@@ -1225,4 +1225,397 @@
 - **Bảo mật**: cả ba dùng IAM + KMS + CloudTrail; Snowball có chuỗi hành trình (chain of custody) và mã hoá. Đề "tuân thủ, audit" → bật CloudTrail + KMS.`,
   ref: ['lab-073-datasync-s3-location', 'lab-075-datasync-incremental-transfer', 'lab-081-transfer-family-sftp-voi-s3-backend', 'lab-084-snowball-data-migration-planning'],
 },
+{
+  id: 'awslab-compute-001',
+  category: 'compute',
+  title: 'EC2 Auto Scaling + ALB: Spring Boot multi-AZ, tự co giãn theo tải',
+  level: 'senior',
+  minutes: 50,
+  exams: ['sap-c02', 'dop-c02'],
+  domains: ['sap-d2', 'sap-d3', 'dop-d3'],
+  services: ['EC2', 'Auto Scaling', 'Application Load Balancer', 'Target Group'],
+  goal: 'Sau lab này bạn tự tay dựng nhóm EC2 chạy Spring Boot ở 2 Availability Zone (AZ — một hay nhiều trung tâm dữ liệu độc lập trong một Region, ví dụ hai tòa nhà máy chủ cách nhau vài kilomet) phía sau Application Load Balancer (ALB — cân bằng tải lớp 7, nhận HTTP/HTTPS rồi chuyển tới instance khỏe mạnh), rồi cấu hình Auto Scaling Group (ASG — nhóm tự động thêm/bớt EC2 theo chính sách bạn đặt) với target tracking CPU 50%. Kỹ năng này xuất hiện liên tục trong đề SAP/DOP: tính sẵn sàng cao, tự scale, không downtime khi scale.',
+  steps: [
+    'Chuẩn bị VPC 2 AZ: 2 public subnet cho ALB, 2 private subnet cho EC2, Internet Gateway, NAT Gateway nếu EC2 cần tải thư viện Maven từ Internet.',
+    'Tạo IAM role cho EC2 gán AmazonSSMManagedInstanceCore (để kết nối bằng Session Manager, không mở port 22) và một policy đọc S3, rồi tạo Instance Profile gán role này khi launch instance.',
+    'Tạo launch template: Amazon Linux 2023, instance t3.micro, user data cài Java 17 (Amazon Corretto), copy jar Spring Boot của bạn, chạy java -jar app.jar --server.port=8080. Launch template là bản thiết kế chuẩn hóa: AMI, loại instance, user data, security group, IAM profile.',
+    'Tạo security group ALB: inbound 80/443 từ 0.0.0.0/0. Security group EC2: inbound 8080 chỉ từ security group của ALB.',
+    'Tạo ALB internet-facing ở 2 public subnet, target group port 8080, protocol HTTP, health check path / (hoặc /actuator/health nếu dùng Spring Boot Actuator), interval 30 giây, unhealthy threshold 2, healthy threshold 2.',
+    'Tạo ASG: launch template trên, min 1, desired 2, max 4, 2 private subnet, health check type ELB, gán target group.',
+    'Tạo target tracking policy bằng aws autoscaling put-scaling-policy với policy-type TargetTrackingScaling, PredefinedMetricSpecification ASGAverageCPUUtilization, TargetValue 50 (file cpu.json).',
+    'Test scale-out: qua Session Manager vào một instance, cài stress-ng (sudo dnf install -y stress-ng), chạy stress-ng --cpu 2 --timeout 600, quan sát ASG Activity history trong 5-10 phút.',
+  ],
+  verify: [
+    'aws autoscaling describe-auto-scaling-groups --auto-scaling-group-names lab-asg trả về DesiredCapacity 2, MinSize 1, MaxSize 4, 2 instance ở 2 AZ khác, HealthCheckType: ELB.',
+    'aws elbv2 describe-target-health --target-group-arn tg-xxx cho tất cả instance trạng thái healthy (không phải initial nữa).',
+    'Truy cập DNS name của ALB qua curl nhận 200 OK từ Spring Boot; terminate một instance (aws ec2 terminate-instances) thì ASG thay thế và ALB vẫn phản hồi nhờ instance kia.',
+  ],
+  cost: 'ALB khoảng 0.0225 USD/giờ cộng LCU (không đến 1 USD trong vài giờ lab). EC2 t3.micro nằm trong Free Tier (750 giờ/tháng cho tài khoản mới), nếu vượt thì khoảng 0.0116 USD/giờ/instance. NAT Gateway nếu tạo: khoảng 0.045 USD/giờ cộng phí xử lý GB — chỉ bật trong thời gian lab rồi xoá. Dọn dẹp BẮT BUỘC: xoá ASG (terminate instance đi kèm), xoá ALB, target group, launch template, NAT Gateway (chờ Deleted) rồi release Elastic IP, xoá security group, VPC.',
+  examTip: `### Bẫy đề thi
+- **ALB là lớp 7 (HTTP/HTTPS)**, NLB là lớp 4 (TCP/TLS, IP tĩnh). Đề cần path-based routing (/api → nhóm A, /web → nhóm B) hoặc WebSocket → chọn ALB.
+- **Health check ALB** quyết định instance vào InService hay OutOfService. Path sai (ví dụ / mà app chỉ có /actuator/health) → toàn bộ instance unhealthy, ALB không gửi traffic.
+- **ASG health check** mặc định EC2 (status running) — chưa đủ. Đề yêu cầu "tự thay thế instance ứng dụng lỗi" → chọn health check type ELB, interval ngắn, grace period hợp lý.
+- **Target tracking** scale theo giá trị mục tiêu (CPU 50%, request mỗi target 1000). Simple scaling và step scaling dùng CloudWatch alarm — chậm hơn, phù hợp bursts cố định.
+- **Warm pool** giữ instance ở trạng thái Stopped để scale-out trong vài giây thay vì vài phút — đề "giảm thời gian khởi động" khi traffic đột ngột.`,
+  ref: ['lab-031-create-application-load-balancer', 'lab-021-create-auto-scaling-group', 'lab-022-target-tracking', 'lab-028-health-check-replacement'],
+},
+{
+  id: 'awslab-compute-002',
+  category: 'compute',
+  title: 'Launch Template + Auto Scaling Instance Refresh: nâng cấp fleet không downtime',
+  level: 'senior',
+  minutes: 45,
+  exams: ['sap-c02', 'dop-c02'],
+  domains: ['sap-d2', 'dop-d1', 'dop-d2'],
+  services: ['EC2', 'Auto Scaling', 'Launch Template'],
+  goal: 'Sau lab này bạn hiểu Launch Template (bản thiết kế launch EC2 có versioning, thay thế Launch Configuration cũ), cách tạo phiên bản mới, đặt làm $Default để ASG dùng bản mới khi scale-out, và Instance Refresh (ASG terminate và thay thế từng instance theo quy tắc bạn đặt, giữ tối thiểu fleet khỏe, chờ warm-up trước khi chuyển instance kế). Đây là cách triển khai nâng cấp không downtime cho fleet EC2 — đề SAP/DOP hay hỏi "cập nhật AMI/security patch cho nhóm EC2 mà không gián đoạn dịch vụ".',
+  steps: [
+    'Mở launch template cũ (phiên bản 1), tạo phiên bản mới bằng aws ec2 create-launch-template-version: đổi AMI sang bản vá bảo mật mới, cập nhật user data cài Java 17 patch mới nhất, giữ cùng instance type và IAM profile.',
+    'Đặt phiên bản mới làm $Default bằng aws ec2 modify-launch-template --default-version để ASG dùng bản mới khi scale-out.',
+    'Tạo instance refresh: aws autoscaling start-instance-refresh --auto-scaling-group-name lab-asg --preferences MinHealthyPercentage=50,InstanceWarmup=300 — ASG sẽ terminate và thay thế từng instance, giữ ít nhất 50% fleet khỏe, chờ instance warm-up (sẵn sàng nhận traffic) trước khi chuyển instance kế.',
+    'Quan sát Activity history và trạng thái instance refresh bằng aws autoscaling describe-instance-refreshes: từng giai đoạn (Provisioning, Warmup, Terminating, Waiting).',
+    'Nếu phát hiện lỗi sau khi bắt đầu: aws autoscaling cancel-instance-refresh để dừng, rollback bằng cách đặt $Default về phiên bản cũ rồi refresh lại.',
+    'Test: curl liên tục đến ALB trong lúc refresh, đảm bảo không có lỗi 5xx lâu dài (connection draining của target group giữ kết nối cũ).',
+  ],
+  verify: [
+    'aws autoscaling describe-launch-template-versions cho thấy DefaultVersion là phiên bản mới, instance chạy AMI ID mới.',
+    'aws autoscaling describe-instance-refreshes --auto-scaling-group-names lab-asg trạng thái Successful, PercentComplete 100.',
+    'Tất cả instance trong ASG trạng thái healthy, ALB target health toàn bộ healthy, ứng dụng trả phiên bản code mới.',
+  ],
+  cost: 'Instance refresh terminate instance cũ và launch mới: trong Free Tier t3.micro phí compute gần 0; nếu t3.large trở lên thì tính theo giờ chạy. ALB chạy liên tục khoảng 0.0225 USD/giờ. Dọn dẹp: xoá ASG, launch template, ALB, target group.',
+  examTip: `### Bẫy đề thi
+- **Launch template thay thế launch configuration** (cũ, hạn chế tính năng). Đề so sánh hai bản thiết kế → chọn launch template vì hỗ trợ versioning, T2/T3 unlimited, EBS encryption, IMDSv2.
+- **Instance Refresh** không thay đổi launch template trực tiếp; nó dùng phiên bản $Default hiện tại. Muốn rollback → đổi $Default về phiên bản cũ rồi refresh lại.
+- **MinHealthyPercentage** (mặc định 90%) và **InstanceWarmup** (không có mặc định, phải set) kiểm soát tốc độ và độ trễ sau khi scale. Đề "không downtime, ít ảnh hưởng user" → MinHealthyPercentage cao, warmup đủ lâu cho ứng dụng khởi động (Spring Boot thường 30-60 giây).
+- **Connection draining** (deregistration delay, mặc định 300 giây) giữ kết nối cũ khi instance bị terminate — giảm lỗi failed request khi refresh.`,
+  ref: ['lab-013-launch-template', 'lab-014-versioned-launch-template', 'lab-015-instance-refresh', 'lab-03-tao-launch-template-va-dung-auto-scaling-group-de-thay-the-instance-loi'],
+},
+{
+  id: 'awslab-compute-003',
+  category: 'compute',
+  title: 'Spot Instances + Savings Plans: chạy workload giảm chi phí, chịu được gián đoạn',
+  level: 'senior',
+  minutes: 45,
+  exams: ['sap-c02', 'dop-c02'],
+  domains: ['sap-d3', 'dop-d3'],
+  services: ['EC2 Spot', 'Auto Scaling', 'Savings Plans', 'CloudWatch', 'EventBridge'],
+  goal: 'Sau lab này bạn hiểu Spot Instance (mức tính toán chưa dùng của AWS, giảm đến 90% so với On-Demand, nhưng AWS có thể reclaim lại với báo trước 2 phút qua rebalance notice), cách thiết kế ASG dùng hỗn hợp On-Demand + Spot trên nhiều loại instance (mixed instances policy) và nhiều AZ để không bị dội hết khi một loại instance hết dung lượng, khi nào dùng Savings Plans (cam kết sử dụng 1 hoặc 3 năm, giảm chi phí so với On-Demand) thay vì Spot. Đề SAP/DOP hay hỏi "giảm chi phí tối đa cho workload chịu gián đoạn (batch, test) → Spot", "giảm chi phí workload ổn định 24/7 → Savings Plans/Reserved Instances".',
+  steps: [
+    'Tạo ASG với mixed instances policy: On-Demand base 1 instance (dành cho phần không thể gián đoạn), phần còn lại 100% Spot, overload các loại instance (t3.micro, t3.small, t3a.micro...) và 2-3 AZ.',
+    'Đặt Spot allocation strategy: capacity-optimized (AWS chọn dung lượng Spot ít bị gián đoạn nhất) hoặc capacity-optimized-prioritized nếu bạn ưu tiên danh sách instance type.',
+    'Bật capacity rebalancing: ASG tự thay thế instance Spot nhận rebalance notice (AWS gửi 2 phút trước khi reclaim) trước khi bị thu hồi.',
+    'Tạo CloudWatch alarm hoặc EventBridge rule trên sự kiện EC2 Spot Instance Interruption Warning để chạy script drain kết nối và upload log lên S3 trước khi instance chết.',
+    'Tuỳ chọn: mua Compute Savings Plans trong Cost Explorer (Savings Plans recommendations), cam kết USD/giờ trong 1 năm, áp dụng tự động cho On-Demand usage tươngpatible.',
+    'Quan sát Cost Explorer: nhóm theo Instance type và Purchase type (Spot vs On-Demand) để so sánh chi phí thực.',
+  ],
+  verify: [
+    'aws autoscaling describe-auto-scaling-groups MixedInstancesPolicy có OnDemandBaseCapacity 1, SpotAllocationStrategy capacity-optimized, nhiều InstanceType.',
+    'EventBridge rule captures sự kiện aws.ec2 Spot Instance Interruption Warning (target Lambda hoặc SNS) — instance bị đánh dấu termination trong 2 phút.',
+    'Cost Explorer hiển thị chi phí Spot thấp hơn On-Demand cùng loại instance (khoảng 60-90% giảm).',
+  ],
+  cost: 'Spot giảm 60-90% so với On-Demand (t3.micro On-Demand khoảng 0.0104 USD/giờ, Spot có thể khoảng 0.003-0.006 USD/gior tùy AZ). Savings Plans 1 năm All Upfront giảm tới 30-40% so với On-Demand nhưng phải trả trước hoặc cam kết hàng tháng. Dọn dẹp: xoá ASG (terminate Spot và On-Demand), huỷ Savings Plans không thể huỷ (cam kết hợp đồng) — chỉ dừng dùng tài nguyên On-Demand để không tính thêm phí.',
+  examTip: `### Bẫy đề thi
+- **Spot chỉ hợp workload chịu gián đoạn**: batch xử lý, test, CI worker, rendering. Không dùng Spot cho database chính, user session stateful, hoặc workload không thể retry.
+- **Rebalance notice 2 phút**: khi AWS thông báo sẽ reclaim Spot, bạn có 2 phút để drain, flush cache, thông báo ứng dụng. Không dùng → mất dữ liệu đang xử lý.
+- **Mixed instances policy + nhiều AZ + nhiều instance type** là cách giảm nguy cơ Spot bị thu hồi đồng thời. Đề "giảm chi phí mà vẫn high availability" → ASG mixed instances multi-AZ.
+- **Savings Plans áp dụng cho On-Demand**, không áp dụng cho Spot (Spot đã rẻ). Compute Savings Plans linh hoạt đổi loại instance/AZ; EC2 Instance Savings Plans gắn chặt hơn, giảm nhiều hơn.
+- **Reserved Instances** chỉ khả dụng EC2 (không phải Lambda/Fargate), Savings Plans có Compute (EC2 + Lambda + Fargate) và EC2 Instance.`,
+  ref: ['lab-029-capacity-rebalancing', 'lab-030-asg-cost-control', 'lab-093-spot-interruption', 'lab-091-compute-cost-baseline'],
+},
+{
+  id: 'awslab-compute-004',
+  category: 'compute',
+  title: 'ECS Fargate: đóng gói Spring Boot vào container, chạy serverless, không quản lý EC2',
+  level: 'senior',
+  minutes: 50,
+  exams: ['sap-c02', 'dop-c02'],
+  domains: ['sap-d2', 'sap-d3', 'dop-d3'],
+  services: ['ECS', 'Fargate', 'Application Load Balancer', 'ECR', 'CloudWatch Logs'],
+  goal: 'Sau lab này bạn hiểu ECS (Amazon Elastic Container Service — điều phối container: chạy, escala, khôi phục container), Fargate (engine serverless của ECS: AWS quản lý EC2 underneath, bạn chỉ trả cho CPU/memory container dùng), task definition (bản thiết kế container: image, CPU, memory, env var, logging), ECS service (giữ số task mong muốn, tự khởi lại task sai). Bạn đóng gói một ứng dụng Spring Boot vào Docker image, đẩy lên ECR, chạy trên Fargate phía sau ALB. Đề hay hỏi "ít vận hành nhất, không quản lý server, container" → Fargate; "cần kiểm soát instance, giá rẻ" → EC2 launch type.',
+  steps: [
+    'Cài Docker, viết Dockerfile cho Spring Boot: FROM amazoncorretto:17-alpine, copy jar, EXPOSE 8080, ENTRYPOINT ["java","-jar","app.jar"]. Build image: docker build -t spring-app .',
+    'Tạo repository ECR riêng: aws ecr create-repository --repository-name spring-app. Lấy lệnh login: aws ecr get-login-password --region ap-southeast-1 | docker login --username AWS --password-stdin 111122223333.dkr.ecr.ap-southeast-1.amazonaws.com. Tag và push: docker tag spring-app:latest .../spring-app:latest, docker push ...',
+    'Tạo ECS cluster Fargate: aws ecs create-cluster --cluster-name lab-cluster --capacity-providers FARGATE.',
+    'Tạo task definition: family spring-app, networkMode awsvpc (mỗi task có ENI riêng, IP riêng, security group riêng), container 512 CPU / 1 GB memory, port mapping 8080, log driver awslogs đến CloudWatch log group /ecs/spring-app.',
+    'Tạo security group task: inbound 8080 từ security group ALB. Task role: ECS task có quyền gọi AWS (ví dụ đọc Secrets Manager) — khác task execution role (ECS agent pull image, gửi log).',
+    'Tạo ECS service: desired 2 task, launch type FARGATE, 2 private subnet, gán target group ALB port 8080, health check grace period 120 giây (Spring Boot khởi động chậm).',
+    'Scale service: aws ecs update-service --cluster lab-cluster --service spring-app --desired-count 4. Quan sát CloudWatch CPU/memory của task qua Container Insights.',
+  ],
+  verify: [
+    'aws ecs describe-services --cluster lab-cluster --services spring-app trả về runningCount 2, desiredCount 2, các task trạng thái RUNNING.',
+    'aws ecs list-tasks --cluster lab-cluster và describe-tasks cho thấy launchType FARGATE, các task healthy sau grace period.',
+    'Curl ALB DNS nhận 200 OK từ Spring Boot; stop một task (aws ecs stop-task) thì ECS khởi chạy task thay thế, ALB vẫn phục vụ.',
+  ],
+  cost: 'Fargate tính phí theo vCPU (khoảng 0.0404 USD/gior/vCPU) và GB RAM (khoảng 0.00444 USD/gior/GB, ap-southeast-1) mỗi task — 2 task 512 CPU/1GB chạy 24h khoảng 2-3 USD. ECR lưu image tính phí storage (khoảng 0.08 USD/GB/tháng) + data transfer. CloudWatch Logs ingest khoảng 0.50 USD/GB. Dọn dẹp BẮT BUỘC: xoá ECS service (tự dừng task), xoá cluster, deregister task definition không dùng, xoá image ECR hoặc đặt lifecycle policy, xoá ALB, VPC.',
+  examTip: `### Bẫy đề thi
+- **Fargate = serverless container**: không chọn EC2, không cần vá OS, không chọn AMI. Trả theo task CPU/memory thực. Hạn biệt: không dùng được GPU, không SSH vào task (dùng ECS Exec).
+- **awsvpc mode**: mỗi task có ENI riêng → giới hạn ENI trên instance (dùng EC2 launch type) hoặc giới hạn Fargate; mỗi task tiêu thụ một IP private subnet. Đề "hết IP subnet" → kiểm tra này.
+- **Task role vs Task execution role**: execution role cho ECS agent (pull image, push log); task role cho code trong container gọi AWS SDK. Gộp hai nhầm → task khởi chạy nhưng code bị AccessDenied.
+- **Grace period**: ALB health check bắt đầu sau grace period; Spring Boot init 30-60 giây thì set grace period đủ dài, không target bị đánh unhealthy ngay khi khởi động.
+- **ECS vs EKS**: ECS ít vận hành hơn, 통합 sâu AWS; EKS nếu đội đã biết Kubernetes, cần contrôle plane chi tiết. Đề "ít vận hành nhất cho container" → ECS Fargate.`,
+  ref: ['lab-051-ecs-cluster-fargate', 'lab-052-ecs-task-definition', 'lab-053-ecs-service', 'lab-056-ecs-fargate-networking'],
+},
+{
+  id: 'awslab-compute-005',
+  category: 'compute',
+  title: 'Amazon ECR: lưu container image riêng, quét lỗ hổng, quản lý vòng đời',
+  level: 'senior',
+  minutes: 35,
+  exams: ['sap-c02', 'dop-c02'],
+  domains: ['sap-d2', 'dop-d2', 'dop-d6'],
+  services: ['ECR', 'IAM', 'EventBridge', 'CloudWatch'],
+  goal: 'Sau lab này bạn hiểu ECR (Amazon Elastic Container Registry — lưu trữ container image riêng, riêng tư như Docker Hub nhưng trên AWS), tạo repository, push/pull image với IAM authentication (bỏ qua username/mật khẩu Docker Hub), bật scan on push (quét imagem khi push để tìm CVE/lỗ hổng known), tạo lifecycle policy (tự xoá image cũ quá số lượng hoặc thời gian để kiểm soát chi phí storage). Đề liên quan bảo mật supply chain: "image không được chứa lỗ hổng nghiêm trọng" → ECR scan; "kiểm soát chi phí image vô hạn" → lifecycle policy.',
+  steps: [
+    'Tạo repository riêng: aws ecr create-repository --repository-name lab/spring-app --image-scanning-configuration scanOnPush=true.',
+    'Tạo lifecycle policy: xoá image chưa gán tag (untagged) sau 7 ngày, giữ tối đa 50 image mỗi tag (ví dụ prod-): áp dụng qua console hoặc aws ecr put-lifecycle-policy.',
+    'Login Docker với IAM (không cần tạo user Docker): aws ecr get-login-password ... | docker login --username AWS --password-stdin <account>.dkr.ecr.<region>.amazonaws.com.',
+    'Build, tag, push: docker build -t lab/spring-app:v1 ., docker tag lab/spring-app:v1 <uri>/lab/spring-app:v1, docker push <uri>/lab/spring-app:v1.',
+    'Kiểm tra kết quả quét: aws ecr describe-image-scan-findings --repository-name lab/spring-app --image-id imageTag=v1 xem severity CRITICAL/HIGH và CVE.',
+    'Xem EventBridge rule hoặc CloudWatch event khi scan hoàn thành (nếu cấu hình thông báo).',
+    'Thử pull trên một EC2/ECS khác với role có ecr:BatchGetImage, ecr:GetDownloadUrlForLayer (không cần lưu mật khẩu ECR trên instance).',
+  ],
+  verify: [
+    'aws ecr describe-repositories --repository-names lab/spring-app hiển thị repository URI, imageScanningConfiguration: scanOnPush true.',
+    'aws ecr list-images --repository-name lab/spring-app hiển thị image v1 vừa push và digest.',
+    'aws ecr describe-image-scan-findings trả về imageScanStatus COMPLETED, findings có severity.',
+    'Lifecycle policy đã áp dụng: thử push image thứ 51, xem image cũ nhất bị xoá (hoặc xem preview trước khi áp).',
+  ],
+  cost: 'ECR private repository miễn phí tạo; storage image khoảng 0.08 USD/GB/tháng (ap-southeast-1), data transfer out theo giá EC2. Quét cơ bản (basic scan) miễn phí cho image push lên; enhanced scan tính phí. Dọn dẹp: xoá lifecycle policy, xoá repository (phải xoá hết image trước hoặc force delete), xoá image thủ công.',
+  examTip: `### Bẫy đề thi
+- **ECR authentication dùng IAM token**, không phải username/mật khẩu Docker. Token hết hạn 12 giờ → trong CI/CD phải gọi get-login-password mỗi build.
+- **Scan on push** quét image ngay khi push, kết quả lưu trong ECR; Enhanced scanning quét liên tục và gửi EventBridge alert khi có CVE mới. Đề "biết ngay khi image có lỗ hổng mới" → Enhanced + EventBridge.
+- **Lifecycle policy** kiểm soát storage chi phí: ví dụ giữ 10 image mỗi branch, xoá untagged sau 7 ngày. Không cấu hình → storage tăng không kiểm soát.
+- **Repository policy** kiểm soát ai có quyền push/pull cross-account (khác với IAM policy ở chính repository owner).`,
+  ref: ['lab-081-ecr-repository', 'lab-082-ecr-image-tagging', 'lab-083-ecr-scan-on-push'],
+},
+{
+  id: 'awslab-compute-006',
+  category: 'compute',
+  title: 'EKS cơ bản: Kubernetes cluster managed, node group, ingress qua ALB',
+  level: 'senior',
+  minutes: 55,
+  exams: ['sap-c02'],
+  domains: ['sap-d2', 'sap-d3'],
+  services: ['EKS', 'EC2', 'Application Load Balancer', 'VPC CNI'],
+  goal: 'Sau lab này bạn hiểu EKS (Amazon Elastic Kubernetes Service — Kubernetes managed: AWS quản lý control plane, bạn quản lý node worker), tạo cluster, managed node group (EC2 chạy worker, AWS điều phối), cài AWS Load Balancer Controller để Ingress tạo ALB tự động, đưa một ứng dụng Java lên pod. EKS phức tạp và vận hành nhiều hơn ECS — dùng khi đội đã rành Kubernetes, cần các công cụ Kubernetes (helm, operator) hoặc multi-cloud. Đề SAP/DOP: "nhiều micro-service phức tạp, đã dùng K8s" → EKS; "ít vận hành nhất" → ECS Fargate hoặc Lambda.',
+  steps: [
+    'Tạo EKS cluster: aws eks create-cluster --name lab-cluster --role-arn arn:aws:iam::111122223333:role/eks-cluster-role --resources-vpc-config subnetIds=subnet-xxx,subnet-yyy,securityGroupIds=sg-xxx. Chờ control plane active (vài phút).',
+    'Cập nhật kubeconfig: aws eks update-kubeconfig --region ap-southeast-1 --name lab-cluster (cần aws-cli, eks-cli, kubectl).',
+    'Tạo managed node group: aws eks create-nodegroup --cluster-name lab-cluster --nodegroup-name lab-node --subnet-ids subnet-xxx subnet-yyy --instance-types t3.medium --scaling-config minSize=1,maxSize=3,desiredSize=2 --ami-type AL2_x86_64. Chờ node join cluster.',
+    'Cài AWS Load Balancer Controller qua Helm (cần IAM OIDC provider, IAM role cho controller với policy AWSLoadBalancerControllerIAMPolicy).',
+    'Viết Kubernetes Deployment Spring Boot (replica 2, image từ ECR, port 8080) và Service (ClusterIP). Áp dụng: kubectl apply -f deployment.yaml,service.yaml.',
+    'Tạo Ingress (k8s networking.k8s.io/v1) với annotation kubernetes.io/ingress.class: alb, AWS Load Balancer Controller tự tạo ALB và target group, pod được đăng ký làm target.',
+    'Kiểm tra pod: kubectl get pods, kubectl logs <pod>. Truy cập DNS ALB từ Ingress status.',
+  ],
+  verify: [
+    'aws eks describe-cluster --name lab-cluster trả về status ACTIVE, endpoint, version.',
+    'kubectl get nodes hiển thị 2 node Ready (managed node group).',
+    'kubectl get ingress hiển thị ALB DNS name (ADDRESS) sau vài phút, kubectl get svc pod có endpoint.',
+    'Curl ALB DNS nhận 200 OK từ ứng dụng Java.',
+  ],
+  cost: 'EKS control plane khoảng 0.10 USD/giờ (không qua Free Tier) + EC2 worker node t3.medium (khoảng 0.0416 USD/gior/node) chạy liên tục. ALB từ Ingress khoảng 0.0225 USD/gior + LCU. Một cluster lab chạy 2-3 giờ tầm 1-2 USD, nhưng nếu quên tắt cả ngày có thể 10+ USD. Dọn dẹp BẮT BUỘC: xoá Ingress (tự xoá ALB), xoá Deployment/Service, xoá node group, xoá cluster EKS, xoá EC2 security group và VPC nếu tạo mới.',
+  examTip: `### Bẫy đề thi
+- **EKS control plane AWS quản lý** (upgrade, HA, etcd), bạn quản lý worker node, networking CNI, add-ons. Không quản lý control plane → ít vận hành hơn tự dựng K8s trên EC2, nhưng nhiều hơn ECS.
+- **Node group managed** hỗ trợ auto scaling qua cluster autoscaler, update AMI tự động, taints/labels. Self-managed node bạn tự lo tất cả.
+- **AWS Load Balancer Controller** tạo ALB/NLB từ Ingress resource (không phải Ingress của NGINX). Cần IAM role cho controller + OIDC provider trên cluster.
+- **EKS vs ECS**: EKS nếu yêu cầu Kubernetes API, Helm, Operators, hybrid multi-cloud; ECS nếu AWS-native, ít vận hành. Đề nêu "đội bereits dùng Kubernetes" → EKS.`,
+  ref: ['lab-071-eks-cluster', 'lab-072-eks-node-group', 'lab-075-eks-load-balancer-controller', 'lab-076-eks-ingress'],
+},
+{
+  id: 'awslab-compute-007',
+  category: 'compute',
+  title: 'Lambda + SnapStart: chạy Java serverless, giảm cold start',
+  level: 'senior',
+  minutes: 40,
+  exams: ['sap-c02', 'dop-c02'],
+  domains: ['sap-d2', 'dop-d3'],
+  services: ['Lambda', 'SnapStart', 'CloudWatch', 'IAM'],
+  goal: 'Sau lab này bạn hiểu Lambda (chạy mã không quản lý server, trả theo milliseconds và số lần gọi), cold start (lần đầu gọi hoặc sau thời gian không dùng, JVM khởi tạo chậm → độ trễ cao, đặc biệt Java), SnapStart (tính năng AWS khởi tạo hàm một lần, chụp snapshot bộ nhớ, gọi tiếp khôi phục ngay → giảm cold start Java từ giây xuống percent milliseconds). Bạn viết hàm Java, deploy, bật SnapStart, đo thời gian gọi trước/sau. Đề SAP/DOP: "Java Lambda khởi động chậm" → SnapStart; "sự kiện-driven, ít vận hành" → Lambda.',
+  steps: [
+    'Viết hàm Java: class implements RequestHandler, dùng Amazon Corretto 17 runtime (java17 hoặc al2023 tùy region), xử lý event JSON trả về JSON.',
+    'Tạo hàm Lambda: aws lambda create-function --function-name lab-java-fn --runtime java17 --role arn:aws:iam::111122223333:role/lambda-role --handler com.example.Handler::handleRequest --code S3Bucket=...,S3Key=... --memory-size 1024 --timeout 30.',
+    'Gọi hàm lần đầu (cold start): aws lambda invoke --function-name lab-java-fn --invocation-type RequestResponse out.json và xem headers X-Amzn-Executed-Version + CloudWatch Logs duration.',
+    'Bật SnapStart: aws lambda update-function-configuration --function-name lab-java-fn --snap-start ApplyOn=PublishedVersions. Lưu ý SnapStart áp cho published version + alias, không phải $LATEST.',
+    'Publish phiên bản mới: aws lambda publish-version --function-name lab-java-fn, tạo alias prod trỏ phiên bản mới.',
+    'Gọi qua alias prod nhiều lần, xem CloudWatch Logs: khởi động lần đầu chậm (init duration), gọi sau nhanh nhờ khôi phục snapshot. So sánh với hàm không bật SnapStart.',
+    'Xem CloudWatch metric Duration, InitDuration, và lỗi SnapStartTimeout (nếu hàm khởi tạo quá thời gian chụp snapshot, thường 15 giây).',
+  ],
+  verify: [
+    'aws lambda get-function-configuration --function-name lab-java-fn --qualifier prod hiển thị SnapStart: ApplyOn PublishedVersions, state On/Off.',
+    'CloudWatch Logs group /aws/lambda/lab-java-fn có dòng Init Duration (lần đầu) và Duration thấp hơn các lần sau.',
+    'aws lambda list-versions-by-function --function-name lab-java-fn có ít nhất 2 version, alias prod trỏ version mới.',
+  ],
+  cost: 'Lambda Free Tier: 1 triệu request và 400.000 GB-seconds tính toán miễn phí/tháng. Vừa vặn lab: dưới 1 USD. SnapStart không tính phí thêm (tính phí lưu snapshot nhỏ). Dọn dẹp: xoá alias, xoá phiên bản function, xoá hàm, xoá role IAM, log group.',
+  examTip: `### Bẫy đề thi
+- **Cold start Java** cao vì JVM nạp class, khởi tạo Spring context (nếu dùng Spring). SnapStart chụp bộ nhớ sau khi init xong, gọi tiếp khôi phục nhanh — lý tưởng cho Java, không chỉ Python/Node.js.
+- **SnapStart chỉ áp published version + alias**. Gọi $LATEST không được lợi ích. Đề "gọi qua alias, giảm cold start" → SnapStart + PublishVersion + Alias.
+- **SnapStart không hỗ trợ**: hàm dùng VPC ENI trước đây (hiện đã hỗ trợ nhiều trường hợp, nhưng kiểm tra latest), ephemeral storage lớn, state cục bộ trong hàm (snapshot chụp khi publish, state sau publish bị mất).
+- **Provisioned Concurrency** giữ sẵn instance khởi tạo (trả phí cả khi không gọi) — dùng khi không thể chấp nhận cold start LA GIÂY, chứ không phải ms.
+- **Lambda concurrent execution limit** (mặc định 1000/region) — burst quá nhiều bị throttle.`,
+  ref: ['lab-76-toi-uu-cold-start-bang-cach-khoi-tao-aws-sdk-ngoai-lambda-function-handler', 'lab-67-toi-uu-hieu-nang-ung-dung-cpu-bound-tren-aws-lambda-bang-cach-tang-cau-hinh-memory', 'lab-56-quan-ly-phien-ban-va-rollback-tuc-thi-cho-aws-lambda-bang-function-versions-va-aliases', 'lab-121-dich-chuyen-luu-luong-lambda-bang-weighted-alias-traffic-shifting'],
+},
+{
+  id: 'awslab-compute-008',
+  category: 'compute',
+  title: 'Elastic Beanstalk: triển khai Spring Boot không quản lý instance',
+  level: 'senior',
+  minutes: 40,
+  exams: ['sap-c02', 'dop-c02'],
+  domains: ['sap-d2', 'dop-d1'],
+  services: ['Elastic Beanstalk', 'EC2', 'Application Load Balancer', 'Auto Scaling', 'CloudWatch'],
+  goal: 'Sau lab này bạn hiểu Elastic Beanstalk (PaaS của AWS: bạn upload code/jar, AWS tự cấp EC2, cài đặt môi trường, chạy ALB, ASG, CloudWatch, bạn chỉ quan tâm code), tạo application + environment, chọn platform Java Corretto, triển khai jars, chọn chiến lược deployment rolling hoặc immutable (không downtime, tăng capacity gấp đôi rồi chuyển traffic), rollback nếu lỗi. Beanstalk phù hợp "đưa ứng dụng legacy lên AWS nhanh, ít vận hành", nhưng ít linh hoạt hơn ECS/EKS khi cần cấu hình chi tiết container. Đề: "ít vận hành nhất, triển khai ứng dụng web Java" → Elastic Beanstalk là đáp án nhanh.',
+  steps: [
+    'Tạo ứng dụng Beanstalk: console → Create application, chọn platform Java (Corretto 17), code đầu tiên là sample app.',
+    'Tạo environment loại Web server environment (có ALB + ASG + EC2), chọn instance type t3.micro, VPC/subnet từ lab trước.',
+    'Upload bản build Spring Boot (java -jar được Beanstalk chạy tự động nếu đặt manifest Procfile hoặc dùng jar duy nhất), hoặc dùng EB CLI: eb init, eb create lab-env.',
+    'Xem môi trường vừa tạo: Beanstalk tự tạo ALB, ASG, security group, CloudWatch alarm. Đợi trạng thái Ready (green).',
+    'Triển khai phiên bản mới: upload jar v2, chọn deployment policy Rolling with additional batch (giữ 100% capacity: launch batch mới, health check, rồi chuyển traffic, terminate batch cũ) hoặc Immutable (launch batch mới trong ASG tạm, chuyển traffic, xóa batch tạm).',
+    'Quan sát health: console Enhanced health, /health endpoint, CloudWatch alarm. Nếu lỗi → Rollback về phiên bản trước trong vài cú click.',
+    'Thử terminate một EC2: ASG thay thế tự động, Beanstalk tự healing.',
+  ],
+  verify: [
+    'Beanstalk environment trạng thái Ready, màu xanh (ok), ALB DNS trả 200 OK.',
+    'aws elasticbeanstalk describe-environments --application-name lab-app trả về status Ready, health Green.',
+    'Sau deploy v2, các instance chạy jar mới (xem quá trình trong console deployment history).',
+    'Rollback thành công: environment quay lại version trước, vẫn healthy.',
+  ],
+  cost: 'Beanstalk miễn phí (tiền trả cho EC2, ALB, CloudWatch log vốn chạy). t3.micro 2 instance Free Tier; ALB khoảng 0.0225 USD/gior. Dọn dẹp BẮT BUỘC: terminate environment (Beanstalk tự xoá ALB, ASG, EC2, security group), xoá application và các version jar trên S3 (beanstalk storage của bạn), xoá S3 bucket nếu không dùng nữa.',
+  examTip: `### Bẫy đề thi
+- **Elastic Beanstalk = PaaS quản lý EC2/ALB/ASG/CloudWatch**, bạn quản lý code và cấu hình environment. Đề "quản trị ít nhất, đưa app Java lên AWS nhanh" → Beanstalk.
+- **Deployment policy**: All at once (nhanh nhất, có downtime), Rolling (cú lượt, ít downtime), Rolling with additional batch (không downtime, tốn gấp đôi capacity tạm thời), Immutable (không downtime, chậm nhất, launch ASG tạm). Đề chọn theo ràng buộc "không downtime + ít chi phí nhất" → Rolling with additional batch thường ổn hơn Immutable về chi phí.
+- **Beanstalk không phải container-native**: có Docker platform nhưng ít điều khiển hơn ECS/EKS. Đề cần sidecar, service mesh, chính sách placement phức tạp → ECS/EKS.
+- **Enhanced health monitoring** báo lý do instance degraded (health check fails, app deployment fails) — dùng để debug nhanh.`,
+  ref: ['lab-84-tao-elastic-beanstalk-environment-voi-rolling-immutable-deployment', 'lab-33-cap-nhat-platform-node-js-khong-downtime-tren-elastic-beanstalk-bang-immutable-update', 'lab-12-chon-chien-luoc-trien-khai-nhanh-nhat-all-at-once-tren-aws-elastic-beanstalk', 'lab-69-trien-khai-elastic-beanstalk-giu-100-phan-tram-capacity-va-toi-uu-chi-phi-bang-rolling-with-additional-batch'],
+},
+{
+  id: 'awslab-compute-009',
+  category: 'compute',
+  title: 'Blue/Green với CodeDeploy: triển khai không downtime, rollback tự động khi lỗi',
+  level: 'senior',
+  minutes: 50,
+  exams: ['dop-c02', 'sap-c02'],
+  domains: ['dop-d1', 'sap-d2', 'dop-d3'],
+  services: ['CodeDeploy', 'Application Load Balancer', 'Auto Scaling', 'ECS', 'Lambda', 'CloudWatch'],
+  goal: 'Sau lab này bạn hiểu blue/green deployment (blue = phiên bản cũ còn phục vụ, green = phiên bản mới chạy song song, testing rồi chuyển traffic qua green, xóa blue), CodeDeploy điều phối quá trình này cho EC2, Lambda, ECS, appspec.yml định nghĩa hooks (BeforeInstall, AfterInstall, ApplicationStart, ValidateService cho EC2; BeforeAllowTraffic, AfterAllowTraffic cho Lambda/ECS), automatic rollback khi CloudWatch alarm bật (ví dụ lỗi 5xx tăng). Đề DOP/SAP hay hỏi "không downtime + rollback nhanh nhất khi lỗi" → blue/green CodeDeploy; "giảm rủi ro từng phần" → canary/linear (xem card 010).',
+  steps: [
+    'Chuẩn bị ứng dụng Spring Boot đã build artifact (jar hoặc zip), upload lên S3 bucket artifact.',
+    'Tạo CodeDeploy application (compute platform EC2/On-premises hoặc Lambda hoặc ECS), deployment group gán ASG/ALB (EC2) hoặc ECS service + ALB (ECS) hoặc Lambda alias.',
+    'Viết appspec.yml (ví dụ EC2): hooks BeforeInstall (cài Java), ApplicationStart (chạy jar), ValidateService (curl health check), files từ S3 unpack vào /opt/app.',
+    'Cấu hình automatic rollback: CloudWatch alarm trên metric HTTPCode_Target_5XX_Count của ALB hoặc Errors của Lambda, bật rollback khi alarm ALARM.',
+    'Triển khai bản mới (deployment): CodeDeploy launch green fleet (instance mới), chạy hooks, ALB bắt đầu gửi traffic sang green sau khi healthy.',
+    'Quan sát deployment lifecycle trong console; nếu alarm bật → CodeDeploy rollback tự động về blue, xem timeline sự kiện.',
+    'Sau thành công, terminate blue fleet (ASG cũ) sau một thời gian barn-out.',
+  ],
+  verify: [
+    'aws deploy list-deployments --application-name lab-app hiển thị deployment trạng thái Succeeded (hoặc Rolled back nếu có lỗi).',
+    'Deployment detail có hook execution thành công (BeforeInstall, ApplicationStart, ValidateService).',
+    'ALB target health toàn bộ healthy trên fleet green, traffic 100% green (xem target group registration).',
+    'Nếu làm thử fail: cẩn cả ValidateService trả fail, deployment trạng thái Failed, rollback tự động, instance blue vẫn phục vụ.',
+  ],
+  cost: 'CodeDeploy EC2/On-premises miễn phí (tiền trả EC2, ALB). CodeDeploy Lambda/ECS miễn phí. CloudWatch alarm khoảng 0.10 USD/tháng. T3.micro 2-4 instance Free Tier. Dọn dẹp BẮT BUỘC: xoá deployment group, application, S3 artifact bucket, CloudWatch alarm, ASG, ALB.',
+  examTip: `### Bẫy đề thi
+- **Blue/green = phiên bản mới song song, chuyển traffic sau khi verify** → không downtime, rollback nhanh (đổi target group ngược). Rolling = thay thế dần trên cùng fleet → có khoảng downtime nhỏ, rollback chậm hơn.
+- **AppSpec hooks khác theo nền tảng**: EC2 (BeforeInstall → ApplicationStart → ValidateService); Lambda (BeforeAllowTraffic → AfterAllowTraffic); ECS (BeforeInstall → AfterAllowTraffic). Đề nêu hook sai nền tảng → sai đáp án.
+- **Automatic rollback** cần CloudWatch alarm trước; không có alarm → không rollback tự động.
+- **Deployment configuration** (ví dụ CodeDeployDefault.AllAtOnce, Canary10Percent5Minutes, Linear10PercentEvery1Minute) kiểm soát tốc độ chuyển traffic. Đề "chuyển 10% traffic đầu, chờ 5 phút, nếu OK thì 100%" → Canary10Percent5Minutes.`,
+  ref: ['lab-063-ecs-blue-green', 'lab-094-blue-green-compute', 'lab-40-tu-dong-trien-khai-lambda-an-toan-va-nhanh-nhat-bang-codedeploy-canary10percent5minutes', 'lab-93-trien-khai-canary-10-percent-30-minutes-cho-lambda-bang-aws-sam-va-codedeploy-hooks'],
+},
+{
+  id: 'awslab-compute-010',
+  category: 'compute',
+  title: 'Canary deployment: chuyển dần traffic, tự rollback nếu lỗi',
+  level: 'senior',
+  minutes: 45,
+  exams: ['dop-c02'],
+  domains: ['dop-d1', 'dop-d3'],
+  services: ['Lambda', 'CodeDeploy', 'ECS', 'CloudWatch', 'Route 53'],
+  goal: 'Sau lab này bạn hiểu canary deployment (chuyển một phần nhỏ traffic, ví dụ 10%, sang phiên bản mới, quan sát metrics lỗi, nếu ổn thì tăng dần lên 100%, nếu lỗi thì rollback ngay — chỉ ảnh hưởng ít user), Lambda weighted alias (alias trỏ nhiều phiên bản với trọng số, ví dụ prod 90% v1 + 10% v2), ECS canary (task mới chạy song song, ALB chuyển phần traffic). Canary giảm rủi ro sai sót bản mới so với blue/green chuyển toàn bộ ngay. Đề DOP: "giảm rủi ro dần, theo % traffic" → canary/linear; "không downtime, rollback nhanh nhất" → blue/green.',
+  steps: [
+    'Publish Lambda function v2, tạo alias prod với weighted config: v1 weight 90, v2 weight 10 (aws lambda update-alias --function-name fn --name prod --routing-config AdditionalVersionWeights={"v2":0.1}).',
+    'Gọi alias prod nhiều lần (ví dụ 100 request), xem CloudWatch: khoảng 10% request chạy v2 (X-Amzn-Executed-Version).',
+    'Giả lập lỗi trong v2 (ném exception theo ý), gọi liên tục, xem metric Errors tăng và CloudWatch alarm bật.',
+    'CodeDeploy/Lambda canary: deployment config Canary10Percent5Minutes (chuyển 10% đầu, chờ 5 phút) hoặc Linear10PercentEvery1Minute. Nếu alarm bật → rollback tự động về 100% v1.',
+    'Nếu ổn: update-alias bỏ routing-config (v2 weight 100%) hoặc complete deployment, v2 nhận 100% traffic.',
+    'ECS canary tương tự: task definition mới, service deployment với circuit breaker, CloudWatch alarm rollback nếu task unhealthy.',
+  ],
+  verify: [
+    'aws lambda get-alias --function-name fn --name prod hiển thị RoutingConfig AdditionalVersionWeights (10% v2).',
+    'CloudWatch metric Errors của alias có spike khi v2 lỗi, alarm trạng thái ALARM.',
+    'Deployment trạng thái Succeeded (v2 100%) hoặc Rolled back (v1 100%) trong CodeDeploy/Lambda console.',
+    'ECS: aws ecs describe-services runningCount theo các bản task, deployment circuit breaker bật (deployment failed → rollback).',
+  ],
+  cost: 'Lambda canary miễn phí thêm ngoài số lần gọi (Free Tier 1 triệu request). CloudWatch alarm khoảng 0.10 USD/tháng. ECS canary chạy task thêm trong thời gian canary → tính Fargate/EC2 thêm vài giờ. Dọn dẹp: xoá alias routing-config, xoá deployment group/application, ECS service, task definition cũ.',
+  examTip: `### Bẫy đề thi
+- **Canary = chuyển dần theo % traffic**, chỉ phần user nhỏ gặp bản mới → rủi ro thấp, nhưng cần surveillance metrics (error rate, latency) và quy định khi rollback.
+- **Linear vs Canary**: Canary10Percent5Minutes (10% thì chờ 5 phút) vs Linear10PercentEvery1Minute (tăng 10% mỗi phút). Đề nêu chi tiết % và thời gian → chọn config khớp.
+- **Weighted alias Lambda** dùng cho canary không cần CodeDeploy (đơn giản, chỉ Lambda). Đề chỉ Lambda + canary → weighted alias là đủ.
+- **Traffic shifting vs Blue/green**: canary giữ cả hai phiên bản trong khoảng thời gian, blue/green chuyển toàn bộ sau verify. Đề "chậm rãi theo phần trăm" → canary.`,
+  ref: ['lab-121-dich-chuyen-luu-luong-lambda-bang-weighted-alias-traffic-shifting', 'lab-064-ecs-canary-pattern', 'lab-095-canary-compute'],
+},
+{
+  id: 'awslab-compute-011',
+  category: 'compute',
+  title: 'Multi-AZ compute & disaster recovery: chịu thất bại AZ, khôi phục sau sự cố',
+  level: 'senior',
+  minutes: 45,
+  exams: ['sap-c02', 'dop-c02'],
+  domains: ['sap-d3', 'dop-d3'],
+  services: ['EC2', 'Auto Scaling', 'Route 53', 'CloudWatch', 'S3'],
+  goal: 'Sau lab này bạn hiểu Multi-AZ (chạy trên ít nhất 2 AZ để một AZ hỏng thì ứng dụng còn chạy), AZ là gì (một hoặc nhiều data center độc lập, điện, mạng riêng), cách thiết kế ASG multi-AZ (tự thay thế instance khi AZ bị sự cố), Route 53 failover giữa Region (pilot light / warm standby cho DR — Disaster Recovery: khôi phục dịch vụ sau thảm hoạ), RPO (Recovery Point Objective — lượng dữ liệu có thể mất, tính theo thời gian) và RTO (Recovery Time Objective — thời gian khôi phục dịch vụ). Đề SAP hay hỏi RPO/RTO: "RPO gần 0, RTO phút" → Aurora Global/ multi-AZ sync; "chi phí thấp, RTO vài giờ" → backup & restore/pilot light.',
+  steps: [
+    'Tạo ASG stretch 3 AZ (min 3, desired 3, max 6), launch template như card 001, target group ALB multi-AZ.',
+    'Giả lập mất một AZ: trong console EC2, stop/terminate tất cả instance ở AZ-1 (hoặc tạm dùng AWS Fault Injection Simulator nếu có). Quan sát ASG tự launch instance ở AZ-2/AZ-3 để đạt desired capacity.',
+    'ALB target health: instance AZ-1 out-of-service, AZ-2/3 healthy, traffic vẫn qua ALB.',
+    'Tạo S3 bucket chứa backup cấu hình (launch template, user data, script build) — cơ sở pilot light (cơ sở tối thiểu luôn chạy, scale lên khi cần).',
+    'Tuỳ chọn: tạo Route 53 health check cho endpoint Region chính, record failover PRIMARY/SECONDARY trỏ ALB của 2 Region (nếu có 2 Region, mô phỏng bằng health check và đọc cấu hình).',
+    'Ghi bảng so sánh: multi-AZ trong 1 Region (RPO 0 cho stateless, RTO phút) vs pilot light cross-Region (RPO minutes-hours, RTO hours) vs backup & restore (chi phí thấp nhất, RTO nhiều giờ).',
+  ],
+  verify: [
+    'aws autoscaling describe-auto-scaling-groups thấy instance phân bố 3 AZ, sau khi mất AZ-1 thì ASG launch thêm ở AZ-2/3.',
+    'ALB describe-target-health: instance AZ-2/3 healthy, traffic curl ALB vẫn 200 OK.',
+    'S3 bucket có backup artifacts; aws s3 ls thấy file cấu hình.',
+    'Route 53 health check state healthy/unhealthy khớp với trạng thái endpoint (nếu tạo).',
+  ],
+  cost: 'Multi-AZ trong 1 Region: không tính phí thêm cho AZ, nhưng chạy ít nhất 3 instance t3.micro (Free Tier covers 750 giờ/tháng). Route 53 health check 0.50 USD/tháng/c.check. Cross-Region DR thêm chi phí S3 replication, ALB ở Region thứ hai. Dọn dẹp BẮT BUỘC: xoá ASG, ALB, launch template, S3 bucket backup, Route 53 health check/record, EC2/VPC.',
+  examTip: `### Bẫy đề thi
+- **AZ ≠ Region**: AZ là data center độc lập trong Region; Region là vùng địa lý (ví dụ ap-southeast-1 Singapore). Multi-AZ = cùng Region, khác AZ; multi-Region = khác quốc gia/khu vực, chi phí và độ trễ cao hơn.
+- **Stateless multi-AZ** dễ (ASG + ALB); database multi-AZ cần RDS Multi-AZ hoặc Aurora (xem lab RDS).
+- **RPO/RTO**: RPO = data loss acceptable (0 = đồng bộ), RTO = downtime acceptable. Đề "RPO seconds, RTO minutes" → multi-AZ sync hoặc Aurora Global; "chi phí thấp nhất, chấp nhận RTO 24 giờ" → backup & restore từ S3.
+- **Pilot light**: component quan trọng (database) luôn chạy nhỏ, phần còn lại scale khi sự cố — trung gian giữa chi phí và tốc độ khôi phục.
+- **ASG rebalancing**: sau AZ thay lại ổn định, ASG không tự rebalance instance về AZ cũ ngay (tránh flapping) — biết để đọc đề điều khiển.`,
+  ref: ['lab-092-multi-az-compute', 'lab-097-disaster-recovery-compute', 'lab-098-compute-observability'],
+},
+{
+  id: 'awslab-compute-012',
+  category: 'compute',
+  title: 'Tối ưu chi phí compute & capacity planning: Compute Optimizer, Budgets, Savings Plans',
+  level: 'senior',
+  minutes: 40,
+  exams: ['sap-c02', 'dop-c02'],
+  domains: ['sap-d3', 'dop-d3'],
+  services: ['EC2', 'Compute Optimizer', 'Budgets', 'Savings Plans', 'Cost Explorer'],
+  goal: 'Sau lab này bạn hiểu cách theo dõi chi phí compute (Cost Explorer nhóm theo service, instance type, purchase type), Compute Optimizer phân tích lịch sử sử dụng CPU/memory và khuyến nghị resize instance (rightsizing: downsize instance quá lớn, đổi generation mới), Savings Plans (cam kết dùng 1/3 năm, giảm 30-66% so với On-Demand) và Reserved Instances (chỉ EC2, giảm cao nhưng ít linh hoạt), AWS Budgets cảnh báo ngưỡng chi phí. Đề SAP/DOP: "giảm chi phí compute ít thay đổi kiến trúc" → Compute Optimizer + Savings Plans; "quản trị chi phí tổ chức" → Budgets + tag allocation + consolidated billing.',
+  steps: [
+    'Mở Cost Explorer, lọc Last 30 days, group by Service rồi by Instance Type: tìm 3 khoản compute lớn nhất (thường là EC2, ALB, NAT).',
+    'Bật Compute Optimizer (opt-in) và đọc khuyến nghị: instance quá lớn (utilization CPU < 40% liên tiếp) → downsizing; instance cũ (m4, t2) → đổi m6g/t3g (Graviton) giảm 20-40% chi phí.',
+    'Tạo AWS Budget: ngưỡng 50 USD/tháng, alert email khi chi phí dự đoán vượt ngưỡng, type Cost budget.',
+    'Tìm Savings Plans recommendations trong Cost Explorer: Compute Savings Plans 1 năm No Upfront giảm khoảng 30% so với On-Demand, áp dụng tự động cho EC2/Lambda/Fargate.',
+    'Thử thay đổi ASG mixed instances: On-Demand base 1 + Spot phần còn lại, 3 loại instance, 3 AZ (như card 003) và theo dõi chi phí giảm bao nhiêu.',
+    'Ghi bảng quyết định: workload ổn định 24/7 → Savings Plans/Reserved Instances; workload burst, chịu gián đoạn → Spot; workload không rõ hạn → On-Demand + Compute Optimizer theo dõi.',
+  ],
+  verify: [
+    'Cost Explorer báo cáo hiển thị chi phí EC2 theo instance type, có thể tính tổng.',
+    'Compute Optimizer dashboard có khuyến nghị (nếu dữ liệu đủ 30-60 ngày; tài khoản mới có thể trống — đọc hiểu giao diện).',
+    'AWS Budget đã tạo, trạng thái Active, ngưỡng và email alert đúng.',
+    'ASG mixed instances policy chạy, xem spot expenditure trong Cost Explorer giảm so với toàn On-Demand.',
+  ],
+  cost: 'Cost Explorer UI miễn phí; API Compute Optimizer miễn phí. AWS Budgets miễn phí 2 budget đầu, sau đó 0.02 USD/bucket/tháng. Savings Plans là cam kết thanh toán (không huỷ được), chỉ chọn khi chắc workload ổn định. Dọn dẹp: xoá budget nếu không cần, giữ tags; không cần xoá khuyến nghị Compute Optimizer.',
+  examTip: `### Bẫy đề thi
+- **Compute Optimizer** khuyến nghị dựa lịch sử 14 ngày-60 ngày, chỉ đúng khi có đủ dữ liệu. Đề tài khoản mới không có dữ liệu → không khuyến nghị được.
+- **Savings Plans Compute** áp EC2 + Lambda + Fargate, linh hoạt đổi region/instance family; EC2 Instance Savings Plans giảm nhiều hơn nhưng gắn loại instance, region. RI (Reserved Instances) chỉ EC2, giảm nhất nhưng ít linh hoạt nhất.
+- **Spot** giảm 60-90% nhưng có thể bị thu hồi → chỉ workload chịu gián đoạn. Đề "giảm chi phí tối đa, workload batch đêm cuối tuần" → Spot + Scheduled scaling.
+- **Tag allocation** + Cost Allocation Tags là tiền đề để chi trả theo team/project trong consolidated billing (Organizations). Không tag → không phân bổ chi phí được.
+- **Right-sizing** (downsize instance quá lớn) tiết kiệm nhanh nhất, không cần cam kết hợp đồng dài hạn.`,
+  ref: ['lab-091-compute-cost-baseline', 'lab-096-capacity-planning', 'lab-030-asg-cost-control'],
+},
 );
