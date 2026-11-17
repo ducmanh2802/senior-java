@@ -4624,5 +4624,137 @@ Tại bước 2, request đang giữ **C1 + C2 đồng thời**. Khi QPS cao, nh
     'Đề xuất sửa đúng: bỏ/tách REQUIRES_NEW sau commit, rút ngắn transaction, tăng pool có tính toán, fail fast, alert metric.'
   ],
   tags: ['hikaricp', 'connection-pool', 'requires_new', 'transaction', 'spring', 'concurrentbag', 'synchronousqueue', 'pool-exhaustion', 'jstack']
+},
+{
+  id: 'lab-thread-020',
+  category: 'thread',
+  title: 'Parallel stream treo toàn bộ hệ thống vì chặn common pool',
+  level: 'senior',
+  scenario: `**Bối cảnh:** Microservice **Analytics** (Spring Boot 3.4, Java 21) chạy trên môi trường Docker với 8 CPU giới hạn. Service có tính năng {{SyncReport}} dùng Java Parallel Stream để xử lý dữ liệu từ 200 partner: {{partners.parallelStream().map(p -> callPartner(p)).collect(Collectors.toList())}}. Phương thức {{callPartner(p)}} thực hiện HTTP GET tới partner thông qua {{RestTemplate}}.
+  
+  **Triệu chứng:** Lúc **10:00 ngày 23/10/2026**, 1 trong 200 partner (partner-X) bị sự cố hạ tầng, khiến thời gian phản hồi HTTP tăng từ ~200ms lên tới hơn 45 giây. Ngay lập tức, mọi tính năng khác trong service (đặc biệt là các job dùng parallel stream khác) đều bị treo. Các request HTTP vào service vẫn phản hồi nhanh, nhưng các task background hoặc report hoàn toàn không tiến triển. CPU node thấp, không có deadlock.
+  
+  **Dữ liệu thu thập:** Jstack lấy lúc 10:05 (đang treo) và log của service.`,
+  artifacts: [
+    {
+      name: 'jstack-parallel-stream.txt',
+      lang: 'text',
+      content: `2026-10-23 10:05:00
+Full thread dump OpenJDK 64-Bit Server VM (21.0.4+7-LTS-151 mixed mode, sharing):
+
+"ForkJoinPool.commonPool-worker-1" #15 [1001] prio=5 os_prio=0 cpu=4102.55ms elapsed=3600.09s tid=0x00007fa1b01c2000 nid=1001 runnable  [0x00007fa18f7f6000]
+   java.lang.Thread.State: RUNNABLE
+        at sun.nio.ch.Net.poll(java.base@21.0.4/Native Method)
+        at sun.nio.ch.NioSocketImpl.park(java.base@21.0.4/NioSocketImpl.java:191)
+        at sun.nio.ch.NioSocketImpl.timedRead(java.base@21.0.4/NioSocketImpl.java:280)
+        at java.net.Socket$SocketInputStream.read(java.base@21.0.4/Socket.java:1099)
+        at org.apache.hc.core5.http.impl.io.SessionInputBufferImpl.fillBuffer(SessionInputBufferImpl.java:149)
+        at org.apache.hc.client5.http.impl.classic.InternalHttpClient.doExecute(InternalHttpClient.java:174)
+        at vn.analytics.SyncReport.callPartner(SyncReport.java:45)
+        at java.base/java.util.stream.ForEachOps$ForEachOp$OfRef.accept(ForEachOps.java:184)
+        at java.base/java.util.stream.ReferencePipeline$3$1.accept(ReferencePipeline.java:212)
+        at java.base/java.util.concurrent.ForkJoinPool$WorkQueue.runTask(ForkJoinPool.java:1908)
+        at java.base/java.util.concurrent.ForkJoinPool.runWorker(ForkJoinPool.java:1809)
+        at java.base/java.util.concurrent.ForkJoinWorkerThread.run(ForkJoinWorkerThread.java:188)
+
+"ForkJoinPool.commonPool-worker-2" #16 [1002] prio=5 os_prio=0 cpu=3901.55ms elapsed=3600.09s tid=0x00007fa1b01c3000 nid=1002 runnable  [0x00007fa18f7f7000]
+   java.lang.Thread.State: RUNNABLE
+        at sun.nio.ch.Net.poll(java.base@21.0.4/Native Method)
+        at sun.nio.ch.NioSocketImpl.park(java.base@21.0.4/NioSocketImpl.java:191)
+        at sun.nio.ch.NioSocketImpl.timedRead(java.base@21.0.4/NioSocketImpl.java:280)
+        at java.net.Socket$SocketInputStream.read(java.base@21.0.4/Socket.java:1099)
+        at org.apache.hc.core5.http.impl.io.SessionInputBufferImpl.fillBuffer(SessionInputBufferImpl.java:149)
+        at org.apache.hc.client5.http.impl.classic.InternalHttpClient.doExecute(InternalHttpClient.java:174)
+        at vn.analytics.SyncReport.callPartner(SyncReport.java:45)
+        at java.base/java.util.stream.ForEachOps$ForEachOp$OfRef.accept(ForEachOps.java:184)
+        at java.base/java.util.concurrent.ForkJoinPool$WorkQueue.runTask(ForkJoinPool.java:1908)
+        at java.base/java.util.concurrent.ForkJoinPool.runWorker(ForkJoinPool.java:1809)
+        at java.base/java.util.concurrent.ForkJoinWorkerThread.run(ForkJoinWorkerThread.java:188)
+
+"ForkJoinPool.commonPool-worker-3" #17 [1003] prio=5 os_prio=0 cpu=4210.55ms elapsed=3600.09s tid=0x00007fa1b01c4000 nid=1003 runnable  [0x00007fa18f7f8000]
+   java.lang.Thread.State: RUNNABLE
+        at sun.nio.ch.Net.poll(java.base@21.0.4/Native Method)
+        ... (omitted threads 4-6)
+
+"ForkJoinPool.commonPool-worker-7" #21 [1007] prio=5 os_prio=0 cpu=4001.55ms elapsed=3600.09s tid=0x00007fa1b01c8000 nid=1007 runnable  [0x00007fa18f7fc000]
+   java.lang.Thread.State: RUNNABLE
+        at sun.nio.ch.Net.poll(java.base@21.0.4/Native Method)
+        ...
+        at java.net.Socket$SocketInputStream.read(java.base@21.0.4/Socket.java:1099)
+        at vn.analytics.SyncReport.callPartner(SyncReport.java:45)
+        ...
+
+"http-nio-8080-exec-1" #50 [2001] prio=5 os_prio=0 cpu=100ms elapsed=3600.09s tid=0x00007fa1b01d0000 nid=2001 waiting on condition [0x00007fa18f8f6000]
+   java.lang.Thread.State: WAITING (parking)
+        at jdk.internal.misc.Unsafe.park(java.base@21.0.4/Native Method)
+        ...`
+    },
+    {
+      name: 'metrics.log',
+      lang: 'text',
+      content: `2026-10-23T10:00:00.000+07:00 WARN vn.analytics.SyncReport - partner-X latency spike, p99=45000ms
+2026-10-23T10:01:00.000+07:00 ERROR vn.analytics.ReportTask - Task stuck, no progress in 60s
+2026-10-23T10:05:00.000+07:00 WARN vn.analytics.metrics.PoolReporter - commonPool active=7 idle=0`
+    }
+  ],
+  questions: [
+    'Tại sao partner-X chậm lại làm treo cả các tác vụ không liên quan trong service?',
+    'Tại sao không có deadlock trong jstack nhưng hệ thống vẫn treo?',
+    'Cách sửa: Làm sao tách biệt luồng xử lý cho partner-X và đảm bảo lỗi partner-X không ảnh hưởng luồng chung?'
+  ],
+  hints: [
+    'Parallel stream mặc định sử dụng ForkJoinPool.commonPool(). Kiểm tra xem nó có bao nhiêu luồng.',
+    'Các thread "ForkJoinPool.commonPool-worker-N" đang bị block ở đâu? Có phải là IO không?',
+    'Sử dụng CompletableFuture thay vì ParallelStream. Executor riêng cho các tác vụ IO.'
+  ],
+  answer: `**Tóm tắt:** Lỗi ở chỗ dùng Parallel Stream cho các tác vụ Blocking I/O. Java Parallel Stream mặc định dùng {{ForkJoinPool.commonPool()}} (có số luồng bằng số CPU trừ 1) để làm việc. Khi partner-X chậm, 7 luồng trong commonPool bị kẹt ở {{SocketInputStream.read}} (Blocking I/O), dẫn đến pool bị cạn kiệt (pool starvation). Mọi tác vụ khác trong hệ thống cần commonPool (kể cả report khác, hay các xử lý song song khác) đều phải xếp hàng chờ, dù không liên quan tới partner-X.
+
+### Nguyên nhân gốc
+
+Parallel stream là công cụ mạnh cho CPU-intensive, không phải IO-intensive. Mọi parallel stream trong JVM đều chia sẻ cùng một pool global: {{ForkJoinPool.commonPool()}}.
+- Với môi trường 8 CPU, pool chỉ có 7 luồng hoạt động.
+- Khi gọi HTTP (Blocking IO), luồng bị treo trong {{java.net.Socket.read}}.
+- Chỉ cần 7 request đồng thời tới partner-X bị chậm là pool cạn sạch. 
+- Deadlock là lỗi "ai chờ ai", còn đây là lỗi **Resource Starvation** (cạn kiệt tài nguyên): tất cả worker đều đang "bận" chờ IO, không có worker nào rảnh để chạy task mới.
+
+### Dẫn chứng
+
+- Jstack chỉ ra 7 thread {{ForkJoinPool.commonPool-worker-N}} đều ở trạng thái {{RUNNABLE}} nhưng đang thực hiện {{SocketInputStream.read}} (thực chất là đang bị block ở mức OS Socket, không phải deadlock).
+- Metrics log: {{commonPool active=7 idle=0}} chứng tỏ pool đã dùng tối đa capacity và tất cả đều đang "bận".
+- Các thread {{http-nio-8080-exec-X}} (web server) không kẹt, vì chúng dùng thread pool riêng của Tomcat, đó là lý do API vẫn phản hồi bình thường, chỉ các tính năng report (nội bộ hoặc job) bị treo.
+
+### Cách sửa
+
+1. **Tuyệt đối không dùng Parallel Stream cho IO.**
+2. **Sử dụng ExecutorService riêng:** Tạo một thread pool chuyên dụng cho các tác vụ gọi partner (ví dụ: {{ThreadPoolExecutor}} với số luồng lớn hơn nhiều vì nó chủ yếu chờ IO).
+3. **Sử dụng CompletableFuture + timeout:** Không block luồng. Dùng {{CompletableFuture.supplyAsync(..., executor)}} và luôn có {{orTimeout(timeout, unit)}} để đảm bảo dù partner-X có treo, luồng sẽ được giải phóng sau một khoảng thời gian.
+4. **Bulkhead (Vách ngăn):** Cô lập các partner yếu. Nếu một partner yếu, chỉ những task gọi partner đó bị ảnh hưởng, không lây lan ra pool chung.
+
+~~~java
+// Cách sửa an toàn
+private final ExecutorService partnerExecutor = Executors.newFixedThreadPool(50); // Pool riêng cho IO
+
+public CompletableFuture<String> callPartnerAsync(Partner p) {
+    return CompletableFuture.supplyAsync(() -> callPartner(p), partnerExecutor)
+                            .orTimeout(5, TimeUnit.SECONDS); // Timeout cực kỳ quan trọng
 }
+~~~
+
+### Phòng ngừa
+
+- Code review: Cấm dùng {{parallelStream()}} cho code có gọi IO (DB, HTTP, File).
+- Monitoring: Theo dõi sát metric {{ForkJoinPool.commonPool()}} (active/pending) trong Prometheus.
+- Bulkhead: Luôn phân tách thread pool theo từng loại dịch vụ (IO-heavy vs CPU-heavy).
+- Circuit Breaker: Sử dụng {{Resilience4j}} để tự động ngắt kết nối với partner-X khi nó chậm, tránh treo lây lan.
+
+> Senior tip: Parallel stream rất tiện nhưng cực nguy hiểm trong môi trường chia sẻ (như Web server). Nếu bắt buộc dùng, hãy cấu hình lại pool cho commonPool bằng property {{-Djava.util.concurrent.ForkJoinPool.common.parallelism=N}}, nhưng đó là sửa phần ngọn. Sửa gốc là tách luồng theo workload: IO thì dùng Thread Pool lớn (do nhiều thời gian chờ), CPU thì dùng số thread bằng số core.`,
+  rubric: [
+    'Giải thích đúng cơ chế ForkJoinPool.commonPool() bị cạn kiệt do blocked IO.',
+    'Phân biệt deadlock và thread starvation (cạn luồng do block IO) — jstack không báo deadlock.',
+    'Đề xuất đúng: Tách ExecutorService riêng, dùng CompletableFuture với timeout/bulkhead.',
+    'Đưa ra biện pháp phòng ngừa: Monitoring, Circuit Breaker, và quy định code review.'
+  ],
+  tags: ['forkjoin', 'parallel-stream', 'io-blocking', 'completablefuture', 'starvation', 'bulkhead']
+}
+
 );
