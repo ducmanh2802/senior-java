@@ -1,0 +1,633 @@
+# labaws.site lab index (titles/slugs only, fetched 2026-11-17 from https://labaws.site/labs-index.json). Reference links only: https://labaws.site/labs/<slug>. Do NOT copy their lab content.
+category	difficulty	minutes	slug	title
+Network	Intermediate	45	lab-001-cidr-va-vpc-network-planning	Lab 001 - CIDR va VPC Network Planning
+Network	Intermediate	45	lab-002-public-va-private-subnet	Lab 002 - Public va Private Subnet
+Network	Intermediate	45	lab-003-az-region-va-failure-domain	Lab 003 - AZ Region va Failure Domain
+Network	Intermediate	45	lab-004-vpc-cidr-planning	Lab 004 - VPC CIDR Planning
+Network	Intermediate	45	lab-005-route-table-longest-prefix-match	Lab 005 - Route Table Longest Prefix Match
+Network	Intermediate	45	lab-006-internet-gateway	Lab 006 - Internet Gateway
+Network	Intermediate	45	lab-007-nat-gateway	Lab 007 - NAT Gateway
+Network	Intermediate	45	lab-008-elastic-ip-va-public-ipv4	Lab 008 - Elastic IP va Public IPv4
+Network	Intermediate	45	lab-009-dns-resolution-trong-vpc	Lab 009 - DNS Resolution trong VPC
+Network	Intermediate	45	lab-010-thiet-ke-ip-plan-production	Lab 010 - Thiet ke IP Plan Production
+Network	Intermediate	45	lab-011-tao-custom-vpc	Lab 011 - Tao Custom VPC
+Network	Intermediate	45	lab-012-tao-public-private-database-subnet	Lab 012 - Tao Public Private Database Subnet
+Network	Intermediate	45	lab-013-gan-route-table-theo-subnet	Lab 013 - Gan Route Table theo Subnet
+Network	Intermediate	45	lab-014-public-route-qua-internet-gateway	Lab 014 - Public Route qua Internet Gateway
+Network	Intermediate	45	lab-015-private-route-qua-nat-gateway	Lab 015 - Private Route qua NAT Gateway
+Network	Intermediate	45	lab-016-isolated-subnet-khong-internet	Lab 016 - Isolated Subnet khong Internet
+Network	Intermediate	45	lab-017-vpc-flow-co-ban	Lab 017 - VPC Flow Co ban
+Network	Intermediate	45	lab-018-route-propagation-va-blackhole-route	Lab 018 - Route Propagation va Blackhole Route
+Network	Intermediate	45	lab-019-phan-tich-asymmetric-routing	Lab 019 - Phan tich Asymmetric Routing
+Network	Intermediate	45	lab-020-vpc-multi-az-chuan	Lab 020 - VPC Multi AZ chuan
+Network	Intermediate	45	lab-021-security-group-stateful	Lab 021 - Security Group Stateful
+Network	Intermediate	45	lab-022-network-acl-stateless	Lab 022 - Network ACL Stateless
+Network	Intermediate	45	lab-023-so-sanh-sg-va-nacl	Lab 023 - So sanh SG va NACL
+Network	Intermediate	45	lab-024-layered-security-web-app-database	Lab 024 - Layered Security Web App Database
+Network	Intermediate	45	lab-025-security-group-reference-giua-tier	Lab 025 - Security Group Reference giua Tier
+Network	Intermediate	45	lab-026-ephemeral-port-va-return-traffic	Lab 026 - Ephemeral Port va Return Traffic
+Network	Intermediate	45	lab-027-nacl-deny-co-kiem-soat	Lab 027 - NACL Deny co Kiem soat
+Network	Intermediate	45	lab-028-timeout-do-security-group	Lab 028 - Timeout do Security Group
+Network	Intermediate	45	lab-029-timeout-do-network-acl	Lab 029 - Timeout do Network ACL
+Network	Intermediate	45	lab-030-least-privilege-network-security	Lab 030 - Least Privilege Network Security
+Network	Intermediate	45	lab-032-ipv6-public-subnet	Lab 032 - IPv6 Public Subnet
+Network	Intermediate	45	lab-033-egress-only-internet-gateway	Lab 033 - Egress only Internet Gateway
+Network	Intermediate	45	lab-034-dual-stack-ec2	Lab 034 - Dual Stack EC2
+Network	Intermediate	45	lab-035-security-group-cho-ipv6	Lab 035 - Security Group cho IPv6
+Network	Intermediate	45	lab-036-network-acl-cho-ipv6	Lab 036 - Network ACL cho IPv6
+Network	Intermediate	45	lab-039-kiem-tra-route-ipv6	Lab 039 - Kiem tra Route IPv6
+Network	Intermediate	45	lab-031-gan-ipv6-cidr-cho-vpc	Lab 031 - Gan IPv6 CIDR cho VPC
+Network	Intermediate	45	lab-037-ipv6-private-service-access	Lab 037 - IPv6 Private Service Access
+Network	Intermediate	45	lab-038-ipv4-va-ipv6-transition	Lab 038 - IPv4 va IPv6 Transition
+Network	Intermediate	45	lab-040-thiet-ke-dual-stack-production	Lab 040 - Thiet ke Dual Stack Production
+Network	Intermediate	45	lab-041-s3-gateway-endpoint	Lab 041 - S3 Gateway Endpoint
+Network	Intermediate	45	lab-042-dynamodb-gateway-endpoint	Lab 042 - DynamoDB Gateway Endpoint
+Network	Intermediate	45	lab-043-ssm-interface-endpoint	Lab 043 - SSM Interface Endpoint
+Network	Intermediate	45	lab-044-ec2-messages-interface-endpoint	Lab 044 - EC2 Messages Interface Endpoint
+Network	Intermediate	45	lab-045-ecr-interface-endpoint	Lab 045 - ECR Interface Endpoint
+Network	Intermediate	45	lab-047-endpoint-policy-least-privilege	Lab 047 - Endpoint Policy Least Privilege
+Network	Intermediate	45	lab-048-gateway-va-interface-endpoint	Lab 048 - Gateway va Interface Endpoint
+Network	Intermediate	45	lab-049-chan-internet-nhung-van-dung-aws-api	Lab 049 - Chan Internet nhung van dung AWS API
+Network	Intermediate	45	lab-050-thiet-ke-private-only-workload	Lab 050 - Thiet ke Private Only Workload
+Network	Intermediate	45	lab-046-private-dns-cho-endpoint	Lab 046 - Private DNS cho Endpoint
+Network	Intermediate	45	lab-051-route-53-public-hosted-zone	Lab 051 - Route 53 Public Hosted Zone
+Network	Intermediate	45	lab-052-route-53-private-hosted-zone	Lab 052 - Route 53 Private Hosted Zone
+Network	Intermediate	45	lab-053-private-hosted-zone-association	Lab 053 - Private Hosted Zone Association
+Network	Intermediate	45	lab-054-resolver-inbound-endpoint	Lab 054 - Resolver Inbound Endpoint
+Network	Intermediate	45	lab-055-resolver-outbound-endpoint	Lab 055 - Resolver Outbound Endpoint
+Network	Intermediate	45	lab-056-dns-forwarding-hybrid	Lab 056 - DNS Forwarding Hybrid
+Network	Intermediate	45	lab-057-alb-path-based-routing	Lab 057 - ALB Path Based Routing
+Network	Intermediate	45	lab-058-nlb-static-ip-va-tcp-pass-through	Lab 058 - NLB Static IP va TCP Pass Through
+Network	Intermediate	45	lab-059-route-53-weighted-va-failover	Lab 059 - Route 53 Weighted va Failover
+Network	Intermediate	45	lab-060-cloudfront-va-global-accelerator	Lab 060 - CloudFront va Global Accelerator
+Network	Intermediate	45	lab-061-vpc-peering-cung-region	Lab 061 - VPC Peering cung Region
+Network	Intermediate	45	lab-062-inter-region-vpc-peering	Lab 062 - Inter Region VPC Peering
+Network	Intermediate	45	lab-063-xu-ly-overlapping-cidr	Lab 063 - Xu ly Overlapping CIDR
+Network	Intermediate	45	lab-064-cross-account-peering	Lab 064 - Cross Account Peering
+Network	Intermediate	45	lab-065-transit-gateway-co-ban	Lab 065 - Transit Gateway co ban
+Network	Intermediate	45	lab-066-tgw-route-tables-va-route-domains	Lab 066 - TGW Route Tables va Route Domains
+Network	Intermediate	45	lab-067-tgw-attachment-nhieu-vpc	Lab 067 - TGW Attachment Nhieu VPC
+Network	Intermediate	45	lab-068-tgw-appliance-mode	Lab 068 - TGW Appliance Mode
+Network	Intermediate	45	lab-069-privatelink-consumer	Lab 069 - PrivateLink Consumer
+Network	Intermediate	45	lab-070-privatelink-provider-service	Lab 070 - PrivateLink Provider Service
+Network	Intermediate	45	lab-071-site-to-site-vpn-architecture	Lab 071 - Site to Site VPN Architecture
+Network	Intermediate	45	lab-072-customer-gateway-va-virtual-private-gateway	Lab 072 - Customer Gateway va Virtual Private Gateway
+Network	Intermediate	45	lab-073-static-vpn-routing	Lab 073 - Static VPN Routing
+Network	Intermediate	45	lab-074-dynamic-bgp-vpn	Lab 074 - Dynamic BGP VPN
+Network	Intermediate	45	lab-075-vpn-tunnel-failover	Lab 075 - VPN Tunnel Failover
+Network	Intermediate	45	lab-076-accelerated-site-to-site-vpn	Lab 076 - Accelerated Site to Site VPN
+Network	Intermediate	45	lab-077-direct-connect-virtual-interface	Lab 077 - Direct Connect Virtual Interface
+Network	Intermediate	45	lab-078-direct-connect-gateway	Lab 078 - Direct Connect Gateway
+Network	Intermediate	45	lab-079-transit-vif-voi-transit-gateway	Lab 079 - Transit VIF voi Transit Gateway
+Network	Intermediate	45	lab-080-hybrid-routing-va-dns-end-to-end	Lab 080 - Hybrid Routing va DNS End to End
+Network	Intermediate	45	lab-081-aws-network-firewall-co-ban	Lab 081 - AWS Network Firewall co ban
+Network	Intermediate	45	lab-082-stateful-rule-group	Lab 082 - Stateful Rule Group
+Network	Intermediate	45	lab-083-stateless-rule-group	Lab 083 - Stateless Rule Group
+Network	Intermediate	45	lab-084-centralized-inspection-qua-tgw	Lab 084 - Centralized Inspection qua TGW
+Network	Intermediate	45	lab-085-gateway-load-balancer	Lab 085 - Gateway Load Balancer
+Network	Intermediate	45	lab-086-geneve-udp-6081	Lab 086 - GENEVE UDP 6081
+Network	Intermediate	45	lab-087-appliance-mode-va-symmetric-routing	Lab 087 - Appliance Mode va Symmetric Routing
+Network	Intermediate	45	lab-088-vpc-flow-logs	Lab 088 - VPC Flow Logs
+Network	Intermediate	45	lab-089-traffic-mirroring	Lab 089 - Traffic Mirroring
+Network	Intermediate	45	lab-090-network-monitoring-voi-reachability-analyzer	Lab 090 - Network Monitoring voi Reachability Analyzer
+Network	Intermediate	45	lab-091-do-latency-giua-az	Lab 091 - Do Latency giua AZ
+Network	Intermediate	45	lab-092-do-throughput-giua-subnet	Lab 092 - Do Throughput giua Subnet
+Network	Intermediate	45	lab-093-nat-gateway-bottleneck	Lab 093 - NAT Gateway Bottleneck
+Network	Intermediate	45	lab-094-cross-az-data-transfer	Lab 094 - Cross AZ Data Transfer
+Network	Intermediate	45	lab-095-nlb-performance	Lab 095 - NLB Performance
+Network	Intermediate	45	lab-096-multi-region-network-failover	Lab 096 - Multi Region Network Failover
+Network	Intermediate	45	lab-097-hybrid-vpn-disaster-recovery	Lab 097 - Hybrid VPN Disaster Recovery
+Network	Intermediate	45	lab-098-tgw-failure-isolation	Lab 098 - TGW Failure Isolation
+Network	Intermediate	45	lab-099-network-incident-response-runbook	Lab 099 - Network Incident Response Runbook
+Network	Intermediate	45	lab-100-capstone-centralized-hybrid-multi-region-network	Lab 100 - Capstone Centralized Hybrid Multi Region Network
+RDS	Intermediate	45	lab-001-chon-rds-aurora-hay-self-managed-database	Lab 001 - Chon RDS Aurora hay Self Managed Database
+RDS	Intermediate	45	lab-002-so-sanh-mysql-postgresql-mariadb-oracle-va-sql-server	Lab 002 - So sanh MySQL PostgreSQL MariaDB Oracle va SQL Server
+RDS	Intermediate	45	lab-003-chon-db-instance-class	Lab 003 - Chon DB Instance Class
+RDS	Intermediate	45	lab-004-chon-gp3-io1-va-magnetic-storage	Lab 004 - Chon gp3 io1 va Magnetic Storage
+RDS	Intermediate	45	lab-005-tao-db-subnet-group-multi-az	Lab 005 - Tao DB Subnet Group Multi AZ
+RDS	Intermediate	45	lab-006-db-parameter-group	Lab 006 - DB Parameter Group
+RDS	Intermediate	45	lab-007-db-option-group	Lab 007 - DB Option Group
+RDS	Intermediate	45	lab-008-rds-endpoint-dns-va-port	Lab 008 - RDS Endpoint DNS va Port
+RDS	Intermediate	45	lab-009-maintenance-window-va-backup-window	Lab 009 - Maintenance Window va Backup Window
+RDS	Intermediate	45	lab-010-rds-cost-estimate-tagging-va-budget	Lab 010 - RDS Cost Estimate Tagging va Budget
+RDS	Intermediate	45	lab-011-tao-rds-private-khong-public-access	Lab 011 - Tao RDS Private khong Public Access
+RDS	Intermediate	45	lab-012-security-group-cho-application-va-database	Lab 012 - Security Group cho Application va Database
+RDS	Intermediate	45	lab-013-luu-database-secret-trong-secrets-manager	Lab 013 - Luu Database Secret trong Secrets Manager
+RDS	Intermediate	45	lab-014-iam-database-authentication	Lab 014 - IAM Database Authentication
+RDS	Intermediate	45	lab-015-ma-hoa-rds-bang-kms-customer-managed-key	Lab 015 - Ma hoa RDS bang KMS Customer Managed Key
+RDS	Intermediate	45	lab-016-bat-buoc-tls-cho-database-connection	Lab 016 - Bat buoc TLS cho Database Connection
+RDS	Intermediate	45	lab-017-database-user-va-least-privilege	Lab 017 - Database User va Least Privilege
+RDS	Intermediate	45	lab-018-enhanced-monitoring-role	Lab 018 - Enhanced Monitoring Role
+RDS	Intermediate	45	lab-019-cloudtrail-audit-cho-rds-control-plane	Lab 019 - CloudTrail Audit cho RDS Control Plane
+RDS	Intermediate	45	lab-020-security-review-cho-rds-production	Lab 020 - Security Review cho RDS Production
+RDS	Intermediate	45	lab-021-tao-rds-mysql	Lab 021 - Tao RDS MySQL
+RDS	Intermediate	45	lab-022-tao-rds-postgresql	Lab 022 - Tao RDS PostgreSQL
+RDS	Intermediate	45	lab-023-tao-rds-mariadb	Lab 023 - Tao RDS MariaDB
+RDS	Intermediate	45	lab-024-tao-rds-sql-server	Lab 024 - Tao RDS SQL Server
+RDS	Intermediate	45	lab-025-danh-gia-rds-oracle	Lab 025 - Danh gia RDS Oracle
+RDS	Intermediate	45	lab-026-sua-db-parameter-va-apply-method	Lab 026 - Sua DB Parameter va Apply Method
+RDS	Intermediate	45	lab-027-rds-storage-autoscaling	Lab 027 - RDS Storage Autoscaling
+RDS	Intermediate	45	lab-028-maintenance-patch-va-reboot	Lab 028 - Maintenance Patch va Reboot
+RDS	Intermediate	45	lab-029-auto-minor-version-upgrade	Lab 029 - Auto Minor Version Upgrade
+RDS	Intermediate	45	lab-030-stop-start-database-cho-dev-test	Lab 030 - Stop Start Database cho Dev Test
+RDS	Intermediate	45	lab-031-single-az-va-multi-az-db-instance	Lab 031 - Single AZ va Multi AZ DB Instance
+RDS	Intermediate	45	lab-032-tao-multi-az-db-cluster	Lab 032 - Tao Multi AZ DB Cluster
+RDS	Intermediate	45	lab-033-kiem-thu-multi-az-failover	Lab 033 - Kiem thu Multi AZ Failover
+RDS	Intermediate	45	lab-034-tao-read-replica	Lab 034 - Tao Read Replica
+RDS	Intermediate	45	lab-035-cross-region-read-replica	Lab 035 - Cross Region Read Replica
+RDS	Intermediate	45	lab-036-promote-read-replica	Lab 036 - Promote Read Replica
+RDS	Intermediate	45	lab-037-writer-reader-va-replica-endpoints	Lab 037 - Writer Reader va Replica Endpoints
+RDS	Intermediate	45	lab-038-dns-ttl-retry-va-connection-recovery	Lab 038 - DNS TTL Retry va Connection Recovery
+RDS	Intermediate	45	lab-039-read-scaling-va-replica-lag	Lab 039 - Read Scaling va Replica Lag
+RDS	Intermediate	45	lab-040-thiet-ke-rds-high-availability-production	Lab 040 - Thiet ke RDS High Availability Production
+RDS	Intermediate	45	lab-041-tao-aurora-mysql-cluster	Lab 041 - Tao Aurora MySQL Cluster
+RDS	Intermediate	45	lab-042-tao-aurora-postgresql-cluster	Lab 042 - Tao Aurora PostgreSQL Cluster
+RDS	Intermediate	45	lab-043-aurora-cluster-reader-va-custom-endpoint	Lab 043 - Aurora Cluster Reader va Custom Endpoint
+RDS	Intermediate	45	lab-044-aurora-serverless-v2	Lab 044 - Aurora Serverless v2
+RDS	Intermediate	45	lab-045-aurora-replica-auto-scaling	Lab 045 - Aurora Replica Auto Scaling
+RDS	Intermediate	45	lab-046-aurora-global-database	Lab 046 - Aurora Global Database
+RDS	Intermediate	45	lab-047-aurora-global-switchover-va-failover	Lab 047 - Aurora Global Switchover va Failover
+RDS	Intermediate	45	lab-048-aurora-mysql-backtrack	Lab 048 - Aurora MySQL Backtrack
+RDS	Intermediate	45	lab-049-aurora-fast-database-cloning	Lab 049 - Aurora Fast Database Cloning
+RDS	Intermediate	45	lab-050-aurora-standard-va-i-o-optimized	Lab 050 - Aurora Standard va I O Optimized
+RDS	Intermediate	45	lab-051-rds-automated-backup-va-retention	Lab 051 - RDS Automated Backup va Retention
+RDS	Intermediate	45	lab-052-manual-db-snapshot	Lab 052 - Manual DB Snapshot
+RDS	Intermediate	45	lab-053-point-in-time-restore	Lab 053 - Point in Time Restore
+RDS	Intermediate	45	lab-054-copy-snapshot-sang-region-khac	Lab 054 - Copy Snapshot sang Region khac
+RDS	Intermediate	45	lab-055-share-manual-snapshot-cross-account	Lab 055 - Share Manual Snapshot Cross Account
+RDS	Intermediate	45	lab-056-encrypted-snapshot-cross-account	Lab 056 - Encrypted Snapshot Cross Account
+RDS	Intermediate	45	lab-057-restore-validation-va-data-checksum	Lab 057 - Restore Validation va Data Checksum
+RDS	Intermediate	45	lab-058-export-rds-snapshot-sang-s3	Lab 058 - Export RDS Snapshot sang S3
+RDS	Intermediate	45	lab-059-aws-backup-cho-rds-va-aurora	Lab 059 - AWS Backup cho RDS va Aurora
+RDS	Intermediate	45	lab-060-backup-restore-runbook-rpo-va-rto	Lab 060 - Backup Restore Runbook RPO va RTO
+RDS	Intermediate	45	lab-061-cloudwatch-database-insights	Lab 061 - CloudWatch Database Insights
+RDS	Intermediate	45	lab-062-rds-enhanced-monitoring	Lab 062 - RDS Enhanced Monitoring
+RDS	Intermediate	45	lab-063-cloudwatch-metrics-va-dashboard	Lab 063 - CloudWatch Metrics va Dashboard
+RDS	Intermediate	45	lab-064-slow-query-log-va-log-export	Lab 064 - Slow Query Log va Log Export
+RDS	Intermediate	45	lab-065-db-parameter-tuning	Lab 065 - DB Parameter Tuning
+RDS	Intermediate	45	lab-066-rds-gp3-iops-va-throughput-tuning	Lab 066 - RDS gp3 IOPS va Throughput Tuning
+RDS	Intermediate	45	lab-067-storage-growth-va-freestoragespace-alarm	Lab 067 - Storage Growth va FreeStorageSpace Alarm
+RDS	Intermediate	45	lab-068-query-plan-va-index-optimization	Lab 068 - Query Plan va Index Optimization
+RDS	Intermediate	45	lab-069-rds-proxy-connection-pooling	Lab 069 - RDS Proxy Connection Pooling
+RDS	Intermediate	45	lab-070-load-test-va-database-bottleneck	Lab 070 - Load Test va Database Bottleneck
+RDS	Intermediate	45	lab-071-dms-homogeneous-rds-migration	Lab 071 - DMS Homogeneous RDS Migration
+RDS	Intermediate	45	lab-072-dms-heterogeneous-database-migration	Lab 072 - DMS Heterogeneous Database Migration
+RDS	Intermediate	45	lab-073-aws-schema-conversion-tool-assessment	Lab 073 - AWS Schema Conversion Tool Assessment
+RDS	Intermediate	45	lab-074-dms-full-load	Lab 074 - DMS Full Load
+RDS	Intermediate	45	lab-075-dms-change-data-capture	Lab 075 - DMS Change Data Capture
+RDS	Intermediate	45	lab-076-dms-data-validation	Lab 076 - DMS Data Validation
+RDS	Intermediate	45	lab-077-rds-blue-green-deployment	Lab 077 - RDS Blue Green Deployment
+RDS	Intermediate	45	lab-078-import-export-data-voi-s3	Lab 078 - Import Export Data voi S3
+RDS	Intermediate	45	lab-079-lambda-ket-noi-rds-an-toan	Lab 079 - Lambda ket noi RDS an toan
+RDS	Intermediate	45	lab-080-ecs-eks-ket-noi-rds-qua-secrets-va-proxy	Lab 080 - ECS EKS ket noi RDS qua Secrets va Proxy
+RDS	Intermediate	45	lab-081-rds-eventbridge-events	Lab 081 - RDS EventBridge Events
+RDS	Intermediate	45	lab-082-rds-event-subscription-voi-sns	Lab 082 - RDS Event Subscription voi SNS
+RDS	Intermediate	45	lab-083-cloudwatch-alarm-cho-rds	Lab 083 - CloudWatch Alarm cho RDS
+RDS	Intermediate	45	lab-084-rds-log-export-va-retention	Lab 084 - RDS Log Export va Retention
+RDS	Intermediate	45	lab-085-automatic-remediation-co-guardrail	Lab 085 - Automatic Remediation co Guardrail
+RDS	Intermediate	45	lab-086-xu-ly-too-many-connections	Lab 086 - Xu ly Too Many Connections
+RDS	Intermediate	45	lab-087-xu-ly-high-cpu	Lab 087 - Xu ly High CPU
+RDS	Intermediate	45	lab-088-xu-ly-storage-full	Lab 088 - Xu ly Storage Full
+RDS	Intermediate	45	lab-089-xu-ly-read-replica-lag	Lab 089 - Xu ly Read Replica Lag
+RDS	Intermediate	45	lab-090-database-incident-response-runbook	Lab 090 - Database Incident Response Runbook
+RDS	Intermediate	45	lab-091-cross-region-snapshot-dr	Lab 091 - Cross Region Snapshot DR
+RDS	Intermediate	45	lab-092-cross-region-read-replica-dr	Lab 092 - Cross Region Read Replica DR
+RDS	Intermediate	45	lab-093-aurora-global-database-dr	Lab 093 - Aurora Global Database DR
+RDS	Intermediate	45	lab-094-rpo-rto-restore-drill	Lab 094 - RPO RTO Restore Drill
+RDS	Intermediate	45	lab-095-deletion-protection-va-final-snapshot	Lab 095 - Deletion Protection va Final Snapshot
+RDS	Intermediate	45	lab-096-snapshot-retention-va-cleanup	Lab 096 - Snapshot Retention va Cleanup
+RDS	Intermediate	45	lab-097-rds-reserved-instances-va-cost-model	Lab 097 - RDS Reserved Instances va Cost Model
+RDS	Intermediate	45	lab-098-rds-rightsizing-voi-compute-optimizer	Lab 098 - RDS Rightsizing voi Compute Optimizer
+RDS	Intermediate	45	lab-099-production-readiness-review	Lab 099 - Production Readiness Review
+RDS	Intermediate	45	lab-100-capstone-multi-az-multi-region-database-platform	Lab 100 - Capstone Multi AZ Multi Region Database Platform
+Storage	Intermediate	45	lab-001-phan-biet-block-file-va-object-storage	Lab 001 - Phan biet Block File va Object Storage
+Storage	Intermediate	45	lab-002-lua-chon-storage-theo-iops-throughput-va-latency	Lab 002 - Lua chon Storage theo IOPS Throughput va Latency
+Storage	Intermediate	45	lab-003-phan-tich-az-region-va-failure-domain	Lab 003 - Phan tich AZ Region va Failure Domain
+Storage	Intermediate	45	lab-004-thiet-ke-naming-tagging-va-encryption	Lab 004 - Thiet ke Naming Tagging va Encryption
+Storage	Intermediate	45	lab-005-do-latency-throughput-bang-cong-cu-chuan	Lab 005 - Do Latency Throughput bang Cong cu chuan
+Storage	Intermediate	45	lab-006-so-sanh-managed-va-self-managed-storage	Lab 006 - So sanh Managed va Self-managed Storage
+Storage	Intermediate	45	lab-007-thiet-ke-backup-restore-rpo-va-rto	Lab 007 - Thiet ke Backup Restore RPO va RTO
+Storage	Intermediate	45	lab-008-phan-tich-chi-phi-storage-request-va-transfer	Lab 008 - Phan tich Chi phi Storage Request va Transfer
+Storage	Intermediate	45	lab-009-iam-least-privilege-cho-storage	Lab 009 - IAM Least Privilege cho Storage
+Storage	Intermediate	45	lab-010-xay-dung-storage-decision-matrix-production	Lab 010 - Xay dung Storage Decision Matrix Production
+Storage	Intermediate	45	lab-011-tao-gan-va-mo-rong-amazon-ebs-gp3	Lab 011 - Tao gan va mo rong Amazon EBS gp3
+Storage	Intermediate	45	lab-012-so-sanh-ebs-gp3-io2-st1-va-sc1	Lab 012 - So sanh EBS gp3 io2 st1 va sc1
+Storage	Intermediate	45	lab-016-tao-snapshot-va-restore-ebs-volume	Lab 016 - Tao Snapshot va Restore EBS Volume
+Storage	Intermediate	45	lab-017-copy-ebs-snapshot-sang-region-khac	Lab 017 - Copy EBS Snapshot sang Region khac
+Storage	Intermediate	45	lab-018-ma-hoa-ebs-bang-kms-customer-managed-key	Lab 018 - Ma hoa EBS bang KMS Customer Managed Key
+Storage	Intermediate	45	lab-019-khoi-phuc-ec2-tu-snapshot-khi-volume-hong	Lab 019 - Khoi phuc EC2 tu Snapshot khi Volume hong
+Storage	Intermediate	45	lab-020-thiet-ke-ebs-backup-monitoring-va-cost-control	Lab 020 - Thiet ke EBS Backup Monitoring va Cost Control
+Storage	Intermediate	45	lab-013-format-mount-uuid-va-fstab-cho-ebs	Lab 013 - Format Mount UUID va fstab cho EBS
+Storage	Intermediate	45	lab-014-resize-ebs-online-khong-downtime	Lab 014 - Resize EBS Online khong Downtime
+Storage	Intermediate	45	lab-015-tang-iops-va-throughput-cho-gp3	Lab 015 - Tang IOPS va Throughput cho gp3
+Storage	Intermediate	45	lab-023-cau-hinh-security-group-cho-nfs-2049	Lab 023 - Cau hinh Security Group cho NFS 2049
+Storage	Intermediate	45	lab-028-so-sanh-efs-standard-va-efs-ia	Lab 028 - So sanh EFS Standard va EFS IA
+Storage	Intermediate	45	lab-029-cau-hinh-efs-lifecycle-va-throughput-mode	Lab 029 - Cau hinh EFS Lifecycle va Throughput Mode
+Storage	Intermediate	45	lab-030-ung-dung-multi-az-dung-efs-va-kiem-thu-failover	Lab 030 - Ung dung Multi AZ dung EFS va Kiem thu Failover
+Storage	Intermediate	45	lab-021-tao-efs-regional-trong-nhieu-az	Lab 021 - Tao EFS Regional trong nhieu AZ
+Storage	Intermediate	45	lab-022-mount-efs-tu-ec2-linux	Lab 022 - Mount EFS tu EC2 Linux
+Storage	Intermediate	45	lab-024-phan-tich-efs-mount-target-va-route-path	Lab 024 - Phan tich EFS Mount Target va Route Path
+Storage	Intermediate	45	lab-025-su-dung-efs-access-point	Lab 025 - Su dung EFS Access Point
+Storage	Intermediate	45	lab-026-phan-quyen-posix-user-va-group-tren-efs	Lab 026 - Phan quyen POSIX User va Group tren EFS
+Storage	Intermediate	45	lab-027-ma-hoa-efs-at-rest-va-in-transit	Lab 027 - Ma hoa EFS At Rest va In Transit
+Storage	Intermediate	45	lab-031-tao-s3-bucket-va-phan-tich-bucket-policy	Lab 031 - Tao S3 Bucket va Phan tich Bucket Policy
+Storage	Intermediate	45	lab-032-block-public-access-va-kiem-tra-public-exposure	Lab 032 - Block Public Access va Kiem tra Public Exposure
+Storage	Intermediate	45	lab-033-iam-policy-bucket-policy-va-acl	Lab 033 - IAM Policy Bucket Policy va ACL
+Storage	Intermediate	45	lab-034-upload-download-s3-bang-console-cli-va-sdk	Lab 034 - Upload Download S3 bang Console CLI va SDK
+Storage	Intermediate	45	lab-035-versioning-delete-marker-va-object-recovery	Lab 035 - Versioning Delete Marker va Object Recovery
+Storage	Intermediate	45	lab-037-s3-lifecycle-qua-cac-storage-class	Lab 037 - S3 Lifecycle qua cac Storage Class
+Storage	Intermediate	45	lab-039-s3-sse-s3-sse-kms-va-dsse-kms	Lab 039 - S3 SSE S3 SSE KMS va DSSE KMS
+Storage	Intermediate	45	lab-036-multipart-upload-va-xu-ly-upload-loi	Lab 036 - Multipart Upload va Xu ly Upload Loi
+Storage	Intermediate	45	lab-038-object-lock-retention-va-legal-hold	Lab 038 - Object Lock Retention va Legal Hold
+Storage	Intermediate	45	lab-040-s3-access-point-va-prefix-isolation	Lab 040 - S3 Access Point va Prefix Isolation
+Storage	Intermediate	45	lab-041-s3-event-notification-toi-lambda	Lab 041 - S3 Event Notification toi Lambda
+Storage	Intermediate	45	lab-042-s3-event-notification-toi-sqs	Lab 042 - S3 Event Notification toi SQS
+Storage	Intermediate	45	lab-043-s3-eventbridge-integration	Lab 043 - S3 EventBridge Integration
+Storage	Intermediate	45	lab-044-s3-inventory-va-object-metadata	Lab 044 - S3 Inventory va Object Metadata
+Storage	Intermediate	45	lab-045-s3-storage-lens-va-cost-visibility	Lab 045 - S3 Storage Lens va Cost Visibility
+Storage	Intermediate	45	lab-046-s3-replication-time-control	Lab 046 - S3 Replication Time Control
+Storage	Intermediate	45	lab-047-cross-region-replication-voi-kms	Lab 047 - Cross Region Replication voi KMS
+Storage	Intermediate	45	lab-048-same-region-replication-va-object-ownership	Lab 048 - Same Region Replication va Object Ownership
+Storage	Intermediate	45	lab-049-s3-multi-region-access-point	Lab 049 - S3 Multi Region Access Point
+Storage	Intermediate	45	lab-050-s3-data-lake-voi-lifecycle-replication-va-audit	Lab 050 - S3 Data Lake voi Lifecycle Replication va Audit
+Storage	Intermediate	45	lab-052-fsx-for-windows-multi-az	Lab 052 - FSx for Windows Multi AZ
+Storage	Intermediate	45	lab-053-fsx-windows-voi-aws-managed-microsoft-ad	Lab 053 - FSx Windows voi AWS Managed Microsoft AD
+Storage	Intermediate	45	lab-054-smb-share-ntfs-acl-va-continuous-availability	Lab 054 - SMB Share NTFS ACL va Continuous Availability
+Storage	Intermediate	45	lab-055-kiem-thu-automatic-failover-fsx-windows	Lab 055 - Kiem thu Automatic Failover FSx Windows
+Storage	Intermediate	45	lab-057-fsx-for-openzfs-va-nfs-workload	Lab 057 - FSx for OpenZFS va NFS Workload
+Storage	Intermediate	45	lab-058-fsx-for-netapp-ontap-svm-volume-nfs-smb	Lab 058 - FSx for NetApp ONTAP SVM Volume NFS SMB
+Storage	Intermediate	45	lab-051-fsx-for-windows-single-az	Lab 051 - FSx for Windows Single AZ
+Storage	Intermediate	45	lab-056-fsx-for-lustre-tich-hop-s3	Lab 056 - FSx for Lustre tich hop S3
+Storage	Intermediate	45	lab-059-ontap-snapshot-clone-va-storage-efficiency	Lab 059 - ONTAP Snapshot Clone va Storage Efficiency
+Storage	Intermediate	45	lab-060-ontap-snapmirror-cross-region-va-failback	Lab 060 - ONTAP SnapMirror Cross Region va Failback
+Storage	Intermediate	45	lab-063-backup-ebs-efs-s3-va-fsx	Lab 063 - Backup EBS EFS S3 va FSx
+Storage	Intermediate	45	lab-064-kms-key-policy-cho-backup-vault	Lab 064 - KMS Key Policy cho Backup Vault
+Storage	Intermediate	45	lab-065-cross-account-backup-copy	Lab 065 - Cross Account Backup Copy
+Storage	Intermediate	45	lab-068-restore-ebs-efs-va-fsx-tu-aws-backup	Lab 068 - Restore EBS EFS va FSx tu AWS Backup
+Storage	Intermediate	45	lab-069-audit-backup-bang-cloudtrail-va-cloudwatch	Lab 069 - Audit Backup bang CloudTrail va CloudWatch
+Storage	Intermediate	45	lab-070-centralized-backup-cho-nhieu-workload	Lab 070 - Centralized Backup cho Nhieu Workload
+Storage	Intermediate	45	lab-061-tao-aws-backup-vault-va-backup-plan	Lab 061 - Tao AWS Backup Vault va Backup Plan
+Storage	Intermediate	45	lab-062-backup-rule-schedule-lifecycle-va-retention	Lab 062 - Backup Rule Schedule Lifecycle va Retention
+Storage	Intermediate	45	lab-066-cross-region-backup-copy	Lab 066 - Cross Region Backup Copy
+Storage	Intermediate	45	lab-067-vault-lock-va-compliance-retention	Lab 067 - Vault Lock va Compliance Retention
+Storage	Intermediate	45	lab-072-datasync-smb-location	Lab 072 - DataSync SMB Location
+Storage	Intermediate	45	lab-073-datasync-s3-location	Lab 073 - DataSync S3 Location
+Storage	Intermediate	45	lab-075-datasync-incremental-transfer	Lab 075 - DataSync Incremental Transfer
+Storage	Intermediate	45	lab-076-do-throughput-file-count-va-transferred-bytes	Lab 076 - Do Throughput File Count va Transferred Bytes
+Storage	Intermediate	45	lab-071-datasync-agent-va-nfs-location	Lab 071 - DataSync Agent va NFS Location
+Storage	Intermediate	45	lab-074-datasync-filter-include-exclude-va-verification	Lab 074 - DataSync Filter Include Exclude va Verification
+Storage	Intermediate	45	lab-077-storage-gateway-file-gateway-toi-s3	Lab 077 - Storage Gateway File Gateway toi S3
+Storage	Intermediate	45	lab-078-storage-gateway-volume-gateway-cached-mode	Lab 078 - Storage Gateway Volume Gateway Cached Mode
+Storage	Intermediate	45	lab-079-storage-gateway-tape-gateway	Lab 079 - Storage Gateway Tape Gateway
+Storage	Intermediate	45	lab-080-migration-on-prem-sang-aws-voi-cutover-rollback	Lab 080 - Migration On Prem sang AWS voi Cutover Rollback
+Storage	Intermediate	45	lab-081-transfer-family-sftp-voi-s3-backend	Lab 081 - Transfer Family SFTP voi S3 Backend
+Storage	Intermediate	45	lab-082-transfer-family-identity-provider-va-scope-down	Lab 082 - Transfer Family Identity Provider va Scope Down
+Storage	Intermediate	45	lab-083-transfer-family-logging-va-cloudwatch-audit	Lab 083 - Transfer Family Logging va CloudWatch Audit
+Storage	Intermediate	45	lab-084-snowball-data-migration-planning	Lab 084 - Snowball Data Migration Planning
+Storage	Intermediate	45	lab-085-snow-family-encryption-job-va-chain-of-custody	Lab 085 - Snow Family Encryption Job va Chain of Custody
+Storage	Intermediate	45	lab-087-dms-homogeneous-migration	Lab 087 - DMS Homogeneous Migration
+Storage	Intermediate	45	lab-088-dms-heterogeneous-migration-voi-sct	Lab 088 - DMS Heterogeneous Migration voi SCT
+Storage	Intermediate	45	lab-089-dms-full-load-va-cdc	Lab 089 - DMS Full Load va CDC
+Storage	Intermediate	45	lab-090-dms-validation-cutover-va-rollback	Lab 090 - DMS Validation Cutover va Rollback
+Storage	Intermediate	45	lab-086-dms-replication-instance-va-network-prerequisites	Lab 086 - DMS Replication Instance va Network Prerequisites
+Storage	Intermediate	45	lab-091-hybrid-storage-qua-site-to-site-vpn	Lab 091 - Hybrid Storage qua Site to Site VPN
+Storage	Intermediate	45	lab-092-hybrid-storage-qua-direct-connect	Lab 092 - Hybrid Storage qua Direct Connect
+Storage	Intermediate	45	lab-093-route-table-cho-on-prem-vers-aws-storage	Lab 093 - Route Table cho On Prem vers AWS Storage
+Storage	Intermediate	45	lab-094-centralized-storage-logging-va-cloudtrail-data-events	Lab 094 - Centralized Storage Logging va CloudTrail Data Events
+Storage	Intermediate	45	lab-095-multi-region-s3-disaster-recovery-voi-route-53	Lab 095 - Multi Region S3 Disaster Recovery voi Route 53
+Storage	Intermediate	45	lab-096-fsx-ontap-cross-region-disaster-recovery	Lab 096 - FSx ONTAP Cross Region Disaster Recovery
+Storage	Intermediate	45	lab-097-dms-cross-region-migration-va-cdc	Lab 097 - DMS Cross Region Migration va CDC
+Storage	Intermediate	45	lab-098-storage-failure-injection-va-recovery	Lab 098 - Storage Failure Injection va Recovery
+Storage	Intermediate	45	lab-099-runbook-backup-restore-failover-failback	Lab 099 - Runbook Backup Restore Failover Failback
+Storage	Intermediate	45	lab-100-capstone-hybrid-multi-region-storage	Lab 100 - Capstone Hybrid Multi Region Storage
+SOA	Intermediate	45	lab-01-trien-khai-ec2-sau-application-load-balancer-trong-nhieu-availability-zone	Lab 01 - Trien khai EC2 sau Application Load Balancer trong nhieu Availability Zone
+SOA	Intermediate	45	lab-02-cau-hinh-auto-scaling-group-da-az-de-tang-high-availability	Lab 02 - Cau hinh Auto Scaling group da AZ de tang high availability
+SOA	Intermediate	45	lab-03-tao-launch-template-va-dung-auto-scaling-group-de-thay-the-instance-loi	Lab 03 - Tao launch template va dung Auto Scaling group de thay the instance loi
+SOA	Intermediate	45	lab-04-cau-hinh-target-group-health-check-cho-alb-va-xu-ly-unhealthy	Lab 04 - Cau hinh target group health check cho ALB va xu ly unhealthy
+SOA	Intermediate	45	lab-05-cau-hinh-scaling-policy-theo-cpu-target-tracking	Lab 05 - Cau hinh scaling policy theo CPU target tracking
+SOA	Intermediate	45	lab-06-cau-hinh-scheduled-scaling-cho-gio-cao-diem	Lab 06 - Cau hinh scheduled scaling cho gio cao diem
+SOA	Intermediate	45	lab-07-toi-uu-chi-phi-bang-reserved-instances-cho-workload-luon-chay	Lab 07 - Toi uu chi phi bang Reserved Instances cho workload luon chay
+SOA	Intermediate	45	lab-08-toi-uu-chi-phi-bang-spot-instances-cho-task-node-ngan-han	Lab 08 - Toi uu chi phi bang Spot Instances cho task node ngan han
+SOA	Intermediate	45	lab-09-tao-mixed-instances-policy-cho-auto-scaling-group	Lab 09 - Tao mixed instances policy cho Auto Scaling group
+SOA	Intermediate	45	lab-10-chon-spot-allocation-strategy-theo-capacity-optimized	Lab 10 - Chon Spot allocation strategy theo capacity optimized
+SOA	Intermediate	45	lab-100-tao-network-load-balancer-da-az-cho-ung-dung-tcp	Lab 100 - Tao Network Load Balancer da AZ cho ung dung TCP
+SOA	Intermediate	45	lab-11-dung-cluster-placement-group-cho-workload-can-network-latency-thap	Lab 11 - Dung cluster placement group cho workload can network latency thap
+SOA	Intermediate	45	lab-12-dung-spread-hoac-partition-placement-group-cho-workload-can-tach-loi	Lab 12 - Dung spread hoac partition placement group cho workload can tach loi
+SOA	Intermediate	45	lab-13-gan-elastic-ip-cho-mo-hinh-instance-thay-the-tu-dong	Lab 13 - Gan Elastic IP cho mo hinh instance thay the tu dong
+SOA	Intermediate	45	lab-14-cau-hinh-multiple-listener-ports-tren-load-balancer	Lab 14 - Cau hinh multiple listener ports tren load balancer
+SOA	Intermediate	45	lab-15-import-certificate-vao-acm-va-gan-vao-load-balancer	Lab 15 - Import certificate vao ACM va gan vao load balancer
+SOA	Intermediate	45	lab-16-tao-s3-bucket-policy-chi-cho-phep-truy-cap-qua-cloudfront-oac	Lab 16 - Tao S3 bucket policy chi cho phep truy cap qua CloudFront OAC
+SOA	Intermediate	45	lab-17-bat-s3-versioning-va-khoi-phuc-object-bi-xoa	Lab 17 - Bat S3 Versioning va khoi phuc object bi xoa
+SOA	Intermediate	45	lab-18-cau-hinh-s3-lifecycle-chuyen-object-sang-standard-ia-va-glacier	Lab 18 - Cau hinh S3 Lifecycle chuyen object sang Standard-IA va Glacier
+SOA	Intermediate	45	lab-19-bat-s3-object-lock-de-bao-ve-du-lieu-khoi-xoa-sua	Lab 19 - Bat S3 Object Lock de bao ve du lieu khoi xoa sua
+SOA	Intermediate	45	lab-20-cau-hinh-s3-replication-sang-bucket-o-region-khac	Lab 20 - Cau hinh S3 Replication sang bucket o Region khac
+SOA	Intermediate	45	lab-21-bat-s3-server-access-logging-hoac-cloudtrail-data-events	Lab 21 - Bat S3 server access logging hoac CloudTrail data events
+SOA	Intermediate	45	lab-22-tao-pre-signed-url-cho-object-rieng-tu	Lab 22 - Tao pre-signed URL cho object rieng tu
+SOA	Intermediate	45	lab-23-tang-hieu-nang-ebs-bang-cach-tang-kich-thuoc-gp2-volume	Lab 23 - Tang hieu nang EBS bang cach tang kich thuoc gp2 volume
+SOA	Intermediate	45	lab-24-tao-ebs-snapshot-va-restore-volume-o-availability-zone-khac	Lab 24 - Tao EBS snapshot va restore volume o Availability Zone khac
+SOA	Intermediate	45	lab-25-bat-ebs-fast-snapshot-restore-cho-kiem-thu-dr	Lab 25 - Bat EBS fast snapshot restore cho kiem thu DR
+SOA	Intermediate	45	lab-26-ma-hoa-ebs-volume-bang-kms-key	Lab 26 - Ma hoa EBS volume bang KMS key
+SOA	Intermediate	45	lab-27-tao-efs-file-system-voi-mount-target-o-moi-az	Lab 27 - Tao EFS file system voi mount target o moi AZ
+SOA	Intermediate	45	lab-28-mount-efs-tu-nhieu-ec2-instance-voi-do-tre-thap	Lab 28 - Mount EFS tu nhieu EC2 instance voi do tre thap
+SOA	Intermediate	45	lab-29-tao-fsx-for-windows-file-server-multi-az	Lab 29 - Tao FSx for Windows File Server Multi-AZ
+SOA	Intermediate	45	lab-30-theo-doi-dung-luong-fsx-bang-cloudwatch-alarm-va-sns	Lab 30 - Theo doi dung luong FSx bang CloudWatch alarm va SNS
+SOA	Intermediate	45	lab-31-cau-hinh-aws-storage-gateway-file-gateway-cho-backup-on-premises	Lab 31 - Cau hinh AWS Storage Gateway file gateway cho backup on premises
+SOA	Intermediate	45	lab-32-dung-aws-datasync-de-di-chuyen-file-len-aws	Lab 32 - Dung AWS DataSync de di chuyen file len AWS
+SOA	Intermediate	45	lab-33-tao-rds-multi-az-db-instance-va-kiem-thu-failover	Lab 33 - Tao RDS Multi-AZ DB instance va kiem thu failover
+SOA	Intermediate	45	lab-34-tao-rds-read-replica-de-giam-tai-truy-van-doc	Lab 34 - Tao RDS read replica de giam tai truy van doc
+SOA	Intermediate	45	lab-35-copy-encrypted-rds-snapshot-sang-region-khac	Lab 35 - Copy encrypted RDS snapshot sang Region khac
+SOA	Intermediate	45	lab-36-restore-rds-snapshot-va-doi-security-group-subnet-group	Lab 36 - Restore RDS snapshot va doi security group subnet group
+SOA	Intermediate	45	lab-37-giam-sat-rds-readiops-cpu-freestoragespace-bang-cloudwatch	Lab 37 - Giam sat RDS ReadIOPS CPU FreeStorageSpace bang CloudWatch
+SOA	Intermediate	45	lab-38-tao-aurora-cluster-voi-aurora-replica-va-automatic-failover	Lab 38 - Tao Aurora cluster voi Aurora Replica va automatic failover
+SOA	Intermediate	45	lab-39-resize-elasticache-for-redis-node-trong-mo-hinh-high-availability	Lab 39 - Resize ElastiCache for Redis node trong mo hinh high availability
+SOA	Intermediate	45	lab-40-tao-elasticache-redis-replication-group-multi-az-voi-automatic-failover	Lab 40 - Tao ElastiCache Redis replication group Multi-AZ voi automatic failover
+SOA	Intermediate	45	lab-41-tao-dynamodb-table-voi-autoscaling-hoac-on-demand-capacity	Lab 41 - Tao DynamoDB table voi autoscaling hoac on-demand capacity
+SOA	Intermediate	45	lab-42-bat-dynamodb-point-in-time-recovery	Lab 42 - Bat DynamoDB point-in-time recovery
+SOA	Intermediate	45	lab-43-dung-dynamodb-ttl-de-tu-dong-xoa-item-het-han	Lab 43 - Dung DynamoDB TTL de tu dong xoa item het han
+SOA	Intermediate	45	lab-44-tao-vpc-public-private-subnet-tren-nhieu-az	Lab 44 - Tao VPC public private subnet tren nhieu AZ
+SOA	Intermediate	45	lab-45-cau-hinh-route-table-internet-gateway-va-nat-gateway	Lab 45 - Cau hinh route table internet gateway va NAT gateway
+SOA	Intermediate	45	lab-46-troubleshoot-ec2-private-subnet-khong-ra-internet	Lab 46 - Troubleshoot EC2 private subnet khong ra internet
+SOA	Intermediate	45	lab-47-mo-rong-cidr-hoac-them-subnet-khi-het-private-ipv4	Lab 47 - Mo rong CIDR hoac them subnet khi het private IPv4
+SOA	Intermediate	45	lab-48-cau-hinh-vpc-endpoint-cho-s3-de-tranh-di-qua-internet	Lab 48 - Cau hinh VPC endpoint cho S3 de tranh di qua internet
+SOA	Intermediate	45	lab-49-cau-hinh-interface-vpc-endpoint-cho-systems-manager	Lab 49 - Cau hinh interface VPC endpoint cho Systems Manager
+SOA	Intermediate	45	lab-50-thiet-lap-vpc-peering-va-route-hai-chieu	Lab 50 - Thiet lap VPC peering va route hai chieu
+SOA	Intermediate	45	lab-51-cau-hinh-site-to-site-vpn-route-cho-subnet-moi	Lab 51 - Cau hinh Site-to-Site VPN route cho subnet moi
+SOA	Intermediate	45	lab-52-kiem-tra-direct-connect-vpn-redundancy	Lab 52 - Kiem tra Direct Connect VPN redundancy
+SOA	Intermediate	45	lab-53-tao-route-53-failover-record-voi-health-check	Lab 53 - Tao Route 53 failover record voi health check
+SOA	Intermediate	45	lab-54-tao-route-53-weighted-record-de-chia-traffic	Lab 54 - Tao Route 53 weighted record de chia traffic
+SOA	Intermediate	45	lab-55-tao-cloudfront-distribution-cho-alb-hoac-s3-origin	Lab 55 - Tao CloudFront distribution cho ALB hoac S3 origin
+SOA	Intermediate	45	lab-56-chan-truy-cap-truc-tiep-alb-chi-cho-phep-cloudfront	Lab 56 - Chan truy cap truc tiep ALB chi cho phep CloudFront
+SOA	Intermediate	45	lab-57-cau-hinh-aws-waf-rule-chan-ip-hoac-pattern-request	Lab 57 - Cau hinh AWS WAF rule chan IP hoac pattern request
+SOA	Intermediate	45	lab-58-tao-cloudwatch-alarm-gui-thong-bao-qua-sns	Lab 58 - Tao CloudWatch alarm gui thong bao qua SNS
+SOA	Intermediate	45	lab-59-tao-composite-alarm-khi-nhieu-metric-cung-vuot-nguong	Lab 59 - Tao composite alarm khi nhieu metric cung vuot nguong
+SOA	Intermediate	45	lab-60-cai-cloudwatch-agent-de-thu-thap-memory-va-disk-metrics	Lab 60 - Cai CloudWatch Agent de thu thap memory va disk metrics
+SOA	Intermediate	45	lab-61-tao-cloudwatch-dashboard-cho-ec2-alb-rds	Lab 61 - Tao CloudWatch dashboard cho EC2 ALB RDS
+SOA	Intermediate	45	lab-62-tao-cloudwatch-logs-metric-filter-tu-application-log	Lab 62 - Tao CloudWatch Logs metric filter tu application log
+SOA	Intermediate	45	lab-63-dung-cloudwatch-synthetics-canary-kiem-tra-url-nhu-nguoi-dung-that	Lab 63 - Dung CloudWatch Synthetics canary kiem tra URL nhu nguoi dung that
+SOA	Intermediate	45	lab-64-tao-eventbridge-rule-bat-su-kien-ec2-state-change	Lab 64 - Tao EventBridge rule bat su kien EC2 state change
+SOA	Intermediate	45	lab-65-gui-canh-bao-operational-qua-sns-subscription-email	Lab 65 - Gui canh bao operational qua SNS subscription email
+SOA	Intermediate	45	lab-66-bat-cloudtrail-organization-trail	Lab 66 - Bat CloudTrail organization trail
+SOA	Intermediate	45	lab-67-truy-van-cloudtrail-log-bang-athena	Lab 67 - Truy van CloudTrail log bang Athena
+SOA	Intermediate	45	lab-68-tim-nguyen-nhan-thay-doi-tai-nguyen-bang-cloudtrail-event-history	Lab 68 - Tim nguyen nhan thay doi tai nguyen bang CloudTrail event history
+SOA	Intermediate	45	lab-69-tao-iam-role-cho-ec2-truy-cap-s3-an-toan	Lab 69 - Tao IAM role cho EC2 truy cap S3 an toan
+SOA	Intermediate	45	lab-70-viet-iam-policy-yeu-cau-tag-khi-launch-ec2	Lab 70 - Viet IAM policy yeu cau tag khi launch EC2
+SOA	Intermediate	45	lab-71-dung-permission-boundary-de-gioi-han-quyen-iam	Lab 71 - Dung permission boundary de gioi han quyen IAM
+SOA	Intermediate	45	lab-72-bat-mfa-cho-iam-user-va-kiem-thu-policy-dieu-kien-mfa	Lab 72 - Bat MFA cho IAM user va kiem thu policy dieu kien MFA
+SOA	Intermediate	45	lab-73-tao-kms-customer-managed-key-va-alias	Lab 73 - Tao KMS customer managed key va alias
+SOA	Intermediate	45	lab-74-ma-hoa-s3-bucket-mac-dinh-bang-sse-kms	Lab 74 - Ma hoa S3 bucket mac dinh bang SSE-KMS
+SOA	Intermediate	45	lab-75-rotate-secret-trong-aws-secrets-manager	Lab 75 - Rotate secret trong AWS Secrets Manager
+SOA	Intermediate	45	lab-76-tao-aws-config-managed-rule-kiem-tra-tag-bat-buoc	Lab 76 - Tao AWS Config managed rule kiem tra tag bat buoc
+SOA	Intermediate	45	lab-77-cau-hinh-aws-config-remediation-bang-systems-manager-automation	Lab 77 - Cau hinh AWS Config remediation bang Systems Manager Automation
+SOA	Intermediate	45	lab-78-dung-trusted-advisor-de-tim-ec2-low-utilization	Lab 78 - Dung Trusted Advisor de tim EC2 low utilization
+SOA	Intermediate	45	lab-79-tao-aws-organizations-scp-chan-hanh-dong-khong-mong-muon	Lab 79 - Tao AWS Organizations SCP chan hanh dong khong mong muon
+SOA	Intermediate	45	lab-80-provision-account-baseline-bang-aws-control-tower-account-factory	Lab 80 - Provision account baseline bang AWS Control Tower Account Factory
+SOA	Intermediate	45	lab-81-tao-cloudformation-template-co-mapping-ami-theo-region	Lab 81 - Tao CloudFormation template co Mapping AMI theo Region
+SOA	Intermediate	45	lab-82-dung-cloudformation-change-set-truoc-khi-update-stack	Lab 82 - Dung CloudFormation change set truoc khi update stack
+SOA	Intermediate	45	lab-83-troubleshoot-cloudformation-stack-rollback	Lab 83 - Troubleshoot CloudFormation stack rollback
+SOA	Intermediate	45	lab-84-tao-elastic-beanstalk-environment-voi-rolling-immutable-deployment	Lab 84 - Tao Elastic Beanstalk environment voi rolling immutable deployment
+SOA	Intermediate	45	lab-85-dung-systems-manager-session-manager-de-ket-noi-ec2-private	Lab 85 - Dung Systems Manager Session Manager de ket noi EC2 private
+SOA	Intermediate	45	lab-86-gan-iam-instance-profile-va-ssm-agent-de-instance-xuat-hien-trong-session-manager	Lab 86 - Gan IAM instance profile va SSM Agent de instance xuat hien trong Session Manager
+SOA	Intermediate	45	lab-87-chay-systems-manager-run-command-tren-nhieu-ec2	Lab 87 - Chay Systems Manager Run Command tren nhieu EC2
+SOA	Intermediate	45	lab-88-patch-ec2-bang-systems-manager-patch-manager	Lab 88 - Patch EC2 bang Systems Manager Patch Manager
+SOA	Intermediate	45	lab-89-tao-systems-manager-automation-document-cho-thao-tac-lap-lai	Lab 89 - Tao Systems Manager Automation document cho thao tac lap lai
+SOA	Intermediate	45	lab-90-dung-aws-backup-tao-backup-plan-cho-ebs-rds-efs	Lab 90 - Dung AWS Backup tao backup plan cho EBS RDS EFS
+SOA	Intermediate	45	lab-91-kiem-thu-restore-tai-nguyen-tu-aws-backup-vault	Lab 91 - Kiem thu restore tai nguyen tu AWS Backup vault
+SOA	Intermediate	45	lab-92-tao-lambda-xu-ly-event-tu-eventbridge	Lab 92 - Tao Lambda xu ly event tu EventBridge
+SOA	Intermediate	45	lab-93-tao-sqs-queue-dlq-va-kiem-thu-retry	Lab 93 - Tao SQS queue DLQ va kiem thu retry
+SOA	Intermediate	45	lab-94-tao-sns-topic-fan-out-sang-sqs-lambda	Lab 94 - Tao SNS topic fan-out sang SQS Lambda
+SOA	Intermediate	45	lab-95-push-docker-image-len-amazon-ecr	Lab 95 - Push Docker image len Amazon ECR
+SOA	Intermediate	45	lab-96-bat-ecr-image-scanning	Lab 96 - Bat ECR image scanning
+SOA	Intermediate	45	lab-97-tao-lifecycle-policy-don-image-cu-trong-ecr	Lab 97 - Tao lifecycle policy don image cu trong ECR
+SOA	Intermediate	45	lab-98-kiem-tra-ecs-service-health-va-deployment-rollback-co-ban	Lab 98 - Kiem tra ECS service health va deployment rollback co ban
+SOA	Intermediate	45	lab-99-kiem-tra-eks-pod-node-health-bang-kubectl-va-cloudwatch-container-insights	Lab 99 - Kiem tra EKS pod node health bang kubectl va CloudWatch Container Insights
+DVA	Intermediate	45	lab-01-luu-tru-va-chia-se-api-access-token-xuyen-tai-khoan-bang-aws-secrets-manager-va-kms-cmk	Lab 01 - Lưu trữ và chia sẻ API Access Token xuyên tài khoản bằng AWS Secrets Manager và KMS CMK
+DVA	Intermediate	45	lab-02-quan-ly-bien-moi-truong-va-thong-tin-xac-thuc-ung-dung-ecs-voi-parameter-store-va-secrets-manager	Lab 02 - Quản lý biến môi trường và thông tin xác thực ứng dụng ECS với Parameter Store và Secrets Manager
+DVA	Intermediate	45	lab-03-cach-ly-moi-truong-dev-va-prod-bang-cach-chan-s3-trigger-xuyen-tai-khoan-voi-lambda-resource-policy	Lab 03 - Cách ly môi trường Dev và Prod bằng cách chặn S3 Trigger xuyên tài khoản với Lambda Resource Policy
+DVA	Intermediate	45	lab-04-tich-hop-dang-ky-va-dang-nhap-bang-social-identity-provider-voi-amazon-cognito-user-pools	Lab 04 - Tích hợp đăng ký và đăng nhập bằng Social Identity Provider với Amazon Cognito User Pools
+DVA	Intermediate	45	lab-05-lay-aws-sts-credentials-dong-tai-edge-cho-frontend-bang-cloudfront-va-lambda-at-edge	Lab 05 - Lấy AWS STS credentials động tại Edge cho Frontend bằng CloudFront và Lambda@Edge
+DVA	Intermediate	45	lab-06-toi-uu-connection-pool-va-xu-ly-loi-too-many-connections-cho-lambda-bang-amazon-rds-proxy	Lab 06 - Tối ưu connection pool và xử lý lỗi Too Many Connections cho Lambda bằng Amazon RDS Proxy
+DVA	Intermediate	45	lab-07-phat-hien-du-lieu-the-tin-dung-bi-lo-tren-s3-bang-amazon-macie-sensitive-data-discovery	Lab 07 - Phát hiện dữ liệu thẻ tín dụng bị lộ trên S3 bằng Amazon Macie Sensitive Data Discovery
+DVA	Intermediate	45	lab-08-phan-quyen-guest-va-authenticated-user-bang-amazon-cognito-identity-pools-va-iam-roles	Lab 08 - Phân quyền Guest và Authenticated User bằng Amazon Cognito Identity Pools và IAM Roles
+DVA	Intermediate	45	lab-09-ket-noi-aws-lambda-vao-vpc-private-subnet-de-truy-van-amazon-rds-mysql-an-toan	Lab 09 - Kết nối AWS Lambda vào VPC Private Subnet để truy vấn Amazon RDS MySQL an toàn
+DVA	Intermediate	45	lab-10-trien-khai-cloudformation-stack-da-region-su-dung-mappings-va-fn-findinmap-cho-ami-id	Lab 10 - Triển khai CloudFormation Stack đa Region sử dụng Mappings và Fn::FindInMap cho AMI ID
+DVA	Intermediate	45	lab-100-tang-toc-phan-hoi-api-thong-ke-cong-cong-bang-api-caching-tren-api-gateway	Lab 100 - Tăng Tốc Phản Hồi API Thống Kê Công Cộng Bằng API Caching Trên API Gateway
+DVA	Intermediate	45	lab-101-doc-cau-hinh-dong-khong-redeploy-bang-aws-appconfig-agent-lambda-extension	Lab 101 - Đọc Cấu Hình Động Không Redeploy Bằng AWS AppConfig Agent Lambda Extension
+DVA	Intermediate	45	lab-102-quan-ly-va-tich-hop-thu-vien-java-tap-trung-trong-codepipeline-bang-aws-codeartifact	Lab 102 - Quản Lý Và Tích Hợp Thư Viện Java Tập Trung Trong CodePipeline Bằng AWS CodeArtifact
+DVA	Intermediate	45	lab-103-xu-ly-provisionedthroughputexceeded-tren-kinesis-bang-exponential-backoff-va-kcl	Lab 103 - Xử Lý ProvisionedThroughputExceeded Trên Kinesis Bằng Exponential Backoff Và Tăng Số Lượng Shards
+DVA	Intermediate	45	lab-104-trien-khai-website-fullstack-serverless-va-tu-dong-hoa-ci-cd-bang-aws-amplify	Lab 104 - Triển Khai Website Fullstack Serverless Và Tự Động Hóa CI/CD Bằng AWS Amplify
+DVA	Intermediate	45	lab-105-dam-bao-thu-tu-va-chong-trung-lap-don-hang-bang-amazon-sqs-fifo-queue-va-lambda	Lab 105 - Đảm Bảo Thứ Tự Và Chống Trùng Lặp Đơn Hàng Bằng Amazon SQS FIFO Queue Và Lambda
+DVA	Intermediate	45	lab-106-tich-hop-va-lam-giau-du-lieu-event-enrichment-giua-sqs-va-api-bang-eventbridge-pipes	Lab 106 - Tích Hợp Và Làm Giàu Dữ Liệu Event Enrichment Giữa SQS Và Hệ Thống Đích Bằng EventBridge Pipes
+DVA	Intermediate	45	lab-107-loc-luu-luong-du-lieu-stream-theo-dieu-kien-bang-eventbridge-pipes-filter-step	Lab 107 - Lọc Lưu Lượng Dữ Liệu Stream Theo Điều Kiện Bằng EventBridge Pipes Filter Step
+DVA	Intermediate	45	lab-108-giao-dich-acid-dong-thoi-tren-nhieu-bang-dynamodb-bang-transactwriteitems	Lab 108 - Giao dịch ACID Đồng thời trên Nhiều Bảng DynamoDB bằng TransactWriteItems
+DVA	Intermediate	45	lab-109-gioi-han-concurrency-tren-sqs-event-source-mapping-de-bao-ve-he-thong-downstream	Lab 109 - Giới hạn Concurrency trên SQS Event Source Mapping để Bảo vệ Hệ thống Downstream
+DVA	Intermediate	45	lab-11-tao-va-chia-se-thu-vien-dung-chung-bang-aws-lambda-layers	Lab 11 - Tạo và chia sẻ thư viện dùng chung bằng AWS Lambda Layers
+DVA	Intermediate	45	lab-110-fan-out-tin-nhan-bao-toan-thu-tu-va-chong-trung-lap-bang-sns-fifo-va-sqs-fifo	Lab 110 - Fan-out Tin nhắn Bảo toàn Thứ tự và Chống Trùng lặp bằng SNS FIFO và SQS FIFO
+DVA	Intermediate	45	lab-111-phan-phoi-ban-cap-nhat-firmware-an-toan-toan-cau-bang-cloudfront-signed-urls-va-amazon-s3	Lab 111 - Phân Phối Bản Cập Nhật Firmware An Toàn Toàn Cầu bằng CloudFront Signed URLs và Amazon S3
+DVA	Intermediate	45	lab-112-xu-ly-loi-bat-dong-bo-cho-aws-lambda-bang-dead-letter-queue-dlq-voi-amazon-sqs	Lab 112 - Xử Lý Lỗi Bất Đồng Bộ cho AWS Lambda bằng Dead Letter Queue (DLQ) với Amazon SQS
+DVA	Intermediate	45	lab-113-tu-dong-xoay-vong-thong-tin-xac-thuc-amazon-aurora-postgresql-bang-aws-secrets-manager	Lab 113 - Tự Động Xoay Vòng Thông Tin Xác Thực Amazon Aurora PostgreSQL bằng AWS Secrets Manager
+DVA	Intermediate	45	lab-114-cap-quyen-truy-cap-aws-cho-khach-vang-lai-bang-amazon-cognito-identity-pools-unauthenticated-role	Lab 114 - Cấp Quyền Truy Cập AWS cho Khách Vãng Lai Bằng Amazon Cognito Identity Pools Unauthenticated Role
+DVA	Intermediate	45	lab-115-dong-goi-va-trien-khai-ung-dung-serverless-bang-aws-sam-cli-sam-package	Lab 115 - Đóng Gói và Triển Khai Ứng Dụng Serverless Bằng AWS SAM CLI sam package
+DVA	Intermediate	45	lab-116-quan-ly-vong-doi-tai-nguyen-tu-dong-bang-aws-cdk-custom-resources-va-lambda	Lab 116 - Quản Lý Vòng Đời Tài Nguyên Tự Động Bằng AWS CDK Custom Resources và Lambda
+DVA	Intermediate	45	lab-117-bao-mat-du-lieu-khoi-tao-ec2-bang-ssm-parameter-store-securestring-va-cloudformation-dynamic-references	Lab 117 - Bảo Mật Dữ Liệu Khởi Tạo EC2 Bằng SSM Parameter Store SecureString và CloudFormation Dynamic References
+DVA	Intermediate	45	lab-118-kiem-thu-cuc-bo-rest-api-va-lambda-bang-aws-sam-cli-sam-local-start-api	Lab 118 - Kiểm Thử Cục Bộ REST API và Lambda Bằng AWS SAM CLI sam local start-api
+DVA	Intermediate	45	lab-119-thu-thap-su-kien-da-tai-khoan-vao-bus-trung-tam-bang-amazon-eventbridge-resource-policy	Lab 119 - Thu Thập Sự Kiện Đa Tài Khoản Vào Bus Trung Tâm Bằng Amazon EventBridge Resource Policy
+DVA	Intermediate	45	lab-12-chon-chien-luoc-trien-khai-nhanh-nhat-all-at-once-tren-aws-elastic-beanstalk	Lab 12 - Chọn chiến lược triển khai nhanh nhất All at once trên AWS Elastic Beanstalk
+DVA	Intermediate	45	lab-120-thiet-ke-mo-hinh-du-lieu-dynamodb-voi-khoa-ket-hop-va-global-secondary-index-gsi	Lab 120 - Thiết Kế Mô Hình Dữ Liệu DynamoDB với Khóa Kết Hợp và Global Secondary Index (GSI)
+DVA	Intermediate	45	lab-121-dich-chuyen-luu-luong-lambda-bang-weighted-alias-traffic-shifting	Lab 121 - Dịch Chuyển Lưu Lượng Lambda Bằng Weighted Alias (Traffic Shifting)
+DVA	Intermediate	45	lab-122-toi-uu-truy-van-doc-rds-bang-amazon-elasticache-for-memcached-kien-truc-multi-threaded	Lab 122 - Tối Ưu Truy Vấn Đọc RDS Bằng Amazon ElastiCache for Memcached Kiến Trúc Multi-Threaded
+DVA	Intermediate	45	lab-123-ma-hoa-api-key-trong-bien-moi-truong-lambda-bang-aws-kms-customer-managed-key	Lab 123 - Mã Hóa API Key Trong Biến Môi Trường Lambda Bằng AWS KMS Customer Managed Key
+DVA	Intermediate	45	lab-124-toi-uu-chi-phi-luu-tru-s3-bang-standard-ia-va-s3-glacier-deep-archive-standard-retrieval	Lab 124 - Tối Ưu Chi Phí Lưu Trữ S3 Bằng Standard-IA và S3 Glacier Deep Archive Standard Retrieval
+DVA	Intermediate	45	lab-125-trien-khai-serverless-da-moi-truong-bang-aws-sam-toml-configuration-samconfig-toml	Lab 125 - Triển Khai Serverless Đa Môi Trường Bằng AWS SAM TOML Configuration (samconfig.toml)
+DVA	Intermediate	45	lab-126-tu-dong-xu-ly-du-lieu-iot-bang-s3-event-trigger-kich-hoat-aws-lambda	Lab 126 - Tự Động Xử Lý Dữ Liệu IoT Bằng S3 Event Trigger Kích Hoạt AWS Lambda
+DVA	Intermediate	45	lab-127-giu-nguyen-tai-nguyen-de-go-loi-khi-trien-khai-cloudformation-bang-co-disable-rollback	Lab 127 - Giữ Nguyên Tài Nguyên Để Gỡ Lỗi Khi Triển Khai CloudFormation Bằng Cờ disable-rollback
+DVA	Intermediate	45	lab-128-quan-ly-connection-pool-cho-lambda-va-aurora-postgresql-bang-amazon-rds-proxy	Lab 128 - Quản Lý Connection Pool Cho Lambda và Aurora PostgreSQL Bằng Amazon RDS Proxy
+DVA	Intermediate	45	lab-129-chien-luoc-phan-nhanh-git-tren-aws-codecommit-cho-bug-fixes-va-feature-moi	Lab 129 - Chiến Lược Phân Nhánh Git Trên AWS CodeCommit Cho Bug Fixes và Feature Mới
+DVA	Intermediate	45	lab-13-luu-tru-thong-tin-nhan-vien-va-link-anh-s3-dung-dynamodb-va-s3-key	Lab 13 - Lưu trữ thông tin nhân viên và link ảnh S3 dùng DynamoDB và S3 Object Key
+DVA	Intermediate	45	lab-130-xu-ly-loi-insufficientcapabilities-trong-cloudformation-bang-capability-named-iam	Lab 130 - Xử Lý Lỗi InsufficientCapabilities Trong CloudFormation Bằng CAPABILITY_NAMED_IAM
+DVA	Intermediate	45	lab-14-ep-buoc-ma-hoa-in-transit-bang-s3-bucket-policy-voi-dieu-kien-aws-securetransport	Lab 14 - Ép buộc mã hóa in-transit bằng S3 Bucket Policy với điều kiện aws:SecureTransport
+DVA	Intermediate	45	lab-15-dinh-tuyen-luu-luong-beta-testing-bang-alb-listener-rule-va-cookie-version-beta	Lab 15 - Định tuyến lưu lượng Beta Testing bằng ALB Listener Rule và Cookie version=beta
+DVA	Intermediate	45	lab-16-troubleshoot-va-cap-quyen-iam-role-va-s3-bucket-policy-cho-ung-dung-ec2	Lab 16 - Troubleshoot và cấp quyền IAM Role và S3 Bucket Policy cho ứng dụng EC2
+DVA	Intermediate	45	lab-17-thu-thap-va-quan-ly-log-tap-trung-tu-nhieu-ec2-bang-unified-cloudwatch-agent	Lab 17 - Thu thập và quản lý log tập trung từ nhiều EC2 bằng Unified CloudWatch Agent
+DVA	Intermediate	45	lab-18-kich-hoat-aws-lambda-tu-s3-object-created-event-bang-amazon-eventbridge-rule	Lab 18 - Kích hoạt AWS Lambda từ S3 Object Created Event bằng Amazon EventBridge Rule
+DVA	Intermediate	45	lab-19-tu-dong-dien-region-hien-tai-bang-cloudformation-pseudo-parameter-aws-region	Lab 19 - Tự động điền Region hiện tại bằng CloudFormation Pseudo Parameter AWS::Region
+DVA	Intermediate	45	lab-20-cau-hinh-lambda-function-urls-voi-phan-quyen-aws-iam-va-signature-version-4	Lab 20 - Cấu hình Lambda Function URLs với phân quyền AWS_IAM và Signature Version 4
+DVA	Intermediate	45	lab-21-xu-ly-thay-doi-du-lieu-gan-thoi-gian-thuc-bang-dynamodb-streams-va-aws-lambda	Lab 21 - Xử lý thay đổi dữ liệu gần thời gian thực bằng DynamoDB Streams và AWS Lambda
+DVA	Intermediate	45	lab-22-tu-dong-xoay-vong-thong-tin-dang-nhap-database-dinh-ky-bang-aws-secrets-manager	Lab 22 - Tự động xoay vòng thông tin đăng nhập Database định kỳ bằng AWS Secrets Manager
+DVA	Intermediate	45	lab-23-quan-ly-trang-thai-ket-noi-websocket-api-va-chong-spam-bang-amazon-elasticache	Lab 23 - Quản lý trạng thái kết nối WebSocket API và chống spam bằng Amazon ElastiCache
+DVA	Intermediate	45	lab-24-xay-dung-api-luu-tru-anh-serverless-voi-api-gateway-cognito-authorizer-s3-va-dynamodb	Lab 24 - Xây dựng API lưu trữ ảnh Serverless với API Gateway Cognito Authorizer S3 và DynamoDB
+DVA	Intermediate	45	lab-25-quan-ly-ma-nguon-va-review-code-tap-trung-voi-aws-codecommit-va-pull-requests	Lab 25 - Quản lý mã nguồn và review code tập trung với AWS CodeCommit và Pull Requests
+DVA	Intermediate	45	lab-26-ket-noi-lambda-alias-toi-aurora-postgresql-an-toan-qua-secrets-manager-co-rotation	Lab 26 - Kết nối Lambda Alias tới Aurora PostgreSQL an toàn qua Secrets Manager có rotation
+DVA	Intermediate	45	lab-27-ky-va-xac-thuc-request-aws-bang-signature-version-4-qua-http-authorization-header	Lab 27 - Ký và xác thực request AWS bằng Signature Version 4 qua HTTP Authorization Header
+DVA	Intermediate	45	lab-28-tu-dong-sinh-mat-khau-rds-trong-cloudformation-bang-secrets-manager-dynamic-reference	Lab 28 - Tự động sinh mật khẩu RDS trong CloudFormation bằng Secrets Manager Dynamic Reference
+DVA	Intermediate	45	lab-29-index-metadata-file-s3-trong-dynamodb-de-truy-van-nhanh-duoi-10-mili-giay	Lab 29 - Index metadata file S3 trong DynamoDB để truy vấn nhanh dưới 10 mili-giây
+DVA	Intermediate	45	lab-30-dong-goi-cloudfront-va-lambda-at-edge-bang-aws-sam-va-xu-ly-rang-buoc-region-us-east-1	Lab 30 - Đóng gói CloudFront và Lambda at Edge bằng AWS SAM và xử lý ràng buộc Region us-east-1
+DVA	Intermediate	45	lab-31-toi-uu-dashboard-thoi-gian-thuc-bang-chien-luoc-write-through-tren-amazon-elasticache	Lab 31 - Tối ưu Dashboard thời gian thực bằng chiến lược Write-through trên Amazon ElastiCache
+DVA	Intermediate	45	lab-32-tach-thu-vien-ngoai-100mb-bang-aws-lambda-layers-de-toi-uu-package-size	Lab 32 - Tách thư viện ngoài 100MB bằng AWS Lambda Layers để tối ưu package size
+DVA	Intermediate	45	lab-33-cap-nhat-platform-node-js-khong-downtime-tren-elastic-beanstalk-bang-immutable-update	Lab 33 - Cập nhật Platform Node.js không downtime trên Elastic Beanstalk bằng Immutable Update
+DVA	Intermediate	45	lab-34-unit-test-aws-lambda-consume-sqs-trong-pipeline-ci-cd-voi-mock-test-event	Lab 34 - Unit test AWS Lambda consume SQS trong pipeline CI/CD với Mock Test Event
+DVA	Intermediate	45	lab-35-dinh-tuyen-va-loc-don-hang-da-doi-tac-bang-amazon-sns-subscription-filter-policy	Lab 35 - Định tuyến và lọc đơn hàng đa đối tác bằng Amazon SNS Subscription Filter Policy
+DVA	Intermediate	45	lab-36-truy-van-song-song-nhieu-bang-trong-mot-thao-tac-duy-nhat-bang-dynamodb-batchgetitem	Lab 36 - Truy vấn song song nhiều bảng trong một thao tác duy nhất bằng DynamoDB BatchGetItem
+DVA	Intermediate	45	lab-37-tach-biet-moi-truong-test-va-prod-trong-api-gateway-bang-stage-variables-va-lambda-integration	Lab 37 - Tách biệt môi trường Test và Prod trong API Gateway bằng Stage Variables và Lambda Integration
+DVA	Intermediate	45	lab-38-ket-noi-internet-cho-lambda-trong-vpc-private-subnet-thong-qua-nat-gateway	Lab 38 - Kết nối Internet cho Lambda trong VPC Private Subnet thông qua NAT Gateway
+DVA	Intermediate	45	lab-39-thiet-lap-thoi-gian-het-han-va-canh-bao-eventbridge-bang-ssm-parameter-store-advanced-tier	Lab 39 - Thiết lập thời gian hết hạn và cảnh báo EventBridge bằng SSM Parameter Store Advanced Tier
+DVA	Intermediate	45	lab-40-tu-dong-trien-khai-lambda-an-toan-va-nhanh-nhat-bang-codedeploy-canary10percent5minutes	Lab 40 - Tự động triển khai Lambda an toàn và nhanh nhất bằng CodeDeploy Canary10Percent5Minutes
+DVA	Intermediate	45	lab-41-quan-ly-va-xoay-vong-mat-khau-rds-cho-nhieu-lambda-bang-aws-secrets-manager	Lab 41 - Quản lý và xoay vòng mật khẩu RDS cho nhiều Lambda bằng AWS Secrets Manager
+DVA	Intermediate	45	lab-42-lay-thong-tin-xac-thuc-database-an-toan-trong-codebuild-buildspec-bang-secrets-manager	Lab 42 - Lấy thông tin xác thực Database an toàn trong CodeBuild Buildspec bằng Secrets Manager
+DVA	Intermediate	45	lab-43-gia-lap-phan-hoi-api-bang-api-gateway-mock-integration-va-vtl-mapping-templates	Lab 43 - Giả lập phản hồi API bằng API Gateway Mock Integration và VTL Mapping Templates
+DVA	Intermediate	45	lab-44-trien-khai-aws-x-ray-daemon-sidecar-container-tren-ecs-fargate-de-trace-loi-microservices	Lab 44 - Triển khai AWS X-Ray Daemon Sidecar Container trên ECS Fargate để trace lỗi Microservices
+DVA	Intermediate	45	lab-45-bien-doi-du-lieu-s3-dong-va-an-danh-thong-tin-nhay-cam-bang-amazon-s3-object-lambda	Lab 45 - Biến đổi dữ liệu S3 động và ẩn danh thông tin nhạy cảm bằng Amazon S3 Object Lambda
+DVA	Intermediate	45	lab-46-giai-quyet-merge-conflict-trong-codecommit-bang-git-rebase-tren-nen-nhanh-main	Lab 46 - Giải quyết Merge Conflict trong CodeCommit bằng Git Rebase trên nền nhánh Main
+DVA	Intermediate	45	lab-47-kiem-tra-hop-le-request-payload-tai-edge-bang-api-gateway-request-validation-va-models	Lab 47 - Kiểm tra hợp lệ Request Payload tại Edge bằng API Gateway Request Validation và Models
+DVA	Intermediate	45	lab-48-sao-luu-toan-bo-thay-doi-don-hang-tu-dynamodb-vao-s3-bang-dynamodb-streams-va-lambda	Lab 48 - Sao lưu toàn bộ thay đổi đơn hàng từ DynamoDB vào S3 bằng DynamoDB Streams và Lambda
+DVA	Intermediate	45	lab-49-giam-do-tre-toan-cau-va-giam-tai-ec2-bang-cach-cache-tai-nguyen-tinh-qua-cloudfront-va-s3	Lab 49 - Giảm độ trễ toàn cầu và giảm tải EC2 bằng cách cache tài nguyên tĩnh qua CloudFront và S3
+DVA	Intermediate	45	lab-50-gioi-han-quyen-tai-file-danh-rieng-cho-thanh-vien-tra-phi-bang-s3-pre-signed-object-urls	Lab 50 - Giới hạn quyền tải file dành riêng cho thành viên trả phí bằng S3 Pre-signed Object URLs
+DVA	Intermediate	45	lab-51-tim-kiem-tien-to-email-tren-dynamodb-bang-global-secondary-index-va-begins-with	Lab 51 - Tìm kiếm tiền tố email trên DynamoDB bằng Global Secondary Index (GSI) và begins_with
+DVA	Intermediate	45	lab-52-tang-toc-trien-khai-code-lambda-tren-cloud-bang-aws-sam-accelerate-voi-sam-sync-watch	Lab 52 - Tăng tốc triển khai code Lambda trên Cloud bằng AWS SAM Accelerate với sam sync --watch
+DVA	Intermediate	45	lab-53-luu-tru-credentials-dong-vao-ssm-parameter-store-securestring-tu-lambda-custom-resource	Lab 53 - Lưu trữ credentials động vào SSM Parameter Store SecureString từ Lambda Custom Resource
+DVA	Intermediate	45	lab-54-khac-phuc-loi-accessdenied-tren-dynamodb-cli-bang-iam-policy-least-privilege	Lab 54 - Khắc phục lỗi AccessDenied trên DynamoDB CLI bằng IAM Policy Least Privilege
+DVA	Intermediate	45	lab-55-ma-hoa-end-to-end-https-giua-viewer-cloudfront-va-origin-bang-https-only-policy	Lab 55 - Mã hóa End-to-End HTTPS giữa Viewer, CloudFront và Origin bằng HTTPS-Only Policy
+DVA	Intermediate	45	lab-56-quan-ly-phien-ban-va-rollback-tuc-thi-cho-aws-lambda-bang-function-versions-va-aliases	Lab 56 - Quản lý phiên bản và rollback tức thì cho AWS Lambda bằng Function Versions và Aliases
+DVA	Intermediate	45	lab-57-ma-hoa-s3-voi-kms-customer-managed-key-va-tu-dong-xoay-vong-khoa-hang-nam	Lab 57 - Mã hóa S3 với KMS Customer Managed Key và tự động xoay vòng khóa hàng năm
+DVA	Intermediate	45	lab-58-tich-hop-chay-unit-test-va-test-reports-tu-dong-trong-codepipeline-bang-aws-codebuild	Lab 58 - Tích hợp chạy Unit Test và Test Reports tự động trong CodePipeline bằng AWS CodeBuild
+DVA	Intermediate	45	lab-59-gioi-han-truy-cap-s3-bucket-tu-nhieu-vpc-endpoints-bang-dieu-kien-aws-sourcevpce	Lab 59 - Giới hạn truy cập S3 Bucket từ nhiều VPC Endpoints bằng điều kiện aws:sourceVpce
+DVA	Intermediate	45	lab-60-chia-se-tap-trung-root-ca-certificate-cho-nhieu-lambda-xuyen-tai-khoan-bang-secrets-manager	Lab 60 - Chia sẻ tập trung Root CA Certificate cho nhiều Lambda xuyên tài khoản bằng Secrets Manager
+DVA	Intermediate	45	lab-61-phat-hien-secret-khong-su-dung-trong-secrets-manager-bang-aws-config-va-eventbridge	Lab 61 - Phát hiện Secret không sử dụng trong Secrets Manager bằng AWS Config và EventBridge
+DVA	Intermediate	45	lab-62-lap-lich-kich-hoat-lambda-dinh-ky-moi-10-phut-bang-amazon-eventbridge-scheduled-rule	Lab 62 - Lập Lịch Kích Hoạt Lambda Định Kỳ Mỗi 10 Phút Bằng Amazon EventBridge Scheduled Rule
+DVA	Intermediate	45	lab-63-bao-mat-master-credentials-opensearch-bang-cloudformation-dynamic-reference-va-secrets-manager	Lab 63 - Bảo Mật Master Credentials OpenSearch Bằng CloudFormation Dynamic Reference Và Secrets Manager
+DVA	Intermediate	45	lab-64-quan-ly-phien-dang-nhap-session-state-tap-trung-cho-ec2-bang-amazon-elasticache	Lab 64 - Quản Lý Phiên Đăng Nhập Session State Tập Trung Cho EC2 Bằng Amazon ElastiCache
+DVA	Intermediate	45	lab-65-phan-tich-dia-chi-client-ip-thuc-te-phia-sau-application-load-balancer-qua-x-forwarded-for	Lab 65 - Phân Tích Địa Chỉ Client IP Thực Tế Phía Sau Application Load Balancer Qua X-Forwarded-For
+DVA	Intermediate	45	lab-66-dieu-phoi-rate-limit-cua-api-ben-thu-ba-bang-aws-step-functions-wait-state	Lab 66 - Điều Phối Rate Limit Của API Bên Thứ Ba Bằng AWS Step Functions Wait State
+DVA	Intermediate	45	lab-67-toi-uu-hieu-nang-ung-dung-cpu-bound-tren-aws-lambda-bang-cach-tang-cau-hinh-memory	Lab 67 - Tối Ưu Hiệu Năng Ứng Dụng CPU-bound Trên AWS Lambda Bằng Cách Tăng Cấu Hình Memory
+DVA	Intermediate	45	lab-68-phan-tich-nghen-hieu-nang-he-thong-phan-tan-lambda-bang-aws-x-ray-trace-segments	Lab 68 - Phân Tích Nghẽn Hiệu Năng Hệ Thống Phân Tán Lambda Bằng AWS X-Ray Trace Segments
+DVA	Intermediate	45	lab-69-trien-khai-elastic-beanstalk-giu-100-phan-tram-capacity-va-toi-uu-chi-phi-bang-rolling-with-additional-batch	Lab 69 - Triển Khai Elastic Beanstalk Giữ 100% Capacity Và Tối Ưu Chi Phí Bằng Rolling With Additional Batch
+DVA	Intermediate	45	lab-70-kiem-thu-tu-dong-lambda-cuc-bo-va-ci-cd-pipeline-bang-aws-sam-local-cli	Lab 70 - Kiểm Thử Tự Động Lambda Cục Bộ Và CI/CD Pipeline Bằng AWS SAM Local CLI
+DVA	Intermediate	45	lab-71-cau-hinh-iam-role-trust-policy-cho-ec2-service-principal-truy-cap-dynamodb	Lab 71 - Cấu Hình IAM Role Trust Policy Cho EC2 Service Principal Truy Cập DynamoDB
+DVA	Intermediate	45	lab-72-ma-hoa-envelope-encryption-bang-aws-encryption-sdk-va-luu-encrypted-data-key	Lab 72 - Mã Hóa Envelope Encryption Bằng AWS Encryption SDK Và Lưu Encrypted Data Key
+DVA	Intermediate	45	lab-73-truy-cap-s3-bang-temporary-credentials-voi-lambda-execution-role-least-privilege	Lab 73 - Truy Cập S3 Bằng Temporary Credentials Với Lambda Execution Role Least Privilege
+DVA	Intermediate	45	lab-74-chia-se-code-lambda-s3-xuyen-tai-khoan-cho-cloudformation-bang-s3-bucket-policy	Lab 74 - Chia Sẻ Code Lambda S3 Xuyên Tài Khoản Cho CloudFormation Bằng S3 Bucket Policy
+DVA	Intermediate	45	lab-75-tu-dong-hoa-goi-api-mot-lan-moi-ngay-bang-serverless-lambda-va-eventbridge-cron	Lab 75 - Tự Động Hóa Gọi API Một Lần Mỗi Ngày Bằng Serverless Lambda Và EventBridge Cron
+DVA	Intermediate	45	lab-76-toi-uu-cold-start-bang-cach-khoi-tao-aws-sdk-ngoai-lambda-function-handler	Lab 76 - Tối Ưu Cold Start Bằng Cách Khởi Tạo AWS SDK Ngoài Lambda Function Handler
+DVA	Intermediate	45	lab-77-giam-tai-va-giam-latency-cho-amazon-rds-bang-elasticache-redis-cluster-mode	Lab 77 - Giảm Tải Và Giảm Latency Cho Amazon RDS Bằng ElastiCache Redis Cluster Mode
+DVA	Intermediate	45	lab-78-lam-chu-thu-tu-lifecycle-event-hooks-trong-aws-codedeploy-in-place-deployment	Lab 78 - Làm Chủ Thứ Tự Lifecycle Event Hooks Trong AWS CodeDeploy In-Place Deployment
+DVA	Intermediate	45	lab-79-xu-ly-timeout-api-gateway-bang-cach-kich-hoat-lambda-bat-dong-bo-qua-x-amz-invocation-type	Lab 79 - Xử Lý Timeout API Gateway Bằng Cách Kích Hoạt Lambda Bất Đồng Bộ Qua X-Amz-Invocation-Type
+DVA	Intermediate	45	lab-80-quan-ly-va-cap-nhat-dependencies-tap-trung-cho-nhieu-lambda-bang-lambda-layers	Lab 80 - Quản Lý Và Cập Nhật Dependencies Tập Trung Cho Nhiều Lambda Bằng Lambda Layers
+DVA	Intermediate	45	lab-81-tu-dong-xoa-du-lieu-het-han-sau-48-gio-tren-dynamodb-bang-time-to-live-ttl	Lab 81 - Tự Động Xóa Dữ Liệu Hết Hạn Sau 48 Giờ Trên DynamoDB Bằng Time to Live (TTL)
+DVA	Intermediate	45	lab-82-ket-hop-secrets-manager-xoay-vong-mat-khau-rds-va-ssm-parameter-store-cho-lambda	Lab 82 - Kết Hợp Secrets Manager Xoay Vòng Mật Khẩu RDS Và SSM Parameter Store Cho Lambda
+DVA	Intermediate	45	lab-83-phan-quyen-tao-va-xoa-nhanh-git-least-privilege-tren-aws-codecommit	Lab 83 - Phân Quyền Tạo Và Xóa Nhánh Git Least Privilege Trên AWS CodeCommit
+DVA	Intermediate	45	lab-84-xu-ly-loi-provisionedthroughputexceeded-tren-dynamodb-bang-exponential-backoff-va-aws-sdk	Lab 84 - Xử Lý Lỗi ProvisionedThroughputExceeded Trên DynamoDB Bằng Exponential Backoff Và AWS SDK
+DVA	Intermediate	45	lab-85-vuot-gioi-han-bien-moi-truong-trong-codebuild-bang-ssm-parameter-store	Lab 85 - Vượt Giới Hạn Biến Môi Trường Trong CodeBuild Bằng SSM Parameter Store
+DVA	Intermediate	45	lab-86-toi-uu-anh-dong-theo-thiet-bi-bang-lambda-at-edge-va-luu-cache-tren-amazon-s3	Lab 86 - Tối Ưu Ảnh Động Theo Thiết Bị Bằng Lambda@Edge Và Lưu Cache Trên Amazon S3
+DVA	Intermediate	45	lab-87-dat-do-tre-duoi-1-mili-giay-cho-giao-dich-chung-khoan-bang-dynamodb-accelerator-dax	Lab 87 - Đạt Độ Trễ Dưới 1 Mili-giây Cho Giao Dịch Chứng Khoán Bằng DynamoDB Accelerator (DAX)
+DVA	Intermediate	45	lab-88-tracing-ung-dung-python-tren-ec2-bang-aws-x-ray-daemon-va-x-ray-sdk	Lab 88 - Tracing Ứng Dụng Python Trên EC2 Bằng AWS X-Ray Daemon Và X-Ray SDK
+DVA	Intermediate	45	lab-89-canh-bao-ty-le-loi-api-vuot-qua-5-phan-tram-bang-cloudwatch-custom-metric-math-va-sns	Lab 89 - Cảnh Báo Tỷ Lệ Lỗi API Vượt Quá 5% Bằng CloudWatch Custom Metric Math Và SNS
+DVA	Intermediate	45	lab-90-chia-se-chuoi-ket-noi-aurora-db-ma-hoa-tap-trung-cho-nhieu-lambda-bang-ssm-securestring	Lab 90 - Chia Sẻ Chuỗi Kết Nối Aurora DB Mã Hóa Tập Trung Cho Nhiều Lambda Bằng SSM SecureString
+DVA	Intermediate	45	lab-91-bat-execution-logging-va-access-logging-tren-api-gateway-de-debug-http-400	Lab 91 - Bật Execution Logging Và Access Logging Trên API Gateway Để Debug Lỗi HTTP 400
+DVA	Intermediate	45	lab-92-cau-hinh-override-cache-method-tren-api-gateway-cho-phuong-thuc-post	Lab 92 - Cấu Hình Override Cache Method Trên API Gateway Cho Phương Thức POST
+DVA	Intermediate	45	lab-93-trien-khai-canary-10-percent-30-minutes-cho-lambda-bang-aws-sam-va-codedeploy-hooks	Lab 93 - Triển Khai Canary 10 Percent 30 Minutes Cho Lambda Bằng AWS SAM Và CodeDeploy Hooks
+DVA	Intermediate	45	lab-94-tu-dong-sinh-va-xoay-vong-mat-khau-rds-trong-cloudformation-bang-secrets-manager	Lab 94 - Tự Động Sinh Và Xoay Vòng Mật Khẩu RDS Trong CloudFormation Bằng Secrets Manager
+DVA	Intermediate	45	lab-95-cau-hinh-event-source-mapping-de-dynamodb-streams-kich-hoat-lambda-function	Lab 95 - Cấu Hình Event Source Mapping Để DynamoDB Streams Kích Hoạt Lambda Function
+DVA	Intermediate	45	lab-96-truyen-bien-moi-truong-vao-container-tren-aws-ecs-fargate-task-definition	Lab 96 - Truyền Biến Môi Trường Vào Container Trên AWS ECS Fargate Task Definition
+DVA	Intermediate	45	lab-97-bao-ve-csdl-rds-trong-cloudformation-bang-deletionpolicy-retain-va-stack-policy	Lab 97 - Bảo Vệ CSDL RDS Trong CloudFormation Bằng DeletionPolicy Retain Và Stack Policy
+DVA	Intermediate	45	lab-98-ma-hoa-du-lieu-s3-at-rest-bang-sse-kms-va-theo-doi-audit-trail-qua-cloudtrail	Lab 98 - Mã Hóa Dữ Liệu S3 At-Rest Bằng SSE-KMS Và Theo Dõi Audit Trail Qua CloudTrail
+DVA	Intermediate	45	lab-99-truy-van-top-10-danh-gia-cao-nhat-tren-dynamodb-bang-global-secondary-index-gsi	Lab 99 - Truy Vấn Top 10 Đánh Giá Cao Nhất Trên DynamoDB Bằng Global Secondary Index (GSI)
+Compute & Containers	Beginner	45	lab-001-launch-ec2-instance	Lab 001 - Khởi Tạo EC2 Instance Chuẩn Doanh Nghiệp (IMDSv2, SSM Session Manager, EBS Encrypted)
+Compute & Containers	Beginner	45	lab-002-ec2-instance-metadata	Lab 002 - EC2 Instance Metadata Service (IMDSv1 vs IMDSv2): Cơ Chế Hoạt Động, Phòng Chống SSRF & Giám Sát CloudWatch
+Compute & Containers	Beginner	45	lab-003-user-data-bootstrap	Lab 003 - EC2 User Data Bootstrap: Tự Động Hóa Web Server Nginx, Ghi Log Cloud-Init & Xử Lý Sự Cố Khởi Động
+Compute & Containers	Beginner	45	lab-004-ebs-root-volume	Lab 004 - Quản Lý EBS Root Volume: Mở Rộng Ổ Đĩa Online Không Downtime (gp3 Elastic Volumes & XFS Growfs)
+Compute & Containers	Beginner	45	lab-005-ec2-security-group	Lab 005 - EC2 Security Group Chuyên Sâu: Cơ Chế Stateful, Security Group Chaining & Connection Tracking
+Compute & Containers	Beginner	45	lab-006-elastic-ip	Lab 006 - Quản Lý Elastic IP: Cơ Chế 1:1 NAT, Chuyển Dịch Dự Phòng Zero-Downtime & Tối Ưu Chi Phí FinOps
+Compute & Containers	Beginner	45	lab-007-instance-stop-start	Lab 007 - Vòng Đời EC2 Instance: Stop, Start, Reboot, Hibernate & Tối Ưu FinOps Cho Môi Trường Dev/Test
+Compute & Containers	Beginner	45	lab-008-termination-protection	Lab 008 - EC2 Termination Protection & Shutdown Behavior: Cơ Chế Bảo Vệ Máy Chủ Sản Xuất Trước Thao Tác Xóa Nhầm
+Compute & Containers	Beginner	45	lab-009-ec2-placement	Lab 009 - EC2 Placement Groups Chuyên Sâu: Cluster, Spread, Partition & Tối Ưu Hóa Độ Trễ Mạng HPC
+Compute & Containers	Beginner	45	lab-010-ec2-baseline	Lab 010 - EC2 Production Baseline: Tổng Hợp Kiến Trúc Chuẩn Doanh Nghiệp (IMDSv2, SSM, CloudWatch Agent, EBS KMS & Termination Protection)
+Compute & Containers	Beginner	45	lab-011-create-ami	Lab 011 - Tạo Amazon Machine Image (AMI): Cơ Chế Reboot vs No-Reboot, Quản Lý Snapshot & Khởi Chạy Custom AMI
+Compute & Containers	Beginner	45	lab-012-ami-copy-region	Lab 012 - Sao Chép AMI Xuyên Region: Chiến Lược Disaster Recovery Đa Vùng & Mã Hóa Lại Với KMS Khóa Đích
+Compute & Containers	Beginner	45	lab-013-launch-template	Lab 013 - Khởi Tạo EC2 Launch Template: Chuẩn Hóa Cấu Hình Khởi Chạy & Thay Thế Launch Configuration
+Compute & Containers	Beginner	45	lab-014-versioned-launch-template	Lab 014 - Quản Lý Phiên Bản Launch Template: Tạo Version Mới, Chuyển Đổi $Default, $Latest & Chiến Lược Rollback
+Compute & Containers	Beginner	45	lab-015-instance-refresh	Lab 015 - EC2 Auto Scaling Instance Refresh: Triển Khai Nâng Cấp Cuộn Rolling Update Zero-Downtime & Tự Động Rollback
+Compute & Containers	Beginner	45	lab-016-golden-image-pipeline	Lab 016 - Thiết Kế Golden Image Pipeline Với EC2 Image Builder: Tự Động Hóa Bản Vá, Kiểm Thử & Phân Phối Đa Vùng
+Compute & Containers	Beginner	45	lab-017-ami-encryption	Lab 017 - Mã Hóa AMI Với AWS KMS Customer Managed Key (CMK): Chuyển Đổi Không Mã Hóa Sang Mã Hóa & Cưỡng Chế Toàn Vùng
+Compute & Containers	Beginner	45	lab-018-ami-sharing	Lab 018 - Chia Sẻ AMI Xuyên Tài Khoản (Cross-Account AMI Sharing): Quản Trị Phân Quyền KMS CMK & Mô Hình Shared Services
+Compute & Containers	Beginner	45	lab-019-boot-troubleshooting	Lab 019 - Xử Lý Sự Cố Khởi Động EC2 (Boot Troubleshooting): System Log, Instance Screenshot, Serial Console & Kỹ Thuật "Mổ Đĩa Cứu Hộ" (Rescue Instance)
+Compute & Containers	Beginner	45	lab-020-image-governance	Lab 020 - Quản Trị Vòng Đời AMI (Image Governance): AMI Deprecation, Dọn Dẹp Snapshot Mồ Côi & Kiểm Toán Tuân Thủ AWS Config
+Compute & Containers	Intermediate	45	lab-021-create-auto-scaling-group	Lab 021 - Khởi Tạo EC2 Auto Scaling Group: Thiết Kế Đa Vùng Khả Dụng (Multi-AZ), Cấu Hình Dung Lượng & Chính Sách Termination
+Compute & Containers	Intermediate	45	lab-022-target-tracking	Lab 022 - Auto Scaling Target Tracking Policy: Co Giãn Theo Tải CPU Mục Tiêu, Stress Test & Tự Động Scale-Out/Scale-In
+Compute & Containers	Intermediate	45	lab-023-step-scaling	Lab 023 - Auto Scaling Step Scaling Policy: Cơ Chế Phân Bậc Đa Tầng, Khắc Phục Điểm Nghẽn Cooldown Của Simple Scaling
+Compute & Containers	Intermediate	45	lab-024-scheduled-scaling	Lab 024 - Auto Scaling Scheduled Actions: Co Giãn Theo Lịch Trình (Cron), Chuẩn Bị Tải Trước Giờ Cao Điểm & Tối Ưu Chi Phí Đêm/Cuối Tuần
+Compute & Containers	Intermediate	45	lab-025-warm-pool	Lab 025 - EC2 Auto Scaling Warm Pool: Giảm Thiểu Thời Gian Scale-Out Từ Vài Phút Xuống Vài Giây & Tối Ưu Chi Phí Trạng Thái Stopped
+Compute & Containers	Intermediate	45	lab-026-lifecycle-hook	Lab 026 - EC2 Auto Scaling Lifecycle Hooks: Tạm Dừng Vòng Đời, Thu Gom Log Lên S3 Trước Khi Hủy Máy & Hoàn Tất Tác Vụ An Toàn
+Compute & Containers	Intermediate	45	lab-027-instance-refresh-asg	Lab 027 - Auto Scaling Instance Refresh Nâng Cao: Kiểm Thử Canary Với Checkpoints, Tích Hợp CloudWatch Alarm & Tự Động Rollback
+Compute & Containers	Intermediate	45	lab-028-health-check-replacement	Lab 028 - Cơ Chế Kiểm Tra Sức Khỏe EC2 vs ELB: Tự Động Thay Thế Máy Chủ Unhealthy (Health Check Replacement) & Grace Period
+Compute & Containers	Intermediate	45	lab-029-capacity-rebalancing	Lab 029 - Quản Trị Rủi Ro Spot Instances: Auto Scaling Capacity Rebalancing & Xử Lý Cảnh Báo Gián Đoạn Chủ Động
+Compute & Containers	Intermediate	45	lab-030-asg-cost-control	Lab 030 - Tối Ưu Hóa Chi Phí Auto Scaling (ASG Cost Control Capstone): Mixed Instances Policy, Kết Hợp On-Demand & Spot, Phân Bổ 3 AZs & FinOps Đỉnh Cao
+Compute & Containers	Intermediate	45	lab-031-create-application-load-balancer	Lab 031 - Khởi Tạo Application Load Balancer (ALB): Cân Bằng Tải Lớp 7, Phân Bổ Đa Vùng Khả Dụng & Security Group Chaining
+Compute & Containers	Intermediate	45	lab-032-alb-listener-rules	Lab 032 - ALB Listener Rules: Định Tuyến Lớp 7 Nâng Cao (Path-Based, Host-Based, Header-Based, Weighted Target Groups & Fixed Response)
+Compute & Containers	Intermediate	45	lab-033-alb-target-group	Lab 033 - ALB Target Group Chuyên Sâu: Thuộc Tính Nâng Cao, Connection Draining, Slow Start & Session Stickiness
+Compute & Containers	Intermediate	45	lab-034-alb-health-check	Lab 034 - ALB Health Check Chuyên Sâu: Cơ Chế Giám Sát Sức Khỏe Lớp 7, Mã Thành Công & Bóc Tách Mã Lỗi Chi Tiết (Reason Codes)
+Compute & Containers	Intermediate	45	lab-035-nlb-tcp-listener	Lab 035 - Khởi Tạo Network Load Balancer (NLB): Cân Bằng Tải Lớp 4 Siêu Tốc, Bảo Lưu Địa Chỉ Client IP & Giao Thức TCP
+Compute & Containers	Intermediate	45	lab-036-nlb-static-ip	Lab 036 - Network Load Balancer Static Elastic IP: Gán Địa Chỉ IP Tĩnh Cố Định Theo Từng Vùng Khả Dụng (AZ) Phục Vụ Firewall Whitelisting
+Compute & Containers	Intermediate	45	lab-037-gateway-load-balancer	Lab 037 - Gateway Load Balancer (GWLB): Triển Khai & Điều Phối Thiết Bị Mạng Ảo (Firewall / IDS / IPS) Qua Giao Thức GENEVE & GWLB Endpoint
+Compute & Containers	Intermediate	45	lab-038-cross-zone-load-balancing	Lab 038 - Cross-Zone Load Balancing: Cơ Chế Phân Bổ Tải Xuyên Vùng Khả Dụng & Tối Ưu Hóa Chi Phí Dữ Liệu Liên Vùng (Inter-AZ FinOps)
+Compute & Containers	Intermediate	45	lab-039-load-balancer-logs	Lab 039 - Load Balancer Access Logs: Kích Hoạt Nhật Ký Truy Cập Lớp 7 Vào S3, Cấu Hình Bucket Policy & Truy Vấn Phân Tích Bằng Amazon Athena
+Compute & Containers	Intermediate	45	lab-040-load-balancing-review	Lab 040 - Tổng Kết Chuyên Sâu Tầng Cân Bằng Tải (Load Balancing Capstone Review): Ma Trận Quyết Định Kiến Trúc ALB vs NLB vs GWLB, Tích Hợp AWS WAF & Best Practices Production
+Compute & Containers	Intermediate	45	lab-041-ssm-managed-node	Lab 041 - AWS Systems Manager Managed Node: Biến EC2 Thành Nút Được Quản Lý, IAM Instance Profile & Kiến Trúc Outbound-Only Zero Open Inbound Ports
+Compute & Containers	Intermediate	45	lab-042-session-manager	Lab 042 - AWS Systems Manager Session Manager: Quản Trị Máy Chủ Không Cần SSH/RDP, Mã Hóa KMS & Ghi Nhật Ký Kiểm Toán Vào S3 & CloudWatch
+Compute & Containers	Intermediate	45	lab-043-run-command	Lab 043 - AWS Systems Manager Run Command: Thực Thi Lệnh Tự Động Hóa Đồng Loạt Quy Mô Lớn, Kiểm Soát Tốc Độ (Rate Control) & Giám Sát Kết Quả
+Compute & Containers	Intermediate	45	lab-044-patch-manager	Lab 044 - AWS Systems Manager Patch Manager: Thiết Lập Custom Patch Baseline, Patch Group, Lên Lịch Bảo Trì (Maintenance Window) & Báo Cáo Tuân Thủ (Compliance)
+Compute & Containers	Intermediate	45	lab-045-state-manager	Lab 045 - AWS Systems Manager State Manager: Quản Lý Cấu Hình Mong Muốn (Desired State Configuration), Chống Trôi Cấu Hình (Configuration Drift) & Tự Động Sửa Chữa (Self-Healing)
+Compute & Containers	Intermediate	45	lab-046-automation-document	Lab 046 - AWS Systems Manager Automation Document: Tự Động Hóa Vận Hành Đám Mây Đa Bước (Multi-Step Cloud Runbook), Tự Động Sao Lưu AMI & Phục Hồi Dịch Vụ
+Compute & Containers	Intermediate	45	lab-047-parameter-store-ec2	Lab 047 - AWS Systems Manager Parameter Store: Quản Lý Cấu Hình & Bí Mật Tập Trung Cho EC2, Phân Cấp Hierarchical Paths & Giải Mã SecureString Qua KMS
+Compute & Containers	Intermediate	45	lab-048-inventory-and-compliance	Lab 048 - AWS Systems Manager Inventory & Compliance: Tự Động Thu Thập Siêu Dữ Liệu Phần Mềm (Software Inventory), Resource Data Sync Vào S3 & Giám Sát Tuân Thủ
+Compute & Containers	Intermediate	45	lab-049-ssm-incident-response	Lab 049 - AWS Systems Manager Incident Manager: Ứng Phó Sự Cố Vận Hành Tự Động, Kế Hoạch Báo Động (Escalation Plan), Kích Hoạt Runbook Khẩn Cấp & Báo Cáo Hậu Sự Cố (Post-Incident Analysis)
+Compute & Containers	Intermediate	45	lab-050-ssm-operations-review	Lab 050 - Tổng Kết Vận Hành Đám Mây Toàn Diện Bằng AWS Systems Manager (SSM Capstone Review): Ma Trận Quyết Định Kiến Trúc, Zero Trust Fleet Management & Bẫy Thi Chuyên Nghiệp
+Compute & Containers	Intermediate	45	lab-051-ecs-cluster-fargate	Lab 051 - Khởi Tạo Amazon ECS Cluster Fargate: Cụm Điều Phối Container Serverless, Cách Ly MicroVM & Kích Hoạt Container Insights
+Compute & Containers	Intermediate	45	lab-052-ecs-task-definition	Lab 052 - Khởi Tạo Amazon ECS Task Definition: Khai Báo Bản Thiết Kế Container, Phân Biệt Task Role vs Task Execution Role & Cấu Hình AWSLogs Driver
+Compute & Containers	Intermediate	45	lab-053-ecs-service	Lab 053 - Khởi Tạo Amazon ECS Service: Tích Hợp Application Load Balancer, Cơ Chế Tự Phục Hồi (Self-Healing) & Cân Bằng Tải Container Đa Vùng Khả Dụng
+Compute & Containers	Intermediate	45	lab-054-ecs-service-discovery	Lab 054 - Amazon ECS Service Discovery: Giao Tiếp Microservices Đông-Tây (East-West Traffic) Bằng AWS Cloud Map & Route 53 Private DNS Không Cần Load Balancer
+Compute & Containers	Intermediate	45	lab-055-ecs-secrets	Lab 055 - Amazon ECS Secrets Management: Tiêm Biến Môi Trường Bí Mật Vào Container Từ Parameter Store & Secrets Manager Chuẩn Bảo Mật Không Lộ Khóa
+Compute & Containers	Intermediate	45	lab-056-ecs-fargate-networking	Lab 056 - Amazon ECS Fargate Networking Chuyên Sâu: Chế Độ Mạng awsvpc, Dedicated ENI Cho Từng Task, Giao Tiếp Localhost Sidecar & Kiến Trúc Private Subnet Không Cần NAT Gateway
+Compute & Containers	Intermediate	45	lab-057-ecs-deployment	Lab 057 - Amazon ECS Deployment Strategies: Triển Khai Cuốn Chiếu Không Gián Đoạn (Rolling Update), Tính Toán Min/Max Percent & Chốt Chặn Tự Động Rollback (Deployment Circuit Breaker)
+Compute & Containers	Intermediate	45	lab-058-ecs-logging	Lab 058 - Amazon ECS Container Logging: Cấu Hình awslogs Driver Non-Blocking, Giám Sát Tập Trung Trên CloudWatch Logs & Truy Vấn Chuyên Sâu Bằng CloudWatch Logs Insights
+Compute & Containers	Intermediate	45	lab-059-ecs-capacity-provider	Lab 059 - Amazon ECS Capacity Providers: Chiến Lược Tối Ưu Chi Phí FinOps Kết Hợp Fargate & Fargate Spot (Base & Weight Strategy)
+Compute & Containers	Intermediate	45	lab-060-ecs-basic-operations	Lab 060 - Tổng Kết Vận Hành Nền Tảng Container Amazon ECS (ECS Capstone Review): Kiến Trúc Fargate Toàn Diện, Tích Hợp ALB, Secrets, Logging, Tự Động Rollback & Bẫy Thi AWS
+Compute & Containers	Intermediate	45	lab-061-ecs-ec2-capacity	Lab 061 - Amazon ECS EC2 Launch Type: Tự Quản Lý Cụm Máy Chủ Container, Auto Scaling Group Capacity Provider & Cơ Chế Co Giãn Managed Scaling
+Compute & Containers	Intermediate	45	lab-062-ecs-service-connect	Lab 062 - ECS Service Connect: Service-to-Service Networking & Observability
+Compute & Containers	Intermediate	45	lab-063-ecs-blue-green	Lab 063 - ECS Blue/Green Deployments with AWS CodeDeploy
+Compute & Containers	Intermediate	45	lab-064-ecs-canary-pattern	Lab 064 - ECS Canary Deployment Pattern: Gradual Traffic Shifting & Auto-Rollback
+Compute & Containers	Intermediate	45	lab-065-ecs-autoscaling	Lab 065 - ECS Service Auto Scaling: Target Tracking & Step Scaling Policies
+Compute & Containers	Intermediate	45	lab-066-ecs-task-placement	Lab 066 - ECS Task Placement Strategies & Constraints (EC2 Launch Type)
+Compute & Containers	Intermediate	45	lab-067-ecs-spot-capacity	Lab 067 - ECS Spot Capacity: Cost Optimization with Spot Instances & Interruption Handling
+Compute & Containers	Intermediate	45	lab-068-ecs-service-health	Lab 068 - ECS Health Checks & Self-Healing: Container Probes vs ALB Health Checks
+Compute & Containers	Intermediate	45	lab-069-ecs-deployment-rollback	Lab 069 - ECS Deployment Circuit Breaker & CloudWatch Alarm Automated Rollback
+Compute & Containers	Intermediate	45	lab-070-ecs-advanced-review	Lab 070 - ECS Advanced Operations & Architecture Capstone Review
+Compute & Containers	Advanced	45	lab-071-eks-cluster	Lab 071 - Amazon EKS Cluster: Control Plane Architecture, Access Entries & Security
+Compute & Containers	Advanced	45	lab-072-eks-node-group	Lab 072 - EKS Managed Node Groups: Node Lifecycle, Taints, Labels & AMI Updates
+Compute & Containers	Advanced	45	lab-073-eks-iam-pod-identity	Lab 073 - EKS Pod Identity: Next-Gen Granular IAM Authentication for Kubernetes Pods
+Compute & Containers	Advanced	45	lab-074-eks-vpc-cni	Lab 074 - Amazon VPC CNI: Native Pod Networking, Prefix Delegation & Custom Networking
+Compute & Containers	Advanced	45	lab-075-eks-load-balancer-controller	Lab 075 - AWS Load Balancer Controller: Target Type IP, NLB & Subnet Auto-Discovery
+Compute & Containers	Advanced	45	lab-076-eks-ingress	Lab 076 - Kubernetes Ingress with AWS ALB: L7 Path Routing, IngressGroup & SSL Redirect
+Compute & Containers	Advanced	45	lab-077-eks-persistent-storage	Lab 077 - EKS Persistent Storage: Amazon EBS CSI Driver, Dynamic Provisioning & WaitForFirstConsumer
+Compute & Containers	Advanced	45	lab-078-eks-cluster-autoscaler	Lab 078 - EKS Cluster Autoscaler: Auto-Discovery, Pending Pod Scaling & Scale-In Draining
+Compute & Containers	Advanced	45	lab-079-eks-upgrade	Lab 079 - Amazon EKS Cluster Version Upgrade: Zero-Downtime Control Plane, Add-ons & Node Rolling
+Compute & Containers	Advanced	45	lab-080-eks-operations	Lab 080 - Amazon EKS Operations & Architecture Capstone Review
+Compute & Containers	Advanced	45	lab-081-ecr-repository	Lab 081 - Amazon ECR Private Repository: KMS Encryption, Repository Policies & Lifecycle Rules
+Compute & Containers	Advanced	45	lab-082-ecr-image-tagging	Lab 082 - ECR Tag Immutability: Supply Chain Security & Deterministic Deployments
+Compute & Containers	Advanced	45	lab-083-ecr-scan-on-push	Lab 083 - Amazon ECR Vulnerability Scanning: Scan on Push, Basic vs Enhanced & EventBridge Alerts
+Compute & Containers	Advanced	45	lab-084-trivy-container-scan	Lab 084 - Trivy Security Scanner: Pre-Push Vulnerability, Secret & Misconfiguration Auditing
+Compute & Containers	Advanced	45	lab-085-container-non-root	Lab 085 - Container Non-Root Execution: Hardening ECS & EKS with Least Privilege UIDs
+Compute & Containers	Advanced	45	lab-086-container-read-only-fs	Lab 086 - Read-Only Root Filesystem: Immutable Containers & Tmpfs Mounts
+Compute & Containers	Advanced	45	lab-087-secrets-in-containers	Lab 087 - Secure Secrets Injection: AWS Secrets Manager, SSM Parameter Store & Container Runtime Privacy
+Compute & Containers	Advanced	45	lab-088-runtime-security	Lab 088 - Container Runtime Security: eBPF Monitoring & Threat Detection with Amazon GuardDuty
+Compute & Containers	Advanced	45	lab-089-sbom-artifact	Lab 089 - Software Bill of Materials (SBOM): Supply Chain Integrity, CycloneDX & ECR OCI Artifacts
+Compute & Containers	Advanced	45	lab-090-container-security-review	Lab 090 - Container Security & Supply Chain Defense Capstone Review
+Compute & Containers	Advanced	45	lab-091-compute-cost-baseline	Lab 091 - Compute Cost Baselining: AWS Budgets, Cost Allocation Tags & Compute Optimizer
+Compute & Containers	Advanced	45	lab-092-multi-az-compute	Lab 092 - Multi AZ Compute
+Compute & Containers	Advanced	45	lab-093-spot-interruption	Lab 093 - Spot Interruption
+Compute & Containers	Advanced	45	lab-094-blue-green-compute	Lab 094 - Blue Green Compute
+Compute & Containers	Advanced	45	lab-095-canary-compute	Lab 095 - Canary Compute
+Compute & Containers	Advanced	45	lab-096-capacity-planning	Lab 096 - Capacity Planning
+Compute & Containers	Advanced	45	lab-097-disaster-recovery-compute	Lab 097 - Disaster Recovery Compute
+Compute & Containers	Advanced	45	lab-098-compute-observability	Lab 098 - Compute Observability
+Compute & Containers	Advanced	45	lab-099-compute-incident-runbook	Lab 099 - Compute Incident Runbook
+Compute & Containers	Advanced	45	lab-100-compute-capstone	Lab 100 - Compute Capstone: Enterprise Multi-Tier Container & Compute Platform
+Storage	Beginner	30	s3-gateway-endpoint	AWS S3 Gateway Endpoint Hands-on Lab

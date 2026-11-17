@@ -43,7 +43,7 @@
       stars: ['star-stories.js'],                             // #/career mẫu câu chuyện STAR (window.STAR_STORIES)
       pathbasics: ['path-basics.js'],                         // #/path: kiến thức nền + link tài liệu cho từng chặng
       // AWS Pro track (#/aws): plan + SAP-C02/DOP-C02 exam-style pools (docs/AWS-TRACK.md, scripts/check-aws.js)
-      aws: ['aws-plan.js', 'aws-sap-1.js', 'aws-sap-2.js', 'aws-sap-3.js', 'aws-dop-1.js', 'aws-dop-2.js', 'aws-dop-3.js', 'aws-sap-4.js', 'aws-dop-4.js', 'aws-sap-5.js', 'aws-dop-5.js'],
+      aws: ['aws-plan.js', 'aws-sap-1.js', 'aws-sap-2.js', 'aws-sap-3.js', 'aws-dop-1.js', 'aws-dop-2.js', 'aws-dop-3.js', 'aws-sap-4.js', 'aws-dop-4.js', 'aws-sap-5.js', 'aws-dop-5.js', 'aws-labs.js'],
     },
     routes: {
       // dashboard: SRS due list + stats, next lesson, today's plan, interview plan — all from the light index via
