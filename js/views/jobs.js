@@ -195,7 +195,7 @@
 
   const PLACES = [
     { id: 'all', key: 'locAll' },
-    { id: 'hanoi', key: 'locHanoi', re: /ha noi|\bhn\b/ },
+    { id: 'hanoi', key: 'locHanoi', re: /ha ?noi|\bhn\b|cau giay|nam tu liem|dong da|thanh xuan|hoan kiem/ },   // "Hanoi" (EN, no space) too
     { id: 'hcm', key: 'locHcm', re: /ho chi minh|hcmc|\bhcm\b|sai gon/ },
     { id: 'remote', key: 'locRemote', re: /remote|wfh|work from home|toan quoc|anywhere/ },
   ];

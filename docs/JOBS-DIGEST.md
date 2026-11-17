@@ -1,7 +1,7 @@
 # Việc làm hôm nay (job digest)
 
-Mỗi sáng biên tập viên (routine Claude 7h, cùng lượt với bản tin tin tức) chọn **3–12 tin tuyển dụng Java Backend
-từ Middle trở lên** đang mở ở Việt Nam (ưu tiên Hà Nội, TP.HCM, remote), đọc tin gốc và tóm tắt để hiển thị ở
+Mỗi sáng biên tập viên (routine Claude 7h, cùng lượt với bản tin tin tức) chọn **8–15 tin tuyển dụng Java Backend
+từ Middle trở lên** đang mở ở Việt Nam, đọc tin gốc và tóm tắt để hiển thị ở
 trang `#/jobs`. Không cào dữ liệu: chỉ tìm qua web search, mở tin gốc như người đọc bình thường, tóm tắt bằng lời
 của mình và **luôn dẫn link về tin gốc**.
 
@@ -32,8 +32,14 @@ Chưa chạy SQL thì API trả `setup: 'missing_table'` và trang `#/jobs` ch�
 
 ## 2. Quy trình mỗi sáng
 
-1. **Tìm** bằng web search, ví dụ: `Senior Java developer Hà Nội tuyển dụng`, `Java backend senior HCM`, `Java tech lead
-   Vietnam`, `site:itviec.com java senior`, `site:topcv.vn java senior`, trang careers của ngân hàng / công ty product.
+0. **Người dùng ở Hà Nội** (2026-11-17: "sao list job không có việc nào ở Hà Nội"): **ít nhất một nửa số tin phải ở Hà Nội**
+   (onsite/hybrid) hoặc remote nhận người Hà Nội; phần còn lại TP.HCM. Tìm Hà Nội TRƯỚC, đủ chỗ rồi mới tìm HCM.
+   Nếu hôm đó thật sự không đủ tin Hà Nội mới thì ghi rõ trong `intro`, và được phép đưa lại tin Hà Nội đã đăng
+   ở các ngày trước nếu tin gốc vẫn còn mở (ghi "(vẫn mở)" cuối `title`).
+1. **Tìm** bằng web search, ví dụ: `Senior Java developer Hà Nội tuyển dụng`, `Java backend Hà Nội ngân hàng`,
+   `itviec java ha noi`, `topdev java senior hà nội`, `vietnamworks java hà nội`, `Java backend senior HCM`, `Java tech lead
+   Vietnam`, `site:itviec.com java senior`, `site:topcv.vn java senior`, trang careers của ngân hàng (Techcombank, VPBank,
+   MB, VIB, TPBank…) / công ty product, ưu tiên tin có AI/LLM.
 2. **Lọc**: tin còn hạn, đăng trong khoảng 14 ngày gần nhất, Java/Kotlin backend, level mid/senior/lead.
    Bỏ tin không rõ công ty, tin trùng (cùng công ty + vị trí), tin đã đăng ở các ngày trước (xem 3 file gần nhất trong `jobs/`).
 3. **Mở tin gốc** để đọc yêu cầu thật; không suy ra từ đoạn trích của trang tìm kiếm. Không mở được thì bỏ.
