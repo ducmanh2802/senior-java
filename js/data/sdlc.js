@@ -11249,5 +11249,480 @@ Sửa cho **một** service là việc tác nghiệp; làm cho sự cố **khôn
     ]
   },
   tags: ['eks', 'kubernetes', 'aws', 'migration', 'hybrid', 'direct-connect', 'helm', 'argocd', 'gitops', 'argo-rollouts', 'canary', 'irsa', 'secrets-manager', 'rds', 'rds-proxy', 'hikaricp', 'coredns', 'ndots', 'dns', 'node-local-dns', 'hpa', 'cluster-autoscaler', 'jvm-in-container', 'maxrampercentage', 'graceful-shutdown', 'probes', 'terraform', 'opa-gatekeeper', 'imds', 'load-test', 'chaos', 'slo', 'error-budget', 'burn-rate', 'liquibase', 'bank', 'postmortem']
+},
+{
+  id: 'sdlc-012',
+  title: 'Thêm tính năng tóm tắt và phân loại khiếu nại khách hàng bằng AI (Claude API) vào hệ thống ngân hàng',
+  level: 'senior',
+  domain: 'Ngân hàng / AI',
+  context: `Bạn là **Senior Java Developer** trong team Customer Experience Platform của một ngân hàng bán lẻ (khoảng 4,5 triệu khách hàng cá nhân, 120.000 email khiếu nại/tháng, trung bình 480 ký tự/email). Hệ thống hiện tại: {{complaint-service}} (Spring Boot 3.2, Java 21) nhận email khiếu nại từ kênh {{mail-gateway}} và lưu vào PostgreSQL 16 (bảng {{complaint}}, ~8 triệu dòng). Luồng cũ: nhân viên CSKH (chăm sóc khách hàng) đọc thủ công, gõ tóm tắt và chọn phân loại (thẻ, vay, chuyển khoản, app, khác) rồi chuyển cho bộ phận xử lý. Thời gian trung bình từ lúc nhận email đến lúc có tóm tắt: **18 phút**, backlog (hàng tồn chờ xử lý) giờ cao điểm (8–10h sáng) lên tới **2.400 email**.
+
+Ban lãnh đạo muốn thêm tính năng **tự động tóm tắt và phân loại email khiếu nại khách hàng bằng Claude API** (dịch vụ AI của Anthropic, truy cập qua HTTP API — giao diện lập trình cho phép hệ thống của bạn gửi yêu cầu và nhận kết quả qua mạng) để: (1) giảm thời gian chờ xuống < 90 giây, (2) hỗ trợ CSKH ưu tiên khiếu nại nghiêm trọng. Ràng buộc: dữ liệu khách hàng (PII — Personally Identifiable Information, tức thông tin nhận dạng cá nhân như số tài khoản, số CMND/CCCD, số điện thoại, email, địa chỉ) **không được gửi ra ngoài** khi chưa che; phải có audit (nhật ký kiểm tra, ghi lại ai/lúc nào/hệ thống đã làm gì) đầy đủ; chi phí token (token = đơn vị tính phí của mô hình ngôn ngữ, có thể hiểu gần đúng là mảnh nhỏ của văn bản) phải theo dõi được; kết quả phải ở dạng JSON (định dạng dữ liệu có cấu trúc, dễ cho máy đọc) để hệ thống phía sau tiêu thụ; và khi AI lỗi thì luồng thủ công cũ vẫn phải hoạt động.
+
+Kiến trúc mục tiêu: {{complaint-service}} publish (đăng/gửi) sự kiện {{ComplaintReceived}} lên Kafka (hệ thống message queue — hàng đợi tin nhắn — giúp tách bên gửi và bên nhận, xử lý bất đồng bộ và chịu lỗi tốt hơn gọi trực tiếp), {{complaint-ai-worker}} (consumer — tiến trình đọc và xử lý tin nhắn, viết bằng Spring Boot 3) đọc sự kiện, che PII, gọi Claude API, lưu kết quả và audit vào PostgreSQL, publish {{ComplaintSummarized}}. Toàn bộ 8 giai đoạn nối nhau: tên service ({{complaint-service}}, {{complaint-ai-worker}}), số liệu (120.000 email/tháng, backlog 2.400, mục tiêu < 90s), và các quyết định (timeout/retry, idempotency, chiến lược che PII, prompt caching, JSON schema) được dùng lại và một quyết định ở bước trước sẽ gây ra sự cố ở bước bugfix.`,
+  stages: [
+    {
+      key: 'requirement',
+      title: 'Làm rõ yêu cầu: lợi ích, ràng buộc PII và tiêu chí thành công đo được',
+      role: 'BA/Product đưa mục tiêu; An ninh thông tin và Pháp chế đưa ràng buộc; bạn phản biện và chốt tiêu chí',
+      story: `Product Owner (PO — người đại diện nghiệp vụ, chịu trách nhiệm ưu tiên tính năng) trình bày: "AI đọc email và tự điền tóm tắt + phân loại cho CSKH". Bạn hỏi thêm và phát hiện: (1) 12% email chứa số tài khoản 12 chữ số, 7% chứa số CCCD, 9% chứa số điện thoại — chưa ai liệt kê; (2) khiếu nại "mất tiền" cần ưu tiên cao nhưng AI có thể nhầm; (3) tháng cao điểm có thể gấp đôi (240.000 email) và ngân sách AI chưa chốt; (4) nếu Claude API chậm hoặc lỗi, CSKH không được đứng chờ. Bạn yêu cầu mọi tiêu chí phải đo được bằng số và mọi ràng buộc bảo mật phải thành điều kiện nghiệm thu (acceptance criteria — tiêu chí để chấp nhận tính năng hoàn thành).`,
+      artifacts: [
+        { name: 'requirement-notes.txt', lang: 'text', content: `REQ-CX-142: Tự động tóm tắt & phân loại khiếu nại bằng AI
+Stakeholders: PO (Lan), CSKH lead (Minh), Security (Hùng), Legal (Trang), Tech lead (bạn)
+
+Hiện trạng (đo 4 tuần):
+- 120.000 email/tháng, giờ cao điểm 8-10h: ~850 email/giờ
+- Thời gian đến khi có tóm tắt: trung bình 18 phút, p95 42 phút, backlog đỉnh 2.400
+- Tỷ lệ phân loại sai (audit mẫu): 11% (nhầm nhóm thẻ <-> chuyển khoản)
+
+Mục tiêu đề xuất:
+- p95 thời gian từ ComplaintReceived đến có tóm tắt: < 90 giây
+- AI đề xuất phân loại (thẻ, vay, chuyển khoản, app, lừa đảo/nghiêm trọng, khác) + độ tin cậy
+- CSKH luôn có quyền sửa; AI không tự động đóng khiếu nại
+
+Ràng buộc (Security/Legal):
+- PII (số tài khoản, CCCD/CMND, số điện thoại, email, địa chỉ) phải được che/mã hoá trước khi gửi ra API bên ngoài
+- Lưu audit: input đã che, output, thời gian, mã trace, token usage; không lưu PII thô trong log ứng dụng
+- Dữ liệu chỉ gửi sang endpoint được phê duyệt; có cơ chế tắt nhanh (kill switch)
+
+Mở:
+- Ngân sách token/tháng chưa chốt
+- Chưa thống nhất: khi AI lỗi, hiển thị gì cho CSKH?
+- Chưa có bộ email mẫu có nhãn để đánh giá độ chính xác` }
+      ],
+      task: `1. Viết lại mục tiêu thành các tiêu chí đo được (p95 latency, throughput giờ cao điểm, độ chính xác phân loại trên tập nhãn, tỷ lệ fallback thủ công khi AI lỗi).
+2. Liệt kê các loại PII có trong email và đề xuất nguyên tắc che (masking/redaction — che/ẩn một phần hoặc thay bằng ký hiệu) trước khi gửi ra Claude API; nêu rõ vì sao "log nguyên văn email" là vi phạm.
+3. Xác định hành vi khi Claude API lỗi/timeout: CSKH thấy gì, SLA nội bộ ra sao, và ai chịu trách nhiệm bật/tắt kill switch (công tắc tắt nhanh tính năng mà không cần deploy lại).`,
+      answer: `**Tóm tắt:** Tôi chuyển yêu cầu mơ hồ thành tiêu chí nghiệm thu có số: p95 từ {{ComplaintReceived}} đến {{ComplaintSummarized}} < 90 giây ở 850 email/giờ (đỉnh dự kiến 1.700/giờ), độ chính xác phân loại >= 90% trên bộ nhãn tối thiểu 500 email, và khi AI lỗi thì CSKH vẫn làm thủ công trong vòng 5 giây nhờ trạng thái fallback rõ ràng. Đồng thời tôi khóa ràng buộc PII: mọi dữ liệu gửi ra Claude API và mọi log đều chỉ chứa bản đã che.
+
+### 1. Tiêu chí đo được (acceptance criteria)
+- **Latency (độ trễ):** p95 (95% yêu cầu hoàn thành nhanh hơn mức này) từ lúc publish {{ComplaintReceived}} đến lúc lưu kết quả và publish {{ComplaintSummarized}} < 90 giây ở tải 850 email/giờ; p99 < 150 giây. Đo bằng timestamp (mốc thời gian) sự kiện và metric histogram.
+- **Throughput (lưu lượng xử lý):** chịu được 1.700 email/giờ mà không tăng backlog quá 5 phút; consumer Kafka phải scale (mở rộng) theo partition (phân vùng dữ liệu trong Kafka).
+- **Chất lượng:** trên bộ đánh giá (evaluation set) >= 500 email có nhãn thủ công, tỉ lệ phân loại đúng >= 90% và tỉ lệ tóm tắt bị CSKH sửa nặng < 15%. Chạy đánh giá lại mỗi lần đổi prompt hoặc cấu hình.
+- **Độ tin cậy/fallback (phương án dự phòng):** khi Claude API lỗi, timeout, hoặc kill switch bật, 100% email chuyển sang "chờ xử lý thủ công" trong <= 5 giây, không mất sự kiện. Tỉ lệ fallback cảnh báo nếu > 5% trong 15 phút.
+- **Audit & chi phí:** 100% cuộc gọi AI có bản ghi audit ({{complaint_id}}, {{trace_id}} — mã truy vết một luồng xử lý, input đã che, output, {{input_tokens}}, {{output_tokens}}, {{latency_ms}}, {{status}}).
+
+### 2. PII và nguyên tắc che trước khi gửi ra ngoài
+PII là dữ liệu nhận ra một người cụ thể. Trong email khiếu nại ngân hàng: (1) số tài khoản/thẻ 12–19 chữ số, (2) CCCD/CMND 9–12 chữ số, (3) số điện thoại 10–11 chữ số, (4) địa chỉ email, (5) địa chỉ nhà, (6) họ tên kèm ngữ cảnh. Nguyên tắc:
+- **Che tại {{complaint-ai-worker}} trước bước gọi HTTP**: thay bằng placeholder (ký hiệu giữ chỗ) có ngữ nghĩa để AI vẫn hiểu, ví dụ {{[SO_TAI_KHOAN]}}, {{[CCCD]}}, {{[SDT]}}, {{[EMAIL]}}. Dùng kết hợp regex (biểu thức chính quy — mẫu tìm chuỗi) và chuẩn hóa chuỗi; **không dựa vào một regex duy nhất**.
+- **Tách bạch dữ liệu**: payload (gói dữ liệu gửi đi) chỉ gồm nội dung đã che + metadata tối thiểu. System prompt (hướng dẫn hệ thống dài gửi kèm mỗi request) không chứa dữ liệu khách hàng.
+- **Log và audit**: log ứng dụng chỉ ghi {{complaint_id}}, {{trace_id}}, độ dài, mã lỗi — **không log nguyên văn email** vì log thường tập trung, nhiều người đọc, lưu lâu và khó xóa → vi phạm tối thiểu hóa dữ liệu.
+- **Truyền an toàn**: chỉ gọi endpoint HTTPS được phê duyệt, timeout chặt.
+
+### 3. Hành vi khi AI lỗi/timeout và kill switch
+- **Fallback:** nếu gọi Claude API thất bại sau retry có giới hạn, {{complaint-ai-worker}} đánh dấu {{ai_status = MANUAL_REQUIRED}}, lưu lý do lỗi (không kèm nội dung nhạy cảm), không publish tóm tắt giả. UI CSKH hiển thị "Chưa có tóm tắt AI — cần xử lý thủ công" trong <= 5 giây.
+- **Kill switch:** cấu hình runtime (feature flag — cờ bật/tắt tính năng) cho phép tắt gọi AI mà không deploy lại; khi bật, worker chuyển thẳng {{MANUAL_REQUIRED}}. Người có quyền bật: trực kỹ thuật (on-call) và CSKH lead; mọi lần bật/tắt được audit.
+- **SLA nội bộ:** AI là hỗ trợ; cam kết "có tóm tắt trong 90 giây hoặc chuyển thủ công rõ ràng", không để email treo.
+
+### Ví dụ đời thực
+Email: "Tôi là Nguyễn Văn A, STK 012345678901, bị trừ 5.000.000đ lúc 10h, gọi 0912345678 không ai nghe" → gửi AI thành: "Tôi là [TEN], STK [SO_TAI_KHOAN], bị trừ 5.000.000đ lúc 10h, gọi [SDT] không ai nghe". AI vẫn đủ ngữ cảnh tóm tắt "khách phản ánh bị trừ tiền bất thường, cần ưu tiên" và phân loại "lừa đảo/nghiêm trọng" mà không nhận PII thật.
+
+> Senior tip: với tính năng AI trong ngân hàng, ranh giới "dữ liệu nào được phép rời hệ thống" phải chốt trước khi viết dòng code đầu tiên; coi PII là việc làm sau sẽ phải vá ở log, queue, retry payload, audit — chi phí sửa cao và rủi ro tuân thủ thì khó vá bằng code.`,
+      pitfalls: [
+        'Chỉ đặt mục tiêu "dùng AI" mà không có p95, bộ nhãn đánh giá và ngưỡng fallback',
+        'Coi log nội bộ là an toàn nên log nguyên văn email có PII',
+        'Không định nghĩa hành vi khi AI lỗi, khiến email rơi vào trạng thái treo'
+      ]
+    },
+    {
+      key: 'analysis',
+      title: 'Phân tích luồng, rủi ro và quyết định xử lý bất đồng bộ',
+      role: 'Bạn phân tích kiến trúc; phối hợp Security và DBA',
+      story: `Bạn vẽ luồng hiện tại: {{mail-gateway}} -> {{complaint-service}} (HTTP đồng bộ — gọi và chờ kết quả ngay) -> PostgreSQL. Nếu gọi Claude API trực tiếp trong request nhận email, một lần gọi chậm sẽ giữ thread (luồng xử lý) lâu, và lỗi API sẽ làm hỏng luồng nhận. Bạn đề xuất tách bằng Kafka: {{complaint-service}} chỉ validate + lưu {{complaint}} ({{status=RECEIVED}}) + publish {{ComplaintReceived}} rồi trả nhanh; {{complaint-ai-worker}} xử lý nền. Bạn phân tích: (a) email có thể gửi lặp nên phải idempotent (thực hiện lặp nhiều lần cho cùng một yêu cầu cho ra kết quả như một lần), (b) AI call tốn tiền và có thể timeout nên cần retry (thử lại) có backoff (chờ tăng dần) nhưng phải tránh tạo bản tóm tắt trùng, (c) cần cột lưu trạng thái/kết quả/token và bảng audit riêng.`,
+      artifacts: [
+        { name: 'flow-analysis.txt', lang: 'text', content: `Luồng hiện tại (đồng bộ):
+  mail-gateway --HTTP--> complaint-service --INSERT--> PostgreSQL (complaint)
+  complaint-service --HTTP 200--> mail-gateway
+  CSKH mở UI -> đọc complaint.content (thô) -> tự tóm tắt
+
+Vấn đề nếu gọi Claude API đồng bộ:
+  - Latency biến thiên (1-8s), timeout > 10s -> giữ thread/request lâu
+  - Lỗi API (429/5xx/mạng) -> fail nhận email hay nuốt lỗi? xấu cả hai
+  - Giờ cao điểm 850/h nhưng burst -> cần đệm
+
+Luồng đề xuất (bất đồng bộ qua Kafka):
+  1) mail-gateway -> complaint-service: lưu complaint(status=RECEIVED) + publish ComplaintReceived {complaint_id, trace_id}
+  2) complaint-ai-worker consume ComplaintReceived:
+       - kiểm tra idempotency (đã SUMMARIZED?) -> bỏ qua nếu có
+       - che PII -> gọi Claude API (timeout + retry backoff, giới hạn lần)
+       - validate/parse JSON -> lưu summary/category/confidence + token usage + audit
+       - publish ComplaintSummarized
+  3) UI đọc trạng thái: SUMMARIZED | MANUAL_REQUIRED | PROCESSING
+
+Rủi ro:
+  R1: trùng sự kiện Kafka (at-least-once — giao ít nhất một lần) -> idempotent theo complaint_id
+  R2: retry sau timeout mơ hồ có thể tạo 2 lần xử lý tốn tiền/ghi đúp
+  R3: PII lọt do regex không phủ hết (STK có khoảng trắng, CCCD 9 số, SDT +84)
+  R4: output AI không đúng JSON/schema -> validate và fallback
+  R5: chi phí token tăng đột biến` }
+      ],
+      task: `1. So sánh gọi Claude API đồng bộ trong {{complaint-service}} với xử lý bất đồng bộ qua Kafka theo: độ trễ trải nghiệm CSKH, khả năng chịu lỗi, khả năng mở rộng, và độ phức tạp vận hành.
+2. Xác định chiến lược idempotency cho {{complaint-ai-worker}} khi nhận trùng {{ComplaintReceived}} và khi retry HTTP tới Claude API.
+3. Đề xuất các trường/bảng cần thêm trong PostgreSQL để lưu kết quả, token usage và audit.`,
+      answer: `**Tóm tắt:** Tôi chọn kiến trúc bất đồng bộ: {{complaint-service}} nhận và ghi nhận nhanh, {{complaint-ai-worker}} xử lý qua Kafka để cách ly độ trễ/lỗi của Claude API và scale độc lập. Idempotency hai lớp: (a) theo {{complaint_id}} để sự kiện trùng không tạo bản ghi trùng, (b) theo khóa/unique trong DB khi retry HTTP để tránh timeout mơ hồ tạo hai lần tóm tắt. Schema tách kết quả nghiệp vụ và audit/chi phí.
+
+### 1. Đồng bộ vs bất đồng bộ (Kafka)
+- **Trải nghiệm/độ trễ:** Đồng bộ phụ thuộc Claude API (1–8s) và biến lỗi bên ngoài thành lỗi nhận. Bất đồng bộ: trả trong vài chục ms; CSKH thấy {{PROCESSING}} rồi {{SUMMARIZED}} trong < 90s.
+- **Chịu lỗi:** Bất đồng bộ giữ sự kiện bền, consumer retry theo backoff, chuyển {{MANUAL_REQUIRED}} sau ngưỡng mà không mất email. Kafka at-least-once nên **trùng message là bình thường**, bắt buộc idempotent.
+- **Mở rộng:** Scale {{complaint-ai-worker}} theo partition/lag độc lập luồng nhận.
+- **Phức tạp vận hành:** Thêm Kafka, consumer group, monitoring lag, idempotency — đổi lại tách biệt failure domain.
+
+### 2. Idempotency
+- **Theo sự kiện Kafka:** dùng {{complaint_id}} làm khóa. Nếu đã {{SUMMARIZED}} hợp lệ thì **ack (xác nhận đã xử lý) và bỏ qua**. Dùng unique constraint/{{INSERT ... ON CONFLICT DO NOTHING}} hoặc claim {{UPDATE}} có điều kiện.
+- **Theo retry HTTP:** timeout mơ hồ có thể tốn token lần 2 và ghi đúp. Giải pháp: khóa ổn định ({{complaint_id}} + {{request_fingerprint}} — hash nội dung đã che + phiên bản prompt/schema), trạng thái {{IN_PROGRESS}} có lease (thời hạn thuê quyền xử lý), và unique cho bản ghi SUCCESS. (Không bịa tham số API: nếu API hỗ trợ idempotency chính thức thì dùng theo tài liệu; nếu không, tự bảo vệ bằng DB.)
+- **Retry:** chỉ lỗi tạm (mạng, 429, 5xx) với exponential backoff (1s,2s,4s...) + jitter và giới hạn; không retry 400.
+
+### 3. Trường/bảng đề xuất
+- **Bảng {{complaint}} (bổ sung):** {{ai_status}}, {{ai_summary}}, {{ai_category}}, {{ai_confidence}}, {{ai_processed_at}}, {{ai_error_code}}, {{ai_attempt_count}}, {{ai_processing_lease_until}}.
+- **Bảng {{complaint_ai_audit}}:** {{id}}, {{complaint_id}}, {{trace_id}}, {{request_fingerprint}}, {{prompt_version}}, {{schema_version}}, {{input_tokens}}, {{output_tokens}}, {{latency_ms}}, {{http_status}}, {{result_status}}, {{error_code}}, {{created_at}}. Unique partial theo {{complaint_id}} WHERE {{result_status='SUCCESS'}}.
+- **Ràng buộc:** index theo {{created_at}}, {{result_status}} để báo cáo.
+
+> Senior tip: với at-least-once Kafka và timeout mạng, "chạy đúng một lần" không tồn tại — thứ kiểm soát được là "ghi nhận đúng một lần" và "đối soát được từng lần gọi".`,
+      pitfalls: [
+        'Giả định Kafka exactly-once mà không thiết kế idempotency phía consumer/DB',
+        'Retry HTTP vô hạn hoặc không phân biệt lỗi tạm/lỗi vĩnh viễn',
+        'Trộn audit và log ứng dụng, vô tình lưu PII vào nơi không kiểm soát'
+      ]
+    },
+    {
+      key: 'design',
+      title: 'Thiết kế chi tiết: che PII, gọi Claude API an toàn, prompt caching, JSON schema, idempotency',
+      role: 'Bạn thiết kế; Security review cách che PII; DBA review schema/unique',
+      story: `Bạn chốt pipeline {{load -> idempotency-check -> redact PII -> build request -> call Claude API -> validate JSON -> persist+audit -> publish}}. HTTP client có connect/response timeout riêng, retry tối đa 3 lần cho lỗi tạm với exponential backoff + jitter. System prompt ổn định để tận dụng **prompt caching** (cơ chế tái sử dụng prefix prompt — **giả định** khả dụng; xác nhận theo tài liệu khi triển khai, không hard-code tên tham số). Output theo **structured output / JSON schema**. PII redaction chạy trước khi build request; **quyết định tạm thời**: regex cho STK/CCCD/SDT/email, ghi "đủ cho MVP" (sẽ quay lại gây sự cố ở bugfix). Idempotency: unique {{complaint_id}} cho SUCCESS + {{PROCESSING}} với lease.`,
+      artifacts: [
+        { name: 'design-worker.txt', lang: 'text', content: `Pipeline:
+  A. Claim: UPDATE complaint SET ai_status='PROCESSING', ai_processing_lease_until=now()+2min
+     WHERE id=:id AND (ai_status IN ('RECEIVED','MANUAL_REQUIRED') OR (ai_status='PROCESSING' AND ai_processing_lease_until < now()))
+  B. Nếu đã SUMMARIZED -> ack, bỏ qua
+  C. Redact PII -> redacted_text
+  D. Build request: system prompt (ổn định, versioned) + user = redacted_text
+     - JSON schema: {summary, category, confidence, severity, rationale_short}
+     - Prompt caching cho system prompt nếu được hỗ trợ (giả định)
+  E. HTTP call: connectTimeout=2s, responseTimeout=20s
+     retry tối đa 3 lần cho connect timeout/429/5xx; backoff 1s,2s,4s + jitter 0-250ms
+     KHÔNG retry 4xx (trừ 429)
+  F. Parse + validate JSON; sai -> MANUAL_REQUIRED
+  G. Transaction DB: lưu kết quả + insert audit (unique SUCCESS)
+  H. Publish ComplaintSummarized; ack
+
+PII redaction (MVP - quyết định tạm, sẽ refine):
+  STK 12-16 chữ số liền -> [SO_TAI_KHOAN]; CCCD 12 số -> [CCCD]; SDT 0\\d{9,10} -> [SDT]; email -> [EMAIL]
+  (chưa xử lý STK có khoảng trắng, CCCD 9 số, SDT +84)
+
+JSON schema: summary<=400; category enum [THE,VAY,CHUYEN_KHOAN,APP,LUA_DAO_NGHIEM_TRONG,KHAC];
+  confidence 0..1; severity enum [LOW,MEDIUM,HIGH]; rationale_short<=200` }
+      ],
+      task: `1. Mô tả cấu hình HTTP client (connect/response timeout), chính sách retry (số lần, backoff + jitter, loại lỗi) và vì sao tách connect vs response timeout.
+2. Thiết kế idempotency end-to-end: claim {{PROCESSING}} (lease), unique {{complaint_id}} cho SUCCESS, và xử lý crash/timeout mơ hồ để không tạo hai bản tóm tắt.
+3. Trình bày prompt caching (ổn định/versioned system prompt) và structured output (JSON schema + validate) ở mức nguyên lý; nêu giả định cần xác nhận. Đánh giá rủi ro regex PII "MVP".`,
+      answer: `**Tóm tắt:** HTTP client có timeout tách bạch và retry backoff+jitter chỉ cho lỗi tạm; idempotency dựa trên claim {{PROCESSING}} có lease và unique {{complaint_id}} cho SUCCESS để ghi nhận đúng một lần. System prompt cố định/version để tận dụng prompt caching (giả định theo tài liệu), output ràng buộc JSON schema và validate; regex PII MVP bỏ sót STK có khoảng trắng, CCCD 9 số, SDT +84 — nợ rủi ro phải vá trước go-live.
+
+### 1. HTTP client: timeout và retry
+- **Connect timeout (2s):** thời gian tối đa thiết lập kết nối TCP/TLS. Tách riêng vì "không kết nối được" khác "server xử lý lâu".
+- **Response timeout (20s):** chờ phản hồi sau khi gửi; cần tinh chỉnh theo p95.
+- **Retry:** tối đa 3 lần cho lỗi tạm (connect timeout, mạng, 429, 5xx). Exponential backoff 1s,2s,4s + jitter 0–250ms. Không retry 4xx (trừ 429), không vô hạn. Hết retry: {{MANUAL_REQUIRED}}.
+- **Timeout mơ hồ:** server có thể đã xử lý; retry phải đi kèm idempotency DB để không tạo SUCCESS thứ hai.
+
+### 2. Idempotency end-to-end
+- **Claim:** {{UPDATE ... SET ai_status='PROCESSING', ai_processing_lease_until=now()+interval '2 minutes' WHERE ...}} có điều kiện; chỉ worker thắng mới xử lý.
+- **Lease hết hạn:** worker crash -> lease quá hạn cho phép worker khác cướp; unique SUCCESS đảm bảo không ghi trùng kết quả cuối.
+- **Unique SUCCESS:** partial unique index trên {{complaint_id}} WHERE {{result_status='SUCCESS'}}; ghi trong transaction (đụng unique -> đọc lại, idempotent).
+- **Fingerprint:** hash {{redacted_text + prompt_version + schema_version}} để phân biệt trùng vô tình với reprocess có chủ đích.
+
+### 3. Prompt caching, structured output và rủi ro PII
+- **Prompt caching (nguyên lý):** system prompt dài và ổn định đặt ở đầu, versioned để tái sử dụng prefix, giảm độ trễ/chi phí. **Giả định:** cách bật phụ thuộc tài liệu Claude API tại thời điểm triển khai — xác nhận chính thức và đo token usage trước/sau.
+- **Structured output:** yêu cầu JSON đúng schema và **validate** server (kiểu, enum, độ dài). Sai -> {{MANUAL_REQUIRED}}, audit.
+- **Rủi ro regex MVP:** lọt {{0123 4567 8901}}, CCCD 9 số, {{+84...}}. Trước go-live: chuẩn hóa (bỏ khoảng trắng/dấu, đổi +84), mở rộng mẫu, **hậu kiểm** sau redact — còn dấu vết PII thì không gửi, báo {{PII_REDACTION_UNCERTAIN}}. "MVP" là nợ rủi ro có chủ sở hữu.
+
+### Liên hệ phỏng vấn
+Tích hợp AI: (1) gọi API an toàn (timeout, retry backoff+jitter), (2) ghi nhận đúng một lần (idempotency DB), (3) dữ liệu gửi tối thiểu và audit (che PII trước request/log). Prompt caching/structured output cần xác nhận theo tài liệu và có validate.
+
+> Senior tip: "timeout" không đồng nghĩa "chưa xử lý" — thiết kế như thể request chậm có thể đã thành công; idempotency và unique trong DB rẻ hơn đối soát thủ công kết quả/chi phí bị nhân đôi.`,
+      pitfalls: [
+        'Response timeout quá lớn hoặc không timeout',
+        'Retry 4xx và retry sau timeout mơ hồ mà không có idempotency DB',
+        'Tin regex MVP và tin output AI luôn đúng JSON mà không validate'
+      ]
+    },
+    {
+      key: 'dev',
+      title: 'Triển khai: consumer Kafka, redaction, HTTP client, lưu kết quả và audit',
+      role: 'Bạn implement; review chéo với Security về PII và với DBA về transaction',
+      story: `Bạn triển khai {{complaint-ai-worker}}: consumer đọc {{ComplaintReceived}}, {{ComplaintAiProcessor}} thực hiện claim -> redact -> call -> validate -> persist. HTTP client có timeout cấu hình, retry backoff+jitter. {{PiiRedactor}} che PII. Lưu {{ai_status}}, token usage và audit trong một transaction; publish {{ComplaintSummarized}} sau commit. Metric: {{ai_latency_ms}}, {{ai_tokens_total}}, {{ai_fallback_total}}, {{ai_pii_redactions_total}}.`,
+      artifacts: [
+        { name: 'ComplaintAiProcessor.java', lang: 'java', content: `@Service
+class ComplaintAiProcessor {
+  private final ComplaintRepository complaints;
+  private final AuditRepository audit;
+  private final PiiRedactor redactor;
+  private final ClaudeApiClient claude;
+  private final SummaryPublisher publisher;
+
+  @Transactional
+  public void process(long complaintId, String traceId) {
+    // 1) Claim (idempotency)
+    int claimed = complaints.claimProcessing(complaintId, leaseUntil());
+    if (claimed == 0) return; // đã SUMMARIZED hoặc đang xử lý
+
+    Complaint c = complaints.findById(complaintId).orElseThrow();
+    String fingerprint = fingerprint(c.getContent(), promptVersion(), schemaVersion());
+    // 2) Redact PII TRƯỚC khi gọi API
+    RedactionResult redacted = redactor.redact(c.getContent());
+    long start = System.nanoTime();
+    try {
+      // 3) Gọi Claude API (timeout + retry lỗi tạm)
+      ClaudeResult res = claude.summarize(redacted.text(), promptVersion(), schemaVersion());
+      SummaryOutput out = validateSchema(res.json());
+      // 4) Persist + audit trong cùng transaction (unique SUCCESS)
+      complaints.markSummarized(complaintId, out, res.inputTokens(), res.outputTokens());
+      audit.saveSuccess(complaintId, traceId, fingerprint, promptVersion(), schemaVersion(),
+          res.inputTokens(), res.outputTokens(), elapsedMs(start), redacted.counts());
+      // 5) Publish sau commit
+      publisher.afterCommit(() -> publisher.publishSummarized(complaintId));
+    } catch (NonRetryableAiException e) {
+      complaints.markManualRequired(complaintId, e.code());
+      audit.saveFailed(complaintId, traceId, fingerprint, e.code(), elapsedMs(start));
+    } catch (RetryableAiException e) {
+      complaints.markManualRequired(complaintId, "AI_UNAVAILABLE");
+      audit.saveFailed(complaintId, traceId, fingerprint, "AI_UNAVAILABLE", elapsedMs(start));
+    }
+  }
+}` },
+        { name: 'PiiRedactor.java', lang: 'java', content: `@Component
+class PiiRedactor {
+  // MVP: regex trên chuỗi số liền nhau (quyết định tạm)
+  private static final Pattern ACCOUNT = Pattern.compile("\\\\b\\\\d{12,16}\\\\b");
+  private static final Pattern CCCD    = Pattern.compile("\\\\b\\\\d{12}\\\\b");
+  private static final Pattern PHONE   = Pattern.compile("\\\\b0\\\\d{9,10}\\\\b");
+  private static final Pattern EMAIL   = Pattern.compile("[A-Z0-9._%+-]+@[A-Z0-9.-]+\\\\.[A-Z]{2,}",
+      Pattern.CASE_INSENSITIVE);
+
+  RedactionResult redact(String input) {
+    String s = input == null ? "" : input;
+    Counts c = new Counts();
+    s = replace(s, ACCOUNT, "[SO_TAI_KHOAN]", c, "account");
+    s = replace(s, CCCD, "[CCCD]", c, "cccd");
+    s = replace(s, PHONE, "[SDT]", c, "phone");
+    s = replace(s, EMAIL, "[EMAIL]", c, "email");
+    return new RedactionResult(s, c);
+  }
+}` }
+      ],
+      task: `1. Giải thích luồng trong {{ComplaintAiProcessor}}: vì sao claim trước, redact trước khi gọi, persist+audit trong transaction; publish sau commit giải quyết gì và còn rủi ro nào.
+2. Chỉ ra các điểm cần cấu hình từ bên ngoài (timeout, retry, endpoint, kill switch, prompt/schema version) và vì sao không hard-code.
+3. Đánh giá {{PiiRedactor}} MVP: định dạng PII nào bị lọt, và bổ sung kiểm tra gì trước khi gửi.`,
+      answer: `**Tóm tắt:** Luồng an toàn: claim -> redact PII -> gọi Claude API (retry giới hạn) -> validate JSON -> persist+audit trong một transaction, rồi publish sau commit. Tham số nhạy cảm phải cấu hình ngoài; {{PiiRedactor}} MVP lọt định dạng có khoảng trắng/ký tự phân tách và +84/CCCD 9 số, cần chuẩn hóa và hậu kiểm trước khi gửi.
+
+### 1. Luồng và lý do thứ tự
+- **Claim trước:** đảm bảo một worker sở hữu {{complaint_id}}, bỏ qua message trùng. Không claim -> hai worker gọi AI hai lần và đua ghi.
+- **Redact trước khi gọi:** payload ra ngoài không chứa PII thô.
+- **Persist + audit trong transaction:** trạng thái và dấu vết nhất quán; unique SUCCESS ngăn ghi trùng khi race/retry.
+- **Publish sau commit:** giảm rủi ro publish về kết quả chưa commit. Rủi ro còn lại: chết sau commit trước publish -> mất sự kiện. Giảm thiểu bằng consumer idempotent, job đối soát, hoặc outbox.
+
+### 2. Cấu hình ngoài
+- **Endpoint, xác thực, timeout, retry, backoff:** khác theo môi trường, cần tinh chỉnh nhanh.
+- **Kill switch:** tắt gọi AI ngay khi rò rỉ PII/chi phí tăng/lỗi hàng loạt.
+- **{{prompt_version}}, {{schema_version}}:** phục vụ audit, eval, rollback logic.
+
+### 3. Đánh giá {{PiiRedactor}} MVP
+- **Lọt:** STK có khoảng trắng/gạch {{0123 4567 8901}}, CCCD 9 số, {{+84 912 345 678}}, {{0912.345.678}}.
+- **Bổ sung:** (a) chuẩn hóa bản sao dò (bỏ khoảng trắng/dấu, {{+84}}->{{0}}) rồi áp pattern; (b) mở rộng mẫu CCCD 9 số, SDT biến thể; (c) **hậu kiểm**: còn dấu vết PII -> **không gọi API**, {{MANUAL_REQUIRED}} ({{PII_REDACTION_UNCERTAIN}}), cảnh báo; (d) test mẫu ẩn danh; (e) metric {{ai_pii_redactions_total}}.
+
+> Senior tip: với PII, coi redaction là "fail-safe" — không chắc đã che sạch thì **không gửi**.`,
+      pitfalls: [
+        'Publish trước commit',
+        'Hard-code timeout/endpoint/kill switch',
+        'Tin regex MVP và không hậu kiểm trước khi gửi'
+      ]
+    },
+    {
+      key: 'review',
+      title: 'Review code & thiết kế: bảo mật, idempotency và khả năng vận hành',
+      role: 'Security, DBA và đồng đội review PR của bạn',
+      story: `PR mở với processor, redactor, client, migration. Reviewer: (1) SEC: regex không bắt STK có khoảng trắng và +84; không log payload. (2) DBA: unique partial tốt nhưng cần transaction đúng khi concurrent. (3) BE: lease 2 phút nhưng timeout*retry+backoff có thể vượt lease -> worker khác cướp lease gọi AI lần nữa. (4) Ops: thiếu kill switch và metric chi phí token. Bạn phân loại blocker/major/minor và đề xuất sửa.`,
+      artifacts: [
+        { name: 'review-comments.txt', lang: 'text', content: `[SEC-1][BLOCKER] PiiRedactor không che "0123 4567 8901" và "+84..." -> chuẩn hóa + hậu kiểm fail-safe.
+[SEC-2][BLOCKER] Log request body ở DEBUG; staging bật DEBUG -> cấm log payload.
+[BE-1][BLOCKER] lease 2 phút; timeout*retry+backoff có thể vượt -> gia hạn lease/heartbeat + idempotency đủ mạnh.
+[BE-2][MAJOR] publish sau commit nhưng không bù nếu crash -> đối soát hoặc outbox.
+[OPS-1][MAJOR] Thiếu kill switch và metric input/output tokens.
+[OPS-2][MINOR] prompt_version/schema_version hard-code rải rác.` }
+      ],
+      task: `1. Phân loại từng nhận xét, giải thích tác động nếu bỏ qua.
+2. Đề xuất sửa cho SEC-1, BE-1, BE-2.
+3. Chốt điều kiện "được phép merge".`,
+      answer: `**Tóm tắt:** Blocker: SEC-1, SEC-2, BE-1 (rò rỉ PII, lộ log, gọi AI trùng khi lease không an toàn). Major: BE-2, OPS-1. Sửa: redaction fail-safe, không log payload, gia hạn lease + idempotency DB, đối soát/outbox, kill switch và metric token.
+
+### 1. Phân loại
+- **SEC-1 (BLOCKER):** PII lọt -> rủi ro tuân thủ nghiêm trọng.
+- **SEC-2 (BLOCKER):** payload vào log tập trung -> khó thu hồi.
+- **BE-1 (BLOCKER):** lease hết hạn cho phép claim trùng, gọi AI lần nữa tốn token (unique SUCCESS giảm ghi đúp nhưng không giảm chi phí gọi trùng).
+- **BE-2 (MAJOR):** mất sự kiện sau commit; cần đối soát (DB là nguồn sự thật).
+- **OPS-1 (MAJOR):** không vận hành an toàn khi sự cố/chi phí tăng.
+
+### 2. Cách sửa
+- **SEC-1:** chuẩn hóa (bỏ khoảng trắng/dấu, +84->0), mở rộng mẫu, **hậu kiểm** fail-safe (còn dấu vết -> không gửi, {{PII_REDACTION_UNCERTAIN}}), test.
+- **BE-1:** lease >= worst-case **và** gia hạn (heartbeat) khi xử lý; giữ idempotency DB để vượt lease hiếm không ghi đúp kết quả cuối.
+- **BE-2:** job đối soát định kỳ publish lại (consumer idempotent) hoặc **transactional outbox**.
+
+### 3. Điều kiện merge
+- SEC-1/2 pass (test PII, không log payload). BE-1 kiểm chứng test trùng/lease. BE-2 có đối soát hoặc outbox. OPS-1 có kill switch + metric token/latency/fallback. Version từ config, có audit. Có runbook.
+
+> Senior tip: checklist chặn cố định — PII, idempotency, timeout/retry, khả năng tắt, quan sát — bắt lỗi hiếm lộ ở demo nhưng nổ ở production.`,
+      pitfalls: [
+        'Cho qua blocker PII vì "sẽ sửa sau"',
+        'Bỏ qua chi phí gọi AI trùng khi lease kém',
+        'Không đối soát/outbox nên mất sự kiện im lặng'
+      ]
+    },
+    {
+      key: 'test',
+      title: 'Kiểm thử: PII, idempotency, retry/timeout, schema và đánh giá chất lượng',
+      role: 'Bạn và QA/SDET thiết kế test; Security tham gia test PII',
+      story: `Bộ kiểm thử: (1) unit test {{PiiRedactor}} nhiều định dạng và hậu kiểm fail-safe; (2) test {{validateSchema}}; (3) integration test Kafka trùng -> 1 SUCCESS; (4) stub API: 429 rồi 200, timeout, 400, JSON sai; (5) kill switch; (6) eval 500 email có nhãn (ẩn danh) đo accuracy, tỉ lệ sửa nặng, token trung bình.`,
+      artifacts: [
+        { name: 'test-plan.txt', lang: 'text', content: `1) PiiRedactor + hậu kiểm: STK liền/khoảng trắng, CCCD 9/12, SDT 0/+84/dấu chấm, email; uncertain -> KHÔNG gọi API.
+2) Schema: đúng -> pass; sai enum/biên/thiếu/hỏng -> MANUAL_REQUIRED.
+3) Integration: 1 message->1 SUCCESS; trùng 3 lần->vẫn 1; 2 worker->1 claim.
+4) Stub: 429,429,200->retry thành công; timeout quá ngưỡng->MANUAL_REQUIRED; 400->không retry; JSON sai->MANUAL_REQUIRED.
+5) Kill switch: 0 call, MANUAL_REQUIRED.
+6) Eval (500 email ẩn danh): accuracy>=90%, sửa nặng<15%, token trung bình.` }
+      ],
+      task: `1. Thiết kế ca kiểm thử idempotency: trùng message, hai worker song song, timeout mơ hồ — assert gì để chứng minh không tạo hai bản tóm tắt.
+2. Thiết kế ca PII gồm hậu kiểm fail-safe và ca retry (429/5xx/timeout/400/JSON sai) với kỳ vọng số lần gọi và trạng thái cuối.
+3. Mô tả eval trên 500 email có nhãn: xử lý dữ liệu (ẩn danh/che PII), chỉ số đo, và khi nào chạy lại.`,
+      answer: `**Tóm tắt:** Test phải chứng minh: (1) PII không rời hệ thống (kể cả định dạng khó), (2) trùng/timeout mơ hồ không tạo hai {{SUMMARIZED}}, (3) lỗi tạm retry có giới hạn, lỗi xấu fallback an toàn. Eval trên 500 email đã ẩn danh đo accuracy/tỉ lệ sửa nặng/token và lặp lại khi đổi prompt/schema/cấu hình.
+
+### 1. Idempotency
+- **Trùng message:** publish 3 lần cùng {{complaint_id}}. Assert: 1 {{SUMMARIZED}}, 1 audit SUCCESS (unique), không tăng token 3 lần.
+- **Hai worker song song:** 1 claim thắng, 1 audit SUCCESS, 1 publish hiệu lực.
+- **Timeout mơ hồ:** stub mô phỏng xử lý thành công nhưng client timeout/retry. Assert: unique SUCCESS không vi phạm, không hai tóm tắt khác nhau cho cùng {{complaint_id}}, không nhân đôi token ngoài trường hợp kiểm soát.
+
+### 2. PII và retry/timeout
+- **PII:** mỗi mẫu (liền, khoảng trắng, gạch, CCCD 9/12, 0/+84/dấu chấm, email) không còn chuỗi gốc. Fail-safe: biến thể khó -> {{PII_REDACTION_UNCERTAIN}}, {{MANUAL_REQUIRED}}, **API không được gọi**.
+- **Retry:** (a) 429,429,200 -> 3 lần gọi, {{SUMMARIZED}}. (b) timeout/5xx vượt ngưỡng -> đúng tối đa, {{MANUAL_REQUIRED}}, fallback tăng. (c) 400 -> 1 lần, {{MANUAL_REQUIRED}}. (d) JSON sai -> {{MANUAL_REQUIRED}}. (e) kill switch -> 0 lần.
+- **Log:** không có PII mẫu, không body.
+
+### 3. Eval (500 email có nhãn)
+- **Dữ liệu:** mẫu đại diện đủ 6 nhãn; **ẩn danh/che PII** trước khi chia sẻ. Ground truth do CSKH/QA gán.
+- **Chỉ số:** accuracy >= 90% (+ confusion matrix), "sửa nặng" < 15%, token trung bình/p95 (ước tính 120k–240k email), tỉ lệ JSON không hợp lệ ~0.
+- **Chạy lại:** khi đổi {{prompt_version}}, {{schema_version}}, cấu hình ảnh hưởng output, hoặc drift (CSKH sửa nhiều). Lưu kết quả theo version.
+
+> Senior tip: "test pass" phải chứng minh không lọt PII, không nhân đôi tác dụng phụ khi retry/trùng, và có eval định lượng chất lượng.`,
+      pitfalls: [
+        'Chỉ test happy-path, bỏ qua trùng/timeout mơ hồ',
+        'Dữ liệu eval chứa PII thật chia sẻ rộng',
+        'Không đo token usage nên không ước tính chi phí'
+      ]
+    },
+    {
+      key: 'deploy',
+      title: 'Triển khai an toàn: rollout, giám sát chi phí/token và kill switch',
+      role: 'Bạn phối hợp DevOps/SRE triển khai; Security nghiệm thu PII',
+      story: `Rollout: (1) migration trước deploy; (2) deploy {{complaint-ai-worker}} và topic 12 partition; (3) bật 5% -> 25% -> 100% bằng kill switch (sample hash {{complaint_id}}), phần không bật AI vẫn {{MANUAL_REQUIRED}} rõ ràng; (4) dashboard latency, fallback, {{input/output tokens}}, chi phí ước tính, lag; (5) alert fallback, lag, 5xx/429, chi phí vượt ngưỡng, và {{PII_REDACTION_UNCERTAIN}} > 0.`,
+      artifacts: [
+        { name: 'deploy-runbook.txt', lang: 'text', content: `Chuẩn bị: migration OK, secret trong secret manager, config timeout/retry/kill_switch/prompt/schema version, dashboard+alert.
+Rollout: B1 deploy kill_switch=ON, lag=0. B2 5%/60p: p95<90s, fallback<2%, 0 PII uncertain. B3 25%/2h. B4 100% theo dõi 24h.
+Dừng (kill_switch): PII uncertain>0; fallback>10%/10p; p95>150s; cost>150%; 401/403 liên tục.
+Vận hành: kill switch->MANUAL_REQUIRED; báo cáo token từ audit; đối soát 2 phút.` }
+      ],
+      task: `1. Trình bày rollout 5% -> 25% -> 100%: điều kiện chuyển bước, dừng/rollback bằng kill switch, và vì sao phải có đường thủ công luôn sẵn.
+2. Thiết kế giám sát: metric/log/alert bắt buộc (latency, fallback, lag, token/cost, PII uncertain) và ngưỡng gợi ý.
+3. Giải thích cách theo dõi chi phí token (input/output) và tại sao không ghi giá/tên model cụ thể trong code hay tài liệu tĩnh.`,
+      answer: `**Tóm tắt:** Rollout 5%→25%→100% dựa trên latency/fallback/PII/token với kill switch quay về thủ công tức thì; luồng thủ công luôn sẵn. Giám sát gồm latency, fallback, lag, token/cost ước tính, PII uncertain. Chi phí = token * đơn giá cấu hình (không hard-code giá/tên model).
+
+### 1. Rollout và rollback
+- **B1 (kill ON):** xác nhận hạ tầng chưa gọi AI.
+- **B2 (5%, 60p):** sample hash. Chuyển khi p95<90s, p99<150s, fallback<2%, **0** {{PII_REDACTION_UNCERTAIN}}, lag ổn định, token trong biên, không 401/403. Kiểm tra thủ công 20–30 kết quả.
+- **B3 (25%, 2h):** lộ rate limit/chi phí/độ trễ.
+- **B4 (100%, 24h):** khi B3 ổn định.
+- **Dừng:** {{PII_REDACTION_UNCERTAIN}}>0 (ưu tiên nhất), fallback>10%/10p, p95>150s kéo dài, lag tăng, cost>150%, 401/403. Kill switch tức thì, không mất email.
+- **Thủ công luôn sẵn:** AI là trợ giúp; {{MANUAL_REQUIRED}} phải xử lý đầy đủ.
+
+### 2. Giám sát và alert
+- **Latency:** {{ai_processing_latency_ms}} p50/p95/p99; alert p95>120s, >150s.
+- **Fallback:** {{ai_fallback_total}} theo reason; alert >5%/15p, >10%/10p.
+- **Lag:** tăng liên tục 10p hoặc vượt ~5 phút backlog.
+- **Token/cost:** {{ai_input/output_tokens_total}}; ước tính = token * đơn giá cấu hình; alert >150% ngân sách ngày.
+- **PII:** {{ai_pii_uncertain_total}} > 0 phải notify Security/xem xét kill switch.
+- **API health:** 429/5xx/timeout; truy vết theo {{trace_id}}.
+
+### 3. Chi phí token
+- Ghi {{input/output_tokens}} trong audit, tổng hợp theo ngày/{{prompt_version}}.
+- Ước tính = token * **đơn giá cấu hình**. **Không ghi tên model hay giá cụ thể** trong code/tài liệu tĩnh; dùng nhãn cấu hình và cập nhật đơn giá khi thay đổi.
+- Dự báo từ token trung bình/email (120k–240k/tháng); ngưỡng cảnh báo và cơ chế giảm (thu gọn prompt, giới hạn input, kill switch).
+
+> Senior tip: phải có kill switch và số đo chi phí/PII thời gian thực; chỉ nhìn latency có thể "ổn" hiệu năng nhưng hỏng ngân sách/tuân thủ.`,
+      pitfalls: [
+        'Bật 100% không kill switch/ngưỡng dừng',
+        'Không giám sát token/cost và PII uncertain',
+        'Hard-code giá/tên model'
+      ]
+    },
+    {
+      key: 'bugfix',
+      title: 'Sự cố production: tóm tắt bị tạo trùng vì retry sau timeout mơ hồ và lease không an toàn',
+      role: 'Bạn trực sự cố; phối hợp DBA và Ops',
+      story: `Ba ngày sau rollout 100%, 09:20 cao điểm: một số khiếu nại có **hai bản tóm tắt** và chi phí token tăng **1,8 lần** dù lưu lượng +10%. (1) 37 complaint có 2 audit SUCCESS/45 phút (cùng {{complaint_id}}). (2) Log: nhiều request timeout rồi retry thành công, và "claimProcessing succeeded" lặp lại sau >2 phút. (3) Worker bị GC pause dài khiến tổng thời gian vượt {{ai_processing_lease_until}} (2 phút) — worker khác cướp lease và gọi AI. (4) Nhánh refactor cập nhật {{complaint}} {{SUMMARIZED}} commit **tách rời** insert audit SUCCESS (không cùng transaction) nên hai worker cùng tạo dấu vết SUCCESS và publish trùng. (5) Rà soát mẫu: email chứa {{+84 912 345 678}} và {{0123 4567 8901}} đã gửi đi vì regex MVP chưa được thay bằng chuẩn hóa+hậu kiểm như chốt ở review — **quyết định "đủ cho MVP" ở design/review không được thực thi**.`,
+      artifacts: [
+        { name: 'incident-0920.txt', lang: 'text', content: `INC-CX-0920 09:20-10:05
+- 37 complaint có 2 audit SUCCESS/45 phút (cùng complaint_id)
+- Token usage +80%; cost alert đỏ
+- Mẫu PII lọt: "+84 912 345 678", "0123 4567 8901" (audit thủ công)
+Dấu vết: worker-a claim 09:14:01, timeout/retry, GC ~90s, success 09:16:18; worker-b claim 09:16:05 (lease hết 09:16:01), success 09:16:32.
+DB: SUMMARIZED commit tách khỏi insert audit SUCCESS -> 2 audit SUCCESS, 2 event.
+PiiRedactor vẫn regex MVP (liền số), chưa normalize/hậu kiểm.
+Ảnh hưởng: tốn token/hiển thị trùng; PII lọt (sự cố tuân thủ).` },
+        { name: 'postfix-plan.txt', lang: 'text', content: `Khẩn cấp: kill_switch ON; báo Security/Legal; khử trùng (giữ SUCCESS sớm nhất, đánh dấu DUPLICATE).
+Sửa gốc: (A) SUMMARIZED + audit SUCCESS + dấu vết publish trong MỘT transaction; bắt unique -> đọc lại. (B) Gia hạn lease (heartbeat), lease >= worst-case. (C) PiiRedactor chuẩn hóa + hậu kiểm fail-safe, cấm log payload. (D) Đối soát >1 SUCCESS, token bất thường, PII uncertain. (E) Test idempotency/PII + eval trước khi bật 5%.` }
+      ],
+      task: `1. Phân tích chuỗi nguyên nhân gốc: retry sau timeout mơ hồ + lease hết hạn + transaction tách dẫn đến hai bản tóm tắt/chi phí tăng; vì sao PII vẫn lọt dù review đã cảnh báo.
+2. Đề xuất sửa tức thời và sửa lâu dài cho idempotency/transaction/lease và cho PII redaction; nêu cách xác minh (test/metric).
+3. Rút ra 5 điều hành động phòng ngừa để lỗi tương tự (kể cả "quyết định review không được triển khai") không lặp lại.`,
+      answer: `**Tóm tắt:** Hai nguyên nhân gốc: (1) **ghi nhận không nguyên tử** — retry sau timeout mơ hồ + lease hết hạn cho phép worker thứ hai gọi AI, và {{SUMMARIZED}} commit tách khỏi insert audit SUCCESS nên tạo 2 audit SUCCESS và 2 event, tăng token ~1,8 lần; (2) **PII lọt** vì sửa SEC-1 (chuẩn hóa+hậu kiểm) chốt ở review nhưng **không triển khai** trước rollout. Khắc phục: gộp transaction + gia hạn/lease đúng + PII fail-safe và quality gate cho blocker.
+
+### 1. Chuỗi nguyên nhân gốc
+- **Timeout mơ hồ + retry:** server có thể đã xử lý; retry cần idempotency để không tạo tác dụng phụ thứ hai.
+- **Lease không an toàn:** 2 phút < worst-case (timeout lặp + GC pause ~90s); worker-b cướp lease và gọi AI lần nữa.
+- **Transaction/unique dùng sai:** unique partial chỉ hiệu lực nếu insert audit SUCCESS cùng ranh giới quyết định. Tách transaction -> cửa sổ cho 2 audit SUCCESS, 2 event.
+- **PII lọt (không thực thi quyết định):** design nợ regex MVP, review chốt blocker chuẩn hóa+hậu kiểm, nhưng deploy vẫn regex liền số -> {{+84}} và STK có khoảng trắng lọt. Thiếu quality gate kiểm chứng blocker trước bật 100%.
+- **Liên kết giai đoạn:** requirement đặt ràng buộc; design nợ; review phát hiện chưa kiểm chứng; test/deploy không chặn; bugfix lộ ở lưu lượng thật.
+
+### 2. Sửa tức thời và lâu dài
+- **Tức thời:** {{kill_switch}} ON; thông báo Security/Legal; khử trùng (giữ SUCCESS sớm nhất, đánh dấu DUPLICATE); đối soát token/cost.
+- **Idempotency & transaction:** (1) Một transaction: ghi {{SUMMARIZED}} + {{INSERT audit SUCCESS}} + dấu vết outbox; vi phạm unique -> đọc lại (idempotent). (2) Heartbeat gia hạn lease, lease >= worst-case; kiểm tra quyền sở hữu trước commit. (3) Outbox/đối soát publish. (4) Test tái hiện hai worker + delay/timeout/GC giả lập -> đúng 1 SUCCESS.
+- **PII:** redaction chuẩn hóa + hậu kiểm fail-safe (còn dấu vết -> {{PII_REDACTION_UNCERTAIN}}, không gọi API). Cấm log payload; test PII là gate CI. Rà soát theo hướng dẫn Security.
+- **Xác minh:** test idempotency/PII xanh; 48h sau bật 5%: 0 >1 SUCCESS, {{PII_REDACTION_UNCERTAIN}}=0, token/email về baseline.
+
+### 3. Năm điều hành động phòng ngừa
+1. **Quality gate cho blocker:** review {{BLOCKER}} (PII, idempotency, bảo mật) phải có bằng chứng tự động trước merge/deploy.
+2. **Idempotency là bất biến được kiểm thử:** test trùng/timeout mơ hồ/lease hết hạn; alert nếu >1 SUCCESS/complaint.
+3. **Transaction nguyên tử:** "trạng thái + audit SUCCESS + outbox" cùng transaction; checklist review bắt buộc.
+4. **PII fail-safe và giám sát:** hậu kiểm bắt buộc, {{PII_REDACTION_UNCERTAIN}} page ngay, diễn tập kill switch.
+5. **Quan sát chi phí và drift:** dashboard token/cost + alert; eval lại khi đổi {{prompt_version}}; postmortem ghi rõ quyết định (regex MVP, transaction tách) gây sự cố.
+
+### Trả lời mẫu khi phỏng vấn
+"Khi tích hợp Claude API để tóm tắt khiếu nại ngân hàng, tôi thiết kế luồng bất đồng bộ qua Kafka: che PII (chuẩn hóa + hậu kiểm fail-safe) trước khi gửi, HTTP client với connect/response timeout tách biệt và retry exponential backoff + jitter chỉ cho lỗi tạm, structured output JSON + validate. Vì Kafka at-least-once và timeout mơ hồ, tôi đảm bảo idempotency bằng claim {{PROCESSING}} có lease, unique {{complaint_id}} cho SUCCESS và ghi kết quả + audit trong một transaction; publish dùng outbox/đối soát. Theo dõi {{input/output tokens}}, có kill switch và fallback thủ công. Sự cố trùng tóm tắt tăng token 1,8 lần do retry sau timeout + lease hết hạn + transaction tách, còn PII lọt vì regex MVP — bài học: blocker bảo mật/idempotency phải có test gate và bất biến được giám sát."
+
+> Senior tip: sự cố "AI tạo kết quả trùng" hiếm khi do mô hình, mà do **giao thức phân tán** (retry, timeout, lease, transaction) và **kỷ luật triển khai** (blocker phải được kiểm chứng); bảo vệ bằng idempotency nguyên tử và fail-safe PII trước khi tối ưu prompt.`,
+      pitfalls: [
+        'Tăng retry/timeout mà không sửa idempotency và lease',
+        'Tin unique index nhưng tách transaction ghi trạng thái/audit',
+        'Xem PII redaction là việc một lần, không hậu kiểm và không gate'
+      ]
+    }
+  ],
+  interview: {
+    story: `**Situation:** Ngân hàng 4,5 triệu khách, 120.000 email khiếu nại/tháng, p95 42 phút, backlog 2.400. **Task:** Senior Java tích hợp tóm tắt & phân loại email bằng Claude API trên Spring Boot 3 + PostgreSQL + Kafka, che PII trước khi gửi, p95 < 90s, audit/token tracking, fallback thủ công. **Action:** luồng bất đồng bộ ({{complaint-service}} -> Kafka -> {{complaint-ai-worker}}), PII chuẩn hóa+hậu kiểm fail-safe, HTTP timeout (2s/20s) + retry backoff+jitter 3 lần cho lỗi tạm, JSON schema + validate, system prompt versioned (prompt caching — xác nhận theo tài liệu), idempotency claim lease + unique {{complaint_id}} + ghi kết quả/audit một transaction, rollout 5%→25%→100% với kill switch và dashboard token/cost. Sự cố trùng tóm tắt tăng token 1,8 lần (timeout mơ hồ + lease hết hạn + transaction tách) và sót triển khai PII: bật kill switch, khử trùng, gộp transaction, gia hạn lease, hoàn thiện redaction fail-safe, thêm quality gate. **Result:** 0 bản trùng, {{PII_REDACTION_UNCERTAIN}}=0, p95 38s ở 850 email/giờ, fallback < 1,5%, thời gian xử lý trung bình giảm từ 18 phút xuống ~4 phút, token/email ổn định.`,
+    questions: [
+      { q: 'Vì sao dùng Kafka giữa {{complaint-service}} và {{complaint-ai-worker}} thay vì gọi Claude API đồng bộ?', a: 'Kafka tách luồng nhận khỏi độ trễ/lỗi Claude API: {{complaint-service}} lưu và trả nhanh, worker xử lý nền nên CSKH không bị chặn và p95 kiểm soát được. Đệm burst, retry, scale consumer độc lập. Đổi lại phải idempotency cho at-least-once, giám sát lag và fallback thủ công.' },
+      { q: 'Đảm bảo không gửi PII sang Claude API như thế nào và xử lý khi không chắc đã che sạch?', a: 'Redaction tại worker trước khi build request: chuẩn hóa (bỏ khoảng trắng/dấu, +84->0), áp pattern STK/CCCD/SDT/email (biến thể), rồi **hậu kiểm** — còn dấu vết nghi ngờ thì **không gọi API**, {{MANUAL_REQUIRED}} ({{PII_REDACTION_UNCERTAIN}}), cảnh báo và audit. Không log payload, system prompt không chứa PII, có kill switch. Fail-safe: không chắc thì về thủ công.' },
+      { q: 'Làm thế nào để retry sau timeout không tạo hai bản tóm tắt và không nhân đôi chi phí token?', a: 'Timeout mơ hồ -> retry chỉ lỗi tạm với backoff+jitter và idempotency: claim {{PROCESSING}} có lease (heartbeat), unique {{complaint_id}} cho SUCCESS, ghi {{SUMMARIZED}}+audit trong **một transaction** (vi phạm unique -> đọc lại). Lease đủ lớn/heartbeat tránh claim trùng; metric cảnh báo nếu >1 SUCCESS.' },
+      { q: 'Dùng prompt caching và structured output như thế nào, và theo dõi chi phí ra sao?', a: 'System prompt ổn định, versioned để tận dụng prompt caching (cách bật xác nhận theo tài liệu, không giả định tham số). Output theo JSON schema và validate; sai -> {{MANUAL_REQUIRED}}. Chi phí theo dõi bằng {{input/output tokens}} trong audit, nhân đơn giá cấu hình (không hard-code giá/tên model), alert vượt ngưỡng, eval token trung bình/email.' },
+      { q: 'Nếu Claude API lỗi hàng loạt hoặc nghi ngờ rò rỉ PII, xử lý vận hành thế nào?', a: 'Bật **kill switch** ngay: chuyển {{MANUAL_REQUIRED}} (có audit), CSKH xử lý thủ công. Page on-call/Security, kiểm tra fallback/429/5xx/{{PII_REDACTION_UNCERTAIN}}/lag/token, điều tra theo {{trace_id}}/audit đã che, rollout lại từ 5% sau khi sửa được kiểm chứng.' }
+    ]
+  },
+  tags: ['ai', 'claude', 'llm', 'complaint', 'banking', 'spring-boot', 'kafka', 'postgresql', 'pii', 'redaction', 'idempotency', 'retry', 'timeout', 'prompt-caching', 'json-schema', 'audit', 'eval', 'token-cost', 'kill-switch']
 }
+
 );
