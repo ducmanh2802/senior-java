@@ -74,6 +74,7 @@
       sdlc: ['sdlc'],
       toeic: ['toeic'],
       bugs: ['bugs', 'questions', 'glossary'],               // related-questions widget
+      'jobs/prep': ['questions', 'glossary'],               // #/jobs/prep/<jobId>: JD study plan + knowledge summary from the bank
       aws: ['aws'],                                           // window.AWS_PLAN + window.AWS_QUESTIONS
     },
     // Views are lazy too: route 'x' loads css/views/x.css + js/views/x.js on first visit (App.loadView).
