@@ -1118,4 +1118,131 @@
     "starting with a small milestone"
   ]
 },
+{
+  "id": "drill-qa-162", "kind": "qa", "theme": "tech", "level": "senior", "seconds": 90,
+  "q": "How would you integrate a Claude API call into a Spring Boot service, and what do you wrap around it?",
+  "sample": "I would put the integration behind a small client interface so the rest of the app does not depend on the vendor SDK. The method takes a request object with the prompt, model name, and timeout, and returns a typed result. Inside, I set a short HTTP timeout, around five seconds, because a slow model call should not hold my servlet threads. I add a retry with exponential backoff only for transient errors like 429 or 503, and I never retry on 400 because that means a bad request. I also log the request id, token counts, and latency for cost tracking. For production I keep a fallback, such as a cached answer or a simpler rule, so one provider outage does not break the feature. The key point is to treat the LLM like any other unreliable downstream service.",
+  "phrases": ["behind a small client interface", "a short HTTP timeout", "never retry on 400", "cost tracking", "treat the LLM like any other unreliable downstream service"]
+}
+,
+{
+  "id": "drill-qa-163", "kind": "qa", "theme": "tech", "level": "senior", "seconds": 90,
+  "q": "How do you stream an LLM response to the user instead of waiting for the whole answer?",
+  "sample": "I use server-sent events from the backend to the browser. The endpoint opens a connection and forwards each chunk from the model as it arrives. In Spring I can use a SseEmitter or a reactive Flux, depending on the stack. The client reads the stream with EventSource and appends tokens to the UI. This improves perceived latency, because the user sees text immediately instead of waiting ten seconds. The hard parts are error handling and cancellation. If the stream breaks halfway, I need to tell the client and offer a retry. I also need a way to stop generation when the user closes the tab, so I do not pay for tokens nobody reads. The key point is that streaming changes the UX a lot but adds lifecycle complexity.",
+  "phrases": ["server-sent events", "perceived latency", "error handling and cancellation", "stop generation", "streaming changes the UX a lot"]
+}
+,
+{
+  "id": "drill-qa-164", "kind": "qa", "theme": "tech", "level": "senior", "seconds": 90,
+  "q": "What is prompt caching, and how does it reduce cost and latency?",
+  "sample": "Prompt caching means the provider stores a prefix of the prompt on their side, so repeated requests with the same prefix are cheaper and faster. The prefix is usually the system prompt and long reference documents, which do not change per request. The variable part, like the user question, comes after. You need to structure the prompt so the stable content comes first and the dynamic content last. The benefit is a big drop in token cost and latency for high-traffic features. The catch is that cache hits are not guaranteed, because the cache can expire or evict under load. I would measure hit rate and never assume caching makes a feature free. I also keep the cached prefix short enough to be useful but long enough to matter.",
+  "phrases": ["stores a prefix of the prompt", "stable content comes first", "big drop in token cost", "cache hits are not guaranteed", "measure hit rate"]
+}
+,
+{
+  "id": "drill-qa-165", "kind": "qa", "theme": "tech", "level": "senior", "seconds": 90,
+  "q": "How do you use tool use, or function calling, with an LLM in a Java service?",
+  "sample": "Tool use lets the model ask your code to run a function instead of guessing the answer. You define tools with names, descriptions, and JSON schemas for the arguments. The model returns a tool call with a name and arguments, your code runs the real function, and you send the result back as a tool result. The model then continues and produces the final answer. In Java I parse the JSON arguments carefully and validate them against the schema before running anything, because the model can hallucinate arguments. I keep each tool small and side-effect free where possible, and I log every call. The key point is that tool use turns the LLM from a text generator into a small agent that can act, so the boundary between model and system must be explicit and safe.",
+  "phrases": ["lets the model ask your code to run a function", "JSON schemas for the arguments", "validate them against the schema", "small and side-effect free", "turns the LLM from a text generator into a small agent"]
+},
+{
+  "id": "drill-qa-166", "kind": "qa", "theme": "tech", "level": "senior", "seconds": 90,
+  "q": "How would you build a simple RAG pipeline over documents stored in PostgreSQL with pgvector?",
+  "sample": "RAG means retrieval augmented generation. First I chunk the documents into pieces of a few hundred tokens and embed each chunk with an embedding model. I store the chunks and their vectors in a pgvector column. At query time I embed the user question, run a nearest neighbor search with cosine similarity, take the top few chunks, and put them into the prompt as context. The model answers using that context. The quality depends on chunking and on retrieval, not just on the model. I add metadata filters, like tenant or document type, so retrieval stays relevant. I also handle the case where nothing relevant is found by telling the model to say it does not know. The key point is that RAG moves the problem from model memory to data quality.",
+  "phrases": ["retrieval augmented generation", "chunk the documents", "nearest neighbor search", "metadata filters", "RAG moves the problem from model memory to data quality"]
+},
+{
+  "id": "drill-qa-167", "kind": "qa", "theme": "tech", "level": "senior", "seconds": 90,
+  "q": "How do you evaluate the quality of LLM output in production?",
+  "sample": "I would not rely on a single score. I start with golden test cases, a set of inputs with expected outputs or rubrics, and run them on every prompt change. In production I sample real traffic and have humans or a stronger model grade the answers. I track proxy metrics like user edits, thumbs up and down, and how often a fallback path is used. I also log latency, token cost, and refusal rates. For safety-critical features I add an output validator that checks format and constraints before returning to the user. The key point is that LLM quality is a distribution, not a pass fail, so you need continuous measurement rather than a one-time test.",
+  "phrases": ["golden test cases", "sample real traffic", "proxy metrics", "output validator", "LLM quality is a distribution"]
+},
+{
+  "id": "drill-qa-168", "kind": "qa", "theme": "tech", "level": "senior", "seconds": 90,
+  "q": "How do you handle prompt injection in a system that uses user input?",
+  "sample": "Prompt injection is when user input tricks the model into ignoring its instructions. I treat all user content as untrusted data, never as instructions. I separate system instructions from user content clearly in the prompt structure, and I avoid putting raw user text into the system message. For tool use, I validate every argument the model produces, so even a hijacked model cannot run dangerous calls. I also keep the model's permissions narrow, for example read-only tools only, and I never let it execute arbitrary code or SQL. On the output side I validate format and block anything unexpected. The key point is defense in depth, because you cannot fully prevent injection, so you limit what a successful attack can do.",
+  "phrases": ["treat all user content as untrusted data", "separate system instructions from user content", "validate every argument", "keep the model's permissions narrow", "defense in depth"]
+}
+,
+{
+  "id": "drill-qa-169", "kind": "qa", "theme": "tech", "level": "senior", "seconds": 90,
+  "q": "How do you choose between a large model and a smaller, cheaper one for a feature?",
+  "sample": "I would start with the smallest model that could plausibly do the job and measure its quality on my golden test cases. If it passes, I stay with it, because cost and latency scale with size. If it fails, I try a larger model and see whether the gain is worth the extra cost. For many tasks, like classification, extraction, or simple rewriting, a smaller model is enough. I would also consider routing, sending easy requests to the small model and hard ones to the large model, and caching repeated results. The key point is to decide based on measured quality and cost per request, not on the assumption that bigger is always better.",
+  "phrases": ["smallest model that could plausibly do the job", "quality on my golden test cases", "cost and latency scale with size", "consider routing", "measured quality and cost per request"]
+},
+{
+  "id": "drill-qa-170", "kind": "qa", "theme": "project", "level": "senior", "seconds": 120,
+  "q": "Tell me about a project where you integrated an LLM into a Java backend. What was the architecture?",
+  "sample": "I built a feature that summarized support tickets into a short internal note. The architecture had three parts. A Spring Boot service received the ticket text, called a smaller model with a strict prompt, and stored the summary in PostgreSQL. A second service tracked cost and latency per request. The model call had a timeout, a retry with backoff, and a fallback to a simple extractive summary when the API failed. I also added a human feedback button so support agents could mark a summary as wrong. That data went into a weekly review. The hardest part was prompt iteration, not code. We changed the prompt five times based on real tickets. The result was that agents saved about thirty percent of their triage time, and the error rate stayed under five percent.",
+  "phrases": ["three parts", "strict prompt", "fallback to a simple extractive summary", "human feedback button", "prompt iteration, not code"]
+},
+{
+  "id": "drill-qa-171", "kind": "qa", "theme": "project", "level": "senior", "seconds": 120,
+  "q": "Describe a time you had to reduce LLM cost in production. What did you do and what was the result?",
+  "sample": "We had a feature that classified incoming emails, and the monthly bill was growing fast. I did three things. First, I switched from a large model to a smaller one after testing on five hundred labeled emails, and quality barely changed. Second, I added prompt caching for the long system prompt, which cut repeated token cost. Third, I batched non-urgent requests and cached identical inputs for a short window. Together these cut cost by about seventy percent while keeping accuracy above ninety five percent. The lesson was that cost is a design concern from day one, not a cleanup task after launch. I now track cost per request from the first deployment.",
+  "phrases": ["monthly bill was growing fast", "switched from a large model to a smaller one", "prompt caching", "cut cost by about seventy percent", "cost is a design concern from day one"]
+},
+{
+  "id": "drill-qa-172", "kind": "qa", "theme": "project", "level": "senior", "seconds": 120,
+  "q": "Tell me about a time an LLM feature failed in production. What happened and how did you fix it?",
+  "sample": "We shipped a feature that drafted replies for customers. In the first week, a few drafts included a promise to refund, which our policy did not allow. The model had learned that pattern from the training examples we gave it. I did not try to patch the prompt alone. I added an output validator that blocked any draft containing refund language and routed it to a human. I also tightened the prompt and added a negative example. Then I set up a daily review of a sample of drafts. The incident taught me that LLM output needs a guardrail at the boundary, not just a better prompt. After that, no unauthorized refund promise reached a customer.",
+  "phrases": ["drafted replies for customers", "output validator", "negative example", "daily review", "guardrail at the boundary"]
+},
+{
+  "id": "drill-qa-173", "kind": "qa", "theme": "project", "level": "senior", "seconds": 120,
+  "q": "Describe a RAG feature you built. How did you measure whether retrieval was good enough?",
+  "sample": "I built a knowledge base search for internal docs. I started by measuring retrieval separately from generation. I created a set of fifty questions with the expected source documents, then checked whether the top five retrieved chunks contained the right source. That gave a recall number. I also tracked answer correctness with a human grader. Early on, recall was only sixty percent because chunking split tables in half. I fixed chunking to keep tables intact and added metadata filters by document type. Recall rose to about eighty five percent, and answer correctness followed. The lesson was to measure retrieval and generation as two separate problems, because a good model cannot fix bad retrieval.",
+  "phrases": ["measuring retrieval separately from generation", "recall number", "human grader", "keep tables intact", "two separate problems"]
+}
+,
+{
+  "id": "drill-qa-174", "kind": "qa", "theme": "project", "level": "senior", "seconds": 120,
+  "q": "Tell me about a time you had to explain an LLM limitation to a non-technical stakeholder.",
+  "sample": "A product manager wanted the model to always give the exact same answer for the same question, like a database. I explained that a model is probabilistic, so even with temperature zero, small wording changes can change the output, and the provider can update the model underneath. I showed two examples where the same question got slightly different answers. Then I proposed a design: cache the result for identical inputs, and add a human review step for anything that affects money or policy. The stakeholder accepted the trade-off because we made the risk visible and offered a mitigation. The lesson was to translate model behavior into business language, like consistency and risk, rather than into technical terms.",
+  "phrases": ["probabilistic", "cache the result for identical inputs", "human review step", "made the risk visible", "translate model behavior into business language"]
+},
+{
+  "id": "drill-qa-175", "kind": "qa", "theme": "project", "level": "senior", "seconds": 120,
+  "q": "Describe a time you added a fallback so an AI feature kept working when the provider was down.",
+  "sample": "Our summarization feature depended on one provider. When they had a two-hour outage, the feature returned errors and support agents had to write notes by hand. After that, I added a fallback chain. First, try the primary provider with a short timeout. If it fails, try a second provider. If both fail, use a local extractive summarizer that pulls the first few sentences. I also added a queue so requests that fail can be retried later and the summary appears when the service recovers. The fallback is lower quality, but it keeps the workflow moving. I tested the chain with a chaos experiment that blocked the provider. The key point is that an AI feature should degrade gracefully, like any other dependency.",
+  "phrases": ["fallback chain", "local extractive summarizer", "queue so requests that fail can be retried", "degrade gracefully", "chaos experiment"]
+},
+{
+  "id": "drill-qa-176", "kind": "qa", "theme": "design", "level": "senior", "seconds": 120,
+  "q": "How would you design a queue and worker system for processing LLM requests at scale?",
+  "sample": "I would decouple the API from the model call with a queue. The API validates the request, writes a job row, and enqueues a message with a job id. Workers pull jobs, call the model with a timeout, and write the result back to the database. The client either polls or receives a webhook when done. This protects the API from slow model calls and lets me scale workers independently. I would use a bounded queue with backpressure, so overload returns 429 instead of consuming memory. Each job has a timeout, a retry with backoff for transient errors, and a dead letter queue for repeated failures. I would also track queue depth and worker latency as key metrics. The key point is that LLM calls are slow and variable, so they should not run on request threads.",
+  "phrases": ["decouple the API from the model call", "bounded queue with backpressure", "dead letter queue", "scale workers independently", "LLM calls are slow and variable"]
+},
+{
+  "id": "drill-qa-177", "kind": "qa", "theme": "design", "level": "senior", "seconds": 120,
+  "q": "How would you design a cache for LLM responses to save cost?",
+  "sample": "I would cache by a normalized key, which is the model, the prompt template version, and a hash of the inputs. Exact match caching works well for repeated identical requests, like classifying the same email twice. I set a TTL based on how often the underlying data changes. For near-duplicate inputs, I can use semantic caching, embedding the question and looking up similar past questions, but that risks returning a stale or wrong answer, so I only use it for low-risk features. I also invalidate the cache on prompt version changes, because a new prompt means new answers. The key point is to cache safely, with clear invalidation, so stale answers do not reach users.",
+  "phrases": ["normalized key", "Exact match caching", "TTL based on how often the underlying data changes", "semantic caching", "invalidate the cache on prompt version changes"]
+},
+{
+  "id": "drill-qa-178", "kind": "qa", "theme": "design", "level": "senior", "seconds": 120,
+  "q": "How would you design a fallback strategy when the LLM API is slow or down?",
+  "sample": "I would design for graceful degradation in layers. First, a short timeout, so a slow call does not hold resources. Second, a circuit breaker that opens after a threshold of failures and fails fast. Third, a fallback chain, from a second provider to a cached answer to a simple rule-based response. Fourth, a queue that stores failed requests for retry when the service recovers. I would also show the user a clear message when a degraded answer is returned, so expectations are set. The key point is to decide per feature what is acceptable, a delayed answer, a simpler answer, or an error, and to make that decision explicit in the design rather than implicit in the code.",
+  "phrases": ["graceful degradation in layers", "circuit breaker", "fallback chain", "queue that stores failed requests", "decide per feature what is acceptable"]
+}
+,
+{
+  "id": "drill-qa-179", "kind": "qa", "theme": "behavioral", "level": "senior", "seconds": 120,
+  "q": "How do you use AI coding tools in your team without losing code quality?",
+  "sample": "I use them as a fast assistant, not as an author. I ask for boilerplate, tests, or a first draft of a method, then I read and rewrite the parts that matter. I never merge code I have not understood. In the team, I set expectations that AI-generated code goes through the same review as human code, and that the author is responsible for it. I also encourage people to use AI to explain unfamiliar code and to draft test cases. The risk I watch for is over-trust, where someone accepts a plausible but wrong implementation. We address that by requiring tests for any AI-assisted change and by discussing surprising suggestions in review. The key point is that the tool speeds up typing, but judgement still belongs to the engineer.",
+  "phrases": ["fast assistant, not as an author", "never merge code I have not understood", "same review as human code", "over-trust", "the tool speeds up typing, but judgement still belongs to the engineer"]
+},
+{
+  "id": "drill-qa-180", "kind": "qa", "theme": "behavioral", "level": "senior", "seconds": 120,
+  "q": "How do you review code that was written with heavy AI assistance?",
+  "sample": "I review it like any other code, but I pay extra attention to three things. First, whether the code actually solves the stated problem, because AI can produce something plausible that misses an edge case. Second, whether the tests are meaningful or just mirror the implementation. Third, whether there is hidden complexity, like unnecessary abstractions or wrong assumptions about concurrency. I ask the author to explain the tricky parts in their own words, because if they cannot, they do not own the code yet. I also run the tests myself and check the diff size. AI tends to produce large changes, and large changes hide bugs. The key point is that AI raises the speed of writing, so review has to raise the bar on understanding.",
+  "phrases": ["pay extra attention to three things", "tests are meaningful or just mirror the implementation", "hidden complexity", "explain the tricky parts in their own words", "AI raises the speed of writing"]
+},
+{
+  "id": "drill-qa-181", "kind": "qa", "theme": "behavioral", "level": "senior", "seconds": 120,
+  "q": "How would you handle a teammate who wants to use AI everywhere, including in sensitive code paths?",
+  "sample": "I would not start with a ban. I would ask what problem they are trying to solve and which code paths are sensitive. Then I would propose a written guideline that allows AI for boilerplate and tests, but requires human authorship and extra review for security, payment, and data access code. I would also suggest a short experiment, measuring defect rate and review time with and without AI in one area, so the decision is based on data. If the disagreement stays, I would escalate to the tech lead with the options and the trade-offs rather than arguing in Slack. The key point is to treat it as a risk management question, not a culture war, and to keep the conversation specific and respectful.",
+  "phrases": ["I would not start with a ban", "written guideline", "human authorship and extra review", "measuring defect rate", "treat it as a risk management question"]
+}
+
 );
