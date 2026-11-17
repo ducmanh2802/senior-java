@@ -818,4 +818,411 @@
 - **Networking**: replication instance phải reach được cả hai endpoint; đề hay gài thiếu route/SG hoặc đặt sai subnet (public/private).`,
   ref: ['lab-071-dms-homogeneous-rds-migration', 'lab-072-dms-heterogeneous-database-migration', 'lab-074-dms-full-load', 'lab-075-dms-change-data-capture', 'lab-076-dms-data-validation'],
 },
+{
+  id: 'awslab-storage-001',
+  category: 'storage',
+  title: 'S3 Storage Class và Lifecycle: chọn lớp lưu trữ rẻ nhất',
+  level: 'senior',
+  minutes: 45,
+  exams: ['sap-c02', 'dop-c02'],
+  domains: ['sap-d2', 'sap-d3'],
+  services: ['S3', 'Lifecycle', 'Storage Class', 'Storage Lens'],
+  goal: 'Sau lab này bạn chọn đúng storage class cho từng loại dữ liệu và viết lifecycle rule tự chuyển lớp theo tuổi/độ truy cập, biết bẫy phí retrieval và thời gian lưu tối thiểu. Đây là chủ đề tối ưu chi phí lưu trữ kinh điển của SAP-C02 (domain Continuous Improvement) và DOP.',
+  steps: [
+    'Hiểu 3 nhóm storage class: truy cập thường xuyên (STANDARD, INTELLIGENT_TIERING), truy cập ít (STANDARD_IA, ONEZONE_IA), lưu trữ lâu dài (GLACIER_INSTANT_RETRIEVAL, GLACIER_FLEXIBLE_RETRIEVAL, GLACIER_DEEP_ARCHIVE). Mỗi lớp có giá GB/tháng, phí truy xuất (retrieval) và thời gian lưu tối thiểu bị tính phí (ví dụ STANDARD_IA 30 ngày, GLACIER_DEEP_ARCHIVE 180 ngày).',
+    'Tạo bucket: aws s3 mb s3://lab-lifecycle-001 (tên bucket phải duy nhất toàn cầu).',
+    'Upload vài object mẫu: aws s3 cp file.txt s3://lab-lifecycle-001/data/ ; thử thêm một file đặt storage class STANDARD_IA bằng --storage-class STANDARD_IA.',
+    'Mở S3 → bucket → tab Management → Lifecycle rules → Create rule. Rule 1: chuyển object prefix data/ sang STANDARD_IA sau 30 ngày, sang GLACIER_DEEP_ARCHIVE sau 180 ngày; bật Expiration sau 365 ngày nếu muốn tự xoá.',
+    'Thêm rule thứ hai chuyển sang INTELLIGENT_TIERING ngay (lớp này tự tối ưu giữa Frequent/Infrequent/Archive tiers tuỳ cấu hình), phù hợp khi chưa biết tần suất truy cập.',
+    'Bật S3 Storage Lens (miễn phí mức cơ bản) hoặc xem Cost Explorer để thấy chi phí theo bucket và theo storage class.',
+    'Dọn dẹp: xoá lifecycle rule, xoá object (kể cả version nếu đã bật versioning), rồi xoá bucket.'
+  ],
+  verify: [
+    '{{aws s3api get-bucket-lifecycle-configuration --bucket lab-lifecycle-001}} trả về Rules với Transitions (Days + StorageClass) đúng cấu hình.',
+    'Console bucket → Objects cho thấy Storage class của từng object; object upload bằng --storage-class STANDARD_IA hiển thị đúng lớp.',
+    'Sau khi đủ ngày (hoặc mô phỏng bằng rule ngắn), object chuyển lớp; Storage Lens/Cost Explorer phản ánh chi phí giảm.'
+  ],
+  cost: 'S3 tính theo GB/tháng mỗi lớp cộng phí request và phí retrieval. Glacier Flexible/Deep Archive rẻ hơn nhiều nhưng truy xuất chậm (Deep Archive ~12 giờ) và có phí retrieval. Minimum storage duration khiến xoá/chuyển sớm vẫn bị tính phí đủ ngày. Dọn dẹp: xoá lifecycle, toàn bộ object và version, rồi xoá bucket.',
+  examTip: `### Bẫy đề thi
+- **Lifecycle transition ≠ xoá dữ liệu**: chuyển lớp chỉ áp dụng object hiện tại và tương lai; đề "giảm chi phí mà vẫn giữ dữ liệu" → lifecycle transition, không phải xoá.
+- **INTELLIGENT_TIERING không có phí retrieval riêng**: phù hợp khi không biết tần suất truy cập; STANDARD_IA/ONEZONE_IA có phí retrieval + minimum 30 ngày.
+- **GLACIER_INSTANT_RETRIEVAL vs FLEXIBLE**: Instant Retrieval lấy mili-giây (như Standard-IA nhưng rẻ hơn), Flexible mất phút đến giờ. Đề "truy xuất nhanh từ archive" → chọn Instant Retrieval.
+- **GLACIER_DEEP_ARCHIVE**: rẻ nhất, retrieval ~12 giờ (Standard) hoặc 48 giờ (Bulk); không hợp dữ liệu cần khôi phục nhanh.
+- **Minimum storage duration**: xoá/chuyển sớm vẫn bị tính phí đủ 30/90/180 ngày tuỳ lớp.`,
+  ref: ['lab-037-s3-lifecycle-qua-cac-storage-class', 'lab-044-s3-inventory-va-object-metadata', 'lab-045-s3-storage-lens-va-cost-visibility'],
+},
+{
+  id: 'awslab-storage-002',
+  category: 'storage',
+  title: 'Bảo vệ dữ liệu S3: Versioning, Object Lock (WORM) và mã hoá SSE',
+  level: 'senior',
+  minutes: 45,
+  exams: ['sap-c02', 'dop-c02'],
+  domains: ['sap-d2', 'dop-d6'],
+  services: ['S3', 'Versioning', 'Object Lock', 'SSE-KMS'],
+  goal: 'Sau lab này bạn bật versioning, hiểu delete marker và cách khôi phục object bị xoá/ghi đè, bật Object Lock (WORM — Write Once Read Many) với chế độ Governance/Compliance, và chọn đúng cơ chế mã hoá at-rest (SSE-S3, SSE-KMS, DSSE-KMS). Đây là chủ đề bảo vệ dữ liệu hay ra SAP và DOP security.',
+  steps: [
+    'Tạo bucket và bật versioning: aws s3api put-bucket-versioning --bucket lab-worm-002 --versioning-configuration Status=Enabled.',
+    'Upload 2 lần cùng key: aws s3 cp v1.txt s3://lab-worm-002/doc.txt rồi sửa nội dung upload lại v2 → thấy 2 version.',
+    'Xoá object: aws s3 rm s3://lab-worm-002/doc.txt → tạo delete marker (không mất version cũ). Liệt kê: aws s3api list-object-versions --bucket lab-worm-002.',
+    'Khôi phục: xoá đúng delete marker bằng aws s3api delete-object --bucket lab-worm-002 --key doc.txt --version-id VERSION_ID_CUA_DELETE_MARKER → object cũ hiện lại.',
+    'Bật Object Lock: bucket phải tạo mới với Object Lock (console: chọn Enable Object Lock; CLI: aws s3api create-bucket --bucket lab-worm-lock-002 --object-lock-enabled-for-bucket). Object Lock tự bật versioning.',
+    'Đặt retention khi upload: --object-lock-mode GOVERNANCE --object-lock-retain-until-date 2026-12-31T00:00:00Z (hoặc COMPLIANCE). Thử xoá/ghi đè trước hạn → bị từ chối.',
+    'Đặt mã hoá mặc định cho bucket: Properties → Default encryption → chọn SSE-S3 hoặc SSE-KMS (hoặc aws s3api put-bucket-encryption --bucket lab-worm-002 --server-side-encryption-configuration file://enc.json).',
+    'Dọn dẹp: với bucket thường, xoá mọi version và delete marker rồi xoá bucket; với bucket Object Lock, chỉ xoá được sau khi hết thời gian retention.'
+  ],
+  verify: [
+    '{{aws s3api list-object-versions --bucket lab-worm-002}} hiển thị nhiều VersionId và một DeleteMarker=true; khôi phục thành công sau khi xoá delete marker.',
+    'Object Lock: thử DELETE/PUT khi còn trong thời gian retention → trả lỗi AccessDenied; COMPLIANCE không thể ghi đè kể cả root.',
+    '{{aws s3api get-bucket-encryption --bucket lab-worm-002}} trả về thuật toán SSE; object mới có header x-amz-server-side-encryption.'
+  ],
+  cost: 'Version và object cũ vẫn tính phí lưu trữ; Object Lock giữ dữ liệu không xoá được nên đảm bảo retention không quá dài. SSE-S3 miễn phí; SSE-KMS tính phí mỗi request KMS và key. Dọn dẹp: xoá hết version (kể cả delete marker), object, rồi xoá bucket sau khi hết retention với bucket Object Lock.',
+  examTip: `### Bẫy đề thi
+- **Versioning ≠ backup**: versioning chống ghi đè/xoá nhầm nhưng không thay thế backup cross-region; đề "chống accidental delete" → versioning (kèm MFA delete nếu cần).
+- **Object Lock cần versioning**: không thể bật Object Lock nếu chưa bật versioning; bật khi tạo bucket là chắc chắn nhất.
+- **Governance vs Compliance**: Governance có thể bị ghi đè bởi user có quyền s3:BypassGovernanceRetention; Compliance không thể can thiệp kể cả root. Đề "không ai xoá được kể cả admin" → Compliance.
+- **SSE-S3 vs SSE-KMS**: SSE-S3 (AES-256) miễn phí, AWS quản lý key; SSE-KMS dùng CMK, có CloudTrail audit + key policy nhưng tốn phí KMS và cần quyền kms:GenerateDataKey. Đề "cần audit ai dùng key" → SSE-KMS.
+- **Delete marker là version đặc biệt**: xoá object thường không mất dữ liệu; muốn khôi phục phải xoá đúng version-id của delete marker.`,
+  ref: ['lab-035-versioning-delete-marker-va-object-recovery', 'lab-038-object-lock-retention-va-legal-hold', 'lab-039-s3-sse-s3-sse-kms-va-dsse-kms'],
+},
+{
+  id: 'awslab-storage-003',
+  category: 'storage',
+  title: 'S3 Replication: CRR, SRR, Replication Time Control và Multi-Region Access Point',
+  level: 'senior',
+  minutes: 50,
+  exams: ['sap-c02', 'dop-c02'],
+  domains: ['sap-d1', 'sap-d3'],
+  services: ['S3', 'Replication', 'KMS', 'CloudWatch'],
+  goal: 'Sau lab này bạn thiết lập Cross-Region Replication (CRR) và Same-Region Replication (SRR), hiểu yêu cầu versioning + IAM role, bật Replication Time Control (RTC) cho SLA 15 phút, và biết khi nào dùng Multi-Region Access Point. Replication là chủ đề DR/đa vùng kinh điển của SAP.',
+  steps: [
+    'Tạo 2 bucket: source và destination ở 2 region khác nhau (CRR) hoặc cùng region (SRR), cả hai đều bật versioning. Destination có thể dùng KMS key riêng.',
+    'Tạo IAM role cho replication: trust s3.amazonaws.com, policy cho phép s3:GetObjectVersionForReplication, s3:GetObjectVersionAcl, s3:ReplicateObject, s3:ReplicateDelete trên source và destination.',
+    'Trên bucket source → tab Management → Replication rules → Create. Chọn apply-to-all hoặc filter theo prefix/tag, chọn destination bucket và IAM role vừa tạo.',
+    'Bật Replication Time Control (RTC) trong rule: S3 cam kết SLA 15 phút cho 99.99% object, kèm CloudWatch metrics ReplicationLatency và BytesPendingReplication.',
+    'Object đã tồn tại trước khi bật rule KHÔNG tự replicate: tạo S3 Batch Replication job để sao chép dữ liệu cũ; xem tuỳ chọn replicate delete marker và metadata.',
+    'Test: upload object vào source, chờ vài phút, kiểm tra object xuất hiện ở destination bằng aws s3 ls s3://dest-bucket --recursive.',
+    'Nâng cao: tạo Multi-Region Access Point (MRAP) gồm 2 bucket ở 2 region, dùng một endpoint toàn cầu để đọc/ghi gần nhất.',
+    'Dọn dẹp: xoá replication rule, MRAP, IAM role, rồi xoá object/version ở cả 2 bucket và xoá bucket.'
+  ],
+  verify: [
+    'Destination có object giống source (cùng key, version) sau khi upload; delete marker cũng replicate nếu bật tuỳ chọn.',
+    '{{aws s3api get-bucket-replication --bucket source-bucket}} trả về Rules với ReplicationTime (RTC) và destination bucket ARN.',
+    'CloudWatch metric ReplicationLatency (khi bật RTC) dưới 15 phút; endpoint MRAP truy cập được từ nhiều region.'
+  ],
+  cost: 'Replication tính phí data transfer liên region (OUT) cộng request PUT vào destination; RTC thường đắt hơn replication thường. Dữ liệu replicate vẫn tính phí lưu trữ ở destination. Dọn dẹp: xoá rule, MRAP, object/version ở cả 2 bucket, rồi xoá bucket và role.',
+  examTip: `### Bẫy đề thi
+- **Versioning bắt buộc**: không bật versioning ở source và destination thì replication không chạy. Đề hay gài quên bật versioning.
+- **CRR vs SRR**: CRR cho DR/đa vùng; SRR cho tách môi trường (log/production) hoặc đồng bộ trong region. Cả hai đều cần versioning.
+- **Object cũ không tự replicate**: rule chỉ áp dụng object mới; dữ liệu đã tồn tại cần S3 Batch Replication. Đề "replicate toàn bộ dữ liệu hiện có" → Batch Replication.
+- **RTC SLA 15 phút**: chỉ Replication Time Control đảm bảo 15 phút cho 99.99% object; replication thường chỉ eventually consistent.
+- **KMS**: nếu dùng SSE-KMS, role cần quyền kms:Decrypt/Encrypt cho cả 2 key; destination dùng key khác phải cấp quyền chéo.
+- **Delete marker & metadata**: có tuỳ chọn replicate delete marker; metadata (ACL, tags) có thể cấu hình replicate.`,
+  ref: ['lab-046-s3-replication-time-control', 'lab-047-cross-region-replication-voi-kms', 'lab-048-same-region-replication-va-object-ownership', 'lab-049-s3-multi-region-access-point'],
+},
+{
+  id: 'awslab-storage-004',
+  category: 'storage',
+  title: 'Kiểm soát truy cập S3: Bucket policy vs ACL vs IAM + Block Public Access',
+  level: 'senior',
+  minutes: 50,
+  exams: ['sap-c02', 'dop-c02'],
+  domains: ['sap-d1', 'sap-d2', 'dop-d6'],
+  services: ['S3', 'IAM', 'Block Public Access', 'Object Ownership'],
+  goal: 'Sau lab này bạn phân biệt identity-based policy (IAM), resource-based policy (bucket policy) và ACL (legacy), hiểu khi nào cần cả hai (cross-account), cách Block Public Access chặn public ngoài ý muốn, và Object Ownership (BucketOwnerEnforced tắt ACL). Đây là chủ đề bảo mật S3 hay ra nhất.',
+  steps: [
+    'Hiểu 3 lớp kiểm soát: IAM policy (gắn cho user/role), bucket policy (resource-based, JSON trên bucket), ACL (thừa kế, mỗi object/bucket, nay bị hạn chế). Cross-account cần cả IAM (bên user) và bucket policy (bên bucket) cùng cho phép.',
+    'Tạo bucket, giữ Block Public Access bật (mặc định bật cho bucket mới) ở cả account và bucket level.',
+    'Viết bucket policy cho phép một IAM user account khác đọc object: aws s3api put-bucket-policy --bucket lab-access-004 --policy file://policy.json (Principal = ARN user, Action s3:GetObject, Resource arn:aws:s3:::lab-access-004/*).',
+    'Object Ownership: đặt BucketOwnerEnforced (ACLs disabled — mặc định mới) để chỉ bucket policy/IAM kiểm soát; thử dùng ACL → bị từ chối.',
+    'Test cross-account: user kia (đã có IAM allow s3:GetObject trên bucket) đọc thành công; nếu chỉ có IAM mà thiếu bucket policy → bị deny.',
+    'Thử public: đặt Principal trỏ mọi người → Block Public Access chặn (AccessDenied) trừ khi cố tình tắt BPA (không nên).',
+    'Explicit deny: thêm statement Deny s3:DeleteBucket trong IAM/bucket policy để chặn hành động nhạy cảm kể cả khi policy khác allow — deny luôn thắng.',
+    'Dọn dẹp: xoá bucket policy, object, rồi xoá bucket; gỡ user/role tạm nếu đã tạo.'
+  ],
+  verify: [
+    'User khác account đọc được object khi cả IAM và bucket policy đều allow; thiếu một bên → AccessDenied.',
+    '{{aws s3api get-public-access-block --bucket lab-access-004}} trả về 4 trường PublicAccessBlockConfiguration đều true.',
+    '{{aws s3api get-bucket-policy-status --bucket lab-access-004}} cho biết IsPublic true/false; khi đặt BucketOwnerEnforced thì mọi request dùng ACL bị từ chối.'
+  ],
+  cost: 'S3 request và storage là chi phí chính; IAM/bucket policy/ACL/BPA không tính phí riêng. Dọn dẹp: xoá bucket policy, object, bucket; gỡ user/role tạm nếu tạo.',
+  examTip: `### Bẫy đề thi
+- **Explicit deny thắng allow**: trong IAM và bucket policy, deny luôn overrides. Đề "chặn DeleteBucket kể cả khi policy cho phép" → thêm statement Deny.
+- **Cross-account cần 2 phía**: bucket policy (resource) và IAM policy (identity) phải cùng allow; thiếu một là AccessDenied.
+- **ACL đã lỗi thời**: bucket mới mặc định BucketOwnerEnforced (ACLs disabled). Đề "phân quyền object" → dùng bucket policy/IAM/S3 Access Point, không dùng ACL.
+- **Block Public Access 4 mức**: BlockPublicAcls, IgnorePublicAcls, BlockPublicPolicy, RestrictPublicBuckets; bật ở account + bucket, cấu hình bucket chỉ siết chặt hơn chứ không nới.
+- **IAM vs bucket policy**: IAM identity-based (user/role), bucket policy resource-based (chỉ định được cả account khác, public). Đề "cho phép account khác" → bucket policy.
+- **s3:GetObject vs s3:ListBucket**: GetObject cho đọc nội dung, ListBucket cho liệt kê (Resource là ARN bucket, không có /*). Đề "cho xem danh sách" → ListBucket trên ARN bucket.`,
+  ref: ['lab-031-tao-s3-bucket-va-phan-tich-bucket-policy', 'lab-033-iam-policy-bucket-policy-va-acl', 'lab-032-block-public-access-va-kiem-tra-public-exposure', 'lab-009-iam-least-privilege-cho-storage'],
+},
+{
+  id: 'awslab-storage-005',
+  category: 'storage',
+  title: 'Presigned URL: chia sẻ object S3 riêng tư có thời hạn',
+  level: 'mid',
+  minutes: 30,
+  exams: ['sap-c02', 'dop-c02'],
+  domains: ['sap-d2', 'dop-d6'],
+  services: ['S3', 'Presigned URL', 'IAM', 'CloudFront'],
+  goal: 'Sau lab này bạn tạo presigned URL để cho user tạm thời upload/download một object trong bucket private mà không cần cấp quyền AWS, hiểu giới hạn thời hạn (tối đa 7 ngày với credential dài hạn) và khi nào nên dùng CloudFront signed URL/cookie thay thế. Rất hay ra ở phần tích hợp ứng dụng với S3.',
+  steps: [
+    'Tạo bucket private (Block Public Access bật), upload một object mẫu.',
+    'Tạo presigned URL download bằng CLI: aws s3 presign s3://lab-presign-005/doc.txt --expires-in 900 (giây). CLI in ra URL có X-Amz-Signature và X-Amz-Expires.',
+    'Mở URL trong trình duyệt hoặc curl trước khi hết hạn → tải được; đợi quá 900 giây rồi dùng lại URL cũ → bị từ chối (Request has expired).',
+    'Upload bằng presigned URL: dùng SDK (getPresignedUrl với PutObject) hoặc aws s3 presign với method PUT; client PUT trực tiếp lên S3 mà không đi qua backend.',
+    'Hiểu giới hạn: URL ký bằng credential IAM dài hạn tối đa 7 ngày (604800 giây); bằng temporary STS chỉ sống bằng credential (thường tối đa 12 giờ).',
+    'So sánh CloudFront signed URL/cookie: khi cần bảo vệ nhiều file (HLS/DASH) hoặc CDN caching, dùng signed cookie/URL của CloudFront với trusted key group, không phải presigned S3 trực tiếp.',
+    'Dọn dẹp: xoá object và bucket tạm (presigned URL không giữ tài nguyên lâu dài).'
+  ],
+  verify: [
+    'URL presign tải được object trước khi hết hạn; sau khi hết hạn trả lỗi AccessDenied / Request has expired.',
+    'URL chứa các query X-Amz-Algorithm, X-Amz-Signature, X-Amz-Expires; sửa signature → bị từ chối (chống giả mạo).',
+    'Không cần credential AWS nào khác để dùng URL (chỉ cần HTTP GET/PUT đúng method đã ký).'
+  ],
+  cost: 'Không tính phí riêng cho presigned URL; chỉ tính request và data transfer của S3 như thường. Dọn dẹp: xoá object và bucket tạm.',
+  examTip: `### Bẫy đề thi
+- **Presigned ≠ public**: URL có chữ ký và thời hạn; bucket vẫn private. Đề "chia sẻ file nội bộ không cần đăng nhập" → presigned URL.
+- **Tối đa 7 ngày**: với access key dài hạn, expiry tối đa 604800 giây (7 ngày); với STS temporary, URL chỉ hợp lệ đến khi token hết hạn. Đề "cho 30 ngày" → sai.
+- **GET vs PUT**: presigned URL ký theo method (GET để tải, PUT để upload). Đề "cho client upload trực tiếp lên S3" → presigned PUT URL, giảm tải cho backend.
+- **CloudFront signed URL/cookie**: khi cần CDN và bảo vệ nhiều file, dùng CloudFront signed (trusted signer/key group) chứ không phải presigned S3. Đề "video trả phí qua CloudFront" → signed cookie/URL CloudFront.`,
+  ref: ['lab-034-upload-download-s3-bang-console-cli-va-sdk', 'lab-040-s3-access-point-va-prefix-isolation'],
+},
+{
+  id: 'awslab-storage-006',
+  category: 'storage',
+  title: 'S3 Event Notifications: Lambda, SQS và EventBridge',
+  level: 'senior',
+  minutes: 45,
+  exams: ['sap-c02', 'dop-c02'],
+  domains: ['sap-d2', 'dop-d5'],
+  services: ['S3', 'Lambda', 'SQS', 'EventBridge'],
+  goal: 'Sau lab này bạn cấu hình S3 event notification (ObjectCreated, ObjectRemoved, ObjectRestore, Replication...) gửi tới Lambda, SQS, SNS hoặc EventBridge, hiểu khác biệt giữa notification trực tiếp và EventBridge (filter linh hoạt, nhiều target hơn). Đây là nền tảng kiến trúc event-driven hay ra SAP.',
+  steps: [
+    'Hiểu event types: s3:ObjectCreated:*, s3:ObjectRemoved:*, s3:ObjectRestore:*, s3:Replication:*, s3:LifecycleExpiration:*. Có thể lọc theo prefix/suffix.',
+    'Tạo đích: Lambda function (hoặc SQS queue). Cấp quyền cho S3 invoke Lambda (resource policy) hoặc queue policy cho phép s3.amazonaws.com.',
+    'Trên bucket → tab Properties → Event notifications → Create notification. Chọn event type, prefix/suffix, và đích (Lambda ARN hoặc SQS ARN).',
+    'Test: upload file khớp prefix → Lambda được invoke (xem CloudWatch Logs của Lambda) hoặc message xuất hiện trong SQS.',
+    'EventBridge: tab Properties → Event notifications → chọn EventBridge (hoặc aws s3api put-bucket-notification-configuration với EventBridgeConfiguration). Tạo rule EventBridge filter theo source s3, eventName PutObject, prefix.',
+    'So sánh: notification trực tiếp chỉ gửi tới Lambda/SQS/SNS (3 đích), filter đơn giản; EventBridge hỗ trợ 20+ target (Step Functions, Kinesis...), filter nâng cao, archive/replay.',
+    'Dọn dẹp: xoá event notification, Lambda/queue, EventBridge rule, rồi xoá bucket.'
+  ],
+  verify: [
+    'Upload object khớp filter → đích nhận event (CloudWatch Logs Lambda có dòng s3:ObjectCreated:Put, hoặc SQS nhận message JSON với eventName ObjectCreated).',
+    'S3 event notification hiển thị trong console đúng đích và filter; EventBridge rule có event pattern khớp.',
+    'Object không khớp prefix/suffix → không trigger.'
+  ],
+  cost: 'Lambda tính theo request và thời gian chạy; SQS/SNS/EventBridge có phí theo request/message; S3 event notification không tính phí riêng. Dọn dẹp: xoá notification, Lambda, queue, EventBridge rule, rồi xoá bucket.',
+  examTip: `### Bẫy đề thi
+- **S3 notification trực tiếp chỉ 3 đích**: Lambda, SQS, SNS. Cần nhiều hơn hoặc filter phức tạp → EventBridge.
+- **EventBridge filter mạnh hơn**: content-based filtering trên nhiều field (eventName, prefix, size), 20+ target, archive/replay. Đề "route theo kích thước file, nhiều downstream" → EventBridge.
+- **Prefix/suffix filter**: notification trực tiếp lọc theo prefix/suffix (ví dụ uploads/ và .jpg); EventBridge lọc chi tiết hơn.
+- **Eventual delivery**: S3 event giao at-least-once — có thể nhận trùng, cần idempotent ở consumer (SQS/Lambda). Đề "xử lý trùng" → thiết kế idempotent.
+- **ObjectRestore**: event s3:ObjectRestore:* chỉ bắn khi khôi phục object từ Glacier, không phải khi upload thường.`,
+  ref: ['lab-041-s3-event-notification-toi-lambda', 'lab-042-s3-event-notification-toi-sqs', 'lab-043-s3-eventbridge-integration'],
+},
+{
+  id: 'awslab-storage-007',
+  category: 'storage',
+  title: 'EBS: gp3/io2/st1/sc1, mở rộng online và snapshot',
+  level: 'senior',
+  minutes: 45,
+  exams: ['sap-c02', 'dop-c02'],
+  domains: ['sap-d2', 'sap-d3', 'dop-d3'],
+  services: ['EBS', 'Snapshot', 'KMS', 'CloudWatch'],
+  goal: 'Sau lab này bạn chọn đúng volume type (gp3, io2 Block Express, st1, sc1), tạo và mở rộng volume online không downtime, tăng IOPS/throughput cho gp3, tạo snapshot, copy sang region khác và mã hoá bằng KMS. EBS là storage block nền tảng cho EC2, hay ra ở cả thiết kế và tối ưu.',
+  steps: [
+    'Hiểu volume type: gp3 (SSD, baseline 3000 IOPS/125 MB/s, tăng tới 16000 IOPS/1000 MB/s, tách IOPS khỏi dung lượng), io2 Block Express (tới 256000 IOPS, 4000 MB/s, 64 TiB, độ bền 99.999%), st1 (HDD throughput cho log/big data), sc1 (HDD lạnh rẻ nhất).',
+    'Tạo volume rời: aws ec2 create-volume --size 100 --volume-type gp3 --availability-zone ap-southeast-1a.',
+    'Attach vào EC2: aws ec2 attach-volume --volume-id vol-xxx --instance-id i-xxx --device /dev/sdf ; format mkfs -t xfs, mount, khai báo /etc/fstab bằng UUID.',
+    'Mở rộng online: aws ec2 modify-volume --volume-id vol-xxx --size 200 rồi grow filesystem (xfs_growfs / hoặc resize2fs) — không cần restart.',
+    'Tăng IOPS/throughput gp3: aws ec2 modify-volume --volume-id vol-xxx --iops 5000 --throughput 250 (chỉ gp3; io2 dùng --iops).',
+    'Tạo snapshot: aws ec2 create-snapshot --volume-id vol-xxx --description "lab snap". Snapshot tăng dần, lưu trên S3 do AWS quản lý.',
+    'Copy snapshot sang region khác: aws ec2 copy-snapshot --source-region ap-southeast-1 --source-snapshot-id snap-xxx --destination-region us-east-1 ; thêm --encrypted --kms-key-id alias/my-key để mã hoá bằng KMS.',
+    'Khôi phục EC2 từ snapshot khi volume hỏng: tạo volume mới từ snapshot, attach vào EC2 thay thế.',
+    'Dọn dẹp: xoá snapshot (cả 2 region), volume, rồi terminate EC2.'
+  ],
+  verify: [
+    '{{aws ec2 describe-volumes --volume-ids vol-xxx}} trả về Size, VolumeType gp3, Iops/Throughput đúng; state in-use sau attach.',
+    'Mở rộng online: df -h trên EC2 thấy dung lượng tăng sau khi grow filesystem, không cần reboot.',
+    '{{aws ec2 describe-snapshots --snapshot-ids snap-xxx}} có Progress 100%, Encrypted nếu bật KMS; snapshot xuất hiện ở region đích sau copy.'
+  ],
+  cost: 'gp3 tính theo dung lượng GB cộng IOPS/throughput vượt mức miễn phí (3000 IOPS/125 MB/s). io2 đắt hơn, st1/sc1 rẻ. Snapshot tính theo GB lưu trữ tăng dần. Copy cross-region tính phí data transfer. Dọn dẹp: xoá snapshot, volume, terminate EC2, xoá KMS key nếu tạo riêng.',
+  examTip: `### Bẫy đề thi
+- **gp3 tách IOPS khỏi size**: gp2 IOPS tỉ lệ với dung lượng; gp3 có baseline 3000 IOPS bất kể size, tăng độc lập. Đề "cần 5000 IOPS nhưng ít dung lượng" → gp3.
+- **io2 Block Express**: độ bền 99.999%, tới 256000 IOPS/64 TiB, phù hợp DB quan trọng. Đề "critical database, Multi-Attach" → io2.
+- **st1 vs sc1**: st1 throughput cao cho sequential (log, big data); sc1 lạnh rẻ nhất cho dữ liệu ít truy cập. Đề "backup lạnh giá rẻ" → sc1.
+- **Snapshot tăng dần**: chỉ lưu block thay đổi; xoá snapshot cũ không xoá dữ liệu còn phụ thuộc. Đề "chi phí snapshot" → tăng dần, không phải toàn bộ mỗi lần.
+- **Multi-Attach**: chỉ io1/io2 (io2 Block Express) hỗ trợ attach 1 volume vào nhiều EC2 cùng AZ; gp2/gp3 không hỗ trợ. Đề "chia sẻ volume" → io2 Multi-Attach.
+- **EBS vs instance store**: instance store là tạm (mất khi stop), EBS bền. Đề "dữ liệu cần giữ khi stop" → EBS.`,
+  ref: ['lab-011-tao-gan-va-mo-rong-amazon-ebs-gp3', 'lab-012-so-sanh-ebs-gp3-io2-st1-va-sc1', 'lab-016-tao-snapshot-va-restore-ebs-volume', 'lab-017-copy-ebs-snapshot-sang-region-khac'],
+},
+{
+  id: 'awslab-storage-008',
+  category: 'storage',
+  title: 'Amazon EFS: regional multi-AZ, mount target, lifecycle và access point',
+  level: 'senior',
+  minutes: 45,
+  exams: ['sap-c02', 'dop-c02'],
+  domains: ['sap-d2', 'sap-d3'],
+  services: ['EFS', 'NFS', 'KMS', 'Auto Scaling'],
+  goal: 'Sau lab này bạn tạo file system EFS regional (multi-AZ), mount từ EC2 qua NFS (port 2049), hiểu mount target + security group, bật lifecycle (transition sang EFS-IA) và throughput mode, dùng access point để cách ly ứng dụng. EFS là storage chia sẻ cho kiến trúc nhiều EC2/container, hay ra SAP.',
+  steps: [
+    'Hiểu EFS: file system NFSv4 chia sẻ, mount vào nhiều EC2 cùng lúc, regional (multi-AZ) hoặc One Zone. Mỗi AZ có mount target (ENI) để EC2 cùng AZ mount qua đó.',
+    'Tạo EFS: aws efs create-file-system --creation-token lab-efs-008 --encrypted (mã hoá at-rest bằng KMS). Ghi lại FileSystemId.',
+    'Tạo mount target cho mỗi subnet/AZ: aws efs create-mount-target --file-system-id fs-xxx --subnet-id subnet-a --security-groups sg-efs. Security group mount target mở inbound TCP 2049 từ SG của EC2 client.',
+    'Mount từ EC2: sudo mount -t nfs4 -o nfsvers=4.1 fs-xxx.efs.ap-southeast-1.amazonaws.com:/ /mnt/efs. Ghi file, đọc từ EC2 khác → thấy ngay.',
+    'Bật lifecycle: aws efs put-lifecycle-configuration --file-system-id fs-xxx --lifecycle-policies "[{TransitionToIA:AFTER_30_DAYS}]" → file không truy cập 30 ngày chuyển sang EFS-IA (rẻ hơn, có phí truy xuất).',
+    'Throughput mode: bursting (mặc định) hoặc enhanced/provisioned (chọn khi cần throughput cao ổn định); đổi qua aws efs put-file-system-configuration.',
+    'Access point: tạo access point giới hạn root dir + POSIX user, gắn policy riêng cho từng ứng dụng.',
+    'Dọn dẹp: xoá mount target trước, rồi xoá access point, file system và security group.'
+  ],
+  verify: [
+    '{{aws efs describe-file-systems --file-system-id fs-xxx}} trả về LifeCycleState=available, Encrypted=true, SizeInBytes tăng khi ghi.',
+    '{{aws efs describe-mount-targets --file-system-id fs-xxx}} liệt kê mount target mỗi AZ, state available, IP trong subnet.',
+    'Từ 2 EC2 ở 2 AZ cùng mount và đọc/ghi cùng file; file không truy cập 30 ngày chuyển EFS-IA (kiểm tra storage class trong describe).'
+  ],
+  cost: 'EFS tính theo GB/tháng (Standard vs IA khác giá) cộng phí truy xuất IA; throughput provisioned tính thêm MB/s. Mount target dùng ENI có thể phát sinh phí ENI. Dọn dẹp: xoá mount target trước khi xoá file system, rồi xoá access point, file system, security group.',
+  examTip: `### Bẫy đề thi
+- **EFS vs EBS**: EBS gắn 1 EC2 (Multi-Attach chỉ io2, giới hạn), EFS mount nhiều EC2 cùng lúc qua NFS. Đề "nhiều instance chia sẻ file" → EFS, không phải EBS.
+- **Mount target theo AZ**: EC2 mount qua mount target cùng AZ; nếu AZ không có mount target (hoặc SG chặn 2049) → mount fail. Đề "EC2 AZ khác không mount được" → thiếu mount target/SG.
+- **EFS-IA**: rẻ hơn Standard nhưng có phí truy xuất mỗi lần đọc; lifecycle transition sau N ngày không truy cập. Đề "chi phí thấp, dữ liệu ít đọc" → lifecycle + IA.
+- **Throughput mode**: bursting co giãn theo credit; enhanced/provisioned cho throughput cao ổn định (HPC). Đề "throughput cao liên tục" → provisioned.
+- **Regional vs One Zone**: regional multi-AZ (HA), One Zone rẻ hơn nhưng mất khi AZ hỏng. Đề "HA, chịu AZ failure" → regional.
+- **Port 2049**: NFS dùng TCP 2049; SG mount target phải mở từ SG client. Đề "mount timeout" → kiểm tra SG/NACL 2049.`,
+  ref: ['lab-021-tao-efs-regional-trong-nhieu-az', 'lab-028-so-sanh-efs-standard-va-efs-ia', 'lab-029-cau-hinh-efs-lifecycle-va-throughput-mode', 'lab-025-su-dung-efs-access-point'],
+},
+{
+  id: 'awslab-storage-009',
+  category: 'storage',
+  title: 'Amazon FSx: Windows File Server, Lustre và NetApp ONTAP',
+  level: 'senior',
+  minutes: 45,
+  exams: ['sap-c02', 'dop-c02'],
+  domains: ['sap-d2', 'sap-d4'],
+  services: ['FSx', 'SMB', 'NFS', 'S3', 'Active Directory'],
+  goal: 'Sau lab này bạn phân biệt 3 họ FSx (Windows File Server cho SMB/AD, Lustre cho HPC tích hợp S3, NetApp ONTAP đa giao thức NFS/SMB/iSCSI), chọn đúng theo workload (Windows doanh nghiệp, HPC, NAS nâng cao). FSx hay ra ở bài migration/enterprise.',
+  steps: [
+    'Hiểu 3 họ: FSx for Windows File Server (SMB, tích hợp Microsoft AD, multi-AZ automatic failover, DFS namespace); FSx for Lustre (HPC, scratch/persistent, backlog S3 như data source); FSx for NetApp ONTAP (NFS/SMB/iSCSI, snapshot, SnapMirror, storage efficiency).',
+    'FSx Windows: tạo file system trong VPC, gán AWS Managed Microsoft AD (hoặc self-managed), chọn Single-AZ (lab) hoặc Multi-AZ (production). Mount từ EC2 Windows: net use Z: \\\\fs-xxx.fs-xxx.region.amazonaws.com\\share.',
+    'FSx Lustre: tạo file system, chọn backing store S3 (data repository) để import/export bucket; mount từ EC2 Linux: mount -t lustre fs-xxx.fsx.region.amazonaws.com@tcp:/fsx /mnt/lustre.',
+    'FSx ONTAP: tạo file system, tạo SVM (Storage Virtual Machine), tạo volume NFS/SMB, mount từ client; bật snapshot policy và SnapMirror sang region khác cho DR.',
+    'Multi-AZ và failover: FSx Windows Multi-AZ tự failover khi AZ/primary hỏng; kiểm thử automatic failover.',
+    'Bảo mật: tích hợp AD cho SMB (Windows), KMS mã hoá at-rest, security group mở port (SMB 445, NFS 2049).',
+    'Dọn dẹp: xoá file system, SVM/volume, AD (nếu tạo), S3 data repository (nếu dùng).'
+  ],
+  verify: [
+    'FSx file system trạng thái Available; từ EC2 (Windows hoặc Linux) mount được và đọc/ghi file chia sẻ.',
+    '{{aws fsx describe-file-systems}} trả về FileSystemType (WINDOWS/LUSTRE/ONTAP), StorageCapacity và DNSName để mount.',
+    'FSx Windows Multi-AZ: giả lập AZ failure → client tự kết nối lại sang standby, dữ liệu nguyên vẹn.'
+  ],
+  cost: 'FSx tính theo dung lượng GB/tháng cộng throughput, đắt hơn EBS/EFS; Windows Multi-AZ gần gấp đôi; ONTAP thêm SVM/SnapMirror. Dọn dẹp: xoá file system, SVM/volume, AD, S3 repository để tránh phí theo giờ.',
+  examTip: `### Bẫy đề thi
+- **FSx Windows = SMB + AD**: tích hợp Active Directory, hợp Windows doanh nghiệp, DFS namespace. Đề "chia sẻ file Windows, AD group policy" → FSx Windows.
+- **FSx Lustre = HPC + S3**: scratch storage tốc độ cao cho HPC, tích hợp S3 repository (import/export). Đề "HPC, hàng nghìn node đọc song song" → Lustre.
+- **FSx ONTAP = đa giao thức + tính năng NAS**: NFS/SMB/iSCSI, snapshot, SnapMirror, storage efficiency (dedup/compression). Đề "cần iSCSI + NAS nâng cao" → ONTAP.
+- **Multi-AZ Windows automatic failover**: FSx Windows Multi-AZ tự failover; Single-AZ là SPOF. Đề "HA cho file server Windows" → Multi-AZ.
+- **FSx đắt hơn EFS/EBS**: tính theo GB cộng throughput, dùng khi cần giao thức/tính năng đặc thù. Đề "file server Windows" → FSx Windows, không phải EFS.`,
+  ref: ['lab-052-fsx-for-windows-multi-az', 'lab-056-fsx-for-lustre-tich-hop-s3', 'lab-058-fsx-for-netapp-ontap-svm-volume-nfs-smb'],
+},
+{
+  id: 'awslab-storage-010',
+  category: 'storage',
+  title: 'AWS Storage Gateway: File, Volume (cached/stored) và Tape Gateway',
+  level: 'senior',
+  minutes: 45,
+  exams: ['sap-c02', 'dop-c02'],
+  domains: ['sap-d1', 'sap-d4'],
+  services: ['Storage Gateway', 'S3', 'NFS', 'SMB', 'iSCSI'],
+  goal: 'Sau lab này bạn phân biệt 3 loại gateway (File Gateway vào S3, Volume Gateway cached/stored dùng iSCSI, Tape Gateway VTL), hiểu cách tích hợp on-premises với AWS cho hybrid cloud và migration từng phần. Đây là chủ đề hybrid/migration hay ra SAP.',
+  steps: [
+    'Hiểu mô hình: gateway là appliance (VM) đặt ở on-premises, đại diện storage AWS (S3/EBS) qua giao thức on-prem (NFS/SMB/iSCSI/VTL).',
+    'File Gateway: cài VM (OVA/AMI), kích hoạt, tạo file share (NFS/SMB) ánh xạ vào S3 bucket. On-prem đọc/ghi như file NAS, dữ liệu thực nằm ở S3.',
+    'Volume Gateway cached mode: volume iSCSI trên on-prem, dữ liệu chủ yếu ở S3 (EBS snapshot), cache local cho dữ liệu mới/đọc nhiều. Volume Gateway stored mode: toàn bộ dữ liệu ở local, đồng bộ snapshot lên S3 (backup).',
+    'Tape Gateway: trình bày như thư viện băng (VTL) qua iSCSI, backup software (Veeam, NetBackup) ghi tape → lưu vào S3/Glacier.',
+    'Kết nối: gateway cần mạng tới AWS (Internet hoặc Direct Connect/VPN cho hybrid ổn định); cấu hình outbound 443.',
+    'Giám sát: CloudWatch metrics (CacheHitPercent, BufferPercentUsed) và Storage Gateway console.',
+    'Dọn dẹp: xoá gateway trên Storage Gateway console, xoá file share/volume/tape, terminate VM on-prem, rồi xoá S3 bucket/snapshot liên quan.'
+  ],
+  verify: [
+    'Storage Gateway console hiển thị gateway Active, file share/volume/tape trạng thái Available.',
+    'Từ client on-prem mount NFS/SMB share hoặc connect iSCSI → đọc/ghi thành công; dữ liệu xuất hiện ở S3 (file share) hoặc snapshot EBS (volume).',
+    'CloudWatch metrics có dữ liệu (CacheHitPercent...); có thể xem object trong S3 bucket tương ứng.'
+  ],
+  cost: 'Storage Gateway tính phí theo giờ gateway cộng dung lượng lưu trữ (S3/EBS snapshot) và data transfer. Volume/tape dùng S3 storage class. Dọn dẹp: xoá gateway, file share, volume, tape, snapshot, bucket — đây là tài nguyên hay bị quên gây phí.',
+  examTip: `### Bẫy đề thi
+- **File Gateway vs Volume Gateway**: File = NFS/SMB vào S3 (NAS dùng chung), Volume = iSCSI block (cached/stored), Tape = VTL cho backup. Đề "backup software hiện tại ghi băng" → Tape Gateway.
+- **Cached vs Stored**: Cached = dữ liệu chủ yếu ở S3, cache local (rẻ hơn, hợp dữ liệu lớn); Stored = toàn bộ ở local, snapshot lên S3 (hợp low latency, backup). Đề "dữ liệu lớn, chi phí thấp, truy cập không thường xuyên" → cached.
+- **Hybrid connectivity**: gateway cần kết nối ổn định tới AWS; Direct Connect/VPN cho hybrid production. Đề "on-prem cần băng thông ổn định" → DX/VPN.
+- **Tích hợp S3**: File Gateway ánh xạ file share vào S3 bucket; có thể dùng lifecycle, versioning S3. Đề "on-prem cần dùng S3 mà không đổi ứng dụng" → File Gateway.
+- **Không phải workload nào cũng hợp**: gateway thêm độ trễ và phụ thuộc mạng; workload nhạy latency nên cân nhắc.`,
+  ref: ['lab-077-storage-gateway-file-gateway-toi-s3', 'lab-078-storage-gateway-volume-gateway-cached-mode', 'lab-079-storage-gateway-tape-gateway'],
+},
+{
+  id: 'awslab-storage-011',
+  category: 'storage',
+  title: 'AWS Backup: vault, plan, lifecycle, cross-region/account và Vault Lock',
+  level: 'senior',
+  minutes: 50,
+  exams: ['sap-c02', 'dop-c02'],
+  domains: ['sap-d3', 'dop-d3', 'dop-d6'],
+  services: ['AWS Backup', 'EBS', 'RDS', 'EFS', 'KMS'],
+  goal: 'Sau lab này bạn dùng AWS Backup tập trung (backup vault, plan, rule schedule + lifecycle + retention), bật cross-region/cross-account copy, và hiểu Vault Lock (compliance vs governance) để chống xoá backup. Đây là chủ đề sao lưu/DR tập trung hay ra SAP và DOP.',
+  steps: [
+    'Hiểu mô hình: AWS Backup quản lý tập trung backup cho EBS, RDS/Aurora, EFS, S3, FSx, DynamoDB... qua backup vault + plan + selection.',
+    'Tạo backup vault (mã hoá bằng KMS): aws backup create-backup-vault --backup-vault-name lab-vault-011 --encryption-key-arn arn:aws:kms:...',
+    'Tạo backup plan: aws backup create-backup-plan --backup-plan file://plan.json (rule gồm schedule cron, lifecycle chuyển cold/xoá sau N ngày, retention).',
+    'Gán resource: tạo selection (theo tag hoặc ARN) gán EBS volume/RDS/EFS vào plan → backup tự chạy theo lịch.',
+    'Chạy on-demand backup để test: aws backup start-backup-job --backup-vault-name lab-vault-011 --resource-arn arn:...',
+    'Cross-region copy: thêm rule copy sang vault ở region khác (DR). Cross-account: copy sang vault account khác cho tổ chức nhiều account.',
+    'Vault Lock: bật compliance mode (không thể tắt kể cả xoá plan) hoặc governance mode (chỉ user đặc quyền) để chống xoá backup — chống ransomware/mất dữ liệu.',
+    'Giám sát và audit: CloudTrail ghi mọi API backup; EventBridge/CloudWatch cho sự kiện backup; AWS Backup dashboard báo job thành công/thất bại.',
+    'Dọn dẹp: xoá backup job/vault/plan, xoá recovery point (nếu không Vault Lock), rồi xoá resource lab.'
+  ],
+  verify: [
+    '{{aws backup list-backup-vaults}} hiển thị vault; {{aws backup list-backup-jobs --backup-vault-name lab-vault-011}} có job state COMPLETED.',
+    'Recovery point xuất hiện trong vault; có thể restore (EBS/RDS/EFS) ra resource mới.',
+    'Vault Lock (nếu bật): thử xoá recovery point trước hạn → bị từ chối; CloudTrail có event CreateBackupVault và backup job.'
+  ],
+  cost: 'AWS Backup tính theo dung lượng backup (theo resource type) cộng cross-region/account copy và restore. Vault Lock không tính phí riêng nhưng giữ dữ liệu lâu nên chi phí lưu trữ tăng. Dọn dẹp: xoá recovery point, vault, plan, selection, resource lab.',
+  examTip: `### Bẫy đề thi
+- **Backup tập trung**: AWS Backup thay cho cấu hình snapshot rời rạc; dùng tag-based selection để tự động áp dụng policy. Đề "backup nhiều tài nguyên, nhiều account" → AWS Backup + Organizations.
+- **Vault Lock compliance vs governance**: compliance không thể tắt/xoá kể cả root (chống ransomware), governance chỉ user đặc quyền mới tắt được. Đề "không ai xoá được backup" → compliance.
+- **Lifecycle**: transition sang cold storage (rẻ hơn) hoặc expire sau N ngày; kết hợp retention. Đề "chi phí backup thấp" → lifecycle.
+- **Cross-region/account**: copy backup sang region/account khác cho DR và multi-account. Đề "DR, nhiều account" → cross-region + cross-account copy.
+- **Audit**: CloudTrail + AWS Backup dashboard + EventBridge để biết backup thành công/thất bại; DOP hay hỏi phần giám sát/phát hiện sự cố.`,
+  ref: ['lab-061-tao-aws-backup-vault-va-backup-plan', 'lab-062-backup-rule-schedule-lifecycle-va-retention', 'lab-063-backup-ebs-efs-s3-va-fsx', 'lab-067-vault-lock-va-compliance-retention'],
+},
+{
+  id: 'awslab-storage-012',
+  category: 'storage',
+  title: 'Di trú dữ liệu vào S3: DataSync, Transfer Family và Snowball',
+  level: 'senior',
+  minutes: 50,
+  exams: ['sap-c02', 'dop-c02'],
+  domains: ['sap-d4', 'dop-d1'],
+  services: ['DataSync', 'Transfer Family', 'Snowball', 'S3'],
+  goal: 'Sau lab này bạn chọn công cụ di trú dữ liệu phù hợp: DataSync (agent, NFS/SMB/object, incremental, giữ metadata), Transfer Family (SFTP/FTPS/FTP vào S3/EFS không cần dựng server), Snowball (offline petabyte). Đây là chủ đề migration (SAP domain 4) rất hay ra.',
+  steps: [
+    'Hiểu 3 công cụ: DataSync (chuyển giữa on-prem/NFS/SMB/HDFS và AWS S3/EFS/FSx, có agent, incremental, giữ metadata, dùng mạng); Transfer Family (SFTP/FTPS/FTP endpoint quản lý, backend S3/EFS, không cần dựng server); Snowball/Snowball Edge (thiết bị vật lý offline cho petabyte khi băng thông mạng không đủ).',
+    'DataSync: cài DataSync agent (VM on-prem), tạo location nguồn (NFS/SMB) và đích (S3), tạo task rồi chạy; theo dõi transferred bytes/files.',
+    'Transfer Family: tạo server SFTP, gán IAM role và identity provider, trỏ user về S3/EFS; client dùng SFTP như thường để upload vào S3.',
+    'Snowball: yêu cầu thiết bị, cài dữ liệu, vận chuyển tới AWS region, import vào S3; dùng khi dữ liệu quá lớn để chuyển qua mạng (ví dụ 50 TB, link 100 Mbps).',
+    'Chọn theo băng thông: ước tính thời gian = dung lượng / băng thông hiệu dụng. Nếu vài tuần → Snowball; nếu vài giờ → DataSync qua Direct Connect/VPN.',
+    'Bảo mật và kiểm tra: DataSync/Transfer Family dùng IAM, KMS, CloudTrail; Snowball có chain of custody và mã hoá.',
+    'Dọn dẹp: xoá DataSync task/agent/location, Transfer Family server/user, trả thiết bị Snowball, rồi xoá dữ liệu S3 tạm.'
+  ],
+  verify: [
+    'DataSync task trạng thái Success, số file/bytes khớp nguồn; so sánh checksum/metadata nếu bật verify.',
+    'Transfer Family: SFTP client upload file vào S3/EFS thành công bằng credential đã cấu hình.',
+    'Snowball: sau khi AWS import, object xuất hiện trong S3 bucket đích; job manifest báo hoàn tất.'
+  ],
+  cost: 'DataSync tính theo GB dữ liệu chuyển; Transfer Family tính theo giờ cộng data transfer; Snowball tính phí dịch vụ và vận chuyển theo TB/tháng; Direct Connect có port fee. Dọn dẹp: xoá task/location/agent, server, trả Snowball, rồi xoá dữ liệu tạm.',
+  examTip: `### Bẫy đề thi
+- **DataSync vs Transfer Family**: DataSync tự động chuyển/replicate (agent, incremental, giữ metadata); Transfer Family chỉ cung cấp giao thức SFTP/FTPS/FTP để client tự đổ dữ liệu vào S3/EFS. Đề "đồng bộ tự động on-prem → S3" → DataSync.
+- **Snowball khi nào**: khi băng thông không đủ (dữ liệu lớn, thời gian gấp), offline vật lý. Đề "100 TB, link 100 Mbps, cần xong trong 1 tuần" → Snowball.
+- **Incremental**: DataSync chỉ truyền phần thay đổi lần sau, tiết kiệm thời gian/băng thông. Đề "đồng bộ lặp lại hàng ngày" → DataSync.
+- **Metadata**: DataSync giữ POSIX metadata, permissions, timestamps; Transfer Family giữ chủ yếu nội dung file. Đề "giữ nguyên metadata" → DataSync.
+- **Bảo mật**: cả ba dùng IAM + KMS + CloudTrail; Snowball có chuỗi hành trình (chain of custody) và mã hoá. Đề "tuân thủ, audit" → bật CloudTrail + KMS.`,
+  ref: ['lab-073-datasync-s3-location', 'lab-075-datasync-incremental-transfer', 'lab-081-transfer-family-sftp-voi-s3-backend', 'lab-084-snowball-data-migration-planning'],
+},
 );
