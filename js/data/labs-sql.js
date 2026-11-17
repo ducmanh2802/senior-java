@@ -3660,4 +3660,508 @@ CREATE INDEX idx_books_search ON books USING gin (search_vector);
   ],
   tags: ['postgresql', 'index', 'pg_trgm', 'ilike', 'full-text-search', 'gin', 'sargable'],
 },
+{
+  id: 'lab-sql-025',
+  category: 'sql',
+  title: 'Báo cáo đơn VIP lọc theo thuộc tính JSON: Seq Scan 19,6 triệu dòng vì bọc cast quanh biểu thức',
+  level: 'senior',
+  scenario: `**Bối cảnh.** Sàn thương mại điện tử **MegaCart** chạy service {{order-report}} (Spring Boot 3.3, Hibernate 6.4, PostgreSQL 15.6 trên RDS, 8 vCPU / 64 GB RAM). Bảng {{orders}} lưu **19.640.220 dòng** (~7,8 GB heap + 640 MB index). Cột {{metadata}} kiểu {{jsonb}}, mặc định là object rỗng; mỗi đơn lưu các thuộc tính: tier (hạng thành viên: gold, silver, normal), source (app, web, pos), loyalty (điểm tích luỹ, kiểu số). Một giá trị thật:
+
+~~~json
+{"id": 20260318004281, "tier": "gold", "source": "app", "loyalty": 980}
+~~~
+
+Mỗi phút có khoảng 90 request tới endpoint mới {{GET /api/v1/reports/vip-orders}} (màn hình "Đơn VIP" của phòng CRM).
+
+**Triệu chứng (18/03/2026, 10:20).** p95 của endpoint nhảy từ 260 ms lên **4,6 giây**, gateway trả 504 cho ~12% request, CPU RDS tăng từ 24% lên 88%. DBA chạy EXPLAIN ANALYZE và thấy **Seq Scan toàn bảng 19.640.220 dòng**. Index {{idx_orders_created_at}} trên {{created_at}} đã có từ trước nhưng không giúp gì cho câu này. Một dev thử tạo index trên chính cột {{metadata}} — planner vẫn không dùng.
+
+**Việc bạn có.** Ba artifact: EXPLAIN ANALYZE trước/sau khi sửa, schema + danh sách index + {{pg_stat_statements}}, và log Hibernate. Hãy chỉ ra vì sao index không dùng, vì sao câu so sánh {{metadata->>'loyalty'}} với số lại báo lỗi kiểu dữ liệu, và cách sửa đúng.`,
+  artifacts: [
+    {
+      name: 'explain-vip-report.txt',
+      lang: 'text',
+      content: `-- 2026-03-18 10:21:03 +07, psql tren RDS megacart-primary (PostgreSQL 15.6)
+megacart=# EXPLAIN (ANALYZE, BUFFERS)
+SELECT count(*), sum(total_amount) AS total
+FROM orders
+WHERE metadata->>'tier' = 'gold';
+                                                       QUERY PLAN
+------------------------------------------------------------------------------------------------------------------------
+ Aggregate  (cost=1824512.44..1824512.47 rows=1 width=48) (actual time=4583.912..4583.918 rows=1 loops=1)
+   Buffers: shared hit=511204 read=512339
+   ->  Seq Scan on orders  (cost=0.00..1824512.44 rows=4901 width=23) (actual time=0.021..4508.331 rows=2418 loops=1)
+         Filter: ((metadata ->> 'tier'::text) = 'gold'::text)
+         Rows Removed by Filter: 19637802
+         Buffers: shared hit=511204 read=512339
+ Planning Time: 0.284 ms
+ Execution Time: 4584.771 ms
+(9 rows)
+
+-- (2) Loc theo loyalty: jsonb ->> tra ve text, so sanh voi so bi loi
+megacart=# EXPLAIN (ANALYZE, BUFFERS)
+SELECT count(*) FROM orders WHERE metadata->>'loyalty' >= 800;
+ERROR:  operator does not exist: text >= integer
+LINE 2: ... WHERE metadata->>'loyalty' >= 800
+                               ^
+HINT:  No operator matches the given name and argument types. You might need to add explicit type casts.
+
+-- (3) Sau khi "va" bang cast dat tren bieu thuc:
+megacart=# EXPLAIN (ANALYZE, BUFFERS)
+SELECT count(*) FROM orders WHERE (metadata->>'loyalty')::int >= 800;
+                                                       QUERY PLAN
+------------------------------------------------------------------------------------------------------------------------
+ Aggregate  (cost=1832101.44..1832101.47 rows=1 width=8) (actual time=4602.118..4602.124 rows=1 loops=1)
+   Buffers: shared hit=511204 read=512339
+   ->  Seq Scan on orders  (cost=0.00..1832101.44 rows=158220 width=0) (actual time=0.022..4521.006 rows=159000 loops=1)
+         Filter: (((metadata ->> 'loyalty'::text))::integer >= 800)
+         Rows Removed by Filter: 19481220
+         Buffers: shared hit=511204 read=512339
+ Planning Time: 0.301 ms
+ Execution Time: 4603.882 ms
+(9 rows)
+
+-- (4) Sau khi tao expression index va ANALYZE:
+megacart=# CREATE INDEX CONCURRENTLY idx_orders_tier ON orders ((metadata->>'tier'));
+CREATE INDEX
+megacart=# CREATE INDEX CONCURRENTLY idx_orders_loyalty ON orders (((metadata->>'loyalty')::int));
+CREATE INDEX
+megacart=# ANALYZE orders;
+ANALYZE
+
+-- (5) Cau tier: 4.584 ms -> 41,6 ms
+megacart=# EXPLAIN (ANALYZE, BUFFERS)
+SELECT count(*), sum(total_amount) AS total
+FROM orders
+WHERE metadata->>'tier' = 'gold';
+                                                       QUERY PLAN
+------------------------------------------------------------------------------------------------------------------------
+ Aggregate  (cost=4821.44..4821.47 rows=1 width=48) (actual time=41.229..41.235 rows=1 loops=1)
+   Buffers: shared hit=18412 read=6
+   ->  Index Scan using idx_orders_tier on orders  (cost=0.56..4821.44 rows=4901 width=23) (actual time=0.041..39.882 rows=2418 loops=1)
+         Index Cond: ((metadata ->> 'tier'::text) = 'gold'::text)
+         Buffers: shared hit=18412 read=6
+ Planning Time: 0.241 ms
+ Execution Time: 41.612 ms
+(7 rows)
+
+-- (6) Cau loyalty: 4.603 ms -> 11,7 ms
+megacart=# EXPLAIN (ANALYZE, BUFFERS)
+SELECT count(*) FROM orders WHERE (metadata->>'loyalty')::int >= 800;
+                                                       QUERY PLAN
+------------------------------------------------------------------------------------------------------------------------
+ Aggregate  (cost=12842.44..12842.47 rows=1 width=8) (actual time=11.402..11.408 rows=1 loops=1)
+   Buffers: shared hit=12840 read=2
+   ->  Index Scan using idx_orders_loyalty on orders  (cost=0.56..12842.44 rows=158220 width=0) (actual time=0.041..7.114 rows=159000 loops=1)
+         Index Cond: (((metadata ->> 'loyalty'::text))::integer >= 800)
+         Buffers: shared hit=12840 read=2
+ Planning Time: 0.201 ms
+ Execution Time: 11.741 ms
+(7 rows)`,
+    },
+    {
+      name: 'schema-and-index.txt',
+      lang: 'text',
+      content: `-- 2026-03-18 10:22:10 +07, RDS megacart-primary
+megacart=# \\d orders
+                                       Table "public.orders"
+  Column       |           Type           | Nullable |     Default
+---------------+--------------------------+----------+------------------
+ id            | bigint                   | not null |
+ total_amount  | numeric(14,2)            | not null |
+ metadata      | jsonb                    | not null | '{}'::jsonb
+ created_at    | timestamp with time zone | not null | now()
+Indexes:
+    "orders_pkey" PRIMARY KEY, btree (id)
+    "idx_orders_created_at" btree (created_at)
+
+megacart=# SELECT indexname, indexdef FROM pg_indexes WHERE tablename = 'orders';
+       indexname        |                                      indexdef
+------------------------+------------------------------------------------------------------------------------
+ orders_pkey            | CREATE UNIQUE INDEX orders_pkey ON public.orders USING btree (id)
+ idx_orders_created_at  | CREATE INDEX idx_orders_created_at ON public.orders USING btree (created_at)
+
+megacart=# SELECT pg_size_pretty(pg_relation_size('orders')) AS heap,
+                pg_size_pretty(pg_indexes_size('orders')) AS idx;
+  heap  |  idx
+--------+------
+ 7814 MB | 640 MB
+(1 row)
+
+-- Thong ke cau query 5 phut quanh su co (pg_stat_statements):
+megacart=# SELECT calls, round(total_exec_time::numeric, 1) AS total_ms,
+                round(mean_exec_time::numeric, 1) AS mean_ms, rows
+FROM pg_stat_statements
+WHERE query LIKE '%metadata->>%'
+ORDER BY total_exec_time DESC LIMIT 3;
+ calls |  total_ms  | mean_ms | rows
+-------+------------+---------+------
+   452 | 2071516.0  |  4583.0 |   452
+   118 |  541822.0  |  4591.7 |   118
+  3120 |   38688.0  |    12.4 | 7544320
+(3 rows)
+-- 452 lan * 4,6 giay = 2.071 giay CPU trong 300 giay -> ~6,9 vCPU chay lien tuc.`,
+    },
+    {
+      name: 'app-vip-report.log',
+      lang: 'text',
+      content: `2026-03-18 10:21:03.118 DEBUG [http-nio-8080-exec-14] o.h.SQL :
+    select count(*), sum(o1_0.total_amount) from orders o1_0
+    where o1_0.metadata ->> 'tier' = ?
+2026-03-18 10:21:07.702 INFO  [http-nio-8080-exec-14] c.m.o.VipOrderReportController : GET /api/v1/reports/vip-orders -> 200 in 4601 ms
+2026-03-18 10:21:09.331 DEBUG [http-nio-8080-exec-21] o.h.SQL :
+    select count(*) from orders o1_0 where o1_0.metadata ->> 'loyalty' >= ?
+2026-03-18 10:21:09.344 ERROR [http-nio-8080-exec-21] c.m.o.VipOrderReportController : GET /api/v1/reports/vip-orders?minLoyalty=800 -> 500
+org.springframework.dao.InvalidDataAccessResourceUsageException: could not execute query; nested exception is org.hibernate.exception.SQLGrammarException: could not execute query
+Caused by: org.postgresql.util.PSQLException: ERROR: operator does not exist: text >= integer
+  Position: 68
+-- Sau khi dev sua thanh (metadata->>'loyalty')::int >= ?:
+2026-03-18 10:24:11.902 DEBUG [http-nio-8080-exec-9] o.h.SQL :
+    select count(*) from orders o1_0 where (o1_0.metadata ->> 'loyalty')::integer >= ?
+2026-03-18 10:24:16.501 INFO  [http-nio-8080-exec-9] c.m.o.VipOrderReportController : GET /api/v1/reports/vip-orders?minLoyalty=800 -> 200 in 4599 ms
+-- pattern: moi request VIP mat ~4,6 giay, khong co request nao duoi 1 giay`,
+    },
+  ],
+  questions: [
+    'Vì sao câu WHERE metadata->>\'tier\' = \'gold\' không dùng được index, và vì sao câu loyalty bị lỗi kiểu dữ liệu? Chỉ ra bằng dòng nào trong EXPLAIN/log.',
+    'So sánh ba câu: (1) Seq Scan 4.584 ms, (2) lỗi operator does not exist, (3) sau khi tạo expression index còn 41,6 ms. Điều gì thay đổi giữa (1) và (3) nếu bảng và index đều có?',
+    'Bạn sửa thế nào cho ngắn hạn và dài hạn? Giải thích expression index, generated column và GIN jsonb_path_ops — khi nào dùng cái nào, lưu ý gì về IMMUTABLE và ANALYZE?',
+  ],
+  hints: [
+    'Đọc dòng "Filter: ((metadata ->> \'tier\'::text) = \'gold\'::text)": vế trái là một biểu thức trên cột metadata, không phải cột trần. Planner không có index nào trên biểu thức này nên chọn Seq Scan. Index idx_orders_created_at không giúp vì câu không lọc theo created_at.',
+    'jsonb ->> luôn trả về text, kể cả khi giá trị trong JSON là số. So sánh text với số (800) không có toán tử -> lỗi "operator does not exist: text >= integer". Ép kiểu ở vế biểu thức (::int) chạy được nhưng vẫn là biểu thức -> vẫn Seq Scan.',
+    'Cách sửa: tạo expression index ((metadata->>\'tier\')) và (((metadata->>\'loyalty\')::int)), rồi ANALYZE. Biểu thức trong index phải IMMUTABLE (jsonb ->> là IMMUTABLE, cast text::int cũng IMMUTABLE). Dài hạn: generated column STORED + btree, hoặc GIN jsonb_path_ops + @> cho điều kiện bằng.',
+  ],
+  answer: `**Tóm tắt:** Câu báo cáo lọc theo thuộc tính trong cột {{jsonb}} bằng biểu thức {{metadata->>'tier'}} — đây là **biểu thức bọc quanh cột**, không phải cột trần, nên planner không dùng được index btree thông thường và phải **Seq Scan 19.640.220 dòng** (4,6 giây). Khi lọc theo {{loyalty}}, {{metadata->>'loyalty'}} trả về **text** nên so sánh {{>= 800}} báo lỗi "operator does not exist: text >= integer"; dev "vá" bằng {{::int}} ngay trên biểu thức, càng làm index khó dùng. Sửa đúng: tạo **expression index** trên chính biểu thức đó rồi {{ANALYZE}} (đo được 4.584 ms → 41,6 ms), hoặc dùng **GIN + @>** cho điều kiện bằng, hoặc thêm **generated column** có kiểu đúng.
+
+### Kiến thức nền: jsonb và ba toán tử hay dùng
+PostgreSQL có hai kiểu JSON. {{json}} lưu **nguyên văn** (giữ cả khoảng trắng, thứ tự key); {{jsonb}} lưu dạng **cây nhị phân đã parse**, bỏ khoảng trắng, tìm kiếm nhanh hơn. Bảng ở đây dùng {{jsonb}} — đúng cho dữ liệu bị truy vấn thường xuyên.
+
+- {{metadata->>'tier'}} : trả về **giá trị của key tier dưới dạng text**. Mũi tên đơn {{->}} trả về jsonb, mũi tên kép {{->>}} trả về text.
+- {{metadata->'tier'}} : trả về jsonb, dùng khi cần đi sâu tiếp vào object lồng nhau.
+- {{metadata @> ...}} : kiểm tra **chứa** (containment) — jsonb bên trái có chứa toàn bộ key/value bên phải hay không; đây là toán tử duy nhất dùng được với index GIN jsonb_path_ops.
+
+> Điểm mấu chốt: {{->>}} **luôn trả về text**, kể cả khi giá trị trong JSON là số. Vì vậy {{metadata->>'loyalty'}} không so sánh trực tiếp với 800 được — PostgreSQL không có toán tử {{text >= integer}}.
+
+### Vì sao biểu thức làm mất index
+Một index btree trên cột {{metadata}} lưu **giá trị jsonb thô** của cả object, sắp theo thứ tự jsonb. Câu {{WHERE metadata->>'tier' = 'gold'}} không hỏi "object này có bằng ... không" mà hỏi "text ở key tier có bằng gold không". Planner không có cách nào biến câu hỏi đó thành một khoảng trên index jsonb thô, nên nó chọn Seq Scan: đọc từng dòng, bóc tách JSON, so sánh, loại.
+
+Quy tắc chung: planner chỉ dùng index khi biểu thức trong WHERE **trùng khớp** với biểu thức đã được index. Nếu tạo {{CREATE INDEX ... ON orders ((metadata->>'tier'))}}, index sẽ lưu **đúng giá trị text** của từng dòng; khi đó vế trái của WHERE chính là biểu thức đó → dùng được. Đó là **expression index** (index trên biểu thức, không phải trên cột).
+
+### Nguyên nhân gốc, từng bước
+1. Câu 1: {{WHERE metadata->>'tier' = 'gold'}}. Vế trái là biểu thức, không phải cột → planner bỏ {{idx_orders_created_at}} (câu không lọc theo created_at) và cũng không có index nào trên biểu thức → **Seq Scan**.
+2. Seq Scan đọc hết 19.640.220 dòng, giữ 2.418 dòng {{tier = gold}}, loại 19.637.802: {{Rows Removed by Filter: 19637802}}, {{Buffers: shared hit=511204 read=512339}} (~1 triệu page ≈ 7,8 GB heap), {{Execution Time: 4584.771 ms}}.
+3. Câu 2: {{metadata->>'loyalty' >= 800}} → lỗi ngay vì {{->>}} trả text. Đây là **lỗi kiểu dữ liệu**, không phải lỗi index.
+4. Câu 3 (sau khi vá): {{(metadata->>'loyalty')::int >= 800}}. Cast làm biểu thức phức tạp hơn; planner không có index nào khớp → vẫn Seq Scan, 4.603 ms, loại 19.481.220 dòng.
+5. Sau khi tạo expression index + {{ANALYZE}}: câu 1 dùng {{Index Scan using idx_orders_tier}}, {{Buffers: shared hit=18412 read=6}} (18.418 page), {{Execution Time: 41.612 ms}}; câu 3 dùng {{idx_orders_loyalty}}, {{Execution Time: 11.741 ms}}. Chênh lệch ~110 lần và ~390 lần.
+
+### Dẫn chứng
+- Artifact 1: Seq Scan + {{Filter: ((metadata ->> 'tier'::text) = 'gold'::text)}} + {{Rows Removed by Filter: 19637802}} + {{Execution Time: 4584.771 ms}}; câu loyalty lỗi {{operator does not exist: text >= integer}}; sau index: {{Index Scan using idx_orders_tier}} + {{Execution Time: 41.612 ms}}.
+- Artifact 2: index hiện có chỉ có {{orders_pkey}} và {{idx_orders_created_at}} — **không có** index nào trên {{metadata}} hay biểu thức của nó.
+- Artifact 3: Hibernate bind {{metadata ->> 'tier' = ?}} (một tham số text), mỗi request 4,6 giây; câu loyalty ban đầu trả 500 vì lỗi kiểu.
+
+### Cách sửa — ngắn hạn (18/03)
+- Tạo expression index ngoài giờ cao điểm, dùng CONCURRENTLY để không chặn ghi:
+~~~sql
+CREATE INDEX CONCURRENTLY idx_orders_tier ON orders ((metadata->>'tier'));
+CREATE INDEX CONCURRENTLY idx_orders_loyalty ON orders (((metadata->>'loyalty')::int));
+ANALYZE orders;
+~~~
+- Sửa câu loyalty: so sánh **đúng kiểu**. Nếu loyalty là số, dùng {{::int}} (hoặc {{::numeric}}) **ở vế biểu thức**, không so sánh text với số.
+- Đặt {{statement_timeout}} cho role báo cáo (ví dụ 30 giây) để câu nặng không chạy tiếp khi client đã bỏ; thêm cache ngắn 30–60 giây cho màn hình CRM.
+- Nếu câu vẫn chậm vì phải đọc quá nhiều dòng, thêm điều kiện {{created_at}} (khoảng nửa mở) và index phù hợp — xem mục dài hạn.
+
+### Cách sửa — dài hạn
+- **Generated column** (PostgreSQL 12+): thêm cột dẫn xuất có kiểu đúng, lưu sẵn trên đĩa, rồi btree trên đó. Query viết {{tier_text = 'gold'}} — sargable, không cần expression index.
+~~~sql
+ALTER TABLE orders
+  ADD COLUMN tier_text text GENERATED ALWAYS AS (metadata->>'tier') STORED,
+  ADD COLUMN loyalty_int int GENERATED ALWAYS AS ((metadata->>'loyalty')::int) STORED;
+CREATE INDEX CONCURRENTLY idx_orders_tier_text ON orders (tier_text);
+CREATE INDEX CONCURRENTLY idx_orders_loyalty_int ON orders (loyalty_int);
+~~~
+- **GIN + containment** khi cần lọc nhiều key cùng lúc: {{CREATE INDEX ... USING gin (metadata jsonb_path_ops)}} rồi {{WHERE metadata @> ...}}. GIN không hỗ trợ điều kiện khoảng ({{>}}, {{<}}) trên giá trị, nên loyalty vẫn cần expression index hoặc generated column.
+- Nếu JSON là **lõi nghiệp vụ** (không phải thuộc tính phụ), hãy đưa các key hay lọc ra cột thật ngay từ thiết kế. JSON nên dùng cho phần "dữ liệu bán cấu trúc", không phải cho trường phải truy vấn liên tục.
+
+### So sánh ba cách
+| Cách | Khi nào dùng | Nhược điểm |
+|---|---|---|
+| Expression index | Lọc đúng một key, không muốn đổi schema | Query phải viết **trùng khớp** biểu thức; mỗi key một index; vẫn phải ANALYZE |
+| Generated column + btree | Lọc theo kiểu đúng (số, ngày), nhiều query | Thêm cột, tốn bộ nhớ; mỗi write tính lại biểu thức |
+| GIN jsonb_path_ops + @> | Lọc nhiều key, điều kiện bằng | Không hỗ trợ > <; index lớn; ghi chậm hơn |
+
+### Bẫy khi dùng expression index
+- **IMMUTABLE**: biểu thức trong index chỉ được gọi hàm IMMUTABLE (kết quả chỉ phụ thuộc tham số). {{jsonb_object_field_text}} (toán tử {{->>}} trên jsonb) là IMMUTABLE nên index được; nếu dùng {{json}} thường hoặc {{to_char}} (phụ thuộc locale) thì PostgreSQL báo lỗi "functions in index expression must be marked IMMUTABLE".
+- **Phải ANALYZE** sau khi tạo index: planner cần statistics cho biểu thức; thiếu ANALYZE thì vẫn có thể chọn Seq Scan.
+- **CONCURRENTLY**: không chạy được trong transaction block; gọi bằng psql, không đưa vào Flyway.
+- **Kích thước**: mỗi expression index là một btree riêng; hai index ở đây cộng thêm khoảng 1,1 GB. Đo trên staging trước.
+- **Query phải khớp từng ký tự**: {{metadata->>'tier'}} khác {{lower(metadata->>'tier')}}; đổi cách viết là index cũ thành vô dụng.
+
+### Sơ đồ luồng
+~~~seq
+title: Báo cáo VIP: expression index đổi Seq Scan thành Index Scan
+actors: Client | order-report | PostgreSQL
+Client -> order-report: GET /reports/vip-orders?tier=gold
+order-report -> PostgreSQL: SELECT ... WHERE metadata->>'tier' = $1
+PostgreSQL -> PostgreSQL: Seq Scan 19,6 triệu dòng, 4,6 giây
+PostgreSQL --> order-report: 2.418 dòng
+order-report --> Client: 200 sau 4,6 giây
+note PostgreSQL: expression index ((metadata->>'tier')) + ANALYZE
+order-report -> PostgreSQL: cùng câu, sau khi tạo index
+PostgreSQL --> order-report: Index Scan 41 ms
+order-report --> Client: 200 sau 48 ms
+~~~
+
+### Trả lời mẫu khi phỏng vấn
+"Câu báo cáo lọc theo thuộc tính trong cột jsonb bằng metadata->>'tier'. Đây là biểu thức bọc quanh cột nên planner không dùng được index btree, nó Seq Scan 19,6 triệu dòng mất 4,6 giây. Khi lọc theo loyalty thì jsonb->> trả về text, so sánh với số bị lỗi operator does not exist; dev vá bằng cách ép kiểu ngay trên biểu thức, vẫn Seq Scan. Tôi tạo expression index trên chính biểu thức đó — ((metadata->>'tier')) và (((metadata->>'loyalty')::int)) — rồi ANALYZE; câu tier còn 41 ms, câu loyalty 11 ms. Lưu ý biểu thức phải IMMUTABLE, phải ANALYZE, và CONCURRENTLY thì không chạy trong Flyway. Dài hạn tôi thêm generated column STORED có kiểu đúng rồi btree, hoặc GIN jsonb_path_ops với @> khi cần lọc nhiều key."
+
+> Senior tip: JSONB rất tiện nhưng **đừng để nó thành nơi chứa các trường bạn phải truy vấn liên tục**. Quy tắc thực dụng: cái gì đã có WHERE, ORDER BY, JOIN thì đưa ra cột thật; JSON giữ phần thuộc tính phụ. Nếu buộc phải lọc trong JSON, hãy coi expression index hoặc generated column là một phần của schema — và nhớ rằng index trên biểu thức chỉ sống nếu câu query viết lại đúng biểu thức đó.`,
+  rubric: [
+    'Chỉ đúng nguyên nhân gốc: điều kiện WHERE là biểu thức trên cột jsonb (metadata->>\'tier\') nên không sargable, planner chọn Seq Scan 19,6 triệu dòng',
+    'Dẫn chứng đúng: Seq Scan + Filter metadata ->> tier + Rows Removed 19.637.802 + Execution Time 4584 ms, so sánh với Index Scan 41 ms sau khi tạo expression index',
+    'Giải thích đúng vì sao loyalty bị lỗi kiểu (jsonb ->> trả text, không có toán tử text >= integer) và vì sao cast ở vế biểu thức vẫn không dùng được index',
+    'Đề xuất sửa đúng: expression index ((metadata->>\'tier\')) và (((metadata->>\'loyalty\')::int)) + ANALYZE, generated column STORED + btree, GIN jsonb_path_ops + @> cho containment',
+    'Nêu lưu ý IMMUTABLE, ANALYZE, CONCURRENTLY ngoài transaction, kích thước index và bẫy so sánh text với số',
+  ],
+  tags: ['postgresql', 'index', 'jsonb', 'expression-index', 'sargable', 'explain'],
+},
+{
+  id: 'lab-sql-026',
+  category: 'sql',
+  title: 'Migration thêm CHECK và FK không NOT VALID trên bảng 61 triệu dòng: ACCESS EXCLUSIVE LOCK làm 512 query xếp hàng',
+  level: 'lead',
+  scenario: `**Bối cảnh.** Cổng thanh toán **PayGate** chạy service {{ledger-service}} (Spring Boot 3.3, Hibernate 6.4, Flyway, PostgreSQL 15.6 trên RDS, 8 vCPU / 64 GB RAM). Bảng {{ledger_entry}} lưu bút toán kế toán: **61.284.910 dòng** (~14,2 GB heap + 6,8 GB index). Giờ cao điểm 09:00–11:00 hệ thống xử lý **1.400 giao dịch/giây**, mọi API đọc/ghi bút toán đều đi qua bảng này. Service chạy **18 instance**, mỗi instance HikariCP **40 connection** (tổng tối đa 720 connection tới RDS).
+
+**Triệu chứng (19/03/2026, 10:04).** Deploy bản v3.41.0 kèm migration Flyway {{V88__add_ledger_constraints.sql}} gồm ba câu:
+
+~~~sql
+ALTER TABLE ledger_entry ADD COLUMN reversal_of bigint;
+ALTER TABLE ledger_entry ADD CONSTRAINT fk_ledger_account FOREIGN KEY (account_id) REFERENCES account(id);
+ALTER TABLE ledger_entry ADD CONSTRAINT chk_ledger_amount CHECK (amount <> 0);
+~~~
+
+Sau khoảng 40 giây, **toàn bộ** endpoint đọc/ghi bút toán trả 504, CPU RDS chỉ **11%**, connection pool cạn, log tràn {{HikariPool-1 - Connection is not available, request timed out after 3000ms}}. DBA terminate migration lúc 10:07:12, hệ thống hồi phục sau ~25 giây. Cùng migration chạy lại lúc 23:30 (bảng không có traffic) thì xong trong **4 phút 12 giây**.
+
+**Việc bạn có.** Ba artifact: log Flyway, ảnh {{pg_stat_activity}} và {{pg_locks}} lúc 10:07:10. Hãy tìm nguyên nhân gốc, dựng chuỗi chờ, giải thích vì sao 23:00 lại thành công, và đề xuất cách chạy migration an toàn.`,
+  artifacts: [
+    {
+      name: 'flyway-migration.log',
+      lang: 'text',
+      content: `2026-03-19 10:04:00.012 INFO  [main] o.f.core.internal.command.DbMigrate : Migrating schema "public" to version "88 - add ledger constraints"
+2026-03-19 10:04:00.015 INFO  [main] o.f.core.internal.sqlscript.DefaultSqlScriptExecutor : Executing SQL: ALTER TABLE ledger_entry ADD COLUMN reversal_of bigint
+2026-03-19 10:04:00.412 INFO  [main] o.f.core.internal.sqlscript.DefaultSqlScriptExecutor : Executing SQL: ALTER TABLE ledger_entry ADD CONSTRAINT fk_ledger_account FOREIGN KEY (account_id) REFERENCES account(id)
+2026-03-19 10:06:12.905 INFO  [main] o.f.core.internal.sqlscript.DefaultSqlScriptExecutor : Executing SQL: ALTER TABLE ledger_entry ADD CONSTRAINT chk_ledger_amount CHECK (amount <> 0)
+2026-03-19 10:07:12.331 ERROR [main] o.f.core.internal.command.DbMigrate : Migration of schema "public" to version "88" failed! Please restore backups...
+2026-03-19 10:07:12.332 ERROR [main] o.f.core.internal.command.DbMigrate : SQL State  : 57P01 --- Error Code : 0 --- Message  : FATAL: terminating connection due to administrator command
+-- 57P01 = admin_shutdown: backend bi DBA terminate luc 10:07:12 (pg_terminate_backend).
+-- Cau thu 2 (FK) chay 2 phut 12 giay (10:04:00 -> 10:06:12) de validate 61 trieu dong.
+-- Cau thu 3 (CHECK) chay 59 giay thi bi terminate (10:06:12 -> 10:07:12).
+-- Flyway mac dinh boc moi migration trong MOT transaction: lock cua cau dau tien
+--   duoc giu den COMMIT, khong nha o cuoi tung cau.
+-- Lan chay lai 23:30: ADD COLUMN 0,4s + FK 2m05 + CHECK 2m06 = 4 phut 12 giay, thanh cong.`,
+    },
+    {
+      name: 'pg-stat-activity-100710.txt',
+      lang: 'text',
+      content: `-- 2026-03-19 10:07:10 +07, RDS paygate-primary (PostgreSQL 15.6)
+paygate=# SELECT pid, state, wait_event_type, wait_event, now() - xact_start AS xact_age,
+       left(query, 78) AS query
+FROM pg_stat_activity WHERE datname='paygate' ORDER BY backend_start;
+
+  pid   |        state        | wait_event_type | wait_event |    xact_age     |                          query
+--------+---------------------+-----------------+------------+-----------------+---------------------------------------------------------
+ 51422  | active              |                 |            | 00:03:10.442  | ALTER TABLE ledger_entry ADD CONSTRAINT chk_ledger_amount CHECK (amount <> 0)
+ 51423  | active              | Lock            | relation   | 00:00:12.331  | SELECT count(*) FROM ledger_entry WHERE account_id = $1
+ 51424  | active              | Lock            | relation   | 00:00:12.308  | UPDATE ledger_entry SET amount = $1 WHERE id = $2
+ 51425  | active              | Lock            | relation   | 00:00:12.290  | INSERT INTO ledger_entry (...) VALUES (...)
+ 51426  | active              | Lock            | relation   | 00:00:12.264  | SELECT id, amount FROM ledger_entry WHERE account_id = $1
+ 51427  | active              | Lock            | relation   | 00:00:12.241  | UPDATE ledger_entry SET status = $1 WHERE id = $2
+-- (con tong 507 backend cung dang cho lock tren ledger_entry, chi hien 5 dong dau)
+
+paygate=# SELECT wait_event_type, wait_event, count(*) AS n
+FROM pg_stat_activity WHERE datname='paygate' AND backend_type='client backend'
+GROUP BY 1, 2 ORDER BY n DESC;
+ wait_event_type | wait_event |  n
+-----------------+------------+-----
+ Lock            | relation   | 512
+                 |            |   6
+ Client          | ClientRead |   4
+(3 rows)
+-- 512 backend dang cho lock tren cung mot relation; 6 backend dang chay binh thuong.
+
+paygate=# SELECT state, count(*) FROM pg_stat_activity
+WHERE datname='paygate' AND backend_type='client backend' GROUP BY 1;
+        state        | count
+---------------------+-------
+ active              |   518
+ idle                |     6
+(2 rows)`,
+    },
+    {
+      name: 'pg-locks-100710.txt',
+      lang: 'text',
+      content: `-- 2026-03-19 10:07:10 +07
+paygate=# SELECT l.locktype, l.mode, l.granted, count(*) AS n
+FROM pg_locks l JOIN pg_stat_activity a ON a.pid = l.pid
+WHERE l.relation = 'ledger_entry'::regclass
+GROUP BY l.locktype, l.mode, l.granted ORDER BY n DESC;
+
+  locktype  |           mode           | granted |  n
+------------+--------------------------+---------+-----
+ relation   | AccessShareLock          | f       | 468
+ relation   | RowExclusiveLock         | f       |  44
+ relation   | AccessExclusiveLock      | t       |   1
+(3 rows)
+
+-- AccessExclusiveLock granted = t (1): migration dang GIU lock manh nhat tren ledger_entry.
+-- AccessShareLock granted = f (468): SELECT cua ung dung phai xep hang sau migration.
+-- RowExclusiveLock granted = f (44): INSERT/UPDATE/DELETE cung phai xep hang.
+-- 468 + 44 = 512, khop voi so dong wait_event_type = Lock o artifact truoc.
+
+-- Ai dang chan ai:
+paygate=# SELECT a.pid, pg_blocking_pids(a.pid) AS blocked_by
+FROM pg_stat_activity a
+WHERE a.wait_event_type = 'Lock' AND a.datname = 'paygate'
+ORDER BY a.pid LIMIT 3;
+  pid  | blocked_by
+-------+------------
+ 51423 | {51422}
+ 51424 | {51422}
+ 51425 | {51422}
+-- 51422 chinh la migration: moi query cho lock deu bi no chan.
+
+-- Lock tren bang account (bang duoc FK tham chieu):
+paygate=# SELECT l.mode, l.granted, count(*) AS n
+FROM pg_locks l WHERE l.relation = 'account'::regclass GROUP BY 1, 2 ORDER BY 3 DESC;
+          mode           | granted |  n
+-------------------------+---------+-----
+ AccessShareLock         | t       |  18
+ ShareRowExclusiveLock   | t       |   1
+(2 rows)`,
+    },
+  ],
+  questions: [
+    'Vì sao migration cần AccessExclusiveLock, và vì sao 468 SELECT (chỉ cần AccessShareLock) cũng bị treo dù AccessShareLock vốn tương thích với RowExclusiveLock?',
+    'Dựng chuỗi chờ từ artifacts: migration giữ gì, ai chờ, bằng chứng số liệu (lock mode, granted, wait_event, pg_blocking_pids).',
+    'Vì sao cùng migration lúc 23:30 lại thành công? So sánh CHECK thường với NOT VALID + VALIDATE CONSTRAINT về lock và thời gian giữ; FK có khác CHECK không?',
+  ],
+  hints: [
+    'Flyway mặc định bọc mỗi migration trong một transaction. Vì vậy AccessExclusiveLock mà câu ADD COLUMN lấy ở đầu không được nhả cho tới COMMIT — cả ba câu nằm trong cùng một lock hold.',
+    'ACCESS EXCLUSIVE xung đột với mọi lock khác, kể cả AccessShareLock của SELECT. Hàng đợi lock của PostgreSQL là FIFO: một AccessExclusiveLock đang được giữ thì mọi lock xin sau đều phải chờ.',
+    'CHECK không NOT VALID phải quét toàn bộ 61 triệu dòng để kiểm tra dữ liệu cũ, kéo dài thời gian giữ ACCESS EXCLUSIVE. VALIDATE CONSTRAINT chỉ cần ShareUpdateExclusiveLock, không chặn SELECT/INSERT/UPDATE/DELETE.',
+  ],
+  answer: `**Tóm tắt:** Migration {{V88}} chạy trong **một transaction** (Flyway mặc định). Câu {{ALTER TABLE ... ADD CONSTRAINT chk_ledger_amount CHECK (amount <> 0)}} cần **ACCESS EXCLUSIVE LOCK** trên {{ledger_entry}} và phải **quét toàn bộ 61.284.910 dòng** để kiểm tra dữ liệu cũ có thoả {{amount <> 0}} không. Vì nằm trong cùng transaction với các câu trước, ACCESS EXCLUSIVE được giữ từ câu {{ADD COLUMN}} cho tới COMMIT — tức suốt 3 phút 12 giây. ACCESS EXCLUSIVE xung đột với **mọi** lock khác, kể cả {{AccessShareLock}} của SELECT, nên 512 backend xếp hàng ({{wait_event_type = Lock}}, {{wait_event = relation}}), Hikari cạn, toàn bộ API trả 504 dù CPU chỉ 11%. Sửa: đặt {{lock_timeout}} ngắn + retry, chạy ngoài giờ cao điểm, và **chia nhỏ**: {{ADD CONSTRAINT ... NOT VALID}} (không quét) rồi {{VALIDATE CONSTRAINT}} (chỉ cần ShareUpdateExclusiveLock, không chặn đọc/ghi), tách mỗi câu thành migration riêng, {{CREATE INDEX CONCURRENTLY}} ngoài transaction.
+
+### Kiến thức nền: các mức lock trên bảng
+PostgreSQL phân biệt nhiều mức lock trên một relation, theo thứ tự mạnh dần. Hai lock được cấp cùng lúc nếu chúng **tương thích** (không xung đột).
+
+| Mức lock | Ai dùng | Xung đột với |
+|---|---|---|
+| AccessShareLock | SELECT | chỉ AccessExclusiveLock |
+| RowExclusiveLock | INSERT / UPDATE / DELETE | Share, ShareRowExclusive, Exclusive, AccessExclusive |
+| ShareUpdateExclusiveLock | VACUUM, ANALYZE, CREATE INDEX CONCURRENTLY, VALIDATE CONSTRAINT | chính nó, Share, ShareRowExclusive, Exclusive, AccessExclusive |
+| ShareRowExclusiveLock | CREATE TRIGGER, ADD FOREIGN KEY | RowExclusive, ShareUpdateExclusive, Share, ShareRowExclusive, Exclusive, AccessExclusive |
+| AccessExclusiveLock | ALTER TABLE, DROP TABLE, TRUNCATE, VACUUM FULL, REINDEX | mọi lock |
+
+Điểm cần nhớ: **VALIDATE CONSTRAINT chỉ cần ShareUpdateExclusiveLock** — mức này **không** xung đột với RowExclusiveLock, nên INSERT/UPDATE/DELETE vẫn chạy bình thường trong lúc validate. Ngược lại, {{ADD CONSTRAINT ... CHECK}} (không NOT VALID) cần ACCESS EXCLUSIVE và phải quét bảng.
+
+### Flyway transaction và vì sao cả migration bị khoá
+Flyway mặc định chạy **mỗi migration trong một transaction**. Trong PostgreSQL, lock do một câu lệnh lấy được **giữ đến khi transaction kết thúc** (COMMIT/ROLLBACK), không nhả ở cuối câu lệnh. Vì vậy:
+
+1. Câu 1 {{ADD COLUMN reversal_of bigint}} lấy ACCESS EXCLUSIVE trên {{ledger_entry}}.
+2. Câu 2 {{ADD CONSTRAINT ... FOREIGN KEY}} cần ACCESS EXCLUSIVE trên {{ledger_entry}} (và ShareRowExclusiveLock trên {{account}}), rồi quét 61 triệu dòng để kiểm tra account_id không có giá trị mồ côi — mất 2 phút 12 giây.
+3. Câu 3 {{ADD CONSTRAINT ... CHECK}} cần ACCESS EXCLUSIVE và quét toàn bộ để kiểm tra {{amount <> 0}} — bị terminate sau 59 giây.
+4. Trong suốt 3 phút 12 giây, ACCESS EXCLUSIVE của câu 1 **không được nhả**. Mọi SELECT/INSERT/UPDATE đến sau đều phải xếp hàng.
+
+Nếu chạy từng câu ở từng transaction riêng, câu 1 và câu 2 vẫn giữ ACCESS EXCLUSIVE trong lúc validate — chia nhỏ **không** tự động giải quyết vấn đề; phải dùng NOT VALID để câu 2/câu 3 không quét bảng.
+
+### Nguyên nhân gốc, từng bước
+1. 10:04:00 migration BEGIN; {{ADD COLUMN}} chạy 0,4 giây (PostgreSQL 11+ thêm cột với DEFAULT hằng số chỉ ghi metadata, không rewrite 61 triệu dòng) — nhưng ACCESS EXCLUSIVE đã được lấy và giữ.
+2. 10:04:00 → 10:06:12 FK validate 61 triệu dòng. Lock ACCESS EXCLUSIVE vẫn giữ (cùng transaction). Ghi vào {{ledger_entry}} bị chặn; SELECT vẫn chạy được vì AccessShareLock tương thích với... không — ACCESS EXCLUSIVE đã xung đột với AccessShareLock, nên **cả SELECT cũng bị chặn** ngay từ 10:04:00.
+3. 10:06:12 → 10:07:12 CHECK validate. Bảng vẫn bị khoá.
+4. Hàng đợi lock FIFO: 468 AccessShareLock + 44 RowExclusiveLock phải đứng sau ACCESS EXCLUSIVE.
+5. Mỗi request giữ 1 connection Hikari trong lúc chờ lock; {{connectionTimeout = 3000ms}} → timeout → 504. 512 backend chờ trên pool tối đa 720.
+6. CPU 11% vì không có gì thực sự chạy — đây là **blocking**, không phải quá tải. Thêm CPU hay thêm connection đều vô hiệu.
+
+### Dẫn chứng
+- Artifact 1: Flyway log cho thấy câu FK chạy 2 phút 12 giây, câu CHECK bị terminate (SQLSTATE 57P01) lúc 10:07:12; comment ghi rõ Flyway bọc migration trong một transaction.
+- Artifact 2: pid 51422 {{state = active}} (đang quét), 512 backend {{wait_event_type = Lock}}, {{wait_event = relation}}.
+- Artifact 3: {{AccessExclusiveLock granted = t}} n = 1 (migration); {{AccessShareLock granted = f}} n = 468; {{RowExclusiveLock granted = f}} n = 44; {{pg_blocking_pids}} của các pid chờ đều trả về **{51422}**. Bảng {{account}} bị ShareRowExclusiveLock (chặn ghi) nhưng SELECT vẫn chạy (AccessShareLock granted = t).
+
+### Vì sao 23:30 thành công
+Ngoài giờ cao điểm, không có lock nào đang giữ trên {{ledger_entry}}. Migration xin ACCESS EXCLUSIVE và được cấp **ngay**, không có ai xếp hàng, nên dù phải quét 61 triệu dòng (4 phút 12 giây) thì cũng không ai bị ảnh hưởng. Vấn đề không phải câu SQL hay kích thước bảng, mà là **thời điểm** và **thời gian giữ lock**.
+
+### Cách sửa — ngắn hạn (19/03)
+- Đặt {{lock_timeout}} cho role migration (ví dụ 3 giây): migration thất bại nhanh thay vì chờ vô hạn, rồi thử lại sau khi lock được giải phóng.
+- Tìm và kết thúc session giữ lock: {{SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE state = 'idle in transaction' ...}}.
+- Chạy migration ngoài giờ cao điểm (23:00–04:00); không deploy migration nặng trong giờ cao điểm.
+- Tách mỗi câu SQL thành một file migration riêng để một câu lỗi không kéo theo lock của câu khác (nhưng vẫn phải dùng NOT VALID cho câu nặng).
+
+### Cách sửa — dài hạn: NOT VALID + VALIDATE CONSTRAINT
+Chia thành hai pha: **thêm constraint (không quét)** và **validate (không chặn đọc/ghi)**.
+~~~sql
+-- Pha 1: them cot nullable (metadata, nhanh)
+ALTER TABLE ledger_entry ADD COLUMN reversal_of bigint;
+
+-- Pha 2: them CHECK KHONG validate -> khong quet 61 trieu dong, lock rat ngan
+ALTER TABLE ledger_entry ADD CONSTRAINT chk_ledger_amount CHECK (amount <> 0) NOT VALID;
+
+-- Pha 3: validate sau, KHONG chan doc/ghi (ShareUpdateExclusiveLock)
+ALTER TABLE ledger_entry VALIDATE CONSTRAINT chk_ledger_amount;
+
+-- Pha 4: FK cung NOT VALID roi validate
+ALTER TABLE ledger_entry ADD CONSTRAINT fk_ledger_account
+  FOREIGN KEY (account_id) REFERENCES account(id) NOT VALID;
+ALTER TABLE ledger_entry VALIDATE CONSTRAINT fk_ledger_account;
+~~~
+- {{NOT VALID}} bỏ qua bước quét dữ liệu cũ; ràng buộc **vẫn được áp dụng cho INSERT/UPDATE mới** (dòng mới vi phạm sẽ bị từ chối). Dữ liệu cũ có thể vi phạm cho tới khi {{VALIDATE CONSTRAINT}} chạy.
+- {{VALIDATE CONSTRAINT}} chỉ cần ShareUpdateExclusiveLock → SELECT/INSERT/UPDATE/DELETE vẫn chạy; với FK còn cần RowShareLock trên bảng được tham chiếu.
+- Nếu dữ liệu cũ đã vi phạm, {{VALIDATE}} sẽ lỗi; phải dọn dữ liệu trước (ví dụ {{UPDATE ... WHERE amount = 0}}) rồi validate lại.
+- Tạo index (nếu cần) bằng {{CREATE INDEX CONCURRENTLY}} **ngoài transaction**; Flyway mặc định bọc transaction nên câu này sẽ lỗi "CREATE INDEX CONCURRENTLY cannot run inside a transaction block".
+
+### FK khác CHECK thế nào về lock
+| Loại | Lock trên bảng đang sửa | Lock trên bảng tham chiếu | Quét dữ liệu cũ |
+|---|---|---|---|
+| CHECK (không NOT VALID) | ACCESS EXCLUSIVE | không có | Có |
+| CHECK NOT VALID | ACCESS EXCLUSIVE (rất ngắn) | không có | Không |
+| VALIDATE CHECK | SHARE UPDATE EXCLUSIVE | không có | Có, nhưng không chặn đọc/ghi |
+| FOREIGN KEY (không NOT VALID) | SHARE ROW EXCLUSIVE | SHARE ROW EXCLUSIVE | Có |
+| FOREIGN KEY NOT VALID | SHARE ROW EXCLUSIVE | SHARE ROW EXCLUSIVE | Không |
+| VALIDATE FOREIGN KEY | SHARE UPDATE EXCLUSIVE | ROW SHARE | Có, không chặn đọc/ghi trên bảng đang sửa |
+
+Lưu ý: {{ADD FOREIGN KEY}} chỉ cần SHARE ROW EXCLUSIVE (không phải ACCESS EXCLUSIVE) — mức này chặn INSERT/UPDATE/DELETE nhưng **cho SELECT chạy**. Vì trong lab này FK nằm cùng transaction với CHECK, ACCESS EXCLUSIVE của CHECK là mức mạnh nhất và giữ suốt.
+
+### Sơ đồ luồng
+~~~seq
+title: Migration giữ AccessExclusiveLock, 512 session xếp hàng
+actors: Flyway | PostgreSQL | API ledger | HikariCP | Client
+Flyway -> PostgreSQL: BEGIN; ADD CONSTRAINT CHECK (amount <> 0)
+PostgreSQL -> PostgreSQL: quét 61 triệu dòng để validate
+note PostgreSQL: giữ AccessExclusiveLock tới COMMIT
+API ledger -> PostgreSQL: SELECT / INSERT (cần AccessShare / RowExclusive)
+PostgreSQL --> API ledger: xếp hàng FIFO, chưa được cấp
+API ledger -> HikariCP: giữ connection trong lúc chờ
+HikariCP --> API ledger: timeout 3000ms
+API ledger --> Client: 504
+~~~
+
+### Phòng ngừa và guardrail
+- {{lock_timeout}} + {{statement_timeout}} cho role migration và role ứng dụng; retry migration có kiểm soát.
+- {{idle_in_transaction_session_timeout}} để một connection leak không giữ lock vô hạn.
+- Alert khi {{pg_locks}} có {{AccessExclusiveLock granted = f}} hoặc {{granted = t}} quá 5 giây.
+- Quy trình review migration: mọi {{ADD CONSTRAINT}} trên bảng lớn phải có {{NOT VALID}} + {{VALIDATE CONSTRAINT}}; mọi {{CREATE INDEX}} phải {{CONCURRENTLY}} và chạy ngoài transaction.
+- CI chạy migration trên bản sao dữ liệu thật (hoặc staging có số dòng tương đương) để đo thời gian giữ lock trước khi lên production.
+
+### Trả lời mẫu khi phỏng vấn
+"Migration chạy trong một transaction Flyway. Câu ALTER TABLE thêm CHECK cần AccessExclusiveLock và phải quét 61 triệu dòng để kiểm tra dữ liệu cũ. Vì nằm cùng transaction với các câu trước, AccessExclusiveLock được giữ tới COMMIT, tức hơn 3 phút. AccessExclusive xung đột với mọi lock, kể cả AccessShareLock của SELECT, nên 512 backend xếp hàng, pool cạn, API trả 504 dù CPU chỉ 11% — đây là blocking chứ không phải quá tải. Tôi đặt lock_timeout cho role migration, chạy ngoài giờ cao điểm, và quan trọng nhất là chia nhỏ: thêm constraint với NOT VALID để không quét, rồi VALIDATE CONSTRAINT — câu này chỉ cần ShareUpdateExclusiveLock nên không chặn đọc/ghi. FK thì NOT VALID rồi validate tương tự. Ngoài ra tôi thêm guardrail: idle_in_transaction_session_timeout, alert AccessExclusiveLock granted = f, và review migration bắt buộc có NOT VALID cho bảng lớn."
+
+> Senior tip: Trên PostgreSQL, **một ACCESS EXCLUSIVE đang bị giữ là "cổ chai" chặn tất cả**, kể cả SELECT. Vì vậy migration DDL trên bảng nóng phải luôn có {{lock_timeout}} và chạy lúc bảng ít lock nhất. Nhưng quan trọng hơn: hãy thiết kế migration theo kiểu **thêm cấu trúc trước, validate sau** ({{NOT VALID}} + {{VALIDATE CONSTRAINT}}, {{CREATE INDEX CONCURRENTLY}}) để thời gian giữ lock chỉ còn vài trăm mili giây. Và nhớ rằng Flyway bọc mỗi migration trong một transaction — lock không nhả giữa các câu lệnh.`,
+  rubric: [
+    'Chỉ đúng nguyên nhân gốc: migration cần ACCESS EXCLUSIVE và phải quét 61 triệu dòng để validate CHECK, giữ lock suốt transaction',
+    'Giải thích đúng hàng đợi lock FIFO khiến 468 SELECT (AccessShareLock) và 44 ghi (RowExclusiveLock) cùng bị chặn',
+    'Dẫn chứng đúng: AccessExclusiveLock granted = t, AccessShareLock granted = f n = 468, RowExclusiveLock granted = f n = 44, 512 backend wait_event_type = Lock, pg_blocking_pids = {51422}, CPU 11%',
+    'Giải thích đúng vì sao 23:30 thành công (không có lock giữ) và vì sao Flyway transaction giữ lock tới COMMIT',
+    'Đề xuất sửa đúng: lock_timeout, NOT VALID + VALIDATE CONSTRAINT (ShareUpdateExclusiveLock), ADD FOREIGN KEY dùng ShareRowExclusiveLock, CREATE INDEX CONCURRENTLY ngoài transaction, chia migration + guardrail',
+  ],
+  tags: ['postgresql', 'lock', 'migration', 'flyway', 'access-exclusive-lock', 'not-valid', 'validate-constraint'],
+},
 );
