@@ -4164,4 +4164,82 @@ API ledger --> Client: 504
   ],
   tags: ['postgresql', 'lock', 'migration', 'flyway', 'access-exclusive-lock', 'not-valid', 'validate-constraint'],
 },
+{
+  id: 'lab-sql-027',
+  category: 'sql',
+  title: 'Chuyển tiền A→B và B→A đồng thời trên PostgreSQL 16 gây deadlock detected',
+  level: 'senior',
+  scenario: `**Bối cảnh.** Hệ thống ví điện tử PayV (Spring Boot 3.3, PostgreSQL 16.2 trên RDS, HikariCP max 30) xử lý chuyển tiền nội bộ giữa các ví khách hàng. Bảng {{wallet}} có cột {{id (bigint PK), balance (numeric(18,2))}}. Service {{TransferService.transfer(fromId, toId, amount)}} chạy trong một transaction: SELECT … FOR UPDATE từng ví theo thứ tự fromId rồi toId, sau đó UPDATE số dư.
+
+**Triệu chứng (22/04/2026).** Khoảng 0,7% giao dịch chuyển tiền trả lỗi {{CannotAcquireLockException: ERROR: deadlock detected}} (HTTP 500), tập trung vào các cặp chuyển tiền ngược nhau (A→B và B→A cùng lúc). RDS log ghi deadlock detected, HikariCP pool không cạn (waiting = 0), CPU 8%.
+
+**Việc bạn có.** Ba artifact dưới đây lấy từ production lúc 10:12. Hãy tìm nguyên nhân gốc, chứng minh bằng pid/xid/timestamp, rồi đề xuất cách sửa ngắn hạn và phòng ngừa.`,
+  artifacts: [
+    {
+      name: 'postgresql-deadlock.log',
+      lang: 'text',
+      content: `2026-04-22 10:12:03.451 UTC [18421] ERROR:  deadlock detected
+2026-04-22 10:12:03.451 UTC [18421] DETAIL:  Process 18421 waits for ShareLock on transaction 987654; blocked by process 18422.
+        Process 18422 waits for ShareLock on transaction 987653; blocked by process 18421.
+2026-04-22 10:12:03.451 UTC [18421] HINT:  See server log for query details.
+2026-04-22 10:12:03.451 UTC [18421] CONTEXT:  while locking tuple (0,14) in relation "wallet"
+2026-04-22 10:12:03.451 UTC [18421] STATEMENT:  UPDATE wallet SET balance = balance - $1 WHERE id = $2
+2026-04-22 10:12:03.452 UTC [18422] ERROR:  deadlock detected
+2026-04-22 10:12:03.452 UTC [18422] DETAIL:  Process 18422 waits for ShareLock on transaction 987653; blocked by process 18421.
+        Process 18421 waits for ShareLock on transaction 987654; blocked by process 18422.
+2026-04-22 10:12:03.452 UTC [18422] CONTEXT:  while locking tuple (0,15) in relation "wallet"
+2026-04-22 10:12:03.452 UTC [18422] STATEMENT:  UPDATE wallet SET balance = balance + $1 WHERE id = $2`,
+    },
+    {
+      name: 'pg_stat_activity.txt',
+      lang: 'text',
+      content: ` pid  | usename | state  |         query_start         | wait_event_type | wait_event | xact_start
+-------+---------+--------+----------------------------+-----------------+------------+----------------------------
+ 18421 | payv    | active | 2026-04-22 10:12:03.410+00 | Lock            | transactionid | 2026-04-22 10:12:03.405+00
+ 18422 | payv    | active | 2026-04-22 10:12:03.412+00 | Lock            | transactionid | 2026-04-22 10:12:03.407+00
+-- xid: 18421 = 987653, 18422 = 987654
+-- wallet rows locked: pid 18421 holds row-level lock on wallet.id=1 (A), waits for wallet.id=2 (B)
+--                   pid 18422 holds row-level lock on wallet.id=2 (B), waits for wallet.id=1 (A)`,
+    },
+    {
+      name: 'app-log.txt',
+      lang: 'text',
+      content: `2026-04-22T10:12:03.453Z ERROR [http-nio-8080-exec-14] o.h.engine.jdbc.spi.SqlExceptionHelper - SQL Error: 0, SQLState: 40P01
+2026-04-22T10:12:03.453Z ERROR [http-nio-8080-exec-14] o.s.orm.jpa.JpaSystemException - could not execute statement
+2026-04-22T10:12:03.453Z WARN  [http-nio-8080-exec-14] org.springframework.dao.CannotAcquireLockException - deadlock detected
+2026-04-22T10:12:03.453Z INFO  [http-nio-8080-exec-14] com.payv.transfer.TransferService - transfer(from=1,to=2,amount=50.00) FAILED after 48ms`,
+    },
+  ],
+  questions: ['Nguyên nhân gốc là gì? Dẫn chứng từ artifact.', 'Bạn sẽ sửa thế nào, ngắn hạn và dài hạn?'],
+  hints: ['Hai transaction cùng giữ row lock trên hai ví rồi chờ nhau.', 'Thứ tự UPDATE ngược nhau là nguyên nhân deadlock.'],
+  answer: `**Tóm tắt:** Hai transaction chuyển tiền ngược chiều (A→B và B→A) cùng giữ row-level lock (SELECT … FOR UPDATE) trên ví của mình rồi chờ ví còn lại; PostgreSQL phát hiện chu trình chờ và huỷ một transaction với lỗi deadlock detected (SQLState 40P01).
+
+### Nguyên nhân gốc
+Service {{TransferService}} luôn khoá ví theo thứ tự {{fromId}} rồi {{toId}}. Khi có hai request đồng thời A→B và B→A, transaction thứ nhất giữ lock trên A và chờ B; transaction thứ hai giữ lock trên B và chờ A. Đây là deadlock kinh điển: mỗi bên giữ một tài nguyên và chờ tài nguyên của bên kia.
+
+### Dẫn chứng
+- {{postgresql-deadlock.log}}: pid 18421 waits for ShareLock on transaction 987654, blocked by 18422; pid 18422 waits for ShareLock on transaction 987653, blocked by 18421.
+- {{pg_stat_activity.txt}}: xid 18421 = 987653 (giữ A, chờ B), xid 18422 = 987654 (giữ B, chờ A).
+- {{app-log.txt}}: CannotAcquireLockException, SQLState 40P01, transfer(from=1,to=2) fail sau 48ms.
+
+### Cách sửa
+- Khoá theo thứ tự id cố định: trong transaction, luôn SELECT … FOR UPDATE theo id tăng dần (min(fromId,toId) trước, max sau), bất kể chiều chuyển tiền.
+- Thêm retry có giới hạn (ví dụ 3 lần) cho deadlock (SQLState 40P01) và serialization failure (40001), với backoff nhỏ.
+- Giữ transaction ngắn: chỉ khoá và UPDATE, không gọi service ngoài trong transaction.
+
+### Phòng ngừa
+- Unit test concurrency mô phỏng A→B và B→A đồng thời.
+- Metric deadlock_count trong pg_stat_database; alert khi tăng.
+- Idempotency key cho chuyển tiền để retry an toàn.
+- Review code: mọi chỗ SELECT … FOR UPDATE phải có thứ tự id cố định.`,
+  rubric: [
+    'Chỉ đúng nguyên nhân gốc: thứ tự khoá ngược nhau giữa hai transaction',
+    'Dẫn chứng đúng pid/xid/timestamp deadlock',
+    'Đề xuất sửa đúng: khoá theo thứ tự id cố định + retry có giới hạn',
+    'Đề xuất phòng ngừa: test concurrency, metric, idempotency',
+  ],
+  hints: ['Hai transaction cùng giữ row lock trên hai ví rồi chờ nhau.', 'Thứ tự UPDATE ngược nhau là nguyên nhân deadlock.'],
+  tags: ['postgresql', 'deadlock', 'lock', 'transfer', 'for-update'],
+},
 );
+
