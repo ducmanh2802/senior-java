@@ -4755,6 +4755,82 @@ public CompletableFuture<String> callPartnerAsync(Partner p) {
     'Đưa ra biện pháp phòng ngừa: Monitoring, Circuit Breaker, và quy định code review.'
   ],
   tags: ['forkjoin', 'parallel-stream', 'io-blocking', 'completablefuture', 'starvation', 'bulkhead']
+},
+{
+  id: 'lab-thread-021',
+  category: 'thread',
+  title: 'GC pause làm độ trễ khớp lệnh p99 vọt lên',
+  level: 'senior',
+  scenario: `**Bối cảnh:** Dịch vụ khớp lệnh {{OrderMatcher}} trên Java 21, sử dụng G1 GC, cấu hình {{-Xms4g -Xmx4g}}. Dịch vụ nhận lệnh từ Kafka và so khớp trong memory, mỗi lệnh tạo ra nhiều object tạm {{OrderEvent}} để log và tính toán.
+  
+**Triệu chứng:** Giờ cao điểm (10:00), p99 của API khớp lệnh tăng từ 2ms lên **180ms**. CPU pod ở mức 60%, không có deadlock, nhưng log GC unified {{-Xlog:gc*}} ghi nhận nhiều đợt pause Young liên tiếp trùng khớp với thời điểm spike.
+
+**Dữ liệu thu thập:** Log GC unified, metric p50/p99 từ Prometheus, và đoạn dump JFR allocation summary.`,
+  artifacts: [
+    {
+      name: 'gc-order-matcher.log',
+      lang: 'text',
+      content: `[2026-11-18T10:00:00.000+07:00][1000.000s][info][gc,pause] GC(100) Pause Young (G1 Evacuation Pause) 1200M->200M(4096M) 180.2ms
+[2026-11-18T10:00:10.000+07:00][1010.000s][info][gc,pause] GC(101) Pause Young (G1 Evacuation Pause) 1300M->250M(4096M) 195.4ms
+[2026-11-18T10:00:20.000+07:00][1020.000s][info][gc,pause] GC(102) Pause Young (G1 Evacuation Pause) 1400M->300M(4096M) 210.8ms`
+    },
+    {
+      name: 'allocation-summary.txt',
+      lang: 'text',
+      content: `Allocation Summary (JFR) - [2026-11-18 10:00:00 - 10:05:00]
+------------------------------------------------------------------
+Top Allocations by Class:
+1. vn.match.OrderEvent         : 85.2% (120 GB/s) - Total allocated: 36.0 TB
+2. vn.match.PricePoint         : 10.1% (14.2 GB/s) - Total allocated: 4.2 TB
+3. java.lang.String            : 2.5% (3.5 GB/s) - Total allocated: 1.0 TB
+4. java.util.ArrayList         : 1.2% (1.7 GB/s) - Total allocated: 0.5 TB
+5. others                      : 1.0% (1.4 GB/s) - Total allocated: 0.4 TB
+
+Note: The allocation rate of vn.match.OrderEvent is extremely high, 
+causing the Eden space to fill up almost instantly, leading to frequent 
+Young GCs and excessive pressure on the G1 garbage collector.
+The average lifetime of OrderEvent is very short, which is typical for 
+transient objects in a high-frequency trading matching engine.`
+    }
+  ],
+  questions: [
+    'Tại sao p99 vọt lên 180ms dù CPU vẫn còn dư?',
+    'Dựa vào allocation summary, lỗi ở đâu?',
+    'Cách sửa (giảm allocation, object pooling, Generational ZGC)?'
+  ],
+  hints: [
+    'Xem xét tỉ lệ allocation của {{OrderEvent}}.',
+    'So sánh thời gian pause với p99.',
+    'Java 21 có GC nào tối ưu độ trễ tốt hơn G1 cho trường hợp này?'
+  ],
+  answer: `**Tóm tắt:** Lỗi nằm ở việc tạo quá nhiều object tạm {{OrderEvent}} trong hot path (120GB/s), gây áp lực cực lớn lên Young GC, khiến G1 pause kéo dài. Giảm allocation hoặc dùng ZGC là chìa khoá.
+
+### Nguyên nhân gốc
+Dịch vụ khớp lệnh tạo ra hàng triệu {{OrderEvent}} mỗi giây. G1 phải dọn dẹp các object tạm này liên tục. Pause Young GC tỷ lệ thuận với số lượng object sống cần copy giữa các region. 180ms pause trực tiếp cộng vào latency. Dịch vụ khớp lệnh Java 21 này sử dụng G1 GC, cấu hình Heap 4GB, nhưng do object tạm sinh ra quá nhiều, Eden space bị lấp đầy chỉ trong vài chục millisecond.
+
+### Chi tiết cơ chế bên trong và vì sao lại như vậy
+Trong một hệ thống khớp lệnh (matching engine), độ trễ thấp là ưu tiên hàng đầu. Khi chúng ta tạo ra hàng triệu object nhỏ {{OrderEvent}} để đại diện cho mỗi lệnh khớp, các object này nhanh chóng chiếm dụng hết bộ nhớ Eden. Garbage Collector (GC) phải chạy Young GC rất thường xuyên. Mỗi lần Young GC chạy, nó sẽ tìm kiếm các object còn sống để di chuyển (evacuation). Mặc dù {{OrderEvent}} phần lớn là "chết" nhanh, nhưng việc quét hàng triệu object này mất thời gian, và việc copy các object còn sống giữa các region gây ra pause time.
+
+Khi pause time lên đến 180-210ms, các request đi vào đúng lúc đó sẽ bị "đứng hình" (stop-the-world). Đây chính là nguyên nhân p99 vọt lên 180ms. CPU pod ở mức 60% nghĩa là vẫn còn tài nguyên tính toán, nhưng bị "chặn" bởi GC.
+
+### Ví dụ cụ thể
+Với 120 GB/s allocation rate của {{OrderEvent}}, trong 1 giây, hệ thống cấp phát 120GB. Heap chỉ có 4GB. Nếu G1 không chạy GC kịp, OOM sẽ xảy ra. Vì thế G1 chạy GC liên tục mỗi vài chục ms, tạo ra các khoảng dừng nhỏ nhưng dồn lại thành p99 lớn.
+
+### Trả lời mẫu khi phỏng vấn
+"Khi p99 tăng lên trong khi CPU vẫn thấp, tôi sẽ kiểm tra GC pause đầu tiên. Nếu GC pause khớp với p99, tôi sẽ xem allocation rate. Trong trường hợp này, allocation rate quá cao do object tạm {{OrderEvent}} gây áp lực lên G1 GC. Tôi sẽ giải quyết theo hai hướng: một là tối ưu code để giảm allocation (pool object), hai là chuyển sang ZGC hoặc Generational ZGC vì ZGC tối ưu cực tốt cho độ trễ thấp, pause time thường dưới 1ms, giúp triệt tiêu hiện tượng vọt p99."
+
+### Phòng ngừa
+- Alert theo p99 latency của GC pause.
+- Theo dõi allocation rate bằng JFR.
+- Sử dụng ZGC cho các ứng dụng yêu cầu p99 nghiêm ngặt.
+
+> Senior tip: Allocation rate là "sát thủ thầm lặng". Đôi khi bạn chỉ cần thay đổi kiểu dữ liệu hoặc dùng primitive collection là giảm được đáng kể allocation rate mà không cần thay đổi kiến trúc. Hãy dùng công cụ như {{async-profiler}} để nhìn thấy ngay class nào đang chiếm bộ nhớ.`,
+  rubric: [
+    'Giải thích đúng cơ chế GC pause do allocation rate cao của OrderEvent.',
+    'Trích dẫn đúng log GC pause và allocation summary.',
+    'Đề xuất giảm allocation/pooling và dùng ZGC.'
+  ],
+  tags: ['gc', 'latency', 'g1', 'allocation', 'zgc']
 }
 
 );
