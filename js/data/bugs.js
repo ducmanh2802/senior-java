@@ -7166,5 +7166,135 @@ Sử dụng {{ConcurrentHashMap.computeIfAbsent(key, mappingFunction)}}. Mapping
 - Cache stampede là gì? Cách sửa bằng single-flight? (Sử dụng computeIfAbsent hoặc mutex khóa theo key). Trả lời nên nêu: (1) check-then-act không nguyên tử, (2) {{computeIfAbsent}}/khoá theo key để chỉ một luồng nạp, (3) khác biệt cache trong tiến trình vs cache phân tán, (4) xử lý lỗi và TTL. Nhấn mạnh: an toàn luồng (thread-safe) không chỉ là "dùng ConcurrentHashMap" mà là làm trọn vẹn cả thao tác gộp.`,
   related: [],
   tags: ['cache stampede', 'concurrency', 'single-flight']
+},
+{
+  id: 'bug-038',
+  title: 'Lệnh mua cùng lúc khiến số dư tài khoản âm',
+  domain: 'Sàn giao dịch / Trading',
+  level: 'senior',
+  severity: 'P1',
+  minutes: 25,
+  story: `**Bối cảnh:** Sàn giao dịch cổ phiếu cho phép user đặt lệnh mua qua API. Mỗi tài khoản có số dư trong bảng {{accounts}}. Trước khi trừ tiền, hệ thống kiểm tra xem số dư đủ chưa (check-then-act).
+
+**Sự cố:** Hai lệnh mua cùng mã cổ phiếu, cùng số tiền 60, gửi cùng lúc cho cùng một tài khoản có số dư 100. Cả hai lệnh đều qua kiểm tra số dư (100 >= 60), rồi cả hai đều trừ tiền. Kết quả số dư xuống -20, sàn đã cho mua quá khả năng tài chính. Log ghi nhận cả hai luồng đọc số dư là 100 ở cùng một millisecond, sau đó cả hai cùng ghi số dư mới.`,
+  artifacts: [
+    { name: 'trade-engine.log', lang: 'text', content: '2026-11-10 14:30:01.001 [pool-1-thread-1] INFO TradingEngine : ACCOUNT-1 check balance=100 amount=60 OK\n2026-11-10 14:30:01.001 [pool-1-thread-2] INFO TradingEngine : ACCOUNT-1 check balance=100 amount=60 OK\n2026-11-10 14:30:01.002 [pool-1-thread-1] INFO TradingEngine : ACCOUNT-1 deduct 60 new_balance=40\n2026-11-10 14:30:01.002 [pool-1-thread-2] INFO TradingEngine : ACCOUNT-1 deduct 60 new_balance=-20' },
+    { name: 'account-state.json', lang: 'json', content: '{\n  "accountId": "ACCOUNT-1",\n  "initialBalance": 100,\n  "orders": [\n    { "orderId": "ORD-101", "symbol": "AAPL", "amount": 60, "status": "FILLED" },\n    { "orderId": "ORD-102", "symbol": "AAPL", "amount": 60, "status": "FILLED" }\n  ],\n  "finalBalance": -20\n}' }
+  ],
+  starter: `class TradingAccount {
+    private final String id;
+    private long balance;
+    
+    TradingAccount(String id, long balance) {
+        this.id = id;
+        this.balance = balance;
+    }
+    
+    boolean buy(String symbol, long amount) {
+        if (balance >= amount) {
+            simulateDelay();
+            balance -= amount;
+            return true;
+        }
+        return false;
+    }
+    
+    private void simulateDelay() {
+        try { Thread.sleep(1); } catch (InterruptedException e) { Thread.currentThread().interrupt(); }
+    }
+    
+    long getBalance() { return balance; }
+    String getId() { return id; }
+}`,
+  tests: `public class Main {
+    static int passed = 0, total = 0;
+    static void check(String name, boolean ok, String detail) {
+        total++;
+        if (ok) { passed++; System.out.println("PASS " + name); }
+        else System.out.println("FAIL " + name + ": " + detail);
+    }
+    
+    public static void main(String[] args) throws Exception {
+        TradingAccount acc = new TradingAccount("ACCOUNT-1", 100);
+        
+        CountDownLatch gate = new CountDownLatch(2);
+        boolean[] results = new boolean[2];
+        Thread t1 = new Thread(() -> {
+            gate.countDown();
+            try { gate.await(); } catch (InterruptedException e) { Thread.currentThread().interrupt(); }
+            results[0] = acc.buy("AAPL", 60);
+        });
+        Thread t2 = new Thread(() -> {
+            gate.countDown();
+            try { gate.await(); } catch (InterruptedException e) { Thread.currentThread().interrupt(); }
+            results[1] = acc.buy("AAPL", 60);
+        });
+        t1.start(); t2.start();
+        t1.join(5000); t2.join(5000);
+        
+        check("hai_lenh_mua_cung_luc", !results[0] || !results[1], "chi duoc mot lenh mua thanh cong, ket qua t1=" + results[0] + " t2=" + results[1]);
+        check("so_du_khong_am", acc.getBalance() >= 0, "so du khong duoc am, thuc te " + acc.getBalance());
+        
+        TradingAccount acc2 = new TradingAccount("ACCOUNT-2", 100);
+        check("mua_don_le_du_tien", acc2.buy("GOOG", 50), "lenh mua don le phai thanh cong");
+        check("so_du_sau_mua_don_le", acc2.getBalance() == 50, "so du phai la 50, thuc te " + acc2.getBalance());
+        
+        TradingAccount acc3 = new TradingAccount("ACCOUNT-3", 30);
+        check("mua_du_50_voi_so_du_30", !acc3.buy("TSLA", 50), "lenh mua vuot so du phai that bai");
+        check("so_du_khong_thay_doi_khi_that_bai", acc3.getBalance() == 30, "so du khong thay doi khi mua that bai, thuc te " + acc3.getBalance());
+        
+        System.out.println("RESULT " + passed + "/" + total);
+        System.exit(0);
+    }
+}`,
+  reference: `class TradingAccount {
+    private final String id;
+    private long balance;
+    
+    TradingAccount(String id, long balance) {
+        this.id = id;
+        this.balance = balance;
+    }
+    
+    synchronized boolean buy(String symbol, long amount) {
+        if (balance >= amount) {
+            simulateDelay();
+            balance -= amount;
+            return true;
+        }
+        return false;
+    }
+    
+    private void simulateDelay() {
+        try { Thread.sleep(1); } catch (InterruptedException e) { Thread.currentThread().interrupt(); }
+    }
+    
+    long getBalance() { return balance; }
+    String getId() { return id; }
+}`,
+  hints: [
+    'Hai luong cung goi {{buy()}}, ca hai doc so du la 100 truoc khi bat ky luong nao tru tien. Kiem tra va tru tien khong nguyen tu.',
+    'Dung {{synchronized}} tren phuong thuc {{buy()}} de chi mot luong duoc thuc hien toan bo thao tac kiem tra + tru tien moi lan.',
+    'Hoac dung khoa rieng cho moi tai khoan (per-account lock) de tranh chan toan bo tai khoan khi giao dich ma khac nhau.'
+  ],
+  rootCause: `**Race condition kieu check-then-act.** Phuong thuc {{buy()}} kiem tra {{balance >= amount}} sau do moi tru {{balance -= amount}}. Hai luong cung goi voi so du 100, moi lenh 60: luong A doc 100 >= 60 (dung), luong B cung doc 100 >= 60 (dung) truoc khi A tru xong. Ca hai cung tru 60 -> so du -20. Ban chat la thao tac "doc so du + ghi so du moi" khong du bao bo boi khoa, nen hai luong cung di qua ngưỡng kiem tra.`,
+  fix: `### Cach sua trong bai
+Them tu khoa {{synchronized}} len phuong thuc {{buy()}}. Khi phuong thuc duoc danh dau synchronized, chi mot luong co the thuc hien phuong thuc do tren doi tuong {{TradingAccount}} tai mot thoi diem. Luong A kiem tra so du va tru tien hoan toan truoc khi luong B duoc phep vao. Ket qua: chi mot lenh mua 60 duoc chap nhan, so du con 40.
+
+### Tren production thuc
+- San giao dich thuc dung khoa theo tai khoan (per-account lock) hoac khoa phan bo (Redis RedLock, database row-level SELECT ... FOR UPDATE) thay vi synchronized toan bo doi tuong, de giao dich cac ma khac nhau khong bi chan lan nhau.
+- Giao dich phai chay trong database transaction voi isolation level READ COMMITTED tro len, dung {{SELECT ... FOR UPDATE}} de khoa dong tai khoan khi kiem tra so du.
+- Cong them kiem tra dieu kien business o capa validation (vi du: so du con lai >= 0 sau khi tru) va event sourcing de khoi phuc trang thai khi xay ra loi.
+- Giams sat metric: so lenh bi tu choi do so du khong du, ty le lenh trung khop, thoi gian cho khoa.
+
+### Phong ngua
+- Viet test dong thoi (concurrency test) voi CountDownLatch de phat hien race condition som.
+- Code review tap trung vao cac thao tac check-then-act tren trang thai chia se.
+- Su dung cac lop khong thay doi (immutable) hoac cau truc du lieu an toan luong (ConcurrentHashMap, AtomicLong) khi thich hop.
+
+### Lien he phong vien
+- Race condition la gi? Vi du check-then-act tren so du tai khoan. Cach sua: synchronized, lock theo tai khoan, database transaction voi SELECT FOR UPDATE. Tra loi phai neu: (1) van de la khong nguyen tu, (2) synchronized/lock lam tron vien thao tac, (3) per-account lock vs global lock, (4) database isolation level va row-level lock.`,
+  related: ['concurrency-001'],
+  tags: ['race condition', 'check-then-act', 'concurrency', 'trading']
 }
 );
