@@ -46,6 +46,40 @@
       'aws.byDomain': 'Điểm theo domain', 'aws.review': 'Xem lại từng câu', 'aws.onlyWrong': 'Chỉ câu sai',
       'aws.youChose': 'Bạn chọn:', 'aws.blankAns': 'bỏ trống', 'aws.again': 'Thi lại', 'aws.practiceWrong': 'Luyện các câu sai',
       'aws.histRow': '{score}/1000 · {c}/{t} · {date}', 'aws.reviewOld': 'Xem lại',
+      'aws.tab.labs': '🧪 Lab thực hành',
+      'aws.lab.title': 'Lab thực hành AWS',
+      'aws.lab.subtitle': 'Thực hành hands-on trên AWS theo từng category: Mạng, Cơ sở dữ liệu, Lưu trữ, Compute & Containers, Ops, Dev — chuẩn bị SAP-C02 và DOP-C02.',
+      'aws.lab.empty': 'Chưa có lab nào. Agent khác đang điền dữ liệu (T2350–T2355).',
+      'aws.lab.all': 'Tất cả',
+      'aws.lab.cat.network': 'Mạng',
+      'aws.lab.cat.rds': 'Cơ sở dữ liệu',
+      'aws.lab.cat.storage': 'Lưu trữ',
+      'aws.lab.cat.compute': 'Compute & Containers',
+      'aws.lab.cat.ops': 'Ops',
+      'aws.lab.cat.dev': 'Dev',
+      'aws.lab.exam.all': 'Tất cả kỳ thi',
+      'aws.lab.status.all': 'Tất cả',
+      'aws.lab.status.done': 'Đã làm',
+      'aws.lab.status.todo': 'Chưa làm',
+      'aws.lab.search': 'Tìm theo title / dịch vụ…',
+      'aws.lab.searchAria': 'Tìm lab',
+      'aws.lab.clear': 'Xoá lọc',
+      'aws.lab.progress': '{done}/{total} lab ({pct}%)',
+      'aws.lab.doneBtn': '✅ Đã làm xong',
+      'aws.lab.undoneBtn': '↩️ Bỏ đánh dấu',
+      'aws.lab.doneAt': 'Lúc {date}',
+      'aws.lab.goal': 'Mục tiêu',
+      'aws.lab.steps': 'Các bước thực hiện',
+      'aws.lab.verify': 'Xác minh',
+      'aws.lab.cost': 'Chi phí & dọn dẹp',
+      'aws.lab.examTip': 'Gợi ý khi thi',
+      'aws.lab.refs': '📚 Hướng dẫn chi tiết từng bước',
+      'aws.lab.refsNote': 'Nguồn ngoài (labaws.site) — cần tài khoản AWS, chú ý chi phí.',
+      'aws.lab.back': '← Danh sách lab',
+      'aws.lab.next': 'Lab tiếp →',
+      'aws.lab.notFound': 'Không tìm thấy lab',
+      'aws.lab.notFoundHint': 'Lab {id} không có trong dữ liệu.',
+      'aws.lab.keys': 'Phím: <kbd>M</kbd> đổi trạng thái · <kbd>/</kbd> tìm · <kbd>B</kbd> quay lại',
     },
     en: {
       'aws.title': 'AWS Pro (SAP + DOP)',
@@ -84,12 +118,46 @@
       'aws.byDomain': 'Score by domain', 'aws.review': 'Review every question', 'aws.onlyWrong': 'Wrong only',
       'aws.youChose': 'You chose:', 'aws.blankAns': 'blank', 'aws.again': 'Take again', 'aws.practiceWrong': 'Practise wrong answers',
       'aws.histRow': '{score}/1000 · {c}/{t} · {date}', 'aws.reviewOld': 'Review',
+      'aws.tab.labs': '🧪 Hands-on labs',
+      'aws.lab.title': 'AWS Hands-on Labs',
+      'aws.lab.subtitle': 'Hands-on labs by category: Network, RDS, Storage, Compute & Containers, Ops, Dev — prep for SAP-C02 and DOP-C02.',
+      'aws.lab.empty': 'No labs yet. Other agents are adding data (T2350–T2355).',
+      'aws.lab.all': 'All',
+      'aws.lab.cat.network': 'Network',
+      'aws.lab.cat.rds': 'RDS',
+      'aws.lab.cat.storage': 'Storage',
+      'aws.lab.cat.compute': 'Compute & Containers',
+      'aws.lab.cat.ops': 'Ops',
+      'aws.lab.cat.dev': 'Dev',
+      'aws.lab.exam.all': 'All exams',
+      'aws.lab.status.all': 'All',
+      'aws.lab.status.done': 'Done',
+      'aws.lab.status.todo': 'To do',
+      'aws.lab.search': 'Search title / services…',
+      'aws.lab.searchAria': 'Search labs',
+      'aws.lab.clear': 'Clear',
+      'aws.lab.progress': '{done}/{total} labs ({pct}%)',
+      'aws.lab.doneBtn': '✅ Mark done',
+      'aws.lab.undoneBtn': '↩️ Undo',
+      'aws.lab.doneAt': 'At {date}',
+      'aws.lab.goal': 'Goal',
+      'aws.lab.steps': 'Steps',
+      'aws.lab.verify': 'Verify',
+      'aws.lab.cost': 'Cost & cleanup',
+      'aws.lab.examTip': 'Exam tip',
+      'aws.lab.refs': '📚 Step-by-step guide',
+      'aws.lab.refsNote': 'External (labaws.site) — needs an AWS account, watch the cost.',
+      'aws.lab.back': '← Labs list',
+      'aws.lab.next': 'Next lab →',
+      'aws.lab.notFound': 'Lab not found',
+      'aws.lab.notFoundHint': 'Lab {id} is not in the data.',
+      'aws.lab.keys': 'Keys: <kbd>M</kbd> toggle · <kbd>/</kbd> search · <kbd>B</kbd> back',
     },
   });
 
   const t = (k, v) => App.t('aws.' + k, v);
   const esc = App.esc;
-  const TABS = ['overview', 'plan', 'practice', 'mock'];
+  const TABS = ['overview', 'plan', 'practice', 'mock', 'labs'];
   const LETTERS = 'ABCDEF';
   const PASS_PCT = 75;
   const MOCK_KEY = 'sjp.aws.mock';
@@ -125,6 +193,7 @@
     if (a.start === undefined) a.start = null;
     if (!a.done || typeof a.done !== 'object') a.done = {};
     if (!a.answers || typeof a.answers !== 'object') a.answers = {};
+    if (!a.labs || typeof a.labs !== 'object') a.labs = {};
     if (!Array.isArray(a.mocks)) a.mocks = [];
     return a;
   }
@@ -475,6 +544,53 @@
         t('onlyWrong') + ' (' + wrongN + ')</button></div>' + review + '</section>';
   }
 
+  // ---------- labs ----------
+  let labFilter = { cat: 'all', exam: 'all', status: 'all', q: '' };
+  function labsListHtml() {
+    const a = S().labs, list = (window.AWS_LABS || []).filter(l =>
+      (labFilter.cat === 'all' || l.category === labFilter.cat) &&
+      (labFilter.exam === 'all' || l.exams.includes(labFilter.exam)) &&
+      (labFilter.status === 'all' || (labFilter.status === 'done') === !!a[l.id]) &&
+      (!labFilter.q || l.title.toLowerCase().includes(labFilter.q.toLowerCase()) || (l.services || []).some(s => s.toLowerCase().includes(labFilter.q.toLowerCase())))
+    );
+    const done = list.filter(l => a[l.id]).length;
+    const cats = ['all', 'network', 'rds', 'storage', 'compute', 'ops', 'dev'], exams = ['all', 'sap-c02', 'dop-c02'], statuses = ['all', 'done', 'todo'];
+    const filters = '<section class="card aws-filters"><div class="row">' +
+      '<select class="select" id="awsLabCat" aria-label="' + t('lab.cat') + '">' + cats.map(c => '<option value="' + c + '"' + (labFilter.cat === c ? ' selected' : '') + '>' + t('lab.cat.' + c) + '</option>').join('') + '</select>' +
+      '<select class="select" id="awsLabExam" aria-label="' + t('lab.exam') + '">' + exams.map(e => '<option value="' + e + '"' + (labFilter.exam === e ? ' selected' : '') + '>' + t('lab.exam.' + e) + '</option>').join('') + '</select>' +
+      '<select class="select" id="awsLabStatus" aria-label="' + t('lab.status') + '">' + statuses.map(s => '<option value="' + s + '"' + (labFilter.status === s ? ' selected' : '') + '>' + t('lab.status.' + s) + '</option>').join('') + '</select>' +
+      '</div><div class="row"><input type="search" class="input" id="awsLabSearch" placeholder="' + esc(t('lab.search')) + '" value="' + esc(labFilter.q) + '" aria-label="' + esc(t('lab.searchAria')) + '">' +
+      '<button type="button" class="btn ghost" data-act="labClear">' + t('lab.clear') + '</button></div></section>';
+    return '<section class="page-head"><h2>' + t('lab.title') + '</h2><p>' + t('lab.subtitle') + '</p></section>' +
+      '<p>' + t('lab.progress', { done, total: list.length, pct: list.length ? Math.round(done / list.length * 100) : 0 }) + '</p>' + filters +
+      '<div class="grid aws-labs">' + (list.length ? list.map(l => {
+        const done = !!a[l.id];
+        return '<div class="card aws-lab-card' + (done ? ' done' : '') + '"><div class="aws-lab-head">' +
+          '<span class="badge">' + esc(l.category) + '</span> <strong>' + esc(l.title) + '</strong></div>' +
+          '<p class="small muted">' + l.level + ' · ' + l.minutes + ' min</p>' +
+          '<div class="chips">' + (l.services || []).map(s => '<span class="chip">' + esc(s) + '</span>').join('') + '</div>' +
+          '<a href="#/aws/labs/' + esc(l.id) + '" class="btn primary">' + t('openWeek') + '</a></div>';
+      }).join('') : '<p class="empty">' + t('lab.empty') + '</p>') + '</div>';
+  }
+  function labDetailHtml(id) {
+    const l = (window.AWS_LABS || []).find(x => x.id === id);
+    if (!l) return '<p class="empty">' + t('lab.notFound') + ' <br><a href="#/aws/labs">' + t('lab.back') + '</a></p>';
+    const a = S().labs, done = !!a[l.id];
+    return '<nav><a href="#/aws/labs" class="btn sm ghost">' + t('lab.back') + '</a></nav>' +
+      '<article class="card aws-lab-detail"><header><h1>' + esc(l.title) + '</h1>' +
+      '<button type="button" class="btn ' + (done ? 'ok' : '') + '" data-act="labTick" data-id="' + esc(l.id) + '">' + (done ? t('lab.undoneBtn') : t('lab.doneBtn')) + '</button></header>' +
+      (done ? '<p class="small ok">' + t('lab.doneAt', { date: App.fmtDate(a[l.id].doneAt) }) + '</p>' : '') +
+      '<h3>' + t('lab.goal') + '</h3><p>' + esc(l.goal) + '</p>' +
+      '<h3>' + t('lab.steps') + '</h3><ol>' + (l.steps || []).map(s => '<li>' + esc(s) + '</li>').join('') + '</ol>' +
+      '<h3>' + t('lab.verify') + '</h3><ul>' + (l.verify || []).map(s => '<li>' + App.md(s) + '</li>').join('') + '</ul>' +
+      '<div class="card warn"><h3>' + t('lab.cost') + '</h3><p>' + esc(l.cost) + '</p></div>' +
+      (l.examTip ? '<h3>' + t('lab.examTip') + '</h3><div class="md">' + App.md(l.examTip) + '</div>' : '') +
+      '<h3>' + t('lab.refs') + '</h3><p class="small muted">' + t('lab.refsNote') + '</p><ul>' + (l.ref || []).map(slug => {
+        const title = slug.replace(/-/g, ' ').toUpperCase();
+        return '<li><a href="https://labaws.site/labs/' + esc(slug) + '" target="_blank" rel="noopener">' + esc(title) + '</a></li>';
+      }).join('') + '</ul></article>';
+  }
+
   // ---------- render ----------
   function scrollTop() { if (rootEl && rootEl.scrollIntoView) rootEl.scrollIntoView({ block: 'start' }); }
   function render() {
@@ -484,6 +600,7 @@
     if (tab === 'plan') body = planHtml();
     else if (tab === 'practice') body = practiceHtml();
     else if (tab === 'mock') { loadMock(); body = M ? mockHtml() : R ? resultHtml() : mockSetupHtml(); }
+    else if (tab === 'labs') body = params && params[1] ? labDetailHtml(params[1]) : labsListHtml();
     else body = overviewHtml();
     rootEl.innerHTML = '<div class="page-head"><div><h1>' + t('heading') + '</h1><p>' + t('sub') + '</p></div></div>' + tabsHtml() + body;
   }
@@ -524,12 +641,18 @@
       App.navigate('#/aws/practice');
     }
     else if (act === 'reviewOld') { const h = S().mocks.find(x => x.id === b.dataset.id); if (h) { R = h; onlyWrong = false; App.navigate('#/aws/mock'); } }
+    else if (act === 'labClear') { labFilter = { cat: 'all', exam: 'all', status: 'all', q: '' }; render(); }
+    else if (act === 'labTick') { const a = S().labs; if (a[b.dataset.id]) delete a[b.dataset.id]; else a[b.dataset.id] = { doneAt: Date.now(), updatedAt: Date.now() }; App.store.save(); render(); }
   }
   function onChange(e) {
     const el = e.target;
     if (el.id === 'awsStart') { S().start = /^\d{4}-\d{2}-\d{2}$/.test(el.value) ? el.value : null; App.store.save(); render(); }
     else if (el.id === 'awsPExam') { P.exam = el.value; P.domain = 'all'; P.week = null; buildQueue(); render(); }
     else if (el.id === 'awsPDomain') { P.domain = el.value; buildQueue(); render(); }
+    else if (el.id === 'awsLabCat') { labFilter.cat = el.value; render(); }
+    else if (el.id === 'awsLabExam') { labFilter.exam = el.value; render(); }
+    else if (el.id === 'awsLabStatus') { labFilter.status = el.value; render(); }
+    else if (el.id === 'awsLabSearch') { labFilter.q = el.value; render(); }
   }
   function onToggle(e) {
     const d = e.target;

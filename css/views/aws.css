@@ -78,6 +78,15 @@
 .view-aws .aws-cell.flagged { box-shadow: inset 0 -3px 0 var(--warn); }
 .view-aws .aws-cell.current { outline: 2px solid var(--accent); }
 
+/* labs */
+.view-aws .aws-labs { grid-template-columns: repeat(auto-fill, minmax(min(100%, 300px), 1fr)); gap: 12px; margin-top: 10px; }
+.view-aws .aws-lab-card { padding: 14px; position: relative; }
+.view-aws .aws-lab-card.done { border-left: 4px solid var(--ok); }
+.view-aws .aws-lab-head { display: flex; align-items: center; gap: 8px; margin-bottom: 6px; }
+.view-aws .aws-lab-detail h1 { margin-top: 0; }
+.view-aws .aws-lab-detail header { display: flex; justify-content: space-between; align-items: flex-start; gap: 10px; }
+.view-aws .aws-lab-detail h3 { margin: 16px 0 8px; }
+
 /* kết quả */
 .view-aws .aws-score { text-align: center; }
 .view-aws .aws-score h2 { margin-top: 0; }
