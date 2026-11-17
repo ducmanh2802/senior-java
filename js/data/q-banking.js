@@ -4793,11 +4793,721 @@ Một ngân hàng phát hành thẻ Visa. Khách rút 1 triệu tại ATM. Flow:
 > Cụm từ: ISO 8583 là chuẩn thông điệp cho giao dịch thẻ. MTI (Message Type Indicator) là mã loại message (0100, 0110, 0200, 0210). Bitmap là chuỗi bit xác định field nào có trong message. PAN (Primary Account Number) là số thẻ. Response code là mã kết quả giao dịch (00 = approve, 05 = decline).
 
   `,
+follow: [
+        'Khi issuer decline giao dịch (response code 05), acquirer xử lý thế nào để không mất tiền?',
+        'ISO 8583 và ISO 20022 khác nhau thế nào về cấu trúc và hiệu năng? Khi nào dùng cái nào?',
+        'Nếu bitmap bị corrupt (ví dụ do network error), bạn phát hiện và xử lý thế nào?'
+    ],
+    tags: ['iso 8583', 'card transaction', 'authorization', 'message flow', 'bitmap', 'payment']
+},
+{
+  id: 'banking-057',
+  topic: 'banking',
+  level: 'lead',
+  q: 'Thiết kế sổ cái kế toán kép (double-entry ledger) chịu tải cao như thế nào: hot account (tài khoản nóng) gây nghẽn thế nào, giải pháp sharding số dư, và cách đảm bảo ACID khi ghi phân tán?',
+  a: `**Tóm tắt:** Sổ cái kế toán kép (double-entry ledger) ghi mỗi giao dịch thành ít nhất hai bút toán (Debit và Credit) cân bằng nhau. Dưới tải cao, tài khoản "nóng" (hot account) như tài khoản trung gian thanh toán, tài khoản phí, tài khoản ngân hàng đối tác bị nghẽn do nhiều giao dịch cùng muốn khóa và cập nhật cùng lúc. Giải pháp: tách sổ cái thành nhiều shard theo account_id, dùng sharding deterministic (hash account_id), hot account dùng kỹ thuật "reservation counter" hoặc "striping" để phân tán áp lực ghi, và đảm bảo ACID bằng saga hoặc two-phase commit tùy độ phức tạp.
+ 
+### Sổ cái kép và bài toán hot account (giải thích từ đầu)
+Trong hệ thống ngân hàng, sổ cái (ledger) là nơi lưu mọi biến động tiền. Mỗi giao dịch tạo ít nhất hai dòng: một dòng Debit (trừ) và một dòng Credit (cộng), tổng Debit = tổng Credit. Số dư tài khoản = tổng Credit - tổng Debit.
+ 
+**Hot account** là tài khoản bị truy cập cực nhiều, ví dụ:
+- Tài khoản trung gian thanh toán (settlement account): mọi giao dịch chuyển tiền qua ngân hàng đều đụng tài khoản này
+- Tài khoản phí dịch vụ: mọi giao dịch đều trừ phí vào đây
+- Tài khoản ngân hàng đối tác (Nostro/Vostro): hàng nghìn giao dịch cross-border mỗi phút
+ 
+Khi 10.000 giao dịch/giây cùng muốn khóa tài khoản trung gian để ghi Debit/Credit, cơ sở dữ liệu bị tranh chấp khóa (lock contention), throughput sụt giảm, latency tăng vọt.
+ 
+### Sharding số dư (Balance Sharding) - chia nhỏ áp lực ghi
+Thay vì một tài khoản lớn, tách thành nhiều "sub-account" (còn gọi là stripe hoặc partition):
+ 
+~~~text
+Tài khoản trung gian gốc: SETTLEMENT_VND
+Tách thành 100 stripe: SETTLEMENT_VND_00 ... SETTLEMENT_VND_99
+Mỗi giao dịch chọn stripe = hash(transaction_id) % 100
+Số dư thực = SUM(balance của 100 stripe)
+~~~
+ 
+Khi đọc số dư (hiển thị cho khách, báo cáo): cộng tổng 100 stripe (có thể cache, refresh định kỳ).
+Khi ghi: chỉ khóa 1 stripe thay vì khóa toàn bộ tài khoản, giảm contention 100 lần.
+ 
+~~~java
+// Ý tưởng: chọn stripe cho một giao dịch
+int chooseStripe(String txId, int stripeCount) {
+    return Math.abs(txId.hashCode()) % stripeCount;
+}
+ 
+// Ghi Debit vào stripe đã chọn
+@Transactional
+void debitStripe(String baseAccountId, int stripe, BigDecimal amount) {
+    String stripeAccount = baseAccountId + "_" + String.format("%02d", stripe);
+    ledgerRepo.insertEntry(stripeAccount, "DEBIT", amount);
+    balanceRepo.addBalance(stripeAccount, amount.negate());
+}
+~~~
+ 
+**Lưu ý quan trọng**: stripe count phải cố định (không tự động scale) để đọc số dư đúng. Nếu cần tăng stripe, phải chạy migration: đọc toàn bộ stripe cũ, ghi lại theo stripe mới, trong cửa sổ bảo trì.
+ 
+### Reservation Counter - dành cho tài khoản cực nóng (chỉ 1-2 tài khoản)
+Nếu chỉ có 1-2 tài khoản cực nóng (ví dụ tài khoản phí của ngân hàng), sharding 100 stripe vẫn có thể nghẽn nếu traffic cực lớn. Dùng **reservation counter**:
+ 
+1. Giao dịch không ghi trực tiếp vào ledger, mà gửi yêu cầu "đặt chỗ" (reserve) vào hàng đợi (Kafka) kèm idempotency key
+2. Một worker đơn luồng (single-threaded consumer) đọc hàng đợi, ghi lần lượt vào ledger, trả kết quả về qua callback hoặc poll
+3. Vì worker chạy đơn luồng, không có tranh chấp khóa, throughput chỉ phụ thuộc tốc độ ghi DB (~50k-100k TPS trên PostgreSQL/MySQL tuned)
+ 
+~~~seq
+title: Reservation counter cho hot account
+actors: Client | Kafka | ReservationWorker | LedgerDB
+Client -> Kafka: gửi ReserveRequest{txId, account, amount, callback}
+Kafka -> ReservationWorker: consume (đơn luồng)
+ReservationWorker -> LedgerDB: BEGIN; INSERT ledger; UPDATE balance; COMMIT
+ReservationWorker -> Kafka: gửi Result{txId, success/fail}
+Kafka -> Client: nhận kết quả qua callback topic
+~~~
+ 
+### Đảm bảo ACID khi ghi phân tán (Distributed ACID)
+Khi một giao dịch đụng nhiều shard (ví dụ chuyển từ stripe A sang stripe B) hoặc nhiều tài khoản trên nhiều shard:
+ 
+**Cách 1: Saga (khuyên dùng cho high-throughput)**
+- Mỗi bước là local transaction trên một shard
+- Có compensation (bước bù trừ) nếu bước sau thất bại
+- Orchestrator theo dõi state machine: STARTED -> STEP1_DONE -> STEP2_DONE -> COMPLETED / COMPENSATING -> COMPENSATED
+ 
+**Cách 2: Two-Phase Commit (2PC) - chỉ dùng khi bắt buộc nhất quán mạnh**
+- Phase 1 (Prepare): tất cả shard khóa tài khoản, kiểm tra điều kiện, vote YES/NO
+- Phase 2 (Commit): nếu tất cả YES -> commit; có bất kỳ NO -> rollback tất cả
+- Nhược điểm: khóa tài khoản lâu, throughput thấp, phức tạp recovery khi coordinator chết
+ 
+**Cách 3: Deterministic routing - tránh giao dịch cross-shard**
+- Thiết kế sao cho một giao dịch chỉ đụng **một shard**: routing theo account_id của tài khoản nguồn hoặc đích
+- Ví dụ: tài khoản A stripe 5, tài khoản B stripe 5 -> cùng shard, 1 local transaction
+- Nếu A stripe 5, B stripe 7 -> tách thành 2 giao dịch nội bộ: A -> settlement_stripe5, settlement_stripe7 -> B, dùng saga
+ 
+### Lỗi hay gặp
+- Sharding nhưng đọc số dư không cộng đủ stripe -> hiển thị sai số dư cho khách/báo cáo
+- Tự động scale stripe count mà không migration -> dữ liệu vỡ
+- Dùng 2PC cho mọi giao dịch -> throughput sụt 10x, deadlock thường xuyên
+- Reservation counter không idempotent -> xử lý trùng khi retry
+- Hot account không tách stripe mà chỉ tăng DB size -> contention không giảm
+ 
+### Ví dụ đời thực
+ 
+Một ngân hàng số xử lý 500.000 giao dịch/ngày, peak 20.000 TPS. Tài khoản trung gian thanh toán (SETTLEMENT_VND) bị hot: 80% giao dịch đụng tài khoản này. PostgreSQL lock wait time trung bình 200ms, p99 2 giây, nhiều giao dịch timeout.
+ 
+**Điều tra:** EXPLAIN ANALYZE thấy contention trên row SETTLEMENT_VND. Mọi transaction đều SELECT FOR UPDATE row này.
+ 
+**Giải pháp:** Tách SETTLEMENT_VND thành 256 stripe (SETTLEMENT_VND_00.._FF). Giao dịch chọn stripe = hash(txId) % 256. Worker đọc số dư tổng hợp từ 256 stripe mỗi 10 giây, cache vào Redis. Đọc số dư thực từ cache (sub-ms), ghi chỉ khóa 1 stripe.
+ 
+**Kết quả:** Lock wait time giảm từ 200ms xuống 2ms, throughput tăng từ 5.000 TPS lên 50.000 TPS. Chi phí: logic đọc số dư phức tạp hơn (phải cộng 256 stripe), nhưng chấp nhận được vì đọc nhiều hơn ghi 100 lần.
+ 
+### Trả lời mẫu khi phỏng vấn
+ 
+"Sổ cái kép ghi mỗi giao dịch thành cặp Debit/Credit cân bằng. Hot account là tài khoản bị nhiều giao dịch truy cập cùng lúc (trung gian thanh toán, phí, Nostro), gây lock contention. Giải pháp tôi dùng: (1) **Balance sharding** - tách tài khoản nóng thành N stripe (ví dụ 256), mỗi giao dịch hash txId chọn 1 stripe ghi, đọc số dư cộng tổng stripe (cache định kỳ). (2) **Reservation counter** - cho tài khoản cực nóng, đẩy yêu cầu vào Kafka, worker đơn luồng xử lý tuần tự, tránh hoàn toàn lock contention. (3) **ACID phân tán** - ưu tiên deterministic routing (1 giao dịch = 1 shard), nếu cross-shard bắt buộc thì dùng Saga với compensation, chỉ dùng 2PC khi bắt buộc nhất quán mạnh. Thực tế: một ngân hàng tách 256 stripe cho tài khoản trung gian, lock wait giảm 100x, throughput từ 5k lên 50k TPS."
+ 
+> Senior tip: Ba chốt: (1) **Đọc nhiều, ghi ít** - cache tổng số dư, chỉ sharding khi ghi. (2) **Deterministic routing** - thiết kế sao 1 giao dịch chỉ đụng 1 shard, tránh distributed transaction. (3) **Reservation counter** - cho cực nóng, dùng queue + single-thread worker, chấp nhận latency vài chục ms đổi throughput lớn. Hỏi interviewer: "Hệ thống của anh có tài khoản nào > 10k TPS không? Nếu có thì dùng sharding hay reservation?"
+ 
+> Cụm từ: Hot account (tài khoản nóng) là tài khoản bị truy cập ghi cực nhiều, gây lock contention. Stripe/shard là phân chia một tài khoản logic thành nhiều tài khoản vật lý. Saga là chuỗi local transaction có compensation, thay thế 2PC.
+ 
+`,
   follow: [
-    'Khi issuer decline giao dịch (response code 05), acquirer xử lý thế nào để không mất tiền?',
-    'ISO 8583 và ISO 20022 khác nhau thế nào về cấu trúc và hiệu năng? Khi nào dùng cái nào?',
-    'Nếu bitmap bị corrupt (ví dụ do network error), bạn phát hiện và xử lý thế nào?'
+    'Khi đọc số dư từ 256 stripe, bạn cache như thế nào và invalidation ra sao?',
+    'Reservation counter worker chết giữa chừng, giao dịch đang xử lý bị mất không?',
+    'Nếu stripe count cần tăng từ 256 lên 512, bạn migration dữ liệu thế nào không downtime?'
   ],
-  tags: ['iso 8583', 'card transaction', 'authorization', 'message flow', 'bitmap', 'payment']
+  tags: ['ledger', 'double-entry', 'hot account', 'sharding', 'saga', 'reservation counter', 'ACID']
+},
+{
+  id: 'banking-058',
+  topic: 'banking',
+  level: 'senior',
+  q: 'Đối soát hàng ngày (daily reconciliation) với ngân hàng đối tác: quy trình tự động so khớp file, phân loại lệch (break), xử lý tự động vs thủ công, và maker-checker cho điều chỉnh sổ cái.',
+  a: `**Tóm tắt:** Đối soát hàng ngày là quy trình so sánh sổ cái của ngân hàng mình với file giao dịch từ ngân hàng đối tác (NAPAS, ngân hàng liên kết, correspondent bank) để phát hiện lệch (break). Mục tiêu: không đồng nào bị "treo" không rõ chủ. Quy trình: nhận file -> chuẩn hóa -> so khớp theo mã tham chiếu duy nhất -> phân loại break -> tự động xử lý loại có quy tắc -> đẩy phần còn lại vào hàng đợi maker-checker -> ghi bút toán điều chỉnh append-only.
+ 
+### Vì sao cần đối soát hàng ngày
+Hai ngân hàng ghi nhận cùng một giao dịch độc lập. Do timeout, mất mạng, lỗi xử lý, sai định dạng, sai múi giờ... một bên có thể ghi thành công, bên kia thất bại, hoặc cả hai ghi nhưng số tiền/trạng thái khác nhau. Nếu không đối soát, lệch tích lũy thành tiền thật bị mất hoặc ghi nhầm.
+ 
+### Quy trình từng bước
+ 
+**1. Nhận và kiểm tra file**
+- File từ đối tác: CSV, XML (ISO 20022 camt.053), MT940 (SWIFT), hoặc API pull
+- Kiểm tra toàn vẹn: checksum (MD5/SHA256), số dòng, tổng tiền ở dòng footer, chữ ký số (nếu có)
+- File sai -> từ chối, yêu cầu gửi lại, **không xử lý một phần**
+ 
+**2. Chuẩn hóa (Normalize)**
+- Parse về canonical model: partner_ref (mã tham chiếu duy nhất), amount (minor unit, VND = đồng), currency, status, value_date, fee, description
+- Chuyển múi giờ về UTC, chuẩn hóa ngày nghiệp vụ (business date)
+- Mapping trạng thái đối tác -> trạng thái nội bộ (SUCCESS, FAILED, PENDING, REVERSED)
+ 
+**3. So khớp (Matching) - khóa là partner_ref**
+ 
+~~~sql
+-- Full outer join giữa sổ mình (ours) và file đối tác (theirs)
+SELECT 
+    COALESCE(o.partner_ref, t.partner_ref) AS partner_ref,
+    o.amount AS our_amount, t.amount AS their_amount,
+    o.status AS our_status, t.status AS their_status,
+    o.value_date AS our_date, t.value_date AS their_date,
+    CASE 
+        WHEN o.partner_ref IS NULL THEN 'ONLY_THEIRS'
+        WHEN t.partner_ref IS NULL THEN 'ONLY_OURS'
+        WHEN o.amount <> t.amount THEN 'AMOUNT_MISMATCH'
+        WHEN o.status <> t.status THEN 'STATUS_MISMATCH'
+        WHEN o.value_date <> t.value_date THEN 'DATE_MISMATCH'
+        ELSE 'MATCHED'
+    END AS match_result
+FROM ours_day o
+FULL OUTER JOIN theirs_day t ON o.partner_ref = t.partner_ref;
+~~~
+ 
+**4. Phân loại break (loại lệch)**
+ 
+| Loại break | Mô tả | Xử lý tự động? |
+|---|---|---|
+| ONLY_OURS | Chúng ta có, đối tác không có | Có: nếu timeout chờ phản hồi -> inquiry; nếu quá hạn -> reversal |
+| ONLY_THEIRS | Đối tác có, chúng ta không có | Có: nếu là phí/lãi đã biết -> ghi bút toán; còn lại -> inquiry |
+| AMOUNT_MISMATCH | Cùng ref, lệch số tiền | Có: nếu chênh lệch = phí đã biết -> ghi phí; còn lại -> maker-checker |
+| STATUS_MISMATCH | Cùng ref, lệch trạng thái | Có: nếu chúng ta PENDING, đối tác SUCCESS -> cập nhật SUCCESS |
+| DATE_MISMATCH | Cùng ref, lệch ngày giá trị | Có: điều chỉnh theo business date rule |
+| DUPLICATE | Cùng ref xuất hiện 2 lần một bên | Có: giữ bản ghi đầu, đảo bản ghi trùng |
+ 
+**5. Xử lý tự động (Auto-resolution)**
+- Chỉ xử lý tự động khi có **quy tắc rõ ràng, được duyệt trước** (rule engine)
+- Mỗi rule: điều kiện (match_result, amount_diff, fee_schedule...) -> hành động (ghi bút toán, cập nhật trạng thái, gửi inquiry)
+- Kết quả auto-resolution ghi log đầy đủ: rule_id, before/after, timestamp
+ 
+**6. Hàng đợi maker-checker (Manual queue)**
+- Các break không khớp rule -> đẩy vào queue có trạng thái: NEW -> INVESTIGATING -> PROPOSED -> APPROVED -> APPLIED / REJECTED
+- Maker (nhân viên tra soát): xem bằng chứng (log, file đối tác, inquiry response), đề xuất điều chỉnh (bút toán mới)
+- Checker (kiểm soát viên): duyệt hoặc từ chối, **bắt buộc khác người maker**
+- Hệ thống ghi bút toán điều chỉnh **append-only**, không sửa dòng gốc, có audit trail
+ 
+### Code: Matching engine & Auto-resolution
+ 
+~~~java
+enum MatchResult { MATCHED, ONLY_OURS, ONLY_THEIRS, AMOUNT_MISMATCH, STATUS_MISMATCH, DATE_MISMATCH, DUPLICATE }
+ 
+record BreakCase(String partnerRef, MatchResult type, BigDecimal ourAmt, BigDecimal theirAmt,
+                 String ourStatus, String theirStatus, LocalDate ourDate, LocalDate theirDate) {}
+ 
+interface ResolutionRule {
+    boolean matches(BreakCase bc);
+    ResolutionAction apply(BreakCase bc); // trả về action: ADJUST_LEDGER, UPDATE_STATUS, SEND_INQUIRY, ESCALATE
+}
+ 
+// Ví dụ rule: STATUS_MISMATCH, chúng ta PENDING, đối tác SUCCESS -> auto cập nhật
+class PendingToSuccessRule implements ResolutionRule {
+    public boolean matches(BreakCase bc) {
+        return bc.type() == STATUS_MISMATCH 
+            && "PENDING".equals(bc.ourStatus()) 
+            && "SUCCESS".equals(bc.theirStatus());
+    }
+    public ResolutionAction apply(BreakCase bc) {
+        return ResolutionAction.updateStatus(bc.partnerRef(), "SUCCESS", "auto: partner confirmed SUCCESS");
+    }
+}
+ 
+// Engine chạy
+void resolveDaily(List<BreakCase> breaks) {
+    for (BreakCase bc : breaks) {
+        if (bc.type() == MATCHED) continue;
+        for (ResolutionRule rule : rules) {
+            if (rule.matches(bc)) {
+                rule.apply(bc).execute();
+                audit.log("AUTO_RESOLVE", bc.partnerRef(), rule.getClass().getSimpleName());
+                break;
+            }
+        }
+        // Không rule nào khớp -> đẩy queue manual
+        if (!resolved) manualQueue.enqueue(bc);
+    }
+}
+~~~
+ 
+### Đối soát số dư (Balance Reconciliation) - lớp thứ 2
+Ngoài so khớp từng giao dịch, phải so khớp **tổng số dư** cuối ngày:
+- Tổng số dư tài khoản Nostro/Vostro trong ledger mình
+- So với số dư trong statement đối tác (MT940/camt.053 closing balance)
+- Nếu tổng khớp nhưng từng giao dịch lệch -> vẫn phải xử lý từng break (tổng khớp có thể che lệch bù trừ)
+ 
+### Lỗi hay gặp
+- So khớp theo **số tiền + thời gian** thay vì partner_ref -> ghép nhầm giao dịch cùng số tiền
+- File đối tác đến trễ/mất -> không chạy đối soát, lệch tích lũy
+- Tự động điều chỉnh sổ cái **không qua maker-checker** -> rủi ro gian lận
+- Sửa trực tiếp giao dịch gốc (UPDATE) thay vì ghi bút toán mới (INSERT) -> mất audit trail
+- Không theo dõi **tuổi break** (số ngày chưa xử lý) -> break tồn đọng hàng tháng
+ 
+### Ví dụ đời thực
+ 
+Một ngân hàng đối soát hàng ngày với 5 ngân hàng đối tác qua NAPAS. Mỗi ngày ~150 break. Trước khi tự động: 3 nhân viên làm cả buổi sáng, break cũ nhất tồn 47 ngày.
+ 
+**Tự động hóa:** Triển khai matching engine + 12 resolution rule ( phí, lãi, timeout pending, date mismatch, duplicate...). 82% break được auto-resolve (chủ yếu timeout pending đã thành công ở đối tác, lệch ngày do múi giờ, phí correspondent đã biết). 18% còn lại vào queue maker-checker với SLA 2 ngày.
+ 
+**Kết quả:** Thời gian xử lý giảm từ 4h/ngày xuống 30 phút. Break trung bình/ngày giảm từ 150 xuống 27 (do auto-resolve kịp thời). Break tồn > 5 ngày giảm từ 12 xuống 0. Audit trail đầy đủ cho phép truy vết mọi điều chỉnh.
+ 
+### Trả lời mẫu khi phỏng vấn
+ 
+"Đối soát hàng ngày của tôi có 6 bước: (1) Nhận file, kiểm tra checksum/tổng tiền, file sai thì yêu cầu gửi lại. (2) Chuẩn hóa về canonical model (partner_ref, amount minor unit, UTC, business date). (3) So khớp full outer join theo partner_ref, ra 6 loại break. (4) Auto-resolution bằng rule engine: 12 rule cho phí, lãi, timeout pending, date mismatch, duplicate... (5) Phần không khớp rule vào queue maker-checker: maker đề xuất bút toán mới, checker duyệt, hệ thống chặn tự duyệt. (6) Ghi bút toán điều chỉnh append-only, audit trail đầy đủ. Còn so khớp tổng số dư Nostro/Vostro hàng ngày. Thực tế: auto-resolve 82% break, queue thủ công giảm từ 150 xuống 27/ngày, break > 5 ngày bằng 0."
+ 
+> Senior tip: Ba chốt: (1) **Partner_ref là chìa khóa** - bắt đối tác phải có mã duy nhất, không dùng amount+date. (2) **Auto-resolution có rule rõ, có audit** - không "auto" mù mịt. (3) **Maker-checker bắt buộc cho điều chỉnh sổ** - bút toán mới append-only, không sửa dòng cũ. Thống kê nguyên nhân break theo tuần: mỗi nhóm lặp lại là cơ hội thêm rule hoặc fix gốc ở hệ thống nguồn.
+ 
+> Cụm từ: Break (lệch) là giao dịch không khớp giữa hai bên. Auto-resolution là xử lý tự động theo rule. Maker-checker là một người đề xuất, người khác duyệt. Append-only là chỉ thêm dòng mới, không sửa/xóa.
+ 
+`,
+  follow: [
+    'Nếu file đối tác đến muộn 2 ngày, bạn xử lý thế nào để không làm sai số dư hôm nay?',
+    'Làm sao phân biệt lệch thật (bug) và lệch do parse sai file?',
+    'Ai có quyền duyệt điều chỉnh số dư, và ngưỡng tiền nào thì bắt buộc 2 checker?'
+  ],
+  tags: ['reconciliation', 'daily reconciliation', 'break', 'matching', 'maker-checker', 'auto-resolution', 'NAPAS']
+},
+{
+  id: 'banking-059',
+  topic: 'banking',
+  level: 'senior',
+  q: 'Chuyển tiền liên ngân hàng có trạng thái treo (pending/timeout): thiết kế máy trạng thái, tra soát chủ động (inquiry), quy trình hoàn tiền (reversal) và bù đắp (compensation) khi đối tác xác nhận thất bại.',
+  a: `**Tóm tắt:** Timeout khi chuyển tiền liên ngân hàng (NAPAS, SWIFT, correspondent) **không có nghĩa là thất bại** — chỉ là "chưa biết kết quả". Ba khả năng: đối tác chưa nhận lệnh, đối tác đã xử lý thành công nhưng phản hồi bị mất, hoặc đối tác đang xử lý. Thiết kế đúng: chuyển sang trạng thái PENDING_INQUIRY, tạm giữ tiền (hold), không tự động retry lệnh mới, không tự động hoàn tiền. Tra soát chủ động bằng mã tham chiếu duy nhất (inquiry), cập nhật trạng thái theo kết quả, chỉ hoàn tiền khi có xác nhận thất bại hoặc quá hạn tra soát.
+ 
+### Tại sao timeout nguy hiểm
+Khi gửi lệnh chuyển tiền và không nhận phản hồi trong timeout (ví dụ 10 giây), nếu coi là thất bại và hoàn tiền (hoặc cho khách gửi lại), trường hợp "đối tác đã thành công nhưng phản hồi mất" sẽ khiến: người nhận nhận tiền 2 lần, hoặc người gửi bị trừ 2 lần. Đây là lỗi nghiêm trọng nhất thanh toán.
+ 
+### Máy trạng thái (State Machine) giao dịch
+ 
+~~~text
+[INIT] --gửi lệnh--> [SENT]
+[SENT] --nhận SUCCESS--> [SUCCESS] (kết thúc)
+[SENT] --nhận FAILED--> [FAILED] -> hoàn tiền hold
+[SENT] --timeout/lỗi mạng--> [PENDING_INQUIRY] --tiền bị HOLD--
+[PENDING_INQUIRY] --inquiry: SUCCESS--> [SUCCESS] -> chốt trừ tiền
+[PENDING_INQUIRY] --inquiry: FAILED--> [FAILED] -> hoàn tiền hold
+[PENDING_INQUIRY] --inquiry: UNKNOWN & quá hạn--> [MANUAL_INVESTIGATION] -> đối soát/tra soát thủ công
+[MANUAL_INVESTIGATION] --xác nhận FAILED--> [REVERSAL_PENDING] -> reversal -> [REVERSED]
+[MANUAL_INVESTIGATION] --xác nhận SUCCESS--> [SUCCESS]
+~~~
+ 
+**PENDING_INQUIRY**: trạng thái "đang treo, chưa kết luận". Tiền người gửi bị **hold** (tạm giữ khỏi available balance, chưa trừ ledger balance) để không cho chi tiêu trùng.
+ 
+### Mã tham chiếu duy nhất (Partner Reference) - chìa khóa tra soát
+- Mỗi lệnh sinh **idempotency key** (UUID) do ngân hàng gửi tạo, gắn suốt vòng đời
+- Gửi kèm sang đối tác (NAPAS RRN, SWIFT UETR, STAN)
+- Lưu trong DB với unique constraint: {{(partner_ref, business_date)}}
+- Dùng để: inquiry, đối soát, idempotency (retry cùng key -> trả kết quả cũ)
+ 
+### Tra soát chủ động (Inquiry) - không chờ đợi
+ 
+~~~text
+Lịch retry inquiry (exponential backoff):
+Lần 1: sau 30 giây
+Lần 2: sau 2 phút
+Lần 3: sau 10 phút
+Lần 4: sau 1 giờ
+Lần 5: sau 4 giờ
+Lần 6: sau 12 giờ
+Quá 24 giờ chưa rõ -> leo thang MANUAL_INVESTIGATION
+~~~
+ 
+Mỗi lần inquiry dùng **cùng partner_ref**. Đối tác phải hỗ trợ idempotent: nhận lại cùng ref -> trả kết quả cũ, không xử lý trùng.
+ 
+~~~seq
+title: Chuyen khoan lien NH timeout va tra soat
+actors: AppKhach | PaymentSvc | Napas | DoiTacNH
+AppKhach -> PaymentSvc: chuyen 5.000.000 cho B (idem_key=K1)
+PaymentSvc -> PaymentSvc: tao tx_id, hold tien A, trang thai SENT
+PaymentSvc -> Napas: gui lenh chuyen (partner_ref=K1)
+Napas -> DoiTacNH: ghi co cho B
+DoiTacNH --> Napas: thanh cong
+Napas --> PaymentSvc: timeout mat phan hoi
+PaymentSvc -> PaymentSvc: chuyen trang thai PENDING_INQUIRY
+PaymentSvc --> AppKhach: thong bao "Dang xu ly, vui long cho"
+PaymentSvc -> Napas: inquiry(K1) - tra soat
+Napas --> PaymentSvc: ket qua SUCCESS
+PaymentSvc -> PaymentSvc: cap nhat SUCCESS, chot tru tien A
+PaymentSvc --> AppKhach: thong bao thanh cong
+~~~
+ 
+### Hoàn tiền (Reversal) và Bù đắp (Compensation)
+ 
+**Chỉ hoàn tiền khi có xác nhận FAILED** từ đối tác, hoặc sau quy trình MANUAL_INVESTIGATION kết luận thất bại.
+ 
+Quy trình reversal:
+1. Tạo bút toán đảo ngược (reversal entry) trên ledger: Credit tài khoản nguồn, Debit tài khoản trung gian
+2. Ghi rõ tham chiếu giao dịch gốc (original_tx_id) để audit trail
+3. Giải phóng hold (nếu còn), cập nhật available balance
+4. Thông báo khách: "Giao dịch thất bại, tiền đã hoàn về tài khoản"
+ 
+**Compensation cho giao dịch đã SUCCESS nhưng sau đó bị cancel** (hiếm, ví dụ đối tác báo sai):
+- Nếu tiền đã chuyển đến người nhận: phải phối hợp với đối tác thu hồi (recall) - quy trình thủ công, có SLA
+- Nếu tiền chưa đến người nhận: reversal nội bộ
+- Luôn ghi log compensation với original_tx_id, lý do, người phê duyệt
+ 
+### Xử lý PENDING_INQUIRY treo quá lâu
+- Job chạy mỗi 15 phút: quét PENDING_INQUIRY > 48h chưa có inquiry thành công
+- Gửi cảnh báo Slack/Email cho team vận hành
+- Vận hành liên hệ đối tác qua email/điện thoại (out-of-band)
+- Nếu đối tác xác nhận FAILED -> chạy reversal tự động
+- Nếu đối tác không phản hồi sau 7 ngày -> leo thang cấp quản lý, có thể reversal theo chính sách rủi ro
+ 
+### Code: State machine & Inquiry scheduler
+ 
+~~~java
+enum TxStatus { INIT, SENT, PENDING_INQUIRY, SUCCESS, FAILED, MANUAL_INVESTIGATION, REVERSAL_PENDING, REVERSED }
+ 
+@Transactional
+void handleTimeout(String partnerRef) {
+    var tx = repo.findByPartnerRef(partnerRef).orElseThrow();
+    if (tx.status() == SENT) {
+        tx.transitionTo(PENDING_INQUIRY);
+        repo.save(tx);
+        inquiryScheduler.scheduleFirstInquiry(partnerRef); // 30s sau
+    }
+}
+ 
+@Scheduled(fixedDelay = 60_000) // mỗi phút
+void processInquiryQueue() {
+    var due = repo.findDueInquiry(Instant.now()); // next_inquiry_at <= now
+    for (var tx : due) {
+        try {
+            var resp = napasClient.inquiry(tx.partnerRef());
+            if (resp.isSuccess()) {
+                tx.transitionTo(SUCCESS);
+                ledgerService.postDebit(tx.sourceAccount(), tx.amount()); // chốt trừ
+            } else if (resp.isFailed()) {
+                tx.transitionTo(FAILED);
+                ledgerService.releaseHold(tx.sourceAccount(), tx.amount()); // hoàn hold
+            } else { // UNKNOWN
+                tx.scheduleNextInquiry(); // backoff
+            }
+            repo.save(tx);
+        } catch (Exception e) {
+            log.error("Inquiry failed for {}", tx.partnerRef(), e);
+            tx.scheduleNextInquiry(); // retry inquiry sau backoff
+            repo.save(tx);
+        }
+    }
+}
+~~~
+ 
+### Lỗi hay gặp
+- Coi timeout = FAILED -> hoàn tiền ngay -> tiền đi 2 lần nếu đối tác đã thành công
+- Cho khách bấm "Thử lại" tạo giao dịch mới khi đang PENDING_INQUIRY -> trùng tiền
+- Không lưu partner_ref -> không inquiry được, không đối soát được
+- Tự động reversal sau N phút timeout mà chưa inquiry -> hoàn nhầm
+- PENDING_INQUIRY không có TTL/giới hạn -> tiền bị hold vĩnh viễn
+- Inquiry không idempotent -> đối tác xử lý trùng khi retry
+ 
+### Ví dụ đời thực
+ 
+Một ngân hàng số xử lý chuyển khoản NAPAS. Ngày cao điểm lương, traffic tăng 3x. Khách chuyển 5 triệu lúc 21:00, timeout sau 10s. Hệ thống chuyển PENDING_INQUIRY, hold tiền, app hiện "Đang xử lý". Job inquiry chạy: lần 2 (sau 2 phút) NAPAS trả SUCCESS -> cập nhật SUCCESS, trừ tiền, thông báo khách. Giao dịch khác inquiry FAILED sau 24h -> reversal tự động, tiền hoàn về. 94% timeout chốt tự động trong 2h, 0 trường hợp trừ 2 lần.
+ 
+### Trả lời mẫu khi phỏng vấn
+ 
+"Timeout không phải thất bại, chỉ là chưa biết kết quả. Tôi thiết kế máy trạng thái: SENT -> PENDING_INQUIRY (hold tiền) khi timeout. Không tự động retry lệnh mới, không tự động hoàn tiền. Tra soát chủ động bằng partner_ref (idempotency key) với backoff 30s, 2p, 10p, 1h... Inquiry SUCCESS -> chốt trừ tiền, FAILED -> hoàn hold. Quá 24h không rõ -> MANUAL_INVESTIGATION, vận hành liên hệ đối tác. Reversal chỉ khi có xác nhận FAILED, ghi bút toán đảo có original_tx_id. Thực tế: 94% timeout chốt tự động 2h, không còn trừ tiền 2 lần. Nguyên tắc: tiền thật an toàn hơn trải nghiệm nhanh."
+ 
+> Senior tip: Ba chốt: (1) **Timeout ≠ Failed** - không bao giờ tự động hoàn/retry khi timeout. (2) **Partner_ref xuyên suốt** - idempotency key = inquiry key = reconciliation key. (3) **Hold tiền, không trừ ledger** - chỉ chốt khi có xác nhận. Hỏi interviewer: "Hệ thống của anh xử lý timeout như thế nào? Có bao giờ tự động hoàn tiền khi timeout không?"
+ 
+> Cụm từ: Hold (tạm giữ) là khóa available balance, chưa trừ ledger. Inquiry (tra soát) là hỏi đối tác trạng thái giao dịch bằng partner_ref. Reversal (đảo ngược) là bút toán hoàn tiền append-only.
+ 
+`,
+  follow: [
+    'Idempotency được đảm bảo ở tầng nào: client, gateway, service, core, đối tác?',
+    'Khi đối tác xác nhận FAILED nhưng bạn đã chốt SUCCESS (do inquiry trước báo SUCCESS sai), xử lý thế nào?',
+    'PENDING_INQUIRY treo 7 ngày, bạn reversal tự động hay cần phê duyệt?'
+  ],
+  tags: ['interbank', 'timeout', 'pending', 'inquiry', 'reversal', 'hold', 'NAPAS', 'idempotency']
+},
+{
+  id: 'banking-060',
+  topic: 'banking',
+  level: 'lead',
+  q: 'Hệ thống chống gian lận real-time (fraud detection): rule engine vs ML scoring, ngân sách độ trễ (latency budget), xử lý false positive (chặn nhầm khách thật) bằng step-up authentication, và vòng phản hồi retrain model.',
+  a: `**Tóm tắt:** Hệ thống chống gian lận real-time phải quyết định trong 150-300ms: CHO QUA, CHALLENGE (yêu cầu OTP/push), hay BLOCK. Ba lớp chạy song song: Rule Engine (luật cứng, giải thích được), ML Model (điểm 0-1, bắt mẫu tinh vi), Whitelist/Blacklist (danh sách). Độ trễ ngân sách: tổng 2000ms, trong đó decision chỉ 150-300ms — phải đọc feature từ cache/Redis, tính toán nặng chạy bất đồng bộ qua Kafka. False positive (chặn nhầm khách thật) tốn kêu gọi, mất khách; giảm FP bằng step-up authentication thay vì block, và kênh khiếu nại một chạm "Đây là tôi" trong app.
+ 
+### Ba lớp quyết định (Decision Layers)
+ 
+| Lớp | Ví dụ | Ưu điểm | Nhược điểm |
+|---|---|---|---|
+| **Rule Engine** | "Thẻ vừa giao dịch Hà Nội 10 phút trước, nay quẹt nước ngoài" (impossible travel) | Giải thích được, bật/tắt tức thì, không cần dữ liệu lịch sử | Dễ bỏ lọt kẻ gian né luật, bảo trì nhiều luật xung đột |
+| **ML Model** | Điểm xác suất gian lận dựa trên velocity, hành vi, thiết bị, lịch sử merchant | Bắt mẫu phức tạp, thích ứng | Khó giải thích, cần dữ liệu gán nhãn, có độ trễ tính toán |
+| **Danh sách** | Whitelist số điện thoại đã xác thực, Blacklist merchant | Nhanh, chắc chắn | Dữ liệu phải cập nhật liên tục |
+ 
+**Kết hợp**: Rule phủ trường hợp chắc chắn, Model chấm điểm phần còn lại, danh sách bảo vệ khách quen. Tổng điểm so với ngưỡng -> APPROVE / CHALLENGE / BLOCK.
+ 
+### Ngân sách độ trễ (Latency Budget) - bạn chỉ có vài trăm ms
+ 
+~~~text
+Tổng ngân sách một giao dịch thẻ: ~2000ms
+- Gateway + bảo mật: 100ms
+- Kiểm tra tài khoản/hạn mức core: 300-500ms
+- **Fraud Decision: 150-300ms**  <-- CHỈ CÓ KHOẢNG NÀY
+- Trả lời kênh + ghi log: 100ms
+~~~
+ 
+Vì vậy dịch vụ decision **phải đọc feature đã tính sẵn trong cache/Redis**, không được tính toán nặng đồng bộ.
+ 
+**Pattern phổ biến:**
+1. Luồng giao dịch gọi đồng bộ Fraud Decision Service với timeout 200ms
+2. Song song, sự kiện giao dịch đẩy vào Kafka -> cập nhật feature cửa sổ trượt (velocity, amount sum...) cho lần sau — việc nặng chạy **bất đồng bộ**, không chặn khách
+3. Model lớn chạy trên Flink/Spark Streaming, ghi điểm vào Redis; request chỉ đọc điểm đó (sub-ms)
+ 
+### Xử lý khi Decision Service timeout
+Phải có chính sách rõ ràng, không được "mặc định":
+- **Fail-open** (cho qua): rủi ro mất tiền nếu kẻ gian lợi dụng lúc hệ thống lỗi
+- **Fail-closed** (chặn): mất doanh thu, khách phàn nại
+- **Thực tế lai**: giao dịch nhỏ (< 5tr) fail-open, giao dịch lớn hoặc nước ngoài fail-closed hoặc CHALLENGE
+ 
+### False Positive (FP) và False Negative (FN)
+ 
+- **FP (chặn nhầm giao dịch thật)**: chi phí = cuộc gọi tổng đài + mất doanh thu + khách chuyển ngân hàng
+- **FN (cho qua giao dịch gian lận)**: chi phí = tiền bồi thường + phí điều tra
+- Dữ liệu gian lận rất hiếm (< 1%), chỉ chặn bừa 1% là recall trông đẹp nhưng FP thành thảm họa
+- **Bàn bằng chi phí kỳ vọng**: FP × chi phí mất khách + FN × thiệt hại trung bình
+ 
+**Giảm FP bằng Step-up Authentication:**
+- Thay vì BLOCK, dùng **CHALLENGE**: bắt khách xác minh OTP/push trong app
+- Khách thật xác nhận -> giao dịch cho qua ngay
+- Kẻ gian không nhận được OTP -> giao dịch dừng
+- BLOCK chỉ dành cho điểm cực cao (ví dụ > 95)
+ 
+**Kênh khiếu nại một chạm:** Khách bấm "Đây là tôi" trong app -> hệ thống mở khóa, ghi nhãn "legit" để retrain model.
+ 
+### Feature & Giải thích (Explainability)
+Feature hay dùng: velocity (số giao dịch/tiền trong 5/30/60p), khoảng cách địa lý so với giao dịch trước, thiết bị/IP mới, MCC và tỷ lệ khiếu nại, giờ (3h sáng), số tiền lẻ bất thường.
+Khi model cho điểm cao, phải trích được **lý do** (feature nào đẩy điểm) để nhân viên điều tra và khách hiểu.
+ 
+~~~java
+interface Rule { String name(); int score(); boolean matches(TxContext ctx); }
+ 
+record Decision(boolean allow, boolean challenge, List<String> hitRules, List<String> hitFeatures) {}
+ 
+Decision decide(List<Rule> rules, TxContext ctx, ModelScore mlScore,
+                int challengeAt, int blockAt) {
+    List<String> hits = new ArrayList<>();
+    int score = 0;
+    for (Rule r : rules) {
+        if (r.matches(ctx)) { hits.add(r.name()); score += r.score(); }
+    }
+    // ML score: 0-100, quy đổi sang thang điểm rule
+    score += mlScore.score();
+    hits.addAll(mlScore.topFeatures()); // top 3 feature đẩy điểm
+    
+    if (score >= blockAt)     return new Decision(false, false, hits, mlScore.topFeatures());
+    if (score >= challengeAt) return new Decision(true, true, hits, mlScore.topFeatures());
+    return new Decision(true, false, hits, mlScore.topFeatures());
+}
+~~~
+ 
+### Vòng phản hồi (Feedback Loop) & Case Management
+Giao dịch bị CHALLENGE/BLOCK -> vào queue Case Management. Nhân viên xem, kết luận: "GIAN_LẬN_THẬT" hoặc "KHÁCH_THẬT". Kết luận này chính là **nhãn (label)** để retrain model tháng sau. Không có vòng này -> model chết dần vì kẻ gian đổi chiêu.
+ 
+**Retrain pipeline:** Thu thập (label + feature snapshot tại thời điểm quyết định) -> Train offline -> Validate (offline metrics + shadow mode) -> Canary deploy (5% traffic 48h) -> Full rollout. Tự động rollback nếu FP tăng > 20% so với model cũ.
+ 
+### Lưu snapshot feature tại quyết định - bắt buộc
+Khi decision, phải ghi log feature snapshot (ví dụ dưới đây), để sau này giải trình được tại sao chặn khách và retrain chính xác:
+
+~~~json
+{
+  "velocity_5m": 12,
+  "amount_1h": 5000000,
+  "device_new": true,
+  "geo_distance_km": 1200
+}
+~~~
+ 
+### Lỗi hay gặp
+- Tính lại toàn bộ feature trong lúc chờ quyết định -> quá trễ, timeout hàng loạt
+- Velocity dùng Redis quên TTL hoặc quên key theo cửa sổ thời gian -> bộ nhớ phình, số liệu sai
+- Hai giao dịch song song cùng tăng velocity (read-increment-write) -> mất cập nhật; phải dùng INCR atomic hoặc Lua script
+- Không ghi feature snapshot -> không tái hiện được, không retrain được
+- Đổi ngưỡng không grey release -> tỷ lệ block nhảy vọt một buổi sáng
+ 
+### Ví dụ đời thực
+ 
+Ngân hàng 2 triệu giao dịch thẻ/ngày. Sáng nay tỷ lệ BLOCK nhảy từ 0.2% lên 3.5% trong 2h, tổng đài ngập. Dev tra soát: 08:15 team DS deploy model v2.3, giảm challengeAt 70->55 để "bắt nhiều gian lận hơn", không grey release, không thông báo. Model chấm điểm cao cho giao dịch nhỏ buổi sáng (velocity 30p) do dữ liệu train thiếu đại diện giờ cao điểm.
+ 
+**Fix:** Rollback v2.2 (15p), bổ sung pipeline: canary 5% 48h, auto rollback nếu FP tăng > 20%, chuẩn hóa velocity theo bucket giờ (0-6h, 6-12h...). Kết quả: v2.4 deploy an toàn, FP giảm 40%.
+ 
+### Trả lời mẫu khi phỏng vấn
+ 
+"Fraud real-time quyết định 150-300ms: APPROVE / CHALLENGE / BLOCK. Ba lớp song song: Rule Engine (luật cứng), ML Model (điểm 0-1), Whitelist/Blacklist. Độ trễ: tổng 2000ms, decision 150-300ms -> đọc feature từ Redis cache, tính nặng async qua Kafka. Timeout: fail-open cho tiền nhỏ, fail-closed/challenge cho tiền lớn/nước ngoài. FP (chặn nhầm khách thật) giảm bằng step-up OTP/push thay vì block, kênh 'Đây là tôi' 1 chạm. Luôn ghi feature snapshot tại quyết định. Vòng phản hồi: nhân viên gán nhãn legit/fraud -> retrain monthly với canary + auto rollback. Thực tế: rollback model sai config trong 15p, sau đó pipeline an toàn, FP giảm 40%."
+ 
+> Senior tip: Ba chốt: (1) **Decision chỉ đọc cache** - phần nặng async. (2) **Luôn có policy timeout** - fail-open/fail-closed theo ngưỡng tiền. (3) **Ưu tiên CHALLENGE > BLOCK** - step-up authentication giảm FP. (4) **Ghi feature snapshot** - không thì không debug được, không retrain được. Hỏi interviewer: "Hệ thống của anh có step-up authentication không? FP rate hiện tại bao nhiêu?"
+ 
+> Cụm từ: Velocity = tốc độ giao dịch (số lần/tiền trong cửa sổ thời gian). Step-up authentication = buộc thêm OTP/push ngay trong giao dịch thay vì từ chối. Canary deploy = triển khai cho % nhỏ traffic trước khi full.
+ 
+`,
+  follow: [
+    'Decision service timeout 300ms, bạn fail-open hay fail-closed? Quyết định dựa trên gì?',
+    'Làm sao giảm FP mà không tăng FN? Step-up authentication thiết kế ra sao?',
+    'Model cho điểm 0.92, bạn giải thích thế nào cho khách và bộ phận tuân thủ?'
+  ],
+  tags: ['fraud', 'real-time', 'rule engine', 'ML', 'latency', 'false positive', 'step-up', 'feedback loop']
+},
+{
+  id: 'banking-061',
+  topic: 'banking',
+  level: 'lead',
+  q: 'Audit trail không thể sửa (append-only, hash chain): thiết kế lưu trữ bất biến, hash chaining để phát hiện sửa xóa, WORM storage, và cách truy vết khi phát hiện lệch sổ cái.',
+  a: `**Tóm tắt:** Audit trail (nhật ký kiểm toán) là bản ghi bất biến của mọi hành động nhạy cảm: ai, làm gì, lúc nào, giá trị trước/sau, từ IP nào. Bắt buộc **append-only** (chỉ thêm, không sửa/xóa), **hash chain** (mỗi bản ghi hash của bản ghi trước để phát hiện can thiệp), lưu trên **WORM storage** (Write Once Read Many - ghi một lần đọc nhiều, không cho sửa/xóa kể cả admin). Khi phát hiện lệch sổ cái, dùng audit trail để truy vết: tìm transaction_id, xem ai tạo, ai duyệt, giá trị trước/sau, IP, timestamp -> xác định gốc lỗi hoặc gian lận.
+ 
+### Vì sao audit trail phải bất biến
+Trong ngân hàng, nếu nhân viên có thể sửa log, không ai tin được dữ liệu. Kiểm toán, cơ quan quản lý, tòa án yêu cầu log không thể sửa. Nếu một nhân viên gian lận (sửa hạn mức, chuyển tiền, xóa giao dịch) và xóa log -> không bằng chứng xử phạt.
+ 
+### Thiết kế bản ghi Audit (Audit Entry)
+ 
+~~~text
+audit_entry:
+  id (BIGSERIAL)                    -- thứ tự tự tăng, dùng làm chuỗi hash
+  correlation_id (UUID)             -- gắn xuyên suốt một luồng nghiệp vụ
+  occurred_at (TIMESTAMPTZ)         -- thời điểm chính xác
+  actor_id (BIGINT)                 -- mã nhân viên/hệ thống
+  actor_role (VARCHAR)              -- vai trò: MAKER, CHECKER, SYSTEM, ADMIN
+  action (VARCHAR)                  -- CREATE, APPROVE, REJECT, TRANSFER, ADJUST_LIMIT...
+  resource_type (VARCHAR)           -- ACCOUNT, TRANSACTION, LIMIT, RATE, MANDATE...
+  resource_id (VARCHAR)             -- id đối tượng bị tác động
+  before_json (JSONB)               -- giá trị TRƯỚC (null nếu tạo mới)
+  after_json (JSONB)                -- giá trị SAU (null nếu xóa)
+  ip_address (INET)                 -- IP người thực hiện
+  user_agent (TEXT)                 -- trình duyệt/app
+  result (VARCHAR)                  -- SUCCESS, DENIED, FAILED
+  hash_chain (CHAR(64))             -- SHA-256(prev_hash || current_data)
+~~~
+ 
+**Hash chain:** Mỗi bản ghi tính {{hash = SHA256(prev_hash || current_data_serialized)}}. Bản ghi đầu tiên dùng {{prev_hash = "GENESIS"}}. Nếu ai sửa bản ghi giữa -> hash của bản ghi đó và tất cả bản ghi sau đều sai -> phát hiện ngay.
+ 
+### Append-only enforcement tại tầng Database
+ 
+**Cách 1: REVOKE UPDATE, DELETE trên bảng audit (PostgreSQL)**
+~~~sql
+REVOKE UPDATE, DELETE ON audit_entry FROM application_role;
+-- Chỉ cho INSERT, SELECT
+~~~
+ 
+**Cách 2: Trigger chặn UPDATE/DELETE**
+~~~sql
+CREATE FUNCTION prevent_audit_modification() RETURNS trigger AS $$
+BEGIN
+    RAISE EXCEPTION 'Audit trail is immutable. UPDATE/DELETE not allowed.';
+    RETURN NULL;
+END;
+$$ LANGUAGE plpgsql;
+ 
+CREATE TRIGGER audit_immutable
+BEFORE UPDATE OR DELETE ON audit_entry
+FOR EACH ROW EXECUTE FUNCTION prevent_audit_modification();
+~~~
+ 
+**Cách 3: Partition theo tháng + quyền READ ONLY cho partition cũ**
+- Partition audit_entry theo tháng (audit_entry_2026_01, audit_entry_2026_02...)
+- Sau khi kết thúc tháng, {{ALTER TABLE ... SET (autovacuum_enabled = false)}} và revoke INSERT/UPDATE/DELETE, chỉ giữ SELECT
+ 
+### WORM Storage (Write Once Read Many) - cấp hạ tầng
+- **Object Storage với Object Lock** (AWS S3 Object Lock, Azure Immutable Blob, GCS Object Versioning + Retention Policy)
+- Chế độ **Compliance Mode**: không ai (kể cả root/admin) xóa/sửa được trước khi retention hết hạn (ví dụ 7 năm)
+- Chế độ **Governance Mode**: user có quyền đặc biệt có thể ghi đè (dùng cho test, không dùng production)
+- Audit entry sau khi ghi vào DB, đồng bộ (async) sang WORM bucket mỗi 5 phút
+ 
+### Truy vết (Traceability) khi phát hiện lệch sổ cái
+Khi đối soát phát hiện lệch (ví dụ tài khoản A thiếu 500 triệu):
+ 
+**1. Tìm transaction_id liên quan**
+~~~sql
+SELECT * FROM ledger_entries 
+WHERE account_id = 'A' AND amount = 500000000 
+ORDER BY created_at DESC LIMIT 20;
+~~~
+ 
+**2. Tra audit trail theo transaction_id (correlation_id)**
+~~~sql
+SELECT * FROM audit_entry 
+WHERE correlation_id = 'TXN-12345' 
+ORDER BY id;
+~~~
+ 
+**Kết quả truy vết ví dụ:**
+| id | occurred_at | actor | action | resource | before | after | ip | hash |
+|---|---|---|---|---|---|---|---|---|
+| 1001 | 10:00:00 | U1 (MAKER) | CREATE | TRANSFER | null | {from:A, to:B, amt:500M} | 10.0.0.5 | h1 |
+| 1002 | 10:00:05 | U2 (CHECKER) | APPROVE | TRANSFER | {status:PENDING} | {status:APPROVED} | 10.0.0.8 | h2 |
+| 1003 | 10:00:10 | SYSTEM | POST_LEDGER | TRANSFER | {status:APPROVED} | {status:POSTED, ledger_id:LE-999} | - | h3 |
+| 1004 | 10:05:00 | U3 (ADMIN) | ADJUST_LIMIT | ACCOUNT_A | {limit:100M} | {limit:500M} | 10.0.0.12 | h4 |  <-- ĐỎ: ADMIN tự tạo tự duyệt, sửa hạn mức
+ 
+**3. Phân tích:** U3 (ADMIN) sửa hạn mức tài khoản A từ 100M lên 500M, sau đó tạo giao dịch chuyển 500M ra ngoài. Maker-checker bị bypass vì ADMIN có cả hai quyền. Hash chain vẫn đúng (không ai sửa log), nhưng log cho thấy vi phạm phân quyền.
+ 
+### Phát hiện can thiệp log (Tamper Detection)
+- Job hàng ngày: đọc toàn bộ audit_entry, tính toán lại hash chain, so với hash_chain cột lưu
+- Nếu bất kỳ bản ghi nào {{recomputed_hash != stored_hash}} -> ALERT ngay: "Audit trail tampered at id=X"
+- Kiểm tra: ai có quyền truy cập DB trực tiếp, ai có quyền SSH vào server, progress nào ghi audit
+ 
+### Code: Hash chain & Tamper check
+ 
+~~~java
+@Service
+class AuditService {
+    private static final String GENESIS = "GENESIS";
+    private final MessageDigest sha256 = MessageDigest.getInstance("SHA-256");
+    private final AuditRepo repo;
+    private String lastHash = GENESIS;
+    
+    @PostConstruct
+    void init() {
+        lastHash = repo.findLastHash().orElse(GENESIS);
+    }
+    
+    @Transactional
+    public void log(AuditEntry entry) {
+        String data = serialize(entry); // JSON canonical, không whitespace
+        String input = lastHash + data;
+        String hash = bytesToHex(sha256.digest(input.getBytes(StandardCharsets.UTF_8)));
+        entry.setHashChain(hash);
+        repo.save(entry);
+        lastHash = hash;
+    }
+    
+    // Job hàng ngày kiểm tra
+    @Scheduled(cron = "0 0 2 * * ?")
+    public void verifyHashChain() {
+        String computed = GENESIS;
+        for (AuditEntry e : repo.findAllOrderById()) {
+            String data = serialize(e);
+            computed = bytesToHex(sha256.digest((computed + data).getBytes(StandardCharsets.UTF_8)));
+            if (!computed.equals(e.getHashChain())) {
+                alertService.send("AUDIT_TAMPERED", "Hash mismatch at id=" + e.getId() 
+                    + ", expected=" + computed + ", stored=" + e.getHashChain());
+                break;
+            }
+        }
+    }
+}
+~~~
+ 
+### Lỗi hay gặp
+- Ghi audit **sau** khi commit transaction -> nếu crash giữa chừng, audit thiếu, không khớp ledger
+- **Không ghi before/after** -> không biết trường nào đổi từ giá trị nào sang giá trị nào
+- Cho phép ADMIN/DB admin sửa log (không revoke quyền, không WORM) -> mất giá trị pháp lý
+- Hash chain tính sai (không canonical JSON, có whitespace random) -> false positive tamper alert
+- Correlation_id không gắn xuyên suốt luồng -> không truy vết được end-to-end
+- Ghi PII (số thẻ, CMND) vào audit -> vi phạm PCI DSS / bảo vệ dữ liệu cá nhân
+ 
+### Ví dụ đời thực
+ 
+Ngân hàng phát hiện nhân viên back-office B sửa hạn mức thẻ khách từ 50M lên 500M, tự duyệt, chuyển 400M ra tài khoản đồng mưu. Khách khiếu nại. Đội dev tra audit trail: thấy bản ghi 10:05 U3(ADMIN) ADJUST_LIMIT limit 50M->500M, 10:06 U3 CREATE TRANSFER 400M, 10:06 U3 APPROVE TRANSFER (tự duyệt). Hash chain intact (không bị sửa log), nhưng log chứng minh vi phạm SoD (Segregation of Duties): ADMIN có cả maker/checker. 
+ 
+**Xử lý:** Hoàn tiền, xử lý kỷ luật B, thu quyền duyệt ADMIN, sửa code: API kiểm tra {{maker_id != checker_id}}, ngưỡng tiền lớn cần 2 checker. Thêm job verify hash chain hàng ngày.
+ 
+**Kết quả:** Audit trail giúp phát hiện gian lận trong 30 phút, có bằng chứng pháp lý. Sau 6 tháng không còn vi phạm SoD.
+ 
+### Trả lời mẫu khi phỏng vấn
+ 
+"Audit trail của tôi: append-only (chỉ INSERT, REVOKE UPDATE/DELETE), hash chain SHA-256 liên kết bản ghi trước (phát hiện can thiệp), WORM storage (S3 Object Lock Compliance Mode 7 năm). Bản ghi: correlation_id xuyên suốt luồng, before/after JSON, actor/role/action/ip/result. Khi lệch sổ cái: tra ledger tìm tx_id -> tra audit theo correlation_id -> xem ai làm gì, trước/sau giá trị nào, IP nào. Phát hiện can thiệp: job hàng ngày recompute hash chain, mismatch -> alert ngay. Thực tế: audit trail giúp bắt nhân viên ADMIN tự tạo tự duyệt chỉnh hạn mức chuyển tiền gian lận trong 30 phút, hash chain intact làm bằng chứng pháp lý."
+ 
+> Senior tip: Ba chốt: (1) **Append-only thực sự** - REVOKE UPDATE/DELETE ở DB, không tin trigger. (2) **Hash chain + WORM** - phát hiện can thiệp kỹ thuật, WORM chống can thiệp hạ tầng. (3) **Before/After + Correlation_id** - không có hai thứ này thì log chỉ là "ai đó làm gì đó", không truy vết được giá trị cụ thể. Hỏi interviewer: "Audit log của anh có before/after không? Có hash chain không? Lưu đâu?"
+ 
+> Cụm từ: Append-only = chỉ thêm mới, không sửa/xóa. Hash chain = mỗi bản ghi hash của bản ghi trước, sửa một chỗ -> tất cả sai. WORM = Write Once Read Many, lưu trữ ghi một lần đọc nhiều, không sửa/xóa. Correlation_id = mã gắn xuyên suốt một luồng nghiệp vụ.
+ 
+`,
+  follow: [
+    'Khi hệ thống crash giữa chừng, audit entry có thể mất không? Làm sao đảm bảo audit và ledger cùng commit hoặc cùng rollback?',
+    'Hash chain dùng SHA-256, collision resistance đủ không? Khi nào cần thuật toán mạnh hơn?',
+    'WORM storage trên cloud (S3 Object Lock) có chi phí cao không? Có thay thế on-premise không?'
+  ],
+  tags: ['audit trail', 'append-only', 'hash chain', 'WORM', 'immutable log', 'tamper detection', 'forensics']
 },
 );
