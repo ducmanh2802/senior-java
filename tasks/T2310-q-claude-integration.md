@@ -41,3 +41,4 @@ AGENTS.md (đọc mục liên quan). Chỉ THÊM trước dòng `);` cuối file
 - **Nghiệm thu:** `node --check js/data/q-claude.js` → OK. `node scripts/build-light-index.js` → ghi `js/data/index-light.js`. `node scripts/validate.js`: **q-claude.js sạch (0 lỗi)**.
 - **LƯU Ý cho integrator:** `validate.js` hiện còn **4 lỗi ở file KHÔNG thuộc task này** (đang do agent/task khác sửa dở, working tree đã M trong git): `sdlc.js` (missing ) after argument list), `labs-thread.js` (lab-thread-007/008 sai dạng id), `lessons-claude.js` (lesson-claude-013 prompt lệch `{{`/`}}`). Theo luật 3 (không sửa file ngoài quyền sở hữu) tôi **không** tự sửa các file này. Bản HEAD của chúng đều OK → lỗi do thay đổi chưa commit của task khác, sẽ hết khi các task đó hoàn tất.
 - Không chạy `git commit`/`git push`, không tạo branch.
+Reviewed-by: kilo (T2310R)
