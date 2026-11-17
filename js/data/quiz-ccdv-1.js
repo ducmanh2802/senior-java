@@ -1670,5 +1670,398 @@ explain: `**Đáp án đúng: phương án 1 và 2.** Một request có thể đ
   ],
   answer: [0, 2],
   explain: `**Đáp án đúng: phương án 1 và 3.** (1) Sandbox container: cô lập filesystem, không internet, giới hạn quyền — hạn chế thiệt hại nếu agent bị prompt injection hoặc lỗi logic. (2) Human-in-the-loop: bắt buộc xác nhận trước hành động ghi file/chạy lệnh (irreversible actions). Root access (2) cực kỳ nguy hiểm. Tắt tool (4) làm mất tính năng agent. Cả sandbox và approval đều cần thiết (defense in depth).`
+},
+
+{
+  id: 'qz-ccdv-121',
+  topic: 'claude',
+  q: '[Claude Code] You want Claude Code to automatically pick up project conventions (e.g., "always add a header to new files") without repeating them in every prompt. Where should you document this?',
+  options: [
+    'README.md in the root directory.',
+    'CLAUDE.md in the root directory.',
+    'AGENTS.md in the root directory.',
+    'A .clauderc file.'
+  ],
+  answer: 1,
+  explain: `**Đáp án đúng: phương án 2.** CLAUDE.md là file tiêu chuẩn để cấu hình hành vi của Claude Code, bao gồm quy ước dự án, phong cách code, và các hướng dẫn thường dùng. Claude Code tự đọc file này để hiểu context dự án.`
+},
+{
+  id: 'qz-ccdv-122',
+  topic: 'claude',
+  q: '[Claude Code] You want to prevent Claude Code from executing any shell command without explicit approval. How do you configure this?',
+  options: [
+    'Use the --no-shell flag.',
+    'Use --unsafe-disable-hooks.',
+    'Configure PreToolUse hooks in CLAUDE.md or .claudecodes.',
+    'Disable all tools.'
+  ],
+  answer: 2,
+  explain: `**Đáp án đúng: phương án 3.** Bạn có thể cấu hình các "PreToolUse hooks" trong CLAUDE.md để yêu cầu xác nhận người dùng trước khi Claude Code chạy một lệnh shell hoặc thực hiện một tác vụ nhạy cảm, giúp tăng tính an toàn.`
+},
+{
+  id: 'qz-ccdv-123',
+  topic: 'claude',
+  q: '[Claude Code] What is the primary purpose of the .claudecodes directory?',
+  options: [
+    'To store temporary session logs.',
+    'To store persistent configurations, hooks, and context files for Claude Code.',
+    'To store IDE plugins.',
+    'To cache model weights.'
+  ],
+  answer: 1,
+  explain: `**Đáp án đúng: phương án 2.** .claudecodes là thư mục nơi bạn lưu trữ cấu hình bền vững, các hook tùy chỉnh (như PreToolUse), và các file context hỗ trợ Claude Code hoạt động hiệu quả hơn trong dự án.`
+},
+{
+  id: 'qz-ccdv-124',
+  topic: 'claude',
+  q: '[Claude Code] When should you use a subagent instead of letting the main Claude Code agent handle a task?',
+  options: [
+    'For every small task.',
+    'For complex, isolated tasks that require intense focus (e.g., a large refactoring) to avoid context pollution.',
+    'Never, the main agent should do everything.',
+    'When the network is slow.'
+  ],
+  answer: 1,
+  explain: `**Đáp án đúng: phương án 2.** Subagent nên được dùng cho các task phức tạp, cần tập trung cao độ (như refactor lớn) để tách biệt context, tránh làm main agent bị quá tải hoặc nhiễu ngữ cảnh. Main agent nên quản lý điều phối, không nên làm mọi việc chi tiết.`
+},
+{
+  id: 'qz-ccdv-125',
+  topic: 'claude',
+  q: '[Claude Code] How does Claude Code handle long-running tool operations?',
+  options: [
+    'It blocks the entire process until completion.',
+    'It runs them in the background and polls for completion.',
+    'It expects the user to manually trigger the next step.',
+    'It terminates the session to save costs.'
+  ],
+  answer: 1,
+  explain: `**Đáp án đúng: phương án 2.** Claude Code xử lý các lệnh chạy lâu (ví dụ chạy test suite lớn) bằng cách bắt đầu chúng ở nền và kiểm tra tiến độ, cho phép người dùng tiếp tục tương tác hoặc agent làm task khác.`
+},
+{
+  id: 'qz-ccdv-126',
+  topic: 'claude',
+  q: '[Claude Code] What is the effect of running "claude -p" with --output-format json?',
+  options: [
+    'It produces a JSON file instead of standard output.',
+    'It forces Claude to explain its thought process in JSON.',
+    'It structures the output for machine-readable CI/CD pipelines.',
+    'It deletes all existing files.'
+  ],
+  answer: 2,
+  explain: `**Đáp án đúng: phương án 3.** Chạy Claude Code với --output-format json giúp cấu trúc đầu ra để các hệ thống khác (như CI/CD) có thể parse dễ dàng, thay vì văn bản tự do.`
+},
+{
+  id: 'qz-ccdv-127',
+  topic: 'claude',
+  q: '[Claude Code] You want to limit Claude Code to read-only access on a specific directory. Is this possible?',
+  options: [
+    'No, it always needs full access.',
+    'Yes, by configuring PreToolUse hooks to deny write operations on that path.',
+    'Yes, by passing the --read-only flag to the start command.',
+    'Yes, but only by setting filesystem permissions to 444.'
+  ],
+  answer: 1,
+  explain: `**Đáp án đúng: phương án 2.** Bạn có thể cấu hình PreToolUse hook trong CLAUDE.md để kiểm tra các lệnh ghi (write) trên một đường dẫn cụ thể và từ chối chúng, đảm bảo Claude chỉ được đọc (read-only) thư mục đó.`
+},
+{
+  id: 'qz-ccdv-128',
+  topic: 'claude',
+  q: '[Claude Code] How does Claude Code treat files in .gitignore?',
+  options: [
+    'It always reads them to understand the project better.',
+    'It respects them by default and does not index/read these files.',
+    'It ignores them only if explicitly configured in CLAUDE.md.',
+    'It is unaware of .gitignore.'
+  ],
+  answer: 1,
+  explain: `**Đáp án đúng: phương án 2.** Claude Code tôn trọng file .gitignore của dự án, mặc định không index hoặc đọc các file bị ignore để tránh nhiễu và bảo mật.`
+},
+{
+  id: 'qz-ccdv-129',
+  topic: 'claude',
+  q: '[Claude Code] Can Claude Code run inside a Docker container?',
+  options: [
+    'No, it must run on the host OS.',
+    'Yes, it can run inside a containerized environment, which is recommended for added security.',
+    'Only if you have an enterprise license.',
+    'No, it requires GPU access on the host.'
+  ],
+  answer: 1,
+  explain: `**Đáp án đúng: phương án 2.** Claude Code có thể và nên chạy trong môi trường container (Docker) để tăng tính bảo mật (cô lập file hệ thống, giới hạn mạng).`
+},
+{
+  id: 'qz-ccdv-130',
+  topic: 'claude',
+  q: '[Claude Code] What happens when Claude Code encounters a merge conflict during a file edit?',
+  options: [
+    'It crashes and stops.',
+    'It automatically forces the edit.',
+    'It pauses and asks the user to manually resolve the conflict.',
+    'It creates a new branch.'
+  ],
+  answer: 2,
+  explain: `**Đáp án đúng: phương án 3.** Khi gặp xung đột ghi file, Claude Code an toàn sẽ dừng lại và nhờ người dùng can thiệp để tránh ghi đè sai code, thay vì tự ý force hoặc crash.`
+},
+{
+  id: 'qz-ccdv-131',
+  topic: 'claude',
+  q: '[Eval] What is the primary purpose of a held-out test set in LLM evaluation?',
+  options: [
+    'To speed up the evaluation process.',
+    'To evaluate the model on data it has NOT seen during prompt tuning, preventing overfitting.',
+    'To allow the LLM to learn new patterns.',
+    'To minimize token usage.'
+  ],
+  answer: 1,
+  explain: `**Đáp án đúng: phương án 2.** Tập test held-out (test ẩn) là dữ liệu chưa từng được dùng để tinh chỉnh prompt, đảm bảo đánh giá khách quan khả năng tổng quát của model, tránh tình trạng mô hình "học vẹt" (overfitting) tập dữ liệu cũ.`
+},
+{
+  id: 'qz-ccdv-132',
+  topic: 'claude',
+  q: '[Eval] When using an "LLM-as-a-judge" for evaluation, what is a crucial step to ensure reliability?',
+  options: [
+    'Use the cheapest model available.',
+    'Calibrate the judge by comparing its scores with human scores on a subset of data.',
+    'Run the judge only once.',
+    'Give the judge a 100-page system prompt.'
+  ],
+  answer: 1,
+  explain: `**Đáp án đúng: phương án 2.** Judge LLM có thể có xu hướng (bias). Cần calibrate bằng cách so sánh điểm của nó với điểm do người (human) chấm trên một tập mẫu để tin cậy vào độ chính xác của judge trước khi scale.`
+},
+{
+  id: 'qz-ccdv-133',
+  topic: 'claude',
+  q: '[Eval] What makes an evaluation metric for an agent "robust"?',
+  options: [
+    'It produces different results every time.',
+    'It measures task completion precisely and is consistent across multiple runs.',
+    'It measures only latency.',
+    'It ignores errors.'
+  ],
+  answer: 1,
+  explain: `**Đáp án đúng: phương án 2.** Metric mạnh mẽ (robust) là metric đo lường sự hoàn thành tác vụ một cách nhất quán (consistency), không thay đổi ngẫu nhiên giữa các lần chạy, và phản ánh đúng thực tế thành công.`
+},
+{
+  id: 'qz-ccdv-134',
+  topic: 'claude',
+  q: '[Eval] Why should you run agent evaluation tests multiple times?',
+  options: [
+    'To increase the cost of evaluation.',
+    'Agents are non-deterministic (use sampling), so running multiple times measures success probability and consistency.',
+    'It does not change the result.',
+    'It only tests the network speed.'
+  ],
+  answer: 1,
+  explain: `**Đáp án đúng: phương án 2.** Agent sử dụng các model lấy mẫu (sampling) nên không deterministic. Chạy thử nghiệm nhiều lần giúp đo xác suất thành công thực tế (ví dụ: thành công trong 8/10 lần thay vì 1/1) và độ ổn định.`
+},
+{
+  id: 'qz-ccdv-135',
+  topic: 'claude',
+  q: '[Eval] When defining success criteria for an agent task, what is NOT a recommended practice?',
+  options: [
+    'Define criteria before starting prompt optimization.',
+    'Focus on outcome (e.g., "tests pass") rather than just process.',
+    'Make the criteria dependent on exactly one specific tool call sequence.',
+    'Include cost and latency constraints.'
+  ],
+  answer: 2,
+  explain: `**Đáp án đúng: phương án 3.** Tiêu chí thành công nên dựa vào KẾT QUẢ (task đạt mục tiêu, test pass), không nên cứng nhắc phụ thuộc vào một chuỗi gọi tool cụ thể (process). Agent có thể tìm ra cách giải quyết khác vẫn đúng, miễn là kết quả cuối cùng đạt yêu cầu.`
+},
+{
+  id: 'qz-ccdv-136',
+  topic: 'claude',
+  q: '[Eval] What is the danger of overfitting your agent to the test set?',
+  options: [
+    'The agent will become too fast.',
+    'The agent works perfectly on tests but fails on unseen real-world tasks.',
+    'The agent will use less token.',
+    'The agent will become too expensive.'
+  ],
+  answer: 1,
+  explain: `**Đáp án đúng: phương án 2.** Overfitting làm agent "học thuộc" tập test, dẫn đến điểm cao trên test nhưng thất bại thảm hại khi gặp tác vụ thực tế chưa từng thấy — mất tính tổng quát.`
+},
+{
+  id: 'qz-ccdv-137',
+  topic: 'claude',
+  q: '[Eval] For an agent tasked with extracting invoice data, what should be part of the evaluation?',
+  options: [
+    'Only the final JSON output.',
+    'Final JSON correctness, tool usage accuracy, and total token cost.',
+    'Only the total token cost.',
+    'Only the time taken.'
+  ],
+  answer: 1,
+  explain: `**Đáp án đúng: phương án 2.** Đánh giá cần toàn diện: (1) JSON output (có khớp schema, dữ liệu đúng không). (2) Tool usage (có gọi đúng tool, truyền đúng tham số không). (3) Chi phí (token) và độ trễ.`
+},
+{
+  id: 'qz-ccdv-138',
+  topic: 'claude',
+  q: '[Eval] You have a RAG agent. What is a "ground truth" for evaluation?',
+  options: [
+    'A random guess.',
+    'A gold standard answer manually curated by an expert to compare the agent\'s response.',
+    'The model\'s previous answer.',
+    'The user\'s query.'
+  ],
+  answer: 1,
+  explain: `**Đáp án đúng: phương án 2.** Ground truth là câu trả lời "vàng" (gold standard) do chuyên gia biên soạn, dùng để chấm điểm câu trả lời thực tế của model/agent, đảm bảo sự chính xác.`
+},
+{
+  id: 'qz-ccdv-139',
+  topic: 'claude',
+  q: '[Eval] Why should you measure tool accuracy in an agent evaluation?',
+  options: [
+    'Tools are always 100% accurate.',
+    'If tool calls are wrong (wrong tool, wrong args), the task likely fails despite the final answer being "correct".',
+    'It doesn\'t affect the task outcome.',
+    'It is too hard to measure.'
+  ],
+  answer: 1,
+  explain: `**Đáp án đúng: phương án 2.** Sai tool hoặc sai tham số là nguồn lỗi chính của agent. Dù câu trả lời cuối cùng có vẻ "đúng" (may mắn), nếu quy trình tool sai, agent vẫn chưa đáng tin cậy. Cần chấm điểm từng bước tool call để sửa gốc vấn đề.`
+},
+{
+  id: 'qz-ccdv-140',
+  topic: 'claude',
+  q: '[Eval] What is the role of an automated evaluation harness?',
+  options: [
+    'To perform evaluation manually.',
+    'To run the agent on test cases repeatedly, track results, and report metrics automatically.',
+    'To force the agent to only use one tool.',
+    'To replace the LLM with a rule-based system.'
+  ],
+  answer: 1,
+  explain: `**Đáp án đúng: phương án 2.** Harness đánh giá tự động là bộ công cụ thực hiện chạy agent trên hàng trăm case test, tự động ghi log kết quả, tính toán metric (tỉ lệ thành công, chi phí, sai số), giúp lặp nhanh hơn so với đánh giá bằng tay.`
+},
+{
+  id: 'qz-ccdv-141',
+  topic: 'claude',
+  q: '[Applications] Your Java app sends 500 Messages API requests per minute. How to handle burst without 429?',
+  options: [
+    'Send all at once and retry failed ones.',
+    'Use a bulkhead pattern with a rate-limited queue, implement backoff, and use Batch API for non-latency-sensitive requests.',
+    'Disable all rate limit checks.',
+    'Increase the timeout to 10 minutes.'
+  ],
+  answer: 1,
+  explain: `**Đáp án đúng: phương án 2.** Bulkhead (cách ly) + hàng đợi có giới hạn tốc độ (rate-limited queue) giúp dàn trải lưu lượng. Với request không cần latency tức thì (như tóm tắt hàng loạt), Batch API là giải pháp tốt nhất. Retry và backoff cần thiết cho lỗi đột biến.`
+},
+{
+  id: 'qz-ccdv-142',
+  topic: 'claude',
+  q: '[Applications] A Java service uses Resilience4j. How to properly retry Claude API calls?',
+  options: [
+    'Retry every exception indefinitely.',
+    'Retry only transient errors (429, 529, 500, 503) with exponential backoff and jitter, excluding 400/401/403.',
+    'Retry all exceptions, including 400 Bad Request.',
+    'Use a retry loop without any delay.'
+  ],
+  answer: 1,
+  explain: `**Đáp án đúng: phương án 2.** Chỉ retry lỗi tạm thời (transient): 429 (rate limit), 529 (overloaded), 500/503 (server lỗi). Không retry lỗi vĩnh viễn (400 Bad Request, 401/403 quyền) vì gọi lại vẫn lỗi. Luôn dùng backoff lũy thừa + jitter để giảm tải server.`
+},
+{
+  id: 'qz-ccdv-143',
+  topic: 'claude',
+  multi: true,
+  q: '[Applications] When streaming, your Java client fails to parse a JSON tool_use event. What should you do? (Choose 2)',
+  options: [
+    'Always assume the stream is broken and crash.',
+    'Use a robust streaming library (e.g., Jackson streaming) that handles fragmented JSON.',
+    'Accumulate tokens until a complete content block is available before parsing.',
+    'Ignore all JSON parsing errors and assumeClaude never breaks JSON.'
+  ],
+  answer: [1, 2],
+  explain: `**Đáp án đúng: phương án 2 và 3.** Stream dữ liệu đến từng mảnh. Parser phải chịu được JSON phân mảnh (Jackson streaming là lựa chọn tốt cho Java), hoặc ứng dụng phải tích lũy các event delta cho đến khi hoàn tất một content block hoàn chỉnh trước khi parse (đối với tool_use, thường phải đợi hết block để có đủ JSON hợp lệ). Lỗi parsing là bình thường trong streaming.`
+},
+{
+  id: 'qz-ccdv-144',
+  topic: 'claude',
+  q: '[Applications] A chat route has 50K tokens in the system prompt. Every turn repeats this. What is the most efficient caching strategy?',
+  options: [
+    'Remove the system prompt.',
+    'Place it at the beginning, gắn cache_control: {type: "ephemeral"}, and reuse it.',
+    'Set temperature: 0.',
+    'Use a smaller model.'
+  ],
+  answer: 1,
+  explain: `**Đáp án đúng: phương án 2.** Prompt caching: với 50K token dùng lại, đặt nó ở đầu request, gắn cache_control kiểu ephemeral, giúp các lượt sau đọc từ cache giá rẻ thay vì tốn phí đầu vào đầy đủ cho 50K token mỗi lần.`
+},
+{
+  id: 'qz-ccdv-145',
+  topic: 'claude',
+  q: '[Applications] What is a primary risk of handling Claude API keys in a client-side (frontend) application?',
+  options: [
+    'It is faster.',
+    'It exposes your API key to anyone inspecting the network traffic; use a secure backend server instead.',
+    'It uses less bandwidth.',
+    'It enables more features.'
+  ],
+  answer: 1,
+  explain: `**Đáp án đúng: phương án 2.** KHÔNG BAO GIỜ để API key Anthropic ở client-side. Mọi người có thể inspect network tab để thấy key và dùng trộm (cháy hạn mức, tốn tiền). Luôn dùng backend làm proxy bảo mật.`
+},
+{
+  id: 'qz-ccdv-146',
+  topic: 'claude',
+  q: '[Applications] Your Java backend parses "stop_reason" in the response. What does "max_tokens" mean?',
+  options: [
+    'The request was a success.',
+    'The model stopped generating because it reached the limit set in max_tokens.',
+    'The model found a stop sequence.',
+    'The model encountered a refusal.'
+  ],
+  answer: 1,
+  explain: `**Đáp án đúng: phương án 2.** stop_reason là "max_tokens" nghĩa là model đã sinh đủ số token giới hạn bởi tham số max_tokens. Nội dung bị cắt (incomplete), cần tăng giới hạn nếu muốn câu trả lời đầy đủ.`
+},
+{
+  id: 'qz-ccdv-147',
+  topic: 'claude',
+  q: '[Applications] What is the consequence of sending Claude an invalid JSON schema in input_schema?',
+  options: [
+    'Claude ignores the schema and treats the tool as text-based.',
+    'The API returns HTTP 400 Bad Request with details about the schema error.',
+    'Claude hallucinates the schema format.',
+    'The API processes the request but skips tool validation.'
+  ],
+  answer: 1,
+  explain: `**Đáp án đúng: phương án 2.** Nếu schema JSON không hợp lệ, API trả lỗi 400 ngay lập tức, không xử lý tiếp. Cần kiểm tra schema kỹ bằng các thư viện JSON Schema trước khi gửi.`
+},
+{
+  id: 'qz-ccdv-148',
+  topic: 'claude',
+  multi: true,
+  q: '[Applications] Which statements about Message Batches are true? (Choose 2)',
+  options: [
+    'They allow processing large volumes of data at a lower price (~50% discount).',
+    'They must be processed within 5 minutes.',
+    'Each request has a custom_id for result mapping.',
+    'They provide immediate, real-time responses.'
+  ],
+  answer: [0, 2],
+  explain: `**Đáp án đúng: phương án 1 và 3.** Batch API: (1) Giảm giá ~50% cho lượng lớn dữ liệu. (2) Mỗi request trong file JSONL có custom_id để ánh xạ. Không phải real-time, và thời gian hoàn thành thường trong vòng 24 giờ (không phải 5 phút).`
+},
+{
+  id: 'qz-ccdv-149',
+  topic: 'claude',
+  q: '[Applications] When using prompt caching, can you cache only the middle of a long document?',
+  options: [
+    'No, you must cache a prefix.',
+    'Yes, caching is possible for any block anywhere.',
+    'Claude only supports caching the last 500 tokens.',
+    'Caching is disabled for long documents.'
+  ],
+  answer: 0,
+  explain: `**Đáp án đúng: phương án 1.** Prompt caching (ephemeral) hiện hoạt động dựa trên cấu trúc tiền tố (prefix) của nội dung được gửi trong messages. Bạn chỉ có thể cache một tiền tố chung hợp lệ. Claude không tự cache các khối giữa hoặc cuối tài liệu một cách linh hoạt như vậy.`
+},
+{
+  id: 'qz-ccdv-150',
+  topic: 'claude',
+  q: '[Applications] How do you handle a temporary 500 Internal Server Error from the Claude API?',
+  options: [
+    'Stop the application immediately.',
+    'Assume the Anthropic API is permanently broken.',
+    'Retry the request using a backoff strategy (exponential backoff with jitter).',
+    'Switch to a model with a smaller context window.'
+  ],
+  answer: 2,
+  explain: `**Đáp án đúng: phương án 3.** 500 lỗi tạm thời phía server Anthropic. Cần retry với backoff lũy thừa + jitter để phục hồi tự động, không dừng ứng dụng hay đổi model.`
 }
 );
