@@ -2563,6 +2563,7 @@ window.DATA_INDEX = {
     {"id":"lesson-banking-007","track":"banking","order":7,"title":"Số dư khả dụng và giữ tiền (hold): authorization, capture một phần, release và làm tròn BigDecimal","level":"senior","minutes":40},
     {"id":"lesson-banking-008","track":"banking","order":8,"title":"Hạn mức ngày dưới tải đồng thời: check-then-act, khoá theo tài khoản và bắt lỗi race trong test","level":"senior","minutes":35},
     {"id":"lesson-banking-009","track":"banking","order":9,"title":"Batch cuối ngày (EOD): tính lãi cho triệu tài khoản, chết giữa chừng vẫn chạy lại không trả tiền hai lần","level":"senior","minutes":40},
+    {"id":"lesson-banking-011","track":"banking","order":11,"title":"Vòng đời giao dịch thẻ: authorization, clearing, settlement, refund và chargeback","level":"senior","minutes":35},
     {"id":"lesson-banking-010","track":"banking","order":10,"title":"Thanh toán QR và cổng thanh toán: redirect, IPN/callback, chữ ký HMAC, callback trùng và đối soát","level":"senior","minutes":40},
     {"id":"lesson-autotest-001","track":"autotest","order":1,"title":"Automation test là gì, kim tự tháp test và kỹ thuật thiết kế ca kiểm thử","level":"mid","minutes":30},
     {"id":"lesson-autotest-002","track":"autotest","order":2,"title":"Locator: id, CSS, XPath, data-testid — và vì sao locator vỡ","level":"mid","minutes":30},

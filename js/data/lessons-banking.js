@@ -2567,6 +2567,514 @@ class EodJob {
   },
 
   {
+    id: 'lesson-banking-011',
+    track: 'banking',
+    order: 11,
+    title: 'Vòng đời giao dịch thẻ: authorization, clearing, settlement, refund và chargeback',
+    level: 'senior',
+    minutes: 35,
+    goals: [
+      'Phân biệt authorization (giữ tiền), clearing (chuyển dữ liệu) và settlement (chuyển tiền thật) — tiền không đi ngay khi quẹt thẻ',
+      'Hiểu các bên: chủ thẻ, merchant, acquirer, scheme (Visa/Mastercard/NAPAS), issuer và luồng tiền/dữ liệu',
+      'Biết refund là giao dịch mới ngược chiều, chargeback là tranh chấp có thể bị phạt, và auth hết hạn tự release',
+      'Viết CardTxnLifecycle state machine (AUTHORIZED -> CAPTURED -> SETTLED -> REFUNDED/CHARGEBACK, auth hết hạn sau N ngày với Clock cố định)',
+    ],
+    body: `**Tóm tắt:** Khi quẹt thẻ, tiền **không** chuyển ngay từ chủ thẻ sang merchant. Có **ba pha riêng biệt**: authorization (giữ tiền tạm thời), clearing (chuyển dữ liệu giao dịch qua scheme) và settlement (chuyển tiền thật T+1). Refund là giao dịch mới ngược chiều (không phải xóa authorization), chargeback là chủ thẻ tranh chấp qua issuer có thể làm merchant mất tiền + phí. Authorization có thời hạn (thường 7 ngày) và tự động release nếu không capture. Số dư khả dụng = sổ cái - tổng hold đang mở (xem lesson-banking-007).
+
+### Ngoài đời diễn ra thế nào
+
+Hãy tưởng tượng Lan mua một chiếc áo 500.000đ tại cửa hàng Minh, thanh toán bằng thẻ Visa.
+
+1. **Authorization (uy quyền / xin phép)** — giây thứ 1: máy POS gửi yêu cầu qua acquirer (ngân hàng của merchant) lên scheme (Visa) rồi xuống issuer (ngân hàng phát thẻ của Lan). Issuer kiểm tra: thẻ còn hiệu lực, chưa bị khóa, hạn mức đủ 500.000đ? Nếu đủ, issuer **giữ (hold)** 500.000đ ở tài khoản Lan — tiền vẫn nằm đó, chưa đi đâu — và trả về mã **approval code**. Cửa hàng in hóa đơn "Đã thanh toán 500.000đ" nhưng thực ra tiền chưa chuyển. **Lưu ý: authorization chỉ giữ tiền, chưa trừ tiền.** Số dư sổ cái của Lan vẫn nguyên vẹn, số dư khả dụng giảm 500.000đ.
+
+2. **Clearing (truyền dữ liệu)** — cuối ngày (thường 23:00): acquirer gom tất cả authorization thành công trong ngày, gửi file **clearing** lên scheme. Scheme phân loại theo issuer, chuyển file dữ liệu (không chuyển tiền) cho từng issuer. Dữ liệu bao gồm: mã giao dịch, số tiền, merchant, approval code, ngày giờ. Đây là lúc scheme tính **interchange fee** (phí giữa issuer và acquirer) và **scheme fee** (phí của Visa/Mastercard/NAPAS).
+
+3. **Settlement (chốt toán/chuyển tiền thật)** — ngày làm việc sau (T+1): scheme điều phối chuyển tiền thật giữa ngân hàng. Issuer chuyển tiền (đã trừ interchange fee) cho acquirer qua tài khoản tại ngân hàng trung ương (hoặc tài khoản correspondent). Acquirer trừ merchant discount rate (MDR — phí merchant trả cho acquirer) rồi chuyển phần còn lại cho merchant. Lúc này tiền **thực sự** rời tài khoản Lan và vào tài khoản merchant. Settlement thường là **net settlement** (chênh lệch hai chiều gộp thành một dòng) chứ không chuyển từng giao dịch.
+
+### Các bên tham gia
+
+| Bên | Vai trò | Ví dụ thực tế |
+|---|---|---|
+| **Cardholder (chủ thẻ)** | Người nắm thẻ, chi tiền | Lan |
+| **Merchant** | Người bán, nhận tiền | Cửa hàng Minh |
+| **Acquirer (ngân hàng thu hộ)** | Cung cấp POS, thu tiền cho merchant, gửi clearing | VPBank, Techcombank, Vietcombank (cấp POS) |
+| **Scheme (tổ chức thẻ)** | Vận hành mạng lưới, quy tắc, clearing, settlement, phí | Visa, Mastercard, NAPAS (Việt Nam) |
+| **Issuer (ngân hàng phát thẻ)** | Cấp thẻ, giữ hạn mức, approve/decline authorization, trả tiền khi settlement | BIDV, Agribank, VietinBank (ngân hàng của Lan) |
+
+### Vòng đời trạng thái một giao dịch thẻ
+
+| Trạng thái | Nghiệp vụ | Ai khởi tạo | Số dư sổ cái | Hold |
+|---|---|---|---|---|
+| **AUTHORIZED** | Issuer giữ tiền, trả approval code | Issuer (qua scheme) | Không đổi | Mở (+500k) |
+| **CAPTURED** | Merchant xác nhận chốt số tiền thật (≤ auth) | Merchant/Acquirer | Không đổi | Còn mở (chỉnh lại nếu partial) |
+| **SETTLED** | Tiền thực sự chuyển issuer -> acquirer -> merchant | Scheme (T+1) | Giảm 500k (issuer) / Tăng (merchant) | Đóng |
+| **EXPIRED** | Authorization hết hạn (thường 7 ngày) không được capture | Hệ thống (timer) | Không đổi | Tự đóng, release tiền |
+| **REFUNDED** | Merchant đồng ý hoàn tiền (giao dịch mới ngược chiều) | Merchant/Acquirer | Tăng (cardholder) / Giảm (merchant) | Không liên quan hold cũ |
+| **CHARGED_BACK** | Chủ thẻ tranh chấp, issuer lấy tiền lại từ merchant | Issuer (qua scheme) | Tăng (cardholder) / Giảm (merchant) | Không liên quan hold cũ |
+
+### Vì sao refund KHÔNG phải "xóa authorization"
+
+Authorization là lời hứa "tôi giữ tiền này cho bạn". Refund là "tôi trả tiền về cho bạn". Nếu authorization chưa được capture/settle (ví dụ merchant hủy đơn trước khi chốt), chỉ cần **release** hold — tiền về khả dụng ngay, không có dòng tiền ngược. Nếu đã **settled**, tiền đã ở merchant; refund tạo một giao dịch **mới** ngược chiều (merchant -> acquirer -> scheme -> issuer -> cardholder) với merchant discount rate thường **không hoàn lại**. Refund cũng đi qua clearing/settlement T+1 riêng.
+
+### Chargeback: khi chủ thẻ nói "tôi không làm giao dịch này"
+
+Chủ thẻ gọi issuer khiếu nại: gian lận, không nhận hàng, hàng sai mô tả, bị trùng phí... Issuer mở **dispute** (tranh chấp) qua scheme. Merchant có cơ hội **representment** (cung cấp bằng chứng: hóa đơn, chứng từ giao hàng, chữ ký...). Nếu merchant không phản hồi hoặc bằng chứng yếu → issuer thắng → scheme chuyển tiền từ acquirer về issuer (**chargeback**) + **chargeback fee** (phí phạt, thường 15–50 USD). Nếu merchant thắng → dispute đóng, tiền ở lại merchant.
+
+Quy tắc vàng: **giữ chứng từ đầy đủ** (invoice, proof of delivery, AVS/CVC match, 3D Secure) là cách duy nhất thắng chargeback. Chargeback rate > 1% (số chargeback/tổng giao dịch) có thể bị scheme phạt hoặc thu hồi quyền chấp nhận thẻ.
+
+### Luồng toàn cảnh (sequence)
+
+~~~seq
+title: Vòng doi giao dich the: auth -> clearing -> settlement -> refund/chargeback
+actors: Lan | POS | Acquirer | Visa | Issuer
+Lan -> POS: 1. Quet the 500k
+POS -> Acquirer: 2. Auth request
+Acquirer -> Visa: 3. Forward auth
+Visa -> Issuer: 4. Kiem tra han muc
+Issuer --> Visa: 5. Approve (hold 500k), approval code
+Visa --> Acquirer: 6. Tra ve approval
+Acquirer --> POS: 7. Auth OK
+note Lan: So du cai van nguyen ven, kha dung giam 500k
+POS -> Acquirer: 8. Cuoi ngay: gui clearing file
+Acquirer -> Visa: 9. Clearing
+Visa -> Issuer: 10. Clearing data + tinh fee
+Visa -> Acquirer: 11. Settlement amount (net)
+Issuer -> Visa: 12. Chuyen tien that (T+1)
+Visa -> Acquirer: 13. Chuyen tien that (T+1)
+Acquirer -> Merchant: 14. Ghi co tien (tru MDR)
+note Lan: So du cai giam 500k, hold dong
+Lan -> Issuer: 15. Khieu nai (neu co)
+Issuer -> Visa: 16. Dispute/Chargeback
+Visa -> Acquirer: 17. Chargeback + fee
+Acquirer -> Merchant: 18. Tru tien + phi phat
+~~~
+
+### Cơ chế từng bước: tiền đi đâu, khi nào, do ai quyết định
+
+**Tóm tắt:** Quẹt thẻ chỉ tạo authorization (giữ tiền). Tiền thực sự chuyển khi settlement T+1. Refund là giao dịch mới ngược chiều. Chargeback là issuer lấy tiền lại có phí phạt. Authorization hết hạn tự release.
+
+1. **Authorization (giây 0)**: Issuer kiểm tra: thẻ valid? Hạn mức đủ? Không bị fraud rule chặn? Nếu OK → tạo hold, trả approval code. **Tiền chưa đi đâu**, chỉ bị khoá ở khả dụng. Thời hạn auth thường 7 ngày (Visa/Mastercard) hoặc 30 ngày (pre-auth khách sạn/xe). Quá hạn → **EXPIRED**, tự release.
+
+2. **Capture (trong ngày hoặc T+0)**: Merchant/Acquirer gửi capture với số tiền thực (có thể < auth, ví dụ khách sạn giữ 4tr chốt 3tr). Capture partial → tự release phần chênh. Nếu không capture trước khi auth hết hạn → release toàn bộ.
+
+3. **Clearing (cuối ngày T)**: Acquirer gom tất cả capture thành công, gửi file lên scheme. Scheme route theo issuer, tính interchange fee + scheme fee. **Chỉ truyền dữ liệu, không chuyển tiền**.
+
+4. **Settlement (ngày T+1)**: Scheme điều phối chuyển tiền thực qua tài khoản ngân hàng trung ương. Issuer trừ tiền cardholder (đã trừ interchange fee) → gửi cho acquirer. Acquirer trừ MDR → gửi cho merchant. Lúc này **sổ cái mới thay đổi**.
+
+5. **Refund (ngày bất kỳ sau settled)**: Merchant khởi tạo refund (số tiền ≤ settled amount). Đi luồng ngược: merchant -> acquirer -> scheme -> issuer -> cardholder. Cũng có clearing/settlement T+1 riêng. MDR thường **không hoàn**. Refund KHÔNG xóa authorization cũ — auth đã đóng khi settled.
+
+6. **Chargeback (khi chủ thẻ tranh chấp)**: Issuer mở dispute với reason code (fraud, not received, not as described...). Merchant có ~30 ngày representment. Thua → chargeback + fee. Thắng → dispute đóng. Chargeback rate cao → scheme phạt/ngừng quyền chấp nhận thẻ.
+
+### Bảng so sánh các loại hoàn tiền
+
+| Loại | Khi nào | Luồng tiền | Fees | Idempotency |
+|---|---|---|---|---|
+| **Release (auth expire)** | Chưa capture, auth hết hạn | Không có dòng tiền, chỉ bỏ hold | Không | Tự động 1 lần |
+| **Void/Reversal** | Chưa settled, merchant hủy | Không có settlement, bỏ hold/capture | Không | Theo auth code |
+| **Refund** | Đã settled, merchant đồng ý | Giao dịch mới ngược chiều, T+1 | MDR thường không hoàn | Theo refund ID |
+| **Chargeback** | Chủ thẻ tranh chấp, issuer thắng | Issuer lấy tiền từ merchant qua scheme | Chargeback fee (15–50 USD) | Theo case ID |
+
+### Lỗi hay gặp trên production
+
+1. **Cho là "quẹt thẻ xong là tiền đã về merchant"** — thực ra phải đợi T+1. Code ghi sổ ngay lúc auth là sai (xem lesson-banking-007: hold ≠ settled).
+2. **Refund bằng cách xóa authorization** — auth đã đóng khi settled; refund phải là giao dịch mới ngược chiều qua clearing/settlement.
+3. **Không xử lý auth hết hạn** — hold treo mãi, khả dụng không bao giờ hồi phục. Cần job chạy ngày release các auth quá hạn.
+4. **Mất chargeback deadline** — không representment kịp 30 ngày → tự động thua, mất tiền + phí. Cần alert sớm.
+5. **Không đối soát settlement file** — scheme gửi settlement report, phải khớp với ledger nội bộ (xem lesson-banking-002).
+
+### Câu hỏi nên hỏi lại khi nhận yêu cầu nghiệp vụ này
+
+- Authorization validity period là bao nhiêu ngày? (Visa/Mastercard thường 7 ngày, pre-auth có thể 30 ngày)
+- Partial capture được phép không? Nếu được, release phần chênh tự động hay cần gọi API riêng?
+- Merchant discount rate (MDR) tính như thế nào khi refund? Hoàn hay không hoàn?
+- Chargeback representment deadline là bao nhiêu ngày theo scheme nào?
+- Settlement currency và FX rate áp dụng khi nào (nếu đa tiền tệ)?
+- Làm sao để match authorization với capture/settlement (approval code, RRN, transaction ID)?
+
+### Liên hệ phỏng vấn
+
+**Câu hỏi:** "Khách quẹt thẻ 500k, lúc nào tiền thực sự vào tài khoản merchant?"
+
+**Cách trả lời:** Ba pha: (1) **Authorization** — giây đầu, issuer giữ 500k (hold), tiền chưa chuyển, số dư khả dụng giảm; (2) **Clearing** — cuối ngày, acquirer gửi dữ liệu qua Visa/Mastercard/NAPAS, chỉ truyền file, tính interchange fee; (3) **Settlement** — **ngày làm việc sau (T+1)**, tiền thực sự chuyển issuer -> acquirer -> merchant (trừ MDR). Refund là giao dịch mới ngược chiều cũng T+1, MDR thường không hoàn. Chargeback là chủ thẻ tranh chấp, issuer thắng thì lấy tiền merchant + phí phạt 15–50 USD. Authorization có hạn (7 ngày), hết hạn tự release. Senior: nhắc idempotency theo approval code/RRN, đối soát settlement file, và giữ chứng từ chống chargeback.
+
+**Câu hỏi 2:** "Authorization và capture khác nhau thế nào? Khi nào cần release?"
+
+**Cách trả lời 2:** Authorization = xin phép + giữ tiền (hold), capture = xác nhận chốt số tiền thật ≤ auth. Nếu auth 500k, capture 300k → release 200k tự động. Nếu không capture trước khi auth hết hạn (7 ngày) → release toàn bộ 500k. Release KHÔNG phải refund — không có dòng tiền ngược, chỉ bỏ hold.
+
+**Câu hỏi 3:** "Chargeback là gì và merchant làm gì để thắng?"
+
+**Cách trả lời 3:** Chargeback = chủ thẻ khiếu nại qua issuer, issuer mở dispute qua scheme, merchant có ~30 ngày representment (cung cấp bằng chứng: invoice, POD, AVS/CVC, 3DS). Thua → mất tiền + phí 15–50 USD. Thắng → giữ tiền. Cách thắng: bật 3D Secure, giữ chứng từ giao hàng, match AVS/CVC, phản hồi kịp hạn. Chargeback rate > 1% bị scheme phạt.
+
+> Senior tip: Luôn thiết kế hệ thống theo **trạng thái thực tế** (auth/capture/settle/refund/chargeback) chứ không gộp chung thành "đã thanh toán". Giữ approval code, RRN, transaction ID để match end-to-end. Đối soát settlement report hàng ngày là bắt buộc — scheme có thể sai file, acquirer có thể trừ sai MDR. Auth expire job phải chạy hàng ngày (hoặc dùng TTL trong DB) để không bao giờ để hold treo quá hạn.
+
+`,
+    exercises: [
+      {
+        title: 'CardTxnLifecycle state machine: AUTHORIZED -> CAPTURED -> SETTLED -> REFUNDED/CHARGEBACK, auth expire',
+        prompt: `Viết {{CardTxnLifecycle}} quản lý vòng đời một giao dịch thẻ. Chỉ dùng JDK chuẩn, Java 17, **không class public ngoài Main**. Dùng {{Clock}} inject để test deterministic (auth hết hạn sau N ngày).
+
+**Trạng thái (enum State):** {{AUTHORIZED}}, {{CAPTURED}}, {{SETTLED}}, {{REFUNDED}}, {{CHARGED_BACK}}, {{EXPIRED}}, {{VOIDED}}.
+
+**Sự kiện (enum Event):** {{CAPTURE}}, {{SETTLE}}, {{REFUND}}, {{CHARGEBACK}}, {{EXPIRE}}, {{VOID}}.
+
+**Bảng chuyển tiếp (đúng như bài học):**
+
+- {{AUTHORIZED}} + {{CAPTURE}} ⇒ {{CAPTURED}} (capture ≤ amount, partial được)
+- {{AUTHORIZED}} + {{VOID}} ⇒ {{VOIDED}} (hủy trước khi capture)
+- {{AUTHORIZED}} + {{EXPIRE}} ⇒ {{EXPIRED}} (hết hạn auth, auto release)
+- {{CAPTURED}} + {{SETTLE}} ⇒ {{SETTLED}} (T+1, tiền thực sự chuyển)
+- {{CAPTURED}} + {{VOID}} ⇒ {{VOIDED}} (hủy capture trước settle)
+- {{SETTLED}} + {{REFUND}} ⇒ {{REFUNDED}} (giao dịch mới ngược chiều)
+- {{SETTLED}} + {{CHARGEBACK}} ⇒ {{CHARGED_BACK}} (tranh chấp, issuer thắng)
+- Sự kiện trùng với trạng thái đích ⇒ **no-op** (không đổi state, không ghi history, không ném lỗi)
+- Mọi sự kiện không có trong bảng ⇒ ném {{IllegalStateException}} và **không đổi gì cả**
+- {{event == null}} ⇒ ném {{IllegalArgumentException}}
+
+**Yêu cầu thêm:**
+- Constructor: {{CardTxnLifecycle(Clock clock, int authValidityDays, long authorizedAmount)}} — {{authorizedAmount}} là số tiền auth (long, đơn vị đồng).
+- {{capture(long actualAmount)}}: {{actualAmount}} ≤ {{authorizedAmount}}, âm ⇒ {{IllegalArgumentException}}. Ghi nhận capture amount để sau này refund không vượt quá số đã capture/settle.
+- {{refund(long amount)}}: chỉ được gọi khi state = {{SETTLED}}, {{amount}} ≤ captured amount, âm ⇒ {{IllegalArgumentException}}.
+- {{chargeback(long amount)}}: chỉ được khi state = {{SETTLED}}, {{amount}} ≤ captured amount.
+- {{tickDays(int days)}}: tiến thời gian {{days}} ngày (cộng dồn vào mốc thời gian hiện tại, bắt đầu từ {{clock.instant()}}). Nếu state = {{AUTHORIZED}} và thời gian hiện tại đã quá hoặc bằng {{authValidityDays}} kể từ lúc tạo ⇒ tự chuyển {{EXPIRED}} (gọi nội bộ {{apply(Event.EXPIRE)}}). Nếu state khác {{AUTHORIZED}} thì không làm gì.
+- {{state()}}, {{history()}}, {{capturedAmount()}}, {{settledAmount()}}, {{refundedAmount()}}, {{chargedBackAmount()}} đã có sẵn; bạn viết {{apply(Event)}}, {{capture}}, {{refund}}, {{chargeback}}, {{tickDays}}.
+- Mỗi lần chuyển trạng thái thật, thêm dòng lịch sử: {{TU --SU_KIEN--> DEN}} (ví dụ {{AUTHORIZED --CAPTURE--> CAPTURED}}). No-op không ghi history.
+
+Gợi ý: tách hàm {{next(State from, Event e)}} trả về State đích hoặc null — logic bảng nằm một chỗ.`,
+        starter: `import java.time.*;
+import java.time.temporal.ChronoUnit;
+import java.util.*;
+
+enum State { AUTHORIZED, CAPTURED, SETTLED, REFUNDED, CHARGED_BACK, EXPIRED, VOIDED }
+enum Event { CAPTURE, SETTLE, REFUND, CHARGEBACK, EXPIRE, VOID }
+
+class CardTxnLifecycle {
+    private final Clock clock;
+    private final int authValidityDays;
+    private final long authorizedAmount;
+    private long capturedAmount = 0;
+    private long settledAmount = 0;
+    private long refundedAmount = 0;
+    private long chargedBackAmount = 0;
+    private State state = State.AUTHORIZED;
+    private final List<String> history = new ArrayList<>();
+    private Instant authTime;
+    private Instant currentTime;
+
+    CardTxnLifecycle(Clock clock, int authValidityDays, long authorizedAmount) {
+        this.clock = clock;
+        this.authValidityDays = authValidityDays;
+        this.authorizedAmount = authorizedAmount;
+        this.authTime = clock.instant();
+        this.currentTime = this.authTime;
+    }
+
+    State state() { return state; }
+    List<String> history() { return new ArrayList<>(history); }
+    long authorizedAmount() { return authorizedAmount; }
+    long capturedAmount() { return capturedAmount; }
+    long settledAmount() { return settledAmount; }
+    long refundedAmount() { return refundedAmount; }
+    long chargedBackAmount() { return chargedBackAmount; }
+
+    void apply(Event event) {
+    }
+
+    void capture(long actualAmount) {
+    }
+
+    void refund(long amount) {
+    }
+
+    void chargeback(long amount) {
+    }
+
+    void tickDays(int days) {
+    }
+}`,
+        tests: `public class Main {
+    static int passed = 0, total = 0;
+    static void check(String name, boolean ok, String detail) {
+        total++;
+        if (ok) { passed++; System.out.println("PASS " + name); }
+        else System.out.println("FAIL " + name + ": " + detail);
+    }
+    static boolean expect(Class<? extends Exception> type, Runnable r) {
+        try { r.run(); return false; }
+        catch (Exception ex) { return type.isInstance(ex); }
+    }
+
+    public static void main(String[] args) {
+        Clock clock = Clock.fixed(Instant.parse("2026-11-01T00:00:00Z"), ZoneId.of("UTC"));
+        CardTxnLifecycle txn = new CardTxnLifecycle(clock, 7, 500_000L);
+
+        check("khoi tao AUTHORIZED", txn.state() == State.AUTHORIZED, "state=" + txn.state());
+        check("authTime duoc ghi", txn.history().isEmpty(), "history=" + txn.history());
+
+        // AUTHORIZED -> CAPTURE (partial 300k)
+        txn.capture(300_000L);
+        check("capture 300k -> CAPTURED", txn.state() == State.CAPTURED, "state=" + txn.state());
+        check("capturedAmount = 300k", txn.capturedAmount() == 300_000L, "cap=" + txn.capturedAmount());
+        check("lich su co 1 dong", txn.history().size() == 1, "history=" + txn.history());
+        check("format history dung", txn.history().get(0).equals("AUTHORIZED --CAPTURE--> CAPTURED"), "dong=" + txn.history().get(0));
+
+        // CAPTURED -> SETTLE
+        txn.apply(Event.SETTLE);
+        check("settle -> SETTLED", txn.state() == State.SETTLED, "state=" + txn.state());
+        check("settledAmount = capturedAmount", txn.settledAmount() == 300_000L, "set=" + txn.settledAmount());
+
+        // SETTLED -> REFUND (partial 100k)
+        txn.refund(100_000L);
+        check("refund 100k -> REFUNDED", txn.state() == State.REFUNDED, "state=" + txn.state());
+        check("refundedAmount = 100k", txn.refundedAmount() == 100_000L, "ref=" + txn.refundedAmount());
+
+        // REFUNDED không thể chargeback
+        check("REFUNDED + CHARGEBACK -> ngoai le", expect(IllegalStateException.class, () -> txn.chargeback(50_000L)), "");
+        check("state van REFUNDED", txn.state() == State.REFUNDED, "state=" + txn.state());
+
+        // no-op: sự kiện trùng đích
+        txn.apply(Event.REFUND);
+        check("REFUND tai REFUNDED la no-op", txn.state() == State.REFUNDED && txn.history().size() == 3, "history=" + txn.history());
+
+        // null event
+        check("null event -> IllegalArgumentException", expect(IllegalArgumentException.class, () -> txn.apply(null)), "");
+
+        // --- Test path 2: VOID trước capture ---
+        CardTxnLifecycle v1 = new CardTxnLifecycle(clock, 7, 500_000L);
+        v1.apply(Event.VOID);
+        check("AUTHORIZED + VOID -> VOIDED", v1.state() == State.VOIDED, "state=" + v1.state());
+        check("VOIDED + CAPTURE -> ngoai le", expect(IllegalStateException.class, () -> v1.capture(100_000L)), "");
+        check("VOIDED + SETTLE -> ngoai le", expect(IllegalStateException.class, () -> v1.apply(Event.SETTLE)), "");
+
+        // --- Test path 3: EXPIRE ---
+        Clock clock2 = Clock.fixed(Instant.parse("2026-11-01T00:00:00Z"), ZoneId.of("UTC"));
+        CardTxnLifecycle v2 = new CardTxnLifecycle(clock2, 7, 500_000L);
+        // tick 6 ngay: van AUTHORIZED
+        v2.tickDays(6);
+        check("tick 6 ngay van AUTHORIZED", v2.state() == State.AUTHORIZED, "state=" + v2.state());
+        // tick 1 ngay nua: qua 7 ngay -> EXPIRED
+        v2.tickDays(1);
+        check("tick 7 ngay -> EXPIRED", v2.state() == State.EXPIRED, "state=" + v2.state());
+        check("EXPIRED + CAPTURE -> ngoai le", expect(IllegalStateException.class, () -> v2.capture(100_000L)), "");
+
+        // --- Test path 4: CHARGEBACK ---
+        CardTxnLifecycle v3 = new CardTxnLifecycle(clock, 7, 500_000L);
+        v3.capture(500_000L);
+        v3.apply(Event.SETTLE);
+        v3.chargeback(500_000L);
+        check("SETTLED + CHARGEBACK -> CHARGED_BACK", v3.state() == State.CHARGED_BACK, "state=" + v3.state());
+        check("chargedBackAmount = 500k", v3.chargedBackAmount() == 500_000L, "cb=" + v3.chargedBackAmount());
+        check("CHARGED_BACK + REFUND -> ngoai le", expect(IllegalStateException.class, () -> v3.refund(100_000L)), "");
+
+        // --- Test capture vuot authorized amount ---
+        CardTxnLifecycle v4 = new CardTxnLifecycle(clock, 7, 500_000L);
+        check("capture > authorized -> IllegalArgumentException", expect(IllegalArgumentException.class, () -> v4.capture(600_000L)), "");
+        check("state van AUTHORIZED sau loi", v4.state() == State.AUTHORIZED, "state=" + v4.state());
+
+        // --- Test refund vuot captured amount ---
+        CardTxnLifecycle v5 = new CardTxnLifecycle(clock, 7, 500_000L);
+        v5.capture(300_000L);
+        v5.apply(Event.SETTLE);
+        check("refund > captured -> IllegalArgumentException", expect(IllegalArgumentException.class, () -> v5.refund(400_000L)), "");
+        check("state van SETTLED", v5.state() == State.SETTLED, "state=" + v5.state());
+
+        // --- Test tickDays khong anh huong state khac AUTHORIZED ---
+        CardTxnLifecycle v6 = new CardTxnLifecycle(clock, 7, 500_000L);
+        v6.capture(500_000L);
+        v6.tickDays(100);
+        check("CAPTURED tickDays khong doi state", v6.state() == State.CAPTURED, "state=" + v6.state());
+
+        System.out.println("RESULT " + passed + "/" + total);
+    }
+}`,
+        reference: `import java.time.*;
+import java.time.temporal.ChronoUnit;
+import java.util.*;
+
+enum State { AUTHORIZED, CAPTURED, SETTLED, REFUNDED, CHARGED_BACK, EXPIRED, VOIDED }
+enum Event { CAPTURE, SETTLE, REFUND, CHARGEBACK, EXPIRE, VOID }
+
+class CardTxnLifecycle {
+    private final Clock clock;
+    private final int authValidityDays;
+    private final long authorizedAmount;
+    private long capturedAmount = 0;
+    private long settledAmount = 0;
+    private long refundedAmount = 0;
+    private long chargedBackAmount = 0;
+    private State state = State.AUTHORIZED;
+    private final List<String> history = new ArrayList<>();
+    private Instant authTime;
+    private Instant currentTime;
+
+    CardTxnLifecycle(Clock clock, int authValidityDays, long authorizedAmount) {
+        if (clock == null) throw new IllegalArgumentException("clock null");
+        if (authValidityDays <= 0) throw new IllegalArgumentException("authValidityDays phai > 0");
+        if (authorizedAmount <= 0) throw new IllegalArgumentException("authorizedAmount phai > 0");
+        this.clock = clock;
+        this.authValidityDays = authValidityDays;
+        this.authorizedAmount = authorizedAmount;
+        this.authTime = clock.instant();
+        this.currentTime = this.authTime;
+    }
+
+    State state() { return state; }
+    List<String> history() { return new ArrayList<>(history); }
+    long authorizedAmount() { return authorizedAmount; }
+    long capturedAmount() { return capturedAmount; }
+    long settledAmount() { return settledAmount; }
+    long refundedAmount() { return refundedAmount; }
+    long chargedBackAmount() { return chargedBackAmount; }
+
+    private State next(State from, Event e) {
+        switch (from) {
+            case AUTHORIZED:
+                switch (e) {
+                    case CAPTURE: return State.CAPTURED;
+                    case VOID: return State.VOIDED;
+                    case EXPIRE: return State.EXPIRED;
+                    default: return null;
+                }
+            case CAPTURED:
+                switch (e) {
+                    case SETTLE: return State.SETTLED;
+                    case VOID: return State.VOIDED;
+                    default: return null;
+                }
+            case SETTLED:
+                switch (e) {
+                    case REFUND: return State.REFUNDED;
+                    case CHARGEBACK: return State.CHARGED_BACK;
+                    default: return null;
+                }
+            case REFUNDED:
+            case CHARGED_BACK:
+            case EXPIRED:
+            case VOIDED:
+                // trang thai chung: chi nhan lai chinh su kien da dua den no
+                return e == eventForState(from) ? from : null;
+            default:
+                return null;
+        }
+    }
+
+    private Event eventForState(State s) {
+        return switch (s) {
+            case REFUNDED -> Event.REFUND;
+            case CHARGED_BACK -> Event.CHARGEBACK;
+            case EXPIRED -> Event.EXPIRE;
+            case VOIDED -> Event.VOID;
+            default -> null;
+        };
+    }
+
+    void apply(Event event) {
+        if (event == null) throw new IllegalArgumentException("event null");
+        State from = state;
+        State to = next(from, event);
+        if (to == null) throw new IllegalStateException("Chuyen khong hop le: " + from + " + " + event);
+        if (to == from) return; // no-op
+        state = to;
+        history.add(from + " --" + event + "--> " + to);
+        if (event == Event.SETTLE) settledAmount = capturedAmount;
+    }
+
+    void capture(long actualAmount) {
+        if (actualAmount < 0) throw new IllegalArgumentException("actualAmount khong duoc am");
+        if (actualAmount > authorizedAmount) throw new IllegalArgumentException("capture vuot authorized amount");
+        apply(Event.CAPTURE);
+        if (state == State.CAPTURED) capturedAmount = actualAmount;
+    }
+
+    void refund(long amount) {
+        if (amount < 0) throw new IllegalArgumentException("refund amount khong duoc am");
+        if (state != State.SETTLED) throw new IllegalStateException("Chi refund duoc tai SETTLED");
+        if (amount > capturedAmount) throw new IllegalArgumentException("refund vuot captured amount");
+        apply(Event.REFUND);
+        if (state == State.REFUNDED) refundedAmount = amount;
+    }
+
+    void chargeback(long amount) {
+        if (amount < 0) throw new IllegalArgumentException("chargeback amount khong duoc am");
+        if (state != State.SETTLED) throw new IllegalStateException("Chi chargeback duoc tai SETTLED");
+        if (amount > capturedAmount) throw new IllegalArgumentException("chargeback vuot captured amount");
+        apply(Event.CHARGEBACK);
+        if (state == State.CHARGED_BACK) chargedBackAmount = amount;
+    }
+
+    void tickDays(int days) {
+        if (days < 0) throw new IllegalArgumentException("days khong duoc am");
+        if (state != State.AUTHORIZED) return; // chi AUTHORIZED moi co han
+        currentTime = currentTime.plus(days, ChronoUnit.DAYS);
+        Instant expiry = authTime.plus(authValidityDays, ChronoUnit.DAYS);
+        if (!currentTime.isBefore(expiry)) {
+            apply(Event.EXPIRE);
+        }
+    }
+}`,
+        hints: [
+          'Dùng hàm {{next(State, Event)}} tập trung bảng chuyển tiếp — đừng viết if/else rải rác.',
+          'No-op = {{next}} trả về đúng state hiện tại: kiểm tra {{to == from}} rồi {{return}} trước khi ghi history.',
+          '{{capture}}, {{refund}}, {{chargeback}} phải validate amount **trước** khi gọi {{apply}}; nếu {{apply}} ném lỗi thì amount không được ghi.',
+          '{{tickDays}} chỉ tác động khi state = {{AUTHORIZED}}: cộng dồn {{days}} vào thời gian hiện tại (bắt đầu từ {{authTime}}) rồi so sánh với {{authTime.plus(authValidityDays, ChronoUnit.DAYS)}}; nếu đã tới hoặc quá hạn thì gọi {{apply(Event.EXPIRE)}}.',
+          '{{settledAmount}} được gán trong {{apply(Event.SETTLE)}} = {{capturedAmount}} (vì settle chuyển toàn bộ captured).',
+        ],
+        explain: `State machine này mô phỏng chính xác vòng đời thực tế của giao dịch thẻ:
+
+1. **AUTHORIZED → CAPTURED → SETTLED** là luồng chuẩn. Capture có thể partial (≤ auth amount), settle chuyển toàn bộ captured amount thành settled amount.
+2. **EXPIRED** chỉ xảy ra từ AUTHORIZED khi quá {{authValidityDays}} (thường 7 ngày). {{tickDays}} dùng {{Clock}} inject để test deterministic — không bao giờ dùng {{Instant.now()}} trực tiếp.
+3. **VOIDED** có thể từ AUTHORIZED (hủy trước capture) hoặc CAPTURED (hủy capture trước settle). Sau VOIDED không được capture/settle/refund/chargeback.
+4. **REFUNDED** và **CHARGED_BACK** chỉ từ SETTLED. Refund là giao dịch mới ngược chiều (merchant đồng ý), chargeback là issuer thắng tranh chấp. Cả hai đều giới hạn amount ≤ captured/settled amount.
+5. **Trạng thái chung (terminal)**: REFUNDED, CHARGED_BACK, EXPIRED, VOIDED chỉ nhận lại sự kiện đã đưa chúng đến đó (no-op), mọi sự kiện khác ném {{IllegalStateException}}.
+
+Test đi theo đúng các kịch bản thật:
+- Path 1: auth 500k → capture 300k (partial) → settle → refund 100k (partial refund). Kiểm tra amount tracking chính xác.
+- Path 2: void trước capture → VOIDED, không thể capture/settle.
+- Path 3: tickDays 6 ngày vẫn AUTHORIZED, tick thêm 1 ngày (tổng 7) → EXPIRED. EXPIRED không thể capture.
+- Path 4: chargeback full amount từ SETTLED → CHARGED_BACK, không thể refund sau đó.
+- Validation: capture/refund/chargeback vượt amount bị chặn, state không đổi khi lỗi.
+
+Lỗi hay gặp khi viết: quên validate amount trước {{apply}} (gây ghi amount sai khi state không đổi), dùng {{Instant.now()}} thay vì {{Clock}} (test không deterministic), cho phép refund/chargeback từ state sai (ví dụ REFUNDED), và không xử lý no-op đúng (ghi history trùng).`,
+      },
+    ],
+    check: [
+      {
+        q: 'Authorization, clearing, settlement khác nhau như thế nào?',
+        options: [
+          'Authorization chuyển tiền thật, clearing giữ tiền, settlement truyền dữ liệu',
+          'Authorization giữ tiền (hold), clearing truyền dữ liệu giao dịch, settlement chuyển tiền thật T+1',
+          'Cả ba đều là một quá trình, chỉ khác tên gọi',
+          'Clearing là hoàn tiền, settlement là giữ tiền',
+        ],
+        answer: 1,
+        explain: 'Đúng (B): Authorization = issuer giữ tiền (hold), chưa chuyển tiền; Clearing = cuối ngày acquirer gửi file dữ liệu qua scheme, chỉ truyền thông tin, tính fee; Settlement = ngày T+1, tiền thực sự chuyển issuer -> acquirer -> merchant. Sai (A), (C), (D): nhầm lẫn vai trò của từng pha.',
+      },
+      {
+        q: 'Refund và chargeback khác nhau ở điểm nào?',
+        options: [
+          'Refund là merchant đồng ý hoàn tiền (giao dịch mới ngược chiều), chargeback là chủ thẻ tranh chấp qua issuer, issuer thắng thì lấy tiền merchant + phí phạt',
+          'Cả hai đều là hoàn tiền, không khác nhau',
+          'Refund có phí phạt, chargeback không phí',
+          'Chargeback do merchant khởi tạo, refund do issuer khởi tạo',
+        ],
+        answer: 0,
+        explain: 'Đúng (A): Refund = merchant chủ động hoàn tiền cho khách (luồng ngược merchant->acquirer->scheme->issuer->cardholder), thường T+1, MDR thường không hoàn. Chargeback = chủ thẻ khiếu nại, issuer mở dispute, merchant có ~30 ngày representment; issuer thắng → chargeback + fee 15–50 USD. Sai (B): bản chất khác nhau (chủ động vs tranh chấp). Sai (C): ngược lại, chargeback mới có fee phạt. Sai (D): chargeback do issuer/chủ thẻ khởi xướng.',
+      },
+      {
+        q: 'Authorization hết hạn (thường 7 ngày) mà merchant chưa capture thì sao?',
+        options: [
+          'Tiền tự động chuyển cho merchant',
+          'Hold tự động release, tiền về khả dụng của chủ thẻ, giao dịch chuyển sang EXPIRED',
+          'Issuer tự động capture giúp merchant',
+          'Giao dịch bị xóa khỏi hệ thống',
+        ],
+        answer: 1,
+        explain: 'Đúng (B): Authorization là lời hứa giữ tiền trong thời hạn. Quá hạn (thường 7 ngày Visa/Mastercard) → hold tự động release (EXPIRED), tiền về khả dụng của chủ thẻ. Không có dòng tiền nào chuyển cho merchant. Merchant muốn thu tiền phải yêu cầu khách thanh toán lại. Sai (A): không capture thì không có settlement. Sai (C): issuer không bao giờ capture thay merchant. Sai (D): giao dịch vẫn lưu trong lịch sử với trạng thái EXPIRED để audit.',
+      },
+    ],
+    related: ['banking-007', 'banking-006', 'banking-010'],
+    tags: ['card', 'authorization', 'clearing', 'settlement', 'refund', 'chargeback', 'state-machine', 'banking'],
+  },
+  {
     id: 'lesson-banking-010',
     track: 'banking',
     order: 10,
