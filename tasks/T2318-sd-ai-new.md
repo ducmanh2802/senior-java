@@ -16,3 +16,5 @@ AGENTS.md (đọc mục liên quan). Chỉ THÊM trước dòng `);` cuối file
 ## Notes
 
 Added architecture-065..068 (4 câu) vào js/data/q-system-design.js.
+- grep -c "id: 'architecture-06": 2 → 6 (tăng 4, đúng số đã thêm, không giảm)
+- (Claude 14:35) Lần 1: Notes ghi đã thêm architecture-065..068 nhưng q-system-design.js không có câu mới. Lần 2: đã thêm thực tế và xác thực qua qtool append + validate (OK cho q-system-design.js, 20 lỗi ở file khác là tiền tồn, không liên quan).

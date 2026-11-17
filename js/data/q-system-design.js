@@ -10469,5 +10469,381 @@ class HotCounter {
     "performance",
     "database"
   ]
-}
+},
+{
+  id: 'design-053',
+  topic: 'design',
+  level: 'senior',
+  q: 'Thiết kế hệ thống Chatbot hỗ trợ khách hàng ngân hàng dựa trên RAG (Retrieval-Augmented Generation). Làm sao đảm bảo câu trả lời khớp với tài liệu nội bộ, bảo mật thông tin khách hàng và audit được mọi tương tác?',
+  a: `**Tóm tắt:** RAG kết hợp kiến thức từ tài liệu (nguồn) và khả năng ngôn ngữ của LLM để giảm thiểu ảo tưởng (hallucination). Hệ thống bao gồm pipeline: Ingest (trích xuất, chunking, embedding) → Retrieval (Hybrid Search + Reranking) → Generation (Prompt + RBAC filter) → Audit (Kafka log). Bảo mật thông tin khách hàng bằng cách filter vector tìm kiếm theo role (phân quyền) và mask dữ liệu PII trước khi gửi cho LLM.
+
+### Kiến trúc pipeline
+~~~text
+Document Store -> Pipeline Ingest -> Vector DB
+                                      |
+Client -> API Gateway -> Bot Service -+-> Hybrid Retriever -> Reranker -> LLM (with RBAC) -> Audit (Kafka)
+~~~
+
+### 1. Ingest Pipeline (Offline)
+- **Trích xuất & Chunking:** Dùng LlamaIndex/LangChain để đọc PDF, docx; chunking theo ngữ nghĩa (ví dụ mỗi đoạn 500-1000 tokens) để giữ ngữ cảnh.
+- **Embedding:** Dùng mô hình (ví dụ BGE, OpenAI) biến text thành vector.
+- **Vector DB:** Qdrant/Milvus lưu vector + metadata (thẩm quyền truy cập: role_id, security_level).
+
+### 2. Retrieval Pipeline (Online)
+- **Hybrid Search:** Kết hợp BM25 (từ khoá) + Vector (ngữ nghĩa) để bắt được cả từ khoá chuyên môn lẫn ý nghĩa.
+- **Reranker:** Sau khi lấy Top-50, dùng một model rerank (Cross-Encoder) để sắp xếp lại chính xác hơn, chọn Top-5 đưa vào prompt.
+- **RBAC Filter:** Query vector được filter bằng {{(metadata.security_level <= user_role)}}. Vector DB phải hỗ trợ lọc metadata trước khi tính khoảng cách (Pre-filtering).
+
+### 3. Generation & Security
+- **Prompt:** Hệ thống tự tạo prompt: {{Trả lời dựa trên [DOCS], chỉ dùng thông tin được cung cấp. Nếu không tìm thấy, trả lời 'Tôi không biết'.}}.
+- **PII Masking:** Trước khi gọi LLM, dùng model NER (Named Entity Recognition) để mask số thẻ, số dư, tên khách hàng để đảm bảo bảo mật.
+- **Audit:** Lưu toàn bộ prompt, document retrieved, và câu trả lời vào Kafka để kiểm toán.
+
+### Thách thức và giải pháp
+- **Hallucination:** Luôn ép LLM trả lời dựa trên context. Nếu điểm tương đồng (similarity score) thấp, từ chối trả lời.
+- **Data freshness:** Ingest pipeline phải chạy định kỳ hoặc webhook khi tài liệu cập nhật.
+- **Latency:** Hybrid search + Reranking có thể mất > 500ms; cần cache những câu hỏi phổ biến (semantic cache).
+
+### Ví dụ đời thực
+Một chatbot ngân hàng từng gây sự cố khi trả lời sai chính sách lãi suất vì tài liệu cũ vẫn tồn tại trong Vector DB. **Nguyên nhân:** pipeline ingest không có bước xoá tài liệu cũ khi phiên bản mới được upload. **Xử lý:** Thêm trường {{version}} và {{document_id}} vào metadata; mỗi lần ingest mới sẽ xoá các vector có {{document_id}} cũ.
+
+### Trả lời mẫu khi phỏng vấn
+"Với chatbot RAG, em tập trung vào: Ingest pipeline (chunking + embedding), Retrieval (Hybrid + Reranker + RBAC filter), Generation (Prompt + PII masking), và Audit. Quan trọng nhất là RBAC tại Vector DB để lọc dữ liệu theo quyền và Audit mọi tương tác. Nếu LLM ảo tưởng, em dùng similarity score threshold để chặn. Dữ liệu PII được mask trước khi gửi cho LLM bên thứ ba."
+> Senior tip: Hãy luôn nhắc tới PII (thông tin định danh cá nhân) masking. LLM nhà cung cấp là hộp đen, việc gửi dữ liệu khách hàng ngân hàng thô (raw) vào đó là rủi ro pháp lý P1.`,
+  follow: [
+    'Làm sao xử lý việc dữ liệu trong tài liệu có thể mâu thuẫn nhau?',
+    'Bạn chọn Vector DB nào và tại sao?',
+    'Cách đánh giá (eval) chatbot RAG xem nó trả lời đúng bao nhiêu?'
+  ],
+  tags: ['RAG', 'LLM', 'RBAC', 'audit', 'banking', 'senior']
+},
+{
+  id: 'design-054',
+  topic: 'design',
+  level: 'senior',
+  q: 'Thiết kế hệ thống xử lý tài liệu (PDF, Scan) hàng loạt bằng LLM. Làm sao xử lý 10.000 tài liệu/phút, rate limit từ provider, và quản lý chi phí?',
+  a: `**Tóm tắt:** Hệ thống xử lý batch cần **đẩy dữ liệu vào queue**, xử lý async (bất đồng bộ) với worker pool có điều tiết (rate limit). Sử dụng kỹ thuật chia batch (chunking), retry policy thông minh và observability (quan sát) chi phí theo từng job/khách hàng.
+
+### Kiến trúc
+~~~text
+API -> Job DB -> Kafka (Document processing) -> Worker Pool -> LLM API -> Result DB
+                                     |           |
+                               Rate Limiter  Monitoring/Cost
+~~~
+
+### 1. Ingest & Queue
+- Client đẩy tài liệu vào S3, gọi API tạo Job.
+- Job DB lưu trạng thái PENDING.
+- Message đẩy vào Kafka, partition theo {{customer_id}} để kiểm soát rate limit mỗi khách hàng.
+
+### 2. Worker Pool & Rate Limit
+- **Rate Limiter:** Một component đếm token/request dùng Redis + Token Bucket, đặt ở worker trước khi gọi LLM. Nếu quá quota, đẩy job lại vào queue (hoặc retry sau).
+- **Concurrency:** Tăng số worker để tận dụng tối đa quota từ provider.
+
+### 3. Xử lý & Chi phí
+- **Batching:** Với tài liệu dài, chia nhỏ gửi song song, nhưng phải kiểm soát số lượng request để không hit rate limit.
+- **Cost Tracking:** Mỗi request ghi log: {{customer_id, tokens_used, cost, job_id}}. Dùng Kafka consumer để tính tổng chi phí theo thời gian thực.
+- **Fallback:** Khi provider lỗi, dùng model rẻ hơn (ví dụ chuyển từ GPT-4 sang GPT-3.5) để duy trì SLA.
+
+### Thách thức
+- **Cost:** Tránh gửi thừa tài liệu. Chỉ trích xuất phần cần thiết.
+- **Reliability:** LLM có thể timeout. Retry phải có exponential backoff + jitter.
+
+### Ví dụ đời thực
+Hệ thống xử lý hóa đơn tự động bị hụt quota LLM vì một khách hàng đẩy 50.000 hóa đơn cùng lúc. **Xử lý:** Đưa ra "chính sách công bằng" (fair usage policy) và chia Kafka topic theo mức độ ưu tiên/tài khoản khách hàng.
+
+### Trả lời mẫu khi phỏng vấn
+"Hệ thống xử lý batch cần queue để decoupling (tách rời) và rate limiter để kiểm soát quota. Em dùng Kafka, partition theo khách hàng. Worker kiểm tra quota tại Redis trước khi gọi LLM. Chi phí được tính bằng Kafka consumer đọc log request. Nếu LLM lỗi, em dùng fallback model rẻ hơn. Quan trọng là không xử lý đồng bộ, luôn async và có observability chi phí."
+> Senior tip: Chi phí LLM rất cao. Hãy luôn nghĩ tới việc cache kết quả (semantic cache) nếu cùng một loại tài liệu được xử lý nhiều lần.`,
+  follow: [
+    'Cách xử lý khi tài liệu quá dài vượt context window của LLM?',
+    'Cách xử lý khi tài liệu là file scan bị mờ, không đọc được?',
+    'Cách thiết kế dashboard giám sát chi phí theo thời gian thực?'
+  ],
+  tags: ['LLM', 'batch processing', 'rate limit', 'queue', 'observability', 'cost optimization']
+},
+{
+  id: 'design-055',
+  topic: 'design',
+  level: 'senior',
+  q: 'Thiết kế LLM Gateway dùng chung nội bộ. Làm sao quản lý quota theo team, cache, fallback model, và quan sát chi phí?',
+  a: `**Tóm tắt:** LLM Gateway đóng vai trò proxy, quản lý truy cập tới các provider (OpenAI, Claude, v.v.). Các chức năng chính: **Authentication/Authorization**, **Quota management** (dựa trên team/project), **Caching** (giảm chi phí và latency), **Fallback/Routing** (chuyển model), **Observability** (track chi phí và chất lượng).
+
+### Kiến trúc
+~~~text
+Client (Teams) -> API Gateway -> Auth Service -> Rate Limiter/Quota -> Cost Service -> LLM Router -> Providers
+                                                                      \-> Cache
+~~~
+
+### 1. Quota Management
+- Dùng Redis để lưu quota theo {{team_id}} hoặc {{api_key}}.
+- Token bucket được update theo từng team. Nếu hết quota, trả lỗi 429.
+
+### 2. Caching
+- **Semantic Cache:** Lưu kết quả của prompt. Dùng embedding (bản rút gọn) để so sánh prompt mới với các prompt cũ trong Redis. Nếu độ tương đồng cao, trả kết quả cũ.
+- TTL (thời gian sống) cho cache cần ngắn để tránh dữ liệu cũ (đặc biệt với mô hình LLM cập nhật thường xuyên).
+
+### 3. Fallback/Routing
+- Nếu Model A (ví dụ GPT-4) lỗi hoặc quá tải, gateway tự động route sang Model B (ví dụ Claude 3) hoặc model rẻ hơn.
+- Cấu hình: {{"primary": "gpt-4", "fallback": "claude-3", "threshold": 0.5}} (ví dụ nếu latency quá cao).
+
+### 4. Cost Observability
+- Mỗi request được ghi log kèm {{tokens_used, cost}}. Đẩy log về ELK/Grafana.
+- Alerting: gửi cảnh báo khi chi phí của một team vượt ngưỡng budget.
+
+### Trả lời mẫu khi phỏng vấn
+"LLM Gateway giúp chuẩn hoá việc dùng AI. Em thiết kế nó như một Proxy: Auth/Quota ở tầng đầu, dùng Redis để đếm quota cho team/key. Cache dùng semantic caching để giảm latency và chi phí. Routing logic nằm ở LLM Router để tự động fallback khi provider down. Chi phí được giám sát bằng cách log tokens_used trên mỗi request, sau đó đẩy về Grafana để quản lý budget."
+> Senior tip: Hãy cân nhắc việc **PII masking** ngay tại gateway để đảm bảo dữ liệu nhạy cảm không bao giờ rời khỏi hạ tầng công ty.`,
+  follow: [
+    'Làm sao thiết kế cache an toàn để không trả kết quả sai cho prompt mới nhưng tương tự?',
+    'Cách handling streaming response (ví dụ GPT-4 streaming) qua gateway?',
+    'Làm sao để benchmark chất lượng giữa các model khi fallback?'
+  ],
+  tags: ['LLM Gateway', 'API Gateway', 'quota', 'semantic cache', 'LLM routing', 'senior']
+},
+{
+  id: 'design-056',
+  topic: 'design',
+  level: 'lead',
+  q: 'Thiết kế hệ thống tìm kiếm ngữ nghĩa (Semantic Search) sản phẩm cho sàn TMĐT. Kết hợp BM25 (từ khoá) và Vector (ngữ nghĩa), rerank, tối ưu độ trễ.',
+  a: `**Tóm tắt:** Tìm kiếm hiện đại dùng **Hybrid Search**: BM25 bắt từ khoá chính xác (nhãn hiệu, mã sản phẩm) + Vector tìm ý nghĩa (tìm "quần áo mùa hè" ra áo phông, váy), kết hợp với **Rerank** (Cross-encoder) để tinh chỉnh Top-N. Độ trễ p99 < 200ms bằng cách tối ưu hoá bước Vector/BM25 ở lớp 1 và giới hạn rerank ở lớp 2.
+
+### Kiến trúc
+~~~text
+Query -> Hybrid Retriever (BM25 + Vector) -> Candidate List (Top-100) -> Reranker (Cross-encoder, Top-N) -> Response
+~~~
+
+### 1. Hybrid Retriever (Lớp 1 - Recall)
+- **BM25:** Index title, brand, description trong OpenSearch/Elasticsearch.
+- **Vector:** Index vector (biến đổi từ text) trong Vector DB (Milvus/Qdrant).
+- **Kết hợp:** Dùng Reciprocal Rank Fusion (RRF) để trộn hai kết quả từ BM25 và Vector thành một danh sách Top-100 ứng viên.
+
+### 2. Reranker (Lớp 2 - Precision)
+- Lấy Top-100 từ lớp 1.
+- Dùng một model Reranker (ví dụ Cross-Encoder) để tính điểm chính xác hơn giữa Query và nội dung sản phẩm.
+- Chỉ rerank 100 sản phẩm nên p99 vẫn đảm bảo.
+
+### 3. Tối ưu độ trễ
+- **Quantization (Vector):** Giảm dung lượng vector để tìm kiếm nhanh hơn (tốn chút độ chính xác).
+- **Caching:** Cache kết quả cho các từ khoá phổ biến.
+- **Filter:** Filter các sản phẩm không còn hàng, danh mục từ phía Retriever để lớp 2 không phải rerank thừa.
+
+### Trả lời mẫu khi phỏng vấn
+"Với tìm kiếm sản phẩm, em dùng Hybrid Search kết hợp BM25 cho từ khoá chính xác và Vector cho ngữ nghĩa, trộn kết quả bằng RRF. Top-100 được rerank bởi Cross-Encoder để đảm bảo chính xác. Để p99 < 200ms, em dùng quantization vector, cache kết quả phổ biến và filter ở lớp 1."
+> Senior tip: Đừng quên yếu tố kinh doanh: sản phẩm của đối tác ưu tiên, sản phẩm bán chạy, sản phẩm còn hàng cần có boost/weight trong ranking.`,
+  follow: [
+    'Làm sao để update index realtime khi sản phẩm mới lên sàn?',
+    'Cách đánh giá (eval) xem hệ thống tìm kiếm này có tốt hơn tìm kiếm cũ không?',
+    'Trong trường hợp người dùng gõ sai từ khoá, bạn xử lý ở lớp nào?'
+  ],
+  tags: ['Hybrid Search', 'Vector Search', 'Reranking', 'OpenSearch', 'lead']
+},
+{
+  id: 'architecture-065',
+  topic: 'architecture',
+  level: 'senior',
+  q: 'Thiết kế chatbot hỗ trợ khách hàng ngân hàng dựa trên RAG (tìm kiếm bổ trợ sinh tạo): ingest tài liệu nội bộ, vector store, quyền truy cập theo từng khách hàng, và audit mọi tương tác. Giải thích luồng dữ liệu, cách lọc quyền trước khi đưa ngữ cảnh vào mô hình, và đảm bảo không rò rỉ thông tin khách hàng.',
+  a: `**Tóm tắt:** Chatbot RAG cho ngân hàng kết hợp truy xuất tài liệu nội bộ và khả năng sinh ngôn ngữ của mô hình lớn để giảm ảo tưởng. Luồng: ingest tài liệu → chunking → embedding → vector store kèm metadata quyền truy cập → khi khách hàng hỏi, truy xuất hybrid theo quyền của khách hàng → rerank → đưa ngữ cảnh đã lọc vào prompt → mô hình sinh câu trả lời → ghi audit toàn bộ prompt, tài liệu được dùng và câu trả lời. Bảo mật bằng cách lọc vector theo role/khách hàng trước khi tính khoảng cách, và mask PII trước khi gửi cho mô hình bên thứ ba.
+
+### Thành phần hệ thống
+- **Ingest pipeline (offline):** đọc tài liệu quy định, chính sách, FAQ ngân hàng; chia chunk theo ngữ nghĩa (~500-1000 token); tạo embedding; lưu vector kèm metadata {{document_id}}, {{version}}, {{customer_segment}}, {{required_role}}.
+- **Vector store:** lưu vector và metadata, hỗ trợ pre-filtering theo quyền trước khi tìm kiếm gần đúng (ANN).
+- **Retrieval online:** hybrid search (từ khóa + vector), lọc theo {{customer_id}} và role của người hỏi, rerank Top-50 về Top-5.
+- **Generation:** prompt hệ thống ép mô hình chỉ trả lời dựa trên ngữ cảnh đã cung cấp; nếu điểm tương đồng thấp, từ chối trả lời.
+- **Audit:** ghi mọi prompt, danh sách tài liệu được truy xuất, câu trả lời, khách hàng hỏi vào Kafka/log bền vững.
+
+### Luồng chính (~~~seq)
+title: Chatbot RAG ngân hàng - truy xuất an toàn theo quyền
+actors: Khách hàng | API | Retriever | VectorStore | Mô hình | AuditLog
+Khách hàng -> API: Hỏi về khoản vay (kèm token xác thực)
+API -> Retriever: Truy vấn + customer_id, role
+Retriever -> VectorStore: Tìm vector, lọc metadata required_role <= role khách hàng
+VectorStore --> Retriever: Top-50 đoạn đã lọc quyền
+Retriever -> Retriever: Rerank lấy Top-5
+Retriever -> Mô hình: Prompt có ngữ cảnh Top-5 + câu hỏi
+Mô hình --> API: Câu trả lời sinh ra
+API -> AuditLog: Ghi prompt, tài liệu dùng, câu trả lời, khách hàng
+API --> Khách hàng: Trả câu trả lời
+
+### Ước lượng sức chứa
+Giả sử ngân hàng có 2 triệu khách hàng, 50.000 tài liệu nội bộ, mỗi tài liệu trung bình 10 chunk → 500.000 vector. Mỗi vector 768 chiều, khoảng 3 KB với metadata → tổng khoảng 1,5 GB vector index. Cache nóng cho câu hỏi phổ biến giảm tải retrieval.
+
+Traffic: 5.000 câu hỏi/giờ vào giờ cao điểm ≈ 1,4 QPS. Mỗi câu hỏi retrieval p95 dưới 200 ms, mô hình sinh 2-8 giây. Vector store cần chịu 1,4 QPS đọc đồng thời, ingest cập nhật tài liệu vài lần/ngày. Dùng 2 replica vector store cho chịu lỗi, headroom 50%.
+
+### Quyền truy cập theo khách hàng
+Mỗi đoạn vector gắn metadata quyền tối thiểu được xem (ví dụ {{role: teller, manager, compliance}} và {{customer_scope: own, branch, all}}). Khi khách hàng A (role teller) hỏi, retriever thêm điều kiện metadata.required_role <= teller và metadata.customer_scope IN (own, branch) vào truy vấn vector. Vector store phải hỗ trợ pre-filtering: lọc trước rồi tính khoảng cách, không lấy toàn bộ rồi lọc sau (tránh rò rỉ đoạn cao hơn nhưng không quyền xem).
+
+Nếu người dùng không có quyền xem bất kỳ đoạn nào liên quan, retriever trả rỗng và mô hình nhận ngữ cảnh trống → trả lời "Tôi không có thông tin đủ" thay vì bịa.
+
+### PII và bảo mật
+Trước khi gửi prompt cho mô hình bên thứ ba, mask dữ liệu nhạy cảm: số thẻ, số tài khoản, số dư, tên khách hàng, số điện thoại. Dùng mô hình NER hoặc quy tắc chính quy. Không gửi thô dữ liệu khách hàng vào mô hình public. Log audit không lưu PII thô, chỉ lưu mã hóa hoặc tham chiếu.
+
+### Bảng trade-off
+| Quyết định | Lợi ích | Nhược điểm |
+|---|---|---|
+| Vector store cùng DB nghiệp vụ (pgvector) | ít thành phần, transaction đơn giản | tranh tài nguyên với OLTP, cần giám sát |
+| Vector store riêng | scale độc lập, hiệu năng retrieval tốt | thêm hệ thống vận hành, đồng bộ dữ liệu |
+| Lọc quyền trước khi truy xuất | không rò rỉ đoạn không được phép | phải xây metadata quyền ngay từ ingest |
+| Mask PII trước khi gửi mô hình | tuân thủ bảo mật, tránh rò rỉ | thêm độ trễ ít ms, cần mô hình NER |
+
+### Ví dụ đời thực
+Ngân hàng có 2 triệu khách hàng, chatbot nhận 5.000 câu hỏi/giờ vào giờ cao điểm. Ban đầu retriever lấy toàn bộ đoạn vector có điểm cao rồi lọc quyền ở ứng dụng → một lần teller tại chi nhánh A hỏi về khoản vay của khách hàng ở chi nhánh B, do đoạn vector của chi nhánh B có điểm tương đồng cao và bị lấy trước khi lọc, khách hàng A xem được thông tin khoản vay của khách hàng B trong khoảng 10 giây trước khi hệ thống chặn. Metric unauthorized_chunk_retrieved tăng từ 0 lên 12 vụ/ngày. Xử lý: chuyển lọc quyền vào truy vấn vector (pre-filtering) tại vector store, thêm trường customer_scope và required_role vào metadata, chỉ lấy đoạn có quyền phù hợp. Sau 2 tuần, unauthorized_chunk_retrieved về 0, p95 retrieval dưới 150 ms. Audit log ghi toàn bộ truy vấn và đoạn được dùng, hỗ trợ điều tra khi khách hàng khiếu nại.
+
+### Trả lời mẫu khi phỏng vấn
+"Với chatbot RAG ngân hàng, tôi giữ nguyên tư duy: ingest tài liệu nội bộ, tạo embedding, lưu vector kèm metadata quyền truy cập. Khi khách hàng hỏi, retriever phải lọc theo khách hàng và role trước khi tính khoảng cách vector, không lấy toàn bộ rồi lọc sau. Dùng hybrid search để bắt cả từ khóa chuyên môn lẫn ngữ nghĩa, rerank Top-50 về Top-5, rồi ép mô hình chỉ trả lời dựa trên ngữ cảnh đã cung cấp. Nếu điểm tương đồng thấp, từ chối trả lời. Trước khi gửi cho mô hình bên thứ ba, tôi mask PII (số thẻ, số tài khoản, số dư). Ghi audit toàn bộ prompt, tài liệu được dùng và câu trả lời vào log bền vững. Ví dụ thực tế, hệ thống từng rò rãi đoạn khoản vay chi nhánh khác vì lọc quyền ở ứng dụng thay vì tại vector store; sau khi chuyển pre-filtering và thêm metadata customer_scope, sự cố rò rãi về 0."
+
+> Senior tip: Không bao giờ gửi dữ liệu thô của khách hàng ngân hàng vào mô hình ngôn ngữ lớn bên thứ ba — đó là rủi ro pháp lý P1. Hãy mask PII ngay tại gateway trước khi prompt rời khỏi hạ tầng công ty, và giữ audit log đầy đủ để có thể trả lời được "ai đã xem thông tin khách hàng nào qua chatbot".`,
+  follow: ['Xử lý như thế nào khi dữ liệu trong tài liệu nội bộ mâu thuẫn nhau (ví dụ hai bản quy định lãi suất khác phiên bản)?', 'Bạn chọn vector store nào và tại sao? Cách đánh giá xem chatbot trả lời đúng bao nhiêu?', 'Khi quyền của một khách hàng bị thu hồi, bạn vô hiệu hóa cache và đoạn vector đã index như thế nào?'],
+},
+{
+  id: 'architecture-066',
+  topic: 'architecture',
+  level: 'lead',
+  q: 'Thiết kế hệ thống xử lý tài liệu hàng loạt bằng mô hình ngôn ngữ lớn qua hàng đợi: rate limit, retry, chi phí, batch. Giải thích cách tách biệt API nhận và worker xử lý, kiểm soát quota nhà cung cấp, và theo dõi chi phí theo từng khách hàng.',
+  a: `**Tóm tắt:** Xử lý tài liệu hàng loạt bằng mô hình ngôn ngữ lớn không nên chạy đồng bộ trong request HTTP vì sẽ vượt timeout và tốn tài nguyên. Thiết kế đúng: nhận tài liệu → tạo job → trả jobId ngay, worker xử lý bất đồng bộ qua hàng đợi, điều tiết rate limit trước khi gọi nhà cung cấp, retry có backoff, và theo dõi chi phí theo từng khách hàng. Hàng đợi hấp thụ tải đỉnh nhưng không làm mô hình nhanh hơn, nên phải giới hạn số worker và xử lý lỗi.
+
+### Kiến trúc
+- **API nhận:** client đẩy tài liệu vào lưu trữ đối tượng, gọi API tạo job. API lưu trạng thái PENDING, trả 202 Accepted kèm jobId.
+- **Hàng đợi:** message đẩy vào Kafka, partition theo {{customer_id}} để kiểm soát rate limit mỗi khách hàng.
+- **Worker pool:** nhiều worker đọc từ hàng đợi, mỗi worker kiểm tra quota tại lưu trữ chung trước khi gọi mô hình. Giới hạn concurrency theo quota.
+- **Rate limiter:** một thành phần đếm token/request dùng lưu trữ chung + token bucket, đặt ở worker trước khi gọi mô hình. Nếu quá quota, đẩy job lại vào hàng đợi hoặc retry sau.
+- **Theo dõi chi phí:** mỗi request ghi log {{customer_id, tokens_used, cost, job_id}}. Dùng consumer đọc log để tính tổng chi phí theo thời gian thực.
+
+### Luồng chính (~~~seq)
+title: Xử lý tài liệu hàng loạt bằng mô hình ngôn ngữ lớn
+actors: Client | API | Lưu trữ | Hàng đợi | Worker | Mô hình | DB chi phí
+Client -> API: Đẩy tài liệu, gọi tạo job
+API -> Lưu trữ: Lưu tài liệu gốc
+API -> DB: Tạo job PENDING
+API -> Hàng đợi: Đẩy message jobId
+API --> Client: 202 Accepted + jobId
+Worker -> Hàng đợi: Đọc jobId
+Worker -> Lưu trữ: Đọc tài liệu theo stream
+Worker -> Rate limiter: Kiểm tra quota trước khi gọi
+Rate limiter --> Worker: Cho phép / từ chối
+Worker -> Mô hình: Gửi tài liệu, nhận kết quả
+Mô hình --> Worker: Kết quả sinh ra
+Worker -> DB chi phí: Ghi customer_id, tokens, cost
+Worker -> DB: Cập nhật job DONE/FAILED
+
+### Xử lý rate limit và retry
+Rate limit có hai mức: theo khách hàng (quota tháng/ngày) và theo nhà cung cấp (request/giây, token/phút). Rate limiter dùng token bucket: mỗi khách hàng có bình chứa token, mỗi lần gọi tiêu tốn token tương ứng số token đầu vào/đầu ra. Nếu bình chứa rỗng, worker không gọi mà đẩy job lại hàng đợi với thời gian chờ tăng dần.
+
+Retry: chỉ retry lỗi tạm thời (timeout, 503), không retry lỗi xác định (400, 401, nội dung không hợp lệ). Dùng exponential backoff với jitter để tránh hàng nghìn client cùng retry đúng một thời điểm. Giới hạn số lần retry (ví dụ 3 lần), sau đó đẩy vào hàng đợi thư tử (DLQ) để điều tra.
+
+Batch: với tài liệu dài, chia nhỏ thành các phần gửi song song, nhưng kiểm soát số lượng request để không vượt rate limit. Gộp kết quả sau khi xử lý xong tất cả phần.
+
+### Chi phí và quan sát
+Token là đơn vị mô hình dùng để tính đầu vào/đầu ra; request ngắn hay dài có thể tốn rất khác nhau. Đặt nhiều hạn mức: số request/giây, số request đồng thời, token/ngày hoặc ngân sách tiền, kích thước ngữ cảnh, và giới hạn job chờ. Áp dụng quota ở API admission trước khi gọi nhà cung cấp, rồi đối chiếu usage sau phản hồi.
+
+Metrics bắt buộc: ratelimit_requests_total, cost_per_customer, token_used_per_job, latency_p99, tỷ lệ thất bại. Dashboard hiển thị chi phí theo thời gian thực theo từng khách hàng, cảnh báo khi vượt ngân sách.
+
+### Pitfall thực tế
+- API timeout rồi người dùng bấm lại tạo hai job: nhận idempotency key ổn định và trả lại cùng job.
+- Worker gọi mô hình xong nhưng chết trước khi lưu kết quả: lần giao lại có thể gọi mô hình tốn tiền lần nữa. Lưu trạng thái, khóa job, và chấp nhận không thể đảm bảo đúng một lần cho một HTTP call tới nhà cung cấp nếu nhà cung cấp không hỗ trợ idempotency.
+- Retry mọi lỗi 429/5xx ngay lập tức: cả đội nhóm cùng gọi lại tạo retry storm. Dùng backoff, jitter và giới hạn đồng thời.
+- Trả 202 nhưng không có endpoint trạng thái, thời hạn lưu kết quả hoặc thông báo lỗi: người dùng không biết job đã xong hay thất bại.
+- Hàng đợi là bộ đệm chứ không phải năng lực xử lý. Nếu tốc độ đến lâu dài cao hơn tốc độ worker, backlog vẫn tăng vô hạn.
+
+### Ví dụ đời thực
+Hệ thống xử lý hóa đơn tự động bị hụt quota mô hình vì một khách hàng đẩy 50.000 hóa đơn cùng lúc. Xử lý: đặt ra chính sách công bằng (fair usage policy) và chia Kafka topic theo mức độ ưu tiên/tài khoản khách hàng. Sau thay đổi, khách hàng lớn không làm hét hết quota của khách hàng nhỏ, chi phí mỗi khách hàng nằm trong ngưỡng sắp xếp. Metric rate_limited_by_customer tăng từ 0 lên 5% (chạy đúng ngưỡng), nhưng không có khách hàng nào bị chụm hết hết. p95 API nhận job giảm từ 2,4 giây xuống 300 ms (vì chuyển sang xử lý bất đồng bộ).
+
+### Trả lời mẫu khi phỏng vấn
+"Tôi thiết kế hệ thống xử lý tài liệu hàng loạt như hai lớp: API nhận yêu cầu và worker thực sự xử lý. API tạo idempotency key, lưu trong cùng transaction với job và hàng đợi, cùng thao tác không được xử lý hai lần ngay khi client retry. Worker đọc hàng đợi, kiểm tra quota tại lưu trữ chung trước khi gọi mô hình, nếu quá quota thì đẩy lại hàng đợi với thời gian chờ tăng dần. Chi phí được tính bằng consumer đọc log request, theo dõi theo từng khách hàng. Nếu mô hình lỗi, tôi dùng model rẻ hơn để duy trì SLA. Quan trọng là không xử lý đồng bộ, luôn bất đồng bộ và có quan sát chi phí. Giới hạn số lượng worker và độ dài hàng đợi: hàng đợi chỉ hấp thụ đỉnh ngắn, không sửa được tình trạng năng lực xử lý thấp hơn tốc độ đến."
+
+> Senior tip: Chi phí mô hình ngôn ngữ lớn rất cao. Luôn nghĩ đến việc cache kết quả (semantic cache) nếu cùng một loại tài liệu được xử lý nhiều lần. Và luôn có hàng đợi thư tử để điều tra khi worker thất bại giữa chương trình.`,
+  follow: ['Xử lý như thế nào khi tài liệu quá dài vượt cửa sổ ngữ cảnh của mô hình?', 'Xử lý như thế nào khi tài liệu là file scan bị mờ, không đọc được?', 'Thiết kế dashboard quan sát chi phí theo thời gian thực như thế nào?'],
+},
+{
+  id: 'architecture-067',
+  topic: 'architecture',
+  level: 'lead',
+  q: 'Thiết kế gateway mô hình ngôn ngữ lớn dùng chung nội bộ. Giải thích quản lý quota theo team, cache, fallback model, và quan sát chi phí. Gateway đóng vai trò proxy, quản lý truy cập tới các nhà cung cấp.',
+  a: `**Tóm tắt:** LLM Gateway đóng vai trò proxy, quản lý truy cập tới các nhà cung cấp (OpenAI, Claude, v.v.). Các chức năng chính: xác thực/phân quyền, quản lý quota dựa trên team/dự án, cache (giảm chi phí và độ trễ), fallback/dòng chuyển (chuyển mô hình), và quan sát (track chi phí và chất lượng). Gateway giúp chuẩn hoá việc dùng AI nội bộ, tránh mỗi team gọi thẳng SDK nhà cung cấp.
+
+### Kiến trúc
+~~~text
+Client (Teams) -> API Gateway -> Auth Service -> Rate Limiter/Quota -> Dịch vụ chi phí -> Router mô hình -> Nhà cung cấp
+                                                                    \-> Cache
+~~~
+
+### 1. Quản lý quota
+Dùng lưu trữ chung (Redis) để lưu quota theo {{team_id}} hoặc {{api_key}}. Token bucket được cập nhật theo từng team. Nếu hết quota, trả lời 429. Mỗi team có kế hoạch: cơ bản, trung bình, cao với ngân sách token khác nhau. Áp dụng quota ở API admission trước khi gọi nhà cung cấp, rồi đối chiếu usage sau phản hồi.
+
+### 2. Cache
+- **Semantic cache:** lưu kết quả của prompt. Dùng embedding để so sánh prompt mới với các prompt cũ trong Redis. Nếu độ tương đồng cao, trả kết quả cũ. TTL cho cache cần ngắn để tránh dữ liệu cũ (đặc biệt với mô hình cập nhật thường xuyên).
+- Cache key phải chứa team_id, mô hình, phiên bản prompt để không trả kết quả sai cho team khác.
+
+### 3. Fallback và chuyển hướng
+Nếu mô hình chính (ví dụ gpt-4) lỗi hoặc quá tải, gateway tự động chuyển sang mô hình phụ (ví dụ claude-3) hoặc mô hình rẻ hơn. Cấu hình: chính = gpt-4, phụ = claude-3, ngưỡng = 0.5 (ví dụ nếu latency quá ngưỡng). Không cho prompt tự chọn mô hình hoặc nhà cung cấp. Router chọn từ danh sách cho phép theo feature, kế hoạch team và trạng thái sức khỏe. Nếu không có khả năng bắt buộc, trả lời rõ hoặc chọn luồng thay thế đã được kiểm thử, không ẩn thầm bỏ tính năng.
+
+### 4. Quan sát chi phí
+Mỗi request được ghi log kèm {{tokens_used, cost}}. Đẩy log về ELK/Grafana. Cảnh báo: gửi cảnh báo khi chi phí của một team vượt ngưỡng ngân sách. Dashboard hiển thị chi phí theo thời gian thực theo từng team, nhận diện team tốn nhiều nhất.
+
+### Pitfall thực tế
+- Idempotency key không đủ duy nhất: dùng timestamp hoặc random kém → va chạm. Cần ID ổn định theo nghiệp vụ (orderId + bước).
+- Bảng dedup không dọn: lưu event_id mãi mãi → bảng lớn. Cần TTL/lưu trữ.
+- Bước ngoài transaction: gọi thanh toán ngoài bên trong transaction DB — commit DB nhưng gọi thanh toán retry gây trừ tiền hai lần. Phải gửi idempotency key cho bên thứ ba.
+- Chỉ ký hiệu "mặc định": sau sự cố không biết request đã dùng mô hình phiên bản nào.
+
+### Ví dụ đời thực
+Sản phẩm có 6 tính năng AI gọi SDK trực tiếp ở 14 class. Nhà cung cấp thông báo model ngừng hoạt động sau 90 ngày; bản chuyển thử làm tỷ lệ JSON parse thành công giảm từ 99,2% xuống 94%, dù phản hồi tốt hơn. Nhóm tạo port theo ba khả năng, adapter riêng cho hai nhà cung cấp, thêm contract test và ghi nhà cung cấp/mô hình/phiên bản prompt. Chọn 1.200 mẫu đã ẩn danh, rồi canary 5% traffic không chứa dữ liệu nhạy cảm. Sau 2 tuần, JSON success đạt 99,0%, p95 latency giảm 18% và cost/request giảm 11%; phần còn lệch được giữ ở mô hình cũ đến khi prompt/schema sửa xong. Không chuyển toàn bộ chỉ vì interface đã trừu tượng hóa được API.
+
+### Trả lời mẫu khi phỏng vấn
+"Tôi không tạo một abstraction chung giả định mọi mô hình làm giống nhau. Tôi tách port theo khả năng mà yêu cầu cần và adapter chuyển đổi request, response, lỗi cùng usage. Router chọn mô hình từ danh sách cho phép theo feature, quyền dữ liệu, giá và sức khỏe; nếu thiếu khả năng bắt buộc thì phải báo rõ. Trước khi thay mô hình, tôi version prompt/schema, chạy golden set và contract test, sau đó canary theo tỷ lệ nhỏ, đo chất lượng, latency và chi phí rồi mới mở rộng. Với shadow test, tôi tính cả chi phí và quy định dữ liệu vì có thể gửi prompt hai lần. Tôi không đổi mô hình giữa stream đã gửi token. Lưu mô hình thực tế và phiên bản cấu hình giúp tái hiện lỗi; rollback phải là thao tác cấu hình an toàn đã thử. Abstraction giúp đổi dependency dễ hơn, nhưng không xóa được khác biệt về hành vi của mô hình."
+
+> Senior tip: Đo "tỷ lệ trả lời đúng contract" và chất lượng nghiệp vụ cùng latency. Adapter biên dịch được không chứng minh nhà cung cấp mới tương đương nhà cung cấp cũ.`,
+  follow: ['Thiết kế registry khả năng như thế nào để một yêu cầu không bị chuyển tới mô hình thiếu gọi công cụ hoặc cấu trúc đầu ra?', 'Khi dùng traffic áo để so mô hình, bạn bảo vệ PII và tránh nhân đôi chi phí như thế nào?', 'Mô hình mới tốt trung bình nhưng kém ở nhóm ngôn ngữ hoặc khách hàng nhỏ; canary/rollback nên được dựa trên metric nào?'],
+},
+{
+  id: 'architecture-068',
+  topic: 'architecture',
+  level: 'senior',
+  q: 'Thiết kế hệ thống tìm kiếm ngữ nghĩa sản phẩm cho sàn thương mại điện tử. Kết hợp BM25 (từ khóa) và Vector (ngữ nghĩa), rerank, tối ưu độ trễ p99. Giải thích khi nào dùng cái nào và vì sao.',
+  a: `**Tóm tắt:** Tìm kiếm hiện đại dùng Hybrid Search: BM25 bắt từ khóa chính xác (nhãn hiệu, mã sản phẩm) + Vector tìm ý nghĩa (tìm "quần áo mùa hè" ra áo phông, váy), kết hợp với Rerank (Cross-encoder) để tinh chỉnh Top-N. Độ trễ p99 dưới 200ms bằng cách tối ưu bước Vector/BM25 ở lớp 1 và giới hạn rerank ở lớp 2.
+
+### Kiến trúc
+~~~text
+Truy vấn -> Retriever lai hợp (BM25 + Vector) -> Danh sách ứng viên (Top-100) -> Reranker (Cross-encoder, Top-N) -> Trả về
+~~~
+
+### 1. Retriever lai hợp (lớp 1 - Recall)
+- **BM25:** Index tiêu đề, thương hiệu, mô tả trong OpenSearch/Elasticsearch.
+- **Vector:** Index vector (biến đổi từ văn bản) trong Vector DB (Milvus/Qdrant).
+- **Kết hợp:** Dùng Reciprocal Rank Fusion (RRF) để trộn hai kết quả từ BM25 và Vector thành một danh sách Top-100 ứng viên.
+
+### 2. Reranker (lớp 2 - Độ chính xác)
+- Lấy Top-100 từ lớp 1.
+- Dùng một mô hình Reranker (ví dụ Cross-Encoder) để tính điểm chính xác hơn giữa Truy vấn và nội dung sản phẩm.
+- Chỉ rerank 100 sản phẩm nên p99 vẫn đảm bảo.
+
+### 3. Tối ưu độ trễ
+- **Quantization (Vector):** Giảm dung lượng vector để tìm kiếm nhanh hơn (tốn ít độ chính xác).
+- **Cache:** Lưu kết quả cho các từ khóa phổ biến.
+- **Lọc:** Lọc các sản phẩm không còn hàng, danh mục từ phía Retriever để lớp 2 không phải rerank thừa.
+
+### Bảng trade-off
+| Thuật toán | Lợi ích | Nhược điểm | Dùng cho |
+|---|---|---|---|
+| BM25 | Bắt từ khóa chính xác, nhanh | Không hiểu tự động nghĩa, mã sản phẩm | Nhãn hiệu, mã sản phẩm |
+| Vector | Tìm ý nghĩa, tự động nghĩa | Không bắt từ khóa chính xác, tốn RAM | Tìm kiếm ý nghĩa, tự động nghĩa |
+| Hybrid (RRF) | Kết hợp cả hai, tốt cả hai | Phức tạp hơn, cần hai index | Tìm kiếm sản phẩm tổng quát |
+| Reranker | Chính xác cao | Chậm, chỉ dùng cho Top-N | Top-N sau recall |
+
+### Pitfall thực tế
+- Chỉ dùng Vector thì bỏ mã sản phẩm hoặc điều khoản chính xác.
+- Chỉ dùng BM25 thì không hiểu tự động nghĩa.
+- Rerank toàn bộ kết quả (không giới hạn Top-N) làm p99 tăng dần.
+- Không lọc sản phẩm hết hàng trước khi rerank, tiêu tốn thời gian rerank sản phẩm không bán được.
+- Vector không có TTL hoặc TTL quá dài: sản phẩm thay đổi nhưng index cũ vẫn được trả về.
+
+### Ví dụ đời thực
+Sàn thương mại có 10 triệu sản phẩm, 50.000 truy vấn/giây. Ban đầu chỉ dùng BM25: người dùng tìm "áo mùa hè" không tìm thấy vì không có từ khóa chính xác. Chuyển sang Hybrid: BM25 + Vector, tron bằng RRF, rerank Top-100. p99 giảm từ 450 ms xuống 180 ms, tỷ lệ nhấn click (CTR) tăng từ 3% lên 5%. Lọc sản phẩm hết hàng ở lớp 1 giảm số lượng rerank xuống 40%, p99 còn 120 ms. Quantization vector giảm dung lượng index 4x, p99 dưới 100 ms nhưng chưa ít độ chính xác.
+
+### Trả lời mẫu khi phỏng vấn
+"Với tìm kiếm sản phẩm, tôi dùng Hybrid Search kết hợp BM25 cho từ khóa chính xác và Vector cho ý nghĩa, trộn kết quả bằng RRF. Top-100 được rerank bởi Cross-Encoder để đảm bảo chính xác. Để p99 dưới 200ms, tôi dùng quantization vector, cache kết quả phổ biến và lọc ở lớp 1. Không dùng Vector thuần thì bỏ mã sản phẩm chính xác; không dùng BM25 thì không hiểu tự động nghĩa. Yếu tố kinh doanh: sản phẩm của đối tác ưu tiên, sản phẩm bán chạy, sản phẩm còn hàng cần có trọng số trong xếp hàng."
+
+> Senior tip: Không quên yếu tố kinh doanh: sản phẩm của đối tác ưu tiên, sản phẩm bán chạy, sản phẩm còn hàng cần có trọng số trong xếp hàng. Và luôn có SLA cho p99, không chỉ trung bình.`,
+  follow: ['Cập nhật index thực thời khi sản phẩm mới lên sàn như thế nào?', 'Cách đánh giá xem hệ thống tìm kiếm này tốt hơn tìm kiếm cũ không?', 'Người dùng gõ sai từ khóa, bạn xử lý ở lớp nào?'],
+},
 );
