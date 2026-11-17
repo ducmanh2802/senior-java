@@ -249,5 +249,215 @@ Prevent cross-tenant contamination.
 Compliance with data residency.
 
 ### Vì sao từng phương án sai
-- Any region/disable encryption/log plaintext: non-compliant.` }
+- Any region/disable encryption/log plaintext: non-compliant.` },
+{ id: 'qz-ccap-191', topic: 'claude', q: '[Stakeholder & Lifecycle] A project team is planning a Claude-based solution for internal document search. Who should be primarily involved in defining the "success" criteria?', options: ['Developer team only', 'Business stakeholders, end users, and architects', 'Legal team only', 'IT operations only'], answer: 1, explain: `**Tóm tắt:** Business stakeholders, end users, và kiến trúc sư cần cùng định nghĩa thành công.
+
+### Vì sao đáp án đúng
+Sự thành công của dự án công nghệ phụ thuộc vào nhu cầu thực tế của người dùng, mục tiêu của doanh nghiệp và tính khả thi về kiến trúc.
+
+### Vì sao từng phương án sai
+- Chỉ Dev hoặc chỉ một bộ phận sẽ thiếu cái nhìn toàn diện về value và risk.` },
+{ id: 'qz-ccap-192', topic: 'claude', q: '[Stakeholder & Lifecycle] During the design phase, the architect needs to balance system latency and response quality. What is the best way to handle this stakeholder trade-off?', options: ['Make the choice without consulting stakeholders', 'Document options, impact, and consult business stakeholders on preferences', 'Always prioritize latency', 'Always prioritize quality'], answer: 1, explain: `**Tóm tắt:** Tài liệu hóa các lựa chọn và consult stakeholders để quyết định.
+
+### Vì sao đáp án đúng
+Kiến trúc sư đóng vai trò cố vấn (advisor) và stakeholder đóng vai trò quyết định dựa trên ưu tiên kinh doanh.
+
+### Vì sao từng phương án sai
+- Tự quyết hoặc cực đoan (luôn ưu tiên 1 cái) sẽ không tối ưu cho mục tiêu kinh doanh cụ thể.` },
+{ id: 'qz-ccap-193', topic: 'claude', multi: true, q: '[Stakeholder & Lifecycle] Which activities are critical during the "Design" stage of the AI lifecycle? (Choose 2)', options: ['User training', 'Defining API schema and data flows', 'Selecting models and orchestration strategy', 'Marketing the product', 'Monitoring costs'], answer: [1, 2], explain: `**Tóm tắt:** Định nghĩa API/Data flow và chọn Model/Orchestration.
+
+### Vì sao đáp án đúng
+Đây là các hoạt động cốt lõi của giai đoạn thiết kế để đảm bảo hệ thống chạy đúng và hiệu quả.
+
+### Vì sao từng phương án sai
+- User training và Marketing thuộc giai đoạn triển khai; Monitoring thuộc giai đoạn vận hành.` },
+{ id: 'qz-ccap-194', topic: 'claude', q: '[Stakeholder & Lifecycle] A project is entering the "Testing" phase. What is the most important stakeholder engagement activity?', options: ['Planning the marketing campaign', 'Reviewing system performance against golden sets', 'Deciding on future development team hiring', 'Setting budget for next year'], answer: 1, explain: `**Tóm tắt:** Kiểm tra hiệu năng hệ thống dựa trên tập golden set.
+
+### Vì sao đáp án đúng
+Testing là để xác nhận độ chính xác và chất lượng, cần sự tham gia của các bên liên quan để đánh giá kết quả thực tế.
+
+### Vì sao từng phương án sai
+- Các hoạt động còn lại không trực tiếp phục vụ mục tiêu đảm bảo chất lượng của phase testing.` },
+{ id: 'qz-ccap-195', topic: 'claude', q: '[Stakeholder & Lifecycle] What is a key responsibility of stakeholders during the "Deployment" phase of a Claude application?', options: ['Developing new features', 'Monitoring and verifying live performance and impact', 'Writing code', 'Selecting the model'], answer: 1, explain: `**Tóm tắt:** Theo dõi và xác thực hiệu năng thực tế.
+
+### Vì sao đáp án đúng
+Giai đoạn triển khai cần stakeholders theo dõi xem hệ thống có đáp ứng kỳ vọng kinh doanh không.
+
+### Vì sao từng phương án sai
+- Dev/Model selection đã xong trước đó.` },
+{ id: 'qz-ccap-196', topic: 'claude', q: '[Stakeholder & Lifecycle] How should a team handle feedback from stakeholders *after* a production incident?', options: ['Ignore it', 'Conduct a Blameless Post-Mortem, share findings, and define preventive actions', 'Blame the developers', 'Stop the project'], answer: 1, explain: `**Tóm tắt:** Post-mortem không đổ lỗi, rút kinh nghiệm.
+
+### Vì sao đáp án đúng
+Đây là quy trình chuẩn để cải thiện hệ thống, tránh lặp lại lỗi, và tăng cường niềm tin.
+
+### Vì sao từng phương án sai
+- Bỏ qua, đổ lỗi, hay dừng dự án đều làm giảm chất lượng hệ thống và văn hóa đội ngũ.` },
+{ id: 'qz-ccap-197', topic: 'claude', multi: true, q: '[Stakeholder & Lifecycle] Which are the main benefits of "Stakeholder Alignment" in a Claude project? (Choose 2)', options: ['Reduces project scope', 'Ensures shared understanding of goals and trade-offs', 'Increases project cost', 'Better handles expectation management during failures'], answer: [1, 3], explain: `**Tóm tắt:** Đảm bảo hiểu chung về mục tiêu/đánh đổi và quản lý kỳ vọng.
+
+### Vì sao đáp án đúng
+Alignment giúp mọi người hiểu hệ thống có thể làm gì/không thể làm gì, tránh kỳ vọng ảo.
+
+### Vì sao từng phương án sai
+- Alignment không làm giảm scope hay tăng cost; nó làm dự án hiệu quả hơn.` },
+{ id: 'qz-ccap-198', topic: 'claude', q: '[Stakeholder & Lifecycle] During "Lifecycle Management", why is it important to define "success metrics" early?', options: ['Because Anthropic requires it', 'To ensure objective evaluation and stakeholder consensus on value', 'To limit developers\' work', 'To make the project faster'], answer: 1, explain: `**Tóm tắt:** Để đánh giá khách quan và đồng thuận về giá trị.
+
+### Vì sao đáp án đúng
+Không có metric rõ ràng, dự án dễ bị hiểu lầm về giá trị và không có căn cứ đánh giá.
+
+### Vì sao từng phương án sai
+- Các lý do khác không phản ánh đúng vai trò quản trị dự án.` },
+{ id: 'qz-ccap-199', topic: 'claude', q: '[Stakeholder & Lifecycle] A project is in the "Maintenance" phase. What is the most critical activity for stakeholders?', options: ['Reworking the entire UI', 'Continuously evaluating performance and updating prompts/models', 'Changing the team entirely', 'None'], answer: 1, explain: `**Tóm tắt:** Đánh giá hiệu năng và cập nhật liên tục.
+
+### Vì sao đáp án đúng
+Môi trường thay đổi, dữ liệu thay đổi, mô hình thay đổi, nên Maintenance cần sự cải tiến liên tục.
+
+### Vì sao từng phương án sai
+- Các lựa chọn khác gây lãng phí hoặc làm gián đoạn dự án.` },
+{ id: 'qz-ccap-200', topic: 'claude', q: '[Stakeholder & Lifecycle] Why should stakeholders be involved in "Cost-Benefit Analysis" of using Claude versus other models?', options: ['They should not be', 'To make an informed decision based on budget, quality, and performance requirements', 'To make it harder for devs', 'To choose the cheapest option always'], answer: 1, explain: `**Tóm tắt:** Quyết định dựa trên budget, chất lượng và hiệu năng.
+
+### Vì sao đáp án đúng
+Business cần hiểu trade-off giữa giá và chất lượng cho các use case cụ thể.
+
+### Vì sao từng phương án sai
+- Stakeholder luôn cần tham gia vào các quyết định tài chính quan trọng.` },
+{ id: 'qz-ccap-201', topic: 'claude', multi: true, q: '[Stakeholder & Lifecycle] Which documents are typically used to communicate with stakeholders in the Claude project lifecycle? (Choose 2)', options: ['Code files', 'Project status reports/Architecture decision records (ADRs)', 'Deployment logs', 'Meeting notes only'], answer: [1, 3], explain: `**Tóm tắt:** Báo cáo trạng thái và tài liệu kiến trúc.
+
+### Vì sao đáp án đúng
+ADRs ghi lại các quyết định thiết kế, status reports cập nhật tiến độ.
+
+### Vì sao từng phương án sai
+- Code file/logs không phù hợp để giao tiếp ở mức quản lý/kinh doanh.` },
+{ id: 'qz-ccap-202', topic: 'claude', q: '[Stakeholder & Lifecycle] When a model update is released by Anthropic, what should stakeholders do?', options: ['Ignore it', 'Assess the impact on the current system and decide whether to upgrade', 'Upgrade immediately without testing', 'Downgrade to a older model'], answer: 1, explain: `**Tóm tắt:** Đánh giá ảnh hưởng và quyết định nâng cấp.
+
+### Vì sao đáp án đúng
+Nâng cấp luôn có rủi ro, cần đánh giá tác động trước khi quyết định.
+
+### Vì sao từng phương án sai
+- Bỏ qua, nâng cấp ẩu, hay hạ cấp đều không phải là hành động quản lý rủi ro tốt.` },
+{ id: 'qz-ccap-203', topic: 'claude', q: '[Stakeholder & Lifecycle] What is a key benefit of having a "Human-in-the-loop" (HITL) for high-stakes stakeholder decisions?', options: ['It slows down the project', 'It adds a layer of safety and validation for critical decisions', 'It costs too much', 'It is not necessary'], answer: 1, explain: `**Tóm tắt:** Tăng cường an toàn và xác thực cho quyết định quan trọng.
+
+### Vì sao đáp án đúng
+HITL đảm bảo có sự kiểm tra của con người với các quyết định ảnh hưởng đến business hoặc người dùng cuối.
+
+### Vì sao từng phương án sai
+- Dù có thể chậm/đắt, nhưng sự an toàn là mục tiêu tối thượng.` },
+{ id: 'qz-ccap-204', topic: 'claude', q: '[Stakeholder & Lifecycle] When managing expectations for an AI product, what is a key pitfall?', options: ['Transparency about limitations', 'Promising 100% accuracy', 'Providing regular updates', 'Listening to user feedback'], answer: 1, explain: `**Tóm tắt:** Hứa hẹn độ chính xác tuyệt đối.
+
+### Vì sao đáp án đúng
+AI luôn có xác suất lỗi, hứa 100% sẽ dẫn đến mất niềm tin khi hệ thống xảy ra sự cố.
+
+### Vì sao từng phương án sai
+- Minh bạch, cập nhật, lắng nghe là thực hành tốt.` },
+{ id: 'qz-ccap-205', topic: 'claude', q: '[Stakeholder & Lifecycle] How does "Governance" differ from "Operations" in the Claude project?', options: ['Governance is only for lawyers', 'Governance defines policies/standards; Operations executes them', 'Operations defines the policy', 'They are the same'], answer: 1, explain: `**Tóm tắt:** Governance định nghĩa, Operations thực thi.
+
+### Vì sao đáp án đúng
+Governance đảm bảo hướng đi đúng đắn, Ops đảm bảo vận hành ổn định theo hướng đó.
+
+### Vì sao từng phương án sai
+- Governance không chỉ cho luật sư, nó là khung quản lý cho toàn dự án.` },
+{ id: 'qz-ccap-206', topic: 'claude', q: '[Models & Context] What is the effect of a large "Context Window" in Claude?', options: ['Increases latency always', 'Allows more information to be processed at once', 'Decreases model intelligence', 'Makes the model slower to load'], answer: 1, explain: `**Tóm tắt:** Xử lý nhiều thông tin hơn trong một lượt.
+
+### Vì sao đáp án đúng
+Context window lớn cho phép Claude giữ được nhiều tài liệu/hướng dẫn hơn trong bộ nhớ tạm khi xử lý.
+
+### Vì sao từng phương án sai
+- Latency có thể tăng nhưng không phải "luôn luôn", nó không làm giảm trí thông minh.` },
+{ id: 'qz-ccap-207', topic: 'claude', q: '[Models & Context] What happens if a prompt exceeds the model\'s maximum context window?', options: ['The model will answer correctly', 'It will automatically reduce context', 'The API will return an error', 'The model will magically work'], answer: 2, explain: `**Tóm tắt:** API trả về lỗi vượt hạn mức.
+
+### Vì sao đáp án đúng
+Model không thể xử lý dữ liệu nằm ngoài cửa sổ ngữ cảnh, hệ thống sẽ chặn request.
+
+### Vì sao từng phương án sai
+- Model không thể tự động rút gọn hay hoạt động "ma thuật" được.` },
+{ id: 'qz-ccap-208', topic: 'claude', multi: true, q: '[Models & Context] Which factors influence Claude\'s "latency"? (Choose 2)', options: ['The number of output tokens requested', 'The color of the UI', 'Input prompt complexity and size', 'The temperature parameter'], answer: [0, 2], explain: `**Tóm tắt:** Số token output và độ phức tạp/kích thước input.
+
+### Vì sao đáp án đúng
+Claude mất thời gian suy luận (input) và thời gian sinh token (output).
+
+### Vì sao từng phương án sai
+- Màu UI là frontend, không liên quan latency API; Temperature ảnh hưởng sự đa dạng, không ảnh hưởng trực tiếp latency.` },
+{ id: 'qz-ccap-209', topic: 'claude', q: '[Models & Context] What is the primary purpose of "System Prompt"?', options: ['To generate content', 'To provide persistent instructions and behavior to the model', 'To store user chat history', 'To set temperature'], answer: 1, explain: `**Tóm tắt:** Cung cấp hướng dẫn và hành vi cố định.
+
+### Vì sao đáp án đúng
+System prompt là nơi định nghĩa vai trò, phong cách, và luật lệ mà Claude phải tuân theo xuyên suốt cuộc hội thoại.
+
+### Vì sao từng phương án sai
+- Generate là mục đích chính của completion, system prompt là hướng dẫn.` },
+{ id: 'qz-ccap-210', topic: 'claude', q: '[Models & Context] How can you reduce the "cost" of Claude API calls?', options: ['Increase prompt length', 'Use larger models for all tasks', 'Use smaller models for simple tasks and prompt caching for frequent prompts', 'Use Opus for everything'], answer: 2, explain: `**Tóm tắt:** Dùng model nhỏ cho tác vụ đơn giản và cache prompt.
+
+### Vì sao đáp án đúng
+Tối ưu hóa mô hình theo độ phức tạp tác vụ và tận dụng cache giúp giảm chi phí đáng kể.
+
+### Vì sao từng phương án sai
+- Prompt dài hay dùng Opus cho mọi thứ chỉ làm tăng chi phí.` },
+{ id: 'qz-ccap-211', topic: 'claude', q: '[Models & Context] What does "Temperature" represent in a Claude call?', options: ['Latency', 'Randomness of outputs', 'Total cost', 'Number of output tokens'], answer: 1, explain: `**Tóm tắt:** Sự ngẫu nhiên của đầu ra.
+
+### Vì sao đáp án đúng
+Temp 0 là deterministic (luôn giống nhau), temp cao làm Claude sáng tạo và thay đổi hơn.
+
+### Vì sao từng phương án sai
+- Các yếu tố khác không liên quan đến sampling.` },
+{ id: 'qz-ccap-212', topic: 'claude', multi: true, q: '[Models & Context] Which Claude models are available in the current ecosystem? (Choose 2)', options: ['Opus', 'Sonnet', 'GPT-4', 'Llama-3'], answer: [0, 1], explain: `**Tóm tắt:** Opus và Sonnet là các mô hình chính.
+
+### Vì sao đáp án đúng
+Opus và Sonnet là các phiên bản nổi bật của gia đình Claude 3/3.5.
+
+### Vì sao từng phương án sai
+- GPT-4 (OpenAI) và Llama-3 (Meta) không phải của Anthropic.` },
+{ id: 'qz-ccap-213', topic: 'claude', q: '[Models & Context] What is "Prompt Caching"?', options: ['A way to increase latency', 'A way to store frequent input prefixes to reduce cost and latency', 'A method to delete user data', 'A way to increase model accuracy'], answer: 1, explain: `**Tóm tắt:** Lưu trữ prefix đầu vào thường gặp để giảm cost/latency.
+
+### Vì sao đáp án đúng
+Caching giúp tránh việc xử lý lại những phần input dài giống nhau, tiết kiệm thời gian và tài nguyên.
+
+### Vì sao từng phương án sai
+- Cache nhằm giảm latency chứ không tăng.` },
+{ id: 'qz-ccap-214', topic: 'claude', q: '[Models & Context] Why use "Structured Outputs" or "Tool Use" in Claude?', options: ['To make the output slower', 'To ensure deterministic JSON format for programmatic handling', 'To make it harder to read', 'To use more tokens'], answer: 1, explain: `**Tóm tắt:** Đảm bảo format JSON nhất quán để xử lý lập trình.
+
+### Vì sao đáp án đúng
+Dữ liệu đầu ra cần được parser xử lý, format nhất quán là bắt buộc.
+
+### Vì sao từng phương án sai
+- Mục tiêu là hiệu quả chứ không phải chậm hay khó đọc.` },
+{ id: 'qz-ccap-215', topic: 'claude', q: '[Models & Context] What does "Context Window" size limitation actually mean?', options: ['The model will delete oldest messages', 'The API will stop working', 'The limit of combined input and output tokens', 'The model will get smarter'], answer: 2, explain: `**Tóm tắt:** Hạn mức tổng cộng của input và output tokens.
+
+### Vì sao đáp án đúng
+Claude cần tài nguyên để giữ cả input (prompt+docs) và output (response) trong cửa sổ này.
+
+### Vì sao từng phương án sai
+- Nó không tự xóa lịch sử và không làm model thông minh hơn.` },
+{ id: 'qz-ccap-216', topic: 'claude', q: '[Models & Context] How can Claude support "Vision" tasks?', options: ['By only text input', 'By processing image inputs alongside text prompts', 'By only audio input', 'It cannot'], answer: 1, explain: `**Tóm tắt:** Xử lý đầu vào hình ảnh cùng prompt văn bản.
+
+### Vì sao đáp án đúng
+Claude 3 và 3.5 hỗ trợ phân tích hình ảnh (docs, charts, photos).
+
+### Vì sao từng phương án sai
+- Các phương án còn lại không đúng khả năng của model.` },
+{ id: 'qz-ccap-217', topic: 'claude', multi: true, q: '[Models & Context] Which of the following are good practices for "Prompt Engineering"? (Choose 2)', options: ['Give ambiguous instructions', 'Provide specific examples (Few-shot)', 'Be extremely concise', 'Clearly define the role/persona'], answer: [1, 3], explain: `**Tóm tắt:** Few-shot examples và định nghĩa rõ persona.
+
+### Vì sao đáp án đúng
+Ví dụ giúp model hiểu pattern; persona giúp model định hình phong cách phản hồi.
+
+### Vì sao từng phương án sai
+- Hướng dẫn mơ hồ làm giảm độ chính xác.` },
+{ id: 'qz-ccap-218', topic: 'claude', q: '[Models & Context] What happens when Claude "refuses" a request?', options: ['It always means it is wrong', 'The safety filters triggered because the request violated policies', 'The API is down', 'It is testing you'], answer: 1, explain: `**Tóm tắt:** Bộ lọc an toàn đã kích hoạt.
+
+### Vì sao đáp án đúng
+Anthropic có chính sách an toàn để tránh generate nội dung nguy hiểm/độc hại.
+
+### Vì sao từng phương án sai
+- Refusal không có nghĩa là model ngu, nó là rào cản an toàn.` },
+{ id: 'qz-ccap-219', topic: 'claude', q: '[Models & Context] When is "Opus" model preferred over "Sonnet"?', options: ['For simple tasks', 'For highly complex reasoning and tasks requiring high precision', 'For cheapest cost', 'For highest latency'], answer: 1, explain: `**Tóm tắt:** Cho suy luận cực phức tạp và độ chính xác cao.
+
+### Vì sao đáp án đúng
+Opus là mô hình mạnh nhất, giỏi nhất trong việc xử lý logic khó.
+
+### Vì sao từng phương án sai
+- Sonnet cân bằng tốt hơn về tốc độ và chi phí cho các tác vụ trung bình/thông thường.` },
+{ id: 'qz-ccap-220', topic: 'claude', q: '[Models & Context] What is "Pre-fill" in API terms for Claude?', options: ['Ignoring the prompt', 'Providing a partial response that Claude starts from', 'Deleting user prompts', 'Randomizing the output'], answer: 1, explain: `**Tóm tắt:** Cung cấp câu trả lời một phần để Claude tiếp tục.
+
+### Vì sao đáp án đúng
+Pre-fill ép Claude bắt đầu câu trả lời bằng một định dạng/nội dung cụ thể mà bạn mong muốn.
+
+### Vì sao từng phương án sai
+- Các phương án còn lại sai định nghĩa.` },
 );
