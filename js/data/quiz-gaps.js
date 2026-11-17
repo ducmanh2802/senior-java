@@ -2550,4 +2550,339 @@ Khi mã tham chiếu khớp nhưng số tiền khác, đây là **lệch dữ li
 
 > Senior tip: Định nghĩa rõ quy tắc so khớp: trường nào bắt buộc khớp tuyệt đối (mã tham chiếu, tiền tệ), trường nào cho phép sai khác trong ngưỡng (ví dụ chênh lệch làm tròn rất nhỏ nếu được chấp thuận). Mọi ngoại lệ phải được phê duyệt và lưu vết.`
 },
+// ===================== sql/http/git/linux gaps (T2365) =====================
+{
+  id: 'qz-sql-033',
+  topic: 'sql',
+  q: `Query sau trả về bao nhiêu dòng?
+~~~sql
+SELECT u.id, o.id
+FROM users u
+LEFT JOIN orders o ON o.user_id = u.id
+WHERE o.status = 'PAID';
+~~~`,
+  options: ['Tất cả user, kể cả user chưa có order PAID (với order.id = NULL)', 'Chỉ các user có ít nhất một order PAID', 'Lỗi cú pháp', 'Tất cả order PAID kèm user tương ứng'],
+  answer: 1,
+  explain: `**Đáp án đúng: chỉ các user có ít nhất một order PAID.**
+
+### Bẫy
+LEFT JOIN giữ mọi user, nhưng điều kiện {{o.status = 'PAID'}} đặt trong WHERE lọc sau khi join. Dòng user không có order có {{o.status = NULL}}, và {{NULL = 'PAID'}} là UNKNOWN nên bị loại. Kết quả trở thành INNER JOIN.
+
+### Cách đúng nếu muốn giữ user chưa có order
+Đặt điều kiện vào ON:
+~~~sql
+LEFT JOIN orders o ON o.user_id = u.id AND o.status = 'PAID'
+~~~
+Hoặc dùng EXISTS/NOT EXISTS.
+
+> Senior tip: bất cứ khi nào thấy LEFT JOIN kèm WHERE trên cột bảng phải, hãy nghi ngờ join bị "biến thành inner".`
+},
+{
+  id: 'qz-sql-034',
+  topic: 'sql',
+  q: `Bảng {{t}} có các giá trị cột {{x}}: 1, 2, NULL, NULL. Kết quả của {{SELECT COUNT(*), COUNT(x), COUNT(DISTINCT x) FROM t}} là gì?`,
+  options: ['4, 4, 2', '4, 2, 2', '2, 2, 1', '4, 2, 3'],
+  answer: 1,
+  explain: `**Đáp án đúng: 4, 2, 2.**
+
+### Cơ chế
+- {{COUNT(*)}} đếm mọi dòng, kể cả NULL → 4.
+- {{COUNT(x)}} bỏ qua NULL → 2.
+- {{COUNT(DISTINCT x)}} bỏ qua NULL và trùng → 2 (giá trị 1 và 2).
+
+### Bẫy hay gặp
+- {{SUM(x)}} với toàn NULL trả NULL, không phải 0; dùng {{COALESCE(SUM(x), 0)}}.
+- {{AVG(x)}} chỉ tính trên dòng không NULL, nên trung bình khác trực giác khi có nhiều NULL.
+
+> Senior tip: khi báo cáo "tỉ lệ null", luôn tách COUNT(*) và COUNT(col) để tránh hiểu nhầm.`
+},
+{
+  id: 'qz-api-041',
+  topic: 'api',
+  q: `Client gọi API với JWT hết hạn. Server nên trả mã HTTP nào và vì sao?`,
+  options: ['401 Unauthorized: client chưa/chưa còn được xác thực, nên gửi lại credential', '403 Forbidden: client đã xác thực nhưng không có quyền', '409 Conflict: token xung đột với trạng thái server', '422 Unprocessable Entity: token sai định dạng'],
+  answer: 0,
+  explain: `**Đáp án đúng: 401 Unauthorized.**
+
+### Phân biệt
+- 401: thiếu hoặc không hợp lệ credential. Server thường kèm header {{WWW-Authenticate}} để client biết cách xác thực lại (refresh token, đăng nhập).
+- 403: credential hợp lệ nhưng tài khoản không có quyền truy cập tài nguyên đó (ví dụ user thường gọi API admin). Gửi lại credential không giúp.
+
+### Bẫy hay gặp
+- Dùng 403 cho token hết hạn khiến client không biết phải refresh.
+- Dùng 401 cho "không đủ quyền" khiến client refresh vô ích.
+
+> Senior tip: chuẩn hoá envelope lỗi (code, message, traceId) để frontend phân biệt "hết hạn" và "không quyền" mà không phụ thuộc text.`
+},
+{
+  id: 'qz-api-042',
+  topic: 'api',
+  multi: true,
+  q: `Những tình huống nào nên trả 409 Conflict? (Chọn 2)`,
+  options: [
+    'Tạo user với email đã tồn tại (vi phạm unique)',
+    'Thiếu trường bắt buộc trong body',
+    'Cập nhật tài nguyên với version cũ (optimistic locking conflict)',
+    'Token JWT hết hạn'
+  ],
+  answer: [0, 2],
+  explain: `**Đáp án đúng: email trùng · version cũ.**
+
+### Vì sao
+409 biểu thị request xung đột với **trạng thái hiện tại** của tài nguyên. Email đã tồn tại và version không khớp đều là xung đột trạng thái, client có thể giải quyết bằng cách thay đổi request (email khác, lấy version mới).
+
+### Vì sao khác sai
+- Thiếu trường bắt buộc: 400 Bad Request hoặc 422.
+- Token hết hạn: 401.
+
+> Senior tip: trả thêm body chứa conflict detail (field, currentVersion) giúp client retry thông minh.`
+},
+{
+  id: 'qz-api-043',
+  topic: 'api',
+  q: `Khác biệt giữa 422 Unprocessable Entity và 400 Bad Request trong thực tế là gì?`,
+  options: [
+    '422 chỉ dùng cho GraphQL, 400 cho REST',
+    '400: request sai cú pháp/không parse được (JSON hỏng, header sai). 422: cú pháp đúng nhưng dữ liệu không hợp lệ về ngữ nghĩa (email sai format, số tiền âm)',
+    '422 trả khi server lỗi, 400 khi client lỗi',
+    'Không có khác biệt, dùng thay thế nhau'
+  ],
+  answer: 1,
+  explain: `**Đáp án đúng: 400 cho cú pháp, 422 cho ngữ nghĩa.**
+
+### Vì sao
+- 400: server không hiểu request (JSON malformed, Content-Type sai, param không parse được). Thường validate ở filter/gateway.
+- 422: request parse được nhưng vi phạm rule nghiệp vụ (email không đúng định dạng, endDate < startDate). Spring thường trả 400 cho MethodArgumentNotValidException; nhiều team map sang 422 để rõ ràng.
+
+> Senior tip: chọn một convention và giữ nhất quán trong toàn API; document trong OpenAPI.`
+},
+{
+  id: 'qz-api-044',
+  topic: 'api',
+  q: `Response có header {{Cache-Control: public, max-age=300}}. Ý nghĩa đúng là gì?`,
+  options: [
+    'Chỉ browser được cache, CDN không được cache',
+    'Cả browser và CDN/proxy được cache, tối đa 300 giây',
+    'Response không được cache ở đâu cả',
+    'Cache vĩnh viễn, max-age bị bỏ qua'
+  ],
+  answer: 1,
+  explain: `**Đáp án đúng: cả browser và CDN/proxy được cache 300s.**
+
+### Thuật ngữ
+- public: response có thể được cache bởi mọi cache (browser, CDN, proxy), kể cả khi có Authorization.
+- private: chỉ browser cache, không CDN.
+- no-store: không cache.
+- max-age: thời gian sống tính bằng giây.
+
+### Bẫy
+- Dùng public cho response chứa dữ liệu người dùng (có Authorization) → rò dữ liệu giữa user. Nên dùng private hoặc no-store.
+- Stale-while-revalidate giúp trả cache cũ trong lúc fetch mới.
+
+> Senior tip: với API có dữ liệu cá nhân, mặc định no-store; chỉ cache public khi dữ liệu không nhạy cảm và có version/ETag.`
+},
+{
+  id: 'qz-api-045',
+  topic: 'api',
+  q: `Client gửi {{If-None-Match: "abc123"}} và server thấy ETag vẫn khớp. Server nên trả gì?`,
+  options: ['200 OK kèm body đầy đủ', '304 Not Modified, không body', '412 Precondition Failed', '204 No Content'],
+  answer: 1,
+  explain: `**Đáp án đúng: 304 Not Modified.**
+
+### Cơ chế
+Conditional GET: client có bản cache với ETag "abc123". Nếu server ETag còn khớp, trả 304 không body, tiết kiệm băng thông. Nếu khác, trả 200 kèm body và ETag mới.
+
+### Bẫy
+- 412 dùng cho If-Match (PUT/PATCH) khi precondition fail (optimistic locking).
+- Phải trả đúng ETag (strong/weak) và xử lý correctly.
+
+> Senior tip: combine ETag với Cache-Control để giảm tải API và cải thiện latency.`
+},
+{
+  id: 'qz-devops-094',
+  topic: 'devops',
+  q: `Khác biệt chính giữa git rebase và git merge là gì?`,
+  options: [
+    'rebase tạo commit merge, merge thì không',
+    'rebase viết lại lịch sử thành chuỗi thẳng; merge giữ lịch sử phân nhánh và tạo commit merge',
+    'rebase an toàn hơn trên branch đã push công khai',
+    'merge không thể fast-forward'
+  ],
+  answer: 1,
+  explain: `**Đáp án đúng: rebase viết lại lịch sử; merge giữ nhánh.**
+
+### Vì sao
+- merge: giữ commit gốc, tạo merge commit (hoặc fast-forward) → lịch sử phản ánh đúng quá trình.
+- rebase: lấy commit của nhánh và đặt lên đầu nhánh đích → lịch sử thẳng, dễ đọc, nhưng thay đổi hash commit.
+
+### Bẫy
+- rebase trên branch đã push công khai gây force push và rắc rối cho người khác.
+- merge commit làm git log rối nhưng an toàn.
+
+> Senior tip: dùng rebase cho branch cá nhân trước khi PR; dùng merge (hoặc squash merge) khi tích hợp vào main.`
+},
+{
+  id: 'qz-devops-095',
+  topic: 'devops',
+  q: `Bạn cần đưa một commit từ branch feature sang main mà không merge cả branch. Lệnh nào đúng?`,
+  options: ['git cherry-pick <commit>', 'git rebase main', 'git merge --squash feature', 'git apply patch.diff'],
+  answer: 0,
+  explain: `**Đáp án đúng: git cherry-pick.**
+
+### Cơ chế
+cherry-pick lấy diff của commit chỉ định và áp lên HEAD hiện tại, tạo commit mới (hash khác). Hữu ích cho hotfix.
+
+### Bẫy
+- Nếu commit phụ thuộc commit trước, cherry-pick có thể conflict.
+- Sau cherry-pick, commit gốc và mới có hash khác; merge sau có thể gây conflict.
+
+> Senior tip: cherry-pick hotfix vào main rồi merge main zurück vào feature để đồng bộ.`
+},
+{
+  id: 'qz-devops-096',
+  topic: 'devops',
+  q: `Bạn muốn huỷ commit cuối cùng đã push lên remote mà không làm mất lịch sử. Lệnh nào đúng?`,
+  options: ['git reset --hard HEAD~1', 'git revert HEAD', 'git checkout HEAD~1', 'git clean -fd'],
+  answer: 1,
+  explain: `**Đáp án đúng: git revert.**
+
+### Vì sao
+- revert tạo commit mới đảo ngược thay đổi → lịch sử giữ nguyên, an toàn cho branch công khai.
+- reset --hard viết lại lịch sử, cần force push, nguy hiểm trên shared branch.
+
+> Senior tip: trên main/shared, luôn revert; reset chỉ dùng local chưa push.`
+},
+{
+  id: 'qz-devops-097',
+  topic: 'devops',
+  q: `Fast-forward merge xảy ra khi nào?`,
+  options: [
+    'Khi có conflict cần giải quyết',
+    'Khi nhánh đích chưa có commit mới so với nhánh nguồn, git chỉ di chuyển con trỏ',
+    'Khi dùng --no-ff',
+    'Khi merge hai branch không liên quan'
+  ],
+  answer: 1,
+  explain: `**Đáp án đúng: nhánh đích chưa có commit mới.**
+
+### Cơ chế
+Nếu main chưa advance so với feature, merge chỉ di chuyển con trỏ main lên feature tip (fast-forward), không tạo merge commit.
+
+### Bẫy
+- --no-ff ép tạo merge commit để giữ dấu vết branch.
+- Fast-forward làm mất thông tin "đây là một feature".
+
+> Senior tip: trên main, dùng --no-ff để audit rõ ràng từng feature.`
+},
+{
+  id: 'qz-devops-098',
+  topic: 'devops',
+  q: `Lệnh nào lưu tạm thay đổi chưa commit để chuyển branch?`,
+  options: ['git stash', 'git commit --amend', 'git reset --soft', 'git checkout -- .'],
+  answer: 0,
+  explain: `**Đáp án đúng: git stash.**
+
+### Cơ chế
+stash lưu working tree + index vào stack, working tree sạch. Dùng {{git stash pop}} để khôi phục.
+
+### Bẫy
+- stash không lưu file untracked mặc định; dùng -u.
+- commit --amend sửa commit cuối, không phải lưu tạm.
+
+> Senior tip: stash với message để dễ quản lý: {{git stash push -m "wip: login"}}.`
+},
+{
+  id: 'qz-devops-099',
+  topic: 'devops',
+  q: `Để kiểm tra port 8080 đang được process nào listen, lệnh nào phù hợp?`,
+  options: ['top', 'ss -lntp | grep :8080', 'lsof -i :8080', 'Cả B và C'],
+  answer: 3,
+  explain: `**Đáp án đúng: ss và lsof.**
+
+### Vì sao
+- ss (socket statistics) nhanh, hiện socket đang listen và PID.
+- lsof -i :8080 liệt kê process mở port.
+- top hiển thị CPU/mem, không phải socket.
+
+### Bẫy
+- netstat cũ, ss thay thế.
+- Cần quyền root để thấy process của user khác.
+
+> Senior tip: {{ss -lntp}} là lệnh đầu tiên khi debug "port already in use".`
+},
+{
+  id: 'qz-devops-100',
+  topic: 'devops',
+  q: `Trong top, cột %CPU hiển thị >100% cho một process. Điều đó nghĩa là gì?`,
+  options: ['CPU quá tải, hệ thống sẽ crash', 'Process dùng nhiều hơn 1 core (top mặc định theo CPU logical)', 'Lỗi hiển thị', 'Process đang sleep'],
+  answer: 1,
+  explain: `**Đáp án đúng: dùng nhiều hơn 1 core.**
+
+### Cơ chế
+top mặc định %CPU tính trên một CPU; trên máy nhiều core, process đa luồng có thể >100% (tối đa 100% * số core). Nhấn 1 để xem từng core.
+
+### Bẫy
+- Load average khác %CPU.
+- %MEM là phần trăm RAM.
+
+> Senior tip: khi CPU cao, kiểm tra thread count và GC; với Java, jstack để xem thread đang làm gì.`
+},
+{
+  id: 'qz-devops-101',
+  topic: 'devops',
+  q: `Lệnh grep nào tìm lỗi "OutOfMemory" trong file log lớn mà không load toàn bộ file vào RAM?`,
+  options: ['cat app.log | grep OOM', 'grep "OutOfMemory" app.log', 'less app.log | grep OOM', 'tail -f app.log | grep OOM'],
+  answer: 1,
+  explain: `**Đáp án đúng: grep trực tiếp file.**
+
+### Vì sao
+grep đọc file theo stream, không load toàn bộ. {{cat | grep}} tạo thêm process và buffer không cần thiết. tail -f theo dõi mới, không tìm lịch sử.
+
+### Bẫy
+- grep -i không phân biệt hoa thường.
+- zgrep cho file gzip.
+
+> Senior tip: {{grep -n "OutOfMemory" app.log}} kèm -n để có số dòng; combine với tail -f khi đang theo dõi.`
+},
+{
+  id: 'qz-devops-102',
+  topic: 'devops',
+  q: `Chmod 755 trên một file thực thi có ý nghĩa gì?`,
+  options: ['Owner rwx, group r-x, others r-x', 'Owner rw-, group r--, others r--', 'Tất cả đều rwx', 'Chỉ owner đọc'],
+  answer: 0,
+  explain: `**Đáp án đúng: 755 = rwxr-xr-x.**
+
+### Cơ chế
+7 = rwx (4+2+1), 5 = r-x (4+0+1). Owner có full, group/others chỉ đọc+execute.
+
+### Bẫy
+- 777 nguy hiểm (mọi người write).
+- Script cần execute bit; chmod +x thường đủ.
+
+> Senior tip: với secret/config, dùng 600/640; không bao giờ 777 trong production.`
+},
+{
+  id: 'qz-devops-103',
+  topic: 'devops',
+  multi: true,
+  q: `Cron expression "0 2 * * 1-5" chạy khi nào? (Chọn 2)`,
+  options: [
+    'Mỗi ngày lúc 2:00',
+    'Chỉ thứ 2 đến thứ 6',
+    'Mỗi phút trong giờ 2',
+    'Mỗi tuần một lần vào thứ 2'
+  ],
+  answer: [0, 1],
+  explain: `**Đáp án đúng: mỗi ngày lúc 2:00, chỉ thứ 2-6.**
+
+### Cơ chế
+Format: minute hour day-of-month month day-of-week. "0 2 * * 1-5" = phút 0, giờ 2, mọi ngày trong tháng, mọi tháng, thứ 2-6.
+
+### Bẫy
+- day-of-month và day-of-week là OR trong một số implementation; cẩn thận khi kết hợp.
+- Timezone của cron daemon (thường UTC trên server).
+
+> Senior tip: log timezone và dùng UTC nhất quán để tránh lệch giờ.`
+}
+
 );
