@@ -15113,4 +15113,802 @@ Với expand-contract, rollback image về version cũ không phá schema vì ve
     ],
     tags: ['CD', 'Rollback', 'Deployment', 'ExpandContract', 'FixForward', 'Leadership']
   }
+,
+{
+  id: 'devops-170',
+  topic: 'devops',
+  level: 'senior',
+  q: 'Bạn cấu hình OpenTelemetry tracing cho Spring Boot 3 app như thế nào? Giải thích cơ chế propagation context giữa các service.',
+  a: `**Tóm tắt:** Spring Boot 3 tích hợp OpenTelemetry qua Micrometer Tracing + OTel Java Agent; context propagation dùng W3C Trace Context headers (traceparent, tracestate) tự động qua RestClient/WebClient, Kafka, RabbitMQ.
+
+### Cấu hình
+1. **Dependency**: {{io.micrometer:micrometer-tracing-bridge-otel}} + {{io.opentelemetry:opentelemetry-exporter-otlp}}
+2. **application.yml**:
+~~~yaml
+management:
+  tracing:
+    sampling:
+      probability: 0.1
+  otlp:
+    tracing:
+      endpoint: http://jaeger:4318/v1/traces
+  zipkin:
+    tracing:
+      endpoint: http://zipkin:9411/api/v2/spans
+~~~
+3. **Java Agent** (khuyên dùng): {{-javaagent:opentelemetry-javaagent.jar}} tự instrumentation Spring MVC, Kafka, JDBC, HTTP client.
+
+### Cơ chế Propagation
+- **Trace Context**: Header {{traceparent: 00-0af7651916cd43dd8448eb211c80319c-b7ad6b7169203331-01}} (version-traceId-parentId-flags)
+- **Baggage**: Header {{baggage: userId=123,region=vn}} cho correlation cross-cutting
+- **Instrumentation library**: Tự inject/extract context từ HTTP headers, Kafka record headers, JMS properties
+
+### Ví dụ đời thực
+E-comm system: 12 microservices, 50k RPS peak. Issue: trace bị đứt giữa order-service (Spring WebFlux) → payment-service (gRPC). Nguyên nhân: gRPC không dùng W3C header mặc định. Fix: custom {{ClientInterceptor}} inject {{traceparent}} vào metadata gRPC. Kết quả: 100% trace complete, MTTR giảm từ 45p → 8p.
+
+### Trả lời mẫu khi phỏng vấn
+"Em dùng OpenTelemetry Java Agent để zero-code instrumentation Spring Boot 3. Config sampling 10% qua Micrometer, export OTLP tới Jaeger. Context propagation tự động qua RestClient, WebClient, Kafka nhờ W3C Trace Context headers. Với gRPC custom interceptor inject traceparent. Production 12 services 50k RPS, trace complete rate 100%, MTTR 8 phút."
+
+> Senior tip: Luôn bật {{management.tracing.sampling.probability=1.0}} cho staging, production dùng tail-based sampling (OTel Collector) để giữ error trace 100%. Correlation ID (baggage) phải thống nhất naming convention cross-team.`,
+  follow: [
+    'Baggage là gì, dùng correlation cross-cutting thế nào, và lưu ý gì về kích thước header?',
+    'Head-based sampling và tail-based sampling khác nhau thế nào, khi nào chọn cái nào?',
+    'Kafka consumer xử lý message bất đồng bộ trên thread pool riêng: làm sao giữ trace context?',
+  ],
+  tags: [
+    'OpenTelemetry',
+    'Spring Boot 3',
+    'Micrometer',
+    'Distributed Tracing',
+    'W3C Trace Context',
+    'Jaeger',
+    'Zipkin',
+    'gRPC',
+  ]
+},
+{
+  id: 'devops-171',
+  topic: 'devops',
+  level: 'senior',
+  q: 'Thiết kế SLO/SLI/error budget cho payment API (availability 99.95%, latency p99 < 500ms). Cách tính burn rate alert?',
+  a: `**Tóm tắt:** SLI = good events / total events. Availability SLI: HTTP 2xx/3xx / total requests. Latency SLI: requests < 500ms / total. Error budget = (1 - SLO) * window. Burn rate = error rate / (1 - SLO); alert khi burn rate > ngưỡng.
+
+### Định nghĩa SLI/SLO
+| SLI | Metric PromQL | SLO | Window |
+|-----|---------------|-----|--------|
+| Availability | Tỷ lệ request trả 2xx/3xx so với tổng request | 99.95% | 30d |
+| Latency p99 | Tỷ lệ request dưới 500ms so với tổng (tính từ histogram) | 99.9% | 30d |
+
+~~~promql
+# Availability SLI
+sum(rate(http_requests_total{code=~"2..|3.."}[5m])) / sum(rate(http_requests_total[5m]))
+
+# Latency p99 SLI
+histogram_quantile(0.99, sum(rate(http_request_duration_seconds_bucket[5m])) by (le)) < 0.5s
+~~~
+
+### Error Budget & Burn Rate
+- **Error budget 30d**: Availability: (1-0.9995) * 30*24*3600 = 1296s downtime allowed. Latency: 0.1% requests slow allowed.
+- **Burn rate**: {{error_rate / (1 - SLO)}}. Ví dụ: SLO 99.95% → error budget consumption rate = 1x khi error rate = 0.05%.
+- **Multi-window multi-burn-rate alerts** (Google SRE workbook):
+  - 1h window, burn rate ≥ 2% (14.4x) → **page** (critical)
+  - 6h window, burn rate ≥ 5% (5x) → **ticket** (warning)
+  - 1d window, burn rate ≥ 1x (tiêu budget theo mức bình thường suốt ngày) → **ticket**
+
+~~~promql
+# Burn rate 1h (page)
+{{(sum(rate(http_requests_total{code=~"5.."}[1h])) / sum(rate(http_requests_total[1h]))) / (1 - 0.9995) > 14.4}}
+
+# Burn rate 6h (ticket)
+{{(sum(rate(http_requests_total{code=~"5.."}[6h])) / sum(rate(http_requests_total[6h]))) / (1 - 0.9995) > 5}}
+~~~
+
+### Ví dụ đời thực
+Payment API 200k req/min. Sự cố DB deadlock 15p: error rate 0.8% → burn rate 1h = 16x (page), 6h = 2.6x (ticket). On-call nhận page 2p sau sự cố, rollback deploy 5p, error budget tiêu hao 12% (còn 88% tháng). Không page thêm vì burn rate 6h < 5x.
+
+### Trả lời mẫu khi phỏng vấn
+"Em định nghĩa 2 SLI: availability (2xx/3xx ratio) 99.95% và latency p99 < 500ms 99.9%, window 30 ngày. Error budget tính theo SLO. Burn rate alert dùng multi-window: 1h burn rate > 14.4x page, 6h > 5x ticket, 1d > 1x ticket. Production payment API 200k rpm, incident deadlock 15p burn rate 16x page ngay, rollback 5p, budget còn 88%."
+
+> Senior tip: Burn rate alert tránh alert fatigue tốt hơn static threshold. Luôn pair availability + latency SLO. Document error budget policy: team nào tiêu hao > 50% budget → freeze feature, focus reliability.`,
+  follow: [
+    'SLO 99.95% vs 99.99%: trade-off cost vs reliability như thế nào?',
+    'Burn rate alert cho latency SLO (p99) khác availability như thế nào?',
+    'Error budget exhausted: team freeze feature hay vẫn deploy hotfix?',
+  ],
+  tags: [
+    'SLO',
+    'SLI',
+    'Error Budget',
+    'Burn Rate',
+    'PromQL',
+    'SRE',
+    'Alerting',
+    'Payment API',
+  ]
+},
+{
+  id: 'devops-172',
+  topic: 'devops',
+  level: 'lead',
+  q: 'Zero-downtime deploy khi migration DB: thêm cột NOT NULL với default, đổi tên cột, xóa cột. Quy trình expand/contract chi tiết?',
+  a: `**Tóm tắt:** Expand/Contract pattern: **Expand** (thêm schema mới, compatible code cũ) → deploy code mới → **Contract** (dọn dẹp schema cũ). Mỗi bước migration riêng biệt, backward compatible.
+
+### Case 1: Thêm cột NOT NULL với default
+**Bước 1 Expand**: {{ALTER TABLE orders ADD COLUMN status VARCHAR(20) NOT NULL DEFAULT 'PENDING'}} (PostgreSQL 11+ instant default, không lock table).
+**Bước 2 Deploy**: Code mới đọc/ghi {{status}}, code cũ ignore (JPA {{@Column(insertable=false, updatable=false)}} hoặc DTO riêng).
+**Bước 3 Contract**: Sau 1-2 sprint, xoá default nếu không cần, hoặc giữ.
+
+### Case 2: Đổi tên cột {{amount}} → {{total_amount}}
+**Bước 1 Expand**: {{ALTER TABLE orders ADD COLUMN total_amount DECIMAL(19,2)}}; {{UPDATE orders SET total_amount = amount}} (chunk 10k rows, pg_sleep 0.1s tránh lock).
+**Bước 2 Deploy v1**: Code ghi **cả 2 cột** (dual write), đọc ưu tiên {{total_amount}} fallback {{amount}}.
+**Bước 3 Backfill**: Job batch cập nhật {{total_amount}} cho record cũ (nếu có).
+**Bước 4 Deploy v2**: Code chỉ dùng {{total_amount}}, {{@Transient}} cho {{amount}}.
+**Bước 5 Contract**: {{ALTER TABLE orders DROP COLUMN amount}}.
+
+### Case 3: Xóa cột {{legacy_field}}
+**Bước 1 Deploy**: Code ngừng đọc/ghi {{legacy_field}} (remove từ entity, DTO).
+**Bước 2 Contract**: {{ALTER TABLE orders DROP COLUMN legacy_field}}.
+
+### Ví dụ đời thực
+Banking core: đổi {{account_balance}} → {{available_balance}} + {{pending_balance}}. 50M rows, 2TB table. Expand: thêm 2 cột nullable, backfill 48h (pg_repack parallel). Deploy v1 dual-write 2 tuần. Contract: drop old column. Zero downtime, rollback < 5p nhờ feature flag.
+
+### Trả lời mẫu khi phỏng vấn
+"Em dùng Expand/Contract: Expand thêm schema mới compatible code cũ, deploy, Contract dọn schema cũ. Thêm cột NOT NULL: ALTER ADD COLUMN với DEFAULT (PG 11+ instant). Đổi tên cột: add new column → dual write → backfill → switch read → drop old. Xóa cột: code stop dùng trước, rồi drop. Production banking 50M rows, backfill 48h, zero downtime."
+
+> Senior tip: Luôn test migration trên staging với data volume tương đương production (pg_repack, pg_cron). Feature flag bật/tắt dual-write. Monitoring: truy vấn đang chờ khóa trong {{pg_stat_activity}}, lock wait ({{pg_locks}}). Rollback plan: giữ code dual-write 2 sprint trước khi drop.`,
+  follow: [
+    'PostgreSQL 15+ ALTER COLUMN TYPE: làm sao zero-downtime?',
+    'Foreign key constraint: expand/contract khi có FK đến cột bị đổi tên?',
+    'Blue/green deploy DB: dùng pg_logical replication như thế nào?',
+  ],
+  tags: [
+    'Zero Downtime',
+    'Database Migration',
+    'Expand Contract',
+    'PostgreSQL',
+    'Dual Write',
+    'Backfill',
+    'Feature Flag',
+  ]
+},
+{
+  id: 'devops-173',
+  topic: 'devops',
+  level: 'senior',
+  q: 'Thiết kế GitHub Actions pipeline cho Java 21 Spring Boot 3: build, test, security scan, deploy staging/prod với approval. Matrix test JDK 17/21?',
+  a: `**Tóm tắt:** Monorepo multi-module Maven/Gradle. Pipeline: CI (build, unit/integration test matrix JDK 17/21, SonarQube, Trivy, dependency-check) → CD staging (auto) → CD prod (manual approval, blue/green). Cache Maven/Gradle, Docker layer.
+
+### Workflow Structure
+~~~yaml
+# .github/workflows/ci.yml
+name: CI
+on:
+  push:
+    branches: [main, develop]
+  pull_request:
+    branches: [main]
+jobs:
+  build-test:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        java: [17, 21]
+        include:
+          - java: 21
+            gradle-opts: "--parallel --build-cache"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: \${{ matrix.java }}
+          cache: gradle
+      - name: Build & Test
+        run: ./gradlew \${{ matrix.gradle-opts }} check -x test --rerun-tasks
+      - name: Unit Test
+        run: ./gradlew \${{ matrix.gradle-opts }} test --tests "*UnitTest"
+      - name: Integration Test
+        run: ./gradlew \${{ matrix.gradle-opts }} test --tests "*IntegrationTest"
+        env:
+          SPRING_PROFILES_ACTIVE: test
+      - uses: actions/upload-artifact@v4
+        with:
+          name: test-report-\${{ matrix.java }}
+          path: "**/build/reports/tests/**"
+  security:
+    needs: build-test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 21
+          cache: gradle
+      - name: SonarQube Scan
+        uses: sonarsource/sonarqube-scan-action@v5
+        env:
+          SONAR_TOKEN: \${{ secrets.SONAR_TOKEN }}
+      - name: Trivy FS Scan
+        uses: aquasecurity/trivy-action@master
+        with:
+          scan-type: fs
+          severity: HIGH,CRITICAL
+      - name: OWASP Dependency Check
+        uses: dependency-check/Dependency-Check_Action@main
+        with:
+          project: 'payment-api'
+          path: '.'
+          format: 'HTML'
+          out: 'dependency-check-report'
+  docker:
+    needs: [build-test, security]
+    if: github.ref == 'refs/heads/main' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: \${{ github.actor }}
+          password: \${{ secrets.GITHUB_TOKEN }}
+      - name: Build & Push
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          push: true
+          tags: ghcr.io/\${{ github.repository }}:\${{ github.sha }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+~~~
+
+### CD Staging/Prod
+~~~yaml
+# .github/workflows/cd.yml
+name: CD
+on:
+  workflow_run:
+    workflows: ["CI"]
+    types: [completed]
+    branches: [main]
+jobs:
+  deploy-staging:
+    if: \${{ github.event.workflow_run.conclusion == 'success' }}
+    runs-on: ubuntu-latest
+    environment: staging
+    steps:
+      - uses: azure/k8s-set-context@v4
+        with:
+          kubeconfig: \${{ secrets.KUBECONFIG_STAGING }}
+      - run: |
+          kubectl set image deployment/payment-api payment-api=ghcr.io/\${{ github.repository }}:\${{ github.sha }} -n staging
+          kubectl rollout status deployment/payment-api -n staging --timeout=5m
+  deploy-prod:
+    needs: deploy-staging
+    runs-on: ubuntu-latest
+    environment: production
+    steps:
+      - uses: azure/k8s-set-context@v4
+        with:
+          kubeconfig: \${{ secrets.KUBECONFIG_PROD }}
+      - name: Blue/Green Deploy
+        run: |
+          kubectl apply -f k8s/prod-green.yaml
+          kubectl rollout status deployment/payment-api-green -n prod --timeout=10m
+          # Smoke test
+          curl -f https://api-green.prod.example.com/actuator/health
+          kubectl patch service payment-api -n prod -p '{{"spec":{{"selector":{{"version":"green"}}}}}'
+~~~
+
+### Matrix Test JDK 17/21
+- **Unit test**: chạy cả 2 JDK (detect compatibility issue sớm)
+- **Integration test**: chỉ JDK 21 (production runtime)
+- **Gradle config**: toolchain Java 17 cho module legacy, 21 cho module mới
+~~~groovy
+toolchain {
+  languageVersion.set(JavaLanguageVersion.of(17))
+}
+~~~
+cho module legacy, 21 cho module mới
+
+### Ví dụ đời thực
+Fintech monorepo 15 modules. CI time: 8p (matrix 2 JDK parallel), security 3p, docker 4p. Staging auto-deploy 2p, prod manual approval + blue/green 5p. Rollback < 2p (helm rollback / kubectl patch service). Zero failed deploy 6 tháng.
+
+### Trả lời mẫu khi phỏng vấn
+"Em chia CI/CD: CI build/test matrix JDK 17/21, SonarQube, Trivy, OWASP dependency-check. Docker build push GHCR với layer cache. CD: staging auto-deploy sau CI pass, prod manual approval + blue/green deploy K8s, smoke test actuator/health trước khi switch traffic. Monorepo 15 modules, CI 8p, prod deploy 5p, rollback 2p."
+
+> Senior tip: Cache Gradle/Maven + Docker layer cache (GitHub Actions cache) tiết kiệm 40% CI time. Required status checks trên branch protection: build-test (matrix), security. Prod deploy dùng environment protection rules (required reviewers, wait timer).`,
+  follow: [
+    'Gradle configuration cache vs build cache: khác biệt và khi nào dùng?',
+    'Supply chain security: SLSA provenance, sigstore cosign trong pipeline?',
+    'Monorepo affected projects detection: Nx/Turbo vs GitHub Actions paths filter?',
+  ],
+  tags: [
+    'GitHub Actions',
+    'CI/CD',
+    'Java 21',
+    'Spring Boot 3',
+    'Gradle',
+    'Docker',
+    'Kubernetes',
+    'Blue Green',
+    'Security Scan',
+  ]
+},
+{
+  id: 'devops-174',
+  topic: 'devops',
+  level: 'lead',
+  q: 'Pod K8s bị OOMKilled (exit 137) sau 20h chạy, heap 1.2GB/2GB, RSS 3.2GB. Quy trình điều tra root cause với heap dump, NMT, thread dump?',
+  a: `**Tóm tắt:** RSS >> heap = leak non-heap (thread, direct buffer, metaspace, code cache). Quy trình: (1) Metrics Prometheus working set vs heap. (2) Heap dump Eclipse MAT. (3) NMT diff category. (4) Thread dump series tìm unbounded pool/ThreadLocal leak.
+
+### Bước 1: Metrics & Phân loại
+- **Prometheus**: {{container_memory_working_set_bytes}} (RSS) tăng 50MB/h, {{jvm_memory_used_bytes_area_heap}} phẳng → **non-heap leak**
+- **Container**: OOMKilled exit 137 (SIGKILL), không có {{OutOfMemoryError}} trong log → **OS kill do cgroup limit**
+
+### Bước 2: Heap Dump (Eclipse MAT)
+~~~bash
+# Trên pod (cần exec quyền)
+jcmd <pid> GC.heap_dump /tmp/heap.hprof
+kubectl cp <namespace>/<pod>:/tmp/heap.hprof ./heap.hprof
+~~~
+- MAT: **Dominator Tree** → xem object retained size lớn nhất. **Leak Suspects** report.
+- Kết quả: Heap 1.2GB, retained object lớn nhất {{byte[]}} 200MB (normal), **không thấy leak heap**.
+
+### Bước 3: Native Memory Tracking (NMT)
+~~~bash
+# JVM flags: -XX:NativeMemoryTracking=detail -XX:+UnlockDiagnosticVMOptions
+jcmd <pid> VM.native_memory baseline
+# Chờ 30-60 phút
+jcmd <pid> VM.native_memory summary.diff
+~~~
+Kết quả diff:
+~~~
+Total: +2.1GB
+  Thread: +1.8GB (1800 threads)
+  Internal: +300MB (direct buffer)
+  Code: +50MB
+  GC: +20MB
+~~~
+→ **Thread leak + Direct buffer leak**
+
+### Bước 4: Thread Dump Series
+~~~bash
+for i in {{1..5}}; do kubectl exec <pod> -- jstack <pid> > threaddump_\$i.txt; sleep 60; done
+~~~
+Phân tích: 1800 thread {{pool-2-thread-N}} (custom executor), state {{WAITING (parking)}}. Code review: {{Executors.newCachedThreadPool()}} cho async task, không shutdown. {{CompletableFuture.supplyAsync(() -> blockingIO)}} dùng common pool → task block I/O làm thread pool phồng không giới hạn.
+
+### Root Cause & Fix
+1. **Thread leak**: {{CachedThreadPool}} unbounded → thay {{ThreadPoolExecutor}} bounded (core=20, max=50, queue=1000, rejection policy {{CallerRunsPolicy}})
+2. **Direct buffer leak**: Netty/HTTP client không release → set {{-XX:MaxDirectMemorySize=512m}}, bật Netty leak detection {{-Dio.netty.leakDetection.level=ADVANCED}}
+3. **ThreadLocal leak**: Spring MDC không clear trong finally → filter clear MDC
+
+### Kết quả Verify
+Load test 2h peak 2000 RPS: RSS ổn định 1.6GB (trước 3.2GB+), thread count ổn định 85, 0 OOMKilled 14 ngày.
+
+### Trả lời mẫu khi phỏng vấn
+"Pod OOMKilled exit 137, RSS 3.2GB vs heap 1.2GB → leak non-heap. Em lấy heap dump MAT: không leak heap. NMT diff: Thread +1.8GB (1800 threads), Internal +300MB direct buffer. Thread dump series: 1800 pool-2-thread-N từ CachedThreadPool unbounded cho CompletableFuture blocking I/O. Fix: bounded ThreadPoolExecutor, MaxDirectMemorySize=512m, Netty leak detection, clear MDC. Load test 2h 2000 RPS: RSS 1.6GB, 0 OOMKilled 14 ngày."
+
+> Senior tip: Heap dump chỉ thấy JAVA HEAP. RSS tăng mà heap phẳng = leak NON-HEAP. Luôn bật NMT=detail trên staging, không chờ incident mới bật. Thread dump series (5p/lần) mạnh hơn single dump để bắt leak chậm.`,
+  follow: [
+    'Eclipse MAT Dominator Tree vs Histogram: dùng cái nào khi nào để tìm leak?',
+    'NMT summary.diff thầy Internal +500MB: làm sao xác định direct buffer leak hay malloc leak?',
+    'ThreadLocal leak trong Spring async ({{@Async}}, {{CompletableFuture}}): cách clear như thế nào?',
+  ],
+  tags: [
+    'Memory Leak',
+    'Kubernetes',
+    'OOMKilled',
+    'Heap Dump',
+    'Eclipse MAT',
+    'NMT',
+    'Native Memory Tracking',
+    'Thread Dump',
+    'jcmd',
+    'jstack',
+  ]
+},
+{
+  id: 'devops-175',
+  topic: 'devops',
+  level: 'senior',
+  q: "Trong hệ thống Spring Boot 3 dùng Kafka, bạn làm thế nào để trace (dấu vết request) đi xuyên suốt từ HTTP request qua Kafka producer/consumer sang service khác? Hãy giải thích Micrometer Tracing, cơ chế propagate context qua Kafka headers và các bẫy hay gặp.",
+  a: `**Tóm tắt:** Micrometer Tracing (thư viện tracing của Spring, trừu tượng hoá Brave/OpenTelemetry) tự tạo **span** (một đơn vị công việc được đo) và gắn **traceId/spanId** (mã định danh chuỗi request). Với Kafka, context được nhét vào **record headers** (phần metadata đi kèm mỗi message Kafka) khi producer gửi và được lấy ra khi consumer nhận, nhờ đó các span nối thành một chuỗi trace hoàn chỉnh.
+
+### Thuật ngữ cần biết
+- **Trace** (dấu vết): toàn bộ hành trình của một request đi qua nhiều service; gồm nhiều span nối với nhau.
+- **Span**: một đoạn công việc (ví dụ: xử lý HTTP, gửi Kafka, truy vấn DB) có thời gian bắt đầu/kết thúc, gắn với traceId.
+- **Context propagation** (lan truyền ngữ cảnh): truyền traceId/spanId từ nơi này sang nơi khác (qua HTTP header, Kafka header…) để các span ghép lại đúng.
+- **Micrometer Tracing**: API tracing chuẩn trong Spring Boot 3, có thể dùng backend Brave hoặc OpenTelemetry (OTel).
+- **W3C Trace Context**: chuẩn header {{traceparent}} dạng {{00-traceId-spanId-flags}} để các hệ thống khác nhau hiểu nhau.
+
+### Cơ chế hoạt động từng bước
+1. **HTTP vào service A**: filter của Micrometer Tracing tạo root span, sinh traceId.
+2. **Service A gửi Kafka**: {{KafkaTemplate}} (đã được auto-instrument) chèn trace context vào Kafka record headers ({{traceparent}}, hoặc header B3 tuỳ cấu hình) trước khi {{send()}}.
+3. **Message nằm trong Kafka**: headers đi cùng message như metadata, không ảnh hưởng payload.
+4. **Service B consume**: listener container ({{@KafkaListener}}) đọc headers, khôi phục context và tạo child span "receive" gắn vào cùng traceId.
+5. **Export**: mỗi service đẩy span về collector (OTel Collector/Jaeger/Zipkin) qua OTLP; giao diện tracing ghép các span thành một cây theo traceId.
+
+### Ví dụ cấu hình (Spring Boot 3, OpenTelemetry bridge)
+~~~yaml
+# application.yml
+management:
+  tracing:
+    sampling:
+      probability: 1.0        # dev/staging: lấy mẫu 100% để dễ debug
+  otlp:
+    tracing:
+      endpoint: http://otel-collector:4318/v1/traces
+~~~
+
+~~~xml
+<!-- pom.xml: bridge sang OpenTelemetry + exporter OTLP -->
+<dependency>
+  <groupId>io.micrometer</groupId>
+  <artifactId>micrometer-tracing-bridge-otel</artifactId>
+</dependency>
+<dependency>
+  <groupId>io.opentelemetry</groupId>
+  <artifactId>opentelemetry-exporter-otlp</artifactId>
+</dependency>
+~~~
+
+~~~java
+// Spring Boot 3 auto-config đã instrument KafkaTemplate và @KafkaListener.
+// Chỉ cần đảm bảo gửi qua KafkaTemplate (đừng tự new ProducerRecord bỏ qua template).
+@Service
+public class OrderService {
+  private final KafkaTemplate<String, OrderEvent> kafka;
+  public OrderService(KafkaTemplate<String, OrderEvent> kafka) { this.kafka = kafka; }
+
+  public void place(OrderEvent e) {
+    // trace context tự được chèn vào record headers
+    kafka.send("order.created", e.orderId(), e);
+  }
+}
+~~~
+
+### Ví dụ đời thực (có số liệu)
+Hệ thống thương mại điện tử: 8 service Java, Kafka làm message bus, 15.000 đơn/giờ. Triệu chứng: đơn bị kẹt trạng thái "PENDING", log của từng service đều "bình thường" nhưng không ai biết request chết ở khâu nào. Điều tra ban đầu mất 2–3 giờ/incident vì phải grep log thủ công theo orderId.
+Xử lý: bật Micrometer Tracing + OTel bridge, sampling 10% production (100% cho lỗi), propagate qua Kafka headers. Sau 1 tuần phát hiện consumer inventory-service thỉnh thoảng retry 5 phút do timeout DB nhưng metric HTTP không thấy. Kết quả: trace hoàn chỉnh end-to-end, MTTR (thời gian xử lý sự cố) giảm từ ~120 phút xuống ~12 phút.
+
+### Lỗi hay gặp
+- **Tự tạo Kafka Producer thay vì dùng {{KafkaTemplate}}**: không đi qua instrumentation → header không có trace context, trace bị đứt.
+- **Consumer chạy trên thread khác ({{@Async}}, thread pool tự tạo)**: context nằm trong ThreadLocal, sang thread mới sẽ mất; cần dùng {{ObservationRegistry}} hoặc truyền context thủ công.
+- **Bỏ header khi forward message**: code copy payload sang {{ProducerRecord}} mới nhưng quên copy headers.
+- **Sampling quá thấp ở dev**: khó tái hiện; dev/staging nên để 100%.
+
+### Trả lời mẫu khi phỏng vấn
+"Với Spring Boot 3 em dùng Micrometer Tracing với bridge OpenTelemetry để tạo span cho từng request. Khi service A gửi message qua KafkaTemplate, thư viện tự chèn trace context vào Kafka record headers theo chuẩn W3C traceparent. Bên consumer, KafkaListener container đọc header đó và tạo child span cùng traceId nên toàn bộ chuỗi HTTP đến Kafka đến service B nối thành một trace trên Jaeger. Trong thực tế em từng xử lý hệ thống 8 service nơi trace bị đứt vì team tự new ProducerRecord bỏ qua KafkaTemplate, sau khi chuẩn hoá lại và bật sampling 10% production, MTTR giảm từ khoảng 120 phút xuống 12 phút. Em cũng chú ý bẫy mất context khi xử lý async trên thread khác."
+
+> Senior tip: Ở production hãy dùng **tail-based sampling** tại OTel Collector (giữ 100% trace có lỗi/chậm, lấy mẫu phần còn lại) thay vì head sampling cố định, để không mất dấu vết sự cố hiếm. Thống nhất chuẩn header (W3C) toàn tổ chức và giám sát tỷ lệ trace bị đứt (orphan spans) như một SLI riêng.`,
+  follow: [
+    "Head-based sampling và tail-based sampling khác nhau thế nào, khi nào chọn cái nào?",
+    "Nếu consumer xử lý message bất đồng bộ trên thread pool riêng, làm sao giữ được trace context?",
+    "Làm thế nào để correlate (liên kết) log với traceId trong ELK/Loki khi dùng Micrometer Tracing?",
+  ],
+  tags: [
+    "OpenTelemetry",
+    "Micrometer Tracing",
+    "Spring Boot 3",
+    "Kafka",
+    "Distributed Tracing",
+    "W3C Trace Context",
+    "Observability",
+  ]
+},
+{
+  id: 'devops-176',
+  topic: 'devops',
+  level: 'senior',
+  q: "Bạn xây dựng SLO, error budget và cảnh báo theo burn rate cho một API thanh toán như thế nào? Giải thích từng khái niệm và cách cấu hình alert nhiều cửa sổ (multi-window) để vừa bắt sự cố nhanh vừa tránh báo ồn.",
+  a: `**Tóm tắt:** **SLI** (chỉ số đo chất lượng thực tế, ví dụ tỷ lệ request thành công) được so với **SLO** (mục tiêu, ví dụ 99,95%) để tính **error budget** (ngân sách lỗi cho phép). **Burn rate** (tốc độ đốt ngân sách) cho biết ta đang tiêu budget nhanh gấp mấy lần; cảnh báo multi-window dùng nhiều cửa sổ thời gian để phát hiện sự cố lớn ngay lập tức nhưng bỏ qua nhiễu ngắn.
+
+### Thuật ngữ giải thích từ đầu
+- **SLI (Service Level Indicator)**: con số đo được từ hệ thống. Ví dụ: "99,92% request trả HTTP 2xx/3xx trong 5 phút qua".
+- **SLO (Service Level Objective)**: mục tiêu nội bộ đặt ra cho SLI. Ví dụ: "availability >= 99,95% trong 30 ngày".
+- **SLA (Service Level Agreement)**: cam kết với khách hàng, vi phạm có thể bị phạt tiền; thường lỏng hơn SLO để có đệm.
+- **Error budget**: phần được phép sai = 1 - SLO. SLO 99,95%/30 ngày → budget = 0,05% * 30 ngày ≈ 21,6 phút downtime được phép.
+- **Burn rate**: tốc độ tiêu budget so với tốc độ "bình thường". Burn rate 1 nghĩa là vừa đủ hết budget đúng cuối kỳ; burn rate 14,4 nghĩa là sẽ cạn budget trong 30/14,4 ≈ 2,08 ngày.
+
+### Tính toán từng bước
+1. Chọn SLI availability: {{good = request HTTP 2xx,3xx}} / {{total request}} (loại health-check).
+2. SLO 99,95%/30 ngày → error budget = 0,05%.
+3. Nếu 1 giờ qua error rate = 0,72% → burn rate = 0,72 / 0,05 = **14,4x** (rất nguy hiểm).
+4. Ngưỡng cảnh báo (theo khuyến nghị Google SRE Workbook):
+- **Page ngay (khẩn)**: burn rate > 14,4x trong cửa sổ 1h VÀ > 14,4x trong 5m (xác nhận đang cháy thật, cạn budget ~2 ngày).
+- **Ticket (cần xử lý trong ngày)**: burn rate > 6x trong 6h VÀ 30m.
+- **Ticket thấp**: burn rate > 1x trong 3 ngày VÀ 6h (xu hướng xấu kéo dài).
+
+### Ví dụ PromQL (Prometheus) cho alert
+~~~yaml
+# Alert: đốt budget quá nhanh (page)
+- alert: PaymentApiHighBurnRate
+  expr: |
+    (
+      sum(rate(http_requests_total{app="payment",code=~"5.."}[1h]))
+      / sum(rate(http_requests_total{app="payment"}[1h]))
+    ) / 0.0005 > 14.4
+    and
+    (
+      sum(rate(http_requests_total{app="payment",code=~"5.."}[5m]))
+      / sum(rate(http_requests_total{app="payment"}[5m]))
+    ) / 0.0005 > 14.4
+  for: 2m
+  labels:
+    severity: critical
+  annotations:
+    summary: "Payment API burn rate 14.4x - budget cạn ~2 ngày"
+~~~
+
+### Ví dụ đời thực (có số liệu)
+Payment API nội bộ: 120.000 request/phút giờ cao điểm, SLO availability 99,95%/30 ngày (budget ~21,6 phút). Trước đây team đặt alert ngưỡng tĩnh "error rate > 1% trong 1 phút" → 40–60 cảnh báo/tuần, đa số do spike ngắn lúc deploy, on-call mệt và bắt đầu bỏ qua.
+Sau khi chuyển sang burn-rate multi-window:
+- 1h lỗi 0,8% (burn rate 16x) do deadlock DB → page trong 2 phút, rollback 5 phút, tiêu ~12% budget tháng.
+- Spike 30 giây error 3% lúc rolling update (burn rate 5m cao nhưng 1h thấp) → không page, chỉ ghi nhận.
+Kết quả sau 2 tháng: cảnh báo giảm còn 6–8/tháng, không bỏ sót sự cố thật, budget trung bình còn dư ~70% cuối kỳ.
+
+### Lỗi hay gặp
+- **Chọn SLI sai**: đo cả health-check/liveness probe làm SLI đẹp giả tạo.
+- **SLO 100%**: không khả thi, budget = 0, team không dám deploy.
+- **Chỉ một cửa sổ ngắn**: ồn; chỉ một cửa sổ dài: phát hiện chậm.
+- **Không có chính sách khi cạn budget**: budget là con số vô nghĩa nếu không gắn hành động (đóng băng tính năng, ưu tiên độ tin cậy).
+
+### Trả lời mẫu khi phỏng vấn
+"Với API thanh toán em định nghĩa SLI là tỷ lệ request thành công (HTTP 2xx/3xx, loại health-check) và SLO 99,95% trên 30 ngày, tương đương error budget khoảng 21,6 phút. Em cấu hình burn-rate alert nhiều cửa sổ theo hướng dẫn SRE: cửa sổ 1 giờ và 5 phút burn rate trên 14,4x thì page khẩn vì sẽ cạn budget trong khoảng 2 ngày, còn cửa sổ dài hơn với burn rate thấp hơn thì tạo ticket. Ở hệ thống 120 nghìn request mỗi phút, cách này giảm alert từ vài chục xuống còn dưới 10 mỗi tháng nhưng vẫn bắt được sự cố deadlock trong 2 phút. Em cũng đặt chính sách: nếu tiêu quá 50% budget giữa kỳ thì tạm dừng tính năng mới để ưu tiên ổn định."
+
+> Senior tip: Kèm availability SLO với latency SLO (ví dụ p99 < 500ms) vì API "sống" nhưng chậm vẫn là trải nghiệm tệ. Error budget chỉ có ý nghĩa khi đội có **error budget policy** rõ ràng: ai quyết định đóng băng deploy, ngưỡng nào kích hoạt, và được lãnh đạo bảo hộ khi ưu tiên độ tin cậy.`,
+  follow: [
+    "Vì sao cần kết hợp hai cửa sổ thời gian (ngắn và dài) trong cùng một alert burn rate?",
+    "Làm thế nào để chọn SLO hợp lý (99,9% hay 99,95%) khi chi phí hạ tầng tăng theo từng \"số 9\"?",
+    "Khi error budget đã cạn giữa kỳ, team nên làm gì với roadmap tính năng và hotfix?",
+  ],
+  tags: [
+    "SLO",
+    "SLI",
+    "Error Budget",
+    "Burn Rate",
+    "Prometheus",
+    "Alerting",
+    "SRE",
+    "Observability",
+  ]
+},
+{
+  id: 'devops-177',
+  topic: 'devops',
+  level: 'lead',
+  q: "Bạn cần deploy tính năng mới kèm thay đổi schema cơ sở dữ liệu (thêm cột NOT NULL, đổi tên cột) mà không được downtime. Hãy trình bày quy trình expand/contract và cách phối hợp với rolling deploy trên Kubernetes.",
+  a: `**Tóm tắt:** **Expand/contract** (mở rộng/thu hẹp) chia thay đổi DB thành nhiều bước nhỏ, mỗi bước **tương thích ngược** (backward compatible: phiên bản cũ và mới của ứng dụng đều chạy được). Kết hợp rolling deploy (K8s thay Pod dần dần) để tại mọi thời điểm schema và code đều "nói chuyện" được với nhau, nên không cần bảo trì.
+
+### Thuật ngữ giải thích
+- **Rolling deploy**: K8s tạo Pod phiên bản mới, chờ sẵn sàng rồi tắt Pod cũ dần dần; trong một khoảng thời gian có cả Pod v1 và v2 cùng chạy.
+- **Backward compatible** (tương thích ngược): thay đổi mới không làm hỏng phiên bản cũ đang chạy.
+- **Expand**: thêm phần mới (cột mới, bảng mới) mà code cũ vẫn chạy bình thường nếu bỏ qua nó.
+- **Contract**: dọn phần cũ chỉ sau khi chắc chắn không còn phiên bản nào dùng.
+- **Backfill**: chạy job điền dữ liệu cho cột mới dựa trên dữ liệu cũ, thường chia lô (batch) để không khoá bảng lâu.
+
+### Ví dụ 1: Thêm cột {{email_verified}} NOT NULL
+1. **Expand (migration 1)**: {{ALTER TABLE users ADD COLUMN email_verified BOOLEAN NOT NULL DEFAULT false;}} — trên PostgreSQL 11+ thêm cột có DEFAULT là metadata, không ghi lại toàn bộ bảng.
+2. **Deploy app v2 (rolling)**: code bắt đầu ghi giá trị đúng cho {{email_verified}}. Trong lúc rolling, Pod v1 vẫn chạy: cột đã có DEFAULT nên INSERT của v1 không lỗi.
+3. **Contract (migration 2, sau 1–2 release)**: nếu muốn bỏ DEFAULT thì mới {{ALTER COLUMN DROP DEFAULT}} khi mọi code đều ghi tường minh.
+
+### Ví dụ 2: Đổi tên cột {{phone}} → {{mobile_phone}}
+Đây là thay đổi phá vỡ nếu làm thẳng, nên phải qua nhiều pha:
+1. **Expand**: {{ALTER TABLE users ADD COLUMN mobile_phone VARCHAR(20);}} (cho phép NULL tạm thời).
+2. **Deploy v2 (dual-write)**: code ghi vào **cả hai** cột {{phone}} và {{mobile_phone}}, đọc ưu tiên {{mobile_phone}} rồi fallback {{phone}}.
+~~~java
+// Ghi đồng thời hai cột trong giai đoạn chuyển tiếp
+public void savePhone(User u, String value) {
+  u.setPhone(value);        // cột cũ: để Pod v1 còn đọc được
+  u.setMobilePhone(value);  // cột mới
+}
+~~~
+3. **Backfill**: job chạy nền cập nhật {{mobile_phone = phone}} cho bản ghi cũ, chia lô 5.000 dòng, nghỉ giữa lô để giảm tải.
+4. **Deploy v3**: code chỉ đọc/ghi {{mobile_phone}}. Chờ hết Pod v2.
+5. **Contract**: {{ALTER TABLE users DROP COLUMN phone;}} và đặt {{NOT NULL}} cho {{mobile_phone}} nếu cần.
+
+### Phối hợp với Kubernetes rolling update
+- Đặt {{maxUnavailable: 0}} và {{maxSurge: 1}} để luôn có đủ Pod phục vụ và chỉ thêm Pod mới từ từ.
+- **Readiness probe** (kiểm tra Pod sẵn sàng nhận traffic) phải thành công trước khi Pod cũ bị tắt.
+- Chạy migration ở bước riêng (Job/init step) **trước** khi rollout Deployment, và migration phải tương thích với cả code cũ lẫn mới.
+- Có kế hoạch rollback: vì schema đã expand, rollback image về v1 thường vẫn chạy được (v1 không biết cột mới nhưng DB cho phép) — đây là lợi ích lớn của expand/contract.
+
+### Ví dụ đời thực (có số liệu)
+Dịch vụ ví điện tử, bảng {{accounts}} 40 triệu dòng, ~3.000 request/giây giờ cao điểm. Yêu cầu đổi {{balance}} (một cột) thành {{available_balance}} và {{pending_balance}}. Cách làm:
+- Expand: thêm 2 cột mới NULL, deploy code dual-write (2 ngày), backfill 40 triệu dòng chia lô 10.000 mất ~6 giờ ban đêm tải thấp.
+- Switch: deploy code chỉ dùng cột mới, quan sát 48 giờ.
+- Contract: drop cột {{balance}} ở release kế tiếp.
+Kết quả: 0 phút downtime, 0 lỗi trong cửa sổ deploy (giám sát error rate và latency). Một lần rollback thử trên staging mất 4 phút chỉ bằng {{kubectl rollout undo}} vì schema vẫn tương thích.
+
+### Trả lời mẫu khi phỏng vấn
+"Khi cần đổi schema mà không downtime, em dùng expand/contract và phối hợp với rolling deploy. Ví dụ đổi tên cột, em không rename trực tiếp mà thêm cột mới ở pha expand, deploy phiên bản app ghi đồng thời cả hai cột và đọc ưu tiên cột mới, chạy backfill theo lô cho dữ liệu cũ, rồi mới deploy phiên bản chỉ dùng cột mới và cuối cùng drop cột cũ ở pha contract. Trên Kubernetes em đặt maxUnavailable bằng 0 để luôn có Pod phục vụ và chạy migration như bước riêng tương thích với cả code cũ lẫn mới. Ở dự án ví điện tử 40 triệu bản ghi, cách này giúp đổi cấu trúc số dư với 0 downtime và rollback image chỉ mất vài phút vì schema vẫn tương thích ngược."
+
+> Senior tip: Tuyệt đối tránh lệnh DDL khoá bảng lâu (ví dụ rewrite table trên bảng lớn) trong giờ cao điểm; dùng kỹ thuật online (pg_repack, {{CREATE INDEX CONCURRENTLY}}, hoặc tính năng instant ADD COLUMN của DB). Luôn đo thời gian migration trên bản sao dữ liệu thật và đặt **feature flag** để tắt đường ghi mới nếu phát hiện lỗi sau deploy.`,
+  follow: [
+    "Làm sao chạy backfill trên bảng rất lớn (hàng trăm triệu dòng) mà không ảnh hưởng latency production?",
+    "Khi nào rollback image là không đủ và buộc phải fix-forward trong kịch bản thay đổi DB?",
+    "Expand/contract áp dụng thế nào khi thay đổi là tách một cột thành bảng mới có quan hệ khoá ngoại?",
+  ],
+  tags: [
+    "Zero Downtime",
+    "Database Migration",
+    "Expand Contract",
+    "Kubernetes",
+    "Rolling Deploy",
+    "Backward Compatibility",
+  ]
+},
+{
+  id: 'devops-178',
+  topic: 'devops',
+  level: 'senior',
+  q: "Bạn thiết kế GitHub Actions pipeline cho ứng dụng Java 21 Spring Boot 3 như thế nào để build nhanh, test tin cậy và tạo container image sẵn sàng deploy? Hãy trình bày chiến lược cache, chạy test song song và build image.",
+  a: `**Tóm tắt:** Pipeline gồm các giai đoạn build → test (chia song song) → quét bảo mật → build & đẩy container image. Tốc độ dựa vào **cache** (lưu lại phụ thuộc/build giữa các lần chạy) và **song song hoá**; độ tin cậy dựa vào tách loại test và dùng image tag bất biến (theo commit SHA).
+
+### Thuật ngữ giải thích
+- **CI pipeline** (Continuous Integration): quy trình tự động chạy khi có commit/PR để build và kiểm tra code.
+- **Cache**: lưu thư mục (ví dụ kho Maven {{~/.m2}}, Gradle {{~/.gradle}}) để lần sau không tải lại từ đầu.
+- **Matrix / song song**: chạy nhiều job cùng lúc (ví dụ tách nhóm test) để giảm thời gian chờ.
+- **Container image**: gói ứng dụng + runtime đóng thành image (Docker/OCI) để chạy giống nhau ở mọi môi trường.
+- **Tag bất biến**: gắn image bằng mã định danh không đổi (commit SHA, digest) thay vì {{latest}}.
+
+### Thiết kế pipeline từng bước
+1. **Trigger**: chạy trên {{pull_request}} (kiểm tra trước merge) và {{push}} lên nhánh chính.
+2. **Build & cache phụ thuộc**: dùng {{actions/setup-java}} với {{cache: maven}} (hoặc Gradle) để cache kho phụ thuộc theo hash file build.
+3. **Test song song**: tách unit test và integration test; có thể dùng matrix để chia nhóm (shard) hoặc chạy hai job độc lập cùng lúc.
+4. **Quét bảo mật** (song song/tiếp nối): quét dependency và mã nguồn; chặn merge nếu có lỗ hổng nghiêm trọng.
+5. **Build image**: dùng Docker Buildx, build image đã chạy JAR đã qua test, gắn tag {{app:<git-sha>}} và đẩy lên registry; bật cache layer.
+6. **Deploy**: đưa **cùng một image** qua staging rồi production (build once, promote many).
+
+### Ví dụ workflow GitHub Actions (rút gọn)
+~~~yaml
+name: ci
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        group: [unit, integration]   # chạy 2 nhóm test song song
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+          cache: maven               # cache ~/.m2 theo hash pom.xml
+      - name: Run tests
+        run: |
+          if [ "\${{ matrix.group }}" = "unit" ]; then
+            mvn -B -ntp test -Dgroups=unit
+          else
+            mvn -B -ntp verify -Dgroups=integration
+          fi
+
+  image:
+    needs: test
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: true
+          tags: ghcr.io/org/order-api:\${{ github.sha }}
+          cache-from: type=gha        # cache Docker layer trên GitHub Actions
+          cache-to: type=gha,mode=max
+~~~
+
+### Ví dụ đời thực (có số liệu)
+Monorepo 12 module Spring Boot 3, ~2.400 test. Trước tối ưu: pipeline tuần tự 32 phút, dev chờ lâu nên hay gộp PR lớn.
+Cải tiến: bật cache Maven (hit rate ~85%), tách unit/integration chạy song song, và dùng Docker layer cache ({{type=gha}}) cho bước build image. Kết quả: PR trung bình còn 9–11 phút; nhánh chính thêm bước build & push image mất ~4 phút. Flaky test (test lúc pass lúc fail) được cô lập vào nhóm riêng có retry có kiểm soát, tỷ lệ pipeline đỏ giả giảm từ ~15% xuống ~3%.
+
+### Lỗi hay gặp
+- **Dùng tag {{latest}}**: không truy vết được đang chạy bản nào, rollback mơ hồ.
+- **Cache không có key chuẩn**: restore nhầm hoặc không hit, build lúc nhanh lúc chậm.
+- **Integration test phụ thuộc môi trường chung**: chạy song song gây đụng dữ liệu; nên dùng Testcontainers (DB/Kafka chạy trong container tạm cho mỗi job).
+- **Nhồi mọi thứ vào một job**: mất lợi ích song song và khó biết bước nào hỏng.
+
+### Trả lời mẫu khi phỏng vấn
+"Em thiết kế pipeline GitHub Actions cho Spring Boot 3 theo các giai đoạn rõ ràng. Ở bước build em dùng setup-java với cache Maven để tái sử dụng phụ thuộc. Phần test em tách unit và integration chạy song song bằng matrix để rút ngắn thời gian, integration test dùng Testcontainers cho cô lập. Khi test pass trên nhánh chính, em build container image bằng Buildx, bật cache layer và gắn tag theo commit SHA rồi đẩy lên registry, nguyên tắc là build once promote many nên môi trường sau chỉ deploy lại đúng image đó. Trên dự án 12 module, cách này giảm thời gian pipeline từ hơn 30 phút xuống khoảng 10 phút và hạn chế lỗi do khác biệt môi trường."
+
+> Senior tip: Theo dõi **cache hit rate** và thời gian từng job để tối ưu có số liệu. Với monorepo, dùng cơ chế phát hiện phần bị ảnh hưởng (paths filter hoặc tool chuyên dụng) để chỉ build/test module liên quan, nhưng vẫn giữ một đường chạy đầy đủ theo lịch (nightly) để bắt lỗi tích hợp.`,
+  follow: [
+    "Khi nào nên dùng self-hosted runner thay vì runner mặc định của GitHub Actions?",
+    "Làm thế nào để xử lý test flaky (không ổn định) mà không che giấu lỗi thật?",
+    "Khác biệt giữa cache phụ thuộc (Maven/Gradle) và cache Docker layer, và vì sao cần cả hai?",
+  ],
+  tags: [
+    "GitHub Actions",
+    "CI/CD",
+    "Java 21",
+    "Spring Boot 3",
+    "Cache",
+    "Parallel Test",
+    "Docker",
+    "Container Image",
+  ]
+},
+{
+  id: 'devops-179',
+  topic: 'devops',
+  level: 'senior',
+  q: "Một Pod Kubernetes chạy Spring Boot bị OOMKilled (exit code 137) sau vài giờ dù heap dùng chưa đầy. Bạn điều tra rò rỉ bộ nhớ ngoài heap như thế nào bằng heap dump và Native Memory Tracking (NMT)?",
+  a: `**Tóm tắt:** **OOMKilled (exit 137)** nghĩa là tiến trình bị hệ điều hành/kernel giết vì vượt giới hạn bộ nhớ (thường là cgroup limit của container). Nếu heap vẫn thấp mà **RSS** (Resident Set Size: tổng bộ nhớ RAM tiến trình thực dùng) cao, nguyên nhân thường nằm ở bộ nhớ ngoài heap (native/off-heap: thread stack, direct buffer, metaspace, thư viện native…). Quy trình: quan sát số liệu → heap dump loại trừ heap → bật NMT để biết vùng native nào tăng → khoanh vùng và sửa.
+
+### Thuật ngữ giải thích
+- **Heap**: vùng nhớ JVM cấp cho object Java, giới hạn bởi {{-Xmx}}.
+- **Off-heap/Native memory**: bộ nhớ do JVM hoặc thư viện cấp ngoài heap (buffer NIO, thread stack, metaspace, code cache…).
+- **RSS**: tổng RAM tiến trình đang chiếm; container bị kill khi vượt memory limit dù heap còn trống.
+- **Heap dump**: ảnh chụp toàn bộ object trên heap tại một thời điểm (file {{.hprof}}) để tìm object bị giữ lại bất thường.
+- **NMT (Native Memory Tracking)**: tính năng JVM thống kê bộ nhớ native theo từng hạng mục.
+
+### Quy trình điều tra từng bước
+1. **Xác nhận triệu chứng**: xem metric {{container_memory_working_set_bytes}} (RSS/container) so với metric heap {{jvm_memory_used_bytes}} (label {{area="heap"}}). Pod restart với lý do {{OOMKilled}}, exit code 137. Ví dụ: limit 2 GiB, heap max 1 GiB nhưng RSS tăng dần lên ~2,1 GiB.
+2. **Chụp heap dump để loại trừ heap leak**:
+~~~bash
+# Lấy heap dump trong Pod (cần jcmd/jmap có sẵn trong image)
+jcmd <pid> GC.heap_dump /tmp/heap.hprof
+kubectl cp <ns>/<pod>:/tmp/heap.hprof ./heap.hprof
+~~~
+Mở bằng Eclipse MAT (công cụ phân tích heap): xem Dominator Tree/Leak Suspects. Nếu heap ổn định, không có object phình bất thường → nghi ngờ native.
+3. **Bật và đọc NMT** (nên bật sẵn trên môi trường staging; production bật có overhead nhỏ ~5–10%):
+~~~bash
+# JVM option: -XX:NativeMemoryTracking=summary (hoặc detail)
+jcmd <pid> VM.native_memory baseline
+# ... chờ tải chạy một thời gian (30-60 phút) ...
+jcmd <pid> VM.native_memory summary.diff
+~~~
+Ví dụ kết quả {{summary.diff}}:
+~~~text
+- Thread (reserved=820MB +512MB)  # số thread tăng mạnh → thread stack leak
+- Internal (reserved=410MB +260MB) # thường là Direct ByteBuffer
+- Metaspace (reserved=120MB +5MB)  # ổn định
+~~~
+4. **Khoanh vùng nguyên nhân**:
+- **Thread tăng**: lấy thread dump {{jstack <pid>}} nhiều lần; thấy hàng trăm thread {{pool-*-thread-*}} → thread pool không giới hạn hoặc không shutdown.
+- **Internal/Direct buffer tăng**: kiểm tra dùng NIO {{ByteBuffer.allocateDirect}}, Netty, hoặc driver DB; thiếu giải phóng/bound.
+- **Metaspace tăng**: thường do sinh class động liên tục (proxy, Groovy) hoặc classloader leak khi redeploy.
+5. **Khắc phục và xác minh**: sửa cấu hình/code, chạy tải lặp, theo dõi RSS phẳng và NMT diff không còn tăng bất thường.
+
+### Ví dụ đời thực (có số liệu)
+Service Spring Boot 3 (Java 21) trên K8s, limit 2 GiB, {{-Xmx1024m}}. Sau ~18–20 giờ chịu tải 800 req/s, Pod bị OOMKilled, RSS 3,1 GiB trong khi heap chỉ ~900 MiB. Heap dump (MAT) không thấy leak. NMT diff sau 45 phút: hạng mục Thread tăng +1,6 GiB (tương ứng ~1.600 thread). Thread dump cho thấy {{http-nio}} bình thường nhưng có {{pool-2-thread-N}} tăng liên tục do dùng {{Executors.newCachedThreadPool()}} cho tác vụ gọi HTTP chặn, không giới hạn.
+Cách sửa: đổi sang {{new ThreadPoolExecutor(20, 50, 60, SECONDS, new ArrayBlockingQueue<>(500), new CallerRunsPolicy())}} và đặt timeout cho HTTP client. Kết quả sau 72 giờ chạy tải: RSS ổn định ~1,4 GiB, thread count ổn định ~95, không còn OOMKilled.
+
+### Lỗi hay gặp
+- **Chỉ nhìn heap**: tăng {{-Xmx}} khi RSS cao do off-heap sẽ làm container hết RAM nhanh hơn.
+- **Không bật NMT sẵn**: khi sự cố mới bật thì mất baseline; nên bật {{summary}} ở staging và cân nhắc production.
+- **Nhầm direct buffer với heap**: {{ByteBuffer.allocateDirect}} không nằm trên heap, MAT không thấy.
+
+### Trả lời mẫu khi phỏng vấn
+"Khi Pod bị OOMKilled exit 137 nhưng heap chưa đầy, em so sánh RSS container với heap dùng. Nếu RSS cao hơn nhiều, em nghi ngờ rò rỉ ngoài heap. Em chụp heap dump và phân tích bằng Eclipse MAT để loại trừ leak trên heap. Song song em dùng Native Memory Tracking: đặt baseline rồi lấy summary diff sau một khoảng thời gian để xem hạng mục nào tăng, ví dụ Thread hoặc Internal. Trong một sự cố thực tế, heap chỉ 900 MiB nhưng RSS vượt 3 GiB; NMT cho thấy Thread tăng hơn 1,6 GiB, thread dump phát hiện thread pool không giới hạn từ newCachedThreadPool. Sau khi đổi sang ThreadPoolExecutor có giới hạn và queue, RSS ổn định và Pod không bị OOMKilled nữa. Em cũng lưu ý cần đặt giới hạn bộ nhớ container phù hợp với tổng heap cộng native."
+
+> Senior tip: Luôn tính kích thước container theo công thức thực tế: {{heap (Xmx) + metaspace + code cache + direct memory + (số thread * stack size)}} và chừa đệm; đặt {{-XX:MaxDirectMemorySize}} và giới hạn thread pool rõ ràng. Bật {{-XX:+HeapDumpOnOutOfMemoryError}} và (nếu có thể) {{-XX:+ExitOnOutOfMemoryError}} để Pod restart sạch thay vì chạy trong trạng thái lỗi.`,
+  follow: [
+    "Khi nào dùng NMT chế độ summary, khi nào cần detail, và overhead của mỗi chế độ là gì?",
+    "Làm sao phân biệt rò rỉ Metaspace với rò rỉ do Direct ByteBuffer?",
+    "Nếu không thể {{kubectl exec}} vào Pod production, bạn thu thập heap dump/thread dump bằng cách nào?",
+  ],
+  tags: [
+    "Kubernetes",
+    "OOMKilled",
+    "Memory Leak",
+    "Heap Dump",
+    "Native Memory Tracking",
+    "JVM",
+    "Troubleshooting",
+    "Observability",
+  ]
+}
 );
