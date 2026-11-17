@@ -2566,4 +2566,459 @@ class EodJob {
     tags: ['batch', 'eod', 'idempotency', 'checkpoint', 'bigdecimal', 'interest', 'banking'],
   },
 
+  {
+    id: 'lesson-banking-010',
+    track: 'banking',
+    order: 10,
+    title: 'Thanh toán QR và cổng thanh toán: redirect, IPN/callback, chữ ký HMAC, callback trùng và đối soát',
+    level: 'senior',
+    minutes: 40,
+    goals: [
+      'Hiểu luồng thanh toán QR/online qua cổng thanh toán: merchant, cổng, ngân hàng, trình duyệt người mua và IPN server-to-server',
+      'Giải thích vì sao không tin redirect trên trình duyệt mà chỉ tin IPN/callback đã kiểm chữ ký HMAC và khớp số tiền',
+      'Xử lý đúng callback trễ, trùng, sai số tiền và chủ động truy vấn trạng thái khi mất IPN',
+      'Triển khai PaymentCallbackHandler idempotent (HMAC-SHA256, đối chiếu đơn, chuyển trạng thái) và hiểu đối soát cuối ngày với cổng',
+    ],
+    body: `**Tóm tắt:** Khi khách quét QR hoặc thanh toán online, trình duyệt chỉ đưa khách đi (redirect) còn xác nhận "đã thu tiền" phải dựa vào IPN (Instant Payment Notification, thông báo thanh toán từ server cổng gửi thẳng về server merchant) đã được kiểm chữ ký HMAC và đối chiếu số tiền/mã đơn. Vì callback có thể đến trễ, trùng hoặc bị giả mạo, backend phải xử lý idempotent theo mã giao dịch và đối soát cuối ngày với file của cổng.
+
+### Ngoài đời diễn ra thế nào
+
+Hãy tưởng tượng Lan mua một đôi giày 500.000đ trên web của shop Minh.
+
+1. Lan bấm "Thanh toán bằng QR". Shop Minh tạo một "phiếu thu" và nhờ một **cổng thanh toán** (payment gateway, dịch vụ trung gian đứng giữa người bán và ngân hàng, ví dụ ở mức nguyên lý như VNPay/MoMo/Stripe) tạo mã QR.
+2. Lan mở app ngân hàng, quét QR và xác nhận trả tiền. Tiền đi từ tài khoản Lan qua hệ thống ngân hàng rồi được cổng thanh toán ghi nhận.
+3. Sau khi Lan trả tiền, trình duyệt của Lan được **chuyển hướng** (redirect, trình duyệt tự nhảy sang một trang web khác) về trang "Cảm ơn" của shop Minh.
+4. Đồng thời, máy chủ của cổng thanh toán gọi thẳng vào máy chủ của shop Minh để báo "đơn này đã thanh toán" — đây là **IPN/callback server-to-server** (máy chủ gọi máy chủ, không đi qua trình duyệt của Lan).
+
+Điểm mấu chốt đời thường: việc Lan *thấy* trang "Thành công" trên màn hình giống như người mua giơ biên lai trước mặt bạn — biên lai có thể chụp ảnh giả, còn IPN có chữ ký của cổng giống như ngân hàng gọi điện trực tiếp xác nhận đã nhận tiền. Shop chỉ giao hàng khi nhận được cuộc gọi xác nhận đã kiểm tra.
+
+### Các bên và luồng
+
+~~~seq
+title: Thanh toán QR qua cổng (redirect chỉ để hiển thị, IPN mới là nguồn tin)
+actors: Khach | Merchant | Gateway | Bank
+Khach -> Merchant: 1. Tạo đơn và yêu cầu thanh toán
+Merchant -> Gateway: 2. Tạo phiên thanh toán (mã đơn, số tiền)
+Gateway --> Merchant: 3. Trả link/QR để khách thanh toán
+Merchant --> Khach: 4. Hiển thị QR hoặc chuyển sang trang cổng
+Khach -> Bank: 5. Quét QR và xác nhận trả tiền
+Bank -> Gateway: 6. Ghi nhận tiền vào cho phiên thanh toán
+Gateway --> Khach: 7. Redirect trình duyệt về trang kết quả
+Gateway -> Merchant: 8. IPN server-to-server kèm chữ ký HMAC
+Merchant -> Merchant: 9. Kiểm chữ ký, so tiền, idempotent, đổi trạng thái
+Merchant -> Gateway: 10. (Nếu mất IPN) Truy vấn trạng thái chủ động
+~~~
+
+**Các bên tham gia:**
+- **Merchant** (người bán): hệ thống của shop, có đơn hàng và cần biết đơn đã được trả tiền hay chưa.
+- **Cổng thanh toán** (payment gateway): đứng giữa, tạo phiên thanh toán/QR, nhận tiền từ phía ngân hàng và thông báo lại cho merchant. Ở mức nguyên lý, VNPay, MoMo hay Stripe đều đóng vai trò trung gian này (mỗi bên có tên tham số riêng, bài này không bịa tham số thật).
+- **Ngân hàng/app ngân hàng**: nơi tiền thực sự bị trừ khỏi tài khoản khách.
+- **Khách (trình duyệt/app)**: người trả tiền; trình duyệt chỉ là kênh hiển thị.
+
+### Vì sao không tin redirect của trình duyệt mà chỉ tin IPN đã kiểm chữ ký
+
+Redirect chạy trên máy của khách, nên merchant **không kiểm soát được** nó:
+- Khách có thể tự gõ URL trang "Thành công" mà chưa trả tiền.
+- Kẻ gian có thể chặn và sửa tham số trên URL (số tiền, trạng thái) trước khi trình duyệt quay về.
+- Khách đóng trình duyệt ngay sau khi trả tiền, nên redirect có thể **không bao giờ** tới merchant dù tiền đã trừ.
+- Redirect có thể bị gọi nhiều lần (khách bấm F5), hoặc đến trước IPN.
+
+Ngược lại, IPN là cuộc gọi từ server cổng tới server merchant. Để tin được IPN, merchant phải kiểm tra:
+- **Chữ ký HMAC** (Hash-based Message Authentication Code, mã xác thực tạo bằng thuật toán băm và một khóa bí mật chỉ hai bên biết): merchant dùng {{secret}} chung với cổng để tự tính lại chữ ký trên dữ liệu nhận được; khớp mới chứng minh dữ liệu do cổng tạo ra và không bị sửa trên đường truyền.
+- **Đối chiếu số tiền và mã đơn** với dữ liệu merchant đang lưu: tránh trường hợp chữ ký hợp lệ nhưng gắn nhầm đơn, hoặc số tiền thực trả khác số tiền đơn.
+- **Nguồn gốc và tính tươi** (nếu cổng cung cấp): ví dụ timestamp/nonce để giảm rủi ro phát lại (replay).
+
+> Nguyên tắc: redirect dùng để **hiển thị trải nghiệm** cho khách (trang chờ/thành công), còn **ghi nhận doanh thu và giao hàng** chỉ dựa trên IPN đã xác thực. Hai kênh này phục vụ hai mục đích khác nhau.
+
+### Trạng thái và chỗ có thể sai
+
+| Tình huống | Điều gì xảy ra | Cách xử lý đúng |
+|---|---|---|
+| Chữ ký HMAC sai | Dữ liệu bị sửa hoặc giả mạo | Từ chối, KHÔNG đổi trạng thái đơn, ghi log cảnh báo |
+| IPN đến trễ | Khách đã thấy trang chờ lâu, hoặc redirect đến trước | Vẫn xử lý IPN khi nó đến (nếu hợp lệ), UI có thể polling/truy vấn |
+| IPN trùng (gửi lại nhiều lần) | Cổng retry vì không nhận phản hồi, hoặc mạng chập chờn | Idempotent theo {{txnRef}}: lần đầu cập nhật, lần sau trả kết quả cũ, không cộng tiền hai lần |
+| Sai số tiền | Số tiền callback khác số tiền đơn | Từ chối cập nhật PAID, đánh dấu cần kiểm tra thủ công, không giao hàng |
+| Mất IPN | Cổng gọi nhưng merchant lỗi/mạng đứt, không nhận được | Merchant chủ động **query trạng thái** sang cổng theo mã đơn/txn; đối soát cuối ngày để bù |
+| Trạng thái thất bại | Khách hủy, hết tiền, ngân hàng từ chối | Đánh dấu FAILED (nếu đang PENDING), không giao hàng; cho phép khách thử lại theo chính sách |
+| IPN đến sau khi đơn hết hạn | Khách trả muộn so với phiên thanh toán | Cần quy tắc nghiệp vụ rõ: hoàn tiền hay vẫn ghi nhận; tuyệt đối không tự ý bỏ qua nếu tiền đã vào |
+
+Ở góc nhìn trạng thái đơn giản của merchant: {{PENDING}} (chờ thanh toán) -> {{PAID}} (đã thanh toán) hoặc {{FAILED}} (thất bại). Một khi đã {{PAID}} thì không quay về {{PENDING}}; callback trùng báo thành công phải cho kết quả "đã xử lý" chứ không ghi đè lung tung.
+
+### Hệ thống backend xử lý ra sao
+
+Hai ý tưởng lõi: (1) **xác thực** (tính lại HMAC và so sánh), (2) **idempotent** (Idempotent: gọi lặp lại cùng một yêu cầu nhiều lần mà kết quả cuối cùng chỉ như thực hiện một lần, không bị cộng trùng tiền hay đổi trạng thái sai).
+
+Ví dụ tính HMAC-SHA256 bằng JDK chuẩn ({{javax.crypto.Mac}}). Chuỗi dữ liệu đem ký phải thống nhất giữa hai bên (thứ tự trường, dấu phân cách); dưới đây dùng dạng {{txnRef|orderId|amount|status}} để minh họa nguyên lý:
+
+~~~java
+import javax.crypto.Mac;
+import javax.crypto.spec.SecretKeySpec;
+import java.nio.charset.StandardCharsets;
+
+static String hmacSha256(String secret, String data) {
+    try {
+        Mac mac = Mac.getInstance("HmacSHA256");
+        mac.init(new SecretKeySpec(secret.getBytes(StandardCharsets.UTF_8), "HmacSHA256"));
+        byte[] raw = mac.doFinal(data.getBytes(StandardCharsets.UTF_8));
+        // đổi bytes sang chuỗi hex để so sánh chữ ký
+        StringBuilder sb = new StringBuilder(raw.length * 2);
+        for (byte b : raw) sb.append(String.format("%02x", b));
+        return sb.toString();
+    } catch (Exception e) {
+        throw new RuntimeException(e);
+    }
+}
+
+// Dữ liệu callback (ví dụ minh họa, không phải tham số thật của cổng cụ thể)
+String data = txnRef + "|" + orderId + "|" + amount + "|" + status;
+String expected = hmacSha256(secret, data);
+if (!expected.equals(receivedSig)) {
+    // chữ ký sai: từ chối, không tin dữ liệu
+}
+~~~
+
+Luồng xử lý callback an toàn (theo thứ tự): kiểm chữ ký -> tìm đơn theo {{orderId}} -> so {{amount}} với số tiền đơn -> kiểm tra idempotent theo {{txnRef}} -> chỉ khi đơn đang {{PENDING}} mới chuyển sang {{PAID}}/{{FAILED}} theo {{status}}. Nếu không nhận được IPN sau một khoảng thời gian, merchant gọi API **query** của cổng (truy vấn chủ động) để lấy trạng thái cuối cùng thay vì đoán.
+
+### Đối soát cuối ngày với cổng
+
+**Đối soát** (reconciliation) là việc so khớp dữ liệu giữa hai hệ thống: cuối ngày (hoặc theo lịch), cổng thanh toán cung cấp file/bảng kê các giao dịch thành công, merchant đối chiếu từng {{txnRef}} với bản ghi của mình (số tiền, trạng thái, thời điểm). Mục tiêu:
+- Phát hiện giao dịch cổng báo thành công nhưng merchant chưa ghi nhận (mất IPN, lỗi xử lý) để bù cập nhật.
+- Phát hiện lệch số tiền hoặc giao dịch lạ để điều tra.
+- Làm bằng chứng kế toán: tổng tiền khớp giữa hai bên.
+
+Trong thực tế, đối soát là "lưới an toàn" cuối cùng: IPN giúp cập nhật gần thời gian thực, còn đối soát đảm bảo không bỏ sót dù có sự cố tạm thời.
+
+### Câu hỏi nên hỏi lại khi nhận yêu cầu nghiệp vụ này
+
+- Cổng gửi IPN theo cơ chế nào, retry bao nhiêu lần, khoảng cách ra sao, và format chữ ký/canonical string quy định thế nào?
+- Trường nào là mã giao dịch duy nhất để idempotent ({{txnRef}} hay mã khác)? Có thể một đơn có nhiều lần thử thanh toán không?
+- Khi số tiền callback khác số tiền đơn thì xử lý ra sao (từ chối, chờ điều tra, hay cho phép chênh lệch trong ngưỡng nào)?
+- Nếu IPN mất, merchant được phép query chủ động bao lâu/lần, và trạng thái nào là trạng thái cuối cùng (final)?
+- Đơn hết hạn phiên thanh toán nhưng tiền vẫn về thì hoàn tự động hay ghi nhận thủ công?
+- File đối soát nhận lúc nào, múi giờ nào, định dạng ra sao, và ai chịu trách nhiệm xử lý lệch?
+
+### Liên hệ phỏng vấn
+
+Khi trả lời phỏng vấn, hãy nhấn mạnh ba điểm: (1) redirect là kênh hiển thị không đáng tin, chỉ IPN có chữ ký HMAC hợp lệ mới được dùng để ghi nhận tiền; (2) mọi callback phải idempotent theo mã giao dịch vì cổng chắc chắn sẽ gửi trùng/retry; (3) luôn có cơ chế query chủ động và đối soát cuối ngày để vá các trường hợp mất thông báo. Nêu được thứ tự kiểm tra "chữ ký -> tồn tại đơn -> khớp tiền -> idempotent -> chuyển trạng thái" là dấu hiệu bạn hiểu luồng thanh toán thực tế, không chỉ biết gọi API.
+
+> Senior tip: Trong production, việc kiểm tra chữ ký và cập nhật trạng thái nên nằm trong một giao dịch cơ sở dữ liệu với ràng buộc duy nhất trên {{txnRef}} (UNIQUE) để hai callback trùng đến đồng thời trên hai instance vẫn chỉ ghi nhận một lần. Ngoài ra, hãy log đầy đủ payload đã che bớt dữ liệu nhạy cảm và kết quả từng bước kiểm tra để khi đối soát lệch bạn còn truy vết được; đừng bao giờ log {{secret}} hay toàn bộ chữ ký bí mật.`,
+    exercises: [
+      {
+        title: 'PaymentCallbackHandler: kiểm HMAC-SHA256, so số tiền, idempotent theo txnRef',
+        prompt: `Xây dựng bộ xử lý callback thanh toán cho merchant với các lớp sau (tất cả dùng JDK chuẩn, không class public ngoài Main):
+
+- {{Order(orderId, amount, status)}}: {{amount}} là số tiền VND (long), {{status}} là {{PENDING}}, {{PAID}} hoặc {{FAILED}}.
+- {{OrderStore}} lưu đơn theo {{orderId}} và nhớ các {{txnRef}} đã xử lý thành công/thất bại hợp lệ: {{put(Order)}}, {{get(orderId)}}, {{isProcessed(txnRef)}}, {{markProcessed(txnRef)}}.
+- {{PaymentCallbackHandler(secret, store)}} với:
+  - {{String canonical(String txnRef, String orderId, long amount, String status)}} trả về chuỗi {{txnRef|orderId|amount|status}} (dùng để ký).
+  - {{String hmacSha256(String data)}} tính HMAC-SHA256 bằng {{javax.crypto.Mac}} với {{secret}} (UTF-8), trả về chuỗi hex chữ thường.
+  - {{String handle(String txnRef, String orderId, long amount, String status, String receivedSig)}} xử lý callback và trả về mã kết quả:
+    - {{INVALID_SIGNATURE}} nếu chữ ký nhận được khác {{hmacSha256(canonical(...))}} (không đổi trạng thái).
+    - {{DUPLICATE}} nếu {{txnRef}} đã được xử lý trước đó (idempotent, không đổi trạng thái).
+    - {{ORDER_NOT_FOUND}} nếu không có đơn {{orderId}}.
+    - {{AMOUNT_MISMATCH}} nếu {{amount}} khác số tiền của đơn (không đổi trạng thái).
+    - {{SUCCESS}} nếu {{status}} là {{SUCCESS}} và đơn đang {{PENDING}}: đổi đơn thành {{PAID}}, đánh dấu {{txnRef}} đã xử lý.
+    - {{FAILED}} nếu {{status}} là {{FAILED}} và đơn đang {{PENDING}}: đổi đơn thành {{FAILED}}, đánh dấu {{txnRef}} đã xử lý.
+    - Nếu đơn không còn {{PENDING}} (đã {{PAID}} hoặc {{FAILED}}) mà {{txnRef}} mới và dữ liệu hợp lệ (chữ ký đúng, đơn tồn tại, số tiền khớp), coi như callback trễ/trùng nghiệp vụ: trả {{DUPLICATE}} và không đổi trạng thái.
+
+Thứ tự kiểm tra: chữ ký -> trùng {{txnRef}} -> đơn tồn tại -> khớp số tiền -> xử lý theo trạng thái hiện tại của đơn.`,
+        starter: `import javax.crypto.Mac;
+import javax.crypto.spec.SecretKeySpec;
+import java.nio.charset.StandardCharsets;
+import java.util.*;
+
+class Order {
+    final String orderId;
+    final long amount;
+    String status; // PENDING, PAID, FAILED
+
+    Order(String orderId, long amount, String status) {
+        this.orderId = orderId;
+        this.amount = amount;
+        this.status = status;
+    }
+}
+
+class OrderStore {
+    // TODO: lưu đơn và tập txnRef đã xử lý
+    void put(Order order) {
+        throw new UnsupportedOperationException("TODO");
+    }
+
+    Order get(String orderId) {
+        throw new UnsupportedOperationException("TODO");
+    }
+
+    boolean isProcessed(String txnRef) {
+        throw new UnsupportedOperationException("TODO");
+    }
+
+    void markProcessed(String txnRef) {
+        throw new UnsupportedOperationException("TODO");
+    }
+}
+
+class PaymentCallbackHandler {
+    final String secret;
+    final OrderStore store;
+
+    PaymentCallbackHandler(String secret, OrderStore store) {
+        this.secret = secret;
+        this.store = store;
+    }
+
+    String canonical(String txnRef, String orderId, long amount, String status) {
+        throw new UnsupportedOperationException("TODO");
+    }
+
+    String hmacSha256(String data) {
+        throw new UnsupportedOperationException("TODO");
+    }
+
+    String handle(String txnRef, String orderId, long amount, String status, String receivedSig) {
+        throw new UnsupportedOperationException("TODO");
+    }
+}`,
+        tests: `public class Main {
+    static int passed = 0, total = 0;
+    static void check(String name, Runnable r) {
+        total++;
+        try { r.run(); passed++; System.out.println("PASS " + name); }
+        catch (Throwable t) { System.out.println("FAIL " + name + ": " + t); }
+    }
+    static void eq(Object expected, Object actual) {
+        if (!Objects.equals(expected, actual)) throw new AssertionError("expected " + expected + " got " + actual);
+    }
+
+    static OrderStore storeWith(Order... orders) {
+        OrderStore s = new OrderStore();
+        for (Order o : orders) s.put(o);
+        return s;
+    }
+
+    static String sig(PaymentCallbackHandler h, String txnRef, String orderId, long amount, String status) {
+        return h.hmacSha256(h.canonical(txnRef, orderId, amount, status));
+    }
+
+    public static void main(String[] args) {
+        final String SECRET = "top-secret-key";
+
+        check("invalid signature is rejected and order unchanged", () -> {
+            OrderStore store = storeWith(new Order("O1", 500000L, "PENDING"));
+            PaymentCallbackHandler h = new PaymentCallbackHandler(SECRET, store);
+            String res = h.handle("T1", "O1", 500000L, "SUCCESS", "bad-signature");
+            eq("INVALID_SIGNATURE", res);
+            eq("PENDING", store.get("O1").status);
+            eq(false, store.isProcessed("T1"));
+        });
+
+        check("duplicate txnRef is idempotent", () -> {
+            OrderStore store = storeWith(new Order("O2", 120000L, "PENDING"));
+            PaymentCallbackHandler h = new PaymentCallbackHandler(SECRET, store);
+            String good = sig(h, "T2", "O2", 120000L, "SUCCESS");
+            eq("SUCCESS", h.handle("T2", "O2", 120000L, "SUCCESS", good));
+            eq("PAID", store.get("O2").status);
+            eq("DUPLICATE", h.handle("T2", "O2", 120000L, "SUCCESS", good));
+            eq("PAID", store.get("O2").status);
+            eq(true, store.isProcessed("T2"));
+        });
+
+        check("amount mismatch is rejected", () -> {
+            OrderStore store = storeWith(new Order("O3", 500000L, "PENDING"));
+            PaymentCallbackHandler h = new PaymentCallbackHandler(SECRET, store);
+            String badAmountSig = sig(h, "T3", "O3", 499000L, "SUCCESS");
+            eq("AMOUNT_MISMATCH", h.handle("T3", "O3", 499000L, "SUCCESS", badAmountSig));
+            eq("PENDING", store.get("O3").status);
+            eq(false, store.isProcessed("T3"));
+        });
+
+        check("success callback marks order PAID", () -> {
+            OrderStore store = storeWith(new Order("O4", 99000L, "PENDING"));
+            PaymentCallbackHandler h = new PaymentCallbackHandler(SECRET, store);
+            String good = sig(h, "T4", "O4", 99000L, "SUCCESS");
+            eq("SUCCESS", h.handle("T4", "O4", 99000L, "SUCCESS", good));
+            eq("PAID", store.get("O4").status);
+            eq(true, store.isProcessed("T4"));
+        });
+
+        check("failed callback marks order FAILED", () -> {
+            OrderStore store = storeWith(new Order("O5", 77000L, "PENDING"));
+            PaymentCallbackHandler h = new PaymentCallbackHandler(SECRET, store);
+            String good = sig(h, "T5", "O5", 77000L, "FAILED");
+            eq("FAILED", h.handle("T5", "O5", 77000L, "FAILED", good));
+            eq("FAILED", store.get("O5").status);
+            eq(true, store.isProcessed("T5"));
+        });
+
+        check("late valid callback on non-pending order returns DUPLICATE without change", () -> {
+            OrderStore store = storeWith(new Order("O6", 33000L, "PAID"));
+            PaymentCallbackHandler h = new PaymentCallbackHandler(SECRET, store);
+            String good = sig(h, "T6-late", "O6", 33000L, "SUCCESS");
+            eq("DUPLICATE", h.handle("T6-late", "O6", 33000L, "SUCCESS", good));
+            eq("PAID", store.get("O6").status);
+        });
+
+        System.out.println("RESULT " + passed + "/" + total);
+    }
+}`,
+        reference: `import javax.crypto.Mac;
+import javax.crypto.spec.SecretKeySpec;
+import java.nio.charset.StandardCharsets;
+import java.util.*;
+
+class Order {
+    final String orderId;
+    final long amount;
+    String status; // PENDING, PAID, FAILED
+
+    Order(String orderId, long amount, String status) {
+        this.orderId = orderId;
+        this.amount = amount;
+        this.status = status;
+    }
+}
+
+class OrderStore {
+    private final Map<String, Order> orders = new HashMap<>();
+    private final Set<String> processed = new HashSet<>();
+
+    void put(Order order) {
+        orders.put(order.orderId, order);
+    }
+
+    Order get(String orderId) {
+        return orders.get(orderId);
+    }
+
+    boolean isProcessed(String txnRef) {
+        return processed.contains(txnRef);
+    }
+
+    void markProcessed(String txnRef) {
+        processed.add(txnRef);
+    }
+}
+
+class PaymentCallbackHandler {
+    final String secret;
+    final OrderStore store;
+
+    PaymentCallbackHandler(String secret, OrderStore store) {
+        this.secret = secret;
+        this.store = store;
+    }
+
+    String canonical(String txnRef, String orderId, long amount, String status) {
+        // Chuỗi đem ký phải thống nhất giữa hai bên: cùng thứ tự, cùng dấu phân cách
+        return txnRef + "|" + orderId + "|" + amount + "|" + status;
+    }
+
+    String hmacSha256(String data) {
+        try {
+            Mac mac = Mac.getInstance("HmacSHA256");
+            mac.init(new SecretKeySpec(secret.getBytes(StandardCharsets.UTF_8), "HmacSHA256"));
+            byte[] raw = mac.doFinal(data.getBytes(StandardCharsets.UTF_8));
+            StringBuilder sb = new StringBuilder(raw.length * 2);
+            for (byte b : raw) {
+                String hex = Integer.toHexString(b & 0xff);
+                if (hex.length() == 1) sb.append('0');
+                sb.append(hex);
+            }
+            return sb.toString();
+        } catch (Exception e) {
+            throw new RuntimeException(e);
+        }
+    }
+
+    String handle(String txnRef, String orderId, long amount, String status, String receivedSig) {
+        // 1) Kiểm chữ ký: không khớp thì từ chối tuyệt đối, không tin dữ liệu
+        String expected = hmacSha256(canonical(txnRef, orderId, amount, status));
+        if (!expected.equals(receivedSig)) {
+            return "INVALID_SIGNATURE";
+        }
+        // 2) Idempotent theo txnRef: callback trùng/lặp không được xử lý hai lần
+        if (store.isProcessed(txnRef)) {
+            return "DUPLICATE";
+        }
+        // 3) Đơn phải tồn tại
+        Order order = store.get(orderId);
+        if (order == null) {
+            return "ORDER_NOT_FOUND";
+        }
+        // 4) Số tiền callback phải khớp số tiền đơn
+        if (order.amount != amount) {
+            return "AMOUNT_MISMATCH";
+        }
+        // 5) Chỉ chuyển trạng thái khi đơn còn PENDING
+        if (!"PENDING".equals(order.status)) {
+            return "DUPLICATE";
+        }
+        if ("SUCCESS".equals(status)) {
+            order.status = "PAID";
+            store.markProcessed(txnRef);
+            return "SUCCESS";
+        }
+        if ("FAILED".equals(status)) {
+            order.status = "FAILED";
+            store.markProcessed(txnRef);
+            return "FAILED";
+        }
+        return "AMOUNT_MISMATCH";
+    }
+}`,
+        hints: [
+          'Tính HMAC: {{Mac mac = Mac.getInstance("HmacSHA256"); mac.init(new SecretKeySpec(secret.getBytes(StandardCharsets.UTF_8), "HmacSHA256")); byte[] raw = mac.doFinal(data.getBytes(StandardCharsets.UTF_8));}} rồi đổi {{raw}} sang chuỗi hex chữ thường.',
+          'Làm đúng thứ tự: kiểm chữ ký trước, sau đó mới kiểm {{isProcessed(txnRef)}}, rồi tìm đơn, rồi so {{amount}}, cuối cùng mới đổi trạng thái khi đơn đang {{PENDING}}.',
+          'Khi chữ ký đúng, đơn tồn tại và tiền khớp nhưng đơn không còn {{PENDING}}, hãy trả {{DUPLICATE}} để callback trễ không làm hỏng trạng thái đã chốt.',
+        ],
+        explain: `Handler đi theo đúng chuỗi phòng thủ của thanh toán thực tế. Kiểm chữ ký đặt lên đầu vì dữ liệu chưa xác thực thì không được dùng để tra cứu hay thay đổi trạng thái. Idempotent theo {{txnRef}} đảm bảo cổng gửi lại (retry) nhiều lần cũng không ghi nhận trùng: lần đầu hợp lệ mới đổi trạng thái và {{markProcessed}}, các lần sau trả {{DUPLICATE}}. So sánh số tiền với đơn chặn trường hợp chữ ký hợp lệ nhưng gắn nhầm giao dịch hoặc số tiền không khớp.
+
+Lỗi hay gặp:
+- Đổi trạng thái trước khi kiểm tra đủ điều kiện, khiến callback sai chữ ký hoặc sai tiền vẫn làm đơn thành {{PAID}}.
+- Dùng {{txnRef}} của request sai chữ ký để đánh dấu đã xử lý, làm mất cơ hội nhận lại callback đúng.
+- Chỉ dựa vào trạng thái đơn mà bỏ qua {{txnRef}}: hai giao dịch khác nhau cùng một đơn (thử lại) sẽ bị xử lý sai nếu không phân biệt mã giao dịch.
+- Không trả {{DUPLICATE}} cho callback trễ hợp lệ trên đơn đã chốt, dẫn đến ghi đè trạng thái hoặc ném lỗi không cần thiết.
+
+Trong production, bước "đánh dấu {{txnRef}} + đổi trạng thái đơn" phải thực hiện nguyên tử trong một transaction DB với ràng buộc UNIQUE trên {{txnRef}} để nhiều instance xử lý song song vẫn an toàn.`,
+      },
+    ],
+    check: [
+      {
+        q: 'Vì sao trang redirect "Thanh toán thành công" trên trình duyệt không đủ để merchant giao hàng?',
+        options: [
+          'Vì redirect luôn chậm hơn IPN',
+          'Vì redirect đi qua trình duyệt của khách nên có thể bị giả mạo, bị lặp hoặc không đến, trong khi chỉ IPN đã kiểm chữ ký HMAC mới xác nhận tiền từ phía cổng',
+          'Vì redirect không chứa mã đơn hàng',
+          'Vì chỉ IPN mới hiển thị được cho khách',
+        ],
+        answer: 1,
+        explain: 'Đúng (B): redirect chạy trên máy khách, có thể bị sửa/gõ tay, bấm lặp, hoặc không bao giờ quay về dù tiền đã trừ. IPN là kênh server-to-server và chỉ được tin khi chữ ký HMAC hợp lệ, đối chiếu đúng đơn và số tiền. Sai (A): thứ tự đến không cố định, redirect có thể đến trước hoặc sau. Sai (C): redirect vẫn có thể mang tham số nhưng tham số đó không đáng tin nếu chưa xác thực bằng chữ ký từ kênh an toàn. Sai (D): ngược lại, redirect là thứ khách nhìn thấy, IPN là kênh kỹ thuật phía sau.',
+      },
+      {
+        q: 'Cổng thanh toán gửi lại cùng một IPN thành công hai lần với cùng {{txnRef}}. Backend nên làm gì?',
+        options: [
+          'Cộng tiền và ghi nhận hai lần để khớp số lần nhận callback',
+          'Từ chối lần hai vì chữ ký đã dùng rồi',
+          'Xử lý idempotent: lần đầu cập nhật đơn, lần sau nhận ra {{txnRef}} đã xử lý và trả kết quả trùng mà không đổi trạng thái hay cộng tiền',
+          'Xóa đơn rồi tạo lại từ callback mới',
+        ],
+        answer: 2,
+        explain: 'Đúng (C): callback retry là bình thường, nên idempotent theo mã giao dịch duy nhất {{txnRef}} đảm bảo kết quả chỉ như thực hiện một lần. Sai (A): cộng trùng tiền/giao dịch là lỗi nghiêm trọng. Sai (B): chữ ký vẫn hợp lệ cho cùng dữ liệu, vấn đề là xử lý nghiệp vụ trùng chứ không phải chữ ký hết hạn. Sai (D): xóa/tạo lại đơn làm mất lịch sử và có thể gây sai lệch trạng thái.',
+      },
+      {
+        q: 'Merchant không nhận được IPN dù khách đã bị trừ tiền. Cách xử lý đúng là gì?',
+        options: [
+          'Tin vào việc khách báo đã trả tiền và chuyển đơn sang PAID',
+          'Chờ vô thời hạn cho đến khi IPN tự đến',
+          'Chủ động truy vấn (query) trạng thái giao dịch từ cổng theo mã giao dịch/đơn và dùng đối soát cuối ngày để bù các trường hợp còn sót',
+          'Hủy đơn ngay để tránh rủi ro',
+        ],
+        answer: 2,
+        explain: 'Đúng (C): khi mất IPN, merchant phải chủ động gọi API query trạng thái của cổng để lấy kết quả cuối cùng, đồng thời đối soát file cuối ngày để phát hiện và bù các lệch còn lại. Sai (A): lời báo của khách không phải bằng chứng đã xác thực từ cổng/ngân hàng. Sai (B): IPN có thể đã mất hẳn, chờ vô thời hạn làm treo đơn và trải nghiệm xấu. Sai (D): hủy đơn trong khi tiền có thể đã thu sẽ gây mất tiền của khách và sai lệch kế toán.',
+      },
+    ],
+    related: ['banking-007', 'banking-009', 'banking-008'],
+    tags: ['payment-gateway', 'qr', 'ipn', 'callback', 'hmac', 'idempotency', 'reconciliation', 'banking'],
+  },
+
 );
