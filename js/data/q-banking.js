@@ -5553,7 +5553,306 @@ Ngân hàng phát hiện nhân viên back-office B sửa hạn mức thẻ khác
     q: 'PO nói: "Cần cập nhật lại tính năng hạn mức giao dịch cho người dùng." Những câu hỏi làm rõ quan trọng nhất là gì?',
     a: `**Tóm tắt:** Hạn mức giao dịch (transaction limit) là chốt chặn quan trọng để quản lý rủi ro, cần linh hoạt theo từng loại người dùng, loại giao dịch và thời gian.\n\n### Các câu nên hỏi lại\n\n1. **Phân loại hạn mức:** Có bao nhiêu loại hạn mức (ví dụ: tối đa mỗi giao dịch, tối đa mỗi ngày, tối đa mỗi tháng)?\n2. **Đối tượng áp dụng:** Hạn mức áp dụng cho ai (toàn bộ user, hay phân nhóm: eKYC xong, chưa eKYC, tài khoản doanh nghiệp)?\n3. **Cơ chế cập nhật:** Người dùng có tự nâng hạn mức được không? Nếu có, quy trình xác thực ra sao (ví dụ: up ảnh CMND, chờ duyệt)?\n4. **Độ ưu tiên:** Khi có nhiều hạn mức chồng chéo (ví dụ hạn mức theo ngày và theo loại dịch vụ), quy tắc nào được ưu tiên?\n5. **Thông báo:** Khi khách hàng gần đạt hạn mức, có cần thông báo không? Khi bị từ chối giao dịch do vượt hạn mức, thông báo ra sao?\n6. **Quản trị (Admin):** Admin có quyền chỉnh sửa hạn mức cho từng cá nhân cụ thể không (ví dụ: khách VIP)?\n\n### Nếu không hỏi thì chuyện gì xảy ra\nBạn thiết kế hạn mức cứng cho mọi user. Khách hàng doanh nghiệp chuyển tiền lớn bị từ chối liên tục, họ rời bỏ dịch vụ. Admin muốn nâng hạn mức cho khách VIP cũng không được, phải sửa code.\n\n### Từ câu trả lời tới thiết kế\n| Câu hỏi | Thiết kế A (Hạn mức cứng) | Thiết kế B (Hạn mức linh hoạt/RBAC) |\n|---|---|---| \n| Cấu hình | Hardcode | Configurable qua DB/Admin Panel |\n| Phân loại | User | Nhóm/Role/Loại giao dịch |\n\n### Trả lời mẫu khi phỏng vấn\n"Hạn mức là công cụ quản lý rủi ro tài chính cơ bản. Tôi tiếp cận: (1) Thiết kế hệ thống linh hoạt: dùng quy tắc (Rules Engine) để check hạn mức thay vì hardcode. Hạn mức nên được định nghĩa theo nhóm người dùng (RBAC) và loại giao dịch (ví dụ: chuyển tiền > thanh toán). (2) Khả năng quản trị: cần có Admin Panel để chỉnh sửa hạn mức nhanh cho các trường hợp đặc biệt. (3) Trải nghiệm người dùng: cần thông báo rõ khi sắp đạt hạn mức và lý do tại sao giao dịch bị từ chối. Can you clarify if the limit is per transaction, per day, or per month? Do we need to support individual limit exceptions?"\n\n> Senior tip: Hạn mức luôn cần được cập nhật theo thời gian thực (real-time). Sử dụng Redis để lưu giá trị đã tiêu dùng trong ngày để tính toán nhanh, tránh truy vấn DB nặng gây chậm giao dịch.`,
     follow: ['Làm sao để xử lý hạn mức trong môi trường microservices (consistency issue)?', 'Nếu khách hàng đạt hạn mức ngay lúc đang xử lý giao dịch, làm sao tránh để họ tiêu vượt?'],
-    tags: ['limit', 'banking', 'clarification', 'senior']
   },
+  {
+  id: 'banking-067',
+  topic: 'banking',
+  level: 'senior',
+  q: 'PO nói: "Chúng ta cần đối soát giao dịch cuối ngày với đối tác thanh toán (ví dụ NAPAS hoặc ngân hàng liên kết) để không bị thiếu tiền." Trước khi thiết kế, bạn sẽ hỏi lại những gì và vì sao?',
+  a: `**Tóm tắt:** Đối soát cuối ngày là so sánh sổ của ngân hàng chúng ta với sổ của đối tác thanh toán (ví dụ NAPAS — trung tâm chuyển tiền liên ngân hàng, hoặc ngân hàng liên kết) để tìm khoản tiền lệch: tiền có ở một bên nhưng không ở bên kia, hoặc cùng giao dịch nhưng số tiền khác. Trước khi thiết kế, dev cần làm rõ 11 câu dưới đây, nhóm theo 5 nhóm: phạm vi & người dùng, tiền & số liệu, trạng thái & lỗi, quy định & audit, phi chức năng. Mỗi câu đi kèm lý do hỏi và rủi ro nếu không hỏi.
+
+### Các câu nên hỏi lại
+
+**Nhóm 1: Phạm vi & người dùng**
+1. Đối tác là hệ thống nào (NAPAS, ngân hàng liên kết, correspondent bank — ngân hàng đại lý ở nước ngoài), và giao dịch giữa hai bên được xác định bằng mã gì (mã tham chiếu duy nhất/ref ID)?
+   - **Vì sao hỏi:** nếu không có ref ID duy nhất, ta không thể khớp từng giao dịch, chỉ dán tổng số tiền. Hai giao dịch cùng số tiền sẽ bị ghép nhầm, tiền bị cộng vào tài khoản sai khách hàng.
+   - **Rủi ro nếu không hỏi:** giao dịch 5 triệu của khách A bị ghép nhầm với giao dịch 5 triệu của khách B, số dư hai khách sai, khách khiếu nại liên tiếp.
+2. Ai gửi file đối soát, ai nhận, và file đến theo quy định nào (hàng ngày, qua SFTP, hay qua API)?
+   - **Vì sao hỏi:** xác định runbook và SLA (thời gian cam kết hoàn thành). Nếu file đến muộn hai ngày mà team không biết, số dư báo cáo sai mà không ai phát hiện kịp.
+
+**Nhóm 2: Tiền & số liệu**
+3. Số tiền lưu ở đơn vị nhỏ nhất (VND = đồng, không có phần thập phân, vì Việt Nam không dùng xu/hào) hay có phần thập phân?
+   - **Vì sao hỏi:** lưu sai scale (ví dụ lưu 1.5 đồng) sẽ làm tròn lệch 1 đồng mỗi giao dịch, tích lũy thành sai số lớn trên hàng nghìn giao dịch.
+   - **Rủi ro nếu không hỏi:** sổ cái lệch, kiểm toán không chấp nhận báo cáo cuối ngày.
+4. Phí dịch vụ có được trừ riêng hay gộp vào số tiền chính?
+   - **Vì sao hỏi:** nếu gộp, đối soát theo số tiền sẽ sai vì đối tác không trừ cùng khoản phí.
+   - **Rủi ro:** sai P&L (báo cáo lãi lỗ), kế toán không đối được sổ, phải xử lý thủ công hàng ngày.
+
+**Nhóm 3: Trạng thái & lỗi**
+5. Giao dịch bị timeout (không nhận phản hồi trong thời gian cho phép) coi là thành công hay thất bại?
+   - **Vì sao hỏi:** timeout không có nghĩa là thất bại, chỉ là chưa biết kết quả. Coi là thất bại và hoàn tiền ngay sẽ gây trừ tiền hai lần nếu đối tác đã xử lý thành công.
+   - **Rủi ro:** khách nhận tiền hai lần, hoặc ngân hàng mất tiền mà không biết.
+6. Nếu hai bên có số liệu khác nhau (break — khoản lệch trong đối soát), điều chỉnh sổ cái ai thực hiện, và cần người duyệt không?
+   - **Vì sao hỏi:** điều chỉnh sổ cần quy trình maker-checker (một người tạo yêu cầu, một người khác duyệt) để ngăn một nhân viên tự sửa số tiền và gây gian lận.
+
+**Nhóm 4: Quy định & audit**
+7. Có yêu cầu lưu log truy vết (ai sửa số dư, lúc nào, giá trị trước/sau) không, và lưu bao lâu?
+   - **Vì sao hỏi:** cơ quan quản lý và kiểm toán yêu cầu bằng chứng pháp lý cho mọi thay đổi số dư.
+   - **Rủi ro:** không có log → không biết ai gây sai số, không thể xử lý vi phạm, có thể bị phạt theo quy định ngân hàng nhà nước.
+
+**Nhóm 5: Phi chức năng**
+8. Hệ thống cần xử lý bao nhiêu giao dịch mỗi ngày (khối lượng), và độ trễ chấp nhận được là bao nhiêu?
+   - **Vì sao hỏi:** 100.000 giao dịch/ngày và 10 triệu giao dịch/ngày thiết kế khác nhau hoàn toàn. Khối lượng lớn cần xử lý song song, khối lượng nhỏ chỉ cần job đơn giản.
+9. Cần đối soát real-time (trong ngày) hay chỉ cuối ngày (batch — chạy một lần vào cuối ngày)?
+   - **Vì sao hỏi:** real-time cần Kafka/streaming và cảnh báo ngay, cuối ngày chỉ cần job batch chạy một lần. Nhầm lẫn sẽ chi phí quá cao hoặc phát hiện lỗi chậm 24 giờ.
+10. File đối tác bị gửi trùng hai lần hoặc đến muộn, hệ thống xử lý thế nào (không tạo giao dịch trùng)?
+    - **Vì sao hỏi:** đối tác gửi lại file khi mạng lỗi. Nếu không kiểm tra mã tham chiếu đã xử lý, giao dịch cũ được nhập lại, tiền bị cộng hai lần.
+11. Hạn mức điều chỉnh sổ cái mỗi lần là bao nhiêu, quá ngưỡng cần mức duyệt cao hơn không?
+    - **Vì sao hỏi:** điều chỉnh lớn (trên 5 tỷ) cần duyệt cấp cao, điều chỉnh nhỏ chỉ cần một người. Quy tắc này phải ghi vào thiết kế, không tự ý code.
+
+### Nếu không hỏi thì chuyện gì xảy ra
+Ngân hàng A gửi 10.000 giao dịch sang Ngân hàng B qua NAPAS trong một ngày, tổng 5 tỷ đồng. Bên B báo nhận 9.998 giao dịch, tổng 4 tỷ 990 triệu đồng — thiếu hai giao dịch, 10 triệu đồng. Nếu không có mã tham chiếu duy nhất và quy trình tra soát, hai giao dịch này bị "trôi nổi": khách gọi khiếu nại tiền mất, tổng đài quá tải, đội dev phải đối soát theo tay hàng nghìn dòng log. Sau một tuần mới tìm ra hai giao dịch bị mất do lỗi định dạng file của bên B, trong đó một giao dịch khách đã nhận tiền nhưng sổ chúng ta chưa ghi.
+
+### Từ câu trả lời tới thiết kế
+Bảng dưới cho thấy câu trả lời khác nhau dẫn tới thiết kế khác nhau:
+
+| Câu trả lời PO | Thiết kế A (đơn giản) | Thiết kế B (doanh nghiệp) |
+|---|---|---|
+| Có mã ref ID duy nhất | Khớp theo ref ID, 1-1 | Khớp theo ref ID, kèm số tiền và ngày |
+| Không có ref ID, chỉ số tiền+ngày | Khớp mờ, dễ ghép nhầm | Không chấp nhận, yêu cầu đối tác bổ sung mã |
+| File đến hàng đêm | Job batch chạy sau 23 giờ | Cần job intra-day, cảnh báo nếu file không đến |
+| Điều chỉnh sổ cần duyệt | Một nhân viên tự sửa | Maker-checker, hai người khác nhau |
+
+### Trả lời mẫu khi phỏng vấn
+"Khi PO yêu cầu đối soát cuối ngày với đối tác, tôi sẽ làm rõ 11 câu nhóm theo năm nhóm: đối tác là ai và dùng mã ref ID gì để khớp giao dịch (phạm vi & người dùng); tiền lưu đơn vị nhỏ nhất hay có phần thập phân, phí trừ riêng hay gộp (tiền & số liệu); timeout coi thành công hay thất bại, break điều chỉnh ai và có duyệt không (trạng thái & lỗi); lưu log truy vết bao lâu (quy định & audit); khối lượng giao dịch mỗi ngày và đối soát real-time hay batch, file gửi trùng xử lý thế nào (phi chức năng). Tôi khuyên không coi timeout là thất bại, vì tiền có thể đã được xử lý ở bên kia. Can you clarify: does the partner provide a unique reference ID for every transaction? What is the expected daily volume and acceptable reconciliation latency? Is reconciliation batch end-of-day or intraday?"
+
+> Senior tip: Luôn bắt đối tác cung cấp mã tham chiếu duy nhất cho mỗi giao dịch, không dùng số tiền + thời gian để khớp (hai giao dịch cùng số tiền sẽ bị ghép nhầm). Mọi điều chỉnh sổ sau đối soát phải ghi bút toán mới (append-only), có người duyệt khác người tạo, và lưu log truy vết đủ để kiểm toán sau này.
+
+  `,
+},
+{
+  id: 'banking-068',
+  topic: 'banking',
+  level: 'senior',
+  q: 'PO nói: "Ngân hàng cần tính lãi tiền gửi cho khách hàng theo kỳ hạn (1, 3, 6, 12 tháng) và không kỳ hạn (tiết kiệm)." Trước khi thiết kế, bạn sẽ hỏi lại những gì và vì sao?',
+  a: `**Tóm tắt:** Tính lãi tiền gửi là quy trình ngân hàng tính số tiền lãi trả cho khách hàng dựa trên số tiền gửi, lãi suất và số ngày gửi. Ví dụ khách gửi 100 triệu đồng, lãi suất 6% mỗi năm, gửi 30 ngày thì lãi khoảng 493.150 đồng. Trước khi thiết kế, dev cần làm rõ 10 câu dưới đây, nhóm theo 5 nhóm: phạm vi & người dùng, tiền & số liệu, trạng thái & lỗi, quy định & audit, phi chức năng. Mỗi câu đi kèm lý do hỏi và rủi ro nếu không hỏi.
+
+### Các câu nên hỏi lại
+
+**Nhóm 1: Phạm vi & người dùng**
+1. Sản phẩm tiền gửi là không kỳ hạn (tiết kiệm, rút bất cứ lúc) hay có kỳ hạn (1, 3, 6, 12 tháng, khóa tiền)?
+   - **Vì sao hỏi:** không kỳ hạn tính lãi mỗi ngày và rút bất cứ lúc; có kỳ hạn tính theo ngày cam kết, rút sớm thường bị phạt hoặc tính lãi suất thấp hơn.
+   - **Rủi ro nếu không hỏi:** thiết kế chỉ hỗ trợ tiết kiệm, sau đó khách muốn gửi có kỳ hạn thì hệ thống không tính đúng lãi và phải viết lại.
+2. Lãi suất năm là bao nhiêu, áp dụng cho tất cả khách hay phân loại (khách VIP, số tiền lớn)?
+   - **Vì sao hỏi:** nếu có nhiều bảng lãi suất, cần lưu phiên bản theo ngày (effective_from/effective_to) để sổ cũ vẫn tính theo lãi cũ, không bị ghi đè.
+   - **Rủi ro:** 15.000 khách khiếu nại "lãi bị giảm giữa chừng" khi bảng lãi suất được cập nhật và áp dụng sai cho sổ cũ.
+
+**Nhóm 2: Tiền & số liệu**
+3. Quy ước đếm ngày là actual/365 (số ngày thực chia 365) hay actual/360, và tính lãi bao nhiêu lần một ngày?
+   - **Vì sao hỏi:** actual/365 phổ biến ở Việt Nam. actual/360 làm lãi cao hơn một chút vì mẫu số nhỏ hơn. Sai quy ước → lãi sai từng đồng.
+   - **Rủi ro:** báo cáo lãi lỗ cuối ngày không khớp sổ cái kế toán.
+4. Lãi trả vào tài khoản khách hàng hay nhập gốc (lãi kép — lãi vừa cộng lại sinh thêm lãi)?
+   - **Vì sao hỏi:** lãi nhập gốc tăng số dư gốc, lãi kỳ sau tính trên số lớn hơn. Khách cần biết để so sánh sản phẩm.
+5. Tất toán trước hạn tính lãi suất không kỳ hạn (rất thấp, ví dụ 0.2% mỗi năm) hay lãi suất cam kết?
+   - **Vì sao hỏi:** rút sớm tính lãi thấp làm khách hiểu rõ rủi ro, tránh khiếu nại "tại sao rút sớm nhận ít lãi".
+6. Làm tròn đến đồng hay đến xu, chế độ HALF_UP (làm tròn toán học, 0.5 lên 1) hay HALF_EVEN (làm tròn về số chẵn gần nhất)?
+   - **Vì sao hỏi:** VND không có phần thập phân, làm tròn về đồng. Chọn chế độ và áp dụng nhất quán, không được làm tròn ở từng bước giữa.
+
+**Nhóm 3: Trạng thái & lỗi**
+7. Tính lãi mỗi ngày (sinh khối/accrual — ghi nhận lãi đã phát sinh nhưng chưa trả cho khách) hay chỉ tính khi đáo hạn?
+   - **Vì sao hỏi:** sinh khối mỗi ngày giúp báo cáo lãi lỗ ổn định, không nhảy vọt vào ngày đáo hạn. Kế toán yêu cầu ghi nhận đều đặn.
+   - **Rủi ro:** nếu bỏ qua, báo cáo lãi/lỗ ngày nhảy vọt vào ngày đáo hạn, kiểm toán không chấp nhận.
+8. Dùng BigDecimal hay double trong code Java?
+   - **Vì sao hỏi:** double lưu số thực theo nhị phân, bị sai số (0.1 + 0.2 không bằng 0.3 chính xác). Với tiền, một đồng lệch cũng là lỗi. BigDecimal chính xác từng chữ số thập phân.
+   - **Rủi ro:** 10.000 sổ tiền gửi, mỗi sổ sai 1-2 đồng, tổng chênh lệch hàng chục nghìn đồng, kiểm toán từ chối.
+
+**Nhóm 4: Quy định & audit**
+9. Ngày đáo hạn rơi vào ngày nghỉ (cuối tuần, ngày lễ), xử lý thế nào (chuyển sớm hay muộn)?
+   - **Vì sao hỏi:** cần quy tắc rõ (roll forward sang ngày làm việc tiếp theo, hoặc roll backward) để số dư và lãi tính đúng.
+10. Có phần dư khi chia lãi cho nhiều phần, bổ sung vào kỳ nào (thường kỳ cuối)?
+    - **Vì sao hỏi:** chia 10.000 đồng cho 3 kỳ: 3333 + 3333 + 3333 = 9999, thiếu 1 đồng. Phần dư phải được bổ sung có chủ đích để tổng khớp hợp đồng.
+
+### Nếu không hỏi thì chuyện gì xảy ra
+Một sổ tiền gửi 100 triệu đồng, lãi suất 6% mỗi năm, gửi 30 ngày. Dev dùng kiểu double và làm tròn ở mỗi bước tính toán giữa. Khách gọi khiếu nại số tiền lãi sai 1-2 đồng so với tay tính, và trên 10.000 sổ tiền gửi thì tổng chênh lệch lên hàng chục nghìn đồng. Điều tra thấy code dùng double (sai số nhị phân), chia cho 365 gây sai số, và làm tròn ở mỗi bước nhân chia. Nguyên nhân gốc: tiền trong Java phải dùng BigDecimal, chỉ làm tròn một lần ở bước cuối. Sau khi viết lại bằng BigDecimal và chỉ setScale(2, HALF_UP) ở cuối, sai số lãi giảm xuống 0 đồng, báo cáo lãi lỗ cuối ngày khớp sổ cái, kiểm toán chấp nhận.
+
+### Từ câu trả lời tới thiết kế
+Bảng dưới cho thấy câu trả lời khác nhau dẫn tới thiết kế khác nhau:
+
+| Câu trả lời PO | Thiết kế A (đơn giản) | Thiết kế B (doanh nghiệp) |
+|---|---|---|
+| Không kỳ hạn, tính lãi mỗi ngày | Job EOD tính lãi toàn bộ sổ | Sinh khối accrual hằng ngày, báo cáo ổn định |
+| Có kỳ hạn, nhiều bảng lãi suất | Lưu 1 giá trị lãi suất, ghi đè khi đổi | Lưu phiên bản theo ngày, sổ cũ tính lãi cũ |
+| Lãi trả vào tài khoản | Cộng lãi vào tài khoản thanh toán | Lãi nhập gốc, số dư gốc tăng |
+
+### Trả lời mẫu khi phỏng vấn
+"Khi PO yêu cầu tính lãi tiền gửi theo kỳ hạn và không kỳ hạn, tôi sẽ làm rõ 10 câu nhóm theo năm nhóm: sản phẩm không kỳ hạn hay có kỳ hạn, lãi suất áp dụng cho tất cả hay phân loại (phạm vi & người dùng); quy ước đếm ngày actual/365 hay 360, lãi trả vào tài khoản hay nhập gốc, tất toán trước hạn tính lãi như thế nào, làm tròn như thế nào (tiền & số liệu); tính lãi mỗi ngày hay chỉ khi đáo hạn, dùng BigDecimal hay double (trạng thái & lỗi); ngày đáo hạn rơi ngày nghỉ xử lý ra sao, phần dư chia lãi bổ sung vào kỳ nào (quy định & audit); khối lượng sổ và tần suất tính lãi (phi chức năng). Tôi khuyên dùng BigDecimal, chỉ làm tròn một lần ở bước cuối, và lưu phiên bản lãi suất theo ngày để sổ cũ không bị ảnh hưởng. Can you clarify: what day count convention (actual/365 or actual/360) should interest use? Is interest paid out or compounded into principal? How is early termination interest calculated?"
+
+> Senior tip: Lệch 1 đồng là lỗi nghiêm trọng trong kiểm toán ngân hàng. Luôn chốt quy ước "phần dư cộng vào kỳ nào, RoundingMode nào, actual/365 hay actual/360" bằng văn bản với nghiệp vụ/kế toán trước khi code, và khóa bằng test tự động.
+
+  `,
+},
+{
+  id: 'banking-069',
+  topic: 'banking',
+  level: 'senior',
+  q: 'PO nói: "Chúng ta cần mở tài khoản ngân hàng online qua eKYC (xác thực khách hàng điện tử) thay vì khách hàng phải đến chi nhánh." Trước khi thiết kế, bạn sẽ hỏi lại những gì và vì sao?',
+  a: `**Tóm tắt:** Mở tài khoản online qua eKYC là quy trình xác thực danh tính khách hàng từ xa bằng giấy tờ tờ nhận (CMND/CCCD) và ảnh khuôn mặt, thay vì phải đến trực tiếp chi nhánh. Trước khi thiết kế, dev cần làm rõ 10 câu dưới đây, nhóm theo 5 nhóm: phạm vi & người dùng, tiền & số liệu, trạng thái & lỗi, quy định & audit, phi chức năng. Mỗi câu đi kèm lý do hỏi và rủi ro nếu không hỏi.
+
+### Các câu nên hỏi lại
+
+**Nhóm 1: Phạm vi & người dùng**
+1. Quy trình eKYC có bao nhiêu bước (chụp ảnh CMND, chụp ảnh mặt, xác thực số điện thoại, hội nghị video với nhân viên, ký điện tử)?
+   - **Vì sao hỏi:** mỗi bước cần một giao diện, một servizio xử lý, và có thể thất bại riêng lẻ. Thiết kế phải khớp với số bước thực tế.
+   - **Rủi ro nếu không hỏi:** thiết kế chỉ hỗ trợ 2 bước, sau đó compliance yêu cầu bước video, hệ thống không đủ và phải viết lại phần lớn.
+2. Ai là đối tượng (cá nhân, doanh nghiệp, người nước ngoài sống ở Việt Nam)?
+   - **Vì sao hỏi:** người nước ngoài cần hộ chiếu + visa, doanh nghiệp cần giấy phép kinh doanh, quy trình khác hoàn toàn.
+
+**Nhóm 2: Tiền & số liệu**
+3. Số tiền nạp tối đa ban đầu cho tài khoản eKYC là bao nhiêu (ví dụ 100 triệu/ngày)?
+   - **Vì sao hỏi:** tài khoản chưa xác thực đầy đủ thường có hạn mức thấp để giảm rủi ro gian lận.
+4. Phí mở tài khoản, phí duy trì hàng tháng có thu không, và tính từ khi nào?
+   - **Vì sao hỏi:** ảnh hưởng trực tiếp đến số dư thực tế của khách và báo cáo doanh thu.
+
+**Nhóm 3: Trạng thái & lỗi**
+5. Mỗi bước eKYC có trạng thái gì (pending, verified, rejected, expired), và khi nào hết hạn?
+   - **Vì sao hỏi:** khách có thể chụp ảnh nhưng không hoàn thành trong 24 giờ, cần hết hạn và cho phép bắt đầu lại.
+   - **Rủi ro:** hồ sơ bị "kẹt" mãi trong trạng thái pending, khách không biết lý do, tổng đài quá tải.
+6. Nếu chụp ảnh CMND mờ, hệ thống từ chối ngay hay cho phép chụp lại tối đa N lần?
+   - **Vì sao hỏi:** cần quy tắc rõ để tránh khách chụp lại vô tận hoặc bị khóa hồ sơ sau một lần sai.
+
+**Nhóm 4: Quy định & audit**
+7. Dữ liệu eKYC (ảnh CMND, ảnh mặt) được lưu bao lâu, và ai được xem (chỉ compliance team hay toàn bộ dev)?
+   - **Vì sao hỏi:** pháp luật yêu cầu lưu dữ liệu xác thực đủ thời gian (ví dụ 5 năm) và chỉ cho người được ủy quyền xem để ngăn rò rỉ thông tin cá nhân.
+8. Có lưu nhật ký ai duyệt hồ sơ, lúc nào, lý do gì không?
+   - **Vì sao hỏi:** kiểm toán yêu cầu bằng chứng ai đã duyệt mở tài khoản cho khách, tránh nhân viên đứng sau mở tài khoản ảo.
+
+**Nhóm 5: Phi chức năng**
+9. Khách hàng mở tài khoản đồng thời bao nhiêu người mỗi giờ, và thời gian duyệt chấp nhận được là bao nhiêu?
+   - **Vì sao hỏi:** 100 người/giờ và 10.000 người/giờ thiết kế khác nhau hoàn toàn. Khối lượng lớn cần xử lý song song và hàng đợi.
+10. Nếu dịch vụ xác thực khuôn mặt của bên thứ ba lỗi, hệ thống làm thế nào (chuyển sang quay lại chi nhánh hay thử lại sau)?
+    - **Vì sao hỏi:** cần kế hoạch dự phòng (fallback) khi bên thứ ba gián đoạn, không để toàn bộ quy trình dừng hẳn.
+
+### Nếu không hỏi thì chuyện gì xảy ra
+Ngân hàng triển khai mở tài khoản online chỉ hỗ trợ chụp ảnh CMND và ảnh mặt. Sau hai tuần, cơ quan quản lý yêu cầu thêm bước xác thực video trực tiếp và lưu dữ liệu 5 năm, chỉ compliance team được xem. Hệ thống hiện không có bước video, không phân quyền xem, và không lưu nhật ký duyệt. Đội dev phải viết lại giao diện, thêm microservice gọi video, chỉnh sửa cơ sở dữ liệu để lưu nhật ký, và loại bỏ quyền truy cập của dev — mất hơn một tháng, trong lúc đó không thể mở tài khoản online mới.
+
+### Từ câu trả lời tới thiết kế
+Bảng dưới cho thấy câu trả lời khác nhau dẫn tới thiết kế khác nhau:
+
+| Câu trả lời PO | Thiết kế A (đơn giản) | Thiết kế B (doanh nghiệp) |
+|---|---|---|
+| Chỉ cá nhân, 2 bước | 1 microservice, không phân quyền | Nhiều bước, phân quyền compliance, lưu 5 năm |
+| Nhiều loại khách (cá nhân, doanh nghiệp) | 1 quy trình chung | Quy trình riêng theo loại khách |
+
+### Trả lời mẫu khi phỏng vấn
+"Khi PO yêu cầu mở tài khoản online qua eKYC, tôi sẽ làm rõ 10 câu nhóm theo năm nhóm: quy trình eKYC có bao nhiêu bước và đối tượng là ai (phạm vi & người dùng); hạn mức nạp ban đầu và phí mở tài khoản (tiền & số liệu); trạng thái mỗi bước và xử lý khi ảnh mờ (trạng thái & lỗi); lưu dữ liệu ảnh bao lâu, ai được xem, và lưu nhật ký duyệt (quy định & audit); khối lượng khách mở mỗi giờ và kế hoạch dự phòng khi dịch vụ bên thứ ba lỗi (phi chức năng). Tôi khuyên có bước hết hạn cho hồ sơ chưa hoàn thành, phân quyền xem ảnh chỉ cho compliance, và lưu nhật ký ai duyệt để kiểm toán. Can you clarify: how many eKYC steps are required, and who is authorized to view the ID images? What is the daily volume target and acceptable approval time?"
+
+> Senior tip: Ảnh CMND và ảnh mặt là dữ liệu nhạy cảm, không bao giờ lưu vào log hoặc hiển thị lại cho dev. Chỉ compliance team được xem, và phải có nhật ký truy cập đầy đủ để kiểm toán sau này.
+
+  `,
+},
+{
+  id: 'banking-070',
+  topic: 'banking',
+  level: 'senior',
+  q: 'PO nói: "Ngân hàng cần hệ thống cảnh báo gian lận (fraud warning) khi phát hiện giao dịch lạ trên tài khoản khách hàng." Trước khi thiết kế, bạn sẽ hỏi lại những gì và vì sao?',
+  a: `**Tóm tắt:** Hệ thống cảnh báo gian lận phát hiện các giao dịch bất thường (ví dụ số tiền lớn đột ngột, giao dịch từ quốc gia lạ, nhiều giao dịch liên tiếp trong thời gian ngắn) và thông báo cho khách hàng hoặc từ chối giao dịch. Trước khi thiết kế, dev cần làm rõ 10 câu dưới đây, nhóm theo 5 nhóm: phạm vi & người dùng, tiền & số liệu, trạng thái & lỗi, quy định & audit, phi chức năng. Mỗi câu đi kèm lý do hỏi và rủi ro nếu không hỏi.
+
+### Các câu nên hỏi lại
+
+**Nhóm 1: Phạm vi & người dùng**
+1. Cảnh báo gửi đến ai (khách hàng qua SMS/email, đội rủi ro ngân hàng, hoặc cả hai)?
+   - **Vì sao hỏi:** nếu chỉ gửi khách hàng, ngân hàng không biết có gian lận lớn nào đang xảy ra. Nếu chỉ gửi team, khách hàng không kịp can thiệp.
+2. Áp dụng cho loại giao dịch nào (chuyển tiền, rút tiền, thanh toán thẻ, mua sắm online)?
+   - **Vì sao hỏi:** mỗi loại giao dịch có quy tắc phát hiện khác nhau. Chuyển tiền lớn và mua sắm online không dùng cùng một ngưỡng.
+
+**Nhóm 2: Tiền & số liệu**
+3. Ngưỡng cảnh báo là bao nhiêu (ví dụ giao dịch trên 50 triệu, hoặc trên 50% số dư)?
+   - **Vì sao hỏi:** ngưỡng quá thấp gây cảnh báo giả (false positive), khách phiền và bỏ qua. Ngưỡng quá cao bỏ lỡ gian lận thật.
+4. Khung thời gian tính số giao dịch (ví dụ 5 giao dịch trong 10 phút) là bao nhiêu?
+   - **Vì sao hỏi:** cần cửa sổ thời gian cố định để đếm số lần giao dịch và phát hiện tấn công kiểu "rút tiền nhiều lần liên tiếp".
+
+**Nhóm 3: Trạng thái & lỗi**
+5. Mỗi cảnh báo có trạng thái gì (new, under_review, confirmed_fraud, false_positive, dismissed), và ai thay đổi trạng thái?
+   - **Vì sao hỏi:** cần theo dõi vòng đời cảnh báo từ khi sinh đến khi xử lý xong, tránh cảnh báo bị quên lãng.
+6. Nếu hệ thống phát hiện gian lận, từ chối giao dịch ngay hay chỉ cảnh báo và để khách quyết định?
+   - **Vì sao hỏi:** từ chối ngay gây phiền khách nếu là giao dịch hợp pháp (false positive). Chỉ cảnh báo có thể để gian lận xảy ra trước khi can thiệp.
+
+**Nhóm 4: Quy định & audit**
+7. Có lưu toàn bộ dữ liệu dùng để đưa ra quyết định cảnh báo (địa chỉ IP, thiết bị, thời gian, vị trí) không, và lưu bao lâu?
+   - **Vì sao hỏi:** cần bằng chứng khi khách khiếu nại "tại sao giao dịch của tôi bị từ chối" hoặc khi cơ quan quản lý kiểm tra hệ thống phòng chống gian lận.
+8. Khách hàng có quyền kháng cáo quyết định từ chối giao dịch không, và quy trình ra sao?
+   - **Vì sao hỏi:** khách bị từ chối sai cần cách mở khóa tài khoản, không để bị khóa vĩnh viễn mà không có đường khai thác.
+
+**Nhóm 5: Phi chức năng**
+9. Cảnh báo cần xử lý trong thời gian bao nhiêu sau khi giao dịch xảy ra (ví dụ dưới 5 giây)?
+   - **Vì sao hỏi:** nếu chậm hơn thời gian giao dịch hoàn thành, gian lận đã thành công trước khi hệ thống kịp can thiệp.
+10. Hệ thống cần xử lý bao nhiêu giao dịch mỗi giây (TPS), và dùng rule-based hay machine learning?
+    - **Vì sao hỏi:** rule-based dễ triển khai và giải thích, machine learning phát hiện được mẫu lạ mới nhưng khó giải thích và cần dữ liệu lịch sử.
+
+### Nếu không hỏi thì chuyện gì xảy ra
+Ngân hàng triển khai hệ thống cảnh báo gian lận chỉ dựa trên ngưỡng số tiền lớn (trên 100 triệu). Sau một tháng, nhóm tấn công chia giao dịch lớn thành nhiều giao dịch nhỏ (mỗi giao dịch 90 triệu, dưới ngưỡng) gửi đến nhiều tài khoản khác nhau. Hệ thống không phát hiện vì mỗi giao dịch nhỏ dưới ngưỡng, và không đếm số giao dịch trong khung thời gian ngắn. Thiệt gesam lên hàng tỷ đồng trước khi team rủi ro phát hiện qua báo cáo của khách hàng. Nguyên nhân gốc: không có quy tắc đếm tần suất giao dịch trong cửa sổ thời gian, và không có quy tắc phát hiện mẫu chia nhỏ giao dịch.
+
+### Từ câu trả lời tới thiết kế
+Bảng dưới cho thấy câu trả lời khác nhau dẫn tới thiết kế khác nhau:
+
+| Câu trả lời PO | Thiết kế A (đơn giản) | Thiết kế B (doanh nghiệp) |
+|---|---|---|
+| Chỉ cảnh báo khách qua SMS | Gửi SMS, không từ chối giao dịch | Gửi SMS + từ chối giao dịch + thông báo team rủi ro |
+| Rule-based ngưỡng cố định | 1 ngưỡng số tiền | Nhiều quy tắc: số tiền, tần suất, thiết bị, vị trí |
+
+### Trả lời mẫu khi phỏng vấn
+"Khi PO yêu cầu hệ thống cảnh báo gian lận, tôi sẽ làm rõ 10 câu nhóm theo năm nhóm: cảnh báo gửi đến ai và áp dụng cho loại giao dịch nào (phạm vi & người dùng); ngưỡng cảnh báo số tiền và khung thời gian đếm giao dịch (tiền & số liệu); trạng thái vòng đời cảnh báo và từ chối giao dịch ngay hay chỉ cảnh báo (trạng thái & lỗi); lưu dữ liệu ra quyết định và quy trình kháng cáo của khách (quy định & audit); thời gian xử lý dưới bao nhiêu giây và quy tắc cố định hay machine learning (phi chức năng). Tôi khuyên kết hợp nhiều quy tắc (số tiền, tần suất, thiết bị, vị trí) và lưu bằng chứng quyết định để kiểm toán. Can you clarify: who receives the fraud alert — customer, risk team, or both? What is the required detection latency in seconds? Is transaction blocking automatic or manual?"
+
+> Senior tip: Cảnh báo quá nhiều khiến khách bỏ qua (alert fatigue). Hãy bắt đầu với ít quy tắc rõ ràng, đo false positive rate, rồi mới mở rộng. Luôn lưu đủ bằng chứng (IP, thiết bị, thời gian) để giải thích với khách và cơ quan quản lý khi cần.
+
+  `,
+},
+{
+  id: 'banking-071',
+  topic: 'banking',
+  level: 'senior',
+  q: 'PO nói: "Ngân hàng cần xuất sao kê và báo cáo gửi cho cơ quan quản lý (ví dụ Ngân hàng Nhà nước) định kỳ." Trước khi thiết kế, bạn sẽ hỏi lại những gì và vì sao?',
+  a: `**Tóm tắt:** Xuất sao kê và báo cáo quản lý là quá trình tổng hợp dữ liệu giao dịch, số dư, và các chỉ số rủi ro thành file/pdf gửi cho khách hàng hoặc cơ quan quản lý định kỳ (hàng ngày, hàng tháng, hàng quý). Trước khi thiết kế, dev cần làm rõ 10 câu dưới đây, nhóm theo 5 nhóm: phạm vi & người dùng, tiền & số liệu, trạng thái & lỗi, quy định & audit, phi chức năng. Mỗi câu đi kèm lý do hỏi và rủi ro nếu không hỏi.
+
+### Các câu nên hỏi lại
+
+**Nhóm 1: Phạm vi & người dùng**
+1. Báo cáo gửi cho ai (khách hàng qua email/app, hay cơ quan quản lý qua cổng thông tin)?
+   - **Vì sao hỏi:** sao kê khách hàng cần định dạng thân thiện, báo cáo cơ quan quản lý cần định dạng kỹ thuậtStrict (XML, CSV theo mẫu quy định).
+2. Báo cáo là định kỳ (hàng ngày, tháng, quý) hay theo yêu cầu (ad-hoc)?
+   - **Vì sao hỏi:** định kỳ có thể tự động hóa bằng job cron, ad-hoc cần giao diện cho người dùng chọn khoảng thời gian và xuất ngay.
+
+**Nhóm 2: Tiền & số liệu**
+3. Số tiền trong báo cáo làm tròn đến đồng hay có phần thập phân?
+   - **Vì sao hỏi:** VND không có xu/hào, làm tròn về đồng. Báo cáo sai 1 đồng có thể bị cơ quan quản lý từ chối.
+4. Khoảng thời gian báo cáo tính theo ngày giao dịch hay ngày ghi sổ (value date), và múi giờ nào?
+   - **Vì sao hỏi:** giao dịch vào 23:59 ngày 30 có thể ghi sổ ngày 1 tháng sau. Sai múi giờ hoặc ngày tính sẽ làm báo cáo thiếu hoặc trùng giao dịch.
+
+**Nhóm 3: Trạng thái & lỗi**
+5. Mỗi lần xuất báo cáo có trạng thái gì (pending, generated, sent, failed), và xử lý lại khi thất bại như thế nào?
+   - **Vì sao hỏi:** nếu xuất báo cáo thất bại (mạng lỗi, cổng thông tin bảo trì), cần retry tự động và thông báo người quản trị, không để báo cáo bị bỏ lỡ.
+6. Nếu dữ liệu sau khi xuất bị sửa (ví dụ điều chỉnh sai sót), cần xuất lại báo cáo hay xuất báo cáo bổ sung (supplementary)?
+   - **Vì sao hỏi:** cơ quan quản lý thường không chấp nhận sửa báo cáo đã gửi, cần xuất bản bổ sung kèm lý do.
+
+**Nhóm 4: Quy định & audit**
+7. Định dạng báo cáo theo mẫu nào của cơ quan quản lý (CSV, XML, PDF có chữ ký số), và có chữ ký số không?
+   - **Vì sao hỏi:** mỗi cơ quan quản lý có mẫu báo cáo bắt buộc. Sai định dạng → báo cáo bị từ chối, ngân hàng bị phạt.
+8. Lưu báo cáo đã gửi bao lâu, và ai được tải về xem lại?
+   - **Vì sao hỏi:** pháp luật yêu cầu lưu báo cáo gửi cơ quan quản lý đủ thời gian (ví dụ 5–10 năm) để tra cứu sau này.
+
+**Nhóm 5: Phi chức năng**
+9. Báo cáo có bao nhiêu hàng giao dịch (ví dụ 10.000 hàng cho một khách hàng cao cấp), và thời gian xuất chấp nhận được là bao nhiêu?
+   - **Vì sao hỏi:** báo cáo lớn cần xử lý nền (background job), không thể xuất trực tiếp trên giao diện làm người dùng chờ hàng phút.
+10. Nếu cổng thông tin của cơ quan quản lý bảo trì, hệ thống làm thế nào (lưu lại và gửi sau, hay báo lỗi ngay)?
+    - **Vì sao hỏi:** cần kế hoạch dự phòng để báo cáo định kỳ không bị bỏ lỡ khi bên kia đang bảo trì.
+
+### Nếu không hỏi thì chuyện gì xảy ra
+Ngân hàng xuất báo cáo hàng tháng cho Ngân hàng Nhà nước bằng file CSV tự định dạng. Sau khi gửi, cơ quan quản lý trả lời báo cáo bị từ chối vì sai mẫu định dạng bắt buộc (thiếu cột mã giao dịch, sai định dạng ngày tháng). Đội dev phải viết lại mẫu xuất, lấy lại dữ liệu tháng trước, và gửi lại — trong lúc đó ngân hàng bị cảnh báo vi phạm quy định báo cáo. Nguyên nhân gốc: không xác định rõ định dạng và mẫu báo cáo của cơ quan quản lý trước khi thiết kế, và không kiểm tra thử với dữ liệu thật trước khi đưa vào sản xuất.
+
+### Từ câu trả lời tới thiết kế
+Bảng dưới cho thấy câu trả lời khác nhau dẫn tới thiết kế khác nhau:
+
+| Câu trả lời PO | Thiết kế A (đơn giản) | Thiết kế B (doanh nghiệp) |
+|---|---|---|
+| Báo cáo cho khách hàng, PDF | Xuất PDF trực tiếp trên giao diện | Job nền xuất PDF, gửi email, lưu lịch sử |
+| Báo cáo cho cơ quan quản lý, CSV mẫu cố định | CSV tự định dạng | CSV theo mẫu bắt buộc, chữ ký số, lưu 10 năm |
+
+### Trả lời mẫu khi phỏng vấn
+"Khi PO yêu cầu xuất sao kê và báo cáo gửi cơ quan quản lý, tôi sẽ làm rõ 10 câu nhóm theo năm nhóm: báo cáo gửi cho ai và định kỳ hay theo yêu cầu (phạm vi & người dùng); làm tròn tiền như thế nào và tính theo ngày giao dịch hay ghi sổ, múi giờ nào (tiền & số liệu); trạng thái xuất báo cáo và xử lý lại khi thất bại, xuất lại hay bổ sung khi dữ liệu thay đổi (trạng thái & lỗi); định dạng theo mẫu cơ quan quản lý có chữ ký số không, lưu báo cáo bao lâu (quy định & audit); số hàng giao dịch và thời gian xuất chấp nhận được, kế hoạch dự phòng khi cổng thông tin bảo trì (phi chức năng). Tôi khuyên dùng job nền cho báo cáo lớn, lưu đủ thời gian theo pháp luật, và kiểm tra mẫu định dạng trước khi gửi. Can you clarify: what format does the regulator require (CSV, XML, PDF), and is a digital signature needed? What is the retention period for submitted reports? Is reporting periodic or ad-hoc?"
+
+> Senior tip: Báo cáo gửi cơ quan quản lý là tài liệu pháp lý. Không bao giờ sửa báo cáo đã gửi — nếu sai, phải xuất bản bổ sung kèm lý do và lưu giữ cả hai bản để kiểm toán sau này.
+
+  `,
+},
 );
 
