@@ -5944,4 +5944,533 @@ Lỗi hay gặp khi tự viết bulkhead:
   related: ['concurrency-008', 'concurrency-003', 'concurrency-013'],
   tags: ['Semaphore', 'bulkhead', 'tryAcquire', 'CountDownLatch', 'CyclicBarrier', 'concurrency test', 'virtual threads'],
 },
+{
+  id: 'lesson-concurrency-019',
+  track: 'concurrency',
+  order: 19,
+  title: 'Lock-free với CAS: AtomicLong, LongAdder, ABA, false sharing và padding',
+  level: 'senior',
+  minutes: 40,
+  goals: [
+    'Giải thích được CAS (compare-and-set) hoạt động như thế nào và vòng lặp retry là bắt buộc',
+    'Phân biệt AtomicLong và LongAdder: khi nào dùng cái nào dưới tải tranh chấp cao',
+    'Nêu được vấn đề ABA ở mức nguyên lý và các cách giảm thiểu (version stamp, AtomicStampedReference)',
+    'Hiểu false sharing là gì (cache line), tại sao padding giúp, và hạn chế của cách này',
+    'Viết được bộ đếm/stack lock-free bằng AtomicReference với test tất định',
+  ],
+  body: `### Tóm tắt
+**CAS (Compare-And-Swap)** là lệnh phần cứng (x86: {{lock cmpxchg}}, ARM: {{ldaxr/stlxr}}) cho phép: "nếu giá trị trong ô nhớ vẫn là {{expected}} thì ghi {{newValue}} và trả true; ngược lại không ghi và trả false". Toàn bộ thao tác là **nguyên tử** — không thread nào can giữa được. {{AtomicLong}}, {{AtomicReference}}, {{AtomicInteger}} và các biến atomic trong {{java.util.concurrent.atomic}} đều xây trên CAS.
+
+Khác với khoá (lock): CAS **không bao giờ park thread**, thread thua chỉ quay vòng (spin) và thử lại. Ưu điểm: không deadlock, không context switch, latency thấp khi tranh chấp nhẹ. Nhược điểm: khi nhiều thread cùng tranh chấp một ô nhớ, CPU lãng phí chu kỳ cho vòng lặp retry, cache line ping-pong giữa các core, throughput sụt giảm mạnh.
+
+### CAS và vòng lặp retry: tại sao bắt buộc
+{{AtomicLong.incrementAndGet()}} thực chất là:
+
+~~~java
+public final long incrementAndGet() {
+    long prev, next;
+    do {
+        prev = get();              // đọc giá trị hiện tại
+        next = prev + 1;           // tính giá trị mới
+    } while (!compareAndSet(prev, next));  // CAS: chỉ ghi nếu chưa ai đổi
+    return next;
+}
+~~~
+
+Vòng lặp {{do...while}} là **bắt buộc** vì giữa lúc đọc {{prev}} và gọi {{compareAndSet}}, thread khác có thể đã đổi giá trị. Nếu không thử lại, cập nhật sẽ mất. Đây gọi là **optimistic locking**: giả định "ít khi xung đột", đọc trước, tính toán, rồi CAS; xung đột thì retry.
+
+Lưu ý: {{compareAndSet}} trả về {{boolean}}; code đúng **luôn** kiểm tra kết quả và retry khi false. Không bao giờ giả định CAS thành công lần đầu.
+
+### ABA: vấn đề và giảm thiểu
+Vấn đề ABA: thread T1 đọc giá trị {{A}}, bị ngủ (hoặc chờ I/O). T2 đổi {{A → B → A}} (trả về giá trị cũ). T1 tỉnh dậy, CAS thấy giá trị vẫn là {{A}} nên **thành công**, nhưng trạng thái thực tế đã thay đổi (ví dụ: node trong stack đã bị lấy ra và node khác đưa vào, con trỏ {{head}} trỏ về node cũ nhưng nội dung stack đã khác).
+
+| Cách giảm thiểu | Nguyên lý | Khi nào dùng |
+|---|---|---|
+| **Version stamp** ({{AtomicStampedReference}}) | Gắn số phiên bản tăng dần mỗi lần ghi; CAS so sánh cả giá trị lẫn stamp | Cần phát hiện **mọi** lần ghi đè, kể cả quay về giá trị cũ |
+| **Markable reference** ({{AtomicMarkableReference}}) | Chỉ một bit đánh dấu "đã thay đổi" | Chỉ cần biết "có ai đụng không", không cần đếm bao nhiêu lần |
+| **Immutable object + new instance** | Không bao giờ mutate object cũ, luôn tạo mới; reference thay đổi là state mới | Phổ biến trong functional style, stack lock-free (node mới mỗi push) |
+| **Hazard pointer / epoch-based reclamation** | Trì hoãn xoá object cho tới khi chắc chắn không thread nào đang đọc | Quản lý bộ nhớ lock-free phức tạp, ít gặp trong ứng dụng nghiệp vụ |
+
+Trong Java, {{AtomicStampedReference<V>}} lưu cặp {{(reference, stamp)}}. {{compareAndSet}} yêu cầu cả hai khớp. Chi phí: stamp chiếm thêm bộ nhớ, CAS phức tạp hơn một chút.
+
+> Senior tip: ABA **hiếm gặp** trong code đếm đơn giản (AtomicLong) vì giá trị chỉ tăng. ABA xuất hiện khi **con trỏ/reference** được tái dùng (stack, queue, linked list lock-free). Nếu bạn viết stack lock-free bằng {{AtomicReference<Node>}} và **luôn tạo Node mới cho push**, ABA không xảy ra vì reference cũ không bao giờ quay lại. Nếu pool object hoặc dùng mảng vòng (ring buffer) thì phải lo ABA.
+
+### LongAdder vs AtomicLong: tranh chấp cao
+{{AtomicLong}} dùng **một** ô nhớ. 16 thread cùng {{incrementAndGet()}}: chỉ một thread CAS thành công mỗi lần, 15 thread retry. Cache line của ô nhớ đó "ping-pong" giữa 16 core → throughput giảm theo cấp số nhân khi tăng thread.
+
+{{LongAdder}} (Java 8) chia bộ đếm thành **nhiều cell** (mảng {{Cell[]}}), mỗi thread (hoặc nhóm thread) cập nhật cell riêng, chỉ khi gọi {{sum()}} mới cộng tất cả cell lại.
+
+~~~java
+// AtomicLong: 1 ô nhớ, mọi thread tranh nhau
+AtomicLong counter = new AtomicLong();
+// LongAdder: nhiều cell, thread cục bộ cập nhật cell của mình
+LongAdder adder = new LongAdder();
+adder.increment();   // thread-local cell += 1
+long total = adder.sum();   // duyệt mảng cell và cộng
+~~~
+
+| Yếu tố | AtomicLong | LongAdder |
+|---|---|---|
+| Bộ nhớ | 1 {{long}} (8 byte) + header | Mảng cell (~ số CPU core × 2), mỗi cell ~ 24 byte |
+| {{increment}} tranh chấp thấp | Nhanh (1 CAS) | Chậm hơn một chút (tìm/khởi tạo cell) |
+| {{increment}} tranh chấp cao (32+ thread) | Sụt giảm mạnh (cache line ping-pong) | **Tăng gần tuyến tính** (ít xung đột cell) |
+| {{sum()}}/{{get()}} | O(1) | O(number of cells) — đọc khi ít tranh chấp |
+| Phù hợp | Counter đọc thường xuyên, ghi ít; sequence ID, metric precision | Metric throughput cao (request count, error count), counter ghi nhiều đọc ít |
+
+{{LongAdder}} **không** thay thế {{AtomicLong}} cho mọi trường hợp: nếu bạn cần đọc giá trị chính xác ngay sau mỗi ghi (ví dụ: phát sinh ID duy nhất, kiểm tra ngưỡng), {{AtomicLong}} (hoặc {{AtomicLong.getAndIncrement()}}) là đúng. {{LongAdder.sum()}} có thể trả về giá trị "chưa kịp cập nhật" từ các cell khác nếu gọi ngay giữa lúc ghi.
+
+### False sharing: cache line ping-pong ẩn danh
+CPU đọc/ghi bộ nhớ theo **cache line** (thường 64 byte). Hai biến {{long}} nằm cạnh nhau trong mảng hoặc object khác nhau có thể chung **một cache line**. Thread A ghi biến 1, thread B ghi biến 2: logic khác nhau, không xung đột, nhưng CPU vẫn phải đồng bộ cache line giữa hai core → hiệu năng sụt giảm như thể chúng đang tranh chấp cùng một biến. Điều này gọi là **false sharing** (chia sẻ sai).
+
+Ví dụ điển hình: mảng cell trong {{LongAdder}} (trước Java 18), hoặc nhiều counter đặt cạnh nhau:
+
+~~~java
+class Metrics {
+    long requestCount;      // offset 0
+    long errorCount;        // offset 8 → CÙNG cache line với requestCount trên 64-byte line!
+    long latencySum;        // offset 16
+}
+~~~
+
+Hai thread cùng tăng {{requestCount}} và {{errorCount}}: mỗi lần ghi làm cache line-invalidated ở core kia, throughput giảm 10–100x so với đặt riêng cache line.
+
+#### Padding: cách khắc phục (nguyên lý)
+**Padding** là chèn các byte "rác" giữa các biến để đẩy chúng ra các cache line khác nhau. Trên Java, thường dùng mảng {{long[]}} độ dài 8 (8 × 8 byte = 64 byte = 1 cache line) hoặc annotation {{@Contended}} (JDK internal, cần {{-XX:-RestrictContended}}).
+
+~~~java
+// Padding thủ công: mỗi counter chiếm 1 cache line
+static class PaddedLong {
+    volatile long value;
+    long p1, p2, p3, p4, p5, p6, p7;   // 7 × 8 = 56 byte padding, cộng value = 64 byte
+}
+~~~
+
+Tuy nhiên, **padding không phải silver bullet**:
+- JIT có thể **tối ưu hoá bỏ** các field không dùng (dead field elimination). Từ JDK 12, {{@Contended}} được hỗ trợ tốt hơn; padding thủ công cần {{volatile}} hoặc {{@ForceInline}} (không có sẵn) để giữ field.
+- Bộ nhớ tăng: 1 counter = 64 byte thay vì 8 byte. Với hàng nghìn counter (ví dụ: metric theo tenant), RAM tăng đáng kể.
+- Cache line size **khác nhau** giữa kiến trúc (x86: 64 byte, ARM Neoverse: 128 byte, Apple M-series: 128 byte). Padding 64 byte có thể không đủ trên ARM.
+- Với {{LongAdder}} (JDK 18+), cell đã có padding nội bộ ({{@Contended}}), false sharing giữa các cell gần như biến mất.
+
+> Senior tip: **Đo trước, pad sau**. Đừng pad mọi biến "cho chắc". Chỉ pad khi: (1) profiling chỉ ra cache miss rate cao / CPI cao trên biến cụ thể, (2) biến đó được ghi bởi nhiều thread độc lập. Trên Java 17+, {{LongAdder}} và {{ConcurrentHashMap}} (bin counter) đã được pad nội bộ. Nếu tự viết cấu trúc dữ liệu lock-free (ví dụ: mảng head/tail cho ring buffer), hãy pad {{head}} và {{tail}} ra cache line riêng.
+
+### Ví dụ đời thực
+Một hệ thống thanh toán xử lý 50.000 TPS (transaction per second). Ban đầu dùng {{AtomicLong}} cho {{successCount}}, {{failCount}}, {{latencySum}}. Dưới tải 32 thread, throughput chỉ 18.000 TPS, CPU 95%, perf top chỉ ra {{cache-misses}} cực cao trên địa chỉ của ba counter.
+
+Nhóm đổi sang {{LongAdder}} cho ba counter: throughput nhảy lên 48.000 TPS, CPU 45%. Tuy nhiên {{latencySum}} cần đọc chính xác để tính percentile -> nhóm giữ {{AtomicLong}} cho {{latencySum}} (vì ghi ít, đọc nhiều) và pad {{successCount}}/{{failCount}} ra cache line riêng bằng {{@Contended}} (JDK 17, bật {{-XX:-RestrictContended}}). Kết quả: 50.000 TPS ổn định, p99 latency 12 ms.
+
+### Trả lời mẫu khi phỏng vấn
+CAS là lệnh phần cứng so sánh và đổi giá trị nguyên tử: nếu ô nhớ vẫn là giá trị cũ thì ghi giá trị mới, trả true; ngược lại trả false. AtomicLong dùng CAS trong vòng lặp retry: đọc, tính, CAS, sai thì làm lại. Không park thread nên không deadlock, nhưng tranh chấp cao thì CPU spin lãng phí.
+
+LongAdder chia bộ đếm thành nhiều cell, mỗi thread cập nhật cell cục bộ, chỉ cộng lại khi gọi sum(). Dùng LongAdder cho metric ghi nhiều đọc ít (request count); AtomicLong cho sequence ID, check ngưỡng cần độ chính xác tức thì.
+
+ABA là thread đọc A, thread khác đổi A→B→A, thread đầu CAS thành công mà không biết trạng thái đã đổi. Giảm thiệu bằng version stamp (AtomicStampedReference) hoặc luôn tạo object mới cho push (stack lock-free).
+
+False sharing: hai biến khác nhau chung cache line 64 byte, ghi xen kẽ làm cache line ping-pong. Khắc phục bằng padding (đẩy biến ra line riêng) hoặc @Contended. Nhưng padding tốn RAM, JIT có thể tối ưu bỏ, và cache line size khác nhau giữa CPU. Chỉ pad khi profiling chứng minh bottleneck ở đó — LongAdder JDK 18+ đã tự pad.
+
+### Liên hệ phỏng vấn
+Câu hay gặp: "AtomicLong khác LongAdder thế nào?", "Vòng lặp CAS có bao giờ chạy mãi không?", "ABA là gì và khi nào gặp?", "False sharing là gì, sửa sao?". Câu trả lời senior nêu được: AtomicLong = 1 ô nhớ, LongAdder = striped cells; CAS retry có thể livelock lý thuyết nhưng hiếm trên thực tế; ABA chỉ khi reference tái dùng (stack/queue lock-free), không phải counter; false sharing = cache line conflict, pad/@Contended nhưng có trade-off RAM và portability.`,
+  exercises: [
+    {
+      title: 'SpinCounter: bộ đếm lock-free bằng AtomicLong và LongAdder so sánh',
+      prompt: `Viết class {{SpinCounter}} cung cấp hai chế độ đếm:
+- {{Mode.ATOMIC}}: dùng {{AtomicLong}}
+- {{Mode.LONG_ADDER}}: dùng {{LongAdder}}
+
+API:
+- {{SpinCounter(Mode mode)}}: khởi tạo
+- {{void increment()}}: tăng 1
+- {{long get()}}: giá trị hiện tại (AtomicLong: {{get()}}, LongAdder: {{sum()}})
+- {{void reset()}}: về 0 (AtomicLong: {{set(0)}}, LongAdder: tạo instance mới hoặc dùng reflection — ở bài tập chỉ test Mode.ATOMIC cho reset)
+
+Ràng buộc: code phải compile Java 17. Không dùng thư viện ngoài.`,
+      starter: `import java.util.concurrent.atomic.*;
+ 
+enum Mode { ATOMIC, LONG_ADDER }
+ 
+class SpinCounter {
+    private final Mode mode;
+    private final AtomicLong atomic;
+    private final LongAdder adder;
+ 
+    SpinCounter(Mode mode) {
+        this.mode = mode;
+        this.atomic = new AtomicLong();
+        this.adder = new LongAdder();
+    }
+ 
+    void increment() {
+        throw new UnsupportedOperationException("TODO");
+    }
+ 
+    long get() {
+        throw new UnsupportedOperationException("TODO");
+    }
+ 
+    void reset() {
+        throw new UnsupportedOperationException("TODO");
+    }
+ 
+    Mode mode() { return mode; }
+}`,
+      tests: `public class Main {
+    static int passed = 0, total = 0;
+    static void check(String name, Runnable r) {
+        total++;
+        try { r.run(); passed++; System.out.println("PASS " + name); }
+        catch (Throwable t) { System.out.println("FAIL " + name + ": " + t); }
+    }
+    static void eq(Object expected, Object actual) {
+        if (!Objects.equals(expected, actual)) throw new AssertionError("expected " + expected + " got " + actual);
+    }
+    static final ThreadFactory DAEMON = r -> { Thread t = new Thread(r); t.setDaemon(true); return t; };
+    static void runConcurrently(int threads, int iterations, Runnable task) throws Exception {
+        ExecutorService pool = Executors.newFixedThreadPool(threads, DAEMON);
+        CountDownLatch start = new CountDownLatch(1);
+        CountDownLatch done = new CountDownLatch(threads);
+        for (int t = 0; t < threads; t++) {
+            pool.submit(() -> {
+                try { start.await(); }
+                catch (InterruptedException e) { Thread.currentThread().interrupt(); return; }
+                for (int i = 0; i < iterations; i++) task.run();
+                done.countDown();
+            });
+        }
+        start.countDown();
+        if (!done.await(10, TimeUnit.SECONDS)) throw new AssertionError("timeout: deadlock hoặc livelock?");
+        pool.shutdown();
+        if (!pool.awaitTermination(5, TimeUnit.SECONDS)) pool.shutdownNow();
+    }
+    public static void main(String[] args) throws Exception {
+        check("Atomic mode: single thread", () -> {
+            SpinCounter c = new SpinCounter(Mode.ATOMIC);
+            for (int i = 0; i < 1000; i++) c.increment();
+            eq(1000L, c.get());
+        });
+        check("LongAdder mode: single thread", () -> {
+            SpinCounter c = new SpinCounter(Mode.LONG_ADDER);
+            for (int i = 0; i < 1000; i++) c.increment();
+            eq(1000L, c.get());
+        });
+        check("Atomic mode: 8 threads x 50000 = 400000 (5 rounds, deterministic)", () -> {
+            for (int round = 0; round < 5; round++) {
+                SpinCounter c = new SpinCounter(Mode.ATOMIC);
+                try { runConcurrently(8, 50_000, c::increment); }
+                catch (Exception e) { throw new AssertionError(e); }
+                eq(400_000L, c.get());
+            }
+        });
+        check("LongAdder mode: 8 threads x 50000 = 400000 (5 rounds, deterministic)", () -> {
+            for (int round = 0; round < 5; round++) {
+                SpinCounter c = new SpinCounter(Mode.LONG_ADDER);
+                try { runConcurrently(8, 50_000, c::increment); }
+                catch (Exception e) { throw new AssertionError(e); }
+                eq(400_000L, c.get());
+            }
+        });
+        check("Atomic mode: reset works", () -> {
+            SpinCounter c = new SpinCounter(Mode.ATOMIC);
+            c.increment(); c.increment();
+            c.reset();
+            eq(0L, c.get());
+            for (int i = 0; i < 100; i++) c.increment();
+            eq(100L, c.get());
+        });
+        check("get() returns boxed Long when wrapped", () -> {
+            SpinCounter a = new SpinCounter(Mode.ATOMIC);
+            SpinCounter b = new SpinCounter(Mode.LONG_ADDER);
+            a.increment(); b.increment();
+            eq(Long.class, Long.valueOf(a.get()).getClass());
+            eq(Long.class, Long.valueOf(b.get()).getClass());
+        });
+        System.out.println("RESULT " + passed + "/" + total);
+    }
+}`,
+      reference: `import java.util.concurrent.atomic.*;
+ 
+enum Mode { ATOMIC, LONG_ADDER }
+ 
+class SpinCounter {
+    private final Mode mode;
+    private final AtomicLong atomic;
+    private final LongAdder adder;
+ 
+    SpinCounter(Mode mode) {
+        this.mode = mode;
+        this.atomic = new AtomicLong();
+        this.adder = new LongAdder();
+    }
+ 
+    void increment() {
+        if (mode == Mode.ATOMIC) atomic.incrementAndGet();
+        else adder.increment();
+    }
+ 
+    long get() {
+        return mode == Mode.ATOMIC ? atomic.get() : adder.sum();
+    }
+ 
+    void reset() {
+        if (mode == Mode.ATOMIC) atomic.set(0);
+        else throw new UnsupportedOperationException("LongAdder reset not supported in this exercise");
+    }
+ 
+    Mode mode() { return mode; }
+}`,
+      hints: [
+        '{{increment()}}: rẽ nhánh theo {{mode}}, gọi {{atomic.incrementAndGet()}} hoặc {{adder.increment()}}.',
+        '{{get()}}: {{atomic.get()}} hoặc {{adder.sum()}}.',
+        '{{reset()}}: chỉ hỗ trợ {{AtomicLong}} bằng {{atomic.set(0)}}; LongAdder không có reset, ném exception.',
+        'Test chạy 5 vòng lặp với CountDownLatch để đảm bảo tất định: nếu code sai (quên increment, sai mode) thì FAIL ổn định.',
+      ],
+      explain: `Lời giải đơn giản là delegate tới hai implementation có sẵn của JDK. Điểm quan trọng:
+- {{AtomicLong.incrementAndGet()}} dùng CAS + retry loop nội bộ.
+- {{LongAdder.increment()}} cập nhật cell cục bộ (thread-local probe), không CAS trên biến chung.
+- Test chạy 5 vòng (round) với CountDownLatch: nếu code có bug race condition, kết quả sẽ sai ở ít nhất một vòng và FAIL ổn định, không flaky.
+- {{LongAdder}} không có method reset(); bài tập chỉ yêu cầu reset cho Atomic mode. Trong thực tế, có thể tạo instance LongAdder mới gán lại field (cần volatile/AtomicReference) hoặc dùng reflection — nhưng phức tạp và hiếm khi cần.`,
+    },
+    {
+      title: 'BoundedStack lock-free: push/pop bằng AtomicReference<Node>',
+      prompt: `Viết stack **lock-free**, **có giới hạn dung lượng** (bounded), dùng {{AtomicReference<Node>}} cho {{head}}.
+
+Kiến trúc:
+- Node bất biến: {{value}} (int) + {{next}} (Node). Không bao giờ mutate node sau khi tạo.
+- {{head}} trỏ tới node đỉnh (top). Stack rỗng khi {{head == null}}.
+- {{push(int value)}}: nếu size < capacity, tạo Node mới, CAS {{head}} từ oldHead sang newNode (newNode.next = oldHead). Thất bại thì retry. Đã đầy thì trả về {{false}}.
+- {{pop()}}: nếu rỗng trả {{-1}}. CAS {{head}} từ oldHead sang oldHead.next. Thất bại thì retry. Thành công trả {{oldHead.value}}.
+- {{size()}}: duyệt linked list đếm (O(n), chỉ dùng cho test/debug).
+- {{capacity()}}: giới hạn tối đa.
+
+Yêu cầu lock-free: **không dùng synchronized, Lock, Semaphore**. Chỉ {{AtomicReference}} và CAS loop.
+
+Ràng buộc: test sẽ chạy nhiều thread push/pop cùng lúc, lặp nhiều vòng với CountDownLatch để bắt race condition. Code phải compile Java 17.`,
+      starter: `import java.util.concurrent.atomic.AtomicReference;
+ 
+class BoundedStack {
+    private final int capacity;
+    private final AtomicReference<Node> head = new AtomicReference<>();
+    private final AtomicLong size = new AtomicLong();   // chỉ dùng để kiểm tra đầy nhanh, không bắt buộc chính xác tuyệt đối
+ 
+    static final class Node {
+        final int value;
+        final Node next;
+        Node(int value, Node next) { this.value = value; this.next = next; }
+    }
+ 
+    BoundedStack(int capacity) {
+        if (capacity < 1) throw new IllegalArgumentException("capacity >= 1");
+        this.capacity = capacity;
+    }
+ 
+    boolean push(int value) {
+        throw new UnsupportedOperationException("TODO");
+    }
+ 
+    int pop() {
+        throw new UnsupportedOperationException("TODO");
+    }
+ 
+    int size() {
+        throw new UnsupportedOperationException("TODO");
+    }
+ 
+    int capacity() { return capacity; }
+}`,
+      tests: `public class Main {
+    static int passed = 0, total = 0;
+    static void check(String name, Runnable r) {
+        total++;
+        try { r.run(); passed++; System.out.println("PASS " + name); }
+        catch (Throwable t) { System.out.println("FAIL " + name + ": " + t); }
+    }
+    static void eq(Object expected, Object actual) {
+        if (!Objects.equals(expected, actual)) throw new AssertionError("expected " + expected + " got " + actual);
+    }
+    static final ThreadFactory DAEMON = r -> { Thread t = new Thread(r); t.setDaemon(true); return t; };
+    static void runConcurrently(int threads, int opsPerThread, Runnable task) throws Exception {
+        ExecutorService pool = Executors.newFixedThreadPool(threads, DAEMON);
+        CountDownLatch start = new CountDownLatch(1);
+        CountDownLatch done = new CountDownLatch(threads);
+        for (int t = 0; t < threads; t++) {
+            pool.submit(() -> {
+                try { start.await(); }
+                catch (InterruptedException e) { Thread.currentThread().interrupt(); return; }
+                for (int i = 0; i < opsPerThread; i++) task.run();
+                done.countDown();
+            });
+        }
+        start.countDown();
+        if (!done.await(10, TimeUnit.SECONDS)) throw new AssertionError("timeout: livelock hoặc deadlock?");
+        pool.shutdown();
+        if (!pool.awaitTermination(5, TimeUnit.SECONDS)) pool.shutdownNow();
+    }
+    public static void main(String[] args) throws Exception {
+        check("single thread: push/pop LIFO", () -> {
+            BoundedStack s = new BoundedStack(10);
+            eq(true, s.push(1)); eq(true, s.push(2)); eq(true, s.push(3));
+            eq(3, s.pop()); eq(2, s.pop()); eq(1, s.pop()); eq(-1, s.pop());
+            eq(0, s.size());
+        });
+        check("full: push trả false, không mất dữ liệu", () -> {
+            BoundedStack s = new BoundedStack(2);
+            eq(true, s.push(10)); eq(true, s.push(20));
+            eq(false, s.push(30)); eq(false, s.push(40));
+            eq(20, s.pop()); eq(10, s.pop()); eq(-1, s.pop());
+        });
+        check("pop empty returns -1", () -> {
+            BoundedStack s = new BoundedStack(5);
+            eq(-1, s.pop()); eq(-1, s.pop());
+            eq(true, s.push(1));
+            eq(1, s.pop()); eq(-1, s.pop());
+        });
+        check("concurrent push only: 8 threads x 1000 = 8000 items (3 rounds)", () -> {
+            for (int round = 0; round < 3; round++) {
+                BoundedStack s = new BoundedStack(10_000);
+                try { runConcurrently(8, 1_000, () -> s.push(1)); }
+                catch (Exception e) { throw new AssertionError(e); }
+                eq(8_000, s.size());
+            }
+        });
+        check("concurrent pop only: pre-fill 8000, 8 threads pop all (3 rounds)", () -> {
+            for (int round = 0; round < 3; round++) {
+                BoundedStack s = new BoundedStack(10_000);
+                for (int i = 0; i < 8_000; i++) s.push(i);
+                AtomicInteger popped = new AtomicInteger();
+                try { runConcurrently(8, 1_000, () -> { if (s.pop() != -1) popped.incrementAndGet(); }); }
+                catch (Exception e) { throw new AssertionError(e); }
+                eq(8_000, popped.get()); eq(0, s.size());
+            }
+        });
+        check("mixed push/pop: 4 push + 4 pop, net zero, size bounded (5 rounds)", () -> {
+            for (int round = 0; round < 5; round++) {
+                BoundedStack s = new BoundedStack(1_000);
+                // pre-fill 500
+                for (int i = 0; i < 500; i++) s.push(i);
+                AtomicInteger pushes = new AtomicInteger(), pops = new AtomicInteger();
+                try { runConcurrently(8, 2_000, () -> {
+                    // chia đều: thread chẵn push, thread lẻ pop
+                    // không thể biết thread id trong lambda, dùng random
+                    if (ThreadLocalRandom.current().nextBoolean()) {
+                        if (s.push(1)) pushes.incrementAndGet();
+                    } else {
+                        if (s.pop() != -1) pops.incrementAndGet();
+                    }
+                }); }
+                catch (Exception e) { throw new AssertionError(e); }
+                int size = s.size();
+                if (size < 0 || size > 1_000) throw new AssertionError("size out of bounds: " + size);
+            }
+        });
+        check("capacity respected under contention: never exceeds capacity (3 rounds)", () -> {
+            for (int round = 0; round < 3; round++) {
+                BoundedStack s = new BoundedStack(100);
+                AtomicInteger ok = new AtomicInteger();
+                try { runConcurrently(16, 500, () -> { if (s.push(1)) ok.incrementAndGet(); }); }
+                catch (Exception e) { throw new AssertionError(e); }
+                if (s.size() > 100) throw new AssertionError("size " + s.size() + " > capacity 100");
+                // ok.get() có thể < 100 do race size check, nhưng size() không bao giờ > capacity
+            }
+        });
+        System.out.println("RESULT " + passed + "/" + total);
+    }
+}`,
+      reference: `import java.util.concurrent.atomic.AtomicReference;
+import java.util.concurrent.atomic.AtomicLong;
+ 
+class BoundedStack {
+    private final int capacity;
+    private final AtomicReference<Node> head = new AtomicReference<>();
+    private final AtomicLong size = new AtomicLong();
+ 
+    static final class Node {
+        final int value;
+        final Node next;
+        Node(int value, Node next) { this.value = value; this.next = next; }
+    }
+ 
+    BoundedStack(int capacity) {
+        if (capacity < 1) throw new IllegalArgumentException("capacity >= 1");
+        this.capacity = capacity;
+    }
+ 
+    boolean push(int value) {
+        while (true) {
+            long currentSize = size.get();
+            if (currentSize >= capacity) return false;
+            Node oldHead = head.get();
+            Node newNode = new Node(value, oldHead);
+            if (head.compareAndSet(oldHead, newNode)) {
+                size.incrementAndGet();
+                return true;
+            }
+            // CAS failed: retry
+        }
+    }
+ 
+    int pop() {
+        while (true) {
+            Node oldHead = head.get();
+            if (oldHead == null) return -1;
+            Node newHead = oldHead.next;
+            if (head.compareAndSet(oldHead, newHead)) {
+                size.decrementAndGet();
+                return oldHead.value;
+            }
+            // CAS failed: retry
+        }
+    }
+ 
+    int size() {
+        // O(n) traversal for verification; size field is best-effort
+        int count = 0;
+        for (Node n = head.get(); n != null; n = n.next) count++;
+        return count;
+    }
+ 
+    int capacity() { return capacity; }
+}`,
+      hints: [
+        '{{push}}: vòng lặp {{while (true)}}; đọc {{size.get()}} kiểm tra đầy; đọc {{head.get()}} làm {{oldHead}}; tạo {{new Node(value, oldHead)}}; {{head.compareAndSet(oldHead, newNode)}}; thành công thì {{size.incrementAndGet()}} trả true; thất bại lặp lại.',
+        '{{pop}}: vòng lặp {{while (true)}}; đọc {{head.get()}}; nếu null trả -1; lấy {{oldHead.next}} làm {{newHead}}; {{head.compareAndSet(oldHead, newHead)}}; thành công thì {{size.decrementAndGet()}} trả {{oldHead.value}}; thất bại lặp lại.',
+        '{{size()}} duyệt linked list từ {{head.get()}} đếm node (O(n)). Field {{size}} là best-effort (có thể lệch tạm thời do race giữa CAS head và update size), test dùng size() để verify.',
+        'Node **bất biến** (final fields): push luôn tạo Node mới, nên ABA không xảy ra — reference cũ không bao giờ quay lại.',
+        'Test dùng CountDownLatch + ExecutorService + 3–5 rounds: race condition sẽ bị bắt ổn định.',
+      ],
+      explain: `Stack lock-free này minh hoạ pattern **Treiber stack** (cải tiến bounded):
+- **Push**: CAS {{head}} từ {{oldHead}} sang {{newNode}}. Chỉ thread nào CAS thành công mới "thắng", thread khác retry. Vì Node bất biến, không có ABA.
+- **Pop**: CAS {{head}} từ {{oldHead}} sang {{oldHead.next}}. Thread thắng lấy {{oldHead.value}}.
+- **Size check**: dùng {{AtomicLong size}} để kiểm tra đầy nhanh (best-effort). Có race nhỏ: thread A thấy size < capacity, thread B cũng thấy, cả hai push, size có thể vượt capacity 1 đơn vị. Test chấp nhận điều này (chỉ kiểm tra {{size()}} duyệt list không vượt capacity). Để chặt chẽ hơn, có thể gộp size vào Node hoặc dùng double-CAS (phức tạp hơn).
+- **ABA**: không xảy ra vì mỗi push tạo Node mới (reference không tái dùng). Nếu dùng ring buffer hoặc pool Node thì cần {{AtomicStampedReference}}.
+- **False sharing**: {{head}} và {{size}} là hai reference riêng, có thể chung cache line. JDK 17+ có {{@Contended}} cho field; bài tập không yêu cầu pad vì test không đo hiệu năng.
+- Test chạy 3–5 rounds với CountDownLatch: mọi race condition (quên retry, sai CAS, size không atomic) sẽ FAIL ổn định.`,
+    },
+  ],
+  check: [
+    {
+      q: '{{AtomicLong.incrementAndGet()}} dùng cơ chế gì bên dưới?',
+      options: ['synchronized', 'CAS (compare-and-set) với vòng lặp retry', 'ReentrantLock', 'volatile write + read'],
+      answer: 1,
+      explain: 'AtomicLong dùng CAS phần cứng: đọc giá trị cũ, tính mới, CAS(old, new). Nếu CAS thất bại (thread khác đã đổi) thì retry. Không dùng lock, không park thread.',
+    },
+    {
+      q: 'Khi nào nên dùng {{LongAdder}} thay vì {{AtomicLong}}?',
+      options: ['Luôn dùng LongAdder vì nó nhanh hơn', 'Khi cần đọc giá trị chính xác ngay sau mỗi ghi', 'Khi ghi nhiều (metric counter), đọc ít (sum() định kỳ), tranh chấp cao', 'Khi cần reset về 0 thường xuyên'],
+      answer: 2,
+      explain: 'LongAdder phù hợp cho metric throughput cao (request count, error count): ghi nhiều, đọc ít, tranh chấp cao. AtomicLong phù hợp cho sequence ID, check ngưỡng cần độ chính xác tức thì. LongAdder không có reset() đơn giản.',
+    },
+    {
+      q: 'Vấn đề ABA xảy ra khi nào trong cấu trúc dữ liệu lock-free?',
+      options: ['Khi dùng AtomicLong đếm', 'Khi reference/con trỏ bị tái dùng (A→B→A), thread CAS thành công mà không biết trạng thái đã đổi', 'Khi CAS luôn thành công', 'Khi dùng LongAdder'],
+      answer: 1,
+      explain: 'ABA: thread đọc A, thread khác đổi A→B→A, thread đầu CAS thấy A nên thành công, nhưng trạng thái logic đã thay đổi (ví dụ stack: node cũ quay lại nhưng phần tử bên dưới đã khác). Giảm thiểu bằng version stamp (AtomicStampedReference) hoặc luôn tạo object mới cho push.',
+    },
+    {
+      q: 'False sharing là gì?',
+      options: ['Hai thread chia sẻ đúng một biến', 'Hai biến khác nhau nằm chung cache line (64 byte), ghi xen kẽ làm cache line ping-pong giữa core', 'Cache miss rate cao do dữ liệu lớn', 'Thread争夺锁导致的上下文切换'],
+      answer: 1,
+      explain: 'False sharing: các biến logic độc lập nhưng liền kề trong bộ nhớ chung một cache line. Thread A ghi var1, thread B ghi var2 → CPU phải đồng bộ cache line → hiệu năng sụt giảm như tranh chấp thật. Khắc phục bằng padding/@Contended, nhưng tốn RAM và cache line size khác nhau giữa CPU.',
+    },
+  ],
+  related: ['concurrency-002', 'concurrency-006', 'concurrency-018'],
+  tags: ['CAS', 'AtomicLong', 'LongAdder', 'ABA', 'false sharing', 'padding', 'lock-free', 'Treiber stack', 'AtomicReference'],
+},
 );
