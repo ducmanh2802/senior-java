@@ -15,7 +15,14 @@ REVIEWER=${REVIEWER:-codex}
 log() { echo "[$(date +%T)] autopilot: $*"; }
 
 owns()  { grep -m1 '^Owns:' "$1" | grep -o '`[^`]*`' | tr -d '`'; }
-dirty() { local f; for f in $(owns "$1"); do [ -n "$(git status --porcelain -- "$f")" ] && return 0; done; return 1; }
+# DIRTY_SET = files with changes, filled once per round by refresh_dirty (one git status instead of one per file:
+# 2400+ task files made the first round after a restart take 15+ minutes, 2026-11-16)
+declare -A DIRTY_SET
+refresh_dirty() { DIRTY_SET=(); local l; while IFS= read -r l; do DIRTY_SET["${l:3}"]=1; done < <(git status --porcelain --untracked-files=all); }
+dirty() { local f; for f in $(owns "$1"); do [ -n "${DIRTY_SET[$f]:-}" ] && return 0; done; return 1; }
+# live re-check (no cache): a task finishing mid-round is not in DIRTY_SET yet; without this its content was skipped
+# and only the task file got committed (T2299/T2300/T2308/T2309, 2026-11-17)
+dirty_live() { local f; for f in $(owns "$1"); do [ -n "$(git status --porcelain -- "$f")" ] && return 0; done; return 1; }
 # a file also owned by an unfinished task holds that task's half-done work: never commit it.
 # OPEN[file]="ids of unfinished tasks owning it", rebuilt once per round (scanning ~400 task files per check was minutes on Windows)
 declare -A OPEN
@@ -121,6 +128,7 @@ Co-Authored-By: Claude Opus 5.5 (1M context) <noreply@anthropic.com>" && touch l
 log "started (every ${EVERY}s, reviewer ${REVIEWER})"
 while true; do
   scan_open
+  refresh_dirty
   for f in tasks/T*.md; do
     id=$(basename "$f" | cut -d- -f1)
     case "$id" in *R) continue ;; esac
@@ -129,7 +137,7 @@ while true; do
     grep -q '^Status: DONE$' "$f" || continue
     [ -n "${COMMITTED[$f]:-}" ] && continue
     grep -q '^Verify-failed:' "$f" && continue
-    if ! dirty "$f"; then
+    if ! dirty "$f" && ! dirty_live "$f"; then
       # DONE but its owned files hold nothing new (work already in HEAD, e.g. redone task): commit just the task file,
       # otherwise the next task of its chain (After: $id) waits forever
       if [ -n "$(git status --porcelain -- "$f")" ] && ! open_owner "$f" "$id" >/dev/null; then
