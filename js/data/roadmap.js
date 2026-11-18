@@ -98,3 +98,89 @@ window.ROADMAP = {
     },
   ],
 };
+
+window.JD_PLAN = {
+  goal: 'Phỏng vấn VPBankS & VinSmart Future — 20 tuần tập trung JD',
+  targets: [
+    { name: 'VPBank Securities (VPBankS)', examples: 'Backend Java Spring Boot, PostgreSQL/Oracle, Kafka, SOLID, CTDL&GT, CI/CD/Docker/K8s',
+      focus: ['Hệ thống giao dịch chứng khoán: đặt lệnh, khớp lệnh, T+2, sổ lệnh', 'Idempotency, transaction isolation & locking (Oracle vs PostgreSQL)', 'Kafka ordering, consumer group, retry/DLQ', 'CTDL & giải thuật, Design pattern, SOLID', 'Spring internals: IoC, AOP, @Transactional, Spring Security/JWT'] },
+    { name: 'VinSmart Future', examples: 'Senior Software Developer Java/Python, event processing, workflow orchestration, AI inference',
+      focus: ['Event processing, workflow orchestration, task lifecycle (routing, prioritization, assignment, escalation)', 'Kafka/RabbitMQ: async processing, retry, fault-tolerant error handling, DLQ', 'RDBMS + NoSQL/cache, data model, caching, transaction', 'Observability: logging, audit trail, distributed tracing, monitoring/alerting', 'Incident response + RCA, security (authn/authz, audit), AI/ML inference integration', 'Mentor junior, API data contract, webhook/push notification/3rd-party'] },
+  ],
+  project: {
+    name: 'Task/Order Workflow Service',
+    desc: 'Dự án portfolio xuyên suốt 20 tuần: Spring Boot 3 + PostgreSQL + Kafka + Redis. State machine quản lý task/order lifecycle, Transactional Outbox cho event publishing, retry/DLQ pattern, OpenTelemetry tracing + metrics. Dùng để demo trong phỏng vấn 2 JD.',
+  },
+  phases: [
+    {
+      name: 'Giai đoạn 1 — Nền tảng Java vững (tuần 1–3)',
+      weeks: [
+        { id: 'j01', title: 'Core Java & đánh giá đầu vào', topics: ['core', 'collections'], algo: '3 bài Easy: Array, Hash Map, Two Pointers',
+          tasks: ['Làm 1 phiên Phỏng vấn thử "Full loop" để biết điểm xuất phát', 'Ôn câu Core Java & Collections trong Ngân hàng câu hỏi, chấm trạng thái trung thực', 'Viết CV bản nháp theo format STAR cho từng dự án'] },
+        { id: 'j02', title: 'Java 8 → 21 hiện đại & Collections internals', topics: ['modern', 'collections'], algo: '3 bài: Sliding Window, Hash Map internals',
+          tasks: ['Tự vẽ lại cấu trúc HashMap / ConcurrentHashMap từ trí nhớ, đọc source putVal/resize', 'Refactor 1 module cũ sang record, switch pattern matching, Stream', 'Thiết kế domain Account / Transaction / LedgerEntry cho dự án portfolio'] },
+        { id: 'j03', title: 'Concurrency cơ bản & JVM memory', topics: ['concurrency', 'jvm'], algo: '4 bài: Stack, Heap, Interval, TopK',
+          tasks: ['Viết demo race condition + sửa bằng synchronized, Lock, Atomic', 'Benchmark platform thread vs virtual thread cho API gọi IO', 'Tạo memory leak cố ý, lấy heap dump, phân tích Eclipse MAT'] },
+      ],
+    },
+    {
+      name: 'Giai đoạn 2 — Spring, Security, Database (tuần 4–8)',
+      weeks: [
+        { id: 'j04', title: 'Spring core, IoC, AOP, @Transactional', topics: ['spring'], algo: '4 bài: DP Knapsack, DP Fibonacci',
+          tasks: ['Tự chứng minh lỗi self-invocation @Transactional bằng test', 'Dự án: API chuyển tiền với idempotency key + ProblemDetail', 'Học Spring Security OAuth2 resource server + JWT cơ bản'] },
+        { id: 'j05', title: 'Spring Security/JWT & JPA/Hibernate', topics: ['spring', 'security', 'jpa'], algo: '4 bài: DP Palindromes, Greedy',
+          tasks: ['Cấu hình JWT authentication/authorization cho API', 'Bật SQL log, tìm và sửa N+1 trong dự án', 'Batch insert 1 triệu dòng: so sánh IDENTITY vs SEQUENCE'] },
+        { id: 'j06', title: 'SQL, index, EXPLAIN, isolation, locking', topics: ['db', 'sql'], algo: '4 bài: Backtracking, Graph',
+          tasks: ['Đọc EXPLAIN ANALYZE 10 query, tối ưu bằng index phù hợp', 'Tái hiện deadlock + lost update trên PostgreSQL, rồi sửa', 'Ôn thêm Oracle: sequence, partition, execution plan (VPBankS dùng Oracle)'] },
+        { id: 'j07', title: 'MVCC, partitioning, file lớn, tình huống DB', topics: ['db', 'scenario'], algo: '4 bài: Topological Sort, Trie',
+          tasks: ['Dự án: import CSV sao kê 1 triệu dòng (streaming + batch + báo lỗi theo dòng)', 'Phỏng vấn thử preset "Tình huống thực tế"', 'Mốc #/sd: 1 đề design tuần này (ngân hàng): Flash sale chống oversell'] },
+        { id: 'j08', title: 'Tổng ôn Spring + DB + tuần đệm', topics: ['spring', 'jpa', 'db', 'security'], algo: '3 bài ôn theo pattern yếu',
+          tasks: ['Flashcard chế độ "Chỉ câu chưa thuộc" đến khi ≥ 70% Đã thuộc', 'Phỏng vấn thử preset "Java Backend Senior" (8 câu)', 'Mốc #/sd: 1 đề design tuần này (big tech): Rate limiter'] },
+      ],
+    },
+    {
+      name: 'Giai đoạn 3 — Kafka, Microservices, Outbox (tuần 9–12)',
+      weeks: [
+        { id: 'j09', title: 'Kafka cơ bản, ordering, consumer group', topics: ['microservices'], algo: '4 bài: Union Find, Bit Manipulation',
+          tasks: ['Tìm hiểu Kafka: partition, replication, consumer group, offset management', 'Dự án: Transactional Outbox → Kafka → notification service', 'Xử lý message trùng & sai thứ tự (consumer idempotent)'] },
+        { id: 'j10', title: 'Retry, DLQ, idempotent consumer, outbox pattern', topics: ['microservices'], algo: '4 bài: Math/Geometry, Array/String CTCI',
+          tasks: ['Cài đặt retry với exponential backoff + Dead Letter Queue', 'Dự án: triển khai idempotent consumer cho order processing', 'Mốc #/sd: 1 đề design tuần này (ngân hàng): Core banking ledger reconciliation'] },
+        { id: 'j11', title: 'Saga, circuit breaker, API contract, workflow orchestration', topics: ['microservices', 'design'], algo: '4 bài: Linked List, Stack/Queue CTCI',
+          tasks: ['Triển khai Saga pattern cho distributed transaction (order → payment → inventory)', 'Thêm Resilience4j: timeout, retry, circuit breaker khi gọi dịch vụ ngoài', 'Thiết kế API contract (OpenAPI) cho task workflow service'] },
+        { id: 'j12', title: 'Task lifecycle: routing, prioritization, assignment, escalation', topics: ['microservices', 'scenario'], algo: '4 bài: Tree, Graph CTCI',
+          tasks: ['Xây dựng state machine quản lý task lifecycle (created → assigned → in_progress → done/escalated)', 'Cơ chế routing task theo priority/skill, escalation tự động theo SLA', 'Mốc #/sd: 1 đề design tuần này (ngân hàng): Money transfer / wallet'] },
+      ],
+    },
+    {
+      name: 'Giai đoạn 4 — System Design đặc thù (tuần 13–15)',
+      weeks: [
+        { id: 'j13', title: 'System design: Đặt lệnh chứng khoán, khớp lệnh, T+2', topics: ['design', 'banking'], algo: '4 bài: Heap, Sliding Window',
+          tasks: ['Thiết kế order matching engine: price-time priority, order book, trade execution', 'Xử lý T+2 settlement, corporate action, dividend', 'Tham khảo: https://designed-to-scale.vercel.app/#/hld-lld/1'] },
+        { id: 'j14', title: 'System design: Notification/webhook, task routing', topics: ['design', 'microservices'], algo: '4 bài: Two Pointers, DP',
+          tasks: ['Thiết kế notification service: email, SMS, push, webhook, retry policy', 'Thiết kế task routing service: priority queue, worker pool, dead letter', 'Mốc #/sd: 1 đề design tuần này (big tech): Distributed file storage'] },
+        { id: 'j15', title: 'DevOps & Observability: Docker, K8s, CI/CD, OpenTelemetry, RCA', topics: ['devops', 'aws', 'microservices'], algo: '3 bài: Greedy, Backtracking',
+          tasks: ['Containerize dự án: Docker multi-stage build, docker-compose local dev', 'CI/CD pipeline: GitHub Actions → build, test, scan, deploy K8s', 'Thêm OpenTelemetry tracing, dashboard p95/p99, alert rule', 'Viết 1 bài RCA mẫu theo format: incident → timeline → root cause → action items'] },
+      ],
+    },
+    {
+      name: 'Giai đoạn 5 — Ôn tập & Chuẩn bị phỏng vấn (tuần 16–17)',
+      weeks: [
+        { id: 'j16', title: 'Ôn SRS, 5 câu chuyện STAR, CV theo 2 JD, nghiệp vụ chứng khoán', topics: ['behavioral', 'banking', 'scenario'], algo: '3 bài: Union Find, Trie',
+          tasks: ['Ôn Flashcard "Chỉ câu chưa thuộc" mỗi ngày 20 phút (SRS)', 'Viết sẵn 5 câu chuyện STAR có số liệu (sự cố, bất đồng, mentoring, quyết định sai, thành tựu)', 'Chuẩn bị CV & LinkedIn tailor cho VPBankS và VinSmart Future', 'Học nghiệp vụ chứng khoán: loại lệnh, khớp lệnh, sổ lệnh, đối soát, rủi ro'] },
+        { id: 'j17', title: 'Mock interview cường độ cao, phỏng vấn tiếng Anh', topics: ['english', 'scenario', 'design', 'concurrency'], algo: '4 bài: Graph, DP Hard',
+          tasks: ['Mỗi ngày 1 phiên Phỏng vấn thử (xoay vòng preset), mục tiêu điểm TB ≥ 4.0', 'Luyện "Tell me about yourself" bản 2 phút, ghi âm 5 lần', 'Phỏng vấn thử preset "English Interview" × 3', 'Nhờ bạn bè/đồng nghiệp mock 1 buổi thật (coding + design + behavioral)'] },
+      ],
+    },
+    {
+      name: 'Giai đoạn 6 — Tuần phỏng vấn thật (tuần 18–20)',
+      weeks: [
+        { id: 'j18', title: 'Mock theo công ty 2–3 buổi/tuần + tiếng Anh', topics: ['english', 'scenario', 'design'], algo: '3 bài: Tree, Heap',
+          tasks: ['Mock VPBankS: focus transaction, locking, Oracle, Kafka ordering, securities domain', 'Mock VinSmart Future: focus workflow orchestration, task lifecycle, retry/DLQ, tracing, AI inference', 'Luyện nói tiếng Anh 30 phút/ngày (coding + behavioral + system design)'] },
+        { id: 'j19', title: 'Mock theo công ty 2–3 buổi/tuần + tiếng Anh', topics: ['english', 'scenario', 'design'], algo: '3 bài: Graph, DP',
+          tasks: ['Mock VPBankS: focus system design securities, outbox, saga, observability', 'Mock VinSmart Future: focus event processing, cache, NoSQL, security, RCA', 'Review lại 5 câu chuyện STAR, luyện hỏi lại interviewer & đàm phán lương'] },
+        { id: 'j20', title: 'Tuần phỏng vấn thật', topics: [], algo: 'Duy trì 3–5 bài/tuần',
+          tasks: ['Phỏng vấn thật VPBankS & VinSmart Future', 'Sau mỗi vòng: ghi lại câu hỏi, thêm vào ôn tập, tự chấm', 'Đàm phán offer: so sánh tổng thu nhập, lộ trình, công nghệ, culture'] },
+      ],
+    },
+  ],
+};
