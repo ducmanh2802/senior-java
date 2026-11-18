@@ -11252,4 +11252,241 @@ Gateway 5 instance, rate limit 100 req/phút/user. Trước khi có Lua, hai req
   follow: ['Fixed window bị burst gấp đôi ở biên, bạn xử lý thế nào?', 'Làm sao rate limit theo nhiều chiều (user + IP + endpoint)?', 'Chi phí một lệnh Redis cho mỗi request có chấp nhận được không?'],
   tags: ['rate-limiter', 'redis', 'lua', 'token-bucket']
 },
+{
+  id: 'design-062',
+  topic: 'design',
+  level: 'senior',
+  q: 'Thiết kế ví điện tử cho 10 triệu user: ledger, số dư nóng, chống trừ trùng.',
+  a: `**Tóm tắt:** Dùng double-entry ledger append-only làm nguồn sự thật; số dư nóng cache trong Redis để đọc nhanh; mọi giao dịch có idempotency key và xử lý trong transaction DB với row lock trên account; chống duplicate bằng unique constraint.
+
+### Bối cảnh và yêu cầu
+10 triệu user, mỗi người có ví chính và ví phụ (khuyến mãi, tiền thưởng). TPS đỉnh khoảng 5.000 giao dịch/giây. Yêu cầu: số dư không bao giờ âm, không trừ trùng, có sao kê đầy đủ, audit được.
+
+### Capacity estimate
+- 10 triệu account, trung bình 100 giao dịch/user/năm => 1 tỷ giao dịch/năm ~ 32 TPS trung bình, đỉnh 5.000 TPS.
+- Storage: mỗi giao dịch ~ 200 byte => 200 GB/năm cho ledger, giữ 7 năm => 1,4 TB, partition theo tháng.
+- Redis số dư nóng: 10 triệu key * 100 byte ~ 1 GB.
+
+### Kiến trúc nhiều bên
+~~~seq
+title: Chuyển tiền giữa hai user
+actors: Client | API | Redis | DB (Ledger) | Kafka
+Client -> API: POST /transfer {from, to, amount, idempotency_key}
+API -> Redis: GET balance (số dư nóng)
+Redis --> API: balance
+API -> DB (Ledger): BEGIN; SELECT ... FOR UPDATE account from
+DB (Ledger) --> API: locked row
+API -> DB (Ledger): INSERT ledger entries (debit from, credit to)
+API -> DB (Ledger): UPDATE account balance (conditional: balance >= amount)
+API -> DB (Ledger): COMMIT
+API -> Redis: SET balance (invalidate/update)
+API -> Kafka: emit TransferCompleted
+API --> Client: 200 OK
+~~~
+
+### Double-entry ledger
+Mỗi giao dịch sinh hai dòng: debit tài khoản nguồn, credit tài khoản đích. Sum debit = sum credit. Ledger append-only, không update/delete dòng cũ; điều chỉnh bằng reversal entry. Đây là nguồn sự thật (source of truth), số dư trong account table là cache có thể rebuild từ ledger.
+
+### Số dư nóng
+Redis lưu số dư hiện tại để đọc O(1) không chạm DB. Khi giao dịch thành công, cập nhật Redis (write-through). Nếu Redis mất, rebuild từ DB/account table. Redis không phải nguồn sự thật.
+
+### Chống trừ trùng (idempotency)
+Client gửi idempotency_key (UUID). DB có unique constraint trên (account_id, idempotency_key). Nếu retry, request thứ hai trả về kết quả cũ mà không trừ thêm. Kết hợp với transaction DB đảm bảo atomic.
+
+### Khóa đồng thời
+SELECT ... FOR UPDATE trên account row; hoặc dùng optimistic locking với version column. Với TPS cao, partition account theo hash để giảm contention; hot account (ví hệ thống) dùng saga/queue riêng.
+
+### Trade-off
+| Phương án | Ưu | Nhược |
+|---|---|---|
+| Pessimistic lock | An toàn, đơn giản | Throughput thấp, deadlock risk |
+| Optimistic lock | Throughput cao | Retry khi contention cao |
+| Saga + queue | Mở rộng tốt | Eventually consistent, phức tạp |
+
+### Ví dụ đời thực
+Ví MoMo-style: user chuyển 100k, mạng lag retry 3 lần. Nhờ idempotency_key, chỉ trừ 1 lần. Audit phát hiện một bug: update Redis trước commit DB dẫn đến số dư sai khi rollback; sửa thành update Redis sau commit + reconcile job mỗi 5 phút.
+
+### Trả lời mẫu khi phỏng vấn
+"Tôi thiết kế ví theo double-entry ledger append-only làm source of truth, số dư nóng trong Redis chỉ là cache đọc nhanh. Mỗi giao dịch có idempotency key với unique constraint trong DB, xử lý trong transaction với row lock trên account để đảm bảo atomic và không trừ trùng. Capacity: 10 triệu user, đỉnh 5.000 TPS, ledger partition theo tháng, storage ~ 200 GB/năm. Hot account như ví hệ thống tách queue riêng để tránh contention. Redis mất thì rebuild từ DB. Audit bằng cách replay ledger."
+
+> Senior tip: Luôn update cache sau commit DB, và có reconcile job định kỳ so sánh Redis với DB để phát hiện lệch.`,
+  follow: ['Làm sao xử lý giao dịch đa tiền tệ?', 'Nếu DB primary failover giữa chừng thì sao?', 'Làm sao scale hot account (ví hệ thống)?'],
+  tags: ['wallet', 'ledger', 'idempotency', 'redis']
+},
+{
+  id: 'design-063',
+  topic: 'design',
+  level: 'senior',
+  q: 'Thiết kế hệ thống thông báo giao dịch realtime cho ví điện tử.',
+  a: `**Tóm tắt:** Dùng Kafka làm event bus, WebSocket/SSE gateway giữ connection với client, consumer group đẩy notification; dedup bằng event id; fallback push (FCM/APNs) khi offline.
+
+### Bối cảnh
+User cần thấy giao dịch ngay lập tức (push notification + in-app). 10 triệu user, 5.000 TPS giao dịch, mỗi giao dịch sinh 1-2 thông báo (người gửi + người nhận).
+
+### Capacity estimate
+- 5.000 giao dịch/s * 2 = 10.000 notification/s.
+- WebSocket gateway: mỗi instance giữ ~ 50.000 connection => cần ~ 200 instance ở đỉnh, scale horizontal.
+- Kafka: 1 partition per consumer throughput ~ 10 MB/s; tổng ~ 2 MB/s, vài partition đủ.
+
+### Kiến trúc nhiều bên
+~~~seq
+title: Notification realtime
+actors: Wallet Service | Kafka | Notification Service | Gateway (WS) | Client
+Wallet Service -> Kafka: emit TransferCompleted
+Kafka -> Notification Service: consume event
+Notification Service -> Notification Service: build template, dedup by event_id
+Notification Service -> Gateway (WS): push to user channel
+Gateway (WS) --> Client: WS message (transaction update)
+Gateway (WS) -> Notification Service: ack delivery
+Notification Service -> FCM/APNs: push (nếu offline)
+~~~
+
+### Thành phần
+- **Event bus (Kafka):** Wallet service publish event TransferCompleted/Failed. Decouple producer/consumer.
+- **Notification service:** consume event, render template theo locale, dedup bằng event_id (Redis SETNX với TTL), quyết định channel (WS / push / SMS / email).
+- **Gateway (WebSocket/SSE):** giữ long-lived connection; map user_id -> connection; scale bằng sticky session hoặc shared pub/sub (Redis Pub/Sub).
+- **Presence:** Redis lưu user online/offline; offline thì gửi push.
+
+### Đảm bảo không duplicate
+Event có event_id duy nhất; consumer dùng idempotent processing (Redis SETNX). Nếu WS delivery fail, retry với exponential backoff; dead-letter queue cho event lỗi.
+
+### Trade-off
+| Phương án | Ưu | Nhược |
+|---|---|---|
+| WebSocket | Bidirectional, low latency | Stateful, scale phức tạp |
+| SSE | Đơn giản, HTTP-friendly | Một chiều, cần reconnect |
+| Long polling | Tương thích rộng | Latency cao, overhead |
+
+### Ví dụ đời thực
+Ban đầu dùng polling 5s: server load cao, UX chậm. Chuyển SSE + Kafka: notification < 200 ms, server load giảm 80%. Bug: user mở 2 tab cùng account nhận duplicate; fix bằng dedup theo event_id ở client và server.
+
+### Trả lời mẫu khi phỏng vấn
+"Hệ thống notification realtime: Wallet service publish event vào Kafka; Notification service consume, render template, dedup bằng event_id trong Redis; Gateway WebSocket giữ connection với client, scale horizontal với Redis Pub/Sub để broadcast; offline user nhận push qua FCM/APNs. Đảm bảo at-least-once với idempotent consumer, dead-letter queue cho lỗi. Capacity ~ 10.000 notification/s, gateway ~ 200 instance. Trade-off WebSocket vs SSE vs polling."
+
+> Senior tip: Luôn có fallback push cho offline user và dedup ở cả client và server để tránh duplicate khi reconnect.`,
+  follow: ['Làm sao xử lý user có nhiều device?', 'Thứ tự notification có quan trọng không?', 'Làm sao test load 10.000 notif/s?'],
+  tags: ['notification', 'websocket', 'kafka', 'realtime']
+},
+{
+  id: 'design-064',
+  topic: 'design',
+  level: 'senior',
+  q: 'Thiết kế sao kê/lịch sử giao dịch tra cứu nhanh (CQRS, Elasticsearch).',
+  a: `**Tóm tắt:** Tách write (ledger DB) và read (Elasticsearch projection); consumer sync từ Kafka; query theo user + time range; cache hot query.
+
+### Bối cảnh
+User tra cứu sao kê theo khoảng thời gian, lọc theo loại giao dịch, tìm kiếm text (mô tả, merchant). 10 triệu user, truy vấn có thể 100 QPS ở đỉnh. DB ledger không tối ưu cho read phức tạp.
+
+### Capacity estimate
+- 1 tỷ giao dịch/năm, mỗi document ES ~ 500 byte => 500 GB/năm.
+- Query p99 mục tiêu < 200 ms; ES cluster 6-9 node, shard theo user_id hash hoặc time-based index (monthly).
+- Retention: hot 12 tháng trên SSD, cold 7 năm trên object storage (S3) với searchable snapshot.
+
+### Kiến trúc nhiều bên
+~~~seq
+title: Sync ledger sang ES
+actors: Wallet Service | Kafka | Indexer | Elasticsearch | Client | API
+Wallet Service -> Kafka: emit TransferCompleted
+Kafka -> Indexer: consume event
+Indexer -> Elasticsearch: index document (idempotent by txn_id)
+Client -> API: GET /statement?user=..&from=..&to=..&q=..
+API -> Elasticsearch: search query
+Elasticsearch --> API: hits
+API --> Client: paginated result
+~~~
+
+### CQRS
+- Write model: Postgres ledger (append-only, transactional).
+- Read model: Elasticsearch projection với document chứa user_id, txn_id, amount, currency, type, merchant, description, timestamp, balance_after.
+- Eventual consistency: lag sync < 1-2s; UI hiển thị "đang cập nhật" nếu cần.
+
+### Index design
+- Index theo tháng: statement-2026-11. ILM policy rollover + delete.
+- Mapping: keyword cho user_id/type/currency, date cho timestamp, text với analyzer cho description/merchant.
+- Shard: 1 primary + 1 replica per index; scale node khi cần.
+
+### Query patterns
+- Theo user + time range: filter user_id (term) + range timestamp.
+- Full-text: multi_match trên description/merchant.
+- Pagination: search_after thay vì from/size cho deep paging; cursor-based.
+- Aggregate: sum amount by type (ES aggregations).
+
+### Trade-off
+| Phương án | Ưu | Nhược |
+|---|---|---|
+| ES projection | Search nhanh, full-text | Eventual consistency, vận hành phức tạp |
+| DB read replica | Strong consistency | Query chậm, khó full-text |
+| Cache per user | Nhanh | Stale, invalidation phức tạp |
+
+### Ví dụ đời thực
+Trước: query Postgres với LIKE '%merchant%' mất 2-5s và lock. Sau ES: p99 80ms, CTR filter tăng. Bug: duplicate document khi retry indexer; fix bằng idempotent index với _id = txn_id.
+
+### Trả lời mẫu khi phỏng vấn
+"Để tra cứu sao kê nhanh tôi dùng CQRS: write vào Postgres ledger, read projection vào Elasticsearch qua Kafka consumer. Index theo tháng với ILM, mapping keyword cho filter và text analyzer cho full-text. Query dùng search_after cho deep paging. Eventual consistency chấp nhận được cho sao kê, lag < 2s. Capacity: 1 tỷ giao dịch/năm, ~ 500 GB, cluster 6-9 node. Idempotent index bằng txn_id tránh duplicate."
+
+> Senior tip: Luôn đặt _id = transaction id trong ES để reindex/idempotent, và có reconciliation job so sánh count giữa DB và ES.`,
+  follow: ['Làm sao đảm bảo consistency giữa DB và ES?', 'Khi reindex toàn bộ dữ liệu thì làm thế nào?', 'Chi phí lưu trữ ES có thể giảm thế nào?'],
+  tags: ['cqrs', 'elasticsearch', 'statement', 'indexing']
+},
+{
+  id: 'design-065',
+  topic: 'design',
+  level: 'lead',
+  q: 'Thiết kế hệ thống chống gian lận realtime cho ví điện tử.',
+  a: `**Tóm tắt:** Pipeline stream processing (Flink/Kafka Streams) tính feature realtime, model scoring (rule + ML), decision engine block/review/allow; async review queue cho case nghi vấn.
+
+### Bối cảnh
+Gian lận chuyển tiền: account takeover, money mule, social engineering. Cần quyết định trong < 100 ms cho mỗi giao dịch, không làm chậm UX. False positive phải thấp để không chặn user hợp lệ.
+
+### Capacity estimate
+- 5.000 TPS giao dịch, mỗi giao dịch cần scoring < 100 ms.
+- Feature store: Redis cho velocity (số giao dịch/phút theo user/device/IP), Postgres/ClickHouse cho profile lịch sử.
+- Model serving: latency < 50 ms, throughput 5.000 req/s; cần horizontal scale.
+
+### Kiến trúc nhiều bên
+~~~seq
+title: Fraud scoring realtime
+actors: Wallet Service | Feature Store (Redis) | Fraud Engine | ML Model | Decision | Review Queue
+Wallet Service -> Fraud Engine: score request {txn, user, device}
+Fraud Engine -> Feature Store (Redis): get velocity features
+Feature Store (Redis) --> Fraud Engine: features
+Fraud Engine -> ML Model: predict risk score
+ML Model --> Fraud Engine: score 0-1
+Fraud Engine -> Decision: apply rules (threshold)
+Decision --> Wallet Service: allow / block / review
+Decision -> Review Queue: enqueue if review
+~~~
+
+### Feature realtime
+- Velocity: số giao dịch trong 1/5/60 phút theo user, device, IP, merchant.
+- Amount anomaly: so với median lịch sử user.
+- Device fingerprint, IP geolocation, time-of-day.
+- Graph features: shared device/IP giữa nhiều account (money mule).
+
+### Decision engine
+- Rule-based: blacklist, amount limit, velocity threshold.
+- ML model: gradient boosting/XGBoost hoặc neural net; output probability fraud.
+- Combine: score = f(rule, ml); threshold: < 0.3 allow, 0.3-0.7 review (hold funds), > 0.7 block.
+- Action: allow (commit), block (reject), review (pending, hold, async human review).
+
+### Trade-off
+| Phương án | Ưu | Nhược |
+|---|---|---|
+| Sync scoring < 100ms | UX tốt, chặn kịp thời | Latency budget căng |
+| Async post-hoc | Không ảnh hưởng UX | Gian lận đã xảy ra |
+| Hybrid (sync rule + async ML deep) | Cân bằng | Phức tạp |
+
+### Explainability
+Lưu feature values + rule fired + model score để audit và giải thích cho user/compliance. SHAP values cho model.
+
+### Ví dụ đời thực
+Một campaign fraud dùng device farm: velocity rule phát hiện 50 giao dịch/phút từ cùng device fingerprint -> block tự động. False positive ban đầu 2% (user đi du lịch) -> thêm IP geolocation + device trust score -> false positive xuống 0.3%.
+
+### Trả lời mẫu khi phỏng vấn
+"Hệ thống fraud realtime: pipeline Flink/Kafka Streams tính feature velocity/profile; feature store Redis; Fraud engine gọi ML model scoring < 50ms; decision engine kết hợp rule + ML với 3 ngưỡng allow/review/block; case review vào queue async để human review giữ tiền. Latency budget < 100ms. Explainability lưu feature + SHAP. Trade-off sync vs async. False positive giảm bằng device trust + geolocation."
+
+> Senior tip: Luôn có human review queue và explainability (SHAP) để tuân thủ compliance và giảm false positive; monitor drift của model theo thời gian.`,
+  follow: ['Làm sao xử lý cold start cho user mới?', 'Model drift xử lý thế nào?', 'Làm sao cân bằng false positive và false negative?'],
+  tags: ['fraud', 'ml', 'streaming', 'feature-store']
+}
 );
