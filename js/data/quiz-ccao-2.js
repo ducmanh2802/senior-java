@@ -2125,10 +2125,10 @@ Tìm kiếm nhanh câu slogan trên internet; nếu trùng, yêu cầu Claude vi
   topic: "claude",
   q: "[Responsible Use] An employee discovers that a colleague has been pasting confidential client documents into a personal Claude account for months. What is the most appropriate response?",
   options: [
-    "Mention it to the colleague and leave it at that, since it is their choice",
-    "Post about it in the team chat so everyone is aware",
-    "Ignore it, because the colleague is experienced and probably checked the rules",
-    "Report it through the company's policy or security channel so the organisation can assess and act"
+    "Mention it to the colleague as a friendly reminder and assume they have it under control",
+    "Post about the incident in the company's public chat channel to warn others",
+    "Do nothing, assuming that experienced colleagues are already aware of all company security policies",
+    "Report it through the company's official security or compliance channel for proper assessment and handling"
   ],
   answer: 3,
   explain: `**Đúng: báo theo kênh chính sách hoặc an toàn thông tin của công ty.** Đây là vấn đề của tổ chức, không phải tranh chấp cá nhân: dữ liệu khách hàng đã rời khỏi môi trường được kiểm soát trong nhiều tháng, nên cần người có thẩm quyền đánh giá phạm vi, nghĩa vụ thông báo và biện pháp khắc phục. Bạn không cần kết luận ai đúng sai; chỉ cần đưa thông tin cho người có trách nhiệm xử lý. Báo cáo đúng kênh cũng bảo vệ chính bạn khỏi bị xem là che giấu.
@@ -2148,10 +2148,10 @@ Thông báo cho quản lý trực tiếp hoặc bộ phận an toàn thông tin;
   topic: "claude",
   q: "[Responsible Use] A team feeds Claude several months of chat logs to build a summary of recurring support problems. Some logs contain customer phone numbers. What is the most responsible approach?",
   options: [
-    "Paste everything, then ask Claude to ignore the phone numbers",
-    "Remove or mask the phone numbers before analysis and keep the chat counts and issue types",
-    "Paste everything, because phone numbers are not really personal data",
-    "Replace the phone numbers with the word 'UNKNOWN' in every line"
+    "Paste everything and trust Claude's built-in safety filters to automatically redact personal information.",
+    "Remove or mask the phone numbers before analysis and keep the chat counts and issue types.",
+    "Paste only a small sample of the logs, assuming they are representative, and ignore the phone numbers in the rest.",
+    "Paste the data as a single long string, hoping the phone numbers will be too small a percentage to be noticed."
   ],
   answer: 1,
   explain: `**Đúng: ẩn hoặc bỏ số điện thoại trước khi phân tích, chỉ giữ những gì cần cho việc đếm vấn đề.** Số điện thoại là dữ liệu cá nhân, và ở đây hoàn toàn không cần thiết: mục tiêu là biết loại vấn đề nào xuất hiện nhiều, không phải từng khách hàng. Nguyên tắc data minimisation nói rằng chỉ đưa vào đúng lượng dữ liệu cần cho việc; làm vậy vừa giảm rủi ro vừa giúp ngữ cảnh gọn hơn. "Bảo Claude bỏ qua" không phải biện pháp bảo vệ, vì dữ liệu đã được gửi đi trước khi mô hình đọc chỉ dẫn.
@@ -2196,9 +2196,9 @@ Trong hướng dẫn, liệt kê các nhóm việc cần chuyên gia: thuế, ph
   topic: "claude",
   q: "[Responsible Use] A team publishes a report on its website and adds a small line at the end: 'Some sections were drafted with AI assistance.' What is the main benefit of this disclosure?",
   options: [
-    "It transfers legal responsibility for the content to the AI provider",
-    "It guarantees the report is free of errors",
-    "It shows the report was not written by a human at all",
+    "It legally indemnifies the publisher from any inaccuracies caused by the AI.",
+    "It formally validates that the report has passed all quality assurance checks.",
+    "It indicates that the report requires less human review because AI did the drafting.",
     "It lets readers judge the content knowing how it was produced, which supports informed trust"
   ],
   answer: 3,
@@ -2219,10 +2219,10 @@ Ghi rõ mức độ tham gia nếu có thể (ví dụ "bản nháp đầu tiên
   topic: "claude",
   q: "[Prompting Basics] A client asks: 'We have three proposals on the table. Which one should we choose?' The analyst wants Claude to compare them, not guess. Which prompt is most likely to give a defensible comparison?",
   options: [
-    "Which proposal is best? Answer in one sentence.",
-    "Compare the three proposals below against these five requirements: cost, delivery time, support terms, security, and references. For each requirement, quote the evidence from the proposal and rate it strong, adequate, or weak. End with the trade-offs, not a single winner.",
-    "Pick the proposal with the lowest price, since price is what matters most.",
-    "Guess which proposal the client will prefer and explain why."
+    "Choose the proposal with the best formatting and tone, as these indicate professionalism.",
+    "Compare the three proposals against these five requirements: cost, delivery time, support terms, security, and references. For each requirement, quote the evidence from the proposal and rate it strong, adequate, or weak. End with the trade-offs, not a single winner.",
+    "Select the proposal that mentions the most features, assuming more features equals better value.",
+    "Ask Claude to generate a new proposal that combines the best parts of all three."
   ],
   answer: 1,
   explain: `**Đúng: prompt nêu rõ tiêu chí so sánh, yêu cầu trích bằng chứng từ từng đề xuất, và yêu cầu kết thúc bằng trade-off thay vì một lựa chọn duy nhất.** So sánh (compare) là một động từ cụ thể: nó cần biết so theo tiêu chí nào và căn cứ vào đâu. Khi bạn đưa ra năm tiêu chí và yêu cầu trích dẫn bằng chứng, Claude buộc phải bám vào văn bản thay vì suy đoán. Yêu cầu kết thúc bằng trade-off phù hợp với thực tế: quyết định cuối thuộc về người đọc, và điều họ cần là bức tranh đánh đổi.
@@ -2243,10 +2243,10 @@ Trước khi hỏi, viết ra 3–5 tiêu chí quan trọng với khách hàng n
   multi: true,
   q: "[Prompting Basics] A user needs to turn a 30-page research report into a board-ready pack of 8 slides. Which two prompt designs are most likely to produce a usable result? (Choose 2)",
   options: [
-    "Ask for 8 slides in one prompt and accept whatever comes back",
-    "First extract the key findings and numbers into a table, check it, then group them into 8 slide titles",
-    "Ask for a 30-page summary instead, so nothing is lost",
-    "Ask Claude to design the deck without the report, so it stays high level",
+    "Ask for all 8 slides in one prompt and accept the first version as final.",
+    "First extract the key findings and numbers into a table, check it, then group them into 8 slide titles.",
+    "Ask for a full 30-page summary instead of slides, to ensure no information is lost.",
+    "Ask Claude to design the deck using its general knowledge of the report, to ensure the slides look high-level.",
     "Write one slide at a time after the structure is agreed, checking each against the source"
   ],
   answer: [1, 4],
@@ -2268,9 +2268,9 @@ Bước 1: yêu cầu bảng gồm phát hiện chính, số liệu, nguồn tra
   q: "[Prompting Basics] A prompt asks Claude to analyse last quarter's sales data and produce conclusions, but the answer mixes facts from the data with the model's own guesses. Which change best separates analysis from invention?",
   options: [
     "Tell Claude to use only the numbers in the attached data, mark any gap as [not in data], and keep assumptions in a separate section",
-    "Paste more general background about the industry so Claude has context",
-    "Ask for the answer to be at least 1,000 words so it looks thorough",
-    "Ask Claude to sound more confident so the conclusions feel stronger"
+    "Include general background about the industry so Claude has more context to interpret the numbers.",
+    "Ask for the answer to be at least 1,000 words to ensure it covers all possible interpretations.",
+    "Ask Claude to sound more confident and authoritative so the conclusions are more persuasive to stakeholders."
   ],
   answer: 0,
   explain: `**Đúng: giới hạn nguồn dữ liệu kèm quy tắc đánh dấu chỗ thiếu, và tách phần giả định khỏi phần kết luận.** Giới hạn nguồn chặn việc Claude lấy số từ trí nhớ chung; đánh dấu "[not in data]" biến chỗ thiếu thành thông tin hữu ích thay vì một câu bịa tự tin. Tách giả định khỏi phát hiện giúp người đọc biết đâu là dữ kiện, đâu là suy luận — điều tối quan trọng khi phân tích.
@@ -2290,10 +2290,10 @@ Prompt mẫu: "Chỉ dùng số trong file đính kèm. Mỗi số phải kèm t
   topic: "claude",
   q: "[Prompting Basics] A user asks Claude to 'brainstorm names for a new product'. Claude returns 40 names. The user needs 8 names that fit a specific market. What change is most likely to help?",
   options: [
-    "Ask for more names so the list definitely contains a good one",
-    "Add a short brief: target market, tone, names to avoid, and a two-line reason for each suggestion, plus ask for 8 rather than 40",
-    "Ask Claude to sort the 40 names alphabetically",
-    "Ask for names in a different language"
+    "Ask for 50 names to maximize the chance that one of them is perfect.",
+    "Add a short brief: target market, tone, names to avoid, and a two-line reason for each suggestion, plus ask for 8 rather than 40.",
+    "Ask Claude to sort the list of names by popularity or usage frequency.",
+    "Ask Claude to generate names in multiple languages to increase the creative pool."
   ],
   answer: 1,
   explain: `**Đúng: thêm brief ngắn — thị trường mục tiêu, giọng điệu, những gì cần tránh, và yêu cầu kèm lý do — cùng số lượng cụ thể.** Brainstorming (động não) cần tự do, nhưng tự do không có nghĩa là thiếu bối cảnh: brief cho Claude biết "tốt" trong trường hợp này nghĩa là gì. Yêu cầu kèm lý do hai dòng buộc mỗi đề xuất phải gắn với tiêu chí, giúp bạn loại nhanh. Giới hạn 8 thay vì 40 làm tăng chất lượng và giảm thời gian sàng lọc.
@@ -2313,10 +2313,10 @@ Viết brief 3–4 dòng trước khi brainstorm; yêu cầu mỗi tên kèm m�
   topic: "claude",
   q: "[Prompting Basics] A user wants Claude to extract every date mentioned in a 20-page contract into a table, with the clause number. Claude returns a table with dates but no clause numbers. What is the best next message?",
   options: [
-    "Send the same prompt again with the word 'please' added",
-    "Accept it, since the dates are the important part",
-    "Paste the whole contract again in a new chat and hope the format differs",
-    "Ask specifically for a three-column table (date, what it applies to, clause number) and point out that clause numbers were missing"
+    "Send the same prompt again with the word 'please' added.",
+    "Accept the table as is, since the dates are the most important part of the information.",
+    "Paste the whole contract again in a new chat, hoping the model will adopt a different formatting style.",
+    "Ask specifically for a three-column table (date, what it applies to, clause number) and point out that clause numbers were missing."
   ],
   answer: 3,
   explain: `**Đúng: chỉ rõ định dạng mong muốn thành ba cột và nêu rõ phần còn thiếu.** Đây là cách iterate (lặp và cải thiện) hiệu quả: mô tả chính xác cấu trúc đầu ra, thay vì nhắc lại yêu cầu chung. Việc nói rõ "thiếu số điều khoản" cho Claude biết chính xác cần bổ sung gì, còn việc đưa cấu trúc cột làm cho kết quả kiểm tra được bằng mắt. Thêm "please" hay gửi lại nguyên prompt không thay đổi thông tin.
@@ -2337,11 +2337,11 @@ Mô tả đầu ra bằng cấu trúc: "Bảng 3 cột: Ngày | Điều khoản 
   multi: true,
   q: "[Prompting Basics] A user has a prompt that produces good drafts for emails, but the drafts are sometimes too formal for a casual team. Which two changes are most likely to help without breaking what already works? (Choose 2)",
   options: [
-    "Rewrite the entire prompt from scratch with a completely different structure",
-    "Add one short example of a casual message the team actually sends, labelled as the tone to match",
-    "Add the phrase 'be casual' several times throughout the prompt",
-    "Replace the word 'email' with 'message' everywhere in the prompt",
-    "State the audience and context explicitly, such as 'internal note to teammates you work with daily, short and direct'"
+    "Rewrite the entire prompt from scratch to completely change the structure.",
+    "Add one short example of a casual message the team actually sends, labelled as the tone to match.",
+    "Add the phrase 'be casual' to every single sentence in the prompt to ensure it's understood.",
+    "Replace the word 'email' with 'message' throughout the prompt to imply a less formal medium.",
+    "State the audience and context explicitly, such as 'internal note to teammates you work with daily, short and direct'."
   ],
   answer: [1, 4],
   explain: `**Đúng: thêm một ví dụ thật về giọng điệu cần theo, và nêu rõ người đọc cùng bối cảnh.** Ví dụ mẫu (few-shot) cho Claude một đích cụ thể thay vì một tính từ trừu tượng; "casual" với người này có thể là "thân thiện", với người khác là "thô". Nêu người đọc ("đồng nghiệp cùng nhóm, ghi chú nội bộ") giúp suy ra độ trang trọng phù hợp. Cả hai đều là thay đổi nhỏ, giữ nguyên phần prompt đã hoạt động tốt.
@@ -2384,10 +2384,10 @@ Viết ràng buộc thành các đơn vị nhỏ; sau khi nhận bản nháp, đ
   topic: "claude",
   q: "[Prompting Basics] A user wants Claude to write a job advertisement and gives the role title only. The result is generic and could fit any company. What single change would most improve it?",
   options: [
-    "Ask Claude to make the advertisement more exciting",
-    "Add the must-have skills, the team context, and what makes this role different from similar ones",
-    "Ask for a longer advertisement so more detail appears",
-    "Ask Claude to use stronger adjectives"
+    "Ask Claude to make the advertisement more exciting and engaging for candidates.",
+    "Add the must-have skills, the team context, and what makes this role different from similar ones.",
+    "Ask for a longer advertisement so more detail and company history can appear.",
+    "Ask Claude to use more strong adjectives and punchy language to attract top talent."
   ],
   answer: 1,
   explain: `**Đúng: thêm thông tin đầu vào — kỹ năng bắt buộc, bối cảnh nhóm, điểm khác biệt của vị trí.** Một tin tuyển dụng chung chung là hệ quả trực tiếp của việc đầu vào chung chung: Claude không thể viết cụ thể về một vị trí mà nó chỉ biết tên. Khi bạn cung cấp ba mảnh thông tin này, mô hình có đủ chất liệu để viết câu cụ thể và loại bớt những câu có thể dùng cho bất kỳ công ty nào.
@@ -2407,10 +2407,10 @@ Chuẩn bị 5 gạch đầu dòng: 3 kỹ năng bắt buộc, 1 câu về nhóm
   topic: "claude",
   q: "[Prompting Basics] A manager asks Claude to 'review this report and tell me what is wrong'. Claude returns a long list of everything, including style preferences. What is the most useful follow-up?",
   options: [
-    "Ask for the list to be sorted by length",
-    "Start a new chat and ask the same question again",
-    "Ask for the review to be limited to factual and logical errors, ranked by severity, with the sentence quoted for each",
-    "Ask Claude to write a new report instead"
+    "Ask for the review to be sorted by sentence length, from longest to shortest.",
+    "Start a new chat and ask the same question again to see if the critique changes.",
+    "Ask for the review to be limited to factual and logical errors, ranked by severity, with the sentence quoted for each.",
+    "Ask Claude to write a new, improved version of the report, incorporating all the suggestions."
   ],
   answer: 2,
   explain: `**Đúng: giới hạn phạm vi review vào lỗi sự thật và logic, xếp theo mức nghiêm trọng, kèm câu bị trích dẫn.** "Tell me what is wrong" quá rộng: nó bao gồm văn phong, sở thích, cấu trúc — những thứ khác nhau về mức quan trọng. Khi bạn thu hẹp phạm vi và yêu cầu xếp hạng, bạn nhận được một danh sách dùng được: lỗi nghiêm trọng trước, kèm bằng chứng để kiểm tra. Việc trích dẫn từng câu giúp bạn xác minh nhanh thay vì đọc lại toàn bộ.
