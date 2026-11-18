@@ -6289,5 +6289,495 @@ Cấu hình CircuitBreaker: {{slidingWindowSize=20}}, {{failureRateThreshold=50}
     'Nêu alert pending acquires, thread busy, Redis latency; chaos test failover staging.'
   ],
   tags: ['redis', 'lettuce', 'failover', 'timeout', 'circuit-breaker', 'bulkhead', 'cache', 'thread-pool']
+},
+{
+  id: 'lab-incident-044',
+  category: 'incident',
+  title: 'Retry storm do batch listener retry cả lô khi gặp một message lỗi: lag 2 triệu trên cả 6 partition',
+  level: 'senior',
+  scenario: `**Bối cảnh (giải thích thuật ngữ):**
+- **Kafka** là hệ thống message: producer (bên gửi) đẩy message vào **topic** (kênh), consumer (bên nhận) đọc. Mỗi topic chia thành **partition** (đoạn nhỏ) để nhiều consumer đọc song song; trong một **consumer group** (nhóm consumer cùng mục đích), mỗi partition chỉ thuộc một consumer tại một thời điểm.
+- **Offset** là vị trí đọc kế tiếp trong partition. **Lag** là số message đã có trong topic nhưng consumer chưa xử lý xong.
+- **Batch listener** là kiểu consumer nhận một **lô** (batch) nhiều message mỗi lần {{poll()}}, thay vì từng message một. {{max.poll.records}} là số message tối đa mỗi lần poll.
+- **Error handler** ({{DefaultErrorHandler}} của Spring Kafka) quyết định sau khi listener ném lỗi: thử lại bao nhiêu lần, chờ bao lâu, rồi bỏ qua hay gửi sang **DLQ** (dead letter queue — topic chứa message lỗi để xử lý sau).
+- **Retry storm** là hiện tượng thử lại tạo ra nhiều request hơn, làm hệ thống đích quá tải, sinh thêm lỗi và thử lại tiếp — một vòng phản hồi dương.
+
+**Hệ thống:** **ledger-posting** (Spring Boot 3.2, spring-kafka 3.1, kafka-clients 3.6) đọc topic **payment-events** (**6 partition**, Kafka 3.6, 3 broker) và với mỗi sự kiện thanh toán, gọi **đồng bộ** API {{POST /v1/postings}} của **core-banking** (hệ thống hạch toán chính) để ghi bút toán. Idempotency key là {{eventId}}: nếu sự kiện đã hạch toán, core-banking trả **409 DUPLICATE** và không ghi trùng. Triển khai 6 pod × {{concurrency: 1}} = 6 consumer thread, mỗi thread 1 partition. Bình thường **480 message/giây**, mỗi lời gọi core-banking khoảng **80 ms**, lag gần bằng 0, CPU core-banking 40% (4 pod × 1 vCPU).
+
+**Sự cố (05/11/2026).** 09:00, producer **v3.8** có bug: với một số đơn, trường {{amount}} bị null (JSON hợp lệ, {{amount}} khớp kiểu {{BigDecimal}} nên **deserialize thành công**, không ném lỗi parse). Khi listener gọi core-banking, core-banking chạy {{amount.longValue()}} → **NullPointerException** → trả **HTTP 500**. Đây là lỗi **tất định**: cùng message sẽ luôn 500, thử lại bao nhiêu lần cũng vậy.
+
+Consumer dùng **batch listener** ({{batch: true}}, {{ack-mode: batch}}, {{max-poll-records: 200}}). Listener lặp qua từng record và gọi core-banking; nếu **bất kỳ record nào** ném lỗi, **cả batch 200 record bị coi là thất bại**. Bean {{DefaultErrorHandler}} cấu hình {{new FixedBackOff(0, Long.MAX_VALUE)}} — **thử lại vô hạn, chờ 0 ms** — **không** dùng {{BatchListenerFailedException}} để chỉ record lỗi, **không** phân loại lỗi 4xx/5xx, **không** có {{DeadLetterPublishingRecoverer}}.
+
+**Triệu chứng.** Từ 09:00, consumer vẫn "chạy" nhưng **không partition nào nhích offset**: mỗi lần batch thất bại, consumer seek lại **đầu batch** và chạy lại 200 record, trong đó khoảng 100 record đã gọi core-banking thành công (idempotent nên không ghi trùng, nhưng vẫn tốn một lời gọi HTTP mỗi record). Với 0 ms chờ, mỗi thread thực hiện khoảng **2 lần thử/giây** (100 lời gọi × ~5 ms), 6 thread tạo khoảng **1.200 request/giây** tới core-banking — gấp ~3 lần bình thường. Core-banking CPU lên **100%**, p99 từ 80 ms lên **410 ms**; các service khác gọi core-banking bắt đầu timeout. Lag tăng đều **480 message/giây**, đến 10:10 đạt **hơn 2 triệu** trên cả 6 partition. Mỗi pod ghi khoảng **1.200 dòng log/giây** (mỗi lần batch fail in một stack trace), đĩa log đầy sau vài giờ.
+
+**Dữ liệu thu thập:** cấu hình consumer + code listener + bean error handler, log của một pod, metric Prometheus và hai lần chạy {{kafka-consumer-groups.sh}} (công cụ kiểm tra nhóm consumer).`,
+  artifacts: [
+    {
+      name: 'consumer-config-and-code.txt',
+      lang: 'text',
+      content: `# ---------- application.yml (ledger-posting) ----------
+spring:
+  kafka:
+    consumer:
+      group-id: ledger-posting
+      enable-auto-commit: false
+      max-poll-records: 200
+      properties:
+        max.poll.interval.ms: 300000
+        session.timeout.ms: 45000
+    listener:
+      batch: true                 # batch listener: nhan List<PaymentEvent>
+      ack-mode: batch             # commit offset sau khi xong CA BATCH
+      concurrency: 1
+
+# ---------- ErrorHandlerConfig.java ----------
+@Bean
+DefaultErrorHandler errorHandler() {
+    // "khong muon mat message" -> thu lai vo han, 0 ms giua cac lan
+    return new DefaultErrorHandler(new FixedBackOff(0, Long.MAX_VALUE));
+}
+# KHONG co DeadLetterPublishingRecoverer, KHONG addNotRetryableExceptions,
+# KHONG dung BatchListenerFailedException.
+
+# ---------- PostingListener.java ----------
+@KafkaListener(topics = "payment-events")
+public void onBatch(List<PaymentEvent> events) {
+    for (PaymentEvent e : events) {            // batch 200 record
+        coreBankClient.post(e);                // POST /v1/postings, idempotency key = eventId
+    }                                          // 1 record loi -> ca batch nem exception
+}
+
+# ---------- Producer v3.8 (gay loi) ----------
+template.send("payment-events", key, "{\\"eventId\\":\\"PE-20261105-0091231\\",\\"amount\\":null}");
+# amount = null la JSON hop le; consumer deserialize thanh BigDecimal amount = null
+# core-banking: amount.longValue() -> NullPointerException -> HTTP 500`
+    },
+    {
+      name: 'consumer-pod-ledger-3.log',
+      lang: 'text',
+      content: `2026-11-05T09:00:12.104+07:00  INFO 1 --- [ledger-posting] [ntainer#0-0-C-1] o.s.k.l.KafkaMessageListenerContainer : ledger-posting: partitions assigned: [payment-events-0]
+2026-11-05T09:00:47.231+07:00  INFO 1 --- [ledger-posting] [ntainer#0-0-C-1] v.v.ledger.PostingListener               : batch start partition=payment-events-0 records=200 firstOffset=7310284
+2026-11-05T09:00:47.318+07:00  ERROR 1 --- [ledger-posting] [ntainer#0-0-C-1] v.v.ledger.CoreBankClient                : POST /postings eventId=PE-20261105-0091231 amount=null -> 500
+org.springframework.web.client.HttpServerErrorException: 500 Internal Server Error: "amount must not be null"
+	at org.springframework.web.client.RestTemplate.doExecute(RestTemplate.java:889)
+	at v.v.ledger.CoreBankClient.post(CoreBankClient.java:38)
+	at v.v.ledger.PostingListener.onBatch(PostingListener.java:29)
+2026-11-05T09:00:47.321+07:00  ERROR 1 --- [ledger-posting] [ntainer#0-0-C-1] o.s.k.l.KafkaMessageListenerContainer : Consumer record failed
+org.springframework.kafka.listener.ListenerExecutionFailedException: Listener method 'onBatch' threw exception
+2026-11-05T09:00:47.324+07:00  INFO 1 --- [ledger-posting] [ntainer#0-0-C-1] o.a.k.c.c.i.ConsumerCoordinator     : Resetting offset for partition payment-events-0 to offset 7310284
+2026-11-05T09:00:47.851+07:00  INFO 1 --- [ledger-posting] [ntainer#0-0-C-1] v.v.ledger.PostingListener               : batch start partition=payment-events-0 records=200 firstOffset=7310284
+2026-11-05T09:00:48.412+07:00  ERROR 1 --- [ledger-posting] [ntainer#0-0-C-1] o.s.k.l.KafkaMessageListenerContainer : Consumer record failed
+# ... lap lai cung offset 7310284, cung loi amount=null ...
+# 6 thread (partition 0..5) deu lap lai khuon nay; moi lan fail in 200 dong "POST /postings"
+# 09:00:47 -> 09:00:48: 2 lan thu trong 1 giay (100 call x 5 ms = 500 ms moi lan)
+# 1.200 dong log moi giay tren moi pod; 6 pod -> khoang 7.200 dong/giay toan cum`
+    },
+    {
+      name: 'prometheus-and-groups.txt',
+      lang: 'text',
+      content: `# kafka_consumergroup_lag{group="ledger-posting"} tong 6 partition
+# records_consumed_rate = 0 (khong commit offset)
+# core_req/s = rate(http_server_requests_seconds_count{service="core-banking"}[1m])
+# core_500/s = rate(http_server_requests_seconds_count{service="core-banking",status="500"}[1m])
+# core_p99 = p99 http_server_requests_seconds{service="core-banking",uri="/v1/postings"}
+# core_cpu = rate(process_cpu_seconds_total{service="core-banking"}[1m])
+# log_lines/s = rate(logback_events_total{service="ledger-posting"}[1s]) moi pod
+
+time     produce/s  consume/s  lag        core_req/s  core_500/s  core_p99  core_cpu  log_lines/s_per_pod
+08:30    480        480        1.820      480         0           80 ms     40%       10
+09:00    480        480        2.140      480         0           82 ms     41%       10
+09:05    480        0          144.000    1.440       1.140       410 ms    100%      1.200
+09:30    480        0          864.000    1.440       1.140       420 ms    100%      1.200
+10:10    480        0          2.016.000  1.440       1.140       430 ms    100%      1.200
+
+# 09:00 -> 10:10 = 4200 s; 480 msg/s x 4200 = 2.016.000, khop lag
+# core_req/s = 1.440 = 1.140 retry + 300 request tu cac service khac
+# core_cpu 100%: 1.440 req/s x 5 ms = 7.2 CPU-seconds/s > 4 vCPU
+
+# kafka-consumer-groups.sh --bootstrap-server kafka-1:9092 --describe --group ledger-posting
+# 10:10:05
+GROUP           TOPIC           PARTITION  CURRENT-OFFSET  LOG-END-OFFSET  LAG
+ledger-posting  payment-events  0          7310284         7646284         336000
+ledger-posting  payment-events  1          7280532         7616532         336000
+ledger-posting  payment-events  2          7259034         7595034         336000
+ledger-posting  payment-events  3          7324410         7660410         336000
+ledger-posting  payment-events  4          7376021         7712021         336000
+ledger-posting  payment-events  5          7349896         7685896         336000
+# TAT CA 6 partition: CURRENT-OFFSET khong nhich tu 09:00; LOG-END-OFFSET tang ~80/s
+# 6 x 336.000 = 2.016.000
+# Consumer group on dinh: khong co "Preparing to rebalance" (consumer van goi poll() moi vong retry)`
+    }
+  ],
+  questions: [
+    'Vì sao cả 6 partition cùng lag, trong khi message lỗi chỉ là một record? Dẫn chứng từ log batch và metric.',
+    'Giải thích chuỗi: amount null → core-banking 500 → batch listener ném lỗi → DefaultErrorHandler seek lại đầu batch → retry vô hạn. Vì sao đây là retry storm (1.440 req/s) và vì sao consumer group không rebalance?',
+    'Bạn xử lý ngay thế nào, và thiết kế lại error handler (phân loại retryable/non-retryable, backoff, DLQ, BatchListenerFailedException), producer validation và alert theo lag ra sao?'
+  ],
+  hints: [
+    'Batch listener: 1 record lỗi làm cả batch 200 record thất bại. Không dùng BatchListenerFailedException nên handler seek lại ĐẦU batch; khoảng 100 record đã gọi thành công bị gọi lại mỗi lần thử.',
+    'FixedBackOff(0, Long.MAX_VALUE) cộng 6 thread x khoảng 100 call mỗi lần thử = hơn 1.000 req/s; core-banking 4 vCPU không chịu nổi nên p99 tăng, các service khác cũng lỗi.',
+    'Phân loại: 4xx/validation/deserialization là non-retryable (thử lại vô ích); 5xx/timeout là retryable nhưng phải có maxAttempts hữu hạn. Dùng ExponentialBackOff cộng jitter và DeadLetterPublishingRecoverer; alert theo lag từng partition.'
+  ],
+  answer: `**Tóm tắt:** Một message có {{amount = null}} làm core-banking trả **500** (NullPointerException khi chạy {{amount.longValue()}}). Vì listener là **batch listener** và không dùng {{BatchListenerFailedException}}, **cả batch 200 record** bị coi là thất bại; {{DefaultErrorHandler}} với {{new FixedBackOff(0, Long.MAX_VALUE)}} **seek lại đầu batch và thử lại vô hạn, chờ 0 ms**. Mỗi lần thử gọi lại khoảng 100 record đã thành công, nên 6 thread tạo khoảng **1.200 request/giây** tới core-banking (gấp ~3 lần bình thường), làm CPU core-banking lên 100% và p99 từ 80 ms lên 410 ms. Không partition nào commit được offset, lag tăng đều 480 message/giây và đạt **2.016.000** sau 70 phút. Sửa: phân loại lỗi retryable/non-retryable, backoff hữu hạn cộng jitter, DLQ, dùng {{BatchListenerFailedException}} để chỉ record lỗi, producer validate và alert theo lag từng partition.
+
+### Cơ chế: vì sao một message làm cả batch thất bại
+
+1. **Batch listener nhận cả lô.** Mỗi lần {{poll()}} trả về tối đa 200 record ({{max-poll-records: 200}}). Listener lặp qua từng record và gọi core-banking. Nếu một record ném lỗi, cả lời gọi listener thất bại.
+2. **Không chỉ record lỗi.** Khi listener không ném {{BatchListenerFailedException}}, Spring Kafka không biết record nào lỗi. Nó coi **cả batch** là thất bại và seek consumer về **offset đầu batch**. Lần thử sau bắt đầu lại từ record đầu tiên.
+3. **Record đã thành công bị gọi lại.** Giả sử message lỗi ở vị trí thứ 100. Mỗi lần thử, 99 record đầu được gọi lại (core-banking idempotent theo {{eventId}} nên không ghi trùng, nhưng vẫn tốn 99 lời gọi HTTP), rồi record thứ 100 lại 500. Đây là **lãng phí có hệ thống**: công việc đã xong vẫn bị làm lại.
+4. **Vòng lặp không có lối thoát.** {{FixedBackOff(0, Long.MAX_VALUE)}} nghĩa là 0 ms giữa các lần thử và số lần thử tối đa là {{Long.MAX_VALUE}}. Không có {{DeadLetterPublishingRecoverer}} để chuyển message sang DLQ, không có {{addNotRetryableExceptions}} để bỏ qua. Vì lỗi mang tính tất định (null amount luôn 500), thử lại **không bao giờ** thành công.
+
+### Vì sao cả 6 partition cùng lag
+
+- Có 6 consumer thread, mỗi thread một partition. Producer v3.8 phát lỗi **liên tục trên mọi partition** (không chỉ một message duy nhất), nên **cả 6 thread** đều gặp message {{amount = null}} và cùng kẹt.
+- Mỗi thread không commit được offset của partition mình → cả 6 partition đứng. {{kafka-consumer-groups}} cho thấy {{CURRENT-OFFSET}} của cả 6 partition không nhích, {{LOG-END-OFFSET}} tăng khoảng 80 message/giây mỗi partition.
+- Đây là điểm khác với sự cố một message đơn lẻ: khi producer vẫn tiếp tục phát payload lỗi, **mọi partition đều có message độc**, nên không còn partition nào sạch để chạy bù.
+
+### Vì sao thành retry storm
+
+- Mỗi lần thử batch: khoảng 100 lời gọi × ~5 ms = **500 ms**, tức khoảng 2 lần thử/giây mỗi thread.
+- 6 thread × 2 lần/giây × 100 lời gọi = **1.200 request/giây** chỉ để lặp lại 6 message lỗi. Cộng khoảng 300 request/giây từ các service khác, core-banking nhận **1.440 request/giây**.
+- Core-banking có 4 vCPU; 1.440 request/giây × 5 ms = **7,2 CPU-seconds/giây**, vượt 4 vCPU → CPU 100%, p99 tăng từ 80 ms lên 410 ms.
+- Các service khác gọi core-banking bắt đầu timeout → có thể retry thêm → vòng phản hồi dương. Đây chính là **retry storm**: thử lại không tạo năng lực mới, chỉ chuyển tải và làm hệ thống đích quá tải.
+- Log: mỗi lần batch fail in một stack trace; 6 pod × 1.200 dòng/giây = khoảng 7.200 dòng/giây, làm đầy đĩa log.
+
+### Dẫn chứng
+
+- **Log:** cùng {{offset 7310284}}, cùng {{amount=null}}, {{Resetting offset for partition payment-events-0 to offset 7310284}}; hai lần {{batch start}} cách nhau 620 ms (09:00:47.231 → 09:00:47.851).
+- **Consumer groups:** cả 6 partition có {{CURRENT-OFFSET}} đứng yên; ví dụ partition 0 ở {{7310284}}, {{LOG-END-OFFSET}} tăng lên {{7646284}}, {{LAG 336000}}; tổng 6 × 336.000 = **2.016.000**.
+- **Metric:** {{consume/s = 0}}, {{core_req/s = 1.440}}, {{core_500/s = 1.140}}, {{core_cpu = 100%}}, {{core_p99 = 410 ms}}, {{log_lines/s = 1.200}} mỗi pod.
+- **Cấu hình:** {{new DefaultErrorHandler(new FixedBackOff(0, Long.MAX_VALUE))}}; không có {{DeadLetterPublishingRecoverer}}, không có {{BatchListenerFailedException}}, không có {{addNotRetryableExceptions}}.
+- **Nhiễu cần bỏ qua:** consumer group **không** rebalance (consumer vẫn gọi {{poll()}} mỗi vòng retry, heartbeat vẫn chạy); không có {{OutOfMemoryError}}. Đây không phải lỗi rebalance hay bộ nhớ.
+
+### Cách sửa
+
+**Ngay trong sự cố:**
+1. Tạm dừng consumer hoặc chuyển {{ledger-posting}} sang chế độ chỉ đọc để chặn retry storm; đánh giá ảnh hưởng của 1.440 request/giây lên core-banking và các service khác.
+2. Tìm message lỗi theo partition/offset bằng {{kafka-console-consumer --topic payment-events --partition 0 --offset 7310284 --max-messages 1}} (không in dữ liệu cá nhân).
+3. Chuyển message lỗi sang DLQ hoặc nâng offset có kiểm soát **sau khi đã lưu message** làm bằng chứng; sửa producer v3.8 để không phát {{amount = null}}.
+
+**Error handler đúng (phân loại + backoff hữu hạn + DLQ):**
+
+~~~java
+@Bean
+DefaultErrorHandler errorHandler(KafkaOperations<String, String> ops) {
+    DeadLetterPublishingRecoverer recoverer = new DeadLetterPublishingRecoverer(ops,
+            (record, ex) -> new TopicPartition("payment-events.DLT", record.partition()));
+    DefaultErrorHandler handler = new DefaultErrorHandler(recoverer,
+            new ExponentialBackOff(500, 2.0));
+    handler.setMaxAttempts(5);
+    handler.addNotRetryableExceptions(
+            DeserializationException.class,
+            ValidationException.class,
+            HttpClientErrorException.class);
+    return handler;
+}
+~~~
+
+- **Phân loại lỗi:** {{HttpClientErrorException}} (4xx: 400, 409, 422) là lỗi dữ liệu/validation, thử lại vô ích → non-retryable, đưa thẳng DLQ. {{HttpServerErrorException}} (5xx) và timeout là lỗi tạm thời → retryable, nhưng **phải có {{setMaxAttempts}} hữu hạn**. Với lỗi 500 tất định như {{amount = null}}, retry vẫn vô ích; DLQ sau vài lần là lối thoát đúng, đồng thời producer phải được sửa.
+- **Backoff + jitter:** {{ExponentialBackOff(500, 2.0)}} chờ 500 ms, 1 s, 2 s, 4 s…; thêm jitter để nhiều consumer không thử lại cùng lúc. Không dùng 0 ms.
+- **DLQ:** {{DeadLetterPublishingRecoverer}} gửi message thất bại cuối cùng sang {{payment-events.DLT}}; sau khi recover, offset được commit. DLQ phải có dashboard và quy trình phát lại, không phải thùng rác.
+
+**Dùng BatchListenerFailedException để chỉ đúng record lỗi:**
+
+~~~java
+@KafkaListener(topics = "payment-events")
+public void onBatch(List<PaymentEvent> events) {
+    for (int i = 0; i < events.size(); i++) {
+        try {
+            coreBankClient.post(events.get(i));
+        } catch (Exception ex) {
+            throw new BatchListenerFailedException("failed at index " + i, ex, i);
+        }
+    }
+}
+~~~
+
+Khi có {{BatchListenerFailedException}}, error handler chỉ thu hồi từ record lỗi trở đi; các record trước đó đã thành công không bị gọi lại. Kết hợp với DLQ, batch vẫn commit và lag nhích.
+
+**Producer validation:**
+- Kiểm tra {{amount != null}} và các trường bắt buộc ngay tại producer; dùng JSON Schema/Avro + Schema Registry để từ chối payload sai trước khi gửi.
+- Không để consumer là nơi đầu tiên phát hiện dữ liệu rác.
+
+**Alert:**
+- **Lag theo từng partition**, không chỉ tổng lag: {{kafka_consumergroup_lag}} với nhãn partition vượt ngưỡng trong 5 phút.
+- **{{records_consumed_rate = 0}}** trong khi {{records_produced_rate > 0}}: dấu hiệu chính xác nhất của consumer kẹt.
+- **Số lần lỗi lặp lại cùng offset** hoặc cùng {{eventId}} vượt 100 trong 1 phút.
+- **Tốc độ ghi log** tăng đột biến; log lỗi lặp lại nên được chống lặp (rate limit) để không làm đầy đĩa.
+- **Số message trong DLQ** và tuổi message cũ nhất trong DLQ.
+
+### Phòng ngừa
+
+- **Test poison message:** đưa một payload {{amount = null}} vào topic staging, xác nhận consumer chuyển sang DLQ sau số lần thử đã định và batch vẫn commit, không kẹt partition.
+- **Schema ở producer và consumer:** JSON Schema/Avro, trường bắt buộc, giá trị hợp lệ; từ chối ở producer thay vì để consumer phát hiện.
+- **Error handler mặc định an toàn:** finite retry, DLQ, phân loại lỗi không thể retry (deserialization, validation, 4xx) khác với lỗi tạm thời (5xx, timeout).
+- **Không retry cả batch:** luôn dùng {{BatchListenerFailedException}} với batch listener; nếu không, một record lỗi sẽ kéo cả lô xuống.
+- **Idempotency:** nếu listener có side effect (ghi DB, gọi API), dùng idempotency key {{eventId}} để message từ DLQ phát lại không gây trùng.
+- **Runbook:** consumer kẹt, lag tăng trên mọi partition — cách xem message theo offset, cách chuyển DLQ, cách phát lại.
+
+> Senior tip: Với batch listener, câu hỏi đầu tiên khi lag tăng là "một record lỗi có làm cả batch bị retry không?". Nếu có, một message rác sẽ biến thành hàng trăm lời gọi lặp lại. Tôi luôn dùng {{BatchListenerFailedException}} cộng DLQ, và đặt alert theo **lag từng partition** thay vì tổng lag: khi cả 6 partition cùng đứng, tổng lag tăng đều và rất dễ bị tưởng là tải cao, trong khi thực chất là retry storm.`,
+  rubric: [
+    'Xác định đúng chuỗi: amount null → core-banking 500 (NPE) → batch listener không dùng BatchListenerFailedException nên cả batch 200 record thất bại → DefaultErrorHandler FixedBackOff(0, Long.MAX_VALUE) seek lại đầu batch, retry vô hạn.',
+    'Giải thích vì sao cả 6 partition cùng lag: producer v3.8 phát payload lỗi liên tục trên mọi partition, cả 6 consumer thread đều kẹt; dẫn chứng CURRENT-OFFSET đứng yên cả 6 partition và tổng lag 2.016.000 = 6 × 336.000.',
+    'Giải thích retry storm: 6 thread x ~2 lần thử/giây x ~100 call = 1.200 req/s, cộng 300 req/s từ service khác = 1.440 req/s; core-banking 4 vCPU, 1.440 x 5 ms = 7,2 CPU-seconds/s > 4 → CPU 100%, p99 80 ms → 410 ms; consumer group không rebalance vì vẫn gọi poll().',
+    'Đề xuất sửa ngay: tạm dừng consumer/chặn retry storm, tìm message theo offset, chuyển DLQ hoặc nâng offset có kiểm soát sau khi lưu bằng chứng, sửa producer.',
+    'Đề xuất dài hạn: DefaultErrorHandler finite retry + ExponentialBackOff/jitter + DeadLetterPublishingRecoverer, addNotRetryableExceptions cho DeserializationException/Validation/4xx, BatchListenerFailedException để chỉ record lỗi, producer schema validation, idempotency, alert lag từng partition và DLQ.'
+  ],
+  tags: ['kafka', 'poison-message', 'retry-storm', 'batch-listener', 'dead-letter-queue', 'spring-kafka', 'consumer-lag']
+},
+{
+  id: 'lab-incident-045',
+  category: 'incident',
+  title: 'Gọi webhook đối tác đồng bộ không timeout: 200/200 thread Tomcat cạn, cả API đặt hàng 503',
+  level: 'senior',
+  scenario: `**Bối cảnh (giải thích thuật ngữ):**
+- **Webhook** là cách một hệ thống thông báo cho hệ thống khác bằng một request HTTP (thường POST) tới một URL do bên kia cung cấp. Ở đây order-service gọi webhook của đối tác giao vận **fulfill-partner** sau khi tạo đơn.
+- **Thread pool** của Tomcat là nhóm luồng (thread) xử lý request. Mỗi request HTTP vào chiếm một thread cho tới khi xong. **Tomcat 200 thread** nghĩa là tối đa 200 request đang xử lý cùng lúc; request thứ 201 phải xếp hàng ở **accept queue**.
+- **Timeout** là giới hạn thời gian chờ. **Connect timeout** là thời gian tối đa để mở kết nối TCP; **read timeout** là thời gian tối đa chờ dữ liệu phản hồi. Không đặt timeout nghĩa là có thể chờ vô hạn.
+- **Outbox pattern** là cách ghi việc cần làm vào cùng một transaction với dữ liệu nghiệp vụ (bảng {{outbox}}), rồi một worker riêng đọc bảng đó và thực hiện việc (gọi webhook) sau. Nhờ vậy request của người dùng không phải chờ việc bên ngoài.
+- **Bulkhead** (vách ngăn) là giới hạn số tài nguyên (thread, connection) cho một nhóm việc, để một dependency chậm không chiếm hết tài nguyên của cả ứng dụng — giống vách ngăn tàu để một khoang thủng không làm chìm cả tàu.
+- **Little's law** trong bài này: số thread bận trung bình = tốc độ request × thời gian giữ thread.
+
+**Hệ thống:** **order-service** (Spring Boot 3.3, Tomcat **200 thread**, Hikari **20 connection**, 4 pod) phục vụ {{POST /v1/orders}}. Sau khi tạo đơn, service **gọi đồng bộ** webhook của **fulfill-partner** để báo đối tác, **ngay trong request thread** của người dùng, trước khi trả 201. HTTP client là {{RestTemplate}} với {{SimpleClientHttpRequestFactory}} và **không đặt connect/read timeout**.
+
+**Sự cố (05/11/2026).** Traffic ổn định **120 request/giây**. Bình thường webhook trả sau **80 ms**, nên số thread bận xấp xỉ 120 × 0,08 = **9,6 thread** — rất thoải mái. Lúc **14:25**, DB của fulfill-partner chậm: webhook **không trả lời trong 30 giây** (p99 từ 80 ms lên 30 s). Mỗi request order giữ một thread Tomcat suốt 30 giây; theo Little's law cần 120 × 30 = **3.600 thread**, trong khi cả 4 pod chỉ có 4 × 200 = **800 thread**. Tomcat cạn sau khoảng 800/120 xấp xỉ **6,7 giây**; accept queue (100/pod) đầy; request mới bị từ chối bằng **503**. p99 của {{/v1/orders}} lên **30 giây**, rồi 503. Hikari chỉ 20 connection và **idle** vì thread kẹt ở HTTP, chưa tới DB; CPU DB chỉ **22%**. Đối tác sửa xong lúc **14:35**, nhưng các thread đang chờ 30 giây phải rút hết, hệ thống chỉ ổn định lại lúc **14:36**.
+
+**Dữ liệu thu thập:** jstack của một pod lúc 14:30, metric Prometheus 14:24–14:36, log ứng dụng và cấu hình/code gọi webhook.`,
+  artifacts: [
+    {
+      name: 'jstack-order-1430.txt',
+      lang: 'text',
+      content: `2026-11-05 14:30:12
+Full thread dump OpenJDK 64-Bit Server VM (17.0.12+7 mixed mode, sharing):
+
+"http-nio-8080-exec-137" #212 daemon prio=5 os_prio=0 cpu=41.20ms elapsed=27.80s tid=0x00007f3a2c0d9000 nid=0x1a3 runnable  [0x00007f39d6ffd000]
+   java.lang.Thread.State: RUNNABLE
+	at java.base@17.0.12/sun.nio.ch.NioSocketImpl.implRead(NioSocketImpl.java:304)
+	at java.base@17.0.12/sun.nio.ch.NioSocketImpl.read(NioSocketImpl.java:346)
+	at java.base@17.0.12/java.net.Socket$SocketInputStream.read(Socket.java:966)
+	at java.base@17.0.12/java.io.BufferedInputStream.fill(BufferedInputStream.java:244)
+	at sun.net.www.http.HttpClient.parseHTTPHeader(HttpClient.java:799)
+	at sun.net.www.protocol.http.HttpURLConnection.getInputStream0(HttpURLConnection.java:1615)
+	at java.base@17.0.12/java.net.HttpURLConnection.getResponseCode(HttpURLConnection.java:527)
+	at org.springframework.http.client.SimpleClientHttpResponse.getStatusCode(SimpleClientHttpResponse.java:58)
+	at org.springframework.web.client.RestTemplate.doExecute(RestTemplate.java:889)
+	at org.springframework.web.client.RestTemplate.postForObject(RestTemplate.java:385)
+	at vn.shop.order.PartnerWebhookClient.notify(PartnerWebhookClient.java:41)
+	at vn.shop.order.OrderService.create(OrderService.java:73)
+	at vn.shop.order.OrderController.create(OrderController.java:41)
+
+-- Thong ke toan bo dump: 200/200 thread http-nio-8080-exec-* co cung stack PartnerWebhookClient.notify
+-- elapsed cua cac thread: tu 2.1s den 28.4s; khong thread nao phuc vu /actuator/health/*
+-- Hikari pool: 18/20 connection idle (request chua toi DB, dang cho webhook)`
+    },
+    {
+      name: 'metrics-order-1424-1436.txt',
+      lang: 'text',
+      content: `# tomcat_busy = sum(tomcat_threads_busy_threads{service="order-service"}) (max 4 x 200 = 800)
+# webhook_p99 = p99 http_client_requests_seconds{service="order-service",client="fulfill-partner"}
+# order_p99 = p99 http_server_requests_seconds{service="order-service",uri="/v1/orders"}
+# accept_queue = tomcat_accept_queue_size (max 100 moi pod)
+# hikari_active = sum(hikaricp_connections_active{service="order-service"}) (max 80)
+# db_cpu = rate(process_cpu_seconds_total{service="postgres"}[1m]) / 8 * 100
+
+time      req/s  webhook_p99  tomcat_busy  order_p99  accept_queue  503/s  hikari_active  db_cpu
+14:24     120    80 ms        38           95 ms      0             0      3              22%
+14:25:05  120    2.1 s        210          2.2 s      0             12     4              22%
+14:25:12  120    30 s         800          30 s       100           120    4              22%
+14:26     120    30 s         800          30 s       100           120    4              22%
+14:35     120    30 s         800          30 s       100           120    4              22%
+14:35:40  120    90 ms        600          1.1 s      40            30     3              23%
+14:36:20  120    85 ms        45           100 ms     0             0      3              22%
+# 14:25:12: 30 req/s moi pod x 30 s = 900 thread can > 200 thread/pod -> can
+# accept queue 100/pod day -> 503; hikari khong phai nut that (active 4, idle 18)`
+    },
+    {
+      name: 'code-and-config.txt',
+      lang: 'text',
+      content: `### order-service: OrderController.java (hien tai)
+@PostMapping("/v1/orders")
+public ResponseEntity<Order> create(@RequestBody CreateOrderRequest req) {
+    Order order = orderService.create(req);       // insert DB + commit
+    partnerWebhookClient.notify(order);           // BUG: dong bo, khong timeout
+    return ResponseEntity.status(201).body(order);
+}
+
+@Bean
+RestTemplate partnerWebhookRestTemplate() {
+    return new RestTemplate();                    // SimpleClientHttpRequestFactory: KHONG co timeout
+}
+
+### Cach sua: outbox + worker + timeout + bulkhead
+
+-- 1) Bang outbox: ghi "viec can lam" cung transaction tao don
+CREATE TABLE outbox (
+    id              BIGSERIAL PRIMARY KEY,
+    event_id        VARCHAR(64)  NOT NULL UNIQUE,
+    aggregate_type  VARCHAR(64)  NOT NULL,
+    payload         JSONB        NOT NULL,
+    status          VARCHAR(16)  NOT NULL DEFAULT 'PENDING',
+    attempts        INT          NOT NULL DEFAULT 0,
+    next_attempt_at TIMESTAMPTZ  NOT NULL DEFAULT now(),
+    created_at      TIMESTAMPTZ  NOT NULL DEFAULT now()
+);
+CREATE INDEX idx_outbox_due ON outbox (next_attempt_at) WHERE status = 'PENDING';
+
+// OrderService.create (sua): insert order + insert outbox trong CUNG @Transactional
+@Transactional
+public Order create(CreateOrderRequest req) {
+    Order order = orderRepo.save(new Order(req));
+    outboxRepo.save(new OutboxEvent(
+            "order.created:" + order.id(), "ORDER", order.toJson()));
+    return order;                                  // KHONG goi webhook o day
+}
+
+// 2) Worker rieng doc outbox va goi webhook (co timeout, retry, backoff)
+@Scheduled(fixedDelay = 500)
+public void dispatchOutbox() {
+    List<OutboxEvent> batch = outboxRepo.findDue(50);   // SELECT ... FOR UPDATE SKIP LOCKED
+    for (OutboxEvent e : batch) {
+        try {
+            partnerWebhookClient.notify(e.toCommand()); // connect 1s, read 2s
+            outboxRepo.markDone(e.id());
+        } catch (Exception ex) {
+            outboxRepo.markRetry(e.id(), backoff(e.attempts()));  // exponential + jitter
+        }
+    }
+}
+
+# 3) Timeout + bulkhead + circuit breaker
+partner:
+  webhook:
+    connect-timeout: 1s
+    read-timeout: 2s
+resilience4j:
+  bulkhead:
+    instances:
+      partnerWebhook:
+        max-concurrent-calls: 20
+        max-wait-duration: 50ms
+  circuitbreaker:
+    instances:
+      partnerWebhook:
+        failure-rate-threshold: 50
+        wait-duration-in-open-state: 30s`
+    }
+  ],
+  questions: [
+    'Vì sao một dependency không quan trọng (webhook đối tác) lại làm sập cả API đặt hàng? Dùng Little law với 120 req/s và webhook 30 s để chứng minh số thread cần so với 800 thread.',
+    'Dẫn chứng từ jstack và metric: vì sao Hikari/DB không phải nút thắt (hikari idle, DB CPU 22%) mà thread Tomcat lại cạn?',
+    'Bạn xử lý ngay thế nào, và thiết kế lại thế nào (timeout, outbox + worker, bulkhead, circuit breaker, idempotency) để webhook chậm không bao giờ ảnh hưởng luồng đặt hàng?'
+  ],
+  hints: [
+    'Mỗi request /v1/orders giữ một thread Tomcat cho tới khi webhook trả lời. 120 req/s x 30 s = 3.600 thread cần, 4 pod x 200 = 800 thread -> cạn sau ~6,7 s; accept queue 100/pod đầy -> 503.',
+    'Thread kẹt ở HTTP read (jstack: NioSocketImpl.implRead -> PartnerWebhookClient.notify), chưa tới DB, nên Hikari idle và DB CPU 22%.',
+    'Timeout 2 s chặn cạn thread (30 req/s/pod x 2 s = 60 thread/pod), nhưng vẫn làm mỗi order chờ 2 s; outbox + worker tách hẳn việc gọi webhook khỏi request; bulkhead giới hạn 20 call đồng thời; idempotency key = eventId.'
+  ],
+  answer: `**Tóm tắt:** order-service gọi webhook đối tác **đồng bộ ngay trong request thread** của {{POST /v1/orders}}, còn {{RestTemplate}} **không đặt timeout**. Khi webhook chậm 30 giây, mỗi request giữ một thread Tomcat suốt 30 giây; 120 request/giây cần 3.600 thread trong khi cả 4 pod chỉ có 800 thread, nên Tomcat cạn sau khoảng 6,7 giây, accept queue đầy và request mới bị 503. Hikari và DB không phải nút thắt (hikari idle, DB CPU 22%) vì thread kẹt ở HTTP. Sửa: đặt connect/read timeout, chuyển sang **outbox + worker bất đồng bộ**, **bulkhead** giới hạn số lời gọi webhook, circuit breaker và idempotency key.
+
+### Cơ chế: thread-per-request và Little's law
+
+Tomcat (Spring MVC) dùng mô hình **mỗi request một thread**. Thread đó làm mọi việc, kể cả **chờ** HTTP gọi ra ngoài. Số thread bận trung bình = tốc độ request × thời gian giữ thread:
+
+- Bình thường: 120 request/giây × 0,08 giây = **9,6 thread**. Với 800 thread (4 pod × 200), còn rất nhiều chỗ trống.
+- Khi webhook chậm 30 giây: 120 × 30 = **3.600 thread cần**. 800 thread cạn sau 800/120 xấp xỉ **6,7 giây**.
+- Sau khi cạn, request mới nằm ở **accept queue** (100/pod). Đầy queue thì Tomcat từ chối kết nối → **503**.
+- Vì webhook nằm **trước khi trả 201**, một dependency không quan trọng (báo đối tác) đã chặn toàn bộ luồng tạo đơn — kể cả những request không liên quan.
+
+### Vì sao Hikari/DB không phải nút thắt
+
+- Thread kẹt ở {{NioSocketImpl.implRead}} → {{PartnerWebhookClient.notify}} → {{RestTemplate.doExecute}}: đang chờ byte đầu tiên của response từ fulfill-partner.
+- Request **chưa tới DB**, nên Hikari chỉ 4/20 connection active, 18 idle; CPU DB 22%.
+- Đây là dấu hiệu kinh điển: **latency tăng nhưng CPU thấp** → không phải DB chậm, mà là thread bị giữ ở I/O ngoài.
+- Nếu chỉ nhìn dashboard DB và CPU, sẽ tưởng hệ thống rảnh trong khi API đã 503.
+
+### Dẫn chứng
+
+- **jstack:** 200/200 thread {{http-nio-8080-exec-*}} cùng stack {{NioSocketImpl.implRead}} → {{HttpClient.parseHTTPHeader}} → {{SimpleClientHttpResponse.getStatusCode}} → {{RestTemplate.doExecute}} → {{PartnerWebhookClient.notify}} → {{OrderService.create}}; elapsed 2,1–28,4 giây; không thread nào phục vụ health.
+- **Metric:** {{tomcat_busy}} 38 → 800; {{webhook_p99}} 80 ms → 30 s; {{order_p99}} 95 ms → 30 s; {{accept_queue}} 0 → 100; {{503/s}} 0 → 120; {{hikari_active}} 3 → 4 (idle); {{db_cpu}} 22%.
+- **Code:** {{return new RestTemplate();}} không cấu hình timeout; webhook gọi trong {{OrderController.create}} trước {{return 201}}.
+- **Hồi phục:** đối tác sửa lúc 14:35, nhưng {{tomcat_busy}} chỉ giảm dần khi các thread đang chờ 30 giây rút hết; 14:36 mới về 45 thread, 503 về 0.
+
+### Cách sửa
+
+**Ngay trong sự cố:**
+1. **Circuit breaker thủ công** hoặc tạm tắt gọi webhook tới fulfill-partner (bỏ qua tính năng báo đối tác) để thread không bị giữ; báo cho đối tác.
+2. **Restart có kiểm soát** (rolling restart) chỉ khi cần giải phóng thread đang chờ; đây là biện pháp tạm, không phải cách sửa gốc.
+3. Kiểm tra các đơn đã tạo nhưng chưa báo đối tác; sau khi webhook hoạt động lại, gửi bù qua worker/queue (idempotent theo {{eventId}}).
+
+**1. Timeout — cần nhưng chưa đủ:**
+
+~~~java
+@Bean
+RestTemplate partnerWebhookRestTemplate() {
+    var f = new SimpleClientHttpRequestFactory();
+    f.setConnectTimeout(Duration.ofMillis(1000));
+    f.setReadTimeout(Duration.ofMillis(2000));
+    return new RestTemplate(f);
+}
+~~~
+
+Với timeout 2 s, mỗi pod cần 30 request/giây × 2 s = 60 thread < 200 → **không cạn thread nữa**. Nhưng mỗi order vẫn phải chờ tới 2 s, và nếu đối tác lỗi kéo dài, mọi order đều chậm 2 s; timeout chỉ chặn cạn thread, không tách dependency.
+
+**2. Outbox + worker bất đồng bộ (sửa gốc):**
+
+~~~java
+@Transactional
+public Order create(CreateOrderRequest req) {
+    Order order = orderRepo.save(new Order(req));
+    outboxRepo.save(new OutboxEvent(
+            "order.created:" + order.id(), "ORDER", order.toJson()));
+    return order;
+}
+
+@Scheduled(fixedDelay = 500)
+public void dispatchOutbox() {
+    for (OutboxEvent e : outboxRepo.findDue(50)) {
+        try {
+            partnerWebhookClient.notify(e.toCommand());
+            outboxRepo.markDone(e.id());
+        } catch (Exception ex) {
+            outboxRepo.markRetry(e.id(), backoff(e.attempts()));
+        }
+    }
+}
+~~~
+
+- Order và outbox nằm trong **cùng một transaction**: nếu commit thành công, chắc chắn có dòng outbox; nếu rollback, cả hai biến mất. Đây là đảm bảo không mất việc.
+- Worker chạy trên **executor riêng** (hoặc pod riêng), không dùng thread Tomcat. Webhook chậm không ảnh hưởng request của người dùng.
+- Retry có backoff + jitter; sau nhiều lần vẫn lỗi thì chuyển sang hàng đợi cần người xử lý và alert.
+
+**3. Bulkhead + circuit breaker:**
+- {{max-concurrent-calls: 20}} giới hạn số lời gọi webhook đồng thời trên mỗi instance; nếu đối tác chậm, chỉ 20 worker bị giữ, phần còn lại của worker pool vẫn chạy việc khác.
+- Circuit breaker mở khi tỷ lệ lỗi vượt 50% trong cửa sổ trượt; khi mở, worker trả lỗi ngay và thử lại sau 30 s, tránh dồn request vào đối tác đang lỗi.
+- Không tăng {{server.tomcat.threads.max}} để "chữa cháy": tăng thread chỉ làm chậm quá trình cạn và tăng tài nguyên, không giải quyết việc một dependency ngoài chiếm hết thread.
+
+**4. Idempotency:**
+- Webhook phải mang {{eventId}} (hoặc {{Idempotency-Key}}) để đối tác bỏ qua lần gửi trùng. Worker retry và gửi bù đều có thể tạo request trùng; nếu không idempotent, đối tác có thể nhận hai lần cùng một đơn.
+- Ghi trạng thái gửi (PENDING/SENT/FAILED) để biết đơn nào đã báo, đơn nào cần gửi lại.
+
+**5. Alert:**
+- {{tomcat_threads_busy_threads / max > 0.8}} hoặc {{tomcat_accept_queue_size > 0}} trong 1 phút.
+- {{webhook_p99}} vượt ngưỡng (ví dụ 500 ms) hoặc {{webhook_error_rate}} tăng.
+- Số dòng {{outbox}} {{PENDING}} tăng liên tục, hoặc tuổi dòng {{PENDING}} cũ nhất vượt 5 phút.
+- **{{http_server_requests_seconds_count}} với status 503** tăng.
+
+### Phòng ngừa
+
+- **Không gọi dependency ngoài trong request thread** khi có thể: dùng outbox + worker, hoặc ít nhất đặt timeout ngắn và bulkhead.
+- **Timeout mặc định cho mọi HTTP client:** connect 1 s, read 2 s; không bao giờ để {{RestTemplate}} mặc định (không timeout).
+- **Bulkhead theo dependency:** mỗi đối tác một pool/semaphore riêng, để đối tác A chậm không làm cạn tài nguyên của đối tác B.
+- **Test quá tải:** mô phỏng webhook trả sau 30 s, xác nhận order API vẫn trả 201 trong ngưỡng SLA và worker không làm cạn thread.
+- **Chaos test:** tắt webhook đối tác trong staging, xác nhận circuit breaker mở và đơn vẫn được tạo, webhook được gửi bù khi đối tác trở lại.
+
+> Senior tip: Với mọi lời gọi HTTP ra ngoài, câu hỏi đầu tiên là "nếu bên kia không trả lời thì sao?". Nếu không có timeout, một dependency chậm sẽ biến thành cạn thread của chính mình. Nhưng timeout chỉ là lớp đầu: tôi luôn tách việc gọi webhook khỏi luồng người dùng bằng outbox + worker, đặt bulkhead theo từng đối tác, và để idempotency key ở cả hai đầu. Khi đó, đối tác có thể chậm cả tiếng mà API đặt hàng vẫn 201 trong vài chục mili giây.`,
+  rubric: [
+    'Giải thích đúng thread-per-request và Little law: 120 req/s x 30 s = 3.600 thread cần, 4 pod x 200 = 800 thread, cạn sau ~6,7 s, accept queue đầy -> 503.',
+    'Dẫn chứng: jstack 200/200 thread cùng stack PartnerWebhookClient.notify (NioSocketImpl.implRead), elapsed 2,1–28,4 s; metric tomcat_busy 38->800, webhook_p99 80 ms->30 s, hikari idle, DB CPU 22%; RestTemplate không có timeout.',
+    'Chỉ ra nút thắt là thread Tomcat bị giữ ở I/O ngoài, không phải Hikari/DB; latency tăng nhưng CPU thấp; tăng max threads không phải cách sửa.',
+    'Đề xuất sửa ngay: circuit breaker thủ công/tạm tắt webhook, rolling restart có kiểm soát, gửi bù idempotent; sau đó đặt connect/read timeout (1 s/2 s).',
+    'Đề xuất dài hạn: outbox + worker bất đồng bộ, bulkhead 20 call đồng thời, circuit breaker, idempotency key, alert thread busy/accept queue/webhook p99/outbox pending.'
+  ],
+  tags: ['webhook', 'timeout', 'thread-pool', 'outbox', 'bulkhead', 'circuit-breaker', 'spring-boot', 'resilience']
 }
 );
