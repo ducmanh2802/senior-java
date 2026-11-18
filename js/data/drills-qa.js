@@ -1483,6 +1483,125 @@
     "q": "Tell me about a time you had to coordinate a payment feature launch across engineering, compliance, and operations.",
     "sample": "We launched a new instant payout feature that required coordination across five teams. Engineering built the API, the ledger integration, and the provider adapter. Compliance reviewed the KYC flow, the AML rules, and the data retention policy. Operations designed the support runbook, the escalation matrix, and the reconciliation dashboard. I acted as the launch coordinator. I created a shared launch checklist with owners and due dates, ran weekly syncs, and tracked risks in a visible register. Two weeks before launch, compliance flagged a missing sanctions screening step. We added it, retested, and updated the runbook. On launch day, we used a feature flag to enable for five percent of users, monitored error rates and compliance alerts for four hours, then ramped to one hundred percent. The launch had zero incidents, and the feature processed one million dollars in the first week.",
     "phrases": ["launch coordinator", "shared launch checklist", "sanctions screening", "feature flag", "zero incidents"]
-  }
-
+  },
+  {
+    id: "drill-qa-222", kind: "qa", theme: "tech", level: "senior", seconds: 90,
+    q: "How would you reduce hallucinations in a RAG-based customer support bot?",
+    sample: "I would start by improving retrieval quality rather than just prompting the model. First, I chunk documents by semantic sections and add metadata like product and version, so retrieval returns the right context. Second, I use hybrid search combining keyword and vector search, then rerank the top results. Third, I instruct the model to answer only from the provided context and to say it does not know when the context is missing. I also add a confidence threshold: if retrieval scores are low, I fall back to a human handoff. Finally, I log every answer with its sources and review a sample weekly to catch drift. The trade-off is latency and cost, because reranking and larger context increase both. In one project this cut unsupported answers from about twelve percent to under three percent while keeping response time under two seconds.",
+    phrases: ["improving retrieval quality rather than just prompting", "hybrid search combining keyword and vector search", "answer only from the provided context", "confidence threshold", "log every answer with its sources"],
+  },
+  {
+    id: "drill-qa-223", kind: "qa", theme: "tech", level: "senior", seconds: 90,
+    q: "How do you evaluate an LLM feature before shipping it to users?",
+    sample: "I build an evaluation set of realistic questions with expected answers and edge cases before writing code. Then I run candidate prompts and models against that set and measure accuracy, hallucination rate, and latency. I also add a second layer of LLM as judge for subjective quality, but I calibrate it against human labels first. For regressions, I run the eval suite in CI whenever the prompt, model, or retrieval changes. I track cost per request and p99 latency alongside quality. The key point is that vibes are not enough. Without a baseline, you cannot tell whether a change helped. In one project we caught a prompt tweak that improved tone but dropped factual accuracy by eight percent, and we reverted it before launch.",
+    phrases: ["evaluation set of realistic questions", "LLM as judge", "calibrate it against human labels", "run the eval suite in CI", "vibes are not enough"],
+  },
+  {
+    id: "drill-qa-224", kind: "qa", theme: "tech", level: "senior", seconds: 90,
+    q: "How do you control token cost and latency for an LLM feature in production?",
+    sample: "I start by choosing the smallest model that meets the quality bar, then optimize the prompt. I shorten system prompts, remove redundant examples, and cache repeated prefixes where the provider supports it. For retrieval, I limit the number of chunks and truncate long ones. I also cache frequent queries and their answers with a short TTL, which helps when users ask similar questions. I set max tokens and stop sequences to avoid runaway responses. For latency, I stream the response so the user sees progress. I monitor cost per request and p99 latency by feature, and I alert when either drifts. The trade-off is that aggressive caching can serve stale answers, so I invalidate on content updates. In one project these steps cut average cost per request by about forty percent without hurting quality.",
+    phrases: ["smallest model that meets the quality bar", "cache repeated prefixes", "limit the number of chunks", "stream the response", "cost per request"],
+  },
+  {
+    id: "drill-qa-225", kind: "qa", theme: "tech", level: "senior", seconds: 90,
+    q: "How do you protect sensitive data when calling an external LLM API?",
+    sample: "I treat the LLM as an untrusted third party. First, I minimize what I send: I strip PII, redact secrets, and send only the fields needed for the task. Second, I check the provider's data retention and training policies, and I prefer endpoints that do not train on customer data. Third, I use a gateway that logs and audits every request and response, with access controls on the logs. Fourth, for highly sensitive data, I consider on-premise or private models instead of a public API. I also review prompts for accidental leakage, such as including full customer records in few-shot examples. The trade-off is that more redaction can reduce answer quality, so I test both paths. In one project we moved from sending full tickets to sending only the summary, and quality barely changed while compliance risk dropped.",
+    phrases: ["treat the LLM as an untrusted third party", "strip PII, redact secrets", "data retention and training policies", "gateway that logs and audits", "on-premise or private models"],
+  },
+  {
+    id: "drill-qa-226", kind: "qa", theme: "design", level: "senior", seconds: 120,
+    q: "How would you design an agent that can call tools safely?",
+    sample: "I keep the agent loop simple and bounded. The model receives a clear tool schema with typed parameters and descriptions, and it can only call tools from an allowlist. Each tool call goes through validation before execution, and I enforce timeouts and rate limits. I add a maximum number of steps to prevent infinite loops, and I require human confirmation for destructive actions like sending emails or modifying data. I log every step, including the model's reasoning and tool results, so I can debug and audit. For reliability, I retry transient failures and return structured errors the model can reason about. The trade-off is autonomy versus safety: more freedom means more risk. In one project I started with three read-only tools and added write tools only after two weeks of safe usage.",
+    phrases: ["bounded", "allowlist", "validation before execution", "human confirmation for destructive actions", "log every step"],
+  },
+  {
+    id: "drill-qa-227", kind: "qa", theme: "project", level: "lead", seconds: 120,
+    q: "How do you take an AI feature from proof of concept to production?",
+    sample: "I treat the PoC as a learning exercise, not as production code. First, I define success metrics and a baseline, so I know when the feature is good enough. Second, I harden the non-AI parts: input validation, rate limiting, logging, and a fallback when the model fails or times out. Third, I add evaluation and monitoring, including cost and quality dashboards. Fourth, I run a shadow or beta with a small user group and measure real usage and failure modes. Fifth, I plan for model changes, because providers update models and prompts drift. The key point is that the demo is the easy part. Production is about reliability, cost, and observability. In one project we spent three weeks on the PoC and eight weeks hardening, and that ratio was worth it because the launch had no incidents.",
+    phrases: ["PoC as a learning exercise", "define success metrics and a baseline", "harden the non-AI parts", "shadow or beta", "plan for model changes"],
+  },
+  {
+    id: "drill-qa-228", kind: "qa", theme: "tech", level: "senior", seconds: 90,
+    q: "How do you handle prompt injection in an LLM application?",
+    sample: "Prompt injection happens when user input tricks the model into ignoring instructions. I defend in layers. First, I separate system instructions from user content clearly, and I tell the model to treat user content as data, not instructions. Second, I validate and sanitize inputs, and I avoid passing raw user text into places where it could override behavior. Third, I use structured outputs and tool schemas so the model cannot freely invent actions. Fourth, I limit what tools can do and require confirmation for sensitive ones. Finally, I test with adversarial prompts and monitor for suspicious outputs. The trade-off is that no defense is perfect, so I also design the system so that even a successful injection cannot cause serious harm. In one project we added an output filter that blocked responses containing internal system details.",
+    phrases: ["separate system instructions from user content", "treat user content as data", "structured outputs and tool schemas", "test with adversarial prompts", "design the system so injection cannot cause serious harm"],
+  },
+  {
+    id: "drill-qa-229", kind: "qa", theme: "tech", level: "senior", seconds: 90,
+    q: "How do you choose between fine-tuning and prompt engineering for a new task?",
+    sample: "I almost always start with prompt engineering and retrieval, because they are cheaper and faster to iterate. Fine-tuning makes sense when the task is narrow, the data is stable, and prompt engineering cannot reach the quality bar. It also helps when you need a specific style or format that is hard to express in prompts. The trade-off is cost and maintenance: fine-tuning needs labeled data, training, and retraining when the task changes. I also consider smaller fine-tuned models versus larger prompted ones, because a fine-tuned small model can be cheaper at scale. In one project we tried fine-tuning but found that better retrieval and a clearer prompt achieved the same accuracy, so we saved the training cost and kept the flexibility to change quickly.",
+    phrases: ["start with prompt engineering and retrieval", "narrow task with stable data", "labeled data, training, and retraining", "smaller fine-tuned models versus larger prompted ones", "kept the flexibility to change quickly"],
+  },
+  {
+    id: "drill-qa-230", kind: "qa", theme: "tech", level: "senior", seconds: 90,
+    q: "How do you make an LLM feature observable and debuggable in production?",
+    sample: "I log every request with the prompt, retrieved context, model response, latency, and token counts, while redacting sensitive data. I add trace ids that connect the user request to the model call and any tool calls. I build dashboards for quality signals like user feedback, retry rates, and handoff rates. I also sample a few conversations daily for manual review, because metrics alone miss subtle quality issues. When something goes wrong, I can replay the exact prompt and context to reproduce it. The trade-off is storage cost, so I keep full logs for a short window and aggregates longer. In one project this setup let us find a regression in two hours instead of two days.",
+    phrases: ["log every request with prompt, context, response, latency, tokens", "trace ids", "dashboards for quality signals", "sample conversations daily", "replay the exact prompt"],
+  },
+  {
+    id: "drill-qa-231", kind: "qa", theme: "design", level: "senior", seconds: 120,
+    q: "How would you design a semantic search over a large document corpus?",
+    sample: "I would start with the retrieval pipeline. Documents are chunked into meaningful sections, embedded into vectors, and stored in a vector database alongside metadata like source, date, and permissions. At query time, I embed the user question, do a vector search, and apply metadata filters for access control. I then rerank the top results for relevance before passing them to the model or returning them directly. For scale, I shard the index and keep a cache for frequent queries. I also support keyword search as a fallback for exact terms like product names. The trade-off is that embeddings need updating when documents change, so I add an ingestion pipeline with versioning. In one project this design served ten million documents with sub-second search latency.",
+    phrases: ["chunked into meaningful sections", "vector database alongside metadata", "metadata filters for access control", "rerank the top results", "ingestion pipeline with versioning"],
+  },
+  {
+    id: "drill-qa-232", kind: "qa", theme: "tech", level: "senior", seconds: 90,
+    q: "How do you handle model updates from a provider without breaking users?",
+    sample: "I never point production directly at a provider's latest model alias. Instead, I pin a specific model version and test new versions in staging first. I run the eval suite against the new model and compare quality, cost, and latency. If the new model is better, I roll out gradually with a feature flag and monitor. If it regresses, I stay on the old version or adjust the prompt. I also design prompts to be somewhat model-agnostic, avoiding quirks that only work on one version. The trade-off is that pinning delays access to improvements, but it protects users from surprises. In one project a provider update changed JSON formatting and broke parsing; because we pinned and tested, we caught it before users saw it.",
+    phrases: ["pin a specific model version", "test new versions in staging", "run the eval suite against the new model", "roll out gradually with a feature flag", "model-agnostic prompts"],
+  },
+  {
+    id: "drill-qa-233", kind: "qa", theme: "project", level: "senior", seconds: 90,
+    q: "How do you measure the success of an AI feature after launch?",
+    sample: "I define success before launch using both product and technical metrics. Product metrics include task completion rate, user satisfaction, and reduction in support tickets. Technical metrics include accuracy on sampled conversations, hallucination rate, latency, and cost per task. I set up dashboards and alerts, and I review a sample of conversations weekly with the product team. If metrics drift, I investigate whether the cause is data change, model change, or user behavior change. The key point is that launch is the start, not the end. AI features need ongoing tuning. In one project we saw satisfaction drop after three months because new document types were not in the knowledge base, and we added an ingestion job to keep it current.",
+    phrases: ["define success before launch", "task completion rate, user satisfaction", "reduction in support tickets", "review sampled conversations weekly", "launch is the start, not the end"],
+  },
+  {
+    id: "drill-qa-234", kind: "qa", theme: "tech", level: "senior", seconds: 90,
+    q: "How do you balance accuracy and speed when choosing an embedding model?",
+    sample: "I benchmark several embedding models on our actual data, not on public leaderboards. I measure retrieval accuracy using a labeled set of queries and relevant documents, and I measure latency and cost per embedding. A larger model may give better accuracy but cost more and run slower. For most applications, a mid-sized model with good domain performance is enough. I also consider batch embedding for ingestion and caching for frequent queries. The trade-off is that switching models later means re-embedding the whole corpus, so I pick carefully and version the embeddings. In one project a smaller open model matched a larger one on our domain while being three times faster and cheaper.",
+    phrases: ["benchmark on our actual data", "labeled set of queries and relevant documents", "latency and cost per embedding", "batch embedding for ingestion", "re-embedding the whole corpus"],
+  },
+  {
+    id: "drill-qa-235", kind: "qa", theme: "tech", level: "senior", seconds: 90,
+    q: "How do you prevent an LLM agent from taking harmful or irreversible actions?",
+    sample: "I apply least privilege to tools. The agent can only call tools it needs, and each tool has scoped permissions. For irreversible actions like deleting data or sending money, I require explicit human confirmation with a clear summary of what will happen. I also add guardrails in code, such as allowing only certain parameter values and validating against business rules. I log every action and make it reversible when possible, for example by soft-deleting instead of hard-deleting. Finally, I test the agent with adversarial scenarios. The trade-off is that confirmation steps slow down automation, but for high-risk actions that is the right call. In one project we added a confirmation step for refunds over a threshold, which prevented one mistaken large refund.",
+    phrases: ["least privilege to tools", "scoped permissions", "human confirmation", "guardrails in code", "soft-deleting instead of hard-deleting"],
+  },
+  {
+    id: "drill-qa-236", kind: "qa", theme: "tech", level: "senior", seconds: 90,
+    q: "How do you handle streaming responses from an LLM in a web application?",
+    sample: "I use server-sent events or websockets to stream tokens to the client as they arrive, so the user sees progress instead of waiting for the full response. On the server, I buffer partial content and handle errors mid-stream by sending an error event and a fallback message. I also set timeouts so a stalled stream does not hang forever. For tool calls, I stream intermediate status like searching or calculating. On the client, I append tokens to the UI and show a typing indicator. The trade-off is that streaming complicates error handling and makes it harder to validate the full response before showing it, so I sometimes validate and then stream. In one project streaming reduced perceived latency from four seconds to under one second.",
+    phrases: ["server-sent events or websockets", "buffer partial content", "handle errors mid-stream", "streaming complicates error handling", "reduced perceived latency"],
+  },
+  {
+    id: "drill-qa-237", kind: "qa", theme: "design", level: "senior", seconds: 120,
+    q: "How would you design a fallback strategy when an LLM service is unavailable?",
+    sample: "I design for graceful degradation. First, I set timeouts and circuit breakers so a slow or failing provider does not hang my service. When the circuit opens, I fall back to a cached answer if one exists, or a simpler rule-based response, or a clear message asking the user to try later. For critical paths, I may have a secondary provider as backup. I also queue requests that can be processed asynchronously and notify the user when done. I monitor fallback rates and alert when they spike. The trade-off is that fallbacks may be less helpful, but they keep the product usable. In one project we added a keyword-based FAQ fallback that handled about thirty percent of queries during an outage, which kept support load manageable.",
+    phrases: ["graceful degradation", "timeouts and circuit breakers", "cached answer", "secondary provider as backup", "monitor fallback rates"],
+  },
+  {
+    id: "drill-qa-238", kind: "qa", theme: "tech", level: "senior", seconds: 90,
+    q: "How do you keep a knowledge base up to date for a RAG system?",
+    sample: "I build an ingestion pipeline that detects changes in the source documents and re-indexes them automatically. I track document versions and timestamps, and I remove stale chunks when a document is updated or deleted. I also monitor retrieval quality over time, because even with fresh data, user questions change. I add a feedback loop where users can flag bad answers, and I review those to find gaps. For large corpora, I run incremental updates rather than full reindexing. The trade-off is that frequent updates increase compute cost, so I batch them. In one project we moved from weekly manual updates to daily automated ingestion, and stale-answer reports dropped by about sixty percent.",
+    phrases: ["ingestion pipeline that detects changes", "track document versions and timestamps", "remove stale chunks", "feedback loop", "incremental updates"],
+  },
+  {
+    id: "drill-qa-239", kind: "qa", theme: "tech", level: "senior", seconds: 90,
+    q: "How do you reduce bias and harmful outputs in an LLM feature?",
+    sample: "I start with clear system instructions that define acceptable behavior and refuse harmful requests. I add safety filters on both input and output, and I test with adversarial prompts covering hate speech, PII leakage, and jailbreaks. I also review a sample of real outputs regularly and involve diverse reviewers. For high-risk domains, I use a moderation API as an extra layer. I document known limitations and provide a reporting mechanism for users. The trade-off is that stricter filters can cause false positives and block legitimate requests, so I tune thresholds carefully. In one project we adjusted filters after finding that a medical query was being blocked, and we added a human review path for borderline cases.",
+    phrases: ["system instructions that define acceptable behavior", "safety filters on input and output", "adversarial prompts", "moderation API", "tune thresholds carefully"],
+  },
+  {
+    id: "drill-qa-240", kind: "qa", theme: "tech", level: "senior", seconds: 90,
+    q: "How do you test a RAG pipeline end to end?",
+    sample: "I test at three levels. First, unit tests for chunking, embedding, and retrieval components. Second, retrieval tests using a labeled set of queries and expected documents, measuring recall and precision. Third, end-to-end tests that run a question through the full pipeline and check the answer against a reference, including cases where the answer should be I do not know. I also test failure modes like empty retrieval, malformed documents, and provider timeouts. I run the suite in CI and track metrics over time. The trade-off is that end-to-end tests are slow and flaky, so I keep a smaller smoke set for CI and run the full set nightly. In one project this caught a chunking bug that silently dropped ten percent of documents.",
+    phrases: ["unit tests for chunking, embedding, retrieval", "labeled set of queries and expected documents", "recall and precision", "test failure modes", "smoke set for CI"],
+  },
+  {
+    id: "drill-qa-241", kind: "qa", theme: "project", level: "senior", seconds: 120,
+    q: "Tell me about an AI feature you shipped and what you learned from it.",
+    sample: "I shipped an AI feature that summarized support tickets and suggested replies. The PoC looked great, but production taught me three lessons. First, retrieval quality mattered more than the model: when the knowledge base was stale, answers were wrong even with a strong model. Second, users trusted the suggestions too much, so we added a confidence indicator and a one-click edit. Third, cost spiked because long tickets inflated token usage, so we truncated and summarized before calling the model. After these changes, agent handle time dropped by about twenty percent and the feature stuck. The key lesson was that shipping AI is an iteration, not a launch. I now plan for evals, monitoring, and a feedback loop from day one.",
+    phrases: ["PoC looked great", "retrieval quality mattered more than the model", "added a confidence indicator", "cost spiked", "shipping AI is an iteration, not a launch"],
+  },
 );
