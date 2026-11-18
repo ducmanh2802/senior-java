@@ -8584,4 +8584,426 @@ Trang checkout có SLO p99 900 ms. Order service dùng {{@Async}} với 50 threa
     { type: 'article', title: 'Timeouts, retries, and backoff with jitter', url: 'https://aws.amazon.com/builders-library/timeouts-retries-and-backoff-with-jitter/' }
   ]
 },
+{
+  id: 'microservices-098',
+  topic: 'microservices',
+  level: 'mid',
+  q: 'Bạn được yêu cầu tách module Catalog ra khỏi monolith bằng strangler fig. Hãy giải thích lớp facade/proxy đứng trước monolith hoạt động thế nào, bạn chuyển traffic dần ra sao, và những thứ dễ bị bỏ sót (session, static asset, rollback) là gì?',
+  a: `**Tóm tắt:** **Strangler fig** (cây sung bóp cổ) là kỹ thuật thay monolith từng phần: bạn đặt một **facade** (lớp proxy đứng trước) để quyết định request nào đi sang service mới, request nào vẫn vào monolith. Ban đầu 0% sang service mới; sau đó tăng dần theo phần trăm hoặc theo đường dẫn; nếu lỗi thì rollback tức thì bằng cách đổi route. Cái khó không phải viết service mới mà là **liệt kê hết những gì monolith đang làm** (session, file tĩnh, websocket, cache) để không request nào bị rơi.
+
+### Hiểu nhanh
+Tưởng tượng một toà nhà đang có người ở, bạn không đập đi xây lại. Bạn dựng một **lối vào tạm** (facade): bảo vệ nhìn địa chỉ phòng rồi chỉ đường sang phòng mới nếu phòng đó đã sửa xong, còn lại vẫn đi lối cũ. Khi phòng mới chạy ổn, bạn chuyển dần khách sang; nếu phòng mới có sự cố, bảo vệ chỉ khách về lối cũ ngay. "Phòng" là một module nghiệp vụ; "lối vào tạm" là facade/gateway.
+
+### Thuật ngữ
+- **Monolith**: một ứng dụng lớn, mọi module nằm chung một codebase và một tiến trình deploy.
+- **Facade / proxy**: lớp đứng trước, nhận request rồi chuyển tiếp; nó không chứa nghiệp vụ, chỉ định tuyến.
+- **Seam**: "đường may" — chỗ cắt một module ra mà ít ảnh hưởng phần còn lại.
+- **Canary**: thả một phần nhỏ traffic sang bản mới để quan sát trước khi mở rộng.
+- **Rollback**: quay về hành vi cũ; với strangler, rollback = đổi route, không cần deploy lại.
+- **Session affinity (sticky session)**: cùng một người dùng phải luôn được đưa tới cùng một phiên bản.
+
+### Lớp facade hoạt động thế nào
+Facade là một reverse proxy (Nginx, Envoy, Spring Cloud Gateway, hoặc một service mỏng). Nó cần ba quyết định cho mỗi request:
+1. **Route theo path**: ví dụ mọi request {{/api/catalog/**}} sang catalog-service, còn lại vào monolith.
+2. **Route theo phần trăm**: ví dụ 5% request {{/api/order}} sang order-service, 95% vào monolith.
+3. **Route theo header/feature flag**: ví dụ chỉ nhân viên nội bộ (header {{x-canary: true}}) đi vào bản mới.
+
+Điểm mấu chốt: facade phải **nhất quán về định tuyến** — cùng một request luôn cho cùng một quyết định, để không request nào "nhảy" qua lại giữa hai bản trong cùng một phiên.
+
+~~~seq
+title: Strangler facade chuyển traffic dần
+actors: Client | Facade | CatalogSvc | Monolith
+Client -> Facade: GET /api/catalog/42
+Facade -> CatalogSvc: 5% traffic (đã sửa)
+CatalogSvc --> Facade: 200 + product
+Facade --> Client: response
+Facade -> Monolith: 95% còn lại
+Monolith --> Facade: response cũ
+note Facade..CatalogSvc: rollback = đổi route về monolith
+~~~
+
+### Cấu hình mẫu (Spring Cloud Gateway)
+~~~java
+@Bean
+public RouteLocator catalogRoute(RouteLocatorBuilder b) {
+  return b.routes()
+      .route("catalog-new", r -> r
+          .path("/api/catalog/**")                    // chỉ catalog đi service mới
+          .filters(f -> f.setPath("/products/**"))    // đổi path cho khớp API mới
+          .uri("http://catalog-service:8080"))
+      .route("monolith", r -> r
+          .path("/**")                                // mọi thứ còn lại
+          .uri("http://monolith:8080"))
+      .build();
+}
+~~~
+
+Muốn canary theo phần trăm, đặt một filter đọc header hoặc trọng số, hoặc dùng service mesh (Istio VirtualService) để chia 5/95. Đừng tự random trong code nghiệp vụ — hãy để lớp hạ tầng quyết định.
+
+### Những thứ dễ bị bỏ sót
+- **Session**: monolith giữ session trong bộ nhớ hoặc DB; service mới dùng JWT. Nếu không thống nhất, người dùng bị đăng xuất khi chuyển route. Cách tránh: chuyển sang token trước, hoặc chia sẻ session store (Redis).
+- **File tĩnh và upload**: ảnh, PDF thường do monolith phục vụ từ đĩa; service mới không có file đó. Cách tránh: đưa file lên object storage (S3) và sửa URL tuyệt đối.
+- **URL tuyệt đối trong response**: monolith trả link {{http://monolith:8080/...}}; khi chuyển route, client vẫn gọi thẳng monolith. Cách tránh: trả path tương đối hoặc URL qua domain công khai.
+- **WebSocket / SSE**: kết nối dài không đi qua route theo % dễ dàng; cần cùng một instance cho cả phiên. Cách tránh: chuyển theo user/device, không theo request.
+- **Cache**: cache cũ nằm trong monolith; service mới đọc cache rỗng gây tăng tải DB. Cách tránh: warm cache hoặc dùng cache chung.
+- **Cookie domain và CORS**: domain khác nhau làm mất cookie. Cách tránh: dùng cùng domain, reverse proxy chung.
+- **Deadline**: nếu không truyền deadline sang service mới, request có thể chờ lâu hơn SLO.
+
+### Ví dụ đời thực
+Một ngân hàng tách module tra cứu sản phẩm (catalog) khỏi monolith. Tuần đầu facade chuyển 0% sang catalog-service, chỉ chạy **shadow traffic** (nhân bản request, không trả cho user) để so kết quả. Tuần 2 mở 5% user nội bộ; phát hiện 3% response thiếu field {{interestRate}} vì service mới dùng tên field khác, phải sửa mapping. Tuần 3 mở 25% khách thật, ghi nhận p99 tăng từ 120 ms lên 210 ms vì service mới chưa warm cache, bèn thêm cache Redis và prewarm. Tuần 4 mở 100%; một số app mobile cũ vẫn gọi thẳng IP monolith vì URL tuyệt đối trong response cũ đã bị cache ở client, nên phải giữ monolith phục vụ thêm 2 tháng rồi mới tắt. Kết quả: chuyển xong trong 6 tuần, không downtime, chỉ 1 lần rollback 10 phút khi session bị mất do cookie domain.
+
+### Trả lời mẫu khi phỏng vấn
+"Tôi dùng strangler fig: đặt một facade (gateway hoặc reverse proxy) trước monolith, route theo path hoặc phần trăm sang service mới, còn lại vào monolith. Ban đầu 0%, rồi canary 5% đến 25% đến 100% theo SLO. Rollback chỉ là đổi route, không cần deploy lại. Trước khi chuyển, tôi liệt kê mọi thứ monolith đang làm ngoài nghiệp vụ: session, static file, URL tuyệt đối, websocket, cache, vì đó là những chỗ hay làm request rơi. Với session tôi chuyển sang JWT hoặc session store chung; với file tôi đẩy lên S3; với websocket tôi chuyển theo user. Tôi luôn chạy shadow traffic trước để so kết quả mà không ảnh hưởng user, và chỉ mở rộng khi sai lệch về 0."
+
+> Senior tip: strangler fig không thắng ở service mới, nó thắng ở **facade và danh sách việc monolith đang làm**. Nếu bạn không liệt kê được session, static, URL tuyệt đối và websocket, bạn sẽ có một strangler fig "gần xong" nhưng không bao giờ tắt được monolith.`,
+  follow: [
+    'Bạn route theo phần trăm thế nào để cùng một user không nhảy qua lại giữa hai phiên bản?',
+    'Nếu service mới cần file do monolith phục vụ, bạn xử lý ra sao?',
+    'Shadow traffic khác canary ở điểm nào, và khi nào dùng cái nào?'
+  ],
+  tags: ['strangler fig', 'facade', 'canary', 'migration', 'gateway'],
+  refs: [
+    { type: 'article', title: 'StranglerFigApplication (Martin Fowler)', url: 'https://martinfowler.com/bliki/StranglerFigApplication.html' }
+  ]
+},
+{
+  id: 'microservices-099',
+  topic: 'microservices',
+  level: 'senior',
+  q: 'Monolith dùng một schema chung, các module join chéo bảng. Khi tách microservices, bạn xử lý việc tách database dùng chung thế nào? Hãy mô tả giai đoạn dùng chung DB tạm thời, vấn đề foreign key, query xuyên service, và cách cắt hẳn sang database riêng.',
+  a: `**Tóm tắt:** Database là "đường may" khó cắt nhất vì nhiều module cùng đọc/ghi một bảng và join qua lại. Tôi không tách DB ngay; tôi đi ba giai đoạn: (1) **dùng chung DB tạm thời** nhưng mỗi service chỉ đọc bảng của mình, mọi ghi vẫn do monolith đảm nhiệm; (2) **replicate** dữ liệu sang DB riêng của service bằng CDC; (3) **cutover** từng bảng, đổi nguồn ghi duy nhất, rồi xoá bảng cũ. Nguyên tắc bất biến: **mỗi bảng có đúng một chủ ghi**, còn đọc thì có thể replicate.
+
+### Hiểu nhanh
+Một toà nhà có một kho chung, ai cũng vào lấy và để đồ. Muốn chia thành nhiều kho riêng mà vẫn đi lại được, bạn không thể chuyển hết trong một đêm. Bạn làm ba bước: (1) tạm thời vẫn dùng kho chung nhưng quy định mỗi nhóm chỉ được lấy đồ của mình, người khác muốn lấy phải hỏi; (2) lập bản sao (replicate) đồ sang kho riêng để mỗi nhóm tự lấy nhanh; (3) khi bản sao đã đủ tin cậy, mới chuyển quyền ghi sang kho riêng và dọn kho chung. "Kho" là database, "nhóm" là service, "quyền ghi" là chủ sở hữu bảng.
+
+### Thuật ngữ
+- **Database-per-service**: mỗi service có database riêng, không service nào chạm trực tiếp DB của service khác.
+- **Shared database**: nhiều service cùng dùng một DB; đây là trạng thái của monolith.
+- **Foreign key (FK)**: ràng buộc ở DB bảo đảm giá trị một cột phải tồn tại ở bảng khác.
+- **Logical replication**: sao chép dữ liệu theo dòng thay đổi (WAL/binlog) sang một DB khác.
+- **CDC (Debezium)**: đọc log giao dịch của DB nguồn và đẩy thay đổi sang nơi khác (Kafka, DB đích).
+- **Backfill**: nạp dữ liệu lịch sử vào hệ mới trước khi chuyển.
+- **View**: bảng ảo dựng từ câu truy vấn, không lưu dữ liệu riêng.
+
+### Vì sao DB là seam khó nhất
+Ba lý do khiến không thể "copy code sang service mới" là xong:
+1. **Join xuyên bảng**: một màn hình đơn hàng cần bảng {{orders}}, {{order_items}}, {{customers}}, {{products}}. Khi mỗi bảng ở một DB khác, không join được nữa.
+2. **Foreign key xuyên service**: {{orders.customer_id}} tham chiếu {{customers.id}}; FK không thể vượt biên database.
+3. **Transaction xuyên bảng**: đặt hàng ghi {{orders}} và trừ {{inventory}} trong cùng transaction; hai DB không chung transaction nên phải tách thành saga.
+
+### Ba giai đoạn tách DB
+**Giai đoạn 1 — dùng chung DB, nhưng một chủ ghi**
+- Chọn bảng của module cần tách (ví dụ {{products}} thuộc Catalog).
+- Service mới đọc bảng đó qua **view** hoặc kết nối read-only; mọi **ghi** vẫn do monolith đảm nhiệm, để chỉ có một nguồn ghi.
+- Các module khác không ghi trực tiếp; nếu cần dữ liệu, gọi API của service sở hữu hoặc đọc view.
+
+**Giai đoạn 2 — replicate sang DB riêng**
+- Bật **CDC (Debezium)** đọc WAL của bảng nguồn, ghi sang DB của service mới.
+- Service mới đọc từ DB riêng (nhanh, không phụ thuộc monolith).
+- Monolith vẫn là nguồn ghi, nên không có xung đột.
+
+**Giai đoạn 3 — cutover từng bảng**
+- Đổi nguồn ghi sang service mới: service mới ghi DB riêng, rồi publish event để các bên khác (kể cả monolith còn sót) cập nhật bản sao.
+- Chạy dual-run và đối soát một thời gian.
+- Xoá bảng/view cũ khỏi monolith, xoá FK, gỡ kết nối.
+
+### Foreign key và transaction
+- **FK xuyên biên**: bỏ FK thật, thay bằng **kiểm tra ở tầng ứng dụng** (gọi API kiểm tra id tồn tại) hoặc chấp nhận không có FK và chạy job dọn bản ghi mồ côi. Đừng giữ FK giữa hai DB khác nhau.
+- **Transaction xuyên bảng**: chuyển sang **saga** (mỗi bước một transaction cục bộ, có bước bù trừ) hoặc **outbox** để không mất event.
+- Nếu bắt buộc phải nhất quán mạnh trong lúc chuyển, giữ chung DB lâu hơn và chỉ tách **đọc** trước; tách ghi sau.
+
+### Query xuyên service
+- **API composition**: một BFF gọi nhiều service rồi ghép kết quả; đánh đổi là nhiều round-trip mạng.
+- **Replicate read model**: mỗi service giữ bản sao dữ liệu cần đọc, cập nhật qua event (read side của CQRS).
+- **View tạm** trên DB chung chỉ để đọc trong giai đoạn 1, sau đó bỏ khi đã cutover.
+
+~~~seq
+title: Tách DB theo ba giai đoạn
+actors: Monolith | ProductsDB | Debezium | CatalogSvc | CatalogDB
+Monolith -> ProductsDB: ghi products (nguồn duy nhất)
+ProductsDB -> Debezium: WAL thay đổi
+Debezium -> CatalogDB: replicate sang DB mới
+CatalogSvc -> CatalogDB: đọc bản sao
+note Monolith..CatalogDB: cutover: CatalogSvc thành nguồn ghi
+~~~
+
+### Ví dụ đời thực
+Một monolith bán hàng dùng chung một schema với 120 bảng; module Catalog đọc {{products}} và {{categories}}, module Order join {{products}} để lấy giá. Khi tách Catalog, nhóm không tách DB ngay. Giai đoạn 1: tạo view {{v_products}} trong DB chung, catalog-service đọc view; monolith vẫn ghi {{products}}. Giai đoạn 2: bật Debezium replicate 8 bảng sang Postgres riêng của catalog; service mới đọc DB riêng, p99 giảm từ 90 ms xuống 20 ms vì không còn tranh chấp lock với monolith. Giai đoạn 3: chuyển quyền ghi {{products}} sang catalog-service, publish event {{ProductUpdated}}; Order service nhận event và lưu bản sao {{product_name}} + {{price}} trong đơn hàng thay vì join. Sau 6 tuần, xoá 8 bảng khỏi monolith, gỡ 14 FK. Kết quả: monolith còn 112 bảng, catalog deploy độc lập, lead time từ 2 tuần xuống 2 ngày.
+
+### Trả lời mẫu khi phỏng vấn
+"Database là seam khó nhất, nên tôi không tách ngay. Tôi đi ba giai đoạn: dùng chung DB nhưng chỉ một nguồn ghi, service mới đọc qua view hoặc read-only; sau đó replicate sang DB riêng bằng CDC; cuối cùng cutover từng bảng, đổi nguồn ghi duy nhất và xoá bảng cũ. Với FK xuyên service tôi bỏ FK thật, thay bằng kiểm tra ở tầng ứng dụng hoặc job dọn dữ liệu mồ côi. Với transaction xuyên bảng tôi chuyển sang saga hoặc outbox. Với query xuyên service tôi dùng API composition hoặc read model được replicate. Nguyên tắc là mỗi bảng đúng một chủ ghi, đọc thì replicate, ghi thì một nguồn."
+
+> Senior tip: database là chỗ strangler fig hay "chết lặng" nhất. Nếu sau một năm bạn vẫn thấy hai service cùng ghi một bảng, bạn chưa tách DB, bạn chỉ tách code. Đo tiến độ bằng số bảng đã có đúng một chủ ghi và số FK đã gỡ.`,
+  follow: [
+    'Bạn xử lý transaction xuyên bảng khi hai bảng đã ở hai DB khác nhau thế nào?',
+    'View trên DB chung có phải là giải pháp lâu dài không, vì sao không?',
+    'Replicate read model bằng CDC khác gì gọi API composition, khi nào chọn cái nào?'
+  ],
+  tags: ['database per service', 'shared database', 'CDC', 'foreign key', 'saga'],
+  refs: [
+    { type: 'doc', title: 'Database per service (microservices.io)', url: 'https://microservices.io/patterns/data/database-per-service.html' },
+    { type: 'doc', title: 'Debezium documentation', url: 'https://debezium.io/documentation/' }
+  ]
+},
+{
+  id: 'microservices-100',
+  topic: 'microservices',
+  level: 'senior',
+  q: 'Trong một dự án migrate monolith, có giai đoạn service mới phải ghi vào cả DB cũ lẫn DB mới (dual write). Hãy giải thích vì sao dual write hai database rất dễ sai, các cách thay thế (outbox + CDC, một nguồn ghi duy nhất), và bạn chọn phương án nào khi nào.',
+  a: `**Tóm tắt:** Dual write là **một thao tác nghiệp vụ nhưng ghi vào hai hệ thống độc lập, không chung transaction**. Nếu bước ghi thứ hai thất bại (mất điện, timeout, crash), dữ liệu hai bên lệch vĩnh viễn và không có cách tự sửa. Thay vì để service ghi hai nơi, tôi chọn **một nguồn ghi duy nhất + CDC** (một DB là chủ, DB kia nhận bản sao qua log) hoặc **outbox** (ghi bảng sự kiện trong cùng transaction rồi relay/CDC đẩy đi). Dual write chỉ chấp nhận trong thời gian rất ngắn và phải có đối soát liên tục.
+
+### Hiểu nhanh
+Bạn chuyển tiền cho hai người: gạch nợ tài khoản A và cộng vào tài khoản B. Nếu gạch nợ xong thì mất điện trước khi cộng, tiền biến mất. Nếu cộng trước rồi gạch nợ sau mà gạch nợ thất bại, tiền sinh ra từ không khí. Hai tài khoản ở hai ngân hàng khác nhau thì không có "một lần bấm" nào làm cả hai cùng lúc. Đó chính là dual write: hai hệ thống, hai giao dịch, không đảm bảo cả hai cùng thành công hay cùng thất bại.
+
+### Thuật ngữ
+- **Dual write**: một hành động nghiệp vụ ghi vào hai hệ thống độc lập (hai DB, DB và broker...) mà không có transaction chung.
+- **Atomic**: "cùng một lần", hoặc cả hai cùng thành công hoặc cả hai cùng không làm gì.
+- **Outbox**: bảng sự kiện nằm cùng DB nghiệp vụ, ghi trong cùng transaction với dữ liệu chính.
+- **CDC (Debezium)**: đọc log giao dịch (WAL/binlog) của DB và đẩy thay đổi sang hệ khác.
+- **Idempotent**: chạy lại nhiều lần vẫn cho cùng kết quả, không nhân đôi.
+- **Reconciliation**: job định kỳ so sánh hai bên, phát hiện lệch.
+
+### Dual write hai DB: dòng thời gian của một lỗi
+Giả sử service mới ghi DB mới trước, rồi ghi DB cũ:
+1. Ghi DB mới thành công.
+2. Trước khi ghi DB cũ, tiến trình bị kill (OOM, deploy, mất mạng).
+3. DB mới có bản ghi, DB cũ không có.
+4. Không có transaction chung nên không có rollback tự động.
+5. Nếu logic đọc từ DB cũ (monolith vẫn chạy), bản ghi "biến mất"; nếu đọc DB mới, bản ghi "không tồn tại" với các service khác.
+
+Nếu đổi thứ tự (ghi DB cũ trước) thì lỗi đối xứng: DB cũ có, DB mới không. Dù thứ tự nào, luôn tồn tại một khe hở.
+
+### Các phương án thay thế
+| Phương án | Cơ chế | Ưu | Nhược |
+|---|---|---|---|
+| Dual write + đối soát | service ghi hai nơi, job so sánh sửa lệch | đơn giản, không thêm hạ tầng | có cửa sổ lệch, phải sửa tay, dễ bỏ sót |
+| Một nguồn ghi + CDC | chỉ ghi DB chủ, DB kia nhận bản sao qua log | không mất, không lệch, tự động | trễ đồng bộ ( mili-giây đến giây) |
+| Outbox + CDC | ghi dữ liệu và dòng outbox cùng transaction, relay/CDC đẩy đi | không mất event, khớp transaction | thêm bảng outbox, phải dọn |
+
+### Outbox + CDC trong lúc migrate
+~~~java
+// Cùng một transaction: ghi dữ liệu nghiệp vụ VÀ bản ghi outbox
+@Transactional
+public void createOrder(Order order) {
+  orderRepo.save(order);                       // bảng orders ở DB mới
+  outboxRepo.save(new OutboxEvent(            // cùng DB, cùng transaction
+      "order.created", order.getId(), order.toJson()));
+}
+// Debezium đọc outbox (hoặc WAL), publish lên Kafka; monolith và bên khác consume
+~~~
+
+Điểm quan trọng: outbox nằm **cùng DB** với nghiệp vụ, nên khi commit thì cả hai cùng có; nếu crash trước commit thì cả hai cùng không. CDC đọc log nên không bỏ sót dòng nào đã commit.
+
+~~~seq
+title: Dual write lỗi và cách sửa bằng outbox
+actors: CatalogSvc | CatalogDB | OrdersDB | Debezium | Kafka
+CatalogSvc -> CatalogDB: ghi product (mới)
+CatalogSvc -> OrdersDB: ghi order (cũ) — FAIL
+CatalogDB --> CatalogSvc: commit OK
+note CatalogSvc..OrdersDB: lệch: product có, order không
+CatalogSvc -> CatalogDB: order + outbox row
+CatalogDB -> Debezium: WAL có outbox
+Debezium -> Kafka: order.created
+note Debezium..Kafka: consumer idempotent khi đọc lại
+~~~
+
+### Khi nào chấp nhận dual write
+- Chỉ trong **giai đoạn chuyển ngắn** (vài ngày đến vài tuần), khi chưa kịp bật CDC.
+- Phải có **đối soát liên tục** (mỗi phút) và cơ chế sửa lệch tự động.
+- Phải **idempotent** và có cờ "nguồn ghi" để biết bên nào đúng.
+- Không dùng dual write cho dữ liệu tiền, tồn kho, hoặc bất cứ thứ gì không thể sửa sai.
+
+### Ví dụ đời thực
+Một ngân hàng tách service thẻ khỏi monolith. Ban đầu nhóm cho service thẻ ghi DB mới rồi gọi API monolith ghi DB cũ (dual write). Trong 3 ngày, 412 bản ghi lệch: 400 do timeout khi gọi monolith, 12 do monolith từ chối vì điều kiện nghiệp vụ. Đối soát phát hiện muộn 6 tiếng, phải viết script sửa tay, suýt sai số dư. Sau sự cố, nhóm chuyển sang **một nguồn ghi duy nhất**: monolith vẫn ghi DB cũ, bật Debezium replicate sang DB mới, service thẻ đọc bản sao. Khi cần ghi, chỉ monolith ghi. Sau 2 tuần ổn định, cutover quyền ghi sang service thẻ và dùng outbox để publish event. Kết quả: số bản ghi lệch về 0, đối soát chạy mỗi 5 phút, không còn sửa tay.
+
+### Trả lời mẫu khi phỏng vấn
+"Dual write là một thao tác nghiệp vụ nhưng ghi hai hệ thống không chung transaction, nên luôn có khe hở: ghi bên này xong thì bên kia chết, dữ liệu lệch vĩnh viễn. Tôi không dùng dual write cho dữ liệu quan trọng. Tôi chọn một nguồn ghi duy nhất cộng CDC: chỉ một DB là chủ, DB kia nhận bản sao qua log, hoặc dùng outbox ghi cùng transaction rồi relay/CDC đẩy đi. Dual write chỉ chấp nhận trong giai đoạn chuyển ngắn và phải có đối soát liên tục, idempotent và sửa lệch tự động. Với tiền và tồn kho thì tuyệt đối không dual write."
+
+> Senior tip: dual write không sai vì "ghi hai nơi", nó sai vì **hai nơi không chung một transaction**. Nếu buộc phải đồng bộ hai DB trong lúc migrate, hãy để log của DB làm trung gian (CDC), đừng để tầng ứng dụng làm trung gian.`,
+  follow: [
+    'Outbox và CDC khác nhau ở chỗ nào, khi nào chỉ cần outbox mà không cần Debezium?',
+    'Nếu hai DB cách xa nhau qua mạng, CDC có bị trễ không và bạn xử lý trễ thế nào?',
+    'Bạn làm sao biết bên nào đúng khi đối soát phát hiện lệch?'
+  ],
+  tags: ['dual write', 'CDC', 'outbox', 'reconciliation', 'migration'],
+  refs: [
+    { type: 'doc', title: 'Transactional outbox (microservices.io)', url: 'https://microservices.io/patterns/data/transactional-outbox.html' },
+    { type: 'doc', title: 'Debezium documentation', url: 'https://debezium.io/documentation/' }
+  ]
+},
+{
+  id: 'microservices-101',
+  topic: 'microservices',
+  level: 'lead',
+  q: 'Khi chuyển dần từ monolith sang service mới, làm sao đảm bảo dữ liệu hai bên luôn đồng nhất? Bạn thiết kế reconciliation (đối soát), phát hiện drift, backfill và cutover thế nào để không mất hay lệch dữ liệu?',
+  a: `**Tóm tắt:** Trong lúc chuyển luôn có **hai bản dữ liệu** (DB cũ và DB mới). Tôi giữ **một nguồn ghi duy nhất**, đồng bộ bản còn lại bằng CDC, và chạy **reconciliation job** định kỳ so sánh (count, checksum, sampling) để phát hiện drift sớm. Trước cutover phải **backfill** dữ liệu lịch sử và **dual-run** đủ lâu; khi cắt, chuyển nguồn ghi một lần, giữ cửa sổ sửa lỗi (rollback window). Mục tiêu: mọi lệch phải phát hiện trong vài phút, không phải vài tháng.
+
+### Hiểu nhanh
+Bạn chuyển nhà, đồ đạc có hai bản: đồ thật ở nhà cũ và ảnh chụp/danh sách ở nhà mới. Nếu chỉ nhìn danh sách, bạn không biết món nào đã chuyển, món nào thất lạc. Cách chắc chắn: định kỳ **đi kiểm tra từng phòng** (đối soát), so ảnh với đồ thật, ghi nhận món lệch, rồi mới chuyển. "Đối soát" là so hai bản dữ liệu; "drift" là độ lệch; "cutover" là ngày chính thức chuyển sang ở nhà mới.
+
+### Thuật ngữ
+- **Reconciliation (đối soát)**: job so sánh hai nguồn dữ liệu, báo lệch.
+- **Drift**: độ lệch tích luỹ giữa hai bên (thiếu bản ghi, sai giá trị, sai kiểu).
+- **Checksum**: giá trị băm tổng hợp của một tập dữ liệu; hai bên cùng checksum thì gần như chắc chắn giống nhau.
+- **Backfill**: nạp dữ liệu lịch sử vào hệ mới trước khi chuyển.
+- **Dual-run**: chạy song song hai hệ, so sánh kết quả trong thời gian dài.
+- **Cutover**: thời điểm chuyển quyền ghi và đọc sang hệ mới.
+- **In-flight write**: giao dịch đang thực hiện dở lúc cutover.
+
+### Vì sao phải đối soát
+CDC thường rất tin cậy, nhưng vẫn có drift vì:
+- **Sai sót cấu hình** (bỏ sót bảng, sai filter).
+- **CDC lag** (mạng chậm, broker nghẽn) khiến bản sao trễ.
+- **Ghi trực tiếp** vào DB đích bởi một tiến trình cũ chưa tắt.
+- **Lỗi ánh xạ** (kiểu dữ liệu, precision số thực, timezone).
+- **Xóa không được lan truyền** (CDC không bắt được delete nếu cấu hình sai).
+
+Nếu không đối soát, drift chỉ lộ khi khách hàng phàn nàn — thường là vài tháng sau, khi dữ liệu đã sai quá nhiều để sửa.
+
+### Các mức so sánh
+1. **Count**: đếm số dòng mỗi bảng. Rẻ, phát hiện mất/thừa hàng loạt, nhưng không phát hiện sai giá trị.
+2. **Checksum theo nhóm**: chia bảng thành nhóm theo khóa chính, tính checksum từng nhóm (ví dụ tổng {{MD5}} của các cột). Phát hiện sai giá trị trong nhóm.
+3. **Sampling**: chọn ngẫu nhiên 1% bản ghi so chi tiết. Phát hiện drift tinh vi với chi phí thấp.
+4. **Full compare**: so toàn bộ khi chuẩn bị cutover. Chậm nhưng cần trước khi cắt.
+
+### Backfill và cutover
+- **Backfill**: trước khi bật CDC, nạp toàn bộ dữ liệu lịch sử sang DB mới. Sau đó CDC chỉ lo thay đổi phát sinh.
+- **Cutover theo bảng**: chuyển từng bảng, không chuyển cả schema một lần.
+- **In-flight write**: lúc cutover, dừng ghi ở nguồn cũ một thời gian ngắn (đọc-ghi tạm khóa), chờ CDC bắt kịp (lag = 0), rồi mở ghi ở nguồn mới. Hoặc dùng **dual-write ngắn** có đối soát để bắc cầu.
+- **Read-your-writes**: sau khi user ghi, phải đọc lại từ đúng nguồn vừa ghi; nếu đọc từ bản sao trễ, user thấy dữ liệu cũ.
+
+~~~seq
+title: Cutover có đối soát và cửa sổ rollback
+actors: Writer | MonolithDB | Debezium | NewDB | Reconcile
+Writer -> MonolithDB: ghi (nguồn hiện tại)
+MonolithDB -> Debezium: WAL
+Debezium -> NewDB: replicate
+Reconcile -> MonolithDB: checksum nhóm
+Reconcile -> NewDB: checksum nhóm
+note Reconcile..NewDB: lệch > ngưỡng → chặn cutover
+Writer -> NewDB: cutover: chuyển quyền ghi
+note Writer..NewDB: giữ 2 tuần đọc đối chiếu được
+~~~
+
+~~~java
+// Job đối soát: so checksum theo nhóm khóa chính
+public long checksum(JdbcTemplate jdbc, String table, String pk, long from, long to) {
+  String sql = "SELECT COUNT(*), COALESCE(SUM(crc32(row_json)), 0) FROM " + table
+             + " WHERE " + pk + " BETWEEN ? AND ?";
+  return jdbc.queryForObject(sql, Long.class, from, to);
+}
+// So sánh hai nguồn theo từng nhóm; lệch thì ghi log + alert, KHÔNG tự sửa
+~~~
+
+### Lỗi hay gặp
+1. **Không có nguồn ghi duy nhất**. Triệu chứng: hai bên cùng ghi, drift tăng liên tục. Cách tránh: chỉ một nguồn ghi cho tới cutover.
+2. **Đối soát chỉ đếm dòng**. Triệu chứng: số dòng khớp nhưng giá trị sai. Cách tránh: thêm checksum/sampling.
+3. **So sánh kiểu số thực**. Triệu chứng: 0,1 + 0,2 lệch do precision. Cách tránh: dùng {{BigDecimal}} và so theo thang đã chuẩn hoá.
+4. **Bỏ qua timezone**. Triệu chứng: lệch 7 tiếng ở cột timestamp. Cách tránh: chuẩn hoá UTC trước khi so.
+5. **Không có cửa sổ rollback**. Triệu chứng: cutover xong mới phát hiện lệch, không quay lại được. Cách tránh: giữ song song và khả năng chuyển nguồn ghi về cũ ít nhất vài tuần.
+
+### Ví dụ đời thực
+Một ngân hàng chuyển module khách hàng (customers) từ monolith sang service mới. Giai đoạn dual-run kéo dài 8 tuần: monolith ghi, Debezium replicate sang DB mới. Job đối soát chạy mỗi 15 phút, so checksum theo nhóm {{customer_id}} chia 1000 nhóm. Tuần 1 phát hiện lệch 2.300 bản ghi do ánh xạ {{CLOB}} sang {{TEXT}} mất dấu tiếng Việt; sửa mapping. Tuần 3 phát hiện lệch 40 bản ghi do một cron cũ vẫn ghi trực tiếp vào DB mới; tắt cron. Tuần 6 lag CDC tăng do batch import; tạm dừng đối soát ban đêm và tăng throughput. Đến tuần 8, 0 lệch trong 14 ngày liên tiếp, mới cutover: dừng ghi monolith 30 giây, chờ lag = 0, mở ghi service mới. Giữ 3 tuần đọc đối chiếu, không rollback. Kết quả: cutover không mất bản ghi, p99 đọc giảm 60%, và phát hiện 3 nguồn ghi ẩn trước khi kịp gây sự cố.
+
+### Trả lời mẫu khi phỏng vấn
+"Tôi giả định luôn có drift, nên tôi thiết kế để phát hiện sớm. Tôi giữ một nguồn ghi duy nhất, replicate bằng CDC, và chạy reconciliation định kỳ theo nhiều mức: count, checksum theo nhóm khóa chính, sampling, và full compare trước cutover. Mỗi lệch đều alert, không tự sửa mù. Trước cutover tôi backfill dữ liệu lịch sử, dual-run đủ lâu, rồi chuyển quyền ghi một lần và giữ cửa sổ rollback vài tuần. Tôi đặc biệt chú ý các nguồn ghi ẩn — cron cũ, script vận hành — vì đó là nguyên nhân drift phổ biến nhất. Chỉ cutover khi 14 ngày liên tiếp không lệch và lag CDC bằng 0."
+
+> Senior tip: đối soát không phải để "biết dữ liệu giống nhau", nó là **hệ thống báo động sớm**. Đặt ngưỡng lệch (ví dụ 0 trên dữ liệu tiền, dưới 0,01% trên dữ liệu đọc) và tự chặn cutover khi vượt ngưỡng. Cutover mà không có cửa sổ rollback là đánh cược cả hệ thống.`,
+  follow: [
+    'Bạn so sánh dữ liệu giữa hai DB khác loại (Postgres và Oracle) thế nào cho đúng?',
+    'Cutover có in-flight write, bạn xử lý chính xác từng bước ra sao?',
+    'Đối soát tốn tài nguyên, bạn chạy tần suất và phạm vi thế nào cho hợp lý?'
+  ],
+  tags: ['reconciliation', 'drift', 'backfill', 'cutover', 'CDC'],
+  refs: [
+    { type: 'doc', title: 'Debezium documentation', url: 'https://debezium.io/documentation/' }
+  ]
+},
+{
+  id: 'microservices-102',
+  topic: 'microservices',
+  level: 'senior',
+  q: 'Trước khi chuyển 100% traffic sang service mới, bạn kiểm thử tương thích thế nào? Giải thích contract test, shadow traffic (mirror), cách so sánh kết quả hai bên, và cách xử lý side effect để không gửi email thật hay trừ tiền hai lần.',
+  a: `**Tóm tắt:** Tôi dùng ba lớp kiểm thử trước khi chuyển traffic: **contract test** (consumer và provider thống nhất hình dạng request/response, chạy trên CI), **shadow traffic / mirroring** (nhân bản request thật sang service mới, so kết quả, nhưng không trả cho user), và **so sánh kết quả có chuẩn hoá** (bỏ field động như timestamp, requestId). Với ghi, tôi chạy service mới với **tài khoản/cổng thử** hoặc **consumer group riêng** để không tạo side effect thật. Chỉ khi sai lệch về 0 mới mở canary.
+
+### Hiểu nhanh
+Trước khi đổi nhà cung cấp, bạn không mua ngay cho cả công ty. Bạn chạy thử song song: đơn hàng thật vẫn đi hệ cũ, nhưng một bản sao âm thầm đi hệ mới để xem kết quả có giống không. Nếu hệ mới gửi email thật cho khách, đó là tai hoạ; nên bạn cho hệ mới chạy trong "chế độ diễn tập" (dry-run) hoặc tài khoản thử. "Shadow traffic" là bản sao request; "side effect" là hành động thật như gửi email, trừ tiền.
+
+### Thuật ngữ
+- **Contract test**: kiểm tra consumer và provider thống nhất về hình dạng request/response mà không cần chạy cả hai cùng lúc.
+- **Provider**: service cung cấp API hoặc message.
+- **Consumer**: service gọi API hoặc đọc message.
+- **Shadow traffic / mirroring**: nhân bản request thật gửi sang hệ mới, phản hồi không trả cho user.
+- **Side effect**: thay đổi thế giới bên ngoài (gửi email, trừ tiền, ghi DB, gọi API bên thứ ba).
+- **Normalise (chuẩn hoá)**: loại bỏ khác biệt không quan trọng trước khi so sánh (timestamp, id ngẫu nhiên).
+- **Tolerance (dung sai)**: ngưỡng chấp nhận chênh lệch, ví dụ 0 đồng trên tiền.
+
+### Ba lớp kiểm thử
+**Lớp 1 — Contract test (trước khi deploy)**
+- Consumer định nghĩa kỳ vọng (path, method, body, status); Pact/Spring Cloud Contract kiểm tra provider đáp ứng.
+- Chạy trên CI, không cần hệ thật. Phát hiện sớm "provider đổi field làm consumer gãy".
+- Dùng Pact Broker + {{can-i-deploy}} để chặn deploy khi chưa tương thích.
+
+**Lớp 2 — Shadow traffic (trước khi mở traffic thật)**
+- Nhân bản request thật ở gateway, gửi bản sao sang service mới.
+- Không dùng phản hồi của bản sao cho user; chỉ log để so.
+- Chạy vài ngày đến vài tuần, với nhiều loại request (đọc và ghi).
+
+**Lớp 3 — So sánh kết quả (đọc và ghi)**
+- Chuẩn hoá response: bỏ hoặc làm mờ field động ({{timestamp}}, {{requestId}}, {{traceId}}), sắp xếp list, chuẩn hoá số thập phân.
+- So sánh có dung sai: tiền đúng từng đồng, số đo có thể lệch nhỏ.
+- Ghi log mọi khác biệt kèm request, hai response, và nhãn "đủ điều kiện chặn".
+
+### Xử lý side effect khi shadow
+Đây là chỗ dễ gây sự cố nhất:
+- **Ghi DB**: service mới không được ghi vào DB thật. Dùng DB shadow riêng, hoặc chế độ dry-run (chỉ tính toán, không commit).
+- **Gửi email/SMS**: tắt bằng feature flag, hoặc chuyển sang mail catcher (MailHog) trong môi trường shadow.
+- **Trừ tiền / đặt lệnh**: không bao giờ gọi cổng thanh toán thật. Dùng sandbox của cổng, hoặc chỉ mô phỏng.
+- **Gọi API bên thứ ba**: dùng mock hoặc sandbox; nếu bắt buộc gọi thật, dùng tài khoản test.
+- **Kafka**: nếu service mới consume cùng topic, dùng **consumer group riêng** và không commit offset chung, để không "cướp" message của consumer cũ. Tốt nhất là chạy trên một topic shadow riêng.
+
+~~~seq
+title: Shadow traffic so sánh kết quả an toàn
+actors: Client | Gateway | Monolith | NewSvc | Diff
+Client -> Gateway: request thật
+Gateway -> Monolith: xử lý thật
+Gateway -> NewSvc: bản sao (shadow)
+NewSvc --> Gateway: response (không trả user)
+Gateway -> Diff: so response cũ vs mới
+Diff --> Diff: chuẩn hoá, bỏ field động
+note NewSvc..Diff: side effect tắt / chạy sandbox
+~~~
+
+~~~java
+// So sánh hai response JSON sau khi chuẩn hoá
+String a = normalize(oldJson);   // bỏ timestamp, requestId, sort list
+String b = normalize(newJson);
+if (!a.equals(b)) {
+  log.warn("DIFF {} old={} new={}", reqId, a, b);   // log để điều tra
+}
+~~~
+
+### Quy trình chuyển traffic
+1. Contract test xanh trên CI cho consumer và provider.
+2. Shadow traffic 100% (đọc trước, ghi sau) trong vài tuần; sai lệch phải về 0.
+3. Canary thật 1% → 5% → 25% → 100%, theo SLO; rollback = đổi route.
+4. Sau cutover, vẫn giữ shadow một thời gian để so (nếu đủ hạ tầng), rồi tắt.
+
+### Ví dụ đời thực
+Một ngân hàng chuyển service tính lãi (interest) từ monolith sang service mới. Giai đoạn shadow: gateway nhân bản 100% request tính lãi sang service mới, không trả cho user. Tuần 1 sai lệch 5%: service mới làm tròn khác (làm tròn nửa lên vs làm tròn chẵn) và dùng {{double}} thay {{BigDecimal}}. Tuần 2 sửa còn 0,02% do timezone trong ngày bắt đầu kỳ. Tuần 3 về 0 trong 7 ngày liên tiếp. Với các request ghi, nhóm tắt side effect bằng cờ {{shadow.mode=readonly}} và dùng DB shadow. Mở canary 1% trong 2 ngày, 5% trong 3 ngày, 25% trong 1 tuần, rồi 100%. Trong suốt quá trình, 0 khiếu nại, p99 giảm từ 300 ms xuống 80 ms. Phát hiện 2 lỗi làm tròn trước khi kịp ảnh hưởng tiền của khách.
+
+### Trả lời mẫu khi phỏng vấn
+"Tôi dùng ba lớp: contract test để consumer và provider thống nhất hình dạng, chạy trên CI với Pact Broker và can-i-deploy; shadow traffic để nhân bản request thật sang service mới, không trả cho user; và so sánh kết quả có chuẩn hoá, bỏ field động và dùng dung sai. Với ghi, tôi tắt side effect bằng feature flag, chạy DB shadow, sandbox cổng thanh toán, consumer group riêng cho Kafka, để không gửi email thật hay trừ tiền hai lần. Chỉ khi sai lệch về 0 trong nhiều ngày tôi mới mở canary 1% đến 5% đến 100%, và rollback chỉ là đổi route."
+
+> Senior tip: shadow traffic là **kiểm thử trên dữ liệu thật nhưng phải cách ly side effect**. Nếu bạn không tắt được gửi email, trừ tiền hay ghi DB thật, bạn chưa sẵn sàng shadow. Và đừng chỉ so sánh status code — hãy so cả body sau khi chuẩn hoá, vì lỗi tiền thường nằm ở một field số thập phân bị làm tròn sai.`,
+  follow: [
+    'Shadow traffic với request ghi khác gì request đọc, bạn xử lý ra sao?',
+    'Nếu service mới không thể chạy side effect thật, bạn so sánh phần nào?',
+    'Contract test và shadow traffic thiếu cái nào, bạn bổ sung bằng gì?'
+  ],
+  tags: ['contract test', 'shadow traffic', 'canary', 'side effect', 'migration'],
+  refs: [
+    { type: 'doc', title: 'Pact documentation', url: 'https://docs.pact.io/' }
+  ]
+},
 );
