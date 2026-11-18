@@ -16298,5 +16298,451 @@ Em dùng Argo Rollouts với canary từng bước và AnalysisTemplate chạy P
     "Rollback",
     "CI/CD",
   ]
+},
+{
+  id: 'devops-185',
+  topic: 'devops',
+  level: 'senior',
+  q: 'Hệ thống 20 microservice dùng OpenTelemetry: khi điều tra sự cố bạn chỉ thấy trace của khoảng một phần ba request, nhiều trace có 1–2 span rồi tắt, và span của consumer Kafka nằm lẻ một cây riêng. Bạn audit và sửa cách lan truyền context qua HTTP và Kafka thế nào, đồng thời đo "chất lượng trace" ra sao?',
+  a: `**Tóm tắt:** Trace bị đứt gần như luôn do **context propagation** thất bại ở một trong ba chỗ: HTTP client không được instrument (hoặc dùng chuẩn header khác), mất context khi chuyển sang thread khác (async/thread pool), và Kafka producer/consumer không chuyển header. Cách sửa: chuẩn hoá W3C Trace Context toàn hệ, kiểm tra propagator ở cả hai đầu, dùng API extract/inject khi tự viết client, và với batch consumer dùng **span link** thay vì cố gắn một parent duy nhất. Đo bằng "trace completeness" (% span có parent đúng) và "orphan span ratio" phát ra từ Collector.
+
+### Thuật ngữ, giải thích từ đầu
+- **Trace** (dấu vết): cả hành trình một request qua nhiều service, gồm nhiều **span** — mỗi span là một đơn vị công việc có thời gian bắt đầu/kết thúc.
+- **parentSpanId**: mỗi span (trừ span gốc) trỏ tới span cha. Ghép tất cả parentId lại thành một cây; mất parent thì span thành "mồ côi" (orphan) và trace hiển thị rời rạc.
+- **Context**: đối tượng mang traceId/spanId hiện tại, được lưu trong ThreadLocal (biến gắn với từng thread) — đây chính là lý do đổi thread là mất.
+- **Propagator**: thành phần biết cách **inject** (ghi header khi gửi) và **extract** (đọc header khi nhận).
+- **traceparent**: header chuẩn W3C dạng {{00-traceId-parentSpanId-flags}}; flags {{01}} nghĩa là "trace này đã được chọn lấy mẫu".
+- **Head sampling**: quyết định lấy mẫu ngay ở span đầu; các service sau phải **tuân theo** quyết định đó, không tự quyết lại.
+- **Span link**: liên kết tham chiếu giữa một span và một span khác **không phải cha**, dùng khi một thao tác gộp nhiều request (batch).
+
+### Vì sao trace hay đứt: 5 nguyên nhân thực tế
+1. **Client tự tạo, không qua bean của Spring**: {{new RestTemplate()}}, {{HttpClient.newHttpClient()}}, {{OkHttpClient}} tự dựng — không có interceptor của OTel nên không inject header.
+2. **Lệch chuẩn header giữa hai đầu**: service A cấu hình propagator B3, service B chỉ nhận W3C (hoặc ngược lại). Header có mặt nhưng bên nhận không hiểu → luôn tạo trace mới.
+3. **Sampling không tuân theo parent**: mỗi service lấy mẫu 10% độc lập. Một trace 5 chặng chỉ còn nếu **cả 5** cùng quyết định lấy → xác suất còn khoảng {{0,1^5}} = 0,001%. Đúng là "trace nào cũng đứt".
+4. **Mất context khi đổi thread**: {{@Async}}, {{CompletableFuture.supplyAsync}} trên pool tự tạo, {{@Scheduled}}; ThreadLocal không tự đi theo.
+5. **Kafka**: tự tạo {{ProducerRecord}} mới và quên copy headers; consumer xử lý batch, hoặc đẩy record sang thread pool riêng rồi mới gọi service.
+
+### Sửa ở tầng HTTP và Kafka
+- Chuẩn hoá **một** propagator cho toàn hệ: W3C Trace Context (mặc định của Micrometer Tracing), đồng thời kiểm tra gateway/service mesh không strip header {{traceparent}}.
+- Với client không được instrument: tự gọi {{inject}} trước khi gửi; phía nhận tự {{extract}} rồi {{makeCurrent()}} trong try-with-resources để đảm bảo đóng scope.
+- Với thread pool: bọc task bằng {{Context.current().wrap(runnable)}} hoặc {{ContextSnapshot.captureAll()}}; trong Spring dùng {{TaskDecorator}} cho {{ThreadPoolTaskExecutor}}.
+- Với batch Kafka: tạo **một consumer span** cho lần xử lý batch, rồi mỗi record tạo span con mang **link** tới span producer của nó. Cách này trung thực với thực tế "một lần đọc phục vụ N trace" và vẫn bấm được sang trace gốc.
+
+~~~java
+// Phía gửi HTTP khi client không được auto-instrument
+// otel = bean OpenTelemetry của Spring Boot; setter ghi header khi gửi
+TextMapSetter<HttpRequest> setter = (req, key, val) -> req.setHeader(key, val);
+otel.getPropagators().getTextMapPropagator().inject(Context.current(), request, setter);
+
+// Phía consumer Kafka: đọc header rồi đặt context hiện tại
+// (kafkaGetter: TextMapGetter<Headers> bọc record.headers() để đọc từng key)
+Context extracted = otel.getPropagators().getTextMapPropagator()
+    .extract(Context.current(), record.headers(), kafkaGetter);
+try (Scope ignored = extracted.makeCurrent()) {
+    // mọi span và log bên trong đây thuộc đúng traceId của producer
+    process(record);
+}
+
+// Thread pool: bọc task để context trong ThreadLocal đi theo
+executor.execute(Context.current().wrap(() -> process(record)));
+~~~
+
+### Đo "chất lượng trace" thay vì chỉ tin vào màn hình đẹp
+| Chỉ số | Cách tính | Ngưỡng lành mạnh |
+|---|---|---|
+| Trace coverage | % request có root span / tổng request ở LB | > 95% |
+| Orphan span ratio | span có parentId không tồn tại / tổng span | < 1% |
+| Span per trace | trung bình số span mỗi trace theo luồng chuẩn | xấp xỉ số chặng mong đợi |
+| Sampling thực tế | trace được lưu / request thực | khớp cấu hình |
+
+OTel Collector cũng đếm số span bị drop (ví dụ vì vượt {{memory_limiter}}). Nếu bỏ qua chỉ số này, bạn tưởng trace đứt do code trong khi thực ra do collector quá tải.
+
+### Ví dụ đời thực
+Hệ 20 service Java, 3.500 RPS giờ cao điểm, dashboard trace chỉ đầy đủ 31% request. Điều tra theo thứ tự: (1) so {{traceparent}} ở gateway và service — khớp; (2) phát hiện service notification dùng {{new RestTemplate()}} gọi 6 service khác nên thiếu header; (3) hai service cấu hình B3 còn lại W3C → mỗi chặng sinh trace mới; (4) consumer batch 500 record đẩy sang pool riêng, mất context. Sau khi chuẩn hoá propagator, thay client bằng bean do Spring quản lý, bọc TaskDecorator và thêm span link cho batch: coverage lên 96%, orphan span còn 0,4%; thời gian tìm nguyên nhân một sự cố điển hình giảm từ 55 phút xuống 12 phút.
+
+### Lỗi hay gặp
+- Bật tail sampling ở Collector nhưng quên rằng quyết định **head** ở service đã loại bỏ trace trước khi tới Collector — trace lỗi hiếm vẫn mất.
+- Đặt tên span chứa orderId → nổ số lượng span name, không tổng hợp hay so sánh được.
+- Gắn thuộc tính cardinality cao (userId, orderId) vào span → chi phí lưu trace tăng vọt; để chúng trong log, trace chỉ giữ tenant và route.
+- Gateway tự sinh header trace sai định dạng làm consumer extract ra traceId rác, mọi span thành trace riêng.
+
+### Trả lời mẫu khi phỏng vấn
+"Khi trace bị đứt, em không sửa từng chỗ ngẫu nhiên mà kiểm tra đúng ba điểm nối: HTTP client, ranh giới thread và Kafka. Trước hết em chuẩn hoá một propagator duy nhất là W3C Trace Context cho toàn hệ, vì nếu service A gửi B3 còn service B chỉ đọc W3C thì header có mà bên nhận không hiểu, luôn sinh trace mới. Thứ hai, em rà các client tự khởi tạo như RestTemplate new tay hay OkHttp — chúng không có interceptor nên phải inject thủ công hoặc chuyển sang bean do Spring quản lý. Thứ ba, context nằm trong ThreadLocal, nên khi dùng @Async hay thread pool em bọc task bằng Context.current().wrap, còn với Kafka batch em tạo một span cho lần xử lý batch và dùng span link cho từng record thay vì gắn cha giả. Em cũng đặt sampling theo parent: service con phải tuân quyết định của root, nếu không 10% mỗi chặng thì xác suất giữ nguyên một trace 5 chặng chỉ còn 0,001%. Để biết mình sửa có hiệu quả, em theo dõi trace coverage và orphan span ratio ngay trên Collector, chứ không chỉ nhìn dashboard thấy có trace là xong."
+
+> Senior tip: coi trace như một SLI: đặt alert khi orphan span ratio vượt 1% trong 30 phút, vì trace đứt âm thầm làm MTTR tăng gấp nhiều lần mà không ai báo. Khi thiết kế span, giữ tên span là **route template** (/orders/{id}) và thuộc tính cardinality thấp; mọi thứ định danh cao để trong log đã gắn traceId.`,
+  follow: [
+    'Tail-based sampling ở Collector hoạt động thế nào, và vì sao nó không cứu được trace đã bị head sampling loại?',
+    'Span link khác parent-child ở đâu, và dùng span link trong batch consumer để làm gì?',
+    'Làm sao phát hiện một service âm thầm không gửi span (instrumentation chết) mà không chờ sự cố?',
+  ],
+  tags: [
+    'OpenTelemetry',
+    'Distributed Tracing',
+    'Kafka',
+    'Micrometer Tracing',
+    'W3C Trace Context',
+    'Observability',
+  ]
+},
+{
+  id: 'devops-186',
+  topic: 'devops',
+  level: 'senior',
+  q: 'Bạn thiết kế bộ metric cho service Spring Boot 3 và hạ tầng theo hai khung RED và USE bằng Micrometer + Prometheus như thế nào? Giải thích cách Prometheus tính p99 từ histogram và các bẫy khiến con số p99 trên dashboard sai.',
+  a: `**Tóm tắt:** **RED** (Rate, Errors, Duration) áp cho thứ phục vụ request: API, consumer; **USE** (Utilization, Saturation, Errors) áp cho tài nguyên: CPU, connection pool, hàng đợi, ổ đĩa. Micrometer sinh metric theo tên/tag chuẩn, Actuator mở {{/actuator/prometheus}} để Prometheus scrape; percentile phải tính **từ histogram bucket đã gộp qua mọi instance** — lấy trung bình các p99 sẵn có là sai về bản chất.
+
+### Thuật ngữ
+- **Counter**: chỉ tăng, dùng để tính tốc độ bằng {{rate()}}; ví dụ số request.
+- **Gauge**: giá trị lên xuống tuỳ thời điểm; ví dụ {{hikaricp_connections_active}}.
+- **Timer**: đo thời gian, sinh ra {{_count}}, {{_sum}}, {{_max}} và tuỳ chọn histogram.
+- **Histogram**: chia thời gian vào các "xô" (bucket) theo ngưỡng {{le}} (less or equal); Prometheus tính quantile bằng nội suy trên các xô.
+- **Saturation**: mức "sắp nghẽn" của tài nguyên — không phải đã đầy, mà là hàng chờ hoặc độ trễ xếp hàng đang tăng.
+
+### RED áp vào Spring Boot thế nào
+Spring Boot tự tạo timer {{http_server_requests_seconds}} với tag {{uri}} (đã là template, ví dụ /orders/{id}), {{method}}, {{status}}, {{outcome}}, {{exception}}. Từ đó:
+- **Rate**: tổng request mỗi giây = {{sum(rate(http_server_requests_seconds_count[5m]))}}.
+- **Errors**: tỷ lệ 5xx = số series có {{status}} bắt đầu bằng 5 chia cho tổng số.
+- **Duration**: p99 = {{histogram_quantile(0.99, sum(rate(http_server_requests_seconds_bucket[5m])) by (le))}}.
+
+Điều kiện để Duration dùng được: phải **bật histogram** cho loại timer đó; nếu để mặc định, Micrometer chỉ xuất count/sum/max và không thể tính p99. Cấu hình mẫu:
+
+~~~yaml
+management:
+  endpoints.web.exposure.include: health,prometheus
+  metrics:
+    distribution:
+      percentiles-histogram:
+        http.server.requests: true      # bật bucket cho RED duration
+      slo:
+        http.server.requests: 300ms,1s  # bucket đúng ngưỡng SLO để tính tỷ lệ đạt
+        hikaricp.connections.acquire: 100ms
+~~~
+
+Với SLO độ trễ, tỷ lệ request đạt là bucket có {{le=0.3}} chia cho {{_count}} — chính xác hơn p99 vì không cần nội suy.
+
+### USE áp vào hạ tầng
+| Tài nguyên | Utilization | Saturation | Errors |
+|---|---|---|---|
+| CPU container | {{rate(process_cpu_seconds_total)}} chia limit | thread runnable, throttling | — |
+| DB connection pool | {{hikaricp_connections_active}} chia max | {{hikaricp_connections_pending}} | {{hikaricp_connections_timeout_total}} |
+| Thread pool | active chia max | {{executor_queued}} | task bị reject |
+| JVM | heap used chia max (chỉ để xem) | GC pause p99, {{jvm_gc_overhead}} | OutOfMemory |
+| Đĩa | used chia size | {{node_disk_io_time_seconds_total}} (thời gian thiết bị bận I/O) | — |
+
+Câu quan trọng khi phỏng vấn: **saturation mới là tín hiệu sớm**. Pool còn trống 50% nhưng {{pending}} tăng liên tục nghĩa là DB chậm dần — nhìn utilization một mình sẽ thấy "bình thường" cho tới khi timeout.
+
+### Vì sao p99 trên dashboard hay sai
+1. **Lấy trung bình các p99 của từng instance**. p99 không cộng trung bình được: 10 pod, 9 pod p99 200 ms và 1 pod p99 5 s, trung bình ra 680 ms trong khi p99 thật của hệ ~5 s (10% traffic vào pod xấu). Phải cộng **bucket** rồi mới {{histogram_quantile}}.
+2. **Dùng percentile tính sẵn phía client**. Micrometer có thể xuất percentile trên từng instance, nhưng không gộp được giữa các instance và không tính lại được theo khoảng thời gian khác.
+3. **Bucket quá thô**. Nếu mốc gần nhất là 1s và 5s, p99 nằm giữa bị nội suy sai; đặt bucket quanh ngưỡng SLO (100ms, 300ms, 500ms, 1s).
+4. **Denominator sai**: tính lỗi trên tổng request gồm cả health check và traffic nội bộ → SLI đẹp giả.
+
+~~~promql
+# p99 gộp đúng cách qua mọi instance
+histogram_quantile(0.99,
+  sum by (le) (rate(http_server_requests_seconds_bucket{job="payment"}[5m])))
+
+# Tỷ lệ đạt SLO 300ms (dùng bucket đúng ngưỡng)
+sum(rate(http_server_requests_seconds_bucket{job="payment",le="0.3"}[5m]))
+/ sum(rate(http_server_requests_seconds_count{job="payment"}[5m]))
+~~~
+
+### Ví dụ đời thực
+Service thanh toán 12 pod. Dashboard hiển thị p99 = 420 ms nhưng khách hàng phàn nàn. Kiểm tra phát hiện dashboard dùng {{avg by (pod)}} trên p99 từng pod — tức lấy trung bình các giá trị đã tính sẵn. Tính lại bằng cách gộp bucket: p99 thật 2,1 s. Truy xuống thấy 1 pod có {{hikaricp_connections_pending}} luôn lớn hơn 0 và GC pause p99 800 ms. Nguyên nhân: pod đó nhận traffic lớn hơn do readiness probe flap. Sau khi sửa probe và tăng heap 25%, p99 hệ về 380 ms; team đổi luôn dashboard sang query gộp bucket và thêm alert trên {{pending}} thay vì chỉ CPU.
+
+### Lỗi hay gặp
+- Bật {{percentiles-histogram}} cho **mọi** timer → nổ số series (mỗi tổ hợp tag nhân mỗi bucket là một series). Chỉ bật cho timer quan trọng.
+- Dùng tag {{uri}} thô chứa ID: Micrometer lấy pattern từ Spring MVC, nhưng nếu code tự dựng tag từ {{getRequestURI()}} thì cardinality nổ ngay.
+- Đặt alert trên {{_max}}: một request chậm bất thường đủ làm alert kêu mãi; {{_max}} chỉ để tham khảo.
+- Quên rằng {{rate()}} cần ít nhất hai điểm dữ liệu: cửa sổ ngắn hơn chu kỳ scrape (15s) sẽ ra rỗng ở lần scrape đầu.
+
+### Trả lời mẫu khi phỏng vấn
+"Em dùng hai khung bổ sung nhau. Với service, em áp RED: rate là request mỗi giây, errors là tỷ lệ 5xx trên tổng request sạch, duration là p99. Với tài nguyên em áp USE, và chỗ em nhấn mạnh là saturation chứ không chỉ utilization: connection pool còn 50% nhưng pending tăng liên tục là dấu hiệu DB sắp nghẽn, còn nhìn utilization thì vẫn thấy bình thường. Về công cụ, Spring Boot Actuator mở endpoint Prometheus, Micrometer đã tự tạo http_server_requests_seconds với tag uri đã chuẩn hoá thành template, em chỉ cần bật histogram cho timer quan trọng và đặt bucket quanh ngưỡng SLO. Điểm em luôn kiểm tra là p99: nhiều dashboard sai vì lấy trung bình p99 của từng pod. p99 không cộng trung bình được, phải cộng bucket rồi mới histogram_quantile, nếu không một pod tệ sẽ bị che mất. Em từng gặp đúng ca đó: dashboard báo 420 ms trong khi p99 thật 2,1 giây vì một pod có pool pending cao. Từ đó em cũng đặt alert trên pending và trên tỷ lệ đạt SLO thay vì chỉ nhìn CPU."
+
+> Senior tip: với mỗi service, chốt trước 5 chỉ số "phải có": rate, error ratio, p99, pool pending, GC pause p99. Nếu dashboard cần hơn 20 biểu đồ mới trả lời được "hệ có ổn không", đó là dashboard thiết kế cho người viết chứ không cho người trực.`,
+  follow: [
+    'Vì sao không được lấy trung bình p99 của nhiều instance?',
+    'Saturation khác utilization thế nào, và vì sao saturation là tín hiệu sớm hơn?',
+    'Khi nào nên dùng native histogram thay cho histogram bucket cổ điển?',
+  ],
+  tags: [
+    'Micrometer',
+    'Prometheus',
+    'RED',
+    'USE',
+    'Metrics',
+    'Observability',
+    'PromQL',
+  ]
+},
+{
+  id: 'devops-187',
+  topic: 'devops',
+  level: 'senior',
+  q: 'Bạn thừa hưởng 180 alert rule cho 30 microservice, phần lớn kêu vì CPU/heap/5xx lẻ tẻ, còn sự cố thật do khách hàng phát hiện. Bạn thiết kế lại theo SLO: alert cái gì, phân tầng page/ticket/chat, cấu hình grouping/inhibition ra sao, và đo chất lượng alert bằng số liệu nào?',
+  a: `**Tóm tắt:** Alert tốt báo **triệu chứng người dùng đang chịu** (SLO ở biên), không báo nguyên nhân có thể có (CPU, heap). Thiết kế ba tầng: **page** (hành động ngay, phá SLO nhanh), **ticket** (xử lý trong giờ làm việc), **chat/dashboard** (chỉ để xem). Alertmanager gom nhóm theo alertname và service, **inhibit** alert con khi alert cha đang cháy. Chất lượng alert phải đo: số page mỗi tuần, tỷ lệ page có hành động, tỷ lệ sự cố được phát hiện bởi alert thay vì khách hàng.
+
+### Thuật ngữ
+- **Symptom-based alert** (cảnh báo theo triệu chứng): dựa trên cái người dùng cảm nhận — request lỗi, chậm.
+- **Cause-based alert** (theo nguyên nhân): dựa trên tài nguyên — CPU, heap, lag. Hữu ích để chẩn đoán nhưng không nên page.
+- **Journey SLO**: SLO cho cả một luồng nghiệp vụ (giỏ hàng → thanh toán → xác nhận) chứ không cho từng service riêng lẻ.
+- **Alert precision**: trong 10 page, bao nhiêu page dẫn tới hành động thật; 2/10 nghĩa là precision 20%.
+- **Inhibition**: luật "nếu alert A đang cháy thì ẩn alert B" để một sự cố không đẻ ra 20 thông báo.
+- **Silence**: tắt tạm có thời hạn, phải có lý do và người tạo.
+
+### Vì sao phải alert ở biên
+30 service, mỗi service 6 rule cause-based = 180 alert. Một sự cố DB làm 12 service cùng kêu; on-call nhận 30 tin trong 2 phút và không biết cái nào là gốc. Ngược lại, khi luồng thanh toán hỏng vì lỗi logic (không CPU cao, không heap cao), 180 rule im lặng. Alert ở biên (load balancer, gateway, synthetic probe) đo đúng thứ khách hàng thấy và **gộp** được nhiều service thành một tín hiệu.
+
+### Thiết kế từng bước
+1. **Chọn 2–4 SLI ở biên** cho mỗi journey: tỷ lệ request thành công, tỷ lệ request dưới ngưỡng latency, và với luồng tiền có thể thêm "tỷ lệ đối soát khớp". Nguồn dữ liệu: metric gateway/service mesh (đếm theo route đã chuẩn hoá) cộng synthetic probe chạy 1 phút/lần từ 3 region.
+2. **Đặt SLO và tính burn rate** cho từng journey (ví dụ 99,9% trong 30 ngày). Tầng page dùng burn rate cao (14,4 lần trên cửa sổ 1 giờ kèm 5 phút); tầng ticket dùng burn rate 1–2 lần trên 6 giờ đến 3 ngày.
+3. **Phân tầng theo hành động**, không theo "mức nghiêm trọng cảm tính":
+
+| Tầng | Điều kiện | Người nhận | Ví dụ |
+|---|---|---|---|
+| Page | burn rate phá budget nhanh, hoặc probe fail 3 region | on-call trực | checkout thành công dưới 99% kéo dài 5 phút |
+| Ticket | xu hướng xấu, chưa phá SLO | team sở hữu, giờ hành chính | pool pending tăng đều 3 ngày |
+| Chat/dashboard | tài nguyên, thông tin | không ai bị đánh thức | CPU 80%, heap 85%, lag 2 phút |
+
+4. **Mỗi rule phải có owner, runbook và link dashboard**; rule không có runbook thì xoá, không giữ "cho chắc".
+5. **Alertmanager gom nhóm và inhibit**:
+
+~~~yaml
+route:
+  receiver: oncall
+  group_by: [alertname, service]
+  group_wait: 30s
+  group_interval: 5m
+  repeat_interval: 4h
+  routes:
+    - matchers: [severity="page"]
+      receiver: oncall-pager
+    - matchers: [severity="ticket"]
+      receiver: team-ticket
+inhibit_rules:
+  # Journey đang cháy thì ẩn alert tài nguyên của các service trong journey đó
+  - source_matchers: [alertname="CheckoutJourneyBurn"]
+    target_matchers: [severity=~"page|ticket"]
+    equal: [journey]
+~~~
+
+6. **Kiểm thử alert như kiểm thử code**: {{promtool check rules}}, unit test rule với dữ liệu giả, và mỗi quý chạy game day tắt một dependency để xác nhận alert nổ đúng tầng.
+
+~~~promql
+# Tỷ lệ thành công của journey checkout đo ở biên (gateway)
+sum(rate(gateway_requests_total{route="/checkout", code=~"2..|3.."}[5m]))
+/ sum(rate(gateway_requests_total{route="/checkout"}[5m]))
+~~~
+
+### Đo chất lượng alert
+| Chỉ số | Cách đo | Mục tiêu |
+|---|---|---|
+| Page mỗi tuần mỗi người | đếm page chia số người trực | ≤ 2 |
+| Precision | page có hành động / tổng page | > 70% |
+| Phát hiện chủ động | sự cố do alert phát hiện / tổng sự cố | > 90% |
+| MTTD | thời điểm alert trừ thời điểm lỗi bắt đầu | < 5 phút |
+| Rule chết | rule không nổ trong 90 ngày | xoá hoặc sửa |
+
+Chỉ số cuối rất quan trọng: một rule 6 tháng không nổ có thể là vô dụng, hoặc **sai** (metric không tồn tại, ngưỡng không bao giờ chạm). Cả hai đều nên xử lý.
+
+### Ví dụ đời thực
+180 rule, 46 page mỗi tuần, chỉ 8 page dẫn tới hành động (precision 17%), 6/9 sự cố quý trước do khách hàng báo. Sau 6 tuần: gộp còn 24 rule (4 journey × 3 tầng cộng 12 ticket), page còn 7/tuần, precision 78%, 8/9 sự cố được alert phát hiện, MTTD từ 14 phút xuống 2 phút. Việc giảm mạnh nhất đến từ **hạ CPU/heap/lag xuống tầng chat** — on-call thôi bị đánh thức lúc 3 giờ sáng vì job batch làm CPU 82%.
+
+### Lỗi hay gặp
+- Inhibit quá rộng: ẩn luôn alert của một sự cố độc lập cùng journey; luôn mô phỏng hai sự cố đồng thời để kiểm tra.
+- {{group_wait}} quá dài (10 phút) làm page chậm; page cần 30–60 giây.
+- {{repeat_interval}} quá ngắn (15 phút) biến một sự cố thành 20 tin nhắn, on-call tự tắt thông báo.
+- Alert dựa trên deploy: mỗi lần rolling update lại có 5xx vài giây → thêm điều kiện "kéo dài ít nhất 2 phút" hoặc loại trừ cửa sổ deploy.
+- Không ai sở hữu alert của service đã chuyển team → alert kêu vào khoảng không.
+
+### Trả lời mẫu khi phỏng vấn
+"Em thiết kế alert theo triệu chứng, không theo nguyên nhân. Với mỗi luồng nghiệp vụ như checkout, em định nghĩa SLO ở biên — gateway hoặc synthetic probe — vì đó là nơi phản ánh đúng cái khách hàng chịu, và nó gộp được 30 service thành một tín hiệu thay vì 180 alert rời rạc. Em chia ba tầng hành động: page chỉ dành cho burn rate phá budget nhanh, ticket cho xu hướng xấu trong giờ hành chính, còn CPU, heap, lag thì đẩy xuống dashboard hoặc chat. Trong Alertmanager em group theo alertname và service, đặt group_wait ngắn cho page, repeat_interval dài để không spam, và inhibit alert tài nguyên khi journey đang cháy. Điều em coi trọng không kém là đo chất lượng: số page mỗi tuần mỗi người, precision là bao nhiêu page dẫn tới hành động, và tỷ lệ sự cố do alert phát hiện thay vì khách hàng báo. Ở một hệ 30 service em từng đưa 46 page mỗi tuần xuống 7, precision từ 17 lên 78%, MTTD từ 14 phút xuống 2 phút; phần lớn nhờ hạ alert tài nguyên xuống tầng chat và xoá rule không có runbook."
+
+> Senior tip: coi alert là sản phẩm có người dùng là on-call: đo precision và số page mỗi tuần như đo latency. Mỗi alert phải trả lời được ba câu trong 30 giây: chuyện gì đang ảnh hưởng ai, xem ở đâu, làm gì trước. Không trả lời được thì đó là dashboard, không phải alert.`,
+  follow: [
+    'Vì sao alert theo triệu chứng ở biên lại tốt hơn alert theo tài nguyên của từng service?',
+    'Inhibition trong Alertmanager có thể che mất sự cố thật trong tình huống nào?',
+    'Làm sao kiểm thử alert rule trước khi đưa lên production?',
+  ],
+  tags: [
+    'Alerting',
+    'SLO',
+    'Alertmanager',
+    'Prometheus',
+    'On-call',
+    'Observability',
+  ]
+},
+{
+  id: 'devops-188',
+  topic: 'devops',
+  level: 'senior',
+  q: 'Bạn chuẩn hoá logging cho 20 service Spring Boot: log JSON có cấu trúc, correlation id đi xuyên HTTP và Kafka, không lộ dữ liệu cá nhân, và vẫn giữ được ngữ cảnh khi xử lý async. Thiết kế thế nào và bẫy nào hay gặp?',
+  a: `**Tóm tắt:** Log nên là **JSON một dòng** với bộ field cố định (thời gian, mức, service, môi trường, phiên bản, {{traceId}}, {{spanId}}, {{requestId}}, thông điệp, ngoại lệ); **correlation id** lấy từ header (hoặc sinh mới) đặt vào **MDC** (map gắn với thread) và trả lại trong response header; MDC phải được chép sang thread pool và xoá đúng vòng đời; dữ liệu cá nhân phải che trước khi ghi. Mục tiêu cuối: từ một mã đơn hàng hoặc một {{requestId}} tìm được mọi dòng log liên quan trong vài giây, trên mọi service.
+
+### Thuật ngữ
+- **Structured logging**: ghi log dưới dạng field có khoá (JSON) thay vì câu text tự do, để máy lọc và đếm được.
+- **MDC (Mapped Diagnostic Context)**: map khoá-giá trị mà thư viện log tự gắn vào mọi dòng trong cùng thread.
+- **Correlation id / request id**: mã do gateway sinh cho mỗi request, đi kèm mọi log của request đó.
+- **traceId**: mã của trace phân tán; một request có thể sinh nhiều thao tác nội bộ, còn traceId nối cả chuỗi service.
+- **PII**: dữ liệu định danh cá nhân (số thẻ, email, số điện thoại) — không được ghi thô xuống hệ lưu trữ.
+- **Log injection**: kẻ tấn công chèn ký tự xuống dòng vào field để tạo dòng log giả, đánh lừa người đọc hoặc hệ phân tích.
+
+### Vì sao JSON cộng correlation id
+Log text kiểu {{2026-05-01 10:12:33 INFO OrderService - created order 12345}} phải viết regex để tách field, và regex vỡ mỗi lần ai đó đổi format. JSON cho phép truy vấn theo field như {{level}} bằng ERROR và {{service}} bằng payment, giữ nguyên kiểu dữ liệu (số vẫn là số). Correlation id giải bài toán khó nhất của hệ phân tán: một request đi qua 12 service, mỗi service ghi log riêng; nếu không có mã chung, người trực phải ghép bằng thời gian — vô vọng ở 5.000 RPS.
+
+### Chuỗi hoạt động
+1. **Gateway** nhận {{X-Request-Id}} từ client; nếu thiếu hoặc sai định dạng (cho phép 16–64 ký tự chữ, số, gạch) thì sinh mới; trả lại trong response header để khách hàng đọc mã khi báo lỗi.
+2. **Filter ở mỗi service** đọc header, đặt vào MDC, và **luôn xoá trong finally**.
+3. **Micrometer Tracing** tự thêm {{traceId}}, {{spanId}} vào MDC khi có span; encoder JSON ghi mọi cặp MDC ra field.
+4. **Gọi HTTP/Kafka**: header {{traceparent}} lan truyền traceId; với Kafka, consumer đọc header và đặt MDC trước khi xử lý.
+5. **Async**: chép MDC sang thread mới bằng {{TaskDecorator}}; nếu không, dòng log trong thread pool sẽ mất {{requestId}}.
+6. **Ghi log** qua encoder JSON; Fluent Bit/OTel Collector gom về Loki/Elasticsearch; truy vấn theo field.
+
+~~~java
+// Filter đặt correlation id vào MDC, luôn dọn dẹp để không rò sang request sau
+public class CorrelationFilter extends OncePerRequestFilter {
+  protected void doFilterInternal(HttpServletRequest req, HttpServletResponse res, FilterChain chain)
+      throws ServletException, IOException {
+    String id = Optional.ofNullable(req.getHeader("X-Request-Id"))
+        .filter(v -> v.matches("[A-Za-z0-9-]{16,64}"))   // chặn log injection
+        .orElse(UUID.randomUUID().toString());
+    MDC.put("requestId", id);
+    res.setHeader("X-Request-Id", id);
+    try { chain.doFilter(req, res); }
+    finally { MDC.remove("requestId"); }                 // thread được tái sử dụng
+  }
+}
+
+// Thread pool: chép MDC hiện tại sang thread chạy task
+public class MdcTaskDecorator implements TaskDecorator {
+  public Runnable decorate(Runnable r) {
+    Map<String, String> ctx = MDC.getCopyOfContextMap();  // chụp lại trước khi đổi thread
+    return () -> {
+      if (ctx != null) MDC.setContextMap(ctx);
+      try { r.run(); } finally { MDC.clear(); }
+    };
+  }
+}
+~~~
+
+### Bộ field tối thiểu
+
+| Field | Ví dụ | Ghi chú |
+|---|---|---|
+| ts | 2026-05-01T10:12:33.412Z | UTC, mili giây |
+| level | ERROR | thống nhất INFO/WARN/ERROR |
+| service, env, version | payment, prod, 1.14.2 | version lấy từ build info |
+| traceId, spanId | 4bf92f..., 00f067... | do tracing sinh |
+| requestId | 7f3a9c21... | correlation id |
+| msg | "charge failed" | hằng số ngắn, không nối chuỗi dữ liệu |
+| error.type, error.stack | TimeoutException, ... | để trong field riêng, không nhét vào msg |
+| durationMs, http.status | 812, 504 | kiểu số, để tính toán |
+
+### Ví dụ đời thực
+Hệ 20 service, 4.000 RPS. Trước: log text mỗi service một format, điều tra một ca trừ tiền sai mất gần 2 giờ vì phải grep 6 service theo thời gian và orderId nằm rải trong câu chữ. Sau khi chuẩn hoá: log JSON, {{requestId}} từ gateway, {{traceId}} từ tracing, mọi dòng có {{orderId}} dạng field. Ca tương tự lần sau tìm trong Loki bằng một truy vấn theo {{requestId}} ra 34 dòng trong 5 giây, phát hiện service notification retry 3 lần do timeout. Đồng thời rà soát phát hiện log cũ ghi cả 16 số thẻ → thêm bộ che (chỉ giữ 4 số cuối), giảm rủi ro tuân thủ. Khối lượng log giảm 35% nhờ hạ DEBUG và bỏ log trong vòng lặp.
+
+### Lỗi hay gặp
+- **MDC rò giữa request**: thread pool tái sử dụng thread, không {{clear}} thì request sau mang requestId của request trước — log sai người, cực khó phát hiện.
+- **Mất MDC khi async/Kafka**: context không tự đi theo; phải chép thủ công.
+- **Log cả payload**: request 200 KB log nguyên văn làm phình chi phí và lộ PII; chỉ log field cần thiết cộng kích thước.
+- **Nối chuỗi vào msg**: {{log.info("order " + id + " failed")}} làm mất khả năng lọc theo field; dùng tham số có cấu trúc.
+- **Bắt exception rồi không log stack**: chỉ ghi {{e.getMessage()}} là mất stack trace; truyền exception làm tham số cuối.
+- **Đổi format log mà không đổi parser**: dòng rơi vào "unparsed" và biến mất khỏi dashboard.
+
+### Trả lời mẫu khi phỏng vấn
+"Em chuẩn hoá log thành JSON một dòng với bộ field cố định: thời gian UTC, level, service, môi trường, version, traceId, spanId, requestId, message, và lỗi tách thành field riêng. Correlation id em sinh ở gateway nếu client không gửi, kiểm tra định dạng để chặn log injection, đặt vào MDC và trả lại trong response header để khách hàng đọc mã khi báo lỗi. Điểm quan trọng là MDC gắn với thread, nên em luôn xoá trong finally, và khi dùng @Async hay thread pool thì chép MDC sang thread mới bằng TaskDecorator, còn với Kafka thì đọc header và đặt MDC trước khi xử lý. Về dữ liệu nhạy cảm, em che số thẻ, email, số điện thoại ngay tại encoder, chỉ giữ 4 số cuối, vì log thường được gửi sang hệ thống bên thứ ba và giữ nhiều tháng. Em cũng giữ kỷ luật: msg là hằng số ngắn, dữ liệu để trong field, exception truyền nguyên object để có stack trace, và không log payload lớn. Nhờ vậy khi có sự cố em chỉ cần một requestId là ra toàn bộ dòng log liên quan thay vì grep 20 service theo thời gian."
+
+> Senior tip: chọn correlation id **một lần** ở biên và coi nó là hợp đồng toàn hệ; đừng để mỗi service tự sinh mã riêng — bạn sẽ có 12 mã cho một request. Và đặt ngân sách log theo service (ví dụ không quá 2 KB mỗi request trung bình): log phình là chi phí tăng tuyến tính theo traffic và thường không ai nhìn tới khi hoá đơn tới.`,
+  follow: [
+    'Vì sao MDC có thể rò giữa các request và phòng tránh thế nào?',
+    'Làm sao giữ correlation id khi xử lý message Kafka theo batch?',
+    'Che PII trong log nên làm ở tầng nào: ứng dụng, agent thu thập hay backend lưu trữ?',
+  ],
+  tags: [
+    'Logging',
+    'MDC',
+    'Correlation ID',
+    'Spring Boot',
+    'Kafka',
+    'Observability',
+  ]
+},
+{
+  id: 'devops-189',
+  topic: 'devops',
+  level: 'lead',
+  q: 'Bạn là lead on-call cho hệ thanh toán. Một sự cố P1 xảy ra lúc 2 giờ sáng. Hãy mô tả quy trình incident response bạn vận hành (severity, vai trò, khai báo, communication, giảm thiểu trước hay tìm nguyên nhân trước) và cách bạn chạy postmortem blameless để action item thành thay đổi thật.',
+  a: `**Tóm tắt:** Nguyên tắc số một: **giảm thiểu tác động trước, tìm nguyên nhân sau**. Khi có sự cố, khai báo sớm, chỉ định **Incident Commander** (người điều phối), tách vai trò giao tiếp và ghi chép, cập nhật trạng thái đều đặn, và chỉ đóng khi SLO trở lại bình thường. Postmortem blameless diễn ra trong 3–5 ngày, tập trung vào **điều kiện hệ thống cho phép lỗi xảy ra**, kết thúc bằng 3–5 action item có owner, có hạn và được theo dõi tới khi xong.
+
+### Thuật ngữ
+- **Severity (P1 đến P4)**: mức độ sự cố; P1 = ảnh hưởng lớn tới khách hàng hoặc tiền, cần mọi người ngay.
+- **Incident Commander (IC)**: người ra quyết định trong sự cố, **không** trực tiếp sửa lỗi để không mất góc nhìn tổng thể.
+- **Mitigation**: hành động giảm tác động (rollback, tắt feature flag, scale, chặn traffic) — khác với **fix** là sửa gốc.
+- **RCA**: phân tích nguyên nhân gốc (root cause analysis).
+- **Postmortem blameless**: tài liệu học hỏi không quy trách nhiệm cá nhân.
+- **MTTD/MTTR**: thời gian phát hiện / thời gian khôi phục trung bình.
+
+### Severity và vai trò
+
+| Mức | Tiêu chí ví dụ | Ai tham gia | Kênh |
+|---|---|---|---|
+| P1 | Thanh toán lỗi trên 5% hoặc mất dữ liệu | IC, on-call, team DB, comms | Page cộng phòng bridge |
+| P2 | Một phần chức năng lỗi, có workaround | on-call và team sở hữu | Page |
+| P3 | Suy giảm nhẹ, không ảnh hưởng tiền | Ticket | Chat |
+
+Vai trò: **IC** quyết định hướng xử lý và khi nào leo thang; **Ops/Subject Matter Expert** trực tiếp chạy lệnh, đọc metric; **Comms lead** cập nhật cho lãnh đạo và CSKH mỗi 15–30 phút, không để kỹ thuật viên vừa sửa vừa trả lời; **Scribe** ghi timeline (giờ, ai làm gì, giả thuyết nào bị loại). Với team nhỏ, một người có thể kiêm hai vai trò nhưng IC phải tách khỏi người sửa.
+
+### Timeline chuẩn
+1. **Phát hiện (T+0)**: alert SLO page hoặc khách hàng báo. Xác nhận trong 5 phút (acknowledge).
+2. **Khai báo (T+5)**: mở kênh sự cố, gán mức P, gán IC. Nguyên tắc: **khai báo sớm rồi hạ mức** dễ hơn nâng mức muộn.
+3. **Giảm thiểu (T+5 đến T+20)**: bốn đòn theo thứ tự — rollback bản vừa deploy, tắt feature flag, scale hoặc throttle, chuyển traffic/failover. Không tranh luận nguyên nhân khi khách còn đang lỗi.
+4. **Giao tiếp**: cập nhật ngắn theo mẫu: đang ảnh hưởng gì, từ mấy giờ, đã thử gì, bước tiếp theo, lần cập nhật kế tiếp.
+5. **Điều tra**: sau khi đã cầm máu, dùng traceId/log/metric để khoanh vùng; kiểm tra thay đổi gần nhất (deploy, config, migration, traffic) trước.
+6. **Khôi phục và xác nhận**: SLO về mức bình thường, không còn hàng đợi tồn, dữ liệu đối soát khớp.
+7. **Đóng sự cố**: ghi mốc giờ; nếu có nghi vấn dữ liệu sai, mở việc đối soát riêng.
+8. **Postmortem**: trong 3–5 ngày làm việc, review 60 phút, chốt action item.
+
+### Postmortem: viết thế nào cho blameless
+Cấu trúc: **Tác động** (số request lỗi, % error budget đã tiêu, số khách, thiệt hại tiền) → **Timeline** có giờ → **Yếu tố góp phần** (thường 3–5, không chỉ một) → **Điều làm tốt và điều may mắn** → **Action item**.
+
+Đổi ngôn ngữ là kỹ thuật quan trọng nhất:
+
+| Có trách móc | Blameless, hướng hệ thống |
+|---|---|
+| "Dev A deploy config sai" | "Pipeline cho phép config chưa qua kiểm tra lên prod lúc 2 giờ" |
+| "On-call phản ứng chậm" | "Alert không có runbook nên mất 9 phút mới xác định đúng dịch vụ" |
+| "Quên review" | "Checklist review không có mục connection pool khi tăng thread" |
+
+Action item chia ba loại: **phòng ngừa** (sửa nguyên nhân), **phát hiện** (alert/probe mới), **giảm thiểu** (feature flag, canary, rollback nhanh hơn). Giới hạn 3–5 việc; mỗi việc có owner, hạn, và **được đưa vào backlog sprint như mọi việc khác** — postmortem không có action item được track là một tài liệu chết.
+
+### Ví dụ đời thực
+SLO 99,9% theo tháng; 02:10 payment API lỗi tới 38%, kéo dài 26 phút (38% trong 8 phút đầu, còn 6% sau rollback, 0,1% sau khi tắt flag) → tiêu khoảng 10% error budget tháng. Alert burn rate page; IC khai báo P1 lúc 02:12; 02:18 rollback bản deploy 01:50 → lỗi còn 6%; 02:36 tắt feature flag gây tăng thread → lỗi về 0,1%, SLO hồi. Comms cập nhật 2 lần trong 26 phút. Postmortem sau 2 ngày: bản deploy tăng thread pool 40 lên 120 nhưng không tăng pool DB; thêm vào đó feature flag bật mặc định và canary gate chỉ so sánh error rate mỗi 5 phút với mẫu quá nhỏ. Ba action item: (1) kiểm tra quan hệ thread/pool trong checklist review (owner platform, 2 tuần), (2) thêm rule "pool pending lớn hơn 0 trong 2 phút" vào canary analysis (owner payment, 3 tuần), (3) feature flag mặc định tắt và review bắt buộc (owner lead, 1 tuần). Cả ba xong trong 4 tuần; 6 tháng sau không tái diễn, MTTR trung bình từ 26 xuống 9 phút.
+
+### Lỗi hay gặp
+- **Không ai làm IC**: 6 người cùng ssh, cùng sửa, thay đổi chồng nhau, không ai quyết định rollback.
+- **Tranh luận nguyên nhân trong lúc sự cố**: khách vẫn lỗi, đồng hồ error budget vẫn chạy.
+- **Postmortem biến thành phiên xử**: lần sau người ta giấu thông tin, đúng thứ bạn cần nhất.
+- **"Human error" là nguyên nhân gốc**: luôn hỏi tiếp "vì sao hệ thống cho phép thao tác đó đi tới prod mà không có chặn".
+- **Action item không owner**: 100% postmortem đều ghi "nên cải thiện monitoring" và không ai làm.
+- **Đóng sự cố quá sớm**: SLO hồi nhưng hàng đợi còn 200.000 message, lỗi quay lại sau 40 phút.
+
+### Trả lời mẫu khi phỏng vấn
+"Trong sự cố, em vận hành theo nguyên tắc giảm thiểu trước, nguyên nhân sau. Khi alert nổ, người trực acknowledge trong khoảng 5 phút, mở kênh sự cố, gán mức P và chỉ định Incident Commander — người này điều phối chứ không trực tiếp sửa, để giữ góc nhìn tổng thể. Em tách thêm vai trò comms cập nhật cho lãnh đạo và CSKH mỗi 15 đến 30 phút, và scribe ghi timeline. Bốn đòn giảm thiểu em thử theo thứ tự: rollback bản vừa deploy, tắt feature flag, scale hoặc throttle, cuối cùng là chuyển traffic. Chỉ sau khi đã cầm máu mới điều tra sâu bằng trace, log và thay đổi gần nhất. Sự cố chỉ đóng khi SLO về bình thường và không còn hàng đợi tồn. Postmortem làm trong 3 đến 5 ngày, blameless: em mô tả điều kiện hệ thống cho phép lỗi, ví dụ pipeline cho phép config chưa kiểm tra lên production, thay vì nói ai sai. Cuối cùng là 3 đến 5 action item có owner và hạn, đưa vào backlog như việc bình thường và review lại sau 30 ngày. Ở một sự cố P1 thanh toán, cách này đưa MTTR từ 26 xuống 9 phút và không tái diễn trong 6 tháng."
+
+> Senior tip: chạy **game day** mỗi quý: giả lập mất một dependency trong giờ làm việc, bắt on-call thực hành khai báo, gán vai trò và rollback. Kỹ năng vận hành sự cố giống CPR: đọc tài liệu không đủ, phải diễn tập mới nhớ. Và đo chất lượng postmortem bằng **tỷ lệ action item hoàn thành đúng hạn**, không phải bằng độ dài tài liệu.`,
+  follow: [
+    'Vì sao phải tách Incident Commander khỏi người trực tiếp sửa lỗi?',
+    'Blameless postmortem xử lý thế nào khi một cá nhân thật sự thao tác sai?',
+    'Làm sao ưu tiên action item khi postmortem đẻ ra 12 việc?',
+  ],
+  tags: [
+    'Incident Response',
+    'Postmortem',
+    'On-call',
+    'SRE',
+    'RCA',
+    'Observability',
+  ]
 }
 );
