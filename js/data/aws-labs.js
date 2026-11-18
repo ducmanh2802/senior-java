@@ -1988,4 +1988,424 @@
 - Phân biệt: IAM user (mã credentials dài hạn, không khuyến khích), IAM role (tạm thời, assume), Identity Center (đăng nhập con người đa account).`,
   ref: ['lab-79-tao-aws-organizations-scp-chan-hanh-dong-khong-mong-muon', 'lab-80-provision-account-baseline-bang-aws-control-tower-account-factory'],
 },
+{
+  id: 'awslab-dev-001',
+  category: 'dev',
+  title: 'CodePipeline CI/CD cho Java: source, build, approval, deploy',
+  level: 'senior',
+  minutes: 50,
+  exams: ['dop-c02'],
+  domains: ['dop-d1', 'dop-d2'],
+  services: ['CodePipeline', 'CodeBuild', 'CodeArtifact', 'CodeDeploy', 'CodeStar Connections'],
+  goal: 'Sau lab này bạn dựng được pipeline 3 stage Source → Build → Deploy cho ứng dụng Java Maven, hiểu artifact store, IAM role từng stage và manual approval. Đây là dạng bài DOP-C02 hỏi nhiều nhất: dịch vụ nào làm việc gì, pipeline lưu artifact ở đâu, và vì sao CodePipeline không tự chạy Maven.',
+  steps: [
+    'Tạo artifact bucket riêng: bật versioning, mã hoá SSE-KMS, block public access; bucket phải cùng Region với pipeline. Bucket policy cho pipeline role ghi/đọc và cho build role đọc source artifact.',
+    'Tạo connection tới GitHub bằng CodeStar Connections (hoặc dùng CodeCommit), hoàn tất bước authorise trong console. Connection là đối tượng cấp tài khoản, có thể tái dùng cho nhiều pipeline.',
+    'Tạo CodeArtifact domain và repository maven-internal, thêm upstream repository trỏ public:maven-central. Lấy token bằng aws codeartifact get-authorization-token và cấu hình settings.xml để Maven tải dependency nội bộ lẫn Maven Central qua CodeArtifact.',
+    'Viết buildspec.yml: runtime-versions java corretto21, cache đường dẫn ~/.m2/repository, phase build chạy mvn -B clean verify, reports JUnit cho target/surefire-reports, artifacts là target/app.jar.',
+    'Tạo CodeBuild project với service role tối thiểu: quyền CodeArtifact read, S3 artifact, CloudWatch Logs. Chỉ bật privileged mode khi build cần chạy Docker daemon.',
+    'Tạo CodeDeploy application và deployment group cho EC2 theo tag hoặc cho Lambda alias. Deploy EC2 cần cài CodeDeploy agent và gắn instance profile; deploy Lambda cần alias live.',
+    'Tạo pipeline role, khai báo 3 stage Source, Build, Deploy; chèn Manual approval giữa Build và Deploy, gắn SNS topic để gửi email cho người duyệt.',
+    'Push một commit để trigger pipeline; theo dõi log CodeBuild trong CloudWatch, xem artifact zip trong S3 và lịch sử deployment trong CodeDeploy.',
+    'Thử reject approval để thấy pipeline dừng trước Deploy, rồi approve để chạy tiếp. Sau đó cố ý làm test fail để xác nhận stage Deploy không bao giờ chạy khi Build đỏ.'
+  ],
+  verify: [
+    '{{aws codepipeline get-pipeline-state --name java-pipeline}} trả về trạng thái từng stage và stage đang dừng ở approval.',
+    '{{aws s3 ls s3://artifact-bucket/java-pipeline/}} thấy các object zip do pipeline tạo ra sau mỗi lần chạy.',
+    '{{aws codebuild list-builds-for-project --project-name java-build}} có build Succeeded; tab Reports hiển thị số test pass/fail.',
+    '{{aws deploy list-deployments --application-name java-app --deployment-group-name java-dg}} có deployment Succeeded và revision đúng commit.'
+  ],
+  cost: 'CodePipeline V2 tính theo phút action execution, một pipeline nhỏ chạy vài chục giây mỗi lần nên chỉ vài cent; CodeBuild có Free Tier 100 phút/tháng với general1.small; CodeArtifact tính theo GB-tháng và số request; S3, SNS, CloudWatch vài cent. Lab dưới 1 USD nếu dọn ngay. Dọn dẹp: xoá pipeline, CodeBuild project, CodeDeploy application và deployment group, CodeStar connection, CodeArtifact domain (xoá repository/package trước), artifact bucket, SNS topic và log group.',
+  examTip: `### Bẫy đề thi
+- CodePipeline chỉ điều phối (orchestration): build/test do CodeBuild, deploy do CodeDeploy hoặc CloudFormation. Đề hỏi dịch vụ nào chạy Maven thì đáp án là CodeBuild, không phải CodePipeline.
+- Artifact store phải cùng Region với pipeline. Pipeline cross-Region cần replicate bucket artifact hoặc tách pipeline theo từng Region.
+- Cross-account: pipeline role assume role ở account đích; bucket policy và KMS key policy phải cho cả hai account; action deploy dùng role của account đích.
+- Manual approval không tự timeout, có thể gắn SNS để gửi email; approve/reject bằng {{aws codepipeline put-approval-result}}. CodeArtifact là repository/proxy cho Maven, không phải nơi chạy build.`,
+  ref: ['lab-102-quan-ly-va-tich-hop-thu-vien-java-tap-trung-trong-codepipeline-bang-aws-codeartifact', 'lab-58-tich-hop-chay-unit-test-va-test-reports-tu-dong-trong-codepipeline-bang-aws-codebuild'],
+},
+{
+  id: 'awslab-dev-002',
+  category: 'dev',
+  title: 'CodeBuild buildspec: cache, biến môi trường, test report',
+  level: 'senior',
+  minutes: 45,
+  exams: ['dop-c02'],
+  domains: ['dop-d1', 'dop-d2'],
+  services: ['CodeBuild', 'SSM Parameter Store', 'Secrets Manager', 'S3', 'CloudWatch Logs'],
+  goal: 'Sau lab này bạn viết được buildspec.yml đúng chuẩn production: tách phase, cache Maven, lấy cấu hình từ Parameter Store, lấy mật khẩu từ Secrets Manager và xuất báo cáo JUnit. Đây là kỹ năng DOP-C02 hay hỏi vì một buildspec sai làm pipeline chậm, lộ secret hoặc báo xanh giả.',
+  steps: [
+    'Tạo buildspec.yml version 0.2 với các phase install, pre_build, build, post_build. Khai báo runtime-versions java corretto21 để CodeBuild dùng đúng JDK thay vì JDK mặc định.',
+    'Khai báo env.variables cho cấu hình không nhạy cảm (AWS_REGION, APP_ENV) và env.parameter-store trỏ tới /myapp/db/url. Parameter Store phù hợp cấu hình dạng chuỗi, có version và audit.',
+    'Khai báo env.secrets-manager trỏ ARN secret và JSON key password. Giá trị secret được đưa vào biến môi trường lúc runtime và bị che trong log; không in giá trị này ra.',
+    'Bật cache S3 cho ~/.m2/repository để các build sau không tải lại toàn bộ dependency. Dùng cache namespace riêng khi thay đổi lớn để tránh cache bẩn.',
+    'Trong phase build chạy mvn -B clean verify; phase post_build xuất báo cáo JUnit XML và đóng gói jar. Báo cáo phải đúng format JUnit thì tab Reports mới hiển thị.',
+    'Khai báo artifacts files target/app.jar, discard-paths yes, để artifact nhỏ và đường dẫn ổn định cho stage deploy.',
+    'Gắn service role tối thiểu: ssm:GetParameters (và kms:Decrypt nếu SecureString), secretsmanager:GetSecretValue, quyền đọc/ghi bucket cache và artifact, quyền ghi CloudWatch Logs.',
+    'Nếu build cần kết nối RDS private để chạy integration test, cấu hình VPC và security group. Build trong VPC phải có NAT Gateway hoặc VPC endpoint cho S3, ECR, CloudWatch Logs, SSM, Secrets Manager, nếu không build sẽ treo rồi timeout.',
+    'Chạy build hai lần: lần đầu tải dependency, lần sau kiểm tra log cache và thời gian giảm; mở tab Reports xem số test; tải artifact về kiểm tra.'
+  ],
+  verify: [
+    'Log build hiển thị giá trị parameter bình thường nhưng secret bị che bằng dấu sao; không có mật khẩu thật trong log.',
+    '{{aws codebuild batch-get-builds --ids build-id}} trả về phases SUCCEEDED và thông tin cache hit của lần chạy sau.',
+    'Tab Reports của project hiển thị đúng số test và thời gian chạy; file JUnit XML nằm trong target/surefire-reports.',
+    '{{aws s3 ls s3://artifact-bucket/}} có artifact jar mới, kích thước hợp lý và không chứa thư mục target lồng nhau.'
+  ],
+  cost: 'CodeBuild on-demand khoảng 0.005 USD/phút cho general1.small (tuỳ Region), có Free Tier 100 phút/tháng; S3 cache/artifact và CloudWatch Logs vài cent. Lab dưới 1 USD. Dọn dẹp: xoá CodeBuild project, log group, S3 bucket cache/artifact, SSM parameter, secret (force delete nếu là secret lab) và IAM role.',
+  examTip: `### Bẫy đề thi
+- {{parameter-store}} đọc từ SSM Parameter Store; SecureString cần thêm quyền {{kms:Decrypt}}. Đọc secret từ Secrets Manager phải dùng block {{secrets-manager}}, không trộn với parameter-store.
+- Biến môi trường trong buildspec có giới hạn kích thước; nhiều biến hoặc giá trị dài nên để trong SSM/Secrets Manager thay vì nhồi hết vào env.
+- Build trong VPC mà không có NAT hoặc VPC endpoint sẽ timeout khi tải dependency; đây là lỗi production rất hay gặp.
+- Test report chỉ hiển thị khi file đúng JUnit XML; report group sai đường dẫn thì tab Reports trống dù test đã chạy.`,
+  ref: ['lab-42-lay-thong-tin-xac-thuc-database-an-toan-trong-codebuild-buildspec-bang-secrets-manager', 'lab-85-vuot-gioi-han-bien-moi-truong-trong-codebuild-bang-ssm-parameter-store', 'lab-58-tich-hop-chay-unit-test-va-test-reports-tu-dong-trong-codepipeline-bang-aws-codebuild'],
+},
+{
+  id: 'awslab-dev-003',
+  category: 'dev',
+  title: 'CodeDeploy blue/green và canary cho ECS/Lambda',
+  level: 'senior',
+  minutes: 50,
+  exams: ['dop-c02'],
+  domains: ['dop-d1', 'dop-d3'],
+  services: ['CodeDeploy', 'ECS', 'Lambda', 'Application Load Balancer', 'CloudWatch Alarms'],
+  goal: 'Sau lab này bạn biết dịch chuyển traffic từng phần (canary/linear) cho Lambda alias và ECS task set, gắn CloudWatch alarm để tự rollback. Đây là phần DOP-C02 hỏi rất kỹ vì liên quan trực tiếp đến zero-downtime và tự động phục hồi.',
+  steps: [
+    'Tạo Lambda v1 và alias live; publish version 2. CodeDeploy chỉ dịch chuyển traffic trên alias, không bao giờ tác động trực tiếp vào $LATEST.',
+    'Tạo CodeDeploy application platform Lambda và deployment group trỏ tới alias live, chọn deployment config LambdaCanary10Percent5Minutes.',
+    'Viết AppSpec cho Lambda với hook BeforeAllowTraffic và AfterAllowTraffic gọi một validation function; hook AfterAllowTraffic nên kiểm tra lỗi nghiệp vụ trước khi cho phép 100% traffic.',
+    'Tạo CloudWatch alarm theo dõi Errors hoặc Throttles của alias/version mới và gắn vào deployment group. Nếu alarm đang ở trạng thái ALARM trước khi deploy, deployment sẽ fail ngay.',
+    'Chạy create-deployment; theo dõi alias routing config: 5 phút đầu 10% traffic sang version 2, sau đó 100% nếu không có alarm.',
+    'Làm version 2 trả lỗi hoặc làm validation hook fail; quan sát CodeDeploy rollback alias về version 1 và ghi event tương ứng.',
+    'Với ECS: tạo service sau ALB có hai target group blue/green, một listener production và một listener test; tạo CodeDeploy application platform ECS.',
+    'Tạo deployment group ECS trỏ cluster, service, listener và target group; deploy task definition revision mới, chọn config ECSCanary10Percent5Minutes, quan sát hai task set và trọng số traffic.',
+    'So sánh với rolling update native của ECS: rolling update thay task dần dần, còn blue/green giữ nguyên môi trường cũ để rollback tức thời; CodeDeploy cần thiết khi muốn blue/green có kiểm soát traffic.'
+  ],
+  verify: [
+    '{{aws deploy get-deployment --deployment-id d-XXXX}} có status Succeeded và deploymentStyle là BLUE_GREEN.',
+    '{{aws lambda get-alias --function-name orders --name live}} trong lúc deploy hiển thị RoutingConfig với additionalVersionWeight 0.1, sau đó về 1.0 cho version mới.',
+    '{{aws deploy list-deployment-history --application-name orders-app --deployment-group-name orders-dg}} thấy lần rollback với status Failed và revision cũ.',
+    'Target group blue/green đều healthy trước khi chuyển traffic; alarm chuyển ALARM khi version mới lỗi.'
+  ],
+  cost: 'CodeDeploy miễn phí cho Lambda và ECS; chi phí là Lambda, ECS task, ALB, CloudWatch alarm (0.10 USD/alarm/tháng) và data transfer. Blue/green tạm thời chạy gấp đôi capacity nên kiểm tra quota và chi phí. Dọn dẹp: xoá deployment group/application, alias version cũ, ECS service/task set, ALB, target group, alarm và log group.',
+  examTip: `### Bẫy đề thi
+- Lambda canary/linear chỉ đổi trọng số trên alias; $LATEST không được dùng cho production vì không có version cố định để rollback.
+- ECS blue/green bắt buộc ALB/NLB và hai target group; không hỗ trợ classic load balancer. CodeDeploy quản lý task set thay vì service tự rolling.
+- Deployment config phổ biến: AllAtOnce, Canary10Percent5Minutes, Canary10Percent15Minutes, Linear10PercentEvery1Minute. Đề cho traffic 10% trong 5 phút là canary.
+- CloudWatch alarm phải cùng Region với deployment group; alarm đã ở ALARM trước khi bắt đầu sẽ làm deployment fail ngay. Rollback chỉ đưa traffic về version cũ, không sửa code hay revert migration database.`,
+  ref: ['lab-063-ecs-blue-green', 'lab-064-ecs-canary-pattern', 'lab-40-tu-dong-trien-khai-lambda-an-toan-va-nhanh-nhat-bang-codedeploy-canary10percent5minutes', 'lab-93-trien-khai-canary-10-percent-30-minutes-cho-lambda-bang-aws-sam-va-codedeploy-hooks'],
+},
+{
+  id: 'awslab-dev-004',
+  category: 'dev',
+  title: 'CloudFormation: change set, drift, rollback an toàn',
+  level: 'senior',
+  minutes: 50,
+  exams: ['dop-c02', 'sap-c02'],
+  domains: ['dop-d2', 'sap-d2'],
+  services: ['CloudFormation', 'IAM', 'EC2', 'RDS', 'S3'],
+  goal: 'Sau lab này bạn cập nhật hạ tầng bằng change set, đọc drift, xử lý rollback và bảo vệ tài nguyên bằng stack policy, DeletionPolicy. Đây là nhóm câu DOP-C02 và SAP-C02 về IaC: làm sao thay đổi production mà không xoá nhầm database.',
+  steps: [
+    'Viết template có Parameters Env, Mappings RegionAmi, Conditions IsProd, một EC2, security group và IAM role có tên cố định. Dùng pseudo parameter AWS::Region để chọn AMI đúng Region.',
+    'Tạo stack bằng create-stack; nếu template tạo IAM role có tên thì phải truyền CAPABILITY_NAMED_IAM, nếu không sẽ gặp lỗi InsufficientCapabilities.',
+    'Sửa template: đổi instance type và thêm ingress rule. Tạo change set bằng create-change-set, đọc describe-change-set để xem action Add/Modify/Remove trước khi execute.',
+    'Execute change set và xác nhận stack UPDATE_COMPLETE; so sánh resource trước và sau bằng describe-stack-resources.',
+    'Cố ý đặt AMI ID không tồn tại rồi update-stack; stack sẽ rollback về trạng thái trước. Đọc tab Events để tìm resource gây lỗi và thông báo lỗi gốc.',
+    'Thử update-stack với --disable-rollback để giữ tài nguyên lỗi phục vụ debug; nhớ đây chỉ là thao tác lab, production nên để rollback mặc định.',
+    'Chạy detect-stack-drift, sau đó sửa security group bằng tay ngoài CloudFormation; chạy describe-stack-resource-drifts để thấy trạng thái MODIFIED.',
+    'Thêm DeletionPolicy Retain và UpdateReplacePolicy Retain cho RDS; thêm stack policy deny Update:Replace cho RDS để chặn thay thế ngoài ý muốn.',
+    'Thử update làm thay RDS để thấy stack policy chặn; sau đó delete-stack và kiểm tra RDS vẫn còn nhờ DeletionPolicy Retain, phải xoá tay.'
+  ],
+  verify: [
+    '{{aws cloudformation describe-stacks --stack-name lab-stack}} trả về StackStatus CREATE_COMPLETE hoặc UPDATE_COMPLETE.',
+    '{{aws cloudformation describe-change-set --change-set-name ...}} liệt kê đúng các resource sẽ Add/Modify trước khi execute.',
+    '{{aws cloudformation describe-stack-resource-drifts --stack-name lab-stack}} báo DriftStatus DRIFTED sau khi sửa security group bằng tay.',
+    'Sau delete-stack, {{aws rds describe-db-instances --db-instance-identifier lab-db}} vẫn trả về DB nhờ DeletionPolicy Retain.'
+  ],
+  cost: 'CloudFormation miễn phí, chỉ trả cho tài nguyên tạo ra (EC2, RDS, EBS). RDS chạy vài giờ có thể vài USD nên hạ class nhỏ nhất. Dọn dẹp: delete-stack, xoá RDS retained bằng tay, xoá EBS snapshot nếu có, xoá S3 template, IAM role và log group.',
+  examTip: `### Bẫy đề thi
+- Change set chỉ là bản xem trước, không tự execute và không phát hiện drift. Drift detection là thao tác riêng và cũng không tự sửa.
+- Mặc định update fail sẽ rollback; --disable-rollback giữ trạng thái lỗi để debug, không dùng cho production.
+- Thiếu CAPABILITY_IAM hoặc CAPABILITY_NAMED_IAM gây lỗi InsufficientCapabilities; IAM role có tên cố định cần NAMED_IAM.
+- DeletionPolicy Retain giữ resource khi xoá stack; Snapshot chỉ áp dụng cho resource hỗ trợ snapshot như RDS/EBS. UpdateReplacePolicy xử lý khi resource bị thay thế; stack policy chặn update/replace nhưng không thay IAM permission.`,
+  ref: ['lab-82-dung-cloudformation-change-set-truoc-khi-update-stack', 'lab-83-troubleshoot-cloudformation-stack-rollback', 'lab-127-giu-nguyen-tai-nguyen-de-go-loi-khi-trien-khai-cloudformation-bang-co-disable-rollback', 'lab-97-bao-ve-csdl-rds-trong-cloudformation-bang-deletionpolicy-retain-va-stack-policy'],
+},
+{
+  id: 'awslab-dev-005',
+  category: 'dev',
+  title: 'AWS CDK: synth, bootstrap, diff và deploy',
+  level: 'mid',
+  minutes: 45,
+  exams: ['dop-c02'],
+  domains: ['dop-d2', 'dop-d1'],
+  services: ['AWS CDK', 'CloudFormation', 'S3', 'IAM', 'Lambda'],
+  goal: 'Sau lab này bạn hiểu CDK là lớp lập trình sinh ra CloudFormation, biết construct L1/L2/L3, bootstrap tài khoản và dùng diff trước khi deploy. Đây là câu DOP-C02 về IaC hiện đại: CDK không thay CloudFormation mà tạo template cho CloudFormation chạy.',
+  steps: [
+    'Cài Node.js và AWS CDK CLI bằng npm install -g aws-cdk; chạy cdk --version để kiểm tra. CDK CLI dùng Node, còn ứng dụng CDK có thể viết bằng TypeScript, Java, Python hoặc Go.',
+    'Chạy cdk init app --language java hoặc typescript để tạo project; mở thư mục lib để thấy stack và thư mục bin để thấy app entry point.',
+    'Trong stack, khai báo VPC L2 với maxAzs 2 và natGateways 0 để tiết kiệm chi phí lab; tạo S3 bucket có encryption S3_MANAGED và blockPublicAccess; tạo Lambda function runtime JAVA_21.',
+    'Chạy cdk synth; mở file template JSON trong cdk.out để thấy CDK đã sinh ra CloudFormation resource, IAM role và metadata. Đây là bằng chứng CDK chỉ là công cụ tổng hợp template.',
+    'Chạy cdk bootstrap aws://account/region một lần cho mỗi cặp account/Region; lệnh tạo stack CDKToolkit gồm bucket asset, ECR repository và IAM role để upload code, image.',
+    'Chạy cdk diff để xem thay đổi trước khi deploy, sau đó cdk deploy. Theo dõi stack trong CloudFormation console và xác nhận resource được tạo đúng.',
+    'Đổi memorySize hoặc timeout của Lambda, chạy lại cdk diff thấy action Modify; deploy và kiểm tra cấu hình mới. Thử đổi tên logical ID để thấy resource bị Replace.',
+    'Thêm một custom resource chạy Lambda khi CREATE/UPDATE/DELETE cho việc CloudFormation không hỗ trợ native; hiểu rằng custom resource là code chạy trong lifecycle stack, không phải code chạy mỗi request.',
+    'Chạy cdk destroy để xoá resource của stack; lưu ý stack CDKToolkit của bootstrap vẫn còn và bucket asset có thể còn object.'
+  ],
+  verify: [
+    '{{cdk ls}} liệt kê đúng tên stack; {{cdk synth}} in ra template CloudFormation không lỗi.',
+    '{{cdk diff}} hiển thị đúng resource thay đổi; trong CI có thể dùng {{cdk diff --fail}} để trả exit code khác 0 khi có diff.',
+    '{{aws cloudformation describe-stacks --stack-name CdkLabStack}} trả về CREATE_COMPLETE/UPDATE_COMPLETE.',
+    'Sau cdk destroy, stack biến mất nhưng CDKToolkit vẫn còn; kiểm tra {{aws s3 ls}} bucket asset để thấy tài nguyên bootstrap.'
+  ],
+  cost: 'CDK và CloudFormation miễn phí; bootstrap tạo S3 bucket và ECR repository gần như không tốn phí nếu không lưu nhiều. Chi phí chính là resource trong stack (Lambda, S3, VPC endpoint nếu có). Dọn dẹp: cdk destroy, xoá object trong bucket asset nếu muốn, xoá stack CDKToolkit nếu không dùng nữa, xoá log group và IAM role do app tạo.',
+  examTip: `### Bẫy đề thi
+- CDK không phải runtime và không thay CloudFormation; nó synth ra template rồi CloudFormation deploy. Drift vẫn xảy ra và vẫn phải detect riêng.
+- Construct L1 là CfnXxx map 1-1 với resource; L2 là construct curated như Vpc, Function; L3 là pattern như ApplicationLoadBalancedFargateService.
+- Bootstrap cần một lần mỗi account/Region trước khi deploy stack có asset (Lambda code, Docker image); thiếu bootstrap sẽ lỗi khi upload asset.
+- cdk diff chỉ so template với stack, không thay thế review nghiệp vụ; dùng --fail trong CI để chặn thay đổi ngoài ý muốn. Custom resource chạy trong lifecycle CloudFormation, không phải code xử lý request người dùng.`,
+  ref: ['lab-116-quan-ly-vong-doi-tai-nguyen-tu-dong-bang-aws-cdk-custom-resources-va-lambda'],
+},
+{
+  id: 'awslab-dev-006',
+  category: 'dev',
+  title: 'AWS SAM: build, local test, package và deploy serverless',
+  level: 'mid',
+  minutes: 45,
+  exams: ['dop-c02', 'sap-c02'],
+  domains: ['dop-d1', 'dop-d2'],
+  services: ['AWS SAM', 'Lambda', 'API Gateway', 'CloudFormation', 'DynamoDB'],
+  goal: 'Sau lab này bạn đóng gói và triển khai ứng dụng serverless bằng SAM CLI, chạy thử API/Lambda ở máy local và quản lý nhiều môi trường bằng samconfig.toml. Đây là cách nhanh nhất để làm lab Lambda + API Gateway mà vẫn hiểu bên dưới là CloudFormation.',
+  steps: [
+    'Chạy sam init --runtime java21 --app-template hello-world để tạo project mẫu; mở template.yaml xem AWS::Serverless::Function, sự kiện Api và bảng DynamoDB.',
+    'Chạy sam validate --lint để bắt lỗi schema sớm; chạy sam build để Maven/Gradle build và đóng gói artifact vào .aws-sam/build.',
+    'Chạy sam local start-api --port 3000 và curl endpoint để thử nghiệm; dùng sam local invoke với file events/event.json để kiểm tra một event cụ thể.',
+    'Tạo bucket S3 để chứa artifact; chạy sam package --s3-bucket bucket --output-template-file packaged.yaml. Lệnh này upload code và viết lại template trỏ tới S3.',
+    'Chạy sam deploy --guided lần đầu để tạo changeset, đặt tên stack và lưu cấu hình vào samconfig.toml; xác nhận deploy tạo Lambda, API Gateway và IAM role.',
+    'Tạo thêm môi trường prod bằng samconfig.toml với parameter khác nhau (bảng DynamoDB, memory, log level) và deploy bằng sam deploy --config-env prod.',
+    'Dùng Globals để đặt timeout, memory, tracing cho mọi function; override ở từng function khi cần. Bật Tracing Active để có X-Ray.',
+    'Trong lúc phát triển, dùng sam sync --watch để đẩy thay đổi nhanh; chỉ dùng cho dev vì bỏ qua changeset và một số bước kiểm soát.',
+    'Gọi API bằng curl, xem log CloudWatch và trace X-Ray; cuối cùng sam delete --stack-name để dọn tài nguyên.'
+  ],
+  verify: [
+    '{{sam validate --lint}} không báo lỗi; {{sam build}} tạo artifact trong .aws-sam/build.',
+    'curl tới endpoint local trả về JSON đúng; {{sam local invoke}} chạy function với event mẫu và in log.',
+    '{{aws cloudformation describe-stacks --stack-name sam-lab}} trả về CREATE_COMPLETE; API Gateway endpoint trả 200 sau deploy.',
+    'CloudWatch Logs có log của function; X-Ray service map có node API Gateway và Lambda nếu bật tracing.'
+  ],
+  cost: 'SAM CLI miễn phí; Lambda và API Gateway có Free Tier, S3 artifact và CloudWatch Logs vài cent. Lab dưới 1 USD. Dọn dẹp: sam delete --stack-name, xoá bucket artifact nếu còn object, xoá log group, DynamoDB table nếu template không xoá, và IAM role do stack tạo.',
+  examTip: `### Bẫy đề thi
+- SAM là transform AWS::Serverless-2016-10-31 trên CloudFormation; khi deploy, SAM mở rộng thành Lambda, API Gateway, IAM role và event source.
+- sam package upload code lên S3 và viết lại template; sam deploy dùng template đã đóng gói. Không upload code thủ công rồi mong SAM tự tìm.
+- sam local dùng Docker để mô phỏng Lambda nhưng không giống 100% (IAM, network, cold start, service emulation); đừng dùng làm bằng chứng duy nhất cho production.
+- sam sync bỏ qua changeset, chỉ dùng dev; production dùng sam deploy để có changeset và rollback. Globals áp dụng mặc định cho mọi function, giá trị ở function thắng Globals.`,
+  ref: ['lab-115-dong-goi-va-trien-khai-ung-dung-serverless-bang-aws-sam-cli-sam-package', 'lab-118-kiem-thu-cuc-bo-rest-api-va-lambda-bang-aws-sam-cli-sam-local-start-api', 'lab-52-tang-toc-trien-khai-code-lambda-tren-cloud-bang-aws-sam-accelerate-voi-sam-sync-watch'],
+},
+{
+  id: 'awslab-dev-007',
+  category: 'dev',
+  title: 'API Gateway + Lambda: proxy, stage, cache và timeout',
+  level: 'senior',
+  minutes: 50,
+  exams: ['sap-c02', 'dop-c02'],
+  domains: ['sap-d2', 'dop-d1'],
+  services: ['API Gateway', 'Lambda', 'CloudWatch', 'IAM'],
+  goal: 'Sau lab này bạn nối API Gateway với Lambda đúng kiểu proxy, tách môi trường bằng stage, bật cache và xử lý giới hạn timeout 29 giây. Đây là bài SAP-C02 về thiết kế API serverless và DOP-C02 về vận hành, logging, throttling.',
+  steps: [
+    'Tạo Lambda trả JSON theo format proxy (statusCode, headers, body) và đọc biến môi trường APP_ENV. Test function trực tiếp trước khi nối API.',
+    'Tạo REST API, resource /orders, method POST, integration Lambda proxy. Deploy stage dev và lấy invoke URL.',
+    'Cấp quyền cho API Gateway gọi Lambda bằng add-permission với source-arn giới hạn đúng API/stage; thiếu quyền sẽ gặp 500 hoặc 403 khi gọi.',
+    'Tạo hai alias dev và prod cho Lambda; dùng stage variable lambdaAlias trong integration URI để cùng một API trỏ alias khác nhau theo stage.',
+    'Tạo model JSON schema cho body và bật request validator; gửi payload thiếu field để nhận 400 trước khi Lambda chạy, giảm chi phí và lỗi.',
+    'Bật cache cho stage với dung lượng 0.5 GB, TTL 300 giây; gọi cùng request hai lần và xem metric CacheHitCount. Lưu ý cache mặc định chỉ áp dụng cho GET, muốn cache POST phải bật riêng.',
+    'Tạo usage plan, API key và throttling rate/burst; gửi request vượt ngưỡng để thấy 429 và kiểm tra metric ThrottleCount.',
+    'Với tác vụ dài hơn 29 giây, không tăng timeout integration vô hạn; chuyển sang gọi Lambda bất đồng bộ bằng header X-Amz-Invocation-Type Event hoặc đẩy message vào SQS/Step Functions.',
+    'Bật access log dạng JSON và X-Ray tracing; gửi request lỗi để xem log có requestId, status, integrationLatency và trace nối sang Lambda.'
+  ],
+  verify: [
+    'curl POST tới invoke URL trả 200 và JSON đúng; payload thiếu field trả 400 do request validation.',
+    'CloudWatch metric CacheHitCount tăng sau lần gọi thứ hai; thời gian phản hồi lần sau thấp hơn.',
+    'Gửi request vượt rate limit thấy 429 và metric ThrottleCount tăng; usage plan hiển thị API key đã dùng.',
+    'Log group access log có trường requestId, status, integrationLatency; X-Ray trace nối API Gateway với Lambda.'
+  ],
+  cost: 'REST API khoảng 3.50 USD/triệu request; cache tính theo giờ (0.5 GB vài cent/giờ); Lambda và CloudWatch Logs thêm vài cent. Lab dưới 1 USD. Dọn dẹp: xoá API và stage (cache bị xoá theo stage), usage plan/API key, Lambda alias/version, log group, alarm và IAM role.',
+  examTip: `### Bẫy đề thi
+- REST API và HTTP API khác nhau: HTTP API rẻ, độ trễ thấp nhưng thiếu API key, usage plan, caching, request validation. Đề yêu cầu các tính năng đó thì chọn REST API.
+- Lambda proxy chuyển nguyên request và yêu cầu response đúng statusCode/body; non-proxy cần mapping template VTL. Trả sai format proxy thường gây 502.
+- Timeout tích hợp tối đa 29 giây. Việc dài phải dùng async invocation, SQS hoặc Step Functions; tăng timeout Lambda không giải quyết giới hạn API Gateway.
+- 429 là throttling, 502 thường do Lambda trả sai format hoặc crash, 504 do timeout. Cache theo stage, TTL mặc định 300 giây và mặc định chỉ áp dụng cho GET.`,
+  ref: ['lab-37-tach-biet-moi-truong-test-va-prod-trong-api-gateway-bang-stage-variables-va-lambda-integration', 'lab-100-tang-toc-phan-hoi-api-thong-ke-cong-cong-bang-api-caching-tren-api-gateway', 'lab-47-kiem-tra-hop-le-request-payload-tai-edge-bang-api-gateway-request-validation-va-models', 'lab-79-xu-ly-timeout-api-gateway-bang-cach-kich-hoat-lambda-bat-dong-bo-qua-x-amz-invocation-type'],
+},
+{
+  id: 'awslab-dev-008',
+  category: 'dev',
+  title: 'SQS + SNS fan-out: FIFO, filter policy và DLQ',
+  level: 'senior',
+  minutes: 50,
+  exams: ['sap-c02', 'dop-c02'],
+  domains: ['sap-d2', 'dop-d3'],
+  services: ['SNS', 'SQS', 'Lambda', 'DynamoDB', 'CloudWatch'],
+  goal: 'Sau lab này bạn thiết kế fan-out SNS → nhiều SQS, lọc message bằng filter policy, cấu hình DLQ và xử lý trùng lặp/giữ thứ tự với FIFO. Đây là nền tảng câu SAP-C02 về decoupling và DOP-C02 về vận hành hàng đợi.',
+  steps: [
+    'Tạo SNS topic order-created; tạo hai SQS queue email và analytics; subscribe cả hai vào topic và bật raw message delivery để consumer nhận body gốc thay vì envelope SNS.',
+    'Gắn filter policy cho subscription analytics, ví dụ chỉ nhận eventType ORDER_CREATED. Message phải có message attribute tương ứng vì filter policy mặc định đánh giá attribute, không đánh giá body.',
+    'Tạo DLQ cho queue email và gắn redrive policy maxReceiveCount 3; đặt retention hợp lý để message lỗi còn đủ thời gian điều tra.',
+    'Tạo Lambda consumer với event source mapping batch size 10, visibility timeout lớn hơn 6 lần timeout Lambda, và bật ReportBatchItemFailures để chỉ retry message lỗi trong batch.',
+    'Publish một message; xác nhận cả hai queue nhận, sau đó publish event khác loại để thấy queue analytics không nhận nhờ filter policy.',
+    'Ép Lambda lỗi ba lần với cùng message; message chuyển sang DLQ. Dùng start-message-move-task để redrive về queue chính sau khi sửa code.',
+    'Gửi lặp cùng một đơn hàng vào standard queue; thêm bảng DynamoDB idempotency theo orderId để consumer bỏ qua lần xử lý trùng, vì standard queue chỉ đảm bảo at-least-once.',
+    'Tạo SNS FIFO topic và SQS FIFO queue, publish với MessageGroupId theo customer và dedup ID; kiểm tra các message cùng group được xử lý đúng thứ tự.',
+    'Tạo CloudWatch alarm cho ApproximateNumberOfMessagesVisible và AgeOfOldestMessage; alarm DLQ khi có message để không bỏ quên lỗi.'
+  ],
+  verify: [
+    '{{aws sqs get-queue-attributes --queue-url ... --attribute-names All}} thấy RedrivePolicy trỏ DLQ và VisibilityTimeout đúng.',
+    '{{aws sqs receive-message --queue-url ...}} nhận message sau khi publish; queue không khớp filter policy không nhận.',
+    'Sau ba lần lỗi, {{aws sqs get-queue-attributes --queue-url dlq-url --attribute-names ApproximateNumberOfMessages}} lớn hơn 0.',
+    'Với FIFO, thứ tự receive-message khớp thứ tự publish trong cùng MessageGroupId; metric queue depth giảm dần.'
+  ],
+  cost: 'SQS và SNS có Free Tier 1 triệu request/tháng; Lambda, DynamoDB, CloudWatch vài cent. Lab gần như 0 USD. Dọn dẹp: xoá SQS queue, DLQ, SNS topic và subscription, Lambda event source mapping, DynamoDB table, CloudWatch alarm và log group.',
+  examTip: `### Bẫy đề thi
+- SNS là pub/sub push, SQS là queue pull. Fan-out chuẩn là một SNS topic → nhiều SQS queue để mỗi consumer buffer và scale độc lập.
+- Standard queue at-least-once và best-effort ordering; FIFO đảm bảo thứ tự theo MessageGroupId và chống trùng trong 5 phút, nhưng throughput thấp hơn và cần dedup ID.
+- Visibility timeout phải lớn hơn thời gian xử lý; nếu không message bị giao lại và consumer xử lý trùng. Lambda cần timeout queue lớn hơn timeout function.
+- DLQ chỉ nhận sau maxReceiveCount; luôn tạo alarm DLQ và quy trình redrive. Filter policy mặc định dựa trên message attributes, không dựa trên body. SQS message tối đa 256 KB, payload lớn dùng extended client qua S3.`,
+  ref: ['lab-94-tao-sns-topic-fan-out-sang-sqs-lambda', 'lab-110-fan-out-tin-nhan-bao-toan-thu-tu-va-chong-trung-lap-bang-sns-fifo-va-sqs-fifo', 'lab-105-dam-bao-thu-tu-va-chong-trung-lap-don-hang-bang-amazon-sqs-fifo-queue-va-lambda', 'lab-112-xu-ly-loi-bat-dong-bo-cho-aws-lambda-bang-dead-letter-queue-dlq-voi-amazon-sqs'],
+},
+{
+  id: 'awslab-dev-009',
+  category: 'dev',
+  title: 'Step Functions: Standard vs Express, Retry/Catch và saga',
+  level: 'senior',
+  minutes: 50,
+  exams: ['sap-c02', 'dop-c02'],
+  domains: ['sap-d2', 'dop-d3'],
+  services: ['Step Functions', 'Lambda', 'IAM', 'CloudWatch'],
+  goal: 'Sau lab này bạn viết state machine điều phối nhiều bước, cấu hình Retry/Catch, Wait, Choice và hiểu khi nào dùng Standard hay Express. Đây là câu SAP-C02 về orchestration và DOP-C02 về xử lý lỗi phân tán.',
+  steps: [
+    'Viết Amazon States Language JSON cho workflow Reserve → Charge → Ship, mỗi Task gọi một Lambda. Bắt đầu bằng Pass state để kiểm tra input/output trước khi nối Lambda.',
+    'Thêm Retry cho lỗi tạm thời như States.Timeout hoặc Lambda.ServiceException với IntervalSeconds 2, MaxAttempts 3, BackoffRate 2.0.',
+    'Thêm Catch chuyển sang nhánh Compensate khi Charge thất bại; Compensate gọi Lambda Refund để hoàn tiền. Đây là saga pattern, không phải transaction database.',
+    'Thêm Choice theo amount lớn hơn 1000 để gọi bước phê duyệt, và Wait 30 giây để mô phỏng rate limit của API bên thứ ba.',
+    'Tạo IAM role cho state machine có quyền lambda:InvokeFunction trên đúng function ARN và quyền ghi CloudWatch Logs; thiếu quyền sẽ fail ngay ở Task đầu.',
+    'Tạo state machine bằng create-state-machine, chạy start-execution với input JSON; mở execution history để xem từng state, thời gian và output.',
+    'Ép Lambda Charge lỗi để quan sát Retry chạy lại, sau đó Catch chuyển sang Compensate; kiểm tra execution kết thúc Failed nhưng đã hoàn tiền.',
+    'Chọn loại Standard cho workflow dài, cần exactly-once; chọn Express cho lượng lớn, thời gian ngắn. Ghi lại khác biệt về thời lượng tối đa và cách tính phí.',
+    'Bật logging CloudWatch và tạo alarm cho ExecutionFailed, ExecutionTimedOut để phát hiện workflow kẹt hoặc lỗi hàng loạt.'
+  ],
+  verify: [
+    '{{aws stepfunctions describe-execution --execution-arn ...}} trả về status SUCCEEDED hoặc FAILED đúng kịch bản.',
+    '{{aws stepfunctions get-execution-history --execution-arn ...}} thấy các event TaskStateEntered/Exited, Retry, Catch chuyển nhánh.',
+    'CloudWatch Logs có log execution; metric ExecutionFailed tăng khi ép lỗi không có Catch.',
+    'Với Express, kiểm tra log group tương ứng và thời gian execution ngắn hơn; Standard giữ history lâu hơn.'
+  ],
+  cost: 'Standard khoảng 0.025 USD cho 1.000 state transition, có Free Tier 4.000 transition/tháng; Express khoảng 1 USD/triệu request cộng phí duration. Lambda và CloudWatch Logs thêm vài cent. Lab dưới 1 USD. Dọn dẹp: xoá state machine, execution history, Lambda function, IAM role, log group và alarm.',
+  examTip: `### Bẫy đề thi
+- Standard chạy tới 1 năm, exactly-once, phù hợp workflow dài và cần audit; Express tối đa 5 phút, at-least-once, throughput cao, rẻ hơn cho volume lớn.
+- Step Functions chỉ điều phối, không chạy code; Task gọi Lambda, ECS, SNS, SQS hoặc API. Đừng chọn Step Functions thay cho compute.
+- Retry xử lý lỗi tạm thời; Catch xử lý sau khi retry hết hoặc lỗi không retry. Retry có thể chạy lại side effect nên Lambda phải idempotent.
+- Human approval dùng waitForTaskToken cùng SendTaskSuccess/SendTaskHeartbeat, không polling bằng Wait dài. Saga dùng compensating action khi bước sau fail, không có rollback tự động cho giao dịch đã commit ở service khác.`,
+  ref: ['lab-66-dieu-phoi-rate-limit-cua-api-ben-thu-ba-bang-aws-step-functions-wait-state'],
+},
+{
+  id: 'awslab-dev-010',
+  category: 'dev',
+  title: 'Secrets Manager: rotation cho RDS và đọc secret an toàn',
+  level: 'senior',
+  minutes: 50,
+  exams: ['sap-c02', 'dop-c02'],
+  domains: ['sap-d1', 'dop-d6'],
+  services: ['Secrets Manager', 'RDS', 'Lambda', 'KMS', 'EventBridge'],
+  goal: 'Sau lab này bạn bật rotation cho mật khẩu RDS, hiểu Lambda rotation bốn bước và cách ứng dụng đọc secret lúc runtime thay vì nhúng vào image. Đây là câu SAP-C02 bảo mật và DOP-C02 vận hành secret, rất hay gặp khi hỏi Parameter Store so với Secrets Manager.',
+  steps: [
+    'Tạo RDS hoặc Aurora PostgreSQL nhỏ trong private subnet; ghi lại endpoint, port, database name và security group.',
+    'Tạo secret dạng JSON gồm username, password, host, port, dbname; hoặc bật tích hợp Secrets Manager ngay khi tạo RDS để AWS sinh secret và cấu hình rotation.',
+    'Bật rotation với chu kỳ 30 ngày, chọn Lambda rotation template cho RDS. Lambda rotation phải chạy trong VPC truy cập được RDS và có security group phù hợp.',
+    'Gắn IAM role cho Lambda rotation: secretsmanager:GetSecretValue, PutSecretValue, DescribeSecret, kms:Decrypt và rds:DescribeDBInstances. Thiếu quyền KMS là lỗi rất hay gặp.',
+    'Hiểu bốn bước: createSecret tạo phiên bản AWSPENDING, setSecret đổi mật khẩu trong database, testSecret kiểm tra đăng nhập, finishSecret chuyển AWSPENDING thành AWSCURRENT.',
+    'Ép rotation ngay bằng rotate-secret; xem list-secret-version-ids có các stage AWSPENDING và AWSCURRENT; thử đăng nhập bằng mật khẩu mới và xác nhận mật khẩu cũ không còn dùng được.',
+    'Sửa ứng dụng Java đọc secret bằng SDK lúc khởi động hoặc theo TTL, cache ngắn trong bộ nhớ; không đóng gói secret vào image, không để trong biến môi trường tĩnh của task definition.',
+    'Với cross-account, gắn resource policy cho secret và key policy cho KMS CMK để role account kia được decrypt; kiểm tra cả hai phía vì thiếu một phía vẫn AccessDenied.',
+    'Tạo EventBridge rule bắt sự kiện CloudTrail RotateSecret thất bại để gửi SNS; rotation im lặng thất bại là sự cố production rất khó phát hiện.'
+  ],
+  verify: [
+    '{{aws secretsmanager describe-secret --secret-id lab/db}} trả về RotationEnabled true và RotationLambdaARN đúng function.',
+    '{{aws secretsmanager list-secret-version-ids --secret-id lab/db}} thấy version có staging label AWSCURRENT và AWSPENDING trong lúc rotate.',
+    'Kết nối psql/mysql bằng mật khẩu mới thành công; mật khẩu cũ bị từ chối sau khi rotation hoàn tất.',
+    'CloudTrail có event RotateSecret; alarm/EventBridge nhận thông báo khi cố ý làm rotation fail (ví dụ sai security group).'
+  ],
+  cost: 'Secrets Manager khoảng 0.40 USD/secret/tháng cộng 0.05 USD cho 10.000 API call; Lambda rotation gần như miễn phí; RDS là chi phí chính. Dọn dẹp: xoá secret với ForceDeleteWithoutRecovery, xoá Lambda rotation, EventBridge rule, RDS instance và log group.',
+  examTip: `### Bẫy đề thi
+- Secrets Manager có rotation native; Parameter Store SecureString không tự rotate, muốn rotate phải tự viết Lambda/EventBridge. Đề hỏi tự động xoay mật khẩu định kỳ thì chọn Secrets Manager.
+- Không nhúng secret vào biến môi trường tĩnh của Lambda/ECS; đọc runtime bằng SDK và cache có TTL để giảm API call nhưng vẫn nhận giá trị mới.
+- Lambda rotation phải có network tới database; RDS private subnet cần Lambda trong VPC, security group đúng và NAT/VPC endpoint nếu cần gọi AWS API.
+- Multi-user rotation luân phiên hai user database để tránh downtime. KMS CMK cần quyền cho cả rotation role và application role; cross-account cần cả secret resource policy và key policy.`,
+  ref: ['lab-75-rotate-secret-trong-aws-secrets-manager', 'lab-22-tu-dong-xoay-vong-thong-tin-dang-nhap-database-dinh-ky-bang-aws-secrets-manager', 'lab-113-tu-dong-xoay-vong-thong-tin-xac-thuc-amazon-aurora-postgresql-bang-aws-secrets-manager'],
+},
+{
+  id: 'awslab-dev-011',
+  category: 'dev',
+  title: 'X-Ray: trace phân tán cho Java trên Lambda/ECS',
+  level: 'mid',
+  minutes: 40,
+  exams: ['dop-c02', 'sap-c02'],
+  domains: ['dop-d4', 'sap-d3'],
+  services: ['AWS X-Ray', 'Lambda', 'ECS', 'API Gateway', 'CloudWatch'],
+  goal: 'Sau lab này bạn bật tracing cho một request đi qua API Gateway, Lambda và database, đọc service map để tìm nút thắt và dùng annotation để lọc trace. Đây là câu DOP-C02 monitoring: phân biệt trace với log/metric và biết khi nào cần X-Ray daemon.',
+  steps: [
+    'Bật Active tracing cho Lambda và API Gateway stage; với ECS/EC2 phải chạy X-Ray daemon như sidecar hoặc process phụ lắng nghe UDP cổng 2000.',
+    'Thêm AWS X-Ray SDK for Java vào ứng dụng, cấu hình recorder và servlet filter để mỗi request tạo một segment. Với Spring có thể dùng filter/interceptor tương ứng.',
+    'Tạo subsegment cho lời gọi HTTP, SQL, SQS hoặc S3; subsegment giúp biết thời gian nằm ở dependency nào thay vì chỉ thấy tổng thời gian Lambda.',
+    'Gắn annotation cho các trường cần tìm kiếm như orderId, customerTier; annotation được index và dùng trong filter expression. Metadata chỉ hiển thị, không query được.',
+    'Gắn IAM role quyền xray:PutTraceSegments và xray:PutTelemetryRecords; thiếu quyền thì SDK gửi trace thất bại nhưng ứng dụng vẫn chạy, rất dễ bỏ sót.',
+    'Hiểu sampling mặc định khoảng 1 request/giây cộng 5% request còn lại; tạo custom sampling rule theo URL hoặc theo service để tăng mẫu khi điều tra sự cố.',
+    'Tạo traffic thành công và traffic lỗi; mở service map để thấy node lỗi, latency và edge giữa các service.',
+    'Mở một trace chậm, xem timeline để tìm subsegment chiếm nhiều thời gian nhất; tạo group với filter expression annotation để theo dõi nhóm request đó.',
+    'So sánh với ADOT/OpenTelemetry: ADOT thu thập trace theo chuẩn mở rồi gửi X-Ray; X-Ray vẫn là backend hiển thị service map và trace.'
+  ],
+  verify: [
+    '{{aws xray get-service-graph --start-time ... --end-time ...}} trả về các node API Gateway, Lambda và dependency.',
+    '{{aws xray get-trace-summaries --start-time ... --end-time ...}} có trace với duration và error flag.',
+    'Service map hiển thị edge lỗi màu đỏ khi cố ý làm downstream fail; trace timeline chỉ ra subsegment chậm.',
+    'CloudWatch Logs của Lambda có trace ID; header X-Amzn-Trace-Id xuất hiện trong log/response để nối trace.'
+  ],
+  cost: 'X-Ray có Free Tier 100.000 trace ghi mỗi tháng và 1.000.000 trace đọc; vượt thì khoảng 5 USD/triệu trace ghi. Daemon và SDK miễn phí; Lambda/ECS là chi phí chính. Dọn dẹp: tắt tracing trên Lambda/API Gateway/ECS, xoá sampling rule, group, log group và daemon task.',
+  examTip: `### Bẫy đề thi
+- EC2/ECS cần X-Ray daemon; Lambda đã tích hợp sẵn, chỉ cần bật Active tracing. Thiếu daemon hoặc thiếu IAM PutTraceSegments thì trace mất dù ứng dụng vẫn chạy.
+- Sampling không trace 100% request. Mặc định khoảng 1 request/giây cộng 5%; đề hỏi giảm chi phí thì điều chỉnh sampling, không tắt hẳn.
+- Annotation được index để filter; metadata không index. Dùng annotation cho orderId, tenant, errorCode thay vì nhét tất cả vào metadata.
+- Trace gồm segment và subsegment; service map do X-Ray dựng từ trace. API Gateway, Lambda và SQS truyền header X-Amzn-Trace-Id để nối trace xuyên service. X-Ray khác CloudWatch Logs/Metrics: log cho biết sự kiện, metric cho biết xu hướng, trace cho biết request chậm ở đâu.`,
+  ref: ['lab-68-phan-tich-nghen-hieu-nang-he-thong-phan-tan-lambda-bang-aws-x-ray-trace-segments', 'lab-88-tracing-ung-dung-python-tren-ec2-bang-aws-x-ray-daemon-va-x-ray-sdk', 'lab-44-trien-khai-aws-x-ray-daemon-sidecar-container-tren-ecs-fargate-de-trace-loi-microservices'],
+},
+{
+  id: 'awslab-dev-012',
+  category: 'dev',
+  title: 'Cognito: user pool, identity pool và API Gateway authorizer',
+  level: 'senior',
+  minutes: 50,
+  exams: ['sap-c02', 'dop-c02'],
+  domains: ['sap-d1', 'dop-d6'],
+  services: ['Cognito', 'API Gateway', 'IAM', 'S3', 'Lambda'],
+  goal: 'Sau lab này bạn phân biệt user pool (xác thực, phát JWT) với identity pool (đổi token thành AWS credentials), gắn authorizer cho API Gateway và cấp quyền S3 theo danh tính. Đây là câu SAP-C02 về xác thực ứng dụng và DOP-C02 về bảo mật API.',
+  steps: [
+    'Tạo user pool, app client public không có client secret cho SPA/mobile; bật đăng nhập email, password policy và MFA tuỳ chọn. App client secret không được nhúng trong ứng dụng chạy trên trình duyệt.',
+    'Tạo domain hosted UI với callback URL localhost; cấu hình Google làm social identity provider và map attribute email, name từ Google vào user pool.',
+    'Đăng ký, xác nhận email, đăng nhập và lấy ID token, access token, refresh token; decode payload để xem sub, email, cognito:groups và thời hạn token.',
+    'Tạo API Gateway REST API và Cognito authorizer trỏ user pool; gắn authorizer cho method. Gọi không có token nhận 401, có token hợp lệ nhận 200.',
+    'Trong Lambda proxy, đọc claim từ requestContext.authorizer.claims để lấy sub/email; không tin header do client tự gửi vì đã bị authorizer kiểm tra.',
+    'Tạo identity pool, thêm user pool làm identity provider; tạo role authenticated và unauthenticated với quyền khác nhau.',
+    'Dùng get-id và get-credentials-for-identity để đổi token thành AWS credentials tạm thời; dùng credentials gọi S3 với prefix theo identity id.',
+    'Test khách chưa đăng nhập chỉ đọc được bucket public hoặc bị từ chối; user đã đăng nhập ghi được vào prefix của chính mình nhờ IAM policy dùng biến cognito-identity.amazonaws.com:sub.',
+    'Thu hồi refresh token, xoá user và kiểm tra access token cũ vẫn dùng được đến khi hết hạn; thiết kế API cần kiểm tra nhóm/quyền ở server cho thao tác nhạy cảm.'
+  ],
+  verify: [
+    '{{aws cognito-idp admin-get-user --user-pool-id ... --username ...}} trả về trạng thái CONFIRMED và attribute email.',
+    '{{aws cognito-identity get-id --identity-pool-id ... --logins ...}} và {{aws cognito-identity get-credentials-for-identity}} trả về AccessKeyId, SecretKey, SessionToken.',
+    'curl API không token trả 401; curl với header Authorization Bearer ID-token trả 200 và Lambda thấy đúng sub.',
+    'S3 PutObject vào prefix của identity khác bị AccessDenied; prefix của chính identity thành công.'
+  ],
+  cost: 'Cognito có Free Tier theo số MAU hàng tháng, lab vài user gần như 0 USD; API Gateway, Lambda, S3 và CloudWatch vài cent. Dọn dẹp: xoá user pool (và domain), identity pool, app client, IAM role authenticated/unauthenticated, API Gateway, Lambda, S3 object và log group.',
+  examTip: `### Bẫy đề thi
+- User pool là authentication (bạn là ai) và phát JWT; identity pool là authorization cho AWS, đổi token thành credentials tạm thời. Đừng nhầm hai khái niệm.
+- API Gateway Cognito authorizer kiểm tra JWT; REST API thường dùng ID token, HTTP API JWT authorizer cấu hình audience/client_id và dùng access token. Chọn đúng loại token theo loại API.
+- Identity pool role có trust policy gắn với identity pool; authenticated và unauthenticated role phải tách quyền, không cấp AdministratorAccess cho guest. Cognito groups map được sang IAM role để phân quyền.
+- Social IdP như Google federation vào user pool, không tự cấp AWS credentials. Access token và ID token mặc định khoảng 1 giờ, refresh token khoảng 30 ngày; access token đã phát không thu hồi ngay, chỉ thu hồi được refresh token.`,
+  ref: ['lab-04-tich-hop-dang-ky-va-dang-nhap-bang-social-identity-provider-voi-amazon-cognito-user-pools', 'lab-08-phan-quyen-guest-va-authenticated-user-bang-amazon-cognito-identity-pools-va-iam-roles', 'lab-24-xay-dung-api-luu-tru-anh-serverless-voi-api-gateway-cognito-authorizer-s3-va-dynamodb'],
+},
 );
