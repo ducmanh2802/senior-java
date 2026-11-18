@@ -2538,6 +2538,7 @@ window.DATA_INDEX = {
     {"id":"lesson-api-009","track":"api","order":9,"title":"ETag + If-Match: conditional GET/PUT và chặn lost update (412/428)","level":"senior","minutes":45},
     {"id":"lesson-api-010","track":"api","order":10,"title":"Idempotency từ gốc: vì sao POST phải idempotent và kho ConcurrentHashMap chống request song song","level":"senior","minutes":40},
     {"id":"lesson-api-011","track":"api","order":11,"title":"Token bucket từ gốc: công thức nạp token, chi phí mỗi request và cài đặt thread-safe","level":"senior","minutes":40},
+    {"id":"lesson-api-012","track":"api","order":12,"title":"Idempotency-Key end-to-end","level":"senior","minutes":40},
     {"id":"lesson-devops-001","track":"devops","order":1,"title":"JVM trong container: MaxRAMPercentage, CPU limit và sizing heap/thread pool","level":"mid","minutes":30},
     {"id":"lesson-devops-002","track":"devops","order":2,"title":"Liveness, readiness, startup probe và state machine graceful shutdown","level":"mid","minutes":30},
     {"id":"lesson-devops-003","track":"devops","order":3,"title":"Rolling, blue-green, canary: hash ổn định chia traffic và tự rollback theo error rate","level":"senior","minutes":35},

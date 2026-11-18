@@ -4036,4 +4036,132 @@ Truyền {{nowMillis}} vào cho phép dựng chính xác các mốc 0, 500, 1000
   related: ['api-019', 'api-036', 'api-057'],
   tags: ['rate limiting', 'token bucket', 'thread-safe', 'Retry-After', 'cost', 'fake clock'],
 },
+{
+  id: 'lesson-api-012',
+  track: 'api',
+  order: 12,
+  title: 'Idempotency-Key end-to-end',
+  level: 'senior',
+  minutes: 40,
+  goals: ['Thiết kế Idempotency-Key', 'Lưu kết quả theo key', 'Xử lý request trùng đang chạy', 'TTL và unique constraint'],
+  body: `### Vấn đề
+Client timeout sau POST thanh toán không biết server đã xử lý chưa. Idempotency-Key nhận diện request trùng và cho phép replay kết quả.
+
+### Hợp đồng
+Key mới chạy nghiệp vụ và lưu status + body. Key cũ cùng body replay. Key cũ khác body trả 422. Key đang chạy trả 409. TTL thường 24h. Khác unique constraint ở chỗ lưu response để replay.
+
+### Chi tiết cơ chế
+Client sinh UUID một lần cho một thao tác logic, gửi trong header {{Idempotency-Key}}. Server lưu kết quả theo key trong phạm vi (tenant, endpoint, key). Khi request trùng đến, server không chạy lại nghiệp vụ mà trả nguyên status và body đã lưu. Nếu body khác, trả 422 IDEMPOTENCY_KEY_REUSED. Nếu request đầu chưa xong, trả 409 REQUEST_IN_PROGRESS.
+
+### TTL và phạm vi
+Key phải unique trong phạm vi (tenant, endpoint, key). TTL thường 24 giờ; phải dài hơn cửa sổ retry của client. Body fingerprint là hash raw body; client retry phải byte-identical.
+
+### Lưu ở đâu
+DB với unique index trên (scope, key) cho thanh toán; Redis cho throughput cao. State machine: ghi IN_PROGRESS trước, gọi gateway, rồi DONE + response. Crash giữa chừng do job đối soát xử lý.
+
+### Khác unique constraint
+Unique constraint ngăn trùng dữ liệu (ví dụ mã tài khoản), nhưng không lưu response để replay. Idempotency key lưu cả status và body, nên client nhận đúng kết quả gốc.
+
+### Liên hệ phỏng vấn
+Interviewer hỏi xử lý song song, TTL, crash. Trả lời state machine + unique constraint + đối soát.
+
+### Ví dụ đời thực
+Hệ thống thanh toán: request đầu tạo giao dịch, request trùng cùng key trả lại kết quả gốc, tránh trừ tiền hai lần.
+### Thêm giải thích
+Idempotency key không biến API thành exactly-once thần kỳ. Nó biến có thể trùng thành trùng được phát hiện và trả kết quả cũ, miễn là key sống đủ lâu, được lưu bền, và việc kiểm tra key nằm cùng biên transaction với nghiệp vụ. Cần lưu cả status code và body để client nhận đúng kết quả. Cần kiểm tra body fingerprint để tránh tái sử dụng key cho giao dịch khác. Cần TTL đủ dài cho cửa sổ retry. Cần xử lý request song song bằng unique constraint hoặc lock. Cần state machine và job đối soát cho crash. Đây là những điểm interviewer senior sẽ hỏi.
+### Thêm giải thích 2
+Trong production, idempotency key thường được lưu trong database cùng transaction với nghiệp vụ, hoặc trong Redis cho throughput cao. Khi dùng Redis, cần cấu hình persistence phù hợp. Khi crash, job đối soát xử lý các key treo. Khi gateway bên ngoài, cũng cần gửi idempotency key cho gateway để chống trừ tiền hai lần ở phía họ.
+
+Idempotency key không biến API thành exactly-once thần kỳ. Nó biến có thể trùng thành trùng được phát hiện và trả kết quả cũ, miễn là key sống đủ lâu, được lưu bền, và việc kiểm tra key nằm cùng biên transaction với nghiệp vụ.
+`,
+  exercises: [
+    {
+      title: 'IdempotencyStore',
+      prompt: `handle(key, body, action): key blank ném IllegalArgumentException. Key mới chạy action. Key cũ cùng body replay. Key cũ khác body trả Stored(422, "IDEMPOTENCY_KEY_REUSED"). Key đang chạy trả Stored(409, "REQUEST_IN_PROGRESS").`,
+      starter: `record Stored(int status, String body) {}
+
+class IdempotencyStore {
+    Stored handle(String key, String body, java.util.function.Supplier<Stored> action) {
+        throw new UnsupportedOperationException("TODO");
+    }
+}`,
+      tests: `public class Main {
+    static int passed = 0, total = 0;
+    static void check(String name, Runnable r) { total++; try { r.run(); passed++; System.out.println("PASS " + name);} catch(Throwable t){ System.out.println("FAIL "+name+": "+t);} }
+    static void eq(Object e, Object a){ if(!Objects.equals(e,a)) throw new AssertionError("expected "+e+" got "+a); }
+    static void expectThrows(Class<? extends Throwable> t, Runnable r){ try{r.run();}catch(Throwable x){ if(t.isInstance(x)) return; throw new AssertionError("wrong: "+x);} throw new AssertionError("expected "+t.getSimpleName()); }
+    public static void main(String[] args) {
+        check("first runs", () -> {
+            IdempotencyStore s=new IdempotencyStore();
+            java.util.concurrent.atomic.AtomicInteger runs=new java.util.concurrent.atomic.AtomicInteger();
+            Stored r=s.handle("k","a=1",()->{runs.incrementAndGet();return new Stored(201,"created");});
+            eq(201,r.status()); eq("created",r.body()); eq(1,runs.get());
+        });
+        check("replay", () -> {
+            IdempotencyStore s=new IdempotencyStore();
+            java.util.concurrent.atomic.AtomicInteger runs=new java.util.concurrent.atomic.AtomicInteger();
+            s.handle("k","a=1",()->{runs.incrementAndGet();return new Stored(201,"created");});
+            Stored r=s.handle("k","a=1",()->{runs.incrementAndGet();return new Stored(201,"created");});
+            eq(201,r.status()); eq("created",r.body()); eq(1,runs.get());
+        });
+        check("different body", () -> {
+            IdempotencyStore s=new IdempotencyStore();
+            s.handle("k","a=1",()->new Stored(201,"created"));
+            Stored r=s.handle("k","a=2",()->new Stored(201,"created2"));
+            eq(422,r.status()); eq("IDEMPOTENCY_KEY_REUSED",r.body());
+        });
+        check("blank key", () -> {
+            IdempotencyStore s=new IdempotencyStore();
+            expectThrows(IllegalArgumentException.class, ()->s.handle("   ","a=1",()->new Stored(200,"ok")));
+        });
+        System.out.println("RESULT "+passed+"/"+total);
+    }
+}`,
+      reference: `record Stored(int status, String body) {}
+
+class IdempotencyStore {
+    private static final class Entry { String requestBody; volatile boolean done; Stored result; }
+    private final java.util.concurrent.ConcurrentHashMap<String, Entry> map = new java.util.concurrent.ConcurrentHashMap<>();
+    Stored handle(String key, String body, java.util.function.Supplier<Stored> action) {
+        if (key == null || key.trim().isEmpty()) throw new IllegalArgumentException("blank key");
+        Entry e = new Entry();
+        Entry existing = map.putIfAbsent(key, e);
+        boolean owner = (existing == null);
+        Entry cur = owner ? e : existing;
+        if (owner) {
+            cur.requestBody = body;
+            try {
+                Stored r = action.get();
+                synchronized (cur) { cur.result = r; cur.done = true; }
+                return r;
+            } catch (RuntimeException ex) { map.remove(key, cur); throw ex; }
+        }
+        synchronized (cur) {
+            if (!cur.done) return new Stored(409, "REQUEST_IN_PROGRESS");
+            if (!java.util.Objects.equals(cur.requestBody, body)) return new Stored(422, "IDEMPOTENCY_KEY_REUSED");
+            return cur.result;
+        }
+    }
+}`,
+      hints: ['Dùng ConcurrentHashMap.putIfAbsent.'],
+      explain: `Entry lưu request body và result; in-progress trả 409; done kiểm tra body.`,
+    },
+  ],
+  check: [
+    {
+      q: 'Hai request cùng key, request đầu chưa xong. Trả gì?',
+      options: ['200', '409', '422', '500'],
+      answer: 1,
+      explain: 'Trả 409 REQUEST_IN_PROGRESS.',
+    },
+    {
+      q: 'Idempotency key khác unique constraint ở điểm nào?',
+      options: ['Unique constraint lưu response để replay', 'Idempotency key lưu status + body để replay', 'Unique constraint có TTL', 'Không có khác biệt'],
+      answer: 1,
+      explain: 'Idempotency key lưu cả status và body để replay chính xác. Unique constraint chỉ ngăn trùng dữ liệu, không lưu response.',
+    },
+  ],
+  related: ['api-003'],
+  tags: ['idempotency'],
+},
 );
