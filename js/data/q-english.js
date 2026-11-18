@@ -10899,4 +10899,162 @@ The client accepted. We shipped the soft delete, and six months later they used 
   ],
   tags: ['english', 'client', 'disagreement', 'soft-delete', 'stakeholder']
 },
+{
+  id: 'english-210',
+  topic: 'english',
+  level: 'senior',
+  lang: 'en',
+  q: 'Introduce your current project and your role in about 90 seconds. What do you include, and what do you leave out?',
+  a: `**Tóm tắt:** Giới thiệu = bối cảnh hệ thống + vai trò của bạn + 1 con số impact, trong 3 câu. Bỏ chi tiết kỹ thuật nhỏ.
+
+### Cấu trúc 3 câu
+1. **What:** "I work on X, a Y serving Z users/requests per day."
+2. **My role:** "I own the payment service, leading 3 engineers."
+3. **Impact:** "Last quarter we cut latency from 400ms to 120ms."
+
+### Vì sao bỏ chi tiết nhỏ
+Interviewer chưa có context; mỗi chi tiết thừa làm loãng. Giữ lại cái giúp họ hỏi tiếp (trade-off, incident, scale).
+
+### Ví dụ đời thực
+"Currently I am a Senior Backend Engineer at a fintech. I own the payments service, about 2 million transactions per day. Recently I led a migration from synchronous to event-driven, cutting p99 latency from 400ms to 120ms."
+
+### Trả lời mẫu khi phỏng vấn
+I am a Senior Backend Engineer at a fintech company. I own the payments service, which processes roughly two million transactions per day across three regions. My team of four engineers is responsible for the API, the event pipeline, and the database. Over the last quarter I led a migration from synchronous REST calls to an event-driven flow using Kafka. That cut our p99 latency from about four hundred milliseconds to one hundred twenty, and reduced failed payments by thirty percent. Before that I worked on a logistics platform where I designed the inventory service. I enjoy work that combines system design with mentoring, and I am looking for a role where I can do more of both.
+
+> Senior tip: Luôn có 1 số liệu cụ thể; số liệu tạo trust hơn tính từ.`,
+  follow: [
+    'What is the most complex part of that system?',
+    'What would you change if you rebuilt it today?',
+    'How does your team ship changes safely?'
+  ],
+  tags: ['english', 'introduction', 'project', 'impact']
+},
+{
+  id: 'english-211',
+  topic: 'english',
+  level: 'lead',
+  lang: 'en',
+  q: 'Describe a production incident you led the RCA for. How did you structure the timeline and the fix?',
+  a: `**Tóm tắt:** Incident = triệu chứng + timeline + nguyên nhân gốc + fix ngắn hạn + fix dài hạn + bài học. Luôn có số liệu.
+
+### Timeline template
+- T0: alert fired (error rate 5% -> 40%).
+- T+5m: mitigate (rollback/feature flag).
+- T+30m: identify root cause (GC pause 8s due to heap 95%).
+- T+2h: permanent fix (tune GC, add alert).
+
+### RCA fields
+Symptom, detection, impact, root cause, contributing factors, action items with owner and date.
+
+### Ví dụ đời thực
+Payment API 5xx tăng từ 0.1% lên 35% lúc 14:02. Rollback lúc 14:08, khôi phục 14:10. Root cause: deploy mới thêm logging không async, thread pool cạn kiệt. Fix: async logging + alert thread pool > 80%.
+
+### Trả lời mẫu khi phỏng vấn
+Last quarter our payment API started returning five hundreds at fourteen oh two. Error rate went from point one percent to thirty five percent in two minutes. I declared an incident, rolled back the last deploy at fourteen oh eight, and traffic recovered by fourteen ten. Impact was about twelve thousand failed payments, all retried successfully. Root cause was a new synchronous logging call inside the request path that exhausted the Tomcat thread pool. Short term we disabled the feature flag. Long term we moved logging to async, added a thread pool utilization alert at eighty percent, and added a load test gate in CI. The lesson I took away is that any new synchronous I/O in the hot path needs a review checklist item.
+
+> Senior tip: RCA tốt kết thúc bằng action item có owner và deadline, không chỉ "sẽ cẩn thận hơn".`,
+  follow: [
+    'How do you communicate during an incident?',
+    'What is a blameless postmortem?',
+    'How do you prioritize fixes after an incident?'
+  ],
+  tags: ['english', 'incident', 'rca', 'production']
+},
+{
+  id: 'english-212',
+  topic: 'english',
+  level: 'senior',
+  lang: 'en',
+  q: 'Compare Kafka vs RabbitMQ and SQL vs NoSQL for a given use case. How do you justify the choice?',
+  a: `**Tóm tắt:** So sánh theo workload: throughput/ordering/durability cho message broker; consistency/query/flexibility cho DB. Luôn nói "depends on".
+
+### Kafka vs RabbitMQ
+| Tiêu chí | Kafka | RabbitMQ |
+|---|---|---|
+| Throughput | rất cao (triệu msg/s) | vừa (chục nghìn/s) |
+| Ordering | trong partition | trong queue |
+| Replay | có (retention) | không (đã ack) |
+| Use case | event sourcing, stream | task queue, RPC |
+
+### SQL vs NoSQL
+| Tiêu chí | SQL (Postgres) | NoSQL (Mongo/Dynamo) |
+|---|---|---|
+| Consistency | ACID | eventual (thường) |
+| Schema | strict | flexible |
+| Join | native | application-side |
+| Scale write | vertical + shard | horizontal |
+
+### Ví dụ đời thực
+Order events cần replay và ordering -> Kafka. Email notifications fire-and-forget -> RabbitMQ. User profile schema ổn định -> Postgres. Product catalog thuộc tính động -> Mongo.
+
+### Trả lời mẫu khi phỏng vấn
+It depends on the workload. For a high-throughput event stream where we need replay and ordering, Kafka fits because partitions give ordered, durable logs and consumers can replay from any offset. For task queues and request-reply, RabbitMQ is simpler and has better routing. For storage, if I need ACID transactions and complex joins, like payments, I choose Postgres. If the schema changes often and reads are by key, like a product catalog, a document store fits. I always state the trade-off and the one metric that decides it, for example required throughput or consistency requirement.
+
+> Senior tip: Câu trả lời Senior luôn có "it depends" + tiêu chí quyết định + 1 ví dụ.`,
+  follow: [
+    'When would you use both Kafka and a database?',
+    'How do you migrate from SQL to NoSQL?',
+    'What is the outbox pattern?'
+  ],
+  tags: ['english', 'kafka', 'rabbitmq', 'sql', 'nosql', 'tradeoff']
+},
+{
+  id: 'english-213',
+  topic: 'english',
+  level: 'lead',
+  lang: 'en',
+  q: 'Tell me about a time you mentored a junior engineer. How did you structure it and measure success?',
+  a: `**Tóm tắt:** Mentoring = mục tiêu rõ + pairing + review + feedback định kỳ + đo lường bằng output độc lập.
+
+### Cấu trúc
+1. Đặt mục tiêu 90 ngày (ví dụ: tự ship 1 service).
+2. Pair programming 2 buổi/tuần.
+3. Code review có giải thích "vì sao", không chỉ "sửa".
+4. 1-on-1 hàng tuần, feedback 2 chiều.
+5. Đo: PR tự merge, on-call rotation, peer feedback.
+
+### Ví dụ đời thực
+Junior mới vào, sau 3 tháng tự lead feature nhỏ, viết runbook, on-call secondary. Metric: cycle time giảm 20%.
+
+### Trả lời mẫu khi phỏng vấn
+I mentored a junior engineer who had joined with two years of experience. We set a ninety-day goal: ship one small service end to end. I paired with them twice a week, always explaining why in code review rather than just requesting changes. We had a weekly one-on-one with feedback both ways. After three months they shipped their own feature, wrote the runbook, and joined the on-call rotation as secondary. I measured success by their independent output and by peer feedback, not by hours spent. The biggest lesson for me was to ask questions instead of giving answers, so they built the reasoning themselves.
+
+> Senior tip: Mentoring tốt được đo bằng "người mentee tự làm được mà không cần bạn".`,
+  follow: [
+    'How do you give constructive feedback?',
+    'How do you handle a mentee who is stuck?',
+    'How do you scale mentoring across a team?'
+  ],
+  tags: ['english', 'mentoring', 'leadership', 'growth']
+},
+{
+  id: 'english-214',
+  topic: 'english',
+  level: 'senior',
+  lang: 'en',
+  q: 'What questions do you ask the interviewer at the end? Give three and explain why.',
+  a: `**Tóm tắt:** Hỏi về team/process, technical challenges, và success metrics. Tránh hỏi lương ở vòng đầu.
+
+### 3 câu nên hỏi
+1. "What is the biggest technical challenge the team faces this quarter?" — hiểu pain points.
+2. "How does the team measure success for this role?" — align expectations.
+3. "What does onboarding look like for the first 90 days?" — show intent to ramp up.
+
+### Vì sao
+Cho thấy bạn nghĩ về đóng góp, không chỉ nhận việc. Câu trả lời cũng giúp bạn đánh giá công ty.
+
+### Ví dụ đời thực
+Sau khi phỏng vấn, bạn biết team đang migrate sang event-driven -> bạn có thể follow up bằng kinh nghiệm của mình.
+
+### Trả lời mẫu khi phỏng vấn
+I usually ask three questions. First, what is the biggest technical challenge the team is tackling this quarter, because it shows where I can add value. Second, how does the team measure success for this role in the first six months, so expectations are clear. Third, what does onboarding look like for the first ninety days, which signals I want to ramp up quickly. I avoid salary and remote questions in early rounds unless the recruiter raises them. I also tailor one question to something specific from the conversation, like a migration they mentioned, to show I listened.
+
+> Senior tip: Luôn có 1 câu hỏi follow-up dựa trên điều interviewer vừa nói; đó là tín hiệu lắng nghe.`,
+  follow: [
+    'How do you handle a question you cannot answer in the interview?',
+    'What do you do if the interviewer is silent?',
+    'How do you close an interview professionally?'
+  ],
+  tags: ['english', 'interview', 'questions', 'closing']
+},
 );
