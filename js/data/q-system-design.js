@@ -10846,4 +10846,410 @@ Sàn thương mại có 10 triệu sản phẩm, 50.000 truy vấn/giây. Ban đ
 > Senior tip: Không quên yếu tố kinh doanh: sản phẩm của đối tác ưu tiên, sản phẩm bán chạy, sản phẩm còn hàng cần có trọng số trong xếp hàng. Và luôn có SLA cho p99, không chỉ trung bình.`,
   follow: ['Cập nhật index thực thời khi sản phẩm mới lên sàn như thế nào?', 'Cách đánh giá xem hệ thống tìm kiếm này tốt hơn tìm kiếm cũ không?', 'Người dùng gõ sai từ khóa, bạn xử lý ở lớp nào?'],
 },
+{
+  id: 'design-057',
+  topic: 'design',
+  level: 'senior',
+  q: 'Bạn thiết kế lớp cache cho một hệ thống thương mại điện tử gồm ba loại dữ liệu: catalog sản phẩm (đọc rất nhiều, ghi ít), số dư ví điện tử (ghi liên tục, không được sai), và cấu hình tính năng feature flag (đổi phải có hiệu lực ngay). Với mỗi loại, bạn chọn cache-aside, write-through hay không cache? Giải thích race giữa đọc-miss và ghi, cùng yêu cầu read-your-writes.',
+  a: `**Tóm tắt:** Cache-aside (app tự đọc cache, miss thì đọc DB rồi nạp lại) là mặc định cho dữ liệu đọc nhiều như catalog. Write-through (ghi xuyên qua cache xuống DB) hợp khi cần đọc-ngay-sau-ghi và cache là nguồn chính. Với dữ liệu tiền như số dư ví thì **không cache** — đọc thẳng DB. Feature flag dùng cache local TTL cực ngắn hoặc pub/sub. Ba mô hình khác nhau ở chỗ ai chịu trách nhiệm nạp và làm mới cache.
+
+### Ba mô hình trong một câu
+| Mô hình | Ai nạp cache khi miss | Khi ghi thì sao | Phù hợp |
+|---|---|---|---|
+| Cache-aside (lazy) | Ứng dụng đọc DB rồi set | Xoá cache sau khi DB commit | Đọc nhiều, chấp nhận stale ngắn |
+| Write-through | Cache tự nạp từ DB (hoặc app ghi cả hai) | Ghi cache + DB cùng lúc | Cần đọc-ngay-sau-ghi |
+| Write-behind | Cache, DB ghi sau bất đồng bộ | Ghi cache trước, DB sau | Ghi cực nhiều, chấp nhận mất dữ liệu |
+
+### Chọn theo tính chất dữ liệu
+- **Catalog sản phẩm:** cache-aside, TTL 5–10 phút. Đọc 500 lần/giây, ghi 20 lần/giây ⇒ cache hit ~99%, DB gần như không bị chạm.
+- **Số dư ví:** **không cache**. Tiền không được phép sai; đọc thẳng DB (hoặc ledger) và dùng transaction. Nếu vẫn muốn cache thì TTL 1–2 giây và chỉ để giảm tải đọc, không bao giờ ghi qua cache.
+- **Feature flag:** cache local (Caffeine) TTL 1–5 giây, hoặc Redis pub/sub để xoá tức thì khi admin đổi. Cần "đổi là thấy ngay" nên không thể TTL dài.
+
+### Cơ chế cache-aside (code)
+~~~java
+public Product getProduct(long id) {
+    String key = "product:" + id;
+    Product cached = redis.get(key, Product.class);
+    if (cached != null) return cached;              // hit: ~0.5 ms
+
+    Product p = repo.findById(id).orElseThrow();     // miss: đọc DB
+    long ttl = 300 + ThreadLocalRandom.current().nextInt(60);  // jitter
+    redis.set(key, p, Duration.ofSeconds(ttl));      // nạp lại, TTL có jitter
+    return p;
+}
+
+public void updatePrice(long id, BigDecimal price) {
+    repo.updatePrice(id, price);                     // 1) ghi DB
+    redis.delete("product:" + id);                   // 2) XOÁ cache sau commit
+}
+~~~
+
+### Race nguy hiểm: đọc miss đồng thời với ghi
+Đây là lỗi kinh điển mà ít người để ý. Xem trình tự thời gian:
+~~~seq
+title: Ghi và đọc-miss xen kẽ làm cache giữ giá trị cũ
+actors: Reader | App | Cache | DB
+Reader -> App: GET product:7 (miss)
+App -> Cache: GET product:7
+Cache --> App: null
+App -> DB: SELECT ... (đọc giá 100)
+DB --> App: giá 100
+App -> DB: UPDATE giá = 120 (từ writer khác, commit)
+App -> Cache: SET product:7 = 100 (nạp giá CŨ)
+note App..Cache: cache giữ 100 trong khi DB đã là 120
+~~~
+
+Vì sao sai? Reader đọc DB được giá 100, nhưng trước khi nó kịp SET vào cache, một writer đã commit giá 120 và xoá cache. Reader (vẫn đang chạy với dữ liệu cũ trong tay) ghi 100 trở lại cache ⇒ cache stale cho tới khi hết TTL. Đây là lý do vì sao **xoá cache sau commit** quan trọng, nhưng vẫn không loại bỏ hoàn toàn race — cần thêm: (1) TTL ngắn, (2) delayed double delete (xoá lại sau khoảng 500 ms), (3) CDC/binlog để xoá cache khi DB đổi, hoặc (4) version key.
+
+### Write-through khác gì
+~~~java
+public void updatePrice(long id, BigDecimal price) {
+    repo.updatePrice(id, price);                 // DB trước
+    redis.set("product:" + id, repo.findById(id).get(), Duration.ofMinutes(10)); // cache sau
+}
+~~~
+Write-through ghi cache ngay sau DB nên đọc-ngay-sau-ghi luôn thấy mới. Nhược: mỗi lần ghi đều tốn một lệnh cache dù dữ liệu đó ít ai đọc. Với catalog ghi ít thì chi phí này không đáng.
+
+### Read-your-writes (đọc thấy ngay dữ liệu vừa ghi)
+Người dùng vừa đổi địa chỉ, tải lại trang vẫn thấy địa chỉ cũ là trải nghiệm tệ. Giải pháp:
+- **Sticky session:** sau khi ghi, định tuyến request tiếp theo của user đó tới đúng instance vừa xử lý (hoặc gắn cờ "vừa ghi, bỏ qua cache 2 giây").
+- **Version header:** client gửi version, server trả 304 nếu không đổi.
+- **Write-through + xoá cache** để lần đọc sau chắc chắn miss và nạp mới.
+
+### Ví dụ đời thực
+Một sàn TMĐT dùng cache-aside cho 100k sản phẩm, đọc 50k lần/giây. Sau một lần deploy, giá hiển thị cũ suốt 15 phút vì cache không được xoá. **Triệu chứng:** p99 tải trang sản phẩm tăng 200 ms → 2 giây. **Điều tra:** cache key product:<id> còn TTL 600 giây từ trước deploy. **Nguyên nhân gốc:** cache-aside chỉ xoá khi cùng app ghi; deploy là thay đổi ngoài luồng đó. **Xử lý:** thêm CDC (Debezium nghe binlog Postgres) để xoá cache tự động, thêm TTL jitter, thêm feature flag tắt cache trong 1 phút. **Kết quả:** không còn stale quá 1 giây, p99 về 180 ms.
+
+### Trả lời mẫu khi phỏng vấn
+"Khi thiết kế cache, tôi không chọn một mô hình cho mọi thứ mà phân theo tính chất dữ liệu. Catalog sản phẩm đọc nhiều ghi ít nên tôi dùng cache-aside với TTL 5–10 phút và jitter để tránh avalanche; khi ghi thì xoá cache sau khi DB commit. Số dư ví thì tôi không cache vì tiền không được sai, đọc thẳng DB. Feature flag cần hiệu lực ngay nên tôi dùng cache local TTL ngắn hoặc pub/sub. Tôi luôn nói về race giữa đọc-miss và ghi: nếu không cẩn thận, một request đọc dữ liệu cũ rồi nạp lại cache sau khi writer đã xoá, khiến cache stale tới hết TTL; tôi giảm thiểu bằng delayed double delete, CDC và TTL ngắn. Với write-through, tôi chỉ dùng khi cần đọc-ngay-sau-ghi, vì nó tốn thêm lệnh cache mỗi lần ghi."
+
+> Senior tip: Cache không bao giờ "đúng tuyệt đối" — điều quan trọng là bạn biết stale tối đa chấp nhận được và đo được nó. Nếu tắt cache mà DB sập thì bạn không có cache, bạn có một điểm chết mới.`,
+  follow: ['Bạn chọn TTL thế nào cho dữ liệu vừa cần mới vừa đọc rất nhiều?', 'Làm sao invalidate cache khi dữ liệu thay đổi từ service khác không chung codebase?', 'So sánh Redis và cache local (Caffeine) về độ trễ và tính nhất quán.'],
+  tags: ['caching', 'cache-aside', 'write-through', 'race']
+},
+{
+  id: 'design-058',
+  topic: 'design',
+  level: 'senior',
+  q: 'Một key sản phẩm đang hot hết hạn, 3000 request mỗi giây cùng lúc đọc DB. Bạn thiết kế chống cache stampede bằng single-flight lock và probabilistic early refresh như thế nào? Vẽ luồng và giải thích vì sao chỉ TTL jitter là chưa đủ.',
+  a: `**Tóm tắt:** Cache stampede (giẫm đạp lên cache) là khi một key nóng hết hạn và hàng nghìn request cùng lúc miss, cùng đổ vào DB. Hai vũ khí chính: **single-flight** (chỉ một request được nạp, số còn lại chờ hoặc nhận dữ liệu cũ) và **probabilistic early refresh** (làm mới sớm với xác suất tăng dần khi sắp hết hạn). TTL jitter chỉ dàn đều thời điểm hết hạn chứ không chặn được đợt dồn ảo khi một key siêu hot hết hạn.
+
+### Stampede là gì, vì sao nguy hiểm
+"Stampede" = đàn ngựa phi. Khi key product:123 (đang flash sale) hết hạn, 3000 req/s cùng thấy miss, cùng gọi SELECT, cùng SET. DB nhận 3000 truy vấn giống hệt trong một khoảnh khắc — có thể vượt connection pool và làm sập cả service. Đây khác với **avalanche** (nhiều key khác nhau hết hạn cùng lúc) và **penetration** (key không tồn tại bị hỏi liên tục).
+
+### Cách 1: Single-flight (chỉ một người đi mua)
+Ý tưởng: chỉ **một** request được phép đi nạp DB; các request khác chờ kết quả đó (hoặc trả dữ liệu cũ nếu có). Trong một instance dùng ConcurrentHashMap; nhiều instance thì dùng khóa Redis.
+
+~~~java
+public Product getHot(long id) {
+    String key = "product:" + id;
+    Product c = redis.get(key, Product.class);
+    if (c != null) return c;
+    String lockKey = "lock:" + key;
+    if (redis.setIfAbsent(lockKey, "1", Duration.ofSeconds(3))) {   // mình được nạp
+        try {
+            Product p = repo.findById(id).orElseThrow();
+            redis.set(key, p, Duration.ofSeconds(300));
+            return p;
+        } finally { redis.delete(lockKey); }
+    }
+    sleep(50);                              // người khác đang nạp, chờ chút
+    return getHot(id);                      // thử lại (giờ cache đã có)
+}
+~~~
+
+Luồng khi 3000 request cùng tới:
+~~~seq
+title: Single-flight chặn 2999 request không đọc DB
+actors: R1 | R2 | App | Cache | DB
+R1 -> App: GET product:123 (miss)
+R2 -> App: GET product:123 (miss)
+App -> Cache: GET product:123
+Cache --> App: null
+App -> Cache: SET lock:product:123 NX PX 3000
+Cache --> App: OK (R1 giữ khóa)
+App -> DB: SELECT product 123
+DB --> App: bản ghi
+App -> Cache: SET product:123 (TTL 300s)
+App -> Cache: DEL lock:product:123
+App --> R1: trả dữ liệu
+R2 -> App: chờ 50ms rồi thử lại
+App -> Cache: GET product:123
+Cache --> R2: dữ liệu (hit)
+note R2..DB: R2 không bao giờ chạm DB
+~~~
+
+Chỉ R1 chạm DB, R2..R3000 đọc cache. Đó là "single-flight".
+
+### Cách 2: Probabilistic early refresh (làm mới sớm có xác suất)
+Vấn đề của single-flight: request đầu tiên vẫn phải chờ DB một lần (độ trễ). Early refresh giải quyết bằng cách làm mới **trước khi** hết hạn, với xác suất tăng dần. Công thức (phiên bản đơn giản):
+
+delta = now - lastRefresh
+nếu delta > 0 và random() < exp(-delta * beta / ttl) thì một request được chọn để nạp lại (còn lại trả cache cũ ngay).
+
+beta là hằng số điều chỉnh (thường khoảng 1). Khi delta nhỏ (vừa mới nạp) xác suất gần 0; khi delta tiến gần ttl xác suất tiến tới 1. Nhờ vậy việc nạp lại rải đều, không dồn cục.
+
+~~~seq
+title: Early refresh trả cache cũ ngay, một worker nạp lại
+actors: R1 | R2 | App | Cache | DB
+R1 -> App: GET product:123 (sắp hết hạn)
+App -> Cache: GET product:123
+Cache --> App: giá trị cũ
+App -> App: random() < ngưỡng?
+note App..DB: nếu đúng, R1 nạp lại ở nền
+App --> R1: trả giá trị cũ ngay (nhanh)
+R2 -> App: GET product:123
+App -> Cache: GET product:123
+Cache --> App: giá trị cũ
+App --> R2: trả ngay, không chờ
+~~~
+
+### TTL jitter và stale-while-revalidate
+- **TTL jitter:** ttl = base + random(0, base * 0.1). Dàn đều thời điểm hết hạn của các key được nạp cùng lúc ⇒ tránh avalanche.
+- **Stale-while-revalidate:** trả dữ liệu đã hết hạn ngay, đồng thời một tiến trình nền nạp lại. Kết hợp với early refresh là mạnh nhất.
+
+### So sánh
+| Kỹ thuật | Chặn được gì | Nhược |
+|---|---|---|
+| TTL jitter | Avalanche (nhiều key cùng hết hạn) | Không chặn stampede của một key siêu hot |
+| Single-flight | Stampede của một key | Request đầu vẫn chờ DB |
+| Early refresh | Stampede + độ trễ | Cần tính toán xác suất, dễ sai thông số |
+| Stale-while-revalidate | Stampede + độ trễ | Trả dữ liệu cũ trong lúc nạp lại |
+
+### Ví dụ đời thực
+Một flash sale, product:123 nhận 3000 req/s. Trước khi có single-flight, mỗi lần key hết hạn (TTL 60s) DB nhận khoảng 3000 truy vấn trong 1 giây, connection pool (50) nghẽn, p99 tăng 800 ms → 4 giây. **Xử lý:** thêm single-flight Redis (SET NX PX) và early refresh. **Kết quả:** DB chỉ nhận khoảng 1 truy vấn mỗi chu kỳ (giảm 99,9%), p99 về 120 ms, không còn nghẽn pool.
+
+### Trả lời mẫu khi phỏng vấn
+"Cache stampede là khi một key nóng hết hạn và hàng nghìn request cùng miss, cùng đọc DB. Tôi dùng single-flight để chỉ một request được nạp, các request khác chờ hoặc nhận dữ liệu cũ; nhiều instance thì dùng khóa Redis SET NX PX kèm TTL. Để tránh độ trễ ở request đầu, tôi thêm probabilistic early refresh: làm mới sớm với xác suất tăng dần khi sắp hết hạn, nên việc nạp lại rải đều thay vì dồn cục. TTL jitter giúp tránh avalanche khi nhiều key được nạp cùng lúc. Tôi không chỉ dựa vào jitter vì nó không chặn được đợt dồn ảo của một key siêu hot. Ở production tôi từng thấy DB nhận 3000 truy vấn giống hệt trong một giây; sau khi thêm single-flight và early refresh, DB chỉ còn khoảng 1 truy vấn mỗi chu kỳ."
+
+> Senior tip: Đo bằng "số truy vấn DB trên mỗi lần key hết hạn" — nếu lớn hơn 1 thì bạn còn stampede. Single-flight biến nó về đúng 1.`,
+  follow: ['Single-flight dùng khóa Redis khác gì với dùng ConcurrentHashMap trong một instance?', 'Early refresh với beta không hợp lý thì sao?', 'Làm sao phát hiện stampede trên production?'],
+  tags: ['caching', 'stampede', 'single-flight', 'cache']
+},
+{
+  id: 'design-059',
+  topic: 'design',
+  level: 'senior',
+  q: 'Trong một flash sale, key product:123 nhận 300.000 request mỗi giây khiến một node Redis quá tải. Bạn phát hiện hot key thế nào và giảm tải ra sao? So sánh local cache, key replication và read replica.',
+  a: `**Tóm tắt:** Hot key là một key nhận lưu lượng khổng lồ, dồn hết vào một node Redis (vì Redis phân mảnh theo key). Phát hiện bằng redis-cli --hotkeys, giám sát latency per-key, hoặc log phía client. Giảm tải theo thứ tự: (1) local L1 cache (Caffeine) để chặn 90%+ request, (2) key replication (nhân bản key ra N bản, đọc ngẫu nhiên), (3) read replica cho Redis. Mỗi cách có cái giá riêng về độ nhất quán và invalidate.
+
+### Hot key là gì
+Redis Cluster chia dữ liệu thành slot, mỗi key thuộc một slot, mỗi slot nằm trên một node. Nếu một key (product:123) chiếm 300k req/s thì **toàn bộ** lưu lượng đó đổ vào đúng một node, các node khác rảnh. Tăng số node không giúp gì vì key này không tách được. Giống như một siêu thị có 10 quầy nhưng tất cả khách dồn vào quầy 1.
+
+### Phát hiện
+- redis-cli --hotkeys (cần maxmemory-policy allkeys-lfu).
+- Giám sát: theo dõi số lệnh trên mỗi key, hoặc latency p99 từng key.
+- Phía client: log top-N key theo tần suất trong cửa sổ trượt.
+
+### Giảm tải 1: Local L1 cache (Caffeine)
+~~~java
+// Mỗi instance giữ một bản local, TTL ngắn 1–2 giây
+Cache<Long, Product> local = Caffeine.newBuilder()
+    .maximumSize(10_000)
+    .expireAfterWrite(Duration.ofSeconds(2))
+    .build();
+
+public Product getHot(long id) {
+    Product p = local.getIfPresent(id);
+    if (p != null) return p;                 // chặn trước khi tới Redis
+    p = redis.get("product:" + id, Product.class);
+    if (p != null) local.put(id, p);
+    return p;
+}
+~~~
+300k req/s chia cho 200 instance = 1500 req/s/instance, local cache hit khoảng 95% ⇒ Redis chỉ nhận khoảng 75k req/s. TTL 2 giây khiến dữ liệu cũ tối đa 2 giây — chấp nhận được với giá sản phẩm.
+
+Luồng:
+~~~seq
+title: L1 local cache chặn hot key trước khi tới Redis
+actors: Client | API | L1 | Redis
+Client -> API: GET product:123
+API -> L1: getIfPresent(123)
+L1 --> API: hit (95%)
+API --> Client: trả ngay
+API -> Redis: miss (5%)
+Redis --> API: giá trị
+API -> L1: put(123)
+note API..Redis: chỉ 5% request chạm Redis
+~~~
+
+### Giảm tải 2: Key replication
+Nhân bản key ra N bản: product:123:0 ... product:123:9, mỗi bản nằm trên slot khác nên trên node khác. Đọc ngẫu nhiên một bản.
+- Ưu: không cần local cache, dùng Redis thuần.
+- Nhược: ghi phải xoá hoặc cập nhật cả N bản; invalidate tốn N lần.
+
+~~~text
+# Ghi: xoá cả 10 bản
+for i in 0..9: DEL product:123:i
+# Đọc: chọn ngẫu nhiên
+key = "product:123:" + random(0..9)
+~~~
+Nên chọn N xấp xỉ số node, hoặc theo tỉ lệ hot.
+
+### Giảm tải 3: Read replica
+Thêm Redis replica chỉ phục vụ đọc. Nhưng replica cũng nhận bản sao của key nóng nên vẫn có một replica nóng. Read replica chỉ giúp khi tải đến từ nhiều key khác nhau, **không cứu được một key siêu hot đơn lẻ**. Vì vậy với hot key thật sự, local cache hoặc key replication mới là giải pháp.
+
+### So sánh
+| Cách | Chặn hot key? | Nhược | Dùng khi |
+|---|---|---|---|
+| L1 local cache | Có, mạnh nhất | Stale tới TTL, bộ nhớ mỗi instance | Đọc cực nhiều, chấp nhận stale 1–2s |
+| Key replication | Có | Invalidate N lần, phức tạp | Không muốn local cache |
+| Read replica | Không (một key vẫn nóng) | Thêm hạ tầng | Tải từ nhiều key |
+
+### Ví dụ đời thực
+Flash sale, product:123 nhận 300k req/s. Một node Redis (8 vCPU) đạt 100% CPU, p99 40 ms. **Xử lý:** thêm L1 Caffeine TTL 2s trên 200 instance. **Kết quả:** Redis chỉ nhận khoảng 15k req/s cho key này, CPU node về 45%, p99 về 3 ms, không cần thêm node.
+
+### Trả lời mẫu khi phỏng vấn
+"Hot key là một key dồn toàn bộ lưu lượng vào một node Redis vì Redis phân mảnh theo key; thêm node không giúp được. Tôi phát hiện bằng redis-cli --hotkeys và giám sát latency per-key. Để giảm tải, ưu tiên số một là local L1 cache (Caffeine) với TTL 1–2 giây, nó chặn 90%+ request trước khi tới Redis. Nếu không muốn local cache, tôi nhân bản key ra N bản trên các slot khác nhau và đọc ngẫu nhiên, đổi lại phải invalidate cả N bản. Read replica không cứu được một key siêu hot đơn lẻ vì replica cũng nóng. Tôi từng xử lý một key 300k req/s bằng L1 cache, Redis chỉ còn 5% lưu lượng cho key đó."
+
+> Senior tip: Hot key thường là sản phẩm hot, người nổi tiếng, hoặc key null bị miss liên tục. Đừng quên nhóm thứ ba — dùng Bloom filter hoặc cache null với TTL ngắn.`,
+  follow: ['L1 cache và Redis không đồng nhất thì xử lý thế nào?', 'Key replication với N lớn thì invalidate ra sao?', 'Làm sao tự động phát hiện hot key theo thời gian thực?'],
+  tags: ['caching', 'hot-key', 'redis', 'caffeine']
+},
+{
+  id: 'design-060',
+  topic: 'design',
+  level: 'senior',
+  q: 'Bạn cần chống xử lý trùng khi một job thanh toán chạy trên nhiều instance. Redis SET NX PX trông đủ, nhưng vì sao Redlock gây tranh cãi? Khi nào bạn không dùng lock phân tán mà chọn cách khác? Vẽ luồng kịch bản GC pause làm mất lock.',
+  a: `**Tóm tắt:** Lock phân tán cho nhiều process loại trừ lẫn nhau. Redis SET NX PX cộng token là đủ để "giảm khả năng hai worker chạy cùng lúc", nhưng **không đủ để đảm bảo đúng tuyệt đối**: client có thể bị GC pause dài hơn TTL, lock hết hạn, client khác vào, rồi client cũ ghi đè. Redlock (nhiều node Redis) giảm rủi ro mất node nhưng vẫn dựa vào đồng hồ và không có fencing. Với tiền, hãy dùng idempotency key, conditional update, hoặc single consumer thay vì lock.
+
+### Redis lock cơ bản
+~~~text
+SET lock:payment:123 "token-abc" NX PX 30000
+~~~
+- NX: chỉ set nếu chưa tồn tại (acquire).
+- PX 30000: TTL 30 giây, tránh deadlock nếu process chết.
+- token: để release đúng của mình.
+
+Release phải kiểm tra token (gộp trong Lua):
+~~~text
+-- KEYS[1]=lock:payment:123, ARGV[1]=token-abc
+if redis.call('GET', KEYS[1]) == ARGV[1] then
+  return redis.call('DEL', KEYS[1])
+end
+return 0
+~~~
+
+### Vấn đề chí tử: lock hết hạn khi client còn làm việc
+Kịch bản kinh điển:
+~~~seq
+title: GC pause làm mất lock, hai worker cùng ghi
+actors: A | Redis | B | DB
+A -> Redis: SET lock NX PX 30000
+Redis --> A: OK (A giữ lock)
+A -> A: bắt đầu xử lý thanh toán
+A -> A: Full GC 40 giây (dừng mọi thứ)
+Redis -> Redis: lock hết hạn sau 30s
+B -> Redis: SET lock NX PX 30000
+Redis --> B: OK (B giữ lock)
+B -> DB: ghi kết quả (token 34)
+A -> A: tỉnh dậy sau GC
+A -> DB: ghi kết quả (token 33) -> GHI ĐÈ B
+note A..DB: A tưởng mình vẫn giữ lock
+~~~
+TTL dài hơn chỉ giảm xác suất, không diệt được. Watchdog gia hạn cũng vô dụng nếu process bị treo hoàn toàn.
+
+### Redlock và tranh cãi
+Redlock: acquire trên N=5 node độc lập, thành công nếu từ 3 node trở lên trong thời gian ngắn hơn TTL.
+- **antirez (ủng hộ):** chịu được mất node, giảm phụ thuộc một điểm, hợp khi cần hiệu quả.
+- **Kleppmann (phản đối):** vẫn dựa vào **đồng hồ và timing**; một client pause dài vẫn ghi đè; không có fencing token; khi sự cố mạng, hệ thống có thể mất lock mà client không biết.
+Kết luận thực dụng: Redlock **không sai** cho mục tiêu "giảm khả năng trùng", nhưng **không đủ** cho "không bao giờ ghi đè".
+
+### Fencing token
+Mỗi lần acquire cấp một số tăng dần (Redis INCR hoặc etcd revision). Mọi thao tác ghi gửi kèm số; tài nguyên đích **từ chối** token nhỏ hơn token lớn nhất đã thấy.
+~~~text
+A acquire -> token 33
+A pause ... lock expire, B acquire -> token 34, B ghi với 34 (storage nhớ 34)
+A tỉnh, ghi với 33 -> storage từ chối vì 33 < 34
+~~~
+
+### Khi nào KHÔNG dùng lock
+| Nhu cầu | Cách đúng hơn lock |
+|---|---|
+| Chống xử lý trùng message | Idempotency key (unique constraint) |
+| Trừ tồn kho | UPDATE ... WHERE qty >= ? (conditional) |
+| Thanh toán | Idempotency key + ledger |
+| Chạy job định kỳ | Single consumer (partition/leader election) |
+
+### Ví dụ đời thực
+Job tính tồn kho chạy trên 3 instance, dùng Redis SET NX PX 30000. Flash sale, Full GC 38 giây khiến lock hết hạn, 2 instance cùng chạy, tồn kho âm 12 mã. **Điều tra:** log cho thấy 2 lần "recalc started" cách 18 giây. **Nguyên nhân gốc:** lock chỉ có TTL, không fencing; GC dài hơn TTL. **Xử lý:** chuyển sang một consumer duy nhất (partition), thêm version conditional update (UPDATE ... WHERE version < ?), giảm Xmx và tách job ra process riêng. **Kết quả:** hết tồn kho âm, Full GC worker về 180 ms.
+
+### Trả lời mẫu khi phỏng vấn
+"Khi được hỏi về distributed lock, tôi luôn hỏi trước: có tránh được lock không? Unique constraint, conditional update, hay single consumer thường đúng và đơn giản hơn. Nếu buộc dùng, với Redis tôi dùng SET key token NX PX và release bằng Lua kiểm tra token. Nhưng tôi nhấn mạnh lock một mình không đủ: client có thể bị GC pause dài hơn TTL, lock hết hạn, client khác vào, rồi client cũ ghi đè. Tôi từng gặp đúng kịch bản này với job tồn kho và Full GC 38 giây. Giải pháp đúng là fencing token ở tầng lưu trữ, hoặc thiết kế lại để bỏ lock. Redlock tôi xem là giảm xác suất cho job không quan trọng, không dùng cho tiền hay tồn kho nếu không có ràng buộc thứ hai."
+
+> Senior tip: Câu hỏi tôi luôn hỏi lại: "nếu client giữ lock bị GC 40 giây thì sao?". Trả lời "tăng TTL" là chưa đủ; trả lời "fencing token ở tầng storage" là người đã vận hành hệ phân tán.`,
+  follow: ['Fencing token triển khai với storage không hỗ trợ so sánh version thế nào?', 'Khi nào DB advisory lock (Postgres) tốt hơn Redis?', 'Làm sao giám sát lock giữ quá lâu mà không false positive?'],
+  tags: ['distributed-lock', 'redlock', 'fencing-token']
+},
+{
+  id: 'design-061',
+  topic: 'design',
+  level: 'senior',
+  q: 'Bạn triển khai rate limiter phân tán cho API gateway dùng Redis. So sánh token bucket và sliding window, viết đoạn Lua nguyên tử, và quyết định fail-open hay fail-closed khi Redis gặp sự cố.',
+  a: `**Tóm tắt:** Rate limiter chặn bớt request vượt hạn mức (ví dụ 100 req/phút/user). Với nhiều instance, trạng thái phải chia sẻ qua Redis và cập nhật **nguyên tử** bằng Lua (Redis chạy đơn luồng nên Lua là một khối không bị chen). Token bucket cho phép burst có kiểm soát; sliding window mượt hơn fixed window nhưng khó chính xác tuyệt đối. Khi Redis chết, phải quyết định fail-open (cho qua, ưu tiên sẵn sàng) hay fail-closed (chặn, ưu tiên bảo vệ) theo mức độ nhạy cảm.
+
+### Rate limiter là gì, vì sao cần
+Giới hạn số request mỗi client trong một khung thời gian để: (1) chống lạm dụng/DoS, (2) bảo vệ backend khỏi quá tải, (3) đảm bảo công bằng giữa các client. Trả 429 Too Many Requests kèm Retry-After.
+
+### Token bucket vs sliding window
+| Thuật toán | Cách chạy | Ưu | Nhược |
+|---|---|---|---|
+| Fixed window | Đếm trong mỗi phút, reset đầu phút | Rẻ, dễ | Burst gấp đôi ở biên |
+| Sliding window log | Lưu timestamp từng request | Chính xác | Tốn bộ nhớ theo số request |
+| Sliding window counter | Nội suy giữa 2 window | Rẻ, mượt hơn fixed | Vẫn là xấp xỉ |
+| Token bucket | Xô N token, nạp r token/giây | Cho burst có kiểm soát | Lưu 2 biến |
+
+Token bucket hợp API vì traffic thật có burst: user mở app bắn 20 request rồi im.
+
+### Cơ chế token bucket
+capacity (burst tối đa), refillRate (token/giây). Mỗi request:
+1. elapsed = now - lastRefill
+2. tokens = min(capacity, tokens + elapsed * refillRate)
+3. nếu tokens >= cost thì trừ, cho qua; ngược lại chặn.
+
+### Triển khai Lua nguyên tử
+Sai lầm: đọc token trong app, tính, ghi lại — hai request đồng thời cùng đọc tokens=1 và cùng được qua. Phải gộp vào một script:
+~~~text
+-- KEYS[1]=rate:user:123, ARGV=capacity, refill, now_ms, cost
+local d = redis.call('HMGET', KEYS[1], 'tokens', 'ts')
+local tokens = tonumber(d[1]); local ts = tonumber(d[2])
+local now = tonumber(ARGV[3])
+if tokens == nil then tokens = tonumber(ARGV[1]); ts = now end
+local refill = (now - ts) / 1000.0 * tonumber(ARGV[2])
+tokens = math.min(tonumber(ARGV[1]), tokens + refill)
+local cost = tonumber(ARGV[4]); local allowed = 0
+if tokens >= cost then tokens = tokens - cost; allowed = 1 end
+redis.call('HSET', KEYS[1], 'tokens', tokens, 'ts', now)
+redis.call('PEXPIRE', KEYS[1], 86400000)
+return { allowed, math.floor(tokens) }
+~~~
+Dùng thời gian của Redis (redis.call('TIME')) thay vì đồng hồ app để tránh lệch giờ giữa các node.
+
+### Vì sao phải nguyên tử
+Nếu tách thành GET rồi tính rồi SET, hai request cùng đọc tokens=1, cùng tính còn 1, cùng trừ về 0, cùng cho qua ⇒ vượt 2 lần. Lua chạy trọn vẹn trong một lần gọi nên không có khe hở.
+
+### Fail-open vs fail-closed
+Khi Redis down:
+~~~seq
+title: Quyết định khi Redis lỗi
+actors: Client | Gateway | Redis | Backend
+Client -> Gateway: request
+Gateway -> Redis: EVAL rate script
+Redis --> Gateway: timeout / lỗi
+Gateway -> Gateway: fail-open cho qua, hoặc chặn 503
+note Gateway..Backend: fail-open ưu tiên sẵn sàng, fail-closed ưu tiên bảo vệ
+~~~
+- **Fail-open:** Redis chết thì cho request qua. Ưu tiên: dịch vụ vẫn chạy. Nhược: mất bảo vệ, dễ bị quá tải.
+- **Fail-closed:** Redis chết thì chặn (503). Ưu tiên: bảo vệ backend. Nhược: sự cố Redis làm sập dịch vụ.
+Chọn theo bài toán: API công khai dễ bị lạm dụng thì fail-closed có kiểm soát (chỉ chặn khi tải cao); dịch vụ nội bộ thì fail-open.
+
+### Ví dụ đời thực
+Gateway 5 instance, rate limit 100 req/phút/user. Trước khi có Lua, hai request đồng thời vượt 1–2 lần mỗi user (race). **Xử lý:** gộp vào Lua. **Kết quả:** không còn vượt, Redis thêm khoảng 0,5 ms/request. Khi Redis bảo trì, gateway fail-open 30 giây, backend chịu được vì có circuit breaker riêng.
+
+### Trả lời mẫu khi phỏng vấn
+"Rate limiter phân tán cần trạng thái chung qua Redis và cập nhật nguyên tử bằng Lua, vì Redis chạy đơn luồng nên script là một khối không bị chen; nếu tách GET rồi tính rồi SET thì hai request đồng thời sẽ cùng đọc một giá trị và cùng được qua. Tôi thường chọn token bucket vì API có burst tự nhiên, hoặc sliding window counter nếu cần mượt hơn fixed window. Tôi dùng thời gian của Redis thay vì đồng hồ app để tránh lệch giờ. Khi Redis chết, tôi phải quyết định fail-open hay fail-closed: dịch vụ nội bộ tôi fail-open để giữ sẵn sàng, API công khai dễ lạm dụng tôi fail-closed có kiểm soát hoặc kết hợp circuit breaker. Tôi từng thấy race vượt 1–2 lần mỗi user trước khi chuyển sang Lua."
+
+> Senior tip: Lua script nên dùng redis.call('TIME') cho nhất quán, và luôn đặt TTL lớn hơn thời gian đầy xô — nếu không key bị xoá và user được reset burst.`,
+  follow: ['Fixed window bị burst gấp đôi ở biên, bạn xử lý thế nào?', 'Làm sao rate limit theo nhiều chiều (user + IP + endpoint)?', 'Chi phí một lệnh Redis cho mỗi request có chấp nhận được không?'],
+  tags: ['rate-limiter', 'redis', 'lua', 'token-bucket']
+},
 );
