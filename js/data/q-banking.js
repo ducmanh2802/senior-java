@@ -6097,5 +6097,513 @@ Một ngân hàng số từng xử lý timeout bằng cách báo khách "giao d�
     'Khi đối tác xác nhận FAILED nhưng bạn đã trừ tiền/hold, luồng đảo bút (reversal) cần đảm bảo những gì?'
   ],
   tags: ['core', 'timeout', 'pending', 'tra soát', 'doi soat', 'EOD']
+},
+{
+  id: 'banking-082',
+  topic: 'banking',
+  level: 'senior',
+  q: 'Thiết kế OMS (Order Management System) cho chứng khoán: nhận lệnh đặt/huỷ/sửa lệnh thế nào, máy trạng thái lệnh ra sao, và làm sao chống ghi nhận trùng khi app gửi lại?',
+  a: `**Tóm tắt:** OMS là hệ thống trung gian giữa app của khách và sàn giao dịch: nhận yêu cầu mua/bán, kiểm tra hợp lệ và sức mua, giữ (hold) tiền hoặc chứng khoán, gửi lệnh tới sàn, rồi theo dõi từng phần khớp cho tới khi lệnh khớp hết, bị huỷ hoặc bị từ chối. Lệnh không bao giờ được UPDATE mù mà đi qua máy trạng thái có kiểm soát, huỷ/sửa là một yêu cầu mới tham chiếu lệnh gốc, và mọi lệnh mang một mã do client sinh (clientOrderId) để gửi lại bao nhiêu lần cũng chỉ tạo đúng một lệnh.
+
+### Các thuật ngữ cần biết trước
+- **OMS (Order Management System)**: hệ thống quản lý vòng đời lệnh — nhận, kiểm tra, gửi sàn, nhận kết quả khớp, huỷ, sửa. Ví dụ đời thường: OMS giống "người thư ký" ghi sổ mọi yêu cầu mua bán và theo dõi từng yêu cầu đến khi xong.
+- **Sàn giao dịch (exchange)**: nơi tập trung lệnh của mọi công ty chứng khoán, ví dụ HOSE (TP.HCM), HNX (Hà Nội). Sàn vận hành **matching engine** — bộ máy ghép lệnh mua với lệnh bán.
+- **Công ty chứng khoán (broker)**: bên có ghế thành viên trên sàn; bạn viết phần mềm cho họ, không nói chuyện trực tiếp với khách.
+- **FIX (Financial Information eXchange)**: giao thức nhắn tin dạng chuỗi key=value chuẩn ngành để gửi lệnh/nhận báo cáo với sàn hoặc đối tác.
+- **Fill (khớp)**: một phần hoặc toàn bộ khối lượng lệnh được khớp. Một lệnh 1.000 cổ phiếu có thể khớp 300, rồi 700 — gọi là khớp một phần (partial fill).
+- **Hold (phong toả)**: tạm giữ tiền hoặc cổ phiếu để chắc chắn khách đủ khả năng thanh toán khi lệnh khớp. Ví dụ: khách có 100 triệu, đặt mua 50 triệu thì 50 triệu đó bị hold, số dư khả dụng còn 50 triệu.
+- **Idempotency key (khoá chống trùng)**: một mã duy nhất cho một thao tác, để gửi lại cùng mã thì hệ thống trả lại kết quả cũ thay vì làm lại.
+
+### Vì sao không được UPDATE trạng thái lệnh một cách tuỳ tiện
+Lệnh chứng khoán có hai nguồn cập nhật chạy song song: lệnh của khách (đặt, huỷ, sửa) và báo cáo từ sàn (ack, khớp một phần, khớp hết, từ chối). Nếu code cứ đọc trạng thái rồi ghi đè, hai luồng có thể giẫm lên nhau:
+
+1. Khách bấm huỷ, OMS đọc lệnh đang là ACKNOWLEDGED, chuẩn bị ghi CANCELLED.
+2. Cùng lúc sàn báo khớp 100% khối lượng.
+3. Luồng huỷ ghi CANCELLED sau đó, đè mất thông tin đã khớp. Sổ vị thế và sổ tiền của khách lệch với sàn, cuối ngày đối soát mới phát hiện.
+
+Vì vậy mỗi lần chuyển trạng thái phải là một **so sánh-và-đổi có điều kiện** (compare-and-set) trong DB hoặc một sự kiện bất biến (event) có số thứ tự, để chỉ chuyển được từ trạng thái nguồn hợp lệ sang trạng thái đích hợp lệ.
+
+### Máy trạng thái của một lệnh
+~~~text
+[NEW] --gửi sàn OK--> [PENDING_NEW] --sàn nhận--> [ACKNOWLEDGED]
+[ACKNOWLEDGED] --báo khớp 1 phần--> [PARTIALLY_FILLED]
+[ACKNOWLEDGED|PARTIALLY_FILLED] --báo khớp hết--> [FILLED]
+[ACKNOWLEDGED|PARTIALLY_FILLED] --huỷ thành công--> [CANCELLED]
+[NEW|PENDING_NEW] --sàn từ chối--> [REJECTED]
+[NEW] --kiểm tra nội bộ thất bại--> [REJECTED]
+~~~
+
+Chú ý: **FILLED và CANCELLED là trạng thái cuối**, không có đường quay lại. Một lệnh đã khớp một phần rồi bị huỷ vẫn ghi được cả hai sự kiện: khối lượng đã khớp nằm trong các bản ghi fill riêng, không nhét vào một cột "trạng thái".
+
+### Đi từng bước khi khách bấm Mua 1.000 cổ phiếu
+1. **Chống trùng:** app sinh clientOrderId dạng UUID, gửi kèm. OMS có unique index trên cặp (accountId, clientOrderId). Nếu insert bị trùng khoá, trả về lệnh đã có — thao tác lặp lại an toàn.
+2. **Kiểm tra hợp lệ:** mã có giao dịch không, khối lượng là bội số lô (ví dụ lô 100 trên HOSE), giá nằm trong biên độ trần/sàn, bước giá đúng quy định, tài khoản đang mở.
+3. **Kiểm tra sức mua và hold:** tính tiền cần = giá × khối lượng × (1 + phí dự kiến), trừ số dư khả dụng, tạo bản ghi hold trong cùng transaction với lệnh.
+4. **Ghi lệnh rồi mới gửi:** commit lệnh ở trạng thái NEW, sau đó gửi sang sàn. Nếu gửi lỗi mạng, lệnh vẫn còn trong DB để job tra soát xử lý tiếp — không có chuyện "đã gửi sàn nhưng mất dấu".
+5. **Nhận báo cáo:** mỗi báo cáo từ sàn được xử lý idempotent theo mã báo cáo (execId); khớp một phần thì cộng dồn khối lượng đã khớp và giảm hold phần còn lại.
+6. **Kết thúc:** FILLED thì chuyển hold thành ghi nợ thật; CANCELLED thì nhả hold phần chưa khớp.
+
+### Code minh hoạ: chống trùng và chuyển trạng thái có điều kiện
+~~~java
+// Ghi lệnh: unique(account_id, client_order_id) biến việc gửi lặp thành no-op an toàn
+public Order place(long accountId, String clientOrderId, OrderRequest req) {
+    return orderRepo.findByClientOrderId(accountId, clientOrderId)
+        .orElseGet(() -> {
+            Order o = Order.newPending(accountId, clientOrderId, req);
+            riskService.assertTradable(o);       // mã, lô, biên độ giá, phiên
+            holdService.holdFor(o);              // giữ tiền/CP, cùng transaction
+            return orderRepo.insert(o);          // có thể ném DuplicateKey -> bắt và đọc lại
+        });
 }
+
+// Chỉ cho phép chuyển trạng thái theo bảng hợp lệ, dùng CAS để tránh ghi đè báo cáo khớp
+private static final Map<Status, Set<Status>> ALLOWED = Map.of(
+    Status.NEW, Set.of(Status.PENDING_NEW, Status.REJECTED),
+    Status.PENDING_NEW, Set.of(Status.ACKNOWLEDGED, Status.REJECTED),
+    Status.ACKNOWLEDGED, Set.of(Status.PARTIALLY_FILLED, Status.FILLED, Status.CANCELLED),
+    Status.PARTIALLY_FILLED, Set.of(Status.FILLED, Status.CANCELLED));
+
+public boolean move(long orderId, Status from, Status to) {
+    if (!ALLOWED.getOrDefault(from, Set.of()).contains(to)) {
+        throw new IllegalStateException("Chuyển trạng thái không hợp lệ " + from + " -> " + to);
+    }
+    return orderRepo.updateStatusIfCurrent(orderId, from, to) == 1;  // UPDATE ... WHERE status = ?
+}
+~~~
+
+### Huỷ và sửa lệnh: cuộc đua với lúc khớp
+Sửa lệnh về bản chất là **huỷ lệnh cũ + đặt lệnh mới** (cancel-replace), và có một khoảng thời gian lệnh cũ vẫn có thể khớp tiếp. Vì thế:
+- Không bao giờ "trả lại" hold cũ trước khi nhận xác nhận huỷ từ sàn; nếu không, khách có thể dùng tiền đó đặt lệnh khác và bị âm khi lệnh cũ khớp nốt.
+- Trạng thái trung gian CANCEL_PENDING hữu ích: khoá thao tác sửa/huỷ thứ hai trong lúc chờ sàn trả lời.
+- Nếu lệnh đã khớp hết trước khi yêu cầu huỷ tới sàn, yêu cầu huỷ bị từ chối — phải trả về đúng lý do cho khách, không im lặng.
+
+### So sánh hai cách giữ tiền khi đặt lệnh
+| Cách | Ưu điểm | Nhược điểm |
+|---|---|---|
+| Hold ngay khi đặt lệnh (mặc định) | Không bao giờ âm tiền khi khớp; khách thấy đúng sức mua còn lại | Giữ tiền cả khi lệnh không khớp; cần job nhả hold chính xác |
+| Chỉ kiểm tra lúc khớp (check-then-act muộn) | Không giữ tiền sớm, khách linh hoạt | Có thể oversell/âm tiền nếu khách đặt nhiều lệnh cùng lúc; phải xử lý vi phạm sau khi đã khớp — rất xấu về pháp lý |
+
+Nguyên tắc thực tế: **hold là bắt buộc**; câu hỏi chỉ là hold theo giá nào (giá đặt hay giá trần) và nhả hold theo sự kiện nào.
+
+### Lỗi hay gặp trên production
+- Dùng timestamp làm idempotency key: hai cú bấm trong cùng một milli-giây sinh hai lệnh.
+- Nhả hold khi đã gửi yêu cầu huỷ nhưng chưa có xác nhận từ sàn, dẫn tới âm tiền khi lệnh khớp nốt.
+- Xử lý báo cáo khớp không idempotent: sàn gửi lại báo cáo (retransmission sau khi mất kết nối FIX) làm cộng khối lượng hai lần.
+- Không có job đối soát trạng thái lệnh với sàn, để lệnh kẹt PENDING_NEW hàng giờ.
+
+### Ví dụ đời thực
+Một công ty chứng khoán gặp sự cố giờ mở cửa: app bán lẻ retry khi mạng chập chờn, và vì clientOrderId sinh ở server theo timestamp, 9h15 có 1.800 lệnh trùng được tạo, hold tiền gấp đôi khiến nhiều tài khoản báo "không đủ sức mua" dù còn tiền. Sau khi chuyển sang UUID do client sinh và thêm unique index (account_id, client_order_id), số lệnh trùng về 0; thời gian xử lý trung bình một lệnh 42ms, p99 180ms; số ticket "sức mua sai" giảm từ khoảng 60/ngày xuống còn vài ticket do nguyên nhân khác.
+
+### Trả lời mẫu khi phỏng vấn
+"OMS của tôi chia làm ba phần: nhận và chống trùng, kiểm tra và giữ tiền, theo dõi trạng thái. Mỗi lệnh có clientOrderId do app sinh, unique theo tài khoản, nên gửi lại bao nhiêu lần cũng chỉ một lệnh. Khi hợp lệ, tôi hold tiền hoặc cổ phiếu trong cùng transaction với việc ghi lệnh ở trạng thái NEW, rồi mới gửi sang sàn, để nếu mạng đứt thì lệnh vẫn còn dấu trong DB. Lệnh đi qua máy trạng thái NEW, PENDING_NEW, ACKNOWLEDGED, PARTIALLY_FILLED, FILLED hoặc CANCELLED, mỗi lần chuyển là một câu UPDATE có điều kiện theo trạng thái hiện tại, nên báo cáo khớp của sàn không bị luồng huỷ ghi đè. Huỷ là cancel-replace: chỉ nhả hold sau khi sàn xác nhận, vì lệnh cũ có thể khớp trong lúc chờ. Cuối cùng tôi có job tra soát lệnh treo và đối soát fill với sàn, và xử lý báo cáo khớp idempotent theo execId để báo cáo gửi lại không cộng khối lượng hai lần."
+
+> Senior tip: đừng bao giờ để trạng thái lệnh chỉ nằm ở một cột — hãy lưu chuỗi sự kiện (order_events) kèm execId, thời điểm và nguồn (khách hay sàn). Khi có tranh chấp với khách hoặc với sàn, bạn dựng lại được chính xác điều gì đã xảy ra, theo thứ tự nào. Chi phí lưu thêm rất nhỏ so với một buổi sáng mất dữ liệu khớp lệnh.
+
+> Cụm từ: OMS là hệ thống quản lý vòng đời lệnh. Hold là tạm phong toả tiền/chứng khoán cho một lệnh. Idempotency key là mã chống trùng cho một thao tác. Cancel-replace là huỷ lệnh cũ để đặt lệnh mới với giá/khối lượng khác.
+`,
+  follow: [
+    'Nếu sàn chấp nhận lệnh nhưng báo cáo ACK bị mất, OMS phát hiện và xử lý thế nào?',
+    'Bạn thiết kế bảng lưu fill (khớp từng phần) và cách tính khối lượng còn lại ra sao?',
+    'Hold theo giá đặt hay giá trần, và vì sao lựa chọn đó ảnh hưởng tới trải nghiệm khách?'
+  ],
+  tags: ['OMS', 'chứng khoán', 'máy trạng thái lệnh', 'idempotency', 'hold', 'cancel-replace']
+},
+{
+  id: 'banking-083',
+  topic: 'banking',
+  level: 'lead',
+  q: 'Thiết kế sổ lệnh (order book) và matching engine khớp lệnh theo ưu tiên giá - thời gian (price-time priority): cấu trúc dữ liệu, tính bất biến khi chạy đa luồng và cách đo hiệu năng?',
+  a: `**Tóm tắt:** Sổ lệnh là hai danh sách lệnh chờ mua (bid) và chờ bán (ask) được xếp theo giá tốt nhất trước, cùng giá thì lệnh đến trước được ưu tiên — đó chính là price-time priority. Matching engine chạy **một luồng duy nhất cho mỗi mã** (single-writer), mọi lệnh vào đi qua một hàng đợi có thứ tự, nên không cần khoá phức tạp mà vẫn tất định. Nguyên tắc bất di bất dịch: chỉ khớp khi giá mua lớn hơn hoặc bằng giá bán, khớp ở giá của lệnh nằm sẵn trong sổ, và không bao giờ khớp vượt khối lượng còn lại.
+
+### Thuật ngữ
+- **Order book (sổ lệnh)**: bảng hai chiều các lệnh chờ khớp. Ví dụ đời thường: như hai hàng người xếp hàng mua và bán vé, ai trả giá tốt hơn đứng trước, cùng giá thì ai đến trước được phục vụ trước.
+- **Bid / Ask**: giá bên mua cao nhất (bid) và giá bên bán thấp nhất (ask). Khoảng cách giữa hai giá gọi là **spread**.
+- **Price-time priority**: ưu tiên 1 là giá tốt hơn, ưu tiên 2 là thời gian đến sớm hơn. Trên HOSE/HNX lệnh khớp liên tục tuân theo quy tắc này.
+- **Taker / Maker**: lệnh đến sau khớp với lệnh nằm sẵn — lệnh đến sau là taker, lệnh nằm sẵn là maker.
+- **Tất định (deterministic)**: cùng một chuỗi lệnh đầu vào luôn cho cùng một chuỗi kết quả khớp. Bắt buộc với hệ thống tài chính, vì phải tái hiện được để kiểm toán.
+
+### Vì sao phải là một luồng ghi duy nhất
+Có hai lệnh mua cùng lúc tới giá 25.000, sổ chỉ còn 100 cổ phiếu giá 25.000 bên bán. Nếu hai luồng cùng đọc "còn 100" rồi cùng khớp 100, tổng khớp thành 200 — thừa một lượng không tồn tại. Các cách chống:
+- Khoá từng mã trước khi khớp: đúng nhưng dễ chết lock, khó suy luận, hiệu năng giảm khi tranh chấp cao.
+- **Một luồng cho mỗi mã** (hoặc một luồng cho một tập mã): mọi thao tác thêm/huỷ/khớp vào sổ tuần tự hoá tự nhiên, không cần khoá nội bộ, kết quả tất định và dễ replay.
+
+Với sàn lớn, mỗi mã có thể có luồng riêng; các mã độc lập nhau nên scale theo số mã, còn trong một mã thì mãi mãi tuần tự.
+
+### Cấu trúc dữ liệu
+- **Bên giá**: cây tìm kiếm cân bằng hoặc cấu trúc sắp xếp để lấy giá tốt nhất trong O(log n) hoặc O(1) nếu dùng mảng chỉ số giá (giá có bước giá cố định, ví dụ bước 100 đồng thì dùng mảng chỉ số).
+- **Trong một mức giá**: hàng đợi FIFO để đúng thứ tự thời gian.
+- **Tra cứu lệnh để huỷ**: bảng băm orderId -> vị trí, để huỷ O(1). Huỷ "lười" (lazy delete) cũng hay dùng: đánh dấu huỷ, dọn khi tới lượt khớp.
+
+Ví dụ sổ lệnh:
+~~~text
+BID (mua)                 ASK (bán)
+25.100  x 500  (A)        25.300  x 300  (D)
+25.000  x 800  (B)        25.400  x 900  (E)
+25.000  x 200  (C)        25.500  x 1.200(F)
+~~~
+
+### Từng bước khớp một lệnh mua mới
+1. Lấy ask thấp nhất. Nếu không có ask, hoặc giá ask > giá mua, dừng: phần còn lại vào sổ bên bid.
+2. Nếu giá ask <= giá mua: khớp tại **giá ask** (giá của maker), khối lượng = min(còn lại của mua, còn lại của ask).
+3. Trừ khối lượng hai bên, sinh bản ghi khớp (trade) có mã, giá, khối lượng, hai bên, thời điểm.
+4. Lặp lại tới khi lệnh mua hết khối lượng hoặc không còn ask thoả giá.
+5. Nếu lệnh mua còn khối lượng, đặt phần còn lại vào cuối hàng đợi tại mức giá của nó.
+
+Với ví dụ trên, lệnh mua 25.400 x 400 sẽ khớp 300 với D tại 25.300, rồi 100 với E tại 25.400, xong hết khối lượng.
+
+### Code minh hoạ (giản lược, một luồng)
+~~~java
+// Toàn bộ phương thức này chỉ chạy trên luồng của mã này -> không cần synchronized
+void submit(Order in) {
+    while (in.remaining() > 0 && !asks.isEmpty()) {
+        PriceLevel best = asks.first();                 // mức giá bán thấp nhất
+        if (best.price.compareTo(in.price) > 0) break;  // không còn giá thoả
+        Order maker = best.peekFirst();                 // FIFO trong mức giá
+        long qty = Math.min(in.remaining(), maker.remaining());
+        trades.add(new Trade(in.symbol, in.id, maker.id, best.price, qty)); // khớp tại giá maker
+        in.fill(qty);
+        maker.fill(qty);
+        if (maker.remaining() == 0) best.pollFirst();   // lệnh maker hết -> bỏ khỏi sổ
+        if (best.isEmpty()) asks.removeFirst();
+    }
+    if (in.remaining() > 0) bids.add(in);               // phần dư vào sổ
+}
+~~~
+
+Chú ý ba chi tiết quyết định tính đúng: khớp ở {{best.price}} chứ không phải giá của taker, dùng {{min}} khối lượng, và bỏ maker ngay khi hết.
+
+### Cách chạy an toàn khi đa luồng
+- Hàng đợi đầu vào có thứ tự (ví dụ một log tuần tự như Kafka partition theo mã, hoặc ring buffer nội bộ).
+- Nếu chạy nhiều instance, **mỗi mã chỉ được một instance sở hữu** tại một thời điểm, thường qua leader election hoặc phân vùng cố định.
+- Trạng thái sổ lệnh là dữ liệu trong bộ nhớ, được dựng lại bằng cách replay log lệnh khi khởi động; ảnh chụp (snapshot) định kỳ để replay nhanh.
+- Kết quả khớp được ghi ra log bất biến trước khi công bố, để có thể tái hiện chính xác.
+
+### Bảng trade-off
+| Thiết kế | Độ đúng | Hiệu năng | Khi nào dùng |
+|---|---|---|---|
+| Một luồng/mã, in-memory + log | Cao, tất định | Rất nhanh (micro-giây tới mili-giây mỗi lệnh) | Matching engine thật, mô phỏng sàn |
+| Khoá DB từng mã | Cao nhưng khó suy luận | Chậm, nghẽn khi tranh chấp | Hệ thống nhỏ, ít lệnh |
+| Nhiều luồng cùng sửa sổ | Dễ sai | Nhanh trên lý thuyết | Không nên dùng cho khớp lệnh |
+
+### Lỗi hay gặp
+- Khớp ở giá của lệnh đến sau (taker) khiến một bên được lợi bất công và sai quy tắc sàn.
+- Bỏ qua khối lượng còn lại sau khi khớp một phần, dẫn tới lệnh "biến mất" khỏi sổ.
+- Huỷ lười nhưng quên kiểm tra cờ huỷ khi tới lượt khớp, sinh trade với lệnh đã huỷ.
+- Dùng số thực dấu phẩy động (double) cho giá: 25.100 lưu thành 25100.0000001, so sánh sai. Giá phải là số nguyên theo đơn vị nhỏ nhất hoặc BigDecimal.
+- Replay log không tất định vì phụ thuộc giờ hệ thống hoặc thứ tự thread — hai lần replay ra hai kết quả khác nhau.
+
+### Ví dụ đời thực
+Một đơn vị vận hành sàn mô phỏng cho cuộc thi đầu tư dùng DB với khoá theo mã. Khi 4.000 sinh viên cùng đặt lệnh lúc 9h15, p99 độ trễ khớp lên 2,3 giây và xuất hiện 37 cặp khớp vượt khối lượng do logic đọc-sửa-ghi. Chuyển sang một luồng/mã với sổ trong bộ nhớ: p99 còn 4ms, throughput đỉnh 12.000 lệnh/giây, và nhờ log lệnh bất biến, tranh chấp về kết quả khớp được giải quyết bằng replay thay vì tranh cãi.
+
+### Trả lời mẫu khi phỏng vấn
+"Matching engine của tôi giữ hai bên bid và ask, mỗi bên sắp theo giá tốt nhất trước và trong cùng một mức giá là hàng đợi FIFO — đó là price-time priority. Điều quan trọng nhất là tính tất định, nên tôi chạy một luồng duy nhất cho mỗi mã: lệnh vào qua một hàng đợi có thứ tự, không khoá, kết quả luôn tái hiện được. Khi khớp, tôi lấy mức giá đối diện tốt nhất, nếu giá thoả thì khớp tại giá của lệnh nằm sẵn trong sổ, khối lượng là min của hai bên, sinh trade, trừ khối lượng, lặp tới khi hết hoặc hết giá thoả, phần dư đặt vào cuối hàng đợi của mức giá. Tôi lưu log lệnh và trade bất biến để replay dựng lại sổ khi khởi động, snapshot định kỳ cho nhanh. Giá lưu bằng số nguyên đơn vị nhỏ nhất, không dùng double. Với nhiều instance, mỗi mã chỉ một instance sở hữu tại một thời điểm."
+
+> Senior tip: hãy viết một bộ test replay: cho một chuỗi lệnh cố định, chạy hai lần và so từng trade. Bộ test này bắt được gần hết lỗi tinh vi của matching engine, kể cả lỗi chỉ xuất hiện khi có huỷ lười hoặc khớp một phần. Đo p99 và p999 theo từng mã, không chỉ trung bình — một mã thanh khoản cao có thể làm nghẽn cả luồng.
+
+> Cụm từ: Order book là sổ hai chiều lệnh chờ mua/bán. Price-time priority là ưu tiên giá tốt trước, cùng giá thì thời gian trước. Taker là lệnh đến sau khớp với lệnh nằm sẵn (maker).
+`,
+  follow: [
+    'Bạn xử lý huỷ lười (lazy delete) trong sổ lệnh thế nào để không sinh trade với lệnh đã huỷ?',
+    'Snapshot và replay log hoạt động ra sao khi engine khởi động lại giữa phiên?',
+    'Muốn scale theo số mã và theo số lệnh, bạn phân vùng và đo hiệu năng thế nào?'
+  ],
+  tags: ['order book', 'matching engine', 'price-time priority', 'chứng khoán', 'single writer', 'tất định']
+},
+{
+  id: 'banking-084',
+  topic: 'banking',
+  level: 'senior',
+  q: 'Các phiên giao dịch chứng khoán (ATO, khớp liên tục, ATC) khác nhau thế nào, các loại lệnh LO/MP/ATO/ATC ra sao, và backend phải xử lý gì khi chuyển phiên?',
+  a: `**Tóm tắt:** Một ngày giao dịch chia thành các phiên: mở cửa (ATO — khớp tại giá mở cửa), khớp liên tục (khớp ngay khi mua bán gặp nhau), và đóng cửa (ATC — khớp tại giá đóng cửa). Mỗi phiên chỉ cho phép một số loại lệnh nhất định, và giá khớp được xác định theo quy tắc riêng của từng phiên. Backend phải coi phiên là **trạng thái có thời hạn** (có giờ bắt đầu/kết thúc thật, có thể đổi lịch), chặn lệnh sai phiên, và xử lý chuyển phiên một cách nguyên tử: huỷ lệnh ATO/ATC còn lại, chốt giá, rồi mở phiên mới.
+
+### Thuật ngữ và các phiên trong ngày
+- **Phiên (session)**: khoảng thời gian trong ngày mà sàn áp một tập quy tắc giao dịch. Ví dụ đời thường: như giờ mở cửa, giờ cao điểm và giờ đóng cửa của một cửa hàng — mỗi lúc có quy định phục vụ khác nhau.
+- **ATO (At-The-Open)**: lệnh chỉ dùng trong phiên mở cửa, khớp tại một giá mở cửa duy nhất do sàn xác định để tối đa khối lượng khớp.
+- **ATC (At-The-Closing)**: tương tự nhưng cho phiên đóng cửa; khớp tại một giá đóng cửa duy nhất. ATO/ATC không khớp liên tục, không hiện trong sổ lệnh theo cách thông thường, và nếu không khớp thì bị huỷ tự động hết phiên.
+- **Khớp liên tục (continuous)**: lệnh vào là khớp ngay với lệnh đối diện nếu thoả giá — phần lớn thời gian trong ngày.
+- **LO (Limit Order)**: lệnh giới hạn, nêu rõ giá mua tối đa hoặc giá bán tối thiểu.
+- **MP (Market Price)**: lệnh thị trường, chỉ nêu khối lượng, chấp nhận khớp theo giá tốt nhất hiện có. Trên thị trường Việt Nam, MP thường chỉ được dùng trong phiên khớp liên tục và bị giới hạn bởi giá trần/sàn.
+- **Giá trần / giá sàn**: mức giá cao nhất và thấp nhất được phép trong ngày, tính từ giá tham chiếu và biên độ (ví dụ 7% trên HOSE). Bước giá là đơn vị nhỏ nhất được phép thay đổi.
+- **Giá tham chiếu**: giá đóng cửa ngày trước (đã điều chỉnh khi chia cổ tức, phát hành thêm) dùng để tính trần/sàn.
+
+### Vì sao ATO/ATC cần quy tắc riêng
+Với khớp liên tục, mỗi lệnh khớp riêng lẻ nên dễ: lấy giá đối diện tốt nhất. Với ATO/ATC, sàn phải chọn **một giá** cho tất cả lệnh khớp sao cho khối lượng khớp là lớn nhất — về bản chất là tìm điểm cân bằng giữa cung và cầu:
+
+1. Gom tất cả lệnh ATO và lệnh LO còn hiệu lực.
+2. Với mỗi mức giá khả thi, tính tổng khối lượng mua sẵn sàng trả từ mức đó trở lên và tổng khối lượng bán sẵn sàng nhận từ mức đó trở xuống.
+3. Chọn mức giá cho khối lượng khớp nhỏ nhất của hai bên là lớn nhất; nếu hoà thì ưu tiên mức gần giá tham chiếu hơn (quy tắc cụ thể do sàn công bố).
+
+Vì vậy backend của công ty chứng khoán **không tự khớp ATO/ATC** — nó gửi lệnh lên sàn, nhận báo cáo khớp sau khi sàn chốt giá. Điều này rất hay bị hiểu nhầm khi phỏng vấn.
+
+### Ma trận loại lệnh theo phiên
+| Loại lệnh | Phiên mở cửa (ATO) | Khớp liên tục | Phiên đóng cửa (ATC) |
+|---|---|---|---|
+| LO (giới hạn) | Có (tham gia tính giá mở cửa) | Có | Có (tham gia tính giá đóng cửa) |
+| MP (thị trường) | Thường không | Có | Thường không |
+| ATO | Bắt buộc dùng loại này | Không | Không |
+| ATC | Không | Không | Bắt buộc dùng loại này |
+
+Bảng trên là mô tả khái quát; chi tiết luôn theo quy chế hiện hành của từng sàn, và đây chính là lý do quy tắc phiên phải **cấu hình được**, không hard-code.
+
+### Backend xử lý chuyển phiên thế nào
+1. **Trạng thái phiên là dữ liệu, không phải if-else theo giờ**: bảng trading_session gồm mã sàn, ngày, loại phiên, thời điểm bắt đầu/kết thúc, trạng thái. Có job chuyển trạng thái theo lịch, có thể sửa khi sàn đổi giờ hoặc có sự cố.
+2. **Chặn ở tầng API**: một lệnh ATO gửi lúc 9h16 (đã sang khớp liên tục) phải bị từ chối ngay với mã lỗi rõ ràng, không đẩy sang sàn để bị từ chối muộn.
+3. **Chuyển phiên nguyên tử**: huỷ các lệnh ATO/ATC chưa khớp, nhả hold tương ứng, chốt số liệu phiên, rồi mới bật phiên mới. Nếu làm dở dang mà crash, phải replay được từ log.
+4. **Kiểm tra giá theo phiên**: biên độ trần/sàn và bước giá có thể khác nhau (ví dụ phiên ATO/ATC cho phép dải giá rộng hơn), nên luôn kiểm tra bằng bộ quy tắc theo phiên.
+5. **Đồng bộ với sàn**: giờ hệ thống của bạn và giờ sàn có thể lệch vài trăm mili-giây; hãy coi trạng thái do sàn công bố là nguồn sự thật cuối cùng.
+
+### Code minh hoạ: kiểm tra lệnh theo phiên
+~~~java
+public void validate(OrderRequest r, Session s) {
+    // 1) Loại lệnh có được dùng trong phiên này không
+    if (!s.allowedTypes().contains(r.type())) {
+        throw new Rejected("Loại lệnh " + r.type() + " không dùng được trong phiên " + s.code());
+    }
+    // 2) ATO/ATC không được kèm giá; LO/MP phải có/không có giá đúng quy định
+    if (r.type() == Type.ATO || r.type() == Type.ATC) {
+        if (r.price() != null) throw new Rejected("Lệnh " + r.type() + " không được đặt giá");
+    }
+    // 3) Giá trong biên độ và đúng bước giá của phiên (MP lấy giá trần/sàn làm biên)
+    BigDecimal floor = s.floorPrice(r.symbol());
+    BigDecimal ceil  = s.ceilingPrice(r.symbol());
+    BigDecimal price = r.effectiveLimitPrice();     // MP -> giá trần khi mua, giá sàn khi bán
+    if (price.compareTo(floor) < 0 || price.compareTo(ceil) > 0) {
+        throw new Rejected("Giá ngoài biên độ " + floor + " - " + ceil);
+    }
+    if (price.remainder(s.tickSize(r.symbol())).compareTo(BigDecimal.ZERO) != 0) throw new Rejected("Sai bước giá");
+    // 4) Khối lượng là bội số lô
+    if (r.quantity() % s.lotSize(r.symbol()) != 0) throw new Rejected("Khối lượng sai lô");
+}
+~~~
+
+### Lỗi hay gặp
+- Hard-code giờ phiên trong code; hôm sàn đổi giờ hoặc nghỉ lễ bất thường là hỏng cả ngày.
+- Coi lệnh ATO/ATC như LO thường, đẩy vào sổ khớp liên tục và báo khách "đã khớp" trong khi sàn chưa chốt giá.
+- Không huỷ ATO/ATC chưa khớp khi hết phiên, để lệnh treo và hold tiền vô hạn.
+- Tính trần/sàn từ giá đóng cửa thô mà quên điều chỉnh giá tham chiếu khi có chia cổ tức — lệch cả biên độ.
+- Dùng MP không giới hạn giá: khách có thể khớp ở giá xa hơn kỳ vọng. Luôn giới hạn MP trong biên độ trần/sàn.
+- So sánh giá bằng double: sai ở bước giá.
+
+### Ví dụ đời thực
+Một công ty chứng khoán để giờ phiên trong file cấu hình tĩnh. Vào ngày sàn thông báo mở cửa muộn 15 phút do sự cố kỹ thuật, hệ thống vẫn mở nhận lệnh đúng giờ cũ: khoảng 320 lệnh ATO bị đẩy lên sàn khi sàn chưa mở, bị từ chối hàng loạt, khách thấy "lệnh lỗi" ngay giữa phiên mở cửa. Sau khi chuyển trạng thái phiên thành dữ liệu có hiệu lực theo thời điểm (có bảng phiên và job điều khiển bởi sàn), cùng tình huống lặp lại nhưng hệ thống giữ lệnh ở trạng thái chờ và nhận đúng thời điểm, khiếu nại về "lệnh ma" giảm hẳn; số lệnh bị sàn từ chối do sai phiên từ khoảng 300/ngày xuống dưới 5.
+
+### Trả lời mẫu khi phỏng vấn
+"Trong ngày giao dịch có ba phiên chính: ATO mở cửa, khớp liên tục, ATC đóng cửa. ATO và ATC không khớp từng lệnh mà sàn chọn một giá duy nhất để khối lượng khớp lớn nhất, nên phía công ty chứng khoán chúng tôi chỉ gửi lệnh và chờ báo cáo khớp, không tự khớp. Lệnh LO dùng được ở cả ba phiên, MP chỉ ở khớp liên tục và luôn bị chặn trong biên độ trần sàn, còn ATO/ATC chỉ dùng đúng phiên của nó và không được kèm giá. Về backend, tôi coi phiên là dữ liệu có hiệu lực theo thời điểm chứ không hard-code giờ: API kiểm tra loại lệnh, giá, biên độ, bước giá và lô theo đúng phiên đang chạy. Khi chuyển phiên, tôi huỷ ATO hoặc ATC chưa khớp, nhả hold, chốt số liệu và mở phiên mới một cách nguyên tử, có thể replay từ log nếu crash. Cuối cùng, trạng thái do sàn công bố là chân lý, vì đồng hồ hai bên có thể lệch."
+
+> Senior tip: đặt quy tắc phiên và quy tắc giá vào một module "market rules" có version và ngày hiệu lực. Khi sàn đổi biên độ hoặc thêm loại lệnh, bạn triển khai bằng dữ liệu và bật theo thời điểm, không phải deploy code trong phiên — và luôn có test chạy lại lịch sử một ngày giao dịch thật để so kết quả.
+
+> Cụm từ: ATO/ATC là lệnh khớp tại giá mở cửa/đóng cửa. LO là lệnh giới hạn có giá. MP là lệnh thị trường không nêu giá. Giá tham chiếu là mốc để tính giá trần và giá sàn trong ngày.
+`,
+  follow: [
+    'Vì sao phía công ty chứng khoán không nên tự khớp lệnh ATO/ATC mà phải chờ sàn chốt giá?',
+    'Bạn mô hình hoá trạng thái phiên và xử lý chuyển phiên an toàn khi crash giữa chừng thế nào?',
+    'Giá tham chiếu bị điều chỉnh do chia cổ tức ảnh hưởng đến kiểm tra trần/sàn ra sao?'
+  ],
+  tags: ['ATO', 'ATC', 'phiên giao dịch', 'LO', 'MP', 'giá trần sàn', 'chứng khoán']
+},
+{
+  id: 'banking-085',
+  topic: 'banking',
+  level: 'senior',
+  q: 'Hold tiền và chứng khoán khi đặt lệnh hoạt động thế nào, nhả hold ra sao khi khớp/huỷ, và chu kỳ thanh toán T+2 ảnh hưởng gì tới số dư khả dụng?',
+  a: `**Tóm tắt:** Khi khách đặt lệnh mua, hệ thống giữ (hold) một khoản tiền; khi đặt lệnh bán, giữ số cổ phiếu tương ứng. Hold không phải là trừ tiền thật — nó chỉ làm giảm **số dư khả dụng** để khách không tiêu hai lần cùng một khoản. Khi khớp, hold được chuyển thành ghi nợ thật (tiền rời tài khoản) hoặc chuyển giao cổ phiếu; khi huỷ hoặc huỷ phần còn lại, hold được nhả. Chu kỳ thanh toán T+2 nghĩa là tiền và cổ phiếu chính thức đổi chủ vào ngày làm việc thứ hai sau ngày khớp, nên trong hai ngày đó khách thấy tiền "đã bị trừ" nhưng người bán chưa nhận được.
+
+### Thuật ngữ
+- **Số dư (balance)**: tổng tiền theo sổ. **Số dư khả dụng (available)**: phần được phép dùng ngay = số dư trừ tiền đang hold và các khoản phong toả khác. Ví dụ đời thường: trong ví có 1 triệu nhưng 600 nghìn đang đặt cọc giữ chỗ, thì số dư 1 triệu, khả dụng 400 nghìn.
+- **Hold / reservation**: bản ghi "khoản tiền/cổ phiếu X đang bị giữ cho lệnh Y", có trạng thái ACTIVE, CONSUMED, RELEASED.
+- **T+2**: ngày giao dịch T, thanh toán (tiền và chứng khoán chuyển chính thức) vào T+2 ngày làm việc. Ví dụ khớp thứ Hai thì thanh toán thứ Tư; khớp thứ Sáu thì thanh toán thứ Ba tuần sau (bỏ qua thứ Bảy, Chủ nhật và ngày lễ).
+- **Thanh toán (settlement)**: bước chuyển tiền và chứng khoán giữa các bên qua hệ thống lưu ký (VSD) và ngân hàng thanh toán.
+- **Sao kê (statement)**: bản ghi đối chiếu số dư, giao dịch theo kỳ. Hay dùng để khách tự kiểm tra.
+- **Tiền về chờ (pending cash)**: tiền bán chứng khoán đã khớp nhưng chưa tới ngày thanh toán — hiển thị nhưng chưa dùng được.
+
+### Vì sao phải hold trước khi gửi lệnh
+Lệnh chứng khoán có thể khớp ngay lập tức và không thể "undo" một lần khớp. Nếu chỉ kiểm tra lúc khớp, hai request mua 60 triệu từ một tài khoản 100 triệu gửi gần như đồng thời có thể cùng qua kiểm tra, cùng khớp 60 triệu, và tài khoản âm 20 triệu. Hold biến việc kiểm tra thành một thao tác nguyên tử có trạng thái:
+
+1. Nguyên tử: trừ available và tạo bản ghi hold trong **cùng một transaction**.
+2. Kiểm tra điều kiện: available phải >= khoản hold, nếu không từ chối ngay.
+3. Sổ sách rõ ràng: mọi hold đều có id, lệnh tham chiếu, thời điểm, số tiền, trạng thái.
+
+### Vòng đời của hold
+~~~text
+Tạo hold (ACTIVE) --lệnh khớp 1 phần--> CONSUMED cho phần khớp + vẫn ACTIVE cho phần còn lại
+ACTIVE --lệnh khớp hết--> CONSUMED toàn bộ --> ghi nợ tiền thật / chuyển cổ phiếu
+ACTIVE --huỷ lệnh / hết phiên--> RELEASED --> available tăng lại
+CONSUMED --không thể đảo--> chỉ đảo bằng giao dịch hoàn/điều chỉnh có duyệt
+~~~
+
+Điểm cần nhớ: **hold không phải bút toán kế toán**. Nó là lớp "giữ chỗ" phục vụ kiểm soát sức mua; tiền chỉ thực sự di chuyển ở bước thanh toán.
+
+### Tiền đi qua những trạng thái nào (ví dụ mua 1.000 cổ phiếu giá 25.000)
+1. **Đặt lệnh**: hold = 1.000 × 25.000 = 25.000.000 cộng phí dự kiến (ví dụ 0,15% = 37.500). Available giảm 25.037.500.
+2. **Khớp một phần 400**: hold còn ACTIVE 15.022.500 (tương ứng 600 cổ phiếu), phần 400 chuyển CONSUMED; sinh nghĩa vụ thanh toán.
+3. **Khớp hết**: toàn bộ hold CONSUMED; khoản tiền vào hàng đợi thanh toán T+2.
+4. **T+2**: tiền rời tài khoản (ghi nợ), cổ phiếu vào tài khoản chứng khoán của khách. Nếu khách bán ngay trong T+0 hoặc T+1, tuỳ quy định hiện hành, cổ phiếu mua chưa về nên có thể chưa bán được (trước đây phải chờ T+2, hiện nhiều thị trường cho bán trong ngày nhưng tiền chỉ dùng được sau thanh toán).
+5. **Huỷ phần còn lại**: nhả hold đúng phần chưa khớp.
+
+### Code minh hoạ: hold và nhả hold an toàn
+~~~java
+// Trừ available có điều kiện để không bao giờ âm, kèm tạo hold trong cùng transaction
+@Transactional
+public Hold holdForOrder(long accountId, long orderId, BigDecimal amount) {
+    int n = jdbc.update("""
+        UPDATE cash_account
+           SET available = available - ?
+         WHERE id = ? AND available >= ?
+        """, amount, accountId, amount);       // điều kiện available >= amount là chốt chặn
+    if (n != 1) throw new InsufficientFunds(accountId, amount);
+    return holdRepo.insert(accountId, orderId, amount, HoldStatus.ACTIVE);
+}
+
+// Nhả hold đúng một lần: chuyển ACTIVE -> RELEASED bằng CAS để job chạy lặp không cộng tiền 2 lần
+@Transactional
+public void release(long holdId) {
+    int n = holdRepo.updateStatusIfCurrent(holdId, HoldStatus.ACTIVE, HoldStatus.RELEASED);
+    if (n == 1) {
+        holdRepo.addAvailable(holdId);          // cộng tiền lại cho available
+    }
+}
+~~~
+
+Hai chốt chặn quan trọng: {{WHERE available >= amount}} (không âm) và CAS ACTIVE -> RELEASED (job chạy lại không cộng tiền hai lần).
+
+### Bảng: hold theo giá nào và nhả khi nào
+| Quyết định | Lựa chọn A | Lựa chọn B | Gợi ý |
+|---|---|---|---|
+| Hold giá nào khi mua LO | Theo giá đặt | Theo giá trần | Giá trần an toàn hơn nhưng giữ nhiều tiền hơn; thực tế hay hold theo giá đặt + phí, kiểm tra lại lúc khớp |
+| Khi nào nhả hold | Ngay khi gửi huỷ | Khi sàn xác nhận huỷ | Chờ xác nhận, vì lệnh có thể khớp trong lúc chờ |
+| Xử lý hold khi khớp một phần | Giữ nguyên cả khoản | Tách phần khớp và phần còn lại | Tách rõ ràng, dễ đối soát |
+
+### Lỗi hay gặp
+- Cộng available khi nhả hold mà không kiểm tra trạng thái, job retry làm khách có thêm tiền "từ trên trời".
+- Hold nhưng không bao giờ có job dọn hold mồ côi (lệnh bị xoá, phiên đổi), tiền bị giữ vĩnh viễn.
+- Trộn available và balance trong cùng một cột, không thể giải thích cho khách vì sao "có tiền mà không mua được".
+- Hiển thị tiền bán chứng khoán là khả dụng ngay khi khớp, khách dùng tiền trước ngày thanh toán rồi âm quỹ.
+- Nhả hold khi khách sửa lệnh nhưng lệnh cũ vẫn khớp được.
+
+### Ví dụ đời thực
+Một công ty chứng khoán bị khiếu nại hàng loạt sau một buổi sáng có sự cố mạng: khách huỷ lệnh, hold được nhả, nhưng do job tra soát chạy lại sau đó, hold bị nhả lần hai và available tăng gấp đôi. Một số khách dùng "tiền ảo" đó mua tiếp, cuối ngày âm 1,7 tỷ đồng phải xử lý thủ công. Sau khi chuyển sang CAS ACTIVE -> RELEASED và thêm ràng buộc tổng available luôn bằng balance trừ tổng hold ACTIVE (kiểm tra trong job đối soát nội bộ mỗi 5 phút), sự cố không lặp lại; thời gian phát hiện lệch giảm từ cuối ngày xuống dưới 5 phút.
+
+### Trả lời mẫu khi phỏng vấn
+"Hold là cách tôi đảm bảo khách không tiêu hai lần cùng một khoản. Khi đặt lệnh mua, tôi trừ số dư khả dụng và tạo bản ghi hold trong cùng một transaction, với điều kiện available lớn hơn hoặc bằng khoản hold — nếu không thì từ chối ngay. Hold có trạng thái ACTIVE, CONSUMED, RELEASED; khớp một phần thì phần khớp chuyển CONSUMED, phần còn lại vẫn ACTIVE; khớp hết thì toàn bộ CONSUMED và khoản tiền đi vào hàng đợi thanh toán T+2; huỷ hoặc hết phiên thì RELEASED và available tăng lại. Nhả hold tôi làm bằng compare-and-set ACTIVE sang RELEASED, nên job chạy lại không cộng tiền hai lần. Điểm quan trọng là hold không phải bút toán: tiền chỉ thực sự rời tài khoản ở bước thanh toán, còn tiền bán chưa tới T+2 thì hiển thị là đang chờ, không cho dùng. Tôi luôn có job đối soát tổng available bằng balance trừ tổng hold để phát hiện lệch sớm."
+
+> Senior tip: hãy xem hold như một sổ cái phụ có số dư riêng, và đối soát nó liên tục: tổng hold ACTIVE theo tài khoản phải khớp đúng phần chênh giữa balance và available. Khi con số này lệch, gần như luôn là hold bị nhả hai lần hoặc hold mồ côi — cả hai đều là lỗi tiền, không phải lỗi hiển thị.
+
+> Cụm từ: Hold là tạm giữ tiền/chứng khoán cho một lệnh. Available là số dư được phép dùng. T+2 là thanh toán vào ngày làm việc thứ hai sau ngày khớp.
+`,
+  follow: [
+    'Nếu khách bán chứng khoán vừa mua trong T+0, hệ thống xử lý hold cổ phiếu chưa về thế nào?',
+    'Bạn đối soát hold với balance và available ra sao, và tần suất bao nhiêu là hợp lý?',
+    'Khi sàn huỷ lệnh hàng loạt do sự cố, làm sao nhả hold an toàn và đúng thứ tự?'
+  ],
+  tags: ['hold', 'số dư khả dụng', 'T+2', 'thanh toán', 'chứng khoán', 'sức mua']
+},
+{
+  id: 'banking-086',
+  topic: 'banking',
+  level: 'lead',
+  q: 'Giao dịch ký quỹ (margin) hoạt động thế nào: tỷ lệ ký quỹ ban đầu, tỷ lệ duy trì, call margin và bán giải chấp (force sell) — bạn thiết kế hệ thống tính toán và cảnh báo ra sao?',
+  a: `**Tóm tắt:** Giao dịch ký quỹ cho khách vay tiền của công ty chứng khoán để mua chứng khoán, thế chấp chính số chứng khoán đã mua cùng tài sản có sẵn. Hệ thống phải tính liên tục **tỷ lệ ký quỹ** (giá trị tài sản ròng chia giá trị khoản vay); khi tỷ lệ này rơi xuống dưới ngưỡng duy trì, hệ thống gọi ký quỹ thêm (call margin); xuống dưới ngưỡng giải chấp thì bán giải chấp để đưa tài khoản về ngưỡng an toàn. Đây là bài toán vừa tính đúng tiền, vừa phải chạy đúng giờ, vừa phải chịu được biến động giá lớn trong ngày.
+
+### Thuật ngữ
+- **Margin (ký quỹ)**: khách bỏ một phần vốn, công ty chứng khoán cho vay phần còn lại. Ví dụ đời thường: mua nhà trả góp — bạn có 30% tiền, ngân hàng cho vay 70%, và căn nhà là tài sản thế chấp.
+- **Tỷ lệ ký quỹ ban đầu (initial margin)**: phần vốn khách phải tự có khi mở vị thế, ví dụ 50% nghĩa là mua 100 triệu thì khách bỏ 50 triệu, vay 50 triệu.
+- **Tài sản ròng (equity)**: giá trị chứng khoán hiện tại cộng tiền mặt, trừ khoản vay và lãi vay. Nếu giá cổ phiếu giảm, equity giảm theo.
+- **Tỷ lệ ký quỹ (margin ratio)**: equity chia cho giá trị chứng khoán (hoặc chia cho dư nợ, tuỳ quy ước — phải thống nhất và ghi rõ trong tài liệu). Ví dụ equity 50 triệu, chứng khoán 100 triệu thì tỷ lệ 50%.
+- **Tỷ lệ duy trì (maintenance margin)**: ngưỡng tối thiểu phải giữ, ví dụ 35–40%. Dưới ngưỡng này thì phát sinh nghĩa vụ bổ sung tài sản.
+- **Call margin (gọi ký quỹ)**: thông báo yêu cầu khách nộp thêm tiền hoặc bán bớt chứng khoán trong thời hạn quy định.
+- **Force sell (bán giải chấp)**: công ty chứng khoán chủ động bán chứng khoán của khách để thu hồi nợ khi khách không xử lý call margin kịp.
+- **Danh mục được vay (marginable list)**: chỉ một số mã được phép giao dịch ký quỹ, và mỗi mã có tỷ lệ cho vay riêng.
+
+### Vì sao phải tính theo giá thị trường liên tục, không theo giá đặt
+Giá cổ phiếu đổi trong suốt phiên. Nếu chỉ tính margin một lần khi đặt lệnh, một cú giảm 7% (hết biên độ một phiên) có thể đẩy tài khoản từ an toàn xuống dưới ngưỡng giải chấp mà hệ thống không biết. Vì vậy:
+1. Mỗi khi có giá khớp mới hoặc giá tham chiếu cập nhật, cần tính lại equity.
+2. Không cần tính lại toàn bộ tài khoản cho mọi tick; thường dùng tính toán theo lô (batch) vài giây một lần cộng với tính tức thời khi có giao dịch làm thay đổi vị thế.
+3. Mức độ trễ phải được nêu rõ: cảnh báo dựa trên giá cách đây 5 giây khác với giá realtime, và điều này ảnh hưởng trách nhiệm pháp lý.
+
+### Công thức và ví dụ số cụ thể
+Giả sử khách có 60 triệu tiền mặt, vay thêm 40 triệu (tỷ lệ vay 40%), mua 100 triệu cổ phiếu A.
+
+~~~text
+equity       = giá trị chứng khoán - dư nợ vay - lãi vay
+margin ratio = equity / giá trị chứng khoán
+~~~
+
+| Tình huống | Giá trị CK | Dư nợ | Equity | Tỷ lệ | Trạng thái |
+|---|---|---|---|---|---|
+| Mới mua | 100 | 40 | 60 | 60% | An toàn |
+| Giảm 10% | 90 | 40 | 50 | 55,6% | An toàn |
+| Giảm 30% | 70 | 40 | 30 | 42,9% | Gần ngưỡng duy trì |
+| Giảm 40% | 60 | 40 | 20 | 33,3% | Dưới duy trì 35% -> call margin |
+| Giảm 47% | 53 | 40 | 13 | 24,5% | Dưới ngưỡng giải chấp 25% -> force sell |
+
+Ví dụ trên cho thấy chỉ cần giảm khoảng 40% là tài khoản vào diện nguy hiểm — trong khi một cổ phiếu có thể giảm 7% mỗi phiên, tức khoảng 6 phiên sàn liên tiếp.
+
+### Thiết kế hệ thống: các thành phần
+1. **Sổ vị thế và sổ nợ**: mỗi tài khoản có vị thế theo mã (số lượng, giá vốn, giá thị trường), dư nợ gốc, lãi vay tích luỹ theo ngày. Dùng BigDecimal với scale cố định, không dùng double.
+2. **Bộ tính margin**: nhận snapshot giá, tính equity và tỷ lệ; thuần tuý, không side effect, để test dễ và chạy lại được.
+3. **Máy trạng thái tài khoản**: NORMAL, WATCH, CALL_MARGIN, FORCE_SELL_PENDING, FORCE_SELLED, CLOSED. Chuyển trạng thái chỉ khi vượt ngưỡng, và có thời gian ân hạn theo hợp đồng.
+4. **Bộ thông báo**: gửi cảnh báo qua app, SMS, email với nội dung rõ: thiếu bao nhiêu tiền, hạn bao lâu, hậu quả nếu không xử lý. Đây là bằng chứng pháp lý, phải lưu lại bản đã gửi.
+5. **Bộ giải chấp**: chỉ bán đúng lượng cần thiết để đưa tỷ lệ về ngưỡng an toàn, ưu tiên mã thanh khoản cao, và ghi lại lý do, người/kíp duyệt nếu quy trình yêu cầu.
+
+### Code minh hoạ: tính margin và quyết định trạng thái
+~~~java
+public MarginState evaluate(Position p, BigDecimal price, BigDecimal loan, MarginPolicy pol) {
+    BigDecimal marketValue = p.qty().multiply(price).setScale(0, RoundingMode.DOWN);
+    BigDecimal equity = marketValue.subtract(loan);                       // tài sản ròng
+    if (marketValue.signum() == 0) return MarginState.CLOSED;
+
+    // So sánh bằng cross-multiply để tránh chia số lẻ và sai số làm tròn
+    BigDecimal ratio = equity.divide(marketValue, 6, RoundingMode.DOWN);
+
+    if (ratio.compareTo(pol.forceSellThreshold()) < 0) return MarginState.FORCE_SELL_PENDING;
+    if (ratio.compareTo(pol.maintenanceThreshold()) < 0) return MarginState.CALL_MARGIN;
+    if (ratio.compareTo(pol.maintenanceThreshold().add(pol.warnBuffer())) < 0)
+        return MarginState.WATCH;
+    return MarginState.NORMAL;
+}
+
+// Số tiền cần nộp để về ngưỡng an toàn: equity' = target * marketValue  ->  thêm = target*MV - equity
+public BigDecimal topUpNeeded(BigDecimal marketValue, BigDecimal equity, BigDecimal target) {
+    return target.multiply(marketValue).subtract(equity).max(BigDecimal.ZERO)
+                 .setScale(0, RoundingMode.CEILING);
+}
+~~~
+
+Điểm tinh tế: **ngưỡng phải so sánh bằng số đã làm tròn cùng quy ước**, nếu không có tài khoản nằm sát ngưỡng sẽ nhảy trạng thái qua lại liên tục (hiện tượng rung), gửi thông báo trùng và làm khách hoảng.
+
+### Bảng trade-off: tính margin khi nào
+| Cách | Độ chính xác | Tải hệ thống | Ghi chú |
+|---|---|---|---|
+| Realtime mỗi tick giá | Cao nhất | Rất lớn | Chỉ nên cho tài khoản sát ngưỡng hoặc dùng streaming tính toán |
+| Batch vài giây một lần | Cao, trễ vài giây | Vừa | Phổ biến; cần nêu rõ độ trễ trong hợp đồng |
+| Tính khi có giao dịch | Thấp khi giá biến động | Nhỏ | Không đủ an toàn làm cơ chế duy nhất |
+
+Thực tế thường kết hợp: batch định kỳ cho toàn bộ, cộng tính đẩy ngay khi một lệnh khớp hoặc khi giá vượt ngưỡng cảnh báo.
+
+### Lỗi hay gặp
+- Tính margin theo giá đặt lệnh thay vì giá thị trường hiện tại.
+- Trộn quy ước tỷ lệ (equity/chứng khoán so với equity/dư nợ) giữa các màn hình, khách thấy hai con số khác nhau.
+- Không tính lãi vay vào equity, khiến tỷ lệ thực tế thấp hơn hiển thị.
+- Force sell bán toàn bộ danh mục dù chỉ cần một phần, gây thiệt hại cho khách và tranh chấp.
+- Cảnh báo gửi trùng hàng trăm lần do rung trạng thái quanh ngưỡng; khách tưởng bị làm phiền và bỏ qua cảnh báo thật.
+- Không lưu bằng chứng đã gửi cảnh báo: khi tranh chấp, không chứng minh được khách đã được thông báo.
+- Dùng double cho tiền và giá dẫn tới sai ngưỡng ở đúng biên.
+
+### Ví dụ đời thực
+Một công ty chứng khoán tính margin theo lô 60 giây. Trong một phiên có tin xấu, cổ phiếu A giảm sàn hai phiên liên tiếp; tài khoản 1.240 khách vượt ngưỡng giải chấp nhưng batch chỉ phát hiện sau 60 giây, và lệnh bán giải chấp bị đẩy vào lúc giá đã sàn nên không khớp, dư nợ xấu tăng. Sau khi thêm tính đẩy theo sự kiện khi giá cập nhật và vượt ngưỡng cảnh báo (độ trễ p99 khoảng 800ms) cùng cơ chế đặt lệnh giải chấp có giá linh hoạt theo biên độ, tỷ lệ tài khoản âm vốn giảm từ 0,9% xuống 0,2% số tài khoản margin; số thông báo trùng giảm nhờ thêm khoảng đệm chống rung quanh ngưỡng.
+
+### Trả lời mẫu khi phỏng vấn
+"Margin là cho khách vay để mua chứng khoán, thế chấp bằng chính danh mục. Hệ thống của tôi tính equity bằng giá trị chứng khoán theo giá thị trường trừ dư nợ và lãi vay, rồi tính tỷ lệ ký quỹ. Ba ngưỡng cần có: ngưỡng cảnh báo, ngưỡng duy trì và ngưỡng giải chấp. Khi tỷ lệ xuống dưới ngưỡng duy trì thì chuyển trạng thái call margin và gửi thông báo kèm số tiền cần nộp, hạn và hậu quả; dưới ngưỡng giải chấp thì bán một phần đủ để đưa về ngưỡng an toàn, không bán sạch. Tôi tính theo batch vài giây một lần cho toàn bộ, cộng tính đẩy khi giá cập nhật và chạm ngưỡng cảnh báo, vì chờ 60 giây trong phiên giảm mạnh là quá lâu. Tiền và giá dùng BigDecimal với quy ước làm tròn thống nhất, có khoảng đệm chống rung quanh ngưỡng, và mọi thông báo, quyết định giải chấp đều lưu lại làm bằng chứng."
+
+> Senior tip: khoảng đệm chống rung (hysteresis) quanh mỗi ngưỡng là bắt buộc, không phải tuỳ chọn. Không có nó, một tài khoản nằm đúng ngưỡng sẽ nhận hàng trăm thông báo mỗi phiên và bạn mất uy tín đúng lúc khách cần tin bạn nhất. Đồng thời hãy lưu mọi bản thông báo đã gửi kèm thời điểm và nội dung — đó là thứ bảo vệ cả khách và công ty khi có tranh chấp.
+
+> Cụm từ: Margin là giao dịch ký quỹ (vay để mua). Equity là tài sản ròng. Call margin là yêu cầu nộp thêm tài sản. Force sell là bán giải chấp để thu hồi nợ.
+`,
+  follow: [
+    'Bạn xử lý thế nào khi giá giảm sàn liên tiếp khiến lệnh giải chấp không khớp được?',
+    'Làm sao tránh rung trạng thái quanh ngưỡng và tránh gửi thông báo trùng cho khách?',
+    'Bạn thiết kế và kiểm thử bộ tính margin để chắc chắn đúng khi có khớp một phần, lãi vay và nhiều mã?'
+  ],
+  tags: ['margin', 'call margin', 'force sell', 'ký quỹ', 'chứng khoán', 'risk']
+},
 );
