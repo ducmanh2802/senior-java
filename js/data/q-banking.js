@@ -5857,6 +5857,245 @@ Bảng dưới cho thấy câu trả lời khác nhau dẫn tới thiết kế k
     'Hệ thống tích hợp 20+ hệ thống, làm sao đảm bảo adapter không thành bottleneck khi core mới thay đổi?'
   ],
   tags: ['migration', 'core banking', 'parallel run', 'cutover', 'rollback', 'reconciliation', 'hypercare', 'adapter']
+},
+{
+  id: 'banking-077',
+  topic: 'banking',
+  level: 'senior',
+  q: 'Luồng chuyển tiền nhanh 24/7 liên ngân hàng (NAPAS) diễn ra thế nào ở mức nguyên lý, và khi giao dịch bị timeout thì xử lý thế nào để không mất tiền?',
+  a: `**Tóm tắt:** Chuyển tiền nhanh 24/7 liên ngân hàng cho phép khách gửi tiền giữa các ngân hàng bất cứ lúc nào. Ở Việt Nam chạy qua NAPAS. Khi timeout, không tự động retry hay hoàn tiền ngay; đánh dấu giao dịch đang tra soát, truy vấn lại theo mã tham chiếu duy nhất, chỉ hoàn tiền nếu sau thời hạn vẫn không xác định được.
+
+### Luồng nguyên lý
+Khách gửi yêu cầu tại ngân hàng gửi -> ngân hàng gửi đóng gói giao dịch gửi đến NAPAS -> NAPAS kiểm tra và chuyển tiền đến ngân hàng nhận -> ngân hàng nhận ghi có tài khoản người nhận -> NAPAS thông báo kết quả về ngân hàng gửi -> ngân hàng gửi thông báo khách.
+
+### Khi timeout
+Timeout nghĩa là chưa biết kết quả, không phải thất bại. Tiền có thể đã được trừ ở bên gửi hoặc đã được cộng ở bên nhận mà thông báo bị mất. Vì vậy:
+- Không tự động retry và không tự động trừ tiền lại.
+- Đánh dấu giao dịch là đang tra soát (PENDING_UNKNOWN), tiền bị tạm giữ.
+- App hiển thị "đang xử lý", không báo lỗi ngay.
+- Tra soát theo mã tham chiếu duy nhất: hỏi NAPAS hoặc ngân hàng nhận xem giao dịch đã được thực hiện chưa.
+- Nếu đã thực hiện -> cập nhật thành công, thông báo khách.
+- Nếu chưa thực hiện và qua thời hạn -> hoàn tiền về tài khoản người gửi, mở ticket.
+- Nếu không xác định được sau thời hạn -> leo thang cho nhân viên kiểm tra tay.
+
+### Lỗi hay gặp
+- Tự động retry khi timeout -> tiền bị trừ/cộng nhiều lần.
+- Quên lưu mã tham chiếu duy nhất -> không tra soát được.
+- Thông báo thất bại ngay khi timeout, chưa tra soát xong -> khách hoang mang.
+- Không có giới hạn số lần tra soát -> giao dịch treo vĩnh viễn.
+
+### Ví dụ đời thực
+Một khách gửi 5 triệu VND lúc 20 giờ, hệ thống báo timeout sau 10 giây. Dev không tự động gửi lại lệnh trừ tiền. Tra soát theo mã tham chiếu duy nhất: NAPAS xác nhận tiền đã được cộng vào tài khoản người nhận -> cập nhật giao dịch thành "thành công" và gửi SMS cho khách. Nếu sau 24 giờ vẫn không xác định được -> hoàn 5 triệu VND về tài khoản người gửi và mở ticket cho nhân viên kiểm tra tay.
+
+### Trả lời mẫu khi phỏng vấn
+"Chuyển tiền nhanh 24/7 qua NAPAS hoạt động như bưu điện điện tử giữa ngân hàng gửi và ngân hàng nhận. Khi timeout, tôi không bao giờ tự động retry hay tự động trừ tiền lại, vì tiền có thể đã bị trừ ở bên gửi hoặc đã được cộng ở bên nhận mà thông báo bị mất. Tôi đánh dấu giao dịch đang tra soát, truy vấn lại NAPAS bằng mã tham chiếu duy nhất, và chỉ hoàn tiền nếu sau thời gian quy định vẫn không xác định được."
+
+> Senior tip: Trái tim của chuyển khoản liên ngân hàng là "một giao dịch, một mã tham chiếu duy nhất, không bao giờ tự động thử lại khi lỗi".
+
+> Cụm từ: Transaction ID (mã giao dịch) là chuỗi ký tự duy nhất gắn với mỗi giao dịch.
+`,
+  follow: [
+    'Tại sao không được tự động retry khi giao dịch liên ngân hàng bị timeout?',
+    'Mã tham chiếu duy nhất giúp tra soát giao dịch thế nào?',
+    'Giao dịch đang tra soát quá một tháng, bạn xử lý thế nào?'
+  ],
+  tags: ['NAPAS', 'chuyen khoan lien ngan hang', 'timeout', 'tra sot']
+},
+{
+  id: 'banking-078',
+  topic: 'banking',
+  level: 'mid',
+  q: 'QR thanh toán chuẩn chung (VietQR) hoạt động thế nào từ lúc khách quét mã đến khi tiền vào tài khoản người bán, và vì sao ảnh "chuyển khoản thành công" không phải bằng chứng?',
+  a: `**Tóm tắt:** Mã QR thanh toán chỉ là "tờ giấy ghi sẵn thông tin chuyển khoản". App ngân hàng của khách quét, đọc các trường đó rồi khởi tạo lệnh chuyển khoản nhanh 24/7. Lệnh đi qua hệ thống chuyển mạch (NAPAS), tiền vào tài khoản người bán, người bán nhận báo có qua app hoặc webhook. QR không giữ tiền và không chứng minh đã thanh toán.
+
+### QR tĩnh và QR động
+QR tĩnh in ra dán quầy, không có số tiền, khách tự nhập; QR động sinh theo đơn hàng, có số tiền, mã đơn, hết hạn vài phút.
+
+### Luồng
+Khách quét QR -> app đọc TLV -> xác nhận -> gửi lệnh chuyển khoản nhanh 24/7 qua NAPAS -> tiền vào tài khoản người bán -> core người bán gửi webhook báo có -> POS người bán đối chiếu, xác nhận đơn.
+
+### Vì sao không tin ảnh chụp
+Khách chụp màn hình "Giao dịch thành công" gửi cho người bán là chiêu lừa phổ biến: ảnh ghép rất dễ, còn tiền thì chưa chuyển. Luồng đúng: tạo đơn trạng thái CHO_THANH_TOAN, sinh QR động gắn mã đơn; nhận webhook báo có hoặc chủ động gọi API tra soát theo mã tham chiếu; kiểm tra đúng số tiền, đúng tài khoản thụ hưởng, đúng mã đơn, chưa từng được dùng cho đơn khác; chỉ khi đó chuyển đơn sang DA_THANH_TOAN và cho phép giao hàng.
+
+### Lỗi hay gặp
+- Cho phép thanh toán khi chưa có xác nhận từ phía ngân hàng (chỉ tin thông báo của khách).
+- Không gắn nội dung chuyển khoản với mã đơn.
+- Dùng số thập phân cho VND ở mọi nơi rồi làm tròn lệch khi đối soát.
+- QR động không có hạn.
+- Coi webhook là tin cậy tuyệt đối mà không kiểm tra chữ ký/nguồn và không xử lý trùng.
+
+### Ví dụ đời thực
+Một chuỗi cửa hàng tiện lợi 200 chi nhánh triển khai VietQR động. Một ngày, chi nhánh A báo 15 đơn hàng bị "mất tiền": khách quét QR, app báo thành công, nhưng POS không nhận webhook. Dev tra soát log POS và NAPAS thấy: webhook bị thất lạc do sự cố mạng 5 phút. Hệ thống POS không có job tra soát chủ động, trạng thái đơn vẫn là AWAITING. Cách xử lý: chạy script đối soát thủ công cho 15 đơn, xác nhận tiền đã về tài khoản, chuyển đơn sang PAID. Sau đó bổ sung job cron 5 phút tra soát theo mã tham chiếu NAPAS.
+
+### Trả lời mẫu khi phỏng vấn
+"VietQR chỉ là kênh khởi tạo yêu cầu chuyển khoản, không giữ tiền và không chứng minh đã thanh toán. QR tĩnh in ra dán quầy, không có số tiền và mã đơn; QR động sinh theo đơn hàng, có số tiền, mã đơn, hết hạn vài phút. Luồng: khách quét QR -> app đọc TLV -> xác nhận -> gửi lệnh chuyển khoản nhanh 24/7 qua NAPAS -> tiền vào tài khoản người bán -> core người bán gửi webhook báo có. Quan trọng: không bao giờ xác nhận đơn chỉ dựa vào ảnh 'chuyển khoản thành công' khách chụp, phải nhận webhook hoặc chủ động tra soát theo mã tham chiếu NAPAS."
+
+> Senior tip: QR chỉ là kênh khởi tạo yêu cầu (initiation), còn kênh quyết định là hệ thống chuyển mạch và sổ cái. Thiết kế phải có mã đơn duy nhất, trạng thái "đang chờ xác nhận", và job tra soát chủ động.
+
+> Cụm từ: Webhook là việc hệ thống A chủ động gọi API của B khi có sự kiện.
+`,
+  follow: [
+    'Vì sao không được xác nhận đơn hàng chỉ dựa vào ảnh "chuyển khoản thành công" khách gửi?',
+    'QR động cần những dữ liệu nào để đối soát tự động, và xử lý khi QR hết hạn ra sao?',
+    'Webhook báo có bị gửi trùng hai lần, hệ thống người bán phải ứng xử thế nào?'
+  ],
+  tags: ['VietQR', 'QR tinh', 'QR dong', 'doi soat', 'webhook']
+},
+{
+  id: 'banking-079',
+  topic: 'banking',
+  level: 'lead',
+  q: 'Tokenization thẻ và PCI-DSS là gì ở mức nguyên lý, và vì sao không lưu CVV trong hệ thống?',
+  a: `**Tóm tắt:** PCI-DSS là tiêu chuẩn bảo mật cho mọi đơn vị lưu, xử lý hoặc truyền số thẻ thanh toán. Nguyên tắc quan trọng: không bao giờ lưu mã CVV sau khi xác nhận thanh toán; dùng tokenization để thay số thẻ thật bằng mã giả; và che số thẻ khi ghi log.
+
+### PCI-DSS là gì
+PCI-DSS (Payment Card Industry Data Security Standard) là bộ quy tắc bảo mật mà mọi đơn vị xử lý thẻ phải tuân theo. Nó không phải pháp luật nhưng là yêu cầu của các tổ chức thẻ (Visa, Mastercard...). Nếu vi phạm, đơn vị có thể bị phạt, bị ngừng dịch vụ thẻ.
+
+### Không lưu CVV
+CVV (Card Verification Value) là 3 số in sau thẻ, dùng để xác minh người mua có thẻ trong tay khi mua online. PCI-DSS cấm tuyệt đối lưu CVV sau khi xác nhận thanh toán, vì nếu không lưu CVV, kẻ xấu lấy được số thẻ mà không thể mua online (vì cần CVV).
+
+### Tokenization là gì
+Tokenization thay thế số thẻ thật (PAN - Primary Account Number) bằng một mã giả (token) ngẫu nhiên, không có giá trị toán học với số thẻ. Token được lưu trong hệ thống, số thẻ thật lưu ở một hệ thống biệt lập (vault) được bảo mật rất cao. Nếu cơ sở dữ liệu ngân hàng bị lộ, kẻ xấu chỉ lấy được token, không thể chuyển đổi thành số thẻ thật không có khóa mã hóa của vault. Token khác mã hóa (encryption): mã hóa cần khóa để giải mã, token không cần (cần hệ thống vault để đổi trả).
+
+### Che số thẻ trong log
+Log hệ thống không được chứa số thẻ đầy đủ. Nếu cần ghi log để xác định lỗi, chỉ ghi 4 số cuối hoặc che tất cả ngoại trừ 4 số cuối.
+
+### Lỗi hay gặp
+- Lưu CVV trong cơ sở dữ liệu -> vi phạm PCI-DSS.
+- Lưu số thẻ thật ở dạng văn bản thô.
+- Ghi số thẻ đầy đủ vào log để debug.
+- Token không được mã hóa hoặc lưu ở hệ thống không bảo mật.
+- Nhân viên có thể xem số thẻ đầy đủ trong hệ thống quản lý.
+
+### Ví dụ đời thực
+Một dev đang debug lỗi giao dịch thanh toán thẻ và viết log: "Giao dịch thẻ 1234 5678 9012 3456 thành công". Kiểm tra bảo mật phát hiện log chứa số thẻ đầy đủ (PAN) — vi phạm tiêu chuẩn PCI-DSS. Điều tra code thấy hệ thống lưu số thẻ thật dưới dạng văn bản thô trong bảng giao dịch. Nguyên nhân gốc: không có quy tắc che thẻ trong log, và số thẻ thật không được mã hóa hay thay bằng token. Cách xử lý: xóa toàn bộ log cũ chứa số thẻ, sửa code chỉ ghi 4 số cuối (**** **** **** 3456), áp dụng tokenization: thay số thẻ thật bằng token ngẫu nhiên, số thẻ thật lưu ở hệ thống vault riêng biệt và bảo mật cao; đồng thời xác nhận không bao giờ lưu mã CVV sau khi xác nhận thanh toán.
+
+### Trả lời mẫu khi phỏng vấn
+"PCI-DSS là tiêu chuẩn bảo mật mà mọi đơn vị lưu, xử lý hoặc truyền số thẻ thanh toán phải tuân theo. Nguyên tắc quan trọng nhất là không bao giờ lưu mã CVV sau khi xác nhận thanh toán. Thay vì lưu số thẻ thật, hệ thống dùng tokenization: thay số thẻ thật (PAN) bằng một mã giả ngẫu nhiên gọi là token, số thẻ thật được lưu ở hệ thống vault riêng biệt và bảo mật rất cao. Khi cần thanh toán, hệ thống gửi token đến vault để thực hiện. Nếu cơ sở dữ liệu bị lộ, kẻ xấu chỉ lấy được token, không thể đổi thành số thẻ thật mà không có khóa của vault. Khi ghi log, chỉ được che số thẻ, ví dụ hiển thị 4 số cuối, không bao giờ in số thẻ đầy đủ."
+
+> Senior tip: PCI-DSS không chỉ là "mã hóa" mà là "giảm thiểu tối thiểu dữ liệu nhạy cảm hệ thống cần lưu". Số thẻ thật chỉ cần lưu ở một nơi, và các hệ thống khác chỉ lưu token.
+
+> Cụm từ: PAN (Primary Account Number - số tài khoản chính) là số thẻ in trên thẻ (16 số), được bảo vệ bởi PCI-DSS.
+`,
+  follow: [
+    'Tại sao cấm lưu CVV sau khi xác nhận thanh toán?',
+    'Token khác mã hóa thế nào, và khi nào dùng cái gì?',
+    'Log phải che số thẻ thế nào để an toàn?'
+  ],
+  tags: ['PCI DSS', 'CVV', 'tokenization', 'so the', 'log']
+},
+{
+  id: 'banking-080',
+  topic: 'banking',
+  level: 'senior',
+  q: 'Chuyển tiền quốc tế và tỷ giá: cut-off, value date là gì, và xử lý thế nào để không sai số tiền?',
+  a: `**Tóm tắt:** Chuyển tiền quốc tế liên quan đến tỷ giá hối đoái, thời gian cut-off và value date (ngày tiền được cộng vào tài khoản). Cut-off time là mốc giờ cuối ngày ngân hàng nhận giao dịch; giao dịch sau cut-off được xử lý như của ngày làm việc tiếp theo. Value date là ngày tiền giao dịch được cộng vào tài khoản và bắt đầu tính lãi. Dev phải hiểu các quy tắc này để tính toán ngày giao dịch, số dư và lãi chính xác.
+
+### Cut-off time là gì
+Cut-off time (giờ cắt của) là mốc giờ của một ngày, sau giờ này, giao dịch mới được chấp nhận nhưng sẽ được tính như của ngày tiếp theo. Mỗi ngân hàng có một cut-off khác nhau cho từng loại giao dịch (ví dụ chuyển tiền nội bộ cut-off 16 giờ, chuyển khoản liên ngân hàng cut-off 14 giờ, tiền gửi cut-off 15 giờ).
+
+Ví dụ: khách chuyển tiền 5 triệu lúc 16 giờ 30, cut-off là 16 giờ. Ngân hàng chấp nhận giao dịch nhưng tính như giao dịch của ngày mai. Người nhận tiền có thể tiền đến ngày mai, không phải ngày hôm nay.
+
+Vì sao cần cut-off: ngân hàng cần thời gian để xử lý, kiểm tra và đóng sổ cái ngày. Nếu không có cut-off, giao dịch đến cuối đêm vẫn được xử lý, hệ thống sẽ quá tải và không kịp đóng sổ cái.
+
+### Ngày làm việc và ngày lễ
+Ngày làm việc là ngày ngân hàng mở cửa và xử lý giao dịch (thứ 2 đến thứ 6, trừ các ngày lễ). Ngày lễ là ngày ngân hàng nghỉ. Trong ngày lễ, không có giao dịch mới được xử lý, không tính lãi, không cập nhật số dư.
+
+### Tác động đến giao dịch và tính lãi
+1. Value date (ngày giá trị): ngày tiền giao dịch được tính và cộng vào tài khoản. Nếu giao dịch trượt qua cut-off hoặc vào ngày lễ, value date được đẩy sang ngày làm việc kế tiếp.
+2. Tính lãi: lãi tiền gửi hoặc khoản vay được tính theo số ngày tiền gửi/vay.
+3. Số dư: số dư hiển thị cho khách chỉ được cập nhật sau khi giao dịch được xử lý. Nếu giao dịch sau cut-off, số dư hiển thị có thể chưa thay đổi cho đến ngày làm việc kế tiếp.
+
+Ví dụ số liệu: khách gửi tiền 100 triệu vào ngày Chủ Nhật (ngày nghỉ, giờ cắt đã qua). Ngân hàng chấp nhận giao dịch, tính value date là ngày làm việc đầu tiên của tuần sau. Lãi tiền được tính từ value date, không tính từ ngày Chủ Nhật.
+
+### Tỷ giá và làm tròn
+- Một số tiền luôn là cặp (giá trị, loại tiền), không bao giờ tách rời.
+- Giao dịch có quy đổi phải lưu snapshot tỷ giá (tỷ giá, nguồn, mã báo giá, thời điểm) ngay lúc thực hiện.
+- Làm tròn theo số chữ thập phân của từng loại tiền (VND scale 0, USD scale 2) và chỉ làm tròn ở bước cuối.
+- Phần dư khi chia tiền cho nhiều bên phải được phân bổ thành dòng điều chỉnh để tổng không "rơi" tiền.
+
+### Lỗi hay gặp
+- Tính ngày giao dịch bằng ngày hiện tại, không kiểm tra cut-off và ngày lễ -> value date sai, lãi sai.
+- Không phân biệt ngày làm việc và ngày thực tế -> sai số dư, khách phàn nàn.
+- Tính lãi trong ngày lễ như một ngày bình thường cho sản phẩm chỉ tính lãi trong ngày làm việc -> sai số tiền lãi.
+- Thông báo cho khách tiền đã được cộng nhưng value date chưa đến -> khách hoang mang.
+- Lưu số tiền bằng double hoặc bằng long "số VND" rồi giả định mọi tiền tệ đều như vậy.
+- Quy đổi hai lần (khách thấy số ở màn hình xác nhận khác số trong sao kê).
+
+### Ví dụ đời thực
+Một khách gửi 100 triệu VND vào lúc 23 giờ Chủ Nhật — đã qua giờ cut-off và ngày này là ngày nghỉ. Ngân hàng vẫn chấp nhận giao dịch, nhưng value date được đẩy sang ngày làm việc đầu tiên của tuần sau, không phải Chủ Nhật. Lãi tiền gửi được tính từ value date. Nếu dev sai lầm tính ngày bằng ngày hiện tại, value date và lãi sẽ sai, khách thấy số dư chưa cập nhật và gọi điện phàn nàn. Cách xử lý đúng: dùng một lớp tính ngày làm việc dùng chung cho toàn hệ thống, kiểm tra cut-off và danh sách ngày lễ trước khi gán value date, và luôn thông báo khách đúng ngày tiền thực tế được cộng.
+
+### Trả lời mẫu khi phỏng vấn
+"Cut-off time là mốc giờ cuối ngày ngân hàng chấp nhận giao dịch và tính là của ngày hôm nay; giao dịch sau cut-off được xử lý như của ngày làm việc tiếp theo. Ngày làm việc là ngày ngân hàng mở cửa và xử lý giao dịch, còn ngày lễ ngân hàng nghỉ, không xử lý giao dịch mới. Khi tính lãi hoặc hạn, value date sẽ bị đẩy sang ngày làm việc kế tiếp nếu giao dịch trượt cut-off hoặc rơi vào ngày lễ. Tôi nhấn mạnh dev không được tự ý tính ngày trên mỗi màn hình, phải có một lớp tính ngày làm việc dùng chung cho toàn hệ thống, và luôn thông báo khách đúng value date để tránh hiểu nhầm về số dư. Với chuyển tiền quốc tế, phải lưu snapshot tỷ giá tại thời điểm giao dịch và làm tròn theo scale của loại tiền đích."
+
+> Senior tip: Hãy vẽ bảng tra cứu các loại giao dịch với cut-off và quy tắc tính ngày. Nhấn mạnh rằng dev không được tính ngày một cách tùy tiện, phải có một lớp tính ngày làm việc dùng chung cho toàn hệ thống. Với tiền tệ, tiền là cặp giá trị-loại tiền, mọi giao dịch lưu tỷ giá và nguồn tỷ giá tại thời điểm, và làm tròn một lần có dòng điều chỉnh phần dư để tổng luôn khớp.
+
+> Cụm từ: Value date (ngày giá trị) là ngày tiền giao dịch được cộng vào tài khoản và bắt đầu tính lãi, không phải luôn bằng ngày khách nhận thông báo. Snapshot tỷ giá là bản ghi giá trị tỷ giá đã dùng tại thời điểm giao dịch, để sau này tái hiện đúng số tiền.
+`,
+  follow: [
+    'Giao dịch sau cut-off tính ngày nào, tiền đến khi nào?',
+    'Ngày lễ có tính lãi tiền gửi không, và xử lý thế nào?',
+    'Tại sao cần một lớp tính ngày dùng chung thay vì mỗi màn hình tính riêng?'
+  ],
+  tags: ['cut-off time', 'ngay lam viec', 'ngay le', 'value date', 'tinh lai', 'ngoai te', 'ty gia']
+},
+{
+  id: 'banking-081',
+  topic: 'banking',
+  level: 'senior',
+  q: 'Xử lý giao dịch treo cuối ngày (EOD): trạng thái PENDING_UNKNOWN, tra soát và đối soát ra sao để không mất tiền?',
+  a: `**Tóm tắt:** Giao dịch treo cuối ngày là giao dịch chưa biết kết quả (timeout, mất phản hồi) khi EOD chạy. Hệ thống chuyển sang trạng thái PENDING_UNKNOWN, tiền bị tạm giữ, không tự động hoàn hay retry. Tra soát theo mã tham chiếu duy nhất với backoff, và đối soát cuối ngày với file của đối tác để chốt các giao dịch còn treo. Chỉ hoàn tiền khi có xác nhận thất bại hoặc quá thời hạn tra soát theo quy trình.
+
+### Vì sao timeout nguy hiểm
+Khi gửi lệnh mà không nhận được phản hồi trong thời gian cho phép, có ba khả năng:
+1. Đối tác chưa nhận lệnh -> tiền chưa đi.
+2. Đối tác đã xử lý thành công (người nhận đã được ghi có) nhưng phản hồi bị mất trên đường về.
+3. Giao dịch đang được xử lý ở một bên.
+
+Nếu coi timeout = thất bại và hoàn tiền (hoặc cho khách gửi lại), trường hợp 2 khiến tiền đi hai lần hoặc ngân hàng mất tiền.
+
+### Máy trạng thái giao dịch
+~~~text
+[SENDING] --phản hồi thành công--> [SUCCESS]
+[SENDING] --phản hồi thất bại--> [FAILED] --> hoàn tiền tạm giữ
+[SENDING] --timeout / lỗi mạng--> [PENDING_UNKNOWN]
+[PENDING_UNKNOWN] --tra soát: thành công--> [SUCCESS]
+[PENDING_UNKNOWN] --tra soát: thất bại--> [FAILED] --> hoàn tiền
+[PENDING_UNKNOWN] --quá hạn, chưa rõ--> [MANUAL_INVESTIGATION] --> đối soát/tra soát với đối tác
+~~~
+
+Ở PENDING_UNKNOWN, số tiền đã bị tạm giữ khỏi số dư khả dụng nhưng chưa được ghi nợ chính thức; app hiển thị "đang xử lý".
+
+### Tra soát bằng mã giao dịch
+- Mỗi lệnh có mã tham chiếu duy nhất do ngân hàng gửi sinh ra và gửi kèm lệnh — đây là chìa khóa để hỏi trạng thái và để đối soát.
+- Job hỏi trạng thái tự động với backoff (ví dụ sau 1, 5, 15, 60 phút); kết quả cập nhật máy trạng thái một cách idempotent.
+- Không tự động gửi lại lệnh khi timeout, trừ khi kênh đảm bảo chống trùng theo mã tham chiếu.
+
+### Đối soát cuối ngày
+File đối soát của đối tác được so khớp với sổ của ngân hàng theo mã tham chiếu: giao dịch treo mà đối tác báo thành công thì hoàn tất; ngân hàng ghi thành công mà đối tác không có thì mở tra soát; các khoản chưa giải quyết đi vào quy trình tra soát chính thức với thời hạn theo quy định của đối tác và có maker-checker cho mọi điều chỉnh.
+
+### Lỗi hay gặp
+- Coi timeout là thất bại và hoàn tiền ngay.
+- Cho phép khách bấm gửi lại khi giao dịch đang treo.
+- Không có mã tham chiếu duy nhất xuyên suốt -> không tra soát được.
+- Sửa trạng thái bằng tay trong DB thay vì qua quy trình có duyệt.
+- PENDING_UNKNOWN treo vô hạn không có job quét/leo thang -> tiền khách bị giữ mãi.
+
+### Ví dụ đời thực
+Một ngân hàng số từng xử lý timeout bằng cách báo khách "giao dịch thất bại" và hoàn tiền ngay; khách chuyển lại và nhiều trường hợp người nhận nhận hai lần vì lệnh đầu thực ra đã thành công — trung bình 40 vụ mỗi tuần, mất nhiều ngày để đòi lại. Chuyển sang máy trạng thái trên: 92% giao dịch timeout được chốt tự động trong 15 phút nhờ hỏi trạng thái, phần còn lại chốt trong đối soát cuối ngày; không còn chuyển trùng, khiếu nại "tiền bị trừ mà chưa đến" giảm nhờ app hiển thị đúng trạng thái.
+
+### Trả lời mẫu khi phỏng vấn
+"Với giao dịch treo cuối ngày, timeout không có nghĩa là thất bại — chỉ là chưa biết kết quả. Tôi chuyển giao dịch sang trạng thái PENDING_UNKNOWN, tiền bị tạm giữ, app hiển thị đang xử lý và không cho gửi lại lệnh mới. Mỗi lệnh có mã tham chiếu duy nhất; job hỏi trạng thái theo mã đó với backoff và cập nhật máy trạng thái idempotent: thành công thì ghi nợ chính thức, thất bại thì hoàn tiền tạm giữ. Những giao dịch vẫn chưa rõ sẽ được chốt trong đối soát cuối ngày với file của đối tác, hoặc đi vào quy trình tra soát chính thức có thời hạn và maker-checker. Không tự động gửi lại lệnh, vì đó là cách nhanh nhất để chuyển tiền hai lần."
+
+> Senior tip: đo tỉ lệ giao dịch rơi vào trạng thái chờ tra soát theo giờ và theo đối tác. Tỉ lệ tăng đột biến thường là dấu hiệu sớm nhất của sự cố phía đối tác — trước cả khi họ thông báo. Luôn có job quét PENDING_UNKNOWN quá hạn và leo thang cho nhân viên.
+
+> Cụm từ: PENDING_UNKNOWN là trạng thái "đang treo, chưa kết luận" của giao dịch. Maker-checker là quy trình hai người tham gia một thao tác quan trọng: người đầu tiên (maker) khởi tạo, người thứ hai (checker) duyệt hoặc từ chối.
+`,
+  follow: [
+    'Idempotency được đảm bảo ở những tầng nào (client, API của bạn, đối tác, DB) và mỗi tầng làm gì?',
+    'Bạn thiết kế job tra soát định kỳ cho các giao dịch PENDING_UNKNOWN như thế nào (tần suất, backoff, giới hạn, leo thang thủ công)?',
+    'Khi đối tác xác nhận FAILED nhưng bạn đã trừ tiền/hold, luồng đảo bút (reversal) cần đảm bảo những gì?'
+  ],
+  tags: ['core', 'timeout', 'pending', 'tra soát', 'doi soat', 'EOD']
 }
 );
-
