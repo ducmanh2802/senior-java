@@ -5046,5 +5046,278 @@ Lỗi thường gặp: gọi refund khi debit chưa thành công (hoàn tiền "
   ],
   related: ['microservices-020', 'microservices-021'],
   tags: ['saga', 'orchestration', 'compensation', 'idempotency', 'timeout', 'state machine', 'distributed transaction']
+},
+{
+  id: 'lesson-microservices-019', track: 'microservices', order: 19,
+  title: 'Transactional Outbox: giữ sự nhất quán giữa database và message broker', level: 'senior', minutes: 30,
+  goals: ['Giải thích dual-write và tại sao transaction database đơn lẻ không đủ khi có Kafka', 'Mô tả bảng outbox và relay, tại sao delivery là at-least-once', 'Hiểu tại sao consumer phải idempotent để loại bỏ duplicate'],
+  body: `**Tóm tắt:** Transactional Outbox lưu thay đổi nghiệp vụ và sự kiện cần phát trong cùng một transaction database. Một relay đọc bảng outbox rồi gửi sự kiện ra broker. Vì crash có thể xảy ra giữa khi gửi và khi đánh dấu đã gửi, hệ thống chấp nhận gửi lặp (at-least-once) và yêu cầu consumer phải chống trùng bằng event id.
+
+### Bài toán: cập nhật DB và gửi Kafka cùng lúc
+Một request điển hình cần làm hai việc: ghi đơn hàng vào database và gửi sự kiện OrderCreated lên Kafka để kho hàng và email thông báo xử lý tiếp. Nếu làm tuần tự (dual-write — ghi hai lần riêng lẻ) thì không có cơ chế đảm bảo cả hai thành công cùng lúc:
+- Ghi DB xong rồi commit, sau đó process chết trước khi publish: đơn hàng tồn tại nhưng không có sự kiện, downstream không biết.
+- Publish lên Kafka trước rồi DB rollback: consumer nhận sự kiện về một đơn hàng chưa từng được commit.
+Khác hai database trong cùng hệ thống, một transaction database **không bao trùm** Kafka. Kafka là hệ thống riêng biệt, không tham gia giao dịch của database.
+
+### Giải pháp: bảng outbox trong cùng transaction
+Outbox giải quyết bằng cách lưu cả hai record trong cùng một transaction database:
+~~~text
+BEGIN
+  INSERT INTO orders (id, status, amount) VALUES (..., 'CREATED', ...);
+  INSERT INTO outbox (id, aggregate_id, event_type, payload, created_at) VALUES (..., ..., 'OrderCreated', ..., now());
+COMMIT
+~~~
+Rollback thì cả hai dòng cùng mất; commit thì cả đơn hàng và dòng outbox đều bền vững. Dòng outbox là "ghi chú" hệ thống cần gửi sự kiện này. Relay sau đó đọc các dòng chưa gửi và publish ra broker. Đây là atomicity giữa state nghiệp vụ và ý định phát sự kiện, không phải atomicity với broker.
+
+### Relay và mô hình at-least-once
+Relay là một tiến trình riêng quét bảng outbox tìm các dòng chưa gửi (ví dụ sent_at IS NULL), lấy payload publish lên Kafka topic. Sau khi broker gửi lại ACK (acknowledgment — xác nhận đã nhận/lưu tin nhắn), relay mới cập nhật sent_at. Vì sao đánh dấu sau ACK? Nếu đánh dấu trước rồi publish thất bại hoặc process chết, sự kiện coi như "đã gửi" nhưng thực ra mất. Nếu process chết sau khi publish nhưng trước khi ghi sent_at, lần chạy sau relay sẽ gửi lại. Đây là at-least-once delivery: gửi ít nhất một lần, có thể gửi trùng.
+
+Do có thể gửi lặp, consumer nhận được cùng một sự kiện nhiều lần. Consumer phải idempotent: áp dụng cùng một sự kiện nhiều lần cho kết quả giống như chỉ áp dụng một lần, sử dụng event id ổn định để kiểm tra đã xử lý.
+
+~~~java
+// Minh họa: 2 thao tác DB trong 1 transaction, publish nằm ngoài transaction database
+void createOrder(OrderRequest req, Connection db, OutboxRelay relay) throws Exception {
+    String orderId = UUID.randomUUID().toString();
+    String eventId = UUID.randomUUID().toString(); // id ổn định dùng cho deduplication
+    db.setAutoCommit(false);
+    try {
+        // Ghi state nghiệp vụ
+        try (var ps = db.prepareStatement(
+                "INSERT INTO orders(id, status, amount) VALUES (?,?,?)")) {
+            ps.setString(1, orderId); ps.setString(2, "CREATED"); ps.setLong(3, req.amount());
+            ps.executeUpdate();
+        }
+        // Ghi outbox CÙNG transaction với order
+        try (var ps = db.prepareStatement(
+                "INSERT INTO outbox(event_id, aggregate_id, type, payload) VALUES (?,?,?,?)")) {
+            ps.setString(1, eventId); ps.setString(2, orderId);
+            ps.setString(3, "OrderCreated"); ps.setString(4, toJson(req));
+            ps.executeUpdate();
+        }
+        db.commit(); // Cả hai cùng commit hoặc cùng rollback
+    } catch (Exception e) {
+        db.rollback(); // Lỗi → không có đơn, không có dòng outbox
+        throw e;
+    }
+    // Relay poll outbox và publish sau commit; publish KHÔNG nằm trong transaction DB
+}
+~~~
+
+### Cơ chế từng bước (tạo đơn hàng từ đầu đến cuối)
+**Kafka** là hệ thống hàng đợi / phát sự kiện (message broker — "người đưa thư" ở giữa): producer gửi tin nhắn vào topic, consumer đọc tin nhắn từ topic. **Event** là bản ghi mô tả điều đã xảy ra (ví dụ "đơn hàng vừa được tạo"). **Broker** là máy chủ chạy Kafka, nhận và lưu tin nhắn.
+
+1. Nhận request và mở transaction database: transaction là nhóm các thao tác DB, hoặc tất cả thành công, hoặc tất cả bị hủy (rollback). Đây là transaction nội bộ của một database, không phải transaction phân tán qua nhiều hệ thống.
+2. Ghi state nghiệp vụ: INSERT vào bảng orders. Ghi trong transaction để nếu bước sau lỗi, đơn hàng "nửa vời" không bị lưu.
+3. Ghi ý định phát sự kiện vào outbox cùng transaction: INSERT vào bảng outbox chứa event_id (định danh duy nhất, ổn định), aggregate_id (ví dụ order id), event_type, payload (nội dung JSON). Vì sao cùng transaction? DB đảm bảo hai INSERT cùng commit hoặc cùng rollback.
+4. Commit: DB xác nhận. Từ lúc này, cả đơn hàng lẫn dòng outbox đều bền vững (durable — còn sau restart). Chưa có tin nhắn nào gửi tới Kafka ở bước này.
+5. Relay đọc outbox và publish: tiến trình riêng quét các dòng outbox chưa gửi, gửi payload lên Kafka topic. ACK là xác nhận từ broker rằng tin nhắn đã được nhận/lưu.
+6. Đánh dấu đã gửi sau ACK: chỉ khi broker ACK, relay mới cập nhật sent_at. Nếu chết giữa bước 5 và 6, lần sau gửi lại → at-least-once.
+7. Consumer xử lý và phải idempotent: consumer nhận sự kiện (có thể trùng) và áp dụng nghiệp vụ, dùng cơ chế chống trùng.
+
+### Lỗi hay gặp trên production
+- Triệu chứng: đơn hàng có trong DB nhưng downstream (kho, thông báo) không nhận sự kiện. Nguyên nhân: code publish Kafka trực tiếp sau khi ghi DB (dual-write), process chết giữa hai thao tác, hoặc publish trước commit rồi transaction rollback. Cách sửa: dùng transactional outbox, không để publish broker nằm giữa transaction DB.
+- Triệu chứng: bảng outbox phình to hàng chục triệu dòng, query chậm, disk đầy. Nguyên nhân: chỉ insert không có cơ chế dọn (purge) các dòng đã gửi, hoặc dọn quá chậm so với tốc độ ghi. Cách sửa: job xóa/archiver các dòng sent_at cũ hơn cửa sổ giữ (ví dụ 3-7 ngày); dọn theo batch nhỏ để tránh lock lớn; theo dõi số dòng backlog và tuổi dòng cũ nhất.
+- Triệu chứng: consumer nhận cùng một sự kiện 2-3 lần sau restart relay. Nguyên nhân: relay dùng mô hình "gửi rồi mới đánh dấu" nên khi chết giữa chừng sẽ gửi lặp — đây là hành vi at-least-once, không phải bug. Cách sửa: chấp nhận duplicate ở tầng transport; bắt buộc consumer idempotent theo event_id ổn định; đo duplicate rate.
+- Triệu chứng: sự kiện cùng đơn hàng đến consumer sai thứ tự (OrderShipped trước OrderCreated). Nguyên nhân: relay gửi song song nhiều dòng, hoặc partition Kafka không gắn theo aggregate, hoặc không dùng sequence/version. Cách sửa: dùng aggregate_id làm partition key để sự kiện cùng aggregate vào cùng partition (Kafka giữ thứ tự trong một partition); thêm sequence/version trong payload; consumer bỏ qua hoặc buffer sự kiện lệch thứ tự.
+
+### Liên hệ phỏng vấn
+- Hỏi: Tại sao không thể dùng một transaction bao cả database và Kafka? Trả lời ngắn: Transaction database chỉ cam kết trên một hệ quản trị; Kafka là hệ thống khác. Không có 2PC thực dụng giữa hai bên trong đa số kiến trúc; dùng outbox để atomic trong DB rồi publish at-least-once, consumer idempotent.
+- Hỏi: Relay crash sau khi publish nhưng trước khi đánh dấu sent thì sao? Trả lời ngắn: Sự kiện sẽ được gửi lại (at-least-once). Đây là lựa chọn có chủ đích để tránh mất sự kiện; consumer dùng event id ổn định để xử lý idempotent.
+- Hỏi: CDC (ví dụ Debezium) khác polling outbox thế nào? Trả lời ngắn: CDC đọc transaction log (WAL/binlog) nên thấy dòng đã commit với độ trễ thấp, không query bảng liên tục; đổi lại phải vận hành connector, schema và quản lý log retention.
+
+> Senior tip: theo dõi p95/p99 tuổi outbox chưa gửi và số hàng backlog; alert theo tuổi sự kiện thường phản ánh tác động người dùng tốt hơn chỉ đếm hàng.
+`,
+  exercises: [{
+    title: 'Mô phỏng OutboxStore: ghi order và outbox nguyên tử, relay gửi lặp an toàn',
+    prompt: `Cài {{OutboxStore}} mô phỏng transaction trong bộ nhớ. {{create(id, eventType, payload)}} ghi order và event cùng nhau: id trùng thì ném {{IllegalArgumentException}}. {{relay(sender)}} lần lượt đưa các event chưa gửi cho sender và trả về số event gửi thành công trong lần gọi đó; chỉ đánh dấu đã gửi khi sender trả {{true}}, sender trả {{false}} thì giữ event để retry (dừng ở event lỗi đầu tiên để giữ thứ tự). Event đã gửi không được đưa cho sender lần nữa. Các method đều {{synchronized}}.`,
+    starter: `record Event(String id, String orderId, String eventType) {}
+class OutboxStore {
+    private final Map<String,String> orders = new HashMap<>();
+    private final Map<String,Event> events = new LinkedHashMap<>();
+    private final Set<String> sent = new HashSet<>();
+    synchronized void create(String id, String eventType, String payload) {
+        throw new UnsupportedOperationException("TODO");
+    }
+    synchronized int relay(java.util.function.Predicate<Event> sender) {
+        throw new UnsupportedOperationException("TODO");
+    }
+    synchronized int orderCount() { return orders.size(); }
+    synchronized int eventCount() { return events.size(); }
+    synchronized int pending() { return events.size() - sent.size(); }
+}`,
+    tests: `public class Main {
+  static int p=0,t=0; static void ck(String n,Runnable r){t++;try{r.run();p++;System.out.println("PASS "+n);}catch(Throwable e){System.out.println("FAIL "+n+": "+e);}}
+  static void eq(Object a,Object b){if(!Objects.equals(a,b))throw new AssertionError(a+" != "+b);}
+  public static void main(String[] z){
+  ck("atomic create persists order and event",()->{OutboxStore s=new OutboxStore();s.create("o1","type1","order-created");eq(1,s.orderCount());eq(1,s.eventCount());eq(1,s.pending());});
+  ck("duplicate id rejected leaves one row",()->{OutboxStore s=new OutboxStore();s.create("x","t","p");try{s.create("x","t","p");throw new AssertionError();}catch(IllegalArgumentException ok){}eq(1,s.eventCount());});
+  ck("failed send stays pending then succeeds",()->{OutboxStore s=new OutboxStore();s.create("a","t","p");eq(0,s.relay(e->false));eq(1,s.pending());eq(1,s.relay(e->true));eq(0,s.pending());});
+  ck("each pending event sent once after success",()->{OutboxStore s=new OutboxStore();s.create("a","t","p");s.create("b","t","p");List<String> got=new ArrayList<>();eq(2,s.relay(e->{got.add(e.id());return true;}));eq(0,s.relay(e->{throw new AssertionError();}));eq(2,got.size());});
+  System.out.println("RESULT "+p+"/"+t);
+  }
+ }`,
+    reference: `record Event(String id, String orderId, String eventType) {}
+class OutboxStore {
+    private final Map<String,String> orders=new HashMap<>();
+    private final Map<String,Event> events=new LinkedHashMap<>();
+    private final Set<String> sent=new HashSet<>();
+    synchronized void create(String id, String eventType, String payload) {
+        if (orders.containsKey(id)) throw new IllegalArgumentException("duplicate");
+        String order=id; Event event=new Event("evt-"+id,id,eventType!=null?eventType:""); events.put(event.id(),event); orders.put(id,order);
+    }
+    synchronized int relay(java.util.function.Predicate<Event> sender) {
+        int count=0;
+        for(Event e:events.values()) {
+            if(sent.contains(e.id())) continue;
+            if(!sender.test(e)) break; // chưa ACK: bỏ chờ lần sau
+            sent.add(e.id()); count++;
+        }
+        return count;
+    }
+    synchronized int orderCount(){return orders.size();}
+    synchronized int eventCount(){return events.size();}
+    synchronized int pending(){return events.size()-sent.size();}
+}`,
+    hints: ['Stage cả order lẫn event, kiểm tra lỗi mô phỏng trước, rồi mới ghi cả hai vào map.', 'Relay synchronized; với mỗi event pending, sender false nghĩa là chưa ACK.', 'Chỉ thêm event id vào sent sau khi sender thành công; retry có thể gửi lại nếu crash nằm giữa hai thao tác.'],
+    explain: `Bài tập gom hai thay đổi dưới một monitor và stage dữ liệu trước khi commit vào map. Trong DB thật, transaction cung cấp rollback; monitor chỉ mô phỏng tính loại trừ trong một JVM, không thay thế transaction bền vững.
+
+Relay đánh dấu sau khi sender thành công. Nếu sender ném lỗi, exception được truyền ra và trạng thái sent chưa đổi. Nếu broker đã nhận nhưng ứng dụng chưa kịp ghi sent rồi chết, lần chạy sau có thể gửi trùng; mô hình này nhấn mạnh vì sao production cần consumer dedup theo event id. Mutex trong ví dụ cũng giữ lock qua network call, điều không nên làm production vì làm nghẽn ghi; relay thật claim batch rồi gửi ngoài transaction, sau đó cập nhật trạng thái/offset phù hợp.
+
+Lỗi thường gặp: đánh dấu trước send làm mất event khi broker lỗi; tạo order trước rồi ném lỡ mà không rollback để lại trạng thái nửa vời; hoặc cho rằng synchronized bảo vệ nhiều instance/process.`
+  }],
+  check: [
+    { q: 'Relay gửi thành công nhưng process chết trước khi ghi sent. Kết quả có thể là gì?', options: ['Sự kiện bị mất chắc chắn', 'Sự kiện được gửi lại; consumer cần deduplicate', 'DB tự rollback transaction đã commit', 'Kafka xóa sự kiện'], answer: 1, explain: `Outbox giữ hàng chưa đánh dấu nên relay sẽ thử lại. Điều này tạo duplicate nhưng tránh mất sự kiện; consumer dùng event id ổn định để xử lý idempotent. (A) sai vì mô hình "đánh dấu sau ACK" ưu tiên không mất. (C) sai vì transaction DB đã commit trước khi publish. (D) sai vì Kafka không tự xóa sự kiện hợp lệ do relay chết.` },
+    { q: 'Vì sao ghi order và outbox trong CÙNG một transaction database?', options: ['Để Kafka tự rollback khi DB lỗi', 'Để publish nhanh hơn nhờ gom network', 'Để đảm bảo state nghiệp vụ và ý định phát sự kiện cùng commit hoặc cùng rollback', 'Để consumer không cần idempotent'], answer: 2, explain: `Đúng (C): cùng transaction cho atomicity nội bộ — không có trạng thái "có đơn nhưng không có outbox" hay ngược lại. (A) sai vì Kafka không tham gia transaction DB. (B) sai vì publish xảy ra sau commit bởi relay, không nằm trong transaction. (D) sai vì consumer vẫn phải idempotent do delivery là at-least-once.` },
+    { q: 'Nếu relay đánh dấu sent TRƯỚC khi publish tới Kafka, rủi ro chính là gì?', options: ['Tạo duplicate sự kiện ở consumer', 'Làm transaction DB rollback tự động', 'Làm Kafka partition bị lệch thứ tự', 'Có thể mất sự kiện nếu publish thất bại hoặc process chết sau khi đánh dấu'], answer: 3, explain: `Đúng (D): sự kiện đã bị coi là "xong" nhưng chưa chắc broker đã nhận, nên mất message. (A) ngược lại — đánh dấu trước thường gây mất, không gây duplicate (duplicate xuất hiện khi đánh dấu sau). (B) sai vì đánh dấu sent không ảnh hưởng transaction DB đã commit. (C) sai vì thứ tự partition phụ thuộc key/partitioning, không phụ thuộc thời điểm đánh dấu.` },
+  ], tags: ['outbox', 'CDC', 'Kafka', 'atomicity', 'dual-write', 'relay']
+},
+{
+  id: 'lesson-microservices-020', track: 'microservices', order: 20,
+  title: 'Idempotent Consumer: chống xử lý trùng sự kiện', level: 'senior', minutes: 25,
+  goals: ['Giải thích at-least-once và tại sao consumer nhận trùng là bình thường', 'Deduplicate bằng processed-id cùng transaction với side effect', 'Bỏ qua sự kiện có version cũ'],
+  body: `**Tóm tắt:** Consumer idempotent biến việc nhận cùng message nhiều lần thành một hiệu ứng nghiệp vụ duy nhất. Cần lưu processed-id (mã đã xử lý) cùng transaction với cập nhật state; chỉ cache trong RAM không đủ khi restart hay chạy nhiều instance.
+
+### Tại sao nhận lặp là bình thường
+Broker thường chỉ biết consumer đã commit offset hay chưa, không biết side effect ở database đã commit chưa. Nếu database commit xong nhưng process chết trước khi commit offset, broker giao lại message. Đây là hành vi at-least-once: ưu tiên không mất message, chấp nhận giao trùng. Mạng timeout cũng không cho producer biết server đã xử lý hay chưa.
+
+### Processed-id và inbox
+Bảng inbox có unique key (consumer, message_id/processed-id). Consumer trong một database transaction: insert inbox; nếu conflict thì kết thúc không làm side effect; nếu mới thì cập nhật projection rồi commit. Hai thao tác phải nguyên tử. Với event thay thế state, lưu version theo aggregate và chỉ áp dụng version lớn hơn hiện tại; event cũ đến muộn bị bỏ qua. Với event cộng dồn (charge, increment), version không thể tự thay thế dedup id.
+
+~~~java
+if (inbox.insertIfAbsent(message.id())) { // unique constraint là trọng tài giữa replicas
+    if (message.version() > current.version()) apply(message);
+}
+~~~
+
+### Phân biệt event và command
+Event thường mô tả điều đã xảy ra, còn command yêu cầu hành động. Không nên bỏ command khác id chỉ vì payload giống nhau; hai giao dịch hợp lệ có thể cùng số tiền. Idempotency key nên do nguồn tạo và ổn định qua retry. Với HTTP API, lưu key, request fingerprint và kết quả để lần gọi lại trả cùng kết quả.
+
+| Cơ chế | Bao phủ | Giới hạn |
+|---|---|---|
+| Set trong RAM | Một process đang sống | Mất khi restart, không chia sẻ replicas |
+| Inbox SQL unique | Nhiều instance, bền vững | Tăng dung lượng; cần retention có căn cứ |
+| Version aggregate | Bỏ event state cũ | Không đủ cho mọi side effect cộng dồn |
+
+### Cơ chế từng bước
+**Idempotent** nghĩa là thực hiện cùng một thao tác nhiều lần cho kết quả giống như thực hiện một lần (ví dụ: nhấn nút "lưu" 3 lần nhưng chỉ lưu 1 bản ghi). **Consumer** là chương trình đọc message từ broker (Kafka). **Offset** là vị trí đọc của consumer trong một partition (phân vùng) của topic; commit offset nghĩa là "tôi đã xử lý tới đây".
+
+1. Consumer nhận message: broker giao message kèm message_id (định danh ổn định do producer/outbox tạo) và có thể kèm version/sequence. Vì sao cần message_id ổn định? Để cùng một message, dù được giao lại bao nhiêu lần, vẫn nhận ra là "đã thấy".
+2. Mở transaction database cục bộ: consumer bắt đầu một transaction trên database của chính nó (projection/state store). Vì sao? Để việc "ghi nhận đã xử lý" và "áp dụng side effect nghiệp vụ" trở thành một đơn vị nguyên tử.
+3. Kiểm tra/ghi inbox (dedup): INSERT vào bảng inbox (bảng ghi nhận message đã xử lý) với unique constraint trên (consumer_name, message_id). Nếu insert thành công → message mới, tiếp tục. Nếu vi phạm unique (conflict) → message trùng, rollback/thoát mà không làm side effect. Vì sao dùng unique constraint thay vì check-then-act? Hai consumer replica cùng kiểm tra "chưa có" rồi cùng xử lý sẽ trừ tiền hai lần; constraint database là trọng tài nguyên tử.
+4. Kiểm tra version (nếu event thay thế state): với event dạng snapshot (mô tả trạng thái mới), so incoming.version > current.version. Nếu cũ hơn hoặc bằng → bỏ qua phần áp dụng state (nhưng đã ghi inbox để replay sau không tốn xử lý). Vì sao không dùng timestamp đồng hồ? Đồng hồ các máy có thể lệch (clock skew).
+5. Áp dụng side effect nghiệp vụ: cập nhật projection/bảng state, hoặc thực hiện hành động nghiệp vụ. Với event cộng dồn (charge tiền, tăng số dư) thì version không thay thế được dedup — bắt buộc dựa vào message_id.
+6. Commit transaction database: inbox row và state change cùng commit. Từ đây, dù message có đến lại, bước 3 sẽ chặn.
+7. Commit offset (sau database commit): consumer báo broker đã xử lý. Vì sao sau database commit? Nếu commit offset trước rồi database lỗi, broker nghĩ "xong" và không giao lại → mất hiệu ứng (at-most-once). Commit sau tạo at-least-once (có thể trùng) và dedup xử lý phần trùng.
+
+~~~java
+// Luồng idempotent consumer: inbox insert + apply trong 1 transaction database
+void handle(Message msg, Connection db) throws Exception {
+    db.setAutoCommit(false);
+    try {
+        // Dedup: unique (consumer, message_id) — conflict nghĩa là đã xử lý
+        try (var ps = db.prepareStatement(
+                "INSERT INTO inbox(consumer, message_id) VALUES (?,?)")) {
+            ps.setString(1, "billing"); ps.setString(2, msg.id());
+            ps.executeUpdate();
+        } catch (java.sql.SQLIntegrityConstraintViolationException dup) {
+            db.rollback(); // Duplicate: không side effect
+            return;
+        }
+        // Chỉ áp version mới, rồi cập nhật state
+        applyIfNewer(db, msg.aggregateId(), msg.version(), msg.payload());
+        db.commit(); // Inbox + state cùng bền vững
+    } catch (Exception e) {
+        db.rollback(); // Lỗi → offset chưa commit, broker sẽ giao lại
+        throw e;
+    }
+    // Commit offset SAU database commit (thực tế do consumer framework gọi)
+}
+~~~
+
+### Lỗi hay gặp trên production
+- Triệu chứng: khách bị trừ tiền hai lần, hoặc tồn kho bị trừ hai lần sau khi consumer restart/rebalance. Nguyên nhân: dedup chỉ bằng HashSet trong RAM — mất khi restart, và mỗi replica có Set riêng nên hai instance cùng xử lý trước khi biết nhau; hoặc dùng check-then-act không nguyên tử (kiểm tra rồi mới xử lý tách rời). Cách sửa: dùng inbox table với unique constraint trên (consumer, message_id), insert và side effect trong cùng transaction database; với side effect gọi dịch vụ ngoài, dùng idempotency key ở đích hoặc outbox.
+- Triệu chứng: projection hiển thị trạng thái cũ dù event mới đã đến (ví dụ đơn đã "Shipped" nhưng hiện "Paid"). Nguyên nhân: event đến sai thứ tự (out-of-order) và consumer ghi đè state theo thứ tự nhận, không theo version/sequence của aggregate; hoặc dùng timestamp làm version và bị clock skew. Cách sửa: lưu version theo aggregate, chỉ áp dụng khi incoming.version > current; dùng sequence tăng đơn điệu do aggregate phát; với event dạng delta/out-of-order phức tạp, cân nhắc buffer chờ gap hoặc rebuild từ source.
+- Triệu chứng: bảng inbox tăng không ngừng, chiếm dung lượng lớn, insert chậm dần. Nguyên nhân: ghi nhận mọi message_id nhưng không có retention (chính sách giữ/xóa). Cách sửa: xóa inbox row cũ hơn cửa sổ replay/khôi phục có căn cứ (ví dụ lâu hơn max retention của topic + thời gian điều tra); dọn theo batch, có index; theo dõi kích thước bảng.
+- Triệu chứng: replay một khoảng event cũ (reprocessing) làm phát sinh side effect lặp (gửi mail lại, gọi API đối tác lần nữa). Nguyên nhân: xóa inbox key quá sớm nên replay không còn bị chặn; hoặc side effect nằm ngoài transaction database (gọi HTTP) không có idempotency key. Cách sửa: giữ inbox key đủ dài qua cửa sổ replay; với side effect ngoài, dùng outbox hoặc idempotency key ở hệ thống đích; thiết kế replay chạy ở chế độ có kiểm soát.
+
+### Liên hệ phỏng vấn
+- Hỏi: At-least-once nghĩa là gì và vì sao consumer vẫn phải idempotent? Trả lời ngắn: Broker có thể giao lại message khi offset chưa được commit sau khi database đã commit, hoặc khi timeout/rebalance. At-least-once ưu tiên không mất; idempotent consumer (inbox + unique key) biến lần giao trùng thành no-op.
+- Hỏi: Vì sao check if (!set.contains(id)) set.add(id) không đủ trong môi trường nhiều replica? Trả lời ngắn: Set cục bộ không chia sẻ giữa instance và thao tác không nguyên tử với side effect; hai replica có thể cùng qua nhánh if rồi cùng xử lý. Cần unique constraint ở database dùng chung và thực hiện trong cùng transaction.
+- Hỏi: Làm sao xử lý event đến sai thứ tự? Trả lời ngắn: Với event thay thế state, lưu version/sequence tăng đơn điệu theo aggregate và chỉ áp dụng khi version mới hơn; không dùng timestamp đồng hồ. Với event dạng delta, có thể cần buffer/gap handling hoặc rebuild.
+
+> Senior tip: đo duplicate rate theo topic/consumer; tỷ lệ tăng đột ngột thường chỉ ra rebalance, timeout hoặc database latency chứ không nhất là lỗi broker.
+`,
+  exercises: [{
+    title: 'Áp dụng message một lần và chỉ nhận version mới (processed-id dedup)',
+    prompt: `Cài {{Projection}}. {{apply(m)}} nhận {{Message(id, version, value)}}, trả {{true}} khi có hiệu ứng state mới, {{false}} nếu id đã xử lý hoặc version không lớn hơn version hiện tại (bằng nhau cũng là cũ). Dedup theo id độc lập với version: mọi id đã nhận, kể cả event cũ bị bỏ qua, đều được ghi vào {{seen}} ({{seenCount()}} đếm cả chúng). Chỉ thay {{value}} và {{version}} khi áp dụng. Tất cả thao tác thread-safe.`,
+    starter: `record Message(String id, long version, String value) {}
+class Projection {
+    private final Set<String> seen = new HashSet<>();
+    private long version = 0;
+    private String value = "";
+    synchronized boolean apply(Message m) { throw new UnsupportedOperationException("TODO"); }
+    synchronized long version() { return version; }
+    synchronized String value() { return value; }
+    synchronized int seenCount() { return seen.size(); }
+}`,
+    tests: `public class Main {
+  static int p=0,t=0;static void ck(String n,Runnable r){t++;try{r.run();p++;System.out.println("PASS "+n);}catch(Throwable e){System.out.println("FAIL "+n+": "+e);}}
+  static void eq(Object a,Object b){if(!Objects.equals(a,b))throw new AssertionError(a+" != "+b);}
+  public static void main(String[] x){
+  ck("first applied returns true and sets state",()->{Projection p=new Projection();if(!p.apply(new Message("m1",1,"A")))throw new AssertionError();eq("A",p.value());eq(1L,p.version());});
+  ck("duplicate processed-id returns false and keeps state",()->{Projection p=new Projection();p.apply(new Message("m1",1,"A"));if(p.apply(new Message("m1",2,"B")))throw new AssertionError();eq("A",p.value());eq(1L,p.version());});
+  ck("old version ignored but id still seen",()->{Projection p=new Projection();p.apply(new Message("m2",3,"C"));if(p.apply(new Message("m1",2,"B")))throw new AssertionError();eq("C",p.value());eq(3L,p.version());eq(2,p.seenCount());});
+  ck("new version applies",()->{Projection p=new Projection();p.apply(new Message("m1",1,"A"));if(!p.apply(new Message("m2",2,"B")))throw new AssertionError();eq("B",p.value());});
+  ck("same version is stale",()->{Projection p=new Projection();p.apply(new Message("m1",4,"A"));if(p.apply(new Message("m2",4,"B")))throw new AssertionError();eq("A",p.value());});
+  System.out.println("RESULT "+p+"/"+t);
+  }
+ }`,
+    reference: `record Message(String id,long version,String value) {}
+class Projection {
+    private final Set<String> seen=new HashSet<>();
+    private long version=0; private String value="";
+    synchronized boolean apply(Message m) {
+        if(seen.contains(m.id())) return false;
+        seen.add(m.id()); // đánh dấu id đã thấy kể cả sự kiện cũ: replay không tốn xử lý
+        if(m.version()<=version) return false;
+        version=m.version(); value=m.value(); return true;
+    }
+    synchronized long version(){return version;}
+    synchronized String value(){return value;}
+    synchronized int seenCount(){return seen.size();}
+}`,
+    hints: ['Kiểm tra messageId trước; không dùng version để thay thế dedup.', 'Đánh dấu ID đã thấy kể cả khi event stale để cùng event không được xét lại.', 'Chỉ thay value và version khi incoming version lớn hơn hiện tại.'],
+    explain: `Set biểu diễn inbox bền vững và synchronized làm check-then-act nguyên tử trong bài mô phỏng. Trong production, Set trong process không đủ; dùng unique constraint ở database, và insert inbox cùng transaction cập nhật projection. Nếu side effect nằm ở dịch vụ khác, cần thêm outbox hoặc idempotency key ở đích.
+
+Event stale vẫn được đánh dấu đã thấy để replay không tốn xử lý, nhưng state không đổi. Hai event khác ID có cùng version cũng không ghi đè nhau: version phải biểu thị thứ tự có ý nghĩa, thường do aggregate phát. Nếu event là delta thay vì snapshot, bỏ qua version gap có thể sai nghiệp vụ.
+
+Lỗi thường gặp là lưu ID sau side effect, khiến crash tạo side effect lặp; dùng ID không ổn định qua retry; hoặc chỉ kiểm tra version mà bỏ qua duplicate của side effect không thay thế được.`
+  }],
+  check: [
+    { q: 'Database side effect đã commit nhưng consumer chưa commit offset. Kịch bản hợp lý nhất?', options: ['Message có thể được giao lại', 'Broker biết DB commit nên bỏ qua', 'DB tự rollback theo offset', 'Message bị đổi ID'], answer: 0, explain: `Offset và DB là hai transaction khác nhau; crash ở giữa có thể khiến broker giao lại. Inbox/idempotency làm lần giao lại không nhân đôi hiệu ứng. (B) sai vì broker không quan sát transaction DB. (C) sai vì offset commit không điều khiển rollback DB. (D) sai vì message id ổn định là cơ sở dedup.` },
+    { q: 'Vì sao check-then-act bằng HashSet cục bộ không đủ khi có nhiều replica?', options: ['Set không lưu String', 'Mỗi replica có trạng thái riêng và có thể cùng xử lý trước khi ghi', 'Kafka không gửi String', 'Version luôn tăng theo đồng hồ'], answer: 1, explain: `Các process không chia sẻ Set và thao tác cục bộ không nguyên tử toàn cụm. Unique constraint/inbox dùng chung là nơi phân xử. (A) sai vì HashSet lưu được String. (C) sai, không liên quan kiểu dữ liệu. (D) sai và đồng hồ còn có thể lệch.` },
+    { q: 'Trong idempotent consumer, tại sao nên insert inbox và cập nhật state trong CÙNG transaction database?', options: ['Để Kafka commit offset nhanh hơn', 'Để tránh trạng thái "đã áp dụng side effect nhưng chưa ghi nhận đã xử lý" khi crash', 'Để cho phép hai replica cùng xử lý một message', 'Để thay thế hoàn toàn version checking'], answer: 1, explain: `Đúng (B): nếu tách rời, crash giữa hai bước có thể làm side effect chạy rồi nhưng inbox chưa ghi, lần giao lại sẽ chạy lại side effect. (A) sai vì offset commit là thao tác riêng với broker. (C) sai, mục tiêu là ngăn xử lý trùng. (D) sai vì version giải quyết thứ tự event state, khác mục đích với dedup theo message_id.` },
+    { q: 'Consumer nhận event state cũ (version 2) sau khi đã áp dụng version 5. Cách xử lý đúng là gì?', options: ['Ghi đè state bằng version 2 để giữ đủ lịch sử nhận', 'Bỏ qua áp dụng state vì version không mới hơn; vẫn ghi nhận message id để replay an toàn', 'Rollback DB về version 2', 'Tăng offset nhưng xóa inbox để nhận lại'], answer: 1, explain: `Đúng (B): event state chỉ áp dụng khi version lớn hơn hiện tại; vẫn nên dedup theo message_id để lần replay không xử lý lại. (A) sai vì sẽ làm state lùi. (C) sai vì DB không tự rollback theo version event và việc này phá hủy state mới hơn. (D) sai vì xóa inbox làm mất khả năng chống trùng.` },
+  ], tags: ['idempotency', 'Kafka', 'inbox', 'ordering', 'processed-id']
 }
 );
