@@ -1665,5 +1665,106 @@ process: [
       { title: 'Clodura.AI — Trusting Social Tech Stack (Go, Java, Python, Rust, Scala, Elixir, K8s, AWS, GCP, Kafka)', url: 'https://www.clodura.ai/directory/company/trusting-social' }
     ],
     confidence: 'medium'
+  },
+  {
+    id: 'vpbank-securities',
+    name: 'Chứng khoán VPBank (VPBankS)',
+    type: 'bank/securities',
+    icon: '📈',
+    summary: 'Công ty chứng khoán thuộc hệ sinh thái VPBank, tuyển Backend Developer (Java, Spring Boot, PostgreSQL) tại Hà Nội. JD yêu cầu ≥5 năm kinh nghiệm, thành thạo Java, Oracle, Kafka, CI/CD, PostgreSQL, Spring Boot, thiết kế pattern, SOLID, JDK 8+, Spring Boot 2.x+, Spring 5+, ưu tiên Docker, K8s, Kafka; đọc tài liệu tiếng Anh tốt. Quy trình phỏng vấn thường có bài test online, 1–2 vòng technical (live coding, system design microservices/database, deep-dive project), behavioral/leadership cho Senior. Trọng tâm câu hỏi gắn với hệ thống giao dịch chứng khoán: đặt lệnh, khớp lệnh, T+2, sổ lệnh; idempotency, transaction/isolation & locking (Oracle vs PostgreSQL), Kafka ordering, CTDL/thuật toán, SOLID/pattern, Spring internals.',
+    stack: ['Java', 'Spring Boot', 'PostgreSQL', 'Oracle', 'Kafka', 'CI/CD', 'Docker', 'Kubernetes', 'Microservices', 'REST API'],
+    process: [
+      { round: 'Vòng 1 — Bài test online (tham khảo JD và ngân hàng 2024–2025)', detail: 'JD nêu yêu cầu Java/Spring Boot, Oracle/PostgreSQL, Kafka, CI/CD; các ngân hàng/chứng khoán tương tự thường có bài test online (iMocha/Codility/HackerRank) về Java core, Spring, SQL, design pattern, tiếng Anh trước vòng technical. Hỏi recruiter xác nhận nền tảng, thời lượng và số câu.' },
+      { round: 'Vòng 2 — Phỏng vấn kỹ thuật (1–2 vòng, tham khảo review ngân hàng/chứng khoán)', detail: 'Thường gồm live coding (algorithm easy–medium, Java core/collections/concurrency), system design tập trung microservices, database (transaction, locking, idempotency), deep-dive dự án trên CV. Có thể hỏi thêm về quy trình giao dịch chứng khoán (đặt lệnh, khớp lệnh, thanh toán T+2).' },
+      { round: 'Vòng 3 — Behavioral / Leadership (cho vị trí Senior)', detail: 'Trao đổi về xử lý tình huống, dẫn dắt team, conflict resolution, định hướng kỹ thuật. Một số vị trí có thể gặp thêm lãnh đạo khối hoặc chuyên gia.' },
+      { round: 'Hình thức test (tham khảo review VPBank/ngân hàng 2024–2025)', detail: 'VPBank và các ngân hàng tương tự thường dùng iMocha/Codility cho screening. Bài test 60–90 phút: Java core (exception, thread, collections), Spring (bean, DI/IoC, JPA), SQL, OOP/design pattern, English. Technical rounds: live coding + system design (microservices, database, trading system) + deep-dive project. Tiếng Anh đọc hiểu tài liệu là bắt buộc. Hỏi recruiter team (trading, settlement, core, digital) vì stack khác nhau.' }
+    ],
+    focus: ['banking', 'concurrency', 'db', 'microservices', 'spring', 'core', 'architecture', 'english'],
+    algoWeight: 0.25,
+    englishRequired: true,
+    questions: [
+      'banking-004',
+      'banking-003',
+      'banking-013',
+      'banking-016',
+      'banking-022',
+      'banking-023',
+      'banking-025',
+      'concurrency-008',
+      'concurrency-013',
+      'concurrency-019',
+      'microservices-007',
+      'microservices-012',
+      'spring-005',
+      'db-003'
+    ],
+    tips: [
+      'Ôn kỹ idempotency, double-entry ledger, transaction isolation (READ_COMMITTED vs REPEATABLE_READ vs SERIALIZABLE) và locking (SELECT FOR UPDATE, optimistic lock @Version) — đây là cốt lõi hệ thống giao dịch.',
+      'Hiểu rõ luồng đặt lệnh → khớp lệnh → thanh toán T+2, sổ lệnh (order book) và cách thiết kế idempotent cho API đặt lệnh/hủy lệnh.',
+      'So sánh Oracle vs PostgreSQL về MVCC, locking behavior, deadlock handling, advisory lock — JD nêu rõ cả hai.',
+      'Luyện Kafka: ordering guarantee trong partition, consumer group, exactly-once semantics, transactional producer, DLQ cho poison pill.',
+      'Chuẩn bị thuật toán và cấu trúc dữ liệu (heap, tree, graph, sliding window) — có thể có bài live coding trước khi vào system design.',
+      'Nắm SOLID, design pattern (Strategy, Factory, Observer, Decorator) và áp dụng trong Spring: @Transactional propagation, bean lifecycle, Spring Security filter chain.',
+      'Tiếng Anh đọc hiểu JD, tài liệu kỹ thuật, có thể phỏng vấn một phần bằng tiếng Anh — luyện từ vựng banking/securities (settlement, clearing, custody, order book, T+2, corporate action).',
+      'Hỏi recruiter rõ team (trading engine, settlement, market data, risk, digital) vì domain và stack khá khác nhau.'
+    ],
+    pay: [],
+    sources: [
+      { title: 'ITviec — Backend Developer Java Spring Boot PostgreSQL tại Công ty Cổ phần Chứng khoán VPBank', url: 'https://itviec.com/viec-lam-it/backend-developer-java-spring-boot-postgresql-cong-ty-co-phan-chung-khoan-vpbank-4104' },
+      { title: 'ITviec — VPBank Securities company page', url: 'https://itviec.com/companies/vpbank-securities' }
+    ],
+    confidence: 'low'
+  },
+  {
+    id: 'vinsmart-future',
+    name: 'VinSmart Future',
+    type: 'product/AI',
+    icon: '🤖',
+    summary: 'Công ty sản phẩm/AI thuộc tập đoàn Vingroup, tuyển Senior Software Developer (Java/Python) tại Hà Nội (Ocean Park). Trách nhiệm: event processing, workflow orchestration, task lifecycle (routing, prioritization, assignment, escalation); API data contract; ingestion pipeline, async processing, message queue, retry, fault-tolerant error handling; webhook/push notification/3rd-party; logging, audit trail, distributed tracing, monitoring/alerting; tối ưu latency/throughput; data model, caching, transaction; incident response + RCA; security (authn/authz, audit); tích hợp kết quả AI/ML inference; mentor junior. Yêu cầu: ≥4 năm; REST, async; Kafka/RabbitMQ; RDBMS + 1 NoSQL/distributed cache; microservices, distributed systems, concurrency; Docker, CI/CD, monitoring; troubleshooting/performance.',
+    stack: ['Java', 'Python', 'Spring Boot', 'Kafka', 'RabbitMQ', 'PostgreSQL', 'Redis', 'MongoDB', 'Microservices', 'Docker', 'Kubernetes', 'CI/CD', 'Prometheus', 'Grafana', 'OpenTelemetry', 'AI/ML'],
+    process: [
+      { round: 'Vòng 1 — HR screening & technical screening (tham khảo JD product company 2024–2025)', detail: 'Trao đổi kinh nghiệm, kiểm tra tiếng Anh, có thể có bài test online (HackerRank/Codility) về Java core, concurrency, SQL, algorithm, system design basics 60–90 phút.' },
+      { round: 'Vòng 2 — Technical interview sâu (1–2 vòng)', detail: 'Hỏi sâu event-driven architecture, workflow orchestration, message queue (Kafka/RabbitMQ), async processing, retry/fault-tolerance, distributed tracing, monitoring, caching, data model, transaction, incident response/RCA, security (authn/authz), AI/ML inference integration. Có live coding hoặc take-home về ingestion pipeline hoặc task orchestration.' },
+      { round: 'Vòng 3 — System design / Architecture discussion', detail: 'Thiết kế hệ thống event processing, workflow engine, task lifecycle management, ingestion pipeline. Trade-off consistency/availability, scale, latency, exactly-once, idempotency, observability.' },
+      { round: 'Vòng 4 — Culture fit / Hiring manager / Leadership', detail: 'Trao đổi về mentoring, xử lý conflict, định hướng kỹ thuật, ownership, agility. Có thể gặp Engineering Manager hoặc Director.' },
+      { round: 'Hình thức test (tham khảo review VinFast/Vingroup tech, product company 2024–2025)', detail: 'Product company thường có: OA HackerRank (algorithm, SQL, CS fundamentals), technical 2–3 vòng (live coding, deep-dive project, system design, domain knowledge AI/ML), behavioral/culture fit. Tiếng Anh bắt buộc (team đa quốc gia, doc tiếng Anh). Hỏi recruiter team (platform, AI, IoT, automotive) vì stack/domain khác nhau.' }
+    ],
+    focus: ['microservices', 'concurrency', 'db', 'design', 'scenario', 'security', 'ai', 'architecture', 'devops', 'english'],
+    algoWeight: 0.35,
+    englishRequired: true,
+    questions: [
+      'microservices-004',
+      'microservices-005',
+      'microservices-006',
+      'microservices-009',
+      'microservices-010',
+      'microservices-018',
+      'microservices-021',
+      'scenario-005',
+      'scenario-010',
+      'scenario-015',
+      'security-001',
+      'security-006',
+      'ai-003',
+      'ai-012'
+    ],
+    tips: [
+      'Nắm vững event-driven architecture: Kafka/RabbitMQ, consumer group, ordering, exactly-once, DLQ, transactional outbox, saga pattern cho workflow orchestration.',
+      'Thiết kế ingestion pipeline: async processing, backpressure, retry với exponential backoff + jitter, circuit breaker, bulkhead, idempotent consumer (dedup table).',
+      'Workflow orchestration: so sánh choreography vs orchestration (Temporal/Camunda), state machine cho task lifecycle (routing, prioritization, assignment, escalation), compensation handling.',
+      'Observability: distributed tracing (OpenTelemetry), logging (structured, correlation ID), metrics (RED/USE), alerting (SLO burn rate), debug production incident bằng trace.',
+      'Caching & data model: Redis cache pattern (cache-aside, read-through, write-behind), cache stampede prevention (single-flight, stale-while-revalidate), NoSQL vs RDBMS cho task/event store.',
+      'Security: OAuth2/OIDC, JWT validation, mTLS service-to-service, RBAC/ABAC, audit log (append-only, tamper-proof), PII masking.',
+      'AI/ML integration: model serving (TensorFlow Serving, Triton, vLLM), inference pipeline, feature store, A/B testing model, monitoring drift, fallback khi model lỗi.',
+      'Incident response & RCA: quy trình on-call, runbook, post-mortem blameless, 5 Whys, action item tracking. Chuẩn bị ví dụ STAR incident thực tế.',
+      'Mentoring & leadership: code review culture, pair programming, knowledge sharing, grow junior. Chuẩn bị câu chuyện behavioral theo STAR.',
+      'Tiếng Anh: giao tiếp kỹ thuật, đọc hiểu tài liệu, có thể phỏng vấn toàn tiếng Anh — luyện từ vựng domain (orchestration, ingestion, idempotency, observability, inference, drift).'
+    ],
+    pay: [],
+    sources: [
+      { title: 'ITviec — Senior Software Developer Java Python tại VinSmart Future', url: 'https://itviec.com/viec-lam-it/senior-software-developer-java-python-vinsmart-future-2527' },
+      { title: 'ITviec — VinSmart Future company page', url: 'https://itviec.com/companies/vinsmart-future' }
+    ],
+    confidence: 'low'
   }
 ];
