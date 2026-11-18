@@ -2413,6 +2413,7 @@ window.DATA_INDEX = {
     {"id":"lesson-core-011","track":"core","order":11,"title":"Immutable snapshot cho request: defensive copy ở cả hai biên","level":"mid","minutes":25},
     {"id":"lesson-core-012","track":"core","order":12,"title":"Exception đúng chuẩn: checked vs unchecked, wrap giữ cause, try-with-resources và suppressed","level":"senior","minutes":30},
     {"id":"lesson-core-013","track":"core","order":13,"title":"Generics PECS thực chiến: viết copy và max an toàn kiểu","level":"senior","minutes":30},
+    {"id":"lesson-core-014","track":"core","order":14,"title":"BigDecimal, equals/compareTo nhất quán và Money record chuẩn hoá scale","level":"senior","minutes":30},
     {"id":"lesson-modern-001","track":"modern","order":1,"title":"Stream: lazy evaluation, stateless/stateful và Collectors nhóm theo khách hàng, tháng","level":"senior","minutes":30},
     {"id":"lesson-modern-002","track":"modern","order":2,"title":"Optional trong API: orElse/orElseGet, tránh get()","level":"mid","minutes":25},
     {"id":"lesson-modern-003","track":"modern","order":3,"title":"Record, sealed interface và pattern matching (Java 21)","level":"lead","minutes":30},

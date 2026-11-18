@@ -2509,6 +2509,232 @@ Nhớ giải thích được: (1) invariant vs covariant của mảng và vì sa
   ],
   related: ['core-001', 'core-012', 'core-056'],
   tags: ['generics', 'PECS', 'wildcard', 'type-safety', 'Comparator']
-}
+},
+{
+  id: 'lesson-core-014', track: 'core', order: 14,
+  title: 'BigDecimal, equals/compareTo nhất quán và Money record chuẩn hoá scale', level: 'senior', minutes: 30,
+  goals: [
+    'Giai thich vi sao 1.0 va 1.00 khac nhau theo equals nhung bang nhau theo compareTo',
+    'Du doan hanh vi cua HashMap/HashSet va TreeSet khi dung BigDecimal lam khoa',
+    'Chuan hoa scale bang setScale va RoundingMode truoc khi luu tien te',
+    'Viet record Money co equals, hashCode, compareTo nhat qua, dung an toan trong HashSet/TreeSet/HashMap'
+  ],
+  body: `**Tóm tắt:** BigDecimal là kiểu lưu số thập phân chính xác, dùng cho tiền tệ. Hai số bằng về trị số như 1.0 và 1.00 lại KHÔNG bằng nhau theo {{equals}} vì {{equals}} so cả số lẫn scale (số chữ số sau dấu phẩy), trong khi {{compareTo}} chỉ so trị số. Dùng BigDecimal làm khóa {{HashMap}} hoặc phần tử trong {{HashSet}}/{{TreeSet}} thì sự khác biệt này gây lỗi: Map không tìm thấy key đã put, Set giữ hai số trị số bằng nhau, hoặc âm thầm gộp hai số khác tiền tệ. Bài học dạy quy tắc chuẩn hoá scale bằng {{setScale}} ngay khi tạo, dùng {{compareTo}} == 0 khi chỉ so trị số, và viết record Money sao cho {{equals}}, {{hashCode}}, {{compareTo}} luôn nhất quán.
 
+### BigDecimal lưu số dưới hai phần
+BigDecimal không lưu số dấu phẩy động như {{double}}. Mỗi giá trị gồm hai phần: **unscaled value** (số nguyên không dấu chứa mọi chữ số) và **scale** (vị trí dấu phẩy thập phân). Giá trị thực = unscaled chia 10 mũ scale. Vì unscaled là số nguyên không giới hạn, BigDecimal không bị sai lệch như {{double}} (0.1 + 0.2 có thể ra 0.30000000000000004).
+
+1.0 có unscaled 10, scale 1. 1.00 có unscaled 100, scale 2. Hai số trị số bằng 1 nhưng scale khác nhau.
+
+~~~java
+BigDecimal mot = new BigDecimal("1.0");      // unscaled 10, scale 1
+BigDecimal mot00 = new BigDecimal("1.00");   // unscaled 100, scale 2
+System.out.println(mot.equals(mot00));       // false: scale 1 khac scale 2
+System.out.println(mot.compareTo(mot00));    // 0: tri so cung bang 1
+~~~
+
+Luu tu chuoi de giu chinh xac tung chu so. {{new BigDecimal(0.1)}} giu luon sai lech nhi phan cua {{double}}; phai viet {{new BigDecimal("0.1")}}.
+
+### equals so scale, compareTo bo qua scale
+{{equals}} tra true chi khi **ca hai** unscaled va scale giong nhau. Vi sao 1.0 (scale 1) khac 1.00 (scale 2). {{compareTo}} tra 0 khi tri so bang nhau, khong nhin scale: 1.0 compareTo 1.00 tra 0.
+
+Quy tắc dung trong tien te:
+- Chi so tri so (vi du "don hang du so tien khong"): dung {{compareTo}} == 0, hoac chuan hoa cung scale truoc.
+- Dung lam khoa {{HashMap}} hoac phan tu {{HashSet}}: phai chuan hoa scale truoc, bang khong hai so tri so bang nhau nhung scale khac se roi vao bucket khac nhau va bi coi la khoa khac.
+
+~~~java
+System.out.println(mot.hashCode());   // hash cua 1.0
+System.out.println(mot00.hashCode()); // hash cua 1.00, khong bang hash tren
+~~~
+
+Vi {{HashMap}} chon bucket bang {{hashCode}} roi moi so {{equals}}, 1.0 va 1.00 co hash khac nhau -> roi vao bucket khac nhau -> {{get}} tra null dù key co tri so bang nhau.
+
+### HashSet va TreeSet xu ly khac nhau
+HashSet dung {{hashCode}} roi {{equals}}: 1.0 va 1.00 hash khac nhau -> HashSet giu ca hai (hai phan tu "bang tri so").
+
+TreeSet dung {{compareTo}}, coi ket qua 0 la "da co roi": 1.0 compareTo 1.00 tra 0 -> TreeSet gop thanh mot phan tu, so thu hai bi bo im lang.
+
+~~~java
+Set<BigDecimal> hashSet = new HashSet<>();
+hashSet.add(new BigDecimal("1.0"));
+hashSet.add(new BigDecimal("1.00")); // duoc them: hash khac nhau
+// hashSet co 2 phan tu
+
+TreeSet<BigDecimal> treeSet = new TreeSet<>();
+treeSet.add(new BigDecimal("1.0"));
+treeSet.add(new BigDecimal("1.00")); // bi bo: compareTo tra 0
+// treeSet co 1 phan tu
+~~~
+
+Day la loi kinh dien: hai so tien "1.0 USD" va "1.00 USD" tri so bang nhau nhung trong HashSet van dem la 2, trong TreeSet lai con 1. Neu code dem so don hang duy nhất theo tien thi ket qua sai tuong ung voi collection chon.
+
+### Vien thuc te: chia tien va loi 1 xu
+Hoa don 10.000 VND chia cho 3 ky. {{10.000 / 3}} voi scale 0 va HALF_UP cho 3333 moi ky, tong ba ky la 9999, thieu 1. Phai lam tròn ro rang va phan bo phan du.
+
+RoundingMode là chinh sach lam tròn: HALF_UP lam tròn pho bien (0.5 len), HALF_EVEN giam thien lech khi cong don nhieu lan (chia cho so chan khi gan giua). Chia BigDecimal phai luon truyen scale va RoundingMode, bang khong {{divide}} nem {{ArithmeticException}} khi ket qua khong chia het (10 chia 3).
+
+~~~java
+BigDecimal tong = new BigDecimal("10000");
+BigDecimal motKy = tong.divide(BigDecimal.valueOf(3), 0, RoundingMode.HALF_UP); // 3333
+// 3333 * 3 = 9999, thieu 1 -> can phan bo xu cuoi cung cho mot ky
+~~~
+
+Chuan hoa scale cho tien te bang {{setScale}} ngay o ranh gio nhap lieu, roi giu scale do moi khoong. Khong dung {{stripTrailingZeros}} de dinh dang vi co the tao scale am (1E+3).
+
+### Money record: equals, hashCode, compareTo nhat qua
+Record tu sinh {{equals}} va {{hashCode}} theo tat ca component, nhung **khong** tu sinh {{compareTo}}. Neu component la BigDecimal chua chuan hoa scale, Money("1.0", "USD") va Money("1.00", "USD") se khac nhau theo equals nhung bang nhau theo compareTo — hop contract vo, TreeSet gop nham.
+
+Quy tắc: chuan hoa scale trong compact constructor (chay truoc khi gan field), vi du scale 2 cho tien te, roi viet compareTo so tien te truoc sau do moi so tien.
+
+~~~java
+record Money(BigDecimal amount, String currency) implements Comparable<Money> {
+    Money {
+        amount = Objects.requireNonNull(amount, "amount");
+        currency = Objects.requireNonNull(currency, "currency");
+        if (currency.length() != 3) throw new IllegalArgumentException("currency phai la ma 3 ky tu");
+        for (int i = 0; i < 3; i++) {
+            char c = currency.charAt(i);
+            if (c < 'A' || c > 'Z') throw new IllegalArgumentException("currency phai la chu hoa A-Z");
+        }
+        amount = amount.setScale(2, RoundingMode.HALF_UP); // chuan hoa scale tai day
+    }
+    public int compareTo(Money other) {
+        Objects.requireNonNull(other, "other");
+        int byCurrency = currency.compareTo(other.currency);
+        return byCurrency != 0 ? byCurrency : amount.compareTo(other.amount);
+    }
+}
+~~~
+
+Sau chuan hoa, Money("1.0", "USD") va Money("1.00", "USD") cung amount 1.00 scale 2 -> equals true, hashCode bang, compareTo 0. HashSet giu mot phan tu, TreeSet gop dung, HashMap tim duoc key tao moi. Neu hai Money khac tien te thi compareTo khong 0 (so tien te truoc), TreeSet giu ca hai — nhat qua voi equals (cung khac nhau).
+
+### Loi hay gap
+- So tien bang {{equals}} ma khong chuan hoa scale: 1.0 khac 1.00, HashMap khong tim thay key.
+- Dùng compareTo chi so tien, bo qua tien te: TreeSet gop USD 1000 va EUR 1000 thanh mot, mat tien im lang.
+- Chia BigDecimal thieu scale va RoundingMode: nem ArithmeticException.
+- {{new BigDecimal(double)}}: giu luon sai lech nhi phan ngay tu dau.
+- Viết record nhung quên compareTo, hoac viet compareTo khac field voi equals: HashSet/TreeSet hanh vi mau thuan.
+
+### Senior tip:
+Khi thiet kế value type tien te, hãy chon mot quy tắc duy nhất: "tri so bang nhau va cung tien te thi bang nhau" roi ap dung quy tắc do dong thoi cho equals, hashCode va compareTo. Ep nhan vien moi ghi quy tắc nay vao comment tren class Money de ai sua sau nay khong vo tac pha hop contract.
+
+### Liên hệ phỏng vấn
+- Vì sao 1.0 và 1.00 khac nhau theo equals nhung bang nhau theo compareTo? → equals so ca so luon scale, compareTo chi so tri so.
+- HashSet va TreeSet voi BigDecimal xu ly ra sao, va tai sao khac nhau? → HashSet dung hashCode (gom scale) roi equals -> 1.0 va 1.00 la hai phan tu. TreeSet dung compareTo, ket qua 0 nghia la da co -> chi giu mot phan tu.
+- Lam sao de Money dung an toan trong HashSet/TreeSet/HashMap? → Chuan hoa scale trong constructor, viet compareTo tra 0 dung khi va chi khi equals tra true, dung cung cac field trong equals va hashCode.
+`,
+  exercises: [{
+    title: 'Money record chuan hoa scale, equals/hashCode dung',
+    prompt: `Viet record Money(BigDecimal amount, String currency) implements Comparable<Money>.
+
+Yeu cau:
+- Compact constructor tu choi amount null, currency null, tien te khong dung 3 ky tu hoa A-Z bang IllegalArgumentException; neu amount hop le thi chuan hoa amount ve scale 2 bang setScale(2, RoundingMode.HALF_UP).
+- equals va hashCode tu record sinh ra (khong viet tay) phai dua tren hai component da chuan hoa: Money("1.0", "USD") phai bang Money("1.00", "USD") va cung hashCode.
+- compareTo viet tay: so tien te truoc, neu bang 0 moi so tien; tra 0 dung khi va chi khi equals tra true; tien te khac thi khong duoc tra 0.
+- amount() va currency() la accessor tu record sinh.
+
+Test se dung HashSet, TreeSet, HashMap de kiem tra hop kinh thuc, khong chi goi thang method.`,
+    starter: `record Money(BigDecimal amount, String currency) implements Comparable<Money> {
+    Money {
+        throw new UnsupportedOperationException("TODO");
+    }
+    public int compareTo(Money other) {
+        throw new UnsupportedOperationException("TODO");
+    }
+}`,
+    tests: `public class Main {
+    static int passed = 0, total = 0;
+    static void guard(String name, java.util.function.Supplier<Boolean> body) {
+        total++;
+        try {
+            if (body.get()) { passed++; System.out.println("PASS " + name); }
+            else System.out.println("FAIL " + name);
+        } catch (Throwable t) {
+            System.out.println("FAIL " + name + ": " + t);
+        }
+    }
+    public static void main(String[] args) {
+        Money a = new Money(new BigDecimal("1.0"), "USD");
+        Money b = new Money(new BigDecimal("1.00"), "USD");
+        Money c = new Money(new BigDecimal("1.00"), "EUR");
+
+        guard("1.0 USD va 1.00 USD bang nhau sau chuan hoa scale", () -> a.equals(b) && b.equals(a) && a.equals(a));
+        guard("cung hashCode vi components giong nhau", () -> a.hashCode() == b.hashCode());
+        guard("compareTo tra 0 cho gia tri va tien te giong nhau", () -> a.compareTo(b) == 0 && b.compareTo(a) == 0);
+        guard("khac tien te thi khong bang va compareTo khong 0", () -> !a.equals(c) && !c.equals(a) && a.compareTo(c) != 0);
+        guard("HashSet bo tram mot phan tu khi gia tri giong nhau", () -> new HashSet<>(List.of(a, b)).size() == 1);
+        guard("TreeSet bo tram khi compareTo tra 0", () -> new TreeSet<>(List.of(a, b)).size() == 1);
+        guard("TreeSet giu hai tien te khac nhau", () -> {
+            TreeSet<Money> ts = new TreeSet<>();
+            ts.add(a); ts.add(c);
+            return ts.size() == 2;
+        });
+        guard("HashMap tim gia tri bang key tao moi co du lieu giong", () -> {
+            Map<Money, String> ledger = new HashMap<>();
+            ledger.put(a, "don hang 1");
+            return "don hang 1".equals(ledger.get(new Money(new BigDecimal("1.00"), "USD")));
+        });
+        guard("lam tron 1.005 thanh 1.01 tai scale 2", () -> new Money(new BigDecimal("1.005"), "USD").amount().equals(new BigDecimal("1.01")));
+        guard("tu choi amount null", () -> { try { new Money(null, "USD"); return false; } catch (NullPointerException ok) { return true; } });
+        guard("tu choi tien te sai dinh dang", () -> { try { new Money(new BigDecimal("1.00"), "us"); return false; } catch (IllegalArgumentException ok) { return true; } });
+        guard("tu choi tien te qua 3 ky tu", () -> { try { new Money(new BigDecimal("1.00"), "USDX"); return false; } catch (IllegalArgumentException ok) { return true; } });
+        System.out.println("RESULT " + passed + "/" + total);
+    }
+}`,
+    reference: `record Money(BigDecimal amount, String currency) implements Comparable<Money> {
+    Money {
+        amount = Objects.requireNonNull(amount, "amount");
+        currency = Objects.requireNonNull(currency, "currency");
+        if (currency.length() != 3) throw new IllegalArgumentException("currency phai la ma 3 ky tu");
+        for (int i = 0; i < 3; i++) {
+            char c = currency.charAt(i);
+            if (c < 'A' || c > 'Z') throw new IllegalArgumentException("currency phai la chu hoa A-Z");
+        }
+        amount = amount.setScale(2, RoundingMode.HALF_UP);
+    }
+    public int compareTo(Money other) {
+        Objects.requireNonNull(other, "other");
+        int byCurrency = currency.compareTo(other.currency);
+        return byCurrency != 0 ? byCurrency : amount.compareTo(other.amount);
+    }
+}`,
+    hints: [
+        'Chuan hoa amount trong compact constructor bang setScale(2, RoundingMode.HALF_UP) truoc khi field duoc gan.',
+        'compareTo phai tra 0 dung khi equals tra true: so tien te truoc, neu bang 0 moi so tien; bo qua tien te thi TreeSet gop nham USD va EUR.',
+        'equals va hashCode tu record sinh, khong viet tay, nhung chi dung dung sau khi components da chuan hoa scale.'
+    ],
+    explain: `Record tu sinh equals va hashCode theo tat ca component. Chua chuan hoa scale, "1.0" co scale 1 va "1.00" co scale 2 la component khac nhau, nen equals sai va hashCode khac nhau. Compact constructor chuan hoa amount ve scale 2 bang setScale(2, RoundingMode.HALF_UP) luc tao, truoc khi field duoc gan. Sau do hai tien te tri so bang nhau cung co component giong nhau -> equals true, hashCode bang nhau.
+
+compareTo phai viet tay vi record khong sinh method nay. Viết so tien te bang currency.compareTo, neu bang 0 moi so tien bang amount.compareTo (BigDecimal.compareTo bo qua scale, nhung amount da chuan hoa tai day). Vay compareTo tra 0 dung khi va chi khi equals tra true, duy tri hop contract cua TreeSet.
+
+HashSet kiem tra hashCode roi equals -> mot phan tu. TreeSet kiem tra compareTo, ket qua 0 nghia la da co -> gop dung, va tien te khac van duoc giu lai (compareTo khong 0). HashMap tim duoc key tao moi vi hashCode va equals da dau dau. Neu bo chuan hoa scale hoac viet compareTo thieu tien te, HashSet giu hai so "1.0 va 1.00" trong khi TreeSet con mot: hop contract vo, loi khong bao ra exception chi thieu du lieu khi doi soat.`
+  }],
+  check: [
+    {
+      q: 'Hai so {{new BigDecimal("1.0")}} va {{new BigDecimal("1.00")}} theo {{equals}} va {{compareTo}} ra sao?',
+      options: ['Ca hai deu cho bang nhau', 'Ca hai deu cho khac nhau', 'equals cho khac nhau (scale khac), compareTo cho bang nhau (tri so bang)', 'equals cho bang nhau, compareTo cho khac nhau'],
+      answer: 2,
+      explain: 'Dap an C dung: equals so ca so luon scale (1.0 co scale 1, 1.00 co scale 2) nen cho khac nhau; compareTo chi so tri so, hai so bang 1 nen tra 0. A, B, D sai.'
+    },
+    {
+      q: 'Dung BigDecimal lam khoa HashSet, dua 1.0 va 1.00 vao, set co bao nhieu phan tu?',
+      options: ['1 phan tu, vi tri so bang nhau', '2 phan tu, vi hashCode khac nhau nen equals khong bao gio duoc goi de so sanh', 'HashSet nem IllegalArgumentException', 'Khong xac dinh, tuong tu JVM'],
+      answer: 1,
+      explain: 'Dap an B dung: HashSet chon bucket bang hashCode roi moi goi equals trong bucket do. 1.0 va 1.00 hash khac nhau -> bucket khac -> equals khong bao gio goi -> set giu 2 phan tu "1.0 va 1.00" co tri so bang nhau.'
+    },
+    {
+      q: 'compareTo cua Money chi so tien, bo qua tien te. Dua USD 1000 va EUR 1000 vao TreeSet, ket qua?',
+      options: ['Giu ca hai vi equals coi chung khac nhau', 'Chi giu mot phan tu, phan tu thu hai bi bo vi compareTo tra 0', 'TreeSet nem ClassCastException', 'Khong xac dinh'],
+      answer: 1,
+      explain: 'Dap an B dung: TreeSet khong goi equals, no tin compareTo; ket qua 0 nghia la khoa da co va phan tu thu hai bi bo im lang. A, C, D sai.'
+    },
+    {
+      q: 'Vi sao khong viet new BigDecimal(0.1) cho so tien?',
+      options: ['Constructor double giu luon sai lech nhi phan cua 0.1, tien sai ngay tu dau tien tinh toan dau tien', 'BigDecimal khong nhan constructor double', '0.1 trong double la chinh xac', 'Java 17 lui constructor double'],
+      answer: 0,
+      explain: 'Dap an A dung: double luu so nhi phan, 0.1 khong co bieu dien nhi phan han che, va new BigDecimal(0.1) giu luon gia tri sai lech do (0.1000000000000000055511...). Phai dung new BigDecimal("0.1") hoac BigDecimal.valueOf(0.1). B, C, D sai.'
+    }
+  ],
+  tags: ['BigDecimal', 'Money', 'equals', 'hashCode', 'compareTo']
+}
 );
