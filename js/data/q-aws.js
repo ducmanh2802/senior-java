@@ -5480,4 +5480,205 @@ Một hệ thống tóm tắt tài liệu gọi Claude qua Bedrock on-demand, tr
   ],
   tags: ['Bedrock', 'Claude', 'PrivateLink', 'VPC endpoint', 'quota', 'retry', 'senior']
 },
+{
+  id: 'aws-079',
+  topic: 'aws',
+  level: 'senior',
+  q: 'Bạn được giao nhiệm vụ giảm 30% hóa đơn EC2/RDS trong 3 tháng mà không ảnh hưởng SLO. Bạn sẽ làm từng bước thế nào, và những đòn bẩy tiết kiệm lớn nhất là gì?',
+  a: `**Tóm tắt:** Giảm chi phí AWS không bắt đầu từ mua Savings Plans mà từ **đo lường và rightsizing**: bật Cost Explorer + Compute Optimizer, tìm **EC2/RDS oversized**, **idle resource** (volume unattached, EIP không dùng, snapshot cũ), **dữ liệu truy cập ít**; sau đó tối ưu kiến trúc (Graviton, Auto Scaling, Spot cho workload phù hợp), cuối cùng mới cam kết **Savings Plans/Reserved Instances** cho phần tải nền đã ổn định. Mỗi bước đều có số đo trước/sau.
+
+### Bước 1 — Đo lường (tuần 1)
+- Bật **AWS Cost Explorer**, **Cost and Usage Report (CUR)** export ra S3, **AWS Budgets** cảnh báo vượt ngưỡng.
+- Bật **Compute Optimizer** (miễn phí) cho EC2, EBS, Lambda, ECS — nó đề xuất size dựa trên metric CloudWatch 14 ngày.
+- Lập danh sách **idle**: EC2 CPU < 5% liên tục 14 ngày, volume EBS không attach, Elastic IP không attach, Load Balancer không có target, RDS instance CPU thấp nhưng storage lớn.
+
+### Bước 2 — Rightsizing (tuần 2-3)
+- Giảm size instance theo đề xuất Compute Optimizer (ví dụ m5.2xlarge → m5.xlarge nếu CPU trung bình 12%).
+- RDS: chuyển từ **provisioned IOPS** sang **gp3** (rẻ hơn, tự đặt IOPS), giảm storage đã cấp dư, dùng **Aurora Serverless v2** cho workload biến thiên.
+- EBS: xóa volume unattached, chuyển gp2 → gp3, snapshot lifecycle (xóa snapshot cũ hơn N ngày).
+
+### Bước 3 — Kiến trúc (tuần 3-6)
+- **Graviton (arm64)**: chuyển workload Java/Spring sang instance c7g/r7g — thường rẻ hơn và nhanh hơn x86; kiểm tra dependency (native lib, JNI).
+- **Auto Scaling** theo metric thực (CPU/queue depth) thay vì giữ capacity cố định 24/7.
+- **Spot** cho batch, CI runner, dev env; giữ on-demand cho production critical.
+- **Savings Plans** (Compute Savings Plans linh hoạt nhất) cho phần base load đã ổn định ≥ 1 năm.
+
+### Bước 4 — Cam kết (tuần 6-8)
+- Mua Savings Plans 1 năm No Upfront hoặc Partial Upfront tùy dòng tiền; tránh All Upfront nếu chưa chắc.
+- Reserved Instance cho RDS/Redshift/ElastiCache nếu workload ổn định.
+
+### Ví dụ đời thực
+Một SaaS B2B: hóa đơn EC2 18.000 USD/tháng. Rightsizing theo Compute Optimizer giảm 22% (4.000 USD). Chuyển 40% workload sang Graviton giảm thêm 15%. Bật Auto Scaling cho môi trường staging ban đêm giảm 60% chi phí staging. Mua Compute Savings Plans 1 năm cho base load giảm thêm 20% trên phần cam kết. Tổng giảm khoảng 45% (8.100 USD/tháng) sau 8 tuần, SLO không đổi. Sai lầm đầu tiên của team là mua Savings Plans trước khi rightsizing — đã cam kết cho instance oversized.
+
+### Trả lời mẫu khi phỏng vấn
+"Tôi làm theo thứ tự: đo lường trước (Cost Explorer, CUR, Compute Optimizer), rightsizing và dọn idle, tối ưu kiến trúc (Graviton, Auto Scaling, Spot), cuối cùng mới cam kết Savings Plans/RI cho phần tải nền đã ổn định. Tôi luôn đo trước/sau và đặt Budgets cảnh báo. Đòn bẩy lớn nhất thường là rightsizing và dọn idle chứ không phải mua Savings Plans, và mua Savings Plans trước khi rightsizing là sai lầm phổ biến."
+
+> Senior tip: **mua Savings Plans trước khi rightsizing là sai lầm kinh điển** — bạn đã cam kết trả tiền cho capacity oversized. Luôn rightsizing và ổn định workload trước, rồi mới cam kết.`,
+  follow: [
+    'Compute Savings Plans và EC2 Instance Savings Plans khác nhau thế nào?',
+    'Khi nào nên dùng Spot thay vì Savings Plans?',
+    'Làm sao phân bổ chi phí theo team/product (showback/chargeback)?'
+  ],
+  tags: ['AWS', 'cost', 'rightsizing', 'Savings Plans', 'Graviton', 'senior']
+},
+{
+  id: 'aws-080',
+  topic: 'aws',
+  level: 'senior',
+  q: 'NAT Gateway thường là "bẫy chi phí" trong VPC. Khi nào chi phí NAT tăng bất thường, và dùng VPC endpoint thế nào để giảm?',
+  a: `**Tóm tắt:** NAT Gateway tính tiền theo **giờ chạy + mỗi GB dữ liệu đi qua**. Chi phí bất thường thường đến từ **traffic lớn đi qua NAT**: gọi S3/DynamoDB/Bedrock, pull image từ ECR, download package, log shipping. Giải pháp: **Gateway endpoint** (miễn phí) cho S3 và DynamoDB; **Interface endpoint (PrivateLink)** cho các dịch vụ AWS khác; đặt tài nguyên trong private subnet với endpoint; tránh route 0.0.0.0/0 qua NAT cho traffic nội bộ.
+
+### Vì sao NAT Gateway đắt
+- Phí giờ: khoảng 0,045 USD/giờ/ AZ (~32 USD/tháng/AZ) kể cả khi không có traffic.
+- Phí dữ liệu: khoảng 0,045 USD/GB xử lý, cộng phí cross-AZ nếu traffic đi qua AZ khác.
+- Một pod tải 100GB từ S3 qua NAT = 4,5 USD chỉ phí xử lý, chưa kể phí cross-AZ.
+
+### Nguồn traffic bất thường
+- Service trong private subnet gọi S3/DynamoDB → đi qua NAT thay vì endpoint.
+- EKS node pull image từ ECR (ECR API + S3 layer) → đi NAT.
+- CloudWatch Logs agent shipping log → đi NAT.
+- Lambda trong VPC gọi DynamoDB/S3 → đi NAT.
+- Package manager (npm, pip, apt) trong CI runner.
+
+### Giải pháp VPC endpoint
+| Loại | Dịch vụ | Chi phí | Cách dùng |
+|---|---|---|---|
+| Gateway endpoint | S3, DynamoDB | Miễn phí (chỉ phí request S3/DynamoDB) | Route table trỏ prefix list S3/DynamoDB vào endpoint |
+| Interface endpoint (PrivateLink) | ECR, CloudWatch, Bedrock, Secrets Manager, v.v. | Phí giờ + GB | ENI trong subnet, security group 443, private DNS |
+
+### Các bước
+1. Tạo **Gateway endpoint** cho S3 và DynamoDB ở mỗi VPC, gắn vào route table của private subnet.
+2. Tạo **Interface endpoint** cho các dịch vụ hay gọi (ECR API + ECR DKR, CloudWatch Logs, Secrets Manager, STS, Bedrock runtime).
+3. Bật **private DNS** trên interface endpoint để SDK tự resolve tên dịch vụ sang endpoint (không đổi code).
+4. Security group của endpoint cho phép 443 từ subnet service.
+5. Kiểm tra **VPC Flow Logs** hoặc CUR để xác nhận traffic không còn đi NAT.
+
+### Ví dụ đời thực
+Một hệ thống EKS: hóa đơn NAT 6.000 USD/tháng. Điều tra Flow Logs: 70% traffic là pull image ECR và ship log CloudWatch, 20% gọi S3. Tạo gateway endpoint S3 + interface endpoint ECR (api + dkr) + CloudWatch Logs, bật private DNS. Hóa đơn NAT giảm xuống 800 USD/tháng (chỉ còn traffic npm/pip và một số API bên ngoài), tổng tiết kiệm ~5.200 USD/tháng. Chi phí endpoint interface ~400 USD/tháng nhưng vẫn lời lớn.
+
+### Trả lời mẫu khi phỏng vấn
+"NAT Gateway tính tiền theo giờ và mỗi GB đi qua, nên traffic lớn tới S3/DynamoDB/ECR/CloudWatch qua NAT là bẫy chi phí. Tôi dùng Gateway endpoint miễn phí cho S3 và DynamoDB, Interface endpoint (PrivateLink) cho các dịch vụ khác, bật private DNS để SDK không đổi code, security group chỉ mở 443. Sau đó kiểm tra VPC Flow Logs/CUR để xác nhận traffic đã chuyển sang endpoint. Với workload EKS, endpoint ECR (api + dkr) và CloudWatch Logs thường là đòn bẩy lớn nhất."
+
+> Senior tip: **bật private DNS** trên interface endpoint là bước hay bị quên — không bật thì SDK vẫn resolve tên dịch vụ ra public IP và đi qua NAT, endpoint vô dụng. Luôn kiểm tra bằng Flow Logs sau khi tạo.`,
+  follow: [
+    'Gateway endpoint và Interface endpoint khác nhau thế nào về chi phí và cơ chế?',
+    'PrivateLink endpoint policy dùng để làm gì?',
+    'Làm sao phát hiện traffic bất thường qua NAT Gateway?'
+  ],
+  tags: ['AWS', 'VPC', 'NAT Gateway', 'PrivateLink', 'VPC endpoint', 'cost', 'senior']
+},
+{
+  id: 'aws-081',
+  topic: 'aws',
+  level: 'senior',
+  q: 'S3 thường là kho dữ liệu lớn nhất và hóa đơn lưu trữ tăng dần theo thời gian. Bạn thiết kế lifecycle và Intelligent-Tiering thế nào để giảm chi phí mà không mất dữ liệu?',
+  a: `**Tóm tắt:** Dữ liệu S3 có **pattern truy cập giảm dần theo thời gian** (hot → warm → cold → archive). Dùng **S3 Lifecycle rules** để chuyển object sang storage class rẻ hơn sau N ngày (Standard → Standard-IA → Glacier Instant Retrieval → Glacier Deep Archive) và **expire** object không cần. Dùng **S3 Intelligent-Tiering** khi pattern truy cập không đoán được — nó tự chuyển tier theo truy cập, không phí retrieval. Kết hợp **prefix/tag filter**, **multipart cleanup**, **versioning lifecycle**, và **S3 Storage Lens** để đo lường.
+
+### Storage classes (giá giảm dần, retrieval tăng)
+- Standard: truy cập thường xuyên.
+- Standard-IA: truy cập không thường xuyên (tối thiểu 30 ngày, phí retrieval).
+- Glacier Instant Retrieval: truy cập hiếm nhưng cần ms (tối thiểu 90 ngày).
+- Glacier Flexible Retrieval: phút-giờ.
+- Glacier Deep Archive: giờ, rẻ nhất (tối thiểu 180 ngày).
+
+### Lifecycle rules
+- Chuyển theo age: sau 30 ngày → Standard-IA, sau 90 ngày → Glacier IR, sau 365 ngày → Deep Archive.
+- Expire object sau N ngày (log, temp upload).
+- Xóa **incomplete multipart uploads** sau 7 ngày (rất hay bị quên, tốn tiền).
+- Với **versioning**: expire noncurrent versions sau N ngày, xóa delete markers.
+
+### Intelligent-Tiering
+- Tự chuyển giữa Frequent/Infrequent/Archive Instant/Archive/Deep Archive theo truy cập.
+- Không phí retrieval khi chuyển tier; phí monitoring nhỏ mỗi 1000 object.
+- Phù hợp khi **không đoán được** pattern truy cập; không nên dùng cho object nhỏ (< 128KB không được tier) hoặc object tồn tại ngắn.
+
+### Ví dụ đời thực
+Một nền tảng log/analytics: bucket log 200TB Standard, hóa đơn 4.600 USD/tháng. Thiết kế lifecycle: log raw sau 7 ngày → Standard-IA, sau 30 ngày → Glacier IR, sau 90 ngày → Deep Archive, expire sau 365 ngày; xóa incomplete multipart. Bucket dữ liệu user upload dùng Intelligent-Tiering vì truy cập không đoán được. Sau 60 ngày hóa đơn storage giảm xuống ~900 USD/tháng (giảm ~80%), dữ liệu vẫn truy vấn được khi cần (Glacier IR ms). Kiểm tra Storage Lens hàng tháng.
+
+### Trả lời mẫu khi phỏng vấn
+"Tôi phân tích pattern truy cập theo thời gian. Dữ liệu có vòng đời rõ (log, backup) → Lifecycle rules chuyển Standard → IA → Glacier → Deep Archive và expire sau N ngày, nhớ dọn incomplete multipart và noncurrent versions. Dữ liệu pattern không đoán được → Intelligent-Tiering tự tier, không phí retrieval. Tôi dùng prefix/tag filter để rule đúng phạm vi, và S3 Storage Lens + CUR để đo hiệu quả và điều chỉnh ngưỡng."
+
+> Senior tip: **incomplete multipart uploads** là chi phí "vô hình" phổ biến — upload thất bại để lại parts vẫn tính tiền. Luôn có rule AbortIncompleteMultipartUpload sau 7 ngày. Và Glacier Deep Archive có phí retrieval + thời gian chờ: đừng archive dữ liệu cần truy vấn thường xuyên.`,
+  follow: [
+    'Glacier Instant Retrieval và Standard-IA khác nhau ra sao?',
+    'Khi nào Intelligent-Tiering không hiệu quả?',
+    'S3 Object Lock và versioning ảnh hưởng lifecycle thế nào?'
+  ],
+  tags: ['AWS', 'S3', 'lifecycle', 'Intelligent-Tiering', 'Glacier', 'cost', 'senior']
+},
+{
+  id: 'aws-082',
+  topic: 'aws',
+  level: 'senior',
+  q: 'CloudWatch Logs chi phí tăng nhanh và khó kiểm soát. Bạn giảm chi phí log thế nào mà vẫn đủ observability?',
+  a: `**Tóm tắt:** CloudWatch Logs tính tiền theo **GB ingested + GB lưu trữ + query (Logs Insights)**. Giảm chi phí bằng cách **lọc tại nguồn** (log level, sampling), **đặt retention** thay vì giữ mãi, **export sang S3** cho log lạnh (rẻ hơn nhiều), dùng **subscription filter** sang Kinesis/Firehose, và **structured logging** để query hiệu quả hơn. Observability vẫn đủ nếu giữ metric và trace, và giữ log lỗi/warn đầy đủ.
+
+### Đòn bẩy chi phí
+- **Retention**: mặc định "Never expire" → đặt 7/14/30/90 ngày theo loại log (debug 7 ngày, audit 1 năm).
+- **Filter tại nguồn**: chỉ gửi WARN/ERROR ở production; DEBUG chỉ khi cần (feature flag).
+- **Sampling**: log 1/10 request thành công, 100% request lỗi.
+- **Export to S3**: log cũ chuyển sang S3 (rẻ) qua subscription filter hoặc scheduled export; truy vấn bằng Athena.
+- **Structured JSON log**: query bằng Logs Insights rẻ và nhanh hơn parse text; giảm thời gian scan.
+- **Metric filter / Embedded Metric Format (EMF)**: tạo metric từ log thay vì lưu toàn bộ log để dashboard.
+- **Log group theo service**: dễ đặt retention và quyền riêng.
+
+### Điều cần giữ
+- Log lỗi và cảnh báo đầy đủ (không sampling).
+- Trace (X-Ray) cho request path.
+- Metric RED/USE cho SLO.
+- Audit log tuân thủ (retention dài, immutable).
+
+### Ví dụ đời thực
+Một microservices EKS: hóa đơn CloudWatch Logs 3.200 USD/tháng (ingest 1.8TB). Phân tích: 60% là DEBUG/INFO từ service thanh toán, 25% là access log của ALB, 15% lỗi/warn. Xử lý: đặt log level INFO ở production, sampling 10% request thành công, ALB access log chuyển sang S3 (không qua CloudWatch), retention 14 ngày cho app log và 90 ngày cho audit, structured JSON. Hóa đơn giảm xuống ~480 USD/tháng (giảm ~85%), vẫn giữ đầy đủ lỗi và trace để điều tra sự cố.
+
+### Trả lời mẫu khi phỏng vấn
+"CloudWatch Logs tính tiền theo ingest, lưu trữ và query. Tôi giảm bằng cách: đặt retention thay vì giữ mãi, lọc/sampling log tại nguồn (giữ đầy đủ lỗi), chuyển log lạnh sang S3 qua subscription filter, dùng structured JSON để query rẻ hơn, và tạo metric từ log qua EMF thay vì lưu toàn bộ log để dashboard. Observability vẫn đủ vì giữ metric, trace, và log lỗi đầy đủ; audit log giữ retention dài riêng."
+
+> Senior tip: **ALB/NLB access log và VPC Flow Logs không nên đi qua CloudWatch** — chúng rất lớn và CloudWatch đắt; gửi thẳng S3 và truy vấn bằng Athena. Đây là một trong những cách giảm hóa đơn observability nhanh nhất.`,
+  follow: [
+    'Embedded Metric Format (EMF) là gì và dùng khi nào?',
+    'Làm sao truy vấn log đã export sang S3?',
+    'Retention và storage class của CloudWatch Logs khác nhau ra sao?'
+  ],
+  tags: ['AWS', 'CloudWatch Logs', 'observability', 'cost', 'senior']
+},
+{
+  id: 'aws-083',
+  topic: 'aws',
+  level: 'lead',
+  q: 'Khi công ty lớn lên, chi phí AWS phân tán và khó kiểm soát. Bạn thiết kế multi-account với AWS Organizations và tagging strategy thế nào để quản lý chi phí và bảo mật?',
+  a: `**Tóm tắt:** Dùng **AWS Organizations** với **OU (Organizational Unit)** theo môi trường/miền (prod, non-prod, security, shared services, sandbox) và **account vending** tự động. Áp dụng **tagging strategy** bắt buộc (cost center, owner, env, app) qua **Tag Policies** và **SCP**; dùng **Consolidated Billing** + **Cost Categories** để phân bổ chi phí theo team/product. Kết hợp **AWS Control Tower** để baseline bảo mật và **Service Catalog** để provision account chuẩn.
+
+### Multi-account design
+- Một account = một blast radius: prod tách khỏi non-prod, security tách riêng (log, GuardDuty, Security Hub).
+- OU theo môi trường: Root → Security OU, Infrastructure OU, Workloads OU (prod/non-prod), Sandbox OU.
+- Account vending: tạo account mới tự động với baseline (CloudTrail, Config, GuardDuty, IAM role cho admin) qua Control Tower hoặc tự động hóa.
+- Cross-account access bằng IAM role + STS AssumeRole, không chia sẻ credential.
+
+### Tagging strategy
+- Tag bắt buộc: {{CostCenter}}, {{Owner}}, {{Environment}}, {{Application}}, {{DataClassification}}.
+- Tag Policies: chuẩn hoá giá trị và cách viết hoa của tag (allowed values) khi tag đã được cung cấp — **không** tự bắt buộc phải có tag.
+- SCP chặn tạo resource không có tag bắt buộc (deny if missing tag, dùng điều kiện aws:RequestTag).
+- Tag propagation: propagate tag từ resource cha (EC2 → EBS, snapshot) để không mất chi phí.
+
+### Phân bổ chi phí
+- Consolidated Billing: một hóa đơn tổng, RI/Savings Plans chia sẻ giữa account.
+- Cost Categories: gom theo team/product/domain.
+- CUR + Athena/QuickSight: dashboard chi phí theo tag.
+- Showback/chargeback: gửi báo cáo chi phí hàng tháng cho từng team.
+
+### Ví dụ đời thực
+Một công ty 80 dev, 12 account AWS không có tagging, hóa đơn 90.000 USD/tháng không biết ai dùng gì. Thiết kế lại: Organizations với 5 OU, Control Tower baseline, tagging bắt buộc qua SCP, Cost Categories theo 6 product team. Sau 3 tháng: 100% resource có tag, dashboard chi phí theo team, phát hiện 2 team chiếm 60% chi phí và 1 sandbox account chi 4.000 USD/tháng cho instance quên tắt. Giảm 18% chi phí chỉ bằng visibility + dọn dẹp, chưa cần tối ưu kỹ thuật.
+
+### Trả lời mẫu khi phỏng vấn
+"Tôi thiết kế multi-account với Organizations: OU theo môi trường và miền, account vending tự động với baseline bảo mật qua Control Tower, cross-account bằng AssumeRole. Tagging bắt buộc lúc tạo qua SCP (deny nếu thiếu tag), còn Tag Policies chuẩn hoá giá trị tag; propagate tag. Chi phí phân bổ qua Consolidated Billing, Cost Categories và CUR+Athena dashboard, showback hàng tháng cho team. Mục tiêu là visibility trước, rồi tối ưu — không có visibility thì không biết tối ưu chỗ nào."
+
+> Senior tip: **SCP chỉ deny, không grant** — nó là hàng rào, không phải cấp quyền. Và tagging phải **bắt buộc tại thời điểm tạo** (SCP deny) chứ không phải "khuyến khích"; tag thêm sau rất hay bị quên và làm méo dashboard chi phí.`,
+  follow: [
+    'Service Control Policy (SCP) và IAM policy khác nhau thế nào?',
+    'AWS Control Tower làm gì so với tự viết automation?',
+    'Làm sao xử lý resource đã tồn tại mà chưa có tag (backfill)?'
+  ],
+  tags: ['AWS', 'Organizations', 'multi-account', 'tagging', 'cost', 'governance', 'lead']
+}
 )
