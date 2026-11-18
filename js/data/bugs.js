@@ -7296,5 +7296,417 @@ Them tu khoa {{synchronized}} len phuong thuc {{buy()}}. Khi phuong thuc duoc da
 - Race condition la gi? Vi du check-then-act tren so du tai khoan. Cach sua: synchronized, lock theo tai khoan, database transaction voi SELECT FOR UPDATE. Tra loi phai neu: (1) van de la khong nguyen tu, (2) synchronized/lock lam tron vien thao tac, (3) per-account lock vs global lock, (4) database isolation level va row-level lock.`,
   related: ['concurrency-001'],
   tags: ['race condition', 'check-then-act', 'concurrency', 'trading']
+},
+{
+  id: 'bug-039',
+  title: 'Chia hoá đơn kèm phí: mỗi ngày đối soát lệch vài đồng',
+  domain: 'Ví điện tử / Fintech',
+  level: 'senior',
+  severity: 'P2',
+  minutes: 25,
+  story: `**Bối cảnh dự án:** Ví điện tử có tính năng **chia hoá đơn nhóm**: một người chụp hoá đơn, chọn các thành viên, mỗi thành viên bị trừ số tiền **tỉ lệ với phần mình đã gọi**, cộng thêm **phí dịch vụ** (ví dụ 5% tổng hoá đơn). Tiền là VND nguyên, lưu dạng {{long}}; không có đơn vị nhỏ hơn đồng.
+
+Mỗi đêm một job **đối soát** (reconciliation — so sánh sổ nội bộ với số tiền thực sự đã trừ khách) kiểm tra bất biến: *tổng tiền đã trừ các thành viên phải bằng hoá đơn + phí*.
+
+**Sự cố:** 87 ngày gần nhất job đối soát báo lệch **41.206 trên 512.000 lần chia** (khoảng 8%), nhưng tổng chênh chỉ **61.842 đồng** nên cảnh báo theo từng lần chia (ngưỡng 1.000 đồng) không hề kêu. Kế toán không đóng được sổ. Ví dụ khách phàn nàn: hoá đơn 100.000đ chia đều 3 người, app trừ mỗi người 33.333đ, tổng chỉ 99.999đ — ví **thu thiếu 1 đồng**; hoá đơn 200đ chia 3 thì ví lại **thu thừa 1 đồng**.
+
+**Nhiệm vụ của bạn:**
+1. Đọc {{BillSplitter.split}} và log/file mẫu, tìm vì sao tổng các phần không bằng tổng hoá đơn.
+2. Sửa để **tổng luôn đúng bằng hoá đơn + phí**, và khi chia đều thì các phần chênh nhau tối đa 1 đồng.
+3. Bấm **Chạy test**: test tái hiện đúng ca 100.000đ và ca có phí.`,
+  artifacts: [
+    { name: 'bill-splitter.log', lang: 'text', content: `2026-11-12 22:41:07.114 INFO  [split-worker-3] BillSplitter splitId=SP-8842103 bill=100000 fee=0 weights=[1, 1, 1] shares=[33333, 33333, 33333] total=99999 expected=100000 diff=-1
+2026-11-12 22:41:09.902 INFO  [split-worker-1] BillSplitter splitId=SP-8842104 bill=250000 fee=12500 weights=[7, 2, 2] shares=[167045, 47727, 47727] total=262499 expected=262500 diff=-1
+2026-11-12 22:41:11.338 INFO  [split-worker-3] BillSplitter splitId=SP-8842105 bill=200 fee=0 weights=[1, 1, 1] shares=[67, 67, 67] total=201 expected=200 diff=+1
+2026-11-12 22:41:15.007 INFO  [split-worker-2] BillSplitter splitId=SP-8842106 bill=10000 fee=1 weights=[1, 1, 1, 1] shares=[2500, 2500, 2500, 2500] total=10000 expected=10001 diff=-1
+2026-11-12 22:41:18.551 INFO  [split-worker-4] BillSplitter splitId=SP-8842107 bill=90000 fee=9000 weights=[5, 3, 1] shares=[55000, 33000, 11000] total=99000 expected=99000 diff=0
+2026-11-12 22:41:18.552 DEBUG [split-worker-4] BillSplitter splitId=SP-8842107 rounding=HALF_UP from double, no ledger check performed` },
+    { name: 'reconciliation-daily.txt', lang: 'text', content: `RECONCILIATION 2026-11-13 02:00 ICT   (window 2026-11-12)
+Splits processed          : 5,941
+Splits mismatched         : 478   (8.0%)
+Ledger total charged      : 1,284,317,450 VND
+Invoice + fee total       : 1,284,317,512 VND
+Net difference            : -62 VND (collected LESS than owed)
+Largest single difference : -1 VND
+90-day rolling difference : -61,842 VND over 41,206 splits
+Note: per-split alert threshold is 1,000 VND, therefore no page was ever fired.
+Owner note: differences are not random - they follow share divisibility, i.e. a rounding bug, not a payment failure.` }
+  ],
+  starter: `// ===== Hạ tầng (đã có sẵn trong dự án, KHÔNG cần sửa) =====
+interface SplitRepository {
+    void saveCharges(String splitId, List<Long> charges);   // ghi số tiền từng thành viên bị trừ vào sổ
+    long totalCharged(String splitId);                      // tổng đã ghi vào sổ của lần chia này
+}
+
+// ===== Code cần sửa =====
+class BillSplitter {
+    private final SplitRepository repo;
+
+    BillSplitter(SplitRepository repo) { this.repo = repo; }
+
+    /** Chia (bill + fee) cho các thành viên theo tỉ lệ weights[i].
+     *  Trả về số tiền từng người phải trả (đơn vị đồng, không có phần lẻ).
+     *  Hợp đồng bắt buộc: tổng các phần == bill + fee. */
+    List<Long> split(String splitId, long bill, long fee, long[] weights) {
+        long total = bill + fee;
+        long sumW = 0;
+        for (long w : weights) sumW += w;
+
+        List<Long> shares = new ArrayList<>();
+        for (long w : weights) {
+            double exact = (double) total * w / sumW;   // chia bằng double: đã mất chính xác
+            long share = new BigDecimal(exact)          // BigDecimal(double) giữ nguyên sai số nhị phân
+                    .setScale(0, RoundingMode.HALF_UP)  // làm tròn TỪNG phần một cách độc lập
+                    .longValueExact();
+            shares.add(share);
+        }
+        repo.saveCharges(splitId, shares);              // ghi sổ luôn, không kiểm tra tổng
+        return shares;
+    }
+}`,
+  tests: `public class Main {
+    static int passed = 0, total = 0;
+    static void check(String name, boolean ok, String detail) {
+        total++;
+        if (ok) { passed++; System.out.println("PASS " + name); }
+        else System.out.println("FAIL " + name + ": " + detail);
+    }
+    static long sum(List<Long> xs) { long s = 0; for (long x : xs) s += x; return s; }
+    static long spread(List<Long> xs) { return Collections.max(xs) - Collections.min(xs); }
+
+    static class FakeRepo implements SplitRepository {
+        final Map<String, List<Long>> rows = new HashMap<>();
+        public void saveCharges(String splitId, List<Long> charges) { rows.put(splitId, new ArrayList<>(charges)); }
+        public long totalCharged(String splitId) { return sum(rows.getOrDefault(splitId, List.of())); }
+    }
+
+    public static void main(String[] args) {
+        FakeRepo repo = new FakeRepo();
+        BillSplitter s = new BillSplitter(repo);
+
+        // 1. Đúng ca sự cố: 100.000đ chia đều 3 người
+        List<Long> a = s.split("SP-1", 100_000, 0, new long[]{1, 1, 1});
+        check("chia_100k_cho_3_nguoi", a.size() == 3 && sum(a) == 100_000L,
+                "cac phan " + a + " tong " + sum(a) + " (ky vong 100000)");
+        check("chia_deu_chenh_toi_da_1_dong", a.size() == 3 && spread(a) <= 1,
+                "cac phan " + a + " chenh " + (a.isEmpty() ? 0 : spread(a)) + " (ky vong <= 1)");
+
+        // 2. Có phí dịch vụ, chia theo tỉ lệ 7:2:2 (không chia hết)
+        List<Long> b = s.split("SP-2", 250_000, 12_500, new long[]{7, 2, 2});
+        check("chia_theo_ti_le_co_phi", b.size() == 3 && sum(b) == 262_500L,
+                "cac phan " + b + " tong " + sum(b) + " (ky vong 262500)");
+
+        // 3. Sổ ghi nhận (repo) cũng phải khớp tổng
+        check("so_ghi_nhan_khop_tong", repo.totalCharged("SP-2") == 262_500L,
+                "repo ghi " + repo.totalCharged("SP-2") + " (ky vong 262500)");
+
+        // 4. Phí lẻ đúng 1 đồng cho 4 người
+        List<Long> c = s.split("SP-3", 10_000, 1, new long[]{1, 1, 1, 1});
+        check("phi_le_mot_dong", c.size() == 4 && sum(c) == 10_001L,
+                "cac phan " + c + " tong " + sum(c) + " (ky vong 10001)");
+
+        // 5. Số tiền rất lớn vẫn phải bảo toàn tổng
+        List<Long> d = s.split("SP-4", 1_000_000_007L, 0, new long[]{5, 3, 1});
+        check("so_lon", sum(d) == 1_000_000_007L, "tong " + sum(d) + " (ky vong 1000000007)");
+
+        // 6. Một người duy nhất: trả đúng hoá đơn + phí
+        List<Long> e = s.split("SP-5", 55_555, 4_445, new long[]{1});
+        check("mot_nguoi", e.size() == 1 && e.get(0) == 60_000L, "phan " + e + " (ky vong [60000])");
+
+        // 7. Lệch tích luỹ qua 300 lần chia phải bằng 0 (đúng triệu chứng đối soát)
+        long drift = 0;
+        for (int i = 1; i <= 300; i++) {
+            long amount = 1_000 + i * 7;
+            drift += sum(s.split("SP-B" + i, amount, 0, new long[]{1, 1, 1})) - amount;
+        }
+        check("khong_lech_tich_luy", drift == 0, "tong lech sau 300 lan chia = " + drift + " (ky vong 0)");
+
+        System.out.println("RESULT " + passed + "/" + total);
+    }
+}`,
+  reference: `interface SplitRepository {
+    void saveCharges(String splitId, List<Long> charges);
+    long totalCharged(String splitId);
+}
+
+class BillSplitter {
+    private final SplitRepository repo;
+
+    BillSplitter(SplitRepository repo) { this.repo = repo; }
+
+    List<Long> split(String splitId, long bill, long fee, long[] weights) {
+        long total = bill + fee;
+        long sumW = 0;
+        for (long w : weights) sumW += w;
+        if (sumW <= 0) throw new IllegalArgumentException("tong weight phai > 0");
+
+        int n = weights.length;
+        BigDecimal totalBd = BigDecimal.valueOf(total);
+        BigDecimal sumBd = BigDecimal.valueOf(sumW);
+        long[] shares = new long[n];
+        BigDecimal[] frac = new BigDecimal[n];   // phần lẻ 0 <= frac < 1 của từng người
+        long assigned = 0;
+
+        for (int i = 0; i < n; i++) {
+            // Chia chính xác bằng BigDecimal (không qua double), scale lớn rồi cắt XUỐNG về đồng
+            BigDecimal exact = totalBd.multiply(BigDecimal.valueOf(weights[i]))
+                    .divide(sumBd, 12, RoundingMode.DOWN);
+            BigDecimal floor = exact.setScale(0, RoundingMode.DOWN);
+            shares[i] = floor.longValueExact();
+            frac[i] = exact.subtract(floor);
+            assigned += shares[i];
+        }
+
+        long leftover = total - assigned;        // luôn trong 0..n-1: số đồng chưa được chia
+        boolean[] taken = new boolean[n];
+        for (long k = 0; k < leftover; k++) {    // largest remainder: đồng dư về người lẻ lớn nhất
+            int best = -1;
+            for (int i = 0; i < n; i++) {
+                if (taken[i]) continue;
+                if (best < 0 || frac[i].compareTo(frac[best]) > 0) best = i;
+            }
+            shares[best]++;
+            taken[best] = true;                  // mỗi người nhận tối đa 1 đồng dư -> chênh <= 1
+        }
+
+        List<Long> out = new ArrayList<>(n);
+        for (long v : shares) out.add(v);
+        repo.saveCharges(splitId, out);
+        return out;
+    }
+}`,
+  hints: [
+    'Cộng lại kết quả trong log: 3 x 33.333 = 99.999, thiếu 1 đồng; 3 x 67 = 201, thừa 1 đồng. Tổng sai vì mỗi phần được làm tròn riêng lẻ, sai số không được "trả lại" cho ai.',
+    'Tìm xem phần bị mất đi đâu: khi chia 100.000 cho 3, phần chung là 33.333 và còn dư 1 đồng. Thay vì bỏ, hãy phát đồng dư đó cho người có phần lẻ lớn nhất (largest remainder).',
+    'Đừng dùng {{double}} rồi {{RoundingMode.HALF_UP}} cho từng phần: vừa mất chính xác vừa không bảo toàn tổng. Dùng {{BigDecimal}} chia chính xác, làm tròn XUỐNG để lấy phần nguyên, rồi phân bổ {{leftover}} đồng còn lại; cuối cùng assert tổng == total trước khi ghi sổ.'
+  ],
+  rootCause: `**Làm tròn từng phần một cách độc lập, trên một giá trị đã bị {{double}} làm mất chính xác — nên sai số không được bù lại ở đâu cả.**
+
+Cơ chế sai theo đúng ba bước trong {{split}}:
+1. {{double exact = (double) total * w / sumW;}} — {{double}} là số nhị phân dấu phẩy động 64-bit: nó biểu diễn chính xác lũy thừa của 2, còn 1/3 hay 1/11 thì **không bao giờ** biểu diễn chính xác (giống 0,1 + 0,2 = 0,30000000000000004 trong Java).
+2. {{new BigDecimal(exact)}} — constructor nhận {{double}} **sao chép nguyên** phần đuôi nhị phân đó, ví dụ 33333.333333333335701809119200333... Đây là bẫy kinh điển: muốn chính xác phải dùng {{BigDecimal.valueOf}} hoặc chuỗi.
+3. {{setScale(0, HALF_UP)}} — mỗi người bị làm tròn về phía gần nhất **một cách độc lập**, không ai kiểm tra tổng. Với 100.000/3: 3 x 33.333 = 99.999 (thiếu 1). Với 200/3: 3 x 67 = 201 (thừa 1).
+
+Dẫn chứng trong log: {{SP-8842103}} có {{shares=[33333, 33333, 33333] total=99999 expected=100000 diff=-1}}; {{SP-8842105}} thì {{total=201 expected=200 diff=+1}}. File đối soát ghi {{Largest single difference : -1 VND}} và {{per-split alert threshold is 1,000 VND}} — vì mỗi lần chỉ lệch 1 đồng nên cảnh báo không bao giờ kêu, sai số **tích luỹ 61.842 đồng trong 90 ngày** mới lộ ra. Đây là lý do bất biến "tổng các phần == tổng gốc" phải được kiểm tra ở mức **tổng**, không phải từng phần.`,
+  fix: `**Tóm tắt:** Nguyên tắc vàng của chia tiền là **bảo toàn tổng (allocation)**: tổng các phần phải bằng tổng gốc, không phải "mỗi phần làm tròn thật đẹp". Cách chuẩn: tính phần nguyên bằng phép chia chính xác, rồi phân bổ số đồng còn dư cho những người có **phần lẻ lớn nhất** (thuật toán largest remainder). Không dùng {{double}} cho tiền, và luôn assert tổng trước khi ghi sổ.
+
+### Vì sao "làm tròn cho đẹp từng phần" lại sai
+Làm tròn là phép **làm mất thông tin**: mỗi lần làm tròn bạn vứt đi một phần lẻ nhỏ hơn 1 đồng. Nếu làm 3 lần độc lập, bạn vứt 3 phần lẻ và không ai cộng chúng lại. Số học đơn giản:
+- 100.000 = 3 x 33.333 + **1** → đồng dư thứ 1 bị bỏ.
+- 250.000 + 12.500 = 262.500 = 11 x 23.863 + lẻ, chia theo 7:2:2 cũng dư 1 đồng.
+
+Với hệ thống tiền tệ, "lệch 1 đồng" không phải lỗi nhỏ: sổ sách kế toán phải **cân**, và job đối soát sẽ chặn mọi lần đóng sổ. Hơn nữa sai số tích luỹ theo số giao dịch chứ không triệt tiêu.
+
+### Vì sao {{double}} + HALF_UP không cứu được
+Hai lỗi chồng lên nhau:
+- {{double}} chỉ có ~15–16 chữ số thập phân có nghĩa; các phân số như 1/3, 7/11 là số vô hạn tuần hoàn trong hệ nhị phân nên **luôn** có sai số.
+- {{new BigDecimal(double)}} **không sửa** sai số đó mà đóng gói nguyên xi: {{new BigDecimal(0.1)}} cho 0.1000000000000000055511151231257827. Vì vậy {{HALF_UP}} đang làm tròn trên một con số đã sai từ trước.
+- Kể cả khi số chính xác, làm tròn từng phần vẫn không bảo toàn tổng — đây là lỗi **thuật toán**, không phải lỗi độ chính xác.
+
+### Cách sửa: chia phần nguyên rồi phát phần dư (largest remainder)
+1. Tính phần chính xác của từng người: {{total * weight_i / sumWeight}}.
+2. Lấy **phần nguyên** (làm tròn xuống) — đây là tiền chắc chắn thu.
+3. Cộng các phần nguyên lại, {{leftover = total - assigned}}. Về mặt toán học {{0 <= leftover < số thành viên}}.
+4. Sắp người theo **phần lẻ giảm dần** và phát mỗi người 1 đồng cho tới khi hết {{leftover}}. Người lẻ nhiều nhất "đáng" được làm tròn lên nhất.
+5. Assert {{sum(shares) == total}} rồi mới ghi sổ.
+
+~~~java
+long leftover = total - assigned;              // 0..n-1 đồng chưa chia
+for (long k = 0; k < leftover; k++) {
+    int best = -1;
+    for (int i = 0; i < n; i++) {
+        if (taken[i]) continue;                 // mỗi người tối đa 1 đồng -> chênh <= 1
+        if (best < 0 || frac[i].compareTo(frac[best]) > 0) best = i;
+    }
+    shares[best]++;
+    taken[best] = true;
+}
+~~~
+
+Kết quả với ca sự cố: 100.000/3 → {{[33334, 33333, 33333]}} (người đầu nhận đồng dư), tổng 100.000, chênh 1 đồng. Với 7:2:2 trên 262.500 → {{[167046, 47727, 47727]}}, tổng đúng 262.500.
+
+### So sánh các cách
+| Cách | Tổng đúng | Chênh lệch | Ghi chú |
+|---|---|---|---|
+| Làm tròn từng phần (double/HALF_UP) | Không | 0–1 đồng mỗi người | Sai, không bao giờ dùng cho tiền |
+| Phần cuối gánh toàn bộ phần dư | Có | Có thể tới n−1 đồng | Đơn giản nhưng một người chịu thiệt |
+| Largest remainder | Có | ≤ 1 đồng | Công bằng, chuẩn khi chia theo tỉ lệ |
+| Cho người trả nhiều nhất gánh phần dư | Có | ≤ 1 đồng | Chấp nhận được, nhưng "phần lẻ lớn nhất" công bằng hơn |
+
+### Ví dụ đời thực
+Ví 2 triệu người dùng, 512.000 lần chia trong 87 ngày. Triệu chứng: job đối soát 02:00 báo {{-62 VND}} mỗi đêm, không có alert vì ngưỡng từng lần chia là 1.000 đồng. Điều tra: nhóm theo số thành viên thấy 100% lần lệch có tổng không chia hết cho số người hoặc cho tổng weight — dấu hiệu của lỗi làm tròn, không phải lỗi thanh toán. Xử lý: thay sang largest remainder, chạy lại đối soát trên dữ liệu cũ trong chế độ shadow 3 ngày (so kết quả mới với cũ, không ghi sổ) thấy 0 lệch. Triển khai: lệch về 0 ngay đêm đầu; 61.842 đồng chênh cũ được ghi một bút toán điều chỉnh có mã lý do để sổ cân.
+
+### Phòng ngừa
+- Viết **property test**: với mọi {{total}} và mọi bộ weight, {{sum(shares) == total}} và {{spread <= 1}} khi chia đều. Đây là loại test bắt được lỗi này ngay từ đầu, test ví dụ cụ thể thì không.
+- Assert bất biến ngay trong service trước khi ghi sổ; sai thì ném lỗi, không ghi.
+- Kiểm tra đối soát phải so **tổng theo ngày** và **theo từng lần chia**, đừng chỉ alert theo từng giao dịch.
+- Không dùng {{float}}/{{double}} cho tiền; với VND dùng {{long}}, với tiền có phần lẻ dùng {{BigDecimal}} với {{RoundingMode}} tường minh.
+
+### Liên hệ phỏng vấn
+Câu "chia 100 nghìn cho 3 người thế nào" kiểm tra bạn có nghĩ tới **bảo toàn tổng** chứ không chỉ "làm tròn cho đẹp". Trả lời đủ ý: (1) làm tròn từng phần độc lập làm mất đồng dư, (2) {{double}} không biểu diễn chính xác phân số thập phân, (3) cách sửa là phần nguyên + largest remainder, (4) assert tổng và property test để phòng ngừa.
+
+> Senior tip: trong hệ thống tiền tệ, "lệch 1 đồng mỗi giao dịch" tệ hơn "lỗi 1 giao dịch to" vì nó không bao giờ vượt ngưỡng cảnh báo. Hãy đặt alert trên **tổng lệch theo ngày** và bắt buộc mọi phép chia phải assert bảo toàn tổng trước khi ghi sổ — tiền đã ghi sổ rồi thì sửa rất đắt.`,
+  related: ['core-012'],
+  tags: ['money', 'rounding', 'BigDecimal', 'allocation', 'reconciliation']
+},
+{
+  id: 'bug-040',
+  title: 'Chia hoá đơn nhóm: làm tròn double làm tổng lệch, đối soát hàng ngày báo sai',
+  domain: 'Ví điện tử / Fintech',
+  level: 'senior',
+  severity: 'P2',
+  minutes: 25,
+  story: `**Bối cảnh dự án:** Ví điện tử có tính năng **chia hoá đơn nhóm**: một người quét mã QR thanh toán, app tự chia số tiền cho các thành viên trong nhóm. Tiền là **VND (số nguyên đồng)**, lưu dạng {{long}}. Code cũ tính bằng {{double}} và làm tròn từng phần bằng {{Math.round}}.
+  **Sự cố:** Job đối soát hằng ngày báo **tổng các phần không bằng tổng hoá đơn**. Ví dụ: 100.000đ chia 3 người → mỗi người 33.333đ (double 33333.333... làm tròn 33333) → tổng 99.999đ (thiếu 1đ); 7đ chia 3 người → mỗi người 2đ → tổng 6đ (thiếu 1đ). Trên 200.000 lần chia/tháng, sai số tích lũy **hơn 3 triệu đồng**. Kế toán mất hàng giờ điều tra thủ công, không phát hiện bug vì từng lần chỉ lệch 1đ.
+  **Nhiệm vụ của bạn:** Sửa {{GroupBillSplitter.split}} để **tổng các phần luôn đúng bằng tổng hoá đơn**, chênh lệch giữa các phần **tối đa 1 đồng**.`,
+  artifacts: [
+    { name: 'recon-daily.txt', lang: 'text', content: `RECONCILIATION 2026-11-15 02:00 ICT
+Total splits processed      : 6,721
+Splits with diff != 0       : 2,207  (32.8%)
+Total net difference        : -1,421 VND (collected LESS)
+Pattern                     : bill not divisible by member count; rounding down each share independently
+Largest single diff         : -1 VND
+Alert threshold (1000 VND)  : NOT TRIGGERED -> silent accumulation` },
+    { name: 'split-examples.csv', lang: 'text', content: `split_id,bill,members,shares,sum_shares,diff
+SB-20261115-001,100000,3,"33333|33333|33333",99999,-1
+SB-20261115-002,200,3,"67|67|67",201,+1
+SB-20261115-003,7,3,"2|2|2",6,-1
+SB-20261115-004,50000,4,"12500|12500|12500|12500",50000,0` },
+  ],
+  starter: `// ===== Hạ tầng (đã có sẵn trong dự án, KHÔNG cần sửa) =====
+interface SplitLedger {
+    void record(String splitId, List<Long> shares);
+    List<Long> get(String splitId);
+}
+
+// ===== Code cần sửa =====
+class GroupBillSplitter {
+    private final SplitLedger ledger;
+    GroupBillSplitter(SplitLedger ledger) { this.ledger = ledger; }
+
+    /** Chia total (VND) cho n người. Trả về danh sách n phần. */
+    List<Long> split(String splitId, long total, int n) {
+        if (n <= 0) throw new IllegalArgumentException("n phải > 0");
+        double share = (double) total / n;       // BUG: double mất chính xác
+        List<Long> shares = new ArrayList<>(n);
+        for (int i = 0; i < n; i++) {
+            shares.add(Math.round(share));       // làm tròn TỪNG phần độc lập
+        }
+        ledger.record(splitId, shares);          // ghi sổ KHÔNG kiểm tra tổng
+        return shares;
+    }
+}`,
+  tests: `public class Main {
+    static int passed = 0, total = 0;
+    static void check(String name, boolean ok, String detail) {
+        total++;
+        if (ok) { passed++; System.out.println("PASS " + name); }
+        else System.out.println("FAIL " + name + ": " + detail);
+    }
+    static long sum(List<Long> xs) { long s = 0; for (long x : xs) s += x; return s; }
+    static long spread(List<Long> xs) { return Collections.max(xs) - Collections.min(xs); }
+
+    static class FakeLedger implements SplitLedger {
+        final Map<String, List<Long>> data = new HashMap<>();
+        public void record(String id, List<Long> shares) { data.put(id, new ArrayList<>(shares)); }
+        public List<Long> get(String id) { return data.getOrDefault(id, List.of()); }
+    }
+
+    public static void main(String[] args) {
+        FakeLedger l1 = new FakeLedger();
+        GroupBillSplitter s1 = new GroupBillSplitter(l1);
+        List<Long> a = s1.split("SB-1", 100_000, 3);
+        check("chia_100k_3_nguoi", a.size() == 3 && sum(a) == 100_000L && spread(a) <= 1,
+            "các phần " + a + " tổng " + sum(a) + " (ky vọng 100000, chênh <= 1)");
+
+        FakeLedger l2 = new FakeLedger();
+        GroupBillSplitter s2 = new GroupBillSplitter(l2);
+        List<Long> b = s2.split("SB-2", 7, 3);
+        check("chia_7_dong_3_nguoi", b.size() == 3 && sum(b) == 7L && spread(b) <= 1,
+            "các phần " + b + " tổng " + sum(b) + " (ky vọng 7)");
+
+        FakeLedger l3 = new FakeLedger();
+        GroupBillSplitter s3 = new GroupBillSplitter(l3);
+        List<Long> c = s3.split("SB-3", 200, 3);
+        check("chia_200_dong_3_nguoi", c.size() == 3 && sum(c) == 200L && spread(c) <= 1,
+            "các phần " + c + " tổng " + sum(c) + " (ky vọng 200)");
+
+        FakeLedger l4 = new FakeLedger();
+        GroupBillSplitter s4 = new GroupBillSplitter(l4);
+        List<Long> d = s4.split("SB-4", 1_000_000_007L, 10);
+        check("so_lon_10_nguoi", d.size() == 10 && sum(d) == 1_000_000_007L && spread(d) <= 1,
+            "tổng " + sum(d) + " (ky vọng 1000000007)");
+
+        FakeLedger l5 = new FakeLedger();
+        GroupBillSplitter s5 = new GroupBillSplitter(l5);
+        List<Long> e = s5.split("SB-5", 55_555, 1);
+        check("mot_nguoi", e.size() == 1 && e.get(0) == 55_555, "một người phải nhận đủ, thực tế " + e);
+
+        // Kiểm tra ledger ghi nhận khớp
+        check("ledger_ghi_dung", l1.get("SB-1").equals(a) && l2.get("SB-2").equals(b),
+            "ledger phải ghi đúng danh sách phần vừa trả về");
+
+        System.out.println("RESULT " + passed + "/" + total);
+    }
+}`,
+  reference: `// ===== Hạ tầng (đã có sẵn trong dự án, KHÔNG cần sửa) =====
+interface SplitLedger {
+    void record(String splitId, List<Long> shares);
+    List<Long> get(String splitId);
+}
+
+// ===== Code đã sửa =====
+class GroupBillSplitter {
+    private final SplitLedger ledger;
+    GroupBillSplitter(SplitLedger ledger) { this.ledger = ledger; }
+
+    List<Long> split(String splitId, long total, int n) {
+        if (n <= 0) throw new IllegalArgumentException("n phải > 0");
+        long base = total / n;              // phần nguyên chia đều
+        long remainder = total % n;         // số đồng còn dư (0 <= remainder < n)
+        List<Long> shares = new ArrayList<>(n);
+        for (int i = 0; i < n; i++) {
+            shares.add(base + (i < remainder ? 1 : 0)); // phát từng đồng dư cho người đầu (largest remainder)
+        }
+        ledger.record(splitId, shares);     // tổng = base*n + remainder = total
+        return shares;
+    }
+}`,
+  hints: [
+    'Làm tròn từng phần độc lập (double + Math.round) làm mất số dư: 3 × 33.333 = 99.999.',
+    'Dùng số học nguyên: total / n cho phần chung, total % n cho số đồng dư, phát thêm 1 đồng cho remainder người đầu.',
+    'Luôn assert tổng các phần == total trước khi ghi sổ; property test với mọi total, n ngẫu nhiên sẽ bắt lỗi này ngay.',
+  ],
+  rootCause: `**Làm tròn từng phần một cách độc lập trên giá trị {{double}} đã mất chính xác.** Khi chia 100.000 cho 3, {{double}} cho 33333.333333333336...; {{Math.round}} làm tròn thành 33333 cho TẤT CẢ 3 người → tổng 99.999 (thiếu 1 đồng). Mỗi phần sai 0,33–0,66 đồng, nhân theo 200.000 lần chia/tháng → sai số tích lũy > 3 triệu đồng.
+  Nguyên tắc bị vi phạm: **tổng các phần phải bằng tổng gốc** (allocation / bảo toàn tổng). Code không hề kiểm tra ràng buộc này trước khi ghi sổ. {{double}} chỉ có ~15–16 chữ số thập phân có nghĩa; các phân số như 1/3 là vô hạn tuần hoàn trong nhị phân nên **luôn** có sai số. Dùng {{Math.round}} trên {{double}} là bẫy kép: vừa mất chính xác vừa không bảo toàn tổng.`,
+  fix: `### Cách sửa
+Dùng **số học nguyên**: phần chung {{total / n}}, số dư {{total % n}} được phát thêm 1 đồng cho {{remainder}} người đầu tiên (thuật toán **largest remainder** đơn giản: những người có phần lẻ lớn nhất nhận đồng dư). Tổng luôn đúng, chênh lệch tối đa 1 đồng, không có {{double}} nào.
+~~~java
+long base = total / n;
+long remainder = total % n;
+List<Long> shares = new ArrayList<>(n);
+for (int i = 0; i < n; i++) {
+    shares.add(base + (i < remainder ? 1 : 0));
+}
+~~~
+
+### Với tiền có phần thập phân (USD, EUR)
+Đổi về **đơn vị nhỏ nhất** (cent) dạng {{long}}, chia như trên, rồi đổi lại; hoặc dùng {{BigDecimal}} với {{divide(n, 2, RoundingMode.DOWN)}} cho n−1 phần đầu và **phần cuối = tổng − tổng các phần trước**.
+~~~java
+BigDecimal part = total.divide(BigDecimal.valueOf(n), 2, RoundingMode.DOWN);
+BigDecimal last = total.subtract(part.multiply(BigDecimal.valueOf(n - 1)));
+~~~
+
+### Phòng ngừa
+- Viết **property test** (jqwik hoặc vòng lặp ngẫu nhiên): với mọi total, n ngẫu nhiên → {{sum(shares) == total && spread <= 1}}.
+- Assert bất biến ngay trong service trước khi {{ledger.record}}: nếu tổng không khớp thì ném lỗi, **không bao giờ ghi sổ sai**.
+- Không bao giờ dùng {{float}}/{{double}} cho tiền. Quy ước: VND dùng {{long}}, ngoại tệ dùng {{BigDecimal}} scale cố định.
+
+### Liên hệ phỏng vấn
+Câu "chia 100 nghìn cho 3 người thế nào" kiểm tra bạn có nghĩ tới **bảo toàn tổng** (allocation) chứ không chỉ "làm tròn cho đẹp". Trả lời đủ ý: (1) làm tròn từng phần độc lập làm mất đồng dư, (2) {{double}} không biểu diễn chính xác phân số thập phân, (3) cách sửa là phần nguyên + largest remainder, (4) assert tổng và property test để phòng ngừa.
+
+> Senior tip: trong hệ thống tiền tệ, "lệch 1 đồng mỗi giao dịch" tệ hơn "lỗi 1 giao dịch to" vì nó **không bao giờ vượt ngưỡng cảnh báo**. Hãy đặt alert trên **tổng lệch theo ngày** và bắt buộc mọi phép chia phải assert bảo toàn tổng trước khi ghi sổ — tiền đã ghi sổ rồi thì sửa rất đắt.`,
+  related: ['core-012'],
+  tags: ['money', 'rounding', 'BigDecimal', 'allocation', 'reconciliation', 'largest-remainder']
 }
 );
