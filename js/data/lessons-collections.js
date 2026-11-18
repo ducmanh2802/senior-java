@@ -2949,4 +2949,361 @@ Cache này không có TTL, tải dữ liệu khi miss, chống cache stampede ha
   related: ['collections-005', 'collections-028', 'collections-001'],
   tags: ['LinkedHashMap', 'LRU', 'cache', 'eviction', 'weight']
 },
+{
+  id: 'lesson-collections-010',
+  track: 'collections',
+  order: 10,
+  title: 'LinkedHashMap LRU cache và PriorityQueue min-heap cho Top-K',
+  level: 'senior',
+  minutes: 30,
+  goals: [
+    'Giải thích được LRU cache là gì, vì sao cần eviction, và cài LRU đơn giản bằng {{LinkedHashMap}} với {{accessOrder}} và {{removeEldestEntry}}',
+    'Hiểu {{PriorityQueue}} trong Java là min-heap (heap tối thiểu), cách nó giữ phần tử nhỏ nhất ở đầu, và dùng heap kích thước k để tìm top-K phần tử lớn nhất',
+    'Phân tích độ phức tạp thời gian/bộ nhớ của hai cách (heap top-K và sắp xếp toàn bộ) và chọn cách phù hợp khi phỏng vấn'
+  ],
+  body: `**Tóm tắt:** LRU (Least Recently Used - ít được dùng gần đây nhất) cache lưu dữ liệu hay dùng và tự loại phần tử lâu nhất chưa được truy cập khi đầy; {{LinkedHashMap}} làm được điều này nhờ thứ tự truy cập và {{removeEldestEntry}}. Top-K (lấy K phần tử lớn nhất) thường dùng {{PriorityQueue}} như min-heap kích thước K để đạt O(n log k) thay vì O(n log n) khi sắp xếp cả mảng.
+
+### Thuật ngữ cơ bản
+- **Cache (bộ nhớ đệm):** nơi lưu tạm kết quả hay dùng để lần sau lấy nhanh hơn, giống để cuốn sách hay đọc trên bàn thay vì chạy xuống kho mỗi lần.
+- **Eviction (loại bỏ):** khi cache đầy, phải bỏ bớt phần tử để nhường chỗ.
+- **LRU (Least Recently Used):** chính sách loại phần tử lâu nhất chưa được dùng. "Dùng" ở đây là thao tác đọc/ghi truy cập phần tử đó.
+- **Heap (đống):** cấu trúc dữ liệu dạng cây nhị phân gần hoàn chỉnh thỏa tính chất heap. **Min-heap**: phần tử nhỏ nhất luôn ở gốc (đầu). **Max-heap**: phần tử lớn nhất ở gốc.
+- **Top-K:** bài toán lấy K phần tử lớn nhất (hoặc nhỏ nhất) trong một tập dữ liệu.
+
+### Phần 1: LinkedHashMap làm LRU cache đơn giản
+
+#### Cái gì và vì sao cần
+Giả sử bạn có API trả thông tin sản phẩm. Mỗi lần gọi database mất 20ms, trong khi đọc từ bộ nhớ chỉ vài micro-giây. Nếu 1000 request cùng hỏi sản phẩm hot, cache giúp tránh 999 lần truy vấn lặp. Nhưng bộ nhớ hữu hạn: cache không thể lớn vô hạn, nên cần chính sách eviction. LRU là lựa chọn phổ biến vì dữ liệu vừa dùng thường có xu hướng được dùng lại sớm (tính cục bộ - locality).
+
+#### LinkedHashMap hoạt động thế nào
+{{HashMap}} cho tra cứu theo key nhanh (trung bình O(1)) nhưng không nhớ thứ tự truy cập. {{LinkedHashMap}} kế thừa {{HashMap}} và thêm một **danh sách liên kết đôi** nối các entry theo thứ tự. Có hai chế độ:
+- **Insertion-order (mặc định):** thứ tự theo lần thêm key lần đầu.
+- **Access-order:** bật bằng {{new LinkedHashMap<>(initialCapacity, loadFactor, true)}}. Mỗi lần {{get(key)}} hoặc {{put(key, value)}} với key đã tồn tại sẽ đưa entry đó về **cuối** danh sách (coi như mới dùng nhất). Entry ở **đầu** danh sách là entry ít được dùng gần đây nhất - ứng viên bị loại.
+
+~~~text
+capacity = 3, access-order = true
+put(A): [A]
+put(B): [A, B]
+put(C): [A, B, C]
+get(A): [B, C, A]      (A vừa được dùng nên chuyển về cuối)
+put(D): đầy -> bỏ B (đầu) -> [C, A, D]
+~~~
+
+#### removeEldestEntry
+{{LinkedHashMap}} có phương thức protected {{removeEldestEntry(Map.Entry<K,V> eldest)}} được gọi **sau mỗi lần {{put}}** (thêm hoặc cập nhật). Mặc định trả {{false}} (không xóa). Ta tạo subclass/anonymous class và override để trả {{size() > capacity}}: khi vượt sức chứa, entry đầu (eldest - lâu nhất chưa dùng trong access-order) sẽ bị tự động xóa.
+
+~~~java
+class LruCache<K, V> extends LinkedHashMap<K, V> {
+    private final int capacity;
+
+    LruCache(int capacity) {
+        // initialCapacity 16, loadFactor 0.75, accessOrder = true
+        super(16, 0.75f, true);
+        this.capacity = capacity;
+    }
+
+    @Override
+    protected boolean removeEldestEntry(Map.Entry<K, V> eldest) {
+        return size() > capacity; // true -> tự xóa entry đầu
+    }
+}
+~~~
+
+#### Lưu ý quan trọng
+- {{get}} trong access-order **thay đổi cấu trúc** map (di chuyển node trong danh sách liên kết), nên {{LinkedHashMap}} không thread-safe ngay cả khi nhiều thread chỉ đọc. Môi trường đa luồng cần {{Collections.synchronizedMap}} (khóa thô, chậm khi tranh chấp cao) hoặc thư viện cache chuyên dụng như Caffeine (có concurrency, TTL, thống kê).
+- {{removeEldestEntry}} phù hợp giới hạn số phần tử. Nếu cần giới hạn theo dung lượng byte/weight hoặc TTL (thời gian sống), cần logic phức tạp hơn.
+- {{null}} key/value: {{LinkedHashMap}} cho phép như {{HashMap}}, nhưng trong thiết kế cache thực tế thường tránh null để phân biệt "không có trong cache" với "giá trị là null".
+
+### Phần 2: PriorityQueue min-heap cho Top-K
+
+#### Cái gì và vì sao cần
+Bài toán: có mảng N số, cần lấy K số lớn nhất. Cách ngây thơ là sắp xếp giảm dần rồi lấy K phần tử đầu: O(n log n). Khi N rất lớn (ví dụ 10 triệu log truy cập, lấy 100 request chậm nhất) và K nhỏ, ta muốn tốt hơn.
+
+#### PriorityQueue trong Java là min-heap
+{{PriorityQueue}} (hàng đợi ưu tiên) trong {{java.util}} là một **min-heap** theo thứ tự tự nhiên (natural ordering) hoặc theo {{Comparator}} cung cấp. Phần tử "nhỏ nhất" (ưu tiên cao nhất theo comparator) luôn nằm ở đầu và được lấy ra bởi {{peek()}}/{{poll()}}. Các thao tác chính:
+- {{offer(e)}} / {{add(e)}}: thêm phần tử, O(log n) (n là số phần tử trong heap) do phải vun đống (sift up).
+- {{poll()}}: lấy và xóa phần tử đầu (nhỏ nhất), O(log n) do sift down.
+- {{peek()}}: xem phần tử đầu, O(1).
+- {{size()}}: O(1).
+
+Lưu ý: duyệt {{PriorityQueue}} bằng iterator/for-each **không** cho thứ tự tăng dần; chỉ {{poll()}} liên tiếp mới ra thứ tự.
+
+#### Chiến lược Top-K lớn nhất bằng min-heap kích thước K
+Ý tưởng: giữ một min-heap chỉ chứa K phần tử lớn nhất đã thấy. Phần tử ở đầu heap là "nhỏ nhất trong nhóm ứng viên top-K" - ngưỡng để vào top.
+1. Duyệt từng số {{x}} trong mảng.
+2. Thêm {{x}} vào heap: {{offer(x)}}.
+3. Nếu {{heap.size() > k}}, bỏ phần tử nhỏ nhất: {{poll()}}. Như vậy heap luôn giữ tối đa K phần tử lớn nhất tính đến hiện tại.
+4. Sau khi duyệt hết, heap chứa đúng K phần tử lớn nhất. Lấy ra và sắp xếp theo yêu cầu.
+
+~~~java
+PriorityQueue<Integer> minHeap = new PriorityQueue<>(); // min-heap mặc định
+for (int x : nums) {
+    minHeap.offer(x);
+    if (minHeap.size() > k) {
+        minHeap.poll(); // loại phần tử nhỏ nhất trong heap
+    }
+}
+// minHeap đang giữ k phần tử lớn nhất
+~~~
+
+#### Độ phức tạp
+- Mỗi phần tử có thể {{offer}} và {{poll}}: O(log k) mỗi thao tác vì heap có tối đa K+1 phần tử.
+- Tổng thời gian: **O(n log k)**. Bộ nhớ phụ: **O(k)** cho heap.
+- So sánh: sắp xếp toàn bộ mảng là O(n log n) thời gian và O(log n) đến O(n) bộ nhớ tùy thuật toán. Khi k nhỏ hơn nhiều so với n (ví dụ k=10, n=1.000.000), log k rất nhỏ nên O(n log k) nhanh hơn đáng kể.
+- Nếu k gần bằng n, lợi thế giảm; đôi khi sắp xếp hoặc thuật toán chọn (Quickselect trung bình O(n)) phù hợp hơn. Trong phỏng vấn, hãy nêu trade-off.
+
+### Ví dụ đời thực
+Hệ thống giám sát cần hiển thị "10 endpoint chậm nhất trong 5 phút" từ hàng trăm nghìn request: dùng min-heap kích thước 10 để cập nhật top chậm nhất với chi phí thấp mỗi request. LRU cache dùng cho cache trang sản phẩm: khi người dùng xem sản phẩm mới, entry cũ ít được xem bị đẩy ra, giữ bộ nhớ ổn định.
+
+### Lỗi hay gặp
+- Nhầm {{PriorityQueue}} là max-heap: mặc định là min-heap. Muốn max-heap dùng {{new PriorityQueue<>(Comparator.reverseOrder())}}.
+- Nghĩ iterator của {{PriorityQueue}} cho thứ tự đã sắp: không đúng, phải {{poll()}} dần.
+- Trong LRU, quên đặt {{accessOrder=true}}: map sẽ theo insertion-order, {{get}} không làm mới recency.
+- Không xử lý k <= 0, k > n hoặc mảng rỗng theo yêu cầu đề bài.
+
+### Liên hệ phỏng vấn
+Trình bày rõ: "Tôi dùng LinkedHashMap(accessOrder=true) và override removeEldestEntry để khi size vượt capacity thì tự bỏ entry đầu - entry LRU. get/put trung bình O(1). Với top-K lớn nhất, tôi duy trì min-heap kích thước K: thêm phần tử, nếu vượt K thì poll phần tử nhỏ nhất. Kết quả là O(n log k) thay vì O(n log n). Tôi cũng nêu hạn chế: LinkedHashMap không thread-safe, PriorityQueue không đảm bảo thứ tự khi duyệt." Nói được trade-off và độ phức tạp là điểm cộng lớn.
+
+> Senior tip: Trong production, cache LRU thuần dễ bị "cache pollution" khi có truy cập quét một lần (scan) làm đẩy dữ liệu hot ra ngoài; thư viện như Caffeine dùng chính sách TinyLFU/W-TinyLFU để giữ tần suất tốt hơn. Với top-K trên dữ liệu phân tán/stream, cân nhắc thuật toán xấp xỉ hoặc cấu trúc chuyên dụng.`,
+  exercises: [
+    {
+      title: 'Cài LruCache bằng LinkedHashMap và removeEldestEntry',
+      prompt: `Hoàn thiện {{LruCache<K,V>}} với sức chứa {{capacity}} (số phần tử tối đa, capacity >= 1).
+- {{V get(K key)}}: trả về value nếu có, ngược lại {{null}}. Nếu key tồn tại, thao tác này phải coi như "vừa dùng" (làm mới recency).
+- {{void put(K key, V value)}}: thêm hoặc cập nhật key. Nếu sau thao tác số phần tử vượt capacity thì tự loại bỏ entry ít được dùng gần đây nhất.
+- {{int size()}}: trả về số phần tử hiện có.
+Gợi ý: dùng {{LinkedHashMap}} với {{accessOrder=true}} và override {{removeEldestEntry}}.`,
+      starter: `class LruCache<K, V> {
+    LruCache(int capacity) {
+        throw new UnsupportedOperationException("TODO");
+    }
+
+    V get(K key) {
+        throw new UnsupportedOperationException("TODO");
+    }
+
+    void put(K key, V value) {
+        throw new UnsupportedOperationException("TODO");
+    }
+
+    int size() {
+        throw new UnsupportedOperationException("TODO");
+    }
+}`,
+      tests: `public class Main {
+    static int passed = 0, total = 0;
+    static void check(String name, Runnable r) {
+        total++;
+        try { r.run(); passed++; System.out.println("PASS " + name); }
+        catch (Throwable t) { System.out.println("FAIL " + name + ": " + t); }
+    }
+    static void eq(Object expected, Object actual) {
+        if (!Objects.equals(expected, actual)) throw new AssertionError("expected " + expected + " got " + actual);
+    }
+    public static void main(String[] args) {
+        check("evicts least recently used after get", () -> {
+            LruCache<String, Integer> c = new LruCache<>(2);
+            c.put("a", 1);
+            c.put("b", 2);
+            eq(1, c.get("a"));
+            c.put("c", 3);
+            eq(null, c.get("b"));
+            eq(1, c.get("a"));
+            eq(3, c.get("c"));
+            eq(2, c.size());
+        });
+        check("put updates value and refreshes recency", () -> {
+            LruCache<String, Integer> c = new LruCache<>(2);
+            c.put("a", 1);
+            c.put("b", 2);
+            c.put("a", 10);
+            eq(2, c.size());
+            c.put("c", 3);
+            eq(null, c.get("b"));
+            eq(10, c.get("a"));
+            eq(3, c.get("c"));
+        });
+        check("capacity one and missing key", () -> {
+            LruCache<Integer, String> c = new LruCache<>(1);
+            eq(null, c.get(99));
+            c.put(1, "x");
+            c.put(2, "y");
+            eq(null, c.get(1));
+            eq("y", c.get(2));
+            eq(1, c.size());
+        });
+        check("access order moves multiple keys correctly", () -> {
+            LruCache<String, String> c = new LruCache<>(3);
+            c.put("a", "A");
+            c.put("b", "B");
+            c.put("c", "C");
+            eq("A", c.get("a"));
+            eq("B", c.get("b"));
+            c.put("d", "D");
+            eq(null, c.get("c"));
+            eq("A", c.get("a"));
+            eq("B", c.get("b"));
+            eq("D", c.get("d"));
+            eq(3, c.size());
+        });
+        System.out.println("RESULT " + passed + "/" + total);
+    }
+}`,
+      reference: `class LruCache<K, V> extends LinkedHashMap<K, V> {
+    private final int capacity;
+
+    LruCache(int capacity) {
+        super(16, 0.75f, true); // accessOrder = true
+        this.capacity = capacity;
+    }
+
+    @Override
+    protected boolean removeEldestEntry(Map.Entry<K, V> eldest) {
+        return size() > capacity;
+    }
+
+    @Override
+    public V get(Object key) {
+        return super.get(key);
+    }
+
+    @Override
+    public V put(K key, V value) {
+        return super.put(key, value);
+    }
+
+    @Override
+    public int size() {
+        return super.size();
+    }
+}`,
+      hints: [
+        'Kế thừa {{LinkedHashMap<K,V>}} và gọi {{super(16, 0.75f, true)}} trong constructor; tham số thứ ba {{true}} bật access-order.',
+        'Override {{removeEldestEntry}} và trả về {{size() > capacity}}. Phương thức này được {{LinkedHashMap}} gọi sau mỗi lần {{put}}.',
+        'Với access-order, {{get}} của {{LinkedHashMap}} đã tự đưa entry truy cập về cuối, nên bạn có thể dùng trực tiếp {{super.get(key)}}.'
+      ],
+      explain: `### Ý tưởng
+{{LinkedHashMap}} đã có sẵn hash table (tra cứu O(1) trung bình) và danh sách liên kết đôi (duy trì thứ tự). Khi bật access-order, mỗi lần {{get}}/{{put}} (key tồn tại) di chuyển entry về cuối danh sách. Entry ở đầu là ít được dùng gần đây nhất.
+
+### Vì sao removeEldestEntry đủ cho giới hạn số phần tử
+Sau mỗi {{put}}, {{LinkedHashMap}} gọi {{removeEldestEntry(eldest)}} với entry đầu danh sách. Nếu trả {{true}}, entry đó bị xóa. Vì mỗi {{put}} chỉ tăng tối đa 1 phần tử, kiểm tra {{size() > capacity}} là đủ để đảm bảo không vượt sức chứa.
+
+### Lỗi hay gặp
+- Quên {{accessOrder=true}}: cache sẽ loại theo thứ tự chèn, không phải LRU.
+- Override {{get}} nhưng không gọi {{super.get}}: có thể mất cập nhật recency. Cách an toàn là dùng {{super.get(key)}}.
+- Dùng trong đa luồng không đồng bộ: {{get}} làm thay đổi cấu trúc nên race condition có thể hỏng danh sách liên kết.`
+    },
+    {
+      title: 'Top-K phần tử lớn nhất bằng PriorityQueue min-heap',
+      prompt: `Viết phương thức {{static List<Integer> largest(int[] nums, int k)}} trả về danh sách gồm {{k}} phần tử lớn nhất trong {{nums}}, sắp xếp **giảm dần** (phần tử lớn nhất đứng đầu).
+- Nếu {{k <= 0}} trả về danh sách rỗng.
+- Nếu {{k >= nums.length}} trả về tất cả phần tử của mảng sắp xếp giảm dần.
+- Nên dùng {{PriorityQueue}} theo chiến lược min-heap kích thước k để đạt O(n log k).`,
+      starter: `class TopK {
+    static List<Integer> largest(int[] nums, int k) {
+        throw new UnsupportedOperationException("TODO");
+    }
+}`,
+      tests: `public class Main {
+    static int passed = 0, total = 0;
+    static void check(String name, Runnable r) {
+        total++;
+        try { r.run(); passed++; System.out.println("PASS " + name); }
+        catch (Throwable t) { System.out.println("FAIL " + name + ": " + t); }
+    }
+    static void eq(Object expected, Object actual) {
+        if (!Objects.equals(expected, actual)) throw new AssertionError("expected " + expected + " got " + actual);
+    }
+    public static void main(String[] args) {
+        check("basic top 3", () -> {
+            eq(Arrays.asList(9, 7, 5), TopK.largest(new int[]{3, 1, 5, 7, 9, 2}, 3));
+        });
+        check("k larger than array and duplicates", () -> {
+            eq(Arrays.asList(5, 5, 4, 1), TopK.largest(new int[]{5, 1, 5, 4}, 10));
+        });
+        check("k zero or negative and single element", () -> {
+            eq(Collections.emptyList(), TopK.largest(new int[]{1, 2, 3}, 0));
+            eq(Collections.emptyList(), TopK.largest(new int[]{1, 2, 3}, -2));
+            eq(Arrays.asList(42), TopK.largest(new int[]{42}, 1));
+        });
+        check("negative numbers", () -> {
+            eq(Arrays.asList(-1, -2, -5), TopK.largest(new int[]{-5, -1, -10, -2, -7}, 3));
+        });
+        System.out.println("RESULT " + passed + "/" + total);
+    }
+}`,
+      reference: `class TopK {
+    static List<Integer> largest(int[] nums, int k) {
+        if (k <= 0) return Collections.emptyList();
+        int limit = Math.min(k, nums.length);
+        PriorityQueue<Integer> minHeap = new PriorityQueue<>();
+        for (int x : nums) {
+            minHeap.offer(x);
+            if (minHeap.size() > limit) {
+                minHeap.poll();
+            }
+        }
+        List<Integer> result = new ArrayList<>(minHeap.size());
+        while (!minHeap.isEmpty()) {
+            result.add(minHeap.poll());
+        }
+        Collections.reverse(result);
+        return result;
+    }
+}`,
+      hints: [
+        'Tạo {{PriorityQueue<Integer>}} mặc định (min-heap). Duyệt mảng, {{offer}} từng phần tử; nếu {{size() > k}} thì {{poll()}} để bỏ phần tử nhỏ nhất đang giữ.',
+        'Sau vòng lặp, heap chứa các phần tử lớn nhất nhưng {{poll()}} sẽ trả ra theo thứ tự tăng dần. Thu vào list rồi đảo ngược ({{Collections.reverse}}) để có thứ tự giảm dần.',
+        'Xử lý sớm các trường hợp {{k <= 0}} (trả rỗng) và giới hạn số phần tử cần giữ bằng {{Math.min(k, nums.length)}}.'
+      ],
+      explain: `### Vì sao dùng min-heap để lấy phần tử lớn nhất?
+Ta muốn giữ K phần tử lớn nhất đã gặp. Trong nhóm K phần tử đó, phần tử nhỏ nhất là "rào cản": số mới chỉ xứng đáng vào top-K nếu nó lớn hơn rào cản này. Min-heap cho phép lấy rào cản ({{peek}}/{{poll}}) trong O(1)/O(log k). Khi gặp số mới, thêm vào và nếu quá K thì bỏ nhỏ nhất, đảm bảo heap luôn giữ K số lớn nhất.
+
+### Độ phức tạp
+- Thời gian: mỗi phần tử thực hiện {{offer}} và có thể {{poll}} trên heap kích thước tối đa K+1, nên O(log k) mỗi phần tử, tổng **O(n log k)**. Bộ nhớ phụ: **O(k)** cho heap và danh sách kết quả.
+
+### Lỗi hay gặp
+- Dùng max-heap rồi lấy K phần tử đầu mà không giới hạn kích thước heap: vẫn đúng nhưng giữ cả n phần tử, tốn O(n) bộ nhớ.
+- Quên đảo thứ tự kết quả: {{poll()}} từ min-heap trả phần tử từ nhỏ đến lớn trong nhóm top-K.
+- Không xử lý {{k <= 0}} hoặc mảng rỗng dẫn đến kết quả sai hoặc lỗi.`
+    }
+  ],
+  check: [
+    {
+      q: 'Trong {{LinkedHashMap}} tạo với {{new LinkedHashMap<>(16, 0.75f, true)}}, {{removeEldestEntry}} được gọi khi nào và entry "eldest" là entry nào?',
+      options: [
+        'Được gọi sau mỗi {{get}}, eldest là entry mới truy cập nhất',
+        'Được gọi sau mỗi {{put}} (chèn/cập nhật), eldest là entry ở đầu danh sách - ít được dùng gần đây nhất khi access-order bật',
+        'Được gọi tự động theo chu kỳ thời gian, eldest là entry cũ nhất theo thời gian tạo',
+        'Chỉ được gọi khi gọi {{remove()}} thủ công, eldest là key nhỏ nhất'
+      ],
+      answer: 1,
+      explain: 'B đúng: {{LinkedHashMap}} gọi {{removeEldestEntry}} sau mỗi thao tác {{put}} để cho phép tự loại entry đầu. Với access-order=true, đầu danh sách là entry ít được dùng gần đây nhất (LRU). A sai vì không gọi sau mỗi get. C sai vì không có cơ chế thời gian/TTL. D sai vì không phụ thuộc {{remove()}} thủ công hay giá trị key.'
+    },
+    {
+      q: '{{PriorityQueue<Integer>}} mặc định trong Java có tính chất gì?',
+      options: [
+        'Là max-heap, {{poll()}} trả phần tử lớn nhất',
+        'Là min-heap, {{peek()}}/{{poll()}} làm việc với phần tử nhỏ nhất theo thứ tự tự nhiên',
+        'Luôn duyệt phần tử theo thứ tự tăng dần khi dùng for-each',
+        'Mọi thao tác {{offer}}, {{poll}}, {{peek}} đều O(1)'
+      ],
+      answer: 1,
+      explain: 'B đúng: {{PriorityQueue}} mặc định dùng natural ordering và là min-heap, nên đầu hàng đợi là phần tử nhỏ nhất. A sai vì mặc định không phải max-heap. C sai vì iterator không đảm bảo thứ tự sắp xếp. D sai vì {{offer}} và {{poll}} là O(log n), chỉ {{peek}} là O(1).'
+    },
+    {
+      q: 'Tìm K phần tử lớn nhất trong mảng N phần tử bằng min-heap kích thước K có độ phức tạp thời gian và bộ nhớ phụ là gì (giả sử K <= N)?',
+      options: [
+        'Thời gian O(n log n), bộ nhớ O(n)',
+        'Thời gian O(n log k), bộ nhớ O(k)',
+        'Thời gian O(n), bộ nhớ O(1)',
+        'Thời gian O(k log n), bộ nhớ O(n)'
+      ],
+      answer: 1,
+      explain: 'B đúng: mỗi trong N phần tử được thêm/bỏ khỏi heap kích thước tối đa K với chi phí O(log k), tổng O(n log k); heap giữ tối đa K phần tử nên bộ nhớ phụ O(k). A giống sắp xếp toàn bộ. C và D không phản ánh đúng chi phí thao tác heap.'
+    }
+  ],
+  related: ['collections-001', 'collections-005', 'collections-007'],
+  tags: ['LinkedHashMap', 'LRU', 'removeEldestEntry', 'PriorityQueue', 'heap', 'top-k', 'complexity']
+},
 );

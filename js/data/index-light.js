@@ -2399,6 +2399,7 @@ window.DATA_INDEX = {
     {"id":"lesson-collections-007","track":"collections","order":7,"title":"Sắp xếp trong Java: Comparable hay Comparator, TimSort ổn định và lỗi \"violates its general contract\"","level":"senior","minutes":30},
     {"id":"lesson-collections-008","track":"collections","order":8,"title":"Tự cài HashMap nhỏ: hash spreading, bucket, va chạm và resize","level":"senior","minutes":35},
     {"id":"lesson-collections-009","track":"collections","order":9,"title":"LinkedHashMap access-order: LRU cache có giới hạn trọng lượng","level":"senior","minutes":30},
+    {"id":"lesson-collections-010","track":"collections","order":10,"title":"LinkedHashMap LRU cache và PriorityQueue min-heap cho Top-K","level":"senior","minutes":30},
     {"id":"lesson-core-001","track":"core","order":1,"title":"Exception: ranh giới lỗi, tài nguyên và suppressed exception","level":"mid","minutes":25},
     {"id":"lesson-core-002","track":"core","order":2,"title":"Generics và PECS: variance an toàn ở compile time","level":"mid","minutes":25},
     {"id":"lesson-core-003","track":"core","order":3,"title":"Immutable object và defensive copy","level":"senior","minutes":25},
