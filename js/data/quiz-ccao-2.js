@@ -2968,5 +2968,703 @@ Prompt mẫu: "Đây là các dữ kiện. Tôi muốn kết quả là một k�
   ],
   answer: 1,
   explain: `**Đúng: thêm yêu cầu 'Hãy sáng tạo, đề xuất ý tưởng táo bạo/độc đáo, và chưa cần lo về rào cản kỹ thuật ngay.'** Khi cần sự sáng tạo, prompt phải explicit hướng dẫn mô hình nới lỏng các ràng buộc thông thường về thực tế.`
+},
+{
+  id: "qz-ccao-913",
+  topic: "claude",
+  q: "[Workflow Integration] A team wants Claude to read free-text customer orders and pull out the shipping address into a structured field. Some orders are messy, and a wrong address means a parcel goes to the wrong person. How should the workflow treat low-confidence results?",
+  options: [
+    "Ship every order automatically, because Claude is usually right",
+    "Auto-fill only high-confidence rows, and send low-confidence ones to a person before shipping",
+    "Ask Claude to guess the missing parts so every row is complete",
+    "Drop orders Claude cannot parse so the queue stays clean"
+  ],
+  answer: 1,
+  explain: `**Đúng: tự động hoá phần chắc chắn, còn phần mơ hồ thì chuyển cho người xử lý trước khi gửi hàng.** "Độ tin cậy" (confidence) ở đây là mức chắc chắn mà hệ thống gán cho kết quả trích xuất — có thể là điểm số của model, hoặc là kết quả của các quy tắc kiểm tra (địa chỉ có đủ số nhà, mã bưu chính, thành phố không). Địa chỉ sai khiến hàng đến nhầm người, phát sinh chi phí giao lại và mất khách; đây là kiểu lỗi "rẻ để chặn, đắt nếu bỏ qua". Cách tiếp cận an toàn là "human-in-the-loop" (con người trong vòng lặp): máy làm phần dễ, người gánh phần khó.
+
+### Vì sao các lựa chọn khác sai
+- **Gửi mọi đơn, tin Claude thường đúng:** "thường đúng" vẫn có tỷ lệ sai; với hàng nghìn đơn, một tỷ lệ nhỏ sai vẫn là rất nhiều bưu kiện giao nhầm.
+- **Bảo Claude đoán phần thiếu cho đủ:** đoán địa chỉ là bịa dữ liệu; một địa chỉ nghe hợp lý nhưng sai còn nguy hiểm hơn một ô trống.
+- **Bỏ đơn không đọc được:** đơn biến mất khỏi quy trình, khách không nhận được hàng mà không ai biết; đây là "sạch sổ" bằng cách mất việc.
+
+### Cách làm
+Đặt ngưỡng tin cậy; trên ngưỡng thì tự điền; dưới ngưỡng thì đưa vào hàng đợi chờ người; ghi log tỷ lệ phải sửa tay để theo dõi.
+
+> Mẹo thực tế: tự động hoá nên bắt đầu ở khâu "đọc và chuẩn bị dữ liệu", còn khâu "gửi hàng thật" thì giữ một chốt người cho đến khi tỷ lệ sai đủ thấp và ổn định.`
+},
+{
+  id: "qz-ccao-914",
+  topic: "claude",
+  q: "[Workflow Integration] A company runs the same Claude translation workflow for 12 markets. They want to expand from 2 pilot markets to all 12. What is the most sensible rollout?",
+  options: [
+    "Switch all 12 markets on at once to save management time",
+    "Let each market start whenever its local team is ready, with no shared quality check",
+    "Expand in stages, checking translation quality per market before adding the next",
+    "Roll back to human-only translation because two pilots are not enough"
+  ],
+  answer: 2,
+  explain: `**Đúng: mở rộng theo từng đợt (staged rollout), đo chất lượng từng thị trường rồi mới thêm thị trường tiếp theo.** Mỗi ngôn ngữ có đặc thù riêng (thuật ngữ, định dạng ngày, cách viết số, sắc thái), nên kết quả tốt ở hai thị trường này không đảm bảo tốt ở thị trường khác. Mở rộng theo đợt giúp bạn phát hiện sớm một kiểu lỗi (ví dụ sai chính tả tên riêng) trước khi nó lan ra 12 nước, và giữ được khả năng dừng lại ở phạm vi nhỏ nếu có sự cố.
+
+### Vì sao các lựa chọn khác sai
+- **Bật cả 12 nước cùng lúc:** nếu quy trình có lỗi hệ thống, cả 12 thị trường cùng sai và bạn phải sửa gấp trên diện rộng.
+- **Mỗi thị trường tự bật, không kiểm tra chung:** thiếu chuẩn chất lượng chung; mỗi nơi một kiểu, khó so sánh và khó cải tiến.
+- **Quay về làm tay hoàn toàn:** phản ứng thái quá; hai pilot đã cho dữ liệu để cải thiện, chưa có bằng chứng là quy trình hỏng.
+
+### Cách làm
+Liệt kê thị trường theo mức rủi ro; mỗi đợt thêm 2–3 nước; đo tỷ lệ phải sửa và khiếu nại; chốt tiêu chí "đạt" trước khi mở đợt sau.
+
+> Mẹo thực tế: mở rộng theo đợt biến một quyết định lớn khó đảo ngược thành nhiều quyết định nhỏ dễ dừng.`
+},
+{
+  id: "qz-ccao-915",
+  topic: "claude",
+  multi: true,
+  q: "[Workflow Integration] A bank is adding a Claude step to its loan application process to summarise documents and flag missing information. Which TWO controls are essential before going live? (Choose 2)",
+  options: [
+    "Let Claude make the final approve-or-reject decision to keep the process fast",
+    "Keep a person making the final credit decision, with Claude only preparing a summary",
+    "Log the inputs, the model output, and the human decision for each application",
+    "Send full identity documents to a public chat tool so the whole team can review them together",
+    "Remove the audit trail to reduce storage cost"
+  ],
+  answer: [1, 2],
+  explain: `**Đúng: người quyết định tín dụng cuối cùng (Claude chỉ tóm tắt), và ghi log đầu vào, đầu ra, quyết định của người cho từng hồ sơ.** Quyết định cho vay ảnh hưởng tài chính của người khác và bị quản lý chặt; mô hình không có thẩm quyền và không chịu trách nhiệm, nên con người phải là người phê duyệt. Log đầy đủ (audit trail — dấu vết kiểm toán) giúp bạn trả lời "vì sao hồ sơ này bị từ chối" khi khách khiếu nại hoặc khi cơ quan quản lý hỏi, và giúp phát hiện nếu model bỏ sót thông tin.
+
+### Vì sao các lựa chọn khác sai
+- **Để Claude tự quyết duyệt/từ chối:** không có người chịu trách nhiệm; một quyết định sai ảnh hưởng trực tiếp đến quyền lợi khách hàng.
+- **Gửi hồ sơ định danh đầy đủ lên công cụ chat công khai:** vi phạm bảo vệ dữ liệu cá nhân; đây là dữ liệu nhạy cảm nhất trong quy trình.
+- **Bỏ audit trail cho rẻ:** khi có tranh chấp, bạn không có bằng chứng để giải trình; chi phí lưu log nhỏ hơn nhiều so với rủi ro.
+
+### Cách làm
+Claude làm bản tóm tắt và đánh dấu mục còn thiếu; người có thẩm quyền quyết định; lưu gói hồ sơ gồm input, output, người duyệt, thời gian.
+
+> Mẹo thực tế: trong quy trình tài chính, nguyên tắc là "AI chuẩn bị, người ký duyệt, hệ thống ghi lại".`
+},
+{
+  id: "qz-ccao-916",
+  topic: "claude",
+  q: "[Workflow Integration] A team wants a Claude bot to read a shared chat channel and post a daily summary of decisions. What should they check first about the bot's access?",
+  options: [
+    "Whether the bot's name is easy to remember",
+    "How many messages the bot can post per day",
+    "Whether the summary uses bullet points",
+    "Which channels the bot can read and write, scoped to only what it needs"
+  ],
+  answer: 3,
+  explain: `**Đúng: giới hạn phạm vi kênh mà bot đọc và ghi, chỉ đúng những gì cần cho việc.** Kết nối (connector) thường đi kèm nguyên tắc "mirror permissions": bot chỉ thấy nội dung mà tài khoản của nó vốn đã thấy. Nếu cấp cho bot quyền đọc toàn bộ workspace, nó có thể tóm tắt cả những kênh chứa thông tin nhạy cảm (lương, nhân sự, pháp lý) mà việc tóm tắt không cần đến. "Least privilege" (đặc quyền tối thiểu) nghĩa là chỉ cấp đúng quyền cần cho nhiệm vụ, không hơn.
+
+### Vì sao các lựa chọn khác sai
+- **Tên bot dễ nhớ:** là chuyện tiện dụng, không liên quan đến quyền truy cập dữ liệu.
+- **Số tin nhắn mỗi ngày:** là giới hạn tần suất, không phải phạm vi dữ liệu.
+- **Định dạng bullet:** là cách trình bày, không ảnh hưởng đến quyền.
+
+### Cách làm
+Tạo một kênh riêng chỉ chứa thông tin cần tóm tắt; cấp bot quyền đọc đúng kênh đó; ghi rõ quyền ghi; rà lại danh sách quyền định kỳ.
+
+> Mẹo thực tế: trước khi kết nối AI với một kho dữ liệu, hãy hỏi "nếu toàn bộ nội dung ở đây bị đọc và gửi đi, ai bị ảnh hưởng?".`
+},
+{
+  id: "qz-ccao-917",
+  topic: "claude",
+  q: "[Workflow Integration] A company wants to tag the sentiment of one million old support tickets from last year. The result is not needed immediately. Which integration style fits best?",
+  options: [
+    "A batch job that sends records in bulk and collects results later",
+    "A live chat where an agent waits for each answer",
+    "Embedding the model inside the customer-facing chat widget",
+    "Asking each agent to paste tickets one by one into the web chat"
+  ],
+  answer: 0,
+  explain: `**Đúng: dùng xử lý theo lô (batch) — gửi một lượng lớn bản ghi, nhận kết quả sau, không cần người trực.** Batch phù hợp với việc lớn, không gấp, chạy một lần: thường rẻ hơn so với gọi từng yêu cầu thời gian thực và không chiếm chỗ của việc hỗ trợ khách đang diễn ra. "Real-time" (thời gian thực) là khi người dùng chờ câu trả lời ngay; ở đây không ai chờ, nên tối ưu là thông lượng (throughput — số việc xử lý được trong một đơn vị thời gian) và chi phí, không phải độ trễ.
+
+### Vì sao các lựa chọn khác sai
+- **Chat trực tiếp từng cái:** một triệu ticket qua chat là không khả thi và đắt; đây là kiểu dùng sai công cụ.
+- **Nhúng vào widget khách hàng:** việc này là phân tích nội bộ, không phải trả lời khách theo thời gian thực.
+- **Nhờ từng agent dán tay:** tốn công người, dễ sót, không có cách đối chiếu.
+
+### Cách làm
+Chọn cơ chế batch; chia lô nhỏ để chạy thử; đối chiếu kết quả với một mẫu đã gán nhãn tay; theo dõi tỷ lệ lỗi trước khi chạy toàn bộ.
+
+> Mẹo thực tế: chọn "real-time" hay "batch" dựa trên việc có ai đang chờ câu trả lời hay không — nếu không, batch gần như luôn rẻ hơn.`
+},
+{
+  id: "qz-ccao-918",
+  topic: "claude",
+  q: "[Workflow Integration] A workflow asks Claude for a JSON object, then a downstream system reads it automatically. Sometimes the reply is not valid JSON and the next step crashes. What is the best safeguard?",
+  options: [
+    "Trust the model and remove the downstream validation",
+    "Ask Claude to always reply with valid JSON and assume it will",
+    "Validate the JSON against a schema and route invalid replies to a retry or a person",
+    "Store the raw text and let the next step guess the fields"
+  ],
+  answer: 2,
+  explain: `**Đúng: kiểm tra JSON theo schema (lược đồ cấu trúc) và chuyển bản không hợp lệ sang thử lại hoặc cho người xử lý.** Mô hình sinh văn bản, nên đôi khi nó thêm lời chào, thiếu dấu ngoặc, hoặc đổi tên trường — khiến JSON hỏng. Nếu bước sau đọc thẳng mà không kiểm tra, một câu trả lời lỗi làm sập cả quy trình. Cách bền vững là coi đầu ra của model là "chưa tin cậy": có cổng kiểm tra cấu trúc, và một đường thoát (retry hoặc hàng đợi) khi sai. Đây là nguyên tắc "validate at the boundary" — kiểm tra ngay tại ranh giới giữa hai hệ thống.
+
+### Vì sao các lựa chọn khác sai
+- **Tin model và bỏ kiểm tra:** lỗi không được chặn sẽ lan xuống hệ thống sau; hậu quả khó truy vết.
+- **Bảo "luôn trả JSON hợp lệ" rồi tin:** câu lệnh không đảm bảo; mô hình vẫn có thể sai định dạng.
+- **Lưu text thô cho bước sau tự đoán:** đẩy vấn đề xuống, không giải quyết; "đoán" càng dễ sai.
+
+### Cách làm
+Định nghĩa schema; kiểm tra từng trường và kiểu; nếu sai, thử lại một lần với yêu cầu sửa; vẫn sai thì đưa vào hàng đợi và báo động.
+
+> Mẹo thực tế: mọi đầu ra của AI dùng cho máy đọc lại đều cần một cổng kiểm tra — đừng để "model nói là đúng" thay cho kiểm tra.`
+},
+{
+  id: "qz-ccao-919",
+  topic: "claude",
+  multi: true,
+  q: "[Workflow Integration] A company has launched a Claude-assisted email drafting feature and wants to know if it helps or hurts. Which TWO metrics are most useful? (Choose 2)",
+  options: [
+    "How many drafts agents keep with little or no editing",
+    "Average time to finish and send a reply compared with before",
+    "Total number of chats opened in the app",
+    "The average length of the generated drafts",
+    "How many employees have logged in at least once"
+  ],
+  answer: [0, 1],
+  explain: `**Đúng: tỷ lệ bản nháp được giữ gần như nguyên vẹn, và thời gian xử lý mỗi thư so với trước khi có công cụ.** Hai thước đo này phản ánh kết quả thật: nếu bản nháp tốt, người dùng giữ nhiều và làm nhanh hơn; nếu tệ, họ viết lại gần hết — tức công cụ đang thêm việc. Đây là "outcome metrics" (thước đo kết quả), khác với "activity metrics" (thước đo hoạt động) như số chat hay số người đăng nhập, vốn chỉ cho biết có người dùng chứ không cho biết có lợi hay không.
+
+### Vì sao các lựa chọn khác sai
+- **Số chat đã mở:** chỉ đo mức sử dụng; dùng nhiều không đồng nghĩa với tiết kiệm thời gian.
+- **Số người đã đăng nhập:** mức độ áp dụng, không phải hiệu quả.
+- **Độ dài bản nháp:** dài hơn không có nghĩa tốt hơn; khách thường muốn ngắn và đúng.
+
+### Cách làm
+Đo thời gian trung bình mỗi thư trong hai tuần trước và sau; ghi tỷ lệ nội dung giữ nguyên; hỏi thêm khách hàng về chất lượng.
+
+> Mẹo thực tế: nếu không đo được thời gian tiết kiệm, rất có thể công cụ đang thêm việc chứ không giảm việc.`
+},
+{
+  id: "qz-ccao-920",
+  topic: "claude",
+  q: "[Workflow Integration] A nightly Claude workflow's token usage suddenly triples, raising the bill. What is the most sensible first step?",
+  options: [
+    "Switch to the most expensive model to improve quality",
+    "Remove all limits so the workflow never stops early",
+    "Run the same workflow twice to confirm the number",
+    "Measure which step consumes the tokens, then cut oversized context and unnecessary retries"
+  ],
+  answer: 3,
+  explain: `**Đúng: đo xem bước nào ngốn token, rồi cắt bớt ngữ cảnh quá lớn và các lần thử lại không cần thiết.** "Token" là đơn vị văn bản mà mô hình đọc/ghi (xem mục 9 của AGENTS.md); chi phí tỉ lệ với số token. Nguyên nhân phổ biến khi chi phí tăng vọt: một bước nhồi cả tài liệu dài vào mỗi lần gọi, hoặc vòng lặp thử lại nhiều lần khi output lỗi. Trước khi đổi model hay tăng ngân sách, bạn cần biết tiền đang đi đâu — nếu không, mọi điều chỉnh chỉ là phỏng đoán.
+
+### Vì sao các lựa chọn khác sai
+- **Đổi sang model đắt nhất:** làm tăng chi phí, và không chẩn đoán được nguyên nhân.
+- **Bỏ mọi giới hạn:** khiến chi phí và rủi ro tăng thêm; giới hạn tồn tại để chặn đúng loại sự cố này.
+- **Chạy lại để xác nhận:** không cho biết bước nào tốn; chỉ tốn thêm tiền.
+
+### Cách làm
+Bật thống kê token theo bước; tìm bước chiếm phần lớn; rút gọn ngữ cảnh (chỉ gửi phần liên quan); giới hạn số lần retry; đặt trần chi phí và cảnh báo.
+
+> Mẹo thực tế: khi chi phí AI tăng đột ngột, hãy hỏi "bước nào tiêu token?" trước khi hỏi "đổi model nào?".`
+},
+{
+  id: "qz-ccao-921",
+  topic: "claude",
+  q: "[Workflow Integration] A healthcare workflow must not send patient notes to any model that keeps or trains on the data. Which integration choice best respects that rule?",
+  options: [
+    "Use a free consumer chat account because it is convenient",
+    "Use an enterprise or API arrangement with a data processing agreement and no-retention terms",
+    "Paste the notes and ask the model to forget them afterwards",
+    "Send only half of each note to reduce exposure"
+  ],
+  answer: 1,
+  explain: `**Đúng: dùng gói doanh nghiệp/API có thoả thuận xử lý dữ liệu (DPA — data processing agreement) và điều khoản không lưu, không huấn luyện.** Với dữ liệu bệnh nhân, yêu cầu không phải là "model có tiện không" mà là "dữ liệu này được phép đi tới đâu, ai giữ, giữ bao lâu". DPA là văn bản ràng buộc nhà cung cấp về cách xử lý dữ liệu; điều khoản no-retention quy định dữ liệu không bị lưu sau khi xử lý. Tài khoản tiêu dùng miễn phí thường không có các bảo đảm này và có thể dùng dữ liệu để cải thiện dịch vụ.
+
+### Vì sao các lựa chọn khác sai
+- **Dùng chat miễn phí cho tiện:** không có bảo đảm hợp đồng về lưu trữ hay huấn luyện; dữ liệu bệnh nhân có thể bị dùng ngoài mong muốn.
+- **Dán rồi bảo model quên:** "quên" là câu lệnh, không xoá được bản ghi; dữ liệu đã rời khỏi hệ thống.
+- **Gửi nửa ghi chú:** vẫn là dữ liệu bệnh nhân; giảm lượng không làm nó hợp lệ.
+
+### Cách làm
+Làm việc với pháp chế để ký DPA; chọn kênh có điều khoản no-retention; giới hạn dữ liệu gửi vào đúng phần cần; kiểm tra định kỳ.
+
+> Mẹo thực tế: với dữ liệu y tế, câu hỏi đầu tiên luôn là "kênh này có DPA và điều khoản không lưu không?", không phải "tính năng có nhanh không?".`
+},
+{
+  id: "qz-ccao-922",
+  topic: "claude",
+  multi: true,
+  q: "[Workflow Integration] A team is deciding where to place human checkpoints in a Claude-assisted workflow. Which TWO are the strongest candidates for a required human review? (Choose 2)",
+  options: [
+    "Actions that spend money or are hard to undo, such as issuing refunds",
+    "Outputs where Claude's confidence is low or the inputs are ambiguous",
+    "Reformatting a date into a standard style",
+    "Every single suggestion, no matter how routine, to be safe",
+    "Sorting a list of names alphabetically"
+  ],
+  answer: [0, 1],
+  explain: `**Đúng: chốt người ở hành động tốn tiền/khó hoàn tác, và ở đầu ra có độ tin cậy thấp hoặc đầu vào mơ hồ.** Đây là cách đặt "human-in-the-loop" đúng chỗ: rủi ro cao thì cần người, việc cơ học thì không. Hoàn tiền sai là mất tiền thật và khó đòi lại; đầu vào mơ hồ dễ khiến model suy diễn sai. Ngược lại, việc như chuẩn hoá ngày hay sắp xếp tên gần như không có hậu quả nếu sai, nên bắt người duyệt chỉ làm chậm mà không tăng an toàn.
+
+### Vì sao các lựa chọn khác sai
+- **Duyệt mọi đề xuất, kể cả việc vụn vặt:** biến con người thành nút cổ chai; mọi người sẽ bấm duyệt theo phản xạ, và chốt trở nên vô nghĩa.
+- **Chuẩn hoá định dạng ngày:** hậu quả thấp, dễ phát hiện; không cần người.
+- **Sắp xếp danh sách theo tên:** việc máy làm tốt và sai cũng dễ sửa; không cần chốt người.
+
+### Cách làm
+Lập danh sách hành động theo mức hậu quả; đặt chốt người cho nhóm "tốn tiền / khó đảo / tin cậy thấp"; nhóm còn lại để tự động kèm ghi log.
+
+> Mẹo thực tế: đặt chốt người ở nơi sai thì tốn kém, đặt đúng nơi thì rẻ — hãy xếp theo hậu quả, không theo cảm giác.`
+},
+{
+  id: "qz-ccao-923",
+  topic: "claude",
+  q: "[Product Selection] A freelance consultant travels a lot and, on a tablet, wants to ask questions about a handful of PDF reports and get answers with citations. They do not code. Which option needs the least setup?",
+  options: [
+    "Projects on Claude.ai with the PDFs uploaded",
+    "Claude Code installed in a terminal",
+    "A custom RAG pipeline built on the API",
+    "A self-hosted vector database connected via MCP"
+  ],
+  answer: 0,
+  explain: `**Đúng: Projects trên Claude.ai — tải vài PDF lên, hỏi kèm trích dẫn, dùng được trên máy tính bảng, không cần code.** Projects xử lý việc trích xuất văn bản, lập chỉ mục và trích dẫn nguồn; người không kỹ thuật chỉ cần tạo project và tải tài liệu. "RAG" (retrieval-augmented generation — sinh câu trả lời có truy hồi tài liệu) là kỹ thuật đằng sau, nhưng bạn không phải tự dựng khi dùng Projects. "MCP" (Model Context Protocol) là chuẩn để nối model với công cụ/dữ liệu bên ngoài, thường dùng cho lập trình viên.
+
+### Vì sao các lựa chọn khác sai
+- **Claude Code trong terminal:** cần cài đặt và biết dùng dòng lệnh; không phù hợp với người không code và với việc đọc PDF khi di chuyển.
+- **RAG pipeline trên API:** phải tự viết code, dựng vector database, xử lý chunking — tốn công.
+- **Vector database + MCP:** dành cho nhà phát triển, phức tạp và cần hạ tầng.
+
+### Cách làm
+Tạo một project; tải PDF; viết custom instruction ngắn (ví dụ "chỉ dùng tài liệu trong project, nêu rõ nguồn"); thử vài câu hỏi.
+
+> Mẹo thực tế: với người không kỹ thuật, "ít cài đặt nhất" thường thắng — hãy chọn giao diện có sẵn trước khi nghĩ đến tự dựng.`
+},
+{
+  id: "qz-ccao-924",
+  topic: "claude",
+  q: "[Product Selection] A 5,000-person company needs single sign-on, automated user provisioning, admin controls, and audit logs for Claude. Which plan fits?",
+  options: [
+    "Free tier with a shared login",
+    "Individual Pro subscriptions bought by each employee",
+    "Enterprise plan",
+    "Pay-per-token API keys handed out by email"
+  ],
+  answer: 2,
+  explain: `**Đúng: gói Enterprise, vì nó cung cấp SSO, SCIM, quản trị tập trung và audit logs.** "SSO" (single sign-on — đăng nhập một lần) cho phép nhân viên dùng tài khoản công ty để vào Claude; "SCIM" là chuẩn tự động tạo/gỡ tài khoản khi nhân sự thay đổi; "audit logs" là nhật ký ghi ai làm gì, phục vụ kiểm toán và điều tra sự cố. Ở quy mô 5,000 người, việc tạo/gỡ tài khoản thủ công là không khả thi, và yêu cầu tuân thủ đòi hỏi dấu vết kiểm toán.
+
+### Vì sao các lựa chọn khác sai
+- **Free tier dùng chung tài khoản:** vi phạm điều khoản, không kiểm soát, không audit.
+- **Mỗi người tự mua Pro:** phân tán, không có quản trị tập trung, không SSO.
+- **API key gửi qua email:** không phải giao diện cho người dùng cuối; phát key thủ công không an toàn và không có quản trị.
+
+### Cách làm
+Làm việc với bộ phận mua sắm/pháp chế; yêu cầu SSO, SCIM, audit logs, DPA; thử nghiệm trên một nhóm nhỏ trước khi triển khai rộng.
+
+> Mẹo thực tế: khi quy mô vượt vài chục người, câu hỏi không còn là "model nào mạnh" mà là "quản trị và tuân thủ thế nào".`
+},
+{
+  id: "qz-ccao-925",
+  topic: "claude",
+  multi: true,
+  q: "[Product Selection] A company is choosing between the Team plan and the Enterprise plan for Claude. Which TWO needs clearly point to Enterprise? (Choose 2)",
+  options: [
+    "Single sign-on with the company identity provider and automated user provisioning",
+    "Audit logs and compliance controls required by regulators",
+    "The lowest possible price per seat",
+    "The simplest possible monthly billing with no admin setup"
+  ],
+  answer: [0, 1],
+  explain: `**Đúng: SSO/SCIM và audit logs/compliance là những nhu cầu chỉ gói Enterprise đáp ứng.** Team plan phù hợp cho nhóm nhỏ đến trung bình cần quản lý thành viên và thanh toán tập trung, nhưng không có SSO cấp doanh nghiệp, SCIM, hay audit logs chi tiết. Khi công ty bị quản lý chặt hoặc có hàng nghìn nhân sự, hai nhu cầu này là điều kiện bắt buộc chứ không phải tuỳ chọn.
+
+### Vì sao các lựa chọn khác sai
+- **Giá mỗi ghế rẻ nhất:** là yếu tố kinh doanh, không phải yếu tố quyết định giữa Team và Enterprise; và Enterprise thường không rẻ hơn.
+- **Billing đơn giản, không cần admin:** đây là điểm mạnh của gói nhỏ, không phải lý do chọn Enterprise.
+
+### Cách làm
+Liệt kê yêu cầu bắt buộc (bảo mật, tuân thủ, quản trị); đối chiếu với tính năng từng gói; chọn gói đáp ứng đủ, không thừa.
+
+> Mẹo thực tế: chọn gói theo yêu cầu bắt buộc trước, rồi mới tối ưu chi phí — không làm ngược lại.`
+},
+{
+  id: "qz-ccao-926",
+  topic: "claude",
+  q: "[Product Selection] A startup wants to ship a customer-facing support chatbot in two weeks, with per-user conversation isolation and a custom look inside their own web app. Which is the best fit?",
+  options: [
+    "Projects on Claude.ai, shared with all users",
+    "Claude Code running on each customer's laptop",
+    "A shared free-tier account for everyone",
+    "The Claude API, embedded in their own application"
+  ],
+  answer: 3,
+  explain: `**Đúng: dùng API và nhúng vào ứng dụng riêng của startup.** "Per-user isolation" (cách ly theo người dùng) nghĩa là mỗi khách chỉ thấy hội thoại của mình — điều này phải do backend của startup tự quản lý khi dùng API. "Custom look" (giao diện riêng) cũng chỉ làm được khi bạn tự xây UI và gọi API. Projects là giao diện có sẵn của Claude.ai, không nhúng vào sản phẩm của bạn được, và không cách ly theo từng người dùng cuối.
+
+### Vì sao các lựa chọn khác sai
+- **Projects chia sẻ cho mọi người:** không cách ly hội thoại theo user, không tuỳ biến giao diện.
+- **Claude Code trên máy từng khách:** đây là công cụ lập trình, không phải chatbot cho người dùng cuối.
+- **Tài khoản free dùng chung:** vi phạm điều khoản, không bảo mật, không cách ly.
+
+### Cách làm
+Thiết kế backend: mỗi user một phiên; lưu/lọc hội thoại theo user; gọi API; tự xây UI chat; thêm kiểm duyệt và giới hạn.
+
+> Mẹo thực tế: khi sản phẩm cần giao diện riêng và dữ liệu tách theo người dùng, API gần như luôn là lựa chọn — Projects là sản phẩm đóng gói.`
+},
+{
+  id: "qz-ccao-927",
+  topic: "claude",
+  q: "[Product Selection] A data team wants Claude to read a warehouse schema, write SQL, run it against the database, see the results, and iterate on a dbt model. Which option fits this loop?",
+  options: [
+    "Claude.ai web chat with the schema pasted in",
+    "Claude Code connected to the database through an MCP server",
+    "Projects with the database password uploaded as a text file",
+    "The API with the database connection string written in the prompt"
+  ],
+  answer: 1,
+  explain: `**Đúng: Claude Code nối tới database qua MCP server để chạy SQL thật và lặp lại.** "dbt" là công cụ biến đổi dữ liệu bằng SQL; vòng lặp ở đây cần chạy truy vấn, đọc kết quả và sửa — tức cần một agent có quyền thực thi, không chỉ sinh chữ. MCP server là cầu nối chuẩn để Claude Code gọi công cụ (ở đây là truy vấn database) một cách có kiểm soát. Đưa mật khẩu vào prompt hay upload file cấu hình là vi phạm bảo mật và không cho phép chạy truy vấn.
+
+### Vì sao các lựa chọn khác sai
+- **Web chat dán schema:** chỉ sinh SQL lý thuyết, không chạy được, không thấy kết quả.
+- **Projects với file mật khẩu:** Projects không thực thi truy vấn; upload secret là rủi ro bảo mật.
+- **API với connection string trong prompt:** prompt không phải nơi đặt secret; và vẫn phải tự viết vòng lặp chạy truy vấn.
+
+### Cách làm
+Dùng MCP server cấu hình quyền đọc tối thiểu; chạy thử trên schema ở chế độ chỉ đọc; kiểm tra kết quả; bật log truy vấn.
+
+> Mẹo thực tế: khi AI cần "chạy và xem kết quả", hãy chọn công cụ có quyền thực thi có kiểm soát (agent + MCP), không phải công cụ chỉ sinh văn bản.`
+},
+{
+  id: "qz-ccao-928",
+  topic: "claude",
+  q: "[Product Selection] A non-technical operations analyst must produce the same weekly report every week from a shared folder of files, in a fixed format. Which option is the most maintainable?",
+  options: [
+    "A Project with the format, instructions, and reference files stored once",
+    "Start a fresh chat each week and retype the instructions",
+    "A bookmark to last week's chat thread",
+    "Keep the prompt only in the analyst's personal notes"
+  ],
+  answer: 0,
+  explain: `**Đúng: một Project chứa hướng dẫn, định dạng và tài liệu mẫu, dùng lại mỗi tuần.** Việc lặp lại thì nên chuẩn hoá một lần: mọi người ra cùng cấu trúc, và khi cần sửa chỉ sửa một chỗ. Project là không gian có hướng dẫn riêng và tài liệu dùng chung, phù hợp với việc lặp lại định kỳ mà không cần ai biết lập trình.
+
+### Vì sao các lựa chọn khác sai
+- **Chat mới, gõ lại từ đầu:** tốn thời gian, mỗi người một kiểu, phụ thuộc trí nhớ.
+- **Bookmark sang chat cũ:** nội dung cũ làm nhiễu, chat cũ có thể đã trôi khỏi ngữ cảnh; người khác khó dùng.
+- **Giữ trong sổ tay cá nhân:** không chia sẻ được; người nghỉ là mất quy trình.
+
+### Cách làm
+Tạo Project với một trang hướng dẫn, một file định dạng mẫu, danh sách nguồn; ghi ai cập nhật; dùng thử hai tuần rồi chốt.
+
+> Mẹo thực tế: nếu một việc lặp lại hàng tuần, đừng để nó phụ thuộc vào việc ai gõ prompt giỏi hơn.`
+},
+{
+  id: "qz-ccao-929",
+  topic: "claude",
+  multi: true,
+  q: "[Product Selection] Which TWO tasks are a natural fit for Claude Code rather than a chat window? (Choose 2)",
+  options: [
+    "Refactoring a feature across many files and running the test suite after each change",
+    "Scaffolding a new component inside the developer's IDE and iterating on it",
+    "Answering a one-off general knowledge question",
+    "Drafting a short marketing caption for a post"
+  ],
+  answer: [0, 1],
+  explain: `**Đúng: (0) refactor nhiều file kèm chạy test, và (1) tạo code trong IDE rồi lặp — cả hai đều cần đọc/ghi file, chạy lệnh và thử lại.** Claude Code là agent chạy trong terminal: nó thao tác trực tiếp trên codebase, chạy test, đọc lỗi và sửa. Đây là "agentic coding" (lập trình có tác nhân tự hành động), khác với chat vốn chỉ sinh văn bản. Hai việc còn lại không cần quyền thực thi, nên chat là đủ và đơn giản hơn.
+
+### Vì sao các lựa chọn khác sai
+- **Hỏi một câu kiến thức chung:** không cần đọc/ghi file; chat là đủ.
+- **Viết một câu quảng cáo ngắn:** không cần chạy lệnh; dùng chat nhanh hơn.
+
+### Cách làm
+Với việc code: giao cho Claude Code trên một nhánh riêng, yêu cầu chạy test và báo cáo ca lỗi, người review diff trước khi gộp.
+
+> Mẹo thực tế: nếu việc cần "chạy và xem kết quả", chọn agent; nếu chỉ cần "viết và đọc", chat là đủ.`
+},
+{
+  id: "qz-ccao-930",
+  topic: "claude",
+  q: "[Product Selection] An enterprise in the EU must keep all data within approved regions and sign a data processing agreement before using Claude. Which is the most appropriate choice?",
+  options: [
+    "A free consumer account, since the data is not sensitive",
+    "A personal Pro subscription for each employee",
+    "An enterprise agreement that covers data residency and a signed DPA",
+    "A public chat channel shared with a partner"
+  ],
+  answer: 2,
+  explain: `**Đúng: thoả thuận doanh nghiệp có điều khoản về nơi lưu trữ dữ liệu (data residency) và DPA đã ký.** "Data residency" là yêu cầu dữ liệu phải nằm trong một khu vực địa lý nhất định; "DPA" là hợp đồng ràng buộc cách nhà cung cấp xử lý dữ liệu. Với dữ liệu bị quản lý (regulated data), đây là điều kiện pháp lý, không phải tuỳ chọn. Tài khoản tiêu dùng không có các bảo đảm này.
+
+### Vì sao các lựa chọn khác sai
+- **Tài khoản free vì "không nhạy cảm":** dữ liệu khách hàng và nội bộ vẫn có thể thuộc diện quản lý; và free không có DPA.
+- **Pro cá nhân từng người:** không có hợp đồng doanh nghiệp, không có bảo đảm residency.
+- **Kênh chat công khai với đối tác:** làm dữ liệu ra ngoài kiểm soát, vi phạm residency.
+
+### Cách làm
+Chọn gói doanh nghiệp có DPA và cam kết residency; cho pháp chế review; kiểm tra tài liệu chính thức về nơi lưu trữ.
+
+> Mẹo thực tế: "dữ liệu nằm ở đâu và ai được giữ nó" là câu hỏi pháp lý, phải trả lời bằng văn bản trước khi dùng.`
+},
+{
+  id: "qz-ccao-931",
+  topic: "claude",
+  q: "[Product Selection] A team is building a high-volume feature that classifies short incoming messages into a few categories, plus a smaller set of hard cases that need deeper reasoning. What model strategy fits best?",
+  options: [
+    "Use the single most powerful model for every message to maximize quality",
+    "Use the same slow model for everything to keep behaviour uniform",
+    "Avoid models and classify everything by hand",
+    "Use a smaller, faster model for the bulk of simple cases and escalate hard cases to a stronger model"
+  ],
+  answer: 3,
+  explain: `**Đúng: dùng model nhỏ/nhanh cho phần lớn ca đơn giản, và chỉ đẩy ca khó sang model mạnh hơn.** Chi phí và độ trễ tỉ lệ với kích thước model; với việc phân loại hàng loạt, một model nhỏ thường đủ chính xác và rẻ hơn nhiều. "Escalation" (đẩy lên trên) nghĩa là khi độ tin cậy thấp hoặc gặp ca bất thường, chuyển sang model mạnh hơn để lấy kết quả tốt. Cách này cân bằng giữa chi phí, tốc độ và chất lượng — thay vì trả giá cao nhất cho mọi yêu cầu.
+
+### Vì sao các lựa chọn khác sai
+- **Model mạnh nhất cho mọi tin nhắn:** tốn kém và chậm; phần lớn ca không cần đến.
+- **Cùng một model chậm cho tất cả:** chậm và tốn, và không tận dụng được việc ca khó cần model mạnh hơn.
+- **Phân loại tay toàn bộ:** không mở rộng được cho lưu lượng lớn.
+
+### Cách làm
+Đo độ chính xác của model nhỏ trên mẫu; đặt ngưỡng tin cậy; ca dưới ngưỡng thì escalate; theo dõi tỷ lệ escalate và chi phí.
+
+> Mẹo thực tế: đừng chọn một model cho mọi việc — hãy chọn theo từng loại việc, và để ca khó đi đường riêng.`
+},
+{
+  id: "qz-ccao-932",
+  topic: "claude",
+  q: "[Product Selection] A five-person team wants a shared library of approved prompts and consistent instructions for everyone, with the least setup and no coding. Which is the best fit?",
+  options: [
+    "Individual free chats, each person keeping their own notes",
+    "A Team plan with shared Projects for the prompt library",
+    "A custom API application with a prompt database",
+    "Claude Code with prompt files in a git repository"
+  ],
+  answer: 1,
+  explain: `**Đúng: gói Team kèm Projects để cả nhóm dùng chung thư viện prompt và hướng dẫn nhất quán.** Projects cho phép lưu custom instructions và tài liệu ở cấp nhóm; Team plan cho phép quản lý thành viên và thanh toán tập trung. Đây là mức setup thấp nhất cho một nhóm nhỏ cần chia sẻ và đồng bộ mà không phải viết code.
+
+### Vì sao các lựa chọn khác sai
+- **Chat cá nhân với ghi chú riêng:** không chia sẻ được, mỗi người một phiên bản, khó đồng bộ.
+- **Ứng dụng API + database prompt:** phải tự xây giao diện, phân quyền, đồng bộ — tốn công.
+- **Claude Code + git:** quá kỹ thuật cho nhóm không lập trình; git không thay được giao diện cộng tác.
+
+### Cách làm
+Mua Team plan; tạo Project chung; đưa prompt mẫu và hướng dẫn vào; mời cả nhóm; chỉ định người cập nhật.
+
+> Mẹo thực tế: khi cả nhóm phải dùng giống nhau, hãy chọn một chỗ chung có quản trị — đừng để mỗi người tự giữ một bản.`
+},
+{
+  id: "qz-ccao-933",
+  topic: "claude",
+  q: "[Knowledge Config] A Project's custom instructions have grown into a long list that sometimes contradicts itself, and answer quality is dropping. What is the most effective fix?",
+  options: [
+    "Consolidate the instructions into a short, prioritised set with no contradictions",
+    "Make the instructions even longer so every case is covered",
+    "Remove custom instructions entirely and rely on each message",
+    "Set the temperature higher so the model decides"
+  ],
+  answer: 0,
+  explain: `**Đúng: gom lại thành một bộ hướng dẫn ngắn, có thứ tự ưu tiên và không mâu thuẫn.** Custom instructions áp dụng cho mọi tin nhắn trong project; càng dài và càng mâu thuẫn thì model càng khó tuân theo nhất quán, vì các yêu cầu "chống nhau" và mô hình phải đoán ý. Nguyên tắc là viết ít nhưng rõ: nhóm các quy tắc liên quan, bỏ cái trùng, xếp cái quan trọng lên trước. "Temperature" là tham số điều khiển độ ngẫu nhiên khi sinh văn bản — tăng nó không sửa được hướng dẫn mâu thuẫn.
+
+### Vì sao các lựa chọn khác sai
+- **Viết dài hơn nữa:** làm tăng mâu thuẫn và loãng; dài không đồng nghĩa rõ.
+- **Bỏ hẳn custom instructions:** mất phần hướng dẫn đang có tác dụng; quay về chỗ mỗi tin nhắn phải nhắc lại.
+- **Tăng temperature:** chỉ thêm ngẫu nhiên; không xử lý gốc rễ.
+
+### Cách làm
+Đọc lại toàn bộ; gộp các mục trùng; xếp ưu tiên; thử lại vài câu hỏi để kiểm tra; cập nhật khi có mâu thuẫn mới.
+
+> Mẹo thực tế: custom instructions tốt là bản ngắn mà người mới đọc cũng hiểu phải làm gì — không phải bản dài liệt kê mọi tình huống.`
+},
+{
+  id: "qz-ccao-934",
+  topic: "claude",
+  q: "[Knowledge Config] Users ask for page numbers in citations, but the knowledge base chunks often do not include a page number, so citations are vague. What is the most useful first improvement?",
+  options: [
+    "Increase the temperature so citations become more specific",
+    "Ask users to stop requesting page numbers",
+    "Make sure source documents have clear structure and headings so chunks carry section labels, and instruct the model to cite what the chunk contains",
+    "Delete the documents and re-upload them as plain text with no headings"
+  ],
+  answer: 2,
+  explain: `**Đúng: chuẩn hoá cấu trúc tài liệu để chunk giữ được nhãn mục/đầu đề, và yêu cầu model trích dẫn đúng những gì có trong chunk.** Retrieval (truy hồi) trả về các đoạn (chunk); nếu chunk không chứa thông tin vị trí, model không thể trích dẫn chính xác và sẽ có xu hướng "đoán" một số trang nghe hợp lý. Khi tài liệu có heading rõ ràng ("Mục 7.2 Bồi thường"), chunk thường giữ được nhãn đó, và instruction "trích đúng nhãn mục trong chunk" giúp citation bám vào dữ liệu thật.
+
+### Vì sao các lựa chọn khác sai
+- **Tăng temperature:** không thêm thông tin vị trí; chỉ làm sinh văn bản ngẫu nhiên hơn.
+- **Bảo người dùng đừng hỏi số trang:** né tránh; nhu cầu trích dẫn chính là lý do dùng knowledge base.
+- **Xoá heading rồi up lại:** mất chính cấu trúc giúp chunk có nhãn; làm việc tệ hơn.
+
+### Cách làm
+Bổ sung heading/đánh số mục trước khi upload; viết instruction trích dẫn theo nhãn có trong chunk; kiểm tra vài câu trả lời thực tế.
+
+> Mẹo thực tế: citation tốt bắt đầu từ tài liệu có cấu trúc — model chỉ trích được những gì chunk đang chứa.`
+},
+{
+  id: "qz-ccao-935",
+  topic: "claude",
+  multi: true,
+  q: "[Knowledge Config] A team wants fewer fabricated citations from a Project (citations that point to text the documents do not contain). Which TWO changes help most? (Choose 2)",
+  options: [
+    "Instruct the model to quote the supporting text from the retrieved chunk before giving a citation",
+    "Remove duplicate or near-duplicate documents so retrieval is not confused about the source",
+    "Increase the number of retrieved chunks so the model has more to choose from",
+    "Turn off citations entirely",
+    "Raise the temperature to make answers more varied"
+  ],
+  answer: [0, 1],
+  explain: `**Đúng: (0) bắt model trích nguyên văn câu hỗ trợ từ chunk trước khi ghi citation, và (1) bỏ tài liệu trùng lặp để retrieval không nhầm nguồn.** Ép trích nguyên văn buộc model phải bám vào văn bản thật; nếu không tìm được câu hỗ trợ, nó khó bịa citation hơn. Tài liệu trùng lặp khiến nhiều chunk giống nhau cạnh tranh, và model dễ gán nhầm nguồn; dọn trùng giúp retrieval xác định đúng nguồn. Đây là hai can thiệp vào prompt và vào dữ liệu, thay vì vào tham số sinh văn bản.
+
+### Vì sao các lựa chọn khác sai
+- **Tăng số chunk lấy về:** nhiều chunk hơn làm loãng ngữ cảnh và tăng cơ hội lẫn nguồn.
+- **Tắt citation:** mất luôn giá trị kiểm chứng; vấn đề là citation đúng, không phải bỏ citation.
+- **Tăng temperature:** không liên quan đến việc trích dẫn đúng nguồn.
+
+### Cách làm
+Thêm bước "trích nguyên văn câu hỗ trợ"; rà và gộp tài liệu trùng; chạy lại tập câu hỏi kiểm thử và đối chiếu citation.
+
+> Mẹo thực tế: muốn citation đáng tin, hãy buộc model trưng ra câu bằng chứng — không có câu thì không có citation.`
+},
+{
+  id: "qz-ccao-936",
+  topic: "claude",
+  q: "[Knowledge Config] A team uploads PDFs that are mostly scanned images (photos of pages) to a Project, but Claude cannot find answers that are clearly in those pages. What is the most likely cause and fix?",
+  options: [
+    "The knowledge base only works with English documents",
+    "Claude refuses to read images",
+    "The documents are too few to be indexed",
+    "Scanned image PDFs may not contain selectable text, so text extraction misses them; use text-based documents or OCR"
+  ],
+  answer: 3,
+  explain: `**Đúng: PDF scan (ảnh chụp trang) thường không có lớp văn bản chọn được, nên bước trích xuất text không lấy được chữ; cần tài liệu có text hoặc chạy OCR.** "OCR" (optical character recognition — nhận dạng ký tự quang học) là công nghệ biến ảnh chữ thành văn bản. Nếu tài liệu chỉ là ảnh, retrieval không có chunk để tìm, và câu trả lời sẽ như thể tài liệu trống. Đây là lỗi ở khâu dữ liệu, không phải ở model.
+
+### Vì sao các lựa chọn khác sai
+- **Chỉ hỗ trợ tiếng Anh:** không đúng; vấn đề là ảnh không có text, không phải ngôn ngữ.
+- **Claude từ chối đọc ảnh:** model không "từ chối"; nó chỉ không nhận được văn bản để dùng.
+- **Tài liệu quá ít:** số lượng không phải nguyên nhân; một file scan cũng không có text.
+
+### Cách làm
+Chuyển sang PDF có text hoặc chạy OCR trước khi upload; kiểm tra thử một trang bằng cách bôi đen chữ; sau đó mới hỏi.
+
+> Mẹo thực tế: trước khi đổ lỗi cho AI, hãy thử bôi đen chữ trong PDF — nếu không bôi được, đó là ảnh, không phải text.`
+},
+{
+  id: "qz-ccao-937",
+  topic: "claude",
+  q: "[Knowledge Config] A user wants a rule to apply to every chat in a project without retyping it each time. Which statement about custom instructions is correct?",
+  options: [
+    "Custom instructions apply to all chats in the project and are the right place for stable rules",
+    "Custom instructions only affect the first message of a chat",
+    "Custom instructions override the user's own message every time",
+    "Custom instructions are only available through the API"
+  ],
+  answer: 0,
+  explain: `**Đúng: custom instructions áp dụng cho mọi cuộc trò chuyện trong project, nên là nơi đặt các quy tắc ổn định.** Đây là điểm khác biệt giữa "nhắc trong một tin nhắn" (chỉ có tác dụng một lần) và "hướng dẫn cấp project" (áp dụng liên tục). Các quy tắc ít thay đổi — định dạng, giọng điệu, cách trích dẫn — nên đặt ở custom instructions để không phải lặp lại.
+
+### Vì sao các lựa chọn khác sai
+- **Chỉ ảnh hưởng tin nhắn đầu:** không đúng; nó áp dụng cho cả cuộc trò chuyện.
+- **Ghi đè mọi tin nhắn của người dùng:** không phải cơ chế; nó là hướng dẫn nền, không thay thế nội dung người dùng.
+- **Chỉ có qua API:** không đúng; custom instructions có trong Projects trên giao diện.
+
+### Cách làm
+Đưa các quy tắc ổn định vào custom instructions; giữ ngắn gọn; kiểm tra bằng vài tin nhắn trong một chat mới.
+
+> Mẹo thực tế: nếu bạn phải nhắc cùng một quy tắc mỗi lần, đó là dấu hiệu nó nên nằm trong custom instructions.`
+},
+{
+  id: "qz-ccao-938",
+  topic: "claude",
+  multi: true,
+  q: "[Knowledge Config] A Project knowledge base is two years old and answers are drifting out of date. Which TWO practices keep it healthy over time? (Choose 2)",
+  options: [
+    "Assign an owner and a regular review schedule for the documents",
+    "Archive or remove outdated versions when newer ones are added",
+    "Upload every document ever created so nothing is missing",
+    "Rename files randomly so users cannot get attached to old names"
+  ],
+  answer: [0, 1],
+  explain: `**Đúng: (0) có người chịu trách nhiệm và lịch rà soát định kỳ, và (1) lưu trữ/loại bỏ bản cũ khi có bản mới.** Knowledge base giống như một thư viện: nếu không ai chăm, nó đầy sách cũ và không ai biết bản nào còn hiệu lực. Người phụ trách và lịch rà soát giúp phát hiện tài liệu lạc hậu; archive bản cũ giúp retrieval không trộn lẫn thông tin cũ và mới. "Data hygiene" (vệ sinh dữ liệu) là việc dọn dẹp định kỳ để nguồn luôn sạch.
+
+### Vì sao các lựa chọn khác sai
+- **Upload mọi thứ từng tạo ra:** càng nhiều tài liệu cũ càng dễ trả lời lạc hậu và loãng ngữ cảnh.
+- **Đổi tên file ngẫu nhiên:** không giúp gì cho việc cập nhật; còn gây khó theo dõi phiên bản.
+
+### Cách làm
+Gán chủ sở hữu; đặt lịch rà soát (ví dụ mỗi quý); khi thêm bản mới, archive bản cũ; ghi ngày cập nhật.
+
+> Mẹo thực tế: một knowledge base không có người trông coi sẽ cũ đi từng ngày — hãy coi việc cập nhật là một phần công việc, không phải việc làm một lần.`
+},
+{
+  id: "qz-ccao-939",
+  topic: "claude",
+  q: "[Knowledge Config] A user asks a question whose answer requires combining an organisation chart from one document and a budget figure from another. How does retrieval typically handle this, and what should the user check?",
+  options: [
+    "It reads only the first document, so the answer must be incomplete",
+    "It retrieves relevant chunks across documents and the model combines them; check that chunks from both documents were actually used",
+    "It refuses any question that spans two documents",
+    "It answers from general knowledge when documents disagree"
+  ],
+  answer: 1,
+  explain: `**Đúng: retrieval lấy các đoạn liên quan từ nhiều tài liệu và model tổng hợp; người dùng nên kiểm tra câu trả lời có thực sự dùng cả hai nguồn.** Knowledge base tìm chunk giống nhất về ngữ nghĩa trên toàn bộ tài liệu, nên về nguyên tắc có thể lấy cả sơ đồ tổ chức lẫn con số ngân sách. Nhưng nếu một trong hai tài liệu không được truy hồi (ví dụ chunk quá nhỏ, hoặc câu hỏi không khớp), câu trả lời sẽ thiếu một nửa. Vì vậy hãy đối chiếu xem cả hai nguồn có được nhắc tới không.
+
+### Vì sao các lựa chọn khác sai
+- **Chỉ đọc tài liệu đầu tiên:** retrieval không giới hạn như vậy; nó tìm trên tất cả tài liệu.
+- **Từ chối câu hỏi hai tài liệu:** không có cơ chế từ chối; model vẫn tổng hợp.
+- **Dùng kiến thức chung khi mâu thuẫn:** nếu instruction yêu cầu chỉ dùng knowledge base, model không nên lấy số từ trí nhớ chung.
+
+### Cách làm
+Nếu câu trả lời thiếu một nguồn, hỏi lại rõ "dùng cả tài liệu A và B"; nếu vẫn thiếu, kiểm tra chunk của tài liệu đó có đủ lớn và rõ không.
+
+> Mẹo thực tế: câu hỏi cần tổng hợp nhiều nguồn là phép thử tốt cho knowledge base — nếu thiếu một nguồn, hãy kiểm tra chunk trước khi nghi model.`
+},
+{
+  id: "qz-ccao-940",
+  topic: "claude",
+  q: "[Knowledge Config] Even though a custom instruction says 'use only the knowledge base', the model sometimes answers from its general training knowledge. What is the most effective response?",
+  options: [
+    "Delete the custom instruction, since it clearly does not work",
+    "Add more unrelated documents so the model has more context",
+    "Strengthen the instruction with an explicit 'if not in the knowledge base, say you do not know' and add an example of that behaviour",
+    "Ask the model to be more creative"
+  ],
+  answer: 2,
+  explain: `**Đúng: làm rõ instruction kèm quy tắc "nếu không có trong knowledge base thì nói không biết", và thêm một ví dụ mẫu về hành vi đó.** "Parametric knowledge" (kiến thức trong tham số model) là những gì model học được khi huấn luyện; nó luôn ở đó và có thể trồi lên khi câu hỏi gần với kiến thức chung. Một câu cấm chung chung dễ bị bỏ qua; một quy tắc cụ thể kèm ví dụ ("khi tài liệu không có, trả lời: 'Chính sách không đề cập nội dung này'") cho model một mẫu hành vi để làm theo. Few-shot (một vài ví dụ) hiệu quả hơn mệnh lệnh trừu tượng.
+
+### Vì sao các lựa chọn khác sai
+- **Bỏ custom instruction:** quay về chỗ model tự do dùng kiến thức chung, tệ hơn.
+- **Thêm tài liệu không liên quan:** làm loãng, không giúp model bám nguồn.
+- **Bảo model sáng tạo hơn:** đi ngược mục tiêu; sáng tạo làm tăng bịa.
+
+### Cách làm
+Viết lại instruction theo mẫu "chỉ dùng KB; nếu thiếu, nói không biết" kèm một ví dụ; kiểm tra bằng câu hỏi mà KB không có.
+
+> Mẹo thực tế: muốn model "không biết thì nói không biết", hãy cho nó một câu mẫu để nói — nó bắt chước tốt hơn là nghe cấm.`
+},
+{
+  id: "qz-ccao-941",
+  topic: "claude",
+  multi: true,
+  q: "[Knowledge Config] A team wants to know whether their Project knowledge base is actually good. Which TWO measurements are most useful? (Choose 2)",
+  options: [
+    "Score a fixed set of representative questions for answer accuracy and correct citation",
+    "Track how often the assistant says it does not know or escalates to a person",
+    "Count how many documents are in the project",
+    "Measure the total file size of the knowledge base"
+  ],
+  answer: [0, 1],
+  explain: `**Đúng: (0) chấm một tập câu hỏi cố định về độ chính xác và citation, và (1) theo dõi tỷ lệ "không biết" hoặc phải chuyển người.** Tập câu hỏi cố định cho phép so sánh giữa các thời điểm và giữa các phiên bản cấu hình; chấm cả trích dẫn giúp phát hiện citation bịa. Tỷ lệ "không biết"/escalate cho biết knowledge base có phủ được câu hỏi thực tế hay không — nếu quá cao, có thể thiếu tài liệu hoặc chunking kém.
+
+### Vì sao các lựa chọn khác sai
+- **Đếm số tài liệu:** nhiều tài liệu không đồng nghĩa với KB tốt; tài liệu cũ/trùng còn gây hại.
+- **Đo tổng dung lượng file:** dung lượng không đo được độ chính xác hay độ phủ.
+
+### Cách làm
+Chốt 15–20 câu đại diện kèm đáp án đúng; mỗi lần đổi cấu hình thì chạy lại; ghi tỷ lệ "không biết" và lý do.
+
+> Mẹo thực tế: "bao nhiêu tài liệu" là thước đo hình thức; "trả lời đúng bao nhiêu phần trăm" mới là thước đo chất lượng.`
+},
+{
+  id: "qz-ccao-942",
+  topic: "claude",
+  q: "[Knowledge Config] A Project serves two product versions, and users complain that answers blend features from both versions. What is the most effective structural fix within Projects?",
+  options: [
+    "Add a custom instruction asking the model to guess which version the user means",
+    "Upload both versions into one document to save space",
+    "Delete the older version entirely",
+    "Use a separate Project for each product version, with clear naming and membership"
+  ],
+  answer: 3,
+  explain: `**Đúng: tách thành hai Project theo phiên bản, đặt tên rõ ràng và quản lý thành viên riêng.** Khi hai phiên bản nằm chung một knowledge base, retrieval có thể lấy chunk của cả hai, và model trộn lẫn tính năng cũ với mới. Tách project là cách "cách ly theo ngữ cảnh": mỗi project chỉ chứa một phiên bản, nên câu trả lời không thể lẫn sang phiên bản kia. Đây là cùng nguyên tắc như tách project cho tài liệu nhạy cảm — ranh giới rõ ràng giúp retrieval và người dùng không nhầm.
+
+### Vì sao các lựa chọn khác sai
+- **Instruction bảo model đoán phiên bản:** model không biết người dùng đang hỏi phiên bản nào; đoán sẽ gây ra chính sự nhầm lẫn đang muốn tránh.
+- **Gộp hai phiên bản vào một tài liệu:** vẫn trộn nội dung trong cùng chunk; không giải quyết gốc rễ.
+- **Xoá phiên bản cũ:** mất thông tin hợp lệ; nhiều khách vẫn dùng phiên bản cũ.
+
+### Cách làm
+Tạo project riêng cho từng phiên bản; đặt tên gồm tên sản phẩm và số phiên bản; chỉ chia sẻ đúng project cho đúng nhóm.
+
+> Mẹo thực tế: khi một knowledge base trả lời "lai" giữa hai thứ, hãy tách nguồn theo ranh giới rõ ràng thay vì cố dặn model đừng lẫn.`
 }
 );
