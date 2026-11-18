@@ -7232,5 +7232,483 @@ Giúp tiết kiệm bộ nhớ khi có nhiều String trùng lặp.
   ],
   answer: 0,
   explain: '**Đáp án đúng: CREATE INDEX ON events ((data->>\'type\));**\n\n### Vì sao đúng\nKhi truy vấn lọc theo một **key cụ thể** trong jsonb (ví dụ data->>\'type\'), index **expression index** (biểu thức) trên chính key đó là tối ưu nhất:\n- Index B-tree trên biểu thức (data->>\'type\') lưu giá trị text của key type.\n- Truy vấn WHERE data->>\'type\' = \'login\' khớp chính xác expression index → Index Scan cực nhanh.\n- Nhẹ hơn GIN index rất nhiều (GIN index toàn bộ jsonb to và chậm khi update).\n\n### Vì sao các phương án còn lại sai\n- **CREATE INDEX ON events (data)**: cú pháp sai — không thể index trực tiếp cột jsonb bằng B-tree; cần USING GIN.\n- **USING GIN (data)**: GIN index toàn bộ jsonb — hỗ trợ tìm kiếm mọi key, nhưng to (lưu mọi key/value), chậm khi INSERT/UPDATE (phải cập nhật GIN). Dùng khi truy vấn **ad-hoc nhiều key khác nhau**.\n- **GIN (data jsonb_path_ops)**: tối ưu cho @> (contains) query, không tối ưu cho equality trên key đơn lẻ.\n\n> Senior tip: nếu chỉ lọc 1–2 key cố định trong jsonb, hãy tạo **expression index** cho từng key. Chỉ dùng GIN khi thực sự cần tìm kiếm tùy ý (full-text, contains, exists key).'
+},
+{
+  id: 'qz-microservices-033',
+  topic: 'microservices',
+  q: 'Topic {{orders}} có 6 partition, consumer group có 6 consumer. Producer gửi sự kiện đơn hàng **không đặt key** (key rỗng, tức null) và dùng {{acks=all}}. Thực tế hai sự kiện {{ORDER_CREATED}} rồi {{ORDER_PAID}} của cùng một đơn đôi khi bị xử lý ngược thứ tự (PAID trước CREATED). Nguyên nhân gốc và cách sửa đúng?',
+  options: [
+    'Kafka chỉ đảm bảo thứ tự trong **một partition**; khi không có key, producer rải message sang các partition khác nhau nên hai sự kiện cùng đơn rơi vào hai consumer chạy song song. Phải đặt {{key = orderId}} để mọi sự kiện của cùng đơn vào cùng partition và consumer xử lý tuần tự từng partition',
+    'Vì topic có quá ít partition; tăng lên 12 partition là đảm bảo thứ tự cho mọi message',
+    'Vì consumer commit offset sai; bật {{enable.auto.commit=true}} để Kafka tự sắp xếp lại message theo thời gian',
+    'Vì cần tăng {{max.in.flight.requests.per.connection}} lên 5 để producer gửi nhanh hơn và giữ thứ tự'
+  ],
+  answer: 0,
+  explain: `**Đáp án đúng: phương án 0 — Kafka chỉ đảm bảo thứ tự trong một partition, nên hai sự kiện cùng đơn rơi vào hai partition khác nhau sẽ bị xử lý song song, mất thứ tự.**
+
+### Các khái niệm cần nắm trước
+- **Topic**: một "kênh" message có tên (ví dụ {{orders}}). Người gửi (producer) đẩy message vào, người nhận (consumer) đọc ra.
+- **Partition**: một topic thực chất bị chia thành nhiều **log con** gọi là partition (giống 6 làn đường của cùng một con đường). Mỗi message khi vào một partition sẽ được gán một **offset** — số thứ tự tăng dần trong đúng partition đó.
+- **Consumer group**: một nhóm consumer chia nhau các partition. Trong ví dụ này 6 partition / 6 consumer nên mỗi consumer nhận đúng 1 partition.
+- **Key**: chuỗi tuỳ chọn gắn vào message, dùng để producer quyết định message vào partition nào.
+
+### Vì sao thứ tự bị vỡ
+Kafka **không** có khái niệm "thứ tự toàn topic". Nó chỉ hứa: trong **cùng một partition**, message được append và đọc theo đúng thứ tự offset tăng dần. Consumer cũng chỉ đảm bảo "một partition chỉ do một consumer trong group xử lý tại một thời điểm".
+
+Vậy producer chọn partition thế nào?
+- **Có key**: {{partition = hash(key) % số partition}}. Cùng key luôn ra cùng partition.
+- **Key null**: từ Kafka 2.4 dùng **sticky partitioner** — gom một batch message vào cùng một partition cho hiệu quả, hết batch thì đổi sang partition khác. Như vậy {{ORDER_CREATED}} có thể vào partition 2, còn {{ORDER_PAID}} (gửi sau vài giây, khi đã đổi partition) vào partition 5.
+
+Hai message vào hai partition = hai consumer khác nhau xử lý **song song**, không ai đợi ai → thứ tự hoàn toàn ngẫu nhiên. Nếu consumer của partition 5 nhanh hơn, PAID được xử lý trước CREATED.
+
+~~~text
+Không key:  CREATED -> partition 2 (consumer B)   PAID -> partition 5 (consumer E)
+            hai consumer chạy song song  =>  có thể thấy PAID trước CREATED
+
+Có key = orderId:  CREATED -> partition 3
+                   PAID    -> partition 3   (cùng consumer, offset tăng dần => đúng thứ tự)
+~~~
+
+### Vì sao các phương án còn lại sai
+- **Tăng lên 12 partition**: số partition chỉ là mức song song. Càng nhiều partition, xác suất hai sự kiện cùng đơn rơi vào hai partition càng **cao**, không phải thấp. Tệ hơn, tăng số partition làm đổi công thức {{hash(key) % N}} nên message cũ và mới cùng key có thể nằm khác partition — thứ tự vỡ thêm một thời gian.
+- **{{enable.auto.commit=true}}**: đây chỉ là cấu hình **ai** commit offset (consumer tự commit theo chu kỳ). Kafka không có cơ chế "sắp xếp lại message theo thời gian" — offset chỉ tăng theo thứ tự message đã vào partition, không liên quan timestamp.
+- **{{max.in.flight.requests.per.connection=5}}**: cho phép producer có nhiều request bay cùng lúc. Nếu có retry, thứ tự giữa các lần gửi **có thể đảo** (trừ khi bật {{enable.idempotence=true}}). Nó không giải quyết được vấn đề hai sự kiện nằm ở hai partition.
+
+### Lỗi hay gặp trên production
+- Tưởng {{acks=all}} là "không mất + đúng thứ tự". Thực tế {{acks=all}} chỉ là **độ bền** (đợi mọi replica trong-sync ghi xong), không liên quan thứ tự.
+- Đặt key đúng nhưng consumer lại đẩy message sang {{ExecutorService}} xử lý song song → thứ tự trong partition bị phá ngay ở phía consumer.
+- Dùng key theo {{orderId}} nhưng sự kiện thanh toán lại dùng key {{paymentId}} → hai luồng khác partition. Key phải là **cùng một "đơn vị cần thứ tự"** ở mọi sự kiện.
+
+> Senior tip: chọn key theo thứ thực sự cần tuần tự (orderId, accountId, userId). Đánh đổi là **hot partition**: một khách hàng cực lớn có thể dồn phần lớn message vào một partition, partition đó thành nút cổ chai. Hãy theo dõi phân bố offset/kích thước theo partition ({{kafka-log-dirs.sh}} hoặc metric của broker) trước khi chọn key.`
+},
+{
+  id: 'qz-microservices-034',
+  topic: 'microservices',
+  q: 'Consumer group {{payment}} có 3 consumer trên topic 6 partition. Consumer A nhận một batch 500 message, xử lý mất khoảng 7 phút (mỗi message gọi API ngân hàng). Trong lúc A còn đang xử lý, coordinator kick A ra khỏi group, chạy rebalance, và A vẫn ghi DB xong rồi mới commit offset → một số message bị xử lý hai lần. Nguyên nhân và cách xử lý đúng?',
+  options: [
+    'Vì {{session.timeout.ms}} quá lớn; giảm xuống 1 giây để phát hiện consumer chết nhanh hơn',
+    'Vì consumer commit offset sai; phải bật {{enable.auto.offset.store=false}} để offset không bị commit sớm',
+    'Consumer A vượt {{max.poll.interval.ms}} (mặc định 5 phút) mà không gọi {{poll()}} nên bị coi là treo và bị đưa ra khỏi group. Sửa: giảm {{max.poll.records}} để mỗi vòng lặp ngắn lại, tăng {{max.poll.interval.ms}} cho khớp thời gian xử lý thật, commit tiến độ theo lô nhỏ — và luôn làm consumer idempotent vì partition đã bị giao cho consumer khác',
+    'Vì 6 partition không chia hết cho 3 consumer; giảm topic còn 2 partition để mỗi consumer chỉ giữ một partition'
+  ],
+  answer: 2,
+  explain: `**Đáp án đúng: phương án 2 — consumer vượt {{max.poll.interval.ms}} nên bị kick, partition bị giao cho consumer khác trong khi nó vẫn đang xử lý batch cũ, vì vậy phải idempotent.**
+
+### Rebalance là gì
+**Rebalance** là quá trình cả consumer group "họp lại" để chia lại các partition khi có consumer vào/ra hoặc bị coi là chết. Trong lúc rebalance, việc tiêu thụ bị dừng một lát, rồi mỗi consumer được giao một tập partition mới.
+
+Điểm nguy hiểm: sau rebalance, partition mà A đang giữ **có thể được giao cho B hoặc C**. Nhưng A không biết ngay — nó vẫn đang chạy vòng lặp xử lý 500 message đã lấy từ trước.
+
+### Hai cơ chế "còn sống" khác nhau
+Kafka có **hai** đồng hồ riêng, rất nhiều người nhầm lẫn:
+
+| Cơ chế | Cấu hình | Đo cái gì | Ai gửi |
+|---|---|---|---|
+| Heartbeat | {{heartbeat.interval.ms}} (3s), {{session.timeout.ms}} (mặc định 45s) | Consumer còn kết nối mạng tới coordinator không | Thread nền riêng của consumer |
+| Poll interval | {{max.poll.interval.ms}} (mặc định 300000 ms = 5 phút) | Khoảng cách giữa hai lần gọi {{poll()}} | Vòng lặp ứng dụng của bạn |
+
+Từ Kafka 0.10.1, heartbeat chạy ở **thread nền**, nên dù ứng dụng đang bận xử lý thì heartbeat vẫn đều — A **không** bị kick vì mất heartbeat. Nhưng nếu 7 phút trôi qua mà vòng lặp chưa quay lại gọi {{poll()}} (vượt 5 phút), coordinator kết luận "consumer này đang treo hoặc đã chết" và đưa ra khỏi group → rebalance.
+
+Sau đó A xử lý xong và commit offset. Lúc này B/C đã có thể đọc và xử lý lại đúng vùng message đó (vì offset commit của A chưa tới), hoặc tệ hơn: commit của A ghi đè vùng offset mà B đang xử lý → **vừa trùng, vừa có thể nhảy mất message**.
+
+### Cách sửa đúng, theo thứ tự ưu tiên
+1. **Giảm {{max.poll.records}}** (ví dụ 500 → 20–50): mỗi lần {{poll()}} lấy ít message hơn, vòng lặp quay lại nhanh hơn, không bao giờ vượt 5 phút.
+2. **Tăng {{max.poll.interval.ms}}** nếu nghiệp vụ buộc xử lý lâu (ví dụ 15 phút). Chỉ là giải pháp tạm vì consumer vẫn giữ partition rất lâu.
+3. **Commit tiến độ theo lô nhỏ**: xử lý 20 message thì commit 20, thay vì đợi cả 500. Khi bị rebalance, phần đã làm không bị làm lại toàn bộ.
+4. **Consumer phải idempotent** — đây là yêu cầu bắt buộc, vì bất kỳ rebalance/crash nào cũng tạo khả năng xử lý trùng.
+5. Nếu xử lý thật sự dài: dừng {{pause()}} partition, xử lý ở thread khác có giới hạn, xong thì {{resume()}} và poll đều đặn.
+
+### Vì sao các phương án còn lại sai
+- **Giảm {{session.timeout.ms}} xuống 1 giây**: đây là đồng hồ heartbeat, không phải poll. Đặt quá nhỏ còn gây kick oan khi mạng chập chờn (false positive) — ngược lại vấn đề.
+- **{{enable.auto.offset.store=false}}**: chỉ kiểm soát khi nào offset được đánh dấu để commit; không liên quan lý do bị kick và không ngăn được rebalance.
+- **6 partition chia 3 consumer là vừa đẹp** (mỗi consumer 2 partition), không phải nguyên nhân; giảm partition xuống 2 chỉ làm giảm khả năng song song.
+
+> Senior tip: dùng assignor **cooperative-sticky** ({{partition.assignment.strategy=CooperativeStickyAssignor}}) để rebalance chỉ chuyển các partition cần chuyển, thay vì thu hồi toàn bộ rồi chia lại. Kết hợp với {{max.poll.records}} nhỏ và commit theo lô — đây là bộ ba giảm mạnh duplicate khi deploy rolling.`
+},
+{
+  id: 'qz-microservices-035',
+  topic: 'microservices',
+  multi: true,
+  q: 'Producer Kafka cấu hình {{acks=all}}, {{enable.idempotence=true}}; consumer commit offset thủ công sau khi xử lý xong. Chọn 3 phát biểu ĐÚNG về delivery semantics. (Chọn 3)',
+  options: [
+    'Phía producer đạt mức at-least-once an toàn: message được ghi vào mọi replica trong-sync trước khi coi là thành công, và idempotent producer loại bỏ duplicate do chính producer retry',
+    'Nếu consumer crash sau khi xử lý xong nhưng trước khi commit offset, message sẽ được giao lại cho lần chạy sau — nên consumer phải idempotent',
+    'Kafka đảm bảo exactly-once xuyên suốt cho mọi tác dụng phụ bên ngoài (ghi DB, gọi API ngân hàng) mà ứng dụng không cần làm gì thêm',
+    'Nếu commit offset trước rồi mới xử lý (hoặc bật auto commit quá sớm), ta có mức at-most-once: crash giữa chừng sẽ làm mất message',
+    'Thứ tự message được đảm bảo trên toàn topic, không chỉ trong một partition'
+  ],
+  answer: [0, 1, 3],
+  explain: `**Đáp án đúng: 0, 1 và 3.**
+
+### Ba mức giao nhận (delivery semantics)
+- **At-most-once (nhiều nhất một lần)**: gửi/ghi nhận rồi coi như xong, không bao giờ thử lại → có thể **mất** message nhưng không bao giờ **trùng**. Ví dụ: commit offset trước khi xử lý.
+- **At-least-once (ít nhất một lần)**: thử lại khi chưa chắc thành công → không mất nhưng có thể **trùng**. Đây là mức mặc định và phổ biến của mọi hệ message.
+- **Exactly-once (đúng một lần)**: không mất, không trùng. Chỉ đạt được **trong nội bộ Kafka** (transactional producer + read_committed) hoặc khi tác dụng phụ ngoài Kafka được viết idempotent.
+
+### Vì sao 0 đúng
+{{acks=all}} nghĩa là producer đợi tới khi tất cả replica trong tập **in-sync replica (ISR)** đã ghi message (kết hợp {{min.insync.replicas}} đủ lớn sẽ chịu được mất một broker). {{enable.idempotence=true}} gắn số sequence cho mỗi message theo (producerId, partition) để broker chặn duplicate do retry — nhờ vậy producer không tạo bản sao, và cũng giữ được thứ tự khi {{max.in.flight}} > 1. Đây chính là "ghi an toàn, ít nhất một lần".
+
+### Vì sao 1 đúng
+Offset là **con trỏ vị trí đã xử lý tới đâu**, lưu ở topic nội bộ {{__consumer_offsets}}. Nếu consumer đã ghi DB xong mà chưa commit offset rồi crash, lần khởi động sau nó đọc lại từ offset cũ → **giao lại** message đã xử lý. Vì thế quy tắc bất di bất dịch: **at-least-once + consumer idempotent = hiệu ứng exactly-once**.
+
+~~~text
+commit sau khi xử lý  -> at-least-once  -> có thể trùng  -> cần idempotent
+commit trước khi xử lý -> at-most-once   -> có thể mất
+~~~
+
+### Vì sao 3 đúng
+Commit offset sớm nghĩa là "tôi đã xong" trong khi thực ra chưa. Crash ngay sau đó → Kafka không giao lại → message **mất vĩnh viễn**. {{enable.auto.commit=true}} mặc định commit theo chu kỳ 5 giây, có thể commit cả offset của message còn đang xử lý dở → đúng là rủi ro at-most-once. Đây là lý do production thường đặt {{enable.auto.commit=false}} và commit tay.
+
+### Vì sao 2 sai
+Exactly-once của Kafka chỉ đúng khi dữ liệu **không ra khỏi Kafka** (produce → topic → consume trong cùng transaction). Ghi DB hay gọi API ngân hàng là hệ thống ngoài, không tham gia transaction Kafka → vẫn cần idempotent. Nói "không cần làm gì thêm" là sai và rất nguy hiểm với nghiệp vụ tiền.
+
+### Vì sao 4 sai
+Kafka chỉ đảm bảo thứ tự trong **một partition**. Trên toàn topic có nhiều partition được xử lý song song nên không có thứ tự toàn cục. Muốn thứ tự cho một thực thể, phải dùng key cố định (ví dụ orderId).
+
+> Senior tip: khi phỏng vấn, hãy nói rõ "Kafka không cho exactly-once xuyên hệ thống; chúng tôi đạt hiệu ứng exactly-once bằng at-least-once + khoá idempotency ở DB". Kèm số liệu: khoá chống trùng đặt UNIQUE trên (event_id) hoặc (business_key, version), và bảng processed_events có TTL để không phình vô hạn.`
+},
+{
+  id: 'qz-microservices-036',
+  topic: 'microservices',
+  q: 'Consumer xử lý {{OrderEvent}}. Một message có dữ liệu hỏng (poison pill) làm xử lý luôn ném exception. Code hiện tại {{catch}} exception rồi {{while(true)}} retry ngay tại chỗ, không commit offset. Điều gì xảy ra và nên sửa thế nào?',
+  options: [
+    'Kafka tự động bỏ qua message lỗi sau 3 lần thử; không cần làm gì thêm',
+    'Message lỗi chặn vĩnh viễn partition đó (head-of-line blocking) vì consumer không bao giờ commit offset; các message phía sau không được xử lý, lag tăng mãi. Sửa: retry có giới hạn kèm backoff (hoặc đẩy sang retry topic riêng), sau N lần thì chuyển DLQ rồi commit offset để đi tiếp',
+    'Tăng {{max.poll.records}} để consumer nhảy qua message lỗi nhanh hơn',
+    'Commit offset ngay khi nhận message để partition không bị chặn'
+  ],
+  answer: 1,
+  explain: `**Đáp án đúng: message lỗi chặn cả partition (head-of-line blocking); phải retry có giới hạn + DLQ rồi commit để đi tiếp.**
+
+### Vì sao một message lỗi chặn cả partition
+Offset không phải "message bị xoá", mà là **con trỏ đánh dấu đã xử lý tới đâu**. Consumer chỉ tiến con trỏ khi commit offset. Nếu message ở offset 1001 luôn lỗi và ta không commit, thì:
+- Kafka coi offset 1001 vẫn "chưa xử lý", mọi message 1002, 1003… phía sau **phải đợi**.
+- Consumer cứ lấy lại 1001 ở mỗi vòng lặp → CPU quay vòng vô ích, DB/API bị gọi lặp, và **lag** (số message chưa xử lý) tăng theo thời gian thực.
+
+Đây gọi là **head-of-line blocking**: một message hỏng kẹt ở đầu hàng làm cả hàng đứng im. Với topic 1 triệu message/ngày, chỉ vài giờ là consumer tụt lại hàng trăm nghìn message.
+
+Thêm một điểm quan trọng: retry **ngay lập tức** chỉ có ích cho lỗi **tạm thời** (timeout mạng, deadlock, 503). Với **poison pill** (dữ liệu hỏng, parse lỗi, vi phạm ràng buộc), lần thử thứ 1 hay thứ 1 triệu đều lỗi giống nhau — retry ngay tại chỗ là vòng lặp vô nghĩa.
+
+### Cách sửa chuẩn: retry có giới hạn + DLQ
+~~~text
+orders  --(lỗi lần 1)-->  orders-retry-5s   (chờ 5s rồi thử lại)
+        --(lỗi lần 2)-->  orders-retry-1m   (chờ 1 phút)
+        --(lỗi lần 3)-->  orders-dlq        (Dead Letter Topic: để điều tra)
+~~~
+
+- **Retry có backoff**: chờ 1s, 5s, 30s… giữa các lần thử. Chờ giúp lỗi tạm thời tự hết và không đập vào downstream đang yếu.
+- **Giới hạn số lần** (3–5 lần). Hết lượt thì đẩy sang **DLQ** (Dead Letter Queue/Topic — "hàng đợi thư chết": nơi chứa message không xử lý được để người vận hành xem lại) và **commit offset** ở topic chính để đi tiếp.
+- Với Spring Kafka: {{DefaultErrorHandler}} + {{DeadLetterPublishingRecoverer}} + {{FixedBackOff(1000L, 3)}} làm đúng việc này; hoặc {{@RetryableTopic}} để tự sinh các topic retry.
+
+### Vì sao các phương án còn lại sai
+- **Kafka tự bỏ qua sau 3 lần**: Kafka không có cơ chế retry hay đếm lỗi nào ở phía consumer. Nó chỉ lưu offset; "thử lại" hoàn toàn do code consumer quyết định.
+- **Tăng {{max.poll.records}}**: chỉ là số message lấy mỗi lần. Message lỗi vẫn nằm ở offset đó và vẫn chặn; tăng lên còn làm batch dài hơn, dễ vượt {{max.poll.interval.ms}}.
+- **Commit ngay khi nhận message**: đây là at-most-once — message lỗi (và mọi message khác nếu crash) **mất vĩnh viễn**, không ai biết. Nguy hiểm hơn head-of-line blocking rất nhiều.
+
+> Senior tip: DLQ không phải "thùng rác". Phải có **cảnh báo khi DLQ có message mới**, dashboard số message DLQ theo giờ, và quy trình review hằng ngày. Nếu không, message lỗi sẽ nằm im và bạn phát hiện muộn khi khách đã phàn nàn. Và nhớ: khi consumer đẩy sang DLQ phải giữ **key gốc** để có thể replay đúng partition sau này.`
+},
+{
+  id: 'qz-microservices-037',
+  topic: 'microservices',
+  q: 'Topic {{orders-dlq}} tích 4.000 message lỗi. Đội đã sửa bug và muốn replay toàn bộ DLQ về topic {{orders}} để consumer xử lý lại. Điều kiện nào là **bắt buộc** để replay an toàn?',
+  options: [
+    'Xoá topic {{orders}} trước khi replay để không bị trùng dữ liệu cũ',
+    'Tắt cơ chế idempotent của consumer trong lúc replay để chạy nhanh hơn',
+    'Đổi tên consumer group trước khi replay là đủ an toàn',
+    'Consumer chính phải idempotent theo {{eventId}} hoặc khoá nghiệp vụ, và khi replay phải giữ nguyên {{key}} để message vào đúng partition/đúng thứ tự; nếu không sẽ trùng hoặc xử lý sai thứ tự'
+  ],
+  answer: 3,
+  explain: `**Đáp án đúng: consumer phải idempotent và phải replay giữ nguyên key/thứ tự.**
+
+### Vì sao replay DLQ nguy hiểm hơn bạn tưởng
+DLQ chứa message "đã thất bại", nhưng thất bại **không có nghĩa là chưa có tác dụng phụ**. Ví dụ consumer trừ kho xong, ghi xong một phần, rồi lỗi ở bước gửi email → message bị đẩy DLQ trong khi nghiệp vụ đã thay đổi một phần. Replay lại message đó nghĩa là chạy lại toàn bộ logic trên trạng thái đã đổi.
+
+Thêm nữa, DLQ thường gom message từ nhiều partition và nhiều thời điểm khác nhau. Nếu replay theo thứ tự tuỳ tiện, có thể xảy ra:
+~~~text
+Thứ tự gốc:      ORDER_CREATED (10:00) -> ORDER_PAID (10:01) -> ORDER_SHIPPED (10:05)
+Replay lộn xộn:  ORDER_SHIPPED  -> ORDER_CREATED -> ORDER_PAID
+=> consumer thấy "ship" trước khi "tạo đơn" => lỗi nghiệp vụ / state sai
+~~~
+
+### Ba điều kiện bắt buộc
+1. **Idempotent theo khoá nghiệp vụ** ({{eventId}}, hoặc tốt hơn là khoá như {{orderId + "-PAID"}}): message đã xử lý trước đó, hoặc bị xử lý vài lần do replay, đều cho **cùng một kết quả cuối**.
+2. **Giữ nguyên {{key}}** khi replay: message cùng key vào đúng partition cũ, và thứ tự trong partition khôi phục đúng cho từng đối tượng.
+3. **Kiểm soát tốc độ và phạm vi**: replay từng lô nhỏ, theo dõi lỗi; bỏ qua message mà trạng thái nghiệp vụ đã vượt qua nó (ví dụ đơn đã SHIPPED thì không replay ORDER_PAID cũ nữa) — dùng cột {{version}}/{{updatedAt}} để chặn cập nhật cũ đè mới.
+
+### Vì sao các phương án còn lại sai
+- **Xoá topic {{orders}}**: xoá là mất toàn bộ message và offset, consumer group phải đọc lại từ đầu, đồng thời mọi downstream đọc topic này cũng mất dữ liệu. Đây là hành động phá hoại, không phải "chống trùng".
+- **Tắt idempotent để replay nhanh**: ngược hoàn toàn — tắt idempotent chính là **tạo ra** trùng lặp và sai trạng thái. Tốc độ không bao giờ đáng đánh đổi với tính đúng của nghiệp vụ tiền.
+- **Đổi tên consumer group**: chỉ khiến group mới không có offset cũ nên đọc topic theo {{auto.offset.reset}} (thường là earliest) — dễ xử lý lại **toàn bộ** topic, gây trùng hàng loạt. Không giải quyết gì.
+
+### Quy trình replay an toàn trên production
+~~~text
+1. Kiểm tra DLQ: phân loại lỗi (schema? dữ liệu? phụ thuộc chết?)
+2. Sửa code, deploy, theo dõi topic chính ổn định vài giờ
+3. Replay 10 message thử -> xem DB, log, metric
+4. Replay theo lô 100-500, có thể dừng bất cứ lúc nào
+5. Đối soát số lượng và trạng thái nghiệp vụ sau replay
+~~~
+
+> Senior tip: đừng replay "toàn bộ DLQ một phát" bằng một script đẩy hết message. Hãy replay qua **topic retry riêng có rate limit** (ví dụ 100 msg/s) và bật **cờ dry-run** in ra message sẽ xử lý trước khi chạy thật. Một lần replay sai có thể tạo hàng nghìn giao dịch trùng — sửa còn tốn hơn nhiều so với việc replay chậm rãi.`
+},
+{
+  id: 'qz-microservices-038',
+  topic: 'microservices',
+  multi: true,
+  q: 'Nhóm bạn thiết kế DLQ (Dead Letter Queue) cho consumer Kafka. Chọn 2 việc **nên** làm. (Chọn 2)',
+  options: [
+    'Đặt retry vô hạn ngay trong consumer để không bao giờ cần tới DLQ',
+    'Khi đẩy vào DLQ, ghi kèm metadata: topic/partition/offset gốc, key, số lần đã thử, exception stack và thời điểm — để điều tra và replay chính xác',
+    'Có cảnh báo khi DLQ có message mới, review định kỳ, và quy trình replay có kiểm soát (idempotent, giữ key) sau khi sửa nguyên nhân',
+    'Cho consumer tự xoá message khỏi DLQ sau 1 giờ để topic không phình to',
+    'Dùng chung một DLQ cho toàn bộ hệ thống, không cần metadata để đơn giản'
+  ],
+  answer: [1, 2],
+  explain: `**Đáp án đúng: 1 và 2.**
+
+### Vì sao cần DLQ
+DLQ là nơi chứa message mà consumer **không xử lý được** sau khi đã thử một số lần. Không có DLQ thì chỉ có hai lựa chọn tồi: chặn cả partition (head-of-line blocking) hoặc bỏ message (mất dữ liệu âm thầm). DLQ cho lựa chọn thứ ba: **đi tiếp, nhưng không bỏ mất**, và để người vận hành xử lý sau.
+
+### Vì sao 1 đúng
+Message vào DLQ **không tự nói** vì sao nó ở đó. Nếu chỉ có payload, người điều tra phải đoán. Metadata tối thiểu:
+- {{originalTopic}}, {{partition}}, {{offset}} → biết message nằm ở đâu trong luồng gốc, replay đúng vị trí logic.
+- **key gốc** → replay vào đúng partition, giữ thứ tự.
+- {{attempts}} (đã thử bao nhiêu lần), **exception class + stack** → phân loại lỗi nhanh (schema vs dữ liệu vs phụ thuộc chết).
+- {{firstFailedAt}} / {{lastFailedAt}}, {{consumerGroup}}, {{host}} → biết lỗi xảy ra khi nào, ở instance nào (hữu ích khi chỉ một node lỗi).
+
+Thực tế: header Kafka mang được các thông tin này, hoặc bọc message thành envelope JSON. Có metadata thì 4.000 message DLQ có thể nhóm thành 3 loại lỗi và sửa một lần.
+
+### Vì sao 2 đúng
+DLQ không phải thùng rác. Cần:
+- **Cảnh báo** khi có message mới (Slack/PagerDuty) để không phát hiện muộn.
+- **Dashboard** số message DLQ theo giờ, theo loại lỗi.
+- **Review định kỳ**: message cũ quá N ngày mà không xử lý được thì escalate.
+- **Replay có kiểm soát**: idempotent, giữ key, đi từng lô, và có thể dừng. Như đã nói ở câu trước, replay mù quáng còn tệ hơn không replay.
+
+### Vì sao 0, 3, 4 sai
+- **Retry vô hạn trong consumer**: chính là head-of-line blocking, làm tê liệt partition và làm lag tăng vô hạn. Retry phải có giới hạn.
+- **Tự xoá DLQ sau 1 giờ**: message lỗi thường cần người xem xét; xoá tự động là **mất dữ liệu có chủ đích**. Nếu muốn giới hạn dung lượng, dùng retention dài (7–30 ngày) + archive ra S3, không xoá 1 giờ.
+- **Một DLQ chung, không metadata**: khi có sự cố, không biết message thuộc luồng nào, schema nào, replay về đâu. Một topic DLQ dùng chung vẫn được, nhưng **bắt buộc** phải có metadata (và thường tách topic theo domain để dễ khoanh vùng).
+
+> Senior tip: đặt tên DLQ theo pattern {{<topic>.DLT}} (Spring Kafka mặc định đẩy sang {{topic + ".DLT"}}) và giữ **cùng số partition** với topic gốc — nhờ vậy replay theo đúng partition, đúng thứ tự. Đừng quên cấu hình retention cho DLT dài hơn topic chính.`
+},
+{
+  id: 'qz-microservices-039',
+  topic: 'microservices',
+  q: 'Consumer RabbitMQ (Spring AMQP) xử lý message "trừ tồn kho" trong DB, sau đó mới gọi {{basicAck}}. Sự cố: consumer bị kill sau khi đã commit DB nhưng **trước** khi kịp ack. RabbitMQ sẽ làm gì và hệ quả là gì?',
+  options: [
+    'Message chưa được ack vẫn bị coi là "đang xử lý"; khi connection đóng, RabbitMQ giao lại message (redelivered = true) cho consumer khác → tồn kho bị trừ hai lần. Phải chống bằng khoá nghiệp vụ idempotent và chỉ ack sau khi commit DB',
+    'Message bị mất vĩnh viễn vì consumer đã nhận nó',
+    'RabbitMQ tự rollback transaction DB của consumer khi thấy consumer chết',
+    'Message tự động chuyển sang Dead Letter Exchange ngay khi consumer crash'
+  ],
+  answer: 0,
+  explain: `**Đáp án đúng: message chưa ack sẽ được giao lại, gây xử lý hai lần; phải idempotent.**
+
+### Ack trong RabbitMQ nghĩa là gì
+RabbitMQ làm việc theo mô hình **push**: broker đẩy message cho consumer, giữ message trong trạng thái **unacked** (đã giao nhưng chưa xác nhận). Consumer gọi {{basicAck(deliveryTag)}} để nói "tôi xử lý xong rồi, xoá khỏi queue". Chỉ khi đó message mới bị xoá.
+
+Nếu consumer chết (process bị kill, mất kết nối, channel đóng) mà chưa ack:
+- Broker phát hiện connection/channel đóng.
+- Mọi message **unacked** của channel đó được đưa trở lại queue (requeue), cờ {{redelivered=true}}.
+- Consumer khác (hoặc chính consumer sau khi khởi động lại) nhận message đó và xử lý lại.
+
+Đây chính là mô hình **at-least-once**: không mất message, nhưng có thể xử lý trùng.
+
+### Vì sao lần này đặc biệt nguy hiểm
+Consumer đã **commit DB** (trừ kho xong) rồi mới crash. Lần giao lại sẽ trừ kho **lần hai** cho cùng một yêu cầu. Không có cách nào RabbitMQ biết DB đã bị thay đổi — broker và database là hai hệ thống hoàn toàn tách biệt, không có transaction chung.
+
+~~~text
+1. broker giao message (unacked)
+2. consumer: BEGIN; UPDATE stock SET qty = qty - 1; COMMIT;   <- DB đã đổi
+3. consumer crash  (chưa basicAck)
+4. broker requeue -> consumer khác nhận lại -> trừ kho lần 2   => sai
+~~~
+
+### Cách làm đúng
+1. **Idempotent theo khoá nghiệp vụ**: bảng {{stock_moves(order_id PK, sku, qty)}}; nếu đã có {{order_id}} thì bỏ qua. Dùng INSERT ... ON CONFLICT DO NOTHING hoặc UNIQUE constraint.
+2. **Ack sau commit, không ack trước**: ack trước khi làm là at-most-once, crash giữa chừng sẽ **mất** message.
+3. **Cùng một channel cho ack**: ack phải trên channel đã nhận message, và nên ack từng message ({{multiple=false}}) cho nghiệp vụ quan trọng; ack hàng loạt ({{multiple=true}}) có thể che giấu lỗi của message giữa lô.
+4. **Publisher confirms** là chuyện khác: nó xác nhận broker đã nhận message từ producer, không liên quan consumer đã xử lý hay chưa.
+
+### Vì sao các phương án còn lại sai
+- **Message mất vĩnh viễn**: chỉ đúng khi ack trước khi xử lý hoặc dùng {{autoAck=true}} (ack ngay khi giao). Ở đây message chưa ack nên được requeue, không mất.
+- **RabbitMQ rollback DB**: broker không có quyền và không có kết nối transaction tới DB nghiệp vụ. Chỉ ứng dụng (hoặc một saga/compensation) mới làm được việc bù trừ.
+- **Tự sang Dead Letter Exchange khi crash**: DLX chỉ nhận message khi bị **reject/nack không requeue**, hết TTL, hoặc vượt giới hạn độ dài queue. Crash đơn thuần thì message được requeue, không vào DLX.
+
+> Senior tip: mặc định Spring Boot đặt {{spring.rabbitmq.listener.simple.acknowledge-mode=auto}} — nghĩa là listener chạy xong **không ném exception** thì framework ack, ném exception thì nack/requeue. Như vậy vẫn là at-least-once. Đừng bao giờ bật {{autoAck=true}} cho nghiệp vụ cần chắc chắn — nó biến hệ thống thành at-most-once mà không có cảnh báo nào.`
+},
+{
+  id: 'qz-microservices-040',
+  topic: 'microservices',
+  q: 'Hai consumer cùng nghe một queue RabbitMQ. Message có hai loại: nhanh (~5 ms) và chậm (~800 ms). Cấu hình {{basicQos(prefetchCount=250)}}. Quan sát: một consumer bận liên tục, consumer kia gần như rảnh, và message chậm bị dồn ứ. Nguyên nhân và cách sửa?',
+  options: [
+    'Vì prefetch chỉ có tác dụng khi queue chỉ có một consumer duy nhất',
+    'Vì {{basicQos}} phải đặt ở phía publisher, đặt ở consumer là sai nên bị bỏ qua',
+    'Prefetch quá lớn: broker đẩy trước tới 250 message chưa ack cho **mỗi** consumer, nên consumer nhanh ôm nhiều message chậm trong buffer nội bộ và xử lý lần lượt, consumer còn lại không còn message để làm. Giảm prefetch (ví dụ 1–20) hoặc tách queue theo loại việc để chia đều',
+    'RabbitMQ luôn chia message round-robin tuyệt đối nên prefetch không ảnh hưởng gì tới cân bằng tải'
+  ],
+  answer: 2,
+  explain: `**Đáp án đúng: prefetch quá lớn làm mất cân bằng vì broker đẩy trước quá nhiều message cho từng consumer.**
+
+### Prefetch (QoS) là gì
+{{basicQos(prefetchCount = N)}} nói với broker: "đừng giao cho tôi quá **N message chưa ack** cùng lúc". RabbitMQ đếm số message đã giao nhưng chưa ack trên **channel** đó; chừng nào chưa ack đủ để xuống dưới N thì nó còn đẩy thêm.
+
+Lưu ý quan trọng: RabbitMQ là **push**, không phải pull. Broker không hỏi "consumer có rảnh không", nó chỉ đẩy tới khi chạm trần prefetch. Vì vậy prefetch là **bộ đệm trước** (pre-fetch) nằm trong bộ nhớ consumer.
+
+### Vì sao prefetch 250 gây lệch tải
+Giả sử queue có 500 message, 490 nhanh và 10 chậm, xếp xen kẽ. Broker đẩy:
+- Consumer A: 250 message (giả sử trong đó có 6 message chậm).
+- Consumer B: 250 message (4 message chậm).
+
+Giờ A xử lý tuần tự: 244 message nhanh mất ~1,2 giây, rồi tới 6 message chậm mất ~4,8 giây. Trong suốt thời gian đó, **B đã làm xong phần mình và ngồi rảnh**, vì broker đã đẩy hết message cho cả hai và không còn gì để giao. Kết quả: một bên quá tải, một bên nhàn — đúng như quan sát.
+
+~~~text
+prefetch = 250:
+  A: [nhanh x244][cham x6] -> bận ~6s
+  B: [nhanh x250]          -> xong sau ~1,3s rồi RẢNH
+
+prefetch = 1..20:
+  A, B thay phiên nhận từng message/ lô nhỏ -> chia đều, không ai ôm hàng
+~~~
+
+### Cách sửa
+1. **Giảm prefetch**: 1–20 cho nghiệp vụ có thời gian xử lý không đều. Với {{prefetch=1}}, mỗi consumer chỉ giữ 1 message chưa ack → broker chia gần như công bằng.
+2. **Tách queue theo loại việc** nếu hai loại chênh lệch quá lớn: queue {{fast}} prefetch cao, queue {{slow}} prefetch thấp, consumer riêng.
+3. **Đo và điều chỉnh**: theo dõi {{messages_unacknowledged}} theo consumer; nếu một consumer luôn có số unacked sát trần trong khi consumer khác bằng 0 → prefetch đang quá cao hoặc tải không đều.
+
+### Đánh đổi của prefetch
+| Prefetch nhỏ (1–10) | Prefetch lớn (100–250) |
+|---|---|
+| Chia tải công bằng | Dễ lệch tải |
+| Nhiều round-trip hơn, throughput thấp hơn | Throughput cao hơn khi message đều và xử lý nhanh |
+| Bộ nhớ consumer thấp | Giữ nhiều message trong RAM mỗi consumer |
+
+Nếu mạng có độ trễ cao (consumer khác datacenter), prefetch = 1 làm throughput tụt mạnh vì mỗi message phải chờ một round-trip. Khi đó chọn 10–50 là hợp lý.
+
+### Vì sao các phương án còn lại sai
+- **Prefetch chỉ có tác dụng với một consumer**: ngược lại, prefetch chính là thứ quyết định **cách chia** message giữa nhiều consumer; càng nhiều consumer, prefetch lớn càng dễ gây lệch.
+- **QoS đặt ở publisher**: {{basicQos}} là API của **consumer** trên channel của nó. Publisher có cơ chế riêng (publisher confirms, flow control), không dùng prefetch.
+- **Round-robin tuyệt đối, prefetch không ảnh hưởng**: RabbitMQ chia round-robin **theo từng lần giao**, nhưng khi đã đẩy đủ trần prefetch thì nó dừng giao cho consumer đó. Prefetch lớn làm consumer ôm một khối lớn → round-robin bị "đóng băng" trong một khoảng dài.
+
+> Senior tip: với Spring Boot, {{spring.rabbitmq.listener.simple.prefetch}} mặc định là **250** — chính là bẫy ở câu này. Với job nặng hoặc thời gian xử lý không đều, hạ xuống 1–10. Nếu cần cân bằng tốt hơn nữa, dùng {{x-single-active-consumer}} (chỉ một consumer hoạt động tại một thời điểm) khi yêu cầu thứ tự nghiêm ngặt, hoặc chuyển bài toán cân bằng sang Kafka với partition và consumer group.`
+},
+{
+  id: 'qz-microservices-041',
+  topic: 'microservices',
+  multi: true,
+  q: 'Service dùng **transactional outbox**: bảng {{outbox}} được ghi trong CÙNG transaction với cập nhật nghiệp vụ; sau đó Debezium đọc WAL (transaction log của PostgreSQL) và phát sự kiện lên Kafka. Chọn 3 phát biểu ĐÚNG. (Chọn 3)',
+  options: [
+    'Vì event và thay đổi nghiệp vụ commit trong cùng một transaction DB, không còn cửa sổ "đã lưu DB nhưng mất event" như khi gọi Kafka trực tiếp giữa luồng nghiệp vụ',
+    'Vì Debezium đọc WAL, service có thể bỏ bảng outbox và ghi thẳng Kafka sau khi commit mà vẫn đảm bảo nguyên tử',
+    'Consumer vẫn phải idempotent, vì connector có thể phát lại message sau restart hoặc khi offset của nó bị tua lại — delivery vẫn là at-least-once',
+    'Bảng outbox cần được dọn/archive định kỳ sau khi đã publish, nếu không sẽ phình rất lớn và làm chậm cả WAL lẫn quá trình CDC',
+    'Outbox cho phép bỏ qua transaction isolation vì mọi thứ đã được ghi vào log'
+  ],
+  answer: [0, 2, 3],
+  explain: `**Đáp án đúng: 0, 2 và 3.**
+
+### Vấn đề outbox giải quyết
+Nghiệp vụ thường cần hai việc "cùng lúc": **lưu dữ liệu vào DB** và **báo cho hệ thống khác** (phát event). Nếu làm trực tiếp:
+~~~java
+orderRepo.save(order);          // (1) commit DB
+kafka.send(new OrderPlaced(..)); // (2) phát event
+~~~
+Có hai cửa sổ hỏng:
+- Commit (1) xong, crash trước (2) → **mất event**, đơn tồn tại nhưng kho/email không biết.
+- Làm ngược lại (gửi trước, commit sau) → **event ma**, có thể DB rollback trong khi event đã đi.
+
+Không có transaction phân tán giữa PostgreSQL và Kafka, nên không thể làm hai việc này nguyên tử bằng cách gọi tuần tự.
+
+**Outbox** đảo cách làm: trong **một transaction DB duy nhất**, ghi cả dữ liệu nghiệp vụ lẫn một dòng "cần phát event" vào bảng {{outbox}}. Transaction DB vốn đã nguyên tử — hoặc cả hai cùng có, hoặc cả hai cùng không. Sau đó một tiến trình khác đọc bảng outbox (poller) hoặc đọc thẳng WAL (Debezium) để phát lên Kafka.
+
+### Vì sao 0 đúng
+Đây là lý do tồn tại của outbox. Vì hai bản ghi nằm trong cùng transaction, không còn khoảnh khắc nào "DB đã đổi mà event chưa được ghi lại". Khi đọc bằng WAL, event được phát **sau khi** transaction commit (chỉ thay đổi đã commit mới xuất hiện trong log theo nghĩa CDC).
+
+### Vì sao 2 đúng
+Outbox đảm bảo "event **được ghi nhận** đúng một lần trong DB", **không** đảm bảo "event được **phát** đúng một lần lên Kafka". Connector có thể:
+- crash sau khi gửi Kafka nhưng trước khi ghi offset của nó → restart phát lại;
+- bị tua offset để backfill/recover → phát lại một đoạn cũ.
+
+Vì vậy phía nhận vẫn là **at-least-once** và consumer phải idempotent (bảng processed_events hoặc UPSERT theo khoá tự nhiên). Nguyên tắc bất biến: outbox giải quyết **tính nguyên tử khi ghi**, idempotent giải quyết **tính trùng khi phát/nhận** — phải có cả hai.
+
+### Vì sao 3 đúng
+Mỗi lần đặt hàng sinh một dòng outbox. Bảng không tự xoá, sau vài tháng có thể lên hàng chục triệu dòng. Hệ quả:
+- Bảng và index phình, làm chậm INSERT nghiệp vụ (vì cùng transaction).
+- Poller phải scan vùng lớn (nếu dùng cách {{SELECT ... WHERE published = false}} kèm index thì đỡ hơn, nhưng vẫn cần dọn).
+- WAL phình, và CDC phải xử lý khối lượng lớn thay đổi không cần thiết.
+
+Cách làm: sau khi chắc chắn đã publish (hoặc theo retention), xoá theo lô nhỏ {{DELETE FROM outbox WHERE created_at < now() - interval '7 days'}} hoặc move sang bảng archive, và partition bảng outbox theo tháng.
+
+### Vì sao 1 và 4 sai
+- **Bỏ outbox, ghi thẳng Kafka sau commit**: đó chính là quay lại vấn đề ban đầu — commit DB và gửi Kafka vẫn là hai thao tác tách rời, crash giữa hai bước làm mất event. Debezium chỉ hữu ích **khi có bảng outbox** để nó đọc.
+- **Bỏ qua transaction isolation**: outbox không thay đổi gì về isolation; transaction vẫn phải đúng (ví dụ ghi outbox và cập nhật nghiệp vụ phải thấy cùng dữ liệu). Nếu isolation sai, có thể ghi outbox cho một thay đổi không hề commit.
+
+### Poller vs CDC
+~~~text
+Poller:  app job SELECT outbox WHERE unpublished -> Kafka -> UPDATE published = true
+         đơn giản, cần index + dọn bảng; trễ phụ thuộc chu kỳ poll (0.5-2s)
+CDC:     Debezium đọc WAL -> Kafka (Connect)
+         gần realtime, không thêm query vào DB; vận hành connector phức tạp hơn
+~~~
+
+> Senior tip: giữ bảng outbox **cùng database, cùng transaction** với nghiệp vụ (đừng dùng DB khác — sẽ mất tính nguyên tử). Và đặt **khoá chính/unique** trên cột {{event_id}} để tránh ghi trùng outbox khi retry nghiệp vụ. Theo dõi độ trễ outbox (tuổi của dòng chưa publish) — đó là metric quan trọng hơn số lượng message.`
+},
+{
+  id: 'qz-microservices-042',
+  topic: 'microservices',
+  q: 'Pipeline: Kafka → consumer tính lại số dư ví và ghi vào bảng {{wallets}}. Consumer commit offset sau mỗi message và vẫn có thể nhận lại message khi restart. Cách nào cho "hiệu ứng exactly-once" trên dữ liệu ví?',
+  options: [
+    'Bật {{enable.idempotence=true}} cho consumer và đặt {{isolation.level=read_committed}} là đủ',
+    'Ghi idempotent bằng khoá tự nhiên: {{INSERT ... ON CONFLICT (wallet_id, event_seq) DO NOTHING}} cho bảng ledger, hoặc kiểm tra {{eventId}} trong **cùng transaction** với cập nhật số dư, để xử lý lại cùng một message cho kết quả không đổi',
+    'Dùng {{synchronized}} trong consumer để không bao giờ xử lý song song',
+    'Chia đều message cho nhiều consumer hơn để mỗi message chắc chắn chỉ được xử lý một lần'
+  ],
+  answer: 1,
+  explain: `**Đáp án đúng: ghi idempotent theo khoá tự nhiên trong cùng transaction với cập nhật số dư.**
+
+### Vì sao không thể "exactly-once" theo nghĩa đen
+Consumer làm hai việc ở hai hệ thống khác nhau:
+1. Ghi kết quả vào **database** (bảng wallets/ledger).
+2. **Commit offset** vào Kafka.
+
+Hai việc này không nằm trong một transaction chung. Vì thế luôn có một khoảng thời gian mà một trong hai đã xong và cái kia chưa:
+~~~text
+commit offset TRƯỚC khi ghi DB  -> crash  -> mất cập nhật      (at-most-once)
+commit offset SAU khi ghi DB    -> crash  -> ghi lại lần nữa   (at-least-once, có trùng)
+~~~
+Vì vậy ta chọn at-least-once rồi làm cho **việc ghi trở nên idempotent** — gọi là **effectively-once** (hiệu ứng đúng một lần, dù message có thể được xử lý nhiều lần).
+
+### Cách 1: ledger với khoá tự nhiên
+Không lưu "số dư cuối cùng" một cách mù quáng, mà ghi **bút toán** (ledger) với khoá duy nhất {{(wallet_id, event_seq)}}:
+~~~sql
+INSERT INTO ledger (wallet_id, event_seq, amount, event_id)
+VALUES (:walletId, :seq, :amount, :eventId)
+ON CONFLICT (wallet_id, event_seq) DO NOTHING;
+~~~
+Lần thứ hai xử lý cùng message sẽ bị DB từ chối (conflict) và bỏ qua — số dư không đổi. Tổng số dư có thể là view tổng hợp từ ledger hoặc cập nhật trong cùng transaction với ràng buộc khoá.
+
+Tại sao dùng {{event_seq}} chứ không chỉ {{event_id}}: nếu hai sự kiện khác nhau cùng dẫn tới một tác dụng phụ (ví dụ hai lệnh "cộng tiền" trùng nội dung nhưng khác event_id), khoá nghiệp vụ theo (wallet_id, seq) hoặc theo (order_id, action) mới chặn đúng.
+
+### Cách 2: processed_events trong cùng transaction
+~~~java
+@Transactional
+public void apply(WalletEvent e) {
+    if (processedRepo.existsById(e.getEventId())) return;
+    walletRepo.updateBalance(e);          // tác dụng phụ
+    processedRepo.save(new Processed(e.getEventId()));  // cùng transaction
+}
+~~~
+Điểm mấu chốt là **cùng một transaction**: nếu crash, cả hai cùng rollback, lần sau xử lý lại từ đầu một cách nhất quán. Nếu tách hai transaction, sẽ có cửa sổ "đã ghi processed nhưng chưa cập nhật số dư" (mất tiền) hoặc ngược lại.
+
+### Vì sao các phương án còn lại sai
+- **{{enable.idempotence}} cho consumer**: cấu hình này là của **producer**, không phải consumer. {{isolation.level=read_committed}} chỉ khiến consumer **không đọc** message thuộc transaction chưa commit của Kafka — nó không chống trùng khi consumer tự xử lý lại message đã commit offset chưa kịp ghi.
+- **{{synchronized}}**: chỉ khoá trong một JVM. Có nhiều instance (pod) chạy song song thì hoàn toàn vô nghĩa. Và nó không liên quan gì tới việc reprocess sau restart.
+- **Chia đều message cho nhiều consumer hơn**: tăng số consumer chỉ tăng song song; mỗi message vẫn có thể được xử lý lại sau crash hay rebalance. Không có cơ chế "chắc chắn một lần" nào ở đây.
+
+### Liên hệ Kafka transaction (chỉ cho Kafka → Kafka)
+Nếu đầu ra cũng là Kafka (consume → transform → produce), có thể dùng **transactional producer** + {{sendOffsetsToTransaction}} để commit offset và ghi message trong cùng transaction Kafka → exactly-once **trong nội bộ Kafka**. Nhưng ngay khi tác dụng phụ là DB của bạn, phải quay về idempotent write.
+
+> Senior tip: với tiền, đừng bao giờ để "số dư" là nguồn sự thật duy nhất — hãy dùng **ledger append-only + số dư là tổng hợp**. Như vậy idempotency tự nhiên (khoá bút toán), đối soát được (tổng ledger = số dư), và khi có tranh chấp bạn có lịch sử từng giao dịch thay vì chỉ một con số.`
 }
 );
