@@ -5026,4 +5026,206 @@ class JwtVerifier {
   related: ['security-003', 'security-034'],
   tags: ['JWT', 'HMAC', 'HS256', 'exp', 'iss', 'aud', 'alg-none'],
 },
+{
+  id: 'lesson-security-014',
+  track: 'security',
+  order: 14,
+  title: 'IDOR và kiểm soát truy cập tại Service Layer',
+  level: 'senior',
+  minutes: 40,
+  goals: [
+    'Giải thích được IDOR (Insecure Direct Object Reference) và rủi ro khi dùng trực tiếp database ID',
+    'Phân biệt được Authentication và Authorization trong ngữ cảnh Web',
+    'Triển khai được Authorization policy độc lập và áp dụng nó trong Service Layer'
+  ],
+  body: `### Định nghĩa IDOR: Khi bạn xem được dữ liệu của người khác
+IDOR (Insecure Direct Object Reference - Tham chiếu trực tiếp đến đối tượng không an toàn) là lỗ hổng bảo mật nghiêm trọng xảy ra khi ứng dụng cho phép người dùng truy cập trực tiếp vào các tài nguyên nội bộ (như database id, tên file) thông qua tham số trên URL hoặc API, mà không kiểm tra xem người dùng đó có quyền truy cập tài nguyên đó hay không. Đây là lỗi phổ biến nhất trong các ứng dụng web theo kiến trúc RESTful.
+
+### Ví dụ kinh điển
+URL: {{GET /api/accounts/1001}}
+Nếu người dùng hiện tại là Alice (user_id: 500) và tài khoản 1001 thuộc về Bob (user_id: 600), thì việc truy cập thành công API trên chính là IDOR. Alice đã "đoán" được số 1001 và server không kiểm tra Alice có sở hữu nó không. Attacker thường dùng công cụ như Burp Suite hoặc đơn giản là sửa số trên URL để duyệt qua hàng triệu tài khoản.
+
+### Tại sao lại xảy ra?
+Thói quen dùng database id (integer tăng dần) làm khóa chính (primary key) và lộ chúng ra bên ngoài. Kẻ tấn công chỉ cần thay đổi số trên URL là có thể duyệt qua toàn bộ database (còn gọi là **bơm số** - enumeration). Ví dụ, bạn có {{/api/orders/555}}, attacker thử {{556}}, {{557}}... và nếu hệ thống không kiểm tra ownership, dữ liệu của người khác sẽ lộ hết.
+
+### Làm sao để phòng chống?
+1. **Không lộ database id**: Dùng UUID (Universally Unique Identifier - chuỗi 36 ký tự ngẫu nhiên) hoặc một chuỗi băm ngẫu nhiên (public id) cho tài nguyên công khai. Attacker không thể đoán được UUID của người khác.
+2. **Luôn kiểm tra quyền sở hữu (Authorization)**: Mỗi khi truy cập đối tượng, server phải verify: {{object.getOwnerId() == currentUser.getUserId()}} hoặc người dùng có role admin.
+3. **Áp dụng tại Service Layer**: Không để logic kiểm quyền rải rác ở Controller. Dùng một lớp Policy hoặc Security Service để tập trung logic này. Điều này giúp đảm bảo rằng ngay cả khi Service được gọi từ chỗ khác (không phải Controller), quyền vẫn được kiểm tra.
+
+### Authentication vs Authorization
+- Authentication (AuthN): Bạn là ai? (Đăng nhập, JWT, Cookie sid)
+- Authorization (AuthZ): Bạn có quyền gì? (AccessPolicy, Role, Permission)
+Lỗ hổng IDOR nằm ở khâu **Authorization**. Đăng nhập xong (AuthN) vẫn chưa đủ, phải kiểm tra xem bạn có quyền với tài nguyên này (AuthZ) hay không. IDOR xảy ra khi server tin tưởng hoàn toàn vào tài nguyên người dùng yêu cầu mà không đối chiếu với danh tính đã xác thực.
+
+### Mô hình phân quyền tại Service Layer
+Dùng một {{AccessPolicy}} làm trung tâm, tất cả các Service cần kiểm tra đều gọi qua Policy này trước khi thực hiện logic. Điều này giúp dễ dàng audit và update quy tắc phân quyền sau này, đồng thời tránh lặp code.
+
+### Bẫy thường gặp
+- **Chỉ kiểm tra ở Controller**: Nếu một Service được gọi từ job chạy ngầm hay một Controller khác, logic kiểm tra bị bỏ qua. Hãy đưa logic kiểm tra quyền vào Service Layer hoặc dùng các annotation như {{@PreAuthorize}} của Spring Security.
+- **Dùng ID từ client**: Kiểm tra quyền nhưng dùng ID đối tượng do client gửi lên mà không lấy thông tin người dùng từ context (Session/JWT). Attacker luôn có thể gửi ID của người khác trong body hoặc header.
+- **SQL thiếu điều kiện sở hữu**: Dùng {{SELECT * FROM orders WHERE id = ?}} mà quên thêm {{AND user_id = ?}}. Khi service xử lý, nó lấy được order, nhưng order đó của người khác.
+
+### Senior tip
+Không bao giờ tin tưởng vào id truyền từ client. Luôn lấy thông tin người dùng từ context sau khi đã authenticate (JWT, session) để so sánh với thông tin của đối tượng cần truy cập trong DB. UUID là cứu cánh tuyệt vời để tránh enumeration, nhưng nó **không thay thế** được kiểm tra quyền sở hữu. Với hệ thống lớn, hãy cân nhắc sử dụng API Gateway (như Kong, APISIX) kết hợp với OPA (Open Policy Agent) để tách biệt hoàn toàn logic Authorization ra khỏi code ứng dụng. Luôn viết integration test với một "User A" cố gắng truy cập dữ liệu của "User B" để đảm bảo hệ thống không bị IDOR.
+
+### Trả lời phỏng vấn
+- **IDOR là gì?** Là lỗ hổng cho phép truy cập tài nguyên của người khác do server không kiểm tra quyền sở hữu tài nguyên (Authorization).
+- **Cách chống?** Dùng UUID, kiểm tra chủ sở hữu trên mỗi request, tập trung logic phân quyền vào Service Layer hoặc dùng Spring Security ({{@PreAuthorize}}).
+- **Sự khác biệt giữa AuthN và AuthZ?** AuthN là xác định người dùng, AuthZ là xác định quyền truy cập tài nguyên. IDOR là lỗi AuthZ.
+- **Nếu hệ thống đã dùng số ID tăng dần thì sao?** Cách nhanh nhất là thêm kiểm tra ownership trong mọi câu query và service layer. Về lâu dài hãy migrate sang UUID.`,
+  exercises: [
+    {
+      title: 'Viết AccessPolicy và áp dụng tại Service Layer',
+      prompt: `Hoàn thiện {{AccessPolicy}} và {{AccountService}} để chống IDOR:
+ 
+ - {{AccessPolicy.canRead(User user, Account account)}}: Trả về true nếu user là admin hoặc user sở hữu tài khoản ({{user.id == account.userId}}).
+ - {{AccountService.getAccount(User user, String accountId)}}: Lấy account từ repository (đã cho sẵn phương thức {{findById}}), nếu không tồn tại ném {{NotFoundException}}, nếu tồn tại thì kiểm tra quyền bằng {{AccessPolicy.canRead}}, nếu không được phép ném {{AccessDeniedException}}.`,
+      starter: `public class User {
+    private final String id;
+    private final boolean admin;
+    public User(String id, boolean admin) { this.id = id; this.admin = admin; }
+    public String getId() { return id; }
+    public boolean isAdmin() { return admin; }
+}
+
+public class Account {
+    private final String id;
+    private final String userId;
+    public Account(String id, String userId) { this.id = id; this.userId = userId; }
+    public String getUserId() { return userId; }
+}
+
+public class NotFoundException extends RuntimeException {}
+public class AccessDeniedException extends RuntimeException {}
+
+class AccessPolicy {
+    static boolean canRead(User user, Account account) {
+        throw new UnsupportedOperationException("TODO");
+    }
+}
+
+class AccountService {
+    private final Account account;
+    AccountService(Account a) { this.account = a; }
+    Account getAccount(User user, String accountId) {
+        throw new UnsupportedOperationException("TODO");
+    }
+}`,
+      tests: `public class Main {
+    static int passed = 0, total = 0;
+    static void check(String name, Runnable r) {
+        total++;
+        try { r.run(); passed++; System.out.println("PASS " + name); }
+        catch (Throwable t) { System.out.println("FAIL " + name + ": " + t); }
+    }
+    public static void main(String[] args) {
+        Account a = new Account("1001", "600");
+        check("policy: owner can read", () -> {
+            if (!AccessPolicy.canRead(new User("600", false), a)) throw new AssertionError("owner phải đọc được");
+        });
+        check("policy: admin can read", () -> {
+            if (!AccessPolicy.canRead(new User("admin", true), a)) throw new AssertionError("admin phải đọc được");
+        });
+        check("policy: others cannot read", () -> {
+            if (AccessPolicy.canRead(new User("500", false), a)) throw new AssertionError("người khác không được đọc");
+        });
+        check("service: allowed", () -> {
+            AccountService service = new AccountService(a);
+            if (service.getAccount(new User("600", false), "1001") != a) throw new AssertionError("owner phải đọc được");
+        });
+        check("service: denied", () -> {
+            AccountService service = new AccountService(a);
+            try { service.getAccount(new User("500", false), "1001"); throw new AssertionError("phải ném AccessDeniedException"); }
+            catch (AccessDeniedException e) { /* ok */ }
+        });
+        System.out.println("RESULT " + passed + "/" + total);
+    }
+}`,
+      reference: `public class User {
+    private final String id;
+    private final boolean admin;
+    public User(String id, boolean admin) { this.id = id; this.admin = admin; }
+    public String getId() { return id; }
+    public boolean isAdmin() { return admin; }
+}
+
+public class Account {
+    private final String id;
+    private final String userId;
+    public Account(String id, String userId) { this.id = id; this.userId = userId; }
+    public String getUserId() { return userId; }
+}
+
+public class NotFoundException extends RuntimeException {}
+public class AccessDeniedException extends RuntimeException {}
+
+class AccessPolicy {
+    static boolean canRead(User user, Account account) {
+        if (user.isAdmin()) return true;
+        return user.getId().equals(account.getUserId());
+    }
+}
+
+class AccountService {
+    private final Account account; // giả định repo
+    AccountService(Account a) { this.account = a; }
+    Account getAccount(User user, String accountId) {
+        // giả định repo.findById(accountId) -> account
+        if (account == null) throw new NotFoundException();
+        if (!AccessPolicy.canRead(user, account)) throw new AccessDeniedException();
+        return account;
+    }
+}`,
+      hints: [
+        'Policy chỉ cần so sánh {{user.getId()}} với {{account.getUserId()}} hoặc kiểm {{user.isAdmin()}}.',
+        'Service cần gọi Policy trước khi trả về đối tượng; nếu không thỏa mãn thì ném {{AccessDeniedException}}.'
+      ],
+      explain: `IDOR không phải là lỗi logic phức tạp mà là lỗi quên kiểm tra sở hữu.
+      
+Bẫy thường gặp:
+- Chỉ kiểm tra {{user.getId().equals(account.getUserId())}} mà quên mất quyền {{admin}}.
+- Kiểm tra quyền nhưng quên mất trường hợp đối tượng không tồn tại (cần ném {{NotFoundException}}).
+- Logic kiểm tra quyền nằm ở Controller thay vì Service, dẫn đến việc bỏ sót quyền khi gọi Service từ job ngầm.
+`
+    }
+  ],
+  check: [
+    {
+      q: 'Tại sao việc dùng UUID thay cho ID tăng dần (1, 2, 3...) giúp giảm rủi ro IDOR?',
+      options: [
+        'Vì UUID mã hóa được ID tăng dần',
+        'Vì UUID khiến việc "đoán" hay duyệt ID trở nên bất khả thi do không có thứ tự',
+        'Vì UUID tự động kiểm tra quyền sở hữu',
+        'Vì UUID nhanh hơn ID tăng dần',
+      ],
+      answer: 1,
+      explain: 'UUID không tăng dần nên attacker không thể duyệt (enumerate) từ 1 đến 1000 để quét toàn bộ tài nguyên. Tuy nhiên, nó không thay thế được việc kiểm tra quyền sở hữu.',
+    },
+    {
+      q: 'Ở đâu là nơi tốt nhất để thực hiện kiểm tra quyền sở hữu (Authorization) cho tài nguyên?',
+      options: [
+        'Chỉ cần ở tầng giao diện (Frontend) để ẩn nút',
+        'Chỉ ở tầng Controller vì đã nhận được request',
+        'Tại Service Layer hoặc thông qua security framework như Spring Security để đảm bảo tính nhất quán',
+        'Tại database (không cần kiểm tra ở code)',
+      ],
+      answer: 2,
+      explain: 'Frontend chỉ ẩn nút, không chặn được request API. Service Layer tập trung logic, đảm bảo quyền được kiểm tra bất kể request tới từ đâu. Database không biết về context người dùng (user_id) trừ khi thêm điều kiện vào mọi query, rất dễ quên.',
+    },
+    {
+      q: 'Trong bài tập, tại sao cần ném AccessDeniedException thay vì trả về null?',
+      options: [
+        'Vì trả null làm ứng dụng nhanh hơn',
+        'Vì trả null khiến client hiểu nhầm là tài nguyên không tồn tại (404), trong khi thực tế tài nguyên tồn tại nhưng không được phép truy cập (403)',
+        'Vì Exception được JVM xử lý tốt hơn',
+        'Vì AccessDeniedException giúp tăng bảo mật',
+      ],
+      answer: 1,
+      explain: 'Lỗi 403 (Forbidden) truyền tải đúng ý nghĩa "bạn không được truy cập". Trả null (thường dẫn đến 404 Not Found) vừa sai bản chất, vừa có thể làm lộ thông tin tài nguyên có tồn tại hay không (lỗi enumeration khác).',
+    }
+  ],
+  related: ['security-001', 'security-002'],
+  tags: ['IDOR', 'Authorization', 'Service Layer', 'Access Control'],
+},
 );
