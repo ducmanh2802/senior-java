@@ -1,6 +1,8 @@
 /* Styles for view "roadmap" — owner: task T17. Scope every rule under .view-roadmap */
 
 /* ---------- hero / header ---------- */
+.view-roadmap .rm-plan-switch { margin-bottom: 16px; }
+.view-roadmap .rm-plan-hint { margin: 8px 0 0; font-size: .88rem; line-height: 1.55; }
 .view-roadmap .rm-hero { margin-bottom: 20px; }
 .view-roadmap .rm-goal { margin-bottom: 12px; font-size: clamp(1.25rem, 3.2vw, 1.75rem); }
 .view-roadmap .rm-hero-meta { margin-bottom: 12px; gap: 8px; }

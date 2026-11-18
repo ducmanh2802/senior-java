@@ -49,7 +49,12 @@
       'rm.logTitle': 'Nhật ký học',
       'rm.recent14': '14 ngày gần nhất',
       'rm.planTitle': 'Lộ trình 26 tuần',
+      'rm.planTitleJd': 'Lộ trình theo JD (20 tuần)',
       'rm.targetsTitle': 'Mục tiêu & dự án',
+      'rm.planMainChip': 'Lộ trình chung (26 tuần)',
+      'rm.planJdChip': 'Theo JD (20 tuần)',
+      'rm.planMainHint': 'Lộ trình 6 tháng tổng hợp (Java → Spring → Microservices → System Design → AWS → AI).',
+      'rm.planJdHint': 'Lộ trình 20 tuần bám sát JD của VPBankS & VinSmart Future (transaction, Oracle, Kafka, workflow, observability).',
     },
     en: {
       'rm.title': '6-month roadmap',
@@ -97,18 +102,36 @@
       'rm.logTitle': 'Study log',
       'rm.recent14': 'Last 14 days',
       'rm.planTitle': '26-week roadmap',
+      'rm.planTitleJd': 'JD-based roadmap (20 weeks)',
       'rm.targetsTitle': 'Goals & projects',
+      'rm.planMainChip': 'General roadmap (26 weeks)',
+      'rm.planJdChip': 'By JD (20 weeks)',
+      'rm.planMainHint': 'A 6-month combined roadmap (Java → Spring → Microservices → System Design → AWS → AI).',
+      'rm.planJdHint': 'A 20-week roadmap tailored to the VPBankS & VinSmart Future JDs (transactions, Oracle, Kafka, workflow, observability).',
     },
   });
 
   const tr = (key, vars) => App.t('rm.' + key, vars);
-  const TOTAL_WEEKS = 26;
+  const MAIN_WEEKS = 26;
+  const JD_WEEKS = 20;
   const WEEK_MS = 7 * App.DAY;
-  const PLAN_MS = TOTAL_WEEKS * WEEK_MS;
   const WD = () => (App.lang === 'en' ? ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'] : ['CN', 'T2', 'T3', 'T4', 'T5', 'T6', 'T7']); // Chủ nhật → Thứ 7
 
-  const RM = () => window.ROADMAP || { goal: '', targets: [], phases: [], project: null };
-  const rm = () => App.store.data.roadmap || (App.store.data.roadmap = { start: null, done: {} });
+  /* ---------- plan chọn (main | jd) ---------- */
+  function rmStore() { return App.store.data.roadmap || (App.store.data.roadmap = { start: null, done: {} }); }
+  function planKind() {
+    const p = rmStore().plan;
+    return p === 'jd' && window.JD_PLAN ? 'jd' : 'main';
+  }
+  function planData() {
+    return planKind() === 'jd' ? (window.JD_PLAN || null) : (window.ROADMAP || { goal: '', targets: [], phases: [], project: null });
+  }
+  function planWeeks() { return planKind() === 'jd' ? JD_WEEKS : MAIN_WEEKS; }
+  function planPrefix() { return planKind() === 'jd' ? 'j' : 'w'; }
+  function planMs() { return planWeeks() * WEEK_MS; }
+
+  const RM = () => planData();
+  const rm = rmStore;
   const daily = () => App.store.data.daily || (App.store.data.daily = {});
   const esc = s => App.esc(s);
 
@@ -120,9 +143,8 @@
   }
   function weekById(id) { return allWeeks().find(w => w.id === id) || null; }
 
-  /** Ngày bắt đầu (timestamp) — chấp nhận number, chuỗi số hoặc 'YYYY-MM-DD'. */
-  function startTs() {
-    const s = rm().start;
+  /** Ngày bắt đầu (timestamp) của plan đang chọn — chấp nhận number, chuỗi số hoặc 'YYYY-MM-DD'. */
+  function parseStart(s) {
     if (s == null || s === '') return null;
     if (typeof s === 'number') return isNaN(s) ? null : s;
     if (typeof s === 'string') {
@@ -134,16 +156,21 @@
     }
     return null;
   }
+  function startTs() {
+    const r = rmStore();
+    if (planKind() === 'jd') return parseStart(r.jdStart);
+    return parseStart(r.start);
+  }
   function todayStart() { return App.startOfDay(Date.now()); }
 
-  /** Tuần hiện tại (1..26) tính từ ngày bắt đầu. */
+  /** Tuần hiện tại (1..số tuần) tính từ ngày bắt đầu của plan đang chọn. */
   function currentWeek() {
     const s = startTs();
     if (!s) return 1;
     const w = Math.floor((todayStart() - App.startOfDay(s)) / WEEK_MS) + 1;
-    return Math.min(TOTAL_WEEKS, Math.max(1, w));
+    return Math.min(planWeeks(), Math.max(1, w));
   }
-  function curWeekId() { return 'w' + String(currentWeek()).padStart(2, '0'); }
+  function curWeekId() { return planPrefix() + String(currentWeek()).padStart(2, '0'); }
 
   function doneMap() { return rm().done || (rm().done = {}); }
   function isDone(key) { return !!doneMap()[key]; }
@@ -187,13 +214,14 @@
       </section>`;
     }
     const week = currentWeek();
-    const end = App.startOfDay(s) + PLAN_MS;
+    const spanMs = planMs();
+    const end = App.startOfDay(s) + spanMs;
     const daysLeft = Math.max(0, Math.ceil((end - todayStart()) / App.DAY));
-    const pct = Math.min(100, Math.max(0, Math.round((todayStart() - App.startOfDay(s)) / PLAN_MS * 100)));
+    const pct = Math.min(100, Math.max(0, Math.round((todayStart() - App.startOfDay(s)) / spanMs * 100)));
     return `<section class="card rm-hero">
       <h1 class="rm-goal">${esc(goal)}</h1>
       <div class="row rm-hero-meta">
-        <span class="badge accent">${esc(tr('weekOf', { w: week, total: TOTAL_WEEKS }))}</span>
+        <span class="badge accent">${esc(tr('weekOf', { w: week, total: planWeeks() }))}</span>
         <span class="badge">${esc(tr('started', { date: fmtDay(App.startOfDay(s)) }))}</span>
         <span class="badge ${daysLeft <= 14 ? 'warn' : 'info'}">${esc(tr('daysLeftEnd', { n: daysLeft }))}</span>
         <span class="badge">${esc(tr('timePassed', { p: pct }))}</span>
@@ -288,20 +316,21 @@
     return 4;
   }
 
-  /** Lưới 26 tuần × 7 ngày. Có ngày bắt đầu → bắt đầu từ tuần bắt đầu; chưa có → 26 tuần gần nhất. */
+  /** Lưới N tuần × 7 ngày. Có ngày bắt đầu → bắt đầu từ tuần bắt đầu; chưa có → N tuần gần nhất. */
   function heatmapHtml() {
     const end = todayStart();
     const s = startTs();
+    const total = planWeeks();
     let gridStart;
     if (s) {
       gridStart = App.startOfDay(s);
       gridStart -= new Date(gridStart).getDay() * App.DAY; // lùi về Chủ nhật
     } else {
       gridStart = end - new Date(end).getDay() * App.DAY; // Chủ nhật của tuần này
-      gridStart -= (TOTAL_WEEKS - 1) * WEEK_MS;          // lùi 25 tuần
+      gridStart -= (total - 1) * WEEK_MS;                 // lùi (N-1) tuần
     }
     let cells = '';
-    for (let c = 0; c < TOTAL_WEEKS; c++) {
+    for (let c = 0; c < total; c++) {
       for (let r = 0; r < 7; r++) {
         const ts = gridStart + (c * 7 + r) * App.DAY;
         const key = App.dayKey(ts);
@@ -383,6 +412,8 @@
   /* ---------- lộ trình ---------- */
   function weeksHtml() {
     const curId = curWeekId();
+    const prefix = planPrefix();
+    const re = new RegExp('^' + prefix);
     return (RM().phases || []).map(p => {
       const st = phaseStats(p);
       const weeks = (p.weeks || []).map(w => {
@@ -391,7 +422,7 @@
         const debt = !isCur && w.id < curId && pct < 100;
         return `<details class="rm-week${isCur ? ' rm-week-cur' : ''}" data-week="${esc(w.id)}"${isCur ? ' open' : ''}>
           <summary>
-            <span class="rm-week-no">${esc(tr('weekNo', { n: w.id.replace(/^w/, '') }))}</span>
+            <span class="rm-week-no">${esc(tr('weekNo', { n: w.id.replace(re, '') }))}</span>
             <span class="rm-week-title">${esc(w.title)}</span>
             ${debt ? `<span class="badge warn">${esc(tr('badgeDebt'))}</span>` : ''}
             ${pct === 100 ? `<span class="badge ok">${esc(tr('badgeDone'))}</span>` : ''}
@@ -499,7 +530,8 @@
         if (!v) return;
         const p = v.split('-');
         if (p.length !== 3) return;
-        rm().start = new Date(Number(p[0]), Number(p[1]) - 1, Number(p[2])).getTime();
+        const ts = new Date(Number(p[0]), Number(p[1]) - 1, Number(p[2])).getTime();
+        if (planKind() === 'jd') rmStore().jdStart = ts; else rm().start = ts;
         App.store.save();
         App.route();
       });
@@ -566,11 +598,56 @@
     });
   }
 
+  /* ---------- chọn lộ trình (chips) ---------- */
+  function planChipsHtml() {
+    if (!window.JD_PLAN) return '';
+    const kind = planKind();
+    const jdHint = kind === 'jd' ? `<p class="rm-plan-hint muted">${esc(tr('planJdHint'))}</p>`
+      : `<p class="rm-plan-hint muted">${esc(tr('planMainHint'))}</p>`;
+    return `<div class="rm-plan-switch">
+      <div class="chips">
+        <button type="button" class="chip${kind === 'main' ? ' active' : ''}" data-plan="main">${esc(tr('planMainChip'))}</button>
+        <button type="button" class="chip${kind === 'jd' ? ' active' : ''}" data-plan="jd">${esc(tr('planJdChip'))}</button>
+      </div>
+      ${jdHint}
+    </div>`;
+  }
+
+  function bindPlanSwitch(root) {
+    const host = root.querySelector('.rm-plan-switch');
+    if (!host) return;
+    host.querySelectorAll('button[data-plan]').forEach(btn => {
+      btn.addEventListener('click', () => {
+        const kind = btn.getAttribute('data-plan');
+        if (kind !== 'main' && kind !== 'jd') return;
+        if (kind === 'jd' && !window.JD_PLAN) return;
+        const r = rmStore();
+        if (r.plan === kind) return;
+        r.plan = kind;
+        // Lần đầu chọn plan JD: mặc định ngày bắt đầu = hôm nay (không ghi đè 'start' của plan chung).
+        if (kind === 'jd' && r.jdStart == null) r.jdStart = todayStart();
+        App.store.save();
+        App.navigate('#/roadmap' + (kind === 'jd' ? '/jd' : '/main'));
+      });
+    });
+  }
+
   /* ---------- render ---------- */
   App.registerView('roadmap', {
     get title() { return App.t('rm.title'); },
     render(root, params) {
+      // Route #/roadmap/jd mở thẳng plan JD; #/roadmap/main mở plan chung (chỉ khi có JD_PLAN).
+      if (params && (params[0] === 'jd' || params[0] === 'main') && window.JD_PLAN) {
+        const want = params[0];
+        const r = rmStore();
+        if (r.plan !== want || (want === 'jd' && r.jdStart == null)) {
+          if (want === 'jd' && r.jdStart == null) r.jdStart = todayStart();   // lần đầu chọn plan JD
+          r.plan = want;
+          App.store.save();
+        }
+      }
       root.innerHTML = `
+        ${planChipsHtml()}
         ${headerHtml()}
         <div class="stack">
           <section class="card rm-today">
@@ -590,7 +667,7 @@
             ${recentTableHtml()}
           </section>
           <section class="rm-plan">
-            <h2>${esc(tr('planTitle'))}</h2>
+            <h2>${esc(planKind() === 'jd' ? tr('planTitleJd') : tr('planTitle'))}</h2>
             <div class="rm-phases">${weeksHtml()}</div>
           </section>
           <section class="rm-targets-sec">
@@ -599,6 +676,7 @@
           </section>
         </div>`;
 
+      bindPlanSwitch(root);
       bindStart(root);
       bindChecks(root);
       bindNote(root);
