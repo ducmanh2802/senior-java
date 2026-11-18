@@ -1,2 +1,9 @@
 # Java runner for a VM (runner/README.md), not part of the static site
 runner/
+
+# not needed by the deployed site (2026-11-18): task specs, docs, dev scripts
+tasks/
+docs/
+scripts/
+AGENTS.md
+CHANGELOG.md
