@@ -6682,4 +6682,465 @@ User Request
   ],
   tags: ["LLM Security", "PII Masking", "Safe Logging", "Output Guardrails", "Prompt Injection", "Presidio", "Tokenization"]
 },
+{
+  id: 'security-067',
+  topic: 'security',
+  level: 'senior',
+  q: 'OWASP API Security Top 10 (2023) – BOLA: kiểm tra quyền theo từng object trong API Spring Boot như thế nào để không bị IDOR?',
+  a: `**Tóm tắt:** BOLA (API1:2023 – Broken Object Level Authorization, tên cũ là IDOR) là lỗ hổng khi API chỉ kiểm tra "bạn đã đăng nhập chưa" mà không kiểm tra "object bạn xin có thuộc về bạn không". Phòng thủ đúng gồm 4 lớp: deny-by-default, kiểm tra quyền ở service layer theo cặp (resourceId, currentUserId) nằm ngay trong câu query, trả 404 khi không có quyền, và có test tự động cross-user trong CI.
+
+### BOLA là gì – ví dụ dễ hiểu
+Hãy tưởng tượng toà nhà văn phòng dùng thẻ từ. Bảo vệ chỉ kiểm tra "thẻ này là thẻ hợp lệ" (bạn đã đăng nhập), nhưng cửa phòng 1204 vẫn mở cho mọi thẻ hợp lệ. Khi đó người có thẻ của phòng 1203 vẫn vào được phòng 1204 — đó chính là BOLA: hệ thống xác thực đúng nhưng **không kiểm tra quyền trên từng đối tượng**.
+
+~~~text
+GET /api/v1/accounts/1002/balance     -> 200  (tài khoản của tôi)
+GET /api/v1/accounts/1003/balance     -> 200  (tài khoản của người khác)  <-- BOLA
+~~~
+
+### Vì sao lỗi này xuất hiện
+- Controller chỉ gắn {{@PreAuthorize("isAuthenticated()")}} — tức mới kiểm tra "đã đăng nhập", chưa kiểm tra "được phép".
+- Service gọi {{accountRepo.findById(id)}} rồi trả về; câu SQL chỉ có {{WHERE id = ?}}.
+- Repository không có phương thức tìm kèm chủ sở hữu, nên không thể loại trừ object của người khác.
+- Không có test nào thử "user A đọc object của user B", nên CI không bao giờ đỏ.
+
+### Cách chặn – kiểm tra ở tầng dữ liệu, không tin ID từ client
+1. **Query theo chủ sở hữu**: {{findByIdAndOwnerId(id, currentUserId)}} — nếu không có bản ghi thì coi như không tồn tại.
+2. **Chính sách tập trung** bằng {{@PreAuthorize}} + {{PermissionEvaluator}} (hoặc bean SpEL như {{@accountSecurity.canAccess(#accountId)}}) để không lặp điều kiện ở mọi controller.
+3. **Trả 404, không trả 403** khi không có quyền — 403 xác nhận "object này tồn tại", giúp attacker dò ID.
+4. **Test matrix cross-user** trong CI: với mỗi endpoint nhận id, tạo 2 user và assert user A không đọc được object của B.
+
+~~~java
+@Service
+@RequiredArgsConstructor
+public class AccountService {
+    private final AccountRepository accountRepo;
+
+    public AccountView getBalance(Long accountId, Long currentUserId) {
+        // Kiểm tra quyền ngay trong câu query: không có bản ghi = không có quyền
+        Account acc = accountRepo.findByIdAndOwnerId(accountId, currentUserId)
+            .orElseThrow(() -> new NotFoundException("ACCOUNT_NOT_FOUND"));
+        return AccountView.of(acc);
+    }
+}
+
+// Lớp hai: chính sách tập trung, dùng lại cho mọi controller
+@Bean
+PermissionEvaluator accountPermission() { return new AccountPermissionEvaluator(); }
+~~~
+
+### BOLA so với BFLA (API5:2023)
+| | BOLA (API1:2023) | BFLA (API5:2023) |
+|---|---|---|
+| Câu hỏi | Object này có của tôi không? | Tôi có được gọi chức năng này không? |
+| Ví dụ | Đọc đơn hàng của người khác | Gọi endpoint admin xoá user khi chỉ là user thường |
+| Cách chặn | Ownership check theo object | Kiểm tra role/quyền theo chức năng, deny-by-default |
+
+### GraphQL khác REST ở đâu
+Với GraphQL, một truy vấn lồng nhau (order → customer → ssn) đi qua nhiều resolver. Mỗi resolver phải tự kiểm tra quyền trên object mà nó trả về; không thể chỉ kiểm tra ở root query. Ngoài ra còn có aliasing/batching (một request chứa hàng nghìn node) nên cần giới hạn độ sâu và số node, nếu không kẻ tấn công sẽ dùng chính BOLA để lấy dữ liệu hàng loạt.
+
+### Ví dụ đời thực
+- **Triệu chứng**: Hệ thống ví điện tử (Spring Boot 3, PostgreSQL) ghi nhận 1.800 request {{GET /api/v1/accounts/ID/balance}} trả 200 trong 2 giờ, nhiều ID tăng dần từ một IP. Log truy cập cho thấy {{userId}} trong token khác chủ sở hữu tài khoản.
+- **Điều tra**: Service chỉ gọi {{accountRepo.findById(accountId)}}; không có kiểm tra ownership. Không có test phân quyền nên CI luôn xanh.
+- **Cách xử lý**: Thêm {{findByIdAndOwnerId}}, trả 404, thêm {{PermissionEvaluator}}, viết 200 test cross-user, rà soát toàn bộ endpoint dạng {{/resource/ID/...}} (phát hiện thêm 4 endpoint cùng lỗi).
+- **Kết quả**: 100% test cross-user trả 404; 30 ngày sau không còn request lệch chủ sở hữu; pipeline chặn được 3 PR có mẫu tương tự.
+
+### Trả lời mẫu khi phỏng vấn
+"Khi làm API Spring Boot, em coi BOLA là lỗi phải chặn ở tầng service chứ không phải controller. Với mỗi tài nguyên nhận id từ path hoặc body, em truy vấn kèm chủ sở hữu, ví dụ {{findByIdAndOwnerId(id, currentUserId)}}, nếu không có bản ghi thì trả 404 chứ không trả 403 để tránh lộ sự tồn tại của object. Em cũng dùng {{@PreAuthorize}} với một PermissionEvaluator viết riêng làm lớp hai, để chính sách phân quyền tập trung một chỗ. Quan trọng nhất là CI phải có test cross-user: tạo hai user, user A thử đọc object của user B và phải nhận 404. Em từng xử lý một ca ví điện tử bị dò số dư bằng cách tăng id, và sau khi vá thì thêm test matrix nên các endpoint sau không tái diễn."
+
+> Senior tip: **Deny-by-default + object-level check ở service, không bao giờ tin ID từ client.** Dùng query kèm owner_id thay vì kiểm tra rồi mới query (tránh race condition TOCTOU). Trả 404 để không lộ sự tồn tại, và thêm test cross-user vào CI — quét SAST thường bỏ sót BOLA vì nó là lỗi logic phân quyền, không phải lỗi pattern.
+
+`,
+  follow: [
+    'BOLA khác Broken Function Level Authorization (API5:2023) như thế nào? Khi nào cần cả hai lớp kiểm tra?',
+    'Làm sao phát hiện BOLA tự động trong CI: viết test cross-user, dùng SAST taint analysis, hay dùng API gateway phân tích hành vi?',
+    'Trong GraphQL, nên kiểm tra quyền ở resolver từng field hay ở tầng data loader? Batching ảnh hưởng thế nào?'
+  ],
+  tags: ['OWASP API', 'BOLA', 'IDOR', 'Spring Security', 'PermissionEvaluator']
+},
+{
+  id: 'security-068',
+  topic: 'security',
+  level: 'senior',
+  q: 'Mass assignment trong API Spring Boot là gì, attacker khai thác bằng cách nào, và bạn chặn ở đâu (DTO, Jackson, WebDataBinder)?',
+  a: `**Tóm tắt:** Mass assignment (nằm trong API3:2023 – Broken Object Property Level Authorization) là lỗi khi API **bind thẳng dữ liệu client gửi vào entity** (hoặc object có quá nhiều field), khiến attacker tự đặt những field mà client không được phép đặt: {{isAdmin}}, {{role}}, {{balance}}, {{ownerId}}, {{emailVerified}}. Phòng thủ: **không bind entity** — dùng DTO/record chỉ chứa field được phép; nếu buộc phải nhận entity thì dùng allowlist ({{Access.READ_ONLY}}, {{WebDataBinder.setAllowedFields}}) và bật {{fail-on-unknown-properties}}.
+
+### Cơ chế hoạt động (cái gì → vì sao)
+Spring MVC có hai đường bind dữ liệu từ request vào object:
+1. **JSON body**: {{@RequestBody User user}} → Jackson gọi setter tương ứng với từng field trong JSON.
+2. **Form/query**: {{@ModelAttribute User user}} → Spring dùng {{WebDataBinder}} bind theo tên tham số.
+
+Vấn đề: nếu object đích là **entity** (bản đồ 1-1 với bảng DB), thì mọi field có setter đều nhận được giá trị từ client — kể cả {{isAdmin}} hay {{balance}} mà UI không hề hiển thị. Attacker chỉ cần thêm vài dòng JSON.
+
+~~~java
+// ❌ LỖI: bind thẳng entity, client đặt được mọi field
+@PostMapping("/users")
+public User create(@RequestBody User user) {   // User có isAdmin, balance, role
+    return userRepo.save(user);
+}
+~~~
+
+~~~text
+POST /users
+{ "name": "An", "isAdmin": true, "role": "OWNER", "balance": 999999 }
+~~~
+
+Kẻ tấn công không cần biết field tên gì: chỉ cần đọc mã nguồn, thử các tên thường gặp, hoặc dùng lỗi lộ dữ liệu (excessive data exposure) để biết entity có field gì.
+
+### Một chi tiết dễ sai: Jackson bỏ qua field lạ
+Spring Boot **tắt** {{FAIL_ON_UNKNOWN_PROPERTIES}} (mặc định của Jackson là bật). Nghĩa là nếu attacker gửi field không tồn tại, request vẫn 200 và field đó bị bỏ qua — không có lỗi để bạn biết. Ngược lại, nếu field tồn tại và có setter thì nó **được gán**. Vì vậy "không thấy lỗi 400" không đồng nghĩa với an toàn.
+
+### Cách chặn
+1. **DTO/request record riêng** (cách tốt nhất): record chỉ chứa đúng field client được đặt. Map sang entity trong service.
+2. **Field nhạy cảm chỉ đọc** bằng Jackson: {{@JsonProperty(access = Access.READ_ONLY)}} — vẫn trả về khi GET nhưng không nhận giá trị khi POST/PUT.
+3. **Chặn hoàn toàn** bằng {{@JsonIgnore}} nếu field không được lộ ra ngoài.
+4. **Form binding**: dùng allowlist {{binder.setAllowedFields("name", "email")}} trong một method {{@InitBinder}}. Từ Spring Framework 6.1 (Spring Boot 3.2+), {{setDisallowedFields}} đã bị đánh dấu deprecated, nên ưu tiên allowlist.
+5. **Bật** {{spring.jackson.deserialization.fail-on-unknown-properties=true}} để request có field lạ bị 400 (phòng thủ theo chiều sâu).
+
+~~~java
+// ✅ ĐÚNG: record chỉ chứa field client được phép đặt
+public record CreateUserRequest(String name, String email) {}
+
+// ✅ ĐÚNG: entity không nhận isAdmin từ client
+@Entity
+public class User {
+    @JsonProperty(access = Access.READ_ONLY)   // chỉ để đọc, không bind từ JSON
+    private boolean admin;
+    @JsonProperty(access = Access.READ_ONLY)
+    private long balance;
+    private String name;
+    private String email;
+}
+
+// ✅ ĐÚNG: form binding dùng allowlist (không bind field ngoài danh sách)
+@PostMapping("/users")
+public User create(@Valid @ModelAttribute UserForm form) {
+    return userService.create(form);
+}
+
+@InitBinder
+public void initBinder(WebDataBinder binder) {
+    binder.setAllowedFields("name", "email");   // allowlist: chỉ 2 field này
+}
+~~~
+
+### Bảng so sánh biện pháp
+| Biện pháp | Bảo vệ | Nhược điểm |
+|---|---|---|
+| DTO/record riêng | Mạnh nhất, rõ ràng | Phải viết mapper |
+| {{Access.READ_ONLY}} | Chặn đúng field nhạy cảm | Dễ quên field mới |
+| {{@JsonIgnore}} | Chặn cả đọc lẫn ghi | Có thể làm mất field cần trả về |
+| {{setAllowedFields}} | Chặn theo form | Chỉ áp dụng cho data binding form |
+| {{fail-on-unknown-properties}} | Bắt field lạ | Không chặn field có setter hợp lệ |
+
+### Pitfall thực tế
+- Dùng **Spring Data REST** và expose entity trực tiếp: mặc định nó sinh endpoint CRUD từ entity, kéo theo mass assignment và excessive data exposure. Phải dùng projection/DTO và cấu hình {{spring.data.rest.exposure}}, hoặc tắt hẳn.
+- Dùng entity làm {{@RequestBody}} cho endpoint **update** (PUT) thì attacker ghi đè cả field không có trong form.
+- Dùng {{@ModelAttribute}} với entity và quên {{setAllowedFields}}.
+- Mapper thủ công ({{BeanUtils.copyProperties}}) copy mọi field trùng tên — lại mass assignment nếu source là request map.
+
+### Ví dụ đời thực
+- **Triệu chứng**: Nền tảng thương mại điện tử (Spring Boot 3, PostgreSQL) phát hiện một tài khoản có {{role=OWNER}} dù luồng đăng ký chỉ tạo user thường. Dấu vết: request {{POST /api/users}} có thêm field {{role}} và {{emailVerified}} không có trong form đăng ký.
+- **Điều tra**: Controller nhận {{@RequestBody User}} rồi {{save}}. Entity {{User}} có {{role}}, {{emailVerified}}; Jackson gán trực tiếp. Log cho thấy 3 tài khoản có {{emailVerified=true}} mà chưa xác thực email.
+- **Cách xử lý**: Tạo {{CreateUserRequest}} chỉ gồm {{name}}, {{email}}, {{password}}; service set {{role=USER}} cứng; thêm {{Access.READ_ONLY}} cho {{role}}/{{emailVerified}}; bật {{fail-on-unknown-properties}}; kiểm tra lại dữ liệu 3 tài khoản bị ảnh hưởng.
+- **Kết quả**: Các request có field lạ bị 400; 0 tài khoản mới có role sai trong 60 ngày; test tự động gửi payload {{isAdmin:true}} để chặn tái diễn.
+
+### Trả lời mẫu khi phỏng vấn
+"Mass assignment xảy ra khi mình bind thẳng dữ liệu client vào entity, nên attacker tự đặt được field như {{role}} hay {{balance}}. Cách em làm là không bao giờ nhận entity từ request: em dùng record hay DTO chỉ chứa field client được phép gửi, rồi map sang entity trong service. Với field nhạy cảm, em gắn {{Access.READ_ONLY}} để nó chỉ có ở response, không nhận giá trị từ JSON. Nếu buộc phải dùng form binding thì em dùng {{setAllowedFields}} theo allowlist, vì {{setDisallowedFields}} đã deprecated từ Spring 6.1. Em cũng bật {{fail-on-unknown-properties}} để field lạ bị từ chối, và thêm test gửi payload {{isAdmin:true}} vào CI. Em từng xử lý một ca role bị nâng thành OWNER qua đúng lỗ này."
+
+> Senior tip: **Bind DTO, không bind entity.** Coi entity là sơ đồ dữ liệu nội bộ; mọi thứ đi vào từ client phải qua một lớp DTO hẹp và một mapper tường minh. Khi thêm field nhạy cảm mới vào entity, hãy kiểm tra ngay xem nó có bị lộ ra request không — vì mặc định Jackson sẽ bind nếu có setter.
+
+`,
+  follow: [
+    'Spring Data REST expose entity trực tiếp thì có những rủi ro nào, và làm sao dùng projection an toàn?',
+    'Jackson {{Access.READ_ONLY}} và {{@JsonIgnore}} khác nhau thế nào? Khi nào nên dùng cái nào?',
+    'Làm sao test tự động mass assignment trong CI: danh sách field nhạy cảm, property-based test, hay fuzzing?'
+  ],
+  tags: ['Mass Assignment', 'OWASP API3', 'Jackson', 'Spring MVC', 'WebDataBinder', 'DTO']
+},
+{
+  id: 'security-069',
+  topic: 'security',
+  level: 'senior',
+  q: 'SSRF trong backend Java (API7:2023) khai thác thế nào, vì sao allowlist theo tên host là chưa đủ, và bạn chặn ra sao với DNS rebinding, redirect và cloud metadata?',
+  a: `**Tóm tắt:** SSRF (Server-Side Request Forgery, API7:2023) là khi server của bạn bị dụ gửi HTTP request tới địa chỉ do attacker chọn — thường là **metadata service** của cloud ({{169.254.169.254}}), {{localhost}}/port quản trị, hoặc service nội bộ không mở ra internet. Phòng thủ phải nhiều lớp: allowlist scheme + host, resolve DNS rồi kiểm tra **IP** (chặn loopback/private/link-local/CGNAT/metadata), không tự đi theo redirect hoặc kiểm tra lại đích redirect, timeout ngắn, và egress proxy + IMDSv2.
+
+### Cơ chế – attacker được gì
+Chức năng "lấy dữ liệu từ URL" rất phổ biến: link preview, import từ URL, webhook, fetch ảnh đại diện, xuất PDF từ URL, kiểm tra URL hợp lệ. Nếu bạn đi thẳng:
+
+~~~java
+// ❌ LỖI: URL do client quyết định, server tự gửi request
+@GetMapping("/preview")
+public String preview(@RequestParam String url) throws Exception {
+    return new String(new URL(url).openStream().readAllBytes());
+}
+~~~
+
+thì attacker có thể đọc được thứ mà server nhìn thấy nhưng client không thấy.
+
+### Payload thường gặp
+~~~text
+http://169.254.169.254/latest/meta-data/iam/security-credentials/   (AWS metadata, lấy tạm khóa IAM)
+http://localhost:8080/actuator/env                                 (port quản trị nội bộ)
+http://127.0.0.1:6379/                                             (Redis nội bộ)
+http://2130706433/                                                 (127.0.0.1 viết dạng số nguyên)
+http://[::1]/                                                       (IPv6 loopback)
+http://user:pass@api.example.com/                                  (userinfo đánh lừa kiểm tra host)
+http://api.example.com@169.254.169.254/                            (host thật là 169.254.169.254)
+~~~
+
+Hai dòng cuối cho thấy vì sao **chỉ kiểm tra chuỗi host là không đủ**: {{URL.getHost()}} phân giải theo chuẩn URL nên dòng cuối trả về {{169.254.169.254}}, nhưng nếu bạn kiểm tra bằng {{contains("api.example.com")}} hay regex thì sẽ bị lừa.
+
+### Vì sao allowlist theo tên host là chưa đủ: DNS rebinding
+Kiểm tra an toàn thường có dạng "kiểm tra host/IP → rồi mới gửi request". Nhưng attacker có thể dùng tên miền mà bản ghi DNS **trả lời khác nhau ở hai lần resolve** (TOCTOU – time-of-check to time-of-use):
+
+1. Lần resolve thứ nhất (lúc kiểm tra): trả về IP công khai của attacker → qua được kiểm tra.
+2. Lần resolve thứ hai (lúc kết nối thật): TTL = 0, trả về {{127.0.0.1}} hoặc {{169.254.169.254}}.
+
+Cách chặn triệt để: **resolve đúng một lần, pin IP đó rồi kết nối tới IP**, gửi kèm header {{Host}} gốc (và SNI nếu HTTPS). Trong Java thuần, cách đơn giản là tự mở {{Socket}} tới IP đã kiểm tra, hoặc dùng thư viện hỗ trợ pin; với {{HttpClient}} của JDK thì khó pin, nên nhiều hệ thống dùng egress proxy.
+
+### Chặn redirect
+Nhiều client HTTP tự đi theo 3xx. Nếu URL gốc hợp lệ nhưng redirect trỏ vào nội bộ thì bạn vẫn bị SSRF.
+
+- {{HttpClient}} (java.net.http): đặt {{Redirect.NEVER}} rồi tự xử lý, hoặc {{Redirect.NORMAL}} chỉ khi đã kiểm tra lại đích.
+- {{RestTemplate}}: dùng {{SimpleClientHttpRequestFactory}} với {{setOutputStreaming(false)}} không đủ; cần {{HttpComponentsClientHttpRequestFactory}} + chiến lược redirect từ chối/kiểm tra lại.
+- Cách chắc chắn nhất: **egress proxy** (Squid, service mesh, cloud NAT) chỉ cho phép đi tới allowlist domain/IP.
+
+### Code chặn nhiều lớp
+~~~java
+static final Set<String> ALLOWED_HOSTS = Set.of("api.example.com", "cdn.example.com");
+
+static void assertSafe(URI uri) {
+    // 1. Scheme: chỉ https (http là cổng vào nội bộ phổ biến)
+    if (!"https".equalsIgnoreCase(uri.getScheme())) throw new SSRFException("scheme");
+    // 2. Host phải nằm trong allowlist
+    if (!ALLOWED_HOSTS.contains(uri.getHost())) throw new SSRFException("host");
+    // 3. Kiểm tra TẤT CẢ IP mà host phân giải (không chỉ IP đầu)
+    try {
+        for (InetAddress ip : InetAddress.getAllByName(uri.getHost())) {
+            if (ip.isLoopbackAddress() || ip.isAnyLocalAddress()
+                || ip.isLinkLocalAddress() || ip.isSiteLocalAddress()) {
+                throw new SSRFException("ip " + ip.getHostAddress());
+            }
+            byte[] b = ip.getAddress();
+            if (b.length == 4) {
+                int a0 = b[0] & 0xFF, a1 = b[1] & 0xFF;
+                if (a0 == 100 && a1 >= 64 && a1 <= 127) throw new SSRFException("CGNAT");
+                if (a0 == 169 && a1 == 254) throw new SSRFException("metadata");
+                if (a0 == 0) throw new SSRFException("unspecified");
+            }
+        }
+    } catch (UnknownHostException e) {
+        throw new SSRFException("resolve");
+    }
+}
+~~~
+
+> Lưu ý: {{isSiteLocalAddress()}} chỉ bắt dải 10/8, 172.16/12, 192.168/16; nó **không** bắt {{100.64.0.0/10}} (CGNAT) hay {{169.254.0.0/16}} (link-local, nơi có metadata). Vì vậy phải kiểm tra thêm như trên.
+
+### Bảng các lớp phòng thủ
+| Lớp | Việc cần làm | Chặn được gì |
+|---|---|---|
+| Ứng dụng | Allowlist scheme + host, kiểm IP sau resolve | Đa số payload |
+| Ứng dụng | Redirect NEVER hoặc kiểm tra lại đích | SSRF qua redirect |
+| Ứng dụng | Timeout kết nối/đọc ngắn | Chậm kênh, DoS |
+| Hạ tầng | Egress proxy / security group chỉ mở outbound cần thiết | Kết nối vào nội bộ |
+| Hạ tầng | IMDSv2 (token, hop limit 1), chặn {{169.254.169.254}} | Lấy khóa IAM qua metadata |
+| Quyền | IAM role tối thiểu cho instance | Giảm thiệt hại nếu bị đọc |
+
+### Ví dụ đời thực
+- **Triệu chứng**: SaaS xuất PDF từ URL (Spring Boot, AWS) có request {{/pdf?url=...}} khiến một tài khoản bị thêm role admin trong IAM; CloudTrail ghi nhận {{GetRole}} và {{PutRolePolicy}} từ IP nội bộ.
+- **Điều tra**: Chức năng chỉ kiểm tra {{url.startsWith("https://")}}; attacker gửi {{https://api.example.com@169.254.169.254/latest/meta-data/iam/security-credentials/}}. Instance dùng IAM role có quyền admin, IMDSv1 đang bật nên lấy được khóa tạm.
+- **Cách xử lý**: (1) Allowlist host + kiểm IP sau resolve, (2) {{Redirect.NEVER}}, (3) timeout 2s, (4) chỉ mở outbound tới domain cần thiết ở security group, (5) bật IMDSv2 với hop limit 1, (6) thu hẹp IAM role của worker.
+- **Kết quả**: Các payload loopback/metadata bị 400; 0 request nội bộ trong 90 ngày; thêm test tự động với danh sách payload trên vào CI.
+
+### Trả lời mẫu khi phỏng vấn
+"Với chức năng lấy dữ liệu từ URL, em coi mọi URL từ client là không tin cậy. Em chỉ cho phép https và host nằm trong allowlist, sau đó resolve DNS và kiểm tra toàn bộ IP trả về: chặn loopback, private, link-local, CGNAT và dải metadata {{169.254.169.254}}. Em không tự đi theo redirect, hoặc nếu có thì kiểm tra lại đích, vì redirect là đường vòng rất phổ biến. Để chống DNS rebinding, em pin IP đã kiểm tra và kết nối đúng IP đó, hoặc đẩy toàn bộ ra egress proxy. Cuối cùng em kết hợp phòng thủ hạ tầng: security group chỉ mở outbound cần thiết, IMDSv2 với hop limit 1 và IAM role tối thiểu, vì nếu một lớp hỏng thì các lớp sau vẫn giảm thiệt hại. Em từng xử lý một ca SaaS bị lấy khóa IAM qua metadata đúng theo hướng này."
+
+> Senior tip: **SSRF là lỗi của hạ tầng lẫn ứng dụng, không chỉ của một dòng code.** Luôn kiểm tra IP sau khi resolve (không chỉ chuỗi host), chặn redirect, đặt timeout, và đi qua egress proxy. Bật IMDSv2 (hop limit 1) vì nó chặn đứng lớp tấn công phổ biến nhất — lấy khóa tạm qua metadata.
+
+`,
+  follow: [
+    'Vì sao {{URL.getHost()}} không an toàn khi kiểm tra {{user:pass@host}} và cách parse URL đúng trong Java?',
+    'DNS rebinding hoạt động từng bước như thế nào, và vì sao kiểm tra IP rồi mới kết nối lại vẫn có thể bị lừa?',
+    'Nếu buộc phải cho phép redirect, bạn kiểm tra lại đích ở đâu: client HTTP, proxy, hay lớp network?'
+  ],
+  tags: ['SSRF', 'OWASP API7', 'DNS Rebinding', 'Metadata', 'IMDSv2', 'RestTemplate', 'HttpClient']
+},
+{
+  id: 'security-070',
+  topic: 'security',
+  level: 'senior',
+  q: 'Vì sao không được dùng MD5/SHA-256 để lưu mật khẩu? Giải thích salt, cost và chọn bcrypt, Argon2id hay PBKDF2 trong Spring Security thế nào cho đúng?',
+  a: `**Tóm tắt:** Mật khẩu phải **hash** (một chiều, không giải mã ngược), không phải **mã hoá** (hai chiều). Dùng hàm chậm, có **salt** ngẫu nhiên riêng từng user: **bcrypt** (cost ≥ 10, thực tế 12), **Argon2id** (memory ≥ 19 MiB, t=2, p=1 theo OWASP), **PBKDF2-HMAC-SHA256** (≥ 600.000 vòng) hoặc **scrypt** (N=2^17, r=8, p=1). Tuyệt đối không dùng MD5, SHA-1, SHA-256 trơn cho mật khẩu. Trong Spring Security dùng {{BCryptPasswordEncoder}}, {{Argon2PasswordEncoder}}, {{DelegatingPasswordEncoder}}.
+
+### Hash nhanh vs hash chậm – vì sao khác nhau
+- {{SHA-256}}, {{MD5}} được thiết kế để **nhanh**: CPU hiện đại và GPU tính được hàng tỷ hash mỗi giây. Nếu DB lộ, attacker thử hàng tỷ mật khẩu mỗi giây.
+- {{bcrypt}}, {{Argon2id}}, {{PBKDF2}}, {{scrypt}} được thiết kế để **chậm và tốn tài nguyên** (thêm cost / memory). Mỗi lần thử một mật khẩu tốn vài trăm ms và vài chục MiB RAM, nên brute-force cả từ điển hoặc toàn bộ không gian mật khẩu trở nên bất khả thi về thời gian và chi phí.
+
+### Salt là gì, pepper là gì
+- **Salt**: chuỗi ngẫu nhiên (16 byte) sinh riêng cho mỗi user, lưu **cùng** với hash. Nhờ salt, hai user cùng mật khẩu vẫn cho hai hash khác nhau, và attacker không dùng được rainbow table (bảng tra hash dựng sẵn).
+- **Pepper**: bí mật **không lưu trong DB** (đặt ở KMS/HSM/ biến môi trường), thêm vào trước khi hash. Khi DB lộ mà pepper chưa lộ, attacker không thể brute-force. Đánh đổi: mất pepper thì không xác thực được, nên cần quản lý key cẩn thận.
+
+### Bảng tham số theo OWASP
+| Thuật toán | Tham số tối thiểu | Ghi chú |
+|---|---|---|
+| Argon2id | m=19 MiB, t=2, p=1 | Mặc định hiện đại, memory-hard |
+| scrypt | N=2^17, r=8, p=1 | Memory-hard, ít thư viện hơn Argon2 |
+| bcrypt | cost 10 (nên 12) | Chỉ xét 72 byte đầu của input |
+| PBKDF2-HMAC-SHA256 | 600.000 vòng | Dễ dùng khi cần FIPS |
+| PBKDF2-HMAC-SHA512 | 210.000 vòng | |
+
+### Code trong Spring Security
+~~~java
+@Bean
+PasswordEncoder passwordEncoder() {
+    // bcrypt cost 12: khoảng 250–500 ms mỗi lần tuỳ CPU — hãy đo trên máy thật
+    return new BCryptPasswordEncoder(12);
+}
+
+// Argon2id: mặc định Spring Security 5.8+ là memory 4096 KiB (4 MiB), t=3, p=1
+// -> thấp hơn khuyến nghị OWASP, nên nâng memory lên 19456 (19 MiB)
+@Bean
+PasswordEncoder argon2PasswordEncoder() {
+    return new Argon2PasswordEncoder(16, 32, 1, 19456, 2);
+}
+~~~
+
+{{DelegatingPasswordEncoder}} (mặc định của Spring Security 5+) lưu hash kèm tiền tố thuật toán, ví dụ {{$2a$12$...}} hoặc {{$argon2id$...}}. Khi đăng nhập, nếu hash cũ dùng thuật toán/cost thấp hơn cấu hình hiện tại, nó tự phát hiện và có thể **nâng cấp** (gọi {{upgradeEncoding}} qua {{UserDetailsPasswordService}}). Đây là cách di trú an toàn khi bạn tăng cost.
+
+### Những lỗi hay gặp
+- Dùng {{password.equals(hash)}} hoặc {{hash.equals(stored)}} để so sánh: so sánh chuỗi thường không phải constant-time, có thể rò rỉ thông tin theo thời gian. Luôn dùng {{passwordEncoder.matches(raw, stored)}}.
+- Lưu mật khẩu bằng {{Base64}} hoặc {{AES}}: đó là mã hoá, giải mã được — coi như lộ toàn bộ khi mất key.
+- Bỏ salt hoặc dùng salt cố định: hai user cùng mật khẩu ra cùng hash, attacker chỉ cần tra một lần.
+- bcrypt và mật khẩu dài hơn 72 byte: bcrypt chỉ dùng 72 byte đầu (nhiều bản Spring Security chặn/ném lỗi), nên hãy giới hạn độ dài ở form hoặc pre-hash bằng SHA-256 trước khi bcrypt.
+- Đặt cost quá thấp (4–8) vì "nhanh cho đỡ tải": đúng là nhanh, nhưng cũng nhanh cho attacker.
+- Chỉ chặn bằng độ phức tạp mà không rate-limit: hash chậm chỉ là một lớp, vẫn cần giới hạn số lần thử và MFA.
+
+### Ví dụ đời thực
+- **Triệu chứng**: Một hệ thống nội bộ bị lộ DB chứa 40.000 user. Đội an ninh mở hash ra thì thấy mật khẩu dạng SHA-256 không salt; sau 2 giờ đã bẻ được 11.000 mật khẩu phổ biến bằng GPU.
+- **Điều tra**: Code cũ dùng {{DigestUtils.sha256Hex(password)}}. Không có salt, không có cost, nên mỗi hash chỉ là một phép băm nhanh.
+- **Cách xử lý**: Chuyển sang bcrypt cost 12 (hoặc Argon2id), thêm salt tự sinh, bật {{DelegatingPasswordEncoder}} để nâng cấp dần khi user đăng nhập; buộc reset mật khẩu với các tài khoản nghi ngờ; thêm MFA cho tài khoản admin.
+- **Kết quả**: Chi phí brute-force tăng vài nghìn lần; sau khi nâng cấp, thời gian đăng nhập tăng khoảng 300 ms nhưng nằm trong ngân sách; 0 tài khoản dùng lại mật khẩu cũ sau chiến dịch reset.
+
+### Trả lời mẫu khi phỏng vấn
+"Mật khẩu phải hash bằng hàm chậm có salt, không phải mã hoá và không phải SHA-256 trơn, vì hash nhanh thì GPU bẻ được hàng tỷ mật khẩu mỗi giây. Em thường dùng bcrypt với cost 12, hoặc Argon2id với memory 19 MiB, t=2, p=1 theo khuyến nghị OWASP; nếu cần FIPS thì dùng PBKDF2-HMAC-SHA256 với 600.000 vòng. Mỗi user có salt riêng để hai mật khẩu giống nhau vẫn ra hai hash khác nhau, và em có thể thêm pepper lưu ở KMS. Trong Spring Security em dùng {{DelegatingPasswordEncoder}} để lưu kèm tiền tố thuật toán và tự nâng cấp khi user đăng nhập, còn khi xác thực thì luôn dùng {{matches}} chứ không so sánh chuỗi. Em cũng thêm rate-limit và MFA, vì hash chậm chỉ là một lớp."
+
+> Senior tip: **Chọn hàm chậm có tham số đo được, đừng chọn theo thói quen.** bcrypt cost 12 là điểm khởi đầu tốt cho đa số hệ thống; Argon2id cho hệ thống mới cần memory-hard. Đo thời gian đăng nhập trên phần cứng thật (mục tiêu 200–500 ms), lưu thuật toán kèm hash để nâng cấp dần, và luôn kết hợp rate-limit + MFA.
+
+`,
+  follow: [
+    'Argon2id với bcrypt khác nhau ở đâu về memory-hard, và khi nào nên chọn cái nào?',
+    'Làm sao nâng cấp cost/thuật toán cho hàng triệu user đang đăng nhập mà không buộc reset mật khẩu?',
+    'bcrypt chỉ dùng 72 byte đầu: pre-hash bằng SHA-256 trước khi bcrypt có an toàn không, và làm đúng cách nào?'
+  ],
+  tags: ['Password Hashing', 'bcrypt', 'Argon2id', 'PBKDF2', 'Spring Security', 'Salt', 'OWASP']
+},
+{
+  id: 'security-071',
+  topic: 'security',
+  level: 'senior',
+  q: 'Audit log là gì, khác gì log debug, cần ghi những sự kiện nào và làm sao chống sửa/xoá trong hệ thống Spring Boot chạy trên cloud?',
+  a: `**Tóm tắt:** Audit log là bản ghi **ai làm gì, lúc nào, trên object nào, từ đâu, kết quả ra sao** — khác log debug ở chỗ nó phải **đầy đủ, có cấu trúc, chỉ ghi thêm (append-only) và chống sửa**. Dùng cho điều tra sự cố, truy trách nhiệm và kiểm toán (PCI DSS, SOC 2, ISO 27001). Trong Spring Boot: ghi ở filter/interceptor hoặc bằng AOP/Spring Security events, đẩy về kho log tập trung (OpenSearch/CloudWatch), giữ 1–7 năm, và ghi cả đăng nhập, phân quyền, thay đổi cấu hình, truy cập dữ liệu nhạy cảm.
+
+### Phân biệt ba loại log
+| Loại | Mục đích | Người đọc | Tính chất |
+|---|---|---|---|
+| Log debug | Tìm lỗi kỹ thuật | Developer | Xoay vòng nhanh, có thể tắt |
+| Log bảo mật (security) | Phát hiện tấn công | SOC/DevOps | Cảnh báo, giữ vừa phải |
+| Audit log | Điều tra, kiểm toán, pháp lý | Kiểm toán viên, an ninh | Chỉ ghi thêm, chống sửa, giữ lâu |
+
+Điểm mấu chốt: log debug **được phép mất** khi hết vòng xoay, audit log thì **không**. Nếu audit log bị ghi đè hoặc xoá, bạn mất bằng chứng điều tra.
+
+### Ghi sự kiện gì
+- **Xác thực**: đăng nhập thành công/thất bại, logout, đổi mật khẩu, MFA, khoá tài khoản.
+- **Phân quyền**: cấp/thu hồi role, thay đổi policy, thêm thành viên vào nhóm.
+- **Truy cập dữ liệu nhạy cảm**: xem/xuất sao kê, hồ sơ y tế, dữ liệu cá nhân.
+- **Thay đổi cấu hình**: bật/tắt tính năng, đổi secret, sửa rate-limit.
+- **Quản trị**: xoá user, xoá dữ liệu, chạy migration, thay đổi key.
+- Mỗi lần **từ chối** (403) cũng nên ghi, vì đó là dấu hiệu tấn công sớm.
+
+### Không ghi gì
+- Mật khẩu, token, cookie phiên, khóa riêng, số thẻ đầy đủ.
+- Toàn bộ payload nhạy cảm; nếu buộc phải ghi thì **mask** ({{**** **** **** 1234}}) hoặc hash.
+- Ghi cả request/response ở mức DEBUG cho endpoint thanh toán — đây là nguồn rò rỉ PII phổ biến.
+
+### Cấu trúc một bản ghi
+Audit log nên là JSON có cấu trúc, không phải text tự do, để truy vấn và cảnh báo được:
+
+~~~json
+{
+  "ts": "2026-03-14T08:15:22.481Z",
+  "event": "account.export",
+  "actor": { "userId": "u-1024", "role": "customer", "ip": "203.0.113.9" },
+  "action": "EXPORT",
+  "resource": { "type": "Account", "id": "acc-1002" },
+  "outcome": "SUCCESS",
+  "traceId": "4bf92f3577b34da6a3ce929d0e0e4736",
+  "sessionId": "s-77ac"
+}
+~~~
+
+Các trường tối thiểu: **who** (actor + role + IP), **what** (action + resource), **when** (UTC ISO-8601), **where** (host/service), **outcome** (SUCCESS/DENIED + lý do), và **traceId** để ghép với log kỹ thuật.
+
+### Triển khai trong Spring Boot
+1. **Filter/Interceptor**: {{OncePerRequestFilter}} hoặc {{HandlerInterceptor}} để ghi mọi request thay đổi trạng thái. Dùng {{MDC}} để gắn {{traceId}} vào logback pattern.
+2. **Spring Security events**: {{AuthenticationSuccessEvent}}, {{AuthenticationFailureBadCredentialsEvent}} — đăng ký bằng {{@EventListener}} hoặc {{AuthenticationEventPublisher}}.
+3. **AOP**: annotation {{@Audit}} trên service method, {{@Around}} ghi lại tham số (đã mask) và kết quả.
+4. **Actuator**: khi có bean {{AuditEventRepository}}, endpoint {{/actuator/auditevents}} trả về các sự kiện. Mặc định là {{InMemoryAuditEventRepository}} — **không dùng trên production** vì mất khi restart và không chống sửa.
+
+~~~java
+// AuditRecord la lop cua ban tu viet; AuditAspect khong phu thuoc API Spring
+@Aspect
+@Component
+public class AuditAspect {
+    private final AuditLogRepository auditLog;   // ghi xuong DB/outbox
+
+    @Around("@annotation(audit)")
+    public Object around(ProceedingJoinPoint pjp, Audit audit) throws Throwable {
+        String actor = SecurityUtil.currentUserId();
+        try {
+            Object result = pjp.proceed();
+            auditLog.save(AuditRecord.of(audit.action(), actor, "SUCCESS", pjp.getArgs()));
+            return result;
+        } catch (RuntimeException e) {
+            // ca khi bi tu chối cung phai co ban ghi (dấu hiệu tấn công)
+            auditLog.save(AuditRecord.of(audit.action(), actor, "DENIED",
+                Map.of("error", e.getClass().getSimpleName())));
+            throw e;
+        }
+    }
+}
+~~~
+
+### Chống sửa, chống mất
+- **Append-only**: tài khoản ghi log không có quyền {{UPDATE}}/{{DELETE}}; chỉ một dịch vụ riêng được đọc.
+- **Kho tập trung**: đẩy về OpenSearch/CloudWatch/Splunk qua shipper (Fluent Bit, Vector) ngay khi phát sinh — không để nằm trên đĩa container (container bị thay là mất).
+- **Object Lock / WORM**: S3 Object Lock chế độ compliance hoặc Azure Immutable Blob để không ai xoá được trong thời gian lưu.
+- **Hash chain**: mỗi bản ghi chứa hash của bản ghi trước; sửa một dòng là các dòng sau sai hash, phát hiện được.
+- **Đồng bộ thời gian**: NTP, ghi UTC; lệch giờ làm sai thứ tự sự kiện.
+- **Outbox pattern**: ghi audit cùng transaction với thay đổi nghiệp vụ (cùng DB), rồi relay bất đồng bộ sang kho trung tâm — tránh mất audit khi hàng đợi chết.
+
+### Giữ bao lâu
+Tối thiểu theo quy định ngành: PCI DSS yêu cầu giữ **12 tháng**, trong đó **3 tháng gần nhất** phải truy cập được ngay. Thực tế nhiều nơi giữ 1 năm nóng + vài năm lưu trữ lạnh (S3 Glacier). Chính sách phải nêu rõ thời gian, quyền truy cập và quy trình phá huỷ.
+
+### Ví dụ đời thực
+- **Triệu chứng**: Một công ty fintech bị khiếu nại "tài khoản của tôi bị chuyển tiền lúc 02:14". Bộ phận hỗ trợ không trả lời được vì log ứng dụng đã bị ghi đè sau 7 ngày, còn log truy cập chỉ có IP không có user.
+- **Điều tra**: Ứng dụng chỉ ghi {{System.out.println}} trong catch, không có audit log có cấu trúc; không có traceId; không biết request nào của user nào.
+- **Cách xử lý**: Thêm filter ghi audit JSON (actor, action, resource, outcome, traceId), đẩy về OpenSearch, bật S3 Object Lock cho kho lưu trữ, thêm cảnh báo khi có nhiều request DENIED từ một IP.
+- **Kết quả**: Truy vết được toàn bộ giao dịch nghi vấn trong 15 phút; giữ 12 tháng đáp ứng PCI DSS; phát hiện sớm 3 đợt dò tài khoản nhờ cảnh báo DENIED.
+
+### Trả lời mẫu khi phỏng vấn
+"Audit log với em là bản ghi ai làm gì, lúc nào, trên object nào, từ đâu và kết quả ra sao, khác log debug ở chỗ nó phải đầy đủ, có cấu trúc và chỉ ghi thêm. Em ghi ở filter hoặc interceptor cho request, dùng Spring Security events cho đăng nhập và AOP cho các thao tác nhạy cảm trong service. Em luôn gắn traceId để ghép với log kỹ thuật, và không bao giờ log mật khẩu hay token. Để chống sửa, em đẩy log về kho tập trung có WORM như S3 Object Lock, giới hạn quyền chỉ append, và có thể dùng hash chain để phát hiện sửa đổi. Em cũng ghi audit cùng transaction nghiệp vụ theo mẫu outbox để không mất khi hàng đợi chết. Em từng xử lý một vụ khiếu nại chuyển tiền mà không truy được vì log đã bị ghi đè, sau đó em chuẩn hoá audit và giữ 12 tháng theo PCI DSS."
+
+> Senior tip: **Audit log là bằng chứng, không phải log gỡ lỗi.** Ghi có cấu trúc, chỉ append, đẩy khỏi container về kho tập trung có WORM, và viết test khẳng định mỗi hành động nhạy cảm (kể cả bị từ chối) đều sinh một bản ghi. Nếu không trả lời được "ai đã sửa dữ liệu này lúc nào" trong vòng vài phút, audit log của bạn chưa đạt.
+
+`,
+  follow: [
+    'Audit log nên ghi đồng bộ trong transaction nghiệp vụ (outbox) hay bất đồng bộ qua message queue? Đánh đổi thế nào?',
+    'Làm sao chống sửa audit log hiệu quả: WORM/Object Lock, hash chain, ký số, hay chỉ phân quyền append-only?',
+    'Cần ghi những trường tối thiểu nào để một bản ghi audit vừa truy vết được sự cố vừa đáp ứng PCI DSS?'
+  ],
+  tags: ['Audit Log', 'Compliance', 'PCI DSS', 'Spring Security', 'Outbox', 'WORM', 'Observability']
+}
+
 );
