@@ -3922,5 +3922,94 @@ BlockSz: Total size of all allocated metaspace blocks (each chunk has several bl
     'Đề xuất tune MaxMetaspaceSize.'
   ],
   tags: ['metaspace', 'dynamic-proxy', 'classloader', 'memory-leak']
+},
+{
+  id: 'lab-gc-021',
+  category: 'gc',
+  title: 'ConcurrentHashMap làm cache không giới hạn trong service tỷ giá',
+  level: 'senior',
+  scenario: `**Bối cảnh:** Service {{fx-rate}} của ví điện tử {{PayNow}} (Spring Boot 3.2, JDK 17.0.10, -Xmx2g, G1) nhận tỷ giá ngoại tệ từ 15 đối tác qua Kafka mỗi giây. Service cung cấp endpoint {{GET /api/rate/currency}} cho hàng ngàn ứng dụng con. Để giảm load DB, team dùng một {{ConcurrentHashMap}} làm cache tỷ giá cuối cùng cho mọi cặp tiền từ tất cả đối tác. Service hoạt động ổn định trong 2 tháng, nhưng từ khi đối tác thêm tính năng {{Tỷ giá cá nhân hoá}} dựa trên {{userId}}, memory tăng đều và pod bị OOM sau khoảng 3 ngày chạy. Pod có limit 3Gi.
+  
+  **Triệu chứng:** Old Gen tăng tuyến tính, không giảm dù request ổn định. Số concurrent mark cycle tăng mạnh, p99 endpoint tỷ giá tăng từ 50ms lên 400ms sau 3 ngày. Dev khẳng định: {{Chúng tôi chỉ dùng ConcurrentHashMap, nó thread-safe, không thể leak.}}
+
+  **Dữ liệu thu thập:** {{jcmd 1 GC.class_histogram}} hai lần, cách nhau 48 giờ, metric bộ nhớ và snippet code {{CurrencyCache}}.`,
+  artifacts: [
+    {
+      name: 'histogram-day1.txt',
+      lang: 'text',
+      content: `num     #instances         #bytes  class name (module)
+-------------------------------------------------------
+   1:        846287      121860072  [B (java.base@17.0.10)
+   2:       1255395       50215800  java.math.BigDecimal (java.base@17.0.10)
+   3:        814503       19548072  java.lang.String (java.base@17.0.10)
+   4:        412385       16495400  vn.paynow.fx.CurrencyRate
+   5:        474255       15176160  java.util.concurrent.ConcurrentHashMap$Node (java.base@17.0.10)`
+    },
+    {
+      name: 'histogram-day3.txt',
+      lang: 'text',
+      content: `num     #instances         #bytes  class name (module)
+-------------------------------------------------------
+   1:       1635479      166054824  [B (java.base@17.0.10)
+   2:       3622971      144918840  java.math.BigDecimal (java.base@17.0.10)
+   3:       1201577       48063080  vn.paynow.fx.CurrencyRate
+   4:       1263447       40430304  java.util.concurrent.ConcurrentHashMap$Node (java.base@17.0.10)
+   5:       1603695       38488680  java.lang.String (java.base@17.0.10)`
+    },
+    {
+      name: 'CurrencyCache.java',
+      lang: 'text',
+      content: `package vn.paynow.fx;
+
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.Map;
+import org.springframework.stereotype.Service;
+
+@Service
+public class CurrencyCache {
+    // Cache tỷ giá theo cặp tiền và userId: Map<String, CurrencyRate>
+    private final Map<String, CurrencyRate> cache = new ConcurrentHashMap<>();
+
+    public void put(String userId, String pair, CurrencyRate rate) {
+        String key = userId + "_" + pair; // Key là userId + cặp tiền
+        cache.put(key, rate);
+    }
+
+    public CurrencyRate get(String userId, String pair) {
+        String key = userId + "_" + pair;
+        return cache.get(key);
+    }
+}`
+    }
+  ],
+  questions: [
+      'Nguyên nhân gốc của memory leak là gì? Dẫn chứng cụ thể từ histogram?',
+      'Tại sao ConcurrentHashMap lại là nguyên nhân gây leak ở đây, mặc dù nó được thiết kế tốt?',
+      'Bạn sẽ sửa thế nào ngắn hạn và dài hạn? Cần những loại alert nào?'
+  ],
+  hints: [
+      'So sánh các key trong ConcurrentHashMap giữa ngày 1 và ngày 3.',
+      'Đọc kỹ Class {{CurrencyCache}} xem key là gì và số lượng phần tử có bị giới hạn không.'
+  ],
+  answer: `**Tóm tắt:** Đây là leak do cache không giới hạn. Key trong cache là {{userId + "_" + pair}}. Với số lượng người dùng lớn và tính năng tỷ giá cá nhân hoá, số lượng unique key trong {{ConcurrentHashMap}} tăng không kiểm soát theo thời gian. Cache không bao giờ xoá entry cũ, dẫn đến OOM.
+
+### Nguyên nhân gốc
+{{ConcurrentHashMap}} chỉ đảm bảo tính thread-safe, không tự động evict (xoá) dữ liệu cũ. Mỗi lần thêm {{userId}} mới, một entry mới được tạo và nằm vĩnh viễn trong map.
+
+### Dẫn chứng
+Dựa trên histogram, ta thấy số lượng instance của {{ConcurrentHashMap$Node}} tăng mạnh sau 48 giờ (từ 474,255 lên 1,263,447). Tương tự, {{CurrencyRate}} và {{String}} (cho key) cũng tăng tương ứng. Đây là bằng chứng rõ ràng về việc các entry không được dọn dẹp.
+
+### Sửa lỗi
+1. **Ngắn hạn:** Sử dụng {{Caffeine}} cache với {{maximumSize}} và {{expireAfterWrite}} để tự động dọn entry cũ.
+2. **Dài hạn:** Rà soát tất cả các cache singleton/ứng dụng xem đã có giới hạn (size/TTL) chưa.
+3. **Alert:** Đặt alert cho kích thước của tất cả các cache (gauge) và tốc độ tăng trưởng của Heap.
+
+> Senior tip: Mọi Collection singleton/ứng dụng (Map, Set, List) trong ứng dụng đều là ứng viên tiềm năng cho memory leak. Hãy luôn kiểm tra xem chúng có được giới hạn kích thước hay không.`,
+  rubric: [
+    'Nhận diện leak do ConcurrentHashMap không có giới hạn.',
+    'Dẫn chứng bằng delta #instances trong histogram.',
+    'Đề xuất Caffeine/TTL, alert gauge.'
+  ],
+  tags: ['leak', 'cache', 'ConcurrentHashMap']
 }
 );

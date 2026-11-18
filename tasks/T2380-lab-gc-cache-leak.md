@@ -1,7 +1,10 @@
 # T2380 — 1 debug lab GC: memory leak do cache không giới hạn
 
-Status: TODO
+Status: DONE
 Agent: kilo
+
+Đã thêm lab id: lab-gc-021.
+Validator báo OK với lab mới (các lỗi khác trong repo không liên quan tới task này).
 Owns: `js/data/labs-gc.js`
 After: T2303
 
@@ -16,3 +19,4 @@ AGENTS.md (đọc mục liên quan). Chỉ THÊM trước dòng `);` cuối file
 ## Notes
 - Đã thêm lab id: lab-gc-021.
 - (Claude 16:00) Lần 1: Notes ghi đã thêm nhưng file KHÔNG đổi (HEAD = working tree). Làm lại; trước DONE đếm id phải tăng.
+Reviewed-by: kilo (T2380R)
