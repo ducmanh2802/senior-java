@@ -1,0 +1,91 @@
+{
+  "date": "2026-11-18",
+  "intro": "Tuần này Spring có loạt bản RC mới (Boot 4.2.0-RC2, Cloud 2026.0.0, AI 2.1.0-RC2), kèm lời nhắc cập nhật JVM vì một CVE mới. Phần còn lại xoay quanh dữ liệu trên AWS: cache DynamoDB bằng ElastiCache Valkey, chia tải read replica qua NLB, query statistics của Aurora DSQL, cùng case observability của Rakbank và bài học thiết kế giao thức của GitHub.",
+  "editor": "claude",
+  "items": [
+    {
+      "title_vi": "This Week in Spring: Boot 4.2.0-RC2, Spring AI 2.1.0-RC2 và lời nhắc cập nhật JVM",
+      "title": "This Week in Spring - November 18th, 2026",
+      "url": "https://spring.io/blog/2026/11/18/this-week-in-spring-november-18th-2026",
+      "source": "Spring Blog",
+      "category": "tech",
+      "summary": "Bản tin tuần của Spring liệt kê Spring Boot 4.2.0-RC2 (6/11), Spring AI 2.1.0-RC2 (9/11) và Spring Cloud 2026.0.0 (codename Paddington) ở giai đoạn RC. Josh Long cũng kêu gọi cập nhật JVM vì một CVE mới tên Java4Shell và dẫn nghiên cứu của JFrog. Ngoài ra Spring for Apache Pulsar sẽ chuyển về Apache Software Foundation.",
+      "why": "Biết sớm RC của Boot 4.2 giúp bạn lên kế hoạch nâng cấp và kiểm tra tương thích; CVE ở tầng JVM cần được đưa vào quy trình patch của đội ngay.",
+      "interview_q": "Khi một CVE nghiêm trọng xuất hiện ở JVM hoặc thư viện lõi, bạn sẽ kiểm tra mức độ ảnh hưởng và triển khai bản vá cho hàng chục service Spring Boot thế nào?",
+      "related": [],
+      "tags": ["spring-boot", "release", "cve"]
+    },
+    {
+      "title_vi": "Dùng ElastiCache Serverless for Valkey làm cache trong suốt cho DynamoDB",
+      "title": "Accelerate your DynamoDB workloads with DynamoDB caching with Amazon ElastiCache Serverless for Valkey",
+      "url": "https://aws.amazon.com/blogs/database/accelerate-your-dynamodb-workloads-with-dynamodb-caching-with-amazon-elasticache-serverless-for-valkey/",
+      "source": "AWS Database Blog",
+      "category": "cloud",
+      "summary": "Tính năng cache DynamoDB của ElastiCache Serverless for Valkey chặn các lời gọi AWS SDK (GetItem, Query, Scan, ghi...) qua một client tích hợp. Cache theo kiểu write-through, đọc eventually consistent có thể lấy từ cache, còn ConsistentRead vẫn đi thẳng DynamoDB. TTL mặc định 5 phút, cần Valkey 9+ và IAM auth. Ví dụ của bài: 20.000 req/s, hit ratio 90% có thể giảm khoảng 40-46% chi phí, nhưng không có lợi khi lưu lượng thấp.",
+      "why": "Hot key và chi phí đọc DynamoDB là vấn đề quen thuộc của backend Java trên AWS; bài cho thấy trade-off giữa consistency, TTL và chi phí.",
+      "interview_q": "Bạn thêm cache phía trước DynamoDB thế nào để giảm hot key mà vẫn đảm bảo đọc đúng dữ liệu mới ghi? So sánh cache-aside với write-through.",
+      "related": ["aws-006", "aws-051", "aws-012"],
+      "tags": ["dynamodb", "cache", "valkey"]
+    },
+    {
+      "title_vi": "Chia tải đọc giữa các RDS read replica bằng Network Load Balancer",
+      "title": "Distribute Amazon RDS traffic between read replicas using Network Load Balancer",
+      "url": "https://aws.amazon.com/blogs/database/distribute-amazon-rds-traffic-between-read-replicas-using-network-load-balancer/",
+      "source": "AWS Database Blog",
+      "category": "cloud",
+      "summary": "Bài đề xuất đặt một NLB làm điểm vào cho các read replica. Lambda chạy theo EventBridge mỗi phút đồng bộ IP của replica vào target group, trạng thái lưu trong S3. NLB giữ lưu lượng theo AZ của client nên giảm chi phí cross-AZ. Hạn chế: đồng bộ theo polling nên thay đổi mất tới khoảng 60 giây, và bài không bàn đến replication lag.",
+      "why": "Nhiều service Java dùng read replica để scale đọc; cần hiểu các lựa chọn DNS weighted, proxy, reader endpoint và điểm yếu của từng cách.",
+      "interview_q": "Bạn phân tán truy vấn đọc lên nhiều read replica thế nào, và xử lý replication lag ra sao để người dùng không thấy dữ liệu cũ sau khi vừa ghi?",
+      "related": ["aws-049", "aws-005"],
+      "tags": ["rds", "read-replica", "nlb"]
+    },
+    {
+      "title_vi": "Aurora DSQL: tìm query chậm và tốn kém bằng query statistics",
+      "title": "Use query statistics to find slow and expensive queries in Aurora DSQL",
+      "url": "https://aws.amazon.com/blogs/database/use-query-statistics-to-find-slow-and-expensive-queries-in-aurora-dsql/",
+      "source": "AWS Database Blog",
+      "category": "cloud",
+      "summary": "Aurora DSQL có thể ghi số liệu theo từng câu lệnh đã chuẩn hoá: số lần gọi, độ trễ, số dòng trả về và quét, DPU tiêu thụ. Bật bằng metric group STATEMENT_STATISTICS khi tạo hoặc cập nhật cluster, xem trong CloudWatch Database Insights. Dấu hiệu thiếu index là số dòng quét và DPU mỗi lần gọi đều cao; ví dụ của bài là truy vấn orders theo customer_id không có index.",
+      "why": "Quy trình đọc top SQL, so sánh số dòng quét với số dòng trả về áp dụng cho mọi DB; hữu ích khi bạn tuning query cho service Spring/JPA.",
+      "interview_q": "Một endpoint đột ngột chậm, bạn dùng công cụ nào để tìm câu SQL gây ra và kết luận thiếu index dựa trên chỉ số nào?",
+      "related": [],
+      "tags": ["aurora-dsql", "sql", "performance"]
+    },
+    {
+      "title_vi": "Rakbank xây observability tập trung 150 GB log/ngày trên OpenSearch",
+      "title": "How Rakbank built centralized observability at scale with Amazon OpenSearch Service",
+      "url": "https://aws.amazon.com/blogs/architecture/how-rakbank-built-centralized-observability-at-scale-with-amazon-opensearch-service/",
+      "source": "AWS Architecture Blog",
+      "category": "company",
+      "summary": "Nền tảng digital banking của Rakbank trên EKS tăng từ khoảng 5 GB lên 150 GB log mỗi ngày. Họ dùng Fluent Bit DaemonSet ghi song song vào OpenSearch và S3, tách tài khoản observability, phân tầng hot (15 ngày), UltraWarm, cold, và lưu 7 năm ở S3 truy vấn bằng Athena. Kết quả theo bài: tiết kiệm khoảng 55% so với cụm toàn hot.",
+      "why": "Log tăng nhanh là bài toán chi phí thật của hệ Java microservices; case này cho mẫu phân tầng dữ liệu và yêu cầu lưu trữ tuân thủ ngân hàng.",
+      "interview_q": "Log của 100 microservice tăng lên hàng trăm GB mỗi ngày: bạn thiết kế thu thập, lưu trữ theo tầng và retention thế nào để vừa tìm nhanh vừa kiểm soát chi phí?",
+      "related": ["devops-070", "devops-069", "aws-013"],
+      "tags": ["observability", "opensearch", "banking"]
+    },
+    {
+      "title_vi": "Chặn dependency có CVE nghiêm trọng ngay lúc build với JFrog Curation và CodeBuild",
+      "title": "Enforcing zero-trust dependency policies in AWS CodeBuild with JFrog Curation",
+      "url": "https://aws.amazon.com/blogs/devops/enforcing-zero-trust-dependency-policies-in-aws-codebuild-with-jfrog-curation/",
+      "source": "AWS DevOps Blog",
+      "category": "devops",
+      "summary": "Thay vì quét sau khi image đã build, bài đặt cổng kiểm tra lúc tải package: build trỏ vào repo ảo Artifactory có Curation. Policy ví dụ chặn mọi phiên bản có CVSS từ 9.0, Curation trả HTTP 403 nên bước cài dependency thất bại và không có image nào được đẩy lên ECR. Demo dùng PyPI; hỗ trợ ecosystem khác cần xem tài liệu JFrog.",
+      "why": "Kiểm soát chuỗi cung ứng là yêu cầu thường gặp với Maven/Gradle trong pipeline CI/CD của service Java, nhất là ở ngân hàng.",
+      "interview_q": "Bạn ngăn một thư viện có lỗ hổng nghiêm trọng hoặc độc hại lọt vào image production thế nào trong pipeline CI/CD của dự án Java?",
+      "related": [],
+      "tags": ["supply-chain", "ci-cd", "security"]
+    },
+    {
+      "title_vi": "GitHub xây Agent Host Protocol để phiên agent tiếp tục qua nhiều thiết bị",
+      "title": "Building the Agent Host Protocol for sessions that continue across devices",
+      "url": "https://github.blog/engineering/engineering-principles/building-the-agent-host-protocol-for-sessions-that-continue-across-devices/",
+      "source": "GitHub Engineering",
+      "category": "company",
+      "summary": "GitHub mô tả Agent Host Protocol (AHP), chuẩn mở tổ chức theo các channel định danh bằng URI, mỗi channel giữ state theo reducer, server là nguồn sự thật còn client gửi action. Reconnect xử lý bằng replay action đã xếp hàng. Hai host độc lập (TypeScript cho VS Code, Rust cho cloud) giúp lộ ra các giả định sai mà một implementation duy nhất sẽ che mất.",
+      "why": "Mô hình state do server làm chủ, reducer và replay khi reconnect áp dụng được cho thiết kế API realtime, WebSocket hay event-driven phía backend.",
+      "interview_q": "Bạn thiết kế giao thức giữa client và server để phiên làm việc tiếp tục được sau khi mất kết nối: state nằm ở đâu và xử lý action trùng lặp ra sao?",
+      "related": [],
+      "tags": ["protocol", "design", "agents"]
+    }
+  ]
+}
