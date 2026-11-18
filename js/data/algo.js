@@ -17352,6 +17352,201 @@ class VWAP {
 }`,
   complexity: 'Time O(1) amortized moi tick, Space O(k) (k tick trong cua so)',
   follow: ['Neu tick den khong theo thu tu timestamp thi cau truc du lieu nao phu hop?', 'Lam sao tinh VWAP cho nhieu ma chung khoan cung luc?']
+},
+{
+  id: 'algo-155',
+  title: 'Meeting Rooms II - so phong toi thieu',
+  difficulty: 'medium',
+  pattern: 'Heap / Sweep Line',
+  tags: ['heap', 'intervals', 'sweep-line'],
+  prompt: `Cho danh sach cac cuoc hop voi thoi gian bat dau va ket thuc. Tim so phong hop toi thieu can thue de tat ca cuoc hop dien ra khong trung nhau.
+
+### Ví dụ
+~~~text
+intervals = [[0,30],[5,10],[15,20]]  -> 2
+intervals = [[7,10],[2,4]]           -> 1
+~~~
+
+### Ràng buộc
+- {{1 <= intervals.length <= 10^5}}
+- {{0 <= start < end <= 10^6}}`,
+  hints: [
+    'Sap xep theo thoi gian bat dau; dung min-heap luu thoi gian ket thuc cua cac phong dang dung.',
+    'Neu phong co thoi gian ket thuc <= thoi gian bat dau cuoc hop moi thi tai su dung phong do.',
+    'So phong can thue bang kich thuoc lon nhat cua heap trong qua trinh xu ly.'
+  ],
+  solution: `### Ý tưởng
+Sap xep cuoc hop theo thoi gian bat dau. Duyet tung cuoc hop, neu phong som nhat (ket thuc nho nhat) da trong truoc thoi gian bat dau thi tai su dung phong do (pop roi push thoi gian ket thuc moi). Nguoc lai can them phong moi (push). Heap luon chua cac thoi gian ket thuc cua cac phong dang ban.
+
+~~~java
+class Solution {
+    public int minMeetingRooms(int[][] intervals) {
+        if (intervals == null || intervals.length == 0) return 0;
+        Arrays.sort(intervals, (a, b) -> Integer.compare(a[0], b[0]));
+        PriorityQueue<Integer> endTimes = new PriorityQueue<>();
+        for (int[] iv : intervals) {
+            if (!endTimes.isEmpty() && endTimes.peek() <= iv[0]) {
+                endTimes.poll();
+            }
+            endTimes.offer(iv[1]);
+        }
+        return endTimes.size();
+    }
+}
+~~~
+
+### Lưu ý khi phỏng vấn
+- Co the dung sweep line: tao mang events (+1 tai start, -1 tai end) roi quet de tim so phong max.
+- Edge case: intervals rong, mot cuoc hop, cac cuoc hop cham bien (end == start cua cuoc khac) co the dung chung phong.
+- Complexity toi uu O(n log n).
+
+> Senior tip: Trong he thong dat lich (booking) thuc te, bai toan nay tuong duong tim so resource toi thieu; toi thuong ket hop them rang buoc capacity theo loai phong.`,
+  starter: "class Solution {\n    public int minMeetingRooms(int[][] intervals) {\n        return 0;\n    }\n}",
+  tests: `public class Main {
+
+    static int passed = 0, total = 0;
+    interface Case { Object get() throws Throwable; }
+    static void run(String name, Object expected, Case c) {
+        total++;
+        try {
+            Object actual = c.get();
+            if (Objects.deepEquals(expected, actual)) {
+                passed++;
+                System.out.println("PASS " + name);
+            } else {
+                System.out.println("FAIL " + name + ": expected "
+                    + Arrays.deepToString(new Object[]{expected})
+                    + " got " + Arrays.deepToString(new Object[]{actual}));
+            }
+        } catch (Throwable t) {
+            System.out.println("FAIL " + name + ": threw " + t);
+        }
+    }
+
+    public static void main(String[] args) {
+        run("example", 2, () -> new Solution().minMeetingRooms(new int[][]{{0,30},{5,10},{15,20}}));
+        run("one room", 1, () -> new Solution().minMeetingRooms(new int[][]{{7,10},{2,4}}));
+        run("empty", 0, () -> new Solution().minMeetingRooms(new int[][]{}));
+        run("same start", 3, () -> new Solution().minMeetingRooms(new int[][]{{1,5},{1,5},{1,5}}));
+        run("touching", 1, () -> new Solution().minMeetingRooms(new int[][]{{1,2},{2,3},{3,4}}));
+        run("large", 100000, () -> {
+            int[][] a = new int[100000][2];
+            for (int i = 0; i < a.length; i++) {
+                a[i][0] = i % 2 == 0 ? 0 : 1;
+                a[i][1] = 10;
+            }
+            return new Solution().minMeetingRooms(a);
+        });
+        System.out.println("RESULT " + passed + "/" + total);
+    }
+}`,
+  complexity: 'Time O(n log n), Space O(n)',
+  follow: ['Neu moi phong co suc chua khac nhau thi bai toan thay doi the nao?', 'Sweep line va heap, uu nhuoc diem khi nao?']
+},
+{
+  id: 'algo-156',
+  title: 'Token Bucket allow(nowMillis)',
+  difficulty: 'medium',
+  pattern: 'Rate Limiting',
+  tags: ['rate-limiting', 'time', 'state'],
+  prompt: `Thiet ke token bucket trong Java, nhung **khong dung dong ho that**. API:
+
+- {{TokenBucket(capacity, refillPerSecond)}}: suc chua {{capacity}} token, nap {{refillPerSecond}} token/giay.
+- {{allow(nowMillis)}}: nap token dua tren thoi gian truyen vao, tra ve true va tru 1 token neu du, nguoc lai false.
+
+### Ví dụ
+~~~text
+b = new TokenBucket(2, 1);  // 2 token, 1 token/giay
+b.allow(0)     // true
+b.allow(0)     // true
+b.allow(0)     // false
+b.allow(1000)  // true (da nap them 1 token)
+~~~
+
+### Ràng buộc
+- {{1 <= capacity <= 10^6}}
+- {{0 < refillPerSecond}}
+- {{nowMillis}} khong giam dan (monotonic)`,
+  hints: [
+    'Luu so token hien tai va moc thoi gian refill gan nhat (nowMillis).',
+    'Moi lan goi, tinh token nap them = (nowMillis - last) / 1000.0 * refillPerSecond, gioi han o capacity.',
+    'Cap nhat last = nowMillis sau khi refill, roi moi kiem tra va tru 1 token.'
+  ],
+  solution: `### Ý tưởng
+Dung thoi gian truyen vao de tinh luong token duoc nap tu lan goi truoc, gioi han o capacity. Sau do kiem tra va tru 1 token. Khong can thread nen, khong phu thuoc System.nanoTime.
+
+~~~java
+class TokenBucket {
+    private final long capacity;
+    private final double refillPerSecond;
+    private double tokens;
+    private long lastMillis;
+
+    public TokenBucket(long capacity, double refillPerSecond) {
+        this.capacity = capacity;
+        this.refillPerSecond = refillPerSecond;
+        this.tokens = capacity;
+        this.lastMillis = 0;
+        // lastMillis se duoc dat o lan goi allow dau tien
+    }
+
+    public boolean allow(long nowMillis) {
+        if (lastMillis == 0 && tokens == capacity) {
+            // lan goi dau tien: dat moc thoi gian
+            lastMillis = nowMillis;
+        }
+        double refill = (nowMillis - lastMillis) / 1000.0 * refillPerSecond;
+        tokens = Math.min(capacity, tokens + refill);
+        lastMillis = nowMillis;
+        if (tokens >= 1.0) {
+            tokens -= 1.0;
+            return true;
+        }
+        return false;
+    }
+}
+~~~
+
+### Lưu ý khi phỏng vấn
+- Khi nowMillis khong tang, refill = 0, hanh vi on dinh.
+- Dung double co sai so nho; voi yeu cau chinh xac, dung long micro-token.
+- Phien ban nay de test (deterministic) va phu hop cho mo phong.
+
+> Senior tip: Tach thoi gian ra khoi logic (dependency injection) la cach tot nhat de test rate limiter; toi luon thiet ke allow(now) thay vi goi System clock truc tiep.`,
+  starter: "class TokenBucket {\n    public TokenBucket(long capacity, double refillPerSecond) {\n        \n    }\n    public boolean allow(long nowMillis) {\n        return false;\n    }\n}",
+  tests: `public class Main {
+
+    static int passed = 0, total = 0;
+    interface Case { Object get() throws Throwable; }
+    static void run(String name, Object expected, Case c) {
+        total++;
+        try {
+            Object actual = c.get();
+            if (Objects.deepEquals(expected, actual)) {
+                passed++;
+                System.out.println("PASS " + name);
+            } else {
+                System.out.println("FAIL " + name + ": expected "
+                    + Arrays.deepToString(new Object[]{expected})
+                    + " got " + Arrays.deepToString(new Object[]{actual}));
+            }
+        } catch (Throwable t) {
+            System.out.println("FAIL " + name + ": threw " + t);
+        }
+    }
+
+    public static void main(String[] args) {
+        run("initial two", true, () -> { TokenBucket b = new TokenBucket(2, 1); return b.allow(0); });
+        run("second", true, () -> { TokenBucket b = new TokenBucket(2, 1); b.allow(0); return b.allow(0); });
+        run("third false", false, () -> { TokenBucket b = new TokenBucket(2, 1); b.allow(0); b.allow(0); return b.allow(0); });
+        run("refill after 1s", true, () -> { TokenBucket b = new TokenBucket(2, 1); b.allow(0); b.allow(0); return b.allow(1000); });
+        run("cap stays", true, () -> { TokenBucket b = new TokenBucket(2, 1); b.allow(0); b.allow(0); return b.allow(10000); });
+        run("zero refill time", false, () -> { TokenBucket b = new TokenBucket(1, 1); b.allow(5); return b.allow(5); });
+        System.out.println("RESULT " + passed + "/" + total);
+    }
+}`,
+  complexity: 'Time O(1), Space O(1)',
+  follow: ['Neu nowMillis khong monotonic thi xu ly the nao?', 'Lam sao ho tro allow(n) cho n token cung luc?']
 }
 );
 })();

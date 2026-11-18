@@ -2367,6 +2367,8 @@ window.DATA_INDEX = {
     {"id":"algo-152","title":"Top K Frequent Elements","difficulty":"medium","pattern":"Heap"},
     {"id":"algo-153","title":"Order Book khớp lệnh limit (giá–thời gian)","difficulty":"medium","pattern":"Order Book"},
     {"id":"algo-154","title":"VWAP cua so truot tren luong tick","difficulty":"medium","pattern":"Sliding Window"},
+    {"id":"algo-155","title":"Meeting Rooms II - so phong toi thieu","difficulty":"medium","pattern":"Heap / Sweep Line"},
+    {"id":"algo-156","title":"Token Bucket allow(nowMillis)","difficulty":"medium","pattern":"Rate Limiting"},
   ],
   lessons: [
     {"id":"lesson-collections-001","track":"collections","order":1,"title":"HashMap từ bên trong: hash, bucket, resize và hợp đồng equals/hashCode","level":"mid","minutes":25},
