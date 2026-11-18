@@ -7785,6 +7785,161 @@ Tôi dùng expand/contract pattern cho zero-downtime migration. Nguyên tắc: e
     'Backfill batch 10k rows: tại sao sleep 100ms, và replication lag monitor metric nào?'
   ],
   tags: ['Flyway', 'zero-downtime', 'expand/contract', 'migration', 'dual-write', 'backfill', 'beforeMigrate', 'afterMigrate', 'feature flag', 'verification', 'ALTER TABLE', 'NOT NULL', 'DROP COLUMN', 'RENAME COLUMN']
+},
+{
+  id: 'sql-085',
+  topic: 'sql',
+  level: 'senior',
+  q: 'Oracle và PostgreSQL xử lý MVCC khác nhau thế nào?',
+  a: `**Tóm tắt:** Cả hai dùng MVCC nhưng Oracle lưu bản cũ trong undo segment (ORA-01555 nếu hết), PostgreSQL lưu bản cũ trong bảng (tuple version) và dọn bằng VACUUM (chậm dọn gây bloat).
+
+### Oracle: undo segment
+UPDATE/DELETE ghi bản cũ vào undo segment. Query dài đọc từ undo; nếu retention hết -> ORA-01555. Tuning: UNDO_RETENTION, tablespace đủ lớn, tránh transaction dài.
+
+### PostgreSQL: tuple version + VACUUM
+UPDATE tạo row mới và đánh dấu row cũ dead; VACUUM dọn. Chậm dọn -> bloat. Long transaction giữ snapshot -> dead tuple không dọn.
+
+### So sánh
+| Tiêu chí | Oracle | PostgreSQL |
+|---|---|---|
+| Bảng phình | không | có nếu VACUUM chậm |
+| Long query | ORA-01555 | bloat |
+| Hot update | chain row | HOT update |
+
+### Ví dụ đời thực
+Batch UPDATE 5 triệu row trong 1 transaction -> dead tuple 5 triệu, autovacuum blocked -> query 200ms lên 8s. Xử lý: batch 10k commit, monitor n_dead_tup.
+
+### Trả lời mẫu khi phỏng vấn
+Cả hai MVCC nhưng lưu bản cũ khác nhau. Oracle undo -> ORA-01555. PostgreSQL tuple version + VACUUM -> bloat. Tránh transaction dài, batch commit, monitor.
+
+> Senior tip: Long transaction là kẻ thù của cả hai; tránh giữ transaction mở lâu, trên PostgreSQL đặt statement_timeout và idle_in_transaction_session_timeout.
+`,
+  follow: ['HOT update là gì?', 'pg_repack vs VACUUM FULL?', 'Oracle Flashback query?'],
+  tags: ['MVCC', 'Oracle', 'PostgreSQL', 'VACUUM', 'bloat']
 }
+,
+{
+  id: 'sql-086',
+  topic: 'sql',
+  level: 'senior',
+  q: 'Dùng SELECT FOR UPDATE NOWAIT / SKIP LOCKED để xây job queue trong PostgreSQL?',
+  a: `**Tóm tắt:** SKIP LOCKED cho nhiều worker claim job không chờ nhau; NOWAIT fail nhanh. Kết hợp transaction ngắn + status transition + idempotency.
+
+### Cơ chế
+FOR UPDATE khóa row. NOWAIT: nếu đã lock -> lỗi ngay. SKIP LOCKED: bỏ qua row đang lock, lấy row khác.
+
+### Pattern
+SELECT id, payload FROM jobs WHERE status='pending' ORDER BY created_at LIMIT 1 FOR UPDATE SKIP LOCKED;
+
+Sau đó UPDATE status='processing' trong cùng transaction, commit. Worker khác không thấy row đó.
+
+### Java/Hibernate
+Dùng native query hoặc @Lock PESSIMISTIC_WRITE với hint skip locked. Transaction ngắn: claim + mark processing rồi commit, xử lý ngoài transaction, sau UPDATE completed/failed. Idempotency qua unique key.
+
+### Pitfall
+Worker crash sau claim -> job stuck. Cần heartbeat/reclaim job processing > X phút. Index trên (status, created_at).
+
+### Ví dụ đời thực
+5 worker Java, job 2-5s, SKIP LOCKED throughput ~1 job/worker, không contention. Reclaim job > 10 phút.
+
+### Trả lời mẫu khi phỏng vấn
+SKIP LOCKED là chuẩn làm queue trong PostgreSQL. Transaction ngắn claim + status update, xử lý ngoài transaction. Cần idempotency, heartbeat reclaim, index phù hợp.
+
+> Senior tip: Đừng giữ transaction mở trong lúc xử lý job.
+`,
+  follow: ['NOWAIT vs SKIP LOCKED?', 'Reclaim job kẹt?', 'Hibernate 6 hỗ trợ SKIP LOCKED?'],
+  tags: ['SKIP LOCKED', 'FOR UPDATE', 'job queue', 'PostgreSQL']
+}
+,
+{
+  id: 'sql-087',
+  topic: 'sql',
+  level: 'senior',
+  q: 'Sequence vs IDENTITY trong PostgreSQL và batch insert với Hibernate?',
+  a: `**Tóm tắt:** IDENTITY đơn giản, an toàn; sequence cho phép pre-allocate id và batch insert hiệu quả. Import lớn nên dùng sequence.
+
+### Sequence
+CREATE SEQUENCE; nextval() trả id trước insert. Hibernate allocate batch id (allocationSize) -> batch insert.
+
+### IDENTITY
+DB gán id khi insert. Hibernate phải insert từng row để lấy id; batch size bị ignore.
+
+### Hibernate config
+@GeneratedValue(strategy=SEQUENCE) + @SequenceGenerator(allocationSize=50). Bật hibernate.jdbc.batch_size, order_inserts.
+
+### Ví dụ đời thực
+Import 1 triệu sản phẩm: sequence + batch 100 -> vài giây; identity -> hàng phút.
+
+### Trả lời mẫu khi phỏng vấn
+IDENTITY đơn giản nhưng không batch được. Sequence pre-allocate id, batch insert hiệu quả. Import lớn dùng sequence + allocationSize.
+
+> Senior tip: Nếu dùng IDENTITY mà muốn batch, cân nhắc UUID client-side.
+`,
+  follow: ['allocationSize ảnh hưởng cache sequence?', 'UUID v7 lợi gì?', 'batch_size với IDENTITY?'],
+  tags: ['sequence', 'identity', 'Hibernate', 'batch insert']
+}
+,
+{
+  id: 'sql-088',
+  topic: 'sql',
+  level: 'lead',
+  q: 'Isolation level mặc định PostgreSQL READ COMMITTED: anomaly còn lại và khi nào cần REPEATABLE READ/SERIALIZABLE?',
+  a: `**Tóm tắt:** PostgreSQL mặc định READ COMMITTED: mỗi câu SELECT snapshot riêng; anomaly còn non-repeatable read, phantom, write skew. REPEATABLE READ/SERIALIZABLE dùng snapshot transaction-level.
+
+### READ COMMITTED
+Mỗi câu lệnh snapshot riêng. Anomaly: non-repeatable read, phantom, write skew. Phù hợp OLTP.
+
+### REPEATABLE READ
+Snapshot tại transaction bắt đầu. Chống non-repeatable/phantom. Conflict nếu row đã đổi -> 40001.
+
+### SERIALIZABLE
+Snapshot + predicate lock (SSI) chống write skew. Throughput thấp hơn, nhiều conflict.
+
+### Khi nào dùng
+Báo cáo nhất quán: REPEATABLE READ. Logic đọc-rồi-ghi: SERIALIZABLE hoặc SELECT FOR UPDATE. Mặc định READ COMMITTED cho throughput.
+
+### Ví dụ đời thực
+Hai transaction đọc stock=10, mỗi trừ 6 -> write skew stock âm. Dùng SERIALIZABLE hoặc FOR UPDATE.
+
+### Trả lời mẫu khi phỏng vấn
+PostgreSQL mặc định READ COMMITTED; anomaly còn non-repeatable read, phantom, write skew. REPEATABLE READ cho báo cáo; SERIALIZABLE chống write skew. Với đọc-rồi-ghi dùng FOR UPDATE/SERIALIZABLE + retry 40001.
+
+> Senior tip: Retry serialization failure (40001) với backoff.
+`,
+  follow: ['Write skew ví dụ?', 'Predicate lock vs row lock?', 'Retry trong Spring?'],
+  tags: ['isolation level', 'READ COMMITTED', 'SERIALIZABLE', 'write skew']
+}
+,
+{
+  id: 'sql-089',
+  topic: 'sql',
+  level: 'lead',
+  q: 'Partitioning bảng giao dịch theo ngày trong PostgreSQL: RANGE, pruning, maintenance, index/constraint?',
+  a: `**Tóm tắt:** Partition theo ngày giúp query theo thời gian chỉ scan partition liên quan (pruning), VACUUM/backup từng partition, drop partition cũ nhanh. Trade-off: PK include partition key, index local.
+
+### Chiến lược
+RANGE partition trên created_at (daily/monthly). Partition pruning với WHERE created_at. Drop partition cũ nhanh.
+
+### Constraints & Index
+PK phải bao gồm cột partition -> composite PK (id, created_at) hoặc UUID. Index propagate từ parent (local). Foreign key hỗ trợ PG12+.
+
+### Maintenance
+pg_partman tự tạo partition. Default partition cho dữ liệu ngoài range. Reindex/VACUUM per partition.
+
+### Java/Hibernate
+Entity map bình thường; pruning ở DB. Batch insert theo partition.
+
+### Ví dụ đời thực
+Bảng 500 triệu dòng partition by month: query tháng gần nhất scan 1 partition (~40 triệu). Drop partition cũ milliseconds.
+
+### Trả lời mẫu khi phỏng vấn
+Partition theo ngày giúp pruning và maintenance nhanh, PK include partition key, index local. Dùng pg_partman, default partition. Java entity không đổi.
+
+> Senior tip: Luôn có default partition và monitoring partition missing.
+`,
+  follow: ['Pruning với prepared statement?', 'pg_partman retain policy?', 'Partition vs sharding?'],
+  tags: ['partitioning', 'RANGE', 'pruning', 'PostgreSQL']
+}
+
 );
 
