@@ -7073,5 +7073,164 @@ Giúp tiết kiệm bộ nhớ khi có nhiều String trùng lặp.
 1.0 có scale là 1, 1.00 có scale là 2. Dùng {{compareTo()}} để so sánh giá trị toán học.
 
 > Senior tip: Luôn dùng {{compareTo()}} cho tiền tệ.`
+},
+{
+  id: 'qz-sql-045',
+  topic: 'sql',
+  q: 'Trên PostgreSQL 15, MVCC hoạt động như thế nào khi một UPDATE đang chạy?',
+  options: [
+    'Ghi đè trực tiếp lên bản ghi cũ, reader bị chặn cho tới khi UPDATE commit',
+    'Tạo một phiên bản mới (tuple mới) của dòng, phiên bản cũ vẫn tồn tại để các transaction đang chạy thấy snapshot cũ',
+    'Khóa toàn bộ bảng, reader phải chờ UPDATE xong',
+    'Sử dụng undo log giống Oracle để khôi phục giá trị cũ cho reader'
+  ],
+  answer: 1,
+  explain: '**Đáp án đúng: Tạo một phiên bản mới (tuple mới) của dòng, phiên bản cũ vẫn tồn tại để các transaction đang chạy thấy snapshot cũ.**\n\n### Vì sao đúng\nMVCC (Multi-Version Concurrency Control) của PostgreSQL không ghi đè dữ liệu ngay lập tức. Khi bạn UPDATE một dòng:\n1. PostgreSQL ghi một **tuple mới** (phiên bản mới) vào cùng trang dữ liệu (hoặc trang mới nếu không chỗ).\n2. Tuple cũ được đánh dấu là "dead" nhưng **chưa xoá ngay** — nó vẫn còn đó để các transaction khác (đã bắt đầu trước UPDATE) tiếp tục đọc snapshot của chúng.\n3. Tuple mới chỉ hiển thị với các transaction bắt đầu **sau khi** UPDATE commit (snapshot mới).\n4. Khi không còn transaction nào cần tuple cũ, **VACUUM** sẽ dọn dẹp (reclaim space).\n\nĐây khác với Oracle (dùng undo segment) hoặc SQL Server (dùng version store trong tempdb). PostgreSQL lưu mọi phiên bản trực tiếp trong bảng chính (heap), nên bảng dễ "phình to" (bloat) nếu VACUUM không kịp chạy.\n\n### Vì sao các phương án còn lại sai\n- **Ghi đè trực tiếp**: đó là mô hình khoá (lock-based), không phải MVCC. PostgreSQL không làm vậy.\n- **Khóa toàn bảng**: UPDATE chỉ khóa dòng bị sửa (row-level lock), không khóa bảng.\n- **Undo log giống Oracle**: Oracle lưu phiên bản cũ trong undo segment riêng; PostgreSQL lưu tuple cũ ngay trong heap bảng.\n\n### Ví dụ thực tế\n~~~sql\n-- T1 bắt đầu, đọc balance = 100\nBEGIN;\nSELECT balance FROM accounts WHERE id = 1;  -- thấy 100\n\n-- T2 UPDATE balance = 200, COMMIT\nUPDATE accounts SET balance = 200 WHERE id = 1;\n\n-- T1 đọc lại trong CÙNG transaction -> vẫn thấy 100 (snapshot T1)\nSELECT balance FROM accounts WHERE id = 1;  -- vẫn 100\n~~~\n\n> Senior tip: bloat do tuple chết là nguyên nhân số 1 làm bảng to dần và query chậm. Hãy bật autovacuum (mặc định bật) và theo dõi pg_stat_user_tables.n_dead_tup. Nếu n_dead_tup tăng liên tục mà autovacuum không kịp, hãy giảm autovacuum_vacuum_scale_factor (mặc định 0.2) xuống 0.05–0.1 cho bảng nóng.'
+},
+{
+  id: 'qz-sql-046',
+  topic: 'sql',
+  q: 'Hai transaction cùng SELECT ... FOR UPDATE trên cùng một dòng. Transaction thứ hai sẽ bị chờ. Nếu T1 sau đó COMMIT, điều gì xảy ra với T2?',
+  options: [
+    'T2 báo lỗi deadlock ngay lập tức',
+    'T2 tiếp tục, đọc lại bản ghi mới nhất sau khi T1 commit, rồi khóa dòng đó cho riêng mình',
+    'T2 bị hủy vì vi phạm unique constraint',
+    'T2 tiếp tục nhưng đọc giá trị cũ (trước khi T1 cập nhật)'
+  ],
+  answer: 1,
+  explain: '**Đáp án đúng: T2 tiếp tục, đọc lại bản ghi mới nhất sau khi T1 commit, rồi khóa dòng đó cho riêng mình.**\n\n### Vì sao đúng\nSELECT ... FOR UPDATE lấy **row-level lock** (khoá dòng) trên các dòng được trả về. Khi T1 đang giữ khoá, T2 phải chờ (block) tại câu lệnh SELECT ... FOR UPDATE. Khi T1 COMMIT:\n1. Khoá của T1 được nhả.\n2. T2 được cấp khoá trên dòng đó.\n3. Ở mức READ COMMITTED (mặc định), T2 **đọc lại bản ghi mới nhất** (re-evaluate) sau khi hết chờ — thấy giá trị T1 vừa ghi.\n4. T2 giờ nắm khoá dòng đó cho tới khi T2 kết thúc.\n\nĐây là cơ chế tránh **lost update**: T2 không làm việc trên giá trị cũ.\n\n### Vì sao các phương án còn lại sai\n- **Deadlock**: deadlock cần vòng chờ (T1 chờ T2, T2 chờ T1). Ở đây chỉ T2 chờ T1 một chiều.\n- **Vi phạm unique**: FOR UPDATE không liên quan đến unique constraint.\n- **Đọc giá trị cũ**: ở READ COMMITTED, mỗi câu lệnh thấy snapshot tại thời điểm câu lệnh chạy. Sau khi T1 commit, câu SELECT của T2 chạy lại và thấy giá trị mới.\n\n> Senior tip: nếu bạn muốn T2 **báo lỗi ngay** thay vì chờ, dùng SELECT ... FOR UPDATE NOWAIT (trả lỗi 55P03 nếu bị chặn) hoặc FOR UPDATE SKIP LOCKED (bỏ qua dòng đang bị khoá, dùng cho hàng đợi công việc).'
+},
+{
+  id: 'qz-sql-047',
+  topic: 'sql',
+  multi: true,
+  q: 'Về deadlock trên PostgreSQL, phát biểu nào ĐÚNG? (Chọn 2)',
+  options: [
+    'Deadlock xảy ra khi hai transaction cùng chờ nhau theo chiều ngược lại, tạo thành vòng chờ; PostgreSQL phát hiện và huỷ một trong hai (ví dụ: T1 khóa A rồi chờ B, T2 khóa B rồi chờ A)',
+    'Deadlock chỉ xảy ra khi dùng SELECT ... FOR UPDATE, không xảy ra với UPDATE thường',
+    'Khi deadlock, PostgreSQL huỷ transaction đang giữ khoá lâu hơn',
+    'Cách phòng tránh tốt nhất là luôn khóa các dòng theo thứ tự cố định (ví dụ theo id tăng dần) trong toàn bộ ứng dụng'
+  ],
+  answer: [0, 3],
+  explain: '**Đáp án đúng: 0 và 3.**\n\n### Vì sao 0 đúng\nDeadlock là vòng chờ: T1 giữ khoá A, chờ B; T2 giữ khoá B, chờ A. PostgreSQL có **deadlock detector** chạy định kỳ (mặc định 1 giây). Khi phát hiện, nó huỷ **một** transaction (thường là transaction trẻ hơn hoặc tốn ít công sức hơn) và trả lỗi 40P01: deadlock detected. Transaction kia tiếp tục chạy.\n\n### Vì sao 3 đúng\nPhòng tránh deadlock bền vững nhất: **thống nhất thứ tự khoá** toàn ứng dụng. Luôn SELECT ... FOR UPDATE (hoặc UPDATE) các dòng theo thứ tự id tăng dần (hoặc bất kỳ thứ tự cố định nào). Khi đó vòng chờ không bao giờ hình thành.\n\n### Vì sao 1 và 2 sai\n- **Chỉ FOR UPDATE**: UPDATE, DELETE, INSERT (khi xung đột unique) đều lấy row lock và có thể gây deadlock.\n- **Huỷ transaction giữ khoá lâu hơn**: PostgreSQL chọn victim dựa trên nhiều yếu tố (tuổi transaction, số dòng đã sửa, v.v.), không đơn giản là "giữ lâu hơn".\n\n### Ví dụ chuẩn hoá thứ tự khoá\n~~~java\n@Transactional\npublic void transfer(Long from, Long to, BigDecimal amount) {\n    Long first = Math.min(from, to);\n    Long second = Math.max(from, to);\n    Account a = repo.findByIdForUpdate(first);  // SELECT ... FOR UPDATE WHERE id = first\n    Account b = repo.findByIdForUpdate(second); // SELECT ... FOR UPDATE WHERE id = second\n    // ... trừ/cộng balance\n}\n~~~\n\n> Senior tip: với khoá động (không biết trước id nào), hãy dùng ORDER BY id FOR UPDATE trong truy vấn lấy nhiều dòng để đảm bảo thứ tự. Và luôn đặt lock_timeout (ví dụ SET lock_timeout = 2s) để transaction không bị treo vô tận khi chờ khoá.'
+},
+{
+  id: 'qz-sql-048',
+  topic: 'sql',
+  q: 'Bảng orders có index composite (status, created_at). Truy vấn nào KHÔNG tận dụng được index này?',
+  options: [
+    'SELECT * FROM orders WHERE status = \'PAID\' ORDER BY created_at DESC;',
+    'SELECT * FROM orders WHERE status = \'PAID\' AND created_at > \'2024-01-01\';',
+    'SELECT * FROM orders WHERE created_at > \'2024-01-01\';',
+    'SELECT * FROM orders WHERE status = \'PAID\';'
+  ],
+  answer: 2,
+  explain: '**Đáp án đúng: SELECT * FROM orders WHERE created_at > \'2024-01-01\';**\n\n### Vì sao đúng\nIndex composite (status, created_at) được tổ chức theo **leftmost prefix**: trước sắp theo status, trong cùng status mới sắp theo created_at. Để index hiệu quả, điều kiện lọc phải bắt đầu từ cột đầu tiên (status).\n- Truy vấn lọc chỉ created_at không có status → các giá trị created_at phù hợp rải rác trong mọi status → không thể khoanh vùng liên tục trong B-tree → planner chọn Seq Scan (hoặc Index Scan toàn bộ index, không nhanh hơn Seq Scan).\n\n### Vì sao các phương án còn lại sai\n- Có status = \'PAID\' (cột đầu) → index dùng tốt, kể cả khi thêm created_at hoặc ORDER BY created_at.\n- Chỉ status = \'PAID\' → index dùng được prefix status.\n\n> Senior tip: nếu truy vấn lọc created_at độc lập là phổ biến, hãy tạo thêm index (created_at) hoặc (created_at, status). Mỗi index tốn chi phí ghi (INSERT/UPDATE chậm hơn), nên chỉ tạo khi thực sự cần (kiểm tra pg_stat_user_indexes.idx_scan).'
+},
+{
+  id: 'qz-sql-049',
+  topic: 'sql',
+  q: 'Kết quả EXPLAIN ANALYZE cho thấy Sort Method: external merge Disk: 123456kB. Điều này có nghĩa là gì và cách xử lý?',
+  options: [
+    'Sort đã dùng hết work_mem và phải ghi ra đĩa; nên tạo index phù hợp để tránh sort hoặc tăng work_mem cục bộ',
+    'Đây là hoạt động bình thường, không cần can thiệp',
+    'Cần giảm work_mem để sort nhanh hơn',
+    'Sort dùng đĩa là do thiếu index trên cột ORDER BY; chỉ cần ANALYZE là xong'
+  ],
+  answer: 0,
+  explain: '**Đáp án đúng: Sort đã dùng hết work_mem và phải ghi ra đĩa; nên tạo index phù hợp để tránh sort hoặc tăng work_mem cục bộ.**\n\n### Vì sao đúng\nSort Method: external merge Disk: ... báo hiệu sort **không vừa bộ nhớ** (work_mem, mặc định 4MB) và phải ghi các run ra đĩa tạm rồi merge — rất chậm.\n- **Giải pháp gốc**: tạo index trên cột ORDER BY (kèm cột lọc nếu có) để PostgreSQL đọc theo đúng thứ tự (Index Scan), **không cần sort**.\n- **Giải pháp tạm**: tăng work_mem cho session/query đó (SET LOCAL work_mem = 256MB;) để sort vừa RAM. Nhưng sort 1 triệu dòng trong RAM vẫn chậm hơn đọc index.\n\n### Vì sao các phương án còn lại sai\n- **Bình thường**: external merge là dấu hiệu hiệu năng kém, cần xử lý.\n- **Giảm work_mem**: làm tràn đĩa nhiều hơn, chậm hơn.\n- **Chỉ ANALYZE**: thống kê không tạo ra index; planner vẫn phải sort nếu không có index cung cấp thứ tự.\n\n> Senior tip: luôn kiểm tra EXPLAIN (ANALYZE, BUFFERS) — nếu thấy Sort Method: external merge Disk kèm shared read lớn, index đang thiếu. Với query có LIMIT nhỏ, index giúp đọc Top-N heapsort chỉ vài dòng thay vì sort toàn bộ.'
+},
+{
+  id: 'qz-sql-050',
+  topic: 'sql',
+  q: 'Mức isolation READ COMMITTED trên PostgreSQL ngăn chặn hiện tượng nào?',
+  options: [
+    'Dirty read (đọc dữ liệu chưa commit)',
+    'Non-repeatable read (đọc cùng dòng hai lần thấy hai giá trị)',
+    'Phantom read (đọc lại tập kết quả thấy dòng mới/lost)',
+    'Serialization anomaly (write skew)'
+  ],
+  answer: 0,
+  explain: '**Đáp án đúng: Dirty read (đọc dữ liệu chưa commit).**\n\n### Vì sao đúng\nCác mức isolation và hiện tượng bị chặn:\n\n| Mức | Dirty read | Non-repeatable read | Phantom read |\n|-----|------------|---------------------|--------------|\n| READ UNCOMMITTED | Có | Có | Có |\n| **READ COMMITTED** | **Không** | **Có** | **Có** |\n| REPEATABLE READ | Không | Không | Có (theo chuẩn SQL; PostgreSQL: Không*) |\n| SERIALIZABLE | Không | Không | Không |\n\n*PostgreSQL REPEATABLE READ dùng snapshot cho cả transaction nên **cũng chặn phantom read khi đọc**, nhưng vẫn có thể gặp **write skew** (cần SERIALIZABLE).\n\nỞ READ COMMITTED, mỗi câu lệnh thấy snapshot tại thời điểm câu lệnh chạy. Nếu transaction khác đã commit sửa dòng đó giữa hai lần đọc, bạn thấy hai giá trị khác nhau (non-repeatable read). Phantom read cũng xảy ra: dòng mới được insert và commit giữa hai lần SELECT.\n\n### Vì sao các phương án còn lại sai\n- **Non-repeatable read**: READ COMMITTED **không** chặn.\n- **Phantom read**: READ COMMITTED **không** chặn.\n- **Serialization anomaly**: chỉ SERIALIZABLE chặn.\n\n> Senior tip: nếu nghiệp vụ cần đọc ổn định (báo cáo, đối soát), hãy dùng SET TRANSACTION ISOLATION LEVEL REPEATABLE READ (hoặc REPEATABLE READ trong @Transactional). Nhưng nhớ: REPEATABLE READ trên PostgreSQL có thể báo lỗi could not serialize access due to concurrent update khi cập nhật cùng dòng — cần retry.'
+},
+{
+  id: 'qz-sql-051',
+  topic: 'sql',
+  multi: true,
+  q: 'Về VACUUM và bloat trên PostgreSQL, phát biểu nào ĐÚNG? (Chọn 2)',
+  options: [
+    'VACUUM (không FULL) dọn tuple chết, đánh dấu trang dữ liệu có thể tái sử dụng, **không** thu hồi disk space về OS; bảng vẫn to như trước nhưng INSERT sau nhanh hơn',
+    'VACUUM FULL khóa bảng độc quyền, viết lại toàn bộ bảng, thu hồi disk space về OS, nhưng tốn thời gian và cần downtime',
+    'autovacuum mặc định chỉ chạy khi bảng có hơn 20% tuple chết; không thể điều chỉnh ngưỡng này',
+    'Bloat chỉ xảy ra khi xóa dữ liệu, UPDATE không tạo bloat vì ghi đè trực tiếp'
+  ],
+  answer: [0, 1],
+  explain: '**Đáp án đúng: 0 và 1.**\n\n### Vì sao 0 đúng\nVACUUM thông thường (không FULL):\n- Quét bảng, tìm tuple chết (dead tuple — tuple không còn bị bất kỳ transaction nào nhìn thấy).\n- Đánh dấu các trang chứa tuple chết là **có thể tái sử dụng** (ghi vào Free Space Map).\n- **Không** co lại file vật lý, **không** trả disk space về OS. Bảng vẫn to như cũ, nhưng INSERT/UPDATE sau sẽ dùng lại chỗ trống đó.\n- Chạy song song với ứng dụng (share lock), không chặn đọc/ghi.\n\n### Vì sao 1 đúng\nVACUUM FULL:\n- Lấy **AccessExclusiveLock** (khóa độc quyền) → chặn mọi đọc/ghi.\n- Viết lại **toàn bộ bảng** vào file mới, loại bỏ hoàn toàn tuple chết → file vật lý co lại, disk space trả về OS.\n- Tốn thời gian tỷ lệ với kích thước bảng, cần downtime → chỉ dùng khi thực sự cần thu hồi space gấp.\n\n### Vì sao 2 và 3 sai\n- **autovacuum ngưỡng 20% không đổi được**: sai. Có thể điều chỉnh autovacuum_vacuum_scale_factor (mặc định 0.2) và autovacuum_vacuum_threshold (mặc định 50) ở cấp bảng: ALTER TABLE orders SET (autovacuum_vacuum_scale_factor = 0.05;) — quan trọng cho bảng nóng.\n- **UPDATE không tạo bloat**: sai hoàn toàn. PostgreSQL MVCC: UPDATE = **ghi tuple mới + đánh dấu tuple cũ là dead**. Cả DELETE lẫn UPDATE đều tạo dead tuple → bloat. Chỉ INSERT không tạo dead tuple.\n\n> Senior tip: theo dõi pg_stat_user_tables.n_dead_tup và n_live_tup. Tỷ lệ n_dead_tup / n_live_tup > 0.1 là cảnh báo bloat. Bật log_autovacuum_min_duration = 0 để xem autovacuum chạy bao lâu, có kịp không.'
+},
+{
+  id: 'qz-sql-052',
+  topic: 'sql',
+  q: 'Transaction T1 (REPEATABLE READ) đọc balance = 100. T2 (READ COMMITTED) UPDATE balance = 200 và COMMIT. T1 đọc lại balance. T1 thấy giá trị nào?',
+  options: [
+    '200 (giá trị mới nhất sau khi T2 commit)',
+    '100 (snapshot của T1 tại thời điểm bắt đầu transaction)',
+    'Lỗi serialization failure',
+    'NULL vì dòng bị khoá'
+  ],
+  answer: 1,
+  explain: '**Đáp án đúng: 100 (snapshot của T1 tại thời điểm bắt đầu transaction).**\n\n### Vì sao đúng\nREPEATABLE READ trên PostgreSQL dùng **snapshot isolation**: toàn bộ transaction thấy một snapshot dữ liệu tại thời điểm **transaction bắt đầu** (thực tế là tại câu lệnh đầu tiên). Dù T2 đã commit thay đổi, T1 vẫn thấy dữ liệu như cũ — đây chính là ý nghĩa của "repeatable read": đọc cùng một dòng bao nhiêu lần cũng thấy cùng giá trị.\n\nNếu T1 sau đó cố UPDATE balance = balance + 50 trên dòng T2 đã sửa, PostgreSQL sẽ báo lỗi:\n~~~\nERROR: could not serialize access due to concurrent update\n~~~\nVì T1 cố ghi dựa trên snapshot cũ mà dòng đã đổi — đây là cơ chế **first-committer-wins** của PostgreSQL cho REPEATABLE READ.\n\n### Vì sao các phương án còn lại sai\n- **200**: đó là hành vi của READ COMMITTED (mỗi câu lệnh thấy snapshot mới).\n- **Lỗi serialization failure**: chỉ xảy ra khi T1 cố **ghi** (UPDATE/DELETE) trên dòng đã bị T2 đổi. Chỉ đọc thì không lỗi.\n- **NULL**: dòng không bị xóa, chỉ giá trị đổi.\n\n> Senior tip: REPEATABLE READ phù hợp cho báo cáo, đối soát (cần snapshot ổn định). Nếu cần cập nhật sau khi đọc, hãy dùng SELECT ... FOR UPDATE (pessimistic lock) hoặc chấp nhận retry khi gặp lỗi serialization.'
+},
+{
+  id: 'qz-sql-053',
+  topic: 'sql',
+  q: 'Bảng events có cột user_id, event_type, created_at. Truy vấn thường lọc WHERE user_id = ? AND event_type = ? ORDER BY created_at DESC LIMIT 20. Index nào tốt nhất?',
+  options: [
+    'CREATE INDEX ON events (user_id, event_type, created_at DESC);',
+    'CREATE INDEX ON events (created_at DESC, user_id, event_type);',
+    'CREATE INDEX ON events (user_id, created_at DESC);',
+    'CREATE INDEX ON events (event_type, user_id, created_at DESC);'
+  ],
+  answer: 0,
+  explain: '**Đáp án đúng: CREATE INDEX ON events (user_id, event_type, created_at DESC);**\n\n### Vì sao đúng\nNguyên tắc thiết kế index cho truy vấn có lọc + sắp xếp + limit:\n1. **Cột điều kiện bằng (=) trước**: user_id và event_type đều là so sánh bằng → đặt đầu.\n2. **Cột sắp xếp (ORDER BY) sau**: created_at DESC đặt cuối để index cung cấp thứ tự sẵn, tránh bước Sort.\n3. **Chiều index khớp ORDER BY**: ghi DESC cho created_at để Index Scan Backward trả đúng thứ tự.\n\nVới index (user_id, event_type, created_at DESC):\n- Planner nhảy thẳng tới (user_id=?, event_type=?).\n- Trong nhóm đó, created_at đã sắp giảm dần → đọc 20 dòng đầu, dừng (Limit).\n- **Không có Sort node**, không đọc thừa.\n\n### Vì sao các phương án còn lại sai\n- **(created_at DESC, user_id, event_type)**: cột đầu là range (created_at không có điều kiện bằng) → không nhảy được tới user cụ thể.\n- **(user_id, created_at DESC)**: thiếu event_type → lọc event_type phải qua Filter (Rows Removed by Filter lớn nếu user có nhiều loại event).\n- **(event_type, user_id, created_at DESC)**: event_type thường cardinality thấp (ít giá trị) → prefix kém chọn lọc hơn user_id.\n\n> Senior tip: luôn kiểm tra EXPLAIN (ANALYZE, BUFFERS) — nếu thấy Index Scan kèm Limit mà không có Sort, index đang hiệu quả.'
+},
+{
+  id: 'qz-sql-054',
+  topic: 'sql',
+  multi: true,
+  q: 'Về FOR UPDATE SKIP LOCKED trên PostgreSQL, phát biểu nào ĐÚNG? (Chọn 2)',
+  options: [
+    'Bỏ qua các dòng đang bị transaction khác khoá (FOR UPDATE/FOR SHARE), chỉ trả về dòng không bị khoá — dùng cho hàng đợi công việc (worker queue)',
+    'Nếu tất cả dòng đều bị khoá, trả về kết quả rỗng (không chờ, không báo lỗi)',
+    'Tương đương FOR UPDATE NOWAIT — cả hai đều không chờ khoá',
+    'Chỉ hoạt động với SELECT, không dùng được với UPDATE hoặc DELETE'
+  ],
+  answer: [0, 1],
+  explain: '**Đáp án đúng: 0 và 1.**\n\n### Vì sao 0 đúng\nFOR UPDATE SKIP LOCKED cho phép **bỏ qua** dòng đang bị khoá bởi transaction khác. Dòng nào đang bị FOR UPDATE/FOR SHARE/UPDATE/DELETE giữ khoá sẽ **không xuất hiện** trong kết quả. Worker queue pattern kinh điển:\n~~~sql\nBEGIN;\nSELECT id, payload FROM job_queue\nWHERE status = \'PENDING\'\nORDER BY created_at\nFOR UPDATE SKIP LOCKED\nLIMIT 10;\n-- xử lý 10 job này\nUPDATE job_queue SET status = \'DONE\' WHERE id IN (...);\nCOMMIT;\n~~~\nNhiều worker chạy song song không bao giờ lấy trùng job.\n\n### Vì sao 1 đúng\nKhác với FOR UPDATE (chờ) và FOR UPDATE NOWAIT (báo lỗi 55P03 nếu bị chặn), SKIP LOCKED **không bao giờ chờ, không bao giờ báo lỗi** — chỉ lọc bỏ dòng bị khoá. Nếu hết dòng sẵn sàng, trả về empty result.\n\n### Vì sao 2 và 3 sai\n- **Tương đương NOWAIT**: NOWAIT báo lỗi ngay khi gặp khoá; SKIP LOCKED bỏ qua nhẹ nhàng. Hai hành vi khác nhau hoàn toàn.\n- **Chỉ SELECT**: UPDATE ... SET ... FROM (SELECT ... FOR UPDATE SKIP LOCKED) sub ... hoặc DELETE ... WHERE id IN (SELECT id ... FOR UPDATE SKIP LOCKED) đều hợp lệ — dùng subquery để chọn dòng rồi cập nhật/xoá.\n\n> Senior tip: SKIP LOCKED là "vũ khí bí mật" cho hàng đợi job, xử lý batch, rate limiting phân tán. Nhưng lưu ý: nó làm thay đổi ngữ nghĩa SELECT (có thể bỏ sót dòng) — chỉ dùng khi nghiệp vụ chấp nhận được (job queue, không phải báo cáo).'
+},
+{
+  id: 'qz-sql-055',
+  topic: 'sql',
+  q: 'Bảng accounts 10 triệu dòng. Cần chạy UPDATE accounts SET balance = balance - 100 WHERE id IN (1,2,3,...,10000) (10k id). Cách nào an toàn và hiệu quả nhất?',
+  options: [
+    'Chạy một câu UPDATE duy nhất với WHERE id IN (...) — PostgreSQL tự xử lý hàng loạt',
+    'Chia thành các batch nhỏ (ví dụ 500 id/lần), mỗi batch trong một transaction riêng, có FOR UPDATE để tránh deadlock',
+    'Dùng SELECT ... FOR UPDATE lấy toàn bộ 10k dòng rồi cập nhật trong ứng dụng',
+    'Tắt autovacuum rồi chạy UPDATE, bật lại sau khi xong'
+  ],
+  answer: 1,
+  explain: '**Đáp án đúng: Chia thành batch nhỏ, mỗi batch transaction riêng, có FOR UPDATE.**\n\n### Vì sao đúng\nCập nhật 10k dòng trong một transaction:\n- Giữ **row lock** trên 10k dòng suốt transaction → chặn transaction khác truy cập các dòng đó.\n- Tốn **lock memory** (mỗi lock ~270 bytes) → 10k lock ≈ 2.7 MB, nhiều transaction cùng làm dễ hết max_locks_per_transaction (mặc định 64).\n- Transaction dài → tăng cơ hội deadlock, bloat (dead tuple), và WAL lớn.\n\nCách an toàn: **batch 500–1000 id/lần**, mỗi batch một transaction:\n~~~sql\n-- Mỗi batch\nBEGIN;\nSELECT id FROM accounts WHERE id IN (...) FOR UPDATE;  -- khoá trước\nUPDATE accounts SET balance = balance - 100 WHERE id IN (...);\nCOMMIT;\n-- ngủ chút (pg_sleep(0.1)) để giảm áp lực\n~~~\n- Transaction ngắn → lock nhả nhanh, WAL nhỏ, deadlock ít.\n- FOR UPDATE trong batch đảm bảo đọc giá trị mới nhất và tránh lost update.\n- Có thể chạy song song nhiều batch (mỗi batch id không giao nhau).\n\n### Vì sao các phương án còn lại sai\n- **Một câu UPDATE duy nhất**: rủi ro lock contention, deadlock, lock memory, WAL spike.\n- **SELECT FOR UPDATE 10k dòng rồi cập nhật ở app**: giữ lock cực lâu (round-trip app), tệ hơn.\n- **Tắt autovacuum**: cực kỳ nguy hiểm — dead tuple tích lũy, bloat nổ, statistics sai, query chậm. Không bao giờ tắt autovacuum trên production.\n\n> Senior tip: với hàng triệu dòng, hãy dùng pg_sleep(0.01) giữa các batch để cho các transaction khác xen kẽ. Và luôn theo dõi pg_locks khi chạy batch lớn.'
+},
+{
+  id: 'qz-sql-056',
+  topic: 'sql',
+  q: 'Cột data kiểu jsonb trong bảng events. Truy vấn thường lọc WHERE data->>\'type\' = \'login\'. Cách tạo index hiệu quả nhất?',
+  options: [
+    'CREATE INDEX ON events ((data->>\'type\'));',
+    'CREATE INDEX ON events (data);',
+    'CREATE INDEX ON events USING GIN (data);',
+    'CREATE INDEX ON events USING GIN (data jsonb_path_ops);'
+  ],
+  answer: 0,
+  explain: '**Đáp án đúng: CREATE INDEX ON events ((data->>\'type\));**\n\n### Vì sao đúng\nKhi truy vấn lọc theo một **key cụ thể** trong jsonb (ví dụ data->>\'type\'), index **expression index** (biểu thức) trên chính key đó là tối ưu nhất:\n- Index B-tree trên biểu thức (data->>\'type\') lưu giá trị text của key type.\n- Truy vấn WHERE data->>\'type\' = \'login\' khớp chính xác expression index → Index Scan cực nhanh.\n- Nhẹ hơn GIN index rất nhiều (GIN index toàn bộ jsonb to và chậm khi update).\n\n### Vì sao các phương án còn lại sai\n- **CREATE INDEX ON events (data)**: cú pháp sai — không thể index trực tiếp cột jsonb bằng B-tree; cần USING GIN.\n- **USING GIN (data)**: GIN index toàn bộ jsonb — hỗ trợ tìm kiếm mọi key, nhưng to (lưu mọi key/value), chậm khi INSERT/UPDATE (phải cập nhật GIN). Dùng khi truy vấn **ad-hoc nhiều key khác nhau**.\n- **GIN (data jsonb_path_ops)**: tối ưu cho @> (contains) query, không tối ưu cho equality trên key đơn lẻ.\n\n> Senior tip: nếu chỉ lọc 1–2 key cố định trong jsonb, hãy tạo **expression index** cho từng key. Chỉ dùng GIN khi thực sự cần tìm kiếm tùy ý (full-text, contains, exists key).'
 }
 );
