@@ -15910,5 +15910,393 @@ Cách sửa: đổi sang {{new ThreadPoolExecutor(20, 50, 60, SECONDS, new Array
     "Troubleshooting",
     "Observability",
   ]
+},
+{
+  id: 'devops-180',
+  topic: 'devops',
+  level: 'senior',
+  q: 'Service Java đặt CPU limit 500m nhưng GC và các pool vẫn tạo nhiều luồng; JVM nhìn thấy bao nhiêu CPU, throttling ảnh hưởng thế nào, và bạn đặt requests/limits CPU ra sao để vừa tránh chậm vừa không tốn tài nguyên?',
+  a: `**Tóm tắt:** JVM từ JDK 8u191 trở lên tự đọc giới hạn CPU của container (cgroup) để quyết định số GC thread, số luồng JIT và độ song song của các pool. Nếu đặt CPU limit quá thấp, JVM thấy ít CPU, tạo ít luồng và bị CFS throttling (kernel tạm dừng tiến trình khi dùng hết hạn mức CPU trong mỗi chu kỳ 100ms) nên p99 tăng dù CPU trung bình thấp. Vì vậy requests nên bằng mức dùng ổn định (p95), limits bằng mức đỉnh có kiểm soát, và dùng {{-XX:ActiveProcessorCount}} khi con số JVM tự suy ra không phản ánh đúng tải.
+
+### Container nhìn CPU khác máy thật thế nào
+Trên máy 8 nhân, {{Runtime.availableProcessors()}} trả về 8. Khi chạy trong container có {{cpu: 500m}} (tức 0.5 CPU), JVM container-aware đọc:
+- {{cpu.cfs_quota_us}} / {{cpu.cfs_period_us}} = 50000 / 100000 = 0.5
+- làm tròn lên tối thiểu 1, nên JVM thấy 1 CPU.
+
+Từ con số này, JVM đặt:
+- số GC thread của G1: 1 CPU thì ParallelGCThreads = 1, GC rất chậm khi heap tăng;
+- {{ForkJoinPool.commonPool()}} parallelism = CPU - 1, parallel stream gần như chạy tuần tự;
+- số luồng event loop của Netty (mặc định 2 × CPU).
+
+Nếu tắt container awareness ({{UseContainerSupport=false}}) hoặc dùng JDK 8 cũ trước 8u191, JVM thấy 8 CPU trên host, tạo hàng chục luồng trong khi chỉ được 0.5 CPU: context switch nhiều, throttling nặng hơn.
+
+### CFS throttling: vì sao latency tăng dù CPU không đầy
+CFS chia mỗi chu kỳ 100ms một hạn mức CPU (quota). Ví dụ limit 500m cho 50ms CPU mỗi 100ms. Khi nhiều Pod cùng lúc xử lý request trong 20ms đầu chu kỳ, chúng dùng hết quota và bị kernel hãm (throttle) đến chu kỳ sau. Triệu chứng:
+- {{container_cpu_cfs_throttled_periods_total}} tăng nhanh;
+- p99 latency nhảy bậc, p50 vẫn bình thường;
+- CPU trung bình nhìn thấp vì bị bóp, dễ kết luận sai là thiếu request chứ không thiếu CPU.
+
+### Đặt requests/limits thế nào
+- requests: mức CPU dùng ổn định ở p95, quyết định trọng số chia CPU khi node tranh chấp.
+- limits: mức đỉnh (p99) cộng đệm; với Java latency-sensitive thường 1–2 CPU, không đặt quá sát mức dùng thường xuyên.
+- Với dịch vụ có GC burst (full GC, khởi động, batch), cân nhắc bỏ CPU limit và chỉ đặt requests, vì limit cứng dễ gây throttling; đổi lại phải chấp nhận rủi ro lấn át node.
+- Nếu cần ép JVM dùng đúng số CPU vật lý của limit, đặt {{-XX:ActiveProcessorCount=N}}; nếu muốn cố định GC thread, đặt {{-XX:ParallelGCThreads=N}} và {{-XX:ConcGCThreads=N}}.
+
+~~~yaml
+resources:
+  requests:
+    cpu: "1"
+    memory: "2Gi"
+  limits:
+    cpu: "2"
+    memory: "2Gi"
+env:
+  - name: JAVA_TOOL_OPTIONS
+    value: >-
+      -XX:MaxRAMPercentage=70
+      -XX:ActiveProcessorCount=2
+      -XX:ParallelGCThreads=4
+      -XX:ConcGCThreads=1
+      -XX:+ExitOnOutOfMemoryError
+~~~
+
+### Ví dụ đời thực
+Dịch vụ thanh toán đặt {{cpu limit: 500m}}, {{availableProcessors = 1}}, heap 1.5 GiB. Khi flash sale, GC pause tăng, p99 từ 120ms lên 900ms trong khi CPU trung bình chỉ 45%. Điều tra {{container_cpu_cfs_throttled_periods_total}}: 40% chu kỳ bị throttle, GC log cho thấy 1 GC thread phải dọn heap lớn. Đổi sang requests 1 CPU, limit 2 CPU, {{ActiveProcessorCount=2}}, {{ParallelGCThreads=4}}. Sau 24 giờ: throttling còn 2%, p99 về 150ms, chi phí node tăng 12% nhưng bù lại giảm timeout và retry.
+
+### Trả lời mẫu khi phỏng vấn
+JVM hiện đại đọc cgroup nên số GC thread và độ song song của pool phụ thuộc CPU limit, không phải số core của node. Em đặt requests theo p95 để scheduler biết dịch vụ cần bao nhiêu, limits theo p99 cộng đệm, và luôn kiểm tra {{container_cpu_cfs_throttled_periods_total}}: nếu throttling cao mà CPU trung bình thấp thì đó là dấu hiệu limit quá sát. Với Java, em đặc biệt lưu ý 1 CPU khiến G1 chỉ có 1 GC thread và parallel stream mất tác dụng, nên em đặt tối thiểu 2 CPU hoặc dùng {{ActiveProcessorCount}}. Khi cần, em bỏ CPU limit cho dịch vụ nhạy trễ và chỉ giữ requests, vì throttling cứng tốn kém hơn phần CPU lấn át. Cuối cùng em đo lại p99, GC pause và chi phí node sau mỗi lần đổi, không đặt số theo cảm tính.
+
+> Senior tip: Đừng đặt CPU limit chỉ vì YAML mẫu trên mạng. Hãy đo throttling và GC trước: nếu p99 tăng nhưng CPU trung bình thấp, khả năng cao là throttling hoặc thiếu GC thread, không phải thiếu Pod.`,
+  follow: [
+    "Khi nào nên bỏ hẳn CPU limit, khi nào bắt buộc phải giữ, và rủi ro của mỗi lựa chọn?",
+    "Làm sao phân biệt latency tăng do CFS throttling, do GC pause, hay do downstream chậm?",
+    "Nếu node có 64 core nhưng Pod chỉ được 2 CPU, JVM cần cờ gì để không tạo hàng chục GC thread?",
+  ],
+  tags: [
+    "Kubernetes",
+    "CPU limit",
+    "CFS throttling",
+    "JVM",
+    "Requests/Limits",
+    "Performance",
+  ]
+},
+{
+  id: 'devops-181',
+  topic: 'devops',
+  level: 'senior',
+  q: 'Khi bảo trì node, kubectl drain bị treo vì PodDisruptionBudget không cho evict; bạn giải thích PDB hoạt động thế nào (minAvailable/maxUnavailable, unhealthyPodEvictionPolicy), vì sao drain bị chặn, và thiết kế PDB cộng topology cho service Java 3 replica để vừa an toàn vừa không treo?',
+  a: `**Tóm tắt:** PodDisruptionBudget (PDB) là chính sách bảo vệ số Pod tối thiểu còn sống của một nhóm Pod theo label. Khi bạn chạy {{kubectl drain}} để bảo trì node, Kubernetes gọi Eviction API; nếu việc evict làm vi phạm PDB, API trả về 429 TooManyRequests và drain chờ, hoặc treo nếu không bao giờ đủ điều kiện. Vì vậy cần đặt PDB khớp với số replica, kết hợp topologySpreadConstraints để Pod không dồn một node, và hiểu {{unhealthyPodEvictionPolicy}} để Pod đang lỗi không chặn drain vĩnh viễn.
+
+### Hai loại gián đoạn
+- Gián đoạn không tự nguyện (involuntary): node crash, OOMKill, Pod bị xóa trực tiếp. PDB KHÔNG bảo vệ.
+- Gián đoạn tự nguyện (voluntary): {{kubectl drain}}, eviction API, Cluster Autoscaler thu gọn node. PDB bảo vệ loại này.
+
+### PDB hoạt động ra sao
+PDB chọn Pod theo {{spec.selector}}, rồi đặt một trong hai ràng buộc:
+- {{minAvailable}}: số Pod tối thiểu phải sống (số tuyệt đối hoặc %);
+- {{maxUnavailable}}: số Pod tối đa được phép gián đoạn cùng lúc.
+
+Đặt cả hai là không hợp lệ. Controller PDB theo dõi số Pod healthy (đủ điều kiện, không bị xóa) và cập nhật {{status.disruptionsAllowed}}. Eviction API đọc con số này: nếu {{disruptionsAllowed = 0}}, Pod bị từ chối evict.
+
+### Vì sao drain bị treo
+Quy trình {{kubectl drain}}:
+1. Cordon node: node không nhận Pod mới.
+2. Liệt kê Pod trên node (bỏ qua DaemonSet, mirror Pod).
+3. Gọi eviction cho từng Pod; nếu PDB chặn thì nhận 429 và thử lại.
+4. Chờ Pod biến mất, rồi sang node tiếp theo.
+
+Nếu DB hoặc downstream chậm khiến Pod thay thế không Ready, hoặc cluster hết tài nguyên, PDB sẽ chặn mãi và drain treo. {{kubectl drain}} có {{--timeout}} để không treo vô hạn, nhưng khi timeout thì node vẫn còn Pod và bảo trì chưa xong.
+
+### unhealthyPodEvictionPolicy
+Từ Kubernetes 1.26 (alpha, beta 1.27, GA 1.31), PDB có {{spec.unhealthyPodEvictionPolicy}}:
+- {{IfHealthyBudget}} (mặc định): Pod đang crash/error vẫn bị tính vào healthy budget, nên có thể chặn evict;
+- {{AlwaysAllow}}: cho evict Pod unhealthy bất kể budget, hữu ích khi Pod lỗi không thể phục hồi.
+
+### Thiết kế cho service Java 3 replica
+- PDB {{minAvailable: 2}}: chỉ cho evict 1 Pod mỗi lần, đảm bảo còn 2 Pod phục vụ.
+- {{topologySpreadConstraints}} maxSkew 1 theo {{topology.kubernetes.io/zone}} và {{kubernetes.io/hostname}}: tránh 3 Pod cùng node hoặc cùng zone.
+- {{PodAntiAffinity}} dạng preferred nếu cần rải đều hơn.
+- Đảm bảo Pod thay thế Ready nhanh: readiness probe hợp lý, không quá nặng.
+- Khi drain, chạy tuần tự từng node và chờ Pod mới Ready trước khi drain node tiếp.
+
+~~~yaml
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: payment-pdb
+spec:
+  minAvailable: 2
+  selector:
+    matchLabels:
+      app: payment
+  unhealthyPodEvictionPolicy: IfHealthyBudget
+~~~
+
+### Ví dụ đời thực
+Service thanh toán 3 replica, PDB minAvailable 2. Khi nâng cấp node, mỗi node chỉ evict được 1 Pod, nên luôn còn 2 Pod; trong lúc chờ Pod mới Ready (40 giây), traffic vẫn được phục vụ, không có 503. Nhưng một lần cluster thiếu tài nguyên, Pod thay thế Pending 45 phút, drain treo và cụm không thể thu gọn node. Xử lý: thêm overprovision (pause Pod có priority thấp), đặt priorityClass cho payment, và đặt {{--timeout=15m}} để bảo trì có điểm dừng rõ ràng.
+
+### Trả lời mẫu khi phỏng vấn
+PDB là ràng buộc ở mức voluntary disruption, không phải cơ chế chống crash. Em đặt minAvailable theo số replica và SLO: 3 replica thì minAvailable 2, nghĩa là mỗi lần chỉ mất 1 Pod. Nhưng PDB chỉ hiệu quả khi có topologySpreadConstraints, nếu không 3 Pod có thể cùng node và một lần drain mất cả 3. Em cũng kiểm tra Pod thay thế Ready nhanh, vì PDB không giúp gì nếu không có chỗ chạy Pod mới. Với Pod lỗi, em cân nhắc unhealthyPodEvictionPolicy AlwaysAllow để drain không bị chặn bởi Pod đã hỏng. Cuối cùng em luôn đặt timeout cho drain và diễn tập bảo trì định kỳ, vì PDB đúng trên giấy nhưng vẫn có thể treo khi thiếu capacity.
+
+> Senior tip: PDB không tạo thêm Pod; nó chỉ từ chối evict. Vì vậy phải đi cùng cluster capacity, priorityClass và topology spread, nếu không PDB biến thành cái phanh treo cả quy trình bảo trì.`,
+  follow: [
+    "minAvailable dạng phần trăm và dạng số tuyệt đối khác nhau thế nào khi số replica thay đổi?",
+    "Vì sao rolling update của Deployment không bị PDB chặn, và điều đó có ý nghĩa gì khi kiểm thử?",
+    "unhealthyPodEvictionPolicy AlwaysAllow có rủi ro gì với dữ liệu có state?",
+  ],
+  tags: [
+    "Kubernetes",
+    "PodDisruptionBudget",
+    "Node drain",
+    "Eviction",
+    "High Availability",
+  ]
+},
+{
+  id: 'devops-182',
+  topic: 'devops',
+  level: 'senior',
+  q: 'Service consume Kafka bị tồn 2 triệu message khi traffic tăng; HPA theo CPU không scale vì consumer I/O-bound. Bạn dùng KEDA để scale theo consumer group lag như thế nào: kiến trúc, cách tính lag, cooldown, và bẫy khi consumer rebalance?',
+  a: `**Tóm tắt:** KEDA là operator chạy trong Kubernetes, đọc số liệu từ nguồn ngoài (Kafka, SQS, RabbitMQ, Prometheus…) rồi tạo và điều khiển một HPA. Với Kafka, KEDA dùng AdminClient đọc lag của consumer group (offset cuối trên broker trừ offset đã commit), rồi HPA so với {{lagThreshold}} để tính số Pod. Nhờ đó service I/O-bound vẫn scale đúng theo việc còn tồn thay vì theo CPU.
+
+### Vì sao HPA theo CPU không đủ
+Consumer Kafka thường chờ dữ liệu (I/O-bound): CPU chỉ 20–30% nhưng queue cao. HPA CPU không scale, message tồn 2 triệu, trễ kéo dài. Lag (độ trễ hoặc tồn đọng) mới là tín hiệu đúng: lag là số message chưa được xử lý.
+
+### Kiến trúc KEDA
+- Operator: theo dõi {{ScaledObject}} và {{ScaledJob}}, tạo hoặc điều chỉnh HPA/Job.
+- Metrics adapter: expose {{external.metrics.k8s.io}} để HPA v2 đọc metric ngoài.
+- Scaler: adapter cho từng nguồn; scaler Kafka dùng AdminClient kết nối broker.
+- HPA: tính số replica mong muốn từ metric ngoài và ngưỡng.
+
+~~~seq
+title: KEDA scale theo lag Kafka
+actors: App | KEDA | Kafka | HPA
+App -> Kafka: consume và commit offset
+KEDA -> Kafka: đọc end offset và committed offset
+Kafka --> KEDA: lag từng partition
+KEDA -> HPA: cập nhật external metric
+HPA -> App: tăng hoặc giảm số replica
+~~~
+
+### Lag được tính thế nào
+1. Lấy danh sách partition của topic.
+2. Gọi {{listConsumerGroupOffsets}} để lấy committed offset của consumer group.
+3. Gọi {{endOffsets}} để lấy offset cuối cùng trên broker.
+4. Lag mỗi partition = endOffset − committedOffset.
+5. KEDA cộng tổng lag; HPA tính số replica mong muốn xấp xỉ {{tổng lag / lagThreshold}}, tối đa bằng số partition nếu không bật {{allowIdleConsumers}}.
+
+Ví dụ 8 partition, tổng lag 8000, {{lagThreshold: 100}} → muốn 80 replica, nhưng bị chặn ở 8 vì mỗi partition chỉ có một consumer. Khi đó phải xử lý partition hot hoặc tăng số partition, không phải tăng replica vô hạn.
+
+### ScaledObject
+~~~yaml
+apiVersion: keda.sh/v1alpha1
+kind: ScaledObject
+metadata:
+  name: payment-consumer
+spec:
+  scaleTargetRef:
+    name: payment-consumer
+  minReplicaCount: 2
+  maxReplicaCount: 20
+  cooldownPeriod: 300
+  triggers:
+    - type: kafka
+      metadata:
+        bootstrapServers: kafka:9092
+        consumerGroup: payment-cg
+        topic: payment-events
+        lagThreshold: "100"
+~~~
+
+### Bẫy thường gặp
+- {{cooldownPeriod}} quá ngắn: scale-down rồi lag tăng lại, gây dao động. Nên đặt 5–10 phút.
+- {{minReplicaCount: 0}} scale về 0: chỉ phù hợp consumer không cần giữ trạng thái; với app có cache/JIT nên giữ tối thiểu 1–2.
+- {{maxReplicaCount}} lớn hơn số partition: Pod dư không có partition để đọc, tốn tài nguyên.
+- Một partition hot do key lệch: lag tập trung một partition, tăng replica không chia lại được; phải đổi key hoặc tăng partition.
+- Scale consumer làm rebalance: nên dùng {{CooperativeStickyAssignor}} để giảm dừng khi chia lại.
+- Downstream (DB) là nút cổ chai: tăng consumer quá mức sẽ làm nghẽn DB; cần giới hạn maxReplicaCount theo sức chịu của DB.
+
+### Ví dụ đời thực
+Flash sale 9h, lag tăng từ 5 nghìn lên 2 triệu trong 3 phút, consumer 4 replica CPU 30%. KEDA scale lên 8 replica (đúng bằng số partition), lag giảm còn 50 nghìn sau 6 phút, sau đó cooldown 300 giây về 4. Tuy nhiên DB connection pool đạt trần 100 và có 2% query timeout; lần sau đặt maxReplicaCount 6 và giới hạn pool theo công thức số replica × connection mỗi Pod.
+
+### Trả lời mẫu khi phỏng vấn
+Em không scale consumer theo CPU vì nó I/O-bound. Em dùng KEDA với ScaledObject trỏ vào Kafka scaler: nó đọc lag của consumer group và đưa vào HPA dạng external metric, HPA tính số replica theo lag. Em đặt minReplicaCount 2 để không mất JIT/cache, maxReplicaCount theo số partition và sức chịu của DB, cooldown 5 phút để tránh dao động. Em cũng kiểm tra phân bố key, vì một partition hot thì scale bao nhiêu cũng vô ích. Với rebalance, em dùng cooperative sticky assignor và theo dõi thời gian dừng. Cuối cùng em đo lag giảm bao lâu và chi phí DB, không chỉ nhìn số replica.
+
+> Senior tip: Với Kafka, số partition là trần cứng của consumer trong một group. Trước khi đặt maxReplicaCount, hãy kiểm tra partition count và phân bố key; nếu không, KEDA sẽ báo mong muốn 80 replica nhưng chỉ chạy được 8.`,
+  follow: [
+    "lagThreshold nên đặt theo tổng lag hay theo lag mỗi partition, và điều đó ảnh hưởng thế nào đến số replica?",
+    "Khi nào nên scale về 0, khi nào phải giữ tối thiểu một consumer để không mất offset?",
+    "Làm sao phát hiện một partition hot và xử lý mà không phải tăng partition bừa?",
+  ],
+  tags: [
+    "Kubernetes",
+    "KEDA",
+    "Kafka",
+    "HPA",
+    "Autoscaling",
+    "Consumer Lag",
+  ]
+},
+{
+  id: 'devops-183',
+  topic: 'devops',
+  level: 'senior',
+  q: 'Secret nằm trong Vault hoặc AWS Secrets Manager nhưng app Spring Boot trên K8s cần đọc DB password và API key; bạn dùng External Secrets Operator và Vault CSI driver thế nào để đồng bộ, xoay vòng tự động và không phải restart Pod?',
+  a: `**Tóm tắt:** External Secrets Operator (ESO) là operator đồng bộ secret từ hệ thống quản lý tập trung như HashiCorp Vault, AWS Secrets Manager, GCP Secret Manager vào một Kubernetes Secret; ứng dụng vẫn đọc qua biến môi trường hoặc file mount như bình thường. Vault CSI driver đi hướng khác: mount trực tiếp secret thành volume, không tạo Kubernetes Secret. Điểm khó không phải là đọc được secret mà là xoay vòng không restart: env của Pod là bất biến, còn file mount được kubelet cập nhật định kỳ nên app phải tự reload.
+
+### Vì sao không để secret trong Git hoặc Secret thô
+- Kubernetes Secret chỉ mã hoá base64, ai có quyền {{get secret}} là đọc được, không phải mã hoá.
+- Secret commit vào Git là lộ vĩnh viễn, kể cả sau khi xóa.
+- Token tĩnh trong CI hoặc trong Pod dễ bị rò; nên dùng workload identity (IRSA trên EKS, Workload Identity trên GKE) để ESO gọi Vault/AWS không cần key dài hạn.
+
+### ESO hoạt động thế nào
+1. {{SecretStore}} hoặc {{ClusterSecretStore}} khai báo backend: địa chỉ Vault, region AWS, cách xác thực.
+2. {{ExternalSecret}} khai báo secret cần lấy, ánh xạ key từ backend sang key của Kubernetes Secret.
+3. Controller ESO đọc, gọi backend, tạo hoặc cập nhật Kubernetes Secret theo {{refreshInterval}}.
+4. Pod mount Secret đó như bình thường.
+
+~~~seq
+title: ESO đồng bộ secret từ Vault
+actors: App | ESO | Vault | K8s
+ESO -> Vault: đọc payment/db bằng workload identity
+Vault --> ESO: JSON gồm user và password
+ESO -> K8s: tạo hoặc cập nhật Secret
+App -> K8s: đọc Secret qua env hoặc volume
+~~~
+
+### ExternalSecret ví dụ
+~~~yaml
+apiVersion: external-secrets.io/v1beta1
+kind: ExternalSecret
+metadata:
+  name: payment-db
+spec:
+  refreshInterval: 1h
+  secretStoreRef:
+    name: vault-backend
+    kind: ClusterSecretStore
+  target:
+    name: payment-db
+    creationPolicy: Owner
+  data:
+    - secretKey: DB_PASSWORD
+      remoteRef:
+        key: payment/db
+        property: password
+~~~
+
+### Xoay vòng không downtime
+- Cập nhật Kubernetes Secret KHÔNG tự đổi biến môi trường của Pod đang chạy: env chỉ đọc lúc khởi động. Muốn nhận password mới phải restart Pod.
+- Nếu mount dạng volume, kubelet đồng bộ file mới sau khoảng một phút; app phải theo dõi và reload.
+- Spring Boot có thể import cấu hình dạng file: {{spring.config.import=optional:configtree:/etc/secrets/}}. Kết hợp Actuator {{/actuator/refresh}} và {{@RefreshScope}} để nạp lại bean; HikariCP cần {{keepaliveTime}} để phát hiện kết nối cũ.
+- Với DB động, dùng {{database secrets engine}} của Vault: mỗi Pod nhận credential có lease, tự gia hạn trước khi hết hạn, không cần rotation thủ công.
+
+### Ví dụ đời thực
+Service thanh toán 12 Pod, mật khẩu DB xoay mỗi 90 ngày. ESO cập nhật Secret sau 1 giờ, nhưng env cũ vẫn giữ password cũ; 3 Pod khởi động lại sau đó mới kết nối được, gây 90 giây lỗi thanh toán. Khắc phục: mount secret dạng file, dùng Spring configtree và {{@RefreshScope}}, HikariCP keepalive 30 giây, đồng thời thêm checksum annotation để rollout restart có kiểm soát khi secret đổi cấu trúc.
+
+### Trả lời mẫu khi phỏng vấn
+Em tách secret khỏi Git bằng ESO hoặc Vault CSI, và xác thực bằng workload identity để không có token tĩnh. Với ứng dụng Spring Boot, em thường mount secret dạng file và dùng configtree, vì env không tự cập nhật khi Secret đổi. Em kết hợp refresh có kiểm soát và connection pool có keepalive để xoay vòng không downtime; với DB, em ưu tiên dynamic credential có lease hơn là password tĩnh. Em cũng giới hạn RBAC để chỉ ESO đọc backend và chỉ namespace cần thiết đọc Secret, đồng thời bật audit để biết ai đã truy cập.
+
+> Senior tip: Đừng coi refreshInterval là cơ chế xoay vòng. ESO chỉ cập nhật Kubernetes Secret; còn Pod có nhận secret mới hay không phụ thuộc cách app đọc (env bất biến, file thì phải reload). Hãy thiết kế app chịu được hai mật khẩu trong một cửa sổ ngắn.`,
+  follow: [
+    "So sánh env, file mount và dynamic credential của Vault: khi nào chọn cái nào?",
+    "Làm sao phát hiện Pod đang dùng secret cũ trước khi rotation gây lỗi hàng loạt?",
+    "RBAC nên giới hạn thế nào để một namespace không đọc được Secret của namespace khác?",
+  ],
+  tags: [
+    "Kubernetes",
+    "Vault",
+    "External Secrets",
+    "Secret Management",
+    "Security",
+  ]
+},
+{
+  id: 'devops-184',
+  topic: 'devops',
+  level: 'senior',
+  q: 'Deploy canary bằng Argo Rollouts: canary 5% nhưng lỗi tăng, bạn thiết kế cơ chế tự động rollback an toàn thế nào (AnalysisTemplate, abort, rollback window), và vì sao không nên rollback khi migration DB đã đổi schema?',
+  a: `**Tóm tắt:** Argo Rollouts thay Deployment bằng CRD Rollout, tách ReplicaSet stable (bản cũ) và canary (bản mới), rồi điều khiển tỉ lệ traffic theo từng bước. Mỗi bước có thể gắn AnalysisTemplate chạy truy vấn Prometheus; nếu metric vượt ngưỡng, Rollout tự abort, đưa traffic về 100% stable và giữ Pod canary một lúc để debug. Rollback an toàn phụ thuộc vào việc giữ ReplicaSet cũ (rollbackWindow) và thiết kế migration DB tương thích ngược.
+
+### Rollout điều khiển canary thế nào
+- Tạo ReplicaSet canary với image mới, stable vẫn chạy image cũ.
+- {{setWeight}} thay đổi tỉ lệ traffic qua Service/Ingress/Gateway (Istio, NGINX, ALB…).
+- {{pause}} dừng lại để theo dõi; {{AnalysisRun}} chạy metric trong lúc pause.
+- Nếu analysis fail hoặc vượt {{failureLimit}}, controller gọi abort: canary về weight 0, stable nhận 100%.
+- {{abortScaleDownDelaySeconds}} giữ Pod canary sau abort (mặc định 30 giây) để lấy log/trace.
+- {{rollbackWindow.revisions}} giữ số phiên bản cũ đủ để {{kubectl argo rollouts undo}} hoạt động.
+
+~~~seq
+title: Argo Rollouts canary và tự rollback
+actors: Argo | Stable | Canary | Prometheus
+Argo -> Canary: tạo 5% traffic
+Canary -> Prometheus: sinh metric lỗi và p99
+Prometheus --> Argo: truy vấn analysis
+Argo -> Argo: lỗi vượt ngưỡng thì abort
+Argo -> Stable: đưa 100% traffic về bản cũ
+~~~
+
+### AnalysisTemplate
+AnalysisTemplate khai báo các metric cần theo dõi, ví dụ:
+- {{successCondition}}: điều kiện đạt, ví dụ {{result[0] >= 0.99}} với tỉ lệ thành công;
+- {{failureCondition}}: điều kiện fail;
+- {{interval}}, {{count}}: tần suất và số lần đo;
+- {{failureLimit}}: số lần fail tối đa trước khi rollout thất bại;
+- {{inconclusive}}: khi không đủ dữ liệu (traffic quá ít).
+
+Nếu dùng metric dạng query Prometheus, cần đặt {{startingStep}} để chỉ chạy sau khi canary đã nhận traffic.
+
+### Rollout canary ví dụ
+~~~yaml
+apiVersion: argoproj.io/v1alpha1
+kind: Rollout
+metadata:
+  name: payment
+spec:
+  replicas: 6
+  strategy:
+    canary:
+      steps:
+        - setWeight: 5
+        - pause: { duration: 10m }
+        - setWeight: 25
+        - pause: { duration: 10m }
+        - setWeight: 50
+        - pause: { duration: 10m }
+      abortScaleDownDelaySeconds: 120
+      analysis:
+        templates:
+          - templateName: success-rate
+        startingStep: 1
+  rollbackWindow:
+    revisions: 3
+~~~
+
+### Vì sao rollback có thể nguy hiểm
+- Stateful trong phiên: session, cache, idempotency key gắn với bản mới. Rollback về bản cũ có thể không đọc được dữ liệu bản mới.
+- Migration DB: nếu bản mới đã thêm cột NOT NULL hoặc xóa cột, bản cũ sẽ lỗi khi chạy. Nguyên tắc expand/contract: thêm cột nullable, deploy code đọc được cả hai, chỉ xóa cột ở bản sau khi đã ổn định.
+- Warm-up Java: JIT và cache chưa nóng, p99 của canary cao hơn trong vài phút đầu, dễ bị analysis đánh giá nhầm. Nên loại bỏ giai đoạn đầu khỏi cửa sổ đo hoặc đặt {{initialDelay}}.
+- Traffic quá ít: tỉ lệ lỗi 0/10 request không đủ tin cậy, nên {{inconclusive}} thay vì fail.
+
+### Ví dụ đời thực
+Canary 5% trong 10 phút, tỉ lệ lỗi tăng từ 0.2% lên 3.5% do một truy vấn mới thiếu index. Analysis fail sau 40 giây, Rollout abort, 100% traffic về stable, không có downtime; 200 giao dịch bị lỗi được retry. Rollback code xong, team thêm index và fix-forward. Nếu lúc đó đã xóa cột cũ trong migration, việc rollback sẽ thất bại vì bản cũ không đọc được schema mới.
+
+### Trả lời mẫu khi phỏng vấn
+Em dùng Argo Rollouts với canary từng bước và AnalysisTemplate chạy Prometheus, vì nó cho phép tự động abort thay vì chờ người thức đêm. Em đặt failureLimit và startingStep để chỉ đánh giá khi canary đã có traffic thật, tránh kết luận từ 5 request. Em giữ rollbackWindow để undo nhanh và abortScaleDownDelaySeconds để còn Pod canary debug. Quan trọng nhất là migration DB phải tương thích ngược theo expand/contract, vì rollback code không cứu được schema đã phá vỡ bản cũ. Với Java, em tính đến warm-up và loại giai đoạn JIT chưa nóng khỏi cửa sổ đo. Cuối cùng em diễn tập abort định kỳ để chắc chắn đường rollback hoạt động.
+
+> Senior tip: Rollback chỉ an toàn khi schema và dữ liệu tương thích ngược. Hãy coi migration DB là một phần của chiến lược phát hành, không phải việc chạy sau khi deploy; nếu cần phá vỡ tương thích, dùng bản phát hành hai bước chứ đừng rollback code.`,
+  follow: [
+    "abort và rollback khác nhau thế nào, và khi nào dùng undo thủ công?",
+    "Làm sao tránh false positive khi canary có ít traffic và metric dao động?",
+    "Với migration phá vỡ tương thích, quy trình expand/contract hai bước diễn ra ra sao?",
+  ],
+  tags: [
+    "Kubernetes",
+    "Argo Rollouts",
+    "Canary",
+    "Rollback",
+    "CI/CD",
+  ]
 }
 );
