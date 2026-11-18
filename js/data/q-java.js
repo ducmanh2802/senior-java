@@ -2309,7 +2309,7 @@ BigDecimal good = BigDecimal.valueOf(0.1); // dùng Double.toString -> "0.1"
 
 ### RoundingMode
 - Cần thiết khi chia hoặc chuyển đổi scale: {{divide(divisor, scale, RoundingMode.HALF_UP)}}.
-- Các mode phổ biến: {{HALF_UP}} (toán học), {{HALF_EVEN}} (banker's rounding, chuẩn IEEE 754R), {{DOWN}}/{{UP}}/{{CEILING}}/{{FLOOR}}.
+- các mode phổ biến: {{HALF_UP}} (toán học), {{HALF_EVEN}} (banker's rounding, chuẩn IEEE 754R), {{DOWN}}/{{UP}}/{{CEILING}}/{{FLOOR}}.
 - Không đặt scale cho {{divide}} sẽ ném {{ArithmeticException}} nếu không chia hết (non-terminating decimal).
 
 ### equals vs compareTo
@@ -12811,6 +12811,275 @@ Dich vu kiem tra don hang can p99 thap. Dung G1, thi thoai pause GC lam p99 tang
   refs: [
     { type: 'doc', title: 'JEP 474: ZGC Generational', url: 'https://openjdk.org/jeps/474' },
     { type: 'doc', title: 'JEP 490: ZGC: Remove Non-Generational', url: 'https://openjdk.org/jeps/490' }
+  ]
+},
+{
+  id: 'core-070',
+  topic: 'core',
+  level: 'senior',
+  q: 'Tai sao tien te trong Java phai dung BigDecimal thay double/float? Lam tron tien theo quy tac ngan hang (bankers rounding) la gi, va ap dung nhu the nao khi tinh thue, giam gia, chia tien giua nhieu tai khoan?',
+  a: `**Tom tat:** Khong bao gio dung double hoac float de luu tien vi dau ky so floating point bi sai sot (0.1 + 0.2 != 0.3), co the sai mot xu va sap xep loi khi tính toán lặp nhiều lần. Dung BigDecimal voi dinh dang toan bo (scale dinh dinh) va chon che do lam tron phu hop (ROUND_HALF_UP cho tien, ROUND_HALF_EVEN cho banker's rounding), luon thuc hien phep nhan chia bang BigDecimal, khong chuyen qua double giua chuan.
+
+### Cay cung va lam tron tien
+- double/float dung IEEE 754, luu gian xap xi, khong chinh xac voi thap phan (0.1 khong luu duoc chinh xac). Tinh toan lpn loi tap hop, loi sap xep khi tong so tien lon.
+- BigDecimal luu bo nhan (unscaled value) va scale (so chu so thap phan), chinh xac tuy y. Tao bang new BigDecimal("...") khong dung constructor double (ke thua sai sot).
+- Che do lam tron (RoundingMode): ROUND_HALF_UP (lam tron 0.5 len, thong dung cho tien), ROUND_HALF_EVEN (banker's rounding, lam tron 0.5 toi so chan, giam loi lech trung binh o lpn nhieu lan), ROUND_DOWN (cat bo phan thap phan, ve 0), ROUND_CEILING (ve duong duong, lam len voi so duong, cat bo voi so am).
+- Scale (so chu so thap phan) phai dinh dinh: tien mat thuong 2 chu so, tien vi mo 4-8 chu so. Khi phep nhan chia, phai luon dat scale va RoundingMode, nguoc lai ngoai le ArithmeticException neu chia khong het.
+
+### Ma vi du (duoi 30 dong)
+~~~java
+import java.math.BigDecimal;
+import java.math.RoundingMode;
+
+public class Tien {
+    private static final int SCALE = 2;
+    private static final RoundingMode MODE = RoundingMode.HALF_UP;
+
+    public static BigDecimal nhan(BigDecimal tien, String tyLe) {
+        return tien.multiply(new BigDecimal(tyLe))
+                   .setScale(SCALE, MODE);
+    }
+
+    public static BigDecimal chia(BigDecimal tong, int soTaiKhoan) {
+        return tong.divide(BigDecimal.valueOf(soTaiKhoan), SCALE, MODE);
+    }
+
+    public static void main(String[] args) {
+        System.out.println(0.1 + 0.2); // 0.30000000000000004
+        System.out.println(new BigDecimal("0.1").add(new BigDecimal("0.2"))); // 0.3
+        System.out.println(chia(new BigDecimal("100"), 3)); // 33.33
+        System.out.println(nhan(new BigDecimal("100.00"), "1.05")); // 105.00
+    }
+}
+~~~
+
+### Vi du thuc su
+dịch vụ thanh toán điện tử dung double de luu so du. Mot giao dich 10.005 x 1.05 (thue 5%) bang double cho ket qua 10.505249999999999, luu vao CSDL lam tron 10.51. Nhung khi tinh tong 10.000 giao dich, sai so tap hop duoc den nhieu nghin dong. Sau khi doi sang BigDecimal voi scale 2 va ROUND_HALF_UP, ket qua chinh xac den cent, bao cao tai chinh khong bi sai so. Chi phi: BigDecimal cham hon double khoang 10-50 lan, nhung voi tien chinh xac quan trong hon toc do, nen chi dung o muc giao dich khong o vong lap nhieu trieu lan.
+
+### Tra loi mau khi phong van
+"Tien phai luu BigDecimal vi double/float co sai sot dau ky so, vi du 0.1 + 0.2 khong bang 0.3, sap xep loi khi tong ket nhieu giao dich. Em luon tao BigDecimal bang xau ("..."), khong dung constructor double. Dinh dinh scale (2 chu so tien mat) va che do lam tron (ROUND_HALF_UP cho tien, ROUND_HALF_EVEN de giam loi lech trung binh). Tat ca phep nhan chia phai setScale de tranh ArithmeticException. BigDecimal cham hon double nhung chinh xac, nen chi dung o muc giao dich, khong dung trong vong lap tien trich. Voi banker's rounding (ROUND_HALF_EVEN), khi chu so o vi tri lam tron bang 5, lam tron toi so chan, giup loi trung binh ve 0 qua nhieu lan lap, phu hop bao cao tai chinh."
+
+> Senior tip: khong bao gio chuyen BigDecimal qua double o giua chuong trinh (doubleValue()) vi loi da nhap vao luon luon. Neu can lay gia tri hien thi, dung toString() hoac setScale. O CSDL, luu tien thanh loai DECIMAL(19,4) khong dung DOUBLE, va luu cung scale de tranh loi dich du giua ung dung va co so du lieu.`,
+  follow: [
+    'Sai sot cua double/float xuat hien o dau, va sao new BigDecimal(double) van ke thua sai sot?',
+    'ROUND_HALF_UP khac ROUND_HALF_EVEN o diem nao, va khi nao chon cai nao?',
+    'Tai sao can setScale va RoundingMode moi lan chia, va loi gi xay ra neu khong lam?'
+  ],
+  tags: ['BigDecimal', 'tien', 'lam tron', 'double', 'floating point'],
+  refs: [
+    { type: 'doc', title: 'BigDecimal JavaDoc', url: 'https://docs.oracle.com/en/java/javase/21/docs/api/java.base/java/math/BigDecimal.html' }
+  ]
+},
+{
+  id: 'core-071',
+  topic: 'core',
+  level: 'senior',
+  q: 'Lop doi tuong bat bien (immutable) la gi, va sao no an toan luong (thread-safe) can dong bo? Cach xay dung lop immutable trong Java, va nhung truong hop can sao chep ve phong thu (defensive copy) la gi?',
+  a: `**Tom tat:** Doi tuong bat bien la doi tuong trang thai khong the thay doi sau khi tao. Tat ca cot la private final, khong co setter, phuong thuc tra ve moi doi tuong moi thay doi. Voi trang thia bo tinh (khong co truong bien co the thay doi), khong luong nao co the thay doi trang thai cua doi tuong khac luong dang doc, nen khong can dong bo (synchronized/Lock) va khong co race condition.
+
+### Co che hoat dong
+- Cot private final: gan o constructor, khong thay doi sau do.
+- Khong co setter, khong phuong thuc sua doi trang thai.
+- Truong tham chieu (mang, List, Date...) phai sao chep ve phong thu o constructor va tra ve sao chep ve phong thu o getter, tranh client thay doi qua tham chieu.
+- Class không được **kế thừa** (hoặc constructor private + factory) để con class không thêm method sửa đổi.
+- Vi mo hinh bo tinh: moi thao tac "sua doi" tra ve doi tuong moi, doi tuong cu nguyen van, nhu String.
+
+### Ma vi du (duoi 30 dong)
+~~~java
+import java.time.Instant;
+import java.util.Collections;
+import java.util.List;
+
+public final class TaiKhoan {
+    private final String soTaiKhoan;
+    private final List<Instant> lichSu;
+
+    public TaiKhoan(String soTaiKhoan, List<Instant> lichSu) {
+        this.soTaiKhoan = soTaiKhoan;
+        // sao chep ve phong tru client sua doi danh sach goc
+        this.lichSu = Collections.unmodifiableList(List.copyOf(lichSu));
+    }
+
+    public String getSoTaiKhoan() { return soTaiKhoan; }
+
+    public List<Instant> getLichSu() {
+        return Collections.unmodifiableList(lichSu); // tra ve sao chep/khong sua duoc
+    }
+
+    public TaiKhoan themGiaoDich(Instant thoiGian) {
+        // tra ve doi tuong moi, khong sua doi this
+        var moi = new java.util.ArrayList<>(lichSu);
+        moi.add(thoiGian);
+        return new TaiKhoan(soTaiKhoan, moi);
+    }
+}
+~~~
+
+### Vi du thuc su
+Dich vu thanh toan gui doi tuong ThanhToan (so tien, thoi gian, trang thai) qua nhieu luong xu ly. Neu doi tuong co setter, luong A dang doc so tien trong khi luong B cap nhat => doc gia tri trung gian (tien bi cham cat hoac con so lon). Doi sang immutable: moi cap nhat tra ve doi tuong moi, luong luon doc gia tri co dinh, khong can synchronized, throughput cao hon va khong co deadlock. Chi phan bo them bo nho doi tuong moi, nhung voi JVM G1/gen ZGC chi phi rat nho. Luu y: neu tra ve List goc khong sao chep, client co the sua doi danh sach luon ngoai, voi loi nhan gia.
+
+### Tra loi mau khi phong van
+"Doi tuong bat bien la doi tuong khong the thay doi trang thai sau khi khoi tao. Em xay dung bang cot private final, khong co setter, class final, va sao chep ve phong thu cho truong tham chieu (mang, List) o constructor va getter. Vi trang thia bo tinh, nhieu luong doc cung doi tuong khong bao gi chien nhau, nen khong can synchronized, khong co race condition va deadlock. Neu can "sua doi", em tra ve doi tuong moi (mo hinh bo tinh) nhu String. Luu nhat: phai sao chep ve phong thu hai chieu, neu khong client sua doi List tra ve se thay doi trang thai cua doi tuong goc. Thiet lap chi phi them bo nho doi tuong moi, nhung voi GC hien nay rat nho va duoc an toan luong nhan gia."
+
+> Senior tip: immutable khong nghia "khong bao gi thay doi" o muc ung dung, chi la doi tuong mot luon duy nhat gia tri. Neu can tinh trang thay doi, tao doi tuong moi voi id moi va luu lich su, khong sua doi doi tuong cu. Tuong tu, Record tu Java 14+ ho tro immutable nhung van can sao chep ve phong thu cho truong tham chieu (List, mang).`,
+  follow: [
+    'Record co thich la immutable khong, va can sao chep ve phong thu cho List o component khong?',
+    'Sao chep ve phong thu (defensive copy) la gi, va can lam o dau?',
+    'Immutable giup an toan luong nhu the nao, van can synchronized o truong hop nao?'
+  ],
+  tags: ['immutable', 'thread-safe', 'final', 'defensive copy', 'record'],
+  refs: [
+    { type: 'doc', title: 'Immutable Objects', url: 'https://docs.oracle.com/javase/tutorial/essential/concurrency/immutable.html' }
+  ]
+},
+{
+  id: 'core-072',
+  topic: 'core',
+  level: 'mid',
+  q: 'String pool (chuoi trung tam) la gi, intern() lam gi, va khoi tao String bang "abc" khac new String("abc") o diem nao? Khi nao can dung intern() va rui ro bo nho neu qua su dung?',
+  a: `**Tom tat:** String pool la vung bo nho heap (Java 7+) luu cac chuoi duoc intern de tien tien su dung (string deduplication). Chuoi viet bang nhom ("abc") tu dong duoc dua vao pool. new String("abc") tao doi tuong moi tren heap, khong duoc them vao pool neu khong goi intern(). == so sanh tham chieu, equals() so sanh noi dung. intern() tra ve chuoi tu pool neu co, nguoc lai them vao pool. Qua su dung intern() hoi tri nguyen bo nho pool (Metaspace/heap string table) khong duoc xoa, co the OOM.
+
+### Co che hoat dong
+- Chuoi literal "abc": compiler dua vao constant pool, tai thuc JVM intern vao string pool, cung mot chuoi chi co mot doi tuong.
+- new String("abc"): tao doi tuong String moi tren heap, bien dem (char array/byte array) moi, != voi literal.
+- String.intern(): kiem tra string pool, neu co chuoi giong nhau tra ve tham chieu do, neu chua co them vao pool va tra ve.
+- Java 7+: string pool o heap (khong o PermGen), bi bien dong theo heap, co the GC neu khong co tham chieu ngoai (nhung chuoi duoc intern boi library thong luu duoc o pool lien tuc).
+- == kiem tra cung tham chieu, equals() kiem tra cung noi dung.
+
+### Ma vi du (duoi 30 dong)
+~~~java
+public class StringPool {
+    public static void main(String[] args) {
+        String a = "hello";
+        String b = "hello";
+        String c = new String("hello");
+        String d = c.intern();
+
+        System.out.println(a == b); // true (cung pool)
+        System.out.println(a == c); // false (c la doi tuong moi)
+        System.out.println(a == d); // true (d intern ve pool)
+        System.out.println(a.equals(c)); // true (noi dung giong)
+    }
+}
+~~~
+
+### Vi du thuc su
+Dich vu xu ly log millisecond dong, moi dong co ten trich xuat (request id) lqp nhieu lan. Neu luu String moi lan, bo nho tang nhanh. Dung intern() cho ten trich xuat de tat ca dong co cung request id chia chung mot doi tuong String, giam bo nho duoc 30-50%. Nhung neu intern tat ca chuoi (bao gom chuoi duy nhat nhat thoi), string pool tang khong han che, bo nho khong duoc giai phong, co the OOM. Nen chi intern cac chuoi lap lai nhieu lan va co do dai it, tranh intern chuoi xau dai hoac chuoi chi xuat hien mot lan.
+
+### Tra loi mau khi phong van
+"String pool la vung luu chuoi da intern de tien tien su dung. Chuoi literal "abc" tu dong duoc intern, cung mot chuoi chi co mot doi tuong. new String("abc") tao doi tuong moi tren heap, != voi literal. intern() kiem tra pool, neu co tra ve tham chieu co san, neu chua co them vao pool. == so sanh tham chieu, equals() so sanh noi dung. Em chi dung intern() cho chuoi lap lai nhieu lan (vi du ma trich xuat, ma don vi) de giam bo nho, tranh intern chuoi xau dai hoac chuoi chi xuat hien mot lan vi pool khong duoc xoa, co the OOM. Java 7+ string pool o heap, bi bien dong, nhung chuoi duoc library intern lien tuc van o pool."
+
+> Senior tip: intern() khong mien phi: kiem tra can dong bo (contention) va bo nho pool khong duoc xoa. Chi dung khi chuoi lap lai nhieu lan va it ky tu. Neu can giam bo nho chuoi sap xep nhieu, dung Java 21 string deduplication (-XX:+UseStringDeduplication) hoac G1, khong can intern tay.`,
+  follow: [
+    'Java 7 chuyen string pool tu PermGen sang heap co tac dong nhu the nao den OOM?',
+    'intern() tra ve gi neu chuoi chua co o pool, va co the GC khong?',
+    '== vs equals() cho String khac nhau o diem nao, va khi nao dung cai nao?'
+  ],
+  tags: ['String', 'string pool', 'intern', 'memory', 'JVM'],
+  refs: [
+    { type: 'doc', title: 'String.intern() JavaDoc', url: 'https://docs.oracle.com/en/java/javase/21/docs/api/java.base/java/lang/String.html' }
+  ]
+},
+{
+  id: 'core-073',
+  topic: 'core',
+  level: 'senior',
+  q: 'Xu ly ngoai le chuan trong service Java: khi nao dung ngoai le du bao du kien (checked) va ngoai le ko du bao (unchecked), cach bao ngoai le (wrap) va chuan bao loi (custom exception), va sao khong bao gio bo trong (swallow) ngoai le?',
+  a: `**Tom tat:** Ngoai le du bao du kien (extends Exception) buot goi goi xu ly hoac khai bao throws, dung cho loi co the phuc hoi duoc (mang mat, het quota). Ngoai le ko du bao (extends RuntimeException) khong buot xu ly, dung loi lap trinh (null pointer, loi tham so). Bao ngoai le (wrap) bao ngoai le thap cap vao ngoai le cao cap can them thong tin nghiep vu, gan nguyen ngoai le goc vao cause, khong bo trong (khong co catch bo trong, khong log roi bo qua). Dinh nghia custom exception cho tung muc tieu dich vu.
+
+### Co che hoat dong
+- Checked Exception: buot try/catch hoac throws, ep caller giai quyet, phu hop voi ngoai le ngoai tu kien luong dieu (mang mat, het quota, het thoi gian).
+- Unchecked Exception (RuntimeException): khong buot xu ly, cho loi lap trinh (NullPointerException, IllegalArgumentException), khong can declares.
+- Wrap (bao ngoai le): throw new DichVuException("khong lay duoc tai khoan", e); e la cause, stack trace gom ca cap thap va cap cao, de debug.
+- Custom exception: ke thua RuntimeException (ko du bao) cho dich vu, danh bung theo loai loi (TaiKhoanKhongTonTaiException, QuaHanException...), de controller chuan tra ve HTTP status.
+- Khong bo trong: catch hoac log roi bo qua mat stack trace, loi an trong khong biet dau, giao dich bi luu sot khong rollback.
+
+### Ma vi du (duoi 30 dong)
+~~~java
+public class DichVuException extends RuntimeException {
+    public DichVuException(String msg, Throwable cause) { super(msg, cause); }
+}
+
+public class TaiKhoanService {
+    public void chuyenTien(String nguon, String dich, long soTien) {
+        try {
+            taiKhoanDao.capNhat(nguon, dich, soTien);
+        } catch (SQLException e) {
+            // bao ngoai le, them thong tin nghiep vu, gan nguyen ngoai le goc
+            throw new DichVuException("Chuyen tien that bai tu " + nguon + " sang " + dich, e);
+        }
+    }
+}
+~~~
+
+### Vi du thuc su
+Dich vu thanh toan goi API ngoai. Neu loi ket noi (IOException) bi bo trong (catch bo trong), he thong co nghia thanh toan thanh cong nhung thuc chua gui tien, khach hang phat khien khong duoc tien. Doi sang wrap: catch IOException, throw DichVuException voi thong tin don hang va nguyen ly, controller bat va tra ve HTTP 502, Giao dich bi danh dau that bai va rollback. Khong su dung Exception chung (khong bat Exception roi log "loi") vi mat loai loi, khong biet retry hay bao loi khach hang.
+
+### Tra loi mau khi phong van
+"Xu ly ngoai le o service: ngoai le du bao du kien (Exception) cho loi co the phuc hoi (mang mat, het quota), ngoai le ko du bao (RuntimeException) cho loi lap trinh (null pointer, tham so sai). Em bao ngoai le (wrap) ngoai le thap cap (SQLException, IOException) vao custom exception cua dich vu, them thong tin nghiep vu (ma don, ma tai khoan) va gan nguyen ngoai le goc vao cause de duoc stack trace day du. Em khong bao gio bo trong ngoai le (catch bo trong hoac log roi bo qua) vi lam mat stack trace va giao dich bi luu sot. Controller bat custom exception va tra ve HTTP status chuan (404, 400, 502)."
+
+> Senior tip: khong bat Exception chung de "an toan", vi bat ca Error (OutOfMemoryError, NoClassDefFoundError) va loi he thong khong phuc hoi duoc. Chi bat cac ngoai le biet (SQLException, IOException, DichVuException). O transactional service, ngoai le khong duoc bat va bo trong, nguoc lai day len de transaction rollback, khong luu sot giao dich that bai.`,
+  follow: [
+    'Checked exception va unchecked exception khac nhau o diem nao, va khi nao dung cai nao?',
+    'Bao ngoai le (wrap) giup debug nhu the nao, va cau tham so cause la gi?',
+    'Sao khong bat Exception chung (catch Exception) trong service?'
+  ],
+  tags: ['exception', 'checked', 'unchecked', 'wrap', 'custom exception', 'service'],
+  refs: [
+    { type: 'doc', title: 'Exceptions JavaDoc', url: 'https://docs.oracle.com/en/java/javase/21/docs/api/java.base/java/lang/Exception.html' }
+  ]
+},
+{
+  id: 'core-074',
+  topic: 'core',
+  level: 'senior',
+  q: 'Tai sao equals/hashCode cua entity JPA khong duoc dung ID (primary key) va khong duoc su dung cot lazy load? Chon khoa nghiep thu (business key) nhu the nao, va loi gi xay ra neu hashCode thay doi khi entity duoc them vao HashSet/HashMap?',
+  a: `**Tom tat:** Entity JPA can equals/hashCode dang dung o collection (HashSet, HashMap) de tranh trung lap. ID (primary key) khong duoc dung vi ID null o trang thai transient (chua luu), va ID co the thay doi sau khi merge. Cot lazy load (Proxy/Collection) khong duoc dung vi khoi tao (fetch) bat ton tai, gay loi trong equals/hashCode. Dung khoa nghiep thu (cac cot duy nhat, khong null, khong thay doi) vi du email, ma so thue, va hashCode phai duoc tinh tu nhung cung cot, khong thay doi trong thoi gian entity o collection.
+
+### Co che hoat dong
+- HashSet/HashMap dung hashCode de chung vi tri (bucket) va equals de kiem tra trung lap. Neu hashCode thay doi khi entity o collection, khong tim thay doi tuong (vi o bucket cu), bi trung lap hoac mat doi tuong.
+- ID null o trang thai transient (chua luu), hai doi tuong chua luu cung ID null => hashCode bang 0, bi coi trung lap, them vao Set khong thanh cong.
+- Cot lazy load duoc khoi tat boi proxy, goi getter o equals se fetch du lieu, co the loi neu session dong hoac chua ton tai.
+- Dinh nghia equals/hashCode bang cac cot khoa nghiep thu (khong null, khong thay doi, duy nhat), luon cung ket qua cho cung entity logic.
+
+### Ma vi du (duoi 30 dong)
+~~~java
+import java.util.Objects;
+
+public class KhachHang {
+    private Long id;
+    private String email; // khoa nghiep thu
+    private String maSoThue;
+
+    public boolean equals(Object o) {
+        if (this == o) return true;
+        if (!(o instanceof KhachHang)) return false;
+        KhachHang that = (KhachHang) o;
+        return Objects.equals(email, that.email)
+               && Objects.equals(maSoThue, that.maSoThue);
+    }
+
+    public int hashCode() {
+        return Objects.hash(email, maSoThue);
+    }
+}
+~~~
+
+### Vi du thuc su
+Dich vu xu ly danh sach khach hang tu nhieu nguon, luu vao HashSet de loai trung. Neu equals dung ID, hai doi tuong chua luu (id null) bi coi cung mot, chi luu mot khach hang, bi mat du lieu. Neu equals dung cot lazy load (danh sach don hang), goi equals khoi tat tat ca don hang, chua loi LazyInitializationException neu session dong. Doi sang khoa nghiep thu (email + ma so thue), HashSet loai trung dung chinh xac, khong khoi tat cot lazy, khong loi o trang thai transient. hashCode tinh tu email + ma so thue, khong thay doi trong thoi gian o Set.
+
+### Tra loi mau khi phong van
+"Entity JPA can equals/hashCode de luu o HashSet/HashMap. Khong dung ID vi ID null o trang thai transient (chua luu), hai doi tuong chua luu cung null => coi cung mot, mat du lieu. Khong dung cot lazy load vi goi getter o equals khoi tat du lieu (fetch) va co the loi neu session dong. Em dung khoa nghiep thu (cac cot duy nhat, khong null, khong thay doi, vi du email + ma so thue), hashCode tinh tu cung cac cot va khong thay doi trong thoi gian entity o collection. Neu hashCode thay doi, HashSet/HashMap khong tim thay doi tuong (o bucket cu), bi trung lap hoac mat doi tuong."
+
+> Senior tip: neu khong co khoa nghiep thu (tat ca cot co the thay doi), khong override equals/hashCode, de Mac dinh (tham chieu) hoac dung ID chi o trang thai da luu (id != null). O HashSet, khong sua doi cot tham gia equals/hashCode khi entity o collection, nguoc lai bi mat doi tuong. Equals cua entity phai duoc dinh dinh nhu "cung nghiep thu" khong phai "cung doi tuong database" (ID).`,
+  follow: [
+    'Sao khong dung ID (primary key) o equals/hashCode cua entity JPA?',
+    'Sao cot lazy load khong duoc dung o equals/hashCode?',
+    'Neu hashCode thay doi khi entity o HashSet, loi gi xay ra?'
+  ],
+  tags: ['equals', 'hashCode', 'JPA', 'entity', 'business key'],
+  refs: [
+    { type: 'doc', title: 'Hibernate Entity equals/hashCode', url: 'https://docs.jboss.org/hibernate/orm/6.4/userguide/html_single/Hibernate_User_Guide.html' }
   ]
 },
 );
