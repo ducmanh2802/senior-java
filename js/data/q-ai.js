@@ -8539,4 +8539,394 @@ Tôi quyết định dựa trên đặc tính kiến thức và yêu cầu hệ 
     ],
     tags: ['fine-tuning', 'RAG', 'decision framework', 'LLM', 'architecture']
   },
+  {
+    id: 'ai-126',
+    topic: 'ai',
+    level: 'mid',
+    q: 'Bạn được giao xây dựng chatbot trả lời từ tài liệu nội bộ ngân hàng (RAG end-to-end). Hãy mô tả toàn bộ luồng từ nạp tài liệu đến trả lời, bao gồm chunking, embedding, vector store, phân quyền theo tài liệu và trích nguồn.',
+    a: `**Tóm tắt:** RAG gồm hai pha: ingestion (đọc tài liệu → cắt chunk → embed → lưu vector store kèm metadata ACL) và query (embed câu hỏi → tìm chunk gần nhất → ghép vào prompt → LLM trả lời kèm trích nguồn). Phân quyền phải lọc ở retrieval, không chỉ ở UI.
+
+### Ingestion
+
+1. **Đọc tài liệu**: PDF/Word/HTML → text (Apache Tika, pdfbox). Giữ metadata: source, page, section, ACL (nhóm được đọc).
+2. **Chunking**: cắt thành đoạn 300–800 token, overlap 50–100 token để không mất ngữ cảnh ở biên. Cắt theo heading/paragraph trước, fallback theo token.
+3. **Embedding**: gọi model embedding → vector (ví dụ 1024 chiều). Batch để tiết kiệm.
+4. **Lưu**: vector store (pgvector/Weaviate) với metadata (docId, chunkId, ACL, source).
+
+### Query
+
+1. Embed câu hỏi → vector.
+2. **Retrieval có ACL**: \SELECT ... WHERE embedding <=> q ORDER BY ... LIMIT k AND acl IN (userGroups)\. Lọc ACL ở DB, không ở application sau khi lấy.
+3. **Re-rank** (tuỳ chọn): cross-encoder chấm lại top-k.
+4. **Prompt**: system prompt + retrieved chunks (kèm source) + câu hỏi. Yêu cầu LLM trích nguồn theo chunk id.
+5. **Trích nguồn**: parse citation từ output, map về doc/page. Nếu LLM không trích được → từ chối hoặc trả "không đủ thông tin".
+
+### Ví dụ đời thực
+
+Ngân hàng có 5.000 tài liệu chính sách (sản phẩm, biểu phí, quy trình), tổng 2 triệu chunk. User thuộc phòng tín dụng chỉ được đọc tài liệu tín dụng. Khi user hỏi "lãi suất vay mua nhà", retrieval lọc ACL → chỉ chunk tín dụng → trả lời kèm "Nguồn: Chính sách vay mua nhà v2.3, trang 4". Nếu user hỏi về thẻ tín dụng → không có chunk phù hợp → bot trả "Tôi không tìm thấy thông tin trong tài liệu được phép truy cập".
+
+### Trả lời mẫu khi phỏng vấn
+
+Tôi xây RAG theo hai pha. Ingestion: đọc tài liệu bằng Tika, chunk 500 token overlap 80, embed bằng model embedding, lưu vào pgvector kèm metadata ACL và source. Query: embed câu hỏi, retrieval với filter ACL ở DB (không filter sau), top-5, re-rank bằng cross-encoder, ghép vào prompt yêu cầu trích nguồn theo chunk id. Phân quyền là điểm quan trọng nhất: phải lọc ở retrieval, vì nếu lấy hết chunk rồi filter ở application thì LLM vẫn có thể leak thông tin qua context. Trích nguồn giúp user verify và là cơ sở cho groundedness metric. Chunking theo heading trước, fallback token; overlap để không mất ngữ cảnh. Embedding batch để tiết kiệm chi phí. Re-rank cải thiện precision nhưng tăng latency, cân nhắc theo SLA.
+
+> Senior tip: ACL filter phải nằm trong câu query vector store (WHERE clause), không phải filter Java sau retrieval — nếu filter sau, dữ liệu đã bị đưa vào prompt và có thể leak. Luôn yêu cầu LLM trích nguồn theo chunk id để verify groundedness.,`,
+    follow: [
+      'Chunk size và overlap chọn thế nào? Có công thức hay heuristic?',
+      'Re-rank bằng cross-encoder có đáng chi phí latency tăng thêm không?',
+      'Khi tài liệu cập nhật, bạn re-ingest toàn bộ hay incremental?'
+    ],
+    tags: ['RAG', 'embedding', 'pgvector', 'ACL', 'chunking', 'retrieval']
+  },
+  {
+    id: 'ai-127',
+    topic: 'ai',
+    level: 'senior',
+    q: 'Làm thế nào để chứng minh chatbot RAG "đủ tốt" để go-live? Hãy thiết kế bộ eval có nhãn, metric (groundedness, accuracy), ngưỡng và human review.',
+    a: `**Tóm tắt:** Go-live cần bộ eval có nhãn (golden dataset), metric groundedness/accuracy/relevance, ngưỡng rõ ràng, và human review sampling. Không go-live nếu chưa có baseline đo được và regression test tự động.
+
+### Bộ eval có nhãn
+
+- **Golden dataset**: 200–500 cặp (câu hỏi, đáp án kỳ vọng, nguồn tài liệu). Phân loại: factual, multi-hop, out-of-scope, adversarial.
+- **Nhãn**: do domain expert (không phải dev) gán. Cập nhật khi chính sách thay đổi.
+- **Synthetic**: dùng LLM sinh câu hỏi từ chunk, rồi expert review (giảm chi phí nhưng cần review).
+
+### Metric
+
+- **Groundedness**: mọi khẳng định trong câu trả lời có được hỗ trợ bởi retrieved chunk không? (LLM-as-judge hoặc NLI model).
+- **Answer relevance**: câu trả lời có đúng trọng tâm câu hỏi không?
+- **Context recall**: chunk chứa đáp án có được retrieve không? (recall@k).
+- **Faithfulness**: không hallucinate ngoài nguồn.
+- **Latency/cost**: p95, token/request.
+
+### Ngưỡng go-live
+
+- Groundedness ≥ 95%, accuracy ≥ 90% trên golden set.
+- Out-of-scope: bot phải từ chối (refusal rate ≥ 95%).
+- Regression: mỗi thay đổi prompt/model phải pass eval tự động trong CI.
+
+### Human review
+
+- Sampling 5–10% production traffic hàng tuần, expert chấm 1–5.
+- Dashboard theo dõi trend metric theo thời gian.
+- Alert khi metric giảm > 5%.
+
+### Ví dụ đời thực
+
+Chatbot CSKH ngân hàng: golden set 300 câu (150 factual, 50 multi-hop, 50 out-of-scope, 50 adversarial). Baseline: groundedness 92%, accuracy 88%. Sau tune chunking + prompt: 96% / 93%. Go-live với điều kiện monitoring hàng tuần. Sau 2 tuần production, sampling 8% → phát hiện 3% câu trả lời thiếu nguồn → tune prompt từ chối → groundedness 98%.
+
+### Trả lời mẫu khi phỏng vấn
+
+Tôi không go-live nếu chưa có eval đo được. Tôi xây golden dataset 200–500 câu có nhãn bởi domain expert, phân loại factual/multi-hop/out-of-scope/adversarial. Metric chính: groundedness (mọi khẳng định có nguồn), accuracy (đúng đáp án), context recall (chunk chứa đáp án được retrieve), refusal rate (từ chối khi thiếu nguồn). Ngưỡng: groundedness ≥ 95%, accuracy ≥ 90%, refusal ≥ 95%. Eval chạy tự động trong CI cho mỗi thay đổi prompt/model. Human review sampling 5–10% production hàng tuần. Nếu metric giảm > 5% → alert và rollback. Eval không phải làm một lần mà là living document, cập nhật khi chính sách thay đổi.
+
+> Senior tip: Golden dataset phải do domain expert gán nhãn, không phải dev — dev dễ viết câu hỏi "dễ" cho model. Sampling production traffic và chấm tay hàng tuần phát hiện drift mà offline eval không thấy.,`,
+    follow: [
+      'LLM-as-judge có bias như thế nào và cách giảm?',
+      'Golden dataset bao nhiêu câu là đủ để có ý nghĩa thống kê?',
+      'Khi chính sách thay đổi, bạn cập nhật eval như thế nào để không mất baseline?'
+    ],
+    tags: ['eval', 'groundedness', 'golden dataset', 'LLM-as-judge', 'go-live']
+  },
+  {
+    id: 'ai-128',
+    topic: 'ai',
+    level: 'senior',
+    q: 'Hallucination xảy ra trên production chatbot RAG. Hãy phân tích cách phát hiện, giảm thiểu (grounding, từ chối khi thiếu nguồn, structured output) và xử lý khiếu nại.',
+    a: `**Tóm tắt:** Hallucination là model bịa thông tin không có trong nguồn. Giảm bằng grounding (chỉ trả lời từ retrieved chunk), từ chối khi thiếu nguồn, structured output; phát hiện bằng groundedness metric và citation verification; xử lý khiếu nại bằng log + human review + rollback.
+
+### Phát hiện
+
+- **Citation verification**: mỗi khẳng định phải map về chunk id. Nếu không map được → flag.
+- **Groundedness score**: LLM-as-judge chấm "câu trả lời có được hỗ trợ bởi context không".
+- **User feedback**: nút "không hữu ích" + lý do.
+- **Sampling review**: expert chấm hàng tuần.
+
+### Giảm thiểu
+
+1. **Grounding prompt**: "Chỉ trả lời dựa trên tài liệu được cung cấp. Nếu không có thông tin, nói 'Tôi không tìm thấy'." kèm few-shot.
+2. **Từ chối khi thiếu nguồn**: nếu retrieval score thấp hoặc không có chunk phù hợp → trả "không đủ thông tin" thay vì đoán.
+3. **Structured output**: ép JSON schema (answer, citations[], confidence). Validate schema; nếu fail → retry hoặc fallback.
+4. **Temperature thấp** (0.0–0.2) cho factual.
+5. **Re-rank + threshold**: chỉ dùng chunk có score ≥ ngưỡng.
+
+### Xử lý khiếu nại
+
+- Log đầy đủ: prompt, retrieved chunks, output, citation, user feedback.
+- Human review case bị complain → phân loại: hallucination thật vs user hiểu sai.
+- Nếu hallucination thật: thêm vào golden set (regression), tune prompt/chunking, redeploy.
+- Thông báo user: "Câu trả lời có thể chưa chính xác, vui lòng liên hệ nhân viên".
+
+### Ví dụ đời thực
+
+Chatbot trả lời "lãi suất vay mua nhà là 8.5%/năm" nhưng tài liệu ghi 9.2%. Nguyên nhân: chunk chứa 9.2 bị cắt mất, model điền 8.5 từ training data. Fix: tăng overlap chunk, thêm instruction "nếu số liệu không có trong tài liệu, không được đoán", structured output bắt buộc citation. Sau fix, groundedness 92% → 98%.
+
+### Trả lời mẫu khi phỏng vấn
+
+Hallucination là rủi ro lớn nhất của RAG. Phát hiện: citation verification (mỗi khẳng định map về chunk), groundedness score bằng LLM-as-judge, user feedback, sampling review. Giảm thiểu: grounding prompt rõ ràng, từ chối khi retrieval score thấp hoặc không có chunk phù hợp, structured output (JSON schema với citations và confidence), temperature thấp, threshold retrieval. Xử lý khiếu nại: log đầy đủ prompt/context/output/citation, human review, phân loại hallucination thật vs user hiểu sai, thêm case vào golden set regression, tune và redeploy. Luôn thông báo user rằng câu trả lời có thể chưa chính xác. Quan trọng: không để model "đoán" khi thiếu nguồn — từ chối là hành vi đúng.
+
+> Senior tip: Từ chối (refusal) khi thiếu nguồn là tính năng, không phải lỗi. Đo refusal rate trên out-of-scope set; nếu quá thấp, bot đang hallucinate. Nếu quá cao, retrieval hoặc chunking có vấn đề.,`,
+    follow: [
+      'Structured output có đảm bảo model không hallucinate không?',
+      'Khi user phàn nàn, bạn phân biệt hallucination thật vs user hiểu sai như thế nào?',
+      'Temperature 0 có loại bỏ hallucination không?'
+    ],
+    tags: ['hallucination', 'grounding', 'structured output', 'citation', 'refusal']
+  },
+  {
+    id: 'ai-129',
+    topic: 'ai',
+    level: 'senior',
+    q: 'Khi dùng LLM bên ngoài (OpenAI/Anthropic/Bedrock) cho dữ liệu ngân hàng, bạn xử lý dữ liệu cá nhân (PII) và bí mật như thế nào? Che PII, data residency, gọi API trực tiếp vs qua cloud provider trong VPC, log an toàn.',
+    a: `**Tóm tắt:** Không gửi PII/bí mật thô tới LLM bên ngoài. Che PII trước khi gọi, chọn provider trong VPC/data residency phù hợp, log an toàn (không lưu prompt thô chứa PII), và có DPA/contract.
+
+### Che PII
+
+- Detect PII bằng regex + NER (tên, số tài khoản, CCCD, SĐT, email).
+- Mask: thay bằng placeholder \[ACCOUNT_1]\, \[NAME_1]\. Giữ mapping để de-mask output nếu cần.
+- Chỉ gửi dữ liệu đã mask. Nếu output cần PII, de-mask ở application.
+
+### Data residency
+
+- Chọn provider region phù hợp (EU data ở EU, VN data ở VN/Singapore).
+- Bedrock trong VPC: traffic không ra internet công cộng, đi qua PrivateLink.
+- OpenAI/Anthropic trực tiếp: kiểm tra DPA, opt-out training data.
+
+### API trực tiếp vs qua cloud provider trong VPC
+
+- **Trực tiếp (public API)**: đơn giản, nhưng data ra ngoài, phụ thuộc internet, khó kiểm soát.
+- **Qua cloud provider trong VPC (Bedrock/Azure OpenAI)**: data ở trong cloud account của bạn, network isolation, IAM, audit log, tuân thủ dễ hơn. Khuyến nghị cho ngân hàng.
+
+### Log an toàn
+
+- Không log prompt/response chứa PII. Log metadata: token count, latency, model, error code, hash của prompt (không nội dung).
+- Nếu cần debug, log với PII masked và retention ngắn.
+- Audit log cho compliance: ai gọi, khi nào, model nào, token.
+
+### Ví dụ đời thực
+
+Ngân hàng xử lý email khiếu nại chứa số tài khoản và tên khách. Trước khi gọi LLM phân loại, mask PII: "Khách [NAME_1] số TK [ACCOUNT_1] khiếu nại...". Gọi Bedrock trong VPC. Log chỉ lưu token count + latency + masked prompt hash. Output classification không chứa PII. Compliance audit pass.
+
+### Trả lời mẫu khi phỏng vấn
+
+Tôi không bao giờ gửi PII thô tới LLM bên ngoài. Trước khi gọi, detect PII bằng regex + NER và mask thành placeholder, giữ mapping để de-mask nếu cần. Chọn provider: ưu tiên cloud provider trong VPC (Bedrock/Azure OpenAI) với PrivateLink, data residency phù hợp, DPA. Tránh gọi public API trực tiếp cho dữ liệu nhạy cảm. Log an toàn: không lưu prompt/response chứa PII, chỉ metadata (token, latency, model, error), hash prompt. Nếu cần debug, log masked + retention ngắn. Audit log cho compliance. Ngoài ra opt-out training data, encryption in transit/at rest, và review periodic.
+
+> Senior tip: Mask PII trước khi gọi LLM, không sau. Nếu mask sau thì PII đã ra ngoài và log có thể chứa. Bedrock trong VPC + PrivateLink là lựa chọn phổ biến cho ngân hàng vì data không ra internet công cộng.,`,
+    follow: [
+      'Mask PII có ảnh hưởng chất lượng model không?',
+      'Khi cần output chứa PII (ví dụ tóm tắt có tên khách), de-mask như thế nào an toàn?',
+      'Data residency yêu cầu VN data không rời VN — bạn chọn provider region nào?'
+    ],
+    tags: ['PII', 'data residency', 'VPC', 'Bedrock', 'logging', 'security']
+  },
+  {
+    id: 'ai-130',
+    topic: 'ai',
+    level: 'mid',
+    q: 'Tích hợp LLM vào luồng nghiệp vụ: phân loại email khiếu nại → ticket. Hãy thiết kế async qua Kafka, idempotency, và human-in-the-loop khi độ tin cậy thấp.',
+    a: `**Tóm tắt:** Email đến → publish Kafka → consumer gọi LLM classify → nếu confidence cao thì tạo ticket tự động; nếu thấp thì đưa vào hàng đợi human review. Idempotency qua idempotency key + dedup. Async để không block email ingestion.
+
+### Luồng
+
+1. Email gateway nhận email → publish \email.received\ (key = messageId).
+2. Consumer \classify-service\ consume → gọi LLM classify (structured output: category, priority, confidence).
+3. Nếu confidence ≥ 0.85 → tạo ticket qua Ticket API (idempotency key = messageId).
+4. Nếu confidence < 0.85 → publish \ticket.review.required\ → human agent phân loại → publish \ticket.created\.
+
+### Idempotency
+
+- Key = messageId (hoặc hash email). Lưu \processed_keys\ table với TTL.
+- Consumer check key trước khi xử lý; nếu đã xử lý → skip.
+- Ticket API nhận idempotency key → không tạo duplicate.
+
+### Human-in-the-loop
+
+- Confidence threshold có thể tune theo category.
+- UI review hiển thị email + suggested category + confidence.
+- Agent approve/modify → publish event → downstream xử lý.
+
+### Ví dụ đời thực
+
+Ngân hàng nhận 2.000 email khiếu nại/ngày. LLM classify vào 8 category với confidence. 85% confidence ≥ 0.9 → auto ticket. 15% → human review. Sau 1 tháng, accuracy auto 94%, review queue giảm từ 2000 xuống 300 email/ngày. Tiết kiệm 2 FTE.
+
+### Trả lời mẫu khi phỏng vấn
+
+Tôi thiết kế async qua Kafka để email ingestion không block. Consumer gọi LLM classify structured output với confidence. Nếu confidence cao (≥ 0.85) → tạo ticket tự động với idempotency key = messageId để tránh duplicate khi retry. Nếu thấp → đưa vào hàng đợi human review, agent approve/modify. Idempotency: lưu processed_keys, check trước khi xử lý, Ticket API nhận key. Human-in-the-loop không phải fallback mà là thiết kế: LLM xử lý phần rõ ràng, human xử lý phần mơ hồ. Threshold tune theo category và theo thời gian. Async + idempotency + HITL là ba trụ cột của production integration.
+
+> Senior tip: Idempotency key phải là business key (messageId), không phải UUID random — nếu dùng UUID random thì retry tạo duplicate. Human-in-the-loop là thiết kế, không phải fallback: LLM xử lý phần rõ ràng, human xử lý phần mơ hồ.,`,
+    follow: [
+      'Confidence threshold chọn thế nào? Có cách tune tự động không?',
+      'Khi LLM classify sai category nhưng confidence cao, bạn phát hiện thế nào?',
+      'Kafka consumer crash giữa chừng, idempotency đảm bảo không duplicate ticket không?'
+    ],
+    tags: ['Kafka', 'idempotency', 'human-in-the-loop', 'classification', 'async']
+  },
+  {
+    id: 'ai-131',
+    topic: 'ai',
+    level: 'senior',
+    q: 'Agent LLM gọi tool có side effect (chuyển tiền, xoá dữ liệu, gửi email). Bạn thiết kế phân quyền, xác nhận, giới hạn bước và audit như thế nào?',
+    a: `**Tóm tắt:** Tool có side effect phải có authorization (user nào được gọi tool nào), confirmation (human approve trước khi thực thi), step limit (max N bước), và audit log (ai, khi nào, tool nào, params, result). Không để agent tự quyết định side effect mà không có gate.
+
+### Phân quyền
+
+- Tool registry theo role: user role → allowed tools. Agent chỉ thấy tool được phép.
+- Param-level: tool \transfer_money\ chỉ cho phép amount ≤ limit của role.
+- Separate read tool vs write tool; write tool cần extra scope.
+
+### Xác nhận (confirmation)
+
+- Side-effect tool không thực thi ngay. Agent đề xuất action + params → UI hiển thị "Bạn có muốn chuyển 1.000.000 VND cho X?" → user confirm → mới thực thi.
+- Auto-approve chỉ cho low-risk (ví dụ gửi email nội bộ) với policy rõ.
+
+### Giới hạn bước
+
+- Max steps per turn (ví dụ 10). Vượt → dừng và trả "không thể hoàn thành, cần human".
+- Token budget per turn.
+- Timeout per tool call.
+
+### Audit
+
+- Log mỗi tool call: sessionId, userId, tool, params (masked PII), result, timestamp, latency.
+- Immutable audit store (append-only).
+- Alert khi tool call bất thường (amount lớn, outside business hours).
+
+### Ví dụ đời thực
+
+Agent hỗ trợ khách hàng có tool \lock_card\ và \transfer\. Lock_card auto-execute (low risk). Transfer yêu cầu confirm + limit 5 triệu/ngày. Khi agent đề xuất transfer 10 triệu → bị block bởi policy → trả "vượt hạn mức, cần phê duyệt thêm". Audit log ghi đầy đủ.
+
+### Trả lời mẫu khi phỏng vấn
+
+Tool có side effect là rủi ro lớn nhất của agent. Tôi thiết kế bốn lớp: phân quyền (role-based tool registry, param-level limit), xác nhận (human approve trước khi thực thi side effect, auto-approve chỉ low-risk), giới hạn bước (max steps, token budget, timeout), và audit (immutable log với sessionId/userId/tool/params/result). Agent không bao giờ tự thực thi side effect mà không có gate. Confirmation UI hiển thị rõ action + params để user verify. Audit giúp điều tra khi có sự cố. Đây là nguyên tắc "least privilege + human in the loop" cho agent.
+
+> Senior tip: Side-effect tool phải có confirmation gate và idempotency key. Nếu user bấm confirm hai lần, tool phải không thực thi hai lần. Audit log là bằng chứng pháp lý khi agent gây sự cố.,`,
+    follow: [
+      'Idempotency cho side-effect tool xử lý thế nào khi user confirm hai lần?',
+      'Auto-approve low-risk tool có rủi ro gì và cách giảm?',
+      'Khi agent bị prompt injection và gọi transfer, confirmation gate có chặn được không?'
+    ],
+    tags: ['agent', 'tool calling', 'authorization', 'confirmation', 'audit', 'side effect']
+  },
+  {
+    id: 'ai-132',
+    topic: 'ai',
+    level: 'lead',
+    q: 'Ước lượng và kiểm soát chi phí LLM cho 50.000 request/ngày. Hãy phân tích cost breakdown, caching, routing model, và budget alert.',
+    a: `**Tóm tắt:** 50k req/ngày ~ 1.5 triệu/tháng. Cost = input tokens + output tokens + embedding + retrieval. Kiểm soát bằng semantic cache, model routing (rẻ cho task đơn giản), prompt optimization, và budget alert theo tenant.
+
+### Cost breakdown
+
+- Input: system prompt + retrieved chunks + user query. Thường 1000–3000 token/req.
+- Output: 200–800 token/req.
+- Embedding: 1 lần/query + ingestion.
+- Retrieval: vector DB compute.
+
+Ví dụ: 50k req × 2000 input + 500 output = 100M input + 25M output token/ngày. Với model mid-tier ~ vài USD/1M token → ~ hundreds USD/ngày. Cần đo thực tế.
+
+### Caching
+
+- **Exact cache**: cùng query → cached response (TTL).
+- **Semantic cache**: embedding similarity ≥ 0.95 → reuse. Tiết kiệm 20–40% traffic lặp.
+- **Prompt caching**: provider cache system prompt prefix (giảm input cost).
+
+### Model routing
+
+- Task đơn giản (classification, extraction) → model nhỏ/rẻ.
+- Task phức tạp (reasoning, multi-hop) → model lớn.
+- Router dựa trên complexity classifier hoặc rule.
+
+### Budget alert
+
+- Track cost per tenant/user/feature (token × price).
+- Alert khi vượt 80% budget.
+- Hard cap per user/ngày để tránh abuse.
+- Dashboard cost trend.
+
+### Ví dụ đời thực
+
+Ứng dụng 50k req/ngày: baseline $800/ngày. Sau semantic cache (30% hit) + model routing (60% traffic dùng model nhỏ) + prompt caching → $280/ngày. Tiết kiệm 65%. Budget alert ở 80% → phát hiện một tenant abuse → throttle.
+
+### Trả lời mẫu khi phỏng vấn
+
+Tôi bắt đầu từ cost breakdown: input/output/embedding/retrieval. Đo thực tế 1 tuần để có baseline. Sau đó áp dụng: semantic cache (20–40% hit cho traffic lặp), model routing (task đơn giản dùng model rẻ), prompt caching (provider cache prefix), prompt optimization (giảm token). Budget alert theo tenant với hard cap per user. Dashboard cost trend theo feature. Quan trọng: không optimize trước khi đo — premature optimization lãng phí effort. Và cost không chỉ là tiền: latency và chất lượng cũng trade-off.
+
+> Senior tip: Đo cost thực tế 1–2 tuần trước khi optimize. Semantic cache hit rate thường 20–40% cho traffic lặp; nếu thấp, traffic đa dạng và cache không giúp. Model routing tiết kiệm nhiều nhất nhưng cần eval chất lượng per task.,`,
+    follow: [
+      'Semantic cache có rủi ro trả lời sai khi câu hỏi tương tự nhưng khác ý không?',
+      'Model routing classifier sai có thể làm giảm chất lượng — cách mitigate?',
+      'Cost per request nên đo ở đâu: application, provider billing, hay cả hai?'
+    ],
+    tags: ['cost', 'caching', 'model routing', 'budget', 'observability']
+  },
+  {
+    id: 'ai-133',
+    topic: 'ai',
+    level: 'lead',
+    q: 'Bạn cần thuyết phục stakeholder chọn use case AI đầu tiên, từ PoC → pilot → production, kèm rủi ro và KPI. Hãy trình bày kế hoạch.',
+    a: `**Tóm tắt:** Chọn use case có ROI rõ, dữ liệu sẵn, rủi ro thấp. PoC 2–4 tuần chứng minh khả thi. Pilot 4–8 tuần với user thật và metric. Production với guardrails, monitoring, rollback. KPI: accuracy, time saved, adoption, cost.
+
+### Chọn use case đầu tiên
+
+- ROI rõ ràng: tiết kiệm thời gian/chi phí đo được.
+- Dữ liệu sẵn và chất lượng tốt.
+- Rủi ro thấp: không tác động tài chính trực tiếp (tránh auto-transfer tiền).
+- Stakeholder aligned: có champion ở business.
+
+Ví dụ tốt: tóm tắt email/ticket, phân loại ticket, tìm kiếm tài liệu nội bộ. Ví dụ rủi ro cao: auto-approve loan, auto-transfer.
+
+### PoC (2–4 tuần)
+
+- Mục tiêu: chứng minh khả thi kỹ thuật và chất lượng.
+- Dữ liệu: sample 100–500 cases có nhãn.
+- Metric: accuracy ≥ X%, latency ≤ Ys.
+- Demo cho stakeholder.
+- Go/no-go decision.
+
+### Pilot (4–8 tuần)
+
+- User thật (10–50 người) dùng trong công việc thật.
+- A/B: AI assist vs baseline.
+- Thu thập feedback, edge cases.
+- Tune prompt/model/chunking.
+- Metric: adoption rate, time saved, satisfaction, error rate.
+
+### Production
+
+- Guardrails: PII mask, content filter, rate limit, fallback.
+- Monitoring: latency, cost, error, user feedback.
+- Rollback plan: feature flag, version prompt.
+- Training user + documentation.
+- SLA và support.
+
+### KPI
+
+- Accuracy ≥ 90% (offline + online).
+- Time saved: phút/request × volume.
+- Adoption: % user dùng thường xuyên.
+- Cost per request ≤ budget.
+- User satisfaction ≥ 4/5.
+- Incident rate < 1%.
+
+### Rủi ro và mitigation
+
+- Hallucination → grounding + citation + human review.
+- PII leak → mask + VPC.
+- Cost vọt → budget cap + alert.
+- User không adopt → training + UX tốt.
+- Model provider thay đổi → abstraction layer.
+
+### Ví dụ đời thực
+
+Ngân hàng chọn use case "tóm tắt email khiếu nại → ticket" làm đầu tiên. PoC 3 tuần: accuracy 92% trên 300 email. Pilot 6 tuần với 20 nhân viên CSKH: time saved 4 phút/email, satisfaction 4.2/5. Production: 2000 email/ngày, cost $40/ngày, incident 0.5%. Sau thành công, mở rộng sang phân loại và trả lời tự động.
+
+### Trả lời mẫu khi phỏng vấn
+
+Tôi chọn use case đầu tiên dựa trên ROI rõ, dữ liệu sẵn, rủi ro thấp, có champion business. Tránh use case tác động tài chính trực tiếp ban đầu. PoC 2–4 tuần chứng minh khả thi trên sample có nhãn, demo stakeholder, go/no-go. Pilot 4–8 tuần với user thật, A/B, thu feedback, tune. Production với guardrails, monitoring, rollback, training. KPI: accuracy ≥ 90%, time saved, adoption, cost/request, satisfaction, incident rate. Rủi ro: hallucination (grounding+citation), PII (mask+VPC), cost (cap+alert), adoption (training+UX), provider change (abstraction). Bắt đầu nhỏ, chứng minh giá trị, rồi mở rộng.
+
+> Senior tip: Use case đầu tiên nên "augment" (hỗ trợ con người) chứ không "automate" (thay thế con người). Augment rủi ro thấp, dễ đo ROI, dễ gain trust. Sau khi trust được xây dựng, mới automate từng phần.,`,
+    follow: [
+      'Khi PoC thành công nhưng pilot thất bại (user không adopt), bạn làm gì?',
+      'KPI nào quan trọng nhất để thuyết phục CFO?',
+      'Làm sao tránh "pilot purgatory" (pilot mãi không lên production)?'
+    ],
+    tags: ['PoC', 'pilot', 'production', 'KPI', 'stakeholder', 'ROI']
+  },
 );

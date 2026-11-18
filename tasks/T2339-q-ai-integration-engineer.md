@@ -1,6 +1,6 @@
 # T2339 — 8 câu phỏng vấn vị trí AI Integration Engineer (Java backend + LLM)
 
-Status: TODO
+Status: DONE
 Agent: kilo
 Owns: `js/data/q-ai.js`
 After: T2245
@@ -28,3 +28,6 @@ Chỉ THÊM trước dòng `);` cuối file, không sửa/xoá câu cũ, không 
 `node --check js/data/q-ai.js`, `node scripts/build-light-index.js`, `node scripts/validate.js` → OK. Status: DONE + id mới vào Notes.
 
 ## Notes
+
+## Notes
+Added ai-126..ai-133 (8 questions).
