@@ -2464,7 +2464,402 @@ explain: `**Đáp án đúng: phương án 1 và 2.** Một request có thể đ
     'Use production traffic as sole metric.'
   ],
   answer: 1,
-  explain: `**Đáp án đúng: phương án 2.** Eval suite với golden dataset và scoring tự động giúp đo lường khách quan.`
+explain: `**Đáp án đúng: phương án 2.** Eval suite với golden dataset và scoring tự động giúp đo lường khách quan.`
+},
+{
+  id: 'qz-ccdv-181',
+  topic: 'claude',
+  q: '[Security] Your production API gateway forwards requests to the Anthropic API. Where should the Anthropic API key be stored?',
+  options: [
+    'In the frontend JavaScript bundle for direct API calls.',
+    'In environment variables on the backend, accessed only by server-side code.',
+    'In a shared config file committed to the Git repository.',
+    'In the user session cookie.'
+  ],
+  answer: 1,
+  explain: `**Đáp án đúng: phương án 2.** API key phải nằm trong biến môi trường (environment variables) trên backend, chỉ code server-side mới đọc được. Không bao giờ đưa key vào frontend, Git repo, hay cookie — kẻ tấn công sẽ dùng trộm quota và truy cập dữ liệu.`
+},
+{
+  id: 'qz-ccdv-182',
+  topic: 'claude',
+  multi: true,
+  q: '[Security] A tool returns customer PII (name, email, phone) to Claude for summarization. What are the risks? (Choose 2)',
+  options: [
+    'Prompt injection could make Claude call the tool with another user\'s ID.',
+    'The PII travels to Anthropic servers in the next request\'s messages array.',
+    'The tool definition schema leaks PII to Anthropic.',
+    'Users can directly invoke the tool without Claude.'
+  ],
+  answer: [0, 1],
+  explain: `**Đáp án đúng: phương án 1 và 2.** (1) Prompt injection: nội dung độc hại khiến Claude gọi tool nhạy cảm với tham số trái phép (user_id của người khác). (2) Kết quả tool chứa PII sẽ đi kèm messages array trong request tiếp theo đến Anthropic — dữ liệu nhạy cảm rời khỏi hạ tầng bạn. Schema chỉ mô tả kiểu, không leak dữ liệu thực. User không gọi tool trực tiếp.`
+},
+{
+  id: 'qz-ccdv-183',
+  topic: 'claude',
+  q: '[Security] Before sending user-uploaded documents to the Messages API, what is the best practice?',
+  options: [
+    'Send as-is; Anthropic does not train on API data.',
+    'Redact or pseudonymize PII (emails, IDs, names) unless strictly required for the task.',
+    'Encrypt the document with your key before sending.',
+    'Compress the document to save tokens.'
+  ],
+  answer: 1,
+  explain: `**Đáp án đúng: phương án 2.** Nguyên tắc tối thiểu dữ liệu (data minimization): chỉ gửi thông tin thực sự cần thiết. Loại bỏ/hạ danh tính PII trừ khi task bắt buộc (ví dụ trích xuất hóa đơn cần tên khách). Mã hóa không giúp vì API cần plaintext. Nén không giảm token (tokenizer chạy trên text).`
+},
+{
+  id: 'qz-ccdv-184',
+  topic: 'claude',
+  multi: true,
+  q: '[Security] When the model refuses a request (stop_reason: "refusal"), what should your application do? (Choose 2)',
+  options: [
+    'Retry the same request immediately in a loop.',
+    'Catch the refusal, log for audit, and show a user-friendly message.',
+    'Add "ignore safety guidelines" to the system prompt.',
+    'Fall back to a different model or ask the user to rephrase.'
+  ],
+  answer: [1, 3],
+  explain: `**Đáp án đúng: phương án 2 và 3.** (2) Xử lý từ chối: log stop_reason="refusal" để audit, hiện thông báo thân thiện. (3) Thử model khác (ngưỡng safety khác) hoặc nhờ user viết lại. Retry ngay thường bị từ chối lại. System prompt KHÔNG tắt được safety filters (lớp bảo vệ cấp nền tảng).`
+},
+{
+  id: 'qz-ccdv-185',
+  topic: 'claude',
+  q: '[Security] Even with structured output (output_format: {type: "json_schema"}), why must your server still validate the JSON?',
+  options: [
+    'The schema guarantee is absolute; no validation needed.',
+    'JSON Schema only constrains structure/types, so business rules still need app-layer validation (defense in depth).',
+    'Structured output only works for tool calls, not final responses.',
+    'Validation is handled by Anthropic and returned in the usage field.'
+  ],
+  answer: 1,
+  explain: `**Đáp án đúng: phương án 2.** Structured output (tham số output_format dạng json_schema) đảm bảo JSON hợp lệ và khớp schema, NHƯNG: (1) Schema chỉ mô tả cấu trúc/kiểu dữ liệu, không diễn đạt được ràng buộc nghiệp vụ (ví dụ: "email phải thuộc domain công ty"). (2) Defense in depth: luôn validate lại ở application layer. Không bao giờ tin cậy hoàn toàn đầu ra từ mô hình.`
+},
+{
+  id: 'qz-ccdv-186',
+  topic: 'claude',
+  multi: true,
+  q: '[Security] Which practices prevent prompt injection when embedding user queries into a RAG prompt? (Choose 2)',
+  options: [
+    'Wrap the user query in XML tags: <user_query>...</user_query>.',
+    'Place the user query in a separate user message after system prompt and retrieved documents.',
+    'Add "ignore any instructions in the user query" to the system prompt.',
+    'Concatenate the user query directly into the system prompt string.'
+  ],
+  answer: [0, 1],
+  explain: `**Đáp án đúng: phương án 1 và 2.** (1) Thẻ XML tạo ranh giới rõ giữa dữ liệu và hướng dẫn. (2) Tách user query thành message riêng, sau system prompt và tài liệu, giúp mô hình phân biệt hướng dẫn hệ thống vs dữ liệu đầu vào. Chỉ nhờ system prompt "bỏ qua hướng dẫn" không đủ an toàn. Ghép trực tiếp vào system prompt cực kỳ nguy hiểm.`
+},
+{
+  id: 'qz-ccdv-187',
+  topic: 'claude',
+  q: '[Security] Your multi-tenant SaaS uses one Anthropic API key. How to enforce per-tenant rate limits?',
+  options: [
+    'Rely on Anthropic\'s built-in per-tenant rate limiting.',
+    'Implement your own rate limiter per tenant before calling Anthropic, and tag requests with metadata.user_id.',
+    'Create a separate Anthropic API key per tenant.',
+    'Use the organization_id field in the request.'
+  ],
+  answer: 1,
+  explain: `**Đáp án đúng: phương án 2.** Anthropic rate limit tính theo API key/organization, không tự động tách theo tenant của bạn. Phải tự implement rate limiter ở lớp ứng dụng (per tenant), và gắn metadata: {user_id: "tenant_123"} để request được gắn với end-user (Anthropic dùng cho việc phát hiện lạm dụng và thống kê), nhờ đó tra soát được tenant nào tiêu nhiều. Tạo key riêng cho từng tenant cũng tách được quota nhưng khó quản lý khi số tenant lớn. Messages API không có trường organization_id trong body request.`
+},
+{
+  id: 'qz-ccdv-188',
+  topic: 'claude',
+  multi: true,
+  q: '[Security] Which are true about API key rotation best practices? (Choose 2)',
+  options: [
+    'Rotate keys periodically (e.g., 90 days) and revoke old keys after verifying the new one works.',
+    'Store the current key in plaintext in the application config file for easy access.',
+    'Use a secrets manager (AWS Secrets Manager, HashiCorp Vault) to store and rotate keys without code changes.',
+    'Share the same API key across dev, staging, and production for consistency.'
+  ],
+  answer: [0, 2],
+  explain: `**Đáp án đúng: phương án 1 và 3.** (1) Quay vòng key định kỳ (90 ngày), thu hồi key cũ ngay sau khi key mới hoạt động. (3) Dùng secrets manager: lưu key an toàn, tự động quay vòng, ứng dụng đọc từ secret manager (không hardcode). Không lưu plaintext trong config. Môi trường dev/staging/prod phải dùng key riêng để tách biệt quota, audit, và giảm tác động khi key bị lộ.`
+},
+{
+  id: 'qz-ccdv-189',
+  topic: 'claude',
+  q: '[Security] A user uploads a PDF containing credit card numbers for summarization. What is the compliance risk?',
+  options: [
+    'No risk; Anthropic does not store API data.',
+    'Credit card data (PCI DSS) sent to Anthropic may violate data residency and compliance unless you have a BAA/DPA in place and tokenize first.',
+    'Only the summary is sent; the document stays on your server.',
+    'Risk is minimal because the API uses TLS encryption.'
+  ],
+  answer: 1,
+  explain: `**Đáp án đúng: phương án 2.** Dữ liệu thẻ tín dụng (PCI DSS) gửi lên Anthropic = dữ liệu nhạy cảm rời khỏi hạ tầng bạn. Cần: (1) Tokenize/mask số thẻ trước khi gửi (chỉ gửi bản đã làm mờ). (2) Kiểm tra BAA (thoả thuận cho dữ liệu y tế, HIPAA) hoặc DPA (data processing agreement) với Anthropic nếu xử lý PII/PCI. (3) Data residency: request được xử lý ở hạ tầng Anthropic, có thể khác region của bạn. TLS chỉ bảo vệ trên đường truyền, không giải quyết nghĩa vụ compliance về lưu trữ/xử lý.`
+},
+{
+  id: 'qz-ccdv-190',
+  topic: 'claude',
+  multi: true,
+  q: '[Security] You build a coding agent that can read/write files and run shell commands. Which safety measures are essential? (Choose 2)',
+  options: [
+    'Run the agent in a sandboxed container with no network access and restricted filesystem.',
+    'Give the agent full root access to the host for maximum flexibility.',
+    'Require human approval (confirmation UI) before any write or shell command executes.',
+    'Disable all tools and let the agent only output code snippets.'
+  ],
+  answer: [0, 2],
+  explain: `**Đáp án đúng: phương án 1 và 3.** (1) Sandbox container: cô lập filesystem, không internet, giới hạn quyền — hạn chế thiệt hại nếu agent bị prompt injection hoặc lỗi logic. (3) Human-in-the-loop: bắt buộc xác nhận trước hành động ghi file/chạy lệnh (irreversible actions). Root access (2) cực kỳ nguy hiểm. Tắt tool (4) mất tính năng agent. Cả sandbox và approval đều cần thiết (defense in depth).`
+},
+{
+  id: 'qz-ccdv-191',
+  topic: 'claude',
+  q: '[Eval] What is the primary purpose of a held-out test set in agent evaluation?',
+  options: [
+    'To speed up evaluation by using fewer test cases.',
+    'To evaluate on data the agent has NOT seen during prompt tuning, preventing overfitting.',
+    'To allow the LLM to learn new patterns during evaluation.',
+    'To minimize token usage during testing.'
+  ],
+  answer: 1,
+  explain: `**Đáp án đúng: phương án 2.** Tập test held-out (ẩn) là dữ liệu chưa từng dùng để tinh chỉnh prompt, đảm bảo đánh giá khách quan khả năng tổng quát, tránh mô hình "học vẹt" (overfitting) tập dữ liệu cũ.`
+},
+{
+  id: 'qz-ccdv-192',
+  topic: 'claude',
+  q: '[Eval] When using "LLM-as-a-judge" for evaluation, what is crucial for reliability?',
+  options: [
+    'Use the cheapest model available as the judge.',
+    'Calibrate the judge by comparing its scores with human scores on a subset of data.',
+    'Run the judge only once per test case.',
+    'Give the judge a 100-page system prompt.'
+  ],
+  answer: 1,
+  explain: `**Đáp án đúng: phương án 2.** Judge LLM có thể có bias. Cần calibrate bằng cách so sánh điểm của nó với điểm do người chấm trên tập mẫu, để tin cậy độ chính xác trước khi scale.`
+},
+{
+  id: 'qz-ccdv-193',
+  topic: 'claude',
+  multi: true,
+  q: '[Eval] What makes an evaluation metric for an agent "robust"? (Choose 2)',
+  options: [
+    'It produces different results every run.',
+    'It measures task completion precisely and is consistent across multiple runs.',
+    'It measures only latency.',
+    'It is reproducible: the same run scored twice by a human or judge gives the same result.'
+  ],
+  answer: [1, 3],
+  explain: `**Đáp án đúng: phương án 2 và 4.** Metric chỉ đáng tin khi (2) đo đúng việc hoàn thành tác vụ và cho kết quả nhất quán qua nhiều lần chạy, và (4) có tính tái lập — chấm lại cùng một output phải ra cùng điểm, nếu không thì không so sánh được giữa các version. Phương án 1 sai vì metric "mỗi lần một kết quả" là ngẫu nhiên. Phương án 3 sai vì latency chỉ là chi phí, không phải chất lượng; nhanh mà trả lời sai thì vô nghĩa.`
+},
+{
+  id: 'qz-ccdv-194',
+  topic: 'claude',
+  q: '[Eval] Why should you run agent evaluation tests multiple times?',
+  options: [
+    'To increase evaluation cost.',
+    'Agents are non-deterministic (use sampling); multiple runs measure success probability and consistency.',
+    'It does not change the result.',
+    'It only tests network speed.'
+  ],
+  answer: 1,
+  explain: `**Đáp án đúng: phương án 2.** Agent dùng model lấy mẫu (sampling) nên không deterministic. Chạy nhiều lần giúp đo xác suất thành công thực tế (ví dụ: thành công 8/10 lần thay vì 1/1) và độ ổn định.`
+},
+{
+  id: 'qz-ccdv-195',
+  topic: 'claude',
+  q: '[Eval] When defining success criteria for an agent task, what is NOT recommended?',
+  options: [
+    'Define criteria before starting prompt optimization.',
+    'Focus on outcome (e.g., "tests pass") rather than process.',
+    'Make criteria dependent on exactly one specific tool call sequence.',
+    'Include cost and latency constraints.'
+  ],
+  answer: 2,
+  explain: `**Đáp án đúng: phương án 3.** Tiêu chí thành công nên dựa vào KẾT QUẢ (task đạt mục tiêu, test pass), không nên cứng nhắc phụ thuộc vào một chuỗi gọi tool cụ thể. Agent có thể tìm ra cách giải quyết khác vẫn đúng, miễn là kết quả cuối đạt yêu cầu.`
+},
+{
+  id: 'qz-ccdv-196',
+  topic: 'claude',
+  q: '[Eval] What is the danger of overfitting your agent to the test set?',
+  options: [
+    'The agent will become too fast.',
+    'The agent works perfectly on tests but fails on unseen real-world tasks.',
+    'The agent will use fewer tokens.',
+    'The agent will become too expensive.'
+  ],
+  answer: 1,
+  explain: `**Đáp án đúng: phương án 2.** Overfitting làm agent "học thuộc" tập test, dẫn đến điểm cao trên test nhưng thất bại khi gặp tác vụ thực tế chưa từng thấy — mất tính tổng quát.`
+},
+{
+  id: 'qz-ccdv-197',
+  topic: 'claude',
+  q: '[Eval] For an agent extracting invoice data, what should evaluation measure?',
+  options: [
+    'Only the final JSON output.',
+    'Final JSON correctness, tool usage accuracy, and total token cost.',
+    'Only total token cost.',
+    'Only time taken.'
+  ],
+  answer: 1,
+  explain: `**Đáp án đúng: phương án 2.** Đánh giá cần toàn diện: (1) JSON output (có khớp schema, dữ liệu đúng không). (2) Tool usage (có gọi đúng tool, truyền đúng tham số không). (3) Chi phí (token) và độ trễ.`
+},
+{
+  id: 'qz-ccdv-198',
+  topic: 'claude',
+  q: '[Eval] What is a "ground truth" for evaluating a RAG agent?',
+  options: [
+    'A random guess.',
+    'A gold standard answer manually curated by an expert to compare against the agent\'s response.',
+    'The model\'s previous answer.',
+    'The user\'s query.'
+  ],
+  answer: 1,
+  explain: `**Đáp án đúng: phương án 2.** Ground truth là câu trả lời "vàng" (gold standard) do chuyên gia biên soạn, dùng để chấm điểm câu trả lời thực tế của model/agent, đảm bảo sự chính xác.`
+},
+{
+  id: 'qz-ccdv-199',
+  topic: 'claude',
+  q: '[Eval] Why measure tool accuracy in agent evaluation?',
+  options: [
+    'Tools are always 100% accurate.',
+    'Wrong tool calls or args cause task failure even if final answer looks "correct" by luck.',
+    'It does not affect task outcome.',
+    'It is too hard to measure.'
+  ],
+  answer: 1,
+  explain: `**Đáp án đúng: phương án 2.** Sai tool hoặc sai tham số là nguồn lỗi chính của agent. Dù câu trả lời cuối có vẻ "đúng" (may mắn), nếu quy trình tool sai, agent vẫn chưa đáng tin cậy. Cần chấm từng bước tool call để sửa gốc vấn đề.`
+},
+{
+  id: 'qz-ccdv-200',
+  topic: 'claude',
+  q: '[Eval] What is the role of an automated evaluation harness?',
+  options: [
+    'To perform evaluation manually.',
+    'To run the agent on test cases repeatedly, track results, and report metrics automatically.',
+    'To force the agent to only use one tool.',
+    'To replace the LLM with a rule-based system.'
+  ],
+  answer: 1,
+  explain: `**Đáp án đúng: phương án 2.** Harness đánh giá tự động chạy agent trên hàng trăm case test, tự động ghi log kết quả, tính metric (tỉ lệ thành công, chi phí, sai số), giúp lặp nhanh hơn so với đánh giá bằng tay.`
+},
+{
+  id: 'qz-ccdv-201',
+  topic: 'claude',
+  q: '[Claude Code] To make Claude Code automatically follow project conventions (e.g., "always add file headers") without repeating in every prompt, where should you document this?',
+  options: [
+    'README.md in the root directory.',
+    'CLAUDE.md in the root directory.',
+    'A .cursorrules file in the root directory.',
+    'A .clauderc file.'
+  ],
+  answer: 1,
+  explain: `**Đáp án đúng: phương án 2.** CLAUDE.md là file ghi nhớ (memory) chuẩn của Claude Code: Claude tự nạp nội dung file này vào context mỗi phiên, nên quy ước dự án (đặt ở thư mục gốc repo) và hướng dẫn cá nhân (ở ~/.claude/CLAUDE.md) không phải lặp lại trong prompt. README.md chỉ là tài liệu cho người, .cursorrules là của Cursor, còn .clauderc không tồn tại.`
+},
+{
+  id: 'qz-ccdv-202',
+  topic: 'claude',
+  q: '[Claude Code] You want Claude Code to ask for your approval before running any shell command. How do you configure that?',
+  options: [
+    'Nothing to configure: Claude Code already asks for approval on every Bash call and it cannot be changed.',
+    'Set "shell": false in package.json.',
+    'Add a permission rule for Bash with "ask" (or a PreToolUse hook that exits with code 2) in .claude/settings.json.',
+    'Disable all tools so the agent can only chat.'
+  ],
+  answer: 2,
+  explain: `**Đáp án đúng: phương án 3.** Quyền của tool được điều khiển bằng permission rules trong settings: .claude/settings.json (cấp dự án, chia sẻ cho team), .claude/settings.local.json (riêng máy bạn) hoặc ~/.claude/settings.json (toàn cục). Ví dụ permissions: {ask: ["Bash"]} khiến mọi lệnh Bash phải hỏi; "deny" thì chặn thẳng. Cách thứ hai là hook PreToolUse: hook nhận JSON mô tả tool call, nếu exit code 2 thì call bị chặn và stderr được trả về cho Claude. Hook khai báo trong settings.json (mục hooks), KHÔNG phải trong CLAUDE.md — CLAUDE.md chỉ chứa hướng dẫn bằng văn bản, model có thể làm theo hoặc không, nên không dùng làm ranh giới bảo mật.`
+},
+{
+  id: 'qz-ccdv-203',
+  topic: 'claude',
+  q: '[Claude Code] What is the primary purpose of the .claude directory in a project?',
+  options: [
+    'To store temporary session logs.',
+    'To store project-level configuration: settings.json (permissions), hooks, subagents, custom commands/skills.',
+    'To store IDE plugins.',
+    'To cache model weights.'
+  ],
+  answer: 1,
+  explain: `**Đáp án đúng: phương án 2.** Thư mục .claude/ trong repo chứa cấu hình cấp dự án: settings.json (permission allow/ask/deny, hooks), agents/ (subagent định nghĩa bằng markdown), commands/ (slash command), skills/… Phiên bản cấp người dùng nằm ở ~/.claude/. Không có thư mục tên ".claudecodes": tên đúng là .claude. Model weights và log phiên không nằm ở đây.`
+},
+{
+  id: 'qz-ccdv-204',
+  topic: 'claude',
+  q: '[Claude Code] When should you use a subagent instead of the main agent?',
+  options: [
+    'For every small task.',
+    'For complex, isolated tasks requiring intense focus (e.g., large refactoring) to avoid context pollution.',
+    'Never; the main agent should do everything.',
+    'When the network is slow.'
+  ],
+  answer: 1,
+  explain: `**Đáp án đúng: phương án 2.** Subagent dùng cho task phức tạp, cần tập trung cao độ (refactor lớn) để tách biệt context, tránh main agent bị quá tải hoặc nhiễu ngữ cảnh. Main agent quản lý điều phối.`
+},
+{
+  id: 'qz-ccdv-205',
+  topic: 'claude',
+  q: '[Claude Code] A full test suite needs 6 minutes. What does Claude Code do with a Bash command that runs that long?',
+  options: [
+    'Every command is killed exactly at 30 seconds, so long suites are impossible.',
+    'The Bash tool has a timeout (default about 2 minutes, configurable up to about 10), and commands can run in the background with output read later.',
+    'It asks the user to type the result back in.',
+    'It switches to a different model with a longer limit.'
+  ],
+  answer: 1,
+  explain: `**Đáp án đúng: phương án 2.** Tool Bash có tham số timeout, mặc định khoảng 2 phút và tối đa khoảng 10 phút cho một lần gọi; quá thời gian thì lệnh bị dừng và Claude thấy lỗi timeout. Với việc dài hơn, Claude có thể chạy lệnh ở chế độ nền (background) để nhận về một handle, tiếp tục làm việc khác rồi quay lại đọc output/kiểm tra tiến độ. Nhờ vậy test suite dài không chặn cả phiên. Không có chuyện kill ở 30 giây, không cần người gõ tay kết quả.`
+},
+{
+  id: 'qz-ccdv-206',
+  topic: 'claude',
+  q: '[Claude Code] What is the effect of running "claude -p" with --output-format json?',
+  options: [
+    'It writes the answer into a .json file instead of printing it.',
+    'It forces Claude to explain its thought process in JSON.',
+    'It prints one JSON object (result, session_id, cost…) to stdout so scripts and CI/CD can parse it.',
+    'It deletes all existing files.'
+  ],
+  answer: 2,
+  explain: `**Đáp án đúng: phương án 3.** -p (print mode) chạy Claude không tương tác: nhận prompt, in kết quả ra stdout rồi thoát. --output-format json đổi định dạng đó thành một object JSON gồm result, session_id, total_cost_usd, usage…; --output-format stream-json thì in từng event JSON theo dòng (dùng cho streaming). Nhờ vậy pipeline CI/CD parse được bằng jq/script thay vì phải đọc văn bản tự do. Nó không tạo file và không thay đổi nội dung repo theo flag này.`
+},
+{
+  id: 'qz-ccdv-207',
+  topic: 'claude',
+  q: '[Claude Code] How can you limit Claude Code to read-only access on a specific directory (e.g. vendor/ or a shared docs folder)?',
+  options: [
+    'Add deny rules for Edit/Write on that path in .claude/settings.json (a PreToolUse hook can also block it).',
+    'No, it always needs full access to be useful.',
+    'Pass the --read-only flag when starting claude.',
+    'Nothing works; project-scoped settings are ignored by Claude Code.'
+  ],
+  answer: 0,
+  explain: `**Đáp án đúng: phương án 1.** permission rules trong settings.json nhận pattern đường dẫn, ví dụ deny: ["Edit(./vendor/**)", "Write(./vendor/**)"] — Claude vẫn đọc được nhưng mọi lần sửa/ghi vào đó bị chặn. Muốn chặn cứng hơn thì dùng hook PreToolUse: hook đọc JSON của tool call và exit code 2 để từ chối. Không có flag --read-only; còn settings cấp dự án (.claude/settings.json) hoàn toàn được áp dụng và nên commit để cả team dùng chung.`
+},
+{
+  id: 'qz-ccdv-208',
+  topic: 'claude',
+  q: '[Claude Code] How does Claude Code treat files listed in .gitignore?',
+  options: [
+    'It always reads them to understand the project better.',
+    'Its search and glob tools skip them by default, so ignored files only enter context if you point at them explicitly.',
+    'It skips them only if you list them again in CLAUDE.md.',
+    'It is unaware of .gitignore.'
+  ],
+  answer: 1,
+  explain: `**Đáp án đúng: phương án 2.** Các tool tìm kiếm (Grep/Glob) tôn trọng .gitignore, nên file build, node_modules, .env… không bị quét và không tự động lọt vào context — vừa giảm nhiễu, vừa tránh đọc nhầm file chứa secret. Nếu bạn chỉ đích danh đường dẫn thì nó vẫn đọc được, vì vậy đừng coi .gitignore là ranh giới bảo mật tuyệt đối; hãy chặn bằng permission rules với các file nhạy cảm.`
+},
+{
+  id: 'qz-ccdv-209',
+  topic: 'claude',
+  q: '[Claude Code] Can Claude Code run inside a Docker container?',
+  options: [
+    'No, it must run on the host OS.',
+    'Yes, it can run inside a containerized environment, which is recommended for added security.',
+    'Only with an enterprise license.',
+    'No, it requires GPU access on the host.'
+  ],
+  answer: 1,
+  explain: `**Đáp án đúng: phương án 2.** Claude Code có thể và nên chạy trong container (Docker) để tăng bảo mật (cô lập filesystem, giới hạn mạng).`
+},
+{
+  id: 'qz-ccdv-210',
+  topic: 'claude',
+  q: '[Claude Code] The Edit tool fails because the file changed since Claude last read it (old_string is stale). What happens next?',
+  options: [
+    'Claude Code overwrites the file with its own version, discarding the other change.',
+    'The tool returns an error, and Claude re-reads the file and retries the edit with a fresh anchor.',
+    'The whole session crashes and has to be restarted.',
+    'Claude Code creates a new git branch and applies the edit there.'
+  ],
+  answer: 1,
+  explain: `**Đáp án đúng: phương án 2.** Edit là phép thay thế chuỗi chính xác (exact string replace): nếu nội dung file đã đổi, chuỗi cũ không còn khớp nên tool trả lỗi thay vì ghi mù — đây chính là cơ chế chống ghi đè lên thay đổi của người khác. Claude nhận lỗi, Read lại file rồi thử Edit lần nữa với đoạn neo mới. Với xung đột git thật (rebase/merge) thì việc chọn giữ bên nào vẫn do bạn quyết định. Claude không tự force ghi đè, không tự tạo branch, và lỗi tool không làm chết phiên.`
 }
-
 );
