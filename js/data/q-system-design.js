@@ -11488,5 +11488,296 @@ Một campaign fraud dùng device farm: velocity rule phát hiện 50 giao dịc
 > Senior tip: Luôn có human review queue và explainability (SHAP) để tuân thủ compliance và giảm false positive; monitor drift của model theo thời gian.`,
   follow: ['Làm sao xử lý cold start cho user mới?', 'Model drift xử lý thế nào?', 'Làm sao cân bằng false positive và false negative?'],
   tags: ['fraud', 'ml', 'streaming', 'feature-store']
+},
+{
+  id: 'design-066',
+  topic: 'design',
+  level: 'senior',
+  q: 'Thiết kế hệ thống phân công và điều phối công việc (task) cho 5.000 nhân viên vận hành của một công ty fintech: mỗi ticket phải được gán cho người phù hợp, tôn trọng tải và kỹ năng, có leo thang (escalation) khi quá hạn, và mọi thao tác phải để lại audit trail. Bạn thiết kế luồng gán, tính ưu tiên và cách xử lý khi hàng đợi dồn.',
+  a: `**Tóm tắt:** Dispatcher chạy **vòng lặp reconcile** (định kỳ đối chiếu trạng thái) với DB là nguồn sự thật: mỗi tick, query những ticket chưa gán hoặc cần gán lại, chấm điểm từng (ticket, agent) theo **năng lực, tải, SLA còn lại và sticky**, chọn cặp tốt nhất rồi commit gán kèm một bản ghi audit **append-only**. Điểm mấu chốt là **idempotency + versioning** để nhiều instance không gán trùng, **reactive rebalance** chứ không phải cân bằng tĩnh, và **escalation theo thời gian (timer + scan)** để không ticket nào bị bỏ quên.
+
+### 1. Làm rõ yêu cầu — vì sao phải hỏi trước khi vẽ
+- **Loại ticket:** sự cố thanh toán, tranh chấp giao dịch, yêu cầu KYC, hỗ trợ doanh nghiệp… Mỗi loại có skill và SLA riêng.
+- **Quy mô:** 5.000 agent, mỗi ngày 60.000 ticket mới, ~1/3 mở lại → khoảng 80.000 lượt gán/ngày. Giờ cao điểm (9h–11h) chiếm 40% → ~16.000 lượt/giờ ≈ 4,4 lượt/giây. Tải này **không cần** streaming phức tạp; một service dispatcher + Redis + DB là đủ. Điều khó là **tính đúng** của quyết định gán, không phải throughput.
+- **Ngoại vi:** chatbot tự trả lời FAQ trước; dispatch chỉ lo phần cần người.
+
+### 2. Mô hình dữ liệu (PostgreSQL 15)
+| Bảng | Vai trò | Ghi chú |
+|---|---|---|
+| {{tickets}} | ticket + {{version}}, {{status}}, {{priority}}, {{sla_due_at}}, {{queue_id}}, {{assignee_id}} | {{version}} để optimistic lock |
+| {{agents}} | {{agent_id}}, {{skills[]}}, {{capacity}}, {{shift}}, {{state}} | {{skills}} mảng, lọc bằng {{&&}} (overlap) |
+| {{agent_skills}} | quan hệ agent–skill + {{proficient_level}} | chuẩn hoá, index (agent_id, skill) |
+| {{assignments}} | lịch sử gán, {{status}}, {{claimed_at}} | nguồn sự thật "ai đang giữ ticket" |
+| {{audit_log}} | append-only: ai/gì/khi nào/trước-sau | chỉ INSERT, không UPDATE/DELETE |
+
+Chỉ số then chốt: {{tickets(queue_id, status, priority, sla_due_at)}}, {{assignments(assignee_id, status)}}.
+
+### 3. Luồng gán từng bước (có sơ đồ)
+~~~seq
+title: Vòng lặp điều phối task
+actors: Producer | Redis | Dispatcher | PG | Agent
+Producer -> PG: tạo ticket status=NEW
+Dispatcher -> Redis: pop nonces theo hàng đợi
+Dispatcher -> PG: SELECT candidate theo queue
+Dispatcher -> PG: UPDATE gán kèm version++ (commit)
+PG --> Dispatcher: 1 row updated
+Dispatcher -> Redis: push job lên queue của agent
+Dispatcher --> Agent: thông báo có việc mới
+Agent -> PG: claim bằng Nếu(assignee=me)
+~~~
+Vì sao từng bước:
+- **Gán = một UPDATE có điều kiện** (compare-and-set). Nếu hai dispatcher cùng đọc ticket version=7 rồi cùng UPDATE, chỉ một câu {{UPDATE ... WHERE version = 7}} thành công (affected rows = 1); câu còn lại thấy 0 dòng và bỏ qua. Đây là cách chống gán trùng rẻ nhất.
+- **Redis chỉ là lớp đánh thức (wake-up)**, không phải nguồn sự thật. Danh sách việc thật vẫn ở DB; mất Redis thì worker vẫn poll DB và không mất việc.
+- **Agent claim** để chắc chắn đúng người đang làm (tránh trường hợp đã gán nhưng worker cũ chưa nhận).
+
+### 4. Chấm điểm chọn agent — vì sao cần công thức
+Gán "ai rảnh nhất" là bẫy: người giỏi nhất bị dồn việc, người mới ngồi không, SLA của việc khó trễ. Ta cần hàm điểm kết hợp nhiều yếu tố.
+
+~~~java
+// Mỗi dòng là một "feature" thô, gán điểm 0..1 rồi nhân trọng số
+static double score(Ticket t, Agent a, int openNow, long msLeft) {
+    if (!a.skills.containsAll(t.requiredSkills)) return -1;      // thiếu kỹ năng: loại
+    if (a.state != State.AVAILABLE) return -1;                   // đang nghỉ/tắt
+    double skill = a.level(t.requiredSkills);                    // 0..1 mức thành thạo
+    double load  = 1.0 - Math.min(1.0, openNow / (double) a.capacity); // còn nhiều chỗ -> điểm cao
+    double sla   = msLeft <= 0 ? 2.0 : 1.0 / (1.0 + msLeft / 600_000.0); // sắp/quá hạn -> ưu tiên
+    return 0.4 * skill + 0.4 * load + 0.2 * sla;                 // skill và tải quan trọng nhất
 }
+~~~
+- {{msLeft}} = {{sla_due_at - now}}. Khi sắp quá hạn (còn dưới 10 phút) thành {{sla}} bật lên, ticket tự nhảy lên đầu — đây là **ưu tiên động**, không cần cột priority cứng.
+- {{openNow}} đếm số ticket {{ASSIGNED}} của agent, lấy từ Redis ({{INCR}}/{{DECR}}) hoặc đếm nhanh trên DB.
+- {{0.4/0.4/0.2}} là điểm khởi đầu; production phải **tuning theo dữ liệu** (thường bằng A/B hoặc học từ lịch sử gán đúng/sai).
+
+### 5. Ưu tiên và chống đói (starvation)
+PriorityQueue theo {{priority}} rồi {{sla_due_at}} (còn hạn gần nhất trước). Nhưng nếu luôn ưu tiên P1, ticket P3 có thể nằm hàng tuần → **aging**: sau khi chờ quá {{T}} (ví dụ 30 phút), tăng dần priority ảo để P3 dần lên. Đây là kỹ thuật "aging" trong lập lịch CPU, áp dụng y hệt ở đây.
+
+### 6. Escalation — cơ chế thời gian, không dựa bộ nhớ
+- Mỗi ticket có {{sla_due_at}}. Một job {{dispatch_escalation}} chạy mỗi 30 giây: {{SELECT ... WHERE sla_due_at < now() AND status = 'ASSIGNED'}}.
+- Khi trễ: chuyển {{status=ESCALATED}}, tăng mức, gán lại cho **lead** có kỹ năng cao hơn, và ghi audit {{escalated_from}}/{{reason}}.
+- Vì sao không dùng một timer trong RAM mỗi ticket? Vì **restart là mất hết**, và 80.000 timer thì tốn. Đánh đổi: scan 30 giây chấp nhận trễ tối đa 30 giây, đổi lấy tính bền vững.
+
+### 7. Audit trail — append-only là bắt buộc
+Mọi chuyển trạng thái ghi một dòng {{audit_log}}: {{ticket_id}}, {{actor}}, {{action}}, {{from}}, {{to}}, {{ts}}, {{reason}}. Bảng này **không UPDATE/DELETE** (có thể dùng trigger chặn, hoặc chỉ cho role {{INSERT}}). Vì sao: khi tranh chấp "ai làm mất ticket", audit là bằng chứng pháp lý và công cụ debug. Trong fintech còn phục vụ compliance.
+
+### 8. Trade-off
+| Phương án | Ưu | Nhược |
+|---|---|---|
+| Ràng buộc cứng trong DB (mỗi agent một queue riêng, gán bằng NOTIFY) | Đơn giản, đúng ngay | Khó rebalance, agent nghỉ là queue kẹt |
+| Dispatcher reconcile định kỳ (đề xuất) | Linh hoạt, dễ tune, chịu lỗi tốt | Trễ tối đa 1 tick; cần chống gán trùng |
+| Streaming (Kafka/Flink) cho quyết định realtime | Gần thời gian thực | Dưới 10k gán/s là over-engineering; vận hành nặng |
+| ML gán (learning-to-rank) | Tối ưu theo mục tiêu dài hạn | Cần dữ liệu + pipeline; khó giải thích cho audit |
+
+Khi nào dùng cái nào: dưới ~10k lượt gán/giây → reconcile + Redis là đủ; hàng triệu sự kiện/giây có ràng buộc thời gian thực mới cần streaming.
+
+### 9. Pitfall production
+- **Thundering herd khi mở ca:** 5.000 agent online cùng lúc, dispatcher cố gán một lượt → dùng {{SKIP LOCKED}} và chia lô, không SELECT FOR UPDATE cả bảng.
+- **Double-assign qua retries:** retry an toàn chỉ khi idempotent; luôn kiểm {{version}} hoặc {{assignment}} trước khi coi là gán.
+- **Agent "ma":** state {{AVAILABLE}} trong Redis nhưng đã offline → cần heartbeat TTL; nếu heartbeat chết quá {{2}} tick thì loại khỏi pool.
+- **SLA trượt do scan chậm:** nếu escalation job chạy 5 phút/lần, SLA 15 phút coi như vô nghĩa — phải khớp tần suất scan với SLA nhỏ nhất.
+- **Queue nóng cục bộ:** một loại ticket khó (ví dụ tranh chấp quốc tế) dồn vào 30 agent → cần tách queue theo skill hiếm.
+
+### 10. Ví dụ đời thực
+Triệu chứng: Thứ Hai đầu tuần, 9h15, tồn 4.000 ticket chưa gán dù có 700 agent online; SLA của 1.200 ticket đã trễ. Điều tra: log dispatcher cho thấy mỗi tick chỉ gán được ~300 ticket rồi dừng, và nhiều ticket trả về {{0 row updated}}. Metric {{dispatch_loop_duration_p99}} = 8,4 giây, {{db_pool_active}} = 50/50 (HikariCP đầy). Nguyên nhân gốc: câu query chọn candidate thiếu index trên {{tickets(queue_id, status)}}, mỗi tick phải seq scan 1,2 triệu dòng ticket; đồng thời dispatcher để {{SELECT ... FOR UPDATE}} trên toàn bộ candidate → các instance chặn nhau. Cách xử lý: (1) thêm index {{CREATE INDEX CONCURRENTLY ... ON tickets(queue_id, status) WHERE status IN ('NEW','UNASSIGNED')}} — partial index chỉ chứa ticket cần gán, nhỏ ~5% bảng; (2) đổi sang {{UPDATE ... WHERE id = ANY(:batch) AND version = :v}} từng lô 200 dòng, dùng {{SKIP LOCKED}} khi đọc; (3) giới hạn mỗi instance xử lý một queue con (consistent-ish sharding theo {{queue_id % N}}). Kết quả: tick còn ~600 ms, {{db_pool_active}} còn 8/50, hết tồn sau 3 phút, không còn ticket trượt SLA trong giờ cao điểm.
+
+### 11. Trả lời mẫu khi phỏng vấn
+"Em thiết kế dispatcher theo vòng lặp reconcile: DB là nguồn sự thật, mỗi tick em lấy các ticket chưa gán hoặc cần gán lại, chấm điểm từng cặp ticket–agent theo kỹ năng, tải hiện tại và SLA còn lại, rồi gán bằng một câu UPDATE có điều kiện kèm version để chống gán trùng khi chạy nhiều instance. Redis chỉ dùng để đánh thức agent và đếm tải nhanh, không giữ nguồn sự thật. Ưu tiên em dùng hàng đợi theo priority và thời hạn, cộng thêm aging để ticket lẻ không bị đói. Escalation em làm bằng job quét sla_due_at định kỳ, trễ thì nâng mức và gán lại cho lead, vì timer trong RAM không bền qua restart. Mọi thay đổi ghi vào audit_log append-only. Về tái cân bằng, em theo dõi mất cân bằng tải giữa các queue rồi điều chỉnh trọng số theo thời gian thực, chứ không gán tĩnh. Ở dự án trước, thêm partial index và bỏ FOR UPDATE toàn bảng đã kéo thời gian một tick từ 8 giây về dưới 1 giây và xử lý hết tồn trong giờ cao điểm."
+
+> Senior tip: Điểm ăn tiền là nói được "dispatch là vòng lặp reconcile idempotent, không phải một luồng chạy theo thời gian thực". Khi đó mọi câu hỏi tiếp theo — chống gán trùng, chịu restart, tái cân bằng, audit — đều suy ra từ chính mô hình này. Đừng lao vào Kafka/Flink khi tải chỉ vài nghìn lượt gán mỗi giây.`,
+  follow: ['Làm sao tái cân bằng khi 700 agent thay đổi kỹ năng và tải liên tục mà không gán lại toàn bộ?', 'Ticket đang ASSIGNED mà agent tắt máy giữa chừng: phát hiện và gán lại thế nào cho an toàn?', 'Audit log append-only nhưng cần sửa dữ liệu sai (ví dụ gán nhầm): bạn xử lý thế nào mà vẫn giữ tính bất biến?'],
+  tags: ['task dispatch', 'routing', 'escalation', 'audit log', 'SLA', 'reconcile', 'optimistic locking', 'SKIP LOCKED']
+},
+{
+  id: 'design-067',
+  topic: 'design',
+  level: 'senior',
+  q: 'Thiết kế nền tảng notification đa kênh (push, SMS, email, webhook) phục vụ 10 triệu thông báo mỗi ngày. Yêu cầu: không gửi trùng, kênh lỗi thì thử lại hoặc chuyển kênh, tôn trọng tần suất (frequency cap) và danh sách opt-out, có template nhiều ngôn ngữ, và theo dõi trạng thái gửi (delivered/failed) để đối soát. Bạn thiết kế luồng dữ liệu và cách chọn kênh dự phòng.',
+  a: `**Tóm tắt:** Dùng kiến trúc **queue theo kênh** (mỗi kênh một hàng đợi riêng vì SLA và nhà cung cấp khác nhau), **outbox pattern** để ghi "cần gửi" cùng transaction nghiệp vụ (không mất thông báo), **idempotency key + dedupe** để không gửi trùng, và một **orchestrator** chọn kênh theo subscription → frequency cap → opt-out → provider health. Gửi theo kiểu at-least-once rồi khử trùng ở đầu provider, retry backoff + circuit breaker, và ghi từng trạng thái vào một bảng {{notification_status}} để đối soát.
+
+### 1. Ước lượng để chọn kiến trúc
+- 10.000.000/ngày ≈ 116 tin/giây trung bình. Đỉnh (8h sáng, hoặc sau sự cố) có thể gấp 10–20 lần → ~1.500–2.000 tin/giây.
+- Với tải này, một cụm worker + Kafka (hoặc SQS) là đủ; **không cần** một hệ thống streaming tự xây. Điều khó là **tính đúng** (dedupe, opt-out, đúng kênh), không phải throughput.
+- Tỷ lệ kênh giả định: push 70% (rẻ, nhanh), email 20%, SMS 8% (đắt, SLA chặt), webhook 2% (tích hợp B2B).
+
+### 2. Vì sao tách queue theo kênh
+Mỗi kênh khác nhau về **throughput, độ trễ, chi phí, cách lỗi**:
+- SMS qua nhà mạng: giới hạn ~10–50 tin/giây mỗi số, lỗi do số điện thoại sai hoặc nhà mạng chặn.
+- Email: có thể spam folder, cần warm-up IP, bounce/phản hồi.
+- Push (FCM/APNs): token hết hạn, thiết bị offline.
+- Webhook: bên nhận có thể chậm/500, cần chữ ký HMAC và retry có kiểm soát.
+
+Nếu dùng chung một queue, một đợt SMS lỗi (nhà mạng nghẽn) sẽ làm nghẽn cả email và push. Tách queue giúp **cô lập lỗi** và **định mức riêng**.
+
+### 3. Luồng dữ liệu (có sơ đồ)
+~~~seq
+title: Gửi thông báo đa kênh
+actors: App | Outbox | Kafka | Orchestrator | Provider
+App -> Outbox: insert notification + outbox cùng transaction
+Outbox -> Kafka: publish outbox event
+Kafka -> Orchestrator: consume theo kênh
+Orchestrator -> Orchestrator: opt-out + frequency cap + template
+Orchestrator -> Provider: gửi kèm idempotency key
+Provider --> Orchestrator: 200 + messageId
+Orchestrator -> Kafka: ghi status delivered
+~~~
+- **Outbox** giải quyết bài toán "ghi DB thành công nhưng publish Kafka thất bại": hai hệ thống không thể commit chung, nên ghi cả hai vào cùng một transaction DB, rồi một publisher (hoặc Debezium CDC) đọc bảng outbox đẩy lên Kafka. Đây là mẫu "transactional outbox".
+- **Orchestrator** là nơi duy nhất gọi provider, để gom logic chọn kênh, retry, rate-limit. Tách biệt này giúp test và thay provider dễ.
+
+### 4. Idempotency và dedupe — vì sao phải có
+Người dùng bấm "Gửi lại" hai lần, hoặc worker xử lý lại một message do timeout (ACK mất) → dễ gửi hai lần. Cách làm:
+- Mỗi yêu cầu có {{idempotency_key}} do client sinh (ví dụ {{userId:templateId:day:seq}}).
+- Bảng {{notification(idempotency_key UNIQUE, status, ...)}}; chèn trước khi gửi, {{INSERT ... ON CONFLICT DO NOTHING}}. Nếu đã tồn tại và {{status}} là {{SENDING}}/{{SENT}} thì bỏ qua.
+- Khi gửi provider, truyền {{Idempotency-Key}} header nếu provider hỗ trợ (nhiều provider như Stripe/Twilio có). Đây là lớp phòng thủ thứ hai.
+
+~~~java
+// Chèn bản ghi idempotency; nếu đã có thì không gửi nữa
+int n = jdbc.update("""
+    INSERT INTO notification(id, idempotency_key, user_id, channel, status)
+    VALUES (?, ?, ?, ?, 'PENDING')
+    ON CONFLICT (idempotency_key) DO NOTHING
+    """, id, key, userId, channel);
+if (n == 0) return;                       // đã có -> bỏ qua, không gửi trùng
+sendToProvider(id, channel, payload);     // gửi bất đồng bộ qua queue kênh
+~~~
+
+### 5. Chọn kênh dự phòng (fallback)
+Orchestrator tính điểm kênh theo: subscription của user, consent, tần suất, sức khỏe provider.
+1. Lọc kênh user đã opt-in và nội dung cho phép (ví dụ OTP chỉ SMS/push, không email).
+2. Áp frequency cap (tối đa 3 push/ngày, 1 SMS/ngày cho cùng loại).
+3. Nếu kênh chính lỗi (circuit open, hoặc trả 5xx nhiều) → thử kênh phụ theo thứ tự ưu tiên đã cấu hình.
+4. Ghi {{attempt}} để audit: kênh nào đã thử, lỗi gì, chuyển kênh khi nào.
+
+Ví dụ bảng cấu hình:
+| Kênh | Ưu tiên | Khi nào dùng | Chi phí/giá trị |
+|---|---|---|---|
+| Push | 1 | app đã cài, token còn hạn | ~0 |
+| Email | 2 | có email hợp lệ | rất rẻ |
+| SMS | 3 | cần gấp, OTP | đắt |
+| Webhook | 4 | đối tác B2B đăng ký | miễn phí nội bộ |
+
+### 6. Frequency cap và opt-out
+- {{frequency_cap}} tính bằng cửa sổ trượt: Redis {{ZADD}} timestamp rồi {{ZREMRANGEBYSCORE}} để đếm số tin trong 24h; vượt ngưỡng thì hoãn hoặc gộp.
+- {{opt-out}}: bảng {{user_prefs(channel, opted_out, reason, ts)}}; kiểm tra ở orchestrator, **không kiểm tra ở provider**. SMS còn phải chặn theo quy định (ví dụ STOP).
+- Đây là lý do orchestrator phải chạy trước khi gọi provider: nếu để provider tự quyết, một provider lỗi vẫn gửi.
+
+### 7. Retry, backoff và circuit breaker
+- Retry theo **exponential backoff + jitter** (ngẫu nhiên để tránh thundering herd khi nhiều worker lỗi cùng lúc): 1s, 2s, 4s, 8s, tối đa 5 lần.
+- **Circuit breaker** ( Resilience4j ) mở khi tỷ lệ lỗi > 50% trong 20 request; khi mở thì chuyển kênh ngay thay vì chờ hết retry.
+- **Dead letter queue (DLQ)**: sau khi hết retry, đẩy vào DLQ để người/xử lý tay; không im lặng bỏ.
+- Vì sao không retry vô hạn: một provider sập mà ta cứ gọi sẽ tự DDoS chính mình và làm trễ các thông báo khác.
+
+### 8. Theo dõi trạng thái và đối soát
+- Provider gọi **webhook** khi delivered/bounced/failed → cập nhật {{notification_status}} (idempotent theo {{messageId}}).
+- Đối soát định kỳ: so số bản ghi {{SENT}} với số provider báo delivered, chênh lệch bất thường → cảnh báo. Điều này bắt lỗi "gửi xong nhưng provider im lặng".
+- Metric cần: {{notification_total}} theo channel/status, {{provider_latency_p99}}, {{retry_count}}, {{dlq_size}}, {{optout_count}}.
+
+### 9. Trade-off
+| Phương án | Ưu | Nhược |
+|---|---|---|
+| Gửi đồng bộ trong request | Đơn giản | Chậm, dễ timeout, provider lỗi làm hỏng API |
+| Queue + worker (đề xuất) | Chịu tải, retry, tách kênh | Cần vận hành queue, trễ vài giây |
+| Kafka unified + routing | Thứ tự tốt, replay | Nặng nếu chỉ vài trăm tin/s; cần schema |
+| Serverless (Lambda/SQS) | Auto-scale, ít vận hành | Chi phí ẩn, khó kiểm soát rate-limit provider |
+
+### 10. Ví dụ đời thực
+Triệu chứng: Sau chiến dịch nhắc nạp tiền, tỷ lệ SMS delivered giảm từ 97% xuống 61% trong 20 phút; hàng đợi SMS dài 2,4 triệu, nhiều user nhận 3–4 tin giống nhau. Điều tra: log orchestrator cho thấy một provider SMS trả 429/503 liên tục; circuit breaker chưa bật nên worker vẫn retry; mỗi message có 3 worker cùng xử lý (do consumer group cấu hình sai), tất cả cùng gọi provider vì chưa có idempotency key; dedupe dựa trên {{messageId}} của provider nên mỗi lần gửi tạo ID mới. Nguyên nhân gốc: thiếu idempotency key ở tầng nghiệp vụ + consumer không idempotent + thiếu circuit breaker. Cách xử lý: (1) sinh {{idempotency_key}} từ {{userId+templateId+ngày}}, cài unique constraint, chèn ON CONFLICT DO NOTHING trước khi gửi; (2) bật Resilience4j circuit breaker cho provider SMS, ngưỡng 50%/20 request, chuyển kênh push+email khi mở; (3) sửa consumer group để mỗi partition chỉ một worker; (4) đẩy các tin đã gửi 429 vào DLQ và gửi lại sau 15 phút. Kết quả: số tin trùng giảm về ~0, delivered SMS tăng lại 96%, hàng đợi xả trong 12 phút, và số user nhận trùng giảm từ 4 xuống 1.
+
+### 11. Trả lời mẫu khi phỏng vấn
+"Em thiết kế notification platform theo hướng queue tách theo kênh, vì SMS, email, push và webhook có SLA, chi phí và kiểu lỗi khác nhau; gộp chung sẽ khiến một kênh lỗi làm nghẽn tất cả. Nghiệp vụ ghi yêu cầu và một bản outbox trong cùng transaction, sau đó publisher đẩy lên Kafka, worker đọc và gửi qua orchestrator. Orchestrator là nơi duy nhất quyết định: kiểm opt-out, tính frequency cap bằng cửa sổ trượt trên Redis, chọn template và ngôn ngữ, rồi gọi provider kèm idempotency key. Em dùng at-least-once rồi khử trùng bằng idempotency key unique ở DB, vì gửi trùng còn đỡ tệ hơn mất tin quan trọng như OTP. Retry dùng exponential backoff có jitter, circuit breaker để chuyển kênh khi provider lỗi, và DLQ để không bỏ sót. Mọi attempt và trạng thái delivered/failed đều ghi lại để đối soát với webhook provider. Ở dự án trước, thêm idempotency key và circuit breaker đã loại bỏ gần hết tin trùng và khôi phục tỷ lệ SMS delivered từ 61% về 96% trong một chiến dịch."
+
+> Senior tip: Điểm phân biệt senior ở bài này là nói được "em chọn at-least-once + idempotency key ở tầng nghiệp vụ, không cố ép exactly-once với provider bên ngoài". Ai trả lời "dùng exactly-once" thường bị hỏi vặn về hai vị tướng và mất điểm. Hãy nhấn mạnh dedupe + đối soát định kỳ.`,
+  follow: ['Vì sao dùng outbox thay vì gọi provider trực tiếp trong transaction nghiệp vụ?', 'Frequency cap tính bằng cửa sổ trượt trên Redis: khi Redis mất, hành vi của hệ thống thế nào?', 'Webhook provider đến chậm hoặc trùng: bạn cập nhật trạng thái thế nào cho idempotent?'],
+  tags: ['notification', 'multichannel', 'push', 'sms', 'email', 'webhook', 'outbox', 'idempotency', 'circuit breaker', 'frequency cap']
+},
+{
+  id: 'design-068',
+  topic: 'design',
+  level: 'lead',
+  q: 'Thiết kế hệ thống nhận và xử lý lệnh đặt chứng khoán chịu tải giờ mở cửa (ATO): trong 5 giây đầu phiên có 5.000 lệnh/giây từ 20.000 thiết bị, mỗi lệnh phải được xác thực, kiểm tra sức mua, đánh số thứ tự và khớp lệnh. Bạn thiết kế pipeline chịu tải đỉnh này, đảm bảo không mất lệnh, thứ tự đúng, và báo trạng thái về cho từng client. Giải thích vì sao không dùng cơ chế chống trùng kiểu "gửi lại cùng một lệnh" một cách ngây thơ.',
+  a: `**Tóm tắt:** Gateway tiếp nhận lệnh và **gán idempotency key + số thứ tự (sequence) ngay tại biên**, ghi vào một **log ghi-trước (write-ahead log, WAL)** bền vững theo lô (group commit) rồi mới xử lý. Xử lý gồm ba chặng tách rời: **pre-trade risk** (kiểm sức mua, hạn mức), **sequencer** (đánh số toàn cục theo mã), và **matching** (khớp trên order book RAM). Vì mỗi chặng đọc từ log tuần tự và ghi kết quả ra output, hệ thống **deterministic**: replay log là tái tạo được toàn bộ trạng thái. Không mất lệnh nhờ WAL + replication; thứ tự đúng nhờ một sequencer cho mỗi mã; báo trạng thái nhờ client lưu {{client_order_id}} và đối chiếu qua API/stream.
+
+### 1. Vì sao 5.000 lệnh/giây ở ATO là bài toán khác thường
+- Phiên liên tục trung bình chỉ ~185–500 lệnh/giây (xem bài matching engine). Nhưng **5 giây đầu ATO** có thể gấp 10–25 lần vì mọi bot và nhà đầu tư nhỏ đều bấm "mua" cùng lúc. Đây là **tải dạng xung (spike)**, không phải tải đều.
+- Đặc điểm: lệnh đến từ 20.000 thiết bị, mạng không đồng đều, nhiều client retry khi timeout. Nếu ta coi mỗi request HTTP là một "lệnh" và xử lý đồng bộ, retry sẽ tạo **lệnh trùng** và **thứ tự lộn xộn**.
+- Vì vậy: tách **nhận** khỏi **xử lý**, và làm cho nhận càng nhẹ càng tốt (chỉ validate + ghi WAL + trả mã tạm).
+
+### 2. Pipeline từng chặng (có sơ đồ)
+~~~seq
+title: Pipeline lệnh giờ mở cửa
+actors: Client | Gateway | WAL | Risk | Sequencer | Matching
+Client -> Gateway: POST /orders (client_order_id)
+Gateway -> WAL: append lệnh + seq tạm, group commit
+WAL --> Gateway: đã ghi bền vững
+Gateway --> Client: 202 + thứ tự tạm
+WAL -> Risk: đọc theo lô, kiểm sức mua
+Risk -> Sequencer: lệnh hợp lệ
+Sequencer -> Matching: seq toàn cục theo mã
+Matching -> WAL: ghi trade/ack
+~~~
+- **WAL là trung tâm.** Vì sao ghi trước khi xử lý? Nếu xử lý rồi mới ghi, một crash giữa chừng làm mất lệnh đã báo thành công cho client. Ghi trước biến "nhận" thành "đã hứa sẽ xử lý", và cho phép replay.
+- **Gateway trả 202 Accepted**, không phải 200. Vì lệnh chưa khớp, chưa biết giá; con số 202 nói "đã nhận, đang xử lý" — đây là **asynchronous acceptance**.
+- **Matching** chỉ đọc từ sequencer; nó không gọi mạng, không truy cập DB. Nhờ vậy nó nhanh (micro giây mỗi lệnh) và giữ được "một luồng cho mỗi mã".
+
+### 3. Chống trùng lệnh — vì sao "gửi lại cùng một lệnh" không đủ
+Người dùng mất mạng ngay sau khi bấm mua → app tự gửi lại. Nếu server coi mỗi HTTP request là một lệnh mới, user đặt 2 lệnh. Cách đúng:
+- Client sinh {{client_order_id}} (UUID) khi bấm nút, **giữ nguyên khi retry**.
+- Gateway ghi {{client_order_id}} vào bảng {{orders}} với UNIQUE constraint; lệnh trùng bị từ chối bằng {{409 Conflict}} kèm lệnh gốc.
+- Nhưng UNIQUE chỉ chống trùng *y hệt*; nếu user sửa số lượng rồi gửi lại, đó là **lệnh mới** (khác nội dung). Vì vậy khóa gồm {{client_order_id}} + {{hash(payload)}} hoặc chỉ dùng {{client_order_id}} và yêu cầu client không đổi nội dung giữa các lần retry.
+- Khi mất response 202 (network timeout), client **poll** {{GET /orders?client_order_id=...}} để biết lệnh đã vào chưa, thay vì gửi lại mù.
+
+~~~java
+// Nhận lệnh tại gateway: chỉ validate nhẹ, ghi WAL, trả 202
+@PostMapping("/orders")
+public ResponseEntity<?> place(@RequestBody NewOrder req) {
+    String key = req.clientOrderId();                  // client giữ nguyên khi retry
+    if (!orderStore.tryInsert(key, req))               // UNIQUE + hash: chặn trùng
+        return ResponseEntity.status(409).build();      // đã có lệnh này
+    wal.append(key, req);                              // ghi bền vững (đã có thể là batch)
+    return ResponseEntity.accepted()                   // 202: đã nhận, chưa khớp
+        .body(Map.of("clientOrderId", key));
+}
+~~~
+
+### 4. Vì sao một sequencer cho mỗi mã là bắt buộc
+Thứ tự khớp phải **toàn cục theo mã**: lệnh mua giá 100 đến trước phải khớp trước lệnh giá 101 đến sau (nếu cùng thời điểm). Nếu hai máy cùng xử lý một mã, thứ tự phụ thuộc lập lịch thread → không tái hiện được, và khi replay sẽ cho kết quả khác.
+- Sequencer gán {{seq}} tăng dần đơn điệu cho mỗi mã, ghi vào log.
+- Shard theo mã: mã A luôn ở shard 0, mã B shard 1. Không bao giờ chia một mã cho hai shard. Khi một mã quá nóng (ví dụ mã blue-chip ATO), **tách riêng mã đó** ra một sequencer riêng.
+- Vì sao không dùng timestamp? Đồng hồ nhiều máy lệch nhau (clock skew); hai lệnh cùng mili-giây có thể đảo thứ tự. {{seq}} do một nguồn duy nhất phát là đúng và rẻ.
+
+### 5. Bền vững và HA
+- WAL ghi ra đĩa (NVMe) rồi **replicate** sang ít nhất 2 node trước khi ack. Nếu chỉ ghi một đĩa, node chết là mất lệnh.
+- **Group commit** (gom 100–500 lệnh hoặc 1–2 ms) thay vì fsync từng lệnh: ở 5.000 lệnh/s, fsync mỗi lệnh sẽ nghẽn IOPS; gom lô giảm fsync xuống vài trăm lần/s, đổi độ trễ tối thiểu +0,2 ms.
+- Standby replay WAL để luôn ở trạng thái mới nhất; primary chết → standby nhận vai, giữ {{seq}} cuối để không lặp.
+- Snapshot order book định kỳ để replay không phải từ đầu phiên.
+
+### 6. Báo trạng thái cho client
+- {{202}} ban đầu chỉ có {{client_order_id}}.
+- Client mở **SSE** (Server-Sent Events) hoặc WebSocket {{GET /orders/stream?client_order_id=...}}; server đẩy {{ACCEPTED}} → {{PARTIALLY_FILLED}} → {{FILLED}}/{{REJECTED}}.
+- Nếu không có stream, client poll mỗi 500 ms với backoff. Phải **idempotent** phía client: cùng trạng thái nhận hai lần thì bỏ qua.
+- Vì sao SSE trước WebSocket? SSE một chiều server→client, đơn giản hơn, tự reconnect ({{Last-Event-ID}}), đủ cho cập nhật trạng thái; WebSocket chỉ cần khi client cũng gửi nhiều luồng.
+
+### 7. Ước lượng tài nguyên (để không bị hỏi vặn)
+- 5.000 lệnh/s × 5 giây = 25.000 lệnh trong cửa sổ đỉnh; nếu mỗi lệnh ~1 KB log → ~25 MB, hoàn toàn trong RAM + một lần ghi đĩa.
+- Matching: nếu mỗi lệnh ~40 micro giây, một luồng chịu 25.000 lệnh/s. Vậy một mã nóng có thể cần shard riêng; phần lớn mã chỉ vài lệnh/s.
+- Network: 25.000 lệnh × 1 KB × 2 chiều ≈ 50 MB trong 5 giây = 10 MB/s, một NIC 1 Gbps dư sức.
+
+### 8. Trade-off
+| Phương án | Ưu | Nhược |
+|---|---|---|
+| Đồng bộ: client chờ khớp mới nhận response | Đơn giản về khái niệm | Timeout hàng loạt ở ATO, retry tạo lệnh trùng, gateway nghẽn |
+| Bất đồng bộ WAL + 202 (đề xuất) | Chịu spike, không mất lệnh, dễ replay | Client phải xử lý trạng thái bất đồng bộ |
+| Kafka làm sequencer | Có sẵn log phân tán | Thêm hops, p99 cao hơn tự ghi WAL; khó kiểm soát fsync |
+| In-memory trước, ghi DB sau | Nhanh | Crash = mất lệnh; chỉ chấp nhận nếu có WAL song song |
+
+Khi nào dùng: hệ thống thật (sàn, OMS) gần như luôn chọn WAL + bất đồng bộ. In-memory thuần chỉ dùng cho mô phỏng, backtest.
+
+### 9. Ví dụ đời thực
+Triệu chứng: 9h00:00 mở cửa, trong 3 giây đầu gateway nhận 21.000 request; tỷ lệ lỗi 5xx tăng lên 18%, nhiều client báo "không biết lệnh đã đặt chưa", và một số user thấy 2 lệnh cùng khối lượng. Điều tra: gateway đang xử lý đồng bộ, gọi matching qua HTTP; matching là một service nhiều instance, mỗi instance có order book riêng cho cùng mã → hai instance cùng nhận lệnh của một mã và khớp khác nhau (thậm chí bán cho chính mình). Đồng thời client timeout 2 giây và gửi lại, nhưng {{client_order_id}} chưa được lưu nên mỗi retry là một lệnh mới. Metric {{http_server_requests_seconds_max}} chạm 2 s, {{jvm_threads_live}} = 800, GC pause p99 = 400 ms do mỗi request tạo nhiều object. Nguyên nhân gốc: (1) thiết kế đồng bộ không chịu được spike, (2) thiếu idempotency key ở client, (3) vi phạm "một mã một sequencer" khiến thứ tự và tính đúng bị phá. Cách xử lý: (1) chuyển sang nhận bất đồng bộ: validate + ghi WAL + trả 202, matching đọc log; (2) cài unique {{client_order_id}} + hash, retry cùng id bị 409; (3) shard theo mã, mỗi mã chỉ một sequencer; (4) bật group commit và pool buffer để giảm GC; (5) thêm SSE đẩy trạng thái. Kết quả: p99 của bước nhận còn 8 ms, không còn 5xx do nghẽn, số lệnh trùng về 0, và hệ thống xử lý ổn định 5.000 lệnh/s với p99 khớp dưới 3 ms trong 5 giây đầu phiên.
+
+### 10. Trả lời mẫu khi phỏng vấn
+"Em tách hệ thống thành ba phần: gateway nhận lệnh, sequencer đánh số, và matching khớp. Ở giờ mở cửa, em không xử lý đồng bộ vì 5.000 lệnh/giây trong 5 giây sẽ làm nghẽn gateway và client timeout hàng loạt; thay vào đó em validate nhẹ, ghi vào write-ahead log bền vững theo lô rồi trả 202 Accepted kèm mã tạm. Sau đó risk check và matching đọc log tuần tự, nên thứ tự khớp là deterministic và replay log là tái tạo được trạng thái. Mỗi mã chỉ có một sequencer để thứ tự toàn cục đúng, shard theo mã chứ không theo request. Client gửi kèm client_order_id, em cài unique constraint để chống lệnh trùng khi retry, và khi mất response thì client poll trạng thái thay vì gửi lại mù. Về HA, WAL được replicate sang ít nhất hai node trước khi ack, standby replay liên tục để chuyển vai nhanh. Em theo dõi p99 từng chặng và dùng group commit để giảm fsync. Ở lần triển khai trước, chuyển từ đồng bộ sang WAL bất đồng bộ đã kéo tỷ lệ lỗi giờ mở cửa từ 18% về gần 0 và xử lý 5.000 lệnh/giây với p99 khớp dưới 3 ms."
+
+> Senior tip: Ở cấp lead, đừng chỉ vẽ hộp. Hãy nói "WAL là nguồn sự thật, matching là hàm thuần (pure function) của log", vì từ đó suy ra được HA bằng replay, audit bằng log, và debug bằng cách phát lại đúng 5 giây đó trên máy dev. Ai trả lời "dùng Kafka + nhiều instance + DB lock" thường bị vặn về thứ tự và double-spend.`,
+  follow: ['Lệnh đã ghi WAL nhưng matching crash trước khi khớp: standby xử lý thế nào để không khớp hai lần?', 'Client mất mạng sau khi nhận 202: làm sao biết lệnh đã khớp và tránh gửi lại?', 'Giờ ATO một mã quá nóng (chiếm 40% lưu lượng): bạn shard thế nào mà vẫn đúng thứ tự?'],
+  tags: ['order management', 'OMS', 'low latency', 'WAL', 'sequencer', 'ATO', 'idempotency', 'sharding', 'SSE', 'system design']
+},
 );
