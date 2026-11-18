@@ -2645,6 +2645,7 @@ window.DATA_INDEX = {
     {"id":"lesson-claude-011","track":"claude","order":11,"title":"Hooks, slash command, subagents, skills va chay headless trong CI","level":"senior","minutes":35},
     {"id":"lesson-claude-012","track":"claude","order":12,"title":"Đọc streaming SSE của Messages API: message_start, content_block_delta, message_delta, message_stop","level":"senior","minutes":40},
     {"id":"lesson-claude-013","track":"claude","order":13,"title":"Structured output và validate phía client: JSON schema, required/type/enum, retry giới hạn, không chạy tool_use bị cắt","level":"senior","minutes":40},
+    {"id":"lesson-claude-014","track":"claude","order":14,"title":"Prompt caching và Batch API: cache write vs cache read, TTL, đặt cache_control, chọn model","level":"senior","minutes":40},
     {"id":"lesson-aws-001","track":"aws","order":1,"title":"IAM và credentials cho ứng dụng Java: principal, policy, role và credentials provider chain","level":"mid","minutes":40},
     {"id":"lesson-aws-002","track":"aws","order":2,"title":"S3 cho backend dev: consistency, multipart upload, presigned URL, storage class và mã hoá","level":"mid","minutes":40},
     {"id":"lesson-aws-003","track":"aws","order":3,"title":"SQS, SNS và EventBridge: visibility timeout, DLQ, FIFO và consumer idempotent","level":"senior","minutes":45},

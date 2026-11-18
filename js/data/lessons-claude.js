@@ -3903,8 +3903,408 @@ Lỗi hay gặp: dùng get(key) == null để kiểm tra required (sai khi field
       explain: 'Duyệt key bằng TreeSet (alphabet) khiến thứ tự lỗi luôn giống nhau. Test không bị flaky, log production dễ grep và so sánh.'
     },
   ],
-  related: ['claude-001', 'claude-012'],
+related: ['claude-001', 'claude-012'],
   tags: ['structured output', 'json schema', 'validation', 'retry', 'max_tokens'],
+},
+{
+  id: 'lesson-claude-014',
+  track: 'claude',
+  order: 14,
+  title: 'Prompt caching và Batch API: cache write vs cache read, TTL, đặt cache_control, chọn model',
+  level: 'senior',
+  minutes: 40,
+  goals: [
+    'Phân biệt cache write (ghi cache) và cache read (đọc cache), hiểu tỷ giá 1.25x và 0.1x so với input thường',
+    'Biết đặt breakpoint cache_control đúng chỗ: phần tĩnh lên trước, phần động ra sau, tối đa 4 breakpoint',
+    'Hiểu TTL mặc định 5 phút, TTL 1 giờ (giá ghi cao hơn), và cách làm mới TTL khi cache hit',
+    'Biết dùng Batch API cho tác vụ không gấp (giảm 50% chi phí), hiểu trade-off latency',
+    'Chọn model theo tác vụ: Opus cho reasoning phức tạp, Sonnet cho cân bằng, Haiku cho tốc độ/rẻ'
+  ],
+  body: `### Vì sao chi phí tăng khi ngữ cảnh dài
+Messages API tính tiền theo token. Khi chatbot nói chuyện nhiều lượt, mỗi lượt phải gửi lại toàn bộ lịch sử (system prompt, các lượt trước). Giả sử system prompt 3.000 token, mỗi lượt thêm 500 token:
+~~~text
+Lượt 1 : 3.000 + 500    =  3.500 token input
+Lượt 10: 3.000 + 5.000  =  8.000 token input
+Lượt 40: 3.000 + 20.000 = 23.000 token input   ← mỗi câu hỏi ngắn cũng trả tiền cho 23K token
+~~~
+Tổng chi phí input của cả phiên tăng gần **bình phương** theo số lượt. Hai công cụ để kiểm soát: **cắt lịch sử** (giảm token gửi đi) và **prompt caching** (giảm giá token lặp lại).
+
+### Prompt caching hoạt động thế nào
+Prompt caching cho phép API lưu lại **prefix** (phần đầu) của prompt đã xử lý. Lần gọi sau có **cùng prefix chính xác từng byte** thì phần đó được đọc từ cache: nhanh hơn và rẻ hơn nhiều. Prefix được xét theo thứ tự cố định: **tools → system → messages**. Bạn đánh dấu điểm kết thúc của phần cần cache bằng {{cache_control}} trên một content block:
+~~~json
+{
+  "model": "claude-sonnet-5-5",
+  "max_tokens": 1024,
+  "system": [
+    { "type": "text", "text": "Bạn là trợ lý CSKH của ngân hàng X. Quy định: ..." },
+    { "type": "text", "text": "<toàn bộ tài liệu sản phẩm, 20.000 token>",
+      "cache_control": { "type": "ephemeral" } }
+  ],
+  "messages": [{ "role": "user", "content": "Phí chuyển khoản liên ngân hàng là bao nhiêu?" }]
+}
+~~~
+Những điều cần nhớ:
+- **Đặt phần tĩnh lên trước**, phần thay đổi ra sau. Chỉ một ký tự khác ở đầu (ví dụ chèn giờ hiện tại vào system prompt, hay đổi thứ tự tools) là toàn bộ cache phía sau vô hiệu.
+- Tối đa **4 breakpoint** {{cache_control}} trong một request. Với chatbot, thường đặt một breakpoint sau system/tài liệu và một breakpoint ở message cuối để các lượt sau đọc lại cả lịch sử từ cache.
+- Có **độ dài tối thiểu** để được cache (khoảng 1024 token trở lên, tuỳ model); prompt ngắn hơn sẽ không được cache dù có {{cache_control}}.
+- TTL mặc định **5 phút**, được làm mới mỗi lần cache hit. Có tuỳ chọn TTL 1 giờ với giá ghi cao hơn.
+
+### Cache write vs cache read: đọc usage để biết cache có chạy không
+Response trả về {{usage}} với bốn con số:
+~~~json
+"usage": {
+  "input_tokens": 45,
+  "cache_creation_input_tokens": 0,
+  "cache_read_input_tokens": 20180,
+  "output_tokens": 210
+}
+~~~
+| Trường | Nghĩa | Giá (so với input thường, TTL 5 phút) |
+|---|---|---|
+| {{input_tokens}} | Token **sau** breakpoint cuối, không được cache | 1x |
+| {{cache_creation_input_tokens}} | Token vừa được **ghi** vào cache | 1.25x |
+| {{cache_read_input_tokens}} | Token **đọc** từ cache | 0.1x |
+| {{output_tokens}} | Token model sinh ra | giá output |
+
+Tổng input thực tế = cả ba trường input cộng lại. Lần gọi đầu thường là "ghi" (đắt hơn 25%), các lần sau trong TTL là "đọc" (rẻ 90%). Vì vậy cache chỉ có lời khi prefix được **dùng lại ít nhất vài lần** trong TTL. Nếu dashboard cho thấy {{cache_read_input_tokens}} luôn bằng 0: kiểm tra prefix có thay đổi mỗi request không, có đủ độ dài tối thiểu không, và khoảng cách giữa các request có vượt TTL không.
+
+### TTL: 5 phút vs 1 giờ
+TTL (Time To Live) quyết định cache tồn tại bao lâu nếu không được truy cập. Mặc định là **5 phút** (ephemeral). Mỗi lần cache hit (đọc), TTL được làm mới lại 5 phút. Nếu cần cache lâu hơn cho các workload ít truy cập (ví dụ tài liệu pháp lý hàng ngày), có thể đặt {{"type": "ephemeral", "ttl": "1h"}}:
+~~~json
+{ "type": "text", "text": "<tài liệu lớn>", "cache_control": { "type": "ephemeral", "ttl": "1h" } }
+~~~
+Giá ghi (cache_creation_input_tokens) với TTL 1 giờ là **2x** input thường (cao hơn 5 phút 1.25x). Giá đọc vẫn là **0.1x**. Chỉ chọn TTL 1 giờ khi chắc chắn prefix sẽ được đọc lại sau hơn 5 phút nhưng trong 1 giờ, và số lần đọc đủ để bù đắp chi phí ghi cao hơn.
+
+### Đặt cache_control đúng chỗ: prefix ổn định là chìa khóa
+Ví dụ SAI (cache không bao giờ hit):
+~~~json
+"system": [
+  { "type": "text", "text": "Hôm nay là " + new Date() + ". Bạn là trợ lý..." },
+  { "type": "text", "text": "<tài liệu>", "cache_control": { "type": "ephemeral" } }
+]
+~~~
+Timestamp thay đổi mỗi request → prefix khác → toàn bộ cache miss.
+Ví dụ ĐÚNG:
+~~~json
+"system": [
+  { "type": "text", "text": "Bạn là trợ lý CSKH của ngân hàng X. Quy định: ...",
+    "cache_control": { "type": "ephemeral" } },
+  { "type": "text", "text": "<tài liệu sản phẩm>", "cache_control": { "type": "ephemeral" } },
+  { "type": "text", "text": "Hôm nay là " + new Date() + ". Khách hỏi: " }
+]
+~~~
+Phần tĩnh (vai trò, quy định, tài liệu) có breakpoint; phần động (ngày, câu hỏi) nằm sau breakpoint cuối. Với hội thoại nhiều lượt, thường đặt thêm breakpoint ở message cuối cùng của lượt trước để lịch sử cũng được cache:
+~~~json
+"messages": [
+  { "role": "user", "content": "Phí chuyển khoản?" },
+  { "role": "assistant", "content": "Phí là 1.100 VNĐ..." },
+  { "role": "user", "content": [
+    { "type": "text", "text": "Cảm ơn. Thêm một câu hỏi.",
+      "cache_control": { "type": "ephemeral" } }
+  ]}
+]
+~~~
+Breakpoint ở message user cuối cho phép lượt sau đọc lại cả lịch sử từ cache.
+
+### Batch API: giảm 50% chi phí cho tác vụ không gấp
+Batch API xử lý nhiều request cùng lúc dưới dạng job bất đồng bộ. Bạn gửi file JSONL (mỗi dòng một request), API xử lý trong vòng 24 giờ và trả file kết quả. Giá **giảm 50%** so với request online.
+~~~bash
+# Tạo file requests.jsonl
+{"custom_id": "req-1", "params": {"model": "claude-sonnet-5-5", "max_tokens": 1024, "messages": [{"role": "user", "content": "Tóm tắt tài liệu A"}]}}
+{"custom_id": "req-2", "params": {"model": "claude-sonnet-5-5", "max_tokens": 1024, "messages": [{"role": "user", "content": "Tóm tắt tài liệu B"}]}}
+~~~
+~~~bash
+# Gửi batch
+curl -X POST https://api.anthropic.com/v1/messages/batches \
+  -H "x-api-key: $ANTHROPIC_API_KEY" \
+  -H "anthropic-version: 2023-06-01" \
+  -F "file=@requests.jsonl"
+~~~
+Khi job xong, tải file kết quả (JSONL mỗi dòng là kết quả của custom_id tương ứng). Trade-off: **latency cao** (phút đến giờ) đổi lấy **giá rẻ 50%**. Phù hợp: tóm tắt hàng nghìn tài liệu hàng đêm, phân loại ticket hỗ trợ, sinh dữ liệu huấn luyện, tạo embedding. KHÔNG phù hợp: chatbot realtime, phê duyệt giao dịch, bất kỳ luồng nào cần kết quả ngay.
+
+### Chọn model theo tác vụ: Opus, Sonnet, Haiku
+| Model | Điểm mạnh | Giá (input/output per 1M tokens) | Khi nào dùng |
+|---|---|---|---|
+| **Opus** | Reasoning phức tạp, code dài, phân tích sâu | ~$4 / $20 | Kiến trúc hệ thống, refactor lớn, security review, math proof |
+| **Sonnet** | Cân bằng tốt mọi tác vụ, code production | ~$2 / $10 | Đại đa số tác vụ: API, business logic, SQL, review PR, agent loop |
+| **Haiku** | Nhanh, rẻ, đủ cho tác vụ đơn giản | ~$0.10 / $0.50 | Phân loại, trích xuất field, tóm tắt ngắn, format lại, intent detection |
+
+Quy tắc thực tế: **mặc định Sonnet**. Chỉ lên Opus khi Sonnet thất bại ở reasoning phức tạp (kiểm tra bằng eval set). Dùng Haiku cho tác vụ lặp lại nhiều, rõ ràng, cần độ trễ thấp và chi phí cực thấp. Có thể kết hợp: Haiku làm intent detection/router, Sonnet xử lý nghiệp vụ, Opus làm architecture review cuối tuần.
+
+### Tính chi phí thực tế: CostEstimator
+Để quyết định cache hay batch, bạn cần tính tiền chính xác. Công thức chi phí một request:
+~~~text
+cost = (input_tokens × input_price)
+     + (cache_creation_input_tokens × input_price × 1.25)
+     + (cache_read_input_tokens × input_price × 0.1)
+     + (output_tokens × output_price)
+~~~
+Với Batch API: nhân toàn bộ kết quả với 0.5 (giảm 50%).
+Bảng giá truyền vào (không hard-code) cho phép so sánh model, TTL, và chiến lược cache/batch.
+
+### Ví dụ đời thực
+Hệ thống hỗ trợ khách hàng 10.000 lượt/ngày. System prompt + tài liệu = 25.000 token. Không cache: 25K × 10K = 250M token input/ngày. Bật cache (breakpoint sau tài liệu): lượt đầu ghi 25K (1.25x), 9.999 lượt đọc 25K (0.1x). Token hiệu quả = 25K×1.25 + 9.999×25K×0.1 ≈ 251K token/ngày. Giảm **99.9% chi phí input**. Thêm Batch cho tác vụ tóm tắt tài liệu hàng đêm (500 request/ngày): giảm 50% chi phí batch. Kết hợp cả hai: chi phí input/ngày chỉ còn ~0,1% ban đầu.
+
+### Trả lời mẫu khi phỏng vấn
+"Tôi dùng prompt caching để giảm chi phí input lặp lại: đặt breakpoint cache_control sau phần tĩnh (system, tài liệu, tools), phần động (ngày, câu hỏi user) ra sau. Cache write (ghi) tốn 1.25x, cache read (đọc) chỉ 0.1x, TTL 5 phút làm mới mỗi hit; có thể chọn TTL 1 giờ (ghi 2x) cho workload ít truy cập. Tôi đọc usage: cache_read_input_tokens > 0 có nghĩa cache đang hit. Với tác vụ không gấp (tóm tắt hàng đêm, phân loại ticket), tôi dùng Batch API giảm 50% chi phí, chấp nhận latency vài giờ. Tôi chọn model: Haiku cho intent detection/router, Sonnet mặc định cho nghiệp vụ, Opus chỉ cho architecture review. Tôi viết CostEstimator nhận bảng giá và usage để so sánh chiến lược trước khi deploy."
+`,
+  exercises: [
+    {
+      title: 'CostEstimator: tính chi phí request theo usage và bảng giá, so sánh cache/batch/model',
+      prompt: `Các kiểu PriceTable, UsageSnapshot, CostBreakdown, CompareResult mô phỏng dữ liệu định giá và usage (không cần sửa). Hãy viết class CostEstimator:
+1. estimate(usage, prices): tính chi phí một request.
+   - inputCost = usage.inputTokens × prices.inputPrice
+   - cacheWriteCost = usage.cacheCreationInputTokens × prices.inputPrice × 1.25
+   - cacheReadCost = usage.cacheReadInputTokens × prices.inputPrice × 0.1
+   - outputCost = usage.outputTokens × prices.outputPrice
+   - Nếu prices.isBatch = true: toàn bộ tổng nhân 0.5
+   - Trả CostBreakdown(inputCost, cacheWriteCost, cacheReadCost, outputCost, total, isBatch)
+2. compare(strategies): so sánh nhiều chiến lược, trả CompareResult(cheapestName, savingsVsFirst, breakdowns).
+   - strategies là Map<name, {usage, prices}>. Tính estimate cho từng cái.
+   - cheapestName: tên chiến lược có total nhỏ nhất.
+   - savingsVsFirst: (firstTotal - cheapestTotal) / firstTotal × 100 (phần trăm tiết kiệm so với chiến lược đầu tiên).
+   - breakdowns: Map tên → CostBreakdown.
+
+Lưu ý: prices.inputPrice và prices.outputPrice là giá cho 1 MILLION token. usage đơn vị là token. Công thức: token × price / 1_000_000.`,
+      starter: `// ====== Có sẵn (không cần sửa) ======
+record PriceTable(
+    double inputPrice,          // giá 1M token input thường
+    double outputPrice,         // giá 1M token output
+    boolean isBatch             // true = Batch API (giảm 50%)
+) {}
+record UsageSnapshot(
+    long inputTokens,
+    long cacheCreationInputTokens,
+    long cacheReadInputTokens,
+    long outputTokens
+) {}
+record CostBreakdown(
+    double inputCost,
+    double cacheWriteCost,
+    double cacheReadCost,
+    double outputCost,
+    double total,
+    boolean isBatch
+) {}
+record CompareResult(
+    String cheapestName,
+    double savingsVsFirstPercent,
+    Map<String, CostBreakdown> breakdowns
+) {}
+
+  // ====== Bài của bạn ======
+class CostEstimator {
+    static CostBreakdown estimate(UsageSnapshot usage, PriceTable prices) {
+        throw new UnsupportedOperationException("TODO");
+    }
+
+    static CompareResult compare(Map<String, Pair<UsageSnapshot, PriceTable>> strategies) {
+        throw new UnsupportedOperationException("TODO");
+    }
 }
 
+// Helper Pair vì Java không có sẵn
+record Pair<U, V>(U first, V second) {}`,
+      tests: `public class Main {
+    static int passed = 0, total = 0;
+    static void check(String name, Runnable r) {
+        total++;
+        try { r.run(); passed++; System.out.println("PASS " + name); }
+        catch (Throwable t) { System.out.println("FAIL " + name + ": " + t); }
+    }
+    static void eq(Object expected, Object actual) {
+        if (!Objects.equals(expected, actual)) throw new AssertionError("expected " + expected + " got " + actual);
+    }
+    static void ok(boolean cond, String msg) { if (!cond) throw new AssertionError(msg); }
+    static void near(double expected, double actual, double eps) {
+        if (Math.abs(expected - actual) > eps) throw new AssertionError("expected " + expected + " got " + actual);
+    }
+    static PriceTable sonnet = new PriceTable(2.00, 10.00, false);
+    static PriceTable sonnetBatch = new PriceTable(2.00, 10.00, true);
+    static PriceTable haiku = new PriceTable(0.10, 0.50, false);
+    static PriceTable opus = new PriceTable(4.00, 20.00, false);
+
+    public static void main(String[] args) {
+        check("request thường không cache", () -> {
+            UsageSnapshot u = new UsageSnapshot(10_000, 0, 0, 2_000);
+            CostBreakdown c = CostEstimator.estimate(u, sonnet);
+            near(0.02, c.inputCost(), 1e-9);      // 10k * 2 / 1M
+            near(0.0, c.cacheWriteCost(), 1e-9);
+            near(0.0, c.cacheReadCost(), 1e-9);
+            near(0.02, c.outputCost(), 1e-9);     // 2k * 10 / 1M
+            near(0.04, c.total(), 1e-9);
+            eq(false, c.isBatch());
+        });
+        check("request có cache write lần đầu", () -> {
+            UsageSnapshot u = new UsageSnapshot(1_000, 20_000, 0, 500);
+            CostBreakdown c = CostEstimator.estimate(u, sonnet);
+            near(0.002, c.inputCost(), 1e-9);           // 1k * 2 / 1M
+            near(0.05, c.cacheWriteCost(), 1e-9);       // 20k * 2 * 1.25 / 1M
+            near(0.0, c.cacheReadCost(), 1e-9);
+            near(0.005, c.outputCost(), 1e-9);          // 500 * 10 / 1M
+            near(0.057, c.total(), 1e-9);
+        });
+        check("request cache read (hit)", () -> {
+            UsageSnapshot u = new UsageSnapshot(500, 0, 20_000, 500);
+            CostBreakdown c = CostEstimator.estimate(u, sonnet);
+            near(0.001, c.inputCost(), 1e-9);          // 500 * 2 / 1M
+            near(0.0, c.cacheWriteCost(), 1e-9);
+            near(0.004, c.cacheReadCost(), 1e-9);       // 20k * 2 * 0.1 / 1M
+            near(0.005, c.outputCost(), 1e-9);
+            near(0.01, c.total(), 1e-9);
+        });
+        check("Batch API giảm 50%", () -> {
+            UsageSnapshot u = new UsageSnapshot(10_000, 0, 0, 2_000);
+            CostBreakdown c = CostEstimator.estimate(u, sonnetBatch);
+            near(0.02, c.total(), 1e-9);   // (0.02+0.02) * 0.5 = 0.02
+            eq(true, c.isBatch());
+        });
+        check("so sánh chiến lược: cache read thắng, Batch gần bằng", () -> {
+            Map<String, Pair<UsageSnapshot, PriceTable>> s = new LinkedHashMap<>();
+            s.put("no_cache", new Pair<>(new UsageSnapshot(25_000, 0, 0, 1_000), sonnet));
+            s.put("cache_write", new Pair<>(new UsageSnapshot(1_000, 24_000, 0, 1_000), sonnet));
+            s.put("cache_read", new Pair<>(new UsageSnapshot(500, 0, 24_000, 1_000), sonnet));
+            s.put("batch_no_cache", new Pair<>(new UsageSnapshot(25_000, 0, 0, 1_000), sonnetBatch));
+            CompareResult r = CostEstimator.compare(s);
+            eq("cache_read", r.cheapestName());
+            near(73.67, r.savingsVsFirstPercent(), 0.5);   // tiết kiệm ~73.7% so với no_cache
+            eq(4, r.breakdowns().size());
+        });
+        check("Haiku rẻ hơn Sonnet cho tác vụ đơn giản", () -> {
+            UsageSnapshot u = new UsageSnapshot(5_000, 0, 0, 1_000);
+            CostBreakdown c1 = CostEstimator.estimate(u, sonnet);
+            CostBreakdown c2 = CostEstimator.estimate(u, haiku);
+            ok(c2.total() < c1.total(), "Haiku phải rẻ hơn: " + c2.total() + " vs " + c1.total());
+        });
+        check("Opus đắt hơn Sonnet gấp nhiều lần", () -> {
+            UsageSnapshot u = new UsageSnapshot(10_000, 0, 0, 2_000);
+            CostBreakdown c1 = CostEstimator.estimate(u, sonnet);
+            CostBreakdown c2 = CostEstimator.estimate(u, opus);
+            ok(c2.total() >= c1.total() * 1.5, "Opus phải đắt gấp >=1.5x: " + c2.total() + " vs " + c1.total());
+        });
+        System.out.println("RESULT " + passed + "/" + total);
+    }
+}`,
+      reference: `// ====== Có sẵn (không cần sửa) ======
+record PriceTable(
+    double inputPrice,
+    double outputPrice,
+    boolean isBatch
+) {}
+record UsageSnapshot(
+    long inputTokens,
+    long cacheCreationInputTokens,
+    long cacheReadInputTokens,
+    long outputTokens
+) {}
+record CostBreakdown(
+    double inputCost,
+    double cacheWriteCost,
+    double cacheReadCost,
+    double outputCost,
+    double total,
+    boolean isBatch
+) {}
+record CompareResult(
+    String cheapestName,
+    double savingsVsFirstPercent,
+    Map<String, CostBreakdown> breakdowns
+) {}
+record Pair<U, V>(U first, V second) {}
+
+  // ====== Lời giải ======
+class CostEstimator {
+    private static final double MILLION = 1_000_000.0;
+    private static final double CACHE_WRITE_MULTIPLIER = 1.25;
+    private static final double CACHE_READ_MULTIPLIER = 0.1;
+    private static final double BATCH_DISCOUNT = 0.5;
+
+    static CostBreakdown estimate(UsageSnapshot usage, PriceTable prices) {
+        double inputCost = usage.inputTokens() * prices.inputPrice() / MILLION;
+        double cacheWriteCost = usage.cacheCreationInputTokens() * prices.inputPrice() * CACHE_WRITE_MULTIPLIER / MILLION;
+        double cacheReadCost = usage.cacheReadInputTokens() * prices.inputPrice() * CACHE_READ_MULTIPLIER / MILLION;
+        double outputCost = usage.outputTokens() * prices.outputPrice() / MILLION;
+        double subtotal = inputCost + cacheWriteCost + cacheReadCost + outputCost;
+        double total = prices.isBatch() ? subtotal * BATCH_DISCOUNT : subtotal;
+        return new CostBreakdown(inputCost, cacheWriteCost, cacheReadCost, outputCost, total, prices.isBatch());
+    }
+
+    static CompareResult compare(Map<String, Pair<UsageSnapshot, PriceTable>> strategies) {
+        Map<String, CostBreakdown> breakdowns = new LinkedHashMap<>();
+        String firstName = null;
+        double firstTotal = 0;
+        String cheapestName = null;
+        double cheapestTotal = Double.MAX_VALUE;
+        for (Map.Entry<String, Pair<UsageSnapshot, PriceTable>> entry : strategies.entrySet()) {
+            String name = entry.getKey();
+            UsageSnapshot usage = entry.getValue().first();
+            PriceTable prices = entry.getValue().second();
+            CostBreakdown bd = estimate(usage, prices);
+            breakdowns.put(name, bd);
+            if (firstName == null) {
+                firstName = name;
+                firstTotal = bd.total();
+            }
+            if (bd.total() < cheapestTotal) {
+                cheapestTotal = bd.total();
+                cheapestName = name;
+            }
+        }
+        double savings = firstTotal > 0 ? (firstTotal - cheapestTotal) / firstTotal * 100.0 : 0.0;
+        return new CompareResult(cheapestName, savings, breakdowns);
+    }
+}`,
+      hints: [
+        'estimate: công thức token × price / 1_000_000. cache_write nhân 1.25, cache_read nhân 0.1. Batch nhân 0.5 cuối cùng.',
+        'compare: duyệt LinkedHashMap để giữ thứ tự; firstName là entry đầu tiên. Tìm min total. savings = (first - cheapest) / first * 100.',
+        'Dùng hằng số cho 1.25, 0.1, 0.5, 1_000_000 để không hard-code số magic.'
+      ],
+      explain: `CostEstimator tách rõ từng thành phần chi phí để bạn thấy đâu đắt, đâu rẻ. Cache write (ghi) tốn 1.25x — lần đầu "lỗ" so với không cache. Cache read (đọc) chỉ 0.1x — mỗi lần hit lời 90%. Batch giảm 50% toàn bộ nhưng latency cao.
+Lỗi hay gặp: quên chia 1_000_000 (price là per 1M token), nhầm cache_write multiplier (1.25 không phải 0.25), quên nhân 0.5 cho batch, và so sánh total mà không chuẩn hóa usage (cùng usage mới so sánh được model). compare dùng LinkedHashMap để thứ tự deterministic, quan trọng cho test và log.`,
+    },
+  ],
+  check: [
+    {
+      q: 'Đặt cache_control ở đâu để cache hit cho chatbot nhiều lượt?',
+      options: [
+        'Cuối system prompt, trước phần động (ngày, câu hỏi user)',
+        'Đầu system prompt, trước vai trò',
+        'Mỗi message user',
+        'Chỉ trên tool definitions'
+      ],
+      answer: 0,
+      explain: 'Prefix ổn định = tools → system → messages. Đặt breakpoint sau phần tĩnh (vai trò, tài liệu), phần động ra sau. Với nhiều lượt, thêm breakpoint ở message user cuối để lịch sử cũng được cache.'
+    },
+    {
+      q: 'Batch API giảm bao nhiêu % chi phí so với request online?',
+      options: ['25%', '50%', '75%', '90%'],
+      answer: 1,
+      explain: 'Batch API giá giảm 50% (nhân 0.5). Trade-off: latency từ vài phút đến 24 giờ. Phù hợp tác vụ offline: tóm tắt hàng đêm, phân loại ticket, sinh dữ liệu huấn luyện.'
+    },
+    {
+      q: 'UsageSnapshot có cache_read_input_tokens = 20.000, cache_creation_input_tokens = 0. Điều này có nghĩa gì?',
+      options: [
+        'Đang ghi cache lần đầu',
+        'Đang đọc cache (cache hit), không ghi mới',
+        'Cache bị miss',
+        'Batch API đang chạy'
+      ],
+      answer: 1,
+      explain: 'cache_creation = 0 và cache_read > 0 nghĩa là request này đọc từ cache đã có (hit). Lần ghi đầu thường có cache_creation > 0, cache_read = 0.'
+    },
+    {
+      q: 'Tại sao Haiku phù hợp cho intent detection/router trong chuỗi xử lý?',
+      options: [
+        'Vì Haiku có reasoning tốt nhất',
+        'Vì Haiku nhanh, rẻ, đủ cho tác vụ phân loại/trích xuất đơn giản',
+        'Vì Haiku hỗ trợ cache tốt hơn',
+        'Vì Haiku có context window lớn nhất'
+      ],
+      answer: 1,
+      explain: 'Haiku giá ~$0.10/$0.50 per 1M token (rẻ gấp ~20x Sonnet), độ trễ thấp, đủ chính xác cho intent detection, phân loại, trích xuất field. Dùng Haiku làm router, Sonnet xử lý nghiệp vụ, Opus cho architecture review.'
+    },
+  ],
+  related: ['claude-003', 'claude-012'],
+  tags: ['prompt caching', 'batch api', 'cost optimization', 'cache_control', 'ttl', 'model selection'],
+}
 );
