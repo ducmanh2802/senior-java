@@ -3764,4 +3764,508 @@ resources:
 
 > Senior tip: Luôn đặt requests cho workload chạy production để scheduler, HPA và QoS hoạt động dự đoán được. Thiếu requests là lỗi cấu hình phổ biến khi autoscaling "không chạy".`
 },
+{
+  id: 'qz-aws-030', topic: 'aws',
+  q: 'Ứng dụng Java chạy trong private subnet của VPC cần tải object lớn từ Amazon S3 và ghi log vào DynamoDB. Hiện traffic đi qua NAT Gateway và hoá đơn data processing tăng cao. Giải pháp nào giảm chi phí và giữ traffic trong mạng AWS mà ít phải đổi code nhất?',
+  options: [
+    'Tạo S3 Gateway VPC Endpoint và DynamoDB Gateway VPC Endpoint, thêm route tương ứng vào route table của private subnet để traffic tới S3/DynamoDB không đi qua NAT',
+    'Thay NAT Gateway bằng Internet Gateway và gán public IP cho mọi instance trong private subnet',
+    'Tạo Interface VPC Endpoint (PrivateLink) cho cả S3 và DynamoDB vì đây là loại endpoint duy nhất hỗ trợ hai dịch vụ này',
+    'Bật S3 Transfer Acceleration để dữ liệu đi qua mạng edge của AWS thay vì NAT'
+  ],
+  answer: 0,
+  explain: `**Tóm tắt:** **VPC Endpoint** (điểm cuối VPC - kết nối riêng từ VPC tới dịch vụ AWS) cho phép tài nguyên trong VPC truy cập dịch vụ AWS mà không cần đi ra Internet. Với S3 và DynamoDB, **Gateway VPC Endpoint** là loại endpoint gắn vào route table (bảng định tuyến), không có phí theo giờ hay theo GB dữ liệu xử lý, nên thường rẻ hơn nhiều so với đi qua **NAT Gateway** (dịch vụ cho subnet private truy cập Internet đi ra, tính phí theo giờ và theo GB).
+
+### Giải thích khái niệm
+- **Private subnet** (mạng con riêng): subnet không có route trực tiếp ra Internet Gateway; instance bên trong không có public IP để nhận kết nối từ Internet.
+- **NAT Gateway** (Network Address Translation Gateway): đặt ở public subnet, nhận traffic từ private subnet rồi đi ra Internet; AWS tính phí NAT theo giờ và theo lượng dữ liệu đi qua.
+- **Gateway VPC Endpoint**: tạo endpoint cho S3 hoặc DynamoDB và thêm route (prefix list - danh sách dải địa chỉ của dịch vụ) vào route table; traffic tới dịch vụ đi trong mạng AWS, không cần NAT, Internet Gateway hay public IP.
+- **Interface VPC Endpoint (PrivateLink)**: tạo ENI (Elastic Network Interface - card mạng ảo) có private IP trong subnet để truy cập dịch vụ; tính phí theo giờ và theo GB.
+
+### So sánh nhanh
+| Tiêu chí | Gateway Endpoint (S3/DynamoDB) | Interface Endpoint | NAT Gateway |
+|---|---|---|---|
+| Dịch vụ hỗ trợ | Chỉ S3, DynamoDB | Nhiều dịch vụ AWS | Đi Internet chung |
+| Chi phí data | Không tính phí endpoint | Tính theo GB | Tính theo GB + giờ |
+| Cách gắn | Route table | ENI trong subnet | Route 0.0.0.0/0 |
+
+### Vì sao các phương án còn lại sai
+- **Internet Gateway + public IP cho private subnet**: làm lộ instance ra Internet, phá thiết kế mạng riêng và tăng rủi ro bảo mật, trong khi mục tiêu chỉ là gọi S3/DynamoDB.
+- **Interface Endpoint cho cả S3 và DynamoDB**: S3 và DynamoDB hỗ trợ **Gateway Endpoint** (thường là lựa chọn rẻ và đơn giản nhất). S3 cũng có thể dùng Interface Endpoint trong một số trường hợp đặc biệt (on-premises qua Direct Connect/VPN, một số mô hình mạng), nhưng nói "duy nhất hỗ trợ" là sai.
+- **S3 Transfer Acceleration**: tăng tốc upload/download từ xa qua edge location (điểm biên), tính thêm phí và không giải quyết việc traffic nội bộ VPC đang đi qua NAT tới S3.
+
+> Senior tip: Nhớ kiểm tra bucket policy và endpoint policy: có thể giới hạn chỉ cho phép truy cập S3 qua endpoint cụ thể (điều kiện {{aws:SourceVpce}}) để giảm rủi ro credential bị lộ dùng từ ngoài VPC. Với DynamoDB cũng có thể dùng endpoint policy tương tự.`
+},
+{
+  id: 'qz-aws-031', topic: 'aws',
+  q: 'Một microservice Java trong private subnet không có đường ra Internet (không có NAT Gateway). Service này cần gọi AWS Secrets Manager để lấy mật khẩu DB và gửi message vào SQS. Cách nào cho phép kết nối riêng tư tới các dịch vụ này trong VPC?',
+  options: [
+    'Tạo Gateway VPC Endpoint cho Secrets Manager và SQS vì mọi dịch vụ AWS đều hỗ trợ gateway endpoint',
+    'Tạo Interface VPC Endpoint (AWS PrivateLink) cho Secrets Manager và SQS trong subnet, gắn security group cho phép HTTPS từ service',
+    'Dùng S3 Gateway Endpoint làm trung gian rồi forward request sang Secrets Manager và SQS',
+    'Bật public access trên Secrets Manager và SQS để service trong private subnet tự kết nối'
+  ],
+  answer: 1,
+  explain: `**Tóm tắt:** **Interface VPC Endpoint** (dựa trên **AWS PrivateLink** - cơ chế kết nối riêng tư tới dịch vụ qua mạng AWS) tạo các ENI có địa chỉ IP private trong subnet của bạn. Ứng dụng gọi DNS của dịch vụ (ví dụ Secrets Manager, SQS) và traffic đi thẳng trong VPC qua endpoint, không cần NAT/Internet.
+
+### Vì sao chọn Interface Endpoint ở đây
+- **Secrets Manager** (dịch vụ lưu trữ bí mật như mật khẩu, API key) và **SQS** (Simple Queue Service - hàng đợi thông điệp): là các dịch vụ hỗ trợ Interface Endpoint; chúng **không** hỗ trợ Gateway Endpoint (Gateway chỉ dành cho S3 và DynamoDB).
+- **Security Group** (SG - tường lửa stateful gắn vào tài nguyên): endpoint có ENI nên bạn gắn SG, thường mở inbound TCP 443 từ SG của ứng dụng.
+- **DNS** (hệ thống phân giải tên miền): khi bật Private DNS cho endpoint, tên DNS mặc định của dịch vụ sẽ phân giải về IP private của endpoint trong VPC.
+
+~~~text
+App (private subnet, no NAT)
+   -> DNS secretsmanager.region.amazonaws.com = 10.0.2.15 (ENI endpoint)
+   -> Interface Endpoint (SG allow 443 from app)
+   -> AWS Secrets Manager (qua mạng AWS)
+~~~
+
+### Vì sao các phương án còn lại sai
+- **Gateway Endpoint cho mọi dịch vụ AWS**: sai, Gateway Endpoint chỉ hỗ trợ S3 và DynamoDB.
+- **S3 Gateway Endpoint làm trung gian**: endpoint S3 chỉ dùng để truy cập S3, không forward hay proxy sang Secrets Manager/SQS.
+- **Bật public access**: Secrets Manager/SQS là dịch vụ managed truy cập qua API endpoint; "public access" ở đây không giúp subnet không có NAT/IGW đi ra Internet, và mở rộng quyền truy cập sai mục tiêu bảo mật.
+
+> Senior tip: Interface Endpoint tính phí theo giờ và theo GB xử lý, nhưng thường vẫn rẻ và an toàn hơn NAT khi traffic chủ yếu gọi API AWS. Nhớ endpoint cần ở đúng subnet/AZ ứng dụng dùng và kiểm tra NACL/security group nếu kết nối bị timeout.`
+},
+{
+  id: 'qz-aws-032', topic: 'aws',
+  q: 'Bạn đã tạo Interface VPC Endpoint cho Amazon SQS để consumer trong private subnet nhận message. Consumer vẫn timeout khi gọi SQS. Kiểm tra nào sau đây là hợp lý nhất để xử lý vấn đề mạng/phân quyền ở lớp endpoint?',
+  options: [
+    'Xoá endpoint vì SQS chỉ truy cập được qua Internet Gateway',
+    'Chỉ cần thêm route 0.0.0.0/0 về endpoint trong route table là đủ cho Interface Endpoint',
+    'Kiểm tra security group của endpoint cho phép inbound TCP 443 từ security group của consumer, DNS private của endpoint/VPC được bật đúng, và endpoint policy không chặn hành động SQS cần dùng',
+    'Đổi SQS queue sang loại FIFO vì Standard queue không hoạt động với VPC endpoint'
+  ],
+  answer: 2,
+  explain: `**Tóm tắt:** Interface VPC Endpoint là một ENI có security group, dùng DNS để hướng traffic vào IP private, và có thể gắn **endpoint policy** (chính sách tài nguyên trên endpoint) để giới hạn hành động/tài nguyên được truy cập. Timeout thường do SG/DNS/NACL/policy chặn.
+
+### Các lớp cần kiểm tra
+- **Security Group của endpoint**: phải cho phép inbound 443 (HTTPS, cổng API AWS) từ nguồn là SG hoặc CIDR của consumer.
+- **DNS**: bật Private DNS cho endpoint (và VPC có {{enableDnsSupport}}, {{enableDnsHostnames}}) để {{sqs.<region>.amazonaws.com}} phân giải về IP private của endpoint trong VPC.
+- **NACL** (Network ACL - tường lửa stateless ở mức subnet): phải cho phép lưu lượng hai chiều (bao gồm ephemeral ports - dải cổng tạm 1024-65535) giữa consumer và ENI endpoint.
+- **Endpoint policy**: nếu policy quá chặt (ví dụ không cho {{sqs:ReceiveMessage}}) thì request có thể bị từ chối.
+
+~~~text
+Consumer SG ->(TCP 443)-> Endpoint ENI SG -> SQS API
+DNS: sqs.ap-southeast-1.amazonaws.com -> 10.0.x.y (private)
+~~~
+
+### Vì sao các phương án còn lại sai
+- **Xoá endpoint vì SQS chỉ qua Internet Gateway**: sai, SQS hỗ trợ Interface VPC Endpoint để truy cập riêng tư trong VPC.
+- **Thêm route 0.0.0.0/0 về endpoint**: cách gắn route table áp dụng cho **Gateway Endpoint** (S3/DynamoDB). Interface Endpoint dùng ENI và DNS, không thêm route như vậy.
+- **Đổi sang FIFO**: loại queue (Standard/FIFO) không quyết định việc đi qua VPC endpoint; đây là vấn đề mạng/cấu hình endpoint.
+
+> Senior tip: Dùng VPC Reachability Analyzer hoặc kiểm tra {{nslookup/dig}} từ trong instance để xác nhận DNS trả về IP private. Khi dùng endpoint policy, nhớ vẫn cần IAM policy của caller cho phép hành động tương ứng.`
+},
+{
+  id: 'qz-aws-033', topic: 'aws', multi: true,
+  q: 'Ứng dụng web chạy ở Region A (primary) và Region B (DR). Bạn dùng Route 53 failover routing để chuyển {{app.example.com}} sang Region B khi Region A lỗi. Hai cấu hình/phát biểu nào đúng? (Chọn 2)',
+  options: [
+    'Tạo bản ghi Route 53 failover PRIMARY trỏ tới endpoint Region A và bản ghi SECONDARY trỏ tới Region B, gắn health check vào bản ghi PRIMARY để Route 53 biết khi nào endpoint chính không khỏe',
+    'Failover routing tự động sao chép dữ liệu giữa RDS ở hai region nên RPO luôn bằng 0 mà không cần cấu hình thêm',
+    'Đặt TTL DNS thấp giúp client cập nhật bản ghi nhanh hơn khi failover xảy ra, nhưng thời gian chuyển còn phụ thuộc vào cache DNS của client/resolver',
+    'Route 53 chỉ hỗ trợ health check bằng ICMP ping tới IP, không thể kiểm tra HTTP/HTTPS endpoint',
+    'Khi PRIMARY khỏe lại, Route 53 sẽ không bao giờ trả traffic về PRIMARY để tránh flapping'
+  ],
+  answer: [0, 2],
+  explain: `**Tóm tắt:** **Route 53 failover routing** (chính sách định tuyến dự phòng của DNS Route 53 - dịch vụ DNS của AWS) cần bản ghi PRIMARY và SECONDARY; **health check** (kiểm tra sức khỏe endpoint) giúp Route 53 ngừng trả về endpoint lỗi. DNS có **TTL** (Time To Live - thời gian client/cache được giữ kết quả) nên chuyển đổi không tức thì tuyệt đối.
+
+### Cách hoạt động
+- **PRIMARY**: thường kèm health check (HTTP/HTTPS/TCP, hoặc health check tính toán). Nếu health check fail, Route 53 trả về bản ghi SECONDARY (nếu healthy).
+- **SECONDARY**: có thể là passive endpoint, static site, hoặc region DR (Disaster Recovery - khôi phục sau thảm họa).
+- **TTL**: ví dụ 60 giây nghĩa là resolver/client có thể cache IP cũ tới 60 giây; một số client cache lâu hơn.
+
+~~~text
+app.example.com
+  - Failover PRIMARY  -> ALB Region A (health check: /health = 200)
+  - Failover SECONDARY -> ALB Region B
+Khi health check A fail -> DNS trả về B
+~~~
+
+### Vì sao các phương án còn lại sai
+- **Failover routing tự sao chép dữ liệu**: Route 53 chỉ làm DNS, không replicate RDS/S3 hay dữ liệu ứng dụng. RPO (Recovery Point Objective - mức mất dữ liệu chấp nhận được) phụ thuộc cơ chế như RDS cross-region read replica/Aurora Global Database, S3 replication.
+- **Health check chỉ bằng ICMP ping**: Route 53 health check hỗ trợ HTTP, HTTPS, TCP và các health check nâng cao (tính toán, theo dõi CloudWatch alarm), không chỉ ICMP.
+- **PRIMARY khỏe lại không bao giờ trả về**: khi health check PRIMARY healthy trở lại, Route 53 có thể trả về PRIMARY theo chính sách failover (cần thiết kế để tránh flapping - chuyển qua lại liên tục - bằng ngưỡng health check và quy trình failback).
+
+> Senior tip: Failover DNS chỉ chuyển "địa chỉ". Hãy diễn tập cả tầng dữ liệu (DB promote, replication lag), tầng ứng dụng (stateless, session), và giám sát thời gian failover thực tế (RTO - Recovery Time Objective, thời gian phục hồi mục tiêu). Dùng health check sâu (ví dụ /health chỉ 200 khi app thực sự sẵn sàng) thay vì chỉ TCP mở cổng.`
+},
+{
+  id: 'qz-aws-034', topic: 'aws',
+  q: 'Bạn có hệ thống phục vụ người dùng toàn cầu: một ALB ở {{us-east-1}} và một ALB ở {{ap-southeast-1}}. Yêu cầu là người dùng được định tuyến tới region có độ trễ thấp nhất trong điều kiện bình thường, nhưng khi region gần nhất gặp sự cố thì tự chuyển sang region còn lại. Kết hợp nào phù hợp nhất trong Route 53?',
+  options: [
+    'Dùng Simple routing với hai giá trị IP và để trình duyệt tự chọn',
+    'Chỉ dùng Weighted routing 50/50 để chia đều và coi như dự phòng',
+    'Chỉ dùng Geolocation routing cố định theo quốc gia, không cần health check',
+    'Dùng Latency-based routing kết hợp health check; khi endpoint mục tiêu bị unhealthy thì Route 53 bỏ qua và chọn endpoint healthy còn lại'
+  ],
+  answer: 3,
+  explain: `**Tóm tắt:** **Latency-based routing** (định tuyến theo độ trễ) giúp Route 53 trả về endpoint có độ trễ tốt hơn cho người dùng (dựa trên đo đạc mạng giữa vùng người dùng và region AWS). Kết hợp **health check** để loại endpoint lỗi khỏi câu trả lời DNS, qua đó đạt hành vi "gần nhất nhưng có dự phòng khi sự cố".
+
+### Các routing policy liên quan (khái niệm ngắn)
+- **Simple**: một bản ghi, không có logic chọn theo sức khỏe/phân tải phức tạp.
+- **Weighted** (theo trọng số): chia tỷ lệ traffic (hữu ích cho canary - phát hành thử một phần nhỏ, dần chuyển tải).
+- **Latency-based**: chọn region/tài nguyên cho độ trễ thấp.
+- **Failover**: active-passive rõ ràng (primary/secondary).
+- **Geolocation/Geoproximity**: dựa trên vị trí địa lý.
+
+~~~text
+User (VN) -> Route 53 latency policy
+  - ap-southeast-1 ALB (healthy, latency thấp)  -> chọn
+  - us-east-1 ALB (healthy)
+Nếu ap-southeast-1 unhealthy -> chỉ còn us-east-1 healthy -> chọn us-east-1
+~~~
+
+### Vì sao các phương án còn lại sai
+- **Simple routing hai IP**: không đảm bảo chọn theo độ trễ, không tự loại endpoint lỗi theo health check theo cách có chủ đích như các policy chuyên biệt.
+- **Weighted 50/50**: chia tải chứ không tối ưu độ trễ theo người dùng; khi một region lỗi, 50% traffic vẫn có thể bị gửi tới endpoint xấu nếu không cấu hình health check đúng.
+- **Geolocation cố định không health check**: quốc gia không luôn tương đương region khỏe/độ trễ tốt; thiếu health check sẽ tiếp tục trả endpoint lỗi.
+
+> Senior tip: Kiến trúc toàn cầu thường kết hợp Route 53 với CloudFront/Global Accelerator và thiết kế dữ liệu đa region. DNS failover có độ trễ do TTL/cache; với yêu cầu RTO rất thấp, cân nhắc Global Accelerator (anycast IP tĩnh) và health check ở tầng mạng.`
+},
+{
+  id: 'qz-aws-035', topic: 'aws',
+  q: 'Service EC2 trong private subnet cần gọi S3 mà không đi qua Internet. Lựa chọn nào đúng và tiết kiệm nhất?',
+  options: [
+    'NAT Gateway trong public subnet',
+    'Gateway VPC Endpoint cho S3 (không tốn phí theo GB, đi qua backbone AWS)',
+    'Interface VPC Endpoint (PrivateLink) cho S3',
+    'Public IP cho từng EC2'
+  ],
+  answer: 1,
+  explain: `**Tóm tắt:** S3 hỗ trợ **Gateway VPC Endpoint** miễn phí theo GB (chỉ tính giờ endpoint? thực ra Gateway endpoint miễn phí), traffic đi backbone AWS, không qua Internet/NAT.
+
+### Vì sao các phương án còn lại sai
+- NAT Gateway: tốn phí theo GB, traffic ra Internet.
+- Interface Endpoint: tốn phí theo giờ + GB, không cần cho S3.
+- Public IP: mở rộng bề mặt tấn công, tốn phí.
+
+> Senior tip: dùng Gateway endpoint cho S3/DynamoDB; interface endpoint cho dịch vụ khác.`
+},
+{
+  id: 'qz-aws-036', topic: 'aws', multi: true,
+  q: 'RDS Multi-AZ và Read Replica khác nhau ở điểm nào? (Chọn 3)',
+  options: [
+    'Multi-AZ tự động failover, Read Replica không',
+    'Read Replica tăng khả năng đọc, Multi-AZ không',
+    'Multi-AZ dùng synchronous replication, Read Replica asynchronous',
+    'Read Replica tự động failover trong cùng region'
+  ],
+  answer: [0, 1, 2],
+  explain: `**Tóm tắt:** Multi-AZ cho HA (failover tự động), Read Replica cho scale read (async).
+
+### Vì sao các phương án còn lại sai
+- Read Replica dùng replication bất đồng bộ và không tự động failover khi primary chết (phải promote thủ công), nên không thay thế Multi-AZ cho sẵn sàng cao.
+
+> Senior tip: Multi-AZ cho production OLTP; Read Replica cho reporting/analytics.`
+},
+{
+  id: 'qz-aws-037', topic: 'aws',
+  q: 'S3 Cross-Region Replication yêu cầu gì?',
+  options: [
+    'Versioning bật trên cả source và destination bucket',
+    'Cùng region',
+    'Không cần versioning',
+    'Chỉ cần IAM role'
+  ],
+  answer: 0,
+  explain: `**Tóm tắt:** CRR yêu cầu versioning bật trên cả hai bucket và IAM role cho replication.
+
+### Vì sao các phương án còn lại sai
+- Cùng region là SRR.
+- Không versioning không được.
+- IAM role cần nhưng không đủ.
+
+> Senior tip: dùng CRR cho DR và compliance; SRR cho latency/processing trong cùng region.`
+},
+{
+  id: 'qz-aws-038', topic: 'aws',
+  q: 'ECS Fargate service cần scale theo CPU. Cách nào đúng?',
+  options: [
+    'Application Auto Scaling với target tracking policy trên CPU',
+    'Manually scale tasks',
+    'CloudWatch alarm chỉ',
+    'Lambda trigger'
+  ],
+  answer: 0,
+  explain: `**Tóm tắt:** Application Auto Scaling target tracking tự động scale tasks theo CPU/memory/custom metric.
+
+### Vì sao các phương án còn lại sai
+- Manual không tự động.
+- CloudWatch alarm chỉ là trigger, cần scaling policy.
+- Lambda không phù hợp.
+
+> Senior tip: đặt min/max tasks hợp lý; kết hợp với ALB target group.`
+},
+{
+  id: 'qz-aws-039', topic: 'aws',
+  q: 'CodeDeploy blue/green cho ECS cần gì?',
+  options: [
+    'Task set và traffic shifting qua ALB listener',
+    'In-place deployment',
+    'Lambda function',
+    'Manual DNS switch'
+  ],
+  answer: 0,
+  explain: `**Tóm tắt:** Blue/green trên ECS dùng task set và chuyển traffic dần qua ALB listener rule.
+
+### Vì sao các phương án còn lại sai
+- In-place là rolling, không blue/green.
+- Lambda không liên quan.
+- DNS switch chậm và không rollback mượt.
+
+> Senior tip: dùng canary/linear traffic shifting để giảm rủi ro.`
+},
+{
+  id: 'qz-aws-040', topic: 'aws',
+  q: 'CloudFormation StackSets dùng để làm gì?',
+  options: [
+    'Deploy stack tới nhiều account/region từ một template',
+    'Chỉ deploy trong một account',
+    'Quản lý IAM users',
+    'Monitoring'
+  ],
+  answer: 0,
+  explain: `**Tóm tắt:** StackSets deploy cùng template tới nhiều account và region, hỗ trợ delegated admin.
+
+### Vì sao các phương án còn lại sai
+- Một account dùng stack thường.
+- IAM users dùng IAM/SSO.
+- Monitoring dùng CloudWatch.
+
+> Senior tip: kết hợp với Organizations để rollout baseline security.`
+},
+{
+  id: 'qz-aws-041', topic: 'aws', multi: true,
+  q: 'SCP (Service Control Policy) trong AWS Organizations có tác dụng gì? (Chọn 2)',
+  options: [
+    'Giới hạn quyền tối đa của account/member',
+    'Cấp quyền cho user',
+    'Không thể cấp quyền, chỉ giới hạn',
+    'Thay thế IAM policy'
+  ],
+  answer: [0, 2],
+  explain: `**Tóm tắt:** SCP đặt guardrail giới hạn quyền tối đa; không cấp quyền (cần IAM). 
+
+### Vì sao các phương án còn lại sai
+- SCP không cấp quyền.
+- Không thay IAM.
+
+> Senior tip: SCP deny by default? Actually default allow; dùng deny để chặn nguy hiểm.`
+},
+{
+  id: 'qz-aws-042', topic: 'aws',
+  q: 'Route 53 health check failover: khi primary unhealthy, traffic chuyển sang secondary. Cần gì?',
+  options: [
+    'Primary record có health check; secondary là failover record',
+    'Không cần health check',
+    'Weighted routing',
+    'Latency routing'
+  ],
+  answer: 0,
+  explain: `**Tóm tắt:** Failover routing cần health check trên primary và secondary record.
+
+### Vì sao các phương án còn lại sai
+- Không health check không biết fail.
+- Weighted/latency không phải failover.
+
+> Senior tip: TTL thấp để failover nhanh; cân nhắc Global Accelerator cho RTO thấp.`
+},
+{
+  id: 'qz-aws-043', topic: 'aws',
+  q: 'S3 bucket policy vs IAM policy: cái nào ưu tiên?',
+  options: [
+    'Explicit deny trong bất kỳ policy nào luôn thắng',
+    'Bucket policy luôn thắng',
+    'IAM policy luôn thắng',
+    'Cái nào viết sau thắng'
+  ],
+  answer: 0,
+  explain: `**Tóm tắt:** AWS evaluation: explicit deny anywhere wins; nếu không deny thì allow cần cả IAM và resource policy (trong cùng account).
+
+### Vì sao các phương án còn lại sai
+- Không có "luôn thắng" cho allow.
+- Thứ tự không quan trọng.
+
+> Senior tip: dùng explicit deny cho guardrails (ví dụ chặn public access).`
+},
+{
+  id: 'qz-aws-044', topic: 'aws',
+  q: 'KMS key rotation: AWS managed key tự động rotate mỗi bao lâu?',
+  options: ['90 ngày', '365 ngày', '1 năm', 'Không rotate'],
+  answer: 1,
+  explain: `**Tóm tắt:** AWS managed keys tự động rotate mỗi 365 ngày; customer managed keys có thể bật rotation (mặc định 365 ngày nếu bật).
+
+### Vì sao các phương án còn lại sai
+- 90 ngày không phải mặc định.
+- Không rotate sai (managed tự rotate).
+
+> Senior tip: bật rotation cho CMK và dùng alias.`
+},
+{
+  id: 'qz-aws-045', topic: 'aws',
+  q: 'Lambda concurrency limit mặc định per region là bao nhiêu?',
+  options: ['100', '1000', '500', 'Unlimited'],
+  answer: 1,
+  explain: `**Tóm tắt:** Default concurrent executions per region là 1000 (có thể tăng quota).
+
+### Vì sao các phương án còn lại sai
+- 100/500 không phải default.
+- Không unlimited.
+
+> Senior tip: dùng reserved concurrency để bảo vệ downstream.`
+},
+{
+  id: 'qz-aws-046', topic: 'aws', multi: true,
+  q: 'Để bảo vệ API Gateway khỏi abuse, nên dùng gì? (Chọn 2)',
+  options: [
+    'Usage plan + API key',
+    'WAF',
+    'Security group',
+    'NACL'
+  ],
+  answer: [0, 1],
+  explain: `**Tóm tắt:** Usage plan/API key cho throttling theo client; WAF cho filtering L7.
+
+### Vì sao các phương án còn lại sai
+- Security group/NACL ở network layer, không phù hợp API abuse.
+
+> Senior tip: kết hợp throttling và WAF rules.`
+},
+{
+  id: 'qz-aws-047', topic: 'aws',
+  q: 'DynamoDB on-demand vs provisioned: khi nào dùng on-demand?',
+  options: [
+    'Traffic không đoán được, mới bắt đầu',
+    'Traffic ổn định cao',
+    'Cần cost thấp nhất mọi lúc',
+    'Cần reserved capacity'
+  ],
+  answer: 0,
+  explain: `**Tóm tắt:** On-demand phù hợp traffic khó đoán hoặc mới; provisioned với autoscaling cho traffic ổn định.
+
+### Vì sao các phương án còn lại sai
+- Ổn định cao nên provisioned.
+- Cost thấp nhất không phải on-demand luôn.
+- Reserved capacity là provisioned.
+
+> Senior tip: monitor và chuyển mode khi traffic ổn định.`
+},
+{
+  id: 'qz-aws-048', topic: 'aws',
+  q: 'CloudFront signed URL vs signed cookie: dùng khi nào?',
+  options: [
+    'Signed URL cho từng file, signed cookie cho nhiều file/path',
+    'Signed URL cho nhiều file',
+    'Signed cookie cho từng file',
+    'Cả hai như nhau'
+  ],
+  answer: 0,
+  explain: `**Tóm tắt:** Signed URL cấp quyền truy cập một object; signed cookie cấp quyền cho nhiều object theo path.
+
+### Vì sao các phương án còn lại sai
+- Ngược lại.
+
+> Senior tip: dùng cookie cho streaming/playlist.`
+},
+{
+  id: 'qz-aws-049', topic: 'aws',
+  q: 'ALB target group health check fail thì điều gì xảy ra?',
+  options: [
+    'Target bị deregister, không nhận traffic',
+    'ALB trả 502',
+    'Target bị terminate',
+    'DNS failover'
+  ],
+  answer: 0,
+  explain: `**Tóm tắt:** Unhealthy target bị remove khỏi target group, không nhận traffic; nếu tất cả unhealthy thì ALB trả 503 (không phải 502).
+
+### Vì sao các phương án còn lại sai
+- 502 khi target trả lỗi; 503 khi không có healthy target.
+- Không terminate.
+- Không DNS.
+
+> Senior tip: health check path phải nhẹ và phản ánh readiness.`
+},
+{
+  id: 'qz-aws-050', topic: 'aws',
+  q: 'IAM role trust policy cho Lambda cần gì?',
+  options: [
+    'Principal service lambda.amazonaws.com',
+    'Principal user',
+    'Principal *',
+    'Không cần trust policy'
+  ],
+  answer: 0,
+  explain: `**Tóm tắt:** Lambda assume role qua service principal lambda.amazonaws.com.
+
+### Vì sao các phương án còn lại sai
+- User principal cho người dùng.
+- * nguy hiểm.
+- Cần trust policy.
+
+> Senior tip: dùng least privilege và resource-based policy.`
+},
+{
+  id: 'qz-aws-051', topic: 'aws', multi: true,
+  q: 'Để audit API calls trong AWS account, nên dùng gì? (Chọn 2)',
+  options: [
+    'CloudTrail',
+    'CloudWatch Logs',
+    'VPC Flow Logs',
+    'Config'
+  ],
+  answer: [0, 3],
+  explain: `**Tóm tắt:** CloudTrail ghi API calls; Config ghi resource configuration changes. CloudWatch Logs là sink, Flow Logs là network.
+
+### Vì sao các phương án còn lại sai
+- CloudWatch Logs lưu log.
+- Flow Logs network.
+
+> Senior tip: bật CloudTrail multi-region và gửi tới S3/CW.`
+},
+{
+  id: 'qz-aws-052', topic: 'aws',
+  q: 'SQS FIFO queue đảm bảo gì?',
+  options: ['Exactly-once processing và thứ tự', 'At-least-once only', 'Không thứ tự', 'Unlimited throughput'],
+  answer: 0,
+  explain: `**Tóm tắt:** FIFO queue đảm bảo exactly-once processing và preserve order (trong message group).
+
+### Vì sao các phương án còn lại sai
+- Standard queue at-least-once.
+- FIFO có throughput limit.
+
+> Senior tip: dùng message group ID để parallel.`
+},
+{
+  id: 'qz-aws-053', topic: 'aws',
+  q: 'S3 lifecycle transition từ Standard sang Glacier Instant Retrieval sau bao lâu tối thiểu?',
+  options: ['0 ngày', '30 ngày', '90 ngày', '180 ngày'],
+  answer: 2,
+  explain: `**Tóm tắt:** Glacier Instant Retrieval có minimum storage duration 90 ngày.
+
+### Vì sao các phương án còn lại sai
+- 30 ngày cho Standard-IA.
+- 180/365 không phải min.
+
+> Senior tip: lifecycle transition phải cân nhắc min duration fee.`
+},
+{
+  id: 'qz-aws-054', topic: 'aws',
+  q: 'EBS volume type gp3 so với gp2: lợi thế chính là gì?',
+  options: [
+    'IOPS và throughput provision độc lập với size',
+    'Rẻ hơn luôn',
+    'Chỉ dùng cho HDD',
+    'Không hỗ trợ encryption'
+  ],
+  answer: 0,
+  explain: `**Tóm tắt:** gp3 cho phép provision IOPS và throughput độc lập với dung lượng, cost-effective hơn gp2.
+
+### Vì sao các phương án còn lại sai
+- Không phải luôn rẻ hơn (tùy).
+- gp3 là SSD.
+- Hỗ trợ encryption.
+
+> Senior tip: migrate gp2 -> gp3 để tối ưu cost/perf.`
+}
 );
