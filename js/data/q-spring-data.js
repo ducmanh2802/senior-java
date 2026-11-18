@@ -15136,4 +15136,837 @@ API "lịch sử giao dịch" của ví điện tử dùng {{PageRequest(page, 2
   ],
   tags: ['keyset pagination', 'cursor', 'pagination', 'tie-breaker', 'index', 'offset', 'Spring Data']
 },
+{
+  id: 'spring-095',
+  topic: 'spring',
+  level: 'senior',
+  q: 'BeanFactoryPostProcessor và BeanPostProcessor khác nhau ở đâu? Khi tự viết một BeanPostProcessor, vì sao log hiện cảnh báo "not eligible for getting processed by all BeanPostProcessors" và nó nguy hiểm thế nào?',
+  a: `**Tóm tắt:** Hai loại "hậu xử lý" này chạy ở hai thời điểm hoàn toàn khác nhau. **BeanFactoryPostProcessor (BFPP)** chạy khi container vừa đọc xong danh sách định nghĩa bean và **trước khi tạo bất kỳ bean thường nào**: nó chỉ sửa được "bản thiết kế" ({{BeanDefinition}} — tên class, property, scope, init method), chưa có object thật nào tồn tại. **BeanPostProcessor (BPP)** chạy **quanh bước khởi tạo của từng bean**: nó nhận object thật và được phép trả về một object khác — đây chính là nơi Spring AOP thay bean bằng proxy. Hệ quả: container phải tạo xong toàn bộ BPP **trước** khi tạo các bean nghiệp vụ, nên mọi thứ mà BPP inject vào bị tạo "quá sớm" — trước khi đủ BPP đăng ký — và cảnh báo trong log chính là dấu hiệu của việc đó.
+
+### Khác nhau ở đâu
+| Tiêu chí | BeanFactoryPostProcessor | BeanPostProcessor |
+|---|---|---|
+| Thời điểm | Sau khi nạp BeanDefinition, trước khi tạo bean | Quanh init của từng bean (before/after) |
+| Đối tượng thao tác | Metadata (BeanDefinition), không phải object | Object thật (đã instantiate, đã inject) |
+| Có thể thay bean bằng proxy? | Không | Có — đây là cách AOP hoạt động |
+| Số lần chạy | Một lần cho cả container | Mỗi bean một lần (và mỗi lần tạo prototype) |
+| Ví dụ có sẵn | {{PropertySourcesPlaceholderConfigurer}}, {{ConfigurationClassPostProcessor}} | {{AutowiredAnnotationBeanPostProcessor}}, {{CommonAnnotationBeanPostProcessor}} (@PostConstruct), {{AbstractAutoProxyCreator}} |
+
+### Bên trong: thứ tự gọi
+1. Container đọc cấu hình, sinh ra các {{BeanDefinition}}.
+2. Chạy các {{BeanDefinitionRegistryPostProcessor}} và BFPP để chỉnh definition (ví dụ thay chỗ {{...}} placeholder bằng giá trị thật, thêm definition mới).
+3. Đăng ký + khởi tạo **từng** BPP theo thứ tự: {{PriorityOrdered}} trước, rồi {{Ordered}}, rồi các BPP không khai báo thứ tự.
+4. Với mỗi bean thường: instantiate → inject → {{postProcessBeforeInitialization}} → init (@PostConstruct, afterPropertiesSet, init-method) → {{postProcessAfterInitialization}} (tạo proxy tại đây) → đăng ký singleton.
+
+### Vì sao cảnh báo "not eligible" xuất hiện
+Trong bước 3, khi BPP thứ N đang được khởi tạo, các BPP từ N+1 trở đi **chưa tồn tại**. Nếu bean đang tạo cần inject một bean khác (ví dụ BPP của bạn có constructor nhận {{AuditService}}), thì {{AuditService}} bị tạo ngay lúc này, giữa chừng bước 3. Khi đó {{BeanPostProcessorChecker}} ghi cảnh báo: bean đó "is not eligible for getting processed by all BeanPostProcessors (for example: not eligible for auto-proxying)". Nguy hiểm thật sự không phải dòng log, mà là: {{AuditService}} **không được bọc proxy** → {{@Transactional}}, {{@Async}}, {{@Cacheable}} trên nó im lặng không chạy, và không có lỗi nào ném ra để bạn biết.
+
+### Code: một BPP đo thời gian init
+~~~java
+@Component
+public class InitTimeBeanPostProcessor implements BeanPostProcessor {
+    private final Map<String, Long> start = new ConcurrentHashMap<>();
+
+    @Override
+    public Object postProcessBeforeInitialization(Object bean, String name) {
+        start.put(name, System.nanoTime());   // chỉ ghi mốc, KHÔNG inject service vào đây
+        return bean;                          // trả null = bỏ qua các BPP còn lại
+    }
+
+    @Override
+    public Object postProcessAfterInitialization(Object bean, String name) {
+        Long t0 = start.remove(name);
+        if (t0 != null) {
+            long ms = (System.nanoTime() - t0) / 1_000_000;
+            if (ms > 200) log.warn("slow init: {} took {}ms", name, ms);
+        }
+        return bean;
+    }
+}
+~~~
+
+### Bốn lỗi hay gặp khi tự viết BPP
+- **Inject service vào BPP**: kéo theo bean bị tạo sớm, mất proxy. Nếu cần dữ liệu, chỉ dùng {{Environment}}, {{BeanFactory}} (qua {{BeanFactoryAware}}) hoặc đọc tham số đơn giản.
+- **Khai báo BPP bằng @Bean không static** trong class {{@Configuration}}: class cấu hình bị tạo sớm, kéo theo cảnh báo và mất AOP. Hãy dùng {{@Bean static}} hoặc đánh dấu {{@Component}} trên chính class BPP.
+- **Trả về null** từ {{postProcessBeforeInitialization}} → các BPP còn lại bị bỏ qua, bean có thể không được init đúng.
+- **Bọc proxy hai lần**: nếu BPP của bạn tự bọc proxy cho bean mà {{AbstractAutoProxyCreator}} cũng bọc, bạn được proxy lồng proxy, và {{instanceof}}/{{equals}} bắt đầu sai. Muốn thấy proxy thì đừng implement {{Ordered}} (BPP không order chạy sau cùng, tức là nhận được proxy); implement {{Ordered}} thì bạn nhận target.
+
+### Ví dụ đời thực
+Một team viết BPP {{TenantBeanPostProcessor}} để gán {{tenantId}} cho mọi bean đánh dấu {{@TenantAware}}, và inject {{TenantResolver}} (một bean có {{@Cacheable}}) vào BPP. Khởi động app 9 giây, 4.000 bean definition, log hiện 3 dòng "not eligible for getting processed by all BeanPostProcessors". Ba tháng sau, khách báo cache tenant không bao giờ cập nhật. Điều tra: {{TenantResolver}} được tạo trong lúc đăng ký BPP, không được bọc proxy cache → mỗi lần gọi đều đọc DB, và {{@Cacheable}} không có tác dụng. Sửa: BPP chỉ nhận {{BeanFactory}} rồi lấy resolver **lười** ở lần dùng đầu tiên (hoặc chuyển logic sang {{ApplicationListener<ContextRefreshedEvent>}}), giữ {{@Bean static}} cho BPP. Kết quả: log sạch cảnh báo, cache tenant hoạt động, thời gian khởi động giảm còn 6,5 giây vì bớt bean tạo sớm.
+
+### Trả lời mẫu khi phỏng vấn
+"BFPP chạy trước khi tạo bean, chỉ được sửa BeanDefinition nên nó dùng để thay placeholder, thêm hoặc chỉnh định nghĩa bean; nó không thấy object nào. BPP chạy quanh init của từng bean, nhận object thật và có thể trả về object khác — Spring AOP tạo proxy đúng ở bước sau init này. Vì BPP phải có trước khi tạo bean nghiệp vụ, container khởi tạo toàn bộ BPP trước; nếu BPP của tôi inject một service khác thì service đó bị tạo giữa chừng, chưa qua đủ các BPP, nên mất proxy — log sẽ cảnh báo 'not eligible for getting processed by all BeanPostProcessors'. Cái nguy hiểm là nó không ném lỗi: @Transactional hay @Cacheable trên bean đó chỉ đơn giản là không chạy. Vì vậy khi viết BPP tôi giữ nó thật nhẹ: chỉ dùng Environment hoặc BeanFactory, lấy bean lười khi cần, khai báo @Bean static, và tránh trả null. Nếu logic cần nhiều dependency và cần chạy sau khi context sẵn sàng, tôi dùng ApplicationListener hoặc SmartInitializingSingleton thay vì nhồi vào BPP."
+
+> Senior tip: hãy coi dòng "not eligible for getting processed by all BeanPostProcessors" là **bug tiềm ẩn, không phải nhiễu log**. Trong review tôi luôn grep log khởi động của môi trường staging tìm cụm này; mỗi lần xuất hiện là một bean đang âm thầm mất AOP hoặc mất xử lý annotation, và loại bug đó chỉ lộ ra khi dữ liệu production sai chứ không lộ lúc test.`,
+  follow: [
+    'Vì sao BFPP khai báo bằng @Bean phải là static, và nếu không static thì chuyện gì xảy ra?',
+    'Nếu bạn cần chạy logic ngay sau khi toàn bộ bean đã sẵn sàng, chọn BeanPostProcessor, SmartInitializingSingleton hay ApplicationReadyEvent?'
+  ],
+  tags: ['BeanPostProcessor', 'BeanFactoryPostProcessor', 'bean lifecycle', 'AOP proxy', 'internals', 'startup']
+},
+{
+  id: 'spring-096',
+  topic: 'spring',
+  level: 'senior',
+  q: 'Bean trong Spring là object thật hay proxy? Bạn kiểm tra bằng cách nào, và vì sao {{@Transactional}} đặt đúng chỗ vẫn âm thầm không chạy (final class, final method, inject sai kiểu)?',
+  a: `**Tóm tắt:** Bean bạn nhận từ container thường là **proxy**, không phải object gốc, vì Spring bọc lại ở {{BeanPostProcessor.postProcessAfterInitialization}} để chèn transaction, cache, async, security. Spring Boot 3 mặc định dùng **CGLIB** ({{spring.aop.proxy-target-class=true}}) nên proxy là **lớp con** của class thật; tên class chứa {{...$$SpringCGLIB$$0}}, còn JDK dynamic proxy có tên kiểu {{jdk.proxy2.$Proxy42}}. Kiểm tra bằng {{AopUtils.isAopProxy(bean)}} và {{AopProxyUtils.ultimateTargetClass(bean)}}. Ba nguyên nhân làm {{@Transactional}} im lặng không chạy: method {{final}} (CGLIB không override được), gọi nội bộ qua {{this}} (không qua proxy), và inject theo kiểu cụ thể khi proxy lại là JDK proxy theo interface.
+
+### Proxy được tạo thế nào
+Khi container hoàn tất khởi tạo một bean, {{AbstractAutoProxyCreator}} xét xem bean có khớp pointcut nào không (ví dụ có method {{@Transactional}}). Nếu có, nó tạo một object mới:
+- **CGLIB**: sinh bytecode một **lớp con** của class thật, override các method public/protected để chèn interceptor. Vì là lớp con nên inject theo kiểu class vẫn được. Đổi lại: **không override được method {{final}}**, không proxy được **class {{final}}**.
+- **JDK dynamic proxy**: sinh một class **implements các interface** của bean, mọi lời gọi vào {{InvocationHandler}}. Chỉ chặn được method có trong interface; nếu code inject theo class cụ thể thì lỗi {{BeanNotOfRequiredTypeException}}.
+
+### Bảng: triệu chứng → nguyên nhân → cách kiểm tra
+| Triệu chứng | Nguyên nhân | Cách kiểm tra |
+|---|---|---|
+| App không boot, lỗi "Cannot subclass final class ..." | Class đánh dấu {{final}} nhưng cần CGLIB proxy | Đọc stack trace, bỏ {{final}} hoặc dùng interface |
+| Boot bình thường, {{@Transactional}} không có tác dụng trên một method | Method đó là {{final}} (hoặc {{static}}, {{private}}) | Xem log DEBUG của {{CglibAopProxy}} có dòng "not routed to the target instance" |
+| Transaction chỉ chạy khi gọi từ controller, không chạy khi gọi nội bộ | Self-invocation: {{this.method()}} bỏ qua proxy | Breakpoint trong interceptor, hoặc inject chính bean đó |
+| Lỗi {{BeanNotOfRequiredTypeException}} khi inject | JDK proxy nhưng inject theo class cụ thể | Kiểm tra {{spring.aop.proxy-target-class}} và kiểu field |
+| Gọi {{@Transactional}} trong constructor hoặc {{@PostConstruct}} không có transaction | Proxy chưa tồn tại ở thời điểm đó | Chuyển sang {{SmartInitializingSingleton}} / {{ApplicationReadyEvent}} |
+
+### Code: kiểm tra trong test
+~~~java
+@SpringBootTest
+class ProxyCheckTest {
+    @Autowired OrderService orderService;   // field khai báo interface hoặc class đều được
+
+    @Test
+    void serviceDuocBocProxy() {
+        assertTrue(AopUtils.isAopProxy(orderService));            // có proxy
+        assertEquals(OrderServiceImpl.class,
+            AopProxyUtils.ultimateTargetClass(orderService));     // class gốc bên trong
+        System.out.println(orderService.getClass().getName());    // thấy $$SpringCGLIB$$ hoặc $Proxy
+    }
+}
+~~~
+Đây là test rẻ nhất để chống bug "annotation có mà không chạy": nếu test này đỏ, mọi thứ phía sau vô nghĩa.
+
+### Vì sao final method là bẫy khó thấy nhất
+Class {{final}} làm app **nổ ngay khi khởi động** — ồn ào, dễ sửa. Nhưng **method {{final}}** thì CGLIB chỉ đơn giản là không override được, Spring bỏ qua method đó và app vẫn chạy bình thường. Kết quả: method ghi dữ liệu chạy ngoài transaction, dữ liệu ghi một nửa rồi lỗi, và không có exception nào nói rằng {{@Transactional}} bị bỏ. Đây là kiểu lỗi chỉ lộ khi có sự cố dữ liệu.
+
+### Ví dụ đời thực
+Một service chuyển tiền nội bộ có method {{public final void transfer(...)}} đánh dấu {{@Transactional}} — chữ {{final}} được thêm từ thời "code style cũ, method không override thì để final". Hệ thống chạy 8 tháng, mỗi ngày khoảng 200.000 giao dịch, cho tới khi một lỗi mạng làm bước ghi bút toán thứ hai thất bại: tiền đã trừ ở tài khoản nguồn nhưng chưa cộng ở tài khoản đích, và **không rollback**. Điều tra: bật log SQL thấy {{UPDATE}} nguồn được tự động commit ngay; kiểm tra {{AopUtils.isAopProxy(transferService)}} trả về true (bean có proxy vì có method khác cần cache), nhưng riêng method {{transfer}} là final nên không bị chặn. Sửa: bỏ {{final}}, thêm test khẳng định sau khi ném exception thì số dư cả hai tài khoản không đổi. Kết quả: 0 giao dịch lệch trong 6 tháng tiếp theo, và team thêm rule kiểm tra {{final}} trên method có annotation AOP vào CI.
+
+### Trả lời mẫu khi phỏng vấn
+"Bean tôi nhận từ Spring thường là proxy chứ không phải object gốc, vì nó được bọc ở bước sau init để chèn transaction, cache, async hay security. Trong Spring Boot 3 mặc định là CGLIB, tức là một lớp con của class thật, nên tên class có $$SpringCGLIB$$; nếu dùng JDK dynamic proxy thì tên kiểu $Proxy và chỉ chặn được method trong interface. Tôi kiểm tra bằng AopUtils.isAopProxy và AopProxyUtils.ultimateTargetClass, và tôi luôn viết một test nhỏ khẳng định service quan trọng thật sự được proxy. Ba nguyên nhân hay làm @Transactional không chạy là: method final vì CGLIB không override được, gọi nội bộ qua this nên không đi qua proxy, và inject theo class cụ thể trong khi proxy lại là JDK proxy theo interface. Trong ba cái đó, final method nguy hiểm nhất vì app vẫn khởi động bình thường, không có lỗi nào, chỉ có dữ liệu sai âm thầm; class final thì ngược lại, nổ ngay lúc tạo bean nên dễ phát hiện."
+
+> Senior tip: khi review code có {{@Transactional}}, tôi tìm ba thứ theo thứ tự: method có {{final}}/{{private}} không, có lời gọi nội bộ không, và class có đang bị inject sai kiểu không. Chỉ cần một test {{isAopProxy}} cho service tiền là đủ chặn phần lớn sự cố loại này, rẻ hơn nhiều so với truy vết sổ sách lệch sau vài tháng.`,
+  follow: [
+    'Khi nào bạn buộc phải đặt spring.aop.proxy-target-class=false và cái giá phải trả là gì?',
+    'Vì sao gọi method @Transactional ngay trong constructor hoặc @PostConstruct lại không có transaction?'
+  ],
+  tags: ['AOP', 'CGLIB', 'JDK dynamic proxy', '@Transactional', 'proxy', 'final method', 'debug']
+},
+{
+  id: 'spring-097',
+  topic: 'spring',
+  level: 'senior',
+  q: 'Bạn catch exception của một lời gọi {{@Transactional}} để "chạy tiếp", nhưng lại nhận {{UnexpectedRollbackException}}: "Transaction silently rolled back because it has been marked as rollback-only". Bên trong đã xảy ra gì và bạn sửa thế nào?',
+  a: `**Tóm tắt:** Khi method trong gọi có {{@Transactional}} (mặc định {{REQUIRED}}) **tham gia** transaction đang có, nó không tạo transaction mới. Nếu nó ném runtime exception, interceptor của nó đánh dấu **rollback-only** lên transaction **dùng chung** rồi mới ném ra ngoài. Bạn catch exception ở method ngoài, transaction vẫn còn sống nhưng đã bị đánh dấu "phải rollback". Đến lúc commit, Spring thấy cờ đó, rollback toàn bộ rồi ném {{UnexpectedRollbackException}}. Nghĩa là: **catch ở ngoài không cứu được transaction đã bị đầu độc**; muốn cô lập thất bại thì method trong phải dùng {{REQUIRES_NEW}}, hoặc đẩy phần "chạy tiếp" ra ngoài biên transaction.
+
+### Diễn biến từng bước
+1. Method ngoài {{placeOrder()}} mở transaction T (mở connection, set autocommit false).
+2. Method ngoài gọi {{this.inventoryService.reserve()}} — qua proxy, nên interceptor của {{reserve}} thấy đã có transaction T và **tham gia** (không mở mới).
+3. {{reserve}} ném {{IllegalStateException}} (hết hàng).
+4. Interceptor của {{reserve}} xét luật rollback: runtime exception → mặc định rollback. Vì nó chỉ tham gia, nó không rollback ngay mà gọi {{setRollbackOnly}} lên T, rồi ném exception ra ngoài.
+5. Method ngoài catch exception, log "đơn hàng lỗi, bỏ qua", rồi chạy tiếp vài bước khác — tất cả vẫn nằm trong T đã bị đánh dấu.
+6. Method ngoài kết thúc **bình thường**, interceptor ngoài gọi {{commit}}. Transaction manager thấy {{isGlobalRollbackOnly() == true}}, nên rollback T và ném {{UnexpectedRollbackException}}.
+
+### Vì sao Spring chọn vậy thay vì commit phần đã làm
+Vì khi một phần công việc trong cùng transaction đã thất bại, dữ liệu còn lại có thể **không nhất quán về nghiệp vụ** (ví dụ đã trừ kho nhưng chưa tạo đơn, hoặc đã ghi nợ mà chưa ghi có). Commit phần còn lại sẽ tạo ra trạng thái nửa vời mà không ai biết. Spring chọn "thà rollback tất cả và báo lỗi to" thay vì âm thầm commit dữ liệu rác. Cái giá là exception ném ra ở bước commit chứ không phải ở chỗ bạn catch, nên log rất khó hiểu nếu không biết cơ chế.
+
+### Code minh hoạ
+~~~java
+@Service
+class OrderService {
+    private final InventoryService inventory;
+    private final PaymentService payment;
+
+    @Transactional                       // transaction T
+    public void placeOrder(Order o) {
+        try {
+            inventory.reserve(o);        // qua proxy, tham gia T
+        } catch (OutOfStockException e) {
+            log.warn("het hang, bo qua dat cho {}", o.id());  // catch nhưng T da bi danh dau
+        }
+        payment.charge(o);               // van ghi trong T da bi danh dau rollback-only
+    }                                    // commit -> UnexpectedRollbackException
+}
+
+@Service
+class InventoryService {
+    @Transactional                       // REQUIRED: tham gia T, KHONG tao transaction moi
+    public void reserve(Order o) {
+        if (!stock.take(o)) throw new OutOfStockException();   // runtime -> danh dau rollback-only
+    }
+}
+~~~
+
+### Bốn cách sửa, chọn theo ý định nghiệp vụ
+| Ý định | Cách làm | Lưu ý |
+|---|---|---|
+| Lỗi kho thì huỷ cả đơn | Đừng catch; để exception nổi lên cho controller/advice xử lý | Đơn giản nhất, đúng nhất về dữ liệu |
+| Lỗi kho không được làm hỏng phần khác | Đặt {{@Transactional(propagation = REQUIRES_NEW)}} cho method trong | Tốn thêm 1 connection, dễ cạn pool nếu gọi trong vòng lặp |
+| Cần "chạy tiếp" bất chấp | Đưa phần chạy tiếp ra **ngoài** biên transaction (method khác, gọi sau khi commit) | Ví dụ {{@TransactionalEventListener(phase = AFTER_COMMIT)}} |
+| Exception thật sự vô hại | {{@Transactional(noRollbackFor = X.class)}} trên method trong | Chỉ dùng khi chắc chắn dữ liệu vẫn nhất quán |
+
+### Phân biệt với "catch ngay trong chính method @Transactional"
+Nếu **chính method** có {{@Transactional}} tự catch exception của nó (không qua proxy con), không có interceptor nào thấy exception → **không** có cờ rollback-only, commit vẫn chạy. Điều này giải thích vì sao cùng một đoạn try/catch, đặt ở method ngoài thì nổ {{UnexpectedRollbackException}}, đặt bên trong method có transaction lại chạy êm. Cờ rollback-only chỉ được set khi exception **đi ra khỏi** một lời gọi qua proxy.
+
+### Ví dụ đời thực
+Job nhập file CSV gọi {{importService.saveRow()}} cho 2.000 dòng, mỗi dòng trong một transaction. Một dòng có mã tiền tệ lạ làm method trong ném {{IllegalArgumentException}}; code ngoài catch, đếm "1 dòng lỗi", rồi chạy tiếp 1.999 dòng còn lại trong cùng transaction. Cuối job nhận {{UnexpectedRollbackException}}, không dòng nào được lưu, job bị scheduler chạy lại mỗi 5 phút → 12 lần/giờ, mỗi lần 2.000 dòng lại rollback, DB chịu tải vô ích suốt 2 ngày. Sửa: mỗi dòng {{REQUIRES_NEW}} (hoặc batch 100 dòng/transaction), dòng lỗi ghi vào bảng {{import_errors}} trong transaction riêng. Kết quả: 1.999 dòng vào DB, 1 dòng vào bảng lỗi kèm lý do, job chạy 1 lần 40 giây thay vì lặp 2 ngày.
+
+### Trả lời mẫu khi phỏng vấn
+"Đây là lỗi rollback-only. Khi method trong có @Transactional REQUIRED, nó không mở transaction mới mà tham gia transaction của method ngoài. Nếu nó ném runtime exception, interceptor của nó không rollback ngay vì transaction không phải của riêng nó, mà đánh dấu rollback-only lên transaction dùng chung rồi ném exception ra. Method ngoài catch exception đó, nhưng transaction đã bị đánh dấu; khi method ngoài kết thúc, Spring cố commit, thấy cờ rollback-only nên rollback tất cả và ném UnexpectedRollbackException. Nghĩa là catch bên ngoài không cứu được gì. Cách sửa phụ thuộc ý định nghiệp vụ: nếu lỗi phải huỷ cả đơn thì đừng catch, để nó nổi lên; nếu muốn cô lập thất bại thì method trong dùng REQUIRES_NEW, chấp nhận thêm connection; nếu cần chạy tiếp sau khi transaction chính đã commit thì dùng @TransactionalEventListener ở pha AFTER_COMMIT. Tôi cũng lưu ý noRollbackFor chỉ nên dùng khi thật sự chắc dữ liệu vẫn nhất quán, vì nó tắt lưới an toàn đúng vào chỗ dễ sai nhất."
+
+> Senior tip: khi thấy {{UnexpectedRollbackException}}, đừng đi tìm chỗ ném exception — hãy đi tìm chỗ **catch** nó bên trong một transaction lớn hơn. Trong log tôi luôn log thêm {{TransactionSynchronizationManager.isActualTransactionActive()}} và tên transaction khi bắt đầu/catch để thấy ngay "catch này đang nằm trong transaction của ai".`,
+  follow: [
+    'noRollbackFor trên method trong có thật sự làm transaction ngoài commit được không, và rủi ro là gì?',
+    'Vì sao REQUIRES_NEW gọi trong một vòng lặp lớn có thể làm cạn connection pool?'
+  ],
+  tags: ['@Transactional', 'rollback-only', 'UnexpectedRollbackException', 'propagation', 'REQUIRES_NEW', 'transaction']
+},
+{
+  id: 'spring-098',
+  topic: 'spring',
+  level: 'lead',
+  q: '(Lead) Bạn có ba loại việc chạy nền: gửi email (50ms), gọi API đối tác chậm (2–5 giây), render báo cáo (30 giây). Nếu tất cả dùng chung một {{@Async}} executor thì dưới tải chuyện gì xảy ra, và bạn tách pool cùng đo saturation thế nào?',
+  a: `**Tóm tắt:** Một pool chung tạo ra **head-of-line blocking**: vài task báo cáo 30 giây chiếm hết thread, task email 50ms phải xếp hàng phía sau, nên p99 của email nhảy từ vài trăm mili giây lên hàng chục giây dù email không hề chậm. Cách xử lý ở mức lead là **bulkhead**: mỗi loại việc có executor riêng ({{@Async("emailExecutor")}}, {{@Async("partnerExecutor")}}, {{@Async("reportExecutor")}}), queue nhỏ, rejection policy nói rõ điều gì xảy ra khi đầy, và **đo** độ no của từng pool (active, queue size, số lần reject) thay vì chỉ nhìn CPU. Hiểu một chi tiết của {{ThreadPoolExecutor}}: thread chỉ được tạo thêm **khi queue đã đầy**, nên đặt queue 10.000 thì {{maxPoolSize}} gần như không bao giờ được dùng tới.
+
+### Cơ chế: một pool, ba tốc độ
+Giả sử pool core 8, queue 1.000. Đúng lúc có 40 request render báo cáo, 8 thread bận 30 giây, 32 task còn lại vào queue. Trong 30 giây đó mọi email rơi vào sau 32 task báo cáo → email chờ tới hơn 2 phút. Tệ hơn: vì queue còn chỗ, pool **không** mở thêm thread (luật của {{ThreadPoolExecutor}}: task mới chỉ tạo thread khi {{poolSize < core}}, hoặc khi **queue đầy** thì mới nới tới {{maxPoolSize}}). Nên cấu hình kiểu "queue 10.000, max 200" thực chất chỉ chạy với 8 thread.
+
+### Code: ba executor độc lập
+~~~java
+@Configuration
+@EnableAsync
+class AsyncPools {
+    static ThreadPoolTaskExecutor pool(int core, int max, int queue, String prefix) {
+        var ex = new ThreadPoolTaskExecutor();
+        ex.setCorePoolSize(core);
+        ex.setMaxPoolSize(max);
+        ex.setQueueCapacity(queue);
+        ex.setThreadNamePrefix(prefix);
+        ex.setRejectedExecutionHandler(new ThreadPoolExecutor.AbortPolicy());
+        ex.setWaitForTasksToCompleteOnShutdown(true);
+        ex.setAwaitTerminationSeconds(20);
+        ex.initialize();
+        return ex;
+    }
+    @Bean("emailExecutor")   ThreadPoolTaskExecutor email()   { return pool(4, 8, 500, "email-"); }
+    @Bean("partnerExecutor") ThreadPoolTaskExecutor partner() { return pool(8, 16, 100, "partner-"); }
+    @Bean("reportExecutor")  ThreadPoolTaskExecutor report()  { return pool(2, 4, 10, "report-"); }
+}
+
+@Service
+class NotificationService {
+    @Async("emailExecutor")
+    public CompletableFuture<Void> sendEmail(Email e) { ... }
+
+    @Async("reportExecutor")
+    public CompletableFuture<Path> renderReport(Long id) { ... }
+}
+~~~
+
+### Chọn tham số theo loại việc
+| Loại việc | Thời gian | Pool | Queue | Khi đầy |
+|---|---|---|---|---|
+| Email, thông báo | 50ms, I/O ngắn | core 4, max 8 | 500 | {{AbortPolicy}} + metric, hoặc {{CallerRunsPolicy}} nếu chấp nhận chậm request |
+| Gọi API đối tác | 2–5s, dễ treo | core 8, max 16 | 100 | {{AbortPolicy}} + circuit breaker ở tầng gọi |
+| Render báo cáo | 30s, CPU nặng | core 2, max 4 | 10 | {{AbortPolicy}} → trả lỗi "đang bận, thử lại sau" |
+
+Nguyên tắc: **queue càng ngắn càng tốt** với việc chậm, vì queue dài chỉ che giấu quá tải chứ không tăng throughput; nó biến lỗi nhanh thành lỗi chậm và hết hạn.
+
+### Đo saturation thế nào
+- Lấy {{ThreadPoolTaskExecutor.getThreadPoolExecutor()}}: {{getActiveCount()}}, {{getQueue().size()}}, {{getCompletedTaskCount()}}.
+- Đăng ký Micrometer Gauge cho từng pool, ví dụ {{executor.active}} và {{executor.queued}} theo tag {{pool=email}}; alert khi {{queued}} vượt 80% capacity trong 5 phút, hoặc khi số lần reject > 0.
+- Tách metric theo pool để biết **pool nào** nghẽn. Chỉ nhìn CPU toàn máy sẽ không thấy gì khi nghẽn là do chờ I/O đối tác.
+- Với tác vụ cần không mất, đừng dùng {{@Async}} nữa: đẩy vào message queue (Kafka/Rabbit/SQS) để có retry, dead-letter và vòng đời deploy độc lập.
+
+### Ví dụ đời thực
+Sàn thương mại điện tử dùng một executor chung core 16, queue 5.000 cho cả email xác nhận, đồng bộ tồn kho sang đối tác và báo cáo doanh thu. Flash sale: 300 yêu cầu báo cáo bị bấm cùng lúc, mỗi báo cáo 30 giây → 16 thread bận, 284 task vào queue. Email xác nhận đơn trước đây p99 300ms nhảy lên 94 giây; khách gọi tổng đài vì không nhận mail. Tách pool như bảng trên: email p99 về 240ms, báo cáo vẫn chờ nhưng có thông báo "đang xử lý", và metric {{executor.queued}} của pool báo cáo bắt được sự cố trước khi khách phàn nàn. Heap ổn định hơn vì queue báo cáo chỉ 10 thay vì 5.000.
+
+### Trả lời mẫu khi phỏng vấn
+"Với ba loại việc tốc độ rất khác nhau, tôi không dùng chung một executor. Nếu dùng chung, task chậm 30 giây sẽ chiếm hết thread, task nhanh 50ms phải xếp sau, nên p99 của email tăng dù email không chậm — đó là head-of-line blocking. Tôi tách pool theo loại tải, mỗi pool có @Async với tên bean riêng, queue ngắn và rejection policy tường minh. Một điểm hay bị hiểu sai: ThreadPoolExecutor chỉ tạo thread vượt core khi queue đã đầy, nên queue lớn làm maxPoolSize vô nghĩa và biến quá tải thành độ trễ. Tôi giữ queue nhỏ cho việc chậm, fail fast khi đầy, và đo từng pool bằng gauge active và queued, alert khi queue đầy hoặc có reject. Với tác vụ không được phép mất như email xác nhận đơn, tôi chuyển sang message queue để có retry và dead-letter thay vì @Async, vì @Async không sống sót qua một lần deploy pod."
+
+> Senior tip: hãy hỏi "pool này phục vụ loại việc gì và nếu nó đầy thì điều gì xảy ra?" trước khi cho ai đó set queue 10.000. Trong hệ thống ngân hàng, tôi luôn tách pool cho tác vụ đối ngoại (gọi API đối tác) khỏi nội bộ, vì đối tác chậm/chết là chuyện chắc chắn sẽ xảy ra, và nó không được phép kéo sập luồng nội bộ.`,
+  follow: [
+    'Vì sao queue lớn làm maxPoolSize gần như vô dụng, và khi nào bạn cố tình dùng queue lớn?',
+    'Bạn chọn CallerRunsPolicy hay AbortPolicy cho từng pool dựa trên tiêu chí nào?'
+  ],
+  tags: ['@Async', 'ThreadPoolTaskExecutor', 'bulkhead', 'thread pool', 'saturation', 'Micrometer', 'head-of-line blocking']
+},
+{
+  id: 'spring-099',
+  topic: 'spring',
+  level: 'lead',
+  q: '(Lead) Bạn viết auto-configuration nội bộ: vì sao {{@ConditionalOnMissingBean}} không "nhường đường" cho bean do người dùng khai báo, và phải tách {{@Configuration}} lồng nhau cùng {{@AutoConfigureAfter}} thế nào để điều kiện được đánh giá đúng?',
+  a: `**Tóm tắt:** {{@ConditionalOnMissingBean}} **không** kiểm tra "sau này có ai khai báo không", nó chỉ kiểm tra **những bean definition đã được đăng ký tính đến thời điểm điều kiện được đánh giá**. Vì vậy điều kiện chỉ đúng khi (a) bean mà bạn muốn nhường đã được đăng ký **trước**, (b) bạn không dựa vào thứ tự giữa các {{@Bean}} trong **cùng một class**, và (c) nếu đối phương nằm ở auto-config khác thì phải khai báo {{@AutoConfigureAfter}} để nó chạy trước. Cách an toàn nhất theo tài liệu Spring Boot: đặt điều kiện ở **class level của một {{@Configuration}} lồng nhau**, khai báo kiểu trả về {{@Bean}} **cụ thể nhất có thể**, và kiểm thử bằng {{ApplicationContextRunner}}.
+
+### Điều kiện được đánh giá khi nào
+Spring Boot nạp auto-config **sau cùng**: {{AutoConfigurationImportSelector}} là một {{DeferredImportSelector}} — mọi {{@Configuration}} của người dùng và mọi {{@Component}} do scan được xử lý trước, rồi mới đến lượt auto-config. Nhờ vậy bean người dùng định nghĩa bằng {{@Bean}}/{{@Component}} trong app của họ thường "thắng" tự nhiên: nó đã có definition trước khi customizer xét {{@ConditionalOnMissingBean}}.
+
+Điều kiện được chạy trong {{ConfigurationClassBeanDefinitionReader}} theo từng bước đăng ký, và {{OnBeanCondition}} nhìn {{BeanFactory}} tại đúng thời điểm đó:
+- Điều kiện ở **class level**: đánh giá **trước khi** bean nào của class đó được đăng ký. Nếu false, cả class bị bỏ.
+- Điều kiện ở **method {{@Bean}}**: đánh giá khi method đó sắp được đăng ký; nó **thấy** các method đã đăng ký **trước** nó trong cùng class, nhưng **không thấy** method sau nó. Đó là lý do "đặt bean A ở trên bean B" đôi khi chạy, đôi khi không — phụ thuộc thứ tự, và một lần refactor đổi thứ tự là bug.
+
+### Ba bẫy thật thường gặp
+| Bẫy | Chuyện gì xảy ra | Cách sửa |
+|---|---|---|
+| Điều kiện ở method {{@Bean}} phụ thuộc bean khác **trong cùng class** | Đúng/sai tuỳ thứ tự method, rất dễ vỡ khi refactor | Tách sang class {{@Configuration}} lồng nhau, điều kiện ở class level |
+| Đối thủ nằm ở **auto-config khác** | Không có thứ tự đảm bảo (mặc định sắp theo tên class) | Thêm {{@AutoConfigureAfter(TenThuvien.class)}} |
+| {{@Bean}} khai báo kiểu trả về quá chung ({{Object}}, interface cha) | {{@ConditionalOnMissingBean(Foo.class)}} không khớp, vì kiểu được suy ra từ return type của method | Khai báo đúng kiểu cụ thể nhất |
+
+### Code: sai và đúng
+~~~java
+// SAI: hai bean cung mot kieu trong mot class, dieu kien phu thuoc thu tu method
+@AutoConfiguration
+class MetricsAutoConfiguration {
+    @Bean Registry registry() { return new SimpleRegistry(); }
+
+    @Bean
+    @ConditionalOnMissingBean(Registry.class)   // co the khong thay bean registry() o tren
+    Registry fallbackRegistry() { return new NoopRegistry(); }
+}
+
+// DUNG: tach config long nhau, dieu kien o class level, chay sau auto-config cua thu vien khac
+@AutoConfiguration
+@AutoConfigureAfter(PartnerMetricsAutoConfiguration.class)
+class MyMetricsAutoConfiguration {
+    @Configuration(proxyBeanMethods = false)
+    @ConditionalOnMissingBean(Registry.class)
+    static class Fallback {
+        @Bean Registry registry() { return new NoopRegistry(); }
+    }
+}
+~~~
+
+### Kiểm chứng, đừng đoán
+- Chạy bằng {{ApplicationContextRunner}} với hai kịch bản: người dùng có bean và không có bean. Test thứ hai mới là test bắt lỗi thật.
+- Bật {{--debug}} hoặc gọi {{/actuator/conditions}} để đọc **Condition evaluation report**: nó ghi rõ condition nào matched/unmatched và lý do, kèm danh sách bean đã thấy tại thời điểm đó.
+- Với {{@ConditionalOnBean}} cũng cùng bản chất: nó không thấy bean do chính class của nó khai báo, vì class được parse trước khi bean của nó đăng ký.
+
+### Ví dụ đời thực
+Một team viết starter nội bộ {{observability-starter}} tạo bean {{MeterRegistryCustomizer}} mặc định. Một team khác trong công ty có auto-config riêng cũng tạo {{MeterRegistryCustomizer}} với tag bắt buộc cho hệ thống tính phí. Khi cả hai có trong classpath, app boot với **hai** customizer (vì không khai báo thứ tự nên starter nội bộ của ta chạy trước), metric bị nhân đôi tag, dashboard tính phí lệch 30%. Sửa: thêm {{@AutoConfigureAfter}} trỏ tới class của team kia và chuyển điều kiện {{@ConditionalOnMissingBean}} xuống class level của một {{@Configuration}} lồng nhau. Thêm hai {{ApplicationContextRunner}} test: "có customizer của team kia thì starter im lặng", "không có thì starter tạo bản mặc định". Kết quả: chỉ còn một customizer, dashboard khớp lại, và bug không tái diễn khi ai đó thêm auto-config thứ ba.
+
+### Trả lời mẫu khi phỏng vấn
+"Điểm cốt lõi là @ConditionalOnMissingBean chỉ thấy các bean definition đã được đăng ký tại thời điểm nó được đánh giá. Spring Boot nạp auto-config sau cùng vì nó dùng DeferredImportSelector, nên bean người dùng khai báo trong app thường thắng tự nhiên. Nhưng nếu tôi dựa vào thứ tự giữa hai @Bean trong cùng một class thì điều kiện đúng hay sai tuỳ thứ tự khai báo, rất dễ vỡ khi refactor; tương tự, nếu đối thủ nằm ở auto-config khác mà tôi không khai báo @AutoConfigureAfter thì thứ tự sắp theo tên class và có thể sai. Cách tôi làm là đặt điều kiện ở class level của một @Configuration lồng nhau, khai báo @Bean với kiểu trả về cụ thể nhất, và nếu cần chạy sau thư viện khác thì thêm @AutoConfigureBefore/After. Tôi luôn kiểm chứng bằng ApplicationContextRunner hai kịch bản, và đọc Condition evaluation report bằng --debug hoặc /actuator/conditions khi điều kiện không như mong đợi. Đây là loại bug rất khó thấy vì app vẫn boot bình thường, chỉ có bean bị nhân đôi hoặc mất."
+
+> Senior tip: coi auto-config là API công khai với hợp đồng rõ: mọi bean mặc định phải có {{@ConditionalOnMissingBean}} ở class level của config lồng nhau, mọi phụ thuộc vào auto-config khác phải khai báo thứ tự, và mỗi starter cần tối thiểu hai test {{ApplicationContextRunner}} (có/không có bean người dùng). Thiếu ba thứ đó, bug sẽ nổ ở môi trường của khách hàng chứ không phải của bạn.`,
+  follow: [
+    'Vì sao @ConditionalOnBean không thấy bean do chính configuration class của nó khai báo?',
+    'Làm sao viết một Condition tuỳ biến và làm cho nó hiện đẹp trong condition evaluation report?'
+  ],
+  tags: ['auto-configuration', '@Conditional', '@ConditionalOnMissingBean', '@AutoConfigureAfter', 'starter', 'ApplicationContextRunner']
+},
+{
+  id: 'spring-100',
+  topic: 'spring',
+  level: 'senior',
+  q: 'Khi tích hợp thư viện bên thứ ba hoặc một lớp chỉ biết được kiểu lúc chạy, bạn dùng {{@Bean}} hay viết một {{FactoryBean}}? Hai cách khác nhau ở cơ chế nào, khi inject Spring trả về cái gì, và bẫy nào làm app khởi động ra hai instance hoặc không resolve được theo kiểu?',
+  a: `**Tóm tắt:** {{@Bean}} là "một method trong class cấu hình: Spring gọi method đó và giữ lại object trả về". {{FactoryBean}} là "một bean đóng vai nhà máy: khi bạn inject kiểu T, Spring trả về {{getObject()}}; khi bạn inject {{FactoryBean}} hoặc gọi {{getBean("&ten")}}, bạn nhận chính nhà máy". Cả hai đều được Spring quản lý vòng đời và đều có thể bị bọc proxy AOP, nhưng FactoryBean cho bạn quyền quyết định object được tạo lúc nào, với kiểu gì, và có cache hay không. Phần lớn trường hợp hãy dùng {{@Bean}}; chỉ viết FactoryBean khi tích hợp thư viện/framework, hoặc khi kiểu thật chỉ biết được vào lúc chạy.
+
+### 1. @Bean: Spring gọi method rồi giữ kết quả
+{{@Bean}} đặt trên method của class có {{@Configuration}}. Lúc parse cấu hình, {{ConfigurationClassBeanDefinitionReader}} đăng ký một {{BeanDefinition}} đặc biệt: nó không biết class của bean là gì, chỉ biết "factory bean" (chính class cấu hình) và tên method. Khi cần bean, Spring đọc {{BeanDefinition}} rồi gọi method đó (inject tham số method nếu có), sau đó cache kết quả.
+
+- Singleton (mặc định): method chỉ chạy **một lần**, các lần {{getBean}} sau trả object đã cache.
+- {{@Scope("prototype")}} trên method {{@Bean}}: mỗi lần {{getBean}} lại gọi method một lần mới.
+- {{destroyMethod}} mặc định được suy ra từ tên method: nếu tên là {{close}} hoặc {{shutdown}} thì Spring gọi nó khi context đóng.
+- Nếu method trả về {{null}}, Spring coi như bean không tồn tại (không lỗi ngay lúc khai báo, nhưng {{getBean}} sẽ báo {{NoSuchBeanDefinitionException}}).
+
+### 2. FactoryBean: Spring hỏi nhà máy
+Giao diện chỉ có ba method:
+
+~~~java
+public interface FactoryBean<T> {
+    T getObject() throws Exception;                   // object that su duoc inject
+    Class<?> getObjectType();                         // kieu cua object, dung de match theo kieu
+    default boolean isSingleton() { return true; }    // getObject() co luon tra cung mot object?
+}
+~~~
+
+Cơ chế bên trong {{DefaultListableBeanFactory}}:
+1. Bean được đăng ký bình thường (bằng {{@Bean}} hoặc {{@Component}} trên class implements {{FactoryBean}}).
+2. Khi inject theo kiểu T, Spring thấy instance là {{FactoryBean}} nên đi qua {{getObjectFromFactoryBean}} và trả về {{getObject()}}.
+3. Nếu bạn khai báo kiểu trả về là {{FactoryBean}} (hoặc gọi {{getBean("&tenBean")}}), Spring trả về **nhà máy**, không gọi {{getObject()}}.
+4. {{isSingleton()}} quyết định Spring có cache object hay không; {{getObjectType()}} quyết định Spring có match được theo kiểu **trước khi** object được tạo hay không.
+5. {{SmartFactoryBean}} (có từ Spring 2.0.3) bổ sung {{isPrototype()}} (nói rõ "mỗi lần một instance độc lập", thay cho {{isSingleton()=false}} khá mơ hồ) và {{isEagerInit()}} (bắt tạo object ngay lúc khởi động để BeanPostProcessor kịp áp lên object).
+
+### 3. Vì sao getObjectType() là điểm hay vỡ
+Khi bạn viết {{@Autowired OrderClient client}}, Spring phải tìm bean có kiểu {{OrderClient}} **trước khi** gọi {{getObject()}} của mọi FactoryBean (nếu gọi hết thì mỗi bean bị khởi tạo sớm, rất tốn). Nó dùng {{getObjectType()}} để lọc:
+
+- Trả về đúng kiểu → match ngay, không cần tạo object.
+- Trả về {{null}} → Spring không biết kiểu, phải instantiate sớm để hỏi lại; nếu lúc đó config chưa sẵn sàng, app nổ {{BeanCreationException}} hoặc {{NoSuchBeanDefinitionException}} rất khó hiểu.
+- Trả về kiểu **cha** trong khi {{getObject()}} trả kiểu con → bean không được inject vào chỗ cần kiểu con.
+
+Quy tắc: {{getObjectType()}} phải trả kiểu **cụ thể nhất** mà bạn muốn người khác inject, và không được phụ thuộc trạng thái runtime.
+
+### 4. Code: một FactoryBean dùng được
+~~~java
+@Configuration
+class ClientConfig {
+
+    @Bean                                   // cach 1: Spring goi method 1 lan, giu lai ket qua
+    OrderClient orderClient(HttpClient http) { return new OrderClient(http); }
+
+    @Bean                                   // cach 2: Spring giu "nha may", moi cho inject nhan getObject()
+    GrpcClientFactory grpcClientFactory(GrpcProps props) { return new GrpcClientFactory(props); }
+}
+
+class GrpcClientFactory implements FactoryBean<OrderClient> {
+    private final GrpcProps props;
+    GrpcClientFactory(GrpcProps props) { this.props = props; }
+
+    @Override
+    public OrderClient getObject() {                        // tao ket noi that o day
+        var channel = ManagedChannelBuilder.forAddress(props.host(), props.port())
+                .usePlaintext().build();
+        return new OrderClient(channel);
+    }
+
+    @Override
+    public Class<?> getObjectType() { return OrderClient.class; }   // de @Autowired match theo kieu
+
+    @Override
+    public boolean isSingleton() { return true; }                   // chi tao 1 lan
+}
+~~~
+
+### 5. So sánh
+| Tiêu chí | @Bean | FactoryBean |
+|---|---|---|
+| Ai tạo object | Spring gọi method của bạn | Bạn viết code trong getObject() |
+| Inject theo kiểu T | Trả object | Trả getObject() |
+| Inject chính nó | Không có khái niệm | Trả nhà máy, hoặc {{getBean("&ten")}} |
+| Kiểu để match | Kiểu trả về khai báo trên method | Phải tự trả về trong getObjectType() |
+| Cache | Theo scope của method {{@Bean}} | Theo isSingleton() |
+| Dùng khi | 95% trường hợp, class do bạn viết hoặc thư viện có constructor rõ ràng | Thư viện cần logic tạo phức tạp, kiểu chỉ biết lúc chạy, tích hợp framework |
+
+### 6. Pitfall thật trên production
+- **Quên getObjectType()**: Spring không match được theo kiểu, phải tạo object sớm; ở môi trường thiếu property thì app chết ngay lúc khởi động thay vì báo lỗi cấu hình rõ ràng.
+- **isSingleton() trả true nhưng getObject() tạo object mới mỗi lần**: các chỗ gọi {{getBean}} nhận object khác nhau, còn chỗ inject thì giữ bản đầu tiên → hành vi không nhất quán, rất khó debug.
+- **Trộn @Bean và FactoryBean cho cùng một kiểu**: hai bean cùng kiểu xuất hiện; chỗ {{@Autowired}} một phần tử sẽ ném {{NoUniqueBeanDefinitionException}}. Dùng {{@Primary}}, {{@Qualifier}} hoặc {{@ConditionalOnMissingBean}} cho bản mặc định.
+- **FactoryBean bị AOP proxy**: khi bạn {{@Autowired}} chính nhà máy, proxy có thể không khớp kiểu {{FactoryBean<OrderClient>}} do type erasure; đây là lý do nên tách nhà máy ra class riêng thay vì để {{@Bean}} trả về nó.
+
+### 7. Ví dụ đời thực
+Một công ty chứng khoán có thư viện nội bộ {{PartnerClientFactory}} dùng cho 20 service. Ban đầu {{getObjectType()}} trả về {{null}} với comment "kiểu chỉ biết sau khi đọc config". Ở local, config luôn có nên không ai thấy gì; khi deploy lên namespace thiếu secret, 3/20 pod crashloop: log {{BeanCreationException: Error creating bean with name 'partnerClientFactory'}} rồi {{FactoryBean threw exception}}, còn các service khác báo {{NoSuchBeanDefinitionException: expected at least 1 bean which qualifies as autowire candidate}}. Điều tra mất 2 giờ vì stack trace chỉ trỏ tới class thư viện, không trỏ tới config thiếu. Sửa: {{getObjectType()}} trả {{PartnerClient.class}}, {{getObject()}} kiểm tra property và ném {{IllegalStateException}} có tên property, thêm {{@ConditionalOnProperty}} để tắt hẳn khi không cấu hình. Kết quả: pod thiếu config khởi động bình thường với tính năng tắt, log lỗi nêu đúng tên property, thời gian điều tra lần sau còn 5 phút.
+
+### 8. Trả lời mẫu khi phỏng vấn
+"Tôi dùng @Bean cho gần như mọi trường hợp: khai báo method trong @Configuration, Spring gọi một lần và giữ kết quả singleton, hoặc theo scope nếu tôi đặt @Scope. Tôi chỉ viết FactoryBean khi tích hợp thư viện cần logic tạo phức tạp hoặc kiểu thật chỉ biết lúc chạy. Khác biệt cốt lõi là với @Bean tôi khai báo kiểu trả về ngay trên method, còn với FactoryBean Spring coi bean đó là nhà máy: inject kiểu T thì nhận getObject, inject FactoryBean hoặc gọi getBean với tiền tố & thì nhận nhà máy. Điểm tôi luôn cẩn thận là getObjectType phải trả kiểu cụ thể nhất, vì Spring dùng nó để match theo kiểu trước khi tạo object; nếu trả null, Spring buộc phải instantiate sớm và lỗi sẽ nổ ở môi trường thiếu cấu hình chứ không phải ở máy dev. Tôi cũng kiểm tra isSingleton có đúng với getObject hay không, và tránh để hai bean cùng kiểu mà không có Primary hay Qualifier."
+
+> Senior tip: hãy coi FactoryBean là "constructor có trạng thái": mọi thứ nên nằm trong getObject(), getObjectType() phải thuần và trả kiểu cụ thể, và luôn có một test khởi động context với config thiếu để bắt lỗi sớm. Trong hệ thống ngân hàng, một FactoryBean trả null kiểu là đủ để cả service không boot — đừng để nó là bí ẩn chỉ người viết hiểu.`,
+  follow: [
+    'Vì sao getObjectType() được gọi trước cả khi getObject(), và điều gì xảy ra nếu nó trả null?',
+    'Khi nào bạn chọn @Bean với destroyMethod thay vì FactoryBean, và khi nào ngược lại?',
+    'Làm sao một FactoryBean có thể tạo bean theo scope prototype đúng nghĩa, kể cả khi Spring cache nhà máy?'
+  ],
+  tags: ['FactoryBean', '@Bean', 'bean creation', 'getObjectType', 'SmartFactoryBean', 'bean scope']
+},
+{
+  id: 'spring-101',
+  topic: 'spring',
+  level: 'senior',
+  q: 'Một method service có cả {{@Transactional}}, {{@Cacheable}} và {{@Async}}. Thứ tự các advisor chạy được quyết định thế nào, vì sao mặc định không đảm bảo, và bạn ép thứ tự ra sao để cache hit không mở transaction (và không giữ connection)?',
+  a: `**Tóm tắt:** Spring AOP **không** tạo nhiều proxy lồng nhau cho ba annotation đó. Nó gom mọi advisor khớp pointcut vào **một** proxy duy nhất, sắp theo {{Ordered}} (số nhỏ = ưu tiên cao, chạy trước "khi đi vào"), rồi dựng một chuỗi interceptor. Mặc định {{@EnableTransactionManagement(order)}} và {{@EnableCaching(order)}} đều là {{Ordered.LOWEST_PRECEDENCE}}, nên thứ tự giữa chúng **không xác định**. Hệ quả kinh điển: cache hit vẫn mở transaction, và với {{DataSourceTransactionManager}} thì vẫn lấy một connection từ Hikari dù không chạy câu SQL nào. Cách xử lý: khai báo {{order}} tường minh, và bọc {{LazyConnectionDataSourceProxy}} để transaction không giữ connection khi không thực sự cần.
+
+### 1. Một proxy, một chuỗi advisor
+- {{AbstractAutoProxyCreator}} tạo một {{ProxyFactory}} chứa **tất cả** advisor khớp, không tạo ba proxy.
+- {{DefaultAopProxyFactory}} chọn JDK dynamic proxy (nếu bean có interface và không ép class) hoặc CGLIB; đây là lựa chọn kỹ thuật, không ảnh hưởng thứ tự.
+- Các advisor được sắp bằng {{AnnotationAwareOrderComparator}}; advisor nào có {{@Order}}/{{Ordered}} nhỏ hơn thì nằm ngoài hơn.
+- "Ngoài hơn" nghĩa là: khi đi vào, nó chạy trước; khi đi ra, nó chạy sau. Vì vậy advice ngoài cùng quyết định phạm vi của những advice bên trong.
+
+Vì chỉ có một proxy, bạn không thể "vô tình" có transaction bọc cache nếu thứ tự không được cấu hình: bạn chỉ có một thứ tự, và nó là thứ tự mà comparator quyết định.
+
+### 2. Ba advisor mặc định
+| Advisor | Bật bởi | order mặc định |
+|---|---|---|
+| Transaction | {{@EnableTransactionManagement}} (Boot tự bật) | {{LOWEST_PRECEDENCE}} |
+| Cache | {{@EnableCaching}} (Boot bật qua cache auto-config) | {{LOWEST_PRECEDENCE}} |
+| Async | {{@EnableAsync}} (Boot tự bật) | {{LOWEST_PRECEDENCE}} |
+
+Khi hai advisor cùng order, Spring nói rõ trong tài liệu: **thứ tự không xác định**. Trên thực tế nó có thể đúng ở máy này, sai ở máy khác, hoặc đổi sau một lần nâng cấp Spring.
+
+### 3. Vì sao cache hit vẫn mở transaction
+Chuỗi mặc định có thể là transaction ngoài, cache trong:
+
+~~~text
+request -> TransactionInterceptor -> CacheInterceptor -> method that
+          mo transaction, lay connection  |
+                                         v
+                              cache hit -> tra ket qua ngay
+~~~
+
+Với {{DataSourceTransactionManager}}, {{doBegin}} gọi {{DataSourceUtils.getConnection(dataSource)}} **ngay khi mở transaction**, tức là lấy một connection từ Hikari. Cache hit không chạy SQL nhưng vẫn giữ connection suốt thời gian serialize JSON, log, gọi service khác. Khi 4.000 request/giây mà 97% là cache hit, pool vẫn bị vắt kiệt một cách vô lý.
+
+Nếu thứ tự ngược lại (cache ngoài), cache hit không vào transaction, chỉ cache miss mới mở transaction — đúng như mong đợi.
+
+### 4. Code: ép thứ tự và trì hoãn connection
+~~~java
+@Configuration
+@EnableCaching(order = 100)                     // so nho hon -> cache advisor o ngoai
+@EnableTransactionManagement(order = 200)
+class AopOrderConfig {
+
+    @Bean
+    DataSource dataSource(DataSourceProperties props) {   // van bind spring.datasource.*
+        HikariDataSource hikari = props.initializeDataSourceBuilder()
+                .type(HikariDataSource.class).build();
+        return new LazyConnectionDataSourceProxy(hikari); // chi lay connection khi co cau SQL dau tien
+    }
+}
+
+@Service
+class CatalogService {
+    @Cacheable("catalog")                       // hit -> khong vao transaction, khong lay connection
+    @Transactional(readOnly = true)
+    public Catalog get(String code) { /* query */ }
+}
+~~~
+
+Hai lớp bảo vệ, dùng cả hai:
+- **order**: quyết định ai bọc ai.
+- **LazyConnectionDataSourceProxy**: khi transaction vẫn được mở (ví dụ do một advice khác, hoặc do Hibernate luôn mở transaction) thì connection thật chỉ được lấy lúc có câu SQL đầu tiên. Đây cũng là khuyến nghị chính thức của Spring cho đúng tình huống cache + transaction này.
+
+Với JPA, Hibernate 5.2+ đã mặc định trì hoãn lấy connection tới lúc cần ({{DELAYED_ACQUISITION_AND_RELEASE_AFTER_TRANSACTION}}), nên {{LazyConnectionDataSourceProxy}} quan trọng nhất với {{JdbcTemplate}} và {{DataSourceTransactionManager}}.
+
+### 5. Khi nào dùng cách nào
+| Tình huống | Cách xử lý |
+|---|---|
+| Cache và transaction trên cùng method, cache hay hit | Đặt cache advisor ngoài (order nhỏ hơn) + LazyConnectionDataSourceProxy |
+| Transaction đọc/ghi nặng, ít hit | order tường minh, không cần lazy proxy nếu pool còn dư |
+| Ghi audit "kể cả khi nghiệp vụ lỗi" | Không dùng REQUIRES_NEW trong request nóng; dùng event sau commit hoặc message queue |
+| {{@Async}} và {{@Transactional}} cùng method | Tách ra: async method tự khai báo transaction trên chính nó, vì transaction gắn với thread |
+
+### 6. Pitfall thật trên production
+- **{{@Async}} + {{@Transactional}} cùng method**: nếu async ở ngoài, transaction mở trong thread mới và caller không thấy gì; nếu transaction ở ngoài, transaction commit ở thread gọi **trước khi** việc async chạy xong, nên async không có transaction. Cả hai đều sai — hãy để method async tự mở transaction.
+- **Đặt {{@Order}} trên class {{@Aspect}}**: chỉ ảnh hưởng các advice của chính aspect đó, không đổi thứ tự giữa transaction và cache.
+- **{{proxyTargetClass}} không đổi thứ tự**: nó chỉ đổi JDK proxy sang CGLIB.
+- **Đo trước khi tin**: dùng integration test đếm số lần {{getConnection()}} (Hikari MXBean {{getActiveConnections()}}) hoặc đặt một {{BeanPostProcessor}} log thời điểm connection được lấy, thay vì suy luận từ annotation.
+
+### 7. Ví dụ đời thực
+Một hệ thống danh mục sản phẩm dùng {{@Cacheable}} + {{@Transactional}} trên cùng method, cache hit 97%. Khi chạy 4.000 request/giây giờ cao điểm, Hikari {{maximumPoolSize=50}} luôn có {{hikaricp.connections.pending}} 60–120 và p99 620ms dù DB chỉ chạy 3% CPU. Điều tra: thread dump cho thấy 50 connection đều đang bị giữ bởi các request mà log không có câu SQL nào (cache hit) — vì transaction advisor nằm ngoài cache advisor. Sửa: khai báo {{@EnableCaching(order = 100)}} và {{@EnableTransactionManagement(order = 200)}}, đồng thời bọc {{LazyConnectionDataSourceProxy}}. Kết quả: pending còn 0–5, p99 180ms, số connection thực dùng giảm từ 50 xuống 12, và DB không còn bị giữ lock từ các transaction rỗng.
+
+### 8. Trả lời mẫu khi phỏng vấn
+"Spring không lồng nhiều proxy cho @Transactional, @Cacheable và @Async; nó gom tất cả advisor khớp vào một proxy và sắp theo Ordered, số nhỏ chạy trước khi đi vào. Vấn đề là mặc định transaction và cache đều dùng LOWEST_PRECEDENCE nên thứ tự không xác định, và trong thực tế rất hay ra transaction ở ngoài cache. Khi đó cache hit vẫn mở transaction, và với DataSourceTransactionManager là vẫn lấy một connection từ Hikari dù không chạy SQL, nên pool bị vắt kiệt bởi những request lẽ ra không cần DB. Tôi xử lý bằng hai lớp: khai báo order tường minh để cache advisor nằm ngoài, và bọc LazyConnectionDataSourceProxy để connection thật chỉ lấy khi có câu SQL đầu tiên. Tôi cũng không đặt @Async và @Transactional trên cùng một method, vì transaction gắn với thread nên async sẽ chạy ngoài transaction hoặc commit trước khi việc async xong. Cuối cùng tôi kiểm chứng bằng integration test đếm số lần lấy connection, chứ không suy luận từ annotation."
+
+> Senior tip: trong review, hãy hỏi đúng một câu cho method có từ hai annotation AOP trở lên: "advisor nào nằm ngoài, và nếu nó không cần tài nguyên thì có đang giữ tài nguyên không?". Đó là cách nhanh nhất để bắt lỗi pool exhaustion do transaction rỗng — loại lỗi không hiện trong log, chỉ hiện trong Hikari pending và p99.`,
+  follow: [
+    'Vì sao một proxy với chuỗi advisor lại khác với nhiều proxy lồng nhau khi đọc stack trace?',
+    'Nếu vẫn muốn cache và transaction ở cùng method, bạn đặt readOnly và order thế nào cho đúng?',
+    'Làm sao viết test chứng minh cache hit không mở transaction, không chỉ đọc annotation?'
+  ],
+  tags: ['AOP', 'advisor order', '@EnableCaching', '@EnableTransactionManagement', 'LazyConnectionDataSourceProxy', 'HikariCP']
+},
+{
+  id: 'spring-102',
+  topic: 'spring',
+  level: 'senior',
+  q: '{{@Autowired}} được xử lý bởi thành phần nào bên trong Spring? Hãy mô tả từng bước từ lúc bean được tạo tới lúc field được gán, vì sao constructor injection được khuyến nghị, và những kiểu inject như {{Map<String, T>}}, {{Optional}}, {{ObjectProvider}} hoạt động khác thường ra sao?',
+  a: `**Tóm tắt:** {{@Autowired}} không phải "ma thuật của JVM": nó do một BeanPostProcessor tên {{AutowiredAnnotationBeanPostProcessor}} xử lý ở giai đoạn {{postProcessProperties}} (Spring 5.1+; trước đây là {{postProcessPropertyValues}}). Post-processor này đọc các field/method có annotation, dựng một {{InjectionMetadata}} rồi **cache theo class**, và với từng điểm inject nó gọi {{DefaultListableBeanFactory.resolveDependency}}. Constructor injection chạy **trước** bước đó, ngay trong {{createBeanInstance}}, nên nó là một phần của việc tạo object chứ không phải gán bổ sung sau khi tạo. Đó là lý do constructor injection fail nhanh, bất biến và dễ test hơn field injection.
+
+### 1. Vị trí chính xác trong vòng đời bean
+Thứ tự rút gọn của {{AbstractAutowireCapableBeanFactory.doCreateBean}}:
+
+~~~text
+1. createBeanInstance  -> chon constructor, resolve tham so (@Autowired hoac constructor duy nhat)
+2. populateBean        -> postProcessProperties cua cac InstantiationAwareBeanPostProcessor
+                          (AutowiredAnnotationBeanPostProcessor cho @Autowired/@Inject/@Value,
+                           CommonAnnotationBeanPostProcessor cho @Resource)
+3. initializeBean      -> Aware -> postProcessBeforeInitialization -> @PostConstruct
+                          -> afterPropertiesSet -> init-method -> postProcessAfterInitialization
+4. bean san sang
+~~~
+
+Hệ quả thực tế: {{@PostConstruct}} luôn thấy field đã được inject, vì injection xảy ra ở bước 2. Nhưng nếu bạn cần một bean khác **chưa** được tạo (ví dụ một BeanPostProcessor), Spring buộc phải tạo nó sớm — đó là nguồn của lỗi "bean created twice" hoặc mất proxy.
+
+### 2. InjectionMetadata và cache
+{{AutowiredAnnotationBeanPostProcessor}} thừa kế {{InstantiationAwareBeanPostProcessorAdapter}}. Lần đầu gặp một class, nó:
+
+1. Quét field bằng {{ReflectionUtils.doWithLocalFields}} và method bằng {{doWithLocalMethods}} để tìm annotation {{@Autowired}}, {{@Inject}} hoặc {{@Value}}.
+2. Với mỗi điểm tìm được, tạo một {{InjectionMetadata.InjectedElement}} (field hoặc method) lưu {{Member}}, số thứ tự tham số và {{DependencyDescriptor}}.
+3. Lưu toàn bộ danh sách vào {{injectionMetadataCache}} (một {{ConcurrentHashMap}} keyed theo class), nên các bean cùng class không phải quét lại annotation.
+
+Sau đó, với mỗi {{InjectedElement}}, nó gọi {{beanFactory.resolveDependency(desc, beanName, autowiredBeanNames, typeConverter)}} và gán giá trị bằng reflection ({{field.set}} hoặc {{method.invoke}}). Nếu không tìm được bean, Spring ném {{NoSuchBeanDefinitionException}} (hoặc {{NoUniqueBeanDefinitionException}}) và bọc trong {{UnsatisfiedDependencyException}} → {{BeanCreationException}} với cả chuỗi nguyên nhân.
+
+### 3. resolveDependency chọn bean thế nào
+{{DefaultListableBeanFactory.doResolveDependency}} đi theo thứ tự:
+
+1. Tìm mọi bean có kiểu khớp {{DependencyDescriptor}} (dùng {{ResolvableType}}, nên khớp cả generic: {{Repository<Order>}} khác {{Repository<Customer>}}).
+2. Nếu có nhiều ứng viên: ưu tiên bean có {{@Primary}}, rồi {{@Priority}} (giá trị nhỏ ưu tiên cao hơn), rồi mới so tên field/tham số với tên bean.
+3. Nếu vẫn không phân định được: {{NoUniqueBeanDefinitionException}}.
+4. Với kiểu đặc biệt: {{Map<String, T>}} → tất cả bean khớp, key là tên bean; {{ObjectProvider<T>}} → proxy tra cứu lười; {{Optional<T>}} và tham số có {{@Nullable}} → cho phép vắng mặt.
+5. Nếu {{required = false}} ({{@Autowired(required = false)}}) mà không có bean, ngoại lệ bị bỏ qua và field nhận {{null}}.
+
+Điểm ít ai để ý: inject {{Map<String, T>}} hay {{List<T>}} **không** bị lọc bởi {{@Primary}} — bạn nhận tất cả, kể cả bean được đánh dấu mặc định.
+
+### 4. Code: ba kiểu inject
+~~~java
+@Service
+public class OrderService {
+    private final OrderRepository repo;
+    private final MeterRegistry metrics;
+
+    // 1 constructor duy nhat -> Spring 4.3+ tu dong inject, khong can @Autowired
+    public OrderService(OrderRepository repo, MeterRegistry metrics) {
+        this.repo = repo;
+        this.metrics = metrics;
+    }
+
+    @Autowired(required = false)                 // khong co bean -> null, khong nem loi
+    private FraudClient fraudClient;
+
+    @Autowired
+    private Map<String, Notifier> notifiers;     // tat ca bean Notifier, key = ten bean
+}
+~~~
+
+Và cách an toàn hơn cho phần "có thể không có":
+
+~~~java
+private final ObjectProvider<FraudClient> fraud;      // luon khong null, tra lười
+
+OrderService(OrderRepository repo, MeterRegistry metrics, ObjectProvider<FraudClient> fraud) {
+    this.repo = repo;
+    this.metrics = metrics;
+    this.fraud = fraud;
+}
+
+void check(Order o) {
+    fraud.getIfAvailable(() -> FraudClient.disabled())   // co bean thi lay, khong co thi dung mac dinh
+         .score(o);
+}
+~~~
+
+### 5. So sánh ba kiểu inject
+| Kiểu | Cơ chế | Ưu | Nhược |
+|---|---|---|---|
+| Constructor | {{createBeanInstance}} → {{autowireConstructor}} | Bất biến, không thể null, test bằng {{new}}, fail ngay lúc khởi động, phát hiện circular dependency | Code dài hơn nếu không dùng Lombok |
+| Field | {{postProcessProperties}} | Gọn, ít dòng | Không {{final}}, phải dùng reflection khi test, che dependency, dễ có field {{required=false}} trả null |
+| Setter | {{postProcessProperties}} (method) | Có thể inject lại, phù hợp dependency tuỳ chọn | Mutable, dễ quên gọi |
+
+Spring chính thức khuyến nghị constructor injection; từ Spring 4.3, một constructor duy nhất không cần {{@Autowired}}.
+
+### 6. Pitfall thật trên production
+- **{{@Autowired}} trên field {{static}}**: Spring bỏ qua, field vẫn {{null}} → {{NullPointerException}} lúc chạy, không có lỗi lúc khởi động.
+- **{{required = false}} bị lạm dụng**: bean không tồn tại ở một profile → field {{null}} → lỗi chỉ xuất hiện ở profile đó, rất khó tái hiện.
+- **Field injection + {{final}}**: không compile, nên muốn bất biến buộc phải dùng constructor.
+- **Trộn constructor và field**: dependency quan trọng nằm ở constructor, dependency phụ nằm ở field → đọc code không biết class cần gì để hoạt động.
+- **{{Map<String, T>}} rỗng**: không có lỗi, chỉ là không có notifier nào chạy — nên có một test khẳng định số lượng bean tối thiểu.
+- **Inject theo kiểu khi có hai bean**: lỗi lúc chạy với thông báo {{NoUniqueBeanDefinitionException}} kèm tên field/param — đọc kỹ tên đó để biết chỗ nào thiếu {{@Qualifier}}.
+
+### 7. Ví dụ đời thực
+Một service quản lý đơn hàng có 14 field {{@Autowired}}, trong đó {{FraudClient}} khai báo {{required = false}} vì "môi trường test không có module chống gian lận". Ở production, một lần deploy nhầm profile đã loại module đó khỏi context: service vẫn khởi động bình thường, mọi đơn không đi qua bước chấm điểm gian lận, khoảng 400 đơn/ngày bị duyệt mà không kiểm tra, thiệt hại quy ra khoảng 180 triệu đồng. Điều tra rất lâu vì không có log lỗi nào: field đơn giản là {{null}}, và dòng gọi {{fraudClient.score(order)}} nằm sau một {{if (fraudClient != null)}} nên im lặng bỏ qua. Sửa: chuyển sang constructor + {{ObjectProvider}}, thêm health check "có mặt FraudClient", và thêm một test khởi động context với từng profile để khẳng định bean bắt buộc tồn tại. Kết quả: profile thiếu bean làm deploy fail ngay ở CI thay vì âm thầm bỏ nghiệp vụ.
+
+### 8. Trả lời mẫu khi phỏng vấn
+"@Autowired do AutowiredAnnotationBeanPostProcessor xử lý, không phải JVM. Ở bước populateBean, post-processor này quét field và method có @Autowired, @Inject hoặc @Value, dựng InjectionMetadata rồi cache theo class, sau đó gọi resolveDependency cho từng điểm inject. resolveDependency tìm bean theo kiểu, nếu nhiều thì ưu tiên @Primary rồi @Priority rồi tên field, còn Map và ObjectProvider là các kiểu đặc biệt được xử lý riêng. Constructor injection chạy sớm hơn, trong createBeanInstance, nên nó là một phần của việc tạo object: dependency là final, không thể null, test được bằng new, và lỗi thiếu bean nổ ngay lúc khởi động. Vì vậy tôi dùng constructor injection cho dependency bắt buộc, và ObjectProvider cho dependency tuỳ chọn thay vì @Autowired(required=false) rồi null. Tôi cũng tránh @Autowired trên field static vì Spring bỏ qua, và luôn đọc kỹ UnsatisfiedDependencyException để biết field nào thiếu bean."
+
+> Senior tip: nguyên tắc của tôi là "mọi dependency bắt buộc phải nằm trên constructor; dependency tuỳ chọn phải tự nói rõ khi vắng mặt thì làm gì". Khi một class có quá 6 tham số constructor, đó không phải vấn đề của Spring mà là dấu hiệu class đang làm quá nhiều việc — hãy tách nó.`,
+
+  follow: [
+    'Vì sao constructor injection giúp phát hiện circular dependency ngay lúc khởi động?',
+    'InjectionMetadata được cache theo class — điều gì xảy ra với bean scope prototype?',
+    '@Resource khác @Autowired thế nào về thứ tự tìm kiếm khi có nhiều bean cùng kiểu?'
+  ],
+  tags: ['@Autowired', 'AutowiredAnnotationBeanPostProcessor', 'InjectionMetadata', 'constructor injection', 'ObjectProvider', 'bean wiring']
+},
+{
+  id: 'spring-103',
+  topic: 'spring',
+  level: 'senior',
+  q: 'Bạn cần gọi 5 API đối tác song song rồi tổng hợp kết quả. Bạn dùng {{CompletableFuture.supplyAsync}}, {{@Async}} trả về {{CompletableFuture}}, hay tự tạo executor? Hãy giải thích {{ForkJoinPool.commonPool}}, cách gom lỗi và đặt timeout, và vì sao một stage lỗi có thể làm cả luồng treo hoặc làm nghẽn việc khác trong JVM.',
+  a: `**Tóm tắt:** {{CompletableFuture.supplyAsync(fn)}} mà không truyền executor sẽ chạy trên {{ForkJoinPool.commonPool()}} — pool dùng chung của cả JVM, số worker mặc định là {{số CPU - 1}}, thread tên {{ForkJoinPool.commonPool-worker-N}}. Pool này được thiết kế cho tính toán CPU ngắn và không chặn, nên gọi HTTP/DB trên đó là "chiếm chỗ" của người khác. Với I/O, hãy truyền executor riêng (hoặc dùng {{@Async}} trả {{CompletableFuture}} để Spring chọn executor đã cấu hình), gom bằng {{allOf}}, đặt timeout bằng {{orTimeout}}, và biến lỗi thành giá trị mặc định bằng {{exceptionally}} thay vì để {{join}} ném {{CompletionException}} giữa luồng.
+
+### 1. Ba lựa chọn và executor thực sự chạy
+| Cách viết | Executor thực tế | Ai quản lý | Dùng khi |
+|---|---|---|---|
+| {{supplyAsync(fn)}} | {{commonPool}} (một JVM chỉ có một) | JVM | Tính toán CPU ngắn, không I/O |
+| {{supplyAsync(fn, myExecutor)}} | Executor của bạn | Bạn | I/O, cần bulkhead, queue, reject policy |
+| {{@Async}} trả {{CompletableFuture}} | Bean {{TaskExecutor}} duy nhất, hoặc bean tên {{taskExecutor}}; không có thì {{SimpleAsyncTaskExecutor}} | Spring | Trong Spring bean, cần log/metrics/context |
+
+Trong Spring Boot, {{TaskExecutionAutoConfiguration}} tạo bean {{applicationTaskExecutor}} (một {{ThreadPoolTaskExecutor}}), nên {{@Async}} mặc định dùng pool có queue — khác hẳn với {{commonPool}}. Nếu bạn tự gọi {{supplyAsync}} mà không truyền executor, bạn **không** dùng pool đó.
+
+### 2. commonPool là gì và vì sao nguy hiểm với I/O
+- {{ForkJoinPool.commonPool()}} được tạo một lần cho cả JVM; số worker mặc định là {{availableProcessors() - 1}} (tối thiểu 1).
+- Nó cũng là pool chạy {{parallelStream}}. Mọi task ở đây được giả định là "ngắn và không chặn".
+- Nếu 8 CPU, bạn có 7 worker. Mỗi request gọi 5 API đối tác mất 2 giây, 100 request đồng thời → 500 task blocking xếp hàng trên 7 worker; CPU gần như 0% nhưng p99 bùng nổ.
+- Triệu chứng nhận biết: thread dump cho thấy toàn {{ForkJoinPool.commonPool-worker-*}} đang ở {{socketRead}} hoặc {{park}}, và {{parallelStream}} ở chỗ khác trong app bỗng chậm theo.
+- Trên máy một CPU, {{CompletableFuture}} dùng {{ThreadPerTaskExecutor}} (mỗi task một thread mới), nên hành vi lại khác — đừng viết code dựa vào số CPU của máy dev.
+
+### 3. Code: executor riêng, timeout, xử lý lỗi
+~~~java
+@Service
+class PartnerService {
+    private final ExecutorService io = new ThreadPoolExecutor(
+            16, 32, 60, TimeUnit.SECONDS,
+            new ArrayBlockingQueue<>(200),               // queue ngan -> fail nhanh khi qua tai
+            new ThreadPoolExecutor.AbortPolicy());
+
+    Quote quoteAll(List<Partner> partners) {
+        var futures = partners.stream()
+            .map(p -> CompletableFuture
+                .supplyAsync(() -> call(p), io)          // executor rieng, khong dung commonPool
+                .orTimeout(2, TimeUnit.SECONDS)          // Java 9+: het 2s -> TimeoutException
+                .exceptionally(ex -> Quote.unavailable(p, ex)))  // mot partner loi khong lam vo ca luong
+            .toList();
+        CompletableFuture.allOf(futures.toArray(CompletableFuture[]::new)).join();
+        return Quote.merge(futures);
+    }
+}
+~~~
+
+Ba chi tiết quan trọng:
+- {{orTimeout}} chỉ làm **future** hoàn thành với {{TimeoutException}}; nó **không** huỷ lời gọi HTTP đang chạy. Muốn thật sự dừng, phải kiểm tra {{Thread.interrupted()}} hoặc dùng HTTP client có timeout riêng (ví dụ {{HttpClient}} với {{connectTimeout}} + {{HttpRequest.timeout}}).
+- {{exceptionally}} biến lỗi thành giá trị, nên {{join}} ở cuối không nổ; nếu không có nó, {{join}} sẽ ném {{CompletionException}} và mọi kết quả tốt bị bỏ.
+- {{allOf}} không phải "fail fast": nó chờ **tất cả** stage hoàn thành (kể cả stage lỗi). Muốn fail nhanh, dùng {{anyOf}} hoặc huỷ các future còn lại khi có lỗi.
+
+### 4. join, get và các biến thể
+| Method | Khi lỗi | Khi bị interrupt |
+|---|---|---|
+| {{join()}} | {{CompletionException}} (unchecked) | Không khai báo checked |
+| {{get()}} | {{ExecutionException}} (checked) | Ném {{InterruptedException}} |
+| {{get(timeout)}} | Thêm {{TimeoutException}} | Như trên |
+| {{cancel(true)}} | Future hoàn thành với {{CancellationException}} | **Không** interrupt thread đang chạy task |
+
+Điểm cuối rất hay bị hiểu sai: {{CompletableFuture.cancel(true)}} bỏ qua tham số {{mayInterruptIfRunning}} và chỉ đánh dấu future là cancelled; thread đang chạy vẫn chạy tiếp tới hết. Nếu bạn cần huỷ thật, hãy giữ một {{Future}} từ executor và gọi {{cancel(true)}} lên nó.
+
+### 5. @Async trả CompletableFuture
+- Spring bọc method trong {{AsyncExecutionInterceptor}}: nó nộp task cho executor và trả về một {{CompletableFuture}} hoàn thành với giá trị trả về của method.
+- Nếu method trả {{void}} mà ném exception, exception đi vào {{AsyncUncaughtExceptionHandler}} (mặc định chỉ log ERROR). Muốn alert/metrics, khai báo {{AsyncConfigurer}} và override {{getAsyncUncaughtExceptionHandler}}.
+- Nếu method trả {{CompletableFuture}}, exception nằm trong future; người gọi phải {{exceptionally}}/{{handle}}, nếu không thì "nuốt lỗi" vẫn xảy ra nhưng ở tầng khác.
+- {{@Async}} trên method {{private}}, {{final}} hoặc gọi nội bộ (self-invocation) thì không có hiệu lực — vì nó cũng là proxy.
+
+### 6. Khi nào dùng cái nào
+| Nhu cầu | Lựa chọn |
+|---|---|
+| Gọi 3–5 API song song trong một request | {{CompletableFuture}} + executor riêng của service (hoặc {{@Async}} trên bean riêng) |
+| Việc nền không được mất (email, đối soát) | Message queue (Kafka/Rabbit/SQS), không phải {{CompletableFuture}} |
+| Cần gộp kết quả từ nhiều nguồn, chấp nhận một phần lỗi | {{allOf}} + {{exceptionally}} + giá trị mặc định |
+| Cần biết tiến độ/tồn kho của luồng | Executor riêng + Micrometer gauge {{executor.active}}, {{executor.queued}} |
+
+### 7. Pitfall thật trên production
+- **Không truyền executor**: mặc định là {{commonPool}}; app có {{parallelStream}} chỗ khác sẽ chậm theo mà không hiểu vì sao.
+- **Không đặt timeout**: một đối tác treo 60 giây giữ worker và giữ cả request; Tomcat thread cũng chờ theo nếu controller {{join}}.
+- **{{allOf}} + không {{exceptionally}}**: một lỗi làm mất toàn bộ kết quả, và các stage khác vẫn chạy tốn tài nguyên.
+- **Bắt {{CompletionException}} ở ngoài**: mất stack gốc; nên dùng {{handle}} để log đúng nguyên nhân.
+- **Mất context**: stage chạy ở thread khác nên MDC (trace id) và {{SecurityContext}} không tự truyền; dùng {{TaskDecorator}} hoặc {{ContextSnapshot}} nếu cần.
+- **Đặt {{@Async}} và {{@Transactional}} cùng method**: transaction gắn với thread, xem câu về thứ tự advisor.
+
+### 8. Ví dụ đời thực
+Một aggregator báo giá chứng khoán gọi 5 API đối tác bằng {{supplyAsync}} mặc định. Ngày thường p99 800ms, không ai để ý. Flash sale 300 request/giây: 7 worker của {{commonPool}} đều nằm trong {{socketRead}}, các request khác phải xếp hàng, p99 nhảy lên 45 giây; đồng thời job báo cáo cuối ngày dùng {{parallelStream}} bị "đói" CPU và chạy chậm 40 phút, khiến báo cáo gửi trễ. Điều tra: thread dump cho thấy 7 thread {{ForkJoinPool.commonPool-worker-*}} đều chờ I/O, CPU chỉ 12%. Xử lý: chuyển sang {{ThreadPoolExecutor}} riêng 16–32 thread với queue 200, đặt {{orTimeout(1500ms)}} cho từng call, {{exceptionally}} trả {{Quote.unavailable}}, và thêm bulkhead {{Semaphore(50)}} cho toàn bộ request. Kết quả: p99 còn 1.8 giây, 0.6% request nhận giá trị mặc định nhưng không treo, job báo cáo trở lại bình thường, và metric {{executor.queued}} bắt được quá tải trước khi khách gọi.
+
+### 9. Trả lời mẫu khi phỏng vấn
+"Tôi không dùng CompletableFuture.supplyAsync mà không truyền executor, vì nó chạy trên ForkJoinPool.commonPool — pool dùng chung của cả JVM, số worker chỉ bằng số CPU trừ một, và nó cũng phục vụ parallelStream. Gọi HTTP trên đó là chiếm chỗ của người khác: khi đối tác chậm, vài worker bị khoá trong socketRead, CPU thấp nhưng p99 bùng nổ, và các chỗ khác dùng parallel stream chậm theo. Tôi dùng executor riêng cho I/O, queue ngắn để fail nhanh khi quá tải, mỗi stage có orTimeout và exceptionally để một đối tác lỗi không làm mất cả luồng. Tôi cũng nhớ rằng allOf không huỷ các stage khác khi một stage lỗi, và orTimeout chỉ hoàn thành future chứ không dừng lời gọi HTTP, nên HTTP client vẫn phải có timeout riêng. Cuối cùng tôi đo executor.active và executor.queued để biết pool có no hay không, thay vì chỉ nhìn CPU."
+
+> Senior tip: một quy tắc dễ nhớ: {{commonPool}} dành cho tính toán không chặn, còn mọi thứ gọi mạng hoặc đọc đĩa phải có executor riêng với hàng đợi hữu hạn. Nếu bạn thấy CPU thấp mà p99 cao, hãy mở thread dump và tìm các worker đang {{socketRead}} — đó gần như luôn là I/O chạy sai pool.`,
+
+  follow: [
+    'Vì sao orTimeout không huỷ được lời gọi HTTP, và bạn kết hợp với gì để thật sự dừng?',
+    'allOf và anyOf khác nhau thế nào khi một stage lỗi, và khi nào bạn chọn cái nào?',
+    'Trả về CompletableFuture từ controller khác gì trả về String, và nó có làm tăng throughput thật không?'
+  ],
+  tags: ['CompletableFuture', 'ForkJoinPool', 'common pool', '@Async', 'timeout', 'bulkhead', 'thread pool']
+},
+{
+  id: 'spring-104',
+  topic: 'spring',
+  level: 'lead',
+  q: 'Hệ thống ngân hàng của bạn có 2 schema: {{core}} (PostgreSQL chính) và {{ledger}} (sổ cái). Bạn cấu hình 2 {{DataSource}}, 2 {{EntityManagerFactory}}, 2 {{JpaTransactionManager}} thế nào để @Transactional mặc định không ghi nhầm DB? Hai DB khác nhau thì giao dịch có atomic không?',
+  a: `**Tóm tắt:** Spring Boot chỉ auto-configure JPA khi có **đúng một** {{DataSource}} ứng viên: {{HibernateJpaConfiguration}} và {{JpaRepositoriesAutoConfiguration}} dùng {{@ConditionalOnSingleCandidate(DataSource.class)}}. Khi bạn khai báo hai DataSource mà không cái nào {{@Primary}}, điều kiện đó sai và Boot **không** tạo {{EntityManagerFactory}} — app chết với thông báo "required a bean of type EntityManagerFactory that could not be found". Cách làm đúng: mỗi DB một cặp {{LocalContainerEntityManagerFactoryBean}} + {{JpaTransactionManager}} với tên riêng, một cái {{@Primary}}, {{@EnableJpaRepositories}} với {{basePackages}} kèm {{entityManagerFactoryRef}} và {{transactionManagerRef}} tách riêng, và ghi sổ cái bằng {{@Transactional("ledgerTx")}}. Hai DB khác nhau **không** có transaction chung: muốn atomic phải XA/2PC, còn {{ChainedTransactionManager}} chỉ là best-effort 1PC.
+
+### 1. Vì sao Boot "rút lui" khi có hai DataSource
+- {{DataSourceAutoConfiguration}} có {{@ConditionalOnMissingBean}} cho {{DataSource}} và {{XADataSource}}: bạn tự khai báo thì Boot không tạo nữa.
+- {{HibernateJpaConfiguration}} và {{JpaRepositoriesAutoConfiguration}} dùng {{@ConditionalOnSingleCandidate(DataSource.class)}}.
+- "Single candidate" nghĩa là **đúng một** bean, hoặc nhiều bean nhưng **có đúng một** bean được đánh {{@Primary}}. Hai bean không primary → không có ứng viên → auto-config tắt.
+- Đây là lý do lỗi rất khó hiểu: không phải thiếu dependency, mà là auto-config tự rút lui. Thông báo chỉ nói thiếu {{EntityManagerFactory}}, không nói "vì bạn có hai DataSource".
+
+### 2. Cấu hình đúng cho DB chính
+~~~java
+@Configuration
+@EnableJpaRepositories(basePackages = "com.bank.core",
+        entityManagerFactoryRef = "coreEmf", transactionManagerRef = "coreTx")
+class CoreDbConfig {
+
+    @Bean @Primary
+    @ConfigurationProperties("app.datasource.core")   // jdbc-url, username, password, maximum-pool-size
+    DataSource coreDataSource() { return new HikariDataSource(); }
+
+    @Bean @Primary
+    LocalContainerEntityManagerFactoryBean coreEmf(DataSource coreDataSource) {
+        var emf = new LocalContainerEntityManagerFactoryBean();
+        emf.setDataSource(coreDataSource);
+        emf.setPersistenceUnitName("core");           // ten khac nhau la bat buoc
+        emf.setPackagesToScan("com.bank.core");
+        emf.setJpaProperties(Map.of(
+            "hibernate.dialect", "org.hibernate.dialect.PostgreSQLDialect",
+            "hibernate.show_sql", "false"));
+        return emf;
+    }
+
+    @Bean @Primary
+    JpaTransactionManager coreTx(EntityManagerFactory coreEmf) {  // inject product, khong phai FactoryBean
+        return new JpaTransactionManager(coreEmf);
+    }
+}
+~~~
+
+DB sổ cái làm y hệt nhưng **không** {{@Primary}}, {{persistenceUnitName = "ledger"}}, {{packagesToScan("com.bank.ledger")}}, và một {{@EnableJpaRepositories}} riêng trỏ {{ledgerEmf}}/{{ledgerTx}}.
+
+Hai chi tiết hay bị bỏ sót:
+- Method {{@Bean}} trả {{LocalContainerEntityManagerFactoryBean}} là một FactoryBean; khi khai báo tham số {{EntityManagerFactory}}, Spring trả về {{getObject()}} của nó, không phải nhà máy.
+- {{@ConfigurationProperties}} đặt trên method {{@Bean}} binds trực tiếp vào object trả về, nên {{HikariDataSource}} nhận {{jdbc-url}}, {{maximum-pool-size}}… theo relaxed binding mà không cần class trung gian.
+
+### 3. @Transactional chọn transaction manager thế nào
+{{TransactionAspectSupport.determineTransactionManager}} làm theo thứ tự:
+
+1. Nếu {{@Transactional}} có {{transactionManager}} hoặc {{value}} (ví dụ {{@Transactional("ledgerTx")}}), dùng đúng tên bean đó.
+2. Nếu không, tìm mọi bean {{TransactionManager}} trong context. Nếu chỉ có một, dùng nó.
+3. Nếu có nhiều, thử bean tên {{transactionManager}}.
+4. Nếu vẫn không phân định được: {{NoUniqueBeanDefinitionException}}.
+
+Điểm cực kỳ quan trọng: bước 4 xảy ra **lúc gọi method** (advisor xác định transaction manager khi invoke), không phải lúc khởi động. Vì vậy một app có hai transaction manager vẫn boot xanh, rồi nổ ở request ghi đầu tiên — smoke test chỉ gọi health check sẽ không bắt được.
+
+### 4. Hai DB thì có atomic không
+{{@Transactional}} chỉ mở transaction trên **một** {{PlatformTransactionManager}} → một {{EntityManager}} → một {{Connection}} → một transaction của một DB. Câu lệnh trên DB còn lại không nằm trong transaction đó và tự commit từng câu. Ba lựa chọn:
+
+| Cách | Cơ chế | Đánh đổi |
+|---|---|---|
+| XA / 2PC (Atomikos, Narayana) | Một transaction toàn cục, hai pha prepare/commit | Đúng nhất, nhưng giữ lock lâu, throughput thấp; PostgreSQL phải bật {{max_prepared_transactions}} (mặc định 0 là tắt) |
+| {{ChainedTransactionManager}} (Spring Data) | Commit lần lượt từng DB, best-effort 1PC | Không atomic: commit thứ hai lỗi thì cái thứ nhất đã commit, phải bù trừ |
+| Outbox + saga | Ghi outbox ở DB chính, publish bất đồng bộ, consumer ghi DB kia idempotent | Bền, dễ retry, nhưng đọc ngay sau ghi có thể chưa thấy (eventual consistency) |
+
+Với luồng tiền, tôi không dùng best-effort: hoặc gộp về một DB (khác schema), hoặc XA nếu thật sự cần, hoặc outbox kèm bù trừ và đối soát.
+
+### 5. Bảng cấu hình
+| Thành phần | core | ledger |
+|---|---|---|
+| DataSource | {{@Primary}}, {{app.datasource.core}} | {{app.datasource.ledger}} |
+| EntityManagerFactory | {{coreEmf}}, unit {{core}} | {{ledgerEmf}}, unit {{ledger}} |
+| TransactionManager | {{coreTx}} {{@Primary}} | {{ledgerTx}} |
+| Repository | {{basePackages = "com.bank.core"}} | {{basePackages = "com.bank.ledger"}} |
+| Flyway | bean mặc định | bean riêng có {{@FlywayDataSource}} |
+| Health | Được kiểm tra | Phải tự thêm indicator |
+
+### 6. Pitfall thật trên production
+- **{{@EnableJpaRepositories}} không khai báo {{basePackages}}**: nó scan toàn bộ package → entity bị map hai lần hoặc repository của DB này dùng EMF của DB kia. Lỗi kiểu {{Table "orders" is mapped twice}}.
+- **{{spring.jpa.*}} chỉ áp cho EMF của Boot**: EMF khai báo tay phải tự set {{hibernate.dialect}}, {{ddl-auto}}, {{open-in-view}}. Rất nhiều team tưởng đã tắt OSIV nhưng thực ra chỉ áp cho DB chính.
+- **Flyway chỉ migrate DataSource chính**: DB ledger không được migrate, thiếu cột, job đêm insert lỗi âm thầm. Phải có hai bean {{Flyway}} với {{@FlywayDataSource}}.
+- **Health check chỉ kiểm tra DB chính**: {{DataSourceHealthIndicator}} của Boot chỉ soi bean {{@Primary}}; ledger chết mà readiness vẫn xanh → Kubernetes không restart pod.
+- **{{@PersistenceContext}} không có {{unitName}}**: hai EMF → {{NoUniqueBeanDefinitionException}} khi inject {{EntityManager}}.
+- **{{@Transactional}} trên method ghi cả hai DB**: chỉ một DB được rollback, DB kia đã ghi → phải thiết kế lại theo outbox/bù trừ, không có cách nào "vá" bằng annotation.
+
+### 7. Ví dụ đời thực
+Một core banking 12 service, 40.000 giao dịch/ngày, thêm {{ledgerDataSource}} (không primary) để ghi sổ cái. Sau deploy, cả cụm crashloop với {{BeanCreationException: Field em in OrderService required a bean of type 'EntityManagerFactory' that could not be found}}: thêm DataSource thứ hai làm {{HibernateJpaConfiguration}} rút lui. Downtime 2 giờ, khoảng 1.400 giao dịch bị từ chối. Sửa tạm: đặt {{@Primary}} cho DataSource core và khai báo {{coreEmf}}/{{coreTx}} tường minh. Ngay sau đó, 3 giao dịch ném {{NoUniqueBeanDefinitionException}} vì {{@Transactional}} không có qualifier — sửa bằng {{@Transactional("coreTx")}} và gọi {{ledgerTx}} tường minh ở bước ghi sổ. Tệ hơn, đối soát phát hiện 2 ngày sổ cái thiếu 168 triệu: {{spring.flyway}} chỉ migrate DB chính, bảng {{ledger_entry}} thiếu cột {{reference}} nên insert fail trong job đêm mà không ai để ý. Sửa: hai bean {{Flyway}} với {{@FlywayDataSource}}, thêm health indicator cho ledger, và thêm test khởi động context với cả hai DataSource để CI bắt lỗi ngay.
+
+### 8. Trả lời mẫu khi phỏng vấn
+"Khi có hai DataSource, tôi không dựa vào auto-config của Boot nữa, vì HibernateJpaConfiguration và JpaRepositoriesAutoConfiguration dùng ConditionalOnSingleCandidate: hai bean không primary thì auto-config rút lui và app chết với lỗi thiếu EntityManagerFactory. Tôi khai báo tường minh cho từng DB: một HikariDataSource với ConfigurationProperties riêng, một LocalContainerEntityManagerFactoryBean có persistenceUnitName và packagesToScan riêng, một JpaTransactionManager riêng, và đánh Primary cho DB chính. EnableJpaRepositories phải có basePackages kèm entityManagerFactoryRef và transactionManagerRef, nếu không Spring scan cả hai package và báo entity bị map hai lần. Khi ghi sổ cái tôi luôn truyền tên transaction manager, vì Transactional không qualifier sẽ ném NoUniqueBeanDefinitionException lúc chạy chứ không lúc khởi động. Quan trọng nhất: hai DB khác nhau thì không có transaction chung, nên với tiền tôi không dùng ChainedTransactionManager best-effort mà chọn XA khi bắt buộc, hoặc outbox kèm bù trừ và đối soát định kỳ."
+
+> Senior tip: nguyên tắc "một transaction, một database" giúp tránh phần lớn sự cố tiền. Khi buộc phải có hai DB, hãy coi mỗi DB là một biên nhất quán riêng và thiết kế bù trừ ngay từ đầu — đừng để "best-effort 1PC" trở thành nợ kỹ thuật mà chỉ người trực đêm mới biết.`,
+  follow: [
+    'Vì sao @Transactional không có qualifier lại ném lỗi lúc chạy chứ không lúc khởi động?',
+    'ChainedTransactionManager khác XA ở điểm nào, và vì sao không dùng cho luồng chuyển tiền?',
+    'Flyway và health check phải cấu hình lại thế nào khi có DB thứ hai?'
+  ],
+  tags: ['multi-datasource', 'EntityManagerFactory', 'JpaTransactionManager', '@EnableJpaRepositories', 'XA', 'Flyway']
+},
 );
