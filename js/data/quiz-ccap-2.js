@@ -1235,4 +1235,525 @@ Trước khi ra mắt, cần một cách đo chất lượng khách quan. Bộ v
 - Request counts: bảng chỉ số yêu cầu chỉ cho biết lưu lượng, không nói về chất lượng câu trả lời.
 - More instructions: thêm chỉ dẫn hệ thống không có cơ sở để biết có cải thiện hay không.
 - Larger model: đổi mô hình lớn hơn không phải cách đo chất lượng.` },
+{ id: 'qz-ccap-281', topic: 'claude', q: '[Enterprise Integration] A financial services company is building a document extraction pipeline using Claude. The pipeline processes 50,000 loan applications per month, each with 30 pages of supporting documents. The team must ensure zero data leakage between applicants and maintain a complete audit trail. Which architecture best satisfies these requirements?', options: ['Process all documents in a single batch job with one shared prompt', 'Isolate each application in a separate request with per-request tracing, redact PII before sending to Claude, and log all interactions with immutable audit logs', 'Use a single large context window to process multiple applications together for efficiency', 'Send all documents to a public Claude endpoint without encryption'], answer: 1, explain: `**Tóm tắt:** Cách ly từng đơn, redact PII trước khi gửi, và log immutable cho audit trail.
+ 
+### Vì sao đáp án đúng
+ Xử lý 50.000 đơn hàng tháng cần **isolation (cách ly)** giữa các đơn để không rò rỉ dữ liệu. **Redact PII (che thông tin cá nhân)** ngay ở lớp tiền xử lý đảm bảo không gửi dữ liệu nhạy cảm đến model. **Immutable audit logs (nhật ký không thể sửa)** ghi lại ai, khi nào, gửi gì, nhận gì cho mục đích kiểm toán. Ba lớp này cùng hoạt động: cách ly ở request level, bảo vệ dữ liệu ở payload level, truy vết ở logging level.
+ 
+### Vì sao các phương án sai
+ - **Single batch job với shared prompt:** không cách ly được, dữ liệu các đơn có thể lẫn nhau trong context.
+ - **Single large context window:** vượt context window, không cách ly, và không audit được từng đơn riêng.
+ - **Public endpoint without encryption:** vi phạm bảo mật dữ liệu tài chính.` },
+{ id: 'qz-ccap-282', topic: 'claude', multi: true, q: '[Enterprise Integration] A SaaS platform routes customer support tickets to either Haiku 5.5 for simple FAQs or Sonnet 5.5 for complex technical issues. The router uses a lightweight classifier. Which two metrics should the team monitor to ensure the routing is effective? (Choose 2)', options: ['Classification accuracy on a held-out golden set', 'Cost per resolved ticket by model tier', 'Total API calls per day', 'Average response length'], answer: [0, 1], explain: `**Tóm tắt:** Classification accuracy và cost per resolved ticket theo model tier.
+ 
+### Vì sao đáp án đúng
+ **Classification accuracy** đo xem router có phân loại đúng không; nếu accuracy thấp, ticket phức tạp bị gửi sang Haiku (kém chất lượng) hoặc FAQ bị gửi sang Sonnet (tốn kém). **Cost per resolved ticket by model tier** kết hợp chi phí và chất lượng: Haiku rẻ nhưng chỉ cho đơn giản, Sonnet đắt nhưng cho phức tạp. Theo dõi hai chỉ số này cho phép tinh chỉnh ngưỡng router.
+ 
+### Vì sao các phương án sai
+ - **Total API calls:** chỉ đo volume, không nói về routing quality.
+ - **Average response length:** không tương quan với hiệu quả routing.` },
+{ id: 'qz-ccap-283', topic: 'claude', q: '[Enterprise Integration] An e-commerce company uses Claude to generate product descriptions from structured data. They need to process 100,000 SKUs overnight. The current synchronous design times out and hits rate limits. Which change best fits the workload?', options: ['Keep synchronous calls but increase timeout to 2 hours', 'Use Message Batches API for asynchronous processing with 24-hour SLA and lower cost', 'Process all SKUs in a single massive prompt', 'Run the job manually from a developer laptop'], answer: 1, explain: `**Tóm tắt:** Message Batches API cho xử lý bất đồng bộ, SLA 24h, chi phí thấp hơn.
+ 
+### Vì sao đáp án đúng
+ **Message Batches API** được thiết kế cho khối lượng lớn không cần tức thời: bạn nộp lô request, API xử lý bất đồng bộ (có thể mất tới 24h), và chi phí thấp hơn gọi đồng bộ. 100.000 SKUs mỗi đêm đúng mô hình này: chênh lệch vài giờ không ảnh hưởng, và bạn không phải giữ hàng nghìn kết nối đồng thời.
+ 
+### Vì sao các phương án sai
+ - **Tăng timeout 2h:** vẫn là đồng bộ, rate limit không nới, và proxy/load balancer sẽ cắt kết nối lâu.
+ - **Single massive prompt:** vượt context window, không parse được output, và rate limit vẫn áp dụng.
+ - **Manual từ laptop:** không có SLA, không audit, không scale, rủi ro vận hành cao.` },
+{ id: 'qz-ccap-284', topic: 'claude', q: '[Enterprise Integration] A healthcare provider uses Claude through Amazon Bedrock in the eu-central-1 region to process patient records. They need to prove to auditors that no patient data ever leaves the EU. Which evidence is most convincing?', options: ['A verbal assurance from the engineering team', 'Bedrock service terms confirming EU data residency, VPC flow logs showing no egress to non-EU regions, and a data processing agreement', 'A screenshot of the AWS console showing the region selector', 'A promise in the system prompt to keep data in EU'], answer: 1, explain: `**Tóm tắt:** Điều khoản dịch vụ Bedrock, VPC flow logs, và DPA là bằng chứng kỹ thuật và pháp lý.
+ 
+### Vì sao đáp án đúng
+ **Data residency (lưu trú dữ liệu)** cần bằng chứng ba lớp: (1) **Điều khoản dịch vụ** của nhà cung cấp cam kết region EU; (2) **VPC flow logs** cho thấy không có traffic ra ngoài EU; (3) **DPA (Data Processing Agreement)** ký kết pháp lý. Ba thứ này cùng tạo thành hồ sơ kiểm toán (audit evidence) thuyết phục.
+ 
+### Vì sao các phương án sai
+ - **Lời nói suông:** không có giá trị pháp lý trước thanh tra.
+ - **Screenshot console:** chỉ thấy cấu hình lúc chụp, không chứng minh runtime behavior.
+ - **Promise trong prompt:** prompt là mềm, không cưỡng chế được hạ tầng.` },
+{ id: 'qz-ccap-285', topic: 'claude', multi: true, q: '[Enterprise Integration] A company runs a multi-tenant Claude gateway serving 500 customers. One customer suddenly sends 10x normal traffic, causing 429 errors for other customers. Which two controls best prevent this? (Choose 2)', options: ['Per-tenant token bucket rate limiting at the gateway', 'Shared global rate limit for all tenants', 'Priority queue with per-tenant fair queuing', 'Disable rate limiting entirely'], answer: [0, 2], explain: `**Tóm tắt:** Token bucket per-tenant và fair queuing với ưu tiên.
+ 
+### Vì sao đáp án đúng
+ **Per-tenant token bucket** giới hạn mỗi khách hàng ở ngưỡng riêng, một khách hàng bão hòa không ảnh hưởng người khác. **Fair queuing với ưu tiên** đảm bảo khi hệ thống bận, traffic quan trọng (ví dụ enterprise tier) được phục vụ trước, còn traffic thấp ưu tiên có thể bị degrade hoặc queue. Hai control này cùng bảo vệ isolation và quality of service.
+ 
+### Vì sao các phương án sai
+ - **Shared global rate limit:** một khách hàng dùng hết quota làm chặn hết mọi người.
+ - **Disable rate limiting:** không có bảo vệ nào, hệ thống sẽ bị DDoS bởi một khách hàng.` },
+{ id: 'qz-ccap-286', topic: 'claude', q: '[Enterprise Integration] A team integrates Claude into their CI/CD pipeline to automatically review pull requests. The model sometimes hallucinates non-existent security vulnerabilities. Which guardrail most directly reduces false positives?', options: ['Add more warning text to the system prompt', 'Require citations from the actual code diff for every finding, and run a deterministic static analysis tool in parallel to cross-check', 'Increase temperature so the model is more creative', 'Remove the code review feature entirely'], answer: 1, explain: `**Tóm tắt:** Bắt trích dẫn từ code diff thực tế và chạy static analysis song song để đối chiếu.
+ 
+### Vì sao đáp án đúng
+ **Grounding (căn cứ)** yêu cầu model trích dẫn chính xác dòng code liên quan đến mỗi finding. **Static analysis tool (công cụ phân tích tĩnh)** chạy deterministic, không hallucinate, đối chiếu với output của Claude. Chỉ các finding có cả trích dẫn hợp lệ VÀ được static analysis xác nhận mới báo cáo. Cách này loại bỏ gần như hoàn toàn false positives.
+ 
+### Vì sao các phương án sai
+ - **Warning text:** chỉ là hướng dẫn mềm, không cưỡng chế.
+ - **Tăng temperature:** làm tăng hallucination, không giảm.
+ - **Xoá feature:** mất giá trị tự động hóa hoàn toàn.` },
+{ id: 'qz-ccap-287', topic: 'claude', q: '[Enterprise Integration] A global bank runs Claude workloads on Google Vertex AI in us-central1, europe-west1, and asia-southeast1. They need a single control plane for model routing, quota management, and audit logging across all regions. Which design pattern fits?', options: ['Deploy three independent gateways with no coordination', 'Deploy a global API gateway with regional backends, centralised config, and unified observability', 'Use a single gateway in us-central1 for all traffic', 'Manage each region manually via spreadsheet'], answer: 1, explain: `**Tóm tắt:** Global API gateway với regional backends, config tập trung, observability thống nhất.
+ 
+### Vì sao đáp án đúng
+ **Global gateway** cung cấp single control plane: routing theo region, quota management tập trung, audit logging thống nhất. **Regional backends** đặt compute gần dữ liệu cho latency thấp và data residency. **Centralised config** cho phép đổi model/quota một lần áp dụng mọi region. **Unified observability** nhìn thấy health/cost/error across regions trên một dashboard.
+ 
+### Vì sao các phương án sai
+ - **Three independent gateways:** không có single control plane, config drift, observability phân mảnh.
+ - **Single gateway in us-central1:** latency cao cho EU/Asia, vi phạm data residency.
+ - **Manual spreadsheet:** không scale, dễ lỗi, không real-time.` },
+{ id: 'qz-ccap-288', topic: 'claude', multi: true, q: '[Enterprise Integration] An insurance company processes claims documents with Claude. Some documents contain fraud indicators that must trigger human review. Which two design choices ensure fraud signals are never missed? (Choose 2)', options: ['Let Claude decide autonomously whether to escalate', 'Define explicit fraud detection rules in a deterministic pre-filter that runs before Claude, and require human review for any flagged claim', 'Put fraud rules only in the system prompt', 'Disable human review to save time'], answer: [1, 2], explain: `**Tóm tắt:** Pre-filter deterministic chạy trước Claude, và bắt buộc human review cho claim bị flag.
+ 
+### Vì sao đáp án đúng
+ **Deterministic pre-filter** chạy trước Claude, dùng rules engine (không phải LLM) để detect fraud indicators — đảm bảo 100% các pattern đã biết đều bị bắt. **Human review bắt buộc** cho claim bị flag tạo safety net: ngay cả khi pre-filter miss, reviewer con người có cơ hội phát hiện. Pre-filter + human review = defense in depth.
+ 
+### Vì sao các phương án sai
+ - **Claude tự quyết:** LLM có thể miss, bị prompt injection, hoặc hallucinate.
+ - **Chỉ trong system prompt:** mềm, không cưỡng chế.
+ - **Disable human review:** bỏ safety net.` },
+{ id: 'qz-ccap-289', topic: 'claude', q: '[Enterprise Integration] A company uses Claude to translate legal contracts into 20 languages. They need consistent terminology across all translations. Which approach best enforces terminology consistency?', options: ['Translate each language independently and hope for consistency', 'Build a terminology glossary as a structured resource, include it in every translation prompt, and validate outputs against the glossary', 'Use a different model for each language', 'Let translators manually fix inconsistencies after the fact'], answer: 1, explain: `**Tóm tắt:** Glossary thuật ngữ có cấu trúc, đưa vào mọi prompt translation, và validate output đối chiếu glossary.
+ 
+### Vì sao đáp án đúng
+ **Terminology glossary** định nghĩa thuật ngữ chuẩn cho từng ngôn ngữ (ví dụ "consideration" -> "đối giá" trong tiếng Việt, không phải "sự cân nhắc"). Đưa glossary vào **mọi prompt** đảm bảo model tham chiếu đồng nhất. **Validate output** đối chiếu glossary tự động bắt các deviation. Ba bước này tạo closed-loop consistency.
+ 
+### Vì sao các phương án sai
+ - **Independently:** mỗi language độc lập dẫn đến inconsistency.
+ - **Different model per language:** thêm biến thể, không đảm bảo consistency.
+ - **Manual fix sau:** chậm, tốn kém, và không scale.` },
+{ id: 'qz-ccap-290', topic: 'claude', q: '[Enterprise Integration] A streaming platform uses Claude to moderate live chat at 50,000 messages per second during peak events. Latency must stay under 100ms. Which architecture is feasible?', options: ['Call Claude synchronously for every message', 'Use a lightweight classifier for real-time filtering, escalate only borderline cases to Claude asynchronously', 'Batch all messages and process once per hour', 'Disable moderation during peak events'], answer: 1, explain: `**Tóm tắt:** Classifier nhẹ cho real-time, chỉ escalate borderline cases đến Claude bất đồng bộ.
+ 
+### Vì sao đáp án đúng
+ 50.000 msg/s với latency <100ms không thể gọi Claude đồng bộ (Claude latency thường 500ms-5s). **Lightweight classifier (như BERT nhỏ hoặc rule-based)** chạy <10ms, lọc rõ ràng (spam, toxicity). Chỉ **borderline cases (trường hợp biên)** gửi đến Claude async để review kỹ. Hybrid này đạt latency target và chất lượng.
+ 
+### Vì sao các phương án sai
+ - **Synchronous Claude cho mọi message:** latency vượt 100ms gấp nhiều lần.
+ - **Batch hourly:** moderation phải real-time, batch 1h thì đã late.
+ - **Disable moderation:** vi phạm policy và pháp lý.` },
+{ id: 'qz-ccap-291', topic: 'claude', multi: true, q: '[Enterprise Integration] A fintech startup uses Claude for real-time transaction categorization. They need to handle traffic spikes during holiday shopping without hitting provider rate limits. Which two patterns should they implement? (Choose 2)', options: ['Client-side token bucket smoothing to shape bursts before they reach the provider', 'Aggressive retry with no backoff to push through the limit', 'Queue with bounded size and priority-based load shedding for non-critical traffic', 'Disable all rate limiting on their side'], answer: [0, 2], explain: `**Tóm tắt:** Client-side token bucket smoothing và bounded queue với priority load shedding.
+ 
+### Vì sao đáp án đúng
+ **Client-side token bucket** san bằng traffic spikes (burst) thành luồng đều trước khi chạm provider, giảm 429. **Bounded queue + priority load shedding** khi vẫn quá tải: queue có giới hạn ngăn OOM, priority đảm bảo transaction quan trọng (high-value) được ưu tiên, non-critical bị shed hoặc degraded.
+ 
+### Vì sao các phương án sai
+ - **Aggressive retry no backoff:** tạo retry storm, làm tràn provider, tệ hơn.
+ - **Disable rate limiting:** không bảo vệ, chắc chắn hit provider limit.` },
+{ id: 'qz-ccap-292', topic: 'claude', q: '[Enterprise Integration] A media company uses Claude to generate article summaries for their CMS. Editors need to approve summaries before publishing. Which workflow design best supports this?', options: ['Auto-publish all summaries without review', 'Generate summary -> store as draft -> editor reviews -> approve/reject -> publish, with full audit trail', 'Let Claude publish directly to CMS', 'Email summaries to editors as plain text without tracking'], answer: 1, explain: `**Tóm tắt:** Workflow draft -> review -> approve/reject -> publish với audit trail đầy đủ.
+ 
+### Vì sao đáp án đúng
+ **Human-in-the-loop (HITL)** workflow: generate -> draft -> review -> decision -> publish. **Audit trail** ghi lại ai review, khi nào, quyết định gì, version nào. Điều này đảm bảo kiểm soát chất lượng, tuân thủ, và truy vết khi có vấn đề.
+ 
+### Vì sao các phương án sai
+ - **Auto-publish:** không có quality gate, rủi ro publish nội dung sai.
+ - **Claude publish directly:** bỏ qua human oversight hoàn toàn.
+ - **Email plain text:** không tracking, không version control, không audit.` },
+{ id: 'qz-ccap-293', topic: 'claude', q: '[Enterprise Integration] A manufacturing company uses Claude to analyze sensor data logs from 10,000 IoT devices. The logs are 5GB/day. They need anomaly detection with explanations. Which data pipeline design is most appropriate?', options: ['Send all raw logs to Claude in one request', 'Pre-process logs: aggregate, detect statistical anomalies, send only anomalous windows to Claude for root-cause explanation', 'Sample 1% of logs and send to Claude', 'Store logs in S3 and ask Claude to read from S3 directly'], answer: 1, explain: `**Tóm tắt:** Pre-process: aggregate, detect statistical anomalies, chỉ gửi anomalous windows cho Claude explain.
+ 
+### Vì sao đáp án đúng
+ 5GB/day vượt context window và chi phí cực cao nếu gửi thô. **Pre-processing pipeline**: (1) aggregate/time-window, (2) statistical anomaly detection (z-score, isolation forest) — nhanh, rẻ, deterministic, (3) chỉ các window bất thường gửi cho Claude để **root-cause explanation (giải thích nguyên nhân gốc)**. Hybrid này: statistical detection cho coverage, Claude cho interpretability.
+ 
+### Vì sao các phương án sai
+ - **All raw logs:** vượt context, chi phí khổng lồ.
+ - **Sample 1%:** miss anomalies, không reliable.
+ - **Claude read S3:** Claude không có quyền truy cập S3 trực tiếp; cần application layer.` },
+{ id: 'qz-ccap-294', topic: 'claude', multi: true, q: '[Enterprise Integration] A company builds an internal developer assistant using Claude. Developers can ask it to write code, explain legacy systems, and create tickets. Which two security controls are essential? (Choose 2)', options: ['Allow the assistant to execute arbitrary shell commands on production servers', 'Run code generation in a sandboxed environment with no network or filesystem write access', 'Require human approval for any ticket creation or code merge', 'Store all source code in the system prompt for context'], answer: [1, 2], explain: `**Tóm tắt:** Sandbox cho code generation, human approval cho ticket/merge.
+ 
+### Vì sao đáp án đúng
+ **Sandboxed environment** cho code generation: không network, không filesystem write, no shell access — hạn chế blast radius nếu model generate malicious code. **Human approval** cho ticket creation và code merge: hành động có side effect (tạo ticket, merge code) phải có human-in-the-loop. Hai control này bảo vệ production khỏi agent runaway.
+ 
+### Vì sao các phương án sai
+ - **Arbitrary shell commands on production:** rủi ro cực cao, một lệnh rm -rf có thể xóa production.
+ - **Store source in system prompt:** vượt context window, leak source code, và prompt injection risk.` },
+{ id: 'qz-ccap-295', topic: 'claude', q: '[Enterprise Integration] A retail company uses Claude for personalized product recommendations. They A/B test two prompt versions: one with user history, one without. Version with history shows 15% higher conversion but 3x token cost. How should they decide?', options: ['Always choose higher conversion regardless of cost', 'Calculate incremental revenue per 1M tokens: if (conversion lift × avg order value × traffic) > (extra token cost), adopt; otherwise not', 'Choose the cheaper version to save money', 'Flip a coin'], answer: 1, explain: `**Tóm tắt:** Tính incremental revenue per token: nếu (lift × AOV × traffic) > extra cost thì adopt.
+ 
+### Vì sao đáp án đúng
+ Quyết định phải dựa trên **ROI (Return on Investment)**. Tính: incremental revenue = conversion_lift × average_order_value × monthly_traffic. So sánh với incremental cost = extra_tokens × price_per_token. Nếu revenue > cost, adopt version with history. Đây là framework quyết định data-driven cho prompt engineering.
+ 
+### Vì sao các phương án sai
+ - **Always higher conversion:** bỏ qua cost, có thể loss-making.
+ - **Always cheaper:** bỏ qua revenue, có thể bỏ lỡ profit.
+ - **Flip coin:** không có basis.` },
+{ id: 'qz-ccap-296', topic: 'claude', q: '[Governance & Risk] A financial institution must demonstrate to regulators that their Claude-based credit decision system does not discriminate against protected classes. Which governance practice is most critical?', options: ['Add a disclaimer in the system prompt saying "do not discriminate"', 'Implement continuous bias monitoring: track approval rates by protected class, run counterfactual fairness tests, and maintain model cards with fairness metrics', 'Only use the model for internal reporting, not decisions', 'Ask the model to self-report if it is being fair'], answer: 1, explain: `**Tóm tắt:** Bias monitoring liên tục: theo dõi tỷ lệ duyệt theo protected class, test counterfactual fairness, và model cards với fairness metrics.
+ 
+### Vì sao đáp án đúng
+ **Fairness governance** cần bằng chứng định lượng, không phải lời hứa. **Continuous monitoring** theo dõi approval rate cho từng protected class (giới tính, chủng tộc, độ tuổi) theo thời gian. **Counterfactual testing** đổi chỉ protected class xem kết quả có đổi không. **Model cards** tài liệu hóa fairness metrics, training data, limitations. Ba thứ này tạo hồ sơ compliance thuyết phục cho regulator.
+ 
+### Vì sao các phương án sai
+ - **Disclaimer in prompt:** mềm, không measurable, không chứng minh được.
+ - **Internal only:** không giải quyết vấn đề, chỉ tránh.
+ - **Self-report:** model không thể tự đánh giá bias của mình.` },
+{ id: 'qz-ccap-297', topic: 'claude', multi: true, q: '[Governance & Risk] A healthcare AI system uses Claude to suggest treatment plans. Which two safeguards are required before clinical deployment? (Choose 2)', options: ['Clinical validation study showing non-inferiority to standard of care', 'Human physician must review and approve every AI suggestion before action', 'Deploy without validation because the model is from a reputable vendor', 'Let patients directly act on AI suggestions'], answer: [0, 1], explain: `**Tóm tắt:** Nghiên cứu validation lâm sàng và human physician review bắt buộc.
+ 
+### Vì sao đáp án đúng
+ **Clinical validation** chứng minh AI không gây hại so với standard of care (non-inferiority). **Physician review** là human-in-the-loop bắt buộc cho clinical decision — AI chỉ suggest, physician quyết định. Hai safeguard này là tiêu chuẩn tối thiểu cho medical AI deployment (FDA, EU AI Act, HIPAA context).
+ 
+### Vì sao các phương án sai
+ - **Deploy without validation:** vi phạm y tế ethics và regulation.
+ - **Patients act directly:** bỏ qua clinical judgment, rủi ro tử vong.` },
+{ id: 'qz-ccap-298', topic: 'claude', q: '[Governance & Risk] A company processes European customer data with Claude. GDPR requires data subject rights including right to erasure. Which technical implementation best supports this?', options: ['Delete the customer record from the application database only', 'Implement a data lineage system that tracks all places customer data flows (including prompts sent to Claude), and supports cascading erasure with provider API deletion requests', 'Rely on the provider to handle erasure automatically', 'Encrypt customer data and throw away the key'], answer: 1, explain: `**Tóm tắt:** Data lineage system theo dõi mọi nơi data chảy (kể cả prompts gửi Claude), hỗ trợ cascading erasure với provider API deletion.
+ 
+### Vì sao đáp án đúng
+ **Right to erasure (quyền bị xóa)** theo GDPR yêu cầu xóa dữ liệu ở **mọi nơi** nó tồn tại. **Data lineage** map data flow: application DB, vector store, prompt logs, Claude provider logs. **Cascading erasure** tự động xóa ở tất cả các nơi, kể cả gọi API xóa của provider (nếu provider hỗ trợ). Không có lineage thì không biết đâu cần xóa.
+ 
+### Vì sao các phương án sai
+ - **Delete app DB only:** data vẫn còn trong vector store, prompt logs, provider logs.
+ - **Rely on provider:** provider không tự biết data của customer nào trong prompt logs.
+ - **Encrypt and throw key:** data vẫn tồn tại, không phải erasure; và key management phức tạp.` },
+{ id: 'qz-ccap-299', topic: 'claude', multi: true, q: '[Governance & Risk] An AI system makes automated loan approval decisions using Claude. Which two transparency measures are required for responsible AI governance? (Choose 2)', options: ['Publish the model weights publicly', 'Provide adverse action notices explaining the specific reasons for denial to each applicant', 'Maintain an audit log of every decision with input features, model version, and output rationale', 'Hide the decision logic to prevent gaming'], answer: [1, 2], explain: `**Tóm tắt:** Adverse action notices cho từng applicant và audit log đầy đủ.
+ 
+### Vì sao đáp án đúng
+ **Adverse action notice (thông báo hành động bất lợi)** là yêu cầu pháp lý (ECOA, FCRA): phải giải thích lý do cụ thể từ chối cho từng applicant. **Audit log** ghi lại input features, model version, output rationale cho mỗi quyết định — cho phép traceback, bias testing, và regulatory examination. Hai measure này tạo transparency cho affected individuals và oversight bodies.
+ 
+### Vì sao các phương án sai
+ - **Publish model weights:** không applicable (Claude weights không public), và không giúp transparency cho quyết định cụ thể.
+ - **Hide logic:** opposite of transparency, vi phạm responsible AI principles.` },
+{ id: 'qz-ccap-300', topic: 'claude', q: '[Governance & Risk] A company uses Claude for employee performance reviews. The system prompt says "be fair and unbiased." An audit reveals the system consistently rates women lower than men for similar achievements. What is the root cause?', options: ['The model is inherently sexist and cannot be fixed', 'System prompt instructions are soft constraints; without measurable fairness metrics, bias testing, and calibrated evaluation rubrics, the model reproduces societal biases in training data', 'The temperature was set too high', 'The prompt was too short'], answer: 1, explain: `**Tóm tắt:** System prompt là soft constraint; không có fairness metrics, bias testing, và calibrated rubrics thì model reproduce societal biases.
+ 
+### Vì sao đáp án đúng
+ **"Be fair" trong prompt** chỉ là lời nhắc mềm (soft constraint). Model học từ training data chứa societal biases. Không có **measurable fairness metrics** (đo lường), **bias testing** (test đối phó), và **calibrated rubrics** (thang chấm hiệu chuẩn) thì không thể detect hay mitigate bias. Root cause là thiếu governance framework, không phải model bản chất.
+ 
+### Vì sao các phương án sai
+ - **Model inherently sexist:** không constructive, bỏ qua việc có thể mitigate bằng engineering.
+ - **Temperature too high:** temperature ảnh hưởng randomness, không phải bias hệ thống.
+ - **Prompt too short:** độ dài prompt không liên quan đến bias.` },
+{ id: 'qz-ccap-301', topic: 'claude', q: '[Governance & Risk] A multinational corporation uses Claude through a single Anthropic API key shared across 20 business units. Legal discovers this violates data processing agreements that require per-unit data isolation. What is the correct remediation?', options: ['Continue using the shared key but add unit names to prompts', 'Issue separate API keys per business unit, enforce per-unit data routing at the gateway, and update data processing agreements', 'Disable Claude for all units', 'Use one key but encrypt prompts per unit'], answer: 1, explain: `**Tóm tắt:** API key riêng per unit, gateway enforce per-unit routing, cập nhật DPA.
+ 
+### Vì sao đáp án đúng
+ **Separate API keys** tạo accountability boundary: unit nào dùng key nào, quota nào, audit log nào. **Gateway routing** enforce data isolation: unit A data không bao giờ đi qua key của unit B. **Updated DPAs** phản ánh kiến trúc mới. Ba bước này remediate violation và prevent recurrence.
+ 
+### Vì sao các phương án sai
+ - **Shared key + unit names in prompt:** prompt không phải security boundary; data vẫn shared ở provider level.
+ - **Disable all:** overkill, mất business value.
+ - **Encrypt prompts:** provider vẫn nhận data, encryption không thay đổi data processing relationship.` },
+{ id: 'qz-ccap-302', topic: 'claude', multi: true, q: '[Governance & Risk] A company deploys a Claude-powered chatbot for customer service. Which two incident response preparations are essential? (Choose 2)', options: ['A runbook with: provider status check, health check commands, failover procedure, and error code dashboard', 'A plan to blame the vendor immediately', 'No preparation needed because AI never fails', 'Delete all logs when an incident occurs'], answer: [0, 1], explain: `**Tóm tắt:** Runbook có provider status check, health check, failover procedure, error code dashboard.
+ 
+### Vì sao đáp án đúng
+ **Runbook (sổ tay vận hành)** chuẩn bị sẵn: check provider status page, run health checks, execute failover procedure, monitor error code dashboard. Đây là chuẩn SRE cho AI systems. Khi incident xảy ra, on-call engineer làm theo runbook thay vì improvise.
+ 
+### Vì sao các phương án sai
+ - **Blame vendor:** không giải quyết incident, làm mất relationship.
+ - **No prep:** AI systems fail (rate limits, model errors, provider outages).
+ - **Delete logs:** phá hủy evidence, vi phạm compliance, không thể root cause.` },
+{ id: 'qz-ccap-303', topic: 'claude', q: '[Governance & Risk] A financial services firm uses Claude for fraud detection. The model flags a transaction as fraudulent. The customer disputes. Which governance artifact is most important for resolving the dispute?', options: ['The model confidence score only', 'A complete decision trace: input features, model version, prompt version, reasoning, and the specific rules that triggered the flag', 'A verbal explanation from the data scientist', 'The raw model output without context'], answer: 1, explain: `**Tóm tắt:** Complete decision trace: input features, model version, prompt version, reasoning, specific triggered rules.
+ 
+### Vì sao đáp án đúng
+ **Decision traceability** là yêu cầu cốt lõi của responsible AI governance (EU AI Act, SR 11-7, Model Risk Management). Cần: input features (gì trigger), model version (phiên bản nào), prompt version (hướng dẫn nào), reasoning (tại sao), specific rules (rule nào). Trace này cho phép reproduce, audit, và explain cho customer/regulator.
+ 
+### Vì sao các phương án sai
+ - **Confidence score only:** không giải thích tại sao, không actionable.
+ - **Verbal explanation:** không reproducible, không auditable, phụ thuộc memory.
+ - **Raw output without context:** thiếu input features và reasoning, không thể verify.` },
+{ id: 'qz-ccap-304', topic: 'claude', multi: true, q: '[Governance & Risk] An AI system processes sensitive personal data. Which two data protection measures are required by GDPR and similar regulations? (Choose 2)', options: ['Data minimization: only send fields necessary for the task', 'Purpose limitation: declare and enforce specific purposes for each processing activity', 'Send all data to the model for better accuracy', 'Store prompts and outputs indefinitely for future training'], answer: [0, 1], explain: `**Tóm tắt:** Data minimization (chỉ gửi field cần thiết) và Purpose limitation (khai báo và enforce mục đích cụ thể).
+ 
+### Vì sao đáp án đúng
+ **Data minimization (Art. 5 GDPR)**: chỉ xử lý data cần thiết cho mục đích. Với Claude: chỉ gửi fields cần thiết cho task, redact PII không cần thiết. **Purpose limitation (Art. 5 GDPR)**: khai báo mục đích cụ thể (ví dụ "fraud detection") và enforce technical controls đảm bảo data không dùng cho mục đích khác (ví dụ không dùng fraud data cho marketing).
+ 
+### Vì sao các phương án sai
+ - **Send all data:** vi phạm data minimization.
+ - **Store indefinitely:** vi phạm storage limitation, và training purpose cần consent riêng.` },
+{ id: 'qz-ccap-305', topic: 'claude', q: '[Governance & Risk] A company uses Claude to screen job applications. The system prompt says "evaluate fairly." An audit finds the system rejects candidates with non-Western names at 3x the rate. What immediate action should governance require?', options: ['Deploy a fix immediately without testing', 'Suspend the automated screening, conduct a bias audit with counterfactual testing, and require human review for all decisions until validated fix is deployed', 'Change the prompt to "be very very fair"', 'Ignore the audit because the model is from a reputable vendor'], answer: 1, explain: `**Tóm tắt:** Suspend automated screening, bias audit với counterfactual testing, human review cho tất cả quyết định cho đến khi fix được validate.
+ 
+### Vì sao đáp án đúng
+ **Suspend (tạm dừng)** automated system khi phát hiện harm — precautionary principle. **Bias audit** với **counterfactual testing** (đổi tên Western/non-Western, giữ achievements giống nhau) xác định causal impact. **Human review** cho mọi quyết định trong lúc remediate. Chỉ deploy fix sau khi **validated** trên hold-out test set.
+ 
+### Vì sao các phương án sai
+ - **Deploy fix without testing:** có thể làm tệ hơn hoặc tạo bias mới.
+ - **Change prompt:** "very very fair" vẫn là soft constraint, không fix root cause.
+ - **Ignore audit:** vi phạm governance duty, legal risk.` },
+{ id: 'qz-ccap-306', topic: 'claude', q: '[Governance & Risk] A healthcare provider uses Claude through Amazon Bedrock. They need to ensure HIPAA compliance. Which configuration is essential?', options: ['Use the public Anthropic API endpoint', 'Enable HIPAA-eligible Bedrock configuration, sign BAA with AWS, use VPC endpoints, and enable encryption at rest and in transit', 'Rely on the model to not output PHI', 'Disable all logging'], answer: 1, explain: `**Tóm tắt:** HIPAA-eligible Bedrock config, BAA với AWS, VPC endpoints, encryption at rest và in transit.
+ 
+### Vì sao đáp án đúng
+ **HIPAA compliance** yêu cầu: (1) **HIPAA-eligible service** (Bedrock configured for HIPAA), (2) **BAA (Business Associate Agreement)** ký với AWS, (3) **VPC endpoints** cho traffic không đi public internet, (4) **Encryption** at rest (KMS) và in transit (TLS 1.2+). Không có BAA thì không có HIPAA compliance dù service có eligible.
+ 
+### Vì sao các phương án sai
+ - **Public Anthropic API:** không có BAA với Anthropic cho HIPAA (trừ enterprise agreement riêng).
+ - **Rely on model:** model có thể output PHI nếu input có PHI; không phải control.
+ - **Disable logging:** mất audit trail, vi phạm HIPAA audit requirements.` },
+{ id: 'qz-ccap-307', topic: 'claude', multi: true, q: '[Governance & Risk] A company wants to implement responsible AI governance for their Claude deployment. Which two foundational elements should they establish first? (Choose 2)', options: ['An AI ethics committee with cross-functional representation and decision authority', 'A model inventory cataloging all Claude use cases, risk levels, and owners', 'A policy to use the largest model for everything', 'A ban on all AI usage'], answer: [0, 1], explain: `**Tóm tắt:** AI ethics committee cross-functional có thẩm quyền, và model inventory catalog tất cả use cases.
+ 
+### Vì sao đáp án đúng
+ **AI Ethics Committee** (cross-functional: legal, security, engineering, business, compliance) với **decision authority** — không chỉ advisory — thiết lập policies, review high-risk use cases, approve deployments. **Model Inventory** catalog tất cả Claude use cases: use case gì, risk level (high/medium/low), owner, data sensitivity, compliance requirements. Hai element này là foundation cho mọi governance activities sau.
+ 
+### Vì sao các phương án sai
+ - **Largest model for everything:** không phải governance, là technical decision sai.
+ - **Ban all AI:** không realistic, không giải quyết business needs.` },
+{ id: 'qz-ccap-308', topic: 'claude', q: '[Governance & Risk] An e-commerce platform uses Claude for automated content moderation. A user posts content that the model incorrectly flags as violating policy. The user appeals. What governance process must exist?', options: ['No appeal process needed; the model is always right', 'A human review appeal process with SLA, documented criteria, and the ability to overturn model decisions with feedback loop to improve the model', 'Ask the model to review its own decision', 'Delete the user account to avoid future issues'], answer: 1, explain: `**Tóm tắt:** Human review appeal process với SLA, documented criteria, overturn capability, và feedback loop.
+ 
+### Vì sao đáp án đúng
+ **Appeal process** là yêu cầu của responsible AI (EU AI Act, platform governance). Cần: **Human reviewer** (không phải model tự review), **SLA** (ví dụ 24h), **documented criteria** (policy rõ ràng), **overturn authority** (human có thể overturn model), **feedback loop** (appeal outcome feed vào eval set để cải thiện model). Không có appeal process = không accountability.
+ 
+### Vì sao các phương án sai
+ - **No appeal:** vi phạm user rights và platform governance.
+ - **Model review own decision:** conflict of interest, model không thể self-correct reliably.
+ - **Delete account:** disproportionate, tránh responsibility.` },
+{ id: 'qz-ccap-309', topic: 'claude', q: '[Governance & Risk] A company uses Claude for automated contract review. Legal wants to ensure the system does not miss critical clauses. Which validation approach is most rigorous?', options: ['Trust the model because it passed the bar exam', 'Build a golden test set of contracts with known critical clauses, measure recall on clause detection, and require minimum recall threshold before deployment', 'Ask a lawyer to spot-check 10 contracts', 'Compare with a different model output'], answer: 1, explain: `**Tóm tắt:** Golden test set với known critical clauses, đo recall, require minimum recall threshold.
+ 
+### Vì sao đáp án đúng
+ **Golden test set** là bộ hợp đồng có ground truth: critical clauses đã được legal gán nhãn. **Recall (tỷ lệ phát hiện)** đo: trong số critical clauses thực sự có, model tìm được bao nhiêu %. **Minimum recall threshold** (ví dụ 95%) là gate: không deploy nếu recall < threshold. Đây là validation định lượng, measurable, auditable.
+ 
+### Vì sao các phương án sai
+ - **Trust model passed bar:** bar exam ≠ contract review performance trên domain cụ thể.
+ - **Lawyer spot-check 10:** sample size quá nhỏ, không representative, không reproducible.
+ - **Compare different model:** không có ground truth, không biết cái nào đúng.` },
+{ id: 'qz-ccap-310', topic: 'claude', multi: true, q: '[Governance & Risk] A financial regulator requires explainability for AI-driven credit decisions. Which two technical measures best satisfy this requirement? (Choose 2)', options: ['Feature importance attribution (SHAP/LIME) for each decision, showing which input factors drove the outcome', 'Natural language rationale generated by the model explaining its reasoning, validated against ground truth', 'The model confidence score', 'The model version number alone'], answer: [0, 1], explain: `**Tóm tắt:** Feature importance attribution (SHAP/LIME) và natural language rationale validated against ground truth.
+ 
+### Vì sao đáp án đúng
+ **Feature importance (SHAP/LIME)** cung cấp quantitative attribution: factor nào đóng góp bao nhiêu % cho quyết định. **Natural language rationale** do model generate, nhưng phải **validated against ground truth** (so với human expert rationale) để đảm bảo không hallucinate. Hai measure này cùng đáp ứng explainability: quantitative cho technical audit, qualitative cho customer communication.
+ 
+### Vì sao các phương án sai
+ - **Confidence score:** chỉ nói model tự tin bao nhiêu, không giải thích tại sao.
+ - **Model version alone:** không giải thích quyết định cụ thể.` },
+{ id: 'qz-ccap-311', topic: 'claude', q: '[Enterprise Integration] A company wants to integrate Claude into an existing Java Spring Boot service that already uses a message broker. Which pattern best decouples the LLM call from request handling?', options: ['Call Claude synchronously inside the HTTP handler', 'Publish a task message to the broker, let a worker consume and call Claude, then publish result back', 'Store the prompt in the database and poll from the client', 'Embed Claude in the frontend'], answer: 1, explain: `**Tóm tắt:** Publish task message, worker consumes and calls Claude, publish result back.
+ 
+### Vì sao đáp án đúng
+ **Asynchronous messaging** decouples producer (HTTP handler) from consumer (LLM worker): handler chỉ enqueue và trả 202, worker scale độc lập, retry/dead-letter xử lý lỗi. Latency của Claude không block client.
+ 
+### Vì sao các phương án sai
+ - **Sync trong handler:** block thread, timeout, poor scalability.
+ - **DB poll client:** coupling, inefficient.
+ - **Frontend embed:** expose API key, no control.` },
+{ id: 'qz-ccap-312', topic: 'claude', q: '[Enterprise Integration] When integrating Claude with an ERP system via REST, what is the most robust approach for handling partial failures during a multi-step workflow?', options: ['Retry the whole workflow from scratch each time', 'Use idempotent operations with unique request IDs and compensating actions', 'Ignore failures and log them', 'Increase timeout to 5 minutes'], answer: 1, explain: `**Tóm tắt:** Idempotent operations với unique request IDs và compensating actions.
+ 
+### Vì sao đáp án đúng
+ **Idempotency** (request ID) cho phép retry an toàn; **compensating actions** (saga pattern) undo các bước đã thành công khi một bước fail, giữ consistency.
+ 
+### Vì sao các phương án sai
+ - **Retry whole:** duplicate side effects.
+ - **Ignore:** data inconsistency.
+ - **Increase timeout:** không giải quyết root cause.` },
+{ id: 'qz-ccap-313', topic: 'claude', multi: true, q: '[Enterprise Integration] Which two are best practices for securing API keys when calling Claude from a backend service? (Choose 2)', options: ['Store keys in a secret manager (AWS Secrets Manager/Vault) and rotate regularly', 'Inject keys via environment variables at runtime, never commit to repo', 'Hardcode keys in source for simplicity', 'Log full request payloads including auth headers for debugging'], answer: [0, 1], explain: `**Tóm tắt:** Secret manager + rotation, env vars at runtime, never commit.
+ 
+### Vì sao đáp án đúng
+ **Secret manager** centralizes rotation/audit; **env vars** keeps secrets out of code. Cả hai là baseline security.
+ 
+### Vì sao các phương án sai
+ - **Hardcode:** leak risk.
+ - **Log auth headers:** credential exposure.` },
+{ id: 'qz-ccap-314', topic: 'claude', q: '[Governance & Risk] A bank must demonstrate that its Claude-based loan assistant does not discriminate. Which evidence is most persuasive to auditors?', options: ['A statement from the vendor that the model is fair', 'A documented bias evaluation on representative loan applicant data with disaggregated metrics by protected class', 'User satisfaction surveys', 'Model accuracy overall'], answer: 1, explain: `**Tóm tắt:** Documented bias evaluation trên representative data với disaggregated metrics by protected class.
+ 
+### Vì sao đáp án đúng
+ **Disaggregated metrics** (accuracy/FPR/FNR theo từng protected class) là evidence định lượng, auditable, reproducible. Vendor statement không đủ.
+ 
+### Vì sao các phương án sai
+ - **Vendor statement:** không kiểm chứng được.
+ - **Surveys:** subjective.
+ - **Overall accuracy:** che giấu disparity giữa nhóm.` },
+{ id: 'qz-ccap-315', topic: 'claude', q: '[Governance & Risk] Which control best prevents prompt injection from external documents fed to Claude?', options: ['Trust the model to ignore malicious instructions', 'Separate untrusted content with clear delimiters and instruct model to treat it as data only', 'Block all external documents', 'Use a longer system prompt'], answer: 1, explain: `**Tóm tắt:** Delimiters + instruct model to treat untrusted content as data only.
+ 
+### Vì sao đáp án đúng
+ **Structural separation** (delimiters) + explicit instruction reduce (not eliminate) injection risk. Defense in depth.
+ 
+### Vì sao các phương án sai
+ - **Trust model:** insufficient.
+ - **Block all:** impractical.
+ - **Longer prompt:** not a control.` },
+{ id: 'qz-ccap-316', topic: 'claude', q: '[Enterprise Integration] For high-volume Claude usage, which caching strategy reduces cost while preserving correctness for deterministic tasks?', options: ['Cache by exact prompt hash with TTL and invalidate on model/version change', 'Cache random subset of responses', 'Never cache LLM output', 'Cache by user ID only'], answer: 0, explain: `**Tóm tắt:** Cache by exact prompt hash with TTL, invalidate on model/version change.
+ 
+### Vì sao đáp án đúng
+ **Prompt-hash cache** đảm bảo same input → same output; TTL + invalidation on model change tránh stale.
+ 
+### Vì sao các phương án sai
+ - **Random subset:** incorrect.
+ - **Never cache:** costly.
+ - **By user ID:** collisions across prompts.` },
+{ id: 'qz-ccap-317', topic: 'claude', q: '[Governance & Risk] What is the primary purpose of a model card in enterprise AI governance?', options: ['Marketing material for the model', 'Document intended use, limitations, evaluation results, and risks for stakeholders', 'API reference only', 'Pricing sheet'], answer: 1, explain: `**Tóm tắt:** Document intended use, limitations, eval results, risks.
+ 
+### Vì sao đáp án đúng
+ **Model card** là transparency artifact: intended use, out-of-scope, metrics, bias, risks. Supports audit and informed deployment.
+ 
+### Vì sao các phương án sai
+ - **Marketing:** not governance.
+ - **API ref:** technical only.
+ - **Pricing:** unrelated.` },
+{ id: 'qz-ccap-318', topic: 'claude', multi: true, q: '[Enterprise Integration] Which two observability signals are most important for LLM integrations in production? (Choose 2)', options: ['Latency and token usage per request', 'End-to-end trace linking request to model call and downstream actions', 'CPU temperature', 'Number of developers'], answer: [0, 1], explain: `**Tóm tắt:** Latency/token usage và end-to-end trace.
+ 
+### Vì sao đáp án đúng
+ **Latency/token usage** cho cost/perf monitoring; **end-to-end trace** cho debugging và accountability.
+ 
+### Vì sao các phương án sai
+ - **CPU temp:** infra not LLM-specific.
+ - **Dev count:** irrelevant.` },
+{ id: 'qz-ccap-319', topic: 'claude', q: '[Governance & Risk] A company wants human oversight for high-stakes Claude decisions. Which design best balances automation and oversight?', options: ['Fully automated with post-hoc review monthly', 'Human-in-the-loop approval for decisions above risk threshold, with audit log', ' Human reviews every trivial request', ' No logging'], answer: 1, explain: `**Tóm tắt:** Human-in-the-loop approval cho decisions above risk threshold + audit log.
+ 
+### Vì sao đáp án đúng
+ **Risk-based HITL**: chỉ human review high-risk, audit log đảm bảo traceability. Cân bằng efficiency và safety.
+ 
+### Vì sao các phương án sai
+ - **Monthly post-hoc:** too late.
+ - **Review all trivial:** wasteful.
+ - **No logging:** no accountability.` },
+{ id: 'qz-ccap-320', topic: 'claude', q: '[Enterprise Integration] When Claude returns structured JSON, what is the safest parsing strategy?', options: ['Regex parse the whole response', 'Use tool use / structured output with schema validation', 'Split by newline', 'Trust model to always output valid JSON'], answer: 1, explain: `**Tóm tắt:** Tool use / structured output + schema validation.
+ 
+### Vì sao đáp án đúng
+ **Structured output** enforces schema; **validation** catches violations. Robust against formatting drift.
+ 
+### Vì sao các phương án sai
+ - **Regex:** brittle.
+ - **Split newline:** fragile.
+ - **Trust model:** unsafe.` },
+{ id: 'qz-ccap-321', topic: 'claude', q: '[Governance & Risk] Which metric best tracks hallucination risk over time in production?', options: ['Token count', 'Groundedness: fraction of claims verifiable against source documents', 'Response length', 'User clicks'], answer: 1, explain: `**Tóm tắt:** Groundedness: fraction of claims verifiable against source documents.
+ 
+### Vì sao đáp án đúng
+ **Groundedness** đo factual alignment với sources, trực tiếp proxy hallucination.
+ 
+### Vì sao các phương án sai
+ - **Token count/length:** not correctness.
+ - **Clicks:** engagement not accuracy.` },
+{ id: 'qz-ccap-322', topic: 'claude', q: '[Enterprise Integration] For multi-tenant SaaS using Claude, how should prompts be isolated per tenant?', options: ['Shared prompt template with tenant ID in user message', 'Per-tenant system prompts and separate API keys/budgets, with no cross-tenant data in context', 'Global prompt for all tenants', 'Tenant data in shared context window'], answer: 1, explain: `**Tóm tắt:** Per-tenant system prompts + separate keys/budgets, no cross-tenant data.
+ 
+### Vì sao đáp án đúng
+ **Isolation** prevents data leakage and enables per-tenant cost control and customization.
+ 
+### Vì sao các phương án sai
+ - **Shared template:** leakage risk.
+ - **Global:** no isolation.
+ - **Shared context:** cross-tenant exposure.` },
+{ id: 'qz-ccap-323', topic: 'claude', q: '[Governance & Risk] What is the key difference between anonymization and pseudonymization for data sent to Claude?', options: ['No difference', 'Anonymization irreversibly removes identifiers; pseudonymization replaces with reversible tokens', 'Pseudonymization is always better', 'Anonymization requires consent'], answer: 1, explain: `**Tóm tắt:** Anonymization irreversibly removes identifiers; pseudonymization replaces with reversible tokens.
+ 
+### Vì sao đáp án đúng
+ **Anonymization** không thể re-identify; **pseudonymization** cho phép re-identification với key. Privacy regimes treat them differently.
+ 
+### Vì sao các phương án sai
+ - **No difference:** wrong.
+ - **Pseudo always better:** depends.
+ - **Consent:** not defining difference.` },
+{ id: 'qz-ccap-324', topic: 'claude', multi: true, q: '[Enterprise Integration] Which two are essential for a robust retry policy when calling Claude? (Choose 2)', options: ['Exponential backoff with jitter', 'Idempotency keys to avoid duplicate side effects', 'Immediate infinite retries', ' Ignoring 429 rate limits'], answer: [0, 1], explain: `**Tóm tắt:** Exponential backoff with jitter + idempotency keys.
+ 
+### Vì sao đáp án đúng
+ **Backoff+jitter** reduces thundering herd; **idempotency keys** make retries safe.
+ 
+### Vì sao các phương án sai
+ - **Infinite immediate:** overload.
+ - **Ignore 429:** violates rate limits.` },
+{ id: 'qz-ccap-325', topic: 'claude', q: '[Governance & Risk] A company deploys Claude for customer support. Which KPI best measures safety incidents?', options: ['Total conversations', 'Rate of harmful/unsafe responses flagged by moderation or users', 'Average response time', 'Token cost'], answer: 1, explain: `**Tóm tắt:** Rate of harmful/unsafe responses flagged by moderation or users.
+ 
+### Vì sao đáp án đúng
+ **Safety incident rate** directly measures harm, not volume or cost.
+ 
+### Vì sao các phương án sai
+ - **Conversations:** volume.
+ - **Latency/cost:** performance, not safety.` },
+{ id: 'qz-ccap-326', topic: 'claude', q: '[Enterprise Integration] How should long documents be handled when they exceed Claude context window?', options: ['Truncate silently', 'Chunk with overlap, summarize hierarchically, or use retrieval (RAG)', 'Send as one giant message and hope', 'Compress by removing vowels'], answer: 1, explain: `**Tóm tắt:** Chunk with overlap, hierarchical summarization, or RAG.
+ 
+### Vì sao đáp án đúng
+ **Chunking+overlap** preserves context; **hierarchical summary** and **RAG** scale to large corpora without losing relevance.
+ 
+### Vì sao các phương án sai
+ - **Truncate:** lose info.
+ - **Hope:** failure.
+ - **Remove vowels:** nonsense.` },
+{ id: 'qz-ccap-327', topic: 'claude', q: '[Governance & Risk] Which is the best practice for versioning prompts in production?', options: ['Keep prompts in code comments', 'Store prompts in version control with change history and rollback', 'Edit prompts directly in production DB', 'No versioning needed'], answer: 1, explain: `**Tóm tắt:** Store prompts in version control with change history and rollback.
+ 
+### Vì sao đáp án đúng
+ **Version control** enables audit, rollback, and reproducibility of behavior changes.
+ 
+### Vì sao các phương án sai
+ - **Comments:** not deployable.
+ - **Prod DB edit:** risky, unaudited.
+ - **No versioning:** no accountability.` },
+{ id: 'qz-ccap-328', topic: 'claude', q: '[Enterprise Integration] When using Claude for code generation, what is the most important safety control before executing generated code?', options: ['Run immediately in production', 'Sandbox execution with restricted permissions and human review', 'Trust the model because it is smart', ' Only check syntax'], answer: 1, explain: `**Tóm tắt:** Sandbox execution with restricted permissions and human review.
+ 
+### Vì sao đáp án đúng
+ **Sandbox** limits blast radius; **human review** catches logic/security issues.
+ 
+### Vì sao các phương án sai
+ - **Run prod:** dangerous.
+ - **Trust:** unsafe.
+ - **Syntax only:** misses vulnerabilities.` },
+{ id: 'qz-ccap-329', topic: 'claude', q: '[Governance & Risk] A regulator asks for evidence that the AI system can be audited. Which artifact is most directly useful?', options: ['Marketing brochure', 'Immutable audit logs of inputs, outputs, model version, and decisions', 'User manual', 'Source code alone'], answer: 1, explain: `**Tóm tắt:** Immutable audit logs of inputs, outputs, model version, decisions.
+ 
+### Vì sao đáp án đúng
+ **Immutable audit logs** provide reproducible evidence trail for regulators.
+ 
+### Vì sao các phương án sai
+ - **Brochure/manual:** not evidence.
+ - **Source alone:** no runtime evidence.` },
+{ id: 'qz-ccap-330', topic: 'claude', multi: true, q: '[Enterprise Integration] Which two are key for graceful degradation when Claude is unavailable? (Choose 2)', options: ['Fallback to cached or rule-based responses', 'Circuit breaker to stop cascading failures', ' Crash the service', ' Infinite retry'], answer: [0, 1], explain: `**Tóm tắt:** Fallback to cached/rule-based + circuit breaker.
+ 
+### Vì sao đáp án đúng
+ **Fallback** maintains user experience; **circuit breaker** prevents cascading failures and allows recovery.
+ 
+### Vì sao các phương án sai
+ - **Crash:** poor UX.
+ - **Infinite retry:** overload.` },
+{ id: 'qz-ccap-331', topic: 'claude', q: '[Governance & Risk] Which principle best guides data minimization when sending context to Claude?', options: ['Send all available user data for best results', 'Send only the minimum necessary data for the task', ' Anonymize after sending', ' Encrypt but send everything'], answer: 1, explain: `**Tóm tắt:** Send only minimum necessary data.
+ 
+### Vì sao đáp án đúng
+ **Data minimization** reduces privacy risk and cost; only include what task requires.
+ 
+### Vì sao các phương án sai
+ - **All data:** unnecessary exposure.
+ - **Anonymize after:** too late.
+ - **Encrypt all:** still excessive.` },
+{ id: 'qz-ccap-332', topic: 'claude', q: '[Enterprise Integration] For event-driven integration, what is the best way to ensure Claude processing results reach downstream systems reliably?', options: ['Fire-and-forget HTTP calls', 'Use durable message queues with acknowledgements and dead-letter queues', ' Poll database', ' Email results'], answer: 1, explain: `**Tóm tắt:** Durable message queues with acks and DLQ.
+ 
+### Vì sao đáp án đúng
+ **Durable queues + acks + DLQ** guarantee delivery and handle failures.
+ 
+### Vì sao các phương án sai
+ - **Fire-forget:** loss risk.
+ - **Poll DB:** inefficient.
+ - **Email:** not system integration.` },
+{ id: 'qz-ccap-333', topic: 'claude', q: '[Governance & Risk] What is the most important consideration when using Claude to process personal data under GDPR?', options: ['Performance only', 'Lawful basis, data minimization, and user rights (access/deletion)', 'Model size', 'Cost'], answer: 1, explain: `**Tóm tắt:** Lawful basis, data minimization, user rights.
+ 
+### Vì sao đáp án đúng
+ **GDPR** requires lawful basis, minimization, and rights like access/deletion. Technical controls must support these.
+ 
+### Vì sao các phương án sai
+ - **Performance/size/cost:** not compliance.` },
+{ id: 'qz-ccap-334', topic: 'claude', q: '[Enterprise Integration] Which approach best manages rate limits across multiple services calling Claude?', options: ['Each service calls independently', 'Centralized rate limiter / token bucket with shared quota', ' Retry on 429 without backoff', ' Increase concurrency blindly'], answer: 1, explain: `**Tóm tắt:** Centralized rate limiter / token bucket with shared quota.
+ 
+### Vì sao đáp án đúng
+ **Centralized limiter** coordinates quota across services, prevents collective overrun.
+ 
+### Vì sao các phương án sai
+ - **Independent:** overrun.
+ - **Retry no backoff:** amplifies.
+ - **Blind concurrency:** 429s.` },
+{ id: 'qz-ccap-335', topic: 'claude', q: '[Governance & Risk] Which control best reduces risk of data exfiltration via Claude outputs?', options: ['Allow model to output any data', 'Output filtering/redaction of PII and sensitive data before returning to user', ' Log all outputs', ' Disable logging'], answer: 1, explain: `**Tóm tắt:** Output filtering/redaction of PII and sensitive data.
+ 
+### Vì sao đáp án đúng
+ **Output redaction** prevents sensitive data from reaching unauthorized users even if in context.
+ 
+### Vì sao các phương án sai
+ - **Allow any:** leak risk.
+ - **Logging alone:** not prevention.
+ - **Disable logging:** loses audit.` },
+{ id: 'qz-ccap-336', topic: 'claude', q: '[Enterprise Integration] For a RAG pipeline using Claude, what is the most important quality control on retrieved context?', options: ['Retrieve as many docs as possible', 'Relevance ranking and filtering to avoid injecting noise/irrelevant info', ' Random retrieval', ' No deduplication'], answer: 1, explain: `**Tóm tắt:** Relevance ranking and filtering.
+ 
+### Vì sao đáp án đúng
+ **Relevance control** prevents context pollution and hallucination from irrelevant docs.
+ 
+### Vì sao các phương án sai
+ - **Max docs:** noise.
+ - **Random:** irrelevant.
+ - **No dedup:** duplicates.` },
+{ id: 'qz-ccap-337', topic: 'claude', q: '[Governance & Risk] Which is the best way to ensure model updates do not break production behavior?', options: ['Auto-upgrade to latest model immediately', 'Pin model version, run regression tests on golden set, then canary deploy', ' Never update', ' Manual spot check only'], answer: 1, explain: `**Tóm tắt:** Pin version, regression tests on golden set, canary deploy.
+ 
+### Vì sao đáp án đúng
+ **Pinning + regression + canary** detects regressions before full rollout.
+ 
+### Vì sao các phương án sai
+ - **Auto-upgrade:** risk.
+ - **Never update:** security/bugs.
+ - **Spot check:** insufficient.` },
+{ id: 'qz-ccap-338', topic: 'claude', q: '[Enterprise Integration] When designing a prompt for a multi-step agent using Claude, what structure improves reliability?', options: ['One giant unstructured prompt', 'Clear step-by-step instructions with tool definitions and stop conditions', ' Vague goals', ' No examples'], answer: 1, explain: `**Tóm tắt:** Clear step-by-step instructions with tool definitions and stop conditions.
+ 
+### Vì sao đáp án đúng
+ **Structured agent prompt** defines actions, tools, and termination, reducing runaway behavior.
+ 
+### Vì sao các phương án sai
+ - **Giant prompt:** ambiguity.
+ - **Vague:** unpredictable.
+ - **No examples:** less guidance.` },
+{ id: 'qz-ccap-339', topic: 'claude', q: '[Governance & Risk] Which control best addresses bias in training data for a Claude-based system?', options: [' Ignore bias', ' Data auditing, representative sampling, and ongoing fairness monitoring', ' Use only majority class data', ' Increase model size'], answer: 1, explain: `**Tóm tắt:** Data auditing, representative sampling, ongoing fairness monitoring.
+ 
+### Vì sao đáp án đúng
+ **Data governance** ensures representative data and continuous fairness checks.
+ 
+### Vì sao các phương án sai
+ - **Ignore:** harm.
+ - **Majority only:** worsens bias.
+ - **Bigger model:** not data fix.` },
+{ id: 'qz-ccap-340', topic: 'claude', multi: true, q: '[Enterprise Integration] Which two are best practices for testing Claude integrations before production? (Choose 2)', options: ['Golden dataset regression tests', 'Load testing under expected traffic', ' Manual ad-hoc only', ' Skip error cases'], answer: [0, 1], explain: `**Tóm tắt:** Golden dataset regression + load testing.
+ 
+### Vì sao đáp án đúng
+ **Regression** catches quality regressions; **load testing** validates scalability.
+ 
+### Vì sao các phương án sai
+ - **Ad-hoc only:** not repeatable.
+ - **Skip errors:** misses failures.` },
 );
