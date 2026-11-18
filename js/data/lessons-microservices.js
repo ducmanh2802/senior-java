@@ -4743,4 +4743,308 @@ Lỗi thường gặp: dùng một breaker chung làm lỗi lan ra mọi depende
   related: ['microservices-060', 'microservices-061', 'microservices-025'],
   tags: ['circuit breaker', 'registry', 'fallback', 'metrics', 'bulkhead', 'graceful degradation']
 },
+{
+  id: 'lesson-microservices-018', track: 'microservices', order: 18,
+  title: 'Saga bù trừ cho chuyển tiền: orchestration, trạng thái, idempotency và timeout', level: 'senior', minutes: 35,
+  goals: [
+    'Giải thích được vì sao chuyển tiền qua nhiều service cần saga thay vì transaction đơn',
+    'Thiết kế TransferSaga với orchestration: chạy bước tuần tự, bù trừ ngược khi lỗi, lưu trạng thái',
+    'Áp dụng idempotency key cho từng bước và xử lý timeout (kết quả không rõ) an toàn'
+  ],
+  body: `**Tóm tắt:** Saga chia nghiệp vụ chuyển tiền thành các bước cục bộ (local transaction — giao dịch chỉ trong 1 database/service). Orchestrator (bộ điều phối trung tâm) ra lệnh từng bước theo thứ tự; nếu bước sau thất bại, nó gọi compensation (bù trừ — hành động nghiệp vụ đảo ngược hiệu quả bước đã commit) theo thứ tự ngược. Mỗi bước phải idempotent (gọi lại cùng key cho cùng kết quả) vì timeout và retry là bình thường.
+
+### Vì sao chuyển tiền cần saga
+Chuyển 500.000đ từ tài khoản A (Account Service, DB A) sang tài khoản B (Account Service, DB B) gồm ít nhất: trừ tiền A (debit) và cộng tiền B (credit). **Vấn đề:** hai database khác nhau không có chung một transaction ACID (Atomicity, Consistency, Isolation, Durability — 4 tính chất đảm bảo giao dịch "hoặc hết hoặc không"). Không thể {{BEGIN}} ở DB A rồi {{COMMIT}} cùng lúc cả DB B bằng lệnh SQL thông thường.
+
+**2PC (Two-Phase Commit — cam kết hai pha)** là giao thức cố gắng làm điều đó: coordinator hỏi tất cả "sẵn sàng chưa?" rồi ra lệnh commit. Thực tế trong microservices 2PC hiếm dùng vì khóa tài nguyên lâu, dễ treo khi coordinator chết, và không phải hệ thống nào cũng hỗ trợ (message broker, dịch vụ ngoài). Saga chấp nhận: mỗi bước tự commit cục bộ, nếu sau đó có lỗi thì chạy bước bù để sửa.
+
+### Orchestration: bộ điều phối trung tâm
+**Orchestration** (điều phối tập trung) nghĩa là có một thành phần — orchestrator — giữ "kịch bản": biết bước nào chạy trước, bước nào chạy sau, khi nào bù trừ. **Choreography** (biên đạo, mỗi service tự phản ứng event của nhau) là cách khác; orchestration thường dễ hiểu, dễ audit và dễ debug hơn với luồng có nhánh như chuyển tiền.
+
+~~~seq
+title: Chuyển tiền thành công
+actors: Orch | DebitSvc | CreditSvc
+Orch -> DebitSvc: debit(sagaId, 500k)
+DebitSvc --> Orch: OK (đã trừ A)
+Orch -> CreditSvc: credit(sagaId, 500k)
+CreditSvc --> Orch: OK (đã cộng B)
+Orch -> Orch: state = COMPLETED
+~~~
+
+~~~seq
+title: Credit thất bại -> bù trừ debit
+actors: Orch | DebitSvc | CreditSvc
+Orch -> DebitSvc: debit(sagaId, 500k)
+DebitSvc --> Orch: OK (đã trừ A)
+Orch -> CreditSvc: credit(sagaId, 500k)
+CreditSvc --> Orch: FAIL
+Orch -> DebitSvc: refund(sagaId, 500k)
+DebitSvc --> Orch: OK (hoàn A)
+Orch -> Orch: state = COMPENSATED
+~~~
+
+### Trạng thái saga (state machine)
+**State machine** (máy trạng thái) là mô hình mô tả: hệ thống đang ở trạng thái nào và được chuyển sang trạng thái nào khi có sự kiện. Orchestrator phải **lưu trạng thái saga vào bộ nhớ bền vững** (database) trước/sau mỗi bước để nếu process restart vẫn biết đã làm tới đâu, tránh trừ tiền hai lần hoặc quên bù trừ.
+
+| Trạng thái | Ý nghĩa | Chuyển tiếp hợp lệ |
+|---|---|---|
+| {{STARTED}} | Mới tạo, chưa thực hiện bước nào | sang {{DEBITED}} nếu debit OK, sang {{FAILED}} nếu debit lỗi |
+| {{DEBITED}} | Đã trừ tiền nguồn thành công | sang {{COMPLETED}} nếu credit OK, sang {{COMPENSATING}} nếu credit lỗi |
+| {{COMPENSATING}} | Đang chạy bù trừ | sang {{COMPENSATED}} khi bù trừ xong |
+| {{COMPLETED}} | Chuyển tiền thành công | trạng thái cuối |
+| {{COMPENSATED}} | Đã bù trừ sau lỗi | trạng thái cuối (nghiệp vụ không hoàn tất nhưng nhất quán) |
+| {{FAILED}} | Thất bại, không có bước nào cần bù | trạng thái cuối |
+
+### Bù trừ (compensation): không phải rollback
+**Compensation** là một hành động nghiệp vụ mới để "đảo ngược hiệu quả" của bước đã commit. Nó **không** xóa lịch sử: debit đã ghi sổ thì refund ghi thêm một bút toán hoàn tiền. Bù trừ chạy theo **thứ tự ngược** các bước đã thành công (giống tháo hành lý: bỏ vào sau thì lấy ra trước).
+
+Ví dụ 3 bước: (1) debit A OK, (2) credit B OK, (3) ghi log phí lỗi → bù (2) rồi bù (1). Nếu bước 1 chưa thành công thì không bù bước 1. Compensation cũng có thể thất bại (mạng lỗi) nên nó phải retryable và cần giám sát.
+
+### Idempotency từng bước
+**Idempotency** (tính lũy đẳng) nghĩa là thực hiện cùng thao tác nhiều lần với cùng tham số cho kết quả giống như thực hiện một lần. Vì sao cần? Orchestrator gọi {{debit(sagaId)}}, service trừ tiền xong nhưng response bị mất do timeout mạng — orchestrator không biết thành công hay chưa, có thể retry. Không idempotent → trừ tiền hai lần.
+
+Cách làm: mỗi lệnh mang {{sagaId}} (hoặc {{stepId}}) ổn định. Service kiểm tra "sagaId này đã xử lý chưa?" (bảng/Set) trước khi áp dụng; nếu đã xử lý thì trả về kết quả cũ/thành công mà không làm lại. Cả bước tiến (forward) lẫn bước bù (compensate) đều phải idempotent.
+
+~~~java
+// Minh họa idempotency: debit chỉ áp dụng một lần cho cùng sagaId
+boolean debit(String sagaId, long amount) {
+    if (processedDebits.contains(sagaId)) {
+        return true; // đã trừ trước đó (do retry) -> coi như thành công
+    }
+    if (!hasEnoughBalance(amount)) return false;
+    balance -= amount;                // hiệu ứng nghiệp vụ chỉ chạy 1 lần
+    processedDebits.add(sagaId);      // ghi nhận đã xử lý
+    return true;
+}
+~~~
+
+### Timeout: kết quả không rõ
+**Timeout** (hết thời gian chờ) nghĩa là orchestrator không nhận được phản hồi kịp. Timeout **không** chứng minh bước thất bại: bước có thể đã thành công ở service nhưng mạng chậm/mất gói. Bù trừ mù quáng khi timeout có thể gây sai (ví dụ refund trong khi debit chưa từng xảy ra, hoặc debit thực ra đã thành công và bạn lại làm hỏng trạng thái).
+
+Xử lý an toàn: (1) retry cùng {{sagaId}} (idempotency key) — nếu bước đã làm, service trả OK mà không làm lại; (2) truy vấn trạng thái bước theo {{sagaId}} trước khi quyết định bù trừ; (3) lưu saga ở trạng thái "chờ xác nhận" thay vì đoán. Trong production cần giới hạn retry, backoff và đường can thiệp thủ công.
+
+### Ví dụ: orchestrator chuyển tiền (rút gọn)
+~~~java
+SagaState run(String sagaId, AccountService svc) {
+    log.add("debit");
+    if (!svc.debit(sagaId)) {          // bước 1: trừ tiền nguồn
+        log.set(log.size() - 1, "debit-failed");
+        state = SagaState.FAILED;      // chưa trừ được -> không bù trừ
+        return state;
+    }
+    state = SagaState.DEBITED;
+    log.add("credit");
+    if (!svc.credit(sagaId)) {         // bước 2: cộng tiền đích
+        log.set(log.size() - 1, "credit-failed");
+        state = SagaState.COMPENSATING;
+        svc.refund(sagaId);            // bù trừ bước 1 (ngược lại)
+        log.add("refund");
+        state = SagaState.COMPENSATED;
+        return state;
+    }
+    state = SagaState.COMPLETED;       // cả hai bước thành công
+    return state;
+}
+~~~
+
+### Lỗi hay gặp trên production
+- **Triệu chứng:** khách bị trừ tiền hai lần khi mạng chập chờn. **Nguyên nhân:** orchestrator retry {{debit}} sau timeout nhưng service không idempotent theo {{sagaId}}. **Cách sửa:** mỗi bước kiểm tra {{sagaId}} đã xử lý; lưu kết quả bước; retry trả lại kết quả cũ.
+- **Triệu chứng:** sau restart, saga "quên" đã debit và chạy lại từ đầu, hoặc quên bù trừ. **Nguyên nhân:** trạng thái saga chỉ giữ trong RAM (biến trong bộ nhớ, mất khi process tắt). **Cách sửa:** persist state machine vào DB bền vững (ghi state trước khi gọi bước tiếp); khi khởi động đọc lại saga đang dang dở và tiếp tục.
+- **Triệu chứng:** tiền bị trừ nhưng người nhận không có tiền và cũng không được hoàn. **Nguyên nhân:** credit lỗi, orchestrator gọi refund nhưng refund lỗi và bị bỏ qua (best-effort). **Cách sửa:** compensation phải retryable/idempotent, có giới hạn retry + alert; đưa saga vào trạng thái cần can thiệp (manual) nếu bù trừ thất bại nhiều lần.
+- **Triệu chứng:** timeout khi debit, orchestrator bù trừ nhưng thực ra debit đã thành công muộn. **Nguyên nhân:** coi timeout là failure chắc chắn. **Cách sửa:** không bù trừ mù quáng; query trạng thái hoặc retry cùng idempotency key để xác định kết quả thật.
+
+### Liên hệ phỏng vấn
+- **Hỏi:** Saga khác transaction ACID thế nào? **Trả lời ngắn:** Saga không có atomicity/isolation toàn cục; mỗi bước là local transaction commit riêng. Nếu lỗi, dùng compensation (bù trừ) để đạt nhất quán cuối cùng (eventual consistency — cuối cùng sẽ đúng), và phải chấp nhận trạng thái trung gian.
+- **Hỏi:** Vì sao compensation phải chạy ngược thứ tự? **Trả lời ngắn:** Bước sau phụ thuộc bước trước (credit chỉ có ý nghĩa sau debit). Bù trừ cần gỡ các hiệu ứng đã commit theo thứ tự ngược để không để lại trạng thái nửa vời; chỉ bù những bước thực sự đã thành công.
+- **Hỏi:** Idempotency từng bước giải quyết vấn đề gì? **Trả lời ngắn:** Timeout/retry/duplicate message khiến cùng lệnh có thể gửi lại. Idempotency key ({{sagaId}}) giúp service nhận ra "đã làm rồi" và trả kết quả cũ thay vì trừ/cộng tiền lần nữa.
+
+> Senior tip: log đầy đủ {{sagaId}}, trạng thái và từng bước (kể cả retry/compensation) vào structured log; khi sự cố chuyển tiền, chỉ nhìn được tiền "mất" hay "nhân đôi" nếu bạn truy vết được toàn bộ vòng đời saga.`,
+  exercises: [{
+    title: 'TransferSaga: bù trừ khi credit thất bại, idempotent theo sagaId',
+    prompt: `Cài {{TransferSaga.run(sagaId, svc)}} điều phối chuyển tiền 2 bước: debit (trừ nguồn) rồi credit (cộng đích) dùng {{AccountService}}.
+
+Yêu cầu:
+- Thành công: ghi log {{debit}}, {{credit}} theo thứ tự, đặt {{state = SagaState.COMPLETED}} và trả về state.
+- Debit thất bại ({{svc.debit}} trả {{false}}): ghi log {{debit-failed}}, {{state = SagaState.FAILED}}, **không** gọi credit/refund (vì chưa trừ được tiền).
+- Credit thất bại (debit đã OK, {{svc.credit}} trả {{false}}): ghi log {{debit}}, {{credit-failed}}, chuyển {{COMPENSATING}}, gọi {{svc.refund(sagaId)}}, ghi log {{refund}}, đặt {{state = SagaState.COMPENSATED}}. Bù trừ chỉ chạy cho bước đã thành công (debit), theo thứ tự ngược.
+
+{{AccountService}} đã idempotent theo {{sagaId}} (debit/credit/refund gọi lặp không nhân đôi hiệu ứng). Giữ logic đơn giản, không dùng thread.`,
+    starter: `enum SagaState { STARTED, DEBITED, COMPLETED, COMPENSATING, COMPENSATED, FAILED }
+
+class AccountService {
+    boolean failDebit = false;
+    boolean failCredit = false;
+    final Set<String> debited = new HashSet<>();
+    final Set<String> credited = new HashSet<>();
+    final Set<String> refunded = new HashSet<>();
+
+    boolean debit(String sagaId) {
+        if (failDebit) return false;
+        debited.add(sagaId); // idempotent: gọi lại cùng sagaId không đổi hiệu ứng
+        return true;
+    }
+
+    boolean credit(String sagaId) {
+        if (failCredit) return false;
+        credited.add(sagaId);
+        return true;
+    }
+
+    boolean refund(String sagaId) {
+        refunded.add(sagaId); // idempotent
+        return true;
+    }
+
+    boolean netDebited(String sagaId) {
+        return debited.contains(sagaId) && !refunded.contains(sagaId);
+    }
+
+    boolean netCredited(String sagaId) {
+        return credited.contains(sagaId);
+    }
+}
+
+class TransferSaga {
+    SagaState state = SagaState.STARTED;
+    final List<String> log = new ArrayList<>();
+
+    SagaState run(String sagaId, AccountService svc) {
+        throw new UnsupportedOperationException("TODO");
+    }
+}`,
+    tests: `public class Main {
+    static int p=0,t=0;
+    static void ck(String n,Runnable r){t++;try{r.run();p++;System.out.println("PASS "+n);}catch(Throwable e){System.out.println("FAIL "+n+": "+e);}}
+    static void eq(Object a,Object b){if(!Objects.equals(a,b))throw new AssertionError(a+" != "+b);}
+    public static void main(String[] x){
+        ck("success completes and keeps both effects",()->{
+            AccountService svc=new AccountService();
+            TransferSaga saga=new TransferSaga();
+            eq(SagaState.COMPLETED, saga.run("s1", svc));
+            eq(true, svc.netDebited("s1"));
+            eq(true, svc.netCredited("s1"));
+            eq(false, svc.refunded.contains("s1"));
+            eq(java.util.List.of("debit","credit"), saga.log);
+        });
+        ck("credit failure compensates debit",()->{
+            AccountService svc=new AccountService();
+            svc.failCredit=true;
+            TransferSaga saga=new TransferSaga();
+            eq(SagaState.COMPENSATED, saga.run("s2", svc));
+            eq(false, svc.netDebited("s2"));
+            eq(false, svc.netCredited("s2"));
+            eq(true, svc.refunded.contains("s2"));
+            eq(java.util.List.of("debit","credit-failed","refund"), saga.log);
+        });
+        ck("debit failure does not call credit or refund",()->{
+            AccountService svc=new AccountService();
+            svc.failDebit=true;
+            TransferSaga saga=new TransferSaga();
+            eq(SagaState.FAILED, saga.run("s3", svc));
+            eq(false, svc.netDebited("s3"));
+            eq(false, svc.netCredited("s3"));
+            eq(true, svc.credited.isEmpty());
+            eq(true, svc.refunded.isEmpty());
+            eq(java.util.List.of("debit-failed"), saga.log);
+        });
+        ck("service steps are idempotent by sagaId",()->{
+            AccountService svc=new AccountService();
+            eq(true, svc.debit("s4")); eq(true, svc.debit("s4"));
+            eq(1, svc.debited.size());
+            eq(true, svc.netDebited("s4"));
+            eq(true, svc.refund("s4")); eq(true, svc.refund("s4"));
+            eq(1, svc.refunded.size());
+            eq(false, svc.netDebited("s4"));
+        });
+        ck("compensation runs only after successful debit",()->{
+            AccountService svc=new AccountService();
+            svc.failCredit=true;
+            new TransferSaga().run("s5", svc);
+            eq(1, svc.debited.size());
+            eq(1, svc.refunded.size());
+            eq(0, svc.credited.size());
+        });
+        System.out.println("RESULT "+p+"/"+t);
+    }
+}`,
+    reference: `enum SagaState { STARTED, DEBITED, COMPLETED, COMPENSATING, COMPENSATED, FAILED }
+
+class AccountService {
+    boolean failDebit = false;
+    boolean failCredit = false;
+    final Set<String> debited = new HashSet<>();
+    final Set<String> credited = new HashSet<>();
+    final Set<String> refunded = new HashSet<>();
+
+    boolean debit(String sagaId) {
+        if (failDebit) return false;
+        debited.add(sagaId);
+        return true;
+    }
+
+    boolean credit(String sagaId) {
+        if (failCredit) return false;
+        credited.add(sagaId);
+        return true;
+    }
+
+    boolean refund(String sagaId) {
+        refunded.add(sagaId);
+        return true;
+    }
+
+    boolean netDebited(String sagaId) {
+        return debited.contains(sagaId) && !refunded.contains(sagaId);
+    }
+
+    boolean netCredited(String sagaId) {
+        return credited.contains(sagaId);
+    }
+}
+
+class TransferSaga {
+    SagaState state = SagaState.STARTED;
+    final List<String> log = new ArrayList<>();
+
+    SagaState run(String sagaId, AccountService svc) {
+        log.add("debit");
+        if (!svc.debit(sagaId)) {
+            log.set(log.size() - 1, "debit-failed");
+            state = SagaState.FAILED; // chưa trừ được tiền -> không có gì để bù
+            return state;
+        }
+        state = SagaState.DEBITED;
+        log.add("credit");
+        if (!svc.credit(sagaId)) {
+            log.set(log.size() - 1, "credit-failed");
+            state = SagaState.COMPENSATING;
+            svc.refund(sagaId); // bù trừ bước đã thành công (debit), ngược lại
+            log.add("refund");
+            state = SagaState.COMPENSATED;
+            return state;
+        }
+        state = SagaState.COMPLETED;
+        return state;
+    }
+}`,
+    hints: [
+      'Ghi log "debit" trước khi gọi debit; nếu debit trả false thì đổi entry cuối thành "debit-failed", đặt FAILED và return (không gọi credit/refund).',
+      'Debit thành công thì chuyển state sang DEBITED, ghi "credit" rồi gọi credit; nếu credit false thì đổi thành "credit-failed", chuyển COMPENSATING, gọi refund, ghi "refund", chuyển COMPENSATED.',
+      'Debit false nghĩa là bước chưa áp dụng hiệu ứng nên tuyệt đối không refund; chỉ bù trừ những bước đã commit thành công.'
+    ],
+    explain: `Orchestrator chạy tuần tự: debit -> credit. Nếu debit lỗi, saga kết thúc FAILED và không có compensation vì chưa có hiệu ứng nào cần đảo ngược. Nếu debit thành công nhưng credit lỗi, saga đã ở trạng thái "tiền nguồn đã trừ", nên phải gọi refund (compensation của debit) rồi mới kết thúc COMPENSATED. Đây là bù trừ đúng: chỉ bù bước đã thành công, không bù bước thất bại.
+
+Idempotency nằm ở service: dùng Set theo {{sagaId}} nên gọi debit/refund lặp (ví dụ do retry sau timeout) không nhân đôi hiệu ứng. Trong production, idempotency key được lưu bền vững trong DB và bước forward/compensate đều phải kiểm tra key.
+
+Lỗi thường gặp: gọi refund khi debit chưa thành công (hoàn tiền "ảo"); quên đặt lại log thành *-failed nên log nói dối; hoặc không chuyển state qua COMPENSATING/COMPENSATED khiến không theo dõi được saga đang bù trừ.`
+  }],
+  check: [
+    { q: 'Debit thành công nhưng credit thất bại. Compensation đúng là gì?', options: ['Rollback transaction DB của credit service', 'Gọi refund cho debit (bước đã thành công) rồi kết thúc COMPENSATED, không gọi refund cho credit vì credit chưa thành công', 'Gọi refund cho cả debit và credit', 'Bỏ qua và đánh dấu COMPLETED vì debit đã xong'], answer: 1, explain: 'Đúng (B): chỉ bù trừ bước đã commit thành công, theo thứ tự ngược; credit thất bại nên không có hiệu ứng credit để bù. (A) sai vì mỗi service commit DB riêng, không có rollback xuyên service. (C) sai vì bù bước chưa thành công có thể gây sai trạng thái. (D) sai vì bỏ qua làm tiền bị trừ nhưng người nhận không nhận được.' },
+    { q: 'Vì sao mỗi bước saga phải idempotent theo sagaId?', options: ['Để saga chạy nhanh hơn', 'Vì timeout/retry có thể khiến cùng bước được gọi lại; idempotency đảm bảo gọi lặp không nhân đôi hiệu ứng', 'Để không cần lưu trạng thái saga', 'Vì database tự động chống duplicate'], answer: 1, explain: 'Đúng (B): khi timeout, orchestrator không biết bước đã thành công hay chưa và có thể retry; idempotency key giúp service trả kết quả cũ thay vì trừ/cộng tiền lần nữa. (A) sai, idempotency không nhằm tăng tốc. (C) sai, vẫn phải lưu trạng thái saga để phục hồi sau restart. (D) sai, database không tự biết nghiệp vụ nào là duplicate nếu không có ràng buộc/key.' },
+    { q: 'Orchestrator gọi debit nhưng bị timeout (không rõ thành công hay thất bại). Cách xử lý an toàn nhất?', options: ['Giả định thất bại và chạy compensation ngay', 'Retry hoặc truy vấn trạng thái cùng sagaId (idempotency key) để xác định kết quả trước khi quyết định bù trừ', 'Giả định thành công và chuyển sang credit', 'Xóa saga và bắt đầu saga mới với sagaId khác'], answer: 1, explain: 'Đúng (B): timeout không chứng minh thất bại; cần xác định kết quả thật bằng query/retry cùng key. (A) sai vì debit có thể đã thành công, bù trừ mù quáng gây sai. (C) sai vì debit có thể chưa thành công, credit sẽ làm lệch tiền. (D) sai vì sagaId cũ có thể đã có hiệu ứng một phần, tạo saga mới không giải quyết và có thể gây rối.' },
+    { q: 'Trạng thái saga nên được lưu ở đâu để an toàn khi orchestrator restart?', options: ['Chỉ trong biến RAM của process', 'Trong database/bộ nhớ bền vững, cập nhật theo từng bước', 'Trong log console', 'Không cần lưu vì có thể chạy lại từ đầu'], answer: 1, explain: 'Đúng (B): persist state cho phép tiếp tục từ bước đã biết sau restart, tránh trừ tiền hai lần hoặc quên bù trừ. (A) và (C) mất khi process tắt. (D) sai vì chạy lại từ đầu khi một phần bước đã commit sẽ gây duplicate hiệu ứng nếu không idempotent và không biết điểm dừng.' }
+  ],
+  related: ['microservices-020', 'microservices-021'],
+  tags: ['saga', 'orchestration', 'compensation', 'idempotency', 'timeout', 'state machine', 'distributed transaction']
+}
 );

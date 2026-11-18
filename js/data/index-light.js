@@ -2495,6 +2495,7 @@ window.DATA_INDEX = {
     {"id":"lesson-microservices-015","track":"microservices","order":15,"title":"Circuit breaker từ gốc: closed/open/half-open","level":"senior","minutes":30},
     {"id":"lesson-microservices-016","track":"microservices","order":16,"title":"Circuit breaker nâng cao: cửa sổ trượt, tỉ lệ lỗi và half-open giới hạn","level":"senior","minutes":30},
     {"id":"lesson-microservices-017","track":"microservices","order":17,"title":"Breaker registry theo dependency: cô lập lỗi, fallback và metrics","level":"senior","minutes":30},
+    {"id":"lesson-microservices-018","track":"microservices","order":18,"title":"Saga bù trừ cho chuyển tiền: orchestration, trạng thái, idempotency và timeout","level":"senior","minutes":35},
     {"id":"lesson-db-001","track":"db","order":1,"title":"Isolation level qua lịch xen kẽ: dirty read, non-repeatable read và lost update","level":"senior","minutes":30},
     {"id":"lesson-db-002","track":"db","order":2,"title":"Optimistic locking: version check và retry có giới hạn","level":"senior","minutes":25},
     {"id":"lesson-db-003","track":"db","order":3,"title":"B-tree index và full scan: đếm phép so sánh, hiểu chọn lọc","level":"mid","minutes":25},
