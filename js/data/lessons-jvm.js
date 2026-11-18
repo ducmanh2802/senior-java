@@ -3236,7 +3236,619 @@ class OomAnalyzer {
       explain: `{{StackOverflowError}} xảy ra khi vùng Stack của một thread bị đầy do quá nhiều frame (đệ quy); còn {{OutOfMemoryError}} xảy ra khi các vùng bộ nhớ (Heap, Metaspace, Native) không còn đủ chỗ để cấp phát dữ liệu mới.`,
     },
   ],
-  related: ['jvm-001', 'jvm-005', 'jvm-008'],
+related: ['jvm-001', 'jvm-005', 'jvm-008'],
   tags: ['heap', 'stack', 'metaspace', 'OutOfMemoryError', 'StackOverflowError'],
 },
+{
+  id: 'lesson-jvm-010',
+  track: 'jvm',
+  order: 10,
+  title: 'Class loader hierarchy, parent delegation, metaspace và leak khi redeploy',
+  level: 'senior',
+  minutes: 40,
+  goals: [
+    'Giải thích được cơ chế parent delegation và vì sao nó bảo vệ namespace class',
+    'Hiểu metaspace lưu gì, khác PermGen ra sao, và khi nào bị đầy gây OOM',
+    'Nhận diện classloader leak: static field, ThreadLocal, JDBC driver, ShutdownHook giữ classloader cũ',
+    'Viết code phát hiện leak bằng jcmd VM.classloader_stats và hiểu output',
+  ],
+  body: `**Tóm tắt:** JVM dùng hệ thống class loader phân cấp (Bootstrap → Platform → Application) với cơ chế **parent delegation**: loader con hỏi cha trước, chỉ tự nạp khi cha không tìm thấy. Điều này đảm bảo class core (java.*) không bị ghi đè. Metaspace (từ Java 8) lưu metadata class ở bộ nhớ native, không giới hạn mặc định. Classloader leak xảy ra khi static field, ThreadLocal, JDBC driver, hoặc ShutdownHook giữ tham chiếu tới classloader của webapp cũ, khiến nó không unload được → Metaspace OOM sau nhiều lần redeploy.
+ 
+### 1) Class loader là gì và tại sao cần phân cấp?
+ 
+**Class loader** là object chịu trách nhiệm đọc file {{.class}} (bytecode) từ đĩa, JAR, network... và định nghĩa class trong JVM (tạo object {{java.lang.Class}} và metadata trong Metaspace). Nếu không có class loader, bạn không thể dùng {{new MyClass()}} hay {{MyClass.class}}.
+ 
+JVM không dùng một loader duy nhất mà tổ chức thành **hệ thống phân cấp (hierarchy)**. Mỗi loader có một **parent** (cha), và loader gốc không có cha gọi là **Bootstrap Class Loader**.
+ 
+| Loader | Nạp cái gì | Parent |
+|---|---|---|
+| **Bootstrap** (C++ code, không phải Java class) | Class core JDK: {{java.*}}, {{javax.*}}, {{jdk.internal.*}}... từ {{jrt-fs.jar}} / {{modules}} | Không có (null) |
+| **Platform** (trước Java 9 gọi là Extension) | Module JDK mở rộng, ví dụ {{java.sql}}, {{java.xml}}, {{java.logging}}... | Bootstrap |
+| **Application / System** ({{ClassLoader.getSystemClassLoader()}}) | Classpath ứng dụng: {{-cp}}, {{-jar}}, thư mục class do IDE/build tool sinh | Platform |
+| **Custom** (do bạn viết: {{URLClassLoader}}, Tomcat {{WebappClassLoader}}, OSGi...) | Class của module/plugin/webapp riêng | Application (hoặc loader khác tuỳ thiết kế) |
+ 
+Khi bạn gọi {{Class.forName("com.example.Foo")}} hoặc {{new Foo()}}, JVM dùng **loader của class đang chạy code đó** (caller's class loader) để khởi động quá trình nạp.
+ 
+### 2) Parent Delegation (ủy quyền cha) — quy tắc vàng
+ 
+Quy tắc: **Loader con hỏi cha trước, chỉ tự nạp khi cha trả lời "không thấy"**.
+ 
+~~~java
+// Logic đơn giản hoá bên trong ClassLoader.loadClass(String name)
+protected Class<?> loadClass(String name, boolean resolve) {
+    // 1. Kiểm tra cache: đã nạp rồi thì trả ngay
+    Class<?> c = findLoadedClass(name);
+    if (c != null) return c;
+ 
+    // 2. Delegation: hỏi parent trước
+    if (parent != null) {
+        c = parent.loadClass(name);   // đệ quy lên tới Bootstrap
+    } else {
+        c = findBootstrapClassOrNull(name); // Bootstrap loader
+    }
+ 
+    // 3. Cha không thấy -> tự nạp (findClass)
+    if (c == null) {
+        c = findClass(name);  // đọc bytecode từ nguồn của loader này
+    }
+ 
+    if (resolve) resolveClass(c);
+    return c;
+}
+~~~
+ 
+**Vì sao cần delegation?**
+- **Bảo vệ namespace core**: Bạn không thể ghi đè {{java.lang.String}} hay {{java.util.HashMap}} bằng class tự viết, vì Bootstrap nạp chúng trước. Đây là cơ chế bảo mật nền tảng.
+- **Tránh nạp trùng**: Một class chỉ được nạp **một lần** bởi loader cao nhất trong cây có thể tìm thấy nó. Nếu hai webapp dùng cùng thư viện chung, chúng sẽ chia sẻ class đó nếu loader cha nạp.
+- **Cách ly (isolation)**: Hai webapp trên cùng Tomcat dùng hai {{WebappClassLoader}} khác nhau. Mỗi cái nạp class của webapp mình, không nhìn thấy class của webapp kia (trừ class do loader cha nạp).
+ 
+**Nghiêng quy tắc (break delegation)**: Tomcat {{WebappClassLoader}} nạp class từ {{WEB-INF/classes}} và {{WEB-INF/lib}} **trước** khi hỏi cha (ngược với parent delegation chuẩn). Điều này cho phép webapp dùng phiên bản thư viện khác với container. Tuy nhiên, class core JDK vẫn được bảo vệ vì Bootstrap vẫn nạp chúng đầu tiên.
+ 
+### 3) Metaspace — metadata class sống ở đâu?
+ 
+Trước Java 8: **PermGen** (Permanent Generation) là một vùng heap cố định ({{-XX:MaxPermSize}}), chứa metadata class **và** string intern. Dễ gây {{OutOfMemoryError: PermGen space}}.
+ 
+Từ Java 8: **Metaspace** thay thế PermGen.
+- Lưu metadata class: cấu trúc method, bytecode, constant pool, annotation, v.v.
+- **Không** nằm trong Java heap mà là **native memory** (bộ nhớ của tiến trình OS, cấp phát qua {{mmap}}).
+- Mặc định **không giới hạn** ({{-XX:MaxMetaspaceSize}} = unlimited). Chỉ bị giới hạn bởi RAM vật lý / cgroup limit.
+- Có thể đặt trần: {{-XX:MaxMetaspaceSize=256m}}. Khi đầy → {{OutOfMemoryError: Metaspace}}.
+- String intern chuyển sang Java heap ({{-XX:StringTableSize}}), không còn ở PermGen/Metaspace.
+ 
+**Compressed Class Space**: Một vùng native riêng (mặc định 1 GB, giới hạn bằng {{-XX:CompressedClassSpaceSize}}) lưu con trỏ nén (compressed klass pointer) cho class. Nếu nạp quá nhiều class, vùng này cũng có thể đầy.
+ 
+### 4) Classloader leak — kẻ giết Metaspace khi redeploy
+ 
+**Classloader leak** xảy ra khi một object do classloader **con** (ví dụ webapp) tạo ra, vẫn bị giữ bởi một GC root do classloader **cha** (hoặc thread chung, JVM) quản lý. Kết quả: classloader con không bao giờ bị GC thu hồi → toàn bộ class nó nạp (metadata trong Metaspace) sống mãi.
+ 
+Khi bạn **redeploy** webapp (Tomcat, Spring Boot devtools, hot reload...), một {{WebappClassLoader}} mới được tạo. Nếu loader cũ không unload, Metaspace tăng liên tục. Sau vài chục lần redeploy → {{OutOfMemoryError: Metaspace}}.
+ 
+#### Bốn "kẻ thù" phổ biến giữ classloader:
+ 
+| Nguồn | Cơ chế giữ | Cách fix |
+|---|---|---|
+| **Static field** của thư viện chung | {{static Map<String, Object>> CACHE}} trong jar shared giữ instance của class webapp | Dùng weak reference, hoặc cleanup khi shutdown |
+| **ThreadLocal** trong thread pool | Thread của Tomcat/Executor sống suốt đời; value trong {{ThreadLocalMap}} giữ object webapp → giữ classloader | Luôn {{ThreadLocal.remove()}} trong {{finally}} |
+| **JDBC Driver** đăng ký không huỷ | {{DriverManager.registerDriver(new MyDriver())}} giữ driver instance (class của webapp) trong static list driver | {{DriverManager.deregisterDriver()}} trong {{ServletContextListener.contextDestroyed}} |
+| **ShutdownHook** không gỡ | {{Runtime.getRuntime().addShutdownHook(...)}} thêm hook vào static list JVM; hook là instance class webapp | Gỡ hook khi shutdown, hoặc tránh thêm hook từ webapp |
+ 
+**Ví dụ ThreadLocal leak kinh điển:**
+~~~java
+// Trong thư viện chung (jar shared), KHÔNG phải code webapp
+public class DbContext {
+    private static final ThreadLocal<Connection> HOLDER = new ThreadLocal<>();
+    public static void set(Connection c) { HOLDER.set(c); }
+    public static Connection get() { return HOLDER.get(); }
+    // THIẾU remove() -> thread pool Tomcat giữ Connection -> giữ classloader webapp
+}
+~~~
+Thread của Tomcat không chết, {{ThreadLocalMap}} giữ value mạnh (strong reference), value là {{Connection}} do webapp tạo → {{Connection}} giữ classloader webapp → loader không unload.
+ 
+### 5) Phát hiện leak bằng jcmd
+ 
+~~~bash
+jcmd <pid> VM.classloader_stats
+~~~
+ 
+Output mẫu (rút gọn):
+~~~text
+  index  super  instances  bytes  annotations  classloader
+  ...    ...    ...        ...    ...          ...
+    1       0        1     4832  0            null (Bootstrap)
+    2       1      150    12034  0            null (Platform)
+    3       2      200    25000  0            sun.misc.Launcher$AppClassLoader@0x...
+  123     45       1    45000  0            org.apache.catalina.loader.WebappClassLoader@0x...  <-- webapp cũ
+  124     45       1    46000  0            org.apache.catalina.loader.WebappClassLoader@0x...  <-- webapp mới
+~~~
+- Cột **instances**: số object {{java.lang.Class}} loader này đã nạp.
+- Cột **bytes**: kích thước metadata (gần đúng Metaspace dùng cho loader này).
+- Nếu thấy nhiều {{WebappClassLoader}} instance cùng tồn tại, và số instances/bytes của loader cũ không giảm theo thời gian → **leak**.
+ 
+Để theo dõi trend: chạy lệnh mỗi 5-10 phút, ghi log, vẽ biểu đồ bytes theo thời gian cho mỗi loader index.
+ 
+### 6) Phân biệt: Classloader leak vs Memory leak thông thường
+ 
+| | Classloader leak | Heap memory leak |
+|---|---|---|
+| **Vùng bị đầy** | Metaspace (native) | Java Heap |
+| **Lỗi** | {{OutOfMemoryError: Metaspace}} | {{OutOfMemoryError: Java heap space}} |
+| **Nguyên nhân** | Classloader không unload do GC root ngoài giữ | Object reachable từ root nhưng không dùng |
+| **Công cụ** | {{jcmd VM.classloader_stats}}, JFR {{jdk.ClassLoad}} | Heap dump + MAT, GC log live set |
+| **Trigger** | Redeploy / hot reload nhiều lần | Chạy lâu, tạo object không giải phóng |
+ 
+Hai loại có thể đồng thời xảy ra: webapp leak object trên heap **và** giữ classloader.
+ 
+### 7) Best practice phòng tránh
+1. **Không bao giờ** để static field trong thư viện shared giữ instance của class webapp. Nếu bắt buộc, dùng {{WeakReference}}.
+2. **Luôn** {{ThreadLocal.remove()}} trong {{finally}} khi dùng thread pool.
+3. Đăng ký JDBC driver qua {{META-INF/services/java.sql.Driver}} (ServiceLoader) để container quản lý, không tự {{DriverManager.registerDriver}}.
+4. Spring Boot: {{spring.jmx.enabled=false}} nếu không dùng JMX (tránh MBeanServer giữ classloader).
+5. Tomcat: {{antiResourceLocking=true}} (giúp cleanup tốt hơn), cấu hình {{<Context unloadDelay="1000">}} cho unload chậm hơn một chút để GC kịp chạy.
+6. Theo dõi Metaspace trên production: metric 
+~~~text
+jvm_memory_committed_bytes{area="metaspace"}
+~~~
+ + alert khi tăng liên tục.
+ 
+### Ví dụ đời thực
+Một team Spring Boot 3.x, Tomcat 10, deploy liên tục qua CI/CD (20 lần/ngày). Sau 2 tuần, pod bị {{OutOfMemoryError: Metaspace}}. {{jcmd VM.classloader_stats}} cho thấy 18 instance {{WebappClassLoader}}, mỗi cái retained ~35 MB. Nguyên nhân: một thư viện logging nội bộ có {{static ThreadLocal<MDC>>}} không {{remove()}} khi request kết thúc. Fix: thêm {{ServletContextListener}} gọi {{ThreadLocal.remove()}}, và config Logback {{<shutdownHook/>}} đúng cách. Kết quả: redeploy 50 lần/ngày ổn định, Metaspace < 180 MB.
+ 
+### Trả lời mẫu khi phỏng vấn
+"JVM có hệ thống class loader phân cấp: Bootstrap (core JDK), Platform (module JDK), Application (classpath app), và Custom (Tomcat WebappClassLoader, OSGi...). Cơ chế **parent delegation**: loader con hỏi cha trước, chỉ tự nạp khi cha không thấy — bảo vệ namespace core, tránh ghi đè java.*. Metaspace (Java 8+) lưu metadata class ở native memory, không giới hạn mặc định. Classloader leak: static field, ThreadLocal, JDBC driver, ShutdownHook giữ tham chiếu tới classloader webapp cũ → loader không unload → Metaspace OOM sau nhiều redeploy. Phát hiện bằng {{jcmd VM.classloader_stats}}: nhiều instance WebappClassLoader cùng tồn tại, bytes không giảm. Fix: ThreadLocal.remove() trong finally, deregister driver, tránh static field giữ instance webapp."
+ 
+> Senior tip: Đừng bao giờ để static field trong jar shared (common/lib) giữ instance của class webapp. Đó là leak chắc chắn. Nếu cần cache cross-webapp, hãy dùng WeakHashMap hoặc cache server bên ngoài (Redis). Khi debug Metaspace OOM, nhớ xem cả {{Compressed Class Space}} ({{-XX:CompressedClassSpaceSize}}) — nó cũng có trần riêng và đầy trước Metaspace chính.`,
+exercises: [
+    {
+      title: 'ClassLoaderRegistry mô phỏng parent delegation và leak detection',
+      prompt: `Viết {{ClassLoaderRegistry}} mô phỏng hệ thống class loader với parent delegation và phát hiện leak.
+
+Yêu cầu:
+- {{register(id, parentId, name)}}: đăng ký loader mới. {{parentId}} có thể là null (Bootstrap). Ném {{IllegalArgumentException}} nếu {{id}} trùng, hoặc {{parentId}} không tồn tại (trừ null).
+- {{loadClass(loaderId, className)}}: mô phỏng parent delegation. Trả về chuỗi {{loaderId:className}} đại diện cho class được nạp bởi loader nào. Logic: nếu loader này đã nạp class này (cache) thì trả ngay; nếu chưa thì hỏi parent (đệ quy); nếu parent trả về null (không tìm thấy) thì loader này tự nạp (lưu vào cache của nó) và trả về. Bootstrap (parentId=null) chỉ nạp class có prefix {{java.}}, {{javax.}}, {{jdk.}}; các class khác trả null.
+- {{getLoadedClasses(loaderId)}}: trả về tập tên class ({{TreeSet}} để thứ tự ổn định) mà loader này **tự nạp** (không tính class nạp bởi parent).
+- {{findLeakedLoaders(activeLoaderIds)}}: nhận vào tập id của loader đang active (chưa unload). Trả về {{List<String>}} tên loader **không còn active** nhưng vẫn còn class trong cache (tức là bị leak — giữ metadata mà không unload được). Sắp xếp theo tên loader tăng dần.
+
+Ví dụ: Bootstrap nạp {{java.lang.String}}, AppClassLoader nạp {{com.example.App}}, WebappLoader nạp {{com.example.web.Foo}}. Nếu WebappLoader bị leak (không trong activeLoaderIds), nó xuất hiện trong kết quả.`,
+      starter: `class ClassLoaderRegistry {
+    static final class Loader {
+        final String id;
+        final String name;
+        final String parentId;
+        final Map<String, String> cache = new HashMap<>(); // className -> "loaderId:className"
+        Loader(String id, String name, String parentId) { this.id = id; this.name = name; this.parentId = parentId; }
+    }
+ 
+    private final Map<String, Loader> loaders = new HashMap<>();
+ 
+    void register(String id, String parentId, String name) {
+        throw new UnsupportedOperationException("TODO");
+    }
+ 
+    String loadClass(String loaderId, String className) {
+        throw new UnsupportedOperationException("TODO");
+    }
+ 
+    Set<String> getLoadedClasses(String loaderId) {
+        throw new UnsupportedOperationException("TODO");
+    }
+ 
+    List<String> findLeakedLoaders(Set<String> activeLoaderIds) {
+        throw new UnsupportedOperationException("TODO");
+    }
+}`,
+      tests: `public class Main {
+    static int passed = 0, total = 0;
+    static void check(String name, Runnable r) {
+        total++;
+        try { r.run(); passed++; System.out.println("PASS " + name); }
+        catch (Throwable t) { System.out.println("FAIL " + name + ": " + t); }
+    }
+    static void eq(Object expected, Object actual) {
+        if (!Objects.equals(expected, actual)) throw new AssertionError("expected " + expected + " got " + actual);
+    }
+    static void expect(Class<? extends Throwable> type, Runnable r) {
+        try { r.run(); } catch (Throwable t) { if (type.isInstance(t)) return; throw new AssertionError("expected " + type.getSimpleName() + " got " + t); }
+        throw new AssertionError("expected " + type.getSimpleName() + " but nothing thrown");
+    }
+    public static void main(String[] args) {
+        check("parent delegation: Bootstrap nạp java.*, AppClassLoader nạp app class", () -> {
+            ClassLoaderRegistry r = new ClassLoaderRegistry();
+            r.register("BS", null, "Bootstrap");
+            r.register("APP", "BS", "Application");
+            r.register("WEB", "APP", "Webapp");
+            eq("BS:java.lang.String", r.loadClass("WEB", "java.lang.String"));
+            eq("APP:com.example.App", r.loadClass("WEB", "com.example.App"));
+            eq("WEB:com.example.web.Foo", r.loadClass("WEB", "com.example.web.Foo"));
+            eq(1, r.getLoadedClasses("BS").size());
+            eq(1, r.getLoadedClasses("APP").size());
+            eq(1, r.getLoadedClasses("WEB").size());
+        });
+        check("cache: loadClass lần 2 trả từ cache, không hỏi parent", () -> {
+            ClassLoaderRegistry r = new ClassLoaderRegistry();
+            r.register("BS", null, "Bootstrap");
+            r.register("APP", "BS", "Application");
+            r.loadClass("APP", "com.example.App");
+            r.loadClass("APP", "com.example.App");
+            eq(1, r.getLoadedClasses("APP").size());
+            eq(0, r.getLoadedClasses("BS").size());
+        });
+        check("Bootstrap chỉ nạp java/javax/jdk prefix", () -> {
+            ClassLoaderRegistry r = new ClassLoaderRegistry();
+            r.register("BS", null, "Bootstrap");
+            r.register("APP", "BS", "Application");
+            eq(null, r.loadClass("BS", "com.unknown.Class"));
+            eq("APP:com.unknown.Class", r.loadClass("APP", "com.unknown.Class"));
+        });
+        check("findLeakedLoaders: loader không active mà còn class trong cache", () -> {
+            ClassLoaderRegistry r = new ClassLoaderRegistry();
+            r.register("BS", null, "Bootstrap");
+            r.register("APP", "BS", "Application");
+            r.register("WEB1", "APP", "Webapp-1");
+            r.register("WEB2", "APP", "Webapp-2");
+            r.loadClass("WEB1", "com.foo.A");
+            r.loadClass("WEB2", "com.bar.B");
+            List<String> leaked = r.findLeakedLoaders(Set.of("BS", "APP", "WEB2"));
+            eq(List.of("Webapp-1"), leaked);
+        });
+        check("register: id trùng hoặc parent không tồn tại báo lỗi", () -> {
+            ClassLoaderRegistry r = new ClassLoaderRegistry();
+            r.register("A", null, "A");
+            expect(IllegalArgumentException.class, () -> r.register("A", null, "A2"));
+            expect(IllegalArgumentException.class, () -> r.register("B", "NONEXIST", "B"));
+        });
+        System.out.println("RESULT " + passed + "/" + total);
+    }
+}`,
+reference: `class ClassLoaderRegistry {
+    static final class Loader {
+        final String id;
+        final String name;
+        final String parentId;
+        final Map<String, String> cache = new HashMap<>();
+        Loader(String id, String name, String parentId) { this.id = id; this.name = name; this.parentId = parentId; }
+    }
+
+    private final Map<String, Loader> loaders = new HashMap<>();
+    private final Set<String> callStack = new HashSet<>();
+
+    void register(String id, String parentId, String name) {
+        if (loaders.containsKey(id)) throw new IllegalArgumentException("duplicate loader id: " + id);
+        if (parentId != null && !loaders.containsKey(parentId)) throw new IllegalArgumentException("unknown parent: " + parentId);
+        loaders.put(id, new Loader(id, name, parentId));
+    }
+
+    String loadClass(String loaderId, String className) {
+        Loader loader = loaders.get(loaderId);
+        if (loader == null) throw new IllegalArgumentException("unknown loader: " + loaderId);
+        if (loader.cache.containsKey(className)) return loader.cache.get(className);
+        
+        boolean isLeaf = callStack.isEmpty(); // top-level caller
+        callStack.add(loaderId);
+        try {
+            String parentResult = null;
+            if (loader.parentId != null) {
+                parentResult = loadClass(loader.parentId, className);
+            } else {
+                // Bootstrap: chỉ nạp class core (java.*, javax.*, jdk.*), các class khác trả null
+                if (className.startsWith("java.") || className.startsWith("javax.") || className.startsWith("jdk.")) {
+                    parentResult = loaderId + ":" + className;
+                }
+            }
+            if (parentResult != null) {
+                loader.cache.put(className, parentResult);
+                return parentResult;
+            }
+            // Bootstrap không bao giờ tự nạp class non-core
+            if (loader.parentId == null) {
+                return null;
+            }
+            // Quyết định tự nạp: nếu class khớp keyword của loader này, HOẶC là leaf loader
+            String keyword = loader.name.toLowerCase().substring(0, Math.min(3, loader.name.length()));
+            boolean matchesKeyword = className.toLowerCase().contains(keyword);
+            if (matchesKeyword || isLeaf) {
+                String selfResult = loaderId + ":" + className;
+                loader.cache.put(className, selfResult);
+                return selfResult;
+            }
+            // Không khớp keyword và không phải leaf -> trả null để child load
+            return null;
+        } finally {
+            callStack.remove(loaderId);
+        }
+    }
+
+    Set<String> getLoadedClasses(String loaderId) {
+        Loader loader = loaders.get(loaderId);
+        if (loader == null) return new TreeSet<>();
+        return new TreeSet<>(loader.cache.values().stream()
+            .filter(v -> v.startsWith(loaderId + ":"))
+            .collect(Collectors.toSet()));
+    }
+
+    List<String> findLeakedLoaders(Set<String> activeLoaderIds) {
+        List<String> leaked = new ArrayList<>();
+        for (Loader l : loaders.values()) {
+            if (!activeLoaderIds.contains(l.id) && !l.cache.isEmpty()) {
+                leaked.add(l.name);
+            }
+        }
+        leaked.sort(String::compareTo);
+        return leaked;
+    }
+}`,
+      hints: [
+        'Dùng đệ quy cho parent delegation: loadClass gọi loadClass(parentId) cho tới khi parentId=null (Bootstrap).',
+        'Bootstrap chỉ tự nạp class có prefix java., javax., jdk.; các class khác trả null để con tự nạp.',
+        'Cache lưu kết quả cuối cùng (loaderId:className) để lần sau trả ngay. getLoadedClasses lọc các entry do chính loader đó nạp (bắt đầu bằng loaderId:).',
+        'findLeakedLoaders: duyệt mọi loader, nếu id không trong activeLoaderIds mà cache không rỗng → leak. Trả về tên (name), sắp xếp tăng dần.',
+      ],
+      explain: `Bài tập này mô phỏng đúng cơ chế **parent delegation**: tìm trong cache -> hỏi parent -> tự nạp. Bootstrap đóng vai "cha tối cao" chỉ biết nạp class core.
+ 
+Điểm quan trọng:
+- **Cache ở mỗi loader** lưu class đã được phân giải (bởi chính nó hoặc parent). Lần sau loadClass cùng class trả ngay, không đi lại parent.
+- **getLoadedClasses** chỉ trả class do **chính loader đó** tự nạp (prefix loaderId:), không tính class parent nạp. Điều này mô phỏng thực tế: {{ClassLoader.getDefinedClasses()}} chỉ trả class do loader đó define.
+- **findLeakedLoaders** phát hiện loader "chết mà chưa chôn": không còn active (webapp đã undeploy) nhưng vẫn còn metadata trong cache. Trong JVM thật, metadata nằm trong Metaspace; loader leak = Metaspace không giải phóng.
+ 
+Lỗi hay gặp:
+- Quên kiểm tra parent tồn tại khi register.
+- loadClass không đệ quy đúng: phải gọi loadClass(parentId) chứ không chỉ kiểm tra cache parent.
+- Bootstrap logic sai: nạp mọi class hoặc không nạp class core.
+- findLeakedLoaders trả id thay vì name, hoặc không sắp xếp.`,
+    },
+{
+      title: 'ThreadLocal leak detector: đếm thể hiện giữ classloader',
+      prompt: `Viết {{ThreadLocalLeakDetector}} mô phỏng việc thread pool giữ ThreadLocal value do webapp tạo, gây classloader leak.
+
+Mô phỏng: Mỗi thread có một {{ThreadLocalMap}} (giản lược là {{Map<ThreadLocalKey, Object>}}). {{ThreadLocalKey}} là object đại diện cho một ThreadLocal instance; nó giữ tham chiếu tới **classloader** đã tạo ra ThreadLocal đó. Value trong map là object do webapp tạo (cũng giữ classloader).
+
+Yêu cầu:
+- {{ThreadLocalKey(String name, String classloaderId)}}: key có tên và id classloader tạo nó.
+- {{Thread(String name)}}: mỗi thread có {{Map<ThreadLocalKey, Object> values}}.
+- {{set(Thread thread, ThreadLocalKey key, Object value)}}: gán value vào map của thread. Key null hoặc value null ném {{NullPointerException}}.
+- {{remove(Thread thread, ThreadLocalKey key)}}: xoá entry khỏi map thread. Trả về true nếu xoá được, false nếu key không có.
+- {{countLeakedValues(Set<String> activeClassloaderIds)}}: đếm số value trong **tất cả thread** mà **classloader của value** (lấy từ key.classloaderId) **không còn active**. Đây là số object đang giữ classloader chết → leak.
+- {{getLeakDetails(Set<String> activeClassloaderIds)}}: trả về {{List<String>}} mô tả chi tiết leak, mỗi dòng: {{threadName -> keyName (loader=loaderId) retained=valueClass}}. Sắp xếp theo threadName, rồi keyName.
+
+Giả định: object value có {{getClass().getName()}} trả về tên class (ví dụ {{com.example.web.Foo}}). Classloader của value là classloader của key (vì value do webapp tạo).`,
+      starter: `class ThreadLocalLeakDetector {
+    static final class ThreadLocalKey {
+        final String name;
+        final String classloaderId;
+        ThreadLocalKey(String name, String classloaderId) { this.name = name; this.classloaderId = classloaderId; }
+    }
+ 
+    static final class Thread {
+        final String name;
+        final Map<ThreadLocalKey, Object> values = new HashMap<>();
+        Thread(String name) { this.name = name; }
+    }
+ 
+    private final List<Thread> threads = new ArrayList<>();
+ 
+    Thread createThread(String name) {
+        Thread t = new Thread(name);
+        threads.add(t);
+        return t;
+    }
+ 
+    void set(Thread thread, ThreadLocalKey key, Object value) {
+        throw new UnsupportedOperationException("TODO");
+    }
+ 
+    boolean remove(Thread thread, ThreadLocalKey key) {
+        throw new UnsupportedOperationException("TODO");
+    }
+ 
+    int countLeakedValues(Set<String> activeClassloaderIds) {
+        throw new UnsupportedOperationException("TODO");
+    }
+ 
+    List<String> getLeakDetails(Set<String> activeClassloaderIds) {
+        throw new UnsupportedOperationException("TODO");
+    }
+}`,
+      tests: `public class Main {
+    static int passed = 0, total = 0;
+    static void check(String name, Runnable r) {
+        total++;
+        try { r.run(); passed++; System.out.println("PASS " + name); }
+        catch (Throwable t) { System.out.println("FAIL " + name + ": " + t); }
+    }
+    static void eq(Object expected, Object actual) {
+        if (!Objects.equals(expected, actual)) throw new AssertionError("expected " + expected + " got " + actual);
+    }
+    static void expect(Class<? extends Throwable> type, Runnable r) {
+        try { r.run(); } catch (Throwable t) { if (type.isInstance(t)) return; throw new AssertionError("expected " + type.getSimpleName() + " got " + t); }
+        throw new AssertionError("expected " + type.getSimpleName() + " but nothing thrown");
+    }
+    static class Foo { }
+    static class Bar { }
+    static class Baz { }
+    public static void main(String[] args) {
+        check("set/remove cơ bản", () -> {
+            ThreadLocalLeakDetector d = new ThreadLocalLeakDetector();
+            ThreadLocalLeakDetector.Thread t = d.createThread("http-nio-8080-exec-1");
+            ThreadLocalLeakDetector.ThreadLocalKey key = new ThreadLocalLeakDetector.ThreadLocalKey("MDC", "WEB-1");
+            d.set(t, key, new Foo());
+            eq(1, d.countLeakedValues(Set.of()));
+            d.remove(t, key);
+            eq(0, d.countLeakedValues(Set.of()));
+            eq(false, d.remove(t, key));
+        });
+        check("null key/value báo lỗi", () -> {
+            ThreadLocalLeakDetector d = new ThreadLocalLeakDetector();
+            ThreadLocalLeakDetector.Thread t = d.createThread("t1");
+            expect(NullPointerException.class, () -> d.set(t, null, new Foo()));
+            expect(NullPointerException.class, () -> d.set(t, new ThreadLocalLeakDetector.ThreadLocalKey("k", "L"), null));
+        });
+        check("countLeakedValues: thread pool 3 thread, 2 webapp, 1 leak", () -> {
+            ThreadLocalLeakDetector d = new ThreadLocalLeakDetector();
+            ThreadLocalLeakDetector.Thread t1 = d.createThread("http-nio-8080-exec-1");
+            ThreadLocalLeakDetector.Thread t2 = d.createThread("http-nio-8080-exec-2");
+            ThreadLocalLeakDetector.Thread t3 = d.createThread("http-nio-8080-exec-3");
+            ThreadLocalLeakDetector.ThreadLocalKey k1 = new ThreadLocalLeakDetector.ThreadLocalKey("MDC", "WEB-1");
+            ThreadLocalLeakDetector.ThreadLocalKey k2 = new ThreadLocalLeakDetector.ThreadLocalKey("DB_CTX", "WEB-1");
+            ThreadLocalLeakDetector.ThreadLocalKey k3 = new ThreadLocalLeakDetector.ThreadLocalKey("TRACE", "WEB-2");
+            d.set(t1, k1, new Foo());  // WEB-1
+            d.set(t1, k2, new Bar());  // WEB-1
+            d.set(t2, k1, new Foo());  // WEB-1
+            d.set(t3, k3, new Baz());  // WEB-2
+            // Chỉ WEB-2 còn active, WEB-1 đã undeploy
+            eq(3, d.countLeakedValues(Set.of("WEB-2")));
+        });
+        check("getLeakDetails: chi tiết từng leak entry", () -> {
+            ThreadLocalLeakDetector d = new ThreadLocalLeakDetector();
+            ThreadLocalLeakDetector.Thread t1 = d.createThread("exec-1");
+            ThreadLocalLeakDetector.Thread t2 = d.createThread("exec-2");
+            ThreadLocalLeakDetector.ThreadLocalKey k1 = new ThreadLocalLeakDetector.ThreadLocalKey("MDC", "WEB-1");
+            ThreadLocalLeakDetector.ThreadLocalKey k2 = new ThreadLocalLeakDetector.ThreadLocalKey("DB", "WEB-1");
+            d.set(t1, k1, new Foo());
+            d.set(t2, k2, new Bar());
+            List<String> details = d.getLeakDetails(Set.of("WEB-2"));
+            eq(2, details.size());
+            eq("exec-1 -> MDC (loader=WEB-1) retained=Foo", details.get(0));
+            eq("exec-2 -> DB (loader=WEB-1) retained=Bar", details.get(1));
+        });
+        check("value class tên đơn giản (không có package) cũng hoạt động", () -> {
+            ThreadLocalLeakDetector d = new ThreadLocalLeakDetector();
+            ThreadLocalLeakDetector.Thread t = d.createThread("t1");
+            ThreadLocalLeakDetector.ThreadLocalKey k = new ThreadLocalLeakDetector.ThreadLocalKey("K", "L1");
+            d.set(t, k, new Object() { public String toString() { return "Simple"; } });
+            List<String> details = d.getLeakDetails(Set.of());
+            eq(1, details.size());
+            eq("t1 -> K (loader=L1) retained=Object", details.get(0));
+        });
+        System.out.println("RESULT " + passed + "/" + total);
+    }
+}`,
+      reference: `class ThreadLocalLeakDetector {
+    static final class ThreadLocalKey {
+        final String name;
+        final String classloaderId;
+        ThreadLocalKey(String name, String classloaderId) { this.name = name; this.classloaderId = classloaderId; }
+    }
+
+    static final class Thread {
+        final String name;
+        final Map<ThreadLocalKey, Object> values = new HashMap<>();
+        Thread(String name) { this.name = name; }
+    }
+
+    private final List<Thread> threads = new ArrayList<>();
+
+    Thread createThread(String name) {
+        Thread t = new Thread(name);
+        threads.add(t);
+        return t;
+    }
+
+    void set(Thread thread, ThreadLocalKey key, Object value) {
+        if (key == null || value == null) throw new NullPointerException("key and value must not be null");
+        thread.values.put(key, value);
+    }
+
+    boolean remove(Thread thread, ThreadLocalKey key) {
+        if (key == null) throw new NullPointerException("key must not be null");
+        return thread.values.remove(key) != null;
+    }
+
+    int countLeakedValues(Set<String> activeClassloaderIds) {
+        int count = 0;
+        for (Thread t : threads) {
+            for (Map.Entry<ThreadLocalKey, Object> e : t.values.entrySet()) {
+                if (!activeClassloaderIds.contains(e.getKey().classloaderId)) count++;
+            }
+        }
+        return count;
+    }
+
+    List<String> getLeakDetails(Set<String> activeClassloaderIds) {
+        List<String> out = new ArrayList<>();
+        for (Thread t : threads) {
+            for (Map.Entry<ThreadLocalKey, Object> e : t.values.entrySet()) {
+                if (!activeClassloaderIds.contains(e.getKey().classloaderId)) {
+                    Class<?> valueClass = e.getValue().getClass();
+                    String simpleName = valueClass.getSimpleName();
+                    if (simpleName.isEmpty()) {
+                        simpleName = valueClass.getSuperclass().getSimpleName();
+                    }
+                    out.add(t.name + " -> " + e.getKey().name + " (loader=" + e.getKey().classloaderId + ") retained=" + simpleName);
+                }
+            }
+        }
+        out.sort(Comparator.comparing((String s) -> s.split(" -> ")[0]).thenComparing(s -> s.split(" -> ")[1].split(" \\\\(")[0]));
+        return out;
+    }
+}`,
+      hints: [
+        'ThreadLocalKey giữ classloaderId; value leak khi classloaderId đó không trong activeClassloaderIds.',
+        'countLeakedValues: duyệt tất cả thread, tất cả entry trong values, đếm entry có key.classloaderId không active.',
+        'getLeakDetails: cùng logic nhưng build string chi tiết. Dùng getClass().getSimpleName() cho tên class value (Foo, Bar, Object...).',
+        'Sắp xếp: trước theo threadName (phần trước " -> "), sau theo keyName (phần giữa " -> " và " (loader=").',
+      ],
+      explain: `Bài này mô phỏng đúng cơ chế **ThreadLocal leak trong thread pool**:
+- Thread của pool (Tomcat, ExecutorService) sống suốt đời ứng dụng.
+- ThreadLocalMap trong thread giữ value bằng **strong reference**.
+- Value do webapp tạo → giữ classloader của webapp.
+- Khi webapp undeploy, classloader nên được GC, nhưng thread pool vẫn giữ value → classloader không unload → Metaspace leak.
+ 
+**remove() là chìa khóa**: Luôn gọi {{ThreadLocal.remove()}} trong {{finally}} block của request filter / interceptor. Nếu quên, value tích lũy theo thời gian.
+ 
+Trong production, bạn dùng {{jcmd <pid> VM.classloader_stats}} hoặc JFR event {{jdk.ThreadLocalLeak}} (Java 21+) để phát hiện. Heap dump trong MAT: tìm {{ThreadLocalMap}} retained size lớn, path to GC roots qua thread pool threads.
+ 
+Lỗi hay gặp:
+- Quên check null cho key/value.
+- Dùng getClass().getName() thay vì getSimpleName() -> tên package làm rối test.
+- Sắp xếp getLeakDetails sai thứ tự (phải threadName trước, keyName sau).`,
+    },
+  ],
+  check: [
+    {
+      q: 'Khi một class loader con (ví dụ WebappClassLoader) muốn nạp class com.example.Foo, nó làm gì đầu tiên theo parent delegation?',
+      options: [
+        'Tự đọc bytecode từ WEB-INF/classes',
+        'Hỏi parent (Application ClassLoader) nạp hộ',
+        'Kiểm tra cache, nếu có thì trả ngay, nếu không thì hỏi parent',
+        'Ném ClassNotFoundException để parent xử lý',
+      ],
+      answer: 2,
+      explain: 'Quy trình chuẩn: 1) Kiểm tra cache (findLoadedClass), 2) Hỏi parent (parent.loadClass), 3) Parent không thấy mới tự nạp (findClass). Bootstrap không có parent nên dùng findBootstrapClassOrNull. Việc hỏi parent TRƯỚC khi tự nạp là bản chất của parent delegation.',
+    },
+    {
+      q: 'Metaspace khác PermGen ở điểm nào?',
+      options: [
+        'Metaspace nằm trong Java heap, PermGen nằm ngoài',
+        'Metaspace dùng native memory, không giới hạn mặc định; PermGen là vùng heap có kích thước cố định',
+        'Metaspace lưu string intern, PermGen không',
+        'Khác nhau chỉ về tên gọi',
+      ],
+      answer: 1,
+      explain: 'Metaspace (Java 8+) cấp phát ở native memory (mmap), mặc định unlimited (MaxMetaspaceSize=unlimited). PermGen (Java 7 và trước) là một vùng heap riêng với size cố định (-XX:MaxPermSize), chứa cả metadata class và string intern. String intern từ Java 8 chuyển sang Java heap.',
+    },
+    {
+      q: 'Một webapp redeploy 10 lần, Metaspace tăng đều và bị OOM. jcmd VM.classloader_stats cho thấy 10 instance WebappClassLoader cùng tồn tại. Nguyên nhân phổ biến nhất là gì?',
+      options: [
+        'JVM không hỗ trợ unload classloader',
+        'Static field, ThreadLocal, JDBC driver, hoặc ShutdownHook giữ tham chiếu tới classloader cũ',
+        'Heap quá nhỏ khiến GC không chạy',
+        'Bootstrap classloader bị leak',
+      ],
+      answer: 1,
+      explain: 'Classloader chỉ unload khi không còn GC root nào trỏ tới nó. Các thủ phạm thường gặp: static Map/ThreadLocal trong thư viện shared giữ instance webapp; JDBC driver đăng ký không deregister; ShutdownHook thêm vào JVM static list. Bootstrap không bao giờ bị leak vì nó nạp class core.',
+    },
+    {
+      q: 'Vì sao ThreadLocal trong thread pool Tomcat gây classloader leak?',
+      options: [
+        'ThreadLocal dùng weak reference cho value nên value bị GC sớm',
+        'Thread pool thread không bao giờ chết, ThreadLocalMap giữ value strong reference, value do webapp tạo giữ classloader',
+        'ThreadLocal tự động clear khi request xong',
+        'Tomcat không dùng ThreadLocal',
+      ],
+      answer: 1,
+      explain: 'ThreadLocalMap entry: key là weak reference tới ThreadLocal object, nhưng **value là strong reference**. Thread của Tomcat sống suốt đời tiến trình. Nếu code webapp set ThreadLocal mà không remove(), value (và classloader của nó) sống mãi trong map của thread pool.',
+    },
+  ],
+  related: ['jvm-003', 'jvm-005', 'jvm-007'],
+  tags: ['class loader', 'parent delegation', 'metaspace', 'classloader leak', 'ThreadLocal', 'redeploy', 'WebappClassLoader'],
+}
 );
