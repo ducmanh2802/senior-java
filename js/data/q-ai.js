@@ -8929,4 +8929,237 @@ Tôi chọn use case đầu tiên dựa trên ROI rõ, dữ liệu sẵn, rủi 
     ],
     tags: ['PoC', 'pilot', 'production', 'KPI', 'stakeholder', 'ROI']
   },
+  {
+    id: 'ai-134',
+    topic: 'ai',
+    level: 'senior',
+    q: 'Khi tích hợp model AI/ML vào backend Java, bạn gọi model service đồng bộ (sync) trong request hay đẩy qua queue bất đồng bộ (async)? Khi nào chọn cái nào?',
+    a: `**Tóm tắt:** Sync khi người dùng chờ kết quả trong vài giây và cần phản hồi ngay; async qua queue khi tác vụ nặng, batch, hoặc không cần trả kết quả ngay. Chọn theo SLA latency và khả năng retry.
+
+### Cơ chế sync
+- HTTP request → service Java → gọi model service → chờ response → trả về.
+- Ưu: đơn giản, kết quả ngay, dễ debug.
+- Nhược: thread bị giữ trong lúc model chạy (có thể 2–20s), dễ thread starvation; timeout phải đặt hợp lý.
+
+### Cơ chế async qua queue
+- Service Java nhận request → publish message vào Kafka/RabbitMQ/SQS → trả 202 Accepted + job id.
+- Worker consume message → gọi model → lưu kết quả DB → notify qua WebSocket/webhook/polling.
+- Ưu: decoupling, retry tự động, scale worker độc lập, chịu burst tốt.
+- Nhược: phức tạp hơn, eventual consistency, cần theo dõi trạng thái job.
+
+### Bảng trade-off
+| Tiêu chí | Sync | Async queue |
+|---|---|---|
+| Latency người dùng | thấp (đợi model) | cao (poll/webhook) |
+| Throughput | bị giới hạn thread pool | scale worker |
+| Retry | phải tự viết | broker hỗ trợ |
+| Phức tạp | thấp | cao |
+
+### Khi nào dùng
+- Sync: autocomplete, phân loại realtime, moderation nhanh (< 2s).
+- Async: OCR hàng loạt, sinh báo cáo, phân tích hồ sơ lớn, batch scoring.
+
+### Code Java (sync với timeout)
+~~~java
+// Java 17 + Spring Boot 3: WebClient với timeout
+WebClient client = WebClient.builder()
+    .baseUrl("http://model-service")
+    .build();
+
+Mono<String> result = client.post()
+    .uri("/predict")
+    .bodyValue(request)
+    .retrieve()
+    .bodyToMono(String.class)
+    .timeout(Duration.ofSeconds(5)); // không chờ mãi
+~~~
+
+### Pitfall production
+- Thread pool bị cạn kiệt khi model chậm → dùng reactive hoặc tăng pool có kiểm soát.
+- Không đặt timeout → request treo vô hạn.
+- Async: message poison pill → cần DLQ và idempotency.
+
+### Ví dụ đời thực
+Service phân loại ticket: sync p99 1.2s cho 500 req/s; khi chuyển sang async cho batch 10k ticket/ngày, throughput tăng 5x và không ảnh hưởng API chính.
+
+### Trả lời mẫu khi phỏng vấn
+Khi tích hợp model, tôi phân loại theo SLA: nếu người dùng cần kết quả ngay trong vài giây, tôi gọi đồng bộ với timeout và fallback; nếu tác vụ nặng hoặc batch, tôi đẩy qua queue và trả job id, worker xử lý và notify kết quả. Sync đơn giản nhưng rủi ro thread starvation; async phức tạp hơn nhưng chịu burst tốt và retry tự nhiên. Quan trọng là đặt timeout, circuit breaker và DLQ để tránh request treo và message poison. Tôi đo p99 latency và cost per request để quyết định ngưỡng chuyển từ sync sang async.
+
+> Senior tip: Luôn có fallback (cache cũ, rule-based, hoặc trả partial) khi model chậm; đừng để một model chậm kéo sập toàn bộ API.`,
+    follow: [
+      'Bạn đặt timeout bao nhiêu giây cho model call và vì sao?',
+      'Làm sao tránh thread starvation khi gọi model đồng bộ?',
+      'Khi nào dùng message queue thay vì HTTP sync?'
+    ],
+    tags: ['sync', 'async', 'queue', 'timeout', 'latency', 'throughput']
+  },
+  {
+    id: 'ai-135',
+    topic: 'ai',
+    level: 'senior',
+    q: 'Timeout, fallback và circuit breaker cho model service: bạn thiết kế thế nào để hệ thống không sập khi model chậm hoặc down?',
+    a: `**Tóm tắt:** Đặt timeout ngắn, retry có giới hạn với backoff, circuit breaker ngắt khi lỗi liên tục, và fallback (cache/rule/partial) để trả kết quả thay thế.
+
+### Cơ chế từng lớp
+1. **Timeout**: không chờ model mãi; đặt theo p99 + margin (ví dụ 3–5s).
+2. **Retry**: retry khi lỗi tạm thời (5xx, timeout), với exponential backoff + jitter; không retry 4xx.
+3. **Circuit breaker**: đếm lỗi trong cửa sổ; khi vượt ngưỡng → mở circuit → trả fallback ngay, không gọi model; sau thời gian thử lại (half-open).
+4. **Fallback**: cache kết quả cũ, rule-based, hoặc trả partial + cờ degraded.
+
+### Code (Resilience4j)
+~~~java
+// Java 17 + Spring Boot 3: Resilience4j
+@CircuitBreaker(name = "model", fallbackMethod = "fallback")
+@TimeLimiter(name = "model")
+@Retry(name = "model")
+public CompletableFuture<Result> predict(Request req) {
+    return CompletableFuture.supplyAsync(() -> modelClient.call(req));
+}
+
+public CompletableFuture<Result> fallback(Request req, Throwable t) {
+    return CompletableFuture.completedFuture(cache.getOrDefault(req.key(), Result.degraded()));
+}
+~~~
+
+### Bảng trạng thái circuit
+| Trạng thái | Hành vi |
+|---|---|
+| Closed | gọi bình thường, đếm lỗi |
+| Open | trả fallback ngay, không gọi |
+| Half-open | cho phép vài request thử |
+
+### Pitfall production
+- Retry không idempotent → gọi model nhiều lần gây side effect.
+- Circuit breaker ngưỡng quá thấp → flicker; quá cao → chậm phát hiện.
+- Fallback trả dữ liệu cũ mà không đánh dấu degraded → người dùng không biết.
+
+### Ví dụ đời thực
+Model service p99 tăng từ 2s lên 15s do GPU quá tải; circuit breaker mở sau 5 lỗi liên tiếp, fallback trả cache 5 phút trước, API chính vẫn trả 200 với cờ degraded; sau 30s half-open thử và phục hồi.
+
+### Trả lời mẫu khi phỏng vấn
+Tôi thiết kế nhiều lớp bảo vệ: timeout ngắn theo p99, retry có giới hạn với backoff cho lỗi tạm thời, circuit breaker ngắt khi lỗi liên tục và fallback trả cache/rule/partial. Quan trọng là idempotency của request và đánh dấu degraded để người dùng biết. Tôi monitor tỉ lệ fallback và thời gian mở circuit để điều chỉnh ngưỡng.
+
+> Senior tip: Fallback phải trả kết quả có ý nghĩa (không phải lỗi 500) và log đầy đủ để điều tra; đo MTTR của model service.`,
+    follow: [
+      'Bạn chọn ngưỡng circuit breaker thế nào (số lỗi, cửa sổ thời gian)?',
+      'Khi nào không nên retry (idempotency)?',
+      'Làm sao theo dõi fallback rate trên production?'
+    ],
+    tags: ['timeout', 'fallback', 'circuit-breaker', 'resilience4j', 'retry']
+  },
+  {
+    id: 'ai-136',
+    topic: 'ai',
+    level: 'lead',
+    q: 'Version model và A/B testing cho model AI: bạn quản lý thế nào để rollout an toàn và so sánh chất lượng?',
+    a: `**Tóm tắt:** Đặt version model trong config/registry, rollout bằng canary/A-B với metric chất lượng và latency, và rollback nhanh khi metric xấu.
+
+### Cơ chế version
+- Model có version (v1, v2) và metadata (training data, eval score).
+- Service Java đọc config (feature flag) để chọn version theo user/tenant/request.
+- Kết quả lưu kèm model version để audit và so sánh.
+
+### A/B testing
+- Chia traffic theo hash user id hoặc random bucket.
+- Đo metric: accuracy (golden set), latency p99, cost, user feedback.
+- Quyết định rollout dựa trên metric, không phải cảm giác.
+
+### Code (feature flag chọn version)
+~~~java
+// Java 17: chọn model version theo bucket
+String version = bucket(userId) < 10 ? "v2" : "v1"; // 10% canary
+ModelResponse r = modelClient.call(version, request);
+audit.save(request, r, version); // lưu version để phân tích
+~~~
+
+### Bảng rollout
+| Giai đoạn | Traffic | Mục tiêu |
+|---|---|---|
+| Canary | 1–5% | phát hiện lỗi lớn |
+| A/B | 50/50 | so sánh metric |
+| Full rollout | 100% | ổn định |
+
+### Pitfall production
+- Không lưu version → không biết kết quả từ model nào.
+- A/B không stratify theo tenant → bias.
+- Rollout quá nhanh → không phát hiện regression.
+
+### Ví dụ đời thực
+Model v2 tăng accuracy 3% nhưng p99 tăng 40%; A/B 2 tuần cho thấy cost tăng 25%; quyết định giữ v1 cho request realtime và v2 cho batch.
+
+### Trả lời mẫu khi phỏng vấn
+Tôi quản lý version model như config: mỗi request ghi nhận version, rollout bằng canary rồi A/B với metric rõ (accuracy, latency, cost). Rollback nhanh qua feature flag. Quan trọng là stratify theo tenant và lưu version trong audit để phân tích sau. Tôi không rollout 100% cho đến khi metric ổn định.
+
+> Senior tip: Luôn có "shadow traffic" (gọi model mới song song nhưng không trả cho user) để đo trước khi rollout.`,
+    follow: [
+      'Bạn đo chất lượng model mới thế nào (golden set, LLM-as-judge)?',
+      'Làm sao rollback model nhanh khi phát hiện regression?',
+      'Khi nào dùng shadow traffic thay vì A/B?'
+    ],
+    tags: ['model-version', 'ab-testing', 'canary', 'rollout', 'feature-flag']
+  },
+  {
+    id: 'ai-137',
+    topic: 'ai',
+    level: 'senior',
+    q: 'Đo p99 latency và chi phí cho tích hợp AI, và lưu kết quả để audit: bạn thiết kế thế nào?',
+    a: `**Tóm tắt:** Đo latency end-to-end và per-step, ghi metric theo version/tenant, tính cost per request, và lưu audit record (input/output/version/timestamp) để truy vết.
+
+### Cơ chế đo latency
+- Đo tổng request time và từng bước: retrieval, model call, post-processing.
+- Dùng Micrometer + Prometheus/Grafana; histogram cho p50/p95/p99.
+- Tách theo model version và tenant.
+
+### Cơ chế đo chi phí
+- Cost = (input tokens + output tokens) × giá model + infra.
+- Ghi tokens per request; aggregate theo ngày/tenant/feature.
+- Budget alert khi vượt ngưỡng.
+
+### Audit storage
+- Lưu: request id, user/tenant, input (đã mask PII), output, model version, latency, tokens, timestamp.
+- Retention theo quy định (ví dụ 90 ngày hoặc theo compliance).
+- Không lưu raw secret/PII chưa mask.
+
+### Code (Micrometer timer)
+~~~java
+// Java 17 + Spring Boot 3: đo latency per step
+Timer.Sample sample = Timer.start(meterRegistry);
+try {
+    result = modelClient.call(req);
+} finally {
+    sample.stop(Timer.builder("ai.model.latency")
+        .tag("version", version)
+        .tag("tenant", tenant)
+        .register(meterRegistry));
+}
+audit.save(new AuditRecord(reqId, tenant, version, tokens, latencyMs, result));
+~~~
+
+### Bảng metric
+| Metric | Mục đích |
+|---|---|
+| p99 latency | SLA |
+| tokens/request | cost |
+| fallback rate | reliability |
+| error rate | health |
+
+### Pitfall production
+- Chỉ đo tổng → không biết bottleneck ở bước nào.
+- Audit lưu PII chưa mask → vi phạm compliance.
+- Không aggregate cost → chi phí vọt không ai biết.
+
+### Ví dụ đời thực
+Sau đo p99, phát hiện retrieval chiếm 60% latency; tối ưu vector index giảm p99 từ 2.1s xuống 0.9s; cost per request giảm 18% nhờ cache semantic.
+
+### Trả lời mẫu khi phỏng vấn
+Tôi đo latency end-to-end và per-step bằng Micrometer, ghi p99 theo version và tenant; tính cost per request từ tokens và aggregate theo ngày. Audit lưu đầy đủ request/output/version/timestamp với PII đã mask và retention phù hợp. Metric và audit giúp phát hiện regression, tối ưu và tuân thủ. Tôi đặt budget alert để tránh chi phí vọt.
+
+> Senior tip: Audit record phải có correlation id để nối với log/trace; không lưu prompt chứa secret.`,
+    follow: [
+      'Bạn đo latency từng bước (retrieval, model, post-process) thế nào?',
+      'Làm sao tính cost per request chính xác?',
+      'Retention và masking cho audit log AI nên ra sao?'
+    ],
+    tags: ['p99', 'latency', 'cost', 'audit', 'observability', 'micrometer']
+  },
 );
