@@ -1,0 +1,91 @@
+{
+  "date": "2026-11-18",
+  "intro": "Hôm nay Hà Nội có nhiều vị trí còn hạn trên Joboko, tập trung ở ngân hàng/chứng khoán (GPBank, VNDirect, Techcombank), thanh toán (MobiFone Digital Payment) và outsource (CMC Global, Thiên Hoàng). Nhiều tin yêu cầu microservices, Kafka/PostgreSQL và tiếng Anh; hầu hết không công bố lương. ITviec bị chặn nên các tin dưới đây lấy từ Joboko, link dẫn về tin gốc.",
+  "editor": "claude",
+  "items": [
+    {
+      "title": "Java Developer (Expert)",
+      "company": "Ngân hàng TMCP Kỷ Nguyên Thịnh Vượng (GPBank)",
+      "url": "https://vn.joboko.com/viec-lam-java-developer-expert-xvi6752989",
+      "source": "Joboko",
+      "location": "Hà Nội (Hoàn Kiếm)",
+      "level": "lead",
+      "salary": "Thoả thuận",
+      "skills": ["Java", "Spring Boot", "Microservices", "DDD", "Docker", "AWS"],
+      "summary": "Vị trí expert cho ngân hàng, yêu cầu khoảng 8 năm phát triển full-stack, trong đó ít nhất 5 năm Java/Spring Boot. Cần thiết kế API-first, microservices theo DDD, hệ thống event/message-driven, CI/CD và triển khai cloud; biết React hoặc Angular, có kinh nghiệm dẫn dắt nhóm và tiếng Anh tốt. Hạn nộp 07/12/2026. Trang cũng nhắc tên pháp nhân khác ở phần dữ liệu ứng viên nên cần xác minh nhà tuyển dụng.",
+      "prep": "Ôn thiết kế microservices theo DDD, event-driven (idempotency, outbox), API-first, và cách trình bày kinh nghiệm dẫn dắt nhóm. Chuẩn bị trả lời tiếng Anh và một ví dụ nghiệp vụ ngân hàng.",
+      "topics": ["microservices", "architecture", "banking", "english"],
+      "tags": ["ngân hàng"]
+    },
+    {
+      "title": "Java Developer (Middle - Senior)",
+      "company": "CMC Global",
+      "url": "https://vn.joboko.com/viec-lam-ha-noi-java-developer-middle-senior-xvi6721916",
+      "source": "Joboko",
+      "location": "Hà Nội (Hoàng Quốc Việt / Cầu Giấy)",
+      "level": "senior",
+      "salary": "Thoả thuận",
+      "skills": ["Java", "Spring Boot", "REST", "Microservices", "PostgreSQL", "SQL Server"],
+      "summary": "Vị trí backend/fullstack làm việc cho khách hàng Singapore theo Agile/Scrum, yêu cầu tối thiểu 3 năm Java. Cần Java 8+, Spring Boot, REST API, microservices, SQL Server hoặc PostgreSQL, có kinh nghiệm tích hợp hệ thống, code review và giao tiếp tiếng Anh. Điểm cộng: dùng công cụ AI coding, cloud, Kubernetes. Hạn nộp 03/12/2026; trang có cảnh báo lừa đảo tuyển dụng chung nên cần kiểm tra nhà tuyển dụng.",
+      "prep": "Ôn Spring Boot, thiết kế REST/microservices, tối ưu SQL trên PostgreSQL, và cách kể về code review/mentoring. Luyện giới thiệu bản thân và trao đổi kỹ thuật bằng tiếng Anh.",
+      "topics": ["spring", "api", "sql", "english"],
+      "tags": ["outsource"]
+    },
+    {
+      "title": "Technical Lead Java",
+      "company": "Công ty Cổ phần Chứng khoán VNDIRECT",
+      "url": "https://vn.joboko.com/viec-lam-technical-lead-java-xvi2722876",
+      "source": "Joboko",
+      "location": "Hà Nội (Hai Bà Trưng)",
+      "level": "lead",
+      "salary": "Thoả thuận",
+      "skills": ["Java", "Spring MVC", "Spring Security", "JPA", "Hibernate", "REST", "SOAP"],
+      "summary": "Vai trò tech lead cho hệ thống chứng khoán, yêu cầu 7+ năm IT, trong đó 5 năm thiết kế, vận hành hệ thống doanh nghiệp lớn. Công việc gồm dẫn dắt đội, thiết kế kiến trúc, code review, quản lý sprint/release và phân tích nghiệp vụ. Stack: Java 8+, Spring MVC/Security/Data, JPA/Hibernate, RESTful và SOAP, DB quan hệ và NoSQL, cache. Hạn nộp 30/11/2026.",
+      "prep": "Ôn Spring/JPA nâng cao (N+1, transaction), caching, thiết kế hệ thống giao dịch chịu tải, và câu hỏi lãnh đạo: quản lý sprint, xử lý rủi ro phát hành.",
+      "topics": ["spring", "jpa", "design", "behavioral"],
+      "tags": ["chứng khoán"]
+    },
+    {
+      "title": "Java Developer (Spring Boot, Angular - dự án ngân hàng)",
+      "company": "Tập đoàn Công nghệ Thiên Hoàng",
+      "url": "https://vn.joboko.com/viec-lam-java-developer-xvi6500953",
+      "source": "Joboko",
+      "location": "Hà Nội (Nam Từ Liêm, làm onsite tại ngân hàng)",
+      "level": "mid",
+      "salary": "Trang ghi cả \"Thoả thuận\" lẫn khoảng 20–35 triệu (không nhất quán)",
+      "skills": ["Java", "Spring Boot", "Angular", "PostgreSQL", "Microservices", "Camunda"],
+      "summary": "Dự án phần mềm cho ngân hàng (nghiệp vụ cho vay, tài trợ thương mại). Yêu cầu khoảng 2 năm Spring Boot và Angular, 1 năm PostgreSQL và microservices, biết nền tảng BPM như Camunda/IBM, tối ưu truy vấn lớn và caching. Hạn nộp 27/11/2026.",
+      "prep": "Ôn Spring Boot, tối ưu truy vấn PostgreSQL, cache, và khái niệm workflow/BPM. Tìm hiểu nghiệp vụ cho vay và tài trợ thương mại cơ bản.",
+      "topics": ["spring", "sql", "banking"],
+      "tags": ["ngân hàng", "outsource"]
+    },
+    {
+      "title": "Java Technical Lead / Technical Owner",
+      "company": "MobiFone Digital Payment",
+      "url": "https://vn.joboko.com/viec-lam-java-technical-lead-technical-owner-xvi6797078",
+      "source": "Joboko",
+      "location": "Tin không nêu thành phố",
+      "level": "lead",
+      "salary": "Thoả thuận",
+      "skills": ["Java", "Spring Boot", "Kafka", "PostgreSQL", "Redis", "Elasticsearch"],
+      "summary": "Vị trí lead/technical owner cho hệ thống thanh toán, yêu cầu 7+ năm với Java/Spring Boot, microservices và event-driven chạy production, hệ thống throughput cao, độ trễ thấp. Cần hiểu hệ phân tán, fault tolerance, idempotency, nhất quán dữ liệu; ưu tiên kinh nghiệm fraud, AML, KYC hoặc ví điện tử. Hạn nộp 25/12/2026.",
+      "prep": "Ôn idempotency, exactly-once/outbox với Kafka, saga, nhất quán dữ liệu, thiết kế hệ thống thanh toán và chống gian lận.",
+      "topics": ["microservices", "design", "banking", "scenario"],
+      "tags": ["fintech", "payment"]
+    },
+    {
+      "title": "Java Technical Lead (Expert)",
+      "company": "Techcombank",
+      "url": "https://vn.joboko.com/viec-lam-java-technical-lead-expert-xvi6737672",
+      "source": "Joboko",
+      "location": "Tin không nêu thành phố",
+      "level": "lead",
+      "salary": "Thoả thuận",
+      "skills": ["Java", "Spring Boot", "Microservices", "CI/CD", "Observability"],
+      "summary": "Vai trò expert/lead yêu cầu tối thiểu 9 năm, dẫn dắt nhóm kỹ thuật, thiết kế kiến trúc và low-level design, mentor, chủ trì code review và cải tiến quy trình. Cốt lõi là Java Spring Boot, microservices, CI/CD, monitoring/logging/tracing, hiệu năng, concurrency và bảo mật. Hạn nộp 01/12/2026; trang nhắc pháp nhân thu thập dữ liệu khác nên cần xác minh trên kênh chính thức của ngân hàng.",
+      "prep": "Ôn concurrency, tuning hiệu năng, observability (metrics/logs/traces), bảo mật API và cách chuẩn bị câu chuyện lãnh đạo kỹ thuật bằng STAR.",
+      "topics": ["concurrency", "microservices", "security", "behavioral"],
+      "tags": ["ngân hàng"]
+    }
+  ]
+}
