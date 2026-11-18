@@ -5905,4 +5905,365 @@ Lỗi hay gặp: dùng trung bình cho lead time; quên trường hợp danh sá
   related: ['devops-126', 'devops-127', 'devops-075'],
   tags: ['DORA', 'metrics', 'platform as product', 'platform engineering'],
 },
+{
+  id: 'lesson-devops-022',
+  track: 'devops',
+  order: 22,
+  title: 'Probe đúng cách: mã HTTP của liveness/readiness/startup, health group và quy tắc liveness không fail khi drain',
+  level: 'senior',
+  minutes: 40,
+  goals: [
+    'Nói được ba probe trả lời ba câu hỏi khác nhau và Kubernetes hành xử theo mã HTTP 2xx/4xx/5xx ra sao',
+    'Hiểu {{ApplicationAvailability}} của Spring Boot ({{LivenessState}}, {{ReadinessState}}) và vì sao phải tách health group',
+    'Giải thích quy tắc cốt lõi: khi graceful shutdown thì readiness là 503 nhưng liveness vẫn 200, nếu không sẽ bị restart nhầm',
+    'Cài được lõi probe + drain bằng đồng hồ giả: từ chối request mới khi shutdown, chờ request cũ có hạn rồi huỷ phần còn lại',
+  ],
+  body: `### Kubernetes hỏi gì, và vì sao mã HTTP quan trọng
+
+**Health check** (kiểm tra sức khoẻ) — trong Kubernetes gọi là **probe** (mũi dò) — là cách control plane định kỳ "gõ cửa" container để biết nó còn ổn không. Container trả lời bằng **mã trạng thái HTTP**, và Kubernetes hành xử theo mã đó: 2xx/3xx coi là **đạt**, 4xx coi là "client sai, đừng đụng", 5xx coi là **hỏng**. Điểm cần nhớ: Kubernetes **không** đọc log của bạn; nó chỉ nhìn mã trả về.
+
+Có **ba** probe, mỗi cái trả lời một câu hỏi khác nhau — gộp chúng là lỗi deploy kinh điển:
+
+| Probe | Câu hỏi | Hỏng thì Kubernetes làm gì | Endpoint |
+|---|---|---|---|
+| **Liveness** (sống) | Process còn sống không, có deadlock không? | **Restart** container | {{/actuator/health/liveness}} |
+| **Readiness** (sẵn sàng) | Nhận request MỚI được chưa? | Gỡ Pod khỏi Service (cắt traffic), **không** restart | {{/actuator/health/readiness}} |
+| **Startup** (khởi động) | Boot xong chưa? | Hết {{failureThreshold}} lần mới restart; khi startup, hai probe kia **chưa** bị tính | tái dùng endpoint liveness |
+
+Vì sao phải tách? Giả sử DB chập chờn. Nếu liveness trỏ vào health đầy đủ (có cả DB), DB chậm làm liveness fail → Kubernetes restart **toàn bộ** Pod → sự cố DB nhỏ biến thành outage lớn. Readiness fail chỉ cần gỡ Pod khỏi danh sách nhận traffic là đủ. Nguyên tắc: **liveness chỉ nhìn process**, còn phụ thuộc bên ngoài (DB, Kafka) nên nằm ở readiness hoặc xử lý bằng circuit breaker.
+
+### Spring Boot lo phần lớn qua ApplicationAvailability
+
+Spring Boot 3 có sẵn bean {{ApplicationAvailability}} giữ hai trạng thái: {{LivenessState}} ({{CORRECT}} / {{BROKEN}}) và {{ReadinessState}} ({{ACCEPTING_TRAFFIC}} / {{REFUSING_TRAFFIC}}). App boot xong thì readiness chuyển sang {{ACCEPTING_TRAFFIC}}; khi nhận SIGTERM để tắt, nó chuyển về {{REFUSING_TRAFFIC}} và phát sự kiện {{AvailabilityChangeEvent}}. Hai health indicator {{readinessState}} và {{livenessState}} đọc đúng hai trạng thái này.
+
+Bật và tách group:
+
+~~~yaml
+management:
+  endpoint:
+    health:
+      probes:
+        enabled: true              # sinh /health/liveness và /health/readiness
+      group:
+        liveness:
+          include: livenessState   # liveness CHỈ nhìn process
+        readiness:
+          include: readinessState  # muốn thì thêm db, kafka
+~~~
+
+Nếu không tách, cả ba endpoint phản ánh health đầy đủ và bạn quay lại đúng lỗi "DB chậm → restart cả cụm".
+
+### Graceful shutdown: tắt êm, không bỏ dở request
+
+**Graceful shutdown** (tắt êm) nghĩa là khi bị yêu cầu tắt, app không cắt ngang request đang xử lý: nó ngừng nhận request mới, **chờ request cũ chạy xong có hạn**, rồi mới thoát. Dòng thời gian khi xoá một Pod:
+
+~~~text
+t=0s   Pod -> Terminating; song song: gỡ khỏi Service + preStop "sleep 5"
+t=5s   preStop xong -> kubelet gửi SIGTERM cho JVM
+       Spring: readiness = REFUSING_TRAFFIC (readiness trả 503)
+       web server ngừng nhận kết nối MỚI, chờ request đang chạy
+t=20s  request cuối xong -> đóng context -> JVM thoát 0
+t=30s  còn sống -> hết terminationGracePeriodSeconds -> SIGKILL (request dở bị cắt)
+~~~
+
+~~~seq
+title: Tat mot Pod graceful
+actors: Kubelet | Spring Boot | Tomcat | LoadBalancer
+Kubelet -> Spring Boot: SIGTERM sau preStop
+Spring Boot -> Spring Boot: readiness = REFUSING_TRAFFIC
+Spring Boot -> Tomcat: ngung nhan ket noi moi
+LoadBalancer -> Tomcat: request dang chay
+Tomcat --> LoadBalancer: tra xong request cu
+Spring Boot -> Spring Boot: dong context roi thoat
+note Kubelet..Spring Boot: het grace period thi SIGKILL
+~~~
+
+Quy tắc quan trọng nhất — và là chỗ nhiều người sai — là: **trong lúc drain, readiness phải là 503 (REFUSING) nhưng liveness vẫn phải là 200 (CORRECT)**. Nếu liveness cũng fail, Kubernetes sẽ **restart** container đang gỡ rối thay vì để nó hoàn tất; request đang chạy bị cắt, công cốc.
+
+Ngân sách thời gian phải cộng đúng, nếu không request dài sẽ bị SIGKILL:
+
+{{terminationGracePeriodSeconds ≥ preStop + timeout-per-shutdown-phase + thời gian destroy bean + dự phòng}}
+
+Ví dụ mặc định grace 30s, preStop 10s, timeout 30s: tổng 40s lớn hơn 30s → request dài bị cắt. Phải nâng grace lên 60s. Bẫy hay gặp nữa: {{ENTRYPOINT}} dạng shell khiến shell (không phải JVM) là PID 1 và nuốt SIGTERM — JVM không bao giờ nhận tín hiệu, Pod luôn chờ hết grace rồi bị SIGKILL; sửa bằng dạng exec {{ENTRYPOINT ["java", "-jar", "app.jar"]}}.
+
+### Bài tập
+
+Bạn cài lõi của cơ chế trên thành một {{ProbeServer}}: ba probe trả mã HTTP đúng; khi bắt đầu shutdown thì từ chối request mới (readiness 503) nhưng giữ liveness 200 và cho request cũ chạy; {{awaitDrain(timeout)}} chờ có hạn rồi huỷ phần còn lại và trả số bị huỷ. Thời gian truyền vào (đồng hồ giả) nên test chạy nhanh và luôn cho cùng kết quả.
+
+### Liên hệ phỏng vấn
+
+Câu hỏi hay gặp: "Mỗi lần rolling update vẫn rớt request, bạn kiểm tra gì?" Trả lời đủ bộ: tách ba probe (liveness chỉ process), readiness fail ngay khi nhận SIGTERM (503) để LB ngừng gửi request mới, preStop sleep vài giây cho LB kịp gỡ Pod, {{server.shutdown=graceful}} với {{timeout-per-shutdown-phase}} đủ lớn, và {{terminationGracePeriodSeconds}} lớn hơn tổng preStop cộng các phase. Nhấn mạnh: **liveness không được fail trong lúc drain**.
+
+> Senior tip: Hãy xuất ba con số cho mỗi lần tắt: thời điểm nhận SIGTERM, thời gian drain thực tế và số request bị huỷ. Lấy p99.9 thời gian xử lý request làm cơ sở cho {{timeout-per-shutdown-phase}} (cộng thêm 50%), rồi mới tính ngược ra {{terminationGracePeriodSeconds}} — đội nào làm vậy thường phát hiện "đuôi dài" vài endpoint chạy 40 giây mà không ai biết trước.`,
+  exercises: [
+    {
+      title: 'ProbeServer: ba probe trả mã HTTP đúng, drain có hạn bằng đồng hồ giả',
+      prompt: `Mô phỏng một HTTP server có health check và graceful shutdown. Hoàn thiện các method của {{ProbeServer}} (đồng hồ là số nguyên mili-giây truyền vào, không dùng giờ thật):
+
+- {{livenessStatus()}}: {{200}} nếu {{liveness == CORRECT}}, ngược lại {{503}}.
+- {{readinessStatus()}}: {{200}} nếu {{readiness == ACCEPTING_TRAFFIC}}, ngược lại {{503}}.
+- {{startupStatus()}}: {{200}} nếu đã {{markStarted}}, ngược lại {{503}}.
+- {{markStarted()}}: {{started = true}} và chuyển {{readiness}} sang {{ACCEPTING_TRAFFIC}}.
+- {{breakLiveness()}} / {{recoverLiveness()}}: đặt {{liveness}} thành {{BROKEN}} / {{CORRECT}}.
+- {{tickTo(t)}}: đưa đồng hồ tới {{t}} (không lùi), rồi hoàn thành mọi request có thời điểm kết thúc **nhỏ hơn hoặc bằng** {{t}} (tăng {{completed}}).
+- {{submit(serviceMs)}}: nếu đang tắt hoặc chưa sẵn sàng thì trả {{false}}; ngược lại ghi một request kết thúc tại {{now + serviceMs}} và trả {{true}}. {{serviceMs < 0}} coi như request hỏng, trả {{false}}.
+- {{beginShutdown()}}: {{readiness = REFUSING_TRAFFIC}} và ngừng nhận request mới; **tuyệt đối không đổi** {{liveness}}.
+- {{inFlight()}} / {{completed()}} / {{cancelled()}}: số request đang chạy / đã xong / đã bị huỷ.
+- {{awaitDrain(timeoutMs)}}: đưa đồng hồ tới {{now + timeoutMs}} để hoàn thành các request kịp hạn, rồi huỷ toàn bộ phần còn lại (cộng vào {{cancelled}}), trả về số request bị huỷ.`,
+      starter: `class ProbeServer {
+    enum Liveness { CORRECT, BROKEN }
+    enum Readiness { ACCEPTING_TRAFFIC, REFUSING_TRAFFIC }
+
+    private Liveness liveness = Liveness.CORRECT;
+    private Readiness readiness = Readiness.REFUSING_TRAFFIC;
+    private boolean started = false;
+    private boolean accepting = true;
+    private long now = 0L;
+    private final List<Long> finishAt = new ArrayList<>();
+    private int completed = 0;
+    private int cancelled = 0;
+
+    int livenessStatus() {
+        throw new UnsupportedOperationException("TODO");
+    }
+
+    int readinessStatus() {
+        throw new UnsupportedOperationException("TODO");
+    }
+
+    int startupStatus() {
+        throw new UnsupportedOperationException("TODO");
+    }
+
+    void markStarted() {
+        throw new UnsupportedOperationException("TODO");
+    }
+
+    void breakLiveness() {
+        throw new UnsupportedOperationException("TODO");
+    }
+
+    void recoverLiveness() {
+        throw new UnsupportedOperationException("TODO");
+    }
+
+    void tickTo(long t) {
+        throw new UnsupportedOperationException("TODO");
+    }
+
+    boolean submit(long serviceMs) {
+        throw new UnsupportedOperationException("TODO");
+    }
+
+    void beginShutdown() {
+        throw new UnsupportedOperationException("TODO");
+    }
+
+    int inFlight() {
+        throw new UnsupportedOperationException("TODO");
+    }
+
+    int completed() {
+        throw new UnsupportedOperationException("TODO");
+    }
+
+    int cancelled() {
+        throw new UnsupportedOperationException("TODO");
+    }
+
+    int awaitDrain(long timeoutMs) {
+        throw new UnsupportedOperationException("TODO");
+    }
+}`,
+      tests: `public class Main {
+    static int passed = 0, total = 0;
+    static void check(String name, Runnable r) {
+        total++;
+        try { r.run(); passed++; System.out.println("PASS " + name); }
+        catch (Throwable t) { System.out.println("FAIL " + name + ": " + t); }
+    }
+    static void eq(int expected, int actual) {
+        if (expected != actual) throw new AssertionError("expected " + expected + " got " + actual);
+    }
+    static void eq(boolean expected, boolean actual) {
+        if (expected != actual) throw new AssertionError("expected " + expected + " got " + actual);
+    }
+    public static void main(String[] args) {
+        check("startup 503 truoc khi boot xong, 200 sau markStarted", () -> {
+            ProbeServer s = new ProbeServer();
+            eq(503, s.startupStatus());
+            eq(503, s.readinessStatus());      // chua ready -> chua nhan traffic
+            s.markStarted();
+            eq(200, s.startupStatus());
+            eq(200, s.readinessStatus());
+        });
+        check("liveness doc lap: 200 -> BROKEN 503 -> recover 200", () -> {
+            ProbeServer s = new ProbeServer();
+            eq(200, s.livenessStatus());
+            s.breakLiveness();
+            eq(503, s.livenessStatus());
+            s.recoverLiveness();
+            eq(200, s.livenessStatus());
+        });
+        check("beginShutdown: readiness 503 nhung liveness van 200", () -> {
+            ProbeServer s = new ProbeServer();
+            s.markStarted();
+            s.beginShutdown();
+            eq(503, s.readinessStatus());
+            eq(200, s.livenessStatus());       // KHONG restart trong luc drain
+        });
+        check("submit bi tu choi truoc ready, sau shutdown, va khi serviceMs am", () -> {
+            ProbeServer s = new ProbeServer();
+            eq(false, s.submit(10));           // chua markStarted
+            s.markStarted();
+            eq(false, s.submit(-1));           // serviceMs am
+            eq(true, s.submit(10));
+            s.beginShutdown();
+            eq(false, s.submit(10));           // dang tat
+        });
+        check("drain kip het: 0 huy, completed 2", () -> {
+            ProbeServer s = new ProbeServer();
+            s.markStarted();
+            eq(true, s.submit(100));
+            eq(true, s.submit(200));
+            s.beginShutdown();
+            eq(0, s.awaitDrain(250));          // ca hai ket thuc <= 250
+            eq(0, s.inFlight());
+            eq(2, s.completed());
+            eq(0, s.cancelled());
+        });
+        check("drain het gio: huy request con lai", () -> {
+            ProbeServer s = new ProbeServer();
+            s.markStarted();
+            eq(true, s.submit(1000));
+            s.beginShutdown();
+            eq(1, s.awaitDrain(100));          // 1000 > 100 -> bi huy
+            eq(1, s.cancelled());
+            eq(0, s.inFlight());
+        });
+        check("drain mot phan: 50ms kip, 500ms bi huy", () -> {
+            ProbeServer s = new ProbeServer();
+            s.markStarted();
+            s.submit(50);
+            s.submit(500);
+            s.beginShutdown();
+            eq(1, s.awaitDrain(100));          // 50<=100 xong, 500>100 huy
+            eq(1, s.completed());
+            eq(1, s.cancelled());
+        });
+        check("tickTo hoan thanh dan theo thoi gian", () -> {
+            ProbeServer s = new ProbeServer();
+            s.markStarted();
+            s.submit(30);
+            s.submit(60);
+            s.tickTo(30);
+            eq(1, s.completed());
+            eq(1, s.inFlight());
+            s.tickTo(60);
+            eq(2, s.completed());
+            eq(0, s.inFlight());
+        });
+        System.out.println("RESULT " + passed + "/" + total);
+    }
+}`,
+      reference: `class ProbeServer {
+    enum Liveness { CORRECT, BROKEN }
+    enum Readiness { ACCEPTING_TRAFFIC, REFUSING_TRAFFIC }
+
+    private Liveness liveness = Liveness.CORRECT;
+    private Readiness readiness = Readiness.REFUSING_TRAFFIC;
+    private boolean started = false;
+    private boolean accepting = true;
+    private long now = 0L;
+    private final List<Long> finishAt = new ArrayList<>();
+    private int completed = 0;
+    private int cancelled = 0;
+
+    int livenessStatus() { return liveness == Liveness.CORRECT ? 200 : 503; }
+
+    int readinessStatus() { return readiness == Readiness.ACCEPTING_TRAFFIC ? 200 : 503; }
+
+    int startupStatus() { return started ? 200 : 503; }
+
+    void markStarted() {
+        started = true;
+        readiness = Readiness.ACCEPTING_TRAFFIC;      // boot xong -> nhận traffic
+    }
+
+    void breakLiveness() { liveness = Liveness.BROKEN; }      // mô phỏng deadlock
+    void recoverLiveness() { liveness = Liveness.CORRECT; }
+
+    void tickTo(long t) {
+        if (t > now) now = t;
+        for (int i = finishAt.size() - 1; i >= 0; i--) {
+            if (finishAt.get(i) <= now) { finishAt.remove(i); completed++; }
+        }
+    }
+
+    boolean submit(long serviceMs) {
+        if (!accepting) return false;                                 // đang tắt: từ chối
+        if (readiness != Readiness.ACCEPTING_TRAFFIC) return false;   // chưa ready: từ chối
+        if (serviceMs < 0) return false;
+        finishAt.add(now + serviceMs);                                // hoàn thành tại thời điểm tuyệt đối
+        return true;
+    }
+
+    void beginShutdown() {
+        readiness = Readiness.REFUSING_TRAFFIC;   // readiness 503; liveness GIỮ NGUYÊN 200
+        accepting = false;
+    }
+
+    int inFlight() { return finishAt.size(); }
+    int completed() { return completed; }
+    int cancelled() { return cancelled; }
+
+    int awaitDrain(long timeoutMs) {
+        tickTo(now + timeoutMs);        // hoàn thành các request kịp hạn
+        int left = finishAt.size();     // phần còn lại -> huỷ
+        cancelled += left;
+        finishAt.clear();
+        return left;
+    }
+}`,
+      hints: [
+        'Ba probe chỉ đọc trạng thái: {{liveness == CORRECT}} cho 200, còn lại 503; readiness so với {{ACCEPTING_TRAFFIC}}; startup dựa trên cờ {{started}}.',
+        '{{beginShutdown}} chỉ đổi {{readiness}} sang {{REFUSING_TRAFFIC}} và tắt cờ nhận; **không được** chạm vào {{liveness}} — đó là quy tắc cốt lõi.',
+        '{{tickTo}} gom việc hoàn thành: duyệt danh sách thời điểm kết thúc, xoá phần tử nào có giá trị **nhỏ hơn hoặc bằng** đồng hồ hiện tại rồi tăng {{completed}}.',
+      ],
+      explain: `Ba probe trả mã HTTP khác nhau chính là cách Kubernetes phân biệt "restart" (liveness) với "cắt traffic" (readiness). {{markStarted}} mô phỏng lúc Spring chuyển {{ACCEPTING_TRAFFIC}}; {{beginShutdown}} mô phỏng lúc app nhận SIGTERM và chuyển {{REFUSING_TRAFFIC}} — request mới bị từ chối, nhưng request cũ vẫn được {{awaitDrain}} chờ. Điểm dễ sai nhất: đổi luôn {{liveness}} khi shutdown sẽ khiến Kubernetes restart container đang gỡ rối.
+
+{{awaitDrain}} dùng đồng hồ giả để test xác định: request có thời điểm kết thúc nằm trong hạn {{now + timeoutMs}} thì được tính là hoàn thành, ngược lại bị huỷ và đếm vào {{cancelled}}. Thứ tự đúng là **chờ hết hạn rồi mới huỷ phần còn lại**.
+
+Lỗi hay gặp: quên giữ {{liveness}} khi shutdown; cho {{submit}} chạy cả khi chưa sẵn sàng hoặc khi {{serviceMs}} âm; huỷ luôn cả những request đã kịp xong; hoặc dùng giờ hệ thống khiến test lúc pass lúc fail.`,
+    },
+  ],
+  check: [
+    {
+      q: 'Pod bị xoá để rolling update. Trong lúc app đang drain (chờ request cũ chạy xong), liveness và readiness nên trả gì?',
+      options: ['Cả hai đều 503 để LB ngừng gửi traffic', 'Readiness 503 (REFUSING) còn liveness vẫn 200 (CORRECT)', 'Cả hai đều 200 cho tới khi tắt hẳn', 'Liveness 503 để Kubernetes restart cho nhanh'],
+      answer: 1,
+      explain: 'Readiness 503 để load balancer ngừng gửi request MỚI, còn request cũ vẫn được xử lý. Liveness phải giữ 200: nếu liveness fail, Kubernetes sẽ **restart** container đang gỡ rối thay vì để nó hoàn tất, và request đang chạy bị SIGKILL cắt ngang. Cho cả hai 503 là lỗi kinh điển; giữ cả hai 200 thì request mới vẫn dồn vào Pod sắp chết; liveness 503 là tự sát.',
+    },
+    {
+      q: 'Vì sao nên tách health group để liveness chỉ include livenessState, không include DB?',
+      options: ['Để probe chạy nhanh hơn', 'DB chậm sẽ làm liveness fail và Kubernetes restart toàn bộ Pod, biến sự cố DB thành outage lớn', 'Vì DB không có health indicator', 'Vì readiness không được phép nhìn DB'],
+      answer: 1,
+      explain: 'Liveness fail khiến Kubernetes restart container (không chỉ gỡ khỏi Endpoints). Nếu DB chậm mà liveness nhìn thấy, cả cụm bị restart cùng lúc, dồn thêm tải lên DB. Readiness fail chỉ cần cắt traffic là đủ; hoặc dùng circuit breaker. Tách group không phải để nhanh hơn, DB vẫn có health indicator, và readiness hoàn toàn có thể include DB nếu muốn.',
+    },
+    {
+      q: 'Deployment có terminationGracePeriodSeconds 30, preStop sleep 10, timeout-per-shutdown-phase 30. Một request mất 25 giây. Điều gì dễ xảy ra?',
+      options: ['Request xong bình thường vì Spring chờ 30 giây', 'Request bị SIGKILL cắt ngang vì grace period tính từ lúc xoá Pod, gồm cả 10 giây preStop', 'Kubernetes tự kéo dài grace cho tới khi Spring báo xong', 'preStop không tính vào grace nên vẫn đủ 30 giây sau SIGTERM'],
+      answer: 1,
+      explain: 'Đồng hồ grace chạy từ lúc Pod chuyển Terminating, preStop ăn 10 giây, nên sau SIGTERM chỉ còn khoảng 20 giây — không đủ cho request 25 giây, SIGKILL đến trước. Spring có chờ 30 giây nhưng Kubernetes không biết và không chờ. Kubernetes không tự kéo dài (ngoại lệ duy nhất là thêm một lần 2 giây khi preStop còn chạy lúc hết hạn). preStop được tính trong grace.',
+    },
+    {
+      q: 'Container dùng ENTRYPOINT dạng shell (sh -c "java -jar app.jar"). Hậu quả khi tắt Pod?',
+      options: ['Không ảnh hưởng gì', 'Shell là PID 1 và không chuyển SIGTERM cho JVM, nên Pod luôn chờ hết grace rồi bị SIGKILL (exit 137)', 'JVM tắt nhanh hơn', 'preStop không chạy được'],
+      answer: 1,
+      explain: 'Shell làm PID 1 không forward SIGTERM cho tiến trình con là JVM, nên graceful shutdown không kích hoạt; Pod luôn mất đúng terminationGracePeriodSeconds rồi bị SIGKILL, request đang chạy bị cắt. Sửa bằng exec form ENTRYPOINT ["java", "-jar", "app.jar"] hoặc exec java trong script, hoặc dùng tini. Các phương án còn lại đều sai.',
+    },
+  ],
+  related: ['devops-002', 'devops-004', 'devops-016'],
+  tags: ['Kubernetes', 'liveness', 'readiness', 'startup probe', 'graceful shutdown', 'Spring Boot Actuator', 'preStop'],
+},
 );

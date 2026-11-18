@@ -2593,6 +2593,7 @@ window.DATA_INDEX = {
     {"id":"lesson-devops-019","track":"devops","order":19,"title":"Quality gate: chặn merge theo ngưỡng coverage, lỗ hổng và ngoại lệ có hạn dùng","level":"mid","minutes":35},
     {"id":"lesson-devops-020","track":"devops","order":20,"title":"Golden path: template tạo service mới với tham số được kiểm tra","level":"senior","minutes":35},
     {"id":"lesson-devops-021","track":"devops","order":21,"title":"Đo nền tảng như sản phẩm: tính 4 chỉ số DORA từ dữ liệu deploy và sự cố","level":"senior","minutes":30},
+    {"id":"lesson-devops-022","track":"devops","order":22,"title":"Probe đúng cách: mã HTTP của liveness/readiness/startup, health group và quy tắc liveness không fail khi drain","level":"senior","minutes":40},
     {"id":"lesson-architecture-001","track":"architecture","order":1,"title":"Parking Lot: Strategy cho tính phí và Factory cho loại xe","level":"senior","minutes":30},
     {"id":"lesson-architecture-002","track":"architecture","order":2,"title":"Elevator: State pattern và chiến lược điều phối","level":"senior","minutes":30},
     {"id":"lesson-architecture-003","track":"architecture","order":3,"title":"Notification Service: Observer và nguyên tắc Open/Closed","level":"mid","minutes":25},
