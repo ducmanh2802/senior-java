@@ -2420,6 +2420,9 @@ window.DATA_INDEX = {
     {"id":"algo-154","title":"VWAP cua so truot tren luong tick","difficulty":"medium","pattern":"Sliding Window"},
     {"id":"algo-155","title":"Meeting Rooms II - so phong toi thieu","difficulty":"medium","pattern":"Heap / Sweep Line"},
     {"id":"algo-156","title":"Token Bucket allow(nowMillis)","difficulty":"medium","pattern":"Rate Limiting"},
+    {"id":"algo-157","title":"Task Scheduler","difficulty":"medium","pattern":"Heap"},
+    {"id":"algo-158","title":"LFU Cache","difficulty":"hard","pattern":"Linked List"},
+    {"id":"algo-159","title":"Car Pooling","difficulty":"medium","pattern":"Intervals"},
   ],
   lessons: [
     {"id":"lesson-collections-001","track":"collections","order":1,"title":"HashMap từ bên trong: hash, bucket, resize và hợp đồng equals/hashCode","level":"mid","minutes":25},

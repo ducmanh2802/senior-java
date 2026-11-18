@@ -17547,6 +17547,501 @@ class TokenBucket {
 }`,
   complexity: 'Time O(1), Space O(1)',
   follow: ['Neu nowMillis khong monotonic thi xu ly the nao?', 'Lam sao ho tro allow(n) cho n token cung luc?']
+},
+{
+  id: 'algo-157',
+  title: 'Task Scheduler',
+  difficulty: 'medium',
+  pattern: 'Heap',
+  tags: ['heap', 'greedy', 'frequency', 'scheduling'],
+  prompt: `Cho mảng {{tasks}} là các ký tự đại diện cho các nhiệm vụ (ví dụ: 'A', 'B', 'A' nghĩa là có hai task A) và số nguyên {{n}} là khoảng nghỉ (cooldown) giữa hai lần thực thi cùng loại task. Mỗi task mất 1 đơn vị thời gian. Tìm thời gian tối thiểu để hoàn thành tất cả các task. Có thể chèn idle (không làm gì) nếu cần.
+
+### Ví dụ
+~~~text
+Input:  tasks = ["A","A","A","B","B","B"], n = 2
+Output: 8
+Giải thích: A -> B -> idle -> A -> B -> idle -> A -> B
+
+Input:  tasks = ["A","A","A","B","B","B"], n = 0
+Output: 6
+Giải thích: không có cooldown, chạy liên tiếp.
+
+Input:  tasks = ["A","A","A","A","A","A","B","C","D","E","F","G"], n = 2
+Output: 16
+Giải thích: A xuất hiện nhiều nhất (6 lần), tạo khung (A _ _ ) * 5 + A, lấp đầy bằng B,C,D,E,F,G.
+~~~
+
+### Ràng buộc
+- {{1 <= tasks.length <= 10^4}}
+- {{tasks[i]}} là chữ cái in hoa tiếng Anh.
+- {{0 <= n <= 100}}`,
+  hints: [
+    'Task xuất hiện nhiều nhất quy định "khung thời gian" tối thiểu. Gọi {{maxFreq}} là tần suất lớn nhất, {{maxCount}} là số loại task có tần suất đó.',
+    'Khung tối thiểu: {{(maxFreq - 1) * (n + 1) + maxCount}} slot. Nếu số task thực tế lớn hơn khung này, đáp án là {{tasks.length}} (không cần idle).',
+    'Có thể dùng max-heap (PriorityQueue) để luôn lấy task còn nhiều lần nhất, kèm hàng đợi chờ cooldown.'
+  ],
+  solution: `### Ý tưởng
+**Phân tích công thức (O(1) space, O(n) time):**
+Task xuất hiện nhiều nhất ({{maxFreq}}) tạo ra {{maxFreq - 1}} "khoảng" cần n idle giữa các lần chạy. Mỗi khoảng rộng {{n + 1}} (1 slot task + n slot cooldown). Cuối cùng thêm {{maxCount}} task cùng tần suất max vào cuối khung.
+Công thức: {{minTime = (maxFreq - 1) * (n + 1) + maxCount}}. Kết quả là {{max(minTime, tasks.length)}}.
+
+**Mô phỏng bằng heap (khi cần trình bày quy trình):**
+Dùng max-heap lưu {{(count, task)}}. Mỗi chu kỳ {{n + 1}}, pop tối đa {{n + 1}} task, giảm count, nếu còn > 0 thì đưa vào hàng đợi chờ; sau chu kỳ, trả các task chờ vào heap. Lặp cho đến khi heap và hàng đợi đều rỗng.
+
+~~~java
+class Solution {
+    public int leastInterval(char[] tasks, int n) {
+        if (n == 0) return tasks.length;
+        int[] freq = new int[26];
+        for (char c : tasks) freq[c - 'A']++;
+        int maxFreq = 0, maxCount = 0;
+        for (int f : freq) {
+            if (f > maxFreq) {
+                maxFreq = f;
+                maxCount = 1;
+            } else if (f == maxFreq) {
+                maxCount++;
+            }
+        }
+        int minTime = (maxFreq - 1) * (n + 1) + maxCount;
+        return Math.max(minTime, tasks.length);
+    }
+}
+~~~
+
+### Lưu ý khi phỏng vấn
+- Công thức chỉ đúng khi cooldown {{n}} là hằng số. Nếu cooldown khác nhau theo task, phải dùng heap mô phỏng.
+- {{n = 0}} là trường hợp đặc biệt: chạy liên tiếp, đáp án là {{tasks.length}}.
+- Heap mô phỏng O(T log 26) ≈ O(T) vì chỉ 26 loại task; công thức nhanh hơn và ít bug hơn.
+- Nếu cần in ra lịch trình cụ thể, heap là bắt buộc.
+
+> Senior tip: Bài này thường hỏi follow-up "nếu task có độ ưu tiên hoặc thời gian chạy khác nhau thì sao?" — lúc đó heap + priority là cách tự nhiên, công thức không còn áp dụng được.`,
+  starter: "class Solution {\n    public int leastInterval(char[] tasks, int n) {\n        \n    }\n}",
+  tests: `public class Main {
+
+    static int passed = 0, total = 0;
+    interface Case { Object get() throws Throwable; }
+    static void run(String name, Object expected, Case c) {
+        total++;
+        try {
+            Object actual = c.get();
+            if (Objects.deepEquals(expected, actual)) {
+                passed++;
+                System.out.println("PASS " + name);
+            } else {
+                System.out.println("FAIL " + name + ": expected "
+                    + Arrays.deepToString(new Object[]{expected})
+                    + " got " + Arrays.deepToString(new Object[]{actual}));
+            }
+        } catch (Throwable t) {
+            System.out.println("FAIL " + name + ": threw " + t);
+        }
+    }
+    static void eq(String what, Object expected, Object actual) {
+        if (!Objects.deepEquals(expected, actual)) {
+            throw new AssertionError(what + " expected "
+                + Arrays.deepToString(new Object[]{expected})
+                + " got " + Arrays.deepToString(new Object[]{actual}));
+        }
+    }
+    static void runSteps(String name, Runnable r) {
+        total++;
+        try { r.run(); passed++; System.out.println("PASS " + name); }
+        catch (Throwable t) { System.out.println("FAIL " + name + ": threw " + t); }
+    }
+    static List<Integer> ints(int... v) {
+        List<Integer> r = new ArrayList<>();
+        for (int x : v) r.add(x);
+        return r;
+    }
+    static List<Integer> seq(int a, int b) {
+        List<Integer> r = new ArrayList<>();
+        for (int i = a; i <= b; i++) r.add(i);
+        return r;
+    }
+
+    public static void main(String[] args) {
+        run("example 1", 8, () -> new Solution().leastInterval("AAABBB".toCharArray(), 2));
+        run("example 2", 6, () -> new Solution().leastInterval("AAABBB".toCharArray(), 0));
+        run("example 3", 16, () -> new Solution().leastInterval("AAAAAABCDEFG".toCharArray(), 2));
+        run("single task", 1, () -> new Solution().leastInterval("A".toCharArray(), 2));
+        run("all different", 5, () -> new Solution().leastInterval("ABCDE".toCharArray(), 3));
+        run("n large", 7, () -> new Solution().leastInterval("AAA".toCharArray(), 2));
+        run("balanced", 6, () -> new Solution().leastInterval("AABBCC".toCharArray(), 1));
+        System.out.println("RESULT " + passed + "/" + total);
+    }
+}`,
+  complexity: 'Time O(n) (công thức), Space O(1)',
+  follow: ['Nếu mỗi task có cooldown riêng thì làm thế nào?', 'Nếu cần in ra lịch trình chi tiết thì cài đặt heap ra sao?']
+},
+{
+  id: 'algo-158',
+  title: 'LFU Cache',
+  difficulty: 'hard',
+  pattern: 'Linked List',
+  tags: ['design', 'hashmap', 'doubly-linked-list', 'frequency'],
+  prompt: `Thiết kế cấu trúc LFU (Least Frequently Used) với sức chứa {{capacity}}. Hỗ trợ {{get(key)}} và {{put(key, value)}} trong O(1) trung bình. Khi vượt sức chứa, loại bỏ key có tần suất truy cập **thấp nhất**; nếu có nhiều key cùng tần suất thấp nhất, loại bỏ key **ít được dùng gần đây nhất** (LRU tie-break).
+
+### Ví dụ
+~~~text
+LFUCache cache = new LFUCache(2);
+cache.put(1, 1);
+cache.put(2, 2);
+cache.get(1);       // 1 (freq 1->2)
+cache.put(3, 3);    // loại bỏ key 2 (freq 1), key 1 có freq 2
+cache.get(2);       // -1
+cache.get(3);       // 3 (freq 1->2)
+cache.put(4, 4);    // loại bỏ key 1 (freq 2) hay key 3 (freq 2)? -> key 1 cũ hơn (LRU)
+cache.get(1);       // -1
+cache.get(3);       // 3
+cache.get(4);       // 4
+~~~
+
+### Ràng buộc
+- {{0 <= capacity <= 10^4}}
+- {{0 <= key, value <= 10^5}}
+- Tối đa {{2 * 10^5}} thao tác. {{get}}, {{put}} phải O(1) trung bình.`,
+  hints: [
+    'Cần tra cứu key -> node (HashMap). Cần nhóm node theo tần suất (freq -> danh sách node LRU). Cần biết tần suất nhỏ nhất hiện tại.',
+    'Dùng HashMap<key, Node> và HashMap<freq, DoublyLinkedList>. Mỗi freq là một danh sách LRU (head mới, tail cũ).',
+    'Khi truy cập node: xoá khỏi list freq cũ, thêm vào đầu list freq+1. Cập nhật minFreq nếu list freq cũ rỗng và freq == minFreq.',
+    'Dùng node sentinel head/tail cho mỗi danh sách freq để tránh xử lý null.'
+  ],
+  solution: `### Ý tưởng
+Kết hợp ba cấu trúc:
+1. {{keyMap}}: key -> Node (chứa key, value, freq, con trỏ prev/next).
+2. {{freqMap}}: freq -> DoublyLinkedList (sentinel head/tail, giữ thứ tự LRU: head.next mới nhất, tail.prev cũ nhất).
+3. {{minFreq}}: tần suất nhỏ nhất hiện có, dùng để evict O(1).
+
+Thao tác:
+- {{get(key)}}: nếu không có trả -1. Nếu có, {{node = keyMap.get(key)}}, gọi {{update(node)}}, trả {{node.val}}.
+- {{put(key, val)}}: nếu key tồn tại, cập nhật value, {{update(node)}}. Nếu mới: nếu {{capacity == 0}} return. Nếu đầy, evict: lấy node = {{freqMap.get(minFreq).tail.prev}}, xoá khỏi list và keyMap. Tạo node mới freq=1, thêm vào {{freqMap.get(1)}}, {{minFreq = 1}}.
+- {{update(node)}}: xoá node khỏi list freq cũ; nếu list rỗng và freq == minFreq thì {{minFreq++}}. Tăng {{node.freq}}, thêm vào đầu list freq mới.
+
+~~~java
+class LFUCache {
+    private static final class Node {
+        int key, val, freq;
+        Node prev, next;
+        Node(int k, int v) { key = k; val = v; freq = 1; }
+    }
+
+    private static final class DLL {
+        Node head, tail;
+        int size;
+        DLL() {
+            head = new Node(0, 0);
+            tail = new Node(0, 0);
+            head.next = tail;
+            tail.prev = head;
+            size = 0;
+        }
+        void addFirst(Node n) {
+            n.next = head.next;
+            n.prev = head;
+            head.next.prev = n;
+            head.next = n;
+            size++;
+        }
+        void remove(Node n) {
+            n.prev.next = n.next;
+            n.next.prev = n.prev;
+            size--;
+        }
+        Node removeLast() {
+            if (size == 0) return null;
+            Node n = tail.prev;
+            remove(n);
+            return n;
+        }
+        boolean isEmpty() { return size == 0; }
+    }
+
+    private final Map<Integer, Node> keyMap = new HashMap<>();
+    private final Map<Integer, DLL> freqMap = new HashMap<>();
+    private final int capacity;
+    private int minFreq;
+
+    public LFUCache(int capacity) {
+        this.capacity = capacity;
+    }
+
+    public int get(int key) {
+        Node n = keyMap.get(key);
+        if (n == null) return -1;
+        update(n);
+        return n.val;
+    }
+
+    public void put(int key, int val) {
+        if (capacity == 0) return;
+        Node n = keyMap.get(key);
+        if (n != null) {
+            n.val = val;
+            update(n);
+            return;
+        }
+        if (keyMap.size() == capacity) {
+            DLL minList = freqMap.get(minFreq);
+            Node lfu = minList.removeLast();
+            keyMap.remove(lfu.key);
+            if (minList.isEmpty()) freqMap.remove(minFreq);
+        }
+        n = new Node(key, val);
+        keyMap.put(key, n);
+        freqMap.computeIfAbsent(1, k -> new DLL()).addFirst(n);
+        minFreq = 1;
+    }
+
+    private void update(Node n) {
+        int f = n.freq;
+        DLL oldList = freqMap.get(f);
+        oldList.remove(n);
+        if (oldList.isEmpty()) {
+            freqMap.remove(f);
+            if (f == minFreq) minFreq++;
+        }
+        n.freq++;
+        freqMap.computeIfAbsent(n.freq, k -> new DLL()).addFirst(n);
+    }
+}
+~~~
+
+### Lưu ý khi phỏng vấn
+- LFU phức tạp hơn LRU do phải quản lý nhiều danh sách theo freq. Trong thực tế, Caffeine dùng TinyLFU (xấp xỉ) vì hiệu năng tốt hơn và đơn giản hơn.
+- {{minFreq}} chỉ tăng, không giảm (trừ khi evict hết freq đó). Đây là điểm then chốt để O(1).
+- Tie-break LRU trong cùng freq: dùng doubly linked list với addFirst/removeLast.
+- Nếu {{capacity = 0}}, mọi thao tác là no-op.
+- Thread-safe: cần khoá cấp độ cao (keyMap, freqMap, minFreq) hoặc dùng ConcurrentHashMap + striped locks.
+
+> Senior tip: LFU thuần hay bị "cache pollution" khi một key được truy cập nhiều lần trong thời gian ngắn rồi không bao giờ dùng nữa — nó chiếm chỗ mãi. Các hệ thống production (Redis, Caffeine) dùng aging/decay hoặc window-based frequency để khắc phục.`,
+  starter: "class LFUCache {\n    public LFUCache(int capacity) {\n        \n    }\n    public int get(int key) {\n        return -1;\n    }\n    public void put(int key, int value) {\n        \n    }\n}",
+  tests: `public class Main {
+
+    static int passed = 0, total = 0;
+    interface Case { Object get() throws Throwable; }
+    static void run(String name, Object expected, Case c) {
+        total++;
+        try {
+            Object actual = c.get();
+            if (Objects.deepEquals(expected, actual)) {
+                passed++;
+                System.out.println("PASS " + name);
+            } else {
+                System.out.println("FAIL " + name + ": expected "
+                    + Arrays.deepToString(new Object[]{expected})
+                    + " got " + Arrays.deepToString(new Object[]{actual}));
+            }
+        } catch (Throwable t) {
+            System.out.println("FAIL " + name + ": threw " + t);
+        }
+    }
+    static void eq(String what, Object expected, Object actual) {
+        if (!Objects.deepEquals(expected, actual)) {
+            throw new AssertionError(what + " expected "
+                + Arrays.deepToString(new Object[]{expected})
+                + " got " + Arrays.deepToString(new Object[]{actual}));
+        }
+    }
+    static void runSteps(String name, Runnable r) {
+        total++;
+        try { r.run(); passed++; System.out.println("PASS " + name); }
+        catch (Throwable t) { System.out.println("FAIL " + name + ": threw " + t); }
+    }
+    static List<Integer> ints(int... v) {
+        List<Integer> r = new ArrayList<>();
+        for (int x : v) r.add(x);
+        return r;
+    }
+    static List<Integer> seq(int a, int b) {
+        List<Integer> r = new ArrayList<>();
+        for (int i = a; i <= b; i++) r.add(i);
+        return r;
+    }
+
+    public static void main(String[] args) {
+        runSteps("example", () -> {
+            LFUCache cache = new LFUCache(2);
+            cache.put(1, 1);
+            cache.put(2, 2);
+            eq("get 1", 1, cache.get(1));
+            cache.put(3, 3);
+            eq("evict 2", -1, cache.get(2));
+            eq("get 3", 3, cache.get(3));
+            cache.put(4, 4);
+            eq("evict 1", -1, cache.get(1));
+            eq("get 3", 3, cache.get(3));
+            eq("get 4", 4, cache.get(4));
+        });
+        runSteps("capacity zero", () -> {
+            LFUCache cache = new LFUCache(0);
+            cache.put(1, 1);
+            eq("get miss", -1, cache.get(1));
+        });
+        runSteps("capacity one", () -> {
+            LFUCache cache = new LFUCache(1);
+            cache.put(1, 1);
+            eq("first", 1, cache.get(1));
+            cache.put(2, 2);
+            eq("evicted", -1, cache.get(1));
+            eq("second", 2, cache.get(2));
+        });
+        runSteps("update existing", () -> {
+            LFUCache cache = new LFUCache(2);
+            cache.put(1, 1);
+            cache.put(2, 2);
+            cache.put(1, 10);
+            eq("updated", 10, cache.get(1));
+            cache.put(3, 3);
+            eq("evict 2", -1, cache.get(2));
+            eq("keep 3", 3, cache.get(3));
+        });
+        runSteps("freq tie lru", () -> {
+            LFUCache cache = new LFUCache(2);
+            cache.put(1, 1);
+            cache.put(2, 2);
+            cache.get(1);    // freq 2
+            cache.get(2);    // freq 2
+            cache.put(3, 3); // evict 1 (older LRU among freq 2? No, 1 accessed earlier than 2? Let's trace: 1 then 2. Both freq 2. 1 is older LRU -> evict 1)
+            eq("evict 1", -1, cache.get(1));
+            eq("keep 2", 2, cache.get(2));
+            eq("keep 3", 3, cache.get(3));
+        });
+        runSteps("freq increase", () -> {
+            LFUCache cache = new LFUCache(2);
+            cache.put(1, 1);
+            cache.put(2, 2);
+            cache.get(1);       // freq 2
+            cache.put(3, 3);    // evict 2 (freq 1)
+            eq("evict 2", -1, cache.get(2));
+            eq("keep 1", 1, cache.get(1));
+            eq("keep 3", 3, cache.get(3));
+        });
+        System.out.println("RESULT " + passed + "/" + total);
+    }
+}`,
+  complexity: 'Time O(1) trung bình mỗi thao tác, Space O(capacity)',
+  follow: ['So sánh LFU và LRU: ưu nhược điểm, khi nào chọn cái nào?', 'Làm sao triển khai LFU thread-safe với hiệu năng cao?']
+},
+{
+  id: 'algo-159',
+  title: 'Car Pooling',
+  difficulty: 'medium',
+  pattern: 'Intervals',
+  tags: ['intervals', 'sorting', 'sweep-line', 'difference-array'],
+  prompt: `Xe buýt có {{capacity}} chỗ ngồi. Cho mảng {{trips}} với {{trips[i] = [numPassengers, from, to]}} nghĩa là tại ga {{from}}, {{numPassengers}} người lên xe, và tại ga {{to}} họ xuống. Xe chạy theo tuyến cố định từ ga 0 đến ga lớn nhất. Kiểm tra xem có thể chở tất cả hành khách mà không bao giờ vượt quá sức chứa hay không.
+
+### Ví dụ
+~~~text
+Input:  trips = [[2,1,5],[3,3,7]], capacity = 4
+Output: false
+Giải thích: ga 3-5 có 2+3=5 người > 4.
+
+Input:  trips = [[2,1,5],[3,5,7]], capacity = 3
+Output: true
+Giải thích: ga 5: 2 người xuống, 3 người lên -> luôn <= 3.
+~~~
+
+### Ràng buộc
+- {{1 <= trips.length <= 1000}}
+- {{1 <= numPassengers <= 100}}
+- {{0 <= from < to <= 1000}}
+- {{1 <= capacity <= 10^5}}`,
+  hints: [
+    'Đây là bài toán sweep line / difference array: tại ga {{from}} tăng {{numPassengers}}, tại ga {{to}} giảm {{numPassengers}}.',
+    'Tạo mảng diff kích thước 1001 (theo ràng buộc to <= 1000). Duyệt trips, cộng/trừ. Sau đó prefix sum và kiểm tra max.',
+    'Hoặc dùng events: {{(ga, delta)}} sort theo ga, delta + trước - sau tại cùng ga để xử lý đúng lên/xuống cùng lúc.'
+  ],
+  solution: `### Ý tưởng
+**Difference array (O(N + M) với M = ga lớn nhất):**
+Tạo mảng {{diff}} kích thước 1001. Với mỗi trip {{[p, f, t]}}: {{diff[f] += p}}, {{diff[t] -= p}}. Sau đó duyệt {{i = 0..1000}}, cộng dồn {{cur += diff[i]}}, nếu {{cur > capacity}} return false.
+
+**Sweep line với events (O(N log N), không phụ thuộc M):**
+Tạo danh sách events {{(ga, delta)}}. {{delta}} dương khi lên, âm khi xuống. Sort theo {{ga}}; nếu cùng ga, xuống (âm) trước lên (dương) — vì hành khách xuống trước khi người mới lên tại cùng ga. Duyệt, cộng dồn và kiểm tra.
+
+Cách difference array đơn giản và nhanh với ràng buộc ga ≤ 1000. Cách events tổng quát hơn cho ga lớn.
+
+~~~java
+class Solution {
+    public boolean carPooling(int[][] trips, int capacity) {
+        int[] diff = new int[1001];
+        for (int[] t : trips) {
+            diff[t[1]] += t[0];
+            diff[t[2]] -= t[0];
+        }
+        int cur = 0;
+        for (int i = 0; i <= 1000; i++) {
+            cur += diff[i];
+            if (cur > capacity) return false;
+        }
+        return true;
+    }
+}
+~~~
+
+### Lưu ý khi phỏng vấn
+- Xử lý đúng thứ tự tại cùng ga: xuống trước, lên sau. Difference array tự nhiên xử lý đúng vì {{diff[to] -= p}} và {{diff[from] += p}} tại cùng index, cộng dồn theo thứ tự index tăng dần.
+- Nếu ràng buộc ga lớn (10^9), dùng events + sort thay vì mảng diff.
+- Bài này tương đương Meeting Rooms II nhưng trọng số (số người) không đều; sweep line là cách chung.
+
+> Senior tip: Sweep line / difference array là pattern cốt lõi cho mọi bài toán "tài nguyên theo thời gian": connection pool, license usage, bandwidth allocation. Hãy nhận ra pattern này ngay khi thấy "tăng tại A, giảm tại B".`,
+  starter: "class Solution {\n    public boolean carPooling(int[][] trips, int capacity) {\n        \n    }\n}",
+  tests: `public class Main {
+
+    static int passed = 0, total = 0;
+    interface Case { Object get() throws Throwable; }
+    static void run(String name, Object expected, Case c) {
+        total++;
+        try {
+            Object actual = c.get();
+            if (Objects.deepEquals(expected, actual)) {
+                passed++;
+                System.out.println("PASS " + name);
+            } else {
+                System.out.println("FAIL " + name + ": expected "
+                    + Arrays.deepToString(new Object[]{expected})
+                    + " got " + Arrays.deepToString(new Object[]{actual}));
+            }
+        } catch (Throwable t) {
+            System.out.println("FAIL " + name + ": threw " + t);
+        }
+    }
+    static void eq(String what, Object expected, Object actual) {
+        if (!Objects.deepEquals(expected, actual)) {
+            throw new AssertionError(what + " expected "
+                + Arrays.deepToString(new Object[]{expected})
+                + " got " + Arrays.deepToString(new Object[]{actual}));
+        }
+    }
+    static void runSteps(String name, Runnable r) {
+        total++;
+        try { r.run(); passed++; System.out.println("PASS " + name); }
+        catch (Throwable t) { System.out.println("FAIL " + name + ": threw " + t); }
+    }
+    static List<Integer> ints(int... v) {
+        List<Integer> r = new ArrayList<>();
+        for (int x : v) r.add(x);
+        return r;
+    }
+    static List<Integer> seq(int a, int b) {
+        List<Integer> r = new ArrayList<>();
+        for (int i = a; i <= b; i++) r.add(i);
+        return r;
+    }
+
+    public static void main(String[] args) {
+        run("example 1", false, () -> new Solution().carPooling(new int[][]{{2,1,5},{3,3,7}}, 4));
+        run("example 2", true, () -> new Solution().carPooling(new int[][]{{2,1,5},{3,5,7}}, 3));
+        run("single trip", true, () -> new Solution().carPooling(new int[][]{{2,1,5}}, 2));
+        run("exact capacity", true, () -> new Solution().carPooling(new int[][]{{3,0,5},{2,5,10}}, 3));
+        run("exceed at start", false, () -> new Solution().carPooling(new int[][]{{3,0,5},{2,0,3}}, 4));
+        run("same from to", true, () -> new Solution().carPooling(new int[][]{{2,1,3},{3,3,5}}, 3));
+        run("large capacity", true, () -> new Solution().carPooling(new int[][]{{1,0,1000}}, 100));
+        System.out.println("RESULT " + passed + "/" + total);
+    }
+}`,
+  complexity: 'Time O(N + M) với M = ga lớn nhất (≤1000), Space O(M)',
+  follow: ['Nếu ga lên tới 10^9 thì dùng cách nào?', 'Nếu cần in ra ga nào quá tải thì sửa thế nào?']
 }
 );
 })();
