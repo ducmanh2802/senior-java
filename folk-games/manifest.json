@@ -1,0 +1,19 @@
+{
+  "name": "Sân Đình · Trò chơi dân gian",
+  "short_name": "Sân Đình",
+  "description": "Trò chơi dân gian Việt Nam: ô ăn quan, cờ gánh, bầu cua, oẳn tù tì, kéo co và góc đồng dao.",
+  "lang": "vi",
+  "start_url": "./",
+  "scope": "./",
+  "display": "standalone",
+  "background_color": "#f4ead6",
+  "theme_color": "#b5371f",
+  "icons": [
+    {
+      "src": "icons/icon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any maskable"
+    }
+  ]
+}

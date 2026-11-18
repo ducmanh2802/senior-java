@@ -1,0 +1,79 @@
+/* Bản đồ làng, Bà kể chuyện, sảnh online, nút âm thanh. */
+:root {
+  --sky1: #f7d9a0; --sky2: #fbeed2; --sun: #f2a23a; --mount: #b9c79a; --dyke: #9bb57a;
+  --field: #a9c56f; --field-row: #8fb055; --road: #d9bf8c; --leaf: #4f7a3a; --leaf-2: #6a9850;
+  --wall: #f1e2c3; --door: #7a4a22; --thatch: #c9a052; --tent: #b5371f;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --sky1: #1d2547; --sky2: #3c3550; --sun: #f3e3a8; --mount: #2f3a33; --dyke: #34452f;
+    --field: #2d3f24; --field-row: #3a5030; --road: #5a4a33; --leaf: #2c4a26; --leaf-2: #3c5e33;
+    --wall: #6b5a43; --door: #2a1a0d; --thatch: #6e5428; --tent: #8e2e1a;
+  }
+}
+:root[data-theme="dark"] {
+  --sky1: #1d2547; --sky2: #3c3550; --sun: #f3e3a8; --mount: #2f3a33; --dyke: #34452f;
+  --field: #2d3f24; --field-row: #3a5030; --road: #5a4a33; --leaf: #2c4a26; --leaf-2: #3c5e33;
+  --wall: #6b5a43; --door: #2a1a0d; --thatch: #6e5428; --tent: #8e2e1a;
+}
+
+.village { position: relative; border-radius: 22px; overflow: hidden; box-shadow: var(--shadow); border: 1px solid var(--line); aspect-ratio: 800 / 440; min-height: 260px; }
+.vl-scene { position: absolute; inset: 0; width: 100%; height: 100%; display: block; }
+.vl-scene .sky1 { stop-color: var(--sky1); } .vl-scene .sky2 { stop-color: var(--sky2); }
+.vl-scene .sun { fill: var(--sun); }
+.vl-scene .mount { fill: var(--mount); }
+.vl-scene .dyke { fill: var(--dyke); }
+.vl-scene .field { fill: var(--field); }
+.vl-scene .rows path { stroke: var(--field-row); stroke-width: 3; fill: none; }
+.vl-scene .road { fill: var(--road); }
+.vl-scene .trunk { fill: var(--wood); } .vl-scene .root { stroke: var(--wood); stroke-width: 6; fill: none; stroke-linecap: round; }
+.vl-scene .canopy { fill: var(--leaf); } .vl-scene .canopy2 { fill: var(--leaf-2); }
+.vl-scene .roof1 { fill: var(--accent); } .vl-scene .roof2 { fill: color-mix(in srgb, var(--accent) 75%, #000); }
+.vl-scene .pearl { fill: var(--gold); }
+.vl-scene .wall { fill: var(--wall); } .vl-scene .door { fill: var(--door); }
+.vl-scene .thatch { fill: var(--thatch); }
+.vl-scene .bamboo { stroke: var(--leaf); stroke-width: 4; fill: none; }
+.vl-scene .tent { fill: var(--tent); } .vl-scene .stall { fill: var(--wood-2); } .vl-scene .lantern { fill: var(--gold); }
+.vl-scene .kite path:first-child { fill: var(--accent); } .vl-scene .kite .tail, .vl-scene .string { stroke: var(--ink); stroke-width: 1.5; fill: none; opacity: .6; }
+.vl-scene .kite { animation: kite 4s ease-in-out infinite alternate; transform-box: fill-box; transform-origin: center; }
+@keyframes kite { to { translate: 10px -6px; rotate: 6deg; } }
+
+.vl-spot {
+  position: absolute; transform: translate(-50%, -50%); display: flex; flex-direction: column; align-items: center; gap: 2px;
+  border: 0; background: none; cursor: pointer; font: inherit; color: var(--ink); padding: 4px;
+}
+.vl-spot .ic { width: 52px; height: 52px; display: grid; place-items: center; font-size: 1.7rem; border-radius: 50%;
+  background: var(--paper); border: 3px solid var(--gold); box-shadow: var(--shadow); transition: transform .15s; animation: bobspot 2.4s ease-in-out infinite; }
+.vl-spot:nth-child(3) .ic { animation-delay: .4s; } .vl-spot:nth-child(4) .ic { animation-delay: .8s; }
+.vl-spot:nth-child(5) .ic { animation-delay: 1.2s; } .vl-spot:nth-child(6) .ic { animation-delay: 1.6s; }
+@keyframes bobspot { 50% { transform: translateY(-5px); } }
+.vl-spot .lb { font-size: .8rem; font-weight: 700; background: var(--paper); padding: 1px 8px; border-radius: 999px; white-space: nowrap; box-shadow: var(--shadow); }
+.vl-spot:hover .ic, .vl-spot.active .ic { transform: scale(1.12); border-color: var(--accent); animation: none; }
+.vl-spot.active .lb { background: var(--accent); color: var(--accent-ink); }
+
+.vl-panel { margin-top: 12px; }
+.vl-panel h3 { margin: 12px 0 8px; }
+.ba { display: flex; gap: 12px; align-items: flex-start; }
+.ba-face { font-size: 2.4rem; line-height: 1; flex: none; }
+.ba-say { position: relative; background: var(--bg-2); border-radius: 14px; padding: 10px 14px; min-height: 3.2em; }
+.ba-say::before { content: ""; position: absolute; left: -8px; top: 14px; border: 8px solid transparent; border-right-color: var(--bg-2); border-left: 0; }
+.vl-games { display: flex; flex-wrap: wrap; gap: 8px; }
+
+/* Sảnh online */
+.net-slot:empty { display: none; }
+.lobby { display: flex; flex-wrap: wrap; align-items: center; justify-content: center; gap: 8px 12px; padding: 10px; margin-bottom: 12px;
+  border: 2px dashed var(--line); border-radius: 14px; background: var(--bg-2); }
+.lobby.on { border-style: solid; border-color: var(--green); }
+.lobby .join { display: inline-flex; gap: 6px; align-items: center; }
+.lobby .input.code { width: 6.5em; font: 700 1.05rem/1.2 ui-monospace, monospace; letter-spacing: 4px; text-transform: uppercase; text-align: center;
+  padding: 7px 8px; border-radius: 10px; border: 1px solid var(--line); background: var(--paper); color: var(--ink); }
+.lobby-msg { color: var(--muted); font-weight: 600; flex-basis: 100%; text-align: center; margin: 0; }
+.lobby.on .lobby-msg { flex-basis: auto; }
+.room-code { font: 800 1.2rem ui-monospace, monospace; letter-spacing: 3px; color: var(--accent); }
+.sr { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); }
+
+@media (max-width: 560px) {
+  .vl-spot .ic { width: 40px; height: 40px; font-size: 1.3rem; border-width: 2px; }
+  .vl-spot .lb { font-size: .68rem; padding: 0 6px; }
+  .village { aspect-ratio: 4 / 3; }
+}

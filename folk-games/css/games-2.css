@@ -1,0 +1,31 @@
+
+/* ===== Đánh quay ===== */
+.game-danh-quay .dq-score { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin: 8px 0; }
+.game-danh-quay .dq-score .pl { display: flex; align-items: center; gap: 10px; padding: 6px 12px; border: 1px solid var(--line); border-radius: 12px; background: var(--paper); font-weight: 700; }
+.game-danh-quay .dq-score .pl b { font-size: 1.3rem; }
+.game-danh-quay .dq-round { font-weight: 700; color: var(--muted); }
+.game-danh-quay .dq-wrap { max-width: 440px; margin: 0 auto; }
+.game-danh-quay .dq-canvas { display: block; width: 100%; border-radius: 14px; border: 2px solid var(--wood); background: var(--bg-2); touch-action: none; cursor: pointer; }
+.game-danh-quay .dq-msg { min-height: 1.5em; margin: 8px 0 2px; text-align: center; font-weight: 600; }
+.game-danh-quay .dq-help { margin: 2px 0 10px; }
+@media (max-width: 400px) {
+  .game-danh-quay .dq-score .pl { padding: 4px 8px; gap: 6px; }
+}
+
+/* ---------- Mèo đuổi chuột ---------- */
+.game-meo-duoi-chuot .mdc-chant { display: grid; gap: 4px; max-width: 520px; margin: 0 auto 12px; min-height: 2em; }
+.game-meo-duoi-chuot .mdc-line { margin: 0; padding: 6px 12px; border-radius: 12px; background: var(--bg-2);
+  border-left: 4px solid var(--accent); animation: pop .25s; }
+.game-meo-duoi-chuot .mdc-wrap { max-width: 640px; margin: 0 auto; }
+.game-meo-duoi-chuot .mdc-canvas { display: block; width: 100%; border-radius: 16px; border: 2px solid var(--line);
+  touch-action: none; user-select: none; -webkit-user-select: none; background: var(--bg-2); }
+.game-meo-duoi-chuot .mdc-msg { text-align: center; font-weight: 600; min-height: 1.6em; margin: 12px 0 2px; }
+@media (max-width: 480px) {
+  .game-meo-duoi-chuot .mdc-line { font-size: .9rem; }
+}
+
+/* ---------- Bịt mắt bắt dê ---------- */
+.game-bit-mat .bm-wrap { max-width: 640px; margin: 0 auto; }
+.game-bit-mat .bm-canvas { display: block; width: 100%; border-radius: 16px; border: 2px solid var(--line);
+  touch-action: none; user-select: none; -webkit-user-select: none; background: var(--bg-2); }
+.game-bit-mat .bm-msg { text-align: center; font-weight: 600; min-height: 1.6em; margin: 12px 0 2px; }
