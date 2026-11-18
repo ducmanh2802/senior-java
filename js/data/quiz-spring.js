@@ -2539,6 +2539,457 @@ Cách cải thiện: chỉ số composite (status, created_at) hoặc INCLUDE (c
 > Senior tip: đọc EXPLAIN (ANALYZE, BUFFERS): Shared Hit là đọc từ bộ nhớ đệm, Shared Read là đọc từ disk. Nếu Filter loại bỏ phần lớn hàng sau Index Cond, hãy xem xét chỉ số phù hợp hơn thay vì hy vọng index hiện tại cứu được truy vấn.`
 },
 {
+  id: 'qz-jpa-901',
+  topic: 'jpa',
+  q: `Fetch type mặc định cho mối quan hệ {{ @OneToMany }} là gì?`,
+  options: [
+    'EAGER',
+    'LAZY',
+    'DEFAULT',
+    'NO_FETCH'
+  ],
+  answer: 1,
+  explain: `**Đáp án đúng: LAZY.**
+
+### Vì sao đúng
+Mặc định của {{ @OneToMany }} là LAZY để tránh tải toàn bộ dữ liệu quan hệ một cách không cần thiết.
+
+### Vì sao các phương án còn lại sai
+- **EAGER**: là mặc định của {{ @ManyToOne }} và {{ @OneToOne }}.
+- **DEFAULT / NO_FETCH**: không phải giá trị FetchType hợp lệ.
+
+> Senior tip: luôn khai báo tường minh LAZY để tránh EAGER vô tình gây N+1. Với @ManyToOne cũng nên dùng LAZY.`
+},
+{
+  id: 'qz-jpa-902',
+  topic: 'jpa',
+  multi: true,
+  q: `Các cách hiệu quả để giải quyết vấn đề N+1 là gì? (Chọn 2)`,
+  options: [
+    'Sử dụng Fetch Join trong JPQL',
+    'Sử dụng @EntityGraph',
+    'Tăng cấu hình fetch size',
+    'Luôn dùng EAGER fetch',
+    'Không bao giờ dùng transactional'
+  ],
+  answer: [0, 1],
+  explain: `**Đáp án đúng: Fetch Join và EntityGraph.**
+
+### Vì sao đúng
+- Fetch Join và EntityGraph giúp tải quan hệ ngay trong query chính, thay vì load lười (lazy load) từng cái một.
+
+### Vì sao các phương án còn lại sai
+- **Tăng fetch size**: chỉ làm batching, không giải quyết được N+1 (vẫn N+1 lần đi lại qua mạng).
+- **Luôn dùng EAGER fetch**: vẫn gây N+1 (Hibernate vẫn phải load bù từng entity khi truy vấn danh sách).
+
+> Senior tip: N+1 là nguyên nhân số 1 của "API chậm mà DB không tải". Luôn kiểm tra số câu lệnh SQL trong test integration.`
+},
+{
+  id: 'qz-jpa-903',
+  topic: 'jpa',
+  q: `Nguyên nhân chính gây ra vấn đề N+1 trong JPA là gì?`,
+  options: [
+    'Sử dụng @Id không đúng',
+    'Tải một entity sau đó truy cập quan hệ LAZY trong một vòng lặp',
+    'Sử dụng quá nhiều @Transactional',
+    'Flush mode không hợp lý'
+  ],
+  answer: 1,
+  explain: `**Đáp án đúng: tải một entity sau đó truy cập quan hệ LAZY trong vòng lặp.**
+
+### Vì sao đúng
+Khi tải một danh sách entity, nếu sau đó lặp qua danh sách và truy cập quan hệ LAZY, JPA sẽ phát sinh thêm 1 câu lệnh SQL cho mỗi entity trong danh sách (N câu cho N entity + 1 câu đầu).
+
+### Vì sao các phương án còn lại sai
+- Các phương án khác không liên quan trực tiếp tới cơ chế của N+1.
+
+> Senior tip: cẩn thận với code kiểu {{orders.stream().map(o -> o.getItems().size())}}. Đây là bẫy N+1 kinh điển.`
+},
+{
+  id: 'qz-jpa-904',
+  topic: 'jpa',
+  q: `Ưu điểm chính của việc sử dụng {{ @EntityGraph }} so với Fetch Join là gì?`,
+  options: [
+    'Nhanh hơn Fetch Join',
+    'Có thể định nghĩa linh hoạt trên repository method mà không sửa query',
+    'EntityGraph chỉ dùng được cho @ManyToOne',
+    'Giảm kích thước file jar'
+  ],
+  answer: 1,
+  explain: `**Đáp án đúng: có thể định nghĩa linh hoạt trên repository method mà không cần sửa query.**
+
+### Vì sao đúng
+{{ @EntityGraph }} cho phép tùy chỉnh đồ thị tải (fetch plan) trực tiếp trên repository method mà không cần thay đổi câu lệnh JPQL (như 'join fetch').
+
+### Vì sao các phương án còn lại sai
+- Các phương án khác không mô tả đúng tính năng hoặc không có cơ sở.
+
+> Senior tip: {{ @EntityGraph }} rất mạnh khi cần fetch các quan hệ khác nhau cho cùng một truy vấn trong các use-case khác nhau.`
+},
+{
+  id: 'qz-jpa-905',
+  topic: 'jpa',
+  q: `Việc đặt {{ @Transactional(readOnly = true) }} mang lại lợi ích gì?`,
+  options: [
+    'Chỉ có tác dụng với Oracle DB',
+    'Không có tác dụng gì',
+    'Tối ưu hóa hiệu năng, ví dụ như bỏ qua check dirty state',
+    'Tự động khóa bảng (table lock)'
+  ],
+  answer: 2,
+  explain: `**Đáp án đúng: tối ưu hóa hiệu năng, ví dụ như bỏ qua check dirty state.**
+
+### Vì sao đúng
+{{ readOnly = true }} báo cho Hibernate biết không cần theo dõi các thay đổi (dirty checking) trên các entity trong session đó, giúp tiết kiệm bộ nhớ và giảm tải CPU.
+
+### Vì sao các phương án còn lại sai
+- **Tự động khóa bảng**: không đúng.
+
+> Senior tip: luôn đặt {{ readOnly = true }} cho các method chỉ đọc. Nó không làm query nhanh hơn, nhưng làm quá trình commit/flush nhẹ hơn đáng kể.`
+},
+{
+  id: 'qz-jpa-906',
+  topic: 'jpa',
+  multi: true,
+  q: `Điều nào sau đây đúng về {{ @Transactional(readOnly = true) }}? (Chọn 2)`,
+  options: [
+    'Có thể thay đổi entity nhưng DB không lưu',
+    'Ngăn chặn mọi thay đổi DB',
+    'Giúp Hibernate tối ưu hóa flush process',
+    'Chỉ dùng được cho câu lệnh SELECT',
+    'Tăng tốc độ truy vấn'
+  ],
+  answer: [2, 4],
+  explain: `**Đáp án đúng: giúp Hibernate tối ưu hóa flush process và tăng tốc truy vấn (trên một số DB).**
+
+### Vì sao đúng
+- Phương án 2: Hibernate bỏ qua dirty checking.
+- Phương án 4: Một số DB driver có thể tối ưu hơn cho các transaction read-only.
+
+### Vì sao các phương án còn lại sai
+- **Ngăn chặn mọi thay đổi DB**: Hibernate không chặn việc gọi setter; nó chỉ không ghi lại thay đổi.
+- **Chỉ dùng cho câu lệnh SELECT**: về mặt ngữ nghĩa là vậy, nhưng code vẫn có thể chạy UPDATE (chỉ là không được lưu).
+
+> Senior tip: readOnly là lưới an toàn, không phải tường lửa. Hãy tuân thủ quy ước đặt readOnly cho method chỉ đọc.`
+},
+{
+  id: 'qz-jpa-907',
+  topic: 'jpa',
+  q: `Annotation {{ @Version }} được dùng để làm gì?`,
+  options: [
+    'Định nghĩa version của ứng dụng',
+    'Cấu hình optimistic locking',
+    'Cấu hình pessimistic locking',
+    'Quản lý cache level 2'
+  ],
+  answer: 1,
+  explain: `**Đáp án đúng: cấu hình optimistic locking.**
+
+### Vì sao đúng
+{{ @Version }} là cơ chế chính để triển khai optimistic locking trong JPA, ngăn chặn mất dữ liệu do ghi đè (lost updates).
+
+### Vì sao các phương án còn lại sai
+- Các phương án khác không liên quan.
+
+> Senior tip: luôn để một cột @Version cho các entity có tranh chấp cao. Nó cứu bạn khỏi lỗi ghi đè dữ liệu mà không cần khóa DB.`
+},
+{
+  id: 'qz-jpa-908',
+  topic: 'jpa',
+  q: `Khi optimistic locking thất bại, JPA sẽ ném ra ngoại lệ nào?`,
+  options: [
+    'OptimisticLockException',
+    'SQLException',
+    'NullPointerException',
+    'DataAccessException'
+  ],
+  answer: 0,
+  explain: `**Đáp án đúng: OptimisticLockException.**
+
+### Vì sao đúng
+Khi một entity đã được cập nhật bởi một transaction khác, JPA phát hiện version không khớp và ném ra {{ OptimisticLockException }}.
+
+### Vì sao các phương án còn lại sai
+- Các phương án khác không đúng hoặc quá tổng quát.
+
+> Senior tip: trong Spring, ngoại lệ này thường được bọc lại thành ObjectOptimisticLockingFailureException. Hãy bắt lỗi này để xử lý retry hoặc thông báo cho người dùng.`
+},
+{
+  id: 'qz-jpa-909',
+  topic: 'jpa',
+  q: `FlushModeType.AUTO trong JPA có nghĩa là gì?`,
+  options: [
+    'Flush sau mỗi câu lệnh SQL',
+    'Flush trước khi query nếu cần đảm bảo tính nhất quán',
+    'Không bao giờ tự động flush',
+    'Chỉ flush khi gọi em.flush()'
+  ],
+  answer: 1,
+  explain: `**Đáp án đúng: flush trước khi query nếu cần đảm bảo tính nhất quán.**
+
+### Vì sao đúng
+{{ FlushModeType.AUTO }} đảm bảo dữ liệu trong persistence context được đẩy xuống DB trước khi thực thi query, nếu query đó có thể bị ảnh hưởng bởi dữ liệu chưa được flush.
+
+### Vì sao các phương án còn lại sai
+- Các phương án khác không mô tả đúng FlushModeType.AUTO.
+
+> Senior tip: hiểu rõ FlushMode giúp tránh việc query ra dữ liệu cũ (stale data) ngay sau khi vừa update entity.`
+},
+{
+  id: 'qz-jpa-910',
+  topic: 'jpa',
+  multi: true,
+  q: `Các tình huống nào sau đây sẽ kích hoạt flush tự động? (Chọn 2)`,
+  options: [
+    'Kết thúc transaction',
+    'Trước khi thực thi truy vấn JPQL/SQL',
+    'Khi thay đổi giá trị field',
+    'Khi tạo entity mới',
+    'Khi chương trình kết thúc'
+  ],
+  answer: [0, 1],
+  explain: `**Đáp án đúng: kết thúc transaction và trước khi thực thi truy vấn.**
+
+### Vì sao đúng
+- Commit transaction: Hibernate flush để đảm bảo data được lưu.
+- Trước khi chạy query: Hibernate flush để đảm bảo query nhìn thấy dữ liệu mới nhất.
+
+### Vì sao các phương án còn lại sai
+- Thay đổi field, tạo mới entity không kích hoạt flush ngay (chúng chỉ làm entity trở nên dirty/managed).
+
+> Senior tip: nắm vững thời điểm flush giúp tối ưu số lượng câu lệnh SQL và tránh lỗi dữ liệu.`
+},
+
+{
+  id: 'qz-spring-911',
+  topic: 'spring',
+  q: `Cách tốt nhất để cấu hình chuỗi bộ lọc bảo mật trong Spring Security 6 là gì?`,
+  options: [
+    'Sử dụng @EnableWebSecurity và định nghĩa bean SecurityFilterChain',
+    'Kế thừa lớp WebSecurityConfigurerAdapter',
+    'Sử dụng @EnableGlobalMethodSecurity',
+    'Định nghĩa bean FilterRegistrationBean'
+  ],
+  answer: 0,
+  explain: `**Đáp án đúng: định nghĩa bean SecurityFilterChain.**
+
+### Vì sao đúng
+{{SecurityFilterChain}} là cách chuẩn trong Spring Security 6 vì lớp {{WebSecurityConfigurerAdapter}} đã bị loại bỏ. Các phương án khác không trực tiếp định nghĩa chuỗi bộ lọc bảo mật theo cách khuyến nghị.
+
+### Vì sao các phương án còn lại sai
+- **WebSecurityConfigurerAdapter**: đã deprecated từ 5.7 và bị xoá ở 6.0.
+- **EnableGlobalMethodSecurity**: dùng cho cấu hình bảo mật ở cấp độ method, không phải chuỗi bộ lọc.
+- **FilterRegistrationBean**: dùng để đăng ký Filter của Servlet API, không phải cho cấu hình chuỗi bộ lọc của Spring Security.
+
+> Senior tip: luôn khai báo tường minh {{SecurityFilterChain}} để thấy rõ thứ tự các filter, tránh lỗi ẩn do mặc định của Boot.`
+},
+{
+  id: 'qz-spring-912',
+  topic: 'spring',
+  q: `Vai trò của {{DelegatingFilterProxy}} trong Spring Security là gì?`,
+  options: [
+    'Tự động mã hóa mật khẩu người dùng',
+    'Làm cầu nối giữa Servlet container và Spring ApplicationContext',
+    'Tự động kiểm tra lỗ hổng SQL Injection',
+    'Lọc các yêu cầu trước khi đến DispatcherServlet'
+  ],
+  answer: 1,
+  explain: `**Đáp án đúng: làm cầu nối giữa Servlet container và Spring ApplicationContext.**
+
+### Vì sao đúng
+{{DelegatingFilterProxy}} là một Filter chuẩn của Servlet API, được đăng ký vào Servlet container. Nó ủy quyền xử lý thực tế cho một bean được quản lý bởi Spring bên trong {{ApplicationContext}}. Nhờ đó, bảo mật có thể dùng các tính năng của Spring (DI, AOP).
+
+### Vì sao các phương án còn lại sai
+- **Mã hóa mật khẩu**: việc của PasswordEncoder.
+- **Kiểm tra SQL Injection**: việc của PreparedStatement hoặc các thư viện chuyên dụng, không phải Filter này.
+- **Lọc trước DispatcherServlet**: DelegatingFilterProxy *thường* đứng trước, nhưng đó không phải là mô tả vai trò "cầu nối".
+
+> Senior tip: nếu thấy {{DelegatingFilterProxy}} không hoạt động, hãy kiểm tra {{web.xml}} hoặc cấu hình ServletContextListener xem SpringContext có được nạp trước không.`
+},
+{
+  id: 'qz-spring-903',
+  topic: 'spring',
+  multi: true,
+  q: `Khi triển khai ứng dụng RESTful, các chiến lược nào giúp xử lý CSRF hiệu quả? (Chọn 2)`,
+  options: [
+    'Vô hiệu hóa CSRF hoàn toàn',
+    'Sử dụng CookieCsrfTokenRepository kết hợp với SPA client (Angular/React)',
+    'Gửi CSRF token qua header HTTP thay vì body',
+    'Chỉ cần sử dụng Basic Authentication',
+    'Không cần bảo vệ CSRF cho API'
+  ],
+  answer: [1, 2],
+  explain: `**Đáp án đúng: dùng CookieCsrfTokenRepository với SPA, gửi token qua header.**
+
+### Vì sao đúng
+- CSRF token giúp đảm bảo request đến từ UI của chính ứng dụng. Với SPA, CSRF token thường được đặt vào cookie (dễ đọc ở client) và gửi lại trong header ở request tiếp theo.
+
+### Vì sao các phương án còn lại sai
+- **Vô hiệu hóa CSRF / Không cần bảo vệ**: sai lầm nghiêm trọng nếu có cookie-based auth (session).
+- **Chỉ cần Basic Authentication**: Basic Auth không bảo vệ khỏi CSRF (trình duyệt tự gửi credential).
+
+> Senior tip: nếu API hoàn toàn dùng JWT trong header Authorization và không cookie, có thể vô hiệu hoá CSRF an toàn. Hãy kiểm tra kỹ xem có cookie nào được dùng không (ví dụ cookie session từ gateway cũ).`
+},
+{
+  id: 'qz-spring-904',
+  topic: 'spring',
+  q: `Tại sao các ứng dụng RESTful sử dụng JWT thường vô hiệu hóa CSRF?`,
+  options: [
+    'Vì JWT không bao giờ bị tấn công CSRF',
+    'Vì REST không sử dụng session dựa trên cookie',
+    'Vì CSRF chỉ ảnh hưởng đến ứng dụng dùng JSP/Thymeleaf',
+    'Vì Spring Security tự động bảo vệ REST không cần CSRF'
+  ],
+  answer: 1,
+  explain: `**Đáp án đúng: vì REST thường dùng token (không cookie).**
+
+### Vì sao đúng
+CSRF tấn công bằng cách ép trình duyệt gửi cookie session tự động tới server. Nếu REST không sử dụng cookie session mà dùng JWT trong header, trình duyệt không tự động gửi, nên CSRF vô hiệu.
+
+### Vì sao các phương án còn lại sai
+- **JWT không bao giờ bị tấn công CSRF**: nếu JWT lưu trong cookie, nó vẫn bị CSRF như thường.
+- **CSRF chỉ ảnh hưởng JSP/Thymeleaf**: sai, nó ảnh hưởng mọi app dùng cookie-based auth.
+- **Spring Security tự động**: không tự động vô hiệu hóa.
+
+> Senior tip: dù dùng JWT, nếu vẫn để JWT trong cookie (để tránh XSS), thì vẫn phải bật CSRF. JWT trong header Authorization là cách an toàn nhất nhưng khó xử lý với cross-origin hơn cookie.`
+},
+{
+  id: 'qz-spring-905',
+  topic: 'spring',
+  q: `Annotation {{ @PreAuthorize }} hoạt động dựa trên cơ chế nào?`,
+  options: [
+    'Spring AOP',
+    'Filter chain',
+    'Interceptors',
+    'Spring MVC HandlerMethods'
+  ],
+  answer: 0,
+  explain: `**Đáp án đúng: Spring AOP.**
+
+### Vì sao đúng
+{{ @PreAuthorize }} thuộc tính năng "Method Security", sử dụng Spring AOP để bao quanh (wrap) method, đánh giá biểu thức SpEL trước khi cho phép hàm thực thi.
+
+### Vì sao các phương án còn lại sai
+- **Filter chain**: chuỗi bộ lọc xử lý yêu cầu HTTP trước khi vào controller, không phải method.
+- **Interceptors**: HandlerInterceptor dùng cho MVC, không kiểm soát bảo mật ở tầng Service.
+
+> Senior tip: AOP dựa trên proxy, nên {{ @PreAuthorize }} trên {{this.method()}} (self-invocation) sẽ bị bỏ qua. Phải gọi qua bean khác hoặc Inject chính class đó (proxy) vào class đó (dù design này không tốt).`
+},
+{
+  id: 'qz-spring-906',
+  topic: 'spring',
+  q: `Điều gì xảy ra nếu biểu thức trong {{ @PreAuthorize }} trả về false?`,
+  options: [
+    'Lỗi biên dịch',
+    'Ứng dụng tiếp tục thực thi nhưng trả về null',
+    'Ném ngoại lệ AccessDeniedException',
+    'Người dùng tự động bị đăng xuất'
+  ],
+  answer: 2,
+  explain: `**Đáp án đúng: ném ngoại lệ AccessDeniedException.**
+
+### Vì sao đúng
+Khi kiểm tra bảo mật không thành công, Spring Security ném {{ AccessDeniedException }}, từ đó được các exception handler xử lý để trả về lỗi 403 Forbidden.
+
+### Vì sao các phương án còn lại sai
+- **Lỗi biên dịch / lỗi khác**: không phải hành vi chuẩn.
+- **Ứng dụng tiếp tục**: Security không được phép tiếp tục khi fail.
+- **Tự động đăng xuất**: không phải hành vi mặc định khi sai quyền.
+
+> Senior tip: tùy chỉnh ExceptionTranslationFilter để trả về mã 403 hoặc 401 theo chuẩn của dự án. Với REST API, trả mã lỗi cùng Problem Details (xem câu qz-api-017) là thực tiễn tốt nhất.`
+},
+{
+  id: 'qz-spring-907',
+  topic: 'spring',
+  q: `Tại sao nên sử dụng {{ BCryptPasswordEncoder }} thay vì SHA-256?`,
+  options: [
+    'Nhanh hơn SHA-256',
+    'BCrypt hỗ trợ salt tự động và chi phí tính toán cao',
+    'SHA-256 đã bị hacker bẻ khóa hoàn toàn',
+    'BCrypt là chuẩn bắt buộc của Spring'
+  ],
+  answer: 1,
+  explain: `**Đáp án đúng: BCrypt hỗ trợ salt tự động và chi phí tính toán cao.**
+
+### Vì sao đúng
+BCrypt là một hàm băm mật khẩu có tính năng "salt" tự động và có tham số "cost factor" để chống lại các cuộc tấn công brute-force. SHA-256 (không có salt) là hàm băm tổng quát, không dành riêng cho mật khẩu.
+
+### Vì sao các phương án còn lại sai
+- **Nhanh hơn**: BCrypt cố tình làm chậm để bảo mật; nhanh hơn là bất lợi.
+- **SHA-256 bị bẻ khóa**: sai, SHA-256 vẫn tốt, nhưng thiếu muối (salt) và quá nhanh để brute-force.
+- **Chuẩn bắt buộc**: Spring Security hỗ trợ nhiều encoder (Argon2, SCrypt), BCrypt chỉ là mặc định khuyến nghị.
+
+> Senior tip: lưu ý "cost factor" trong BCrypt. Khi hardware mạnh hơn, hãy tăng cost factor để giữ độ trễ băm mật khẩu ở mức an toàn (thường > 100ms).`
+},
+{
+  id: 'qz-spring-908',
+  topic: 'spring',
+  q: `Password Encoder trong Spring Security cần đảm bảo điều gì?`,
+  options: [
+    'Mật khẩu được mã hóa phải có thể giải mã ngược',
+    'Mật khẩu được băm phải một chiều và khó đoán',
+    'Mật khẩu phải được lưu dưới dạng Base64',
+    'Sử dụng mã hóa đối xứng AES'
+  ],
+  answer: 1,
+  explain: `**Đáp án đúng: mật khẩu được băm phải một chiều và khó đoán.**
+
+### Vì sao đúng
+Mật khẩu lưu trong DB phải được băm một chiều. Không được phép giải mã ngược mật khẩu gốc. Salt giúp mỗi lần băm một mật khẩu giống nhau ra kết quả khác nhau.
+
+### Vì sao các phương án còn lại sai
+- **Giải mã ngược**: vi phạm nguyên tắc băm mật khẩu.
+- **Lưu dạng Base64 / Mã hóa đối xứng**: Base64 không phải mã hóa, mã hóa đối xứng (như AES) cho phép giải mã, không an toàn để lưu mật khẩu.
+
+> Senior tip: luôn lưu password băm; nếu DB lộ, kẻ tấn công cũng không có mật khẩu của người dùng. Dùng DelegatingPasswordEncoder nếu muốn hỗ trợ nhiều thuật toán băm cũ/mới song song để migrate.`
+},
+{
+  id: 'qz-spring-909',
+  topic: 'spring',
+  multi: true,
+  q: `Khi cấu hình JWT Resource Server, những thông tin nào cần xác thực từ token? (Chọn 2)`,
+  options: [
+    'Chữ ký của token (Signature)',
+    'Thời gian hết hạn (Expiration)',
+    'Màu sắc của token',
+    'IP của người dùng',
+    'Password người dùng'
+  ],
+  answer: [0, 1],
+  explain: `**Đáp án đúng: chữ ký của token và thời gian hết hạn.**
+
+### Vì sao đúng
+- Xác thực chữ ký đảm bảo token đến từ nguồn tin cậy.
+- Kiểm tra thời gian hết hạn đảm bảo token còn hiệu lực.
+
+### Vì sao các phương án còn lại sai
+- **Màu sắc / IP / Password**: không nằm trong JWT.
+
+> Senior tip: luôn kiểm tra {{iss}} (issuer) và {{aud}} (audience) của JWT để bảo đảm nó được phát hành cho đúng ứng dụng của bạn, tránh bị lừa bởi token hợp lệ nhưng phát hành cho ứng dụng khác của cùng nhà cung cấp.`
+},
+{
+  id: 'qz-spring-910',
+  topic: 'spring',
+  q: `Phương thức {{ jwt() }} trong SecurityFilterChain có tác dụng gì?`,
+  options: [
+    'Vô hiệu hóa hoàn toàn bảo mật',
+    'Cấu hình ứng dụng thành JWT Resource Server',
+    'Chỉ dùng để tạo mới JWT',
+    'Chỉ dùng để xóa JWT'
+  ],
+  answer: 1,
+  explain: `**Đáp án đúng: cấu hình ứng dụng thành JWT Resource Server.**
+
+### Vì sao đúng
+{{ jwt() }} trong cấu hình chuỗi bộ lọc bảo mật chỉ định rằng ứng dụng sẽ đóng vai trò là một JWT Resource Server để xác thực các JWT nhận được trong header Authorization.
+
+### Vì sao các phương án còn lại sai
+- **Vô hiệu hóa hoàn toàn**: không đúng.
+- **Tạo mới / Xóa**: Resource Server chỉ xác thực, không phát hành token (việc của Authorization Server).
+
+> Senior tip: JWT Resource Server chỉ kiểm tra token. Để quản lý danh sách token bị thu hồi, hãy tích hợp với denylist hoặc tra cứu tại Authorization Server.`
+},
+{
   id: 'qz-api-026',
   topic: 'api',
   q: 'Ứng dụng bán vé cần cho khách hủy một đơn hàng. Việc hủy có thể bị từ chối nếu vé đã phát hành, đồng thời hệ thống cần lưu thời điểm và lý do hủy. Thiết kế endpoint nào phù hợp nhất?',
@@ -3995,7 +4446,7 @@ java -jar app.jar --debug | grep -A 3 "Negative matches" | head -50
 > Senior tip: đừng lạm dụng @Lazy để "chữa" mọi vấn đề khởi động. Nếu một bean @Lazy hoá ra luôn được dùng trong 5 phút đầu, bạn chỉ dời chi phí khởi tạo sang request của khách hàng. Vòng phụ thuộc thật sự thì nên tách bean hoặc dùng event.`
 },
 {
-  id: 'qz-spring-052',
+  id: 'qz-spring-901',
   topic: 'spring',
   q: 'Một ứng dụng Spring Boot 3 (Spring 6.2) dùng field injection: {{@Autowired private OrderRepository repo;}}. Điều gì xảy ra nếu không có bean {{OrderRepository}} nào trong context?',
   options: [
@@ -4029,7 +4480,7 @@ java -jar app.jar --debug | grep -A 3 "Negative matches" | head -50
 > Senior tip: constructor injection là mặc định ngầm định của các dự án Spring hiện đại (Spring 4.3+ không cần @Autowired khi chỉ có một constructor). Khi review, một constructor dài 6–7 tham số là tín hiệu tách class.`
 },
 {
-  id: 'qz-spring-053',
+  id: 'qz-spring-902',
   topic: 'spring',
   q: '{{PaymentService.applyRefund}} là method {{public}} có {{@Transactional}}, được gọi từ {{OrderController}} qua bean {{paymentService}} (đi qua proxy). Câu nào mô tả đúng thứ tự các bước Spring thực hiện?',
   options: [
@@ -4972,34 +5423,618 @@ Nếu {{UserRequest}} có field {{Address address}}, chỉ khi field đó có {{
   ],
   answer: 0,
   explain: `**Đáp án đúng: spring.autoconfigure.exclude.**
-
+ 
 ### Nó làm gì
 {{spring.autoconfigure.exclude}} nhận danh sách tên class auto-configuration (phân cách bằng dấu phẩy) cần **loại bỏ** khỏi quá trình nạp. Spring sẽ không xử lý các class đó, nghĩa là không tạo bean mặc định của chúng. Ví dụ trên tắt {{RedisAutoConfiguration}} (không tạo {{RedisConnectionFactory}}, {{RedisTemplate}}), nhưng dependency vẫn còn trên classpath để bạn tự khai báo bean khi cần.
-
+ 
 ~~~yaml
 spring:
   autoconfigure:
     exclude:
       - org.springframework.boot.autoconfigure.data.redis.RedisAutoConfiguration
 ~~~
-
+ 
 ### Các cách khác
 - {{@SpringBootApplication(exclude = RedisAutoConfiguration.class)}} hoặc {{@EnableAutoConfiguration(exclude = ...)}}: cùng mục đích, nhưng khai báo bằng code (compile-time, IDE bắt được lỗi chính tả).
 - Một số auto-config có property riêng để tắt, ví dụ {{management.health.redis.enabled=false}} (chỉ tắt health indicator), hoặc {{spring.cache.type=none}}. Với Redis thì không có property "enabled" chung, nên exclude là cách chuẩn.
 - Nếu auto-config được điều kiện bằng {{@ConditionalOnClass}}, bỏ dependency cũng làm nó không nạp — nhưng bạn nói vẫn muốn giữ dependency.
-
+ 
 ### Vì sao không dùng các cách khác
 - **Xóa @SpringBootApplication**: mất luôn component scan và auto-configuration; ứng dụng gần như không chạy được.
 - **allow-bean-definition-overriding**: cho phép bean sau ghi đè bean trước; không liên quan tới việc tắt auto-config, và bật nó thường che giấu lỗi trùng bean rất nguy hiểm.
 - **management.endpoints...exclude**: chỉ ảnh hưởng endpoint Actuator, không ảnh hưởng việc tạo bean.
-
+ 
 ### Lỗi hay gặp
 Sai tên class trong exclude → ứng dụng **fail lúc khởi động** với thông báo "The following classes could not be excluded because they are not auto-configuration classes". Đây là tính năng tốt: nó chặn lỗi chính tả. Nếu bạn tự viết auto-config và muốn cho phép tắt, hãy đặt tên class rõ ràng và ghi vào tài liệu.
-
+ 
 ### Trả lời phỏng vấn
 "Tôi tắt auto-config bằng spring.autoconfigure.exclude hoặc @EnableAutoConfiguration(exclude=...). Nó loại đúng class auto-config khỏi quá trình nạp; sai tên sẽ fail fast lúc khởi động. Nếu chỉ cần tắt health check thì dùng property riêng của module đó."
-
+ 
 > Senior tip: trên production, việc tắt auto-config nên đi kèm lý do rõ ràng trong comment hoặc tài liệu, vì người sau sẽ thắc mắc "vì sao RedisTemplate không có ở đây?". Ưu tiên dùng property chính thức của module nếu có, exclude chỉ là phương án cuối.`
 },
+{
+  id: 'qz-spring-086',
+  topic: 'spring',
+  q: `Ứng dụng Spring Boot 3 dùng Spring Security 6. Cấu hình sau khai báo **hai** bean {{SecurityFilterChain}}, mỗi bean có {{securityMatcher}} khác nhau:
+~~~java
+@Bean @Order(1)
+SecurityFilterChain api(HttpSecurity http) throws Exception {
+    return http
+        .securityMatcher("/api/**")
+        .authorizeHttpRequests(a -> a.requestMatchers("/api/public/**").permitAll().anyRequest().authenticated())
+        .oauth2ResourceServer(OAuth2ResourceServerConfigurer::jwt)
+        .build();
+}
 
+@Bean @Order(2)
+SecurityFilterChain web(HttpSecurity http) throws Exception {
+    return http
+        .securityMatcher("/admin/**")
+        .authorizeHttpRequests(a -> a.anyRequest().hasRole("ADMIN"))
+        .formLogin(Customizer.withDefaults())
+        .build();
+}
+~~~
+Request {{GET /api/orders}} (có header Authorization: Bearer <jwt>) được xử lý bởi chuỗi nào?`,
+  options: [
+    'Chuỗi {{web}} (Order 2), vì nó được khai báo sau nên ưu tiên hơn',
+    'Cả hai chuỗi nối tiếp nhau: request đi qua chuỗi api rồi tiếp tục chuỗi web',
+    'Chuỗi {{api}} (Order 1) xử lý; chuỗi web không được áp dụng vì matcher không khớp',
+    'Spring báo lỗi khởi động vì không được khai báo nhiều SecurityFilterChain'
+  ],
+  answer: 2,
+  explain: `**Đáp án đúng: chuỗi api (Order 1) xử lý request; chuỗi web không áp dụng.**
+ 
+### Vì sao đúng
+Trong Spring Security 6, mỗi {{SecurityFilterChain}} là một bộ lọc độc lập gắn với một {{securityMatcher}}. Khi request đến, Spring duyệt các chuỗi theo thứ tự {{@Order}} tăng dần và **chọn chuỗi đầu tiên** mà {{securityMatcher}} khớp. {{/api/orders}} khớp {{/api/**}} nên chuỗi 1 (Order 1) xử lý và dừng; request không bao giờ rơi xuống chuỗi 2. Chuỗi 2 có matcher {{/admin/**}} hoàn toàn không khớp với đường dẫn này.
+ 
+### Vì sao các phương án còn lại sai
+- **Chuỗi web vì khai báo sau**: thứ tự được quyết định bởi {{@Order}}, không phải thứ tự khai báo trong code. Order 1 chạy trước Order 2.
+- **Nối tiếp hai chuỗi**: một request chỉ đi qua **một** chuỗi filter duy nhất, không nối tiếp. Đây khác với cách filter servlet truyền thống.
+- **Báo lỗi khi khai báo nhiều**: hoàn toàn hợp lệ; đây là cách chuẩn để tách cấu hình API (stateless, JWT) và web (stateful, form login).
+ 
+### Lưu ý quan trọng
+Nếu chuỗi 1 khai báo matcher rộng {{/**}} và đặt Order thấp (số nhỏ), nó sẽ "ăn" mọi request và các chuỗi sau thành vô dụng. Luôn đặt chuỗi **cụ thể** (matcher hẹp) lên trước, chuỗi **chung** xuống sau.
+ 
+> Senior tip: dùng {{spring-security-test}}'s {{MockMvc}} để viết test xác nhận mỗi endpoint đi đúng chuỗi mong muốn, tránh lỗ hổng "quên route" do matcher lỡ tay rộng.`
+},
+{
+  id: 'qz-spring-087',
+  topic: 'spring',
+  q: `API REST stateless dùng JWT, không dùng session, FE gọi từ domain khác. Cấu hình Spring Security 6 nào là **hợp lý nhất**? (Chọn 3)
+ 
+~~~java
+@Bean
+SecurityFilterChain api(HttpSecurity http) throws Exception {
+    return http
+        .csrf(csrf -> csrf.disable())
+        .cors(cors -> cors.configurationSource(corsConfigurationSource()))
+        .sessionManagement(s -> s.sessionCreationPolicy(SessionCreationPolicy.STATELESS))
+        .authorizeHttpRequests(a -> a
+            .requestMatchers("/actuator/health").permitAll()
+            .anyRequest().authenticated())
+        .oauth2ResourceServer(OAuth2ResourceServerConfigurer::jwt)
+        .build();
+}
+~~~`,
+  multi: true,
+  options: [
+    'Tắt CSRF ({{csrf().disable()}}) vì JWT stateless không có session cookie để bảo vệ',
+    'Bật CORS ({{cors()}}) để cho phép domain của FE gọi API',
+    'Bật lại CSRF token trong header để an toàn hơn cho JWT',
+    'Đặt {{sessionCreationPolicy(STATELESS)}} để không tạo HttpSession',
+    'Dùng {{permitAll()}} cho mọi endpoint {{/actuator/**}}'
+  ],
+  answer: [0, 1, 3],
+  explain: `**Đáp án đúng: tắt CSRF, bật CORS, đặt session STATELESS.**
+ 
+### Vì sao đúng
+- **CSRF**: khai thác việc trình duyệt **tự động gửi cookie** session. API stateless dùng JWT (thường gửi trong header Authorization) không có cookie để kẻ tấn công lợi dụng, nên tắt CSRF là chuẩn.
+- **CORS**: là cơ chế của **trình duyệt**, cần cấu hình để domain FE khác được phép gọi. Đây là việc của Spring Security hoặc WebMvc, không phải "tắt bảo mật".
+- **STATELESS**: Spring không tạo và không dùng HttpSession, phù hợp API thuần JWT.
+ 
+### Vì sao các phương án còn lại sai
+- **Bật lại CSRF cho JWT**: không cần và gây rắc rối; JWT không dựa vào cookie. (Nếu sau này bạn chuyển sang cookie httpOnly thì mới cần bật lại.)
+- **permitAll mọi /actuator/**: rất nguy hiểm, /actuator/env và /actuator/heapdump có thể lộ secret và dữ liệu bộ nhớ. Chỉ permitAll đúng endpoint cần (thường là /actuator/health cho probe) và tách cổng actuator riêng.
+ 
+> Senior tip: nguyên tắc là **tắt cái không cần, mở đúng cái cần**. Với JWT, hãy để token trong Authorization header (không phải cookie) và đặt chính sách CORS whitelist rõ ràng thay vì {{allowedOrigins("*")}} khi dùng credentials.`
+},
+{
+  id: 'qz-spring-088',
+  topic: 'spring',
+  q: `Spring Security 6, method security bật bằng {{@EnableMethodSecurity}}. Service sau:
+~~~java
+@Service
+public class OrderService {
+    @PreAuthorize("hasRole('ADMIN') or @orderSecurity.isOwner(authentication, #id)")
+    public void cancel(Long id) { ... }
+ 
+    @PreAuthorize("hasRole('USER')")
+    public void view(Long id) { ... }
+}
+~~~
+{{orderSecurity.isOwner}} là một bean {{@Component}} có method:
+~~~java
+public boolean isOwner(Authentication auth, Long orderId) { ... }
+~~~
+Phát biểu nào đúng về cách Spring Security xử lý biểu thức này?`,
+  options: [
+    'Biểu thức {{@orderSecurity.isOwner(...)}} không được phép vì chỉ hỗ trợ SpEL truy cập bean không có tham số',
+    'Spring Security gọi method bean với hai đối số: {{authentication}} (principal hiện tại) và {{#id}} (tham số method cancel); bean phải là singleton',
+    '@PreAuthorize chỉ chạy khi method được gọi từ bean khác (qua proxy); gọi this.cancel() trong cùng class thì biểu thức bị bỏ qua',
+    'Cả B và C đều đúng'
+  ],
+  answer: 3,
+  explain: `**Đáp án đúng: cả hai phát biểu đều đúng — Spring truyền authentication và tham số method vào bean, và @PreAuthorize bị bỏ qua khi self-invocation.**
+ 
+### Vì sao đúng
+1. **Truyền tham số vào bean**: Trong SpEL của {{@PreAuthorize}}, {{@beanName.method(arg)}} cho phép gọi method của bất kỳ bean nào trong context. Spring Security tự động truyền:
+   - {{authentication}}: object {{Authentication}} hiện tại (có sẵn trong SecurityContext)
+   - {{#id}}: giá trị của tham số method có tên {{id}} (hoặc {{#a0}} cho tham số đầu tiên)
+   Bean {{orderSecurity}} phải là singleton (mặc định) để proxy method security tìm thấy nó.
+ 
+2. **Self-invocation bỏ qua proxy**: {{@PreAuthorize}} (và {{@PostAuthorize}}, {{@Secured}}) hoạt động nhờ **proxy AOP** (do {{@EnableMethodSecurity}} tạo). Chỉ lời gọi từ **bên ngoài qua proxy** mới kích hoạt kiểm tra. Gọi {{this.cancel()}} trong cùng class là self-invocation, bỏ qua proxy, nên biểu thức **không được đánh giá** — method chạy như bình thường không có authorize.
+ 
+### Cách sửa self-invocation
+- Tách logic authorize ra bean khác, inject và gọi qua bean đó.
+- Hoặc dùng {{AopContext.currentProxy()}} sau khi bật {{@EnableAspectJAutoProxy(exposeProxy = true)}}.
+ 
+### Trả lời phỏng vấn
+"@PreAuthorize dùng SpEL, có thể gọi bean @Component với @beanName.method(authentication, #param). Nhưng nó dùng proxy AOP, nên this.method() trong cùng class bỏ qua kiểm tra — đây là bẫy self-invocation quen thuộc như @Transactional."
+ 
+> Senior tip: khi review code, tìm các lời gọi this.method() tới method có @PreAuthorize/@PostAuthorize/@Secured — đó là nơi authorize "biến mất" mà không có cảnh báo.`
+},
+{
+  id: 'qz-spring-089',
+  topic: 'spring',
+  q: `Ứng dụng Spring Boot 3 dùng Spring Security 6. Password encoder được cấu hình:
+~~~java
+@Bean
+PasswordEncoder passwordEncoder() {
+    return new BCryptPasswordEncoder(12); // strength = 12
+}
+~~~
+Một user đăng ký với mật khẩu "Abc@123456". Bảng {{users}} lưu hash. Hôm sau, dev đổi strength thành 10 và deploy. User đăng nhập lại thì sao?`,
+  options: [
+    'Đăng nhập thất bại vì hash cũ (strength 12) không khớp với encoder mới (strength 10)',
+    'Đăng nhập thành công: BCrypt encoder tự phát hiện strength từ hash đã lưu và verify đúng',
+    'Ném exception vì strength không khớp giữa encode và verify',
+    'Đăng nhập thành công nhưng hash được ghi đè lại bằng strength 10'
+  ],
+  answer: 1,
+  explain: `**Đáp án đúng: đăng nhập thành công, BCrypt tự phát hiện strength từ hash.**
+ 
+### Vì sao đúng
+{{BCryptPasswordEncoder}} (và {{Pbkdf2PasswordEncoder}}, {{SCryptPasswordEncoder}}) lưu **cả tham số strength/salt/iterations** ngay trong chuỗi hash. Định dạng hash BCrypt:
+~~~text
+$2a$12$N9qo8uLOickgx2ZMRZoMyeIjZAgcfl7p92ldGxad68LJZdL17lhWy
+ |  |  |
+ |  |  └── salt (22 ký tự)
+ |  └────── strength (cost factor = 12)
+ └───────── thuật toán + version
+~~~
+Khi {{matches(rawPassword, storedHash)}}, encoder đọc strength từ hash (12) chứ **không** dùng strength của instance hiện tại (10). Do đó verify vẫn đúng. Khi user đổi mật khẩu lần sau, hash mới sẽ được tạo với strength 10.
+ 
+### Vì sao các phương án còn lại sai
+- **Thất bại vì strength không khớp**: đây là hiểu lầm phổ biến; encoder không dùng strength của instance để verify.
+- **Ném exception**: BCrypt không ném exception khi strength khác; nó chỉ đọc từ hash.
+- **Ghi đè hash ngay**: hash chỉ được cập nhật khi encode lại (ví dụ user đổi password), không phải lúc verify.
+ 
+> Senior tip: migration strength an toàn: chỉ đổi strength trong config; user cũ vẫn đăng nhập được, hash mới sẽ dùng strength mới. Nếu muốn ép tất cả user cập nhật, có thể thêm cờ {{needsRehash}} hoặc kiểm tra strength khi login và encode lại.`
+},
+{
+  id: 'qz-spring-090',
+  topic: 'spring',
+  q: `Resource Server dùng JWT (Spring Security 6, {{oauth2ResourceServer().jwt()}}). Token có claim {{scope: "read write"}}, {{client_id: "mobile-app"}}, và {{exp}} hợp lệ. Cấu hình:
+~~~java
+.authorizeHttpRequests(a -> a
+    .requestMatchers(HttpMethod.GET, "/api/**").hasAuthority("SCOPE_read")
+    .requestMatchers(HttpMethod.POST, "/api/**").hasAuthority("SCOPE_write")
+    .anyRequest().authenticated())
+~~~
+Request {{GET /api/orders}} với token trên bị từ chối (403). Nguyên nhân là gì?`,
+  options: [
+    'JWT parser mặc định không map claim "scope" thành authority; cần cấu hình JwtAuthenticationConverter',
+    'Token thiếu claim "authorities" nên Spring không có authority nào để so khớp',
+    'hasAuthority yêu cầu exact match "read" chứ không phải "SCOPE_read"',
+    'GET /api/orders cần SCOPE_write vì là truy xuất dữ liệu quan trọng'
+  ],
+  answer: 0,
+  explain: `**Đáp án đúng: JWT parser mặc định không map claim "scope" thành authority; cần JwtAuthenticationConverter.**
+ 
+### Vì sao đúng
+Spring Security 6 khi parse JWT, mặc định tạo authority từ claim {{scope}} **chỉ khi** bạn cấu hình {{JwtAuthenticationConverter}} với {{setJwtGrantedAuthoritiesConverter}}. Mặc định, {{JwtAuthenticationConverter}} chỉ tạo authority từ claim {{authorities}} (nếu có) hoặc {{roles}}.
+ 
+Claim {{scope: "read write"}} trong JWT **không tự động** thành {{SCOPE_read}} {{SCOPE_write}}. Bạn phải cấu hình:
+~~~java
+@Bean
+JwtAuthenticationConverter jwtAuthenticationConverter() {
+    JwtAuthenticationConverter converter = new JwtAuthenticationConverter();
+    converter.setJwtGrantedAuthoritiesConverter(jwt -> {
+        String scope = jwt.getClaimAsString("scope");
+        if (scope == null) return List.of();
+        return Arrays.stream(scope.split(" "))
+            .map(s -> "SCOPE_" + s)
+            .map(SimpleGrantedAuthority::new)
+            .collect(Collectors.toList());
+    });
+    return converter;
+}
+
+@Bean
+SecurityFilterChain api(HttpSecurity http) throws Exception {
+    return http
+        .oauth2ResourceServer(oauth2 -> oauth2
+            .authenticationManagerResolver(resolver -> resolver.jwt(jwtConfigurer -> jwtConfigurer.jwtAuthenticationConverter(jwtAuthenticationConverter())))
+        )
+        ...
+        .build();
+}
+~~~
+ 
+### Vì sao các phương án còn lại sai
+- **Token thiếu claim authorities**: JWT thường dùng "scope" (OAuth2) chứ không phải "authorities" (Spring Security cụ thể).
+- **hasAuthority yêu cầu exact match "read"**: {{hasAuthority("SCOPE_read")}} khớp authority {{SCOPE_read}} — tiền tố SCOPE_ là quy ước của Spring.
+- **Cần SCOPE_write**: GET thường dùng read scope.
+ 
+> Senior tip: luôn kiểm tra authority thực tế bằng breakpoint hoặc log {{authentication.getAuthorities()}} sau khi cấu hình converter. Đây là lỗi #1 khi setup resource server JWT.`
+},
+{
+  id: 'qz-spring-091',
+  topic: 'spring',
+  q: `CSRF protection trong Spring Security 6 với ứng dụng **Single Page Application (React/Vue)** gọi API REST stateless (JWT trong header Authorization). Cách cấu hình CSRF phù hợp nhất?`,
+  options: [
+    'Bật CSRF mặc định (cookie) và đọc token từ cookie XSRF-TOKEN gửi trong header X-XSRF-TOKEN',
+    'Tắt CSRF hoàn toàn ({{csrf().disable()}}) vì API stateless JWT không có session cookie',
+    'Dùng {{CsrfTokenRequestAttributeHandler}} để lưu token trong request attribute, FE đọc từ meta tag',
+    'Bật CSRF với {{CookieCsrfTokenRepository.withHttpOnlyFalse()}} và FE gửi token trong header'
+  ],
+  answer: 1,
+  explain: `**Đáp án đúng: tắt CSRF vì API stateless JWT không có session cookie.**
+ 
+### Vì sao đúng
+CSRF (Cross-Site Request Forgery) khai thác việc trình duyệt **tự động gửi cookie** (session cookie) khi request cross-origin. API REST stateless dùng JWT:
+- JWT thường gửi trong header **Authorization: Bearer ...** (không phải cookie)
+- Không có session cookie → trình duyệt không tự gắn credential → không có mặt tấn công CSRF
+- Vì vậy **tắt CSRF là chuẩn** cho kiến trúc này.
+ 
+### Vì sao các phương án còn lại sai
+- **Bật CSRF mặc định (cookie)**: cần session cookie; JWT không dùng session cookie nên cơ chế này vô hiệu.
+- **CsrfTokenRequestAttributeHandler**: dùng cho server-side rendering (Thymeleaf) nơi form đọc token từ attribute; không phù hợp SPA tách biệt.
+- **CookieCsrfTokenRepository**: vẫn cần cookie; nếu bạn lưu JWT trong cookie httpOnly thì mới cần bật CSRF, nhưng lúc đó architecture đã khác (stateful cookie-based).
+ 
+### Khi nào CẦN bật CSRF
+- Ứng dụng web truyền thống (server-side rendering) dùng session cookie.
+- SPA dùng **cookie httpOnly** để lưu access token (không dùng header Authorization).
+- Form đăng nhập/đăng ký công khai (login page) — Spring Security bật CSRF mặc định cho form login.
+ 
+> Senior tip: với JWT trong header Authorization, {{csrf().disable()}} là đúng. Nếu sau này đổi sang cookie httpOnly, hãy bật lại {{csrf()}} và cấu hình {{CookieCsrfTokenRepository.withHttpOnlyFalse()}} (để JS đọc được) hoặc dùng pattern double-submit cookie.`
+},
+{
+  id: 'qz-jpa-042',
+  topic: 'jpa',
+  q: `Entity {{Order}} có quan hệ {{@OneToMany(mappedBy = "order") List<OrderItem> items}} (mặc định LAZY). Code sau chạy trong transaction:
+~~~java
+List<Order> orders = orderRepo.findAll(); // 100 order
+for (Order o : orders) {
+    System.out.println(o.getItems().size()); // truy cập collection lazy
+}
+~~~
+Log SQL cho thấy 101 câu SELECT. Vấn đề này gọi là gì và các cách sửa nào đúng?
+ 
+~~~text
+1. N+1 select problem: 1 câu lấy orders + 100 câu lấy items cho từng order
+2. Eager loading problem: Hibernate load sẵn items nên chậm
+3. Sửa bằng @EntityGraph(attributePaths = "items") trên method repository
+4. Sửa bằng @BatchSize(size = 20) trên field items
+5. Sửa bằng join fetch trong JPQL: select o from Order o join fetch o.items
+~~~`,
+  options: [
+    '1, 3',
+    '1, 4',
+    '1, 3, 5',
+    '2, 3, 4'
+  ],
+  answer: 2,
+  explain: `**Đáp án đúng: N+1 select problem; sửa bằng @EntityGraph, @BatchSize, hoặc JOIN FETCH.**
+ 
+### Vì sao đúng
+- **N+1 select problem**: 1 câu SELECT lấy 100 order, sau đó **N=100** câu SELECT thêm — mỗi câu nạp items của một order. Nguyên nhân: {{@OneToMany}} mặc định **LAZY**, nên lúc {{findAll()}} chỉ load order; khi code gọi {{o.getItems()}}, Hibernate phải chạy câu SELECT riêng cho từng order.
+- Ba cách sửa chuẩn:
+  1. **JOIN FETCH**: {{@Query("select o from Order o join fetch o.items")}} — 1 câu SQL, trả về order kèm items. Cẩn thận: không dùng với Pageable (sẽ load toàn bộ rồi phân trang trong bộ nhớ, mã HHH90003004).
+  2. **@EntityGraph**: {{@EntityGraph(attributePaths = "items")}} trên method repository — cho phép fetch graph tùy biến, dùng được với Pageable nếu không fetch collection.
+  3. **@BatchSize(size = 20)**: trên field {{items}} — gom 20 order_id vào một câu {{SELECT ... WHERE order_id IN (...)}}, giảm từ 100 câu xuống 5 câu. An toàn với Pageable và nhiều collection.
+ 
+### Vì sao các phương án còn lại sai
+- **Eager loading problem**: ngược lại, LAZY mới gây N+1; EAGER sẽ load items ngay trong câu đầu (nhưng JPQL vẫn gây N+1 khi load bù, xem qz-jpa-009).
+- Chỉ chọn 1 cách sửa: cả 3 cách đều đúng và dùng tùy ngữ cảnh.
+ 
+> Senior tip: @BatchSize là "vũ khí im lặng" an toàn nhất cho collection to-many: không thay đổi câu query chính, không gây tích Descartes, dùng được với Pageable. Đặt {{hibernate.default_batch_fetch_size=20}} cho toàn app nếu không muốn annotate từng field.`
+},
+{
+  id: 'qz-jpa-043',
+  topic: 'jpa',
+  q: `Service đọc dữ liệu chỉ để hiển thị (không sửa), method có {{@Transactional(readOnly = true)}}. Phát biểu nào **KHÔNG** phải lợi ích của readOnly?`,
+  options: [
+    'Hibernate bỏ qua dirty checking và không giữ snapshot, giảm CPU và heap',
+    'Connection JDBC được đặt read-only, cho phép driver/DB tối ưu hoặc routing sang read replica',
+    'Transaction readOnly không cần connection từ pool (chạy không connection)',
+    'Flush mode được đặt MANUAL, nên không có flush tự động lúc commit'
+  ],
+  answer: 2,
+  explain: `**Đáp án đúng: readOnly vẫn cần connection từ pool.**
+ 
+### Vì sao đúng
+{{@Transactional(readOnly = true)}} mang lại các lợi ích thực tế:
+1. **Bỏ dirty checking**: Hibernate đặt session read-only, flush mode MANUAL. Entity load ra không giữ snapshot, commit không duyệt entity để so sánh — tiết kiệm CPU/heap lớn với hàng nghìn entity.
+2. **Connection read-only**: Spring gọi {{Connection.setReadOnly(true)}}. Driver có thể tối ưu (PostgreSQL chuyển transaction sang READ ONLY), {{AbstractRoutingDataSource}} có thể route sang read replica dựa trên {{TransactionSynchronizationManager.isCurrentTransactionReadOnly()}}.
+3. **Flush mode MANUAL**: chỉ {{em.flush()}} gọi tay mới đẩy thay đổi; nhưng vì method chỉ đọc nên cũng không có gì để flush.
+ 
+### Vì sao phương án "không cần connection" sai
+Transaction read-only **vẫn lấy một connection từ pool** và giữ nó tới hết method. Nó không phải "chạy không connection". Connection được trả về pool sau khi method kết thúc (commit/rollback của transaction read-only là no-op về mặt dữ liệu nhưng vẫn đóng transaction).
+ 
+### Cạm bẫy
+Khi dùng routing sang replica, nhớ **replication lag**: luồng "ghi xong đọc lại ngay" phải đọc từ primary, nếu không user thấy dữ liệu cũ. Đừng để readOnly che lấp việc thiếu index hoặc query kém.
+ 
+> Senior tip: pattern phổ biến là đặt {{@Transactional(readOnly = true)}} ở mức class service, rồi ghi đè {{@Transactional}} (mặc định readWrite) trên các method ghi.`
+},
+{
+  id: 'qz-jpa-044',
+  topic: 'jpa',
+  q: `Entity {{Product}} có {{@Version Long version}}. Hai request cùng cập nhật giá sản phẩm id=100:
+~~~java
+// Request A (version=5)          // Request B (version=5)
+product.setPrice(90);              product.setPrice(80);
+productRepo.save(product);         productRepo.save(product);
+// A commit trước                  // B commit sau
+~~~
+Kết quả của request B?`,
+  options: [
+    'B bị chặn (block) cho tới khi A commit, rồi đọc bản ghi mới nhất',
+    'B ném OptimisticLockException (Spring bọc thành ObjectOptimisticLockingFailureException): UPDATE kèm WHERE version=5 không khớp vì version đã thành 6',
+    'B commit thành công và ghi đè price của A (last write wins)',
+    'B ném StaleObjectStateException ngay khi gọi save()'
+  ],
+  answer: 1,
+  explain: `**Đáp án đúng: B nhận OptimisticLockException khi flush, vì điều kiện version không khớp.**
+ 
+### Vì sao đúng
+- {{@Version}} thêm cột version. Lúc load, entity giữ version=5. Câu UPDATE của Hibernate: {{update product set price=?, version=6 where id=? and version=5}}.
+- A commit trước: UPDATE khớp (DB version=5) → 1 dòng thay đổi, DB version thành 6.
+- B commit sau: DB version đã là 6, câu UPDATE vẫn mang {{where version=5}} → **0 dòng** bị ảnh hưởng → Hibernate ném {{OptimisticLockException}} (Spring bọc thành {{ObjectOptimisticLockingFailureException}}, thường map sang HTTP 409).
+- Lỗi xảy ra ở **flush lúc commit**, không phải lúc {{save()}}: save chỉ đưa entity vào hàng chờ. Do đó retry phải bọc **ngoài** transaction.
+ 
+### Vì sao các phương án còn lại sai
+- **Ghi đè bản A**: đó là "last write wins" — chính thứ @Version sinh ra để chặn.
+- **Bị chặn (block)**: đó là pessimistic lock ({{SELECT ... FOR UPDATE}}, xem qz-jpa-017), không phải optimistic.
+- **Ném ngay tại save**: save không chạy UPDATE; chỉ flush mới thực thi.
+ 
+### Cách retry đúng
+~~~java
+@Retryable(retryFor = ObjectOptimisticLockingFailureException.class, maxAttempts = 3)
+@Transactional(propagation = Propagation.REQUIRES_NEW)
+public void updatePrice(Long id, BigDecimal price) { ... }
+~~~
+ 
+> Senior tip: optimistic hợp với tranh chấp thấp (form sửa hồ sơ). Với tranh chấp cao như trừ tồn kho flash sale, retry liên tục sẽ thừa — dùng câu UPDATE nguyên tử có điều kiện hoặc pessimistic lock. Đừng retry bên trong cùng transaction: entity cũ vẫn nằm trong session.`
+},
+{
+  id: 'qz-jpa-045',
+  topic: 'jpa',
+  q: `Entity dùng id tự sinh (SEQUENCE, allocationSize=50). Batch insert 5.000 dòng bằng {{saveAll}}, đã bật {{hibernate.jdbc.batch_size=50}} và {{hibernate.order_inserts=true}}. Log vẫn cho thấy 5.000 câu INSERT riêng lẻ. Nguyên nhân?`,
+  options: [
+    'Entity quên khai báo @GeneratedValue nên Hibernate không biết id tự sinh',
+    'saveAll luôn chạy tuần tự; đổi sang parallelStream là batch được',
+    'Thiếu hibernate.jdbc.batch_versioned_data=true cho entity có @Version',
+    'Entity dùng GenerationType.IDENTITY: Hibernate phải INSERT ngay để lấy khóa, phá batch; đổi sang SEQUENCE + pooled optimizer'
+  ],
+  answer: 3,
+  explain: `**Đáp án đúng: GenerationType.IDENTITY buộc Hibernate INSERT ngay để lấy khóa, phá vỡ batching.**
+ 
+### Vì sao đúng
+Với {{GenerationType.IDENTITY}}, cơ sở dữ liệu sinh khóa **ngay khi câu INSERT chạy** (identity column / auto_increment). Hibernate cần khóa đó để đưa entity vào persistence context (id là "địa chỉ" của entity trong sổ tay), nên nó **phải** thực thi INSERT ngay tại {{persist()}} rồi đọc generated key. Không thể hoãn để gom nhiều INSERT thành một batch → mỗi dòng một round-trip.
+ 
+Với {{GenerationType.SEQUENCE}}, Hibernate gọi sequence một lần lấy **một khối** khóa ({{allocationSize = 50}}, pooled optimizer) rồi cấp dần trong bộ nhớ. Vì đã biết khóa trước, entity có thể nằm chờ trong session và INSERT được gom thành batch lúc flush.
+ 
+Kèm theo: {{hibernate.order_inserts=true}} để các INSERT cùng bảng nằm cạnh nhau, và {{flush()}} + {{clear()}} mỗi lô để session không phình.
+ 
+### Vì sao các phương án còn lại sai
+- **Entity quên @GeneratedValue**: nếu thiếu @GeneratedValue thì Hibernate coi entity là "id gán tay", vẫn có thể batch (nếu id đã có) hoặc dùng merge.
+- **saveAll chạy tuần tự**: batch_size làm việc ở mức JDBC, không phụ thuộc saveAll hay loop tay.
+- **batch_versioned_data**: chỉ ảnh hưởng batch cho UPDATE/DELETE có @Version, không phải INSERT.
+ 
+> Senior tip: trên PostgreSQL dùng SEQUENCE + allocationSize (nhớ để INCREMENT BY khớp allocationSize); MySQL không có sequence thì dùng TABLE generator. Với hàng chục triệu dòng, cân nhắc bỏ JPA: JdbcTemplate.batchUpdate hoặc COPY nhanh hơn một bậc.`
+},
+{
+  id: 'qz-jpa-046',
+  topic: 'jpa',
+  q: `Màn hình danh sách cần hiển thị 10.000 order, chỉ dùng 3 cột: id, mã đơn, trạng thái. Entity {{Order}} có 40 cột. Cách nào **tối ưu nhất** cho use case này?`,
+  options: [
+    'Dùng findAll() rồi stream().map(o -> new OrderRow(o.getId(), o.getCode(), o.getStatus()))',
+    'Interface projection đóng: interface OrderRow { Long getId(); String getCode(); String getStatus(); } làm kiểu trả về',
+    'Thêm @Transactional(readOnly = true) cho findAll()',
+    'Đánh dấu 37 cột còn lại là @Basic(fetch = FetchType.LAZY)'
+  ],
+  answer: 1,
+  explain: `**Đáp án đúng: interface projection đóng (closed projection).**
+ 
+### Vì sao đúng
+Khi trả entity đầy đủ, Hibernate SELECT **toàn bộ 40 cột**, tạo 10.000 entity managed, mỗi entity giữ snapshot cho dirty checking. Với màn hình chỉ cần 3 cột, đó là lãng phí I/O, heap và CPU.
+ 
+Interface projection đóng (chỉ có getter ánh xạ thẳng thuộc tính) cho phép Spring Data sinh query **chỉ chọn các cột cần** và trả về proxy/tuple, **không phải entity managed**:
+~~~java
+interface OrderRow {
+    Long getId();
+    String getCode();
+    String getStatus();
+}
+
+List<OrderRow> findAllProjectedBy(); // Spring Data hiểu tự động
+~~~
+Kết quả: query nhẹ, không entity trong persistence context, không dirty checking, ít heap.
+ 
+### Vì sao các phương án còn lại sai
+- **findAll rồi map**: vẫn SELECT đủ 40 cột và nạp 10.000 entity vào persistence context; map chỉ xảy ra sau đó.
+- **readOnly = true**: bớt dirty checking nhưng vẫn SELECT đủ 40 cột và vẫn tạo entity.
+- **@Basic(fetch = LAZY)**: với Hibernate, lazy cho cột thường chỉ có hiệu lực khi bật bytecode enhancement; nếu không thì bị bỏ qua. Mà kể cả có hiệu lực, vẫn tạo entity managed.
+ 
+> Senior tip: quy tắc thực dụng — **đọc để hiển thị thì dùng projection/DTO, ghi thì dùng entity**. Trên bảng rộng có cột TEXT/JSONB lớn, chuyển màn hình danh sách sang projection thường giảm vài lần cả thời gian query lẫn heap.`
+},
+{
+  id: 'qz-jpa-047',
+  topic: 'jpa',
+  q: `Trong một transaction, persistence context đã có entity {{Invoice}} (managed). Code chạy bulk update xoá hàng loạt {{invoice_item}} của hoá đơn đó, rồi gọi {{itemRepo.findAllByInvoiceId(id)}}. Phát biểu nào đúng? (Chọn 2)`,
+  multi: true,
+  options: [
+    'Câu bulk update đi thẳng xuống DB, bỏ qua persistence context; entity đã load trước đó vẫn giữ giá trị cũ trong bộ nhớ',
+    'Nếu entity đó bị dirty và commit sau bulk update, dirty checking có thể ghi đè lại giá trị cũ lên dữ liệu vừa bulk update',
+    'Nếu câu bulk update nằm trước lệnh find trong cùng transaction, find sẽ thấy dữ liệu mới vì bulk update ghi ngay xuống DB',
+    '@Modifying luôn tự clear persistence context trước khi chạy câu bulk',
+    'Bulk update không được phép chạy trong transaction'
+  ],
+  answer: [0, 1],
+  explain: `**Đáp án đúng: bulk update bỏ qua persistence context (entity cũ giữ giá trị cũ) và dirty checking sau đó có thể ghi đè.**
+ 
+### Vì sao đúng
+- Câu bulk ({{@Modifying @Query("update ...")}} hoặc {{delete ...}}) được Hibernate gửi **thẳng** xuống DB, không cập nhật các object đang nằm trong persistence context. Bạn update 500 dòng trong DB, nhưng 500 entity đã load trong session vẫn giữ snapshot cũ.
+- Nguy hiểm nhất là **ghi đè ngược**: nếu một entity trong session đang dirty (khác snapshot), lúc flush Hibernate sinh UPDATE với giá trị trong bộ nhớ và **đè** lên giá trị DB vừa bị bulk update. Kết quả: thay đổi âm thầm biến mất.
+- Cách phòng ngừa: {{@Modifying(clearAutomatically = true, flushAutomatically = true)}} — flush các thay đổi đang chờ **trước** khi chạy bulk, clear session **sau** đó để lần đọc sau lấy dữ liệu mới từ DB.
+ 
+### Vì sao các phương án còn lại sai
+- **Bulk trước find thì find thấy dữ liệu mới**: trong **cùng** transaction, câu bulk đã chạy và đã ghi xuống DB, nên find sau đó đọc đúng dữ liệu mới; **nhưng** nếu entity đã có trong persistence context, Hibernate trả về **bản trong bộ nhớ** (first-level cache) chứ không query DB.
+- **@Modifying luôn tự clear**: mặc định **không**; {{clearAutomatically = true}} mới bật. Tương tự {{flushAutomatically}}.
+- **Không được chạy trong transaction**: ngược lại, {{@Modifying}} thiếu {{@Transactional}} sẽ ném TransactionRequiredException.
+ 
+> Senior tip: quy tắc thực dụng — bulk update chỉ dùng cho hàng nghìn dòng trở lên, và luôn bật clearAutomatically. Với vài chục dòng, load entity rồi sửa bằng setter an toàn và dễ đọc hơn nhiều.`
+},
+{
+  id: 'qz-jpa-048',
+  topic: 'jpa',
+  q: `Service (không có @Transactional) gọi {{repo.findById(id)}} trả về {{Order}}, rồi ở controller gọi {{order.getItems().count()}} để tính số sản phẩm. Exception nào xuất hiện?`,
+  options: [
+    'TransactionRequiredException ngay tại findById',
+    'EntityNotFoundException vì items chưa được load',
+    'Không exception, mọi quan hệ đều load kèm trong cùng câu SELECT',
+    'LazyInitializationException khi controller truy cập items, vì transaction đã kết thúc và session đóng khi repo.findById trả về'
+  ],
+  answer: 3,
+  explain: `**Đáp án đúng: LazyInitializationException khi truy cập collection lazy ngoài session.**
+ 
+### Vì sao đúng
+- Không có {{@Transactional}}, mỗi lần gọi repository method Spring mở một transaction ngắn, mở session, chạy SELECT rồi **đóng session**. Entity trả về là **detached**: nó có dữ liệu nhưng không còn "người theo dõi" để nạp thêm.
+- {{items}} là collection lazy (mặc định to-many LAZY). Lúc load Order, items chưa được nạp. Khi controller gọi {{getItems().count()}}, Hibernate cần chạy một câu SELECT nữa nhưng session đã đóng → ném LazyInitializationException.
+- Cách sửa: load đủ trong service đang có transaction — {{@EntityGraph(attributePaths = "items")}} trên method, hoặc {{join fetch}}, hoặc trả về DTO/projection đã tính sẵn số lượng.
+ 
+### Vì sao các phương án còn lại sai
+- **TransactionRequiredException**: chỉ xuất hiện khi chạy câu lệnh ghi/bulk ngoài transaction.
+- **EntityNotFoundException**: xảy ra khi truy cập một proxy ({{getReference}}) mà hàng không tồn tại, không phải khi session đóng.
+- **Không exception vì đã load kèm**: chỉ đúng nếu quan hệ EAGER hoặc đã fetch; ở đây là LAZY mặc định.
+ 
+> Senior tip: LazyInitializationException thường xuất hiện **sau khi** tắt OSIV ({{spring.jpa.open-in-view=false}}) — đó là dấu hiệu bạn đang đọc dữ liệu ở tầng sai. Hãy chuyển việc "đếm/hiển thị" vào service, đừng để controller chạm vào collection.`
+},
+{
+  id: 'qz-jpa-049',
+  topic: 'jpa',
+  q: `Entity {{Inventory}} có {{@Version}} và {{@OneToMany(mappedBy = "inventory", cascade = ALL, orphanRemoval = true) List<StockMovement> movements}}. Cần trừ tồn kho 1 đơn vị dưới tải 5.000 request/giây trên **cùng** một dòng. Cách nào xử lý đúng? (Chọn 2)`,
+  multi: true,
+  options: [
+    'Gọi quantity-- rồi save trong transaction dài, dùng @Version để đảm bảo đúng',
+    'Dùng pessimistic lock (SELECT ... FOR UPDATE) rồi gọi API thanh toán bên ngoài trong lúc vẫn giữ lock',
+    'Optimistic lock: load entity có @Version, trừ quantity rồi save, retry nhiều lần khi OptimisticLockException',
+    'Câu UPDATE nguyên tử có điều kiện: update inventory set quantity = quantity - 1 where sku = ? and quantity >= 1, kiểm tra số dòng ảnh hưởng (1 là thành công, 0 là hết hàng)',
+    'Đẩy phần "giữ chỗ" sang Redis (DECR hoặc Lua script), sau đó ghi bản ghi tồn kho chính thức qua hàng đợi'
+  ],
+  answer: [3, 4],
+  explain: `**Đáp án đúng: UPDATE nguyên tử có điều kiện ở DB, hoặc đẩy việc giữ chỗ sang Redis rồi ghi sổ qua hàng đợi.**
+ 
+### Vì sao đúng
+- **UPDATE nguyên tử**: cả đọc, kiểm tra và ghi diễn ra trong một câu lệnh bên trong DB, không có vòng "đọc qua mạng → sửa trong JVM → ghi lại". Điều kiện {{quantity >= 1}} chặn bán quá tồn. Kiểm tra số dòng ảnh hưởng: 1 = thành công, 0 = hết hàng.
+- **Redis + hàng đợi**: ở mức vài nghìn request/giây trên một khoá nóng, row lock của DB cũng là điểm nghẽn. Các hệ thống thật giữ "suất" bằng {{DECR}} hoặc Lua script (nguyên tử trong Redis), rồi ghi kho chính thức bất đồng bộ qua Kafka/SQS. Đổi lại: phải xử lý bù trừ, đối soát và idempotency khi ghi sổ.
+- Cả hai đều tránh vòng read-modify-write qua JVM.
+ 
+### Vì sao các phương án còn lại sai
+- **Optimistic + retry nhiều lần**: 5.000 request cùng tranh một version → hầu hết đều thua, retry chỉ nhân tải (retry storm). Tỉ lệ lỗi và p99 tăng vọt.
+- **Transaction dài giữ entity**: giữ lock và connection rất lâu, thông lượng sụp.
+- **PESSIMISTIC_WRITE + gọi API thanh toán trong lúc giữ lock**: giữ lock trong lúc gọi mạng chậm → mọi request khác xếp hàng; timeout thanh toán có thể làm treo cả cụm.
+ 
+> Senior tip: khoá nóng là bài toán "một dòng, nhiều writer". Giải pháp luôn là **giảm thời gian giữ lock** (một câu UPDATE nguyên tử) hoặc **giảm số writer tranh một khoá** (chia bucket tồn kho, hàng đợi, Redis). Đừng cố "tăng retry" để chữa nghẽn.`
+},
+{
+  id: 'qz-jpa-050',
+  topic: 'jpa',
+  q: `Entity {{Order}} có:
+~~~java
+@OneToMany(mappedBy = "order", cascade = CascadeType.ALL, orphanRemoval = true)
+private List<OrderItem> items = new ArrayList<>();
+
+public void addItem(OrderItem item) {
+    items.add(item);      // thiếu item.setOrder(this)
+}
+~~~
+Trong một transaction, code tạo order mới, gọi {{addItem(item)}} rồi {{orderRepo.save(order)}} và commit. Cột {{order_item.order_id}} nhận giá trị nào?`,
+  options: [
+    'NULL (hoặc lỗi constraint nếu cột NOT NULL), vì phía sở hữu quan hệ là OrderItem.order và nó không được gán',
+    'id của order, vì cascade ALL đã cập nhật khoá ngoại giúp',
+    'Item không được lưu, vì cascade chỉ áp dụng khi gọi itemRepo.save(item)',
+    'id của order, vì Hibernate tự đồng bộ hai phía của quan hệ hai chiều'
+  ],
+  answer: 0,
+  explain: `**Đáp án đúng: order_id = NULL (hoặc vi phạm NOT NULL), vì owning side là OrderItem.order không được gán.**
+ 
+### Vì sao đúng
+- Trong quan hệ hai chiều, chỉ **owning side** (phía **không** có {{mappedBy}}, ở đây là {{OrderItem.order}}) quyết định giá trị khoá ngoại. Phía {{mappedBy}} chỉ là "gương" để đọc.
+- {{cascade = ALL}} khiến item được persist cùng order, nhưng khi ghi cột order_id, Hibernate đọc {{item.getOrder()}} — đang null → ghi NULL.
+- orphanRemoval không liên quan: nó chỉ quyết định "gỡ khỏi collection thì con có bị xoá không".
+- Cách đúng là helper đồng bộ hai phía: {{items.add(item); item.setOrder(this);}}.
+ 
+### Vì sao các phương án còn lại sai
+- **Tự đồng bộ**: Hibernate không tự làm (trừ khi bật bytecode enhancement với association management, ít dùng).
+- **Cascade cập nhật khoá ngoại**: cascade chỉ lan toả thao tác persist/remove, không ghi cột.
+- **Item không được lưu**: cascade ALL từ order vẫn persist item; chỉ cột order_id sai.
+ 
+### Cách đúng: helper đồng bộ hai phía
+~~~java
+public void addItem(OrderItem item) {
+    items.add(item);
+    item.setOrder(this);   // owning side phải được gán
+}
+~~~
+ 
+> Senior tip: luôn để cột khoá ngoại NOT NULL ở DB (Flyway/Liquibase) để bug kiểu này nổ ngay trong test, thay vì âm thầm tạo dữ liệu mồ côi. Và đặt helper addItem/removeItem ở một chỗ duy nhất, đừng rải setOrder khắp service.`
+},
+{
+  id: 'qz-jpa-051',
+  topic: 'jpa',
+  q: `Flush mode mặc định của Hibernate là AUTO. Method sau có {{@Transactional}} (mặc định REQUIRED):
+~~~java
+public void process() {
+    Order o = orderRepo.findById(7L).orElseThrow(); // SELECT
+    o.setStatus(OrderStatus.PAID);                    // KHÔNG gọi save
+    // không có flush() thủ công
+}
+~~~
+Khi nào câu UPDATE cho status được chạy?`,
+  options: [
+    'Ngay tại dòng setStatus vì dirty checking chạy real-time',
+    'Khi transaction commit (hoặc trước một query cần dữ liệu mới), do flush mode AUTO',
+    'Không bao giờ, vì thiếu orderRepo.save(o)',
+    'Khi method kết thúc, trước khi trả về cho caller'
+  ],
+  answer: 1,
+  explain: `**Đáp án đúng: khi transaction commit (hoặc trước query cần dữ liệu mới), do flush mode AUTO.**
+ 
+### Vì sao đúng
+- {{findById}} chạy SELECT, đưa entity vào **persistence context** (first-level cache) kèm một **snapshot** (bản chụp trạng thái lúc load).
+- {{setStatus}} chỉ sửa field trong bộ nhớ, **không có SQL** nào chạy lúc này.
+- Lúc commit, Hibernate **flush**: so sánh entity managed với snapshot, thấy khác → sinh UPDATE. Flush mode mặc định của Hibernate là **AUTO**: flush trước khi commit VÀ trước những query cần dữ liệu mới (để kết quả query đúng).
+- Nếu method là {{@Transactional(readOnly = true)}}, Spring đặt flush mode **MANUAL** nên sẽ không có UPDATE (và không dirty checking).
+ 
+### Vì sao các phương án còn lại sai
+- **Ngay tại setStatus**: setter chỉ đổi bộ nhớ; flush mới đẩy xuống DB.
+- **Thiếu save thì không chạy**: với entity **managed**, dirty checking đủ; {{save()}} chỉ cần cho entity mới hoặc detached.
+- **Khi method kết thúc**: method kết thúc và commit transaction là gần như cùng lúc, nhưng điểm chính xác là **flush lúc commit** (hoặc trước query), không phải "khi method return".
+ 
+> Senior tip: vì dirty checking chạy trên toàn bộ entity managed, một method {{readOnly = false}} vô tình sửa field sẽ âm thầm ghi DB. Dùng readOnly cho method đọc để biến "quên" thành an toàn.`
+},
+ 
 );
