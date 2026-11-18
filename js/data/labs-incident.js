@@ -6055,4 +6055,239 @@ jvm_memory_committed_bytes{area="metaspace"}
   ],
   tags: ['oomkilled', 'kubernetes', 'native-memory', 'nmt', 'container-memory', 'jvm', 'metaspace', 'jasperreports', 'groovy', 'direct-buffer']
 }
+,
+{
+  id: 'lab-incident-043',
+  category: 'incident',
+  title: 'Redis cache failover 40 giây, Lettuce không timeout, thread Tomcat chờ hết, p99 30 giây',
+  level: 'senior',
+  scenario: `**Bối cảnh:** Sàn **ShopVN** chạy **{{product-service}}** (Spring Boot 3.3, Tomcat 200 thread, Hikari 20 connection/pod, 12 pod) phục vụ chi tiết sản phẩm. Cache dùng **{{Redis Lettuce 6.2}}** (client Redis Java phi đồng bộ, pool 50 connection) với key ~~~text
+product:detail:{id}
+~~~, TTL 6 giờ. Khi cache miss, service truy vấn PostgreSQL join 4 bảng (~120 ms bình thường). Traffic ~4.500 req/s vào giờ cao điểm.
+
+**Sự kiện (25/10/2026).** Lúc **14:22:00**, cụm Redis (AWS ElastiCache Redis 7.1, cluster mode on, 3 shard, 1 primary + 1 replica mỗi shard) bắt đầu **{{failover tự động}}** do primary shard 1 bị reboot bảo trì. Failover kéo dài **{{khoảng 40 giây}}** (thời gian DNS cập nhật + replica thăng cấp + client Lettuce nhận topology mới). Trong 40 giây này, Lettuce **{{không ném timeout}}** mà block các lệnh {{GET}} tại {{RedisChannelHandler}} cho đến khi kết nối mới sẵn sàng. Kết quả: 200 thread Tomcat mỗi pod bị giữ ở lời gọi {{RedisCommands.get()}}, pool Lettuce cạn connection, request mới xếp hàng. p99 của ~~~text
+/v1/products/{id}
+~~~ vọt từ 45 ms lên **{{30 giây}}**, CPU DB chỉ 18% (vì Hikari chỉ 20 connection/pod, request chưa tới DB).
+
+**Dữ liệu thu thập:** log Lettuce {{RedisCommandTimeoutException}}, jstack của một pod lúc 14:22:15, metric Prometheus 14:20–14:28, cấu hình Lettuce pool và timeout.`,
+  artifacts: [
+    {
+      name: 'lettuce-error.log',
+      lang: 'text',
+      content: `2026-10-25T14:22:01.204+07:00 WARN 1 --- [product-service] [lettuce-nioEventLoop-4-1] io.lettuce.core.RedisChannelHandler : [channel=0x7f3a2c001, /10.42.6.14:51022 -> redis-shard1-primary.abc123.cache.amazonaws.com:6379] Connection reset by peer
+2026-10-25T14:22:01.205+07:00 WARN 1 --- [product-service] [lettuce-nioEventLoop-4-1] io.lettuce.core.RedisChannelHandler : [channel=0x7f3a2c002, /10.42.6.14:51022 -> redis-shard1-primary.abc123.cache.amazonaws.com:6379] Connection reset by peer
+2026-10-25T14:22:01.206+07:00 WARN 1 --- [product-service] [lettuce-nioEventLoop-4-1] io.lettuce.core.RedisChannelHandler : [channel=0x7f3a2c003, /10.42.6.14:51022 -> redis-shard1-primary.abc123.cache.amazonaws.com:6379] Connection reset by peer
+... (tổng 48 connection shard 1 bị reset trong 2 giây) ...
+2026-10-25T14:22:05.112+07:00 ERROR 1 --- [product-service] [http-nio-8080-exec-88] v.s.product.ProductController : GET /v1/products/SKU-88123 failed
+io.lettuce.core.RedisCommandTimeoutException: Command timed out after 60000ms: [channel=0x7f3a2c010, /10.42.6.14:51022 -> redis-shard1-replica.abc123.cache.amazonaws.com:6379], command: GET, args: [product:detail:SKU-88123]
+	at io.lettuce.core.ExceptionFactory.createTimeoutException(ExceptionFactory.java:56)
+	at io.lettuce.core.protocol.CommandHandler.handleTimeout(CommandHandler.java:642)
+	at io.lettuce.core.protocol.CommandHandler.channelRead(CommandHandler.java:618)
+	at io.netty.channel.AbstractChannelHandlerContext.invokeChannelRead(AbstractChannelHandlerContext.java:444)
+	at io.netty.channel.DefaultChannelPipeline.fireChannelRead(DefaultChannelPipeline.java:1181)
+	at io.netty.channel.nio.AbstractNioByteChannel$NioByteUnsafe.read(AbstractNioByteChannel.java:166)
+	at io.netty.channel.nio.NioEventLoop.processSelectedKey(NioEventLoop.java:788)
+	at io.netty.channel.nio.NioEventLoop.run(NioEventLoop.java:580)
+	at java.base/java.lang.Thread.run(Thread.java:833)
+2026-10-25T14:22:05.114+07:00 ERROR 1 --- [product-service] [http-nio-8080-exec-89] v.s.product.ProductController : GET /v1/products/SKU-88124 failed
+io.lettuce.core.RedisCommandTimeoutException: Command timed out after 60000ms: [channel=0x7f3a2c011, /10.42.6.14:51022 -> redis-shard1-replica.abc123.cache.amazonaws.com:6379], command: GET, args: [product:detail:SKU-88124]
+... (lặp lại hàng nghìn lần cho các key thuộc shard 1, timeout mặc định 60 giây) ...
+2026-10-25T14:22:41.002+07:00 INFO 1 --- [product-service] [lettuce-nioEventLoop-4-1] io.lettuce.core.RedisChannelHandler : [channel=0x7f3a2c100, /10.42.6.14:51022 -> redis-shard1-primary.abc123.cache.amazonaws.com:6379] Connection established
+2026-10-25T14:22:41.005+07:00 INFO 1 --- [product-service] [lettuce-nioEventLoop-4-1] io.lettuce.core.RedisChannelHandler : Topology refresh completed, new primary: redis-shard1-primary.abc123.cache.amazonaws.com:6379
+2026-10-25T14:22:41.010+07:00 WARN 1 --- [product-service] [http-nio-8080-exec-12] v.s.product.ProductController : GET /v1/products/SKU-88123 succeeded after 39808 ms (fallback DB)
+2026-10-25T14:22:41.012+07:00 WARN 1 --- [product-service] [http-nio-8080-exec-13] v.s.product.ProductController : GET /v1/products/SKU-88124 succeeded after 39805 ms (fallback DB)`,
+    },
+    {
+      name: 'jstack-product-142215.txt',
+      lang: 'text',
+      content: `2026-10-25 14:22:15
+Full thread dump OpenJDK 64-Bit Server VM (17.0.12+7 mixed mode, sharing):
+
+"http-nio-8080-exec-88" #98 daemon prio=5 os_prio=0 cpu=120.50ms elapsed=38.4s tid=0x00007f3a2c0d9000 nid=0x1a3 runnable  [0x00007f39d6ffd000]
+   java.lang.Thread.State: RUNNABLE
+    at java.base@17.0.12/sun.nio.ch.NioSocketImpl.implRead(NioSocketImpl.java:304)
+    at java.base@17.0.12/sun.nio.ch.NioSocketImpl.read(NioSocketImpl.java:346)
+    at java.base@17.0.12/java.net.Socket$SocketInputStream.read(Socket.java:966)
+    at java.base@17.0.12/java.io.BufferedInputStream.fill(BufferedInputStream.java:244)
+    at io.lettuce.core.protocol.CommandHandler.readByte(CommandHandler.java:712)
+    at io.lettuce.core.protocol.CommandHandler.readReply(CommandHandler.java:689)
+    at io.lettuce.core.protocol.CommandHandler.read(CommandHandler.java:656)
+    at io.lettuce.core.RedisAsyncCommandsImpl.get(RedisAsyncCommandsImpl.java:124)
+    at io.lettuce.core.RedisAsyncCommandsImpl.get(RedisAsyncCommandsImpl.java:108)
+    at v.s.product.RedisCacheService.get(RedisCacheService.java:41)
+    at v.s.product.ProductService.getDetail(ProductService.java:73)
+    at v.s.product.ProductController.getDetail(ProductController.java:41)
+
+-- Thống kê toàn bộ dump: 200/200 thread http-nio-8080-exec-* có cùng stack chờ Lettuce đọc socket từ Redis shard 1
+-- elapsed của các thread: từ 35.2s đến 40.1s
+-- Hikari pool: 20/20 connection idle (request chưa tới DB vì kẹt ở Redis)`,
+    },
+    {
+      name: 'prometheus-1420-1428.txt',
+      lang: 'text',
+      content: `# req = sum(rate(http_server_requests_seconds_count{service="product-service",uri="/v1/products/{id}"}[10s]))
+# p99 = histogram_quantile(0.99, http_server_requests_seconds_bucket{service="product-service",uri="/v1/products/{id}"})
+# tomcat_busy = sum(tomcat_threads_busy_threads{service="product-service"}) (max 12 x 200 = 2400)
+# lettuce_pool_leased = sum(lettuce_pool_connections_leased{service="product-service"}) (max 12 x 50 = 600)
+# lettuce_pool_pending = sum(lettuce_pool_pending_acquires{service="product-service"})
+# hikari_active = sum(hikaricp_connections_active{service="product-service"}) (max 240)
+# db_cpu = sum(rate(process_cpu_seconds_total{service="postgres"}[10s])) / 16 * 100
+
+time      req/s  p99     tomcat_busy  lettuce_leased  lettuce_pending  hikari_active  db_cpu
+14:20      4520   45 ms    180           120             0                8              18%
+14:22:00   4510   45 ms    185           125             0                8              18%
+14:22:10   4480   8.2 s   1,240         600           2,340            8              18%
+14:22:20   4450   18.6 s  2,180         600           5,870            8              18%
+14:22:30   4430   26.4 s  2,380         600           8,120            8              18%
+14:22:40   4420   30.1 s  2,395         600           9,450            8              18%
+14:22:45   4410   28.7 s  2,200         450           7,800            8              18%
+14:22:50   4500   12.3 s  1,450         280           3,200            8              18%
+14:23:00   4510   48 ms    190           130           0                8              18%
+14:24:00   4520   46 ms    180           125           0                8              18%`,
+    },
+    {
+      name: 'lettuce-config.yml',
+      lang: 'yaml',
+      content: `# application.yml (product-service)
+spring:
+  data:
+    redis:
+      lettuce:
+        pool:
+          max-active: 50          # connection pool tối đa mỗi pod
+          max-idle: 50
+          min-idle: 10
+        # KHÔNG CÓ: command-timeout (mặc định 60 giây từ Lettuce)
+        # KHÔNG CÓ: socket-timeout
+        # KHÔNG CÓ: connect-timeout
+        cluster:
+          refresh:
+            period: 30s
+      client-type: lettuce
+      cluster:
+        nodes:
+          - redis-shard1-primary.abc123.cache.amazonaws.com:6379
+          - redis-shard2-primary.abc123.cache.amazonaws.com:6379
+          - redis-shard3-primary.abc123.cache.amazonaws.com:6379
+
+# ProductService.java
+@Service
+class ProductService {
+    public ProductDetail getDetail(String sku) {
+        return redisCache.get("product:detail:" + sku, () -> repo.loadDetail(sku)); // fallback DB khi cache miss
+    }
+}
+
+# RedisCacheService.java
+@Component
+class RedisCacheService {
+    public <T> T get(String key, Supplier<T> loader) {
+        try {
+            return lettuce.sync().get(key);  // BLOCKING call, không timeout tùy chỉnh
+        } catch (RedisCommandTimeoutException e) {
+            return loader.get(); // fallback DB
+        }
+    }
+}`,
+    }
+  ],
+  questions: [
+    'Dựng lại dòng thời gian từ lúc Redis failover bắt đầu đến khi hồi phục. Tại sao Lettuce block 40 giây thay vì fail fast? Dẫn chứng từ log và jstack.',
+    'Tính theo định luật Little: 4.500 req/s vào 12 pod, mỗi request giữ thread Tomcat khoảng 40 giây khi Lettuce block. Cần bao nhiêu thread so với 200 thread/pod? Tại sao CPU DB thấp mà p99 vọt lên 30 giây?',
+    'Thiết kế lại cấu hình Lettuce: timeout nào cần đặt, circuit breaker thế nào, fallback DB, bulkhead Lettuce/Redis. Xử lý dữ liệu cache khi failover thế nào?'
+  ],
+  hints: [
+    'Lettuce mặc định command-timeout = 60 giây. Failover 40 giây < 60 giây nên command không hết timeout, nhưng connection bị reset -> Lettuce chờ topology refresh (period 30s) hoặc reconnect. Cần đặt socket-timeout và command-timeout ngắn hơn failover mong đợi.',
+    'Thread Tomcat bị giữ ở {{NioSocketImpl.implRead}} -> chờ data từ socket Redis. 4.500 req/s x 40s ≈ 180.000 thread cần, pool chỉ 2.400 -> cạn ngay. Hikari idle vì request kẹt ở Redis, chưa tới DB.',
+    'Circuit breaker (Resilience4j) bọc lời gọi Redis: mở khi lỗi/timeout > 50%, fallback ngay sang DB. Bulkhead: Lettuce pool tách theo shard hoặc semaphore giới hạn concurrent call Redis.'
+  ],
+  answer: `**Tóm tắt:** Redis ElastiCache failover shard 1 kéo dài ~40 giây. Lettuce **{{không đặt socket-timeout hay command-timeout ngắn}}**, nên khi primary shard 1 reboot, connection bị reset và Lettuce block ở {{NioSocketImpl.implRead}} chờ topology refresh (period 30s) và kết nối mới. 200 thread Tomcat mỗi pod bị giữ ~40 giây, theo định luật Little cần ~180.000 thread trong khi pool chỉ 2.400 (12 pod x 200). Hikari connection pool chỉ 20/pod, idle vì request chưa tới DB. Kết quả: p99 vọt từ 45 ms lên 30 giây, CPU DB 18%.
+
+### Dòng thời gian
+
+| Thời điểm | Sự kiện |
+|---|---|
+| 14:22:00.000 | AWS ElastiCache bắt đầu failover shard 1 (primary reboot bảo trì) |
+| 14:22:01.204 | 48 connection Lettuce tới shard 1 primary bị {{Connection reset by peer}} |
+| 14:22:05.112 | Lệnh {{GET}} đầu tiên ném {{RedisCommandTimeoutException}} sau 60 giây mặc định (command-timeout Lettuce) |
+| 14:22:05–14:22:40 | Hàng nghìn request block ở {{RedisAsyncCommandsImpl.get()}} -> {{NioSocketImpl.implRead}}, Lettuce pool 600 connection leased, 9.000+ pending acquires |
+| 14:22:41.002 | Lettuce topology refresh hoàn tất, kết nối mới đến shard 1 primary thành công |
+| 14:22:41.010 | Request đầu tiên fallback DB thành công sau ~39.8 giây |
+
+### Nguyên nhân gốc
+
+**1. Lettuce thiếu timeout phi chức năng.** Cấu hình Lettuce **{{không có}}** {{socket-timeout}}, {{connect-timeout}}, và dùng {{command-timeout}} mặc định 60 giây. Khi failover, socket bị reset nhưng Lettuce không fail fast: nó chờ topology refresh (mặc định 30 giây) và quá trình reconnect. Trong 40 giây failover, mọi lệnh {{GET}} block tại Netty socket read.
+
+**2. Thread pool Tomcat cạn do blocking I/O.** Mỗi request giữ một thread Tomcat suốt 40 giây chờ Redis. Theo Little law: 4.500 req/s × 40 giây = **{{180.000 thread đồng thời cần}}**, trong khi Tomcat tổng 12 pod × 200 = **{{2.400 thread}}**. 2.400/180.000 = 1,3% năng lực -> p99 vọt 30 giây.
+
+**3. Thiếu circuit breaker và bulkhead.** Không có cơ chế phát hiện Redis chậm và fail fast. Lettuce pool 50 connection/pod x 12 = 600 connection leased toàn bộ, pending acquire lên 9.000+. Hikari 20 connection/pod idle 100% vì request chưa bao giờ tới DB.
+
+### Dẫn chứng
+
+- **Log Lettuce:** {{Connection reset by peer}} lúc 14:22:01, {{RedisCommandTimeoutException}} command-timeout 60 giây lúc 14:22:05, topology refresh xong 14:22:41 (40 giây sau khi bắt đầu).
+- **JStack:** 200/200 thread {{http-nio-8080-exec-*}} cùng stack {{NioSocketImpl.implRead}} -> {{CommandHandler.readReply}} -> {{RedisAsyncCommandsImpl.get}}, elapsed 35–40 giây.
+- **Prometheus:** {{tomcat_busy}} 180 -> 2.395 (vượt 2.400 max), {{lettuce_leased}} 125 -> 600 (max pool), {{lettuce_pending}} 0 -> 9.450, {{hikari_active}} 8 (idle, không tăng), {{db_cpu}} 18% không đổi.
+- **CPU DB 18%:** request kẹt ở Redis client, chưa tới Hikari/DB.
+
+### Cách sửa
+
+**Ngắn hạn (cấu hình Lettuce, rolling restart):**
+
+~~~yaml
+spring:
+  data:
+    redis:
+      lettuce:
+        pool:
+          max-active: 50
+          max-idle: 50
+          min-idle: 10
+        # Timeout quan trọng (ms):
+        connect-timeout: 500        # TCP connect nhanh hoặc fail
+        socket-timeout: 2000        # đọc socket tối đa 2 giây
+        command-timeout: 2000       # lệnh Redis tối đa 2 giây (failover mong đợi < 5s)
+        shutdown-timeout: 100ms
+      cluster:
+        refresh:
+          period: 5s                # topology refresh nhanh hơn (mặc định 30s)
+~~~
+
+**Circuit breaker + fallback (Resilience4j):**
+
+~~~java
+@CircuitBreaker(name = "redis", fallbackMethod = "redisFallback")
+@Retry(name = "redis")
+public <T> T get(String key, Supplier<T> loader) {
+    return lettuce.sync().get(key);
+}
+
+public <T> T redisFallback(String key, Supplier<T> loader, Exception e) {
+    log.warn("Redis circuit open or timeout for key={}, fallback DB", key);
+    return loader.get(); // luôn đọc DB khi Redis lỗi/timeout
+}
+~~~
+
+Cấu hình CircuitBreaker: {{slidingWindowSize=20}}, {{failureRateThreshold=50}}, {{waitDurationInOpenState=30s}}, {{permittedNumberOfCallsInHalfOpenState=5}}.
+
+**Bulkhead Lettuce:** giới hạn concurrent call Redis bằng semaphore (ví dụ 100/pod) hoặc tách pool theo shard. Khi pool Lettuce cạn, fail fast thay vì queue 9.000 request.
+
+**Xử lý cache khi failover:** dùng **{{stale-while-revalidate}}** — khi Redis timeout, trả dữ liệu cache cũ (nếu còn TTL mềm) trong lúc background refresh. Key không có cache thì fallback DB ngay, không block.
+
+### Phòng ngừa và alert
+
+- Alert {{lettuce_pool_pending_acquires > 100}} hoặc {{tomcat_threads_busy_threads / max > 0.8}}.
+- Alert {{redis_command_latency_p99 > 500ms}} hoặc {{redis_command_timeout_total}} tăng.
+- Chaos test định kỳ: inject network partition/failover vào Redis staging, đo p99 và xác nhận fail fast < 3 giây.
+- Luôn đặt {{socket-timeout}}, {{connect-timeout}}, {{command-timeout}} nhỏ hơn SLA của hệ thống (ví dụ p99 API 200ms -> Redis timeout 50-100ms).
+
+> Senior tip: Lettuce là client phi đồng bộ nhưng {{sync().get()}} vẫn blocking thread caller. Khi Redis failover, client phải fail fast trong mili giây, không chờ topology refresh 30 giây. Tôi luôn đặt {{command-timeout}} = 1/10 SLA đỉnh, {{socket-timeout}} = 2x command-timeout, và bọc circuit breaker. Với cache, fallback DB là bắt buộc, không phải "nice to have".`,
+  rubric: [
+    'Dựng đúng timeline: failover 14:22:00 -> connection reset 14:22:01 -> command timeout 14:22:05 (60s mặc định) -> topology refresh 14:22:41 (40s); Lettuce block ở NioSocketImpl.implRead 40s.',
+    'Áp dụng Little law: 4.500 req/s x 40s = 180.000 thread cần, pool 2.400 -> cạn 98,7%; Hikari idle, DB CPU 18% vì request kẹt ở Redis client.',
+    'Chỉ ra Lettuce thiếu socket-timeout, connect-timeout, command-timeout tùy chỉnh; topology refresh period 30s quá chậm; pool 600 leased, pending 9.000+.',
+    'Đề xuất: Lettuce timeout ngắn (connect 500ms, socket/command 2s), refresh period 5s, circuit breaker + fallback DB, bulkhead semaphore/pool tách shard, stale-while-revalidate.',
+    'Nêu alert pending acquires, thread busy, Redis latency; chaos test failover staging.'
+  ],
+  tags: ['redis', 'lettuce', 'failover', 'timeout', 'circuit-breaker', 'bulkhead', 'cache', 'thread-pool']
+}
 );
