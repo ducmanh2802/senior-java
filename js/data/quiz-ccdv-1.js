@@ -2063,5 +2063,408 @@ explain: `**Đáp án đúng: phương án 1 và 2.** Một request có thể đ
   ],
   answer: 2,
   explain: `**Đáp án đúng: phương án 3.** 500 lỗi tạm thời phía server Anthropic. Cần retry với backoff lũy thừa + jitter để phục hồi tự động, không dừng ứng dụng hay đổi model.`
+},
+{
+  id: 'qz-ccdv-151',
+  topic: 'claude',
+  q: '[Tools] A legal team wants Claude to draft contracts using a template from their internal wiki. Which approach best gives Claude secure, on-demand access to that wiki content?',
+  options: [
+    'Paste the entire wiki into the system prompt every request.',
+    'Implement a tool that queries the wiki API and returns relevant sections when Claude requests them.',
+    'Give Claude the wiki database credentials and let it run SQL directly.',
+    'Store the wiki URL in the user message and ask Claude to browse it.'
+  ],
+  answer: 1,
+  explain: `**Đáp án đúng: phương án 2.** Tool use cho phép Claude chủ động gọi API wiki khi cần, chỉ lấy phần liên quan. Phương án 1 tốn token và dễ stale. Phương án 3 rủi ro bảo mật. Phương án 4 Claude không tự browse web.`
+},
+{
+  id: 'qz-ccdv-152',
+  topic: 'claude',
+  multi: true,
+  q: '[Tools] Which TWO practices improve reliability of tool use in production? (Choose 2)',
+  options: [
+    'Define tool input_schema with strict JSON Schema and required fields.',
+    'Let Claude infer parameter types from natural language.',
+    'Validate tool results before feeding back to Claude.',
+    'Disable parallel tool calls always.',
+    'Return raw HTML without parsing.'
+  ],
+  answer: [0, 2],
+  explain: `**Đáp án đúng: phương án 1 và 3.** Schema rõ ràng giúp Claude gọi đúng tham số; validate kết quả tránh propagation lỗi. Phương án 2 dễ sai; phương án 4 không cần thiết; phương án 5 làm Claude khó parse.`
+},
+{
+  id: 'qz-ccdv-153',
+  topic: 'claude',
+  q: '[Tools] Your tool returns an error JSON. How should you feed it back to Claude?',
+  options: [
+    'Drop the tool_result and retry automatically.',
+    'Send a tool_result with is_error true and a clear error message.',
+    'Throw an exception in the client and stop the conversation.',
+    'Append the error to the system prompt.'
+  ],
+  answer: 1,
+  explain: `**Đáp án đúng: phương án 2.** Gửi tool_result với is_error=true và mô tả lỗi để Claude tự điều chỉnh hoặc báo người dùng. Các phương án khác làm mất ngữ cảnh hoặc dừng luồng.`
+},
+{
+  id: 'qz-ccdv-154',
+  topic: 'claude',
+  q: '[Tools] When should you prefer parallel tool calls over sequential ones?',
+  options: [
+    'When tool calls are independent and have no data dependency.',
+    'Always, to minimize latency.',
+    'When results of one call are needed as input to another.',
+    'Never, to keep ordering deterministic.'
+  ],
+  answer: 0,
+  explain: `**Đáp án đúng: phương án 1.** Chỉ gọi song song khi các lời gọi độc lập. Nếu phụ thuộc dữ liệu phải gọi tuần tự. Luôn song song có thể gây lỗi race.`
+},
+{
+  id: 'qz-ccdv-155',
+  topic: 'claude',
+  q: '[Tools] You define a tool with an enum parameter. Claude sometimes sends values outside the enum. Best fix?',
+  options: [
+    'Remove the enum and accept any string.',
+    'Keep enum and add clear description; also validate client-side and return is_error.',
+    'Switch to a larger model only.',
+    'Disable the tool.'
+  ],
+  answer: 1,
+  explain: `**Đáp án đúng: phương án 2.** Kết hợp mô tả rõ ràng với validate phía client và trả is_error để Claude tự sửa. Các phương án khác hoặc mất ràng buộc hoặc không giải quyết gốc.`
+},
+{
+  id: 'qz-ccdv-156',
+  topic: 'claude',
+  multi: true,
+  q: '[Tools] Which TWO are valid reasons to stop a tool-use loop? (Choose 2)',
+  options: [
+    'stop_reason is end_turn.',
+    'Claude returns a final text answer with no tool_use.',
+    'The user sends a new message.',
+    'Token count reaches zero.',
+    'Model name changes.'
+  ],
+  answer: [0, 1],
+  explain: `**Đáp án đúng: phương án 1 và 2.** Loop kết thúc khi stop_reason=end_turn hoặc không còn tool_use block. Người dùng gửi tin mới cũng kết thúc nhưng không phải lý do tự động dừng loop; token/model không phải tiêu chí.`
+},
+{
+  id: 'qz-ccdv-157',
+  topic: 'claude',
+  q: '[Tools] A tool needs to stream partial results. What is the recommended pattern?',
+  options: [
+    'Send multiple tool_result blocks in one user message.',
+    'Use a single tool_result with final aggregated content.',
+    'Put partial results in system prompt.',
+    'Poll Claude repeatedly.'
+  ],
+  answer: 1,
+  explain: `**Đáp án đúng: phương án 2.** Mỗi tool_use tương ứng một tool_result cuối cùng với nội dung tổng hợp. Nhiều tool_result cho cùng một tool_use không được hỗ trợ.`
+},
+{
+  id: 'qz-ccdv-158',
+  topic: 'claude',
+  q: '[Tools] How to prevent Claude from calling a tool you no longer want available?',
+  options: [
+    'Remove the tool from the tools array in the request.',
+    'Set tool_choice to "any" but ignore results.',
+    'Add "do not use" in system prompt only.',
+    'Return empty results forever.'
+  ],
+  answer: 0,
+  explain: `**Đáp án đúng: phương án 1.** Bỏ tool khỏi mảng tools là cách chắc chắn. Chỉ dùng prompt không đáng tin; any vẫn ép gọi.`
+},
+{
+  id: 'qz-ccdv-159',
+  topic: 'claude',
+  q: '[Tools] tool_choice "any" forces Claude to call at least one tool. When is this useful?',
+  options: [
+    'When you need structured output guaranteed from a tool.',
+    'When you want free-form text answers.',
+    'When disabling tools.',
+    'When caching prompts.'
+  ],
+  answer: 0,
+  explain: `**Đáp án đúng: phương án 1.** tool_choice "any" hữu ích để ép Claude trả về structured output qua tool. Các phương án khác không liên quan.`
+},
+{
+  id: 'qz-ccdv-160',
+  topic: 'claude',
+  q: '[Tools] Which field in tool definition is mandatory?',
+  options: [
+    'name and input_schema',
+    'description only',
+    'examples array',
+    'version string'
+  ],
+  answer: 0,
+  explain: `**Đáp án đúng: phương án 1.** Tool definition bắt buộc name và input_schema. description khuyến nghị. examples/version không bắt buộc.`
+},
+{
+  id: 'qz-ccdv-161',
+  topic: 'claude',
+  q: '[Prompt] You need Claude to output only JSON without extra prose. Best technique?',
+  options: [
+    'Ask nicely in user message.',
+    'Use a tool with input_schema describing the JSON and tool_choice forced.',
+    'Set temperature to 1.',
+    'Add "no markdown" to system prompt only.'
+  ],
+  answer: 1,
+  explain: `**Đáp án đúng: phương án 2.** Ép qua tool với schema là cách đáng tin nhất để nhận JSON có cấu trúc. Prompt-only không đảm bảo.`
+},
+{
+  id: 'qz-ccdv-162',
+  topic: 'claude',
+  multi: true,
+  q: '[Prompt] Which TWO are recommended for reducing hallucination in factual Q&A? (Choose 2)',
+  options: [
+    'Provide source documents in context and ask to cite.',
+    'Instruct Claude to say "I don\'t know" when unsure.',
+    'Increase temperature to 1.',
+    'Remove all constraints.',
+    'Use a smaller context window.'
+  ],
+  answer: [0, 1],
+  explain: `**Đáp án đúng: phương án 1 và 2.** Cung cấp nguồn và cho phép từ chối khi không chắc giảm hallucination. Tăng temperature hoặc bỏ ràng buộc làm tăng hallucination.`
+},
+{
+  id: 'qz-ccdv-163',
+  topic: 'claude',
+  q: '[Prompt] On new models, budget_tokens is removed. What replaces it?',
+  options: [
+    'thinking: {type: "adaptive"} plus effort level.',
+    'temperature and top_p tuning.',
+    'Prefilling assistant messages.',
+    'max_tokens only.'
+  ],
+  answer: 0,
+  explain: `**Đáp án đúng: phương án 1.** Trên model mới dùng thinking adaptive và effort. temperature/top_p/top_k và prefill bị 400.`
+},
+{
+  id: 'qz-ccdv-164',
+  topic: 'claude',
+  q: '[Prompt] How to make Claude follow a strict output format across turns reliably?',
+  options: [
+    'Repeat format instructions in every user message.',
+    'Put format spec in system prompt and use examples.',
+    'Rely on model memory.',
+    'Use random seeds.'
+  ],
+  answer: 1,
+  explain: `**Đáp án đúng: phương án 2.** System prompt + few-shot examples ổn định nhất. Lặp lại trong user message dễ drift.`
+},
+{
+  id: 'qz-ccdv-165',
+  topic: 'claude',
+  q: '[Prompt] Prompt caching saves cost when?',
+  options: [
+    'When prefix of messages is identical and marked cache_control.',
+    'When responses are short.',
+    'When using high temperature.',
+    'When model changes.'
+  ],
+  answer: 0,
+  explain: `**Đáp án đúng: phương án 1.** Prompt caching dựa trên tiền tố giống nhau được đánh dấu cache_control. Response ngắn hay temperature không liên quan.`
+},
+{
+  id: 'qz-ccdv-166',
+  topic: 'claude',
+  multi: true,
+  q: '[Prompt] Which TWO are true about system prompt best practices? (Choose 2)',
+  options: [
+    'Keep role and constraints concise and specific.',
+    'Put dynamic user data in system prompt for caching.',
+    'Use few-shot examples for desired style.',
+    'Make system prompt as long as possible.',
+    'Avoid any instructions.'
+  ],
+  answer: [0, 2],
+  explain: `**Đáp án đúng: phương án 1 và 3.** System prompt nên rõ ràng, có ví dụ. Động dữ liệu người dùng không nên đặt trong system prompt.`
+},
+{
+  id: 'qz-ccdv-167',
+  topic: 'claude',
+  q: '[Prompt] You want Claude to reason step-by-step internally but show only final answer. Best approach?',
+  options: [
+    'Ask it to print reasoning then answer.',
+    'Use extended thinking and return only final.',
+    'Disable thinking entirely.',
+    'Use top_k=1.'
+  ],
+  answer: 1,
+  explain: `**Đáp án đúng: phương án 2.** Extended thinking cho phép suy luận nội bộ; client chỉ hiển thị final.`
+},
+{
+  id: 'qz-ccdv-168',
+  topic: 'claude',
+  q: '[Prompt] Few-shot examples should be:',
+  options: [
+    'Diverse, representative, and ordered from simple to complex.',
+    'Identical to the query.',
+    'As many as possible regardless of relevance.',
+    'Only negative examples.'
+  ],
+  answer: 0,
+  explain: `**Đáp án đúng: phương án 1.** Ví dụ nên đa dạng, đại diện, sắp xếp từ đơn giản đến phức tạp.`
+},
+{
+  id: 'qz-ccdv-169',
+  topic: 'claude',
+  q: '[Prompt] How to handle user-provided content that may contain prompt injection?',
+  options: [
+    'Concatenate directly into system prompt.',
+    'Wrap in clear delimiters and instruct to treat as data, not instructions.',
+    'Trust it fully.',
+    'Execute it as code.'
+  ],
+  answer: 1,
+  explain: `**Đáp án đúng: phương án 2.** Dùng delimiter và chỉ thị xử lý như dữ liệu giúp giảm prompt injection.`
+},
+{
+  id: 'qz-ccdv-170',
+  topic: 'claude',
+  q: '[Prompt] When is prefilling assistant messages disallowed?',
+  options: [
+    'On the latest models it returns 400.',
+    'Only in streaming mode.',
+    'Only with tools.',
+    'Never.'
+  ],
+  answer: 0,
+  explain: `**Đáp án đúng: phương án 1.** Trên model mới, prefill assistant bị 400.`
+},
+{
+  id: 'qz-ccdv-171',
+  topic: 'claude',
+  q: '[Applications] You need to process 10,000 documents overnight cheaply. Best API feature?',
+  options: [
+    'Standard Messages API with high concurrency.',
+    'Message Batches API with 50% discount.',
+    'Streaming responses.',
+    'Prompt caching only.'
+  ],
+  answer: 1,
+  explain: `**Đáp án đúng: phương án 2.** Message Batches API phù hợp xử lý khối lượng lớn, giảm 50% chi phí.`
+},
+{
+  id: 'qz-ccdv-172',
+  topic: 'claude',
+  multi: true,
+  q: '[Applications] Which TWO are true about the Message Batches API? (Choose 2)',
+  options: [
+    'Results available within 24 hours.',
+    'Supports 50% cost discount.',
+    'Guarantees sub-second latency.',
+    'Requires streaming.',
+    'Only works with Haiku.'
+  ],
+  answer: [0, 1],
+  explain: `**Đáp án đúng: phương án 1 và 2.** Batch xử lý trong vòng 24h, giảm 50% chi phí.`
+},
+{
+  id: 'qz-ccdv-173',
+  topic: 'claude',
+  q: '[Applications] For a chat UI needing token-by-token display, which feature?',
+  options: [
+    'Message Batches API.',
+    'Streaming (SSE) responses.',
+    'Prompt caching.',
+    'Extended thinking only.'
+  ],
+  answer: 1,
+  explain: `**Đáp án đúng: phương án 2.** Streaming qua SSE cho phép hiển thị token từng phần.`
+},
+{
+  id: 'qz-ccdv-174',
+  topic: 'claude',
+  q: '[Applications] How to choose between Haiku, Sonnet, Opus?',
+  options: [
+    'Always use Opus for quality.',
+    'Match task complexity/cost/latency: Haiku simple/fast/cheap, Sonnet balanced, Opus complex.',
+    'Use Haiku for all to save cost.',
+    'Random selection.'
+  ],
+  answer: 1,
+  explain: `**Đáp án đúng: phương án 2.** Chọn model theo độ phức tạp, chi phí, latency.`
+},
+{
+  id: 'qz-ccdv-175',
+  topic: 'claude',
+  q: '[Applications] A 400 error mentions "budget_tokens" on a new model. Fix?',
+  options: [
+    'Add budget_tokens back.',
+    'Replace with thinking: {type: "adaptive"} and effort.',
+    'Switch to older model.',
+    'Increase max_tokens.'
+  ],
+  answer: 1,
+  explain: `**Đáp án đúng: phương án 2.** Trên model mới budget_tokens không hỗ trợ; dùng thinking adaptive + effort.`
+},
+{
+  id: 'qz-ccdv-176',
+  topic: 'claude',
+  multi: true,
+  q: '[Applications] Which TWO improve cost efficiency in production? (Choose 2)',
+  options: [
+    'Prompt caching for repeated prefixes.',
+    'Right-size model per task.',
+    'Always use Opus.',
+    'Disable caching.',
+    'Send full history every time without trimming.'
+  ],
+  answer: [0, 1],
+  explain: `**Đáp án đúng: phương án 1 và 2.** Caching prefix và chọn model phù hợp giảm chi phí.`
+},
+{
+  id: 'qz-ccdv-177',
+  topic: 'claude',
+  q: '[Applications] When should you use extended thinking?',
+  options: [
+    'For simple classification.',
+    'For complex reasoning/math/coding where deeper analysis helps.',
+    'For streaming chat.',
+    'For caching.'
+  ],
+  answer: 1,
+  explain: `**Đáp án đúng: phương án 2.** Extended thinking hữu ích cho tác vụ suy luận phức tạp.`
+},
+{
+  id: 'qz-ccdv-178',
+  topic: 'claude',
+  q: '[Applications] Secrets (API keys) should be handled how?',
+  options: [
+    'Embedded in system prompt.',
+    'Stored in environment variables / secret manager, never sent to Claude.',
+    'Passed in user messages.',
+    'Logged for debugging.'
+  ],
+  answer: 1,
+  explain: `**Đáp án đúng: phương án 2.** Giữ secret ở env/secret manager, không đưa vào prompt hay log.`
+},
+{
+  id: 'qz-ccdv-179',
+  topic: 'claude',
+  q: '[Applications] Rate limit 429 should be handled by:',
+  options: [
+    'Immediate failure.',
+    'Exponential backoff with jitter and retry.',
+    'Switching API key.',
+    'Reducing max_tokens to 1.'
+  ],
+  answer: 1,
+  explain: `**Đáp án đúng: phương án 2.** 429 là rate limit tạm thời; retry với backoff+jitter là chuẩn.`
+},
+{
+  id: 'qz-ccdv-180',
+  topic: 'claude',
+  q: '[Applications] For evaluating model quality, best practice is:',
+  options: [
+    'Manual spot checks only.',
+    'Build eval suite with golden datasets and automated scoring.',
+    'Trust vendor benchmarks.',
+    'Use production traffic as sole metric.'
+  ],
+  answer: 1,
+  explain: `**Đáp án đúng: phương án 2.** Eval suite với golden dataset và scoring tự động giúp đo lường khách quan.`
 }
+
 );
