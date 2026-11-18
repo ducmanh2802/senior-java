@@ -9006,4 +9006,260 @@ Một ngân hàng chuyển service tính lãi (interest) từ monolith sang serv
     { type: 'doc', title: 'Pact documentation', url: 'https://docs.pact.io/' }
   ]
 },
+{
+  id: 'microservices-103',
+  topic: 'microservices',
+  level: 'senior',
+  q: 'Bạn thiết kế task lifecycle cho một workflow dài (ví dụ đơn hàng) bằng state machine (NEW → ASSIGNED → IN_PROGRESS → DONE/ESCALATED). Vì sao cần state machine thay vì if/else rải rác, và cách persist trạng thái an toàn là gì?',
+  a: `**Tóm tắt:** state machine tập trung mọi chuyển trạng thái vào một chỗ, tránh trạng thái không hợp lệ; persist trạng thái trong DB với version (optimistic locking) để chống race và cho phép resume sau crash.
+
+### Vì sao cần state machine
+Nếu code rải rác {{if status == X}} ở nhiều nơi, dễ xuất hiện trạng thái không hợp lệ (DONE rồi vẫn IN_PROGRESS) và khó audit. State machine định nghĩa rõ: từ mỗi trạng thái chỉ được chuyển sang trạng thái nào. Ví dụ {{NEW → ASSIGNED → IN_PROGRESS → DONE}} hoặc {{IN_PROGRESS → ESCALATED}} khi quá SLA.
+
+### Cách persist an toàn
+- Bảng {{task(id, status, version, updated_at)}}.
+- Cập nhật dùng optimistic locking: {{UPDATE task SET status=?, version=version+1 WHERE id=? AND status=? AND version=?}}. Nếu affected rows = 0 → có người khác vừa sửa → retry đọc lại.
+- Mỗi chuyển trạng thái ghi audit log (ai, khi nào, từ→đến, lý do).
+- Idempotency: cùng một event xử lý hai lần không tạo chuyển trạng thái trùng.
+
+### Code Java
+~~~java
+public enum TaskStatus { NEW, ASSIGNED, IN_PROGRESS, DONE, ESCALATED }
+
+public boolean transition(Long id, TaskStatus from, TaskStatus to, long expectedVersion) {
+    int n = jdbc.update(
+        "UPDATE task SET status=?, version=version+1, updated_at=now() " +
+        "WHERE id=? AND status=? AND version=?", to, id, from, expectedVersion);
+    return n == 1;
+}
+~~~
+
+### Pitfall
+- Quên persist trước khi emit event → crash giữa chừng mất trạng thái. Dùng transactional outbox.
+- Cho phép chuyển trạng thái "ngược" (DONE → IN_PROGRESS) để "sửa" → dữ liệu không nhất quán.
+
+### Ví dụ đời thực
+Hệ thống xử lý 50k task/ngày. Trước refactor, 120 task/tháng bị "kẹt" trạng thái do race giữa 2 worker. Sau state machine + optimistic locking, số kẹt giảm về 0 và có audit trail đầy đủ cho compliance.
+
+### Trả lời mẫu khi phỏng vấn
+"Tôi model task bằng state machine với enum rõ ràng, mỗi chuyển trạng thái đi qua một hàm transition kiểm tra hợp lệ và dùng optimistic locking theo version. Trạng thái lưu DB cùng audit log. Idempotency key chống xử lý trùng. Khi crash, worker đọc trạng thái hiện tại và resume đúng bước, không đoán mò. Với workflow dài hơn nhiều bước, tôi cân nhắc Temporal/Camunda để engine quản lý retry/timer, nhưng với 4–5 trạng thái đơn giản thì tự viết state machine là đủ và dễ debug."
+
+> Senior tip: **trạng thái là sự thật; code chỉ là cách di chuyển giữa các sự thật**. Hãy persist trước, emit event sau, và luôn có audit log — vì khi incident xảy ra, audit log là thứ duy nhất cho biết chuyện gì đã xảy ra.`,
+  follow: [
+    'Orchestration vs choreography: khi nào chọn cái nào cho workflow dài?',
+    'Làm sao khôi phục task đang IN_PROGRESS sau khi service restart?',
+    'Optimistic locking vs distributed lock cho state machine, trade-off là gì?'
+  ],
+  tags: ['state machine', 'task lifecycle', 'optimistic locking', 'idempotency', 'audit'],
+},
+{
+  id: 'microservices-104',
+  topic: 'microservices',
+  level: 'lead',
+  q: 'Orchestration vs choreography cho workflow dài: so sánh hai mô hình, khi nào chọn cái nào, và rủi ro của choreography là gì?',
+  a: `**Tóm tắt:** orchestration có một "nhạc trưởng" điều phối từng bước (dễ theo dõi, dễ debug); choreography mỗi service tự phản ứng event (lỏng coupling nhưng khó theo dõi luồng tổng thể). Workflow dài, nhiều bù trừ → orchestration; luồng đơn giản, độc lập → choreography.
+
+### Orchestration
+Một service trung tâm (orchestrator) gọi từng bước theo thứ tự, xử lý kết quả, quyết định bước tiếp. Ví dụ: order service gọi inventory → payment → shipping, và nếu payment fail thì gọi compensate inventory.
+
+### Choreography
+Không có trung tâm. Mỗi service publish event, service khác subscribe và tự hành động. Ví dụ: order created → inventory reserved → payment charged, mỗi bước là reaction.
+
+### Bảng so sánh
+| Tiêu chí | Orchestration | Choreography |
+|---|---|---|
+| Coupling | Orchestrator biết các service | Service chỉ biết event |
+| Dễ theo dõi luồng | Cao (một chỗ) | Thấp (rải rác) |
+| Thêm bước mới | Sửa orchestrator | Thêm subscriber |
+| Single point of failure | Orchestrator | Không |
+| Phù hợp | Workflow dài, bù trừ | Luồng đơn giản, fan-out |
+
+### Rủi ro choreography
+- "Spaghetti event": không ai biết tổng thể luồng; thay đổi một event ảnh hưởng không rõ.
+- Khó implement compensation (saga) vì không có điểm điều phối.
+- Debug phải trace qua nhiều service.
+
+### Code Java (orchestrator đơn giản)
+~~~java
+public void placeOrder(Order o) {
+    inventory.reserve(o);          // bước 1
+    try { payment.charge(o); }     // bước 2
+    catch (Exception e) { inventory.release(o); throw e; } // compensate
+    shipping.create(o);            // bước 3
+}
+~~~
+
+### Ví dụ đời thực
+Luồng đặt hàng 4 bước với bù trừ: nhóm chọn orchestration (Temporal) vì cần retry từng bước và compensation rõ ràng. Luồng "gửi email chào mừng sau đăng ký" dùng choreography vì đơn giản, fire-and-forget, không cần theo dõi.
+
+### Trả lời mẫu khi phỏng vấn
+"Tôi chọn theo độ phức tạp và nhu cầu compensation. Workflow có nhiều bước, bù trừ, SLA → orchestration (Temporal/Camunda hoặc tự viết orchestrator) để có một chỗ theo dõi, retry, compensate. Luồng đơn giản, fan-out, không cần theo dõi tổng thể → choreography qua Kafka, coupling lỏng hơn. Rủi ro choreography là spaghetti event và khó debug; tôi mitig bằng schema registry, contract test và tracing. Không dogmatic: một hệ thống thường dùng cả hai tuỳ use case."
+
+> Senior tip: **choreography là microservices lý tưởng, orchestration là thực tế**. Đa số workflow nghiệp vụ có bù trừ và SLA — và bù trừ cần một "người chịu trách nhiệm".`,
+  follow: [
+    'Temporal/Camunda khác gì tự viết orchestrator, khi nào dùng engine?',
+    'Saga pattern: choreography saga vs orchestration saga, trade-off?',
+    'Làm sao tránh orchestrator trở thành "god service"?'
+  ],
+  tags: ['orchestration', 'choreography', 'saga', 'workflow', 'coupling'],
+},
+{
+  id: 'microservices-105',
+  topic: 'microservices',
+  level: 'senior',
+  q: 'Retry với exponential backoff + jitter: vì sao cần, jitter giải quyết vấn đề gì, và cách implement an toàn trong Java?',
+  a: `**Tóm tắt:** retry giúp vượt lỗi tạm thời; exponential backoff tránh dồn dập; jitter (ngẫu nhiên hoá delay) tránh "thundering herd" khi nhiều client retry cùng lúc. Implement bằng Resilience4j hoặc tự viết với Thread.sleep có jitter.
+
+### Vì sao cần backoff
+Nếu downstream quá tải, retry ngay lập tức làm nó tệ hơn. Exponential backoff: delay = base * 2^attempt, capped ở max. Ví dụ base 100ms → 100, 200, 400, 800, 1600ms (cap 2s).
+
+### Vì sao cần jitter
+Nếu 1000 client cùng fail ở cùng thời điểm (ví dụ downstream restart), tất cả retry theo lịch giống nhau → spike đồng pha. Jitter thêm ngẫu nhiên: delay = random(0, computed) hoặc full jitter. AWS khuyến nghị "full jitter": sleep = random(0, min(cap, base*2^attempt)).
+
+### Code Java (full jitter)
+~~~java
+public <T> T retry(Callable<T> fn, int maxAttempts) throws Exception {
+    Exception last = null;
+    for (int i = 0; i < maxAttempts; i++) {
+        try { return fn.call(); }
+        catch (Exception e) { last = e; }
+        long cap = 2000;
+        long base = 100;
+        long exp = Math.min(cap, base * (1L << i));
+        if (i < maxAttempts - 1) {
+            long sleep = ThreadLocalRandom.current().nextLong(0, exp + 1);
+            Thread.sleep(sleep);
+        }
+    }
+    throw last;
+}
+~~~
+
+### Khi nào KHÔNG retry
+- Lỗi 4xx (client error) → retry vô ích.
+- Lỗi không idempotent (POST tạo đơn) → retry có thể tạo trùng → cần idempotency key.
+- Đã vượt budget thời gian (deadline).
+
+### Pitfall
+- Retry trên lỗi "connection reset" nhưng downstream đã xử lý xong → duplicate. Dùng idempotency key.
+- Không cap số lần → retry vô hạn khi downstream chết hoàn toàn. Luôn có max attempts + circuit breaker.
+- Sleep trên thread request → thread pool cạn. Dùng async retry (Resilience4j + Reactor) cho throughput cao.
+
+### Ví dụ đời thực
+Payment gateway timeout 0,5% request. Retry với full jitter giảm lỗi về 0,02% mà không làm gateway quá tải thêm. Trước đó retry "ngay lập tức" từng gây spike 3x traffic và gateway sập.
+
+### Trả lời mẫu khi phỏng vấn
+"Tôi retry chỉ trên lỗi tạm thời (5xx, timeout, connection reset), không retry 4xx. Delay exponential với full jitter để tránh thundering herd, cap ở 2s và tối đa 3–5 lần. Mỗi request mang idempotency key để retry an toàn. Kết hợp circuit breaker: khi failure rate cao, mở circuit và fail fast thay vì retry. Với Java, Resilience4j Retry + CircuitBreaker là lựa chọn chuẩn; tự viết chỉ cho hiểu cơ chế."
+
+> Senior tip: **retry là con dao hai lưỡi**: giải quyết lỗi tạm thời nhưng có thể biến một downstream chậm thành sự cố lớn hơn. Luôn đo "retry rate" và "effective failure rate" riêng, và đặt retry budget toàn hệ thống (ví dụ tổng retry ≤ 10% traffic).`,
+  follow: [
+    'Full jitter vs equal jitter vs decorrelated jitter, khác gì?',
+    'Làm sao tránh retry storm khi downstream restart?',
+    'Idempotency key thiết kế thế nào để retry an toàn?'
+  ],
+  tags: ['retry', 'backoff', 'jitter', 'resilience4j', 'thundering herd'],
+},
+{
+  id: 'microservices-106',
+  topic: 'microservices',
+  level: 'senior',
+  q: 'DLQ (Dead Letter Queue) và reprocess an toàn: khi nào message vào DLQ, cách reprocess không gây duplicate hay disorder, và pitfalls thường gặp?',
+  a: `**Tóm tắt:** DLQ chứa message không xử lý được sau retry; reprocess an toàn cần idempotency, ordering awareness, và reprocess theo batch nhỏ có monitoring. Pitfall: reprocess toàn bộ DLQ cùng lúc → spike; reprocess không idempotent → duplicate.
+
+### Khi nào message vào DLQ
+- Vượt max retry (ví dụ 3 lần).
+- Lỗi không retry được (poison message: schema sai, dữ liệu không hợp lệ).
+- Timeout xử lý.
+
+### Reprocess an toàn
+1. **Idempotency**: consumer xử lý message phải idempotent (theo message id / business key). Reprocess cùng message nhiều lần không đổi kết quả.
+2. **Batch nhỏ**: reprocess theo batch (100–1000 message) với rate limit, không dump toàn bộ.
+3. **Ordering**: nếu topic có ordering theo key, reprocess có thể phá thứ tự → xử lý theo key/partition, hoặc chấp nhận eventual consistency.
+4. **Monitoring**: đếm DLQ depth, alert khi tăng; log lý do vào DLQ.
+5. **Phân loại**: tách DLQ theo lý do (poison vs transient) để xử lý khác nhau.
+
+### Code Java (Spring Kafka DLQ)
+~~~java
+@KafkaListener(topics = "orders")
+public void handle(OrderEvent e, Acknowledgment ack) {
+    try { process(e); ack.acknowledge(); }
+    catch (Exception ex) {
+        if (isPoison(ex)) dlqTemplate.send("orders.DLT", e);
+        else throw ex; // retry qua Kafka
+    }
+}
+~~~
+
+### Pitfall
+- Reprocess DLQ bằng cách "đẩy lại topic gốc" mà không fix code → lặp vô hạn vào DLQ. Phải fix root cause trước.
+- DLQ chứa PII → lưu trữ/retention phải tuân thủ.
+- Không có DLQ → message lỗi block partition (head-of-line blocking).
+- Reprocess song song nhiều consumer → race với processing đang chạy.
+
+### Ví dụ đời thực
+Sau deploy lỗi, 1,2 triệu message vào DLT của 3 topic. Nhóm fix code, reprocess theo batch 500 message/phút với rate limit, giám sát lag và error rate. Mất 6 giờ, 0 duplicate nhờ idempotency key theo order_id. Phát hiện thêm 200 poison message do schema cũ → xử lý thủ công.
+
+### Trả lời mẫu khi phỏng vấn
+"Tôi thiết kế DLQ từ đầu: max retry rồi đẩy message kèm metadata (lý do, số lần retry, timestamp) vào DLT. Reprocess chỉ sau khi fix root cause, theo batch nhỏ với rate limit, và consumer phải idempotent theo business key. Monitoring DLQ depth và alert. Với poison message, tách riêng để xử lý thủ công hoặc drop có audit. Không bao giờ reprocess toàn bộ cùng lúc — đó là cách biến sự cố nhỏ thành sự cố lớn."
+
+> Senior tip: **DLQ không phải thùng rác, là hàng đợi điều tra**. Mỗi message trong DLQ là một bằng chứng. Nếu bạn không có tooling để inspect và replay từng message, DLQ chỉ là nơi message đi để chết.`,
+  follow: [
+    'Làm sao phân biệt poison message và lỗi tạm thời để route vào DLQ khác nhau?',
+    'Reprocess có thể phá ordering, bạn xử lý ra sao?',
+    'DLQ retention bao lâu là hợp lý, và PII thì sao?'
+  ],
+  tags: ['DLQ', 'DLT', 'reprocess', 'idempotency', 'kafka'],
+},
+{
+  id: 'microservices-107',
+  topic: 'microservices',
+  level: 'lead',
+  q: 'Giao webhook tin cậy tới partner: ký HMAC, retry exponential, idempotency key. Thiết kế end-to-end thế nào để partner nhận đúng và không xử lý trùng?',
+  a: `**Tóm tắt:** webhook tin cậy = ký payload bằng HMAC (partner verify), idempotency key theo event, retry exponential với jitter, DLQ cho event không giao được, và partner phải trả 2xx nhanh rồi xử lý async.
+
+### Thiết kế end-to-end
+1. **Payload + chữ ký**: HMAC-SHA256 của body với secret chia sẻ, gửi trong header {{X-Signature}}. Partner verify bằng secret của mình.
+2. **Idempotency key**: mỗi event có {{event_id}} duy nhất; partner lưu và bỏ qua nếu đã xử lý.
+3. **Retry**: exponential backoff + jitter, max 5–8 lần trong 24h, sau đó vào DLQ.
+4. **Timeout**: partner phải trả 2xx trong ≤ 5s; xử lý nặng làm async.
+5. **Ordering**: không đảm bảo ordering toàn cục; partner xử lý theo event_id/timestamp, hoặc chấp nhận eventual consistency.
+6. **Versioning**: payload có {{schema_version}} để partner parse đúng.
+
+### Code Java (ký HMAC)
+~~~java
+public String sign(String body, String secret) {
+    Mac mac = Mac.getInstance("HmacSHA256");
+    mac.init(new SecretKeySpec(secret.getBytes(UTF_8), "HmacSHA256"));
+    byte[] raw = mac.doFinal(body.getBytes(UTF_8));
+    return "sha256=" + HexFormat.of().formatHex(raw);
+}
+~~~
+
+### Partner verify
+~~~java
+boolean ok = MessageDigest.isEqual(
+    sign(body, secret).getBytes(), receivedSig.getBytes());
+~~~
+
+### Pitfall
+- So sánh chữ ký bằng {{equals}} thay vì constant-time → timing attack. Dùng {{MessageDigest.isEqual}}.
+- Secret leaked → rotate secret, hỗ trợ hai secret song song trong thời gian chuyển.
+- Partner trả 200 nhưng chưa xử lý xong → mất event. Yêu cầu partner chỉ 200 sau khi persist.
+- Replay attack: thêm timestamp + tolerance (±5 phút) và nonce.
+
+### Ví dụ đời thực
+Hệ thống thanh toán gửi webhook "payment.captured" tới 200 merchant. Trước: 3% event mất do retry không đủ và partner timeout. Sau thiết kế: HMAC + idempotency key + retry 8 lần/24h + DLQ + dashboard replay. Delivery success 99,97%, duplicate xử lý 0 nhờ idempotency key. Một merchant bị leak secret → rotate trong 2 phút, zero downtime nhờ hỗ trợ hai secret.
+
+### Trả lời mẫu khi phỏng vấn
+"Tôi thiết kế webhook như một message queue ra bên ngoài: ký HMAC-SHA256 để partner verify, idempotency key theo event_id, retry exponential với jitter và DLQ. Partner phải trả 2xx nhanh và xử lý async; timestamp + nonce chống replay. Secret rotation hỗ trợ hai secret song song. Monitoring delivery rate và DLQ depth; dashboard cho partner replay event thủ công. Đây là contract giữa hai hệ thống — nên version payload và document rõ."
+
+> Senior tip: **webhook là API một chiều và không đáng tin cậy theo mặc định**. Coi nó như at-least-once delivery với idempotency, không phải exactly-once. Partner nào không implement idempotency, bạn không thể đảm bảo đúng — nên document và test contract.`,
+  follow: [
+    'Làm sao chống replay attack cho webhook (timestamp, nonce)?',
+    'Secret rotation zero-downtime thiết kế thế nào?',
+    'Partner xử lý webhook chậm, bạn xử lý thế nào (timeout, async)?'
+  ],
+  tags: ['webhook', 'HMAC', 'idempotency', 'retry', 'security'],
+},
+
 );
