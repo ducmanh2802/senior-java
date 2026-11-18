@@ -7101,6 +7101,690 @@ VACUUM dọn dead tuple do MVCC để tái sử dụng chỗ và cập nhật vi
 > Senior tip: Bloat là "bệnh thầm lặng": không crash nhưng làm mọi query chậm dần. Monitor dead_tuple_percent và age(relfrozenxid) như metric bắt buộc, alert khi vượt ngưỡng.`,
   follow: ['VACUUM FULL khác gì pg_repack?', 'Tại sao long-running transaction gây bloat?', 'autovacuum_vacuum_cost_limit điều chỉnh thế nào?'],
   tags: ['VACUUM', 'autovacuum', 'MVCC', 'dead tuple', 'bloat', 'visibility map', 'wraparound', 'pgstattuple', 'pg_repack']
+},
+{
+  id: 'sql-080',
+  topic: 'sql',
+  level: 'senior',
+  q: 'Thiết kế schema ledger cho ví điện tử: bảng entries (gía trị, tài khoản, loại), bảng accounts (số dư hiện tại, phiên bản), và bảng balance_snapshot (điểm kiểm tra hàng ngày). Giải thích cơ chế ghi entries + cập nhật accounts trong một transaction, vì sao cần balance_snapshot cho đối soát nhanh, và cách rebuild snapshot khi phát hiện lệch.',
+  a: `**Tóm tắt:** Ledger dùng double-entry: mỗi giao dịch tạo ít nhất hai bản ghi trong {{entries}} (debit/credit) cùng {{transaction_id}}, và cập nhật {{accounts.balance}} + {{accounts.version}} trong cùng một transaction. Bảng {{balance_snapshot}} lưu số dư cuối ngày để đối soát O(1) thay vì SUM hàng triệu entries. Khi lệch, rebuild bằng cách chạy lại entries từ snapshot gần nhất hoặc dùng window function.
+ 
+### Schema ledger cốt lõi
+~~~sql
+CREATE TABLE accounts (
+    id BIGSERIAL PRIMARY KEY,
+    user_id BIGINT NOT NULL,
+    currency CHAR(3) NOT NULL DEFAULT 'VND',
+    balance NUMERIC(19,0) NOT NULL DEFAULT 0,  -- minor units
+    version BIGINT NOT NULL DEFAULT 0,         -- optimistic lock
+    status TEXT NOT NULL DEFAULT 'ACTIVE',     -- ACTIVE, FROZEN, CLOSED
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    UNIQUE (user_id, currency)
+);
+ 
+CREATE TABLE entries (
+    id BIGSERIAL PRIMARY KEY,
+    transaction_id BIGINT NOT NULL,            -- groups debit/credit together
+    account_id BIGINT NOT NULL REFERENCES accounts(id),
+    amount NUMERIC(19,0) NOT NULL,             -- positive for credit, negative for debit
+    type TEXT NOT NULL,                        -- DEPOSIT, WITHDRAW, TRANSFER_IN, TRANSFER_OUT, FEE, REWARD
+    ref_id BIGINT,                             -- id của transfer, order, bill...
+    description TEXT,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    CONSTRAINT entries_amount_not_zero CHECK (amount <> 0)
+);
+CREATE INDEX idx_entries_txn ON entries (transaction_id);
+CREATE INDEX idx_entries_acct_time ON entries (account_id, created_at DESC);
+ 
+CREATE TABLE balance_snapshot (
+    account_id BIGINT NOT NULL REFERENCES accounts(id),
+    snapshot_date DATE NOT NULL,
+    balance NUMERIC(19,0) NOT NULL,
+    entry_count BIGINT NOT NULL,               -- số entries tính tới snapshot này
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    PRIMARY KEY (account_id, snapshot_date)
+);
+~~~
+ 
+### Ghi entries + cập nhật accounts atomic
+Mỗi giao dịch tiền (nạp, rút, chuyển, phí) chạy trong **một transaction duy nhất**:
+~~~java
+@Transactional
+public void transfer(TransferCommand cmd) {
+    // 1. Khóa hai tài khoản theo thứ tự id tăng để tránh deadlock
+    List<Account> accounts = jdbc.query("""
+        SELECT * FROM accounts WHERE id IN (?, ?) ORDER BY id FOR UPDATE
+        """, (rs, i) -> map(rs), cmd.fromId(), cmd.toId());
+ 
+    // 2. Kiểm tra số dư nguồn
+    if (accounts.get(0).balance().compareTo(cmd.amount()) < 0) {
+        throw new InsufficientFundsException();
+    }
+ 
+    // 3. Tạo transaction_id (dùng sequence hoặc UUID)
+    long txnId = jdbc.queryForObject("SELECT nextval('txn_seq')", Long.class);
+ 
+    // 4. Ghi entries (debit nguồn, credit đích)
+    jdbc.update("""
+        INSERT INTO entries (transaction_id, account_id, amount, type, ref_id)
+        VALUES (?, ?, ?, 'TRANSFER_OUT', ?), (?, ?, ?, 'TRANSFER_IN', ?)
+        """, txnId, cmd.fromId(), cmd.amount().negate(), cmd.refId(),
+             txnId, cmd.toId(), cmd.amount(), cmd.refId());
+ 
+    // 5. Cập nhật balance + version (optimistic lock)
+    int updated = jdbc.update("""
+        UPDATE accounts SET balance = balance - ?, version = version + 1
+        WHERE id = ? AND version = ?
+        """, cmd.amount(), cmd.fromId(), accounts.get(0).version());
+    if (updated == 0) throw new OptimisticLockException();
+ 
+    updated = jdbc.update("""
+        UPDATE accounts SET balance = balance + ?, version = version + 1
+        WHERE id = ? AND version = ?
+        """, cmd.amount(), cmd.toId(), accounts.get(1).version());
+    if (updated == 0) throw new OptimisticLockException();
+}
+~~~
+Điểm quan trọng: **cùng một transaction** đảm bảo ACID — hoặc cả hai entries và cả hai balance đều ghi, hoặc không ghi gì. {{version}} chống lost update khi cùng lúc có nhiều giao dịch trên một tài khoản.
+ 
+### Vì sao cần balance_snapshot
+Đối soát cuối ngày: {{SELECT SUM(amount) FROM entries WHERE account_id = ? AND created_at <= ?}} trên hàng triệu dòng mất giây. {{balance_snapshot}} cho O(1):
+~~~sql
+-- Lấy số dư cuối ngày 2026-11-17
+SELECT balance FROM balance_snapshot
+WHERE account_id = 123 AND snapshot_date = DATE '2026-11-17';
+~~~
+Job hàng đêm (00:05) tính snapshot:
+~~~sql
+INSERT INTO balance_snapshot (account_id, snapshot_date, balance, entry_count)
+SELECT a.id, CURRENT_DATE - 1, a.balance,
+       (SELECT COUNT(*) FROM entries e WHERE e.account_id = a.id AND e.created_at < CURRENT_DATE)
+FROM accounts a
+WHERE a.status = 'ACTIVE'
+ON CONFLICT (account_id, snapshot_date) DO UPDATE SET
+    balance = EXCLUDED.balance,
+    entry_count = EXCLUDED.entry_count;
+~~~
+ 
+### Rebuild snapshot khi lệch
+Nếu đối soát phát hiện {{accounts.balance <> balance_snapshot.balance + SUM(entries sau snapshot)}}:
+1. **Từ snapshot gần nhất**: chạy lại entries từ {{entry_count + 1}} tới nay.
+2. **Full rebuild**: xóa snapshot, chạy lại từ đầu (chỉ khi ít dữ liệu).
+~~~sql
+-- Cách 1: chạy lại từ snapshot_date + 1
+WITH latest_snap AS (
+    SELECT * FROM balance_snapshot WHERE account_id = 123 ORDER BY snapshot_date DESC LIMIT 1
+), entries_after AS (
+    SELECT SUM(amount) AS delta FROM entries e, latest_snap s
+    WHERE e.account_id = 123 AND e.created_at > s.snapshot_date
+)
+UPDATE balance_snapshot SET balance = s.balance + COALESCE(e.delta, 0)
+FROM latest_snap s, entries_after e
+WHERE account_id = 123 AND snapshot_date = s.snapshot_date;
+~~~
+ 
+### Lỗi hay gặp trên production
+- **Quên FOR UPDATE khi đọc balance**: đọc balance rồi UPDATE không khóa -> lost update.
+- **Không kiểm tra affected rows**: version tăng nhưng UPDATE trả 0 dòng -> silent failure.
+- **Transaction_id không unique**: một transfer tạo 2 entries cùng txn_id, nhưng bug tạo 4 entries -> sai số dư.
+- **Snapshot job chạy trùng với giao dịch**: snapshot đọc balance đang bị UPDATE -> snapshot sai. Cách sửa: snapshot đọc từ {{entries}} (immutable) chứ không đọc {{accounts.balance}}, hoặc chạy snapshot trên replica.
+- **Currency mixing**: lưu VND và USD trong cùng cột balance -> sai khi cộng trừ. Luôn tách cột currency và UNIQUE (user_id, currency).
+ 
+### Ví dụ đời thực
+Ví điện tử 2 triệu user, 50 triệu entries/tháng. Đối soát thủ công từng ngày mất 4 giờ (SUM entries). Thêm {{balance_snapshot}} hàng đêm: đối soát 120.000 tài khoản trong 3 phút. Một lần bug ghi entries thiếu một bản credit (mất transaction_id khi retry), đối soát phát hiện lệch 500 tài khoản. Rebuild từ snapshot gần nhất: chạy lại entries từ {{entry_count}}, 500 tài khoản xong trong 2 phút. Thêm trigger kiểm tra SUM(amount) theo {{transaction_id}} bằng 0 (CHECK constraint không dùng được window function) để chặn entries không cân bằng.
+ 
+### Trả lời mẫu khi phỏng vấn
+Tôi thiết kế ledger theo double-entry: mỗi giao dịch sinh entries debit/credit cùng transaction_id, và cập nhật accounts.balance + version trong một transaction. Dùng FOR UPDATE theo thứ tự id để tránh deadlock, kiểm tra affected rows cho optimistic lock. Để đối soát nhanh, tôi tạo balance_snapshot hàng đêm lưu số dư và entry_count — O(1) thay vì SUM hàng triệu dòng. Khi lệch, tôi rebuild từ snapshot gần nhất bằng cách cộng dồn entries sau snapshot. Tôi không bao giờ đọc balance rồi UPDATE mà không khóa, và luôn tách currency. Unique constraint trên (user_id, currency) và CHECK cho entries cân bằng là bắt buộc.
+ 
+> Senior tip: Ledger là "nhật ký không thể sửa". Đừng bao giờ UPDATE entries — nếu sai, ghi entry đảo ngược (reversal) với ref_id trỏ về entry gốc. Audit trail phải toàn vẹn cho tới khi heat death of the universe.
+`,
+  follow: [
+    'Vì sao không nên UPDATE entries khi sai, mà phải ghi reversal?',
+    'Snapshot job đọc từ entries thay vì accounts.balance thì an toàn hơn ở đâu?',
+    'Nếu một transfer thất bại giữa chừng (ghi entries xong, update balance lỗi), hệ thống xử lý sao?'
+  ],
+  tags: ['ledger', 'double-entry', 'balance_snapshot', 'optimistic lock', 'FOR UPDATE', 'transaction_id', 'reconciliation', 'reversal']
+},
+{
+  id: 'sql-081',
+  topic: 'sql',
+  level: 'senior',
+  q: 'So sánh NUMERIC/DECIMAL vs BIGINT (minor units) cho cột tiền trong fintech. Precision/scale chọn như thế nào cho VND, USD, tỷ giá nội bộ, crypto. Rounding mode HALF_UP vs HALF_EVEN dùng khi nào. Tại sao không bao giờ dùng FLOAT/DOUBLE.',
+  a: `**Tóm tắt:** Tiền luôn dùng **NUMERIC/DECIMAL** (chuẩn SQL) hoặc **BIGINT lưu minor units** (ví dụ VND * 1, USD * 10000, ETH wei * 1). Không bao giờ FLOAT/DOUBLE vì nhị phân không biểu diễn chính xác 0.1. Precision/scale: VND không lẻ -> NUMERIC(19,0) hoặc BIGINT; USD -> NUMERIC(19,4); tỷ giá nội bộ -> NUMERIC(19,8) trở lên; crypto token -> NUMERIC(38,18), wei -> BIGINT. Rounding: tiền dùng HALF_UP, thống kê dùng HALF_EVEN. Luôn truyền RoundingMode cho BigDecimal.divide.
+ 
+### Tại sao FLOAT/DOUBLE là sai
+IEEE 754 binary floating point: {{0.1}} không biểu diễn được chính xác (như {{1/3}} trong thập phân).
+~~~java
+double a = 0.1 + 0.2;  // 0.30000000000000004
+BigDecimal b = BigDecimal.valueOf(0.1).add(BigDecimal.valueOf(0.2)); // 0.3
+~~~
+Trên production: tính lãi suất 0.05% trên 1 tỷ VND -> sai 50.000 VND/lần. Lũy theo hàng triệu giao dịch -> sai số tỷ VND. **Không bao giờ** dùng float cho tiền.
+ 
+### NUMERIC/DECIMAL vs BIGINT minor units
+| Cách | Ưu điểm | Nhược điểm | Khi nào dùng |
+|---|---|---|---|
+| {{NUMERIC(p,s)}} | Chuẩn SQL, tự xử lý scale, readable | Chậm hơn BIGINT ~10-20%, chiếm nhiều storage | Cần precision linh hoạt, nhiều currency khác scale |
+| {{BIGINT}} (minor units) | Nhanh nhất, index nhỏ, atomic CPU | Application phải tự scale (×100, ×10000), dễ sai nếu quên | High-throughput, single currency (VND), latency critical |
+ 
+BIGINT minor units: lưu VND * 1 (VND không lẻ), USD * 10000 (4 decimals), ETH wei * 1 (18 decimals). Application **luôn** nhân/chia theo scale trước khi ghi/đọc DB.
+~~~java
+// VND: scale = 0
+long vndMinor = 1_000_000L;  // 1 triệu VND
+ 
+// USD: scale = 4
+long usdMinor = Math.round(123.4567 * 10000);  // 1234567
+ 
+// Crypto wei: scale = 18 (BigInteger cho an toàn)
+BigInteger wei = new BigInteger("1000000000000000000"); // 1 ETH
+~~~
+ 
+### Chọn precision/scale
+| Loại tiền | Ví dụ | NUMERIC(p,s) | BIGINT scale | Ghi chú |
+|---|---|---|---|---|
+| VND | 1.000.000 | NUMERIC(19,0) | ×1 | Không lẻ, p=19 đủ 922 tỷ tỷ |
+| USD | 123.4567 | NUMERIC(19,4) | ×10000 | 4 decimals chuẩn ISO |
+| Tỷ giá nội bộ | 23.456789 | NUMERIC(19,6) | ×1000000 | Cần 6-8 decimals cho chính xác |
+| Crypto token | 1.234567890123456789 ETH | NUMERIC(38,18) | ×10^18 (wei) | p=38 cho 10^18 * 10^18 |
+| Chỉ số/VNIndex | 1234.56 | NUMERIC(10,2) | ×100 | Không phải tiền, dùng cho thống kê |
+ 
+**Quy tắc**: {{p}} ≥ số chữ số nguyên tối đa + {{s}}. NUMERIC(19,4) cho phép 999.999.999.999.999,9999 (15 chữ số nguyên). NUMERIC(38,18) cho phép 10^20 * 10^18.
+ 
+### Rounding mode: HALF_UP vs HALF_EVEN
+| Mode | Ví dụ 1.5 | Ví dụ 2.5 | Dùng cho |
+|---|---|---|---|
+| {{HALF_UP}} | 2 | 3 | **Tiền** (ngân hàng, thanh toán) — người dùng mong đợi 0.5 lên |
+| {{HALF_EVEN}} (Banker's) | 2 | 2 | **Thống kê, báo cáo** — giảm bias tích lũy |
+| {{HALF_DOWN}} | 1 | 2 | Hiếm |
+ 
+Luôn truyền {{RoundingMode}} cho {{BigDecimal.divide}}:
+~~~java
+// SAI: ném ArithmeticException khi không chia hết (1/3)
+BigDecimal rate = amount.divide(BigDecimal.valueOf(3));
+ 
+// ĐÚNG: scale 10, HALF_UP cho tiền
+BigDecimal rate = amount.divide(BigDecimal.valueOf(3), 10, RoundingMode.HALF_UP);
+ 
+// ĐÚNG: HALF_EVEN cho thống kê
+BigDecimal avg = sum.divide(BigDecimal.valueOf(count), 4, RoundingMode.HALF_EVEN);
+~~~
+ 
+### TIMESTAMPTZ vs TIMESTAMP cho thời gian tiền
+- {{TIMESTAMPTZ}}: lưu UTC, đổi theo timezone khi hiển thị. **Mặc định cho mọi cột thời gian**.
+- {{TIMESTAMP}} (without time zone): không lưu timezone, giả định theo session. Dễ sai khi server đổi vùng, hoặc replication cross-region.
+~~~sql
+-- ĐÚNG
+created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+ 
+-- SAI cho fintech
+created_at TIMESTAMP NOT NULL DEFAULT now()
+~~~
+Java dùng {{Instant}} hoặc {{OffsetDateTime}}, không dùng {{LocalDateTime}} (mất timezone).
+ 
+### Lỗi hay gặp
+- **FLOAT cho lãi suất**: {{rate DOUBLE PRECISION}} -> sai số tích lũy.
+- **NUMERIC(10,2) cho USD**: không chứa 1.234,56 (cần 19,4).
+- **Quên RoundingMode**: {{divide()}} ném exception trên production khi chia 100/3.
+- **Lưu tiền âm trong BIGINT**: Java {{long}} signed, nhưng logic nghiệp vụ phải kiểm tra riêng.
+- **TIMESTAMP cho created_at**: server deploy ở Singapore, DB ở Virginia -> lệch 12h.
+- **Mix currency**: một cột balance lưu cả VND và USD -> cộng 1000 VND + 1000 USD = 2000 (sai).
+ 
+### Ví dụ đời thực
+Hệ thống cho vay lưu lãi suất {{rate DOUBLE PRECISION}}. Tính lãi 100 triệu VND * 0.05%/ngày * 30 ngày: double ra 1.500.000,0000002 VND, BigDecimal HALF_UP ra 1.500.000 VND. Sai 0.0000002 VND/lần, 10 triệu hợp đồng mỗi tháng -> sai ~2 VND/tháng. Chuyển sang {{rate NUMERIC(19,8)}}, {{interest NUMERIC(19,0)}}, {{divide(..., 10, HALF_UP)}}: sai số về 0. Thêm BIGINT minor units cho VND (×1): INSERT/UPDATE nhanh hơn, index nhỏ hơn.
+ 
+### Trả lời mẫu khi phỏng vấn
+Tôi không bao giờ dùng FLOAT/DOUBLE cho tiền vì nhị phân không biểu diễn chính xác 0.1. Tôi dùng NUMERIC(p,s) theo chuẩn SQL hoặc BIGINT minor units cho high-throughput. VND: NUMERIC(19,0) hoặc BIGINT ×1; USD: NUMERIC(19,4) hoặc BIGINT ×10000; tỷ giá: NUMERIC(19,6+); crypto: NUMERIC(38,18). Rounding: tiền HALF_UP, thống kê HALF_EVEN. Luôn truyền RoundingMode cho divide(). Thời gian dùng TIMESTAMPTZ + Instant/OffsetDateTime. Currency tách cột, UNIQUE (user_id, currency). Chọn kiểu dữ liệu tiền là quyết định khó sửa nhất — đổi double sang numeric trên bảng lớn là dự án migration.
+ 
+> Senior tip: Hãy test edge case: 100/3, 0.1+0.2, 1 tỷ * 0.0005% * 365. Nếu code không pass các case này trên CI, đừng deploy. Và luôn có integration test lưu số tiền, đọc lại, so sánh bit-by-bit.
+`,
+  follow: [
+    'NUMERIC(19,4) đủ cho USD nhưng không đủ cho tỷ giá 1 USD = 23.456789 VND: precision bao nhiêu là đủ?',
+    'BigDecimal.divide() không có scale và rounding mode ném ArithmeticException: ví dụ thực tế và cách sửa?',
+    'BIGINT minor units cho crypto wei: Java long có chứa được 10^18 không, và khi nào cần BigInteger?'
+  ],
+  tags: ['NUMERIC', 'DECIMAL', 'BIGINT', 'minor units', 'money', 'currency', 'precision', 'scale', 'rounding', 'HALF_UP', 'HALF_EVEN', 'BigDecimal', 'TIMESTAMPTZ', 'FLOAT', 'DOUBLE']
+},
+{
+  id: 'sql-082',
+  topic: 'sql',
+  level: 'senior',
+  q: 'Bảng transactions 500 triệu dòng, partition by month (RANGE trên created_at). Viết DDL tạo partition, index strategy, query pruning, maintenance (detach/attach cho archival), và giải thích tại sao partition key phải là cột trong PRIMARY KEY/UNIQUE.',
+  a: `**Tóm tắt:** Partition by RANGE trên {{created_at}} (monthly). Partition key **bắt buộc** nằm trong PRIMARY KEY/UNIQUE để PostgreSQL enforce uniqueness cục bộ. Index: local index trên mỗi partition (account_id, created_at) + global unique index trên id (nếu dùng). Query pruning tự động khi WHERE có created_at. Archival: {{ALTER TABLE ... DETACH PARTITION}} rồi {{ATTACH}} vào schema archive, hoặc {{DROP}} partition cũ. Maintenance: {{pg_partman}} tự động tạo partition mới.
+ 
+### DDL partition by month
+~~~sql
+-- Bảng gốc (partitioned table)
+CREATE TABLE transactions (
+    id BIGSERIAL NOT NULL,
+    account_id BIGINT NOT NULL,
+    amount NUMERIC(19,0) NOT NULL,
+    type TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'PENDING',
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    -- PRIMARY KEY PHẢI chứa partition key (created_at)
+    PRIMARY KEY (id, created_at)
+) PARTITION BY RANGE (created_at);
+ 
+-- Tạo partition cho từng tháng (ví dụ 2026-01 tới 2026-12)
+CREATE TABLE transactions_2026_01 PARTITION OF transactions
+    FOR VALUES FROM ('2026-01-01') TO ('2026-02-01');
+CREATE TABLE transactions_2026_02 PARTITION OF transactions
+    FOR VALUES FROM ('2026-02-01') TO ('2026-03-01');
+-- ... tạo thêm cho các tháng còn lại
+ 
+-- Default partition bắt lỗi data ngoài phạm vi
+CREATE TABLE transactions_default PARTITION OF transactions DEFAULT;
+~~~
+ 
+### Vì sao partition key phải trong PRIMARY KEY/UNIQUE
+PostgreSQL **không support global unique index** trên partitioned table (đến PG 17 vẫn vậy): mọi unique index/PRIMARY KEY **phải chứa partition key**. Để enforce uniqueness:
+- PK/UNIQUE **phải chứa partition key** -> uniqueness chỉ cục bộ trong từng partition.
+- Ví dụ: {{PRIMARY KEY (id, created_at)}} -> {{id}} unique trong cùng tháng, nhưng **có thể trùng id giữa các tháng**.
+- Cách khắc phục: dùng {{BIGSERIAL}} (sequence global) cho {{id}} -> id không trùng global, dù PK local. Hoặc dùng UUIDv7 (time-ordered) làm id.
+ 
+### Index strategy: local vs global
+| Index | Cú pháp | Dùng cho |
+|---|---|---|
+| **Local** (mỗi partition có index riêng) | {{CREATE INDEX ON transactions (account_id, created_at);}} | Query filter theo account_id + created_at (pruning + index) |
+| **Unique local trên id** | {{CREATE UNIQUE INDEX ON transactions (id, created_at);}} | Enforce unique id trong từng partition; id global unique nhờ BIGSERIAL/UUIDv7 |
+ 
+Khuyên dùng **local index** cho hầu hết trường hợp: nhỏ hơn, maintain độc lập, VACUUM/REINDEX per partition.
+~~~sql
+-- Local index: tự tạo trên mỗi partition
+CREATE INDEX idx_txn_acct_time ON transactions (account_id, created_at);
+-- Thực tế tạo: idx_txn_acct_time trên transactions_2026_01, _02, ...
+ 
+-- Partial index cho status pending (partition local)
+CREATE INDEX idx_txn_pending ON transactions (account_id, created_at)
+WHERE status = 'PENDING';
+~~~
+ 
+### Query pruning (partition elimination)
+Planner **tự bỏ qua partition** khi WHERE chứa partition key với hằng số:
+~~~sql
+-- PRUNED: chỉ quét transactions_2026_11
+SELECT * FROM transactions
+WHERE created_at >= '2026-11-01' AND created_at < '2026-12-01'
+  AND account_id = 123;
+ 
+-- KHÔNG PRUNED: quét TẤT CẢ partition (Seq Scan từng partition)
+SELECT * FROM transactions
+WHERE account_id = 123;  -- thiếu created_at
+ 
+-- PRUNED với parameter (PreparedStatement)
+SELECT * FROM transactions
+WHERE created_at >= $1 AND created_at < $2 AND account_id = $3;
+~~~
+**Luôn truyền created_at range** trong query, kể cả khi query theo account_id.
+ 
+### Archival: detach/attach partition
+Partition cũ (đã đóng tháng, không ghi nữa) di chuyển ra schema archive:
+~~~sql
+-- 1. Detach partition (metadata only, gần như instant, không lock dữ liệu)
+ALTER TABLE transactions DETACH PARTITION transactions_2026_01;
+ 
+-- 2. Tạo schema archive nếu chưa có
+CREATE SCHEMA IF NOT EXISTS archive;
+ 
+-- 3. Attach vào bảng archive (cũng metadata only)
+ALTER TABLE archive.transactions_2026_01 SET SCHEMA archive;
+-- HOẶC: ALTER TABLE archive.transactions ATTACH PARTITION transactions_2026_01
+--       FOR VALUES FROM ('2026-01-01') TO ('2026-02-01');
+ 
+-- 4. Nếu không cần nữa: DROP TABLE transactions_2026_01; (instant)
+~~~
+Ưu điểm: **zero-downtime**, không copy dữ liệu, chỉ đổi metadata. Phục hồi nhanh nếu cần.
+ 
+### Maintenance tự động với pg_partman
+~~~sql
+-- Cài extension
+CREATE EXTENSION pg_partman;
+ 
+-- Tạo partition tự động cho 12 tháng tới, giữ 24 tháng
+SELECT partman.create_parent('public.transactions', 'created_at', 'native', 'monthly',
+    p_start_partition := '2026-01-01',
+    p_premake := 12,
+    p_automatic_maintenance := 'on',
+    p_retention := '24 months',
+    p_retention_schema := 'archive',
+    p_retention_keep_table := true);
+ 
+-- Cron job chạy maintenance (pg_cron hoặc pgAgent)
+SELECT cron.schedule('partman-maintenance', '0 2 * * *', 'SELECT partman.run_maintenance()');
+~~~
+{{pg_partman}} tự tạo partition mới, detach partition cũ sang schema {{archive}}, và drop/index maintenance.
+
+### Lỗi hay gặp
+- **Quên created_at trong PK**: {{PRIMARY KEY (id)}} -> ERROR: partition key must be part of primary key.
+- **Id trùng giữa partition**: dùng BIGSERIAL (sequence global) hoặc UUIDv7 để id global unique.
+- **Query thiếu created_at**: full partition scan, chậm 100x. Luôn thêm {{WHERE created_at BETWEEN ...}}.
+- **Global unique index**: PG không support. Mọi unique index phải chứa partition key; dùng BIGSERIAL/UUIDv7 cho id global unique.
+- **Default partition đầy**: data rơi vào default -> mất pruning. Monitor {{SELECT * FROM transactions_default;}}.
+- **Foreign key tới partitioned table**: PG không support FK reference TO partitioned table. Dùng trigger hoặc application-level check.
+
+### Ví dụ đời thực
+Bảng transactions 500M rows, 2 TB. Partition by month: mỗi partition ~40M rows, 160 GB. Query đối soát tháng: pruning + local index -> 2 giây (trước 45 phút). Archival tháng 01/2026: {{DETACH PARTITION}} 50ms, {{ATTACH}} vào archive 30ms, zero downtime. {{pg_partman}} chạy 2h sáng: tự tạo partition 2026-12, detach 2024-11 sang archive. Index local: REINDEX partition 2026-11 mất 3 phút (vs 6 giờ full table). FK tới accounts: dùng trigger AFTER INSERT trên transactions check EXISTS(SELECT 1 FROM accounts WHERE id = NEW.account_id).
+
+### Trả lời mẫu khi phỏng vấn
+Tôi partition transactions by RANGE trên created_at hàng tháng. PK phải chứa created_at -> {{PRIMARY KEY (id, created_at)}}, dùng BIGSERIAL để id global unique. Local index trên (account_id, created_at) cho query pruning. Query luôn truyền created_at range. Archival: {{DETACH PARTITION}} -> {{ATTACH}} vào schema archive, instant, zero downtime. Dùng pg_partman tự động tạo partition mới 12 tháng trước, detach cũ 24 tháng. Không có global unique index trên PG < 15, và FK reference TO partitioned table không support -> dùng trigger.
+ 
+> Senior tip: Partition key selection quyết định mọi thứ. created_at tốt cho time-series (pruning tự nhiên), nhưng nếu query thường lọc theo account_id KHÔNG có time range, hãy cân nhắc hash partition trên account_id (PG 11+) hoặc composite range-hash (PG 13+). Đừng partition chỉ vì "bảng lớn" — partition phải giải quyết được query pattern thực tế.
+`,
+  follow: [
+    'Tại sao unique index trên partitioned table phải chứa partition key, và cách nào có id global unique?',
+    'Hash partition trên account_id khác gì range partition trên created_at, và khi nào chọn cái nào?',
+    'Foreign key reference TO partitioned table không support: ba cách khắc phục là gì?'
+  ],
+  tags: ['partition', 'RANGE', 'created_at', 'PRIMARY KEY', 'local index', 'global index', 'query pruning', 'DETACH PARTITION', 'ATTACH PARTITION', 'archival', 'pg_partman', 'zero-downtime']
+},
+{
+  id: 'sql-083',
+  topic: 'sql',
+  level: 'senior',
+  q: 'So sánh soft delete (cột deleted_at) vs audit table (bảng riêng lưu lịch sử) cho fintech. Khi nào chọn cái nào, impact lên query, index, unique constraint, FK, và GDPR right to be forgotten.',
+  a: `**Tóm tắt:** Soft delete: thêm cột {{deleted_at}}/{{is_deleted}}, query thêm {{WHERE deleted_at IS NULL}}. Audit table: trigger ghi mọi thay đổi vào bảng lịch sử riêng. Fintech **bắt buộc audit table** cho ledger/accounts (luật bắt buộc lưu vết), soft delete chỉ cho dữ liệu reference (category, config). Soft delete phá vỡ unique constraint (cần partial unique index), FK trỏ tới bản đã xóa, GDPR khó xoá thật. Audit table tách biệt, query chính nhanh, unique/FK bình thường, GDPR xoá audit riêng.
+ 
+### Soft delete (cột deleted_at)
+~~~sql
+ALTER TABLE accounts ADD COLUMN deleted_at TIMESTAMPTZ;
+CREATE INDEX idx_accounts_active ON accounts (user_id, currency) WHERE deleted_at IS NULL;
+-- Unique constraint: chỉ unique cho active
+CREATE UNIQUE INDEX uq_accounts_active ON accounts (user_id, currency) WHERE deleted_at IS NULL;
+ 
+-- Query phải luôn filter
+SELECT * FROM accounts WHERE user_id = 123 AND deleted_at IS NULL;
+ 
+-- Soft delete
+UPDATE accounts SET deleted_at = now() WHERE id = 123;
+ 
+-- Restore
+UPDATE accounts SET deleted_at = NULL WHERE id = 123;
+~~~
+ 
+### Audit table (bảng lịch sử riêng)
+~~~sql
+CREATE TABLE accounts_audit (
+    id BIGSERIAL PRIMARY KEY,
+    account_id BIGINT NOT NULL,
+    operation TEXT NOT NULL,          -- INSERT, UPDATE, DELETE
+    old_data JSONB,                   -- null cho INSERT
+    new_data JSONB,                   -- null cho DELETE
+    changed_by BIGINT,                -- user/system
+    changed_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    transaction_id BIGINT             -- link to business transaction
+);
+CREATE INDEX idx_audit_acct_time ON accounts_audit (account_id, changed_at DESC);
+ 
+-- Trigger ghi audit
+CREATE OR REPLACE FUNCTION audit_accounts() RETURNS trigger LANGUAGE plpgsql AS $$
+BEGIN
+    IF TG_OP = 'DELETE' THEN
+        INSERT INTO accounts_audit (account_id, operation, old_data, changed_by)
+        VALUES (OLD.id, 'DELETE', to_jsonb(OLD), current_user_id());
+        RETURN OLD;
+    ELSIF TG_OP = 'UPDATE' THEN
+        INSERT INTO accounts_audit (account_id, operation, old_data, new_data, changed_by)
+        VALUES (NEW.id, 'UPDATE', to_jsonb(OLD), to_jsonb(NEW), current_user_id());
+        RETURN NEW;
+    ELSIF TG_OP = 'INSERT' THEN
+        INSERT INTO accounts_audit (account_id, operation, new_data, changed_by)
+        VALUES (NEW.id, 'INSERT', to_jsonb(NEW), current_user_id());
+        RETURN NEW;
+    END IF;
+    RETURN NULL;
+END $$;
+ 
+CREATE TRIGGER trg_audit_accounts
+AFTER INSERT OR UPDATE OR DELETE ON accounts
+FOR EACH ROW EXECUTE FUNCTION audit_accounts();
+~~~
+ 
+### So sánh chi tiết
+| Tiêu chí | Soft delete | Audit table |
+|---|---|---|
+| **Query chính** | Phải {{WHERE deleted_at IS NULL}} mọi nơi (dễ quên) | Không ảnh hưởng, query bình thường |
+| **Unique constraint** | Phải partial unique index {{WHERE deleted_at IS NULL}} (PG 15+) | Unique bình thường, không bị ảnh hưởng |
+| **Foreign key** | FK trỏ tới bản soft-deleted -> dữ liệu "ma" | FK trỏ tới bản active, lịch sử tách biệt |
+| **Index size** | Index chứa cả deleted row (trừ partial) | Bảng chính nhỏ gọn, index nhỏ |
+| **Storage** | Dữ liệu xóa vẫn ở bảng chính | Lịch sử ở bảng riêng, có thể partition/archive |
+| **GDPR right to be forgotten** | Khó: phải hard delete (UPDATE -> DELETE) hoặc anonymize cột | Dễ: {{DELETE FROM audit WHERE account_id = ? AND changed_at < ?}} |
+| **Point-in-time query** | Khó: cần {{deleted_at > '2026-01-01'}} | Dễ: {{SELECT * FROM audit WHERE account_id = ? AND changed_at <= ? ORDER BY changed_at DESC LIMIT 1}} |
+| **Performance** | Mọi query scan thêm deleted row (nếu không partial index) | Zero overhead cho query chính |
+| **Complexity** | Đơn giản, nhưng dễ bug quên filter | Trigger + bảng riêng, nhưng tách biệt rõ ràng |
+ 
+### Khi nào dùng cái nào
+| Dữ liệu | Khuyên dùng | Lý do |
+|---|---|---|
+| **accounts, ledger, transactions, KYC** | **Audit table** | Luật fintech bắt buộc audit trail, point-in-time, GDPR xoá lịch sử riêng |
+| **User profile, preferences** | Audit table (PII) | GDPR, lịch sử thay đổi PII |
+| **Category, config, reference data** | Soft delete | Ít thay đổi, không cần audit chi tiết, restore dễ |
+| **Idempotency key, nonce** | Hard delete (TTL) | Chỉ dùng một lần, TTL tự dọn |
+| **Session, cache, temp** | Hard delete / TTL | Không cần lịch sử |
+ 
+### Unique constraint với soft delete
+Partial unique index hoạt động trên PostgreSQL hiện tại: {{CREATE UNIQUE INDEX ... WHERE deleted_at IS NULL}} -> chỉ unique cho row active, soft-deleted rows nằm ngoài index nên không chặn insert row mới cùng (user_id, currency).
+{{INSERT ... ON CONFLICT}} cần mệnh đề {{WHERE deleted_at IS NULL}} khớp predicate index để phát hiện conflict đúng; thiếu predicate thì PostgreSQL không áp dụng partial index.
+ 
+### GDPR right to be forgotten
+Soft delete: user yêu cầu xoá -> phải {{UPDATE SET deleted_at = now(), email = 'deleted@...', phone = '...'}} (anonymize) VÀ {{DELETE FROM ... WHERE deleted_at IS NOT NULL AND ...}} (hard delete sau retention). Rối.
+Audit table: {{DELETE FROM accounts_audit WHERE account_id = ?}} xong. Bảng chính {{DELETE FROM accounts WHERE id = ?}} (hard delete). Sạch.
+
+### Lỗi hay gặp
+- **Quên {{WHERE deleted_at IS NULL}}** trong query -> leak dữ liệu đã xóa (security bug).
+- **Partial unique index + ON CONFLICT**: PG báo conflict với deleted row -> insert fail.
+- **FK trỏ tới soft-deleted row**: {{JOIN}} vẫn thấy -> logic nghiệp vụ sai (ví dụ chuyển tiền cho tài khoản đã đóng).
+- **Audit trigger chậm**: JSONB to_jsonb() trên row lớn. Chỉ audit cột cần thiết: {{jsonb_build_object('balance', NEW.balance, 'status', NEW.status)}}.
+- **Audit table không partition**: audit lớn -> chậm. Partition audit by month trên changed_at.
+- **Không có transaction_id trong audit**: không liên kết được business transaction -> khó debug.
+ 
+### Ví dụ đời thực
+Hệ thống ví 1M user. Bảng accounts dùng soft delete: query quên filter -> 500 tài khoản đã đóng vẫn hiển thị, khách chuyển tiền vào tài khoản đóng -> incident. Chuyển sang audit table: trigger ghi accounts_audit (partition by month), bảng accounts chỉ 1M rows active. Unique (user_id, currency) hoạt động bình thường. GDPR request: {{DELETE FROM accounts_audit WHERE account_id = ?}} 200ms, {{DELETE FROM accounts WHERE id = ?}} 5ms. Đối soát point-in-time: {{SELECT * FROM accounts_audit WHERE account_id = ? AND changed_at <= '2026-11-17' ORDER BY changed_at DESC LIMIT 1}}.
+ 
+### Trả lời mẫu khi phỏng vấn
+Fintech bắt buộc audit table cho ledger/accounts/transactions vì luật yêu cầu audit trail, point-in-time reconstruction, và GDPR right to be forgotten. Soft delete chỉ dùng cho reference data (category, config). Soft delete phá vỡ unique constraint (cần partial unique index PG 15+), FK trỏ tới bản xóa, mọi query phải filter deleted_at (dễ quên -> leak data), GDPR phải hard delete rối. Audit table tách biệt: bảng chính nhỏ, query nhanh, unique/FK bình thường, point-in-time query đơn giản, GDPR xoá audit riêng. Tôi dùng trigger AFTER INSERT/UPDATE/DELETE ghi JSONB vào audit table partition by month, có transaction_id để trace.
+ 
+> Senior tip: Đừng bao giờ soft delete dữ liệu tiền. Luật ngân hàng/PCI-DSS/GDPR yêu cầu audit trail immutable. Soft delete là cho "danh mục hàng hóa", không phải cho "số dư ví". Nếu interviewer hỏi "tại sao không soft delete accounts?", câu trả lời: "vì tôi không muốn giải thích cho examiner tại sao số dư tài khoản đã đóng vẫn xuất hiện trong báo cáo".
+`,
+  follow: [
+    'Partial unique index WHERE deleted_at IS NULL có hoạt động với ON CONFLICT không?',
+    'Audit table partition by month trên changed_at: query point-in-time như thế nào?',
+    'Trigger audit dùng to_jsonb(OLD) trên row 100 cột: impact performance và cách tối ưu?'
+  ],
+  tags: ['soft delete', 'deleted_at', 'audit table', 'trigger', 'JSONB', 'unique constraint', 'partial index', 'foreign key', 'GDPR', 'right to be forgotten', 'point-in-time', 'fintech compliance']
+},
+{
+  id: 'sql-084',
+  topic: 'sql',
+  level: 'senior',
+  q: 'Zero-downtime migration expand/contract pattern với Flyway cho fintech: thêm cột NOT NULL có default, đổi kiểu cột tiền từ NUMERIC sang BIGINT minor units, xóa cột không dùng, rename cột. Callback beforeMigrate/afterMigrate để dual-write, backfill, và verification.',
+  a: `**Tóm tắt:** Zero-downtime migration dùng **expand/contract pattern**: mở rộng schema (thêm cột/bảng mới) -> dual-write -> backfill -> verify -> chuyển đọc -> thu hẹp (xóa cột cũ). Flyway callback {{beforeMigrate}}/{{afterMigrate}} phối hợp với deploy. Không bao giờ {{ALTER TABLE ... ADD COLUMN NOT NULL DEFAULT}} trên bảng lớn (lock AccessExclusive). Thay vào đó: thêm nullable -> backfill batch -> {{ALTER COLUMN SET NOT NULL}} (metadata only). Đổi kiểu: thêm cột mới -> dual-write -> backfill -> switch -> drop cũ.
+ 
+### Nguyên tắc expand/contract
+| Giai đoạn | Hành động | Deploy |
+|---|---|---|
+| **Expand** | Thêm cột/bảng/index mới (nullable, không break code cũ) | Deploy v1 (code ghi cả cũ và mới) |
+| **Migrate** | Backfill dữ liệu cũ sang cột mới (batch, idempotent) | Chạy migration script |
+| **Verify** | So sánh dữ liệu cũ vs mới, kiểm tra consistency | Chạy verification script |
+| **Switch** | Chuyển đọc sang cột mới (feature flag hoặc deploy v2) | Deploy v2 (code chỉ đọc mới) |
+| **Contract** | Xóa cột/bảng cũ, drop index không dùng | Deploy v3 (code gỡ dual-write) |
+ 
+### Flyway callback orchestration
+~~~sql
+-- flyway/callbacks/beforeMigrate__init_dual_write.sql
+-- Chạy TRƯỚC migration: bật feature flag dual-write (nếu dùng config table)
+INSERT INTO app_config (key, value) VALUES ('dual_write_enabled', 'true')
+ON CONFLICT (key) DO UPDATE SET value = 'true';
+ 
+-- flyway/callbacks/afterMigrate__verify_and_cleanup.sql
+-- Chạy SAU migration: verification + cleanup
+-- 1. Verification: so sánh row count, sum, sample
+DO $$
+DECLARE
+    old_count BIGINT; new_count BIGINT;
+    old_sum NUMERIC; new_sum NUMERIC;
+BEGIN
+    SELECT COUNT(*), SUM(balance) INTO old_count, old_sum FROM accounts WHERE balance IS NOT NULL;
+    SELECT COUNT(*), SUM(balance_minor) INTO new_count, new_sum FROM accounts WHERE balance_minor IS NOT NULL;
+    IF old_count <> new_count OR old_sum <> new_sum THEN
+        RAISE EXCEPTION 'Verification failed: count=% vs %, sum=% vs %', old_count, new_count, old_sum, new_sum;
+    END IF;
+    -- Sample check 1000 rows
+    IF EXISTS (
+        SELECT 1 FROM accounts
+        WHERE balance IS NOT NULL AND balance_minor IS NOT NULL
+        AND balance * 10000 <> balance_minor  -- scale 4 như Case 2
+        LIMIT 1000
+    ) THEN
+        RAISE EXCEPTION 'Sample mismatch detected';
+    END IF;
+END $$;
+ 
+-- 2. Tắt dual-write flag sau khi deploy v2 đã ổn định (tuần sau)
+-- INSERT INTO app_config (key, value) VALUES ('dual_write_enabled', 'false') ...
+~~~
+ 
+### Case 1: Thêm cột NOT NULL có default (bảng lớn)
+**SAI trên PG < 11** (rewrite toàn bảng, AccessExclusive lock, block toàn bảng). **PG 11+**: cùng câu lệnh metadata-only nếu default là hằng -> an toàn:
+~~~sql
+ALTER TABLE accounts ADD COLUMN status TEXT NOT NULL DEFAULT 'ACTIVE';
+~~~
+**ĐÚNG** (3 bước, zero-downtime):
+~~~sql
+-- V1: Expand - thêm nullable
+ALTER TABLE accounts ADD COLUMN status TEXT;
+-- Index nếu cần filter
+CREATE INDEX CONCURRENTLY idx_accounts_status ON accounts (status) WHERE status IS NOT NULL;
+ 
+-- V1 Deploy: code ghi status = 'ACTIVE' cho row mới, đọc {{COALESCE(status, 'ACTIVE')}}
+ 
+-- V2 Migration: Backfill batch (mỗi batch 10k, commit, sleep 100ms)
+DO $$
+DECLARE
+    batch_size CONSTANT INT := 10000;
+    updated INT := 1;
+BEGIN
+    WHILE updated > 0 LOOP
+        UPDATE accounts SET status = 'ACTIVE'
+        WHERE status IS NULL
+        AND id IN (SELECT id FROM accounts WHERE status IS NULL ORDER BY id LIMIT batch_size)
+        RETURNING 1 INTO updated;
+        COMMIT;
+        PERFORM pg_sleep(0.1);  -- cho autovacuum, giảm replication lag
+    END LOOP;
+END $$;
+ 
+-- V2: SET NOT NULL (full scan bảng; chạy low-traffic + lock_timeout)
+SET lock_timeout = '5s';
+ALTER TABLE accounts ALTER COLUMN status SET NOT NULL;
+ 
+-- V3 Deploy: gỡ COALESCE, đọc trực tiếp status
+ 
+-- V3 Migration (tuần sau): Contract - drop default nếu có
+ALTER TABLE accounts ALTER COLUMN status DROP DEFAULT;
+~~~
+ 
+### Case 2: Đổi kiểu tiền NUMERIC(19,4) -> BIGINT minor units (×10000)
+~~~sql
+-- V1: Expand - thêm cột mới
+ALTER TABLE accounts ADD COLUMN balance_minor BIGINT;
+CREATE INDEX CONCURRENTLY idx_accounts_balance_minor ON accounts (balance_minor);
+ 
+-- V1 Deploy: Dual-write
+--   WRITE: UPDATE accounts SET balance = ?, balance_minor = round(? * 10000) WHERE id = ?
+--   READ:  COALESCE(balance_minor, round(balance * 10000))
+ 
+-- V2 Migration: Backfill
+UPDATE accounts SET balance_minor = round(balance * 10000)
+WHERE balance_minor IS NULL;
+-- Batch nếu bảng lớn (như Case 1)
+ 
+-- V2: Verification (callback afterMigrate)
+-- So sánh balance_minor = round(balance * 10000) cho 100% rows
+ 
+-- V3 Deploy: Switch read sang balance_minor, gỡ dual-write
+ 
+-- V4 Migration: Contract
+ALTER TABLE accounts DROP COLUMN balance;
+ALTER TABLE accounts RENAME COLUMN balance_minor TO balance;
+-- Primary key/unique/index tự động update
+~~~
+ 
+### Case 3: Xóa cột không dùng
+**SAI**: {{ALTER TABLE DROP COLUMN}} ngay (lock, break code đang đọc).
+**ĐÚNG**:
+~~~sql
+-- V1 Deploy: Code ngưng đọc cột (đã deploy v2 không dùng cột này)
+-- V2 Migration: Đợi 1-2 tuần đảm bảo không còn query nào dùng cột
+ALTER TABLE accounts DROP COLUMN old_column;
+~~~
+ 
+### Case 4: Rename cột
+Không {{RENAME COLUMN}} trực tiếp (break code).
+~~~sql
+-- V1: Expand - thêm cột mới, dual-write
+ALTER TABLE accounts ADD COLUMN new_name TEXT;
+-- Trigger hoặc application dual-write
+ 
+-- V2: Backfill + Verify
+ 
+-- V3 Deploy: Switch read/write sang new_name
+ 
+-- V4: Contract
+ALTER TABLE accounts DROP COLUMN old_name;
+~~~
+ 
+### Backfill batch pattern (an toàn cho replication)
+~~~sql
+-- Function backfill dùng trong migration
+CREATE OR REPLACE FUNCTION backfill_batch(
+    p_table TEXT, p_set_col TEXT, p_where_col TEXT, p_batch_size INT DEFAULT 10000
+) RETURNS VOID LANGUAGE plpgsql AS $$
+DECLARE
+    updated INT := 1;
+BEGIN
+    WHILE updated > 0 LOOP
+        EXECUTE format('
+            UPDATE %I SET %I = %I
+            WHERE %I IS NULL
+            AND id IN (SELECT id FROM %I WHERE %I IS NULL ORDER BY id LIMIT %L)
+        ', p_table, p_set_col, p_set_col, p_where_col, p_table, p_where_col, p_batch_size)
+        INTO updated;
+        COMMIT;
+        PERFORM pg_sleep(0.1);
+    END LOOP;
+END $$;
+ 
+-- Gọi: SELECT backfill_batch('accounts', 'status', 'status', 10000);
+~~~
+ 
+### Lỗi hay gặp
+- **ADD COLUMN NOT NULL DEFAULT** trên bảng 500M rows: lock 30 phút, outage.
+- **DROP COLUMN** trước khi code ngưng dùng: crash production.
+- **Backfill không batch**: transaction quá lớn, WAL bloat, replication lag, rollback lâu.
+- **Quên verification**: dữ liệu mới sai mà không biết, switch xong thì incident.
+- **Không có feature flag dual-write**: phải deploy cùng lúc migration -> coupling, rollback khó.
+- **RENAME COLUMN** mà không dual-write: code cũ đọc cột cũ -> NULL.
+- **Flyway callback order sai**: {{beforeMigrate}} chạy sau migration -> dual-write chưa bật khi migration chạy.
+ 
+### Ví dụ đời thực
+Fintech đổi {{accounts.balance NUMERIC(19,4)}} -> {{BIGINT minor units}} cho 2M tài khoản, 500M transactions.
+Tuần 1: V1 migration thêm {{balance_minor}}, V1 deploy dual-write (feature flag). Backfill 2M rows batch 10k, 45 phút, zero downtime.
+Tuần 2: V2 migration verification (callback afterMigrate pass). V2 deploy switch read.
+Tuần 3: V3 migration drop {{balance}}, rename {{balance_minor}} -> {{balance}}. INSERT/UPDATE nhanh 20%, index nhỏ 35%.
+Flyway callbacks tự động bật/tắt feature flag, verification fail sẽ stop pipeline. Không có incident, p99 không tăng.
+
+### Trả lời mẫu khi phỏng vấn
+Tôi dùng expand/contract pattern cho zero-downtime migration. Nguyên tắc: expand (thêm cột nullable) -> dual-write deploy -> backfill batch -> verify -> switch read -> contract (drop cột cũ). Không bao giờ ADD COLUMN NOT NULL DEFAULT hay DROP COLUMN trực tiếp trên bảng lớn. Flyway callback beforeMigrate bật feature flag dual-write, afterMigrate chạy verification (so sánh count, sum, sample). Đổi kiểu tiền: thêm cột BIGINT, dual-write round(*10000), backfill, verify, switch, rename. Backfill batch 10k rows, commit, sleep 100ms để không chặn replication. Tuần 1 expand, tuần 2 verify+switch, tuần 3 contract.
+ 
+> Senior tip: Migration là phần nguy hiểm nhất trong deploy. Hãy có runbook: rollback plan cho từng bước, verification script có thể chạy độc lập, feature flag để tắt dual-write ngay nếu sai. Và luôn test migration trên staging với dữ liệu production-scale (pg_dump --data-only -> anonymize -> restore) trước khi lên prod.
+`,
+  follow: [
+    'Flyway callback beforeMigrate/afterMigrate chạy ở đâu trong lifecycle, và lỗi trong callback có rollback migration không?',
+    'Dual-write với feature flag: nếu flag bật nhưng migration chưa chạy xong, code ghi cột mới NULL -> sai không?',
+    'Backfill batch 10k rows: tại sao sleep 100ms, và replication lag monitor metric nào?'
+  ],
+  tags: ['Flyway', 'zero-downtime', 'expand/contract', 'migration', 'dual-write', 'backfill', 'beforeMigrate', 'afterMigrate', 'feature flag', 'verification', 'ALTER TABLE', 'NOT NULL', 'DROP COLUMN', 'RENAME COLUMN']
 }
 );
 
