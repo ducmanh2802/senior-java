@@ -7195,28 +7195,28 @@ Chi phí: hai ngày viết test, tiết kiệm khoảng 40 giờ xử lý sự c
   id: 'microservices-082',
   topic: 'microservices',
   level: 'mid',
-  q: 'Consumer Kafka cua ban ghi vao database, nhung pod bi restart giua chuc va cung mot message bi xu ly hai lan. Ban thiet ke bang processed_event va commit offset the nao de khong mat record va khong xu ly lap nghiep vu?',
-  a: `**Tom tat:** Kafka dam bao at-least-once: mot message co the duoc giao lai neu consumer bi gian doan truoc khi danh dau da xu ly. De khong xu ly lap nghiep vu, consumer kiem tra id cua message trong bang processed_event trong **cung mot transaction database** voi viec ghi du lieu nghiep vu, roi moi commit offset. Neu id da co thi bo qua, khong lam gi them.
+  q: 'Consumer Kafka của bạn ghi vào database, nhưng pod bị restart giữa chừng và cùng một message bị xử lý hai lần. Bạn thiết kế bảng processed_event và commit offset thế nào để không mất record và không xử lý lặp nghiệp vụ?',
+  a: `**Tóm tắt:** Kafka đảm bảo at-least-once: một message có thể được giao lại nếu consumer bị gián đoạn trước khi đánh dấu đã xử lý. Để không xử lý lặp nghiệp vụ, consumer kiểm tra id của message trong bảng processed_event trong **cùng một transaction database** với việc ghi dữ liệu nghiệp vụ, rồi mới commit offset. Nếu id đã có thì bỏ qua, không làm gì thêm.
 
-### Thuat ngu
-- **Consumer group**: nhom consumer cung group.id chia nhau cac partition cua mot topic Kafka.
-- **Offset**: so thu tu cua message trong partition; commit offset nghia la ghi dau "toi da xu ly toi day" de sau restart khong doc lai tu dau.
-- **At-least-once**: message duoc xu ly it nhat mot lan, co the bi trung — day la mo hinh thuc te mac dinh cua Kafka.
-- **Idempotent consumer**: consumer xu ly cung message nhieu lan van cho ket qua nhu xu ly mot lan.
-- **Processed event table**: bang luu id cua moi su kien da xu ly, dung khoa chinh de chan ban trung.
-- **Natural key**: khoa tu nhien cua nghiep vu (vi ma don hang) dung de kiem tra trung thay cho bang rieng.
+### Thuật ngữ
+- **Consumer group**: nhóm consumer cùng group.id chia nhau các partition của một topic Kafka.
+- **Offset**: số thứ tự của message trong partition; commit offset nghĩa là ghi dấu "đã xử lý tới đây" để sau restart không đọc lại từ đầu.
+- **At-least-once**: message được xử lý ít nhất một lần, có thể bị trùng — đây là mô hình thực tế mặc định của Kafka.
+- **Idempotent consumer**: consumer xử lý cùng message nhiều lần vẫn cho kết quả như xử lý một lần.
+- **Processed event table**: bảng lưu id của mọi sự kiện đã xử lý, dùng khóa chính để chặn bản trùng.
+- **Natural key**: khóa tự nhiên của nghiệp vụ (ví mã đơn hàng) dùng để kiểm tra trùng thay cho bảng riêng.
 - **TTL**: time-to-live, thời gian sống của bản ghi. Hết TTL thì bản ghi bị xoá để bảng không phình; TTL không phải cơ chế chống lặp.
 
-### Co che hoat dong (tung buoc)
-1. Consumer doc message co id M1 tu topic wallet.credit.
-2. Mo transaction database: insert vao processed_event(event_id = M1, processed_at = now()). Neu event_id da co (vi pham UNIQUE) -> bo qua, khong xu ly lai.
-3. Neu insert thanh cong -> ghi nghiep vu (cong so du vi) trong **cung transaction**.
-4. Commit transaction database. Sau do container Kafka moi commit offset cho M1.
-5. Neu pod crash giua buoc 3 va commit offset: sau restart, message M1 duoc doc lai, insert processed_event bi trung -> bo qua. Khong mat record va khong cong tien hai lan.
+### Cơ chế hoạt động (từng bước)
+1. Consumer đọc message có id M1 từ topic wallet.credit.
+2. Mở transaction database: insert vào processed_event(event_id = M1, processed_at = now()). Nếu event_id đã có (vi phạm UNIQUE) -> bỏ qua, không xử lý lại.
+3. Nếu insert thành công -> ghi nghiệp vụ (cộng số dư ví) trong **cùng transaction**.
+4. Commit transaction database. Sau đó container Kafka mới commit offset cho M1.
+5. Nếu pod crash giữa bước 3 và commit offset: sau restart, message M1 được đọc lại, insert processed_event bị trùng -> bỏ qua. Không mất record và không cộng tiền hai lần.
 
-Vi sao cung transaction: neu tach ra, crash giua hai buoc lai sinh ban trung hoac mat record.
-Vi sao commit offset sau database: commit truoc thi crash giua lam mat message (at-most-once, khong hop voi nghiep vu tien).
-Spring Kafka mac dinh tat auto-commit va commit offset sau khi listener tra ve.
+Vì sao cùng transaction: nếu tách ra, crash giữa hai bước lại sinh bản trung hoặc mất record.
+Vì sao commit offset sau database: commit trước thì crash giữa làm mất message (at-most-once, không hợp với nghiệp vụ tiền).
+Spring Kafka mặc định tắt auto-commit và commit offset sau khi listener trả về.
 
 ~~~sql
 CREATE TABLE processed_event (
@@ -7237,43 +7237,43 @@ public void onCredit(WalletEvent evt) {
 }   // commit DB xong, container Kafka moi commit offset
 ~~~
 
-### Natural key upsert (khong can bang rieng)
-Neu nghiep vu da co khoa tu nhien (ma don hang), dung upsert thay cho bang processed_event:
+### Natural key upsert (không cần bảng riêng)
+Nếu nghiệp vụ đã có khóa tự nhiên (mã đơn hàng), dùng upsert thay cho bảng processed_event:
 
 ~~~sql
 INSERT INTO ledger(entry_id, account_id, amount) VALUES (:id, :acct, :amt)
 ON CONFLICT (entry_id) DO NOTHING;   -- MySQL: INSERT IGNORE / ON DUPLICATE KEY UPDATE
 ~~~
 
-entry_id la idempotency key cua su kien; trung thi khong ghi them.
+entry_id là idempotency key của sự kiện; trùng thì không ghi thêm.
 
-### TTL dong bang processed_event
-Bang nay chi tang, can job dinh ky xoa ban ghi cu (giu 7-30 ngay, lon hon thoi gian replay toi da co the).
+### TTL đồng bảng processed_event
+Bảng này chỉ tăng, cần job định kỳ xóa bản ghi cũ (giữ 7-30 ngày, lớn hơn thời gian replay tối đa có thể).
 
-### Bang tra doi
-| Cach | Uu diem | Nhuan diem |
+### Bảng trả lời
+| Cách | Ưu điểm | Nhược điểm |
 |---|---|---|
-| Bang processed_event | Dung duoc moi truong hop, ro rang | Bang moi phai dong theo TTL |
-| Natural key upsert | Khong can bang them | Chi dung khi co khoa tu nhien on dinh |
-| Chi commit offset, khong dedup | Don gian | Xu ly lai khi crash -> can nghiep vu idempotent khac |
+| Bảng processed_event | Dùng được mọi trường hợp, rõ ràng | Bảng mới phải đồng theo TTL |
+| Natural key upsert | Không cần bảng thêm | Chỉ dùng khi có khóa tự nhiên ổn định |
+| Chỉ commit offset, không dedup | Đơn giản | Xử lý lại khi crash -> cần nghiệp vụ idempotent khác |
 
-### Loi hay gap
-1. Check-then-insert khong co UNIQUE: hai request song cung cung thay "chua co" va cung xu ly -> trung. Dung UNIQUE constraint cua database.
-2. Insert processed_event va ghi nghiep vu o hai transaction khac nhau: crash giua hai transaction van trung. Phai cung @Transactional.
-3. Commit offset truoc khi ghi DB: crash lam mat record. Luon commit sau.
-4. TTL qua ngan: message bi cham lai (retry vait gio) sau khi key/xoa da het han -> xu ly lai. TTL phai lon hon thoi gian tre toi da.
+### Lỗi hay gặp
+1. Check-then-insert không có UNIQUE: hai request cùng lúc cùng thấy "chưa có" và cùng xử lý -> trùng. Dùng UNIQUE constraint của database.
+2. Insert processed_event và ghi nghiệp vụ ở hai transaction khác nhau: crash giữa hai transaction vẫn trùng. Phải cùng @Transactional.
+3. Commit offset trước khi ghi DB: crash làm mất record. Luôn commit sau.
+4. TTL quá ngắn: message bị chậm lại (retry vài giờ) sau khi key/xóa đã hết hạn -> xử lý lại. TTL phải lớn hơn thời gian trễ tối đa.
 
-### Vi du doi thuc
-He thong vi dien tu khoang 1.800 su kien wallet.credit moi phut. Sau mot dot deploy lam consumer restart lien trong, dien tai ghi nhan khoang 0,6% don duoc cong tien vao vi hai lan; tien trong vi vuot giao dich ngan hang khoang 11 trieu dong trong 40 phut. Dieu tra: listener cap nhat so du roi moi de container commit offset, va khong co bang kiem tra trung; pod chet giua hai buoc nen message duoc doc lai. Nguyen goc: khong co idempotent consumer. Xu ly: them bang processed_event(event_id PRIMARY KEY), insert event_id va cap nhat so du trong cung @Transactional, event trung thi bo qua. Chi commit offset Kafka sau khi transaction DB commit. Ket qua: sau 48 gio, so dong trung theo event_id = 0; so du vi doi soat voi ngan hang khop 100%.
+### Ví dụ đời thực
+Hệ thống ví điện tử khoảng 1.800 sự kiện wallet.credit mỗi phút. Sau một đợt deploy làm consumer restart liên tục, hệ thống ghi nhận khoảng 0,6% đơn được cộng tiền vào ví hai lần; tiền trong ví vượt giao dịch ngân hàng khoảng 11 triệu đồng trong 40 phút. Điều tra: listener cập nhật số dư rồi mới để container commit offset, và không có bảng kiểm tra trùng; pod chết giữa hai bước nên message được đọc lại. Nguyên gốc: không có idempotent consumer. Xử lý: thêm bảng processed_event(event_id PRIMARY KEY), insert event_id và cập nhật số dư trong cùng @Transactional, event trung thì bỏ qua. Chỉ commit offset Kafka sau khi transaction DB commit. Kết quả: sau 48 giờ, số dòng trùng theo event_id = 0; số dư ví đối soát với ngân hàng khớp 100%.
 
-### Tra loi mau khi phan vien
-Kafka theo at-least-once: neu consumer bi gian doan truoc khi commit offset, message se duoc doc lai, nen phai tu chan xu ly lap. Tao bang processed_event voi event_id lam khoa chinh; cung transaction database, insert event_id roi moi ghi nghiep vu, event trung thi bo qua. Chi commit offset Kafka sau khi transaction DB commit, vi commit truoc ghi DB co the mat record. Neu nghiep vu da co khoa tu nhien nhu ma don hang, dung upsert ON CONFLICT DO NOTHING thay cho bang rieng. Bang processed_event dong theo TTL 7-30 ngay. Kinh nghiem: UNIQUE constraint bat buoc — kiem tra roi insert khong du khi nhieu request cung luc.
+### Trả lời mẫu khi phỏng vấn
+Kafka theo at-least-once: nếu consumer bị gián đoạn trước khi commit offset, message sẽ được đọc lại, nên phải tự chặn xử lý lặp. Tạo bảng processed_event với event_id làm khóa chính; cùng transaction database, insert event_id rồi mới ghi nghiệp vụ, event trung thì bỏ qua. Chỉ commit offset Kafka sau khi transaction DB commit, vì commit trước ghi DB có thể mất record. Nếu nghiệp vụ đã có khóa tự nhiên như mã đơn hàng, dùng upsert ON CONFLICT DO NOTHING thay cho bảng riêng. Bảng processed_event đồng theo TTL 7-30 ngày. Kinh nghiệm: UNIQUE constraint bắt buộc — kiểm tra rồi insert không đủ khi nhiều request cùng lúc.
 
-> Senior tip: theo doi so ban ghi bi chan bang processed_event moi phut. Con so bang 0 khong co nghia he thong hoan hoa, co the nghia la ban chua bat retry nen chua gian gap ban trung nao.`,
+> Senior tip: theo dõi số bản ghi bị chặn bằng processed_event mỗi phút. Con số bằng 0 không có nghĩa hệ thống hoàn hảo, có thể nghĩa là bạn chưa bắt retry nên chưa gặp bản trung nào.`,
   follow: [
-    'Lam sao biet bang processed_event da bi qua lon va can job dong?',
-    'Side effect ngoai database (goi API thu ba) khong ho tro idempotency, ban lam gi?',
-    'Offset commit truoc hay sau khi xu ly? Tung lua chon danh doi gi?'
+    'Làm sao biết bảng processed_event đã quá lớn và cần job dọn?',
+    'Side effect ngoài database (gọi API thứ ba) không hỗ trợ idempotency, bạn làm gì?',
+    'Offset commit trước hay sau khi xử lý? Từng lựa chọn đánh đổi gì?'
   ],
   tags: ['Kafka', 'idempotent consumer', 'processed event', 'offset commit']
 },
@@ -7281,23 +7281,23 @@ Kafka theo at-least-once: neu consumer bi gian doan truoc khi commit offset, mes
   id: 'microservices-083',
   topic: 'microservices',
   level: 'senior',
-  q: 'Topic Kafka co nhieu partition, nhung business yeu cau moi event cua cung mot don hang phai duoc xu ly dung thu tu. Ban thiet ke producer va consumer the nao, va thu tu co bi hong o dau?',
-  a: `**Tom tat:** Kafka chi dam bao thu tu trong mot partition. Chon key la id cua aggregate (orderId) de moi event cua cung mot don vao cung partition (hash key chia lay du so partition). Thu tu co the bi hong khi: key null, tang so partition, retry cua producer khong idempotent, hoac event thuoc partition khac nhung nghiep vu can thu tu toan cuc (thi chi co mot partition, trade-off throughput).
+  q: 'Topic Kafka có nhiều partition, nhưng business yêu cầu mỗi event của cùng một đơn hàng phải được xử lý đúng thứ tự. Bạn thiết kế producer và consumer thế nào, và thứ tự có bị hỏng ở đâu?',
+  a: `**Tóm tắt:** Kafka chỉ đảm bảo thứ tự trong một partition. Chọn key là id của aggregate (orderId) để mỗi event của cùng một đơn vào cùng partition (hash key chia lấy dư số partition). Thứ tự có thể bị hỏng khi: key null, tăng số partition, retry của producer không idempotent, hoặc event thuộc partition khác nhưng nghiệp vụ cần thứ tự toàn cục (thì chỉ có một partition, trade-off throughput).
 
-### Thuat ngu
-- **Partition**: mot nhanh log co thu tu trong topic Kafka.
-- **Offset**: so thu tu message trong partition, tang dan.
-- **Partition key**: khoa producer dung de chon partition (murmur2 hash cua key chia lay du so partition).
-- **Sticky partitioner**: khi message khong co key, producer gan cac message lien tiep vao cung partition cho den khi batch lai, khong dam bao thu tu theo nghiep vu.
-- **Idempotent producer**: producer gan PID va so thu tu cho moi message de broker loai ban trung do retry (Kafka 3.x bat mac dinh enable.idempotence=true; tu Kafka 0.11 tro len co the bat thu cong).
-- **max.in.flight.requests.per.connection**: so request chua nhan phan hoi toi da tren mot ket noi producer.
-- **Consumer group**: trong mot nhom, moi partition chi thuoc mot consumer, giu thu tu xu ly tren partition do.
+### Thuật ngữ
+- **Partition**: một nhánh log có thứ tự trong topic Kafka.
+- **Offset**: số thứ tự message trong partition, tăng dần.
+- **Partition key**: khóa producer dùng để chọn partition (murmur2 hash của key chia lấy dư số partition).
+- **Sticky partitioner**: khi message không có key, producer gán các message liên tiếp vào cùng partition cho đến khi batch lại, không đảm bảo thứ tự theo nghiệp vụ.
+- **Idempotent producer**: producer gán PID và số thứ tự cho mỗi message để broker loại bản trung do retry (Kafka 3.x bật mặc định enable.idempotence=true; từ Kafka 0.11 trở lên có thể bật thủ công).
+- **max.in.flight.requests.per.connection**: số request chưa nhận phản hồi tối đa trên một kết nối producer.
+- **Consumer group**: trong một nhóm, mỗi partition chỉ thuộc một consumer, giữ thứ tự xử lý trên partition đó.
 
-### Co che (tung buoc)
-1. Producer gui event voi key = orderId (bytes). Broker tinh hash(key) % numPartitions -> moi event cua cung mot don luon vao cung partition.
-2. Trong partition do, offset tang dan theo thu tu commit; consumer cua nhom lay theo thu tu offset.
-3. Neu producer gui that bai va retry: idempotent producer (PID + sequence number) + acks=all + max.in.flight.requests.per.connection <= 5 giup broker loai ban trung va giu thu tu giua cac lan retry tren cung mot ket noi.
-4. Consumer xu ly message theo thu tu offset cua partition ma no phu trach.
+### Cơ chế (từng bước)
+1. Producer gửi event với key = orderId (bytes). Broker tính hash(key) % numPartitions -> mỗi event của cùng một đơn luôn vào cùng partition.
+2. Trong partition đó, offset tăng dần theo thứ tự commit; consumer của nhóm lấy theo thứ tự offset.
+3. Nếu producer gửi thất bại và retry: idempotent producer (PID + sequence number) + acks=all + max.in.flight.requests.per.connection <= 5 giúp broker loại bản trung và giữ thứ tự giữa các lần retry trên cùng một kết nối.
+4. Consumer xử lý message theo thứ tự offset của partition mà nó phụ trách.
 
 ~~~java
 // Producer: cung orderId => cung partition => thu tu duoc giu
@@ -7310,28 +7310,28 @@ public void on(OrderEvent evt) {
 }
 ~~~
 
-### Thu tu bi hong (va xu ly)
-| Nguyen nhan | Vi du | Xu ly |
+### Thứ tự bị hỏng (và xử lý)
+| Nguyên nhân | Ví dụ | Xử lý |
 |---|---|---|
-| Key null | event khong co orderId | Sticky partitioner gan ngau nen -> thu tu mat. Luon co key la id aggregate. |
-| Tang so partition | tu 6 len 12 partition | Hash thay doi, event moi cua cung don co the vao partition khac trong khi event cua chua xu ly xong -> thu tu ly khai. Du partition tu dau; neu phai tang, chuyen dan topic moi hoac doi xu ly xong partition cu. |
-| Producer retry khong idempotent | timeout, gui lai | Co the ban trung hoac thay doi thu tu. Bat enable.idempotence=true, acks=all, max.in.flight <= 5. |
-| Can thu tu toan cuc | tat ca don tren he thong | Phai dung mot partition -> toan bo topic qua mot consumer, throughput bi han che cheo. Tran neu co the. |
+| Key null | event không có orderId | Sticky partitioner gán ngẫu nhiên -> thứ tự mất. Luôn có key là id aggregate. |
+| Tăng số partition | từ 6 lên 12 partition | Hash thay đổi, event mới của cùng đơn có thể vào partition khác trong khi event của chưa xử lý xong -> thứ tự bị xáo trộn. Đủ partition từ đầu; nếu phải tăng, chuyển sang topic mới hoặc đợi xử lý xong partition cũ. |
+| Producer retry không idempotent | timeout, gửi lại | Có thể bản trung hoặc thay đổi thứ tự. Bật enable.idempotence=true, acks=all, max.in.flight <= 5. |
+| Cần thứ tự toàn cục | tất cả đơn trên hệ thống | Phải dùng một partition -> toàn bộ topic qua một consumer, throughput bị hạn chế. Tránh nếu có thể. |
 
-### Pattern sequence number + reorder buffer (khi khong the dung mot partition)
-Neu nghiep vu bat buoc thu tu toan cuc nhung can nhieu partition (vi event tu nhieu nguon), producer gan them sequenceNumber vao payload; consumer giu buffer nho, chi xu ly event co so tiep theo, cac event khac cho trong buffer co thoi han. Trade-off: them do tre va bo nho, chi dung khi thuc su can.
+### Pattern sequence number + reorder buffer (khi không thể dùng một partition)
+Nếu nghiệp vụ bắt buộc thứ tự toàn cục nhưng cần nhiều partition (vì event từ nhiều nguồn), producer gán thêm sequenceNumber vào payload; consumer giữ buffer nhỏ, chỉ xử lý event có số tiếp theo, các event khác cho trong buffer có thời hạn. Trade-off: thêm độ trễ và bộ nhớ, chỉ dùng khi thực sự cần.
 
-### Vi du doi thuc
-He thong van chuyen co topic order.events 6 partition, key = orderId. Nam 2023, team tang partition len 12 de tang throughput. Trieu chung: khach hang nhan email "don hang da huy" truoc email "don hang da tao" (Cancelled truoc Created cho cung mot don). Dieu tra: event Created cua don 9998 vao partition 2 truoc khi tang, event Cancelled sau khi tang roi vao partition 5; hai partition duoc hai consumer khac xu ly song song -> thu tu nghiep vu bi dao. Nguyen goc: doi so partition lam thay doi bam key -> partition. Xu ly: quay ve 6 partition (da du cho throughput 1.200 event/giay) va them kiem thu tu dong: gui hai event cung key lien tiep, assert consumer xu ly dung thu tu. Ket qua: khong con khach hang nhan thong bao sai thu tu.
+### Ví dụ đời thực
+Hệ thống vận chuyển có topic order.events 6 partition, key = orderId. Năm 2023, team tăng partition lên 12 để tăng throughput. Triệu chứng: khách hàng nhận email "đơn hàng đã hủy" trước email "đơn hàng đã tạo" (Cancelled trước Created cho cùng một đơn). Điều tra: event Created của đơn 9998 vào partition 2 trước khi tăng, event Cancelled sau khi tăng rồi vào partition 5; hai partition được hai consumer khác xử lý song song -> thứ tự nghiệp vụ bị đảo. Nguyên gốc: đổi số partition làm thay đổi băm key -> partition. Xử lý: quay về 6 partition (đã đủ cho throughput 1.200 event/giây) và thêm kiểm thử tự động: gửi hai event cùng key liên tiếp, assert consumer xử lý đúng thứ tự. Kết quả: không còn khách hàng nhận thông báo sai thứ tự.
 
-### Tra loi mau khi phan vien
-Toi chon key la id cua aggregate (vi du orderId) de Kafka gom moi event cua cung mot don vao mot partition, vi thu tu chi duoc dam bao trong mot partition. Trong consumer group moi partition chi thuoc mot consumer, nen xu ly theo thu tu offset la tu nhien. Toi luu note ba cho thu tu de hong: key null, tang so partition lam doi bang bam key->partition, va retry producer khong idempotent; nen bat enable.idempotence, acks=all va max.in.flight <= 5. Neu thuc su can thu tu toan cuc, duy nhat la mot partition, nhung day la nut that throughput, nen tran va dung sequence number trong payload neu business bat buoc. Kinh nghiem: du partition tu dau, khong tang partition cua topic da co thu tu theo key.
+### Trả lời mẫu khi phỏng vấn
+Tôi chọn key là id của aggregate (ví dụ orderId) để Kafka gom mọi event của cùng một đơn vào một partition, vì thứ tự chỉ được đảm bảo trong một partition. Trong consumer group mỗi partition chỉ thuộc một consumer, nên xử lý theo thứ tự offset là tự nhiên. Tôi lưu ý ba cách thứ tự bị hỏng: key null, tăng số partition làm đổi bảng băm key->partition, và retry producer không idempotent; nên bật enable.idempotence, acks=all và max.in.flight <= 5. Nếu thực sự cần thứ tự toàn cục, duy nhất là một partition, nhưng đó là nút thắt throughput, nên tránh và dùng sequence number trong payload nếu business bắt buộc. Kinh nghiệm: đủ partition từ đầu, không tăng partition của topic đã có thứ tự theo key.
 
-> Senior tip: mot partition xu ly duoc khoang chuc ngang den tram nghien event moi giay tuong theo kich thuoc ban; khong tao 100 partition cho topic chi co kiem tram event moi ngay, moi partition la mot tap tin log va nhieu partition lam tang xu ly cua broker va consumer rebalance.`,
+> Senior tip: một partition xử lý được khoảng chục đến trăm nghìn event mỗi giây tùy theo kích thước bản; không tạo 100 partition cho topic chỉ có vài tram event mỗi ngày, mỗi partition là một tập tin log và nhiều partition làm tăng xử lý của broker và consumer rebalance.`,
   follow: [
-    'Tai sao tang so partition lai thay doi bam key? Ban xu ly ra sao?',
-    'Producer gui cung key nhung consumer van nhan sai thu tu, co the o dau?',
-    'Khi nao chap nhan dung mot partition de co thu tu toan cuc?'
+    'Tại sao tăng số partition lại thay đổi băm key? Bạn xử lý ra sao?',
+    'Producer gửi cùng key nhưng consumer vẫn nhận sai thứ tự, có thể ở đâu?',
+    'Khi nào chấp nhận dùng một partition để có thứ tự toàn cục?'
   ],
   tags: ['Kafka', 'partition', 'ordering', 'producer']
 },
@@ -7339,23 +7339,23 @@ Toi chon key la id cua aggregate (vi du orderId) de Kafka gom moi event cua cung
   id: 'microservices-084',
   topic: 'microservices',
   level: 'senior',
-  q: 'Listener Spring Kafka that bai vi database downstream bi downturn vait phut. Ban thiet ke retry topic va dead letter topic the nao de message khong mat, khong chan partition, va sau khi khoi phuc thi xu ly lai dung?',
-  a: `**Tom tat:** Loi tam thoi (DB down, timeout) thi message duoc day sang retry topic, doi mot khoang thi gui lai topic goc; sau N lan van that bai thi chuyen sang dead letter topic (DLT) kem metadata loi. Nhung vay partition goc khong bi do bo boi mot message loi, va doc ta co the replay DLT sau khi sua loi. Consumer van phai idempotent vi retry topic co the gui cung message nhieu lan.
+  q: 'Listener Spring Kafka thất bại vì database downstream bị downtime vài phút. Bạn thiết kế retry topic và dead letter topic thế nào để message không mất, không chặn partition, và sau khi khôi phục thì xử lý lại đúng?',
+  a: `**Tóm tắt:** Lỗi tạm thời (DB down, timeout) thì message được đưa sang retry topic, đợi một khoảng thì gửi lại topic gốc; sau N lần vẫn thất bại thì chuyển sang dead letter topic (DLT) kèm metadata lỗi. Như vậy partition gốc không bị đơ bởi một message lỗi, và đội ta có thể replay DLT sau khi sửa lỗi. Consumer vẫn phải idempotent vì retry topic có thể gửi cùng message nhiều lần.
 
-### Thuat ngu
-- **Retry topic**: topic rieng (<ten goc>.RETRY) chua message that bai, kem header dem so lan thu va ly do loi; listener rieng doc va gui lai sau do tre.
-- **Dead letter topic / DLT**: topic chua message khong xu ly duoc sau het so lan retry, kem header exception, stacktrace, topic/partition/offset goc.
-- **DeadLetterPublishingRecoverer**: thanh phan Spring Kafka publish record loi sang DLT sau het retry.
-- **Fixed-delay listener**: listener doc retry topic voi do tre giua cac lan xu ly.
-- **Header**: metadata kem message Kafka (cap khoa-gia tri), dung de luu so lan retry, ten exception, topic goc.
-- **Idempotent consumer**: xu ly cung message nhieu lan van cho ket qua nhu mot lan (bat buoc trong mo hinh nay).
+### Thuật ngữ
+- **Retry topic**: topic riêng (<tên gốc>.RETRY) chứa message thất bại, kèm header đếm số lần thử và lý do lỗi; listener riêng đọc và gửi lại sau độ trễ.
+- **Dead letter topic / DLT**: topic chứa message không xử lý được sau hết số lần retry, kèm header exception, stacktrace, topic/partition/offset gốc.
+- **DeadLetterPublishingRecoverer**: thành phần Spring Kafka publish record lỗi sang DLT sau hết retry.
+- **Fixed-delay listener**: listener đọc retry topic với độ trễ giữa các lần xử lý.
+- **Header**: metadata kèm message Kafka (cặp khóa-giá trị), dùng để lưu số lần retry, tên exception, topic gốc.
+- **Idempotent consumer**: xử lý cùng message nhiều lần vẫn cho kết quả như một lần (bắt buộc trong mô hình này).
 
-### Co che (tung buoc)
-1. Listener goc doc message tu order.events, xu ly that bai (vi ném SQLException do DB down).
-2. DefaultErrorHandler retry co han (vi du 3 lan, cach nhau 1s). Van loi -> DeadLetterPublishingRecoverer publish message sang order.events.RETRY kem header x-retry-count, x-exception-class, original-topic, failed-at.
-3. Listener retry doc order.events.RETRY, doi backoff tang dan (2s, 4s, 8s...), roi gui lai ve order.events (hoac xu ly truc tiep).
-4. Neu van that bai sau so lan toi da -> publish sang order.events.DLT kiem toan bo metadata loi, roi commit offset de partition goc tuc tuc.
-5. Sau DB khoi phuc, doc ta doc DLT, sua du lieu/code, roi replay message tu DLT ve topic goc. Consumer idempotent dam bao khong xu ly trung.
+### Cơ chế (từng bước)
+1. Listener gốc đọc message từ order.events, xử lý thất bại (vì ném SQLException do DB down).
+2. DefaultErrorHandler retry có hạn (ví dụ 3 lần, cách nhau 1s). Vẫn lỗi -> DeadLetterPublishingRecoverer publish message sang order.events.RETRY kèm header x-retry-count, x-exception-class, original-topic, failed-at.
+3. Listener retry đọc order.events.RETRY, đợi backoff tăng dần (2s, 4s, 8s...), rồi gửi lại về order.events (hoặc xử lý trực tiếp).
+4. Nếu vẫn thất bại sau số lần tối đa -> publish sang order.events.DLT kèm toàn bộ metadata lỗi, rồi commit offset để partition gốc túc túc.
+5. Sau DB khôi phục, đội ta đọc DLT, sửa dữ liệu/code, rồi replay message từ DLT về topic gốc. Consumer idempotent đảm bảo không xử lý trùng.
 
 ~~~java
 // Cau hinh loi tam thoi: retry vait lan roi sang DLT
@@ -7380,32 +7380,32 @@ public void on(OrderEvent evt, Acknowledgment ack) {
 }
 ~~~
 
-Code tren la yeu tuong; production nen dung Spring Retry Topic hoac DeadLetterPublishingRecoverer da co san thay cho viet tay.
+Code trên là yêu tưởng; production nên dùng Spring Retry Topic hoặc DeadLetterPublishingRecoverer đã có sẵn thay cho viết tay.
 
-### Bang tra doi
-| Cach | Uu diem | Nhuan diem |
+### Bảng trả lời
+| Cách | Ưu điểm | Nhược điểm |
 |---|---|---|
-| Blocking retry (DefaultErrorHandler) | Don gian, giu thu tu | Thread listener bi cho, partition do bo khi loi lau |
-| Retry topic + fixed-delay | Partition goc khong bi do bo, retry nhieu tang | Them topic, do tre, consumer phai idempotent |
-| DLT chi, khong retry | Partition khong bi do bo | Message loi bi mat neu khong co quy trinh replay |
+| Blocking retry (DefaultErrorHandler) | Đơn giản, giữ thứ tự | Thread listener bị chờ, partition bị đơ khi lỗi lâu |
+| Retry topic + fixed-delay | Partition gốc không bị đơ, retry nhiều lần | Thêm topic, độ trễ, consumer phải idempotent |
+| DLT chỉ, không retry | Partition không bị đơ | Message lỗi bị mất nếu không có quy trình replay |
 
-### Loi hay gap
-1. Consumer khong idempotent: retry topic gui lai message da xu ly -> tien duoc cong hai luon. Luon dedup theo event_id.
-2. Retry vo cung: khong gioi han so lan -> message loi cuon quay partition khac. Gioi han so lan roi sang DLT.
-3. Loi deserialize (sai schema): retry vo ich, phai DLT ngay qua addNotRetryableExceptions(DeserializationException.class).
-4. DLT khong ai xem: DLT tich tram trieu message, khong ai replay. Dat alert theo so message vao DLT.
+### Lỗi hay gặp
+1. Consumer không idempotent: retry topic gửi lại message đã xử lý -> tiền được cộng hai lần. Luôn dedup theo event_id.
+2. Retry vô cùng: không giới hạn số lần -> message lỗi cuốn quay partition khác. Giới hạn số lần rồi sang DLT.
+3. Lỗi deserialize (sai schema): retry vô ích, phải DLT ngay qua addNotRetryableExceptions(DeserializationException.class).
+4. DLT không ai xem: DLT tích trăm triệu message, không ai replay. Đặt alert theo số message vào DLT.
 
-### Vi du doi thuc
-He thong don hang topic order.events, listener ghi vao PostgreSQL. Nam 2023, trong khoang 10 phut DB bao tri, listener nem SQLException lien tuc. Neu khong co retry topic, 6 partition cua topic bi do bo, consumer lag tang tu 0 len 800.000 message. Xu ly: listener publish that bai sang order.events.RETRY kem header x-retry-count, listener retry doc sau backoff 2s/4s/8s, sau 3 lan van loi -> order.events.DLT. Ket qua: partition goc tuc tuc xu ly cac event khac, lag chi tang nhe; sau DB tro lai, doc ta replay 12.000 message trong DLT va xu ly xong trong 20 phut. Su kien trong DLT kem header exception giup doc ta biet chinh xac DB down hay du lieu sai.
+### Ví dụ đời thực
+Hệ thống đơn hàng topic order.events, listener ghi vào PostgreSQL. Năm 2023, trong khoảng 10 phút DB bảo trì, listener ném SQLException liên tục. Nếu không có retry topic, 6 partition của topic bị đơ, consumer lag tăng từ 0 lên 800.000 message. Xử lý: listener publish thất bại sang order.events.RETRY kèm header x-retry-count, listener retry đọc sau backoff 2s/4s/8s, sau 3 lần vẫn lỗi -> order.events.DLT. Kết quả: partition gốc túc túc xử lý các event khác, lag chỉ tăng nhẹ; sau DB trở lại, đội ta replay 12.000 message trong DLT và xử lý xong trong 20 phút. Sự kiện trong DLT kèm header exception giúp đội ta biết chính xác DB down hay dữ liệu sai.
 
-### Tra loi mau khi phan vien
-Voi loi tam thoi nhu database downtime, toi khong de listener cho nhung day message sang retry topic kem header dem so lan va ly do loi. Sau backoff tang dan, message duoc gui lai; neu het so lan van loi, chuyen sang dead letter topic kem metadata exception, roi commit offset de partition khong bi do bo. Sau khoi phuc, toi replay DLT sau khi sua loi. Mo hinh nay bat buoc consumer idempotent vi retry topic co the gui lai message da xu ly. Loi deserialize (sai schema) toi dua vao DLT ngay, khong retry. Kinh nghiem: luon co alert tren so message vao DLT, DLT khong duoc bo quon.
+### Trả lời mẫu khi phỏng vấn
+Với lỗi tạm thời như database downtime, tôi không để listener chờ mà đưa message sang retry topic kèm header đếm số lần và lý do lỗi. Sau backoff tăng dần, message được gửi lại; nếu hết số lần vẫn lỗi, chuyển sang dead letter topic kèm metadata exception, rồi commit offset để partition không bị đơ. Sau khôi phục, tôi replay DLT sau khi sửa lỗi. Mô hình này bắt buộc consumer idempotent vì retry topic có thể gửi lại message đã xử lý. Lỗi deserialize (sai schema) tôi đưa vào DLT ngay, không retry. Kinh nghiệm: luôn có alert trên số message vào DLT, DLT không được bỏ quên.
 
-> Senior tip: DLT khong la thung rac. Dat alarm theo so message vao DLT va co quy trinh replay sau moi lan sua loi, nguoc lai DLT se tro thanh kho luu cua cac loi da quang mat.`,
+> Senior tip: DLT không là thùng rác. Đặt alarm theo số message vào DLT và có quy trình replay sau mỗi lần sửa lỗi, ngược lại DLT sẽ trở thành kho lưu của các lỗi đã quên mất.`,
   follow: [
-    'Sai phan biet retry topic voi DefaultErrorHandler blocking retry o dau?',
-    'Header x-retry-count luu gi va tai sao can no?',
-    'DeserializationException co the retry duoc khong, tai sao?'
+    'Sự phân biệt retry topic với DefaultErrorHandler blocking retry ở đâu?',
+    'Header x-retry-count lưu gì và tại sao cần nó?',
+    'DeserializationException có thể retry được không, tại sao?'
   ],
   tags: ['Kafka', 'Spring Kafka', 'retry topic', 'DLT']
 },
@@ -7413,24 +7413,24 @@ Voi loi tam thoi nhu database downtime, toi khong de listener cho nhung day mess
   id: 'microservices-085',
   topic: 'microservices',
   level: 'lead',
-  q: 'Team ban gui event dang JSON len Kafka khong dung Schema Registry. Mot ngay consumer cu bat dau loi sau khi producer them field moi. Ban thiet ke quy trinh thay doi schema JSON the nao cho an toan, backward compatible, va nhieu team deploy doc lap?',
-  a: `**Tom tat:** Khong co Schema Registry thi contract nam trong chinh payload: moi event mang truong schemaVersion, consumer la "tolerant reader" (bo qua field la), producer chi them field co gia tri mac dinh, khong doi nghia field cu, doi don vi phai tao field moi, va xoa field phai qua giai giai deprecate. Moi thay doi di kem contract test voi mau payload cu va moi, va consumer nan truoc producer.
+  q: 'Team của bạn gửi event dạng JSON lên Kafka không dùng Schema Registry. Một ngày consumer cũ bắt đầu lỗi sau khi producer thêm field mới. Bạn thiết kế quy trình thay đổi schema JSON thế nào cho an toàn, backward compatible, và nhiều team deploy độc lập?',
+  a: `**Tóm tắt:** Không có Schema Registry thì contract nằm trong chính payload: mỗi event mang trường schemaVersion, consumer là "tolerant reader" (bỏ qua field lạ), producer chỉ thêm field có giá trị mặc định, không đổi nghĩa field cũ, đổi đơn vị phải tạo field mới, và xóa field phải qua giai đoạn deprecate. Mỗi thay đổi đi kèm contract test với mẫu payload cũ và mới, và consumer trước producer.
 
-### Thuat ngu
-- **Schema evolution**: thay doi cau truc su kien theo thoi gian khong lam hong consumer dang chay.
-- **Backward compatible**: consumer cu van doc duoc event do producer moi sinh ra (khong can sua consumer).
-- **Tolerant reader**: consumer chi doc field minh can va bo qua field khong biet, thay loi khi gap field la.
-- **schemaVersion**: truong so trong payload ghi ro ban event tuan theo phien ban cau truc nao.
-- **Breaking change**: doi ten field, doi kieu, doi nghia, bo field, doi dinh dang ngay/so tien — lam consumer cu loi.
-- **Deprecate**: danh dau field cu "khong khuyen dung" truoc khi xoa hoan toan, doi moi consumer ngung dung.
-- **Contract test**: kiem thu tu dong voi mau payload cu va moi de phat hien breaking change truoc deploy.
+### Thuật ngữ
+- **Schema evolution**: thay đổi cấu trúc sự kiện theo thời gian không làm hỏng consumer đang chạy.
+- **Backward compatible**: consumer cũ vẫn đọc được event do producer mới sinh ra (không cần sửa consumer).
+- **Tolerant reader**: consumer chỉ đọc field mình cần và bỏ qua field không biết, thay lỗi khi gặp field lạ.
+- **schemaVersion**: trường số trong payload ghi rõ bản event tuân theo phiên bản cấu trúc nào.
+- **Breaking change**: đổi tên field, đổi kiểu, đổi nghĩa, bỏ field, đổi định dạng ngày/số tiền — làm consumer cũ lỗi.
+- **Deprecate**: đánh dấu field cũ "không khuyến dùng" trước khi xóa hoàn toàn, đợi mọi consumer ngừng dùng.
+- **Contract test**: kiểm thử tự động với mẫu payload cũ và mới để phát hiện breaking change trước deploy.
 
-### Cac qui tac thay doi JSON (tung buoc)
-1. Them truong moi: luon co gia tri mac dinh (null hoac gia tri hop le), consumer cu bo qua vi tolerant reader.
-2. Khong doi ten truong: neu can doi ten, them truong moi, gui cung hai trong thoi gian chuyen tien, roi xoa truong cu.
-3. Khong doi nghia: so tien tu USD sang cent phai la truong moi (amountCents), khong reinterpret truong cu.
-4. Xoa field: danh dau deprecated, doc moi consumer xac nhan khong dung nua, roi moi xoa trong phien ban schema tiep theo.
-5. Moi event co truong schemaVersion de consumer biet ap dung logic doc nao, dac biet khi replay event cu.
+### Các qui tác thay đổi JSON (từng bước)
+1. Thêm trường mới: luôn có giá trị mặc định (null hoặc giá trị hợp lệ), consumer cũ bỏ qua vì tolerant reader.
+2. Không đổi tên trường: nếu cần đổi tên, thêm trường mới, gửi cùng hai trong thời gian chuyển tiền, rồi xóa trường cũ.
+3. Không đổi nghĩa: số tiền từ USD sang cent phải là trường mới (amountCents), không reinterpret trường cũ.
+4. Xóa field: đánh dấu deprecated, đợi mọi consumer xác nhận không dùng nữa, rồi mới xóa trong phiên bản schema tiếp theo.
+5. Mỗi event có trường schemaVersion để consumer biết áp dụng logic đọc nào, đặc biệt khi replay event cũ.
 
 ~~~java
 // Consumer doc event, bo qua field khong biet (tolerant reader)
@@ -7441,37 +7441,37 @@ public void on(PaymentEvent evt) {
 }
 ~~~
 
-Spring Boot cau hinh Jackson tat FAIL_ON_UNKNOWN_PROPERTIES mac dinh nen them truong la an toan; nhung doi "2024-05-01" sang epoch millis la breaking ngam.
+Jackson mặc định **tắt** FAIL_ON_UNKNOWN_PROPERTIES (bỏ qua field lạ), nên consumer đã là tolerant reader sẵn; chỉ khi bật cờ này mới lỗi. Tuy nhiên đổi "2024-05-01" sang epoch millis là breaking ngầm.
 
-### Khi nao dung Schema Registry/Avro
-JSON khong dung registry phu hop team nho, it thay doi. Nhieu team, consumer strongly-typed (Java/C++), can kiem tra tu dong compatibility truoc producer deploy -> dung Schema Registry + Avro (BACKWARD_TRANSITIVE hoac FULL_TRANSITIVE, xem cau khac). Registry chan dang ky schema breaking tren CI.
+### Khi nào dùng Schema Registry/Avro
+JSON không dùng registry phù hợp team nhỏ, ít thay đổi. Nhiều team, consumer strongly-typed (Java/C++), cần kiểm tra tự động compatibility trước producer deploy -> dùng Schema Registry + Avro (BACKWARD_TRANSITIVE hoặc FULL_TRANSITIVE, xem câu khác). Registry chặn đăng ký schema breaking trên CI.
 
 ### Contract test
-Voi moi thay doi, viet test serialize mau payload cu va moi, deserialize bang consumer cu va moi, assert khong loi va field quan trong giu gia tri. Test chay trong CI cua ca producer va consumer.
+Với mỗi thay đổi, viết test serialize mẫu payload cũ và mới, deserialize bằng consumer cũ và mới, assert không lỗi và field quan trọng giữ giá trị. Test chạy trong CI của cả producer và consumer.
 
-### Bang tra doi
-| Cach | Uu diem | Nhuan diem |
+### Bảng trả lời
+| Cách | Ưu điểm | Nhược điểm |
 |---|---|---|
-| JSON + schemaVersion + tolerant reader | Don gian, khong can he thong them | Khong chan tu dong breaking change tren CI |
-| Schema Registry + Avro | Kiem tra compatibility tu dong, nhieu team deploy doc lap | Them he thong phai van hanh, consumer phai tai schema |
+| JSON + schemaVersion + tolerant reader | Đơn giản, không cần hệ thống thêm | Không chặn tự động breaking change trên CI |
+| Schema Registry + Avro | Kiểm tra compatibility tự động, nhiều team deploy độc lập | Thêm hệ thống phải vận hành, consumer phải tải schema |
 
-### Loi hay gap
-1. Consumer deserialize chat (FAIL_ON_UNKNOWN_PROPERTIES bat hoac enum chat): producer them field la consumer loi. Dung tolerant reader, enum co gia tri UNKNOWN.
-2. Doi dinh dang ngay hay so tien: schema "khong doi" kieu nhung consumer parse loi. Contract test phai kiem dinh dang.
-3. Xoa field ma consumer cu con can: break ngay. Xoa phai qua deprecate.
-4. Khong co schemaVersion: consumer khong biet event cu hay moi khi replay, de xu ly sai.
+### Lỗi hay gặp
+1. Consumer deserialize cứng (enum cứng không có UNKNOWN hoặc custom deserializer ném lỗi khi gặp field lạ): producer thêm field là consumer lỗi. Dùng tolerant reader, enum có giá trị UNKNOWN.
+2. Đổi định dạng ngày hay số tiền: schema "không đổi" kiểu nhưng consumer parse lỗi. Contract test phải kiểm định định dạng.
+3. Xóa field mà consumer cũ còn cần: break ngay. Xóa phải qua deprecate.
+4. Không có schemaVersion: consumer không biết event cũ hay mới khi replay, để xử lý sai.
 
-### Vi du doi thuc
-He thong thanh toan gui su kien payment.captured dang JSON. Nam 2023, producer them field discountCode va cung luc doi field amount tu USD sang cent (van kieu so). Consumer cu (team khach hang, deploy doc lap) bat dau hien thi so tien sai 100 lan va mot so truong deserialize loi. Dieu tra: khong co schemaVersion, khong co contract test, consumer cu khong dung tolerant reader. Nguyen goc: doi nghia field khong tao field moi, va khong co co che kiem tra compatibility. Xu ly: rollback field amount, them truong moi amountCents, deprecate amount, them schemaVersion: 2, consumer moi doc amountCents, consumer cu van dung amount trong khoang chuyen tien, contract test cho mau cu va moi trong CI. Ket qua: 0 loi deserialize sau 2 tuan, 2 PR bi CI chan do vi pham qui tac.
+### Ví dụ đời thực
+Hệ thống thanh toán gửi sự kiện payment.captured dạng JSON. Năm 2023, producer thêm field discountCode và cùng lúc đổi field amount từ USD sang cent (vẫn kiểu số). Consumer cũ (team khách hàng, deploy độc lập) bắt đầu hiển thị số tiền sai 100 lần và một số trường deserialize lỗi. Điều tra: không có schemaVersion, không có contract test, consumer cũ không dùng tolerant reader. Nguyên gốc: đổi nghĩa field không tạo field mới, và không có cơ chế kiểm tra compatibility. Xử lý: rollback field amount, thêm trường mới amountCents, deprecate amount, thêm schemaVersion: 2, consumer mới đọc amountCents, consumer cũ vẫn dùng amount trong khoảng chuyển tiền, contract test cho mẫu cũ và mới trong CI. Kết quả: 0 lỗi deserialize sau 2 tuần, 2 PR bị CI chặn do vi phạm qui tắc.
 
-### Tra loi mau khi phan vien
-Khong co Schema Registry thi toi tu quyet contract trong payload: moi event co schemaVersion, consumer la tolerant reader chi doc field minh can. Producer chi duoc them field co gia tri mac dinh; doi ten, doi kieu, doi don vi (vi USD sang cent) phai tao field moi, khong reinterpret truong cu; xoa field phai qua deprecate. Moi thay doi di kem contract test voi mau payload cu va moi trong CI. Neu co nhieu team va consumer strongly-typed, toi len Schema Registry + Avro voi che do BACKWARD_TRANSITIVE. Kinh nghiem: phan lon su co schema den tu doi dinh dang ngay/so tien, khong phai them field.
+### Trả lời mẫu khi phỏng vấn
+Không có Schema Registry thì tôi tự quyết contract trong payload: mỗi event có schemaVersion, consumer là tolerant reader chỉ đọc field mình cần. Producer chỉ được thêm field có giá trị mặc định; đổi tên, đổi kiểu, đổi đơn vị (vì USD sang cent) phải tạo field mới, không reinterpret trường cũ; xóa field phải qua deprecate. Mỗi thay đổi đi kèm contract test với mẫu payload cũ và mới trong CI. Nếu có nhiều team và consumer strongly-typed, tôi lên Schema Registry + Avro với chế độ BACKWARD_TRANSITIVE. Kinh nghiệm: phần lớn sự cố schema đến từ đổi định dạng ngày/số tiền, không phải thêm field.
 
-> Senior tip: schemaVersion trong payload giup consumer chon logic doc khi replay event cu hai ba nam sau — them ngay tu ban event dau tien, khong cho den khi can.`,
+> Senior tip: schemaVersion trong payload giúp consumer chọn logic đọc khi replay event cũ hai ba năm sau — thêm ngay từ bản event đầu tiên, không chờ đến khi cần.`,
   follow: [
-    'Tang schemaVersion co thay doi gi nhan vat neu co Schema Registry?',
-    'Doi don vi tien te nhung giu nguyen kieu so co the loi nhat o dau?',
-    'Consumer cu bi loi voi field moi, sua o consumer hay producer?'
+    'Tăng schemaVersion có thay đổi gì nếu dùng Schema Registry?',
+    'Đổi đơn vị tiền tệ nhưng giữ nguyên kiểu số có thể lỗi nhất ở đâu?',
+    'Consumer cũ bị lỗi với field mới, sửa ở consumer hay producer?'
   ],
   tags: ['Kafka', 'schema evolution', 'JSON', 'backward compatibility']
 },
