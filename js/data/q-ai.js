@@ -9393,5 +9393,237 @@ Một trợ lý CSKH ngân hàng xử lý 30.000 cuộc gọi/tháng. Ban đầu
       'Bạn xử lý trường hợp user yêu cầu "hiện số thẻ cuối 4 số" ra sao?'
     ],
     tags: ['PII', 'privacy', 'masking', 'output guard', 'security', 'banking']
-  }
+  },
+  {
+    id: 'ai-141',
+    topic: 'ai',
+    level: 'lead',
+    q: 'Hệ thống kiểm tra chất lượng sản phẩm bằng thị giác máy (AOI) trên dây chuyền sản xuất: ảnh từ camera → suy luận model phát hiện khuyết tật → lưu kết quả → phản hồi dây chuyền trong dưới 1 giây. Bạn thiết kế kiến trúc này như thế nào để vừa đáp ứng latency, vừa mở rộng được khi thêm nhiều camera?',
+    a: `**Tóm tắt:** Hệ thống AOI production cần xử lý luồng ảnh liên tục từ nhiều camera, chạy suy luận model phát hiện khuyết tật, lưu kết quả vào cơ sở dữ liệu và phản hồi dây chuyền trong ngân sách dưới 1 giây. Thiết kế phải tách biệt các lớp thu thập ảnh, suy luận, lưu trữ và điều khiển dây chuyền, với antrian giữa các lớp để chống áp lực burst, và có cơ chế giảm cấp khi model chậm để không làm treo sản xuất.
+
+### Kiến trúc từng lớp
+1. Camera và thu thập ảnh: mỗi camera chụp ảnh liên tục (ví dụ 10-30 fps), gửi qua protokol GigE/USB vào node thu thập. Node này resize, chuẩn hóa màu và đẩy ảnh vào antrian suy luận kèm metadata (cameraId, timestamp, sequenceId).
+2. Suy luận (inference service): worker pool lấy ảnh từ antrian, chạy model phát hiện khuyết tật (classification hoặc object detection), trả về bounding box, lớp khuyết tật và độ tin cậy. Dùng batch inference nếu có GPU để tăng throughput.
+3. Lưu kết quả: ghi bản ghi kiểm tra vào PostgreSQL/TimescaleDB kèm ảnh cắt, kết quả suy luận, thời gian xử lý và pass/fail theo ngưỡng.
+4. Điều khiển dây chuyền: service phản hồi gửi tín hiệu OK/NG đến PLC qua giao thức OPC UA/Modbus trong giới hạn 1 giây. Nếu NG, dây chuyền cách ly sản phẩm lỗi.
+
+### Ngân sách latency dưới 1 giây
+| Bước | Thời gian ngân sách | Mẹo tối ưu |
+|------|---------------------|------------|
+| Chụp ảnh + chuẩn hóa | 50-100 ms | Chụp đồng bộ, giảm độ phân uitz nếu không cần chi tiết tinh tế |
+| Truyền qua mạng | 10-30 ms | Dùng GigE, tránh Wi-Fi, đặt node inference gần camera |
+| Suy luận model | 200-500 ms | Model nhẹ (MobileNet/EfficientDet), batch nếu có GPU, tensorRT/OpenVINO |
+| Lưu kết quả | 50-100 ms | Ghi bất đồng bộ, batch insert, không chờ commit đầy đủ cho từng ảnh |
+| Phản hồi PLC | 20-50 ms | OPC UA/Modbus local, timeout ngắn |
+| Tổng | ~400-800 ms | Giữ phần dự phòng để xử lý burst |
+
+### Mở rộng khi thêm nhiều camera
+Shard theo camera: mỗi antrian suy luận phục vụ một nhóm camera (ví dụ 4-8 camera/node) để tránh một node trở thành nghẽn. Cân bằng tải bằng Redis Streams hoặc RabbitMQ với consumer group. Tách service inference ra khỏi service điều khiển dây chuyền để scale độc lập.
+
+### Java mã minh họa
+~~~java
+record InspectionResult(String cameraId, long timestamp, String defect, double confidence, boolean pass) {}
+
+class InferenceWorker {
+    private final Model model;
+    private final BlockingQueue<InspectionRequest> queue;
+    private final ResultRepository repo;
+    private final PlcClient plc;
+
+    void run() {
+        while (running) {
+            InspectionRequest req = queue.poll(100, TimeUnit.MILLISECONDS);
+            if (req == null) continue;
+            long start = System.currentTimeMillis();
+            InspectionResult result = model.infer(req.image());
+            boolean pass = result.confidence() >= 0.85 && !result.defect().equals("khuyet tat");
+            repo.save(result);
+            long elapsed = System.currentTimeMillis() - start;
+            if (elapsed < 900) {
+                plc.sendResult(req.cameraId(), pass ? "OK" : "NG");
+            } else {
+                plc.sendResult(req.cameraId(), "REVIEW");
+            }
+        }
+    }
+}
+~~~
+
+### Bảng đánh đổi
+| Quyết định | Lợi ích | Rủi ro |
+|------------|---------|--------|
+| Batch inference trên GPU | Throughput cao, chi phí mỗi ảnh thấp | Latency cao hơn cho ảnh đơn lẻ, cần đợi đủ batch |
+| Model nhieu chạy trên CPU | Latency thấp, không cần GPU | Chính xác thấp hơn model lớn |
+| Ghi DB bất đồng bộ | Không làm chậm phản hồi PLC | Có thể mất kết quả nếu node crash trước khi ghi |
+| Giảm cấp REVIEW khi quá latency | Không làm treo dây chuyền | Một số sản phẩm được bo qua kiểm tra tự động |
+
+### Lỗi hay gặp trong production
+Model chậm đôi khi làm antrian dồn lên, phản hồi PLC vượt 1 giây → dây chuyền phải chờ hoặc bỏ qua kiểm tra. Không lưu ảnh gốc cùng kết quả → sau này không thể kiểm tra lại tại sao model gọi sai. Ngưỡng pass/fail cứng không điều chỉnh theo từng loại sản phẩm → sai lệch cao trên sản phẩm mới. Không có circuit breaker khi model service down → toàn bộ dây chuyền treo.
+
+### Ví dụ đời thực
+Dây chuyền sản xuất linh kiện điện tử, 6 camera chụp 15 fps (90 ảnh/giây). Ban đầu chạy model lớn trên 1 GPU, p95 latency 1,5 giây, vượt ngân sách, 12% ảnh bị bỏ qua vì antrian đầy. Thiết kế lại: tách thành 3 node inference, dùng model nhẹ quantization INT8, ghi kết quả bất đồng bộ, giảm cấp sang REVIEW nếu p95 vượt 800 ms. Kết quả: p95 latency giảm xuống 650 ms, 0% ảnh bị bỏ qua, tỷ lệ phát hiện khuyết tật giữ nguyên 96,5%. (Số liệu minh họa, tùy hardware và model thực tế.)
+
+### Trả lời mẫu khi phỏng vấn
+Tôi thiết kế hệ thống AOI theo kiến trúc các lớp tách biệt: thu thập ảnh, suy luận, lưu trữ và điều khiển dây chuyền, có antrian giữa các lớp để chống burst. Ngân sách latency dưới 1 giây được phân bổ cho từng bước, với yếu tố lớn nhất là suy luận model nên tôi ưu tiên model nhẹ, quantization và batch trên GPU. Khi mở rộng nhiều camera, tôi shard antrian theo nhóm camera và auto-scale worker. Tôi luôn lưu ảnh gốc cùng kết quả để kiểm tra lại, và có cơ chế giảm cấp REVIEW khi latency vượt ngưỡng để không làm treo sản xuất. Ví dụ thực tế: 6 camera 15 fps, p95 từ 1,5 giây xuống 650 ms sau khi tách node và dùng model nhẹ, không ảnh bỏ qua.
+
+> Senior tip: Trong AOI production, latency determinism quan trọng hơn độ chính xác tuyệt đối. Một model 98% chính xác nhưng đôi khi chậm 5 giây sẽ làm dây chuyền treo; hãy chọn model 95% chính xác nhưng luôn hoàn thành dưới 800 ms, và có kết quả dự phòng REVIEW cho trường hợp ngoại lệ.
+
+`,
+  follow: [
+    'Bạn phân bổ ngân sách latency 1 giây cho từng bước AOI như thế nào, bước nào quan trọng nhất?',
+    'Khi model inference chậm bất ngờ, bạn làm sao không làm treo toàn bộ dây chuyền sản xuất?',
+    'Bạn lưu ảnh gốc cùng kết quả suy luận ra sao để kiểm tra lại sau này mà không làm đầy đĩa?'
+  ],
+  tags: ['AOI', 'computer vision', 'inference', 'latency', 'manufacturing', 'PLC', 'edge']
+  },
+  {
+    id: 'ai-142',
+    topic: 'ai',
+    level: 'senior',
+    q: 'Hệ thống bảo trì dự đoán từ dữ liệu cảm biến (nhiệt độ, rung, áp suất) của thiết bị công nghiệp: trích xuất đặc trưng theo cửa sổ thời gian, đặt ngưỡng báo động, và gửi thông báo khi thiết bị có nguy cơ hỏng. Bạn thiết kế pipeline này như thế nào để vừa phát hiện sớm, vừa không gây quá tải do báo động sai?',
+    a: `**Tóm tắt:** Pipeline bảo trì dự đoán thu thập dữ liệu cảm biến thời gian thực, trích xuất đặc trưng trong cửa sổ trượt (ví dụ 5 phút, trượt 1 phút), tính trung bình, độ lệch chuẩn, tần số rung cao nhất, áp dụng mô hình hoặc ngưỡng để đánh giá rủi ro hỏng hóc, và gửi cảnh báo khi vượt ngưỡng. Thiết kế cân bằng giữa phát hiện sớm và giảm báo động sai, vì báo động quá nhiều làm đội vận hành bỏ qua.
+
+### Pipeline từng bước
+1. Thu thập cảm biến: thiết bị gửi dữ liệu cảm biến qua MQTT/OPC UA mỗi 1-10 giây vào broker message.
+2. Cửa sổ trượt: gom dữ liệu theo cửa sổ thời gian, tính đặc trưng: trung bình, min/max, độ lệch chuẩn, tần số dominant của tín hiệu rung.
+3. Đánh giá rủi ro: áp dụng ngưỡng tĩnh hoặc model phân loại trên đặc trưng cửa sổ, xuất điểm rủi ro 0-1.
+4. Cảnh báo: nếu điểm rủi ro vượt ngưỡng cao → cảnh báo ngay; nếu vượt ngưỡng trung bình → đưa vào hàng đợi kiểm tra định kỳ.
+5. Feedback vòng lại: kỹ sư xác nhận hỏng hay không, kết quả dùng để điều chỉnh ngưỡng hoặc huấn luyện lại model.
+
+### Cửa sổ thời gian và đặc trưng
+| Cửa sổ | Phù hợp | Đặc trưng chính |
+|--------|---------|-----------------|
+| 1 phút | Phát hiện sự cố đột ngột | Spike nhiệt độ, rung cao nhất |
+| 5-15 phút | Phát hiện xu hướng suy giảm | Trung bình, độ lệch chuẩn, skew |
+| 1 giờ | Phát hiện hỏng hóc chậm | Xu hướng dốc, thay đổi theo thời gian |
+
+Cửa sổ quá ngắn dễ báo sai do nhiễu; cửa sổ quá dài phát hiện muộn. Khuyến khích bắt đầu 5 phút và điều chỉnh theo dữ liệu thực.
+
+### Ngưỡng và báo động sai
+Ngưỡng tĩnh: giá trị cố định (ví dụ nhiệt độ > 85 độ C). Dễ hiểu nhưng không chịu được sự thay đổi môi trường. Ngưỡng thích ứng: tính trung bình và độ lệch chuẩn lịch sử, cảnh báo khi vượt trung bình + 3 độ lệch chuẩn. Kết hợp: cảnh báo cấp 1 khi vượt ngưỡng tắt, cảnh báo cấp 2 khi vượt ngưỡng thích ứng.
+
+### Giảm báo động sai
+Yêu cầu xác nhận nhiều lần: chỉ gửi cảnh báo nếu rủi ro vượt ngưỡng trong 3 cửa sổ liên tiếp. Hysteresis: ngưỡng bật cao hơn ngưỡng tắt, tránh cảnh báo nhấp nháy. Ưu tiên cảnh báo: phân loại cao/trung bình/thấp. Feedback từ kỹ sư: đánh dấu cảnh báo đúng/sai, dùng để điều chỉnh ngưỡng định kỳ.
+
+### Java mã minh họa
+~~~java
+record SensorReading(String deviceId, long timestamp, double temperature, double vibration, double pressure) {}
+record WindowFeature(String deviceId, long windowStart, double avgTemp, double maxVibration, double stdPressure) {}
+record RiskAssessment(String deviceId, double riskScore, String level, String action) {}
+
+class PredictiveMaintenancePipeline {
+    private final WindowStore windowStore;
+    private final RiskModel model;
+    private final AlertService alertService;
+
+    void onReading(SensorReading reading) {
+        WindowFeature feature = windowStore.addAndCompute(reading);
+        if (feature == null) return;
+        RiskAssessment assessment = model.assess(feature);
+        if (assessment.riskScore() >= 0.8) {
+            alertService.sendAlert(assessment.deviceId(), assessment.level(), assessment.action());
+        } else if (assessment.riskScore() >= 0.5) {
+            alertService.enqueueReview(assessment);
+        }
+    }
+}
+~~~
+
+### Bảng đánh đổi
+| Quyết định | Lợi ích | Rủi ro |
+|------------|---------|--------|
+| Cửa sổ ngắn | Phát hiện sự cố ngay | Báo sai nhiều do nhiễu |
+| Cửa sổ dài | Ít báo sai, xu hướng rõ | Phát hiện muộn |
+| Ngưỡng tĩnh | Dễ triển khai | Không chịu thay đổi môi trường |
+| Ngưỡng thích ứng | Khỏe hơn với thay đổi | Cần dữ liệu lịch sử đủ |
+| Yêu cầu 3 cửa sổ liên tiếp | Lọc nhiễu, ít báo sai | Phát hiện chậm hơn một chút |
+
+### Lỗi hay gặp trong production
+Không lọc nhiễu cảm biến: giá trị lạ đơn lần gây báo động giả. Ngưỡng không điều chỉnh theo mùa: báo động nhiều mùa hè. Báo động quá nhiều: đội bỏ qua cảnh báo, thật sự hỏng không được xử lý kịp. Không lưu dữ liệu thô cùng đặc trưng: sau này không thể xem lại tại sao model đưa ra kết quả đó.
+
+### Ví dụ đời thực
+Hệ thống bơm nước công nghiệp, 50 bơm, mỗi bơm có cảm biến nhiệt độ và rung gửi mỗi 5 giây. Ban đầu dùng ngưỡng tĩnh nhiệt độ > 80 độ C, báo động 200 lần/tháng nhưng 80% là giả do mùa nắng nóng. Thiết kế lại: cửa sổ 5 phút, ngưỡng thích ứng, yêu cầu 3 cửa sổ liên tiếp, phân loại cảnh báo cao/trung bình/thấp. Kết quả: giảm xuống 35 cảnh báo/tháng, precision từ 20% lên 72%, phát hiện 4 trường hợp hỏng true positive trước khi bơm dừng hoàn toàn. (Số liệu minh họa, tùy thiết bị và môi trường.)
+
+### Trả lời mẫu khi phỏng vấn
+Tôi thiết kế pipeline bảo trì dự đoán theo các bước: thu thập cảm biến qua MQTT, cửa sổ trượt tính đặc trưng, đánh giá rủi ro bằng model hoặc ngưỡng, rồi cảnh báo theo mức độ. Tôi dùng cửa sổ 5 phút làm điểm bắt đầu, kết hợp ngưỡng tĩnh cho nguy hiểm ngay và ngưỡng thích ứng cho theo dõi xu hướng. Để giảm báo sai, tôi yêu cầu xác nhận nhiều cửa sổ liên tiếp, dùng hysteresis và phân loại mức độ cảnh báo. Kỹ sư phản hồi đúng/sai để điều chỉnh ngưỡng định kỳ. Ví dụ thực tế: 50 bơm, báo động từ 200 xuống 35 lần/tháng, precision từ 20% lên 72% sau khi chuyển sang ngưỡng thích ứng và lọc nhiều lần.
+
+> Senior tip: Báo động sai nhiều hơn là không báo — sau một thời gian, đội vận hành sẽ bỏ qua toàn bộ cảnh báo. Hãy ưu tiên precision cao hơn recall cao, và luôn có cơ chế kỹ sư đánh giá cảnh báo để điều chỉnh ngưỡng liên tục.
+
+`,
+  follow: [
+    'Bạn chọn độ dài cửa sổ trượt như thế nào, và ảnh hưởng thế nào đến việc phát hiện sớm versus báo sai?',
+    'Làm sao giảm báo động sai mà không bỏ lỡ trường hợp hỏng thật?',
+    'Khi kỹ sư đánh giá cảnh báo là sai, bạn dùng phản hồi đó để điều chỉnh hệ thống ra sao?'
+  ],
+  tags: ['predictive maintenance', 'sensor', 'time series', 'anomaly detection', 'alerting', 'IIoT']
+  },
+  {
+    id: 'ai-143',
+    topic: 'ai',
+    level: 'senior',
+    q: 'Hệ thống ML đưa ra dự đoán (phân loại, trích xuất), nhưng khi độ tin cậy thấp hoặc người dùng phàn nàn, cần con người xác nhận và gán nhãn lại để huấn luyện lại model. Bạn thiết kế vòng lặp human-in-the-loop này như thế nào để vừa cải thiện chất lượng model, vừa không làm quá tải đội kiểm tra?',
+    a: `**Tóm tắt:** Vòng lặp human-in-the-loop lấy các dự đoán thấp độ tin cậy hoặc bị tranh cãi, đưa vào hàng đợi kiểm tra của chuyên gia, con người xác nhận hoặc sửa nhãn, sau đó dùng nhãn đã xác nhận để huấn luyện lại model. Thiết kế cần ưu tiên trường hợp quan trọng nhất, giới hạn số lượng kiểm tra mỗi ngày, và có feedback loop tự động từ kết quả kiểm tra vào pipeline training.
+
+### Thành phần vòng lặp
+1. Phát hiện dự đoán cần kiểm tra: độ tin cậy model dưới ngưỡng, hoặc người dùng bấm sai trên giao diện, hoặc kết quả xuống nhánh exception.
+2. Hàng đợi kiểm tra: chuyên gia xem danh sách dự đoán cần xác nhận, kèm bằng chứng để quyết định nhanh.
+3. Xác nhận và gán nhãn lại: chuyên gia giữ nguyên nhãn model, sửa nhãn, hoặc đánh dấu không đủ thông tin. Mỗi quyết định ghi kèm lý do và thời gian.
+4. Huấn luyện lại: nhãn đã xác nhận được thêm vào tập dữ liệu training, model được huấn luyện lại định kỳ.
+5. Giám sát và báo cáo: theo dõi tỷ lệ dự đoán cần kiểm tra, độ chính xác sau retraining, và thời gian chờ trong hàng đợi.
+
+### Ưu tiên và giới hạn tải
+Ưu tiên theo rủi ro: dự đoán ảnh hưởng trực tiếp đến khách hàng hoặc thanh toán tài chính được ưu tiên kiểm tra trước. Ưu tiên theo độ không chắc chắn: độ tin cậy thấp nhất được đưa lên đầu hàng đợi. Giới hạn hàng ngày: mỗi chuyên gia chỉ kiểm tra tối đa N dự đoán/ngày để không mệt mỏi. Lọc trùng: nếu nhiều bản ghi cùng nội dung, chỉ kiểm tra một mẫu đại diện.
+
+### Java mã minh họa
+~~~java
+record Prediction(String id, String input, String predictedLabel, double confidence, boolean needsReview) {}
+record ReviewDecision(String predictionId, String reviewerId, String confirmedLabel, String reason, long reviewedAt) {}
+
+class HumanInTheLoopPipeline {
+    private final ReviewQueue reviewQueue;
+    private final LabelStore labelStore;
+    private final RetrainingScheduler retrainingScheduler;
+
+    void onPrediction(Prediction pred) {
+        if (pred.confidence() < 0.7 || pred.needsReview()) {
+            reviewQueue.enqueue(pred);
+        }
+    }
+
+    void onReviewDecision(ReviewDecision decision) {
+        labelStore.save(decision.confirmedLabel(), decision.predictionId(), decision.reason());
+        if (labelStore.countNewLabelsToday() >= 500) {
+            retrainingScheduler.triggerRetraining();
+        }
+    }
+}
+~~~
+
+### Bảng đánh đổi
+| Quyết định | Lợi ích | Rủi ro |
+|------------|---------|--------|
+| Kiểm tra tất cả dự đoán thấp độ tin cậy | Chất lượng nhãn cao | Quá tải đội kiểm tra |
+| Kiểm tra mẫu ngẫu nhiên nhỏ | Tải nhẹ, nhanh | Có thể bỏ lỡ trường hợp quan trọng |
+| Huấn luyện lại hàng tuần | Model ổn định | Phản hồi chậm |
+| Huấn luyện lại liên tục | Model cải thiện nhanh | Ngập ngừng dữ liệu, cần giám sát |
+
+### Lỗi hay gặp trong production
+Không có giới hạn hàng ngày: đội kiểm tra chök quá tải, chất lượng đánh giá tụt. Chỉ kiểm tra dự đoán sai: bỏ qua dự đoán đúng nhưng model không biết tại sao đúng. Nhãn chuyên gia không nhất quán: hai chuyên gia gán nhãn khác nhau cho cùng đầu vào. Retraining quá thường xuyên: model bị overfit vào nhãn gần đây. Không theo dõi thời gian chờ: dự đoán quan trọng nằm trong hàng đợi không được xử lý kịp.
+
+### Ví dụ đời thực
+Hệ thống trích xuất thông tin từ hóa đơn điện tử, 50.000 hóa đơn/ngày. Model phân loại loại hóa đơn với độ tin cậy. Ban đầu kiểm tra tất cả hóa đơn dưới 0.8 độ tin cậy → 15.000 hóa đơn/ngày, đội 5 người không kịp. Thiết kế lại: chỉ kiểm tra 200 hóa đơn có độ tin cậy thấp nhất/ngày, ưu tiên hóa đơn giá trị cao, giới hạn 50 việc/người/ngày. Sau 1 tháng: tập nhãn xác nhận 6.000 mẫu, retraining hàng tuần, độ chính xác model từ 85% lên 92%, thời gian chờ trong hàng đợi dưới 24 giờ. (Số liệu minh họa, tùy domain và model.)
+
+### Trả lời mẫu khi phỏng vấn
+Tôi thiết kế vòng lặp human-in-the-loop gồm năm thành phần: phát hiện dự đoán cần kiểm tra, hàng đợi kiểm tra của chuyên gia, xác nhận và gán nhãn lại, huấn luyện lại model, và giám sát báo cáo. Để không làm quá tải đội, tôi ưu tiên theo rủi ro và độ không chắc chắn, giới hạn số lượng kiểm tra mỗi ngày, và lọc trùng nội dung. Nhãn được xác nhận được dùng để retraining định kỳ. Ví dụ thực tế: 50.000 hóa đơn/ngày, giảm từ 15.000 xuống 200 cần kiểm tra/ngày, độ chính xác từ 85% lên 92% sau một tháng, thời gian chờ dưới 24 giờ.
+
+> Senior tip: Human-in-the-loop không phải là kiểm tra mọi dự đoán, mà là chọn đúng những dự đoán quan trọng và không chắc chắn nhất. Giới hạn tải hàng ngày để đội kiểm tra giữ chất lượng, và luôn có feedback từ nhãn đã xác nhận vào pipeline retraining để model cải thiện liên tục.
+
+`,
+  follow: [
+    'Bạn chọn dự đoán nào để đưa vào hàng đợi kiểm tra, và làm sao ưu tiên khi hàng đợi dài?',
+    'Khi chuyên gia gán nhãn không nhất quán, bạn xử lý thế nào để model không học bị nhiễu?',
+    'Bạn retraining model bao nhiêu lần, và làm sao biết retraining thực sự cải thiện chứ không làm suy giảm chất lượng?'
+  ],
+  tags: ['human-in-the-loop', 'relabeling', 'active learning', 'ML ops', 'review queue']
+}
 );
