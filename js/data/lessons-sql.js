@@ -3187,9 +3187,783 @@ class BankReport {
         answer: 1,
         explain: '**Phương án 2 đúng**: {{LAG}} lấy dòng đứng trước {{offset}} vị trí trong cùng partition; dòng đầu partition không có dòng trước nên trả về {{default}} là {{0}} như đã chỉ định. **3** sai ở đây vì ta truyền default là 0 (nếu không truyền default thì mới là {{NULL}}). **1** sai: {{LAG}} không trả dòng hiện tại. **4** sai: thiếu dòng trước là trường hợp bình thường, không phải lỗi.',
       },
-    ],
+],
     related: ['sql-001', 'sql-004', 'db-001', 'sql-015'],
     tags: ['window function', 'partition by', 'row_number', 'rank', 'running balance', 'lag', 'group by'],
-  }
+  },
+{
+  id: 'lesson-sql-015',
+  track: 'sql',
+  order: 15,
+  title: 'Locking & MVCC thực hành: đọc nhất quán, lost update, SELECT FOR UPDATE, optimistic locking',
+  level: 'senior',
+  minutes: 35,
+  goals: [
+    'Giải thích MVCC (Multi-Version Concurrency Control) và vì sao đọc không chặn ghi, ghi không chặn đọc',
+    'Phân biệt lost update, dirty read, non-repeatable read, phantom read và biết isolation level nào chặn cái gì',
+    'Mô tả SELECT ... FOR UPDATE (pessimistic locking) và cột version (optimistic locking), khi nào dùng cái nào',
+    'Viết UPDATE có điều kiện WHERE version = ? và hiểu tại sao nó nguyên tử',
+  ],
+  body: `### MVCC: tại sao đọc không bao giờ bị chặn
+**MVCC** (Multi-Version Concurrency Control, điều khiển đồng thời đa phiên bản) là cơ chế PostgreSQL (và Oracle, MySQL InnoDB, SQL Server) giữ **nhiều phiên bản** của cùng một dòng. Khi bạn {{UPDATE}}, DB **không ghi đè tại chỗ** ngay lập tức; nó tạo một **phiên bản mới** của dòng, đánh dấu phiên bản cũ là "đã bị xoá bởi transaction X". Các transaction khác vẫn thấy phiên bản cũ nếu snapshot của chúng bắt đầu trước transaction X commit.
+
+- **Reader** ({{SELECT}}): nhìn snapshot dữ liệu tại thời điểm bắt đầu câu lệnh ({{READ COMMITTED}}) hoặc bắt đầu transaction ({{REPEATABLE READ}} / {{SERIALIZABLE}}). Reader **không bao giờ chờ writer**.
+- **Writer** ({{INSERT}}/{{UPDATE}}/{{DELETE}}): tạo phiên bản mới. Writer chỉ chờ writer khác khi **cùng sửa/xoá một dòng** (row lock).
+
+Analog đời thường: giống Wikipedia — bạn đọc bản lúc 10:00 vẫn xem trọn vẹn nội dung đó, dù người khác sửa lúc 10:01. Bạn chỉ thấy bản mới khi tải lại (snapshot mới).
+
+> Lưu ý: MVCC **không có nghĩa là không khóa**. Hai transaction cùng {{UPDATE}} một dòng vẫn xung đột: transaction thứ hai phải chờ transaction đầu tiên commit/rollback (row lock). MVCC chỉ loại bỏ xung đột **đọc-vs-ghi**; xung đột **ghi-vs-ghi** vẫn cần khóa.
+
+### Lost update: đọc – tính – ghi mà không khoá
+Scenario kinh điển: trừ số dư ví.
+
+~~~sql
+-- Transaction A                                    -- Transaction B
+BEGIN;                                              BEGIN;
+SELECT balance FROM wallet WHERE id = 1;  -- 100    SELECT balance FROM wallet WHERE id = 1;  -- 100
+-- tính: 100 - 20 = 80                               -- tính: 100 - 30 = 70
+UPDATE wallet SET balance = 80 WHERE id = 1;        UPDATE wallet SET balance = 70 WHERE id = 1;
+COMMIT;                                             COMMIT;
+~~~
+
+Kết quả: balance = 70 (transaction B ghi đè A). **Hai lần trừ 20+30=50 nhưng số dư chỉ giảm 30** — đây là **lost update** (mất cập nhật). Nguyên nhân: cả hai đọc giá trị cũ, tính toán độc lập, rồi ghi đè lẫn nhau. {{READ COMMITTED}} (mặc định PostgreSQL) **không ngăn** lost update vì mỗi câu SELECT thấy snapshot mới nhất tại thời điểm chạy.
+
+### Các mức isolation level trên PostgreSQL
+PostgreSQL hỗ trợ ba mức thực tế ({{READ UNCOMMITTED}} bị maps thành {{READ COMMITTED}}):
+
+| Mức | Snapshot lúc nào | Dirty read | Non-repeatable read | Phantom read | Serialization anomaly | Lost update |
+|---|---|---|---|---|---|---|
+| {{READ COMMITTED}} | Mỗi câu lệnh | Không (MVCC) | **Có** | **Có** | **Có** | **Có** |
+| {{REPEATABLE READ}} | Đầu transaction | Không | Không | **Có** (PG dùng snapshot nên ít hơn) | **Có** | **Có** |
+| {{SERIALIZABLE}} | Đầu transaction + predicate lock | Không | Không | Không | **Không (SSI)** | **Không** |
+
+- **Dirty read**: đọc dữ liệu chưa commit của transaction khác — PostgreSQL **không bao giờ cho phép** nhờ MVCC.
+- **Non-repeatable read**: đọc lại cùng một dòng trong một transaction thấy giá trị khác (transaction khác đã commit UPDATE). {{REPEATABLE READ}} ngăn bằng snapshot cố định.
+- **Phantom read**: chạy lại cùng câu {{SELECT ... WHERE ...}} thấy **thêm/bớt dòng** (transaction khác {{INSERT}}/{{DELETE}}). {{REPEATABLE READ}} trên PG dùng snapshot nên cũng ngăn được phần lớn, nhưng chuẩn SQL vẫn coi là có thể xảy ra.
+- **Serialization anomaly** (write skew): hai transaction cùng đọc tập dữ liệu, mỗi bên quyết định hành động dựa trên dữ liệu đó, rồi ghi — kết quả vi phạm ràng buộc mà mỗi transaction đơn lẻ đều đúng. Ví dụ: hai bác sĩ cùng de-ca trực, mỗi người kiểm tra "còn ít nhất một bác sĩ khác trực" (đúng), rồi cả hai cùng nghỉ → không ai trực. {{SERIALIZABLE}} (SSI) phát hiện và abort một bên (lỗi {{40001}}).
+
+> Pitfall thực tế: nhiều dev tin {{REPEATABLE READ}} ngăn lost update — **sai**. Cả hai mức đều **không ngăn lost update** do ứng dụng đọc giá trị tuyệt đối rồi ghi đè. Cách ngăn: **pessimistic lock** ({{SELECT ... FOR UPDATE}}) hoặc **optimistic lock** (cột version).
+
+### Pessimistic locking: SELECT ... FOR UPDATE
+Khóa dòng **ngay khi đọc**, giữ đến khi transaction kết thúc. Transaction khác muốn {{UPDATE}}/{{DELETE}} hoặc cũng {{SELECT ... FOR UPDATE}} dòng đó phải **chờ**.
+
+~~~sql
+BEGIN;
+SELECT balance FROM wallet WHERE id = 1 FOR UPDATE;  -- khóa dòng id=1
+-- bây giờ không transaction nào sửa dòng này được cho tới khi COMMIT/ROLLBACK
+UPDATE wallet SET balance = balance - 20 WHERE id = 1;
+COMMIT;
+~~~
+
+Biến thể hữu ích:
+- {{FOR UPDATE NOWAIT}}: fail ngay (lỗi {{55P03}}) nếu lock không lấy được — dùng cho thao tác "thử khóa, không được thì bỏ".
+- {{FOR UPDATE SKIP LOCKED}}: bỏ qua dòng đang bị lock — dùng cho **queue worker** (lấy việc chưa ai làm).
+- {{FOR SHARE}}: khóa chia sẻ (shared lock), cho phép nhiều người đọc {{FOR SHARE}} cùng lúc, nhưng chặn {{UPDATE}}/{{DELETE}}/{{FOR UPDATE}}.
+
+Khi nào dùng pessimistic lock:
+- Xung đột **thường xuyên** (hot row: số dư tài khoản, tồn kho flash sale).
+- Logic kiểm tra phức tạp, không thể gộp thành một câu {{UPDATE}} nguyên tử.
+- Transaction **ngắn** (vài ms) — giữ lock lâu làm cạn connection pool.
+
+### Optimistic locking: cột version
+Thêm cột {{version}} (int, mặc định 1). Mỗi lần {{UPDATE}} kiểm tra version cũ và tăng version:
+
+~~~sql
+UPDATE wallet
+SET balance = balance - 20, version = version + 1
+WHERE id = 1 AND version = 5;   -- chỉ thành công nếu version vẫn là 5
+~~~
+
+Nếu {{UPDATE}} trả **0 rows affected** → version đã đổi (transaction khác đã sửa) → **conflict** → ứng dụng **retry**: đọc lại balance + version mới, tính toán lại, UPDATE lại.
+
+Khi nào dùng optimistic lock:
+- Xung đột **hiếm** (profile, cấu hình, metadata).
+- Transaction **dài** (có gọi HTTP, chờ user nhập, v.v.) — pessimistic lock giữ connection lâu dễ cạn pool.
+- Muốn tránh deadlock (optimistic lock không giữ lock DB nên không deadlock ở tầng DB).
+
+So sánh nhanh:
+
+| | Pessimistic (FOR UPDATE) | Optimistic (version) |
+|---|---|---|
+| Cơ chế | Khóa dòng khi đọc | Kiểm tra version khi ghi |
+| Xung đột nhiều | Tốt (hàng đợi có trật tự) | Kém (nhiều retry, tải DB tăng) |
+| Xung đột hiếm | Quá bảo thủ, giữ lock vô ích | Tốt (không lock, throughput cao) |
+| Transaction dài | Nguy hiểm (cạn pool, deadlock) | An toàn (không giữ lock) |
+| Deadlock DB | Có thể (thứ tự lock sai) | Không (không giữ lock ghi) |
+| Code phức tạp | Đơn giản (chỉ thêm FOR UPDATE) | Cần vòng retry + idempotency |
+
+> Senior tip: **UPDATE nguyên tử** ({{UPDATE ... SET balance = balance - 20 WHERE id = 1 AND balance >= 20}}) thường tốt hơn cả hai cho bài toán trừ số dư đơn giản: không lock đọc, không version, không retry — DB đảm bảo nguyên tử ở cấp độ hàng. Dùng pessimistic/optimistic khi logic **không gộp được** thành một UPDATE (ví dụ: đọc nhiều bảng, gọi service ngoài, quy tắc nghiệp vụ phức tạp).
+
+### UPDATE có điều kiện WHERE version = ? là nguyên tử vì sao
+Trong SQL, câu {{UPDATE}} đơn lẻ **luôn nguyên tử** (all-or-nothing) đối với các dòng nó ảnh hưởng. Điều kiện {{WHERE version = 5}} được đánh giá **trong engine lưu trữ** cùng lúc với việc ghi dữ liệu mới. Không có "khoảng trống" giữa lúc kiểm tra version và lúc ghi: hoặc dòng khớp version 5 và được cập nhật (version thành 6), hoặc không khớp và không dòng nào bị sửa. Điều này khác hẳn với mẫu "SELECT version, IF version=5 THEN UPDATE" trong ứng dụng — mẫu đó có race condition.
+
+### Cột version trong JPA/Hibernate
+{{@Version}} trên field {{int version}} hoặc {{long version}} (hoặc {{Instant}}/{{Timestamp}}). Hibernate tự thêm {{AND version = ?}} vào {{UPDATE}}/{{DELETE}}. Ném {{OptimisticLockException}} (hoặc {{StaleObjectStateException}}) khi conflict. Cần {{@OptimisticLocking(type = OptimisticLockType.VERSION)}} (mặc định).
+
+~~~java
+@Entity
+class Wallet {
+    @Id Long id;
+    Long balance;
+    @Version int version;   // Hibernate tự quản lý
+}
+~~~
+
+### Deadlock và trật tự khóa
+Deadlock xảy ra khi hai transaction khóa tài nguyên theo thứ tự ngược nhau:
+- T1: lock A, rồi lock B
+- T2: lock B, rồi lock A
+
+PostgreSQL có **deadlock detector** (chạy theo {{deadlock_timeout}}, mặc định 1s). Khi phát hiện chu trình chờ, nó abort một transaction (victim) với lỗi {{40P01: deadlock detected}}. Transaction victim **phải rollback toàn bộ**.
+
+Cách phòng tránh:
+- **Chuẩn hoá thứ tự lock toàn hệ thống**: luôn lock theo {{id}} tăng dần (hoặc một khóa toàn cục nhất quán).
+- Giữ transaction **ngắn nhất có thể**.
+- Với pessimistic lock nhiều dòng: {{SELECT ... FOR UPDATE ORDER BY id}} (PG không đảm bảo thứ tự lock với {{IN}}, nên khóa từng dòng theo thứ tự trong code).
+- Retry transaction bị abort do deadlock ({{40P01}}) hoặc serialization failure ({{40001}}) — tối đa 3 lần, backoff ngẫu nhiên.
+
+### Liên hệ phỏng vấn
+Câu hay gặp: "Hai người cùng trừ tiền một ví, làm sao tránh lost update?", "Phân biệt pessimistic và optimistic locking", "Deadlock DB là gì, xử lý thế nào?". Trả lời senior: (1) chỉ ra lost update do đọc-ghi không nguyên tử, (2) so sánh pessimistic (FOR UPDATE, giữ lock, tốt cho hot row) vs optimistic (version, không lock, tốt cho cold row, cần retry), (3) nêu UPDATE nguyên tử {{WHERE balance >= 20}} là cách đơn giản nhất cho trừ tiền, (4) giải thích deadlock do thứ tự lock ngược, fix bằng chuẩn hoá thứ tự id, (5) nhắc idempotency key cho retry an toàn.`,
+  exercises: [
+    {
+      title: 'Mô phỏng lost update và so sánh cách khắc phục',
+      prompt: `Mô phỏng tình huống lost update và ba cách khắc phục bằng Java thuần (không DB). {{Wallet}} có {{balance}} (int) và {{version}} (int). Hai thread cùng trừ tiền từ một ví: thread A trừ 20, thread B trừ 30. Balance ban đầu 100. Kết quả đúng: 50 (giảm 50). Lost update: kết quả 70 hoặc 80.
+
+Viết class {{WalletSim}} với 4 phương thức (mỗi phương thức chạy một kịch bản, trả về balance cuối):
+- {{lostUpdate()}}: đọc balance, ngủ 1ms, ghi balance mới (không đồng bộ) — **mong đợi lỗi** (balance != 50).
+- {{pessimisticLock()}}: dùng {{synchronized}} trên {{WalletSim}} instance (giả lập SELECT FOR UPDATE) — đọc, ngủ 1ms, ghi — **mong đợi đúng** 50.
+- {{atomicUpdate()}}: dùng {{AtomicInteger}} cho balance, {{addAndGet(-amount)}} — **mong đợi đúng** 50.
+- {{optimisticLock()}}: dùng {{AtomicReference<WalletState>}} (immutable state: balance + version). CAS: đọc state cũ, tạo state mới (balance - amount, version + 1), {{compareAndSet(old, new)}}; thất bại thì retry vòng lặp — **mong đợi đúng** 50.
+
+{{WalletState}} là record:
+~~~java
+record WalletState(int balance, int version) {}
+~~~
+
+Mỗi kịch bản chạy 2 thread song song (thread A trừ 20, thread B trừ 30), join chờ xong, trả balance cuối.`,
+      starter: `import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicReference;
+
+record WalletState(int balance, int version) {}
+
+class WalletSim {
+    private int balance = 100;
+    private int version = 1;
+    private final AtomicInteger atomicBalance = new AtomicInteger(100);
+    private final AtomicReference<WalletState> optimisticState = new AtomicReference<>(new WalletState(100, 1));
+
+    // Kịch bản 1: lost update (không đồng bộ)
+    int lostUpdate() {
+        balance = 100; version = 1;
+        // TODO: chạy 2 thread, mỗi thread đọc balance -> Thread.sleep(1) -> ghi balance - amount
+        throw new UnsupportedOperationException("TODO");
+    }
+
+    // Kịch bản 2: pessimistic lock (synchronized)
+    int pessimisticLock() {
+        balance = 100; version = 1;
+        // TODO: synchronized(this) { đọc balance -> sleep(1) -> ghi balance - amount }
+        throw new UnsupportedOperationException("TODO");
+    }
+
+    // Kịch bản 3: atomic update (AtomicInteger)
+    int atomicUpdate() {
+        atomicBalance.set(100);
+        // TODO: atomicBalance.addAndGet(-amount) cho 2 thread
+        throw new UnsupportedOperationException("TODO");
+    }
+
+    // Kịch bản 4: optimistic lock (AtomicReference + CAS + retry)
+    int optimisticLock() {
+        optimisticState.set(new WalletState(100, 1));
+        // TODO: vòng lặp CAS: đọc state -> tính mới -> compareAndSet, thất bại thì retry
+        throw new UnsupportedOperationException("TODO");
+    }
+}`,
+      tests: `public class Main {
+    static int passed = 0, total = 0;
+    static void check(String name, Runnable r) {
+        total++;
+        try { r.run(); passed++; System.out.println("PASS " + name); }
+        catch (Throwable t) { System.out.println("FAIL " + name + ": " + t); }
+    }
+    static void eq(int expected, int actual, String msg) {
+        if (expected != actual) throw new AssertionError(msg + " expected " + expected + " got " + actual);
+    }
+
+    public static void main(String[] args) throws Exception {
+        WalletSim sim = new WalletSim();
+
+        check("lostUpdate often produces wrong result (not 50)", () -> {
+            int bal = sim.lostUpdate();
+            if (bal == 50) throw new AssertionError("lostUpdate accidentally got 50, run again to see race");
+        });
+
+        check("pessimisticLock always produces 50", () -> {
+            eq(50, sim.pessimisticLock(), "pessimisticLock");
+        });
+
+        check("atomicUpdate always produces 50", () -> {
+            eq(50, sim.atomicUpdate(), "atomicUpdate");
+        });
+
+        check("optimisticLock always produces 50 with CAS retry", () -> {
+            eq(50, sim.optimisticLock(), "optimisticLock");
+        });
+
+        // Chạy nhiều lần để tăng độ tin cậy cho lostUpdate (race condition không 100% tái hiện)
+        final int[] wrong = {0};
+        for (int i = 0; i < 50; i++) {
+            if (sim.lostUpdate() != 50) wrong[0]++;
+        }
+        check("lostUpdate fails in at least some runs over 50 trials", () -> {
+            if (wrong[0] == 0) throw new AssertionError("lostUpdate never failed in 50 runs; race may not manifest on this JVM");
+        });
+
+        System.out.println("RESULT " + passed + "/" + total);
+    }
+}`,
+      reference: `import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicReference;
+
+record WalletState(int balance, int version) {}
+
+class WalletSim {
+    private int balance = 100;
+    private int version = 1;
+    private final AtomicInteger atomicBalance = new AtomicInteger(100);
+    private final AtomicReference<WalletState> optimisticState = new AtomicReference<>(new WalletState(100, 1));
+
+    int lostUpdate() {
+        balance = 100; version = 1;
+        Thread t1 = new Thread(() -> {
+            int b = balance;
+            try { Thread.sleep(1); } catch (InterruptedException ignored) {}
+            balance = b - 20;
+        });
+        Thread t2 = new Thread(() -> {
+            int b = balance;
+            try { Thread.sleep(1); } catch (InterruptedException ignored) {}
+            balance = b - 30;
+        });
+        t1.start(); t2.start();
+        try { t1.join(); t2.join(); } catch (InterruptedException ignored) {}
+        return balance;
+    }
+
+    int pessimisticLock() {
+        balance = 100; version = 1;
+        Thread t1 = new Thread(() -> {
+            synchronized (this) {
+                int b = balance;
+                try { Thread.sleep(1); } catch (InterruptedException ignored) {}
+                balance = b - 20;
+            }
+        });
+        Thread t2 = new Thread(() -> {
+            synchronized (this) {
+                int b = balance;
+                try { Thread.sleep(1); } catch (InterruptedException ignored) {}
+                balance = b - 30;
+            }
+        });
+        t1.start(); t2.start();
+        try { t1.join(); t2.join(); } catch (InterruptedException ignored) {}
+        return balance;
+    }
+
+    int atomicUpdate() {
+        atomicBalance.set(100);
+        Thread t1 = new Thread(() -> atomicBalance.addAndGet(-20));
+        Thread t2 = new Thread(() -> atomicBalance.addAndGet(-30));
+        t1.start(); t2.start();
+        try { t1.join(); t2.join(); } catch (InterruptedException ignored) {}
+        return atomicBalance.get();
+    }
+
+    int optimisticLock() {
+        optimisticState.set(new WalletState(100, 1));
+        class Deduct {
+            long amount;
+            Deduct(long amount) { this.amount = amount; }
+            void run() {
+                while (true) {
+                    WalletState cur = optimisticState.get();
+                    WalletState next = new WalletState((int)(cur.balance() - amount), cur.version() + 1);
+                    if (optimisticState.compareAndSet(cur, next)) return;
+                }
+            }
+        }
+        Deduct d1 = new Deduct(20);
+        Deduct d2 = new Deduct(30);
+        Thread t1 = new Thread(d1::run);
+        Thread t2 = new Thread(d2::run);
+        t1.start(); t2.start();
+        try { t1.join(); t2.join(); } catch (InterruptedException ignored) {}
+        return optimisticState.get().balance();
+    }
+}`,
+      hints: [
+        'lostUpdate: hai thread cùng đọc {{balance}} cục bộ, sleep, rồi ghi đè — thread chạy sau ghi đè thread chạy trước.',
+        'pessimisticLock: {{synchronized(this)}} tạo critical section; thread thứ hai chờ thread đầu release monitor — tương tự SELECT FOR UPDATE giữ row lock.',
+        'atomicUpdate: {{AtomicInteger.addAndGet}} là atomic hardware (CAS) — tương đương UPDATE balance = balance - 20 nguyên tử.',
+        'optimisticLock: {{AtomicReference.compareAndSet}} chỉ thành công nếu state hiện tại vẫn bằng state đã đọc (version khớp). Thất bại thì đọc lại state mới và retry — đây chính là optimistic locking với version column.',
+      ],
+      explain: `### Mapping sang DB
+- **lostUpdate** = ứng dụng đọc balance, tính toán, UPDATE balance = giá_tuyệt_đối (không WHERE version). Hai transaction chạy song song → lost update.
+- **pessimisticLock** = {{SELECT ... FOR UPDATE}} (row lock). Thread chờ lock = transaction chờ row lock. Giữ lock trong critical section = giữ row lock đến COMMIT.
+- **atomicUpdate** = {{UPDATE wallet SET balance = balance - 20 WHERE id = 1}}. Nguyên tử tại engine lưu trữ, không cần lock đọc, không cần version.
+- **optimisticLock** = {{UPDATE ... SET balance = balance - 20, version = version + 1 WHERE id = 1 AND version = 5}}. CAS = kiểm tra version khi ghi. Thất bại = 0 rows affected → retry.
+
+### Lỗi hay gặp
+- **Quên retry trong optimisticLock**: CAS thất bại một lần thì dừng → balance sai. Phải dùng {{while (true)}} retry cho tới khi thành công.
+- **Dùng {{synchronized}} trên method thay vì block**: làm lock cả instance, cặn kẽ hơn cần thiết. Block:
+~~~java
+synchronized(this) {
+    ...
+}
+~~~
+đủ.
+- **Không reset trạng thái giữa các kịch bản**: test chạy tuần tự, nếu không set lại balance/version/state thì kết quả dính nhau.
+- **Thread.sleep trong synchronized**: giữ lock khi sleep (đúng hành vi FOR UPDATE giữ lock khi xử lý nghiệp vụ), nhưng production nên tránh sleep trong transaction.
+
+### Senior tip
+Đừng mặc định dùng pessimistic lock cho mọi thứ. Hãy phân loại: (1) **Logic có gộp thành một UPDATE nguyên tử được không?** → dùng atomic update. (2) **Xung đột nhiều, logic phức tạp?** → pessimistic lock (FOR UPDATE), nhớ chuẩn hoá thứ tự lock. (3) **Xung đột hiếm, transaction dài?** → optimistic lock (version), bắt buộc có retry loop. (4) **Queue/task worker?** → FOR UPDATE SKIP LOCKED. Trong phỏng vấn, nêu được 4 trường hợp này là điểm mạnh.`,
+    },
+  ],
+  check: [
+    {
+      q: 'Lost update xảy ra trong tình huống nào?',
+      options: [
+        'Hai transaction cùng UPDATE cùng một dòng, mỗi bên đọc giá trị cũ, tính toán độc lập, rồi ghi đè lẫn nhau',
+        'Transaction đọc dữ liệu chưa commit của transaction khác',
+        'Transaction đọc lại cùng dòng thấy giá trị khác vì transaction khác đã commit',
+        'Transaction chạy lại SELECT thấy thêm/bớt dòng do INSERT/DELETE của transaction khác',
+      ],
+      answer: 0,
+      explain: `**Phương án 1 đúng**: lost update = đọc giá trị tuyệt đối, tính toán, ghi đè — transaction sau ghi đè transaction trước mà không biết dữ liệu đã đổi. **2** là dirty read (PG không bao giờ cho phép nhờ MVCC). **3** là non-repeatable read. **4** là phantom read.`,
+    },
+    {
+      q: 'READ COMMITTED và REPEATABLE READ trên PostgreSQL: mức nào CHẶN lost update?',
+      options: [
+        'READ COMMITTED',
+        'REPEATABLE READ',
+        'Cả hai đều chặn',
+        'Cả hai đều KHÔNG chặn',
+      ],
+      answer: 3,
+      explain: `**Phương án 4 đúng**: Cả READ COMMITTED lẫn REPEATABLE READ **đều không chặn lost update** vì lost update do ứng dụng đọc giá trị tuyệt đối rồi ghi đè, không phải do snapshot. Cần pessimistic lock (FOR UPDATE), optimistic lock (version), hoặc UPDATE nguyên tử (balance = balance - 20).`,
+    },
+    {
+      q: 'Khi nào nên dùng SELECT ... FOR UPDATE NOWAIT thay vì FOR UPDATE thường?',
+      options: [
+        'Khi muốn chờ lâu nhất có thể để lấy lock',
+        'Khi muốn fail ngay nếu lock không lấy được, thay vì chờ',
+        'Khi muốn bỏ qua dòng đang bị lock và lấy dòng khác',
+        'Khi muốn khóa chia sẻ để nhiều người đọc cùng lúc',
+      ],
+      answer: 1,
+      explain: `**Phương án 2 đúng**: NOWAIT trả lỗi 55P03 ngay lập tức nếu lock bị giữ — phù hợp cho thao tác "thử khóa, không được thì bỏ/hủy". **3** là SKIP LOCKED (dùng cho queue). **4** là FOR SHARE.`,
+    },
+    {
+      q: 'Optimistic locking với cột version: câu UPDATE nào đúng ngữ nghĩa?',
+      options: [
+        'UPDATE t SET val = ?, version = version + 1 WHERE id = ?',
+        'UPDATE t SET val = ?, version = version + 1 WHERE id = ? AND version = ?',
+        'UPDATE t SET val = ?, version = version + 1 WHERE id = ? AND version = version + 1',
+        'UPDATE t SET val = ?, version = version + 1 WHERE id = ? AND version > ?',
+      ],
+      answer: 1,
+      explain: `**Phương án 2 đúng**: WHERE version = ? (giá trị version đã đọc) đảm bảo chỉ cập nhật nếu không ai sửa trong lúc đó. 0 rows affected = conflict. **1** thiếu kiểm tra version → lost update. **3** logic sai (version = version + 1 luôn false). **4** version > ? cho phép ghi đè version mới hơn — vi phạm nguyên tắc "chỉ ghi nếu chính xác version cũ".`,
+    },
+  ],
+  related: ['sql-034', 'sql-035', 'sql-049', 'db-001', 'sql-057'],
+  tags: ['MVCC', 'lost update', 'pessimistic locking', 'optimistic locking', 'SELECT FOR UPDATE', 'version column', 'deadlock', 'isolation level'],
+},
+{
+  id: 'lesson-sql-016',
+  track: 'sql',
+  order: 16,
+  title: 'Bài tập: Mô phỏng optimistic locking đa luồng với version check và CountDownLatch',
+  level: 'senior',
+  minutes: 30,
+  goals: [
+    'Viết mô phỏng optimistic locking thực tế: nhiều thread cùng cập nhật một bản ghi, kiểm tra version bằng CAS',
+    'Dùng CountDownLatch để các thread bắt đầu cùng lúc (tăng xác suất race condition) và chờ tất cả hoàn thành',
+    'Hiểu tại sao test đa luồng cần deterministic setup: fixed thread count, latch, retry loop, assertion cuối',
+  ],
+  body: `### Tại sao cần bài tập này
+Optimistic locking trong DB: {{UPDATE ... WHERE id = ? AND version = ?}}. Trong Java thuần, tương ứng là **Compare-And-Swap (CAS)** trên {{AtomicReference}} hoặc {{AtomicInteger}}: chỉ ghi nếu giá trị hiện tại khớp giá trị đã đọc. Bài tập này cho bạn:
+- Cài đặt vòng **retry CAS** chuẩn (đọc state -> tính mới -> compareAndSet, thất bại thì retry).
+- Dùng **CountDownLatch** để ép nhiều thread vào điểm tranh chấp cùng lúc (reproducible race).
+- Quan sát: thread nào CAS thành công trước "thắng", thread sau nhận state mới và retry — **không ai bị chờ lock**, throughput cao khi xung đột hiếm.
+
+### CountDownLatch: đồng bộ khởi động
+{{CountDownLatch}} cho phép một hoặc nhiều thread **chờ** cho đến khi một bộ đếm về 0.
+- {{new CountDownLatch(N)}}: tạo latch đếm từ {{N}}.
+- {{countDown()}}: giảm bộ đếm 1 (thường worker gọi khi sẵn sàng).
+- {{await()}}: block cho đến khi bộ đếm về 0 (thường controller gọi để chờ tất cả worker sẵn sàng).
+
+Pattern phổ biến: **start latch** (controller đếm số worker, worker {{countDown()}} rồi {{await()}} trên start latch để cùng lúc bùng nổ) + **done latch** (worker {{countDown()}} khi xong, controller {{await()}} để chờ hết).
+
+~~~java
+CountDownLatch startLatch = new CountDownLatch(threads);
+CountDownLatch doneLatch  = new CountDownLatch(threads);
+
+for (int i = 0; i < threads; i++) {
+    new Thread(() -> {
+        startLatch.countDown();     // báo đã sẵn sàng
+        try { startLatch.await(); } // chờ lệnh đi
+        catch (InterruptedException ignored) {}
+        // ... làm việc (CAS retry loop) ...
+        doneLatch.countDown();      // báo xong
+    }).start();
+}
+
+doneLatch.await(); // main chờ tất cả worker xong
+~~~
+
+### Mô hình dữ liệu: WalletState (immutable)
+~~~java
+record WalletState(long balance, long version) {}
+~~~
+— immutable, an toàn cho concurrent access. State mới tạo ra từ state cũ: {{new WalletState(old.balance - amount, old.version + 1)}}.
+
+### CAS retry loop chuẩn
+~~~java
+while (true) {
+    WalletState cur = ref.get();                    // 1. Đọc state hiện tại (snapshot)
+    WalletState next = new WalletState(cur.balance - amount, cur.version + 1); // 2. Tính state mới
+    if (ref.compareAndSet(cur, next)) return;       // 3. CAS: thành công -> thoát; thất bại -> loop lại
+    // 4. Thất bại: thread khác đã cập nhật, cur đã cũ. Loop lại đọc state mới nhất.
+}
+~~~
+
+Đây chính là bản dịch Java của optimistic locking DB:
+- {{ref.get()}} ~ {{SELECT balance, version FROM wallet WHERE id = ?}}
+- Tính {{next}} ~ ứng dụng tính balance mới, version + 1
+- {{compareAndSet}} ~ {{UPDATE ... SET balance = ?, version = ? WHERE id = ? AND version = ?}}
+- Thất bại retry ~ ứng dụng bắt OptimisticLockException, đọc lại, retry
+
+### Test deterministic: vì sao cần CountDownLatch
+Nếu chỉ {{thread.start()}} rồi {{join()}}, các thread có thể chạy lần lượt (thread 1 xong rồi thread 2 mới bắt đầu) — **không phát hiện race**. {{CountDownLatch}} ép tất cả thread **"cắm đầu" ở rào chắn** rồi cùng một lúc phóng đi, tối đa hoá cơ hội CAS thất bại và retry — test **xác định (deterministic)** phát hiện bug nếu logic sai.
+
+### Liên hệ phỏng vấn
+Interviewer hỏi: "Mô phỏng optimistic locking bằng Java", "CountDownLatch dùng làm gì", "Tại sao test concurrent cần latch". Trả lời: (1) CAS loop trên AtomicReference<State>, (2) start latch ép các thread vào critical section cùng lúc để repro race, done latch chờ xong, (3) không có latch thì thread chạy lần lượt, test pass ngẫu nhiên che giấu bug. Nêu được "deterministic concurrency test" là điểm cộng lớn.`,
+  exercises: [
+    {
+      title: 'Optimistic locking đa luồng: CAS retry + CountDownLatch',
+      prompt: `Viết class {{OptimisticWallet}} mô phỏng ví dùng optimistic locking (version check) với nhiều thread cùng rút tiền.
+
+Yêu cầu:
+- State (record):
+~~~java
+record WalletState(long balance, long version) {}
+~~~
+(immutable).
+- Field: {{AtomicReference<WalletState> state}}.
+- {{OptimisticWallet(long initialBalance)}}: khởi tạo state = {{new WalletState(initialBalance, 1)}}.
+- {{boolean withdraw(long amount)}}: một lần rút tiền. Trả {{true}} nếu thành công (balance >= amount), {{false}} nếu **hết tiền** (balance < amount). **Logic**:
+  1. Vòng lặp {{while (true)}}:
+     - {{cur = state.get()}}
+     - Nếu {{cur.balance < amount}} -> trả {{false}} (không retry, vì thiếu tiền là nghiệp vụ, không phải conflict).
+     - {{next = new WalletState(cur.balance - amount, cur.version + 1)}}
+     - {{if (state.compareAndSet(cur, next)) return true;}}
+     - // CAS thất bại: loop lại đọc state mới.
+- {{long getBalance()}}, {{long getVersion()}}: đọc state hiện tại.
+
+Viết class {{ConcurrentTester}} chạy test xác định:
+- Constructor {{ConcurrentTester(int threadCount, long initialBalance, long withdrawAmount)}}.
+- {{void run()}}: tạo {{OptimisticWallet}}, dùng **2 CountDownLatch** (startLatch, doneLatch) để ép {{threadCount}} thread cùng lúc gọi {{withdraw(withdrawAmount)}}. Mỗi thread lưu kết quả {{boolean}} vào mảng {{results[threadIndex]}}. Main {{await()}} doneLatch rồi trả.
+- {{int successCount()}}: số thread trả {{true}}.
+- {{long finalBalance()}}, {{long finalVersion()}}: trạng thái cuối.
+
+**Điều kiện đúng**: Nếu {{initialBalance >= threadCount * withdrawAmount}} thì tất cả thread thành công (successCount = threadCount, finalBalance = initialBalance - threadCount * withdrawAmount, finalVersion = 1 + threadCount). Nếu {{initialBalance < threadCount * withdrawAmount}} thì chỉ một số thread thành công (số tiền cho phép), các thread sau thấy hết tiền và trả false — **không có lost update** (balance không bao giờ âm).`,
+      starter: `import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.atomic.AtomicReference;
+
+record WalletState(long balance, long version) {}
+
+class OptimisticWallet {
+    private final AtomicReference<WalletState> state;
+
+    OptimisticWallet(long initialBalance) {
+        this.state = new AtomicReference<>(new WalletState(initialBalance, 1));
+    }
+
+    boolean withdraw(long amount) {
+        // TODO: vòng lặp CAS retry. Nếu balance < amount -> return false. CAS thành công -> return true. Thất bại -> retry.
+        throw new UnsupportedOperationException("TODO");
+    }
+
+    long getBalance() {
+        return state.get().balance();
+    }
+
+    long getVersion() {
+        return state.get().version();
+    }
+}
+
+class ConcurrentTester {
+    private final int threadCount;
+    private final long initialBalance;
+    private final long withdrawAmount;
+    private final boolean[] results;
+    private OptimisticWallet wallet;
+
+    ConcurrentTester(int threadCount, long initialBalance, long withdrawAmount) {
+        this.threadCount = threadCount;
+        this.initialBalance = initialBalance;
+        this.withdrawAmount = withdrawAmount;
+        this.results = new boolean[threadCount];
+    }
+
+    void run() {
+        wallet = new OptimisticWallet(initialBalance);
+        CountDownLatch startLatch = new CountDownLatch(threadCount);
+        CountDownLatch doneLatch = new CountDownLatch(threadCount);
+
+        for (int i = 0; i < threadCount; i++) {
+            final int idx = i;
+            new Thread(() -> {
+                startLatch.countDown();
+                try { startLatch.await(); }
+                catch (InterruptedException ignored) {}
+                results[idx] = wallet.withdraw(withdrawAmount);
+                doneLatch.countDown();
+            }).start();
+        }
+
+        try { doneLatch.await(); }
+        catch (InterruptedException ignored) {}
+    }
+
+    int successCount() {
+        int c = 0;
+        for (boolean b : results) if (b) c++;
+        return c;
+    }
+
+    long finalBalance() { return wallet.getBalance(); }
+    long finalVersion() { return wallet.getVersion(); }
+}`,
+      tests: `public class Main {
+    static int passed = 0, total = 0;
+    static void check(String name, Runnable r) {
+        total++;
+        try { r.run(); passed++; System.out.println("PASS " + name); }
+        catch (Throwable t) { System.out.println("FAIL " + name + ": " + t); }
+    }
+    static void eq(long expected, long actual, String msg) {
+        if (expected != actual) throw new AssertionError(msg + " expected " + expected + " got " + actual);
+    }
+    static void eq(int expected, int actual, String msg) {
+        if (expected != actual) throw new AssertionError(msg + " expected " + expected + " got " + actual);
+    }
+    static void eq(boolean expected, boolean actual, String msg) {
+        if (expected != actual) throw new AssertionError(msg + " expected " + expected + " got " + actual);
+    }
+
+    public static void main(String[] args) throws Exception {
+        // Test 1: đủ tiền cho 5 thread rút 10 mỗi thread (balance 50)
+        ConcurrentTester t1 = new ConcurrentTester(5, 50, 10);
+        t1.run();
+        check("5 threads, enough balance: all succeed", () -> eq(5, t1.successCount(), "successCount"));
+        check("final balance = 0", () -> eq(0L, t1.finalBalance(), "finalBalance"));
+        check("final version = 6 (1 initial + 5 success)", () -> eq(6L, t1.finalVersion(), "finalVersion"));
+
+        // Test 2: không đủ tiền cho 5 thread rút 10 (balance 35) -> 3 thành công, 2 thất bại do hết tiền
+        ConcurrentTester t2 = new ConcurrentTester(5, 35, 10);
+        t2.run();
+        check("5 threads, balance 35: exactly 3 succeed", () -> eq(3, t2.successCount(), "successCount"));
+        check("final balance = 5 (35 - 3*10)", () -> eq(5L, t2.finalBalance(), "finalBalance"));
+        check("final version = 4 (1 + 3 success)", () -> eq(4L, t2.finalVersion(), "finalVersion"));
+
+        // Test 3: 10 threads, balance 100, withdraw 15 -> 6 succeed (90), 4 fail, balance 10
+        ConcurrentTester t3 = new ConcurrentTester(10, 100, 15);
+        t3.run();
+        check("10 threads, balance 100, withdraw 15: 6 succeed", () -> eq(6, t3.successCount(), "successCount"));
+        check("final balance = 10", () -> eq(10L, t3.finalBalance(), "finalBalance"));
+        check("final version = 7 (1 + 6)", () -> eq(7L, t3.finalVersion(), "finalVersion"));
+
+        // Test 4: single thread sanity
+        OptimisticWallet w = new OptimisticWallet(100);
+        check("single thread withdraw success", () -> {
+            boolean ok = w.withdraw(30);
+            eq(true, ok, "ok");
+            eq(70L, w.getBalance(), "balance");
+            eq(2L, w.getVersion(), "version");
+        });
+        check("single thread withdraw fail when insufficient", () -> {
+            boolean ok = w.withdraw(80); // balance 70
+            eq(false, ok, "ok");
+            eq(70L, w.getBalance(), "balance unchanged");
+            eq(2L, w.getVersion(), "version unchanged");
+        });
+
+        // Test 5: deterministic race - run many times to ensure no lost update (balance never negative)
+        for (int trial = 0; trial < 20; trial++) {
+            ConcurrentTester t = new ConcurrentTester(8, 80, 15); // 5 succeed (75), 3 fail, balance 5
+            t.run();
+            check("trial " + trial + ": balance never negative", () -> {
+                if (t.finalBalance() < 0) throw new AssertionError("balance negative: " + t.finalBalance());
+            });
+            check("trial " + trial + ": version = 1 + successCount", () -> {
+                eq(1L + t.successCount(), t.finalVersion(), "version mismatch");
+            });
+        }
+
+        System.out.println("RESULT " + passed + "/" + total);
+    }
+}`,
+      reference: `import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.atomic.AtomicReference;
+
+record WalletState(long balance, long version) {}
+
+class OptimisticWallet {
+    private final AtomicReference<WalletState> state;
+
+    OptimisticWallet(long initialBalance) {
+        this.state = new AtomicReference<>(new WalletState(initialBalance, 1));
+    }
+
+    boolean withdraw(long amount) {
+        while (true) {
+            WalletState cur = state.get();
+            if (cur.balance() < amount) {
+                return false;                 // hết tiền: nghiệp vụ, không retry
+            }
+            WalletState next = new WalletState(cur.balance() - amount, cur.version() + 1);
+            if (state.compareAndSet(cur, next)) {
+                return true;                  // CAS thành công
+            }
+            // CAS thất bại: thread khác đã cập nhật, loop lại đọc state mới
+        }
+    }
+
+    long getBalance() {
+        return state.get().balance();
+    }
+
+    long getVersion() {
+        return state.get().version();
+    }
+}
+
+class ConcurrentTester {
+    private final int threadCount;
+    private final long initialBalance;
+    private final long withdrawAmount;
+    private final boolean[] results;
+    private OptimisticWallet wallet;
+
+    ConcurrentTester(int threadCount, long initialBalance, long withdrawAmount) {
+        this.threadCount = threadCount;
+        this.initialBalance = initialBalance;
+        this.withdrawAmount = withdrawAmount;
+        this.results = new boolean[threadCount];
+    }
+
+    void run() {
+        wallet = new OptimisticWallet(initialBalance);
+        CountDownLatch startLatch = new CountDownLatch(threadCount);
+        CountDownLatch doneLatch = new CountDownLatch(threadCount);
+
+        for (int i = 0; i < threadCount; i++) {
+            final int idx = i;
+            new Thread(() -> {
+                startLatch.countDown();
+                try { startLatch.await(); }
+                catch (InterruptedException ignored) {}
+                results[idx] = wallet.withdraw(withdrawAmount);
+                doneLatch.countDown();
+            }).start();
+        }
+
+        try { doneLatch.await(); }
+        catch (InterruptedException ignored) {}
+    }
+
+    int successCount() {
+        int c = 0;
+        for (boolean b : results) if (b) c++;
+        return c;
+    }
+
+    long finalBalance() { return wallet.getBalance(); }
+    long finalVersion() { return wallet.getVersion(); }
+}`,
+      hints: [
+        'withdraw: {{while (true)}} loop. {{cur = state.get()}}. Kiểm tra {{cur.balance() < amount}} -> return false. {{next = new WalletState(cur.balance() - amount, cur.version() + 1)}}. {{if (state.compareAndSet(cur, next)) return true;}} // else loop lại.',
+        'ConcurrentTester: thêm field {{private OptimisticWallet wallet;}} để finalBalance/finalVersion truy cập được. Tạo wallet trong run().',
+        'CountDownLatch: {{startLatch = new CountDownLatch(threadCount)}}, {{doneLatch = new CountDownLatch(threadCount)}}. Thread: {{startLatch.countDown()}} -> {{startLatch.await()}} -> làm việc -> {{doneLatch.countDown()}}. Main: {{doneLatch.await()}}.',
+        'Không được dùng {{synchronized}} hay {{Lock}} — mục tiêu là CAS lock-free (optimistic).',
+      ],
+      explain: `### Vì sao CAS loop đúng
+{{compareAndSet(cur, next)}} chỉ thành công nếu **state hiện tại trong AtomicReference vẫn chính xác bằng {{cur}}** (so sánh identity, vì WalletState là record immutable). Nếu thread khác đã CAS thành công giữa lúc ta {{get()}} và lúc {{compareAndSet}}, state trong ref đã là state mới (version cao hơn) -> CAS thất bại -> ta loop lại, đọc state mới nhất, tính toán lại, thử lại. Đảm bảo: **mỗi lần rút tiền thành công tương ứng chính xác một lần tăng version**, không lost update.
+
+### Vai trò CountDownLatch
+- **startLatch**: controller tạo latch với count = threadCount. Mỗi thread {{countDown()}} khi đã khởi động xong, rồi {{await()}} chờ. Khi count về 0, **tất cả thread được giải phóng cùng một lúc** — đây là lúc race condition xảy ra mạnh nhất (tất cả cùng đọc cùng state, cùng CAS, chỉ một thắng).
+- **doneLatch**: thread {{countDown()}} khi xong việc. Main {{await()}} chờ count về 0 -> biết tất cả thread đã kết thúc.
+
+Nếu không có startLatch, thread 1 có thể chạy xong toàn bộ (5 lần withdraw) trước khi thread 2 mới start -> không test được concurrency. Latch biến test thành **deterministic**.
+
+### Lỗi hay gặp
+- **Quên check balance < amount trước CAS**: CAS có thể thành công nhưng balance âm (vi phạm nghiệp vụ). Phải check trước, return false ngay.
+- **Retry khi hết tiền**: nếu balance < amount mà vẫn loop CAS -> deadlock logic (luôn fail vì balance không tăng). Hết tiền là **nghiệp vụ**, không phải conflict -> return false ngay.
+- **Không reset wallet giữa các trial**: test loop 20 lần, nếu wallet không tạo mới mỗi lần thì balance dính từ trial trước.
+- **Dùng {{synchronized}} trong withdraw**: phá vỡ mục tiêu optimistic locking (lock-free). CAS trên AtomicReference đã đủ.
+- **finalBalance/finalVersion truy cập không được wallet**: cần lưu wallet làm field của ConcurrentTester.
+
+### Senior tip
+Trên production DB, optimistic locking thường kèm **retry limit** (tối đa 3-5 lần) và **backoff** (ngủ ngẫu nhiên 10-50ms) tránh thundering herd khi nhiều thread cùng retry. Trong Java thuần, CAS loop thường thành công rất nhanh (microseconds) nên backoff không cần thiết trừ khi contention cực cao. Khi viết retry cho DB, nhớ: **retry toàn bộ transaction** (đọc lại -> tính toán -> ghi), không chỉ câu UPDATE, vì dữ liệu liên quan có thể đã đổi. Và luôn gắn **idempotency key** cho API có side-effect để retry an toàn.`,
+    },
+  ],
+  check: [
+    {
+      q: 'Trong optimistic locking với CAS, khi {{compareAndSet}} thất bại nghĩa là gì?',
+      options: [
+        'Thread hiện tại bị block cho đến khi state thay đổi',
+        'Thread khác đã cập nhật state thành công; state hiện tại không khớp state đã đọc -> phải đọc lại và retry',
+        'State bị hỏng, cần khởi động lại ứng dụng',
+        'Version giảm xuống, logic sai',
+      ],
+      answer: 1,
+      explain: `**Phương án 2 đúng**: CAS thất bại = giá trị trong AtomicReference đã khác so với giá trị đã đọc (cur). Thread khác đã CAS thành công. Phải loop lại: đọc state mới, tính toán lại, CAS lại. **1** sai: CAS không block, nó trả false ngay lập tức. **3,4** không liên quan.`,
+    },
+    {
+      q: 'Tại sao test concurrent cần CountDownLatch (start latch) để ép các thread chạy cùng lúc?',
+      options: [
+        'Để thread chạy lần lượt, dễ debug',
+        'Để tối đa hoá cơ hội race condition, làm test deterministic phát hiện bug',
+        'Để giảm tải CPU khi test',
+        'Để đảm bảo thread main chạy trước các worker',
+      ],
+      answer: 1,
+      explain: `**Phương án 2 đúng**: không có latch, thread có thể chạy lần lượt (thread 1 xong hẳn rồi thread 2 mới bắt đầu) -> race condition không xảy ra -> test pass ngẫu nhiên che giấu bug. Start latch ép tất cả thread "cắm đầu" ở rào chắn rồi cùng một lúc phóng đi, ép race condition xảy ra, test deterministic.`,
+    },
+    {
+      q: 'Khi rút tiền, nếu balance < amount thì withdraw() nên làm gì?',
+      options: [
+        'Vẫn thử CAS cho đến khi thành công',
+        'Trả về false ngay lập tức (không retry), vì đây là lỗi nghiệp vụ "hết tiền", không phải conflict',
+        'Ném exception',
+        'Chờ (wait) cho đến khi có tiền',
+      ],
+      answer: 1,
+      explain: `**Phương án 2 đúng**: hết tiền là điều kiện nghiệp vụ (business rule), không phải race condition. Balance không tự tăng, nên retry mãi cũng không thành công. Phải return false ngay để caller xử lý (thông báo người dùng, ghi log, v.v.).`,
+    },
+    {
+      q: 'Sau khi 5 thread cùng rút 10 từ balance 50 (optimistic locking CAS), final version mong đợi là bao nhiêu?',
+      options: ['5', '6', '1', '10'],
+      answer: 1,
+      explain: `**6 đúng**: version khởi tạo = 1. Mỗi lần withdraw thành công tăng version 1. 5 lần thành công -> version = 1 + 5 = 6.`,
+    },
+  ],
+  related: ['sql-034', 'sql-035', 'sql-049', 'db-001', 'sql-057', 'concurrency-001'],
+  tags: ['optimistic locking', 'CAS', 'CountDownLatch', 'AtomicReference', 'concurrent test', 'version check', 'retry loop'],
+}
 
 );
