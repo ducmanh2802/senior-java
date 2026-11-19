@@ -16644,4 +16644,306 @@ Một job tính tổng giao dịch theo nhóm chạy trên pod heap 1 GB, 8 tri�
   ],
   tags: ['Stream', 'ScrollableResults', 'cursor', 'fetch size', 'PostgreSQL', 'MySQL', 'OutOfMemoryError', 'readOnly']
 },
+{
+  id: 'db-059',
+  topic: 'db',
+  level: 'senior',
+  q: 'Redis có những kiểu dữ liệu nào và dùng cho bài toán thực tế nào: rate limit, leaderboard, distributed lock (và rủi ro của Redlock)?',
+  a: `**Tóm tắt:** Redis là kho dữ liệu trong RAM theo kiểu key-value, hỗ trợ nhiều cấu trúc (string, hash, list, set, sorted set, stream). Rate limit dùng string + INCR + EXPIRE; leaderboard dùng sorted set; distributed lock dùng string + SET NX PX, nhưng Redlock có rủi ro về đồng bộ thời gian và failover.
+
+### Cơ chế từng bước và VÌ SAO
+
+**1. Rate limit với token bucket / fixed window**
+- {{INCR key}} tăng bộ đếm; nếu chưa có thì tạo = 1.
+- {{EXPIRE key 60}} đặt TTL 60 giây.
+- Kết hợp: mỗi request gọi INCR, nếu > limit thì từ chối.
+- Vì sao INCR atomic: Redis đơn luồng, không cần lock.
+
+**2. Leaderboard với Sorted Set**
+- {{ZADD leaderboard score userId}} thêm/sửa điểm.
+- {{ZREVRANGE leaderboard 0 9 WITHSCORES}} lấy top 10.
+- {{ZREVRANK leaderboard userId}} lấy hạng của user.
+- Vì sao sorted set: sắp xếp theo score tự động, O(log N) cho add/rank.
+
+**3. Distributed lock**
+- {{SET lock:key value NX PX 30000}}: NX = chỉ set nếu chưa có, PX = TTL 30 giây.
+- Giải phóng: dùng Lua script kiểm tra value rồi DEL (atomic).
+- Vì sao cần value ngẫu nhiên: tránh process khác giải phóng lock của mình.
+
+**4. Rủi ro Redlock**
+- Redlock: lock trên N node Redis độc lập, cần majority.
+- Rủi ro: clock skew (đồng hồ lệch), GC pause, failover làm mất lock, network partition.
+- Vì sao nhiều người tranh cãi: Martin Kleppmann chỉ ra Redlock không an toàn với clock drift.
+
+### Bảng trade-off
+
+| Bài toán | Cấu trúc | Ưu | Nhược |
+|---|---|---|---|
+| Rate limit | String + INCR | Đơn giản, atomic | Fixed window có edge burst |
+| Leaderboard | Sorted Set | O(log N) rank | Tốn RAM |
+| Lock | String + SET NX | Đơn giản | Cần fencing token |
+| Redlock | Multi-node | Fault tolerant hơn | Phức tạp, rủi ro clock |
+
+### Pitfall production
+- Lock không có fencing token: process A bị GC pause, lock hết hạn, process B lấy lock, A tỉnh dậy ghi đè.
+- TTL quá ngắn: lock hết hạn giữa chừng.
+- TTL quá dài: deadlock khi process chết.
+
+### Ví dụ đời thực
+Hệ thống flash sale 10k request/giây. Rate limit dùng Redis INCR với TTL 1 giây, giới hạn 100 req/user/giây. Leaderboard top 100 sản phẩm bán chạy dùng sorted set, cập nhật mỗi đơn hàng. Distributed lock bảo vệ tồn kho: SET NX PX 5000, fencing token là version trong DB. Một lần Redis master failover, lock bị mất, hai pod cùng trừ tồn kho → oversell 12 đơn. Sửa: dùng fencing token + kiểm tra version khi ghi DB, không chỉ dựa vào lock.
+
+### Trả lời mẫu khi phỏng vấn
+"Redis là kho dữ liệu trong RAM với nhiều cấu trúc. Rate limit tôi dùng INCR + EXPIRE, atomic vì đơn luồng. Leaderboard dùng sorted set với ZADD/ZREVRANGE, O(log N). Distributed lock dùng SET NX PX với value ngẫu nhiên và Lua để giải phóng an toàn. Redlock lock trên nhiều node nhưng có rủi ro clock skew, GC pause, failover. Vì vậy với lock tôi luôn dùng fencing token: lock chỉ là tối ưu hiệu năng, còn correctness dựa vào token/version ở DB. TTL phải cân bằng: quá ngắn thì lock hết giữa chừng, quá dài thì deadlock khi process chết. Production tôi monitor lock contention, TTL expiry, và luôn có fallback khi Redis down."
+
+> Senior tip: lock Redis là mutual exclusion best-effort, không phải correctness primitive. Correctness phải ở DB với fencing token/optimistic locking; Redis chỉ giảm contention.
+`,
+  follow: [
+    'Fencing token là gì và vì sao cần dù đã có distributed lock?',
+    'Redlock có an toàn không? Martin Kleppmann nói gì?',
+    'Khi Redis down, bạn xử lý lock và rate limit thế nào?'
+  ],
+  tags: ['Redis', 'rate limit', 'leaderboard', 'distributed lock', 'Redlock', 'fencing token']
+},
+{
+  id: 'db-060',
+  topic: 'db',
+  level: 'senior',
+  q: 'Cache-aside và write-through khác nhau thế nào? Cache stampede là gì và xử lý ra sao?',
+  a: `**Tóm tắt:** Cache-aside (lazy loading): app đọc cache, miss thì đọc DB rồi ghi cache. Write-through: ghi DB và cache cùng lúc. Cache stampede xảy ra khi nhiều request cùng miss cache và cùng query DB; xử lý bằng single-flight, locking, hoặc probabilistic early expiration.
+
+### Cơ chế từng bước và VÌ SAO
+
+**Cache-aside**
+1. Read cache by key.
+2. Hit → trả về.
+3. Miss → read DB → write cache (SET with TTL) → trả về.
+- Vì sao phổ biến: đơn giản, cache chỉ chứa dữ liệu thực sự được đọc.
+
+**Write-through**
+1. Write DB.
+2. Write cache (đồng bộ).
+3. Read luôn hit.
+- Vì sao dùng: dữ liệu đọc nhiều, cần consistency cao.
+
+**Cache stampede (thundering herd)**
+- Khi một key hot hết TTL, hàng trăm request cùng miss → cùng query DB → DB quá tải.
+- Vì sao xảy ra: TTL đồng thời hết cho nhiều instance.
+
+**Xử lý**
+- **Single-flight / mutex**: chỉ một request query DB, các request khác chờ.
+- **Probabilistic early expiration**: làm mới cache trước khi hết TTL với xác suất tăng dần.
+- **Lock per key**: Redis SET NX với TTL ngắn để lock.
+
+### Bảng trade-off
+
+| Pattern | Consistency | Latency write | Complexity |
+|---|---|---|---|
+| Cache-aside | Eventual | Thấp | Thấp |
+| Write-through | Mạnh hơn | Cao (đồng bộ) | Trung bình |
+| Write-behind | Eventual | Thấp | Cao (rủi ro mất dữ liệu) |
+
+### Pitfall production
+- Cache-aside + update DB mà quên invalidate cache → stale data.
+- Write-through nếu cache down thì write fail → cần fallback.
+- Stampede với key hot: DB CPU spike 100%.
+
+### Ví dụ đời thực
+Trang sản phẩm hot 5000 req/s, cache TTL 60s. Khi hết TTL, 5000 request cùng query DB → DB CPU 100%, latency tăng từ 20ms lên 2s. Sửa: dùng single-flight với Caffeine (loading cache) hoặc Redis lock per key; chỉ một request query DB, các request khác chờ 50ms rồi read cache. Kết quả: DB CPU xuống 5%, latency ổn định 25ms. Thêm probabilistic early expiration để refresh trước khi hết TTL, tránh spike.
+
+### Trả lời mẫu khi phỏng vấn
+"Cache-aside là lazy: miss thì đọc DB rồi ghi cache, đơn giản và phổ biến. Write-through ghi DB và cache cùng lúc, consistency tốt hơn nhưng write chậm hơn. Cache stampede xảy ra khi key hot hết TTL và nhiều request cùng miss, cùng query DB. Tôi xử lý bằng single-flight: chỉ một request query DB, các request khác chờ rồi đọc cache. Hoặc dùng probabilistic early expiration để refresh trước TTL. Production tôi cũng invalidate cache khi update DB, và có fallback khi cache down. Quan trọng là monitor cache hit rate và DB load khi TTL expire."
+
+> Senior tip: cache stampede không phải bug code mà là bug timing. Monitor cache expiry events và DB load spikes để phát hiện sớm.
+`,
+  follow: [
+    'Làm sao invalidate cache đúng khi update dữ liệu?',
+    'Write-behind (write-back) khác write-through thế nào?',
+    'Khi cache down, bạn fallback thế nào?'
+  ],
+  tags: ['cache-aside', 'write-through', 'cache stampede', 'single-flight', 'TTL']
+},
+{
+  id: 'db-061',
+  topic: 'db',
+  level: 'lead',
+  q: 'Khi nào nên dùng MongoDB thay vì RDBMS? Index, document model và transaction giới hạn ra sao?',
+  a: `**Tóm tắt:** MongoDB phù hợp dữ liệu document linh hoạt, schema thay đổi thường xuyên, read/write lớn và horizontal scale. RDBMS phù hợp dữ liệu có quan hệ chặt, transaction ACID phức tạp. MongoDB có transaction multi-document nhưng giới hạn (single replica set/shard, hiệu năng thấp hơn). Index và aggregation pipeline là điểm mạnh.
+
+### Cơ chế từng bước và VÌ SAO
+
+**Document model**
+- Dữ liệu lưu dạng BSON (JSON-like), lồng nhau.
+- Schema linh hoạt: mỗi document có thể khác field.
+- Vì sao: phù hợp dữ liệu phi cấu trúc, evolving schema.
+
+**Index**
+- Single field, compound, multikey (array), text, geospatial.
+- {{db.collection.createIndex}} (field: 1).
+- Vì sao: query nhanh nếu index đúng; không có index thì collection scan.
+
+**Transaction**
+- Multi-document ACID từ 4.0 (replica set), 4.2 (sharded).
+- Giới hạn: hiệu năng thấp hơn single-document; không cross-shard hiệu quả; lock ở document level.
+- Vì sao: MongoDB thiết kế cho single-document atomic; multi-doc transaction là thêm vào sau.
+
+**Khi nào dùng MongoDB**
+- Schema linh hoạt, thay đổi thường.
+- Dữ liệu lồng nhau, đọc cùng nhau.
+- Scale horizontal lớn.
+- Không cần join phức tạp.
+
+**Khi nào dùng RDBMS**
+- Quan hệ chặt, nhiều join.
+- Transaction phức tạp nhiều bảng.
+- Báo cáo/analytics phức tạp.
+
+### Bảng trade-off
+
+| Tiêu chí | MongoDB | RDBMS |
+|---|---|---|
+| Schema | Linh hoạt | Cứng |
+| Join | $lookup (chậm) | JOIN native |
+| Transaction | Multi-doc giới hạn | ACID mạnh |
+| Scale | Horizontal sharding | Vertical + read replica |
+| Query | Aggregation pipeline | SQL |
+
+### Pitfall production
+- Lạm dụng $lookup: hiệu năng kém.
+- Không index: collection scan trên triệu document.
+- Schema quá linh hoạt: dữ liệu không nhất quán.
+
+### Ví dụ đời thực
+Hệ thống catalog sản phẩm với 10 triệu SKU, thuộc tính khác nhau theo ngành hàng (điện thoại có RAM, quần áo có size). Dùng MongoDB: mỗi document là một sản phẩm với attributes lồng nhau, index trên category + price. Query filter theo category, price range, tags dùng compound index. Transaction chỉ cần cho cập nhật tồn kho trong một document (atomic). Báo cáo doanh thu chuyển sang PostgreSQL với ETL. Một lần team dùng $lookup để join orders với products → latency 2s; sửa: denormalize product name vào order document.
+
+### Trả lời mẫu khi phỏng vấn
+"MongoDB phù hợp khi schema linh hoạt, dữ liệu lồng nhau, và cần scale horizontal. Document model cho phép mỗi bản ghi khác field, index compound/multikey giúp query nhanh. Transaction multi-document có từ 4.0 nhưng hiệu năng thấp hơn single-document và không cross-shard hiệu quả, nên tôi chỉ dùng cho cập nhật nhiều document liên quan trong cùng replica set. RDBMS vẫn tốt hơn cho quan hệ chặt, join phức tạp, và transaction ACID mạnh. Production tôi thường hybrid: MongoDB cho catalog/event, PostgreSQL cho transactional data, và ETL sang warehouse cho analytics."
+
+> Senior tip: MongoDB không phải "SQL không cần schema" — schema vẫn tồn tại ở application layer. Thiếu validation ở app sẽ dẫn đến dữ liệu bẩn khó sửa sau.
+`,
+  follow: [
+    'MongoDB sharding hoạt động thế nào và chọn shard key ra sao?',
+    'Aggregation pipeline khác SQL GROUP BY thế nào?',
+    'Khi nào dùng Elasticsearch thay vì MongoDB?'
+  ],
+  tags: ['MongoDB', 'document', 'index', 'transaction', 'sharding', 'schema']
+},
+{
+  id: 'db-062',
+  topic: 'db',
+  level: 'senior',
+  q: 'Eviction policy và TTL trong Redis trên production: chọn thế nào và monitor ra sao?',
+  a: `**Tóm tắt:** Redis eviction policy xác định cách xoá key khi đầy RAM: noeviction (lỗi), allkeys-lru, volatile-lru, allkeys-lfu, volatile-ttl. TTL đặt thời gian tự hết hạn. Production cần chọn policy phù hợp use case, set maxmemory, và monitor eviction rate, memory fragmentation, key count.
+
+### Cơ chế từng bước và VÌ SAO
+
+**Eviction policy**
+- {{noeviction}}: không xoá, trả lỗi khi đầy → phù hợp cache bắt buộc không mất.
+- {{allkeys-lru}}: xoá key ít dùng gần đây nhất → cache tổng quát.
+- {{volatile-lru}}: chỉ xoá key có TTL → cache + dữ liệu bền.
+- {{allkeys-lfu}}: xoá key ít dùng nhất → workload có hot key rõ.
+- {{volatile-ttl}}: xoá key sắp hết TTL → ưu tiên dữ liệu mới.
+
+**TTL**
+- {{EXPIRE key seconds}} hoặc {{SET key value EX seconds}}.
+- Vì sao TTL: tránh RAM đầy, tự dọn dữ liệu cũ.
+
+**maxmemory**
+- {{maxmemory 2gb}}, {{maxmemory-policy allkeys-lru}}.
+- Vì sao: Redis không tự giới hạn RAM, OS sẽ OOM kill.
+
+### Bảng trade-off
+
+| Policy | Khi nào dùng | Rủi ro |
+|---|---|---|
+| noeviction | Dữ liệu không được mất | Write fail khi đầy |
+| allkeys-lru | Cache tổng quát | Mất dữ liệu không TTL |
+| volatile-lru | Mix cache + bền | Key không TTL không bị xoá → đầy |
+| allkeys-lfu | Hot key rõ | Overhead tính frequency |
+| volatile-ttl | Ưu tiên mới | Có thể xoá key còn dùng |
+
+### Pitfall production
+- Dùng noeviction cho cache → OOM.
+- TTL quá dài → RAM đầy.
+- Fragmentation cao → RAM thực tế > dữ liệu.
+- Eviction rate cao → cache hit rate thấp.
+
+### Ví dụ đời thực
+Redis cluster 8GB cho cache session + product catalog. Ban đầu noeviction → khi đầy RAM, write fail, session mất, user bị logout. Sửa: maxmemory 6GB, policy allkeys-lru, TTL session 30 phút, product 1 giờ. Monitor: {{INFO memory}} → used_memory_rss vs used_memory, {{INFO stats}} → evicted_keys. Alert khi evicted_keys > 1000/min hoặc memory fragmentation > 1.5. Sau tuning, eviction rate < 10/min, hit rate 95%.
+
+### Trả lời mẫu khi phỏng vấn
+"Eviction policy chọn theo use case: cache tổng quát dùng allkeys-lru, mix cache và dữ liệu bền dùng volatile-lru, không được mất dùng noeviction nhưng phải set maxmemory hợp lý. TTL đặt theo tần suất thay đổi dữ liệu. Production tôi luôn set maxmemory và monitor evicted_keys, memory fragmentation, key count. Eviction rate cao là dấu hiệu cache quá nhỏ hoặc TTL sai. Fragmentation cao thì cần restart hoặc điều chỉnh allocator. Quan trọng: Redis không tự giới hạn RAM, nếu không set maxmemory thì OS sẽ kill process."
+
+> Senior tip: eviction rate là metric quan trọng nhất của cache. Nếu eviction rate cao mà hit rate thấp, cache đang làm việc vô ích — tăng RAM hoặc giảm TTL.
+`,
+  follow: [
+    'Memory fragmentation trong Redis là gì và xử lý thế nào?',
+    'Làm sao biết cache hit rate và eviction rate?',
+    'Khi nào nên dùng Redis Cluster vs Sentinel?'
+  ],
+  tags: ['Redis', 'eviction', 'TTL', 'maxmemory', 'LRU', 'LFU', 'fragmentation']
+},
+{
+  id: 'db-063',
+  topic: 'db',
+  level: 'lead',
+  q: 'Redis Cluster và Redis Sentinel khác nhau thế nào? Khi nào chọn cái nào và failover hoạt động ra sao?',
+  a: `**Tóm tắt:** Sentinel cung cấp high availability cho một master (failover tự động) nhưng không scale write. Cluster sharding dữ liệu across nhiều master, scale write và read, failover per shard. Chọn Sentinel cho dữ liệu nhỏ cần HA; Cluster cho dữ liệu lớn cần scale.
+
+### Cơ chế từng bước và VÌ SAO
+
+**Sentinel**
+- 3+ Sentinel node giám sát master.
+- Khi master down, Sentinel bầu leader và promote replica → master mới.
+- Client reconnect qua Sentinel.
+- Vì sao: HA đơn giản, không sharding.
+
+**Cluster**
+- Dữ liệu chia thành 16384 hash slot, phân phối cho N master.
+- Mỗi master có replica.
+- Failover per master: replica promote.
+- Client route theo slot.
+- Vì sao: scale write/read, HA per shard.
+
+**Failover Sentinel**
+1. Sentinel phát hiện master down (quorum).
+2. Bầu leader Sentinel.
+3. Promote replica tốt nhất.
+4. Cập nhật config, client redirect.
+
+**Failover Cluster**
+1. Node fail, cluster mark fail.
+2. Replica promote (nếu có).
+3. Slot ownership chuyển.
+
+### Bảng trade-off
+
+| Tiêu chí | Sentinel | Cluster |
+|---|---|---|
+| Scale write | Không | Có |
+| Scale read | Replica | Shard + replica |
+| Complexity | Thấp | Cao |
+| Multi-key ops | OK | Chỉ cùng slot |
+| Dữ liệu lớn | Không | Có |
+
+### Pitfall production
+- Cluster: multi-key transaction chỉ cùng slot → cần hash tag.
+- Sentinel: master vẫn single point write → bottleneck.
+- Failover làm mất dữ liệu chưa replicate (async replication).
+- Client library phải hỗ trợ cluster mode.
+
+### Ví dụ đời thực
+Hệ thống cache 50GB, 100k ops/s. Sentinel với một master 50GB → RAM một node lớn, write bottleneck. Chuyển sang Cluster 6 master × 8GB, mỗi master có 1 replica → scale write 6×, failover per shard. Một lần master shard-3 down, replica promote trong 2s, client retry → không mất request. Nhưng multi-key MGET across slot cần hash tag user:{123}:profile để cùng slot. Monitoring: {{CLUSTER INFO}}, {{CLUSTER NODES}}, per-node memory.
+
+### Trả lời mẫu khi phỏng vấn
+"Sentinel cho HA đơn giản với một master, phù hợp dữ liệu nhỏ. Cluster sharding across nhiều master, scale write và read, phù hợp dữ liệu lớn. Failover Sentinel: quorum phát hiện, bầu leader, promote replica. Failover Cluster: per-master promote. Production tôi chọn Cluster khi data > RAM một node hoặc write > 50k/s. Lưu ý Cluster multi-key chỉ cùng slot, cần hash tag. Replication async nên failover có thể mất dữ liệu chưa sync. Client library phải cluster-aware."
+
+> Senior tip: đừng chọn Cluster chỉ vì "scale" nếu dữ liệu nhỏ — complexity của cluster (resharding, slot migration) không đáng. Sentinel + replica thường đủ cho 90% use case.
+`,
+  follow: [
+    'Hash tag trong Redis Cluster là gì và dùng khi nào?',
+    'Resharding trong Cluster hoạt động thế nào?',
+    'Khi nào nên dùng Redis Sentinel thay vì Cluster?'
+  ],
+  tags: ['Redis Cluster', 'Sentinel', 'failover', 'sharding', 'high availability']
+},
 );
