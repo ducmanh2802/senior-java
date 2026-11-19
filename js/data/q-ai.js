@@ -6763,49 +6763,49 @@ Ung dung chat bot noi bo tu 500 len 5.000 nguoi duoc moi ngay (tang gap muoi lan
   id: 'ai-102',
   topic: 'ai',
   level: 'lead',
-  q: 'Luat yeu cau luu nhat ky prompt/phan hoi theo quy dinh va xoa du lieu nguoi duoc khi ho yeu cau. Lam sao thiet ke luu log prompt, thoi gian luu giu, va xoa theo yeu cau trong he thong dung LLM (bao cung vector store va cache)?',
-  a: `**Tóm tắt:** Tuan thu du lieu trong he thong LLM nghia la biet chinh xac du lieu nguoi duoc duoc luu o dau (prompt, cau tra loi, vector, cache, nhat ky), bao luong duoc luu va cach xoa hoan toan khi nguoi duoc yeu cau (quyen duoc quet). Vi du lieu nguoi duoc co the chay vao nhieu noi, can ban do luu tru va quy trinh xoa co the kiem chung.
+  q: 'Luật yêu cầu lưu nhật ký prompt/phản hồi theo quy định và xoá dữ liệu người dùng khi họ yêu cầu. Làm sao thiết kế lưu log prompt, thời gian lưu giữ, và xoá theo yêu cầu trong hệ thống dùng LLM (bao gồm cả vector store và cache)?',
+  a: `**Tóm tắt:** Tuân thủ dữ liệu trong hệ thống LLM nghĩa là biết chính xác dữ liệu người dùng được lưu ở đâu (prompt, câu trả lời, vector, cache, nhật ký), bao lâu được lưu và cách xoá hoàn toàn khi người dùng yêu cầu (quyền được quên). Vì dữ liệu người dùng có thể chảy vào nhiều nơi, cần bản đồ lưu trữ và quy trình xoá có thể kiểm chứng.
 
-### Luu nhat ky prompt va cau tra loi
-- **Cái gì**: luu lai cau hoi cua nguoi duoc, cau tra loi cua model, ma phien ban model/prompt, thoi gian va ma tenant de kiem tra sau nay.
-- **Vì sao can**: phuc vu dieu tra su co, kiem tra quy dinh va chung minh he thong hoat dong dung. Nhung log cung chua du lieu nhan cam, can bao ve.
-- **Hoat dong the nao**: moi yeu cau LLM ghi mot ban ghi nhat ky co ma truy vet (trace ID). Truoc khi ghi, che du lieu nhan dien ca nhan (PII) nhu email, so dien thoai, so tai khoan bang placeholder hoac ma hoa. Gioi han thoi gian luu (retention), vi du 30-90 ngay, sau do xoa tu dong.
-- Khong luu khoa API, ma bao mat hoac toan bo tai lieu mat vao log.
+### Lưu nhật ký prompt và câu trả lời
+- **Cái gì**: lưu lại câu hỏi của người dùng, câu trả lời của model, mã phiên bản model/prompt, thời gian và mã tenant để kiểm tra sau này.
+- **Vì sao cần**: phục vụ điều tra sự cố, kiểm tra quy định và chứng minh hệ thống hoạt động đúng. Nhưng log cũng chứa dữ liệu nhạy cảm, cần bảo vệ.
+- **Hoạt động thế nào**: mỗi yêu cầu LLM ghi một bản ghi nhật ký có mã truy vết (trace ID). Trước khi ghi, che dữ liệu nhận diện cá nhân (PII) như email, số điện thoại, số tài khoản bằng placeholder hoặc mã hoá. Giới hạn thời gian lưu (retention), ví dụ 30–90 ngày, sau đó xoá tự động.
+- Không lưu khoá API, mã bảo mật hoặc toàn bộ tài liệu mật vào log.
 
-### Xoa theo yeu cau (quyen duoc quet)
-- **Cái gì**: khi nguoi duoc yeu cau xoa du lieu cua minh, he thong phai xoa toan bo ban sao lien quan: prompt va cau tra loi trong log, doan tai lieu cua nguoi duoc trong vector store (neu co), ket qua trong cache, va sao luu neu co the.
-- **Vì sao can**: phap luat (vi du GDPR) va nien tin nguoi duoc. Xoa chi trong ung dung chinh ma con de lai trong vector store hoac cache la vi pham.
-- **Hoat dong the nao**: moi ban du lieu gan ma nguoi duoc (user_id) va ma khach hang (tenant_id). Nhan yeu cau xoa -> tim moi noi luu ma do -> xoa hoac thay bang ma khong the lien ket lai -> ghi nhan trong nhat ky kiem tra (audit log).
+### Xoá theo yêu cầu (quyền được quên)
+- **Cái gì**: khi người dùng yêu cầu xoá dữ liệu của mình, hệ thống phải xoá toàn bộ bản sao liên quan: prompt và câu trả lời trong log, đoạn tài liệu của người dùng trong vector store (nếu có), kết quả trong cache, và sao lưu nếu có thể.
+- **Vì sao cần**: pháp luật (ví dụ GDPR) và niềm tin người dùng. Xoá chỉ trong ứng dụng chính mà còn để lại trong vector store hay cache là vi phạm.
+- **Hoạt động thế nào**: mỗi bản dữ liệu gán mã người dùng (user_id) và mã khách hàng (tenant_id). Nhận yêu cầu xoá -> tìm mọi nơi lưu mã đó -> xoá hoặc thay bằng mã không thể liên kết lại -> ghi nhận trong nhật ký kiểm tra (audit log).
 
-### Vector store va cache
-- Doan tai lieu trong vector store co the chua noi dung cua nguoi duoc (vi du tai lieu ho upload de hoi). Khi xoa nguoi duoc, xoa toan bo doan co ma user_id/tenant_id. Mot so vector store khong ho tro xoa tung doan nhanh; can lap lich rebuild chi muc khong chua doan do.
-- Cache luu cau tra loi theo ma tenant va cau hoi; khi xoa, xoa muc cache lien quan hoac dat thoi gian het han ngan (TTL) de tu mat.
+### Vector store và cache
+- Đoạn tài liệu trong vector store có thể chứa nội dung của người dùng (ví dụ tài liệu họ upload để hỏi). Khi xoá người dùng, xoá toàn bộ đoạn có mã user_id/tenant_id. Một số vector store không hỗ trợ xoá từng đoạn nhanh; cần lập lịch rebuild chỉ mục không chứa đoạn đó.
+- Cache lưu câu trả lời theo mã tenant và câu hỏi; khi xoá, xoá mục cache liên quan hoặc đặt thời gian hết hạn ngắn (TTL) để tự mất.
 
-### Ban do luu tru va kiem tra
-- Liet ke moi noi du lieu nguoi duoc co the di den: ung dung chinh, log LLM, vector store, cache, sao luu, he thong phan tich.
-- Moi noi ghi ro thoi gian luu giu va cach xoa. Kiem tra dinh ky de khong co "khu du lieu hoang" bi quen.
-- Nhat ky kiem tra ghi ai yeu cau xoa, khi nao va ket qua, nhung khong luu noi dung nhan cam cua du lieu bi xoa.
+### Bản đồ lưu trữ và kiểm tra
+- Liệt kê mọi nơi dữ liệu người dùng có thể đi đến: ứng dụng chính, log LLM, vector store, cache, sao lưu, hệ thống phân tích.
+- Mọi nơi ghi rõ thời gian lưu giữ và cách xoá. Kiểm tra định kỳ để không có "khu dữ liệu hoang" bị quên.
+- Nhật ký kiểm tra ghi ai yêu cầu xoá, khi nào và kết quả, nhưng không lưu nội dung nhạy cảm của dữ liệu bị xoá.
 
-### Loi hay gap
-- Chi xoa trong co so du lieu chinh, quen log LLM, vector store va cache.
-- Luu toan bo prompt khong che PII: log tro thanh noi ro rui du lieu.
-- Khong co thoi gian luu giu: du lieu bi giu ma ma.
-- Xoa yeu cau nhung khong kiem chung: khong biet da xoa het chua.
-- Dung ma nguoi duoc lam khoa cache ma khong xoa khi tai khoan bi xoa.
+### Lỗi hay gặp
+- Chỉ xoá trong cơ sở dữ liệu chính, quên log LLM, vector store và cache.
+- Lưu toàn bộ prompt không che PII: log thành nơi rò rỉ dữ liệu.
+- Không có thời gian lưu giữ: dữ liệu bị giữ mãi mãi.
+- Xoá yêu cầu nhưng không kiểm chứng: không biết đã xoá hết chưa.
+- Dùng mã người dùng làm khoá cache mà không xoá khi tài khoản bị xoá.
 
-### Vi du doi thuc
-Ung dung tro luong cho 20.000 nhan vien, moi nguoi trung binh 50 cuoc hoi thoai moi thang. Phap luat yeu cau luu nhat ky LLM 90 ngay va xoa toan bo du lieu nhan vien khi ho nghi viec. Doi thiet lap: log prompt che PII, giu 90 ngay roi xoa tu dong; moi doan vector va muc cache gan ma nhan vien. Khi mot nhan vien nghi viec, he thong xoa log, doan vector va cache cua ma do trong vòng 24 giờ và gửi báo cáo kiểm tra. Sau 6 thang, co 120 yeu cau xoa va tat ca duoc hoan thanh trong thoi han, khong con du lieu cua nhan vien nghi viec trong he thong LLM. (So lieu minh hoa.)
+### Ví dụ đời thực
+Ứng dụng trợ lực cho 20.000 nhân viên, mỗi người trung bình 50 cuộc hội thoại mỗi tháng. Pháp luật yêu cầu lưu nhật ký LLM 90 ngày và xoá toàn bộ dữ liệu nhân viên khi họ nghỉ việc. Đối thiết lập: log prompt che PII, giữ 90 ngày rồi xoá tự động; mỗi đoạn vector và mục cache gán mã nhân viên. Khi một nhân viên nghỉ việc, hệ thống xoá log, đoạn vector và cache của mã đó trong vòng 24 giờ và gửi báo cáo kiểm tra. Sau 6 tháng, có 120 yêu cầu xoá và tất cả được hoàn thành trong thời hạn, không còn dữ liệu của nhân viên nghỉ việc trong hệ thống LLM. (Số liệu minh hoạ.)
 
 ### Trả lời mẫu khi phỏng vấn
-"Em khuyen thiet ke ban do luu tru ngay tu dau dau: biet du lieu nguoi duoc di den ung dung chinh, log LLM, vector store, cache va sao luu o dau. Luu nhat ky prompt va cau tra loi nhung phai che du lieu nhan dien ca nhan truoc khi ghi, va chi giu trong thoi gian quy dinh, ví dụ chín mươi ngày, roi xoa tu dong. Khi nguoi duoc yeu cau xoa, tim moi noi co ma nguoi duoc, xoa hoac thay bang ma khong lien ket lai, va ghi vao nhat ky kiem tra. Vector store va cache khong duoc quen, neu khong quyen duoc quet chi la nua cuoc. Trong vi du thuc them, he thong xu ly mot tram hai muoi yeu cau xoa trong 6 thang, tất cả hoàn thành dưới hai mươi bốn giờ."
+"Em khuyên thiết kế bản đồ lưu trữ ngay từ đầu đầu: biết dữ liệu người dùng đi đến ứng dụng chính, log LLM, vector store, cache và sao lưu ở đâu. Lưu nhật ký prompt và câu trả lời nhưng phải che dữ liệu nhận diện cá nhân trước khi ghi, và chỉ giữ trong thời gian quy định, ví dụ chín mươi ngày, rồi xoá tự động. Khi người dùng yêu cầu xoá, tìm mọi nơi có mã người dùng, xoá hoặc thay bằng mã không liên kết lại, và ghi vào nhật ký kiểm tra. Vector store và cache không được quên, nếu không quyền được quên chỉ là nửa cuộc. Trong ví dụ thực tiễn, hệ thống xử lý một trăm hai mươi yêu cầu xoá trong 6 tháng, tất cả hoàn thành dưới hai mươi bốn giờ."
 
-> Senior tip: Quyen duoc quet khong the kiem chung sau khi he thong chay bang tay moi lan. Hay thiet lap quy trinh xoa tu dong co ma nguoi duoc tren moi lop luu tru va kiem thu dinh ky bang yeu cau xoa gia.
+> Senior tip: Quyền được quên không thể kiểm chứng sau khi hệ thống chạy bằng tay mỗi lần. Hãy thiết lập quy trình xoá tự động có mã người dùng trên mọi lớp lưu trữ và kiểm thử định kỳ bằng yêu cầu xoá giả.
 
 `,
   follow: [
-    'Du lieu nguoi duoc co the di den noi nao trong he thong LLM, va moi noi xoa ra sao?',
-    'Ban thiet lap thoi gian luu giu (retention) cho log prompt bao nhieu ngay, va xoa tu dong nhu the nao?',
-    'Ban kiem chung da xoa het du lieu cua mot nguoi duoc sau khi ho yeu cau ra sao?'
+    'Dữ liệu người dùng có thể đi đến nơi nào trong hệ thống LLM, và mỗi nơi xoá ra sao?',
+    'Bạn thiết lập thời gian lưu giữ (retention) cho log prompt bao nhiêu ngày, và xoá tự động như thế nào?',
+    'Bạn kiểm chứng đã xoá hết dữ liệu của một người dùng sau khi họ yêu cầu ra sao?'
   ],
   tags: ['data compliance', 'privacy', 'GDPR', 'retention', 'deletion']
 },
