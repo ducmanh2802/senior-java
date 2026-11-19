@@ -4199,7 +4199,7 @@ Lưu ý: reference solution dùng index trong loop để gán {{"ERR-" + i}} khi
     'Biet {{volatile}} dam bao gi (visibility, thu tu) va khong dam bao gi (tinh nguyen tu cua {{count++}})',
     'Viet dung co dung luong va cong bao ket qua an toan qua bien volatile',
   ],
-  body: `### Tom tat
+  body: `### Tóm tắt
 Java Memory Model (JMM) la "hop dong" giua chuong trinh Java va phan cung/JIT: no quy dinh khi nao mot luong duoc phep thay gia tri ma luong khac vua ghi. Mac dinh, ghi cua luong A **khong** tu dong hien len ngay cho luong B — luong B co the thay gia tri cu, thap chi khong bao thoi thay thay doi. {{volatile}} tao quan he **happens-before** giua lan ghi va lan doc sau do tren cung bien, giup luong B chac chan thay gia tri moi nhat. Bai nay giai thich tu co ban: cache cua CPU, tai sao vong lap co the bi hoist thanh vo han, cac quy tac happens-before, va volatile dam bao / khong dam bao gi.
 
 ### Vi sao luong B co the khong thay ghi cua luong A
@@ -4227,7 +4227,9 @@ Java khong bat ban hieu tung loai CPU. Thay vao do, JMM dua ra hop dong: neu hai
 | Monitor lock | {{unlock}} mot monitor happens-before moi {{lock}} sau do tren **cung** monitor |
 | Volatile write/read | Ghi bien volatile happens-before moi lan doc sau do cua **cung** bien do |
 | Thread start | {{t.start()}} happens-before moi lenh trong luong {{t}} |
-| Thread join | Moi lenh trong {{t}} happens-before {{t.join()}} tra ve |
+| Thread join | Moi lenh trong {{t}} happens-before {{t.join()}} tra ve (hoac {{isAlive()}} tra ve false) |
+| Thread interrupt | {{t.interrupt()}} happens-before luc {{t}} phat hien bi interrupt |
+| Final field | Ghi field {{final}} trong constructor duoc thay dung boi luong nao nhan reference sau khi constructor xong (neu khong de lo {{this}}) |
 | Transitivity | A hb B va B hb C thi A hb C |
 
 Vi du "piggyback" tren volatile — bien {{data}} thong duoc bao ve nhi bien cong {{ready}} volatile:
@@ -4251,7 +4253,7 @@ Dieu kien: luong B phai **doc chinh bien volatile do** va **thay gia tri** A vua
 
 Nhung volatile **khong** bien thao tac gop thanh nguyen tu. {{count++}} la ba buoc doc-cong-ghi; hai luong cung doc 5 roi cung ghi 6 van mot lan tang bi mat, du {{count}} la volatile. Can {{AtomicInteger}} hay {{synchronized}} cho viec do.
 
-### Loi production hay gap
+### Lỗi production hay gặp
 - **Co dung khong volatile** trong bean Spring hoac consumer Kafka tu viet: goi {{shutdown()}} ma luong khong dung, pod bi kill sau grace period va mat message dang xu ly. Loi nay thuong chi lo ra sau khi JIT da toi uu (chay lau), nen test ngan tren may dev van pass.
 - Dung {{volatile int counter}} roi {{counter++}}: so lieu metric thap hon thuc te tai tai cao.
 - **De lo {{this}} trong constructor** (dang ky listener, start luong trong constructor): luong khac thay object khi field {{final}} chua chac da duoc ghi.
@@ -4260,7 +4262,7 @@ Nhung volatile **khong** bien thao tac gop thanh nguyen tu. {{count++}} la ba bu
 
 > Senior tip: muon kiem chung code co data race hay khong, dung duoa vao "chay thu thay dung". Hay chi ra **chuoi happens-before** tu lenh ghi toi lenh doc. Khong chi ra duoc thi code sai, du test co pass.
 
-### Liet he phong van
+### Liên hệ phỏng vấn
 Cau hoi kinh dien: "volatile khac synchronized the nao?", "volatile count++ co thread-safe khong?", "vi sao co dung can volatile?", "luong nay co the khong dung khong?". Cau tra loi senior noi dung ten quy tac happens-before dang dung (volatile write/read, unlock/lock, start/join) thay noi chung chung "volatile doc thang tu RAM" — cach noi do sai ve ky thuat vi cache coherence cua CPU van hoat dong, van de nam o JIT, store buffer va reordering.`,
   exercises: [
     {
@@ -4406,7 +4408,7 @@ Test lap nhieu lan: 100 round, moi round publish mot gia tri, mot luong viet, mo
 - {{publish}} ghi volatile {{ready}}; vong lap doc {{ready}} moi lan, nen lan doc **sau** lenh ghi chac chan thay true. JIT khong duoc bien vong lap thanh {{while (true)}}.
 - {{data = v}} o truoc {{ready = true}} trong program order; luong doc thay {{ready}} la true thi co canh volatile write/read, ban cua sang lenh ghi {{data}}. Day la ky thuat "piggyback": mot bien volatile lam cong cho nhieu bien thuong.
 
-Loi hay gap:
+Lỗi hay gặp:
 - Dao thu tu: ghi {{ready = true}} truoc roi moi ghi {{data = v}}: luong doc co the thay ready nhung data van la 0.
 - Dung boolean thuan khong volatile: JIT hoist vong lap thanh vo han, reader khong bao thoi thay true.
 - Thay volatile bo {{Thread.sleep}} trong vong lap: sleep khong tao happens-before, bo duy loi quay lai.`,
@@ -4442,7 +4444,7 @@ Loi hay gap:
     'Duoc luong kich thuoc pool cho viec CPU-bound va IO-bound, chon rejection policy phu hop',
     'Dung invokeAll, xu ly exception cua task va shutdown pool dung cach (graceful shutdown)',
   ],
-  body: `### Tom tat
+  body: `### Tóm tắt
 Tao mot **luong (thread)** cua he dieu hanh ton kem: moi luong co **stack** rieng (vung nho de luu bien cuc bo va loi goi ham, mac dinh khoang 1 MB), tao va huy phai goi he dieu hanh, va khi may co nhieu luong thi **chuyen nghia (context switch)** — luu trang thai luong nay, nap trang thai luong khac — lai ton CPU. Neu tao mot luong cho moi request, khi tai tang dot bien so luong tang khong gioi han toi khi **het bo nho (OutOfMemoryError)** hoac CPU chi con lo chuyen nghia. Thread pool giai quyet hai viec: **tai su dung** luong va **gioi han** so viec chay dong thoi. ExecutorService / ThreadPoolExecutor la cong cu chuan cua Java de lam viec nay.
 
 ### Vi sao can thread pool
@@ -4519,18 +4521,18 @@ try {
 - {{shutdownNow()}}: co giong interrupt task dang chay ({{Thread.interrupt()}}), tra list task **chua bao gio chay** (dang o trong queue). Task dang chay **khong** tu dung neu khong tu kiem tra {{Thread.interrupted()}}.
 - Tu **Java 19**, {{ExecutorService}} la {{AutoCloseable}}: {{try (var pool = Executors.newFixedThreadPool(4))}} tu goi shutdown roi cho xong, dung duoc voi try-with-resources.
 
-Loi hay gap:
+Lỗi hay gặp:
 - Quen {{shutdown()}}: pool non-daemon (luong nen khong duoc phep giu JVM song) giu JVM khong thoat.
 - {{shutdownNow()}} ngay khong {{awaitTermination}}: task dang chay bi interrupt dot ngot, co the de lieu khong nhat quan.
 - Bat {{InterruptedException}} ma khong {{Thread.currentThread().interrupt()}}: caller khong biet bi interrupt, logic retry/shutdown bi gaya.
 - Task trong pool cho ket qua cua task khac **cung pool** (pool 4 luong, 4 task cha cung cho 4 task con o trong hang doi): thread starvation deadlock (ca 4 luong cha deu dung cho 4 luong con khong bao gio duoc chay vi het luong).
 
-### Loi production hay gap
+### Lỗi production hay gặp
 - Spring Boot auto-config task executor mac dinh core 8, **hang doi khong gioi han**, max {{Integer.MAX_VALUE}}: max khong bao gi duoc dung, {{@Async}} chat hang trieu task trong RAM khi downstream (dich vu phia sau) cham. Luon dat {{spring.task.execution.pool.queue-capacity}}.
 - Tao pool moi **trong moi request** roi quen shutdown: so luong luong tang dan toi khi {{OutOfMemoryError: unable to create native thread}}.
 - Khong dat ten luong: thread dump (anh chup trang thai cac luong) toan {{pool-7-thread-3}}, khong biet pool nao cua module nao.
 
-### Liet he phong van
+### Liên hệ phỏng vấn
 Cau hoi kinh dien: "core 4, max 8, queue 100: task thu 5 chay o dau? task thu 105?" (thu 5 vao hang doi; thu 105 tao luong thu 5 vi hang day). Tra loi senior them: luon su dung hang doi co gioi han, chon rejection policy theo nghiep vu, dat ten luong, theo doi {{getActiveCount}}/{{getQueue().size()}} qua Micrometer (thu vien do metric cua Spring Boot), va shutdown co timeout khi ung dung tat.`,
   exercises: [
     {
@@ -4603,7 +4605,7 @@ Test chay 10 task ngan (moi task tang bo dem), task cham (dang o {{CountDownLatc
 2. **Graceful shutdown**: {{shutdown()}} khong nhan task moi, {{awaitTermination}} cho task chay xong trong han timeout, {{shutdownNow()}} chi khi timeout de interrupt task con lai.
 3. **Khoi phuc co interrupt**: neu bi interrupt khi cho, phai goi {{Thread.currentThread().interrupt()}} de caller o ngoai biet bi yeu cau dung.
 
-Loi hay gap:
+Lỗi hay gặp:
 - Quen {{shutdown()}}: pool non-daemon giu luong song, JVM khong thoat.
 - {{shutdownNow()}} ngay khong {{awaitTermination}}: task dang chay bi interrupt dot ngot.
 - Bat {{InterruptedException}} mat co: caller khong biet bi interrupt.`,
