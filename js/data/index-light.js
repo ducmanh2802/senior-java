@@ -2802,7 +2802,7 @@ window.DATA_INDEX = {
     {"id":"lesson-banking-009","track":"banking","order":9,"title":"Batch cuối ngày (EOD): tính lãi cho triệu tài khoản, chết giữa chừng vẫn chạy lại không trả tiền hai lần","level":"senior","minutes":40},
     {"id":"lesson-banking-011","track":"banking","order":11,"title":"Vòng đời giao dịch thẻ: authorization, clearing, settlement, refund và chargeback","level":"senior","minutes":35},
     {"id":"lesson-banking-010","track":"banking","order":10,"title":"Thanh toán QR và cổng thanh toán: redirect, IPN/callback, chữ ký HMAC, callback trùng và đối soát","level":"senior","minutes":40},
-    {"id":"lesson-banking-012","track":"banking","order":12,"title":"eKYC va mo tai khoan online: cac buoc, trang thai, retry, kiem tra AML","level":"senior","minutes":40},
+    {"id":"lesson-banking-012","track":"banking","order":12,"title":"eKYC và mở tài khoản online: các bước, trạng thái, retry, kiểm tra AML","level":"senior","minutes":40},
     {"id":"lesson-banking-013","track":"banking","order":13,"title":"Chống gian lận realtime: rule engine, velocity check, chấm điểm rủi ro và quyết định chặn/OTP/cho qua","level":"senior","minutes":40},
     {"id":"lesson-banking-014","track":"banking","order":14,"title":"Tích hợp với core banking (khái niệm T24/Temenos Transact): timeout, COB và store-and-forward","level":"senior","minutes":40},
     {"id":"lesson-autotest-001","track":"autotest","order":1,"title":"Automation test là gì, kim tự tháp test và kỹ thuật thiết kế ca kiểm thử","level":"mid","minutes":30},

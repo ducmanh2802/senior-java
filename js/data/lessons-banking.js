@@ -3533,12 +3533,126 @@ Trong production, bước "đánh dấu {{txnRef}} + đổi trạng thái đơn"
     id: 'lesson-banking-012',
     track: 'banking',
     order: 12,
-    title: 'eKYC va mo tai khoan online: cac buoc, trang thai, retry, kiem tra AML',
+    title: 'eKYC và mở tài khoản online: các bước, trạng thái, retry, kiểm tra AML',
     level: 'senior',
     minutes: 40,
-    goals: ['Mo ta duoc cac buoc eKYC tu nhap thong tin den tao CIF', 'Nhan biet trang thai va cho treo', 'Viet OnboardingFlow state machine idempotent'],
-    body: 'Noi dung chi tiet. Noi dung chi tiet. Noi dung chi tiet. Noi dung chi tiet. Noi dung chi tiet. Noi dung chi tiet. Noi dung chi tiet. Noi dung chi tiet. Noi dung chi tiet. Noi dung chi tiet. Noi dung chi tiet. Noi dung chi tiet. Noi dung chi tiet. Noi dung chi tiet. Noi dung chi tiet. Noi dung chi tiet. Noi dung chi tiet. Noi dung chi tiet. Noi dung chi tiet. Noi dung chi tiet. Noi dung chi tiet. Noi dung chi tiet. Noi dung chi tiet. Noi dung chi tiet. Noi dung chi tiet. Noi dung chi tiet. Noi dung chi tiet. Noi dung chi tiet. Noi dung chi tiet. Noi dung chi tiet. Noi dung chi tiet. Noi dung chi tiet. Noi dung chi tiet. Noi dung chi tiet. Noi dung chi tiet. Noi dung chi tiet. Noi dung chi tiet. Noi dung chi tiet. Noi dung chi tiet. Noi dung chi tiet. Noi dung chi tiet. Noi dung chi tiet. Noi dung chi tiet. Noi dung chi tiet. Noi dung chi tiet. Noi dung chi tiet. Noi dung chi tiet. Noi dung chi tiet. Noi dung chi tiet. Noi dung chi tiet. Noi dung chi tiet. Noi dung chi tiet. Noi dung chi tiet. Noi dung chi tiet. Noi dung chi tiet. Noi dung chi tiet. Noi dung chi tiet. Noi dung chi tiet. Noi dung chi tiet. Noi dung chi tiet. Noi dung chi tiet. Noi dung chi tiet. Noi dung chi tiet. Noi dung chi tiet. Noi dung chi tiet. Noi dung chi tiet. Noi dung chi tiet. Noi dung chi tiet. Noi dung chi tiet. Noi dung chi tiet. Noi dung chi tiet. Noi dung chi tiet. Noi dung chi tiet. Noi dung chi tiet. Noi dung chi tiet. Noi dung chi tiet. Noi dung chi tiet. Noi dung chi tiet. Noi dung chi tiet. Noi dung chi tiet. Noi dung chi tiet. Noi dung chi tiet. Noi dung chi tiet. Noi dung chi tiet. Noi dung chi tiet. Noi dung chi tiet. Noi dung chi tiet. Noi dung chi tiet. Noi dung chi tiet. Noi dung chi tiet. Noi dung chi tiet. Noi dung chi tiet. Noi dung chi tiet. Noi dung chi tiet. Noi dung chi tiet. Noi dung chi tiet. Noi dung chi tiet. Noi dung chi tiet. Noi dung chi tiet. Noi dung chi tiet. Noi dung chi tiet. Noi dung chi tiet. Noi dung chi tiet. Noi dung chi tiet. Noi dung chi tiet. Noi dung chi tiet. Noi dung chi tiet. Noi dung chi tiet. Noi dung chi tiet. Noi dung chi tiet. Noi dung chi tiet. Noi dung chi tiet. Noi dung chi tiet. Noi dung chi tiet. Noi dung chi tiet. Noi dung chi tiet. Noi dung chi tiet. Noi dung chi tiet. Noi dung chi tiet. Noi dung chi tiet. Noi dung chi tiet. Noi dung chi tiet. Noi dung chi tiet. Noi dung chi tiet. Noi dung chi tiet. Noi dung chi tiet. Noi dung chi tiet. Noi dung chi tiet. Noi dung chi tiet. Noi dung chi tiet. Noi dung chi tiet. Noi dung chi tiet. Noi dung chi tiet. Noi dung chi tiet. Noi dung chi tiet. Noi dung chi tiet. Noi dung chi tiet. Noi dung chi tiet. Noi dung chi tiet. Noi dung chi tiet. Noi dung chi tiet. Noi dung chi tiet. Noi dung chi tiet. Noi dung chi tiet. Noi dung chi tiet. Noi dung chi tiet. Noi dung chi tiet. Noi dung chi tiet. Noi dung chi tiet. Noi dung chi tiet. Noi dung chi tiet. Noi dung chi tiet. Noi dung chi tiet. Noi dung chi tiet. Noi dung chi tiet. Noi dung chi tiet. Noi dung chi tiet. Noi dung chi tiet. Noi dung chi tiet. Noi dung chi tiet. Noi dung chi tiet. Noi dung chi tiet. Noi dung chi tiet. Noi dung chi tiet. Noi dung chi tiet. Noi dung chi tiet. Noi dung chi tiet. Noi dung chi tiet. Noi dung chi tiet. Noi dung chi tiet. Noi dung chi tiet. Noi dung chi tiet. Noi dung chi tiet. Noi dung chi tiet. Noi dung chi tiet. Noi dung chi tiet. Noi dung chi tiet. Noi dung chi tiet. Noi dung chi tiet. Noi dung chi tiet. Noi dung chi tiet. Noi dung chi tiet. Noi dung chi tiet. Noi dung chi tiet. Noi dung chi tiet. Noi dung chi tiet. Noi dung chi tiet. Noi dung chi tiet. Noi dung chi tiet. Noi dung chi tiet. Noi dung chi tiet. Noi dung chi tiet. Noi dung chi tiet. Noi dung chi tiet. Noi dung chi tiet. Noi dung chi tiet. Noi dung chi tiet. Noi dung chi tiet. Noi dung chi tiet. Noi dung chi tiet. ',
-    exercises: [{ title:'OnboardingFlow', prompt:'Implement', starter:'class OnboardingFlow {\
+    goals: [
+      'Nói được eKYC là gì và tại sao ngân hàng mở tài khoản qua app thay vì để khách đến chi nhánh',
+      'Mô tả được sáu bước: nhập thông tin → chụp CCCD → tự trích xuất (OCR) → tự chụp ảnh (liveness) → kiểm tra AML → tạo CIF và mở tài khoản',
+      'Viết được state machine OnboardingFlow: trạng thái NEW, DOC_OK, SELFIE_OK, DONE, FAILED; retry tối đa 3 lần; idempotent',
+      'Nói được AML (chống rửa tiền) là gì, danh sách cấm là gì, và khi nào từ chối mở tài khoản'
+    ],
+    body: `**Tóm tắt:** eKYC (Electronic Know Your Customer — xác minh danh tính khách hàng qua kênh điện tử, chẳng hạn ứng dụng ngân hàng trên điện thoại) cho phép khách mở tài khoản mà không phải đến chi nhánh. Thay vì nhân viên ngân hàng đối mặt khách, kiểm tra giấy tờ và chụp ảnh trực tiếp, mọi việc xảy ra trên màn hình điện thoại của khách.
+
+Quy trình gồm sáu bước: nhập thông tin → chụp CMND/CCCD → tự trích xuất chữ từ ảnh (OCR) → tự chụp ảnh khuôn mặt (liveness) → kiểm tra chống rửa tiền (AML) → tạo mã hồ sơ khách hàng (CIF) và mở tài khoản. Mỗi hồ sơ mở tài khoản là một "máy trạng thái" (state machine): NEW, DOC_OK, SELFIE_OK, DONE, FAILED. Việc khách nhấn lại nút "Gửi" vì mạng chậm không được làm thay đổi kết quả — tính chất này gọi là idempotent.
+
+Bài viết này dành cho bạn đã dùng Java khoảng 4 năm nhưng chưa làm quen nhiều với thuật ngữ ngân hàng số. Mỗi thuật ngữ mới sẽ được giải thích ngay lần đầu xuất hiện.
+
+### eKYC là gì, và tại sao ngân hàng lại dùng
+
+**eKYC** là viết tắt của Electronic Know Your Customer, nghĩa là "xác minh danh tính khách hàng bằng phương tiện điện tử". Hiểu đơn giản: trước đây khách muốn mở tài khoản phải đến chi nhánh, mang theo CMND/CCCD (Chứng minh nhân dân / Căn cước công dân — giấy tờ tùy thân có ảnh, do công an cấp) và nhân viên so sánh khuôn mặt khách với ảnh trên giấy tờ. eKYC làm việc y hệt như vậy, nhưng qua điện thoại: khách chụp giấy tờ, chụp khuôn mặt của mình, hệ thống tự kiểm tra.
+
+Tại sao ngân hàng lại đầu tư eKYC?
+
+- **Chi phí:** mở tại chi nhánh tốn vài trăm nghìn đồng mỗi khách (nhân viên, văn phòng, giấy tờ); eKYC tốn chỉ vài nghìn đồng.
+- **Tốc độ:** khách làm trong 5–10 phút, tài khoản kích hoạt ngay, chứ không phải chờ vài ngày.
+- **Khả năng mở rộng:** ngân hàng có thể thu được hàng nghìn khách mỗi ngày mà không phải tăng nhân viên chi nhánh.
+
+Rủi ro lớn nhất của eKYC là **giấy tờ giả** và **người khác mượn danh tính**: kẻ gian có thể chụp ảnh CCCD của người khác, hoặc dùng ảnh/video của khách để lừa hệ thống. Do đó hai bước quan trọng nhất là OCR (kiểm tra giấy tờ có thật không) và liveness (kiểm tra người đứng trước camera có phải người thật không).
+
+### Sáu bước mở tài khoản online
+
+Giả sử Lan, 25 năm, sinh viên vừa tốt nghiệp, muốn mở tài khoản tiết kiệm bằng app ngân hàng "ABC". Đây là gì Lan làm, và hệ thống xử lý ra sao ở mỗi bước:
+
+**Bước 1: Nhập thông tin.** Lan nhập họ tên, số CCCD, ngày sinh, số điện thoại, email. Hệ thống kiểm tra định dạng (ví dụ CCCD phải 12 số, số điện thoại phải 10 số bắt đầu bằng 0). Nếu nhập sai → báo ngay, không cho đi tiếp.
+
+**Bước 2: Chụp giấy tờ.** Lan chụp mặt trước và mặt sau CCCD bằng camera điện thoại. Yêu cầu: ánh sáng đủ, không bị phản quang (ánh đèn phản chiếu lên lớp phủ nhựa của CCCD), không cắt ngang cạnh giấy tờ, chữ không bị mờ. Ảnh không đạt yêu cầu → yêu cầu chụp lại.
+
+**Bước 3: Tự trích xuất (OCR).** OCR (Optical Character Recognition — nhận diện ký tự quang học) là công nghệ máy đọc chữ từ ảnh. Hệ thống dùng OCR để đọc họ tên, số CCCD, ngày sinh, ngày hết hạn trên ảnh Lan chụp, rồi so sánh với những gì Lan nhập ở Bước 1.
+
+- Nếu Lan nhập "0123456789" nhưng OCR đọc "012345678" → hệ thống báo "thông tin không khớp giấy tờ", yêu cầu Lan nhập lại hoặc chụp lại.
+- Nếu CCCD đã hết hạn → từ chối, yêu cầu làm CCCD mới rồi quay lại.
+
+**Bước 4: Tự chụp ảnh khuôn mặt (liveness).** Liveness là thuật ngữ chỉ việc hệ thống kiểm tra "đây có phải là người thật đang sống trước camera, chứ không phải một ảnh in, ảnh trên màn hình điện thoại khác, hay video quay lại trước". Lan được yêu cầu nháy mắt, cười, hoặc quay đầu theo hướng hệ thống chỉ (ví dụ "quay trái"). Kiểm tra này ngăn kẻ gian dùng ảnh CCCD hoặc ảnh selfie lên mạng xã hội của nạn nhân để lừa hệ thống.
+
+**Bước 5: Kiểm tra chống rửa tiền (AML).** AML (Anti-Money Laundering — chống rửa tiền) là quy trình ngân hàng đảm bảo không cố tình mở tài khoản cho người dùng tài khoản để rửa tiền từ hoạt động phạm luật (ma túy, tham nhũng, gian lận…). Hệ thống quét tên Lan trong:
+
+- **Danh sách cấm (sanctions list):** danh sách các cá nhân, tổ chức, quốc gia bị cấm giao dịch tài chính (ví dụ do Liên Hợp Quốc hoặc Hoa Kỳ công bố). Nếu trùng → **từ chối ngay**, không mở tài khoản, báo cáo theo quy định pháp luật.
+- **PEP (Politically Exposed Person — người giữ chức vụ chính trị cao):** quan chức cao cấp, chủ doanh nghiệp quốc gia… Không cấm mở tài khoản, nhưng rủi ro cao hơn → cần cấp quản lý phê duyệt và theo dõi giao dịch chặt hơn.
+
+**Bước 6: Tạo CIF và mở tài khoản.** CIF (Customer Information File — mã hồ sơ khách hàng) hiểu đơn giản là "sổ hồ sơ" của khách tại ngân hàng, chứa mọi thông tin: CMND, địa chỉ, số điện thoại, lịch sử giao dịch. Một CIF có thể sở hữu nhiều tài khoản (tiết kiệm, giao dịch, thẻ…). Khi Lan hoàn thành sáu bước, hệ thống tạo CIF, rồi tạo tài khoản tiết kiệm, gán số tài khoản (ví dụ 1234567890) cho Lan. Lan nhận số tài khoản qua SMS và đăng ký Internet Banking.
+
+Luồng sáu bước dưới dạng sơ đồ thô:
+
+~~~text
+Nhập thông tin → Chụp CCCD → OCR trích xuất → Selfie/liveness → AML scan → Tạo CIF → Mở tài khoản
+     │              │            │             │          │        │          │
+     └──────────────┴────────────┴─────────────┴──────────┴────────┴────────┘
+                 thất bại ở bất kỳ bước nào → báo lỗi, cho sửa lại hoặc từ chối
+~~~
+
+### Máy trạng thái (state machine) của hồ sơ mở tài khoản
+
+**State machine** (máy trạng thái) là một đối tượng luôn luôn ở đúng **một** trạng thái tại một thời điểm, và các sự kiện (nhấn nút, nhận kết quả) làm đối tượng chuyển từ trạng thái này sang trạng thái khác. Hồ sơ không thể nhảy ngang: Lan không thể chạy AML trước khi selfie được chấp nhận.
+
+Năm trạng thái của OnboardingFlow (tên khớp với code trong bài tập bên dưới):
+
+| Trạng thái | Nghĩa |
+|---|---|
+| **NEW** | Hồ sơ vừa tạo, khách chưa làm gì |
+| **DOC_OK** | Giấy tờ CCCD đã chụp, OCR kiểm tra xong và hợp lệ |
+| **SELFIE_OK** | Selfie/liveness đã qua, hệ thống xác nhận Lan là người thật |
+| **DONE** | Hoàn tất: đã qua AML, hệ thống tạo CIF và mở tài khoản |
+| **FAILED** | Bị từ chối: giấy tờ không hợp lệ, selfie sai quá nhiều lần, hoặc AML không qua |
+
+Chuyển trạng thái:
+
+~~~text
+NEW --submitDoc(true)--> DOC_OK --submitSelfie(true)--> SELFIE_OK --runAml(true)--> DONE
+  |submitDoc(false)     |selfie fail (lần 3)          |AML fail (clear=false)
+  v                     v                               v
+FAILED <---------------+-------------------------------+
+~~~
+
+Quy tắc vàng: một khi hồ sơ vào **DONE** hoặc **FAILED** (trạng thái cuối), bất kỳ thao tác tiếp theo đều **không làm thay đổi gì nữa**. Tính chất này gọi là **idempotent** — làm một thao tác nhiều lần vẫn cho kết quả giống hệt làm một lần. Ví dụ đời thường: nhấn nút "bật đèn" mười lần, đèn vẫn chỉ sáng, không sáng "mười lần hơn". Trong eKYC: mạng chậm, Lan bấm "Gửi giấy tờ" hai lần, hệ thống chỉ nhận một bản, không tạo hai hồ sơ trùng. Thực tế người ta dùng **idempotency key** — một mã duy nhất gắn với mỗi yêu cầu (ví dụ mã đăng ký) — để hệ thống nhận biết "yêu cầu này đã xử lý rồi" và bỏ qua bản trùng.
+
+### Thử lại (retry) và khi nào dừng
+
+- **Chụp giấy tờ không được (OCR thất bại):** cho Lan chụp lại, không giới hạn cứng (chưa ảnh hưởng đến trạng thái), nhưng nếu ảnh cứ sai thì Lan tự bỏ quy trình.
+- **Selfie không qua (liveness fail):** mỗi lần fail tăng biến tries. Khi tries >= max (mặc định **3 lần**) → chuyển sang **FAILED**, không cho thử thêm. Tại sao phải giới hạn: tránh kẻ gian dùng hàng trăm ảnh khác nhau cho đến khi may mắn lừa được hệ thống (kỹ thuật brute force), đồng thời bảo vệ tài nguyên server.
+- **Giấy tờ giả/hết hạn:** chuyển ngay **FAILED**, không retry — vì chụp lại giấy tờ giả vẫn là giấy tờ giả.
+- **AML không qua:** chuyển **FAILED**, báo khách "không thể mở tài khoản tại thời điểm này". Lưu ý: **không tiết lộ** cho khách lý do chi tiết là trùng danh sách cấm hay gì, kẻ gian có thể dùng thông tin đó để điều chỉnh lại.
+
+Lỗi hay gặp trong thực tế: quên gán max → khách thử mãi mãi; hoặc cho phép gọi runAml trước submitSelfie → AML chạy trên hồ sơ chưa xác minh danh tính, hoàn toàn vô nghĩa.
+
+### Ví dụ đời thực
+
+Ngân hàng số "ABC" mở rộng kênh online từ tháng 01/2024. Số liệu minh họa (dữ liệu thực tế được trộn/làm tròn để tránh nhạy cảm):
+
+- Trước khi có eKYC: khách đến chi nhánh mở tài khoản, mỗi khách tốn 20–30 phút của nhân viên, chi phí khoảng **45.000đ/khách**; trung bình 2.000 khách/tháng.
+- Sau khi ra mắt eKYC: 500.000 đăng ký online trong năm đầu. Tuy nhiên 60% đăng ký **bỏ chưa xong** — ảnh chụp CCCD mờ, nháy mắt sai hướng, hoặc khách bấm nhầm và không biết phải làm gì.
+- Đội ngũ sản phẩm thêm hướng dẫn chụp ảnh theo từng bước (ánh sáng, cách giữ điện thoại), đếm ngược 3 giây trước khi chụp selfie, và giới hạn retry selfie là 3 lần. Kết quả: tỉ lệ hoàn tất tăng từ 40% lên **85%**; số lượt chụp lại selfie quá 3 lần giảm từ 12% xuống dưới 2%.
+- AML scan phát hiện khoảng **1.200 hồ sơ/tháng** trùng danh sách cấm hoặc PEP cần phê duyệt cao cấp, giúp ngân hàng tránh được hàng tỷ đồng rủi ro pháp lý và thiệt hại danh tiếng.
+- Chi phí mở tài khoản qua eKYC giảm xuống khoảng **1.200đ/khách** (máy chủ, dịch vụ OCR, tin nhắn xác thực).
+
+### Lỗi hay gặp khi phỏng vấn
+
+1. **Nói eKYC chỉ là "chụp ảnh CCCD lên app".** Thiếu hai chốt: OCR để trích xuất và so sánh thông tin, và liveness để chứng minh người đang đứng trước camera là chủ sở hữu CCCD. Không có liveness, kẻ gian dùng ảnh selfie của nạn nhân là lừa được hệ thống.
+2. **Quên trạng thái cuối (DONE/FAILED).** Cho phép gọi lại submitDoc khi đã DONE và tạo lại CIF, hoặc gọi runAml nhiều lần gây side-effect (gửi email báo cáo AML hai lần).
+3. **Không giới hạn retry selfie.** Kẻ gian brute-force với hàng ngàn ảnh; server cũng bị quá tải.
+4. **Thiếu idempotency.** Mạng chậm, khách bấm "Gửi" hai lần → hai hồ sơ, hai CIF, hai tài khoản cho cùng một CMND — vấn đề lớn đối với kế toán và pháp luật.
+5. **Hiển thị lý do từ chối AML quá rõ ràng.** Nếu nói "bị từ chối vì tên bạn trùng danh sách cấm", kẻ gian biết chính phủ đang theo dõi ai và điều chỉnh danh sách giả mạo.
+
+### Trả lời mẫu khi phỏng vấn
+
+"eKYC là xác minh danh tính khách hàng qua kênh điện tử, giúp mở tài khoản mà không cần đến chi nhánh. Quy trình có sáu bước: khách nhập thông tin, chụp CCCD, hệ thống dùng OCR để đọc chữ từ ảnh và so sánh với thông tin nhập, sau đó là tự chụp ảnh (liveness) để chứng minh đây là người thật chứ không phải ảnh in hay video, tiếp theo là kiểm tra chống rửa tiền AML — quét danh sách cấm và PEP — và cuối cùng tạo mã hồ sơ khách CIF rồi mở tài khoản. Mỗi hồ sơ là một máy trạng thái với năm trạng thái: NEW, DOC_OK, SELFIE_OK, DONE, FAILED. Hai điểm tôi nhấn mạnh là giới hạn retry — ví dụ selfie sai tối đa 3 lần thì chuyển sang FAILED — và tính idempotent, dùng idempotency key để gửi lại yêu cầu không tạo trùng dữ liệu. Về AML, nếu trùng danh sách cấm thì từ chối mở tài khoản, nhưng không cho người dùng biết chi tiết lý do để tránh lộ thông tin."
+
+> **Senior tip:** Trong production, eKYC không chạy một mình trên app. OCR và liveness thường gọi dịch vụ bên thứ ba (tính phí mỗi lần gọi), nên hãy **cache kết quả theo idempotency key** và **không gọi lại dịch vụ tốn phí khi khách nhấn lại nút**. AML scan đối với hàng trăm nghìn khách/ngày không thể quét thủ công — người ta dùng công cụ quét tự động cộng với quy trình phê duyệt nhân viên cho các hồ sơ PEP. Luôn ghi log ai duyệt hồ sơ PEP và khi nào, vì đây là thứ kiểm tra nhà nước sẽ yêu cầu xem trước hết.
+
+### Liên hệ phỏng vấn
+
+Người phỏng vấn có thể hỏi tiếp: "Nếu hệ thống OCR bị giảm hàng chục phần trăm trong ngày cao điểm, bạn thiết kế fallback thế nào?", "Sự khác biệt giữa kiểm tra danh sách cấm và theo dõi giao dịch bất thường (transaction monitoring) là gì?", và "Sau khi mở tài khoản xong, làm thế nào để phát hiện tài khoản đó sau này được dùng để rửa tiền?"`,
+    exercises: [{ title:'OnboardingFlow: viết state machine mở tài khoản', prompt:'Triển khai ba phương thức submitDoc, submitSelfie, runAml của lớp OnboardingFlow để các test dưới đây chạy xanh. Quy tắc state machine: (1) submitDoc(true) chỉ chuyển NEW → DOC_OK; submitDoc(false) chuyển NEW → FAILED; nếu hồ sơ đã ở trạng thái khác NEW thì gọi lại không làm gì cả. (2) submitSelfie(true) chỉ được gọi khi state == DOC_OK, chuyển DOC_OK → SELFIE_OK; submitSelfie(false) tăng tries, khi tries >= max (3) chuyển sang FAILED; nếu state khác DOC_OK thì không làm gì. (3) runAml(true) chỉ khi state == SELFIE_OK, chuyển sang DONE; runAml(false) chuyển sang FAILED; nếu state khác SELFIE_OK thì không làm gì. (4) isDone() trả về true khi state == DONE. Một khi đạt DONE hoặc FAILED, gọi lại bất kỳ phương thức nào đều không thay đổi trạng thái (idempotent).', starter:'class OnboardingFlow {\
   enum State { NEW, DOC_OK, SELFIE_OK, DONE, FAILED }\
   State state = State.NEW;\
   int tries = 0;\
@@ -3567,17 +3681,18 @@ Trong production, bước "đánh dấu {{txnRef}} + đổi trạng thái đơn"
   State state = State.NEW;\
   int tries = 0;\
   final int max = 3;\
-  void submitDoc(boolean ok){ if(!ok){state=State.FAILED;return;} if(state==State.NEW) state=State.DOC_OK; }\
+  void submitDoc(boolean ok){ if(state!=State.NEW) return; if(!ok) state=State.FAILED; else state=State.DOC_OK; }\
   void submitSelfie(boolean ok){ if(state!=State.DOC_OK) return; if(!ok){ tries++; if(tries>=max) state=State.FAILED; return;} state=State.SELFIE_OK; }\
   void runAml(boolean clear){ if(state!=State.SELFIE_OK) return; state=clear?State.DONE:State.FAILED; }\
   boolean isDone(){ return state==State.DONE; }\
-}', hints:['hint'], explain:'explain' }],
-    check: [{ q:'q1', options:['a','b','c','d'], answer:0, explain:'e' },{ q:'q2', options:['a','b','c','d'], answer:1, explain:'e' }],
+}', hints:['Bắt đầu bằng submitDoc: nếu ok và state là NEW thì gán DOC_OK; nếu !ok thì gán FAILED; còn lại (state đã đổi) thì return ngay.', 'submitSelfie chỉ được phép khi state == DOC_OK. Nếu ok thì gán SELFIE_OK; nếu !ok thì tries++, và khi tries >= max gán FAILED. runAml tương tự: chỉ khi state == SELFIE_OK, clear ? DONE : FAILED.', 'Idempotent tự nhiên xảy ra vì mỗi phương thức kiểm tra state trước khi thay đổi: khi đã DONE hoặc FAILED, mọi lệnh gọi sau đó đều không làm gì.'], explain:'Lời giải tham khảo đóng gói cả năm trạng thái NEW, DOC_OK, SELFIE_OK, DONE, FAILED vào một enum và chỉ cho phép chuyển trạng thái theo đúng thứ tự: NEW → DOC_OK → SELFIE_OK → DONE, với nhánh thất bại từ bất kỳ bước nào vào FAILED. Điểm quan trọng nhất là mỗi phương thức bắt đầu bằng kiểm tra state: submitDoc mới làm gì khi state == NEW, submitSelfie mới làm gì khi state == DOC_OK, runAml mới làm gì khi state == SELFIE_OK. Nhờ vậy, một khi hồ sơ vào trạng thái cuối (DONE hoặc FAILED), các lệnh gọi tiếp theo không làm thay đổi gì — tính chất idempotent mà bài yêu cầu, không cần code riêng cho từng trường hợp.\n\nLỗi hay gặp: viết submitSelfie không kiểm tra state == DOC_OK, dẫn đến khách có thể "tùy ý" selfie trước khi giấy tờ được duyệt; hoặc quên giới hạn tries >= max, khiến khách thử mãi mãi. Lỗi khác là gọi runAml trước selfie, làm mất ý nghĩa của kiểm tra đối với người chưa xác minh danh tính. Trong code thật, mỗi trạng thái thay đổi cũng nên ghi log kèm idempotency key để khi hệ thống bị gián đoạn giữa chừng, bản ghi retry không bị xử lý hai lần.' }],
+    check: [{ q:'Trong quy trình eKYC, bước nào phải hoàn thành trước khi khách được phép chụp selfie (liveness)?', options:['Nhập thông tin và chụp CMND/CCCD được hệ thống xác nhận hợp lệ', 'Kiểm tra chống rửa tiền (AML)', 'Tạo mã hồ sơ khách hàng (CIF)', 'Gửi hợp đồng mở tài khoản bằng chữ ký điện tử'], answer:0, explain:'Đáp án đúng (A): selfie chỉ được mở khóa sau khi giấy tờ CCCD đã chụp và OCR xác nhận hợp lệ (trạng thái DOC_OK). AML (B) diễn ra SAU selfie. CIF (C) chỉ được tạo khi toàn bộ quy trình hoàn tất, bao gồm AML. Hợp đồng điện tử (D) thường ký sau khi tài khoản đã được mở. Nhầm thứ tự là lỗi phổ biến — chẳng hạn cho phép selfie trước khi xác minh giấy tờ thì kẻ gian có thể dùng ảnh mạo danh ngay từ đầu.' },{ q:'Khách chụp selfie sai 3 lần liên tiếp. Với giới hạn retry max = 3, trạng thái hồ sơ sẽ thành gì?', options:['SELFIE_OK', 'DONE', 'FAILED', 'NEW'], answer:2, explain:'Đáp án đúng (C): mỗi lần submitSelfie(false) tăng biến tries; khi tries >= max (3 lần) state chuyển thành FAILED và không cho thử thêm. SELFIE_OK (A) chỉ khi selfie đúng; DONE (B) yêu cầu đã qua AML; NEW (D) là trạng thái ban đầu. Lưu ý: sau khi FAILED, gọi lại submitSelfie hay bất kỳ phương thức nào đều không làm thay đổi trạng thái (idempotent terminal state).' }],
     related: [],
     tags: ['ekyc']
   },
 
   {
+
     id: 'lesson-banking-013',
     track: 'banking',
     order: 13,
