@@ -10063,4 +10063,138 @@ Kết quả: rolling restart 10 lần, 0 duplicate. Processing time tăng ~2ms (
   ],
   tags: ['Kafka', 'rebalance', 'duplicate', 'idempotent', 'manual-commit', 'exactly-once', 'outbox']
 },
+{
+  id: 'scenario-164',
+  topic: 'scenario',
+  level: 'senior',
+  q: 'Background job tạo hóa đơn cuối tháng bị worker chết giữa chừng, task kẹt ở trạng thái IN_PROGRESS mãi không ai xử lý lại. Bạn thiết kế task queue có lease/heartbeat như thế nào?',
+  a: `**Tóm tắt:** mọi task vận hành phải có lease có thời hạn và cơ chế heartbeat; task đang IN_PROGRESS được worker giữ lease qua heartbeat, deadline là TTL; worker chết thì lease hết hạn, scheduler phát hiện task quá hạn và đưa task về trạng thái chờ để worker khác claim lại, và phép chạy lại bắt buộc idempotent.
+
+### Vòng đời task
+- Luồng trạng thái: PENDING -> ASSIGNED -> IN_PROGRESS -> DONE | FAILED -> RETRY / CLOSED.
+- Khi claim task thành công: set status = ASSIGNED và lease_until = now + TTL.
+- Worker xử lý: sau khi set IN_PROGRESS, mỗi heartbeat renew lease_until.
+- Worker xong: set status = DONE, xóa lease.
+- Worker chết giữa chừng: lease treo vô hạn nếu không có TTL, task nằm IN_PROGRESS mãi.
+
+### Thuật ngữ
+- **Lease**: khoảng thời gian tạm thời worker được quyền xử lý task.
+- **Heartbeat**: tín hiệu renew lease định kỳ thay vì chờ tới deadline rồi kiểm tra.
+- **TTL lease**: thời gian tối đa task được coi là đang chạy sau khi worker mất.
+
+### Triệu chứng và số liệu
+- Job tạo hóa đơn cuối tháng: 40.000 giao dịch, chiếm khoảng 35 phút mỗi lần.
+- 23:50 worker die giữa chừng, task kẹt IN_PROGRESS, hệ thống báo không có job chạy sau ngày đầu tháng.
+
+### Giả thuyết và cách xác minh
+1. Worker thiếu heartbeat thread hoặc heartbeat không đúng tần suất.
+2. TTL của lease nhỏ hơn thời gian job thật.
+
+### Cơ chế từng bước
+1. Task mới: PENDING, lease_until = NULL.
+2. Claim: SELECT ... FOR UPDATE SKIP LOCKED trên task PENDING, set IN_PROGRESS + lease_until = now + TTL.
+3. Renew heartbeat.
+4. Done: DONE, lease = NULL.
+5. Crash: sau TTL task IN_PROGRESS -> scheduler đưa RETRY -> queue lại.
+
+### Giải pháp
+~~~sql
+SELECT id, payload FROM tasks
+WHERE status = 'IN_PROGRESS' AND lease_until < now()
+FOR UPDATE SKIP LOCKED
+LIMIT 1;
+UPDATE tasks SET status = 'RETRY', lease_until = NULL WHERE id = $1;
+~~~
+
+### Trade-off & pitfall
+- SKIP LOCKED lấy task khác thay vì chờ; FOR UPDATE chờ.
+- TTL phải > max runtime + margin.
+- Fencing token: số version tăng mỗi lần claim để worker cũ không còn hiệu lực sau khi worker mới đã xử lý xong.
+
+### Ví dụ đời thực
+Hệ thống chấm phí cuối tháng: job tạo hóa đơn xử lý 40.000 giao dịch trong 35 phút. Worker chết lúc đang chạy, task IN_PROGRESS kéo dài mãi, job không bao giờ hoàn tất. Giải pháp: bổ sung heartbeat renew lease mỗi 10 giây, TTL 45 phút cho job này; scheduler quét task IN_PROGRESS quá lease_until mỗi phút và chuyển RETRY; job đã cấu hình idempotency theo giao dịch lô nên worker mới claim task là task khác sẽ chạy lại an toàn.
+
+### Trả lời mẫu khi phỏng vấn
+"Trước hết tôi xác nhận task đang ở đâu trong vòng đời, nghiệp vụ cần gì, và tại sao nó kẹt ở IN_PROGRESS. Sau đó tôi kiểm tra heartbeat: tôi thiết kế heartbeat renew lease mỗi 10 giây và đặt TTL dài hơn thời gian job thật, ví dụ 45 phút cho job tạo hóa đơn. Khi worker chết, sau TTL lease hết hạn và một job quét định kỳ sẽ phát hiện task quá hạn, chuyển task về trạng thái chờ rồi đưa vào hàng đợi để worker khác claim, chứ không bao giờ nỡ chờ heartbeat của worker chết. Tôi dùng SELECT FOR UPDATE SKIP LOCKED ở layer claim để hai worker không lấy chung một task. Vì job có thể chạy lại, mọi nghiệp vụ con phải idempotent, ví dụ khóa giao dịch theo lô. Cuối cùng tôi giám sát số task RETRY và thời gian trung bình từ khi task vào RETRY đến khi hoàn tất. Tôi cũng đặt lease TTL luôn lớn hơn thời gian job thật để không vừa lỡ và vừa khiến task bị coi là mềm."
+
+> Senior tip: quy tắc của tôi cho task queue: lease TTL luôn lớn hơn max runtime cộng margin, heartbeat renew cho task chạy dài hơn vài phút, và watchdog quét task quá hạn là bắt buộc - không bao giờ chờ heartbeat của worker chết để giải quyết.
+`,
+  follow: [
+    'Lease hết hạn khi worker mất, fencing token phải kiểm tra ở đâu để tránh execute 2 lần cho cùng task?',
+    'Heartbeat interval nên thiết kế thế nào cho job chạy lâu hơn tần suất heartbeat?'
+  ],
+  tags: ['queue', 'lease', 'heartbeat', 'distributed-job']
+},
+{
+  id: 'scenario-165',
+  topic: 'scenario',
+  level: 'senior',
+  q: 'Partner gửi webhook cho giao dịch, hệ thống nhận được rồi phản hồi 200 OK nhưng không bắt đầu xử lý, hoặc xử lý xong rồi response bị mất. Dữ liệu có bị bỏ lỡ hoặc xử lý trùng. Bạn xử lý thế nào?',
+  a: `**Tóm tắt:** phản hồi 200 OK của webhook chỉ nói rằng receiver đã nhận message, không nói rằng receiver đã xử lý xong; vì vậy cần idempotency, outbox và cơ chế reconciliation để tránh bỏ lỡ hoặc xử lý trùng.
+
+### Vòng đời webhook
+- Sender có thể gửi 1 lần hoặc nhiều lần, receiver có thể nhận trước khi xử lý xong, hoặc crash giữa nhận và xử lý.
+- 200 OK trả về trước khi kết quả ghi database thì việc xử lý có thể bị bỏ sót.
+
+### Thuật ngữ
+- **Webhook**: kênh giao tiếp đối tác push event.
+- **Idempotency key**: khóa nhận biết một lần xử lý.
+- **Outbox**: bảng ghi event trong database trước khi publish.
+
+### Giải pháp
+- (1) Mọi webhook có event_id, receiver ghi processed_events trong cùng transaction với nghiệp vụ.
+- (2) Outbox: ghi event vào bảng outbox trong cùng transaction nghiệp vụ rồi publisher đọc và gửi.
+- (3) Receiver: nếu lỗi thì đưa vào dead letter queue để retry.
+- (4) Reconciliation: so sánh event_id đã gửi với processed_events, phát hiện thiếu và xử lý lại.
+
+### Ví dụ đời thực
+Hệ thống thanh toán: partner gửi webhook giao dịch thành công với event_id ev_9f3a. Receiver nhận, trước khi ghi processed_events thì crash. Partner retry đúng event_id, receiver không còn gì để dedup nên xử lý lại, vì nghiệp vụ có khóa giao dịch nên không trừ tiền hai lần. Ngược lại, nếu receiver ghi xong nhưng trả response thất bại, partner tạo event mới và xử lý trùng.
+
+### Trả lời mẫu khi phỏng vấn
+"Tôi hiểu rằng phản hồi 200 OK chỉ là acknowledgement nhận message, không phải xác nhận xử lý xong. Vì vậy tôi thiết kế receiver luôn ghi idempotency key trong cùng transaction với nghiệp vụ, dùng outbox để đảm bảo không mất event trước khi publish, và đưa các event lỗi vào dead letter queue để retry. Khi đối tác retry, event_id giống nhau nên dedup bằng processed_events sẽ skip. Cuối cùng tôi chạy job reconciliation so sánh các event đã gửi với các event đã xử lý để phát hiện và xử lý lại những cái bị bỏ lỡ."
+
+> Senior tip: 200 OK nghĩa là toang da, không phải da thỏ. Luôn coi 200 có thể đến trước khi xử lý xong, và luôn có cơ chế idempotency + reconciliation.
+`,
+  follow: [
+    'Outbox pattern và transactional outbox khác nhau thế nào, khi nào dùng cái nào?',
+    'Dead letter queue retry policy nên cấu hình thế nào cho webhook partner?'
+  ],
+  tags: ['webhook', 'idempotency', 'reconciliation', 'outbox', 'idempotent-consumer']
+},
+{
+  id: 'scenario-166',
+  topic: 'scenario',
+  level: 'lead',
+  q: 'Khi incident P1 khẩn cấp, escalation gửi thông báo đến hàng nghìn người qua email, SMS, push. Hệ thống có gửi trùng, gửi quá tải, hoặc nhóm on-call nhận hàng chục thông báo cho cùng một sự cố. Bạn xử lý thế nào?',
+  a: `**Tóm tắt:** hệ thống escalation cần ba lớp: deduplication, rate limit và batching; mỗi thông báo chỉ được gửi một lần và mỗi người chỉ nhận một thông báo cho một sự cố.
+
+### Nguyên nhân
+- Nhiều alert rule cùng fire cho cùng incident.
+- Retry không có dedup.
+- Thiếu rate limit cho phép gửi quá tải.
+
+### Giải pháp
+- Dedup key: SHA-256 cộng với incidentId, alertId, recipientId, channel.
+- Notification log lưu trạng thái đã gửi.
+- Token bucket rate limit cho mỗi người nhận.
+- Aggregation: gom alert của cùng service hoặc cùng incident thành notification summary.
+
+### Trade-off & pitfall
+- Đừng dedup quá dài vì có thể bỏ sót thông báo mới.
+- Rate limit cần chống gửi trùng nhưng không chặn thông báo cấp bách.
+
+### Ví dụ đời thực
+Incident database failover: 47 alert rule cùng fire, trước đây mỗi rule gửi email riêng, on-call nhận 47 email cho một sự cố. Sau khi thêm dedup + aggregation, gom thành 2 thông báo cho service chính và 1 cho lỗi database.
+
+### Trả lời mẫu khi phỏng vấn
+"Tôi xử lý bằng cách có đủ lớp: deduplication theo khóa gồm incident, alert, người nhận và kênh, notification log để gửi đúng một lần, rate limit bằng token bucket cho mỗi người, và aggregation các alert cùng service thành một thông báo tóm tắt. Với incident P1, tôi ưu tiên SMS hoặc push kèm email; các alert độc lập thuộc cùng incident thì gom lại thành một thông báo. Tôi cũng để công cụ dedup có thời gian ngắn, và giám sát số thông báo đã gửi mỗi incident để phát hiện bơm thông tin.
+
+> Senior tip: escalation hàng loạt là bài toán notification hệ thống, không phải bài toán alert. Sự cố lớn nên gửi một thông báo rõ ràng với đầy đủ thông tin, không phải hàng chục email rời rạc.
+`,
+  follow: [
+    'Rate limit cho on-call team nên áp dụng cho ai: per person, per team, hay per incident?',
+    'Batching alert có nên chờ thêm hết các rule fire trước khi gửi, hay gửi ngay khi có alert cấp cao nhất?'
+  ],
+  tags: ['escalation', 'notification', 'dedup', 'rate-limit', 'incident']
+},
 );
