@@ -3078,14 +3078,14 @@ Một công ty tài chính có 50.000 hợp đồng vay trả góp 12 tháng. Th
   id: 'banking-043',
   topic: 'banking',
   level: 'mid',
-  q: 'Import file giao dich tu doi tac moi sang: file co the duoc gui lai khi loi mang, lam sao import khong tao giao dich trung va khong lam fail toan bo file vi mot dong sai?',
-  a: `**Tóm tắt:** Hang sang, he thong nhan file giao dich tu doi tac (CSV/XML/ISO). File co the duoc gui lai nhieu lan (re-send) khi mang lo. Moi dong trong file co ma tham chieu duy tien cua doi tac. Import phai idempotent: ma tham chieu da xu ly thi bo qua, khong tao giao dich moi. Mot dong sai (so tien sai dinh dang, ma tai khoan khong ton tai) khong duoc lam fail toan bo file — dua vao hang doi loi de nhan vien xu ly, cac dong con lai van nhap binh thuong.
-### File giao dich la gi va tai sao gui lai
-File giao dich la danh sach cac giao dich cua doi tac trong mot ngay (vi du Napas gui file dich vu, file the...). Mang loi -> doi tac gui lai cung mot file hoac file moi chua nhung giao dich cu. Neu he thong khong kiem tra trung, nhung giao dich cu duoc nhap hai lam -> tien duoc cong hai lan.
-### Ma tham chieu duy tien tren moi dong
-Moi dong trong file co ma tham chieu duy tien (vi du RRN - Retrieval Reference Number trong giao dich the, hoac STAN). He thong luu ma da xu ly trong bang voi rang buoc duy nhat (unique constraint). Truoc khi nhap dong, kiem tra ma da co chua:
-- Da co -> bo qua dong, tra ket qua cu (idempotent).
-- Chua co -> nhap giao dich, luu ma.
+  q: 'Import file giao dịch từ đối tác mới sang: file có thể được gửi lại khi lỗi mạng, làm sao import không tạo giao dịch trùng và không làm fail toàn bộ file vì một dòng sai?',
+  a: `**Tóm tắt:** Hàng sáng, hệ thống nhận file giao dịch từ đối tác (CSV/XML/ISO). File có thể được gửi lại nhiều lần (re-send) khi mạng lỗi. Mỗi dòng trong file có mã tham chiếu duy nhất của đối tác. Import phải idempotent: mã tham chiếu đã xử lý thì bỏ qua, không tạo giao dịch mới. Một dòng sai (số tiền sai định dạng, mã tài khoản không tồn tại) không được làm fail toàn bộ file — đưa vào hàng đợi lỗi để nhân viên xử lý, các dòng còn lại vẫn nhập bình thường.
+### File giao dịch là gì và tại sao gửi lại
+File giao dịch là danh sách các giao dịch của đối tác trong một ngày (ví dụ Napas gửi file dịch vụ, file the...). Mạng lỗi -> đối tác gửi lại cùng một file hoặc file mới chứa những giao dịch cũ. Nếu hệ thống không kiểm tra trùng, những giao dịch cũ được nhập hai lần -> tiền được cộng hai lần.
+### Mã tham chiếu duy nhất trên mỗi dòng
+Mỗi dòng trong file có mã tham chiếu duy nhất (ví dụ RRN - Retrieval Reference Number trong giao dịch the, hoặc STAN). Hệ thống lưu mã đã xử lý trong bảng với ràng buộc duy nhất (unique constraint). Trước khi nhập dòng, kiểm tra mã đã có chưa:
+- Đã có -> bỏ qua dòng, trả kết quả cũ (idempotent).
+- Chưa có -> nhập giao dịch, lưu mã.
 
 ~~~sql
 CREATE TABLE imported_tx (
@@ -3093,48 +3093,49 @@ CREATE TABLE imported_tx (
   import_date   DATE NOT NULL,
   amount        NUMERIC(20,0) NOT NULL,
   status        VARCHAR(20) NOT NULL,
-  PRIMARY KEY (partner_ref, import_date) -- cung mot ma chi duoc nhap mot lan moi ngay
+  PRIMARY KEY (partner_ref, import_date) -- cùng một mã chỉ được nhập một lần mỗi ngày
 );
 ~~~
-### Khong fail toan bo file vi mot dong sai
-Chi dinh nhap theo bo (batch): doc tung dong, kiem tra, neu dong sai (so tien sai, tai khoan khong ton tai, ma bi trung trong cung file) -> ghi vao bang loi voi ly do, tiep tuc dong tiep theo. Cuoi cung bao cao: tong so dong, so dong thanh cong, so dong loi, danh sach ly do. Nhan vien sua dong loi, chay lai chi nhung dong loi (vi ma tham chieu da luu, chay lai khong tao trung).
-### Xu ly file bi gui trung
-Hai file giao nhau hoac cung file gui hai lan: ma tham chieu trung o bang imported_tx -> tat ca dong trung bi bo qua, chi nhap dong moi. Tinh ket qua cua file lan hai giong lan dau (khong tao giao dich them).
-### Code yeu tuong (Java)
+### Không fail toàn bộ file vì một dòng sai
+Chỉ định nhập theo batch: đọc từng dòng, kiểm tra, nếu dòng sai (số tiền sai, tài khoản không tồn tại, mã bị trùng trong cùng file) -> ghi vào bảng lỗi với lý do, tiếp tục dòng tiếp theo. Cuối cùng báo cáo: tổng số dòng, số dòng thành công, số dòng lỗi, danh sách lý do. Nhân viên sửa dòng lỗi, chạy lại chỉ những dòng lỗi (vì mã tham chiếu đã lưu, chạy lại không tạo trùng).
+### Xử lý file bị gửi trung
+Hai file giao nhau hoặc cùng file gửi hai lần: mã tham chiếu trung ở bảng imported_tx -> tất cả dòng trung bị bỏ qua, chỉ nhập dòng mới. Tính kết quả của file lần hai giống lần đầu (không tạo giao dịch thêm).
+### Code ý tưởng (Java)
 ~~~java
 void importFile(List<TransactionRow> rows, LocalDate date) {
     for (TransactionRow row : rows) {
         try {
-            // insertIfNew va ledgerService.post phai trong CUNG mot transaction
+            // insertIfNew và ledgerService.post phải trong CÙNG một transaction
             txTemplate.execute(status -> {
                 boolean inserted = txRepo.insertIfNew(row.partnerRef(), date, row.amount(), row.status());
-                if (!inserted) return false; // da xu ly, bo qua
-                ledgerService.post(row); // ghi so cai
+                if (!inserted) return false; // đã xử lý, bỏ qua
+                ledgerService.post(row); // ghi sổ cái
                 return true;
             });
         } catch (Exception e) {
-            errorQueue.add(row, e.getMessage()); // dong loi, khong dung toan bo file
+            errorQueue.add(row, e.getMessage()); // dòng lỗi, không dùng toàn bộ file
         }
     }
 }
 ~~~
-### Loi hay gap
-- Kiem tra trung trong bo nho dem (cache) thay DB -> may khoi dong lai mat cache, nhap trung.
-- Mot dong sai dung toan bo file -> nhieu giao dich hop le khong duoc nhap.
-- Khong co ma tham chieu duy tien -> khong biet dong nao da xu ly, chi duoc so sanh so tien + thoi gian (bi gap nhieu giao dich cung so tien).
-- Nhap dong loi nhung khong ghi ly do -> nhan vien khong biet sua sao.
-### Vi du doi thuc
-Mot ngan hang nhan file Napas khoang 100.000 dong/ngay. Mot ngay, loi mang dich vu gui lai file cu ke file moi. Dev cu nhap thuan tuan khong kiem tra trung -> 2.300 giao dich duoc nhap hai lam, tong tien dup 12 ty VND, phai hoan ve thu cong. Dev sua: them bang imported_tx voi ma tham chieu duy tien, kiem tra truoc khi nhap, dong loi dua vao hang doi loi bo loc, chay lai chi dong loi. Ket qua: ngay sau khong con giao dich nhap trung, nhap file xu ly duoc 100.000 dong it nhat 99.5% thanh cong, loi duoc xu ly cung ngay.
-### Tra loi muon khi pham van
-"File giao dich tu doi tac moi sang co the bi gui lai khi mang lo, nen import phai chan trung. Em dung ma tham chieu duy tien cua doi tac (RRN/STAN) lam khoa chinh cung ngay import, kiem tra truoc khi nhap: ma da co thi bo qua, chua co thi moi ghi so. Import theo dong, khong dung mot transaction cho toan bo file: dong sai (sai dinh dang, tai khoan khong ton tai) dua vao hang doi loi voi ly do chi tiet, cac dong hop le van nhap binh thuong. Sau khi xong, bao cao tong dong, dong thanh cong, dong loi. Nhan vien chi can sua va nhap lai hang doi loi — vi ma da luu, nhap lai khong tao giao dich trung."
+### Lỗi hay gặp
+- Kiểm tra trung trong bộ nhớ đệm (cache) thay DB -> máy khởi động lại mất cache, nhập trùng.
+- Một dòng sai dùng toàn bộ file -> nhiều giao dịch hợp lệ không được nhập.
+- Không có mã tham chiếu duy nhất -> không biết dòng nào đã xử lý, chỉ được so sánh số tiền + thời gian (bị gặp nhiều giao dịch cùng số tiền).
+- Nhập dòng lỗi nhưng không ghi lý do -> nhân viên không biết sửa sao.
+### Ví dụ đời thực
+Một ngân hàng nhận file Napas khoảng 100.000 dòng/ngày. Một ngày, lỗi mạng dịch vụ gửi lại file cũ kèm file mới. Dev cũ nhập thuần túy không kiểm tra trung -> 2.300 giao dịch được nhập hai lần, tổng tiền dup 12 tỷ VND, phải hoàn về thủ công. Dev sửa: thêm bảng imported_tx với mã tham chiếu duy nhất, kiểm tra trước khi nhập, dòng lỗi đưa vào hàng đợi lỗi, bỏ qua, chạy lại chỉ dòng lỗi. Kết quả: ngày sau không còn giao dịch nhập trung, nhập file xử lý được 100.000 dòng ít nhất 99.5% thành công, lỗi được xử lý cùng ngày.
+### Trả lời mẫu khi phỏng vấn
+"File giao dịch từ đối tác mới sang có thể bị gửi lại khi mạng lỗi, nên import phải chặn trung. Em dùng mã tham chiếu duy nhất của đối tác (RRN/STAN) làm khóa chính cùng ngày import, kiểm tra trước khi nhập: mã đã có thì bỏ qua, chưa có thì mới ghi sổ. Import theo dòng, không dùng một transaction cho toàn bộ file: dòng sai (sai định dạng, tài khoản không tồn tại) đưa vào hàng đợi lỗi với lý do chi tiết, các dòng hợp lệ vẫn nhập bình thường. Sau khi xong, báo cáo tổng dòng, dòng thành công, dòng lỗi. Nhân viên chỉ cần sửa và nhập lại hàng đợi lỗi — vì mã đã lưu, nhập lại không tạo giao dịch trung."
 
-> Senior tip: Nhap file doi tac la noi xay ra loi "nhap trung" quan trong nhat boi vi file den thang nam va nguoi gui tu dong gui lai khi loi. Rang buoc duy nhat o DB, khong chi trong bo nho dem, va mot transaction cho moi dong (khong fail toan bo file) la hai chot.
+> Senior tip: Nhập file đối tác là nơi xảy ra lỗi "nhập trung" quan trọng nhất bởi vì file đến tháng năm và người gửi tự động gửi lại khi lỗi. Ràng buộc duy nhất ở DB, không chỉ trong bộ nhớ đệm, và một transaction cho mỗi dòng (không fail toàn bộ file) là hai chốt.
 
+  
   `,
   follow: [
-    'Neu cung mot file duoc gui lai hai lan cung luc (hai luong), he thong xu ly nhu the nao?',
-    'Mot dong trong file bi loi, cac dong sau van duoc nhap hay dung toan bo file? Tai sao?',
-    'Ma tham chieu duy tien duoc tao o dau, va neu doi tac khong co ma nao thi lam gi?'
+    'Nếu cùng một file được gửi lại hai lần cùng lúc (hai luồng), hệ thống xử lý như thế nào?',
+    'Một dòng trong file bị lỗi, các dòng sau vẫn được nhập hay dừng toàn bộ file? Tại sao?',
+    'Mã tham chiếu duy nhất được tạo ở đâu, và nếu đối tác không có mã nào thì làm gì?'
   ],
   tags: ['import file', 'idempotency', 'doi tac', 'batch', 'hang doi loi']
 },
