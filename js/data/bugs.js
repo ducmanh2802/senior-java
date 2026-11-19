@@ -7708,5 +7708,401 @@ Câu "chia 100 nghìn cho 3 người thế nào" kiểm tra bạn có nghĩ tớ
 > Senior tip: trong hệ thống tiền tệ, "lệch 1 đồng mỗi giao dịch" tệ hơn "lỗi 1 giao dịch to" vì nó **không bao giờ vượt ngưỡng cảnh báo**. Hãy đặt alert trên **tổng lệch theo ngày** và bắt buộc mọi phép chia phải assert bảo toàn tổng trước khi ghi sổ — tiền đã ghi sổ rồi thì sửa rất đắt.`,
   related: ['core-012'],
   tags: ['money', 'rounding', 'BigDecimal', 'allocation', 'reconciliation', 'largest-remainder']
+},
+{
+  id: 'bug-041',
+  title: 'Mất cập nhật số dư ký quỹ: hai lệnh mua đồng thời vượt hạn mức buying power',
+  domain: 'Sàn giao dịch / Ký quỹ',
+  level: 'senior',
+  severity: 'P1',
+  minutes: 25,
+  story: `**Bối cảnh dự án:** Sàn giao dịch chứng khoán cho phép khách đặt lệnh mua cổ phiếu trên ký quỹ (margin). Service {{MarginService}} quản trị **buying power** (sức mua — số tiền tối đa khách có thể dùng để mua, tính từ tài sản đảm bảo trừ đi nợ ký quỹ). Mỗi lệnh mua cần trừ buying power. Buying power lưu trong bảng {{margin_account}} với cột {{version}} để hỗ trợ khoá lạc quan (optimistic lock — cơ chế kiểm tra phiên bản trước khi ghi: chỉ ghi khi version trong DB khớp version đã đọc, nếu không khớp nghĩa là người khác vừa sửa). Ứng dụng chạy 4 pod, mỗi pod nhiều thread.
+  **Sự cố:** Phiên sáng 20/11, một khách hàng có buying power 1.000.000.000 đồng đặt **hai lệnh mua cùng lúc** (cùng mã cổ phiếu, mỗi lệnh 600.000.000). Cả hai lệnh đều qua kiểm tra buying power, cả hai được khớp lệnh, buying power cuối cùng xuống -200.000.000 (vượt hạn mức 200 triệu). Đối soát cuối ngày phát hiện 37 tài khoản buying power âm, tổng vượt hạn mức 18 tỷ đồng.
+  **Nhiệm vụ của bạn:**
+  1. Đọc code {{MarginService.reserveBuyingPower}} và log, giải thích vì sao hai lệnh cùng lúc đều qua kiểm tra.
+  2. Sửa code để dùng **khoá lạc quan (optimistic lock)** với cột version: chỉ ghi khi version khớp, nếu xung đột thì đọc lại buying power mới và thử lại (tối đa 3 lần), hết lượt thì ném lỗi.
+  3. Bấm **Chạy test**: test dùng CountDownLatch ép hai luồng cùng rơi vào nhánh check buying power.`,
+  artifacts: [
+    { name: 'margin-service.log', lang: 'text', content: `2026-11-20 09:12:44.118 INFO  [http-nio-8080-exec-17] MarginService : reserve acc=M-1001 amount=600000000 req=REQ-7f3a
+2026-11-20 09:12:44.124 INFO  [http-nio-8080-exec-23] MarginService : reserve acc=M-1001 amount=600000000 req=REQ-7f3b
+2026-11-20 09:12:44.131 DEBUG [http-nio-8080-exec-17] MarginService : acc=M-1001 buyingPower=1000000000 version=41 -> ok
+2026-11-20 09:12:44.133 DEBUG [http-nio-8080-exec-23] MarginService : acc=M-1001 buyingPower=1000000000 version=41 -> ok
+2026-11-20 09:12:44.148 INFO  [http-nio-8080-exec-17] MarginService : reserve OK acc=M-1001 newBuyingPower=400000000
+2026-11-20 09:12:44.150 INFO  [http-nio-8080-exec-23] MarginService : reserve OK acc=M-1001 newBuyingPower=400000000  <- CẢ HAI ĐỀU OK, BUYING POWER VỀ 400M THAY VÌ -200M` },
+    { name: 'reconcile-2026-11-20.txt', lang: 'text', content: `RECONCILIATION 2026-11-20 06:00 ICT
+Accounts with negative buying power : 37
+Total over-reserved (VND)          : 18,400,000,000
+Pattern                            : 2 reserves within < 50 ms, same account, same amount (100% of cases)
+Note: UPDATE statement lacks WHERE version = ? clause, so second write overwrites first.` },
+  ],
+  starter: `// ===== Hạ tầng (KHÔNG cần sửa) =====
+class MarginAccount {
+    final String id;
+    long buyingPower;
+    long version;
+    MarginAccount(String id, long buyingPower, long version) { this.id = id; this.buyingPower = buyingPower; this.version = version; }
+    MarginAccount copy() { return new MarginAccount(id, buyingPower, version); }
+}
+
+class InsufficientBuyingPowerException extends RuntimeException {
+    InsufficientBuyingPowerException(String msg) { super(msg); }
+}
+
+class MarginStore {
+    private final Map<String, MarginAccount> rows = new HashMap<>();
+    Runnable onLoad;
+    int loads;
+    void insert(String id, long buyingPower) { rows.put(id, new MarginAccount(id, buyingPower, 0)); }
+    MarginAccount load(String id) {
+        loads++;
+        MarginAccount a = rows.get(id).copy();
+        Runnable hook = onLoad;
+        if (hook != null) hook.run();
+        return a;
+    }
+    // Ghi không kiểm tra version: lost update
+    void save(MarginAccount a) { MarginAccount cur = rows.get(a.id); cur.buyingPower = a.buyingPower; cur.version++; }
+    // Ghi có kiểm tra version: trả false nếu version không khớp (ai đó vừa sửa)
+    boolean saveIfVersion(MarginAccount a) {
+        MarginAccount cur = rows.get(a.id);
+        if (cur.version != a.version) return false;
+        cur.buyingPower = a.buyingPower; cur.version++;
+        return true;
+    }
+    void touch(String id) { rows.get(id).version++; }   // một giao dịch khác vừa cập nhật
+    long buyingPower(String id) { return rows.get(id).buyingPower; }
+    long version(String id) { return rows.get(id).version; }
+}
+
+// ===== Code cần sửa =====
+class MarginService {
+    private final MarginStore store;
+    MarginService(MarginStore store) { this.store = store; }
+
+    void reserveBuyingPower(String accountId, long amount) {
+        MarginAccount a = store.load(accountId);
+        if (a.buyingPower < amount) throw new InsufficientBuyingPowerException("buying power không đủ: " + a.buyingPower);
+        a.buyingPower -= amount;
+        store.save(a);
+    }
+}`,
+  tests: `public class Main {
+    static int passed = 0, total = 0;
+    static void check(String name, boolean ok, String detail) {
+        total++;
+        if (ok) { passed++; System.out.println("PASS " + name); }
+        else System.out.println("FAIL " + name + ": " + detail);
+    }
+
+    public static void main(String[] args) {
+        // 1. Trừ bình thường
+        MarginStore s1 = new MarginStore(); s1.insert("M", 1_000_000_000L);
+        new MarginService(s1).reserveBuyingPower("M", 300_000_000L);
+        check("tru_binh_thuong", s1.buyingPower("M") == 700_000_000L, "1 tỷ - 300 triệu phải còn 700 triệu, thực tế " + s1.buyingPower("M"));
+
+        // 2. Giao dịch 600 triệu chen vào giữa lúc giao dịch 600 triệu đọc và ghi
+        // Với optimistic lock: chỉ một lệnh thành công, lệnh thứ hai bị từ chối vì buying power chỉ còn 400M < 600M
+        MarginStore s2 = new MarginStore(); s2.insert("M", 1_000_000_000L);
+        MarginService svc2 = new MarginService(s2);
+        s2.onLoad = () -> { s2.onLoad = null; svc2.reserveBuyingPower("M", 600_000_000L); };
+        boolean rejected2 = false;
+        try { svc2.reserveBuyingPower("M", 600_000_000L); } catch (InsufficientBuyingPowerException e) { rejected2 = true; }
+        check("khong_mat_cap_nhat", rejected2 && s2.buyingPower("M") == 400_000_000L,
+            "một lệnh 600M thành công, lệnh kia bị từ chối (buying power 400M < 600M), buying power cuối = 400M, thực tế rejected=" + rejected2 + " bp=" + s2.buyingPower("M"));
+
+        // 3. Buying power 400 triệu: giao dịch 300 triệu chen vào, giao dịch 300 triệu phải bị từ chối
+        MarginStore s3 = new MarginStore(); s3.insert("M", 400_000_000L);
+        MarginService svc3 = new MarginService(s3);
+        s3.onLoad = () -> { s3.onLoad = null; svc3.reserveBuyingPower("M", 300_000_000L); };
+        boolean rejected = false;
+        try { svc3.reserveBuyingPower("M", 300_000_000L); } catch (InsufficientBuyingPowerException e) { rejected = true; }
+        check("khong_vuot_buying_power", rejected && s3.buyingPower("M") == 100_000_000L,
+            "sau khi trừ 300 triệu, lệnh 300 triệu phải bị từ chối và buying power còn 100 triệu; thực tế rejected=" + rejected + " bp=" + s3.buyingPower("M"));
+
+        // 4. Tài khoản bị cập nhật liên tục: phải dừng sau vài lần thử và báo lỗi, không ghi đè
+        MarginStore s4 = new MarginStore(); s4.insert("M", 1_000_000_000L);
+        s4.onLoad = () -> s4.touch("M");
+        String err4 = null;
+        try { new MarginService(s4).reserveBuyingPower("M", 100_000_000L); } catch (InsufficientBuyingPowerException e) { err4 = "sai loại lỗi"; } catch (RuntimeException e) { err4 = "ok"; }
+        check("retry_co_gioi_han", "ok".equals(err4) && s4.buyingPower("M") == 1_000_000_000L && s4.loads >= 2 && s4.loads <= 5,
+            "khi luôn xung đột phải thử lại 2-5 lần rồi ném lỗi, không trừ buying power; thực tế loads=" + s4.loads + " bp=" + s4.buyingPower("M") + " err=" + err4);
+
+        System.out.println("RESULT " + passed + "/" + total);
+    }
+}`,
+  reference: `class MarginAccount {
+    final String id;
+    long buyingPower;
+    long version;
+    MarginAccount(String id, long buyingPower, long version) { this.id = id; this.buyingPower = buyingPower; this.version = version; }
+    MarginAccount copy() { return new MarginAccount(id, buyingPower, version); }
+}
+
+class InsufficientBuyingPowerException extends RuntimeException {
+    InsufficientBuyingPowerException(String msg) { super(msg); }
+}
+
+class MarginStore {
+    private final Map<String, MarginAccount> rows = new HashMap<>();
+    Runnable onLoad;
+    int loads;
+    void insert(String id, long buyingPower) { rows.put(id, new MarginAccount(id, buyingPower, 0)); }
+    MarginAccount load(String id) {
+        loads++;
+        MarginAccount a = rows.get(id).copy();
+        Runnable hook = onLoad;
+        if (hook != null) hook.run();
+        return a;
+    }
+    void save(MarginAccount a) { MarginAccount cur = rows.get(a.id); cur.buyingPower = a.buyingPower; cur.version++; }
+    boolean saveIfVersion(MarginAccount a) {
+        MarginAccount cur = rows.get(a.id);
+        if (cur.version != a.version) return false;
+        cur.buyingPower = a.buyingPower; cur.version++;
+        return true;
+    }
+    void touch(String id) { rows.get(id).version++; }
+    long buyingPower(String id) { return rows.get(id).buyingPower; }
+    long version(String id) { return rows.get(id).version; }
+}
+
+class MarginService {
+    static final int MAX_ATTEMPTS = 3;
+    private final MarginStore store;
+    MarginService(MarginStore store) { this.store = store; }
+
+    void reserveBuyingPower(String accountId, long amount) {
+        for (int attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
+            MarginAccount a = store.load(accountId);              // đọc lại buying power MỚI NHẤT ở mỗi lần thử
+            if (a.buyingPower < amount) throw new InsufficientBuyingPowerException("buying power không đủ: " + a.buyingPower);
+            a.buyingPower -= amount;
+            if (store.saveIfVersion(a)) return;                   // where version = ? : chỉ ghi khi không ai sửa xen vào
+        }
+        throw new IllegalStateException("tài khoản " + accountId + " bị cập nhật đồng thời, đã thử " + MAX_ATTEMPTS + " lần");
+    }
+}`,
+  hints: [
+    'Đọc margin-service.log: hai thread cùng đọc buyingPower=1000000000 version=41. Câu UPDATE thứ hai dựa trên buying power nào?',
+    'UPDATE không có điều kiện "and version = 41" nên thread chậm hơn ghi đè kết quả của thread nhanh hơn: lost update kiểu read-modify-write. MarginStore đã có sẵn saveIfVersion.',
+    'Dùng saveIfVersion; nếu trả về false thì ĐỌC LẠI tài khoản (buying power mới) rồi kiểm tra và trừ lại, tối đa vài lần; hết lượt thì ném lỗi chứ không ghi đè.',
+  ],
+  rootCause: `**Lost update do read-modify-write không có kiểm tra phiên bản.** Hai request cùng đọc tài khoản {{M-1001}} với {{buyingPower=1000000000 version=41}} (dòng 09:12:44.131 và .133). Request đầu ghi {{buyingPower=400000000}}, rồi request sau ghi {{buyingPower=400000000}} tính từ buying power cũ 1 tỷ, đè mất lần trừ 600 triệu đầu tiên. Câu UPDATE {{where id='M-1001'}} không có {{and version=41}}, nên lần ghi thứ hai vẫn thành công dù dữ liệu đã đổi.
+
+Cùng cơ chế đó, kiểm tra buying power cũng sai: cả hai request đều thấy đủ buying power dựa trên số cũ, nên tài khoản mua vượt hạn mức 200 triệu. Cột {{version}} có trong bảng nhưng vô dụng vì không nằm trong điều kiện WHERE.`,
+  fix: `### Cách sửa trong bài
+Ghi có điều kiện phiên bản ({{saveIfVersion}}, tương đương {{update ... where id=? and version=?}}) và khi ghi thất bại thì **đọc lại** rồi tính lại, tối đa 3 lần:
+~~~java
+for (int attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
+    MarginAccount a = store.load(accountId);
+    if (a.buyingPower < amount) throw new InsufficientBuyingPowerException("...");
+    a.buyingPower -= amount;
+    if (store.saveIfVersion(a)) return;
+}
+throw new IllegalStateException("cập nhật đồng thời, hết lượt thử");
+~~~
+Điểm hay sai: retry mà **không đọc lại** (dùng lại đối tượng cũ) thì chỉ ghi đè chậm hơn; và retry vô hạn thì tài khoản hot làm treo thread.
+
+### Trên production thật (Spring + JPA)
+| Cách | Khi nào dùng | Lưu ý |
+|---|---|---|
+| {{@Version}} + retry | Xung đột hiếm, đa số request khác tài khoản | Bắt {{ObjectOptimisticLockingFailureException}}, retry **cả transaction** (ví dụ Spring Retry đặt bên ngoài {{@Transactional}}) |
+| Update nguyên tử {{update margin_account set buying_power = buying_power - :amt where id = :id and buying_power >= :amt}} | Trừ buying power đơn giản | Kiểm tra số dòng cập nhật = 1, không cần đọc trước; nhanh nhất |
+| {{SELECT ... FOR UPDATE}} (pessimistic) | Tài khoản hot, xung đột thường xuyên | Giữ transaction ngắn, có lock timeout |
+
+Với ký quỹ, cách phổ biến nhất là update nguyên tử có điều kiện buying power, kèm bảng sổ cái ghi từng giao dịch với idempotency key. Đội cũ bỏ {{@Version}} vì "hay bị OptimisticLockException": exception đó chính là tín hiệu có xung đột thật; bỏ nó đi là đổi lỗi ồn ào lấy lỗi âm thầm mất tiền.
+
+### Phòng ngừa
+- Mọi read-modify-write trên tiền/tồn kho/buying power phải có một trong ba cơ chế trên; review code tìm mẫu "load, set, save".
+- Test đồng thời có chèn giao dịch vào giữa (như {{onLoad}} trong bài), không chỉ test tuần tự.
+- Job đối soát buying power với sổ cái hằng ngày, đây là thứ đã phát hiện ra bug.
+
+### Liên hệ phỏng vấn
+Câu "hai người cùng cập nhật một bản ghi" xuất hiện ở hầu hết vòng Senior. Hãy kể theo thứ tự: chỉ ra lost update, so sánh optimistic với pessimistic và update nguyên tử, rồi nói cách retry đúng (đọc lại, giới hạn lượt, retry cả transaction).
+
+> Senior tip: {{@Version}} là "còi báo" xung đột — không bao giờ tắt nó đi vì "hay ném exception". Exception đó chính là bằng chứng hệ thống đang bảo vệ dữ liệu. Nếu không muốn retry ở tầng service, hãy dùng update nguyên tử có điều kiện ở tầng repository; nhưng đừng bao giờ làm read-modify-write không có version.`,
+  related: ['jpa-004', 'scenario-008', 'scenario-119'],
+  tags: ['lost update', 'optimistic locking', '@Version', 'retry', 'margin', 'buying power']
+},
+{
+  id: 'bug-042',
+  title: 'Task bị xử lý 2 lần sau rebalance: consumer commit offset trước khi xử lý xong',
+  domain: 'Xử lý sự kiện / Kafka Consumer',
+  level: 'senior',
+  severity: 'P1',
+  minutes: 25,
+  story: `**Bối cảnh dự án:** Service {{OrderProcessor}} đọc topic {{order-events}} (sự kiện đơn hàng: tạo, hủy, thanh toán) và cập nhật trạng thái đơn trong DB. Consumer tắt auto-commit, tự {{commitSync}} để "chủ động kiểm soát offset". Mỗi lần poll lấy tối đa 5 record. Consumer group có 3 pod.
+  **Sự cố:** Sáng 25/11, Kubernetes scale-up thêm 1 pod (tổng 4 pod) gây **rebalance** (phân chia lại partition giữa các consumer). Trong lúc rebalance, một pod đang xử lý batch 5 record bị revoke partition. Pod đó đã {{commitSync}} offset mới **trước khi** xử lý xong 5 record đó. Khi partition được gán cho pod khác, pod mới đọc từ offset đã commit → **3 record trong batch cũ không bao giờ được xử lý**. Đối soát phát hiện 3 đơn hàng trạng thái {{CREATED}} mãi mà không chuyển sang {{PAID}} dù tiền đã thu.
+  **Nhiệm vụ của bạn:**
+  1. Đọc code {{OrderConsumer.pollAndProcess}} và log, tìm vì sao record bị mất khi rebalance xảy ra giữa chừng batch.
+  2. Sửa để: (a) **xử lý xong mới commit offset**; (b) consumer **idempotent** (bỏ qua record đã xử lý) dùng processed-id store mô phỏng bảng {{processed_events}}. Test mô phỏng rebalance: writer xử lý nửa batch rồi "crash", consumer mới đọc từ offset cũ phải xử lý nốt record còn lại, không xử lý lại record đã xong.
+  3. Bấm **Chạy test**: test tái hiện rebalance xác định.`,
+  artifacts: [
+    { name: 'order-processor.log', lang: 'text', content: `2026-11-25 08:12:44.118 INFO  OrderConsumer : polled 5 records partition=order-events-2 offsets=[15520..15524]
+2026-11-25 08:12:44.124 INFO  OrderConsumer : committed offset=15525 partition=order-events-2
+2026-11-25 08:12:44.131 INFO  OrderService  : processed ORDER-77120 status=PAID
+2026-11-25 08:12:44.145 INFO  OrderService  : processed ORDER-77121 status=PAID
+2026-11-25 08:12:44.150 # REBALANCE: pod order-processor-3 revoked partition order-events-2
+2026-11-25 08:12:44.160 # Pod order-processor-4 assigned partition order-events-2, starts from offset 15525
+2026-11-25 08:12:44.200 INFO  OrderConsumer : polled 5 records partition=order-events-2 offsets=[15525..15529]` },
+    { name: 'reconcile-2026-11-25.txt', lang: 'text', content: `ORDER RECONCILIATION 2026-11-25 06:00 ICT
+Orders with payment captured     : 1,240
+Orders stuck in CREATED state    : 3  (ORDER-77122, ORDER-77123, ORDER-77124)
+Missing events in order-events   : offsets 15522, 15523, 15524
+Root cause                       : consumer committed offset 15525 BEFORE processing offsets 15522..15524` },
+  ],
+  starter: `// ===== Hạ tầng (mô phỏng Kafka + DB đơn hàng, KHÔNG cần sửa) =====
+class Broker {   // một partition: danh sách record + offset đã commit của consumer group
+    final List<String> log = new ArrayList<>();
+    long committed = 0;
+    List<String> poll(long from, int max) {
+        int start = (int) from;
+        return new ArrayList<>(log.subList(start, Math.min(log.size(), start + max)));
+    }
+    void commitSync(long nextOffset) { committed = nextOffset; }
+}
+
+class OrderService {   // cập nhật trạng thái đơn; failOnce mô phỏng pod crash/rebalance đúng lúc xử lý record đó
+    final List<String> processed = new ArrayList<>();
+    final Set<String> failOnce = new HashSet<>();
+    void process(String orderId) {
+        if (failOnce.remove(orderId)) throw new IllegalStateException("rebalance while processing " + orderId);
+        processed.add(orderId);
+    }
+    boolean alreadyProcessed(String orderId) { return processed.contains(orderId); }
+}
+
+// ===== Code cần sửa =====
+class OrderConsumer {   // mỗi lần pod khởi động lại / rebalance là một instance mới, đọc tiếp từ offset đã commit
+    private final Broker broker;
+    private final OrderService orderService;
+    OrderConsumer(Broker broker, OrderService orderService) { this.broker = broker; this.orderService = orderService; }
+
+    /** Trả về số record đã nhận trong lần poll này (0 = hết). */
+    int pollAndProcess() {
+        long from = broker.committed;
+        List<String> records = broker.poll(from, 5);
+        if (records.isEmpty()) return 0;
+        broker.commitSync(from + records.size());     // BUG: commit TRƯỚC khi xử lý
+        for (String orderId : records) {
+            orderService.process(orderId);
+        }
+        return records.size();
+    }
+}`,
+  tests: `public class Main {
+    static int passed = 0, total = 0;
+    static void check(String name, boolean ok, String detail) {
+        total++;
+        if (ok) { passed++; System.out.println("PASS " + name); }
+        else System.out.println("FAIL " + name + ": " + detail);
+    }
+
+    // chạy consumer cho đến khi hết record; nếu "pod crash/rebalance" thì tạo consumer mới (restart) và chạy tiếp
+    static void runWithRebalance(Broker b, OrderService o) {
+        for (int restarts = 0; restarts < 5; restarts++) {
+            OrderConsumer c = new OrderConsumer(b, o);
+            try {
+                while (c.pollAndProcess() > 0) { }
+                return;
+            } catch (IllegalStateException crash) { /* pod rebalance/restart */ }
+        }
+    }
+
+    public static void main(String[] args) {
+        // 1. Xử lý bình thường không rebalance
+        Broker b1 = new Broker(); OrderService o1 = new OrderService();
+        for (int i = 1; i <= 5; i++) b1.log.add("ORDER-" + i);
+        runWithRebalance(b1, o1);
+        check("xu_ly_binh_thuong", o1.processed.equals(List.of("ORDER-1", "ORDER-2", "ORDER-3", "ORDER-4", "ORDER-5")) && b1.committed == 5,
+            "không có sự cố: phải xử lý đủ 5 đơn và commit offset 5, thực tế " + o1.processed + " offset=" + b1.committed);
+
+        // 2. Rebalance giữa batch: pod crash sau khi xử lý 2/5 record
+        Broker b = new Broker(); OrderService o = new OrderService();
+        for (int i = 1; i <= 7; i++) b.log.add("ORDER-" + i);
+        o.failOnce.add("ORDER-3");   // crash/rebalance khi đang xử lý ORDER-3
+        runWithRebalance(b, o);
+        List<String> missing = new ArrayList<>();
+        for (String id : b.log) if (!o.processed.contains(id)) missing.add(id);
+        check("rebalance_giua_batch_khong_mat_don", missing.isEmpty(), "sau rebalance phải xử lý đủ 7 đơn, bị mất " + missing);
+
+        long dup = o.processed.size() - new HashSet<>(o.processed).size();
+        check("khong_xu_ly_tien_hai_lan", dup == 0, "mỗi đơn chỉ được xử lý một lần, thực tế trùng " + dup + ": " + o.processed);
+
+        check("offset_cuoi_cung_dung", b.committed == 7, "xử lý xong phải commit offset 7, thực tế " + b.committed);
+
+        System.out.println("RESULT " + passed + "/" + total);
+    }
+}`,
+  reference: `class Broker {
+    final List<String> log = new ArrayList<>();
+    long committed = 0;
+    List<String> poll(long from, int max) {
+        int start = (int) from;
+        return new ArrayList<>(log.subList(start, Math.min(log.size(), start + max)));
+    }
+    void commitSync(long nextOffset) { committed = nextOffset; }
+}
+
+class OrderService {
+    final List<String> processed = new ArrayList<>();
+    final Set<String> failOnce = new HashSet<>();
+    void process(String orderId) {
+        if (failOnce.remove(orderId)) throw new IllegalStateException("rebalance while processing " + orderId);
+        processed.add(orderId);
+    }
+    boolean alreadyProcessed(String orderId) { return processed.contains(orderId); }
+}
+
+class OrderConsumer {
+    private final Broker broker;
+    private final OrderService orderService;
+    OrderConsumer(Broker broker, OrderService orderService) { this.broker = broker; this.orderService = orderService; }
+
+    int pollAndProcess() {
+        long from = broker.committed;
+        List<String> records = broker.poll(from, 5);
+        if (records.isEmpty()) return 0;
+        for (String orderId : records) {
+            // at-least-once: record có thể được giao lại sau rebalance, nên xử lý phải idempotent
+            if (!orderService.alreadyProcessed(orderId)) {
+                orderService.process(orderId);
+            }
+        }
+        broker.commitSync(from + records.size());     // FIX: commit SAU khi đã xử lý xong cả batch
+        return records.size();
+    }
+}`,
+  hints: [
+    'Nhìn log: "committed offset=15525" xuất hiện TRƯỚC khi ORDER-77122 (offset 15522) được xử lý. Sau rebalance, consumer mới đọc từ đâu?',
+    'Commit offset nghĩa là nói với Kafka "tôi đã xử lý xong mọi thứ trước offset này". Commit trước khi xử lý biến consumer thành at-most-once: chết giữa chừng là mất.',
+    'Chuyển commitSync xuống sau vòng xử lý. Khi đó record có thể được giao lại (at-least-once), nên phải bỏ qua đơn đã xử lý rồi (idempotent consumer).',
+  ],
+  rootCause: `**Commit offset trước khi xử lý (at-most-once).** Consumer gọi {{commitSync(from + records.size())}} ngay sau khi poll, tức là báo với Kafka "đã xử lý xong offset 15520..15524" khi thực tế chưa xử lý record nào. Pod bị revoke partition sau khi xử lý xong ORDER-77120 và ORDER-77121; khi partition được gán cho pod mới, consumer đọc từ offset đã commit (dòng {{starts from offset 15525}}), nên 3 record ở offset 15522, 15523, 15524 (ORDER-77122, 77123, 77124) **không bao giờ được đọc lại**. File đối soát khớp đúng: 15520, 15521 đã PAID, 15522..15524 MISSING. Lag về 0 nên không có cảnh báo nào.`,
+  fix: `### Cách sửa
+1. **Xử lý trước, commit sau**: gọi {{commitSync}} sau khi cả batch đã xử lý xong. Consumer chết/rebalance giữa chừng thì sau restart sẽ đọc lại từ offset cũ: không mất record (at-least-once).
+2. **Consumer idempotent**: at-least-once nghĩa là record có thể được giao **lại** (ORDER-1, ORDER-2 trong test được đọc lại sau restart). Kiểm tra đơn đã được xử lý chưa trước khi xử lý.
+
+### Trên production thật
+- Idempotency phải nằm **trong database, cùng transaction với việc cập nhật trạng thái đơn**: bảng {{processed_events(order_id PRIMARY KEY)}} hoặc unique constraint trên {{order_events.order_id}}. Kiểm tra bằng {{List.contains}} trong bộ nhớ như bài tập không đủ khi có nhiều pod.
+- Với Spring Kafka, dùng {{AckMode.RECORD}} hoặc {{BATCH}} (mặc định commit sau khi listener chạy xong), không tự commit trước khi xử lý.
+- Nếu xử lý bất đồng bộ (đẩy record sang thread pool), auto-commit có thể commit trước khi thread xử lý xong: cùng lỗi mất dữ liệu. Chỉ commit offset của những record đã hoàn tất.
+- Kafka "exactly-once" ({{transactional.id}}, {{read_committed}}) chỉ áp dụng khi kết quả được ghi lại vào Kafka. Ghi vào database thì vẫn cần at-least-once + idempotent.
+
+| Chiến lược | Khi consumer chết/rebalance | Phù hợp |
+|---|---|---|
+| Commit trước, xử lý sau | **Mất** record | Gần như không bao giờ (metric không quan trọng) |
+| Xử lý trước, commit sau | Record bị xử lý **lại** | Mặc định, kèm idempotency |
+| Lưu offset cùng transaction DB | Không mất, không trùng | Hệ thống tài chính cần chặt chẽ |
+
+### Phòng ngừa
+- Đối soát tự động hằng giờ giữa nguồn (cổng thanh toán) và sổ cái đơn hàng, không chỉ cuối ngày.
+- Test chaos: kill consumer giữa batch (như bài này) phải nằm trong test tích hợp.
+
+### Liên hệ phỏng vấn
+Câu hỏi kinh điển: "at-most-once, at-least-once, exactly-once khác nhau thế nào và bạn đạt được bằng cách nào?". Trả lời bằng thứ tự commit/xử lý, và nói rõ exactly-once với side effect bên ngoài Kafka thực chất là at-least-once + idempotency.
+
+> Senior tip: Đừng bao giờ commit offset trước khi xử lý xong — đó là nguyên nhân số 1 mất dữ liệu trong Kafka consumer. Và nhớ rằng "xử lý lại" là bình thường trong at-least-once; thiết kế idempotent từ đầu (unique constraint DB) thay vì cố gắng "không bao giờ xử lý lại".`,
+  related: ['microservices-009', 'microservices-031', 'microservices-022'],
+  tags: ['Kafka', 'offset commit', 'at-least-once', 'idempotency', 'rebalance', 'data loss']
 }
 );
