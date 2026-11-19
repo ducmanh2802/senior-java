@@ -7479,26 +7479,26 @@ Không có Schema Registry thì tôi tự quyết contract trong payload: mỗi 
   id: 'microservices-086',
   topic: 'microservices',
   level: 'senior',
-  q: 'Ban muon service ghi database roi phat event len Kafka khong mat event. So sanh Transactional Outbox chay poll bang outbox va CDC qua Debezium, va chon cai nao?',
-  a: `**Tom tat:** Transactional Outbox ghi business row va dong event vao bang outbox trong cung transaction DB, roi mot trinh gui rieng (polling relay hoac CDC nhu Debezium) day event ra Kafka. Neu khong dung outbox va goi Kafka sau commit DB, crash giua hai buoc se mat event hoac phat event "ao" (du lieu khong ton tai nhung event da co) — day la dual-write problem. CDC doc transaction log cua DB (WAL PostgreSQL / binlog MySQL) nen khong them tai query va khong phai thay doi code domain; polling relay don gian hon nhung query bang lien thuoc. Chon CDC khi khong muon van hanh them job query lien thuoc va co the van hanh Kafka Connect; chon polling khi team nho, khong muon them he thong.
+  q: 'Bạn muốn service ghi database rồi phát event lên Kafka không mất event. So sánh Transactional Outbox chạy poll bảng outbox và CDC qua Debezium, và chọn cái nào?',
+  a: `**Tóm tắt:** Transactional Outbox ghi business row và dòng event vào bảng outbox trong cùng transaction DB, rồi một trình gửi riêng (polling relay hoặc CDC như Debezium) đẩy event ra Kafka. Nếu không dùng outbox và gọi Kafka sau commit DB, crash giữa hai bước sẽ mất event hoặc phát event "ảo" (dữ liệu không tồn tại nhưng event đã có) — đây là dual-write problem. CDC đọc transaction log của DB (WAL PostgreSQL / binlog MySQL) nên không thêm tải query và không phải thay đổi code domain; polling relay đơn giản hơn nhưng query bảng liên tục. Chọn CDC khi không muốn vận hành thêm job query liên tục và có thể vận hành Kafka Connect; chọn polling khi team nhỏ, không muốn thêm hệ thống.
 
-### Thuat ngu
-- **Dual write**: ghi vao hai he thong doc lap (DB va Kafka broker) khong co transaction chung.
-- **Outbox table**: bang trong cung DB nghiep vu chua su kien cho gui.
-- **Polling relay**: job dinh ky doc bang outbox (SELECT ... FOR UPDATE SKIP LOCKED), day len Kafka, roi danh dau da gui. Do tre khoang 100ms-1s.
-- **CDC (Change Data Capture)**: bat thay doi du lieu bang cach doc log cua DB, khong phai query bang.
-- **WAL / binlog**: nhat ky ghi truoc cua PostgreSQL / nhat ky nhi phan cua MySQL, moi thay doi deu duoc ghi vao day truoc.
-- **Debezium**: bo CDC connector chay tren Kafka Connect, doc WAL/binlog va publish thanh message Kafka.
-- **Replication slot**: dau trang cua PostgreSQL ghi nho consumer logical replication da doc toi dau.
-- **Kafka Connect**: framework chay connector (nguon/destination), luu offset cua connector vao topic noi bo.
-- **Outbox Event Router**: SMT cua Debezium bien dong outbox thanh record Kafka, chon topic theo loai aggregate, dat Kafka key = aggregate ID.
-- **Snapshot lan dau**: khi Debezium khoi dau lan dau, no doc toan bo bang hien tai de consumer khong bo lot du lieu da co.
+### Thuật ngữ
+- **Dual write**: ghi vào hai hệ thống độc lập (DB và Kafka broker) không có transaction chung.
+- **Outbox table**: bảng trong cùng DB nghiệp vụ chứa sự kiện chờ gửi.
+- **Polling relay**: job định kỳ đọc bảng outbox (SELECT ... FOR UPDATE SKIP LOCKED), đẩy lên Kafka, rồi đánh dấu đã gửi. Độ trễ khoảng 100ms-1s.
+- **CDC (Change Data Capture)**: bắt thay đổi dữ liệu bằng cách đọc log của DB, không phải query bảng.
+- **WAL / binlog**: nhật ký ghi trước của PostgreSQL / nhật ký nhị phân của MySQL, mọi thay đổi đều được ghi vào đây trước.
+- **Debezium**: bộ CDC connector chạy trên Kafka Connect, đọc WAL/binlog và publish thành message Kafka.
+- **Replication slot**: dấu trang của PostgreSQL ghi nhớ consumer logical replication đã đọc tới đâu.
+- **Kafka Connect**: framework chạy connector (nguồn/đích), lưu offset của connector vào topic nội bộ.
+- **Outbox Event Router**: SMT của Debezium biến dòng outbox thành record Kafka, chọn topic theo loại aggregate, đặt Kafka key = aggregate ID.
+- **Snapshot lần đầu**: khi Debezium khởi đầu lần đầu, nó đọc toàn bộ bảng hiện tại để consumer không bỏ lỡ dữ liệu đã có.
 
-### Co che outbox (tung buoc)
-1. API gui don hang: trong mot transaction, insert bang orders va insert dong outbox (event_id, aggregate_type, aggregate_id, type, payload). Ca hai cung commit hoac cung rollback -> khong con dual write.
-2. Trinh gui doc outbox: (a) Polling: job SELECT ... FROM outbox WHERE sent = false FOR UPDATE SKIP LOCKED LIMIT 100 de nhieu instance khong lay trung dong, day len Kafka, roi cap nhat sent = true (hoac xoa dong). Do tre khoang 100ms-1s. (b) CDC Debezium: doc WAL qua replication slot, khong them tai query, do tre thap, Outbox Event Router chon topic va key = aggregate_id.
-3. Gui xong Kafka moi danh dau da gui (polling) hoac luu offset connector (CDC). Neu crash giua gui va danh dau -> lan sau gui lai, tuc la trung chung khong mat; consumer phai idempotent.
-4. Kafka key = aggregate_id de moi event cua cung mot don vao cung partition, giu thu tu.
+### Cơ chế outbox (từng bước)
+1. API gửi đơn hàng: trong một transaction, insert bảng orders và insert dòng outbox (event_id, aggregate_type, aggregate_id, type, payload). Cả hai cùng commit hoặc cùng rollback -> không còn dual write.
+2. Trình gửi đọc outbox: (a) Polling: job SELECT ... FROM outbox WHERE sent = false FOR UPDATE SKIP LOCKED LIMIT 100 để nhiều instance không lấy trùng dòng, đẩy lên Kafka, rồi cập nhật sent = true (hoặc xóa dòng). Độ trễ khoảng 100ms-1s. (b) CDC Debezium: đọc WAL qua replication slot, không thêm tải query, độ trễ thấp, Outbox Event Router chọn topic và key = aggregate_id.
+3. Gửi xong Kafka mới đánh dấu đã gửi (polling) hoặc lưu offset connector (CDC). Nếu crash giữa gửi và đánh dấu -> lần sau gửi lại, tức là trùng chứ không mất; consumer phải idempotent.
+4. Kafka key = aggregate_id để mọi event của cùng một đơn vào cùng partition, giữ thứ tự.
 
 ~~~java
 @Transactional
@@ -7506,7 +7506,7 @@ public void placeOrder(OrderCmd cmd) {
     Order agg = Order.create(cmd);
     orderRepo.save(agg);
     outboxRepo.save(OutboxEvent.of("Order", agg.getId(), "order.created", toJson(agg)));
-    // commit: cung don hang va cung dong outbox cung co, hoac khong dong nao
+    // commit: cùng đơn hàng và cùng dòng outbox cùng có, hoặc không dòng nào
 }
 ~~~
 
@@ -7519,40 +7519,40 @@ CREATE TABLE outbox (
     payload JSONB NOT NULL,
     created_at TIMESTAMP NOT NULL
 );
--- Outbox Event Router doc cot aggregate_type de chon topic, aggregate_id lam Kafka key
+-- Outbox Event Router đọc cột aggregate_type để chọn topic, aggregate_id làm Kafka key
 ~~~
 
-### Outbox event la contract on dinh
-Khong nen serialize truc tiep entity/domain class vao payload (thay doi code domain lam hong event cu). Dung DTO event rieng, co truong schemaVersion, va giu field trong thoi gian dai. Consumer khong nen map truc tiep event vao entity cua minh.
+### Outbox event là contract ổn định
+Không nên serialize trực tiếp entity/domain class vào payload (thay đổi code domain làm hỏng event cũ). Dùng DTO event riêng, có trường schemaVersion, và giữ field trong thời gian dài. Consumer không nên map trực tiếp event vào entity của mình.
 
-### Bang mot ho nhieu bang outbox
-| Cach | Uu diem | Nhuan diem |
+### Bảng một hay nhiều bảng outbox
+| Cách | Ưu điểm | Nhược điểm |
 |---|---|---|
-| Mot bang outbox chung | Quan ly don, job dong mot noi | Tat ca event cung luong, cot type phan loai |
-| Bang outbox moi aggregate | Ro rang theo aggregate, dong rieng | Nhieu bang phai quan ly |
+| Một bảng outbox chung | Quản lý đơn, job đồng một nơi | Tất cả event cùng lượng, cột type phân loại |
+| Bảng outbox mỗi aggregate | Rõ ràng theo aggregate, dòng riêng | Nhiều bảng phải quản lý |
 
-### Khi chon polling vs CDC
-- **Polling relay**: team nho, khong muon cai Kafka Connect, chap nhan duoc do tre 100ms-1s va tai query them cho DB.
-- **CDC Debezium**: khong them tai query DB, do tre thap, khong doi code domain, nhung phai van hanh Kafka Connect va theo doi replication slot (slot bi bo roi lau lam WAL phin, dia DB day).
+### Khi chọn polling vs CDC
+- **Polling relay**: team nhỏ, không muốn cài Kafka Connect, chấp nhận được độ trễ 100ms-1s và tải query thêm cho DB.
+- **CDC Debezium**: không thêm tải query DB, độ trễ thấp, không đổi code domain, nhưng phải vận hành Kafka Connect và theo dõi replication slot (slot bị bỏ rơi lâu làm WAL phình, đĩa DB đầy).
 
-### Loi hay gap
-1. Outbox phin to: hang tram trieu dong, polling chay cham. Dong dong da gui theo TTL 7-30 ngay; voi CDC co the xoa ngay trong cung transaction vi Debezium van doc su kien INSERT tu WAL.
-2. Replication slot bi bo roi: connector dung lau, PostgreSQL giu WAL khong xoa duoc, dia day. Dat alert theo lag cua slot va gioi han max_slot_wal_keep_size.
-3. Consumer khong idempotent: connector restart gui lai event, tien duoc cong hai lan. Consumer dedup theo event_id trong cung transaction DB (xem cau idempotent consumer).
-4. Them cot outbox khong cap nhat router: header/field moi khong xuat hien o Kafka. Viet integration test kiem tra mapping sau moi thay doi.
-5. Payload chua du lieu nhat cam khong can thiet: outbox la contract ra ngoai, khong rot toan bo entity.
+### Lỗi hay gặp
+1. Outbox phình to: hàng trăm triệu dòng, polling chạy chậm. Dọn dòng đã gửi theo TTL 7-30 ngày; với CDC có thể xóa ngay trong cùng transaction vì Debezium vẫn đọc được sự kiện INSERT từ WAL.
+2. Replication slot bị bỏ rơi: connector dừng lâu, PostgreSQL giữ WAL không xóa được, đĩa đầy. Đặt alert theo lag của slot và giới hạn max_slot_wal_keep_size.
+3. Consumer không idempotent: connector restart gửi lại event, tiền được cộng hai lần. Consumer dedup theo event_id trong cùng transaction DB (xem câu idempotent consumer).
+4. Thêm cột outbox không cập nhật router: header/field mới không xuất hiện ở Kafka. Viết integration test kiểm tra mapping sau mỗi thay đổi.
+5. Payload chứa dữ liệu nhạy cảm không cần thiết: outbox là contract ra ngoài, không rớt toàn bộ entity.
 
-### Vi du doi thuc
-He thong thuong mai dien tu 50 dev, Order Service ghi Postgre va phat su kien don hang len Kafka topic order.events. Nam 2023, deploy moi them field discountId vao Order aggregate, lap trinh vien viet orderRepo.save(order); kafkaTemplate.send(...).get();. Ket qua: 1% request crash giua hai buoc, event mat; 0,5% nguoc lai, send thanh cong nhung transaction bao ngoai rollback -> event ao (consumer nhan don khong ton tai trong DB). Trieu chung: dashboard doanh so thieu 1,5% don, customer service khong tim thay don. Dieu tra: log thay KafkaTimeoutException; audit log thay don co nhung event khong co. Nguyen goc: dual-write problem. Xu ly: refactor dung Transactional Outbox, ghi don va dong outbox trong cung @Transactional, Debezium Outbox Event Router doc WAL publish order.events voi key = orderId, consumer idempotent. Ket qua: sau 2 tuan khong con event mat hay event ao; dashboard doanh so chinh xac 99,99%; do tre them khoang 100ms do relay.
+### Ví dụ đời thực
+Hệ thống thương mại điện tử 50 dev, Order Service ghi Postgre và phát sự kiện đơn hàng lên Kafka topic order.events. Năm 2023, deploy mới thêm field discountId vào Order aggregate, lập trình viên viết orderRepo.save(order); kafkaTemplate.send(...).get();. Kết quả: 1% request crash giữa hai bước, event mất; 0,5% ngược lại, send thành công nhưng transaction bao ngoài rollback -> event ảo (consumer nhận đơn không tồn tại trong DB). Triệu chứng: dashboard doanh số thiếu 1,5% đơn, customer service không tìm thấy đơn. Điều tra: log thấy KafkaTimeoutException; audit log thấy đơn có những event không có. Nguyên gốc: dual-write problem. Xử lý: refactor dùng Transactional Outbox, ghi đơn và dòng outbox trong cùng @Transactional, Debezium Outbox Event Router đọc WAL publish order.events với key = orderId, consumer idempotent. Kết quả: sau 2 tuần không còn event mất hay event ảo; dashboard doanh số chính xác 99,99%; độ trễ thêm khoảng 100ms do relay.
 
-### Tra loi mau khi phan vien
-Ghi database va publish Kafka la dual write vi hai he thong khong co transaction chung. Toi dung Transactional Outbox: trong cung transaction, ghi don hang va dong outbox chua su kien. Sau do Debezium doc WAL, Outbox Event Router day event ra topic voi key la aggregateId de giu thu tu. Neu khong muon van hanh Kafka Connect, polling voi SKIP LOCKED cung duoc. Vi Kafka Connect chi luu offset sau khi Kafka xac nhan, restart connector co the gui lai nhung khong mat, nen consumer phai idempotent. Event trong outbox la contract rieng, khong serialize truc tiep entity domain. Theo doi lag connector va kich thuoc WAL bi slot giu, vi connector chet la business cham theo.
+### Trả lời mẫu khi phỏng vấn
+Ghi database và publish Kafka là dual write vì hai hệ thống không có transaction chung. Tôi dùng Transactional Outbox: trong cùng transaction, ghi đơn hàng và dòng outbox chứa sự kiện. Sau đó Debezium đọc WAL, Outbox Event Router đẩy event ra topic với key là aggregateId để giữ thứ tự. Nếu không muốn vận hành Kafka Connect, polling với SKIP LOCKED cũng được. Vì Kafka Connect chỉ lưu offset sau khi Kafka xác nhận, restart connector có thể gửi lại nhưng không mất, nên consumer phải idempotent. Event trong outbox là contract riêng, không serialize trực tiếp entity domain. Theo dõi lag connector và kích thước WAL bị slot giữ, vì connector chết là business chậm theo.
 
-> Senior tip: CDC la them mot thanh phan phai van hanh nhu service thich — theo doi trang thai connector, do tre va kich thuoc WAL bi slot giu, khong chi de connector chay yen lang.`,
+> Senior tip: CDC là thêm một thành phần phải vận hành như service thật — theo dõi trạng thái connector, độ trễ và kích thước WAL bị slot giữ, không chỉ để connector chạy yên lặng.`,
   follow: [
-    'Polling relay va CDC chon cai nao khi team it nguoi va khong muon them he thong?',
-    'Replication slot bi bo roi lau dau hieu ra gi, xu ly the nao?',
-    'Event trong outbox co phai serialize truc tiep entity domain duoc khong, tai sao?'
+    'Polling relay và CDC chọn cái nào khi team ít người và không muốn thêm hệ thống?',
+    'Replication slot bị bỏ rơi lâu dấu hiệu ra gì, xử lý thế nào?',
+    'Event trong outbox có phải serialize trực tiếp entity domain được không, tại sao?'
   ],
   tags: ['Kafka', 'outbox', 'CDC', 'Debezium', 'dual-write']
 },
@@ -7560,56 +7560,56 @@ Ghi database va publish Kafka la dual write vi hai he thong khong co transaction
   id: 'microservices-087',
   topic: 'microservices',
   level: 'senior',
-  q: 'Doi tac hoi: he thong cua ban co dam bao exactly-once khong? Ban tra loi the nao, va trong thuc te Java backend lam gi de dat hieu qua exactly-once?',
-  a: `**Tom tat:** Exactly-once end-to-end qua mang khong the (bien the bai toan Hai Tuong: ben gui khong phan biet duoc "bi mat message" voi "da toi nhung phan hoi bi mat"). Thuc te he thong chon at-least-once (khong mat message, co the trung) cong consumer idempotent = hieu qua exactly-once: message co the den hai lan nhung nghiep vu chi xay ra mot lan. Kafka transaction chi cho exactly-once khi ca dau vao va dau ra deu nam trong Kafka (vi du Kafka Streams), khong bao duoc database hoac API ngoai.
+  q: 'Đối tác hỏi: hệ thống của bạn có đảm bảo exactly-once không? Bạn trả lời thế nào, và trong thực tế Java backend làm gì để đạt hiệu quả exactly-once?',
+  a: `**Tóm tắt:** Exactly-once end-to-end qua mạng không thể (biến thể bài toán Hai Tướng: bên gửi không phân biệt được "bị mất message" với "đã tới nhưng phản hồi bị mất"). Thực tế hệ thống chọn at-least-once (không mất message, có thể trùng) cộng consumer idempotent = hiệu quả exactly-once: message có thể đến hai lần nhưng nghiệp vụ chỉ xảy ra một lần. Kafka transaction chỉ cho exactly-once khi cả đầu vào và đầu ra đều nằm trong Kafka (ví dụ Kafka Streams), không bao được database hay API ngoài.
 
-### Thuat ngu
-- **Exactly-once end-to-end**: message duoc xu ly dung mot lan tu dau den cuoi — khong the bao bo chi bang broker khi co mang giua cac he thong.
-- **At-least-once**: message duoc xu ly it nhat mot lan, co the bi xu ly lai — mo hinh mac dinh thuc te cua Kafka/RabbitMQ.
-- **Hieu qua exactly-once (exactly-once effect)**: message co the den nhieu lan nhung he quyet nghiep vu chi xay ra mot lan, nhu consumer idempotent.
-- **Idempotent consumer**: xu ly cung message nhieu lan cho ket qua giong mot lan (dedup theo event_id hoac natural key upsert).
-- **Kafka transaction**: nhom nhieu ghi vao Kafka + commit offset thanh mot don vi nguyen tu, chi trong pham vi Kafka.
-- **read_committed**: che do consumer chi doc message thuoc transaction da commit.
-- **Hai Tuong (Two Generals)**: bai toan phan lan cho thuc hai ben khong the thong nhat boan luon qua mang khong dang tin cay.
+### Thuật ngữ
+- **Exactly-once end-to-end**: message được xử lý đúng một lần từ đầu đến cuối — không thể bảo chỉ bằng broker khi có mạng giữa các hệ thống.
+- **At-least-once**: message được xử lý ít nhất một lần, có thể bị xử lý lại — mô hình mặc định thực tế của Kafka/RabbitMQ.
+- **Hiệu quả exactly-once (exactly-once effect)**: message có thể đến nhiều lần nhưng hệ quả nghiệp vụ chỉ xảy ra một lần, như consumer idempotent.
+- **Idempotent consumer**: xử lý cùng message nhiều lần cho kết quả giống một lần (dedup theo event_id hoặc natural key upsert).
+- **Kafka transaction**: nhóm nhiều ghi vào Kafka + commit offset thành một đơn vị nguyên tử, chỉ trong phạm vi Kafka.
+- **read_committed**: chế độ consumer chỉ đọc message thuộc transaction đã commit.
+- **Hai Tướng (Two Generals)**: bài toán phân lăn cho thực hai bên không thể thống nhất báo an luôn qua mạng không đáng tin cậy.
 
-### Ba muc do dam bao (bang)
-| Muc | Cach dat | He quyet | Dung khi nao |
+### Ba mức độ đảm bảo (bảng)
+| Mức | Cách đạt | Hệ quả | Dùng khi nào |
 |---|---|---|---|
-| At-most-once | commit offset truoc khi xu ly | co the mat message | metric lay sample, mat duoc |
-| At-least-once | xu ly xong moi commit offset | co the trung | nghiep vu tien, don hang (kem idempotent) |
-| Exactly-once trong Kafka | transaction producer + read_committed | dung mot lan neu dau vao/ra deu la Kafka | Kafka Streams consume-transform-produce |
-| Hieu qua exactly-once | at-least-once + consumer idempotent | trung o cap message, khong trung o nghiep vu | consumer ghi database (thuc te pho bien nhat) |
+| At-most-once | commit offset trước khi xử lý | có thể mất message | metric lấy sample, mất được |
+| At-least-once | xử lý xong mới commit offset | có thể trùng | nghiệp vụ tiền, đơn hàng (kèm idempotent) |
+| Exactly-once trong Kafka | transaction producer + read_committed | đúng một lần nếu đầu vào/ra đều là Kafka | Kafka Streams consume-transform-produce |
+| Hiệu quả exactly-once | at-least-once + consumer idempotent | trùng ở cấp message, không trùng ở nghiệp vụ | consumer ghi database (thực tế phổ biến nhất) |
 
-### Vi sao crash giua chuc van gay trung
-1. Consumer doc message offset 41, ghi database thanh cong.
-2. Pod crash truoc commit offset 42.
-3. Sau restart, consumer doc lai tu offset 41 -> message 41 duoc xu ly lan hai.
-Ghi database va commit offset Kafka la hai he thong khac nhau (giong dual write), nen khong the tranh hoan toan duoc trung o cap message.
+### Vì sao crash giữa chừng gây trùng
+1. Consumer đọc message offset 41, ghi database thành công.
+2. Pod crash trước commit offset 42.
+3. Sau restart, consumer đọc lại từ offset 41 -> message 41 được xử lý lần hai.
+Ghi database và commit offset Kafka là hai hệ thống khác nhau (giống dual write), nên không thể tránh hoàn toàn được trùng ở cấp message.
 
-### Lam gi trong thuc te (Java backend)
-1. Chon at-least-once: xu ly xong moi commit offset (Spring Kafka mac dinh tat auto-commit).
-2. Consumer idempotent: bang processed_event(event_id PRIMARY KEY) hoac upsert theo natural key, cung transaction database voi business write.
-3. Idempotency key phia client cho lenh ghi tien (UUID gui kem header, database insert UNIQUE, luu response trong cung transaction).
-4. Kafka transaction chi dung khi pipeline toan bo nam trong Kafka (Kafka Streams), consumer dat isolation.level=read_committed.
-5. Lap chung: gan event_id xuat hien log, database va trace; theo doi metric duplicate_suppressed (so ban trung bi chan moi phut); doi soat database voi he thong ngoai dinh ky.
+### Làm gì trong thực tế (Java backend)
+1. Chọn at-least-once: xử lý xong mới commit offset (Spring Kafka mặc định tắt auto-commit).
+2. Consumer idempotent: bảng processed_event(event_id PRIMARY KEY) hoặc upsert theo natural key, cùng transaction database với business write.
+3. Idempotency key phía client cho lệnh ghi tiền (UUID gửi kèm header, database insert UNIQUE, lưu response trong cùng transaction).
+4. Kafka transaction chỉ dùng khi pipeline toàn bộ nằm trong Kafka (Kafka Streams), consumer đặt isolation.level=read_committed.
+5. Lập chứng: gắn event_id xuất hiện log, database và trace; theo dõi metric duplicate_suppressed (số bản trùng bị chặn mỗi phút); đối soát database với hệ thống ngoài định kỳ.
 
-### Loi hay gap
-1. Tin Kafka transaction bao het database: Kafka commit nhung database rollback (hoac nguoc lai) -> du lieu lech. Chon mot nguon su that, dung inbox/outbox.
-2. Commit offset truoc xu ly xong: crash lam mat message, chi dung cho du lieu mat duoc (metric lay sample).
-3. Idempotency key TTL qua ngan: ban trung quay lai sau key het han. TTL phai lon hon thoi gian retry/replay toi da.
-4. Side effect ngoai database (goi API thu ba) chua idempotency key: crash giua hai buoc = thuc hien hai lan thuc. Truyen key sang thu ba hoac ghi trang thai PENDING roi doi soat.
+### Lỗi hay gặp
+1. Tin Kafka transaction bao hết database: Kafka commit nhưng database rollback (hoặc ngược lại) -> dữ liệu lệch. Chọn một nguồn sự thật, dùng inbox/outbox.
+2. Commit offset trước xử lý xong: crash làm mất message, chỉ dùng cho dữ liệu mất được (metric lấy sample).
+3. Idempotency key TTL quá ngắn: bản trùng quay lại sau key hết hạn. TTL phải lớn hơn thời gian retry/replay tối đa.
+4. Side effect ngoài database (gọi API thứ ba) chưa idempotency key: crash giữa hai bước = thực hiện hai lần thật. Truyền key sang thứ ba hoặc ghi trạng thái PENDING rồi đối soát.
 
-### Vi du doi thuc
-He thong dat phong khach san khoang 2.000 su kien booking.created moi phut. Mot dot scaling lam consumer pod bi kill OOM ngay sau ghi database nhung truoc commit offset. Trieu chung: 0,9% dat phong bi tao hai don cung ma tham chieu, khach phan lan bi tru tien hai lan; khoang 45 trieu dong don hang trung trong 3 gio. Dieu tra: log thay cung eventId duoc xu ly hai lan, offset khong tien dan; khong co bang processed_event. Xu ly: them bang processed_event(event_id PRIMARY KEY) cung transaction voi insert dat phong, commit offset sau DB commit; them metric duplicate_suppressed. Ket qua: don trung xuong 0, metric duplicate_supressed on dinh khoang 0,4%/phut (biet he thong dang retry an toan), doi soat database voi cang thanh toan khop 100%.
+### Ví dụ đời thực
+Hệ thống đặt phòng khách sạn khoảng 2.000 sự kiện booking.created mỗi phút. Một đợt scaling làm consumer pod bị kill OOM ngay sau ghi database nhưng trước commit offset. Triệu chứng: 0,9% đặt phòng bị tạo hai đơn cùng mã tham chiếu, khách phàn nàn bị trừ tiền hai lần; khoảng 45 triệu đồng đơn hàng trùng trong 3 giờ. Điều tra: log thấy cùng eventId được xử lý hai lần, offset không tiến dần; không có bảng processed_event. Xử lý: thêm bảng processed_event(event_id PRIMARY KEY) cùng transaction với insert đặt phòng, commit offset sau DB commit; thêm metric duplicate_suppressed. Kết quả: đơn trùng xuống 0, metric duplicate_suppressed ổn định khoảng 0,4%/phút (biết hệ thống đang retry an toàn), đối soát database với cổng thanh toán khớp 100%.
 
-### Tra loi mau khi phan vien
-Exactly-once thuc su tu dau den cuoi qua mang khong the: ben gui khong phan biet duoc message bi mat voi da toi nhung phan hoi bi mat. Thuc te toi chon at-least-once: xu ly xong moi commit offset, chap nhan message co the den hai lan. De khong xu ly lap nghiep vu, consumer insert event_id vao bang processed_event cung transaction database voi business write, trung thi bo qua. Kafka transaction chi cho exactly-once neu ca vao va ra deu la Kafka (nhu Kafka Streams), khong bao duoc PostgreSQL hoac API ngoai. Toi lap chung bang event_id xuat hien log, database va trace, theo doi metric duplicate_supressed, va doi soat dinh ky. Neu chi mot ban trung qua cao (vi tien), thiet ke idempotency key tu client va doi soat he thong ngoai. Kinh nghiem: so ban trung bi chan khong 0 la binh thuong, bang 0 co nghia ban chua bat retry.
+### Trả lời mẫu khi phỏng vấn
+Exactly-once thực sự từ đầu đến cuối qua mạng không thể: bên gửi không phân biệt được message bị mất với đã tới nhưng phản hồi bị mất. Thực tế tôi chọn at-least-once: xử lý xong mới commit offset, chấp nhận message có thể đến hai lần. Để không xử lý lặp nghiệp vụ, consumer insert event_id vào bảng processed_event cùng transaction database với business write, trùng thì bỏ qua. Kafka transaction chỉ cho exactly-once nếu cả vào và ra đều là Kafka (như Kafka Streams), không bao được PostgreSQL hay API ngoài. Tôi lập chứng bằng event_id xuất hiện log, database và trace, theo dõi metric duplicate_suppressed, và đối soát định kỳ. Nếu chỉ một bản trùng quá cao (vì tiền), thiết kế idempotency key từ client và đối soát hệ thống ngoài. Kinh nghiệm: số bản trùng bị chặn không 0 là bình thường, bằng 0 có nghĩa bạn chưa bật retry.
 
-> Senior tip: hieu qua exactly-once duoc mua bang chi phi consumer idempotent (bang dedup, TTL, doi soat). Tra loi don tac "co/khong" voi doi tac khong co nghia; phai noi ro pham vi va chi phi ho tro.`,
+> Senior tip: hiệu quả exactly-once được mua bằng chi phí consumer idempotent (bảng dedup, TTL, đối soát). Trả lời đơn tác "có/không" với đối tác không có nghĩa; phải nói rõ phạm vi và chi phí hỗ trợ.`,
   follow: [
-    'Tai sao exactly-once end-to-end qua mang khong the?',
-    'Kafka transaction bao duoc database khong, tai sao?',
-    'Metric duplicate_supressed bang 0 co nghia la tot hay xau?'
+    'Tại sao exactly-once end-to-end qua mạng không thể?',
+    'Kafka transaction bao được database không, tại sao?',
+    'Metric duplicate_suppressed bằng 0 có nghĩa là tốt hay xấu?'
   ],
   tags: ['Kafka', 'exactly once', 'at least once', 'idempotency']
 },
