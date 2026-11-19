@@ -7687,4 +7687,313 @@ Kết quả: di dời hết 8 service trong 6 tuần, **zero downtime**, lỗi d
   ],
   tags: ['migration', 'Java-21', 'Spring-Boot-3', 'feature-flag', 'STAR', 'leadership']
 },
+{
+  id: 'behavioral-060',
+  topic: 'behavioral',
+  level: 'senior',
+  q: 'Sau khi xử lý xong sự cố production, bạn viết RCA (Root Cause Analysis) như thế nào? Cấu trúc tài liệu, phương pháp 5 Whys, và làm sao để RCA không thành văn kiện "cho có" mà thực sự ngăn chặn lặp lại?',
+  a: `**Tóm tắt:** RCA không phải là văn bản mô tả sự cố — là **công cụ thay đổi hệ thống**. Một RCA tốt có 4 phần bắt buộc: timeline có mốc giờ chính xác, phân tích nguyên nhân gốc bằng 5 Whys (không dừng ở "ai sai"), danh sách hành động khắc phục (corrective actions) có chủ sở hữu và hạn chót, và cơ chế kiểm tra hiệu quả sau triển khai. Mục tiêu: cùng một nguyên nhân không bao giờ gây sự cố lần hai.
+
+### Interviewer muốn đánh giá gì
+- Bạn có phân biệt được **nguyên nhân gần** (proximate cause — ví dụ: code ném exception) và **nguyên nhân gốc** (root cause — ví dụ: thiếu test kết hợp với thiếu circuit breaker) không.
+- Bạn có dùng **5 Whys** có kỷ luật hay chỉ hỏi "tại sao" một lần rồi dừng.
+- Bạn có chuyển RCA thành **hành động cụ thể, có người chịu trách nhiệm, có deadline** không.
+- Bạn có thiết lập **kiểm tra hiệu quả** (verification) sau khi fix không.
+
+### Cấu trúc RCA chuẩn (dùng ngay trong công ty)
+| Phần | Nội dung bắt buộc | Ví dụ |
+|---|---|---|
+| 1. Tóm tắt sự cố | Dịch vụ nào, thời gian, tác động (user bị ảnh hưởng bao nhiêu, doanh thu mất bao nhiêu) | "API thanh toán lỗi 503 từ 14:12–14:37, 1.200 đơn thất bại, ước tính mất 45 triệu VNĐ" |
+| 2. Timeline | Mốc giờ chính xác (theo UTC hoặc múi giờ cố định), ai làm gì, hệ thống phản ứng ra sao | "14:12:03 — alert P99 latency > 5s; 14:15 — on-call xác nhận; 14:20 — rollback v2.3.1; 14:37 — dịch vụ ổn định" |
+| 3. Phân tích nguyên nhân | Dùng 5 Whys, ghi rõ từng cấp, kết thúc bằng nguyên nhân hệ thống (process, tooling, kiến trúc) | Xem bảng 5 Whys bên dưới |
+| 4. Hành động khắc phục | Mỗi action: mô tả, chủ sở hữu (owner), hạn chót (due date), trạng thái | "Thêm circuit breaker cho payment gateway — @backend-lead — 2026-02-15 — Done" |
+| 5. Kiểm tra hiệu quả | Cách đo xem hành động có hiệu quả không, thời điểm review | "Sau 2 tuần, chạy load test giả lập gateway chậm, P99 < 800ms" |
+| 6. Liên kết | Link alert, log, dashboard, PR fix, ticket Jira | |
+
+### 5 Whys — ví dụ thực tế từ sự cố thanh toán
+> **Vấn đề:** API thanh toán trả 503 trong 25 phút, 1.200 đơn thất bại.
+>
+> 1. **Tại sao API trả 503?** Vì {{PaymentService}} ném {{TimeoutException}} khi gọi {{PaymentGatewayClient}}.
+> 2. **Tại sao client bị timeout?** Vì gateway đối tác phản hồi chậm (trung bình 12s) trong khi client cấu hình timeout 5s.
+> 3. **Tại sao gateway chậm?** Vì đối tác đang deploy phiên bản mới, gây nghẽn luồng xác thực 3D Secure.
+> 4. **Tại sao chúng ta không chịu đựng được?** Vì **không có circuit breaker** — mọi request đều chờ hết timeout, làm cạn thread pool Tomcat, lan sang các endpoint khác.
+> 5. **Tại sao không có circuit breaker?** Vì **checklist review code và thiết kế không bắt buộc circuit breaker cho dependency ngoài**, và team chưa từng chịu sự cố kiểu này để biết rủi ro.
+>
+> **Nguyên nhân gốc (systemic):** Quy trình kỹ thuật thiếu yêu cầu bắt buộc về resilience pattern (circuit breaker, timeout, retry, bulkhead) cho mọi external dependency.
+
+### Chuyển 5 Whys thành hành động (corrective actions)
+| Whys cấp độ | Hành động | Owner | Due date | Loại |
+|---|---|---|---|---|
+| 1 (code) | Thêm Resilience4j CircuitBreaker + fallback trả mã lỗi thân thiện | @dev-team | 2026-02-10 | Quick fix |
+| 2 (config) | Điều chỉnh timeout theo SLA gateway thực tế (p99 + buffer) | @dev-team | 2026-02-10 | Quick fix |
+| 3 (monitoring) | Thêm alert "circuit breaker OPEN" + dashboard latency p99 theo dependency | @platform | 2026-02-15 | Detect |
+| 4 (process) | Cập nhật **Design Review Checklist**: bắt buộc có resilience pattern cho external call | @tech-lead | 2026-02-20 | Prevent |
+| 5 (culture) | Workshop chia sẻ sự cố + code review tập trung resilience cho cả team | @tech-lead | 2026-03-01 | Prevent |
+
+> **Lưu ý:** Phân loại hành động: **Quick fix** (sửa ngay để giảm tác động), **Detect** (phát hiện sớm lần sau), **Prevent** (ngăn chặn lặp lại). RCA tốt phải có cả ba loại.
+
+### Bẫy thường gặp (RCA "cho có")
+- **Dừng ở "ai sai"**: "Dev A quên thêm try-catch" → không phải nguyên nhân gốc, là thiếu quy trình review.
+- **Không có owner/deadline**: "Team sẽ thêm circuit breaker" → không ai làm, kéo dài hàng tháng.
+- **Chỉ quick fix, không prevent**: Sửa code xong RCA đóng, checklist review vẫn như cũ → sự cố lặp lại 3 tháng sau.
+- **Không có verification**: Không đo xem fix có hiệu quả không (ví dụ: load test, chaos engineering).
+- **RCA quá dài, không ai đọc**: Giữ dưới 2 trang A4, dùng bảng, link đến evidence.
+
+### Ví dụ đời thực
+Một sự cố API đơn hàng trả 500 do {{NullPointerException}} khi parse response từ service địa chỉ. RCA ban đầu ghi: "dev quên null check" → action: "thêm null check". Ba tháng sau sự cố tương tự xảy ra ở service khác.
+RCA thứ hai dùng 5 Whys: tại sao dev quên? → vì response schema không có validation. Tại sao schema không validate? → vì **không có contract test** giữa hai service. Tại sao không có contract test? → vì **team chưa thống nhất quy trình tích hợp**.
+Hành động prevent: thiết lập Pact contract test bắt buộc cho mọi integration mới, thêm validation schema trong CI. Kết quả: 18 tháng sau không còn sự cố parse response null nào.
+
+### Trả lời mẫu khi phỏng vấn
+"Sau sự cố thanh toán mất 25 phút, tôi viết RCA theo cấu trúc: tóm tắt tác động, timeline có mốc giờ, 5 Whys, hành động chia ba nhóm (quick fix, detect, prevent) kèm owner và deadline, và verification. 5 Whys chỉ ra nguyên nhân gốc không phải code thiếu try-catch, mà là quy trình thiếu bắt buộc resilience pattern cho external dependency. Tôi thêm circuit breaker (quick fix), alert khi breaker mở (detect), và cập nhật Design Review Checklist bắt buộc resilience pattern (prevent). Sau 2 tuần, tôi chạy load test giả lập gateway chậm để verify P99 < 800ms. RCA không phải viết xong bỏ, phải có verification mới đóng được."
+
+> Senior tip: RCA tốt nhất là RCA **không bao giờ cần viết lần hai cho cùng một nguyên nhân**. Nếu bạn thấy cùng một root cause xuất hiện trong 2 RCA riêng biệt, nghĩa là hành động prevent của RCA đầu tiên thất bại — hãy quay lại sửa prevent action thay vì viết RCA mới.
+
+`,
+  follow: [
+    'Làm sao bạn phân biệt được "human error" và "systemic issue" trong 5 Whys?',
+    'Bạn có mẫu RCA (template) nào dùng chung cho team không? Chia sẻ cấu trúc chính.',
+    'Khi stakeholder ép rút gọn RCA để "đóng nhanh", bạn bảo vệ phần prevent như thế nào?'
+  ],
+  tags: ['RCA', 'incident', '5-whys', 'postmortem', 'corrective-action', 'STAR']
+},
+{
+  id: 'behavioral-061',
+  topic: 'behavioral',
+  level: 'senior',
+  q: 'Bạn mentoring một junior muốn tiến lên mức mid/senior. Bạn dạy họ tư duy hệ thống (system thinking) và thiết kế kiến trúc như thế nào — không chỉ review code?',
+  a: `**Tóm tắt:** Mentoring để junior lên senior không phải là "review code kỹ hơn" — là **dạy cách tư duy**: chia nhỏ bài toán, xem xét đánh đổi (trade-off), dự đoán rủi ro vận hành, và viết được thiết kế (design doc/ADR) trước khi code. Cách hiệu quả nhất là **pair design** (thiết kế cùng nhau) trước **pair programming**, kèm bài tập thực tế có phản hồi lặp.
+
+### Interviewer muốn đánh giá gì
+- Bạn có nhận ra rằng **kỹ năng code** và **kỹ năng thiết kế** là hai thứ khác nhau không.
+- Bạn có quy trình cụ thể để dạy tư duy hệ thống (không chỉ nói chung "hãy nghĩ lớn hơn").
+- Bạn có cho junior **thực hành thiết kế** trên bài toán thật, có review và iterate không.
+- Bạn có đo lường tiến bộ bằng cách nào (không chỉ "cảm thấy họ giỏi hơn").
+
+### Ba cấp độ tư duy cần dạy
+| Cấp độ | Mô tả | Cách dạy |
+|---|---|---|
+| 1. Code level | Viết code sạch, có test, tuân thủ convention | Code review, pair programming, linter |
+| 2. Component level | Chia module, thiết kế interface, quản lý dependency | Pair design trên một feature nhỏ; yêu cầu vẽ diagram trước khi code |
+| 3. System level | Trade-off latency/consistency/cost, capacity planning, failure domain, observability | Viết ADR cho quyết định lớn; tham gia incident review; design review với stakeholder |
+
+### Quy trình mentoring 3 tháng (ví dụ thực tế)
+**Tháng 1: Component thinking — "Tại sao interface này lại như vậy?"**
+- Yêu cầu junior vẽ **sequence diagram** (Mermaid/PlantUML) cho từng task trước khi code.
+- Pair design 30 phút: tôi hỏi "nếu service B lỗi thì A xử lý ra sao?", "timeout bao nhiêu?", "retry bao nhiêu lần?".
+- Junior viết **design doc ngắn** (1 trang): context, options, trade-off, quyết định, rollback plan.
+- Kết quả: 4 feature đầu tiên junior thiết kế, 3/4 không cần sửa lớn sau review.
+
+**Tháng 2: System thinking — "Điều gì sẽ hỏng ở production?"**
+- Mời junior tham gia **incident review** (blameless postmortem) và yêu cầu họ viết **một RCA nhỏ** cho một sự cố gần đây (dù không phải người gây ra).
+- Bài tập: "Thiết kế rate limiter cho API công khai — vẽ failure domain, chọn algorithm (token bucket vs sliding window), tính capacity".
+- Thảo luận: tại sao chọn Redis không phải in-memory? Làm sao handle Redis down? Circuit breaker ở đâu?
+
+**Tháng 3: Ownership & communication — "Bạn bảo vệ quyết định của mình như thế nào?"**
+- Junior lead một **design review** với team: trình bày ADR, trả lời câu hỏi, ghi nhận feedback.
+- Yêu cầu junior viết **runbook** cho feature mình sở hữu (deploy, rollback, debug steps, alert).
+- Cuối kỳ: junior tự thiết kế end-to-end một tính năng trung bình (2–3 service), tôi chỉ vào cuối để challenge.
+
+### Công cụ dạy cụ thể (không trừu tượng)
+1. **ADR template** (Architecture Decision Record): context, decision, consequences, alternatives considered. Bắt junior viết cho mọi quyết định lớn.
+2. **Trade-off matrix**: bảng so sánh ít nhất 3 phương án trên 5 tiêu chí (latency, cost, ops complexity, consistency, dev speed).
+3. **Failure mode brainstorm**: "Liệt kê 5 cách feature này có thể hỏng ở production, và mitigation cho từng cái".
+4. **Capacity estimation**: "Tính toán: 10k RPS, payload 2KB, latency p99 < 200ms — cần bao nhiêu CPU, RAM, network, DB connection?"
+5. **Code review ngược**: junior review code của senior, tìm chỗ senior có thể cải thiện — rèn mắt kỹ thuật.
+
+### Đo lường tiến bộ (metrics)
+| Chỉ số | Cách đo | Mục tiêu 3 tháng |
+|---|---|---|
+| Số design doc junior viết (được approve không sửa lớn) | Đếm PR có design doc đi kèm | ≥ 5 |
+| Số lần junior đưa ra trade-off đúng trong design review | Ghi nhận trong meeting notes | ≥ 3 lần/tháng |
+| Junior tự bắt lỗi thiết kế trước khi code | So sánh design doc v1 vs v2 | Giảm 50% lần sửa sau review |
+| Junior giải thích được failure domain của feature mình sở hữu | Hỏi bất ngờ 1 lần/tuần | Trả lời đúng 4/5 |
+
+### Bẫy thường gặp
+- **Chỉ dạy code style**: format, naming, pattern — junior code đẹp nhưng thiết kế sai vẫn pass review.
+- **Làm thay junior**: "anh làm cho em phần thiết kế, em code đi" — junior không học được tư duy.
+- **Không có bài tập thực hành**: chỉ nói lý thuyết, junior không biết áp dụng khi nào.
+- **Đánh giá theo cảm tính**: "em thấy nó tiến bộ" — không có bằng chứng.
+
+### Ví dụ đời thực
+Junior A (2 năm kinh nghiệm) viết code tốt nhưng feature "xuất báo cáo Excel" gây OOM khi 50k dòng. Tôi không sửa code cho A, mà yêu cầu A:
+1. Vẽ sequence diagram luồng xuất file.
+2. Tìm failure mode: OOM, timeout, file quá lớn, user hủy giữa chừng.
+3. Thiết kế lại: streaming write (Apache POI SXSSF), chunk 5k dòng, async job + progress polling, cancel token.
+4. Viết ADR so sánh 3 phương án: in-memory, temp file, streaming.
+5. Load test 100k dòng, đo heap, GC pause.
+Kết quả: feature chạy ổn định 100k dòng, heap < 200MB. A sau đó tự áp dụng pattern streaming cho 2 feature khác mà không cần nhắc.
+
+### Trả lời mẫu khi phỏng vấn
+"Tôi mentoring junior lên senior bằng cách dạy tư duy hệ thống qua 3 giai đoạn: component thinking (vẽ diagram, viết design doc trước khi code), system thinking (tham gia incident review, bài tập failure mode, capacity estimation), và ownership (lead design review, viết runbook). Tôi dùng ADR template, trade-off matrix, và failure mode brainstorming như công cụ cụ thể. Ví dụ junior A viết xuất Excel gây OOM, tôi không sửa giúp mà yêu cầu A vẽ diagram, liệt kê failure mode, thiết kế lại dùng streaming, viết ADR so sánh 3 phương án, và load test. Kết quả: feature chạy 100k dòng, heap < 200MB, và A tự áp dụng pattern cho 2 feature sau. Tôi đo tiến bộ bằng số design doc được approve, số trade-off đưa ra đúng, và khả năng tự bắt lỗi thiết kế."
+
+> Senior tip: hãy yêu cầu junior **viết design doc cho feature của senior** (reverse design doc). Khi junior phải hiểu và viết lại tư duy của người khác, họ học nhanh gấp bội là tự thiết kế từ đầu. Cách này cũng giúp phát hiện chỗ senior chưa tư duy kỹ.
+
+`,
+  follow: [
+    'Bạn xử lý thế nào khi junior đề xuất thiết kế sai hướng nhưng bảo vệ rất quyết liệt?',
+    'Làm sao bạn dạy junior ước lượng effort cho một thiết kế chưa từng làm?',
+    'Khi junior đã giỏi thiết kế component nhưng yếu system thinking, bạn làm gì?'
+  ],
+  tags: ['mentoring', 'system-thinking', 'architecture', 'ADR', 'design-review', 'STAR']
+},
+{
+  id: 'behavioral-062',
+  topic: 'behavioral',
+  level: 'senior',
+  q: 'Bạn bất đồng với Product Owner (PO) về một quyết định sản phẩm: PO muốn giao nhanh, bỏ qua kỹ thuật (ví dụ: không idempotency, hardcode config, bỏ validation). Bạn xử lý như thế nào để vừa bảo vệ chất lượng, vừa giữ mối quan hệ làm việc tốt?',
+  a: `**Tóm tắt:** Bất đồng với PO không phải là "dev chống lại business" — là **hai góc nhìn hợp lệ gặp nhau**: PO tối ưu *time-to-market* và *giá trị người dùng*, dev tối ưu *rủi ro vận hành* và *chi phí bảo trì*. Cách giải quyết chuyên nghiệp: **dùng dữ liệu, định lượng rủi ro, đưa ra lựa chọn có điều kiện (conditional agreement), và ghi lại quyết định**. Mục tiêu: không phải "thắng" PO, mà là **ra quyết định tốt nhất cho sản phẩm**.
+
+### Interviewer muốn đánh giá gì
+- Bạn có hiểu PO **không phải "kẻ thù"** — họ chịu áp lực deadline, doanh thu, stakeholder không?
+- Bạn có **dịch ngôn ngữ kỹ thuật sang ngôn ngữ kinh doanh** (rủi ro → tiền, thời gian, uy tín) không.
+- Bạn có đề xuất **giải pháp trung gian** (phased approach, feature flag, technical debt ticket có SLA) không.
+- Bạn có **cam kết thực hiện** quyết định cuối cùng dù không đồng ý (disagree and commit) không.
+
+### Framework xử lý: 4 bước
+| Bước | Hành động | Câu hỏi then chốt |
+|---|---|---|
+| 1. Hiểu "vì sao" của PO | Hỏi: "Deadline này đến từ đâu? Nếu giao muộn 1 tuần thì tác động gì?" | Tìm driver thực sự (hợp đồng, sự kiện marketing, competitor) |
+| 2. Định lượng rủi ro kỹ thuật | Tính: "Nếu bỏ idempotency, xác suất trùng đơn là bao nhiêu? Chi phí xử lý một đơn trùng (hoàn tiền, CS, audit) là bao nhiêu?" | Dùng con số, không dùng "rất nguy hiểm", "không chuyên nghiệp" |
+| 3. Đề xuất lựa chọn có điều kiện | "Nếu chúng ta giao phiên bản đơn giản hôm nay, tôi cam kết: (a) feature flag tắt ngay khi có lỗi, (b) ticket tech debt có due date 2 sprint, (c) monitoring alert từ ngày 1." | Phân tách: gì *bắt buộc* hôm nay, gì *có thể trì hoãn* có kiểm soát |
+| 4. Ghi lại và cam kết | Viết ADR ngắn hoặc comment trong ticket: quyết định, lý do, rủi ro đã chấp nhận, chủ sở hữu, hạn chót khắc phục | "Disagree and commit" — sau khi quyết định, tôi code tốt nhất có thể |
+
+### Ví dụ thực tế: PO muốn bỏ idempotency cho API thanh toán để kịp Black Friday
+**Bối cảnh:** Còn 3 tuần đến Black Friday. PO yêu cầu bỏ qua idempotency key cho API tạo đơn hàng để giảm 2 ngày dev. Lý do: "Khách hàng không bấm nút 2 lần, và nếu trùng thì CS xử lý thủ công."
+
+**Xử lý:**
+1. **Hiểu driver**: PO bị ép bởi marketing — campaign Black Friday đã in banner, không thể dịch. Muộn 1 tuần = mất ~2 tỷ VNĐ doanh thu dự kiến.
+2. **Định lượng rủi ro**:
+   - Tỷ lệ double-click thực tế trên web: ~0.3% (dữ liệu GA).
+   - 10k đơn/ngày Black Friday → 30 đơn trùng/ngày.
+   - Chi phí xử lý 1 đơn trùng (hoàn tiền, gọi khách, audit, reconciliation): ~15 phút nhân viên + rủi ro uy tín.
+   - 30 đơn × 15 phút = 7.5h/ngày team CS chỉ lo đơn trùng.
+3. **Đề xuất lựa chọn có điều kiện**:
+- Phiên bản 1 (hôm nay): implement idempotency **chỉ ở tầng application** (bảng {{idempotency_key}} + unique index), **không** làm distributed lock phức tạp. Ước lượng 0.5 ngày.
+- Nếu vẫn không kịp: feature flag {{enable_idempotency}} mặc định **ON**, PO có thể tắt bằng config nếu quyết định rủi ro chấp nhận được.
+   - Ticket tech debt: "Hardening idempotency cho high-concurrency" — due date sprint sau Black Friday.
+4. **Kết quả**: Dev implement idempotency đơn giản trong 4 tiếng. Black Friday diễn ra 0 đơn trùng. Sprint sau nâng cấp bản robust.
+
+### Dịch ngôn ngữ: từ kỹ thuật sang kinh doanh
+| Dev nói | PO nghe | Cách dịch tốt hơn |
+|---|---|---|
+| "Code này không sạch" | "Dev thích hoàn hảo" | "Cách này tạo technical debt 5 ngày sau, chi phí sửa sau là 3x bây giờ" |
+| "Rủi ro mất dữ liệu" | "Sợ hãi vô lý" | "Xác suất 0.5%/tháng, nếu xảy ra mất 4h downtime = 500 triệu doanh thu" |
+| "Tôi không làm" | "Không hợp tác" | "Tôi làm phiên bản đơn giản hôm nay, nhưng cần cam kết ticket khắc phục tuần sau" |
+| "Best practice đòi hỏi..." | "Quy tắc cứng nhắc" | "Team chúng ta đã mất 2 sự cố năm ngoái vì thiếu điều này, nên tôi đề xuất bắt buộc" |
+
+### Bẫy thường gặp
+- **Nói "không" ngay lập tức**: PO cảm thấy bị chặn, leo thang lên manager → quan hệ xấu, dev vẫn phải làm.
+- **Chỉ nói kỹ thuật, không nói tiền/ngày**: PO không hiểu rủi ro, coi là dev cồng kềnh.
+- **Không có lựa chọn B**: "Hoặc làm đầy đủ hoặc không làm" — PO buộc chọn không làm.
+- **Không ghi lại quyết định**: 3 tháng sau ai cũng quên ai đồng ý bỏ qua gì, trách nhiệm không rõ.
+- **Sau khi thua, làm kém chất lượng (malicious compliance)**: hại sản phẩm, mất uy tín dev.
+
+### Ví dụ đời thực
+PO yêu cầu hardcode URL môi trường staging vào code production để "test nhanh cho demo khách hàng hôm nay". Tôi:
+1. Hiểu driver: demo quan trọng, hợp đồng 5 tỷ, khách hàng xem live lúc 14h.
+2. Định lượng: hardcode → deploy production phải rebuild nếu đổi URL; rủi ro leak config production; vi phạm security policy.
+3. Đề xuất: dùng **feature flag** bật môi trường demo, config qua env var (không hardcode), tôi deploy hotfix trong 30 phút.
+4. Ghi chú trong PR: "Tạm chấp nhận config thủ công cho demo, ticket #1234 khắc phục trước sprint review."
+Kết quả: demo thành công, khách ký hợp đồng. Sprint sau config được chuẩn hóa.
+
+### Trả lời mẫu khi phỏng vấn
+"PO muốn bỏ idempotency để kịp Black Friday. Tôi không nói 'không' mà hỏi deadline đến từ đâu, rồi định lượng rủi ro: 0.3% double-click, 30 đơn trùng/ngày, 7.5h CS/ngày. Tôi đề xuất implement idempotency đơn giản 0.5 ngày (bảng unique index), feature flag bật mặc định, ticket tech debt sprint sau. PO đồng ý. Kết quả: Black Friday 0 đơn trùng, tech debt được trả đúng hạn. Nguyên tắc: hiểu driver của PO, định lượng rủi ro bằng tiền/ngày, đưa ra lựa chọn có điều kiện, ghi lại quyết định, và cam kết thực hiện."
+
+> Senior tip: hãy luôn mang đến bàn nghị sự **ít nhất 2 lựa chọn có số liệu**, không chỉ mang "vấn đề". PO bận rộn, họ cần bạn giúp họ quyết định, không cần bạn báo động. Khi bạn nói "nếu chọn A thì rủi ro X, chọn B thì tốn Y ngày, tôi khuyến nghị C vì cân bằng cả hai", bạn trở thành **partner** chứ không phải **gatekeeper**.
+
+`,
+  follow: [
+    'Nếu PO từ chối mọi lựa chọn trung gian và ép bạn làm theo cách rủi ro, bạn làm gì?',
+    'Làm sao bạn ước lượng "chi phí technical debt" để PO hiểu được?',
+    'Khi manager can thiệp ủng hộ PO, bạn bảo vệ quyết định kỹ thuật như thế nào?'
+  ],
+  tags: ['PO', 'stakeholder', 'technical-debt', 'trade-off', 'negotiation', 'STAR']
+},
+{
+  id: 'behavioral-063',
+  topic: 'behavioral',
+  level: 'lead',
+  q: 'Bạn làm việc cross-functional với team Data/AI: họ cần feature store, real-time inference, và batch training pipeline. Bạn thiết kế hệ thống backend để phục vụ nhu cầu đó như thế nào, và xử lý conflict về SLA, schema, ownership như thế nào?',
+  a: `**Tóm tắt:** Làm việc với team Data/AI khác với làm việc với team backend khác: **thuộc tính dữ liệu (data contract) quan trọng hơn API contract**, latency requirement khác hẳn (batch: giờ, real-time: ms), và ownership thường mờ (ai sở hữu feature store? ai chịu trách nhiệm data quality?). Cách làm hiệu quả: **thiết lập data contract trước, chia ownership rõ, dùng feature store làm ranh giới, và có SLO riêng cho từng đường dữ liệu**.
+
+### Interviewer muốn đánh giá gì
+- Bạn có hiểu **đặc thù workload Data/AI** (batch lớn, idempotent, retry tự do; real-time inference cần p99 < 50ms, cold start quan trọng) không.
+- Bạn có thiết kế **feature store** (kho đặc trưng tập trung) làm **ranh giới ownership** giữa backend và Data không.
+- Bạn có xử lý được **schema evolution** cho feature/training data (khác với API versioning) không.
+- Bạn có thiết lập **SLO/SLA riêng biệt** cho batch vs real-time path không.
+
+### Kiến trúc tham chiếu: Backend ↔ Feature Store ↔ Data/AI
+~~~seq
+title: Cross-functional Backend - Data/AI
+actors: Backend | Feature Store | Data Engineering | ML Platform
+Backend -> Feature Store: Ghi feature (event-driven, CDC từ DB)
+Feature Store -> Data Engineering: Cung cấp dataset cho training (point-in-time correctness)
+Feature Store -> ML Platform: Serving feature vector cho real-time inference (< 10ms)
+ML Platform -> Backend: Trả prediction / score
+Data Engineering --> Backend: Feedback data quality issue, schema change request
+~~~
+
+### 1. Data Contract — "Hợp đồng dữ liệu" thay vì API Contract
+Khác với REST/gRPC contract (request/response shape), **data contract** bao gồm:
+| Yếu tố | Mô tả | Ví dụ |
+|---|---|---|
+| **Schema** | Avro/Protobuf/Parquet schema cho feature/event | {{user_id: long, txn_count_7d: int, avg_amount_30d: double}} |
+| **Semantic meaning** | Định nghĩa nghiệp vụ chính xác | "txn_count_7d = số giao dịch thành công trong 7 ngày quay về, không tính refund" |
+| **Freshness SLO** | Dữ liệu mới nhất được ghi khi nào | "Feature cập nhật trong 5 phút sau khi transaction commit" |
+| **Completeness** | Tỷ lệ missing value cho phép | "< 0.1% null cho numeric feature" |
+| **Point-in-time correctness** | Training data không được dùng thông tin tương lai | "Feature tại T chỉ dùng dữ liệu < T" |
+| **Ownership** | Team nào sở hữu feature này, ai on-call khi hỏng | Owner: Data Engineering; Producer: Backend; Consumer: ML Platform |
+
+> **Lưu ý:** Data contract **không versioning như API** (v1, v2). Thay vào đó dùng **schema evolution rules**: thêm field có default, không xóa field, không đổi kiểu. Feature store enforce quy tắc này.
+
+### 2. Feature Store làm ranh giới ownership
+| Vấn đề | Giải pháp bằng Feature Store |
+|---|---|
+| Backend ghi raw event, Data transform thành feature — ai chịu trách nhiệm logic feature? | **Data Engineering sở hữu feature definition** (transformation logic). Backend chỉ đảm bảo *raw event đúng, đầy đủ, kịp thời*. |
+| ML Platform đọc feature để inference — latency cao do join nhiều bảng | Feature store **materialize** feature vector sẵn (offline + online store). Online store (Redis/DynamoDB) serve < 10ms. |
+| Schema thay đổi làm vỡ training pipeline | Feature store **validate schema khi ghi** (producer contract) và **validate khi đọc** (consumer contract). Schema registry cho Avro/Protobuf. |
+| Backlog feature request từ Data chậm, backend không ưu tiên | **Self-serve**: Data tự định nghĩa feature mới trên feature store (SQL/DBT), backend chỉ cần expose raw event CDC. |
+
+### 3. Hai đường dữ liệu — SLO khác nhau
+| Đường dữ liệu | Latency SLO | Throughput | Retry policy | Monitoring |
+|---|---|---|---|---|
+| **Batch training** (daily/weekly) | < 4h end-to-end | TB/ngày | Idempotent, retry không giới hạn | Data freshness, completeness, schema validation |
+| **Real-time inference** | p99 < 50ms (feature lookup < 10ms) | 1k–10k RPS | Timeout 20ms, fallback default value | p99 latency, error rate, staleness (feature age) |
+
+**Backend chỉ cần đảm bảo:** ghi raw event/CDC vào message bus (Kafka) hoặc feature store write path với **acknowledged write**. Không cần lo inference latency — đó là trách nhiệm feature store online serving layer.
+
+### 4. Xử lý conflict thường gặp
+| Conflict | Cách giải quyết |
+|---|---|
+| Data muốn feature mới, backend nói "chưa có event" | Data tự tạo feature từ event hiện có (derived feature) hoặc tạo ticket "event mới" có SLA 2 sprint. Backend không block feature work. |
+| Inference latency cao do feature store online | Profile: bottleneck ở network (cross-AZ) hoặc serialization. Giải pháp: co-locate online store, dùng protobuf, cache local trong ML serving pod. |
+| Schema change làm vỡ training pipeline | **Backward compatibility bắt buộc**: thêm field có default. Breaking change → tạo feature mới (feature_v2), deprecate cũ sau 30 ngày. |
+| Ai on-call khi feature sai? | **Data Engineering on-call cho feature logic**; **Backend on-call cho event delivery**; **ML Platform on-call cho inference serving**. Runbook rõ ràng. |
+| Data quality issue (null spike, distribution shift) | Feature store có **data quality monitor** (Great Expectations / custom check) → alert Data Engineering, không alert Backend. |
+
+### Ví dụ đời thực
+Team Data/AI cần real-time fraud score cho API thanh toán (p99 < 100ms). Hiện tại: batch training daily, inference qua REST gọi Python service (p99 800ms, cold start 2s).
+**Triệu chứng:** Tỷ lệ fraudundetected 12%, chargeback cao. Data team yêu cầu feature mới: {{txn_velocity_1h}}, {{device_fingerprint_match}}.
+**Xử lý:**
+1. **Thiết lập data contract**: định nghĩa 15 feature, semantic, freshness SLO 2 phút, schema Avro trong Schema Registry.
+2. **Feature store**: dùng Feast + Redis online store + Parquet offline store (S3). Backend ghi CDC event từ DB → Kafka → Feast materialize.
+3. **Real-time path**: ML Platform deploy model lên Triton Inference Server, gọi Feast online store gRPC (< 5ms), trả score cho backend qua gRPC (< 20ms total).
+4. **Batch path**: Data Engineering đọc offline store (Parquet) cho training daily, point-in-time correctness guaranteed by Feast.
+5. **Ownership**: Data sở hữu feature logic + training; Backend sở hữu event CDC + API thanh toán; ML Platform sở hữu model serving + inference SLO.
+**Kết quả:** Inference p99 từ 800ms xuống 35ms. Fraudundetected từ 12% xuống 3%. Data team tự thêm 5 feature mới trong 2 tháng mà không cần backend can thiệp (self-serve).
+
+### Trả lời mẫu khi phỏng vấn
+"Làm việc với team Data/AI, tôi thiết lập data contract (schema Avro, semantic, freshness SLO, completeness) thay vì chỉ API contract. Tôi dùng Feature Store (Feast + Redis + Parquet) làm ranh giới ownership: Backend chịu trách nhiệm raw event/CDC đúng và kịp thời; Data Engineering sở hữu feature definition, transformation, training pipeline; ML Platform sở hữu model serving và inference SLO. Hai đường dữ liệu tách biệt: batch training (SLO 4h, TB/day) và real-time inference (p99 < 50ms, feature lookup < 10ms). Conflict về schema dùng backward compatibility + feature versioning; conflict về latency dùng co-location, protobuf, local cache. Ví dụ fraud detection: inference p99 từ 800ms xuống 35ms,undetected rate từ 12% xuống 3%, Data tự thêm feature mới self-serve."
+
+> Senior tip: Đừng cố gắng làm backend "phục vụ" Data — hãy xây **nền tảng dữ liệu (data platform)** mà cả hai đều là client. Feature store là ví dụ điển hình: backend ghi event, Data đọc/viết feature, ML đọc feature để inference. Khi ranh giới rõ, conflict giảm 80%.
+
+`,
+  follow: [
+    'Làm sao bạn xử lý khi Data team muốn feature cần PII (dữ liệu nhạy cảm) mà backend không được log?',
+    'Khi model inference lỗi do feature stale, ai chịu trách nhiệm và runbook như thế nào?',
+    'Bạn chọn Feast, Tecton, hay tự build feature store? Tiêu chí quyết định là gì?'
+  ],
+  tags: ['data-engineering', 'ML', 'feature-store', 'cross-functional', 'data-contract', 'STAR', 'leadership']
+},
 );
