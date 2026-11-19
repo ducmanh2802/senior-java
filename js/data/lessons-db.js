@@ -2590,11 +2590,11 @@ entry (tenant_id, created_at)      -> TID
 
 ### Leftmost prefix: quy tắc vàng
 - {{WHERE tenant_id = 42}}: dùng được, vì tenant_id là cột đầu tiên.
-- {{WHERE created_at >= ...}}: theo quy tắc cổ điển thì không seek được, vì created_at không phải cột đầu; database phải quét toàn bộ entry của index (hoặc chuyển sang seq scan). Từ PostgreSQL 18, planner có **skip scan** (nhảy cóc: khi thiếu cột đầu, nó lần lượt giả sử từng giá trị của cột đầu rồi seek tiếp như thể có điều kiện equality) nên vẫn dùng được index này nếu {{tenant_id}} có ít giá trị phân biệt và điều kiện trên {{created_at}} đủ chọn lọc.
+- {{WHERE created_at >= ...}}: theo quy tắc cổ điển thì không seek được, vì created_at không phải cột đầu; database phải quét toàn bộ entry của index (hoặc chuyển sang seq scan). Một số database khác (Oracle, SQL Server, MySQL 8.0.13+) hỗ trợ **skip scan** (nhảy cóc: khi thiếu cột đầu, nó lần lượt giả sử từng giá trị của cột đầu rồi seek tiếp); PostgreSQL (tới 17) chưa có tính năng này.
 - {{WHERE tenant_id = 42 AND created_at >= ...}}: dùng được cả hai — seek tới (42, ...) rồi đi tiếp theo created_at.
 - {{WHERE tenant_id = 42 ORDER BY created_at}}: không cần sort, vì trong cùng một tenant, các entry đã có thứ tự theo created_at.
 
-Nói ngắn: theo quy tắc cổ điển, index (a, b, c) phục vụ các tiền tố (a), (a, b), (a, b, c), không phục vụ (b), (c), (b, c). Từ PostgreSQL 18, skip scan có thể dùng được một phần các trường hợp thiếu cột đầu nếu cột đầu ít giá trị phân biệt.
+Nói ngắn: theo quy tắc cổ điển, index (a, b, c) phục vụ các tiền tố (a), (a, b), (a, b, c), không phục vụ (b), (c), (b, c). Một số database khác (Oracle, SQL Server, MySQL 8.0.13+) có skip scan cho một phần trường hợp thiếu cột đầu nếu cột đầu ít giá trị phân biệt; PostgreSQL (tới 17) chưa hỗ trợ.
 
 ### Thứ tự cột: equality trước, range sau
 Quy tắc thực dụng:
@@ -2602,7 +2602,7 @@ Quy tắc thực dụng:
 2. Cột dùng range ({{>}}, {{<}}, {{BETWEEN}}) hoặc ORDER BY đặt sau trong nhóm đó.
 3. Giữa nhiều cột equality, thứ tự không làm index to hay nhỏ khác đi (index vẫn chứa đủ các cột đó). Nó quyết định truy vấn nào **chỉ lọc một phần** index thì còn seek được: nếu có truy vấn quan trọng chỉ {{WHERE tenant_id = ?}}, hãy để {{tenant_id}} đứng đầu; nếu truy vấn nào cũng lọc đủ các cột thì thứ tự giữa chúng ít quan trọng.
 
-Ví dụ truy vấn {{WHERE tenant_id = ? AND status = ? AND created_at BETWEEN ? AND ?}} nên có index {{(tenant_id, status, created_at)}}. Nếu đảo thành {{(created_at, tenant_id, status)}}, seek chỉ còn dựa vào {{created_at}} (range), còn {{tenant_id}} và {{status}} trở thành điều kiện lọc trên từng entry; PostgreSQL 18+ có thể skip scan nếu hai cột này ít giá trị phân biệt, nhưng vẫn phải duyệt nhiều entry hơn.
+Ví dụ truy vấn {{WHERE tenant_id = ? AND status = ? AND created_at BETWEEN ? AND ?}} nên có index {{(tenant_id, status, created_at)}}. Nếu đảo thành {{(created_at, tenant_id, status)}}, seek chỉ còn dựa vào {{created_at}} (range), còn {{tenant_id}} và {{status}} trở thành điều kiện lọc trên từng entry; một số database khác có skip scan nếu hai cột này ít giá trị phân biệt, nhưng PostgreSQL (tới 17) không hỗ trợ, nên phải duyệt nhiều entry hơn.
 
 Selectivity (độ chọn lọc) = số giá trị khác nhau chia cho số hàng: cột boolean chỉ có 2 giá trị nên selectivity rất thấp, đặt nó đầu chỉ giúp khi truy vấn lọc thêm cột phía sau; nếu chỉ lọc riêng {{is_active}} thì index phải đọc rất nhiều entry. Tổ hợp (tenant_id, created_at) thường trỏ tới ít hàng hơn từng cột riêng (mỗi tenant có nhiều đơn, nhưng mỗi cặp tenant + thời điểm thì gần như một đơn), nên số entry phải đọc ít hơn.
 
@@ -2610,7 +2610,7 @@ Selectivity (độ chọn lọc) = số giá trị khác nhau chia cho số hàn
 Bảng {{orders}} 10 triệu dòng, 1000 tenant, mỗi tenant 10 nghìn đơn.
 - Index (tenant_id): mỗi tenant 10 nghìn entry.
 - Index (tenant_id, created_at): truy vấn "đơn của tenant 7 trong tháng 1" seek tới (7, 2026-01-01) rồi quét khoảng 1 nghìn entry, thay vì 10 nghìn.
-- Truy vấn "mọi đơn có created_at trong ngày" theo quy tắc cổ điển không dùng được index trên (vì cột đầu là tenant_id); từ PostgreSQL 18, skip scan có thể dùng được nếu tenant_id ít giá trị phân biệt, nhưng nếu truy vấn này phổ biến thì vẫn nên có index riêng trên created_at.
+- Truy vấn "mọi đơn có created_at trong ngày" theo quy tắc cổ điển không dùng được index trên (vì cột đầu là tenant_id); một số database khác có skip scan nếu tenant_id ít giá trị phân biệt, nhưng PostgreSQL (tới 17) không hỗ trợ; nếu truy vấn này phổ biến thì vẫn nên có index riêng trên created_at.
 
 ### Covering index và INCLUDE
 Nếu index đã chứa mọi cột mà SELECT cần, PostgreSQL có thể trả kết quả bằng index-only scan, không phải đọc heap. {{CREATE INDEX idx_orders_cov ON orders (tenant_id, created_at) INCLUDE (status, total)}}. Giá phải trả: index rộng hơn, ghi chậm hơn, tốn WAL hơn.
@@ -2637,7 +2637,7 @@ int examined = hi - lo;           // chi cac entry cua a=7, b trong [5, 15]
 
 ### Lỗi hay gặp trên production
 1. Thứ tự cột ngược: index (created_at, tenant_id) không phục vụ {{WHERE tenant_id = ?}}.
-2. Cột selectivity thấp đứng đầu: index (is_active, tenant_id) gần như vô dụng khi is_active chỉ có 2 giá trị và truy vấn chỉ lọc is_active; PostgreSQL 18+ có thể skip scan khi truy vấn lọc tenant_id.
+2. Cột selectivity thấp đứng đầu: index (is_active, tenant_id) gần như vô dụng khi is_active chỉ có 2 giá trị và truy vấn chỉ lọc is_active; một số database khác có skip scan khi truy vấn lọc tenant_id, nhưng PostgreSQL (tới 17) không hỗ trợ.
 3. Index thừa trùng tiền tố: đã có (a, b) thì index (a) thường bỏ được.
 4. Hàm trên cột: {{WHERE date(created_at) = ...}} không dùng được index; viết thành range {{created_at >= ... AND created_at < ...}}.
 5. Quên ANALYZE sau bulk load: planner dùng thống kê cũ và chọn sai plan.
@@ -2758,7 +2758,7 @@ Tự sắp mảng và dùng binary search; không dùng TreeMap.`,
       ],
       explain: `Bài tập tách hai đại lượng: **examined** (số entry index phải liếc qua) và **matched** (số entry thực sự khớp). Với index (a, b) và truy vấn a = 7, b trong [5, 15], hai biên seek được là (7, 5) và (7, 16), nên chỉ có 11 entry của đúng a = 7 bị xét. Với index (b, a), cột đầu là b nên seek được tới b = 5 nhưng trong mỗi b vẫn phải duyệt mọi a; vì a = 7 nằm rải rác, examined bằng 50 nhân 11 bằng 550. Đó là nội dung của leftmost prefix: chỉ tiền tố bên trái mới dùng được để thu hẹp.
 
-Lỗi hay gặp khi cài: dùng == cho chuỗi order (phải dùng equals); quên xử lý bLo > bHi (khoảng rỗng); tính biên trên bằng bHi thay vì bHi + 1 làm mất entry ở đúng biên trên. Trong PostgreSQL, cùng ý này thể hiện ở thứ tự cột của index và ở việc planner chọn index scan hay seq scan; hãy kiểm chứng bằng {{EXPLAIN (ANALYZE, BUFFERS)}} thay vì suy đoán. Từ PostgreSQL 18, skip scan có thể giúp trường hợp index {{(b, a)}} khi {{a}} ít giá trị phân biệt; mô phỏng này cố tình dùng hành vi cổ điển để thấy rõ leftmost prefix.`
+Lỗi hay gặp khi cài: dùng == cho chuỗi order (phải dùng equals); quên xử lý bLo > bHi (khoảng rỗng); tính biên trên bằng bHi thay vì bHi + 1 làm mất entry ở đúng biên trên. Trong PostgreSQL, cùng ý này thể hiện ở thứ tự cột của index và ở việc planner chọn index scan hay seq scan; hãy kiểm chứng bằng {{EXPLAIN (ANALYZE, BUFFERS)}} thay vì suy đoán. Một số database khác (MySQL 8.0.13+, Oracle, SQL Server) có skip scan giúp trường hợp index {{(b, a)}} khi {{a}} ít giá trị phân biệt; PostgreSQL (tới 17) không hỗ trợ; mô phỏng này cố tình dùng hành vi cổ điển để thấy rõ leftmost prefix.`
     }
   ],
   check: [
@@ -2793,7 +2793,7 @@ Lỗi hay gặp khi cài: dùng == cho chuỗi order (phải dùng equals); quê
         'created_at không được đứng sau'
       ],
       answer: 1,
-      explain: 'is_active chỉ có 2 giá trị, mỗi giá trị trỏ tới khoảng nửa bảng; nếu truy vấn chỉ lọc is_active thì index scan phải đọc rất nhiều entry. PostgreSQL 18+ có thể skip scan khi truy vấn lọc cột phía sau, nhưng khi đó cột đầu ít giá trị phân biệt chính là điều kiện để việc bỏ qua có lợi.'
+      explain: 'is_active chỉ có 2 giá trị, mỗi giá trị trỏ tới khoảng nửa bảng; nếu truy vấn chỉ lọc is_active thì index scan phải đọc rất nhiều entry. Một số database khác (MySQL 8.0.13+, Oracle, SQL Server) có skip scan khi truy vấn lọc cột phía sau, nhưng PostgreSQL (tới 17) không hỗ trợ; cột đầu ít giá trị phân biệt là điều kiện để skip scan có lợi ở những database có tính năng này.'
     },
     {
       q: 'Vì sao thêm một index làm INSERT chậm đi?',
@@ -3375,8 +3375,8 @@ Index {{(tenant_id, status, created_at)}}:
 - {{WHERE tenant_id = 7}}: dùng được (prefix 1 cột).
 - {{WHERE tenant_id = 7 AND status = 'PENDING'}}: dùng được (2 cột).
 - {{WHERE tenant_id = 7 AND status = 'PENDING' AND created_at >= '2026-01-01'}}: dùng được (3 cột, cột cuối là range).
-- {{WHERE status = 'PENDING'}}: theo quy tắc cổ điển thì không seek theo index này vì thiếu cột trái {{tenant_id}}; PostgreSQL 18+ có thể skip scan nếu {{tenant_id}} ít giá trị phân biệt và điều kiện ngày đủ chọn lọc.
-- {{WHERE tenant_id = 7 AND created_at >= '2026-01-01'}} (bỏ {{status}}): seek được theo {{tenant_id}} nhưng không thu hẹp tiếp theo {{created_at}} như một khóa liên tục; planner có thể quét mọi entry của tenant 7 rồi lọc {{created_at}}. Từ PostgreSQL 18, **skip scan** (nhảy cóc) có thể lặp qua từng giá trị phân biệt của {{status}} trong tenant 7 rồi seek theo {{created_at}}, nếu {{status}} ít giá trị phân biệt và điều kiện ngày đủ chọn lọc; trước đó thì không.
+- {{WHERE status = 'PENDING'}}: theo quy tắc cổ điển thì không seek theo index này vì thiếu cột trái {{tenant_id}}; một số database khác (MySQL 8.0.13+, Oracle, SQL Server) có skip scan nếu {{tenant_id}} ít giá trị phân biệt; PostgreSQL (tới 17) chưa hỗ trợ.
+- {{WHERE tenant_id = 7 AND created_at >= '2026-01-01'}} (bỏ {{status}}): seek được theo {{tenant_id}} nhưng không thu hẹp tiếp theo {{created_at}} như một khóa liên tục; planner có thể quét mọi entry của tenant 7 rồi lọc {{created_at}}. Một số database khác có skip scan lặp qua từng giá trị phân biệt của {{status}} trong tenant 7 rồi seek theo {{created_at}}, nếu {{status}} ít giá trị phân biệt; PostgreSQL (tới 17) không hỗ trợ.
 
 ~~~text
 Index (tenant_id, status, created_at) — các entry đã sắp:
@@ -3616,6 +3616,687 @@ Mô phỏng này đếm bước logic, không đo I/O thật. Trong PostgreSQL, 
   ],
   related: ['db-001', 'db-003', 'db-022', 'db-023'],
   tags: ['composite-index', 'leftmost-prefix', 'B-tree', 'LIKE', 'index', 'PostgreSQL']
-}
+},
+{
+  id: 'lesson-db-016',
+  track: 'db',
+  order: 16,
+  title: 'Cache-aside từ gốc: TTL, LRU eviction và vì sao cache phải có giới hạn',
+  level: 'senior',
+  minutes: 35,
+  goals: [
+    'Giải thích được cache-aside: đọc cache trước, miss thì đọc nguồn chính rồi ghi lại cache',
+    'Cài cache có TTL và kiểm tra hết hạn đúng tại biên bằng một đồng hồ giả (fake clock)',
+    'Cài giới hạn kích thước bằng LRU eviction và giải thích vì sao cache không giới hạn là rò rỉ bộ nhớ',
+    'Phân biệt penetration, avalanche, stampede và biết công cụ chống từng loại'
+  ],
+  body: `**Tóm tắt:** Cache là bản sao dữ liệu đặt gần nơi đọc để khỏi hỏi nguồn chính (database) mỗi lần. Pattern phổ biến nhất là **cache-aside**: đọc cache trước, nếu miss thì đọc DB, rồi ghi lại vào cache kèm **TTL** (thời gian sống). Nhưng cache chỉ an toàn khi có hai thứ đi kèm: **giới hạn kích thước** (đầy thì đuổi bớt, thường theo LRU) và **hạn sử dụng** (hết hạn thì nạp lại). Thiếu một trong hai, cache biến thành rò rỉ bộ nhớ hoặc dữ liệu cũ vĩnh viễn.
 
+### Cache là gì và vì sao backend nào cũng có nó
+**Cache** (bộ nhớ đệm) là một bản sao dữ liệu đã đọc một lần, đặt ở nơi đọc nhanh hơn nguồn chính. Ví dụ đời thường: quán phở dán bảng giá ở quầy (cache) thay vì mỗi lần khách hỏi lại chạy vào kho xem bảng giá gốc (database). Bảng dán giúp trả lời trong 1 giây thay vì 30 giây, đổi lại nếu quán đổi giá mà chưa thay bảng thì khách thấy giá cũ — đó chính là **staleness** (dữ liệu cũ).
+
+Các thuật ngữ cần nắm ngay từ đầu:
+
+- **Nguồn chính (source of truth)**: nơi dữ liệu đúng nhất, thường là PostgreSQL. Cache chỉ là bản sao, mất cache không mất dữ liệu.
+- **Cache hit** (trúng cache): tìm thấy key trong cache, không cần chạm DB. **Cache miss** (trượt): không tìm thấy, phải đọc DB.
+- **Hit rate** (tỉ lệ trúng): phần trăm request tìm thấy trong cache. Đây là chỉ số quan trọng nhất để biết cache có đáng tiền không.
+- **Key**: định danh một mục trong cache, ví dụ {{product:42}}. Thiết kế key sai (thiếu tenant, thiếu phiên bản) là nguồn gốc của những bug dữ liệu chéo khách hàng.
+
+Số liệu để cảm nhận độ chênh: một lệnh {{GET}} tới Redis trong cùng datacenter mất khoảng 0,3–1 ms; một truy vấn Postgres đơn giản theo primary key mất 1–3 ms, còn truy vấn join vài bảng có thể 20–100 ms. Với dịch vụ 6.000 request/giây và hit rate 96%, DB chỉ nhận 240 truy vấn/giây thay vì 6.000 — giảm 25 lần tải. Đó là lý do cache xuất hiện trong gần như mọi hệ thống đọc nhiều.
+
+> Cache không miễn phí: bạn thêm một tầng phải vận hành, phải theo dõi, và phải chấp nhận dữ liệu có thể cũ trong khoảng TTL. Câu hỏi phỏng vấn hay gặp không phải "có nên cache không" mà là "dữ liệu này chịu được cũ bao lâu".
+
+### Cache-aside: luồng chuẩn và từng bước
+**Cache-aside** (còn gọi **lazy loading**, nạp lười) nghĩa là ứng dụng tự quản lý cache, Redis không tự đi đọc DB. Luồng đọc gồm 5 bước:
+
+~~~seq
+title: Đọc theo cache-aside (TTL 600 giây)
+actors: API | Redis | Postgres
+API -> Redis: GET product:42
+Redis --> API: miss (không có key)
+API -> Postgres: SELECT id, name, price
+Postgres --> API: 1 dòng
+API -> Redis: SET product:42 json EX 600
+API -> API: trả kết quả cho client
+~~~
+
+1. Ứng dụng hỏi cache trước bằng key đã thống nhất.
+2. Miss thì ứng dụng đọc nguồn chính.
+3. Ghi kết quả vào cache **kèm TTL** để lần sau trúng.
+4. Trả kết quả cho client.
+5. Lần đọc kế tiếp lặp lại từ bước 1 và dừng ở cache.
+
+Vì sao nạp theo nhu cầu chứ không nạp sẵn tất cả? Vì dữ liệu ít dùng sẽ chiếm chỗ của dữ liệu nóng. Cache hiệu quả nhờ quy luật 80/20: khoảng 20% key phục vụ 80% request. Nạp sẵn toàn bộ (cache warm) chỉ nên làm cho một danh sách nhỏ đã biết chắc là nóng, và phải làm từ từ để không dội DB.
+
+Ba pattern hay bị đem ra so sánh:
+
+| Pattern | Ai nạp cache | Ghi dữ liệu | Phù hợp khi |
+|---|---|---|---|
+| Cache-aside | Ứng dụng (đọc miss rồi ghi) | Ứng dụng ghi DB, xoá key | Phổ biến nhất, kiểm soát rõ ràng |
+| Read-through | Cache engine tự gọi loader | Ứng dụng ghi DB | Muốn code đọc gọn, chấp nhận phụ thuộc engine |
+| Write-through | Ứng dụng/engine | Ghi cache và DB cùng lúc | Cần đọc lại ngay sau ghi, ghi không quá nhiều |
+| Write-behind | Ứng dụng ghi cache | Cache ghi DB sau, bất đồng bộ | Ghi rất nhiều, chấp nhận mất vài giây dữ liệu |
+
+**Bẫy kinh điển khi ghi:** đừng {{SET}} đè giá trị mới vào cache ngay sau khi cập nhật DB. Hãy **xoá key** (invalidate) để lần đọc sau nạp lại. Lý do: hai request ghi có thể đua nhau. T1 đọc DB được giá trị cũ 10, T2 cập nhật DB thành 20 rồi xoá cache, sau đó T1 mới {{SET}} 10 vào cache — cache giữ giá trị cũ cho tới khi TTL hết. Xoá key sau khi ghi DB thu hẹp cửa sổ sai, và TTL là chốt an toàn cuối cùng.
+
+### TTL: hạn sử dụng của bản cache
+**TTL** (time to live, thời gian sống) là khoảng thời gian một entry được coi là còn giá trị. Ví dụ {{SET product:42 ... EX 600}} nghĩa là sau 600 giây key tự hết hạn. Trong cache tự viết, mỗi entry phải lưu **thời điểm hết hạn** ({{expiresAt = now + ttl}}), không phải một TTL chung cho cả cache, vì các key được ghi ở những thời điểm khác nhau.
+
+Điểm dễ hiểu sai: hết hạn **không** có nghĩa là bộ nhớ được giải phóng ngay.
+
+- **Lazy expiration** (hết hạn lười): khi có ai đọc key, mới so {{now}} với {{expiresAt}}; nếu quá hạn thì coi như miss và gỡ entry. Cách này rẻ nhưng key hết hạn mà không ai đọc vẫn nằm trong bộ nhớ.
+- **Active expiration** (dọn nền): tiến trình nền lấy mẫu ngẫu nhiên các key có TTL để gỡ. Redis chạy chu kỳ dọn khoảng 10 lần/giây, mỗi lần lấy mẫu một ít key có TTL; nếu tỉ lệ hết hạn cao thì lặp lại ngay trong chu kỳ đó. Nhờ vậy bộ nhớ được thu hồi dần dù không ai đọc.
+
+TTL bao lâu là câu hỏi về nghiệp vụ, không phải về kỹ thuật: giá sản phẩm có thể cũ 60 giây, nhưng số dư ví thì gần như không được cũ. Hai cách chọn:
+
+- TTL dài: hit rate cao, ít tải DB, nhưng dữ liệu cũ lâu hơn.
+- TTL ngắn: dữ liệu tươi, nhưng miss nhiều, DB chịu tải cao hơn và stampede xảy ra thường xuyên hơn.
+
+> **Jitter** (làm lệch ngẫu nhiên): đừng đặt TTL giống hệt nhau cho mọi key. Nếu 1,5 triệu key được nạp cùng lúc lúc 09:00 với TTL 600 giây, thì 09:10 cả 1,5 triệu key hết hạn trong vài chục giây — DB nhận một cơn sóng. Đặt TTL = 600 giây cộng/trừ ngẫu nhiên ±10% (540–660 giây) sẽ rải các lần hết hạn ra.
+
+Ba sự cố thường bị gọi lẫn tên nhau:
+
+| Sự cố | Cơ chế | Cách chống |
+|---|---|---|
+| Penetration (xuyên thủng) | Key không tồn tại, request nào cũng miss rồi đọc DB | Cache cả kết quả rỗng (negative caching) với TTL ngắn 30–60 giây; validate đầu vào |
+| Avalanche (tuyết lở) | Rất nhiều key hết hạn cùng lúc | Jitter TTL, cache nhiều tầng, nạp ấm từ từ |
+| Stampede (giẫm đạp) | Một key nóng hết hạn, hàng nghìn request cùng nạp | Single-flight theo key (bài tiếp theo) |
+
+### Giới hạn kích thước và LRU eviction
+Cache **không được** phình vô hạn. Một triệu entry, mỗi entry 2 KB là 2 GB RAM; nếu key chứa cả JSON 50 KB thì chỉ 40.000 entry đã là 2 GB. Không có giới hạn thì kết cục là {{OutOfMemoryError}} ở cache trong JVM, hoặc Redis trả lỗi ghi khi chạm {{maxmemory}}.
+
+**Eviction** (đuổi bớt) là việc chọn một entry để xoá khi cache đầy. Chính sách phổ biến nhất là **LRU** (least recently used, lâu không dùng nhất). Hình dung bàn làm việc chỉ để được 3 cuốn sách: mỗi lần bạn lấy một cuốn ra đọc, cuốn đó thành "vừa dùng"; khi có cuốn thứ tư, bạn cất cuốn nằm lâu nhất dưới đáy chồng.
+
+Cài LRU đúng trong O(1) cần hai cấu trúc phối hợp:
+
+- **HashMap**: tra key ra entry trong O(1).
+- **Danh sách liên kết đôi** theo thứ tự sử dụng: chạm vào entry thì gỡ nó ra và gắn lên đầu (mới nhất); đầy thì cắt node ở cuối.
+
+~~~text
+capacity 3, thứ tự từ mới nhất sang cũ nhất
+[c] <-> [a] <-> [b]        get("a")  ->  [a] <-> [c] <-> [b]
+put("d")                   đầy, đuổi b (cũ nhất) -> [d] <-> [a] <-> [c]
+~~~
+
+Java có sẵn một cài LRU gọn trong một thread:
+
+~~~java
+// accessOrder = true: mỗi get/put đưa entry về cuối danh sách (mới dùng nhất)
+Map<String, String> lru = new LinkedHashMap<>(16, 0.75f, true) {
+    @Override
+    protected boolean removeEldestEntry(Map.Entry<String, String> eldest) {
+        return size() > 3;   // vượt 3 entry thì xoá entry lâu không dùng nhất
+    }
+};
+lru.put("a", "1");
+lru.put("b", "2");
+lru.put("c", "3");
+lru.get("a");                 // a thành mới nhất; b thành cũ nhất
+lru.put("d", "4");            // đuổi b, còn a, c, d
+~~~
+
+Redis không dùng LRU chính xác. Lý do: LRU chính xác cần thêm hai con trỏ mỗi key và phải sửa một danh sách toàn cục dưới khoá, làm mất tính song song. Redis dùng **approximated LRU** (LRU xấp xỉ): mỗi lần cần đuổi, nó lấy mẫu ngẫu nhiên {{maxmemory-samples}} key (mặc định 5), rồi đuổi key có lần dùng gần nhất cũ nhất trong mẫu. Mẫu càng lớn càng giống LRU thật nhưng tốn CPU; đây là trade-off có chủ đích.
+
+Các chính sách thường gặp:
+
+| Chính sách | Đuổi entry nào | Phù hợp khi | Bẫy |
+|---|---|---|---|
+| {{allkeys-lru}} | Mọi key, cái lâu dùng nhất | Cache thuần túy | Dữ liệu nóng có thể bị đuổi nếu traffic lệch |
+| {{volatile-lru}} | Chỉ key **có TTL** | Vừa cache vừa lưu dữ liệu lâu dài | Key không TTL sẽ không bị đuổi, đầy bộ nhớ thì ghi lỗi |
+| {{allkeys-lfu}} | Key ít dùng nhất theo tần suất | Hot key ổn định, ít bị quét | Key mới chưa kịp nổi tiếng dễ bị đuổi |
+| {{allkeys-random}} | Ngẫu nhiên | Mọi key đều ngang giá trị | Hit rate kém hơn LRU/LFU |
+| {{noeviction}} | Không đuổi, trả lỗi khi đầy | Không được phép mất key | Client phải chịu lỗi ghi |
+
+**LRU hay LFU?** LRU bị "lạm dụng" bởi các lần quét dữ liệu một lần: một job đọc 200.000 key không lặp lại đẩy hết key nóng ra khỏi cache, hit rate sụp sau mỗi lần chạy. LFU đếm tần suất nên key nóng được bảo vệ tốt hơn. Ngược lại, LFU phản ứng chậm khi món hàng đang hot đổi sang món khác.
+
+> Bẫy production: chọn {{volatile-lru}} nhưng quên đặt TTL cho hàng loạt key. Khi bộ nhớ đầy, Redis không tìm được key nào để đuổi, và với chính sách này Redis trả lỗi {{OOM command not allowed when used memory > maxmemory}} cho mọi lệnh ghi. Kiểm tra bằng {{INFO memory}} và {{CONFIG GET maxmemory-policy}}.
+
+> Bẫy khi tự viết: {{LinkedHashMap}} với {{accessOrder = true}} không thread-safe, vì {{get()}} cũng sửa cấu trúc bên trong. Dùng nó trong nhiều thread mà không có khoá sẽ gây {{ConcurrentModificationException}} hoặc dữ liệu sai. Trên production hãy dùng thư viện đã kiểm chứng (Caffeine, Guava Cache) hoặc ConcurrentHashMap kết hợp khoá/ghi bất biến; bài tập của bài này mô phỏng đơn luồng để nhìn rõ cơ chế.
+
+### Ví dụ đời thực
+Catalog service của một sàn thương mại điện tử phục vụ 6.000 request/giây lúc cao điểm, cache 1,5 triệu sản phẩm trong Redis với TTL 600 giây, hit rate 96%, DB nhận khoảng 240 truy vấn/giây.
+
+**Triệu chứng:** sau một lần deploy, cứ 10 phút lại có 60–90 giây DB CPU lên 92%, p99 API từ 120 ms nhảy lên 1,4 giây, hit rate tụt còn 70% trong đúng khoảng đó.
+
+**Điều tra:** cả 1,5 triệu key được nạp trong lúc nạp ấm lúc 08:55 với cùng TTL 600, nên chúng hết hạn gần như đồng thời lúc 09:05. Mỗi đợt hết hạn, khoảng 1.500 request/giây cùng miss (xem {{INFO stats}} có {{keyspace_misses}} tăng vọt theo chu kỳ 10 phút).
+
+**Xử lý:** (1) TTL = 600 giây cộng ngẫu nhiên 10% để rải hết hạn; (2) thêm single-flight theo key để mỗi key chỉ một truy vấn DB; (3) nạp ấm thành nhiều đợt nhỏ thay vì một lần.
+
+**Kết quả đo được:** đỉnh truy vấn DB giảm từ khoảng 1.500 xuống 260/giây, p99 về 180 ms, hit rate ổn định 95–96%.
+
+### Liên hệ phỏng vấn
+- **"Cache-aside là gì? Khác read-through và write-through chỗ nào?"** → Trả lời đúng vai trò người nạp: cache-aside để ứng dụng tự nạp/set/xoá; read-through để cache engine gọi loader; write-through ghi cả cache và DB; write-behind ghi DB sau. Nêu được khi nào chọn cái nào.
+- **"TTL nên đặt bao lâu?"** → Không có con số chung; quyết định theo mức cũ chấp nhận được của dữ liệu, hit rate đo được và tần suất stampede. Luôn thêm jitter.
+- **"Vì sao cập nhật DB xong nên xoá cache thay vì set lại giá trị?"** → Hai writer đua nhau có thể ghi lại giá trị cũ; xoá + TTL là chốt an toàn. Có thể nêu thêm delay double delete hoặc version trong key.
+- **"Cài LRU thế nào? Redis LRU có chính xác không?"** → HashMap + doubly linked list cho O(1); Redis dùng approximated LRU lấy mẫu vì chính xác quá tốn.
+- **"Hết cache thì sao?"** → Hệ thống vẫn đúng (cache không phải nguồn chính), nhưng tải DB tăng đột ngột; cần giới hạn tốc độ, circuit breaker, và chấp nhận giảm chất lượng hoặc trả lỗi có kiểm soát.
+
+> Senior tip: mỗi cache production cần ba con số được theo dõi liên tục: hit rate, số key bị eviction mỗi phút, và p99 thời gian đọc DB. Khi hit rate giảm mà traffic không đổi, hãy nghi ngay eviction (cache quá nhỏ) hoặc TTL quá ngắn, chứ không phải "Redis chậm".
+`,
+  exercises: [
+    {
+      title: 'TtlLruCache: TTL bằng đồng hồ giả và đuổi LRU khi vượt sức chứa',
+      prompt: `Cài {{TtlLruCache<K, V>}} — một cache đơn luồng có TTL và giới hạn số entry, dùng **đồng hồ giả** {{LongSupplier clock}} trả về mili giây (test tự bơm thời gian nên kết quả xác định, không phụ thuộc đồng hồ thật).
+
+Chữ ký và ngữ nghĩa:
+- {{TtlLruCache(int capacity, long ttlMillis, LongSupplier clock)}}: sức chứa tối đa {{capacity}} entry, mỗi entry sống {{ttlMillis}} mili giây tính từ lần ghi.
+- {{void put(K key, V value)}}: lưu value với hạn {{clock.getAsLong() + ttlMillis}}. Nếu key đã có thì thay giá trị và **đặt lại hạn**. Coi put là một lần dùng (mới nhất).
+- {{V get(K key)}}: nếu key có và {{now < expiresAt}} trả value và đánh dấu vừa dùng. Nếu đã hết hạn ({{now >= expiresAt}}) thì gỡ entry và trả {{null}}.
+- {{int size()}}: số entry đang có trong map. Entry đã hết hạn nhưng chưa bị đọc vẫn được tính — đúng như cache thật chỉ dọn khi đọc (lazy expiration) hoặc khi có chu kỳ dọn nền.
+- Khi số entry vượt {{capacity}}, đuổi entry **lâu nhất không được dùng** (LRU); cả {{get}} và {{put}} đều tính là dùng.
+
+Giá trị không null, key không null. Gợi ý: {{LinkedHashMap}} có {{accessOrder = true}} cộng {{removeEldestEntry}}.`,
+      starter: `class TtlLruCache<K, V> {
+    private final long ttlMillis;
+    private final LongSupplier clock;
+
+    TtlLruCache(int capacity, long ttlMillis, LongSupplier clock) {
+        this.ttlMillis = ttlMillis;
+        this.clock = clock;
+    }
+
+    V get(K key) {
+        throw new UnsupportedOperationException("TODO");
+    }
+
+    void put(K key, V value) {
+        throw new UnsupportedOperationException("TODO");
+    }
+
+    int size() {
+        throw new UnsupportedOperationException("TODO");
+    }
+}
+`,
+      tests: `public class Main {
+    static int p = 0, t = 0;
+    static void c(String name, Runnable r) {
+        t++;
+        try { r.run(); p++; System.out.println("PASS " + name); }
+        catch (Throwable e) { System.out.println("FAIL " + name + ": " + e); }
+    }
+    static void eq(Object expected, Object actual) {
+        if (!Objects.equals(expected, actual)) throw new AssertionError("expected " + expected + " but got " + actual);
+    }
+
+    public static void main(String[] args) {
+        c("hit khi còn hạn", () -> {
+            AtomicLong now = new AtomicLong(1_000);
+            TtlLruCache<String, String> cache = new TtlLruCache<>(3, 1_000, now::get);
+            cache.put("k", "v1");
+            now.set(1_999);                    // còn 1ms nữa mới hết hạn
+            eq("v1", cache.get("k"));
+            eq(1, cache.size());
+        });
+
+        c("hết hạn đúng biên và bị gỡ", () -> {
+            AtomicLong now = new AtomicLong(0);
+            TtlLruCache<String, String> cache = new TtlLruCache<>(3, 1_000, now::get);
+            cache.put("k", "v1");
+            now.set(1_000);                    // now == expiresAt -> hết hạn
+            eq(null, cache.get("k"));
+            eq(0, cache.size());
+        });
+
+        c("put lại đặt lại hạn", () -> {
+            AtomicLong now = new AtomicLong(0);
+            TtlLruCache<String, String> cache = new TtlLruCache<>(2, 1_000, now::get);
+            cache.put("k", "v1");              // hạn 1000
+            now.set(600);
+            cache.put("k", "v2");              // hạn mới 1600
+            now.set(1_500);
+            eq("v2", cache.get("k"));
+            now.set(1_600);
+            eq(null, cache.get("k"));
+        });
+
+        c("LRU đuổi key lâu không dùng", () -> {
+            AtomicLong now = new AtomicLong(0);
+            TtlLruCache<String, Integer> cache = new TtlLruCache<>(2, 60_000, now::get);
+            cache.put("a", 1);
+            cache.put("b", 2);
+            cache.get("a");                    // a mới dùng -> b là cũ nhất
+            cache.put("c", 3);                 // vượt capacity -> đuổi b
+            eq(null, cache.get("b"));
+            eq(1, cache.get("a"));
+            eq(3, cache.get("c"));
+            eq(2, cache.size());
+        });
+
+        c("put lại cũng tính là dùng", () -> {
+            AtomicLong now = new AtomicLong(0);
+            TtlLruCache<String, Integer> cache = new TtlLruCache<>(2, 60_000, now::get);
+            cache.put("a", 1);
+            cache.put("b", 2);
+            cache.put("a", 10);                // a mới dùng -> b bị đuổi khi thêm c
+            cache.put("c", 3);
+            eq(null, cache.get("b"));
+            eq(10, cache.get("a"));
+            eq(3, cache.get("c"));
+        });
+
+        System.out.println("RESULT " + p + "/" + t);
+    }
+}
+`,
+      reference: `class TtlLruCache<K, V> {
+    private static final class Entry<V> {
+        final V value;
+        final long expiresAt;
+        Entry(V value, long expiresAt) { this.value = value; this.expiresAt = expiresAt; }
+    }
+
+    private final long ttlMillis;
+    private final LongSupplier clock;
+    private final LinkedHashMap<K, Entry<V>> map;
+
+    TtlLruCache(int capacity, long ttlMillis, LongSupplier clock) {
+        this.ttlMillis = ttlMillis;
+        this.clock = clock;
+        // accessOrder = true: get/put đưa entry về cuối danh sách = mới dùng nhất
+        this.map = new LinkedHashMap<K, Entry<V>>(16, 0.75f, true) {
+            @Override
+            protected boolean removeEldestEntry(Map.Entry<K, Entry<V>> eldest) {
+                return size() > capacity;   // vượt sức chứa thì đuổi entry cũ nhất
+            }
+        };
+    }
+
+    V get(K key) {
+        Entry<V> e = map.get(key);          // get cũng làm entry thành mới nhất
+        if (e == null) return null;
+        if (clock.getAsLong() >= e.expiresAt) {
+            map.remove(key);                // hết hạn: gỡ ngay (lazy expiration)
+            return null;
+        }
+        return e.value;
+    }
+
+    void put(K key, V value) {
+        map.put(key, new Entry<>(value, clock.getAsLong() + ttlMillis));
+    }
+
+    int size() {
+        return map.size();
+    }
+}
+`,
+      hints: [
+        'Lưu cả value lẫn expiresAt trong một object Entry; TTL tính từ lần ghi gần nhất.',
+        'LinkedHashMap(16, 0.75f, true) với accessOrder = true đã tự sắp lại khi get/put; override removeEldestEntry để chặn vượt capacity.',
+        'Kiểm tra hết hạn bằng now >= expiresAt (biên thuộc về "hết hạn") và nhớ gỡ entry khi phát hiện.'
+      ],
+      explain: `Lời giải tách hai trục: **thời gian** (expiresAt so với đồng hồ) và **thứ tự sử dụng** (accessOrder của LinkedHashMap). get() có hai tác dụng phụ: đánh dấu entry mới dùng và dọn entry hết hạn. put() luôn đặt lại hạn, nên "ghi đè" không làm sống lại một entry đã quá hạn cũ — chỉ cần thay object Entry.
+
+Vì sao dùng đồng hồ giả? TTL phụ thuộc thời gian; nếu test dùng {{System.currentTimeMillis()}} thì phải {{Thread.sleep}} và kết quả có thể flaky trên CI chậm. Truyền {{LongSupplier}} cho phép test nhảy thời gian chính xác đến từng mili giây.
+
+Lỗi hay gặp:
+
+- So sánh {{now > expiresAt}} thay vì {{now >= expiresAt}} làm entry sống thêm 1ms — sai ở test biên và khó thấy trên production.
+- Chỉ lưu value mà không lưu hạn, rồi dùng một "lần ghi cuối" chung cho cả cache: key nào cũng sống theo nhịp của key mới nhất.
+- Quên rằng {{get()}} trên {{LinkedHashMap}} access-order cũng là thao tác sửa cấu trúc: nếu cache dùng chung nhiều thread, cần khoá hoặc thư viện chuyên dụng.
+- Kiểm tra hết hạn nhưng không gỡ entry: bộ nhớ vẫn giữ dữ liệu chết, eviction LRU lại đuổi nhầm key còn sống vì dữ liệu chết chiếm chỗ.
+
+Trên production, cơ chế này là phần lõi của Caffeine/Guava: bảng băm cho tra cứu, cấu trúc theo dõi thứ tự dùng, và một đồng hồ (thường là tick đơn điệu) cho hạn dùng. Redis làm tương tự nhưng ở mức key và dùng xấp xỉ LRU để giữ throughput.`
+    }
+  ],
+  check: [
+    {
+      q: 'Một entry trong cache ghi lúc 10:00:00 với TTL 60 giây. Đến 10:01:00 đúng (theo đồng hồ) thì entry đó thế nào?',
+      options: [
+        'Còn hạn thêm 1 giây vì TTL tính từ giây kế tiếp',
+        'Hết hạn: điều kiện now >= expiresAt đã đúng',
+        'Tự động bị xoá khỏi Redis ngay lập tức và giải phóng bộ nhớ tức thì',
+        'Chuyển thành entry vĩnh viễn'
+      ],
+      answer: 1,
+      explain: 'expiresAt = 10:01:00; tại đúng thời điểm đó now >= expiresAt nên entry hết hạn. Việc giải phóng bộ nhớ không tức thì: cache có thể chỉ gỡ khi đọc (lazy) hoặc dọn nền theo mẫu.'
+    },
+    {
+      q: 'Vì sao cache tự viết bắt buộc phải có giới hạn kích thước (capacity hoặc maxmemory)?',
+      options: [
+        'Vì HashMap chỉ chứa được 1 triệu entry',
+        'Vì key sinh ra vô hạn theo dữ liệu, không giới hạn thì bộ nhớ tăng đến khi OOM hoặc Redis từ chối ghi',
+        'Vì LRU cần số entry chẵn',
+        'Vì TTL chỉ hoạt động khi cache đầy'
+      ],
+      answer: 1,
+      explain: 'Số key có thể tăng theo dữ liệu và theo traffic; không có eviction thì bộ nhớ chỉ tăng. Kết cục là OutOfMemoryError trong JVM hoặc lỗi ghi khi Redis chạm maxmemory.'
+    },
+    {
+      q: '1,5 triệu key được nạp cùng lúc với cùng TTL 600 giây. Cách hiệu quả nhất để tránh DB bị dội mỗi 10 phút là gì?',
+      options: [
+        'Tăng TTL lên 24 giờ cho mọi key',
+        'Thêm jitter (lệch ngẫu nhiên khoảng 10%) vào TTL để các lần hết hạn rải ra',
+        'Tắt hoàn toàn TTL',
+        'Giảm capacity của cache để đuổi bớt key'
+      ],
+      answer: 1,
+      explain: 'Jitter rải thời điểm hết hạn nên không còn cơn sóng đồng thời. Tăng TTL chỉ giảm tần suất chứ vẫn dồn cục; bỏ TTL làm dữ liệu cũ vĩnh viễn; giảm capacity chỉ làm hit rate tệ hơn.'
+    },
+    {
+      q: 'Redis dùng approximated LRU (LRU xấp xỉ) thay vì LRU chính xác chủ yếu vì lý do gì?',
+      options: [
+        'Vì Redis không lưu được con trỏ',
+        'Vì LRU chính xác cần thêm bộ nhớ mỗi key và một danh sách toàn cục phải sửa dưới khoá, làm giảm throughput',
+        'Vì LRU chính xác chỉ đúng với key có TTL',
+        'Vì xấp xỉ luôn cho hit rate cao hơn'
+      ],
+      answer: 1,
+      explain: 'LRU chính xác cần danh sách liên kết toàn cục cập nhật mỗi lần đọc, tạo tranh chấp khoá. Redis lấy mẫu maxmemory-samples key rồi đuổi key cũ nhất trong mẫu: rẻ hơn, gần đúng, chấp nhận sai số.'
+    }
+  ],
+  related: ['db-024', 'collections-005', 'collections-028', 'spring-017'],
+  tags: ['cache', 'cache-aside', 'TTL', 'LRU', 'eviction', 'Redis', 'stampede']
+},
+{
+  id: 'lesson-db-017',
+  track: 'db',
+  order: 17,
+  title: 'Chống cache stampede bằng single-flight: một CompletableFuture cho mỗi key',
+  level: 'senior',
+  minutes: 40,
+  goals: [
+    'Giải thích cache stampede: vì sao một key nóng hết hạn có thể làm sập database',
+    'Cài single-flight theo từng key bằng ConcurrentHashMap và CompletableFuture',
+    'Phân biệt single-flight với khoá toàn cục và với computeIfAbsent, nêu được bẫy của từng cách',
+    'Xử lý loader lỗi, timeout và giới hạn khi hệ thống chạy nhiều instance'
+  ],
+  body: `**Tóm tắt:** **Cache stampede** (giẫm đạp cache) là khi một key nóng vừa hết hạn, hàng nghìn request cùng miss và cùng chạy loader — database nhận một cơn sóng truy vấn giống hệt nhau. **Single-flight** (gộp chuyến) sửa đúng điểm đó: thread đầu tiên đăng ký một {{CompletableFuture}} cho key, các thread sau tìm thấy future ấy và **chờ chung** kết quả, nên loader chỉ chạy một lần.
+
+### Stampede: ba cái tên cho cùng một sự cố
+Trong tài liệu bạn sẽ gặp ba tên gần như đồng nghĩa:
+
+- **Cache stampede** (giẫm đạp): nhiều request đồng thời cùng miss **một** key và cùng nạp.
+- **Thundering herd** (bầy thú hoảng loạn): cùng hiện tượng, nhấn vào việc tất cả cùng "lao" về DB.
+- **Dogpile** (chồng đống): cách gọi cũ, cùng bản chất.
+
+Hãy hình dung một quầy bán vé có tấm bảng ghi "còn 50 vé" (cache). Đúng 9 giờ, tấm bảng được gỡ để cập nhật. 2.000 người đang xếp hàng cùng lúc không thấy bảng nên cùng gọi điện vào phòng vé để hỏi — phòng vé có 5 nhân viên, sập. Đó là stampede: không phải cache hỏng, mà là cache hết hạn trong khi key đó đang nóng.
+
+Vì sao việc này nguy hiểm hơn về mặt số liệu? Giả sử một endpoint nhận 3.000 request/giây, key cấu hình có TTL 60 giây và mỗi lần nạp mất 300 ms. Bình thường DB nhận 1 truy vấn/phút. Đúng thời điểm hết hạn, khoảng 300 ms đó có thể có tới 900 request cùng miss (3.000 × 0,3). Nếu connection pool của DB là 50, thì 50 kết nối bị chiếm bởi các truy vấn giống hệt nhau, các request khác phải chờ — và chính các request chờ đó lại tiếp tục miss và xếp hàng dài thêm. Hiện tượng tự khuếch đại.
+
+> Tăng TTL **không** sửa được stampede, chỉ làm nó xảy ra ít hơn. Chừng nào cache còn hết hạn thì chừng đó còn cơn sóng; TTL 1 giờ vẫn có stampede mỗi giờ, và khi xảy ra thì càng dữ dội vì lượng request dồn trong 1 giờ lớn hơn.
+
+### Single-flight: một chuyến bay cho mỗi key
+**Single-flight** nghĩa là gộp các lời gọi **cùng một key** đang đồng thời thành một lần tính. Ví dụ đời thường: quán chỉ cho một nhân viên vào kho lấy hàng; những người đến sau không tự vào kho mà đứng chờ và cùng nhận đúng thùng hàng đó.
+
+Ba yêu cầu của một cài đặt đúng:
+
+1. **Theo key, không toàn cục**: key A đang nạp không được chặn key B. Nếu khoá cả cache bằng {{synchronized}}, mọi key xếp hàng sau một loader chậm 500 ms — throughput sụp dù không có stampede.
+2. **Người đến sau phải chờ và nhận kết quả**, không được bỏ qua rồi tự nạp, cũng không được trả lỗi ngay.
+3. **Không được "đầu độc" cache khi loader lỗi**: lỗi tạm thời của DB không được biến thành lỗi vĩnh viễn cho mọi request sau.
+
+Cách cài phổ biến là một map key → "vé chờ". Ở Java, {{CompletableFuture}} vừa là vé chờ vừa là kết quả: nó có trạng thái "chưa xong", gọi {{join()}} để chờ, và khi xong thì trả cùng một giá trị cho mọi người gọi.
+
+~~~seq
+title: Single-flight khi key nóng hết hạn
+actors: Thread A | Thread B | Cache
+Thread A -> Cache: get(hot, loader)
+Cache --> Thread A: future mới chưa xong
+Thread B -> Cache: get(hot, loader)
+Cache --> Thread B: đúng future đó
+Thread A -> Thread A: chạy loader một lần
+Thread A -> Cache: future.complete(value)
+Cache --> Thread B: join nhận cùng value
+~~~
+
+### Hoạt động từng bước
+Map có kiểu {{ConcurrentHashMap<K, CompletableFuture<V>>}}. Thuật toán của {{get(key, loader)}}:
+
+1. {{map.get(key)}} — nếu có future thì nhảy thẳng tới bước 5 (dùng chung).
+2. Nếu chưa có, tạo {{mine = new CompletableFuture<>()}} rồi {{map.putIfAbsent(key, mine)}}. Đây là phép nguyên tử: đúng **một** thread nhận về {{null}} (thread thắng), mọi thread khác nhận future của thread thắng.
+3. Thread thắng chạy loader **ngay trên thread của nó** (không đẩy sang pool khác), rồi {{mine.complete(value)}}.
+4. Nếu loader ném lỗi: {{mine.completeExceptionally(t)}} **và** {{map.remove(key, mine)}} để lần gọi sau được thử lại. Truyền đúng {{mine}} vào remove để không xoá nhầm future của người khác (nếu key vừa được thay).
+5. Mọi thread gọi {{future.join()}} (hoặc {{get(timeout, unit)}}) và nhận cùng một kết quả hoặc cùng một lỗi.
+
+Điểm tinh tế: future **thành công** được để nguyên trong map và đóng vai trò cache entry. Vì vậy thread đến muộn — kể cả sau khi loader đã xong — vẫn thấy future đã hoàn thành, lấy giá trị luôn, không nạp lại. Nhờ đó test đếm số lần gọi loader là xác định, không phụ thuộc thứ tự lập lịch thread.
+
+### Vì sao không dùng computeIfAbsent cho cả loader?
+{{ConcurrentHashMap.computeIfAbsent}} cũng đảm bảo chỉ một thread chạy hàm cho một key, và đó là cách hay cho cache không có I/O (xem bài concurrency về single-flight). Nhưng khi loader gọi DB/Redis (I/O chậm), nó có hai vấn đề:
+
+- **Giữ khoá bucket lâu**: JDK giữ khoá trên bucket trong suốt thời gian hàm chạy. Loader 500 ms làm mọi key khác rơi vào cùng bucket phải chờ 500 ms. Với 16 bucket mặc định ban đầu và nhiều key, xác suất đụng bucket không nhỏ.
+- **Cấm sửa map trong hàm**: nếu loader (hoặc code nó gọi) lại đụng chính map đó, có thể gây {{IllegalStateException}} hoặc deadlock, vì thread đang giữ khoá của bucket.
+
+Khi dùng CompletableFuture, {{putIfAbsent}} chỉ giữ khoá trong khoảng thời gian tạo future (cực ngắn); loader chạy ngoài khoá. Đó là lý do pattern này phổ biến ở các thư viện cache.
+
+### Vì sao không dùng supplyAsync mặc định?
+{{CompletableFuture.supplyAsync(loader)}} không truyền executor sẽ chạy trên **ForkJoinPool.commonPool** — pool dùng chung cho cả parallel stream và nhiều việc khác, mặc định chỉ có {{số CPU - 1}} thread. Nếu loader là lời gọi DB blocking 300 ms, vài chục key cùng miss sẽ chiếm hết pool chung, làm chậm cả những chỗ không liên quan. Nếu muốn chạy bất đồng bộ, hãy truyền executor riêng có giới hạn; còn cách đơn giản và dễ suy luận nhất là chạy loader ngay trên thread đang gọi, vì request đó dù sao cũng đang chờ kết quả.
+
+### Timeout, lỗi và các bẫy production
+- **join() vô hạn là bẫy chết người**: nếu loader treo (DB không trả lời, mạng đứt) thì mọi thread chờ key đó treo theo; thread pool của web server (Tomcat) cạn dần và cả service ngừng phục vụ. Luôn dùng {{get(timeout, unit)}} hoặc {{orTimeout}} và có kế hoạch fallback.
+- **Future lỗi phải bị gỡ**: nếu chỉ {{completeExceptionally}} mà quên {{remove}}, mọi request sau nhận lại đúng lỗi cũ cho tới khi key bị xoá hoặc TTL hết — một lỗi DB 1 giây biến thành sự cố 10 phút.
+- **Phân biệt lỗi tạm thời và vĩnh viễn**: lỗi timeout nên gỡ future để thử lại; lỗi "không tồn tại" nên cache có TTL ngắn (negative caching) để không đập DB liên tục.
+- **Timeout không tự huỷ việc đang chạy**: future vẫn tiếp tục và có thể complete sau khi caller đã bỏ đi. Cần chấp nhận điều đó hoặc huỷ hợp lý; điều quan trọng là loader không chạy vô hạn.
+- **Single-flight chỉ trong một JVM**: 10 instance chạy 10 map riêng ⇒ tối đa 10 loader đồng thời cho một key. Với key cực nóng và loader rất đắt, cần khoá phân tán (ví dụ Redis {{SET key value NX PX 5000}} làm leader, người khác chờ hoặc dùng bản cũ) hoặc chấp nhận 10 lần.
+- **Stale-while-revalidate**: cách bổ sung rất thực dụng — giữ bản cũ quá hạn, trả ngay cho người dùng, và chỉ một thread nền refresh. Người dùng không phải chờ loader, DB vẫn chỉ nhận một truy vấn.
+- **Kết hợp TTL**: future hoàn thành nằm trong map nên cần hạn sử dụng. Hoặc tách map {{inFlight}} (chỉ future chưa xong) khỏi cache value có TTL, hoặc lưu cặp {{(future, expiresAt)}} và kiểm tra hạn khi đọc.
+
+### Ví dụ đời thực
+Một dịch vụ thanh toán có 10 instance, mỗi instance nhận 3.000 request/giây. Bảng phí giao dịch được cache theo key {{fee-table}} với TTL 60 giây; mỗi lần nạp là một truy vấn join 4 bảng mất khoảng 250 ms.
+
+**Triệu chứng:** cứ mỗi phút lại có khoảng 5 giây lỗi 500 hàng loạt; connection pool của DB (30 kết nối) báo timeout; APM cho thấy mỗi instance bắn khoảng 300 truy vấn giống hệt nhau trong đúng 250 ms đó.
+
+**Điều tra:** TTL hết hạn đồng thời trên cả 10 instance; mỗi instance nhận khoảng 3.000 request/giây × 0,25 giây = 750 request cùng miss. Không có cơ chế gộp.
+
+**Xử lý:** (1) single-flight theo key trong từng JVM; (2) thêm khoá Redis {{SET fee-table:lock ... NX PX 5000}} để chỉ một instance nạp, các instance khác chờ hoặc đọc bản cũ; (3) thêm jitter TTL để 10 instance không hết hạn cùng lúc; (4) timeout 200 ms cho bước chờ, fallback về bảng phí mặc định đã kiểm duyệt.
+
+**Kết quả đo được:** truy vấn nạp bảng phí giảm từ khoảng 3.000 lần/phút (mỗi instance tự nạp) xuống còn 1 lần/phút; lỗi 500 về 0; p99 của endpoint từ 2,1 giây xuống 180 ms.
+
+### Liên hệ phỏng vấn
+- **"Cache stampede là gì? Chống thế nào?"** → Một key nóng hết hạn, nhiều request cùng nạp; chống bằng single-flight theo key, jitter TTL, stale-while-revalidate, và khoá phân tán khi nhiều instance.
+- **"Vì sao dùng CompletableFuture thay vì computeIfAbsent?"** → computeIfAbsent giữ khoá bucket trong suốt loader I/O và cấm sửa map bên trong; future chỉ giữ khoá lúc đăng ký, loader chạy ngoài khoá.
+- **"Loader lỗi thì xử lý thế nào?"** → completeExceptionally + remove đúng future để lần sau retry; phân biệt lỗi tạm thời với "not found" (negative caching có TTL).
+- **"Hệ thống 10 instance thì single-flight có đủ?"** → Không, nó chỉ gộp trong một JVM; cần khoá phân tán hoặc chấp nhận N lần nạp; nêu trade-off.
+- **"Vì sao phải có timeout?"** → Tránh thread chờ vô hạn làm cạn thread pool khi loader treo; kèm fallback (bản cũ, giá trị mặc định, lỗi có kiểm soát).
+
+> Senior tip: single-flight không thay thế TTL và eviction, nó chỉ bịt lỗ "nạp trùng". Hãy đo hai con số: số lần loader chạy mỗi phút (kỳ vọng xấp xỉ số lần hết hạn, không phải số request) và thời gian chờ trung bình của các thread join. Nếu số lần loader vẫn tăng theo traffic, single-flight của bạn đang không hoạt động — thường vì future bị gỡ quá sớm hoặc vì mỗi request tạo map riêng.
+`,
+  exercises: [
+    {
+      title: 'SingleFlightCache: gộp loader theo key bằng CompletableFuture',
+      prompt: `Cài {{SingleFlightCache<K, V>}} dùng {{ConcurrentHashMap<K, CompletableFuture<V>>}} để bảo đảm với mỗi key, loader chỉ chạy **một lần** dù nhiều thread gọi đồng thời.
+
+API và ngữ nghĩa:
+- {{V get(K key, Function<K, V> loader)}}: trả giá trị của key.
+  - Nếu key **chưa có future**: tạo future mới, {{putIfAbsent}}. Thread nào nhận về {{null}} là thread thắng, tự chạy {{loader.apply(key)}} trên chính thread đó rồi {{complete(value)}}.
+  - Nếu đã có future (đang chạy hoặc đã xong): {{join}} và dùng chung kết quả, **không** gọi loader.
+  - Nếu loader ném lỗi: {{completeExceptionally}} và gỡ future khỏi map (dùng {{remove(key, future)}}) để lần sau thử lại; lỗi được ném ra ngoài dưới dạng {{RuntimeException}} bọc nguyên nhân.
+- {{int size()}}: số future đang có trong map.
+
+Future thành công nằm lại trong map như một entry cache. loader nhận key và trả value không null.`,
+      starter: `class SingleFlightCache<K, V> {
+    private final ConcurrentHashMap<K, CompletableFuture<V>> map = new ConcurrentHashMap<>();
+
+    V get(K key, Function<K, V> loader) {
+        throw new UnsupportedOperationException("TODO");
+    }
+
+    int size() {
+        return map.size();
+    }
+}
+`,
+      tests: `public class Main {
+    static int p = 0, t = 0;
+    static void c(String name, Runnable r) {
+        t++;
+        try { r.run(); p++; System.out.println("PASS " + name); }
+        catch (Throwable e) { System.out.println("FAIL " + name + ": " + e); }
+    }
+    static void eq(Object expected, Object actual) {
+        if (!Objects.equals(expected, actual)) throw new AssertionError("expected " + expected + " but got " + actual);
+    }
+
+    public static void main(String[] args) {
+        c("hai lần gọi cùng key: loader chạy một lần", () -> {
+            AtomicInteger calls = new AtomicInteger();
+            SingleFlightCache<String, Integer> cache = new SingleFlightCache<>();
+            Function<String, Integer> loader = k -> { calls.incrementAndGet(); return 99; };
+            eq(99, cache.get("hot", loader));
+            eq(99, cache.get("hot", loader));
+            eq(1, calls.get());
+            eq(1, cache.size());
+        });
+
+        c("key khác nhau nạp độc lập", () -> {
+            AtomicInteger calls = new AtomicInteger();
+            SingleFlightCache<String, Integer> cache = new SingleFlightCache<>();
+            Function<String, Integer> loader = k -> { calls.incrementAndGet(); return k.length(); };
+            eq(3, cache.get("abc", loader));
+            eq(2, cache.get("ab", loader));
+            eq(3, cache.get("abc", loader));
+            eq(2, calls.get());
+            eq(2, cache.size());
+        });
+
+        c("8 thread cùng key: loader chạy một lần", () -> {
+            AtomicInteger calls = new AtomicInteger();
+            CountDownLatch started = new CountDownLatch(1);
+            CountDownLatch release = new CountDownLatch(1);
+            Function<String, Integer> loader = k -> {
+                calls.incrementAndGet();
+                started.countDown();
+                try { release.await(); }
+                catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                    throw new RuntimeException(e);
+                }
+                return 42;
+            };
+            SingleFlightCache<String, Integer> cache = new SingleFlightCache<>();
+            ExecutorService pool = Executors.newFixedThreadPool(8);
+            try {
+                List<Future<Integer>> results = new ArrayList<>();
+                for (int i = 0; i < 8; i++) results.add(pool.submit(() -> cache.get("hot", loader)));
+                if (!started.await(2, TimeUnit.SECONDS)) throw new AssertionError("loader chưa chạy");
+                release.countDown();
+                for (Future<Integer> r : results) eq(42, r.get(2, TimeUnit.SECONDS));
+            } catch (Exception e) {
+                throw new RuntimeException(e);
+            } finally {
+                pool.shutdownNow();
+            }
+            eq(1, calls.get());
+            eq(1, cache.size());
+        });
+
+        c("lỗi không bị cache: lần sau nạp lại", () -> {
+            AtomicInteger calls = new AtomicInteger();
+            SingleFlightCache<String, Integer> cache = new SingleFlightCache<>();
+            Function<String, Integer> loader = k -> {
+                if (calls.incrementAndGet() == 1) throw new IllegalStateException("DB down");
+                return 7;
+            };
+            boolean threw = false;
+            try { cache.get("k", loader); } catch (RuntimeException e) { threw = true; }
+            if (!threw) throw new AssertionError("lần đầu phải ném lỗi");
+            eq(7, cache.get("k", loader));
+            eq(2, calls.get());
+            eq(1, cache.size());
+        });
+
+        System.out.println("RESULT " + p + "/" + t);
+    }
+}
+`,
+      reference: `class SingleFlightCache<K, V> {
+    private final ConcurrentHashMap<K, CompletableFuture<V>> map = new ConcurrentHashMap<>();
+
+    V get(K key, Function<K, V> loader) {
+        CompletableFuture<V> f = map.get(key);
+        if (f == null) {
+            CompletableFuture<V> mine = new CompletableFuture<>();
+            f = map.putIfAbsent(key, mine);   // null: mình là thread thắng
+            if (f == null) {
+                f = mine;
+                try {
+                    f.complete(loader.apply(key));   // loader chạy đúng một lần cho key
+                } catch (Throwable t) {
+                    f.completeExceptionally(t);
+                    map.remove(key, mine);           // lỗi tạm thời không được nằm lại cache
+                }
+            }
+        }
+        try {
+            return f.join();                         // thread khác chờ chung kết quả
+        } catch (CompletionException e) {
+            throw new RuntimeException(e.getCause());
+        }
+    }
+
+    int size() {
+        return map.size();
+    }
+}
+`,
+      hints: [
+        'Dùng putIfAbsent để chọn thread thắng một cách nguyên tử; ai nhận null thì chạy loader, ai nhận future thì join.',
+        'Loader ném lỗi thì completeExceptionally rồi remove(key, future) — truyền đúng future để không xoá nhầm của người khác.',
+        'join() ném CompletionException; bọc lại (unwrap) nếu API của bạn muốn ném lỗi gốc.'
+      ],
+      explain: `Lời giải dùng map làm **bảng đăng ký chuyến bay**: key → future. Thao tác quyết định là {{putIfAbsent}} — nguyên tử, nên chỉ một thread nhận {{null}} và được quyền chạy loader. Các thread còn lại nhận future (đang chạy hoặc đã xong) và {{join}} để chờ cùng kết quả. Vì future thành công **không bị gỡ**, nó đồng thời là cache entry: lần gọi sau dùng luôn, không nạp lại.
+
+Vì sao test vẫn xác định khi có 8 thread? Không có nhánh nào phụ thuộc "ai chạy trước". Chỉ một thread thắng putIfAbsent, và thread đến sau — sớm hay muộn — đều thấy đúng future trong map. CountDownLatch chỉ giữ loader cho tới khi test ra hiệu, để tất cả thread có cơ hội chờ; kể cả thread đến sau khi future đã complete vẫn trả đúng 42 mà không gọi loader, nên {{calls == 1}} luôn đúng.
+
+Lỗi hay gặp:
+
+- **Quên remove khi loader lỗi** ⇒ future lỗi nằm mãi trong map, mọi request sau nhận lỗi cũ. Đây là lỗi "poison cache" nguy hiểm nhất của pattern này.
+- **remove(key)** một tham số ⇒ có thể xoá future của thread khác vừa đăng ký; hãy dùng {{remove(key, mine)}}.
+- **Dùng computeIfAbsent bọc cả lời gọi loader I/O** ⇒ giữ khoá bucket lâu và có thể deadlock; computeIfAbsent chỉ nên dùng cho phép tính nhanh, không I/O.
+- **join() không timeout** ⇒ loader treo làm treo luôn mọi request chờ key đó.
+- **Gọi complete hai lần** ⇒ lần sau trả false, không có tác dụng; cũng đừng completeExceptionally sau khi đã complete thành công.
+- **Mỗi request tạo map mới** (ví dụ map đặt trong biến cục bộ của method) ⇒ không gộp được gì; map phải sống theo vòng đời cache.
+
+Trên production, hãy coi single-flight là lớp bảo vệ **trong một JVM**. Muốn giảm số lần nạp trên toàn cụm thì cần khoá phân tán hoặc để chỉ một instance chịu trách nhiệm refresh, và luôn có timeout + fallback để không biến stampede thành sự cố treo.`
+    }
+  ],
+  check: [
+    {
+      q: 'Trong 300 ms cuối vòng đời của một key nóng, endpoint nhận 3.000 request/giây. Không có single-flight thì khoảng bao nhiêu request có thể cùng miss?',
+      options: [
+        'Đúng 1 request',
+        'Khoảng 900 request (3.000 nhân 0,3 giây)',
+        'Khoảng 3 request',
+        'Không request nào vì TTL còn hiệu lực'
+      ],
+      answer: 1,
+      explain: 'Mọi request đến trong khoảng thời gian key đã hết hạn và future chưa xong đều miss, nên số request cùng nạp xấp xỉ tốc độ nhân thời gian nạp: 3.000 × 0,3 = 900. Đó là lý do connection pool bị chiếm hết.'
+    },
+    {
+      q: 'Vì sao dùng CompletableFuture trong map thay vì bọc loader bằng computeIfAbsent khi loader gọi database?',
+      options: [
+        'Vì computeIfAbsent không đảm bảo chạy một lần',
+        'Vì computeIfAbsent giữ khoá bucket trong suốt thời gian hàm chạy và cấm sửa map bên trong, nên loader I/O chậm sẽ chặn key khác cùng bucket',
+        'Vì CompletableFuture nhanh hơn khoá ở mọi trường hợp',
+        'Vì computeIfAbsent không dùng được với ConcurrentHashMap'
+      ],
+      answer: 1,
+      explain: 'computeIfAbsent có đảm bảo chạy một lần, nhưng giữ khoá trong lúc hàm chạy. Loader I/O 500 ms vừa chặn key khác cùng bucket vừa có nguy cơ deadlock nếu loader đụng lại map. Future chỉ giữ khoá lúc đăng ký.'
+    },
+    {
+      q: 'Loader ném ngoại lệ ở lần gọi đầu. Cài đặt đúng cần làm gì với future trong map?',
+      options: [
+        'Giữ future lỗi lại để các request sau nhận cùng lỗi, đỡ phải gọi DB',
+        'completeExceptionally và gỡ future đó (remove đúng future) để lần sau nạp lại',
+        'complete với giá trị null',
+        'Xoá toàn bộ map'
+      ],
+      answer: 1,
+      explain: 'Lỗi tạm thời không được biến thành lỗi vĩnh viễn. Gỡ đúng future vừa lỗi để request sau thử lại; nếu muốn tránh đập DB với key không tồn tại thì cache kết quả rỗng với TTL ngắn (negative caching).'
+    },
+    {
+      q: 'Hệ thống chạy 10 instance, mỗi instance có SingleFlightCache riêng. Điều gì đúng?',
+      options: [
+        'Toàn cụm chỉ còn đúng 1 lần nạp mỗi key',
+        'Mỗi key có thể có tối đa 10 lần nạp đồng thời, mỗi instance một lần; muốn giảm nữa cần khoá phân tán',
+        'Single-flight không hoạt động vì mỗi instance có map khác nhau',
+        'Cần tắt cache để tránh stampede'
+      ],
+      answer: 1,
+      explain: 'Single-flight chỉ gộp trong một JVM. Với 10 instance, mỗi instance vẫn có một loader riêng nên tối đa 10 lần nạp; giảm tiếp bằng khoá phân tán (Redis NX/PX) hoặc để một instance chịu trách nhiệm refresh.'
+    }
+  ],
+  related: ['concurrency-030', 'db-024', 'db-009', 'spring-017'],
+  tags: ['cache', 'stampede', 'single-flight', 'CompletableFuture', 'ConcurrentHashMap', 'Redis']
+},
 );
