@@ -8409,5 +8409,274 @@ try {
 - **Mỗi lần get() đồng bộ**: {{ThreadLocal.get()}} chỉ đọc map của **chính thread hiện tại**, không cần khoá.
 
 > Senior tip: Java 21 có {{ScopedValue}} (preview) thay thế ThreadLocal an toàn hơn về cấu trúc (bất biến, kế thừa có kiểm soát), nhưng nguyên tắc vẫn là: dữ liệu theo request phải dọn ở {{finally}}. Với {{@Async}}, ThreadLocal **không** truyền sang thread mới — phải truyền qua tham số task.`
-}
+},
+{
+  id: 'qz-devops-104',
+  topic: 'devops',
+  q: 'Một Spring Boot service chạy trên Kubernetes. Trong lần rolling update, bản mới được triển khai nhưng vài request đang xử lý bị cắt giữa chừng (client nhận connection reset). Bạn muốn tắt Pod cũ chỉ sau khi request đang xử lý đã hoàn tất. Cách nào đúng và đầy đủ nhất?',
+  options: [
+    'Chỉ cần đặt {{server.shutdown=graceful}} trong application.properties, Spring Boot tự chờ mọi request xong rồi mới tắt, không cần cấu hình Kubernetes gì thêm.',
+    'Chuyển stratégie Deployment về Recreate thì Pod cũ tắt hoàn toàn trước khi bản mới chạy, do không có hai phiên bản cùng lúc nên không bị cắt request.',
+    'Kết hợp: {{server.shutdown=graceful}} để Spring Boot chờ request xong, preStop hook để kubelet có thời gian bỏ Pod khỏi Service trước khi tắt, đặt {{terminationGracePeriodSeconds}} lớn hơn thời gian request dài nhất, và chạy Java dưới exec form (ENTRYPOINT ["java","-jar","app.jar"]) để Java là PID 1 nhận trực tiếp SIGTERM.',
+    'Tăng {{terminationGracePeriodSeconds}} lên lớn nhất có thể; Kubernetes sẽ giữ Pod chạy mãi cho đến khi request xử lý xong.'
+  ],
+  answer: 2,
+  explain: `**Đáp án đúng: kết hợp graceful shutdown của Spring Boot với preStop hook, terminationGracePeriodSeconds đủ lớn và exec form entrypoint.**
+
+### Tóm tắt
+Graceful shutdown (tắt nhẹ nhàng) nghĩa là không dừng ứng dụng ngay lập tức, mà chờ các request đang xử lý hoàn tất rồi mới thoát. Không có biện pháp đơn lẻ nào đủ: cả ứng dụng và Kubernetes phải phối hợp.
+
+### Vì sao đúng
+- {{server.shutdown=graceful}}: Spring Boot, khi nhận tín hiệu dừng, sẽ không nhận request mới và chờ các request đang chạy hoàn tất (hoặc hết thời gian cấu hình) trước khi đóng server.
+- preStop hook: lệnh chạy trước khi container dừng (ví dụ sleep 10 giây). Trong khoảng này kubelet đã bỏ Pod khỏi EndpointSlice (danh sách IP sẵn sàng của Service), nên load balancer ngừng gửi traffic mới về Pod.
+- {{terminationGracePeriodSeconds}}: thời gian tối đa K8s chờ container tắt trước khi gửi SIGKILL (tín hiệu buộc Kernel điều đình process tắt ngay). Phải lớn hơn thời gian request dài nhất cộng thêm buffer.
+- Exec form {{ENTRYPOINT ["java","-jar","app.jar"]}}: Java chạy là PID 1, nhận trực tiếp tín hiệu {{SIGTERM}} (tín hiệu Linux yêu cầu chương trình tự tắt) từ Kubernetes. Shell form (java -jar chạy trong "/bin/sh -c") khiến shell làm PID 1, Java là tiến trình con, tín hiệu dễ bị nuốt và không truyền xuống Java.
+
+### Vì sao các phương án còn lại sai
+- **Chỉ {{server.shutdown=graceful}}**: thiếu thì Spring Boot có chờ request, nhưng nếu kubelet chờ xong grace period mà container chưa tắt thì gửi SIGKILL cắt ngay. Cũng thiếu preStop, nên traffic mới có thể vẫn được gửi về Pod trong khi nó đang tắt.
+- **Recreate**: tắt tất cả Pod cũ trước khi khởi bản mới → downtime vài phút, client bị lỗi toàn bộ, không phải "không bị cắt".
+- **Grace period lớn nhất**: không thể chờ mãi; quá lớn làm node bị treo khi Pod thực sự kẹt. Còn nếu Java không phải PID 1 (shell form), Java chưa bao giờ nhận SIGTERM, cuối cùng vẫn bị SIGKILL cắt request.
+
+> Senior tip: đặt {{terminationGracePeriodSeconds}} bằng timeout request dài nhất cộng thêm buffer (ví dụ 30–60 giây). preStop sleep 5–10 giây là cách đơn giản giúp kubelet và load balancer có thời gian rút Pod khỏi danh sách trước khi Spring Boot bắt đầu từ chối request mới. Luôn dùng exec form entrypoint trong image Java.`
+},
+{
+  id: 'qz-devops-105',
+  topic: 'devops',
+  q: 'Triển khai Deployment dùng image {{myapp:latest}}. Sau khi apply bản build mới, các Pod mới vẫn chạy code cũ. Nguyên nhân và cách khắc phục đúng là gì?',
+  options: [
+    'Kubernetes tự cache image theo tên tag, nên {{latest}} luôn được lấy lại; phải xóa cache trên mỗi node.',
+    'Tag {{latest}} không thể dùng trong Kubernetes, nên Deployment sẽ từ chối khởi tạo Pod.',
+    'Phải xóa namespace và tạo lại để Kubernetes tải image mới.',
+    'Với imagePullPolicy mặc định là {{IfNotPresent}}, nếu node đã có image tên {{myapp:latest}} thì kubelet không tải lại, dù nội dung tag đã thay đổi trên registry; nên ghim image theo digest (ví dụ {{myapp@sha256:abc…}}) hoặc đặt {{imagePullPolicy: Always}}.'
+  ],
+  answer: 3,
+  explain: `**Đáp án đúng: imagePullPolicy IfNotPresent cùng tag mutable latest khiến node không tải lại image đã có; phải ghim theo digest hoặc dùng Always.**
+
+### Tóm tắt
+Image là gói chứa ứng dụng và môi trường chạy. Digest (ví dụ {{sha256:abc…}}) là mã nhận dạng duy nhất, bất biến của nội dung image. Tag (như {{latest}}) là nhãn có thể thay đổi, có thể trỏ sang nội dung khác sau khi build.
+
+### Vì sao đúng
+Mặc định imagePullPolicy là {{IfNotPresent}}: kubelet chỉ tải image khi node chưa có. Nếu node đã lưu {{myapp:latest}} từ lần trước, nó không hỏi registry xem tag này đã đổi nội dung chưa → Pod mới chạy code cũ. Dùng digest ghim đúng byte của bản build; hoặc đặt {{imagePullPolicy: Always}} để mỗi lần khởi tạo Pod đều tải image mới nhất.
+
+### Vì sao các phương án còn lại sai
+- **Kubernetes tự cache và phải xóa cache**: không chính xác — vấn đề là chính sách chỉ tải khi thiếu, không phải cache không thể xóa.
+- **Tag latest không thể dùng**: dùng được, nhưng là mutable (có thể đổi), nên rủi ro trong production.
+- **Xóa namespace**: không cần, và gây downtime.
+
+> Senior tip: trong CI, hãy build image, gán tag theo commit SHA và push digest vào registry; manifest Deployment ghi digest (hoặc tag cố định như {{v1.2.3}}), không dùng {{latest}} trong production. Nên dùng {{imagePullPolicy: Always}} cho môi trường chạy thường xuyên deploy để đảm bảo pod luôn chạy bản mới nhất.`
+},
+{
+  id: 'qz-devops-106',
+  topic: 'devops',
+  q: 'Một Pod chạy Spring Boot kết nối PostgreSQL. Bạn cần định cấu hình hai probe: một cái quyết định xem Pod có được nhận traffic không (gắn vào Service), một cái quyết định xem container có bị restart không. Nếu DB tạm thời giảm chậm, bạn không muốn Pod bị restart. Thiết lập nào đúng nhất?',
+  options: [
+    'Cả hai đều gọi endpoint {{/actuator/health}} kiểm tra DB, vì health check tổng quát nhất.',
+    'Readiness probe gọi endpoint kiểm tra DB (khi DB lỗi thì Pod bị bỏ khỏi EndpointSlice, Service ngừng gửi traffic mới, Pod vẫn chạy); liveness probe chỉ kiểm tra ứng dụng Java còn phản hồi (ví dụ endpoint nhẹ), không kiểm tra DB, tránh restart cascading.',
+    'Liveness probe gọi {{/actuator/health}} (bao gồm DB) để Pod tự restart khi DB lỗi; readiness probe chỉ kiểm tra process còn sống.',
+    'Không cần probe nào; Kubernetes tự biết Pod sẵn sàng khi container trạng thái Running.'
+  ],
+  answer: 1,
+  explain: `**Đáp án đúng: readiness probe kiểm tra DB để kiểm soát traffic; liveness probe chỉ kiểm tra ứng dụng còn sống, không kiểm tra DB.**
+
+### Tóm tắt
+Readiness probe (kiểm tra sẵn sàng): fail thì kubelet bỏ Pod khỏi EndpointSlice (danh sách IP Pod sẵn sàng của Service), Service ngừng gửi traffic mới về Pod, nhưng Pod vẫn chạy. Liveness probe (kiểm tra còn sống): fail thì kubelet khởi động lại container. Restart cascading là hiện tượng nhiều Pod restart cùng lúc làm trầm trọng thêm sự cố.
+
+### Vì sao đúng
+Khi DB giảm chậm, readiness fail → Pod bị tách khỏi Service, không nhận request mới, tránh làm chậm thêm DB; Pod vẫn sống, không bị restart. Liveness chỉ kiểm tra Java process còn phản hồi → DB hiccup tạm thời không gây restart toàn bộ Pod.
+
+### Vì sao các phương án còn lại sai
+- **Cả hai kiểm tra DB qua /actuator/health**: liveness kiểm tra DB là nguy hiểm: DB giật lag là toàn bộ Pod restart, kéo theo hiện tượng thundering herd (nhiều Pod cùng tấn công DB khi vừa khởi động).
+- **Liveness kiểm tra DB, readiness chỉ kiểm tra process**: ngược roles; readiness mới là cái kiểm soát việc nhận traffic, nên nó là nơi kiểm tra dependency quan trọng như DB.
+- **Không cần probe**: container Running không có nghĩa ứng dụng đã khởi động xong hay có thể phục vụ traffic (Java có thể còn nạp dữ liệu, DB chưa kết nối).
+
+> Senior tip: readiness probe nên kiểm tra những dependency Pod cần để phục vụ traffic; liveness chỉ kiểm tra "processe còn sống, không deadlock". Không đặt liveness quá nhạy, và hạn chế số lần retry thấp để tránh restart lẫn nhau.`
+},
+{
+  id: 'qz-devops-107',
+  topic: 'devops',
+  q: 'Node hết RAM. Ba Pod cùng namespace: A là Guaranteed (request = limit = 512 MiB, dùng 400 MiB); B là Burstable (request 256 MiB, limit 1 GiB, dùng 700 MiB); C là BestEffort (không đặt request/limit, dùng 600 MiB). Kubelet sẽ evict Pod nào đầu tiên để giải phóng RAM?',
+  options: [
+    'Pod C, vì BestEffort có mức ưu tiên thấp nhất khi dự trữ RAM hết.',
+    'Pod B, vì vượt quá request và đang dùng gần limit.',
+    'Pod A, vì dùng nhiều RAM nhất so với request.',
+    'Tất cả cùng mức, Kubelet chọn ngẫu nhiên.'
+  ],
+  answer: 0,
+  explain: `**Đáp án đúng: Pod C (BestEffort) bị evict đầu tiên.**
+
+### Tóm tắt
+QoS class (chất lượng dịch vụ) là cách Kubernetes phân loại Pod theo cách đặt resources.requests và resources.limits: Guaranteed (cả hai bằng nhau), Burstable (khác nhau hoặc chỉ có request), BestEffort (không đặt gì). Evict là kubelet đuổi Pod khỏi node. OOMKilled là trạng thái KernelLinux giết process vì hết RAM. oom_score là điểm Kernel dùng để quyết định process nào bị giết.
+
+### Vì sao đúng
+Khi node hết RAM, kubelet evict theo thứ tự: BestEffort trước, rồi Burstable, rồi Guaranteed (bảo vệ Pod quan trọng). Trong cùng một lớp, oom_score càng cao (dùng nhiều hơn so với request) càng bị đầu tiên. Do đó C (BestEffort) bị đuổi đầu tiên, B Burstable dùng 700 MiB vượt request 256 MiB đứng tiếp theo, A Guaranteed được bảo vệ đến cùng.
+
+### Vì sao các phương án còn lại sai
+- **Pod B vượt quá request nên bị đầu tiên**: B đúng là Burstable và có oom_score cao, nhưng BestEffort (C) vẫn được evict trước B.
+- **Pod A dùng nhiều nhất so với request**: Guaranteed là lớp được bảo vệ nhất, chỉ bị evict khi không còn cách nào khác.
+- **Chọn ngẫu nhiên**: Kubernetes có thứ tự ưu tiên rõ ràng dựa trên QoS và oom_score.
+
+> Senior tip: muốn Pod quan trọng không bị OOMKilled, đặt request = limit (Guaranteed) và giám sát memory usage so với request, không chỉ so với limit. Nên đặt cả request và limit cho mọi container để K8s schedules và đưa ra quyết định đúng.`
+},
+{
+  id: 'qz-devops-108',
+  topic: 'devops',
+  q: 'SLO của API là 99.9% request thành công trong 30 ngày (error budget là 0.1% request thất bại). Lúc này error rate đang 0.5% (gấp 5 lần mục tiêu). Bạn đang thiết kế alert. Lựa chọn nào phù hợp nhất?',
+  options: [
+    'Alert ngay khi error rate vượt 0.1% (vượt SLO), mỗi 1 phút một lần.',
+    'Không cần alert, chỉ cần xem dashboard khi có khách phàn nàn.',
+    'Alert khi error rate vượt 100% (toàn bộ request lỗi), để tránh báo nhầm.',
+    'Alert dựa trên tốc độ tiêu dùng error budget (burn rate): ví dụ team đã dùng hết budget hàng tháng trong vòng 1 giờ (burn rate 720x), hoặc dự kiến dùng hết budget trong vài ngày; điều chỉnh ngưỡng theo thời gian còn lại của cửa sổ SLO.'
+  ],
+  answer: 3,
+  explain: `**Đáp án đúng: alert dựa trên burn rate (tốc độ tiêu dùng error budget), điều chỉnh theo thời gian còn lại của cửa sổ SLO.**
+
+### Tóm tắt
+SLO (mục tiêu cấp độ dịch vụ) là cam kết về chất lượng dịch vụ (ví dụ 99.9% request thành công). SLI (chỉ số cấp độ dịch vụ) là con số đo lường thực tế. Error budget là phần sai số được phép (100% - 99.9% = 0.1%). Burn rate là tốc độ dùng budget so với bình thường (720x nghĩa là dùng cả tháng trong 1 giờ). Alert fatigue là tình trạng quá nhiều alert khiến người vận hành bỏ qua.
+
+### Vì sao đúng
+Lỗi 0.5% có vẻ nhỏ nhưng nếu kéo dài, budget 30 ngày sẽ cạn nhanh. Alert burn rate kích hoạt khi tiền tiêu dùng quá nhanh so với cửa sổ còn lại, nên nhịp độ cân bằng: không báo nhầm do dao động nhỏ, vẫn kịp can thiệp trước khi budget hết.
+
+### Vì sao các phương án còn lại sai
+- **Alert mỗi phút khi vượt 0.1%**: 0.1% là budget dành cho cả 30 ngày, không phải ngưỡng mỗi phút. Báo ngay và liên tục gây alert fatigue, team bắt đầu bỏ qua alert.
+- **Không cần alert**: chủ động phản ứng thì chi phí sửa lỗi thấp hơn chờ khách phàn nàn.
+- **Vượt 100% mới báo**: quá muộn, tất cả người dùng đã bị ảnh hưởng.
+
+> Senior tip: phổ biến alert trên burn rate (ví dụ "dùng hết 14 ngày budget trong 1 giờ" → nghiêm trọng; "dùng hết budget trong 7 ngày" → cảnh báo). SLI nên chọn metric do người dùng cảm nhận được (request thành công / tổng request), không phải CPU hay RAM.`
+},
+{
+  id: 'qz-devops-109',
+  topic: 'devops',
+  multi: true,
+  q: 'Hệ thống có 3 service Java gửi/nhận message qua Kafka. Bạn muốn theo dõi một yêu cầu của user đi qua cả 3 service (distributed tracing). (Chọn 2)',
+  options: [
+    'Cần thư viện tracing (ví dụ OpenTelemetry) ở producer và consumer: producer ghi trace ID vào message header, consumer đọc header đó và nối tiếp span; nếu không mỗi service sẽ tạo trace riêng biệt.',
+    'Kafka tự động gắn trace ID vào mỗi message, nên service nào cũng biết yêu cầu này liên quan đến nhau mà không cần code thêm.',
+    'Kafka không lưu trace ID nên không thể tracing qua message broker.',
+    'Một trace bao gồm nhiều span (mỗi service xử lý một span) nối bằng trace ID; hiển thị thời gian mỗi đoạn, bổ sung cho log và metric, không thay thế chúng.',
+    'Một trace chỉ gồm duy nhất một span cho toàn bộ hệ thống.'
+  ],
+  answer: [0, 3],
+  explain: `**Đáp án đúng: cần instrumentation ở producer và consumer để truyền trace ID qua Kafka header; một trace gồm nhiều span nối bằng trace ID.**
+
+### Tóm tắt
+Distributed tracing (theo dõi phân tán) là cách theo dõi một yêu cầu đi qua nhiều service. Trace ID là mã định danh duy nhất đi cùng yêu cầu. Span là một đơn vị công việc (ví dụ xử lý trong một service, truy vấn DB). Producer là service gửi message, consumer là service nhận message. Kafka header là metadata đi kèm message.
+
+### Vì sao đúng
+- **Cần thư viện tracing ở producer và consumer**: Kafka không tự hiểu trace ID; producer phải inject (ghi) trace ID vào header message, consumer extract (đọc) và nối tiếp span. Không thì mỗi service tạo trace riêng, không biết chúng liên quan.
+- **Một trace gồm nhiều span**: mỗi service tạo một span, các span cùng trace ID được nối lại thành một trace, hiển thị thời gian mỗi đoạn. Trace bổ sung cho log (sự kiện chi tiết từng service) và metric (con số theo thời gian), không thay thế chúng.
+
+### Vì sao các phương án còn lại sai
+- **Kafka tự động gắn trace ID**: sai, Kafka không tự thêm trace ID, cần code instrumentation.
+- **Kafka không lưu trace ID nên không thể tracing**: sai, trace ID có thể mang qua Kafka header, nên tracing qua broker hoàn toàn có thể.
+- **Một trace chỉ một span**: sai, một yêu cầu qua nhiều service sẽ tạo nhiều span, mỗi span đại diện cho một đoạn công việc.
+
+> Senior tip: khi tracing qua Kafka, chú ý producer và consumer phải dùng cùng thư viện tracing và định dạng header (ví dụ W3C trace-context) để trace ID được hiểu đúng hai bên.`
+},
+{
+  id: 'qz-devops-110',
+  topic: 'devops',
+  q: 'Sau rolling update triển khai bản có lỗi, bạn muốn quay lại phiên bản trước nhanh nhất mà không phải sửa code lại. Cách làm đúng trên Kubernetes là gì?',
+  options: [
+    'Xóa Deployment và tạo lại từ manifest cũ.',
+    'Chạy {{kubectl rollout undo deployment/<tên>}}: Kubernetes quay về ReplicaSet trước đó (tạo bản sửa mới trong lịch sử rollout), Pod mới chạy image cũ.',
+    'Thay đổi label của Deployment để trỏ về ReplicaSet cũ.',
+    'Không thể rollback; phải build và deploy bản fix mới (forward fix).'
+  ],
+  answer: 1,
+  explain: `**Đáp án đúng: dùng kubectl rollout undo để quay về ReplicaSet trước đó.**
+
+### Tóm tắt
+Rollout là quá trình triển khai. ReplicaSet là nhóm Pod cùng phiên bản. Mỗi khi Deployment thay đổi (image, label, resources…), Kubernetes lưu lại một revision (bản sửa) trong lịch sử rollout. kubectl rollout undo quay về revision trước bằng cách tạo bản sửa mới trỏ tới Pod template cũ, sau đó thực hiện rolling update quay lại image cũ.
+
+### Vì sao đúng
+Lệnh rollback này nhanh (một lệnh), không downtime dài (rolling update), và giữ nguyên lịch sử thay đổi để kiểm tra sau.
+
+### Vì sao các phương án còn lại sai
+- **Xóa Deployment và tạo lại**: gây downtime vì tất cả Pod bị tắt trước khi tạo mới.
+- **Thay đổi label**: label chỉ dùng đánh dấu, không đổi image đang chạy, không tác vụ rollback.
+- **Không thể rollback**: sai, Kubernetes hỗ trợ rollback tích hợp; forward fix chỉ chọn khi bản cũ không thể phục hồi được dữ liệu đã thay đổi.
+
+> Senior tip: xem lịch sử bằng {{kubectl rollout history deployment/<tên>}} và quay về revision cụ thể bằng {{kubectl rollout undo deployment/<tên> --to-revision=2}}. Nếu bản mới đã thay đổi database schema không tương thích, rollback code đơn độc không đủ — cần kế hoạch rollback dữ liệu.`
+},
+{
+  id: 'qz-devops-111',
+  topic: 'devops',
+  multi: true,
+  q: 'Xây dựng Docker image cho Spring Boot trong pipeline CI. (Chọn 2)',
+  options: [
+    'Dùng base image tag {{latest}} để luôn có bản vá bảo mật mới nhất.',
+    'Pin base image theo digest hoặc tag cụ thể (ví dụ {{eclipse-temurin:17-jre-alpine}}), dùng multi-stage build, và ghim version dependency để build tái lập được.',
+    'COPY toàn bộ mã nguồn trước, rồi mới cài dependency, sao mỗi lần sửa code chỉ rebuild các bước sau.',
+    'Không lưu secret (password, API key) trong Dockerfile qua {{ENV}}/{{ARG}} hoặc COPY file secret; đọc secret từ biến môi trường hoặc secret manager khi container chạy.',
+    'Chạy ứng dụng dưới user root bên trong container để không bị lỗi quyền.'
+  ],
+  answer: [1, 3],
+  explain: `**Đáp án đúng: pin base image + multi-stage build cho build tái lập; không nhúng secret vào image.**
+
+### Tóm tắt
+Multi-stage build là kỹ thuật chia Dockerfile thành nhiều giai đoạn (ví dụ giai đoạn build dùng Maven, giai đoạn chạy chỉ chứa JRE và JAR), image cuối không chứa công cụ build. Digest là mã nhận dạng byte-by-byte của image, không bao giờ thay đổi. Secret là bí mật (password, API key).
+
+### Vì sao đúng
+- **Pin base image + multi-stage + ghim dependency**: cùng một Dockerfile luôn sinh ra image giống hệt nhau (reproducible), image cuối nhỏ hơn và ít bề mặt tấn công hơn.
+- **Không lưu secret trong Dockerfile**: mọi layer trong image được lưu vĩnh viễn, kể cả layer sau bị ghi đè. Ai có image đều có thể dùng {{docker history}} hoặc giải nén layer để lấy secret. Đọc secret từ biến môi trường hoặc secret manager khi container chạy.
+
+### Vì sao các phương án còn lại sai
+- **Dùng tag latest**: latest là mutable (có thể trỏ sang nội dung khác), hai lần build có thể cho image khác nhau → khó tái lập và rủi ro bảo mật.
+- **COPY source trước rồi cài dependency**: Docker cache hủy một layer và mọi layer sau nó. Sửa mã nguồn sẽ làm mất cache bước tải dependency → build chậm. Thứ tự đúng là copy pom.xml/build.gradle và tải dependency trước, rồi mới copy source.
+- **Chạy dưới user root**: root trong container là rủi ro bảo mật; nên tạo user không có đặc quyền và chạy ứng dụng dưới user đó.
+
+> Senior tip: ghim base image theo digest hoặc tag cố định, không dùng {{latest}}. Thêm bước quét lỗ hổng image (vulnerability scan) vào CI và cho fail khi phát hiện CVE nghiêm trọng.`
+},
+{
+  id: 'qz-devops-112',
+  topic: 'devops',
+  q: 'Dịch vụ của bạn chậm p99. Bạn muốn biết yêu cầu bị chậm ở chính service này hay ở service đối phương gọi qua HTTP. Công cụ nào trả lời câu hỏi này?',
+  options: [
+    'Distributed tracing: xem thời gian của mỗi span (service gọi DB, gọi HTTP đối phương) và biết đoạn nào chiếm thời gian.',
+    'CPU/RAM metric của container (dùng cao có nghĩa là chính service này chậm).',
+    'Log từng service (xem dòng log có từ "lỗi").',
+    'Kiểm tra diskull của node.'
+  ],
+  answer: 0,
+  explain: `**Đáp án đúng: distributed tracing (theo dõi phân tán).**
+
+### Tóm tắt
+p99 là percentile 99: 99% request nhanh hơn con số này, 1% request chậm nhất. Metric là con số theo thời gian (CPU, latency, error rate). Log là bản ghi sự kiện của từng service. Trace là hành trình của một yêu cầu qua nhiều service, gồm các span (mỗi span là một đoạn công việc, kèm thời gian bắt đầu/kết thúc), nối bằng trace ID.
+
+### Vì sao đúng
+Trace cho thấy thời gian từng span: nếu span "gọi HTTP đối phương" chiếm 80% thời gian, lỗi ở đối phương; nếu span xử lý nội bộ chiếm hết, lỗi ở chính service này.
+
+### Vì sao các phương án còn lại sai
+- **CPU/RAM metric**: CPU cao không hiển thị lệnh gọi nào chậm; có thể CPUIdle mà ứng dụng chờ I/O (ví dụ chờ DB trả về).
+- **Log từng service**: log là sự kiện riêng lẻ, khó tương quan giữa các service và không cho thấy thời gian end-to-end của yêu cầu.
+- **Diskull**: ổ đĩa đầy gây lỗi ghi, không trực tiếp cho biết API chậm ở thành phần nào.
+
+> Senior tip: dùng metric để biết "có vấn đề không" (SLI/SLO), log để biết "lỗi gì" của từng service, trace để biết "yêu cầu đi đâu, chậm ở đâu". Ba loại bổ trợ lẫn nhau.`
+},
+{
+  id: 'qz-devops-113',
+  topic: 'devops',
+  q: 'Triển khai canary: 5% traffic đến bản mới, 95% traffic đến bản cũ. Bạn muốn quyết định promotion (mở rộng traffic cho bản mới) hay rollback. Cách so sánh đúng là gì?',
+  options: [
+    'So sánh tổng số request của hai phiên bản.',
+    'So sánh error rate, latency p99, và business metric (ví dụ tỷ lệ thanh toán thành công) của canary với baseline (bản cũ) trong cùng khoảng thời gian; promotion chỉ khi canary không kém hơn đáng kể.',
+    'Chờ 24 giờ rồi promotion dù sao.',
+    'Nhìn xem Pod canary có CrashLoopBackOff không; nếu không thì promotion.'
+  ],
+  answer: 1,
+  explain: `**Đáp án đúng: so sánh canary với baseline theo cùng khoảng thời gian, dùng error rate, latency p99 và business metric; có guardrails trước khi promotion.**
+
+### Tóm tắt
+Canary là phát hành bản mới cho một nhóm nhỏ người dùng trước (ví dụ 5% traffic), quan sát rồi mới mở rộng. Baseline là phiên bản hiện tại dùng làm giá trị tham chiếu. Promotion là mở rộng traffic cho bản mới. Error rate là tỷ lệ request lỗi. p99 latency là thời gian mà 99% request nhanh hơn.
+
+### Vì sao đúng
+Tổng số request chỉ phản ánh tỷ lệ chia traffic (5% so với 95%), không nói về chất lượng. Chỉ khi canary không kém hơn baseline về lỗi, độ trễ và chỉ số kinh doanh thì mới promotion. Nên đặt guardrails tự động (ví dụ error rate tăng vượt ngưỡng → rollback tự động).
+
+### Vì sao các phương án còn lại sai
+- **Tổng số request**: canary nhận ít request hơn vì được chỉ định ít traffic, không phải do bản mới kém.
+- **Chờ 24 giờ rồi promotion dù sao**: thời gian cố định không căn cứ vào metric, có thể promotion bản có lỗi lặng.
+- **Không CrashLoopBackOff thì promotion**: không crash không có nghĩa không có lỗi (sai lầm logic, phản hồi chậm, dữ liệu sai).
+
+> Senior tip: canary cần chạy đủ lâu để lấp lửng các request hiếm (ví dụ thanh toán bằng thẻ hiếm dùng). Luôn có kế hoạch rollback trước khi bắt đầu canary.`
+},
 );
