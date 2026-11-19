@@ -7939,7 +7939,254 @@ Partition theo ngày giúp pruning và maintenance nhanh, PK include partition k
 `,
   follow: ['Pruning với prepared statement?', 'pg_partman retain policy?', 'Partition vs sharding?'],
   tags: ['partitioning', 'RANGE', 'pruning', 'PostgreSQL']
+},
+{
+  id: 'sql-090',
+  topic: 'sql',
+  level: 'senior',
+  q: 'Bảng orders (id, merchant_id, created_at, total_amount, status) có 500 triệu dòng. Lấy 20 đơn lớn nhất của một merchant trong tháng này: WHERE merchant_id = ? AND created_at >= ? AND created_at < ? ORDER BY total_amount DESC LIMIT 20. Chọn index (merchant_id, created_at DESC) hay (merchant_id, total_amount DESC), và tại sao?',
+  a: `**Tóm tắt:** Dùng index (merchant_id, created_at DESC) khi khoảng tháng còn ít đơn: DB seek đúng merchant và tháng, sau đó Sort theo total_amount để lấy 20 lớn nhất. Dùng index (merchant_id, total_amount DESC) khi merchant có hàng trăm nghìn đơn/tháng và cần dừng sớm sau LIMIT 20: DB quét theo thứ tự tiền giảm dần, lọc ngày từng dòng, dừng khi đủ 20 đơn trong tháng. Không có cách nào luôn đúng — phụ thuộc tỷ lệ đơn tháng này so với lịch sử và mức độ tương quan giữa số tiền và thời gian; nếu vẫn chậm, tạo cả hai hoặc partial index cho merchant lớn, và luôn kiểm tra bằng EXPLAIN (ANALYZE, BUFFERS).
+
+### Ba cách lập index
+| Cách | Khi dùng | Ghi chú |
+| (merchant_id, created_at DESC) + Sort | Khoảng tháng chọn ít đơn | Lọc nhanh, sau đó Sort theo total_amount; Sort spill nếu work_mem nhỏ |
+| (merchant_id, total_amount DESC) | LIMIT nhỏ, đơn lớn tập trung gần đây | Dừng sớm sau 20 dòng, không Sort; nhưng lọc created_at từng dòng |
+| Cả hai index | Merchant lớn và nhỏ có hành trình khác nhau | Planner tự chọn index phù hợp; mỗi index thêm chi phí ghi |
+
+### Cơ chế từng bước và VÌ SAO
+B-tree (merchant_id, created_at DESC) lưu entry theo merchant_id rồi created_at giảm dần. WHERE merchant_id = ? AND created_at >= ? AND created_at < ? là prefix đầy đủ → index range scan, chỉ đọc đơn của merchant trong tháng. ORDER BY total_amount DESC không khớp thứ tự index → DB phải Sort toàn bộ kết quả range trước LIMIT 20. Nếu tháng có 500.000 đơn, Sort đọc 500.000 dòng rồi xếp hạng — chậm nếu work_mem không đủ và spill ra đĩa.
+
+Index (merchant_id, total_amount DESC) lưu theo merchant rồi tiền giảm dần. ORDER BY khớp index → DB đọc theo thứ tự tiền, LIMIT 20 dừng sớm. Nhưng created_at không dùng để sắp xếp → mỗi dòng đọc được phải lọc created_at trong tháng. Nếu đơn lớn nhất của merchant đều nằm tháng trước, DB quét hàng chục nghìn đơn cũ mới tìm đủ 20 đơn tháng này.
+
+### SQL mẫu
+~~~sql
+CREATE INDEX CONCURRENTLY idx_orders_merchant_created ON orders (merchant_id, created_at DESC);
+CREATE INDEX CONCURRENTLY idx_orders_merchant_amount ON orders (merchant_id, total_amount DESC);
+~~~
+~~~java
+List<OrderRow> top20 = jdbc.query("""
+    SELECT id, total_amount, created_at
+    FROM orders
+    WHERE merchant_id = ?
+      AND created_at >= ? AND created_at < ?
+    ORDER BY total_amount DESC
+    LIMIT 20
+    """, orderRowMapper(), merchantId, startOfMonth, startOfNextMonth);
+~~~
+
+### Lỗi hay gặp / pitfall production
+1. LIMIT 20 không có index nào cũng nhanh: với index tiền, nếu tháng này chỉ có vài đơn lớn, DB quét gần toàn bộ lịch sử merchant → chậm hơn index ngày + Sort.
+2. Hai index khiến mỗi INSERT cập nhật 2 cấu trúc B-tree và sinh thêm WAL; trên bảng 500 triệu dòng ghi nhiều, p95 ghi tăng. Chỉ tạo index thực sự cần và theo dõi idx_scan = 0 để xóa index thừa.
+3. total_amount cho phép NULL: ORDER BY DESC đặt NULL đầu (PostgreSQL), có thể làm sai kết quả "20 lớn nhất". Thêm NOT NULL hoặc xử lý rõ ràng.
+
+### Ví dụ đời thực
+Hệ thống đơn hàng 500 triệu dòng, merchant lớn 500.000 đơn/tháng. Ban đầu chỉ có index (merchant_id). Query top 20 tháng này Sort 500.000 dòng, p95 3,2 giây. Thêm index (merchant_id, created_at DESC): range scan 500.000, Sort trong bộ nhớ, p95 450 ms. Thử index (merchant_id, total_amount DESC): vì 80% đơn lớn của merchant nằm tháng trước, DB quét 120.000 đơn cũ trước khi đủ 20 đơn tháng này, p95 1,1 giây — kém hơn. Cuối cùng giữ index (merchant_id, created_at DESC), p95 450 ms, CPU giảm 60%. Số liệu minh họa, phụ thuộc phân bổ thời gian của đơn lớn.
+
+### Trả lời mẫu khi phỏng vấn
+"Với query lọc merchant và tháng rồi sắp xếp theo tổng tiền, tôi sẽ thử hai index: (merchant_id, created_at DESC) để lọc trước rồi Sort, hoặc (merchant_id, total_amount DESC) để đọc theo thứ tự tiền và dừng sớm sau LIMIT 20. Nếu tháng này chỉ có một phần nhỏ lịch sử merchant, index ngày + Sort rẻ hơn; nếu đơn lớn tập trung gần đây, index tiền dừng sớm hơn. Tôi không đoán mà chạy EXPLAIN (ANALYZE, BUFFERS) để xem Sort đọc bao nhiêu dòng và có spill ra đĩa không. Nếu vẫn chậm, tôi tạo cả hai hoặc partial index cho merchant lớn, và nhớ mỗi index thêm là chi phí ghi cao hơn trên bảng 500 triệu dòng."
+
+> Senior tip: quy tắc "equality trước, ORDER BY tiếp, range sau cùng" áp dụng khi cột ORDER BY cũng là cột lọc. Ở đây ORDER BY total_amount không xuất hiện trong WHERE, nên phải cân bằng giữa "lọc ít hàng rồi Sort" và "Sort miễn phí nhưng quét nhiều hàng để lọc" — EXPLAIN (ANALYZE, BUFFERS) là cơ sở duy nhất để quyết định.`,
+  follow: [
+    'Tại sao index (merchant_id, total_amount DESC) có thể quét gần toàn bộ lịch sử merchant thay vì dừng sau 20 dòng?',
+    'Khi nào nên tạo cả hai index, và chi phí ghi là bao nhiêu?',
+    'NULL trong total_amount ảnh hưởng ORDER BY DESC như thế nào?'
+  ],
+  tags: ['composite index', 'ORDER BY', 'LIMIT', 'EXPLAIN', 'index design'],
+},
+{
+  id: 'sql-091',
+  topic: 'sql',
+  level: 'senior',
+  q: 'Bảng orders 500 triệu dòng, báo cáo cần id và total_amount của 50 đơn OPEN mới nhất của một merchant: SELECT id, total_amount FROM orders WHERE merchant_id = ? AND status = ? ORDER BY created_at DESC LIMIT 50. Index (merchant_id, status, created_at DESC) đã có, nhưng vẫn phải đọc heap lấy id và total_amount. Bạn thêm INCLUDE (id, total_amount) vào index được không, và khi index-only scan vẫn chậm?',
+  a: `**Tóm tắt:** Thêm INCLUDE (id, total_amount) vào index (merchant_id, status, created_at DESC) cho phép Index Only Scan: DB lấy id và total_amount từ lá index, không đọc bảng heap. Lưu ý index B-tree phụ KHÔNG chứa khóa chính id (nó chỉ lưu cột khóa + cột INCLUDE + ctid trỏ heap), nên phải INCLUDE cả id thì SELECT id mới không phải chạm heap. Nhưng index-only scan chỉ thực sự tránh heap khi visibility map đánh dấu trang all-visible (sau VACUUM); bảng orders ghi nhiều (UPDATE status PENDING sang DONE) làm visibility map cũ, Heap Fetches lớn, index-only scan vẫn chậm. INCLUDE chỉ dành cho cột nhỏ, query nóng; không INCLUDE cột lớn (payload JSONB, note TEXT) và không dùng cho SELECT *.
+
+### Cơ chế từng bước và VÌ SAO
+Index entry chứa cột khóa (merchant_id, status, created_at) và cột INCLUDE (id, total_amount) ở lá. Query cần id, total_amount, merchant_id, status, created_at — tất cả có trong index → DB bỏ qua đọc heap. Nếu chỉ INCLUDE (total_amount), cột id (khóa chính) vẫn không có trong index phụ nên planner buộc đọc heap lấy id — index-only scan không xảy ra. Nhưng PostgreSQL phải biết tuple trên trang heap visible với mọi transaction (visibility map, do VACUUM cập nhật); trang chưa all-visible → Heap Fetch kiểm tra xmin/xmax của từng tuple.
+
+~~~sql
+CREATE INDEX CONCURRENTLY idx_orders_open_amount
+ON orders (merchant_id, status, created_at DESC)
+INCLUDE (id, total_amount);
+
+SELECT id, total_amount
+FROM orders
+WHERE merchant_id = ? AND status = 'OPEN'
+ORDER BY created_at DESC
+LIMIT 50;
+~~~
+~~~java
+List<OrderRow> top50 = jdbc.query("""
+    SELECT id, total_amount FROM orders
+    WHERE merchant_id = ? AND status = 'OPEN'
+    ORDER BY created_at DESC
+    LIMIT 50
+    """, orderRowMapper(), merchantId);
+~~~
+
+### Bảng trade-off
+| Cách | Đọc heap | Kích thước index | Chi phí ghi |
+| (merchant_id, status, created_at DESC) | Có (mỗi dòng lấy id, total_amount từ heap) | Nhỏ | Thấp |
+| + INCLUDE (id, total_amount) | Không, nếu visibility map all-visible | Lớn hơn (id, total_amount trên mọi entry) | Cao hơn (mỗi UPDATE ghi thêm vào index) |
+| INCLUDE cột lớn (JSONB, TEXT) | Không | Rất lớn, có thể > 100 GB | Rất cao, tránh |
+
+### Lỗi hay gặp / pitfall production
+1. UPDATE status liên tục làm visibility map bị xoá lại; EXPLAIN vẫn cho Heap Fetches lớn → index-only scan chỉ "nửa mùa". Cần autovacuum kịp và không để transaction dài idle.
+2. SELECT * không bao giờ được cover (trừ khi index toàn bộ bảng, vô lý).
+3. Cột INCLUDE không tham gia tìm kiếm hay sắp xếp; ORDER BY created_at vẫn dùng cột khóa.
+4. UPDATE status (cột khóa) di chuyển entry index; chi phí hơn UPDATE cột không có index.
+
+### Ví dụ đời thực
+Bảng orders 500 triệu dòng, report top 50 đơn OPEN mỗi merchant. Index (merchant_id, status, created_at DESC) 24 GB, Heap Fetches 48.000/50.000 dòng, p95 640 ms. Thêm INCLUDE (id, total_amount): index 32 GB, sau VACUUM ANALYZE Heap Fetches = 0, p95 7 ms. (Chỉ INCLUDE total_amount thì id vẫn phải đọc heap nên không đạt Heap Fetches = 0.) UPDATE status liên tục khiến visibility map bị xoá; sau khi đặt autovacuum kịp và idle_in_transaction_session_timeout = '5min', VM ổn định, p95 giữ dưới 10 ms.
+
+### Trả lời mẫu khi phỏng vấn
+"Tôi thêm INCLUDE (id, total_amount) vào index (merchant_id, status, created_at DESC) để query lấy id, total_amount hoàn toàn từ index, không đọc heap. Lưu ý index phụ không chứa khóa chính id, nên phải INCLUDE cả id — chỉ INCLUDE total_amount thì id vẫn buộc đọc heap. Điều kiện là mọi trang heap liên quan phải all-visible trong visibility map — nếu bảng ghi nhiều và VACUUM không kịp, EXPLAIN vẫn cho Heap Fetches lớn và query chậm như trước. Tôi chỉ INCLUDE cột nhỏ và cần thiết, không INCLUDE JSONB hay text lớn, và chắc chắn không dùng cho SELECT *. Tôi kiểm chứng bằng EXPLAIN (ANALYZE, BUFFERS): Index Only Scan kèm Heap Fetches = 0 mới là thật sự tránh heap."
+
+> Senior tip: Index Only Scan trong kế hoạch không có nghĩa là "không đọc đĩa" — hãy luôn xem Heap Fetches và Buffers; Heap Fetches lớn nghĩa là bạn trả phí cho một index-only scan ảo.`,
+  follow: [
+    'Visibility map được cập nhật khi nào, và transaction dài ảnh hưởng thế nào?',
+    'Tại sao cột INCLUDE không giúp ORDER BY hay WHERE?',
+    'Khi nào index-only scan chậm hơn index scan thông thường?'
+  ],
+  tags: ['covering index', 'INCLUDE', 'index-only scan', 'visibility map', 'VACUUM'],
+},
+{
+  id: 'sql-092',
+  topic: 'sql',
+  level: 'senior',
+  q: 'API merchant xem đơn hàng kiểu "tải thêm": WHERE merchant_id = ? AND status = ? ORDER BY created_at DESC, id DESC LIMIT 50, cursor là base64 của merchant_id, status, created_at, id của đơn cuối. Viết query trang tiếp theo, giải thích tại sao cursor phải đủ mọi cột ORDER BY plus khóa chính, và tại sao OFFSET chậm trên bảng 500 triệu dòng?',
+  a: `**Tóm tắt:** OFFSET 200.000 buộc DB duyệt và bỏ qua 200.000 dòng trước khi trả 50 → chi phí tăng theo độ sâu, trang 10.000 mất hàng giây, và kém ổn định khi có đơn mới chèn. Keyset dùng điều kiện row constructor WHERE (merchant_id, status, created_at, id) < (:m, :s, :ts, :id) với index (merchant_id, status, created_at DESC, id DESC) → Index Scan định vị thẳng vị trí bắt đầu, chi phí gần như không đổi theo độ sâu. Cursor phải mã hóa đủ cột ORDER BY (merchant_id, status, created_at) cộng id làm tie-break; thiếu cột nào sẽ bỏ sót hoặc lặp đơn khi created_at trùng (nhiều đơn cùng mili-giây). Keyset chỉ hỗ trợ "tải thêm/trang sau", không nhảy trang ngẫu nhiên; UI cần số trang thì cache tổng số hoặc dùng OFFSET chỉ trên bảng nhỏ.
+
+### Cơ chế từng bước
+1. Trang trước trả đơn cuối: merchant M, status OPEN, created_at T, id I.
+2. Trang sau: WHERE merchant_id = M AND status = 'OPEN' AND (created_at, id) < (T, I) ORDER BY created_at DESC, id DESC LIMIT 51. So sánh tuple từ trái sang phải: created_at < T, hoặc = T và id < I — đúng nghĩa "sau đơn cuối" theo thứ tự sắp xếp.
+3. Index (merchant_id, status, created_at DESC, id DESC) Seek đến entry đầu tiên nhỏ hơn (T, I), đọc 50 entry liên tiếp, dừng. Không có bước bỏ qua tuyến tính như OFFSET.
+4. Trang trước: đảo dấu >, ORDER BY ngược, rồi reverse danh sách ở ứng dụng.
+
+~~~sql
+-- Trang tiếp theo (sau đơn cuối theo cursor)
+SELECT id, merchant_id, total_amount, created_at
+FROM orders
+WHERE merchant_id = ? AND status = ?
+  AND (created_at, id) < (?, ?)
+ORDER BY created_at DESC, id DESC
+LIMIT 51;   -- 51 để biết có trang sau
+~~~
+~~~java
+record OrderCursor(String merchantId, String status, OffsetDateTime createdAt, long id) {}
+
+String encode(OrderCursor c) {
+    String raw = c.merchantId() + "|" + c.status() + "|" + c.createdAt() + "|" + c.id();
+    return Base64.getUrlEncoder().withoutPadding()
+        .encodeToString(raw.getBytes(StandardCharsets.UTF_8));
 }
 
+List<OrderRow> nextPage(String cursor, int size) {
+    OrderCursor c = decode(cursor);   // decode base64, tách theo "|", kiểm tra định dạng
+    return jdbc.query("""
+        SELECT id, merchant_id, total_amount, created_at FROM orders
+        WHERE merchant_id = ? AND status = ?
+          AND (created_at, id) < (?, ?)
+        ORDER BY created_at DESC, id DESC
+        LIMIT ?
+        """, orderRowMapper(), c.merchantId(), c.status(), c.createdAt(), c.id(), size + 1);
+}
+~~~
+
+### Bảng trade-off
+| Cách | Chi phí trang sâu | Ưu điểm | Nhược điểm |
+| OFFSET | Tăng theo N (bỏ N dòng) | Đơn giản, nhảy trang ngẫu nhiên | Chậm dần, trùng/lạc khi insert |
+| Keyset | Gần như không đổi (index seek) | Nhanh ổn định, ổn định khi insert song song | Chỉ tải thêm/trang sau, cần index khớp ORDER BY, cursor mã hóa đủ cột |
+
+### Lỗi hay gặp / pitfall production
+1. Thiếu id trong cursor: nhiều đơn cùng created_at → trang sau bỏ sót hoặc lặp đơn.
+2. Client sửa cursor để đọc đơn merchant khác: ký HMAC hoặc coi cursor là opaque và kiểm tra merchant_id của phiên.
+3. created_at NULL: mặc định DESC đặt NULL đầu, điều kiện (created_at, id) < (...) bỏ qua NULL → dùng cột NOT NULL hoặc xử lý NULLS LAST rõ ràng.
+4. Collation: nếu ORDER BY text, cursor và query phải cùng collation, không thì index bị bỏ.
+
+### Ví dụ đời thực
+Bảng orders 50 triệu dòng, pageSize 20. OFFSET trang 2.000 (bỏ 40.000 dòng) mất 3,2 giây, trang 5.000 mất 11 giây; bot cào dữ liệu làm CPU DB 90%. Đổi sang keyset với index (merchant_id, status, created_at DESC, id DESC) và cursor base64: mọi trang 8–12 ms, p95 140 ms, CPU giảm 22%. Cursor ký HMAC, TTL 24 giờ.
+
+### Trả lời mẫu khi phỏng vấn
+"Tôi dùng keyset thay OFFSET vì OFFSET phải duyệt và bỏ qua toàn bộ các dòng phía trước, càng sâu càng chậm và kém ổn định khi có đơn mới. Query dùng WHERE (merchant_id, status, created_at, id) < cursor ORDER BY created_at DESC, id DESC LIMIT 51 với index khớp chính xác thứ tự đó, nên mọi trang nhanh như trang đầu. Cursor phải mã hóa đủ cột ORDER BY cộng id làm tie-break; thiếu id thì đơn cùng mili-giây bị lặp hoặc mất. Tôi chỉ hỗ trợ "tải thêm", không nhảy trang ngẫu nhiên; nếu UI bắt buộc số trang thì cache tổng hoặc OFFSET chỉ trên bảng nhỏ. Cursor ký HMAC để client không giả mạo."
+
+> Senior tip: Nếu thấy mình viết OFFSET với số trang lớn, đó là tín hiệu cần đổi thiết kế, không phải cần thêm index. Keyset nhanh gấp nhiều lần ở trang sâu nhưng mất quyền truy cập ngẫu nhiên — chọn theo nhu cầu UI.`,
+  follow: [
+    'Tại sao keyset không hỗ trợ nhảy ngẫu nhiên tới trang 50 như OFFSET?',
+    'Cursor base64 có rủi ro giả mạo gì, và bạn kiểm tra chữ ký ở đâu?',
+    'Lọc theo nhiều điều kiện thì cursor mã hóa gì, và index sắp xếp như thế nào?'
+  ],
+  tags: ['keyset pagination', 'cursor', 'OFFSET', 'row constructor', 'PostgreSQL', 'index'],
+},
+{
+  id: 'sql-093',
+  topic: 'sql',
+  level: 'lead',
+  q: 'Job hàng tối đọc file giá 5 triệu dòng và cập nhật bảng orders (giá, trạng thái). Bạn thiết kế batch update thế nào để không khóa bảng lâu, không chặn API, và crash giữa chừng thì chạy lại an toàn?',
+  a: `**Tóm tắt:** Không nạp 5 triệu dòng trong một transaction. Nạp vào bảng staging UNLOGGED bằng COPY, sau đó chạy nhiều batch nhỏ: mỗi batch chọn 5.000 dòng cần cập nhật từ staging theo batch_token, MERGE vào orders, COMMIT ngay (vài trăm ms). Mỗi batch là transaction riêng và idempotent (batch_token hoặc điều kiện WHERE tự loại dòng đã xử lý), nên crash giữa chừng chỉ mất các batch chưa commit, chạy lại từ checkpoint không xử lý nhầm. Một transaction 40 phút giữ xmin, chặn VACUUM, làm bloat 40 GB, và DDL/SELECT xếp hàng sau lock hàng đợi.
+
+### Cơ chế từng bước
+1. Nạp file vào staging_price (UNLOGGED) bằng COPY — nhanh, không sinh nhiều WAL.
+2. Mỗi batch: MERGE INTO orders o USING (SELECT sku, price FROM staging_price WHERE batch_token = ? LIMIT 5000) s ON o.sku = s.sku WHEN MATCHED THEN UPDATE SET price = s.price, updated_at = now(); COMMIT; — hoặc UPDATE ... FROM với CTE LIMIT N FOR UPDATE SKIP LOCKED khi chỉ cập nhật phần con.
+3. Lặp tăng batch_token cho đến khi staging hết. Mỗi batch commit vài trăm ms → replica theo kịp, API không bị chặn lâu.
+4. Crash giữa chừng: batch_token đã commit không xử lý lại (WHERE tự loại), batch chưa commit rerun an toàn.
+
+~~~sql
+-- Staging tạm, không sinh nhiều WAL
+CREATE UNLOGGED TABLE staging_price (
+    sku text,
+    price numeric,
+    batch_token integer
+);
+-- Nạp bằng COPY từ ứng dụng
+
+-- Mỗi batch: cập nhật 5.000 dòng, commit ngay
+MERGE INTO orders o
+USING (SELECT sku, price FROM staging_price WHERE batch_token = ? LIMIT 5000) s
+ON o.sku = s.sku
+WHEN MATCHED THEN
+    UPDATE SET price = s.price, updated_at = now();
+~~~
+~~~java
+int token = 0;
+while (true) {
+    int updated = jdbc.update("""
+        MERGE INTO orders o
+        USING (SELECT sku, price FROM staging_price WHERE batch_token = ? LIMIT 5000) s
+        ON o.sku = s.sku
+        WHEN MATCHED THEN UPDATE SET price = s.price, updated_at = now()
+        """, token);
+    if (updated == 0) break;
+    token++;
+    Thread.sleep(50);   // nhường I/O, cho replica theo kịp
+}
+~~~
+
+### Bảng trade-off
+| Cách | Thời gian | Khoá | Rủi ro |
+| Một transaction 5 triệu dòng | Vài phút | Giữ suốt lệnh | Treo API, replication lag, rollback lâu nếu lỗi |
+| Batch 5.000 dòng, commit mỗi lô | Vài phút | Ngắn từng lô | Phải viết vòng lặp, idempotent, checkpoint |
+| Java vòng lặp save() từng dòng | Hàng giờ | Ngắn | 5 triệu round-trip, quá chậm |
+
+### Lỗi hay gặp / pitfall production
+1. Một transaction 40 phút (như câu sql-055): giữ xmin → VACUUM không dọn dead tuple, bloat 40 GB; ALTER TABLE chờ, SELECT xếp hàng sau lock hàng đợi.
+2. MERGE khóa các dòng đích tương ứng; batch lớn vẫn khóa lâu → phải chia nhỏ.
+3. Staging có trùng sku → MERGE cập nhật một dòng đích hai lần gây lỗi "MERGE command cannot affect row a second time" (SQLSTATE 21000); khử trùng staging trước (GROUP BY sku).
+4. FK: orders tham chiếu customers; cập nhật orders không đụng customers nên OK, nhưng nếu xóa đơn cha phải kiểm tra order_items → cần index FK trên order_items(order_id).
+5. Crash rồi chạy lại mà không có batch_token/WHERE tự loại → xử lý nhầm đơn đã cập nhật. Lưu ý: bảng UNLOGGED bị **truncate khi crash recovery**, nên sau crash phải nạp lại staging (COPY) rồi mới chạy tiếp từ token đã checkpoint; nếu không, vòng lặp sẽ thấy staging rỗng và bỏ dở nửa job.
+
+### Ví dụ đời thực
+Hệ thống giá 500 triệu đơn, job hàng tối cập nhật 5 triệu dòng từ file nhà cung cấp. Ban đầu một transaction UPDATE ... FROM 5 triệu dòng: API đơn hàng timeout, replica trễ 10 phút, WAL vài GB. Sửa sang staging UNLOGGED + MERGE batch 5.000, commit mỗi lô, sleep 50 ms: job 8 phút, mỗi lô khoá dưới 300 ms, replica lag dưới 30 giây, p95 API không tăng. Crash ở batch 1.200 (UNLOGGED staging bị truncate khi recovery, nên nạp lại file vào staging): chạy lại từ token 1.200, không đơn nào bị cập nhật hai lần.
+
+### Trả lời mẫu khi phỏng vấn
+"Tôi không bao giờ để một transaction cập nhật 5 triệu dòng. Nạp file vào staging UNLOGGED bằng COPY, rồi chạy nhiều batch nhỏ: mỗi batch MERGE 5.000 dòng từ staging vào orders theo batch_token, commit ngay, tăng token và lặp đến khi hết. Mỗi batch là transaction riêng nên khoá vài trăm milliseconds, replica theo kịp, API không bị chặn. batch_token làm job idempotent: crash giữa chừng chỉ chạy lại các batch chưa commit, không cập nhật nhầm đơn. Tôi cũng khử trùng staging trước (tránh lỗi cập nhật cùng một dòng hai lần) và theo dõi replication lag giữa các batch."
+
+> Senior tip: Mỗi batch commit riêng là điều tối thiểu; nếu batch vẫn lớn, hãy chia nhỏ hơn hoặc chuyển sang CDC/queue thay vì các lần cập nhật khổng lồ trực tiếp trên bảng production.`,
+  follow: [
+    'MERGE và UPDATE ... FROM khác nhau ở điểm nào cho batch lớn?',
+    'Tại sao batch_token làm job idempotent, và gì xảy ra nếu thiếu nó?',
+    'Replication lag monitor bằng cách nào trong khi batch chạy?'
+  ],
+  tags: ['batch update', 'MERGE', 'UNLOGGED', 'staging', 'idempotent', 'replication lag'],
+}
 );
 
