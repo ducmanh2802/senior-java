@@ -3723,6 +3723,9 @@ window.DATA_INDEX = {
     {"id":"trusting-social","name":"Trusting Social","focus":["core","microservices","design","db","concurrency","scenario","english","architecture","devops","ai"]},
     {"id":"vpbank-securities","name":"Chứng khoán VPBank (VPBankS)","focus":["banking","concurrency","db","microservices","spring","core","architecture","english"]},
     {"id":"vinsmart-future","name":"VinSmart Future","focus":["microservices","concurrency","db","design","scenario","security","ai","architecture","devops","english"]},
+    {"id":"lg-cns-vietnam","name":"LG CNS Việt Nam","focus":["core","spring","microservices","iot","mes"]},
+    {"id":"rikkei-soft","name":"Rikkei Soft","focus":["spring","db","microservices"]},
+    {"id":"samsung-sds-vietnam","name":"Samsung SDS Vietnam","focus":["core","jvm","spring","microservices"]},
   ],
   quiz: [
     ["qz-devops-001","devops"],

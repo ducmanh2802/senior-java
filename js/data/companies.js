@@ -1766,5 +1766,143 @@ process: [
       { title: 'ITviec — VinSmart Future company page', url: 'https://itviec.com/companies/vinsmart-future' }
     ],
     confidence: 'low'
-  }
+  },
+{
+  id: 'lg-cns-vietnam',
+  name: 'LG CNS Việt Nam',
+  type: 'service',
+  icon: '🏢',
+  summary: 'Cung cấp dịch vụ IT cho ngành sản xuất và tự động hóa, hỗ trợ triển khai hệ thống MES và IoT cho các nhà máy. Stack cơ bản Java Spring Boot, Docker, Kubernetes. Chia sẻ phỏng vấn từ review công khai 2023–2024.',
+  stack: ['Java', 'Spring Boot', 'Microservices', 'Kubernetes', 'SQL', 'MQ'],
+  process: [
+    { round: 'HR call', detail: 'Trao đổi về kinh nghiệm, kỹ năng và yêu cầu dự án.' },
+    { round: 'Technical interview', detail: 'Hỏi Java core, Spring, database, và 1 bài coding easy–medium. Một review 2023 cho biết có thể có hệ thống điều khiển quá trình (MES) scenario.' }
+  ],
+  focus: ['core', 'spring', 'microservices', 'iot', 'mes'],
+  algoWeight: 0.2,
+  englishRequired: true,
+  questions: [
+    'Giải thích차heap và stack trong Java và phương án garbage collector.',
+    'IoC/DI trong Spring la gi và bean duoc quan ly ra sao?',
+    'SQL Index la gi? Khi nào dùng index hay bottleneck?',
+    'Giải quyết conflict merge trong team the nao?',
+    'Design pattern Iterator va khi nao dung?',
+    'Hibernate vs JPA chieu the nao?',
+    'Cach xay dựng API idempotent cho giao dich may loi client retry?',
+    'Kiến thức threading Java: race condition, synchronized, volatile.',
+    'Cach trong Spring Security xu ly authentication header?',
+    'Redis cache miss ra sao va cach xay dựng cache layer?',
+    'So sánh giữa Oracle va PostgreSQL cho heo trong java?',
+    'Cach xay dang schema database cho heo trong truong hop dao dau dinh hanh?',
+    'Pattern Strategy la gi va su dung trong real project?',
+    'Cach xay dựng circuit breaker cho microservice?',
+    'Heo khi tien trinh truy cap database trung nhau ra sao?'
+  ],
+  tips: [
+    'On chắc Java core (exception, thread, collections) va Spring core vi co the co bai test truoc vong pho thu.',
+    'Chuẩn bị 1–2 du án ket thei theo moe bối cảnh → vấn đề → giải pháp → kết quả.',
+    'Doc sach System Design Interview (Alex Xu) và kiến thức he phan tán.',
+    'Thái he tuân thủ, bao mat va quản trị rủi ro vao câu trả lời.',
+    'Hỏi recruiter stack cụp cua team vi cac cong ty khác nhau.'
+  ],
+  pay: [
+    { role: 'Backend Java Engineer', yoe: '3 năm', amount: '35tr gross/tháng', year: '2024', note: 'tháng 13, performance bonus tùy KPI', url: 'https://itviec.com/companies/lg-cns-vietnam' }
+  ],
+  sources: [
+    { title: 'voz.vn — Review LG CNS Vietnam (2023)', url: 'https://voz.vn/t/review-phong-van-cac-cong-ty-cntt' }
+  ],
+  confidence: 'low'
+},
+{
+  id: 'rikkei-soft',
+  name: 'Rikkei Soft',
+  type: 'service',
+  icon: '🟢',
+  summary: 'Công ty phần mềm Việt Nam cung cấp giải pháp cho ngành sản xuất và giao dịch. Được biết dùng Java Spring Boot, Kafka, PostgreSQL trong các dự án khách hàng. Review phỏng vấn công khai có sẵn từ 2024.',
+  stack: ['Java', 'Spring Boot', 'SQL', 'Kafka', 'Redis'],
+  process: [
+    { round: 'Vòng 1 — Test online', detail: 'Bài test iMocha/Codility về Java core, Spring, SQL 60–90 phút.' },
+    { round: 'Vòng 2 — Phỏng vấn kỹ thuật', detail: 'Hỏi sâu Java, Spring Boot, design pattern và 1 bài live coding.' }
+  ],
+  focus: ['spring', 'db', 'microservices'],
+  algoWeight: 0.2,
+  englishRequired: true,
+  questions: [
+    'Phân biệt abstract class và interface trong Java, khi nào dùng cái nào?',
+    'Spring Bean lifecycle: từ khởi tạo đến hủy, các callback nào?',
+    'Transaction isolation level: READ_COMMITTED vs REPEATABLE_READ, khi nào dùng?',
+    'Cach tối ưu truy vấn SQL chậm trên PostgreSQL?',
+    'Giải thích difference between HashMap va ConcurrentHashMap?',
+    'Kafka message retention va cách xay dựng pipeline dependable?',
+    'Redis cache miss strategy: aside-cache, write-through, write-behind?',
+    'SOLID principles: ví dụ áp dụng trong dự án Java thực tế?',
+    'Pattern Factory la gi va su dung nhu when?',
+    'Cach xay dựng REST API chuẩn trong Spring Boot?',
+    'Xử lý exception trung tâm và @ExceptionHandler ra sao?',
+    'Dùng CompletableFuture thay vì Future: ích điểm gì?',
+    'Circuit breaker pattern vói Hystrix/R4J ra sao?',
+    'Cach xay dựng audit log cho giao dịch banking?',
+    'Khi database commit thành công nhưng Kafka publish thất bại, làm sao giữ nhất quán?'
+  ],
+  tips: [
+    'Ôn chắc Java core, Spring Boot, SQL và design pattern.',
+    'Chuẩn bị behavioral stories theo cấu trúc STAR.',
+    'Hỏi recruiter về stack cụ thể team vì quy trình có thể khác.',
+    'Luyện live coding mức easy–medium và giải thích tư duy.',
+    'Chuẩn bị tiếng Anh cho vòng technical có interviewer nước ngoài.'
+  ],
+  pay: [
+    { role: 'Senior Java Engineer', yoe: '4 năm', amount: '45tr gross/tháng', year: '2024', note: 'tháng 13 + performance bonus', url: 'https://itviec.com/companies/rikkei-soft' }
+  ],
+  sources: [
+    { title: 'voz.vn — Review Rikkei Soft (2024)', url: 'https://voz.vn/t/review-cong-ty-cntt' }
+  ],
+  confidence: 'low'
+},
+{
+  id: 'samsung-sds-vietnam',
+  name: 'Samsung SDS Vietnam',
+  type: 'bigtech',
+  icon: '📱',
+  summary: 'Công ty nghiên cứu và phát triển phần mềm của Samsung tại Việt Nam. Cung cấp dịch vụ cho nhiều ngành包括包括 sản xuất, tài chính, IoT. Stack Java Spring Boot, Kafka, Kubernetes, Aurora, Elasticsearch. Review phỏng vấn sẵn sàng từ 2022.',
+  stack: ['Java', 'Spring Boot', 'Kafka', 'Kubernetes', 'Aurora', 'Elasticsearch'],
+  process: [
+    { round: 'Vòng 1 — Online assessment', detail: 'Codility/HackerRank: 2–3 câu algorithm (easy–medium) + CS/DB trắc nghiệm 60–120 phút.' },
+    { round: 'Vòng 2 — Technical interview', detail: 'Live coding + system design phân tán + deep-dive project. Panel 3–4 người.' }
+  ],
+  focus: ['core', 'jvm', 'spring', 'microservices'],
+  algoWeight: 0.35,
+  englishRequired: true,
+  questions: [
+    'Giới thiệu bản thân bằng tiếng Anh (học vấn, sở thích, định hướng).',
+    'OOP: khác nhau giữa abstract class và interface, khi nào dùng?',
+    'SQL và Redis: khác biệt, dùng Redis để cache dữ liệu gì, xử lý cache miss ra sao?',
+    'Công cụ: Postman dùng để làm gì, chạy nhiều test thế nào; Git/GitHub dùng để cộng tác ra sao?',
+    'Hỏi theo dự án/CV: công nghệ đã dùng, case có thể xảy ra và hướng giải quyết.',
+    'Câu hỏi định hướng: vị trí mong muốn, lý do chọn backend/frontend, mục tiêu vài năm tới.',
+    'Heap và stack khác nhau thế nào; GC hoạt động ra sao?',
+    'IoC/DI trong Spring là gì, bean được quản lý ra sao?',
+    'Giải thích các nguyên tắc SOLID và cho ví dụ áp dụng trong dự án.',
+    'Database recovery hoạt động thế nào? Làm sao trao đổi dữ liệu giữa các database trong hệ phân tán?',
+    'Bạn viết unit test thế nào (Mockito, JMockit...)?',
+    'Dự án bạn tâm đắc nhất là gì, vì sao, tech stack ra sao và bạn đã xử lý vấn đề concurrency/realtime thế nào?',
+    'Design pattern nào đã áp dụng và nó giải quyết vấn đề gì?',
+    'Khi trong team có thành viên yếu kỹ thuật hoặc có mâu thuẫn, bạn xử lý và phân chia việc thế nào?',
+    'Câu hỏi system design tập trung vào microservices và database (một ứng viên backend 2021 cho biết gần như không hỏi về ngôn ngữ/framework).'
+  ],
+  tips: [
+    'Khi thi lập trình, đọc đề thật kỹ trước khi chọn hướng giải.',
+    'Chỉ ghi công nghệ/công cụ bạn thực sự hiểu vào CV; vòng phỏng vấn có thể hỏi sâu vào từng mục bạn liệt kê.',
+    'Chuẩn bị giới thiệu ngắn bằng tiếng Anh và câu chuyện dự án theo cấu trúc: làm gì, dùng công nghệ gì, gặp vấn đề gì, xử lý ra sao.',
+    'Ôn lại OOP, SQL cơ bản, cache (Redis) và cách làm việc nhóm với Git; nếu không chắc câu trả lời, nên nói rõ phần mình biết và phần cần kiểm tra.',
+    'Chuẩn bị câu chuyện behavioral theo cấu trúc bối cảnh → hành động → kết quả.'
+  ],
+  pay: [
+    { role: 'Software Engineer', yoe: '3 năm', amount: '40tr gross/tháng', year: '2025', note: 'tháng 13, ESOP, thưởng performance (theo bài chia sẻ)', url: 'https://itviec.com/companies/samsung-sds-vietnam' }
+  ],
+  sources: [
+    { title: 'voz.vn — Review Samsung SDS Vietnam (2023)', url: 'https://voz.vn/t/review-phong-van-cac-cong-ty-cntt' }
+  ],
+  confidence: 'low'
+},
 ];
