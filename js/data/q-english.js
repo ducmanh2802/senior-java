@@ -11057,4 +11057,234 @@ I usually ask three questions. First, what is the biggest technical challenge th
   ],
   tags: ['english', 'interview', 'questions', 'closing']
 },
+{
+  id: 'english-215',
+  topic: 'english',
+  level: 'senior',
+  lang: 'en',
+  q: 'Explain how Kafka guarantees message ordering within a partition.',
+  a: `**Tóm tắt:** Kafka chỉ đảm bảo thứ tự trong cùng một partition; producer gửi message tới partition cụ thể, broker ghi tuần tự vào log append-only, consumer đọc theo offset tăng dần. Không có thứ tự toàn cục across partitions.
+
+### Cơ chế bên trong
+1. **Partition là đơn vị ordering**: mỗi partition là một log append-only trên disk, message được gán offset tăng dần.
+2. **Producer routing**: key hashing (murmur2) → partition; cùng key → cùng partition → thứ tự bảo toàn. Không key → sticky partitioner (Kafka 3.x mặc định) → không bảo toàn.
+3. **Broker**: append-only write, fsync theo config; replication theo ISR.
+4. **Consumer**: poll theo offset; commit offset sau xử lý. Rebalance có thể duplicate → idempotent consumer.
+
+### Java example
+~~~java
+// Producer: key = orderId để cùng order vào cùng partition
+props.put("acks", "all");
+props.put("enable.idempotence", true);
+producer.send(new ProducerRecord<>("orders", orderId, payload));
+~~~
+
+### Trade-off
+| Approach | Ordering | Throughput | Cost |
+|---|---|---|---|
+| Single partition | Toàn cục | Thấp | Scale kém |
+| Key-based partition | Per-key | Cao | Cần key ổn định |
+| Nhiều partition | Không | Rất cao | Cần idempotency |
+
+### Pitfall production
+- Rebalance gây duplicate → phải idempotent.
+- Retry producer có thể reorder → dùng {{enable.idempotence=true}} và {{max.in.flight.requests.per.connection=5}}.
+- Consumer lag lớn → ordering vẫn đúng nhưng latency cao.
+
+### Ví dụ đời thực
+Service xử lý 50k order/giờ; key=orderId đảm bảo event của cùng order theo thứ tự Created→Paid→Shipped; consumer idempotent theo orderId+offset; sau rebalance không mất thứ tự per key.
+
+### Trả lời mẫu khi phỏng vấn
+Kafka guarantees ordering only within a partition, not globally. Each partition is an append-only log with monotonically increasing offsets. Producers route messages by key hash, so the same key always lands in the same partition, preserving per-entity order. Brokers append sequentially and replicate via ISR. Consumers poll by offset and commit after processing. To keep ordering under retries, enable idempotent producer and keep max in flight at five. Rebalances can cause duplicates, so consumers must be idempotent. If I need global order I would use a single partition, but that limits throughput, so I prefer key-based partitioning plus idempotent consumers. This pattern handled fifty thousand orders per hour with consistent per-order event ordering.
+
+> Senior tip: Ordering guarantee is per-partition; design keys around business entities, and always make consumers idempotent because rebalances happen.
+`,
+  follow: ['How would you handle out-of-order messages across partitions?', 'What is the impact of consumer rebalance on ordering?', 'When would you use a single partition?'],
+  tags: ['kafka', 'ordering', 'partition']
+},
+{
+  id: 'english-216',
+  topic: 'english',
+  level: 'senior',
+  lang: 'en',
+  q: 'Describe a database deadlock you fixed in production.',
+  a: `**Tóm tắt:** Deadlock xảy ra khi hai transaction giữ lock và chờ nhau; fix bằng thứ tự lock nhất quán, giảm transaction scope, retry với backoff, và giám sát lock wait.
+
+### Cơ chế bên trong
+1. PostgreSQL dùng row-level locks; deadlock detector chạy định kỳ (1s mặc định) và abort một transaction.
+2. Nguyên nhân: transaction A lock row1 rồi chờ row2; B lock row2 rồi chờ row1.
+3. Fix: lock theo thứ tự (sort by id), transaction ngắn, SELECT ... FOR UPDATE với ORDER BY.
+
+### Java/Spring example
+~~~java
+@Transactional
+public void transfer(Long from, Long to, BigDecimal amt) {
+  Long first = Math.min(from, to), second = Math.max(from, to);
+  accountRepo.findByIdForUpdate(first); // SELECT ... FOR UPDATE
+  accountRepo.findByIdForUpdate(second);
+  // debit/credit
+}
+~~~
+
+### Trade-off
+| Fix | Pros | Cons |
+|---|---|---|
+| Consistent lock order | Deterministic | Cần discipline |
+| Retry with backoff | Resilient | Tăng latency |
+| Reduce transaction scope | Fewer locks | Phức tạp |
+
+### Pitfall production
+- ORM lazy loading mở transaction dài → deadlock.
+- Missing index → seq scan giữ lock nhiều row → deadlock dễ hơn.
+- Retry không giới hạn → thundering herd.
+
+### Ví dụ đời thực
+E-commerce transfer deadlock 12 lần/ngày; sau sort lock order + retry 3 lần backoff 50ms, deadlock về 0; p99 latency tăng 8ms.
+
+### Trả lời mẫu khi phỏng vấn
+I fixed a deadlock in a wallet transfer service. Two transactions locked accounts in opposite order, causing PostgreSQL to abort one every few minutes. I introduced consistent lock ordering by sorting account ids before SELECT FOR UPDATE, shortened transactions by moving external calls outside, and added retry with exponential backoff up to three attempts. I also added monitoring on lock wait time and deadlock count. Deadlocks dropped to zero and p99 latency increased only eight milliseconds. The key lesson is that deadlocks are usually a locking-order problem, not a database bug.
+
+> Senior tip: Always acquire locks in a global consistent order; monitor pg_locks and deadlock count; keep transactions short.
+`,
+  follow: ['How do you detect deadlocks in PostgreSQL?', 'What is the difference between deadlock and lock contention?', 'How would you retry safely with idempotency?'],
+  tags: ['deadlock', 'postgres', 'locking']
+},
+{
+  id: 'english-217',
+  topic: 'english',
+  level: 'lead',
+  lang: 'en',
+  q: 'Walk through designing a notification system.',
+  a: `**Tóm tắt:** Hệ thống notification cần ingest event, dedup, route theo channel (push/email/SMS), retry với backoff, và theo dõi delivery; scale bằng queue và worker pool.
+
+### Cơ chế bên trong
+1. **Ingest**: API nhận event, validate schema, ghi vào Kafka topic.
+2. **Dedup**: idempotency key (eventId) trong Redis với TTL.
+3. **Routing**: preference service chọn channel per user.
+4. **Delivery**: worker per channel gọi provider (FCM, SendGrid, Twilio) với retry.
+5. **Tracking**: delivery status trong DB, webhook callback cập nhật.
+
+### Java/Spring example
+~~~java
+@KafkaListener(topics = "notifications")
+public void handle(NotificationEvent e) {
+  if (redis.opsForValue().setIfAbsent("notif:" + e.id(), "1", Duration.ofHours(24))) {
+    channelRouter.route(e).forEach(ch -> ch.send(e));
+  }
+}
+~~~
+
+### Trade-off
+| Design | Latency | Cost | Complexity |
+|---|---|---|---|
+| Sync direct | Thấp | Cao | Thấp |
+| Queue + workers | Trung bình | Thấp | Trung bình |
+| Multi-region | Cao | Rất cao | Cao |
+
+### Pitfall production
+- Provider rate limit → bulkhead per provider.
+- Duplicate notification → dedup key.
+- Poison message → DLQ.
+
+### Ví dụ đời thực
+Hệ thống gửi 2M notification/ngày; Kafka + Redis dedup + worker pool; delivery success 99.4%; p99 delivery 1.2s; DLQ xử lý <0.1%.
+
+### Trả lời mẫu khi phỏng vấn
+I would design a notification system around an event-driven pipeline. Ingest events into Kafka, deduplicate by event id in Redis with TTL, route per user preferences, and deliver via channel-specific workers calling FCM, SendGrid, or Twilio with retry and backoff. Track delivery status in a database and use webhooks for final status. I would add a dead letter queue for poison messages and bulkheads per provider for rate limits. At two million notifications per day this gives ninety-nine point four percent delivery success and p99 delivery of one point two seconds. The design prioritizes reliability and cost over lowest latency.
+
+> Senior tip: Dedup at ingest with idempotency keys; isolate providers with bulkheads; always have a DLQ.
+`,
+  follow: ['How would you handle user notification preferences?', 'How do you ensure exactly-once delivery?', 'How would you scale to ten million per day?'],
+  tags: ['system-design', 'notification', 'kafka']
+},
+{
+  id: 'english-218',
+  topic: 'english',
+  level: 'mid',
+  lang: 'en',
+  q: 'Explain idempotency to a non-technical PM.',
+  a: `**Tóm tắt:** Idempotency nghĩa là thực hiện cùng một hành động nhiều lần cho kết quả như thực hiện một lần; quan trọng cho retry an toàn trong hệ thống phân tán.
+
+### Cơ chế bên trong (giải thích đơn giản)
+- **Ví von**: bấm nút "gửi email" nhiều lần nhưng email chỉ gửi một lần vì hệ thống nhớ "đã gửi".
+- **Kỹ thuật**: client gửi idempotency key (UUID) trong header; server lưu key + kết quả trong DB/Redis với TTL; request trùng trả về kết quả cũ.
+- **Vì sao cần**: mạng không đáng tin, retry là bình thường; không có idempotency → duplicate charge, duplicate email.
+
+### Java/Spring example
+~~~java
+@PostMapping("/payments")
+public ResponseEntity<?> pay(@RequestHeader("Idempotency-Key") String key, @RequestBody PayReq req) {
+  return idempotencyService.execute(key, () -> paymentService.charge(req));
+}
+~~~
+
+### Trade-off
+| Approach | Safety | Complexity | Storage |
+|---|---|---|---|
+| DB unique constraint | Cao | Thấp | DB |
+| Redis TTL | Cao | Thấp | Redis |
+| Full request hash | Rất cao | Cao | Lớn |
+
+### Pitfall production
+- Key collision nếu reuse key across different requests.
+- TTL quá ngắn → retry sau TTL tạo duplicate.
+- Partial failure → phải lưu kết quả sau khi commit.
+
+### Ví dụ đời thực
+Payment API dùng idempotency key; retry do timeout không charge lần hai; duplicate charge giảm từ 0.3% xuống 0 trong 3 tháng.
+
+### Trả lời mẫu khi phỏng vấn
+Idempotency means doing the same action multiple times has the same effect as doing it once. I would explain to a PM with an analogy: pressing send email twice should still send one email because the system remembers it already sent. Technically, the client sends a unique idempotency key, and the server stores the result keyed by it; retries return the stored result instead of reprocessing. This matters because networks fail and clients retry; without it we get duplicate charges or emails. In production, idempotency keys cut duplicate charges from zero point three percent to zero over three months. The trade-off is storing keys with a sensible TTL.
+
+> Senior tip: Use idempotency keys for all mutating external-facing APIs; store result after commit; choose TTL based on retry window.
+`,
+  follow: ['How do you choose TTL for idempotency keys?', 'What happens on partial failure?', 'How does Stripe implement idempotency?'],
+  tags: ['idempotency', 'api-design']
+},
+{
+  id: 'english-219',
+  topic: 'english',
+  level: 'senior',
+  lang: 'en',
+  q: 'How do you negotiate scope and deadline with stakeholders?',
+  a: `**Tóm tắt:** Đàm phán scope/deadline bằng dữ liệu: chia scope thành MVP và nice-to-have, ước lượng effort, trình bày trade-off, đặt checkpoint, và cam kết phần có thể.
+
+### Cơ chế bên trong
+1. **Clarify goal**: xác định outcome nghiệp vụ, không phải feature list.
+2. **Decompose**: chia thành must-have, should-have, nice-to-have (MoSCoW).
+3. **Estimate**: t-shirt sizing + buffer 20-30%.
+4. **Present options**: scope cố định vs deadline cố định vs quality.
+5. **Agree & checkpoint**: sprint review, renegotiate nếu scope creep.
+
+### Java/Spring example (không có code framework; ví dụ quy trình)
+~~~java
+// Không cần code; ví dụ checklist trong doc
+// 1. Must-have: login, checkout
+// 2. Should-have: wishlist
+// 3. Nice-to-have: recommendations
+~~~
+
+### Trade-off
+| Option | Scope | Time | Risk |
+|---|---|---|---|
+| Fixed scope, flexible time | Full | Longer | Low |
+| Fixed time, flexible scope | MVP | Fixed | Medium |
+| Fixed both | Impossible | — | High |
+
+### Pitfall production
+- Cam kết deadline không có buffer → burnout.
+- Không ghi nhận quyết định → scope creep.
+- Bỏ qua quality → technical debt.
+
+### Ví dụ đời thực
+Dự án 8 tuần; stakeholder muốn 12 feature; tôi đề xuất MVP 6 feature trong 8 tuần, còn lại phase 2; checkpoint mỗi 2 tuần; giao đúng MVP, phase 2 sau 3 tuần.
+
+### Trả lời mẫu khi phỏng vấn
+I negotiate scope and deadline with data, not opinions. First I clarify the business outcome, then decompose scope into must-have, should-have, and nice-to-have using MoSCoW. I estimate with t-shirt sizing plus a twenty to thirty percent buffer. I present three options: fixed scope with flexible time, fixed time with flexible scope, or fixed both which is usually impossible. We agree on MVP and set biweekly checkpoints to renegotiate if scope creeps. In one project, stakeholders wanted twelve features in eight weeks; I proposed six must-haves in eight weeks and the rest in phase two, delivered the MVP on time, and shipped phase two three weeks later. The key is transparency and incremental delivery.
+
+> Senior tip: Never commit to both scope and date; always define MVP, buffer estimates, and renegotiate early with data.
+`,
+  follow: ['How do you handle scope creep mid-sprint?', 'How do you communicate delay early?', 'What metrics do you use to justify scope change?'],
+  tags: ['soft-skills', 'negotiation', 'scope']
+},
 );
