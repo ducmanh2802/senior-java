@@ -2514,6 +2514,9 @@ window.DATA_INDEX = {
     {"id":"algo-160","title":"Find Median from Data Stream","difficulty":"hard","pattern":"Heap"},
     {"id":"algo-161","title":"Subarray Sum Equals K","difficulty":"medium","pattern":"Hash Map"},
     {"id":"algo-162","title":"Capacity To Ship Packages Within D Days","difficulty":"medium","pattern":"Binary Search on Answer"},
+    {"id":"algo-163","title":"Letter Combinations of a Phone Number","difficulty":"medium","pattern":"Backtracking"},
+    {"id":"algo-164","title":"Next Greater Element II","difficulty":"medium","pattern":"Stack"},
+    {"id":"algo-165","title":"Longest Common Subsequence","difficulty":"medium","pattern":"Dynamic Programming"},
   ],
   lessons: [
     {"id":"lesson-collections-001","track":"collections","order":1,"title":"HashMap từ bên trong: hash, bucket, resize và hợp đồng equals/hashCode","level":"mid","minutes":25},

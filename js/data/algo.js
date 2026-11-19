@@ -18267,6 +18267,317 @@ class Solution {
     }
 }`,
   follow: ['Nếu cho phép đổi thứ tự gói thì bài toán thay đổi thế nào?']
+},
+{
+  id: 'algo-163',
+  title: 'Letter Combinations of a Phone Number',
+  difficulty: 'medium',
+  pattern: 'Backtracking',
+  tags: ['backtracking', 'string', 'dfs'],
+  prompt: `Cho một chuỗi {{digits}} chỉ gồm các chữ số từ {{2}} đến {{9}}. Mỗi chữ số ánh xạ sang một nhóm chữ cái như bàn phím điện thoại cổ:
+
+| 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 |
+|---|---|---|---|---|---|---|---|
+| abc | def | ghi | jkl | mno | pqrs | tuv | wxyz |
+
+Trả về **mọi tổ hợp chữ cái** có thể tạo được: mỗi tổ hợp lấy đúng một chữ cái từ mỗi chữ số, theo thứ tự. Nếu {{digits}} rỗng thì trả về danh sách rỗng.
+
+### Ví dụ
+~~~text
+Input:  digits = "23"
+Output: ["ad","ae","af","bd","be","bf","cd","ce","cf"]
+
+Input:  digits = ""
+Output: []
+
+Input:  digits = "2"
+Output: ["a","b","c"]
+~~~
+
+### Ràng buộc
+- {{0 <= digits.length <= 4}}
+- {{digits[i]}} là chữ số từ 2 đến 9.`,
+  hints: [
+    'Đây là bài "tích Descartes" của các nhóm chữ cái: mỗi tổ hợp là một đường đi từ gốc xuống lá của cây, mỗi tầng ứng với một chữ số.',
+    'Dùng đệ quy theo vị trí {{idx}}: tại mỗi tầng, thử lần lượt từng chữ cái của {{digits[idx]}}, thêm vào "đường đi" tạm rồi đệ quy sang chữ số kế tiếp.',
+    'Khi {{idx == digits.length}} thì đường đi tạm là một tổ hợp hoàn chỉnh → thêm vào kết quả. Sau mỗi lần đệ quy phải hoàn tác (xoá ký tự vừa thêm) để quay lui (backtrack) sang lựa chọn khác.'
+  ],
+  solution: `### Ý tưởng
+Mỗi chữ số là một **tầng** trong cây quyết định; mỗi chữ cái ứng với số đó là một **nhánh**. Ta đi từ tầng 0 xuống, mỗi bước chọn một chữ cái và ghi tạm vào một {{StringBuilder}}; khi đi hết chữ số thì "đường đi" hiện tại chính là một tổ hợp.
+
+Đây là **backtracking** kinh điển: chọn → đệ quy → **hoàn tác** (bỏ lựa chọn vừa thêm) để thử lựa chọn kế tiếp.
+
+~~~java
+class Solution {
+    public List<String> letterCombinations(String digits) {
+        List<String> result = new ArrayList<>();
+        if (digits == null || digits.isEmpty()) return result; // de bai: rong -> danh sach rong
+        String[] pad = {"", "", "abc", "def", "ghi", "jkl", "mno", "pqrs", "tuv", "wxyz"};
+        backtrack(digits, 0, new StringBuilder(), pad, result);
+        return result;
+    }
+
+    private void backtrack(String digits, int idx, StringBuilder path, String[] pad, List<String> result) {
+        if (idx == digits.length()) {          // da chon het moi chu so
+            result.add(path.toString());       // luu mot to hop hoan chinh
+            return;
+        }
+        String letters = pad[digits.charAt(idx) - '0']; // nhom chu cai cua chu so hien tai
+        for (int i = 0; i < letters.length(); i++) {
+            path.append(letters.charAt(i));               // chon
+            backtrack(digits, idx + 1, path, pad, result); // di tiep
+            path.deleteCharAt(path.length() - 1);         // hoan tac: bo ky tu vua them
+        }
+    }
+}
+~~~
+
+Chạy tay {{digits = "23"}}:
+~~~text
+idx=0 (2 -> "abc")
+  chon 'a' -> idx=1 (3 -> "def")
+     'd' -> het chu so -> "ad"
+     'e' -> "ae"
+     'f' -> "af"
+  chon 'b' -> "bd", "be", "bf"
+  chon 'c' -> "cd", "ce", "cf"
+=> 9 to hop
+~~~
+
+### Lưu ý khi phỏng vấn
+- Độ phức tạp là {{O(4^n · n)}}: mỗi chữ số tối đa 4 chữ cái, mỗi tổ hợp dài {{n}}. Với {{n <= 4}} thì tối đa {{4^4 = 256}} tổ hợp.
+- Luôn kiểm tra {{digits}} rỗng trước khi truy cập {{digits.charAt(0)}}, nếu không sẽ {{StringIndexOutOfBoundsException}}.
+- Có thể thay {{StringBuilder}} bằng {{char[]}} cố định để giảm cấp phát; nhưng {{StringBuilder}} rõ ràng và đủ nhanh ở ràng buộc này.
+
+> Senior tip: Đây là bài "sinh tổ hợp" mà mọi đề DFS/backtracking khác (tổ hợp, hoán vị, ghép cặp) đều là biến thể. Khi phỏng vấn, hãy nói rõ 3 bước chọn – đệ quy – hoàn tác, và chỉ ra chi phí {{O(4^n)}} để thấy vì sao không dùng brute force sinh mọi chuỗi rồi mới lọc.`,
+  starter: "class Solution {\n    public List<String> letterCombinations(String digits) {\n        // TODO\n        return new ArrayList<>();\n    }\n}",
+  tests: `public class Main {
+    static int passed = 0, total = 0;
+    interface Case { Object get() throws Throwable; }
+    static void run(String name, Object expected, Case c) {
+        total++;
+        try {
+            Object actual = c.get();
+            if (Objects.deepEquals(expected, actual)) { passed++; System.out.println("PASS " + name); }
+            else System.out.println("FAIL " + name + ": expected " + expected + " got " + actual);
+        } catch (Throwable t) { System.out.println("FAIL " + name + ": threw " + t); }
+    }
+    static List<String> srt(List<String> x) {
+        List<String> r = new ArrayList<>(x);
+        Collections.sort(r);
+        return r;
+    }
+    public static void main(String[] args) {
+        Solution s = new Solution();
+        run("example 23", srt(Arrays.asList("ad", "ae", "af", "bd", "be", "bf", "cd", "ce", "cf")),
+            () -> srt(s.letterCombinations("23")));
+        run("empty", srt(new ArrayList<String>()), () -> srt(s.letterCombinations("")));
+        run("single 2", srt(Arrays.asList("a", "b", "c")), () -> srt(s.letterCombinations("2")));
+        run("seven", srt(Arrays.asList("p", "q", "r", "s")), () -> srt(s.letterCombinations("7")));
+        run("nine", srt(Arrays.asList("w", "x", "y", "z")), () -> srt(s.letterCombinations("9")));
+        run("79", srt(Arrays.asList("pw", "px", "py", "pz", "qw", "qx", "qy", "qz", "rw", "rx", "ry", "rz", "sw", "sx", "sy", "sz")),
+            () -> srt(s.letterCombinations("79")));
+        System.out.println("RESULT " + passed + "/" + total);
+    }
+}`,
+  complexity: 'Time O(4^n · n) với n = digits.length (mỗi chữ số tối đa 4 chữ cái), Space O(n) cho ngăn xếp đệ quy',
+  follow: ['Nếu chữ số 1 và 0 cũng được gán chữ cái thì bổ sung bảng ánh xạ thế nào?', 'Nếu yêu cầu kết quả theo thứ tự từ điển thì có cần sort không, vì sao?']
+},
+{
+  id: 'algo-164',
+  title: 'Next Greater Element II',
+  difficulty: 'medium',
+  pattern: 'Stack',
+  tags: ['monotonic-stack', 'stack', 'array'],
+  prompt: `Cho mảng số nguyên {{nums}} xếp theo **vòng tròn** (phần tử cuối nối tiếp phần tử đầu). Với mỗi phần tử, tìm **phần tử lớn hơn kế tiếp** theo chiều đi tới (có thể vòng lại đầu mảng). Nếu không có phần tử nào lớn hơn thì ghi {{ -1 }}. Trả về mảng kết quả cùng độ dài.
+
+### Ví dụ
+~~~text
+Input:  nums = [1,2,3,4,3]
+Output: [2,3,4,-1,4]
+
+Input:  nums = [1,2,1]
+Output: [2,-1,2]
+~~~
+
+### Ràng buộc
+- {{1 <= nums.length <= 10^4}}
+- {{-10^9 <= nums[i] <= 10^9}}`,
+  hints: [
+    'Vì mảng chạy vòng, ta có thể "đi" hai vòng thay vì một: dùng {{i % n}} để lấy phần tử ở vị trí i (mod n).',
+    'Dùng **ngăn xếp đơn điệu giảm dần** (monotonic decreasing stack) chứa **chỉ số** còn "chờ" phần tử lớn hơn. Khi gặp {{nums[i]}} lớn hơn phần tử ở đỉnh stack, đó chính là "next greater" của nó → pop và ghi đáp án.',
+    'Chỉ push chỉ số ở vòng đầu ({{i < n}}); vòng hai chỉ để "giải quyết" nốt các chỉ số còn sót (những phần tử lớn nhất, vòng lại vẫn không ai lớn hơn nên giữ {{ -1 }}).'
+  ],
+  solution: `### Ý tưởng
+"Phần tử lớn hơn kế tiếp" là bài kinh điển của **ngăn xếp đơn điệu**. Ta giữ một stack các **chỉ số** mà giá trị giảm dần từ đáy lên đỉnh (đỉnh stack luôn là phần tử nhỏ nhất còn chờ). Duyệt {{nums}}:
+
+- Nếu {{nums[i]}} lớn hơn phần tử ở đỉnh stack, thì {{i}} chính là "next greater" của chỉ số đó → pop và gán.
+- Lặp lại cho đến khi đỉnh stack >= {{nums[i]}} (hoặc stack rỗng).
+- Sau đó (chỉ ở vòng 1) push {{i}}.
+
+Với mảng vòng, duyệt {{2n}} phần tử với {{i % n}}: vòng 1 để đẩy và giải quyết phần lớn; vòng 2 chỉ giải quyết nốt các chỉ số còn tồn (phần tử lớn nhất — vòng lại vẫn không ai lớn hơn → giữ {{ -1 }}).
+
+~~~java
+class Solution {
+    public int[] nextGreaterElements(int[] nums) {
+        int n = nums.length;
+        int[] res = new int[n];
+        Arrays.fill(res, -1);                      // mac dinh: khong co phan tu lon hon
+        Deque<Integer> stack = new ArrayDeque<>(); // chua CHI SO, gia tri giam dan tu day len dinh
+        for (int i = 0; i < 2 * n; i++) {
+            int x = nums[i % n];                    // di 2 vong de xu ly tinh vong
+            while (!stack.isEmpty() && nums[stack.peek()] < x) {
+                res[stack.pop()] = x;               // x la next greater cua chi so o dinh
+            }
+            if (i < n) stack.push(i);               // vong 1 moi push; vong 2 chi de giai quyet
+        }
+        return res;
+    }
+}
+~~~
+
+Chạy tay {{nums = [1,2,1]}}:
+~~~text
+i=0 x=1: stack[]  -> push 0          stack=[0]
+i=1 x=2: nums[0]=1<2 -> res[0]=2, pop0; push1   stack=[1]
+i=2 x=1: nums[1]=2<1? khong -> push2            stack=[2,1]
+i=3 x=nums[0]=1: nums[2]=1<1? khong
+i=4 x=nums[1]=2: nums[2]=1<2 -> res[2]=2, pop2; nums[1]=2<2? khong
+i=5 x=nums[2]=1: khong lam gi
+=> res = [2, -1, 2]
+~~~
+
+### Lưu ý khi phỏng vấn
+- Mỗi chỉ số được push đúng 1 lần và pop đúng 1 lần nên tổng cộng O(n) dù vòng lặp chạy 2n.
+- Dùng {{ArrayDeque}} thay cho {{Stack}} (lớp cũ, chậm hơn và đồng bộ không cần thiết). Với thao tác peek/pop thì {{ArrayDeque}} là lựa chọn chuẩn.
+- Nhớ {{Arrays.fill(res, -1)}}: phần tử không tìm được phải để nguyên {{ -1 }}.
+- Biến thể quan trọng: "Next Greater Element I" (tìm trong mảng khác) và "Daily Temperatures" (tìm khoảng cách ngày) dùng đúng mô hình stack đơn điệu này.
+
+> Senior tip: Monotonic stack là "mẫu nhận dạng" khi đề nói "phần tử lớn hơn / nhỏ hơn kế tiếp". Nói với interviewer: "em dùng stack đơn điệu giảm dần, duyệt 2n để mô phỏng vòng tròn, mỗi phần tử vào/ra 1 lần nên O(n)".`,
+  starter: "class Solution {\n    public int[] nextGreaterElements(int[] nums) {\n        // TODO\n        return new int[nums.length];\n    }\n}",
+  tests: `public class Main {
+    static int passed = 0, total = 0;
+    interface Case { Object get() throws Throwable; }
+    static void run(String name, Object expected, Case c) {
+        total++;
+        try {
+            Object actual = c.get();
+            if (Objects.deepEquals(expected, actual)) { passed++; System.out.println("PASS " + name); }
+            else System.out.println("FAIL " + name + ": expected " + Arrays.toString((int[]) expected) + " got " + Arrays.toString((int[]) actual));
+        } catch (Throwable t) { System.out.println("FAIL " + name + ": threw " + t); }
+    }
+    public static void main(String[] args) {
+        Solution s = new Solution();
+        run("example", new int[]{2, 3, 4, -1, 4}, () -> s.nextGreaterElements(new int[]{1, 2, 3, 4, 3}));
+        run("wrap", new int[]{2, -1, 2}, () -> s.nextGreaterElements(new int[]{1, 2, 1}));
+        run("two", new int[]{3, 3, -1}, () -> s.nextGreaterElements(new int[]{2, 1, 3}));
+        run("single", new int[]{-1}, () -> s.nextGreaterElements(new int[]{5}));
+        run("all equal", new int[]{-1, -1, -1}, () -> s.nextGreaterElements(new int[]{7, 7, 7}));
+        run("descending", new int[]{-1, 5, 5, 5, 5}, () -> s.nextGreaterElements(new int[]{5, 4, 3, 2, 1}));
+        System.out.println("RESULT " + passed + "/" + total);
+    }
+}`,
+  complexity: 'Time O(n) (mỗi phần tử push/pop tối đa 1 lần), Space O(n)',
+  follow: ['Nếu yêu cầu tìm phần tử nhỏ hơn kế tiếp (next smaller) thì sửa stack thế nào?', 'Nếu là mảng không vòng (Next Greater Element I) thì thuật toán khác ra sao?']
+},
+{
+  id: 'algo-165',
+  title: 'Longest Common Subsequence',
+  difficulty: 'medium',
+  pattern: 'Dynamic Programming',
+  tags: ['dp', 'string', 'lcs', '2d-dp'],
+  prompt: `Cho hai chuỗi {{text1}} và {{text2}}. Tìm độ dài **chuỗi con chung dài nhất** (Longest Common Subsequence — LCS). Chuỗi con ở đây là dãy ký tự xuất hiện **theo thứ tự** nhưng **không nhất thiết liên tiếp**. Trả về độ dài.
+
+### Ví dụ
+~~~text
+Input:  text1 = "abcde", text2 = "ace"
+Output: 3   ("ace")
+
+Input:  text1 = "abc", text2 = "abc"
+Output: 3
+
+Input:  text1 = "abc", text2 = "def"
+Output: 0
+~~~
+
+### Ràng buộc
+- {{1 <= text1.length, text2.length <= 1000}}
+- {{text1}} và {{text2}} chỉ gồm chữ cái tiếng Anh thường.`,
+  hints: [
+    'LCS có **tính con chứng tối ưu**: nếu hai ký tự cuối bằng nhau, lời giải = 1 + LCS(phần còn lại); nếu khác nhau, lấy max của "bỏ một ký tự cuối của chuỗi 1" và "bỏ một ký tự cuối của chuỗi 2".',
+    'Đặt {{dp[i][j]}} = độ dài LCS của {{text1[0..i)}} và {{text2[0..j)}} (tiền tố độ dài i và j). Viết công thức chuyển trạng thái cho từng ô.',
+    'Cần bảng {{dp}} kích thước {{ (m+1) x (n+1) }}; hàng và cột 0 ứng với chuỗi rỗng nên bằng 0. Kết quả nằm ở {{dp[m][n]}}.'
+  ],
+  solution: `### Ý tưởng
+Đây là bài **quy hoạch động 2 chiều** kinh điển. Đặt {{dp[i][j]}} = độ dài LCS của hai tiền tố {{text1[0..i)}} và {{text2[0..j)}}. Hàng và cột 0 ứng với chuỗi rỗng nên bằng 0.
+
+Với mỗi ô (i, j) xét hai ký tự {{a = text1[i-1]}}, {{b = text2[j-1]}}:
+- Nếu {{a == b}}: ký tự này chắc chắn nằm trong một LCS → {{dp[i][j] = dp[i-1][j-1] + 1}}.
+- Nếu {{a != b}}: không dùng đồng thời cả hai; lấy kết quả tốt hơn giữa "bỏ ký tự của text1" và "bỏ ký tự của text2" → {{dp[i][j] = max(dp[i-1][j], dp[i][j-1])}}.
+
+Điền bảng theo thứ tự tăng {{i}} rồi tăng {{j}} (vì mỗi ô phụ thuộc ô phía trên và bên trái đã tính). Đáp án ở {{dp[m][n]}}.
+
+~~~java
+class Solution {
+    public int longestCommonSubsequence(String text1, String text2) {
+        int m = text1.length(), n = text2.length();
+        int[][] dp = new int[m + 1][n + 1];     // dp[i][j] = LCS cua tien to dai i va dai j
+        for (int i = 1; i <= m; i++) {
+            for (int j = 1; j <= n; j++) {
+                if (text1.charAt(i - 1) == text2.charAt(j - 1)) {
+                    dp[i][j] = dp[i - 1][j - 1] + 1;                   // khop: them 1 ky tu
+                } else {
+                    dp[i][j] = Math.max(dp[i - 1][j], dp[i][j - 1]); // khac: bo 1 ben
+                }
+            }
+        }
+        return dp[m][n];
+    }
+}
+~~~
+
+Minh hoạ bảng với {{text1 = "abcde"}}, {{text2 = "ace"}}:
+~~~text
+       ""  a   c   e
+  ""    0  0   0   0
+  a     0  1   1   1
+  b     0  1   1   1
+  c     0  1   2   2
+  d     0  1   2   2
+  e     0  1   2   3   -> dp[5][3] = 3
+~~~
+
+### Lưu ý khi phỏng vấn
+- Độ phức tạp {{O(m·n)}} thời gian và {{O(m·n)}} bộ nhớ. Vì {{dp[i][j]}} chỉ phụ thuộc hàng trên và cùng hàng bên trái, có thể **nén còn {{O(n)}}** bằng một mảng 1 chiều (lưu lại {{dp[j-1]}} của hàng trước trước khi ghi đè).
+- Đừng nhầm "chuỗi con" (subsequence — không cần liên tiếp) với "chuỗi con liên tiếp" (substring). Bài này là subsequence.
+- Biến thể hay hỏi: in ra LCS (không chỉ độ dài) bằng cách truy vết ngược từ {{dp[m][n]}}; và "Edit Distance" dùng cùng bảng {{dp}} nhưng công thức khác.
+
+> Senior tip: LCS là "bảng DP 2 chiều mẫu". Khi phỏng vấn, hãy vẽ bảng nhỏ và điền vài ô để chứng minh công thức, rồi nói ngay đến tối ưu bộ nhớ {{O(n)}} — đó là điểm Senior thể hiện.`,
+  starter: "class Solution {\n    public int longestCommonSubsequence(String text1, String text2) {\n        // TODO\n        return 0;\n    }\n}",
+  tests: `public class Main {
+    static int passed = 0, total = 0;
+    interface Case { Object get() throws Throwable; }
+    static void run(String name, Object expected, Case c) {
+        total++;
+        try {
+            Object actual = c.get();
+            if (Objects.deepEquals(expected, actual)) { passed++; System.out.println("PASS " + name); }
+            else System.out.println("FAIL " + name + ": expected " + expected + " got " + actual);
+        } catch (Throwable t) { System.out.println("FAIL " + name + ": threw " + t); }
+    }
+    public static void main(String[] args) {
+        Solution s = new Solution();
+        run("example", 3, () -> s.longestCommonSubsequence("abcde", "ace"));
+        run("equal", 3, () -> s.longestCommonSubsequence("abc", "abc"));
+        run("none", 0, () -> s.longestCommonSubsequence("abc", "def"));
+        run("empty", 0, () -> s.longestCommonSubsequence("", "abc"));
+        run("single", 1, () -> s.longestCommonSubsequence("bl", "yby"));
+        run("medium", 1, () -> s.longestCommonSubsequence("bsbininm", "jmjkbkjkv"));
+        System.out.println("RESULT " + passed + "/" + total);
+    }
+}`,
+  complexity: 'Time O(m·n), Space O(m·n); có thể nén còn O(n)',
+  follow: ['Làm sao in ra chính chuỗi LCS chứ không chỉ độ dài?', 'So sánh bộ nhớ và tốc độ giữa bản O(m·n) và bản nén O(n) khi m, n cỡ 10^4.']
 }
 );
 })();
