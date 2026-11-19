@@ -4011,5 +4011,603 @@ Dựa trên histogram, ta thấy số lượng instance của {{ConcurrentHashMa
     'Đề xuất Caffeine/TTL, alert gauge.'
   ],
   tags: ['leak', 'cache', 'ConcurrentHashMap']
+},
+  {
+    id: 'lab-gc-022',
+    category: 'gc',
+    title: 'Batch đối soát cuối ngày OOM: load 12 triệu giao dịch mà không clear persistence context',
+    level: 'senior',
+    scenario: `**Bối cảnh (background):** Ngân hàng **VietFin** vận hành service **recon-batch** (Spring Boot 3.2, JDK 17.0.10, Hibernate 6, PostgreSQL 15, HikariCP) thực hiện đối soát giao dịch cuối ngày. Pod Kubernetes: 4 vCPU, memory limit 6Gi. JVM: {{-Xms4g -Xmx4g -XX:+UseG1GC -Xlog:gc*,gc+heap=debug:file=/logs/gc.log:time,uptime,level,tags}}. JVM khởi động lúc 01:00, job chạy lúc **01:15 mỗi ngày**, đọc khoảng **12 triệu giao dịch** từ bảng {{transaction}} trong ngày, so khớp với file đối soát từ VNPAY/MoMo, ghi kết quả ra bảng {{reconciliation_result}}.
+    
+**Thuật ngữ giải thích:**
+- **Persistence context (ngữ cảnh bền vững):** Trong JPA/Hibernate, là bộ nhớ đệm cấp 1 (L1 cache) gắn với {{EntityManager}} (hoặc {{Session}}). Mọi entity được load, save, update trong transaction đều được giữ trong persistence context để theo dõi thay đổi (dirty checking) và tránh load trùng lặp. **Mặc định persistence context sống suốt transaction**; nếu transaction dài và load nhiều entity, context sẽ phình to và gây OOM.
+- **Old Gen (vùng già):** Phần heap chứa object sống lâu. G1 GC dọn Old Gen bằng *concurrent mark* + *mixed GC*. Nếu Old Gen tăng liên tục mà không giảm sau GC, có thể là leak hoặc object bị giữ bởi root (như persistence context).
+- **Full GC:** Thu gom rác toàn bộ heap, dừng toàn bộ ứng dụng (Stop-The-World). Với G1, Full GC thường xảy ra khi heap quá đầy hoặc phân mảnh nặng, và rất chậm (giây).
+- **{{EntityManager.clear()}}:** Xoá toàn bộ entity khỏi persistence context, khiến chúng trở thành *detached*. Giúp giải phóng bộ nhớ khi xử lý batch lớn.
+
+**Triệu chứng:** Lúc **01:15 ngày 22/10/2026**, job batch bắt đầu. Đến **01:45**, pod bị **OOMKilled** (exit code 137). Trước đó, GC log ghi nhận **Old Gen tăng từ ~500 MB lên ~3.8 GB** trong 30 phút, **5 lần Pause Full (G1 Compaction Pause)** mỗi lần 1.8–2.4 giây. CPU pod chỉ 1.2/4 core. Không có {{OutOfMemoryError}} trong log ứng dụng (bị kernel kill). Dev nhận xét: "Heap 4 GB, dữ liệu 12 triệu bản ghi, cứ tăng heap lên 8 GB là xong."
+
+**Dữ liệu thu thập:** GC log JDK 17 trong lúc job chạy, heap histogram lấy bằng {{jmap -histo}} lúc 01:40, đoạn code {{ReconciliationJob}}, và cấu hình Hibernate.`,
+    artifacts: [
+      {
+        name: 'gc-recon-batch.log',
+        lang: 'text',
+        content: `[2026-10-22T01:00:00.015+0700][0.015s][info][gc,init] Version: 17.0.10+7 (release)
+[2026-10-22T01:00:00.015+0700][0.015s][info][gc,init] CPUs: 4 total, 4 available
+[2026-10-22T01:00:00.015+0700][0.015s][info][gc,init] Memory: 6144M
+[2026-10-22T01:00:00.015+0700][0.015s][info][gc,init] Heap Region Size: 2M
+[2026-10-22T01:00:00.015+0700][0.015s][info][gc,init] Heap Min Capacity: 4G
+[2026-10-22T01:00:00.015+0700][0.015s][info][gc,init] Heap Initial Capacity: 4G
+[2026-10-22T01:00:00.015+0700][0.015s][info][gc,init] Heap Max Capacity: 4G
+[2026-10-22T01:00:00.015+0700][0.015s][info][gc,init] Parallel Workers: 4
+... (young GC bình thường trước job, heap sau GC ~400-500 MB) ...
+[2026-10-22T01:15:22.104+0700][922.104s][info][gc] GC(85) Pause Young (Normal) (G1 Evacuation Pause) 1850M->520M(4096M) 14.201ms
+[2026-10-22T01:20:05.330+0700][1205.330s][info][gc] GC(86) Pause Young (Normal) (G1 Evacuation Pause) 2120M->680M(4096M) 16.882ms
+[2026-10-22T01:24:12.881+0700][1452.881s][info][gc,start] GC(87) Pause Young (Concurrent Start) (G1 Evacuation Pause)
+[2026-10-22T01:24:12.881+0700][1452.881s][info][gc,task] GC(87) Using 4 workers of 4 for evacuation
+[2026-10-22T01:24:12.946+0700][1452.946s][info][gc,heap] GC(87) Eden regions: 420->0(420)
+[2026-10-22T01:24:12.946+0700][1452.946s][info][gc,heap] GC(87) Survivor regions: 18->22(52)
+[2026-10-22T01:24:12.946+0700][1452.946s][info][gc,heap] GC(87) Old regions: 210->380
+[2026-10-22T01:24:12.946+0700][1452.946s][info][gc] GC(87) Pause Young (Concurrent Start) (G1 Evacuation Pause) 1850M->1420M(4096M) 58.114ms
+[2026-10-22T01:24:12.947+0700][1452.947s][info][gc] GC(88) Concurrent Mark Cycle
+[2026-10-22T01:26:10.102+0700][1570.102s][info][gc] GC(89) Pause Young (Normal) (G1 Evacuation Pause) 2450M->1980M(4096M) 72.340ms
+[2026-10-22T01:26:10.102+0700][1570.102s][info][gc,heap] GC(89) Old regions: 580->720
+[2026-10-22T01:27:45.440+0700][1665.440s][info][gc] GC(90) Pause Young (Normal) (G1 Evacuation Pause) 2890M->2410M(4096M) 88.602ms
+[2026-10-22T01:27:45.440+0700][1665.440s][info][gc,heap] GC(90) Old regions: 720->890
+[2026-10-22T01:29:20.210+0700][1760.210s][info][gc] GC(91) Pause Young (Normal) (G1 Evacuation Pause) 3320M->2850M(4096M) 102.771ms
+[2026-10-22T01:29:20.210+0700][1760.210s][info][gc] GC(91) To-space exhausted
+[2026-10-22T01:29:20.211+0700][1760.211s][info][gc,start] GC(92) Pause Full (G1 Compaction Pause)
+[2026-10-22T01:29:20.211+0700][1760.211s][info][gc,task] GC(92) Using 4 workers of 4 for full compaction
+[2026-10-22T01:29:20.812+0700][1760.812s][info][gc,phases] GC(92) Phase 1: Mark live objects 601.118ms
+[2026-10-22T01:29:21.014+0700][1761.014s][info][gc,phases] GC(92) Phase 2: Prepare for compaction 91.551ms
+[2026-10-22T01:29:21.203+0700][1761.203s][info][gc,phases] GC(92) Phase 3: Adjust pointers 188.940ms
+[2026-10-22T01:29:22.346+0700][1762.346s][info][gc,phases] GC(92) Phase 4: Compact heap 1143.077ms
+[2026-10-22T01:29:22.355+0700][1762.355s][info][gc,heap] GC(92) Old regions: 1020->110
+[2026-10-22T01:29:22.355+0700][1762.355s][info][gc] GC(92) Pause Full (G1 Compaction Pause) 3420M->1120M(4096M) 2144.902ms
+[2026-10-22T01:31:10.999+0700][1870.999s][info][gc] GC(93) Pause Young (Normal) (G1 Evacuation Pause) 1980M->1150M(4096M) 95.207ms
+[2026-10-22T01:33:55.979+0700][2035.979s][info][gc] GC(94) To-space exhausted
+[2026-10-22T01:33:55.979+0700][2035.979s][info][gc] GC(94) Pause Young (Normal) (G1 Evacuation Pause) 3120M->3080M(4096M) 319.004ms
+[2026-10-22T01:35:10.001+0700][2110.001s][info][gc] GC(95) Pause Full (G1 Compaction Pause) 3080M->1180M(4096M) 2011.447ms
+[2026-10-22T01:37:40.001+0700][2260.001s][info][gc] GC(96) Pause Full (G1 Compaction Pause) 3150M->1210M(4096M) 1988.334ms
+[2026-10-22T01:40:15.001+0700][2415.001s][info][gc] GC(97) Pause Full (G1 Compaction Pause) 3200M->1240M(4096M) 2055.112ms
+[2026-10-22T01:43:20.001+0700][2600.001s][info][gc] GC(98) Pause Full (G1 Compaction Pause) 3250M->1270M(4096M) 2100.445ms
+[2026-10-22T01:45:30.001+0700][2730.001s] [OOMKilled: container memory limit 6Gi exceeded]`
+      },
+      {
+        name: 'jmap-histo-0140.txt',
+        lang: 'text',
+        content: `$ kubectl exec recon-batch-7d8f6c-x4k2p -- jmap -histo 1 | head -20
+ num     #instances         #bytes  class name (module)
+-------------------------------------------------------
+   1:       4210800      985236000  [B (java.base@17.0.10)
+   2:       5602400      134457600  org.hibernate.engine.internal.EntityEntry
+   3:       2801200       89638400  vn.vietfin.recon.Transaction
+   4:       2801200       67228800  vn.vietfin.recon.ReconciliationResult
+   5:       1400600       33614400  java.util.ArrayList
+   6:       1400600       22409600  java.util.HashMap
+   7:       1120480       17927680  java.lang.String
+   8:        560240       17927680  java.math.BigDecimal
+   9:       1400600       13445760  org.hibernate.collection.internal.PersistentBag
+  10:        280120        8963840  org.hibernate.proxy.pojo.bytebuddy.ByteBuddyInterceptor
+Total       21578240      1390849760`
+      },
+      {
+        name: 'ReconciliationJob.java',
+        lang: 'text',
+        content: `package vn.vietfin.recon.batch;
+
+import jakarta.persistence.EntityManager;
+import jakarta.persistence.EntityManagerFactory;
+import org.springframework.batch.core.Job;
+import org.springframework.batch.core.Step;
+import org.springframework.batch.core.job.builder.JobBuilder;
+import org.springframework.batch.core.repository.JobRepository;
+import org.springframework.batch.core.step.builder.StepBuilder;
+import org.springframework.batch.item.ItemProcessor;
+import org.springframework.batch.item.ItemWriter;
+import org.springframework.batch.item.database.JpaPagingItemReader;
+import org.springframework.batch.item.database.builder.JpaPagingItemReaderBuilder;
+import org.springframework.context.annotation.Bean;
+import org.springframework.context.annotation.Configuration;
+import org.springframework.transaction.PlatformTransactionManager;
+import vn.vietfin.recon.Transaction;
+import vn.vietfin.recon.ReconciliationResult;
+
+@Configuration
+public class ReconciliationJob {
+
+    private final JobRepository jobRepository;
+    private final PlatformTransactionManager transactionManager;
+    private final EntityManagerFactory entityManagerFactory;
+    private final EntityManager entityManager;
+
+    public ReconciliationJob(JobRepository jobRepository,
+                             PlatformTransactionManager transactionManager,
+                             EntityManagerFactory entityManagerFactory,
+                             EntityManager entityManager) {
+        this.jobRepository = jobRepository;
+        this.transactionManager = transactionManager;
+        this.entityManagerFactory = entityManagerFactory;
+        this.entityManager = entityManager;
+    }
+
+    @Bean
+    public Job reconciliationJob() {
+        return new JobBuilder("reconciliationJob", jobRepository)
+                .start(reconciliationStep())
+                .build();
+    }
+
+    @Bean
+    public Step reconciliationStep() {
+        return new StepBuilder("reconciliationStep", jobRepository)
+                .<Transaction, ReconciliationResult>chunk(5000, transactionManager)
+                .reader(transactionReader())
+                .processor(transactionProcessor())
+                .writer(reconciliationWriter())
+                .build();
+    }
+
+    @Bean
+    public JpaPagingItemReader<Transaction> transactionReader() {
+        return new JpaPagingItemReaderBuilder<Transaction>()
+                .name("transactionReader")
+                .entityManagerFactory(entityManagerFactory)
+                .pageSize(5000)
+                .queryString("SELECT t FROM Transaction t WHERE t.createdDate = :date")
+                .parameterValues(java.util.Map.of("date", java.time.LocalDate.now().minusDays(1)))
+                .build();
+    }
+
+    @Bean
+    public ItemProcessor<Transaction, ReconciliationResult> transactionProcessor() {
+        return transaction -> {
+            // Load toàn bộ related entities (fee, counterparty, channel) vào persistence context
+            transaction.getFees().size();           // force load lazy collection
+            transaction.getCounterparty();          // force load @ManyToOne
+            transaction.getChannel();               // force load @ManyToOne
+            
+            // Tạo object kết quả, giữ reference đến transaction gốc
+            ReconciliationResult result = new ReconciliationResult();
+            result.setTransaction(transaction);     // Giữ reference mạnh tới entity gốc
+            result.setMatched(checkMatch(transaction));
+            result.setDiscrepancy(calculateDiff(transaction));
+            return result;
+        };
+    }
+
+    @Bean
+    public ItemWriter<ReconciliationResult> reconciliationWriter() {
+        return items -> {
+            for (ReconciliationResult r : items) {
+                entityManager.persist(r);           // Persist context giữ thêm result
+            }
+            entityManager.flush();                  // Flush 1 lần cho cả chunk 5000
+            // KHÔNG GỌI entityManager.clear() - persistence context giữ tích lũy
+        };
+    }
+
+    private boolean checkMatch(Transaction t) { /* ... */ return true; }
+    private String calculateDiff(Transaction t) { /* ... */ return "0"; }
+}`
+      },
+      {
+        name: 'hibernate-config.yml',
+        lang: 'text',
+        content: `spring:
+  jpa:
+    properties:
+      hibernate:
+        jdbc:
+          batch_size: 50
+        order_inserts: true
+        order_updates: true
+    open-in-view: false
+  datasource:
+    hikari:
+      maximum-pool-size: 20
+      minimum-idle: 5`
+      }
+    ],
+    questions: [
+      'Tại sao Old Gen tăng liên tục từ ~500 MB lên ~3.8 GB trong khi chỉ xử lý 12 triệu giao dịch? Dẫn chứng từ GC log và histogram.',
+      'Vì sao Persistence Context của Hibernate là thủ phạm? Giải thích cơ chế dirty checking và tại sao entity không bị GC thu hồi.',
+      'Chứng minh đây KHÔNG phải memory leak kiểu "quên đóng resource" mà là thiết kế batch sai. Tăng heap lên 8 GB có giải quyết được không?',
+      'Sửa ngắn hạn (code) và dài hạn (kiến trúc batch). Cần alert gì?'
+    ],
+    hints: [
+      'Nhìn Old regions trong GC log: 210 -> 380 -> 580 -> 720 -> 890 -> 1020. Tăng đều, không giảm sau Full GC (Full GC chỉ compact, không xoá object còn reachable).',
+      'Histogram: 2.8 triệu Transaction, 2.8 triệu ReconciliationResult, 1.4 triệu ArrayList/HashMap/PersistentBag. Tổng ~1.4 GB chỉ cho entity + collection. Persistence context giữ mọi entity đã load từ đầu job, không nhả ra sau mỗi page/chunk.',
+      'EntityManager.flush() KHÔNG giải phóng entity khỏi persistence context. Chỉ clear() mới làm entity trở thành detached và có thể GC thu hồi.',
+      'Tăng heap 8 GB chỉ dời sự cố: 12 triệu transaction × ~500 byte/entity ≈ 6 GB chỉ cho entity, chưa tính collection, result, buffer. Transaction lớn hơn cuối tháng sẽ OOM lại.'
+    ],
+    answer: `**Tóm tắt:** Job batch **load 12 triệu entity Transaction vào persistence context Hibernate nhưng không bao giờ gọi {{entityManager.clear()}}**. Mỗi entity kéo theo lazy collection (fees) và quan hệ @ManyToOne (counterparty, channel) được force-load, cộng thêm object {{ReconciliationResult}} giữ reference mạnh tới entity gốc. Persistence context (L1 cache) tích lũy ~2.8 triệu Transaction + 2.8 triệu ReconciliationResult + collection = **~1.3 GB live data chỉ trong 30 phút**, đẩy Old Gen từ 500 MB lên 3.8 GB, gây 5 lần Full GC ~2 giây, cuối cùng pod bị OOMKilled. Tăng heap không giải quyết được vì dữ liệu tăng tuyến tính với số lượng giao dịch. Sửa bằng {{clear()}} sau mỗi chunk, dùng {{StatelessSession}} hoặc Spring Batch {{JdbcCursorItemReader}} streaming.
+
+### Cơ chế: Persistence Context và Dirty Checking
+
+**Persistence context (ngữ cảnh bền vững)** là bộ nhớ đệm cấp 1 của JPA/Hibernate, gắn với {{EntityManager}} (hoặc {{Session}}). Nó đảm bảo:
+- **Identity map:** Trong một transaction, cùng một entity (cùng ID) chỉ load một lần, trả về cùng instance.
+- **Dirty checking:** Hibernate theo dõi thay đổi field của entity. Khi transaction commit (hoặc {{flush()}}), Hibernate so sánh snapshot lúc load với trạng thái hiện tại, sinh UPDATE cho field thay đổi.
+- **Write-behind:** {{persist()}}, {{merge()}}, {{remove()}} chỉ ghi vào context; {{flush()}} mới đẩy xuống DB.
+
+**Vấn đề:** Persistence context **mặc định sống suốt transaction** (hoặc scope của {{EntityManager}}). Nếu một transaction load 12 triệu entity mà không {{clear()}}, context giữ **tất cả** entity đó — snapshot cho dirty checking, collection, proxy — trong heap. Chúng **không bao giờ được GC thu hồi** vì còn reachable từ context (root qua {{EntityManager}} → {{PersistenceContext}} → {{EntityEntry}} → entity).
+
+{{EntityManager.flush()}} chỉ đẩy SQL xuống DB, **KHÔNG** xoá entity khỏi context. Chỉ {{entityManager.clear()}} (hoặc {{session.clear()}}) mới **detach** toàn bộ entity, giải phóng snapshot, cho phép GC thu hồi.
+
+### Dẫn chứng từ artifact
+
+| Thời điểm / GC | Dòng log trích | Ý nghĩa |
+|---|---|---|
+| GC(85) 01:15 | {{Pause Young ... 1850M->520M}}, Old regions: implicit | Khởi đầu job, young GC thường, old còn thấp |
+| GC(87) 01:24 | {{Concurrent Start}}, {{Old regions: 210->380}} | Old tăng, chạm ngưỡng IHOP, bắt đầu concurrent mark |
+| GC(89) 01:26 | {{Old regions: 580->720}} | Old tăng nhanh (140 region = 280 MB / ~2 phút) |
+| GC(90) 01:27 | {{Old regions: 720->890}} | Tiếp tục tăng |
+| GC(91) 01:29 | {{To-space exhausted}}, {{Old regions: 890->1020}} | Không còn region trống cho evacuation |
+| GC(92) 01:29 | {{Pause Full (G1 Compaction Pause) 3420M->1120M(4096M) 2144.902ms}} | Full GC đầu, compact old 1020->110 region. **Heap sau GC 1120M** là live set thực (entity còn reachable từ context) |
+| GC(93) 01:31 | {{1980M->1150M}} | Young GC sau Full GC, old nhanh chóng tăng lại vì context vẫn giữ entity |
+| GC(95) 01:35 | {{Pause Full ... 3080M->1180M 2011.447ms}} | Full GC thứ 2, live set ~1180M |
+| GC(98) 01:43 | {{Pause Full ... 3250M->1270M 2100.445ms}} | Full GC thứ 5, live set ~1270M. Pod bị kill lúc 01:45 |
+
+**Histogram lúc 01:40 (giữa các Full GC):**
+- {{vn.vietfin.recon.Transaction}}: **2,801,200 instance**, 89.6 MB (chỉ object gốc, chưa tính field/collection)
+- {{vn.vietfin.recon.ReconciliationResult}}: **2,801,200 instance**, 67.2 MB (giữ reference tới Transaction qua field {{transaction}})
+- {{ArrayList}}, {{HashMap}}, {{PersistentBag}}: **1,400,600 instance** mỗi loại — tương ứng với collection fees (ArrayList/PersistentBag) và map/collection khác trong entity
+- {{EntityEntry}} (mỗi entity được quản lý có một entry theo dõi trạng thái): **5,602,400 instance** — đúng bằng 2,8 triệu Transaction + 2,8 triệu ReconciliationResult đang bị context giữ; ngoài ra Hibernate còn giữ snapshot giá trị field của từng entity để dirty checking, nên bộ nhớ live lớn hơn nhiều so với kích thước đo được của riêng object entity
+- Tổng histogram: **1.39 GB** — nhỉnh hơn heap sau Full GC ~1.1-1.2 GB vì {{jmap -histo}} (không {{:live}}) đếm cả object rác chưa thu hồi, còn heap sau Full GC chỉ còn object sống
+
+**Phép tính kiểm tra:** 12 triệu transaction / pageSize 5000 = 2400 page. Chunk 5000 = 1 commit / page. Mỗi page load 5000 entity + collection → 5000 Transaction + 5000 ReconciliationResult + collection. Sau 560 page (2.8 triệu entity), heap đã ~3.2 GB. Tốc độ tăng ~140 region/2 phút = 280 MB/2 phút = **140 MB/phút** khớp với GC log Old regions tăng.
+
+### Tại sao TĂNG HEAP LÊN 8 GB KHÔNG GIẢI QUYẾT
+
+- Dữ liệu **tăng tuyến tính với số lượng giao dịch**. Cuối tháng 15-20 triệu giao dịch → live set 1.6-2 GB chỉ cho entity. Còn collection, result, buffer, Metaspace, thread stack → vượt 8 GB.
+- Full GC trên heap 8 GB **chậm hơn** (phase compact mất 3-4 giây), application pause lâu hơn, throughput batch giảm.
+- Pod limit 6Gi không đủ cho heap 8 GB cộng native memory (Metaspace, CodeCache, Direct buffer, GC structures).
+
+### Cách sửa
+
+**Ngắn hạn (hotfix deploy trong ngày):**
+1. Gọi {{entityManager.clear()}} sau mỗi chunk (sau {{flush()}} trong writer):
+
+~~~java
+@Bean
+public ItemWriter<ReconciliationResult> reconciliationWriter() {
+    return items -> {
+        for (ReconciliationResult r : items) {
+            entityManager.persist(r);
+        }
+        entityManager.flush();
+        entityManager.clear();          // QUAN TRỌNG: detach tất cả entity, giải phóng heap
+    };
 }
+~~~
+
+2. Trong processor: **KHÔNG** giữ reference tới entity gốc trong {{ReconciliationResult}}. Chỉ copy field cần thiết (ID, amount, status...):
+
+~~~java
+ReconciliationResult result = new ReconciliationResult();
+result.setTransactionId(transaction.getId());   // Chỉ ID, không giữ entity
+result.setAmount(transaction.getAmount());
+result.setStatus(transaction.getStatus());
+// KHÔNG: result.setTransaction(transaction);
+~~~
+
+3. Tắt force-load collection không cần thiết ({{transaction.getFees().size()}} chỉ để trigger load — nếu không dùng thì bỏ).
+
+**Dài hạn (kiến trúc batch đúng):**
+- Dùng **{{StatelessSession}}** (Hibernate) hoặc **{{JdbcCursorItemReader}}** / **{{JpaCursorItemReader}}** với cursor streaming: đọc từng dòng, xử lý, ghi, xoá — không giữ entity trong context. {{StatelessSession}} không có persistence context, không dirty checking, không L1 cache, phù hợp batch read-only/write-only.
+- Hoặc tách: reader dùng JPA streaming, processor tạo DTO nhẹ, writer dùng JDBC batch insert ({{JdbcBatchItemWriter}}) thay vì {{entityManager.persist()}}.
+- Cấu hình {{hibernate.jdbc.batch_size}} và {{hibernate.order_inserts}} cho writer JDBC.
+- Chunk size 1000-5000 tùy entity size; sau mỗi chunk **bắt buộc clear/detach**.
+
+### Alert và phòng ngừa
+- Alert khi GC log xuất hiện {{To-space exhausted}} hoặc {{Pause Full (G1 Compaction Pause)}}.
+- Alert khi Old Gen sau GC tăng liên tục 3-5 lần liên tiếp (dùng metric 'jvm_memory_used_bytes{area="heap",id="G1 Old Gen"}' ngay sau mixed GC).
+- Code review batch: **bắt buộc có clear/detach** sau mỗi chunk; cấm giữ reference entity trong DTO/result; ưu tiên StatelessSession/JDBC cho batch lớn.
+- Test batch với dữ liệu gấp 3-5 lần production (cuối tháng/năm) trên staging, đo heap sau GC và GC pause.
+
+> Senior tip: Batch JPA là "bẫy" hay gặp: team dùng JPA vì quen, nhưng quên persistence context. Quy tắc vàng: **mọi batch JPA load > 100k entity BẮT BUỘC có clear() sau mỗi chunk, hoặc dùng StatelessSession/JDBC**. Khi review code batch, tôi chỉ cần tìm {{entityManager.flush()}} — nếu **không có {{clear()}} ngay sau đó** thì chắc chắn sẽ OOM khi dữ liệu lớn.`,
+    rubric: [
+      'Chỉ ra đúng nguyên nhân: load 12 triệu entity vào persistence context Hibernate không clear(), entity + collection + snapshot dirty checking + ReconciliationResult giữ reference → Old Gen tăng tuyến tính.',
+      'Dẫn chứng GC log: Old regions 210->380->580->720->890->1020, 5 Pause Full ~2s, heap sau Full GC 1.1-1.2 GB ổn định (live set thực).',
+      'Dẫn chứng histogram: 2.8M Transaction, 2.8M ReconciliationResult, 1.4M ArrayList/HashMap/PersistentBag, EntityEntry — tổng ~1.4 GB gần khớp heap sau GC.',
+      'Giải thích đúng: flush() KHÔNG clear context; chỉ clear()/detach mới giải phóng; dirty checking giữ snapshot; tăng heap chỉ dời sự cố.',
+      'Đề xuất sửa: clear() sau flush, không giữ entity trong result, StatelessSession/JDBC streaming cho batch lớn; alert To-space exhausted / Full GC / Old Gen trend.'
+    ],
+    tags: ['hibernate', 'persistence-context', 'batch', 'full-gc', 'oomkilled', 'jpa', 'spring-batch', 'g1']
+  },
+  {
+    id: 'lab-gc-023',
+    category: 'gc',
+    title: 'Pause dài ở giờ cao điểm do humongous allocation: buffer JSON lớn > nửa region size',
+    level: 'senior',
+    scenario: `**Bối cảnh (background):** App **payment-gateway** (Spring Boot 3.3, JDK 21.0.4, G1) nhận request thanh toán từ merchant, gọi core banking qua gRPC, sau đó trả response. Pod Kubernetes: 4 vCPU, memory limit 5Gi. JVM: {{-Xms4g -Xmx4g -XX:+UseG1GC -XX:G1HeapRegionSize=2m -Xlog:gc*:file=/logs/gc.log:time,uptime,level,tags}}. Response core banking chứa chi tiết giao dịch, lịch sử 30 ngày, rủi ro scoring — JSON sequence có thể lên tới **3-5 MB** mỗi request. Traffic giờ cao điểm ~2.000 req/s/pod.
+    
+**Thuật ngữ giải thích:**
+- **Humongous object (đối tượng khổng lồ):** Trong G1 GC, heap chia thành region bằng nhau (ở đây 2 MB). Object có kích thước **≥ 50% region (≥ 1 MB)** được coi là humongous. G1 cấp phát humongous **thẳng vào Old Gen** trên các region **liên tiếp**, không qua Eden.
+- **G1HeapRegionSize:** Kích thước mỗi region (mặc định tự tính từ heap size, 1-32 MB, lũy thừa 2). Region lớn → ngưỡng humongous cao hơn → ít object bị coi là humongous.
+- **To-space exhausted:** Khi young GC, G1 cần copy object sống từ Eden/Survivor sang region mới (to-space). Nếu không đủ region trống (vì bị humongous chiếm chỗ), G1 ném {{To-space exhausted}} và buộc chạy Full GC.
+- **Streaming parser (parser luồng):** Thay vì đọc toàn bộ JSON vào {{String}}/{{byte[]}} trong heap, parser đọc token từng cái từ {{InputStream}} (ví dụ Jackson {{JsonParser}}, Gson {{JsonReader}}), xử lý rồi bỏ — heap gần như không tăng.
+- **{{HttpResponse.BodyHandlers.ofByteArray()}}:** Đọc toàn bộ HTTP response body vào một mảng {{byte[]}} duy nhất trong heap. Dùng cho response nhỏ; response lớn gây humongous allocation.
+
+**Triệu chứng:** Từ **10:00-10:30 ngày 23/10/2026** (giờ cao điểm), p99 {{POST /api/payment}} tăng từ 120 ms lên **2.8-3.5 giây**. GC log ghi nhận **humongous allocation dày đặc**, **3 lần Pause Full (G1 Compaction Pause)** mỗi lần 1.6-2.1 giây. CPU pod 2.8/4 core. Heap used dashboard chỉ ~2.5 GB / 4 GB. Sau 10:30 traffic giảm, hệ thống tự ổn định. Dev đề xuất: "Tăng heap lên 8 GB và G1HeapRegionSize lên 8 MB."
+
+**Dữ liệu thu thập:** GC log JDK 21 trong lúc sự cố, heap histogram lúc 10:15, đoạn code {{PaymentClient}} gọi core banking, và JFR allocation profiling.`,
+    artifacts: [
+      {
+        name: 'gc-payment-gateway.log',
+        lang: 'text',
+        content: `[2026-10-23T08:00:00.012+0700][0.012s][info][gc,init] Version: 21.0.4+7 (release)
+[2026-10-23T08:00:00.012+0700][0.012s][info][gc,init] CPUs: 4 total, 4 available
+[2026-10-23T08:00:00.012+0700][0.012s][info][gc,init] Memory: 5120M
+[2026-10-23T08:00:00.012+0700][0.012s][info][gc,init] Heap Region Size: 2M
+[2026-10-23T08:00:00.012+0700][0.012s][info][gc,init] Heap Min Capacity: 4G
+[2026-10-23T08:00:00.012+0700][0.012s][info][gc,init] Heap Initial Capacity: 4G
+[2026-10-23T08:00:00.012+0700][0.012s][info][gc,init] Heap Max Capacity: 4G
+[2026-10-23T08:00:00.012+0700][0.012s][info][gc,init] Parallel Workers: 4
+[2026-10-23T08:00:00.012+0700][0.012s][info][gc,init] Concurrent Workers: 2
+... (young GC bình thường, heap sau GC ~400-600 MB) ...
+[2026-10-23T10:05:22.104+0700][7522.104s][info][gc] GC(412) Pause Young (Normal) (G1 Evacuation Pause) 1850M->520M(4096M) 14.201ms
+[2026-10-23T10:08:12.330+0700][7692.330s][info][gc,start] GC(413) Pause Young (Concurrent Start) (G1 Humongous Allocation)
+[2026-10-23T10:08:12.330+0700][7692.330s][info][gc,task] GC(413) Using 4 workers of 4 for evacuation
+[2026-10-23T10:08:12.392+0700][7692.392s][info][gc,phases] GC(413)   Evacuate Collection Set: 48.1ms
+[2026-10-23T10:08:12.392+0700][7692.392s][info][gc,heap] GC(413) Eden regions: 420->0(420)
+[2026-10-23T10:08:12.392+0700][7692.392s][info][gc,heap] GC(413) Survivor regions: 18->22(52)
+[2026-10-23T10:08:12.392+0700][7692.392s][info][gc,heap] GC(413) Old regions: 210->380
+[2026-10-23T10:08:12.392+0700][7692.392s][info][gc,heap] GC(413) Humongous regions: 124->124
+[2026-10-23T10:08:12.392+0700][7692.392s][info][gc] GC(413) Pause Young (Concurrent Start) (G1 Humongous Allocation) 1850M->1420M(4096M) 58.114ms
+[2026-10-23T10:08:12.393+0700][7692.393s][info][gc] GC(414) Concurrent Mark Cycle
+[2026-10-23T10:10:10.102+0700][7810.102s][info][gc] GC(415) Pause Young (Normal) (G1 Humongous Allocation) 2450M->1980M(4096M) 72.340ms
+[2026-10-23T10:10:10.102+0700][7810.102s][info][gc,heap] GC(415) Old regions: 580->720
+[2026-10-23T10:10:10.102+0700][7810.102s][info][gc,heap] GC(415) Humongous regions: 124->280
+[2026-10-23T10:11:45.440+0700][7905.440s][info][gc] GC(416) Pause Young (Normal) (G1 Humongous Allocation) 2890M->2410M(4096M) 88.602ms
+[2026-10-23T10:11:45.440+0700][7905.440s][info][gc,heap] GC(416) Old regions: 720->890
+[2026-10-23T10:11:45.440+0700][7905.440s][info][gc,heap] GC(416) Humongous regions: 280->412
+[2026-10-23T10:13:20.210+0700][8000.210s][info][gc] GC(417) Pause Young (Normal) (G1 Humongous Allocation) 3320M->2850M(4096M) 102.771ms
+[2026-10-23T10:13:20.210+0700][8000.210s][info][gc] GC(417) To-space exhausted
+[2026-10-23T10:13:20.211+0700][8000.211s][info][gc,start] GC(418) Pause Full (G1 Compaction Pause)
+[2026-10-23T10:13:20.211+0700][8000.211s][info][gc,task] GC(418) Using 4 workers of 4 for full compaction
+[2026-10-23T10:13:20.812+0700][8000.812s][info][gc,phases] GC(418) Phase 1: Mark live objects 601.118ms
+[2026-10-23T10:13:21.014+0700][8001.014s][info][gc,phases] GC(418) Phase 2: Prepare for compaction 91.551ms
+[2026-10-23T10:13:21.203+0700][8001.203s][info][gc,phases] GC(418) Phase 3: Adjust pointers 188.940ms
+[2026-10-23T10:13:22.346+0700][8002.346s][info][gc,phases] GC(418) Phase 4: Compact heap 1143.077ms
+[2026-10-23T10:13:22.355+0700][8002.355s][info][gc,heap] GC(418) Old regions: 1020->110
+[2026-10-23T10:13:22.355+0700][8002.355s][info][gc,heap] GC(418) Humongous regions: 520->520
+[2026-10-23T10:13:22.355+0700][8002.355s][info][gc] GC(418) Pause Full (G1 Compaction Pause) 3420M->1120M(4096M) 2144.902ms
+[2026-10-23T10:15:10.999+0700][8110.999s][info][gc] GC(419) Pause Young (Normal) (G1 Humongous Allocation) 1980M->1150M(4096M) 95.207ms
+[2026-10-23T10:15:10.999+0700][8110.999s][info][gc,heap] GC(419) Humongous regions: 520->560
+[2026-10-23T10:17:55.979+0700][8275.979s][info][gc] GC(420) To-space exhausted
+[2026-10-23T10:17:55.979+0700][8275.979s][info][gc] GC(420) Pause Young (Normal) (G1 Evacuation Pause) 3120M->3080M(4096M) 319.004ms
+[2026-10-23T10:18:10.001+0700][8290.001s][info][gc] GC(421) Pause Full (G1 Compaction Pause) 3080M->1180M(4096M) 2011.447ms
+[2026-10-23T10:18:10.001+0700][8290.001s][info][gc,heap] GC(421) Humongous regions: 580->580
+[2026-10-23T10:20:40.001+0700][8440.001s][info][gc] GC(422) Pause Full (G1 Compaction Pause) 3150M->1210M(4096M) 1988.334ms
+[2026-10-23T10:20:40.001+0700][8440.001s][info][gc,heap] GC(422) Humongous regions: 590->590
+[2026-10-23T10:25:10.001+0700][8710.001s][info][gc] GC(423) Pause Young (Normal) (G1 Evacuation Pause) 2100M->480M(4096M) 18.102ms
+[2026-10-23T10:25:10.001+0700][8710.001s][info][gc,heap] GC(423) Humongous regions: 590->8`
+      },
+      {
+        name: 'jmap-histo-1015.txt',
+        lang: 'text',
+        content: `$ kubectl exec payment-gateway-7d8f6c-x4k2p -- jmap -histo 1 | head -20
+ num     #instances         #bytes  class name (module)
+-------------------------------------------------------
+   1:        249000     1372320000  [B (java.base@21.0.4)
+   2:         20750       66400000  java.lang.String
+   3:         16600       53120000  com.fasterxml.jackson.databind.node.ObjectNode
+   4:         12450       39840000  java.util.ArrayList
+   5:         10375       33200000  java.util.HashMap
+   6:         16600       26560000  com.fasterxml.jackson.databind.node.ArrayNode
+   7:          8300       26560000  java.math.BigDecimal
+   8:          4150       13280000  vn.payment.gateway.CoreBankingResponse
+Total        338225     1631280000`
+      },
+      {
+        name: 'PaymentClient.java',
+        lang: 'text',
+        content: `package vn.payment.gateway.client;
+
+import com.fasterxml.jackson.databind.ObjectMapper;
+import io.grpc.stub.StreamObserver;
+import vn.payment.corebanking.CoreBankingGrpc;
+import vn.payment.corebanking.PaymentRequest;
+import vn.payment.corebanking.PaymentResponse;
+import org.springframework.stereotype.Component;
+import java.util.concurrent.TimeUnit;
+
+@Component
+public class PaymentClient {
+
+    private final CoreBankingGrpc.CoreBankingStub asyncStub;
+    private final ObjectMapper mapper = new ObjectMapper();
+
+    public PaymentResult callCoreBanking(PaymentRequest request) {
+        // Chuyển request sang JSON để log (debug)
+        String requestJson = mapper.writeValueAsString(request);
+
+        // Gọi gRPC async, convert response sang byte[] để xử lý
+        PaymentResponse response = blockingCall(request);
+
+        // Đọc TOÀN BỘ response body vào byte[] (core banking trả JSON 3-5 MB)
+        byte[] responseBytes = response.getPayload().toByteArray();  // humongous nếu > 1 MB
+
+        // Parse JSON sang object tree (Jackson) — tạo thêm ObjectNode, ArrayNode, String
+        CoreBankingResponse parsed = mapper.readValue(responseBytes, CoreBankingResponse.class);
+
+        // Log response để audit
+        String responseJson = mapper.writeValueAsString(parsed);   // Tạo thêm String lớn
+
+        return new PaymentResult(parsed.getStatus(), parsed.getTransactionId());
+    }
+
+    private PaymentResponse blockingCall(PaymentRequest request) {
+        // ... gRPC blocking stub call ...
+        return null; // placeholder
+    }
+}
+
+class PaymentResult {
+    final String status;
+    final String transactionId;
+    PaymentResult(String status, String transactionId) {
+        this.status = status;
+        this.transactionId = transactionId;
+    }
+}
+
+class CoreBankingResponse {
+    String status;
+    String transactionId;
+    String riskScore;
+    java.util.List<TransactionHistory> history;   // 30 ngày lịch sử
+    RiskDetail riskDetail;
+    // getter/setter
+}`
+      },
+      {
+        name: 'jfr-allocation-1015.txt',
+        lang: 'text',
+        content: `$ jcmd 1 JFR.start duration=2m filename=/tmp/payment.jfr settings=profile
+$ jfr print --events jdk.ObjectAllocationSample /tmp/payment.jfr | head -50
+
+jdk.ObjectAllocationSample {
+  startTime = 10:12:03.412
+  objectClass = byte[] (classLoader = bootstrap)
+  weight = 4.2 MB
+  eventThread = "http-nio-8080-exec-45"
+  stackTrace = [
+    java.util.Arrays.copyOf(byte[], int) line: 3537
+    java.io.ByteArrayOutputStream.toByteArray() line: 211
+    com.google.protobuf.ByteString.toByteArray() line: 1245
+    vn.payment.gateway.client.PaymentClient.callCoreBanking(PaymentClient.java:28)
+  ]
+}
+
+jdk.ObjectAllocationSample {
+  startTime = 10:12:03.415
+  objectClass = byte[] (classLoader = bootstrap)
+  weight = 3.8 MB
+  eventThread = "http-nio-8080-exec-45"
+  stackTrace = [
+    com.fasterxml.jackson.databind.util.ByteBufferBackedInputStream.read(byte[], int, int) line: 120
+    com.fasterxml.jackson.databind.deser.BaseNodeDeserializer.deserializeArray(JsonParser, DeserializationContext, JavaType) line: 189
+    vn.payment.gateway.client.PaymentClient.callCoreBanking(PaymentClient.java:31)
+  ]
+}
+
+jdk.ObjectAllocationSample {
+  startTime = 10:12:03.418
+  objectClass = java.lang.String (classLoader = bootstrap)
+  weight = 3.1 MB
+  eventThread = "http-nio-8080-exec-45"
+  stackTrace = [
+    java.lang.StringLatin1.newString(byte[], int, int) line: 769
+    com.fasterxml.jackson.databind.util.ByteBufferBackedInputStream.read(byte[], int, int) line: 120
+    vn.payment.gateway.client.PaymentClient.callCoreBanking(PaymentClient.java:34)
+  ]
+}
+
+# Tổng hợp allocation rate lúc 10:12 (2000 req/s):
+# byte[] (Protobuf toByteArray)       ~ 4.0 MB × 2000 = 8.0 GB/s
+# byte[] (Jackson parse)               ~ 3.5 MB × 2000 = 7.0 GB/s  
+# String (Jackson writeValueAsString)  ~ 3.0 MB × 2000 = 6.0 GB/s
+# ObjectNode/ArrayNode/HashMap/ArrayList  ~ 1.5 GB/s
+# TỔNG allocation rate ≈ 22.5 GB/s (chỉ cho response processing)`
+      }
+    ],
+    questions: [
+      'Tại sao G1 liên tục báo "G1 Humongous Allocation", rồi "To-space exhausted" và cuối cùng "Pause Full"? Trích dòng cụ thể trong GC log và giải thích với region size 2 MB.',
+      'Từ histogram và JFR, chứng minh chính xác object nào là humongous (byte[] từ đâu, kích thước bao nhiêu). Vì sao response 3-5 MB gây humongous còn request JSON nhỏ không?',
+      'Chứng minh đây KHÔNG phải memory leak. Tăng heap lên 8 GB hoặc G1HeapRegionSize lên 8 MB có phải lời giải gốc không?',
+      'Sửa ngắn hạn (code) và dài hạn (kiến trúc). Cách nào tốt nhất: streaming parser, giảm region size, hay tách luồng xử lý response lớn?'
+    ],
+    hints: [
+      'Region size 2 MB → ngưỡng humongous = 1 MB. Response 3-5 MB = 2-3 region liên tiếp. Nhìn Humongous regions: 124 -> 280 -> 412 -> 520 -> 580 -> 590 (tăng đều), Full GC không giảm (520->520, 580->580, 590->590).',
+      'Histogram: {{jmap -histo}} gộp mọi mảng byte[] vào MỘT dòng (~249k instance, 1.37 GB, trung bình ~5.5 KB vì phần lớn là buffer nhỏ); phần lớn dung lượng đến từ vài trăm mảng 3-5 MB đang bị request giữ. JFR chỉ rõ ba điểm cấp phát: 4.2 MB, 3.8 MB, 3.1 MB tại PaymentClient.java dòng 28, 31, 34 — ba lần copy: Protobuf toByteArray, Jackson parse, writeValueAsString.',
+      'GC(423) khi traffic giảm: Humongous regions 590->8, heap 2100M->480M. Khác với leak (leak thì heap sau GC tăng dần, Full GC không giảm humongous).',
+      'Tăng G1HeapRegionSize 8 MB: ngưỡng humongous = 4 MB, response 3-5 MB vẫn có thể humongous (5 MB > 4 MB). Tăng heap: allocation rate 22.5 GB/s, young GC 10x dày hơn, Full GC trên 8 GB lâu gấp 2 lần. Không phải fix gốc.'
+    ],
+    answer: `**Tóm tắt:** Service đọc response gRPC core banking (JSON 3-5 MB) vào {{byte[]}} qua {{ByteString.toByteArray()}}, parse Jackson tạo thêm {{byte[]}}, {{ObjectNode}}, {{String}}, rồi {{writeValueAsString}} tạo thêm {{String}} lớn. Với **G1HeapRegionSize=2 MB**, mọi object **≥ 1 MB là humongous** → response 3-5 MB chiếm **2-3 region liên tiếp** trong Old Gen. 2.000 req/s × 3 object lớn mỗi request = hàng nghìn humongous object mỗi giây. Humongous regions tăng 124 → 590 (1.18 GB), chặn region trống → {{To-space exhausted}} → **Pause Full ~2 giây**, lặp 3 lần. Khi traffic giảm, GC(423) thu hồi humongous 590->8 trong young GC thường, chứng minh **không leak**. Sửa gốc: **streaming parser** (Jackson {{JsonParser}}/Gson {{JsonReader}}) đọc token từ {{InputStream}} không load toàn bộ vào heap, hoặc gRPC streaming response.
+
+### Cơ chế: Humongous Allocation trong G1
+
+1. **Region và ngưỡng:** GC log {{Heap Region Size: 2M}}. G1 coi object ≥ 1 MB là humongous. Cấp phát thẳng vào Old Gen trên region liên tiếp.
+2. **Ba lần copy trong một request:** (PaymentClient.java)
+   - Dòng 28: {{response.getPayload().toByteArray()}} — Protobuf ByteString copy internal buffer ra **byte[] 3-5 MB** (humongous #1).
+   - Dòng 31: {{mapper.readValue(responseBytes, ...)}} — Jackson parse byte[], nội bộ cấp phát **byte[]/char[] buffer ~3.5 MB** (humongous #2) và build tree **ObjectNode/ArrayNode/String**.
+   - Dòng 34: {{mapper.writeValueAsString(parsed)}} — serialize tree ra **String 3-4 MB** (backing byte[]/char[] humongous #3).
+3. **Tổng allocation rate:** ~22.5 GB/s lúc 2.000 req/s. G1 coi mỗi object ≥ 1 MB là humongous: object được cấp phát thẳng vào region riêng ở Old Gen, **không đi qua Eden và không được young GC copy** (chỉ được thu hồi khi không còn ai tham chiếu). Vì vậy Eden chỉ nhận phần allocation nhỏ (buffer, object tree) nhưng region trống vẫn bị humongous chiếm dần → áp lực lên toàn heap chứ không chỉ Eden.
+4. **To-space exhausted:** Humongous regions chiếm 590 region × 2 MB = 1.18 GB Old Gen. Chỉ còn ~1.5 GB region trống cho Eden+Survivor+Old thường. Khi Eden đầy, không đủ region trống để evacuate → To-space exhausted → Full GC.
+5. **Full GC không giảm humongous:** GC(418) {{Humongous regions: 520->520}}, GC(421) {{580->580}}, GC(422) {{590->590}}. Vì humongous object **vẫn còn được tham chiếu** bởi thread đang xử lý request (stack frame giữ responseBytes, parsed, responseJson) nên chúng vẫn là live data. Lưu ý: G1 Full GC (G1 Compaction Pause) có compact cả vùng humongous, nhưng nó chỉ **di chuyển** object còn sống chứ không thể thu hồi object vẫn reachable — do đó số region humongous không giảm.
+
+### Dẫn chứng từ artifact
+
+| GC / Thời điểm | Dòng log trích | Ý nghĩa |
+|---|---|---|
+| GC(413) 10:08 | {{Pause Young (Concurrent Start) (G1 Humongous Allocation)}}, {{Humongous regions: 124->124}} | Bắt đầu có humongous, concurrent mark kích hoạt |
+| GC(415) 10:10 | {{Humongous regions: 124->280}} | +156 region = 312 MB humongous mới trong 2 phút |
+| GC(416) 10:11 | {{Humongous regions: 280->412}} | +132 region = 264 MB |
+| GC(417) 10:13 | {{To-space exhausted}}, {{Humongous regions: 412->520}} | Cạn region trống |
+| GC(418) 10:13 | {{Pause Full (G1 Compaction Pause) 3420M->1120M 2144ms}}, {{Humongous regions: 520->520}} | Full GC đầu, humongous không giảm |
+| GC(421) 10:18 | {{Pause Full ... 2011ms}}, {{Humongous regions: 580->580}} | Full GC thứ 2, humongous không giảm |
+| GC(422) 10:20 | {{Pause Full ... 1988ms}}, {{Humongous regions: 590->590}} | Full GC thứ 3, humongous không giảm |
+| GC(423) 10:25 | {{Pause Young ... 2100M->480M}}, {{Humongous regions: 590->8}} | **Bằng chứng không leak**: traffic giảm, request xong, humongous eager-reclaim 590->8, heap về 480 MB |
+| JFR | {{weight = 4.2 MB}} tại {{ByteString.toByteArray}} (line 28), {{3.8 MB}} tại Jackson parse (line 31), {{3.1 MB}} tại {{writeValueAsString}} (line 34) | Ba object humongous mỗi request |
+| Histogram | {{byte[]}} một dòng duy nhất: 249.000 instance, 1.37 GB | {{jmap -histo}} gộp mọi mảng byte[] theo class, không tách theo nguồn cấp phát; phần lớn byte là các mảng 3-5 MB của request đang chạy |
+
+### Tại sao TĂNG HEAP / TĂNG G1HEAPREGIONSIZE KHÔNG PHẢI LỜI GIẢI GỐC
+
+- **Tăng heap 8 GB:** Allocation rate 22.5 GB/s không đổi. Young GC sẽ dày gấp 2 lần (Eden lớn hơn nhưng allocation rate như cũ), Full GC trên 8 GB mất 4-5 giây. Pod limit 5Gi không đủ cho heap 8 GB + native memory.
+- **Tăng G1HeapRegionSize 8 MB:** Ngưỡng humongous = 4 MB. Response 3 MB không còn humongous, nhưng 5 MB VẪN humongous. Region 8 MB → heap 4 GB chỉ còn 512 region (thay vì 2048), giảm độ linh hoạt của G1 chọn collection set, young GC kém hiệu quả. Cần restart JVM. Chỉ là workaround.
+- **Gốc rễ:** Code **giữ toàn bộ response lớn trong heap** dưới dạng byte[]/String/object tree. Không cần thiết: service chỉ extract {{status}}, {{transactionId}} — có thể streaming parse chỉ lấy field cần thiết.
+
+### Cách sửa
+
+**Ngắn hạn (giảm rủi ro ngay, deploy hôm nay):**
+1. **Giới hạn đồng thời (bulkhead):** {{Semaphore}} hoặc Resilience4j Bulkhead tối đa 50-100 request xử lý response lớn đồng thời/pod. Trả 429/503 khi vượt.
+2. **Giới hạn kích thước response:** Kiểm tra {{Content-Length}} hoặc gRPC message size trước khi đọc; reject > 2 MB (hoặc chuyển luồng xử lý riêng).
+3. **Bỏ log response body lớn:** Xoá {{mapper.writeValueAsString(parsed)}} (dòng 34) — tiết kiệm 1 humongous String + allocation rate 6 GB/s.
+
+**Dài hạn (sửa gốc, loại bỏ humongous):**
+1. **Streaming JSON parser (khuyên dùng nhất):** Dùng Jackson {{JsonParser}} hoặc Gson {{JsonReader}} đọc token từ {{InputStream}}, chỉ extract field cần thiết ({{status}}, {{transactionId}}), bỏ qua history/riskDetail lớn. Heap gần như không tăng.
+
+~~~java
+public PaymentResult callCoreBanking(PaymentRequest request) {
+    // gRPC trả InputStream hoặc ByteString có thể convert sang InputStream
+    try (InputStream in = response.getPayload().newInput()) {  // không toByteArray()
+        JsonParser parser = new JsonFactory().createParser(in);
+        String status = null, txnId = null;
+        while (parser.nextToken() != null) {
+            if ("status".equals(parser.currentName())) {
+                status = parser.nextTextValue();
+            } else if ("transactionId".equals(parser.currentName())) {
+                txnId = parser.nextTextValue();
+            } else if ("history".equals(parser.currentName()) || "riskDetail".equals(parser.currentName())) {
+                parser.skipChildren();  // bỏ qua object lớn, không parse
+            }
+        }
+        return new PaymentResult(status, txnId);
+    }
+}
+~~~
+
+2. **gRPC streaming response:** Thay đổi contract core banking trả response chia nhỏ (streaming {{PaymentResponseChunk}}), gateway xử lý chunk-by-chunk.
+3. **Tách luồng:** Response lớn (> 1 MB) đẩy vào queue xử lý async, gateway trả 202 Accepted ngay. Worker dùng streaming parser, không ảnh hưởng latency API.
+
+### Phòng ngừa và alert
+
+- Alert khi GC log có {{To-space exhausted}} hoặc {{Pause Full (G1 Compaction Pause)}}.
+- Alert khi cause {{G1 Humongous Allocation}} xuất hiện > 10 lần/phút (parse GC log hoặc metric exporter có label cause).
+- Theo dõi {{jvm_gc_live_data_size_bytes}} và allocation rate trên mỗi request ({{jvm_gc_memory_allocated_bytes_total / request_count}}).
+- Bật JFR liên tục ({{-XX:StartFlightRecording=disk=true,maxage=2h,settings=profile}}) để khi sự cố có {{ObjectAllocationSample}}.
+- Code review: cấm {{BodyHandlers.ofByteArray()}}, {{ByteString.toByteArray()}}, {{ObjectMapper.readValue(byte[])}}, {{writeValueAsString}} cho payload > 256 KB không có streaming. Yêu cầu {{JsonParser}}/{{InputStream}} cho response lớn.
+
+> Senior tip: Humongous allocation là "kẻ giết G1 thầm lặng" vì app chạy ngon tuần đầu, sập khi traffic tăng hoặc payload lớn hơn một chút. Quy tắc: **mọi byte[]/String lớn từ network (HTTP, gRPC, Kafka, file) phải có giới hạn KHỎNG hoặc streaming**. Khi debug GC log, tìm chuỗi: {{G1 Humongous Allocation}} → {{To-space exhausted}} → {{Pause Full}} và so sánh {{Humongous regions}} trước/sau Full GC — nếu humongous không giảm sau Full GC nhưng giảm mạnh ở young GC sau khi tải hết, đó là humongous còn sống do request giữ, không phải leak. Cách chữa bền: streaming parser, giới hạn kích thước, bulkhead; tăng RegionSize/heap chỉ là đòn giảm đau.`,
+    rubric: [
+      'Giải thích đúng cơ chế: region 2M → ngưỡng 1M, object ≥ ngưỡng cấp phát thẳng Old Gen trên region liên tiếp, ba lần copy (Protobuf toByteArray, Jackson parse, writeValueAsString) mỗi request tạo 3 humongous.',
+      'Dẫn chứng GC log: Humongous regions 124→280→412→520→580→590, To-space exhausted (GC 417), Pause Full ~2s nhưng Humongous regions không giảm (520->520, 580->580, 590->590).',
+      'Chứng minh không leak: GC(423) Humongous regions 590->8, heap 2100M->480M khi traffic giảm; phân biệt humongous sống tạm vs leak.',
+      'Chỉ đúng code gây ra: PaymentClient.java dòng 28/31/34, ba lần copy byte[]/String 3-5 MB; JFR weight 4.2/3.8/3.1 MB khớp.',
+      'Đề xuất có chiều sâu: streaming parser (JsonParser skipChildren) loại bỏ humongous hoàn toàn; bulkhead giới hạn đồng thời; bỏ log response body; giải thích tăng RegionSize/heap chỉ là workaround; alert To-space exhausted / Humongous cause.'
+    ],
+    tags: ['g1', 'humongous', 'full-gc', 'gc-log', 'streaming', 'jackson', 'grpc', 'jdk21', 'jfr']
+  }
 );
