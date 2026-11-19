@@ -9726,4 +9726,341 @@ Ví điện tử 1,2 triệu giao dịch/ngày: đối soát cuối ngày báo 2
   ],
   tags: ['money', 'race-condition', 'idempotency', 'ledger', 'reconciliation', 'database-constraint']
 },
+{
+  id: 'scenario-160',
+  topic: 'scenario',
+  level: 'senior',
+  q: 'Giờ mở cửa phiên ATO (Auto Trading Order), latency đặt lệnh tăng 10 lần so với bình thường. Bạn điều tra và xử lý thế nào?',
+  a: `**Tóm tắt:** Lưu lượng đỉnh đánh trúng điểm yếu — thread pool, connection pool, lock contention, hoặc cold start. Thứ tự điều tra: đo latency breakdown (network, serialization, business logic, DB), so sánh flame graph trước/sau, tìm bottleneck (thread pool exhaustion, DB connection pool, lock hot key, GC pause), sau đó scale/optimize đúng chỗ.
+ 
+### Hiểu nhanh
+Phiên ATO giống "cổng thu phí giờ cao điểm": mọi xe (request) cùng đến lúc. Nếu có 10 làn (thread) nhưng 1000 xe đến cùng lúc, 990 xe phải xếp hàng. Nếu lúc này hệ thống còn phải "mở cửa sổ" mới (lazy init, cold start), hoặc "kiểm tra giấy tờ" chậm (DB query thiếu index, lock contention), tắc nghẽn càng tồi tệ.
+ 
+### Thuật ngữ
+- **ATO (Auto Trading Order)**: khớp lệnh tự động, thường dùng ở sàn giao dịch chứng khoán/crypto.
+- **Thread pool exhaustion**: hết thread xử lý request, request mới bị queue hoặc reject.
+- **Lock contention**: nhiều thread cùng tranh lock (DB row lock, Java synchronized, Redis lock) gây chờ.
+- **Cold start / lazy init**: lần đầu chạy code path chưa được JIT compile, class loading, cache warm-up.
+- **Flame graph**: biểu đồ hiển thị CPU time theo call stack, giúp tìm "hot path".
+ 
+### Triệu chứng và số liệu
+- Bình thường: p99 latency 15ms, throughput 5.000 req/s.
+- Giờ mở cửa ATO (09:00:00–09:00:30): p99 latency 180ms (tăng 12 lần), error rate 0.5% (timeout), CPU 85%, thread pool active 200/200, DB connection pool 50/50.
+- Log: nhiều {{RejectedExecutionException}} từ thread pool queue đầy, {{SQLTransientConnectionException}} (HikariCP pool exhausted).
+ 
+### Giả thuyết và cách xác minh
+1. **Thread pool exhaustion**. Xác minh: metric {{tomcat.threads.active}} đạt max, queue size tăng vọt. Flame graph cho thấy CPU time chủ yếu ở {{ThreadPoolExecutor.getTask()}} — thread chờ việc.
+2. **DB connection pool exhausted**. Xác minh: HikariCP {{active=50/50}}, {{pending>0}}. Kiểm tra {{pg_stat_activity}}: nhiều query {{SELECT ... FOR UPDATE}} trên cùng một tài khoản nóng (hot key).
+3. **Lock contention (DB row lock / Java lock)**. Xác minh: flame graph có nhiều {{LOCK}}/{{PARK}} tại {{ReentrantLock.lock()}} hoặc {{SELECT ... FOR UPDATE}}. {{jstack}} cho thấy nhiều thread {{BLOCKED}} trên cùng monitor.
+4. **Cold start / JIT warm-up**. Xác minh: request đầu tiên sau deploy chậm 50ms, sau đó ổn định 15ms. Giờ ATO traffic bùng đột ngột, code path chưa được JIT compile đủ (tiered compilation).
+5. **GC pause**. Xác minh: GC log cho thấy Full GC 200ms trùng với spike latency.
+ 
+### Cơ chế từng bước
+1. **Request đến**: Tomcat nhận request, submit vào thread pool.
+2. **Thread pool full**: request vào queue (có giới hạn). Queue đầy → {{RejectedExecutionException}} → 503.
+3. **Thread lấy request**: deserialize JSON, validation, gọi business logic.
+4. **Business logic**: lấy DB connection từ HikariCP → pool exhausted → chờ {{connectionTimeout}} (30s default).
+5. **DB query**: {{SELECT ... FOR UPDATE}} trên tài khoản nóng → row lock → thread chờ lock release.
+6. **Serialize response**: Jackson serialize object lớn → CPU spike.
+7. **GC**: allocation rate cao lúc peak → young GC thường xuyên, có thể trigger Full GC.
+ 
+### Giải pháp
+- **Ngắn hạn (trước phiên ATO tới)**:
+  - Tăng thread pool size (Tomcat {{maxThreads}}) và queue size, nhưng phải cân nhắc CPU/memory.
+  - Tăng HikariCP {{maximumPoolSize}} (tính: {{connections = (core_count * 2) + effective_spindle_count}} làm baseline, đo thực tế).
+  - Warm-up cache và JIT trước giờ ATO: chạy script warm-up gọi các endpoint quan trọng với traffic giả lập.
+  - Pre-load class: {{-XX:CompileThreshold=1000}} hoặc dùng AppCDS (Application Class Data Sharing).
+- **Trung hạn**:
+  - Tách hot path: dùng async processing cho non-critical path (gửi email, log audit), giữ sync chỉ cho core matching.
+  - Sharding hot key: chia tài khoản nóng thành nhiều partition, giảm lock contention.
+  - Read replica cho query đọc (market data, account info), primary chỉ cho write (place order).
+  - Optimistic locking thay pessimistic locking cho các case ít conflict.
+- **Dài hạn**:
+  - Architecture: event-driven, CQRS, tách biệt read/write model.
+  - Load test định kỳ ở 2x peak traffic, đo p99/p999.
+  - Canary deployment cho thay đổi core matching engine.
+ 
+### Trade-off & pitfall
+- Tăng pool size vô tội vạ → context switching overhead, CPU contention, DB overload.
+- Warm-up script nếu không mô phỏng đúng traffic shape (burst, hot key distribution) thì vô hiệu.
+- Sharding key phải thiết kế sao cho related orders cùng shard (để giữ consistency) nhưng phân tán đều load.
+- Optimistic locking có retry storm khi conflict rate cao — cần backoff + max retry.
+ 
+### Ví dụ đời thực
+Sàn giao dịch crypto 500k user, phiên ATO 09:00 hàng ngày. Lúc 09:00:00 traffic từ 1k req/s nhảy lên 50k req/s trong 10 giây. Hệ thống: 10 pod, mỗi pod Tomcat 200 threads, HikariCP 20 connections. Kết quả: 09:00:00–09:00:30 p99 180ms, 2% request timeout.
+Điều tra: (1) Flame graph (async-profiler) cho thấy 40% CPU ở {{ThreadPark}} (chờ DB connection), 30% ở {{SELECT FOR UPDATE}} trên bảng {{accounts}} (hot key: 10 tài khoản chiếm 80% volume). (2) HikariCP exhausted vì connection bị giữ lâu ở row lock.
+Sửa: (1) Tăng HikariCP 20→50, Tomcat threads 200→400. (2) Warm-up 5 phút trước giờ ATO: chạy 10k request giả lập. (3) Chia tài khoản nóng: 10 tài khoản top volume tách sang DB shard riêng, dùng optimistic locking ({{version}} column) cho {{UPDATE accounts SET balance = balance - ? WHERE id = ? AND version = ?}}). (4) Tách read path: market data query đọc từ read replica.
+Kết quả phiên ATO sau: p99 22ms, 0% timeout, CPU ổn định 45%.
+ 
+### Trả lời mẫu khi phỏng vấn
+"Giờ mở cửa ATO là bài toán burst traffic đánh trúng bottleneck. Tôi điều tra theo thứ tự: đo latency breakdown, flame graph tìm hot path, metric thread pool/connection pool/GC. Nguyên nhân hay gặp: thread pool exhaustion, DB connection pool exhausted, lock contention trên hot key, cold start/JIT chưa kịp compile, GC pause. Giải pháp ngắn hạn: tăng pool size, warm-up cache/JIT trước giờ ATO. Trung hạn: sharding hot key, optimistic locking, tách read replica. Dài hạn: event-driven architecture, CQRS, load test 2x peak. Quan trọng là đo trước khi sửa — tôi từng thấy team tăng thread pool từ 200 lên 1000 mà latency tăng vì context switching, còn DB vẫn exhausted."
+ 
+> Senior tip: luôn có "ATO readiness checklist" chạy tự động 10 phút trước giờ: warm-up done, pool size ok, read replica lag < 1s, no deployment trong 30 phút, alert threshold p99 < 50ms. Nếu checklist fail thì delay ATO hoặc scale trước.
+`,
+  follow: [
+    'Warm-up script thiết kế thế nào để mô phỏng đúng burst shape và hot key distribution?',
+    'Khi nào chọn optimistic locking thay vì pessimistic locking cho matching engine?',
+    'Làm sao đo JIT compilation status của hot path trong production?'
+  ],
+  tags: ['ATO', 'burst-traffic', 'thread-pool', 'connection-pool', 'lock-contention', 'warm-up', 'flame-graph']
+},
+{
+  id: 'scenario-161',
+  topic: 'scenario',
+  level: 'senior',
+  q: 'Sau khi deploy version mới, consumer lag Kafka tăng liên tục và không bao giờ giảm. Bạn điều tra và xử lý thế nào?',
+  a: `**Tóm tắt:** Consumer lag tăng sau deploy nghĩa là throughput xử lý < throughput sản sinh. Nguyên nhân: code mới chậm hơn (logic phức tạp, query N+1, lock contention), rebalance storm, partition assignment lệch, hoặc downstream dependency chậm. Điều tra: so sánh consumer metrics trước/sau, kiểm tra processing time per record, rebalance frequency, downstream latency.
+ 
+### Hiểu nhanh
+Kafka consumer giống "người dọn băng tải": hàng (message) chạy trên băng, người dọn phải kịp lấy. Nếu người dọn đột ngờ chậm lại (code mới phức tạp), hoặc bị đổi chỗ liên tục (rebalance), hoặc máy xay thịt downstream (DB, API) kẹt, thì hàng sẽ chồng chất (lag tăng).
+ 
+### Thuật ngữ
+- **Consumer lag**: {{latest_offset - current_offset}} — số message chưa xử lý.
+- **Rebalance**: consumer group phân chia lại partition khi member join/leave.
+- **Rebalance storm**: rebalance liên tục do {{max.poll.interval.ms}} quá nhỏ hoặc processing time quá dài.
+- **Partition assignment**: chiến lược gán partition cho consumer (Range, RoundRobin, Cooperative Sticky).
+- **Processing time per record**: trung bình thời gian xử lý một message.
+ 
+### Triệu chứng và số liệu
+- Trước deploy: lag ~0, processing time 5ms/record, throughput 10k msg/s.
+- Sau deploy: lag tăng 50k/h, processing time 50ms/record (tăng 10x), rebalance mỗi 2 phút, consumer throughput 1k msg/s.
+- Log: {{Revoking previously assigned partitions}}, {{Joining group}}, {{SyncGroup}} lặp lại.
+- Downstream (DB/API): latency p99 tăng từ 20ms lên 500ms.
+ 
+### Giả thuyết và cách xác minh
+1. **Code mới chậm hơn (logic/query)**. Xác minh: flame graph production (async-profiler) so sánh trước/sau. Tìm hot path: query N+1, lock contention, serialization chậm, regex catastrophic backtracking.
+2. **Rebalance storm**. Xác minh: consumer logs có rebalance liên tục. Kiểm tra {{max.poll.interval.ms}} (default 5 phút) vs processing time thực tế. Nếu batch xử lý 1000 record × 50ms = 50s > 5m thì OK, nhưng nếu GC pause dài hoặc downstream timeout làm processing time spike thì rebalance.
+3. **Partition assignment lệch**. Xác minh: metric {{consumer.assignments}} — một consumer nhận 8 partition, 5 consumer nhận 1 partition. Dùng {{CooperativeStickyAssignor}} thay {{RangeAssignor}}.
+4. **Downstream dependency chậm**. Xác minh: trace consumer → downstream API/DB. Kiểm tra connection pool, thread pool của downstream.
+5. **Deserialization schema evolution**. Xác minh: log deserialization error rate, schema registry compatibility.
+6. **Consumer instance bị OOM/crash loop**. Xác minh: pod restart count, OOMKilled, heap dump.
+ 
+### Cơ chế từng bước
+1. **Producer gửi message** → Kafka broker append log.
+2. **Consumer poll()** → fetch batch records (theo {{max.poll.records}}, {{fetch.max.bytes}}).
+3. **Deserialize** → Avro/Protobuf/JSON deserialize.
+4. **Business logic** → xử lý, gọi DB, gọi API downstream.
+5. **Commit offset** → sync/async commit.
+6. **Nếu processing time > max.poll.interval.ms** → consumer bị coi là dead → leave group → rebalance.
+7. **Rebalance** → revoke partition → join group → sync assignment → resume từ offset đã commit.
+8. **Trong lúc rebalance** → không xử lý message → lag tăng.
+ 
+### Giải pháp
+- **Ngắn hạn (rollback/hotfix)**:
+  - Rollback về version cũ nếu không xác định được root cause trong 15 phút.
+  - Tăng {{max.poll.interval.ms}} (vd 15 phút) và {{max.poll.records}} giảm (vd 100) để tránh rebalance.
+  - Tăng consumer instances (scale horizontal) nếu partition count cho phép.
+- **Trung hạn (fix code)**:
+  - Optimize hot path: fix N+1 query, thêm index, batch DB write, async non-critical work.
+  - Dùng {{CooperativeStickyAssignor}} (Kafka 2.4+) để giảm rebalance impact.
+  - Circuit breaker cho downstream: fail fast thay vì block thread pool.
+  - Idempotent processing + exactly-once semantics (transactional producer + consumer).
+- **Dài hạn**:
+  - Canary deployment: deploy 10% consumer trước, so sánh lag/processing time 30 phút.
+  - Load test consumer với production-like traffic shape trước release.
+  - Monitoring: alert lag > threshold, rebalance frequency > 1/h, processing time p99 > budget.
+ 
+### Trade-off & pitfall
+- Tăng {{max.poll.records}} giảm overhead poll nhưng tăng processing time per batch → risk rebalance.
+- Scale consumer instances > partition count → consumer idle, lãng phí resource.
+- Circuit breaker mở → message đi DLQ → cần retry mechanism cho DLQ.
+- Exactly-once tăng latency (transactional overhead) — chỉ dùng khi business yêu cầu.
+ 
+### Ví dụ đời thực
+Hệ thống thanh toán: consumer {{payment-processor}} xử lý topic {{payment-events}} (12 partition, 6 consumer). Deploy version 2.3.0 thêm feature "tự động hoàn tiền khi timeout". Sau deploy: lag từ 0 tăng 80k/h, p99 latency 20ms→800ms.
+Điều tra: (1) Flame graph: 60% CPU ở {{Hibernate: select ... from refund_policy where payment_id = ?}} — N+1 query trong loop 1000 records. (2) Consumer logs: rebalance mỗi 3 phút. Config {{max.poll.interval.ms=60000}} (60s, set thấp để fail-fast), batch {{max.poll.records=500}}, N+1 query + downstream refund API p99 500ms khiến processing time ~300s/batch > 60s → rebalance. (3) Downstream refund API p99 500ms.
+Sửa: (1) Fix N+1: {{@EntityGraph}} + batch load refund policy. (2) Bỏ sync call, dùng async CompletableFuture với timeout cho refund API. (3) Tăng {{max.poll.interval.ms=15m}}, giảm {{max.poll.records=200}}. (4) Thêm circuit breaker cho refund API. (5) Canary deploy 1 consumer 30 phút.
+Kết quả: processing time 50ms→8ms, lag về 0, không rebalance.
+ 
+### Trả lời mẫu khi phỏng vấn
+"Consumer lag tăng sau deploy nghĩa là consumer xử lý không kịp producer. Tôi so sánh metrics trước/sau: processing time per record, rebalance frequency, downstream latency, consumer throughput. Nguyên nhân hay gặp: code mới chậm (N+1 query, lock contention, serialization), rebalance storm do processing time vượt {{max.poll.interval.ms}}, partition assignment lệch, downstream chậm. Giải pháp: rollback nếu chưa tìm ra root cause 15 phút; hotfix tăng {{max.poll.interval.ms}}, giảm batch size; fix code: optimize query, batch processing, circuit breaker; dùng CooperativeStickyAssignor; canary deploy consumer. Quan trọng: luôn có alert lag, rebalance frequency, processing time p99."
+ 
+> Senior tip: consumer lag là "cảnh báo sớm" tốt nhất cho deploy sai. Tôi luôn đặt alert: lag > 10k hoặc tăng > 1k/5m thì page on-call. Và deploy consumer luôn canary 1 instance trước, so sánh processing time/lag 30 phút mới rollout toàn bộ.
+`,
+  follow: [
+    'Làm sao thiết kế canary deploy cho Kafka consumer (không có request/response như web)?',
+    'Khi nào dùng exactly-once semantics cho consumer, overhead bao nhiêu?',
+    'Rebalance storm do GC pause: làm sao giảm thiểu?'
+  ],
+  tags: ['Kafka', 'consumer-lag', 'rebalance', 'deploy', 'processing-time', 'canary', 'CooperativeStickyAssignor']
+},
+{
+  id: 'scenario-162',
+  topic: 'scenario',
+  level: 'senior',
+  q: 'DB CPU đột ngột 95% do một query mới được deploy. Bạn điều tra, mitigate và fix thế nào?',
+  a: `**Tóm tắt:** Query mới gây CPU spike thường do: missing index (Seq Scan), bad plan (stats cũ), Cartesian product, expensive sort/hash aggregate, hoặc recursive CTE runaway. Mitigate ngay: cancel query, increase statement_timeout, add index CONCURRENTLY, hoặc disable feature flag. Fix gốc: EXPLAIN ANALYZE, rewrite query, update statistics, partition.
+ 
+### Hiểu nhanh
+DB CPU 95% giống "xe hơi chạy ga tối đa nhưng không tiến": engine (CPU) bùng nổ nhưng bánh xe (I/O) không quay. Query mới như một người lái mới bấm ga sâu trên đường đèo — nếu không có index (bản đồ), DB phải scan toàn bộ bảng (đi mòn từng mét) thay vì nhảy thẳng đến đích.
+ 
+### Thuật ngữ
+- **Seq Scan (Sequential Scan)**: đọc toàn bộ bảng tuần tự, không dùng index.
+- **Index Scan / Bitmap Index Scan**: dùng index để nhảy đến row cần thiết.
+- **Nested Loop / Hash Join / Merge Join**: thuật toán join bảng.
+- **Sort / Hash Aggregate**: sắp xếp hoặc nhóm dữ liệu trong memory/disk.
+- **EXPLAIN ANALYZE BUFFERS**: hiển thị execution plan thực tế với timing và I/O.
+- **Statement timeout**: giới hạn thời gian chạy một query.
+ 
+### Triệu chứng và số liệu
+- Trước deploy: DB CPU 30%, p99 query 50ms.
+- Sau deploy (10:00): DB CPU 95% trong 5 phút, p99 query 5s, connection pool exhausted, application timeout tăng.
+- {{pg_stat_activity}}: 50 session chạy cùng một query {{SELECT ... FROM orders JOIN order_items ... GROUP BY ... ORDER BY ... LIMIT 100}}.
+- {{EXPLAIN ANALYZE}}: Seq Scan trên {{orders}} (50M rows), Hash Join {{order_items}} (200M rows), Sort 50M rows (spill to disk 2GB), total time 45s.
+- Query mới: feature "top selling products last 7 days" cho dashboard admin.
+ 
+### Giả thuyết và cách xác minh
+1. **Missing index**. Xác minh: {{EXPLAIN ANALYZE}} cho thấy Seq Scan + Filter remove 49.9M rows. Index trên {{orders.created_at}} hoặc composite {{(created_at, status)}} sẽ giúp.
+2. **Bad plan do stats cũ**. Xác minh: {{pg_stat_clear_snapshot()}} → {{ANALYZE orders}} → re-run EXPLAIN, plan thay đổi từ Hash Join sang Nested Loop với Index Scan.
+3. **Cartesian product / missing join condition**. Xác minh: EXPLAIN rows estimate >> actual rows, hoặc Join type {{Nested Loop}} với giant outer table.
+4. **Expensive Sort/HashAgg spill to disk**. Xác minh: EXPLAIN {{Sort Method: external merge Disk: 2048MB}}. Fix: index hỗ trợ ORDER BY, hoặc LIMIT pushdown.
+5. **Recursive CTE runaway**. Xác minh: query có {{WITH RECURSIVE}} không có termination condition đúng, rows explosion.
+ 
+### Cơ chế từng bước
+1. **Deploy code mới** → feature flag bật query mới.
+2. **Traffic đến** → 100 concurrent request chạy query mới.
+3. **Query execution**: Seq Scan 50M rows → Hash Join 200M rows → Sort 50M rows (spill disk) → CPU 100% trên nhiều core.
+4. **Resource contention**: CPU saturation → context switching overhead → mọi query khác cũng chậm.
+5. **Connection pool exhausted**: query chạy 45s, connection giữ lâu → HikariCP exhausted → app timeout → retry → load gấp đôi.
+6. **Cascade failure**: DB CPU 95% → replication lag tăng → read replica stale → read traffic cũng chậm.
+ 
+### Giải pháp
+- **Mitigate ngay (trong 5 phút)**:
+  - {{SELECT pg_cancel_backend(pid)}} cho các query đang chạy (từ {{pg_stat_activity}}).
+  - Tăng {{statement_timeout = '30s'}} cho role application (ngăn query runaway).
+  - Tắt feature flag tắt query mới (nếu có flag) hoặc deploy hotfix comment query.
+  - Nếu query cần thiết: {{CREATE INDEX CONCURRENTLY}} (không block write).
+- **Fix gốc**:
+  - {{EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON)}} để hiểu plan chi tiết.
+  - Thêm index phù hợp: composite index cho WHERE + ORDER BY + JOIN.
+  - {{ANALYZE}} bảng liên quan cập nhật statistics.
+  - Rewrite query: tránh {{SELECT *}}, dùng {{LIMIT}} pushdown, tránh function trên column trong WHERE.
+  - Partition bảng lớn theo thời gian (vd {{orders}} partition by month).
+  - Materialized view cho dashboard query phức tạp, refresh 15 phút.
+- **Prevent**:
+  - CI gate: {{EXPLAIN}} query mới trên staging với data volume tương tự production.
+  - Load test query mới ở 2x expected QPS.
+  - Feature flag bắt buộc cho query mới, rollback tức thì.
+  - Monitoring: alert CPU > 80% > 5m, query duration p99 > 1s, connection pool usage > 80%.
+ 
+### Trade-off & pitfall
+- {{CREATE INDEX CONCURRENTLY}} lâu hơn (3-10x) nhưng không lock write. Nếu cancel giữa chừng → index INVALID, phải drop và tạo lại.
+- {{statement_timeout}} quá thấp có thể kill legitimate long-running query (report, migration).
+- Partition table: query cần {{WHERE partition_key}} để partition pruning, nếu không scan tất cả partition.
+- Materialized view: stale data window, refresh impact trên primary.
+ 
+### Ví dụ đời thực
+E-commerce platform deploy feature "Top 100 sản phẩm bán chạy 7 ngày" cho admin dashboard. Query: {{SELECT p.*, SUM(oi.qty) FROM products p JOIN order_items oi ON p.id = oi.product_id JOIN orders o ON oi.order_id = o.id WHERE o.created_at > now() - interval '7 days' GROUP BY p.id ORDER BY SUM(oi.qty) DESC LIMIT 100}}.
+Sau deploy 10:00: DB CPU 30%→95%, p99 50ms→5s, app error rate 15%. {{EXPLAIN ANALYZE}}: Seq Scan {{orders}} 50M rows (Filter {{created_at}} remove 45M), Hash Join {{order_items}} 200M rows, Sort 500k rows spill 2GB disk.
+Mitigate: 10:05 cancel query, 10:07 disable feature flag. 10:15 {{CREATE INDEX CONCURRENTLY ON orders (created_at, status) INCLUDE (id)}} + {{CREATE INDEX ON order_items (order_id, product_id)}}. 10:30 enable flag: CPU 35%, p99 80ms.
+Fix gốc: materialized view {{mv_top_products_7d}} refresh 15 phút, dashboard query view này (50 rows, index scan, 5ms). Partition {{orders}} by month, {{order_items}} by order_id hash.
+ 
+### Trả lời mẫu khi phỏng vấn
+"DB CPU 95% do query mới, tôi mitigate ngay: cancel query chạy, tắt feature flag, tăng statement_timeout. Sau đó EXPLAIN ANALYZE tìm root cause: thường là missing index, bad plan do stats cũ, expensive sort/hash join, hoặc Cartesian product. Fix: thêm index CONCURRENTLY, ANALYZE stats, rewrite query (tránh SELECT *, function trên column, LIMIT pushdown), partition table, materialized view cho query phức tạp. Prevent: CI gate chạy EXPLAIN trên staging data volume, load test 2x QPS, feature flag mandatory, alert CPU/connection pool/query duration."
+ 
+> Senior tip: luôn có "query kill switch" — {{pg_cancel_backend}} script sẵn sàng, feature flag cho mọi query mới, và {{statement_timeout}} default 30s cho application role. Tôi từng thấy một query {{SELECT * FROM logs WHERE message LIKE '%error%'}} (không index, Seq Scan 200M rows) làm sập DB 2 giờ vì dev quên tắt feature flag sau khi test xong.
+`,
+  follow: [
+    'Làm sao chạy EXPLAIN ANALYZE an toàn trên production mà không làm chậm hệ thống?',
+    'Khi nào dùng materialized view thay vì index cho query dashboard phức tạp?',
+    'Partition table giúp gì cho query này, và trade-off là gì?'
+  ],
+  tags: ['PostgreSQL', 'CPU-spike', 'EXPLAIN-ANALYZE', 'index', 'materialized-view', 'partition', 'statement-timeout', 'feature-flag']
+},
+{
+  id: 'scenario-163',
+  topic: 'scenario',
+  level: 'senior',
+  q: 'Sau khi rebalance Kafka consumer group, một task bị xử lý 2 lần (duplicate processing). Bạn tìm nguyên nhân và thiết kế idempotent consumer thế nào?',
+  a: `**Tóm tắt:** Duplicate sau rebalance do: commit offset trước khi xử lý xong (at-most-once), hoặc xử lý xong nhưng commit offset thất bại/sau rebalance (at-least-once). Kafka default {{enable.auto.commit=true}} commit theo interval, không đảm bảo xử lý xong. Giải pháp: tắt auto commit, manual commit sau khi xử lý xong + idempotent processing (dedup key + DB unique constraint), hoặc dùng transactional outbox pattern.
+ 
+### Hiểu nhanh
+Rebalance giống "ca làm việc đổi người": người A đang dọn dẹp (xử lý message) thì ca kết thúc, người B tiếp nhận. Nếu người A chưa kịp ghi "đã dọn xong" (commit offset) thì người B sẽ dọn lại. Hoặc người A dọn xong nhưng sổ ghi chép (offset commit) bị rơi, người B cũng dọn lại. Cách khắc phục: người A phải dọn xong MỚI ghi sổ, VÀ việc dọn phải làm 2 lần cũng không sao (idempotent).
+ 
+### Thuật ngữ
+- **Rebalance**: consumer group phân chia lại partition khi member join/leave/crash.
+- **Offset commit**: ghi nhận vị trí đã xử lý đến đâu.
+- **Auto commit**: Kafka tự commit offset theo {{auto.commit.interval.ms}} (default 5s), không quan tâm xử lý xong chưa.
+- **Manual commit**: {{commitSync()}} / {{commitAsync()}} do code gọi sau khi xử lý xong.
+- **At-least-once**: message có thể xử lý ≥ 1 lần (mặc định Kafka).
+- **Exactly-once**: message xử lý đúng 1 lần (cần idempotent + transactional).
+- **Idempotent processing**: xử lý lại nhiều lần cho cùng kết quả.
+ 
+### Triệu chứng và số liệu
+- Topic {{order-events}}, 12 partition, 6 consumer.
+- Deploy/scale/restart → rebalance → 0.1% message duplicate (xác nhận bằng DB unique constraint violation hoặc business logic detect).
+- Log consumer: {{Revoking partition 3}}, {{Assigning partition 3 to consumer-2}}.
+- Processing time per message: 200ms. Auto commit interval: 5s.
+- Số message trong 5s window: ~250 message/partition. Nếu rebalance xảy ra giữa window, đến 250 message có thể duplicate.
+ 
+### Giả thuyết và cách xác minh
+1. **Auto commit + rebalance**. Xác minh: config {{enable.auto.commit=true}}. Rebalance xảy ra giữa 2 auto commit → message đã poll nhưng chưa xử lý xong bị commit offset → sau rebalance consumer mới không nhận lại → **message loss** (không phải duplicate). Duplicate xảy ra khi: message xử lý xong, nhưng commit offset CHƯA kịp chạy trước rebalance → consumer mới poll lại từ offset cũ → duplicate. Xác minh: bật debug log {{offset commit}}, so sánh timestamp commit vs rebalance.
+2. **Processing time > max.poll.interval.ms**. Xác minh: processing 200ms, batch 500 records = 100s > 5 phút (default) → không phải. Nhưng nếu GC pause 10s + processing → có thể trigger rebalance.
+3. **Downstream idempotent key missing**. Xác minh: DB error {{Duplicate key 'order_id'}} hoặc business logic detect duplicate.
+4. **Transactional outbox missing**. Xác minh: code pattern: xử lý message → write DB → commit offset. Nếu crash giữa write DB và commit offset → duplicate.
+ 
+### Cơ chế từng bước (duplicate scenario)
+1. Consumer poll batch 500 message (offset 1000-1499).
+2. Xử lý message 1000: write DB (order created).
+3. Xử lý message 1001: write DB (order created).
+4. **Rebalance triggered** (consumer crash, deploy, scale, GC pause).
+5. Offset chưa commit (auto commit interval 5s, mới chạy 2s).
+6. Consumer mới assign partition, resume từ offset 1000 (last committed).
+7. Xử lý lại message 1000, 1001 → duplicate DB write.
+ 
+### Giải pháp
+- **Cấp độ 1: Manual commit + Idempotent processing (khuyên dùng)**:
+  ~~~java
+  @KafkaListener(topics = "order-events")
+  public void handle(ConsumerRecord<String, OrderEvent> record) {
+      try {
+          // Idempotent: dedup key = eventId, DB unique constraint
+          orderService.processIdempotent(record.value());
+          // Manual commit SAU KHI xử lý xong
+          consumer.commitSync(Collections.singletonMap(
+              new TopicPartition(record.topic(), record.partition()),
+              new OffsetAndMetadata(record.offset() + 1)
+          ));
+      } catch (Exception e) {
+          // Không commit, log error, DLQ nếu cần
+          throw e;
+      }
+  }
+  // Config: enable.auto.commit=false
+  ~~~
+- **Cấp độ 2: Transactional outbox (exactly-once)**:
+  - Consumer: trong cùng DB transaction: write business data + write outbox event + write offset vào bảng {{consumer_offset}} (hoặc dùng Kafka transactional producer gửi ra topic khác).
+  - Hoặc: Kafka Transactions ({{producer.initTransactions()}}, {{sendOffsetsToTransaction()}}) — phức tạp hơn, cần idempotent producer.
+- **Cấp độ 3: Deduplication ở downstream**:
+  - Mọi event có {{eventId}} unique (UUID từ producer).
+  - DB table {{processed_events (event_id PK, processed_at)}}.
+  - {{INSERT INTO processed_events (event_id) VALUES (?) ON CONFLICT DO NOTHING}}.
+  - Nếu insert thành công (row count 1) → xử lý business logic.
+  - Nếu conflict (row count 0) → skip, đã xử lý.
+ 
+### Trade-off & pitfall
+- Manual commit: commitSync block, chậm; commitAsync nhanh nhưng có thể lose offset nếu crash trước khi callback — cần retry logic.
+- Idempotent key: phải là business key (orderId, paymentId) hoặc technical key (eventId từ producer). Producer PHẢI generate eventId.
+- DB unique constraint: là safety net cuối cùng. Dù code có bug, DB chặn duplicate.
+- Exactly-once Kafka Transactions: overhead latency, complexity, chỉ dùng khi business bắt buộc (tiền, ledger).
+- Rebalance listener: {{onPartitionsRevoked}} có thể dùng để flush pending, nhưng không đảm bảo atomic với offset commit.
+ 
+### Ví dụ đời thực
+Hệ thống đơn hàng: consumer {{order-processor}} xử lý {{order-events}}. Sau deploy rolling restart, 0.1% đơn bị tạo 2 lần (customer complaint "đơn trùng").
+Root cause: config {{enable.auto.commit=true}} (default), {{auto.commit.interval.ms=5000}}. Rolling restart: pod old shutdown → rebalance → pod new assign partition. Message đã poll (offset 1000-1499) xử lý xong 200 message, nhưng offset chưa commit (chưa đến 5s). Pod new resume từ offset 1000 → duplicate 200 message.
+Fix: (1) {{enable.auto.commit=false}}. (2) Manual {{commitSync()}} sau {{orderService.processIdempotent()}}. (3) {{processIdempotent}}: {{INSERT INTO processed_events (event_id) VALUES (?) ON CONFLICT DO NOTHING}} → nếu conflict return early. (4) Producer thêm {{eventId}} UUID vào mọi event. (5) Test: kill consumer giữa chừng processing, verify không duplicate.
+Kết quả: rolling restart 10 lần, 0 duplicate. Processing time tăng ~2ms (DB insert dedup check), acceptable.
+ 
+### Trả lời mẫu khi phỏng vấn
+"Duplicate sau rebalance do offset commit không sync với xử lý xong. Kafka default auto commit 5s, nếu rebalance xảy ra giữa chừng thì message đã xử lý nhưng chưa commit offset → consumer mới xử lý lại. Giải pháp 3 lớp: (1) Tắt auto commit, manual commitSync SAU KHI xử lý xong. (2) Idempotent processing: mọi event có eventId, DB unique constraint ON CONFLICT DO NOTHING, check trước khi xử lý business logic. (3) Nếu cần exactly-once chặt: transactional outbox hoặc Kafka Transactions. Producer PHẢI generate eventId. Test: kill consumer giữa chừng, verify không duplicate."
+ 
+> Senior tip: idempotent key nên là business key (orderId, paymentId) chứ không chỉ eventId, vì business logic thường dedup theo business key. Và DB unique constraint là "lưới an toàn cuối cùng" — dù code có bug gì, duplicate không thể viết vào DB.
+`,
+  follow: [
+    'Manual commitSync vs commitAsync: trade-off latency vs safety, khi nào dùng cái nào?',
+    'Kafka Transactions (exactly-once) overhead bao nhiêu, khi nào xứng đáng dùng?',
+    'Nếu producer KHÔNG generate eventId (legacy), làm sao dedup ở consumer?'
+  ],
+  tags: ['Kafka', 'rebalance', 'duplicate', 'idempotent', 'manual-commit', 'exactly-once', 'outbox']
+},
 );
