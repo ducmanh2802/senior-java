@@ -8104,5 +8104,465 @@ Câu hỏi kinh điển: "at-most-once, at-least-once, exactly-once khác nhau t
 > Senior tip: Đừng bao giờ commit offset trước khi xử lý xong — đó là nguyên nhân số 1 mất dữ liệu trong Kafka consumer. Và nhớ rằng "xử lý lại" là bình thường trong at-least-once; thiết kế idempotent từ đầu (unique constraint DB) thay vì cố gắng "không bao giờ xử lý lại".`,
   related: ['microservices-009', 'microservices-031', 'microservices-022'],
   tags: ['Kafka', 'offset commit', 'at-least-once', 'idempotency', 'rebalance', 'data loss']
+},
+{
+  id: 'bug-043',
+  title: 'Cache trả dữ liệu cũ sau khi cập nhật DB: xóa cache race với đọc đang xử lý',
+  domain: 'Cache / Cửa hàng sản phẩm',
+  level: 'senior',
+  severity: 'P1',
+  minutes: 25,
+  story: `**Bối cảnh dự án:** Service {{ProductService}} quản lý giá sản phẩm. Đọc giá dùng cache (mô phỏng Redis bằng Map), ghi giá cập nhật DB rồi xóa cache. Cache có TTL 60 giây.
+**Sự cố:** Khách hàng A xem giá sản phẩm {{P-1001}} (cache miss, đọc DB thấy 100.000). Đồng thời admin cập nhật giá thành 200.000: cập nhật DB xong rồi xóa cache. Nhưng request đọc của A đang ở giữa chừng, sau khi đọc DB xong thì **ghi giá cũ 100.000 vào cache**. Kết quả: cache đang có 100.000 bất chấp DB đã 200.000. Nhiều lượt khách tiếp theo thấy giá cũ, đặt hàng dưới giá thực. Kiểm toán phát hiện chênh lệch doanh thu 45 triệu trong một ngày.
+**Nhiệm vụ của bạn:**
+1. Đọc code {{ProductService.getPrice}} và {{setPrice}}, tìm vì sao giá cũ lại về lại cache sau khi đã xóa.
+2. Sửa để: đọc chỉ ghi vào cache khi phiên bản sản phẩm chưa đổi; ghi cập nhật DB tăng phiên bản rồi xóa cache; cache có TTL ngắn làm phòng tuyến cuối cùng.
+3. Test mô phỏng race xác định bằng latch: đọc choke ở giữa (sau khi đọc DB, trước khi ghi cache), ghi mới xong rồi đọc tiếp → cache không được chứa giá cũ.`,
+  artifacts: [
+    { name: 'product-service.log', lang: 'text', content: `2026-11-26 10:15:02.301 INFO  ProductService : getPrice P-1001 cache=MISS db=100000
+2026-11-26 10:15:02.310 INFO  AdminService : setPrice P-1001 100000 -> 200000 (db updated)
+2026-11-26 10:15:02.312 INFO  AdminService : cache evicted P-1001
+2026-11-26 10:15:02.315 INFO  ProductService : put cache P-1001 = 100000 (stale, read before update)
+2026-11-26 10:15:05.100 INFO  ProductService : getPrice P-1001 cache=HIT 100000 (KHÔNG đúng, db=200000)` },
+    { name: 'audit-2026-11-26.txt', lang: 'text', content: `KIỂM TOÁN GIÁ 2026-11-26
+Sản phẩm P-1001: giá DB = 200000, giá cache = 100000
+Đơn hàng dưới giá: 450 đơn × chênh lệch 100000 = 45.000.000
+Nguyên nhân nghi ngờ: race giữa đọc cache và xóa cache sau cập nhật` },
+  ],
+  starter: `// ===== Hạ tầng (mô phỏng DB + cache, KHÔNG cần sửa) =====
+class CacheEntry {
+    final long value;
+    final long expiryMs;
+    CacheEntry(long value, long expiryMs) { this.value = value; this.expiryMs = expiryMs; }
+}
+
+class FakeClock {
+    long millis;
+    FakeClock(long millis) { this.millis = millis; }
+    long millis() { return millis; }
+    void advance(long ms) { millis += ms; }
+}
+
+// ===== Code cần sửa =====
+class ProductService {
+    final Map<String, Long> db = new HashMap<>();
+    final Map<String, CacheEntry> cache = new HashMap<>();
+    final FakeClock clock;
+    final long ttlMs = 60_000;
+    // Test hook: choke đọc giữa khi đọc DB xong và trước khi ghi cache
+    volatile Runnable onBeforePut;
+    ProductService(FakeClock clock) { this.clock = clock; }
+
+    long now() { return clock.millis(); }
+
+    /** Đọc giá sản phẩm. Cache miss thì đọc DB và ghi vào cache. */
+    long getPrice(String id) {
+        long now = now();
+        CacheEntry e = cache.get(id);
+        if (e != null && e.expiryMs > now) return e.value;
+        long price = db.get(id);
+        if (onBeforePut != null) onBeforePut.run();   // choke để test race
+        cache.put(id, new CacheEntry(price, now + ttlMs));  // BUG: không kiểm tra phiên bản
+        return price;
+    }
+
+    /** Cập nhật giá sản phẩm: ghi DB rồi xóa cache. */
+    void setPrice(String id, long price) {
+        db.put(id, price);        // cập nhật DB
+        cache.remove(id);         // xóa cache SAU db (delete-after-commit)
+        // Vẫn không đủ: đọc đang chạy có thể ghi giá cũ về cache sau này
+    }
+}`,
+  tests: `public class Main {
+    static int passed = 0, total = 0;
+    static void check(String name, boolean ok, String detail) {
+        total++;
+        if (ok) { passed++; System.out.println("PASS " + name); }
+        else System.out.println("FAIL " + name + ": " + detail);
+    }
+
+    public static void main(String[] args) throws Exception {
+        // 1. Cập nhật rồi đọc: phải thấy giá mới
+        FakeClock c1 = new FakeClock(0);
+        ProductService s1 = new ProductService(c1);
+        s1.db.put("P-1", 100L);
+        s1.setPrice("P-1", 200L);
+        check("doc_sau_cap_nhat", s1.getPrice("P-1") == 200L,
+            "sau setPrice 200, getPrice phải trả 200, thực tế " + s1.getPrice("P-1"));
+
+        // 2. Đọc lần 2 từ cache: không đọc lại DB
+        FakeClock c2 = new FakeClock(0);
+        ProductService s2 = new ProductService(c2);
+        s2.db.put("P-2", 100L);
+        long first = s2.getPrice("P-2");
+        s2.db.put("P-2", 999L);   // thay DB, cache chưa xóa
+        long second = s2.getPrice("P-2");
+        check("doc_lan_2_lay_cache", first == 100L && second == 100L,
+            "lần 2 phải lấy từ cache = 100, thực tế first=" + first + " second=" + second);
+
+        // 3. Race: đọc choke giữa đọc DB và ghi cache, ghi mới xong rồi đọc tiếp
+        FakeClock c3 = new FakeClock(0);
+        ProductService s3 = new ProductService(c3);
+        s3.db.put("P-3", 100L);
+        CountDownLatch gate = new CountDownLatch(1);
+        final long[] result = new long[1];
+        s3.onBeforePut = () -> { try { gate.await(); } catch (InterruptedException e) { Thread.currentThread().interrupt(); } };
+        Thread reader = new Thread(() -> result[0] = s3.getPrice("P-3"));
+        reader.start();
+        Thread.sleep(40);              // chờ reader vào gate
+        s3.setPrice("P-3", 200L);      // ghi mới: db=200, cache xóa
+        gate.countDown();              // giải phóng reader: reader ghi giá cũ 100 vào cache
+        reader.join();
+        long after = s3.getPrice("P-3");  // gọi lại: nếu cache bị lỗi thì trả 100
+        check("race_khong_luu_gia_cu", after == 200L,
+            "sau race, getPrice phải trả 200 (không được chứa giá cũ 100), thực tế " + after);
+
+        // 4. TTL hết hạn: đọc lại từ DB, không giữ cache vĩnh viễn
+        FakeClock c4 = new FakeClock(0);
+        ProductService s4 = new ProductService(c4);
+        s4.db.put("P-4", 100L);
+        s4.getPrice("P-4");            // vào cache, hết hạn sau 60s
+        c4.advance(61_000);            // quá TTL
+        s4.db.put("P-4", 200L);
+        check("ttl_het_han_doc_lai_db", s4.getPrice("P-4") == 200L,
+            "quá TTL phải đọc lại DB = 200, thực tế " + s4.getPrice("P-4"));
+
+        System.out.println("RESULT " + passed + "/" + total);
+    }
+}`,
+  reference: `class CacheEntry {
+    final long value;
+    final long expiryMs;
+    final long version;   // phiên bản DB lúc ghi vào cache
+    CacheEntry(long value, long expiryMs, long version) {
+        this.value = value; this.expiryMs = expiryMs; this.version = version;
+    }
+}
+
+class FakeClock {
+    long millis;
+    FakeClock(long millis) { this.millis = millis; }
+    long millis() { return millis; }
+    void advance(long ms) { millis += ms; }
+}
+
+class ProductService {
+    final Map<String, Long> db = new HashMap<>();
+    final Map<String, Long> dbVersion = new HashMap<>();   // phiên bản mỗi sản phẩm
+    final Map<String, CacheEntry> cache = new HashMap<>();
+    final FakeClock clock;
+    final long ttlMs = 60_000;
+    volatile Runnable onBeforePut;
+    ProductService(FakeClock clock) { this.clock = clock; }
+
+    long now() { return clock.millis(); }
+
+    long getPrice(String id) {
+        long now = now();
+        CacheEntry e = cache.get(id);
+        long ver = dbVersion.getOrDefault(id, 0L);
+        if (e != null && e.expiryMs > now && e.version == ver) return e.value;
+        long price = db.get(id);
+        long readVer = dbVersion.getOrDefault(id, 0L);
+        if (onBeforePut != null) onBeforePut.run();
+        long curVer = dbVersion.getOrDefault(id, 0L);
+        // Chỉ ghi cache nếu phiên bản không đổi giữa khi đọc và khi ghi
+        if (curVer == readVer) {
+            cache.put(id, new CacheEntry(price, now + ttlMs, curVer));
+        }
+        return price;
+    }
+
+    void setPrice(String id, long price) {
+        db.put(id, price);
+        long v = dbVersion.getOrDefault(id, 0L);
+        dbVersion.put(id, v + 1);     // tăng phiên bản
+        cache.remove(id);             // xóa cache sau khi db đã đổi
+    }
+}`,
+  hints: [
+    'Nhìn log: đọc P-1001 thấy 100000, rồi admin cập nhật 200000 và xóa cache, nhưng đọc cũ lại ghi 100000 về cache sau đó.',
+    'Xóa cache sau khi cập nhật DB (delete-after-commit) vẫn không đủ: một luồng đọc đang xử lý có thể ghi giá cũ vào cache sau khi cache đã bị xóa.',
+    'Thêm phiên bản cho mỗi sản phẩm. Đọc ghi vào cache chỉ khi phiên bản DB không đổi giữa hai thời điểm. TTL ngắn làm phòng tuyến cuối cùng.',
+  ],
+  rootCause: `**Race giữa đọc cache và xóa cache.** Luồng đọc A cache-miss, đọc DB thấy {{giá=100000 phiên bản=0}}. Luồng ghi B cập nhật DB thành {{200000 phiên bản=1}} rồi xóa cache. Sau đó A tiếp tục, **ghi {{100000 phiên bản=0}} vào cache** dựa trên dữ liệu đã cũ. Tiếp theo mọi đọc cache-hit đều thấy 100000 bất chấp DB đã 200000. Xóa cache sau commit (delete-after-commit) không ngăn được điều này vì luồng đọc bắt đầu trước khi xóa, nhưng kết thúc sau khi xóa.`,
+  fix: `### Cách sửa trong bài
+Mỗi sản phẩm giữ phiên bản {{dbVersion}}. Đọc giá: lấy phiên bản DB lúc đọc, chỉ ghi vào cache nếu phiên bản DB chưa đổi sau khi đọc xong. Cập nhật giá: tăng phiên bản DB rồi xóa cache.
+~~~java
+long getPrice(String id) {
+    long now = now();
+    CacheEntry e = cache.get(id);
+    long ver = dbVersion.getOrDefault(id, 0L);
+    if (e != null && e.expiryMs > now && e.version == ver) return e.value;
+    long price = db.get(id);
+    long readVer = dbVersion.getOrDefault(id, 0L);
+    if (onBeforePut != null) onBeforePut.run();
+    long curVer = dbVersion.getOrDefault(id, 0L);
+    if (curVer == readVer) {
+        cache.put(id, new CacheEntry(price, now + ttlMs, curVer));
+    }
+    return price;
+}
+~~~
+Lợi điểm: nếu có ghi mới xen vào giữa, đọc cũ không ghi vào cache. TTL ngắn (60 giây) đảm bảo giá cuối cùng cũng tự sửa sau một khoảng thời gian ngắn nếu race lách qua.
+
+### Trên production thật (Redis)
+- **Cache-aside đúng đọc**: đọc cache, miss thì đọc DB, ghi cache kèm version/timestamp.
+- **Xóa cache sau khi DB commit** (không phải trước), tránh cửa sổ đọc giá cũ.
+- **Double delete**: xóa cache trước và sau cập nhật, cách nhau vài trăm mili giây, để invalidate bản giá cũ bị ghi lại bởi đọc muộn.
+- **TTL ngắn** làm phòng tuyến cuối cùng: dù race xảy ra, cache cũng tự hết hạn sau vài phút.
+- Dùng Redis WATCH/MULTI hoặc Lua script để atomic hóa kiểm tra version trước khi ghi cache.
+
+### Phòng ngừa
+- Review code tìm mẫu "đọc DB, sau đó ghi cache" không kiểm tra version/timestamp.
+- Giá tiền/tồn kho luôn kèm TTL ngắn và kiểm tra version trước khi ghi cache.
+- Test race phải choke giữa đọc DB và ghi cache (như bài), không chỉ test tuần tự.
+
+### Liên hệ phỏng vấn
+Câu "cache bị dữ liệu cũ sau update" xuất hiện thường. Hãy trả lời theo thứ tự: race condition giữa đọc và xóa cache, tại sao delete-after-commit vẫn không đủ, version/timestamp hoặc double delete, và TTL ngắn là phòng tuyến cuối cùng.
+
+> Senior tip: Không có chiến lược cache-invalidation nào hoàn hảo 100% trong distributed system. Luồng an toàn nhất là TTL ngắn + xóa cache sau commit + version check. Không bao giờ tin cache vĩnh viễn đối với dữ liệu thay đổi.`,
+  related: [],
+  tags: ['cache', 'race condition', 'cache invalidation', 'version', 'TTL', 'Redis', 'stale data']
+},
+{
+  id: 'bug-044',
+  title: 'Nhân viên xử lý đơn lâu hơn thời hạn giao nhiệm vụ: đơn bị nhận lại và xử lý 2 lần',
+  domain: 'Lập lịch nhiệm vụ / Phân phối công việc',
+  level: 'senior',
+  severity: 'P1',
+  minutes: 25,
+  story: `**Bối cảnh dự án:** Hệ thống {{TaskScheduler}} phân phối đơn xử lý cho nhiều nhân viên (worker). Mỗi đơn khi được nhận sẽ có thời hạn giao (lease) 30 giây. Nhân viên xử lý đơn thì phải hoàn thành trước khi hết hạn; nếu hết hạn, đơn về trạng thái mở và nhân viên khác có thể nhận lại.
+**Sự cố:** Đơn {{T-7712}} được nhân viên A nhận vào 10:00:00, hạn đến 10:00:30. Nhiệm vụ gọi API bên ngoài bị chậm, nhân viên A xử lý đến 10:00:35 (vượt hạn 5 giây). Đến 10:00:30, hạn giao hết, đơn về mở. Nhân viên B nhận đơn cùng lúc 10:00:30. Cả A và B cùng hoàn thành đơn → **đơn được xử lý 2 lần**, khách bị trừ tiền 2 lần. Lỗi phát hiện qua đối soát thanh toán.
+**Nhiệm vụ của bạn:**
+1. Đọc code {{Scheduler.claim}} và {{complete}}, tìm vì sao nhân viên A sau khi vượt hạn vẫn có thể hoàn thành, và nhân viên B cũng nhận được đơn.
+2. Sửa để: (a) nhân viên có thể **gia hạn hạn giao** khi đang xử lý (heartbeat); (b) mỗi lần nhận giao nhận một **mã chặn (fencing token)** tăng dần, chỉ nhân viên sở hữu mã mới nhất được phép hoàn thành.
+3. Test bằng đồng hồ giả (Clock): tiến đồng hồ vượt hạn mà không gia hạn → nhân viên khác nhận lại; sau đó nhân viên cũ với mã cũ không được hoàn thành.`,
+  artifacts: [
+    { name: 'task-scheduler.log', lang: 'text', content: `2026-11-27 10:00:00.000 INFO  Scheduler : claim T-7712 by worker-A token=1 leaseUntil=10:00:30
+2026-11-27 10:00:28.000 INFO  Worker-A  : calling external API (slow, ~15s)
+2026-11-27 10:00:30.000 INFO  Scheduler : lease T-7712 EXPIRED (worker-A)
+2026-11-27 10:00:30.500 INFO  Scheduler : claim T-7712 by worker-B token=2 leaseUntil=10:01:00
+2026-11-27 10:00:35.000 INFO  Worker-A  : completed T-7712 token=1   <-- STALE, should be rejected
+2026-11-27 10:00:36.000 INFO  Worker-B  : completed T-7712 token=2
+2026-11-27 10:00:36.500 ERROR Payment : duplicate charge for order T-7712` },
+    { name: 'audit-2026-11-27.txt', lang: 'text', content: `KIỂM TOÁN THANH TOÁN 2026-11-27
+Đơn T-7712: hoàn thành bởi worker-A (token=1) và worker-B (token=2)
+Khách bị trừ tiền 2 lần: 2 × 1.200.000 = 2.400.000
+Nguyên nhân: worker-A xử lý vượt hạn giao, không có heartbeat gia hạn, không có fencing token` },
+  ],
+  starter: `// ===== Hạ tầng (mô phỏng nhân viên + đồng hồ, KHÔNG cần sửa) =====
+class TaskRecord {
+    final String id;
+    String owner;
+    long leaseUntil;
+    long token;
+    String status; // "open" | "completed"
+    TaskRecord(String id) { this.id = id; this.status = "open"; }
+}
+
+class FakeClock {
+    long millis;
+    FakeClock(long millis) { this.millis = millis; }
+    long millis() { return millis; }
+    void advance(long ms) { millis += ms; }
+}
+
+// ===== Code cần sửa =====
+class Scheduler {
+    final Map<String, TaskRecord> tasks = new HashMap<>();
+    final FakeClock clock;
+    final long leaseMs = 30_000;
+    Scheduler(FakeClock clock) { this.clock = clock; }
+    long now() { return clock.millis; }
+
+    /** Nhận đơn: nếu đơn mở hoặc hạn đã hết, gán cho nhân viên và trả token. */
+    Long claim(String taskId, String workerId) {
+        TaskRecord t = tasks.get(taskId);
+        if (t == null) { t = new TaskRecord(taskId); tasks.put(taskId, t); }
+        if (!"open".equals(t.status)) return null;
+        if (t.owner != null && t.leaseUntil > now()) return null;   // vẫn đang giao cho ai đó
+        t.owner = workerId;
+        t.token = (t.token == 0 ? 1 : t.token + 1);
+        t.leaseUntil = now() + leaseMs;
+        return t.token;
+    }
+
+    /** Gia hạn hạn giao (heartbeat). Trong starter: không làm gì. */
+    void renew(String taskId, String workerId, long token) {
+        // BUG: không gia hạn, hết hạn vẫn hết hạn
+    }
+
+    /** Hoàn thành đơn. Trong starter: không kiểm tra token, nên nhân viên cũ vẫn hoàn thành được. */
+    boolean complete(String taskId, String workerId, long token) {
+        TaskRecord t = tasks.get(taskId);
+        if (t == null || !t.owner.equals(workerId)) return false;   // BUG: không kiểm tra token
+        if (!"open".equals(t.status)) return false;
+        t.status = "completed";
+        return true;
+    }
+
+    boolean isLeaseValid(String taskId) {
+        TaskRecord t = tasks.get(taskId);
+        return t != null && t.owner != null && t.leaseUntil > now();
+    }
+}`,
+  tests: `public class Main {
+    static int passed = 0, total = 0;
+    static void check(String name, boolean ok, String detail) {
+        total++;
+        if (ok) { passed++; System.out.println("PASS " + name); }
+        else System.out.println("FAIL " + name + ": " + detail);
+    }
+
+    public static void main(String[] args) {
+        // 1. Claim và complete bình thường: nhân viên nhận và hoàn thành
+        FakeClock c1 = new FakeClock(0);
+        Scheduler s1 = new Scheduler(c1);
+        TaskRecord t1 = new TaskRecord("T-1"); s1.tasks.put("T-1", t1);
+        Long tok1 = s1.claim("T-1", "worker-A");
+        check("claim_tra_ma", tok1 != null && tok1 == 1,
+            "claim phải trả token 1, thực tế " + tok1);
+        boolean done1 = s1.complete("T-1", "worker-A", tok1);
+        check("hoan_tat_nhan_vien_chinh", done1 && "completed".equals(t1.status),
+            "nhân viên A phải hoàn thành được, thực tế done=" + done1 + " status=" + t1.status);
+
+        // 2. Hết hạn, nhân viên khác nhận lại được
+        FakeClock c2 = new FakeClock(0);
+        Scheduler s2 = new Scheduler(c2);
+        TaskRecord t2 = new TaskRecord("T-2"); s2.tasks.put("T-2", t2);
+        Long tokA = s2.claim("T-2", "worker-A");  // token=1, hạn 30s
+        c2.advance(35_000);                        // vượt hạn 30s
+        Long tokB = s2.claim("T-2", "worker-B");  // worker B nhận lại, token=2
+        check("het_han_nhan_lai", tokB != null && tokB == 2 && "worker-B".equals(t2.owner),
+            "sau hết hạn worker B phải nhận lại được, thực tế tokB=" + tokB + " owner=" + t2.owner);
+
+        // 3. Fencing: nhận lại sau hết hạn tạo token mới, token cũ không được hoàn thành
+        FakeClock c3 = new FakeClock(0);
+        Scheduler s3 = new Scheduler(c3);
+        TaskRecord t3 = new TaskRecord("T-3"); s3.tasks.put("T-3", t3);
+        Long tokA1 = s3.claim("T-3", "worker-A");  // token=1
+        c3.advance(35_000);                         // hết hạn
+        Long tokA2 = s3.claim("T-3", "worker-A");  // token=2 (nhận lại)
+        check("nhan_lai_token_moi", tokA2 != null && tokA2 == 2,
+            "sau hết hạn, nhận lại phải tạo token 2, thực tế " + tokA2);
+        boolean oldDone = s3.complete("T-3", "worker-A", tokA1);  // token=1 cũ
+        check("fencing_token_cu", !oldDone && "open".equals(t3.status),
+            "nhân viên A token cũ phải bị từ chối, thực tế oldDone=" + oldDone);
+        boolean newDone = s3.complete("T-3", "worker-A", tokA2);  // token=2 mới
+        check("fencing_token_moi", newDone && "completed".equals(t3.status),
+            "nhân viên A token mới phải hoàn thành được, thực tế newDone=" + newDone);
+
+        // 4. Heartbeat gia hạn hạn giao: renew trước hết hạn, hạn được kéo dài
+        FakeClock c4 = new FakeClock(0);
+        Scheduler s4 = new Scheduler(c4);
+        TaskRecord t4 = new TaskRecord("T-4"); s4.tasks.put("T-4", t4);
+        Long tok4 = s4.claim("T-4", "worker-A");  // hạn 30s
+        c4.advance(25_000);                        // sắp hết hạn
+        s4.renew("T-4", "worker-A", tok4);         // heartbeat gia hạn thêm 30s
+        c4.advance(10_000);                        // tổng 35s, quá hạn cũ nhưng chưa hết hạn mới
+        check("con_da_gia_han", s4.isLeaseValid("T-4"),
+            "sau renew, hạn giao vẫn còn hiệu lực tại 35s, thực tế valid=" + s4.isLeaseValid("T-4"));
+
+        System.out.println("RESULT " + passed + "/" + total);
+    }
+}`,
+  reference: `class TaskRecord {
+    final String id;
+    String owner;
+    long leaseUntil;
+    long token;
+    String status; // "open" | "completed"
+    TaskRecord(String id) { this.id = id; this.status = "open"; }
+}
+
+class FakeClock {
+    long millis;
+    FakeClock(long millis) { this.millis = millis; }
+    long millis() { return millis; }
+    void advance(long ms) { millis += ms; }
+}
+
+class Scheduler {
+    final Map<String, TaskRecord> tasks = new HashMap<>();
+    final FakeClock clock;
+    final long leaseMs = 30_000;
+    Scheduler(FakeClock clock) { this.clock = clock; }
+    long now() { return clock.millis; }
+
+    Long claim(String taskId, String workerId) {
+        TaskRecord t = tasks.get(taskId);
+        if (t == null) { t = new TaskRecord(taskId); tasks.put(taskId, t); }
+        if (!"open".equals(t.status)) return null;
+        if (t.owner != null && t.leaseUntil > now()) return null;
+        t.owner = workerId;
+        t.token = (t.token == 0 ? 1 : t.token + 1);
+        t.leaseUntil = now() + leaseMs;
+        return t.token;
+    }
+
+    void renew(String taskId, String workerId, long token) {
+        TaskRecord t = tasks.get(taskId);
+        if (t != null && t.owner.equals(workerId) && t.token == token) {
+            t.leaseUntil = now() + leaseMs;   // FIX: gia hạn hạn giao
+        }
+    }
+
+    boolean complete(String taskId, String workerId, long token) {
+        TaskRecord t = tasks.get(taskId);
+        if (t == null || !t.owner.equals(workerId) || t.token != token) return false;  // FIX: kiểm tra token
+        if (!"open".equals(t.status)) return false;
+        t.status = "completed";
+        return true;
+    }
+
+    boolean isLeaseValid(String taskId) {
+        TaskRecord t = tasks.get(taskId);
+        return t != null && t.owner != null && t.leaseUntil > now();
+    }
+}`,
+  hints: [
+    'Nhìn log: worker-A nhận token=1, hạn đến 10:00:30. Hết hạn, worker-B nhận token=2. Sau đó worker-A vẫn hoàn thành với token=1 vì code không kiểm tra token.',
+    'Fencing token tăng dần mỗi lần nhận giao. Chỉ người sở hữu token mới nhất được phép hoàn thành; token cũ bị từ chối.',
+    'Nhân viên xử lý lâu cần gọi renew (heartbeat) để kéo dài hạn giao trước khi hết hạn.',
+  ],
+  rootCause: `**Không có fencing token và không có heartbeat gia hạn.** worker-A nhận đơn {{T-7712}} với {{token=1}} và hạn {{10:00:30}}. Xử lý kéo dài đến {{10:00:35}}, vượt hạn. Hết hạn, đơn về mở, worker-B nhận với {{token=2}}. Code complete chỉ kiểm tra owner, không kiểm tra token, nên worker-A với token cũ vẫn hoàn thành được. Hai nhân viên cùng xử lý một đơn → tính toán lại 2 lần, trừ tiền 2 lần. Còn thiếu renew: worker-A không có cách nào kéo dài hạn giao khi đang xử lý.`,
+  fix: `### Cách sửa trong bài
+Thêm hai cơ chế: (1) renew kéo dài hạn giao khi nhân viên đang xử lý (heartbeat); (2) complete kiểm tra token khớp với token hiện tại của đơn (fencing), token cũ bị từ chối.
+~~~java
+void renew(String taskId, String workerId, long token) {
+    TaskRecord t = tasks.get(taskId);
+    if (t != null && t.owner.equals(workerId) && t.token == token) {
+        t.leaseUntil = now() + leaseMs;
+    }
+}
+
+boolean complete(String taskId, String workerId, long token) {
+    TaskRecord t = tasks.get(taskId);
+    if (t == null || !t.owner.equals(workerId) || t.token != token) return false;
+    if (!"open".equals(t.status)) return false;
+    t.status = "completed";
+    return true;
+}
+~~~
+Khi worker-A xử lý lâu, gọi renew định kỳ để kéo hạn. Nếu worker-A treo và hết hạn, worker-B nhận được với token mới (2); sau đó worker-A thức lại và gọi complete với token cũ (1) bị từ chối.
+
+### Trên production thật
+- **Fencing token**: mỗi lần nhận nhiệm vụ gán token tăng dần (ví dụ số tăng trong Redis/ZooKeeper). Bất kỳ tác động bên ghi (cập nhật DB, gọi API thanh toán) phải kèm token, hệ thống đích chỉ chấp nhận token mới nhất đã xem.
+- **Heartbeat renewal**: nhân viên gia hạn hạn giao định kỳ (ví dụ mỗi 10 giây cho hạn 30 giây). Nếu không heartbeat trong 2 chu kỳ, hệ thống coi như người xử lý đã mất và gán lại.
+- **Idempotent handler**: ngay cả với fencing, xử lý bên dưới nên idempotent (unique key trên order_id) vì message có thể được giao lại ở least-once.
+- Thời hạn giao nên ngắn hơn timeout xử lý dự kiến, và có timeout toàn bộ để không treo mãi.
+
+### Phòng ngừa
+- Mọi phân phối công việc có thời hạn giao phải có fencing token và heartbeat.
+- Review code tìm mẫu "nhận việc, xử lý lâu, hoàn thành" không kiểm tra token hoặc hạn giao.
+- Thiết kế xử lý idempotent từ đầu: cùng mã đơn chỉ tính toán một lần dù nhận nhiều lần.
+
+### Liên hệ phỏng vấn
+Câu "phân phối công việc, xử lý lâu hơn hạn giao" xuất hiện ở vòng hệ thống phân tán. Trả lời: fencing token, heartbeat renewal, idempotent handler, và tại sao owner-check đơn giản là không đủ.
+
+> Senior tip: Fencing token chỉ hữu ích nếu hệ thống bên nhận (DB, API thanh toán) cũng kiểm tra token. Chỉ kiểm tra ở scheduler thì worker cũ vẫn có thể gọi trực tiếp API bên nhận. Token phải đi cùng mọi tác động ghi.`,
+  related: [],
+  tags: ['lease', 'fencing token', 'heartbeat', 'distributed lock', 'double processing', 'task scheduler']
 }
 );
