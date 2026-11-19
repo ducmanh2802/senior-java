@@ -9162,4 +9162,236 @@ Tôi đo latency end-to-end và per-step bằng Micrometer, ghi p99 theo version
     ],
     tags: ['p99', 'latency', 'cost', 'audit', 'observability', 'micrometer']
   },
+  {
+    id: 'ai-138',
+    topic: 'ai',
+    level: 'senior',
+    q: 'Pipeline gọi inference theo batch qua queue: Spring Boot gửi tác vụ, worker lấy làm inference, lưu kết quả kèm version, giám sát drift và chất lượng từ phía backend. Bạn thiết kế thế nào?',
+    a: `**Tóm tắt:** Pipeline bất đồng bộ ba tầng: tầng tác vụ đẩy vào message queue (hàng đợi tin nhắn — nơi lưu tạm công việc để tiến trình khác lấy ra xử lý sau, giống hộp thư đến), tầng worker (tiến trình chạy nền lấy tác vụ từ queue ra xử lý) giới hạn concurrency (số tác vụ chạy song song tối đa), tầng kết quả lưu vào PostgreSQL kèm metadata version và input hash. Job giám sát hằng ngày so sánh embedding version và metric chất lượng với baseline để phát hiện drift sớm.
+
+### Cơ chế pipeline, từng bước
+1. **Gửi tác vụ**: Spring Boot nhận request, đẩy vào message queue (RabbitMQ/SQS) kèm metadata (docId, version, tenant, inputHash). Mỗi tác vụ có ID duy nhất và ngân sách token. Đây là bước "nhận việc rồi trả về ngay" — không chờ model.
+2. **Worker lấy tác vụ**: poll queue với giới hạn concurrency (Semaphore), timeout gọi model 30s, retry tối đa 2 lần cho lỗi tạm thời (429/5xx) với backoff (chờ lâu dần giữa các lần thử). Vượt ngân sách token thì trả lỗi có kiểm soát.
+3. **Thực inference**: gọi model theo request đã cấu hình, đọc usage (input/output tokens) từ response metadata.
+4. **Lưu kết quả**: ghi vào bảng ai_result với cột result_id, doc_id, embed_version, tenant, input_hash, output_json, usage_in, usage_out, latency_ms, status, timestamp. Dùng UPSERT (update nếu đã tồn tại, insert nếu chưa) theo result_id để tránh bản trùng nếu worker crash giữa chừng.
+5. **Giám sát drift**: drift là sự lệch dần của hành vi model so với lúc baseline. Mỗi kết quả lưu embedding version; job hằng ngày embed lại chunk mới, so cosine similarity (độ giống nhau giữa hai vector, 1 là trùng khít) với embedding cũ cùng docId và tenant; nếu dưới ngưỡng (ví dụ 0,8) thì ghi drift alert kèm số lượng chunk thay đổi. Kết quả cũng đẩy vào Prometheus (histogram ai.result.latency, counter ai.result.drift.count).
+
+### Code ví dụ (Java 17 + Spring Boot 3)
+~~~java
+@Service
+class BatchInferenceService {
+  private final QueueService queue;
+  private final ModelClient model;
+  private final AiResultRepository repo;
+
+  void submitBatch(List<InferenceRequest> requests) {
+    for (InferenceRequest req : requests) {
+      String taskId = UUID.randomUUID().toString();
+      queue.push(new QueueMessage<>(taskId, req));      // đẩy vào queue, không chờ model
+    }
+  }
+
+  @Scheduled(fixedDelay = 60_000)
+  void pollAndProcess() {
+    QueueMessage<InferenceRequest> msg = queue.poll();   // lấy 1 tác vụ
+    if (msg == null) return;
+    InferenceRequest req = msg.getPayload();
+    try {
+      String output = model.call(req.getPrompt(), req.getOptions());
+      repo.save(new AiResult(msg.getId(), req.docId(), req.version(), req.tenant(),
+          req.inputHash(), output, "success", Instant.now()));
+    } catch (Exception e) {
+      repo.save(new AiResult(msg.getId(), req.docId(), req.version(), req.tenant(),
+          req.inputHash(), null, "failed: " + e.getClass().getSimpleName(), Instant.now()));
+    }
+  }
+}
+~~~
+
+### Bảng trade-off
+| Cách làm | Ưu | Nhược |
+|---|---|---|
+| Đồng bộ trong request | Đơn giản, không cần queue | Cạn thread pool, latency cao, không kiểm soát quota |
+| Queue + worker giới hạn concurrency | Kiểm soát quota, retry có kiểm soát, không treo request | Thêm hạ tầng queue, latency tác vụ tăng |
+| Batch API của provider | Rẻ hơn đáng kể | Không realtime, chờ kết quả |
+
+### Ví dụ đời thực
+Hệ thống tóm tắt báo cáo hàng tháng cho 10.000 tài liệu. Ban đầu chạy song song trong request, 30% request timeout vì model chậm và cạn thread pool. Chuyển pipeline batch: đẩy 10.000 tác vụ vào queue, worker poll với concurrency 50, timeout 30s, retry 2 lần. Kết quả: p95 latency tác vụ giảm từ 8.000 ms xuống 2.100 ms (vì không chờ đồng bộ), 0% request treo do model, chi phí dự báo giảm 25% nhờ batch và pooling token. Mỗi kết quả lưu version embedding và input hash, job daily drift check phát hiện 12% tài liệu có thay đổi embedding và cần reindex.
+
+### Trả lời mẫu khi phỏng vấn
+"Tôi thiết kế pipeline batch inference có 3 tầng rõ ràng: tác vụ đẩy vào queue, worker lấy tác vụ với giới hạn concurrency và timeout, kết quả lưu vào DB kèm metadata version và input hash. Nguyên lý là không bao giờ chờ model đồng bộ trong request user-facing, vì nó làm cạn thread pool và tăng latency cho toàn hệ thống. Mỗi kết quả lưu version embedding, input hash, tenant và thời gian để có thể so sánh drift hằng ngày. Việc dùng queue và worker giới hạn concurrency giúp kiểm soát quota token của nhà cung cấp model và tránh một tác vụ đốt hết ngân sách. Tôi giám sát ba metric chính: latency p95, error rate và drift rate, đặt alert khi vượt ngưỡng. Trước khi deploy, tôi chạy pilot 1.000 tác vụ để đo baseline rồi mới mở rộng."
+
+> Senior tip: luôn có input hash và version metadata khi lưu kết quả inference, và dùng UPSERT tránh bản trùng nếu worker crash giữa chừng. Giám sát drift hằng ngày qua embedding comparison là cách tốt nhất để phát hiện sớm khi model hoặc chunking thay đổi hành vi.`,
+    follow: [
+      'Worker crash giữa chừng tác vụ bị trùng: bạn xử lý thế nào?',
+      'Bạn đặt ngưỡng drift bao nhiêu và vì sao?',
+      'Queue nên dùng RabbitMQ hay SQS và lý do gì?'
+    ],
+    tags: ['batch', 'inference', 'queue', 'worker', 'monitoring', 'drift']
+  },
+  {
+    id: 'ai-139',
+    topic: 'ai',
+    level: 'lead',
+    q: 'Giám sát chất lượng và drift cho ứng dụng LLM: bạn đo recall@k, faithfulness và metadata thay đổi ra sao, và cảnh báo theo quy trình nào khi chất lượng tụt?',
+    a: `**Tóm tắt:** Tách hai lớp đo: retrieval (lấy đúng tài liệu) và generation (trả lời đúng và trung thực). Mỗi lớp có metric cứng và vòng cảnh báo tự động. Mỗi kết quả inference lưu embedding version và metadata thay đổi, job giám sát hằng ngày chạy so sánh với baseline.
+
+### Lớp retrieval metrics
+- **recall@k**: tỷ lệ tài liệu cần thiết nằm trong top-k kết quả tìm kiếm. Có nghĩa: với 100 câu hỏi mà mỗi câu cần đúng 1 chunk, recall@5 = 94% tức 94/100 câu tìm thấy chunk đúng trong 5 kết quả đầu. Đo trên tập query mẫu cố định.
+- **context precision**: trong top-k, bao nhiêu chunk thực sự liên quan (có metadata khớp không, không phải rò rỉ qua tenant).
+- **MRR** (Mean Reciprocal Rank): vị trí chunk đúng đầu tiên — nếu chunk đúng đứng vị trí 1 thì điểm 1, vị trí 2 thì 0,5, vị trí 3 thì 0,33; lấy trung bình.
+- **Chunk version drift**: so sánh embedding version của chunk hôm nay với version lưu từ lần chạy trước; nếu khác thì flag.
+
+### Lớp generation metrics
+- **faithfulness**: mọi claim trong câu trả lời có được context hỗ trợ không. Tách câu trả lời thành các claim nhỏ, hỏi LLM-as-judge (dùng một LLM khác để chấm điểm từng claim, giống có "trọng tài" tự động).
+- **answer relevance**: câu trả lời có thực sự trả lời câu hỏi không, hay lạc đề.
+- **answer correctness**: so với đáp án chuẩn (nếu có).
+
+### Cảnh báo tự động
+1. **Mỗi sáng job giám sát**: chạy retrieval + generation trên golden set (tập câu hỏi và đáp án chuẩn do chuyên gia gán nhãn) 200 câu hỏi thật, so sánh metric với baseline (lưu trong DB config).
+2. **Ngưỡng cảnh báo**: recall@5 giảm > 2 điểm → gửi alert (Slack/Email) kèm báo cáo chi tiết.
+3. **Ngưỡng nghiêm trọng**: faithfulness giảm > 5% so với baseline → chặn deploy PR có thay đổi prompt/model/index, yêu cầu rollback hoặc tối ưu chunking/prompt trước.
+4. **Theo dõi thay đổi metadata**: mỗi kết quả lưu embed_version, job diff mỗi ngày phát hiện +N chunk mới, -M chunk cũ. Nếu N + M > ngưỡng (ví dụ 10) thì gửi alert kèm báo cáo các tài liệu thay đổi.
+
+### Code ví dụ (Micrometer + Job chạy hằng ngày)
+~~~java
+@Component
+class MonitoringJob {
+  private final AiResultRepository repo;
+  private final MeterRegistry meterRegistry;
+
+  MonitoringJob(AiResultRepository repo, MeterRegistry meterRegistry) {
+    this.repo = repo; this.meterRegistry = meterRegistry;
+  }
+
+  @Scheduled(cron = "0 30 6 * * *")                    // mỗi sáng 6h30
+  void run() {
+    double recall = calculateRecallOnGoldenSet(repo, 5); // recall@k trên golden set
+    meterRegistry.gauge("ai.recall.at5", recall);
+    if (recall < 0.85) {
+      alertDrift("recall@5 giảm xuống " + String.format("%.2f", recall));
+    }
+    double faithfulness = calculateFaithfulness(repo);    // faithfulness qua LLM-as-judge
+    meterRegistry.gauge("ai.faithfulness", faithfulness);
+    if (faithfulness < 0.90) {
+      alertDrift("faithfulness giảm xuống " + String.format("%.2f", faithfulness));
+    }
+    long changed = repo.countChangedEmbeddingsSince(Instant.now().minus(Duration.ofDays(1)));
+    meterRegistry.gauge("ai.drift.count", (double) changed);
+    if (changed > 50) {
+      alertDrift("Tối đa " + changed + " chunk thay đổi embedding version hôm nay");
+    }
+  }
+}
+~~~
+
+### Ví dụ đời thực
+Hệ thống chatbot nội bộ cho 5.000 nhân viên. Sau 2 tuần chạy production, sáng thứ 3 job giám sát báo recall@5 giảm từ 94% xuống 87%, faithfulness từ 96% xuống 91%, và drift count là 84 chunk thay đổi embedding version. Điều tra: team vừa đổi embedding model từ text-embedding-3-large sang text-embedding-ada-002 mà không theo dõi version. Kết quả: recall@5 phục hồi 93% nhờ bật iterative index scan và điều chỉnh ef_search. Và lần sau team luôn kiểm tra recall@k trên golden set trước khi chuyển model.
+
+### Trả lời mẫu khi phỏng vấn
+"Tôi tách đo chất lượng làm hai lớp: retrieval dùng metric cứng recall@k, context precision, MRR trên golden set câu hỏi thật; generation dùng faithfulness (mỗi claim có nguồn không), answer relevance và answer correctness. Mỗi kết quả inference lưu embedding version và metadata thay đổi, job giám sát hằng ngày chạy trên golden set và so sánh với baseline. Ngưỡng cảnh báo: recall@5 giảm > 2 điểm thì alert ngay; faithfulness giảm > 5% thì chặn deploy và yêu cầu tối ưu chunking hoặc prompt. Vì tôi luôn theo dõi metric qua Micrometer gauge và gửi alert qua Slack kèm báo cáo chi tiết, đội biết chính xác lúc nào phải sửa chunking, prompt hay khi đã chuyển model an toàn. Quan trọng là không đo một lần rồi bỏ, mà phải chạy regression mỗi khi có thay đổi."
+
+> Senior tip: luôn có golden set câu hỏi thật được phát triển bởi chuyên gia, và metric quan sát phải là gauge (để theo dõi xu hướng) chứ không chỉ là counter. Và alert phải kèm đủ dữ liệu chi tiết để biết sửa chỗ nào, không chỉ biết "điểm tụt".`,
+    follow: [
+      'Bạn hiệu chỉnh LLM-as-judge để đo faithfulness ra sao?',
+      'Golden set nên bao nhiêu câu hỏi và ai duy trì?',
+      'Làm sao xử lý khi recall@k và faithfulness cùng tụt?'
+    ],
+    tags: ['monitoring', 'drift', 'retrieval', 'faithfulness', 'eval', 'alert']
+  },
+  {
+    id: 'ai-140',
+    topic: 'ai',
+    level: 'senior',
+    q: 'Bảo vệ dữ liệu cá nhân (PII) khi gửi sang LLM: pseudonymization, kiểm soát quyền truy cập và output guard nên thiết kế thế nào?',
+    a: `**Tóm tắt:** Coi prompt gửi tới model là dữ liệu không tin cậy, không bao giờ chứa raw PII (Personally Identifiable Information — dữ liệu cá nhân nhạy cảm như CCCD, số thẻ, số tài khoản, họ tên đầy đủ). Pipeline gồm 3 lớp: masking trước gửi, quyền chỉ đọc ở retrieval, và output guard khi trả kết quả. Mọi quyết định về dữ liệu cá nhân đều đi qua xác thực danh tính thực và audit.
+
+### 3 lớp bảo vệ
+1. **Masking (Pseudonymization — thay dữ liệu thật bằng nhãn giả, giữ được quan hệ giữa các thực thể) trước khi gửi prompt**
+   - Dùng kết hợp: regex (biểu thức chính quy — mẫu tìm chuỗi) cho mẫu cố định (CCCD 12 chữ số, số điện thoại 10 chữ số, số thẻ 16 chữ số, email), NER (Named Entity Recognition — nhận diện thực thể như tên người, địa chỉ trong câu) cho tên riêng và địa chỉ tiếng Việt, và từ điển khách hàng đã biết trong phiên.
+   - Thay bằng nhãn ổn định trong phạm vi request (KH_1, TK_1) để model vẫn hiểu quan hệ; bảng ánh xạ nằm trong gateway, dùng để khôi phục khi cần nhưng không gửi lên model.
+   - Regex mẫu (đặt trong code block để tránh lỗi hiển thị, mỗi dòng một loại):
+~~~text
+CCCD:   \\b\\d{12}\\b
+SĐT:    \\b0\\d{9}\\b
+Số thẻ: \\b\\d{16}\\b
+Email:  \\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\\.[A-Za-z]{2,}\\b
+~~~
+   - Nếu fields quan trọng (số dư, giao dịch) cần biết thì dùng tool có kiểm soát quyền thay vì đưa vào prompt.
+
+2. **Quyền chỉ đọc ở retrieval (RAG — Retrieval-Augmented Generation: tìm tài liệu liên quan rồi mới sinh câu trả lời)**
+   - Mỗi chunk metadata mang tenantId (đơn vị thuê riêng biệt) và ACL (Access Control List — danh sách ai được phép đọc).
+   - Lọc truy vấn vector trước khi đưa context vào prompt (WHERE tenant_id = :tenant AND acl LIKE ...), không lọc sau khi LLM đã trả lời vì dữ liệu đã lọt vào context.
+   - Nếu user không có quyền, tài liệu không được nằm trong context, chatbot trả lời "Bạn không có quyền xem tài liệu này".
+
+3. **Output guard (hậu kiểm)** trước khi render cho người dùng
+   - Regex chặn URL ngoài allowlist (không cho render ảnh từ domain lạ thông qua markdown).
+   - Regex che dãy số dài (CCCD 12 chữ số, số thẻ 16 chữ số) thay bằng [đã ẩn].
+   - Kiểm tra tool call: chỉ cho phép tool gọi với customerId lấy từ session đã xác thực (JWT/OTP), không chấp nhận từ tham số do model điền.
+   - CSP (Content Security Policy — chính sách trình duyệt chỉ tải tài nguyên từ nguồn được whitelist) img-src 'self' https://static.bank.example.
+
+### Code ví dụ (Java 17 + Spring Boot 3)
+~~~java
+@Component
+class PiiMaskingService {
+  private final Pattern cccd = Pattern.compile("\\b\\d{12}\\b");
+  private final Pattern phone = Pattern.compile("\\b0\\d{9}\\b");
+  private final Pattern card = Pattern.compile("\\b\\d{16}\\b");
+  private final Map<String, String> map = new LinkedHashMap<>();
+
+  String mask(String text) {
+    text = replace(cccd, "CCCD", text);
+    text = replace(phone, "SDT", text);
+    text = replace(card, "TK", text);
+    return text;
+  }
+
+  private String replace(Pattern p, String label, String text) {
+    return p.matcher(text).replaceAll(m -> {
+      String token = "[" + label + "_" + (map.size() + 1) + "]";
+      map.put(token, m.group());                       // ghi bản ánh xạ để khôi phục sau
+      return Matcher.quoteReplacement(token);
+    });
+  }
+
+  String unmask(String text) {
+    for (var e : map.entrySet()) text = text.replace(e.getKey(), e.getValue());
+    return text;
+  }
+}
+
+@Component
+class OutputGuard {
+  private static final Pattern LONG_NUMBER = Pattern.compile("\\b\\d{12,16}\\b");
+  private static final Set<String> ALLOWED_HOSTS = Set.of("www.bank.example", "help.bank.example");
+
+  static String sanitize(String answer) {
+    answer = LONG_NUMBER.matcher(answer).replaceAll("[đã ẩn]");
+    Matcher m = Pattern.compile("https?://[^\\s)]+").matcher(answer);
+    while (m.find()) {
+      String host;
+      try { host = URI.create(m.group()).getHost(); }
+      catch (IllegalArgumentException e) { host = null; }
+      if (host == null || !ALLOWED_HOSTS.contains(host))
+        throw new BlockedOutputException("URL ngoài allowlist: " + m.group());
+    }
+    return answer;
+  }
+}
+~~~
+
+### Ví dụ đời thực
+Một trợ lý CSKH ngân hàng xử lý 30.000 cuộc gọi/tháng. Ban đầu chưa masking, khảo sát cho thấy 7% câu trả lời vẫn chứa CCCD đầy đủ và 3% số thẻ 16 chữ số (dẫn đến phàn nàn từ bộ phận audit và rủi ro vi phạm Luật Bảo vệ dữ liệu cá nhân). Thiết kế lại: (1) masking chạy trước khi ghép context vào prompt, (2) retrieval lọc theo tenantId và ACL, (3) output guard chặn URL và số dài. Kết quả sau 2 tháng: 0% CCCD/số thẻ lọt ra ngoài, audit phát hiện 0 vi phạm, và trải nghiệm khách không giảm (vì nhãn masked vẫn cho phép mô tả quan hệ). Chi phí xử lý masking thêm 2% chi phí input nhưng tiết kiệm rủi ro pháp lý và cải thiện độ tin tưởng của nhân viên sử dụng hệ thống.
+
+### Trả lời mẫu khi phỏng vấn
+"Tôi coi prompt gửi tới LLM là dữ liệu không tin cậy và thiết kế ba lớp bảo vệ. Lớp đầu tiên là masking pseudonymization trước gửi prompt: thay raw PII bằng nhãn ổn định trong phạm vi request, bảng ánh xạ nằm ở gateway chứ không gửi lên model. Lớp thứ hai là quyền chỉ đọc ở retrieval: mỗi chunk có tenantId và ACL, truy vấn vector phải lọc trước khi đưa context vào prompt, không bao giờ lọc sau khi LLM đã trả lời vì dữ liệu đã lọt vào context. Lớp thứ ba là output guard: regex che dãy số dài, chặn URL ngoài allowlist, CSP markdown không tải ảnh từ domain lạ. Mọi quyết định về dữ liệu cá nhân đều đi qua xác thực danh tính thực và audit. Kết quả là hệ thống tuân thủ Luật Bảo vệ dữ liệu cá nhân, 0 dữ liệu nhạy cảm lọt ra ngoài trong 6 tháng theo dõi, và trải nghiệm người dùng vẫn tốt vì nhãn masked vẫn cho phép mô tả quan hệ."
+
+> Senior tip: coi mỗi prompt là input từ Internet không tin cậy. Không bao giờ để raw PII vào prompt, dù đã xác thực. Ba lớp (masking, retrieval ACL, output guard) tạo rào bảo vệ sâu đủ cho production, và audit toàn bộ bước để kiểm tra compliance. Đừng chỉ dùng một lớp prompt — prompt có thể bị phá qua prompt injection, tool có thể bị misuse, nên phòng thủ nhiều tầng.`,
+    follow: [
+      'Bạn lưu bản ánh xạ mapping ra đâu và cơ chế refresh thế nào?',
+      'Output guard regex có thể bị bỏ sót pattern gì?',
+      'Bạn xử lý trường hợp user yêu cầu "hiện số thẻ cuối 4 số" ra sao?'
+    ],
+    tags: ['PII', 'privacy', 'masking', 'output guard', 'security', 'banking']
+  }
 );
