@@ -11287,4 +11287,180 @@ I negotiate scope and deadline with data, not opinions. First I clarify the busi
   follow: ['How do you handle scope creep mid-sprint?', 'How do you communicate delay early?', 'What metrics do you use to justify scope change?'],
   tags: ['soft-skills', 'negotiation', 'scope']
 },
+{
+  id: 'english-220',
+  topic: 'english',
+  level: 'senior',
+  lang: 'en',
+  q: 'Introduce yourself as a fullstack developer (Java backend plus Vue frontend) in about 90 seconds. How would you structure the answer for an LG CNS interview?',
+  a: `**Tóm tắt:** Mở bằng tên và tổng số năm kinh nghiệm, sau đó nêu vai trò fullstack (Java/Spring Boot backend + Vue frontend), một thành tựu định lượng, và lý do quan tâm đến vị trí. Giữ trong 90 giây, khoảng 150–180 từ, tránh đọc CV theo thứ tự thời gian.
+
+### 1. Cấu trúc "Hiện tại → Quá khứ → Tương lai" (Present-Past-Future)
+
+Bước 1 — Hiện tại (20 giây): "I am a fullstack developer with 4 years of experience, currently working at X, where I build Java/Spring Boot services and Vue frontends for a payment platform handling ~50k transactions/day."
+
+Bước 2 — Quá khứ (30 giây): nêu 1–2 thành tựu định lượng: "Previously I migrated a monolith to microservices, cutting p95 latency from 800ms to 200ms, and shipped a Vue dashboard used by ~200 operators."
+
+Bước 3 — Tương lai (20 giây): "I am now looking for a role where I can own features end-to-end and work with global teams; that is why LG CNS appeals to me — large-scale systems, Korean and global clients."
+
+### 2. Vì sao cấu trúc này hiệu quả
+
+Interviewer có ~90 giây chú ý. Mở bằng giá trị (kinh nghiệm + domain) giúp họ đặt câu hỏi tiếp theo theo hướng mạnh của bạn. Tránh liệt kê công nghệ theo thứ tự thời gian vì khó nhớ và không nổi bật.
+
+### 3. Từ vựng hữu ích
+
+- "end-to-end ownership" = sở hữu trọn vẹn một tính năng từ backend đến frontend.
+- "p95 latency" = độ trễ ở phân vị 95 (95% request nhanh hơn con số này).
+- "shipped" = đã phát hành/đưa vào production.
+
+### 4. Bảng trade-off: ngắn vs đầy đủ
+
+| Lựa chọn | Ưu | Nhược |
+|---|---|---|
+| 60 giây | Súc tích, dễ nhớ | Dễ thiếu bằng chứng |
+| 90 giây | Đủ số liệu + động lực | Cần luyện để không lan man |
+| 2 phút+ | Chi tiết | Mất chú ý, interviewer ngắt lời |
+
+### 5. Pitfall thường gặp
+
+- Nói "I am a hard worker" không có bằng chứng → thay bằng số liệu.
+- Liệt kê mọi công nghệ → chọn 3–4 stack chính.
+- Quên nhắc domain business (payment, e-commerce) → interviewer khó hình dung impact.
+
+### Ví dụ đời thực
+
+Ứng viên trả lời: "I am a fullstack developer with four years of experience. Currently I build Spring Boot services and Vue apps for a payment platform processing about fifty thousand transactions a day. Last year I migrated a monolith to microservices, cutting p95 latency from eight hundred to two hundred milliseconds, and shipped a Vue dashboard for two hundred operators. I am looking for a role with end-to-end ownership and global teams, which is why LG CNS interests me." — ~75 từ, 40 giây, còn thời gian interviewer hỏi sâu.
+
+### Trả lời mẫu khi phỏng vấn
+
+"I am a fullstack developer with four years of experience. Currently I work at a fintech company where I build Spring Boot services and Vue frontends for a payment platform handling about fifty thousand transactions a day. Before that I helped migrate a monolith to microservices, cutting p95 latency from eight hundred to two hundred milliseconds, and I shipped a Vue dashboard used by roughly two hundred operators. I enjoy owning features end to end, from API design to UI. I am looking for a role with larger scale and global collaboration, which is why LG CNS and its Java and Vue stack appeal to me. Outside work I read Java performance blogs and contribute small fixes to open source."
+
+### Senior tip
+
+Luyện câu trả lời bằng đồng hồ; nếu vượt 90 giây, cắt phần quá khứ trước. Luôn kết thúc bằng "why this company" để interviewer thấy động lực cụ thể.
+`,
+  follow: ['Can you walk me through one project in more detail?', 'What is your strongest technical skill?', 'Why do you want to join LG CNS specifically?'],
+  tags: ['english', 'introduction', 'fullstack', 'lg-cns']
+},
+{
+  id: 'english-221',
+  topic: 'english',
+  level: 'senior',
+  lang: 'en',
+  q: 'A page in your Java/Vue app is slow in production. Walk me through how you debug it end-to-end, from the browser to the database.',
+  a: `**Tóm tắt:** Đo trước (RUM/APM), khoanh vùng theo lớp (browser → network → API → DB), dùng công cụ từng lớp (Chrome DevTools, distributed tracing, jstack/JFR, EXPLAIN ANALYZE), rồi sửa và xác nhận bằng số liệu. Luôn bắt đầu từ dữ liệu, không đoán.
+
+### 1. Bước 1 — Đo và xác định phạm vi
+
+- Thu thập RUM (Real User Monitoring): p50/p95/p99 thời gian tải trang, theo region/device.
+- APM (Application Performance Monitoring, ví dụ Micrometer + Prometheus/Grafana): trace end-to-end với traceId.
+- Nếu chỉ chậm với một số user → kiểm tra data skew (ví dụ một tenant có nhiều dữ liệu hơn).
+
+### 2. Bước 2 — Khoanh vùng theo lớp
+
+1. Browser: Chrome DevTools Network tab → xem waterfall, blocking time, JS bundle size. Vue: kiểm tra rerender thừa (Vue DevTools).
+2. Network/CDN: TLS handshake, TTFB (Time To First Byte) cao → có thể server chậm hoặc cold start.
+3. API: Spring Boot → xem trace span: controller → service → repository. Nếu span DB lớn → vấn đề ở DB.
+4. DB: PostgreSQL → EXPLAIN (ANALYZE, BUFFERS) cho query chậm; kiểm tra missing index, seq scan.
+5. JVM: nếu CPU cao → jstack (thread dump) tìm blocked thread; JFR (Java Flight Recorder) cho allocation/GC.
+
+### 3. Bước 3 — Công cụ cụ thể
+
+- {{jcmd}} {{PID}} Thread.print → thread dump.
+- {{jfr}} start --duration 60s --filename rec.jfr → profiling.
+- PostgreSQL: {{EXPLAIN ANALYZE}} SELECT ... → xem Seq Scan vs Index Scan.
+- Vue: {{performance.now()}} đo render; lazy-load route và code splitting.
+
+### 4. Bước 4 — Sửa và xác nhận
+
+Sửa xong, đo lại p95 trước/sau, đặt alert (ví dụ p95 > 500ms trong 5 phút). Viết postmortem ngắn.
+
+### Bảng trade-off: tối ưu ở đâu
+
+| Lớp | Chi phí sửa | Hiệu quả |
+|---|---|---|
+| Frontend bundle | Thấp | Cao — giảm thời gian tải/parse JS, time to interactive (TTFB không đổi) |
+| API caching | Trung bình | Cao |
+| DB index | Thấp | Rất cao nếu query sai |
+| JVM tuning | Cao | Thấp–trung bình |
+
+### Pitfall thường gặp
+
+- Tối ưu code trước khi đo → lãng phí.
+- Chỉ nhìn average, bỏ qua p99 → user VIP vẫn chậm.
+- Sửa index nhưng không VACUUM/ANALYZE → planner chọn sai plan.
+- Quên cache invalidation → dữ liệu cũ.
+
+### Ví dụ đời thực
+
+Triệu chứng: trang danh sách đơn hàng mất 4s. RUM cho thấy p95 4.2s. Trace: API 3.8s, span DB 3.5s. EXPLAIN ANALYZE: Seq Scan trên orders (2M rows) vì thiếu index trên (customer_id, created_at). Thêm index → 40ms. p95 còn 300ms do Vue render list 1000 item → virtual scroll → 120ms. Kết quả p95 120ms.
+
+### Trả lời mẫu khi phỏng vấn
+
+"I would start with data, not guesses. First I check RUM and APM to confirm the slowness and get a traceId. Then I go layer by layer: in the browser I look at the Network waterfall and Vue render time; on the API I open the distributed trace to see which span is slow; if the database span dominates, I run EXPLAIN ANALYZE on the query and check for missing indexes or seq scans; if CPU is high, I take a thread dump with jstack or a JFR recording. After fixing, I compare p95 before and after and add an alert. In a recent case, a missing composite index on orders caused a four-second page; adding it cut p95 to three hundred milliseconds, and a virtual-scroll fix on the page brought it to one hundred twenty milliseconds."
+
+### Senior tip
+
+Luôn đo p95/p99 theo từng lớp và giữ traceId xuyên suốt; "slow" không có số liệu thì không phải bug có thể sửa được.
+`,
+  follow: ['How do you decide between caching and indexing?', 'What tools do you use for JVM profiling?', 'How would you handle a slow third-party API call?'],
+  tags: ['english', 'performance', 'debugging', 'observability']
+},
+{
+  id: 'english-222',
+  topic: 'english',
+  level: 'lead',
+  lang: 'en',
+  q: 'Describe a time you worked with a Korean PM/BA on unclear requirements. How did you clarify, align, and deliver?',
+  a: `**Tóm tắt:** Khi yêu cầu mơ hồ, tôi không code ngay: tôi đặt câu hỏi làm rõ bằng ví dụ cụ thể, viết lại requirement thành acceptance criteria, đồng bộ qua tài liệu + demo nhỏ, và theo dõi thay đổi. Với PM/BA Hàn, tôi chú ý giao tiếp gián tiếp, xác nhận bằng văn bản, và tôn trọng hierarchy.
+
+### 1. Vì sao yêu cầu hay mơ hồ
+
+PM/BA thường viết theo góc nhìn business, bỏ sót edge case, concurrency, dữ liệu lớn. Dev nếu giả định sai sẽ phải làm lại. Chi phí sửa sau khi code xong gấp 10 lần sửa ở giai đoạn requirement.
+
+### 2. Quy trình clarify 5 bước
+
+1. Đọc và liệt kê câu hỏi: "What happens if two users edit the same record?", "What is the max data volume?", "What is the SLA?".
+2. Hỏi bằng ví dụ cụ thể thay vì câu hỏi trừu tượng: "If a customer cancels after payment but before delivery, do we refund automatically or manually?"
+3. Viết lại thành acceptance criteria (Given/When/Then) và gửi PM/BA xác nhận.
+4. Demo nhỏ (spike) hoặc mock UI để PM/BA "thấy" thay vì "đọc".
+5. Theo dõi thay đổi: mỗi thay đổi scope phải có impact estimate (ngày công, rủi ro) và PM quyết định.
+
+### 3. Giao tiếp với PM/BA Hàn — lưu ý văn hoá
+
+- Giao tiếp gián tiếp: "maybe", "could be" thường có nghĩa "không đồng ý"; cần hỏi lại rõ ràng nhưng lịch sự.
+- Xác nhận bằng văn bản (email/chat) sau mỗi cuộc họp; tránh chỉ nói miệng.
+- Tôn trọng hierarchy: escalate qua PM/BA, không bỏ qua để nói trực tiếp với stakeholder lớn.
+- Dùng tiếng Anh đơn giản, tránh slang; chuẩn bị từ vựng domain (settlement, reconciliation, SLA).
+
+### 4. Bảng trade-off: clarify sâu vs giao nhanh
+
+| Cách | Ưu | Nhược |
+|---|---|---|
+| Clarify sâu trước code | Ít rework, chất lượng cao | Chậm ban đầu, PM sốt ruột |
+| Code ngay theo hiểu biết | Nhanh | Rủi ro làm lại, mất niềm tin |
+| Spike/demo nhỏ | PM "thấy" sớm | Tốn thời gian |
+
+### 5. Pitfall thường gặp
+
+- Giả định "PM sẽ hiểu khi thấy code" → sai; PM cần spec rõ ràng.
+- Không ghi lại quyết định → tranh cãi sau.
+- Over-engineer edge case hiếm → lãng phí; hỏi tần suất trước.
+- Không estimate impact khi scope đổi → deadline trượt mà không ai biết.
+
+### Ví dụ đời thực
+
+Tình huống: PM Hàn yêu cầu "dashboard realtime cho operator". Mơ hồ: realtime là giây hay phút? Bao nhiêu operator? Tôi hỏi: "Do operators need updates within 1 second or 30 seconds? How many concurrent operators?" PM trả lời 30s, 50 người. Tôi viết acceptance criteria, làm spike WebSocket + fallback polling 30s, demo cho PM. PM thấy polling đủ → không cần WebSocket phức tạp. Tiết kiệm 2 tuần. Ghi lại quyết định trong Confluence.
+
+### Trả lời mẫu khi phỏng vấn
+
+"In my last project the BA asked for a 'real-time operator dashboard' without defining latency or scale. Instead of coding, I asked concrete questions: do operators need updates within one second or thirty seconds, and how many concurrent users? The answer was thirty seconds and fifty users. I wrote acceptance criteria, built a small spike with polling every thirty seconds, and demoed it to the BA. Seeing it, they agreed polling was enough, saving two weeks of WebSocket work. With Korean stakeholders I confirm decisions in writing after meetings, use simple English, and escalate through the PM rather than bypassing hierarchy. I also track scope changes with effort estimates so trade-offs are visible."
+
+### Senior tip
+
+Yêu cầu rõ ràng là kỹ năng giao tiếp, không phải kỹ năng code. Luôn kết thúc mỗi cuộc họp bằng email tóm tắt quyết định và next step; đây là bằng chứng nếu scope thay đổi sau.
+`,
+  follow: ['How do you handle a requirement change mid-sprint?', 'How do you say no to a stakeholder politely?', 'How do you document decisions for future reference?'],
+  tags: ['english', 'communication', 'requirements', 'korean-team', 'lead']
+}
 );
