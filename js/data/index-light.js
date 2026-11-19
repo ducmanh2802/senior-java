@@ -2536,6 +2536,8 @@ window.DATA_INDEX = {
     {"id":"lesson-concurrency-017","track":"concurrency","order":17,"title":"Virtual threads từ gốc: platform thread, carrier thread, pinning và khi nào nên dùng","level":"mid","minutes":40},
     {"id":"lesson-concurrency-018","track":"concurrency","order":18,"title":"Giới hạn đồng thời bằng Semaphore: bulkhead, tryAcquire có timeout và test tất định với CountDownLatch","level":"senior","minutes":35},
     {"id":"lesson-concurrency-019","track":"concurrency","order":19,"title":"Lock-free với CAS: AtomicLong, LongAdder, ABA, false sharing và padding","level":"senior","minutes":40},
+    {"id":"lesson-concurrency-020","track":"concurrency","order":20,"title":"Producer-Consumer với BlockingQueue và backpressure","level":"senior","minutes":30},
+    {"id":"lesson-concurrency-021","track":"concurrency","order":21,"title":"Retry có backoff và Dead Letter Queue trong worker","level":"senior","minutes":30},
     {"id":"lesson-spring-001","track":"spring","order":1,"title":"IoC và DI: container quản lý object","level":"mid","minutes":30},
     {"id":"lesson-spring-002","track":"spring","order":2,"title":"AOP và proxy: lời gọi nội bộ bỏ qua advice","level":"senior","minutes":30},
     {"id":"lesson-spring-003","track":"spring","order":3,"title":"@Transactional: propagation và rollback","level":"senior","minutes":35},

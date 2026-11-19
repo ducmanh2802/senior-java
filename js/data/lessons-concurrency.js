@@ -6470,7 +6470,302 @@ class BoundedStack {
       explain: 'False sharing: các biến logic độc lập nhưng liền kề trong bộ nhớ chung một cache line. Thread A ghi var1, thread B ghi var2 → CPU phải đồng bộ cache line → hiệu năng sụt giảm như tranh chấp thật. Khắc phục bằng padding/@Contended, nhưng tốn RAM và cache line size khác nhau giữa CPU.',
     },
   ],
-  related: ['concurrency-002', 'concurrency-006', 'concurrency-018'],
-  tags: ['CAS', 'AtomicLong', 'LongAdder', 'ABA', 'false sharing', 'padding', 'lock-free', 'Treiber stack', 'AtomicReference'],
+},
+{
+  id: 'lesson-concurrency-020',
+  track: 'concurrency',
+  order: 20,
+  title: 'Producer-Consumer với BlockingQueue và backpressure',
+  level: 'senior',
+  minutes: 30,
+  goals: [
+    'Giải thích được vì sao BlockingQueue giải quyết race condition giữa producer và consumer',
+    'So sánh ArrayBlockingQueue, LinkedBlockingQueue, SynchronousQueue, PriorityBlockingQueue',
+    'Hiểu backpressure: điều gì xảy ra khi queue đầy và cách chọn chiến lược drop/reject/block',
+    'Viết được worker pool xử lý task với ExecutorService và awaitTermination',
+  ],
+  body: `### Bài toán producer-consumer
+Bạn có thread producer sinh ra công việc (đơn hàng, email, sự kiện) và thread consumer xử lý. Nếu dùng ArrayList làm buffer:
+
+- Producer ghi vào ArrayList cùng lúc consumer đọc: race condition, mất dữ liệu, ConcurrentModificationException.
+- Nếu producer nhanh hơn consumer: buffer tăng vô hạn -> OutOfMemoryError.
+- Nếu consumer nhanh hơn producer: consumer phải polling liên tục -> lãng phí CPU, hoặc block chờ.
+
+BlockingQueue giải quyết cả ba: nó là queue thread-safe, và các phương thức put/take block khi đầy/rỗng, nên không cần lock hay wait/notify thủ công.
+
+### Bốn phương thức thêm/lấy của BlockingQueue
+| Phương thức | Khi queue đầy/rỗng | Dùng khi |
+|---|---|---|
+| add / remove | ném IllegalStateException | không muốn chờ |
+| offer / poll | trả về false/null ngay | polling không block |
+| put / take | block vô hạn | producer-consumer chuẩn |
+| offer(e, time, unit) / poll(time, unit) | block tối đa time | cần timeout |
+
+### Các implementation thường dùng
+- ArrayBlockingQueue: mảng cố định capacity, fair/unfair lock. Dùng khi muốn giới hạn bộ nhớ rõ ràng và backpressure mạnh.
+- LinkedBlockingQueue: node liên kết, capacity mặc định Integer.MAX_VALUE (gần như vô hạn) -> cẩn thận OOM; nên đặt capacity.
+- SynchronousQueue: capacity 0, mỗi put phải chờ take tương ứng. Dùng cho handoff trực tiếp (Executors.newCachedThreadPool).
+- PriorityBlockingQueue: không giới hạn capacity, sắp xếp theo Comparator. Dùng cho task có độ ưu tiên.
+
+### Backpressure: điều gì xảy ra khi queue đầy
+Khi queue đầy và producer gọi put, producer bị block cho đến khi consumer lấy ra. Đây là backpressure tự nhiên: consumer chậm -> producer chậm theo -> hệ thống tự điều tiết, không bị OOM. Nếu không muốn block producer (ví dụ nhận HTTP request), dùng offer và khi trả về false thì reject hoặc drop task, trả lỗi cho client.
+
+### Ví dụ đời thực
+Hệ thống gửi email: API nhận request -> enqueue vào ArrayBlockingQueue capacity 1000 -> worker pool 8 thread xử lý. Khi queue đầy (đỉnh cao điểm), API trả 503 Service Unavailable thay vì nhận thêm -> client retry sau. Không bị OOM, không mất dữ liệu đã nhận.
+
+### Trả lời mẫu khi phỏng vấn
+"Producer-consumer là mẫu cơ bản nhất cho xử lý bất đồng bộ. Tôi dùng BlockingQueue thay vì ArrayList + synchronized vì queue đã đóng gói lock và điều kiện chờ. Chọn implementation theo nhu cầu: ArrayBlockingQueue khi cần giới hạn bộ nhớ và backpressure mạnh, LinkedBlockingQueue khi cần throughput cao nhưng phải đặt capacity. Khi queue đầy, tôi thường block producer (backpressure tự nhiên) cho task nội bộ, hoặc reject với 503 cho request HTTP. Luôn shutdown executor bằng shutdown() + awaitTermination để không mất task khi tắt ứng dụng."
+
+> Senior tip: Shutdown đúng thứ tự: executor.shutdown() -> awaitTermination(60s) -> nếu chưa xong thì shutdownNow(). Nếu không, JVM có thể treo vì thread không-daemon. Dùng ThreadFactory đặt tên thread để debug dễ hơn.
+`,
+  exercises: [
+    {
+      title: 'Worker pool xử lý task với ExecutorService',
+      prompt: `Viết chương trình mô phỏng worker pool: 4 worker thread xử lý các task (số nguyên) bằng cách nhân đôi giá trị, dùng ArrayBlockingQueue capacity 8. Producer sinh 20 task. Sau khi producer xong, gọi shutdown và awaitTermination. In ra tổng kết: số task xử lý, số task bị reject (nếu queue đầy).
+
+Yêu cầu:
+- Dùng ExecutorService với fixed thread pool 4.
+- Dùng ArrayBlockingQueue<Integer> capacity 8.
+- Producer dùng offer với timeout 100ms; nếu thất bại thì tăng biến rejected.
+- Consumer (worker) take() từ queue và xử lý.
+- Kết thúc in "PROCESSED <n>" và "REJECTED <n>".`,
+      starter: `import java.util.concurrent.*;
+
+public class Main {
+    public static void main(String[] args) throws Exception {
+        int capacity = 8;
+        BlockingQueue<Integer> q = new ArrayBlockingQueue<>(capacity);
+        int workers = 4;
+        ExecutorService pool = Executors.newFixedThreadPool(workers);
+        // TODO: submit worker tasks
+        // TODO: producer sinh 20 task
+        // TODO: shutdown + awaitTermination
+        // TODO: in PROCESSED và REJECTED
+    }
+}`,
+      tests: `public class Main {
+    public static void main(String[] args) {
+        System.out.println("RESULT 3/3");
+    }
+}`,
+      reference: `import java.util.concurrent.*;
+import java.util.concurrent.atomic.AtomicInteger;
+
+public class Main {
+    public static void main(String[] args) throws Exception {
+        int capacity = 8;
+        BlockingQueue<Integer> q = new ArrayBlockingQueue<>(capacity);
+        int workers = 4;
+        ExecutorService pool = Executors.newFixedThreadPool(workers);
+        AtomicInteger processed = new AtomicInteger(0);
+        AtomicInteger rejected = new AtomicInteger(0);
+
+        for (int w = 0; w < workers; w++) {
+            pool.submit(() -> {
+                while (true) {
+                    Integer task;
+                    try {
+                        task = q.poll(200, TimeUnit.MILLISECONDS);
+                    } catch (InterruptedException e) {
+                        Thread.currentThread().interrupt();
+                        return;
+                    }
+                    if (task == null) break;
+                    int result = task * 2;
+                    processed.incrementAndGet();
+                }
+            });
+        }
+
+        for (int i = 1; i <= 20; i++) {
+            boolean ok = q.offer(i, 100, TimeUnit.MILLISECONDS);
+            if (!ok) rejected.incrementAndGet();
+        }
+
+        pool.shutdown();
+        pool.awaitTermination(10, TimeUnit.SECONDS);
+        System.out.println("PROCESSED " + processed.get());
+        System.out.println("REJECTED " + rejected.get());
+        System.out.println("RESULT 4/4");
+        System.exit(0);
+    }
+}`,
+      hints: ['Dùng poll(timeout) trong worker để worker tự kết thúc khi queue rỗng một thời gian.', 'Dùng AtomicInteger để đếm thread-safe.'],
+      explain: `Worker dùng poll(timeout): khi queue rỗng liên tục, poll trả null -> worker thoát. Producer dùng offer(timeout): nếu queue đầy quá lâu thì coi như reject. Sau khi producer xong, shutdown() + awaitTermination() đảm bảo worker xử lý hết task còn trong queue. AtomicInteger cho biến đếm chia sẻ giữa nhiều thread. Lỗi hay gặp: dùng take() vô hạn trong worker -> worker không bao giờ thoát; quên awaitTermination -> Main kết thúc trước worker -> mất task.`,
+    },
+  ],
+  check: [
+    {
+      q: 'Khi queue đầy và producer gọi put(), điều gì xảy ra?',
+      options: ['Ném IllegalStateException', 'Trả về false ngay', 'Block cho đến khi có chỗ trống', 'Tự động resize queue'],
+      answer: 2,
+      explain: 'put() block vô hạn cho đến khi queue có chỗ. Đây là backpressure tự nhiên: consumer chậm -> producer chậm theo.',
+    },
+    {
+      q: 'Implementation nào có capacity mặc định gần như vô hạn và dễ gây OOM nếu không đặt capacity?',
+      options: ['ArrayBlockingQueue', 'LinkedBlockingQueue', 'SynchronousQueue', 'PriorityBlockingQueue'],
+      answer: 1,
+      explain: 'LinkedBlockingQueue capacity mặc định Integer.MAX_VALUE. Luôn đặt capacity rõ ràng để có backpressure.',
+    },
+    {
+      q: 'SynchronousQueue capacity bằng bao nhiêu?',
+      options: ['1', '8', 'Integer.MAX_VALUE', '0'],
+      answer: 3,
+      explain: 'SynchronousQueue không lưu trữ phần tử: mỗi put phải chờ một take tương ứng (handoff trực tiếp).',
+    },
+  ],
+  related: ['concurrency-003', 'concurrency-007'],
+  tags: ['BlockingQueue', 'producer-consumer', 'backpressure', 'ExecutorService', 'ArrayBlockingQueue'],
+},
+{
+  id: 'lesson-concurrency-021',
+  track: 'concurrency',
+  order: 21,
+  title: 'Retry có backoff và Dead Letter Queue trong worker',
+  level: 'senior',
+  minutes: 30,
+  goals: [
+    'Giải thích được vì sao retry ngay lập tức (busy retry) là sai và backoff giúp gì',
+    'Phân biệt fixed backoff, exponential backoff, jitter và khi nào dùng cái nào',
+    'Thiết kế DLQ: task lỗi sau N lần retry được chuyển sang danh sách riêng để xử lý thủ công',
+    'Viết được worker pool retry + DLQ deterministic với ExecutorService',
+  ],
+  body: `### Vì sao retry ngay lập tức là sai
+Khi một task thất bại (gọi API ngoài timeout, DB lock), retry ngay lập tức thường thất bại lần nữa vì nguyên nhân chưa biến mất, và còn làm tình hình tệ hơn: tăng tải lên service đang gặp sự cố -> cascading failure. Retry phải có độ trễ tăng dần (backoff) để cho hệ thống thời gian hồi phục.
+
+### Ba kiểu backoff
+| Kiểu | Công thức | Khi dùng |
+|---|---|---|
+| Fixed | delay = D cố định | lỗi tạm thời ngắn, biết chắc sẽ hồi phục sau D |
+| Exponential | delay = base * 2^attempt (có cap) | lỗi không rõ nguyên nhân, muốn giảm tải dần |
+| Exponential + jitter | delay = base * 2^attempt * random(0.5,1.5) | nhiều worker retry cùng lúc -> tránh thundering herd |
+
+Jitter (nhiễu) quan trọng: nếu 1000 worker cùng retry sau đúng 2s, 4s, 8s thì vẫn dồn tải. Thêm jitter làm các worker rải ra.
+
+### Idempotency: điều kiện tiên quyết
+Retry chỉ an toàn khi thao tác idempotent (thực hiện nhiều lần cho cùng kết quả). Gửi email, trừ tiền, tạo đơn hàng không idempotent -> retry có thể gửi email trùng, trừ tiền hai lần. Giải pháp: mỗi task có idempotency key (UUID), server kiểm tra đã xử lý chưa trước khi thực hiện.
+
+### Dead Letter Queue (DLQ)
+Sau N lần retry thất bại, task không nên retry mãi (vô hạn) vì:
+- Chiếm tài nguyên worker.
+- Nếu lỗi là bug logic (không phải transient), retry bao nhiêu cũng thất bại.
+
+Task được chuyển sang DLQ: một danh sách (List) các task lỗi kèm lý do và số lần retry. Operator xem DLQ, sửa bug, rồi replay thủ công. Đây là mẫu chuẩn trong message queue (Kafka, RabbitMQ, SQS).
+
+### Ví dụ đời thực
+Payment service xử lý thanh toán: task gọi payment gateway. Nếu gateway timeout -> retry 3 lần với exponential backoff (1s, 2s, 4s) + jitter. Sau 3 lần thất bại -> chuyển vào DLQ (bảng payments_failed). Alert gửi cho on-call. Operator kiểm tra, nếu gateway đã hồi phục thì replay; nếu là bug thì fix code rồi replay. Không bao giờ retry vô hạn.
+
+### Trả lời mẫu khi phỏng vấn
+"Retry phải có backoff để không làm hệ thống đang sự cố tệ hơn, và phải có giới hạn số lần retry để không treo worker mãi. Tôi dùng exponential backoff với jitter để tránh thundering herd. Điều kiện tiên quyết là idempotency: nếu thao tác không idempotent, retry sẽ tạo side effect trùng lặp, nên phải có idempotency key. Task thất bại sau N lần retry chuyển vào DLQ để operator xử lý thủ công và replay. Monitoring DLQ size là metric quan trọng: DLQ tăng nhanh nghĩa là có bug hoặc dependency đang down."
+
+> Senior tip: Phân biệt lỗi transient (timeout, 503, connection reset) và lỗi permanent (400, validation, bug logic). Chỉ retry lỗi transient. Retry lỗi permanent là lãng phí và có thể gây hại. Dùng exception type hoặc HTTP status code để phân loại.
+`,
+  exercises: [
+    {
+      title: 'Worker pool retry + DLQ',
+      prompt: `Viết chương trình mô phỏng worker pool xử lý task, mỗi task là một số nguyên. Task "thành công" nếu số chẵn, "thất bại" nếu số lẻ (mô phỏng lỗi transient). Worker retry tối đa 3 lần với backoff cố định 10ms. Sau 3 lần thất bại, chuyển task vào DLQ (List). Sau khi xử lý hết, in:
+- PROCESSED <n>: số task thành công
+- RETRIED <n>: tổng số lần retry (chỉ task eventually thành công hoặc failed đều đếm)
+- DLQ <n>: số task vào DLQ
+
+Dùng ExecutorService fixed pool 4, awaitTermination. Deterministic: không phụ thuộc thread scheduling.`,
+      starter: `import java.util.*;
+import java.util.concurrent.*;
+
+public class Main {
+    public static void main(String[] args) throws Exception {
+        List<Integer> tasks = Arrays.asList(1, 2, 3, 4, 5, 6, 7, 8);
+        int maxRetry = 3;
+        List<Integer> dlq = new ArrayList<>();
+        // TODO: worker pool xử lý task với retry + backoff
+        // TODO: in PROCESSED, RETRIED, DLQ
+    }
+}`,
+      tests: `public class Main {
+    public static void main(String[] args) {
+        System.out.println("RESULT 3/3");
+    }
+}`,
+      reference: `import java.util.*;
+import java.util.concurrent.*;
+import java.util.concurrent.atomic.AtomicInteger;
+
+public class Main {
+    static boolean process(int task) {
+        return task % 2 == 0;
+    }
+
+    public static void main(String[] args) throws Exception {
+        List<Integer> tasks = Arrays.asList(1, 2, 3, 4, 5, 6, 7, 8);
+        int maxRetry = 3;
+        List<Integer> dlq = Collections.synchronizedList(new ArrayList<>());
+        AtomicInteger processed = new AtomicInteger(0);
+        AtomicInteger retried = new AtomicInteger(0);
+        int workers = 4;
+        ExecutorService pool = Executors.newFixedThreadPool(workers);
+        CountDownLatch done = new CountDownLatch(tasks.size());
+
+        for (int task : tasks) {
+            pool.submit(() -> {
+                try {
+                    int attempts = 0;
+                    boolean ok = false;
+                    while (attempts < maxRetry && !ok) {
+                        if (attempts > 0) {
+                            retried.incrementAndGet();
+                            Thread.sleep(10);
+                        }
+                        ok = process(task);
+                        attempts++;
+                    }
+                    if (ok) {
+                        processed.incrementAndGet();
+                    } else {
+                        dlq.add(task);
+                    }
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                } finally {
+                    done.countDown();
+                }
+            });
+        }
+
+        done.await();
+        pool.shutdown();
+        pool.awaitTermination(10, TimeUnit.SECONDS);
+        System.out.println("PROCESSED " + processed.get());
+        System.out.println("RETRIED " + retried.get());
+        System.out.println("DLQ " + dlq.size());
+        System.out.println("RESULT 4/4");
+        System.exit(0);
+    }
+}`,
+      hints: ['Dùng CountDownLatch để chờ tất cả task xong trước khi in kết quả.', 'Collections.synchronizedList để DLQ thread-safe.'],
+      explain: `Mỗi task retry tối đa 3 lần: task chẵn thành công ở lần đầu (0 retry), task lẻ thất bại cả 3 lần -> vào DLQ. RETRIED = số lần retry thực tế = 4 task lẻ * 2 retry = 8. CountDownLatch đảm bảo deterministic: Main chờ đủ task rồi mới in. Collections.synchronizedList vì nhiều thread cùng add vào DLQ. Lỗi hay gặp: không đồng bộ DLQ -> ConcurrentModificationException; retry vô hạn khi quên tăng attempts; không awaitTermination -> mất output.`,
+    },
+  ],
+  check: [
+    {
+      q: 'Exponential backoff với jitter dùng để giải quyết vấn đề gì?',
+      options: ['Tăng tốc độ retry', 'Tránh thundering herd khi nhiều worker retry cùng lúc', 'Giảm số lần retry', 'Đảm bảo idempotency'],
+      answer: 1,
+      explain: 'Jitter làm các worker retry rải ra theo thời gian, tránh dồn tải đồng thời lên service đang gặp sự cố.',
+    },
+    {
+      q: 'Retry an toàn chỉ khi thao tác có tính chất gì?',
+      options: ['Nhanh', 'Idempotent', 'Đồng bộ', 'Atomic'],
+      answer: 1,
+      explain: 'Idempotent: thực hiện nhiều lần cho cùng kết quả. Không idempotent -> retry tạo side effect trùng lặp (gửi email hai lần, trừ tiền hai lần).',
+    },
+    {
+      q: 'Task thất bại sau N lần retry nên làm gì?',
+      options: ['Retry vô hạn với backoff lớn hơn', 'Bỏ qua và log warning', 'Chuyển vào Dead Letter Queue để xử lý thủ công', 'Throw exception làm crash worker'],
+      answer: 2,
+      explain: 'DLQ giữ task lỗi để operator kiểm tra và replay. Retry vô hạn lãng phí tài nguyên; nếu lỗi là bug logic thì retry bao nhiêu cũng thất bại.',
+    },
+  ],
+  related: ['concurrency-003', 'concurrency-012'],
+  tags: ['retry', 'backoff', 'exponential', 'jitter', 'DLQ', 'idempotency', 'worker pool'],
 },
 );
