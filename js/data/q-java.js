@@ -13081,5 +13081,398 @@ Dich vu xu ly danh sach khach hang tu nhieu nguon, luu vao HashSet de loai trung
   refs: [
     { type: 'doc', title: 'Hibernate Entity equals/hashCode', url: 'https://docs.jboss.org/hibernate/orm/6.4/userguide/html_single/Hibernate_User_Guide.html' }
   ]
+  },
+{
+  id: 'core-075',
+  topic: 'core',
+  level: 'senior',
+  q: 'He thong thanh toan ho tro nhieu hinh thuc tinh phi (the, vi, chuyen khoan) va team viet if-else dai trong mot method. Vi sao dieu do vi pham OCP (Open-Closed Principle), va Strategy pattern giai quyet nhu the nao?',
+  a: `**Tom tat:** OCP (Open-Closed Principle - nguyen tac mo-dong) bao class mo de mo rong nhung dong de sua. if-else dai moi lan them hinh thuc thanh toan lai phai sua class tinh phi, de gay bug lan toa. Strategy tach moi quy tac tinh phi thanh class rieng, context goi qua interface chung, nen them loai moi khong cham code cu.
+
+### Cai gi - vi sao can - cach hoat dong buoc buoc
+- **OCP la gi?** Nguyen tac thiet ke phan mem: mot module/class nen duoc phep **mo rong** (them tinh nang moi) nhung **dong** voi viec sua doi (khong sua code da chay on dinh). Giong mot tu dien: mo cua de thiet bi moi, khong pha tu dien moi lan mua dien thoai moi.
+- **Van de cua if-else dai:** Mot method tinhPhi(loai, soTien) dung if-else cho the/vi/chuyen khoan. Moi lan them loai moi (vi du tien dien tu moi) dev phai mo method, them nhanh, rebuild toan bo dich vu. Sai mot dau ngoac la tinh phi sai cho ca he thong, va phai retest moi loai cu.
+- **Strategy pattern la gi?** Dinh nghia mot interface chung cho phep thay doi thuat toan. Moi cach tinh phi la mot class trien khai interface, context goi qua interface ma khong biet trien khai cu the. Nhu mot cai ban tinh: gan module tinh thue Viet Nam hay module tinh thue My vao cung mot cho, cai ban tinh khong can biet ben trong tinh the nao.
+
+### Buoc buoc ap Strategy
+1. Dinh nghia interface TinhPhiStrategy co method tinh(soTien).
+2. Moi hinh thuc tao class trien khai: PhiThe, PhiVi, PhiChuyenKhoan.
+3. Lop context BoTinhPhi giu mot TinhPhiStrategy, method tinh(soTien) goi strategy.tinh(soTien).
+4. Chon strategy ngoai (factory hoac cau hinh) roi truyen vao context. Context khong bi sua khi them loai phi moi.
+
+~~~java
+// TRUOC: vi pham OCP - moi loai phi moi phai sua method nay
+public class DichVuTinhPhi {
+    public long tinh(String loai, long soTien) {
+        if ("THE".equals(loai)) return Math.round(soTien * 0.015);
+        if ("VI".equals(loai)) return Math.round(soTien * 0.008);
+        if ("CHUYEN_KHOAN".equals(loai)) return Math.round(soTien * 0.005);
+        throw new IllegalArgumentException("Loai khong ho tro: " + loai);
+    }
+}
+// SAU: ap Strategy - them loai moi chi them class, khong sua class nay
+interface TinhPhiStrategy {
+    long tinh(long soTien);
+}
+class PhiThe implements TinhPhiStrategy {
+    @Override public long tinh(long soTien) { return Math.round(soTien * 0.015); }
+}
+class PhiVi implements TinhPhiStrategy {
+    @Override public long tinh(long soTien) { return Math.round(soTien * 0.008); }
+}
+class PhiChuyenKhoan implements TinhPhiStrategy {
+    @Override public long tinh(long soTien) { return Math.round(soTien * 0.005); }
+}
+public class DichVuTinhPhi {
+    private final TinhPhiStrategy strategy;
+    public DichVuTinhPhi(TinhPhiStrategy strategy) { this.strategy = strategy; }
+    public long tinh(long soTien) { return strategy.tinh(soTien); }
+}
+~~~
+
+### Bang so sanh / khi nao dung
+| Tieu chi | if-else trong mot class | Strategy pattern |
+|---|---|---|
+| Them loai phi moi | Sua class tinh phi (vi pham OCP) | Them class moi, khong sua code cu |
+| Rou sai regression | Cao (sua code chay on dinh) | Thap (class moi doc lap) |
+| Test | Phai retest moi loai cu | Test tung strategy rieng liet |
+| Doc code | Method dai, kho doc | Moi strategy ngan, ro nghia |
+| Chi phi | Khong co class them | Them it class, can factory chon |
+
+**Khi dung Strategy:** co nhieu thuat toan thay doi thuong xuan, moi thuat toan doc lap, muon chon luc chay.
+**Khi khong dung:** chi 1-2 loai va hiem khi doi -> if-else don gian hon, khong can over-engineering.
+
+### Pitfall production
+- **Strategy giu trang thai:** neu strategy class co field instance va duoc chia sie giua nhieu request (thread khac nhau) -> ro ri trang thai. Strategy nen khong giu trang thai giua cac lan goi.
+- **Chon strategy van hard-code:** neu chuc chon strategy nam trong service va phai sua moi khi them loai, van chua tri tren. Dung factory hoac cau hinh (vi du Map<loai, TinhPhiStrategy>) de them loai moi chi la them cau hinh.
+- **Qua nhieu strategy cho su khac biet nho:** hai strategy chi khac mot hang so -> nen dua hang so vao constructor, khong them them class.
+
+### Vi du doi thuc (production)
+Dich vu thanh toan cua mot san thuong mai dien tu ban dau dung if-else trong DichVuTinhPhi de tinh phi theo loai the. Trong mot quy, team them 3 hinh thuc thanh toan moi (vi dien tu A, B, vi bang diem thuong). Hai lan dev them nham nhanh, khien phi tinh sai khoang 0,2% don hang, phai hoan tien va doi soat hon 12.000 don hang trong 2 ngay. Sau khi refactor sang Strategy: moi hinh thuc la mot class rieng, them loai moi chi tao class va dang ky vao Map<String, TinhPhiStrategy>. Quy sau, them 2 hinh thuc moi khong co incident tinh phi nao, va test don vi cua module tinh phi giam tu 2 gio xuong 15 phut vi moi strategy test doc lap.
+
+### Tra loi mau khi phong van
+"Open-Closed Principle nghia la class mo de mo rong nhung dong de sua. Neu minh viet if-else dai de tinh phi theo tung loai the, vi, chuyen khoan, thi moi lan them hinh thuc moi minh lai phai mo method tinh phi, them nhanh, rebuild va retest moi loai cu, rui ro cao. Strategy pattern giai quyet bang cach dinh nghia mot interface tinh phi, moi hinh thuc la mot class rieng trien khai interface do, va class dich vu chi goi qua interface ma khong biet chi tiet. Them loai moi chi la tao class moi, khong cham code da chay on dinh. Minh luu ý strategy nen khong giu trang thai de dung chung an toan trong moi trang da luong, va chuc chon strategy nen dung factory hoac cau hinh thay vi hard-code if-else, neu khong van de chi do sang noi khac. Trong thuc tat, tung loai phi co quy tac khac nhau va thay doi doc lap, nen Strategy giup moi chung tu phu thoc mot loai khong giao thiep code voi nhau."
+
+> Senior tip: Neu chi co 1-2 loai phi va hiem khi doi, if-else don gian la du, khong buoc Strategy vi lap code phuc tap khong co loi ich thuc. Strategy gia tri khi loai phi thay doi thuong xuan va moi loai co quy tac rieng.
+`,
+  follow: [
+    'Vi sao strategy nen khong giu trang thai khi dung chung trong dich vu da luong?',
+    'Neu chuc chon strategy van dung if-else thi Strategy con giai quyet duoc van de gi khong?',
+    'Dau hieu nao nhan biet Strategy dang tro thanh over-engineering?'
+  ],
+  tags: ['core', 'SOLID', 'OCP', 'Strategy pattern', 'refactor'],
+},
+{
+  id: 'core-076',
+  topic: 'core',
+  level: 'senior',
+  q: 'Mot cong viec/lenh di qua cac trang thai (moi, dang xu ly, hoan thanh, bi tu choi), va hanh dong xu ly khac nhau tuy trang thai. Vi sao if-else theo trang thai kho bao tri, va State pattern giup gi?',
+  a: `**Tom tat:** State pattern goi moi trang thai cua mot object thanh mot class rieng, object chinh (context) thay doi hanh vi khi trang thai chuyen. Thay vi mot method dai if-else kiem tra trang thai, moi trang thai tu quyen xu ly va quyet dinh trang thai tiep theo, code ngan gon, de them trang thai moi.
+
+### Cai gi - vi sao can - cach hoat dong
+- **Trang thai la gi?** Tinh trang hien tai cua object anh huong cach no phan tra. Vi du don hang "moi" co the bi huy, nhung don hang "da giao" khong the huy duoc.
+- **Van de if-else theo trang thai:** Method xuLy(DonHang dh) kiem tra if (trangThai == MOI) ... else if (DANG_XU_LY) ... . Them trang thai moi phai sua tat ca method kiem tra trang thai, de bo sot nhanh -> don hang bi ket trang thai cu.
+- **State pattern:** Dinh nghia interface TrangThaiTask co method xuLy() va tiepTheo(). Moi trang thai concrete (TaskMoi, TaskDangXuLy, TaskHoanThanh, TaskTuChoi) trien khai. Lop Task giu tham chieu trang thai hien tai, giao viec xu ly cho no. Khi can chuyen trang thai, Task gan trang thai moi.
+
+### Buoc buoc
+1. Interface TrangThaiTask: void xuLy(Task task), TrangThaiTask tiepTheo().
+2. Class moi trang thai: TaskMoi.xuLy() chuyen sang DangXuLy; TaskDangXuLy.xuLy() chuyen sang HoanThanh hoac TuChoi; TaskHoanThanh va TaskTuChoi khong lam gi (trang thai ket thuc).
+3. Class Task: field trangThai, method xuLy() goi trangThai.xuLy(this), method setTrangThai() de chuyen trang thai.
+
+~~~java
+interface TrangThaiTask {
+    void xuLy(Task task);
+    TrangThaiTask tiepTheo();
+}
+class TaskMoi implements TrangThaiTask {
+    @Override public void xuLy(Task task) {
+        System.out.println("Bat dau xu ly task");
+        task.setTrangThai(new TaskDangXuLy());
+    }
+    @Override public TrangThaiTask tiepTheo() { return new TaskDangXuLy(); }
+}
+class TaskDangXuLy implements TrangThaiTask {
+    @Override public void xuLy(Task task) {
+        System.out.println("Dang xu ly, cho phep huy");
+    }
+    @Override public TrangThaiTask tiepTheo() { return new TaskHoanThanh(); }
+}
+class TaskHoanThanh implements TrangThaiTask {
+    @Override public void xuLy(Task task) { System.out.println("Da hoan thanh, khong xu ly them"); }
+    @Override public TrangThaiTask tiepTheo() { return this; }
+}
+class Task {
+    private TrangThaiTask trangThai = new TaskMoi();
+    public void xuLy() { trangThai.xuLy(this); }
+    public void setTrangThai(TrangThaiTask t) { this.trangThai = t; }
+}
+~~~
+
+### Bang so sanh / khi nao dung
+| Tieu chi | if-else theo trang thai | State pattern |
+|---|---|---|
+| Them trang thai moi | Sua tat ca method kiem tra trang thai | Them class trang thai moi |
+| Hanh dong | Mot method lon, kho doc | Moi trang thai bao dong rieng |
+| Chuyen trang thai | Nhieu chuc gan bien thu cong | Tap trung trong class trang thai |
+| Test | Phai test tat ca nhanh cung luc | Test tung trang thai rieng liet |
+
+**Khi dung:** object co nhieu trang thai, hanh dong khac nhau ro rang, chuyen trang thai theo quy tac coc dinh (trinh tu cong viec).
+**Khi khong dung:** chi 2-3 trang thai va hanh dong hoac nhau giong nhau -> enum/boolean don gian hon.
+
+### Pitfall production
+- **Vong chuyen trang thai:** neu tiepTheo() quay lai trang thai cu khong co dieu kien dung -> task lap vo han, tieu tieu CPU. Phai co trang thai ket thuc (hoan thanh/tu choi).
+- **State giu tham chieu context:** neu state object luu doi tuong task va task luu state, co the tao vong tham chieu. Thiet ke sao state khong luu context dai han.
+- **Khong thread-safe:** nhieu thread cung goi xuLy() tren mot task, trang thai co bi thay doi xung dot. Can dong bo hoac dam bao mot task chi duoc mot thread xu ly tai mot thoi diem.
+
+### Vi du doi thuc (production)
+He thong xu ly don hang cua mot cong ty logistics dung enum TrangThai va if-else trong DonHangService.xuLy(). Khi them trang thai "dang giao" va "da co giao that bai", dev sua 4 method khac nhau nhung bo sot nhanh trong method kiem tra phi ship -> don hang "da co giao" van duoc tinh phi nhu dang giao, mat khoang 45 trieu dong trong thang. Refactor sang State: moi trang thai la class, chuyen trang thai tap trung trong tiepTheo(). Sau do, them trang thai moi khong lam sai logic cu, va so incident lien quan trang thai don hang giam tu trung binh 6 ca/thang xuong 0 trong 3 thang sau.
+
+### Tra loi mau khi phong van
+"Khi mot object co nhieu trang thai va hanh doi thay doi tuy trang thai, neu viet if-else kiem tra trang thai trong nhieu method thi them mot trang thai moi la phai sua het cac method do, de bo sot nhanh. State pattern giai quyet bang cach goi moi trang thai thanh mot class trien khai mot interface chung, vi du giao dien trang thai task co method xu ly va method tra ve trang thai tiep theo. Class task giu mot tham chieu den trang thai hien tai va giao viec xu ly cho no, nen task khong can biet chi tiet tung trang thai. Them trang thai moi chi la tao class moi, khong sua class task. Minh luu ý can co trang thai cuoi cung de tranh vong lap chuyen trang thai, va neu nhieu thread xu ly cung mot task thi phai dong bo de tranh thay doi trang thai xung dot."
+
+> Senior tip: State pattern hop ly khi trang thai co quy tac chuyen tien ro rang (workflow). Neu trang thai chi dung de hien thi giao interface va hanh dong khong khac nhau, enum + switch don gian la du, khong tao them nhieu class state.
+`,
+  follow: [
+    'Vi sao moi trang thai nen la mot class rieng thay vi chi la gia tri enum?',
+    'State pattern co the gay vong lap chuyen trang thai khong, va phong tranh ra sao?',
+    'Neu nhieu thread cung xu ly mot task co trang thai, can luu u gi?'
+  ],
+  tags: ['core', 'State pattern', 'trang thai', 'workflow', 'refactor'],
+},
+{
+  id: 'core-077',
+  topic: 'core',
+  level: 'lead',
+  q: 'Nhieu class con lam cung mot luong xu ly (vi du nhap file CSV, JSON, Excel) nhung chi tiet tung buoc khac nhau. Template Method giup tranh lap code nhu the nao, va nhuoc diem cua no la gi?',
+  a: `**Tom tat:** Template Method la mau thiet ke dinh nghia khung thuat toan trong class cha, de lai cac buoc chi tiet (phuong thuc abstract hoac hook) cho class con trien khai. Class cha kiem thu tu tu thuc hien, class con chi tu chinh buoc, tranh lap code va dam bao luong xu ly nhat quan.
+
+### Cai gi - vi sao can - cach hoat dong
+- **Template Method la gi?** Mot phuong thuc trong class cha dinh ro thu tu cac buoc (mo file -> doc -> chuyen doi -> kiem tra -> luu), danh la final de class con khong doi tu tu, cac buoc ben trong la abstract de class con override.
+- **Vi sao can:** neu moi loai file (CSV, JSON, Excel) viet lai toan bo luong mo-doc-luu thi code lap, va sua mot buoc chung (vi du them log) phai sua nhieu chuc.
+- **Cach hoat dong:** class cha NhapDuLieu co phuong thuc nhap() final goi moFile(), docDong(), chuyenDoi(), kiemTra(), luu(). Class con NhapCSV override docDong() doc dong phay, NhapJSON override doc JSON. Luong chung o chi, chi tiet o con.
+- **Hook:** phuong thuc co trien khai mac dinh, class con co the override neu muon (vi du kiemTra() mac dinh khong lam gi, class con override de kiem tra du lieu).
+
+### Buoc buoc
+1. Tao abstract class cha co phuong thuc xuLy() final, goi cac buoc buoc1(), buoc2()...
+2. Cac buoc bien doi danh abstract, class con trien khai.
+3. Cac buoc tu chinh danh hook, co trien khai mac dinh trong.
+4. Class con extends cha, chi override buoc can thiet.
+
+~~~java
+abstract class NhapDuLieu {
+    public final void nhap(String path) {
+        moFile(path);
+        while (coDongTiepTheo()) {
+            String dong = docDong();
+            Object doiTuong = chuyenDoi(dong);
+            if (kiemTra(doiTuong)) {
+                luu(doiTuong);
+            }
+        }
+        dongFile();
+    }
+    void moFile(String path) { System.out.println("Mo " + path); }
+    void dongFile() { System.out.println("Dong file"); }
+    abstract boolean coDongTiepTheo();
+    abstract String docDong();
+    abstract Object chuyenDoi(String dong);
+    boolean kiemTra(Object o) { return true; }
+    abstract void luu(Object o);
+}
+class NhapCSV extends NhapDuLieu {
+    @Override boolean coDongTiepTheo() { return true; }
+    @Override String docDong() { return "a,b,c"; }
+    @Override Object chuyenDoi(String dong) { return dong.split(","); }
+    @Override void luu(Object o) { System.out.println("Luu CSV"); }
+}
+~~~
+
+### Bang so sanh / khi nao dung
+| Tieu chi | Viet lai moi class con | Template Method |
+|---|---|---|
+| Code chung | Lap o moi class con | Gan o class cha |
+| Sua luong chung | Sua nhieu class con | Sua mot chuc class cha |
+| Tu tu xu ly | Con co the doi sai | Cha kiem soat (final) |
+| Tu chinh buoc | De nhung rac | Ro rang qua abstract/hook |
+
+**Khi dung:** nhieu class con chia cung luong xu ly, chi khac o mot so buoc, muon dam bao tu tu khong bi con thay doi.
+**Khi khong dung:** chi 1-2 class con, hoac moi class luong hoan toan khac -> ke thua lam giam do linh hoat.
+
+### Pitfall production
+- **Class cha qua phuc tap:** cung nhieu buoc abstract, class cha qua kho doc, class con phai hieu toan bo khung moi trien khai dung.
+- **Kho debug:** loi xay ra trong class con nhung stack track qua class cha, lap trinh vien moi de nham la bug cua framework.
+- **Cang ke thua cang coc:** class con bi rang buoc boi khung cua cha, kho tai su dung buoc don le o noi khac. Neu chi can thay doi mot phan nho, coi lai composition (gop doi tuong) thay vi ke thua.
+
+### Vi du doi thuc (production)
+He thong bao cao co 3 loai xuat file (PDF, Excel, CSV) ban dau moi loai viet lai toan bo luong: truy xuat du lieu -> dinh dang -> ghi file -> ghi log. Team them yeu cau "ghi log moi lan xuat" thi phai sua 3 class. Refactor ap Template Method: class abstract XuatBaoCao dinh method xuat() final, buoc ghiLog() chung, buoc dinhDang() de con override. Them loai xuat moi (HTML) chi tao class con override dinhDang(), khong cham class cu. Thoi gian them loai xuat moi giam tu nua ngay xuong 30 phut, va bug "quen ghi log" bo mat vi log o class cha.
+
+### Tra loi mau khi phong van
+"Template Method la mau thiet ke de tranh lap code khi nhieu class con lam cung mot luong nhung chi tiet tung buoc khac nhau. Class cha dinh mot phuong thuc final chua tu tu cac buoc (mo, doc, chuyen doi, kiem tra, luu), cac buoc nay abstract de class con trien khai theo cach cua minh, con buoc tu chinh dung hook co trien khai mac dinh. Nhu thu class con khong can viet lai toan bo luong, chi override buoc can thiet, va tu tu xu ly duoc class cha kiem soat nen con khong doi sai luong. Nhuoc diem la class cha co the tro thanh phuc tap, kho debug khi loi o class con, va ke thua lam class con it linh hoat. Neu chi can thay doi mot phan nho, minh cau nhan composition thay vi ke thua sau."
+
+> Senior tip: Template Method ngung quyen kiem soat tu class con len class cha. Neu thay class cha co qua nhieu phuong thuc abstract va class con chi trien khai mot phan, huy tach thanh cac component nho va gop bang composition thay vi ke thua sau.
+`,
+  follow: [
+    'Vi sao template method nen danh final, va class con co the lam gi neu khong final?',
+    'Hook la gi va khac phuong thuc abstract o diem nao?',
+    'Template Method va Strategy khac nhau ra sao, khi nao chon cai nao?'
+  ],
+  tags: ['core', 'Template Method', 'SOLID', 'OCP', 'abstract class', 'refactor'],
+},
+{
+  id: 'core-078',
+  topic: 'core',
+  level: 'senior',
+  q: 'Tao mot doi tuong cau hinh co nhieu truong tu chon (host, port, timeout, SSL...) thi constructor dai va de nham tham so. Khi nao dung Builder, khi nao dung Factory, va hai pattern khac nhau ra sao?',
+  a: `**Tom tat:** Builder xay dung doi tuong tung buoc theo ten phuong thuc, giai quyet van de constructor dai va nham tham so khi doi tuong co nhieu truong tu chon. Factory quyet dinh tao class nao dua vao dau vao, an chi tiet khoi tao. Hai pattern giai quyet van de khac nhau: Builder ve "cach tao mot doi tuong phuc tap", Factory ve "tao doi tuong nao".
+
+### Cai gi - vi sao can - cach hoat dong
+- **Constructor dai:** constructor voi nhieu tham so, goi nhu new Config("localhost", 5432, 30, null, null, true, false) de nham thu tu va kho doc.
+- **Builder la gi?** Mot class tro giup (thuong la static nested class) co cac phuong thuc dat tung truong va tra ve chinh builder, method build() tao doi tuong cuoi cung. Goi nhu new Config.Builder().host("localhost").port(5432).timeout(30).ssl(true).build() — ro rang tung truong.
+- **Factory la gi?** Mot phuong thuc/class tao doi tuong dua vao dieu kien, client khong can biet class cu the. Vi du ConnectionFactory.create(loai) tra ve KetNoiMySQL hoac KetNoiPostgreSQL.
+
+### Buoc buoc Builder
+1. Tao class Config co constructor private, tat ca field final.
+2. Tao static nested class Builder co cac field tuong ung, moi phuong thuc setX() tra ve this.
+3. Method build() tao Config va co the validate truoc khi tra ve.
+
+### Buoc buoc Factory
+1. Dinh nghia interface/lop abstract san pham (KetNoi).
+2. Tao class cu the (KetNoiMySQL, KetNoiPostgreSQL).
+3. Tao KetNoiFactory.create(loai) tra ve doi tuong phu hop.
+
+~~~java
+public class Config {
+    private final String host;
+    private final int port;
+    private final boolean ssl;
+    private Config(Builder b) {
+        this.host = b.host;
+        this.port = b.port;
+        this.ssl = b.ssl;
+    }
+    public static class Builder {
+        private String host = "localhost";
+        private int port = 5432;
+        private boolean ssl = false;
+        public Builder host(String host) { this.host = host; return this; }
+        public Builder port(int port) { this.port = port; return this; }
+        public Builder ssl(boolean ssl) { this.ssl = ssl; return this; }
+        public Config build() {
+            if (host == null || host.isEmpty()) throw new IllegalArgumentException("host bat buoc");
+            return new Config(this);
+        }
+    }
+}
+Config cfg = new Config.Builder().host("db.prod.vn").port(5432).ssl(true).build();
+~~~
+
+### Bang so sanh Builder vs Factory
+| Tieu chi | Builder | Factory |
+|---|---|---|
+| Giai quyet van de | Constructor nhieu tham so, nham thu tu | Khong biet truoc loai object can tao |
+| Cach dung | Goi tung phuong thuc dat truong, roi build() | Goi mot phuong thuc voi loai/kieu, nhan object |
+| Client biet class cu the | Biet (la Config) | Khong biet (nhan interface) |
+| Vi du | Tao Config co nhieu tu chon | Tao ket noi DB theo loai (MySQL/PostgreSQL) |
+
+**Khi dung Builder:** doi tuong nhieu truong, it tu chon, muon code goi ro rang va co the validate truoc khi tao.
+**Khi dung Factory:** chon loai object dua vao dau vao/cau hinh, muon an class cu the khoi client.
+**Khi khong dung:** doi tuong chi 1-2 truong bat buoc -> constructor don gian la du.
+
+### Pitfall production
+- **Builder over-engineering:** doi tuong chi 2-3 truong, tao Builder lam code dai hon khong co loi ich.
+- **build() duoc goi nhieu lan voi builder dung chung:** neu builder khong reset field, object lan sau co gia tri cua lan truoc. Nhen moi build tao builder moi hoac tai lieu ro.
+- **Factory if-else dai:** if (loai.equals("MYSQL")) ... else if ... vi pham OCP, them loai moi phai sua factory. Cai thien bang registry Map<loai, Supplier<KetNoi>> hoac cau hinh.
+
+### Vi du doi thuc (production)
+Mot dich vu ket noi co so du lieu ban dau co constructor KetNoiDB(String host, int port, String db, String user, String password, int timeout, int maxPool, boolean ssl) voi 8 tham so. Dev thuong tho nham port va timeout -> ket noi that bai, khoang 5% yeu cau loi trong dot deploy. Refactor sang KetNoiDB.Builder().host(...).port(...).db(...)...build() ro rang tung truong, va builder validate port trong khoang 1-65535 truoc khi tao. Sau do loi nham tham so ve 0, va them truong moi (vi du schema) khong anh huong code goi cu vi cac phuong thuc builder doc lap.
+
+### Tra loi mau khi phong van
+"Khi tao mot doi tuong co nhieu truong tu chon nhu cau hinh ket noi co so du lieu, constructor dai de lam nham thu tu tham so va kho doc. Builder giai quyet bang cach cung cap cac phuong thuc dat tung truong voi ten ro rang, tra ve chinh builder, cuoi cung goi build() tao doi tuong va co the validate du lieu. Factory khac: no khong quan tâm cach dat tung truong, ma quyet dinh tao class nao dua vao dau vao, vi du tao ket noi MySQL hay PostgreSQL, va an class cu the khoi client. Minh dung Builder khi doi tuong co nhieu truong tu chon va muon code goi ro rang, dung Factory khi can chon loai object dua vao cau hinh. Neu doi tuong chi mot hai truong, constructor don gian la du, khong buoc them pattern."
+
+> Senior tip: Neu factory if-else dai moi lan them loai moi, huy thay bang registry (Map loai -> ham tao) hoac cau hinh, de them loai moi khong sua factory. Va builder chi nen dung khi doi tuong thuc su co nhieu truong tu chon, khong tao Builder cho moi class.
+`,
+  follow: [
+    'Builder khac constructor co tham so mac dinh o diem nao?',
+    'Vi sao constructor cua class co Builder nen de private?',
+    'Factory if-else dai vi pham nguyen tac nao, va cai thien ra sao?'
+  ],
+  tags: ['core', 'Builder pattern', 'Factory pattern', 'constructor', 'refactor'],
+},
+{
+  id: 'core-079',
+  topic: 'core',
+  level: 'lead',
+  q: 'Mot class lam qua nhieu viec (vi pham SRP) va dung if-else de xu ly su kien (vi pham OCP). Ban refactor nhu the nao, Observer/event bus khac nhau the nao, va khi nao dung pattern thi bi over-engineering?',
+  a: `**Tom tat:** SRP (Single Responsibility Principle - nguyen tac tac nhiem don) bao mot class chi co mot, va chi mot, ly do de thay doi. Neu mot class vua kiem tra don hang, vua gui email, vua ghi log thi moi yeu cau moi lai phai sua class do. Refactor tach thanh cac class nho theo tac nhiem. Observer pattern de cac thanh dang ky nhan su kien va phan tra, giam ket dia. Event bus la trung tam phan phoi su kien. Ap pattern khong can thiet cho van de don gian la over-engineering, lam code kho hieu hon.
+
+### Cai gi - vi sao can - cach hoat dong
+- **SRP la gi?** Mot class nen co mot, va chi mot, ly do de thay doi. Vi du DonHangService chi nen xu ly nghiep vu don hang, khong nen tu gui mail hoac viet log.
+- **Refactor theo SRP:** tach DonHangService thanh DonHangService (xu ly don), EmailService (gui mail), LogService (ghi log). Moi class mot ly do thay doi, sua giao dien mail khong dot code don hang.
+- **OCP trong refactor:** thay vi if-else xu ly loai su kien, moi loai su kien duoc xu ly boi handler rieng, them loai moi khong sua code cu.
+- **Observer pattern:** subject (phat su kien) giu danh sach observer, khi su kien xay ra goi capNhat() tren moi observer. Observer va subject khong biet chi tiet nhau, chi biet interface.
+- **Event bus:** trung tam nhan su kien tu publisher va chuyen den subscriber da dang ky. Publisher khong can biet ai subscribed.
+
+### Su khac biet Observer vs Event bus
+| Tieu chi | Observer | Event bus |
+|---|---|---|
+| Ket noi | Subject giu tiep tuc danh sach observer | Publisher va subscriber khong biet nhau, cung biet bus |
+| Thiet lap | Subject dang ky observer thu cong | Subscriber dang ky vao bus trung tam |
+| Phu hop | It observer, quan he 1-n ro rang | Nhieu thanh, su kien khong dong bo, khong biet truoc ai xu ly |
+
+**Khi dung Observer:** it observer, quan he 1-n ro rang, muon subscriber phan tra ngay.
+**Khi dung Event bus:** nhieu thanh, khong muon chung biet nhau, su kien di qua nhieu he thong.
+**Khi over-engineering:** chi 1-2 subscriber, luong xu ly don gian, goi truc tiep da du; tao event bus va nhieu class handler lam code kho theo doi, debug kho vi luong dieu khien nhay qua nhieu class.
+
+~~~java
+// TRUOC: vi pham SRP + OCP
+public class DonHangService {
+    public void xuLy(DonHang dh) {
+        kiemTraDonHang(dh);
+        luuDonHang(dh);
+        if (dh.isMoi()) { guiEmailXacNhan(dh); ghiLog("Tao " + dh.getId()); }
+        if (dh.getLoai().equals("NOI_BO")) { /* ... */ }
+    }
+}
+// SAU: tach SRP + Observer
+interface SuKienHandler { void xuLy(SuKienDonHang sk); }
+class GuiEmailHandler implements SuKienHandler {
+    @Override public void xuLy(SuKienDonHang sk) {
+        if (sk.getLoai() == LoaiSuKien.TAO_MOI) guiEmail(sk.getDonHang());
+    }
+}
+class GhiLogHandler implements SuKienHandler {
+    @Override public void xuLy(SuKienDonHang sk) { ghiLog("Don: " + sk.getDonHang().getId()); }
+}
+public class DonHangService {
+    private final List<SuKienHandler> handlers;
+    public void xuLy(DonHang dh) {
+        kiemTraDonHang(dh);
+        luuDonHang(dh);
+        SuKienDonHang sk = new SuKienDonHang(dh, LoaiSuKien.TAO_MOI);
+        for (SuKienHandler h : handlers) h.xuLy(sk);
+    }
+}
+~~~
+
+### Pitfall production
+- **Event bus lam luong dieu khien kho theo doi:** khi su kien di qua bus, lap trinh vien kho biet ai xu ly va thu tu nao, debug su kien bi bo sot mat nhieu thoi gian.
+- **Khong unregister observer:** observer dang ky nhung khong huy khi khong dung nua (vi du man hinh dong, service bi huy) -> giu tham chieu, gay mat bo nho.
+- **Thu tu xu ly khong dam bao:** neu handler A phai chay truoc handler B, event bus khong dam bao thu tu neu khong cau hinh ro.
+- **Xu ly su kien dong bo tren event bus:** mot handler cham lam cham toan bo chain. Can hang doi hoac xu ly khong dong bo cho su kien khong khan.
+
+### Vi du doi thuc (production)
+Mot dich vu dat ve ban dau co class DatVeService lon lam het: kiem tra ghe, tinh tien, gui email xac nhan, ghi log, cap nhat ton kho. Moi lan team marketing thay doi noi dung email hoac team bao tri thay doi format log, lai phai sua class nay va chay lai toan bo test dat ve, duoi khong gay regression dat ve. Refactor tach thanh DatVeService, EmailService, GhiLogService, CapNhatTonKhoService, va dung event bus de cac service phu dang ky su kien "dat ve thanh cong". Sau do, thay doi noi dung email chi sua EmailService khong cham code dat ve, so incident do thay doi email/log giam tu trung binh 4 ca/thang xuong 0 trong 2 thang, va test dat ve chay nhanh hon vi khong khoi tao service mail/log trong moi test.
+
+### Tra loi mau khi phong van
+"Neu mot class vua xu ly don hang, vua gui email, vua ghi log thi no vi pham SRP vi co nhieu ly do de thay doi. Minh refactor tach ra thanh cac class nho, moi class mot tac nhiem: dich vu don hang chi xu ly don, dich vu email chi gui mail, dich vu log chi ghi log. De xu ly su kien sau khi dat ve, minh dung Observer hay event bus: cac handler dang ky nhan su kien, them loai su kien moi khong phai sua class dat hang (OCP). Observer phu hop khi co it observer va quan he ro rang; event bus phu hop khi nhieu thanh khong muon biet nhau. Nhung neu chi co mot hai subscriber va luong don gian, tao event bus la over-engineering, code kho theo doi hon la goi truc tiep. Minh cung luu ý phai unregister observer de tranh mat bo nho, va khong de luong xu ly quan tri bi lam cham boi handler khac tren event bus."
+
+> Senior tip: Ap pattern vi "co the can trong tuong lai" thuong la over-engineering. Ap pattern khi van de thuc su da xuat hien va lam code kho bao tri. Voi event bus, luon co cach xem danh sach subscriber va thu tu xu ly, neu khong debug su kien mat se kho khan.
+`,
+  follow: [
+    'SRP va OCP khac nhau the nao, va refactor vi du duong thoa man ca hai chua?',
+    'Observer va event bus khac nhau o diem nao, chon cai nao cho truong hop gi?',
+    'Dau hieu nao nhan biet ban dang over-engineering khi ap mau thiet ke?'
+  ],
+  tags: ['core', 'SRP', 'OCP', 'Observer', 'event bus', 'over-engineering', 'refactor'],
 },
 );
