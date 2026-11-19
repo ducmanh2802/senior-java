@@ -7160,5 +7160,416 @@ public void reclaimStaleTasks() {
     'Giá trị hợp lý: lease 2× p99 xử lý, heartbeat < lease/10, reclaim 5 phút; alert stuck_in_progress > 0 trong 10 phút, OOMKilled trigger reclaim.'
   ],
   tags: ['task-processing', 'lease', 'heartbeat', 'oomkilled', 'reclaim', 'postgresql', 'idempotency', 'worker']
+},
+{
+  id: 'lab-incident-048',
+  category: 'incident',
+  title: 'Dữ liệu máy bị trùng và lệch giờ sau khi mạng xưởng chập chờn: edge gateway gửi lại batch khi reconnect, dashboard OEE nhảy >100%',
+  level: 'senior',
+  scenario: `**Bối cảnh (giải thích thuật ngữ):**
+- **Edge gateway** là bộ thu thập dữ liệu đặt tại nhà máy, đọc dữ liệu từ PLC (Programmable Logic Controller - bộ điều khiển logic lập trình, dùng để tự động hóa dây chuyền sản xuất) qua giao thức OPC UA / Modbus, gói thành batch và gửi lên cloud qua MQTT/HTTPS.
+- **OEE (Overall Equipment Effectiveness)** là chỉ số hiệu suất thiết bị tổng thể = Availability × Performance × Quality, dùng để đo hiệu quả máy móc. Dashboard OEE hiển thị thời gian thực cho quản lý sản xuất.
+- **Idempotency key** là khoá định danh duy nhất cho một phép toán, giúp hệ thống nhận diện yêu cầu trùng lặp và chỉ xử lý một lần (ví dụ {{machineId}} + sequence number).
+- **Late data** là dữ liệu đến muộn so với cửa sổ thời gian xử lý (window), do độ trễ mạng hoặc buffering.
+
+Hệ thống **FactoryVN** có 50 edge gateway tại các nhà máy, mỗi gateway thu thập dữ liệu từ 20–30 PLC (chu kỳ 1 giây), gói batch 100 bản ghi và gửi lên **ingestion-service** (Spring Boot 3.3, Kafka 3.6, TimescaleDB) qua HTTPS. Gateway có bộ đệm (buffer) cục bộ 10.000 bản ghi và cơ chế **retry với exponential backoff** khi gửi thất bại. ingestion-service ghi vào Kafka topic {{machine-telemetry}}, sau đó consumer ghi vào TimescaleDB và tính OEE realtime.
+
+**Triệu chứng:** Ngày **15/11/2026**, từ **06:30** mạng xưởng (factory LAN) bị chập chờn do switch core quá tải. Các gateway mất kết nối tới cloud trong 5–30 giây, sau đó reconnect và **gửi lại toàn bộ batch trong buffer** (kể cả batch đã gửi thành công trước khi mất mạng). Dashboard OEE của 3 nhà máy nhảy vọt: Availability từ 85% lên **112%**, Performance từ 90% lên **105%**. Phân tích thấy timestamp của bản ghi bị lệch: máy dùng giờ local (không đồng bộ NTP), lệch ±2–5 phút so với giờ UTC. ingestion-service không có idempotency check nên ghi trùng toàn bộ batch retry. Dữ liệu trùng làm sai số liệu OEE, báo cáo cuối ca sai lệch 15–20%.
+
+**Dữ liệu thu thập:** Log gateway (buffer/retry), log ingestion-service (Kafka producer), metric Prometheus OEE, sample dữ liệu TimescaleDB trùng lặp, và cấu hình gateway/ingestion.`,
+  artifacts: [
+    {
+      name: 'gateway-buffer-retry.log',
+      lang: 'text',
+      content: `[2026-11-15T06:30:12.104+07:00] GW-03 WARN  Network unreachable, buffering batch seq=10240-10339 (100 records)
+[2026-11-15T06:30:15.220+07:00] GW-03 INFO  Buffered 500 records, buffer usage 5%
+[2026-11-15T06:30:42.001+07:00] GW-03 INFO  Network restored, flushing buffer...
+[2026-11-15T06:30:42.005+07:00] GW-03 INFO  Sending batch seq=10240-10339 (retry 1/3)
+[2026-11-15T06:30:42.110+07:00] GW-03 INFO  HTTP 200 OK batch seq=10240-10339
+[2026-11-15T06:30:42.112+07:00] GW-03 INFO  Sending batch seq=10340-10439 (retry 1/3)
+[2026-11-15T06:30:42.118+07:00] GW-03 INFO  HTTP 200 OK batch seq=10340-10439
+[2026-11-15T06:30:42.120+07:00] GW-03 INFO  Sending batch seq=10240-10339 (retry 2/3)  # GỬI LẠI BATCH ĐÃ THÀNH CÔNG
+[2026-11-15T06:30:42.225+07:00] GW-03 INFO  HTTP 200 OK batch seq=10240-10339
+[2026-11-15T06:30:42.227+07:00] GW-03 INFO  Sending batch seq=10340-10439 (retry 2/3)
+[2026-11-15T06:30:42.332+07:00] GW-03 INFO  HTTP 200 OK batch seq=10340-10439
+# Gateway logic: khi reconnect, flush TOÀN BỘ buffer (kể cả batch đã ACK), không lọc batch đã gửi thành công trước đó.`,
+    },
+    {
+      name: 'ingestion-service-kafka.log',
+      lang: 'text',
+      content: `[2026-11-15T06:30:42.115+07:00] INFO  ProducerRecord(topic=machine-telemetry, partition=3, key=GW-03, value=100 records) sent, offset=12450120
+[2026-11-15T06:30:42.118+07:00] INFO  ProducerRecord(topic=machine-telemetry, partition=3, key=GW-03, value=100 records) sent, offset=12450121
+[2026-11-15T06:30:42.230+07:00] INFO  ProducerRecord(topic=machine-telemetry, partition=3, key=GW-03, value=100 records) sent, offset=12450122  # TRÙNG seq 10240-10339
+[2026-11-15T06:30:42.335+07:00] INFO  ProducerRecord(topic=machine-telemetry, partition=3, key=GW-03, value=100 records) sent, offset=12450123  # TRÙNG seq 10340-10439
+# ingestion-service KHÔNG kiểm tra trùng lặp trước khi produce vào Kafka.`,
+    },
+    {
+      name: 'timescale-duplicate-sample.sql',
+      lang: 'text',
+      content: `-- Truy vấn phát hiện bản ghi trùng (machineId + seq + timestamp)
+SELECT machine_id, seq, event_time, count(*) as cnt
+FROM machine_telemetry
+WHERE machine_id IN ('GW-03-M01','GW-03-M02','GW-07-M05')
+  AND event_time >= '2026-11-15 06:30:00' AND event_time < '2026-11-15 07:00:00'
+GROUP BY machine_id, seq, event_time
+HAVING count(*) > 1
+ORDER BY cnt DESC, machine_id, seq;
+
+-- Kết quả mẫu:
+ machine_id  | seq  |        event_time        | cnt
+-------------+------+--------------------------+-----
+ GW-03-M01   | 10240| 2026-11-15 06:30:12.100  | 3
+ GW-03-M01   | 10241| 2026-11-15 06:30:12.101  | 3
+ GW-03-M01   | 10242| 2026-11-15 06:30:12.102  | 3
+ ... (400 bản ghi trùng lặp 3 lần cho GW-03)
+ GW-07-M05   | 20100| 2026-11-15 06:28:55.000  | 2  # LỆCH GIỜ: máy dùng giờ local, lệch -2 phút so với UTC
+ GW-07-M05   | 20101| 2026-11-15 06:28:56.000  | 2
+-- Tổng: 1.200 bản ghi trùng trong 1 giờ, OEE tính sai.`,
+    },
+    {
+      name: 'prometheus-oee-0630-0730.txt',
+      lang: 'text',
+      content: `# oee_availability = sum(rate(machine_running_seconds[1m])) / sum(rate(machine_scheduled_seconds[1m]))
+# oee_performance = sum(rate(actual_output[1m])) / sum(rate(theoretical_output[1m]))
+# duplicate_rate = count(duplicate_inserts) / count(total_inserts)
+
+time       oee_avail  oee_perf  duplicate_rate  ingest_rate  db_insert_rate
+06:25       85.2%      90.1%       0.0%          12,000/s      12,000/s
+06:30       85.5%      90.3%       0.0%          12,100/s      12,100/s
+06:31       98.7%      98.2%      42.0%          24,500/s      24,500/s
+06:32      105.3%     101.5%      48.5%          25,200/s      25,200/s
+06:33      112.8%     106.2%      50.1%          26,800/s      26,800/s
+06:34      108.9%     104.7%      49.8%          25,900/s      25,900/s
+06:35      102.1%      99.8%      45.2%          23,100/s      23,100/s
+06:40       95.0%      93.5%      12.0%          15,800/s      15,800/s
+06:45       88.5%      91.2%       1.2%          12,500/s      12,500/s
+# OEE > 100% là dấu hiệu dữ liệu trùng lặp. duplicate_rate ~50% ở đỉnh.`,
+    },
+    {
+      name: 'gateway-ingestion-config.yml',
+      lang: 'yaml',
+      content: `# Gateway firmware config (GW-03, GW-07...)
+buffer:
+  size: 10000
+  batch_size: 100
+retry:
+  max_attempts: 3
+  backoff_ms: 1000
+  exponential_base: 2
+  # THIẾU: không có persistent ACK tracking (lưu seq đã gửi thành công vào flash)
+  # THIẾU: không có idempotency key trong payload
+
+# Ingestion-service config
+spring:
+  kafka:
+    producer:
+      bootstrap-servers: kafka-1:9092,kafka-2:9092,kafka-3:9092
+      acks: all
+      retries: 3
+      enable.idempotence: true  # Chỉ idempotent ở mức producer, không ở mức business key
+  datasource:
+    url: jdbc:postgresql://timescaledb:5432/factory
+    hikari:
+      maximum-pool-size: 20
+
+# IngestionService.java (rút gọn)
+@PostMapping("/api/v1/telemetry/batch")
+public ResponseEntity<Void> ingest(@RequestBody TelemetryBatch batch) {
+    // KHÔNG KIỂM TRA TRÙNG: machineId + seq
+    kafkaTemplate.send("machine-telemetry", batch.getGatewayId(), batch);
+    return ResponseEntity.ok().build();
+}
+
+# MachineTelemetry entity
+@Entity
+@Table(name = "machine_telemetry")
+class MachineTelemetry {
+    @Id @GeneratedValue private Long id;
+    private String machineId;
+    private Long seq;           // Sequence number từ gateway
+    private Instant eventTime;  # Timestamp từ máy (KHÔNG CHUẨN HÓA UTC)
+    private Double temperature;
+    private Double vibration;
+    private Integer statusCode;
+    // THIẾU: unique constraint (machineId, seq)
+    // THIẾU: idempotencyKey = machineId + "#" + seq
+}`,
+    }
+  ],
+  questions: [
+    'Dựng lại chuỗi sự kiện từ lúc mạng chập chờn đến khi OEE nhảy >100%. Tại sao gateway gửi lại batch đã thành công? Dẫn chứng từ log gateway và ingestion.',
+    'Phân tích tác động của timestamp lệch (máy dùng giờ local, không đồng bộ NTP) đến việc tính OEE và deduplication. Số liệu TimescaleDB cho thấy GW-07-M05 event_time 06:28:55 trong khi giờ thực là 06:30:55.',
+    'Thiết kế lại toàn bộ luồng: idempotency key ở gateway và ingestion, chuẩn hóa timestamp về UTC, xử lý late data, và alert khi OEE vượt ngưỡng phi lý.',
+  ],
+  hints: [
+    'Gateway flush toàn bộ buffer khi reconnect, không phân biệt batch đã ACK hay chưa. Cần lưu seq đã ACK vào persistent storage (flash/SSD) để lọc khi retry.',
+    'Timestamp lệch khiến deduplication theo time window bị sai: bản ghi GW-07-M05 seq=20100 có event_time 06:28:55 (thực tế 06:30:55) rơi vào cửa sổ 06:28, không bị nhận là trùng với bản ghi 06:30:55.',
+    'Idempotency key = machineId + "#" + seq. Ingestion-service phải kiểm tra trước khi produce (Redis SET NX) hoặc DB unique constraint. TimescaleDB cần index (machineId, seq) unique. Late data: nếu event_time cũ hơn watermark thì ghi vào bảng late_data riêng hoặc cập nhật upsert.',
+  ],
+  answer: `**Tóm tắt:** Mạng xưởng chập chờn khiến gateway mất kết nối, buffer đầy. Khi reconnect, gateway **flush toàn bộ buffer** (kể cả 100 bản ghi seq 10240–10339 đã gửi thành công trước đó) do **không lưu persistent ACK**. Ingestion-service **không có idempotency check** (machineId+seq) nên ghi trùng 3 lần vào Kafka/TimescaleDB. Đồng thời máy PLC dùng **giờ local không đồng bộ NTP**, lệch -2 phút khiến timestamp rơi sai cửa sổ thời gian, deduplication theo window thất bại. Kết quả: OEE Availability nhảy **112%**, Performance **106%**, duplicate rate **50%** ở đỉnh. 1.200 bản ghi trùng trong 1 giờ làm sai báo cáo ca.
+
+**Chuỗi sự kiện:**
+1. **06:30:12** Mạng chập chờn, GW-03 buffer batch seq 10240–10339 (đã gửi thành công, nhận HTTP 200 nhưng **không lưu ACK persistent**).
+2. **06:30:42** Mạng hồi phục, GW-03 flush buffer: gửi lại seq 10240–10339 (retry 1), seq 10340–10439 (retry 1), rồi **gửi lại seq 10240–10339 (retry 2), seq 10340–10439 (retry 2)**.
+3. Ingestion-service nhận 4 batch, produce 400 record vào Kafka (200 unique, 200 duplicate), consumer ghi 400 dòng vào TimescaleDB.
+4. GW-07 máy dùng giờ local, lệch -2 phút: event_time 06:28:55 thay vì 06:30:55. Deduplication theo window 5 phút không bắt được trùng lặp cross-window.
+5. **06:31–06:35** OEE tính trên dữ liệu trùng: Availability = (running time × 3) / scheduled → **112%**, Performance = (output × 3) / theoretical → **106%**.
+
+**Dẫn chứng:**
+- Log GW-03: {{Sending batch seq=10240-10339 (retry 2/3)}} sau khi đã {{HTTP 200 OK}} ở retry 1.
+- Ingestion log: offset 12450120, 12450121, 12450122 (trùng seq), 12450123 (trùng seq).
+- TimescaleDB: {{GW-03-M01, seq=10240, cnt=3}}; {{GW-07-M05, seq=20100, event_time=06:28:55 (lệch -2p), cnt=2}}.
+- Prometheus: {{oee_avail 112.8%}}, {{oee_perf 106.2%}}, {{duplicate_rate 50.1%}}, {{ingest_rate 26,800/s}} (gấp 2.2 lần bình thường).
+
+**Cách sửa:**
+
+**Ngắn hạn (trong giờ):**
+1. **Deduplication tại ingestion-service:** Redis {{SET machineId:seq NX EX 86400}} trước khi produce Kafka. Nếu key tồn tại → bỏ qua, trả 200 OK.
+2. **Backfill dữ liệu:** {{DELETE FROM machine_telemetry WHERE ctid NOT IN (SELECT min(ctid) FROM machine_telemetry GROUP BY machine_id, seq);}} xóa trùng, giữ bản ghi đầu. Chạy {{REFRESH MATERIALIZED VIEW}} cho OEE.
+3. **Tạm tắt gateway GW-03/GW-07** cho đến khi flash firmware mới.
+
+**Dài hạn:**
+1. **Gateway: Persistent ACK tracking.** Lưu {{last_acked_seq}} vào flash/SSD sau mỗi HTTP 200. Khi reconnect, chỉ flush các batch {{seq > last_acked_seq}}.
+2. **Idempotency key business:** {{idempotency_key = machineId + "#" + seq}}. Payload JSON bắt buộc có field này. Ingestion-service kiểm tra Redis/DB unique constraint {{(machine_id, seq)}} trước khi ghi.
+3. **Chuẩn hóa timestamp UTC tại gateway.** Gateway đồng bộ NTP (chrony) mỗi 1 phút, thêm field {{event_time_utc}} (ISO 8601, Zulu). Ingestion-service **bỏ qua** {{event_time}} từ máy, dùng {{received_at}} (server time) cho watermark, nhưng lưu {{event_time_utc}} để phân tích.
+4. **Xử lý late data:** Watermark = {{now() - 10 phút}}. Record có {{event_time_utc < watermark}} → ghi vào bảng {{machine_telemetry_late}} với {{upsert ON CONFLICT (machine_id, seq) DO UPDATE}}. Alert khi late data > 5%.
+5. **Alert OEE phi lý:** {{oee_availability > 100% OR oee_performance > 100% OR duplicate_rate > 1%}} trong 5 phút → PagerDuty.
+
+**Phòng ngừa:**
+- Firmware gateway: test chaos network partition/reconnect, verify không duplicate.
+- Schema registry: Avro schema bắt buộc {{idempotency_key}}, {{event_time_utc}}.
+- Load test: simulate 50 gateway reconnect cùng lúc, verify ingest rate không spike, OEE không vượt 100%.
+- Runbook: "OEE > 100%" → check duplicate_rate, check gateway buffer flush logic, run deduplication SQL.
+
+> Senior tip: IoT/Edge hệ thống khác hẳn web: **mạng không tin cậy**, **thiết bị không đồng bộ giờ**, **buffer có hạn**. Ba trụ cột: (1) **Idempotency key ở mức business** (không tin vào exactly-once của Kafka), (2) **Timestamp chuẩn UTC tại source** (gateway đồng bộ NTP, không tin máy), (3) **Persistent ACK** (lưu seq đã gửi thành công vào flash trước khi xóa buffer). Không có ba thứ này, reconnect chắc chắn duplicate.`,
+  rubric: [
+    'Dựng đúng chuỗi: mạng chập chờn → buffer đầy → reconnect flush toàn bộ buffer (kể cả batch đã ACK) vì thiếu persistent ACK → ingestion không idempotent check → Kafka/DB ghi trùng 3 lần.',
+    'Phân tích timestamp lệch: máy dùng giờ local không NTP, lệch -2p khiến event_time rơi sai window, deduplication cross-window thất bại; dẫn chứng GW-07-M05 event_time 06:28:55 thực tế 06:30:55.',
+    'Dẫn chứng định lượng: log GW-03 retry 2/3 batch đã ACK, ingestion offset trùng seq, TimescaleDB cnt=3, Prometheus OEE 112%/106%, duplicate_rate 50%.',
+    'Đề xuất đầy đủ: gateway persistent ACK + NTP sync, ingestion idempotency key ({{machineId#seq}}) + Redis SET NX + DB unique constraint, timestamp UTC chuẩn hóa, late data handling (watermark + upsert), alert OEE > 100%.',
+    'Phòng ngừa: firmware test chaos, Avro schema bắt buộc {{idempotency_key}}/{{event_time_utc}}, load test 50 gateway reconnect, runbook OEE > 100%.'
+  ],
+  tags: ['iot', 'edge-gateway', 'idempotency', 'duplicate-data', 'time-sync', 'ntp', 'oee', 'kafka', 'timescaledb', 'late-data']
+},
+{
+  id: 'lab-incident-049',
+  category: 'incident',
+  title: 'Zero-downtime database migration: ALTER TABLE ADD COLUMN với volatile DEFAULT gây rewrite bảng, deploy rollback không kịp',
+  level: 'senior',
+  scenario: `**Bối cảnh (giải thích thuật ngữ):**
+- **Zero-downtime migration** là kỹ thuật thay đổi schema database mà không ngừng service: thường dùng *expand/contract pattern* (mở rộng schema trước, chuyển code, rồi thu hẹp).
+- **ALTER TABLE ADD COLUMN** trên PostgreSQL: thêm cột có {{DEFAULT}} giá trị cố định (không volatile) là **metadata-only** (chỉ cập nhật catalog, không quét bảng) từ PG 11+. Nhưng nếu {{DEFAULT}} dùng hàm **volatile** (như {{gen_random_uuid()}}, {{now()}}, {{random()}}) → PostgreSQL phải **rewrite toàn bộ bảng** (full table rewrite), khóa {{ACCESS EXCLUSIVE}} chặn mọi đọc/ghi.
+- **Lock timeout** là thời gian tối đa một transaction chờ khóa; vượt quá thì ném {{lock_timeout}} error.
+- **Statement timeout** là thời gian tối đa cho một câu SQL; dùng để chặn query chạy quá lâu.
+- **Migration tool** (Flyway/Liquibase) chạy migration trong transaction, nếu migration thất bại sẽ rollback toàn bộ transaction.
+
+Hệ thống **FinPay** (cổng thanh toán) chạy **PostgreSQL 15** (primary + 2 replica, 500 GB dữ liệu bảng {{transactions}} ~200 triệu hàng). **payment-service** (Spring Boot 3.3, HikariCP 20 connection/pod, 12 pod) đọc/ghi {{transactions}} liên tục ~5.000 req/s. Team dùng **Flyway** quản lý migration, chạy trong pipeline CI/CD trước khi deploy code mới.
+
+**Sự kiện (20/11/2026):** PR #2847 thêm cột {{risk_correlation_id}} (UUID) vào bảng {{transactions}} để trace mối liên quan giữa giao dịch và bản ghi rủi ro từ AI model. Migration {{V20261120_080000__add_risk_correlation.sql}}:
+~~~sql
+ALTER TABLE transactions ADD COLUMN risk_correlation_id UUID NOT NULL DEFAULT gen_random_uuid();
+~~~
+Khi pipeline chạy migration lúc **10:00:00**, Flyway bắt đầu transaction và thực thi {{ALTER TABLE}}. Bảng {{transactions}} 200 triệu hàng, cột mới có DEFAULT **volatile** {{gen_random_uuid()}} khiến PostgreSQL **rewrite toàn bộ bảng** (không dùng fast-path metadata-only). Lock {{ACCESS EXCLUSIVE}} kéo dài **18 phút**. Trong lúc đó:
+- Mọi {{SELECT/INSERT/UPDATE}} trên {{transactions}} bị chờ khóa → Hikari pool cạn, payment-service timeout 30 giây → 500 error.
+- Gateway trả **504** cho 100% request thanh toán.
+- Team nhận alert lúc 10:05, quyết định rollback code (không rollback DB vì migration đã commit một phần). Deploy code cũ lúc 10:12 nhưng migration vẫn đang chạy (không thể kill vì đang rewrite). Hệ thống chỉ hồi phục lúc **10:18** khi migration xong.
+
+**Dữ liệu thu thập:** Flyway migration log, {{pg_locks}} snapshot lúc 10:05, payment-service thread dump, metric Prometheus 10:00–10:20, và migration SQL.`,
+  artifacts: [
+    {
+      name: 'flyway-migration.log',
+      lang: 'text',
+      content: `[2026-11-20T10:00:00.012+07:00] INFO  Flyway: Current version: 20261119.090000
+[2026-11-20T10:00:00.015+07:00] INFO  Flyway: Migrating schema "public" to version 20261120.080000 - add risk_correlation
+[2026-11-20T10:00:00.018+07:00] INFO  Flyway: Executing SQL: ALTER TABLE transactions ADD COLUMN risk_correlation_id UUID NOT NULL DEFAULT gen_random_uuid()
+[2026-11-20T10:18:42.310+07:00] INFO  Flyway: Successfully applied 1 migration to schema "public" (execution time 00:18:42.292)
+[2026-11-20T10:18:42.315+07:00] INFO  Flyway: Schema "public" is at version 20261120.080000
+# Migration chạy 18 phút 42 giây, trong đó lock ACCESS EXCLUSIVE chặn toàn bộ truy cập bảng transactions.`,
+    },
+    {
+      name: 'pg-locks-1005.sql',
+      lang: 'text',
+      content: `-- pg_locks lúc 10:05:00 (5 phút sau migration bắt đầu)
+SELECT pid, locktype, database, relation::regclass, mode, granted, 
+       now() - pg_stat_activity.query_start AS duration, 
+       left(pg_stat_activity.query, 80) AS query
+FROM pg_locks
+JOIN pg_stat_activity ON pg_locks.pid = pg_stat_activity.pid
+WHERE relation = 'transactions'::regclass
+ORDER BY duration DESC;
+
+  pid  | locktype |    mode     | granted |  duration  |                          query
+-------+----------+-------------+---------+------------+--------------------------------------------------------------
+ 12458 | relation | AccessExclusiveLock | t  | 00:05:12  | ALTER TABLE transactions ADD COLUMN risk_correlation_id UUID NOT NULL DEFAULT gen_random_uuid()
+ 12459 | relation | AccessShareLock       | f  | 00:04:58  | SELECT * FROM transactions WHERE id = $1
+ 12460 | relation | AccessShareLock       | f  | 00:04:55  | UPDATE transactions SET status = $1 WHERE id = $2
+ 12461 | relation | RowExclusiveLock      | f  | 00:04:50  | INSERT INTO transactions (...) VALUES (...)
+ 12462 | relation | AccessShareLock       | f  | 00:04:48  | SELECT * FROM transactions WHERE user_id = $1 AND created_at > $2
+... (tổng 247 pid chờ lock, granted = f)
+# Tất cả SELECT/INSERT/UPDATE trên transactions bị chờ AccessExclusiveLock của migration.`,
+    },
+    {
+      name: 'payment-service-jstack-1005.txt',
+      lang: 'text',
+      content: `2026-11-20 10:05:12
+Full thread dump OpenJDK 64-Bit Server VM (17.0.12+7 mixed mode):
+
+"http-nio-8080-exec-88" #98 daemon prio=5 os_prio=0 cpu=120.50ms elapsed=28.4s tid=0x00007f3a2c0d9000 nid=0x1a3 runnable  [0x00007f39d6ffd000]
+    java.lang.Thread.State: RUNNABLE
+        at org.postgresql.core.v3.QueryExecutorImpl.receiveErrorResponse(QueryExecutorImpl.java:2675)
+        at org.postgresql.core.v3.QueryExecutorImpl.readFromCopy(QueryExecutorImpl.java:1089)
+        at org.postgresql.jdbc.PgStatement.executeInternal(PgStatement.java:490)
+        at org.postgresql.jdbc.PgPreparedStatement.executeWithFlags(PgPreparedStatement.java:192)
+        at org.postgresql.jdbc.PgPreparedStatement.executeUpdate(PgPreparedStatement.java:168)
+        at com.zaxxer.hikari.pool.ProxyPreparedStatement.executeUpdate(ProxyPreparedStatement.java:61)
+        at com.zaxxer.hikari.pool.HikariProxyPreparedStatement.executeUpdate(HikariProxyPreparedStatement.java)
+        at org.hibernate.persister.entity.AbstractEntityPersister.insert(AbstractEntityPersister.java:3284)
+        ... (stack trace Hibernate insert transaction)
+    -- Thống kê: 200/200 thread http-nio-8080-exec-* đều chờ PostgreSQL response (lock wait)
+    -- Hikari: total=20, active=20, idle=0, waiting=180 (mỗi pod)
+    -- Không thread nào phục vụ /actuator/health (readiness/liveness fail sau 30s)`,
+    },
+    {
+      name: 'prometheus-1000-1020.txt',
+      lang: 'text',
+      content: `# req = rate(http_server_requests_seconds_count{service="payment-service",uri="/v1/payments"}[10s])
+# p99 = histogram_quantile(0.99, http_server_requests_seconds_bucket{service="payment-service",uri="/v1/payments"})
+# hikari_active = sum(hikaricp_connections_active{service="payment-service"}) (max 12 x 20 = 240)
+# hikari_pending = sum(hikaricp_connections_pending{service="payment-service"})
+# db_lock_wait = sum(rate(pg_stat_database_locks_wait_total[10s]))
+# gateway_504 = rate(spring_cloud_gateway_requests_seconds_count{status="GATEWAY_TIMEOUT"}[10s])
+
+time       req/s  p99     hikari_active  hikari_pending  db_lock_wait  gateway_504/s  payment_500/s
+09:55       5,020  45 ms      180             0               0               0              0
+10:00       5,010  48 ms      185             0               0               0              0
+10:01       4,980  2.1 s    240           1,200          247             12             4,800
+10:02       4,950  15.3 s   240           5,400          247             85             4,900
+10:03       4,920  28.7 s   240           12,000         247            210             4,920
+10:05       4,890  30.0 s   240           18,000         247            410             4,890
+10:10       4,850  30.0 s   240           22,000         247            480             4,850
+10:15       4,820  30.0 s   240           24,000         247            500             4,820
+10:18       4,800  1.2 s    240           5,000          0               50             1,200
+10:20       4,810  48 ms    185             0               0               0              0
+# Migration kết thúc 10:18:42, lock giải phóng, hệ thống hồi phục dần. pending queue xả trong 2 phút.`,
+    },
+    {
+      name: 'migration-sql-and-config.txt',
+      lang: 'text',
+      content: `-- V20261120_080000__add_risk_correlation.sql (Flyway)
+BEGIN;
+ALTER TABLE transactions ADD COLUMN risk_correlation_id UUID NOT NULL DEFAULT gen_random_uuid();
+COMMIT;
+
+-- pg_attribute của transactions (trích)
+ attname    | atttypid | attnotnull | atthasdef | adsrc
+------------+----------+------------+-----------+-------
+ id         | int8     | t          | t         | nextval('transactions_id_seq'::regclass)
+ ...
+ risk_correlation_id | uuid     | t          | t         | gen_random_uuid()
+
+-- payment-service application.yml
+spring:
+  datasource:
+    hikari:
+      maximum-pool-size: 20
+      connection-timeout: 30000
+      validation-timeout: 5000
+  flyway:
+    enabled: true
+    baseline-on-migrate: true
+    # THIẾU: lock-timeout, statement-timeout cho migration
+
+-- Flyway config (pipeline CI/CD)
+flyway:
+  locations: classpath:db/migration
+  baseline-version: 0
+  baseline-description: initial
+  # THIẾU: outOfOrder=false (mặc định), validate-on-migrate=true
+  # THIẾU: callback beforeMigrate/afterMigrate để set lock_timeout
+  
+-- PostgreSQL config (postgresql.conf)
+# lock_timeout = 0 (vô hạn)
+# statement_timeout = 0 (vô hạn)
+# idle_in_transaction_session_timeout = 0`,
+    }
+  ],
+  questions: [
+    'Tại sao {{ALTER TABLE ... ADD COLUMN ... NOT NULL DEFAULT gen_random_uuid()}} trên PostgreSQL 15 vẫn rewrite toàn bộ bảng 200 triệu hàng? Giải thích cơ chế metadata-only ADD COLUMN và điều kiện kích hoạt rewrite.',
+    'Dựng lại chuỗi sự kiện từ lúc migration bắt đầu đến khi hệ thống hồi phục. Tại sao rollback code không giúp, và migration không thể kill? Dẫn chứng từ pg_locks, jstack, và metric Prometheus.',
+    'Thiết kế lại quy trình migration an toàn: expand/contract pattern, lock_timeout/statement_timeout, online schema change tool (pg_repack/pg_partman), và cách deploy code tương thích song song (backward/forward compatibility).',
+  ],
+  hints: [
+    'PostgreSQL 11+ chỉ dùng fast-path metadata-only khi ADD COLUMN có DEFAULT hằng số (không volatile) — kể cả khi có NOT NULL. Gây rewrite là DEFAULT **volatile** (gen_random_uuid): mỗi hàng cần giá trị riêng, nên PostgreSQL phải lưu giá trị vào từng hàng hiện có, quét và rewrite toàn bộ bảng. DEFAULT 0 (hằng số) sẽ chỉ là metadata-only ~100 ms, không phải nguyên nhân sự cố.',
+    'Lock AccessExclusiveLock chặn mọi SELECT/INSERT/UPDATE. Migration chạy trong transaction Flyway (BEGIN...COMMIT), không thể kill giữa chừng (kill pid chỉ rollback transaction, rewrite đã chạy một phần vẫn tốn I/O). Rollback code không giải phóng lock DB.',
+    'Expand/contract: (1) ADD COLUMN risk_correlation_id UUID DEFAULT gen_random_uuid() (không NOT NULL) → fast metadata-only. (2) Deploy code ghi risk_correlation_id từ AI, đọc cho phép NULL. (3) Backfill risk_correlation_id = gen_random_uuid() cho hàng cũ (batch nhỏ, có lock_timeout). (4) ALTER COLUMN SET NOT NULL (có lock_timeout). Code phải tương thích cả NULL và NOT NULL trong quá trình chuyển đổi.',
+  ],
+  answer: `**Tóm tắt:** Migration {{ALTER TABLE transactions ADD COLUMN risk_correlation_id UUID NOT NULL DEFAULT gen_random_uuid()}} trên bảng 200 triệu hàng khiến PostgreSQL **rewrite toàn bộ bảng** vì {{DEFAULT}} là hàm **volatile** ({{gen_random_uuid()}}): mỗi hàng cần giá trị riêng, không thể lưu làm một hằng số trong catalog. Lock {{AccessExclusiveLock}} kéo dài **18 phút** chặn mọi truy cập bảng {{transactions}}. Hikari pool 12 pod × 20 = 240 connection cạn kiệt sau 1 phút, {{pending}} lên 24.000, payment-service 5.000 req/s toàn bộ 500 error, gateway 504. Rollback code không giúp vì lock ở DB, migration không thể kill an toàn (đang rewrite). Hệ thống chỉ hồi phục khi migration commit xong lúc 10:18:42.
+
+**Tại sao rewrite bảng:**
+- PostgreSQL 11+ chỉ dùng **fast-path metadata-only** khi {{ADD COLUMN}} có {{DEFAULT}} hằng số (không volatile) — **có {{NOT NULL}} cùng DEFAULT hằng số vẫn không gây rewrite**.
+- Gây rewrite là {{DEFAULT}} **volatile** (như {{gen_random_uuid()}}, {{now()}}, {{random()}}): mỗi hàng cần giá trị riêng, nên PostgreSQL phải **ghi giá trị vào từng hàng hiện có** → quét và rewrite bảng, cấp phát trang mới, copy dữ liệu, build index lại.
+- {{DEFAULT gen_random_uuid()}} là volatile nên gây **rewrite toàn bộ bảng** 200 triệu hàng, kèm khóa {{AccessExclusiveLock}} chặn mọi đọc/ghi.
+
+**Chuỗi sự kiện:**
+1. **10:00:00** Flyway {{BEGIN}}, chạy {{ALTER TABLE transactions ADD COLUMN risk_correlation_id UUID NOT NULL DEFAULT gen_random_uuid()}}. PG lấy {{AccessExclusiveLock}}, bắt đầu rewrite 200M hàng.
+2. **10:00:10** {{pg_locks}}: 1 pid giữ {{AccessExclusiveLock}}, 247 pid chờ {{AccessShareLock}}/{{RowExclusiveLock}} (SELECT/INSERT/UPDATE).
+3. **10:01** Hikari {{active=240}}, {{pending=1.200}}; payment-service thread 200/200 chờ PG response ({{QueryExecutorImpl.receiveErrorResponse}}).
+4. **10:05** Alert PagerDuty, team quyết định rollback code v2.13 (không có cột risk_correlation_id). Deploy code cũ 10:12 nhưng **migration vẫn chạy**, lock không giải phóng.
+5. **10:18:42** Migration {{COMMIT}}, lock giải phóng. {{hikari_pending}} xả trong 2 phút, 10:20 hệ thống ổn định.
+
+**Dẫn chứng:**
+- Flyway log: {{execution time 00:18:42.292}}.
+- {{pg_locks}}: 1 pid {{AccessExclusiveLock granted=t}}, 247 pid {{AccessShareLock granted=f}}, duration 5+ phút.
+- JStack: 200/200 thread {{PgStatement.executeInternal}} → {{receiveErrorResponse}} (lock wait).
+- Prometheus: {{hikari_pending}} 0 → 24.000, {{db_lock_wait}} 247/s, {{gateway_504/s}} 0 → 500, {{payment_500/s}} ~4.900.
+
+**Cách sửa & phòng ngừa:**
+
+**Ngắn hạn (sau sự cố):**
+1. **Backfill an toàn:** {{UPDATE transactions SET risk_correlation_id = gen_random_uuid() WHERE risk_correlation_id IS NULL;}} chạy batch 10.000 hàng, {{lock_timeout = '5s'}}, {{statement_timeout = '10s'}}, nghỉ 1s giữa batch.
+2. {{ALTER TABLE transactions ALTER COLUMN risk_correlation_id SET NOT NULL;}} với {{lock_timeout = '5s'}} (PG 15+ hỗ trợ). Nếu lock timeout → rollback, thử lại lúc ít traffic.
+
+**Dài hạn: quy trình migration zero-downtime chuẩn (expand/contract):**
+
+**Bước 1 — Expand (schema mở rộng, tương thích code cũ):**
+~~~sql
+-- Migration V1: Chỉ ADD COLUMN, KHÔNG NOT NULL, DEFAULT volatile (metadata-only ~100ms)
+ALTER TABLE transactions ADD COLUMN risk_correlation_id UUID DEFAULT gen_random_uuid();
+-- Tạo index nếu cần (CONCURRENTLY)
+CREATE INDEX CONCURRENTLY idx_transactions_risk_correlation ON transactions (risk_correlation_id);
+~~~
+- Deploy **code v2.14** (ghi {{risk_correlation_id}} từ AI, đọc cho phép {{NULL}}): {{entity.setRiskCorrelationId(id != null ? id : java.util.UUID.randomUUID())}}.
+
+**Bước 2 — Backfill (điền dữ liệu cũ, an toàn):**
+- Job batch (Spring Batch / pg_cron) chạy: {{UPDATE transactions SET risk_correlation_id = gen_random_uuid() WHERE risk_correlation_id IS NULL;}} 
+- Mỗi batch 10.000 hàng, {{SET LOCAL lock_timeout = '5s'; SET LOCAL statement_timeout = '10s';}} nghỉ 1s.
+- Theo dõi {{pg_stat_progress_*}} hoặc {{pg_locks}} để không block traffic.
+
+**Bước 3 — Contract (schema thu hẹp, tương thích code mới):**
+- Migration V2: {{ALTER TABLE transactions ALTER COLUMN risk_correlation_id SET NOT NULL;}} với {{lock_timeout = '5s'}} (PG 15+).
+- Deploy **code v2.15** (bỏ fallback {{null}}, coi {{risk_correlation_id}} luôn có giá trị).
+
+**Yêu cầu kỹ thuật bắt buộc cho mọi migration:**
+1. **Lock timeout & statement timeout:** {{SET lock_timeout = '5s'; SET statement_timeout = '30s';}} ở đầu migration script. Flyway callback {{beforeMigrate}} set mặc định.
+2. **Không bao giờ {{NOT NULL}} trong {{ADD COLUMN}} cùng lúc.** Luôn tách: ADD COLUMN (nullable) → backfill → SET NOT NULL.
+3. **Online schema change tool:** Bảng > 50 GB dùng {{pg_repack}} (rewrite không lock) hoặc partition table + detach/attach.
+3. **Backward/Forward compatibility:** Code vN phải chạy được với schema vN và vN+1; code vN+1 phải chạy được với schema vN và vN+1. Test trong CI: deploy code vN+1 lên staging có schema vN, chạy smoke test.
+4. **Pipeline guard:** CI tự parse migration SQL, cấm pattern {{ADD COLUMN.*NOT NULL}}, {{DROP COLUMN}}, {{ALTER COLUMN TYPE}} trên bảng lớn (> 1 GB). Yêu cầu ticket schema review.
+
+**Alert & observability:**
+- {{pg_locks}} granted=f > 50 trong 30s trên bảng core → P1.
+- Flyway migration duration > 5 phút trên bảng core → P1.
+- {{hikaricp_connections_pending}} > 100 → P1.
+- Migration history table ({{flyway_schema_history}}) có cột {{execution_time}} → dashboard theo dõi trend.
+
+> Senior tip: Nguyên tắc vàng migration zero-downtime: **mở rộng trước, thu hẹp sau** (expand/contract). {{ADD COLUMN ... DEFAULT volatile}} (như {{gen_random_uuid()}}) là anti-pattern trên bảng lớn — mỗi hàng cần giá trị riêng, nên PostgreSQL phải lưu từng hàng → full table rewrite, khóa {{AccessExclusiveLock}}. {{DEFAULT}} hằng số cùng {{NOT NULL}} vẫn là metadata-only ~100 ms. Luôn test migration trên staging với dữ liệu production-scale (pg_dump --schema-only + pgbench generate data). Và nhớ: **không kill migration đang chạy** — nó đã ghi WAL, kill chỉ làm rollback chậm hơn và bloat bảng. Có {{lock_timeout}} để migration tự timeout thay vì treo hệ thống.`,
+  rubric: [
+    'Giải thích đúng: PostgreSQL 11+ fast-path metadata-only khi ADD COLUMN có DEFAULT hằng số (không volatile), kể cả có NOT NULL. Gây rewrite là DEFAULT volatile (gen_random_uuid): mỗi hàng cần giá trị riêng → lưu vào từng hàng → rewrite bảng 200M hàng, lock AccessExclusiveLock 18 phút.',
+    'Dựng đúng chuỗi: Flyway BEGIN → ALTER TABLE → lock chặn 247 query → Hikari cạn → payment 500/504 → rollback code không giải phóng lock → migration commit 10:18:42 mới hồi phục. Dẫn chứng pg_locks (AccessExclusiveLock granted=t, 247 chờ), jstack 200/200 thread chờ PG, Prometheus hikari_pending 24.000, gateway_504 500/s.',
+    'Giải thích tại sao rollback code không giúp (lock ở DB, không phải code), migration không kill được (đang rewrite, kill chỉ rollback chậm hơn).',
+    'Đề xuất expand/contract đầy đủ: (1) ADD COLUMN nullable DEFAULT gen_random_uuid() (metadata-only), (2) deploy code ghi NULL/UUID, (3) backfill batch có lock_timeout, (4) SET NOT NULL có lock_timeout. Kèm yêu cầu: lock_timeout/statement_timeout migration, pg_repack cho bảng lớn, CI guard cấm ADD COLUMN NOT NULL DEFAULT volatile, backward/forward compatibility test.',
+    'Alert: pg_locks granted=f > 50, migration duration > 5p, hikari_pending > 100, flyway_schema_history execution_time trend.'
+  ],
+  tags: ['postgresql', 'migration', 'flyway', 'alter-table', 'zero-downtime', 'expand-contract', 'lock-timeout', 'online-schema-change', 'pg-repack']
 }
 );
