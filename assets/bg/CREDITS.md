@@ -9,8 +9,8 @@ Side-gutter backdrops (css/base.css, "per-section side photos"). All photos are 
 | home-r.webp | Home | [Mac mini M4 with keyboard and mouse](https://unsplash.com/photos/LBCddW34Ivw) | Amanz (@amanz) |
 | talk-l.webp | Interview + English (speak, interview, mock, companies) | [Laptop screen showing a video conference](https://unsplash.com/photos/s8KDEUHJErQ) | Rodrigo Rodrigues, WOLF Λ R T (@wolfart32) |
 | talk-r.webp | Interview + English | [Laptop video conference and coffee mug](https://unsplash.com/photos/fRGoTJFQAHM) | Compare Fibre (@comparefibre) |
-| study-l.webp | Study | [Stacked hundred dollar bills](https://unsplash.com/photos/WyxqQpyFNk8) | Giorgio Trovato (@giorgiotrovato) |
-| study-r.webp | Study | [Hundred dollar bills fanned out](https://unsplash.com/photos/P4xvs9snTno) | Giorgio Trovato (@giorgiotrovato) |
+| study-l.webp | Study | [Desk with notebook, coffee and laptop](https://images.unsplash.com/photo-1488190211105-8b0e65b80b4e) | Unsplash (photo-1488190211105) |
+| study-r.webp | Study | [Laptop and open notebook on a work desk](https://images.unsplash.com/photo-1501504905252-473c47e087f8) | Unsplash (photo-1501504905252) |
 | practice-l.webp | Practice | [Laptop screen displaying colorful code](https://unsplash.com/photos/8qEB0fTe9Vw) | Mohammad Rahmani (@afgprogrammer) |
 | practice-r.webp | Practice | [Computer programming codes on a monitor](https://unsplash.com/photos/MgtHZ4zlC1U) | Markus Spiske (@markusspiske) |
 | career-l.webp | Career | [Two businesswomen shaking hands in a modern office building](https://unsplash.com/photos/EyapdJ3818E) | Vitaly Gariev (@silverkblack) |
