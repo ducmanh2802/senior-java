@@ -12519,18 +12519,18 @@ Em coi null là tín hiệu, không phải giá trị, và em chuẩn hoá nó �
   id: 'collections-057',
   topic: 'collections',
   level: 'mid',
-  q: 'Danh sach su kien da xu ly theo thu tu xay ra, can lay su kien moi nhat va duyet nguoc de kiem tra lai — trong Java 21 nen dung collection nao, va {{getFirst}}/{{getLast}}/{{reversed}} hoat dong nhu the nao?',
-  a: `**Tom tat:** Java 21 them hai interface {{SequencedCollection}} va {{SequencedMap}} (tinh nang on dinh, final tu Java 21, JEP 431) cho cac collection co thu tu on dinh nhu {{List}}, {{LinkedHashSet}}, {{LinkedHashMap}}, {{TreeSet}}, {{TreeMap}}. Chung thong thuc API lay phan tu dau/cuoi va dao nguoc: {{getFirst()}}, {{getLast()}}, {{addFirst()}}, {{addLast()}}, {{removeFirst()}}, {{removeLast()}}, {{reversed()}}. {{HashSet}}/{{HashMap}} khong implement vi thu tu phan tu khong on dinh.
+  q: 'Danh sách sự kiện đã xử lý theo thứ tự xảy ra, cần lấy sự kiện mới nhất và duyệt ngược để kiểm tra lại — trong Java 21 nên dùng collection nào, và {{getFirst}}/{{getLast}}/{{reversed}} hoạt động như thế nào?',
+  a: `**Tóm tắt:** Java 21 thêm hai interface {{SequencedCollection}} và {{SequencedMap}} (tính năng ổn định, final từ Java 21, JEP 431) cho các collection có thứ tự ổn định như {{List}}, {{LinkedHashSet}}, {{LinkedHashMap}}, {{TreeSet}}, {{TreeMap}}. Chúng thống nhất API lấy phần tử đầu/cuối và đảo ngược: {{getFirst()}}, {{getLast()}}, {{addFirst()}}, {{addLast()}}, {{removeFirst()}}, {{removeLast()}}, {{reversed()}}. {{HashSet}}/{{HashMap}} không implement vì thứ tự phần tử không ổn định.
 
-### Cai gi - vi sao can - hoat dong
-- **Collection** (tap hop) la lop bo nhieu phan tu; **interface** (giao thuc) la hop thiet ket cac phuong thuc nao phai trien khai, nhap giao thuc trong dien thoai, cac ung dung phu hop phai ho tro cong thuc do.
-- Truoc Java 21, moi loai collection co API rieng: {{List}} dung {{get(0)}} va {{get(size - 1)}}, {{TreeSet}} dung {{first()}}/{{last()}}, con {{LinkedHashSet}}/{{LinkedHashMap}} khong co cai gi de lay dau/cuoi. Viet method nhan "bat ky collection co thu tu nao" rat kho: phai viet nhieu overload cho List, Set, Map.
-- {{SequencedCollection}} extends {{Collection}}: {{getFirst()}}/{{getLast()}} lay phan tu dau/cuoi (nem {{NoSuchElementException}} neu collection trong - khong con phan tu nao); {{addFirst}}/{{addLast}}/{{removeFirst}}/{{removeLast}} la thao tac tuych chon (collection bat bien nhu {{List.of}} se nem {{UnsupportedOperationException}}); {{reversed()}} tra view (cua so xem nguoc) khong sao chep collection, thay doi collection gia se hien len view va nguoc lai.
-- {{SequencedMap}} extends {{Map}}: {{firstEntry()}}/{{lastEntry()}}/{{firstKey()}}/{{lastKey()}}/{{putFirst}}/{{putLast}}/{{reversed()}}, them {{sequencedKeySet()}}, {{sequencedValues()}}, {{sequencedEntrySet()}}.
-- Danh sach implementer: {{List}} (ArrayList, LinkedList, Vector, Stack), {{Deque}} (ArrayDeque, LinkedList, ConcurrentLinkedDeque), {{LinkedHashSet}}, {{LinkedHashMap}}, {{TreeSet}}, {{TreeMap}}. Khong implementer: {{HashSet}}, {{HashMap}}, {{ConcurrentHashMap}}, {{CopyOnWriteArrayList}} (co thu tu nhung khong ho tro addFirst/addLast hieu qua).
-- {{SequencedCollection}} khong extends {{Deque}}, nen khong co {{push}}/{{pop}}.
+### Cái gì - vì sao cần - hoạt động
+- **Collection** (tập hợp) là khái niệm chỉ một nhóm phần tử; **interface** (giao diện) là bản hợp đồng khai báo những phương thức mà class triển khai nó bắt buộc phải có — giống hợp đồng quy định bên nhận việc phải cung cấp đúng những dịch vụ đã cam kết.
+- Trước Java 21, mỗi loại collection có API riêng: {{List}} dùng {{get(0)}} và {{get(size - 1)}}, {{TreeSet}} dùng {{first()}}/{{last()}}, còn {{LinkedHashSet}}/{{LinkedHashMap}} không có cái gì để lấy đầu/cuối. Viết method nhận "bất kỳ collection có thứ tự nào" rất khó: phải viết nhiều overload cho List, Set, Map.
+- {{SequencedCollection}} extends {{Collection}}: {{getFirst()}}/{{getLast()}} lấy phần tử đầu/cuối (ném {{NoSuchElementException}} nếu collection trống - không còn phần tử nào); {{addFirst}}/{{addLast}}/{{removeFirst}}/{{removeLast}} là thao tác tuỳ chọn (collection bất biến như {{List.of}} sẽ ném {{UnsupportedOperationException}}); {{reversed()}} trả view (cửa sổ xem ngược) không sao chép collection, thay đổi collection gốc sẽ hiện lên view và ngược lại.
+- {{SequencedMap}} extends {{Map}}: {{firstEntry()}}/{{lastEntry()}}/{{firstKey()}}/{{lastKey()}}/{{putFirst}}/{{putLast}}/{{reversed()}}, thêm {{sequencedKeySet()}}, {{sequencedValues()}}, {{sequencedEntrySet()}}.
+- Danh sách implementer: {{List}} (ArrayList, LinkedList, Vector, Stack, CopyOnWriteArrayList), {{Deque}} (ArrayDeque, LinkedList, ConcurrentLinkedDeque), {{LinkedHashSet}}, {{LinkedHashMap}}, {{TreeSet}}, {{TreeMap}}. Không implementer: {{HashSet}}, {{HashMap}}, {{ConcurrentHashMap}} — thứ tự phần tử không xác định. {{CopyOnWriteArrayList}} vẫn implement (vì nó là {{List}}) nhưng mỗi lần {{addFirst}}/{{addLast}} phải sao chép toàn bộ mảng nên chi phí O(n), không phù hợp chèn/xoá ở đầu liên tục.
+- {{SequencedCollection}} không extends {{Deque}}, nên không có {{push}}/{{pop}}.
 
-### Ma vi du
+### Mã ví dụ
 ~~~java
 List<String> suKien = new ArrayList<>();
 suKien.add("Tao don hang");
@@ -12550,24 +12550,24 @@ maGiaoDich.add("GD-101");
 String maMoiNhat = maGiaoDich.getLast();    // "GD-101", dung lien tuc voi List
 ~~~
 
-### Luu khi su dung
-- {{getFirst()}}/{{getLast()}} nem neu neu collection rong: hay kiem tra {{isEmpty()}} truoc, hoac dung {{stream().findFirst()}}.
-- {{reversed()}} la **view**, khong phai ban sao: xoa phan tu trong collection gia thi view doi theo, va nguoc lai (neu collection co the thay doi).
-- Collection bat bien ({{List.of}}, {{Set.of}}) implement {{SequencedCollection}} nhung goi {{addFirst}}/{{removeFirst}} nem {{UnsupportedOperationException}}.
-- Khong dua {{HashSet}}/{{HashMap}} vao tham so kieu {{SequencedCollection}}: chung khong implement, thu tu khong on dinh, "phan tu moi nhat" khong co nghia.
-- Muon mot snapshot doc lap (ban sao khong bi anh huong sau nay), hay sao chep: {{new ArrayList<>(collection.reversed())}}.
+### Lưu khi sử dụng
+- {{getFirst()}}/{{getLast()}} ném nếu collection rỗng: hay kiểm tra {{isEmpty()}} trước, hoặc dùng {{stream().findFirst()}}.
+- {{reversed()}} là **view**, không phải bản sao: xoá phần tử trong collection gốc thì view đổi theo, và ngược lại (nếu collection có thể thay đổi).
+- Collection bất biến {{List.of}} implement {{SequencedCollection}} (vì nó là {{List}}) nhưng gọi {{addFirst}}/{{removeFirst}} ném {{UnsupportedOperationException}}. Còn {{Set.of}} trả về set không thứ tự, không implement {{SequencedSet}}, nên không có {{getFirst}}/{{addFirst}}.
+- Không đưa {{HashSet}}/{{HashMap}} vào tham số kiểu {{SequencedCollection}}: chúng không implement, thứ tự không ổn định, "phần tử mới nhất" không có nghĩa.
+- Muốn một snapshot độc lập (bản sao không bị ảnh hưởng sau này), hãy sao chép: {{new ArrayList<>(collection.reversed())}}.
 
-### Vi du thuc su (production)
-He thong xu ly su kien thanh toan luu ma giao dich da xu ly trong {{LinkedHashSet}} de khong bi trung va giu thu tu xay ra, khoang 50.000 ma moi ngay. Can lay ma moi nhat de so sanh voi ngan hang. Truoc Java 21, code ep sang {{List}} goi {{get(size - 1)}}, hoac duyet nguoc bang Iterator — de sai chi muc va phai sao chep toan bo tap hop. Sau nang cap Java 21, dung thang {{set.getLast()}} va {{set.reversed()}} de duyet nguoc khong sao chep, va kiem tra {{isEmpty()}} truoc khi goi {{getLast()}} tranh {{NoSuchElementException}}. Code gon hon khoi muoi dong, khong con loi chi muc vuot mang trong module kiem tra giao dich.
+### Ví dụ thực sự (production)
+Hệ thống xử lý sự kiện thanh toán lưu mã giao dịch đã xử lý trong {{LinkedHashSet}} để không bị trùng và giữ thứ tự xảy ra, khoảng 50.000 mã mỗi ngày. Cần lấy mã mới nhất để so sánh với ngân hàng. Trước Java 21, code ép sang {{List}} gọi {{get(size - 1)}}, hoặc duyệt ngược bằng Iterator — dễ sai chỉ mục và phải sao chép toàn bộ tập hợp. Sau nâng cấp Java 21, dùng thẳng {{set.getLast()}} và {{set.reversed()}} để duyệt ngược không sao chép, và kiểm tra {{isEmpty()}} trước khi gọi {{getLast()}} tránh {{NoSuchElementException}}. Code gọn hơn khối mười dòng, không còn lỗi chỉ mục vượt mảng trong module kiểm tra giao dịch.
 
-### Tra loi mau khi phong van
-"Java 21 them SequencedCollection va SequencedMap de thong thuc API lay phan tu dau, cuoi va dao nguoc cho cac collection co thu tu, nhu List, LinkedHashSet, LinkedHashMap, TreeSet. Truoc nay moi loai co API rieng, nen viet method chung rat kho. Voi SequencedCollection, em dung getFirst/getLast lay dau/cuoi, reversed de duyet nguoc bang view khong can sao chep. Luu thay getFirst/getLast nem neu neu collection rong nen em kiem tra isEmpty truoc; reversed la view khong phai ban sao; va HashSet/HashMap khong implement vi thu tu khong on dinh. Em su dung SequencedCollection lam tham so method de chap nhan nhieu loai collection hon."
+### Trả lời mẫu khi phỏng vấn
+"Java 21 thêm SequencedCollection và SequencedMap để thống nhất API lấy phần tử đầu, cuối và đảo ngược cho các collection có thứ tự, như List, LinkedHashSet, LinkedHashMap, TreeSet. Trước đây mỗi loại có API riêng, nên viết method chung rất khó. Với SequencedCollection, em dùng getFirst/getLast lấy đầu/cuối, reversed để duyệt ngược bằng view không cần sao chép. Lưu ý getFirst/getLast ném nếu collection rỗng nên em kiểm tra isEmpty trước; reversed là view không phải bản sao; và HashSet/HashMap không implement vì thứ tự không ổn định. Em sử dụng SequencedCollection làm tham số method để chấp nhận nhiều loại collection hơn."
 
-> Senior tip: khi viet method nhan collection co thu tu, dung {{SequencedCollection}} lam tham so thay vi {{List}}/{{Deque}} — chap nhan duoc nhieu loai hon va co API thong thuc. {{reversed()}} view rat tien cho duyet nguoc khong can tinh chi muc. HashMap/HashSet khong co thu tu on dinh nen khong dung cho dau tim "moi nhat".`,
+> Senior tip: khi viết method nhận collection có thứ tự, dùng {{SequencedCollection}} làm tham số thay vì {{List}}/{{Deque}} — chấp nhận được nhiều loại hơn và có API thống nhất. {{reversed()}} view rất tiện cho duyệt ngược không cần tính chỉ mục. HashMap/HashSet không có thứ tự ổn định nên không dùng cho đầu tìm "mới nhất".`,
   follow: [
-    'Vì sao {{HashSet}}/{{HashMap}} khong implement {{SequencedCollection}}/{{SequencedMap}}?',
-    '{{reversed()}} view co thiet khong, va thay doi collection gia co anh huong view nhu the nao?',
-    'Lay phan tu moi nhat cua {{LinkedHashSet}} truoc Java 21 lam nhu the nao, co bug gi?'
+    'Vì sao {{HashSet}}/{{HashMap}} không implement {{SequencedCollection}}/{{SequencedMap}}?',
+    '{{reversed()}} view có thiết không, và thay đổi collection gốc có ảnh hưởng view như thế nào?',
+    'Lấy phần tử mới nhất của {{LinkedHashSet}} trước Java 21 làm như thế nào, có bug gì?'
   ],
   tags: ['SequencedCollection', 'SequencedMap', 'Java 21', 'reversed', 'getFirst'],
   refs: [
@@ -12579,7 +12579,7 @@ He thong xu ly su kien thanh toan luu ma giao dich da xu ly trong {{LinkedHashSe
   topic: 'modern',
   level: 'mid',
   q: 'Don hang co trang thai (cho xu ly, da thanh toan, dang giao, da giao, da huy) va moi trang thai ke theo du lieu khac nhau; team hien dung chuoi if-else voi instanceof va ep kieu, them trang thai moi de quench case. Java 21 record pattern va pattern matching cho switch giup gi, va kiem tra day du (exhaustive) la gi?',
-  a: `**Tom tat:** Java 21 (tinh nang on dinh, final tu Java 21, JEP 440 va JEP 441) cho phep "thao" (deconstruct - lay cac thanh phat ben trong) mot record ngay trong {{instanceof}} va nhanh {{case}} cua {{switch}}: cung cung kiem tra kieu va gan bien thanh phat, khong can ep kieu thu cong. Ket hop voi {{sealed}} (kieu che han, final tu Java 17) compiler biet tat ca loai con phep va kiem tra tinh day du luc bien dich — thieu nhanh bao loi bien dich, thay the visitor pattern va if-else chain day day.
+  a: `**Tóm tắt:** Java 21 (tinh nang on dinh, final tu Java 21, JEP 440 va JEP 441) cho phep "thao" (deconstruct - lay cac thanh phat ben trong) mot record ngay trong {{instanceof}} va nhanh {{case}} cua {{switch}}: cung cung kiem tra kieu va gan bien thanh phat, khong can ep kieu thu cong. Ket hop voi {{sealed}} (kieu che han, final tu Java 17) compiler biet tat ca loai con phep va kiem tra tinh day du luc bien dich — thieu nhanh bao loi bien dich, thay the visitor pattern va if-else chain day day.
 
 ### Cai gi - vi sao can - hoat dong
 - **Record** (tu Java 16): lop du lieu chi doc, thanh phat (component) khai bao trong header, compiler tu dong sinh getter, equals, hashCode, toString.
@@ -12644,7 +12644,7 @@ Cong ty logistik, don hang co trang thai SEALED voi du lieu khac nhau theo trang
   topic: 'modern',
   level: 'senior',
   q: 'Virtual thread (luong an, Java 21) duoc quang cao "tao hang trieu luong re", nhung khi nao KHONG nen dung — cong viec tinh toan nang (CPU-bound), pool ket noi co so du lieu gioi han, va ThreadLocal nang — va dieu gi se xay ra neu co dinh dung?',
-  a: `**Tom tat:** Virtual thread giai bai toan "cho re" (I/O-bound — cong viec nhieu thoi gian cho mang/dia) khong phai "tinh toan re". Ba trang thai KHONG nen dung: (1) cong viec tinh toan nang khong co kho cho de nhung, them luong an chi tang chi lap lich, throughput han che boi so loi CPU; (2) nhieu luong an tranh nhau nguon co han (connection pool 50 — vung luu so ket noi co san toi co so du lieu), cac tac vu xep hang cho ket noi, timeout day chuyen, p99 tang; (3) ThreadLocal nang (vi du MDC luu trace id — ma xac dinh yeu cau de nhom log) nhan ban theo so luong an, heap chen chiec, co the OOM. Luon gioi han dong thoi bang Semaphore/bulkhead (cai chot dem so luot tac vu dong thoi) va doc p95/p99 truoc khi ket luan.
+  a: `**Tóm tắt:** Virtual thread giai bai toan "cho re" (I/O-bound — cong viec nhieu thoi gian cho mang/dia) khong phai "tinh toan re". Ba trang thai KHONG nen dung: (1) cong viec tinh toan nang khong co kho cho de nhung, them luong an chi tang chi lap lich, throughput han che boi so loi CPU; (2) nhieu luong an tranh nhau nguon co han (connection pool 50 — vung luu so ket noi co san toi co so du lieu), cac tac vu xep hang cho ket noi, timeout day chuyen, p99 tang; (3) ThreadLocal nang (vi du MDC luu trace id — ma xac dinh yeu cau de nhom log) nhan ban theo so luong an, heap chen chiec, co the OOM. Luon gioi han dong thoi bang Semaphore/bulkhead (cai chot dem so luot tac vu dong thoi) va doc p95/p99 truoc khi ket luan.
 
 ### Luong an va luong nen tai san
 - **Luong nen tai san** (platform thread): luong cu he dieu hanh (Linux, Windows...), moi luong bo nho stack (vung luu trang thai goi ham) mac dinh co the len 1 MB, chi chuyen nguc (context switch — he dieu hanh dung luong nay, luu trang thai, chay luong khac) cao.
@@ -12680,7 +12680,7 @@ Dich vu xu ly anh (resize, ma hoa) doi sang virtual thread per task => khong nha
   topic: 'modern',
   level: 'lead',
   q: 'Du an Spring Boot 2.7 chay Java 11, ke hoach nang len Java 21 + Spring Boot 3.x. Cai bat thuc thy nao team de gap, va ban se ke hoach nang cap nhu the nao de khong gay su luc production?',
-  a: `**Tom tat:** Java 11→21 khong chi la doi so version. Strong encapsulation (Java 17+) chan reflection vao noi bo JDK, Spring Boot 3 bat buoc namespace {{jakarta.*}} (thay {{javax.*}}), Hibernate 6 thay doi so anh xa va HQL chat hon, va agent hieu nang (APM, Mockito, Lombok) co the loi khoi dong. Ke hoach dung: co baseline, quet API dung noi bo JDK, chay song song JDK cu/moi trong CI, rollout canary co rollback.
+  a: `**Tóm tắt:** Java 11→21 khong chi la doi so version. Strong encapsulation (Java 17+) chan reflection vao noi bo JDK, Spring Boot 3 bat buoc namespace {{jakarta.*}} (thay {{javax.*}}), Hibernate 6 thay doi so anh xa va HQL chat hon, va agent hieu nang (APM, Mockito, Lombok) co the loi khoi dong. Ke hoach dung: co baseline, quet API dung noi bo JDK, chay song song JDK cu/moi trong CI, rollout canary co rollback.
 
 ### Bat thuc thy (theo thu tu gap)
 1. **Strong encapsulation**: Java 17+ chan {{setAccessible}} vao goi noi bo JDK ({{java.base}}) => {{InaccessibleObjectException}}. {{--add-opens}} chi la giai phap tam, phai co ticket dan som. Tim bang {{jdeps --jdkinternals}} va {{jdeprscan}}.
@@ -12723,7 +12723,7 @@ He thong core banking 14 dich vu Java 8 + Spring Boot 2.3 nang len Java 21 trong
   topic: 'modern',
   level: 'mid',
   q: 'Trong buoi phong van Java 21, nguoi hoi "Ban co dung tinh nang moi nao cua Java 21 khong?" Neu ung vien dung string templates (noi suy chuoi) hoac structured concurrency (cong viec co cau truc), ung vien nen tra loi nhu the nao de khong hieu sai trang thai tinh nang?',
-  a: `**Tom tat:** Khong phai tinh nang moi cua Java 21 cung on dinh dung production. Record pattern, pattern matching switch, sequenced collections, virtual thread la TINH NANG ON DINH (final) tu Java 21. String templates (JEP 430/459) chi preview o Java 21 va 22, roi bi RUT hoan toan truoc JDK 23 — khong co JDK chinh thuc nao co tinh nay. Structured concurrency (StructuredTaskScope) va ScopedValue con PREVIEW o Java 21 (can bat --enable-preview); ScopedValue chinh thuc tu Java 24, StructuredTaskScope van tien hoa. Trong phong van, ung vien nen ngu tinh nang on dinh da dung, va neu nhac preview phai no ro trang thai, khong khuyen khich production.
+  a: `**Tóm tắt:** Khong phai tinh nang moi cua Java 21 cung on dinh dung production. Record pattern, pattern matching switch, sequenced collections, virtual thread la TINH NANG ON DINH (final) tu Java 21. String templates (JEP 430/459) chi preview o Java 21 va 22, roi bi RUT hoan toan truoc JDK 23 — khong co JDK chinh thuc nao co tinh nay. Structured concurrency (StructuredTaskScope) va ScopedValue con PREVIEW o Java 21 (can bat --enable-preview); ScopedValue chinh thuc tu Java 24, StructuredTaskScope van tien hoa. Trong phong van, ung vien nen ngu tinh nang on dinh da dung, va neu nhac preview phai no ro trang thai, khong khuyen khich production.
 
 ### Cai gi - vi sao can - hoat dong
 - **Preview feature**: tinh nang hoan chinh nhua chua chot, co the thay doi hoac bi xoa; bien dich va chay can bat --enable-preview (co lenh cho phep tinh xem truoc); class file chi chay tren dung ban JDK do.
@@ -12766,7 +12766,7 @@ Thu vien noi bo dung 3 bieu thuc string templates sinh cau SQL bao cao tren JDK 
   topic: 'modern',
   level: 'senior',
   q: 'Dich vu lat tien (p99 quan trong) hien dang dung G1 (mac dinh), team thac mac nen chuyen sang ZGC generational (Java 21) khong. Hai GC khac nhau o dau, khi nao chon cai nao, va ban se doc luong ra gi truoc khi thay doi production?',
-  a: `**Tom tat:** G1 la GC mac dinh (tu Java 9), an toan cho nhieu workload. ZGC (Java 11+, on dinh tu Java 21) va Generational ZGC (Java 21, bat bang {{-XX:+UseZGC -XX:+ZGenerational}}; mac dinh generational tu JDK 23+) nham pause duoi 1ms nhung tieu thu CPU va bo nho du hon; chuyen GC khong chi la doi co — phai doc p99, throughput, allocation rate (toc tao bo) va allocation stall (luong ung dung bi chan vi tao bo nhanh hon bo doun rac) tren tai thuc.
+  a: `**Tóm tắt:** G1 la GC mac dinh (tu Java 9), an toan cho nhieu workload. ZGC (Java 11+, on dinh tu Java 21) va Generational ZGC (Java 21, bat bang {{-XX:+UseZGC -XX:+ZGenerational}}; mac dinh generational tu JDK 23+) nham pause duoi 1ms nhung tieu thu CPU va bo nho du hon; chuyen GC khong chi la doi co — phai doc p99, throughput, allocation rate (toc tao bo) va allocation stall (luong ung dung bi chan vi tao bo nhanh hon bo doun rac) tren tai thuc.
 
 ### Cai gi - vi sao can - hoat dong
 - **GC** (Garbage Collector — bo doun rac): tu dong thu hoi object khong con ai tham chieu tren heap (vung nho chua object Java trong luc chay), hieu nhi thung rac tu dong rat cua may tinh.
@@ -12818,7 +12818,7 @@ Dich vu kiem tra don hang can p99 thap. Dung G1, thi thoai pause GC lam p99 tang
   topic: 'core',
   level: 'senior',
   q: 'Tai sao tien te trong Java phai dung BigDecimal thay double/float? Lam tron tien theo quy tac ngan hang (bankers rounding) la gi, va ap dung nhu the nao khi tinh thue, giam gia, chia tien giua nhieu tai khoan?',
-  a: `**Tom tat:** Khong bao gio dung double hoac float de luu tien vi dau ky so floating point bi sai sot (0.1 + 0.2 != 0.3), co the sai mot xu va sap xep loi khi tính toán lặp nhiều lần. Dung BigDecimal voi dinh dang toan bo (scale dinh dinh) va chon che do lam tron phu hop (ROUND_HALF_UP cho tien, ROUND_HALF_EVEN cho banker's rounding), luon thuc hien phep nhan chia bang BigDecimal, khong chuyen qua double giua chuan.
+  a: `**Tóm tắt:** Khong bao gio dung double hoac float de luu tien vi dau ky so floating point bi sai sot (0.1 + 0.2 != 0.3), co the sai mot xu va sap xep loi khi tính toán lặp nhiều lần. Dung BigDecimal voi dinh dang toan bo (scale dinh dinh) va chon che do lam tron phu hop (ROUND_HALF_UP cho tien, ROUND_HALF_EVEN cho banker's rounding), luon thuc hien phep nhan chia bang BigDecimal, khong chuyen qua double giua chuan.
 
 ### Cay cung va lam tron tien
 - double/float dung IEEE 754, luu gian xap xi, khong chinh xac voi thap phan (0.1 khong luu duoc chinh xac). Tinh toan lpn loi tap hop, loi sap xep khi tong so tien lon.
@@ -12875,7 +12875,7 @@ dịch vụ thanh toán điện tử dung double de luu so du. Mot giao dich 10.
   topic: 'core',
   level: 'senior',
   q: 'Lop doi tuong bat bien (immutable) la gi, va sao no an toan luong (thread-safe) can dong bo? Cach xay dung lop immutable trong Java, va nhung truong hop can sao chep ve phong thu (defensive copy) la gi?',
-  a: `**Tom tat:** Doi tuong bat bien la doi tuong trang thai khong the thay doi sau khi tao. Tat ca cot la private final, khong co setter, phuong thuc tra ve moi doi tuong moi thay doi. Voi trang thia bo tinh (khong co truong bien co the thay doi), khong luong nao co the thay doi trang thai cua doi tuong khac luong dang doc, nen khong can dong bo (synchronized/Lock) va khong co race condition.
+  a: `**Tóm tắt:** Doi tuong bat bien la doi tuong trang thai khong the thay doi sau khi tao. Tat ca cot la private final, khong co setter, phuong thuc tra ve moi doi tuong moi thay doi. Voi trang thia bo tinh (khong co truong bien co the thay doi), khong luong nao co the thay doi trang thai cua doi tuong khac luong dang doc, nen khong can dong bo (synchronized/Lock) va khong co race condition.
 
 ### Co che hoat dong
 - Cot private final: gan o constructor, khong thay doi sau do.
@@ -12937,7 +12937,7 @@ Dich vu thanh toan gui doi tuong ThanhToan (so tien, thoi gian, trang thai) qua 
   topic: 'core',
   level: 'mid',
   q: 'String pool (chuoi trung tam) la gi, intern() lam gi, va khoi tao String bang "abc" khac new String("abc") o diem nao? Khi nao can dung intern() va rui ro bo nho neu qua su dung?',
-  a: `**Tom tat:** String pool la vung bo nho heap (Java 7+) luu cac chuoi duoc intern de tien tien su dung (string deduplication). Chuoi viet bang nhom ("abc") tu dong duoc dua vao pool. new String("abc") tao doi tuong moi tren heap, khong duoc them vao pool neu khong goi intern(). == so sanh tham chieu, equals() so sanh noi dung. intern() tra ve chuoi tu pool neu co, nguoc lai them vao pool. Qua su dung intern() hoi tri nguyen bo nho pool (Metaspace/heap string table) khong duoc xoa, co the OOM.
+  a: `**Tóm tắt:** String pool la vung bo nho heap (Java 7+) luu cac chuoi duoc intern de tien tien su dung (string deduplication). Chuoi viet bang nhom ("abc") tu dong duoc dua vao pool. new String("abc") tao doi tuong moi tren heap, khong duoc them vao pool neu khong goi intern(). == so sanh tham chieu, equals() so sanh noi dung. intern() tra ve chuoi tu pool neu co, nguoc lai them vao pool. Qua su dung intern() hoi tri nguyen bo nho pool (Metaspace/heap string table) khong duoc xoa, co the OOM.
 
 ### Co che hoat dong
 - Chuoi literal "abc": compiler dua vao constant pool, tai thuc JVM intern vao string pool, cung mot chuoi chi co mot doi tuong.
@@ -12985,7 +12985,7 @@ Dich vu xu ly log millisecond dong, moi dong co ten trich xuat (request id) lqp 
   topic: 'core',
   level: 'senior',
   q: 'Xu ly ngoai le chuan trong service Java: khi nao dung ngoai le du bao du kien (checked) va ngoai le ko du bao (unchecked), cach bao ngoai le (wrap) va chuan bao loi (custom exception), va sao khong bao gio bo trong (swallow) ngoai le?',
-  a: `**Tom tat:** Ngoai le du bao du kien (extends Exception) buot goi goi xu ly hoac khai bao throws, dung cho loi co the phuc hoi duoc (mang mat, het quota). Ngoai le ko du bao (extends RuntimeException) khong buot xu ly, dung loi lap trinh (null pointer, loi tham so). Bao ngoai le (wrap) bao ngoai le thap cap vao ngoai le cao cap can them thong tin nghiep vu, gan nguyen ngoai le goc vao cause, khong bo trong (khong co catch bo trong, khong log roi bo qua). Dinh nghia custom exception cho tung muc tieu dich vu.
+  a: `**Tóm tắt:** Ngoai le du bao du kien (extends Exception) buot goi goi xu ly hoac khai bao throws, dung cho loi co the phuc hoi duoc (mang mat, het quota). Ngoai le ko du bao (extends RuntimeException) khong buot xu ly, dung loi lap trinh (null pointer, loi tham so). Bao ngoai le (wrap) bao ngoai le thap cap vao ngoai le cao cap can them thong tin nghiep vu, gan nguyen ngoai le goc vao cause, khong bo trong (khong co catch bo trong, khong log roi bo qua). Dinh nghia custom exception cho tung muc tieu dich vu.
 
 ### Co che hoat dong
 - Checked Exception: buot try/catch hoac throws, ep caller giai quyet, phu hop voi ngoai le ngoai tu kien luong dieu (mang mat, het quota, het thoi gian).
@@ -13034,7 +13034,7 @@ Dich vu thanh toan goi API ngoai. Neu loi ket noi (IOException) bi bo trong (cat
   topic: 'core',
   level: 'senior',
   q: 'Tai sao equals/hashCode cua entity JPA khong duoc dung ID (primary key) va khong duoc su dung cot lazy load? Chon khoa nghiep thu (business key) nhu the nao, va loi gi xay ra neu hashCode thay doi khi entity duoc them vao HashSet/HashMap?',
-  a: `**Tom tat:** Entity JPA can equals/hashCode dang dung o collection (HashSet, HashMap) de tranh trung lap. ID (primary key) khong duoc dung vi ID null o trang thai transient (chua luu), va ID co the thay doi sau khi merge. Cot lazy load (Proxy/Collection) khong duoc dung vi khoi tao (fetch) bat ton tai, gay loi trong equals/hashCode. Dung khoa nghiep thu (cac cot duy nhat, khong null, khong thay doi) vi du email, ma so thue, va hashCode phai duoc tinh tu nhung cung cot, khong thay doi trong thoi gian entity o collection.
+  a: `**Tóm tắt:** Entity JPA can equals/hashCode dang dung o collection (HashSet, HashMap) de tranh trung lap. ID (primary key) khong duoc dung vi ID null o trang thai transient (chua luu), va ID co the thay doi sau khi merge. Cot lazy load (Proxy/Collection) khong duoc dung vi khoi tao (fetch) bat ton tai, gay loi trong equals/hashCode. Dung khoa nghiep thu (cac cot duy nhat, khong null, khong thay doi) vi du email, ma so thue, va hashCode phai duoc tinh tu nhung cung cot, khong thay doi trong thoi gian entity o collection.
 
 ### Co che hoat dong
 - HashSet/HashMap dung hashCode de chung vi tri (bucket) va equals de kiem tra trung lap. Neu hashCode thay doi khi entity o collection, khong tim thay doi tuong (vi o bucket cu), bi trung lap hoac mat doi tuong.
@@ -13087,7 +13087,7 @@ Dich vu xu ly danh sach khach hang tu nhieu nguon, luu vao HashSet de loai trung
   topic: 'core',
   level: 'senior',
   q: 'He thong thanh toan ho tro nhieu hinh thuc tinh phi (the, vi, chuyen khoan) va team viet if-else dai trong mot method. Vi sao dieu do vi pham OCP (Open-Closed Principle), va Strategy pattern giai quyet nhu the nao?',
-  a: `**Tom tat:** OCP (Open-Closed Principle - nguyen tac mo-dong) bao class mo de mo rong nhung dong de sua. if-else dai moi lan them hinh thuc thanh toan lai phai sua class tinh phi, de gay bug lan toa. Strategy tach moi quy tac tinh phi thanh class rieng, context goi qua interface chung, nen them loai moi khong cham code cu.
+  a: `**Tóm tắt:** OCP (Open-Closed Principle - nguyen tac mo-dong) bao class mo de mo rong nhung dong de sua. if-else dai moi lan them hinh thuc thanh toan lai phai sua class tinh phi, de gay bug lan toa. Strategy tach moi quy tac tinh phi thanh class rieng, context goi qua interface chung, nen them loai moi khong cham code cu.
 
 ### Cai gi - vi sao can - cach hoat dong buoc buoc
 - **OCP la gi?** Nguyen tac thiet ke phan mem: mot module/class nen duoc phep **mo rong** (them tinh nang moi) nhung **dong** voi viec sua doi (khong sua code da chay on dinh). Giong mot tu dien: mo cua de thiet bi moi, khong pha tu dien moi lan mua dien thoai moi.
@@ -13167,7 +13167,7 @@ Dich vu thanh toan cua mot san thuong mai dien tu ban dau dung if-else trong Dic
   topic: 'core',
   level: 'senior',
   q: 'Mot cong viec/lenh di qua cac trang thai (moi, dang xu ly, hoan thanh, bi tu choi), va hanh dong xu ly khac nhau tuy trang thai. Vi sao if-else theo trang thai kho bao tri, va State pattern giup gi?',
-  a: `**Tom tat:** State pattern goi moi trang thai cua mot object thanh mot class rieng, object chinh (context) thay doi hanh vi khi trang thai chuyen. Thay vi mot method dai if-else kiem tra trang thai, moi trang thai tu quyen xu ly va quyet dinh trang thai tiep theo, code ngan gon, de them trang thai moi.
+  a: `**Tóm tắt:** State pattern goi moi trang thai cua mot object thanh mot class rieng, object chinh (context) thay doi hanh vi khi trang thai chuyen. Thay vi mot method dai if-else kiem tra trang thai, moi trang thai tu quyen xu ly va quyet dinh trang thai tiep theo, code ngan gon, de them trang thai moi.
 
 ### Cai gi - vi sao can - cach hoat dong
 - **Trang thai la gi?** Tinh trang hien tai cua object anh huong cach no phan tra. Vi du don hang "moi" co the bi huy, nhung don hang "da giao" khong the huy duoc.
@@ -13244,7 +13244,7 @@ He thong xu ly don hang cua mot cong ty logistics dung enum TrangThai va if-else
   topic: 'core',
   level: 'lead',
   q: 'Nhieu class con lam cung mot luong xu ly (vi du nhap file CSV, JSON, Excel) nhung chi tiet tung buoc khac nhau. Template Method giup tranh lap code nhu the nao, va nhuoc diem cua no la gi?',
-  a: `**Tom tat:** Template Method la mau thiet ke dinh nghia khung thuat toan trong class cha, de lai cac buoc chi tiet (phuong thuc abstract hoac hook) cho class con trien khai. Class cha kiem thu tu tu thuc hien, class con chi tu chinh buoc, tranh lap code va dam bao luong xu ly nhat quan.
+  a: `**Tóm tắt:** Template Method la mau thiet ke dinh nghia khung thuat toan trong class cha, de lai cac buoc chi tiet (phuong thuc abstract hoac hook) cho class con trien khai. Class cha kiem thu tu tu thuc hien, class con chi tu chinh buoc, tranh lap code va dam bao luong xu ly nhat quan.
 
 ### Cai gi - vi sao can - cach hoat dong
 - **Template Method la gi?** Mot phuong thuc trong class cha dinh ro thu tu cac buoc (mo file -> doc -> chuyen doi -> kiem tra -> luu), danh la final de class con khong doi tu tu, cac buoc ben trong la abstract de class con override.
@@ -13323,7 +13323,7 @@ He thong bao cao co 3 loai xuat file (PDF, Excel, CSV) ban dau moi loai viet lai
   topic: 'core',
   level: 'senior',
   q: 'Tao mot doi tuong cau hinh co nhieu truong tu chon (host, port, timeout, SSL...) thi constructor dai va de nham tham so. Khi nao dung Builder, khi nao dung Factory, va hai pattern khac nhau ra sao?',
-  a: `**Tom tat:** Builder xay dung doi tuong tung buoc theo ten phuong thuc, giai quyet van de constructor dai va nham tham so khi doi tuong co nhieu truong tu chon. Factory quyet dinh tao class nao dua vao dau vao, an chi tiet khoi tao. Hai pattern giai quyet van de khac nhau: Builder ve "cach tao mot doi tuong phuc tap", Factory ve "tao doi tuong nao".
+  a: `**Tóm tắt:** Builder xay dung doi tuong tung buoc theo ten phuong thuc, giai quyet van de constructor dai va nham tham so khi doi tuong co nhieu truong tu chon. Factory quyet dinh tao class nao dua vao dau vao, an chi tiet khoi tao. Hai pattern giai quyet van de khac nhau: Builder ve "cach tao mot doi tuong phuc tap", Factory ve "tao doi tuong nao".
 
 ### Cai gi - vi sao can - cach hoat dong
 - **Constructor dai:** constructor voi nhieu tham so, goi nhu new Config("localhost", 5432, 30, null, null, true, false) de nham thu tu va kho doc.
@@ -13403,7 +13403,7 @@ Mot dich vu ket noi co so du lieu ban dau co constructor KetNoiDB(String host, i
   topic: 'core',
   level: 'lead',
   q: 'Mot class lam qua nhieu viec (vi pham SRP) va dung if-else de xu ly su kien (vi pham OCP). Ban refactor nhu the nao, Observer/event bus khac nhau the nao, va khi nao dung pattern thi bi over-engineering?',
-  a: `**Tom tat:** SRP (Single Responsibility Principle - nguyen tac tac nhiem don) bao mot class chi co mot, va chi mot, ly do de thay doi. Neu mot class vua kiem tra don hang, vua gui email, vua ghi log thi moi yeu cau moi lai phai sua class do. Refactor tach thanh cac class nho theo tac nhiem. Observer pattern de cac thanh dang ky nhan su kien va phan tra, giam ket dia. Event bus la trung tam phan phoi su kien. Ap pattern khong can thiet cho van de don gian la over-engineering, lam code kho hieu hon.
+  a: `**Tóm tắt:** SRP (Single Responsibility Principle - nguyen tac tac nhiem don) bao mot class chi co mot, va chi mot, ly do de thay doi. Neu mot class vua kiem tra don hang, vua gui email, vua ghi log thi moi yeu cau moi lai phai sua class do. Refactor tach thanh cac class nho theo tac nhiem. Observer pattern de cac thanh dang ky nhan su kien va phan tra, giam ket dia. Event bus la trung tam phan phoi su kien. Ap pattern khong can thiet cho van de don gian la over-engineering, lam code kho hieu hon.
 
 ### Cai gi - vi sao can - cach hoat dong
 - **SRP la gi?** Mot class nen co mot, va chi mot, ly do de thay doi. Vi du DonHangService chi nen xu ly nghiep vu don hang, khong nen tu gui mail hoac viet log.
