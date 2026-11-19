@@ -2472,6 +2472,9 @@ window.DATA_INDEX = {
     {"id":"algo-157","title":"Task Scheduler","difficulty":"medium","pattern":"Heap"},
     {"id":"algo-158","title":"LFU Cache","difficulty":"hard","pattern":"Linked List"},
     {"id":"algo-159","title":"Car Pooling","difficulty":"medium","pattern":"Intervals"},
+    {"id":"algo-160","title":"Find Median from Data Stream","difficulty":"hard","pattern":"Heap"},
+    {"id":"algo-161","title":"Subarray Sum Equals K","difficulty":"medium","pattern":"Hash Map"},
+    {"id":"algo-162","title":"Capacity To Ship Packages Within D Days","difficulty":"medium","pattern":"Binary Search on Answer"},
   ],
   lessons: [
     {"id":"lesson-collections-001","track":"collections","order":1,"title":"HashMap từ bên trong: hash, bucket, resize và hợp đồng equals/hashCode","level":"mid","minutes":25},

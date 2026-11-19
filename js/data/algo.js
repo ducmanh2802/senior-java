@@ -18042,6 +18042,231 @@ class Solution {
 }`,
   complexity: 'Time O(N + M) với M = ga lớn nhất (≤1000), Space O(M)',
   follow: ['Nếu ga lên tới 10^9 thì dùng cách nào?', 'Nếu cần in ra ga nào quá tải thì sửa thế nào?']
+},
+{
+  id: 'algo-160', title: 'Find Median from Data Stream', difficulty: 'hard', pattern: 'Heap', tags: ['heap', 'design', 'stream'],
+  prompt: `Thiết kế cấu trúc dữ liệu hỗ trợ thêm số {{addNum(num)}} và trả median hiện tại {{findMedian()}}. Median của số lượng chẵn là trung bình hai số giữa.
+
+### Ví dụ
+~~~text
+addNum(1), addNum(2), findMedian() -> 1.5
+addNum(3), findMedian() -> 2.0
+~~~
+
+### Ràng buộc
+- {{-10^5 <= num <= 10^5}}, tối đa 5·10^4 thao tác.`,
+  hints: [
+    'Sắp xếp toàn bộ mỗi lần findMedian là O(n log n) mỗi query, quá chậm.',
+    'Chia các số thành hai nửa: nửa nhỏ (max-heap) và nửa lớn (min-heap). Median nằm ở biên giữa hai nửa.',
+    'Giữ kích thước hai heap chênh lệch tối đa 1; nếu lẻ, nửa nhỏ lớn hơn 1 phần tử.'
+  ],
+  solution: `### Ý tưởng
+Duy trì hai heap:
+- {{low}}: max-heap chứa nửa nhỏ.
+- {{high}}: min-heap chứa nửa lớn.
+Mọi phần tử trong low <= mọi phần tử trong high. Cân bằng size: low.size() == high.size() hoặc low.size() == high.size()+1.
+
+addNum(x):
+1. Đưa x vào low, rồi đẩy max(low) sang high.
+2. Nếu high có phần tử nhỏ hơn low.max, hoán đổi.
+3. Cân bằng size để low lớn hơn hoặc bằng high 1.
+
+findMedian:
+- Nếu size lẻ: top của low.
+- Nếu chẵn: (top low + top high)/2.
+
+~~~java
+class MedianFinder {
+    private final PriorityQueue<Integer> low = new PriorityQueue<>(Collections.reverseOrder()); // max-heap
+    private final PriorityQueue<Integer> high = new PriorityQueue<>(); // min-heap
+
+    public void addNum(int num) {
+        low.offer(num);
+        high.offer(low.poll());
+        if (low.size() < high.size()) low.offer(high.poll());
+    }
+
+    public double findMedian() {
+        if (low.size() > high.size()) return low.peek();
+        return (low.peek() + high.peek()) / 2.0;
+    }
+}
+~~~
+
+### Lưu ý khi phỏng vấn
+- Dùng PriorityQueue với comparator reverseOrder cho max-heap.
+- Tránh tràn khi tính trung bình: chia cho 2.0.
+
+> Senior tip: Pattern hai heap dùng cho running median, top-k streaming, scheduling theo deadline.`,
+  complexity: 'Time O(log n) mỗi thao tác, Space O(n)',
+  starter: 'class MedianFinder {\n    public void addNum(int num) {\n        // TODO\n    }\n    public double findMedian() {\n        // TODO\n        return 0.0;\n    }\n}',
+  tests: `public class Main {
+    static int passed = 0, total = 0;
+    interface Case { Object get() throws Throwable; }
+    static void run(String name, Object expected, Case c) {
+        total++;
+        try {
+            Object actual = c.get();
+            if (Objects.deepEquals(expected, actual)) { passed++; System.out.println("PASS " + name); }
+            else System.out.println("FAIL " + name + ": expected " + expected + " got " + actual);
+        } catch (Throwable t) { System.out.println("FAIL " + name + ": threw " + t); }
+    }
+    public static void main(String[] args) {
+        MedianFinder m = new MedianFinder();
+        m.addNum(1); m.addNum(2);
+        run("two", 1.5, () -> m.findMedian());
+        m.addNum(3);
+        run("three", 2.0, () -> m.findMedian());
+        m.addNum(4); m.addNum(5);
+        run("five", 3.0, () -> m.findMedian());
+        MedianFinder m2 = new MedianFinder();
+        m2.addNum(-1);
+        run("single", -1.0, () -> m2.findMedian());
+        System.out.println("RESULT " + passed + "/" + total);
+    }
+}`,
+  follow: ['Nếu dữ liệu đến theo batch thì cấu trúc nào tốt hơn?']
+},
+{
+  id: 'algo-161', title: 'Subarray Sum Equals K', difficulty: 'medium', pattern: 'Hash Map', tags: ['array', 'hashmap', 'prefix-sum'],
+  prompt: `Cho mảng số nguyên (có thể âm) và số {{k}}, đếm số subarray liên tục có tổng bằng {{k}}.
+
+### Ví dụ
+~~~text
+nums = [1,1,1], k = 2 -> 2
+nums = [1,2,3], k = 3 -> 2
+~~~
+
+### Ràng buộc
+- {{1 <= nums.length <= 2·10^4}}, {{-1000 <= nums[i] <= 1000}}.`,
+  hints: [
+    'Brute force O(n²) xét mọi cặp (i,j).',
+    'Dùng prefix sum: tổng subarray [i..j] = prefix[j+1]-prefix[i]. Cần đếm cặp có hiệu bằng k.',
+    'Duyệt prefix, dùng map đếm số lần từng prefix sum xuất hiện; với prefix hiện tại p, số subarray kết thúc tại đây là count[p-k].'
+  ],
+  solution: `### Ý tưởng
+Prefix sum: {{P[0]=0}}, {{P[i+1]=P[i]+nums[i]}}. Tổng subarray [i..j] = {{P[j+1]-P[i]}}. Cần đếm cặp (i<j+1) với hiệu = k.
+
+Duyệt j từ 0..n-1, maintain {{count}} map số lần từng prefix sum xuất hiện trước. Với prefix hiện tại p=P[j+1], số subarray kết thúc tại j có tổng k là count[p-k] (vì P[i]=p-k). Sau đó tăng count[p].
+
+~~~java
+class Solution {
+    public int subarraySum(int[] nums, int k) {
+        Map<Integer, Integer> count = new HashMap<>();
+        count.put(0, 1);
+        int p = 0, ans = 0;
+        for (int x : nums) {
+            p += x;
+            ans += count.getOrDefault(p - k, 0);
+            count.put(p, count.getOrDefault(p, 0) + 1);
+        }
+        return ans;
+    }
+}
+~~~
+
+### Lưu ý khi phỏng vấn
+- Vì có số âm, không dùng two pointers (tổng không đơn điệu).
+- Khởi tạo count[0]=1 để tính subarray từ đầu.
+
+> Senior tip: Prefix sum + hash map là mẫu đếm subarray với tổng/điều kiện; mở rộng cho "số subarray chia hết cho K".`,
+  complexity: 'Time O(n), Space O(n)',
+  starter: 'class Solution {\n    public int subarraySum(int[] nums, int k) {\n        // TODO\n        return 0;\n    }\n}',
+  tests: `public class Main {
+    static int passed = 0, total = 0;
+    interface Case { Object get() throws Throwable; }
+    static void run(String name, Object expected, Case c) {
+        total++;
+        try {
+            Object actual = c.get();
+            if (Objects.deepEquals(expected, actual)) { passed++; System.out.println("PASS " + name); }
+            else System.out.println("FAIL " + name + ": expected " + expected + " got " + actual);
+        } catch (Throwable t) { System.out.println("FAIL " + name + ": threw " + t); }
+    }
+    public static void main(String[] args) {
+        Solution s = new Solution();
+        run("example1", 2, () -> s.subarraySum(new int[]{1,1,1}, 2));
+        run("example2", 2, () -> s.subarraySum(new int[]{1,2,3}, 3));
+        run("negatives", 3, () -> s.subarraySum(new int[]{1,-1,0}, 0));
+        run("single match", 1, () -> s.subarraySum(new int[]{5}, 5));
+        run("none", 0, () -> s.subarraySum(new int[]{1,2,3}, 10));
+        run("all zeros", 6, () -> s.subarraySum(new int[]{0,0,0}, 0));
+        System.out.println("RESULT " + passed + "/" + total);
+    }
+}`,
+  follow: ['Nếu mảng rất lớn thì memory có vấn đề không?']
+},
+{
+  id: 'algo-162', title: 'Capacity To Ship Packages Within D Days', difficulty: 'medium', pattern: 'Binary Search on Answer', tags: ['binary-search', 'greedy'],
+  prompt: `Có các gói hàng với trọng lượng {{weights[i]}} xếp theo thứ tự, cần chở hết trong {{D}} ngày. Mỗi ngày chở một số gói liên tiếp (theo thứ tự) với tổng trọng lượng không vượt capacity. Tìm capacity nhỏ nhất.
+
+### Ví dụ
+~~~text
+weights = [1,2,3,4,5,6,7,8,9,10], D = 5 -> 15
+~~~
+
+### Ràng buộc
+- {{1 <= weights.length <= 5·10^4}}, {{1 <= D <= weights.length}}.`,
+  hints: [
+    'Capacity phải ít nhất max(weights) (gói nặng nhất) và nhiều nhất tổng weights (1 ngày).',
+    'Nếu capacity c khả thi thì mọi c lớn hơn c cũng khả thi → binary search trên đáp án.',
+    'Kiểm tra c: greedy gom gói liên tiếp cho đến khi vượt c thì sang ngày mới; đếm ngày <= D?'
+  ],
+  solution: `### Ý tưởng
+Binary search on answer trong [max(weights), sum(weights)]. Kiểm tra feasibility(c): greedy, mỗi ngày thêm gói cho đến khi vượt c thì bắt đầu ngày mới. Nếu số ngày <= D thì c khả thi.
+
+~~~java
+class Solution {
+    public int shipWithinDays(int[] weights, int D) {
+        int lo = 0, hi = 0;
+        for (int w : weights) { lo = Math.max(lo, w); hi += w; }
+        while (lo < hi) {
+            int mid = lo + (hi - lo) / 2;
+            if (feasible(weights, D, mid)) hi = mid;
+            else lo = mid + 1;
+        }
+        return lo;
+    }
+    private boolean feasible(int[] w, int D, int cap) {
+        int days = 1, cur = 0;
+        for (int x : w) {
+            if (cur + x > cap) { days++; cur = 0; }
+            cur += x;
+        }
+        return days <= D;
+    }
+}
+~~~
+
+### Lưu ý khi phỏng vấn
+- Greedy gom theo thứ tự là tối ưu vì không được đổi thứ tự gói.
+- Phân biệt với "chia mảng tối thiểu hoá tổng lớn nhất" (Split Array Largest Sum) cùng pattern.
+
+> Senior tip: Capacity planning và rate limiting thường dùng binary search on answer + greedy feasibility.`,
+  complexity: 'Time O(n log S) với S = tổng weights, Space O(1)',
+  starter: 'class Solution {\n    public int shipWithinDays(int[] weights, int D) {\n        // TODO\n        return 0;\n    }\n}',
+  tests: `public class Main {
+    static int passed = 0, total = 0;
+    interface Case { Object get() throws Throwable; }
+    static void run(String name, Object expected, Case c) {
+        total++;
+        try {
+            Object actual = c.get();
+            if (Objects.deepEquals(expected, actual)) { passed++; System.out.println("PASS " + name); }
+            else System.out.println("FAIL " + name + ": expected " + expected + " got " + actual);
+        } catch (Throwable t) { System.out.println("FAIL " + name + ": threw " + t); }
+    }
+    public static void main(String[] args) {
+        Solution s = new Solution();
+        run("example", 15, () -> s.shipWithinDays(new int[]{1,2,3,4,5,6,7,8,9,10}, 5));
+        run("one day", 55, () -> s.shipWithinDays(new int[]{1,2,3,4,5,6,7,8,9,10}, 1));
+        run("each day", 10, () -> s.shipWithinDays(new int[]{1,2,3,4,5,6,7,8,9,10}, 10));
+        run("single", 5, () -> s.shipWithinDays(new int[]{5}, 1));
+        run("heavy", 6, () -> s.shipWithinDays(new int[]{3,2,2,4,1,4}, 3));
+        System.out.println("RESULT " + passed + "/" + total);
+    }
+}`,
+  follow: ['Nếu cho phép đổi thứ tự gói thì bài toán thay đổi thế nào?']
 }
 );
 })();
