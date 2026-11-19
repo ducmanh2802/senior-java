@@ -4241,5 +4241,188 @@ Service {{TransferService}} luôn khoá ví theo thứ tự {{fromId}} rồi {{t
   hints: ['Hai transaction cùng giữ row lock trên hai ví rồi chờ nhau.', 'Thứ tự UPDATE ngược nhau là nguyên nhân deadlock.'],
   tags: ['postgresql', 'deadlock', 'lock', 'transfer', 'for-update'],
 },
+{
+  id: 'lab-sql-028',
+  category: 'sql',
+  title: 'Bảng job queue nghẽn khóa khi 20 worker cùng SELECT FOR UPDATE',
+  level: 'senior',
+  scenario: `**Bối cảnh.** Sàn logistics ShipLane vận hành module booking-queue: sau khi API tạo task, 20 worker cùng consumer lệnh:
+
+~~~sql
+SELECT tq.task_id, tq.shipping_order_id, tq.payload
+FROM task_queue tq
+WHERE tq.status = 'PENDING'
+ORDER BY tq.enqueued_at
+LIMIT 1
+FOR UPDATE;
+~~~
+
+**Triệu chứng (14/03/2026, 14:00).** Throughput tụt từ ~35 task/s xuống còn ~15 task/s; hàng đợi PENDING tăng nhưng worker không tiến hành xử lý. {{pg_stat_activity}} cho thấy toàn bộ backend của worker đều ở state **active** với {{wait_event_type = Lock}} / {{wait_event = transactionid}} trên cùng bảng task_queue.
+
+**Việc bạn có.** Hai artifact: snapshot {{pg_stat_activity}} lúc 14:05 và snapshot {{pg_locks}} lúc 14:05:20. Hãy tìm đúng vòng chờ và sửa bằng {{FOR UPDATE SKIP LOCKED}} + index phù hợp + transaction ngắn.`,
+  artifacts: [
+    {
+      name: 'pg-stat-activity-queue.txt',
+      lang: 'text',
+      content: `-- 2026-03-14 14:05:12 +07, RDS shiplane-primary (PostgreSQL 15.6)
+-- 20 worker consumer chạy lệnh SELECT ... FOR UPDATE trên task_queue
+SELECT pid, usename, application_name, state, xact_start, wait_event_type, wait_event, left(query, 60) AS query
+FROM pg_stat_activity
+WHERE datname = 'shiplane' AND backend_type = 'client backend' AND state = 'active'
+ORDER BY xact_start;
+  pid  | usename   | application_name | state |         xact_start         | wait_event_type | wait_event |                            query
+-----+-----------+-------------------+-------+---------------------------+-----------------+------------+---------------------------------------------------------
+  5121 | worker_01 | worker-svc        | active | 2026-03-14 14:02:41+07 | Lock           | transactionid | SELECT tq.task_id, tq.shipping_order_id, tq.payload
+  5122 | worker_02 | worker-svc        | active | 2026-03-14 14:02:44+07 | Lock           | transactionid | SELECT tq.task_id, tq.shipping_order_id, tq.payload
+  5123 | worker_03 | worker-svc        | active | 2026-03-14 14:02:47+07 | Lock           | transactionid | SELECT tq.task_id, tq.shipping_order_id, tq.payload
+
+-- tổng hợp: hàng đợi task_queue backlog = 4.820 task PENDING
+-- throughput 15 task/s cho thấy mỗi task bị worker kia chờ dành hàng.`,
+    },
+    {
+      name: 'pg-locks-queue.txt',
+      lang: 'text',
+      content: `-- 2026-03-14 14:05:20 +07, RDS shiplane-primary
+SELECT pid, locktype, mode, granted, relation::regclass AS relation, page, tuple
+FROM pg_locks
+WHERE relation = 'task_queue'::regclass
+ORDER BY pid, granted, locktype;
+  pid  |     locktype      |       mode       | granted | relation   | page | tuple
+------+------------------+-----------------+---------+-------------+------+----------
+  5121 | relation         | RowExclusiveLock | t       | task_queue |      |
+  5121 | transactionid     | ShareLock        | f       |             |      |      |
+  5122 | relation         | RowExclusiveLock | t       | task_queue |      |
+  5122 | transactionid     | ShareLock        | f       |             |      |     `,
+    },
+  ],
+  questions: [
+    'Vì sao 20 worker cùng lệnh SELECT ... FOR UPDATE trên bảng task_queue lại tạo hàng loạt session chờ Lock/transactionid, và throughput tụt còn ~15 task/s?',
+    'Bạn sửa bằng những gì để mỗi worker nhận đúng task chưa bị khóa, và làm sao để transaction ngắn hơn?',
+  ],
+  hints: [
+    'Một statement SELECT ... FOR UPDATE ... LIMIT 1 mà nhiều worker cùng chạy: worker đầu khóa task, worker sau chờ. Phải có SKIP LOCKED hoặc cơ chế nhận task không khóa chung.',
+    'Index phù hợp: (status, enqueued_at) để ORDER BY ... LIMIT 1 có thứ tự sạch, không cần sort rồi FOR UPDATE.',
+  ],
+  answer: `**Tóm tắt:** Mọi worker cùng chạy SELECT ... FOR UPDATE ... LIMIT 1 nên có thể khóa cùng một task; các worker sau chờ ShareLock trên transactionid của worker trước. Hệ quả: throughput tụt xuống ~15 task/s, hàng đợi nghẽn. Sửa bằng FOR UPDATE SKIP LOCKED để worker bỏ qua task đang giữ và nhận task tiếp theo, thêm index (status, enqueued_at), và rút ngắn transaction.
+
+### Nguyên nhân gốc
+1. Thiếu SKIP LOCKED: worker sau chờ cho tới khi worker trước commit/rollback, task đó không bao giờ được xử lý bởi worker kia.
+2. Transaction giữ lock lâu hơn tối thiểu.
+
+### Dẫn chứng
+- Artifact 1: 20 backend worker active, wait_event_type = Lock, wait_event = transactionid, cùng bảng task_queue, backlog = 4.820 task PENDING.
+
+### Cách sửa
+~~~sql
+SELECT tq.task_id, tq.shipping_order_id, tq.payload
+FROM task_queue tq
+WHERE tq.status = 'PENDING'
+ORDER BY tq.enqueued_at
+LIMIT 1
+FOR UPDATE SKIP LOCKED;
+~~~
+
+### Phòng ngừa and monitoring
+- Bật log_lock_waits.
+
+> Senior tip: Khi có 20 worker cùng SELECT FOR UPDATE trên cùng bảng, việc dùng SKIP LOCKED thay vì FOR UPDATE chờ chắc chắn là chênh lệch giữa 15 task/s và 35+ task/s. Luôn đặt index (status, enqueued_at) để ORDER BY + LIMIT nhanh, và kiểm tra hàng đợi backlog mỗi giờ để phát hiện sớm.`,
+  rubric: [
+    'Chỉ đúng nguyên nhân gốc: FOR UPDATE chờ chắc chắn khiến nhiều worker cùng chờ cùng một task, chờ throughput tụt',
+    'Dẫn chứng đúng artifact: 20 backend active, wait_event_type=Lock, backlog 4.820 task PENDING, và vòng chờ transactionid',
+    'Đề xuất sửa đúng: FOR UPDATE SKIP LOCKED + index (status, enqueued_at) + rút ngắn transaction',
+    'Nêu rõ monitoring cơ chế SKIP LOCKED và tốc độ xử lý thay đổi so với cơ chế chờ.',
+  ],
+  tags: ['postgresql', 'lock', 'job-queue', 'for-update', 'skip-locked'],
+},
+{
+  id: 'lab-sql-029',
+  category: 'sql',
+  title: 'Bảng ledger_entry phình do job batch dài xử lý hàng triệu bản ghi giữ snapshot, autovacuum không dọn được dead tuple',
+  level: 'senior',
+  scenario: `**Bối cảnh.** Dịch vụ ledger-batch chạy một job nightly: job này mở một transaction PostgreSQL, cập nhật hàng triệu bản ghi bảng ledger_entry để tạo báo cáo daily, giữ transaction mở dài (6–8 tiếng) để duy nhất snapshot dữ liệu.
+
+**Triệu chứng (10/04/2026, 14:23).** p95 câu SELECT ledger_entry tăng từ 2 ms lên 80 ms trong ngày. {{pg_stat_user_tables}} báo {{n_dead_tup}} tăng gấp ba, query chậm dần. {{pg_stat_activity}} cho thấy một backend state **active** với xact_start lúc 08:14 hôm nay (đã chạy ~6 tiếng), transaction đang giữ snapshot, query = "UPDATE ledger_entry SET status = ?, amount = ? WHERE id > ?".
+
+**Việc bạn có.** Ba artifact: snapshot {{pg_stat_user_tables}}, snapshot {{pg_stat_activity}}, log VACUUM VERBOSE. Hãy tìm transaction nào giữ snapshot lâu, vì sao autovacuum không xoá dead tuple, và sửa.`,
+  artifacts: [
+    {
+      name: 'pg-stat-user-tables.txt',
+      lang: 'text',
+      content: `-- 2026-04-10 14:22 +07, RDS ledger-primary (PostgreSQL 15.6)
+-- pg_stat_user_tables cho bảng ledger_entry
+schemaname | relname | n_live_tup | n_dead_tup | last_vacuum | last_autovacuum | vacuum_count | autovacuum_count
+public     | ledger_entry | 5200000   | 5600000    | 2026-04-03 02:10:00+07 | 2026-04-03 02:10:00+07 | 12 | 124
+-- n_dead_tup / n_live_tup = 108%, dead tuple vượt xa dữ liệu sống
+-- pg_relation_size('ledger_entry') = 4.1 GB heap, pg_total_relation_size = 5.3 GB
+-- Ước tính bloat: dead tuple ~ 1.2 GB`,
+    },
+    {
+      name: 'pg-stat-activity.txt',
+      lang: 'text',
+      content: `-- 2026-04-10 14:23 +07
+       -- pg_stat_activity: phiên đang mở lâu nhất (active)
+       pid  | usename | state    | xact_start            | query_start           | wait_event_type | wait_event | query
+       18421 | ledger-batch | active  | 2026-04-10 08:14:00+07 | 2026-04-10 08:14:00+07 | Client         | ClientRead | UPDATE ledger_entry SET status = ?, amount = ? WHERE id > 1000000;
+       -- xid age của phiên này: 48.300.000 (tuổi xid giữ)
+       -- max_connections = 200, active = 52, idle in transaction = 2`
+    },
+    {
+      name: 'vacuum-verbose.txt',
+      lang: 'text',
+      content: `-- 2026-04-10 14:24 +07
+       -- Cảnh báo từ monitoring (Datadog)
+       WARNING: database "ledger" must be vacuumed within 1200000 transactions
+       -- autovacuum: launcher = on, max_workers = 3, naptime = 1min
+       -- log_autovacuum_min_duration = 0
+       -- log: "automatic vacuum of table \"public.ledger_entry\" skipped because of lock conflict - dead row versions cannot be removed yet, oldest xmin: 12345678"`
+    },
+  ],
+  questions: [
+    'Vì sao autovacuum không dọn được dead tuple dù đang bật và chạy liên tục? Dẫn chứng bằng artifact.',
+    'Vì sao bảng phình to làm query SELECT ledger_entry chậm dù plan không đổi?',
+    'Bạn xử lý thế nào trong ngày và thiết kế dài hạn để không tái diễn?',
+  ],
+  hints: [
+    'Tìm phiên long-running active trong pg_stat_activity (state = active), xact_start cũ. Phiên này giữ snapshot, chặn autovacuum.',
+    'n_dead_tup tăng + vacuum log skip (dead row versions cannot be removed) = autovacuum bị chặn.',
+    'xid age tăng → nguy cơ wraparound; cần vacuum freeze.',
+  ],
+  answer: `**Tóm tắt:** Một job batch nightly mở một transaction dài (6–8 tiếng) trên bảng ledger_entry để duy nhất snapshot khi tính toán báo cáo daily. Transaction này cập nhật hàng triệu bản ghi, sinh ra nhiều dead tuple. Autovacuum chạy nhưng bị skip vì lock conflict — dead tuple vẫn "cần" cho snapshot của transaction batch. Dead tuple tích luỹ làm bảng phình to → nhiều page hơn → query SELECT đọc nhiều page hơn → chậm dần, mặc dù plan không đổi. Xid age tăng cũng báo nguy cơ transaction ID wraparound.
+
+### Nguyên nhân gốc
+1. Transaction batch mở transaction dài (6–8 tiếng) giữ snapshot dữ liệu → mọi dead tuple sinh ra sau đó vẫn "cần" cho transaction batch.
+2. Autovacuum chạy nhưng bị skip vì lock conflict (log xác nhận: "dead row versions cannot be removed yet"): dead tuple vẫn còn cần cho snapshot.
+3. Dead tuple tích luỹ: n_dead_tup / n_live_tup = 108%, làm bloat ~1.2 GB heap, query SELECT đọc nhiều page hơn.
+
+### Dẫn chứng
+- Artifact 1: n_dead_tup = 5.600.000, n_live_tup = 5.200.000, last_autovacuum = 03/04 (6 ngày trước), tỷ lệ dead tuple 108%.
+- Artifact 2: pid 18421 state active (transaction dài), xact_start 08:14, query đang UPDATE, xid age 48.3M.
+- Artifact 3: vacuum skip log: "dead row versions cannot be removed yet, oldest xmin: 12345678".
+
+### Cách sửa ngắn hạn
+- Terminate phiên active transaction dài (pg_terminate_backend) sau khi xác định không còn cần.
+- Chạy VACUUM (FULL nếu cần) ngoài giờ cao điểm để thu hồi space.
+- Bật idle_in_transaction_session_timeout (ví dụ 5 phút) để tự kill phiên dài.
+
+### Cách sửa dài hạn
+- Sửa code: không mở transaction batch dài; thay bằng commit mỗi 5000 bản ghi (batch nhỏ).
+- Bật monitoring: alert khi n_dead_tup / n_live_tup > 100%, khi transaction active > 5 phút, khi xid age > 1 tỷ.
+- Tune autovacuum: giảm autovacuum_vacuum_scale_factor cho bảng lớn, tăng autovacuum_max_workers.
+
+### Phòng ngừa và monitoring
+- Cảnh báo: alert khi n_dead_tup / n_live_tup > 100%, khi transaction active > 5 phút, khi xid age > 1 tỷ.
+- Tune autovacuum: giảm autovacuum_vacuum_scale_factor cho bảng lớn, tăng autovacuum_max_workers.
+
+> Senior tip: dead tuple không phải rác ngay lập tức — chúng cần cho snapshot của các phiên đang chạy. Vì vậy một transaction dài giữ snapshot là kẻ thù số 1 của vacuum. Luôn đặt idle_in_transaction_session_timeout và theo dõi pg_stat_activity.state = 'active' cùng xact_start cũ.
+`,
+  rubric: [
+    'Chỉ đúng nguyên nhân gốc: phiên active transaction giữ snapshot, chặn autovacuum xoá dead tuple',
+    'Dẫn chứng đúng: n_dead_tup 5.6M, vacuum skip log, pid active transaction với xact_start cũ, xid age',
+    'Giải thích đúng vì sao bloat làm query SELECT chậm (nhiều page hơn, cùng plan)',
+    'Đề xuất sửa đúng: terminate phiên, VACUUM, idle_in_transaction_session_timeout, tune autovacuum',
+    'Có monitoring/phòng ngừa: alert n_dead_tup ratio, transaction active, xid age',
+  ],
+  tags: ['postgresql', 'vacuum', 'bloat', 'active-transaction', 'autovacuum'],
+},
 );
 
