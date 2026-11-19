@@ -12936,17 +12936,17 @@ Dịch vụ thanh toán gửi đối tượng ThanhToan (số tiền, thời gia
   id: 'core-072',
   topic: 'core',
   level: 'mid',
-  q: 'String pool (chuoi trung tam) la gi, intern() lam gi, va khoi tao String bang "abc" khac new String("abc") o diem nao? Khi nao can dung intern() va rui ro bo nho neu qua su dung?',
-  a: `**Tóm tắt:** String pool la vung bo nho heap (Java 7+) luu cac chuoi duoc intern de tien tien su dung (string deduplication). Chuoi viet bang nhom ("abc") tu dong duoc dua vao pool. new String("abc") tao doi tuong moi tren heap, khong duoc them vao pool neu khong goi intern(). == so sanh tham chieu, equals() so sanh noi dung. intern() tra ve chuoi tu pool neu co, nguoc lai them vao pool. Qua su dung intern() hoi tri nguyen bo nho pool (Metaspace/heap string table) khong duoc xoa, co the OOM.
+  q: 'String pool (chuỗi trung tâm) là gì, intern() làm gì, và khởi tạo String bằng "abc" khác new String("abc") ở đâu? Khi nào cần dùng intern() và rủi ro bộ nhớ nếu quá sử dụng?',
+  a: `**Tóm tắt:** String pool là vùng bộ nhớ heap (Java 7+) lưu các chuỗi được intern để tận dụng lại (string deduplication). Chuỗi viết bằng nháy kép ("abc") tự động được đưa vào pool. new String("abc") tạo đối tượng mới trên heap, không được thêm vào pool nếu không gọi intern(). == so sánh tham chiếu, equals() so sánh nội dung. intern() trả về chuỗi từ pool nếu có, ngược lại thêm vào pool. Quá sử dụng intern() tiêu tốn bộ nhớ pool (bảng string table trong native memory) không được xóa, có thể OOM.
 
-### Co che hoat dong
-- Chuoi literal "abc": compiler dua vao constant pool, tai thuc JVM intern vao string pool, cung mot chuoi chi co mot doi tuong.
-- new String("abc"): tao doi tuong String moi tren heap, bien dem (char array/byte array) moi, != voi literal.
-- String.intern(): kiem tra string pool, neu co chuoi giong nhau tra ve tham chieu do, neu chua co them vao pool va tra ve.
-- Java 7+: string pool o heap (khong o PermGen), bi bien dong theo heap, co the GC neu khong co tham chieu ngoai (nhung chuoi duoc intern boi library thong luu duoc o pool lien tuc).
-- == kiem tra cung tham chieu, equals() kiem tra cung noi dung.
+### Cơ chế hoạt động
+- Chuỗi literal "abc": compiler đưa vào constant pool, tại runtime JVM intern vào string pool, cùng một chuỗi chỉ có một đối tượng.
+- new String("abc"): tạo đối tượng String mới trên heap, mảng ký tự/byte mới, != với literal.
+- String.intern(): kiểm tra string pool, nếu có chuỗi giống nhau trả về tham chiếu đó, nếu chưa có thêm vào pool và trả về.
+- Java 7+: string pool (các đối tượng String) ở heap, nhưng bảng băm quản lý pool (string table) nằm ở native memory (off-heap). Chuỗi intern tại runtime có thể GC nếu không còn tham chiếu; literal compile-time được class loader giữ lại không GC.
+- == kiểm tra cùng tham chiếu, equals() kiểm tra cùng nội dung.
 
-### Ma vi du (duoi 30 dong)
+### Mã ví dụ (dưới 30 dòng)
 ~~~java
 public class StringPool {
     public static void main(String[] args) {
@@ -12955,25 +12955,25 @@ public class StringPool {
         String c = new String("hello");
         String d = c.intern();
 
-        System.out.println(a == b); // true (cung pool)
-        System.out.println(a == c); // false (c la doi tuong moi)
-        System.out.println(a == d); // true (d intern ve pool)
-        System.out.println(a.equals(c)); // true (noi dung giong)
+        System.out.println(a == b); // true (cùng pool)
+        System.out.println(a == c); // false (c là đối tượng mới)
+        System.out.println(a == d); // true (d intern về pool)
+        System.out.println(a.equals(c)); // true (nội dung giống)
     }
 }
 ~~~
 
-### Vi du thuc su
-Dich vu xu ly log millisecond dong, moi dong co ten trich xuat (request id) lqp nhieu lan. Neu luu String moi lan, bo nho tang nhanh. Dung intern() cho ten trich xuat de tat ca dong co cung request id chia chung mot doi tuong String, giam bo nho duoc 30-50%. Nhung neu intern tat ca chuoi (bao gom chuoi duy nhat nhat thoi), string pool tang khong han che, bo nho khong duoc giai phong, co the OOM. Nen chi intern cac chuoi lap lai nhieu lan va co do dai it, tranh intern chuoi xau dai hoac chuoi chi xuat hien mot lan.
+### Ví dụ thực sự
+Dịch vụ xử lý log hàng triệu dòng, mỗi dòng có request id lặp nhiều lần. Nếu lưu String mới mỗi lần, bộ nhớ tăng nhanh. Dùng intern() cho request id để tất cả dòng cùng id chia sẻ một đối tượng String, giảm bộ nhớ đáng kể. Nhưng nếu intern tất cả chuỗi (bao gồm chuỗi duy nhất), string table tăng không hạn chế, bộ nhớ không giải phóng, có thể OOM. Nên chỉ intern chuỗi lặp lại nhiều lần và ngắn, tránh intern chuỗi dài hoặc chỉ xuất hiện một lần.
 
-### Tra loi mau khi phong van
-"String pool la vung luu chuoi da intern de tien tien su dung. Chuoi literal "abc" tu dong duoc intern, cung mot chuoi chi co mot doi tuong. new String("abc") tao doi tuong moi tren heap, != voi literal. intern() kiem tra pool, neu co tra ve tham chieu co san, neu chua co them vao pool. == so sanh tham chieu, equals() so sanh noi dung. Em chi dung intern() cho chuoi lap lai nhieu lan (vi du ma trich xuat, ma don vi) de giam bo nho, tranh intern chuoi xau dai hoac chuoi chi xuat hien mot lan vi pool khong duoc xoa, co the OOM. Java 7+ string pool o heap, bi bien dong, nhung chuoi duoc library intern lien tuc van o pool."
+### Trả lời mẫu khi phỏng vấn
+"String pool là vùng lưu chuỗi đã intern để tận dụng lại. Chuỗi literal "abc" tự động được intern, cùng một chuỗi chỉ có một đối tượng. new String("abc") tạo đối tượng mới trên heap, != với literal. intern() kiểm tra pool, nếu có trả về tham chiếu có sẵn, nếu chưa có thêm vào pool. == so sánh tham chiếu, equals() so sánh nội dung. Em chỉ dùng intern() cho chuỗi lặp lại nhiều lần (ví dụ request id, mã đơn vị) để giảm bộ nhớ, tránh intern chuỗi dài hoặc chỉ xuất hiện một lần vì string table không được xóa, có thể OOM. Java 7+ string pool ở heap, nhưng string table ở native memory."
 
-> Senior tip: intern() khong mien phi: kiem tra can dong bo (contention) va bo nho pool khong duoc xoa. Chi dung khi chuoi lap lai nhieu lan va it ky tu. Neu can giam bo nho chuoi sap xep nhieu, dung Java 21 string deduplication (-XX:+UseStringDeduplication) hoac G1, khong can intern tay.`,
+> Senior tip: intern() không miễn phí: cần đồng bộ (contention) và string table không tự xóa. Chỉ dùng khi chuỗi lặp lại nhiều lần và ngắn. Nếu cần giảm bộ nhớ chuỗi trùng lặp nhiều, bật G1 GC với string deduplication (-XX:+UseStringDeduplication), không cần intern tay.`,
   follow: [
-    'Java 7 chuyen string pool tu PermGen sang heap co tac dong nhu the nao den OOM?',
-    'intern() tra ve gi neu chuoi chua co o pool, va co the GC khong?',
-    '== vs equals() cho String khac nhau o diem nao, va khi nao dung cai nao?'
+    'Java 7 chuyển string pool từ PermGen sang heap có tác động như thế nào đến OOM?',
+    'intern() trả về gì nếu chuỗi chưa có ở pool, và có thể GC không?',
+    '== vs equals() cho String khác nhau ở đâu, và khi nào dùng cái nào?'
   ],
   tags: ['String', 'string pool', 'intern', 'memory', 'JVM'],
   refs: [
@@ -12984,17 +12984,17 @@ Dich vu xu ly log millisecond dong, moi dong co ten trich xuat (request id) lqp 
   id: 'core-073',
   topic: 'core',
   level: 'senior',
-  q: 'Xu ly ngoai le chuan trong service Java: khi nao dung ngoai le du bao du kien (checked) va ngoai le ko du bao (unchecked), cach bao ngoai le (wrap) va chuan bao loi (custom exception), va sao khong bao gio bo trong (swallow) ngoai le?',
-  a: `**Tóm tắt:** Ngoai le du bao du kien (extends Exception) buot goi goi xu ly hoac khai bao throws, dung cho loi co the phuc hoi duoc (mang mat, het quota). Ngoai le ko du bao (extends RuntimeException) khong buot xu ly, dung loi lap trinh (null pointer, loi tham so). Bao ngoai le (wrap) bao ngoai le thap cap vao ngoai le cao cap can them thong tin nghiep vu, gan nguyen ngoai le goc vao cause, khong bo trong (khong co catch bo trong, khong log roi bo qua). Dinh nghia custom exception cho tung muc tieu dich vu.
+  q: 'Xử lý ngoại lệ chuẩn trong service Java: khi nào dùng ngoại lệ được kiểm tra (checked) và ngoại lệ không được kiểm tra (unchecked), cách bao ngoại lệ (wrap) và chuẩn báo lỗi (custom exception), và sao không bao giờ bỏ trong (swallow) ngoại lệ?',
+  a: `**Tóm tắt:** Ngoại lệ được kiểm tra (extends Exception) buộc caller xử lý hoặc khai báo throws, dùng cho lỗi có thể phục hồi (mạng mất, hết quota). Ngoại lệ không được kiểm tra (extends RuntimeException) không buộc xử lý, dùng cho lỗi lập trình (null pointer, sai tham số). Bao ngoại lệ (wrap) gói ngoại lệ thấp cấp vào ngoại lệ cao cấp kèm thông tin nghiệp vụ, gán nguyên nhân gốc vào cause, không bỏ trong (không catch rỗng, không log rồi bỏ qua). Định nghĩa custom exception cho từng mục tiêu dịch vụ.
 
-### Co che hoat dong
-- Checked Exception: buot try/catch hoac throws, ep caller giai quyet, phu hop voi ngoai le ngoai tu kien luong dieu (mang mat, het quota, het thoi gian).
-- Unchecked Exception (RuntimeException): khong buot xu ly, cho loi lap trinh (NullPointerException, IllegalArgumentException), khong can declares.
-- Wrap (bao ngoai le): throw new DichVuException("khong lay duoc tai khoan", e); e la cause, stack trace gom ca cap thap va cap cao, de debug.
-- Custom exception: ke thua RuntimeException (ko du bao) cho dich vu, danh bung theo loai loi (TaiKhoanKhongTonTaiException, QuaHanException...), de controller chuan tra ve HTTP status.
-- Khong bo trong: catch hoac log roi bo qua mat stack trace, loi an trong khong biet dau, giao dich bi luu sot khong rollback.
+### Cơ chế hoạt động
+- Checked Exception: buộc try/catch hoặc throws, ép caller giải quyết, phù hợp với ngoại lệ ngoài không kiểm soát (mạng mất, hết quota, timeout).
+- Unchecked Exception (RuntimeException): không buộc xử lý, cho lỗi lập trình (NullPointerException, IllegalArgumentException), không cần declares.
+- Wrap (bao ngoại lệ): throw new DichVuException("không lấy được tài khoản", e); e là cause, stack trace gồm cả cấp thấp và cấp cao, dễ debug.
+- Custom exception: kế thừa RuntimeException (unchecked) cho dịch vụ, phân loại theo loại lỗi (TaiKhoanKhongTonTaiException, QuaHanException...), để controller chuẩn trả về HTTP status.
+- Không bỏ trong: catch rỗng hoặc log rồi bỏ qua làm mất stack trace, lỗi ẩn không biết đâu, giao dịch bị lưu sót không rollback.
 
-### Ma vi du (duoi 30 dong)
+### Mã ví dụ (dưới 30 dòng)
 ~~~java
 public class DichVuException extends RuntimeException {
     public DichVuException(String msg, Throwable cause) { super(msg, cause); }
@@ -13005,24 +13005,24 @@ public class TaiKhoanService {
         try {
             taiKhoanDao.capNhat(nguon, dich, soTien);
         } catch (SQLException e) {
-            // bao ngoai le, them thong tin nghiep vu, gan nguyen ngoai le goc
-            throw new DichVuException("Chuyen tien that bai tu " + nguon + " sang " + dich, e);
+            // bao ngoại lệ, thêm thông tin nghiệp vụ, gán nguyên nhân gốc
+            throw new DichVuException("Chuyển tiền thất bại từ " + nguon + " sang " + dich, e);
         }
     }
 }
 ~~~
 
-### Vi du thuc su
-Dich vu thanh toan goi API ngoai. Neu loi ket noi (IOException) bi bo trong (catch bo trong), he thong co nghia thanh toan thanh cong nhung thuc chua gui tien, khach hang phat khien khong duoc tien. Doi sang wrap: catch IOException, throw DichVuException voi thong tin don hang va nguyen ly, controller bat va tra ve HTTP 502, Giao dich bi danh dau that bai va rollback. Khong su dung Exception chung (khong bat Exception roi log "loi") vi mat loai loi, khong biet retry hay bao loi khach hang.
+### Ví dụ thực sự
+Dịch vụ thanh toán gọi API ngoài. Nếu lỗi kết nối (IOException) bị bỏ trong (catch rỗng), hệ thống coi như thanh toán thành công nhưng thực chưa gửi tiền, khách hàng phát hiện không được tiền. Đổi sang wrap: catch IOException, throw DichVuException với thông tin đơn hàng và nguyên nhân, controller bắt và trả về HTTP 502, giao dịch bị đánh dấu thất bại và rollback. Không dùng Exception chung (bắt Exception rồi log "lỗi") vì mất loại lỗi, không biết retry hay báo lỗi khách hàng.
 
-### Tra loi mau khi phong van
-"Xu ly ngoai le o service: ngoai le du bao du kien (Exception) cho loi co the phuc hoi (mang mat, het quota), ngoai le ko du bao (RuntimeException) cho loi lap trinh (null pointer, tham so sai). Em bao ngoai le (wrap) ngoai le thap cap (SQLException, IOException) vao custom exception cua dich vu, them thong tin nghiep vu (ma don, ma tai khoan) va gan nguyen ngoai le goc vao cause de duoc stack trace day du. Em khong bao gio bo trong ngoai le (catch bo trong hoac log roi bo qua) vi lam mat stack trace va giao dich bi luu sot. Controller bat custom exception va tra ve HTTP status chuan (404, 400, 502)."
+### Trả lời mẫu khi phỏng vấn
+"Xử lý ngoại lệ ở service: ngoại lệ được kiểm tra (Exception) cho lỗi có thể phục hồi (mạng mất, hết quota), ngoại lệ không được kiểm tra (RuntimeException) cho lỗi lập trình (null pointer, sai tham số). Em bao ngoại lệ (wrap) ngoại lệ thấp cấp (SQLException, IOException) vào custom exception của dịch vụ, thêm thông tin nghiệp vụ (mã đơn, mã tài khoản) và gán nguyên nhân gốc vào cause để có stack trace đầy đủ. Em không bao giờ bỏ trong ngoại lệ (catch rỗng hoặc log rồi bỏ qua) vì làm mất stack trace và giao dịch bị lưu sót. Controller bắt custom exception và trả về HTTP status chuẩn (404, 400, 502)."
 
-> Senior tip: khong bat Exception chung de "an toan", vi bat ca Error (OutOfMemoryError, NoClassDefFoundError) va loi he thong khong phuc hoi duoc. Chi bat cac ngoai le biet (SQLException, IOException, DichVuException). O transactional service, ngoai le khong duoc bat va bo trong, nguoc lai day len de transaction rollback, khong luu sot giao dich that bai.`,
+> Senior tip: không bắt Exception chung để "an toàn", vì bắt cả Error (OutOfMemoryError, NoClassDefFoundError) và lỗi hệ thống không phục hồi. Chỉ bắt các ngoại lệ biết (SQLException, IOException, DichVuException). Ở transactional service, ngoại lệ không được bắt và bỏ trong, ngược lại đẩy lên để transaction rollback, không lưu sót giao dịch thất bại.`,
   follow: [
-    'Checked exception va unchecked exception khac nhau o diem nao, va khi nao dung cai nao?',
-    'Bao ngoai le (wrap) giup debug nhu the nao, va cau tham so cause la gi?',
-    'Sao khong bat Exception chung (catch Exception) trong service?'
+    'Checked exception và unchecked exception khác nhau ở đâu, và khi nào dùng cái nào?',
+    'Bao ngoại lệ (wrap) giúp debug như thế nào, và cấu tham số cause là gì?',
+    'Sao không bắt Exception chung (catch Exception) trong service?'
   ],
   tags: ['exception', 'checked', 'unchecked', 'wrap', 'custom exception', 'service'],
   refs: [
@@ -13033,22 +13033,22 @@ Dich vu thanh toan goi API ngoai. Neu loi ket noi (IOException) bi bo trong (cat
   id: 'core-074',
   topic: 'core',
   level: 'senior',
-  q: 'Tai sao equals/hashCode cua entity JPA khong duoc dung ID (primary key) va khong duoc su dung cot lazy load? Chon khoa nghiep thu (business key) nhu the nao, va loi gi xay ra neu hashCode thay doi khi entity duoc them vao HashSet/HashMap?',
-  a: `**Tóm tắt:** Entity JPA can equals/hashCode dang dung o collection (HashSet, HashMap) de tranh trung lap. ID (primary key) khong duoc dung vi ID null o trang thai transient (chua luu), va ID co the thay doi sau khi merge. Cot lazy load (Proxy/Collection) khong duoc dung vi khoi tao (fetch) bat ton tai, gay loi trong equals/hashCode. Dung khoa nghiep thu (cac cot duy nhat, khong null, khong thay doi) vi du email, ma so thue, va hashCode phai duoc tinh tu nhung cung cot, khong thay doi trong thoi gian entity o collection.
+  q: 'Tại sao equals/hashCode của entity JPA không được dùng ID (primary key) và không được sử dụng cột lazy load? Chọn khoá nghiệp vụ (business key) như thế nào, và lỗi gì xảy ra nếu hashCode thay đổi khi entity được thêm vào HashSet/HashMap?',
+  a: `**Tóm tắt:** Entity JPA cần equals/hashCode đúng đắn ở collection (HashSet, HashMap) để tránh trùng lặp. ID (primary key) không được dùng vì ID null ở trạng thái transient (chưa lưu), và ID có thể thay đổi sau khi merge. Cột lazy load (Proxy/Collection) không được dùng vì khởi tạo (fetch) bất tiện, gây lỗi trong equals/hashCode. Dùng khoá nghiệp vụ (các cột duy nhất, không null, không thay đổi) ví dụ email, mã số thuế, và hashCode phải được tính từ những cùng cột, không thay đổi trong thời gian entity ở collection.
 
-### Co che hoat dong
-- HashSet/HashMap dung hashCode de chung vi tri (bucket) va equals de kiem tra trung lap. Neu hashCode thay doi khi entity o collection, khong tim thay doi tuong (vi o bucket cu), bi trung lap hoac mat doi tuong.
-- ID null o trang thai transient (chua luu), hai doi tuong chua luu cung ID null => hashCode bang 0, bi coi trung lap, them vao Set khong thanh cong.
-- Cot lazy load duoc khoi tat boi proxy, goi getter o equals se fetch du lieu, co the loi neu session dong hoac chua ton tai.
-- Dinh nghia equals/hashCode bang cac cot khoa nghiep thu (khong null, khong thay doi, duy nhat), luon cung ket qua cho cung entity logic.
+### Cơ chế hoạt động
+- HashSet/HashMap dùng hashCode để xác định vị trí (bucket) và equals để kiểm tra trùng lặp. Nếu hashCode thay đổi khi entity ở collection, không tìm thấy đối tượng (vì ở bucket cũ), bị trùng lặp hoặc mất đối tượng.
+- ID null ở trạng thái transient (chưa lưu), hai đối tượng chưa lưu cùng ID null => hashCode bằng 0, equals trả về true => bị coi trùng lặp, chỉ đối tượng đầu được thêm vào Set.
+- Cột lazy load được khởi tạo bởi proxy, gọi getter ở equals sẽ fetch dữ liệu, có thể gây lỗi nếu session đóng hoặc chưa tồn tại.
+- Định nghĩa equals/hashCode bằng các cột khoá nghiệp vụ (không null, không thay đổi, duy nhất), luôn cùng kết quả cho cùng entity logic.
 
-### Ma vi du (duoi 30 dong)
+### Mã ví dụ (dưới 30 dòng)
 ~~~java
 import java.util.Objects;
 
 public class KhachHang {
     private Long id;
-    private String email; // khoa nghiep thu
+    private String email; // khoá nghiệp vụ
     private String maSoThue;
 
     public boolean equals(Object o) {
@@ -13065,17 +13065,17 @@ public class KhachHang {
 }
 ~~~
 
-### Vi du thuc su
-Dich vu xu ly danh sach khach hang tu nhieu nguon, luu vao HashSet de loai trung. Neu equals dung ID, hai doi tuong chua luu (id null) bi coi cung mot, chi luu mot khach hang, bi mat du lieu. Neu equals dung cot lazy load (danh sach don hang), goi equals khoi tat tat ca don hang, chua loi LazyInitializationException neu session dong. Doi sang khoa nghiep thu (email + ma so thue), HashSet loai trung dung chinh xac, khong khoi tat cot lazy, khong loi o trang thai transient. hashCode tinh tu email + ma so thue, khong thay doi trong thoi gian o Set.
+### Ví dụ thực sự
+Dịch vụ xử lý danh sách khách hàng từ nhiều nguồn, lưu vào HashSet để loại trùng. Nếu equals dùng ID, hai đối tượng chưa lưu (id null) bị coi cùng một, chỉ lưu một khách hàng, bị mất dữ liệu. Nếu equals dùng cột lazy load (danh sách đơn hàng), gọi equals khởi tạo tất cả đơn hàng, gây lỗi LazyInitializationException nếu session đóng. Đổi sang khoá nghiệp vụ (email + mã số thuế), HashSet loại trùng đúng chính xác, không khởi tạo cột lazy, không lỗi ở trạng thái transient. hashCode tính từ email + mã số thuế, không thay đổi trong thời gian ở Set.
 
-### Tra loi mau khi phong van
-"Entity JPA can equals/hashCode de luu o HashSet/HashMap. Khong dung ID vi ID null o trang thai transient (chua luu), hai doi tuong chua luu cung null => coi cung mot, mat du lieu. Khong dung cot lazy load vi goi getter o equals khoi tat du lieu (fetch) va co the loi neu session dong. Em dung khoa nghiep thu (cac cot duy nhat, khong null, khong thay doi, vi du email + ma so thue), hashCode tinh tu cung cac cot va khong thay doi trong thoi gian entity o collection. Neu hashCode thay doi, HashSet/HashMap khong tim thay doi tuong (o bucket cu), bi trung lap hoac mat doi tuong."
+### Trả lời mẫu khi phỏng vấn
+"Entity JPA cần equals/hashCode để lưu ở HashSet/HashMap. Không dùng ID vì ID null ở trạng thái transient (chưa lưu), hai đối tượng chưa lưu cùng null => coi cùng một, mất dữ liệu. Không dùng cột lazy load vì gọi getter ở equals khởi tạo dữ liệu (fetch) và có thể lỗi nếu session đóng. Em dùng khoá nghiệp vụ (các cột duy nhất, không null, không thay đổi, ví dụ email + mã số thuế), hashCode tính từ cùng các cột và không thay đổi trong thời gian entity ở collection. Nếu hashCode thay đổi, HashSet/HashMap không tìm thấy đối tượng (ở bucket cũ), bị trùng lặp hoặc mất đối tượng."
 
-> Senior tip: neu khong co khoa nghiep thu (tat ca cot co the thay doi), khong override equals/hashCode, de Mac dinh (tham chieu) hoac dung ID chi o trang thai da luu (id != null). O HashSet, khong sua doi cot tham gia equals/hashCode khi entity o collection, nguoc lai bi mat doi tuong. Equals cua entity phai duoc dinh dinh nhu "cung nghiep thu" khong phai "cung doi tuong database" (ID).`,
+> Senior tip: nếu không có khoá nghiệp vụ (tất cả cột có thể thay đổi), không override equals/hashCode, để Mặc định (tham chiếu) hoặc dùng ID chỉ ở trạng thái đã lưu (id != null). Ở HashSet, không sửa đổi cột tham gia equals/hashCode khi entity ở collection, ngược lại bị mất đối tượng. Equals của entity phải được định nghĩa như "cùng nghiệp vụ" không phải "cùng đối tượng database" (ID).`,
   follow: [
-    'Sao khong dung ID (primary key) o equals/hashCode cua entity JPA?',
-    'Sao cot lazy load khong duoc dung o equals/hashCode?',
-    'Neu hashCode thay doi khi entity o HashSet, loi gi xay ra?'
+    'Sao không dùng ID (primary key) ở equals/hashCode của entity JPA?',
+    'Sao cột lazy load không được dùng ở equals/hashCode?',
+    'Nếu hashCode thay đổi khi entity ở HashSet, lỗi gì xảy ra?'
   ],
   tags: ['equals', 'hashCode', 'JPA', 'entity', 'business key'],
   refs: [
@@ -13083,25 +13083,25 @@ Dich vu xu ly danh sach khach hang tu nhieu nguon, luu vao HashSet de loai trung
   ]
   },
 {
-  id: 'core-075',
+id: 'core-075',
   topic: 'core',
   level: 'senior',
-  q: 'He thong thanh toan ho tro nhieu hinh thuc tinh phi (the, vi, chuyen khoan) va team viet if-else dai trong mot method. Vi sao dieu do vi pham OCP (Open-Closed Principle), va Strategy pattern giai quyet nhu the nao?',
-  a: `**Tóm tắt:** OCP (Open-Closed Principle - nguyen tac mo-dong) bao class mo de mo rong nhung dong de sua. if-else dai moi lan them hinh thuc thanh toan lai phai sua class tinh phi, de gay bug lan toa. Strategy tach moi quy tac tinh phi thanh class rieng, context goi qua interface chung, nen them loai moi khong cham code cu.
+  q: 'Hệ thống thanh toán hỗ trợ nhiều hình thức tính phí (thẻ, ví, chuyển khoản) và team viết if-else dài trong một method. Vì sao điều đó vi phạm OCP (Open-Closed Principle), và Strategy pattern giải quyết như thế nào?',
+  a: `**Tóm tắt:** OCP (Open-Closed Principle - nguyên tắc mở-đóng) bảo class mở để mở rộng nhưng đóng để sửa. if-else dài mỗi lần thêm hình thức thanh toán lại phải sửa class tính phí, dễ gây bug lan toa. Strategy tách mỗi quy tắc tính phí thành class riêng, context gọi qua interface chung, nên thêm loại mới không chạm code cũ.
 
-### Cai gi - vi sao can - cach hoat dong buoc buoc
-- **OCP la gi?** Nguyen tac thiet ke phan mem: mot module/class nen duoc phep **mo rong** (them tinh nang moi) nhung **dong** voi viec sua doi (khong sua code da chay on dinh). Giong mot tu dien: mo cua de thiet bi moi, khong pha tu dien moi lan mua dien thoai moi.
-- **Van de cua if-else dai:** Mot method tinhPhi(loai, soTien) dung if-else cho the/vi/chuyen khoan. Moi lan them loai moi (vi du tien dien tu moi) dev phai mo method, them nhanh, rebuild toan bo dich vu. Sai mot dau ngoac la tinh phi sai cho ca he thong, va phai retest moi loai cu.
-- **Strategy pattern la gi?** Dinh nghia mot interface chung cho phep thay doi thuat toan. Moi cach tinh phi la mot class trien khai interface, context goi qua interface ma khong biet trien khai cu the. Nhu mot cai ban tinh: gan module tinh thue Viet Nam hay module tinh thue My vao cung mot cho, cai ban tinh khong can biet ben trong tinh the nao.
+### Cái gì - vì sao cần - cách hoạt động bước bước
+- **OCP là gì?** Nguyên tắc thiết kế phần mềm: một module/class nên được phép **mở rộng** (thêm tính năng mới) nhưng **đóng** với việc sửa đổi (không sửa code đã chạy ổn định). Giống một từ điển: mở cửa để thiết bị mới, không phá từ điển mỗi lần mua điện thoại mới.
+- **Vấn đề của if-else dài:** Một method tinhPhi(loai, soTien) dùng if-else cho thẻ/ví/chuyển khoản. Mỗi lần thêm loại mới (ví dụ ví điện tử mới) dev phải mở method, thêm nhánh, rebuild toàn bộ dịch vụ. Sai một dấu ngoặc là tính phí sai cho cả hệ thống, và phải retest mọi loại cũ.
+- **Strategy pattern là gì?** Định nghĩa một interface chung cho phép thay đổi thuật toán. Mỗi cách tính phí là một class triển khai interface, context gọi qua interface mà không biết triển khai cụ thể. Như một cái bàn tính: gắn module tính thuế Việt Nam hay module tính thuế Mỹ vào cùng một chỗ, cái bàn tính không cần biết bên trong tính thế nào.
 
-### Buoc buoc ap Strategy
-1. Dinh nghia interface TinhPhiStrategy co method tinh(soTien).
-2. Moi hinh thuc tao class trien khai: PhiThe, PhiVi, PhiChuyenKhoan.
-3. Lop context BoTinhPhi giu mot TinhPhiStrategy, method tinh(soTien) goi strategy.tinh(soTien).
-4. Chon strategy ngoai (factory hoac cau hinh) roi truyen vao context. Context khong bi sua khi them loai phi moi.
+### Bước bước áp Strategy
+1. Định nghĩa interface TinhPhiStrategy có method tinh(soTien).
+2. Mỗi hình thức tạo class triển khai: PhiThe, PhiVi, PhiChuyenKhoan.
+3. Lớp context BoTinhPhi giữ một TinhPhiStrategy, method tinh(soTien) gọi strategy.tinh(soTien).
+4. Chọn strategy ngoài (factory hoặc cấu hình) rồi truyền vào context. Context không bị sửa khi thêm loại phí mới.
 
 ~~~java
-// TRUOC: vi pham OCP - moi loai phi moi phai sua method nay
+// TRƯỚC: vi phạm OCP - mỗi loại phí mới phải sửa method này
 public class DichVuTinhPhi {
     public long tinh(String loai, long soTien) {
         if ("THE".equals(loai)) return Math.round(soTien * 0.015);
@@ -13110,7 +13110,7 @@ public class DichVuTinhPhi {
         throw new IllegalArgumentException("Loai khong ho tro: " + loai);
     }
 }
-// SAU: ap Strategy - them loai moi chi them class, khong sua class nay
+// SAU: áp Strategy - thêm loại mới chỉ thêm class, không sửa code cũ
 interface TinhPhiStrategy {
     long tinh(long soTien);
 }
@@ -13130,35 +13130,35 @@ public class DichVuTinhPhi {
 }
 ~~~
 
-### Bang so sanh / khi nao dung
-| Tieu chi | if-else trong mot class | Strategy pattern |
+### Bảng so sánh / khi nào dùng
+| Tiêu chí | if-else trong một class | Strategy pattern |
 |---|---|---|
-| Them loai phi moi | Sua class tinh phi (vi pham OCP) | Them class moi, khong sua code cu |
-| Rou sai regression | Cao (sua code chay on dinh) | Thap (class moi doc lap) |
-| Test | Phai retest moi loai cu | Test tung strategy rieng liet |
-| Doc code | Method dai, kho doc | Moi strategy ngan, ro nghia |
-| Chi phi | Khong co class them | Them it class, can factory chon |
+| Thêm loại phí mới | Sửa class tính phí (vi phạm OCP) | Thêm class mới, không sửa code cũ |
+| Rủi sai regression | Cao (sửa code chạy ổn định) | Thấp (class mới độc lập) |
+| Test | Phải retest mọi loại cũ | Test từng strategy riêng lẻ |
+| Đọc code | Method dài, khó đọc | Mỗi strategy ngắn, rõ nghĩa |
+| Chi phí | Không thêm class mới | Thêm ít class, cần factory chọn |
 
-**Khi dung Strategy:** co nhieu thuat toan thay doi thuong xuan, moi thuat toan doc lap, muon chon luc chay.
-**Khi khong dung:** chi 1-2 loai va hiem khi doi -> if-else don gian hon, khong can over-engineering.
+**Khi dùng Strategy:** có nhiều thuật toán thay đổi thường xuyên, mỗi thuật toán độc lập, muốn chọn lúc chạy.
+**Khi không dùng:** chỉ 1-2 loại và hiếm khi đổi -> if-else đơn giản hơn, không cần over-engineering.
 
 ### Pitfall production
-- **Strategy giu trang thai:** neu strategy class co field instance va duoc chia sie giua nhieu request (thread khac nhau) -> ro ri trang thai. Strategy nen khong giu trang thai giua cac lan goi.
-- **Chon strategy van hard-code:** neu chuc chon strategy nam trong service va phai sua moi khi them loai, van chua tri tren. Dung factory hoac cau hinh (vi du Map<loai, TinhPhiStrategy>) de them loai moi chi la them cau hinh.
-- **Qua nhieu strategy cho su khac biet nho:** hai strategy chi khac mot hang so -> nen dua hang so vao constructor, khong them them class.
+- **Strategy giữ trạng thái:** nếu strategy class có field instance và được chia sẻ giữa nhiều request (thread khác nhau) -> rò rỉ trạng thái. Strategy nên không giữ trạng thái giữa các lần gọi.
+- **Chọn strategy vẫn hard-code:** nếu chức năng chọn strategy nằm trong service và phải sửa mỗi khi thêm loại, vẫn chưa trị tận. Dùng factory hoặc cấu hình (ví dụ Map<loai, TinhPhiStrategy>) để thêm loại mới chỉ là thêm cấu hình.
+- **Quá nhiều strategy cho sự khác biệt nhỏ:** hai strategy chỉ khác một hằng số -> nên đưa hằng số vào constructor, không thêm class.
 
-### Vi du doi thuc (production)
-Dich vu thanh toan cua mot san thuong mai dien tu ban dau dung if-else trong DichVuTinhPhi de tinh phi theo loai the. Trong mot quy, team them 3 hinh thuc thanh toan moi (vi dien tu A, B, vi bang diem thuong). Hai lan dev them nham nhanh, khien phi tinh sai khoang 0,2% don hang, phai hoan tien va doi soat hon 12.000 don hang trong 2 ngay. Sau khi refactor sang Strategy: moi hinh thuc la mot class rieng, them loai moi chi tao class va dang ky vao Map<String, TinhPhiStrategy>. Quy sau, them 2 hinh thuc moi khong co incident tinh phi nao, va test don vi cua module tinh phi giam tu 2 gio xuong 15 phut vi moi strategy test doc lap.
+### Ví dụ đời thực (production)
+Dịch vụ thanh toán của một sàn thương mại điện tử ban đầu dùng if-else trong DichVuTinhPhi để tính phí theo loại thẻ. Trong một quý, team thêm 3 hình thức thanh toán mới (ví điện tử A, B, ví bằng điểm thưởng). Hai lần dev thêm nhầm nhánh, khiến phí tính sai khoảng 0,2% đơn hàng, phải hoàn tiền và đối soát hơn 12.000 đơn hàng trong 2 ngày. Sau khi refactor sang Strategy: mỗi hình thức là một class riêng, thêm loại mới chỉ tạo class và đăng ký vào Map<String, TinhPhiStrategy>. Quý sau, thêm 2 hình thức mới không có incident tính phí nào, và test đơn vị của module tính phí giảm từ 2 giờ xuống 15 phút vì mỗi strategy test độc lập.
 
-### Tra loi mau khi phong van
-"Open-Closed Principle nghia la class mo de mo rong nhung dong de sua. Neu minh viet if-else dai de tinh phi theo tung loai the, vi, chuyen khoan, thi moi lan them hinh thuc moi minh lai phai mo method tinh phi, them nhanh, rebuild va retest moi loai cu, rui ro cao. Strategy pattern giai quyet bang cach dinh nghia mot interface tinh phi, moi hinh thuc la mot class rieng trien khai interface do, va class dich vu chi goi qua interface ma khong biet chi tiet. Them loai moi chi la tao class moi, khong cham code da chay on dinh. Minh luu ý strategy nen khong giu trang thai de dung chung an toan trong moi trang da luong, va chuc chon strategy nen dung factory hoac cau hinh thay vi hard-code if-else, neu khong van de chi do sang noi khac. Trong thuc tat, tung loai phi co quy tac khac nhau va thay doi doc lap, nen Strategy giup moi chung tu phu thoc mot loai khong giao thiep code voi nhau."
+### Trả lời mẫu khi phỏng vấn
+"Open-Closed Principle nghĩa là class mở để mở rộng nhưng đóng để sửa. Nếu mình viết if-else dài để tính phí theo từng loại thẻ, ví, chuyển khoản, thì mỗi lần thêm hình thức mới mình lại phải mở method tính phí, thêm nhánh, rebuild và retest mọi loại cũ, rủi ro cao. Strategy pattern giải quyết bằng cách định nghĩa một interface tính phí, mỗi hình thức là một class riêng triển khai interface đó, và class dịch vụ chỉ gọi qua interface mà không biết chi tiết. Thêm loại mới chỉ là tạo class mới, không chạm code đã chạy ổn định. Mình lưu ý strategy nên không giữ trạng thái để dùng chung an toàn trong môi trường đa luồng, và chức năng chọn strategy nên dùng factory hoặc cấu hình thay vì hard-code if-else, nếu không vấn đề chỉ dời sang nơi khác. Trong thực tế, từng loại phí có quy tắc khác nhau và thay đổi độc lập, nên Strategy giúp mỗi chủ đề phụ thuộc một loại không giao tiếp code với nhau."
 
-> Senior tip: Neu chi co 1-2 loai phi va hiem khi doi, if-else don gian la du, khong buoc Strategy vi lap code phuc tap khong co loi ich thuc. Strategy gia tri khi loai phi thay doi thuong xuan va moi loai co quy tac rieng.
+> Senior tip: Nếu chỉ có 1-2 loại phí và hiếm khi đổi, if-else đơn giản là đủ, không buộc Strategy vì lặp code phức tạp không có lợi ích thực. Strategy giá trị khi loại phí thay đổi thường xuyên và mỗi loại có quy tắc riêng.
 `,
   follow: [
-    'Vi sao strategy nen khong giu trang thai khi dung chung trong dich vu da luong?',
-    'Neu chuc chon strategy van dung if-else thi Strategy con giai quyet duoc van de gi khong?',
-    'Dau hieu nao nhan biet Strategy dang tro thanh over-engineering?'
+    'Vì sao strategy nên không giữ trạng thái khi dùng chung trong dịch vụ đa luồng?',
+    'Nếu chức năng chọn strategy vẫn dùng if-else thì Strategy còn giải quyết được vấn đề gì không?',
+    'Dấu hiệu nào nhận biết Strategy đang trở thành over-engineering?'
   ],
   tags: ['core', 'SOLID', 'OCP', 'Strategy pattern', 'refactor'],
 },
