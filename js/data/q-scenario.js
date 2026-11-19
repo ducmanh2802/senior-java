@@ -8191,38 +8191,38 @@ Hệ thống đặt lịch khám bệnh online ban đầu lưu giờ hẹn bằn
   id: 'scenario-138',
   topic: 'scenario',
   level: 'senior',
-  q: 'Service Java tren server Linux dot nen su dung day mot lop CPU, p99 API tang gap 10, khong co deploy moi va traffic khong doi. Ban tim luong nao dang gay loi va xu ly nhu the nao?',
-  a: `**Tóm tắt:** CPU 100% tren mot lop nghia la mot thread dang quay vong (busy spin) khong ngung nghỉ va chap het nguyen cua lop do. Ban can tim luong do bang cong cu {{top -H}} va {{jstack}}, xet stack trace cua luong do, sua vong lap khong ngung bang cach doi co dieu kien va co thoi gian cho. Khong may CPU 100% cung la loi; co the cong viec thuc su nhieu, nen can phan biet.
+  q: 'Service Java trên server Linux đột ngột sử dụng dãy một lớp CPU, p99 API tăng gấp 10, không có deploy mới và traffic không đổi. Bạn tìm luồng nào đang gây lỗi và xử lý như thế nào?',
+  a: `**Tóm tắt:** CPU 100% trên một lớp nghĩa là một thread đang quay vòng (busy spin) không ngừng nghỉ và chấp hết nguyên của lớp đó. Bạn cần tìm luồng đó bằng công cụ {{top -H}} và {{jstack}}, xét stack trace của luồng đó, sửa vòng lặp không ngừng bằng cách đợi có điều kiện và có thời gian chờ. Không phải CPU 100% cũng là lỗi; có thể công việc thực sự nhiều, nên cần phân biệt.
 
-### Cac khai niem can biet
-- **CPU 100% mot lop:** mot thread chi su dung nguyen cua mot lop CPU de tinh toan hoac kiem tra dieu kien lap lai, khong bo thoi gian cho cac luong khac tren cung mot lop.
-- **{{top -H -p <PID tien trinh Java}}:** cong cu Linux hien thi tung luong (khong chi tien trinh), cot %CPU cho biet luong nao dang dot CPU nhat. PID hien thi la so thap phan cua luong.
-- **{{jstack <PID tien trinh Java}}:** cong cu cua JDK in stack trace cua tung luong tai thoi diem hien tai. Trong ket qua, moi luong co mot nid (native thread id, ma luong he thong) duoc viet bang he luc thap (0x...). Ban chuyen PID thap phan cua luong tu {{top -H}} sang he luc thap, sau do tim nid trung khop trong ket qua {{jstack}} de biet luong do dang lam gi.
-- **Trang thai luong trong {{jstack}}:** runnable nghia luong dang su dung CPU hoang cho I/O; waiting hay timed_waiting nghia luong dang ngiu ho cho, khong dot CPU. Neu mot luong runnable va stack o cung mot ham tinh toan cua minh, do nguy co rat cao.
-- **Vong lap khong ngung (busy spin):** vong lap while kiem tra dieu kien lap lai khong ngung, khong co lenh ngiu (Thread.sleep, Object.wait, BlockingQueue.poll…), nen luong luon o trang thai runnable va chap het CPU.
+### Các khái niệm cần biết
+- **CPU 100% một lớp:** một thread chỉ sử dụng nguyên của một lớp CPU để tính toán hoặc kiểm tra điều kiện lặp lại, không bỏ thời gian chờ cho các luồng khác trên cùng một lớp.
+- **{{top -H -p <PID tiến trình Java}}:** công cụ Linux hiển thị từng luồng (không chỉ tiến trình), cột %CPU cho biết luồng nào đang đốt CPU nhất. PID hiển thị là số thập phân của luồng.
+- **{{jstack <PID tiến trình Java}}:** công cụ của JDK in stack trace của từng luồng tại thời điểm hiện tại. Trong kết quả, mỗi luồng có một nid (native thread id, mã luồng hệ thống) được viết bằng hệ lục phân (0x...). Bạn chuyển PID thập phân của luồng từ {{top -H}} sang hệ lục phân, sau đó tìm nid trùng khớp trong kết quả {{jstack}} để biết luồng đó đang làm gì.
+- **Trạng thái luồng trong {{jstack}}:** runnable nghĩa là luồng đang sử dụng CPU hoặc chờ I/O; waiting hay timed_waiting nghĩa là luồng đang ngủ hoặc chờ, không đốt CPU. Nếu một luồng runnable và stack ở cùng một hàm tính toán của mình, đó nguy cơ rất cao.
+- **Vòng lặp không ngừng (busy spin):** vòng lặp while kiểm tra điều kiện lặp lại không ngừng, không có lệnh ngủ (Thread.sleep, Object.wait, BlockingQueue.poll...), nên luồng luôn ở trạng thái runnable và chấp hết CPU.
 
-### Cach tim luong gay loi, buoc buoc
-1. Chay {{top -H -p <PID tien trinh Java>}}. Xem cot %CPU, ghi lai PID (so thap phan) cua luong dot CPU nhat (vi du 98-100%).
-2. Chuyen PID luong sang he luc thap: {{printf '%x' <PID luong>}}. Vi du PID 1234 doi thanh 0x4d2.
-3. Chay {{jstack <PID tien trinh Java>}}, tim dong co nid=0x4d2 va trang thai runnable. Xem stack trace cua luong do dang o ham nao, lap lai bao nhieu lan.
-4. Chup {{jstack}} 3 lan cach nhau 5 giay. Neu stack cua cung mot luong khong thay doi, chac chan do la vong lap khong ngung.
-5. Sua code: thay vong lap kiem tra lien tục bang doi co dieu kien co thoi gian cho (co Thread.sleep hoac BlockingQueue.poll voi thoi gian han).
+### Cách tìm luồng gây lỗi, bước bước
+1. Chạy {{top -H -p <PID tiến trình Java>}}. Xem cột %CPU, ghi lại PID (số thập phân) của luồng đốt CPU nhất (ví dụ 98-100%).
+2. Chuyển PID luồng sang hệ lục phân: {{printf '%x' <PID luong>}}. Ví dụ PID 1234 đổi thành 0x4d2.
+3. Chạy {{jstack <PID tiến trình Java>}}, tìm dòng có nid=0x4d2 và trạng thái runnable. Xem stack trace của luồng đó đang ở hàm nào, lặp lại bao nhiêu lần.
+4. Chụp {{jstack}} 3 lần cách nhau 5 giây. Nếu stack của cùng một luồng không thay đổi, chắc chắn đó là vòng lặp không ngừng.
+5. Sửa code: thay vòng lặp kiểm tra liên tục bằng đợi có điều kiện có thời gian hạn (có Thread.sleep hoặc BlockingQueue.poll với thời gian hạn).
 
-### Vi du code
+### Ví dụ code
 ~~~java
-// SAI: vong lap kiem tra lien tuc khong ngung, luong luon RUNNABLE va dot CPU
+// SAI: vòng lặp kiểm tra liên tục không ngừng, luồng luôn RUNNABLE và đốt CPU
 public class VongLapSai {
     private boolean coLieu = false;
 
     public void choCoLieuSai() {
-        while (!coLieu) {   // nếu coLieu không bao giờ thành true, vòng chạy mãi
+        while (!coLieu) {   // nếu coLiệu không bao giờ thành true, vòng chạy mãi
             ;               // không làm gì, nhưng CPU vẫn bị chiếm hết
         }
         xuLy();
     }
 }
 
-// DUNG: doi co dieu kien co thoi gian han, giai phong CPU trong khoang doi
+// ĐÚNG: đợi có điều kiện có thời gian hạn, giải phóng CPU trong khoảng chờ
 import java.util.concurrent.BlockingQueue;
 import java.util.concurrent.LinkedBlockingQueue;
 import java.time.Duration;
@@ -8231,11 +8231,11 @@ public class VongLapDung {
     private final BlockingQueue<String> hangDoi = new LinkedBlockingQueue<>();
 
     public void xuLyCoHan() throws InterruptedException {
-        String mail = hangDoi.poll();               // lay neu co, khong doi
+        String mail = hangDoi.poll();               // lấy nếu có, không chờ
         if (mail == null) {
-            mail = hangDoi.poll(Duration.ofSeconds(5)); // doi toi da 5 giay, CPU ngu
+            mail = hangDoi.poll(Duration.ofSeconds(5)); // chờ tối đa 5 giây, CPU ngủ
             if (mail == null) {
-                throw new IllegalStateException("Khong co du lieu sau 5 giay");
+                throw new IllegalStateException("Không có dữ liệu sau 5 giây");
             }
         }
         xuLy(mail);
@@ -8243,20 +8243,20 @@ public class VongLapDung {
 }
 ~~~
 
-### Vi du doi thuc
-Mot xu ly hang doi email co bug: while (!hangDoi.isEmpty()) { xuLy(hangDoi.peek()); } nhung quen goi hangDoi.poll() de lay khoi hang, cung mot email duoc xu ly mai mot chot. Server 4 lop, mot luong dot 100% mot lop, tong CPU hien 25% nhung p99 API tu 200ms len 5s (container gioi han 1 vCPU nen mot luong chap het nguyen luc xu ly cua container). Sau khi sua bang poll(Duration) thay vong lap trong, CPU ve khoang 3% mot lop, p99 con 250ms.
+### Ví dụ đời thực
+Một xử lý hàng đợi email có bug: while (!hangDoi.isEmpty()) { xuLy(hangDoi.peek()); } nhưng quên gọi hangDoi.poll() để lấy khỏi hàng, cùng một email được xử lý mãi một chỗ. Server 4 lớp, một luồng đốt 100% một lớp, tổng CPU hiện 25% nhưng p99 API từ 200ms lên 5s (container giới hạn 1 vCPU nên một luồng chấp hết nguyên lực xử lý của container). Sau khi sửa bằng poll(Duration) thay vòng lặp trong, CPU về khoảng 3% một lớp, p99 còn 250ms.
 
-### Loi hay gap
-- Khong may CPU 100% cung la loi. Cong viec thuc su nhieu (tinh bao cao) cung lam CPU cao, nhung trong stack se co nhieu luong runnable o cac ham khac nhau, khong la mot luong chay lap lai cung mot ham.
-- Neu container khong co {{jstack}} (vi image distroless), ban co the su dung {{jcmd}} neu con con, hoac gioi han CPU de biet xem pod co bi restart khong, hoac them log de biet duong nao dang chay.
+### Lỗi hay gặp
+- Không phải CPU 100% cũng là lỗi. Công việc thực sự nhiều (tính báo cáo) cũng làm CPU cao, nhưng trong stack sẽ có nhiều luồng runnable ở các hàm khác nhau, không phải một luồng chạy lặp lại cùng một hàm.
+- Nếu container không có {{jstack}} (vì image distroless), bạn có thể sử dụng {{jcmd}} nếu còn còn, hoặc giới hạn CPU để biết xem pod có bị restart không, hoặc thêm log để biết đường nào đang chạy.
 
-> Senior tip: neu ho nghi, hãy chup {{jstack}} 3-5 lan cach nhau 5 giay va so sanh; stack cua cung mot luong khong thay doi o cung mot ham la diem noc can tim.
+> Senior tip: nếu hoài nghi, hãy chụp {{jstack}} 3-5 lần cách nhau 5 giây và so sánh; stack của cùng một luồng không thay đổi ở cùng một hàm là điểm nọc cần tìm.
 
 `,
   follow: [
-    'Lam sao phan biet CPU 100% do vong lap va cong viec thuc su nhieu?',
-    'Neu container khong co jstack/jcmd (image distroless), ban chuan doan nhu the nao?',
-    'Bien coLieu o tren neu khong dung tu khoa volatile co nguy hiem gi trong moi truong da luong?'
+    'Làm sao phân biệt CPU 100% do vòng lặp và công việc thực sự nhiều?',
+    'Nếu container không có jstack/jcmd (image distroless), bạn chẩn đoán như thế nào?',
+    'Biến coLieu ở trên nếu không dùng từ khóa volatile có nguy hiểm gì trong môi trường đa luồng?'
   ],
   tags: ['CPU', 'troubleshooting', 'jstack', 'top', 'thread', 'Java']
 },
@@ -8264,17 +8264,17 @@ Mot xu ly hang doi email co bug: while (!hangDoi.isEmpty()) { xuLy(hangDoi.peek(
   id: 'scenario-139',
   topic: 'scenario',
   level: 'lead',
-  q: 'Sau khi them metric dem so lan goi API va gan nhan la {{user_id}} de theo doi tung khach hang, server Prometheus su dung RAM tang tu 4GB len 24GB va cac canh bao lo tien. Nguyen nhan va thiet kế metric an toan nhu the nao?',
-  a: `**Tóm tắt:** Prometheus luu tung ket hop cua ten metric va toan bo nhan (label) lam mot chuoi thoi gian (time series). Nhan {{user_id}} co the co tram va tram gia tri khac nhau, khi do so chuoi thoi gian nhan len theo ty le, bo nho RAM cua Prometheus tang vo cung, server cham het va canh bao khong bao gio chay dung. Cach sua: bo nhan co gia tri nhieu khoi metric, chi gan nhan cho cac gia tri it thay doi (endpoint, trang thai, phuong thuc), va truy doi khach hang qua log thay vì qua metric.
+  q: 'Sau khi thêm metric đếm số lần gọi API và gán nhãn là {{user_id}} để theo dõi từng khách hàng, server Prometheus sử dụng RAM tăng từ 4GB lên 24GB và các cảnh báo lỗi trôi. Nguyên nhân và thiết kế metric an toàn như thế nào?',
+  a: `**Tóm tắt:** Prometheus lưu từng kết hợp của tên metric và toàn bộ nhãn (label) làm một chuỗi thời gian (time series). Nhãn {{user_id}} có thể có trăm vạn giá trị khác nhau, khi đó số chuỗi thời gian nhấn lên theo tỷ lệ, bộ nhớ RAM của Prometheus tăng vô cùng, server chậm hẳn và cảnh báo không bao giờ chạy đúng. Cách sửa: bỏ nhãn có giá trị nhiều khỏi metric, chỉ gán nhãn cho các giá trị ít thay đổi (endpoint, trạng thái, phương thức), và truy vết khách hàng qua log thay vì qua metric.
 
-### Cac khai nem can biet (Prometheus la he thong moi cho nhieu doc gia)
-- **Prometheus:** he thong thu thap va luu so lieu cua ung dung theo thoi gian, dung de ve bieu do va dat canh bao.
-- **Metric:** mot con so co ten (vi du so_lan_goi_api_tong).
-- **Nhan (label):** thong tin mo ta them kèm theo metric (vi du endpoint=/api/tao_don, trang_thai=200). Ten metric cong toan bo nhan tao thanh mot chuoi thoi gian.
-- **Cardinality:** so luong chuoi thoi gian khac nhau. Moi nhan them voi nhieu gia tri khac nhau lam so chuoi thoi gian nhan len theo ty le (vi du 10 endpoint x 5 trang thai x 3 phuong thuc = 150 chuoi; them user_id co 1 trieu gia tri -> 150 trieu chuoi).
-- Moi chuoi thoi gian tốn bo nho RAM o Prometheus; qua nhieu chuoi lam server cham, het RAM, va canh bao bao loi thuc su khong bao gio chay.
+### Các khái niệm cần biết (Prometheus là hệ thống mới cho nhiều độc giả)
+- **Prometheus:** hệ thống thu thập và lưu số liệu của ứng dụng theo thời gian, dùng để vẽ biểu đồ và đặt cảnh báo.
+- **Metric:** một con số có tên (ví dụ so_lan_goi_api_tong).
+- **Nhãn (label):** thông tin mô tả thêm kèm theo metric (ví dụ endpoint=/api/tao_don, trang_thai=200). Tên metric cộng toàn bộ nhãn tạo thành một chuỗi thời gian.
+- **Cardinality:** số lượng chuỗi thời gian khác nhau. Mỗi nhãn thêm với nhiều giá trị khác nhau làm số chuỗi thời gian nhấn lên theo tỷ lệ (ví dụ 10 endpoint x 5 trạng thái x 3 phương thức = 150 chuỗi; thêm user_id có 1 triệu giá trị -> 150 triệu chuỗi).
+- Mỗi chuỗi thời gian tốn bộ nhớ RAM ở Prometheus; quá nhiều chuỗi làm server chậm, hết RAM, và cảnh báo báo lỗi thực sự không bao giờ chạy.
 
-### Vi du code (Micrometer)
+### Ví dụ code (Micrometer)
 ~~~java
 import io.micrometer.core.instrument.Counter;
 import io.micrometer.core.instrument.MeterRegistry;
@@ -8284,12 +8284,12 @@ public class TheoDoiApi {
     private final Counter counter;
 
     public TheoDoiApi(MeterRegistry registry, String endpoint) {
-        // SAI (khong lam): user_id co the nhan tram va tram gia tri khac nhau
+        // SAI (không làm): user_id có thể nhận trăm vạn giá trị khác nhau
         // this.counter = Counter.builder("api.calls")
         //     .tags("endpoint", endpoint, "userId", userId)   // cardinality cao
         //     .register(registry);
 
-        // DUNG: nhan chi cac gia tri it thay doi
+        // ĐÚNG: nhãn chỉ các giá trị ít thay đổi
         this.counter = Counter.builder("api.calls")
                 .tags("endpoint", endpoint, "phuong_thuc", "POST", "trang_thai", "200")
                 .register(registry);
@@ -8301,21 +8301,21 @@ public class TheoDoiApi {
 }
 ~~~
 
-### Vi du doi thuc
-Dich vu thanh toan them metric api_calls{user_id} de theo doi tung khach hang VIP. Hai tuan sau, Prometheus tu 4GB tang len 24GB, pod bi OOMKilled restart, canh bao loi tan le khong bao gi chay vi server qua tai. Sua: bo user_id khoi nhan metric, giu endpoint, phuong thuc, trang thai; theo doi khach hang qua log co trace_id va truy van he thong luu tru log (ELK hoac Loki) thay vì qua metric. Ket qua: Prometheus ve lai 4GB, canh bao hoat dong binh thuong, co phat hien su co trong mot phut.
+### Ví dụ đời thực
+Dịch vụ thanh toán thêm metric api_calls{user_id} để theo dõi từng khách hàng VIP. Hai tuần sau, Prometheus từ 4GB tăng lên 24GB, pod bị OOMKilled restart, cảnh báo lỗi tan lệ không bao giờ chạy vì server quá tải. Sửa: bỏ user_id khỏi nhãn metric, giữ endpoint, phương thức, trạng thái; theo dõi khách hàng qua log có trace_id và truy vấn hệ thống lưu trữ log (ELK hoặc Loki) thay vì qua metric. Kết quả: Prometheus về lại 4GB, cảnh báo hoạt động bình thường, có phát hiện sự cố trong một phút.
 
-### Bang trade-off
-| Loai nhan | Vi du | Nhan duoc khong? |
-| Nhan thap cardinality | endpoint, phuong_thuc, trang_thai, vung | Co, it gia tri |
-| Nhan cao cardinality | user_id, order_id, transaction_id, email, dia chi IP | Khong, tránh triet de |
+### Bảng trade-off
+| Loại nhãn | Ví dụ | Nhận được không? |
+| Nhãn thấp cardinality | endpoint, phuong_thuc, trang_thai, vung | Có, ít giá trị |
+| Nhãn cao cardinality | user_id, order_id, transaction_id, email, địa chỉ IP | Không, tránh triệt để |
 
-> Senior tip: quy tắc vang — truoc khi them nhan, hay hoi "nhan nay co the nhan bao nhieu gia tri khac nhau?". Neu tra loi la "tuy so khach hang" hoac "khong gioi han", khong nhan vao nhan, hay bo vao noi dung log va truy van log thay vi metric.
+> Senior tip: quy tắc vàng — trước khi thêm nhãn, hãy hỏi "nhãn này có thể nhận bao nhiêu giá trị khác nhau?". Nếu trả lời là "tùy số khách hàng" hoặc "không giới hạn", không gán vào nhãn, hãy bỏ vào nội dung log và truy vấn log thay vì metric.
 
 `,
   follow: [
-    'Histogram va Summary trong Prometheus khac nhau nhu the nao, dung khi nao?',
-    'Lam sao phat hien som cardinality cua metric dang tang (vi du qua dashboard Prometheus)?',
-    'Neu bat buoc phai theo doi tung khach hang, ban lam sao ma khong lam sap Prometheus?'
+    'Histogram và Summary trong Prometheus khác nhau như thế nào, dùng khi nào?',
+    'Làm sao phát hiện sớm cardinality của metric đang tăng (ví dụ qua dashboard Prometheus)?',
+    'Nếu bắt buộc phải theo dõi từng khách hàng, bạn làm sao mà không làm sập Prometheus?'
   ],
   tags: ['Prometheus', 'metrics', 'cardinality', 'observability', 'nhan']
 },
@@ -8323,17 +8323,17 @@ Dich vu thanh toan them metric api_calls{user_id} de theo doi tung khach hang VI
   id: 'scenario-140',
   topic: 'scenario',
   level: 'senior',
-  q: 'API tong hop thong tin don hang goi 3 dich vu trong bo (kho, van chuyen, khuyen mai) bang {{CompletableFuture.allOf(cf1, cf2, cf3).join()}}. Khi dich vu van chuyen bi cham 30 giay, toan bo luong xu ly cua API bi ket, p99 tang gap 20 va cac API khac trong cung service cung loi 503. Nguyen nhan va cach xu ly?',
-  a: `**Tóm tắt:** {{.join()}} (hoặc {{.get()}}) dung luong goi cho den khi tac vu hoan tat. {{allOf()}} chi hoan tat khi **tat ca** cac tac vu nhap vao hoan tat, neu mot bi cham, {{allOf()}} bi cham theo va {{.join()}} giu luong ma mot thoi gian cho duoc dat. Luong web (Tomcat) co so luong han che (vi du 200), neu moi luong deu dang {{.join()}} cho dich vu cham, request moi khong con luong xu ly, toan bo service loi, khong chi API tong hop.
+  q: 'API tổng hợp thông tin đơn hàng gọi 3 dịch vụ trong bộ (kho, vận chuyển, khuyến mãi) bằng {{CompletableFuture.allOf(cf1, cf2, cf3).join()}}. Khi dịch vụ vận chuyển bị chậm 30 giây, toàn bộ luồng xử lý của API bị kẹt, p99 tăng gấp 20 và các API khác trong cùng service cũng lỗi 503. Nguyên nhân và cách xử lý?',
+  a: `**Tóm tắt:** {{.join()}} (hoặc {{.get()}}) đợi luồng gọi cho đến khi tác vụ hoàn tất. {{allOf()}} chỉ hoàn tất khi **tất cả** các tác vụ nhập vào hoàn tất, nếu một bị chậm, {{allOf()}} bị chậm theo và {{.join()}} giữ luồng mà không có thời gian chờ được đặt. Luồng web (Tomcat) có số lượng hạn chế (ví dụ 200), nếu mỗi luồng đều đang {{.join()}} cho dịch vụ chậm, request mới không còn luồng xử lý, toàn bộ service lỗi, không chỉ API tổng hợp.
 
-### Cac khai nem can biet
-- **{{CompletableFuture}}:** doi tuong bieu dien ket qua se co sau nay cua mot tac vu bat dong bo.
-- **{{.join()}}:** cho luong goi den va cho den khi tac vu xong, sau do lay ket qua. Luong goi bi dung (block) trong thoi gian doi.
-- **{{allOf()}}:** tra ve mot Future hoan tat khi tat ca cac Future nhap vao hoan tat. Neu mot cai bi cham, allOf bi cham theo.
-- **{{ForkJoinPool.commonPool()}}:** nhom luong dung chung cua toan bo JVM, CompletableFuture chay tac vu tren nhom neu ban khong cung cap nhom rieng.
+### Các khái niệm cần biết
+- **{{CompletableFuture}}:** đối tượng biểu diễn kết quả sẽ có sau này của một tác vụ bất đồng bộ.
+- **{{.join()}}:** đợi luồng gọi đến và chờ đến khi tác vụ xong, sau đó lấy kết quả. Luồng gọi bị đứng (block) trong thời gian chờ.
+- **{{allOf()}}:** trả về một Future hoàn tất khi tất cả các Future nhập vào hoàn tất. Nếu một cái bị chậm, allOf bị chậm theo.
+- **{{ForkJoinPool.commonPool()}}:** nhóm luồng dùng chung của toàn bộ JVM, CompletableFuture chạy tác vụ trên nhóm nếu bạn không cung cấp nhóm riêng.
 
-### Cach xu ly
-Moi dich vu chi duoc cho toi da 800 miligiay, sau do tra gia tri thay the bang {{exceptionally}} thay vi cho mai:
+### Cách xử lý
+Mỗi dịch vụ chỉ được cho tối đa 800 mili giây, sau đó trả giá trị thay thế bằng {{exceptionally}} thay vì chờ mãi:
 
 ~~~java
 import java.util.concurrent.CompletableFuture;
@@ -8357,24 +8357,24 @@ public class TongHopDonHang {
 }
 ~~~
 
-### Loi hay gap
-- {{orTimeout}} khong huy tac vu dang chay, chi lam luong goi khong con doi. Tac vu cu tiep tuc chay nen phai lam bo nhi cho an toan (idempotent).
-- Khong goi {{.join()}} tren luong xu ly request neu co the tránh; neu bat buoc, phai co thoi gian cho cho moi loi goi.
-- Neu timeout quý lau (vi du 30 giay) va nhieu request cung cham, luong van bi het cho neu khong co gioi han luong dong thoi (bulkhead) cho tung dich vu.
+### Lỗi hay gặp
+- {{orTimeout}} không huỷ tác vụ đang chạy, chỉ làm luồng gọi không còn chờ. Tác vụ cũ tiếp tục chạy nên phải làm bộ nhị cho an toàn (idempotent).
+- Không gọi {{.join()}} trên luồng xử lý request nếu có thể tránh; nếu bắt buộc, phải có thời gian chờ cho mỗi lời gọi.
+- Nếu timeout quá lâu (ví dụ 30 giây) và nhiều request cũng chậm, luồng vẫn bị hết chỗ nếu không có giới hạn luồng đồng thời (bulkhead) cho từng dịch vụ.
 
-### Vi du doi thuc
-API tong hop don hang goi 3 dich vu, p99 binh thuong 300ms. Khi van chuyen cham 30 giay, {{.join()}} giu 200 luong Tomcat, p99 len 6s, API khac (dang nhap, xem san pham) cung service cung 503. Sau them {{orTimeout}} 800 miligiay: p99 ve 900ms, service khong con sap.
+### Ví dụ đời thực
+API tổng hợp đơn hàng gọi 3 dịch vụ, p99 bình thường 300ms. Khi vận chuyển chậm 30 giây, {{.join()}} giữ 200 luồng Tomcat, p99 lên 6s, API khác (đăng nhập, xem sản phẩm) cùng service cũng 503. Sau thêm {{orTimeout}} 800 mili giây: p99 về 900ms, service không còn sập.
 
-### Tra loi mau khi pham van
-"Khi goi nhieu dich vu bat dong bo va cho ket qua, toi luon dat thoi gian cho cho moi loi goi. CompletableFuture.allOf() cho den khi tat ca hoan tat, neu mot dich vu cham 30 giay, .join() giu luong web ma mot, toan bo service bi chan. Tao sua bang orTimeout(800ms) cho moi dich vu, dung exceptionally tra gia tri thay thay (vi du kho trong, van chuyen chua co thong tin), sau do join(). Ket qua p99 tu 6s ve 900ms va service khong sap nua. Luu y orTimeout khong huy tac vu dang chay nen phai lam bo nhi cho an toan, va khong cho .join() tren luong request neu co the tranh."
+### Trả lời mẫu khi phỏng vấn
+"Khi gọi nhiều dịch vụ bất đồng bộ và chờ kết quả, tôi luôn đặt thời gian chờ cho mỗi lời gọi. CompletableFuture.allOf() chờ đến khi tất cả hoàn tất, nếu một dịch vụ chậm 30 giây, .join() giữ luồng web mà một, toàn bộ service bị chặn. Tôi sửa bằng orTimeout(800ms) cho mỗi dịch vụ, dùng exceptionally trả giá trị thay thế (ví dụ kho trống, vận chuyển chưa có thông tin), sau đó join(). Kết quả p99 từ 6s về 900ms và service không sập nữa. Lưu ý orTimeout không huỷ tác vụ đang chạy nên phải làm bộ nhị cho an toàn, và không cho .join() trên luồng request nếu có thể tránh."
 
-> Senior tip: bao giot cung dat thoi gian cho moi loi goi bat dong bo, va coi moi dich vu ngoai deu co the treo ma; co gioi han luong dong thoi (bulkhead) cho tung dich vu de mot dich vu cham khong lam het het luong cua toan bo service.
+> Senior tip: bao giờ cũng đặt thời gian chờ cho mỗi lời gọi bất đồng bộ, và coi mỗi dịch vụ ngoài đều có thể treo mà; có giới hạn luồng đồng thời (bulkhead) cho từng dịch vụ để một dịch vụ chậm không làm hết hết luồng của toàn bộ service.
 
 `,
   follow: [
-    'orTimeout khac completeOnTimeout nhu the nao?',
-    'Tac vu CompletableFuture bi cham co bi huy khi orTimeout het han khong? Dieu gi xay ra?',
-    'Tại sao khong nen su dung ForkJoinPool.commonPool() cho tac vu goi I/O trong ung dung web?'
+    'orTimeout khác completeOnTimeout như thế nào?',
+    'Tác vụ CompletableFuture bị chậm có bị huỷ khi orTimeout hết hạn không? Điều gì xảy ra?',
+    'Tại sao không nên sử dụng ForkJoinPool.commonPool() cho tác vụ gọi I/O trong ứng dụng web?'
   ],
   tags: ['CompletableFuture', 'timeout', 'thread pool', 'cascading failure', 'Java concurrency']
 },
@@ -8382,60 +8382,60 @@ API tong hop don hang goi 3 dich vu, p99 binh thuong 300ms. Khi van chuyen cham 
   id: 'scenario-141',
   topic: 'scenario',
   level: 'senior',
-  q: 'Lap trinh vien su dung {{danhSach.parallelStream().map(...)}} de tinh phi cho 10.000 don hang trong mot request API. API nhanh nguoi it su dung, nhung khi nhieu nguoi cung goi, toan bo API trong service cung cham, dung CPU server chi 40%. Nguyen nhan va cach xu ly?',
-  a: `**Tóm tắt:** {{parallelStream()}} chay cong viec song song tren {{ForkJoinPool.commonPool()}}, nhom luong dung chung cua toan bo JVM (so luong mac dinh = so lop CPU tru 1). Trong request web, cac luong Tomcat gui nhiem vu vao nhom chung roi **dung cho den khi xong**. Neu nhieu request cung tinh toan nang, nhom chung bi day, luong Tomcat khong con luong nhan request moi, toan service cham, dung CPU thap (cac luong dang cho, khong tinh toan).
+  q: 'Lập trình viên sử dụng {{danhSach.parallelStream().map(...)}} để tính phí cho 10.000 đơn hàng trong một request API. API nhanh người ít dùng, nhưng khi nhiều người cùng gọi, toàn bộ API trong service cũng chậm, dùng CPU server chỉ 40%. Nguyên nhân và cách xử lý?',
+  a: `**Tóm tắt:** {{parallelStream()}} chạy công việc song song trên {{ForkJoinPool.commonPool()}}, nhóm luồng dùng chung của toàn bộ JVM (số lượng mặc định = số lớp CPU trừ 1). Trong request web, các luồng Tomcat gửi nhiệm vụ vào nhóm chung rồi **đợi cho đến khi xong**. Nếu nhiều request cùng tính toán nặng, nhóm chung bị đầy, luồng Tomcat không còn luồng nhận request mới, toàn service chậm, dùng CPU thấp (các luồng đang chờ, không tính toán).
 
-### Cac khai nem can biet
-- **{{parallelStream()}}:** chia danh sach thanh nhieu phan va xu ly song song de nhanh hon tren nhieu lop CPU.
-- **{{ForkJoinPool.commonPool()}}:** nhom luong dung chung cua toan bo JVM, parallelStream mac dinh su dung nhom nay.
-- **I/O-bound vs CPU-bound:** I/O-bound la viec cho mang/DB (luong thoi gian cho), CPU-bound la viec tinh toan (luong thoi gian CPU). parallelStream chi ly honh cho tinh toan CPU nang, va chi khi su dung nhom luong rieng.
-- **Doi luong luong (thread starvation):** nhom luong bi day, luong khac khong duoc luong de lam viec.
+### Các khái niệm cần biết
+- **{{parallelStream()}}:** chia danh sách thành nhiều phần và xử lý song song để nhanh hơn trên nhiều lớp CPU.
+- **{{ForkJoinPool.commonPool()}}:** nhóm luồng dùng chung của toàn bộ JVM, parallelStream mặc định sử dụng nhóm này.
+- **I/O-bound vs CPU-bound:** I/O-bound là việc chờ mạng/DB (luồng thời gian chờ), CPU-bound là việc tính toán (luồng thời gian CPU). parallelStream chỉ lý tưởng cho tính toán CPU nặng, và chỉ khi sử dụng nhóm luồng riêng.
+- **Đổi luồng luồng (thread starvation):** nhóm luồng bị đầy, luồng khác không được luồng để làm việc.
 
-### Cach xu ly
-- **KHONG** su dung {{parallelStream()}} trong request web (HTTP).
-- Neu can tinh toan song song nang, su dung {{ForkJoinPool}} rieng voi so luong han che, hoac dời tac vu sang job nen, khong lam doi luong luong web.
+### Cách xử lý
+- **KHÔNG** sử dụng {{parallelStream()}} trong request web (HTTP).
+- Nếu cần tính toán song song nặng, sử dụng {{ForkJoinPool}} riêng với số lượng hạn chế, hoặc dời tác vụ sang job nền, không làm đổi luồng luồng web.
 
-### Vi du code
+### Ví dụ code
 ~~~java
 import java.math.BigDecimal;
 import java.util.List;
 
-// SAI: su dung nhom luong dung chung cua toan bo JVM, de lam doi luong web
+// SAI: sử dụng nhóm luồng dùng chung của toàn bộ JVM, để làm đổi luồng web
 public BigDecimal tongPhiSai(List<DonHang> danhSach) {
-    return danhSach.parallelStream()   // su dung ForkJoinPool.commonPool()
-            .map(DonHang::tinhPhi)     // tinh toan nang, chap luong chung
+    return danhSach.parallelStream()   // sử dụng ForkJoinPool.commonPool()
+            .map(DonHang::tinhPhi)     // tính toán nặng, chấp luồng chung
             .reduce(BigDecimal.ZERO, BigDecimal::add);
 }
 
-// DUNG: tinh toan thuan tu trong request HTTP
+// ĐÚNG: tính toán thuận tự trong request HTTP
 public BigDecimal tongPhiDung(List<DonHang> danhSach) {
-    return danhSach.stream()   // khong su dung parallelStream trong request HTTP
+    return danhSach.stream()   // không sử dụng parallelStream trong request HTTP
             .map(DonHang::tinhPhi)
             .reduce(BigDecimal.ZERO, BigDecimal::add);
 }
 ~~~
 
-Neu can tinh toan song song:
+Nếu cần tính toán song song:
 ~~~java
 import java.util.concurrent.ForkJoinPool;
 
-// Nhom luong rieng, gioi han 4 luong, khong anh huong luong web
+// Nhóm luồng riêng, giới hạn 4 luồng, không ảnh hưởng luồng web
 ForkJoinPool pool = new ForkJoinPool(4);
 BigDecimal tong = pool.submit(() -> danhSach.parallelStream()
         .map(DonHang::tinhPhi)
         .reduce(BigDecimal.ZERO, BigDecimal::add)).join();
 ~~~
 
-### Vi du doi thuc
-Server 8 lop, nhom chung 7 luong; Tomcat 200 luong. 3 nhan vien cung xuat bao cao tinh phi 10.000 don: 7 luong nhom chung bi day, 200 luong Tomcat bi cho, p99 toan service tu 150ms len 8s, CPU 40% (luong Tomcat dang cho, khong tinh toan). Sua: bo parallelStream, tinh thuan tu; bao cao sau do 1.5s nhung khong anh huong API khac; hoac doti sang job nen.
+### Ví dụ đời thực
+Server 8 lớp, nhóm chung 7 luồng; Tomcat 200 luồng. 3 nhân viên cùng xuất báo cáo tính phí 10.000 đơn: 7 luồng nhóm chung bị đầy, 200 luồng Tomcat bị chờ, p99 toàn service từ 150ms lên 8s, CPU 40% (luồng Tomcat đang chờ, không tính toán). Sửa: bỏ parallelStream, tính thuận tự; báo cáo sau đó 1.5s nhưng không ảnh hưởng API khác; hoặc dời sang job nền.
 
-> Senior tip: quy tắc don gian — ma xu ly request HTTP khong duoc su dung parallelStream(). Neu thuc su can tinh toan song song nang, dung nhom luong rieng voi so luong han che, hoac doti tac vu sang job nen, khong lam doi luong luong xu ly web.
+> Senior tip: quy tắc đơn giản — mã xử lý request HTTP không được sử dụng parallelStream(). Nếu thực sự cần tính toán song song nặng, dùng nhóm luồng riêng với số lượng hạn chế, hoặc dời tác vụ sang job nền, không làm đổi luồng luồng xử lý web.
 
 `,
   follow: [
-    'parallelStream giup nhanh hon tren bao nhiêu lop CPU, va khi nao thi chua hon stream thuan tu?',
-    'ForkJoinPool.commonPool con dung cho viec nao khac trong ung dung?',
-    'Virtual thread (Java 21) co giai quyet tri de van de nay khong?'
+    'parallelStream giúp nhanh hơn trên bao nhiêu lớp CPU, và khi nào thì chậm hơn stream thuận tự?',
+    'ForkJoinPool.commonPool còn dùng cho việc nào khác trong ứng dụng?',
+    'Virtual thread (Java 21) có giải quyết triệt để vấn đề này không?'
   ],
   tags: ['parallelStream', 'ForkJoinPool', 'doi luong luong', 'CPU', 'Java concurrency']
 },
