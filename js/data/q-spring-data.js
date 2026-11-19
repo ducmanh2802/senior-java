@@ -13246,18 +13246,18 @@ Chuyển sang {{@ConfigurationProperties(prefix = "payment")}} + {{@Validated}} 
   id: 'spring-085',
   topic: 'spring',
   level: 'senior',
-  q: 'Profiles (dev/test/prod), externalized config precedence (application.yml, env, CLI args, Spring Cloud Config), va @Profile/@ConditionalOnProperty: ban quan ly cau hinh chenh lech giua moi truong nhu the nao?',
-  a: `**Tom tat:** Spring Boot nap cau hinh theo thu tu uu tien co dinh: default (application.yml trong jar) < profile-specific (application-prod.yml) < environment variable < command line args < Spring Cloud Config Server (neu bat). Profile active quyet dinh file profile-specific nao duoc nap. {{@Profile}} dieu khien bean registration; {{@ConditionalOnProperty}} dieu khien auto-configuration. Quy tac: config chung o application.yml, chenh lech moi truong o env/args/Config Server, khong commit secret vao git.
+  q: 'Profiles (dev/test/prod), externalized config precedence (application.yml, env, CLI args, Spring Cloud Config), và @Profile/@ConditionalOnProperty: bạn quản lý cấu hình chênh lệch giữa môi trường như thế nào?',
+  a: `**Tóm tắt:** Spring Boot nạp cấu hình theo thứ tự ưu tiên cố định: default (application.yml trong jar) < profile-specific (application-prod.yml) < environment variable < command line args < Spring Cloud Config Server (nếu bật). Profile active quyết định file profile-specific nào được nạp. {{@Profile}} điều khiển bean registration; {{@ConditionalOnProperty}} điều khiển auto-configuration. Quy tắc: config chung ở application.yml, chênh lệch môi trường ở env/args/Config Server, không commit secret vào git.
 
-### Thu tu uu tien nap cau hinh (cao nhat thang)
-1. **Default**: {{application.yml}}, {{application.properties}} trong jar (thap nhat).
-2. **Profile-specific**: application-{profile}.yml (vi du {{application-prod.yml}}) - nap khi profile active khop.
-3. **Environment variable**: {{SPRING_DATASOURCE_URL}}, {{PAYMENT_BASE_URL}} (relaxed binding: {{_}} thanh {{.}}, {{UPPER_CASE}} map sang kebab-case).
+### Thứ tự ưu tiên nạp cấu hình (cao nhất thắng)
+1. **Default**: {{application.yml}}, {{application.properties}} trong jar (thấp nhất).
+2. **Profile-specific**: application-{profile}.yml (ví dụ {{application-prod.yml}}) - nạp khi profile active khớp.
+3. **Environment variable**: {{SPRING_DATASOURCE_URL}}, {{PAYMENT_BASE_URL}} (relaxed binding: {{_}} thành {{.}}, {{UPPER_CASE}} map sang kebab-case).
 4. **Command line args**: {{--spring.datasource.url=...}}, {{--payment.base-url=...}}.
-5. **Spring Cloud Config Server**: neu {{spring.config.import=configserver:}} - uu tien cao nhat (co the ghi de env/args tuy config).
+5. **Spring Cloud Config Server**: nếu {{spring.config.import=configserver:}} - ưu tiên cao nhất (có thể ghi đè env/args tùy config).
 6. **Test-specific**: {{@TestPropertySource}}, {{@SpringBootTest(properties=...)}}, {{application-test.yml}}.
 
-### Profile va bean registration
+### Profile và bean registration
 ~~~java
 @Profile("dev")
 @Bean DataSource devDataSource() { return new EmbeddedDatabaseBuilder().build(); }
@@ -13265,50 +13265,49 @@ Chuyển sang {{@ConfigurationProperties(prefix = "payment")}} + {{@Validated}} 
 @Profile("prod")
 @Bean DataSource prodDataSource() { return DataSourceBuilder.create().url(url).build(); }
 
-@Profile("!test")  // khong active khi profile test
+@Profile("!test")  // không active khi profile test
 @Bean Scheduler prodScheduler() { ... }
 ~~~
-{{spring.profiles.active=dev,prod}} (nhieu profile, profile sau ghi de truoc).
+{{spring.profiles.active=dev,prod}} (nhiều profile, profile sau ghi đè trước).
 {{spring.profiles.include=common}} gom config chung.
 
 ### @ConditionalOnProperty vs @Profile
-| Annotation | Pham vi | Dung khi |
+| Annotation | Phạm vi | Dùng khi |
 |---|---|---|
-| {{@Profile}} | Bean registration (component scan, @Bean) | Bat/tat toan bo bean/service theo moi truong |
-| {{@ConditionalOnProperty}} | Auto-configuration, @Bean method | Bat/tat feature flag, auto-config tuy property |
+| {{@Profile}} | Bean registration (component scan, @Bean) | Bật/tắt toàn bộ bean/service theo môi trường |
+| {{@ConditionalOnProperty}} | Auto-configuration, @Bean method | Bật/tắt feature flag, auto-config tùy property |
 
-Vi du: {{@ConditionalOnProperty(prefix="feature", name="new-checkout", havingValue="true")}} cho feature flag.
+Ví dụ: {{@ConditionalOnProperty(prefix="feature", name="new-checkout", havingValue="true")}} cho feature flag.
 
 ### Spring Cloud Config Server
-- Config Server phuc vu /{application}/{profile}[/{label}] tu Git backend.
-- Client: {{spring.config.import=optional:configserver:http://config-server:8888}} ({{optional:}} cho phep start khi Config Server down).
-- Label = branch/tag/commit Git, cho phep rollback config khong deploy code.
-- Encrypt/decrypt: Config Server ma hoa value ({cipher}AQA...), client giai ma voi key chung.
+- Config Server phục vụ /{application}/{profile}[/{label}] từ Git backend.
+- Client: {{spring.config.import=optional:configserver:http://config-server:8888}} ({{optional:}} cho phép start khi Config Server down).
+- Label = branch/tag/commit Git, cho phép rollback config không deploy code.
+- Encrypt/decrypt: Config Server mã hóa value ({cipher}AQA...), client giải mã với key chung.
 
-### Quan ly secret
-- **Khong bao gio** commit secret (DB password, API key, JWT secret) vao git (ke ca application-prod.yml).
-- Production: inject qua env variable (K8s Secret -> env), Vault, hoac AWS Secrets Manager.
-- Config Server: luu secret da encrypt, client decrypt tai runtime.
-- Local dev: dung {{.env}} file hoac IDE env var, khong commit.
+### Quản lý secret
+- **Không bao giờ** commit secret (DB password, API key, JWT secret) vào git (kể cả application-prod.yml).
+- Production: inject qua env variable (K8s Secret -> env), Vault, hoặc AWS Secrets Manager.
+- Config Server: lưu secret đã encrypt, client decrypt tại runtime.
+- Local dev: dùng {{.env}} file hoặc IDE env var, không commit.
 
 ### Pitfall production
-- application-prod.yml trong git chua password -> lo secret khi repo public hoac nhan vien cu con clone.
-- Profile active khong khop file profile-specific (typo: {{application-prod.yml}} vs {{spring.profiles.active=production}}) -> config default bi dung, ket noi sai DB.
-- Spring Cloud Config Server down ma client khong co {{optional:}} -> app khong start duoc.
-- Env variable={{SPRING_PROFILES_ACTIVE=prod}} ghi de {{spring.profiles.active}} trong yml -> behavior khac local/test.
+- application-prod.yml trong git chứa password -> lộ secret khi repo public hoặc nhân viên cũ còn clone.
+- Profile active không khớp file profile-specific (typo: {{application-prod.yml}} vs {{spring.profiles.active=production}}) -> config default bị dùng, kết nối sai DB.
+- Spring Cloud Config Server down mà client không có {{optional:}} -> app không start được.
+- Env variable={{SPRING_PROFILES_ACTIVE=prod}} ghi đè {{spring.profiles.active}} trong yml -> behavior khác local/test.
 
-### Vi du doi thuc
-He thong microservice 15 service, moi service 3 profile (dev, staging, prod). Truoc do moi service co application-prod.yml trong git chua DB password. Mot lan dev vo tinh push application-prod.yml len repo public -> lo password production. Chuyen sang: chi chua application.yml (config chung, khong secret), application-dev.yml (config dev an toan). Production secret: K8s Secret mount thanh env variable ({{SPRING_DATASOURCE_PASSWORD}}), Spring Boot relaxed binding tu map vao {{spring.datasource.password}}. Staging dung Spring Cloud Config Server (Git backend, branch staging) voi {{optional:configserver:}} - cho phep service start doc lap khi Config Server bao tri. Feature flag {{feature.new-checkout}} dieu khien bang {{@ConditionalOnProperty}} - bat/tat khong deploy. CI kiem tra: moi @ConfigurationProperties co test validation; secret khong xuat hien trong git history (git-secrets hook).
+### Ví dụ đời thực
+Hệ thống microservice 15 service, mỗi service 3 profile (dev, staging, prod). Trước đó mỗi service có application-prod.yml trong git chứa DB password. Một lần dev vô tình push application-prod.yml lên repo public -> lộ password production. Chuyển sang: chỉ chứa application.yml (config chung, không secret), application-dev.yml (config dev an toàn). Production secret: K8s Secret mount thành env variable ({{SPRING_DATASOURCE_PASSWORD}}), Spring Boot relaxed binding tự map vào {{spring.datasource.password}}. Staging dùng Spring Cloud Config Server (Git backend, branch staging) với {{optional:configserver:}} - cho phép service start độc lập khi Config Server bảo trì. Feature flag {{feature.new-checkout}} điều khiển bằng {{@ConditionalOnProperty}} - bật/tắt không deploy. CI kiểm tra: mỗi @ConfigurationProperties có test validation; secret không xuất hiện trong git history (git-secrets hook).
 
-### Tra loi mau khi phong van
-"Spring Boot nap config theo thu tu: default < profile-specific < env < CLI args < Config Server. Toi de config chung o application.yml, chenh lech moi truong (DB url, pool size, feature flag) o env variable (K8s Secret) hoac Config Server. Profile active chon file application-{profile}.yml. Bean registration dung @Profile; auto-config/feature flag dung @ConditionalOnProperty. Secret khong bao gio vao git - production dung K8s Secret -> env, hoac Vault/Secrets Manager. Spring Cloud Config Server cho phep quan ly config tap trung, rollback bang Git label, encrypt secret. CI bat loi: test @ConfigurationProperties validation, git-secrets hook chan secret."
+### Trả lời mẫu khi phỏng vấn
+"Spring Boot nạp config theo thứ tự: default < profile-specific < env < CLI args < Config Server. Tôi để config chung ở application.yml, chênh lệch môi trường (DB url, pool size, feature flag) ở env variable (K8s Secret) hoặc Config Server. Profile active chọn file application-{profile}.yml. Bean registration dùng @Profile; auto-config/feature flag dùng @ConditionalOnProperty. Secret không bao giờ vào git - production dùng K8s Secret -> env, hoặc Vault/Secrets Manager. Spring Cloud Config Server cho phép quản lý config tập trung, rollback bằng Git label, encrypt secret. CI bắt lỗi: test @ConfigurationProperties validation, git-secrets hook chặn secret."
 
-> Senior tip: hay co mot file {{application.yml}} mau ({{application.yml.example}}) trong git cho dev biet cau truc config, va checklist release: "secret da qua K8s Secret/Vault?", "profile active dung?", "feature flag default an toan?".`,
-
+> Senior tip: hãy có một file {{application.yml}} mẫu ({{application.yml.example}}) trong git cho dev biết cấu trúc config, và checklist release: "secret đã qua K8s Secret/Vault?", "profile active đúng?", "feature flag default an toàn?".`,
   follow: [
-    "Spring Cloud Config Server client reload config thay doi khong can restart app the nao? (@RefreshScope)",
-    "Khi env variable va CLI args cung set mot property, cai nao thang?",
-    "Profile \"default\" (khong active profile nao) nap file nao?"
+    "Spring Cloud Config Server client reload config thay đổi không cần restart app thế nào? (@RefreshScope)",
+    "Khi env variable và CLI args cùng set một property, cái nào thắng?",
+    "Profile \"default\" (không active profile nào) nạp file nào?"
   ],
   tags: ['core', "profile", "externalized config", "Spring Cloud Config", "@Profile", "@ConditionalOnProperty", "precedence", "secret"]
 },
@@ -13860,14 +13859,14 @@ Hệ thống microservice 15 service, deploy ArgoCD lên K8s dev/staging/prod. M
 {
   id: 'spring-052', topic: 'spring', level: 'lead',
   q: 'Micrometer Observation API (vs Meter API cũ), custom observation, exemplars, tracing context propagation — bạn instrument code nghiệp vụ thế nào để metric, log, trace nối được với nhau?',
-  a: `**Tom tat:** Micrometer Observation la abstraction thong nhat: mot {{Observation}} sinh **ca** metric (timer/histogram) lan span (qua Micrometer Tracing bridge OpenTelemetry/Brave). Thay vi dung {{Meter}}/{{Timer}} cu rieng le, dung {{Observation.createNotStarted}} hoac {{@Observed}} annotation. Custom observation cho phep gan attribute (low cardinality), event, error. Exemplar: histogram metric dinh kem traceId cua request mau -- tu bieu do p99 tren Grafana bam thang sang trace request cham. Context propagation: HTTP dung header W3C {{traceparent}}, Kafka dung header tracing, executor bat dong bo phai boc {{ObservationThreadLocalAccessor}} hoac {{ContextPropagation}}.
-### Observation vs Meter API cu
-| | Meter API (cu) | Observation API (moi) |
+  a: `**Tóm tắt:** Micrometer Observation là abstraction thống nhất: một {{Observation}} sinh **cả** metric (timer/histogram) lẫn span (qua Micrometer Tracing bridge OpenTelemetry/Brave). Thay vì dùng {{Meter}}/{{Timer}} cũ riêng lẻ, dùng {{Observation.createNotStarted}} hoặc {{@Observed}} annotation. Custom observation cho phép gắn attribute (low cardinality), event, error. Exemplar: histogram metric đính kèm traceId của request mẫu -- từ biểu đồ p99 trên Grafana bấm thẳng sang trace request chậm. Context propagation: HTTP dùng header W3C {{traceparent}}, Kafka dùng header tracing, executor bất đồng bộ phải bọc {{ObservationThreadLocalAccessor}} hoặc {{ContextPropagation}}.
+### Observation vs Meter API cũ
+| | Meter API (cũ) | Observation API (mới) |
 |---|---|---|
-| Metric | {{Timer}}, {{Counter}}, {{Gauge}} rieng | Sinh metric tu observation |
-| Trace | Tracing rieng (Brave/OpenTelemetry) | Tich hop san qua Micrometer Tracing |
-| Cardinality | De bung neu tag khong kiem soat | Khuyen nghi attribute low cardinality |
-| Code | Rai rac {{timer.record()}} | {{observation.start()}} / {{observation.stop()}} hoac {{@Observed}} |
+| Metric | {{Timer}}, {{Counter}}, {{Gauge}} riêng | Sinh metric từ observation |
+| Trace | Tracing riêng (Brave/OpenTelemetry) | Tích hợp sẵn qua Micrometer Tracing |
+| Cardinality | Dễ bùng nếu tag không kiểm soát | Khuyến nghị attribute low cardinality |
+| Code | Rải rác {{timer.record()}} | {{observation.start()}} / {{observation.stop()}} hoặc {{@Observed}} |
 ### Custom Observation
 ~~~java
 Observation obs = Observation.createNotStarted(
@@ -13877,7 +13876,7 @@ Observation obs = Observation.createNotStarted(
             kv.add("customer.tier", customer.getTier());
         }
         public void addHighCardinality(KeyValues kv) {
-            // KHONG them orderId, userId o day -- dung event hoac exemplar
+            // KHÔNG thêm orderId, userId ở đây -- dùng event hoặc exemplar
         }
     },
     registry
@@ -13885,30 +13884,30 @@ Observation obs = Observation.createNotStarted(
 obs.lowCardinalityKeyValue(KeyValue.of("payment.method", "card"));
 obs.error(exception);
 obs.event(Event.of("payment.gateway.called", Instant.now()));
-obs.start(); obs.stop();  // hoac try-with-resources: obs.scoped(() -> doWork())
+obs.start(); obs.stop();  // hoặc try-with-resources: obs.scoped(() -> doWork())
 ~~~
 ### Exemplar
-Histogram metric ({{Timer}} tu observation) co the dinh kem traceId cua mot request mau. Tren Grafana, tu bieu do p99 bam exemplar -> mo trace cua request cham do trong Tempo/Jaeger. Can: Micrometer Tracing + OpenTelemetry bridge + exemplar sampler ({{TraceSampler.alwaysSample()}} cho error/slow).
+Histogram metric ({{Timer}} từ observation) có thể đính kèm traceId của một request mẫu. Trên Grafana, từ biểu đồ p99 bấm exemplar -> mở trace của request chậm đó trong Tempo/Jaeger. Cần: Micrometer Tracing + OpenTelemetry bridge + exemplar sampler ({{TraceSampler.alwaysSample()}} cho error/slow).
 ### Context Propagation
-- HTTP client: dung {{RestClient}}, {{WebClient}}, {{RestTemplate}} tao tu builder cua Spring (tu propagate {{traceparent}}).
-- Kafka: bat {{spring.kafka.producer.observation-enabled=true}}, {{consumer.observation-enabled=true}}.
-- {{@Async}}/{{Executor}}: boc task bang {{ObservationThreadLocalAccessor}} hoac dung {{TaskDecorator}} copy context.
-- Reactor: {{Hooks.onEachOperator}} hoac {{contextWrite}} propagate {{ObservationThreadLocalAccessor}}.
+- HTTP client: dùng {{RestClient}}, {{WebClient}}, {{RestTemplate}} tạo từ builder của Spring (tự propagate {{traceparent}}).
+- Kafka: bật {{spring.kafka.producer.observation-enabled=true}}, {{consumer.observation-enabled=true}}.
+- {{@Async}}/{{Executor}}: bọc task bằng {{ObservationThreadLocalAccessor}} hoặc dùng {{TaskDecorator}} copy context.
+- Reactor: {{Hooks.onEachOperator}} hoặc {{contextWrite}} propagate {{ObservationThreadLocalAccessor}}.
 ### Pitfall production
-- Them high cardinality tag (orderId, userId, sessionId) vao observation attribute -> cardinality no, memory/chi phi tang. Chi dung low cardinality attribute; high cardinality de o exemplar hoac event.
-- Sampling thap bo mat trace loi hiem; dung tail-based sampling hoac sampler giu error/slow.
-- Executor bat dong bo khong propagate context -> trace dut, metric khong gan duoc traceId.
-- {{@Observed}} tren method private hoac self-invocation khong hoat dong (proxy AOP).
-### Vi du doi thuc
-He thong thanh toan 5 service Spring Boot 3. Truoc dung Meter API: metric rieng, trace rieng (Brave), log rieng -- incident "thanh toan treo 10s" phai grep log 5 service theo thoi gian, trung binh 45 phut dieu tra. Chuyen sang Observation API: moi service dung {{@Observed}} cho boundary quan trong (HTTP inbound, RestClient outbound, Kafka, JDBC qua datasource-proxy). Histogram latency co exemplar (traceId). Log JSON tu co traceId tu MDC (Micrometer Tracing tu dua vao). Client tra traceId trong response loi. Lan sau incident: ho tro gui traceId tu man hinh loi -> trace Tempo cho thay 9.2s o span goi dich vu chong gian lan (retry 3 lan timeout 3s). Dieu tra 5 phut; team giam timeout va them circuit breaker. Chi phi ingest tang 15% do exemplar, nhung MTTR giam 90%.
-### Tra loi mau khi phong van
-"Toi dung Micrometer Observation API thay vi Meter API cu vi no sinh ca metric lan span tu mot observation. Boundary quan trong (HTTP server, RestClient/WebClient, Kafka, JDBC) duoc Spring Boot 3 tu instrument khi bat observation. Toi tao custom observation cho use case nghiep vu: gan low cardinality attribute (order.type, customer.tier), khong them high cardinality nhu orderId -- nhung cai do de o exemplar hoac event. Exemplar cho phep tu histogram p99 tren Grafana bam thang sang trace request cham. Context propagation: HTTP client phai dung builder cua Spring, Kafka bat observation, executor async phai boc context. TraceId tu dua vao MDC nen log JSON co san, toi tra traceId trong response loi de ho tro gui lai. Sampling can bang chi phi, giu du trace loi va cham."
-> Senior tip: Bat dau voi RED metrics (rate, errors, duration), roi trace cac duong di co gia tri dieu tra. Theo doi ca chi phi ingest va cardinality; dashboard dep nhung tag khong gioi han se bien observability thanh su co van hanh. High cardinality chi o exemplar, khong o attribute.
+- Thêm high cardinality tag (orderId, userId, sessionId) vào observation attribute -> cardinality nổ, memory/chi phí tăng. Chỉ dùng low cardinality attribute; high cardinality để ở exemplar hoặc event.
+- Sampling thấp bỏ mất trace lỗi hiếm; dùng tail-based sampling hoặc sampler giữ error/slow.
+- Executor bất đồng bộ không propagate context -> trace đứt, metric không gắn được traceId.
+- {{@Observed}} trên method private hoặc self-invocation không hoạt động (proxy AOP).
+### Ví dụ đời thực
+Hệ thống thanh toán 5 service Spring Boot 3. Trước dùng Meter API: metric riêng, trace riêng (Brave), log riêng -- incident "thanh toán treo 10s" phải grep log 5 service theo thời gian, trung bình 45 phút điều tra. Chuyển sang Observation API: mỗi service dùng {{@Observed}} cho boundary quan trọng (HTTP inbound, RestClient outbound, Kafka, JDBC qua datasource-proxy). Histogram latency có exemplar (traceId). Log JSON tự có traceId từ MDC (Micrometer Tracing tự đưa vào). Client trả traceId trong response lỗi. Lần sau incident: hỗ trợ gửi traceId từ màn hình lỗi -> trace Tempo cho thấy 9.2s ở span gọi dịch vụ chống gian lận (retry 3 lần timeout 3s). Điều tra 5 phút; team giảm timeout và thêm circuit breaker. Chi phí ingest tăng 15% do exemplar, nhưng MTTR giảm 90%.
+### Trả lời mẫu khi phỏng vấn
+"Tôi dùng Micrometer Observation API thay vì Meter API cũ vì nó sinh cả metric lẫn span từ một observation. Boundary quan trọng (HTTP server, RestClient/WebClient, Kafka, JDBC) được Spring Boot 3 tự instrument khi bật observation. Tôi tạo custom observation cho use case nghiệp vụ: gắn low cardinality attribute (order.type, customer.tier), không thêm high cardinality như orderId -- những cái đó để ở exemplar hoặc event. Exemplar cho phép từ histogram p99 trên Grafana bấm thẳng sang trace request chậm. Context propagation: HTTP client phải dùng builder của Spring, Kafka bật observation, executor async phải bọc context. TraceId tự đưa vào MDC nên log JSON có sẵn, tôi trả traceId trong response lỗi để hỗ trợ gửi lại. Sampling cân bằng chi phí, giữ đủ trace lỗi và chậm."
+> Senior tip: Bắt đầu với RED metrics (rate, errors, duration), rồi trace các đường đi có giá trị điều tra. Theo dõi cả chi phí ingest và cardinality; dashboard đẹp nhưng tag không giới hạn sẽ biến observability thành sự cố vận hành. High cardinality chỉ ở exemplar, không ở attribute.
 `,
   follow: [
-    'Khi nao chon head sampling va tail sampling?',
-    'Vi sao khong nen dat orderId lam label cua metric?',
-    'Reactor operator chain propagate Observation context tu dong hay can config them?'
+    'Khi nào chọn head sampling và tail sampling?',
+    'Vì sao không nên đặt orderId làm label của metric?',
+    'Reactor operator chain propagate Observation context tự động hay cần config thêm?'
   ],
   tags: ['Micrometer', 'Observation', 'exemplar', 'tracing', 'OpenTelemetry', 'observability', 'context propagation']
 },
