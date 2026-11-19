@@ -6488,48 +6488,48 @@ He thong tom tat hop dong phap ly cho 200 nguoi duoc moi ngay. Ban dau goi LLM d
   id: 'ai-097',
   topic: 'ai',
   level: 'senior',
-  q: 'Nhieu khach hang (tenant) dung cung he thong RAG. Lam sao dam bao du lieu cua khach hang A khong bao gi hien thi cho khach hang B, khi chia sang vector store, cache va ma ung dung?',
-  a: `**Tóm tắt:** Cach ly du lieu tenant nghia la moi khach hang chi thay tai lieu cua minh, khong bao gi doan tai lieu cua khach khac. Trong RAG, cach ly phai duoc ap dung o moi lop: khi nap tai lieu (chunk), khi luu vector, khi truy xuat va khi cache ket qua. Thiet ke sai co the gay ro rui du lieu giua khach hang ma khong ai phat hien ngay.
+  q: 'Nhiều khách hàng (tenant) dùng chung hệ thống RAG. Làm sao đảm bảo dữ liệu của khách hàng A không bao giờ hiển thị cho khách hàng B, khi chia sang vector store, cache và mã ứng dụng?',
+  a: `**Tóm tắt:** Cách ly dữ liệu tenant nghĩa là mỗi khách hàng chỉ thấy tài liệu của mình, không bao giờ đụng đến tài liệu của khách khác. Trong RAG, cách ly phải được áp dụng ở mọi lớp: khi nạp tài liệu (chunk), khi lưu vector, khi truy xuất và khi cache kết quả. Thiết kế sai có thể gây rò rỉ dữ liệu giữa khách hàng mà không ai phát hiện ngay.
 
-### Tenant la gi
-Tenant (khach hang thue) la don vi su dung dich vu, moi tenant co du lieu rieng va khong duoc nhin du lieu cua tenant khac. Vi du hai cong ty dung cung ung dung chat bot noi bo; cong ty A khong duoc xem luong nhan vien cua cong ty B.
+### Tenant là gì
+Tenant (khách hàng thuê) là đơn vị sử dụng dịch vụ, mỗi tenant có dữ liệu riêng và không được nhìn dữ liệu của tenant khác. Ví dụ hai công ty dùng cùng ứng dụng chat bot nội bộ; công ty A không được xem lương nhân viên của công ty B.
 
-### Hai cach to chuc vector store
-- **Chi muc rieng cho moi tenant**: moi tenant co mot chi muc vector hoac schema rieng. Cach ly manh, nhan quan ly nhieu chi muc tinh cong va chi phi.
-- **Chi muc chung + ma tenant tren moi doan**: luu tat ca vector trong mot chi muc, moi doan vector kem ma tenant (tenant_id). Khi truy xuat, them dieu kien loc tenant_id truoc khi tim. Tiet kiem hon, nhung phai tin vao co che loc cua he thong vector.
+### Hai cách tổ chức vector store
+- **Chỉ mục riêng cho mỗi tenant**: mỗi tenant có một chỉ mục vector hoặc schema riêng. Cách ly mạnh, nhưng quản lý nhiều chỉ mục tốn công và chi phí.
+- **Chỉ mục chung + mã tenant trên mỗi đoạn**: lưu tất cả vector trong một chỉ mục, mỗi đoạn vector kèm mã tenant (tenant_id). Khi truy xuất, thêm điều kiện lọc tenant_id trước khi tìm. Tiết kiệm hơn, nhưng phải tin vào cơ chế lọc của hệ thống vector.
 
-Khuyen khich bat dau bang chi muc chung + ma tenant vi de van hanh, chi chi tach chi muc khi khach hang yeu cau cach ly vat ly hoac quy dinh phap luat bat buot.
+Khuyến khích bắt đầu bằng chỉ mục chung + mã tenant vì dễ vận hành, chỉ chi tách chỉ mục khi khách hàng yêu cầu cách ly vật lý hoặc quy định pháp luật bắt buộc.
 
-### Luu va truy xuat toan an
-- Khi nap tai lieu, gắn tenant_id vao moi doan (chunk) va metadata (ma tai khoan, phong ban, ngay).
-- Khi truy xuat, luon them bo loc tenant_id cua nguoi dang hoi. Khong bao gi de model hay prompt quyet dan quyen truy cap.
-- Vector store co the la PostgreSQL + pgvector, OpenSearch... (xem cau ai-010 ve vector store). Quan trong la kiem tra he thong ban dung co ho tro loc truoc khi tim hay loc sau; loc sau co the bo sot tai lieu.
+### Lưu và truy xuất toàn an
+- Khi nạp tài liệu, gắn tenant_id vào mỗi đoạn (chunk) và metadata (mã tài khoản, phòng ban, ngày).
+- Khi truy xuất, luôn thêm bộ lọc tenant_id của người đang hỏi. Không bao giờ để model hay prompt quyết định quyền truy cập.
+- Vector store có thể là PostgreSQL + pgvector, OpenSearch... (xem câu ai-010 về vector store). Quan trọng là kiểm tra hệ thống bạn dùng có hỗ trợ lọc trước khi tìm hay lọc sau; lọc sau có thể bỏ sót tài liệu.
 
-### Cache phai cach ly theo tenant
-Cache luu lai cau tra loi hoac doan truy xuat de khong goi LLM lai. Neu cache dung key chi theo cau hoi, khach hang A co the nhan cau tra loi tinh tu tai lieu cua khach hang B vi cau hoi giong nhau.
-- Key cache phai bao gom tenant_id (va phien ban tai lieu, quyen truy cap).
-- Hoac khong cache cau tra loi hoan toan, chi cache nhung (embedding) va truy xuat, it ru ro hon.
+### Cache phải cách ly theo tenant
+Cache lưu lại câu trả lời hoặc đoạn truy xuất để không gọi LLM lại. Nếu cache dùng key chỉ theo câu hỏi, khách hàng A có thể nhận câu trả lời tính từ tài liệu của khách hàng B vì câu hỏi giống nhau.
+- Key cache phải bao gồm tenant_id (và phiên bản tài liệu, quyền truy cập).
+- Hoặc không cache câu trả lời hoàn toàn, chỉ cache nhúng (embedding) và truy xuất, ít rủi ro hơn.
 
-### Loi hay gap
-- Quen gan tenant_id khi nap tai lieu cu: doan khong co ma chu so huu co the bi lo cho moi tenant.
-- Cache key thieu tenant_id: tra loi cheo giua khach hang.
-- Phan quyen duoc prompt ("chi tra loi tai lieu cua cong ty A"): model co the bi lua, khong phai hang rao bao mat.
-- Khong cap nhat quyen khi nhan vien chuyen phong: tai lieu cu van hien thi.
-- Log luu toan bo cau tra loi co doan tai lieu cua khach khac ma khong kiem tra quyen xem log.
+### Lỗi hay gặp
+- Quên gán tenant_id khi nạp tài liệu cũ: đoạn không có mã chủ sở hữu có thể bị lộ cho mọi tenant.
+- Cache key thiếu tenant_id: trả lời chéo giữa khách hàng.
+- Phân quyền được prompt ("chỉ trả lời tài liệu của công ty A"): model có thể bị lừa, không phải hàng rào bảo mật.
+- Không cập nhật quyền khi nhân viên chuyển phòng: tài liệu cũ vẫn hiển thị.
+- Log lưu toàn bộ câu trả lời có đoạn tài liệu của khách khác mà không kiểm tra quyền xem log.
 
-### Vi du doi thuc
-Mot nen tang chat bot phuc vu 30 cong ty, moi cong ty khoang 50.000 doan tai lieu. Ban dau doi dung chi muc chung nhung quen gan tenant_id cho 12.000 doan nap dau tien. Khi kiem tra, thay nguoi dung cua cong ty A co the nhan doan chinh sach luong cua cong ty B trong ngon ngu. Cach xu ly: gan lai tenant_id cho toan bo doan cu, ap bo loc tenant_id truoc moi truy xuat, va doi key cache thanh "tenantId:hash(cau hoi)". Ket qua: khong con truong hop lo cheo trong 500 cau hoi kiem tra, va moi truy xuat chi quet trong khoang 50.000 doan cua chinh tenant thay ca 1,5 trieu doan. (So lieu minh hoa, tuong tu he thong.)
+### Ví dụ đời thực
+Một nền tảng chat bot phục vụ 30 công ty, mỗi công ty khoảng 50.000 đoạn tài liệu. Ban đầu dùng chỉ mục chung nhưng quên gán tenant_id cho 12.000 đoạn nạp đầu tiên. Khi kiểm tra, thấy người dùng của công ty A có thể nhận đoạn chính sách lương của công ty B trong ngôn ngữ. Cách xử lý: gán lại tenant_id cho toàn bộ đoạn cũ, áp bộ lọc tenant_id trước mỗi truy xuất, và đổi key cache thành "tenantId:hash(câu hỏi)". Kết quả: không còn trường hợp lộ chéo trong 500 câu hỏi kiểm tra, và mỗi truy xuất chỉ quét trong khoảng 50.000 đoạn của chính tenant thay cả 1,5 triệu đoạn. (Số liệu minh họa, tương tự hệ thống.)
 
 ### Trả lời mẫu khi phỏng vấn
-"Em khuyen luu tat ca vector trong mot chi muc chung va gan ma khach hang (tenant_id) vao moi doan, thay vi tao chi muc rieng cho moi khach, vi de van hanh hon. Khi truy xuat, luon them dieu kien loc theo ma khach hang cua nguoi hoi truoc khi tim, va khong bao gi de lenh he thong quyet dan quyen truy cap. Cache luu ket qua phai co ma khach hang trong khoa, neu khong khach A co the nhan cau tra loi tinh tu du lieu cua khach B. Khi nap tai lieu, gan ma khach hang cung ngay va phien ban; khi quyen thay doi, cap nhat hoac danh dau doan cu. Trong vi du thuc them, them bo loc theo khach hang giup moi truy xuat chi quet doan cua chinh khach hang thay ca he thong, va loai bo hoan toan tinh trang lo cheo sau khi sua khoa cache."
+"Em khuyến lưu tất cả vector trong một chỉ mục chung và gán mã khách hàng (tenant_id) vào mỗi đoạn, thay vì tạo chỉ mục riêng cho mỗi khách, vì dễ vận hành hơn. Khi truy xuất, luôn thêm điều kiện lọc theo mã khách hàng của người hỏi trước khi tìm, và không bao giờ để lệnh hệ thống quyết định quyền truy cập. Cache lưu kết quả phải có mã khách hàng trong khóa, nếu không khách A có thể nhận câu trả lời tính từ dữ liệu của khách B. Khi nạp tài liệu, gán mã khách hàng cùng ngày và phiên bản; khi quyền thay đổi, cập nhật hoặc đánh dấu đoạn cũ. Trong ví dụ thực thêm, thêm bộ lọc theo khách hàng giúp mỗi truy xuất chỉ quét đoạn của chính khách hàng thay cả hệ thống, và loại bỏ hoàn toàn tình trạng lộ chéo sau khi sửa khóa cache."
 
-> Senior tip: Cach ly du lieu khong the doi sau khi he thong chay. Hay thiet ke khoa cache, metadata doan va quy trinh nap tai lieu kem ma tenant tu ngay dau, va kiem thu bang truong hop "nhan vien khach hang A co tam hoi ve tai lieu cua khach hang B".
+> Senior tip: Cách ly dữ liệu không thể đổi sau khi hệ thống chạy. Hãy thiết kế khóa cache, metadata đoạn và quy trình nạp tài liệu kèm mã tenant từ ngày đầu, và kiểm thử bằng trường hợp "nhân viên khách hàng A có hỏi về tài liệu của khách hàng B".
 
 `,
   follow: [
-    'Khac biet giua chi muc rieng va chi muc chung kem ma tenant la gi, chon cai nao khi nao?',
-    'Vi sao khoa cache phai chua ma khach hang, khong chi chua cau hoi?',
-    'Ban kiem thu cach ly du lieu truoc khi ra mat the nao?'
+    'Khác biệt giữa chỉ mục riêng và chỉ mục chung kèm mã tenant là gì, chọn cái nào khi nào?',
+    'Vì sao khóa cache phải chứa mã khách hàng, không chỉ chứa câu hỏi?',
+    'Bạn kiểm thử cách ly dữ liệu trước khi ra mắt thế nào?'
   ],
   tags: ['multi-tenant', 'RAG', 'data isolation', 'vector store', 'cache']
 },
@@ -6537,52 +6537,52 @@ Mot nen tang chat bot phuc vu 30 cong ty, moi cong ty khoang 50.000 doan tai lie
   id: 'ai-098',
   topic: 'ai',
   level: 'senior',
-  q: 'Tai lieu trong kho tri thuc (knowledge base) thay doi nhieu lan moi ngay. Lam sao cap nhat chi muc RAG gan thoi gian thuc ma khong xu ly lai toan bo, va sao chac khong tra loi tu tai lieu cu da bi xoa hoac sua?',
-  a: `**Tóm tắt:** Cap nhat gan thoi gian thuc nghia la khi tai lieu duoc them, sua hoac xoa, doan tuong ung trong chi muc vector duoc them, cap nhat hoac xoa trong vay phut, khong cho rebuild toan bo. Can theo doi thay doi, xu ly tang dan (incremental), danh dau doan cu khong con dung va kiem tra khong tra loi tu tai lieu da het han.
+  q: 'Tài liệu trong kho tri thức (knowledge base) thay đổi nhiều lần mỗi ngày. Làm sao cập nhật chỉ mục RAG gần thời gian thực mà không xử lý lại toàn bộ, và sao chắc không trả lời từ tài liệu cũ đã bị xóa hoặc sửa?',
+  a: `**Tóm tắt:** Cập nhật gần thời gian thực nghĩa là khi tài liệu được thêm, sửa hoặc xóa, đoạn tương ứng trong chỉ mục vector được thêm, cập nhật hoặc xóa trong vài phút, không rebuild toàn bộ. Cần theo dõi thay đổi, xử lý tăng dần (incremental), đánh dấu đoạn cũ không còn dùng và kiểm tra không trả lời từ tài liệu đã hết hạn.
 
-### Knowledge base va chi muc la gi
-Knowledge base la bo tai lieu cung cap cho RAG (chinh sach, huong dan, bang gia...). Chi muc la no luu vector (danh sach so bieu dien y nghia) va metadata cua moi doan de tim nhanh (xem cau ai-003 ve RAG).
+### Knowledge base và chỉ mục là gì
+Knowledge base là bộ tài liệu cung cấp cho RAG (chính sách, hướng dẫn, bảng giá...). Chỉ mục là nơi lưu vector (danh sách số biểu diễn ý nghĩa) và metadata của mỗi đoạn để tìm nhanh (xem câu ai-003 về RAG).
 
-### Luong cap nhat tang dan
-1. Phat hien thay doi: he thong tai lieu gui thong bao (webhook) hoac ung dung quet dinh ky moi vay phut de tim tai lieu moi, sua hoac xoa.
-2. Chi xu ly doan thay doi: voi tai lieu moi, chia doan va nhung; voi tai lieu sua, xoa toan bo doan cu cua tai lieu do roi nap doan moi; voi tai lieu xoa, xoa toan bo doan lien quan.
-3. Gan phien ban: moi tai lieu co ma phien ban (vi du ngay gio chinh sua cuoi). Đoan trong chi muc luu ma phien ban nay.
-4. Xac nhan hoan tat: chi danh dau tai lieu la "da cap nhat trong chi muc" khi vector da duoc ghi thanh cong.
+### Luồng cập nhật tăng dần
+1. Phát hiện thay đổi: hệ thống tài liệu gửi thông báo (webhook) hoặc ứng dụng quét định kỳ mỗi vài phút để tìm tài liệu mới, sửa hoặc xóa.
+2. Chỉ xử lý đoạn thay đổi: với tài liệu mới, chia đoạn và nhúng; với tài liệu sửa, xóa toàn bộ đoạn cũ của tài liệu đó rồi nạp đoạn mới; với tài liệu xóa, xóa toàn bộ đoạn liên quan.
+3. Gán phiên bản: mỗi tài liệu có mã phiên bản (ví dụ ngày giờ chỉnh sửa cuối). Đoạn trong chỉ mục lưu mã phiên bản này.
+4. Xác nhận hoàn tất: chỉ đánh dấu tài liệu là "đã cập nhật trong chỉ mục" khi vector đã được ghi thành công.
 
-### Tra anh tra loi tu tai lieu cu
-- Khi truy xuat, chi chap nhan doan co phien ban moi nhat cua tai lieu. Neu chi muc con doan cu do loi, loc theo phien ban truoc khi dua vao ngon ngu.
-- Co khoang thoi gian ton tinh (stale window): trong vay phut sau khi tai lieu sua, he thong co the van tra doan cu. Khuyen khich canh bao nguoi dung "thong tin duoc cap nhat vao luc..." hoac uu tai tai lieu moi.
-- Khi xoa tai lieu, xoa ngay doan trong chi muc; khong de doan mo co (orphan chunk) gay sai.
+### Tránh trả lời từ tài liệu cũ
+- Khi truy xuất, chỉ chấp nhận đoạn có phiên bản mới nhất của tài liệu. Nếu chỉ mục còn đoạn cũ do lỗi, lọc theo phiên bản trước khi đưa vào ngôn ngữ.
+- Có khoảng thời gian tồn tính (stale window): trong vài phút sau khi tài liệu sửa, hệ thống có thể vẫn trả đoạn cũ. Khuyến khích cảnh báo người dùng "thông tin được cập nhật vào lúc..." hoặc ưu tiên tài liệu mới.
+- Khi xóa tài liệu, xóa ngay đoạn trong chỉ mục; không để đoạn mồ côi (orphan chunk) gây sai.
 
-### Vi du ve ma phien ban va xoa (minh hoa)
+### Ví dụ về mã phiên bản và xóa (minh họa)
 ~~~text
-Tai lieu: hoa-don-001, phien ban: 2026-10-01T08:00
-  -> doan 1 (vector + metadata: taiLieuId=hoa-don-001, phienBan=2026-10-01T08:00)
-Tai lieu sua thanh phien ban: 2026-10-02T14:30
-  -> xoa toan bo doan co taiLieuId=hoa-don-001
-  -> nap lai doan moi, phienBan=2026-10-02T14:30
+Tài liệu: hoa-don-001, phiên bản: 2026-10-01T08:00
+  -> đoạn 1 (vector + metadata: taiLieuId=hoa-don-001, phienBan=2026-10-01T08:00)
+Tài liệu sửa thành phiên bản: 2026-10-02T14:30
+  -> xóa toàn bộ đoạn có taiLieuId=hoa-don-001
+  -> nạp lại đoạn mới, phienBan=2026-10-02T14:30
 ~~~
 
-### Loi hay gap
-- Chi them moi, khong xoa ban cu: tai lieu het hieu luc van nam trong chi muc va duoc tra loi.
-- Xoa tai lieu o ngoai nhung quet xoa doan trong vector store.
-- Cap nhat batch dem mot lan: trong ngay, nguoi duoc van thay thong tin cu.
-- Kiem tra thanh cong ghi vector: cho rang da cap nhat nhung lan truy xuat sau van dung doan cu.
-- Metadata thieu phien ban: khong the phan biet doan cu va doan moi.
+### Lỗi hay gặp
+- Chỉ thêm mới, không xóa bản cũ: tài liệu hết hiệu lực vẫn nằm trong chỉ mục và được trả lời.
+- Xóa tài liệu ở bên ngoài nhưng quên quét xóa đoạn trong vector store.
+- Cập nhật batch đợt một lần: trong ngày, người dùng vẫn thấy thông tin cũ.
+- Kiểm tra thành công ghi vector: cho rằng đã cập nhật nhưng lần truy xuất sau vẫn dùng đoạn cũ.
+- Metadata thiếu phiên bản: không thể phân biệt đoạn cũ và đoạn mới.
 
-### Vi du doi thuc
-He thong huong dan su dung san pham cho 40.000 tai lieu, moi ngay khoang 1.200 tai lieu duoc them hoac sua. Ban dau doi rebuild toan bo chi muc moi tuan, nen tai lieu sua hom nay moi xuat hien sau bay ngay, va 6% cau tra loi trich doan da bo. Doi chuyen sang cap nhat tang dan moi phut: lang nghe su ki tu he thong tai lieu, chi xu ly doan thay doi, gan phien ban va xoa doan cu khi tai lieu sua. Sau hai tuan: ty le tra loi tu doan cu tu 6% xuong duoi 0,2%, va thoi gian tu khi tai lieu sua den khi tim thay duoi hai phut. (So lieu minh hoa, tuong tu he thong va nha cung cap vector.)
+### Ví dụ đời thực
+Hệ thống hướng dẫn sử dụng sản phẩm cho 40.000 tài liệu, mỗi ngày khoảng 1.200 tài liệu được thêm hoặc sửa. Ban đầu dùng rebuild toàn bộ chỉ mục mỗi tuần, nên tài liệu sửa hôm nay chỉ xuất hiện sau bảy ngày, và 6% câu trả lời trích đoạn đã bị bỏ. Dịch chuyển sang cập nhật tăng dần mỗi phút: lắng nghe sự kiện từ hệ thống tài liệu, chỉ xử lý đoạn thay đổi, gán phiên bản và xóa đoạn cũ khi tài liệu sửa. Sau hai tuần: tỷ lệ trả lời từ đoạn cũ từ 6% xuống dưới 0,2%, và thời gian từ khi tài liệu sửa đến khi tìm thấy dưới hai phút. (Số liệu minh họa, tương tự hệ thống và nhà cung cấp vector.)
 
 ### Trả lời mẫu khi phỏng vấn
-"Em thiet ke cap nhat tang dan thay vi rebuild toan bo moi lan. He thong tai lieu thong bao qua su ki hoac ung dung quet dinh ky, roi chi xu ly doan cua tai lieu moi, sua hoac xoa. Moi doan luu ma phien ban cua tai lieu; khi tai lieu sua, xoa toan bo doan cu cua tai lieu do truoc khi nap doan moi. Khi truy xuat, loc theo phien ban moi nhat de khong dung doan da bo. Co khoang thoi gian ton tinh vay phut, nen em hien thi thoi diem cap nhat gan nhat cho nguoi dung biet. Trong vi du thuc them, chuyen sang cap nhat moi phut giup ty le cau tra loi tu doan cu tu sau phan tram xuong duoi 0,2 phan tram, va thoi gian phan anh sua doi duoi hai phut."
+"Em thiết kế cập nhật tăng dần thay vì rebuild toàn bộ mỗi lần. Hệ thống tài liệu thông báo qua sự kiện hoặc ứng dụng quét định kỳ, rồi chỉ xử lý đoạn của tài liệu mới, sửa hoặc xóa. Mỗi đoạn lưu mã phiên bản của tài liệu; khi tài liệu sửa, xóa toàn bộ đoạn cũ của tài liệu đó trước khi nạp đoạn mới. Khi truy xuất, lọc theo phiên bản mới nhất để không dùng đoạn đã bỏ. Có khoảng thời gian tồn tính vài phút, nên em hiển thị thời điểm cập nhật gần nhất cho người dùng biết. Trong ví dụ thực thêm, chuyển sang cập nhật mỗi phút giúp tỷ lệ câu trả lời từ đoạn cũ từ sáu phần trăm xuống dưới 0,2 phần trăm, và thời gian phản hồi sửa đổi dưới hai phút."
 
-> Senior tip: Cap nhat gan thoi gian thuc khong chi la nap lai vector; quan trong nhat la xoa doan cu va theo doi phien ban, neu khong chi muc se lap day bo du lieu khong con dung va he thong tra loi thong tin da bo.
+> Senior tip: Cập nhật gần thời gian thực không chỉ là nạp lại vector; quan trọng nhất là xóa đoạn cũ và theo dõi phiên bản, nếu không chỉ mục sẽ lặp lại bộ dữ liệu không còn dùng và hệ thống trả lời thông tin đã bỏ.
 
 `,
   follow: [
-    'Khi tai lieu duoc sua, ban xoa doan cu truoc hay sau khi nap doan moi? Tai sao?',
-    'Khoang thoi gian ton tinh la bao nhieu la chap nhan duoc, va ban bao nguoi dung nhu the nao?',
-    'Ban lam sao biet vector da duoc ghi thanh cong truoc khi danh dau tai lieu la da cap nhat?'
+    'Khi tài liệu được sửa, bạn xóa đoạn cũ trước hay sau khi nạp đoạn mới? Tại sao?',
+    'Khoảng thời gian tồn tính là bao nhiêu là chấp nhận được, và bạn báo người dùng như thế nào?',
+    'Bạn làm sao biết vector đã được ghi thành công trước khi đánh dấu tài liệu là đã cập nhật?'
   ],
   tags: ['RAG', 'knowledge base', 'incremental update', 'versioning']
 },
@@ -6590,50 +6590,50 @@ He thong huong dan su dung san pham cho 40.000 tai lieu, moi ngay khoang 1.200 t
   id: 'ai-099',
   topic: 'ai',
   level: 'senior',
-  q: 'Sau khi ra mat, lam sao biet cau tra loi cua LLM dung hay sai khong doc tung cuoc hoi thoai: thu phan hoi nguoi duoc, lay mau danh gia (sampling), va bien phan hoi thanh bo kiem tra?',
-  a: `**Tóm tắt:** Do chat luong online nghia la sau khi ung dung chay that, thu thu phan hoi cua nguoi dung (thich/khong thich, ban goc/chinh lai), lay mot phan cuoc hoi thoai de nhan vien danh gia chi tiet (sampling), va dung cuoc hoi thoai loi lam bai kiem tra (eval) de cai tien. Khong doc toan bo vi tinh tien va thoi gian.
+  q: 'Sau khi ra mắt, làm sao biết câu trả lời của LLM đúng hay sai không đọc từng cuộc hội thoại: thu thập phản hồi người dùng, lấy mẫu đánh giá (sampling), và biến phản hồi thành bộ kiểm tra?',
+  a: `**Tóm tắt:** Đánh giá online nghĩa là sau khi ứng dụng chạy thật, thu thập phản hồi của người dùng (thích/không thích, bản gốc/chỉnh lại), lấy một phần cuộc hội thoại để nhân viên đánh giá chi tiết (sampling), và dùng cuộc hội thoại lỗi làm bài kiểm tra (eval) để cải thiện. Không đọc toàn bộ vì tốn tiền và thời gian.
 
-### Feedback (phan hoi nguoi duoc)
-- **Cái gì**: nut thich/khong thich, binh luan ngan, hoac hanh vi nhu sao chep, chinh lai cau tra loi, bo cuoc tro chuyen.
-- **Vì sao can**: nguoi duoc la nguoi dau tien biet cau tra loi sai, va feedback chi tieu phi nho.
-- **Hoat dong the nao**: sau moi cau tra loi, hien nut "Co huu ich" va "Khong". Khi nguoi duoc bam khong huu ich, ghi lai cau hoi, cau tra loi, ma phien ban model va ly do neu co.
-- **Tin hieu ngam**: neu nguoi duoc sao chep cau tra loi thi thong thu huu ich; neu chinh lai nhieu thi cau tra loi chua du tot; neu bo cuoc thi co the khong hai long.
+### Feedback (phản hồi người dùng)
+- **Cái gì**: nút thích/không thích, bình luận ngắn, hoặc hành vi như sao chép, chỉnh lại câu trả lời, bỏ cuộc trò chuyện.
+- **Vì sao cần**: người dùng là người đầu tiên biết câu trả lời sai, và feedback tốn ít chi phí.
+- **Hoạt động thế nào**: sau mỗi câu trả lời, hiện nút "Có hữu ích" và "Không". Khi người dùng bấm không hữu ích, ghi lại câu hỏi, câu trả lời, mã phiên bản model và lý do nếu có.
+- **Tín hiệu ngầm**: nếu người dùng sao chép câu trả lời thì thông thường hữu ích; nếu chỉnh lại nhiều thì câu trả lời chưa đủ tốt; nếu bỏ cuộc thì có thể không hài lòng.
 
-### Sampling (lay mau danh gia)
-- **Cái gì**: chon mot phan nho cuoc hoi thoai (vi du 1-5%) de nhan vien chuyen mon danh gia dung/sai theo rubric (tieu chi cham), thay vi doc het.
-- **Vì sao can**: 10.000 cuoc hoi thoai moi ngay khong ai doc het; mau ngau nhien du lon da cho biet chat luong tong the.
-- **Hoat dong the nao**: moi ngay chon ngau nhien 500 cuoc hoi thoai, nhan vien cham tung cau tra loi theo thang diem (vi du 1-5) va ghi nguyen han loi (trich xuat sai, thieu thong tin, tra loi khong lien quan).
+### Sampling (lấy mẫu đánh giá)
+- **Cái gì**: chọn một phần nhỏ cuộc hội thoại (ví dụ 1-5%) để nhân viên chuyên môn đánh giá đúng/sai theo rubric (tiêu chí chấm), thay vì đọc hết.
+- **Vì sao cần**: 10.000 cuộc hội thoại mỗi ngày không ai đọc hết; mẫu ngẫu nhiên đủ lớn đã cho biết chất lượng tổng thể.
+- **Hoạt động thế nào**: mỗi ngày chọn ngẫu nhiên 500 cuộc hội thoại, nhân viên chấm từng câu trả lời theo thang điểm (ví dụ 1-5) và ghi nguyên nhân lỗi (trích xuất sai, thiếu thông tin, trả lời không liên quan).
 
-### Online eval (danh gia khi dang chay)
-- Chuyen cuoc hoi thoai co phan hoi xau hoac mau danh gia vao bo kiem tra truc tuyen (online eval set).
-- Moi khi thay doi prompt, model hoac truy xuat, chay lai bo kiem tra nao de thay chat luong thay doi truoc khi anh huong nhieu nguoi.
-- Tinh cac chi so: ty le phan hoi khong huu ich, ty le cau tra loi bi danh gia sai, do dung trich dan, do tre p95, chi phi moi cuoc hoi thoai.
+### Online eval (đánh giá khi đang chạy)
+- Chuyển cuộc hội thoại có phản hồi xấu hoặc mẫu đánh giá vào bộ kiểm tra trực tuyến (online eval set).
+- Mọi khi thay đổi prompt, model hoặc truy xuất, chạy lại bộ kiểm tra nào để thấy chất lượng thay đổi trước khi ảnh hưởng nhiều người.
+- Tính các chỉ số: tỷ lệ phản hồi không hữu ích, tỷ lệ câu trả lời bị đánh giá sai, độ đúng trích dẫn, độ trễ p95, chi phí mỗi cuộc hội thoại.
 
-### Bien phan hoi thanh bai kiem tra
-- Moi loi duoc xac nhan them vao bo cau hoi chuan (golden set) voi dau an dung.
-- Chay regression (kiem tra hoi quy) truoc khi trien khai thay doi: neu diem eval giam, khong trien khai.
-- Dong vong phan hoi: khi da sua loi, thong bao cho nguoi duoc bao loi neu co the.
+### Biến phản hồi thành bài kiểm tra
+- Mỗi lỗi được xác nhận thêm vào bộ câu hỏi chuẩn (golden set) với đáp án đúng.
+- Chạy regression (kiểm tra hồi quy) trước khi triển khai thay đổi: nếu điểm eval giảm, không triển khai.
+- Đồng vòng phản hồi: khi đã sửa lỗi, thông báo cho người dùng biết lỗi nếu có thể.
 
-### Loi hay gap
-- Chi dem so luot thich: mot cau tra loi sai nhung nghe khoe co the duoc thich nhieu.
-- Khong lay mau ngau nhien: chi doc nhung cuoc hoi thoai nhan vien chon, thieu khach quan.
-- Thu feedback nhung khong xu ly: nguoi duoc ngung bao loi.
-- Khong gan phien ban model/prompt: khong biet chat luong tuot do thay doi nao.
-- Danh gia toan bo cuoc hoi thoai thay vi tung cau tra loi: kho biet loi o dau.
+### Lỗi hay gặp
+- Chỉ đếm số lượt thích: một câu trả lời sai nhưng nghe khoẻ có thể được thích nhiều.
+- Không lấy mẫu ngẫu nhiên: chỉ đọc những cuộc hội thoại nhân viên chọn, thiếu khách quan.
+- Thu feedback nhưng không xử lý: người dùng ngừng báo lỗi.
+- Không gán phiên bản model/prompt: không biết chất lượng sụt do thay đổi nào.
+- Đánh giá toàn bộ cuộc hội thoại thay vì từng câu trả lời: khó biết lỗi ở đâu.
 
-### Vi du doi thuc
-Chat bot ho tro 15.000 cuoc hoi thoai moi tuan. Ban dau doi chi doc 20 cuoc goi chon san va coi he thong on dinh. Sau do them nut phan hoi va lay mau ngau nhien 1% (khoang 150 cuoc) moi tuan de nhan vien cham. Tim thay khoang 8% cau tra loi trich dan sai nguon va 3% tra loi khong lien quan. Doi dua 200 truong hop loi vao golden set, chay eval truoc moi lan thay doi prompt. Sau hai thang: ty le cau tra loi bi danh gia sai tu 8% xuong 1,2%, va phat hien som hai su co do thay doi prompt truoc khi anh huong nhieu khach. (So lieu minh hoa.)
+### Ví dụ đời thực
+Chat bot hỗ trợ 15.000 cuộc hội thoại mỗi tuần. Ban đầu dùng chỉ đọc 20 cuộc gọi chọn sẵn và coi hệ thống ổn định. Sau đó thêm nút phản hồi và lấy mẫu ngẫu nhiên 1% (khoảng 150 cuộc) mỗi tuần để nhân viên chấm. Tìm thấy khoảng 8% câu trả lời trích dẫn sai nguồn và 3% trả lời không liên quan. Đưa 200 trường hợp lỗi vào golden set, chạy eval trước mỗi lần thay đổi prompt. Sau hai tháng: tỷ lệ câu trả lời bị đánh giá sai từ 8% xuống 1,2%, và phát hiện sớm hai sự cố do thay đổi prompt trước khi ảnh hưởng nhiều khách. (Số liệu minh họa.)
 
 ### Trả lời mẫu khi phỏng vấn
-"Em khuyen khong doc tung cuoc hoi thoai, ma ket hop ba thu. Thu nhat, nut phan hoi ngay tren giao dien: huu ich hay khong, kem hanh vi ngam nhu sao chep hoac chinh lai. Thu hai, sampling: chon ngau nhien mot phan nho, vi du mot phan tram cuoc hoi thoai moi tuan, de nhan vien cham dung sai theo tieu chi ro rang. Thu tu ba, dua cac truong hop loi vao bo kiem tra chuan va chay lai truoc khi thay doi prompt hoac model, de phat hien som chat luong tuot. Cac chi so theo doi bao gom ty le phan hoi khong huu ich, ty le cau tra loi sai va chi phi moi cuoc hoi thoai. Trong thuc the, viec them phan hoi va mau danh gia giup giam ty le cau tra loi bi danh gia sai tu tam phan tram xuong khoang mot phan tram hai trong hai thang."
+"Em khuyến không đọc từng cuộc hội thoại, mà kết hợp ba thứ. Thứ nhất, nút phản hồi ngay trên giao diện: hữu ích hay không, kèm hành vi ngầm như sao chép hoặc chỉnh lại. Thứ hai, sampling: chọn ngẫu nhiên một phần nhỏ, ví dụ một phần trăm cuộc hội thoại mỗi tuần, để nhân viên chấm đúng sai theo tiêu chí rõ ràng. Thứ ba, đưa các trường hợp lỗi vào bộ kiểm tra chuẩn và chạy lại trước khi thay đổi prompt hoặc model, để phát hiện sớm chất lượng sút. Các chỉ số theo dõi bao gồm tỷ lệ phản hồi không hữu ích, tỷ lệ câu trả lời sai và chi phí mỗi cuộc hội thoại. Trong thực tế, việc thêm phản hồi và mẫu đánh giá giúp giảm tỷ lệ câu trả lời bị đánh giá sai từ tám phần trăm xuống khoảng một phần trăm hai trong hai tháng."
 
-> Senior tip: Feedback chi gia tri khi ai do xu ly. Hay dat quy trinh "feedback xau -> tao bai kiem tra -> chay truoc khi trien khai", neu khong nguoi duoc ngung bao loi vi cam thang khong ai doc.
+> Senior tip: Feedback chỉ giá trị khi ai đó xử lý. Hãy đặt quy trình "feedback xấu -> tạo bài kiểm tra -> chạy trước khi triển khai", nếu không người dùng ngừng báo lỗi vì cảm thấy không ai đọc.
 
 `,
   follow: [
-    'Ban lay mau bao nhieu phan tram cuoc hoi thoai de danh gia, va lam sao biet mau du dai dien?',
-    'Feedback nguoi duoc co the bi sai lech the nao, va sampling giup gi?',
-    'Ban bien mot cuoc hoi thoai loi thanh bai kiem tra trong eval ra sao?'
+    'Bạn lấy mẫu bao nhiêu phần trăm cuộc hội thoại để đánh giá, và làm sao biết mẫu đủ đại diện?',
+    'Feedback người dùng có thể bị sai lệch thế nào, và sampling giúp gì?',
+    'Bạn biến một cuộc hội thoại lỗi thành bài kiểm tra trong eval ra sao?'
   ],
   tags: ['online evaluation', 'feedback', 'sampling', 'LLM eval']
 },
@@ -6641,48 +6641,48 @@ Chat bot ho tro 15.000 cuoc hoi thoai moi tuan. Ban dau doi chi doc 20 cuoc goi 
   id: 'ai-100',
   topic: 'ai',
   level: 'lead',
-  q: 'Muon thay doi model LLM (vi du tu model A sang model B). Lam sao thiet ke thu nghiem A/B cong bang, chia traffic, do so lieu va quyet dinh khi nao chuyen toan bo?',
-  a: `**Tóm tắt:** Thu nghiem A/B model la chay hai phien ban model cung luc tren nhom nguoi duoc khac nhau, do chat luong va chi phi tren moi nhom, roi chi chuyen toan bo sang model tot hon khi co bang chung ro rang. Muc tieu khong phai doi model vi model moi ma la doi vi no thuc su tot hon cho nguoi duoc va chi phi chap nhan duoc.
+  q: 'Muốn thay đổi model LLM (ví dụ từ model A sang model B). Làm sao thiết kế thí nghiệm A/B công bằng, chia traffic, đo số liệu và quyết định khi nào chuyển toàn bộ?',
+  a: `**Tóm tắt:** Thí nghiệm A/B model là chạy hai phiên bản model cùng lúc trên nhóm người dùng khác nhau, đo chất lượng và chi phí trên mỗi nhóm, rồi chỉ chuyển toàn bộ sang model tốt hơn khi có bằng chứng rõ ràng. Mục tiêu không phải đổi model vì model mới mà là đổi vì nó thực sự tốt hơn cho người dùng và chi phí chấp nhận được.
 
-### Thiet ke thu nghiem
-- **Cái gì**: chia nguoi duoc hoac yeu cau thanh hai nhom ngau nhien: nhom A dung model hien tai, nhom B dung model moi. Moi dieu khac (prompt, ngon ngu, guardrail) phai giong nhau.
-- **Vì sao can**: neu doi toan bo luc nao va chat luong tuot, khong biet do model hay do nguyen nhan khac. A/B tach biet tac dong cua model.
-- **Hoat dong the nao**: gateway hoac dich vu nhan yeu cau, dua theo ma nguoi duoc (hash) gan nhom A hoac B, goi model tuong ung, ghi ket qua cung ma nhom.
+### Thiết kế thí nghiệm
+- **Cái gì**: chia người dùng hoặc yêu cầu thành hai nhóm ngẫu nhiên: nhóm A dùng model hiện tại, nhóm B dùng model mới. Mọi điều khác (prompt, ngôn ngữ, guardrail) phải giống nhau.
+- **Vì sao cần**: nếu đổi toàn bộ lúc nào và chất lượng sút, không biết do model hay do nguyên nhân khác. A/B tách biệt tác động của model.
+- **Hoạt động thế nào**: gateway hoặc dịch vụ nhận yêu cầu, đưa theo mã người dùng (hash) gán nhóm A hoặc B, gọi model tương ứng, ghi kết quả cùng mã nhóm.
 
-### Don vi chia: nguoi duoc hay yeu cau
-- Chia theo nguoi duoc (user-level): cung mot nguoi luon gap cung mot model, trai nghiem on dinh qua thoi gian. Phu hop khi quan tam cam than nguoi duoc theo thoi gian.
-- Chia theo yeu cau (request-level): moi yeu cau ngau nhien mot model, can it nguoi duoc hon de co ket qua nhanh. Phu hop bai tu doc lap moi yeu cau, nhung cung mot nguoi co the thay hai model khac nhau.
+### Đơn vị chia: người dùng hay yêu cầu
+- Chia theo người dùng (user-level): cùng một người luôn gặp cùng một model, trải nghiệm ổn định qua thời gian. Phù hợp khi quan tâm cảm nhận người dùng theo thời gian.
+- Chia theo yêu cầu (request-level): mỗi yêu cầu ngẫu nhiên một model, cần ít người dùng hơn để có kết quả nhanh. Phù hợp bài toán độc lập mỗi yêu cầu, nhưng cùng một người có thể thấy hai model khác nhau.
 
-### So lieu can do
-- Chat luong: ty le phan hoi khong huu ich, ty le cau tra loi bi danh gia sai (xem cau ai-099), diem eval tren mau, do dung trich dan.
-- Chi phi: so token dau vao/dau ra va chi phi moi yeu cau.
-- Do tre: thoi gian den token dau tien va tong thoi gian (p95).
-- Do tin cay: ty le loi, ty le lai attempt, ty le JSON sai schema.
+### Số liệu cần đo
+- Chất lượng: tỷ lệ phản hồi không hữu ích, tỷ lệ câu trả lời bị đánh giá sai (xem câu ai-099), điểm eval trên mẫu, độ đúng trích dẫn.
+- Chi phí: số token đầu vào/đầu ra và chi phí mỗi yêu cầu.
+- Độ trễ: thời gian đến token đầu tiên và tổng thời gian (p95).
+- Độ tin cậy: tỷ lệ lỗi, tỷ lệ lại attempt, tỷ lệ JSON sai schema.
 
-### Nghia thong ke va kich thuoc mau
-- Khong ket luan sau mot ngay hoac muoi cuoc hoi thoai. Sai so ngau nhien co the lam mot nhom thang tot hon.
-- Can kich thuoc mau du lon (ngan cuoc hoi thoai) va chay it nhat mot den hai tuan de bao gom ngay trong tuan va gio cao diem.
-- Dat nguong truoc: chi chuyen toan bo neu model B tot hon ro rang (vi du chat luong cao hon va chi phi khong cao hon qua 10 phan tram).
+### Ý nghĩa thống kê và kích thước mẫu
+- Không kết luận sau một ngày hoặc mười cuộc hội thoại. Sai số ngẫu nhiên có thể làm một nhóm trông tốt hơn.
+- Cần kích thước mẫu đủ lớn (nghìn cuộc hội thoại) và chạy ít nhất một đến hai tuần để bao gồm ngày trong tuần và giờ cao điểm.
+- Đặt ngưỡng trước: chỉ chuyển toàn bộ nếu model B tốt hơn rõ ràng (ví dụ chất lượng cao hơn và chi phí không cao hơn quá 10 phần trăm).
 
-### Quyet dinh va rollback
-- Neu model B tot hon: tang dan phan tram traffic sang B (canary: 10% -> 50% -> 100%) trong khi theo doi.
-- Neu model B kem hon hoac chi phi cao qua nhieu: dung thu nghiem, giu model A.
-- Luon co cach quay lai ngay lap tuc (feature flag) neu model moi gay su co sau khi chuyen toan bo.
+### Quyết định và rollback
+- Nếu model B tốt hơn: tăng dần phần trăm traffic sang B (canary: 10% -> 50% -> 100%) trong khi theo dõi.
+- Nếu model B kém hơn hoặc chi phí cao quá nhiều: dừng thí nghiệm, giữ model A.
+- Luôn có cách quay lại ngay lập tức (feature flag) nếu model mới gây sự cố sau khi chuyển toàn bộ.
 
-### Loi hay gap
-- Chia theo yeu cau ma quen cung mot nguoi duoc thay hai model: trai nghiem khong lien tin.
-- Danh gia chi theo do tre, quen chat luong: model moi nhanh nhung tra sai.
-- Ket luan qua som: mau nho, sai so ngau nhien.
-- Khong co nhom dieu khien (model cu): khong biet su thay doi la do model hay do du lieu nguoi duoc thay doi theo thoi gian.
-- Khong co ke hoach rollback: doi model xong khong the quay lai nhanh khi su co.
+### Lỗi hay gặp
+- Chia theo yêu cầu mà quên cùng một người dùng thấy hai model: trải nghiệm không liên tục.
+- Đánh giá chỉ theo độ trễ, quên chất lượng: model mới nhanh nhưng trả sai.
+- Kết luận quá sớm: mẫu nhỏ, sai số ngẫu nhiên.
+- Không có nhóm điều khiển (model cũ): không biết sự thay đổi là do model hay do dữ liệu người dùng thay đổi theo thời gian.
+- Không có kế hoạch rollback: đổi model xong không thể quay lại nhanh khi sự cố.
 
-### Vi du doi thuc
-Dich vu trich xuat thong tin tu hoa don xu ly 100.000 yeu cau moi thang. Doi muon doi tu model A sang model B moi hon. Thu nghiem A/B trong ba thang: 50% yeu cau model A, 50% model B. Ket qua: model B chinh xac hon 2 phan tram (tu 93% len 95%) nhung chi phi cao hon 40 phan tram va cham hon 1,5 giay p95. Doi quyet dinh khong chuyen toan bo vi chi phi tang khong xung voi loi ich nho, va giu model A cho trich xuat, dung model B cho tom tat noi dung khong quan trong. (So lieu minh hoa.)
+### Ví dụ đời thực
+Dịch vụ trích xuất thông tin từ hóa đơn xử lý 100.000 yêu cầu mỗi tháng. Dịch muốn đổi từ model A sang model B mới hơn. Thí nghiệm A/B trong ba tháng: 50% yêu cầu model A, 50% model B. Kết quả: model B chính xác hơn 2 phần trăm (từ 93% lên 95%) nhưng chi phí cao hơn 40 phần trăm và chậm hơn 1,5 giây p95. Dịch quyết định không chuyển toàn bộ vì chi phí tăng không xứng với lợi ích nhỏ, và giữ model A cho trích xuất, dùng model B cho tóm tắt nội dung không quan trọng. (Số liệu minh họa.)
 
 ### Trả lời mẫu khi phỏng vấn
-"Em khuyen thu nghiem A/B thay doi toan bo mot lan. Chia nguoi duoc hoac yeu cau thanh hai nhom ngau nhien, nhom dung model cu va nhom dung model moi, moi dieu khac nhu prompt va ngon ngu phai giong nhau. Do ca chat luong (ty le phan hoi khong huu ich, diem eval), chi phi (token moi yeu cau) va do tre (p95). Chi chuyen toan bo khi co bang chung ro rang trong it nhat mot den hai thang, va luon co cach quay lai ngay lap tuc neu model moi gay su co. Trong vi du thuc them, model moi chinh xac hon hai phan tram nhung chi phi cao hơn bốn mươi phần trăm, nen em quyet dinh khong chuyen toan bo ma chi dung cho tac vu phu hop."
+"Em khuyến thí nghiệm A/B thay đổi toàn bộ một lần. Chia người dùng hoặc yêu cầu thành hai nhóm ngẫu nhiên, nhóm dùng model cũ và nhóm dùng model mới, mọi điều khác như prompt và ngôn ngữ phải giống nhau. Đo cả chất lượng (tỷ lệ phản hồi không hữu ích, điểm eval), chi phí (token mỗi yêu cầu) và độ trễ (p95). Chỉ chuyển toàn bộ khi có bằng chứng rõ ràng trong ít nhất một đến hai tháng, và luôn có cách quay lại ngay lập tức nếu model mới gây sự cố. Trong ví dụ thực thêm, model mới chính xác hơn hai phần trăm nhưng chi phí cao hơn bốn mươi phần trăm, nên em quyết định không chuyển toàn bộ mà chỉ dùng cho tác vụ phù hợp."
 
-> Senior tip: Model moi khong nhat dinh tot hon cho bai toan cua ban. Hay co nhom dieu khien (model cu), do dung ca chat luong va chi phi, va chi chap nhan doi khi loi ich ro rang vuot chenh lech chi phi.
+> Senior tip: Model mới không nhất định tốt hơn cho bài toán của bạn. Hãy có nhóm điều khiển (model cũ), đo đúng cả chất lượng và chi phí, và chỉ chấp nhận đổi khi lợi ích rõ ràng vượt chênh lệch chi phí.
 
 `,
   follow: [
