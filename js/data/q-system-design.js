@@ -12009,4 +12009,206 @@ Triệu chứng: hệ thống đơn hàng 2 triệu đơn/ngày, query "đơn c�
   follow: ['Outbox pattern hoạt động thế nào và vì sao tránh được dual write?', 'Cassandra eventual consistency: bạn chọn consistency level nào cho write/read và vì sao?', 'Khi nào polyglot persistence không đáng công (over-engineering)?'],
   tags: ['system design', 'SQL', 'NoSQL', 'PostgreSQL', 'MongoDB', 'Redis', 'Cassandra', 'CQRS', 'polyglot persistence', 'outbox', 'access pattern']
 },
+{
+  id: 'design-069',
+  topic: 'design',
+  level: 'senior',
+  q: 'Thiết kế hệ thống audit trail (nhật ký kiểm toán) cho thay đổi trạng thái đơn hàng hoặc task. Hãy trình bày event sourcing là gì, cách lưu sự kiện để không bao giờ mất lịch sử, làm sao replay để khôi phục trạng thái vào bất kỳ thời điểm nào, và cách xem trạng thái tại thời điểm T (time travel).',
+  a: `**Tóm tắt:** Event sourcing là kỹ thuật không lưu chỉ trạng thái cuối cùng, mà lưu toàn bộ các sự kiện đã làm thay đổi trạng thái theo thứ tự xảy ra. Với audit trail, mỗi thay đổi (tạo đơn, chuyển PENDING sang PAID, hủy task…) là một sự kiện bất biến, ghi vào event store. Để xem trạng thái vào thời điểm T, ta replay các sự kiện từ đầu cho đến T. Bảng trạng thái hiện tại chỉ là bản chiếu (projection), có thể xây lại từ event store bất cứ lúc nào.
+
+### Event sourcing và audit trail là gì
+- **Sự kiện (event):** một sự việc đã xảy ra, ghi ở thì quá khứ, ví dụ OrderCreated, OrderStatusChanged, TaskAssigned. Một event không bao giờ được sửa hoặc xoá sau khi ghi.
+- **Event store:** kho lưu trữ chỉ cho phép ghi thêm (append-only), mỗi event có mã, loại, nội dung, thời gian và người thực hiện.
+- **Replay:** chạy lại danh sách event theo thứ tự để tính lại trạng thái. Ví dụ 10 event của một đơn hàng ⇒ trạng thái cuối cùng của đơn đó.
+- **Snapshot:** chụp ảnh trạng thái định kỳ (ví dụ mỗi 1000 event hoặc mỗi đêm) để replay không bắt đầu từ sự kiện đầu tiên.
+- **Time travel:** xem trạng thái vào thời điểm T bằng cách replay sự kiện cho đến T, bỏ qua những event sau T.
+- **Audit trail:** nhật ký kiểm toán trả lời ai, khi nào, thay đổi trạng thái từ gì sang gì, với lý do gì. Vì event không bao giờ bị sửa, audit trail chống được giả mạo lịch sử.
+
+### Cơ chế hoạt động từng bước (có sơ đồ)
+Khi yêu cầu thay đổi trạng thái đơn hàng đến hệ thống:
+1. Service nhận yêu cầu: PUT /orders/{id}/status kèm trạng thái mới và lý do.
+2. Service kiểm tra nghiệp vụ: đơn tồn tại không, chuyển trạng thái này được phép không (ví dụ PENDING → PAID được, CANCELED → PAID không).
+3. Service tạo sự kiện OrderStatusChanged { orderId, fromStatus, toStatus, changedBy, changedAt, reason }.
+4. Ghi sự kiện vào event store. Chỉ sau khi ghi xong, service trả kết quả cho client.
+5. Processor đọc event store, cập nhật bảng trạng thái hiện tại {{orders_current}} và bảng audit {{order_audit}} (mỗi event một dòng).
+6. Client xem lịch sử: truy vấn bảng audit theo {{orderId}}, sắp xếp theo thời gian.
+7. Time travel: truyền tham số asOf=2026-10-01T10:00:00Z, replay các event trước thời điểm này ⇒ thấy trạng thái đơn lúc đó.
+
+~~~seq
+title: Thay đổi trạng thái đơn hàng với event sourcing
+actors: Client | Service | Event Store | Read DB | Audit Viewer
+Client -> Service: PUT /orders/123/status PAID
+Service -> Event Store: ghi sự kiện OrderStatusChanged
+Event Store --> Service: đã ghi sự kiện 452
+Service --> Client: 200 OK
+Event Store -> Read DB: cập nhật trạng thái hiện tại + audit
+Read DB --> Audit Viewer: lịch sử thay đổi / trạng thái tại T
+~~~
+
+### Tại sao event sourcing phù hợp với audit trail
+- **Chống sửa lịch sử:** event ghi rồi không sửa ⇒ người dùng và quản trị viên không thể sửa lịch sử sau khi xảy ra. Yêu cầu kiểm toán của ngân hàng, chứng khoán, y tế.
+- **Tái tạo trạng thái bất cứ lúc nào:** mất bảng đọc? Chỉ cần replay event store là có lại toàn bộ.
+- **Xem thời điểm T:** phương thức truyền thống chỉ thấy trạng thái hiện tại; event sourcing thấy được đơn ở trạng thái gì vào hôm qua.
+- **Debug dễ:** sự kiện ghi rõ ai làm gì, khi nào, với dữ liệu trước và sau.
+
+### Code Java ngắn (ít hơn 30 dòng)
+~~~java
+public record OrderEvent(String id, String orderId, String type,
+                         String fromStatus, String toStatus,
+                         String changedBy, long changedAt) {}
+
+public class EventStore {
+    private final List<OrderEvent> events = new CopyOnWriteArrayList<>();
+    public void append(OrderEvent e) { events.add(e); } // chỉ ghi thêm, không sửa
+    public String currentStatus(String orderId) {
+        String status = null;
+        for (OrderEvent e : events) {
+            if (e.orderId().equals(orderId)) status = e.toStatus(); // replay đến cuối cùng
+        }
+        return status;
+    }
+    public String statusAt(String orderId, long asOf) {
+        String status = null;
+        for (OrderEvent e : events) {
+            if (e.orderId().equals(orderId) && e.changedAt() <= asOf) {
+                status = e.toStatus(); // replay đến thời điểm T
+            }
+        }
+        return status;
+    }
+}
+~~~
+Trong thực tế event store lưu vào bảng DB (cột payload JSONB) hoặc Kafka topic, sắp xếp theo id để giữ thứ tự, không dùng CopyOnWriteArrayList.
+
+### Bảng trade-off
+| Tiêu chí | Event sourcing | Cập nhật trạng thái + log riêng |
+|---|---|---|
+| Lịch sử thay đổi | Toàn bộ, không bao giờ mất | Chỉ có log nếu lập trình viên nhớ ghi |
+| Chống sửa lịch sử | Có, event bất biến | Khó, log có thể bị sửa hoặc xoá |
+| Xem trạng thái tại thời điểm T | Có (replay đến T) | Không, chỉ thấy hiện tại |
+| Khôi phục sau lỗi | Replay event store | Phục hồi từ backup, có thể mất khoảng thời gian |
+| Độ phức tạp | Cao hơn: snapshot, phiên bản event, migration | Thấp, quen thuộc |
+| Hiệu năng đọc trạng thái | Chậm nếu không snapshot (replay nhiều event) | Nhanh, đọc một hàng |
+| Khi nào dùng | Audit trail yêu cầu cao, cần time travel, trạng thái thay đổi ít so với đọc | CRUD đơn giản, không yêu cầu kiểm toán |
+
+### Pitfall production
+- **Không snapshot ⇒ replay chậm:** hàng triệu event của một đơn hàng ⇒ replay vài giây. Xử lý: snapshot mỗi N event hoặc mỗi đêm, replay từ snapshot gần nhất.
+- **Thay đổi cấu trúc event:** event cũ vẫn có dữ liệu cũ, code mới đọc sai. Xử lý: phiên bản event, viết converter, hoặc giữ event gốc và thêm event mới.
+- **Sự kiện trùng khi retry:** processor đọc event hai lần ⇒ cập nhật hai lần. Xử lý: event id duy nhất, processor bỏ qua event đã xử lý (idempotent).
+- **Thông tin nhạy cảm trong event:** event store lưu mã thẻ, số CMND ⇒ vi phạm bảo mật. Xử lý: mã hóa/ẩn danh trước khi ghi, không lưu PII thô.
+- **Thứ tự event sai:** ghi không theo thứ tự ⇒ replay cho trạng thái sai. Xử lý: ghi theo thứ tự vào một partition/khóa đơn hàng, dùng sequence DB hoặc Kafka partition theo orderId.
+
+### Ví dụ đời thực
+Một nền tảng quản lý task doanh nghiệp có 50.000 task mới mỗi ngày. **Triệu chứng:** khách hàng báo "task của tôi biến trạng thái từ Đang làm sang Hoàn thành nhưng tôi không biết ai làm, lúc nào, và lý do gì"; quản lý muốn xem task ở trạng thái gì vào tuần trước để đối soát KPI. **Điều tra:** hệ thống dùng bảng {{tasks}} chỉ có cột {{status}} và {{updated_at}}; mỗi lần đổi trạng thái thì UPDATE ghi đè, không lưu ai thay đổi, không lưu lý do. Không thể trả lời "task ở trạng thái gì vào thứ Ba tuần trước". **Nguyên nhân gốc:** lưu chỉ trạng thái cuối cùng, không có event sourcing hay audit trail riêng. **Xử lý:** (1) tạo bảng {{task_event}} chỉ thêm (id, taskId, type, fromStatus, toStatus, changedBy, changedAt, reason); (2) mọi thay đổi trạng thái ghi event trước, sau đó cập nhật {{tasks.status}}; (3) thêm API GET /tasks/{id}/history và GET /tasks/{id}/status?asOf=...; (4) snapshot trạng thái cuối mỗi tuần để history query nhanh. **Kết quả đo được:** sau khi triển khai, 100% thay đổi trạng thái có người thực hiện và lý do; query lịch sử 500 event dưới 100 ms; số ticket hỗ trợ "task đổi trạng thái không rõ nguyên nhân" giảm 80%.
+
+### Trả lời mẫu khi phỏng vấn
+"Khi thiết kế audit trail cho trạng thái đơn hàng hoặc task, tôi chọn event sourcing: thay vì chỉ cột status trong bảng chính, mỗi thay đổi là một event bất biến (OrderCreated, OrderStatusChanged…) ghi vào event store chỉ thêm với ai, khi nào, lý do. Trạng thái hiện tại là projection — xây lại bằng cách replay event từ đầu; để xem trạng thái vào thời điểm T, ta replay đến T rồi dừng. Code tối giản: lưu event theo orderId, TRANG_THAI_HIEN_TAI là event toStatus mới nhất; TRANG_THAI_TAI_T là event mới nhất có thời gian bé hơn hoặc bằng T. Trade-off: replay chậm nếu không snapshot, nên snapshot định kỳ; sự kiện không được sửa, thay đổi cấu trúc thì phiên bản event và viết converter. Pitfall hay gặp là retry làm xử lý trùng event ⇒ dùng event id duy nhất và handler idempotent; không lưu thông tin nhạy cảm thô trong event. Trong thực tế tôi thường kết hợp event sourcing với bảng đọc riêng để truy vấn nhanh, và luôn có quy trình xử lý sự kiện sai (reversal event) thay vì sửa event đã ghi."
+> Senior tip: sự kiện trong event sourcing là tài liệu kiểm toán — nếu sự kiện sai thì replay bao nhiêu lần cũng sai, nên validate nghiêm ngặt trước khi ghi, và giữ một bản sự kiện gốc không chỉnh sửa dù có phát hiện sai sót (sửa bằng event đảo ngược, revision event).
+`,
+  follow: [
+    'Sự kiện bị sai nội dung sau khi đã ghi vào event store bạn xử lý thế nào?',
+    'Nếu event store có triệu sự kiện, replay từ đầu sẽ chậm, bạn tối ưu thế nào?',
+    'Bạn lưu audit trail cùng database hay dịch vụ riêng, và tại sao?'
+  ],
+  tags: ['event sourcing', 'audit trail', 'time travel', 'append-only', 'replay', 'core']
+},
+{
+  id: 'design-070',
+  topic: 'design',
+  level: 'lead',
+  q: 'Thiết kế pipeline nhận sự kiện từ nhiều nguồn (webhook, ứng dụng di động, thiết bị IoT, file log), chuẩn hóa về schema chung, xử lý bất đồng bộ, đẩy xuống các hệ thống phía sau, và đảm bảo không mất sự kiện cũng như không xử lý trùng.',
+  a: `**Tóm tắt:** Pipeline ingest (nạp dữ liệu) là hệ thống nằm ở biên, tiếp nhận sự kiện từ nhiều nguồn khác nhau, chuyển về định dạng chuẩn, đệm và xử lý bất đồng bộ, rồi gửi xuống các hệ thống phía sau (cơ sở dữ liệu, kho dữ liệu, dịch vụ cảnh báo). Hai bài toán cốt lõi: không mất sự kiện (ghi bền, xác nhận nhận, xử lý lại, hàng đợi thư tử) và không xử lý trùng (mã duy nhất cho mỗi sự kiện, xử lý idempotent).
+
+### Các thuật ngữ cần biết (từ gốc)
+- **Nguồn (upstream):** nơi tạo sự kiện, ví dụ webhook từ đối tác, ứng dụng di động gửi hành vi người dùng, thiết bị IoT gửi chỉ số cảm biến, file log của server.
+- **Phía sau (downstream):** nơi nhận dữ liệu đã chuẩn hóa, ví dụ PostgreSQL, Elasticsearch, dịch vụ cảnh báo.
+- **Ingestion (nạp):** thu thập sự kiện từ nguồn vào hệ thống của mình.
+- **Chuẩn hóa (normalize):** chuyển các định dạng khác nhau của từng nguồn về schema chung mà phía sau hiểu.
+- **Áp lực ngược (backpressure):** khi phía sau xử lý chậm, phía trước phải chậm theo chứ không bị tràn bộ nhớ.
+- **Hàng đợi thư tử (dead-letter queue, DLQ):** nơi đặt sự kiện mà worker xử lý không được sau N lần, để xem lại sau.
+- **Ít nhất một lần (at-least-once):** sự kiện được xử lý ít nhất một lần, có thể bị trùng.
+- **Mã không trùng (idempotency key):** mã duy nhất gắn mỗi sự kiện, dùng để phát hiện và bỏ qua sự kiện đã xử lý.
+
+### Kiến trúc từng thành phần (có sơ đồ)
+1. **Cổng tiếp nhận (ingestor/gateway):** nhận sự kiện từ nhiều nguồn qua HTTP/TCP, kiểm tra nhẹ (định dạng, kích thước), gán {{ingestionId}}, ghi vào bộ đệm bền vững (WAL/hàng đợi bền), trả 202 Accepted ngay. Chỉ nhận, không xử lý sâu, để nguồn không bị chờ lâu.
+2. **Bộ chuẩn hóa:** đọc từ bộ đệm, nhận dạng nguồn, chuyển sang schema chung (ví dụ tất cả sự kiện có {{eventId, eventType, eventTime, payload}}), gán {{normalizedId}}.
+3. **Hàng đợi (queue):** đệm sự kiện, chia theo khóa (ví dụ theo {{deviceId}}) để sự kiện cùng thiết bị xử lý theo thứ tự.
+4. **Worker:** lấy sự kiện từ hàng đợi, xử lý (ghi DB, gọi downstream), sau khi xong mới xác nhận (ack). Nếu chưa xong, hàng giữ lại để xử lý lại.
+5. **Hệ thống phía sau:** nhận dữ liệu đã chuẩn hóa, lưu vào PostgreSQL/Elasticsearch, gửi cảnh báo nếu có sự kiện bất thường.
+6. **Hàng thư tử (DLQ):** sự kiện lỗi sau N lần thử được đưa vào DLQ, vận hành viên xem xét và xử lý lại.
+
+~~~seq
+title: Pipeline nhận xử lý sự kiện nhiều nguồn
+actors: Nguồn | Gateway | Hàng đợi | Worker | Hệ thống sau | DLQ
+Nguồn -> Gateway: gửi sự kiện webhook
+Gateway -> Hàng đợi: lưu sự kiện ban đầu
+Hàng đợi --> Gateway: đã ghi bền
+Gateway --> Nguồn: 202 đã chấp nhận
+Hàng đợi -> Worker: lấy sự kiện
+Worker -> Hệ thống sau: gửi dữ liệu đã chuẩn hóa
+Hệ thống sau --> Worker: đã lưu
+Worker -> Hàng đợi: xác nhận đã xử lý (ack)
+Hàng đợi -> DLQ: sự kiện lỗi sau N lần
+~~~
+
+### Không mất sự kiện
+- **Ghi bền trước khi xác nhận:** sự kiện ghi vào WAL/hàng đợi bền trước khi gateway trả 202. Mất mạng giữa chừng, nguồn gửi lại, hệ thống vẫn có sự kiện.
+- **Xác nhận sau khi xử lý xong:** worker chỉ ack sau khi ghi xuống phía sau thành công. Nếu worker chết trước khi ack, hàng giữ sự kiện để worker khác xử lý.
+- **Xử lý lại khi lỗi tạm thời:** mạng lỗi, downstream chậm ⇒ retry với khoảng cách tăng dần (exponential backoff).
+- **DLQ cho sự kiện chết:** sau N lần retry vẫn lỗi, đưa vào DLQ thay vì chặn hàng đợi.
+- **Replay từ vị trí cũ:** nếu cần làm lại từ thời điểm T, đọc lại hàng từ vị trí T.
+
+### Không xử lý trùng
+- **Mỗi sự kiện có mã duy nhất:** nguồn gửi {{eventId}} (hoặc gateway gán {{ingestionId}}), cùng một sự kiện retry giữ nguyên mã.
+- **Xử lý idempotent:** trước khi ghi, kiểm tra {{eventId}} đã xử lý chưa (unique constraint trong DB). Nếu có, bỏ qua, trả kết quả cũ.
+- **At-least-once cộng idempotent ≈ xử lý đúng một lần:** ngay cả khi sự kiện đến hai lần, kết quả chỉ ảnh hưởng một lần.
+
+### Code Java ngắn (ít hơn 30 dòng)
+~~~java
+public record IngestEvent(String eventId, String source, String type,
+                          String payload, long receivedAt) {}
+
+public class IngestPipeline {
+    private final Set<String> processed = ConcurrentHashMap.newKeySet();
+    public void handle(IngestEvent e) {
+        if (!processed.add(e.eventId())) return; // đã xử lý rồi, bỏ qua
+        String normalized = normalize(e);        // chuẩn hóa schema
+        downstream.write(normalized);            // gửi hệ thống sau
+        // chỉ xác nhận (ack) sau khi ghi thành công
+    }
+}
+~~~
+Trong thực tế {{processed}} thay bằng bảng DB có unique constraint (hoặc Redis set có TTL) để nhiều worker instance chia sẻ và không mất khi khởi động lại.
+
+### Bảng trade-off
+| Tiêu chí | Pipeline bất đồng bộ (đề xuất) | Xử lý đồng bộ ngay lúc nhận |
+|---|---|---|
+| Không mất sự kiện | Có, ghi bền trước khi trả | Không, mất nếu gateway lỡ |
+| Không xử lý trùng | Có, qua idempotency key | Không dễ, phải kiểm tra thêm |
+| Giải phóng nguồn | Nhanh (trả 202 ngay) | Chậm (đợi xử lý xong) |
+| Xử lý nhiều sự kiện | Có, hàng đợi đệm tác vụ | Không, bị giới hạn lượng luồng |
+| Độ phức tạp | Cao hơn (cần quản lý hàng, DLQ) | Thấp, code ngắn |
+| Khi nào dùng | Nhiều nguồn, tải thay đổi, cần độ sẵn sàng cao | Tải ít, yêu cầu phản hồi ngay lập tức |
+
+### Pitfall production
+- **Không xác nhận sau khi xử lý:** worker crash sau khi ghi DB nhưng trước khi ack ⇒ sự kiện được xử lý hai lần (đã idempotent thì không sai, nhưng tốn công).
+- **Downstream chậm làm nghẽn hàng:** worker đọc liên tục, downstream chậm ⇒ hàng đợi tràn, bộ nhớ hết. Xử lý: giới hạn số lượng sự kiện đang xử lý (backpressure), tắt gateway khi hàng đầy.
+- **Thứ tự sự kiện thay đổi:** sự kiện A gửi trước đến sau vì đường mạng khác ⇒ trạng thái sai. Xử lý: chia hàng theo khóa (ví dụ {{deviceId}}) cho sự kiện cùng thiết bị xử lý theo thứ tự.
+- **Sửa schema của nguồn:** nguồn thay đổi trường JSON ⇒ bộ chuẩn hóa crash. Xử lý: schema version, bộ lọc sự kiện biết, cảnh báo ngay.
+- **DLQ không xử lý:** sự kiện lưu DLQ không ai xem ⇒ mất dữ liệu nguyên nhân không biết. Xử lý: cảnh báo kích cỡ DLQ, có công cụ xem và xử lý lại.
+
+### Ví dụ đời thực
+Một hệ thống theo dõi vận đơn giao nhận có 200.000 sự kiện mỗi ngày từ 3 nguồn: app lái xe (GPS), hệ thống kho (scan mã vạch), webhook của nhà vận chuyển. **Triệu chứng:** một ngày, khối lượng tăng gấp 5 do chương trình khuyến mãi, đơn hàng bị cập nhật trạng thái chậm, một số sự kiện bị mất (khách phàn nàn "vận đơn bị mất trạng thái"). **Điều tra:** gateway xử lý đồng bộ, gọi API kho ngay lúc nhận sự kiện; API kho chậm hơn 2 giây, gateway timeout và mất sự kiện. Không có hàng đợi đệm, không có xử lý lại khi lỗi. **Nguyên nhân gốc:** xử lý đồng bộ bắt buộc gateway đợi downstream, không đệm tác vụ, không xử lý lại khi lỗi. **Xử lý:** (1) thêm gateway ghi sự kiện vào Kafka làm bộ đệm và trả 202 ngay; (2) worker đọc Kafka, chuẩn hóa, ghi PostgreSQL, ack sau khi ghi thành công; (3) chia partition theo mã đơn hàng để sự kiện cùng đơn xử lý theo thứ tự; (4) thêm DLQ và cảnh báo khi kích cỡ DLQ lớn hơn 0; (5) xử lý idempotent bằng {{eventId}} để sự kiện gửi lại không tạo đơn trùng. **Kết quả đo được:** sau khi triển khai, 1 triệu sự kiện/ngày được xử lý trong 2 giây, sự kiện bị mất 0%, trạng thái đơn cập nhật dưới 5 giây sau khi sự kiện sinh.
+
+### Trả lời mẫu khi phỏng vấn
+"Khi thiết kế pipeline nhận sự kiện từ nhiều nguồn, tôi luôn bắt đầu bằng cấu trúc sự kiện của từng nguồn (webhook, app di động, thiết bị IoT, file log) và schema chung mà hệ thống phía sau cần. Kiến trúc: cổng tiếp nhận kiểm tra nhẹ, gán mã duy nhất, ghi vào hàng đợi bền và trả 202 không đợi xử lý xuống; bộ chuẩn hóa chuyển sang schema chung; worker đọc hàng, xử lý, ghi hệ thống sau, chỉ xác nhận sau khi thành công. Để không mất sự kiện: ghi bền trước khi trả, chỉ xác nhận sau khi xử lý xong, xử lý lại lỗi tạm thời, sự kiện cuối cùng vào DLQ. Để không xử lý trùng: mỗi sự kiện có mã duy nhất, xử lý idempotent với unique constraint trong DB; at-least-once cộng idempotent kết quả xử lý đúng một lần. Thứ tự sự kiện cùng thiết bị được duy trì bằng cách chia hàng theo khóa. Trade-off: pipeline bất đồng bộ phức tạp hơn xử lý đồng bộ, cần quản lý hàng và DLQ, đổi lại có thông lượng cao và không mất dữ liệu."
+> Senior tip: hàng đợi DLQ không được để quên — nếu DLQ tăng dần, có nghĩa có sự kiện xử lý không được và bạn đang mất dữ liệu trong thời gian thực. Luôn có cảnh báo và công cụ xử lý lại DLQ, và kiểm tra DLQ như kiểm tra cơ sở dữ liệu.
+`,
+  follow: [
+    'Sự kiện lại đến nhiều lần do client retry, bạn tránh xử lý trùng thế nào?',
+    'Downstream chậm làm hàng đợi đầy, bạn giới hạn tải thế nào mà không mất sự kiện?',
+    'Nguồn thay đổi định dạng sự kiện (thêm trường JSON), pipeline xử lý thế nào?'
+  ],
+  tags: ['data ingestion', 'pipeline', 'idempotency', 'at-least-once', 'dead letter queue', 'core']
+},
 );
