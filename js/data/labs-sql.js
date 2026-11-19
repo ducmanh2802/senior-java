@@ -4424,5 +4424,387 @@ public     | ledger_entry | 5200000   | 5600000    | 2026-04-03 02:10:00+07 | 20
   ],
   tags: ['postgresql', 'vacuum', 'bloat', 'active-transaction', 'autovacuum'],
 },
+{
+  id: 'lab-sql-030',
+  category: 'sql',
+  title: 'API lịch sử lệnh OFFSET 200000 đọc vứt 200 nghìn dòng: keyset pagination + index',
+  level: 'senior',
+  scenario: `**Bối cảnh.** Ngân hàng số FinBank chạy service {{transaction-history}} (Spring Boot 3.3, Hibernate 6.4, PostgreSQL 15.6 trên RDS, 8 vCPU / 64 GB RAM). Bảng {{account_transaction}} lưu lịch sử giao dịch của 1.2 triệu tài khoản: **62.418.904 dòng** (~14 GB heap + 8,2 GB index). Mỗi tài khoản trung bình ~52 giao dịch, nhưng 5% tài khoản lớn (doanh nghiệp) có 5.000–50.000 giao dịch.
+
+Màn hình "Lịch sử giao dịch" của khách hàng doanh nghiệp gọi:
+~~~text
+GET /api/v1/accounts/{accountId}/transactions?page=2000&size=100
+~~~
+để xem trang 2000 (OFFSET 200.000). API này dùng Spring Data JPA {{Pageable}} mặc định — sinh ra câu SQL có {{OFFSET 200000 LIMIT 100}}.
+
+**Triệu chứng (20/03/2026, 10:15).** p95 của endpoint nhảy từ 45 ms lên **4,2 giây**, CPU RDS từ 22% lên 88%. DBA chạy EXPLAIN ANALYZE trên production và thấy **Index Scan đọc 200.100 dòng chỉ để trả 100 dòng**. Index {{idx_account_transaction_account_created}} (btree trên (account_id, created_at DESC, id)) đã tồn tại nhưng planner vẫn phải duyệt qua 200.000 entry trước khi lấy 100 dòng cần thiết.
+
+**Điều đã thử, không ăn.** Tăng {{work_mem}} lên 256 MB (không giảm được số dòng phải đọc), tạo read-replica cho báo cáo (vẫn phải OFFSET trên replica), cache trang đầu (không giúp trang sâu).
+
+**Việc bạn có.** Ba artifact: EXPLAIN ANALYZE của câu OFFSET, schema + index, và log ứng dụng. Hãy chỉ ra vì sao OFFSET tốn kém, và sửa bằng keyset pagination + index phù hợp.`,
+  artifacts: [
+    {
+      name: 'explain-offset.txt',
+      lang: 'text',
+      content: `-- 2026-03-20 10:15:41 +07, psql trên RDS finbank-primary (PostgreSQL 15.6)
+finbank=# EXPLAIN (ANALYZE, BUFFERS)
+SELECT id, account_id, amount, type, created_at, balance_after
+FROM account_transaction
+WHERE account_id = 88412
+ORDER BY created_at DESC, id DESC
+LIMIT 100 OFFSET 200000;
+                                                          QUERY PLAN
+------------------------------------------------------------------------------------------------------------------------------
+ Limit  (cost=14821.56..14821.78 rows=100 width=64) (actual time=4182.331..4182.358 rows=100 loops=1)
+   ->  Index Scan using idx_account_transaction_account_created on account_transaction
+         (cost=0.57..17320.45 rows=230140 width=64) (actual time=0.041..4178.212 rows=200100 loops=1)
+               Index Cond: (account_id = 88412)
+               Buffers: shared hit=184521 read=1243
+ Planning Time: 0.284 ms
+ Execution Time: 4183.401 ms
+(7 rows)
+
+Time: 4183.712 ms
+
+-- So sánh: cùng điều kiện, trang đầu (OFFSET 0):
+finbank=# EXPLAIN (ANALYZE, BUFFERS)
+SELECT id, account_id, amount, type, created_at, balance_after
+FROM account_transaction
+WHERE account_id = 88412
+ORDER BY created_at DESC, id DESC
+LIMIT 100;
+                                                          QUERY PLAN
+------------------------------------------------------------------------------------------------------------------------------
+ Limit  (cost=0.57..148.21 rows=100 width=64) (actual time=0.031..0.412 rows=100 loops=1)
+   ->  Index Scan using idx_account_transaction_account_created on account_transaction
+         (cost=0.57..17320.45 rows=230140 width=64) (actual time=0.029..0.398 rows=100 loops=1)
+               Index Cond: (account_id = 88412)
+               Buffers: shared hit=184 read=2
+ Planning Time: 0.241 ms
+ Execution Time: 0.471 ms
+(7 rows)
+
+Time: 0.782 ms`,
+    },
+    {
+      name: 'schema-and-index.txt',
+      lang: 'text',
+      content: `-- 2026-03-20 10:16:02 +07
+finbank=# \\d+ account_transaction
+                                          Table "public.account_transaction"
+   Column        |           Type           | Collation | Nullable |      Default
+----------------+--------------------------+-----------+----------+-------------------
+ id             | bigint                   |           | not null | nextval('...')
+ account_id     | bigint                   |           | not null |
+ amount         | numeric(18,2)            |           | not null |
+ type           | character varying(16)    |           | not null |
+ created_at     | timestamp with time zone |           | not null | now()
+ balance_after  | numeric(18,2)            |           | not null |
+ description    | character varying(256)   |           |          |
+Indexes:
+     "idx_account_transaction_account_created" btree (account_id, created_at DESC, id)
+     "account_transaction_pkey" PRIMARY KEY, btree (id)
+
+finbank=# SELECT reltuples::bigint AS est_rows,
+             pg_size_pretty(pg_total_relation_size('account_transaction')) AS total_size,
+             pg_size_pretty(pg_relation_size('account_transaction')) AS heap_only
+FROM pg_class WHERE relname = 'account_transaction';
+  est_rows | total_size | heap_only
+----------+------------+-----------
+ 62418904 | 22140 MB   | 14023 MB
+
+finbank=# SELECT count(*) FROM account_transaction WHERE account_id = 88412;
+  count
+-------
+ 35420
+-- Tài khoản 88412 là doanh nghiệp lớn: 35.420 giao dịch. Trang 2000 (OFFSET 200.000) vượt tổng số dòng!`,
+    },
+    {
+      name: 'app-transaction-history.log',
+      lang: 'text',
+      content: `2026-03-20 10:15:42.118 DEBUG [http-nio-8080-exec-14] o.h.SQL :
+    select at1_0.id,at1_0.account_id,at1_0.amount,at1_0.type,at1_0.created_at,at1_0.balance_after
+    from account_transaction at1_0
+    where at1_0.account_id=?
+    order by at1_0.created_at desc, at1_0.id desc
+    limit ? offset ?
+2026-03-20 10:15:46.301 INFO  [http-nio-8080-exec-14] c.f.t.TransactionController :
+    GET /api/v1/accounts/88412/transactions?page=2000&size=100 -> 200 in 4188 ms
+2026-03-20 10:15:46.552 DEBUG [http-nio-8080-exec-7] o.h.SQL : (cùng câu, page=2001)
+2026-03-20 10:15:50.741 INFO  [http-nio-8080-exec-7] c.f.t.TransactionController :
+    GET /api/v1/accounts/88412/transactions?page=2001&size=100 -> 200 in 4189 ms
+-- pattern: mỗi request trang sâu mất ~4,2 giây, CPU RDS 88%`,
+    },
+  ],
+  questions: [
+    'Vì sao câu OFFSET 200000 LIMIT 100 đọc 200.100 dòng index entry chỉ để trả 100 dòng? Chỉ ra bằng dòng nào trong EXPLAIN.',
+    'So sánh với OFFSET 0 (0,47 ms): chênh lệch 4183/0,47 ≈ 8.900 lần. Tại sao OFFSET không thể "nhảy" thẳng đến vị trí?',
+    'Bạn sửa API này thế nào cho trang sâu cũng dưới 50 ms? Giải thích keyset pagination (WHERE (created_at, id) < (:lastCreatedAt, :lastId)) và vì sao index (account_id, created_at DESC, id) phù hợp.',
+  ],
+  hints: [
+    'Đọc dòng "actual time=0.041..4178.212 rows=200100 loops=1": Index Scan phải duyệt 200.100 entry (200.000 OFFSET + 100 LIMIT) rồi vứt 200.000 dòng đầu.',
+    'PostgreSQL không hỗ trợ "seek" trong index — OFFSET luôn phải đọc rồi bỏ. Với keyset pagination, điều kiện WHERE (created_at, id) < (:lastCreatedAt, :lastId) cho phép planner "nhảy" thẳng tới vị trí cuối trang trước.',
+    'Index (account_id, created_at DESC, id) khớp ORDER BY created_at DESC, id DESC và điều kiện WHERE trên account_id + cặp (created_at, id).',
+  ],
+  answer: `**Tóm tắt:** Endpoint dùng OFFSET 200.000 khiến PostgreSQL phải **duyệt qua 200.100 entry index** (Index Scan trên {{idx_account_transaction_account_created}}) rồi vứt 200.000 dòng đầu — mất 4,2 giây. Trang đầu (OFFSET 0) chỉ 0,47 ms vì đọc đúng 100 dòng. Sửa bằng **keyset pagination**: client truyền {{lastCreatedAt}} và {{lastId}} của dòng cuối trang trước, server chạy {{WHERE account_id = ? AND (created_at, id) < (:lastCreatedAt, :lastId) ORDER BY created_at DESC, id DESC LIMIT 100}} — planner dùng index để **nhảy thẳng** tới vị trí, không đọc dòng thừa.
+
+### Vì sao OFFSET tốn kém (giải thích từ gốc)
+**OFFSET** trong PostgreSQL hoạt động như sau: planner chạy câu query bình thường, nhận được các dòng theo thứ tự ORDER BY, **bỏ qua N dòng đầu** (N = OFFSET), rồi trả M dòng tiếp theo (M = LIMIT). Cơ chế này **luôn phải đọc N + M dòng** từ index/bảng — không có cách nào "nhảy" thẳng đến dòng thứ N+1 vì B-tree không lưu số thứ tự dòng (rank).
+
+| Trang | OFFSET | Dòng index phải đọc | Thời gian |
+|---|---|---|---|
+| 1 (trang đầu) | 0 | 100 | 0,47 ms |
+| 2.000 | 200.000 | 200.100 | 4.183 ms |
+| 10.000 | 1.000.000 | 1.000.100 | ~20 giây (dự kiến) |
+
+Chi phí tăng **tuyến tính theo OFFSET**. Lưu ý: artifact 2 cho thấy tài khoản 88412 chỉ có 35.420 giao dịch, OFFSET 200.000 vượt tổng số dòng — planner vẫn phải duyệt hết 35.420 entry index (thực tế ít hơn 200.100 do dữ liệu ít hơn ước lượng statistics) rồi trả về rỗng. EXPLAIN ANALYZE báo actual rows=200100 vì statistics ước lượng 230.140 dòng cho account_id này, nhưng thực tế chỉ có 35.420.
+
+### Dẫn chứng
+- Artifact 1, câu OFFSET 200000: **"actual time=0.041..4178.212 rows=200100 loops=1"** — Index Scan duyệt 200.100 entry (theo ước lượng statistics), **Buffers: shared hit=184521 read=1243** (gần 186 nghìn page, ~1,4 GB dữ liệu đọc từ RAM). **Execution Time: 4183.401 ms**.
+- Artifact 1, câu OFFSET 0: **"actual time=0.029..0.398 rows=100 loops=1"** — chỉ đọc 100 entry, **Buffers: shared hit=184 read=2**, **Execution Time: 0.471 ms**.
+- Chênh lệch **4183/0,47 ≈ 8.900 lần** chỉ do OFFSET. Index đã đúng, ORDER BY đã khớp index — vấn đề không phải index kém mà là cơ chế OFFSET.
+- Artifact 2: tài khoản 88412 chỉ có **35.420 giao dịch**, OFFSET 200.000 vô nghĩa (trả rỗng) nhưng planner vẫn phải duyệt index range theo ước lượng statistics.
+- Artifact 3: log ứng dụng mỗi request trang sâu ~4,2 giây, CPU RDS 88%.
+
+### Keyset pagination (cursor-based pagination) — cách hoạt động
+Thay vì dùng {{OFFSET}}, client ghi nhớ **con trỏ (cursor)** của dòng cuối trang hiện tại: cặp giá trị {{(created_at, id)}}. Lần sau client truyền cursor này lên, server thêm điều kiện:
+
+~~~sql
+SELECT id, account_id, amount, type, created_at, balance_after
+FROM account_transaction
+WHERE account_id = 88412
+  AND (created_at, id) < (:lastCreatedAt, :lastId)   -- "nhỏ hơn" theo thứ tự DESC
+ORDER BY created_at DESC, id DESC
+LIMIT 100;
+~~~
+
+PostgreSQL so sánh **tuple comparison** theo thứ tự từ trái sang phải: trước so sánh {{created_at}}, nếu bằng mới so {{id}}. Điều kiện {{(created_at, id) < (A, B)}} nghĩa là "created_at < A HOẶC (created_at = A VÀ id < B)" — chính xác là "dòng đứng sau (A, B) theo thứ tự DESC".
+
+Với index {{(account_id, created_at DESC, id)}}, planner dùng **Index Cond** trên cả ba cột: {{account_id = 88412}} + {{(created_at, id) < (...)}} → **nhảy thẳng** đến vị trí cursor, đọc đúng 100 dòng tiếp theo. Không đọc dòng thừa, chi phí **không phụ thuộc vào trang**.
+
+### Cách sửa
+**Ngắn hạn (hôm nay):**
+- Thêm endpoint mới dùng keyset pagination:
+~~~text
+GET /api/v1/accounts/{accountId}/transactions?cursor=...&size=100
+~~~
+- FE: nút "Trang sau" truyền cursor={{lastCreatedAt}}:{{lastId}}; nút "Trang trước" cần lưu cursor đầu trang hiện tại (hoặc dùng OFFSET cho trang trước gần — chấp nhận được vì OFFSET nhỏ).
+- Giữ endpoint cũ cho tương thích nhưng ghi log cảnh báo khi {{page * size > 10000}}.
+
+**Dài hạn:**
+- Loại bỏ OFFSET hoàn toàn cho API danh sách có phân trang sâu. Keyset pagination là chuẩn cho feed, lịch sử, log.
+- Nếu cần "nhảy tới trang N": ước lượng vị trí bằng {{COUNT(*) WHERE account_id = ? AND created_at < :mid}} rồi binary search cursor — phức tạp, hiếm khi cần thiết.
+- Index {{(account_id, created_at DESC, id)}} đã đúng. Nếu ORDER BY khác, điều chỉnh index khớp ORDER BY (cột equality trước, cột sort sau).
+
+### So sánh OFFSET vs Keyset
+| Tiêu chí | OFFSET | Keyset (cursor) |
+|---|---|---|
+| Độ phức tạp client | Thấp (page, size) | Cao hơn (lưu cursor, xử lý prev/next) |
+| Hiệu năng trang sâu | Tệ (O(N)) | Tốt (O(1) đọc index) |
+| Hỗ trợ "nhảy trang" | Có | Khó (cần binary search hoặc ước lượng) |
+| Dữ liệu thay đổi giữa 2 trang | Dòng bị lặp/lỡ | Không lặp/lỡ (cursor gắn liền dữ liệu) |
+| Tương thích SQL chuẩn | Có | Cần tuple comparison (PostgreSQL, MySQL 8+, SQL Server) |
+
+### Lỗi hay gặp
+- Dùng {{WHERE created_at < :lastCreatedAt}} (quên {{id}}) → khi nhiều giao dịch cùng mili-giây, cursor không xác định được vị trí duy nhất, dòng bị lặp hoặc lỡ.
+- Sai hướng so sánh: ORDER BY DESC thì dùng {{<}}, ORDER BY ASC thì dùng {{>}}.
+- Index không khớp ORDER BY: nếu ORDER BY created_at DESC, id DESC mà index là (account_id, created_at ASC, id) → planner không dùng index cho sort, phải filesort.
+- Không {{ANALYZE}} sau khi tạo index → planner có thể chọn Seq Scan cho tài khoản nhỏ.
+
+### Sơ đồ luồng
+~~~seq
+title: Keyset pagination: client lưu cursor, server nhảy thẳng
+actors: Client | transaction-history | PostgreSQL
+Client -> transaction-history: GET /transactions?size=100 (trang đầu)
+transaction-history -> PostgreSQL: WHERE account_id=88412 ORDER BY created_at DESC, id DESC LIMIT 100
+PostgreSQL --> transaction-history: 100 dòng, cursor = (created_at_100, id_100)
+transaction-history --> Client: data + cursor
+Client -> transaction-history: GET /transactions?cursor=created_at_100:id_100&size=100
+transaction-history -> PostgreSQL: WHERE account_id=88412 AND (created_at,id) < (cursor) ORDER BY ... LIMIT 100
+PostgreSQL --> transaction-history: Index Scan nhảy thẳng, 100 dòng, 0,5 ms
+transaction-history --> Client: data + cursor mới
+~~~
+
+### Trả lời mẫu khi phỏng vấn
+"Endpoint lịch sử giao dịch dùng OFFSET 200.000. PostgreSQL không có seek trong index — OFFSET phải đọc 200.100 entry rồi vứt 200.000, mất 4,2 giây. Trang đầu chỉ 0,47 ms. Tôi đổi sang keyset pagination: client truyền cursor (created_at, id) của dòng cuối trang trước, server chạy WHERE account_id = ? AND (created_at, id) < (:cursor) ORDER BY created_at DESC, id DESC LIMIT 100. Index (account_id, created_at DESC, id) khớp ORDER BY và điều kiện cursor → planner nhảy thẳng, đọc đúng 100 dòng, mọi trang dưới 50 ms. Lưu ý phải có cả id trong cursor để xử lý trùng created_at."
+
+> Senior tip: **OFFSET là kẻ thù số 1 của hiệu năng phân trang sâu**. Mọi hệ thống có feed, lịch sử, log với khả năng người dùng lướt sâu đều phải dùng keyset pagination từ ngày 1. Chi phí OFFSET tăng tuyến tính — trang 10.000 có thể tốn 20 giây trong khi keyset vẫn 0,5 ms. Và nhớ: cursor **phải đủ duy nhất** — nếu ORDER BY có cột có thể trùng giá trị (như created_at), hãy thêm PK vào cursor. Index phải khớp ORDER BY theo thứ tự: equality columns trước, sort columns sau.`,
+  rubric: [
+    'Chỉ đúng nguyên nhân: OFFSET 200.000 buộc Index Scan đọc 200.100 entry rồi vứt 200.000, chi phí tuyến tính theo OFFSET',
+    'Dẫn chứng đúng: actual rows=200100 vs 100, Buffers 184521 vs 184, Execution Time 4183 ms vs 0,47 ms',
+    'Giải thích đúng cơ chế OFFSET (không seek, phải đọc rồi bỏ) và keyset pagination (tuple comparison trên index)',
+    'Đề xuất sửa đúng: keyset pagination với cursor (created_at, id), index (account_id, created_at DESC, id) khớp ORDER BY, so sánh OFFSET vs keyset',
+    'Nêu lỗi hay gặp: quên id trong cursor, sai hướng so sánh, index không khớp ORDER BY',
+  ],
+  tags: ['postgresql', 'pagination', 'offset', 'keyset', 'cursor', 'index', 'explain'],
+},
+{
+  id: 'lab-sql-031',
+  category: 'sql',
+  title: 'Xoá khách hàng thiếu index FK trên bảng con: RowExclusiveLock chặn 1.200 INSERT/giây',
+  level: 'senior',
+  scenario: `**Bối cảnh.** Sàn thương mại điện tử MegaMart chạy service {{customer-service}} (Spring Boot 3.3, Hibernate 6.4, PostgreSQL 15.6 trên RDS, 8 vCPU / 64 GB RAM). Bảng {{customers}} lưu 2.400.000 khách hàng. Bảng {{orders}} lưu 48.752.110 đơn hàng, có cột {{customer_id}} tham chiếu {{customers.id}} — **FK đã khai báo ở DB** nhưng **thiếu index trên customer_id**. Giờ cao điểm 10:00–12:00 hệ thống xử lý **1.200 INSERT đơn/giây**.
+
+**Triệu chứng (21/03/2026, 10:45).** Một admin xoá 1 khách hàng test qua {{DELETE FROM customers WHERE id = 998877}} (chạy trong psql). Trong lúc câu DELETE chạy (~2 giây), **toàn bộ API tạo đơn hàng bị treo**: p95 nhảy từ 18 ms lên **2.1 giây**, CPU RDS từ 28% lên 92%. {{pg_stat_activity}} cho thấy 1.200 backend đang chờ {{wait_event_type = Lock}}, {{wait_event = relation}} trên bảng {{orders}}.
+
+**Việc bạn có.** Ba artifact: EXPLAIN ANALYZE của DELETE, snapshot {{pg_locks}}, và log ứng dụng. Hãy tìm nguyên nhân gốc, giải thích cơ chế RowExclusiveLock khi FK thiếu index, và cách sửa (tạo index CONCURRENTLY + FK NOT VALID).`,
+  artifacts: [
+    {
+      name: 'explain-delete-customer.txt',
+      lang: 'text',
+      content: `-- 2026-03-21 10:45:12 +07, psql trên RDS megamart-primary (PostgreSQL 15.6)
+megamart=# EXPLAIN (ANALYZE, BUFFERS)
+DELETE FROM customers WHERE id = 998877;
+                                                            QUERY PLAN
+---------------------------------------------------------------------------------------------------
+ Delete on customers  (cost=0.29..8.31 rows=1 width=6) (actual time=1842.331..1842.334 rows=1 loops=1)
+   ->  Index Scan using customers_pkey on customers  (cost=0.29..8.31 rows=1 width=6) (actual time=0.021..0.024 rows=1 loops=1)
+         Index Cond: (id = 998877)
+ Planning Time: 0.284 ms
+ Execution Time: 1843.401 ms
+(5 rows)
+
+Time: 1843.712 ms
+
+-- Ghi chú: không có Seq Scan trên orders trong plan (kiểm tra FK chạy qua trigger RI ẩn), NHƯNG execution time 1.842 giây cho thấy điều gì đó chặn ở mức lock.
+-- Thử chạy lại khi không có traffic: 0,8 ms.`,
+    },
+    {
+      name: 'pg-locks-delete.txt',
+      lang: 'text',
+      content: `-- 2026-03-21 10:45:13 +07 (khi DELETE đang chạy)
+megamart=# SELECT l.locktype, l.mode, l.granted, count(*) AS n, a.state
+FROM pg_locks l JOIN pg_stat_activity a ON a.pid = l.pid
+WHERE l.relation IN ('customers'::regclass, 'orders'::regclass)
+GROUP BY l.locktype, l.mode, l.granted, a.state ORDER BY n DESC;
+
+-- Trên bảng customers:
+  locktype |       mode        | granted |  n  | state
+-----------+-------------------+---------+-----+--------
+ relation  | RowExclusiveLock  | t       |   1 | active (DELETE)
+
+-- Trên bảng orders (FK đã khai báo, KHÔNG CÓ INDEX trên customer_id):
+  locktype |       mode        | granted |  n  | state
+-----------+-------------------+---------+-----+--------
+ relation  | RowExclusiveLock  | t       |   1 | active (DELETE customers)
+ relation  | AccessShareLock   | f       | 1200| active (INSERT orders)
+ relation  | RowExclusiveLock  | f       | 1200| active (INSERT orders)
+
+-- DELETE customers đang giữ RowExclusiveLock trên CẢ HAI BẢNG customers VÀ orders.
+-- 1.200 INSERT orders xin AccessShareLock + RowExclusiveLock trên orders bị CHỜ (granted = f).
+
+megamart=# SELECT pid, pg_blocking_pids(pid) AS blocked_by
+FROM pg_stat_activity
+WHERE wait_event_type = 'Lock' AND datname = 'megamart'
+ORDER BY pid LIMIT 3;
+  pid  | blocked_by
+-------+------------
+ 51423 | {41210}
+ 51424 | {41210}
+ 51425 | {41210}
+-- pid 41210 chính là session DELETE customers. Tất cả 1.200 INSERT orders bị nó chặn.`,
+    },
+    {
+      name: 'app-orders-stuck.log',
+      lang: 'text',
+      content: `2026-03-21 10:45:12.118 DEBUG [http-nio-8080-exec-14] o.h.SQL :
+    insert into orders (id, customer_id, total_amount, status, created_at) values (?,?,?,?,?)
+2026-03-21 10:45:13.961 WARN  [http-nio-8080-exec-14] c.z.h.pool.HikariPool :
+    MegaMart-HikariPool-1 - Connection is not available, request timed out after 3000ms.
+2026-03-21 10:45:13.962 ERROR [http-nio-8080-exec-14] c.m.o.OrderController :
+    POST /api/v1/orders -> 504 in 2145 ms
+-- pattern: 1.200 INSERT/giây, mỗi cái chờ ~2 giây thì timeout, pool cạn, CPU 92%`,
+    },
+  ],
+  questions: [
+    'Vì sao DELETE trên bảng customers (chỉ 1 dòng) lại chặn 1.200 INSERT trên bảng orders? FK đã khai báo nhưng thiếu index trên customer_id — planner bắt buộc Seq Scan toàn bảng child.',
+    'Giải thích cơ chế: PostgreSQL khi DELETE parent row phải kiểm tra child table có row tham chiếu không (trigger RI). Nếu child table KHÔNG CÓ index trên cột FK, planner buộc phải Seq Scan toàn bảng child → trong lúc scan, nó lấy RowExclusiveLock trên child table (relation-level) → chặn mọi INSERT/UPDATE/DELETE trên child table.',
+    'Bạn sửa thế nào để không chặn ghi đơn hàng? Trình bày: (1) tạo index CONCURRENTLY trên orders.customer_id, (2) FK đã có sẵn, sau khi index xong planner dùng Index Scan, (3) nếu chưa có FK thì thêm FK NOT VALID + VALIDATE CONSTRAINT. Giải thích vì sao index giúp planner dùng Index Scan thay vì Seq Scan, từ đó không cần lock toàn bảng child.',
+  ],
+  hints: [
+    'Đọc pg_locks: DELETE customers giữ RowExclusiveLock trên orders (n = 1). 1.200 INSERT orders xin AccessShareLock/RowExclusiveLock trên orders bị granted = f. pg_blocking_pids trỏ về pid DELETE.',
+    'PostgreSQL rule: DELETE/UPDATE trên parent table cần kiểm tra FK (qua trigger RI). Nếu child table có index trên cột FK → Index Scan (nhanh, lock tuple-level). Nếu KHÔNG CÓ index → Seq Scan toàn bảng child, giữ RowExclusiveLock trên relation (toàn bảng) suốt quá trình scan.',
+    'Index CONCURRENTLY không chặn ghi. Nếu chưa có FK: ADD CONSTRAINT NOT VALID không quét dữ liệu cũ. VALIDATE CONSTRAINT dùng ShareUpdateExclusiveLock (không chặn INSERT/UPDATE/DELETE).',
+  ],
+  answer: `**Tóm tắt:** Admin chạy {{DELETE FROM customers WHERE id = 998877}}. Bảng {{orders}} có cột {{customer_id}} tham chiếu {{customers.id}} — **FK đã khai báo ở DB** nhưng **thiếu index** trên {{customer_id}}. PostgreSQL khi DELETE parent row **bắt buộc phải kiểm tra** child table không có row tham chiếu (thông qua trigger RI nội bộ). Vì {{orders}} không có index trên {{customer_id}}, planner dùng **Seq Scan toàn bảng 48.752.110 dòng** để kiểm tra — trong lúc scan, nó giữ **RowExclusiveLock trên bảng orders** (relation-level) → 1.200 INSERT/giây bị chờ lock, pool cạn, API tạo đơn trả 504 trong 2 giây. Sửa: tạo index {{CONCURRENTLY}} trên {{orders.customer_id}}.
+
+### Kiến thức nền: FK và lock trên child table
+Khi bạn chạy {{DELETE}} hoặc {{UPDATE khóa chính}} trên bảng parent ({{customers}}), PostgreSQL **phải đảm bảo tính toàn vẹn tham chiếu**: không được để child table ({{orders}}) chứa row trỏ đến parent row đã xoá/sửa. Việc kiểm tra này diễn ra **tự động thông qua trigger RI (Referential Integrity)** — trigger này được tạo ngầm khi bạn khai báo {{FOREIGN KEY}}.
+
+**Quy tắc lock khi kiểm tra FK:**
+- Child table **CÓ index** trên cột FK: planner dùng **Index Scan** (chỉ đọc các entry khớp), lock **chỉ các dòng liên quan** (tuple lock), thời gian cực ngắn → không chặn ghi khác.
+- Child table **KHÔNG CÓ index** trên cột FK: planner dùng **Seq Scan toàn bảng**, phải đọc mọi dòng → giữ **RowExclusiveLock trên relation (toàn bảng)** suốt quá trình scan → **chặn mọi INSERT/UPDATE/DELETE** trên child table.
+
+### Nguyên nhân gốc, từng bước
+1. Admin chạy {{DELETE FROM customers WHERE id = 998877}}.
+2. PostgreSQL kích hoạt trigger RI trên {{orders}} để kiểm tra FK {{customer_id}} = 998877.
+3. Bảng {{orders}} **KHÔNG CÓ index** trên {{customer_id}} → planner chọn **Seq Scan**.
+4. Seq Scan đọc 48.752.110 dòng, trong lúc đó giữ **RowExclusiveLock trên bảng orders** (relation-level lock).
+5. 1.200 INSERT/giây vào {{orders}} xin {{AccessShareLock}} (cho INSERT) và {{RowExclusiveLock}} → bị chờ vì xung đột với RowExclusiveLock của DELETE.
+6. Mỗi INSERT chờ ~2 giây (thời gian Seq Scan), timeout Hikari 3 giây → 504, pool cạn.
+7. CPU 92%: 1.200 thread cùng chạy Seq Scan + overhead context switch + lock contention.
+
+### Dẫn chứng
+- Artifact 1: {{DELETE}} chỉ 1 dòng trên {{customers}} (Index Scan customers_pkey) nhưng **Execution Time: 1843.401 ms** — thời gian chủ yếu do Seq Scan {{orders}} ẩn trong trigger RI. Chạy lại không traffic: 0,8 ms (không chờ lock).
+- Artifact 2: {{pg_locks}}: DELETE (pid 41210) giữ {{RowExclusiveLock granted = t}} trên {{orders}} (n = 1). 1.200 INSERT xin {{AccessShareLock granted = f}} và {{RowExclusiveLock granted = f}} trên {{orders}} (n = 1200). {{pg_blocking_pids}} của các INSERT đều trả về **{41210}**.
+- Artifact 3: log ứng dụng INSERT orders chờ ~2 giây, timeout 3 giây → 504.
+
+### Cách sửa
+**Ngắn hạn (hôm nay):**
+- Tạo index CONCURRENTLY trên cột FK (không chặn ghi):
+~~~sql
+CREATE INDEX CONCURRENTLY idx_orders_customer_id ON orders (customer_id);
+~~~
+- Sau khi index xong, planner dùng Index Scan cho kiểm tra FK: chỉ đọc ~1 dòng (customer 998877 có ~20 đơn), lock tuple-level, DELETE xong trong < 10 ms.
+
+**Dài hạn:**
+- Đảm bảo mọi FK đều có index trên cột child. Nếu gặp FK chưa có index, tạo index CONCURRENTLY trước.
+- Nếu schema mới chưa có FK: thêm FK {{NOT VALID}} rồi {{VALIDATE CONSTRAINT}}:
+~~~sql
+ALTER TABLE orders ADD CONSTRAINT fk_orders_customer
+  FOREIGN KEY (customer_id) REFERENCES customers(id) NOT VALID;
+ALTER TABLE orders VALIDATE CONSTRAINT fk_orders_customer;
+~~~
+- {{NOT VALID}}: thêm ràng buộc cho INSERT/UPDATE mới, **không quét 48.7 triệu dòng cũ** (lock cực ngắn).
+- {{VALIDATE CONSTRAINT}}: quét dữ liệu cũ để kiểm tra, nhưng chỉ cần **ShareUpdateExclusiveLock** — **không chặn INSERT/UPDATE/DELETE** trên {{orders}} (chỉ chặn DDL song song). Với index đã có, validate nhanh (Index Scan từng giá trị parent).
+
+### So sánh: có index vs không index khi DELETE parent
+| Tình huống | Planner | Lock trên child table | Thời gian DELETE parent | Ảnh hưởng ghi child |
+|---|---|---|---|---|
+| Không index FK | Seq Scan toàn bảng | RowExclusiveLock (relation) | Giây/phút (tỷ lệ với size child) | Chặn hoàn toàn INSERT/UPDATE/DELETE |
+| Có index FK | Index Scan (chỉ dòng khớp) | Tuple lock (chỉ dòng liên quan) | < 10 ms | **Không chặn** (chỉ dòng bị khoá tạm) |
+
+### Lỗi hay gặp
+- Tạo index {{CREATE INDEX ... ON orders (customer_id)}} **không CONCURRENTLY** trong giờ cao điểm → {{AccessExclusiveLock}} chặn ghi 1.200 INSERT/giây, tương tự sự cố.
+- Thêm FK **không NOT VALID** → {{ADD CONSTRAINT}} quét 48.7 triệu dòng, giữ {{ShareRowExclusiveLock}} (chặn ghi) trong nhiều phút.
+- Quên {{VALIDATE CONSTRAINT}} sau NOT VALID → dữ liệu cũ có thể vi phạm FK mà không biết.
+- Tạo index trên cột FK nhưng **không ANALYZE** → planner vẫn có thể chọn Seq Scan cho một số giá trị parent.
+
+### Sơ đồ luồng
+~~~seq
+title: DELETE parent chặn INSERT child do thiếu index FK
+actors: Admin | PostgreSQL | orders (child) | API tạo đơn
+Admin -> PostgreSQL: DELETE FROM customers WHERE id = 998877
+PostgreSQL -> PostgreSQL: trigger RI kiểm tra FK trên orders.customer_id
+note PostgreSQL: KHÔNG CÓ index → Seq Scan 48.7M dòng, giữ RowExclusiveLock trên orders
+API tạo đơn -> PostgreSQL: INSERT INTO orders ... (cần RowExclusiveLock)
+PostgreSQL --> API tạo đơn: CHỜ (bị RowExclusiveLock của DELETE chặn)
+Admin -> PostgreSQL: DELETE xong (sau ~2 giây), nhả lock
+API tạo đơn -> PostgreSQL: lock được cấp, INSERT chạy tiếp
+~~~
+
+### Trả lời mẫu khi phỏng vấn
+"Admin DELETE 1 khách hàng, API tạo đơn hàng bị treo 2 giây rồi timeout. pg_locks thấy DELETE giữ RowExclusiveLock trên bảng orders, 1.200 INSERT chờ lock. Nguyên nhân: orders có FK customer_id tham chiếu customers.id nhưng THIẾU INDEX. PostgreSQL kiểm tra FK khi DELETE parent: không index → Seq Scan toàn bảng 48.7 triệu dòng, giữ RowExclusiveLock trên cả bảng orders → chặn mọi INSERT. Tôi tạo index CONCURRENTLY trên orders.customer_id → planner dùng Index Scan, chỉ khóa vài dòng liên quan, DELETE xong < 10 ms, INSERT không bị chặn."
+
+> Senior tip: **Mọi cột khóa ngoại (FK) ở bảng con BẮT BUỘC có index**. Đây là quy tắc số 1 khi thiết kế schema quan hệ. Không index = Seq Scan khi parent DELETE/UPDATE = chặn toàn bộ ghi trên bảng con = sự cố production. Index CONCURRENTLY tạo không chặn ghi, chi phí nhỏ, hiệu quả to. Và khi thêm FK trên bảng lớn: LUÔN dùng NOT VALID + VALIDATE CONSTRAINT riêng — nó tách "thêm quy tắc cho dữ liệu mới" (nhanh, lock nhẹ) và "kiểm tra dữ liệu cũ" (chậm, lock ShareUpdateExclusiveLock, không chặn ghi).`,
+  rubric: [
+    'Chỉ đúng nguyên nhân: DELETE parent buộc kiểm tra child table, thiếu index trên cột FK → Seq Scan toàn bảng 48.7M dòng → giữ RowExclusiveLock relation-level → chặn 1.200 INSERT/giây',
+    'Dẫn chứng đúng: pg_locks RowExclusiveLock granted=t trên orders (DELETE), AccessShareLock/RowExclusiveLock granted=f n=1200 (INSERT), pg_blocking_pids trỏ về pid DELETE, Execution Time 1843 ms',
+    'Giải thích đúng cơ chế: có index → Index Scan + tuple lock (không chặn ghi); không index → Seq Scan + relation lock (chặn ghi)',
+    'Đề xuất sửa đúng: CREATE INDEX CONCURRENTLY trên child FK (FK đã có sẵn), hoặc ADD CONSTRAINT NOT VALID + VALIDATE CONSTRAINT nếu chưa có FK',
+    'Nêu lỗi hay gặp: tạo index không CONCURRENTLY, FK không NOT VALID, quên VALIDATE, quên ANALYZE',
+  ],
+  tags: ['postgresql', 'foreign-key', 'index', 'lock', 'delete', 'concurrently', 'not-valid', 'validate-constraint'],
+},
 );
 
