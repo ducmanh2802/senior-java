@@ -770,6 +770,86 @@
       '</a>').join('') + '</section>';
   }
 
+  // ---------- JD focus mode (T2488) ----------
+  function jdWeeks() {
+    const out = [];
+    if (!window.JD_PLAN) return out;
+    (window.JD_PLAN.phases || []).forEach(p => (p.weeks || []).forEach(w => out.push(Object.assign({ phase: p.name }, w))));
+    return out;
+  }
+  function jdStartTs() {
+    const r = App.store.data.roadmap || {};
+    const s = r.jdStart;
+    if (s == null || s === '') return null;
+    if (typeof s === 'number') return s;
+    if (typeof s === 'string') { if (/^\\d+$/.test(s)) return Number(s); const t = Date.parse(s); return isNaN(t) ? null : t; }
+    return null;
+  }
+  function jdWeekNum() {
+    const s = jdStartTs();
+    const weeks = jdWeeks();
+    if (!weeks.length || !s) return 1;
+    return Math.max(1, Math.min(weeks.length, Math.floor((App.startOfDay(Date.now()) - App.startOfDay(s)) / (7 * 86400000)) + 1));
+  }
+  function focusModeOn() {
+    const d = App.store.data;
+    if (typeof d.focusMode === 'boolean') return d.focusMode;
+    return (d.roadmap || {}).plan === 'jd';
+  }
+  function startJdPlan() {
+    const r = App.store.data.roadmap || (App.store.data.roadmap = { start: null, done: {} });
+    r.plan = 'jd';
+    if (r.jdStart == null) r.jdStart = App.startOfDay(Date.now());
+    App.store.data.focusMode = true;
+    App.store.save();
+    App.route();
+  }
+  function focusCardHtml() {
+    const r = App.store.data.roadmap || {};
+    const planJd = r.plan === 'jd' && window.JD_PLAN;
+    if (!planJd) {
+      return '<section class="card db-focus">' +
+        '<h2>Hôm nay học gì? (lộ trình theo JD, 20 tuần)</h2>' +
+        '<p class="db-dim small">Bật chế độ tập trung theo JD để biết mỗi ngày chỉ cần làm 3 việc.</p>' +
+        '<button type="button" class="btn primary" data-start-jd>Bắt đầu lộ trình theo JD (20 tuần)</button>' +
+      '</section>';
+    }
+    const num = jdWeekNum();
+    const weeks = jdWeeks();
+    const w = weeks[num - 1] || {};
+    const title = w.title || '';
+    const topics = Array.isArray(w.topics) ? w.topics : [];
+    const topic0 = topics[0];
+    const dayKey = App.dayKey(Date.now());
+    const done = (App.store.data.focusDone && App.store.data.focusDone[dayKey]) || {};
+    const due = App.dueItems().filter(x => String(x.id).indexOf('algo-') !== 0).slice(0, 10);
+    const task1Href = due.length ? '#/flash/due' : (topic0 ? '#/flash/' + encodeURIComponent(topic0) : '#/flash');
+    const task1Label = due.length ? 'Ôn 10 câu đến hạn' : 'Học 5 câu mới';
+    // lesson first not done in topic0
+    const lessons = App.lite('lessons').filter(l => l.track === topic0);
+    const lesson = lessons.find(l => App.store.getStatus(l.id) !== 'known') || lessons[0];
+    const task2Href = lesson ? '#/learn/' + encodeURIComponent(lesson.id) : (topic0 ? '#/bank/' + encodeURIComponent(topic0) : '#/bank');
+    const task2Label = lesson ? 'Học 1 bài: ' + lesson.title : 'Xem chủ đề tuần';
+    const isWeekend = (new Date().getDay() === 0 || new Date().getDay() === 6);
+    const task3Href = isWeekend ? '#/mock' : '#/algo';
+    const task3Label = isWeekend ? '1 buổi phỏng vấn thử' : '1 bài thuật toán';
+    const tasks = [
+      { key: 't1', label: task1Label, href: task1Href },
+      { key: 't2', label: task2Label, href: task2Href },
+      { key: 't3', label: task3Label, href: task3Href },
+    ];
+    const doneCount = tasks.filter(t => done[t.key]).length;
+    const rows = tasks.map(t => '<li class="db-focus-task' + (done[t.key] ? ' is-done' : '') + '">' +
+      '<label><input type="checkbox" data-focus-done="' + t.key + '"' + (done[t.key] ? ' checked' : '') + '> ' + App.esc(t.label) + '</label>' +
+      '<a class="btn sm" href="' + App.esc(t.href) + '">Mở</a></li>').join('');
+    return '<section class="card db-focus">' +
+      '<div class="db-focus-head"><h2>Hôm nay — Tuần ' + num + '/20 — ' + App.esc(title) + '</h2>' +
+        '<span class="badge ' + (doneCount === 3 ? 'ok' : 'accent') + '">' + doneCount + '/3 ✓ Xong hôm nay</span></div>' +
+      '<ul class="db-focus-list">' + rows + '</ul>' +
+      '<p class="db-dim small"><a href="#/roadmap/jd">Xem lộ trình đầy đủ</a></p>' +
+    '</section>';
+  }
+
   App.registerView('dashboard', {
     get title() { return App.t('dash.title'); },
     render(root) {
@@ -791,14 +871,19 @@
           const details = (id, title, content) => '<details class="dash-more" data-id="' + id + '" ' + (dOpen(id) ? 'open' : '') + '>' +
               '<summary>' + App.esc(title) + '</summary><div data-lazy-content>' + (dOpen(id) ? content : '') + '</div></details>';
           
-          body = '<header class="db-compact-header">' + heroHtml(st, editing) + metricsHtml(st) + '</header>' +
-                 jobCardHtml() +
-                 missionHtml(pomo) +
-                 coreHtml() +
-                 details('week', tr('more.week'), weekHtml()) +
-                 details('plan', tr('more.plan'), careerHtml(editingCareer)) +
-                 details('topics', tr('more.topics'), sectionsHtml()) +
-                 details('history', tr('more.history'), bottomHtml());
+          body = '<section class="db-focusbar">' +
+            '<button type="button" class="btn sm" data-focus-toggle>' + (focusModeOn() ? 'Chỉ hiện việc hôm nay: BẬT' : 'Chỉ hiện việc hôm nay: TẮT') + ' <kbd>f</kbd></button>' +
+          '</section>' +
+          focusCardHtml() +
+          (focusModeOn() ? '' :
+           ('<header class="db-compact-header">' + heroHtml(st, editing) + metricsHtml(st) + '</header>' +
+            jobCardHtml() +
+            missionHtml(pomo) +
+            coreHtml() +
+            details('week', tr('more.week'), weekHtml()) +
+            details('plan', tr('more.plan'), careerHtml(editingCareer)) +
+            details('topics', tr('more.topics'), sectionsHtml()) +
+            details('history', tr('more.history'), bottomHtml())));
           
           loadErr = null;
         } catch (e) {
@@ -838,6 +923,11 @@
           const next = root.querySelector('.db-task.is-next .btn');
           if (next) next.click();
         }
+        if (e.key === 'f' || e.key === 'F') {
+          App.store.data.focusMode = !focusModeOn();
+          App.store.save();
+          paint();
+        }
       });
 
       const onSubmit = e => {
@@ -872,7 +962,18 @@
           refreshMission();
           return;
         }
-        const cb = e.target.closest('[data-plan-done]');
+        const cb2 = e.target.closest('[data-focus-done]');
+        if (cb2) {
+          const key = cb2.getAttribute('data-focus-done');
+          const dayKey = App.dayKey(Date.now());
+          App.store.data.focusDone = App.store.data.focusDone || {};
+          App.store.data.focusDone[dayKey] = App.store.data.focusDone[dayKey] || {};
+          if (cb2.checked) App.store.data.focusDone[dayKey][key] = true; else delete App.store.data.focusDone[dayKey][key];
+          App.store.save();
+          const card = root.querySelector('.db-focus');
+          if (card) card.outerHTML = focusCardHtml();
+          return;
+        }
         if (!cb) return;
         const tp = ensurePlan(false), key = cb.getAttribute('data-plan-done');
         if (cb.checked) tp.done[key] = true; else delete tp.done[key];
@@ -901,7 +1002,13 @@
           refreshHero();
         }
         
-        const details = e.target.closest('.dash-more');
+        if (e.target.closest('[data-start-jd]')) { startJdPlan(); return; }
+        if (e.target.closest('[data-focus-toggle]')) {
+          App.store.data.focusMode = !focusModeOn();
+          App.store.save();
+          paint();
+          return;
+        }
         if (details) {
           const isOpen = details.open;
           localStorage.setItem('dash.open.' + details.dataset.id, !isOpen);
