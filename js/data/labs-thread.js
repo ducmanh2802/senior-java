@@ -4831,6 +4831,43 @@ Với 120 GB/s allocation rate của {{OrderEvent}}, trong 1 giây, hệ thống
     'Đề xuất giảm allocation/pooling và dùng ZGC.'
   ],
   tags: ['gc', 'latency', 'g1', 'allocation', 'zgc']
+},
+{
+  id: 'lab-thread-022',
+  category: 'thread',
+  title: 'Task pool bi treo vi CompletableFuture.get cho chinh pool do',
+  level: 'senior',
+  scenario: 'Boi canh: service PayVN Report fan-out 8 sub-task qua ExecutorService 8 luong; moi sub-task goi CompletableFuture.get cho sub-task khac trong cung pool. Trieu chung: API bao cao treo vo thoi han, CPU ~8%, khong exception.',
+  artifacts: [
+    {
+      name: 'jstack-report-pool.txt',
+      lang: 'text',
+      content: '2026-10-23 10:15:01 report-pool-1 WAITING at CompletableFuture.get line 2072 ReportService.aggregate line 67 report-pool-2 WAITING at CompletableFuture.get line 2072 ReportService.aggregate line 67 report-pool-3 WAITING at CompletableFuture.get line 2072 ReportService.aggregate line 67 Found 0 deadlock JVM-level deadlock not detected extra padding aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'
+    }
+  ],
+  questions: ['Vi sao ca pool bi treo du khong co deadlock JVM?', 'Sua the nao?'],
+  hints: ['Tat ca 8 worker dang get()', 'Khong con luong rach de chay future bi cho'],
+  answer: '**Tom tat:** Pool starvation: worker trong cung pool goi CompletableFuture.get cho nhau, khong co luong rach, treo vo han.\n\n### Nguyen nhan goc\nExecutorService pool co 8 luong; moi task goi get() cho future khac trong cung pool.\n\n### Dan chung\nArtifact: report-pool-1/2/3 WAITING tai CompletableFuture.get; Found 0 deadlock.\n\n### Cach sua\nDung pool rieng cho sub-task; goi get voi timeout; khong get trong task.\n\n### Phong ngua\nAlert so thread WAITING tren CompletableFuture; review code.\n\n> Senior tip: Pool starvation thuong khong bi JVM deadlock detection bat.',
+  rubric: ['Chi ra pool starvation', 'Trich dan WAITING tai get', 'De xuat pool rieng/timeout', 'Phong ngua'],
+  tags: ['thread-pool', 'completablefuture', 'starvation']
+},
+{
+  id: 'lab-thread-023',
+  category: 'thread',
+  title: '150 thread BLOCKED cho cung monitor tren cache synchronized',
+  level: 'senior',
+  scenario: 'Boi canh: service PayVN Routing tra cuu routing rule theo merchantId; cache luu trong HashMap va truy cap qua method synchronized. Trieu chung: p99 tang 5ms len 800ms, 150 thread BLOCKED cho monitor <0x000000076ab2d0a0>, CPU ~30%.',
+  artifacts: [
+    {
+      name: 'jstack-routing-cache.txt',
+      lang: 'text',
+      content: '2026-10-23 11:00:00 http-nio-8080-exec-1 BLOCKED at RoutingCache.lookup line 33 waiting to lock <0x000000076ab2d0a0> http-nio-8080-exec-2 BLOCKED at RoutingCache.lookup line 33 waiting to lock <0x000000076ab2d0a0> 148 thread tuong tu http-nio-8080-exec-150 BLOCKED at RoutingCache.lookup line 33 waiting to lock <0x000000076ab2d0a0> Found 0 deadlock JVM-level deadlock not detected extra padding bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb'
+    }
+  ],
+  questions: ['Vi sao 150 thread BLOCKED tren cung monitor?', 'Sua the nao?'],
+  hints: ['Monitor <0x000000076ab2d0a0> xuat hien o 150 thread', 'synchronized toan method gay serial hoa'],
+  answer: '**Tom tat:** 150 thread cung cho mot monitor cua RoutingCache vi method lookup synchronized toan object.\n\n### Nguyen nhan goc\nMethod lookup synchronized tren toan object nen moi request phai xep hang.\n\n### Dan chung\nArtifact: 150 thread BLOCKED tai RoutingCache.lookup, waiting to lock <0x000000076ab2d0a0>.\n\n### Cach sua\nDung ConcurrentHashMap va computeIfAbsent; hoac striping; hoac snapshot volatile.\n\n### Phong ngua\nAlert so thread BLOCKED; review hot path.\n\n> Senior tip: Contention khong ton CPU nhung kill latency; do bang JFR.',
+  rubric: ['Chi ra 150 thread BLOCKED', 'Giai thich synchronized toan method', 'De xuat ConcurrentHashMap/striping', 'Phong ngua'],
+  tags: ['contention', 'synchronized', 'cache']
 }
-
 );
