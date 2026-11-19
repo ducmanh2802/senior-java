@@ -1,0 +1,64 @@
+{
+  "date": "2026-11-19",
+  "intro": "Hôm nay số tin mới ở Hà Nội ít: phần lớn tin Java Hà Nội tìm được đã hết hạn nộp, nên ngoài tin mới của VTI Technology (dự án chính phủ điện tử) tôi đưa lại GPBank và CMC Global (vẫn mở) cùng một tin VMO Holdings ở TP.HCM. ITviec và nhiều trang khác không truy cập được từ môi trường biên tập, nên tin lấy từ Joboko; trang này có chỗ ghi tên pháp nhân thu thập dữ liệu khác tên nhà tuyển dụng, bạn nên xác minh trước khi nộp hồ sơ.",
+  "editor": "claude",
+  "items": [
+    {
+      "title": "Senior Java Developer",
+      "company": "Công ty TNHH VTI Technology Việt Nam",
+      "url": "https://vn.joboko.com/viec-lam-senior-java-developer-xvi6783573",
+      "source": "Joboko",
+      "location": "Hà Nội (Hà Đông)",
+      "level": "senior",
+      "salary": "Thoả thuận",
+      "skills": ["Java 17/21", "Spring Boot", "JPA/Hibernate", "Microservices", "React", "Docker"],
+      "summary": "Vị trí senior (từ 5 năm Java) cho các hệ thống lớn phục vụ chính phủ điện tử và chuyển đổi số của cơ quan nhà nước, doanh nghiệp. Yêu cầu Spring Boot/MVC/Data JPA/Security, REST và microservices, tích hợp hệ thống, React, SQL tuning với Oracle/PostgreSQL/MySQL, JWT/OAuth2, CI/CD. Có mentor dev junior/mid. Tin ghi hạn nộp khoảng 11–14/12/2026, đồng thời có dòng \"expired\" mâu thuẫn nên cần xác nhận lại.",
+      "prep": "Ôn Spring Security với JWT/OAuth2, tối ưu truy vấn và JPA (N+1, index), thiết kế microservices và Clean Architecture. Chuẩn bị ví dụ mentor đồng đội và hỏi lại về mô hình bodyshop, địa điểm làm việc.",
+      "topics": ["spring", "jpa", "security", "microservices"],
+      "tags": ["chính phủ điện tử"]
+    },
+    {
+      "title": "Java Developer (Expert) (vẫn mở)",
+      "company": "Ngân hàng TMCP Kỷ Nguyên Thịnh Vượng (GPBank)",
+      "url": "https://vn.joboko.com/viec-lam-java-developer-expert-xvi6752989",
+      "source": "Joboko",
+      "location": "Hà Nội (Hoàn Kiếm)",
+      "level": "lead",
+      "salary": "Thoả thuận",
+      "skills": ["Java", "Spring Boot", "Microservices", "DDD", "Docker", "AWS"],
+      "summary": "Vị trí expert tại ngân hàng, yêu cầu khoảng 8 năm phát triển full-stack, ít nhất 5 năm Java/Spring Boot. Cần thiết kế API-first, microservices theo DDD, hệ thống event/message-driven, CI/CD, triển khai cloud, biết React hoặc Angular, tiếng Anh bắt buộc. Hạn nộp 07/12/2026.",
+      "prep": "Ôn DDD và event-driven (idempotency, outbox), API-first, kinh nghiệm dẫn dắt nhóm. Chuẩn bị trả lời tiếng Anh và một ví dụ nghiệp vụ ngân hàng.",
+      "topics": ["microservices", "architecture", "banking", "english"],
+      "tags": ["ngân hàng"]
+    },
+    {
+      "title": "Java Developer (Middle - Senior) (vẫn mở)",
+      "company": "CMC Global",
+      "url": "https://vn.joboko.com/viec-lam-ha-noi-java-developer-middle-senior-xvi6721916",
+      "source": "Joboko",
+      "location": "Hà Nội (Hoàng Quốc Việt / Cầu Giấy)",
+      "level": "senior",
+      "salary": "Thoả thuận",
+      "skills": ["Java", "Spring Boot", "REST", "Microservices", "PostgreSQL", "SQL Server"],
+      "summary": "Vị trí backend/fullstack làm cho khách hàng Singapore, yêu cầu tối thiểu 3 năm Java 8+, Spring Boot, REST API, SQL Server hoặc PostgreSQL, tích hợp hệ thống, code review và giao tiếp tiếng Anh tốt. Ưu tiên cloud, CI/CD, Docker/Kubernetes. Hạn nộp 03/12/2026.",
+      "prep": "Ôn Spring Boot, thiết kế REST API, tối ưu SQL với PostgreSQL, và cách làm việc với khách hàng nước ngoài bằng tiếng Anh. Chuẩn bị nói về code review và mentoring.",
+      "topics": ["spring", "api", "sql", "english"],
+      "tags": ["outsource"]
+    },
+    {
+      "title": "Java Developer (HCM) - HOT",
+      "company": "VMO Holdings",
+      "url": "https://vn.joboko.com/viec-lam-java-developer-hcm-hot-xvi6801481",
+      "source": "Joboko",
+      "location": "TP.HCM",
+      "level": "mid",
+      "salary": "Thoả thuận",
+      "posted": "2026-10-26",
+      "skills": ["Kotlin", "Java", "Spring Boot", "REST", "Docker", "Kubernetes"],
+      "summary": "Vị trí phát triển server-side bằng Kotlin/Java với Spring Boot và REST API, làm việc với MySQL, PostgreSQL hoặc MongoDB. Cần biết Docker/Kubernetes, Git, unit test, CI, Agile và có tiếng Anh giao tiếp tốt. Hạn nộp 27/12/2026.",
+      "prep": "Ôn Spring Boot, thiết kế REST, unit test, cơ bản Docker/Kubernetes và so sánh Kotlin với Java. Chuẩn bị tự giới thiệu bằng tiếng Anh.",
+      "topics": ["spring", "kotlin", "devops", "english"],
+      "tags": ["outsource"]
+    }
+  ]
+}

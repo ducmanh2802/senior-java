@@ -1,0 +1,91 @@
+{
+  "date": "2026-11-19",
+  "intro": "Hôm nay có tin đáng chú ý ở hệ sinh thái Spring (Spring for Apache Pulsar chuyển sang Apache, Spring AI 2.1.0-RC2 kèm vài breaking change), tin JDK 28 (adaptive heap sizing cho ZGC, primitive patterns bị rút), Kubernetes lên lịch bỏ kube-proxy IPVS, và hai bài AWS về nâng cấp RDS for MySQL 9.7 cùng pipeline CDC sang Iceberg.",
+  "editor": "claude",
+  "items": [
+    {
+      "title_vi": "Spring for Apache Pulsar chuyển về Apache Pulsar, Spring ngừng bảo trì",
+      "title": "Announcing a New Home for Spring for Apache Pulsar",
+      "url": "https://spring.io/blog/2026/11/10/spring-pulsar-new-home-asf",
+      "source": "Spring Blog",
+      "category": "tech",
+      "summary": "Spring for Apache Pulsar sẽ trở thành subproject mang tên Apache Pulsar support for Spring trong dự án Apache Pulsar; đội Spring không còn bảo trì. Bản 2.0.8 là bản cuối từ Spring và vẫn dùng được với Spring Boot 4.2.0. Muốn nhận bản vá và tính năng mới, cần đổi dependency và package sang dự án mới. Binder cho Spring Cloud Stream sẽ nằm trong Spring Cloud Stream 5.1.0 sắp phát hành.",
+      "why": "Nếu hệ thống đang dùng Pulsar với Spring Boot, bạn cần lên kế hoạch đổi dependency để còn nhận vá lỗi; đây cũng là ví dụ điển hình về rủi ro phụ thuộc vào module do bên thứ ba bảo trì.",
+      "interview_q": "Một thư viện lõi trong hệ thống bị ngừng bảo trì hoặc chuyển chủ sở hữu, bạn sẽ đánh giá rủi ro và lên kế hoạch di chuyển thế nào?",
+      "related": ["spring-001"],
+      "tags": ["spring", "pulsar", "messaging"]
+    },
+    {
+      "title_vi": "Spring AI 2.1.0-RC2: DecisionModel API, stream tool call và breaking change với Anthropic",
+      "title": "Spring AI 2.1.0-RC2 Available Now",
+      "url": "https://spring.io/blog/2026/11/09/spring-ai-2-1-0-RC2-available-now",
+      "source": "Spring Blog",
+      "category": "tech",
+      "summary": "Spring AI 2.1.0-RC2 (chạy trên Spring Boot 4.2.0-RC2) thêm DecisionModel API trả về câu trả lời có kiểu (yes/no, lựa chọn, điểm) kèm xác suất, stream từng phần tham số của tool call, và hỗ trợ MCP server theo revision mới. Có breaking change: với Anthropic, temperature/topP/topK bị loại bỏ kèm cảnh báo WARN, API key gửi qua header Authorization Bearer, và số token prompt nay đã gồm cache read/write.",
+      "why": "Nếu đang tích hợp LLM vào service Spring, các thay đổi về tham số và đếm token ảnh hưởng trực tiếp đến cấu hình và chi phí theo dõi.",
+      "interview_q": "Khi nâng cấp một thư viện AI client có thay đổi cách đếm token và tham số mặc định, bạn đảm bảo không làm sai báo cáo chi phí và hành vi hiện tại bằng cách nào?",
+      "related": ["ai-001"],
+      "tags": ["spring-ai", "llm", "release"]
+    },
+    {
+      "title_vi": "Inside Java Newscast #117: adaptive heap sizing cho ZGC (JDK 28), primitive patterns bị rút",
+      "title": "Adaptive Heap Sizing + Numeric Conversion + Primitive Patterns - Inside Java Newscast #117",
+      "url": "https://inside.java/newscast/117/",
+      "source": "Inside Java",
+      "category": "tech",
+      "summary": "Bản tin nhắc JEP 546 đưa adaptive heap sizing vào ZGC trong JDK 28, cân bằng giữa mức dùng CPU và bộ nhớ với gần như không cần cấu hình. Primitive patterns sẽ không có mặt trong JDK 28 vì còn vấn đề chưa giải quyết khi tương tác với các tính năng khác. Tập cũng bàn về khó khăn khi định nghĩa chuyển đổi số giữa các value class.",
+      "why": "Heap sizing tự điều chỉnh có thể giảm công tinh chỉnh GC trên container; biết tính năng preview nào bị rút giúp bạn không dựa vào nó khi đánh giá nâng cấp JDK.",
+      "interview_q": "Bạn tune heap và GC cho một service Java chạy trong container như thế nào, và khi nào nên để JVM tự điều chỉnh?",
+      "related": ["jvm-001"],
+      "tags": ["jdk28", "zgc", "gc"]
+    },
+    {
+      "title_vi": "Kubernetes lên lịch gỡ backend IPVS của kube-proxy",
+      "title": "Scheduling the removal of the kube-proxy IPVS backend",
+      "url": "https://kubernetes.io/blog/2026/11/16/ipvs-removal/",
+      "source": "Kubernetes Blog",
+      "category": "devops",
+      "summary": "Kubernetes thông báo kế hoạch gỡ backend ipvs của kube-proxy. Backend này ra đời để nhanh hơn iptables, nhưng API IPVS của kernel không khớp tốt với Services API, chưa xử lý đủ edge case và kiến trúc khác hẳn các backend còn lại. Backend nftables có từ bản 1.29 và GA ở 1.33, được kỳ vọng thay thế cả iptables lẫn ipvs. Tôi chỉ đọc được phần đầu bài nên chưa nắm chi tiết lộ trình và bản gỡ cụ thể.",
+      "why": "Nếu cluster chạy các service Java đang dùng kube-proxy ở chế độ ipvs, bạn cần kiểm tra và lên kế hoạch chuyển sang nftables trước khi nâng cấp Kubernetes.",
+      "interview_q": "kube-proxy hoạt động thế nào và khi nào bạn chọn iptables, ipvs hay nftables cho cluster có hàng nghìn Service?",
+      "related": ["devops-001"],
+      "tags": ["kubernetes", "networking"]
+    },
+    {
+      "title_vi": "Amazon RDS for MySQL 9.7 LTS ra mắt: lưu ý khi nâng cấp từ 8.4",
+      "title": "Amazon RDS for MySQL LTS version 9.7 is now generally available",
+      "url": "https://aws.amazon.com/blogs/database/amazon-rds-for-mysql-lts-version-9-7-is-now-generally-available/",
+      "source": "AWS Database Blog",
+      "category": "cloud",
+      "summary": "RDS for MySQL hỗ trợ 9.7, bản LTS thứ hai sau 8.4 (minor 9.7.4). Nâng cấp phải đi LTS-to-LTS (8.4 lên 9.7), khuyến nghị dùng Blue/Green. Plugin mysql_native_password bị loại bỏ, cần chuyển tài khoản sang caching_sha2_password. EXPLAIN mặc định trả định dạng TREE, require_secure_transport mặc định bật, và một số biến bị xoá. MySQL 8.0 đã vào Extended Support từ 1/8/2026.",
+      "why": "Ứng dụng Java dùng MySQL driver cũ hoặc tài khoản native password có thể không kết nối được sau nâng cấp; công cụ parse EXPLAIN dạng bảng cũng có thể hỏng.",
+      "interview_q": "Bạn lập kế hoạch nâng cấp major version của database production với downtime tối thiểu thế nào, và kiểm tra tương thích client ra sao?",
+      "related": ["db-001", "aws-001"],
+      "tags": ["rds", "mysql", "upgrade"]
+    },
+    {
+      "title_vi": "United Airlines stream thay đổi từ Aurora MySQL sang Iceberg bằng DMS, Kinesis và Firehose",
+      "title": "How United Airlines streams database changes to Apache Iceberg with Amazon Data Firehose",
+      "url": "https://aws.amazon.com/blogs/architecture/how-united-airlines-streams-database-changes-to-apache-iceberg-with-amazon-data-firehose/",
+      "source": "AWS Architecture Blog",
+      "category": "cloud",
+      "summary": "United thay batch bằng pipeline CDC: DMS đọc binlog Aurora MySQL, ghi vào Kinesis Data Streams, Firehose gọi Lambda biến đổi rồi ghi Parquet vào bảng Iceberg trên S3, truy vấn qua Athena và Redshift Serverless. Bài nêu các đánh đổi: buffer dài thì rẻ nhưng trễ hơn, merge-on-read tạo delete file, và partition key mặc định đẩy toàn bộ một bảng vào một shard nên nên dùng primary key. Schema evolution không nằm trong template.",
+      "why": "Backend Java thường là nguồn phát sinh dữ liệu cho CDC; hiểu thứ tự thay đổi theo khoá và đánh đổi độ trễ/chi phí giúp thiết kế pipeline dữ liệu đúng hơn.",
+      "interview_q": "Bạn thiết kế pipeline CDC từ database giao dịch sang data lake thế nào để giữ thứ tự theo từng bản ghi và xử lý schema thay đổi?",
+      "related": ["db-001", "aws-001"],
+      "tags": ["cdc", "iceberg", "kinesis"]
+    },
+    {
+      "title_vi": "Giảm 73% MTTR sự cố Aurora PostgreSQL bằng Skill tuỳ biến cho AWS DevOps Agent",
+      "title": "Reducing database incident MTTR by 73% with a custom AWS DevOps Agent Skill",
+      "url": "https://aws.amazon.com/blogs/devops/reducing-database-incident-mttr-by-73-with-a-custom-aws-devops-agent-skill/",
+      "source": "AWS DevOps Blog",
+      "category": "devops",
+      "summary": "Nhóm tác giả đóng gói quy trình triage của DBRE thành một Skill (SKILL.md) cho AWS DevOps Agent, gồm cây quyết định kiểm tra theo thứ tự: cạn connection pool, replication lag, query chậm, áp lực storage, lệch parameter. MTTR giảm từ 52 phút xuống 14 phút (73%), nhưng đo trong thử nghiệm nội bộ chỉ với ba sự cố mô phỏng nên mẫu nhỏ. Bài cũng nhắc pg_stat_statements và pg_repack.",
+      "why": "Thứ tự kiểm tra (connection pool trước) là checklist thực tế khi service Spring chậm vì database; cách ghi lại runbook thành quy trình cũng đáng học.",
+      "interview_q": "API đột ngột chậm và nghi do database Aurora PostgreSQL, bạn điều tra theo thứ tự nào để khoanh vùng nhanh nhất?",
+      "related": ["db-001", "devops-001"],
+      "tags": ["postgresql", "incident", "aurora"]
+    }
+  ]
+}
