@@ -16945,4 +16945,156 @@ Hệ thống cache 50GB, 100k ops/s. Sentinel với một master 50GB → RAM m�
   ],
   tags: ['Redis Cluster', 'Sentinel', 'failover', 'sharding', 'high availability']
 },
+{
+  id: 'db-064',
+  topic: 'db',
+  level: 'senior',
+  q: 'MyBatis mapper XML và annotation mapper khác nhau thế nào, khi nào chọn cái nào?',
+  a: `**Tóm tắt:** XML cho SQL phức tạp và dynamic SQL dễ đọc; annotation cho CRUD đơn giản. Trong dự án lớn thường dùng XML cho query phức tạp và annotation cho query ngắn.
+
+### Cơ chế
+MyBatis ánh xạ method interface sang SQL. Với XML, SQL nằm trong file mapper XML, hỗ trợ dynamic SQL. Với annotation, SQL viết ngay trong interface bằng @Select/@Insert/... và {{@SqlProvider}} cho dynamic.
+
+### Bảng trade-off
+| Tiêu chí | XML | Annotation |
+|---|---|---|
+| SQL phức tạp | Tốt | Khó đọc |
+| Dynamic SQL | Tốt (if/where/foreach) | Cần SqlProvider |
+| Refactor | Tách biệt | Gần code |
+| Review | Dễ | Nhanh |
+
+### Pitfall
+- Trộn hai kiểu gây khó maintain.
+- Annotation với SQL dài làm interface khó đọc.
+
+### Ví dụ đời thực
+Dự án có 200 query: 30 query phức tạp dùng XML, 170 CRUD dùng annotation. Review PR nhanh hơn.
+
+### Trả lời mẫu khi phỏng vấn
+MyBatis cho phép viết SQL trong XML hoặc annotation. XML phù hợp query phức tạp, dynamic SQL, vì dễ đọc và maintain. Annotation phù hợp CRUD đơn giản, giảm file. Trong dự án lớn tôi thường dùng XML cho query phức tạp và annotation cho query ngắn. Quan trọng là thống nhất convention trong team.
+
+> Senior tip: Chọn theo độ phức tạp, không theo sở thích cá nhân.`,
+  follow: ['Dynamic SQL trong MyBatis hoạt động thế nào?', 'Khi nào nên dùng MyBatis thay vì JPA?'],
+  tags: ['MyBatis', 'mapper', 'XML', 'annotation']
+}
+
+,
+{
+  id: 'db-065',
+  topic: 'db',
+  level: 'senior',
+  q: 'Trong MyBatis, #{} và \${} khác nhau thế nào và vì sao \${} gây SQL injection?',
+  a: `**Tóm tắt:** #{} là prepared statement (an toàn), \${} là string interpolation (nguy hiểm). Chỉ dùng \${} cho tên bảng/cột cố định.
+
+### Cơ chế
+- #{}: MyBatis tạo PreparedStatement và set parameter, DB parse SQL trước. An toàn với injection.
+- \${}: MyBatis thay thế trực tiếp chuỗi vào SQL trước khi gửi DB. Nếu input chứa SQL thì injection.
+
+### Ví dụ
+~~~java
+// An toàn
+@Select("SELECT * FROM users WHERE id = #{id}")
+User findById(Long id);
+
+// Nguy hiểm
+@Select("SELECT * FROM users WHERE name = '\${name}'")
+User findByName(String name);
+~~~
+
+### Pitfall
+- Dùng \${} cho giá trị người dùng.
+- Dùng \${} cho ORDER BY mà không whitelist.
+
+### Ví dụ đời thực
+API search theo tên: dùng \${name} → attacker nhập ' OR 1=1 → trả toàn bộ user. Sửa sang #{}.
+
+### Trả lời mẫu khi phỏng vấn
+#{} dùng PreparedStatement, an toàn injection. \${} nối chuỗi trực tiếp, nguy hiểm. Tôi chỉ dùng \${} cho tên bảng/cột/order by đã whitelist, còn giá trị luôn #{}.
+
+> Senior tip: Whitelist tên cột khi dùng \${} cho ORDER BY.`,
+  follow: ['Cách viết dynamic ORDER BY an toàn trong MyBatis?', 'PreparedStatement hoạt động thế nào?'],
+  tags: ['MyBatis', 'SQL injection', 'prepared statement']
+}
+
+,
+{
+  id: 'db-066',
+  topic: 'db',
+  level: 'senior',
+  q: 'MyBatis dynamic SQL: if/where/foreach hoạt động thế nào và pitfall thường gặp?',
+  a: `**Tóm tắt:** Dynamic SQL build câu SQL theo điều kiện. if/where/foreach giúp tránh SQL sai cú pháp. Pitfall: where trim, foreach collection null.
+
+### Cơ chế
+- <if test="...">: thêm đoạn SQL nếu điều kiện đúng.
+- <where>: tự thêm WHERE và trim AND/OR thừa.
+- <foreach>: lặp collection để tạo IN (...) hoặc batch insert.
+
+### Ví dụ XML
+~~~xml
+<select id="find" resultType="User">
+  SELECT * FROM users
+  <where>
+    <if test="name != null"> AND name = #{name}</if>
+    <if test="status != null"> AND status = #{status}</if>
+  </where>
+</select>
+~~~
+
+### Pitfall
+- Thiếu <where> dẫn AND thừa.
+- foreach collection rỗng → SQL lỗi.
+- test expression null handling.
+
+### Ví dụ đời thực
+Search form có nhiều filter optional. Dùng where + if giúp query linh hoạt và không lỗi cú pháp.
+
+### Trả lời mẫu khi phỏng vấn
+Dynamic SQL cho phép build query theo điều kiện. if/where/foreach là các tag phổ biến. where tự xử lý AND/OR và WHERE. Pitfall thường là collection rỗng và biểu thức null. Tôi luôn test với input rỗng và null.
+
+> Senior tip: Luôn test dynamic SQL với tất cả filter null.`,
+  follow: ['Batch insert bằng foreach trong MyBatis?', 'Cách test dynamic SQL?'],
+  tags: ['MyBatis', 'dynamic SQL', 'if', 'where', 'foreach']
+}
+
+,
+{
+  id: 'db-067',
+  topic: 'db',
+  level: 'lead',
+  q: 'MyBatis resultMap, association/collection và N+1: cách giải quyết và so sánh với JPA?',
+  a: `**Tóm tắt:** resultMap ánh xạ cột sang object phức tạp. association/collection dễ gây N+1 nếu không dùng join hoặc batch. So với JPA, MyBatis kiểm soát SQL rõ hơn nhưng phải tự tối ưu.
+
+### Cơ chế
+- resultMap: định nghĩa mapping cột → property, hỗ trợ nested object.
+- association: 1-1, collection: 1-N.
+- N+1: load list rồi load từng phần tử → nhiều query.
+
+### Giải pháp
+- JOIN + resultMap nested.
+- resultMap với fetchType="lazy" trên association/collection + SqlSession.
+- Batch loading bằng IN query.
+
+### So sánh MyBatis vs JPA
+| Tiêu chí | MyBatis | JPA |
+|---|---|---|
+| Kiểm soát SQL | Cao | Thấp |
+| N+1 | Tự xử lý | Fetch join/EntityGraph |
+| Cache | Có | Có |
+| Learning curve | Thấp | Cao |
+
+### Pitfall
+- Lazy loading ngoài phạm vi SqlSession → MyBatis ném lỗi hoặc trả dữ liệu rỗng (MyBatis không có LazyInitializationException như JPA/Hibernate).
+- Collection lớn gây memory.
+
+### Ví dụ đời thực
+Order list 1000 đơn, mỗi đơn load items → 1001 query. Dùng JOIN + resultMap giảm còn 1 query.
+
+### Trả lời mẫu khi phỏng vấn
+MyBatis resultMap cho phép map object phức tạp. association/collection có thể gây N+1. Tôi dùng JOIN hoặc batch loading. So với JPA, MyBatis kiểm soát SQL rõ hơn nhưng phải tự tối ưu. Chọn MyBatis khi cần SQL phức tạp và performance; JPA khi CRUD nhanh.
+
+> Senior tip: Luôn kiểm tra số query bằng log SQL.`,
+  follow: ['MyBatis cache hoạt động thế nào?', 'Khi nào chọn MyBatis thay JPA?'],
+  tags: ['MyBatis', 'resultMap', 'N+1', 'JPA']
+}
+
 );
