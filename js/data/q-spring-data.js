@@ -13700,27 +13700,27 @@ Mot he thong thanh toan 12 pod PostgreSQL. Luc 10h sang, primary DB gap checkpoi
 {
   id: 'spring-048', topic: 'spring', level: 'senior',
   q: 'Khi Kubernetes gửi SIGTERM, Spring Boot graceful shutdown xử lý request đang chạy thế nào qua các phase, Tomcat/Reactor behavior, và bạn phối hợp với preStop, terminationGracePeriodSeconds ra sao để không mất request?',
-  a: `**Tom tat:** Graceful shutdown cua Spring Boot ({{server.shutdown=graceful}}, mac dinh tu Boot 3.4) chay theo trinh tu: ngung nhan request moi -> cho request dang xu ly xong trong {{spring.lifecycle.timeout-per-shutdown-phase}} (mac dinh 30s) -> dong ApplicationContext (dung consumer, scheduler, pool). Tomcat ngung accept socket moi, cho request trong pipeline xu ly xong; Reactor {{HttpServer}} cung drain in-flight request. Tren Kubernetes, {{preStop}} sleep 5-10 giay chay song song voi viec go pod khoi Endpoints, cho load balancer ki cap nhat truoc khi server ngung nhan request. Tong grace period = preStop + shutdown timeout phai nho hon {{terminationGracePeriodSeconds}} (mac dinh 30s), neu khong pod bi SIGKILL.
-### Trinh tu chi tiet
-1. Kubernetes danh dau pod Terminating, **song song**: gui SIGTERM cho container **va** go pod khoi Service/Endpoints (lan toi kube-proxy, ingress mat vai giay).
-2. Neu ung dung dung nhan request ngay khi SIGTERM, request dang duoc dinh tuyen trong may giay do se loi connection refused. {{preStop: sleep 10}} cho viec go endpoint lan xong.
-3. Spring Boot nhan SIGTERM, {{server.shutdown=graceful}}: Tomcat ngung accept ket noi moi, cho request trong pipeline xong (drain). Reactor Netty tuong tu drain in-flight request.
-4. Cho request xong trong {{spring.lifecycle.timeout-per-shutdown-phase}} (dat theo p99 latency thuc te, vi du 30-60s).
-5. Dong ApplicationContext: {{SmartLifecycle}} stop (phase thap truoc) -- dung Kafka consumer (commit offset), dung scheduler, dong HikariCP pool, dong JPA EntityManagerFactory.
-6. Process thoat truoc SIGKILL.
+  a: `**Tóm tắt:** Graceful shutdown của Spring Boot ({{server.shutdown=graceful}}, mặc định từ Boot 3.4) chạy theo trình tự: ngưng nhận request mới -> chờ request đang xử lý xong trong {{spring.lifecycle.timeout-per-shutdown-phase}} (mặc định 30s) -> đóng ApplicationContext (dừng consumer, scheduler, pool). Tomcat ngưng accept socket mới, chờ request trong pipeline xử lý xong; Reactor {{HttpServer}} cũng drain in-flight request. Trên Kubernetes, {{preStop}} sleep 5-10 giây chạy song song với việc gỡ pod khỏi Endpoints, cho load balancer kịp cập nhật trước khi server ngưng nhận request. Tổng grace period = preStop + shutdown timeout phải nhỏ hơn {{terminationGracePeriodSeconds}} (mặc định 30s), nếu không pod bị SIGKILL.
+### Trình tự chi tiết
+1. Kubernetes đánh dấu pod Terminating, **song song**: gửi SIGTERM cho container **và** gỡ pod khỏi Service/Endpoints (lần tới kube-proxy, ingress mất vài giây).
+2. Nếu ứng dụng dừng nhận request ngay khi SIGTERM, request đang được định tuyến trong vài giây đó sẽ lỗi connection refused. {{preStop: sleep 10}} cho việc gỡ endpoint lần xong.
+3. Spring Boot nhận SIGTERM, {{server.shutdown=graceful}}: Tomcat ngưng accept kết nối mới, chờ request trong pipeline xong (drain). Reactor Netty tương tự drain in-flight request.
+4. Chờ request xong trong {{spring.lifecycle.timeout-per-shutdown-phase}} (đặt theo p99 latency thực tế, ví dụ 30-60s).
+5. Đóng ApplicationContext: {{SmartLifecycle}} stop (phase thấp trước) -- dừng Kafka consumer (commit offset), dừng scheduler, đóng HikariCP pool, đóng JPA EntityManagerFactory.
+6. Process thoát trước SIGKILL.
 ### Tomcat vs Reactor
-- Tomcat (thread-per-request): moi request mot thread, drain cho thread xong. Thread pool co queue; shutdown khong xu ly task trong queue cua {{@Async}} executor tru neu executor cung dung graceful shutdown.
-- Reactor Netty (event-loop): drain cho cac subscription in-flight hoan tat. Cac {{Mono}}/{{Flux}} dang chay duoc phep hoan tat; {{boundedElastic}} scheduler task khong tu drain -- can tu manage.
+- Tomcat (thread-per-request): mỗi request một thread, drain cho thread xong. Thread pool có queue; shutdown không xử lý task trong queue của {{@Async}} executor trừ khi executor cũng dùng graceful shutdown.
+- Reactor Netty (event-loop): drain cho các subscription in-flight hoàn tất. Các {{Mono}}/{{Flux}} đang chạy được phép hoàn tất; {{boundedElastic}} scheduler task không tự drain -- cần tự manage.
 ### Pitfall production
-- {{terminationGracePeriodSeconds}} mac dinh 30s qua ngan cho shutdown 30s + preStop 10s -> pod bi SIGKILL.
-- Readiness probe dung {{/actuator/health}} thay vi {{/actuator/health/readiness}}: liveness check co the pass nhung pod khong ready.
-- Consumer Kafka khong commit offset truoc khi shutdown -> message bi xu ly lai (duplicate) hoac mat (neu enable.auto.commit=false ma shutdown truoc khi poll xong).
-- {{@Async}} task dai trong executor khong bi graceful shutdown quan ly -> bi kill giua chung.
-### Vi du doi thuc
-He thong don hang 12 pod, p99 request 2.3s. Rolling update moi lan deploy: 0.8% request loi 502 trong 1-2 phut. Nguyen nhan: da bat {{server.shutdown=graceful}} nhung thieu preStop. Ingress (nginx) cache endpoint 10s, van gui request toi pod da ngung nhan. Sua: them {{preStop: sleep 10}}, {{terminationGracePeriodSeconds: 60}}, {{spring.lifecycle.timeout-per-shutdown-phase: 40s}}. Readiness probe dung {{/actuator/health/readiness}} (Spring tu chuyen {{REFUSING_TRAFFIC}} khi bat dau tat). Consumer Kafka dung som, commit offset truoc khi dong. Ket qua: 20 lan deploy lien tiep 0% loi 502.
-### Tra loi mau khi phong van
-"Khi Kubernetes dung pod, no gui SIGTERM va dong thoi go pod khoi endpoints, nhung viec go lan toi ingress va kube-proxy mat vai giay. Toi them preStop sleep 10 giay de cho viec go lan xong. Spring Boot graceful shutdown: ngung nhan request moi, cho request dang chay xong trong timeout-per-shutdown-phase (dat theo p99 thuc te), roi dong context theo thu tu -- dung consumer Kafka commit offset, dung scheduler, dong pool. Readiness probe dung nhom readiness cua Actuator de bao khong nhan traffic khi bat dau tat. Quan trong la tong preStop + shutdown timeout phai nho hon terminationGracePeriodSeconds, neu khong pod bi SIGKILL. Toi kiem chung bang load test chay lien tuc trong luc rolling update."
-> Senior tip: Lay p99 thoi luong request va thoi gian deregistration thuc te de dat grace period, sau do dien tap rolling deploy duoi tai. Graceful shutdown giam gian doan, nhung retry an toan va idempotency van la lop bao ve cuoi cho client.
+- {{terminationGracePeriodSeconds}} mặc định 30s quá ngắn cho shutdown 30s + preStop 10s -> pod bị SIGKILL.
+- Readiness probe dùng {{/actuator/health}} thay vì {{/actuator/health/readiness}}: liveness check có thể pass nhưng pod không ready.
+- Consumer Kafka không commit offset trước khi shutdown -> message bị xử lý lại (duplicate) hoặc mất (nếu enable.auto.commit=false mà shutdown trước khi poll xong).
+- {{@Async}} task dài trong executor không bị graceful shutdown quản lý -> bị kill giữa chừng.
+### Ví dụ đời thực
+Hệ thống đơn hàng 12 pod, p99 request 2.3s. Rolling update mỗi lần deploy: 0.8% request lỗi 502 trong 1-2 phút. Nguyên nhân: đã bật {{server.shutdown=graceful}} nhưng thiếu preStop. Ingress (nginx) cache endpoint 10s, vẫn gửi request tới pod đã ngưng nhận. Sửa: thêm {{preStop: sleep 10}}, {{terminationGracePeriodSeconds: 60}}, {{spring.lifecycle.timeout-per-shutdown-phase: 40s}}. Readiness probe dùng {{/actuator/health/readiness}} (Spring tự chuyển {{REFUSING_TRAFFIC}} khi bắt đầu tắt). Consumer Kafka dừng sớm, commit offset trước khi đóng. Kết quả: 20 lần deploy liên tiếp 0% lỗi 502.
+### Trả lời mẫu khi phỏng vấn
+"Khi Kubernetes dừng pod, nó gửi SIGTERM và đồng thời gỡ pod khỏi endpoints, nhưng việc gỡ lần tới ingress và kube-proxy mất vài giây. Tôi thêm preStop sleep 10 giây để cho việc gỡ lần xong. Spring Boot graceful shutdown: ngưng nhận request mới, chờ request đang chạy xong trong timeout-per-shutdown-phase (đặt theo p99 thực tế), rồi đóng context theo thứ tự -- dừng consumer Kafka commit offset, dừng scheduler, đóng pool. Readiness probe dùng nhóm readiness của Actuator để báo không nhận traffic khi bắt đầu tắt. Quan trọng là tổng preStop + shutdown timeout phải nhỏ hơn terminationGracePeriodSeconds, nếu không pod bị SIGKILL. Tôi kiểm chứng bằng load test chạy liên tục trong lúc rolling update."
+> Senior tip: Lấy p99 thời lượng request và thời gian deregistration thực tế để đặt grace period, sau đó diễn tập rolling deploy dưới tải. Graceful shutdown giảm gián đoạn, nhưng retry an toàn và idempotency vẫn là lớp bảo vệ cuối cho client.
 `,
   follow: [
     'Kubernetes readiness va Spring graceful shutdown can thu tu phoi hop ra sao?',
@@ -13732,30 +13732,30 @@ He thong don hang 12 pod, p99 request 2.3s. Rolling update moi lan deploy: 0.8% 
 {
   id: 'spring-049', topic: 'spring', level: 'senior',
   q: 'HikariCP production tuning: công thức maximumPoolSize (Little Law), connectionTimeout, leakDetectionThreshold, validationTimeout — bạn đặt giá trị thế nào, quan sát metric nào để biết pool đủ hay thiếu?',
-  a: `**Tom tat:** Kich thuoc pool khong lay theo so thread ung dung ma dua tren cong viec thuc te. Theo Little Law: so connection ban trung binh = throughput (req/s) x thoi gian giu connection trung binh (s). Vi du 400 req/s x 20ms = 8 connection ban; pool 15-20 tren moi instance du cho dinh tai. {{maximumPoolSize}} tong tat ca instance (tinh ca luc autoscale) phai nho hon {{max_connections}} cua DB (chua 20% cho admin/replication). {{connectionTimeout}} ngan (2-5s) de fail nhanh; {{leakDetectionThreshold}} bat (60s) de bat code giu connection lau; {{validationTimeout}} ngan (1-2s) de khong cho validation khi DB cham. Metric quan trong: {{hikaricp.connections.pending}} (luong cho), {{connections.acquire}} (thoi gian cho lay connection), {{connections.usage}} (ty le ban).
-### Cong thuc va sizing
-1. Xem {{max_connections}} DB va so instance: {{maximumPoolSize}} x so instance <= {{max_connections}} x 0.8.
-2. Tinh theo CPU DB: quy tac cong dong {{pool ≈ (CPU cores x 2) + effective disks}}.
-3. Bat dau 10-20/instance, do: pending, acquire latency, DB throughput.
-4. Voi virtual threads (Java 21+): so luong co the rat lon nhung connection DB van huu han -> pool nho (5-10), theo doi pending.
-### Cac timeout
-| Tham so | Y nghia | Goi y |
+  a: `**Tóm tắt:** Kích thước pool không lấy theo số thread ứng dụng mà dựa trên công việc thực tế. Theo Little Law: số connection bản trung bình = throughput (req/s) x thời gian giữ connection trung bình (s). Ví dụ 400 req/s x 20ms = 8 connection bản; pool 15-20 trên mỗi instance đủ cho đỉnh tải. {{maximumPoolSize}} tổng tất cả instance (tính cả lúc autoscale) phải nhỏ hơn {{max_connections}} của DB (chừa 20% cho admin/replication). {{connectionTimeout}} ngắn (2-5s) để fail nhanh; {{leakDetectionThreshold}} bật (60s) để bắt code giữ connection lâu; {{validationTimeout}} ngắn (1-2s) để không chờ validation khi DB chậm. Metric quan trọng: {{hikaricp.connections.pending}} (lượng chờ), {{connections.acquire}} (thời gian chờ lấy connection), {{connections.usage}} (tỷ lệ bận).
+### Công thức và sizing
+1. Xem {{max_connections}} DB và số instance: {{maximumPoolSize}} x số instance <= {{max_connections}} x 0.8.
+2. Tính theo CPU DB: quy tắc cộng dồn {{pool ≈ (CPU cores x 2) + effective disks}}.
+3. Bắt đầu 10-20/instance, đo: pending, acquire latency, DB throughput.
+4. Với virtual threads (Java 21+): số lượng có thể rất lớn nhưng connection DB vẫn hữu hạn -> pool nhỏ (5-10), theo dõi pending.
+### Các timeout
+| Tham số | Ý nghĩa | Gợi ý |
 |---|---|---|
-| connectionTimeout | Cho toi da lay connection tu pool | 2-5 giay, fail nhanh |
-| maxLifetime | Thoi gian toi da connection ton tai truoc khi dong thay moi | Ngan hon timeout firewall/DB, vi du 30p so voi 60p |
-| idleTimeout | Connection roi bao lau moi duoc dong | 10 phut |
-| leakDetectionThreshold | Giu connection qua lau thi ghi stack trace noi muon | 60 giay, bat luon |
-| validationTimeout | Cho validation query ({{SELECT 1}}) | 1-2 giay, khong cho khi DB cham |
+| connectionTimeout | Chờ tối đa lấy connection từ pool | 2-5 giây, fail nhanh |
+| maxLifetime | Thời gian tối đa connection tồn tại trước khi đóng thay mới | Ngắn hơn timeout firewall/DB, ví dụ 30p so với 60p |
+| idleTimeout | Connection rỗi bao lâu mới được đóng | 10 phút |
+| leakDetectionThreshold | Giữ connection quá lâu thì ghi stack trace nơi đang giữ | 60 giây, bật luôn |
+| validationTimeout | Chờ validation query ({{SELECT 1}}) | 1-2 giây, không chờ khi DB chậm |
 ### Pitfall production
-- Pool lon hon lai cham: hang cho M/M/c phi tuyen, context switch DB, tranh chap lock, buffer pool xao tron.
-- {{spring.jpa.open-in-view=true}} (mac dinh) giu connection suot render JSON -> pool can du query nhanh. Tat OSIV, load du du lieu trong service.
-- {{maxLifetime}} >= timeout firewall/DB -> connection reset ngau nhien sau gio thap diem.
-- Khong bat {{leakDetectionThreshold}} -> khong biet code nao giu connection lau (Open Session In View, goi API ngoai trong @Transactional).
-### Vi du doi thuc
-Dich vu don hang 4 instance, moi instance pool 50 (tong 200) tro PostgreSQL {{max_connections=120}}. Gio cao diem 350 req/s, p95 API 2.5s, loi "Connection is not available". DB CPU tang du query nhanh. Metric HikariCP: {{pending}} > 0 thuong xuyen, {{acquire}} cao. {{spring.jpa.open-in-view}} bat -> connection giu 80ms thay vi 20ms. Sua: tat OSIV, giam pool instance xuong 15 (tong 60), {{maxLifetime=30p}}, {{leakDetectionThreshold=60s}}. Ket qua: pending ve 0, p95 220ms, loi timeout bien mat, CPU DB giam.
-### Tra loi mau khi phong van
-"Khi sizing HikariCP, toi khong lay so thread ung dung ma dua tren Little Law: throughput nhan thoi gian giu connection trung binh. Vi du 400 req/s x 20ms chi can 8 connection ban. Tong pool moi instance phai nho hon max_connections DB. Pool qua lon lam cham vi tang hang cho, context switch, tranh chap lock tren DB. Toi dat connectionTimeout 2-5s fail nhanh, maxLifetime ngan hon timeout firewall (30p vs 60p), leakDetectionThreshold 60s de bat cho giu connection lau, validationTimeout 1-2s. Metric quan trong: connections.pending, connections.acquire, connections.usage. Khi thay cho connection, viec dau tien la tim transaction giu lau (OSIV, goi API ngoai trong @Transactional), khong phai tang pool."
-> Senior tip: Chi so quan trong nhat la thoi gian cho va so luong dang cho, khong phai so ket noi hien co. Pool lon khong lam DB nhanh hon; no chi chia nho thoi gian CPU cua DB cho nhieu yeu cau hon. Khi thay cho connection, hay tim truy van giu giao dich lau.
+- Pool lớn hơn lại chậm: hàng chờ M/M/c phi tuyến, context switch DB, tranh chấp lock, buffer pool xáo trộn.
+- {{spring.jpa.open-in-view=true}} (mặc định) giữ connection suốt render JSON -> pool cần đủ query nhanh. Tắt OSIV, load đủ dữ liệu trong service.
+- {{maxLifetime}} >= timeout firewall/DB -> connection reset ngẫu nhiên sau giờ thấp điểm.
+- Không bật {{leakDetectionThreshold}} -> không biết code nào giữ connection lâu (Open Session In View, gọi API ngoài trong @Transactional).
+### Ví dụ đời thực
+Dịch vụ đơn hàng 4 instance, mỗi instance pool 50 (tổng 200) tới PostgreSQL {{max_connections=120}}. Giờ cao điểm 350 req/s, p95 API 2.5s, lỗi "Connection is not available". DB CPU tăng dù query nhanh. Metric HikariCP: {{pending}} > 0 thường xuyên, {{acquire}} cao. {{spring.jpa.open-in-view}} bật -> connection giữ 80ms thay vì 20ms. Sửa: tắt OSIV, giảm pool instance xuống 15 (tổng 60), {{maxLifetime=30p}}, {{leakDetectionThreshold=60s}}. Kết quả: pending về 0, p95 220ms, lỗi timeout biến mất, CPU DB giảm.
+### Trả lời mẫu khi phỏng vấn
+"Khi sizing HikariCP, tôi không lấy số thread ứng dụng mà dựa trên Little Law: throughput nhân thời gian giữ connection trung bình. Ví dụ 400 req/s x 20ms chỉ cần 8 connection bản. Tổng pool mỗi instance phải nhỏ hơn max_connections DB. Pool quá lớn làm chậm vì tăng hàng chờ, context switch, tranh chấp lock trên DB. Tôi đặt connectionTimeout 2-5s fail nhanh, maxLifetime ngắn hơn timeout firewall (30p vs 60p), leakDetectionThreshold 60s để bắt chỗ giữ connection lâu, validationTimeout 1-2s. Metric quan trọng: connections.pending, connections.acquire, connections.usage. Khi thầy cho connection, việc đầu tiên là tìm transaction giữ lâu (OSIV, gọi API ngoài trong @Transactional), không phải tăng pool."
+> Senior tip: Chỉ số quan trọng nhất là thời gian chờ và số lượng đang chờ, không phải số kết nối hiện có. Pool lớn không làm DB nhanh hơn; nó chỉ chia nhỏ thời gian CPU của DB cho nhiều yêu cầu hơn. Khi thầy cho connection, hãy tìm truy vấn giữ giao dịch lâu.
 `,
   follow: [
     'Theo quy tac Little, 200 request/giay va giu connection 50ms can bao nhieu connection trung binh?',
@@ -13767,8 +13767,8 @@ Dich vu don hang 4 instance, moi instance pool 50 (tong 200) tro PostgreSQL {{ma
 {
   id: 'spring-050', topic: 'spring', level: 'senior',
   q: '@ConfigurationProperties với validation (JSR-380), nested properties, relaxed binding, record vs class — bạn cấu hình type-safe config thế nào và bắt lỗi sớm lúc startup?',
-  a: `**Tom tat:** {{@ConfigurationProperties}} bind property tu {{application.yml}}, env, CLI args vao object type-safe. Bat validation bang {{@Validated}} tren class va annotation JSR-380 ({{@NotNull}}, {{@Min}}, {{@Max}}, {{@Pattern}}, {{@Size}}) tren field. Nested object dung field type la class/record khac (cung co annotation validation). Relaxed binding cho phep {{kebab-case}}, {{snake_case}}, {{UPPER_CASE}} trong env map sang camelCase field. Record (Java 16+) immutable, constructor tu validate, phu hop config read-only; class mutable cho phep binder set field sau construct. Dat {{spring.config.import}} hoac {{@PropertySource}} de nap file bo sung. Loi validation khien context fail fast luc startup -- phat hien som.
-### Cau hinh co ban
+  a: `**Tóm tắt:** {{@ConfigurationProperties}} bind property từ {{application.yml}}, env, CLI args vào object type-safe. Bật validation bằng {{@Validated}} trên class và annotation JSR-380 ({{@NotNull}}, {{@Min}}, {{@Max}}, {{@Pattern}}, {{@Size}}) trên field. Nested object dùng field type là class/record khác (cũng có annotation validation). Relaxed binding cho phép {{kebab-case}}, {{snake_case}}, {{UPPER_CASE}} trong env map sang camelCase field. Record (Java 16+) immutable, constructor tự validate, phù hợp config read-only; class mutable cho phép binder set field sau construct. Đặt {{spring.config.import}} hoặc {{@PropertySource}} để nạp file bổ sung. Lỗi validation khiến context fail fast lúc startup -- phát hiện sớm.
+### Cấu hình cơ bản
 ~~~java
 @ConfigurationProperties(prefix = "app.payment")
 @Validated
@@ -13784,27 +13784,27 @@ public record NestedConfig(
     @Min(1) int retryCount
 ) {}
 ~~~
-Spring Boot tu dong validate khi bind (can {{spring-boot-validation}} hoac {{jakarta.validation}} tren classpath). Loi validation nem {{BindException}} luc startup, log ro field va constraint vi pham.
+Spring Boot tự động validate khi bind (cần {{spring-boot-validation}} hoặc {{jakarta.validation}} trên classpath). Lỗi validation ném {{BindException}} lúc startup, log rõ field và constraint vi phạm.
 ### Relaxed Binding
-Env {{APP_PAYMENT_MERCHANT_ID}}, {{APP_PAYMENT_CALLBACK_URL}}, {{APP_PAYMENT_TIMEOUT_SECONDS}}, {{APP_PAYMENT_NESTED_API_KEY}} deu bind dung vao field camelCase. Kebab-case trong YAML ({{merchant-id}}) cung bind duoc. Quy tac: bo dau phan cach, chu cai sau dau phan cach viet hoa.
+Env {{APP_PAYMENT_MERCHANT_ID}}, {{APP_PAYMENT_CALLBACK_URL}}, {{APP_PAYMENT_TIMEOUT_SECONDS}}, {{APP_PAYMENT_NESTED_API_KEY}} đều bind đúng vào field camelCase. Kebab-case trong YAML ({{merchant-id}}) cũng bind được. Quy tắc: bỏ dấu phân cách, chữ cái sau dấu phân cách viết hoa.
 ### Record vs Class
 | | Record | Class |
 |---|---|---|
-| Immutable | Co (final field) | Khong (setter) |
-| Validation | Tren constructor parameter | Tren field/setter |
-| Constructor | Compact, tu toString/equals/hashCode | Can Lombok hoac thu cong |
-| Phu hop | Config read-only, type-safe | Config can mutation (hiem) |
+| Immutable | Có (final field) | Không (setter) |
+| Validation | Trên constructor parameter | Trên field/setter |
+| Constructor | Compact, tự toString/equals/hashCode | Cần Lombok hoặc thủ công |
+| Phù hợp | Config read-only, type-safe | Config cần mutation (hiếm) |
 ### Pitfall production
-- Quen {{@Validated}} tren class config -> validation khong chay, gia tri sai lot vao runtime.
-- Nested object thieu {{@Valid}} -> validation khong lan xuong nested.
-- Dung {{@Value}} rai rac thay vi {{@ConfigurationProperties}} -> mat type-safe, validation, IDE support, documentation.
-- Relaxed binding khong hoat dong voi {{@Value}} (chi dung chinh xac ten property).
-- Record constructor validation chi chay khi bind; neu dung {{@ConfigurationProperties}} tren {{@Bean}} method tra record, validation van chay.
-### Vi du doi thuc
-Team cau hinh cong thanh toan qua {{@Value}} rai rac 15 field. Mot lan deploy thieu {{callbackUrl}} (property ghi nham {{callbakUrl}}) -- ung dung start thanh cong, runtime goi cong thanh toan moi loi {{NullPointerException}}. Chuyen sang {{@ConfigurationProperties(prefix="app.payment")}} record co {{@NotNull @Pattern}}: lan deploy sau thieu property -> application context fail ngay luc startup, log ro "callbackUrl: must not be null, must match pattern". Nested config cho {{retryPolicy}} cung validate duoc. CI them test {{SpringBootTest}} assert context load thanh cong voi config hop le va fail voi config sai.
-### Tra loi mau khi phong van
-"Toi dung @ConfigurationProperties(prefix='app.payment') tren record immutable, bat @Validated va annotation JSR-380 (@NotNull, @Min, @Max, @Pattern) tren field. Nested config cung la record co @Valid de validation lan xuong. Relaxed binding cho phep env APP_PAYMENT_MERCHANT_ID, YAML merchant-id deu bind vao merchantId camelCase. Record phu hop config read-only vi immutable, validation chay tren constructor. Loi validation khien context fail fast luc startup -- phat hien som thay vi runtime. Toi khong dung @Value rai rac vi mat type-safe, validation va IDE support. CI co test context load voi config hop le va fail voi config sai."
-> Senior tip: Hay coi @ConfigurationProperties nhu API contract cua config. Moi field deu co validation annotation, nested cung validate, va co test context load trong CI. Dung de config sai lot den runtime.
+- Quên {{@Validated}} trên class config -> validation không chạy, giá trị sai lọt vào runtime.
+- Nested object thiếu {{@Valid}} -> validation không lan xuống nested.
+- Dùng {{@Value}} rải rác thay vì {{@ConfigurationProperties}} -> mất type-safe, validation, IDE support, documentation.
+- Relaxed binding không hoạt động với {{@Value}} (chỉ dùng chính xác tên property).
+- Record constructor validation chỉ chạy khi bind; nếu dùng {{@ConfigurationProperties}} trên {{@Bean}} method trả record, validation vẫn chạy.
+### Ví dụ đời thực
+Team cấu hình cổng thanh toán qua {{@Value}} rải rác 15 field. Một lần deploy thiếu {{callbackUrl}} (property ghi nhầm {{callbakUrl}}) -- ứng dụng start thành công, runtime gọi cổng thanh toán mới lỗi {{NullPointerException}}. Chuyển sang {{@ConfigurationProperties(prefix="app.payment")}} record có {{@NotNull @Pattern}}: lần deploy sau thiếu property -> application context fail ngay lúc startup, log rõ "callbackUrl: must not be null, must match pattern". Nested config cho {{retryPolicy}} cũng validate được. CI thêm test {{SpringBootTest}} assert context load thành công với config hợp lệ và fail với config sai.
+### Trả lời mẫu khi phỏng vấn
+"Tôi dùng @ConfigurationProperties(prefix='app.payment') trên record immutable, bật @Validated và annotation JSR-380 (@NotNull, @Min, @Max, @Pattern) trên field. Nested config cũng là record có @Valid để validation lan xuống. Relaxed binding cho phép env APP_PAYMENT_MERCHANT_ID, YAML merchant-id đều bind vào merchantId camelCase. Record phù hợp config read-only vì immutable, validation chạy trên constructor. Lỗi validation khiến context fail fast lúc startup -- phát hiện sớm thay vì runtime. Tôi không dùng @Value rải rác vì mất type-safe, validation và IDE support. CI có test context load với config hợp lệ và fail với config sai."
+> Senior tip: Hãy coi @ConfigurationProperties như API contract của config. Mọi field đều có validation annotation, nested cũng validate, và có test context load trong CI. Đừng để config sai lọt đến runtime.
 `,
   follow: [
     'Validation annotation tren record constructor parameter khac field annotation ra sao?',
@@ -13816,39 +13816,39 @@ Team cau hinh cong thanh toan qua {{@Value}} rai rac 15 field. Mot lan deploy th
 {
   id: 'spring-051', topic: 'spring', level: 'senior',
   q: 'Profile-specific config (application-{profile}.yml), externalized config precedence (SPRING_CONFIG_* env, configtree), Kubernetes ConfigMap/Secret — thứ tự ưu tiên là gì và bạn thiết kế config cho multi-env thế nào?',
-  a: `**Tom tat:** Spring Boot nap config theo thu tu uu tien (cao nhat ghi de thap nhat): 1) Default property ({{SpringApplication.setDefaultProperties}}), 2) {{@PropertySource}} tren {{@Configuration}}, 3) Config file ({{application.yml}}, application-{profile}.yml) trong classpath, 4) Config file ngoai classpath ({{spring.config.location}}, {{spring.config.import}}), 5) Environment variable ({{SPRING_CONFIG_*}}, {{SPRING_APPLICATION_JSON}}), 6) Command line argument ({{--key=value}}), 7) {{SpringApplication.setAdditionalProfiles}}. Kubernetes ConfigMap/Secret mount thanh file hoac env variable -- deu tham gia thu tu tren. {{spring.config.import=configtree:/config/}} (Boot 2.4+) nap toan bo file trong thu muc (tu Secret mount) theo thu tu alphabetic, ghi de lan nhau.
-### Thu tu uu tien chi tiet (cao -> thap)
+  a: `**Tóm tắt:** Spring Boot nạp config theo thứ tự ưu tiên (cao nhất ghi đè thấp nhất): 1) Default property ({{SpringApplication.setDefaultProperties}}), 2) {{@PropertySource}} trên {{@Configuration}}, 3) Config file ({{application.yml}}, application-{profile}.yml) trong classpath, 4) Config file ngoài classpath ({{spring.config.location}}, {{spring.config.import}}), 5) Environment variable ({{SPRING_CONFIG_*}}, {{SPRING_APPLICATION_JSON}}), 6) Command line argument ({{--key=value}}), 7) {{SpringApplication.setAdditionalProfiles}}. Kubernetes ConfigMap/Secret mount thành file hoặc env variable -- đều tham gia thứ tự trên. {{spring.config.import=configtree:/config/}} (Boot 2.4+) nạp toàn bộ file trong thư mục (từ Secret mount) theo thứ tự alphabetic, ghi đè lần nhau.
+### Thứ tự ưu tiên chi tiết (cao -> thấp)
 1. Command line args ({{--app.payment.timeout=30}})
 2. {{SPRING_APPLICATION_JSON}} (env JSON)
 3. {{SPRING_CONFIG_*}} env ({{SPRING_CONFIG_LOCATION}}, {{SPRING_CONFIG_IMPORT}})
 4. System property ({{-Dapp.payment.timeout=30}})
 5. OS env variable ({{APP_PAYMENT_TIMEOUT=30}}, relaxed binding)
-6. application-{profile}.yml (profile active, vi du {{application-prod.yml}} ghi de {{application.yml}})
-7. {{application.yml}} (mac dinh)
-8. {{spring.config.import}} file ngoai classpath ({{file:}}, {{configtree:}}, {{optional:classpath:}})
+6. application-{profile}.yml (profile active, ví dụ {{application-prod.yml}} ghi đè {{application.yml}})
+7. {{application.yml}} (mặc định)
+8. {{spring.config.import}} file ngoài classpath ({{file:}}, {{configtree:}}, {{optional:classpath:}})
 9. Default property trong code
 ### Kubernetes ConfigMap/Secret
-- Mount ConfigMap thanh file trong {{/config/application.yml}} -> dung {{spring.config.import=optional:file:/config/application.yml}}.
-- Mount Secret thanh file ({{/secrets/db-password}}) -> {{spring.config.import=optional:configtree:/secrets/}} nap tung file lam property (ten file = key, noi dung = value).
-- Hoac mount Secret thanh env variable -> tu bind nho relaxed binding ({{SPRING_DATASOURCE_PASSWORD}} -> {{spring.datasource.password}}).
-- Ket hop: ConfigMap cho config khong nhay cam (timeout, feature flag), Secret cho nhay cam (password, API key). Cung property, Secret env variable (uu tien 5) ghi de ConfigMap file (uu tien 8).
-### Thiet ke multi-env
-- Base config trong {{application.yml}} (chi gia tri an toan, khong secret).
-- Profile-specific {{application-prod.yml}}, {{application-staging.yml}} ghi de base.
-- Secret mount env variable cho password/key (uu tien cao, khong commit git).
-- ConfigMap mount file cho feature flag, timeout (de thay doi khong rebuild image).
-- {{spring.config.import=optional:configtree:/config/}} cho phep override tai runtime bang mount volume moi.
-- CI validate: test context load voi tung profile, assert property quan trong co gia tri.
+- Mount ConfigMap thành file trong {{/config/application.yml}} -> dùng {{spring.config.import=optional:file:/config/application.yml}}.
+- Mount Secret thành file ({{/secrets/db-password}}) -> {{spring.config.import=optional:configtree:/secrets/}} nạp từng file làm property (tên file = key, nội dung = value).
+- Hoặc mount Secret thành env variable -> tự bind nhờ relaxed binding ({{SPRING_DATASOURCE_PASSWORD}} -> {{spring.datasource.password}}).
+- Kết hợp: ConfigMap cho config không nhạy cảm (timeout, feature flag), Secret cho nhạy cảm (password, API key). Cùng property, Secret env variable (ưu tiên 5) ghi đè ConfigMap file (ưu tiên 8).
+### Thiết kế multi-env
+- Base config trong {{application.yml}} (chỉ giá trị an toàn, không secret).
+- Profile-specific {{application-prod.yml}}, {{application-staging.yml}} ghi đè base.
+- Secret mount env variable cho password/key (ưu tiên cao, không commit git).
+- ConfigMap mount file cho feature flag, timeout (để thay đổi không rebuild image).
+- {{spring.config.import=optional:configtree:/config/}} cho phép override tại runtime bằng mount volume mới.
+- CI validate: test context load với từng profile, assert property quan trọng có giá trị.
 ### Pitfall production
-- Commit secret vao git: dung Secret env variable, khong bao gio dat password trong {{application.yml}} hoac ConfigMap.
-- Profile active sai: {{spring.profiles.active}} dat qua env variable tren tung env (K8s: {{envFrom: secretRef}} hoac {{value: "prod"}}).
-- {{optional:}} prefix quan trong: thieu file khong lam crash startup (vi du secret mount delay).
-- Thu tu alphabetic trong {{configtree:}}: file {{10-database.yml}} nap truoc {{20-feature.yml}} -> dat prefix so de kiem soat ghi de.
-### Vi du doi thuc
-He thong microservice 15 service, deploy ArgoCD len K8s dev/staging/prod. Moi service: base {{application.yml}} trong image (timeout, pool size an toan). ConfigMap {{app-config}} mount {{/config/application.yml}} chua feature flag, timeout per env. Secret {{app-secrets}} mount env variable {{SPRING_DATASOURCE_PASSWORD}}, {{APP_PAYMENT_API_KEY}}. {{spring.config.import=optional:file:/config/application.yml}}. Prod dung profile {{prod}} ({{application-prod.yml}} trong image ghi de base). Thu tu ghi de: base image < profile image < ConfigMap file < Secret env. Thay doi feature flag: update ConfigMap, ArgoCD rollout restart pod, khong rebuild image. Thay doi password: update Secret, pod restart tu dong (Relocator sidecar hoac Wave). CI test: {{SpringBootTest}} voi profile dev/staging/prod assert property quan trong.
-### Tra loi mau khi phong van
-"Thu tu uu tien Spring Boot: command line args > SPRING_APPLICATION_JSON > SPRING_CONFIG_* env > system property > OS env > application-{profile}.yml > application.yml > spring.config.import file > default code. Kubernetes: ConfigMap mount file (uu tien thap), Secret mount env variable (uu tien cao nho relaxed binding). Toi thiet ke: base config trong image, profile-specific trong image, ConfigMap cho feature flag/timeout (file), Secret cho password/key (env variable). Cung property, Secret env ghi de ConfigMap file. Dung optional: prefix de thieu file khong crash. CI test context load tung profile assert property quan trong."
-> Senior tip: Dung bao gio commit secret vao git. Dung Secret mount env variable -- no uu tien cao hon ConfigMap file, khong o trong image, va ArgoCD/SealedSecret quan tri tot. Hay ghi ro thu tu uu tien trong README team de ai moi cung hieu tai sao prod lay gia tri A thay vi B.
+- Commit secret vào git: dùng Secret env variable, không bao giờ đặt password trong {{application.yml}} hoặc ConfigMap.
+- Profile active sai: {{spring.profiles.active}} đặt qua env variable trên từng env (K8s: {{envFrom: secretRef}} hoặc {{value: "prod"}}).
+- {{optional:}} prefix quan trọng: thiếu file không làm crash startup (ví dụ secret mount delay).
+- Thứ tự alphabetic trong {{configtree:}}: file {{10-database.yml}} nạp trước {{20-feature.yml}} -> đặt prefix số để kiểm soát ghi đè.
+### Ví dụ đời thực
+Hệ thống microservice 15 service, deploy ArgoCD lên K8s dev/staging/prod. Mỗi service: base {{application.yml}} trong image (timeout, pool size an toàn). ConfigMap {{app-config}} mount {{/config/application.yml}} chứa feature flag, timeout per env. Secret {{app-secrets}} mount env variable {{SPRING_DATASOURCE_PASSWORD}}, {{APP_PAYMENT_API_KEY}}. {{spring.config.import=optional:file:/config/application.yml}}. Prod dùng profile {{prod}} ({{application-prod.yml}} trong image ghi đè base). Thứ tự ghi đè: base image < profile image < ConfigMap file < Secret env. Thay đổi feature flag: update ConfigMap, ArgoCD rollout restart pod, không rebuild image. Thay đổi password: update Secret, pod restart tự động (Relocator sidecar hoặc Wave). CI test: {{SpringBootTest}} với profile dev/staging/prod assert property quan trọng.
+### Trả lời mẫu khi phỏng vấn
+"Thứ tự ưu tiên Spring Boot: command line args > SPRING_APPLICATION_JSON > SPRING_CONFIG_* env > system property > OS env > application-{profile}.yml > application.yml > spring.config.import file > default code. Kubernetes: ConfigMap mount file (ưu tiên thấp), Secret mount env variable (ưu tiên cao nhờ relaxed binding). Tôi thiết kế: base config trong image, profile-specific trong image, ConfigMap cho feature flag/timeout (file), Secret cho password/key (env variable). Cùng property, Secret env ghi đè ConfigMap file. Dùng optional: prefix để thiếu file không crash. CI test context load từng profile assert property quan trọng."
+> Senior tip: Không bao giờ commit secret vào git. Dùng Secret mount env variable -- nó ưu tiên cao hơn ConfigMap file, không ở trong image, và ArgoCD/SealedSecret quản trị tốt. Hãy ghi rõ thứ tự ưu tiên trong README team để ai mới cũng hiểu tại sao prod lấy giá trị A thay vì B.
 `,
   follow: [
     'Khi cung mot property xuat hien o ca ConfigMap file va Secret env, cai nao thang va tai sao?',
