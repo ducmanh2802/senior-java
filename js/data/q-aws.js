@@ -4615,34 +4615,34 @@ Spring Boot 1 GB: cold start thuong 4-5 giay, SnapStart duoi 1 giay, Provisioned
   topic: 'aws',
   level: 'senior',
   q: 'Secrets Manager khác Parameter Store thế nào, luồng xoay mật khẩu RDS hoạt động thế nào, và Spring Boot đọc secret an toàn như thế nào?',
-  a: `**Tóm tắt:** Secrets Manager lưu secret (mat khau CSDL, API key), co xoay tu dong qua Lambda, tinh phi theo moi secret va moi lenh goi API; Parameter Store luu tham so cau hinh (SecureString ma hoa boi KMS), rer hon nhung khong xoay tu dong. Spring Boot doc qua AWS SDK v2 SecretsManagerClient, cache secret trong bo nho, khong ghi secret vao log va khong de trong application.properties.
+  a: `**Tóm tắt:** Secrets Manager lưu secret (mật khẩu CSDL, API key), có xoay tự động qua Lambda, tính phí theo mỗi secret và mỗi lệnh gọi API; Parameter Store lưu tham số cấu hình (SecureString mã hóa bởi KMS), rẻ hơn nhưng không xoay tự động. Spring Boot đọc qua AWS SDK v2 SecretsManagerClient, cache secret trong bộ nhớ, không ghi secret vào log và không để trong application.properties.
 
 ### Thuật ngữ
-- **Secret (bi mat)**: mat khau CSDL, API key, token luu trong Secrets Manager.
-- **Secrets Manager**: dich vu luu va quan ly secret, co xoay tu dong.
-- **Parameter Store**: dich vu luu tham so cau hinh, co SecureString ma hoa boi KMS.
-- **KMS (Key Management Service)**: dich vu quan ly khoa ma hoa AWS.
-- **Rotation (xoay)**: thay mat khau cu bang mat khau moi dinh ky.
-- **Lambda**: ham chay theo su ki, duoc su dung de xoay mat khau RDS.
-- **AWSPENDING / AWSCURRENT**: phien mat chua chua chuan bi va chinh thuc trong rotation.
-- **SDK v2**: bo thu vien AWS moi nhat cho Java.
-- **Cache (bo nho tam)**: luu gia tri da tai de khong goi API lan lan.
-- **TTL (thoi gian chung)**: thoi gian cache duoc phep su dung.
+- **Secret (bí mật)**: mật khẩu CSDL, API key, token lưu trong Secrets Manager.
+- **Secrets Manager**: dịch vụ lưu và quản lý secret, có xoay tự động.
+- **Parameter Store**: dịch vụ lưu tham số cấu hình, có SecureString mã hóa bởi KMS.
+- **KMS (Key Management Service)**: dịch vụ quản lý khóa mã hóa AWS.
+- **Rotation (xoay)**: thay mật khẩu cũ bằng mật khẩu mới định kỳ.
+- **Lambda**: hàm chạy theo sự kiện, được dùng để xoay mật khẩu RDS.
+- **AWSPENDING / AWSCURRENT**: phiên mật chưa chuẩn bị và chính thức trong rotation.
+- **SDK v2**: bộ thư viện AWS mới nhất cho Java.
+- **Cache (bộ nhớ tạm)**: lưu giá trị đã tải để không gọi API lần lặp.
+- **TTL (thời gian sống)**: thời gian cache được phép sử dụng.
 
-### Co che xoay buoc buoc
-1. Bat rotation cho secret RDS, chon chu ky (vi du 30 ngay).
-2. AWS goi rotation Lambda (mau co san cho RDS): tao mat khau moi, luu vao phien ban AWSPENDING.
-3. Lambda kiem tra ket noi DB voi mat khau moi.
-4. Neu thanh cong, AWS promote AWSPENDING thanh AWSCURRENT; ung dung doc AWSCURRENT va nhan mat khau moi.
-5. Neu ung dung cache secret, no co the dung mat khau cu trong khoang TTL cache (vi du 10 phut), sau do tu tai moi. Vi sao cache phai ngan va ung dung phai xu ly loi dang nhap bang tai lai secret.
+### Cơ chế xoay từng bước
+1. Bật rotation cho secret RDS, chọn chu kỳ (ví dụ 30 ngày).
+2. AWS gọi rotation Lambda (mẫu có sẵn cho RDS): tạo mật khẩu mới, lưu vào phiên bản AWSPENDING.
+3. Lambda kiểm tra kết nối DB với mật khẩu mới.
+4. Nếu thành công, AWS promote AWSPENDING thành AWSCURRENT; ứng dụng đọc AWSCURRENT và nhận mật khẩu mới.
+5. Nếu ứng dụng cache secret, nó có thể dùng mật khẩu cũ trong khoảng TTL cache (ví dụ 10 phút), sau đó tự tải mới. Vì sao cache phải ngắn và ứng dụng phải xử lý lỗi đăng nhập bằng tải lại secret.
 
 ~~~java
-// Doc secret voi cache ngan, tranh goi API lan lan
+// Đọc secret với cache ngắn, tránh gọi API lần lặp
 public class SecretCache {
     private final SecretsManagerClient client = SecretsManagerClient.create();
     private String cachedValue;
     private long cachedAt;
-    private static final long TTL_MS = 10 * 60 * 1000; // 10 phut
+    private static final long TTL_MS = 10 * 60 * 1000; // 10 phút
 
     public String get(String secretId) {
         long now = System.currentTimeMillis();
@@ -4656,26 +4656,26 @@ public class SecretCache {
 }
 ~~~
 
-### Bang so sanh
-| Tieu chi | Secrets Manager | Parameter Store |
+### Bảng so sánh
+| Tiêu chí | Secrets Manager | Parameter Store |
 |---|---|---|
-| Noi dung | Secret (mat khau, API key) | Tham so cau hinh (SecureString) |
-| Xoay tu dong | Co (qua Lambda) | Khong |
-| Chi phi | Theo secret + lenh goi API | Rer hon, theo tham so |
-| Ma hoa | KMS tu dong | KMS (SecureString) |
+| Nội dung | Secret (mật khẩu, API key) | Tham số cấu hình (SecureString) |
+| Xoay tự động | Có (qua Lambda) | Không |
+| Chi phí | Theo secret + lệnh gọi API | Rẻ hơn, theo tham số |
+| Mã hóa | KMS tự động | KMS (SecureString) |
 
-### Loi hay gap
-- **Doc secret moi request.** Trieu chung: tach lenh goi API, cham, de bi throttling va tieu tieu phi. Cach sua: cache ngan (5-10 phut), tai lai khi loi dang nhap.
-- **Luu secret trong bien moi truong.** Trieu chung: nhan vien co the xem qua console, log co the ghi. Cach sua: luu trong Secrets Manager, IAM least privilege chi cho role can thiet.
-- **Rotation khong kiem tra ket noi truoc khi promote.** Trieu chung: ung dung dang nhap sai sau khi xoay. Cach sua: kiem tra ket noi voi mat khau moi o buoc 3, kiem thu rotation tren staging.
+### Lỗi hay gặp
+- **Đọc secret mỗi request.** Triệu chứng: tốn lệnh gọi API, chậm, dễ bị throttling và tốn tiền. Cách sửa: cache ngắn (5-10 phút), tải lại khi lỗi đăng nhập.
+- **Lưu secret trong biến môi trường.** Triệu chứng: nhân viên có thể xem qua console, log có thể ghi. Cách sửa: lưu trong Secrets Manager, IAM least privilege chỉ cho role cần thiết.
+- **Rotation không kiểm tra kết nối trước khi promote.** Triệu chứng: ứng dụng đăng nhập sai sau khi xoay. Cách sửa: kiểm tra kết nối với mật khẩu mới ở bước 3, kiểm thử rotation trên staging.
 
-### Vi du doi thuc
-Mat khau RDS xoay moi 30 ngay, app cache 10 phut => sau khi xoay, app con dung mat khau cu toi da 10 phut roi tu tai moi. Neu khong cache he thong 1.000 request/giay => 1.000 lenh GetSecretValue/giay, tieu tieu phi va de bi gioi han goi API (throttling).
+### Ví dụ đời thực
+Mật khẩu RDS xoay mỗi 30 ngày, app cache 10 phút => sau khi xoay, app còn dùng mật khẩu cũ tối đa 10 phút rồi tự tải mới. Nếu không cache hệ thống 1.000 request/giây => 1.000 lệnh GetSecretValue/giây, tốn tiền và dễ bị giới hạn gọi API (throttling).
 
-### Tra loi mau khi pham van
-"Secrets Manager luu bi mat mat khau CSDL, API key, co xoay tu dong qua Lambda va tinh phi theo secret va lenh goi API; Parameter Store luu tham so cau hinh (SecureString ma hoa bang KMS), rer hon nhung khong xoay tu dong. Toi chon Secrets Manager cho mat khau can xoay, Parameter Store cho cau hinh binh thuong. Spring Boot doc qua SecretsManagerClient, cache ngan 5-10 phut, khong ghi log va khong luu trong application.properties. Xoay RDS: Lambda tao mat khau moi, luu AWSPENDING, kiem tra ket noi, sau do promote thanh AWSCURRENT. App doc AWSCURRENT, neu cache thi dung mat khau cu toi da mot khoang TTL roi tai lai. Luon kiem thu rotation tren staging truoc khi bat production."
+### Trả lời mẫu khi phỏng vấn
+"Secrets Manager lưu bí mật mật khẩu CSDL, API key, có xoay tự động qua Lambda và tính phí theo secret và lệnh gọi API; Parameter Store lưu tham số cấu hình (SecureString mã hóa bằng KMS), rẻ hơn nhưng không xoay tự động. Tôi chọn Secrets Manager cho mật khẩu cần xoay, Parameter Store cho cấu hình bình thường. Spring Boot đọc qua SecretsManagerClient, cache ngắn 5-10 phút, không ghi log và không lưu trong application.properties. Xoay RDS: Lambda tạo mật khẩu mới, lưu AWSPENDING, kiểm tra kết nối, sau đó promote thành AWSCURRENT. App đọc AWSCURRENT, nếu cache thì dùng mật khẩu cũ tối đa một khoảng TTL rồi tải lại. Luôn kiểm thử rotation trên staging trước khi bật production."
 
-> Senior tip: xoay mat khau RDS moi 30-90 ngay, nhung rotation Lambda can quyen ket noi DB voi mat khau cu va moi; kiem thu tren staging, va xu ly loi dang nhap bang tai lai secret neu bi thoi gian cache.
+> Senior tip: xoay mật khẩu RDS mỗi 30-90 ngày, nhưng rotation Lambda cần quyền kết nối DB với mật khẩu cũ và mới; kiểm thử trên staging, và xử lý lỗi đăng nhập bằng tải lại secret nếu bị thời gian cache.
 `,
   follow: [
     'Secrets Manager và Parameter Store: chọn cái nào cho API key, cái nào cho cấu hình?',
@@ -4689,58 +4689,59 @@ Mat khau RDS xoay moi 30 ngay, app cache 10 phut => sau khi xoay, app con dung m
   topic: 'aws',
   level: 'lead',
   q: 'IRSA (IAM Role for Service Accounts) và EKS Pod Identity gán quyền cho pod ra sao mà không cần access key, và khi nào chọn cái nào?',
-  a: `**Tóm tắt:** IRSA lien ket Kubernetes service account voi IAM role qua OIDC provider (OpenID Connect, dich vu xac thuc dua tren token JSON duoc ky so); pod goi STS bang token gắn vao, nhan credentials tam thoi (thuong la 1 gio). EKS Pod Identity AWS quan li lien ket, khong can tao OIDC provider, nhung IRSA linh hoac hon (role chaining, nhieu tai khoan AWS). Ca hai deu thay the access key dai han, tuan thu least privilege (chi cap quyen can thiet).
+  a: `**Tóm tắt:** IRSA liên kết Kubernetes service account với IAM role qua OIDC provider (OpenID Connect, dịch vụ xác thực dựa trên token JSON được ký số); pod gọi STS bằng token gắn vào, nhận credentials tạm thời (thường là 1 giờ). EKS Pod Identity AWS quản lý liên kết, không cần tạo OIDC provider, nhưng IRSA linh hoạt hơn (role chaining, nhiều tài khoản AWS). Cả hai đều thay thế access key dài hạn, tuân thủ least privilege (chỉ cấp quyền cần thiết).
 
 ### Thuật ngữ
-- **IRSA (IAM Role for Service Accounts)**: gán vai trò IAM cho service account Kubernetes, pod do nhan quyen cua vai tro.
-- **Service account**: danh tinh Kubernetes dung pod goi API AWS.
-- **OIDC provider (OpenID Connect)**: dich vu xac thuc dua tren token JSON duoc ky so.
-- **Trust relationship (moi quan tin tuy)**: khai bao trong IAM role cho biet OIDC provider nao duoc tin dang nhap.
-- **STS (Security Token Service)**: dich vu cap tham mat tam thoi.
-- **AssumeRoleWithWebIdentity**: lenh STS nhan token web va tra ve tham mat tam thoi.
-- **Credentials tam thoi (AccessKey/SecretKey/SessionToken)**: het han sau mot thoi gian (mac dinh 1 gio), khong can luu dai han.
-- **EKS Pod Identity**: dich vu AWS quan li lien ket service account voi IAM role, khong can OIDC provider.
-- **Instance profile (hinh thuc instance)**: vai tro IAM gán cho EC2 node, tat ca cung pod tren node nhan chung quyen (qua rong).
-- **Least privilege (quyen it nhat)**: chi cap quyen can thiet cho viec can lam.
+- **IRSA (IAM Role for Service Accounts)**: gán vai trò IAM cho service account Kubernetes, pod đó nhận quyền của vai trò.
+- **Service account**: danh tính Kubernetes dùng pod gọi API AWS.
+- **OIDC provider (OpenID Connect)**: dịch vụ xác thực dựa trên token JSON được ký số.
+- **Trust relationship (mối quan hệ tin cậy)**: khai báo trong IAM role cho biết OIDC provider nào được tin đăng nhập.
+- **STS (Security Token Service)**: dịch vụ cấp tham chiếu tạm thời.
+- **AssumeRoleWithWebIdentity**: lệnh STS nhận token web và trả về tham chiếu tạm thời.
+- **Credentials tạm thời (AccessKey/SecretKey/SessionToken)**: hết hạn sau một thời gian (mặc định 1 giờ), không cần lưu dài hạn.
+- **EKS Pod Identity**: dịch vụ AWS quản lý liên kết service account với IAM role, không cần OIDC provider.
+- **Instance profile (hình thức instance)**: vai trò IAM gán cho EC2 node, tất cả cùng pod trên node nhận chung quyền (quá rộng).
+- **Least privilege (quyền ít nhất)**: chỉ cấp quyền cần thiết cho việc cần làm.
 
-### Co che buoc buoc
-1. Tao OIDC provider cho cluster EKS.
-2. Tao IAM role voi trust relationship cho OIDC provider cua cluster va namespace/service account chon.
-3. Gan annotation eks.amazonaws.com/role-arn = arn cua IAM role vao service account.
-4. Pod khoi dong, kubelet gan token vao duong dan /var/run/secrets/eks.amazonaws.com/serviceaccount/token.
-5. SDK goi AssumeRoleWithWebIdentity voi token, nhan AccessKey/SecretKey/SessionToken tam thoi (thoi gian chung 1 gio).
-6. Credentials tu lam moi truoc khi het han; neu ban tu luu, phai cap nhat truoc het han khong loi gap.
+### Cơ chế từng bước
+1. Tạo OIDC provider cho cluster EKS.
+2. Tạo IAM role với trust relationship cho OIDC provider của cluster và namespace/service account chọn.
+3. Gán annotation eks.amazonaws.com/role-arn = arn của IAM role vào service account.
+4. Pod khởi động, kubelet gán token vào đường dẫn /var/run/secrets/eks.amazonaws.com/serviceaccount/token.
+5. SDK gọi AssumeRoleWithWebIdentity với token, nhận AccessKey/SecretKey/SessionToken tạm thời (thời gian sống 1 giờ).
+6. Credentials tự làm mới trước khi hết hạn; nếu bạn tự lưu, phải cập nhật trước hết hạn không lỗi gặp.
 
 ~~~java
-// Voi IRSA, SDK v2 tu dong goi AssumeRoleWithWebIdentity thong qua credential provider chain
-// Chi can tao client binh thuong, khong can doc token hay goi STS thu cong
+// Với IRSA, SDK v2 tự động gọi AssumeRoleWithWebIdentity thông qua credential provider chain
+// Chỉ cần tạo client bình thường, không cần đọc token hay gọi STS thủ công
 S3Client s3 = S3Client.create();
-// Hoac voi region tuy chinh
-S3Client s3 = S3Client.builder().region(Region.AP_SOUTHEAST_1).build();
+
+// Hoặc với region tùy chỉnh
+S3Client s3Custom = S3Client.builder().region(Region.AP_SOUTHEAST_1).build();
 ~~~
 
-### Bang so sanh
-| Tieu chi | EC2 instance profile | IRSA | EKS Pod Identity |
+### Bảng so sánh
+| Tiêu chí | EC2 instance profile | IRSA | EKS Pod Identity |
 |---|---|---|---|
-| Cap quyen cho | Toan ca pod tren node | Moi service account | Moi service account |
-| Can OIDC provider | Khong | Co | Khong |
-| Quan ly | AWS (node) | Ban (role, trust) | AWS |
-| Nhieu tai khoan AWS | Khong | Dung (role chaining) | Khong |
-| Dung khi nao | Tat ca cung mot quyen | Nhieu role chi tiet, nhieu tai khoan | Mot tai khoan, don gian |
+| Cấp quyền cho | Toàn cả pod trên node | Mỗi service account | Mỗi service account |
+| Cần OIDC provider | Không | Có | Không |
+| Quản lý | AWS (node) | Bạn (role, trust) | AWS |
+| Nhiều tài khoản AWS | Không | Được (role chaining) | Không |
+| Dùng khi nào | Tất cả cùng một quyền | Nhiều role chi tiết, nhiều tài khoản | Một tài khoản, đơn giản |
 
-### Loi hay gap
-- **Pod khong co quyen.** Trieu chung: AccessDenied. Nguyen nhan: quên annotation hoac chua tao OIDC provider. Cach sua: kiem tra annotation service account, xem CloudTrail AccessDenied.
-- **Dung node instance profile cho tat ca pod.** Trieu chung: quyen qua rong, vi pham least privilege (service order doc duoc bucket cua service payment). Cach sua: moi service account mot role rieng biet.
-- **Luu credentials qua lau.** Trieu chung: sau 1 gio het han, loi goi API. Cach sua: de SDK lam moi tu dong, khong tu luu vao bo nho lau dai.
-- **Debug AccessDenied.** Cach sua: chay aws sts get-caller-identity trong pod de biet danh tinh dang su dung.
+### Lỗi hay gặp
+- **Pod không có quyền.** Triệu chứng: AccessDenied. Nguyên nhân: quên annotation hoặc chưa tạo OIDC provider. Cách sửa: kiểm tra annotation service account, xem CloudTrail AccessDenied.
+- **Dùng node instance profile cho tất cả pod.** Triệu chứng: quyền quá rộng, vi phạm least privilege (service order đọc được bucket của service payment). Cách sửa: mỗi service account một role riêng biệt.
+- **Lưu credentials quá lâu.** Triệu chứng: sau 1 giờ hết hạn, lỗi gọi API. Cách sửa: để SDK làm mới tự động, không tự lưu vào bộ nhớ lâu dài.
+- **Debug AccessDenied.** Cách sửa: chạy aws sts get-caller-identity trong pod để biết danh tính đang sử dụng.
 
-### Vi du doi thuc
-Ba microservice (don hang, thanh toan, kho) o namespace rieng nhau, moi service account co IAM role rieng (don-hang-role doc queue don hang, thanh-toan-role ghi DB thanh toan). Truoc do tat ca pod dung chung node instance profile => service don hang co the doc bucket thanh toan, nguy co bao mat. Sau IRSA, moi service chi co quyen can thiet, va AccessDenied duoc tra cuu qua CloudTrail.
+### Ví dụ đời thực
+Ba microservice (đơn hàng, thanh toán, kho) ở namespace riêng nhau, mỗi service account có IAM role riêng (don-hang-role đọc queue đơn hàng, thanh-toan-role ghi DB thanh toán). Trước đó tất cả pod dùng chung node instance profile => service đơn hàng có thể đọc bucket thanh toán, nguy cơ bảo mật. Sau IRSA, mỗi service chỉ có quyền cần thiết, và AccessDenied được tra cứu qua CloudTrail.
 
-### Tra loi mau khi pham van
-"IRSA lien ket service account Kubernetes voi IAM role qua OIDC provider; pod nhan token gắn vao, goi STS AssumeRoleWithWebIdentity, nhan tham mat tam thoi (thuong la mot gio). EKS Pod Identity la dich vu AWS quan li lien ket, khong can tao OIDC provider, nhung IRSA linh hoc hon nhieu role va nhieu tai khoan. Toi chon IRSA khi can nhieu role chi tiet hoac nhieu tai khoan AWS; EKS Pod Identity neu chi mot tai khoan va muon don gian. Moi service account nhan role theo least privilege; neu gap AccessDenied, toi kiem tra annotation service account, OIDC provider va truy van CloudTrail."
+### Trả lời mẫu khi phỏng vấn
+"IRSA liên kết service account Kubernetes với IAM role qua OIDC provider; pod nhận token gắn vào, gọi STS AssumeRoleWithWebIdentity, nhận tham chiếu tạm thời (thường là một giờ). EKS Pod Identity là dịch vụ AWS quản lý liên kết, không cần tạo OIDC provider, nhưng IRSA linh hoạt hơn nhiều role và nhiều tài khoản. Tôi chọn IRSA khi cần nhiều role chi tiết hoặc nhiều tài khoản AWS; EKS Pod Identity nếu chỉ một tài khoản và muốn đơn giản. Mỗi service account nhận role theo least privilege; nếu gặp AccessDenied, tôi kiểm tra annotation service account, OIDC provider và truy vấn CloudTrail."
 
-> Senior tip: uu tien IRSA khi nhieu role chi tiet hoac nhieu tai khoan AWS; EKS Pod Identity don gian hon neu mot tai khoan; luon cap quyen it nhat, va Xem AccessDenied qua CloudTrail truoc khi them quyen them.
+> Senior tip: ưu tiên IRSA khi nhiều role chi tiết hoặc nhiều tài khoản AWS; EKS Pod Identity đơn giản hơn nếu một tài khoản; luôn cấp quyền ít nhất, và Xem AccessDenied qua CloudTrail trước khi thêm quyền thêm.
 `,
   follow: [
     'IRSA và EKS Pod Identity khác nhau ở đâu, chọn cái nào?',
@@ -4753,28 +4754,28 @@ Ba microservice (don hang, thanh toan, kho) o namespace rieng nhau, moi service 
   id: 'aws-068',
   topic: 'aws',
   level: 'senior',
-  q: 'Triển khai bản Spring Boot mới lên ECS Fargate sau ALB: rolling update mặc định của ECS không đủ khi bản mới chạy được nhưng tra sai du lieu, va migration database phai chay truoc ban moi. Ban dung CodeDeploy blue/green nhu the no, va rollback tu dong khi xay ra loi 5xx ra sao?',
-  a: `**Tom tat:** CodeDeploy blue/green chay ban moi (green) cung luc voi ban cu (blue), chuyen traffic qua ALB theo ty le (canary 10% roi 100%), va tu quay ve ban cu neu bao cao bao dong CloudWatch (ty le 5xx, do tra p99) vuot ngưỡng. Rolling update thuan cua ECS chi biet da task healthy chua, khong phat hien duoc ban "chay duoc nhung tra sai du lieu".
+  q: 'Triển khai bản Spring Boot mới lên ECS Fargate sau ALB: rolling update mặc định của ECS không đủ khi bản mới chạy được nhưng trả sai dữ liệu, và migration database phải chạy trước bản mới. Bạn dùng CodeDeploy blue/green như thế nào, và rollback tự động khi xảy ra lỗi 5xx ra sao?',
+  a: `**Tóm tắt:** CodeDeploy blue/green chạy bản mới (green) cùng lúc với bản cũ (blue), chuyển traffic qua ALB theo tỷ lệ (canary 10% rồi 100%), và tự quay về bản cũ nếu báo cáo báo động CloudWatch (tỷ lệ 5xx, độ trễ p99) vượt ngưỡng. Rolling update thuần của ECS chỉ biết đã task healthy chưa, không phát hiện được bản "chạy được nhưng trả sai dữ liệu".
 
-### Hieu nhanh
-Hay tuong tuong quán co hai hang counter: hang cu van phuc vu khach, hang moi mo ben chanh nhung chua cong nhac. Quan ly (CodeDeploy) moi mot phan nho khach sang hang moi, xem co phan khong, roi moi doi ca quay. Neu khach moi bat dau phan khan (loi 5xx), quan ly kich cua hang moi va quay lai hang cu. Rolling update chi kiem tra "nhan vien moi da den lam viec chua", khong biet nhan vien do co phuc vu sai mon hay khong.
+### Hiểu nhanh
+Hãy tưởng tượng quán có hai hàng counter: hàng cũ vẫn phục vụ khách, hàng mới mở bên cạnh nhưng chưa công nhận. Quản lý (CodeDeploy) mời một phần nhỏ khách sang hàng mới, xem có phàn nàn không, rồi mới đổi cả quá quay. Nếu khách mới bắt đầu phàn khàn (lỗi 5xx), quản lý kích cửa hàng mới và quay lại hàng cũ. Rolling update chỉ kiểm tra "nhân viên mới đã đến làm việc chưa", không biết nhân viên đó có phục vụ sai món hay không.
 
-### Thuat ngu
-- Blue/green deployment: ban cu (blue) va ban moi (green) chay cung luc, traffic chuyen qua CodeDeploy thay thay chinh tuc tai.
-- Canary: chuyen mot phan nho traffic sang ban moi truoc khi mo rong toan bo.
-- AppSpec: file YAML khai bao quy trinh trien khai cua CodeDeploy, gom cac hook truoc/trong/sau khi chuyen traffic.
-- AfterAllowTestTraffic: hook chay kiem tra tu dong sau khi mot phan traffic da di sang ban moi.
-- Deployment configuration: quy tuc chuyen traffic, vi du Canary10Percent5Minutes (10% trong 5 phut roi doi) hoac Linear10PercentEvery1Minute.
-- CloudWatch alarm: bo chu tu ALB, vi du HTTPCode_Target_5XX_Count va TargetResponseTime p99, kich hoat rollback.
-- Rollback tu dong: CodeDeploy thao tac ban moi va tra lai ban task revision cu da chay on dinh.
+### Thuật ngữ
+- Blue/green deployment: bản cũ (blue) và bản mới (green) chạy cùng lúc, traffic chuyển qua CodeDeploy thay thay chỉnh tức thì.
+- Canary: chuyển một phần nhỏ traffic sang bản mới trước khi mở rộng toàn bộ.
+- AppSpec: file YAML khai báo quy trình triển khai của CodeDeploy, gồm các hook trước/trong/sau khi chuyển traffic.
+- AfterAllowTestTraffic: hook chạy kiểm tra tự động sau khi một phần traffic đã đi sang bản mới.
+- Deployment configuration: quy tắc chuyển traffic, ví dụ Canary10Percent5Minutes (10% trong 5 phút rồi đợi) hoặc Linear10PercentEvery1Minute.
+- CloudWatch alarm: bộ chủ từ ALB, ví dụ HTTPCode_Target_5XX_Count và TargetResponseTime p99, kích hoạt rollback.
+- Rollback tự động: CodeDeploy tháo tác bản mới và trả lại bản task revision cũ đã chạy ổn định.
 
-### Co che chung buoc
-1. CI build image, tag theo git SHA, push ECR, dang ky task definition revision moi tro toi image do.
-2. CodeDeploy tao DeploymentGroup cho ECS: nhom blue la task revision cu, nhom green la revision moi, ca hai gan vao listener va target group cua ALB (CodeDeploy dung hai target group rieng cho blue va green).
-3. Theo AppSpec, hook truoc khi chuyen traffic chay migration database (qua task one-off hoac Lambda) de schema moi san sang truoc khi green nhan traffic.
-4. CodeDeploy chuyen traffic theo ty le quy dinh, ALB bat dau gui mot phan request sang task green.
-5. Trong cua so theo doi, neu bao cao bao dong CloudWatch vuot ngưỡng (vi du 5xx qua 1% trong 5 phut), CodeDeploy danh dau deployment that bai, dung chuyen traffic va rollback ve blue.
-6. Neu on dinh, chuyen 100% traffic sang green roi xoa task blue cu.
+### Cơ chế chung từng bước
+1. CI build image, tag theo git SHA, push ECR, đăng ký task definition revision mới trỏ tới image đó.
+2. CodeDeploy tạo DeploymentGroup cho ECS: nhóm blue là task revision cũ, nhóm green là revision mới, cả hai gắn vào listener và target group của ALB (CodeDeploy dùng hai target group riêng cho blue và green).
+3. Theo AppSpec, hook trước khi chuyển traffic chạy migration database (qua task one-off hoặc Lambda) để schema mới sẵn sàng trước khi green nhận traffic.
+4. CodeDeploy chuyển traffic theo tỷ lệ quy định, ALB bắt đầu gửi một phần request sang task green.
+5. Trong cửa sổ theo dõi, nếu báo cáo báo động CloudWatch vượt ngưỡng (ví dụ 5xx quá 1% trong 5 phút), CodeDeploy đánh dấu deployment thất bại, dừng chuyển traffic và rollback về blue.
+6. Nếu ổn định, chuyển 100% traffic sang green rồi xóa task blue cũ.
 
 ### Code guard readiness (Spring Boot)
 ~~~java
@@ -4788,7 +4789,7 @@ public class MigrationGuardController {
 
     @GetMapping("/actuator/health/readiness")
     public ResponseEntity<Void> readiness() {
-        // Tra 503 khi migration chua chay xong: ALB coi target unhealthy, CodeDeploy khong gui traffic xanh
+        // Trả 503 khi migration chưa chạy xong: ALB coi target unhealthy, CodeDeploy không gửi traffic xanh
         if (!migrationRepository.isMigrationComplete()) {
             return ResponseEntity.status(HttpStatus.SERVICE_UNAVAILABLE).build();
         }
@@ -4798,31 +4799,31 @@ public class MigrationGuardController {
 ~~~
 
 ### Rolling update vs blue/green
-| Tieu chi | Rolling update (ECS) | Blue/green (CodeDeploy) |
+| Tiêu chí | Rolling update (ECS) | Blue/green (CodeDeploy) |
 |---|---|---|
-| Cach thay the | Task cu bi xoa khi task moi healthy | Ban moi chay cung cung, chuyen traffic dan |
-| Phat hien tra sai du lieu | Khong, chi kiem tra task healthy | Co, qua bao 5xx/latency trong cua so theo doi |
-| Rollback | Thao tac task moi, giu lai revision cu (cham) | Tu dong quay ve blue khi bao |
-| Migration DB | Phai chay truoc hoac tuong thich nghich | Chay trong hook truoc khi chuyen traffic |
-| Phu hop | Ban nho, khong thay doi schema | Ban co migration, can rollback nhanh |
+| Cách thay thế | Task cũ bị xóa khi task mới healthy | Bản mới chạy cùng lúc, chuyển traffic dần |
+| Phát hiện trả sai dữ liệu | Không, chỉ kiểm tra task healthy | Có, qua báo 5xx/latency trong cửa sổ theo dõi |
+| Rollback | Tháo tác task mới, giữ lại revision cũ (chậm) | Tự động quay về blue khi báo |
+| Migration DB | Phải chạy trước hoặc tương thích ngược | Chạy trong hook trước khi chuyển traffic |
+| Phù hợp | Bản nhỏ, không thay đổi schema | Bản có migration, cần rollback nhanh |
 
-### Loi hay gap
-- **Chay migration trong task cung luc nhieu ban.** Trieu chung: hai revision cung chay migration, gay khoa bang hoac loi trung du lieu. Cach tranh: migration buoc rieng, chay mot lan qua task one-off hoac Lambda truoc khi green nhan traffic.
-- **Hook AfterAllowTestTraffic khong chay hoac chay sai.** Trieu chung: traffic da chuyen sang green nhung khong kiem tra, loi moi chi phat hien sau khi khach phan khan. Cach tranh: gan hook kiem tra smoke test (goi /actuator/health, dat don kiem tra) va bao rollback.
-- **Quen cau hinh bao rollback.** Trieu chung: deployment xanh dung ung dung tra 50%, CodeDeploy khong biet. Cach tranh: luon gan bao CloudWatch vao deployment group, cua so theo doi du dai (it it nhat mo phut).
-- **ALB deregistration delay qua ngan khi rollback.** Trieu chung: request con dang tren task blue bi xoa ngay, khach thay 502. Cach tranh: dat deregistration delay 30-60 giay va graceful shutdown trong Spring Boot.
+### Lỗi hay gặp
+- **Chạy migration trong task cùng lúc nhiều bản.** Triệu chứng: hai revision cùng chạy migration, gây khóa bảng hoặc lỗi trùng dữ liệu. Cách tránh: migration bước riêng, chạy một lần qua task one-off hoặc Lambda trước khi green nhận traffic.
+- **Hook AfterAllowTestTraffic không chạy hoặc chạy sai.** Triệu chứng: traffic đã chuyển sang green nhưng không kiểm tra, lỗi mới chỉ phát hiện sau khi khách phàn khàn. Cách tránh: gán hook kiểm tra smoke test (gọi /actuator/health, đặt đơn kiểm tra) và báo rollback.
+- **Quên cấu hình báo rollback.** Triệu chứng: deployment xanh dung ứng dụng trả 50%, CodeDeploy không biết. Cách tránh: luôn gán báo CloudWatch vào deployment group, cửa sổ theo dõi đủ dài (ít nhất một phút).
+- **ALB deregistration delay quá ngắn khi rollback.** Triệu chứng: request còn đang trên task blue bị xóa ngay, khách thấy 502. Cách tránh: đặt deregistration delay 30-60 giây và graceful shutdown trong Spring Boot.
 
-### Tra loi mau khi phan vien
-"Voi Spring Boot tren ECS Fargate, toi dung CodeDeploy blue/green thay vi rolling update thuan khi co migration database. Qua trinh: image build mot lan, tag theo git SHA; CodeDeploy chay revision moi cung cung, thuc hien migration trong hook truoc khi chuyen traffic, roi chuyen traffic qua ALB theo ty le canary. Trong cua so theo doi, bao CloudWatch tren ty le 5xx va do tra p99 cua ALB kich hoat rollback tu dong ve revision cu neu co su co. Toi cung dat readiness endpoint tra 503 trong khi migration chua xong, deregistration delay du dai de khong ro request, va graceful shutdown trong Spring Boot. Rolling update chi dung cho ban nho khong thay doi schema."
-> Senior tip: rollback tot nhat la rollback khong ai cam thay — hay dien thao lap deploy ban loi co y trong staging va chung minh bao 5xx keo CodeDeploy quay ve ban cu trong it nhat mo phut, chu khong doi khach bao loi.
+### Trả lời mẫu khi phỏng viên
+"Với Spring Boot trên ECS Fargate, tôi dùng CodeDeploy blue/green thay vì rolling update thuần khi có migration database. Quá trình: image build một lần, tag theo git SHA; CodeDeploy chạy revision mới cùng lúc, thực hiện migration trong hook trước khi chuyển traffic, rồi chuyển traffic qua ALB theo tỷ lệ canary. Trong cửa sổ theo dõi, báo CloudWatch trên tỷ lệ 5xx và độ trễ p99 của ALB kích hoạt rollback tự động về revision cũ nếu có sự cố. Tôi cũng đặt readiness endpoint trả 503 trong khi migration chưa xong, deregistration delay đủ dài để không rớ request, và graceful shutdown trong Spring Boot. Rolling update chỉ dùng cho bản nhỏ không thay đổi schema."
+> Senior tip: rollback tốt nhất là rollback không ai cảm thấy — hay diễn thảo lập deploy bản lỗi có ý trong staging và chứng minh báo 5xx kéo CodeDeploy quay về bản cũ trong ít nhất mốt phút, chứ không đợi khách báo lỗi.
 
-### Vi du doi thuc
-Mot doi van he thong don hang Spring Boot tren ECS Fargate, hai task sau ALB. Lan dau dung rolling update, deploy ban them cot not null vao bang don hang: task moi healthy nhung moi don moi loi "cot not null", hon 200 don bi tu choi trong 10 phut truoc khi doi nhan ra va rollback thu cong. Sau do chuyen sang CodeDeploy blue/green: migration chay qua task one-off truoc khi green nhan traffic, chuyen 10% traffic trong 5 phut, bao CloudWatch theo doi HTTPCode_Target_5XX_Count va TargetResponseTime. Lan deploy sau co loi moi, bao vuot ngưỡng trong 3 phut, CodeDeploy tu rollback ve revision cu, khach gan nhu khong cam thay. Ket qua: thoi gian khoi phuc tu va gio xuong con duoi 5 phut, va moi deployment deu co diem quay ve duoc thu thap truoc.
-  `,
+### Ví dụ đời thực
+Một đội vận hành hệ thống đơn hàng Spring Boot trên ECS Fargate, hai task sau ALB. Lần đầu dùng rolling update, deploy bản thêm cột not null vào bảng đơn hàng: task mới healthy nhưng mỗi đơn mới lỗi "cột not null", hơn 200 đơn bị từ chối trong 10 phút trước khi đội nhận ra và rollback thủ công. Sau đó chuyển sang CodeDeploy blue/green: migration chạy qua task one-off trước khi green nhận traffic, chuyển 10% traffic trong 5 phút, báo CloudWatch theo dõi HTTPCode_Target_5XX_Count và TargetResponseTime. Lần deploy sau có lỗi mới, báo vượt ngưỡng trong 3 phút, CodeDeploy tự rollback về revision cũ, khách gần như không cảm thấy. Kết quả: thời gian khôi phục từ vạ giờ xuống còn dưới 5 phút, và mỗi deployment đều có điểm quay về được thu thập trước.
+`,
   follow: [
-    'CodeDeploy blue/green cho ECS dung mot hay hai target group cua ALB?',
-    'Migration database trong hook truoc khi chuyen traffic: neu migration that bai CodeDeploy lam gi?',
-    'Rollback tu dong cua CodeDeploy khac rollback tay trong ECS console o diem nao?'
+    'CodeDeploy blue/green cho ECS dùng một hay hai target group của ALB?',
+    'Migration database trong hook trước khi chuyển traffic: nếu migration thất bại CodeDeploy làm gì?',
+    'Rollback tự động của CodeDeploy khác rollback tay trong ECS console ở điểm nào?'
   ],
   tags: ['ECS', 'Fargate', 'CodeDeploy', 'blue-green', 'canary', 'rollback']
 },
@@ -4830,78 +4831,79 @@ Mot doi van he thong don hang Spring Boot tren ECS Fargate, hai task sau ALB. La
   id: 'aws-069',
   topic: 'aws',
   level: 'lead',
-  q: 'He thong event-driven Java xu ly su kien tai chinh: don hang can thu tu theo tung tai khoan, clickstream can xem lai du lieu trong 30 ngay, va nhieu nhom cung dung cung luong su kien. Ban chon Kinesis Data Streams hay Amazon MSK (Kafka managed), va trade-off van hanh ra sao?',
-  a: `**Tom tat:** Kinesis Data Streams la stream managed don gian: du lieu ghi vao shard, gui toi da 365 ngay, moi consumer doc doc lap qua con tro cua minh, integrate san voi Lambda. MSK la Kafka managed day du tinh nang (consumer group, compacted topic, Kafka Connect, MirrorMaker), phuc tap hon ve van hanh nhung linh hoat hon cho nhieu consumer va he sinh tai Kafka. Chon Kinesis khi muon it van hanh va xu ly thoi gian gan thuc tai; chon MSK khi doi da co kinh tien Kafka ho can nhieu consumer phuc tap, compacted topic, ho ket noi he thong ngoai qua Connect.
+  q: 'Hệ thống event-driven Java xử lý sự kiện tài chính: đơn hàng cần thứ tự theo từng tài khoản, clickstream cần xem lại dữ liệu trong 30 ngày, và nhiều nhóm cùng dùng cùng lượng sự kiện. Bạn chọn Kinesis Data Streams hay Amazon MSK (Kafka managed), và trade-off vận hành ra sao?',
+  a: `**Tóm tắt:** Kinesis Data Streams là stream managed đơn giản: dữ liệu ghi vào shard, giữ tối đa 365 ngày, mỗi consumer đọc độc lập qua con trỏ của mình, tích hợp sẵn với Lambda. MSK là Kafka managed đầy đủ tính năng (consumer group, compacted topic, Kafka Connect, MirrorMaker), phức tạp hơn về vận hành nhưng linh hoạt hơn cho nhiều consumer và hệ sinh thái tại Kafka. Chọn Kinesis khi muốn ít vận hành và xử lý thời gian gần thực tại; chọn MSK khi đội đã có kinh nghiệm Kafka hoặc cần nhiều consumer phức tạp, compacted topic, hoặc kết nối hệ thống ngoài qua Connect.
 
-### Hieu nhanh
-Kinesis giong cuon so yeu khach: moi dong su kien ghi theo thu tu vao mot trang (shard), nhieu nguoi co the doc cung cuon so nhung moi nho minh da doc toi trang nao, va cuon so chi giu 24 den 365 ngay. MSK giong he thong phong thu chuyen nghien: nhieu bo thu (broker), moi kenh (topic) chia thanh nhieu trang (partition), moi nhom nghe (consumer group) theo doi da nghe toi trang nao, co the nghe lai kenh cu (compacted topic), va co cong tu ket noi he thong ngoai (Kafka Connect). Phong thu manh hon nhung can nhan vien van hanh.
+### Hiểu nhanh
+Kinesis giống cuốn sổ yêu cầu: mỗi dòng sự kiện ghi theo thứ tự vào một trang (shard), nhiều người có thể đọc cùng cuốn sổ nhưng mỗi nhớ mình đã đọc tới trang nào, và cuốn sổ chỉ giữ 24 đến 365 ngày. MSK giống hệ thống phòng thư chuyên nghiệp: nhiều bộ thư (broker), mỗi kênh (topic) chia thành nhiều trang (partition), mỗi nhóm nghe (consumer group) theo dõi đã nghe tới trang nào, có thể nghe lại kênh cũ (compacted topic), và có cổng tự kết nối hệ thống ngoài (Kafka Connect). Phòng thư mạnh hơn nhưng cần nhân viên vận hành.
 
-### Thuat ngu
-- Shard: don vi ghi va doc song song cua Kinesis, moi ho tro 1 MB/s ghi va 2 MB/s doc, chia su throughput tong cua stream.
-- Sequence number: so thu tu cua moi ban ghi trong shard, dung lam con tro doc.
-- Retention: thoi gian gui du lieu trong stream, mac dinh 24 ngay, toi da 365 ngay.
-- Consumer / checkpoint: ung dung doc stream va luu tien trinh doc (checkpoint) thong qua DynamoDB, de doc tiep tu diem dung.
-- Topic: ten kenh su kien trong Kafka/MSK.
-- Partition: moi topic chia thanh nhieu partition, ghi duoc thu tu chi trong mot partition.
-- Consumer group: nhom ung dung doc cung topic, Kafka quan ly offset cua moi nhom doc lap.
-- Compacted topic: topic chi giu ban ghi moi nhat theo khoa, dung luu trang thai moi nhat (tuong tu bang tra cuu).
-- Kafka Connect: cong tu dua du lieu vao/ra Kafka tu dong (vi du doc tu PostgreSQL ghi vao Kafka).
-- MirrorMaker: cong replicate du lieu giua hai cluster Kafka (vi du giua hai region).
+### Thuật ngữ
+- Shard: đơn vị ghi và đọc song song của Kinesis, mỗi shard hỗ trợ 1 MB/s ghi và 2 MB/s đọc, throughput tổng của stream bằng tổng các shard.
+- Sequence number: số thứ tự của mỗi bản ghi trong shard, dùng làm con trỏ đọc.
+- Retention: thời gian giữ dữ liệu trong stream, mặc định 24 ngày, tối đa 365 ngày.
+- Consumer / checkpoint: ứng dụng đọc stream và lưu tiến trình đọc (checkpoint) thông qua DynamoDB, để đọc tiếp từ điểm dừng.
+- Topic: tên kênh sự kiện trong Kafka/MSK.
+- Partition: mỗi topic chia thành nhiều partition, ghi được thứ tự chỉ trong một partition.
+- Consumer group: nhóm ứng dụng đọc cùng topic, Kafka quản lý offset của mỗi nhóm đọc độc lập.
+- Compacted topic: topic chỉ giữ bản ghi mới nhất theo khóa, dùng lưu trạng thái mới nhất (tương tự bảng tra cứu).
+- Kafka Connect: cổng tự đưa dữ liệu vào/ra Kafka tự động (ví dụ đọc từ PostgreSQL ghi vào Kafka).
+- MirrorMaker: cổng replicate dữ liệu giữa hai cluster Kafka (ví dụ giữa hai region).
 
-### Co che chung buoc
-**Ghi vao Kinesis:** ung dung goi PutRecord voi partition key (vi du accountId), Kinesis bam partition key de chon shard, gui ban ghi voi sequence number, tra ve ngay. Vi sao: cung accountId luon vao cung shard nen thu tu su kien cua tai khoan do duoc giu.
-**Doc Kinesis:** consumer lay shard iterator, doc ban ghi theo batch, xu ly, luu checkpoint vao DynamoDB. Neu consumer bi xet, doc tiep tu checkpoint cuoi.
-**Ghi vao MSK:** producer gui ban ghi toi broker-leader cua partition, broker replicate sang cac broker theo he so replication (vi du 3), xac nhan khi du replica ghi. Vi sao: du lieu khong mat khi mot broker bi xet.
-**Doc MSK:** consumer group doc partition, luu offset trong Kafka (__consumer_offsets topic), nhieu nhom doc cung topic khong anh nhau.
+### Cơ chế chung từng bước
+**Ghi vào Kinesis:** ứng dụng gọi PutRecord với partition key (ví dụ accountId), Kinesis băm partition key để chọn shard, gửi bản ghi với sequence number, trả về ngay. Vì sao: cùng accountId luôn vào cùng shard nên thứ tự sự kiện của tài khoản đó được giữ.
+**Đọc Kinesis:** consumer lấy shard iterator, đọc bản ghi theo batch, xử lý, lưu checkpoint vào DynamoDB. Nếu consumer bị xết, đọc tiếp từ checkpoint cuối.
+**Ghi vào MSK:** producer gửi bản ghi tới broker-leader của partition, broker replicate sang các broker theo hệ số replication (ví dụ 3), xác nhận khi đủ replica ghi. Vì sao: dữ liệu không mất khi một broker bị xết.
+**Đọc MSK:** consumer group đọc partition, lưu offset trong Kafka (__consumer_offsets topic), nhiều nhóm đọc cùng topic không ảnh nhau.
 
-### Code: producer Kafka voi xac nhan an toan
+### Code: producer Kafka với xác nhận an toàn
 ~~~java
 Properties props = new Properties();
 props.put(ProducerConfig.BOOTSTRAP_SERVERS_CONFIG, bootstrapServers);
 props.put(ProducerConfig.KEY_SERIALIZER_CLASS_CONFIG, StringSerializer.class.getName());
 props.put(ProducerConfig.VALUE_SERIALIZER_CLASS_CONFIG, JsonSerializer.class.getName());
-props.put(ProducerConfig.ACKS_CONFIG, "all");        // cho tat ca replica dong bo xac nhan
-props.put(ProducerConfig.RETRIES_CONFIG, 3);          // thu lai neu loi tam thoi
-props.put(ProducerConfig.MAX_IN_FLIGHT_REQUESTS_PER_CONNECTION, 1); // giu thu tu gui theo khoa
+props.put(ProducerConfig.ACKS_CONFIG, "all");        // cho tất cả replica đồng bộ xác nhận
+props.put(ProducerConfig.RETRIES_CONFIG, 3);          // thử lại nếu lỗi tạm thời
+props.put(ProducerConfig.MAX_IN_FLIGHT_REQUESTS_PER_CONNECTION, 1); // giữ thứ tự gửi theo khóa
 KafkaProducer<String, OrderEvent> producer = new KafkaProducer<>(props);
 producer.send(new ProducerRecord<>("orders", order.getAccountId(), order), (metadata, exception) -> {
     if (exception != null) {
-        log.error("Gui su kien that bai", exception);
-        // gui vao hang doi thu lai hoac dead-letter
+        log.error("Gửi sự kiện thất bại", exception);
+        // gửi vào hàng đợi thử lại hoặc dead-letter
     }
 });
 producer.close();
 ~~~
 
-### So sanh Kinesis va MSK
-| Tieu chi | Kinesis Data Streams | Amazon MSK |
+### So sánh Kinesis và MSK
+| Tiêu chí | Kinesis Data Streams | Amazon MSK |
 |---|---|---|
-| Quan ly | Managed day du, khong quan broker | Managed nhung van quan topic, partition, consumer group |
-| Thu tu | Theo shard (khoa partition) | Theo partition |
-| Gui du lieu | 24 gio-365 ngay | Tuong tu retention cau hinh (co the lau hon) |
-| Nhieu consumer | Moi consumer tu luu checkpoint | Consumer group quan ly offset tap trung |
-| Truy van lai cu | Doc tu sequence number | Doc tu offset, compacted topic gui trang thai moi nhat |
-| Ket noi he thong ngoai | Gui hoac Lambda | Kafka Connect co san |
-| Chi phi van hanh | Thap | Cao (can van hanh cluster, chuyen gia Kafka) |
-| Tich hop Lambda | Event source mapping co san | Co, qua ban sao stream hoac nguoi dung tu tich hop |
+| Quản lý | Managed đầy đủ, không quản broker | Managed nhưng vẫn quản topic, partition, consumer group |
+| Thứ tự | Theo shard (khóa partition) | Theo partition |
+| Giữ dữ liệu | 24 giờ-365 ngày | Tương tự retention cấu hình (có thể lâu hơn) |
+| Nhiều consumer | Mỗi consumer tự lưu checkpoint | Consumer group quản lý offset tập trung |
+| Truy vấn lại cũ | Đọc từ sequence number | Đọc từ offset, compacted topic giữ trạng thái mới nhất |
+| Kết nối hệ thống ngoài | GUI hoặc Lambda | Kafka Connect có sẵn |
+| Chi phí vận hành | Thấp | Cao (cần vận hành cluster, chuyên gia Kafka) |
+| Tích hợp Lambda | Event source mapping có sẵn | Có, qua bản sao stream hoặc người dùng tự tích hợp |
 
-### Loi hay gap
-- **Partition key yeu tren Kinesis.** Trieu chung: toan bo su kien don vao mot shard, throughput tran, cac shard khac rong. Cach tranh: dung khoa co gia tri khac nhau (accountId, orderId) chu khong phai ngay thang.
-- **Consumer Kinesis bi lag va chua checkpoint.** Trieu chung: restart consumer thi doc lai tu thoi diem cu, xu ly trung su kien. Cach tranh: checkpoint dinh ki va lam consumer idempotent.
-- **MSK producer khong cho replica.** Trieu chung: broker leader bi xet ngay sau khi gui, du lieu moi nhat bi mat vi chi gui vao leader. Cach tranh: acks=all va replication factor >= 3.
-- **Khong chay nhieu consumer group tren MSK vi chua hieu offset.** Trieu chung: nhom moi doc tu dau topic, dua tram trieu su kien cu vao he thong xuong dong. Cach tranh: cau hinh auto.offset.reset = earliest/latest co y nghia va reset offset thap minh.
+### Lỗi hay gặp
+- **Partition key yếu trên Kinesis.** Triệu chứng: toàn bộ sự kiện đổ vào một shard, throughput tràn, các shard khác rỗng. Cách tránh: dùng khóa có giá trị khác nhau (accountId, orderId) chứ không phải ngày tháng.
+- **Consumer Kinesis bị lag và chưa checkpoint.** Triệu chứng: restart consumer thì đọc lại từ thời điểm cũ, xử lý trùng sự kiện. Cách tránh: checkpoint định kỳ và làm consumer idempotent.
+- **MSK producer không chờ replica.** Triệu chứng: broker leader bị xết ngay sau khi gửi, dữ liệu mới nhất bị mất vì chỉ gửi vào leader. Cách tránh: acks=all và replication factor >= 3.
+- **Không chạy nhiều consumer group trên MSK vì chưa hiểu offset.** Triệu chứng: nhóm mới đọc từ đầu topic, đưa trăm triệu sự kiện cũ vào hệ thống xuống dòng. Cách tránh: cấu hình auto.offset.reset = earliest/latest có ý nghĩa và reset offset thấu minh.
 
-### Vi du doi thuc
-He thong thanh toan gui su kien giao dich vao Kinesis voi partition key = accountId, stream 10 shard (10 MB/s gui), gui 7 ngay. Nhom phan gian doc stream qua Lambda de phat hien giao dich la, nhom bao cao doc cung stream de nhap vao kho du lieu, moi nhom luu checkpoint rieng nen khong anh nhau. Trieu chung: khi mo khuyen mai, luong gui nhay len 15 MB/s vuot 10 MB/s cua 10 shard, cac ban ghi bi tu choi (ProvisionedThroughputExceededException). Doi tang stream len 20 shard va chia partition key them ma luot giao dich de tra deu. Ket qua: throughput dam ung 30 MB/s, chi phi Kinesis duong 450 USD/thang. Neu nhom can Kafka Connect de dua du lieu sang ElasticSearch ho can compacted topic, ho se chuyen sang MSK va chap nhan chi phi van hanh cao hon (can nhan vien hieu Kafka).
+### Ví dụ đời thực
+Hệ thống thanh toán gửi sự kiện giao dịch vào Kinesis với partition key = accountId, stream 10 shard (10 MB/s gửi), giữ 7 ngày. Nhóm phản gian đọc stream qua Lambda để phát hiện giao dịch lừa, nhóm báo cáo đọc cùng stream để nhập vào kho dữ liệu, mỗi nhóm lưu checkpoint riêng nên không ảnh nhau. Triệu chứng: khi mở khuyến mãi, lượng gửi nhảy lên 15 MB/s vượt 10 MB/s của 10 shard, các bản ghi bị từ chối (ProvisionedThroughputExceededException). Đội tăng stream lên 20 shard để trải đều tải. Kết quả: throughput đáp ứng 30 MB/s, chi phí Kinesis khoảng 450 USD/tháng. Nếu nhóm cần Kafka Connect để đưa dữ liệu sang ElasticSearch hoặc cần compacted topic, họ sẽ chuyển sang MSK và chấp nhận chi phí vận hành cao hơn (cần nhân viên hiểu Kafka).
 
-### Tra loi mau khi phan vien
-"Toi chon Kinesis Data Streams khi muon quan tri toi thieu: du lieu chia theo shard, gui toi da 365 ngay, moi consumer doc doc lap qua checkpoint, va co san event source mapping cho Lambda. Toi chon Amazon MSK khi he thong da dung Kafka, can consumer group quan ly offset tap trung, compacted topic de luu trang thai moi nhat, ho Kafka Connect de noi he thong ngoai. MSK manh hon nhung doi phai van hanh cluster, quan ly partition va replication, nen chi phi con nguoi cao hon. Vo su kien tai chinh can thu tu theo tai khoan, toi dung partition key la accountId; neu can xem lai 30 ngay, toi dat retention 30 ngay ho dung MSK voi retention dai hon. Trade-off chinh la it van hanh so voi he sinh tai Kafka day du."
-> Senior tip: khong chon MSK chi vi "Kafka la tieu chuan nganh". Neu chi can mot ho hai consumer doc su kien gan real-time va tich hop voi Lambda, Kinesis it rui ro van hanh hon nhieu; MSK thuc su xep dang khi doi da co chuyen gia Kafka va can cac cong cu xung quanh Kafka.
-  `,
+### Trả lời mẫu khi phỏng vấn
+"Tôi chọn Kinesis Data Streams khi muốn quản trị tối thiểu: dữ liệu chia theo shard, giữ tối đa 365 ngày, mỗi consumer đọc độc lập qua checkpoint, và có sẵn event source mapping cho Lambda. Tôi chọn Amazon MSK khi hệ thống đã dùng Kafka, cần consumer group quản lý offset tập trung, compacted topic để lưu trạng thái mới nhất, hoặc Kafka Connect để nối hệ thống ngoài. MSK mạnh hơn nhưng đội phải vận hành cluster, quản lý partition và replication, nên chi phí con người cao hơn. Với sự kiện tài chính cần thứ tự theo tài khoản, tôi dùng partition key là accountId; nếu cần xem lại 30 ngày, tôi đặt retention 30 ngày hoặc dùng MSK với retention dài hơn. Trade-off chính là ít vận hành so với hệ sinh thái tại Kafka đầy đủ."
+> Senior tip: không chọn MSK chỉ vì "Kafka là tiêu chuẩn ngành". Nếu chỉ cần một hai consumer đọc sự kiện gần real-time và tích hợp với Lambda, Kinesis ít rủi ro vận hành hơn nhiều; MSK thực sự xếp hạng khi đội đã có chuyên gia Kafka và cần các công cụ xung quanh Kafka.
+
+`,
   follow: [
-    'Kinesis va MSK khac nhau o diem nao ve ghi va doc du lieu?',
-    'Khi nao nen tang shard cua Kinesis thay doi partition key?',
-    'Consumer group tren MSK quan ly offset nhu the no?'
+    'Kinesis và MSK khác nhau ở điểm nào về ghi và đọc dữ liệu?',
+    'Khi nào nên tăng shard của Kinesis thay đổi partition key?',
+    'Consumer group trên MSK quản lý offset như thế nào?'
   ],
   tags: ['Kinesis', 'MSK', 'Kafka', 'event-driven', 'consumer group', 'lead']
 },
