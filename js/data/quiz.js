@@ -8116,5 +8116,298 @@ public void viewOrder(Long id) {
 Dùng cho truy vấn tìm kiếm, báo cáo, xuất file — giúp DB tránh mở transaction đọc/ghi không cần thiết và PostgreSQL có thể tối ưu hơn (ví dụ không cần lấy snapshot chi tiết cho đọc). Không dùng cho method vừa đọc vừa ghi.
 
 > Senior tip: readOnly=true không làm cho code của bạn "bất biến" — nó chỉ ngăn Spring/Hibernate đẩy thay đổi xuống DB. Nếu bạn truyền entity đã sửa ra ngoài service (ví dụ trả về controller), controller vẫn có thể thay đổi đối tượng đó; chỉ có DB không bị ảnh hưởng.`
+},
+{
+  id: 'qz-concurrency-046',
+  topic: 'concurrency',
+  q: `Một ThreadPoolExecutor với corePoolSize=4, maximumPoolSize=8, queue=LinkedBlockingQueue(), rejection policy=AbortPolicy. Khi 20 task cùng lúc submit, task chạy được bao nhiêu và bao nhiêu bị từ chối?`,
+  options: [
+    `8 task chạy (4 core + 4 thêm), 12 bị từ chối vì queue đầy`,
+    `Tất cả 20 task đều chạy vì LinkedBlockingQueue không giới hạn`,
+    `4 task chạy (chỉ core), 16 task bị từ chối vì đã đủ core nên không tạo thêm thread`,
+    `8 task chạy, 12 xếp hàng trong queue, không task nào bị từ chối vì queue không giới hạn`
+  ],
+  answer: 1,
+  explain: `**Đáp án đúng: Tất cả 20 task đều chạy vì LinkedBlockingQueue không giới hạn.**
+
+### Vì sao đúng
+Thứ tự xử lý của ThreadPoolExecutor:
+1. Tạo thread mới cho tới corePoolSize (4 thread) — task 1–4.
+2. Đã đủ core → đưa vào queue. LinkedBlockingQueue() không tham số có dung lượng **Integer.MAX_VALUE**, nên không bao giờ đầy.
+3. Không bao giờ tới bước tạo thêm thread (maximumPoolSize) vì queue luôn nhận được task.
+4. Không bao giờ kích hoạt rejection policy vì queue không đầy.
+
+Kết quả: 4 thread chạy song song, 16 task chờ trong queue, 0 bị từ chối — cả 20 task đều được xử lý.
+
+### Vì sao các phương án còn lại sai
+- **8 task chạy, 12 bị từ chối**: chỉ xảy ra khi queue có giới hạn (ArrayBlockingQueue) và đã đầy sau khi tạo đủ maximumPoolSize thread.
+- **4 chạy, 16 bị từ chối**: sai — khi đã đủ core, task được đưa vào queue chứ không bị từ chối; queue không giới hạn nhận hết 16 task và các core thread xử lý dần.
+- **8 task chạy, 12 xếp hàng**: maximumPoolSize chỉ được dùng khi queue đầy; với queue không giới hạn, maximumPoolSize là vô nghĩa.
+
+> Senior tip: Executors.newFixedThreadPool() dùng LinkedBlockingQueue không giới hạn — nếu submit quá nhanh và task chậm, queue phình tới OutOfMemoryError. Production: dùng ArrayBlockingQueue hoặc SynchronousQueue với rejection policy CallerRunsPolicy để tạo backpressure tự nhiên.`
+},
+{
+  id: 'qz-concurrency-047',
+  topic: 'concurrency',
+  q: `Hai thread cùng thực hiện code sau. Kết quả cuối cùng của counter là bao nhiêu?
+~~~java
+static int counter = 0;
+static final Object lock = new Object();
+public void run() {
+    for (int i = 0; i < 1000; i++) {
+        synchronized (lock) {
+            int v = counter;
+            v = v + 1;
+            counter = v;
+        }
+    }
+}
+~~~`,
+  options: [
+    `2000, vì synchronized đảm bảo chỉ một thread vào khối critical section tại một thời điểm`,
+    `Ít hơn 2000, vì đọc counter ra khỏi synchronized`,
+    `2000, vì synchronized tạo happens-before nhưng không bảo đảm atomic`,
+    `Không xác định, phụ thuộc vào thứ tự CPU chạy thread`
+  ],
+  answer: 0,
+  explain: `**Đáp án đúng: 2000, vì synchronized đảm bảo chỉ một thread vào khối critical section tại một thời điểm.**
+
+### Vì sao đúng
+Khối code nằm hoàn toàn bên trong {{synchronized (lock)}}. Mỗi lần một thread lấy được lock, nó thực hiện đầy đủ chuỗi: đọc counter, cộng 1, ghi counter — không thread nào khác có thể can thiệp vì chúng đang chờ lock. Do đó 2 thread lần lượt tăng 1000 lần, tổng là 2000.
+
+Đây là khác biệt quan trọng với {{volatile}}: {{volatile}} chỉ bảo đảm **visibility** (thấy giá trị mới), không bảo đảm **atomicity** (nguyên tử). Khi cả đọc, sửa, ghi đều nằm trong **cùng một** synchronized block trên **cùng một** object lock, thao tác trở thành nguyên tử.
+
+### Vì sao các phương án còn lại sai
+- **Đọc counter ra khỏi synchronized**: trong code trên, cả ba dòng đều nằm trong block.
+- **Synchronized không bảo đảm atomic**: synchronized trên cùng một object **đã** biến chuỗi thao tác bên trong thành nguyên tử (mutual exclusion + happens-before).
+- **Không xác định**: kết quả là xác định (2000) nhờ khóa đúng cách.
+
+> Senior tip: quy tắc "một lock cho một invariant". Nếu counter và các biến khác cùng thay đổi trong một nghiệp vụ, hãy đưa tất cả vào cùng một synchronized block trên cùng một lock object. Đừng dùng nhiều lock khác nhau cho cùng một trạng thái chung — dễ gây deadlock hoặc race condition tinh vi.`
+},
+{
+  id: 'qz-concurrency-048',
+  topic: 'concurrency',
+  q: `Một CompletableFuture dùng orTimeout(2, TimeUnit.SECONDS). Sau 2 giây nếu chưa xong, future sẽ ở trạng thái gì và hành vi của join() ra sao?`,
+  options: [
+    `Future bị cancel, join() ném CancellationException`,
+    `Future hoàn tất exceptionally với TimeoutException, join() ném CompletionException bọc TimeoutException`,
+    `Future vẫn đang chạy ngầm, join() block vô hạn`,
+    `Future hoàn tất bình thường với giá trị null, join() trả về null`
+  ],
+  answer: 1,
+  explain: `**Đáp án đúng: Future hoàn tất exceptionally với TimeoutException, join() ném CompletionException bọc TimeoutException.**
+
+### Vì sao đúng
+{{orTimeout}} (Java 9) không **cancel** task đang chạy (task vẫn chạy cho tới khi xong), nhưng nó làm cho future **hoàn tất exceptionally** ngay khi hết hạn: future chuyển sang trạng thái completed exceptionally với {{TimeoutException}}. Khi caller gọi {{join()}}, nó nhận {{CompletionException}} với {{getCause()}} là {{TimeoutException}}. Tương tự, {{get()}} ném {{ExecutionException}} bọc {{TimeoutException}}.
+
+Lưu ý: cả {{orTimeout}} lẫn {{completeOnTimeout(fallbackValue, ...)}} đều **không dừng** task đang chạy — chúng chỉ đổi trạng thái future (một cái hoàn tất exceptionally, một cái trả giá trị dự phòng). Muốn thực sự dừng, phải giữ tham chiếu {{Future}} của task (ví dụ {{executor.submit(...)}}) rồi gọi {{cancel(true)}}/{{shutdownNow()}}/{{Thread.interrupt()}} nếu task phản hồi interrupt.
+
+### Vì sao các phương án còn lại sai
+- **Future bị cancel, join() ném CancellationException**: {{orTimeout}} không gọi {{cancel(true)}}; task tiếp tục chạy. {{CancellationException}} chỉ xuất hiện khi dùng {{cancel()}}.
+- **Vẫn chạy ngầm, join() block vô hạn**: sai, {{orTimeout}} hoàn tất future (exceptionally) nên {{join()}} trả về ngay với exception.
+- **Hoàn tất bình thường với null**: sai, nó hoàn tất **exceptionally**, không phải normally.
+
+> Senior tip: luôn có {{exceptionally}} hoặc {{handle}} ở cuối chuỗi CompletableFuture để không bị nuốt lỗi. Với I/O, hãy set timeout hợp lý (ví dụ 3–5 giây) và log context khi timeout để dễ debug.`
+},
+{
+  id: 'qz-concurrency-049',
+  topic: 'concurrency',
+  q: `Với BlockingQueue, producer gọi {{put(e)}} khi queue đầy, consumer gọi {{take()}} khi queue rỗng. Đặc điểm nào là đúng?`,
+  options: [
+    `put() trả về false ngay lập tức khi queue đầy, take() trả về null khi rỗng`,
+    `put() block cho tới khi có chỗ, take() block cho tới khi có phần tử; cả hai đều phản hồi interrupt`,
+    `Cả hai đều ném IllegalStateException khi queue đầy/rỗng`,
+    `put() mở rộng queue tự động, take() luôn trả về phần tử hoặc tạo mới`
+  ],
+  answer: 1,
+  explain: `**Đáp án đúng: put() block cho tới khi có chỗ, take() block cho tới khi có phần tử; cả hai đều phản hồi interrupt.**
+
+### Vì sao đúng
+Đây là bản chất của {{BlockingQueue}}:
+- {{put(E e)}}: chèn phần tử, **block** nếu queue đầy cho tới khi có không gian.
+- {{take()}}: lấy và xoá đầu queue, **block** nếu rỗng cho tới khi có phần tử.
+- Cả hai đều **có thể bị interrupt**: nếu thread đang block bị {{interrupt()}}, chúng ném {{InterruptedException}} và **xoá cờ interrupt** (cần khôi phục bằng {{Thread.currentThread().interrupt()}} nếu muốn truyền tiếp).
+
+Đối chiếu với {{offer()}}/{{poll()}}: phiên bản không block, trả về {{boolean}}/{{null}} ngay lập tức.
+
+### Vì sao các phương án còn lại sai
+- **Trả về false/null ngay**: đó là hành vi của {{offer()}} và {{poll()}}, không phải {{put()}}/{{take()}}.
+- **Ném IllegalStateException**: đó là {{add()}} (ném {{IllegalStateException}} khi đầy) và {{remove()}} (ném {{NoSuchElementException}} khi rỗng) theo hợp đồng {{Queue}}, không phải {{put()}}/{{take()}}; {{put()}}/{{take()}} thì block.
+- **Mở rộng queue tự động**: {{BlockingQueue}} không tự mở rộng; dung lượng được xác định khi tạo (trừ {{LinkedBlockingQueue()}} không tham số).
+
+> Senior tip: trong shutdown graceful, hãy dùng {{poll(timeout)}} thay vì {{take()}} để tránh thread bị treo mãi khi không còn producer, và luôn xử lý {{InterruptedException}} đúng cách (khôi phục cờ và thoát vòng lặp).`
+},
+{
+  id: 'qz-concurrency-050',
+  topic: 'concurrency',
+  multi: true,
+  q: `Đoạn code sau dùng LongAdder đếm request. Những phát biểu nào **đúng**? (Chọn 2)
+~~~java
+static LongAdder counter = new LongAdder();
+public void handle(Request req) {
+    counter.increment();
+    // xử lý request...
+    if (req.isError()) counter.decrement();
+}
+~~~`,
+  options: [
+    `counter.sum() không phải atomic snapshot: trong lúc nó đang duyệt các cell, các increment đồng thời có thể chưa được cộng vào, nên giá trị trả về có thể thiếu vài cập nhật`,
+    `LongAdder nhanh hơn AtomicLong khi tranh chấp thấp vì không dùng CAS`,
+    `decrement() làm giảm tổng, nhưng không thể giảm xuống dưới 0`,
+    `Để reset counter về 0, gọi counter.reset() (Java 8+) hoặc tạo instance mới`
+  ],
+  answer: [0, 3],
+  explain: `**Đáp án đúng: sum() không phải atomic snapshot (có thể thiếu vài increment đồng thời); để reset counter về 0, gọi counter.reset() (Java 8+) hoặc tạo instance mới.**
+
+### Vì sao đúng
+- **sum() không atomic**: {{LongAdder}} nội bộ dùng mảng {{Cell[]}}, mỗi thread thường cộng vào một cell riêng → ít tranh chấp cache line. {{sum()}} duyệt toàn bộ cell và cộng dồn, nhưng javadoc ghi rõ nó **không phải** atomic snapshot: cập nhật xảy ra đồng thời trong lúc đang tính có thể chưa được cộng vào. Vắng mặt cập nhật đồng thời thì kết quả mới chính xác tuyệt đối.
+- **reset()**: từ Java 8, {{LongAdder}} có method {{reset()}} đặt tất cả cell về 0. Cách khác là gán instance mới: {{counter = new LongAdder()}}.
+
+### Vì sao các phương án còn lại sai
+- **Nhanh hơn khi tranh chấp thấp**: ngược lại, {{LongAdder}} có overhead (mảng cell, hash thread) nên **chậm hơn** {{AtomicLong}} khi tranh chấp thấp. Nó chỉ thắng khi **tranh chấp cao** (nhiều thread cùng tăng).
+- **decrement() không giảm dưới 0**: {{LongAdder}} dùng {{long}} có dấu, {{decrement()}} hoàn toàn có thể đưa tổng về âm. Không có ràng buộc non-negative.
+
+> Senior tip: metrics counter (Micrometer) dùng LongAdder-style vì ghi nhiều, đọc ít. Nhưng khi cần giá trị **ngay sau mỗi lần tăng** (sinh ID, rate limit) thì {{AtomicLong}} đúng hơn vì {{sum()}} có độ trễ nhỏ do duyệt mảng.`
+},
+{
+  id: 'qz-concurrency-051',
+  topic: 'concurrency',
+  q: `Java 21 virtual thread gọi JDBC blocking trong khối synchronized. Thread dump cho thấy carrier thread bị chiếm dụng suốt 200 ms. Nguyên nhân và cách xử lý?`,
+  options: [
+    `Virtual thread không hỗ trợ JDBC, phải chuyển sang R2DBC`,
+    `Pinning: virtual thread block trong synchronized không unmount được carrier (Java 21–23); thay bằng ReentrantLock hoặc nâng Java 24+ (JEP 491)`,
+    `Số virtual thread bị giới hạn bằng core, cần tăng -Xss`,
+    `synchronized gây deadlock, JVM tự chuyển sang platform thread`
+  ],
+  answer: 1,
+  explain: `**Đáp án đúng: pinning do synchronized.**
+
+### Vì sao đúng
+Virtual thread chạy trên một số ít **carrier thread** (ForkJoinPool riêng, mặc định bằng số core). Khi gặp thao tác block (socket I/O, lock), virtual thread bình thường **unmount** để carrier phục vụ thread khác. Nhưng ở Java 21–23, nếu đang giữ monitor của {{synchronized}} thì nó bị **pin**: carrier bị chiếm suốt 200 ms. Với 8 carrier, hệ thống chỉ xử lý được ~8 request I/O cùng lúc → throughput sụt dù CPU rảnh.
+
+Cách xử lý:
+1. Thay {{synchronized}} quanh I/O bằng {{ReentrantLock}} (không pin).
+2. Nâng lên **Java 24 (JEP 491)**, nơi {{synchronized}} không còn pin trong hầu hết trường hợp.
+3. Phát hiện bằng JFR event {{jdk.VirtualThreadPinned}}.
+
+### Vì sao các phương án còn lại sai
+- **Không hỗ trợ JDBC**: JDBC chạy tốt trên virtual thread; vấn đề nằm ở lock (một số driver cũ dùng {{synchronized}} bên trong, cần bản mới).
+- **Tăng -Xss**: virtual thread không bị giới hạn theo số core, và {{-Xss}} chỉnh stack platform thread.
+- **Tự chuyển sang platform thread**: JVM không làm vậy; pinning không phải deadlock.
+
+> Senior tip: virtual thread không tăng giới hạn của tài nguyên phía sau: connection pool 20 kết nối vẫn chỉ cho 20 query song song. Hãy giữ pool hợp lý, đo bằng JFR, và nhớ ThreadLocal nặng trên hàng triệu virtual thread sẽ tốn bộ nhớ.`
+},
+{
+  id: 'qz-concurrency-052',
+  topic: 'concurrency',
+  multi: true,
+  q: `Team chuyển service I/O-bound sang virtual threads (Java 21+). Những phát biểu nào **đúng**? (Chọn 3)`,
+  options: [
+    `Không nên pool virtual thread; tạo mới cho mỗi task, ví dụ Executors.newVirtualThreadPerTaskExecutor()`,
+    `Virtual thread giúp tăng tốc tác vụ CPU-bound như mã hoá, nén dữ liệu`,
+    `Muốn giới hạn số truy cập đồng thời tới DB hay API đối tác, dùng Semaphore hoặc kích thước connection pool thay vì giới hạn số thread`,
+    `Từ Java 24 (JEP 491), virtual thread block bên trong synchronized không còn pin carrier thread trong hầu hết trường hợp`,
+    `ThreadLocal bị cấm dùng trong virtual thread`
+  ],
+  answer: [0, 2, 3],
+  explain: `**Đáp án đúng: không pool, giới hạn bằng Semaphore/pool tài nguyên, và JEP 491.**
+
+### Vì sao đúng
+- Virtual thread rất rẻ (vài trăm byte đến vài KB stack trên heap), tạo hàng triệu cái được. Pool tồn tại để tiết kiệm thread đắt, điều không còn cần thiết; pool virtual thread còn mang theo ThreadLocal cũ giữa các task.
+- Không giới hạn số thread nữa, nên giới hạn đồng thời phải đặt ở **tài nguyên**: {{Semaphore}}, HikariCP {{maximumPoolSize}}, bulkhead.
+- JEP 491 (Java 24) cho virtual thread unmount khi block trong {{synchronized}}; vẫn còn pin khi chạy native code/foreign function.
+
+### Vì sao các phương án còn lại sai
+- **Tăng tốc CPU-bound**: virtual thread không thêm CPU; chúng chỉ giúp khi thread **chờ** I/O. CPU-bound vẫn bị giới hạn bởi số core.
+- **Cấm ThreadLocal**: ThreadLocal vẫn hoạt động; chỉ là tốn bộ nhớ khi có hàng triệu thread. Java 25 có {{ScopedValue}} chính thức làm phương án thay thế.
+
+> Senior tip: đo trước và sau bằng load test: lợi ích lớn nhất là code blocking đơn giản đạt throughput gần reactive. Theo dõi JFR {{jdk.VirtualThreadPinned}} và thư viện còn {{synchronized}} quanh I/O khi chạy Java 21.`
+},
+{
+  id: 'qz-concurrency-053',
+  topic: 'concurrency',
+  q: `Một ScheduledExecutorService chạy task định kỳ mỗi 100 ms với {{scheduleAtFixedRate}}. Task đôi khi chạy 300 ms (chậm hơn chu kỳ). Kết quả?`,
+  options: [
+    `Task bị bỏ qua các chu kỳ trễ, lần sau chạy đúng giờ 100 ms kể từ lần chạy trước`,
+    `Executor tạo thêm thread để chạy các task trễ song song`,
+    `Các lần chạy bị dồn lên nhau: task chạy 300 ms, đợi xong rồi lập tức chạy lần tiếp theo, chu kỳ thực tế thành 300 ms`,
+    `Ném RejectedExecutionException vì task không kịp hoàn thành trước chu kỳ tiếp theo`
+  ],
+  answer: 2,
+  explain: `**Đáp án đúng: Các lần chạy bị dồn lên nhau: task chạy 300 ms, đợi xong rồi lập tức chạy lần tiếp theo, chu kỳ thực tế thành 300 ms.**
+
+### Vì sao đúng
+{{scheduleAtFixedRate}} đảm bảo: **khoảng thời gian giữa lúc KHỞI ĐỘNG hai lần chạy liên tiếp** cố định bằng period (100 ms). Nếu một lần chạy quá lâu (300 ms > 100 ms), executor sẽ **không** tạo thread mới (chỉ có một thread cho task định kỳ này trừ khi config pool lớn hơn), và nó sẽ **chạy lần tiếp theo ngay khi lần trước xong**. Kết quả: chu kỳ thực tế bằng thời gian chạy task (300 ms), không còn 100 ms.
+
+Đối chiếu với {{scheduleWithFixedDelay}}: khoảng cách giữa lúc **KẾT THÚC** lần trước và lúc **KHỞI ĐỘNG** lần sau cố định — phù hợp hơn khi muốn nghỉ giữa các lần chạy.
+
+### Vì sao các phương án còn lại sai
+- **Bỏ qua chu kỳ trễ**: đó là hành vi của một số scheduler khác (như Quartz với misfire policy), không phải {{ScheduledExecutorService}} mặc định.
+- **Tạo thêm thread**: executor chỉ có một worker cho task này trừ khi pool size > 1 và task được submit lại; {{scheduleAtFixedRate}} chỉ đăng ký một lần.
+- **RejectedExecutionException**: không ném; executor chỉ dồn lịch chạy.
+
+> Senior tip: nếu task có thể chạy lâu hơn period, hãy dùng {{scheduleWithFixedDelay}} hoặc kiểm tra {{System.currentTimeMillis()}} bên trong task để bỏ qua nếu trễ. Và luôn đặt timeout cho task định kỳ để không bị treo vô hạn.`
+},
+{
+  id: 'qz-concurrency-054',
+  topic: 'concurrency',
+  q: `Một ứng dụng dùng {{CompletableFuture.supplyAsync(() -> callApi(), executor)}} với executor tùy chỉnh (core=10, max=20, queue=ArrayBlockingQueue(50)). Khi submit 100 task cùng lúc, điều gì xảy ra?`,
+  options: [
+    `10 task chạy, 50 xếp hàng, 40 bị từ chối (RejectedExecutionException)`,
+    `20 task chạy, 50 xếp hàng, 30 bị từ chối`,
+    `Tất cả 100 task chạy vì CompletableFuture bỏ qua queue`,
+    `10 task chạy, 90 xếp hàng, không bị từ chối vì queue tự mở rộng`
+  ],
+  answer: 1,
+  explain: `**Đáp án đúng: 20 task chạy (10 core + 10 thêm tới max), 50 xếp hàng, 30 bị từ chối.**
+
+### Vì sao đúng
+{{CompletableFuture.supplyAsync(task, executor)}} gọi {{executor.execute(runnable)}}. ThreadPoolExecutor xử lý theo quy tắc:
+1. Dưới corePoolSize (10) → tạo thread mới (task 1–10).
+2. Đã đủ core → offer vào queue {{ArrayBlockingQueue(50)}} (task 11–60, queue đầy).
+3. Queue đầy thì mới tạo thread vượt core, tới maximumPoolSize (20) → thêm 10 thread (task 61–70, tổng 20 thread đang chạy).
+4. Queue vẫn đầy và đã đủ max (20) → rejection policy mặc định {{AbortPolicy}} ném {{RejectedExecutionException}} (task 71–100 = 30 task).
+
+### Vì sao các phương án còn lại sai
+- **10 chạy, 50 hàng, 40 từ chối**: bỏ qua bước 3 — khi queue đầy, ThreadPoolExecutor vẫn tạo thêm thread tới maximumPoolSize trước khi từ chối, nên có 20 thread chạy và chỉ 30 task bị từ chối.
+- **Tất cả chạy vì bỏ qua queue**: {{CompletableFuture}} **không** bỏ qua queue; nó dùng executor bình thường.
+- **Queue tự mở rộng**: {{ArrayBlockingQueue}} dung lượng cố định; chỉ {{LinkedBlockingQueue()}} không tham số mới không giới hạn.
+
+> Senior tip: với I/O-bound, hãy dùng {{Executors.newVirtualThreadPerTaskExecutor()}} (Java 21) hoặc executor có queue lớn kèm {{CallerRunsPolicy}} để backpressure tự nhiên. Luôn expose metrics: {{active}}, {{queueSize}}, {{rejected}} để cảnh báo sớm.`
+},
+{
+  id: 'qz-concurrency-055',
+  topic: 'concurrency',
+  multi: true,
+  q: `Về {{ThreadLocal}} trong ứng dụng web chạy trên thread pool Tomcat/HikariCP, những phát biểu nào **đúng**? (Chọn 2)`,
+  options: [
+    `Giá trị ThreadLocal được tự động dọn khi request kết thúc`,
+    `Nếu không gọi remove(), giá trị bị giữ lại trong ThreadLocalMap của thread pool → rò rỉ bộ nhớ với thread sống lâu`,
+    `ThreadLocal chỉ hoạt động với thread do bạn tự tạo, không hoạt động với thread của executor`,
+    `Mỗi lần get() đều phải đồng bộ trên toàn pool nên gây nghẽn`,
+    `Dùng try/finally gọi remove() là cách chuẩn để tránh rò rỉ`
+  ],
+  answer: [1, 4],
+  explain: `**Đáp án đúng: nếu không remove() thì rò rỉ bộ nhớ; try/finally remove() là cách chuẩn.**
+
+### Vì sao đúng
+Giá trị {{ThreadLocal}} nằm trong {{ThreadLocalMap}} của thread. Entry giữ key ({{ThreadLocal}}) bằng **WeakReference**, nhưng giữ value bằng **tham chiếu mạnh**. Với thread pool (Tomcat, HikariCP), thread sống gần như suốt đời ứng dụng. Nếu {{set()}} mà không {{remove()}}, value cũ vẫn nằm đó → giữ tham chiếu tới object lớn (session, user context, buffer) → **memory leak**.
+
+Cách chuẩn:
+~~~java
+try {
+    CONTEXT.set(requestContext);
+    chain.doFilter(request, response);
+} finally {
+    CONTEXT.remove();   // luôn remove trong finally
+}
+~~~
+
+### Vì sao các phương án còn lại sai
+- **Tự động dọn khi request kết thúc**: container **không** tự dọn ThreadLocal của bạn; đó là trách nhiệm code ứng dụng.
+- **Chỉ hoạt động với thread tự tạo**: thread của executor hoàn toàn bình thường — và chính vì thế rủi ro mới nguy hiểm.
+- **Mỗi lần get() đồng bộ**: {{ThreadLocal.get()}} chỉ đọc map của **chính thread hiện tại**, không cần khoá.
+
+> Senior tip: Java 21 có {{ScopedValue}} (preview) thay thế ThreadLocal an toàn hơn về cấu trúc (bất biến, kế thừa có kiểm soát), nhưng nguyên tắc vẫn là: dữ liệu theo request phải dọn ở {{finally}}. Với {{@Async}}, ThreadLocal **không** truyền sang thread mới — phải truyền qua tham số task.`
 }
 );
