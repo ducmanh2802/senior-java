@@ -8938,6 +8938,428 @@ Lock per key đảm bảo chỉ một query DB; probabilistic early expiration l
 - **Retry**: tăng tải.
 
 > Senior tip: kết hợp TTL jitter để tránh nhiều key hết hạn cùng lúc.`
+},
+{
+  id: 'qz-design-081',
+  topic: 'design',
+  q: 'Gateway nhà máy publish số đếm sản phẩm lên broker MQTT bằng QoS 1. Wi-Fi chập chờn nên thỉnh thoảng gói PUBACK bị mất. Kết luận nào đúng và cách xử lý đúng nhất?',
+  options: [
+    'QoS 1 đảm bảo exactly-once nên không thể trùng; không cần làm gì thêm.',
+    'QoS 1 chỉ đảm bảo at-least-once: publisher sẽ gửi lại (cờ DUP) nên phía nhận có thể thấy hai bản; phải dedup theo id ổn định của bản ghi.',
+    'Mất PUBACK làm broker mất luôn message, nên chỉ cần bật QoS 2 ở publisher là đủ.',
+    'Tăng keepalive lên 3600 giây để PUBACK không bị mất.'
+  ],
+  answer: 1,
+  explain: `**Đáp án đúng: QoS 1 là at-least-once, mất PUBACK sẽ gây gửi lại và có thể trùng — phải dedup theo id.**
+
+### Tóm tắt
+MQTT (Message Queuing Telemetry Transport) là giao thức publish/subscribe nhẹ chạy trên TCP, rất phổ biến trong IoT và nhà máy. Broker là "tổng đài" trung gian nhận message từ publisher rồi chuyển cho subscriber. QoS (Quality of Service) có 3 mức: 0 at-most-once, 1 at-least-once, 2 exactly-once. QoS 1 chỉ hứa "không mất", không hứa "không trùng".
+
+### Cơ chế: vì sao lại trùng
+1. Publisher gửi PUBLISH kèm packet id, ví dụ id 42, và giữ message trong bộ nhớ chờ xác nhận.
+2. Broker nhận, lưu và trả PUBACK.
+3. Nếu PUBACK mất trên đường về (Wi-Fi rớt đúng lúc), publisher không biết broker đã nhận nên sau timeout gửi lại chính message đó với cờ DUP = 1.
+4. Broker thấy packet id 42 lần nữa: với QoS 1 nó vẫn chuyển tiếp cho subscriber, vì chuẩn cho phép và broker không chắc đây là bản trùng hay bản mới. Kết quả: subscriber nhận 2 bản.
+
+~~~text
+Publisher            Broker              Subscriber
+   |-- PUBLISH id=42 -->|                     |
+   |                    |-- PUBLISH id=42 --->|  ban 1
+   |<---- PUBACK -------|                     |
+   |      (mat!)        |                     |
+   |-- PUBLISH id=42 -->|                     |
+   |      DUP=1         |-- PUBLISH id=42 --->|  ban 2 (TRUNG)
+   |<---- PUBACK -------|                     |
+~~~
+
+Một điểm hay bị hỏi: QoS hiệu lực của một luồng bằng min(QoS publish, QoS subscribe). Publisher đặt QoS 2 nhưng subscriber đăng ký QoS 0 thì message vẫn đi như QoS 0.
+
+### Cách xử lý đúng trên production
+- Đặt id nghiệp vụ ổn định trong payload, ví dụ {{deviceId + ":" + seq}} với seq tăng đơn điệu trong gateway; không dùng timestamp làm id vì hai bản ghi có thể cùng một mili-giây.
+- Consumer dedup bằng unique index trên (device_id, seq) và câu INSERT ... ON CONFLICT DO NOTHING, hoặc Redis SETNX với TTL dài hơn cửa sổ retry. Ghi nhận số bản trùng để theo dõi chất lượng mạng.
+- Vẫn giữ QoS 1: rẻ hơn QoS 2 (1 vòng round-trip thay vì 2) và dedup ở tầng ứng dụng luôn cần, vì message còn có thể bị gửi lại ngoài giao thức (gateway replay buffer sau khi restart).
+
+### Ví dụ đời thực
+Một dây chuyền chiết rót báo sản lượng cao hơn PLC 3,7%. Truy vết thấy 1,8% bản ghi bị trùng rơi đúng các phút Wi-Fi chập chờn: gateway gửi QoS 1, PUBACK mất, gửi lại. Thêm unique index (device_id, seq) và bỏ qua bản trùng, số liệu về khớp PLC trong sai số 0,1%.
+
+### Vì sao các phương án còn lại sai
+- **QoS 1 đảm bảo exactly-once**: sai bản chất. Exactly-once chỉ có ở QoS 2 và chỉ trong phạm vi giao thức MQTT; QoS 1 là at-least-once, tức là "có thể trùng".
+- **Chỉ cần bật QoS 2 ở publisher**: thiếu hai điều. Thứ nhất, QoS hiệu lực là min với QoS của subscription. Thứ hai, message có thể bị gửi lại bởi chính ứng dụng (retry, replay từ buffer), nên tầng nghiệp vụ vẫn phải idempotent. QoS 2 còn tốn thêm round-trip và buộc broker lưu trạng thái phiên.
+- **Tăng keepalive lên 3600 giây**: keepalive chỉ dùng để phát hiện client chết, không liên quan tới việc PUBACK có mất hay không. Tăng lên 3600 giây còn làm việc phát hiện máy offline chậm đi 1 giờ.
+
+> Senior tip: idempotency phải nằm ở tầng dữ liệu (unique index), không nằm ở tầng code kiểu if-not-exists — hai consumer chạy song song vẫn có thể cùng lọt qua bước kiểm tra.`
+},
+{
+  id: 'qz-design-082',
+  topic: 'design',
+  q: 'Ba luồng dữ liệu: (a) nhiệt độ động cơ 1 giây/lần, mất vài điểm không ảnh hưởng; (b) lệnh bật/tắt bơm cao áp, gửi trùng có thể gây nguy hiểm; (c) số đếm sản phẩm cần đủ, trùng thì dedup được. Chọn QoS MQTT nào hợp lý nhất?',
+  options: [
+    'QoS 2 cho cả ba, vì an toàn nhất là không bao giờ mất và không bao giờ trùng.',
+    '(a) QoS 2, (b) QoS 0, (c) QoS 1 — telemetry cần chính xác nhất nên dùng mức cao nhất.',
+    'QoS 1 cho cả ba vì luôn là lựa chọn cân bằng giữa tốc độ và độ tin cậy.',
+    '(a) QoS 0, (b) QoS 2, (c) QoS 1.'
+  ],
+  answer: 3,
+  explain: `**Đáp án đúng: telemetry dùng QoS 0, lệnh điều khiển dùng QoS 2, số đếm dùng QoS 1 kèm dedup.**
+
+### Tóm tắt
+QoS 0 gửi một lần, không chờ xác nhận (at-most-once): nhanh, rẻ, có thể mất. QoS 1 chờ PUBACK (at-least-once): không mất nhưng có thể trùng. QoS 2 dùng handshake 4 bước PUBLISH → PUBREC → PUBREL → PUBCOMP (exactly-once): không mất, không trùng, nhưng tốn 2 vòng round-trip và broker phải lưu trạng thái.
+
+### Chọn theo tính chất nghiệp vụ
+- **(a) nhiệt độ, 1 giây/lần**: bản chất dữ liệu là chuỗi thời gian, điểm sau thay thế điểm trước. Mất 2–3 điểm không làm hỏng biểu đồ xu hướng; dùng QoS 0 để tiết kiệm băng thông. Nếu cần chắc chắn, hãy lưu đệm ở gateway (store-and-forward) thay vì đẩy mọi điểm lên QoS 2.
+- **(b) lệnh bật/tắt bơm cao áp**: gửi trùng lệnh "toggle" (đảo trạng thái) sẽ bật rồi tắt ngay, cực kỳ nguy hiểm. Vì vậy cần exactly-once ở mức giao thức (QoS 2), và vẫn nên thiết kế lệnh idempotent kiểu "đặt về ON" kèm command id thay vì "đảo trạng thái".
+- **(c) số đếm sản phẩm**: cần đủ (không mất) nên tối thiểu QoS 1; trùng xử lý được bằng id (device_id, seq) nên không cần trả giá QoS 2.
+
+Bảng so sánh nhanh:
+
+| QoS | Bảo đảm | Round-trip | Hợp với |
+|---|---|---|---|
+| 0 | at-most-once | 0 | telemetry tần suất cao |
+| 1 | at-least-once | 1 (PUBACK) | dữ liệu cần đủ, dedup được |
+| 2 | exactly-once | 2 (PUBREC/PUBREL/PUBCOMP) | lệnh, giao dịch không thể trùng |
+
+### Vì sao các phương án còn lại sai
+- **QoS 2 cho cả ba**: đúng về an toàn nhưng sai về chi phí. Với 2.000 cảm biến × 10 giá trị/giây, QoS 2 làm gấp đôi round-trip, tăng độ trễ và buộc broker giữ state cho từng packet id; không giải quyết vấn đề gì thêm cho dữ liệu telemetry vốn đã chấp nhận mất điểm.
+- **Phương án (a) QoS 2, (b) QoS 0**: đảo ngược hoàn toàn mức quan trọng. Telemetry không cần exactly-once, còn lệnh bơm cao áp dùng QoS 0 thì có thể mất lệnh dừng — nguy hiểm về an toàn.
+- **QoS 1 cho cả ba**: lệnh gửi trùng có thể đảo trạng thái hai lần. QoS 1 không bảo vệ được lệnh không idempotent.
+
+### Ví dụ đời thực
+Một trạm xử lý nước dùng QoS 1 cho lệnh "mở van xả" dạng toggle. Khi mạng chập chờn, PUBACK mất và lệnh được gửi lại; van mở rồi đóng trong 200 ms, cảm biến mực nước nhảy. Đổi sang lệnh "set van = OPEN" kèm command id và QoS 2, đồng thời thêm kiểm tra idempotent ở PLC: sự cố dừng hẳn.
+
+> Senior tip: QoS 2 chỉ bảo vệ trong phạm vi MQTT — nếu gateway tự replay buffer sau restart, message vẫn có thể tới hai lần. Luôn kèm command id và dedup ở thiết bị nhận.`
+},
+{
+  id: 'qz-design-083',
+  topic: 'design',
+  q: 'Máy CNC ở xưởng mất kết nối Internet 40 phút. Gateway chạy trên máy tính công nghiệp cần không mất dữ liệu sản lượng và không được treo. Thiết kế nào đúng nhất?',
+  options: [
+    'Ghi từng bản ghi xuống bộ nhớ bền (SQLite/embedded queue) trước, gửi tuần tự khi có mạng, giới hạn dung lượng theo kiểu vòng và báo động khi gần đầy.',
+    'Giữ toàn bộ trong RAM vì 40 phút dữ liệu còn nhỏ, mất điện thì chấp nhận.',
+    'Bỏ bản ghi khi mất mạng, vì PLC vẫn giữ số đếm và có thể đọc lại sau.',
+    'Gọi API cloud liên tục, retry mỗi 10 ms cho tới khi thành công.'
+  ],
+  answer: 0,
+  explain: `**Đáp án đúng: ghi bền xuống buffer cục bộ trước, forward tuần tự khi có mạng, buffer có giới hạn và cảnh báo.**
+
+### Tóm tắt
+Store-and-forward nghĩa là gateway đóng vai "kho tạm": dữ liệu được ghi xuống đĩa ngay khi phát sinh, sau đó gửi dần lên cloud khi mạng có lại. Ghi bền (persistent) là ghi xuống ổ đĩa và fsync, khác với ghi vào RAM — mất điện là mất.
+
+### Vì sao phải ghi bền trước khi gửi
+Máy tính công nghiệp có thể bị cắt điện đột ngột, restart dịch vụ, hoặc đĩa đầy. Nếu chỉ giữ trong RAM (in-memory queue), 40 phút dữ liệu sẽ mất sạch khi tiến trình chết. Ghi vào SQLite/LevelDB/embedded queue rồi mới trả "đã nhận" cho tầng đọc PLC tạo ra ít nhất một bản sao bền vững tại mọi thời điểm.
+
+### Bài toán số liệu: đừng chủ quan "40 phút là nhỏ"
+- 1 tag, 1 giây/lần: 40 × 60 = 2.400 điểm — rất nhỏ, RAM đủ.
+- 500 tag, 100 ms/lần: 500 × 10 × 2.400 = 12 triệu điểm. Mỗi điểm 60 byte là khoảng 720 MB — vượt xa RAM an toàn của máy công nghiệp.
+Vì vậy buffer phải có giới hạn (ring buffer theo dung lượng hoặc theo thời gian), có chính sách khi đầy (chặn nguồn, ghi đè bản cũ nhất, hoặc spill sang ổ khác) và phải báo động trước khi đầy để người vận hành can thiệp.
+
+### Trình tự đúng
+~~~text
+PLC --> Gateway: doc tag moi 100ms
+Gateway --> SQLite: INSERT (commit/fsync)
+Gateway --> Cloud API: POST batch 500 ban ghi
+Cloud --> Gateway: 200 OK
+Gateway --> SQLite: DELETE cac ban ghi da ack
+Gateway --> Dashboard: canh bao neu buffer > 80%
+~~~
+Khi mạng trở lại, gửi theo lô (batch) và theo thứ tự seq để cloud dựng lại đúng dòng thời gian; nếu gửi song song không thứ tự, biểu đồ có thể bị "nhảy lùi".
+
+### Vì sao các phương án còn lại sai
+- **Giữ trong RAM**: mất dữ liệu khi mất điện hoặc OOM. Con số 12 triệu điểm ở trên cho thấy RAM không phải chỗ chứa an toàn.
+- **Bỏ bản ghi và đọc lại từ PLC**: bộ đếm trong PLC thường có giới hạn (16/32 bit), bị reset khi bảo trì, hoặc chỉ lưu tổng chứ không lưu được chi tiết theo thời điểm. Không thể tái tạo dữ liệu theo chu kỳ sản xuất.
+- **Retry mỗi 10 ms**: trong 40 phút sẽ có 240.000 lần gọi thất bại, đốt CPU và pin; khi mạng có lại, hàng loạt client cùng dồn sẽ làm nghẽn cloud (thundering herd). Đúng là dùng exponential backoff kèm jitter, batch và giới hạn số request đồng thời.
+
+### Ví dụ đời thực
+Một xưởng nhựa mất Internet 35 phút do nhà mạng bảo trì. Gateway bản cũ giữ queue trong RAM, tiến trình bị OOM restart và mất 35 phút dữ liệu của 9 máy ép. Bản mới ghi vào SQLite theo lô 500 bản ghi, giới hạn 2 GB (khoảng 3 ngày dữ liệu), cảnh báo ở 80%. Lần mất mạng sau, 100% bản ghi được đẩy lên trong 6 phút sau khi có mạng lại.
+
+> Senior tip: đặt giới hạn buffer theo thời gian mất mạng tệ nhất mà bạn cam kết (ví dụ 72 giờ), không theo "chắc là đủ". Đĩa công nghiệp hay bị đầy vì log, nên tách partition cho buffer và giám sát dung lượng.`
+},
+{
+  id: 'qz-design-084',
+  topic: 'design',
+  multi: true,
+  q: 'Thiết kế store-and-forward cho gateway mất mạng. Hai yêu cầu nào BẮT BUỘC để dữ liệu lên cloud đúng và không trùng sau khi mạng trở lại? (Chọn 2)',
+  options: [
+    'Mỗi bản ghi có id ổn định (device_id + seq tăng dần) và consumer phía cloud dedup theo id đó.',
+    'Gateway xoá bản ghi khỏi buffer ngay khi gọi xong API, không cần chờ HTTP 2xx.',
+    'Tăng QoS MQTT lên 2 là đủ; cloud không cần kiểm tra trùng vì QoS 2 bảo đảm exactly-once toàn tuyến.',
+    'Gateway chỉ báo "đã nhận" cho PLC sau khi bản ghi đã ghi bền xuống buffer cục bộ (commit/fsync).',
+    'Nén và gửi song song, không cần giữ thứ tự vì thứ tự không quan trọng với dữ liệu sản xuất.'
+  ],
+  answer: [0, 3],
+  explain: `**Đáp án đúng: id ổn định + dedup ở cloud, và chỉ ack cho PLC sau khi đã ghi bền.**
+
+### Tóm tắt
+Store-and-forward chỉ an toàn khi hội đủ hai tính chất: (1) không mất dữ liệu — ack chỉ sau khi ghi bền; (2) không nhân đôi dữ liệu — mọi lần retry đều mang cùng một id để cloud nhận ra bản trùng. Thiếu một trong hai, số liệu sản xuất sẽ sai.
+
+### Yêu cầu 1: id ổn định + dedup
+Cloud phải phân biệt được "bản ghi mới" và "bản gửi lại". Cách chắc chắn nhất là id do nguồn sinh ra, ví dụ {{device_id + ":" + seq}}, và một unique index trong database đích:
+
+~~~sql
+CREATE TABLE production_count (
+  device_id  text        NOT NULL,
+  seq        bigint      NOT NULL,
+  ts         timestamptz NOT NULL,
+  qty        integer     NOT NULL,
+  PRIMARY KEY (device_id, seq)
+);
+INSERT INTO production_count (device_id, seq, ts, qty)
+VALUES (:deviceId, :seq, :ts, :qty)
+ON CONFLICT (device_id, seq) DO NOTHING;
+~~~
+Nếu gateway gửi lại sau khi timeout, câu lệnh không tạo thêm dòng và cũng không ném lỗi. Không dùng timestamp làm id: hai bản ghi trong cùng mili-giây sẽ đụng nhau, còn đồng hồ gateway có thể bị chỉnh (NTP) làm id nhảy lùi.
+
+### Yêu cầu 2: ack sau khi ghi bền
+Chuỗi tin cậy phải là: ghi xuống buffer bền → fsync/commit thành công → mới trả ack cho PLC (hoặc cho tầng đọc). Nếu ack trước rồi mới ghi, mất điện đúng lúc đó sẽ làm mất dữ liệu mà PLC đã tưởng là an toàn. Tương tự, chỉ xoá khỏi buffer sau khi cloud trả 2xx, nếu không sẽ mất dữ liệu trên đường.
+
+### Ví dụ đời thực
+Một nhà máy chè: gateway ack PLC ngay khi nhận, ghi buffer sau 200 ms. Một lần mất điện, 1,2% bản ghi trong 200 ms cuối bị mất, và vì cloud không có id nên không phát hiện được. Sửa thành ghi SQLite (WAL) rồi mới ack, đồng thời thêm id (device_id, seq): 3 tháng sau không còn lệch giữa báo cáo và PLC.
+
+### Vì sao các phương án còn lại sai
+- **Xoá buffer ngay khi gọi API**: nếu request thất bại hoặc timeout sau khi server đã ghi một nửa, dữ liệu mất mà không có cách gửi lại. Phải xoá theo ack của cloud.
+- **QoS 2 là đủ**: QoS 2 chỉ đúng trong một phiên MQTT giữa hai bên. Khi gateway replay buffer sau restart, hoặc khi bridge/queue trung gian gửi lại, message vẫn có thể trùng. Exactly-once end-to-end phải do tầng dữ liệu bảo đảm.
+- **Gửi song song không thứ tự**: với dữ liệu sản xuất, thứ tự và mốc thời gian quan trọng (tính OEE, phát hiện dừng máy). Gửi lộn xộn làm báo cáo sai và khó đối soát. Có thể song song nhưng phải theo cửa sổ và sắp lại theo seq.
+
+> Senior tip: đo hai chỉ số ở cloud — số bản ghi nhận được và số bản ghi bị dedup. Nếu tỉ lệ dedup tăng vọt, mạng đang có vấn đề; đó là cảnh báo sớm tốt hơn việc chờ báo cáo sản lượng lệch.`
+},
+{
+  id: 'qz-design-085',
+  topic: 'design',
+  q: 'Nhà máy có 2.000 cảm biến, mỗi cảm biến 10 giá trị/giây, cần lưu 2 năm và vẽ biểu đồ theo 1 giờ, 1 ngày, 1 tháng. Nên chọn nơi lưu nào?',
+  options: [
+    'Một bảng PostgreSQL thông thường, mỗi giá trị một dòng, không đánh index.',
+    'Mỗi cảm biến một file CSV trên ổ đĩa, khi cần thì đọc và tự tính tổng hợp.',
+    'Time-series DB (TimescaleDB, InfluxDB…) hoặc PostgreSQL có partitioning theo thời gian + BRIN/extension, kèm retention và downsampling.',
+    'Redis làm nơi lưu chính vì Redis rất nhanh.'
+  ],
+  answer: 2,
+  explain: `**Đáp án đúng: dùng time-series DB, hoặc PostgreSQL được thiết kế đúng cho chuỗi thời gian.**
+
+### Tóm tắt
+Time-series DB (TSDB) là cơ sở dữ liệu tối ưu cho dữ liệu gắn với thời gian, ghi nối đuôi và truy vấn theo khoảng thời gian. Với 2.000 cảm biến × 10 giá trị/giây, bạn tạo ra khoảng 1,73 tỉ điểm mỗi ngày; sau 2 năm là hơn 1.200 tỉ điểm, nên cách lưu quyết định toàn bộ chi phí và tốc độ.
+
+### Bài toán số liệu trước khi chọn
+~~~text
+2000 cam bien x 10 gia tri/giay = 20.000 diem/giay
+20.000 x 86.400 giay            = 1.728.000.000 diem/ngay
+1,728 ti diem/ngay x 730 ngay   = ~1.261 ti diem / 2 nam
+~~~
+Với PostgreSQL thường, một dòng có overhead (header, index, WAL) khoảng 50–100 byte: 1.261 tỉ dòng tương đương 60–120 TB. TSDB nén theo chunk và theo cột (delta cho timestamp tăng đều, mã hóa giá trị ít thay đổi) thường còn 2–10 byte/điểm, tức 3–12 TB — chênh 10–30 lần cả dung lượng lẫn chi phí IO.
+
+### TSDB làm gì khác
+- **Chunk theo thời gian**: dữ liệu được chia thành các khối theo giờ/ngày. Ghi mới chỉ chạm vào chunk "nóng", gần như ghi tuần tự; truy vấn 1 giờ chỉ đọc 1 chunk thay vì quét cả bảng.
+- **Retention**: xoá dữ liệu cũ = bỏ nguyên chunk (DROP PARTITION), nhanh và không sinh dead tuple như DELETE từng dòng.
+- **Downsampling / continuous aggregate**: tính sẵn trung bình mỗi phút/giờ. Biểu đồ 1 tháng đọc 720 dòng tổng hợp thay vì hàng chục triệu điểm thô.
+- **Nén và index theo thời gian**: BRIN index rất hợp với cột timestamp tăng đơn điệu.
+
+### Vì sao các phương án còn lại sai
+- **Bảng PostgreSQL thường, không index**: truy vấn theo khoảng thời gian phải sequential scan hàng trăm triệu dòng; xoá dữ liệu cũ bằng DELETE tạo bloat và vacuum không theo kịp.
+- **Mỗi cảm biến một file CSV**: không có transaction, không truy vấn chéo nhiều cảm biến, dễ hỏng file khi ghi đồng thời, và tổng hợp 1 tháng phải đọc toàn bộ file. Không phù hợp môi trường nhiều tiến trình.
+- **Redis làm nơi lưu chính**: Redis giữ dữ liệu trong RAM (dù có persistence), 1,7 tỉ điểm/ngày vượt xa RAM khả thi về chi phí; Redis không phải nơi lưu trữ lâu dài và không có nén chuỗi thời gian như TSDB. Redis hợp làm cache cho giá trị mới nhất.
+
+### Ví dụ đời thực
+Một nhà máy dệt lưu 800 cảm biến vào PostgreSQL thường. Sau 4 tháng, bảng 900 triệu dòng, dashboard 1 tuần mất 40 giây và autovacuum chạy liên tục. Chuyển sang TimescaleDB (hypertable theo tuần, nén chunk cũ hơn 7 ngày, continuous aggregate theo phút): cùng phần cứng, dashboard 1 tuần còn 300 ms, dung lượng giảm từ 1,8 TB xuống 210 GB.
+
+> Senior tip: nếu team đã quen PostgreSQL, TimescaleDB là lựa chọn ít rủi ro nhất — vẫn dùng SQL, transaction và backup cũ. Đừng thêm một hệ thống mới chỉ vì "TSDB nhanh hơn" khi dữ liệu còn nhỏ.`
+},
+{
+  id: 'qz-design-086',
+  topic: 'design',
+  q: 'Vì sao time-series DB xử lý 100.000 điểm/giây tốt hơn RDBMS thông thường trên cùng phần cứng?',
+  options: [
+    'Vì nó dùng GPU để tính toán các phép tổng hợp.',
+    'Vì dữ liệu ghi nối đuôi được gom thành chunk theo khoảng thời gian, nén theo cột và tính tổng hợp sẵn, nên chỉ đọc phần cần thiết.',
+    'Vì nó bỏ hẳn transaction và không bao giờ ghi xuống đĩa.',
+    'Vì nó giữ toàn bộ dữ liệu trong RAM nên không cần ổ đĩa.'
+  ],
+  answer: 1,
+  explain: `**Đáp án đúng: chunk theo thời gian + nén theo cột + tổng hợp sẵn.**
+
+### Tóm tắt
+Dữ liệu cảm biến có hai đặc điểm vàng: (1) hầu như chỉ ghi nối đuôi (append-only theo thời gian), (2) truy vấn luôn theo khoảng thời gian và thường chỉ cần giá trị tổng hợp. TSDB được thiết kế quanh hai đặc điểm đó, còn RDBMS thông thường được thiết kế cho cập nhật ngẫu nhiên và join giao dịch.
+
+### Ba cơ chế chính
+- **Chunk/partition theo thời gian**: mỗi chunk chứa dữ liệu của một khoảng (ví dụ 1 ngày). Ghi mới vào chunk nóng nên gần như ghi tuần tự; truy vấn 1 giờ chỉ mở 1 chunk; xoá dữ liệu cũ là bỏ cả chunk. RDBMS thường phải cập nhật nhiều B-tree index ngẫu nhiên cho mỗi dòng, sinh WAL lớn và phân mảnh.
+- **Nén theo cột**: timestamp tăng đều nên lưu dạng delta (chênh lệch nhỏ, thường 1–2 byte thay vì 8); giá trị cảm biến thay đổi chậm nên dùng delta-of-delta hoặc dictionary. Kết quả thường 2–10 byte/điểm thay vì 50–100 byte/dòng. Ít byte hơn nghĩa là ít IO hơn, và IO là nút cổ chai thật sự.
+- **Tổng hợp sẵn (downsampling/continuous aggregate)**: TSDB tính sẵn trung bình/min/max theo phút hoặc giờ khi dữ liệu vào. Dashboard 1 tháng đọc 720 dòng thay vì hàng chục triệu điểm thô. Ngoài ra còn có index thời gian rất rẻ (BRIN) và hàm first/last, time_bucket tối ưu sẵn.
+
+### Ví dụ đời thực
+Một hệ SCADA ghi 60.000 điểm/giây vào PostgreSQL thường: WAL sinh 400 MB/phút, checkpoint làm latency tăng vọt mỗi 5 phút, đĩa 4 TB đầy sau 6 tuần. Chuyển sang TSDB nén theo cột: WAL còn 30 MB/phút, cùng 60.000 điểm/giây nhưng CPU thấp hơn 40%, dữ liệu 6 tuần chỉ chiếm 300 GB.
+
+### Vì sao các phương án còn lại sai
+- **Dùng GPU**: các TSDB phổ biến (InfluxDB, TimescaleDB, Prometheus) chạy trên CPU; GPU không giải quyết bài toán ghi và nén chuỗi thời gian.
+- **Bỏ transaction, không ghi đĩa**: TSDB vẫn có WAL hoặc cơ chế bền vững để không mất dữ liệu khi crash; chúng chỉ gom commit theo lô (batch commit) để giảm fsync. Nói "không bao giờ ghi đĩa" là sai và sẽ mất dữ liệu.
+- **Giữ toàn bộ trong RAM**: không hệ TSDB nghiêm túc nào làm vậy với dữ liệu 2 năm; chúng dùng cache cho chunk nóng và đĩa cho phần còn lại. Chỉ giữ trong RAM thì không thể lưu 1.200 tỉ điểm.
+
+> Senior tip: nút cổ chai của telemetry thường là số index update mỗi giây, không phải CPU. Khi thấy WAL và checkpoint tăng vọt, đó là dấu hiệu mô hình lưu trữ sai chứ không phải "cần mua máy khỏe hơn".`
+},
+{
+  id: 'qz-design-087',
+  topic: 'design',
+  q: 'Topic Kafka có 12 partition, key là machine_id. Một trạm hàn (40 mỏ hàn) phát dữ liệu gấp 20 lần máy khác và gây lag trên đúng một partition. Hướng xử lý nào đúng nhất?',
+  options: [
+    'Tăng số partition lên 200 là xong, vì nhiều partition thì mọi key tự dàn đều.',
+    'Bỏ key (key = null) để dùng round-robin, chấp nhận mất thứ tự.',
+    'Tăng số consumer trong cùng group để chia tải partition đang lag.',
+    'Dùng khóa chi tiết hơn (machine_id + line_id hoặc spindle_id) để dàn tải, hoặc tách riêng topic/consumer cho trạm đó khi vẫn cần thứ tự toàn máy.'
+  ],
+  answer: 3,
+  explain: `**Đáp án đúng: làm khóa chi tiết hơn hoặc tách riêng luồng cho máy phát nhiều dữ liệu.**
+
+### Tóm tắt
+Kafka chỉ bảo đảm thứ tự trong phạm vi một partition. Producer băm key để chọn partition: {{hash(key) % số partition}}. Vì vậy một key phát quá nhiều sẽ dồn hết vào một partition, và một partition chỉ được đọc bởi một consumer trong group — thêm consumer không giúp gì.
+
+### Cơ chế và vì sao lag cục bộ
+- Có 12 partition, key machine_id phân bố theo hash. Trạm hàn M-07 có 40 mỏ hàn nhưng báo chung một machine_id, sinh 20.000 message/giây trong khi máy khác 1.000.
+- Toàn bộ 20.000 message/giây đó rơi vào đúng một partition (giả sử P-3). Consumer phụ trách P-3 chỉ xử lý được 8.000/giây, nên lag tăng 12.000/giây trong khi 11 partition còn lại gần như rảnh.
+- Thêm consumer thứ 13 vào group cũng vô ích: Kafka không chia một partition cho hai consumer cùng group (đó là cách bảo đảm thứ tự).
+
+~~~text
+P-0  [may A]         consumer-1   (nhanh, ranh)
+P-1  [may B]         consumer-2   (nhanh, ranh)
+...
+P-3  [M-07: 20k/s]   consumer-4   (lag tang 12k/s)  <-- hot partition
+P-4..P-11            consumer-5..(ranh)
+~~~
+
+### Cách xử lý đúng
+- **Làm khóa chi tiết hơn**: dùng machine_id + spindle_id (hoặc line_id) để 40 mỏ hàn rải sang nhiều partition. Đánh đổi: mất thứ tự toàn máy, chỉ còn thứ tự theo từng mỏ hàn. Thường chấp nhận được vì mỗi mỏ hàn là một nguồn độc lập.
+- **Tách riêng topic/consumer cho trạm lớn**: giữ key machine_id cho topic chi tiết, và một topic riêng có nhiều partition hơn cho trạm hàn; tầng tổng hợp đọc cả hai.
+- **Tăng số partition có kiểm soát**: chỉ hiệu quả nếu bạn tăng đồng thời số consumer và chấp nhận rằng hash(key) đổi, làm key cũ có thể sang partition mới (ảnh hưởng thứ tự tạm thời trong lúc chuyển).
+
+### Vì sao các phương án còn lại sai
+- **Tăng lên 200 partition là xong**: tăng partition không tự làm một key dồn ít lại — vẫn là 1 key vào 1 partition, chỉ khác partition nào. Ngoài ra tăng partition làm thay đổi ánh xạ key, phá thứ tự đang có, và làm tăng số file mở/rebalance.
+- **key = null (round-robin)**: message của cùng một máy sẽ rải khắp partition, mất thứ tự, và các phép tính phụ thuộc thứ tự (đếm chu kỳ, phát hiện dừng máy) sai.
+- **Tăng consumer trong cùng group**: chỉ hữu ích khi số consumer nhỏ hơn số partition. Một partition vẫn chỉ do một consumer đọc, nên consumer thứ 13 sẽ ngồi không.
+
+### Ví dụ đời thực
+Một nhà máy ô tô có 6 trạm hàn robot, mỗi trạm 30–50 mỏ. Topic 12 partition, lag 4 triệu message sau 2 giờ. Đổi key sang machine_id + spindle_id, lag về dưới 10.000 trong 15 phút; tầng tính OEE chuyển sang gộp theo machine_id sau khi đọc, chấp nhận trễ 5 giây.
+
+> Senior tip: trước khi thiết kế key, hãy vẽ phân bố tần suất dữ liệu theo key. Key đẹp là key có phân bố đều; thứ tự chỉ cần trong phạm vi thực thể mà nghiệp vụ thật sự cần.`
+},
+{
+  id: 'qz-design-088',
+  topic: 'design',
+  q: 'Ca sản xuất 480 phút, dừng ngoài kế hoạch 48 phút. Nhịp lý tưởng 1 phút/chiếc, sản lượng 360 chiếc, trong đó 342 chiếc đạt chất lượng. OEE của ca là bao nhiêu?',
+  options: [
+    'Khoảng 71% (0,90 × 0,83 × 0,95).',
+    'Khoảng 90% vì OEE chính là Availability.',
+    'Khoảng 83% vì OEE lấy theo Performance.',
+    'Khoảng 78% vì phải cộng ba chỉ số rồi chia ba.'
+  ],
+  answer: 0,
+  explain: `**Đáp án đúng: OEE ≈ 71%, tính bằng A × P × Q (nhân, không phải trung bình cộng).**
+
+### Tóm tắt
+OEE (Overall Equipment Effectiveness — hiệu suất thiết bị tổng thể) đo một máy thực sự tạo ra bao nhiêu sản phẩm tốt so với khả năng lý tưởng. Công thức chuẩn: OEE = Availability × Performance × Quality. Ba chỉ số nhân với nhau nên một chỉ số thấp kéo cả kết quả xuống mạnh.
+
+### Tính từng bước
+- **Availability (độ sẵn sàng)** = thời gian chạy máy / thời gian sản xuất kế hoạch. Thời gian sản xuất kế hoạch là 480 phút (đã trừ nghỉ có kế hoạch nếu có). Dừng ngoài kế hoạch 48 phút nên thời gian chạy = 432 phút. A = 432 / 480 = 0,90 (90%).
+- **Performance (hiệu suất tốc độ)** = (nhịp lý tưởng × tổng sản lượng) / thời gian chạy. Thời gian lý tưởng để làm 360 chiếc với nhịp 1 phút/chiếc là 360 phút. P = 360 / 432 = 0,833 (83,3%). Chênh lệch 72 phút là do máy chạy chậm hơn thiết kế hoặc có dừng nhỏ không ghi nhận.
+- **Quality (chất lượng)** = sản phẩm đạt / tổng sản phẩm = 342 / 360 = 0,95 (95%).
+- **OEE** = 0,90 × 0,833 × 0,95 = 0,7125 ≈ 71%.
+
+| Chỉ số | Công thức | Số liệu của ca |
+|---|---|---|
+| Availability | Run time / Planned production time | 432 / 480 = 90,0% |
+| Performance | (Ideal cycle × Total count) / Run time | 360 / 432 = 83,3% |
+| Quality | Good count / Total count | 342 / 360 = 95,0% |
+| OEE | A × P × Q | 71,3% |
+
+### Đọc kết quả thế nào
+71% nghĩa là trong 480 phút trả lương, máy chỉ tạo ra giá trị tương đương 341 phút sản phẩm tốt ở tốc độ lý tưởng. Mức tham chiếu thường dùng: 85% là "world class" (A ≥ 90%, P ≥ 95%, Q ≥ 99,9%). Với 71%, điểm nghẽn lớn nhất là Performance (83%) — nên xem lại thời gian chuyển đổi, dừng nhỏ, và tốc độ thực tế.
+
+### Vì sao các phương án còn lại sai
+- **90%**: đó chỉ là Availability. Báo OEE bằng Availability là lỗi phổ biến khiến nhà máy tưởng mình chạy tốt trong khi mất 17% năng suất.
+- **83%**: đó chỉ là Performance; bỏ qua thời gian dừng máy và hàng lỗi.
+- **78% (trung bình cộng)**: trung bình cộng (90 + 83 + 95) / 3 = 89,3% chứ không phải 78%, và về nguyên tắc cũng sai: OEE là tích vì các tổn thất xảy ra đồng thời. Ai cộng rồi chia ba sẽ luôn báo cao hơn thực tế, làm mất động lực cải tiến.
+
+> Senior tip: đừng so OEE giữa các nhà máy khác nhau nếu chưa thống nhất cách tính (thời gian kế hoạch, nhịp lý tưởng, hàng rework). Trong một nhà máy, hãy theo dõi xu hướng theo tuần và tách OEE theo từng tổn thất để biết nên sửa gì trước.`
+},
+{
+  id: 'qz-design-089',
+  topic: 'design',
+  q: 'Khách hàng báo lỗi một sản phẩm (serial S-10023). Bạn cần biết sản phẩm đó dùng những lô nguyên liệu nào và ngược lại, lô đó còn đi vào những serial nào. Thiết kế dữ liệu nào hỗ trợ đúng?',
+  options: [
+    'Lưu lot hiện tại trong bảng serial và UPDATE mỗi lần đổi lô, vì chỉ lô cuối cùng mới quan trọng.',
+    'Ghép theo timestamp: serial nào sản xuất trong khoảng thời gian của lô thì coi là thuộc lô đó.',
+    'Bảng many-to-many serial_lot (serial, lot, qty, consumed_at) chỉ ghi thêm, có index cả hai chiều để truy vấn xuôi và ngược.',
+    'Ghi mỗi lô vào một file CSV riêng, khi cần thì tìm chuỗi trong tất cả file.'
+  ],
+  answer: 2,
+  explain: `**Đáp án đúng: bảng many-to-many chỉ ghi thêm, index hai chiều.**
+
+### Tóm tắt
+Traceability (truy xuất nguồn gốc) là khả năng trả lời hai câu hỏi ngược nhau: "sản phẩm này làm từ nguyên liệu nào" và "nguyên liệu này đã đi vào những sản phẩm nào". Lot là lô nguyên liệu (ví dụ 500 kg nhựa cùng một đợt sản xuất), serial là mã duy nhất của từng sản phẩm. Mối quan hệ giữa chúng là nhiều-nhiều: một sản phẩm dùng nhiều lô, một lô đi vào nhiều sản phẩm.
+
+### Mô hình dữ liệu
+~~~sql
+CREATE TABLE serial_lot (
+  serial       text        NOT NULL,   -- S-10023
+  lot          text        NOT NULL,   -- L-2026-0412
+  qty          numeric(12,3) NOT NULL, -- so luong tieu thu
+  consumed_at  timestamptz NOT NULL,   -- thoi diem tieu thu
+  station      text        NOT NULL,   -- tram su dung
+  PRIMARY KEY (serial, lot, consumed_at)
+);
+CREATE INDEX ix_serial_lot_serial ON serial_lot (serial);
+CREATE INDEX ix_serial_lot_lot    ON serial_lot (lot);
+~~~
+Hai index cho phép truy vấn cả hai chiều trong vài mili-giây. Bảng chỉ INSERT, không UPDATE/DELETE: khi nhập sai thì thêm bản ghi đính chính (ghi rõ lý do, người đính chính) và đánh dấu bản cũ là bị thay thế, để vẫn dựng lại được lịch sử đúng tại thời điểm xuất hàng.
+
+### Vì sao mô hình này cần thiết
+- Thu hồi sản phẩm (recall) đòi hỏi liệt kê toàn bộ sản phẩm liên quan trong vài phút. Nếu chỉ có chiều serial → lot, bạn không thể tìm "lô L-2026-0412 đã đi vào serial nào" mà không quét toàn bảng.
+- Khi có nhiều lô trộn trong một ca, phải lưu đủ từng cặp (serial, lot) cùng khối lượng; nếu chỉ lưu một lot thì mất khả năng truy vết.
+- Dữ liệu phải bất biến vì nó là bằng chứng cho audit chất lượng (ISO 9001, IATF 16949) và cho việc bồi thường.
+
+### Vì sao các phương án còn lại sai
+- **UPDATE lot hiện tại**: mỗi lần đổi lô là mất lịch sử lô trước. Khi khách báo lỗi sau 6 tháng, bạn không biết sản phẩm từng chứa lô nào — mất hoàn toàn khả năng truy xuất ngược.
+- **Ghép theo timestamp**: đây là suy đoán chứ không phải dữ liệu. Nhiều lô cùng tồn tại trên dây chuyền, còn lô có thể nhập kho trước hoặc sau khi dùng. Kết quả là phạm vi recall quá rộng (tốn kém) hoặc quá hẹp (bỏ sót hàng lỗi).
+- **Mỗi lô một file CSV**: tìm kiếm phải quét toàn bộ file, không có index, không transaction, dễ trùng tên và không thể join với bảng serial. Không đáp ứng được yêu cầu truy xuất trong vài giây.
+
+### Ví dụ đời thực
+Một nhà máy thiết bị y tế nhận cảnh báo lô nhựa L-2026-0412 bị nhiễm khuẩn. Với bảng serial_lot, họ tìm được 1.842 serial trong 0,8 giây và cách ly đúng 3 lô hàng xuất khẩu. Lần trước, khi lot chỉ nằm trong một cột chuỗi, việc tìm mất 2 ngày và phải thu hồi gấp đôi số hàng cần thiết.
+
+> Senior tip: thiết kế truy vết ngay từ đầu, đừng đợi đến lúc có recall. Một bảng nối append-only + hai index rẻ hơn rất nhiều so với chi phí thu hồi nhầm hoặc bị phạt do không chứng minh được phạm vi ảnh hưởng.`
+},
+{
+  id: 'qz-design-090',
+  topic: 'design',
+  multi: true,
+  q: 'Sau khi xác định một lô nguyên liệu lỗi, QA cần chứng minh phạm vi ảnh hưởng trong 2 năm và không được sửa lịch sử. Hai yêu cầu thiết kế nào đúng? (Chọn 2)',
+  options: [
+    'Cho phép sửa bản ghi truy xuất để sửa lỗi nhập liệu, miễn là có ghi log.',
+    'Lưu bản ghi truy xuất dạng bất biến (append-only/WORM) kèm audit trail; đính chính bằng bản ghi mới thay vì sửa bản cũ.',
+    'Xoá bản ghi cũ hơn 90 ngày để tiết kiệm dung lượng, vì QA chỉ cần dữ liệu gần đây.',
+    'Lưu cùng một bản ghi ở gateway và cloud nhưng không cần id chung, vì hai nơi độc lập.',
+    'Đánh index/partition theo thời gian cho cả hai chiều truy vấn (serial → lot và lot → serial) để trả kết quả trong vài giây.'
+  ],
+  answer: [1, 4],
+  explain: `**Đáp án đúng: dữ liệu truy xuất phải bất biến có audit trail, và truy vấn hai chiều phải có index/partition theo thời gian.**
+
+### Tóm tắt
+Truy xuất nguồn gốc chỉ có giá trị khi dữ liệu là bằng chứng: không ai được lặng lẽ sửa, và câu trả lời phải có trong vài giây chứ không phải vài ngày. Hai yêu cầu đó tương ứng với tính bất biến (immutability) và khả năng truy vấn hiệu quả.
+
+### Vì sao phải bất biến + audit trail
+Khi xảy ra recall hoặc kiện tụng, câu hỏi đầu tiên là "dữ liệu này có bị sửa không". Nếu ai cũng UPDATE được bảng truy xuất thì phạm vi ảnh hưởng không còn đáng tin. Cách làm đúng:
+- Chỉ cho phép INSERT. Sửa sai bằng bản ghi đính chính có trường tham chiếu tới bản gốc, lý do, người thực hiện và thời điểm.
+- Bật audit trail (trigger hoặc ứng dụng ghi log bất biến) cho mọi thao tác đọc/ghi nhạy cảm.
+- Cân nhắc WORM (write once read many) trên object storage cho báo cáo đã ký số, hoặc ít nhất là partition chỉ đọc sau khi đóng kỳ.
+- Lưu đủ lâu: 2 năm theo yêu cầu, thực tế nên theo vòng đời sản phẩm + thời hạn bảo hành. Không xoá theo kiểu "90 ngày cho nhẹ".
+
+### Vì sao phải index/partition hai chiều
+Recall đi theo hai hướng: từ lô lỗi ra danh sách serial bị ảnh hưởng (hướng chính khi thu hồi), và từ serial khách trả về lô (hướng điều tra). Với dữ liệu 2 năm có thể lên hàng trăm triệu dòng:
+- Index (lot, consumed_at) và (serial, consumed_at) giúp cả hai hướng chạy trong mili-giây.
+- Partition theo tháng giúp truy vấn chỉ đọc partition liên quan, và việc archive dữ liệu cũ là detach partition thay vì DELETE hàng loạt.
+
+### Ví dụ đời thực
+Một nhà máy dược có 320 triệu dòng genealogy sau 2 năm. Truy vấn "lô L-0412 đi vào serial nào" mất 90 giây vì chỉ có index một chiều. Thêm index (lot, consumed_at) và partition theo tháng: 0,6 giây. Đồng thời chuyển sang chỉ-INSERT kèm bảng đính chính, nhờ vậy khi thanh tra hỏi, họ xuất được đầy đủ lịch sử thay đổi của từng bản ghi.
+
+### Vì sao các phương án còn lại sai
+- **Cho phép sửa, chỉ cần ghi log**: log thường nằm ở hệ thống khác, có thể bị xoay vòng (retention 7–30 ngày) và không đủ để chứng minh trước cơ quan quản lý. Bản ghi gốc bị sửa là mất bằng chứng.
+- **Xoá bản ghi cũ hơn 90 ngày**: trực tiếp phá yêu cầu 2 năm. Nếu cần tiết kiệm, hãy nén và archive sang storage rẻ hơn, không xoá.
+- **Lưu hai nơi không có id chung**: khi gateway và cloud lệch nhau, bạn không biết bản nào đúng và không thể đối soát. Phải có id duy nhất toàn cục và quy tắc gộp rõ ràng (ví dụ bản mới hơn theo updatedAt thắng, nhưng với genealogy thì cấm ghi đè).
+
+> Senior tip: hãy thử làm một cuộc diễn tập recall giả lập mỗi quý: chọn ngẫu nhiên một lô, đo thời gian ra danh sách serial và số serial tìm được. Nếu mất hơn 5 phút hoặc không giải thích được nguồn dữ liệu, thiết kế truy xuất chưa đạt.`
 }
 
 );
