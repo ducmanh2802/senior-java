@@ -4257,13 +4257,13 @@ Quy tuc: bat InterruptedException phai co mot trong hai hanh dong — goi lai Th
 {
   id: 'lab-thread-018',
   category: 'thread',
-  title: 'Tat ca tac vu dinh ky treo vi mot task chao dai tren ScheduledThreadPoolExecutor (1 thread)',
+  title: 'Tất cả tác vụ định kỳ treo vì một task chạy dài trên ScheduledThreadPoolExecutor (1 thread)',
   level: 'senior',
-  scenario: `**Bối cảnh:** PayVN Scheduler (Java 21, Spring Boot 3.4) dung @Scheduled cho nhieu tac vu: health check moi 10 giay, flush metrics moi 30 giay, cleanup session moi 5 phan, gui bao cao hang ngay. Cau hinh spring.task.scheduling.pool.size=1 (mac dinh cua Spring Boot cho scheduler — chi co 1 thread scheduling-1). Mot tac vu (flush metrics goi API chua) chay dai hon khoang cach lan chay, chap duy nhat 1 thread scheduler.
+  scenario: `**Bối cảnh:** PayVN Scheduler (Java 21, Spring Boot 3.4) dùng @Scheduled cho nhiều tác vụ: health check mỗi 10 giây, flush metrics mỗi 30 giây, cleanup session mỗi 5 phút, gửi báo cáo hàng ngày. Cấu hình spring.task.scheduling.pool.size=1 (mặc định của Spring Boot cho scheduler — chỉ có 1 thread scheduling-1). Một tác vụ (flush metrics gọi API chậm) chạy dài hơn khoảng cách lần chạy, chiếm duy nhất 1 thread scheduler.
 
-**Triệu chứng:** Tu luc tac vu dai bat dau chay (10:15), tat ca cac tac vu dinh ky khac khong con chay: health check khong gui, metrics khong flush, cleanup khong xay ra. CPU thap, khong exception, thread scheduler RUNNABLE o tac vu dai. Cac tac vu bi chua schedule (chua chay luc phut ke).
+**Triệu chứng:** Từ lúc tác vụ dài bắt đầu chạy (10:15), tất cả các tác vụ định kỳ khác không còn chạy: health check không gửi, metrics không flush, cleanup không xảy ra. CPU thấp, không exception, thread scheduler RUNNABLE ở tác vụ dài. Các tác vụ bị chờ schedule (chưa chạy lúc phút kế).
 
-**Dữ liệu thu thập:** jstack luc 10:18:00, log ung dung, metric lan chay cuoi cung cua tung tac vu.`,
+**Dữ liệu thu thập:** jstack lúc 10:18:00, log ứng dụng, metric lần chạy cuối cùng của từng tác vụ.`,
   artifacts: [
     {
       name: 'jstack-scheduler-10-18.txt',
@@ -4361,50 +4361,50 @@ public class HealthCheckTask {
 }`
     }
   ],
-  questions: [
-    'Tai sao tat ca @Scheduled (health check, metrics, cleanup) dung chung viec ngay cung luc, nhung chi 1 chay? Goi thich ScheduledThreadPoolExecutor co 1 thread.',
-    'Tai sao jstack chi thay scheduling-1 RUNNABLE, khong thay cac tac vu khong? Chung o dau?',
-    'Cach sua: tang pool size, tach tac vu dai ra executor rieng, khong chan thread scheduler; fixedDelay vs fixedRate; thoi gian han cho tac vu.'
-  ],
-  hints: [
-    'Spring Boot mac dinh scheduler pool size = 1 (scheduling-1). Tat ca @Scheduled chia sote thread nay.',
-    'ScheduledThreadPoolExecutor chi khoi chay tac vu ke tiep khi thread rinh lay tu DelayedWorkQueue; tac vu dang chay chap thread => cac tac vu sau xep hang, tri hoan (khong bi bo).',
-    'Nhìn log: metrics flush bat dau 10:15:02, health check lan ke (10:15:10) khong xuat hien => chua duoc chay.'
-  ],
-  answer: `**Tóm tắt:** Mọi @Scheduled chay tren duy nhat 1 thread scheduling-1 (Spring mac dinh pool.size=1). Mot tac vu chay dai chap het thread, cac tac vu dinh ky khac bi tri hoan cho toi khi slot trong.
+questions: [
+    'Tại sao tất cả @Scheduled (health check, metrics, cleanup) dừng chung việc ngay cùng lúc, nhưng chỉ 1 chạy? Giải thích ScheduledThreadPoolExecutor có 1 thread.',
+    'Tại sao jstack chỉ thấy scheduling-1 RUNNABLE, không thấy các tác vụ khác? Chúng ở đâu?',
+    'Cách sửa: tăng pool size, tách tác vụ dài ra executor riêng, không chặn thread scheduler; fixedDelay vs fixedRate; thời gian hạn cho tác vụ.',
+],
+hints: [
+    'Spring Boot mặc định scheduler pool size = 1 (scheduling-1). Tất cả @Scheduled chia sẻ thread này.',
+    'ScheduledThreadPoolExecutor chỉ khởi chạy tác vụ kế tiếp khi thread rảnh lấy từ DelayedWorkQueue; tác vụ đang chạy chiếm thread => các tác vụ sau xếp hàng, trễ hẳn (không bị bỏ).',
+    'Nhìn log: metrics flush bắt đầu 10:15:02, health check lần kế (10:15:10) không xuất hiện => chưa được chạy.'
+],
+answer: `**Tóm tắt:** Mọi @Scheduled chạy trên duy nhất 1 thread scheduling-1 (Spring mặc định pool.size=1). Một tác vụ chạy dài chiếm hết thread, các tác vụ định kỳ khác bị trễ hẳn cho tới khi slot trống.
 
 ### Nguyên nhân gốc
 
-Spring Boot tao TaskScheduler bang ThreadPoolTaskScheduler voi pool size mac dinh = 1. Doi voi @Scheduled, spring dua vao ScheduledThreadPoolExecutor: co 1 worker thread scheduling-1 va mot DelayedWorkQueue luu cac tac vu sap den thoi gian chay.
+Spring Boot tạo TaskScheduler bằng ThreadPoolTaskScheduler với pool size mặc định = 1. Đối với @Scheduled, Spring dùng ScheduledThreadPoolExecutor: có 1 worker thread scheduling-1 và một DelayedWorkQueue lưu các tác vụ sắp đến thời gian chạy.
 
-Khi den luc chay mot tac vu, worker lay no tu hang doi va chay den khi xong. Trong thoi gian do, cac tac vu khac da den thoi gian chay cung xuong hang doi nhung **khong co thread rinh de lay**, nen bi tri hoan. Khi tac vu dai xong, worker quay lai lay tac vu ke tiep tu hang doi.
+Khi đến lúc chạy một tác vụ, worker lấy nó từ hàng đợi và chạy đến khi xong. Trong thời gian đó, các tác vụ khác đã đến thời gian chạy cũng xuống hàng đợi nhưng **không có thread rảnh để lấy**, nên bị trễ hẳn. Khi tác vụ dài xong, worker quay lại lấy tác vụ kế tiếp từ hàng đợi.
 
-Vong lap chinh:
+Vòng lặp chính:
 ~~~java
-// ScheduledThreadPoolExecutor.getTask (tuong tu)
-Runnable r = workQueue.take();  // chi lay duoc khi co thread rinh
-r.run();                        // chay tac vu, bi chap neu dai
+// ScheduledThreadPoolExecutor.getTask (tương tự)
+Runnable r = workQueue.take();  // chỉ lấy được khi có thread rảnh
+r.run();                        // chạy tác vụ, bị chiếm nếu dài
 ~~~
 
-Tac vu metricsFlush goi API chua chay 108s, chap scheduling-1. Health check lan 10:15:10, 10:15:20 ... khong duoc goi den 10:20:02. Cleanup cung tuong tu.
+Tác vụ metricsFlush gọi API chậm chạy 108s, chiếm scheduling-1. Health check lần 10:15:10, 10:15:20 ... không được gọi đến 10:20:02. Cleanup cũng tương tự.
 
 ### Dẫn chứng
 
-- Chi co 1 thread scheduling-1 trong dump (mac dinh Spring pool.size=1).
-- scheduling-1 RUNNABLE o MetricsFlushTask.flush(MetricsFlushTask.java:44) -> doc socket HTTP (Net.poll/read), chua chay 18 giay va con dau.
-- Khong thread nao dang chay HealthCheckTask/SessionCleanupTask (chua duoc loi goi).
-- Log: metricsFlush bat dau 10:15:02, healthCheck lan ke (10:15:10) khong xuat hien; chung thuc te chay lai 10:20:02 sau khi metricsFlush xong 10:20:00.
-- CPU thap, khong exception — loi o cau hinh pool, khong tai nguyen.
+- Chỉ có 1 thread scheduling-1 trong dump (mặc định Spring pool.size=1).
+- scheduling-1 RUNNABLE ở MetricsFlushTask.flush(MetricsFlushTask.java:44) -> đọc socket HTTP (Net.poll/read), chưa chạy 18 giây và còn dở.
+- Không thread nào đang chạy HealthCheckTask/SessionCleanupTask (chưa được lời gọi).
+- Log: metricsFlush bắt đầu 10:15:02, healthCheck lần kế (10:15:10) không xuất hiện; chúng thực tế chạy lại 10:20:02 sau khi metricsFlush xong 10:20:00.
+- CPU thấp, không exception — lỗi ở cấu hình pool, không tài nguyên.
 
 ### Cách sửa
 
-**Cach 1: Tang pool size scheduling**
+**Cách 1: Tăng pool size scheduling**
 ~~~properties
 spring.task.scheduling.pool.size=8
 ~~~
-Mỗi @Scheduled co the chay song song tren thread rieng. Phu hop khi so tac vu it va muc do chong chiet thap.
+Mỗi @Scheduled có thể chạy song song trên thread riêng. Phù hợp khi số tác vụ ít và mức độ chồng chất thấp.
 
-**Cach 2: Tach tac vu dai ra @Async voi executor rieng (khuyen nghich)**
+**Cách 2: Tách tác vụ dài ra @Async với executor riêng (khuyến nghị)**
 ~~~java
 @Async("metricsExecutor")
 @Scheduled(fixedRate = 30000)
@@ -4419,28 +4419,26 @@ public ThreadPoolTaskExecutor metricsExecutor() {
     return ex;
 }
 ~~~
-Scheduler chi dieu khien thoi gian, nhan viec chuan thuc thi ra executor rieng. Thread scheduling-1 khong bao gi bi chap.
+Scheduler chỉ điều khiển thời gian, nhảy việc chạy thật ra executor riêng. Thread scheduling-1 không bao giờ bị chiếm.
 
-**Cach 3: Dung fixedDelay neu muon khoang cach thuc te giua 2 lan chay. Luon dat timeout cho goi HTTP trong tac vu (metricsClient.pushAll co connect/read timeout) de tac vu khong chay voi dinh.**
+**Cách 3: Dùng fixedDelay nếu muốn khoảng cách thực tế giữa 2 lần chạy. Luôn đặt timeout cho gọi HTTP trong tác vụ (metricsClient.pushAll có connect/read timeout) để tác vụ không chạy vĩnh viễn.**
 
-**Cach 4: Khong goi code chan (DB, HTTP, file) truc tiep tren thread @Scheduled; dua vao executor co gioi han concurrency (Semaphore/bulkhead) de tranh bão saturation dich vu xa.**
+**Cách 4: Không gọi code chặn (DB, HTTP, file) trực tiếp trên thread @Scheduled; đưa vào executor có giới hạn concurrency (Semaphore/bulkhead) để tránh bão saturation dịch vụ xa.**
 
 ### Phòng ngừa
 
-- Code review rule: khong duoc chặn thread @Scheduled (moi @Scheduled phai nhanh hoac chuyen sang executor rieng).
-- Giám sát scheduler.lastRun cua moi tac vu; alert neu tac vu khong chay qua 2 chu ky.
-- Dat timeout tat ca goi HTTP/DB trong tac vu dinh ky.
-- Tham khao lab thread-010/012: chung tap chung co the gay doi khi mot tac vu chap nguyen tai nguyen.
+- Code review rule: không được chặn thread @Scheduled (mọi @Scheduled phải nhanh hoặc chuyển sang executor riêng).
+- Giám sát scheduler.lastRun của mỗi tác vụ; alert nếu tác vụ không chạy quá 2 chu kỳ.
+- Đặt timeout tất cả gọi HTTP/DB trong tác vụ định kỳ.
+- Tham khảo lab thread-010/012: chung tập chung có thể gây đợi khi một tác vụ chiếm nguyên tài nguyên.
 
-> Senior tip: @Scheduled khong la "chay nen" tu dong an toan — chung chia sote mot pool co kich thuoc. Neu mot tac vu chay dai, toan bo he thiet lap dinh ky bi dom. Nguyen tac: thread @Scheduled chi duoc phep lam viec CPU it, nhan nhat, khong chan; muc nao can I/O thi chuyen sang executor rieng co gioi han va theo doi metric lan chay cuoi cung.
-
-  `,
-  rubric: [
-    'Giai thích dung: Spring @Scheduled dung ThreadPoolTaskScheduler mac dinh pool.size=1 (1 thread scheduling-1); mot tac vu dai chap thread, cac tac vu khac bi tri hoan trong DelayedWorkQueue khong co thread lay.',
-    'Trich duong artifact: chi co scheduling-1 RUNNABLE o MetricsFlushTask.flush doc socket; log healthCheck lan ke khong chay; thuc te chay lai 10:20:02.',
-    'De xac sua: tang spring.task.scheduling.pool.size, hoac tach tac vu dai sang @Async/executor rieng, dat timeout goi I/O, khong chan thread scheduler.',
-    'Phan biet fixedRate vs fixedDelay va canh bao chung tap nguyen tai nguyen (giong lab thread-010/012).'
-  ],
+> Senior tip: @Scheduled không là "chạy nền" tự động an toàn — chúng chia sẻ một pool có kích thước. Nếu một tác vụ chạy dài, toàn bộ hệ thiết lập định kỳ bị đợi. Nguyên tắc: thread @Scheduled chỉ được phép làm việc CPU ít, nhàn nhát, không chặn; mức nào cần I/O thì chuyển sang executor riêng có giới hạn và theo dõi metric lần chạy cuối cùng.`,
+rubric: [
+    'Giải thích đúng: Spring @Scheduled dùng ThreadPoolTaskScheduler mặc định pool.size=1 (1 thread scheduling-1); một tác vụ dài chiếm thread, các tác vụ khác bị trễ hẳn trong DelayedWorkQueue không có thread lấy.',
+    'Trích dẫn artifact: chỉ có scheduling-1 RUNNABLE ở MetricsFlushTask.flush đọc socket; log healthCheck lần kế không chạy; thực tế chạy lại 10:20:02.',
+    'Đề xuất sửa: tăng spring.task.scheduling.pool.size, hoặc tách tác vụ dài sang @Async/executor riêng, đặt timeout gọi I/O, không chặn thread scheduler.',
+    'Phân biệt fixedRate vs fixedDelay và cảnh báo chung tài nguyên (giống lab thread-010/012).'
+],
   tags: ['scheduled', 'scheduledthreadpoolexecutor', 'thread-pool', 'spring-boot', 'task-scheduler', 'starvation', 'jstack']
 },
 {
