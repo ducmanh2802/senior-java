@@ -9261,5 +9261,324 @@ Hệ thống thanh toán gửi webhook "payment.captured" tới 200 merchant. Tr
   ],
   tags: ['webhook', 'HMAC', 'idempotency', 'retry', 'security'],
 },
+{
+  id: 'microservices-108',
+  topic: 'microservices',
+  level: 'senior',
+  q: 'Topic Kafka của bạn đặt replication.factor=3, nhưng bạn chưa chắc broker chết một thì message có bị mất không. Giải thích ISR (in-sync replica), acks=all, min.insync.replicas và tính toán số broker tối thiểu cho an toàn.',
+  a: `**Tóm tắt:** Kafka lưu mỗi partition thành nhiều bản sao (replica) trên các broker khác nhau, chỉ có broker dẫn đầu (leader) nhận ghi. ISR là tập các replica đã đồng bộ đủ dữ liệu với leader; acks=all bắt producer chờ mọi replica trong ISR ghi nhận mới coi là gửi thành công; min.insync.replicas là số replica ISR tối thiểu phải có, nếu giảm dưới ngưỡng này producer bị lỗi và topic tạm dừng nhận message để không ghi lạc dữ liệu.
 
+### Hiểu nhanh
+Hãy hình dung Kafka như một sổ sách kế toán được sao chép ra ba cuốn, An, Bình, Cường mỗi người giữ một cuốn. An là người chủ sổ (leader), chỉ An nhận ghi dòng mới. Khi ghi một dòng, An chờ Bình và Cường ghi xong mới báo cho người gửi là "đã lưu" — đó là acks=all. Nếu Cường nghỉ phép (broker chết), An chỉ cần chờ Bình ghi là được, vì min.insync.replicas=2 cho phép ghi khi còn hai cuốn đồng bộ. Nếu cả Bình và Cường cùng nghỉ, An chỉ còn một cuốn, dưới ngưỡng tối thiểu 2, nên An từ chối nhận dòng mới để không ghi lạc. Đây là trade-off giữa an toàn dữ liệu và khả năng tiếp nhận.
+
+### Thuật ngữ
+- **Partition**: một nhánh log có thứ tự trong topic Kafka.
+- **Replica (bản sao)**: bản sao của partition lưu trên một broker.
+- **Leader replica**: replica chịu đọc và ghi cho partition; các replica khác là follower.
+- **ISR (in-sync replica)**: tập các replica đã cập nhật đủ dữ liệu mới nhất của leader, được phép tham gia khi producer dùng acks=all.
+- **acks**: producer chờ bao nhiêu replica xác nhận nhận message trước khi coi là gửi thành công (0, 1, all).
+- **min.insync.replicas**: số replica trong ISR tối thiểu phải nhận message khi acks=all; ít hơn thì broker ném lỗi NotEnoughReplicas.
+- **Unclean leader election**: chọn một replica không đầy đủ dữ liệu làm leader khi tất cả replica trong ISR đều chết — có thể làm mất message đã báo thành công.
+
+### ISR và replication hoạt động từng bước
+1. Producer gửi message tới leader của partition.
+2. Leader ghi message vào log cục bộ; follower kéo (pull) message từ leader theo offset.
+3. Khi follower đã cập nhật đủ dữ liệu mới nhất, nó nằm trong ISR. Nếu follower bị chậm hoặc chết, nó bị loại khỏi ISR.
+4. Producer với acks=all: leader chờ **mọi replica còn trong ISR** ghi nhận rồi mới trả thành công cho producer.
+5. Nếu một broker trong ISR chết, nó bị loại khỏi ISR; leader tiếp tục nhận message với số replica còn lại, miễn là số ISR vẫn ≥ min.insync.replicas.
+6. Leader chết: Kafka chọn leader mới từ ISR. Nếu ISR không rỗng, message đã báo thành công không bị mất. Nếu ISR rỗng (tất cả replica chết), phải chọn unclean leader election (có thể mất message) hoặc chờ broker trong ISR quay lại.
+
+### Mức acks và min.insync.replicas
+| acks | Ý nghĩa | Khi an toàn | Khi có nguy hiểm |
+|---|---|---|---|
+| 0 | Producer không chờ xác nhận | Gửi log, metric, dữ liệu mất được | Mất message ngay khi broker crash |
+| 1 | Chờ leader ghi nhận | Nhanh, thường ổn cho dữ liệu không quan trọng | Leader chết sau khi nhận nhưng trước khi replica sync → mất message |
+| all (-1) | Chờ mọi replica trong ISR | An toàn nhất, phù hợp dữ liệu tài chính | Nếu ISR giảm dưới min.insync.replicas, producer bị NotEnoughReplicas, topic tạm dừng nhận message |
+
+### Số broker tối thiểu
+Với replication.factor=3 và min.insync.replicas=2, cụm chịu được **1 broker chết** mà không ngừng nhận message và không mất message đã báo thành công. Quy tắc tính: cần replication.factor ≥ N + 1 để chịu được N broker chết, và đặt min.insync.replicas = replication.factor − 1 (ví dụ 3 broker ⇒ min ISR = 2). Đừng để min.insync.replicas = 1 với acks=all: điều đó tương đương chỉ chờ leader, gần như không an toàn hơn acks=1.
+
+~~~java
+Properties props = new Properties();
+props.put("bootstrap.servers", "broker1:9092,broker2:9092,broker3:9092");
+props.put("acks", "all");                          // chờ mọi replica trong ISR
+props.put("retries", Integer.MAX_VALUE);          // retry tự động khi lỗi tạm thời
+props.put("enable.idempotence", "true");          // không bị trùng do retry (Kafka 3.x bật mặc định)
+props.put("max.in.flight.requests.per.connection", 5); // giữ thứ tự khi retry
+props.put("request.timeout.ms", 30000);           // tổng thời gian chờ một lần gửi
+~~~
+
+### Ví dụ đời thực
+Hệ thống thanh toán ghi 50.000 giao dịch/giây lên Kafka topic transactions (replication.factor=3, min.insync.replicas=2). Một buổi sáng broker2 mất điện. Metric UnderReplicatedPartitions tăng từ 0 lên 120; producer với acks=all vẫn ghi được vì ISR còn 2 broker (đủ min.insync.replicas=2); lag tăng nhẹ rồi ổn định sau khi broker3 làm leader mới cho các partition dẫn đầu trên broker2. Nếu broker3 cũng chết trong khoảng đó, ISR giảm xuống 1 < min.insync.replicas=2, producer nhận NotEnoughReplicasException, giao dịch mới bị từ chối ghi — cụm từ chối nhận dữ liệu thay vì ghi lạc. Sau khi khôi phục broker2, ISR về 3, hệ thống tiếp nhận bình thường, không giao dịch nào bị mất.
+
+### Trả lời mẫu khi phỏng vấn
+Kafka lưu mỗi partition thành vài replica trên các broker khác nhau, chỉ có leader nhận ghi. ISR là tập replica đã đồng bộ đủ dữ liệu với leader. Với acks=all, producer chờ mọi replica trong ISR ghi nhận mới coi là gửi thành công, và min.insync.replicas là số replica ISR tối thiểu phải có — nếu giảm dưới ngưỡng này, producer bị NotEnoughReplicas và topic tạm dừng nhận message để không ghi lạc dữ liệu. Tôi khuyên replication.factor=3, min.insync.replicas=2, nên chịu được 1 broker chết và không mất message đã báo thành công. Nếu tất cả replica trong ISR đều chết, phải chọn unclean leader election (có thể mất message) hoặc chờ broker quay lại. Kinh nghiệm của tôi là luôn theo dõi UnderReplicatedPartitions và đặt min.insync.replicas = replication.factor − 1.
+
+> Senior tip: luôn đặt min.insync.replicas = replication.factor − 1 và theo dõi UnderReplicatedPartitions cùng metric NotEnoughReplicas. min.insync.replicas mặc định là 1, gần như vô nghĩa với acks=all.`,
+  follow: [
+    'Nếu tất cả broker chứa replica của một partition đều chết, bạn làm gì, và rủi ro của unclean leader election là gì?',
+    'min.insync.replicas đặt 1 có vấn đề gì khi dùng acks=all?',
+    'Thêm broker mới vào cụm, replica được cân bằng lại tự động không?'
+  ],
+  tags: ['Kafka', 'replication', 'ISR', 'acks', 'min.insync.replicas'],
+},
+{
+  id: 'microservices-109',
+  topic: 'microservices',
+  level: 'senior',
+  q: 'Producer Kafka gửi event giao dịch tài chính và tự retry khi lỗi mạng. Giải thích idempotent producer (PID, sequence number, epoch), transactional producer và khi nào chọn transaction thay vì chỉ idempotence.',
+  a: `**Tóm tắt:** Idempotent producer gắn mã producer (PID) và số thứ tự (sequence number) vào mỗi message; broker lưu số thứ tự cuối cùng của mỗi PID và loại bỏ message trùng do producer retry, đồng thời giữ thứ tự trong một session gửi. Transactional producer gộp việc ghi nhiều message và commit offset consumer trong một transaction Kafka, thành công hay thất bại cùng lúc — dùng cho luồng đọc Kafka → xử lý → ghi Kafka. Idempotence chỉ đảm bảo exactly-once trong ranh giới Kafka; nếu side effect là ghi DB hoặc gọi HTTP, broker không biết, nên vẫn cần consumer idempotent (Inbox pattern).
+
+### Hiểu nhanh
+Hãy hình dung producer Kafka như một nhân viên ghi sổ của một kho. Mỗi lần ghi sổ, nhân viên viết mã nhân viên (PID) và số thứ tự dòng (sequence) lên sổ. Nếu mạng giật, nhân viên không biết sổ đã ghi hay không nên ghi lại; kho nhìn số thứ tự trùng thì bỏ qua dòng trùng, chỉ ghi một lần — đó là idempotent producer. Transactional producer giống như nhân viên ghi nhiều dòng vào sổ và đồng thời đóng dấu "xong" cho các dòng đã đọc, cả hai việc phải cùng thành công hoặc cùng không; nếu máy tính giữa chừng mati điện, kho quay lại trạng thái trước khi bắt đầu ghi.
+
+### Thuật ngữ
+- **PID (producer ID)**: số định danh duy nhất của producer, broker dùng để nhóm các message từ cùng một producer.
+- **Sequence number**: số thứ tự tăng dần của mỗi message từ một producer, broker dùng để phát hiện và loại message trùng do retry.
+- **Epoch**: phiên bản của producer, tăng khi producer khởi động lại, dùng để loại message cũ của producer cũ bị gửi trễ.
+- **Idempotent producer**: producer đảm bảo broker chỉ nhận một bản của mỗi message mặc dù producer gửi lại do lỗi mạng.
+- **Transactional producer**: producer bắt đầu transaction, ghi nhiều message và commit offset consumer nguyên tử, thành công hoặc rollback cùng lúc.
+- **Exactly-once (EOS)**: xử lý mỗi message đúng một lần, chỉ đảm bảo được trong ranh giới Kafka (topic sang topic).
+- **Idempotent consumer**: consumer xử lý message trùng không gây side effect (dùng bảng processed_message / Inbox pattern).
+
+### Cách hoạt động từng bước
+1. Producer khởi tạo, lấy PID từ broker (transactional producer cần producer.id).
+2. Mỗi message gắn PID và sequence number tăng dần 1.
+3. Broker lưu (PID, sequence) cuối cùng của producer; message có sequence cũ hơn hoặc bằng số đã lưu là trùng, broker loại bỏ mà không trả lỗi, producer tin là đã ghi thành công.
+4. Producer retry khi lỗi tạm thời (timeout, NotEnoughReplicas) với backoff; idempotence giữ thứ tự nếu max.in.flight.requests.per.connection không quá 5 (mặc định là 5 khi bật idempotence).
+5. Transactional producer: beginTransaction → gửi nhiều message → sendOffsets (commit offset của consumer group trong cùng transaction) → commitTransaction. Nếu crash giữa chừng, broker giữ trạng thái transaction; consumer đặt isolation.level=read_committed sẽ không thấy message chưa commit.
+
+### Khi chọn idempotence hay transaction
+| Mục tiêu | Cách làm |
+|---|---|
+| Gửi không bị trùng do producer retry | enable.idempotence=true (mặc định Kafka 3.x) |
+| Ghi nhiều message nguyên tử (cùng thành công, cùng thất bại) | Transactional producer |
+| Đọc Kafka, xử lý, ghi Kafka, commit offset nguyên tử | Consume-transform-produce với transactional producer + isolation.level=read_committed |
+| Ghi ra DB hoặc gọi HTTP bên ngoài Kafka | Transactional producer không đủ; cần idempotent consumer + Outbox/Inbox |
+
+~~~java
+Properties props = new Properties();
+props.put("bootstrap.servers", "broker1:9092");
+props.put("acks", "all");
+props.put("enable.idempotence", "true");                      // không bị trùng do retry
+props.put("max.in.flight.requests.per.connection", 5);        // giữ thứ tự khi retry
+props.put("retries", Integer.MAX_VALUE);                      // retry tự động
+TransactionalKafkaProducer<String, String> producer = new KafkaProducer<>(props);
+producer.initTransactions();                                   // cần producer.id
+producer.beginTransaction();
+producer.send(new ProducerRecord<>("topic", "key", "value"));
+producer.sendOffsets(offsets, "group-id");                     // commit offset cùng transaction
+producer.commitTransaction();                                  // atomic: tất cả hoặc không ai
+~~~
+
+### Ví dụ đời thực
+Hệ thống chuyển tiền gửi event money.transfer vào Kafka topic transfers (replication.factor=3, acks=all). Producer cũ không bật idempotence: khi mạng giật, producer gửi lại cùng một message, broker nhận hai bản (sequence khác nhau), consumer trừ tiền hai lần → khách khiếu nại bị trừ gấp, khoảng 150 trường hợp/tháng. Điều tra: broker log thấy hai message cùng nội dung nhưng sequence khác nhau từ cùng một producer; consumer không dedup nên tin cả hai. Nguyên gốc: producer không idempotent nên retry sinh bản trùng, và consumer lầm tin broker là exactly-once (thực tế chỉ at-least-once). Xử lý: (1) bật enable.idempotence=true và acks=all, (2) message quan trọng dùng transactional producer để ghi event và commit offset consumer nguyên tử, (3) consumer đọc isolation.level=read_committed và dùng Inbox pattern (bảng processed_message) khi ghi DB. Kết quả: broker loại bản trùng do retry, không còn trừ tiền lặp do lỗi mạng; consumer idempotent chặn bản trùng lạ (ví dụ mirror hoặc restore đổi offset). Đây là minh chứng: idempotent producer chỉ trong Kafka, side effect ra DB vẫn cần consumer idempotent.
+
+### Trả lời mẫu khi phỏng vấn
+Khi producer gửi message và mạng giật, producer có thể gửi lại cùng một nội dung, dẫn đến message trùng trên Kafka. Idempotent producer giải quyết bằng cách gắn PID (mã producer) và sequence number (số thứ tự) vào mỗi message; broker lưu sequence cuối cùng của mỗi PID và loại bỏ message trùngdo retry, đồng thời giữ thứ tự nếu max.in.flight.requests.per.connection ≤ 5. Transactional producer đi xa hơn: gộp việc ghi nhiều message và commit offset consumer trong một transaction Kafka, thành công hay thất bại cùng lúc — dùng cho luồng đọc Kafka → xử lý → ghi Kafka (consume-transform-produce) với consumer đặt isolation.level=read_committed. Ràng buộc quan trọng: idempotent producer và transaction chỉ đảm bảo exactly-once trong ranh giới Kafka; nếu side effect là ghi DB hay gọi HTTP, broker không biết, nên vẫn cần idempotent consumer (bảng processed_message). Tôi bật idempotence cho mọi producer quan trọng, dùng transaction khi cần atomicity đa message, và luôn để consumer idempotent.
+
+> Senior tip: idempotent producer chỉ ngăn trùng do producer retry, không ngăn producer tự ý gửi hai message nội dung giống nhau. Nếu nghiệp vụ cần "mỗi lệnh xử lý đúng một lần", phải kết hợp idempotency key do client gửi + consumer idempotent, không nhờ Kafka một mình.`,
+  follow: [
+    'Idempotent producer ngăn trùng do producer retry, nhưng producer tự ý gửi hai message nội dung giống nhau thì broker có ngăn không?',
+    'Consumer đặt isolation.level gì để không đọc message chưa commit của transactional producer?',
+    'Producer crash giữa transaction, broker giữ trạng thái transaction như thế nào, consumer read_committed thấy gì?'
+  ],
+  tags: ['Kafka', 'producer', 'idempotent producer', 'transaction', 'exactly-once'],
+},
+{
+  id: 'microservices-110',
+  topic: 'microservices',
+  level: 'senior',
+  q: 'Consumer group của bạn lag tăng liên tục sau khi traffic gấp ba lần. Bạn đo lag bằng công cụ nào, phân biệt lag do consumer chậm hay producer quá nhanh, và xử lý scale consumer hay tăng phân vùng như thế nào?',
+  a: `**Tóm tắt:** Consumer lag là khoảng cách giữa offset mới nhất của partition (log end offset) và offset consumer group đã commit, tính theo từng partition. Lag thấp (vài đến hàng trăm message) là bình thường; lag tăng liên tục nghĩa là consumer xử lý chậm hơn producer sinh. Đo bằng kafka-consumer-groups --describe hoặc metric JMX records-lag-max / records-lag-avg. Xử lý: nếu mọi partition lag đều đặn thì thêm consumer (tối đa bằng số partition); nếu chỉ một vài partition lag cao hơn hẳn thì là hot key, phải thay đổi key hoặc tăng partition theo kế hoạch migrate. Không bao giờ thêm consumer nhiều hơn số partition, và không tăng partition trực tiếp vì đổi mapping key → partition.
+
+### Hiểu nhanh
+Hãy hình dung Kafka topic như một dây chuyền sản xuất gồm mười hai quầy (partition), mỗi quầy cóống hàng đánh số tăng dần (offset). Nhóm công nhân (consumer group) chia quầy, mỗi công nhân ghi vào sổ "tôi đã xử lý đến kiện số 41" (commit offset). Lag là số kiện còn lại trên dây chuyển chưa được lấy: kiện mới nhất số 100, công nhân đã xử lý đến 82 ⇒ lag 18. Hàng hàngizzo đến nhanh hơn công nhân lấy ⇒ lag tăng; dây chuyển không bị tắc, chỉ cần thêm công nhân hoặc làm nhanh công nhân hiện có.
+
+### Thuật ngữ
+- **Log end offset (LEO)**: offset của message mới nhất trong partition.
+- **Committed offset**: offset consumer group đã lưu là đã xử lý xong.
+- **Consumer lag**: LEO trừ committed offset, theo từng partition.
+- **records-lag-max / records-lag-avg**: metric JMX của Kafka client, lag lớn nhất và trung bình across các partition.
+- **Hot partition**: một partition nhận phần lớn message vì key không phân bố đều.
+- **Rebalance**: chia lại partition khi consumer vào hoặc ra group, tạm dừng xử lý.
+
+### Đo lag từng bước
+1. kafka-consumer-groups --bootstrap-server broker:9092 --describe --group group-id: hiển thị CURRENT-OFFSET, LOG-END-OFFSET, LAG cho từng partition.
+2. JMX: kafka.consumer:type=consumer-fetch-manager-metrics, thuộc tính records-lag-max (lag lớn nhất) và records-lag-avg; cảnh báo khi records-lag-max vượt ngưỡng (ví dụ 10.000) liên tiếp năm phút.
+3. Confluent Control Center, hoặc Kafka Lag Exporter + Prometheus + Grafana: dashboard lag theo topic, group, partition; thấy kịp partition nào đang đỏ.
+4. Phân biệt nguyên nhân: nếu tất cả partition lag tăng cùng ⇒ producer sinh nhanh hơn tổng thể consumer xử lý (tăng consumer hoặc tối ưu xử lý). Nếu chỉ một hoặc hai partition lag cao ⇒ hot key (key phân bố không đều), thêm consumer không giúp vì mỗi partition chỉ thuộc một consumer.
+
+### Xử lý scale
+- Thêm consumer: tối đa bằng số partition của topic. Mười hai partition ⇒ tối đa mười hai consumer làm việc thực tế; consumer thứ mười ba ngồi không.
+- Tăng partition: chỉ khi key phân bố đều và cần nhiều consumer hơn; tạo topic mới với nhiều partition hơn, chuyển producer sang, consumer đọc hết topic cũ rồi mới đọc topic mới. Không tăng partition trực tiếp vì đổi mapping key → partition, phá thứ tự của sự kiện đang xử lý.
+- Tối ưu consumer: giảm max.poll.records, tăng max.poll.interval.ms cho batch lớn, dùng xử lý batch, tránh gọi API chậm trong listener.
+
+~~~text
+Topic orders, 12 partition, group billing:
+P0: LEO 1.050.000, committed 1.040.000, lag 10.000
+P1: LEO 1.020.000, committed 1.019.500, lag 500
+...
+P11: LEO 980.000, committed 979.900, lag 100
+Tổng lag khoảng 15.000, đều diện ⇒ thêm consumer (tối đa 12) hoặc tối ưu xử lý
+~~~
+
+Nếu P3 lag 500.000 còn các partition khác dưới 1.000 ⇒ hot key trên P3 ⇒ xem xét thay đổi key (ví dụ từ regionId sang orderId) hoặc tăng partition.
+
+### Ví dụ đời thực
+Hệ thống thương mại điện tử có group billing consume topic order.events (12 partition) để cập nhật doanh số. Năm 2023, trong Flash Sale, traffic gấp ba lần. Triệu chứng: dashboard billing không cập nhật đơn mới, metric records-lag-max từ 0 lên 2,3 triệu trong 30 phút, p99 latency xử lý đơn từ 200ms lên 8s. Điều tra: kafka-consumer-groups --describe thấy **tất cả 12 partition đều lag khoảng 190.000** (không phải chỉ một partition), metric records-lag-avg 190.000; kubectl top pods thấy CPU consumer trung bình 85%, mỗi consumer poll 500 record/lần nhưng xử lý mỗi record gọi API bên thứ ba một đến hai giây. Nguyên gốc: tổng throughput consumer không theo kịp producer, không phải hot partition. Xử lý: (1) tăng consumer từ sáu lên mười hai (bằng số partition), (2) giảm max.poll.records từ 500 xuống 100 và xử lý batch song song trong pool nhỏ, (3) tối ưu gọi API bên thứ ba bằng circuit breaker và timeout. Kết quả: lag giảm về 0 trong 10 phút, p99 latency 350ms, CPU phân bố đều 45–55%. Nếu chỉ một vài partition lag cao (ví dụ ba partition chiếm 80% message vì key = regionId), thì thêm consumer không cứu được; phải đổi key sang orderId và tạo topic mới với nhiều partition hơn, migrate theo kế hoạch. Đây là minh chứng: đo lag theo từng partition trước khi quyết định thêm consumer hay tăng partition.
+
+### Trả lời mẫu khi phỏng vấn
+Consumer lag là khoảng cách giữa message mới nhất trong partition (log end offset) và offset consumer group đã commit, tính theo từng partition. Tôi đo bằng kafka-consumer-groups --describe (xem LAG từng partition) và metric JMX records-lag-max / records-lag-avg, cảnh báo khi lag lớn nhất vượt ngưỡng liên tục. Nếu tất cả partition lag đồng nghĩa producer sinh nhanh hơn tổng thể consumer xử lý ⇒ tôi thêm consumer, nhưng tối đa bằng số partition (consumer dư không làm gì). Nếu chỉ một vài partition lag cao ⇒ hot key phân bố không đều ⇒ tôi thay đổi key hoặc tạo topic mới với nhiều partition hơn và migrate theo kế hoạch, không bao giờ tăng partition trực tiếp vì đổi mapping key → partition và phá thứ tự. Tôi cũng tối ưu xử lý consumer (batch, timeout, circuit breaker) thay vì mù quáng thêm consumer. Kinh nghiệm: lag thấp là bình thường, lag tăng liên tục mới là tiếng chắn; luôn theo dõi lag theo từng partition chứ không chỉ tổng.
+
+> Senior tip: alarm theo records-lag-max chứ không chỉ tổng lag. Tổng lag thấp có thể che được một partition nóng đang làm chậm toàn bộ flow; lag tăng ở một partition thường là hot key hoặc consumer xử lý chậm partition đó.`,
+  follow: [
+    'Lag cao ở tất cả partition nhưng thêm consumer đã bằng số partition vẫn không đủ, bạn làm gì?',
+    'Làm sao nhận biết hot partition từ dashboard lag?',
+    'Tăng partition cho topic đang chạy ảnh hưởng thứ tự sự kiện như thế nào, bạn migrate ra sao?'
+  ],
+  tags: ['Kafka', 'consumer lag', 'partition', 'scaling', 'monitoring'],
+},
+{
+  id: 'microservices-111',
+  topic: 'microservices',
+  level: 'senior',
+  q: 'RabbitMQ có nhiều loại exchange (direct, topic, fanout, headers), xác nhận (ack) và prefetch. Giải thích từng loại, khi nào chọn queue kiểu quorum thay classic, và chọn RabbitMQ hay Kafka cho trường hợp nào.',
+  a: `**Tóm tắt:** RabbitMQ là broker tin nhắn "thông minh": exchange nhận message và định tuyến vào queue theo loại (direct, topic, fanout, headers); consumer xác nhận (ack) sau khi xử lý xong để message bị xóa; prefetch giới hạn số message chưaack gửi tới consumer để không nhét quá nhiều. Quorum queue là kiểu queue mới dùng thuật toán Raft để nhân bản an toàn khi broker chết, thay cho classic mirrored queue (đã bị gỡ ở RabbitMQ 4.0). Chọn RabbitMQ khi cần routing phức tạp, xác nhận từng message, ưu tiên/TTL; chọn Kafka khi cần lưu theo thời gian, replay, throughput cao.
+
+### Hiểu nhanh
+Hãy hình dung RabbitMQ như một bưu cục hiện đại. Exchange là bộ phân loại thư: thư đến có nhãn (routing key), exchange nhìn nhãn rồi gửi vào hộp thư (queue) đúng. Fanout nhét thư vào mọi hộp (thông báo chung), direct chỉ gửi hộp khớp tên, topic khớp theo mẫu (*.thanh-toan.*), headers khớp theo thuộc tính trong thư. Consumer lấy thư ra, xử lý xong mới ký nhận (ack); nếu chưa xử lý mà nghỉ việc, thư còn lại trong hàng đợi chờ người khác lấy. Prefetch là chỉ cho phép cầm tối đa N thư chưa ký nhận, tránh một người cầm hết thư làm người khác không có việc làm.
+
+### Thuật ngữ
+- **Exchange**: thành phần nhận message từ producer và định tuyến vào queue theo quy tắc binding.
+- **Routing key**: nhãn gắn kèm message, exchange dùng để định tuyến.
+- **Binding**: quy tắc liên kết exchange với queue (ví dụ: queue Q nhận message có routing key "order.created").
+- **Direct exchange**: định tuyến chính xác theo routing key.
+- **Topic exchange**: định tuyến theo mẫu (wildcard * cho một từ, # cho nhiều từ).
+- **Fanout exchange**: phát message đến mọi queue gắn binding, không qua routing key.
+- **Headers exchange**: định tuyến theo tiêu đề (header) của message thay vì routing key.
+- **Queue**: hàng đợi lưu message chờ consumer lấy.
+- **Acknowledgment (ack)**: consumer báo RabbitMQ đã xử lý xong message, RabbitMQ mới xóa message khỏi queue.
+- **Auto-ack vs manual ack**: auto-ack xóa ngay khi gửi message (dễ mất message nếu consumer crash); manual ack xóa sau khi xử lý xong (an toàn, khuyên dùng).
+- **Prefetch count**: số message chưa ack tối đa RabbitMQ gửi tới consumer cùng lúc (giữ consumer không bị nhét quá tải).
+- **Quorum queue**: kiểu queue nhân bản bằng Raft trên ba broker trở lên, an toàn khi broker chết, thay classic mirrored queue.
+- **Classic mirrored queue**: kiểu cũ nhân bản qua nhiều broker (đã bị đánh giá lỗi thời, bị gỡ trong RabbitMQ 4.0).
+
+### Loại exchange
+| Loại | Cách định tuyến | Ví dụ dùng |
+|---|---|---|
+| Direct | routing key khớp chính xác | queue "order.email" chỉ nhận key "order.email" |
+| Topic | routing key theo mẫu (*/#) | "order.*.paid" nhận "order.us.paid", "order.vn.paid" |
+| Fanout | gửi tới mọi queue bound | thông báo hệ thống tới tất cả microservice |
+| Headers | khớp thuộc tính header message | lọc message theo thuộc tính tùy chỉnh (ít dùng hơn topic) |
+
+### Ack và prefetch từng bước
+1. Producer publish message tới exchange, exchange định tuyến vào queue.
+2. Consumer consume message; RabbitMQ gắn tag delivery và giữ message trong queue (chưa xóa) cho tới khi consumer ack.
+3. Manual ack: consumer gọi basicAck(deliveryTag) sau khi xử lý xong (ghi DB thành công). Nếu consumer crash trước khi ack, RabbitMQ đưa message lại hàng đợi (requeue) để consumer khác lấy ⇒ at-least-once.
+4. Auto-ack: RabbitMQ xóa message ngay khi đưa cho consumer; consumer crash giữa chừng = mất message ⇒ chỉ dùng khi message mất được (metric, log).
+5. Prefetch count (basicQos): giới hạn số message chưa ack trên mỗi consumer. Ví dụ prefetch=10: consumer đang xử lý 10 message chưa ack ⇒ RabbitMQ không gửi thêm cho consumer này cho tới khi ack. Tránh một consumer nhanh cầm hết message, consumer khác nghèo nhàn; cũng ngăn consumer bị hết bộ nhớ do nhét quá nhiều message.
+
+### Quorum queue
+- Dùng Raft: leader nhận message, replicate tới follower, cần đa số (quorum) xác nhận mới coi là an toàn.
+- Ba broker ⇒ chịu được một broker chết mà không mất message; năm broker ⇒ chịu được hai broker chết.
+- Khuyến nghị: ba hoặc năm broker, số lẻ; mỗi queue có ba replica.
+- Không dùng cho hàng chục ngàn queue (mỗi quorum queue tốn tài nguyên hơn classic queue).
+- Chọn quorum queue cho queue quan trọng (tài chính, đơn hàng) cần chịu broker chết; classic queue (không mirror) cho queue tạm, dữ liệu mất được.
+
+### Chọn RabbitMQ hay Kafka
+| Tình huống | Chọn | Lý do |
+|---|---|---|
+| Task queue (gửi email, render PDF), cần ack từng công việc | RabbitMQ | manual ack + prefetch, consumer xử lý theo sức, DLQ rõ ràng |
+| Event stream, lưu lại để replay, nhiều consumer cùng đọc | Kafka | log append-only, retention theo thời gian, offset tự quản lý |
+| Routing phức tạp (topic, headers, priority, TTL) | RabbitMQ | exchange định tuyến linh hoạt ngay tại broker |
+| Throughput cực cao, stream processing | Kafka | hàng trăm MB/s, partition song song |
+| Cần duy trì thứ tự theo key và replay lịch sử | Kafka | partition + offset |
+
+~~~java
+channel.basicQos(10);                                   // prefetch: tối đa 10 message chưaack
+channel.basicConsume("order.queue", false,              // autoAck=false => manual ack
+    (consumerTag, delivery) -> {
+        try {
+            processOrder(delivery.getBody());           // ghi DB
+            channel.basicAck(delivery.getEnvelope().getDeliveryTag(), false); // xóa sau khi xong
+        } catch (Exception e) {
+            channel.basicNack(delivery.getEnvelope().getDeliveryTag(), false, true); // requeue, thử lại sau
+        }
+    },
+    consumerTag -> {});
+~~~
+
+### Ví dụ đời thực
+Hệ thống thông báo dùng RabbitMQ queue notification.send với ba consumer, exchange topic routing key "notification.email", "notification.sms", "notification.push". Năm 2023, team để auto-ack=true và không set prefetch. Triệu chứng: consumer A nhanh cầm một nghìn message về bộ nhớ, crash giữa chừng ⇒ một nghìn message mất (đã giao cho A, chưa xử lý, nhưng auto-ack xóa ngay khi giao); dashboard báo 5% notification không gửi được. Điều tra: RabbitMQ management thấy queue consumer A unacked gần không (auto-ack), log consumer A thấy exception null pointer ở message thứ bốn trăm năm mươi hai, message từ bốn trăm năm mươi ba trở đi không bao giờ được giao cho bất kỳ ai. Nguyên gốc: auto-ack xóa message ngay khi giao, không chờ xử lý xong ⇒ mất message khi consumer crash; không có prefetch ⇒ consumer nhanh bị nhét quá tải. Xử lý: (1) auto-ack=false, consumer ack sau khi gọi API gửi tin nhắn thành công, (2) basicQos(50) giới hạn mỗi consumer năm mươi message chưaack, (3) exception ⇒ basicNack(requeue=true) đưa lại hàng đợi, lỗi lặp quá nhiều ⇒ chuyển sang dead letter exchange. Kết quả: không còn notification bị mất do consumer crash, mỗi consumer ổn định xử lý khoảng 40 msg/s, CPU đều đặn. Đây là minh chứng: manual ack + prefetch là cặp bắt buộc cho task queue đáng tin cậy.
+
+### Trả lời mẫu khi phỏng vấn
+RabbitMQ dùng exchange để định tuyến message vào queue: direct khớp chính xác routing key, topic khớp theo mẫu (*/#), fanout phát tới mọi queue, headers lọc theo thuộc tính. Consumer nên dùng manual ack (auto-ack=false): chỉ gọi basicAck sau khi xử lý xong (ghi DB thành công), nếu crash trước khi ack RabbitMQ đưa message lại hàng đợi ⇒ at-least-once. Prefetch (basicQos) giới hạn số message chưa ack gửi tới mỗi consumer, tránh một consumer cầm hết message làm các consumer khác ngồi không. Quorum queue dùng Raft để nhân bản an toàn khi broker chết (khuyên dùng ba hoặc năm broker), thay cho classic mirrored queue đã bị gỡ ở RabbitMQ 4.0. Tôi chọn RabbitMQ cho task queue cần xác nhận từng công việc và routing linh hoạt, chọn Kafka cho event stream cần lưu theo thời gian và replay. Kinh nghiệm: auto-ack là thủ phạm hàng đầu mất message, luôn dùng manual ack + prefetch cho queue quan trọng.
+
+> Senior tip: hãy theo dõi số message chưaack (unacked) của từng consumer trong RabbitMQ management. Nếu một consumer unacked về 0 còn các consumer khác dồn dập, đó là dấu hiệu auto-ack hoặc prefetch không hợp lý, sắp sảy ra mất message.`,
+  follow: [
+    'Auto-ack hay manual ack, chọn cái nào khi xử lý message chậm và có thể thất bại?',
+    'Quorum queue khác classic mirrored queue ở điểm nào, và khi nào không nên dùng quorum queue?',
+    'Consumer xử lý message xong nhưng máy crash trước khi gọi basicAck, RabbitMQ làm gì, message có bị xử lý hai lần không?'
+  ],
+  tags: ['RabbitMQ', 'exchange', 'ack', 'prefetch', 'quorum queue'],
+},
+{
+  id: 'microservices-112',
+  topic: 'microservices',
+  level: 'lead',
+  q: 'Team muốn dùng Kafka làm hàng đợi job (gửi email, render PDF) và RabbitMQ làm event stream (thông báo đơn hàng). Bạn đánh giá theo tiêu chí gì, khi nào chọn cái nào cho từng trường hợp, và rủi ro khi dùng nhầm.',
+  a: `**Tóm tắt:** Không có broker tốt nhất tuyệt đối, chỉ có broker phù hợp với hình thức sử dụng. Task queue (mỗi công việc được xử lý một lần, cần ack, retry, priority) → RabbitMQ phù hợp hơn (manual ack, prefetch, DLX, priority queue). Event stream (mỗi sự kiện có thể được nhiều service đọc, lưu lại để replay, stream processing) → Kafka phù hợp hơn (log append-only, retention, offset tự quản lý, partition song song). Dùng nhầm: Kafka làm task queue ⇒ worker bị giới hạn bởi số partition, một job chậm kẹt partition; RabbitMQ làm event stream replay ⇒ queue không giữ message lâu, không có offset, replay khó.
+
+### Hiểu nhanh
+Hãy hình dung task queue như một **danh sách việc làm** dán trên tường quán cafe: mỗi việc (gửi email, render PDF) được viết trên một mảnh giấy, một nhân viên lấy đi làm, làm xong mới gỡ mảnh giấy ra; nếu nhân viên nghỉ giữa chừng, mảnh giấy vẫn còn, người khác lấy tiếp. Đó là RabbitMQ. Hãy hình dung event stream như một **cuốn sách ký sự** ghi chép mọi sự kiện theo thứ tự: bất kỳ ai có thể đọc cuốn sách từ trang đầu, đọc lại trang cũ (replay), và nhiều người có thể cùng đọc từng trang riêng lẻ mà không ảnh hưởng nhau. Đó là Kafka. Việc dùng nhầm là dùng cuốn sách ký sự làm danh sách việc làm (Kafka làm task queue) hoặc dùng danh sách việc làm làm cuốn ký sự (RabbitMQ làm event stream) — cả hai chạy được nhưng đau đớn khi mở rộng.
+
+### Thuật ngữ
+- **Task queue**: hàng đợi công việc, mỗi message được một consumer xử lý một lần, sau khi xử lý xong thì xóa.
+- **Event stream**: luồng sự kiện, message được lưu lại theo thời gian, nhiều consumer có thể đọc cùng một message, mỗi consumer tự quản lý tiến độ (offset).
+- **At-least-once**: message được xử lý ít nhất một lần, có thể bị trùng.
+- **Replay**: đọc lại message cũ bằng cách quay lại offset cũ (Kafka).
+- **Retention**: thời gian Kafka giữ message (ví dụ bảy ngày), không phụ thuộc consumer đã đọc chưa.
+- **Prefetch**: số message chưa ack RabbitMQ gửi tới consumer (RabbitMQ).
+- **Partition**: đơn vị song song tối đa của một consumer group (Kafka).
+
+### Bảng quyết định
+| Tiêu chí | Task queue (RabbitMQ) | Event stream (Kafka) |
+|---|---|---|
+| Mô hình | Exchange → queue, consumer lấy + ack | Log append-only, consumer đọc theo offset |
+| Mỗi message xử lý | Một lần bởi một consumer | Nhiều lần bởi nhiều consumer |
+| Lưu bao lâu | Đến khi ack (hoặc TTL) | Theo retention (mặc định bảy ngày), độc lập consumer |
+| Replay | Không (xóa sau ack) | Có (reset offset đọc lại) |
+| Thứ tự | Theo queue, có thể thay đổi khi requeue | Theo partition + key |
+| Số consumer song song | Không giới hạn bởi queue | Tối đa bằng số partition |
+| Ưu tiên / TTL từng message | Có (RabbitMQ) | Không |
+| Throughput | Trung bình–cao | Rất cao (hàng trăm MB/s) |
+
+### Rủi ro khi dùng nhầm
+1. **Kafka làm task queue**: mỗi partition chỉ một consumer ⇒ số worker tối đa bằng số partition. Một job chậm (render PDF một phút) kẹt partition, các job phía sau cùng partition đợi. Worker không thể scale nhiều hơn partition. Sửa: dùng RabbitMQ cho task queue, Kafka chỉ cho event.
+2. **RabbitMQ làm event stream**: queue xóa message sau ack ⇒ không replay được sau khi các consumer đã xử lý. Nhiều service muốn đọc cùng event ⇒ phải tạo nhiều queue trùng nội dung, tốn tài nguyên và khó quản lý. Sửa: dùng Kafka topic, mỗi service một consumer group.
+3. **Kafka làm task queue với job ưu tiên**: Kafka không có priority queue native; job khẩn cùng partition với job thường ⇒ bị chặn. Sửa: RabbitMQ priority queue hoặc topic riêng cho job ưu tiên.
+
+### Quy tắc chọn
+- Cần ack từng công việc, retry, DLQ, priority ⇒ RabbitMQ.
+- Cần lưu sự kiện để nhiều service đọc, replay sau khi fix bug, CDC ⇒ Kafka.
+- Task queue và event stream cùng có ⇒ dùng cả hai: RabbitMQ cho công việc, Kafka cho sự kiện; không ép một broker làm tất cả.
+
+### Ví dụ đời thực
+Một hệ thống vận tải có hai nhu cầu: (1) gửi email xác nhận đơn hàng sau khi thanh toán, mỗi email được gửi một lần, nếu gửi thất bại thì retry ba lần rồi bỏ vào hàng lỗi; (2) thông báo sự kiện đơn hàng (đã tạo, đã thanh toán, đã giao) cho kho, khách hàng, marketing và phòng chống gian lận cùng đọc, và marketing muốn đọc lại ba ngày sự kiện cũ để chạy lại campaign.
+
+Ban đầu team dùng Kafka cho cả hai: topic email.jobs (sáu partition, sáu worker) và topic order.events. Triệu chứng: email render job (render hóa đơn PDF) chậm một phút kẹt một partition, các email bình thường cùng partition bị chậm theo; worker muốn scale từ sáu lên hai mươi nhưng partition chỉ sáu ⇒ mười bốn worker ngồi không. Cùng lúc, order.events chỉ lưu bảy ngày ⇒ marketing muốn xem lại sự kiện mười ngày trước đã mất. Điều tra: metric consumer-lag topic email.jobs tăng vì ba partition chậm; Kafka retention bảy ngày không đủ yêu cầu marketing. Xử lý: (1) chuyển gửi email sang RabbitMQ queue email.send (manual ack, prefetch năm mươi, DLX sau ba lần thất bại), worker scale tùy ý không bị giới hạn partition, email ưu tiên dùng priority queue; (2) giữ Kafka cho order.events, tăng retention lên ba mươi ngày cho topic marketing cần replay, mỗi service một consumer group. Kết quả: email không còn bị kẹt bởi job render PDF, worker email scale theo nhu cầu; marketing replay được ba mươi ngày sự kiện. Đây là minh chứng: chọn broker theo hình thức sử dụng, chứ không theo cái phổ biến.
+
+### Trả lời mẫu khi phỏng vấn
+Không có broker tốt nhất tuyệt đối, chỉ có broker phù hợp với hình thức. Task queue (mỗi công việc một consumer xử lý, cần ack, retry, priority) tôi chọn RabbitMQ: manual ack, prefetch giới hạn tải, DLX cho message lỗi, priority queue. Event stream (nhiều service đọc cùng sự kiện, lưu để replay, stream processing) tôi chọn Kafka: log append-only, retention theo thời gian, offset tự quản lý, partition song song. Rủi ro lớn nhất khi dùng nhầm: Kafka làm task queue giới hạn worker bởi số partition và một job chậm kẹt các job cùng partition; RabbitMQ làm event stream không replay được sau khi ack và nhiều service đọc cùng event tốn queue trùng. Nếu hệ thống cần cả hai, tôi dùng cả hai: RabbitMQ cho công việc, Kafka cho sự kiện, không ép một broker làm tất cả. Kinh nghiệm: chọn theo đặc điểm workload, chứ không theo cái phổ biến hay theo xu hướng của team.
+
+> Senior tip: nếu team mới bắt đầu với microservices, đừng chọn Kafka chỉ vì "có thể cần analytics sau này". Kafka vận hành tốn công (cluster, monitor, upgrade), chi phí đến ngay còn lợi ích đến muộn. Hãy bắt đầu bằng RabbitMQ cho task queue, chỉ thêm Kafka khi thực sự cần event stream và replay.`,
+  follow: [
+    'Hệ thống cần cả task queue và event stream, bạn dùng hai broker hay ép một broker làm cả hai?',
+    'Kafka làm task queue, một job chậm kẹt partition, bạn xử lý ra sao nếu buộc phải dùng Kafka?',
+    'RabbitMQ làm event stream, nhiều service muốn đọc cùng một sự kiện, bạn tổ chức queue ra sao?'
+  ],
+  tags: ['Kafka', 'RabbitMQ', 'task queue', 'event stream', 'chọn broker'],
+},
 );
+
