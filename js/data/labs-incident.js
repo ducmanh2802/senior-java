@@ -6779,5 +6779,386 @@ public void dispatchOutbox() {
     'Đề xuất dài hạn: outbox + worker bất đồng bộ, bulkhead 20 call đồng thời, circuit breaker, idempotency key, alert thread busy/accept queue/webhook p99/outbox pending.'
   ],
   tags: ['webhook', 'timeout', 'thread-pool', 'outbox', 'bulkhead', 'circuit-breaker', 'spring-boot', 'resilience']
+},
+{
+  id: 'lab-incident-046',
+  category: 'incident',
+  title: 'Redis cache stampede giờ mở cửa: key giá chứng khoán hết hạn cùng lúc, 3.000 request đồng thời đổ vào DB',
+  level: 'senior',
+  scenario: `**Bối cảnh:** Sàn giao dịch **StockVN** chạy **price-service** (Spring Boot 3.3, Spring Cache + Redis Lettuce, 10 pod, Tomcat 200 thread, Hikari 20 connection/pod) phục vụ giá realtime cho khoảng 10 mã chứng khoán hot. Mỗi mã dùng một key cache price:stock:{symbol} với TTL **10 giây**. Khi cache miss, service chạy truy vấn join 3 bảng trên PostgreSQL 15 (khoảng 40 ms khi DB rảnh). Lúc **09:00:00** (giờ mở cửa), TTL của 10 key hot cùng hết hạn.
+ 
+**Triệu chứng:** Từ 09:00:00, p99 của API giá vọt từ 40 ms lên **4 giây**, CPU DB lên 99%, Hikari pool cạn (active 20, idle 0, waiting 180 trên mỗi pod), hit ratio Redis từ 99.5% rơi xuống 2% trong 2 giây. 3.000 request/giây vào 10 key (khoảng 300 req/s/key) cùng miss và truy vấn DB. Các API khác dùng chung DB (portfolio, order) cũng chậm theo. Một bạn đề xuất "tăng TTL lên 1 phút" và một bạn khác "thêm jitter ngẫu nhiên 0-2 giây cho TTL".
+ 
+**Dữ liệu thu thập:** Metric Prometheus 100ms quanh 09:00, Redis MONITOR sample, log ứng dụng, pg_stat_activity và mã nguồn cache.`,
+  artifacts: [
+    {
+      name: 'grafana-09h00.txt',
+      lang: 'text',
+      content: `# hit_ratio = sum(rate(cache_gets_total{cache="price",result="hit"}[100ms])) / sum(rate(cache_gets_total{cache="price"}[100ms]))
+# miss/s    = so lan cache khong co moi 100ms
+# db_query  = so truy van loadPrice cho 10 ma hot moi 100ms (delta)
+# tomcat    = tong thread ban cua price-service (max 10 x 200 = 2000)
+# hikari    = tong connection DB dang su dung / dang cho (max active 200)
+ 
+time       req/s  hit_ratio  miss/s  db_query  price_p99  tomcat  hikari(act/pend)  db_cpu
+08:59:59.9   3,020     99.5%      15       0        42 ms      120          18/0         25%
+09:00:00.0   3,010     99.5%      15       0        41 ms      118          17/0         26%
+09:00:00.1   3,000      2.1%   2,940    1,240      1.2 s     1,850         200/1,540      85%
+09:00:00.2   2,980      0.0%   2,980    1,180      2.8 s     2,000         200/1,820      98%
+09:00:00.3   3,010      0.0%   3,010    1,210      3.9 s     2,000         200/1,980      99%
+09:00:00.4   3,020      0.0%   3,020    1,240      4.1 s     2,000         200/2,010      99%
+09:00:00.5   3,010      0.0%   3,010    1,190      4.0 s     2,000         200/1,980      99%
+09:00:00.6   2,990     15.0%   2,540    1,080      3.5 s     1,950         200/1,750      98%
+09:00:00.7   3,000     45.0%   1,650      890      2.1 s     1,400         190/1,120      92%
+09:00:00.8   3,020     78.0%      660      420      850 ms      800         180/380        65%
+09:00:00.9   3,010     95.0%      150       90       120 ms      300          50/12          38%
+09:00:01.0   3,000     99.5%      15        0        43 ms      125          18/0           28%
+ 
+# Key het han luc 09:00:00.000 chac chan (TTL 10s). 10 key hot cung het han cung mot luc.
+# db_query = rate(SELECT ... FROM price WHERE symbol IN (...) AND ts = ...) delta 100ms
+# p99 binh thuong 40 ms -> vung 4 giay khi stampede.`,
+    },
+    {
+      name: 'redis-monitor-09h00.txt',
+      lang: 'text',
+      content: `$ redis-cli -h redis-price MONITOR | grep "price:stock:"   (sample 09:00:00.1 - 09:00:00.9)
+1792646400.102114 [0 10.42.6.14:51022] "GET" "price:stock:VCB"
+1792646400.102131 [0 10.42.7.33:40418] "GET" "price:stock:VCB"
+... (hang chuc GET cung key tra ve nil trong 100ms dau) ...
+1792646400.218006 [0 10.42.7.33:40418] "SET" "price:stock:VCB" "123450" "PX" "10000"
+1792646400.220410 [0 10.42.6.14:51022] "SET" "price:stock:VCB" "123450" "PX" "10000"
+... (tong 285 lenh SET cung key VCB, cung gia tri, tu 09:00:00.218 den 09:00:00.512) ...
+1792646400.512233 [0 10.42.6.21:52944] "SET" "price:stock:VCB" "123450" "PX" "10000"
+ 
+# Tuong tu 10 key: VCB, VIC, VHM, FPT, MWG, HPG, TCB, VPB, BID, MSN. Moi key ~280-300 SET.
+# Tong SET 10 key: ~2.850 lenh trong 0.9 giay, thay vi 10 lenh (moi key 1 lan).`,
+    },
+    {
+      name: 'postgres-and-code.txt',
+      lang: 'text',
+      content: `-- pg_stat_activity luc 09:00:00.3
+shop=# SELECT state, coalesce(wait_event_type,'CPU') AS wait, count(*), left(query, 60) AS q
+     FROM pg_stat_activity WHERE datname = 'stockvn' GROUP BY 1, 2, 4 ORDER BY 3 DESC LIMIT 4;
+ state  |  wait  | count |                              q
+--------+--------+-------+--------------------------------------------------------------
+ active | CPU    |   185 | SELECT p.symbol, p.price, p.volume, p.ts FROM price p JOIN ...
+ active | LWLock |    15 | SELECT p.symbol, p.price, p.volume, p.ts FROM price p JOIN ...
+ idle   | Client |    20 | COMMIT
+ (3 rows)
+ -- Tong 200 session = Hikari 20 connection x 10 pod, toan bo chay cung truy van loadPrice.
+ 
+ // ===== PriceService.java =====
+ @Cacheable(cacheNames = "price", key = "'stock:' + #symbol")
+ public StockPrice getPrice(String symbol) {
+     log.debug("cache miss price:stock:{} -> loading", symbol);
+     long t0 = System.nanoTime();
+     StockPrice price = repo.loadPrice(symbol);   // join 3 bang, ~40 ms khi DB rong
+     log.info("loaded symbol={} price={} in {} ms", symbol, price.getPrice(), (System.nanoTime() - t0) / 1_000_000);
+     return price;
+ }
+ 
+ // ===== CacheConfig.java =====
+ @Bean
+ RedisCacheManager cacheManager(RedisConnectionFactory cf) {
+     RedisCacheConfiguration cfg = RedisCacheConfiguration.defaultCacheConfig()
+             .entryTtl(Duration.ofSeconds(10))
+             .serializeValuesWith(RedisSerializationContext.SerializationPair
+                     .fromSerializer(new GenericJackson2JsonRedisSerializer()));
+     return RedisCacheManager.builder(cf).cacheDefaults(cfg).enableStatistics().build();
+ }`,
+    }
+  ],
+  questions: [
+    'Giải thích cơ chế gây ra stampede. Vì sao 3.000 request/giây chỉ mất 0.9 giây để tạo ra ~2.850 truy vấn DB thay vì 10?',
+    'Dùng số liệu: hit ratio rơi từ 99.5% xuống 0%, db_query từ 0 lên 1.200/100ms, Hikari waiting 2.000. Tại sao CPU DB 99% dù truy vấn chỉ 40 ms bình thường?',
+    'Đánh giá hai đề xuất: "tăng TTL 1 phút" và "jitter 0-2 giây". Bạn sẽ sửa thế nào ngay và dài hạn?'
+  ],
+  hints: [
+    '10 key hot cùng hết hạn lúc 09:00:00.000. @Cacheable mặc định không khoá: ai miss đều tự chạy truy vấn. 300 req/s/key × 10 key = 3.000 req/s cùng miss.',
+    'Mỗi pod Hikari 20 connection, 10 pod = 200 connection tối đa. 3.000 req/s × ~0.4s (query chậm do tranh CPU) = 1.200 connection đồng thời cần, vượt 200. PostgreSQL context switch và LWLock làm 40 ms thành 4 giây.',
+    'Tăng TTL chỉ giảm tần suất (10s -> 60s), mỗi lần stampede vẫn sập DB. Jitter giúp nếu nhiều key khác nhau cùng lúc hết hạn; ở đây 10 key CÙNG lúc hết hạn, jitter không ngăn stampede trên từng key riêng lẻ.',
+    'Sửa: @Cacheable(sync=true) khoá trong JVM; refresh-ahead (job @Scheduled 2s nạp lại trước khi hết TTL); stale-while-revalidate với khoá phân tán (SET NX); bulkhead DB (pool riêng nhỏ cho price); statement_timeout 500ms.'
+  ],
+  answer: `**Tóm tắt:** Đây là **cache stampede** (thundering herd) trên **10 hot key** cùng hết hạn lúc **09:00:00.000** (TTL 10 giây). Khi 10 key giá chứng khoán hot mất hết, 3.000 request/giây (300 req/s/key) cùng miss cache. Vì {{@Cacheable}} không có cơ chế gộp request, mỗi request tự chạy truy vấn DB. ~2.850 truy vấn DB cùng lúc (thay vì 10) làm CPU DB 99%, Hikari pool 200 connection cạn, p99 vọt từ 40 ms lên 4 giây. Các API khác dùng chung DB cũng chậm theo.
+ 
+### Cơ chế
+ 
+1. **09:00:00.000**: 10 key {{price:stock:VCB}}, {{price:stock:VIC}}... hết hạn TTL 10 giây cùng lúc (do warm-up job nạp lúc 08:59:50).
+2. Lúc 3.000 request/giây, chỉ trong vài mili giây hàng trăm request/key thấy miss. {{@Cacheable}} mặc định **không khoá** → mỗi request tự gọi {{repo.loadPrice()}}.
+3. Hikari giới hạn 20 connection/pod × 10 pod = **200 connection**. 3.000 truy vấn cùng lúc xếp hàng: {{waiting}} lên 2.000, {{active}} 200. {{pg_stat_activity}} cho thấy **185 + 15 = 200** session chạy cùng truy vấn (185 CPU, 15 LWLock).
+4. Truy vấn 40 ms trở thành 4 giây vì 200 truy vấn tranh CPU, context switch, LWLock. Tomcat 2.000 thread bận chờ connection.
+5. Truy vấn đầu xong ~09:00:00.2 SET Redis, hit ratio tăng dần. Nhưng các loader đã khởi động trước vẫn tiếp tục chạy và SET (285 lần/key), làm TTL trôi theo SET cuối.
+ 
+### Bằng chứng định lượng
+ 
+- Redis MONITOR: **~2.850 lệnh SET** cho 10 key (mỗi key ~285 SET) từ 09:00:00.2 đến 09:00:0.9, thay vì 10 SET (mỗi key 1 lần).
+- Metric: {{miss/s}} 15 → 3.010, {{db_query}} 0 → 1.240/100ms, {{hit_ratio}} 99.5% → 0%, {{hikari waiting}} 0 → 2.000, {{db_cpu}} 26% → 99%.
+- {{pg_stat_activity}}: 200 session chạy cùng 1 truy vấn, CPU 185, LWLock 15.
+- p99 40 ms → 4.1 giây (09:00:00.4), hồi phục 09:00:01.0 khi cache nạp xong.
+ 
+### Đánh giá các đề xuất
+ 
+- **Tăng TTL lên 1 phút**: chỉ giảm tần suất stampede từ 6 lần/phút xuống 1 lần/phút, mỗi lần vẫn sập DB 1 giây. Dữ liệu giá chứng khoán realtime không chấp nhận được độ trễ 1 phút.
+- **Jitter 0-2 giây cho TTL**: hữu ích khi nhiều key **khác nhau** cùng nạp rồi cùng hết hạn. Ở đây 10 key **cùng lúc nạp và cùng lúc hết hạn**, jitter trên TTL không ngăn được stampede trên **từng key riêng lẻ** (300 req/s/key cùng miss).
+ 
+### Cách sửa
+ 
+**Ngắn hạn (deploy trong giờ):**
+1. **{{@Cacheable(sync = true)}}**: trong một JVM chỉ 1 thread nạp mỗi key, các thread khác chờ. 10 pod → tối đa 10 truy vấn/key thay vì 300. DB chịu được 100 truy vấn đồng thời.
+2. **Refresh-ahead**: job {{@Scheduled(fixedRate = 2000)}} (2 giây) gọi {{@CachePut}} cho 10 key hot. TTL vẫn 10s làm lưới an toàn. Key không bao giờ hết hạn trong giờ giao dịch.
+ 
+**Dài hạn:**
+ 
+- **Stale-while-revalidate (logical expiry)**: lưu {{softExpireAt}} trong value, TTL vật lý 30 giây. Khi quá {{softExpireAt}}, 1 request giành khoá {{SET lock:price:stock:VCB NX PX 2000}} và refresh async; các request khác trả dữ liệu cũ vài giây.
+ 
+~~~java
+CachedValue<StockPrice> v = redis.get(key);
+if (v != null && v.softExpireAt().isAfter(Instant.now())) return v.data();
+if (v != null && lock.tryAcquire("lock:" + key, Duration.ofSeconds(2))) refreshAsync(symbol);
+return v != null ? v.data() : loadWithLock(symbol);
+~~~
+ 
+- **Cache 2 tầng**: Caffeine trong pod ({{refreshAfterWrite(1s)}}, {{expireAfterWrite(15s)}}) + Redis tầng 2. Giảm 3.000 GET/giây vào 1 key Redis (hot key shard).
+- **Bảo vệ DB**: pool connection riêng cho price-service (bulkhead 10 connection), {{statement_timeout = 500ms}}, tối ưu index truy vấn. DB portfolio/order không bị chiếm dụng.
+ 
+### Phòng ngừa và alert
+ 
+- Alert {{miss/s}} tăng > 100 lần mức nền hoặc hit ratio < 90% trong 500ms.
+- Alert {{db_query}} của loadPrice vượt 50/100ms (bình thường ~0).
+- Load test: xoá 10 key hot ({{DEL}}) lúc 3.000 req/s, quan sát p99.
+- Dashboard chu kỳ 10 giây: stampede thường có chu kỳ gần bằng TTL.
+ 
+> Senior tip: Với dữ liệu realtime (giá chứng khoán, tỷ giá), TTL ngắn là bắt buộc. Câu hỏi quan trọng: "Khi 10 key hot cùng mất ở giờ cao điểm thì sao?" Cách duy nhất an toàn: **refresh-ahead** (key không bao giờ hết hạn) + **khoá khi nạp** (sync=true hoặc khoá phân tán). TTL là lưới an toàn, không phải cơ chế làm mới chính.`,
+  rubric: [
+    'Nhận diện stampede 10 hot key cùng hết hạn TTL 10s: @Cacheable không khoá → 300 req/s/key tự chạy truy vấn; 2.850 truy vấn DB (MONITOR 285 SET/key) thay vì 10.',
+    'Dẫn chứng: hit_ratio 99.5% → 0%, db_query 0 → 1.240/100ms, Hikari waiting 2.000, pg_stat_activity 200 session cùng truy vấn, p99 40ms → 4.1s.',
+    'Giải thích CPU DB 99%: 200 truy vấn tranh CPU/LWLock làm 40ms thành 4s; Little law 3.000 req/s × 0.4s = 1.200 connection cần > 200.',
+    'Phản biện đúng: tăng TTL chỉ giảm tần suất, dữ liệu cũ hơn; jitter không giúp khi 10 key CÙNG lúc hết hạn.',
+    'Đề xuất: sync=true (khoá JVM), refresh-ahead 2s, stale-while-revalidate + khoá phân tán, cache 2 tầng (Caffeine), bulkhead DB pool riêng + statement_timeout; alert miss/s, hit_ratio, db_query.'
+  ],
+  tags: ['cache-stampede', 'redis', 'hot-key', 'spring-cache', 'postgresql', 'stock-trading', 'refresh-ahead']
+},
+{
+  id: 'lab-incident-047',
+  category: 'incident',
+  title: 'Task kẹt IN_PROGRESS sau khi pod bị OOMKilled: không có lease timeout, 1.200 task không ai xử lý 3 giờ',
+  level: 'senior',
+  scenario: `**Bối cảnh:** Hệ thống **OrderVN** dùng **task-processing-service** (Spring Boot 3.3, PostgreSQL 15, 6 pod) xử lý các task bất đồng bộ: xuất báo cáo, gửi email, đối soát. Task lưu trong bảng {{tasks}} với các trạng thái: {{PENDING}}, {{IN_PROGRESS}}, {{COMPLETED}}, {{FAILED}}. Worker poll task: {{UPDATE tasks SET status='IN_PROGRESS', worker_id=?, started_at=now() WHERE id IN (SELECT id FROM tasks WHERE status='PENDING' ORDER BY priority DESC, created_at LIMIT 10) RETURNING *}}. Sau khi xử lý xong, cập nhật {{COMPLETED}} hoặc {{FAILED}}. Không có **lease timeout** (thời gian hết hạn giữ task) và không có **heartbeat** (cập nhật định kỳ cho thấy worker còn sống). Pod worker có memory limit 2Gi, {{-Xmx=2g}}.
+ 
+**Triệu chứng:** Ngày 12/11/2026 lúc **02:00**, CronJob chạy batch lớn tạo 10.000 task. Lúc **02:15**, một pod worker (**task-worker-5d8f7c9b6-x2k9p**) bị **OOMKilled** (exit 137) do heap spike khi render PDF lớn. 1.200 task mà pod này đã lấy sang {{IN_PROGRESS}} **không bao giờ được cập nhật tiếp**. Worker khác không nhặt được vì status không phải {{PENDING}}. Từ 02:15 đến 05:15 (3 giờ), 1.200 task kẹt {{IN_PROGRESS}}, không ai xử lý. Dashboard chỉ thấy task "đang chạy" nhưng không tiến độ. Phát hiện khi khách khiếu nại báo cáo không xuất.
+ 
+**Dữ liệu thu thập:** Log pod OOMKilled, truy vấn SQL kiểm tra task kẹt, cấu hình worker, metric Prometheus, và jstack trước khi die.`,
+  artifacts: [
+    {
+      name: 'pod-oom-and-tasks.sql',
+      lang: 'text',
+      content: `# kubectl describe pod task-worker-5d8f7c9b6-x2k9p (trich)
+Last State: Terminated
+Reason: OOMKilled
+Exit Code: 137
+Started: Tue, 12 Nov 2026 02:00:12 +07:00
+Finished: Tue, 12 Nov 2026 02:15:23 +07:00
+ 
+# Truy van kiem tra task ket
+SELECT status, count(*) FROM tasks WHERE created_at >= '2026-11-12 02:00' GROUP BY status;
+ status       | count
+--------------+-------
+ PENDING      |  8800
+ IN_PROGRESS  |  1200   <- ket 3 gio tu 02:15
+ COMPLETED    |     0
+ FAILED       |     0
+ 
+# Chi tiet 1200 task ket
+SELECT id, status, worker_id, started_at, updated_at
+FROM tasks WHERE status = 'IN_PROGRESS' AND worker_id = 'task-worker-5d8f7c9b6-x2k9p'
+ORDER BY started_at LIMIT 5;
+ id       | status       | worker_id                       | started_at              | updated_at
+----------+--------------+---------------------------------+-------------------------+-------------------------
+ 881234   | IN_PROGRESS  | task-worker-5d8f7c9b6-x2k9p     | 2026-11-12 02:14:12.105 | 2026-11-12 02:14:12.105
+ 881235   | IN_PROGRESS  | task-worker-5d8f7c9b6-x2k9p     | 2026-11-12 02:14:15.220 | 2026-11-12 02:14:15.220
+ ...
+ -- updated_at = started_at: khong co cap nhat nao sau khi lay task
+ -- worker_id la pod da chet (OOMKilled 02:15:23)
+ 
+# Kiem tra worker khac co nhat duoc khong
+SELECT count(*) FROM tasks WHERE status = 'PENDING' AND created_at >= '2026-11-12 02:00';
+ -- 8800: worker khac dang xu ly PENDING binh thuong, nhung khong cham den IN_PROGRESS cua pod chet.`,
+    },
+    {
+      name: 'worker-config-and-code.txt',
+      lang: 'text',
+      content: `# application.yml (task-processing-service)
+spring:
+  datasource:
+    hikari:
+      maximum-pool-size: 10
+  task:
+    worker:
+      poll-interval-ms: 5000
+      batch-size: 10
+      # KHONG CO: lease-timeout-ms
+      # KHONG CO: heartbeat-interval-ms
+ 
+# TaskWorker.java (rut gon)
+@Component
+class TaskWorker {
+    @Scheduled(fixedDelayString = "\${spring.task.worker.poll-interval-ms:5000}")
+    public void pollAndProcess() {
+        List<Task> batch = taskRepo.claimTasks(10);  // UPDATE ... SET status=IN_PROGRESS, worker_id=?
+        for (Task task : batch) {
+            try {
+                process(task);           // co the mat 5-30 phut (render PDF, gui email)
+                taskRepo.complete(task.id);  // UPDATE status=COMPLETED
+            } catch (Exception e) {
+                taskRepo.fail(task.id, e.getMessage()); // UPDATE status=FAILED
+            }
+        }
+    }
+ 
+    // KHONG CO heartbeat: khong cap nhat last_heartbeat_at trong khi dang xu ly
+    // KHONG CO lease timeout: task IN_PROGRESS khong bao gio het han de worker khac nhat lai
+}
+ 
+# tasks table (rut gon)
+CREATE TABLE tasks (
+    id BIGSERIAL PRIMARY KEY,
+    status VARCHAR(20) NOT NULL DEFAULT 'PENDING',  -- PENDING, IN_PROGRESS, COMPLETED, FAILED
+    worker_id VARCHAR(100),
+    started_at TIMESTAMPTZ,
+    last_heartbeat_at TIMESTAMPTZ,  -- KHONG DUOC CAP NHAT
+    payload JSONB NOT NULL,
+    priority INT DEFAULT 0,
+    created_at TIMESTAMPTZ DEFAULT now(),
+    updated_at TIMESTAMPTZ DEFAULT now()
+);
+CREATE INDEX idx_tasks_status_priority ON tasks (status, priority DESC, created_at)
+WHERE status IN ('PENDING', 'IN_PROGRESS');
+ 
+# Pod OOM: -Xmx=2g bang memory limit 2Gi, khong co MaxMetaspaceSize/MaxDirectMemorySize.
+# render PDF 50MB -> byte[] tren heap -> RSS vuot 2Gi -> OOMKilled.`,
+    },
+    {
+      name: 'metrics-0200-0515.txt',
+      lang: 'text',
+      content: `# task_poll_rate = rate(task_poll_total[1m])
+# task_claim_rate = rate(task_claim_total[1m])
+# task_complete_rate = rate(task_complete_total[1m])
+# task_stuck_in_progress = count(task) WHERE status=IN_PROGRESS AND last_heartbeat_at < now() - 5m
+ 
+time      claim/s  complete/s  stuck_in_progress  pods  heap_used_max
+02:00      200       195               0           6      1.2 GiB
+02:10      200       198               0           6      1.4 GiB
+02:15      200         0            1,200          5      2.0 GiB (pod x2k9p OOM)
+02:20      200       195               1,200          5      1.3 GiB
+02:30      200       192               1,200          5      1.2 GiB
+...
+05:15      200       190               1,200          5      1.1 GiB
+# stuck_in_progress = 1,200 tu 02:15 den 05:15 (3 gio), khong giam.
+# Pod x2k9p chet 02:15, 5 pod con claim PENDING binh thuong (8.800 task), nhung IN_PROGRESS cua pod chet khong ai xu ly.`,
+    }
+  ],
+  questions: [
+  'Tại sao 1.200 task kẹt IN_PROGRESS sau khi pod OOMKilled? Dẫn chứng từ artifact: worker_id, started_at, updated_at, và thiếu lease/heartbeat.',
+    'Vì sao worker khác không nhặt được task kẹt? Giải thích câu UPDATE claimTasks và index WHERE status IN (PENDING, IN_PROGRESS).',
+    'Thiết kế lại: lease timeout (hết hạn giữ task), heartbeat (cập nhật last_heartbeat_at), job quét task kẹt (reclaim). Cấu hình giá trị hợp lý cho task 5-30 phút.'
+  ],
+  hints: [
+    'Pod OOMKilled 02:15:23, 1.200 task đã claim (status=IN_PROGRESS, worker_id=pod chet). updated_at = started_at → không có cập nhật nào sau đó. Không có lease timeout → task không bao giờ hết hạn IN_PROGRESS. Không có heartbeat → không biết worker còn sống hay chết.',
+    'claimTasks chỉ SELECT status=PENDING (index WHERE status IN (PENDING, IN_PROGRESS) nhưng query chỉ lọc PENDING). Task IN_PROGRESS không bao giờ được claim lại. Worker khác chỉ thấy PENDING.',
+    'Lease timeout: ví dụ 2 × thời gian xử lý tối đa (60 phút). Heartbeat: worker cập nhật last_heartbeat_at mỗi 30 giây. Reclaim job: mỗi 5 phút UPDATE status=PENDING WHERE status=IN_PROGRESS AND (last_heartbeat_at < now() - lease_timeout OR worker_id NOT IN (active pods)). Idempotency: task đã COMPLETED/FAILED không bị reclaim.'
+  ],
+  answer: `**Tóm tắt:** Pod worker **OOMKilled lúc 02:15:23** khi render PDF lớn (heap spike, -Xmx=2g bằng limit 2Gi, không chừa non-heap). Pod này đã claim **1.200 task** sang {{IN_PROGRESS}} ({{started_at}} 02:14–02:15, {{updated_at}} = {{started_at}} → không cập nhật sau đó). Vì **không có lease timeout** (task không bao giờ hết hạn IN_PROGRESS) và **không có heartbeat** ({{last_heartbeat_at}} luôn NULL), worker khác **không thể nhận biết** pod đã chết và **không claim lại** được task (query chỉ lấy {{PENDING}}). 1.200 task kẹt 3 giờ (02:15–05:15) cho đến khi SRE can thiệp thủ công.
+ 
+### Nguyên nhân gốc
+ 
+**1. Thiếu lease timeout (thời gian hết hạn giữ task).** Khi worker claim task, task chuyển sang {{IN_PROGRESS}} và gắn {{worker_id}}. Nếu worker chết giữa chừng (OOMKilled, kill, network partition), task mãi ở {{IN_PROGRESS}}. Cần cơ chế: task IN_PROGRESS quá {{leaseTimeout}} mà không có heartbeat → coi là bị abandon, chuyển về {{PENDING}} để worker khác nhặt.
+ 
+**2. Thiếu heartbeat.** Worker nên cập nhật {{last_heartbeat_at}} định kỳ (ví dụ 30 giây) khi đang xử lý. Nếu {{last_heartbeat_at}} cũ hơn {{leaseTimeout}} → task bị coi là orphan.
+ 
+**3. Claim query chỉ lấy PENDING.** {{UPDATE ... WHERE status='PENDING'}} bỏ qua {{IN_PROGRESS}}. Index {{WHERE status IN ('PENDING', 'IN_PROGRESS')}} không giúp gì vì query không lọc IN_PROGRESS. Worker khác chỉ thấy 8.800 PENDING, bỏ qua 1.200 IN_PROGRESS của pod chết.
+ 
+**4. Pod OOM do -Xmx = limit.** {{-Xmx=2g}} bằng memory limit 2Gi, không chừa non-heap (Metaspace, thread stack, direct buffer). Render PDF 50 MB byte[] + Metaspace JasperReports → RSS vượt 2Gi → OOMKilled (exit 137). Đây là lỗi cấu hình JVM riêng, nhưng hậu quả lan ra task processing vì thiếu lease/heartbeat.
+ 
+### Dẫn chứng
+ 
+- **Pod OOMKilled 02:15:23**, 1.200 task {{status=IN_PROGRESS, worker_id=task-worker-5d8f7c9b6-x2k9p}}.
+- **{{started_at}} 02:14:12 – 02:15:20**, **{{updated_at}} = {{started_at}}** → không có complete/fail/heartbeat nào.
+- **{{last_heartbeat_at}} NULL** cho cả 1.200 task (cột tồn tại nhưng không bao giờ cập nhật).
+- **Metric:** {{stuck_in_progress = 1.200}} từ 02:15 đến 05:15 không giảm; 5 pod còn lại claim PENDING bình thường (complete/s ~195), IN_PROGRESS của pod chết không ai đụng.
+- **Code:** {{TaskWorker}} không có heartbeat, không có lease timeout; claimTasks chỉ {{WHERE status='PENDING'}}.
+ 
+### Cách sửa
+ 
+**Ngắn hạn (trong giờ):**
+1. **Reclaim thủ công:** {{UPDATE tasks SET status='PENDING', worker_id=NULL, started_at=NULL WHERE status='IN_PROGRESS' AND worker_id='task-worker-5d8f7c9b6-x2k9p'}}; 1.200 task về PENDING, worker khác nhặt ngay.
+2. **Sửa pod OOM:** giảm {{-XX:MaxRAMPercentage=60}}, thêm {{MaxMetaspaceSize=256m}}, {{MaxDirectMemorySize=128m}}, render PDF streaming.
+ 
+**Dài hạn: thiết kế lease + heartbeat + reclaim job.**
+ 
+~~~sql
+-- Them cot lease_timeout_ms (hoặc dung gia tri config)
+ALTER TABLE tasks ADD COLUMN lease_expires_at TIMESTAMPTZ;
+
+-- Index cho reclaim job
+CREATE INDEX idx_tasks_lease ON tasks (lease_expires_at) WHERE status = 'IN_PROGRESS';
+~~~
+ 
+~~~java
+// 1. Claim: tinh lease_expires_at = now() + leaseTimeout (vi du 60 phut)
+@Modifying
+@Query("UPDATE tasks SET status='IN_PROGRESS', worker_id=?1, started_at=now(), lease_expires_at=now() + interval '60 minutes', last_heartbeat_at=now() WHERE id IN (SELECT id FROM tasks WHERE status='PENDING' ORDER BY priority DESC, created_at LIMIT ?2) RETURNING *")
+List<Task> claimTasks(String workerId, int batchSize);
+
+// 2. Heartbeat: moi 30 giay cap nhat last_heartbeat_at va gia han lease
+@Scheduled(fixedDelay = 30_000)
+public void heartbeat() {
+    String sql = "UPDATE tasks SET last_heartbeat_at=now(), lease_expires_at=now() + interval '60 minutes' WHERE worker_id=? AND status='IN_PROGRESS'";
+    jdbc.update(sql, workerId);
+}
+
+// 3. Process: giu heartbeat song song (thread rieng hoac @Async)
+public void process(Task task) {
+    // xu ly task...
+    taskRepo.complete(task.id);  // status=COMPLETED, lease_expires_at=NULL
+}
+
+// 4. Reclaim job: moi 5 phut nhat lai task het han
+@Scheduled(fixedDelay = 300_000)
+public void reclaimStaleTasks() {
+    String sql = """
+        UPDATE tasks 
+        SET status='PENDING', worker_id=NULL, started_at=NULL, lease_expires_at=NULL, last_heartbeat_at=NULL
+        WHERE status='IN_PROGRESS' 
+          AND (lease_expires_at < now() OR worker_id NOT IN (SELECT pod_ip FROM active_pods))
+          AND id NOT IN (SELECT id FROM tasks WHERE status IN ('COMPLETED', 'FAILED'))
+        """;
+    int reclaimed = jdbc.update(sql);
+    if (reclaimed > 0) log.warn("Reclaimed {} stale tasks", reclaimed);
+}
+~~~
+ 
+**Giá trị hợp lý cho task 5-30 phút:**
+- **Lease timeout:** 60 phút (2× max xử lý 30 phút). Đủ dư cho task chậm, heartbeat gia hạn.
+- **Heartbeat interval:** 30 giây (nhanh hơn lease 200 lần, kịp phát hiện worker die).
+- **Reclaim interval:** 5 phút (sớm phát hiện, không làm tải DB).
+- **Idempotency:** Task đã {{COMPLETED}}/{{FAILED}} có {{lease_expires_at=NULL}} → không bị reclaim. Xử lý task phải idempotent (dùng {{eventId}} trong payload) để reclaim an toàn.
+ 
+### Phòng ngừa và alert
+ 
+- Alert {{task_stuck_in_progress > 0}} trong 10 phút ({{last_heartbeat_at < now() - leaseTimeout}}).
+- Alert pod {{OOMKilled}} (exit 137) → tự động trigger reclaim check.
+- Dashboard: số task IN_PROGRESS theo worker, tuổi task IN_PROGRESS lớn nhất, lease_expires_at distribution.
+- Load test: kill -9 pod worker giữa chừng, xác nhận task được reclaim trong < 5 phút.
+- JVM: luôn {{MaxRAMPercentage < 75}}, đặt tường minh {{MaxMetaspaceSize}}, {{MaxDirectMemorySize}}.
+ 
+> Senior tip: Task processing không có lease/heartbeat giống như thuê xe không có hạn trả: người thuê mất tích (OOMKilled) thì xe mãi ở trạng thái "đang thuê", không ai mượn được. Luôn thiết kế: (1) claim gán lease_expires_at, (2) heartbeat gia hạn lease, (3) reclaim job quét lease_expires_at < now(). Và nhớ: lease timeout phải > 2× p99 xử lý, heartbeat interval phải < lease/10.`,
+  rubric: [
+    'Chỉ ra pod OOMKilled 02:15:23 đã claim 1.200 task IN_PROGRESS (started_at 02:14–02:15, updated_at = started_at, last_heartbeat_at NULL, worker_id = pod chết).',
+    'Giải thích thiếu lease timeout: task IN_PROGRESS không bao giờ hết hạn, worker khác không claim được (query chỉ lấy PENDING). Thiếu heartbeat: không biết worker còn sống.',
+    'Dẫn chứng: stuck_in_progress = 1.200 từ 02:15–05:15 không giảm; 5 pod khác claim PENDING bình thường, IN_PROGRESS của pod chết bị bỏ qua.',
+    'Đề xuất thiết kế: claim gán lease_expires_at (60 phút), heartbeat 30 giây gia hạn, reclaim job 5 phút UPDATE status=PENDING WHERE lease_expires_at < now() OR worker_id không active; idempotent reclaim.',
+    'Giá trị hợp lý: lease 2× p99 xử lý, heartbeat < lease/10, reclaim 5 phút; alert stuck_in_progress > 0 trong 10 phút, OOMKilled trigger reclaim.'
+  ],
+  tags: ['task-processing', 'lease', 'heartbeat', 'oomkilled', 'reclaim', 'postgresql', 'idempotency', 'worker']
 }
 );
