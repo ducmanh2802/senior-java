@@ -12722,38 +12722,38 @@ He thong core banking 14 dich vu Java 8 + Spring Boot 2.3 nang len Java 21 trong
   id: 'modern-072',
   topic: 'modern',
   level: 'mid',
-  q: 'Trong buoi phong van Java 21, nguoi hoi "Ban co dung tinh nang moi nao cua Java 21 khong?" Neu ung vien dung string templates (noi suy chuoi) hoac structured concurrency (cong viec co cau truc), ung vien nen tra loi nhu the nao de khong hieu sai trang thai tinh nang?',
-  a: `**Tóm tắt:** Khong phai tinh nang moi cua Java 21 cung on dinh dung production. Record pattern, pattern matching switch, sequenced collections, virtual thread la TINH NANG ON DINH (final) tu Java 21. String templates (JEP 430/459) chi preview o Java 21 va 22, roi bi RUT hoan toan truoc JDK 23 — khong co JDK chinh thuc nao co tinh nay. Structured concurrency (StructuredTaskScope) va ScopedValue con PREVIEW o Java 21 (can bat --enable-preview); ScopedValue chinh thuc tu Java 24, StructuredTaskScope van tien hoa. Trong phong van, ung vien nen ngu tinh nang on dinh da dung, va neu nhac preview phai no ro trang thai, khong khuyen khich production.
+  q: 'Trong buổi phỏng vấn Java 21, người hỏi "Bạn có dùng tính năng mới nào của Java 21 không?" Nếu ứng viên nhắc string templates (nội suy chuỗi) hay structured concurrency (công việc có cấu trúc), ứng viên nên trả lời như thế nào để không hiểu sai trạng thái tính năng?',
+  a: `**Tóm tắt:** Không phải tính năng mới của Java 21 đều ổn định dùng production. Record pattern, pattern matching switch, sequenced collections, virtual thread là TÍNH NĂNG ỔN ĐỊNH (final) từ Java 21. String templates (JEP 430/459) chỉ preview ở Java 21 và 22, rồi bị RÚT hoàn toàn trước JDK 23 — không có JDK chính thức nào có tính này. Structured concurrency (StructuredTaskScope) và ScopedValue còn PREVIEW ở Java 21 (cần bật --enable-preview); ScopedValue chính thức từ Java 24, StructuredTaskScope vẫn tiền hóa. Trong phỏng vấn, ứng viên nên nhấn mạnh tính năng ổn định đã dùng, và nếu nhắc preview phải nói rõ trạng thái, không khuyến khích production.
 
-### Cai gi - vi sao can - hoat dong
-- **Preview feature**: tinh nang hoan chinh nhua chua chot, co the thay doi hoac bi xoa; bien dich va chay can bat --enable-preview (co lenh cho phep tinh xem truoc); class file chi chay tren dung ban JDK do.
-- **String templates**: cu phap STR."..." / FMT."..." (chi de nhan biet, khong bien dich duoc tren JDK 23+), da bi rut vi thiet che kho hieu, thieu compositionality (noi hop template voi nhau khong de). Thay the: text block cho chuoi nhieu dong (tu Java 15), {{String.formatted}}/{{MessageFormat}} cho noi suy, {{PreparedStatement}} cho SQL ( cau lenh co bien tham so, tranh chen ma), template engine co escape cho HTML.
-- **Structured concurrency**: {{StructuredTaskScope}} fork cac subtask, join nhu mot don vi, loi thi huy cac subtask con lai, khong de tac vu mo co (tac vu chay le loi khong duoc dung). ScopedValue truyen context bat doi (traceId, userId — ma xac dinh yeu cau/khach hang) theo pham vi, thay ThreadLocal (bien gan theo luong, co the quên remove roi loi), tu het hieu luc khi ra khoi pham vi.
-- **--enable-preview**: coc cho bien dich va chay; class file co phien ban khung hop (class file version) gán kết voi ban JDK, len JDK khac se loi.
+### Cái gì - vì sao cần - hoạt động
+- **Preview feature**: tính năng hoàn chỉnh hơn chưa chốt, có thể thay đổi hoặc bị xóa; biên dịch và chạy cần bật --enable-preview (có lệnh cho phép tính xem trước); class file chỉ chạy trên đúng bản JDK đó.
+- **String templates**: cú pháp STR."..." / FMT."..." (chỉ để nhận biết, không biên dịch được trên JDK 23+), đã bị rút vì thiết kế khó hiểu, thiếu compositionality (nối hớp template với nhau không dễ). Thay thế: text block cho chuỗi nhiều dòng (từ Java 15), {{String.formatted}}/{{MessageFormat}} cho nội suy, {{PreparedStatement}} cho SQL (câu lệnh có biến tham số, tránh chèn mã), template engine có escape cho HTML.
+- **Structured concurrency**: {{StructuredTaskScope}} fork các subtask, join như một đơn vị, lỗi thì huỷ các subtask còn lại, không để tác vụ mổ cò (tác vụ chạy lẻ lỗi không được dừng). ScopedValue truyền context bất đối (traceId, userId — mã xác định yêu cầu/khách hàng) theo phạm vi, thay ThreadLocal (biến gán theo luồng, có thể quên remove rồi lỗi), tự hết hiệu lực khi ra khỏi phạm vi.
+- **--enable-preview**: cờ cho biên dịch và chạy; class file có phiên bản khung hợp (class file version) gắn kết với bản JDK, lên JDK khác sẽ lỗi.
 
-### Cau tra loi tot vs sai (bang)
-| Mau | Noi dung | Dan gia |
+### Câu trả lời tốt vs sai (bảng)
+| Mẫu | Nội dung | Đánh giá |
 |---|---|---|
-| Tot | "Da dung record, sealed, pattern matching switch, virtual thread — tat ca on dinh tu Java 21. Structured concurrency va ScopedValue biet la preview o JDK 21, can --enable-preview, nen chua khuyen khich production, chi dung trong spike/cong cu noi bo." | Tot |
-| Sai | "Dung string templates de viet SQL ngan gon trong production." | Sai (tinh da bi rut, khong co o JDK on dinh nao) |
+| Tốt | "Đã dùng record, sealed, pattern matching switch, virtual thread — tất cả ổn định từ Java 21. Structured concurrency và ScopedValue biết là preview ở JDK 21, cần --enable-preview, nên chưa khuyến khích production, chỉ dùng trong spike/công cụ nội bộ." | Tốt |
+| Sai | "Dùng string templates để viết SQL ngắn gọn trong production." | Sai (tính đã bị rút, không có ở JDK ổn định nào) |
 
-### Luu khi su dung
-- Bat --enable-preview trong build production: nang JDK sau => build fail. Khong bat trong profile production.
-- Copy code mau tu blog truoc 2024 dung STR."..." => len JDK 23+ loi "string templates are a preview feature" hoac khong tim thay symbol.
-- Xem trang thai JEP (preview/stable) truoc khi dung production; production chi dung API on dinh.
-- Preview la "vai tam" (tam thoi vay muon) cua JDK, khong phai cam ket on dinh.
+### Lưu khi sử dụng
+- Bật --enable-preview trong build production: nâng JDK sau => build fail. Không bật trong profile production.
+- Copy code mẫu từ blog trước 2024 dùng STR."..." => lên JDK 23+ lỗi "string templates are a preview feature" hoặc không tìm thấy symbol.
+- Xem trạng thái JEP (preview/stable) trước khi dùng production; production chỉ dùng API ổn định.
+- Preview là "vay tạm" (tạm thời vay mượn) của JDK, không phải cam kết ổn định.
 
-### Vi du thuc su
-Thu vien noi bo dung 3 bieu thuc string templates sinh cau SQL bao cao tren JDK 22 preview. CI nang len JDK 23 => build fail loi preview. Nhom gao --enable-preview, viet lai 12 diem goi bang text block cho phan SQL static va {{String.formatted}} cho tham gia hien thi, chuyen gia tri dong sang PreparedStatement. Mat 2 ngay, sau do build on dinh tren JDK 21/23 va khong con phu thuoc preview. Nhom them buoc CI grep --enable-preview de chan tai pham (lam lai loi cu).
+### Ví dụ thực sự
+Thư viện nội bộ dùng 3 biểu thức string templates sinh câu SQL báo cáo trên JDK 22 preview. CI nâng lên JDK 23 => build fail lỗi preview. Nhóm gỡ --enable-preview, viết lại 12 điểm gọi bằng text block cho phần SQL static và {{String.formatted}} cho tham gia hiển thị, chuyển giá trị động sang PreparedStatement. Mất 2 ngày, sau đó build ổn định trên JDK 21/23 và không còn phụ thuộc preview. Nhóm thêm bước CI grep --enable-preview để chặn tái phạm (làm lại lỗi cũ).
 
-### Tra loi mau khi phong van
-"Tinh nang Java 21 em da dung trong thuc te la record, sealed, pattern matching switch, sequenced collections va virtual thread — tat ca chinh thuc (final) tu Java 21. Voi structured concurrency va scoped value, em biet chung con preview o JDK 21, can bat coc --enable-preview, va class file chi chay dung dung ban JDK do, nen em khong khuyen khich dung production chua co du lieu chuong trinh tinh nang nay tot; em chi thuc thu trong spike hoac cong cu noi bo. String templates em KHONG dung vi JEP 430/459 da bi rut truoc JDK 23, khong co o JDK on dinh nao; em thay the bang text block, String.formatted hoac PreparedStatement tu ly trang thai tinh nang. Mau phong van tot: ngu tinh nang on dinh da dung, nhac preview phai no ro trang thai."
+### Trả lời mẫu khi phỏng vấn
+"Tính năng Java 21 em đã dùng trong thực tế là record, sealed, pattern matching switch, sequenced collections và virtual thread — tất cả chính thức (final) từ Java 21. Với structured concurrency và scoped value, em biết chúng còn preview ở JDK 21, cần bật cờ --enable-preview, và class file chỉ chạy đúng đúng bản JDK đó, nên em không khuyến khích dùng production chưa có dữ liệu chương trình tính năng này tốt; em chỉ thử thu trong spike hoặc công cụ nội bộ. String templates em KHÔNG dùng vì JEP 430/459 đã bị rút trước JDK 23, không có ở JDK ổn định nào; em thay thế bằng text block, String.formatted hoặc PreparedStatement tùy lý trạng thái tính năng. Mẫu phỏng vấn tốt: nhấn mạnh tính năng ổn định đã dùng, nhắc preview phải nói rõ trạng thái."
 
-> Senior tip: preview la "vai tam" cua JDK, khong phai cam ket. Trong production pin JDK LTS (ghi din ban ho tro dai han), cam --enable-preview, uu tien API on dinh; neu feature bi rut, chi phi migrate nho neu ban khong day no khap codebase.`,
+> Senior tip: preview là "vay tạm" của JDK, không phải cam kết. Trong production pin JDK LTS (ghi định bản hỗ trợ dài hạn), cấm --enable-preview, ưu tiên API ổn định; nếu feature bị rút, chi phí migrate nhỏ nếu bạn không dây nó khắp codebase.`,
   follow: [
-    'Preview feature co the bi xoa tai sao, va rui ro cu the khi bat --enable-preview trong production la gi?',
-    'Text block khac string templates o diem nao, va khi nao bat preview?',
-    'Ban lam gi de CI phat hien som codebase con dung API preview hoac cu phap da bi rut?'
+    'Preview feature có thể bị xóa tại sao, và rủi ro cụ thể khi bật --enable-preview trong production là gì?',
+    'Text block khác string templates ở điểm nào, và khi nào bật preview?',
+    'Bạn làm gì để CI phát hiện sớm codebase còn dùng API preview hoặc cú pháp đã bị rút?'
   ],
   tags: ['string templates', 'structured concurrency', 'preview', 'JEP', 'JDK 21'],
   refs: [
@@ -12765,47 +12765,47 @@ Thu vien noi bo dung 3 bieu thuc string templates sinh cau SQL bao cao tren JDK 
   id: 'modern-073',
   topic: 'modern',
   level: 'senior',
-  q: 'Dich vu lat tien (p99 quan trong) hien dang dung G1 (mac dinh), team thac mac nen chuyen sang ZGC generational (Java 21) khong. Hai GC khac nhau o dau, khi nao chon cai nao, va ban se doc luong ra gi truoc khi thay doi production?',
-  a: `**Tóm tắt:** G1 la GC mac dinh (tu Java 9), an toan cho nhieu workload. ZGC (Java 11+, on dinh tu Java 21) va Generational ZGC (Java 21, bat bang {{-XX:+UseZGC -XX:+ZGenerational}}; mac dinh generational tu JDK 23+) nham pause duoi 1ms nhung tieu thu CPU va bo nho du hon; chuyen GC khong chi la doi co — phai doc p99, throughput, allocation rate (toc tao bo) va allocation stall (luong ung dung bi chan vi tao bo nhanh hon bo doun rac) tren tai thuc.
+  q: 'Dịch vụ lật tiền (p99 quan trọng) hiện đang dùng G1 (mặc định), team thắc mắc nên chuyển sang ZGC generational (Java 21) không. Hai GC khác nhau ở đâu, khi nào chọn cái nào, và bạn sẽ đọc lượng ra gì trước khi thay đổi production?',
+  a: `**Tóm tắt:** G1 là GC mặc định (từ Java 9), an toàn cho nhiều workload. ZGC (Java 11+, ổn định từ Java 21) và Generational ZGC (Java 21, bật bằng {{-XX:+UseZGC -XX:+ZGenerational}}; mặc định generational từ JDK 23+) nhắm pause dưới 1ms nhưng tiêu thụ CPU và bộ nhớ nhiều hơn; chuyển GC không chỉ là đổi cờ — phải đọc p99, throughput, allocation rate (tốc tạo bộ) và allocation stall (lượng ứng dụng bị chặn vì tạo bộ nhanh hơn bộ dọn rác) trên thực tế.
 
-### Cai gi - vi sao can - hoat dong
-- **GC** (Garbage Collector — bo doun rac): tu dong thu hoi object khong con ai tham chieu tren heap (vung nho chua object Java trong luc chay), hieu nhi thung rac tu dong rat cua may tinh.
-- **G1**: chia heap vung (region), chay young/mixed/full GC, co chung thu tien pause, throughput tot, mac dinh cua Java 9 tro den nay.
-- **ZGC**: chay dong bo nhat thoi (concurrent), di chuyen object cung luc ung dung chay (nen khong phan mang / xau bo nho), pause thong thuong duoi 1ms. ZGC cu (non-generational) quet toan bo heap moi vong => CPU cao khi tao nhieu object ngan song.
-- **Generational ZGC**: tach heap thanh young/old generation, duoc chuyen boi giac luoc "nhieu object mat som" => thu gom young thuong xuyen, chi thap hon so voi ZGC cu. Java 21 phai bat co, JDK 23+ mac dinh generational.
+### Cái gì - vì sao cần - hoạt động
+- **GC** (Garbage Collector — bộ dọn rác): tự động thu hồi object không còn ai tham chiếu trên heap (vùng nhớ chứa object Java trong lúc chạy), giống như thùng rác tự động rất của máy tính.
+- **G1**: chia heap vùng (region), chạy young/mixed/full GC, có chiến thuật thời gian pause, throughput tốt, mặc định của Java 9 đến nay.
+- **ZGC**: chạy đồng bộ nhất thời (concurrent), di chuyển object cùng lúc ứng dụng chạy (nên không phân mảng / xấu bộ nhớ), pause thông thường dưới 1ms. ZGC cũ (non-generational) quét toàn bộ heap mỗi vòng => CPU cao khi tạo nhiều object ngắn sống.
+- **Generational ZGC**: tách heap thành young/old generation, được chuyển biến bởi giả lược "nhiều object chết sớm" => thu gom young thường xuyên, chi thấp hơn so với ZGC cũ. Java 21 phải bật cờ, JDK 23+ mặc định generational.
 
-### Bang so sanh
-| Tieu chi | G1 | ZGC (generational) |
+### Bảng so sánh
+| Tiêu chí | G1 | ZGC (generational) |
 |---|---|---|
-| Muc tieu | Throughput tot, pause chinh thuc | Pause tot (duoi 1ms) |
-| Mac dinh | Co (tu Java 9) | Khong (Java 21 bat co, JDK 23+ mac dinh) |
-| Chi phi CPU | Trung binh | Cao hon (barrier, dua bo nho) |
-| Bo nho du can | It | Nhieu |
-| Throughput | Tot | Thap hon G1 mot so workload |
-| Khi nao dung | Ung dung thuong, bat dau tu day | Dich vu latency-sensitive co benchmark |
+| Mục tiêu | Throughput tốt, pause chính xác | Pause tốt (dưới 1ms) |
+| Mặc định | Có (từ Java 9) | Không (Java 21 bật cờ, JDK 23+ mặc định) |
+| Chi phí CPU | Trung bình | Cao hơn (barrier, đẩy bộ nhớ) |
+| Bộ nhớ đủ cần | Ít | Nhiều |
+| Throughput | Tốt | Thấp hơn G1 một số workload |
+| Khi nào dùng | Ứng dụng thường, bắt đầu từ đây | Dịch vụ latency-sensitive có benchmark |
 
-### Luu khi su dung
-- Pause thap KHONG nghia throughput tot hon: ZGC co the chay chinh chuc hon G1 voi workload tao bo it.
-- ZGC can bo nho du: neu toc tao bo vuot qua toc bo doun rac, luong ung dung bi chan (allocation stall), trieu chinh la latency tang nhung log pause van duoi 1ms.
-- Khong doi GC khong doc: GC log ({{-Xlog:gc*}}), JFR (Java Flight Recorder — cong cu ghi su kien JVM), p50/p95/p99 latency, heap sau GC, allocation rate.
-- JDK 24 bo hoan toan che do non-generational (JEP 490), co --XX:+ZGenerational khong con nghia cua JDK 24 tro len.
+### Lưu khi sử dụng
+- Pause thấp KHÔNG nghĩa throughput tốt hơn: ZGC có thể chạy chính xác hơn G1 với workload tạo bộ ít.
+- ZGC cần bộ nhớ đủ: nếu tốc tạo bộ vượt quá tốc bỏ dọn rác, luồng ứng dụng bị chặn (allocation stall), triệu chứng là latency tăng nhưng log pause vẫn dưới 1ms.
+- Không đổi GC không đọc: GC log ({{-Xlog:gc*}}), JFR (Java Flight Recorder — công cụ ghi sự kiện JVM), p50/p95/p99 latency, heap sau GC, allocation rate.
+- JDK 24 bỏ hoàn toàn chế độ non-generational (JEP 490), cờ --XX:+ZGenerational không còn nghĩa của JDK 24 trở lên.
 
-### Cach doc luong
-- Bat GC log: {{-Xlog:gc*}} (hoac {{-Xlog:gc*,safepoint}}), doc thoi gian young/mixed/full GC, kich thuoc heap truoc/sau.
-- Dung JFR (Java Flight Recorder — cong cu ghi su kien JVM, duong dan trong JDK) de xem su kien GC, allocation, paus.
-- Chay benchmark tren staging voi tai dat dong voi production, so sanh truoc/sau doi GC, chua chuyen production neu khong co so lieu.
+### Cách đọc lượng
+- Bật GC log: {{-Xlog:gc*}} (hoặc {{-Xlog:gc*,safepoint}}), đọc thời gian young/mixed/full GC, kích thước heap trước/sau.
+- Dùng JFR (Java Flight Recorder — công cụ ghi sự kiện JVM, đường dẫn trong JDK) để xem sự kiện GC, allocation, pause.
+- Chạy benchmark trên staging với tải dữ liệu đồng với production, so sánh trước/sau đổi GC, chưa chuyển production nếu không có số liệu.
 
-### Vi du thuc su
-Dich vu kiem tra don hang can p99 thap. Dung G1, thi thoai pause GC lam p99 tang. Thu ZGC non-generational: pause rat thap nhung CPU tang ro khi allocation rate cao. Nang len JDK 21, bat Generational ZGC ({{-XX:+UseZGC -XX:+ZGenerational}}): young generation duoc thu gom thuong xuyen hon, CPU overhead giam so voi ZGC cu cung tai kiem thu, p99 on dinh hon. Nhom con quan sat GC log, allocation rate va du bo nho du tranh allocation stall. Quyết dich cuoi du lieu JFR/benchmark tren tai gan thuc, khong theo ky vong ly thuyet.
+### Ví dụ thực sự
+Dịch vụ kiểm tra đơn hàng cần p99 thấp. Dùng G1, thỉnh thoảng pause GC làm p99 tăng. Thử ZGC non-generational: pause rất thấp nhưng CPU tăng rõ khi allocation rate cao. Nâng lên JDK 21, bật Generational ZGC ({{-XX:+UseZGC -XX:+ZGenerational}}): young generation được thu gom thường xuyên hơn, CPU overhead giảm so với ZGC cũ cùng tải kiểm thử, p99 ổn định hơn. Nhóm còn quan sát GC log, allocation rate và đủ bộ nhớ đủ tránh allocation stall. Quyết định cuối dựa trên dữ liệu JFR/benchmark trên tải gần thực, không theo kỳ vọng lý thuyết.
 
-### Tra loi mau khi phong van
-"G1 la GC mac dinh cua Java, chia heap vung, chua young/mixed/full GC, chung thu tien pause, throughput tot — dung cho nhung ung dung thuong. ZGC (Java 21) va Generational ZGC nham pause duoi 1ms, di chuyen object khi ung dung con chay, nhung tieu thu CPU va bo nho nhieu hon. Generational ZGC tach young/old, thu gom young thuong xuyen, giam chi CPU so voi ZGC cu; Java 21 phai bat co --XX:+UseZGC --XX:+ZGenerational, JDK 23+ mac dinh generational. Em KHONG chuyen GC chi vi pause it hon: em doc p99, throughput, allocation rate, allocation stall tren tai thuc bang GC log va JFR, chi chuyen neu co muc tieu latency ro rang va benchmark ho tro. Tren mot dich vu kiem tra don, em da thay gen ZGC lap on dinh p99 nhung luon co bo nho du va theo doi allocation stall."
+### Trả lời mẫu khi phỏng vấn
+"G1 là GC mặc định của Java, chia heap vùng, chạy young/mixed/full GC, chiến thuật thời gian pause, throughput tốt — dùng cho những ứng dụng thường. ZGC (Java 21) và Generational ZGC nhắm pause dưới 1ms, di chuyển object khi ứng dụng còn chạy, nhưng tiêu thụ CPU và bộ nhớ nhiều hơn. Generational ZGC tách young/old, thu gom young thường xuyên, giảm chi CPU so với ZGC cũ; Java 21 phải bật cờ --XX:+UseZGC --XX:+ZGenerational, JDK 23+ mặc định generational. Em KHÔNG chuyển GC chỉ vì pause ít hơn: em đọc p99, throughput, allocation rate, allocation stall trên thực tế bằng GC log và JFR, chỉ chuyển nếu có mục tiêu latency rõ ràng và benchmark hỗ trợ. Trên một dịch vụ kiểm tra đơn, em đã thấy gen ZGC giúp ổn định p99 nhưng luôn có bộ nhớ đủ và theo dõi allocation stall."
 
-> Senior tip: bat dau bang G1 mac dinh; chuyen ZGC chi khi p99 latency co muc tieu ro rang va co benchmark; generational ZGC la buoc tien nhung van can tuning kich thuoc heap va allocation rate.`,
+> Senior tip: bắt đầu bằng G1 mặc định; chuyển ZGC chỉ khi p99 latency có mục tiêu rõ ràng và có benchmark; generational ZGC là bước tiến nhưng vẫn cần tuning kích thước heap và allocation rate.`,
   follow: [
-    'So sanh G1 vs ZGC: pause va throughput thuc te khac nhau o dau?',
-    'Khi nao nen dung Shenandoah thay ZGC?',
-    'Allocation stall la gi, va biet duoc qua trieu chinh nao?'
+    'So sánh G1 vs ZGC: pause và throughput thực tế khác nhau ở đâu?',
+    'Khi nào nên dùng Shenandoah thay ZGC?',
+    'Allocation stall là gì, và biết được qua triệu chứng nào?'
   ],
   tags: ['Java 21', 'ZGC', 'G1', 'GC', 'performance'],
   refs: [
@@ -12817,16 +12817,16 @@ Dich vu kiem tra don hang can p99 thap. Dung G1, thi thoai pause GC lam p99 tang
   id: 'core-070',
   topic: 'core',
   level: 'senior',
-  q: 'Tai sao tien te trong Java phai dung BigDecimal thay double/float? Lam tron tien theo quy tac ngan hang (bankers rounding) la gi, va ap dung nhu the nao khi tinh thue, giam gia, chia tien giua nhieu tai khoan?',
-  a: `**Tóm tắt:** Khong bao gio dung double hoac float de luu tien vi dau ky so floating point bi sai sot (0.1 + 0.2 != 0.3), co the sai mot xu va sap xep loi khi tính toán lặp nhiều lần. Dung BigDecimal voi dinh dang toan bo (scale dinh dinh) va chon che do lam tron phu hop (ROUND_HALF_UP cho tien, ROUND_HALF_EVEN cho banker's rounding), luon thuc hien phep nhan chia bang BigDecimal, khong chuyen qua double giua chuan.
+  q: 'Tại sao tiền tệ trong Java phải dùng BigDecimal thay double/float? Làm tròn tiền theo quy tắc ngân hàng (bankers rounding) là gì, và áp dụng như thế nào khi tính thuế, giảm giá, chia tiền giữa nhiều tài khoản?',
+  a: `**Tóm tắt:** Không bao giờ dùng double hay float để lưu tiền vì dấu ký số floating point bị sai sót (0.1 + 0.2 != 0.3), có thể sai một xu và sắp xếp lỗi khi tính toán lặp nhiều lần. Dùng BigDecimal với định dạng toàn bộ (scale định định) và chọn chế độ làm tròn phù hợp (ROUND_HALF_UP cho tiền, ROUND_HALF_EVEN cho banker's rounding), luôn thực hiện phép nhân chia bằng BigDecimal, không chuyển qua double giữa chừng.
 
-### Cay cung va lam tron tien
-- double/float dung IEEE 754, luu gian xap xi, khong chinh xac voi thap phan (0.1 khong luu duoc chinh xac). Tinh toan lpn loi tap hop, loi sap xep khi tong so tien lon.
-- BigDecimal luu bo nhan (unscaled value) va scale (so chu so thap phan), chinh xac tuy y. Tao bang new BigDecimal("...") khong dung constructor double (ke thua sai sot).
-- Che do lam tron (RoundingMode): ROUND_HALF_UP (lam tron 0.5 len, thong dung cho tien), ROUND_HALF_EVEN (banker's rounding, lam tron 0.5 toi so chan, giam loi lech trung binh o lpn nhieu lan), ROUND_DOWN (cat bo phan thap phan, ve 0), ROUND_CEILING (ve duong duong, lam len voi so duong, cat bo voi so am).
-- Scale (so chu so thap phan) phai dinh dinh: tien mat thuong 2 chu so, tien vi mo 4-8 chu so. Khi phep nhan chia, phai luon dat scale va RoundingMode, nguoc lai ngoai le ArithmeticException neu chia khong het.
+### Cái gì và làm tròn tiền
+- double/float dùng IEEE 754, lưu giá trị xấp xỉ, không chính xác với thập phân (0.1 không lưu được chính xác). Tính toán lặp lỗi tập hợp, lỗi sắp xếp khi tổng số tiền lớn.
+- BigDecimal lưu bộ nhân (unscaled value) và scale (số chữ số thập phân), chính xác tùy ý. Tạo bằng new BigDecimal("...") không dùng constructor double (kế thừa sai sót).
+- Chế độ làm tròn (RoundingMode): ROUND_HALF_UP (làm tròn 0.5 lên, thông dụng cho tiền), ROUND_HALF_EVEN (banker's rounding, làm tròn 0.5 tới số chẵn, giảm lỗi lệch trung bình ở lặp nhiều lần), ROUND_DOWN (cắt bỏ phần thập phân, về 0), ROUND_CEILING (về dương dương, làm lên với số dương, cắt bỏ với số âm).
+- Scale (số chữ số thập phân) phải định định: tiền mặt thường 2 chữ số, tiền vi mô 4-8 chữ số. Khi phép nhân chia, phải luôn đặt scale và RoundingMode, ngược lại ngoại lệ ArithmeticException nếu chia không hết.
 
-### Ma vi du (duoi 30 dong)
+### Mã ví dụ (dưới 30 dòng)
 ~~~java
 import java.math.BigDecimal;
 import java.math.RoundingMode;
@@ -12853,19 +12853,19 @@ public class Tien {
 }
 ~~~
 
-### Vi du thuc su
-dịch vụ thanh toán điện tử dung double de luu so du. Mot giao dich 10.005 x 1.05 (thue 5%) bang double cho ket qua 10.505249999999999, luu vao CSDL lam tron 10.51. Nhung khi tinh tong 10.000 giao dich, sai so tap hop duoc den nhieu nghin dong. Sau khi doi sang BigDecimal voi scale 2 va ROUND_HALF_UP, ket qua chinh xac den cent, bao cao tai chinh khong bi sai so. Chi phi: BigDecimal cham hon double khoang 10-50 lan, nhung voi tien chinh xac quan trong hon toc do, nen chi dung o muc giao dich khong o vong lap nhieu trieu lan.
+### Ví dụ thực sự
+dịch vụ thanh toán điện tử dùng double để lưu số dư. Một giao dịch 10.005 x 1.05 (thuế 5%) bằng double cho kết quả 10.505249999999999, lưu vào CSDL làm tròn 10.51. Nhưng khi tính tổng 10.000 giao dịch, sai số tập hợp được đến nhiều nghìn dòng. Sau khi đổi sang BigDecimal với scale 2 và ROUND_HALF_UP, kết quả chính xác đến cent, báo cáo tài chính không bị sai số. Chi phí: BigDecimal chậm hơn double khoảng 10-50 lần, nhưng với tiền chính xác quan trọng hơn tốc độ, nên chỉ dùng ở mức giao dịch không ở vòng lặp nhiều triệu lần.
 
-### Tra loi mau khi phong van
-"Tien phai luu BigDecimal vi double/float co sai sot dau ky so, vi du 0.1 + 0.2 khong bang 0.3, sap xep loi khi tong ket nhieu giao dich. Em luon tao BigDecimal bang xau ("..."), khong dung constructor double. Dinh dinh scale (2 chu so tien mat) va che do lam tron (ROUND_HALF_UP cho tien, ROUND_HALF_EVEN de giam loi lech trung binh). Tat ca phep nhan chia phai setScale de tranh ArithmeticException. BigDecimal cham hon double nhung chinh xac, nen chi dung o muc giao dich, khong dung trong vong lap tien trich. Voi banker's rounding (ROUND_HALF_EVEN), khi chu so o vi tri lam tron bang 5, lam tron toi so chan, giup loi trung binh ve 0 qua nhieu lan lap, phu hop bao cao tai chinh."
+### Trả lời mẫu khi phỏng vấn
+"Tiền phải lưu BigDecimal vì double/float có sai sót dấu ký số, ví dụ 0.1 + 0.2 không bằng 0.3, sắp xếp lỗi khi tổng kết nhiều giao dịch. Em luôn tạo BigDecimal bằng xâu ("..."), không dùng constructor double. Định định scale (2 chữ số tiền mặt) và chế độ làm tròn (ROUND_HALF_UP cho tiền, ROUND_HALF_EVEN để giảm lỗi lệch trung bình). Tất cả phép nhân chia phải setScale để tranh ArithmeticException. BigDecimal chậm hơn double nhưng chính xác, nên chỉ dùng ở mức giao dịch, không dùng trong vòng lặp tiền trục. Với banker's rounding (ROUND_HALF_EVEN), khi chữ số ở vị trí làm tròn bằng 5, làm tròn tới số chẵn, giúp lỗi trung bình về 0 qua nhiều lần lặp, phù hợp báo cáo tài chính."
 
-> Senior tip: khong bao gio chuyen BigDecimal qua double o giua chuong trinh (doubleValue()) vi loi da nhap vao luon luon. Neu can lay gia tri hien thi, dung toString() hoac setScale. O CSDL, luu tien thanh loai DECIMAL(19,4) khong dung DOUBLE, va luu cung scale de tranh loi dich du giua ung dung va co so du lieu.`,
+> Senior tip: không bao giờ chuyển BigDecimal qua double ở giữa chương trình (doubleValue()) vì lỗi đã nhập vào luôn luôn. Nếu cần lấy giá trị hiển thị, dùng toString() hoặc setScale. Ở CSDL, lưu tiền thành loại DECIMAL(19,4) không dùng DOUBLE, và lưu cùng scale để tranh lỗi dịch dù giữa ứng dụng và cơ sở dữ liệu.`,
   follow: [
-    'Sai sot cua double/float xuat hien o dau, va sao new BigDecimal(double) van ke thua sai sot?',
-    'ROUND_HALF_UP khac ROUND_HALF_EVEN o diem nao, va khi nao chon cai nao?',
-    'Tai sao can setScale va RoundingMode moi lan chia, va loi gi xay ra neu khong lam?'
+    'Sai sót của double/float xuất hiện ở đâu, và sao new BigDecimal(double) vẫn kế thừa sai sót?',
+    'ROUND_HALF_UP khác ROUND_HALF_EVEN ở điểm nào, và khi nào chọn cái nào?',
+    'Tại sao cần setScale và RoundingMode mỗi lần chia, và lỗi gì xảy ra nếu không làm?'
   ],
-  tags: ['BigDecimal', 'tien', 'lam tron', 'double', 'floating point'],
+  tags: ['BigDecimal', 'tiền', 'làm tròn', 'double', 'floating point'],
   refs: [
     { type: 'doc', title: 'BigDecimal JavaDoc', url: 'https://docs.oracle.com/en/java/javase/21/docs/api/java.base/java/math/BigDecimal.html' }
   ]
@@ -12874,17 +12874,17 @@ dịch vụ thanh toán điện tử dung double de luu so du. Mot giao dich 10.
   id: 'core-071',
   topic: 'core',
   level: 'senior',
-  q: 'Lop doi tuong bat bien (immutable) la gi, va sao no an toan luong (thread-safe) can dong bo? Cach xay dung lop immutable trong Java, va nhung truong hop can sao chep ve phong thu (defensive copy) la gi?',
-  a: `**Tóm tắt:** Doi tuong bat bien la doi tuong trang thai khong the thay doi sau khi tao. Tat ca cot la private final, khong co setter, phuong thuc tra ve moi doi tuong moi thay doi. Voi trang thia bo tinh (khong co truong bien co the thay doi), khong luong nao co the thay doi trang thai cua doi tuong khac luong dang doc, nen khong can dong bo (synchronized/Lock) va khong co race condition.
+  q: 'Lớp đối tượng bất biến (immutable) là gì, và sao nó an toàn luồng (thread-safe) cần đồng bộ? Cách xây dựng lớp immutable trong Java, và những trường hợp cần sao chép vệ phòng thủ (defensive copy) là gì?',
+  a: `**Tóm tắt:** Đối tượng bất biến là đối tượng trạng thái không thể thay đổi sau khi tạo. Tất cả cột là private final, không có setter, phương thức trả về đối tượng mới thay đổi. Với trạng thái bất biến (không có trường biến có thể thay đổi), không luồng nào có thể thay đổi trạng thái của đối tượng khác luồng đang đọc, nên không cần đồng bộ (synchronized/Lock) và không có race condition.
 
-### Co che hoat dong
-- Cot private final: gan o constructor, khong thay doi sau do.
-- Khong co setter, khong phuong thuc sua doi trang thai.
-- Truong tham chieu (mang, List, Date...) phai sao chep ve phong thu o constructor va tra ve sao chep ve phong thu o getter, tranh client thay doi qua tham chieu.
+### Cơ chế hoạt động
+- Cột private final: gán ở constructor, không thay đổi sau đó.
+- Không có setter, không phương thức sửa đổi trạng thái.
+- Trường tham chiếu (mảng, List, Date...) phải sao chép vệ phòng thủ ở constructor và trả về sao chép vệ phòng thủ ở getter, tranh client thay đổi qua tham chiếu.
 - Class không được **kế thừa** (hoặc constructor private + factory) để con class không thêm method sửa đổi.
-- Vi mo hinh bo tinh: moi thao tac "sua doi" tra ve doi tuong moi, doi tuong cu nguyen van, nhu String.
+- Với mô hình bất biến: mọi thao tác "sửa đổi" trả về đối tượng mới, đối tượng cũ nguyên vẹn, như String.
 
-### Ma vi du (duoi 30 dong)
+### Mã ví dụ (dưới 30 dòng)
 ~~~java
 import java.time.Instant;
 import java.util.Collections;
@@ -12896,18 +12896,18 @@ public final class TaiKhoan {
 
     public TaiKhoan(String soTaiKhoan, List<Instant> lichSu) {
         this.soTaiKhoan = soTaiKhoan;
-        // sao chep ve phong tru client sua doi danh sach goc
+        // sao chép vệ phòng thủ tránh client sửa đổi danh sách gốc
         this.lichSu = Collections.unmodifiableList(List.copyOf(lichSu));
     }
 
     public String getSoTaiKhoan() { return soTaiKhoan; }
 
     public List<Instant> getLichSu() {
-        return Collections.unmodifiableList(lichSu); // tra ve sao chep/khong sua duoc
+        return Collections.unmodifiableList(lichSu); // trả về sao chép/không sửa được
     }
 
     public TaiKhoan themGiaoDich(Instant thoiGian) {
-        // tra ve doi tuong moi, khong sua doi this
+        // trả về đối tượng mới, không sửa đổi this
         var moi = new java.util.ArrayList<>(lichSu);
         moi.add(thoiGian);
         return new TaiKhoan(soTaiKhoan, moi);
@@ -12915,17 +12915,17 @@ public final class TaiKhoan {
 }
 ~~~
 
-### Vi du thuc su
-Dich vu thanh toan gui doi tuong ThanhToan (so tien, thoi gian, trang thai) qua nhieu luong xu ly. Neu doi tuong co setter, luong A dang doc so tien trong khi luong B cap nhat => doc gia tri trung gian (tien bi cham cat hoac con so lon). Doi sang immutable: moi cap nhat tra ve doi tuong moi, luong luon doc gia tri co dinh, khong can synchronized, throughput cao hon va khong co deadlock. Chi phan bo them bo nho doi tuong moi, nhung voi JVM G1/gen ZGC chi phi rat nho. Luu y: neu tra ve List goc khong sao chep, client co the sua doi danh sach luon ngoai, voi loi nhan gia.
+### Ví dụ thực sự
+Dịch vụ thanh toán gửi đối tượng ThanhToan (số tiền, thời gian, trạng thái) qua nhiều luồng xử lý. Nếu đối tượng có setter, luồng A đang đọc số tiền trong khi luồng B cập nhật => đọc giá trị trung gian (tiền bị chạm cắt hoặc con số lớn). Đổi sang immutable: mỗi cập nhật trả về đối tượng mới, luồng luôn đọc giá trị cố định, không cần synchronized, throughput cao hơn và không có deadlock. Chi phí: phân bổ thêm bộ nhớ đối tượng mới, nhưng với JVM G1/gen ZGC chi phí rất nhỏ. Lưu ý: nếu trả về List gốc không sao chép, client có thể sửa đổi danh sách luôn ngoài, với lỗi nhân giá.
 
-### Tra loi mau khi phong van
-"Doi tuong bat bien la doi tuong khong the thay doi trang thai sau khi khoi tao. Em xay dung bang cot private final, khong co setter, class final, va sao chep ve phong thu cho truong tham chieu (mang, List) o constructor va getter. Vi trang thia bo tinh, nhieu luong doc cung doi tuong khong bao gi chien nhau, nen khong can synchronized, khong co race condition va deadlock. Neu can "sua doi", em tra ve doi tuong moi (mo hinh bo tinh) nhu String. Luu nhat: phai sao chep ve phong thu hai chieu, neu khong client sua doi List tra ve se thay doi trang thai cua doi tuong goc. Thiet lap chi phi them bo nho doi tuong moi, nhung voi GC hien nay rat nho va duoc an toan luong nhan gia."
+### Trả lời mẫu khi phỏng vấn
+"Đối tượng bất biến là đối tượng không thể thay đổi trạng thái sau khi khởi tạo. Em xây dựng bằng cột private final, không có setter, class final, và sao chép vệ phòng thủ cho trường tham chiếu (mảng, List) ở constructor và getter. Vì trạng thái bất biến, nhiều luồng đọc cùng đối tượng không bao giờ cãi nhau, nên không cần synchronized, không có race condition và deadlock. Nếu cần "sửa đổi", em trả về đối tượng mới (mô hình bất biến) như String. Lưu nhất: phải sao chép vệ phòng thủ hai chiều, nếu không client sửa đổi List trả về sẽ thay đổi trạng thái của đối tượng gốc. Thiết lập chi phí thêm bộ nhớ đối tượng mới, nhưng với GC hiện nay rất nhỏ và được an toàn luồng nhân giá."
 
-> Senior tip: immutable khong nghia "khong bao gi thay doi" o muc ung dung, chi la doi tuong mot luon duy nhat gia tri. Neu can tinh trang thay doi, tao doi tuong moi voi id moi va luu lich su, khong sua doi doi tuong cu. Tuong tu, Record tu Java 14+ ho tro immutable nhung van can sao chep ve phong thu cho truong tham chieu (List, mang).`,
+> Senior tip: immutable không nghĩa "không bao giờ thay đổi" ở mức ứng dụng, chỉ là đối tượng một luồng duy nhất giá trị. Nếu cần tình trạng thay đổi, tạo đối tượng mới với id mới và lưu lịch sử, không sửa đổi đối tượng cũ. Tương tự, Record từ Java 14+ hỗ trợ immutable nhưng vẫn cần sao chép vệ phòng thủ cho trường tham chiếu (List, mảng).`,
   follow: [
-    'Record co thich la immutable khong, va can sao chep ve phong thu cho List o component khong?',
-    'Sao chep ve phong thu (defensive copy) la gi, va can lam o dau?',
-    'Immutable giup an toan luong nhu the nao, van can synchronized o truong hop nao?'
+    'Record có thích là immutable không, và cần sao chép vệ phòng thủ cho List ở component không?',
+    'Sao chép vệ phòng thủ (defensive copy) là gì, và cần làm ở đâu?',
+    'Immutable giúp an toàn luồng như thế nào, vẫn cần synchronized ở trường hợp nào?'
   ],
   tags: ['immutable', 'thread-safe', 'final', 'defensive copy', 'record'],
   refs: [
