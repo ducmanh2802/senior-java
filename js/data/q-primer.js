@@ -2749,4 +2749,245 @@ Hệ thống khách hàng có 1,2 triệu hồ sơ tạo từ nhiều thiết b�
   follow: ['Unicode normalization khác UTF-8 encoding thế nào?', 'Vì sao không nên tự normalize password hoặc dữ liệu dùng để tính chữ ký?'],
   tags: ['Unicode', 'NFC', 'NFD', 'Java', 'normalization', 'i18n']
 },
+{
+  id: 'primer-034',
+  topic: 'primer',
+  level: 'senior',
+  q: 'Độ phức tạp Big-O đọc từ code như thế nào? Cho một đoạn code Java, bạn nhìn vào đâu để đoán O(1), O(n), O(log n), O(n log n), O(n^2)?',
+  a: `**Tóm tắt:** Big-O đo tốc độ tăng của số thao tác khi dữ liệu tăng, bỏ hằng số và lower-order term. Đọc code: một vòng lặp đơn = O(n), lồng nhau = O(n^2), chia đôi mỗi bước = O(log n), vòng lặp + sắp xếp bên trong = O(n log n), truy cập mảng theo index = O(1).
+
+### Vì sao cần Big-O
+
+Khi dữ liệu từ 1.000 lên 1.000.000 bản ghi, O(n^2) tăng từ 1 triệu lên 1.000 tỷ thao tác — chương trình treo. Big-O giúp so sánh hai cách giải mà không phụ thuộc máy.
+
+### Cách đọc Big-O từ code
+
+Quy tắc đếm:
+
+- **Thao tác đơn (gán, so sánh, truy cập mảng theo index, HashMap.get)**: O(1).
+- **Một vòng for/while đi qua n phần tử**: O(n).
+- **Hai vòng lồng nhau qua n**: O(n^2).
+- **Vòng lặp mà mỗi bước chia phạm vi đi 2 (binary search)**: O(log n).
+- **Vòng lặp n lần, mỗi lần làm việc O(log n)**: O(n log n).
+- **Đệ quy chia đôi (merge sort)**: O(n log n) thời gian, O(n) bộ nhớ.
+
+Bỏ hằng số: 2n vẫn là O(n). Bỏ lower-order: n^2 + n là O(n^2). Chỉ giữ phần tăng nhanh nhất.
+
+### Ví dụ cụ thể
+
+~~~java
+// O(1)
+int x = arr[5];
+
+// O(n)
+for (int i = 0; i < n; i++) { sum += arr[i]; }
+
+// O(n^2)
+for (int i = 0; i < n; i++)
+  for (int j = 0; j < n; j++) { ... }
+
+// O(log n)
+while (lo < hi) { mid = (lo+hi)/2; if (a[mid] < x) lo = mid+1; else hi = mid; }
+
+// O(n log n)
+Arrays.sort(arr); // object array: TimSort (stable); primitive array: dual-pivot quicksort — cả hai O(n log n)
+~~~
+
+### Bảng trade-off
+
+| Cách giải | Thời gian | Bộ nhớ | Khi nào dùng |
+|---|---|---|---|
+| Brute force lồng nhau | O(n^2) | O(1) | n nhỏ (< 10^3) |
+| HashMap lookup | O(1) | O(n) | cần tìm nhanh |
+| Binary search | O(log n) | O(1) | dữ liệu đã sắp xếp |
+| Sort + scan | O(n log n) | O(n) | cần thứ tự |
+
+### Pitfall production
+
+- Big-O là **cận trên** (upper bound) của tốc độ tăng; cách nói phổ biến là worst case, nhưng average case cũng viết bằng Big-O (ví dụ quicksort trung bình O(n log n)). HashMap.get trung bình O(1) nhưng worst case O(n) khi hash collision. Java 8+ chuyển bucket thành red-black tree khi collision nhiều → O(log n).
+- Space complexity cũng quan trọng: merge sort O(n) bộ nhớ phụ; quicksort O(log n) stack.
+- Constant factor matters ở n nhỏ: O(n^2) với n=10 có thể nhanh hơn O(n log n) vì overhead.
+
+### Ví dụ đời thực
+
+Service tra cứu user theo email: ban đầu load list rồi loop contains → O(n) mỗi request, với 1 triệu user và 1000 req/s = 1 tỷ so sánh/s → CPU 100%. Chuyển sang HashMap<String, User> → O(1) mỗi request → CPU < 5%. Đo bằng JFR: method contains chiếm 80% CPU trước, sau fix < 1%.
+
+### Trả lời mẫu khi phỏng vấn
+
+Big-O là cách đo tốc độ tăng của số thao tác khi dữ liệu tăng, bỏ hằng số. Đọc code: một vòng lặp đơn là O(n), hai vòng lồng nhau là O(n^2), chia đôi mỗi bước là O(log n), vòng lặp kết hợp sắp xếp là O(n log n), truy cập mảng theo index hoặc HashMap.get là O(1). Big-O là cận trên của tốc độ tăng; cách nói phổ biến là worst case, còn average case cũng viết bằng Big-O — HashMap.get trung bình O(1) nhưng worst case O(n) khi collision, Java 8+ chuyển bucket thành red-black tree nên worst case O(log n). Constant factor quan trọng ở n nhỏ: O(n^2) với n=10 có thể nhanh hơn O(n log n) vì overhead. Trong production tôi từng gặp service tra cứu user bằng list.contains O(n): 1 triệu user, 1000 req/s = 1 tỷ so sánh/s, CPU 100%. Chuyển sang HashMap → O(1), CPU xuống dưới 5%. Luôn đo bằng JFR/profiler trước khi tối ưu, vì Big-O không nói về hằng số thực tế.
+
+> Senior tip: Big-O là công cụ tư duy, không phải câu trả lời cuối. Luôn đo bằng profiler (JFR, async-profiler) trước khi tối ưu, vì hằng số và cache locality thường quan trọng hơn Big-O ở n vừa phải.`,
+  follow: ['HashMap.get thực sự O(1) trong mọi trường hợp không?', 'Khi nào O(n log n) sort tốt hơn O(n) counting sort?'],
+  tags: ['Big-O', 'complexity', 'Java', 'algorithm', 'performance']
+},
+{
+  id: 'primer-035',
+  topic: 'primer',
+  level: 'senior',
+  q: 'HashMap, TreeMap, PriorityQueue (heap) trong Java khác nhau thế nào? Khi nào chọn cái nào?',
+  a: `**Tóm tắt:** HashMap cho tra cứu O(1) không thứ tự; TreeMap cho dữ liệu đã sắp xếp theo key O(log n); PriorityQueue (heap) cho lấy phần tử nhỏ nhất/lớn nhất O(log n) và peek O(1). Chọn theo nhu cầu: tra cứu nhanh → HashMap, cần thứ tự key → TreeMap, cần top-k/min-max → heap.
+
+### Vì sao cần nhiều cấu trúc
+
+Mỗi cấu trúc đánh đổi giữa tốc độ truy cập, thứ tự, và bộ nhớ. Không có cấu trúc "tốt nhất" cho mọi case.
+
+### HashMap
+
+- Cấu trúc: mảng bucket + linked list/red-black tree khi collision.
+- get/put: trung bình O(1), worst O(log n) (Java 8+).
+- Không giữ thứ tự (iteration thứ tự không đảm bảo, trừ LinkedHashMap giữ insertion order).
+- Key phải có hashCode() và equals() đúng.
+
+### TreeMap
+
+- Cấu trúc: red-black tree (cây nhị phân tìm kiếm tự cân bằng).
+- get/put: O(log n).
+- Giữ key sắp xếp theo Comparable hoặc Comparator.
+- Hỗ trợ range query: subMap, headMap, tailMap, ceilingKey, floorKey.
+
+### PriorityQueue (heap)
+
+- Cấu trúc: binary heap (mảng, cha nhỏ hơn con).
+- offer/poll: O(log n); peek (xem min): O(1).
+- Mặc định min-heap; max-heap dùng Comparator.reverseOrder().
+- Iteration không sắp xếp (chỉ peek là min).
+
+### Bảng trade-off
+
+| Nhu cầu | Chọn | get | put | Thứ tự |
+|---|---|---|---|---|
+| Tra cứu theo key | HashMap | O(1) | O(1) | không |
+| Dữ liệu cần sorted by key | TreeMap | O(log n) | O(log n) | có |
+| Top-k / min-max liên tục | PriorityQueue | peek O(1) | O(log n) | partial |
+| Giữ thứ tự chèn | LinkedHashMap | O(1) | O(1) | insertion |
+
+### Pitfall production
+
+- HashMap với key mutable (object thay đổi hashCode sau khi put): mất entry, memory leak. Dùng key immutable (String, Integer, record).
+- TreeMap key phải Comparable hoặc có Comparator; nếu null key → NullPointerException.
+- PriorityQueue không thread-safe; nếu cần dùng đồng thời hãy dùng PriorityBlockingQueue (cùng API queue nhưng an toàn đa luồng), hoặc tự bọc synchronized và khoá mọi thao tác. ConcurrentSkipListMap là map có thứ tự chứ không thay thế được hàng đợi ưu tiên.
+- PriorityQueue.size() O(1) nhưng contains() O(n) — không dùng để kiểm tra membership.
+
+### Ví dụ đời thực
+
+Rate limiter theo user: cần đếm request trong cửa sổ 1 phút. HashMap<String, Deque<Long>> cho O(1) lookup user + O(1) append/remove expired. Nếu cần báo cáo top user theo số request → thêm PriorityQueue. Nếu cần dashboard sorted by userId → TreeMap. Trong thực tế kết hợp: HashMap cho hot path, TreeMap cho report batch.
+
+### Trả lời mẫu khi phỏng vấn
+
+HashMap, TreeMap, PriorityQueue khác nhau ở thứ tự và tốc độ. HashMap dùng hash table, get/put trung bình O(1), không giữ thứ tự, phù hợp tra cứu nhanh. TreeMap dùng red-black tree, O(log n), giữ key đã sắp xếp, hỗ trợ range query như subMap, ceilingKey. PriorityQueue là binary heap, peek min O(1), offer/poll O(log n), phù hợp top-k hoặc lấy min/max liên tục. Chọn: cần tra cứu → HashMap; cần dữ liệu sorted by key hoặc range → TreeMap; cần lấy phần tử nhỏ nhất/lớn nhất liên tục → heap. Pitfall: key mutable trong HashMap làm mất entry; PriorityQueue không thread-safe và contains() là O(n). Trong production rate limiter tôi dùng HashMap<String, Deque> cho hot path O(1), và PriorityQueue riêng cho top user. Quy tắc: chọn cấu trúc theo operation thường xuyên nhất, không theo tên quen thuộc.
+
+> Senior tip: Chọn collection theo operation hot nhất (get vs range vs min), không theo tên quen thuộc. Đo bằng profiler: nếu 90% thao tác là get, HashMap thắng dù TreeMap "đẹp" hơn.`,
+  follow: ['LinkedHashMap và TreeMap khác nhau thế nào về thứ tự?', 'Khi nào dùng ConcurrentSkipListMap thay TreeMap?'],
+  tags: ['HashMap', 'TreeMap', 'PriorityQueue', 'heap', 'Java', 'collections']
+},
+{
+  id: 'primer-036',
+  topic: 'primer',
+  level: 'senior',
+  q: 'Đệ quy (recursion) và vòng lặp (iteration) khác nhau thế nào? Vì sao đệ quy sâu có thể gây StackOverflowError và cách xử lý?',
+  a: `**Tóm tắt:** Đệ quy gọi chính nó với bài toán nhỏ hơn, mỗi lần gọi tạo một stack frame. Vòng lặp dùng biến lặp, không tốn stack. Đệ quy sâu (n lớn) gây StackOverflowError vì stack của mỗi thread có giới hạn (mặc định thường ~1MB với JDK 64-bit, đổi bằng -Xss). Xử lý: chuyển sang iteration, tăng stack size (-Xss), hoặc dùng tail recursion (Java không tự tối ưu).
+
+### Cơ chế đệ quy
+
+Mỗi lần gọi hàm, JVM đẩy một stack frame (local variables, parameters, return address) vào call stack. Khi hàm trả về, frame bị pop. Đệ quy = hàm gọi chính nó → stack tăng theo độ sâu.
+
+### Vì sao StackOverflowError
+
+Call stack có kích thước cố định cho mỗi thread (mặc định thường 1MB với JDK 64-bit; có thể xem/đổi bằng -Xss). Mỗi stack frame tốn vài chục đến vài trăm byte tuỳ số biến local, nên depth khả dụng thường vài nghìn đến vài chục nghìn. Nếu độ sâu đệ quy vượt quá → JVM ném StackOverflowError. Ví dụ: tính Fibonacci đệ quy cho n=10000 → ~10000 frame → crash trước khi kịp tính xong.
+
+### So sánh
+
+| Tiêu chí | Đệ quy | Vòng lặp |
+|---|---|---|
+| Đọc code | tự nhiên cho cây/DFS | rõ ràng cho mảng |
+| Bộ nhớ | O(depth) stack | O(1) |
+| Rủi ro | StackOverflow | infinite loop |
+| Hiệu năng | chậm hơn do call overhead | nhanh hơn |
+
+### Tail recursion
+
+Đệ quy đuôi = recursive call là statement cuối. Một số ngôn ngữ (Scala, Kotlin) tối ưu thành loop. **Java không tối ưu tail recursion** — vẫn tốn stack. Vì vậy trong Java nên viết iteration cho độ sâu lớn.
+
+### Xử lý StackOverflow
+
+1. **Chuyển sang iteration** với stack tường minh (ArrayDeque) — kiểm soát được.
+2. **Tăng stack size**: -Xss2m đổi mặc định cho MỌI thread mới do JVM tạo (không phải "chỉ thread đặc thù"); muốn riêng một thread thì truyền stackSize qua constructor Thread(group, runnable, name, stackSize). Tăng stack chỉ đẩy giới hạn lên, không sửa được thuật toán depth O(n).
+3. **Giới hạn độ sâu đầu vào** (max depth check).
+4. **Giảm depth của thuật toán** (ví dụ DFS trên cây cân bằng có depth O(log n)) — ForkJoinPool không làm stack sâu thêm được, mỗi task vẫn dùng stack của thread đang chạy.
+
+### Pitfall production
+
+- Recursion trên dữ liệu user-controlled (JSON nested sâu) → attacker gửi JSON 100000 cấp → StackOverflow → DoS. Jackson có max nesting depth (mặc định 1000).
+- Thread pool nhỏ + recursion sâu → dễ crash worker thread → request fail.
+- Log stack trace của StackOverflowError rất dài → log bombing.
+
+### Ví dụ đời thực
+
+API parse JSON config từ khách hàng: config lồng 5000 cấp → parse đệ quy → StackOverflow → service crash → restart. Fix: set JsonParser.Feature.STRICT_DUPLICATE_DETECTION? Không. Fix đúng: giới hạn depth ở 100, hoặc parse bằng iterative SAX-like parser. Sau fix: request trả 400 Bad Request thay vì crash.
+
+### Trả lời mẫu khi phỏng vấn
+
+Đệ quy là hàm gọi chính nó với bài toán nhỏ hơn, mỗi lần gọi tạo một stack frame chứa local variables và return address. Vòng lặp dùng biến lặp, không tốn stack. Đệ quy sâu gây StackOverflowError vì call stack có giới hạn cố định, thường 512KB đến 1MB mỗi thread. Ví dụ Fibonacci đệ quy cho n=10000 tạo ~10000 frame → crash. Java không tối ưu tail recursion như Scala hay Kotlin, nên recursion đuôi vẫn tốn stack. Xử lý: chuyển sang iteration với ArrayDeque làm stack tường minh để kiểm soát; hoặc tăng stack size bằng -Xss cho thread đặc thù; hoặc giới hạn độ sâu đầu vào. Pitfall production: recursion trên dữ liệu user-controlled như JSON lồng sâu có thể bị dùng để DoS — Jackson mặc định giới hạn nesting 1000. Tôi từng gặp config JSON 5000 cấp làm service crash; fix là giới hạn depth và trả 400 thay vì crash.
+
+> Senior tip: Trong Java, recursion chỉ an toàn khi depth bị bound chặt (cây cân bằng, depth ≤ log n). Với dữ liệu không tin cậy (user input, JSON), luôn dùng iteration hoặc giới hạn depth rõ ràng.`,
+  follow: ['Tail recursion optimization trong Java có không?', 'Khi nào dùng ArrayDeque thay vì recursion cho DFS?'],
+  tags: ['recursion', 'iteration', 'StackOverflowError', 'Java', 'stack']
+},
+{
+  id: 'primer-037',
+  topic: 'primer',
+  level: 'lead',
+  q: 'Sorting ổn định (stable sort) là gì? Comparator trong Java hoạt động thế nào, và vì sao contract của Comparator (transitive, consistent) quan trọng?',
+  a: `**Tóm tắt:** Stable sort giữ nguyên thứ tự tương đối của các phần tử bằng nhau. Java: Arrays.sort(Object[]) và Collections.sort dùng TimSort (stable); Arrays.sort(primitive) dùng Dual-Pivot Quicksort (không stable). Comparator.compare(a,b) trả âm/0/dương. Contract: transitive, consistent with equals (khuyến nghị), antisymmetric. Vi phạm contract → sort sai hoặc exception.
+
+### Stable sort là gì
+
+Nếu hai phần tử bằng nhau theo tiêu chí sort, stable sort giữ thứ tự ban đầu của chúng. Ví dụ sort danh sách nhân viên theo phòng ban: nhân viên cùng phòng giữ thứ tự nhập.
+
+### Java sorting
+
+- **Object arrays / List**: TimSort (merge sort + insertion sort), **stable**, O(n log n) worst.
+- **Primitive arrays**: Dual-Pivot Quicksort, **không stable**, O(n log n) average, O(n^2) worst (hiếm).
+- Lý do: primitive không có identity ngoài value, stability vô nghĩa; quicksort nhanh hơn và ít bộ nhớ.
+
+### Comparator contract
+
+compare(a,b) phải là:
+- **Antisymmetric**: sign(compare(a,b)) == -sign(compare(b,a)).
+- **Transitive**: nếu compare(a,b) ≤ 0 và compare(b,c) ≤ 0 thì compare(a,c) ≤ 0.
+- **Consistent with equals (khuyến nghị)**: compare(a,b)==0 nên a.equals(b) (không bắt buộc nhưng sort/map dựa vào).
+
+Vi phạm → TimSort ném IllegalArgumentException "Comparison method violates its general contract!" hoặc kết quả sai.
+
+### Ví dụ Comparator
+
+~~~java
+// Java 8+ style
+list.sort(Comparator.comparing(Employee::getDept)
+    .thenComparing(Employee::getName)
+    .thenComparingInt(Employee::getAge));
+
+// custom
+Comparator<Employee> bySalaryDesc = (a,b) -> Integer.compare(b.salary, a.salary);
+~~~
+
+### Pitfall production
+
+- Comparator dùng subtraction (a - b) → overflow với int lớn → sort sai. Dùng Integer.compare.
+- Comparator không transitive (ví dụ so sánh theo nhiều field không nhất quán) → exception runtime.
+- Sort mutable object trong khi đang sort → ConcurrentModificationException hoặc kết quả sai.
+- Stream.sorted() cũng dùng same contract.
+
+### Ví dụ đời thực
+
+Báo cáo giao dịch: sort theo thời gian giảm dần, cùng timestamp giữ thứ tự nhận (stable). Dùng Collections.sort với Comparator comparing timestamp desc. Nếu dùng Arrays.sort(primitive timestamp) → không stable → cùng timestamp bị đảo → audit log sai thứ tự → tranh chấp với khách hàng. Fix: sort object (Transaction) bằng TimSort stable.
+
+### Trả lời mẫu khi phỏng vấn
+
+Stable sort giữ nguyên thứ tự tương đối của các phần tử bằng nhau. Trong Java, Arrays.sort và Collections.sort trên Object dùng TimSort, là stable; trên primitive dùng Dual-Pivot Quicksort, không stable vì primitive không có identity ngoài value. Comparator.compare trả âm, 0, dương. Contract quan trọng: antisymmetric, transitive, và consistent with equals. Vi phạm transitivity → TimSort ném IllegalArgumentException "Comparison method violates its general contract" hoặc kết quả sai. Pitfall thường gặp: dùng subtraction (a-b) gây overflow với int lớn → dùng Integer.compare; Comparator không transitive khi kết hợp nhiều field không nhất quán. Trong production báo cáo giao dịch sort theo timestamp giảm dần, cùng timestamp phải giữ thứ tự nhận (stable) — nếu sort primitive timestamp thì không stable, audit log sai thứ tự. Luôn sort object với Comparator rõ ràng và test contract.
+
+> Senior tip: Khi viết Comparator phức tạp, thêm test property-based kiểm tra transitivity trên dữ liệu ngẫu nhiên; TimSort chỉ ném exception ở runtime khi phát hiện, không phải lúc compile.`,
+  follow: ['Khi nào cần stable sort trong production?', 'Comparator.comparing vs anonymous class khác nhau thế nào về hiệu năng?'],
+  tags: ['sorting', 'stable sort', 'Comparator', 'TimSort', 'Java', 'collections']
+},
 );
