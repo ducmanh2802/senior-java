@@ -15969,4 +15969,679 @@ Một core banking 12 service, 40.000 giao dịch/ngày, thêm {{ledgerDataSourc
   ],
   tags: ['multi-datasource', 'EntityManagerFactory', 'JpaTransactionManager', '@EnableJpaRepositories', 'XA', 'Flyway']
 },
+{
+  id: 'jpa-075',
+  topic: 'jpa',
+  level: 'senior',
+  q: 'Job đêm xử lý 200.000 đơn hàng bằng Hibernate: bạn gọi {{flush()}} mỗi 500 bản ghi nhưng heap vẫn tăng đều rồi nổ {{OutOfMemoryError}}. Vì sao flush không giải phóng bộ nhớ? First-level cache giữ những gì, và bạn sửa job thế nào?',
+  a: `**Tóm tắt:** {{flush()}} chỉ **đẩy SQL xuống database**, không đưa entity ra khỏi persistence context. First-level cache (bộ nhớ đệm cấp 1, tức chính persistence context của một {{EntityManager}}) vẫn giữ hai thứ cho mỗi entity: tham chiếu mạnh tới object, và một **bản sao snapshot giá trị các trường** để dirty checking (so sánh để biết entity có bị sửa). Bộ nhớ vì thế tăng tuyến tính theo số dòng đã xử lý. Muốn giải phóng phải {{clear()}}: gọi {{flush()}} rồi {{clear()}} mỗi lô. Với job thuần chép dữ liệu, {{StatelessSession}} hoặc JDBC batch còn nhẹ hơn vì không giữ context và không dirty check.
+
+### 1. First-level cache thực chất là gì
+Hãy hình dung persistence context như một **cuốn sổ điểm danh** của một phiên làm việc: mỗi entity được {{find}}, {{persist}} hay {{merge}} đều được ghi vào sổ, khóa là {{(class, id)}}. Cuốn sổ đó là một {{Map}} trong bộ nhớ JVM (tên kỹ thuật: identity map). Nó phục vụ hai mục đích:
+
+- **Nhất quán trong một transaction**: gọi {{find}} hai lần cùng id chỉ đọc DB một lần, trả về cùng một object (nên {{a == b}} đúng).
+- **Tự phát hiện thay đổi**: khi flush, Hibernate so từng trường hiện tại với snapshot đã lưu lúc load; khác nhau thì sinh câu {{UPDATE}}.
+
+Chính snapshot này là phần "vô hình" tốn bộ nhớ. Với entity 20 cột kiểu số và chuỗi ngắn, thân entity khoảng 1–2 KB thì snapshot thêm chừng 1–2 KB nữa. Vị từ "khoảng" là quan trọng: kích thước phụ thuộc số trường, độ dài chuỗi, JVM 64-bit với compressed oops.
+
+### 2. Vì sao flush() không làm heap giảm
+Làm rõ hai lệnh rất dễ nhầm:
+
+| Lệnh | Làm gì | Có giải phóng bộ nhớ? |
+|---|---|---|
+| {{flush()}} | Đồng bộ thay đổi trong bộ nhớ xuống DB: chạy INSERT/UPDATE/DELETE | **Không** — entity vẫn managed, snapshot vẫn còn |
+| {{clear()}} | Detach toàn bộ entity khỏi context, xoá sổ điểm danh | **Có** — không còn tham chiếu, GC thu hồi được |
+| {{detach(e)}} | Detach một entity cụ thể | Có, nhưng phải tự quản lý |
+| {{close()}} | Đóng session, giải phóng toàn bộ | Có, nhưng kết thúc luôn phiên làm việc |
+
+Vì vậy vòng lặp {{flush()}} mỗi 500 dòng nhưng không {{clear()}} vẫn giữ **toàn bộ 200.000 entity**. Tệ hơn, mỗi lần flush Hibernate phải dirty-check **mọi** entity đang managed: lô thứ 400 phải so 200.000 entity, nên tổng công việc là bậc hai theo số dòng — job chậm dần rồi chết vì heap.
+
+### 3. Sửa job: flush + clear theo lô
+~~~java
+@Transactional
+public void importOrders(List<OrderCsv> rows) {
+    int n = 0;
+    for (OrderCsv r : rows) {
+        Order o = new Order(r.id(), r.customerId(), r.total());
+        em.persist(o);                 // chỉ xếp vào ActionQueue, chưa gửi SQL
+        if (++n % 500 == 0) {
+            em.flush();                // đẩy 500 INSERT xuống DB, gộp theo batch_size
+            em.clear();                // gỡ 500 entity -> giải phóng snapshot
+        }
+    }
+}
+~~~
+
+Ba lưu ý về thứ tự và ngữ nghĩa:
+
+- **Luôn flush trước clear.** {{clear()}} khi còn thay đổi chưa flush sẽ **vứt bỏ** chúng mà không báo lỗi — bug mất dữ liệu im lặng.
+- Sau {{clear()}}, entity cũ thành **detached** (tách rời). Chạm vào quan hệ lazy của nó sẽ ném {{LazyInitializationException}}, và sửa nó không còn được ghi xuống DB. Trong job chỉ nên giữ **id**, không giữ entity để dùng tiếp.
+- Lô nên là bội số của {{hibernate.jdbc.batch_size}} (ví dụ batch_size 100, lô 500) để mỗi flush ra đúng 5 batch JDBC, không có batch lẻ.
+
+### 4. Ba lựa chọn cho job khối lượng lớn
+| Cách | Dirty checking | Cascade, callback | Bộ nhớ | Khi nên dùng |
+|---|---|---|---|---|
+| Entity + flush/clear theo lô | Có (nhưng chỉ trong 500 entity) | Có | Thấp nếu clear đúng | Cần validate, lifecycle, quan hệ phức tạp |
+| {{StatelessSession}} | Không | Không (không cascade, không @PrePersist) | Rất thấp | Job chép/ghi thuần, ưu tiên tốc độ |
+| JDBC batch ({{JdbcTemplate}}) | Không | Không | Rất thấp | Bảng phẳng, cột cố định, cần throughput cao nhất |
+
+{{StatelessSession}} mở bằng {{sessionFactory.openStatelessSession()}}; nó **không tự tham gia** transaction Spring, phải tự {{begin}}/{{commit}} — đây là lý do nhiều team chọn JDBC batch cho job import, ít bẫy hơn.
+
+### 5. Những chỗ khác cũng giữ bộ nhớ
+- **Đọc trước rồi mới ghi**: {{repo.findAll()}} nạp cả 200.000 dòng vào {{List}} — OOM xảy ra trước khi Hibernate kịp flush. Phải đọc theo lô (keyset) chứ không nạp cả bảng.
+- **Second-level cache**: {{clear()}} không xoá cache cấp 2. Job ghi hàng loạt mà entity có {{@Cache}} sẽ vừa tốn heap vừa làm cache bẩn; tắt cache cho job này.
+- **OSIV**: {{spring.jpa.open-in-view=true}} làm persistence context sống suốt request; nếu job chạy trong request (endpoint admin import) thì context không đóng giữa chừng.
+- **{{saveAll}} của Spring Data** chỉ gọi {{persist}}/{{merge}} từng cái — không tự clear, không tự flush. Nó không thay thế vòng lặp có kiểm soát.
+
+### Ví dụ đời thực
+Job import hoá đơn từ file CSV 200.000 dòng chạy trên pod heap 1 GB. Sau 22 phút thì {{OutOfMemoryError: Java heap space}}, GC log cho thấy old gen đầy dần đều và mỗi lần full GC chỉ giải phóng dưới 5%. Heap dump ({{jcmd <pid> GC.heap_dump}}) cho thấy {{StatefulPersistenceContext}} giữ khoảng 210.000 {{EntityEntry}}, chiếm gần 740 MB. Nguyên nhân: code flush mỗi 500 dòng nhưng không clear. Sửa: thêm {{clear()}} sau flush, lô 500, cộng {{fetchSize}} khi đọc file theo khối. Kết quả: heap ổn định quanh 180 MB suốt job, thời gian từ 6 phút 30 xuống 4 phút 10 vì không còn dirty-check 200.000 entity mỗi lần flush. Job chạy lại 5 đêm liên tiếp không OOM.
+
+### Trả lời mẫu khi phỏng vấn
+"flush chỉ đồng bộ SQL xuống DB, không giải phóng gì trong bộ nhớ. Persistence context là một identity map giữ tham chiếu tới mọi entity managed, kèm snapshot giá trị trường để dirty checking, nên bộ nhớ tăng theo số dòng. Vì vậy vòng lặp flush mỗi 500 dòng mà không clear vẫn ôm cả 200.000 entity, và mỗi flush lại dirty-check toàn bộ nên job chậm dần theo cấp số cộng rồi OOM. Cách sửa là flush rồi clear theo lô, lô là bội số của batch_size, và chỉ giữ id chứ không giữ entity sau khi clear vì entity đã detached. Nếu job chỉ chép dữ liệu, tôi cân nhắc StatelessSession hoặc JdbcTemplate vì không có dirty checking và bộ nhớ rất thấp. Tôi cũng kiểm tra ba nguồn phình bộ nhớ khác: đọc cả bảng vào List, second-level cache, và OSIV giữ context suốt request. Đo bằng Hibernate statistics hoặc heap dump để biết đúng chỗ phình trước khi sửa."
+
+> Senior tip: đừng bao giờ viết {{flush()}} mà quên {{clear()}} trong job lặp — nửa giải pháp còn nguy hiểm hơn không làm gì, vì job vẫn OOM nhưng chậm hơn nên bạn tưởng nó ổn. Và hãy đặt cảnh báo heap theo phần trăm (ví dụ log khi old gen vượt 70%) thay vì chờ OOM, vì lúc OOM thì heap dump có thể không kịp ghi hoặc ghi mất 2 phút.`,
+  follow: [
+    'Nếu job vừa đọc vừa ghi (đọc 1 lô, tính toán, ghi lại) thì flush và clear đặt ở đâu để không mất dữ liệu?',
+    'StatelessSession khác StatefulSession ở những điểm nào ngoài bộ nhớ, và vì sao cascade không hoạt động?',
+    'Làm sao biết persistence context đang giữ bao nhiêu entity khi đang chạy production mà không bật log SQL?'
+  ],
+  tags: ['persistence context', 'first-level cache', 'flush', 'clear', 'OutOfMemoryError', 'StatelessSession', 'batch', 'heap dump']
+},
+{
+  id: 'jpa-076',
+  topic: 'jpa',
+  level: 'senior',
+  q: 'Bạn cập nhật giá 300.000 sản phẩm bằng cách load entity, set giá mới và để dirty checking ghi xuống. Đã bật {{hibernate.jdbc.batch_size = 100}} nhưng log vẫn in 300.000 câu {{UPDATE}} riêng lẻ. Vì sao batch không hoạt động với UPDATE, và cấu hình nào để nó thật sự gộp?',
+  a: `**Tóm tắt:** batch của JDBC chỉ gộp được các câu **cùng một câu SQL** và **liền nhau** trong một lần gửi. Hibernate sinh UPDATE theo thứ tự entity bị dirty, nên các UPDATE xen kẽ (sản phẩm 1, 2, 1, 3...) làm câu SQL đổi qua lại và driver phải gửi từng câu. Bật {{hibernate.order_updates = true}} để Hibernate sắp xếp UPDATE theo câu SQL trước khi flush; với entity có {{@Version}} còn phải bật thêm {{hibernate.batch_versioned_data = true}}. Nếu nghiệp vụ không cần đọc lại từng dòng, một câu {{UPDATE}} JPQL là nhanh nhất.
+
+### 1. Batch ở tầng JDBC nghĩa là gì
+Driver JDBC có API {{addBatch()}} và {{executeBatch()}}: bạn đưa nhiều bộ tham số cho **cùng một câu SQL đã prepare**, driver gửi một gói qua mạng và database thực thi lần lượt. Ví dụ 1.000 lần {{UPDATE product SET price = ? WHERE id = ?}} gộp thành một gói thay vì 1.000 vòng round-trip.
+
+Điều kiện tiên quyết rất cứng: **cùng câu SQL** (cùng chuỗi, cùng số tham số) và **các lần gọi nằm liền nhau**. Driver không thể gộp nếu giữa hai lần {{UPDATE product}} lại có {{UPDATE category}}, hay nếu câu SQL khác nhau về cấu trúc.
+
+### 2. Vì sao Hibernate không tự sắp xếp
+Khi flush, Hibernate lấy các thay đổi từ ActionQueue (hàng đợi hành động) và thực thi theo thứ tự insert → update → xoá bảng phụ → delete. Trong nhóm update, mặc định nó đi theo thứ tự entity được đánh dấu dirty — tức thứ tự code chạy. Vòng lặp của bạn load A, B rồi sửa A rồi C, D rồi sửa B sẽ tạo chuỗi A, A, B, B... tùy dữ liệu, và mỗi khi câu SQL đổi loại entity là batch bị "cắt".
+
+Ba cấu hình giải quyết:
+
+~~~yaml
+spring.jpa.properties.hibernate.jdbc.batch_size: 100
+spring.jpa.properties.hibernate.order_updates: true     # sắp UPDATE theo câu SQL
+spring.jpa.properties.hibernate.order_inserts: true     # tương tự cho INSERT
+spring.jpa.properties.hibernate.batch_versioned_data: true  # cho entity có @Version
+~~~
+
+Vì sao cần {{batch_versioned_data}}? Với entity có {{@Version}}, Hibernate cần **số dòng bị ảnh hưởng** của từng UPDATE để phát hiện optimistic lock thất bại. Theo mặc định nó tắt batching cho loại này vì lo ngại driver không trả count chính xác. Nếu driver của bạn trả count đúng (PostgreSQL, MySQL, Oracle hiện đại đều đúng), bật cờ này để batch hoạt động; nếu driver sai, bạn sẽ mất khả năng phát hiện xung đột — phải test kỹ.
+
+### 3. Cấu hình kèm vòng lặp có kiểm soát
+~~~java
+@Transactional
+public void reprice(List<Long> ids, BigDecimal rate) {
+    for (int i = 0; i < ids.size(); i++) {
+        Product p = em.find(Product.class, ids.get(i));   // 1 SELECT mỗi dòng
+        p.setPrice(p.getPrice().multiply(rate));
+        if ((i + 1) % 500 == 0) {
+            em.flush();     // 500 UPDATE gộp thành 5 batch
+            em.clear();     // tránh phình context (xem câu về first-level cache)
+        }
+    }
+}
+~~~
+
+Nhưng hãy để ý: {{find}} từng id nghĩa là 300.000 câu SELECT. Nếu chỉ nhân giá theo một quy tắc chung, đừng load entity:
+
+~~~java
+@Modifying(clearAutomatically = true)
+@Query("update Product p set p.price = p.price * :rate where p.category = :cat")
+int repriceCategory(@Param("cat") String cat, @Param("rate") BigDecimal rate);
+~~~
+
+Một câu UPDATE cho 300.000 dòng, nhanh hơn hàng chục lần. Đánh đổi: bỏ qua persistence context (entity đang managed không được cập nhật theo), không chạy callback, không audit theo từng dòng.
+
+### 4. Bảng: cái gì phá batch
+| Nguyên nhân | Dấu hiệu trong log | Cách xử lý |
+|---|---|---|
+| Thiếu {{order_updates}} | UPDATE xen kẽ nhiều bảng | Bật cờ |
+| Entity có {{@Version}} | UPDATE đúng thứ tự nhưng vẫn lẻ | Bật {{batch_versioned_data}} |
+| Id {{IDENTITY}} | Mỗi INSERT kèm SELECT lấy id | Đổi sang SEQUENCE (xem câu về allocationSize) |
+| Dùng {{merge}} thay {{persist}} | Có SELECT trước mỗi INSERT | {{persist}} cho entity mới |
+| Lô không phải bội số batch_size | Batch cuối lẻ 1–99 câu | Chọn lô 500 với batch 100 |
+| Lỗi ở giữa ActionQueue | Flush dừng, không có batch nào | Sửa constraint, kiểm tra dữ liệu |
+| MySQL thiếu {{rewriteBatchedStatements}} | Batch có gửi nhưng chậm | Thêm tham số vào JDBC URL |
+
+Dòng cuối đáng nhớ: với MySQL, driver **mặc định không viết lại** thành multi-value INSERT/UPDATE, nên "có batch" vẫn chậm. PostgreSQL thì dùng prepared statement và gửi batch đúng nghĩa.
+
+### 5. Đo trước và sau
+Bật {{logging.level.org.hibernate.SQL=DEBUG}} chỉ để xem hình dạng, đừng bật ở production lâu (log phình rất nhanh). Cách đo gọn hơn: Hibernate Statistics — {{sessionFactory.getStatistics().getPrepareStatementCount()}} trước và sau job, hoặc {{datasource-proxy}} để đếm theo từng loại statement. Con số cần đạt: statements xấp xỉ {{số dòng / batch_size}}, không phải {{số dòng}}.
+
+### Ví dụ đời thực
+Job cập nhật bảng giá 300.000 sản phẩm chạy 26 phút mỗi đêm, giữ transaction mở suốt thời gian đó. Log SQL cho thấy 300.000 UPDATE lẻ và 300.000 SELECT. Đo bằng pg_stat_statements: câu UPDATE chiếm 71% tổng thời gian DB. Sửa theo ba bước: (1) đọc theo lô 500 bằng {{WHERE id > :lastId ORDER BY id LIMIT 500}} thay vì {{find}} từng id; (2) bật order_updates, batch_versioned_data, batch_size 100; (3) chia thành transaction 5.000 dòng thay vì một transaction khổng lồ. Kết quả: statements giảm từ hơn 600.000 xuống khoảng 3.600, thời gian 26 phút còn 3 phút 10, và vì transaction ngắn hơn nên khoá dòng nhả sớm, vacuum của PostgreSQL theo kịp, bloat không còn tăng 2 GB mỗi đêm.
+
+### Trả lời mẫu khi phỏng vấn
+"batch_size chỉ là kích thước gói; điều kiện để gộp là các câu SQL giống nhau và liền nhau. Hibernate flush UPDATE theo thứ tự dirty nên các bảng khác nhau xen kẽ làm batch bị cắt. Tôi bật order_updates và order_inserts để nó sắp theo câu SQL, và với entity có @Version thì bật batch_versioned_data vì mặc định Hibernate tắt batch cho versioned update để còn kiểm tra số dòng ảnh hưởng. Tôi cũng kiểm tra các nguyên nhân phá batch khác: id IDENTITY, dùng merge thay persist, lô không phải bội số batch_size, và với MySQL thì thiếu rewriteBatchedStatements. Nhưng câu hỏi quan trọng hơn là có cần load entity không: nếu quy tắc cập nhật giống nhau cho cả lô thì một câu UPDATE JPQL nhanh hơn nhiều, chỉ mất tính năng callback và đồng bộ context. Cuối cùng tôi đo bằng prepareStatementCount hoặc datasource-proxy chứ không tin cảm giác, vì batch 'bật rồi' vẫn có thể không chạy."
+
+> Senior tip: hãy kiểm tra bằng **số statement**, không bằng việc đã thêm dòng cấu hình. Rất nhiều đội tưởng đã bật batch vì {{batch_size}} có trong file yml, nhưng thực tế vẫn 100% statement lẻ do thiếu {{order_updates}} hoặc do id IDENTITY. Và nhớ: batch càng lớn thì transaction càng giữ khoá lâu — throughput tăng nhưng tranh chấp cũng tăng, nên luôn cân bằng với kích thước transaction, không chỉ kích thước batch.`,
+  follow: [
+    'Vì sao {{hibernate.batch_versioned_data}} có thể làm mất khả năng phát hiện optimistic lock nếu driver trả số dòng sai?',
+    'Nếu bảng đích có trigger ghi audit từng dòng, batch UPDATE còn lợi không, và bạn đo thế nào?',
+    'Chia job thành nhiều transaction nhỏ ảnh hưởng gì tới tính nhất quán của báo cáo đọc giữa lúc chạy?'
+  ],
+  tags: ['batch update', 'hibernate.jdbc.batch_size', 'order_updates', 'batch_versioned_data', '@Version', 'JDBC batch', 'dirty checking']
+},
+{
+  id: 'jpa-077',
+  topic: 'jpa',
+  level: 'senior',
+  q: 'Hai chức năng cùng trừ tồn kho của một SKU. Bạn dùng {{@Lock(LockModeType.PESSIMISTIC_WRITE)}} trên repository. Lock này khoá cái gì, giữ bao lâu, vì sao request đôi lúc treo 30 giây hoặc ném deadlock, và bạn cấu hình timeout cùng thứ tự khoá thế nào?',
+  a: `**Tóm tắt:** {{PESSIMISTIC_WRITE}} sinh ra {{SELECT ... FOR UPDATE}} — một **khoá dòng ở tầng database**, giữ từ lúc câu lệnh chạy tới lúc transaction commit hoặc rollback. Nó không khoá đọc (PostgreSQL dùng MVCC nên người đọc vẫn thấy bản cũ), chỉ chặn người **ghi** cùng dòng. Vì vậy "treo 30 giây" thường là transaction khác đang giữ khoá quá lâu, còn deadlock là hai transaction khoá hai dòng theo thứ tự ngược nhau. Cách chữa: giữ transaction ngắn, khoá theo thứ tự id cố định, đặt lock timeout và trả lỗi nhanh thay vì chờ vô hạn.
+
+### 1. Lock này thực sự làm gì
+Khi repository có {{@Lock(LockModeType.PESSIMISTIC_WRITE)}}, Hibernate thêm mệnh đề khoá vào câu SELECT:
+
+~~~sql
+SELECT id, sku, available FROM stock WHERE sku = 'IPHONE-15' FOR UPDATE;
+~~~
+
+Database đặt khoá loại "khoá dòng để ghi" lên dòng vừa đọc. Từ lúc đó:
+
+- Transaction khác cũng {{SELECT ... FOR UPDATE}} cùng dòng sẽ **phải chờ**.
+- Transaction khác {{UPDATE}} cùng dòng cũng phải chờ.
+- Người chỉ {{SELECT}} thường (không FOR UPDATE) **không chờ** trên PostgreSQL và MySQL InnoDB, vì đọc dùng phiên bản snapshot (MVCC). Đây là điểm hay bị hiểu sai: khoá này không "khoá đọc".
+
+Các biến thể cần phân biệt:
+
+| LockModeType | SQL kiểu | Ý nghĩa |
+|---|---|---|
+| {{PESSIMISTIC_READ}} | {{FOR SHARE}} | Chặn người ghi, nhiều người cùng giữ được |
+| {{PESSIMISTIC_WRITE}} | {{FOR UPDATE}} | Độc quyền ghi dòng |
+| {{PESSIMISTIC_FORCE_INCREMENT}} | {{FOR UPDATE}} + tăng {{@Version}} | Khoá và tăng version, dùng khi cần "đánh dấu" phiên bản cha |
+
+### 2. Giữ bao lâu — đây là câu trả lời quan trọng nhất
+Khoá giữ tới **commit/rollback**, không phải tới khi method repository trả về. Nghĩa là mọi thứ nằm trong cùng transaction đều kéo dài thời gian khoá:
+
+- gọi API đối tác (200–2000 ms),
+- gửi Kafka,
+- render PDF,
+- ghi log vào DB,
+- vòng lặp update 1.000 dòng.
+
+Đây là nguyên nhân số một của "request treo". Một transaction 3 giây giữ khoá thì 50 request cùng SKU xếp hàng: request cuối chờ 150 giây. HikariCP cũng bị ăn connection vì mỗi request đang chờ khoá vẫn giữ một connection — chờ khoá lâu có thể dẫn tới cạn pool, và lỗi hiện ra lại là "connection timeout" chứ không phải "lock timeout", làm điều tra lạc hướng.
+
+### 3. Timeout: đừng để mặc định là vô hạn
+Cách khai báo trong Spring Data:
+
+~~~java
+public interface StockRepository extends JpaRepository<Stock, Long> {
+
+    @Lock(LockModeType.PESSIMISTIC_WRITE)
+    @QueryHints(@QueryHint(name = "jakarta.persistence.lock.timeout", value = "2000"))
+    @Query("select s from Stock s where s.sku = :sku")
+    Optional<Stock> lockBySku(@Param("sku") String sku);
+}
+~~~
+
+Giá trị tính bằng **mili giây**, 0 nghĩa là không chờ (NOWAIT). Nhưng mức hỗ trợ khác nhau khá nhiều:
+
+| Database | Chờ vô hạn mặc định | NOWAIT | Timeout N giây | SKIP LOCKED |
+|---|---|---|---|---|
+| PostgreSQL | Có | {{FOR UPDATE NOWAIT}} | Không có cú pháp trong câu SELECT, phải {{SET LOCAL lock_timeout}} | Có |
+| Oracle | Có | {{FOR UPDATE NOWAIT}} | {{FOR UPDATE WAIT n}} | Có (12c+) |
+| MySQL 8 InnoDB | Có | Có | Qua {{innodb_lock_wait_timeout}} (mức session) | Có |
+
+Vì vậy với PostgreSQL, cách chắc chắn là đặt ở mức transaction: {{SET LOCAL lock_timeout = '2s'}} (chỉ áp dụng cho transaction hiện tại), hoặc cấu hình {{statement_timeout}} của role. Đừng giả định hint {{jakarta.persistence.lock.timeout}} luôn được dịch thành SQL — hãy bật log SQL và xem câu lệnh thật, rồi test đúng phiên bản DB của bạn.
+
+### 4. Deadlock: cơ chế và cách phòng
+Deadlock xảy ra khi hai transaction khoá hai tài nguyên theo thứ tự ngược nhau:
+
+~~~text
+T1: lock SKU-A  ->  chờ SKU-B
+T2: lock SKU-B  ->  chờ SKU-A
+Database phát hiện chu trình -> kill một bên (PostgreSQL: deadlock detected, SQLState 40P01)
+~~~
+
+Cách phòng, theo thứ tự hiệu quả:
+
+1. **Khoá theo thứ tự cố định**: sort danh sách id/SKU trước khi khoá. Nếu mọi transaction đều khoá A rồi B, không thể có chu trình.
+2. **Một điểm khoá duy nhất**: với tồn kho, mỗi SKU là một dòng riêng; đừng khoá cả bảng hay nhiều SKU trong một transaction nếu không cần.
+3. **Transaction ngắn**: khoá xong tính toán nhanh rồi commit; phần gọi ngoài (email, HTTP) đẩy sang sau commit bằng {{@TransactionalEventListener}} hoặc outbox.
+4. **Retry có giới hạn**: deadlock là lỗi tạm thời, retry 2–3 lần với backoff là hợp lý; nhưng retry mà transaction vẫn dài thì chỉ làm chậm thêm.
+
+### 5. Bốn cái bẫy rất thật
+- **@Lock bị bỏ qua khi entity đã có trong context**: nếu entity đang managed (vừa {{find}} ở chỗ khác trong cùng transaction), Hibernate trả object từ first-level cache và không chạy lại SELECT FOR UPDATE. Muốn chắc, dùng {{em.refresh(entity, LockModeType.PESSIMISTIC_WRITE)}} hoặc khoá bằng query trả projection.
+- **Khoá dòng không tồn tại**: chưa có dòng {{stock}} cho SKU mới thì {{FOR UPDATE}} không khoá gì cả; hai request cùng insert sẽ tạo hai dòng. Chặn bằng **unique index** trên {{sku}} và bắt lỗi vi phạm.
+- **Khoá cha do insert con**: khi insert vào bảng con có khoá ngoại, PostgreSQL lấy khoá {{FOR KEY SHARE}} trên dòng cha; khoá này xung đột với {{FOR UPDATE}}, nên một job đang khoá dòng cha có thể làm chậm các insert con.
+- **readOnly + lock**: gọi khoá trong {{@Transactional(readOnly = true)}} trên PostgreSQL sẽ lỗi "cannot execute SELECT FOR UPDATE in a read-only transaction". Đừng đặt readOnly cho method có khoá ghi.
+
+### Ví dụ đời thực
+Flash sale một SKU: 4 pod, mỗi request trừ tồn kho bằng {{@Lock(PESSIMISTIC_WRITE)}} trên dòng stock. Trong method còn gọi API đối tác giữ chỗ mất 400 ms và ghi một bản ghi audit. p99 lên 8 giây, mỗi phút có khoảng 120 lỗi {{deadlock detected}} do hai luồng cập nhật hai SKU theo thứ tự khác nhau (đơn có 2 sản phẩm). Sửa: sort id sản phẩm trước khi khoá, chuyển lời gọi API và audit ra ngoài transaction (sau commit), đặt {{SET LOCAL lock_timeout = '2s'}} và trả HTTP 409 "hệ thống đang bận, thử lại" khi hết timeout, bật retry 2 lần cho deadlock. Kết quả: p99 còn 45 ms, deadlock về 0, số connection chờ giảm mạnh nên pool 20 connection đủ cho 4 pod.
+
+### Trả lời mẫu khi phỏng vấn
+"PESSIMISTIC_WRITE sinh ra SELECT FOR UPDATE, tức khoá dòng ở database, giữ tới commit chứ không phải tới khi method trả về. Nó chỉ chặn người ghi, vì PostgreSQL đọc bằng MVCC nên SELECT thường không bị chặn. Hệ quả là nếu transaction của tôi còn gọi HTTP, gửi message hay xử lý hàng nghìn dòng thì khoá bị giữ rất lâu, các request sau xếp hàng, connection pool cũng bị chiếm nên lỗi hiện ra thành connection timeout. Deadlock xảy ra khi hai transaction khoá hai dòng theo thứ tự ngược nhau, nên tôi sort id trước khi khoá và giữ transaction ngắn. Tôi luôn đặt timeout: với PostgreSQL dùng SET LOCAL lock_timeout hoặc NOWAIT vì hint lock.timeout không phải lúc nào cũng được dịch thành SQL; với Oracle là FOR UPDATE WAIT. Cuối cùng tôi trả lỗi nhanh cho client thay vì để request treo, và retry có giới hạn cho deadlock vì đó là lỗi tạm thời."
+
+> Senior tip: khoá bi quan là công cụ cho tranh chấp **cao và tập trung** (một SKU hot, một dòng số dư). Nếu tranh chấp thấp, optimistic lock rẻ hơn nhiều vì không giữ khoá và không ăn connection. Điều tôi luôn kiểm tra trước khi thêm FOR UPDATE: transaction này dài bao nhiêu mili giây, có lời gọi mạng nào bên trong, và đã có unique index bảo vệ trường hợp dòng chưa tồn tại chưa.`,
+  follow: [
+    'Khi nào bạn chọn PESSIMISTIC_READ thay vì PESSIMISTIC_WRITE, và cho ví dụ nghiệp vụ cụ thể?',
+    'Nếu phải khoá 500 dòng cùng lúc (ví dụ chuyển kho một lô hàng), bạn làm thế nào để không deadlock và không giữ khoá quá lâu?',
+    'Làm sao phân biệt lỗi "lock timeout" với lỗi "connection pool timeout" khi đọc log production?'
+  ],
+  tags: ['pessimistic lock', 'LockModeType', 'FOR UPDATE', 'lock timeout', 'deadlock', 'PostgreSQL', 'MVCC', 'stock']
+},
+{
+  id: 'jpa-078',
+  topic: 'jpa',
+  level: 'lead',
+  q: '(Lead) Bạn làm endpoint export 5 triệu dòng giao dịch kèm tên khách hàng. Dùng entity với {{findAll()}} thì {{OutOfMemoryError}}; map sang DTO trong vòng lặp thì log có 5.000.001 câu SELECT. Bạn thiết kế lại endpoint này thế nào, và làm sao chặn N+1 tái diễn ngay trong CI?',
+  a: `**Tóm tắt:** Hai lỗi có cùng gốc: **tải entity vào bộ nhớ rồi mới xử lý**. {{findAll()}} giữ 5 triệu entity trong persistence context và trong {{List}}; còn khi map DTO trong vòng lặp, mỗi lần chạm {{order.getCustomer().getName()}} là một quan hệ lazy nên sinh thêm một SELECT (N+1: 1 câu lấy đơn + N câu lấy khách hàng). Thiết kế đúng cho báo cáo là: **không dùng entity**, đọc theo lô bằng DTO projection (một câu JOIN sẵn tên khách), ghi file ngay khi có lô, mỗi lô một transaction ngắn. Chặn tái diễn bằng test khẳng định **số statement không tỉ lệ với số dòng**, đo qua Hibernate Statistics.
+
+### 1. Vì sao findAll() nổ và vì sao DTO mapping lại thành N+1
+- {{findAll()}}: Hibernate đọc 5 triệu dòng, tạo 5 triệu object, giữ từng object trong persistence context kèm snapshot để dirty checking (xem câu về first-level cache). List kết quả cũng giữ tham chiếu. Với entity 1 KB và snapshot 1 KB thì riêng phần Hibernate đã khoảng 10 GB — không cấu hình heap nào cứu được.
+- Map DTO trong vòng lặp: mỗi {{Order}} có {{@ManyToOne(fetch = LAZY) Customer}}. Lần đầu chạm {{getCustomer()}} Hibernate phát một SELECT; 5 triệu dòng nghĩa là 5 triệu SELECT phụ. Nếu mỗi câu 0,3 ms thì riêng phần này đã 25 phút, chưa kể CPU database và network.
+
+Điểm cần nhớ: **N+1 không phải lỗi của JPA, mà là hệ quả của việc đọc từng dòng và chạm quan hệ lazy trong vòng lặp**. Cách sửa không phải tăng heap hay tăng timeout.
+
+### 2. Nguyên tắc thiết kế cho báo cáo
+| Nhu cầu | Cách làm | Vì sao |
+|---|---|---|
+| Xuất file lớn | DTO projection + đọc theo lô keyset + ghi streaming | Bộ nhớ hằng số, một query mỗi lô |
+| Bảng tổng hợp | Một câu SQL aggregate (native hoặc JPQL) | Database làm phép tính, trả vài chục dòng |
+| Màn hình phân trang | DTO projection + keyset | Không load entity, không N+1 |
+| Cần sửa dữ liệu | Entity trong transaction ngắn | Chỉ entity mới có dirty checking |
+
+Projection nghĩa là chỉ chọn đúng cột cần: {{select new com.acme.TxRow(t.id, t.amount, t.createdAt, c.name) from Tx t join t.customer c}}. JPA gọi đây là constructor expression; kết quả là {{record}}/class thường, **không** được đưa vào persistence context, nên không có snapshot, không dirty check.
+
+### 3. Code: đọc theo lô và ghi ngay
+~~~java
+@Transactional(readOnly = true)
+public void exportCsv(Instant from, Writer out) throws IOException {
+    Instant lastCreated = from;
+    long lastId = 0L;
+    int size = 5000;
+
+    while (true) {
+        List<TxRow> rows = repo.findRowsAfter(lastCreated, lastId,
+                                               PageRequest.of(0, size));
+        if (rows.isEmpty()) break;
+
+        for (TxRow r : rows) {
+            out.write(r.toCsvLine());          // ghi ngay, không giữ cả file trong RAM
+        }
+        TxRow last = rows.get(rows.size() - 1);
+        lastCreated = last.createdAt();        // cursor cho lô sau
+        lastId = last.id();
+    }
+}
+~~~
+
+~~~java
+public interface TxRepository extends JpaRepository<Tx, Long> {
+
+    @Query("""
+           select new com.acme.TxRow(t.id, t.amount, t.createdAt, c.name)
+           from Tx t join t.customer c
+           where t.createdAt > :lastCreated
+              or (t.createdAt = :lastCreated and t.id > :lastId)
+           order by t.createdAt asc, t.id asc
+           """)
+    List<TxRow> findRowsAfter(@Param("lastCreated") Instant lastCreated,
+                              @Param("lastId") long lastId,
+                              Pageable page);
+}
+~~~
+
+Bốn chi tiết quyết định thành bại:
+
+- **Cursor keyset, không OFFSET**: {{OFFSET 4.000.000}} buộc DB đọc-bỏ 4 triệu dòng mỗi lô, tổng chi phí bậc hai.
+- **Một query mỗi lô** đã JOIN khách hàng, nên không còn N+1.
+- **Mỗi lô nên là một transaction riêng** ở tầng gọi (ví dụ service ngoài gọi method nhỏ cho từng lô). Một transaction 5 triệu dòng trên PostgreSQL giữ snapshot rất lâu, chặn vacuum và làm bảng phình; trên replica còn gây lag.
+- **Ghi file ngay trong vòng lặp**: đừng gom {{StringBuilder}} 5 triệu dòng. Nếu client tải chậm, ghi ra file tạm hoặc object storage rồi trả link, thay vì giữ connection HTTP hàng chục phút.
+
+### 4. Đo N+1 và chặn hồi quy trong CI
+Cách rẻ nhất là dùng Hibernate Statistics trong test tích hợp:
+
+~~~java
+Statistics stats = entityManagerFactory.unwrap(SessionFactory.class).getStatistics();
+stats.setStatisticsEnabled(true);   // test profile: hibernate.generate_statistics=true
+stats.clear();
+
+service.exportCsv(from, new StringWriter());
+
+long statements = stats.getPrepareStatementCount();
+assertThat(statements).isLessThan(50);   // 3.000 dòng, 5.000/lô -> vài statement
+~~~
+
+Điều cần khẳng định là **số statement không tỉ lệ với số dòng**: với 3.000 dòng, 50 là ngưỡng hợp lý; nếu ai đó thêm {{getCustomer().getName()}} vào vòng lặp, con số nhảy lên 3.001 và test đỏ ngay. Với test nhỏ hơn, so sánh hai lần chạy 100 dòng và 1.000 dòng: số statement phải gần như bằng nhau.
+
+Ngoài CI, ở production có thể dùng {{datasource-proxy}}, p6spy hoặc Micrometer để biết query theo endpoint. **Không bật {{hibernate.generate_statistics}} ở production lâu dài**: nó giữ map thống kê theo từng query và có chi phí bộ nhớ, chỉ nên bật tạm khi điều tra.
+
+### 5. Bẫy ở giai đoạn thiết kế
+- **Interface projection "mở"**: projection có {{@Value}} SpEL (ví dụ tính toán từ entity) buộc Hibernate load cả entity → N+1 quay lại. Projection đóng (chỉ getter trả cột) mới thật sự chỉ lấy cột cần.
+- **{{Stream}} quên đóng**: {{Stream<Order> stream()}} giữ cursor mở; phải dùng try-with-resources, nếu không sẽ rò connection. Nó cũng chỉ chạy trong transaction readOnly và cần fetch size hợp lý; PostgreSQL mới thực sự chạy cursor khi autocommit tắt.
+- **{{fetchSize}} mặc định**: nhiều driver mặc định tải hết result set về client, nên dù code đọc theo lô, driver vẫn giữ toàn bộ dòng trong RAM.
+- **Đổi dữ liệu giữa các lô**: mỗi lô một transaction nghĩa là báo cáo có thể thấy dữ liệu hơi lệch thời điểm. Với báo cáo đối soát, ghi rõ mốc thời gian hoặc chạy trên snapshot/replica, đừng hứa "một ảnh nhất quán" nếu không dùng một transaction lớn.
+- **Không đếm tổng bằng {{COUNT}}** trên 5 triệu dòng nếu không cần; nếu cần, tính song song hoặc lấy từ bảng tổng hợp.
+
+### Ví dụ đời thực
+Endpoint "xuất sao kê" của một ví điện tử, heap 2 GB: {{findAll()}} OOM ở khoảng 1,1 triệu dòng. Bản thử hai dùng DTO nhưng map trong vòng lặp: 5 triệu SELECT phụ, mất 27 phút và CPU DB lên 90%, ảnh hưởng traffic thật. Bản ba: một query JOIN mỗi lô 5.000 dòng theo cursor {{(created_at, id)}}, ghi CSV ngay, chạy trên replica, 1.000 lô. Kết quả: 6 phút 40, heap ổn định khoảng 300 MB, CPU replica 25%, DB chính không bị ảnh hưởng; test CI khẳng định số statement dưới 20 cho 50.000 dòng nên một dev thêm truy vấn trong vòng lặp đã bị chặn ngay ở pull request.
+
+### Trả lời mẫu khi phỏng vấn
+"Hai lỗi cùng một gốc là tải entity số lượng lớn. findAll giữ cả triệu entity trong persistence context kèm snapshot nên OOM; còn map DTO trong vòng lặp chạm quan hệ lazy nên mỗi dòng sinh thêm một SELECT, tức N+1. Với báo cáo tôi không dùng entity: tôi viết DTO projection chỉ chọn cột cần, JOIN sẵn tên khách để một lô chỉ tốn một query, đọc theo keyset chứ không OFFSET, ghi file ngay khi có lô và để mỗi lô một transaction ngắn. Transaction ngắn quan trọng vì trên PostgreSQL một transaction đọc 5 triệu dòng giữ snapshot lâu, chặn vacuum và gây bloat, còn trên replica thì gây lag. Cuối cùng tôi chặn tái diễn bằng test dùng Hibernate Statistics: khẳng định số statement không tỉ lệ với số dòng, nên nếu ai thêm truy vấn trong vòng lặp thì CI đỏ. Tôi cũng kiểm tra fetch size và đóng Stream để không rò connection."
+
+> Senior tip: câu hỏi thật sự ở đây không phải "dùng DTO hay entity" mà là **hằng số bộ nhớ**: một endpoint export phải chạy với heap không đổi dù bảng có 5 triệu hay 50 triệu dòng. Khi thiết kế, hãy viết ra ba con số ngay từ đầu — kích thước lô, số query mỗi lô, thời gian giữ transaction — rồi soi code theo đúng ba con số đó. Và đừng quên đặt export trên replica: một job báo cáo không nên tranh CPU với luồng thanh toán.`,
+  follow: [
+    'Nếu báo cáo cần dữ liệu nhất quán tại một thời điểm (không lệch giữa các lô), bạn cân nhắc những cách nào và đánh đổi ra sao?',
+    'Với 50 triệu dòng, bạn chọn ghi CSV trực tiếp, ghi ra object storage rồi trả link, hay chạy job nền — tiêu chí quyết định là gì?',
+    'Làm sao đo N+1 ở production mà không bật generate_statistics toàn cục và không làm chậm hệ thống?'
+  ],
+  tags: ['DTO projection', 'N+1', 'export', 'keyset pagination', 'Hibernate Statistics', 'datasource-proxy', 'fetch size', 'read replica']
+},
+{
+  id: 'jpa-079',
+  topic: 'jpa',
+  level: 'senior',
+  q: 'Bạn dùng {{@SequenceGenerator(allocationSize = 100)}} cho bảng giao dịch chạy trên 8 instance. Vì sao vẫn có lúc INSERT báo trùng khoá chính, và khi khôi phục DB hoặc thêm instance thì {{allocationSize}} với {{INCREMENT BY}} phải xử lý thế nào?',
+  a: `**Tóm tắt:** {{allocationSize}} là số id mà mỗi instance xin trước từ sequence database trong một lần gọi {{nextval}}. Hibernate 6 dùng optimizer {{pooled}} mặc định: mỗi lần chạm sequence nó coi giá trị trả về là **mốc chia một khối id** rồi tự chia trong bộ nhớ, chỉ khi dùng hết khối mới gọi DB lần nữa. Nếu {{allocationSize}} trong code khác với {{INCREMENT BY}} của sequence, hai instance cùng xin về các khối **chồng lấn** nhau nên cùng nhận một id, và INSERT cuối cùng ném {{DuplicateKeyException}}. Sau khi khôi phục DB, sequence bị đặt lại về 1 trong khi các instance vẫn đang giữ khối cũ, nên tiếp tục đụng độ. Cách chữa: coi {{allocationSize}} là **hợp đồng giữa code và DB**, giữ {{INCREMENT BY = allocationSize}} ở mọi môi trường, và cấp lại sequence sau mỗi lần restore.
+
+### 1. Sequence là gì, vì sao cần
+Hãy hình dung sequence như **máy in số thứ tự ở ngân hàng**: mỗi lần bấm, máy in ra số kế tiếp và tự nhớ đã in tới đâu. Trong database, sequence là một đối tượng chuyên sinh số nguyên tăng dần; gọi {{nextval}} một lần thì DB trả về số kế tiếp. JPA có {{GenerationType.SEQUENCE}} dùng đúng cơ chế này. Nó khác {{GenerationType.IDENTITY}} ở chỗ: IDENTITY khiến mỗi câu INSERT phải hỏi DB lấy id, còn sequence cho phép **xin trước một khối số** rồi tự chia cho các dòng trong bộ nhớ.
+
+### 2. allocationSize và cơ chế xin trước
+{{allocationSize = 100}} nghĩa là mỗi lần chạm sequence, Hibernate nhận một giá trị rồi tự chia thành 100 id dùng dần; chỉ khi dùng hết 100 id nó mới gọi {{nextval}} lần nữa. Đây là lý do batch insert nhanh: 100 câu INSERT chỉ tốn một lần gọi sequence. Optimizer quyết định giá trị sequence được hiểu là biên nào của khối:
+
+| Optimizer | Giá trị sequence là | Khi nào dùng |
+|---|---|---|
+| {{none}} | Mỗi lần một giá trị | Đơn giản, không cần batch |
+| {{pooled}} | Biên **trên** của khối | Mặc định Hibernate 6, giảm gọi DB |
+| {{pooled-lo}} | Biên **dưới** của khối | Tương thích hệ cũ, cũng giảm gọi DB |
+
+Cả {{pooled}} và {{pooled-lo}} đều yêu cầu một điều kiện cứng: **{{INCREMENT BY}} của sequence phải bằng {{allocationSize}}**.
+
+### 3. Vì sao lệch nhau thì trùng khoá
+Giả sử bạn quên đổi sequence nên nó vẫn {{INCREMENT BY 1}} (mặc định của nhiều DB), còn code để {{allocationSize = 100}}. Hibernate nhận giá trị 1 và tin rằng mình đang giữ một khối id dài 100. Nhưng lần {{nextval}} kế tiếp chỉ nhảy thêm 1 đơn vị, nghĩa là **vùng id mà hai lần cấp phát tin là của mình giao nhau**. Hai instance cùng lúc ghi vào vùng giao đó sẽ tạo ra hai entity cùng id, và transaction thứ hai chết vì khoá chính đã tồn tại.
+
+Chiều ngược lại cũng có vấn đề: sequence {{INCREMENT BY 100}} nhưng code chỉ {{allocationSize = 50}}. Lúc này không đụng id, nhưng mỗi lần xin chỉ dùng 50 trong 100 số, nửa số bị bỏ. Hệ quả là id nhảy cách rất xa, và với bảng nhiều triệu dòng, bạn tiến gần {{bigint}} hết nhanh hơn dự kiến.
+
+### 4. Cấu hình đúng
+~~~java
+@Entity
+public class Payment {
+    @Id
+    @GeneratedValue(strategy = GenerationType.SEQUENCE, generator = "pay_seq")
+    @SequenceGenerator(name = "pay_seq", sequenceName = "payment_seq",
+                       allocationSize = 100)      // code xin 100 id mỗi lần
+    private Long id;
+}
+~~~
+
+~~~sql
+-- INCREMENT BY phải khớp allocationSize
+CREATE SEQUENCE payment_seq INCREMENT BY 100 START WITH 100;
+~~~
+
+Với 8 instance, mỗi instance giữ một khối riêng, nên về nguyên tắc chúng **không cần phối hợp** với nhau: chỉ cần mọi instance dùng cùng {{allocationSize}} và cùng {{INCREMENT BY}}.
+
+### 5. Pitfall production
+- **Khôi phục DB bằng dump/restore**: sequence bị đặt lại về giá trị ban đầu, trong khi các instance đang chạy vẫn giữ khối cũ. Ngay sau restore, id mới có thể rơi vào vùng đã dùng. Phải {{setval}} tới {{max(id) + 1}} hoặc restart toàn bộ instance sau khi khôi phục.
+- **Deploy từng phần (rolling deploy)**: pod mới lên với {{allocationSize = 100}}, pod cũ vẫn chạy {{allocationSize = 50}}. Hai loại khối lệch nhau → trùng id. Đổi {{allocationSize}} phải đồng loạt, không được để hai phiên bản cùng sống với giá trị khác nhau.
+- **Sequence không replicate giá trị như dữ liệu**: trên PostgreSQL, bản standby sau failover có thể có giá trị sequence lùi về quá khứ nếu không dùng công cụ đồng bộ sequence. Sau failover phải kiểm tra lại.
+- **{{ALTER SEQUENCE ... RESTART}} khi app đang chạy**: các instance đang giữ khối cũ sẽ không biết, dẫn tới đụng độ ngay lập tức.
+- **Đọc lại id bằng {{merge}} của entity cũ**: với pooled, id đã cấp cho entity detached vẫn được coi là "đã dùng"; đừng tính toán id thủ công rồi {{persist}}.
+
+### Ví dụ đời thực
+Một hệ thống ví điện tử 8 pod, 40.000 giao dịch mỗi ngày. Sau một đợt deploy, 3 pod mới lên với {{allocationSize = 100}}, 5 pod cũ còn {{allocationSize = 50}}. Trong 10 phút có 37 giao dịch ném {{DuplicateKeyException}} trên khoá chính bảng {{payment}}; tỷ lệ lỗi khoảng 0,09%. Điều tra: log SQL cho thấy hai cụm id từ hai nhóm pod giao nhau; kiểm tra {{pg_class}} thì sequence vẫn {{INCREMENT BY 1}} vì migration cũ tạo sai, còn code lại để 100. Sửa: thống nhất {{allocationSize = 100}}, sửa sequence thành {{INCREMENT BY 100}}, {{setval}} tới giá trị lớn hơn mọi id đang tồn tại, restart toàn bộ pod. Sau đó thêm test khởi động kiểm tra {{INCREMENT BY}} khớp cấu hình, và đưa việc này vào checklist khôi phục. Không còn lỗi trùng trong 3 ngày theo dõi.
+
+### Trả lời mẫu khi phỏng vấn
+"allocationSize là số id mỗi instance xin trước từ sequence trong một lần nextval; Hibernate 6 mặc định dùng optimizer pooled, coi giá trị sequence là mốc chia khối rồi tự chia trong bộ nhớ. Điều kiện bắt buộc là INCREMENT BY của sequence phải bằng allocationSize. Nếu lệch, hai instance cùng tin mình giữ một vùng id và sinh ra cùng id, nên INSERT ném DuplicateKeyException. Tôi đã gặp đúng ca này khi deploy từng phần: pod mới để 100, pod cũ để 50, id giao nhau. Cách xử lý là coi allocationSize là hợp đồng giữa code và DB: giữ INCREMENT BY khớp nhau ở mọi môi trường, đổi allocationSize thì đổi đồng loạt, và sau khi khôi phục DB thì setval lại sequence hoặc restart instance vì các khối cũ vẫn còn hiệu lực. Tôi cũng thêm test khởi động kiểm tra cấu hình này, vì lỗi chỉ lộ ra dưới tải chứ không lúc start."
+
+> Senior tip: hãy coi sequence là **tài nguyên dùng chung có trạng thái** chứ không phải cấu hình vô hại. Ba câu hỏi tôi luôn kiểm tra trước khi merge một thay đổi allocationSize: sequence hiện tại INCREMENT BY bao nhiêu, có bao nhiêu phiên bản app đang chạy cùng lúc, và lần khôi phục gần nhất đã setval lại chưa. Một dòng cấu hình tưởng nhỏ có thể làm cả cụm 8 pod đua nhau ghi trùng khoá chính dưới tải.`,
+
+  follow: [
+    'Vì sao deploy từng phần (rolling) lại nguy hiểm khi đổi allocationSize, và bạn làm gì để đổi an toàn?',
+    'Khi khôi phục PostgreSQL bằng dump, bạn setval lại sequence như thế nào để không đụng id cũ?',
+    'Nếu một bảng dùng IDENTITY còn bảng kia dùng SEQUENCE, batch insert của hai bảng khác nhau ra sao?'
+  ],
+  tags: ['sequence', 'allocationSize', 'pooled', 'INCREMENT BY', 'DuplicateKeyException', 'Hibernate 6', 'batch insert', 'id generation']
+},
+{
+  id: 'jpa-080',
+  topic: 'jpa',
+  level: 'senior',
+  q: 'Job nền phải ghi 3 triệu dòng vào bảng giao dịch. Bạn định dùng entity + {{flush}}/{{clear}} như một job khác, nhưng có người đề xuất {{StatelessSession}}. StatelessSession khác gì, được gì, mất gì, và bạn chọn thế nào?',
+  a: `**Tóm tắt:** {{StatelessSession}} là phiên Hibernate **không có persistence context**: không identity map, không snapshot để dirty checking, không cascade, không callback vòng đời. Mỗi {{insert}}/{{update}} gửi SQL ngay, bộ nhớ gần như không phình, nên rất hợp job ghi khối lượng lớn. Cái giá là mất toàn bộ "tiện ích" của Hibernate và nó **không tự tham gia transaction của Spring** — bạn phải tự {{begin}}/{{commit}}. Nếu job cần validate, tính toán nghiệp vụ, quan hệ phức tạp hay audit từng entity thì StatefulSession (entity + flush/clear) hoặc JDBC phù hợp hơn.
+
+### 1. Vì sao cần một session "không trạng thái"
+Với entity thường, mỗi object được load/persist đều được ghi vào sổ điểm danh của persistence context kèm một bản snapshot giá trị trường. Sổ đó càng to thì dirty check mỗi lần flush càng lâu, và bộ nhớ tăng theo số dòng (xem câu về first-level cache phình). Với job chỉ **chép hoặc ghi thuần**, bạn không cần hai thứ đó: không cần biết object nào đã đổi, cũng không cần trả lại cùng một object khi gọi find hai lần.
+
+### 2. StatelessSession làm gì khi gọi các method
+| Method | Hành vi |
+|---|---|
+| {{insert(o)}} | Gửi INSERT ngay, không giữ object |
+| {{update(o)}} | Gửi UPDATE theo id, không so sánh trường |
+| {{delete(o)}} | Gửi DELETE ngay |
+| {{get(Class, id)}} | Một SELECT, trả object **detached** |
+| {{refresh(o)}} | Một SELECT nạp lại giá trị mới |
+| {{createQuery}} / {{createNativeQuery}} | Query bình thường, không tự flush |
+
+Điểm cần nhớ: không có dirty checking nghĩa là **bạn phải gọi {{update}} tường minh**; sửa field rồi mong nó tự ghi là sai.
+
+### 3. Bảng so sánh ba lựa chọn
+| Tiêu chí | StatefulSession (entity) | StatelessSession | JdbcTemplate |
+|---|---|---|---|
+| Identity map, snapshot | Có | Không | Không |
+| Dirty checking | Có | Không | Không |
+| Cascade, {{@PrePersist}} | Có | **Không** | Không |
+| Bộ nhớ khi ghi nhiều dòng | Phình nếu không clear | Gần như không | Rất thấp |
+| Tự quản transaction Spring | Có | **Không** | Có |
+| Khi nào dùng | Cần validate, quan hệ, audit | Job ghi/chép khối lượng lớn | Bảng phẳng, cần kiểm soát SQL |
+
+### 4. Cấu hình và code
+~~~java
+@Service
+@RequiredArgsConstructor
+public class LedgerImportService {
+    private final SessionFactory sessionFactory;   // Boot tự sinh từ EntityManagerFactory
+
+    public void importRows(List<LedgerRow> rows) {
+        StatelessSession s = sessionFactory.openStatelessSession();
+        org.hibernate.Transaction tx = s.beginTransaction();  // tự quản
+        try {
+            int n = 0;
+            for (LedgerRow r : rows) {
+                s.insert(r.toEntity());          // INSERT ngay, không giữ context
+                if (++n % 1000 == 0) {           // chia transaction nhỏ, nhả khoá sớm
+                    tx.commit();
+                    tx = s.beginTransaction();
+                }
+            }
+            tx.commit();
+        } catch (RuntimeException e) {
+            tx.rollback();
+            throw e;
+        } finally {
+            s.close();                           // luôn đóng, tránh rò kết nối
+        }
+    }
+}
+~~~
+
+Vì StatelessSession không được Spring quản lý, **đừng đặt {{@Transactional}} lên method này rồi mong nó có tác dụng**; transaction do bạn mở bằng {{beginTransaction}}.
+
+### 5. Pitfall production
+- **Quên {{update}}**: StatelessSession không dirty check, nên sửa field rồi không gọi {{update}} thì thay đổi biến mất, không có ngoại lệ báo.
+- **Cascade không chạy**: lưu entity cha không tự lưu con. Phải tự {{insert}} từng bản ghi con, hoặc dùng quan hệ đã {{mappedBy}} đúng.
+- **Callback không chạy**: {{@PrePersist}}, {{@PreUpdate}}, {{@CreatedDate}} của Spring Data đều **không** được gọi. Nếu cần audit, tự set trường.
+- **Transaction quá dài**: giữ một transaction cho cả 3 triệu dòng làm khoá và WAL phình. Chia nhỏ 1.000–5.000 dòng mỗi transaction.
+- **Đọc rồi ghi lại cùng StatelessSession**: mỗi {{get}} là một SELECT mới, không có cache; nếu cần đọc lại nhiều lần, cân nhắc StatefulSession hoặc tự giữ dữ liệu.
+- **Quên đóng session**: không try-with-resources thì rò connection, pool cạn dần.
+
+### Ví dụ đời thực
+Job nhập 3 triệu dòng sổ cái chạy trên pod heap 1 GB. Bản đầu dùng entity + {{flush}} mỗi 500 dòng nhưng **quên clear**: heap tăng đều, sau 40 phút {{OutOfMemoryError}}, heap dump cho thấy {{StatefulPersistenceContext}} giữ khoảng 2,8 triệu {{EntityEntry}}. Bản hai chuyển sang StatelessSession, chia transaction 2.000 dòng: heap ổn định quanh 220 MB, thời gian từ 52 phút xuống 9 phút vì không còn dirty-check cả tập entity mỗi lần flush. Nhưng một lần deploy sau, đối soát phát hiện 12.000 dòng thiếu: StatelessSession không chạy {{@PrePersist}} nên trường {{createdAt}} do callback set bị null, và {{insert}} không tự điền. Sửa: gán giá trị tường minh trong {{toEntity()}}, thêm test đối chiếu số dòng nguồn với số dòng đích. Ba đêm liên tiếp sau đó khớp 100%.
+
+### Trả lời mẫu khi phỏng vấn
+"StatelessSession là phiên Hibernate không có persistence context: không identity map, không snapshot, nên không có dirty checking, không cascade, không callback vòng đời. Mỗi insert hay update gửi SQL ngay, bộ nhớ gần như không phình, rất hợp job ghi vài triệu dòng. Cái giá là mất hết tiện ích của Hibernate và nó không tự tham gia transaction của Spring, nên tôi phải tự begin, commit, chia transaction nhỏ để nhả khoá, và luôn đóng session. Tôi chọn StatelessSession khi job chỉ chép hoặc ghi thuần, bảng phẳng, không cần quan hệ phức tạp. Nếu job cần validate nghiệp vụ, audit từng dòng hay tính toán trên entity thì tôi dùng StatefulSession với flush và clear theo lô, vì StatelessSession sẽ không chạy callback và không tự set các trường audit. Tôi cũng nhớ ba cái bẫy: quên update thì thay đổi biến mất, cascade không chạy, và phải tự set giá trị cho các trường mà @PrePersist thường điền."
+
+> Senior tip: StatelessSession không phải là "Hibernate nhanh hơn" mà là **một công cụ khác hẳn**: nó đổi toàn bộ tính năng entity lấy tốc độ và bộ nhớ. Trước khi chọn, hãy viết ra ba câu hỏi: job có cần dirty checking không, có cần cascade hay callback không, và có cần đọc lại cùng một object nhiều lần không. Nếu cả ba đều "không" thì StatelessSession hoặc JdbcTemplate là lựa chọn đúng; nếu có một "có" thì entity + flush/clear vẫn an toàn hơn.`,
+
+  follow: [
+    'Nếu job cần điền trường audit (createdAt, createdBy) mà StatelessSession không chạy @PrePersist, bạn làm thế nào cho chắc?',
+    'StatelessSession có tham gia second-level cache không, và điều đó ảnh hưởng gì tới job ghi hàng loạt?',
+    'Khi nào JdbcTemplate batch còn tốt hơn StatelessSession, xét cả tốc độ lẫn độ phức tạp code?'
+  ],
+  tags: ['StatelessSession', 'batch insert', 'persistence context', 'dirty checking', 'cascade', 'callback', 'job nền', 'Hibernate 6']
+},
+{
+  id: 'jpa-081',
+  topic: 'jpa',
+  level: 'lead',
+  q: '(Lead) Hai chức năng cùng trừ tồn kho của một SKU hot dùng {{@Version}}. Khi 500 request mỗi phút cùng ghi, bạn thấy hàng nghìn {{OptimisticLockException}} mỗi phút và retry làm CPU tăng vọt. Vì sao optimistic lock lại khuếch đại tải, và bạn thiết kế lại thế nào?',
+  a: `**Tóm tắt:** Optimistic lock **phát hiện** mất mát cập nhật chứ không ngăn: nhiều transaction cùng đọc một {{@Version}}, cùng tính rồi cùng ghi; chỉ một câu {{UPDATE ... WHERE version = ?}} thành công, số còn lại thấy 0 dòng bị thay đổi và ném {{OptimisticLockException}}. Nếu retry ngay trong vòng lặp hẹp, mỗi request thất bại lại đọc-ghi lại, tạo **retry storm**: càng nhiều người thử, càng nhiều người thua, CPU và số câu SQL tăng theo cấp số nhân. Giải pháp gồm ba tầng: giữ transaction thật ngắn, retry có giới hạn kèm backoff và jitter, và nếu tranh chấp quá cao thì đổi thiết kế — tách counter thành nhiều dòng, ghi tuần tự qua hàng đợi, hoặc dùng pessimistic lock có timeout cho đúng một dòng nóng.
+
+### 1. Optimistic lock hoạt động thế nào
+Với entity có {{@Version}}, Hibernate thêm điều kiện version vào câu UPDATE:
+
+~~~sql
+UPDATE stock SET available = ?, version = ? WHERE id = ? AND version = ?;
+~~~
+
+Nếu hai transaction cùng đọc {{version = 10}}, cùng đặt {{available}} mới, chỉ một câu UPDATE khớp {{version = 10}}. Câu còn lại khớp 0 dòng, Hibernate ném {{OptimisticLockException}} để báo "dữ liệu bạn đọc đã bị người khác sửa". Đây là **phát hiện**, không phải **phòng ngừa**: nó không làm transaction kia chậm đi, chỉ làm transaction này thất bại.
+
+### 2. Vì sao retry làm tải tăng theo cấp số nhân
+Hãy hình dung 500 request mỗi phút cùng vào một dòng tồn kho:
+
+~~~text
+100 request cùng đọc version = 10
+  -> 1 request thắng, 99 request ném OptimisticLockException
+  -> 99 request lập tức đọc lại version = 11, cùng ghi
+  -> 1 thắng, 98 ném, rồi lại thử
+Mỗi vòng retry tạo thêm 1 lần đọc + 1 lần ghi hỏng cho mỗi request còn lại.
+~~~
+
+Với transaction ngắn, retry còn kịp; nhưng nếu mỗi lần thử lại mất 20 ms và có 5 tầng retry, một request có thể kéo dài hàng trăm mili giây, giữ connection và nhân số câu SQL lên nhiều lần. Đó là lý do "càng retry càng chậm".
+
+### 3. Ba tầng giảm tranh chấp
+| Tầng | Cách làm | Đánh đổi |
+|---|---|---|
+| Ngắn | Transaction chỉ chứa đọc-ghi dòng đó, đẩy gọi mạng sang sau commit | Khó hơn nếu nghiệp vụ cần nhiều bước |
+| Hãm | Retry tối đa 2–3 lần, backoff luỹ tiến + jitter ngẫu nhiên | Vẫn có thể thất bại, cần báo lỗi rõ |
+| Đổi thiết kế | Tách counter nhiều dòng, queue ghi tuần tự, hoặc pessimistic có timeout | Thêm độ phức tạp, cần cân nhắc nhất quán |
+
+Ví dụ tách counter: thay vì một dòng {{stock}} cho SKU hot, chia thành 10 dòng {{stock_shard}} mỗi dòng giữ 1/10 tồn. Request băm theo {{sku + userId}} để dồn về một shard, giảm số người tranh cùng dòng từ 500 xuống 50. Khi cộng tồn, cộng 10 shard lại.
+
+### 4. Code retry có giới hạn
+~~~java
+@Transactional(propagation = Propagation.REQUIRES_NEW)
+public void withdraw(Long accountId, BigDecimal amount) {
+    int attempt = 0;
+    while (true) {
+        try {
+            Account a = repo.findById(accountId).orElseThrow();
+            a.setBalance(a.getBalance().subtract(amount));
+            repo.saveAndFlush(a);            // ném OptimisticLockingFailureException nếu version lệch
+            return;
+        } catch (OptimisticLockingFailureException e) {
+            if (++attempt >= 3) throw e;     // hết ngân sách retry
+            sleepBackoff(attempt);           // 20ms, 40ms, cộng jitter ngẫu nhiên
+        }
+    }
+}
+~~~
+
+Ba chi tiết quan trọng: {{saveAndFlush}} để lỗi lộ ra ngay trong transaction (không đợi commit), {{REQUIRES_NEW}} để mỗi lần thử có transaction sạch, và {{jitter}} để các request không thử lại cùng một nhịp.
+
+### 5. Pitfall production
+- **Retry trong cùng transaction đã hỏng**: sau {{OptimisticLockException}}, transaction bị đánh dấu rollback-only; phải mở transaction mới cho lần thử sau.
+- **Không đặt trần thời gian**: retry vô hạn biến lỗi tạm thời thành request treo; nên có tổng thời gian tối đa.
+- **Không đo contention**: nếu tỉ lệ thất bại trên 10–20%, optimistic lock là lựa chọn sai; đừng cố retry.
+- **Idempotency**: retry một thao tác trừ tiền phải đảm bảo không trừ hai lần nếu lần đầu đã commit nhưng client nhận lỗi mạng.
+- **Đọc lại version trước khi retry**: nếu giữ entity cũ đã detached, lần thử sau vẫn dùng version cũ và chắc chắn thất bại.
+
+### Ví dụ đời thực
+Một dịch vụ ví có 500 request mỗi phút cùng trừ một dòng {{wallet}} của tài khoản hot; {{@Version}} với retry 5 lần không backoff. Kết quả: 12.000 {{OptimisticLockException}} mỗi phút, CPU service tăng từ 40% lên 85%, p99 từ 90 ms lên 2,4 giây. Điều tra cho thấy 94% request phải thử ít nhất 3 lần và mỗi lần giữ connection. Sửa: giới hạn retry 3 lần với backoff 20–60 ms cộng jitter, tách transaction thật ngắn (chỉ đọc-ghi-về), và chia {{wallet}} thành 5 shard băm theo {{userId}}. Kết quả: tỉ lệ thất bại còn 1,2%, CPU về 52%, p99 về 140 ms; số câu UPDATE giảm 68% vì ít lần thử lại. Với tài khoản siêu hot còn dùng thêm hàng đợi ghi tuần tự.
+
+### Trả lời mẫu khi phỏng vấn
+"Optimistic lock phát hiện mất cập nhật chứ không ngăn: nhiều transaction cùng đọc một version rồi cùng ghi, chỉ một câu UPDATE có điều kiện version thành công, số còn lại ném OptimisticLockException. Nếu retry ngay trong vòng lặp hẹp, mỗi request thất bại lại đọc-ghi lại, nên tải tăng theo cấp số nhân: 500 request cùng tranh một dòng có thể tạo hàng nghìn lần thử. Tôi xử lý ba tầng: giữ transaction thật ngắn và đẩy lời gọi mạng ra sau commit; retry có giới hạn 2–3 lần với backoff luỹ tiến và jitter để các request không thử cùng nhịp; và nếu tỉ lệ tranh chấp vẫn cao thì đổi thiết kế, ví dụ tách một dòng tồn kho nóng thành nhiều shard băm theo userId, hoặc dùng pessimistic lock có timeout cho đúng dòng đó. Tôi cũng luôn đo tỉ lệ OptimisticLockException trước khi kết luận: trên 10–20% thì optimistic lock là lựa chọn sai, retry chỉ làm chậm thêm. Cuối cùng, thao tác trừ tiền phải idempotent để retry không trừ hai lần."
+
+> Senior tip: optimistic lock hợp với tranh chấp **thấp và vừa**; nó là công cụ phát hiện, không phải công cụ điều tiết. Khi một dòng trở nên "nóng", đừng cố tăng số lần retry — hãy giảm số người tranh cùng dòng đó, bằng shard, hàng đợi, hoặc pessimistic có timeout. Và luôn đo tỉ lệ thất bại: đó là con số duy nhất cho biết optimistic lock còn phù hợp hay đã phải đổi thiết kế.`,
+
+  follow: [
+    'Bạn đo tỉ lệ OptimisticLockException ở production bằng cách nào, và ngưỡng nào thì bạn quyết định đổi thiết kế?',
+    'Với một dòng tồn kho siêu hot, bạn chọn pessimistic lock có timeout hay hàng đợi ghi tuần tự, tiêu chí quyết định là gì?',
+    'Retry một thao tác trừ tiền cần idempotent thế nào để không trừ hai lần khi lần đầu đã commit nhưng client nhận lỗi?'
+  ],
+  tags: ['optimistic lock', '@Version', 'OptimisticLockException', 'retry', 'contention', 'sharding', 'idempotency', 'pessimistic lock']
+},
+{
+  id: 'jpa-082',
+  topic: 'jpa',
+  level: 'senior',
+  q: 'Bạn cần đọc 8 triệu dòng giao dịch để tính tổng theo nhóm, không đủ heap để load một lần. Bạn dùng {{Stream<T>}} của Spring Data. Nó khác {{findAll()}} thế nào, cần cấu hình gì để PostgreSQL thật sự stream, và những cái bẫy nào?',
+  a: `**Tóm tắt:** {{Stream<T>}} trả về một **cursor** ({{ScrollableResults}}) đọc từng phần result set thay vì dựng toàn bộ {{List}} và nạp hết vào persistence context. Nhưng stream chỉ thực sự "nhỏ giọt" khi driver hỗ trợ cursor phía server: PostgreSQL cần một transaction đang mở ({{autocommit = false}}) và {{fetchSize}} dương; MySQL cần {{useCursorFetch = true}} hoặc {{fetchSize = Integer.MIN_VALUE}}; nếu không, driver tải hết vào RAM và bạn vẫn {{OutOfMemoryError}}. Stream giữ connection suốt thời gian đọc nên phải đóng bằng try-with-resources, không mở transaction khác trên cùng connection, và không gọi {{flush}}.
+
+### 1. findAll() và Stream khác nhau ở đâu
+| Tiêu chí | {{findAll()}} | {{Stream<T>}} |
+|---|---|---|
+| Kết quả | Một {{List}} nạp hết vào RAM | Cursor, đọc từng lô theo fetch size |
+| Persistence context | Giữ mọi entity managed | Entity vẫn managed khi đi qua stream, nhưng bạn không giữ List |
+| Bộ nhớ | Tăng theo số dòng | Gần như hằng số nếu fetch size hợp lý |
+| Connection | Dùng rồi trả | Giữ suốt thời gian đọc |
+| Rủi ro | OOM với bảng lớn | Rò connection nếu quên đóng |
+
+Điểm dễ nhầm: stream **không** bỏ qua persistence context. Mỗi entity đi qua vẫn được theo dõi, nên nếu bạn vừa đọc vừa sửa trong lúc stream, context vẫn phình; muốn nhẹ thì chỉ đọc và tính tổng.
+
+### 2. Cơ chế cursor: driver và database
+PostgreSQL không gửi hết 8 triệu dòng trong một gói; nó mở một cursor phía server và gửi từng lô theo {{fetchSize}}. Nhưng cursor phía server chỉ hoạt động khi transaction đang mở, tức {{autocommit}} phải tắt — trong Spring, một method {{@Transactional}} cung cấp đúng điều đó. Nếu không có transaction, PostgreSQL buộc phải tải hết và giữ trong RAM.
+
+| Database | Điều kiện để stream thật |
+|---|---|
+| PostgreSQL | {{autocommit = false}} + {{fetchSize}} > 0 |
+| MySQL | {{useCursorFetch = true}}, hoặc {{fetchSize = Integer.MIN_VALUE}} để stream từng dòng |
+| H2 / nhiều DB nhúng | Thường tải hết vào RAM, không có cursor thật |
+
+### 3. Cấu hình
+~~~yaml
+spring.jpa.properties.hibernate.jdbc.fetch_size: 1000   # mặc định toàn cục
+# hoặc đặt riêng từng query bằng hint org.hibernate.fetchSize
+~~~
+
+Với PostgreSQL, luôn đặt method đọc trong {{@Transactional(readOnly = true)}} để có một transaction mở suốt lúc stream.
+
+### 4. Code
+~~~java
+@Transactional(readOnly = true)
+public void sumByGroup(Instant from) {
+    Map<String, BigDecimal> sums = new HashMap<>();
+    try (Stream<Tx> stream = repo.streamAfter(from)) {   // try-with-resources đóng cursor
+        stream.forEach(tx -> sums.merge(tx.getGroup(), tx.getAmount(), BigDecimal::add));
+    } // đóng stream, trả connection về pool
+}
+
+public interface TxRepository extends JpaRepository<Tx, Long> {
+    @QueryHints(@QueryHint(name = "org.hibernate.fetchSize", value = "1000"))
+    @Query("select t from Tx t where t.createdAt > :from order by t.id")
+    Stream<Tx> streamAfter(@Param("from") Instant from);
+}
+~~~
+
+### 5. Pitfall production
+- **Quên đóng stream**: không try-with-resources thì cursor và connection bị giữ, pool cạn dần cho tới khi request khác ném {{connection timeout}}.
+- **Mở transaction khác trong lúc stream**: connection đang bị stream giữ, không thể dùng cho việc khác; lời gọi DB lồng bên trong sẽ treo hoặc lỗi.
+- **{{fetchSize}} mặc định**: nhiều driver tải hết nếu không đặt; PostgreSQL cần giá trị dương, MySQL cần cấu hình riêng.
+- **Không có transaction**: trên PostgreSQL, thiếu transaction làm mất cursor, stream tải hết vào RAM.
+- **Vừa stream vừa sửa**: entity đi qua vẫn managed, dirty check phình; chỉ nên đọc.
+- **Đọc lại toàn bộ stream hai lần**: stream dùng một lần; muốn hai lượt thì mở hai cursor.
+
+### Ví dụ đời thực
+Một job tính tổng giao dịch theo nhóm chạy trên pod heap 1 GB, 8 triệu dòng. Bản đầu dùng {{findAll()}}: OOM ở khoảng 1,4 triệu dòng. Bản hai dùng {{Stream}} nhưng **quên {{@Transactional}}**, nên trên PostgreSQL driver tải hết result set vào RAM; heap vẫn tăng và OOM sau 20 phút. Bản ba thêm {{@Transactional(readOnly = true)}}, {{fetch_size = 1000}}, và đóng stream bằng try-with-resources: heap ổn định quanh 260 MB, chạy 6 phút 20, connection giữ đúng một suốt thời gian đọc. Một lần khác, một dev mở thêm lời gọi DB trong vòng {{forEach}}: job treo 30 giây rồi ném {{connection timeout}} vì connection đang bị stream giữ. Sửa: gom mọi dữ liệu cần tra thêm trước khi mở stream, hoặc dùng cursor thứ hai. Sau đó job chạy lại 5 đêm liên tiếp không sự cố.
+
+### Trả lời mẫu khi phỏng vấn
+"findAll nạp cả List vào RAM và giữ mọi entity trong persistence context, nên OOM với bảng lớn. Stream trả về một cursor đọc từng lô theo fetch size, bộ nhớ gần như hằng số. Nhưng stream chỉ thật sự nhỏ giọt khi driver hỗ trợ cursor phía server: PostgreSQL cần một transaction đang mở và fetch size dương, còn MySQL cần useCursorFetch hoặc fetchSize = Integer.MIN_VALUE; nếu không, driver vẫn tải hết vào RAM. Vì stream giữ connection suốt thời gian đọc, tôi luôn bọc try-with-resources, đặt @Transactional(readOnly = true), và không mở lời gọi DB khác trên cùng connection. Tôi cũng chỉ đọc chứ không sửa trong lúc stream, vì entity vẫn managed và context sẽ phình. Giữa Stream, keyset pagination và StatelessSession, tôi chọn Stream khi cần đọc tuần tự một lần, keyset khi cần phân trang cho người dùng, và StatelessSession khi cần ghi lại dữ liệu. Cuối cùng tôi kiểm tra fetch size và cấu hình driver của đúng DB production, vì 'có Stream' không đồng nghĩa với 'đang stream thật'."
+
+> Senior tip: đừng hỏi "Stream có nhanh hơn findAll không" mà hỏi "driver này có cursor thật không". Một dòng cấu hình fetch_size quyết định giữa bộ nhớ hằng số và OOM, và nó khác nhau ở từng database. Khi review một đoạn dùng Stream, tôi luôn tìm ba thứ: try-with-resources, @Transactional(readOnly = true), và bằng chứng fetch size đã được đặt — thiếu một trong ba thì gần như chắc chắn đang tải hết vào RAM.`,
+
+  follow: [
+    'Vì sao PostgreSQL cần autocommit = false mới có cursor, và điều đó ảnh hưởng gì tới thời gian giữ transaction?',
+    'Nếu vừa stream vừa cần tra cứu dữ liệu bảng khác, bạn xử lý thế nào để không treo và không rò connection?',
+    'Giữa Stream, keyset pagination và StatelessSession, bạn chọn thế nào cho một job đọc 50 triệu dòng?'
+  ],
+  tags: ['Stream', 'ScrollableResults', 'cursor', 'fetch size', 'PostgreSQL', 'MySQL', 'OutOfMemoryError', 'readOnly']
+},
 );
