@@ -12219,5 +12219,379 @@ Matching engine crash lúc 10:30; snapshot 10:25 + replay 5 phút event → khô
 
 > Senior tip: Test replay định kỳ; nếu replay > RTO thì tăng snapshot frequency.`
 }
+,
+{
+  id: 'concurrency-085',
+  topic: 'concurrency',
+  level: 'senior',
+  q: 'Một {{ThreadPoolExecutor}} dùng chung cho cả việc tính toán nặng (CPU-bound) và việc gọi API ngoài (I/O-bound) thường làm cả hai chậm đi. Vì sao lại như vậy, và bạn tách/định cỡ từng pool thế nào cho đúng?',
+  a: `**Tóm tắt:** Worker trong thread pool là tài nguyên cố định dùng chung. Khi một việc CPU-bound giữ worker hàng trăm mili-giây, việc I/O-bound (chỉ chờ mạng, gần như không tốn CPU) phải xếp hàng phía sau dù CPU còn trống — gọi là head-of-line blocking. Cách đúng là tách pool theo loại việc (bulkhead), mỗi pool có queue hữu hạn, tên thread riêng và kích thước chọn theo đo lường chứ không theo cảm tính.
+
+### Các thuật ngữ, giải thích từ đầu
+- {{Thread pool}} (bể thread): một tập worker thread được tạo sẵn; task mới được ném vào một {{queue}} (hàng đợi) và worker nào rảnh thì lấy ra chạy. Ví dụ đời thường: quầy thu ngân cố định trong siêu thị, khách xếp hàng chờ.
+- {{CPU-bound}} (nặng tính toán): task tiêu gần hết thời gian trên CPU, ví dụ nén ảnh, render PDF, tính báo cáo, băm mật khẩu. Thời gian chạy tỉ lệ với số phép tính.
+- {{I/O-bound}} (nặng chờ): task gần như chỉ chờ bên ngoài trả lời — gọi HTTP sang đối tác, truy vấn DB, đọc file, gửi Kafka. Trong lúc chờ, thread bị block nhưng CPU không làm gì cho task đó.
+- {{Bulkhead}} (vách ngăn, mượn thuật ngữ tàu thủy): chia tài nguyên thành ngăn riêng để một ngăn bị ngập không làm chìm cả tàu. Trong code là mỗi loại việc một pool riêng.
+
+### Vì sao pool chung lại tệ: cơ chế từng bước
+1. Pool có đúng {{N}} worker, không tự co giãn theo loại việc. Một worker chỉ chạy được một task tại một thời điểm.
+2. Task CPU-bound chạy 800 ms thì chiếm trọn worker 800 ms. Task I/O-bound chỉ cần 80 ms nhưng nếu mọi worker đang bận CPU thì nó nằm im trong queue.
+3. Kết quả: CPU utilization có thể chỉ 30% (vì phần lớn thời gian worker chờ mạng) trong khi p99 latency tăng vọt. Nhìn CPU tưởng "còn thừa", nhưng hệ thống đã nghẽn ở chỗ khác.
+4. Ngược lại, nếu I/O task chiếm số đông, task CPU quan trọng nằm sau hàng trăm task chờ mạng — độ trễ của nó bị cộng dồn dù nó chỉ cần vài chục mili-giây.
+
+~~~text
+Pool chung 8 worker, queue 1000:
+worker: [CPU:render#1][CPU:render#2][CPU:render#3] ... đều bận 800ms
+queue : [IO:gọi API A][IO:gọi API B][IO:gọi API C] ... chờ CPU xong mới tới lượt
+         -> CPU chỉ ~35%, nhưng API 80ms phải chờ gần 800ms
+~~~
+
+Vì sao thiết kế "pool + queue" sinh ra vấn đề này: pool tối ưu cho thông lượng chung (throughput) chứ không phân biệt task chờ hay task tính. Mọi task đều xếp cùng một hàng, nên thời gian chờ của task nhẹ bị quyết định bởi task nặng nhất phía trước.
+
+### Định cỡ từng pool: công thức và trần thật
+Với CPU-bound, số thread hữu ích gần bằng số core: nhiều hơn chỉ gây context switch (CPU phải lưu/khôi phục trạng thái thread liên tục) mà không tăng tốc. Thường dùng {{cores}} hoặc {{cores + 1}}.
+
+Với I/O-bound, dùng công thức tham khảo của Brian Goetz: {{N = cores × (1 + W / C)}}, trong đó {{W}} là thời gian chờ trung bình, {{C}} là thời gian tính toán thật. Ví dụ 8 core, một lời gọi API 150 ms trong đó chỉ 10 ms là xử lý: {{8 × (1 + 15) = 128}} thread. Nhưng đây chỉ là điểm khởi đầu, vì **trần thật** là tài nguyên phía sau: pool connection DB 40, rate limit của đối tác 50 request/giây, hay chính băng thông mạng. 128 thread mà HikariCP chỉ có 20 connection thì 108 thread chỉ đứng chờ connection — latency tăng, không có ích gì.
+
+### Code: hai pool riêng, queue hữu hạn, tên thread rõ ràng
+~~~java
+int cores = Runtime.getRuntime().availableProcessors();
+// ThreadFactory đặt tên (helper named() viết riêng): đọc thread dump mới biết pool nào đang nghẽn
+ThreadFactory cpuFactory = named("report-cpu");
+ThreadFactory ioFactory  = named("partner-http");
+
+// CPU-bound: ít thread, queue ngắn, hàng đợi dài chỉ làm latency tăng chứ không tăng throughput
+ThreadPoolExecutor cpuPool = new ThreadPoolExecutor(
+    cores, cores, 0L, TimeUnit.MILLISECONDS,
+    new ArrayBlockingQueue<>(200),
+    cpuFactory,
+    new ThreadPoolExecutor.CallerRunsPolicy());   // đầy thì caller tự chạy -> tự giảm tốc
+
+// I/O-bound: nhiều thread hơn core vì phần lớn thời gian chúng chờ mạng
+ThreadPoolExecutor ioPool = new ThreadPoolExecutor(
+    32, 64, 60L, TimeUnit.SECONDS,
+    new ArrayBlockingQueue<>(1000),
+    ioFactory,
+    new ThreadPoolExecutor.AbortPolicy());       // đầy thì ném lỗi -> trả 503, không nuốt task
+~~~
+Hai pool không chia sẻ worker, nên một đợt render PDF không thể làm nghẽn các lời gọi API. Nhớ đặt metric cho cả hai ({{active}}, {{queued}}, {{rejected}}) và alert khi queue gần đầy.
+
+### Đo để chọn kích thước (không đoán)
+| Chỉ số | Ý nghĩa | Hành động |
+|---|---|---|
+| {{queue wait time}} | thời gian từ lúc submit tới lúc worker bắt đầu chạy | tăng đều + CPU thấp → thiếu thread hoặc downstream chậm |
+| {{active / size}} | mức sử dụng worker | gần 100% liên tục → pool đã bão hòa |
+| throughput theo thread | tăng thread có tăng số task/giây? | không tăng → đã tới trần CPU hoặc tài nguyên sau |
+| rejected count | số task bị từ chối | tăng → cần backpressure hoặc mở rộng có kiểm soát |
+
+### Pitfall production
+- Queue **không giới hạn** ({{Executors.newFixedThreadPool}} dùng {{LinkedBlockingQueue}} mặc định): khi downstream chậm, task tích trong heap tới khi OOM mà không có lỗi nào báo trước.
+- Quên rằng **pool connection DB nhỏ hơn pool thread**: thread chỉ chờ connection, p99 tăng mà không rõ nguyên nhân.
+- Đặt {{@Async}} của Spring mà không khai báo {{ThreadPoolTaskExecutor}} riêng: nhiều cấu hình rơi về executor mặc định, có thể dùng chung hoặc tạo thread không giới hạn tùy phiên bản.
+- Platform thread tốn ~1 MB stack ảo + chi phí context switch; 500 thread "cho chắc" thường làm mọi thứ chậm hơn.
+
+### Ví dụ đời thực
+Service xuất báo cáo: mỗi báo cáo nặng 800 ms CPU, và trong lúc dựng báo cáo còn gọi API đối tác lấy tỷ giá (150 ms). Ban đầu cả hai dùng một pool 20 thread. Khi có 30 yêu cầu xuất báo cáo cùng lúc, p99 của API tỷ giá nhảy từ 160 ms lên 4,2 s vì phải xếp sau các task render; đối tác bắt đầu trả 429 do timeout phía họ. Tách thành {{cpuPool = 8}} và {{ioPool = 32}} với queue hữu hạn: p99 API tỷ giá về 210 ms, thời gian xuất báo cáo trung bình không đổi (CPU vẫn là trần), còn số 429 về 0. Bài học: tách pool không làm CPU nhanh hơn, nó chỉ **cách ly** để việc nhẹ không bị việc nặng chặn.
+
+### Trả lời mẫu khi phỏng vấn
+"Một thread pool có số worker cố định, và worker chỉ chạy được một task tại một thời điểm. Nếu tôi trộn việc CPU-bound với I/O-bound, task tính toán 800 mili-giây sẽ giữ worker, còn task gọi API dù chỉ chờ mạng cũng phải xếp hàng phía sau. Lúc đó CPU nhìn có vẻ thấp nhưng latency đã tăng vọt — head-of-line blocking. Cách tôi làm là tách pool theo loại việc, kiểu bulkhead: pool CPU bằng số core, pool I/O lớn hơn nhiều, mỗi pool có queue hữu hạn, thread có tên riêng và metric riêng. Kích thước tôi chọn bằng đo: theo dõi thời gian chờ trong queue và tỷ lệ active trên size, tăng thread chỉ khi throughput còn tăng. Quan trọng nhất là trần thật phía sau: pool connection DB hay rate limit của đối tác. Tôi cũng không bao giờ để queue không giới hạn, vì khi downstream chậm nó chỉ tích task trong heap rồi OOM thay vì báo lỗi sớm."
+
+> Senior tip: Đừng tối ưu bằng cách tăng thread. Trước khi tăng, hãy xem queue wait time và saturation của downstream; nếu queue wait tăng mà CPU dưới 50%, vấn đề gần như luôn nằm ở phía sau (DB, HTTP, lock), không phải ở số thread.`
+  ,
+  follow: ['Làm sao chứng minh với sếp rằng cần tách pool thay vì chỉ tăng thread?', 'Khi nào nên gộp nhiều pool nhỏ thành một pool lớn?', 'Virtual thread có làm bulkhead này không cần thiết không?'],
+  tags: ['thread pool', 'bulkhead', 'CPU-bound', 'I/O-bound', 'Little law']
+}
+,
+{
+  id: 'concurrency-086',
+  topic: 'concurrency',
+  level: 'senior',
+  q: 'Bạn chọn {{BlockingQueue}} nào cho một pipeline producer–consumer: {{ArrayBlockingQueue}}, {{LinkedBlockingQueue}}, {{SynchronousQueue}}, {{PriorityBlockingQueue}} hay {{DelayQueue}}? Và làm sao tạo backpressure đúng cách mà không chặn vô hạn cũng không âm thầm mất dữ liệu?',
+  a: `**Tóm tắt:** Mỗi loại {{BlockingQueue}} trả lời một câu hỏi khác nhau: có giới hạn hay không, một hay hai lock, có lưu trữ hay handoff trực tiếp, có sắp xếp theo độ ưu tiên/thời gian không. Với pipeline cần an toàn, chọn queue **có giới hạn**, biến việc "đầy" thành tín hiệu rõ ràng (chặn producer, trả 429, hoặc ghi xuống log bền vững), và luôn đo {{remainingCapacity}} để biết mình đang gần vỡ.
+
+### Thuật ngữ trước đã
+- {{Producer–consumer}} (người sản xuất – người tiêu thụ): một bên đẩy dữ liệu vào hàng đợi, bên kia lấy ra xử lý, hai bên không gọi trực tiếp nhau. Giống băng chuyền trong nhà máy: người xếp hàng và người đóng gói chạy độc lập.
+- {{Backpressure}} (áp lực ngược): khi consumer chậm, hệ thống phải **báo ngược lên producer** để giảm tốc, thay vì nhận thêm rồi nổ. Ví dụ đời thường: quán đông thì nhân viên nói "hết chỗ, chờ 20 phút" thay vì nhận hết khách vào sân.
+- {{Bounded queue}} (hàng đợi có giới hạn): có sức chứa tối đa; khi đầy, thao tác thêm phải chờ hoặc bị từ chối. Đây là công cụ chính để tạo backpressure.
+
+### BlockingQueue hoạt động thế nào
+Mỗi queue giữ một tập phần tử và hai nhóm thao tác: {{put/take}} **chặn** (block) khi đầy/rỗng, còn {{offer/poll}} **không chặn** (trả {{false}}/{{null}} ngay), và bản có timeout là ở giữa. Bên trong, phần lớn queue dùng lock + điều kiện ({{Condition}}) để đánh thức đúng bên ({{ArrayBlockingQueue}}, {{LinkedBlockingQueue}}), còn {{SynchronousQueue}} và {{LinkedTransferQueue}} dùng thuật toán không khoá (CAS): producer chờ khi đầy, consumer chờ khi rỗng. Vì thế "chọn queue" thực chất là chọn **cách nó phản ứng khi đầy** và **cách nó giữ phần tử**.
+
+### Bảng chọn queue theo mục đích
+| Queue | Giới hạn? | Đặc điểm bên trong | Dùng khi |
+|---|---|---|---|
+| {{ArrayBlockingQueue}} | Có, cố định | Mảng vòng, **một lock** cho cả put/take, có thể bật fairness | Mặc định an toàn cho pipeline cần backpressure; bộ nhớ biết trước |
+| {{LinkedBlockingQueue}} | Có nếu truyền capacity, mặc định gần như vô hạn | Node liên kết, **hai lock** (put/take) + biến đếm atomic → ít tranh chấp hơn | Cần thông lượng cao hơn, nhưng **bắt buộc truyền capacity** |
+| {{SynchronousQueue}} | Dung lượng 0 | Không lưu trữ, handoff trực tiếp producer→consumer | Muốn đẩy việc sang thread khác ngay, không đệm (dùng trong cached thread pool) |
+| {{PriorityBlockingQueue}} | Không (chỉ giới hạn bởi bộ nhớ) | Heap nhị phân, {{take}} lấy phần tử nhỏ nhất | Task có độ ưu tiên; **không tạo được backpressure** nên phải tự đếm |
+| {{DelayQueue}} | Không | Phần tử chỉ "sẵn sàng" sau thời gian delay | Retry có hẹn giờ, timeout session, cache entry hết hạn |
+| {{LinkedTransferQueue}} | Không | Có {{transfer()}} chờ consumer nhận rồi mới trả về | Cần bảo đảm "đã bàn giao", ít dùng trong ứng dụng thường |
+
+Riêng {{PriorityBlockingQueue}} và {{DelayQueue}} không chặn producer khi "đầy" vì chúng không có khái niệm đầy — đây là bẫy lớn nhất khi dùng cho pipeline chịu tải.
+
+### Ba kiểu backpressure và khi nào dùng
+1. **Chặn producer** — {{queue.put(item)}}. Producer bị block tới khi có chỗ. Phù hợp khi producer là thread nền không phục vụ request trực tiếp; nếu producer là HTTP request thread thì bạn đang giữ thread của client, dễ làm cạn pool Tomcat.
+2. **Chờ có giới hạn rồi quyết định** — {{queue.offer(item, 200, MILLISECONDS)}}; hết thời gian thì trả 429/503 hoặc ghi sang nguồn bền vững hơn (Kafka, DB outbox). Đây là cách tôi thích cho API public: người gọi biết mình bị giảm tốc.
+3. **Gộp lô** — consumer dùng {{drainTo(list, max)}} để lấy nhiều phần tử trong một lần giữ lock, giảm số lần lock/unlock. Đây là tối ưu thông lượng, **không** phải backpressure; vẫn cần queue có giới hạn.
+
+~~~java
+// Producer: đẩy vào queue có giới hạn, biến "đầy" thành tín hiệu rõ ràng thay vì treo vô hạn
+BlockingQueue<Event> queue = new ArrayBlockingQueue<>(5_000);
+if (!queue.offer(event, 200, TimeUnit.MILLISECONDS)) {
+    // 200ms vẫn không có chỗ -> hệ thống đang bão hòa
+    metrics.increment("ingest.rejected");
+    throw new TooManyRequests("hệ thống đang quá tải, thử lại sau");
+}
+
+// Consumer: lấy theo lô để giảm chi phí lock, nhưng vẫn có ngưỡng nghỉ rõ ràng
+List<Event> batch = new ArrayList<>(200);
+while (running) {
+    Event first = queue.poll(1, TimeUnit.SECONDS);   // null = không có dữ liệu, kiểm tra cờ dừng
+    if (first == null) continue;
+    batch.add(first);
+    queue.drainTo(batch, 199);                       // gom thêm tối đa 199 phần tử
+    handleBatch(batch);                              // ghi DB 1 lần thay vì 200 lần
+    batch.clear();
+}
+~~~
+
+### Pitfall production
+- Dùng {{LinkedBlockingQueue}} không truyền capacity → queue phình tới hàng triệu phần tử, mỗi phần tử giữ reference tới payload → OOM chứ không có lỗi nào trước đó.
+- Dùng {{put()}} trong request thread: khi consumer chết, mọi request thread kẹt trong {{put}} và pool cạn dần — hệ thống chết đứng thay vì trả lỗi.
+- Không có "poison pill" hoặc cờ dừng: {{take()}} chặn mãi mãi khi tắt ứng dụng. Cách sạch là đẩy một phần tử đặc biệt báo kết thúc, hoặc interrupt consumer và xử lý {{InterruptedException}} đúng (khôi phục cờ ngắt).
+- Số liệu consumer xử lý chậm hơn producer chỉ lộ ra khi queue đã đầy — luôn alert theo {{remainingCapacity}} chứ không theo độ dài tuyệt đối.
+
+### Ví dụ đời thực
+Dịch vụ nhận webhook dùng {{LinkedBlockingQueue}} mặc định để chuyển event sang worker ghi DB. Một ngày đối tác gửi 40.000 event/phút trong khi worker chỉ ghi được 25.000/phút. Trong 12 phút queue tích 180.000 event, heap tăng từ 1,2 GB lên 3,8 GB và pod bị OOMKilled — mất sạch event trong RAM. Sửa: {{ArrayBlockingQueue(20_000)}} cộng {{offer(200ms)}}; khi đầy thì trả 429 để đối tác retry theo lịch của họ, đồng thời đẩy bản sao vào Kafka làm nơi chứa bền. Lần sau đối tác bùng nổ, p99 tăng từ 20 ms lên 240 ms nhưng không mất event nào và không pod nào restart.
+
+### Trả lời mẫu khi phỏng vấn
+"Tôi chọn queue theo câu hỏi: có cần backpressure không, có cần ưu tiên không, có cần đệm không. Với pipeline chịu tải tôi luôn dùng queue có giới hạn. ArrayBlockingQueue là mặc định an toàn vì bộ nhớ biết trước và một lock dễ suy luận. LinkedBlockingQueue có hai lock nên thông lượng cao hơn, nhưng tôi bắt buộc truyền capacity vì mặc định của nó gần như vô hạn. SynchronousQueue là handoff không đệm, hợp khi muốn đẩy việc sang thread khác ngay. PriorityBlockingQueue và DelayQueue không có khái niệm đầy nên không tạo được backpressure, phải tự đếm. Về backpressure, tôi thường dùng offer có timeout rồi trả 429 hoặc ghi sang Kafka, thay vì put chặn vô hạn trong request thread. Consumer thì drainTo theo lô để giảm số lần lock. Cuối cùng tôi luôn có metric remainingCapacity và một cách dừng sạch cho consumer, bằng poison pill hoặc interrupt có xử lý, để lúc deploy không có thread nào mắc kẹt trong take."
+
+> Senior tip: Câu hỏi "queue dài bao nhiêu là đủ" trả lời bằng thời gian, không bằng số phần tử: queue nên chứa tối đa khoảng vài giây dữ liệu ở tốc độ đỉnh. Nếu consumer tụt lại 10 giây mà bạn không muốn phục vụ dữ liệu trễ 10 giây, hãy giới hạn queue theo ngưỡng đó và để producer chịu backpressure.`
+  ,
+  follow: ['Queue dài 5.000 phần tử nhưng mỗi phần tử 200 KB — bạn tính rủi ro bộ nhớ thế nào?', 'Bạn sẽ dừng consumer sạch sẽ khi deploy ra sao?', 'Vì sao LinkedBlockingQueue có hai lock mà vẫn có thể tranh chấp?'],
+  tags: ['BlockingQueue', 'backpressure', 'ArrayBlockingQueue', 'LinkedBlockingQueue', 'producer consumer']
+}
+,
+{
+  id: 'concurrency-087',
+  topic: 'concurrency',
+  level: 'senior',
+  q: 'Bạn fan-out 8 lời gọi bằng {{CompletableFuture}} và cần tất cả xong trong 800 ms. Viết thế nào cho đúng? Vì sao {{allOf}} không tự huỷ khi hết giờ, và làm sao giới hạn số request đồng thời?',
+  a: `**Tóm tắt:** {{CompletableFuture.allOf}} chỉ là một future "gộp" báo xong khi mọi nhánh xong; nó **không** có deadline và **không** huỷ nhánh nào. Khi hết hạn bạn phải tự {{cancel}} từng future, và quan trọng hơn là mỗi lời gọi phải có timeout ở tầng client (connect/read timeout) vì {{cancel}} không ngắt được task đang block. Muốn không bắn 8 request cùng lúc vào một downstream yếu, giới hạn đồng thời bằng {{Semaphore}} và dùng executor riêng có giới hạn thay vì {{ForkJoinPool.commonPool}}.
+
+### Thuật ngữ trước đã
+- {{Fan-out}} (toả nhánh): một request cha gọi song song nhiều service con rồi gộp kết quả. Ví dụ: trang chủ cần thông tin cá nhân, đơn hàng, khuyến mãi — ba service khác nhau.
+- {{CompletableFuture}}: một "phiếu hẹn kết quả" (future) có thể gắn callback. Khi tác vụ xong, giá trị được đặt vào và các callback chạy theo.
+- {{Deadline}} (hạn chót): mốc thời gian tuyệt đối mà toàn bộ request phải xong, ví dụ "800 ms kể từ lúc nhận request". Khác với timeout của từng lời gọi.
+- {{commonPool}}: {{ForkJoinPool}} dùng chung toàn JVM, mặc định có {{cores - 1}} thread. Mọi {{supplyAsync}} không truyền executor sẽ chạy ở đây.
+
+### Vì sao {{allOf}} không đủ: cơ chế từng bước
+1. {{allOf(f1, f2, ...)}} tạo một future mà **chỉ** hoàn thành khi tất cả future con hoàn thành (hoặc một cái lỗi). Nó không biết gì về thời gian.
+2. {{allOf(...).get(800, MILLISECONDS)}} ném {{TimeoutException}} khi quá hạn — nhưng đây chỉ là **bạn thôi chờ**. Các future con vẫn chạy, thread vẫn bận, request tới downstream vẫn tiếp tục và kết quả bị bỏ.
+3. {{CompletableFuture.cancel(true)}} không ngắt thread đang chạy task: tham số {{mayInterruptIfRunning}} bị bỏ qua trong cài đặt của {{CompletableFuture}}. Nếu task đang block trong một HTTP client không có read timeout, nó có thể treo tới khi TCP timeout của hệ điều hành (hàng phút).
+4. Vì vậy deadline đúng phải là **ba lớp**: timeout từng lời gọi ở client, giới hạn tổng thời gian chờ, và vòng lặp cancel + dọn dẹp khi hết hạn.
+
+~~~java
+// Gọi 8 nhánh song song với: executor riêng, giới hạn đồng thời, deadline tổng
+ExecutorService pool = Executors.newFixedThreadPool(8, named("fanout")); // named(): ThreadFactory đặt tên thread
+Semaphore permits = new Semaphore(4);                 // tối đa 4 request đồng thời tới downstream
+
+List<CompletableFuture<Item>> futures = ids.stream()
+    .map(id -> CompletableFuture.supplyAsync(() -> {
+        try {
+            permits.acquire();                            // chờ tới lượt, tránh dồn 8 request cùng lúc
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();            // khôi phục cờ ngắt
+            throw new CompletionException(e);
+        }
+        try {
+            return client.get(id);                        // client ĐÃ cấu hình connect/read timeout 300ms
+        } finally {
+            permits.release();                            // chỉ trả permit SAU khi đã acquire thành công
+        }
+    }, pool))
+    .toList();
+
+CompletableFuture<Void> all = CompletableFuture.allOf(futures.toArray(CompletableFuture[]::new));
+try {
+    all.get(800, TimeUnit.MILLISECONDS);                  // chờ tối đa 800ms
+} catch (TimeoutException e) {
+    futures.forEach(f -> f.cancel(false));                // báo "không cần kết quả nữa"
+    throw new GatewayTimeout("tổng hợp quá chậm");
+}
+~~~
+
+### Phân biệt ba cách đặt giờ (dễ nhầm)
+| Cách | Tác dụng thật | Có dừng tác vụ dưới không? |
+|---|---|---|
+| {{get(800, MILLISECONDS)}} | caller ngừng chờ, ném {{TimeoutException}} | Không |
+| {{orTimeout(800, MILLISECONDS)}} | future tự hoàn thành **bất thường** với {{TimeoutException}} | Không, task vẫn chạy |
+| {{completeOnTimeout(defaultVal, 800, ...)}} | future hoàn thành **bình thường** với giá trị mặc định | Không, task vẫn chạy |
+| timeout ở HTTP client (connect/read) | chặn chờ ở tầng socket | Có, giải phóng thread |
+
+Vì vậy đừng bao giờ dựa vào {{orTimeout}} để "huỷ" lời gọi. Nó chỉ đổi trạng thái future.
+
+### Lỗi hay gặp
+- **Nuốt exception**: {{allOf}} hoàn thành bất thường với lỗi của nhánh **đầu tiên** thất bại; các lỗi khác bị mất. Muốn log đủ thì gắn {{whenComplete}} cho từng future hoặc dùng {{handle}} để biến lỗi thành giá trị.
+- **Dùng commonPool cho IO**: 8 lời gọi chặn 300 ms chiếm hết 7 thread của commonPool, làm mọi {{parallelStream}} khác trong JVM xếp hàng — sự cố rất khó tìm vì nó xuất hiện ở chỗ khác.
+- **Không giới hạn đồng thời**: 200 request/giây mỗi instance, mỗi request fan-out 8 nhánh, thành 1.600 lời gọi mỗi giây tới downstream, làm chính downstream sập.
+- **Tạo executor mỗi request**: thread không bao giờ được đóng, dẫn tới leak thread; executor phải là bean sống theo ứng dụng.
+
+### Ví dụ đời thực
+API trang chủ gọi 6 service con bằng {{allOf}} trên commonPool, timeout tổng 1 s. Khi service khuyến mãi chậm 4 s, mọi request trang chủ vẫn chờ đủ 1 s rồi trả 504, nhưng các lời gọi vẫn tiếp tục chạy và giữ thread commonPool — {{parallelStream}} trong báo cáo bắt đầu chậm theo, dù báo cáo không liên quan gì tới trang chủ. Sửa: executor riêng 16 thread, {{Semaphore(6)}} cho downstream, HTTP client connect 200 ms/read 400 ms, deadline tổng 800 ms và cancel toàn bộ khi quá hạn. p99 trang chủ giảm từ 1.050 ms xuống 480 ms, số request rác tới service khuyến mãi giảm khoảng 80%, và báo cáo hết bị ảnh hưởng.
+
+### Trả lời mẫu khi phỏng vấn
+"Tôi không coi allOf là cơ chế timeout. allOf chỉ gộp trạng thái, không biết thời gian, và khi tôi ngừng chờ bằng get với timeout thì các task con vẫn chạy. Tệ hơn, cancel trên CompletableFuture không ngắt được thread đang chạy, nên cách duy nhất để thật sự dừng chờ là đặt connect và read timeout ở HTTP client. Trong code tôi làm ba việc: dùng executor riêng có giới hạn thay vì commonPool vì task IO chặn sẽ làm đói mọi parallel stream khác; giới hạn số request đồng thời tới downstream bằng Semaphore; và khi hết deadline thì cancel từng future, log lại nhánh nào chưa xong. Tôi cũng phân biệt rõ get timeout, orTimeout và completeOnTimeout: hai cái sau chỉ đổi trạng thái future, công việc dưới vẫn tiếp tục. Cuối cùng tôi log lỗi của từng nhánh bằng whenComplete, vì allOf chỉ giữ lỗi đầu tiên."
+
+> Senior tip: Đừng đặt deadline bằng cách cộng dồn timeout từng bước. Hãy tính một mốc tuyệt đối lúc nhận request, truyền nó xuống (deadline propagation) và kiểm tra trước mỗi bước; nhờ vậy bước sau tự biết còn bao nhiêu mili-giây và không bao giờ vượt ngân sách của cả request.`
+  ,
+  follow: ['Nếu một nhánh lỗi ngay, làm sao huỷ các nhánh còn lại sớm nhất?', 'Vì sao cancel(false) là lựa chọn mặc định trong ví dụ trên?', 'Deadline propagation nên truyền qua ThreadLocal hay tham số?'],
+  tags: ['CompletableFuture', 'allOf', 'timeout', 'fan-out', 'Semaphore']
+}
+,
+{
+  id: 'concurrency-088',
+  topic: 'concurrency',
+  level: 'senior',
+  q: 'Bạn cần vừa đếm sự kiện theo key vừa bảo đảm mỗi key chỉ một luồng xử lý tại một thời điểm, dùng {{ConcurrentHashMap}}. Viết bằng {{compute}}/{{computeIfAbsent}} thế nào cho đúng, và những cái bẫy nào hay gặp?',
+  a: `**Tóm tắt:** {{ConcurrentHashMap}} khoá **theo bin** (ngăn của bảng băm) trong lúc chạy hàm mapping của {{compute}}, nên hai key khác bin chạy song song được, còn cùng bin thì chờ nhau. Vì thế {{compute}} rất hợp để đếm và để "khoá theo key", nhưng tuyệt đối không được gọi I/O chậm hay sửa map bên trong hàm mapping. Với bộ đếm tranh chấp cao, cân nhắc {{LongAdder}} làm giá trị thay vì {{Integer}}.
+
+### Thuật ngữ trước đã
+- {{ConcurrentHashMap}} (CHM): bảng băm an toàn với nhiều thread. Đọc gần như không khoá nhờ đọc biến volatile; ghi thì khoá **bin** — bin là ngăn chứa các entry có cùng vị trí hash, giống một ngăn kéo trong tủ hồ sơ.
+- {{Hàm mapping}}: hàm bạn truyền vào {{compute}}, nhận key và giá trị cũ, trả về giá trị mới (hoặc {{null}} để xoá entry).
+- {{Khoá theo key}} (per-key locking): nhiều thread cùng xử lý nhiều key, nhưng với một key tại một thời điểm chỉ một thread được làm việc.
+
+### CHM khoá thế nào: cơ chế từng bước
+1. Key được băm, lấy chỉ số bin. Bảng là mảng các bin; mỗi bin thường là một danh sách ngắn hoặc cây đỏ-đen khi bin quá dài.
+2. Khi ghi, CHM {{synchronized}} trên **node đầu tiên của bin** (Java 8+). Vì vậy hai key rơi vào cùng bin sẽ chờ nhau, còn khác bin thì không ảnh hưởng.
+3. {{compute}} giữ khoá bin đó **trong suốt thời gian hàm mapping chạy**. Đây là điểm cốt lõi: nếu hàm của bạn mất 200 ms gọi DB, mọi key khác cùng bin bị chặn 200 ms, dù chúng chẳng liên quan gì.
+4. Vì khoá đang được giữ, tài liệu Java cấm hàm mapping cập nhật lại map (ví dụ {{map.put}} key khác ở trong {{compute}}), vì có thể gây khoá chéo hoặc lỗi khó lường.
+
+~~~text
+CHM table (16 bin)
+bin 0: [key=A]      <- thread 1 đang compute(A): khoá bin 0
+bin 1: [key=B]      <- thread 2 compute(B): chạy song song, không chờ
+bin 7: [key=C]      <- thread 3 compute(C): vẫn song song
+(nếu H băm vào bin 0 thì compute(H) phải chờ compute(A) xong)
+~~~
+
+### Đếm theo key: ba cách, chọn theo mức tranh chấp
+| Cách | Code | Ghi chú |
+|---|---|---|
+| {{merge}} với {{Integer}} | {{map.merge(k, 1, Integer::sum)}} | Ngắn gọn, đúng; nhưng mỗi lần cập nhật tạo một {{Integer}} mới (dưới 127 thì được cache) |
+| {{computeIfAbsent}} + {{LongAdder}} | {{map.computeIfAbsent(k, x -> new LongAdder()).increment()}} | Tốt khi cùng một key bị nhiều thread tăng liên tục: {{LongAdder}} chia ô đếm nội bộ nên ít tranh chấp |
+| {{get}} + {{put}} | {{map.put(k, map.getOrDefault(k, 0) + 1)}} | **Sai**: hai thread có thể cùng đọc 5 rồi cùng ghi 6, mất một lần đếm |
+
+Điểm quan trọng: {{increment()}} trên {{LongAdder}} chạy **sau** khi {{computeIfAbsent}} trả về, tức là ngoài khoá bin. Vì thế đừng bao giờ đặt phép tăng bên trong lambda mapping — nó sẽ tăng mỗi lần mapping chạy, không phải mỗi lần đọc, và với key đã có thì mapping không chạy lần nào nên kết quả sai lệch hoàn toàn.
+
+### "Khoá theo key" bằng compute: mẫu và giới hạn
+Cách phổ biến là dùng map để **bảo đảm chỉ một thread tạo ra tài nguyên cho key** (cache, connection, hàng đợi):
+
+~~~java
+// Chỉ một thread được tạo Processor cho mỗi key, các thread khác nhận lại đúng object đó
+ConcurrentHashMap<String, Processor> processors = new ConcurrentHashMap<>();
+
+Processor p = processors.computeIfAbsent(key, k -> {
+    Processor created = new Processor(k);   // rẻ, không I/O
+    created.start();                        // khởi động tốn vài ms: chấp nhận được
+    return created;
+});
+p.submit(event);                            // dùng ngoài khoá: nhiều thread gọi song song an toàn
+~~~
+
+Nếu cần **loại trừ lẫn nhau trong suốt quá trình xử lý** (không chỉ lúc tạo), hãy giữ một {{ReentrantLock}} hoặc dùng lock striping: một mảng N lock, chọn lock theo {{hash(key) % N}}. Cách này tránh được hai vấn đề: map không phình vô hạn, và không giữ khoá bin trong lúc chạy việc dài.
+
+~~~java
+private final ReentrantLock[] stripes = new ReentrantLock[64];  // khởi tạo trong constructor
+ReentrantLock lock = stripes[Math.floorMod(key.hashCode(), stripes.length)];
+lock.lock();                                     // chỉ khoá dải của key này
+try {
+    process(key, event);                         // việc dài chạy trong khoá riêng, không khoá bin của CHM
+} finally {
+    lock.unlock();                               // luôn mở khoá trong finally
+}
+~~~
+
+### Pitfall production
+- **Gọi I/O trong mapping**: {{computeIfAbsent(k, k -> repository.find(k))}} — mỗi key giữ khoá bin trong lúc chờ DB 20 ms; dưới tải, các bin nóng trở thành nút cổ chai, p99 tăng gấp nhiều lần.
+- **Sửa map trong mapping**: {{compute}} lồng {{map.put}} có thể gây khoá chéo hoặc {{IllegalStateException}}. Quy tắc: hàm mapping chỉ tính toán trên tham số, không chạm map.
+- **{{computeIfAbsent}} trả {{null}}**: nếu hàm trả {{null}}, không có entry nào được thêm và lần sau lại phải tính lại — cache "không bao giờ hit" cho key không tồn tại. Muốn cache cả kết quả rỗng, dùng một object đại diện (sentinel).
+- **Entry không bao giờ bị xoá**: map dùng để khoá/tạo tài nguyên theo key tăng dần theo số key, thành memory leak. Cần cơ chế dọn (TTL, refcount) hoặc dùng {{Caffeine}} có eviction.
+
+### Ví dụ đời thực
+Service tính hạn mức theo tài khoản dùng {{map.merge(key, 1L, Long::sum)}} để đếm và {{computeIfAbsent}} để tạo bộ đếm. Ở tải 3.000 request/giây trên 40.000 tài khoản, p99 tăng từ 12 ms lên 180 ms. JFR cho thấy thời gian chờ khoá trong {{ConcurrentHashMap.compute}} chiếm 63% CPU sample. Nguyên nhân: hàm mapping gọi một service nội bộ để lấy hạn mức (18 ms) trong khi giữ khoá bin. Sửa: lấy hạn mức **trước** khi vào {{computeIfAbsent}}, chỉ để lại phép gán rẻ trong map; phần đếm chuyển sang {{LongAdder}} làm giá trị. p99 về 16 ms, số entry giữ trong map giảm từ 40.000 xuống 6.000 nhờ bỏ cache theo key không cần thiết.
+
+### Trả lời mẫu khi phỏng vấn
+"ConcurrentHashMap ở Java 8 trở đi khoá theo bin, không khoá toàn bảng, nên hai key khác bin vẫn chạy song song. compute giữ khoá bin trong suốt lúc hàm mapping chạy, nên nó rất hợp để đếm nguyên tử hoặc để bảo đảm chỉ một thread tạo tài nguyên cho mỗi key. Nhưng tôi tuyệt đối không gọi DB hay HTTP trong hàm mapping, vì như vậy tôi đang giữ khoá của nhiều key khác. Với bộ đếm nóng, tôi dùng LongAdder làm giá trị và increment ngoài computeIfAbsent, vì LongAdder chia ô nội bộ nên ít tranh chấp hơn Integer. Tôi cũng không get rồi put, vì đó là race condition. Nếu cần loại trừ trong suốt quá trình xử lý chứ không chỉ lúc tạo, tôi dùng lock striping theo hash của key, hoặc một hàng đợi theo key, để không giữ khoá của map trong việc dài. Cuối cùng tôi luôn có cách dọn entry, nếu không map sẽ phình theo số key."
+
+> Senior tip: Khi thấy p99 tăng mà CPU không cao, hãy tìm "khoá bị giữ trong lúc chờ I/O". JFR với event {{jdk.JavaMonitorEnter}} và sample stack sẽ chỉ ra ngay {{ConcurrentHashMap.compute}} hoặc {{computeIfAbsent}} nằm trên đỉnh — đó là dấu hiệu hàm mapping của bạn đang làm việc quá nặng.`
+  ,
+  follow: ['Vì sao compute của hai key khác nhau vẫn có thể chặn nhau?', 'Khi nào nên dùng lock striping thay vì giữ lock trong map?', 'LongAdder khác AtomicLong ở điểm nào khi đếm tranh chấp cao?'],
+  tags: ['ConcurrentHashMap', 'compute', 'computeIfAbsent', 'LongAdder', 'per-key lock']
+}
+,
+{
+  id: 'concurrency-089',
+  topic: 'concurrency',
+  level: 'lead',
+  q: 'Bạn định chuyển một service Spring Boot 3.2 (Java 21) sang virtual thread. Cần đổi gì, cái gì vẫn là nút thắt, và làm sao phát hiện pinning trên production?',
+  a: `**Tóm tắt:** Virtual thread là thread do JVM tự lập lịch, khi gặp thao tác I/O của JDK thì **unmount** khỏi carrier thread (thread nền của hệ điều hành) và nhường chỗ cho virtual thread khác. Vì thế bật virtual thread giúp chịu nhiều request đồng thời mà không cần pool lớn, nhưng **không** làm DB nhanh hơn: pool connection vẫn là trần. Hai rủi ro chính là pinning (virtual thread bị "ghim" vào carrier khi gặp {{synchronized}}/native) và bùng nổ {{ThreadLocal}} khi mỗi request một thread.
+
+### Thuật ngữ trước đã
+- {{Platform thread}} (thread nền tảng): thread 1-1 với thread của hệ điều hành, tốn ~1 MB stack, tạo hàng nghìn cái là nặng.
+- {{Virtual thread}}: thread ảo do JVM quản lý. Hàng trăm nghìn cái vẫn nhẹ, vì stack của nó nằm trên heap và chỉ tốn khi thực sự dùng.
+- {{Carrier thread}} (thread chuyên chở): platform thread mà JVM dùng để **chạy** virtual thread. Số carrier mặc định bằng số core.
+- {{Mount/unmount}} (gắn/gỡ): đưa virtual thread lên carrier để chạy, và gỡ nó ra khi nó block, nhường carrier cho virtual thread khác.
+- {{Pinning}} (ghim): virtual thread **không** unmount được, phải giữ carrier trong lúc block — carrier bị chiếm, mất lợi ích của virtual thread.
+- {{ThreadLocal}}: biến gắn riêng từng thread, hay dùng để giữ security context, trace id, connection.
+
+### Cơ chế: vì sao virtual thread nhẹ
+1. Virtual thread lưu stack trong heap dưới dạng **continuation** — một ảnh chụp trạng thái chạy được, có thể tạm dừng và tiếp tục.
+2. Khi code gọi thao tác I/O đã được hỗ trợ (socket, {{Thread.sleep}}, {{LockSupport.park}}), JVM unmount: chụp continuation, trả carrier về pool. Carrier lập tức chạy virtual thread khác.
+3. Khi I/O xong, virtual thread được xếp hàng để mount lại vào một carrier bất kỳ — nên **không** được giả định cùng một virtual thread luôn chạy trên cùng carrier.
+4. Vì chi phí chuyển rất thấp, mô hình đúng là **một virtual thread cho mỗi task**, không pool. Pool virtual thread là phản mẫu: nó làm mất chính lợi ích.
+
+~~~text
+carrier-1: [VT#101 chạy] -> VT#101 gọi DB, unmount -> [VT#102 chạy] -> ...
+carrier-2: [VT#103 chạy] -> VT#103 sleep, unmount   -> [VT#104 chạy]
+hàng chờ mount: VT#101 (DB trả lời), VT#105, VT#106 ...
+~~~
+
+### Chuyển Spring Boot 3.2 sang virtual thread: các bước
+1. Bật: {{spring.threads.virtual.enabled=true}}. Tomcat sẽ dùng virtual thread cho mỗi request. Không cần đổi code nghiệp vụ.
+2. **Executor do bạn tự tạo vẫn là platform thread**: bean {{applicationTaskExecutor}} mà Spring Boot 3.2 cấp cho {{@Async}} đã chuyển sang virtual thread khi bật property, nhưng executor bạn tự {{new}} ({{Executors.newFixedThreadPool}}, {{ScheduledThreadPoolExecutor}}) vẫn là platform thread, {{CompletableFuture.supplyAsync}} không truyền executor vẫn dùng commonPool platform thread. Phải rà lại từng chỗ tự tạo.
+3. **Giới hạn đồng thời bằng {{Semaphore}}**, không bằng pool: nếu downstream chỉ chịu được 30 kết nối, đặt {{Semaphore(30)}} quanh lời gọi. 10.000 virtual thread cùng xin Hikari connection chỉ tạo ra hàng chờ timeout.
+4. **Kiểm tra ThreadLocal**: mỗi virtual thread có bản ThreadLocal riêng; với 20.000 request đồng thời, một ThreadLocal giữ object 10 KB thành 200 MB. {{InheritableThreadLocal}} còn tệ hơn vì sao chép khi tạo thread.
+5. **Kiểm tra {{synchronized}} bọc quanh I/O** và các thư viện native (JDBC driver cũ, một số client HTTP dùng JNI). Đây là nguồn pinning chính trên JDK 21.
+
+### Pinning: vì sao xảy ra trên JDK 21 và cách phát hiện
+Trên JDK 21, khi virtual thread block bên trong khối {{synchronized}}, JVM không thể unmount vì monitor gắn với carrier. Virtual thread bị **ghim** vào carrier, carrier bị giữ trong lúc chờ — đúng thứ mà virtual thread sinh ra để tránh. {{Object.wait()}} cũng gây pinning trên JDK 21 vì nó dùng monitor.
+
+- Bật log: {{-Djdk.tracePinnedThreads=full}} in stack trace mỗi lần pinning (chỉ dùng khi điều tra, không bật trên production lâu dài).
+- Bật JFR: event {{jdk.VirtualThreadPinned}} (ngưỡng mặc định 20 ms) giúp đo tỷ lệ pinning mà overhead thấp.
+- Đọc kết quả: nếu throughput không tăng dù CPU còn trống và JFR có nhiều {{VirtualThreadPinned}}, hãy tìm khối {{synchronized}} quanh lời gọi mạng/DB.
+- Lưu ý phiên bản: JDK 24 (JEP 491) đã bỏ pinning do {{synchronized}}; nếu team còn ở 21, cách sửa thực dụng là đổi sang {{ReentrantLock}} hoặc thu hẹp khối {{synchronized}} để không bọc I/O.
+
+### Cái gì vẫn là nút thắt sau khi bật virtual thread
+| Thành phần | Có nhanh hơn không? | Vì sao |
+|---|---|---|
+| Số request đồng thời chờ I/O | Có, tăng mạnh | Mỗi request một virtual thread, carrier không bị giữ khi chờ |
+| Việc CPU-bound | Không | Số carrier vẫn bằng số core; CPU là trần thật |
+| Truy vấn DB | Không | Pool connection và DB vẫn giới hạn; virtual thread chỉ xếp hàng ít tốn bộ nhớ hơn |
+| Downstream HTTP | Không, còn rủi ro hơn | Bạn có thể bắn nhiều request hơn nếu không giới hạn, làm sập đối tác |
+| Bộ nhớ | Có thể tệ hơn | ThreadLocal nhân theo số thread; stack trên heap tuy nhỏ nhưng không bằng 0 |
+
+### Ví dụ đời thực
+Service tra cứu đơn hàng chạy 900 platform thread, p99 210 ms ở 1.200 request/giây, CPU 45%. Bật virtual thread: p99 xuống 95 ms, nhưng đúng 90 giây sau mỗi lần deploy có 12 carrier bị pinning, throughput rơi từ 1.200 xuống 400 request/giây trong khoảng 30 giây. JFR chỉ ra {{VirtualThreadPinned}} với stack nằm trong một class đếm metric dùng {{synchronized}} bọc lời gọi tới agent đo lường. Thay {{synchronized}} bằng {{ReentrantLock}}: p99 ổn định 90–110 ms, không còn giai đoạn rơi. Bài học: bật cờ là bước nhỏ, phần lớn công việc là tìm chỗ bị ghim và đặt giới hạn đồng thời cho downstream.
+
+### Trả lời mẫu khi phỏng vấn
+"Virtual thread nhẹ vì stack của nó nằm trên heap và JVM có thể unmount khỏi carrier thread khi gặp I/O, nên mô hình đúng là một thread cho mỗi task chứ không pool. Với Spring Boot 3.2 tôi chỉ cần bật spring.threads.virtual.enabled, nhưng sau đó phải soát lại ba chỗ: executor tự tạo vẫn là platform thread, ThreadLocal sẽ nhân theo số request nên phải kiểm tra kích thước, và quan trọng nhất là pinning. Trên JDK 21, synchronized bọc quanh lời gọi mạng hay DB làm virtual thread bị ghim vào carrier, mất toàn bộ lợi ích; tôi phát hiện bằng JFR event VirtualThreadPinned và sửa bằng ReentrantLock, hoặc nâng lên JDK 24 nơi JEP 491 đã xử lý. Cuối cùng, virtual thread không làm DB nhanh hơn: tôi luôn đặt Semaphore giới hạn số lời gọi đồng thời để không biến hàng chờ connection thành timeout hàng loạt."
+
+> Senior tip: Đừng bật virtual thread cho toàn hệ thống trong một lần. Chọn một service I/O-bound, đo p99 và throughput trước/sau, bật JFR để đếm {{VirtualThreadPinned}}, rồi mới mở rộng. Nếu service có nhiều khối {{synchronized}} quanh I/O của thư viện cũ, chi phí sửa có thể lớn hơn lợi ích — và trên JDK 21 thì đó là rủi ro thật, không phải lý thuyết.`
+  ,
+  follow: ['Vì sao nên giới hạn đồng thời bằng Semaphore thay vì pool virtual thread?', 'ThreadLocal bùng nổ bộ nhớ khi bật virtual thread — bạn đo và xử lý thế nào?', 'JDK 24 (JEP 491) thay đổi gì với pinning do synchronized?'],
+  tags: ['virtual thread', 'pinning', 'Spring Boot 3.2', 'JFR', 'ThreadLocal']
+}
 
 );
