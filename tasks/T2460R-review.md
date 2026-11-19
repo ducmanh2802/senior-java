@@ -1,0 +1,20 @@
+# T2460R — Fact-check nội dung mới của T2460
+
+Status: DONE
+Agent: opencode
+Owns: `js/data/lessons-microservices.js`
+
+Đọc AGENTS.md mục 4–6 (và 10/12 nếu là lab/bài học). Nội dung MỚI của task T2460 (xem `git diff HEAD -- <file>`) do model free viết, CHƯA review.
+Sửa trực tiếp mọi lỗi kỹ thuật (API/flag bịa, mặc định sai, cơ chế nói ngược, số liệu vô căn cứ), lỗi markup, chữ nước ngoài lẫn vào.
+CHỈ cần kiến thức ĐÚNG: không chỉnh văn phong, độ dài, bố cục hay thêm nội dung. Không có lỗi kiến thức thì ghi Notes "không có lỗi" và xong ngay.
+Chuẩn: Java 17/21, Spring Boot 3.x, Hibernate 6, PostgreSQL 15, Kafka 3.x. Không sửa nội dung đã có ở HEAD. Không thêm/xoá mục.
+Bài học: chạy thêm node scripts/test-lessons.js tới khi pass.
+
+## Nghiệm thu
+node scripts/validate.js → OK. Ghi vào Notes các lỗi đã sửa theo từng id.
+
+## Notes
+Không có lỗi. Hai bài học mới (lesson-microservices-021, lesson-microservices-022) đã review:
+- 021: State machine cho task (NEW/ASSIGNED/IN_PROGRESS/DONE/ESCALATED) — logic chuyển trạng thái đúng, cài đặt HashMap+synchronized hợp lệ, test bao phủ các transition hợp lệ/vô hiệu.
+- 022: Timer escalation theo SLA với Clock giả (FakeClock) — pattern Clock interface chuẩn, SlaTimer ghi nhận start time, isOverdue() dùng so sánh > đúng ngữ nghĩa quá hạn, test kiểm tra boundary condition (exact boundary not overdue).
+Cả hai: validate.js OK, syntax check OK, reference code compiles, test cases ≥ 3, body ≥ 2500 ký tự, markup đúng chuẩn ({{code}}, ###, >, ~~~java), không backtick/${ lồng trong template literal.

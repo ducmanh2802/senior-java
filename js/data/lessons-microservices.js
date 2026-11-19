@@ -5319,5 +5319,227 @@ Lỗi thường gặp là lưu ID sau side effect, khiến crash tạo side effe
     { q: 'Trong idempotent consumer, tại sao nên insert inbox và cập nhật state trong CÙNG transaction database?', options: ['Để Kafka commit offset nhanh hơn', 'Để tránh trạng thái "đã áp dụng side effect nhưng chưa ghi nhận đã xử lý" khi crash', 'Để cho phép hai replica cùng xử lý một message', 'Để thay thế hoàn toàn version checking'], answer: 1, explain: `Đúng (B): nếu tách rời, crash giữa hai bước có thể làm side effect chạy rồi nhưng inbox chưa ghi, lần giao lại sẽ chạy lại side effect. (A) sai vì offset commit là thao tác riêng với broker. (C) sai, mục tiêu là ngăn xử lý trùng. (D) sai vì version giải quyết thứ tự event state, khác mục đích với dedup theo message_id.` },
     { q: 'Consumer nhận event state cũ (version 2) sau khi đã áp dụng version 5. Cách xử lý đúng là gì?', options: ['Ghi đè state bằng version 2 để giữ đủ lịch sử nhận', 'Bỏ qua áp dụng state vì version không mới hơn; vẫn ghi nhận message id để replay an toàn', 'Rollback DB về version 2', 'Tăng offset nhưng xóa inbox để nhận lại'], answer: 1, explain: `Đúng (B): event state chỉ áp dụng khi version lớn hơn hiện tại; vẫn nên dedup theo message_id để lần replay không xử lý lại. (A) sai vì sẽ làm state lùi. (C) sai vì DB không tự rollback theo version event và việc này phá hủy state mới hơn. (D) sai vì xóa inbox làm mất khả năng chống trùng.` },
   ], tags: ['idempotency', 'Kafka', 'inbox', 'ordering', 'processed-id']
+},
+{
+  id: 'lesson-microservices-021', track: 'microservices', order: 21,
+  title: 'State machine cho task: trạng thái hợp lệ và chuyển trạng thái an toàn', level: 'senior', minutes: 30,
+  goals: ['Mô tả được các trạng thái NEW/ASSIGNED/IN_PROGRESS/DONE/ESCALATED và chuyển trạng thái hợp lệ', 'Cài đặt state machine thuần Java với bảng chuyển trạng thái', 'Giải thích vì sao không cho phép chuyển trạng thái tùy ý và cách audit'],
+  body: `**Tóm tắt:** State machine (máy trạng thái) là cách mô hình hóa vòng đời của một task: chỉ một số chuyển trạng thái là hợp lệ, mọi chuyển khác bị từ chối. Cài đặt bằng bảng chuyển trạng thái (map từ (trạng thái hiện tại, sự kiện) sang trạng thái kế tiếp) giúp rõ ràng, dễ audit và dễ test.
+
+### State machine là gì
+State machine là mô hình trong đó một object luôn ở một trong các trạng thái hữu hạn, và chỉ chuyển trạng thái khi nhận sự kiện (event) theo các quy tắc định trước. Ví dụ vòng đời task: NEW → ASSIGNED → IN_PROGRESS → DONE, hoặc IN_PROGRESS → ESCALATED khi quá SLA.
+
+### Các trạng thái và sự kiện
+- NEW: task vừa tạo, chưa gán cho ai.
+- ASSIGNED: đã gán cho một người thực hiện.
+- IN_PROGRESS: người thực hiện đã bắt đầu.
+- DONE: hoàn thành.
+- ESCALATED: leo thang (vượt SLA hoặc bị escalate thủ công).
+
+Sự kiện: assign, start, complete, escalate, reassign.
+
+### Bảng chuyển trạng thái hợp lệ
+| Từ | Sự kiện | Tới |
+|---|---|---|
+| NEW | assign | ASSIGNED |
+| ASSIGNED | start | IN_PROGRESS |
+| ASSIGNED | reassign | ASSIGNED |
+| IN_PROGRESS | complete | DONE |
+| IN_PROGRESS | escalate | ESCALATED |
+| ESCALATED | assign | ASSIGNED |
+| * | * | (từ chối) |
+
+Mọi chuyển khác (ví dụ DONE → IN_PROGRESS) phải bị từ chối để tránh dữ liệu vô lý.
+
+### Cài đặt thuần Java
+~~~java
+enum State { NEW, ASSIGNED, IN_PROGRESS, DONE, ESCALATED }
+enum Event { ASSIGN, START, COMPLETE, ESCALATE, REASSIGN }
+
+class TaskStateMachine {
+    private State state = State.NEW;
+    private final Map<String, State> transitions = new HashMap<>();
+
+    TaskStateMachine() {
+        put(State.NEW, Event.ASSIGN, State.ASSIGNED);
+        put(State.ASSIGNED, Event.START, State.IN_PROGRESS);
+        put(State.ASSIGNED, Event.REASSIGN, State.ASSIGNED);
+        put(State.IN_PROGRESS, Event.COMPLETE, State.DONE);
+        put(State.IN_PROGRESS, Event.ESCALATE, State.ESCALATED);
+        put(State.ESCALATED, Event.ASSIGN, State.ASSIGNED);
+    }
+    private void put(State s, Event e, State t) { transitions.put(s + ":" + e, t); }
+
+    synchronized boolean apply(Event e) {
+        State next = transitions.get(state + ":" + e);
+        if (next == null) return false;
+        state = next;
+        return true;
+    }
+    synchronized State state() { return state; }
 }
+~~~
+
+### Vì sao không cho chuyển tùy ý
+Cho phép chuyển trạng thái tùy ý dẫn đến dữ liệu vô lý (task DONE quay lại IN_PROGRESS không qua bước nào). Bảng chuyển trạng thái đóng vai trò "hợp đồng" giữa các service và UI.
+
+### Audit và idempotency
+Mỗi chuyển trạng thái nên ghi log (ai, khi nào, từ → tới). Nếu nhận sự kiện trùng (ví dụ complete gửi 2 lần), lần thứ 2 bị từ chối (vì DONE không có COMPLETE) — đây là idempotency tự nhiên.
+
+### Liên hệ phỏng vấn
+- Hỏi: Vì sao dùng state machine thay vì if-else? Trả lời: rõ ràng, dễ test, dễ audit, tránh trạng thái vô lý.
+- Hỏi: Làm sao xử lý race condition khi 2 request cùng complete? Trả lời: dùng lock/transaction DB với điều kiện trạng thái hiện tại.
+
+> Senior tip: lưu trạng thái và history trong DB với version (optimistic locking) để tránh lost update.
+`,
+  exercises: [{
+    title: 'Cài state machine cho task với bảng chuyển trạng thái',
+    prompt: `Cài {{TaskStateMachine}} với các trạng thái NEW/ASSIGNED/IN_PROGRESS/DONE/ESCALATED và sự kiện ASSIGN/START/COMPLETE/ESCALATE/REASSIGN. {{apply(event)}} trả true nếu chuyển hợp lệ và cập nhật trạng thái, false nếu không. {{state()}} trả trạng thái hiện tại. Thread-safe.`,
+    starter: `enum State { NEW, ASSIGNED, IN_PROGRESS, DONE, ESCALATED }
+enum Event { ASSIGN, START, COMPLETE, ESCALATE, REASSIGN }
+class TaskStateMachine {
+    private State state = State.NEW;
+    synchronized boolean apply(Event e) { throw new UnsupportedOperationException("TODO"); }
+    synchronized State state() { return state; }
+}`,
+    tests: `public class Main {
+  static int p=0,t=0; static void ck(String n,Runnable r){t++;try{r.run();p++;System.out.println("PASS "+n);}catch(Throwable e){System.out.println("FAIL "+n+": "+e);}}
+  static void eq(Object a,Object b){if(!Objects.equals(a,b))throw new AssertionError(a+" != "+b);}
+  public static void main(String[] x){
+    ck("new->assigned",()->{TaskStateMachine s=new TaskStateMachine();if(!s.apply(Event.ASSIGN))throw new AssertionError();eq(State.ASSIGNED,s.state());});
+    ck("assigned->in_progress",()->{TaskStateMachine s=new TaskStateMachine();s.apply(Event.ASSIGN);if(!s.apply(Event.START))throw new AssertionError();eq(State.IN_PROGRESS,s.state());});
+    ck("in_progress->done",()->{TaskStateMachine s=new TaskStateMachine();s.apply(Event.ASSIGN);s.apply(Event.START);if(!s.apply(Event.COMPLETE))throw new AssertionError();eq(State.DONE,s.state());});
+    ck("invalid transition returns false",()->{TaskStateMachine s=new TaskStateMachine();if(s.apply(Event.COMPLETE))throw new AssertionError();eq(State.NEW,s.state());});
+    ck("done cannot be completed again",()->{TaskStateMachine s=new TaskStateMachine();s.apply(Event.ASSIGN);s.apply(Event.START);s.apply(Event.COMPLETE);if(s.apply(Event.COMPLETE))throw new AssertionError();});
+    System.out.println("RESULT "+p+"/"+t);
+  }
+}`,
+    reference: `enum State { NEW, ASSIGNED, IN_PROGRESS, DONE, ESCALATED }
+enum Event { ASSIGN, START, COMPLETE, ESCALATE, REASSIGN }
+class TaskStateMachine {
+    private State state = State.NEW;
+    private final java.util.Map<String, State> t = new java.util.HashMap<>();
+    TaskStateMachine() {
+        t.put("NEW:ASSIGN", State.ASSIGNED);
+        t.put("ASSIGNED:START", State.IN_PROGRESS);
+        t.put("ASSIGNED:REASSIGN", State.ASSIGNED);
+        t.put("IN_PROGRESS:COMPLETE", State.DONE);
+        t.put("IN_PROGRESS:ESCALATE", State.ESCALATED);
+        t.put("ESCALATED:ASSIGN", State.ASSIGNED);
+    }
+    synchronized boolean apply(Event e) {
+        State next = t.get(state + ":" + e);
+        if (next == null) return false;
+        state = next;
+        return true;
+    }
+    synchronized State state() { return state; }
+}`,
+    hints: ['Dùng map key = state + ":" + event.', 'Chỉ cập nhật state nếu có transition hợp lệ.'],
+    explain: `Bảng chuyển trạng thái là hợp đồng rõ ràng. Trong production, lưu state và history trong DB với optimistic locking để tránh lost update.`
+  }],
+  check: [
+    { q: 'Task ở trạng thái DONE, nhận sự kiện COMPLETE. Kết quả?', options: ['Chuyển sang IN_PROGRESS', 'Từ chối (false)', 'Tự động reopen', 'Ném exception'], answer: 1, explain: 'Không có transition DONE:COMPLETE, nên apply trả false và state không đổi.' },
+    { q: 'Vì sao cần audit log cho chuyển trạng thái?', options: ['Để debug và truy vết', 'Để tăng tốc', 'Để giảm dung lượng DB', 'Không cần'], answer: 0, explain: 'Audit log giúp truy vết ai làm gì khi nào, quan trọng cho compliance và debug.' }
+  ], tags: ['state-machine', 'workflow', 'task', 'audit']
+},
+{
+  id: 'lesson-microservices-022', track: 'microservices', order: 22,
+  title: 'Timer escalation theo SLA: Clock giả và kiểm tra quá hạn', level: 'senior', minutes: 30,
+  goals: ['Hiểu khái niệm SLA và escalation', 'Cài đặt timer escalation với Clock giả (deterministic)', 'Giải thích vì sao không dùng System.currentTimeMillis trong test'],
+  body: `**Tóm tắt:** Escalation theo SLA (Service Level Agreement — cam kết thời gian xử lý) tự động leo thang task khi quá hạn. Dùng Clock giả (fake clock) trong test để kiểm tra deterministic, tránh phụ thuộc thời gian thực.
+
+### SLA và escalation
+SLA là cam kết thời gian xử lý một task (ví dụ 4 giờ). Nếu task không hoàn thành trong SLA, hệ thống escalate (leo thang) để người khác xử lý.
+
+### Vì sao cần Clock giả
+Dùng System.currentTimeMillis() trong test làm test phụ thuộc thời gian thực, khó deterministic. Clock giả cho phép đặt thời gian tùy ý.
+
+### Cài đặt
+~~~java
+interface Clock { long now(); }
+class SystemClock implements Clock { public long now() { return System.currentTimeMillis(); } }
+class FakeClock implements Clock { private long t; FakeClock(long t){this.t=t;} void advance(long ms){t+=ms;} public long now(){return t;} }
+
+class SlaTimer {
+    private final Clock clock;
+    private final long slaMs;
+    private long start;
+    SlaTimer(Clock clock, long slaMs){ this.clock=clock; this.slaMs=slaMs; start=clock.now(); }
+    boolean isOverdue(){ return clock.now() - start > slaMs; }
+}
+~~~
+
+### Liên hệ phỏng vấn
+- Hỏi: Vì sao không dùng Thread.sleep trong test? Trả lời: chậm và không deterministic; test phụ thuộc thời gian thực khó kiểm soát.
+- Hỏi: Escalation có thể retry không? Trả lời: có, dùng scheduler (quartz, scheduled executor) với idempotency.
+- Hỏi: Làm sao xử lý task escalate rồi người xử lý mới bắt đầu? Trả lời: reassign về trạng thái ASSIGNED và reset timer.
+- Hỏi: Vì sao nên dùng java.time.Clock? Trả lời: chuẩn JDK, hỗ trợ fixed/offset, dễ test.
+
+### Cơ chế từng bước (escalation theo SLA)
+**SLA** (Service Level Agreement — cam kết thời gian xử lý) là thời gian tối đa mà task phải được hoàn thành. **Escalation** là hành động leo thang khi task quá hạn: gán cho người khác, thông báo quản lý, hoặc tự động thực hiện bước dự phòng. **Clock giả** là đối tượng giả lập thời gian trong test, cho phép đặt và tăng thời gian tùy ý.
+
+1. Khi task được gán, SlaTimer ghi nhận thời điểm bắt đầu (start = clock.now()).
+2. Hệ thống định kỳ (hoặc khi có sự kiện) kiểm tra isOverdue() = clock.now() - start > slaMs.
+3. Nếu quá hạn, escalate: chuyển trạng thái sang ESCALATED (qua state machine), gán lại người xử lý, reset timer.
+4. Sau khi xử lý xong, complete task và dừng timer.
+
+### Lỗi hay gặp trên production
+- Triệu chứng: task bị escalate nhiều lần lặp lại. Nguyên nhân: không reset timer sau escalate, hoặc state machine không chặn escalate từ ESCALATED. Cách sửa: reset start khi escalate, và chỉ cho phép escalate từ IN_PROGRESS.
+- Triệu chứng: test flaky do phụ thuộc thời gian thực. Nguyên nhân: dùng System.currentTimeMillis() và Thread.sleep. Cách sửa: dùng Clock giả và advance deterministic.
+- Triệu chứng: escalation không chạy vì scheduler bị block. Nguyên nhân: task chạy đồng bộ trong scheduler thread. Cách sửa: dùng async executor và monitoring.
+
+> Senior tip: dùng java.time.Clock (Clock.fixed, Clock.offset) thay vì tự viết interface khi có thể, và theo dõi p99 thời gian escalation.
+`,
+  exercises: [{
+    title: 'Cài SlaTimer với Clock giả và kiểm tra quá hạn',
+    prompt: `Cài {{Clock}} interface, {{FakeClock}}, và {{SlaTimer}}. {{SlaTimer(clock, slaMs)}} ghi nhận thời điểm bắt đầu. {{isOverdue()}} trả true nếu thời gian hiện tại vượt quá slaMs. {{advance(ms)}} trên FakeClock tăng thời gian. Thread-safe không bắt buộc.`,
+    starter: `interface Clock { long now(); }
+class FakeClock implements Clock {
+    private long t;
+    FakeClock(long t) { this.t = t; }
+    void advance(long ms) { throw new UnsupportedOperationException("TODO"); }
+    public long now() { return t; }
+}
+class SlaTimer {
+    private final Clock clock;
+    private final long slaMs;
+    private final long start;
+    SlaTimer(Clock clock, long slaMs) { throw new UnsupportedOperationException("TODO"); }
+    boolean isOverdue() { throw new UnsupportedOperationException("TODO"); }
+}`,
+    tests: `public class Main {
+  static int p=0,t=0; static void ck(String n,Runnable r){t++;try{r.run();p++;System.out.println("PASS "+n);}catch(Throwable e){System.out.println("FAIL "+n+": "+e);}}
+  static void eq(Object a,Object b){if(!Objects.equals(a,b))throw new AssertionError(a+" != "+b);}
+  public static void main(String[] x){
+    ck("not overdue initially",()->{FakeClock c=new FakeClock(0);SlaTimer t=new SlaTimer(c,1000);if(t.isOverdue())throw new AssertionError();});
+    ck("overdue after advance",()->{FakeClock c=new FakeClock(0);SlaTimer t=new SlaTimer(c,1000);c.advance(1500);if(!t.isOverdue())throw new AssertionError();});
+    ck("exact boundary not overdue",()->{FakeClock c=new FakeClock(0);SlaTimer t=new SlaTimer(c,1000);c.advance(1000);if(t.isOverdue())throw new AssertionError();});
+    ck("advance multiple times",()->{FakeClock c=new FakeClock(0);SlaTimer t=new SlaTimer(c,500);c.advance(300);if(t.isOverdue())throw new AssertionError();c.advance(300);if(!t.isOverdue())throw new AssertionError();});
+    System.out.println("RESULT "+p+"/"+t);
+  }
+}`,
+    reference: `interface Clock { long now(); }
+class FakeClock implements Clock {
+    private long t;
+    FakeClock(long t) { this.t = t; }
+    void advance(long ms) { t += ms; }
+    public long now() { return t; }
+}
+class SlaTimer {
+    private final Clock clock;
+    private final long slaMs;
+    private final long start;
+    SlaTimer(Clock clock, long slaMs) { this.clock = clock; this.slaMs = slaMs; this.start = clock.now(); }
+    boolean isOverdue() { return clock.now() - start > slaMs; }
+}`,
+    hints: ['Ghi nhận start = clock.now() trong constructor.', 'isOverdue = clock.now() - start > slaMs.'],
+    explain: `Clock giả giúp test deterministic. Trong production dùng java.time.Clock hoặc scheduler.`
+  }],
+  check: [
+    { q: 'Vì sao không dùng System.currentTimeMillis() trong test escalation?', options: ['Chậm', 'Không deterministic, phụ thuộc thời gian thực', 'Không thread-safe', 'Không hỗ trợ Java 17'], answer: 1, explain: 'Test phụ thuộc thời gian thực khó kiểm soát và không deterministic.' },
+    { q: 'SLA là gì?', options: ['Cam kết thời gian xử lý', 'Loại database', 'Framework Java', 'Giao thức mạng'], answer: 0, explain: 'SLA là cam kết thời gian xử lý một task.' }
+  ], tags: ['sla', 'escalation', 'clock', 'timer', 'test']
+}
+
 );
