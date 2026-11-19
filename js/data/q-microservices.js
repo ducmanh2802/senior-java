@@ -9580,5 +9580,138 @@ Không có broker tốt nhất tuyệt đối, chỉ có broker phù hợp với
   ],
   tags: ['Kafka', 'RabbitMQ', 'task queue', 'event stream', 'chọn broker'],
 },
+{
+  id: 'microservices-113',
+  topic: 'microservices',
+  level: 'senior',
+  q: 'Nhà máy thông minh có hàng nghìn cảm biến IoT gửi dữ liệu về server. Bạn chọn MQTT hay Kafka cho đường truyền từ edge về cloud? Giải thích QoS 0/1/2, retained message và vai trò edge gateway.',
+  a: `**Tóm tắt:** MQTT là giao thức publish/subscribe nhẹ cho thiết bị IoT (QoS 0/1/2, retained message, topic phân cấp), phù hợp edge; Kafka là event stream durable cho backend. Thường dùng cả hai: edge gateway nhận MQTT từ thiết bị, rồi đẩy vào Kafka cho các service xử lý.
+
+### MQTT là gì và vì sao nhẹ
+MQTT (Message Queuing Telemetry Transport) là giao thức publish/subscribe chạy trên TCP (thường port 1883 hoặc 8883 với TLS). Thiết kế cho mạng yếu, thiết bị ít tài nguyên: header tối thiểu 2 byte, keep-alive định kỳ, payload bất kỳ (thường JSON/protobuf). Broker MQTT (Mosquitto, EMQX, HiveMQ) nhận message từ publisher và gửi cho subscriber theo topic phân cấp bằng dấu {{/}} (ví dụ {{factory/line1/machineA/temperature}}).
+
+### QoS 0, 1, 2 — mức đảm bảo giao hàng
+- **QoS 0 (at most once)**: fire-and-forget, không ack, có thể mất message. Dùng cho dữ liệu tần suất cao mà mất vài mẫu không sao (nhiệt độ mỗi giây).
+- **QoS 1 (at least once)**: publish → PUBACK, retry nếu không nhận ack → có thể trùng. Phổ biến nhất cho telemetry.
+- **QoS 2 (exactly once)**: handshake 4 bước (PUBLISH → PUBREC → PUBREL → PUBCOMP), đảm bảo không trùng nhưng chậm và tốn tài nguyên. Ít dùng cho IoT vì overhead.
+
+### Retained message và Last Will
+- **Retained message**: broker lưu message cuối cùng của topic; client mới subscribe nhận ngay trạng thái hiện tại (ví dụ trạng thái máy on/off) mà không chờ message mới.
+- **Last Will and Testament (LWT)**: client khai báo message "tôi chết" khi kết nối; nếu mất kết nối bất ngờ, broker publish LWT để các service biết thiết bị offline.
+
+### Edge gateway và store-and-forward
+Thiết bị IoT thường không kết nối trực tiếp cloud vì NAT, firewall, mạng chập chờn. **Edge gateway** (chạy tại nhà máy) nhận MQTT từ thiết bị, buffer dữ liệu khi mất kết nối cloud, rồi đẩy lên Kafka/cloud khi mạng khôi phục. Store-and-forward = lưu tạm trên đĩa/flash, gửi lại khi có mạng, kèm timestamp gốc để server biết dữ liệu đến trễ.
+
+### Khi nào chọn cái nào
+| Nhu cầu | MQTT | Kafka |
+|---|---|---|
+| Thiết bị nhúng, mạng yếu | ✓ | ✗ |
+| Fan-out nhiều subscriber theo topic | ✓ | ✓ |
+| Replay dữ liệu cũ | ✗ (chỉ retained cuối) | ✓ |
+| Throughput lớn, lưu lâu | ✗ | ✓ |
+| Ordering theo key | ✗ | ✓ |
+
+### Ví dụ đời thực
+Nhà máy có 2000 cảm biến nhiệt độ gửi mỗi giây. Ban đầu team cho thiết bị publish thẳng lên Kafka qua MQTT-Kafka bridge: triệu chứng CPU bridge cao, message đến trễ 30s khi mạng chập chờn, mất dữ liệu khi bridge restart. Điều tra: Kafka không phù hợp cho thiết bị không ổn định; bridge là điểm nghẽn. Xử lý: đặt EMQX broker tại edge (gateway trong nhà máy), thiết bị publish QoS 1 với retained message cho trạng thái; gateway buffer vào SQLite khi mất kết nối cloud, rồi đẩy vào Kafka topic {{sensor.telemetry}} (partition key = machineId) khi khôi phục. Kết quả: thiết bị không còn phụ thuộc cloud, mất kết nối 10 phút vẫn không mất dữ liệu, server nhận dữ liệu với timestamp gốc.
+
+### Trả lời mẫu khi phỏng vấn
+Tôi phân tầng: thiết bị → MQTT (QoS 1, retained cho trạng thái, LWT cho offline) → edge gateway (store-and-forward buffer) → Kafka (durable, replay, ordering theo machineId) → service xử lý. MQTT nhẹ và chịu mạng yếu, Kafka mạnh cho stream processing và replay. Không cho thiết bị publish thẳng cloud vì mạng nhà máy không ổn định và thiết bị thiếu tài nguyên. Edge gateway là cầu nối: buffer khi mất mạng, đẩy lên Kafka khi khôi phục, kèm timestamp gốc để server xử lý dữ liệu đến trễ. QoS 2 hiếm khi cần vì overhead cao; QoS 1 + idempotency ở server là lựa chọn thực tế.
+
+> Senior tip: đừng dùng QoS 2 cho IoT vì handshake 4 bước tốn pin và bandwidth; dùng QoS 1 + idempotency key ở server. Retained message chỉ nên dùng cho "trạng thái hiện tại", không dùng cho "sự kiện" vì retained ghi đè, mất lịch sử.`,
+  follow: [
+    'Edge gateway buffer đầy khi mất kết nối cloud lâu, bạn xử lý backpressure thế nào?',
+    'QoS 1 có thể trùng message, server xử lý idempotency ra sao?',
+    'Retained message khác gì với "last value" trong Kafka compacted topic?'
+  ],
+  tags: ['MQTT', 'Kafka', 'IoT', 'edge gateway', 'QoS'],
+},
+{
+  id: 'microservices-114',
+  topic: 'microservices',
+  level: 'senior',
+  q: 'Máy gửi lại dữ liệu sau khi mất kết nối, và dữ liệu đến trễ (late arrival). Bạn xử lý idempotency và ordering thế nào? Giải thích watermark, event time vs processing time.',
+  a: `**Tóm tắt:** Dữ liệu IoT thường đến trễ hoặc trùng. Server phải idempotent (dedup theo eventId/machineId+timestamp) và xử lý late arrival bằng watermark + grace period, phân biệt event time (thời điểm máy đo) và processing time (thời điểm server nhận).
+
+### Event time vs processing time
+- **Event time**: thời điểm cảm biến đo (ghi trong payload, từ đồng hồ máy). Đây là "thời gian thật" của sự kiện.
+- **Processing time**: thời điểm server xử lý. Khác event time vì mạng chậm, buffer, retry.
+- Nếu dùng processing time để aggregate (ví dụ "nhiệt độ trung bình mỗi phút"), kết quả sai khi dữ liệu đến trễ: sự kiện đo lúc 10:00 nhưng xử lý lúc 10:05 bị tính vào bucket 10:05.
+
+### Watermark và grace period
+**Watermark** là mốc thời gian W: "tôi tin rằng mọi event có event time ≤ W đã đến". Khi watermark tiến lên, window (ví dụ mỗi phút) được đóng và aggregate được phát. **Grace period** (allowed lateness) là thời gian chờ thêm sau khi window đóng để nhận late data: nếu event đến trong grace period, cập nhật kết quả; nếu quá grace period, bỏ vào side output / dead letter.
+
+### Idempotency khi máy gửi lại
+Máy retry khi không nhận ack → cùng eventId gửi nhiều lần. Server dedup bằng:
+- **Idempotency key**: {{machineId + sequenceNumber}} hoặc {{eventId UUID}}. Lưu trong Redis/DB với TTL (ví dụ 24h) và SETNX; nếu đã tồn tại, trả kết quả cũ.
+- **Upsert theo (machineId, eventTime)**: ghi đè bản ghi cùng khóa, tránh duplicate.
+- **Inbox pattern**: consumer lưu messageId đã xử lý trong bảng inbox cùng transaction với business write.
+
+### Ordering theo máy
+Để xử lý đúng thứ tự sự kiện của cùng một máy, dùng **partition key = machineId** ở Kafka: mọi event của cùng máy vào cùng partition → consumer xử lý tuần tự. Nhưng nếu event đến trễ (event time cũ) thì consumer vẫn nhận theo thứ tự arrival, không theo event time → cần reorder buffer (sort theo event time trong grace period) hoặc chấp nhận approximate.
+
+### Ví dụ đời thực
+Nhà máy có máy A gửi nhiệt độ mỗi giây. Mạng chập chờn: batch 100 event bị buffer 5 phút rồi gửi cùng lúc. Server aggregate "nhiệt độ trung bình mỗi phút". Ban đầu dùng processing time → bucket 10:05 chứa 100 event đo lúc 10:00 → báo cáo sai. Điều tra: không phân biệt event time/processing time. Xử lý: parse event time từ payload, dùng watermark với grace period 2 phút, aggregate theo event time; event đến trong 2 phút thì cập nhật bucket, quá 2 phút thì ghi side output để xem xét. Dedup theo {{machineId + seq}} trong Redis TTL 1h. Kết quả: báo cáo chính xác, late data được xử lý có kiểm soát.
+
+### Trả lời mẫu khi phỏng vấn
+Tôi phân biệt event time và processing time: aggregate luôn theo event time. Dùng watermark để biết khi nào đóng window, grace period để nhận late data có kiểm soát, side output cho dữ liệu quá muộn. Idempotency: idempotency key từ máy (machineId+seq) hoặc eventId UUID, dedup trong Redis/DB với TTL, inbox pattern cho consumer. Ordering: partition key = machineId đảm bảo cùng máy xử lý tuần tự, nhưng late arrival vẫn có thể out-of-order → cần reorder buffer trong grace period. Đây là bài toán stream processing thực sự, không chỉ là "nhận message rồi ghi DB".
+
+> Senior tip: watermark quá chặt (grace period nhỏ) thì mất late data; quá lỏng thì kết quả chậm và tốn bộ nhớ. Chọn grace period theo SLA dữ liệu (ví dụ 2 phút cho telemetry). Luôn có side output để không mất dữ liệu im lặng.`,
+  follow: [
+    'Grace period nên đặt bao lâu cho telemetry nhà máy và vì sao?',
+    'Làm sao xử lý dữ liệu đến muộn hơn grace period mà không mất?',
+    'Idempotency key nên do thiết bị sinh hay server sinh?'
+  ],
+  tags: ['late arrival', 'watermark', 'event time', 'idempotency', 'IoT'],
+},
+{
+  id: 'microservices-115',
+  topic: 'microservices',
+  level: 'lead',
+  q: 'Thứ tự sự kiện theo máy: bạn chọn partition key = machineId ở Kafka. Giải thích guarantee ordering, xử lý out-of-order, và khi nào cần reorder buffer hoặc chấp nhận approximate result.',
+  a: `**Tóm tắt:** Kafka chỉ đảm bảo thứ tự trong một partition. Đặt partition key = machineId đảm bảo mọi event của cùng máy vào cùng partition → consumer xử lý tuần tự theo offset. Nhưng nếu event đến trễ (late arrival) hoặc retry gửi lại, thứ tự arrival có thể khác thứ tự event time → cần reorder buffer trong grace period hoặc chấp nhận approximate.
+
+### Kafka ordering guarantee
+Kafka đảm bảo thứ tự message **trong một partition** theo offset tăng dần. Producer gửi event theo thứ tự → broker append theo thứ tự → consumer đọc theo offset. Nếu dùng nhiều partition cho cùng key, ordering bị phá vỡ. Vì vậy **partition key = machineId** (hoặc orderId) là cách duy nhất để đảm bảo ordering theo máy: hash(machineId) % numPartitions → cùng máy luôn cùng partition.
+
+### Vấn đề out-of-order
+Thứ tự arrival ≠ thứ tự event time khi:
+- Máy gửi batch sau khi buffer (late arrival).
+- Retry gửi lại event cũ.
+- Nhiều producer cùng máy (nhiều sensor) gửi không đồng bộ.
+Consumer nhận event theo offset (arrival order), nhưng business logic cần event time order. Ví dụ: máy gửi "started" lúc 10:00 rồi "stopped" lúc 10:01, nhưng "started" đến server lúc 10:02 (sau "stopped") → nếu xử lý ngay, trạng thái sai.
+
+### Giải pháp: reorder buffer
+Consumer giữ **reorder buffer** (in-memory hoặc state store) trong grace period:
+- Nhận event, put vào buffer theo event time.
+- Khi watermark tiến lên (không còn event cũ hơn W), flush buffer theo event time order.
+- Nếu event đến sau grace period → side output / DLT, không cập nhật main result.
+
+Chi phí: bộ nhớ tăng, latency tăng (chờ grace period), complexity. Phù hợp khi cần chính xác (billing, audit).
+
+### Chấp nhận approximate (eventual correctness)
+Nếu không cần chính xác tuyệt đối, xử lý theo arrival order và chấp nhận sai lệch nhỏ: ví dụ dashboard realtime hiển thị trạng thái máy, sai lệch vài giây không quan trọng. Dùng **last-write-wins** theo event time: mỗi event mang version/timestamp, consumer so sánh và chỉ apply nếu timestamp lớn hơn.
+
+### Trade-off
+| Yêu cầu | Reorder buffer | Approximate |
+|---|---|---|
+| Chính xác audit/billing | ✓ | ✗ |
+| Latency thấp | ✗ | ✓ |
+| Bộ nhớ | Cao | Thấp |
+| Complexity | Cao | Thấp |
+
+### Ví dụ đời thực
+Hệ thống theo dõi trạng thái máy (running/idle/fault) của 500 máy. Ban đầu partition key = machineId, consumer update state ngay khi nhận → khi mạng chập chờn, event "fault" đến trước "running" (do retry) → dashboard hiển thị fault rồi running → alert sai. Điều tra: không xử lý out-of-order. Xử lý: thêm reorder buffer 30 giây trong consumer (Kafka Streams state store), flush theo event time; event đến muộn hơn 30s ghi side output để review. Kết quả: dashboard chính xác, alert đúng. Chi phí: latency tăng 30s, bộ nhớ tăng ~50MB cho 500 máy.
+
+### Trả lời mẫu khi phỏng vấn
+Kafka chỉ đảm bảo thứ tự trong partition, nên partition key = machineId là cách đảm bảo ordering theo máy. Nhưng arrival order ≠ event time order khi có late arrival/retry. Hai lựa chọn: (1) reorder buffer trong grace period → chính xác nhưng tăng latency và bộ nhớ; (2) approximate với last-write-wins theo timestamp → nhanh nhưng có thể sai lệch tạm thời. Chọn theo yêu cầu business: audit/billing cần chính xác → reorder; dashboard realtime → approximate. Luôn có side output cho event quá muộn để không mất dữ liệu im lặng.
+
+> Senior tip: partition count quyết định độ song song tối đa của consumer (số partition = số consumer tối đa xử lý thật). Với 500 máy, 12 partition là hợp lý nếu throughput cho phép: các máy sẽ chia sẻ partition theo hash(machineId), nhưng ordering của từng máy vẫn đúng vì cùng máy luôn cùng partition. Chọn partition count theo throughput mong muốn, không phải theo số máy. Đừng đặt partition quá lớn "cho tương lai" vì rebalance cost và metadata tăng theo số partition.`,
+  follow: [
+    'Nếu một máy gửi event từ hai sensor khác nhau, partition key nên là gì?',
+    'Reorder buffer nên đặt ở consumer hay dùng Kafka Streams state store?',
+    'Làm sao detect và xử lý event trùng (duplicate) trong reorder buffer?'
+  ],
+  tags: ['ordering', 'partition key', 'machineId', 'reorder buffer', 'Kafka'],
+},
 );
 
