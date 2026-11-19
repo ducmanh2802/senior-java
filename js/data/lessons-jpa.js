@@ -1693,10 +1693,10 @@ Benh vien co 30.000 benh nhan/ngay, 80% luot khoa tac chi doc lich kham, 20% dat
   }],check:[{q:'Retry sau khi gap OptimisticLockException (Spring boi thanh ObjectOptimisticLockingFailureException) nen lam gi?',options:['Gui lai UPDATE voi version cu','Mo transaction moi, doc entity moi (version moi), ap dung lai y dinh, gioi han so lan','Xoa cot version de het loi','Bat exception roi thu lai trong cung transaction, retry den khi thanh cong'],answer:1,explain:`Version cu chac chan tiep tuc that bai. Transaction hien da bi danh dau rollback-only nen khong the tiep tuc trong no, va retry vo han khuong dia tai. Xoa version thi quay lai lost update. Cach dung: transaction moi, doc lai, ap dung lai y dinh, co gioi han.`},{q:'@Query("UPDATE Product p SET p.stock = 0") @Modifying co tu tang cot @Version khong?',options:['Co, Hibernate luon tang version','Chi khi co @Transactional','Khong; bulk DML bo qua entity, phai tu SET version = version + 1 (hoac UPDATE VERSIONED trong HQL)','Chi tren PostgreSQL'],answer:2,explain:`Bulk DML chay thang xu database, khong qua entity managed nen khong co tang version tu dong. Hanh vi nay khong phu thuoc loai database, va retry khong lien quan. Neu khong tu tang version, cac transaction dang giu ban cu se ghi de khong phat hien duoc.`},{q:'Khi nao chon pessimistic lock (SELECT ... FOR UPDATE) hon @Version?',options:['Xung dot cuc hiem','Tranh chap cao tren it hang nong, xu ly ngan','Muon tranh hoan toan deadlock','Nguoi dung mo form sua 10 phut'],answer:1,explain:`Tranh chap cao tren hang nong lam optimistic lien tuc that va retry; kho ngan hieu qua hon. Form mo 10 phut ma kho DB thi chan nguoi khac het thoi gian, nen optimistic hon hon. Xung dot hiem cung la dat cua optimistic. Pessimistic lock van **co the** gay deadlock khong phai tranh duoc.`}],related:['jpa-004'],tags:['optimistic locking','@Version','lost update','retry']
 },
 {
-  id:'lesson-jpa-012',track:'jpa',order:12,title:'N+1 query: phat hien, do luong va khac phuc bang fetch plan',level:'senior',minutes:30,
-  goals:['Nhan dien N+1 trong log SQL va hieu vi sao no ton kem','So sanh cac chien luoc: fetch join, EntityGraph, batch fetching, DTO projection, hai query IN','Biet bat phan trang khi fetch join collection va cach xu ly','Viet code giam N+1 xuong 2 query bang mo phong repository dem luot goi'],
-  body:`### Hieu nhanh
-Ban lay 80 don hang bang mot query, roi trong vong lap goi {{order.getLines()}}. Moi lan goi, Hibernate phat them mot SELECT de lay lines cua don do. Tong cong 1 + 80 = 81 query. Do la **N+1**: 1 query cho danh sach cha, N query cho con. Moi query chi mat 1 ms trong database, nhung cong round-trip mang va lay connection, 81 query co the bien API 10 ms thanh 150 ms; voi 1.000 parent la vai giay.
+  id:'lesson-jpa-012',track:'jpa',order:12,title:'N+1 query: phát hiện, đo lường và khắc phục bằng fetch plan',level:'senior',minutes:30,
+  goals:['Nhận diện N+1 trong log SQL và hiểu vì sao nó tốn kém','So sánh các chiến lược: fetch join, EntityGraph, batch fetching, DTO projection, hai query IN','Biết bẫy phân trang khi fetch join collection và cách xử lý','Viết code giảm N+1 xuống 2 query bằng mô phỏng repository đếm lượt gọi'],
+  body:`### Hiểu nhanh
+Bạn lấy 80 đơn hàng ({{Order}}) bằng một query (một câu lệnh SQL do Hibernate sinh ra), rồi trong vòng lặp gọi {{order.getLines()}}. Mỗi lần gọi, Hibernate phát thêm một SELECT để lấy lines (các dòng hàng) của đơn đó. Tổng cộng 1 + 80 = 81 query. Đó là **N+1**: 1 query cho danh sách cha (parent), N query cho con (child). Mỗi query chỉ mất khoảng 1 ms bên trong database, nhưng mỗi lần như vậy còn tốn round-trip mạng (thời gian đi và về giữa ứng dụng và database) và thời gian lấy connection từ pool (connection pool là tập kết nối được mở sẵn và tái sử dụng). Vì thế 81 query có thể biến một API 10 ms thành 150 ms; với 1.000 parent là vài giây.
 
 ~~~java
 List<Order> orders = orderRepo.findAll();   // query 1: SELECT ... FROM orders
@@ -1705,43 +1705,43 @@ for (Order o : orders) {
 }
 ~~~
 
-Test chi co 1 order thi chi thay 2 query, nen N+1 thuong lot qua review. Muon bat duoc, test phai co nhieu parent va kiem so query **khong tang theo** so parent.
+Test chỉ có 1 order thì chỉ thấy 2 query, nên N+1 thường lọt qua review. Muốn bắt được, test phải có nhiều parent và kiểm số query **không tăng theo** số parent.
 
-### Phat hien N+1 trong production
-1. **Log SQL**: bat {{org.hibernate.SQL}} o DEBUG, dem so dong SELECT trong mot request.
-2. **Statistics**: {{hibernate.generate_statistics=true}} + JMX hoac Actuator endpoint {{/actuator/hibernate.statistics}} cho {{queryExecutionCount}}, {{entityLoadCount}}.
-3. **APM** (Datadog, New Relic, Elastic APM): xem span database, so query moi request.
-4. **Integration test assert**: dung proxy DataSource dem query (giong bai tap ben duoi) va assert {{queryCount <= expected}}.
-5. **Slow query log cua DB**: N+1 thuong xuat hien la hang loat query giong nhau, cung tham so khac nhau.
+### Phát hiện N+1 trong production
+1. **Log SQL**: bật {{org.hibernate.SQL}} ở mức DEBUG, đếm số dòng SELECT trong một request.
+2. **Statistics**: {{hibernate.generate_statistics=true}} + JMX hoặc Actuator endpoint {{/actuator/hibernate.statistics}} cho {{queryExecutionCount}}, {{entityLoadCount}}. (Actuator là module của Spring Boot mở các endpoint để xem số liệu vận hành.)
+3. **APM** (Application Performance Monitoring — công cụ theo dõi hiệu năng như Datadog, New Relic, Elastic APM): xem span database, tức đoạn gọi xuống database trong một trace của request, và đếm số query mỗi request.
+4. **Integration test assert**: dùng proxy DataSource đếm query (giống bài tập bên dưới) và assert {{queryCount <= expected}} (khẳng định số query không vượt ngưỡng mong đợi).
+5. **Slow query log của DB**: N+1 thường xuất hiện là hàng loạt query giống nhau, cùng tham số khác nhau.
 
-Khi thay so query ty le thuong voi so luong entity cha, do la N+1.
+Khi thấy số query tỷ lệ thuận với số lượng entity cha, đó là N+1.
 
-### LAZY hay EAGER deu khong tu chua N+1
-- {{LAZY}} chi **tri hoan** viec tai den luc truy cap. Truy cap trong vong lap thi moi mot query.
-- {{EAGER}} nghia la "phai co san khi entity duoc tai", **khong** co nghia "dung JOIN". Voi {{em.find}}, Hibernate co the JOIN; nhung voi JPQL {{SELECT o FROM Order o}}, cau SQL chi doc bang orders, roi Hibernate phai chay **them** query cho association EAGER cua tung order: van la N+1, va con xay ra o moi noi load Order ke ca khong can du lieu do.
-- Theo chuan JPA, {{@ManyToOne}} va {{@OneToOne}} mac dinh la EAGER. Nen ghi {{fetch = FetchType.LAZY}} tu minh roi chon fetch plan theo tung use case.
+### LAZY hay EAGER đều không tự chữa N+1
+- {{LAZY}} (tải lười) chỉ **trì hoãn** việc tải đến lúc truy cập. Truy cập trong vòng lặp thì mỗi lần là một query.
+- {{EAGER}} (tải ngay) nghĩa là "phải có sẵn khi entity được tải", **không** có nghĩa "dùng JOIN". Với {{em.find}}, Hibernate có thể JOIN; nhưng với JPQL (ngôn ngữ query của JPA) {{SELECT o FROM Order o}}, câu SQL chỉ đọc bảng orders, rồi Hibernate phải chạy **thêm** query cho association EAGER của từng order: vẫn là N+1, và còn xảy ra ở mọi nơi load Order kể cả không cần dữ liệu đó.
+- Theo chuẩn JPA, {{@ManyToOne}} và {{@OneToOne}} mặc định là EAGER. Nên ghi {{fetch = FetchType.LAZY}} từ mình rồi chọn fetch plan (kế hoạch tải dữ liệu) theo từng use case.
 
-### Cach sua: so sanh chi tiet
-| Cach | So query | Uu diem | Cam bay |
+### Cách sửa: so sánh chi tiết
+| Cách | Số query | Ưu điểm | Cạm bẫy |
 |---|---|---|---|
-| Fetch join / EntityGraph | 1 | Don gian, Hibernate tu loai parent trung (Hibernate 6) | Nhan dong; khong phan trang an toan khi fetch collection |
-| Batch fetching ({{@BatchSize}} / {{hibernate.default_batch_fetch_size}}) | 1 + ceil(N/batch) | It sua code, khong can doi query | N rat lon van nhieu query; IN dai co the cham gioi han tham so DB |
-| DTO projection | 1 | Nhe nhat, dung cot man hinh can | Moi man hinh mot query rieng |
-| Hai query + IN | 2 | Kiem soat hoan toan, khong nhan dong | IN qua dai (Oracle 1.000, SQL Server ~2.100) phai chia lo |
+| Fetch join / EntityGraph | 1 | Đơn giản, Hibernate tự loại parent trùng (Hibernate 6) | Nhân dòng; không phân trang an toàn khi fetch collection |
+| Batch fetching ({{@BatchSize}} / {{hibernate.default_batch_fetch_size}}) | 1 + ceil(N/batch) | Ít sửa code, không cần đổi query | N rất lớn vẫn nhiều query; IN dài có thể chạm giới hạn tham số DB |
+| DTO projection | 1 | Nhẹ nhất, đúng cột màn hình cần | Mỗi màn hình một query riêng |
+| Hai query + IN | 2 | Kiểm soát hoàn toàn, không nhân dòng | IN quá dài (Oracle 1.000, SQL Server ~2.100) phải chia lô |
 
 #### 1. Fetch join
 ~~~java
 @Query("SELECT o FROM Order o JOIN FETCH o.lines WHERE o.status = :s")
 List<Order> findWithLines(@Param("s") String status);
 ~~~
-Tu Hibernate 6, ket qua tu loai parent trung (khong can DISTINCT nhu Hibernate 5). Voi collection, JOIN nhan dong: order co 3 lines chiem 3 dong trong result set. Hibernate gom lai trong RAM.
+Từ Hibernate 6, kết quả tự loại parent trùng (không cần DISTINCT như Hibernate 5). Với collection, JOIN nhân dòng: order có 3 lines chiếm 3 dòng trong result set. Hibernate gom lại trong RAM.
 
 #### 2. EntityGraph
 ~~~java
 @EntityGraph(attributePaths = "lines")
 List<Order> findWithLines();
 ~~~
-Tach fetch plan ra khoi query, tai dung duoc cho nhieu method repository.
+Tách fetch plan ra khỏi query, tái dùng được cho nhiều method repository.
 
 #### 3. Batch fetching
 ~~~java
@@ -1749,47 +1749,47 @@ Tach fetch plan ra khoi query, tai dung duoc cho nhieu method repository.
 @BatchSize(size = 50)
 List<Line> lines;
 ~~~
-Hoac cau hinh toan cuc {{spring.jpa.properties.hibernate.default_batch_fetch_size=50}}. Khi ban cham vao lines cua order dau tien, Hibernate tai lines cho toi da 50 order dang cho cung luc bang {{WHERE order_id IN (...)}}. 80 order: 1 + 2 query thay vi 81.
+Hoặc cấu hình toàn cục {{spring.jpa.properties.hibernate.default_batch_fetch_size=50}}. Khi bạn chạm vào lines của order đầu tiên, Hibernate tải lines cho tối đa 50 order đang chờ cùng lúc bằng {{WHERE order_id IN (...)}}. 80 order: 1 + 2 query thay vì 81.
 
 #### 4. DTO projection
 ~~~java
 @Query("SELECT new com.shop.OrderRow(o.id, o.total) FROM Order o")
 List<OrderRow> findAllRow();
 ~~~
-Khong tao entity, khong co lazy, khong N+1. Dung cho man hinh chi doc, danh sach lon.
+Không tạo entity, không có lazy, không N+1. Dùng cho màn hình chỉ đọc, danh sách lớn. (DTO = Data Transfer Object, object chỉ chứa dữ liệu cần trả về, không gắn với persistence context.)
 
-#### 5. Hai query tu viet (bai tap ben duoi)
+#### 5. Hai query tự viết (bài tập bên dưới)
 ~~~text
 orders = queryOrders()                 // query 1
 lines  = queryLinesByOrderIds(ids)     // query 2: WHERE order_id IN (1, 2, 3)
 group lines by orderId                 // ghep trong RAM, khong query trong vong lap
 ~~~
-Day la cach Hibernate batch fetching hoat dong ben duoi.
+Đây là cách Hibernate batch fetching hoạt động bên dưới.
 
-### Bat kinh dien: fetch join collection + phan trang
-JOIN tra mot dong cho moi cap (order, line): order co 3 lines chiem 3 dong. Neu dat {{LIMIT 20}} vao SQL, ban co the nhan 20 dong thuoc 7 order, order cuoi bi cat mat lines. Hibernate biet dieu nay nen khi co {{JOIN FETCH}} collection ke {{setMaxResults}} (hoac {{Pageable}}), no **khong** dua LIMIT xuong SQL ma tai **toan bo** ket qua roi cat trong RAM, chi in canh bao HHH90003004. Bang 1 trieu order se gay OOM. Bat {{hibernate.query.fail_on_pagination_over_collection_fetch=true}} de bien canh bao thanh exception ngay khi test.
+### Bẫy kinh điển: fetch join collection + phân trang
+JOIN trả một dòng cho mỗi cặp (order, line): order có 3 lines chiếm 3 dòng. Nếu đặt {{LIMIT 20}} vào SQL, bạn có thể nhận 20 dòng thuộc 7 order, order cuối bị cắt mất lines. Hibernate biết điều này nên khi có {{JOIN FETCH}} collection kèm {{setMaxResults}} (hoặc {{Pageable}}), nó **không** đưa LIMIT xuống SQL mà tải **toàn bộ** kết quả rồi cắt trong RAM, chỉ in cảnh báo HHH90003004. Bảng 1 triệu order sẽ gây OOM (OutOfMemoryError — hết bộ nhớ heap). Bật {{hibernate.query.fail_on_pagination_over_collection_fetch=true}} để biến cảnh báo thành exception ngay khi test.
 
-Cach dung: phan trang **chi tren parent** (query 1 lay 20 order), roi tai lines cho 20 id do (fetch join voi {{WHERE o.id IN :ids}}, hoac batch fetching).
+Cách đúng: phân trang **chỉ trên parent** (query 1 lấy 20 order), rồi tải lines cho 20 id đó (fetch join với {{WHERE o.id IN :ids}}, hoặc batch fetching).
 
-### Production: so query khong phai muc tieu duy nhat
-1 query tra 2 trieu dong con te hon 3 query nho. Xem ca so dong, payload, thoi gian DB va heap.
+### Production: số query không phải mục tiêu duy nhất
+1 query trả 2 triệu dòng con tệ hơn 3 query nhỏ. Xem cả số dòng, payload (lượng dữ liệu truyền), thời gian DB và heap.
 
-### Vi du doi thuc: API don hang cham tu 50 ms len 2 giay
-Team co endpoint {{GET /orders}} tra 200 don hang kem lines. Dev moi viet JPQL don gian {{SELECT o FROM Order o}}. QA test 5 don hang: 60 ms. Ra production, khach hang 200 don hang, moi don 5 lines: 1 + 200 = 201 query. Round-trip 1 ms/query -> khoang 200 ms chi cho DB, cong connection pool tranh chap -> response cham.
+### Ví dụ đời thực: API đơn hàng chậm từ 50 ms lên 2 giây
+Team có endpoint {{GET /orders}} trả 200 đơn hàng kèm lines. Dev mới viết JPQL đơn giản {{SELECT o FROM Order o}}. QA test 5 đơn hàng: 60 ms. Ra production, khách hàng 200 đơn hàng, mỗi đơn 5 lines: 1 + 200 = 201 query. Round-trip 1 ms/query -> khoảng 200 ms chỉ cho DB, cộng tranh chấp connection pool -> response chậm.
 
-Dieu tra: bat log SQL, thay hang loat {{SELECT * FROM order_line WHERE order_id = ?}}. Sua: them {{@EntityGraph(attributePaths = "lines")}} vao method repository. Ket qua: 1 query JOIN, response 80 ms. Canh bao HHH90003004 xuat hien vi dung Pageable -> chuyen sang phan trang parent + batch fetching cho lines. Ket qua cuoi: 2 query, 40 ms.
+Điều tra: bật log SQL, thấy hàng loạt {{SELECT * FROM order_line WHERE order_id = ?}}. Sửa: thêm {{@EntityGraph(attributePaths = "lines")}} vào method repository. Kết quả: 1 query JOIN, response 80 ms. Cảnh báo HHH90003004 xuất hiện vì dùng Pageable -> chuyển sang phân trang parent + batch fetching cho lines. Kết quả cuối: 2 query, 40 ms.
 
-### Tra loi mau khi pham van
-"N+1 la 1 query cho parent, N query cho child khi duyet collection lazy. Phat hien bang log SQL (hang loat query giong nhau), statistics (queryExecutionCount tang theo parent), APM. Sua: fetch join/EntityGraph cho detail (1 query), batch fetching hoac 2 query IN cho list (kiem soat so query), DTO projection cho read-only. Bat: fetch join collection + Pageable khien Hibernate tai toan bo roi cat trong RAM (HHH90003004) -> phan trang parent roi fetch child. Dung bao gio tra loi 'doi sang EAGER'."
+### Trả lời mẫu khi phỏng vấn
+"N+1 là 1 query cho parent, N query cho child khi duyệt collection lazy. Phát hiện bằng log SQL (hàng loạt query giống nhau), statistics (queryExecutionCount tăng theo parent), APM. Sửa: fetch join/EntityGraph cho trang chi tiết (1 query), batch fetching hoặc 2 query IN cho danh sách (kiểm soát số query), DTO projection cho read-only. Bẫy: fetch join collection + Pageable khiến Hibernate tải toàn bộ rồi cắt trong RAM (HHH90003004) -> phân trang parent rồi fetch child. Đừng bao giờ trả lời 'đổi sang EAGER'."
 
-### Lien he pham van
-Cau hay gap: "Ban phat hien va sua N+1 the nao?" Neu dau hieu (so query tang theo so parent), cach do (SQL log, statistics, APM), roi chon giai phap theo use case: fetch join hoac EntityGraph cho trang chi tiet, batch fetching hoac hai query cho danh sach, DTO projection cho man hinh chi doc. Giai thich them bat phan trang voi collection fetch. Dung tra loi "doi sang EAGER".
+### Liên hệ phỏng vấn
+Câu hay gặp: "Bạn phát hiện và sửa N+1 thế nào?" Nêu dấu hiệu (số query tăng theo số parent), cách đo (SQL log, statistics, APM), rồi chọn giải pháp theo use case: fetch join hoặc EntityGraph cho trang chi tiết, batch fetching hoặc hai query cho danh sách, DTO projection cho màn hình chỉ đọc. Giải thích thêm bẫy phân trang với collection fetch. Đừng trả lời "đổi sang EAGER".
 
 > Senior tip: N+1 không phải lúc nào cũng là 81 query. Với 1 parent (trang chi tiết) chỉ là 2 query — test đơn giản sẽ bỏ qua. Luôn dùng proxy DataSource hoặc hibernate.generate_statistics để đếm số query thực tế, và assert số query không tăng theo số parent. Khi chọn giải pháp, ưu tiên DTO projection cho màn hình danh sách lớn: nó nhẹ nhất (chỉ chọn cột cần), không tạo entity, không có lazy loading, và dễ thêm caching ở tầng service. Fetch join/EntityGraph phù hợp trang chi tiết có ít parent; batch fetching hoặc 2 query IN phù hợp danh sách lớn khi không muốn nhân dòng. Đừng bao giờ dùng EAGER để "giải quyết" N+1 — nó không sinh JOIN và còn áp dụng everywhere, làm query chậm ở cả những nơi không cần association.
-  `,exercises:[{title:'Giam N+1 xuong hai query voi repo dem luot goi',prompt:`{{Repo}} dem so lan goi: {{a}} cho {{orders()}}, {{b}} cho {{lines(ids)}}. Cai {{Service.load()}} tra ve map orderId -> danh sach sku, theo thu tu order:
-- Chi goi {{orders()}} **mot** lan va {{lines(ids)}} **mot** lan voi tap id cua moi order (khong goi trong vong lap).
-- Order khong co line van co mat trong map voi danh sach rong.
-- Neu khong co order nao thi **khong** goi {{lines}} va tra map rong.`,
+  `,exercises:[{title:'Giảm N+1 xuống hai query với repo đếm lượt gọi',prompt:`{{Repo}} đếm số lần gọi: {{a}} cho {{orders()}}, {{b}} cho {{lines(ids)}}. Cài {{Service.load()}} trả về map orderId -> danh sách sku, theo thứ tự order:
+- Chỉ gọi {{orders()}} **một** lần và {{lines(ids)}} **một** lần với tập id của mọi order (không gọi trong vòng lặp).
+- Order không có line vẫn có mặt trong map với danh sách rỗng.
+- Nếu không có order nào thì **không** gọi {{lines}} và trả map rỗng.`,
   starter:`record Order(long id){} record Line(long orderId,String sku){}
 class Repo{int a,b;Set<Long> lastIds;List<Order> orders(){a++;return List.of(new Order(1),new Order(2),new Order(3));}List<Line> lines(Set<Long> ids){b++;lastIds=new HashSet<>(ids);return List.of(new Line(1,"A"),new Line(1,"B"),new Line(3,"C"));}}
 class Service{Repo r;Service(Repo x){r=x;}Map<Long,List<String>> load(){throw new UnsupportedOperationException("TODO");}}`,
@@ -1827,12 +1827,12 @@ class Service{Repo r;Service(Repo x){r=x;}
         return out;
     }
 }`,
-  hints:['Tao entry (danh sach rong) cho moi order truoc khi rap line.','Gom id vao mot Set roi goi lines(ids) dung mot lan, ben ngoai vong lap.','Kiem tra truong hop khong co order truoc khi goi lines.'],
-  explain:`Query 1 tai parent, query 2 tai moi child theo tap id, roi nhom theo {{orderId}} trong RAM. Tao entry truoc giup order khong co line van xuat hien (giong LEFT JOIN). Bo qua query 2 khi tap id rong vi {{IN ()}} rong la SQL khong hop le o nhieu database.
-  Loi hay gap: goi {{lines(Set.of(o.id()))}} trong vong lap, tuc chinh la N+1. Trong thuc te con phai chia tap id thanh lo (vi du 500 id) khi danh sach lon de khong vuot gioi han tham so cua database. Day cung la cach Hibernate batch fetching hoat dong ben duoi.`
-}, {title:'Batch fetching mo phong: hieu co che IN lo',prompt:`Mo phong batch fetching cua Hibernate. {{BatchFetcher}} nhan {{batchSize}} va ham {{loadAll(ids)}} tra ve map id -> value.
-- {{get(id)}}: neu id da co trong cache thi tra ngay; neu chua thi them id vao hang doi cho.
-- {{flush()}}: gom cac id cho, chia thanh cac lo kich thuoc {{batchSize}}, goi {{loadAll}} cho moi lo, cap nhat cache, tra ve so lo da load.`,
+  hints:['Tạo entry (danh sách rỗng) cho mỗi order trước khi ráp line.','Gom id vào một Set rồi gọi lines(ids) đúng một lần, bên ngoài vòng lặp.','Kiểm tra trường hợp không có order trước khi gọi lines.'],
+  explain:`Query 1 tải parent, query 2 tải mọi child theo tập id, rồi nhóm theo {{orderId}} trong RAM. Tạo entry trước giúp order không có line vẫn xuất hiện (giống LEFT JOIN). Bỏ qua query 2 khi tập id rỗng vì {{IN ()}} rỗng là SQL không hợp lệ ở nhiều database.
+  Lỗi hay gặp: gọi {{lines(Set.of(o.id()))}} trong vòng lặp, tức chính là N+1. Trong thực tế còn phải chia tập id thành lô (ví dụ 500 id) khi danh sách lớn để không vượt giới hạn tham số của database. Đây cũng là cách Hibernate batch fetching hoạt động bên dưới.`
+}, {title:'Batch fetching mô phỏng: hiểu cơ chế IN lô',prompt:`Mô phỏng batch fetching của Hibernate. {{BatchFetcher}} nhận {{batchSize}} và hàm {{loadAll(ids)}} trả về map id -> value.
+- {{get(id)}}: nếu id đã có trong cache thì trả ngay; nếu chưa thì thêm id vào hàng đợi chờ.
+- {{flush()}}: gom các id chờ, chia thành các lô kích thước {{batchSize}}, gọi {{loadAll}} cho mỗi lô, cập nhật cache, trả về số lô đã load.`,
   starter:`class BatchFetcher{int batchSize;Function<Set<Long>,Map<Long,String>> loader;Map<Long,String> cache=new HashMap<>();Set<Long> pending=new HashSet<>();BatchFetcher(int batchSize,Function<Set<Long>,Map<Long,String>> loader){this.batchSize=batchSize;this.loader=loader;}String get(long id){throw new UnsupportedOperationException("TODO");}int flush(){throw new UnsupportedOperationException("TODO");}}`,
   tests:`public class Main {
     static int passed = 0, total = 0;
@@ -1863,26 +1863,26 @@ class Service{Repo r;Service(Repo x){r=x;}
     }
 }`,
   reference:`class BatchFetcher{int batchSize;Function<Set<Long>,Map<Long,String>> loader;Map<Long,String> cache=new HashMap<>();Set<Long> pending=new HashSet<>();BatchFetcher(int batchSize,Function<Set<Long>,Map<Long,String>> loader){this.batchSize=batchSize;this.loader=loader;}String get(long id){if(cache.containsKey(id))return cache.get(id);pending.add(id);return null;}int flush(){if(pending.isEmpty())return 0;List<Long> list=new ArrayList<>(pending);pending.clear();int batches=0;for(int i=0;i<list.size();i+=batchSize){int end=Math.min(i+batchSize,list.size());Set<Long> batch=new HashSet<>(list.subList(i,end));cache.putAll(loader.apply(batch));batches++;}return batches;}}`,
-  hints:['Cache hit tra ngay, khong them vao pending.','flush() chia pending thanh cac lo kich thuoc batchSize, goi loader cho moi lo.','Tra ve so lo da load.'],
-  explain:`Batch fetching gom cac id dang cho (pending) va tai theo lo (IN clause). Hibernate lam chinh xac dieu nay: khi ban cham vao collection cua entity dau tien, no gom id cua cac entity cung loai dang trong persistence context va tai theo batch. Test kiem tra viec chia lo dung kich thuoc va cache hit khong goi loader.`
-}],check:[{q:'Doi association sang {{FetchType.LAZY}} co tu loai bo N+1 khong?',options:['Co, LAZY luon sinh mot JOIN','Co, vi LAZY bat buoc dung second-level cache','Khong, truy cap association cua tung parent trong vong lap van phat mot query moi lan','LAZY khong dung duoc voi collection'],answer:2,explain:`LAZY chi hoan thoi diem tai; truy cap trong vong lap van N query. Can fetch join, EntityGraph, batch fetching hoac projection. LAZY khong sinh JOIN (do la viec cua fetch join), khong lien quan second-level cache, va collection mac dinh da la LAZY.`},{q:'Query co {{JOIN FETCH o.lines}} ke phan trang 20 order/trang. Hibernate 6 xu ly the nao?',options:['Tai toan bo ket qua roi cat trang trong RAM, chi in canh bao (tru khi bat fail_on_pagination_over_collection_fetch)','Dua LIMIT 20 xuong SQL va luon tra dung 20 order day du lines','Tu tach thanh hai query: phan trang order roi tai lines','Nem loi bien dich JPQL'],answer:0,explain:`JOIN nhan dong theo so line, nen LIMIT o SQL se cat giua collection. Hibernate vi vay phan trang trong RAM va canh bao HHH90003004, rat nguy hiem voi bang lon. No khong tu tach thanh hai query (do la viec ban phai lam), va JPQL van hop le nen khong co loi bien dich.`},{q:'Bat {{hibernate.default_batch_fetch_size=50}}, load 120 order roi duyet lines cua tung order. Khoang bao nhieu query?',options:['1','121','2','Khoang 4: 1 query order + khoang 3 query lines dang IN'],answer:3,explain:`Batch fetching gom toi da 50 khoa moi lan: 120 order can khoang 3 query IN cho lines, cong 1 query order. Con so chinh xac co the khac mot chut tuy cach Hibernate chia lo, nhung khong con tang theo tung order. 121 la N+1 khong co batch; 1 hay 2 query chi dat duoc bang fetch join hoac tu viet query IN khong chia lo.`},{q:'Tai sao DTO projection khong bao gio bi N+1?',options:['Vi DTO luon dung fetch join','Vi projection chi chon cot can thiet, khong tao entity nen khong co lazy loading','Vi Spring tu bat batch fetching cho DTO','Vi DTO dung second-level cache'],answer:1,explain:`DTO projection ({{SELECT new DTO(...) FROM Entity}}) chay mot query SELECT dung cac cot can, tra ve object DTO thuan Java. Khong co entity, khong co proxy, khong co lazy loading, do do khong bao gio phat sinh query phu.`}],related:['jpa-001','jpa-010','jpa-011','jpa-026','jpa-043','jpa-053'],tags:['N+1','batch fetching','fetch join','EntityGraph','DTO projection']
+  hints:['Cache hit trả ngay, không thêm vào pending.','flush() chia pending thành các lô kích thước batchSize, gọi loader cho mỗi lô.','Trả về số lô đã load.'],
+  explain:`Batch fetching gom các id đang chờ (pending) và tải theo lô (mệnh đề IN). Hibernate làm chính xác điều này: khi bạn chạm vào collection của entity đầu tiên, nó gom id của các entity cùng loại đang trong persistence context và tải theo batch. Test kiểm tra việc chia lô đúng kích thước và cache hit không gọi loader.`
+}],check:[{q:'Đổi association sang {{FetchType.LAZY}} có tự loại bỏ N+1 không?',options:['Có, LAZY luôn sinh một JOIN','Có, vì LAZY bắt buộc dùng second-level cache','Không, truy cập association của từng parent trong vòng lặp vẫn phát một query mỗi lần','LAZY không dùng được với collection'],answer:2,explain:`LAZY chỉ hoãn thời điểm tải; truy cập trong vòng lặp vẫn N query. Cần fetch join, EntityGraph, batch fetching hoặc projection. LAZY không sinh JOIN (đó là việc của fetch join), không liên quan second-level cache, và collection mặc định đã là LAZY.`},{q:'Query có {{JOIN FETCH o.lines}} kèm phân trang 20 order/trang. Hibernate 6 xử lý thế nào?',options:['Tải toàn bộ kết quả rồi cắt trang trong RAM, chỉ in cảnh báo (trừ khi bật fail_on_pagination_over_collection_fetch)','Đưa LIMIT 20 xuống SQL và luôn trả đúng 20 order đầy đủ lines','Tự tách thành hai query: phân trang order rồi tải lines','Ném lỗi biên dịch JPQL'],answer:0,explain:`JOIN nhân dòng theo số line, nên LIMIT ở SQL sẽ cắt giữa collection. Hibernate vì vậy phân trang trong RAM và cảnh báo HHH90003004, rất nguy hiểm với bảng lớn. Nó không tự tách thành hai query (đó là việc bạn phải làm), và JPQL vẫn hợp lệ nên không có lỗi biên dịch.`},{q:'Bật {{hibernate.default_batch_fetch_size=50}}, load 120 order rồi duyệt lines của từng order. Khoảng bao nhiêu query?',options:['1','121','2','Khoảng 4: 1 query order + khoảng 3 query lines dạng IN'],answer:3,explain:`Batch fetching gom tối đa 50 khoá mỗi lần: 120 order cần khoảng 3 query IN cho lines, cộng 1 query order. Con số chính xác có thể khác một chút tuỳ cách Hibernate chia lô, nhưng không còn tăng theo từng order. 121 là N+1 không có batch; 1 hay 2 query chỉ đạt được bằng fetch join hoặc tự viết query IN không chia lô.`},{q:'Tại sao DTO projection không bao giờ bị N+1?',options:['Vì DTO luôn dùng fetch join','Vì projection chỉ chọn cột cần thiết, không tạo entity nên không có lazy loading','Vì Spring tự bật batch fetching cho DTO','Vì DTO dùng second-level cache'],answer:1,explain:`DTO projection ({{SELECT new DTO(...) FROM Entity}}) chạy một query SELECT đúng các cột cần, trả về object DTO thuần Java. Không có entity, không có proxy, không có lazy loading, do đó không bao giờ phát sinh query phụ.`}],related:['jpa-001','jpa-010','jpa-011','jpa-026','jpa-043','jpa-053'],tags:['N+1','batch fetching','fetch join','EntityGraph','DTO projection']
 },
 {
-  id:'lesson-jpa-013',track:'jpa',order:13,title:'Vong doi entity: transient, managed, detached, removed va merge vs persist',level:'senior',minutes:30,
-  goals:['Phan biet ro 4 trang thai: transient (new), managed, detached, removed','Hieu merge khong bien object dau vao thanh managed, ma tra ve instance managed khac','Biet persist chi dung cho entity moi (transient), merge dung cho ca moi va detached','Mo phong persistence context voi identity map, snapshot va chuyen trang thai'],
-  body:`### Hieu nhanh
-Entity JPA trai qua 4 trang thai trong vong doi: **transient (new)** -> **managed** -> **detached** (hoac **removed**). Chi entity **managed** duoc Hibernate theo doi va tu sinh SQL khi flush. **Persist** chi danh cho entity transient (chua co trong DB/context). **Merge** dung cho entity detached (da co trong DB nhung khong con trong context) — va quan trong: merge **khong bien object dau vao thanh managed**, no chep state vao instance managed (nap tu DB neu can) roi tra ve instance do. Object ban truyen vao van detached.
+  id:'lesson-jpa-013',track:'jpa',order:13,title:'Vòng đời entity: transient, managed, detached, removed và merge vs persist',level:'senior',minutes:30,
+  goals:['Phân biệt rõ 4 trạng thái: transient (new), managed, detached, removed','Hiểu merge không biến object đầu vào thành managed, mà trả về instance managed khác','Biết persist chỉ dùng cho entity mới (transient), merge dùng cho cả mới và detached','Mô phỏng persistence context với identity map, snapshot và chuyển trạng thái'],
+  body:`### Hiểu nhanh
+Entity JPA trải qua 4 trạng thái trong vòng đời: **transient (new)** -> **managed** -> **detached** (hoặc **removed**). Chỉ entity **managed** được Hibernate theo dõi và tự sinh SQL khi flush (flush = đẩy các thay đổi đang giữ trong RAM xuống database). **Persist** chỉ dành cho entity transient (chưa có trong DB/context). **Merge** dùng cho entity detached (đã có trong DB nhưng không còn trong context) — và quan trọng: merge **không biến object đầu vào thành managed**, nó chép state (dữ liệu các field) vào instance managed (nạp từ DB nếu cần) rồi trả về instance đó. Object bạn truyền vào vẫn detached.
 
-### Bon trang thai chi tiet
-| Trang thai | Cach vao trang thai nay | Duoc Hibernate theo doi? | Flush lam gi? |
+### Bốn trạng thái chi tiết
+| Trạng thái | Cách vào trạng thái này | Được Hibernate theo dõi? | Flush làm gì? |
 |---|---|---|---|
-| Transient (new) | {{new Entity()}}, chua persist | Khong | Khong gi |
-| Managed | {{persist()}}, {{find()}}, {{merge()}} tra ve, load qua query | Co | So snapshot, sinh UPDATE/INSERT/DELETE |
-| Detached | {{clear()}}, {{detach()}}, {{close()}}, commit (thuong) | Khong | Khong gi (setter bi bo qua lang) |
-| Removed | {{remove()}} tren managed | Co (danh dau xoa) | Sinh DELETE |
+| Transient (new) | {{new Entity()}}, chưa persist | Không | Không gì |
+| Managed | {{persist()}}, {{find()}}, {{merge()}} trả về, load qua query | Có | So snapshot, sinh UPDATE/INSERT/DELETE |
+| Detached | {{clear()}}, {{detach()}}, {{close()}}, commit (thường) | Không | Không gì (setter bị bỏ qua lặng lẽ) |
+| Removed | {{remove()}} trên managed | Có (đánh dấu xoá) | Sinh DELETE |
 
-### Persist: chi cho entity moi
-{{em.persist(entity)}} chuyen entity tu **transient** sang **managed**. Entity phai **chua co trong database** (id chua duoc gan hoac strategy la AUTO/SEQUENCE). Neu persist entity da co id (vi du detached), Hibernate nem {{EntityExistsException}}.
+### Persist: chỉ cho entity mới
+{{em.persist(entity)}} chuyển entity từ **transient** sang **managed**. Entity phải **chưa có trong database** (id chưa được gán hoặc strategy là AUTO/SEQUENCE). Nếu persist entity đã có id (ví dụ detached), Hibernate ném {{EntityExistsException}}.
 
 ~~~java
 @Transactional
@@ -1894,8 +1894,8 @@ public Order create(OrderDto dto) {
 }
 ~~~
 
-### Merge: cho entity detached (va ca transient)
-{{em.merge(entity)}} tim (hoac nap) instance managed cung id, **chep state** tu object cua ban sang instance do, roi tra ve **instance managed**. Object ban truyen vao **van detached**.
+### Merge: cho entity detached (và cả transient)
+{{em.merge(entity)}} tìm (hoặc nạp) instance managed cùng id, **chép state** từ object của bạn sang instance đó, rồi trả về **instance managed**. Object bạn truyền vào **vẫn detached**.
 
 ~~~java
 @Transactional
@@ -1908,12 +1908,12 @@ public Order update(OrderDto dto) {
 }
 ~~~
 
-Spring Data {{repo.save(entity)}} goi {{merge}} khi entity khong "moi" (id khac null hoac {{Persistable.isNew()}} tra false). Vi vay **luon dung gia tri tra ve**: {{order = repo.save(order)}}.
+Spring Data {{repo.save(entity)}} gọi {{merge}} khi entity không "mới" (id khác null hoặc {{Persistable.isNew()}} trả false). Vì vậy **luôn dùng giá trị trả về**: {{order = repo.save(order)}}.
 
-### Tai sao merge khong lam object dau vao thanh managed?
-Neu merge bien object cua ban thanh managed, Hibernate phai theo doi object do ung dung tao ra — co the object do duoc share o cho khac, hoac la DTO, hoac immutable. Thay vao do, Hibernate quan ly **instance cua rieng no** (nap tu DB hoac tao moi trong context), chep du lieu vao do, va tra instance do cho ban. Instance cua Hibernate nam trong identity map, co snapshot, duoc dirty checking.
+### Tại sao merge không làm object đầu vào thành managed?
+Nếu merge biến object của bạn thành managed, Hibernate phải theo dõi object do ứng dụng tạo ra — có thể object đó được share ở chỗ khác, hoặc là DTO, hoặc immutable (bất biến). Thay vào đó, Hibernate quản lý **instance của riêng nó** (nạp từ DB hoặc tạo mới trong context), chép dữ liệu vào đó, và trả instance đó cho bạn. Instance của Hibernate nằm trong identity map (map khoá chính -> entity managed, đảm bảo mỗi id chỉ có một instance trong context), có snapshot (bản sao giá trị lúc nạp), được dirty checking (so sánh field hiện tại với snapshot để biết có thay đổi).
 
-### Chuyen trang thai thuc te
+### Chuyển trạng thái thực tế
 ~~~text
 new Order()                          -> transient
 em.persist(order)                    -> managed
@@ -1926,41 +1926,41 @@ flush()                              -> removed -> DELETE, managed -> UPDATE, tr
 rollback()                           -> managed khoi phuc snapshot, removed huy bo, transient khong doi
 ~~~
 
-### Bat production hay gap
-1. **Sua entity sau commit**: controller nhan entity tu service, transaction da commit, entity detached. Controller sua field roi hy vong luu — **khong co UPDATE**. Sua: load lai entity trong transaction moi, hoac dung {{repo.save()}} (goi merge) va dung instance tra ve.
-2. **Persist entity co id**: {{em.persist(new Order(1L))}} nem {{EntityExistsException}} vi Hibernate nghi entity da ton tai. Dung {{merge}} cho entity co id.
-3. **Merge entity moi khong co id**: {{merge(new Order())}} se chay INSERT (nhu persist) vi khong co id de nap. Nhung object tra ve moi la managed.
-4. **Merge quen dung ket qua**: {{em.merge(detached); detached.setName("X");}} — setter chay tren detached, khong co SQL. Phai dung instance tra ve.
-5. **Cascade MERGE vs PERSIST**: {{@OneToMany(cascade = CascadeType.PERSIST)}} chi cascade persist, khong cascade merge. Muon merge con khi merge cha can {{CascadeType.MERGE}} hoac {{ALL}}.
-6. **Detached entity qua network (DTO)**: form web gui JSON, server deserialize thanh entity (co id). Entity nay la detached. Goi {{repo.save()}} (merge) la dung, nhung phai dung instance tra ve.
+### Bẫy production hay gặp
+1. **Sửa entity sau commit**: controller nhận entity từ service, transaction đã commit, entity detached. Controller sửa field rồi hy vọng lưu — **không có UPDATE**. Sửa: load lại entity trong transaction mới, hoặc dùng {{repo.save()}} (gọi merge) và dùng instance trả về.
+2. **Persist entity có id**: {{em.persist(new Order(1L))}} ném {{EntityExistsException}} vì Hibernate nghĩ entity đã tồn tại. Dùng {{merge}} cho entity có id.
+3. **Merge entity mới không có id**: {{merge(new Order())}} sẽ chạy INSERT (như persist) vì không có id để nạp. Nhưng object trả về mới là managed.
+4. **Merge quên dùng kết quả**: {{em.merge(detached); detached.setName("X");}} — setter chạy trên detached, không có SQL. Phải dùng instance trả về.
+5. **Cascade MERGE vs PERSIST**: {{@OneToMany(cascade = CascadeType.PERSIST)}} chỉ cascade persist, không cascade merge. Muốn merge con khi merge cha cần {{CascadeType.MERGE}} hoặc {{ALL}}. (Cascade = lan truyền thao tác từ cha xuống con.)
+6. **Detached entity qua network (DTO)**: form web gửi JSON, server deserialize thành entity (có id). Entity này là detached. Gọi {{repo.save()}} (merge) là đúng, nhưng phải dùng instance trả về.
 
-### Mo phong persistence context (bai tap ben duoi)
-Bai tap cai {{PersistenceContextSimulator}} voi:
+### Mô phỏng persistence context (bài tập bên dưới)
+Bài tập cài {{PersistenceContextSimulator}} với:
 - Identity map: map id -> entity managed
-- Snapshot: ban sao gia tri luc load/merge
-- Trang thai: transient, managed, detached, removed
+- Snapshot: bản sao giá trị lúc load/merge
+- Trạng thái: transient, managed, detached, removed
 - {{persist}}, {{merge}}, {{remove}}, {{detach}}, {{flush}}, {{commit}}, {{rollback}}
-Giup hinh dung tai sao setter tren detached bi bo qua, tai sao merge tra ve instance khac, va flush sinh SQL the nao.
+Giúp hình dung tại sao setter trên detached bị bỏ qua, tại sao merge trả về instance khác, và flush sinh SQL thế nào.
 
-### Vi du doi thuc: API cap nhat don hang mat cap nhat
-Khach hang goi {{PUT /orders/1}} voi JSON {{"total": 500}}. Controller deserialize thanh {{Order}} (id=1, total=500) — detached. Service goi {{repo.save(order)}} nhung **khong dung gia tri tra ve**, ma tra ve {{order}} cu. Response 200 OK, nhung database khong doi. Debug: log SQL rong. Nguyen nhan: {{save}} goi {{merge}}, tra ve managed instance moi, nhung service tra ve detached instance cu. Sua: {{return repo.save(order);}}. Test integration assert so query = 1.
+### Ví dụ đời thực: API cập nhật đơn hàng mất cập nhật
+Khách hàng gọi {{PUT /orders/1}} với JSON {{"total": 500}}. Controller deserialize thành {{Order}} (id=1, total=500) — detached. Service gọi {{repo.save(order)}} nhưng **không dùng giá trị trả về**, mà trả về {{order}} cũ. Response 200 OK, nhưng database không đổi. Debug: log SQL rỗng. Nguyên nhân: {{save}} gọi {{merge}}, trả về managed instance mới, nhưng service trả về detached instance cũ. Sửa: {{return repo.save(order);}}. Test integration assert số query = 1.
 
-### Tra loi mau khi pham van
-"Entity JPA co 4 trang thai: transient (new), managed (dang theo doi), detached (da ra khoi context), removed (da xoa, cho flush). Chi managed moi duoc dirty checking va sinh SQL. Persist chi cho transient; merge cho detached (va transient) — quan trong: merge chep state vao instance managed cua Hibernate va tra instance do, object truyen vao van detached. Vi vay Spring Data save() phai dung gia tri tra ve. Sai lam thuong gap: sua entity sau commit (da detached), persist entity co id, merge quen dung ket qua."
+### Trả lời mẫu khi phỏng vấn
+"Entity JPA có 4 trạng thái: transient (new), managed (đang được theo dõi), detached (đã ra khỏi context), removed (đã xoá, chờ flush). Chỉ managed mới được dirty checking và sinh SQL. Persist chỉ cho transient; merge cho detached (và transient) — quan trọng: merge chép state vào instance managed của Hibernate và trả instance đó, object truyền vào vẫn detached. Vì vậy Spring Data save() phải dùng giá trị trả về. Sai lầm thường gặp: sửa entity sau commit (đã detached), persist entity có id, merge quên dùng kết quả."
 
-### Lien he pham van
-Cau hay gap: "persist va merge khac nhau the nao? Khi nao dung cai nao?" Persist cho entity moi chua co trong DB; merge cho entity da co trong DB (detached) — merge tra ve instance managed MOI, object truyen vao van detached. Neu them: detach sau commit, setter bi bo qua, cascade MERGE vs PERSIST, va bat Spring Data save() quen dung ket qua.
+### Liên hệ phỏng vấn
+Câu hay gặp: "persist và merge khác nhau thế nào? Khi nào dùng cái nào?" Persist cho entity mới chưa có trong DB; merge cho entity đã có trong DB (detached) — merge trả về instance managed MỚI, object truyền vào vẫn detached. Nếu thêm: detach sau commit, setter bị bỏ qua, cascade MERGE vs PERSIST, và bẫy Spring Data save() quên dùng kết quả.
 
-> Senior tip: Trong production, sai lầm thường gặp là controller nhận entity từ service, transaction đã commit (entity detached), rồi sửa field và hy vong tự lưu — log SQL rỗng, response 200. Debug bằng cách thêm {{hibernate.show_sql}} và kiểm tra xem entity có trong managed map không. Luôn dùng {{return repo.save(entity);}} và dùng instance trả về. Với form web nhận JSON, entity deserialize luôn là detached — merge là đúng, nhưng phải dùng instance trả về. Khi cần update một field cụ thể mà không muốn load toàn bộ entity, dùng {{@Modifying @Query}} hoặc DTO projection thay vì merge toàn object.
-  `,exercises:[{title:'Mo phong persistence context: trang thai va flush',prompt:`Cai {{PersistenceContextSimulator}} quan ly entity {{Item}} (co {{id}} va {{name}}):
-- {{load(id, name)}}: neu id da co trong identity map thi tra **cung object** cu (bo qua name); neu chua thi tao {{Item}}, dua vao managed map va luu snapshot (ban sao name).
-- {{persist(item)}}: item phai o trang thai **transient** (chua co trong managed map, khong co trong snapshot). Them vao managed map, luu snapshot.
-- {{merge(item)}}: neu id da co trong managed map thi chep name vao managed instance do; neu id co trong snapshot (da tung load, gio detached) thi nap managed instance tu snapshot, chep name; neu id hoan toan moi thi tao managed instance moi. Tra ve **managed instance** (khac voi item truyen vao neu item khong phai managed instance do). Luu/cap nhat snapshot.
-- {{remove(id)}}: chuyen entity sang trang thai **removed** (xoa khoi managed map, dua vao removed set, giu snapshot).
-- {{detach(id)}}: chuyen entity sang **detached** (xoa khoi managed map, giu snapshot).
-- {{flush()}}: duyet managed map theo thu tu load, so name voi snapshot. Khac thi them {{"UPDATE item SET name='...' WHERE id=..."}}. Duyet removed set, them {{"DELETE FROM item WHERE id=..."}}. Duyet managed map cac entity moi (persist) chua co trong snapshot luc load -> them {{"INSERT INTO item(id,name) VALUES(...)"}}.
-- {{commit()}}: xoa toan bo managed map, removed set, snapshot (tat ca entity tro thanh detached).
-- {{rollback()}}: khoi phuc name cua managed entity tu snapshot; bo removed set (huy xoa); xoa entity vua persist (chua co snapshot).`,
+> Senior tip: Trong production, sai lầm thường gặp là controller nhận entity từ service, transaction đã commit (entity detached), rồi sửa field và hy vọng tự lưu — log SQL rỗng, response 200. Debug bằng cách thêm {{hibernate.show_sql}} và kiểm tra xem entity có trong managed map không. Luôn dùng {{return repo.save(entity);}} và dùng instance trả về. Với form web nhận JSON, entity deserialize luôn là detached — merge là đúng, nhưng phải dùng instance trả về. Khi cần update một field cụ thể mà không muốn load toàn bộ entity, dùng {{@Modifying @Query}} hoặc DTO projection thay vì merge toàn object.
+  `,exercises:[{title:'Mô phỏng persistence context: trạng thái và flush',prompt:`Cài {{PersistenceContextSimulator}} quản lý entity {{Item}} (có {{id}} và {{name}}):
+- {{load(id, name)}}: nếu id đã có trong identity map thì trả **cùng object** cũ (bỏ qua name); nếu chưa thì tạo {{Item}}, đưa vào managed map và lưu snapshot (bản sao name).
+- {{persist(item)}}: item phải ở trạng thái **transient** (chưa có trong managed map, không có trong snapshot). Thêm vào managed map, lưu snapshot.
+- {{merge(item)}}: nếu id đã có trong managed map thì chép name vào managed instance đó; nếu id có trong snapshot (đã từng load, giờ detached) thì nạp managed instance từ snapshot, chép name; nếu id hoàn toàn mới thì tạo managed instance mới. Trả về **managed instance** (khác với item truyền vào nếu item không phải managed instance đó). Lưu/cập nhật snapshot.
+- {{remove(id)}}: chuyển entity sang trạng thái **removed** (xoá khỏi managed map, đưa vào removed set, giữ snapshot).
+- {{detach(id)}}: chuyển entity sang **detached** (xoá khỏi managed map, giữ snapshot).
+- {{flush()}}: duyệt managed map theo thứ tự load, so name với snapshot. Khác thì thêm {{"UPDATE item SET name='...' WHERE id=..."}}. Duyệt removed set, thêm {{"DELETE FROM item WHERE id=..."}}. Duyệt managed map các entity mới (persist) chưa có trong snapshot lúc load -> thêm {{"INSERT INTO item(id,name) VALUES(...)"}}.
+- {{commit()}}: xoá toàn bộ managed map, removed set, snapshot (tất cả entity trở thành detached).
+- {{rollback()}}: khôi phục name của managed entity từ snapshot; bỏ removed set (huỷ xoá); xoá entity vừa persist (chưa có snapshot).`,
   starter:`class Item {long id;String name;Item(long i,String n){id=i;name=n;}}
 class PersistenceContextSimulator {
     Map<Long,Item> managed=new LinkedHashMap<>();   // identity map: id -> managed instance
@@ -2070,13 +2070,13 @@ class PersistenceContextSimulator {
         managed.entrySet().removeIf(e -> !snapshot.containsKey(e.getKey()));
     }
 }`,
-  hints:['Managed map dung LinkedHashMap de giu thu tu load.','Snapshot luu gia tri (String), khong luu tham chieu Item.','merge: uu tien managed instance san co; neu khong co ma co snapshot thi nap tu snapshot; neu hoan toan moi thi tao moi.','flush: INSERT cho entity moi persist (khong co snapshot luc load), UPDATE cho managed da co snapshot ma name khac, DELETE cho removed.','commit xoa sach tat ca. rollback khoi phuc managed tu snapshot, bo removed, xoa entity vua persist (khong co snapshot).'],
-  explain:`Bai tap mo phong cot lo persistence context: identity map, snapshot, va chuyen trang thai. Loi hay gap: merge khong tra ve managed instance (tra ve object truyen vao), flush khong sinh INSERT cho entity vua persist, rollback khong khoi phuc dung entity removed, commit khong xoa snapshot. Hieu mo hinh nay giup debug "sua xong khong thay UPDATE", "merge ma object cu khong doi", "persist entity co id bi loi".`
-}, {title:'Merge vs Persist: hanh vi voi entity detached',prompt:`Viet {{RepositorySimulator}} don gian hoa: {{save(entity)}} goi merge neu entity co id, persist neu chua co id.
-- {{find(id)}}: load tu DB (mo phong bang map).
-- {{save(entity)}}: neu entity.id == 0 -> persist (gan id moi); neu entity.id != 0 -> merge.
-- Tra ve instance managed (merge tra ve instance khac, persist tra ve chinh entity do sau khi gan id).
-- DB: map id -> name. ID tu tang tu 1.`,
+  hints:['Managed map dùng LinkedHashMap để giữ thứ tự load.','Snapshot lưu giá trị (String), không lưu tham chiếu Item.','merge: ưu tiên managed instance sẵn có; nếu không có mà có snapshot thì nạp từ snapshot; nếu hoàn toàn mới thì tạo mới.','flush: INSERT cho entity mới persist (không có snapshot lúc load), UPDATE cho managed đã có snapshot mà name khác, DELETE cho removed.','commit xoá sạch tất cả. rollback khôi phục managed từ snapshot, bỏ removed, xoá entity vừa persist (không có snapshot).'],
+  explain:`Bài tập mô phỏng cốt lõi persistence context: identity map, snapshot, và chuyển trạng thái. Lỗi hay gặp: merge không trả về managed instance (trả về object truyền vào), flush không sinh INSERT cho entity vừa persist, rollback không khôi phục đúng entity removed, commit không xoá snapshot. Hiểu mô hình này giúp debug "sửa xong không thấy UPDATE", "merge mà object cũ không đổi", "persist entity có id bị lỗi".`
+}, {title:'Merge vs Persist: hành vi với entity detached',prompt:`Viết {{RepositorySimulator}} đơn giản hoá: {{save(entity)}} gọi merge nếu entity có id, persist nếu chưa có id.
+- {{find(id)}}: load từ DB (mô phỏng bằng map).
+- {{save(entity)}}: nếu entity.id == 0 -> persist (gán id mới); nếu entity.id != 0 -> merge.
+- Trả về instance managed (merge trả về instance khác, persist trả về chính entity đó sau khi gán id).
+- DB: map id -> name. ID tự tăng từ 1.`,
   starter:`record Entity(long id,String name){}
 class RepositorySimulator {
     Map<Long,String> db=new HashMap<>(); long nextId=1;
@@ -2117,9 +2117,9 @@ class RepositorySimulator {
         }
     }
 }`,
-  hints:['save: id == 0 la persist (gan id moi), id != 0 la merge (cap nhat DB).','Luon tra ve instance MOI (record immutable), mo phong merge tra ve managed instance khac.','DB luu name theo id.'],
-  explain:`Spring Data save() hanh vi giong the nay: entity "moi" (id null hoac isNew() true) -> persist; entity da co id -> merge. Quan trong: save() tra ve instance managed (merge tra ve instance khac), nen PHAI dung gia tri tra ve. Test kiem tra merge tra ve instance khac detached, va DB duoc cap nhat qua instance managed.`
-}],check:[{q:'Entity vua {{new}}, chua persist, goi {{em.persist(entity)}}. Trang thai sau do?',options:['Transient','Managed','Detached','Removed'],answer:1,explain:`Persist chuyen entity tu transient sang managed. Entity bay gio nam trong persistence context, co snapshot, va se duoc dirty checking khi flush.`},{q:'Entity da load trong transaction A, transaction A commit. Transaction B lay entity do (cung object trong bien Java) va sua field. Luc commit B, co UPDATE khong?',options:['Co, vi object van la entity managed','Khong, vi commit A da clear context, entity tro thanh detached','Co, vi Hibernate tu merge khi thay entity detached','Tuy cau hinh cascade'],answer:1,explain:`Commit (hoac close) thuong xoa persistence context, moi entity managed tro thanh detached. Setter tren detached bi Hibernate bo qua lang, khong sinh SQL. Phai load lai hoac dung merge (repo.save) va dung instance tra ve.`},{q:'{{em.merge(detachedEntity)}} tra ve gi?',options:['detachedEntity sau khi da bien thanh managed','Instance managed MOI (hoac san co trong context), detachedEntity van detached','null neu entity khong ton tai trong DB','EntityExistsException'],answer:1,explain:`Merge tim/khoi tao instance managed trong context, chep state tu detachedEntity vao do, tra ve instance managed do. Object ban truyen vao KHONG doi trang thai, van detached. Day la ly do Spring Data save() phai dung gia tri tra ve.`},{q:'Persist entity da co id (vi du detached entity co id tu client) se the nao?',options:['Tu chuyen sang merge','Nem EntityExistsException','INSERT thanh cong','UPDATE thanh cong'],answer:1,explain:`Persist chi danh cho entity transient (chua co trong DB/context). Entity co id duoc coi la da ton tai, nen Hibernate nem EntityExistsException. Dung merge cho truong hop nay.`}],related:['jpa-002','jpa-019','jpa-022','jpa-049'],tags:['entity lifecycle','persist','merge','transient','managed','detached','removed']
+  hints:['save: id == 0 là persist (gán id mới), id != 0 là merge (cập nhật DB).','Luôn trả về instance MỚI (record immutable), mô phỏng merge trả về managed instance khác.','DB lưu name theo id.'],
+  explain:`Spring Data save() hành vi giống thế này: entity "mới" (id null hoặc isNew() true) -> persist; entity đã có id -> merge. Quan trọng: save() trả về instance managed (merge trả về instance khác), nên PHẢI dùng giá trị trả về. Test kiểm tra merge trả về instance khác detached, và DB được cập nhật qua instance managed.`
+}],check:[{q:'Entity vừa {{new}}, chưa persist, gọi {{em.persist(entity)}}. Trạng thái sau đó?',options:['Transient','Managed','Detached','Removed'],answer:1,explain:`Persist chuyển entity từ transient sang managed. Entity bây giờ nằm trong persistence context, có snapshot, và sẽ được dirty checking khi flush.`},{q:'Entity đã load trong transaction A, transaction A commit. Transaction B lấy entity đó (cùng object trong biến Java) và sửa field. Lúc commit B, có UPDATE không?',options:['Có, vì object vẫn là entity managed','Không, vì commit A đã clear context, entity trở thành detached','Có, vì Hibernate tự merge khi thấy entity detached','Tuỳ cấu hình cascade'],answer:1,explain:`Commit (hoặc close) thường xoá persistence context, mọi entity managed trở thành detached. Setter trên detached bị Hibernate bỏ qua lặng lẽ, không sinh SQL. Phải load lại hoặc dùng merge (repo.save) và dùng instance trả về.`},{q:'{{em.merge(detachedEntity)}} trả về gì?',options:['detachedEntity sau khi đã biến thành managed','Instance managed MỚI (hoặc sẵn có trong context), detachedEntity vẫn detached','null nếu entity không tồn tại trong DB','EntityExistsException'],answer:1,explain:`Merge tìm/khởi tạo instance managed trong context, chép state từ detachedEntity vào đó, trả về instance managed đó. Object bạn truyền vào KHÔNG đổi trạng thái, vẫn detached. Đây là lý do Spring Data save() phải dùng giá trị trả về.`},{q:'Persist entity đã có id (ví dụ detached entity có id từ client) sẽ thế nào?',options:['Tự chuyển sang merge','Ném EntityExistsException','INSERT thành công','UPDATE thành công'],answer:1,explain:`Persist chỉ dành cho entity transient (chưa có trong DB/context). Entity có id được coi là đã tồn tại, nên Hibernate ném EntityExistsException. Dùng merge cho trường hợp này.`}],related:['jpa-002','jpa-019','jpa-022','jpa-049'],tags:['entity lifecycle','persist','merge','transient','managed','detached','removed']
 },
 {
   id:'lesson-jpa-014',track:'jpa',order:14,title:'Xây dựng persistence context mini: identity map, snapshot, dirty checking và flush từ con số 0',level:'senior',minutes:35,
