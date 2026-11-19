@@ -7710,5 +7710,411 @@ public void apply(WalletEvent e) {
 Nếu đầu ra cũng là Kafka (consume → transform → produce), có thể dùng **transactional producer** + {{sendOffsetsToTransaction}} để commit offset và ghi message trong cùng transaction Kafka → exactly-once **trong nội bộ Kafka**. Nhưng ngay khi tác dụng phụ là DB của bạn, phải quay về idempotent write.
 
 > Senior tip: với tiền, đừng bao giờ để "số dư" là nguồn sự thật duy nhất — hãy dùng **ledger append-only + số dư là tổng hợp**. Như vậy idempotency tự nhiên (khoá bút toán), đối soát được (tổng ledger = số dư), và khi có tranh chấp bạn có lịch sử từng giao dịch thay vì chỉ một con số.`
+},
+{
+  id: 'qz-spring-913',
+  topic: 'spring',
+  q: '@Service có method công khai {{placeOrder()}} gắn {{@Transactional}}. Bên trong {{placeOrder()}} gọi trực tiếp {{this.reserveStock()}}, cũng gắn {{@Transactional}}. Controller gọi {{placeOrder()}}. {{reserveStock()}} ném {{RuntimeException}}. Điều gì xảy ra với transaction?',
+  options: [
+    'Chạy trong transaction riêng do Spring proxy tạo, rollback đúng khi {{reserveStock()}} lỗi',
+    'Không chạy trong transaction riêng — gọi {{this.reserveStock()}} bỏ qua proxy, annotation bị bỏ qua; nhưng exception lan truyền ra ngoài nên transaction của {{placeOrder()}} vẫn rollback',
+    'Cả hai method cùng rollback vì chúng nằm trong cùng một bean và proxy',
+    '{{reserveStock()}} rollback riêng, còn {{placeOrder()}} vẫn commit bình thường'
+  ],
+  answer: 1,
+  explain: `**Đáp án đúng: gọi this.reserveStock() bypass proxy, nên @Transactional trên nó không có tác dụng.**
+
+### Vì sao đúng
+Spring không gắn annotation trực tiếp vào method gốc. Nó tạo ra một **proxy** (lớp bọc) quanh bean. Controller gọi proxy.placeOrder(), interceptor của Spring bật transaction rồi mới gọi method gốc. Khi method gốc gọi this.reserveStock(), từ khóa this trỏ thẳng tới object gốc, **không đi qua proxy**, nên interceptor không được kích hoạt: không mở transaction mới. reserveStock() không có transaction riêng; khi nó ném RuntimeException, exception lan truyền qua method gốc và thoát ra proxy của placeOrder() → Spring đánh dấu transaction của placeOrder rollback-only → toàn bộ transaction rollback. Dữ liệu đã thay đổi trong transaction bị huỷ, tránh trạng thái "nửa vời".
+
+~~~java
+@Service
+public class OrderService {
+    @Transactional
+    public void placeOrder() {
+        reserveStock();   // LỖI: this gọi trực tiếp, @Transactional bị bỏ qua
+    }
+
+    @Transactional
+    public void reserveStock() {
+        throw new RuntimeException("hết hàng");
+    }
+}
+~~~
+
+### Cách khắc phục
+1. Tách {{reserveStock()}} ra một bean khác, inject vào OrderService, gọi qua bean đó (đi qua proxy).
+2. Hoặc inject chính bean đó vào mình ({{@Autowired private OrderService self;}}) rồi gọi {{self.reserveStock()}} — vẫn đi qua proxy, nhưng ít khuyến khích vì dễ gây vướng recursion và khó test.
+3. Dùng AspectJ weave tại thời điểm biên dịch nếu bắt buộc phải gọi this.
+
+### Vì sao các phương án còn lại sai
+- **Chạy trong transaction riêng do proxy tạo**: proxy chỉ làm việc khi lời gọi **vào từ bên ngoài** bean. Gọi this bên trong class không qua proxy.
+- **Cả hai cùng rollback**: không có interceptor nào được kích hoạt cho reserveStock, nên không có transaction riêng để rollback.
+- **reserveStock rollback riêng, placeOrder commit**: vì reserveStock không bao giờ có transaction riêng, nên không có gì để rollback cả.
+
+> Senior tip: @Transactional chỉ an toàn dùng trên method public được gọi từ bean khác. Trong code review, bất kỳ method @Transactional nào gọi method @Transactional khác bằng this trong cùng class đều là nghi ngờ lỗi.`
+
+},
+{
+  id: 'qz-spring-914',
+  topic: 'spring',
+  q: '@Service có method công khai {{doWork()}} gắn {{@Transactional}}, bên trong gọi {{this.doInner()}}. {{doInner()}} là method private và cũng gắn {{@Transactional}}. Gọi {{doWork()}} từ bean khác. {{doInner()}} có chạy trong transaction không?',
+  options: [
+    'Không — method private không bị proxy intercept, annotation @Transactional bị bỏ qua',
+    'Có, Spring intercept mọi method có annotation bất kể private hay public',
+    'Có, nhưng chỉ khi class được sinh bằng CGLIB proxy',
+    'Chạy transaction riêng vì Spring intercept private method riêng biệt'
+  ],
+  answer: 0,
+  explain: `**Đáp án đúng: không chạy trong transaction, annotation trên private method là vô nghĩa.**
+
+### Vì sao đúng
+Spring tạo proxy bằng hai cách:
+- **JDK dynamic proxy**: chỉ intercept các method public của interface mà bean implement.
+- **CGLIB**: sinh subclass tại runtime, override method public và protected của class.
+
+Method **private** không thể bị override (nó không thể nhìn thấy bên ngoài class, kể cả subclass), nên cả hai kiểu proxy đều không chèn interceptor vào private method. @Transactional trên doInner() bị Spring bỏ qua (chỉ có thể thấy cảnh báo ở cấp log DEBUG). Khi doWork() gọi this.doInner(), doInner chạy trong transaction của doWork() nếu có, không có transaction riêng.
+
+~~~java
+@Service
+public class OrderService {
+    @Transactional
+    public void doWork() {
+        doInner();   // chạy trong transaction của doWork, không có transaction riêng
+    }
+
+    @Transactional   // BỎ QUA: private method không được intercept
+    private void doInner() { ... }
+}
+~~~
+
+### Vì sao các phương án còn lại sai
+- **Spring intercept mọi method có annotation**: sai, proxy chỉ chèn code vào method có thể bị override (public/protected, không final).
+- **Chỉ CGLIB**: CGLIB cũng không intercept private method, vì private không thể override trong subclass.
+- **Transaction riêng**: không có interceptor → không mở transaction → không có transaction riêng gì cả.
+
+> Senior tip: đặt @Transactional trên method public là quy ước an toàn. Nếu logic private cần transaction, hãy đưa nó ra một method public (trong cùng bean hoặc bean riêng) rồi gọi qua proxy.`
+
+},
+{
+  id: 'qz-spring-915',
+  topic: 'spring',
+  q: '@Transactional công khai method {{process()}}. Bên trong method có try/catch bắt {{RuntimeException}} và return bình thường (không ném exception tiếp ra ngoài). Gọi process() từ bean khác qua proxy. Transaction sẽ rollback không?',
+  options: [
+    'Rollback vì exception đã ném ra trong thân method, dù bị bắt sau đó',
+    'Không compile được vì @Transactional không cho dùng try/catch',
+    'Không rollback — proxy không nhìn thấy exception nên transaction commit bình thường',
+    'Rollback chỉ khi catch rồi ném lại exception khác'
+  ],
+  answer: 2,
+  explain: `**Đáp án đúng: không rollback, transaction commit bình thường.**
+
+### Vì sao đúng
+Interceptor của Spring quyết định rollback dựa trên exception **thoát ra khỏi method qua proxy**, chứ không phải exception được ném ở đâu đó trong thân method. Khi process() bắt RuntimeException và return bình thường, proxy không nhận được exception nào → gọi commit → transaction commit, mọi thay đổi DB vẫn được lưu.
+
+~~~java
+@Transactional
+public void process() {
+    try {
+        riskyUpdate();   // ném RuntimeException
+    } catch (RuntimeException e) {
+        log.warn("bịa lỗi, tiếp tục", e);   // nuốt exception
+    }
+    // proxy không biết có lỗi => commit
+}
+~~~
+
+Lưu ý trường hợp khác: nếu transaction đã bị đánh dấu **rollback-only** bởi thành phần khác (ví dụ transaction con REQUIRES_NEW thất bại rồi đánh dấu rollback-only transaction chung), thì commit sẽ thất bại và ném {{UnexpectedRollbackException}}. Nhưng đó là do cờ rollback-only, không phải do exception bị catch trong process().
+
+### Vì sao các phương án còn lại sai
+- **Rollback vì exception đã ném trong thân method**: interceptor không theo dõi bên trong method, chỉ theo dõi sự ra vào qua proxy.
+- **Không compile**: @Transactional không giới hạn cấu trúc bên trong method, try/catch hoàn toàn hợp lệ.
+- **Rollback khi catch rồi ném lại**: nếu ném lại qua proxy thì đúng rollback, nhưng câu nói return bình thường nên không ném ra ngoài.
+
+> Senior tip: nếu muốn rollback sau khi catch, hãy ném lại exception (ví dụ {{throw new BusinessException("...", e)}}) để proxy đánh dấu rollback-only, hoặc để exception lan truyền ra controller xử lý ở đó.`
+
+},
+{
+  id: 'qz-spring-916',
+  topic: 'spring',
+  q: 'Lớp @Service không implement interface, method {{doWork()}} được khai báo {{final}} và gắn {{@Transactional}}. Spring Boot dùng CGLIB proxy (mặc định khi bean không implement interface). Gọi {{doWork()}} từ bean khác. @Transactional có hiệu lực không?',
+  options: [
+    'Có, CGLIB intercept được final method vì tạo subclass',
+    'Không — CGLIB sinh subclass và override method; method final không thể override nên annotation bị bỏ qua',
+    'Có, Spring tự chuyển sang JDK dynamic proxy khi gặp method final',
+    'Chỉ có hiệu lực nếu đặt {{@EnableAspectJAutoProxy(proxyTargetClass = false)}}'
+  ],
+  answer: 1,
+  explain: `**Đáp án đúng: không có hiệu lực, vì CGLIB không thể override method final.**
+
+### Vì sao đúng
+Khi bean không implement interface, Spring dùng CGLIB: sinh một subclass của bean tại runtime, subclass này override các method để chèn interceptor (transaction, cache, v.v.). Từ khóa **final** trong Java cấm override, nên CGLIB không thể chèn code vào doWork() → method chạy bình thường, không có transaction mở ra, @Transactional bị bỏ qua nhầm. Cùng nguyên lý với method private, static, và constructor.
+
+~~~java
+@Service
+public class OrderService {
+    @Transactional
+    public final void doWork() {   // CGLIB không override được
+        ...                        // chạy không có transaction
+    }
+}
+~~~
+
+### Vì sao các phương án còn lại sai
+- **CGLIB intercept được final method**: Java cấm override final, không có cách nào CGLIB làm được.
+- **Spring chuyển sang JDK proxy**: JDK proxy làm việc trên interface; class này không implement interface nên không chuyển được, và JDK proxy cũng không intercept final method.
+- **proxyTargetClass = false**: cưỡng dịch JDK proxy, không giúp được vì class không có interface.
+
+### Cách khắc phục
+- Xóa final trên method cần transaction (quy ước an toàn).
+- Nếu class thiết kế là final, hãy dùng **AspectJ compile-time weaving** (thay vì proxy runtime) để @Transactional chèn bytecode trực tiếp vào class, hoặc tách logic vào interface + bean khác.
+
+> Senior tip: method final cũng ảnh hưởng các annotation khác của Spring (@Cacheable, @Scheduled...) vì cùng cơ chế proxy. Nếu class bị đánh final thì toàn bộ AOP của Spring trên class đó đều bị bỏ qua.`
+
+},
+{
+  id: 'qz-spring-917',
+  topic: 'spring',
+  q: 'Một phương thức @Bean trong class @Configuration trả về đối tượng gắn {{@Scope("prototype")}}. Một bean @Service kiểu singleton inject đối tượng prototype này vào trường. Gọi method của service hai lần. Đối tượng prototype được tạo bao nhiêu instance?',
+  options: [
+    'Hai instance vì mỗi lần gọi method service lại tạo prototype mới',
+    'Hai lần gọi tạo hai instance khác nhau',
+    'Không tạo instance nào vì prototype chỉ tạo khi gọi getBean thủ công',
+    'Một instance duy nhất — prototype được tạo một lần khi inject vào singleton và được chia sẻ sau đó (trừ khi dùng ObjectProvider hay scoped proxy)'
+  ],
+  answer: 3,
+  explain: `**Đáp án đúng: một instance duy nhất, được chia sẻ cho toàn bộ thời gian sống của singleton.**
+
+### Vì sao đúng
+Prototype có nghĩa là container tạo instance mới **mỗi khi có yêu cầu lấy bean từ container** (ví dụ {{context.getBean()}} hoặc inject vào nhiều bean khác nhau). Nhưng khi prototype được inject vào một bean singleton qua constructor hoặc trường, container chỉ tạo prototype **một lần** tại thời điểm khởi tạo singleton. Singleton giữ tham chiếu đó và dùng lại cho mọi cuộc gọi method sau đó.
+
+~~~java
+@Service
+public class OrderService {
+    @Autowired
+    private PrototypeCounter counter;   // tạo 1 lần, dùng lại mãi
+}
+
+@Scope("prototype")
+@Component
+public class PrototypeCounter { ... }
+~~~
+
+Nếu counter lưu trạng thái (ví dụ số lần gọi), trạng thái đó bị chia sẻ ngầm giữa tất cả luồng gọi service → bug-like race condition rất khó tìm.
+
+### Cách lấy prototype mới mỗi lần
+- Inject {{ObjectProvider<PrototypeCounter>}} rồi gọi {{counter.getObject()}} mỗi lần cần.
+- Hoặc dùng {{@ScopedProxy}} với AOP proxy-scoped.
+- Hoặc dùng lookup method (phổ biến ít hơn).
+
+### Vì sao các phương án còn lại sai
+- **Hai lần gọi tạo hai instance**: chỉ đúng nếu gọi {{getBean()}} hai lần từ container, không phải inject vào singleton.
+- **Mỗi method gọi tạo mới**: singleton chỉ nhận prototype một lần khi khởi tạo.
+- **Không tạo instance nào**: prototype vẫn được tạo, chỉ là một lần duy nhất khi inject.
+
+> Senior tip: prototype inject vào singleton là bẫy kinh điển. Nếu đối tượng có trạng thái và bạn cần instance mới cho mỗi tác vụ, hãy dùng ObjectProvider.getObject() và đặt ý tưởng rõ ràng trong tên biến.`
+
+},
+{
+  id: 'qz-spring-918',
+  topic: 'spring',
+  q: '@Service có method công khai {{doAsync()}} gắn {{@Async}}. Trong cùng class, method {{run()}} gọi {{this.doAsync()}}. Lớp configuration đã gắn {{@EnableAsync}}. Gọi {{run()}} từ bean khác. {{doAsync()}} có chạy trên luồng riêng (không block caller) không?',
+  options: [
+    'Chạy trên luồng riêng vì {{@EnableAsync}} đã bật',
+    'Không — gọi {{this.doAsync()}} bypass proxy, chạy đồng bộ trên luồng gọi, caller bị block',
+    'Chạy trên luồng riêng nhưng Spring tự tạo thread pool mặc định cho mọi method',
+    'Không compile được vì @Async bắt buộc phải có interface'
+  ],
+  answer: 1,
+  explain: `**Đáp án đúng: không chạy ngang hàng, vì this.doAsync() bỏ qua proxy và chạy đồng bộ.**
+
+### Vì sao đúng
+Cùng nguyên lý với @Transactional: @Async chỉ hoạt động khi lời gọi đi **qua proxy** của bean. Controller/bean khác gọi run() qua proxy, interceptor không thấy gì đặc biệt (run() không có @Async), gọi method gốc. Bên trong run() gọi this.doAsync() — this là object gốc, không qua proxy → @Async bị bỏ qua → doAsync chạy trên luồng hiện tại → caller bị chờ cho tới khi xong.
+
+~~~java
+@Service
+public class OrderService {
+    @Async
+    public void doAsync() { ... }   // chỉ chạy async khi gọi qua proxy
+
+    public void run() {
+        doAsync();   // LỖI: chạy đồng bộ, block caller
+    }
+}
+~~~
+
+### Điều cần có để @Async thật sự chạy ngang hàng
+1. Gắn {{@EnableAsync}} trên class @Configuration (đã có trong câu).
+2. Method phải **public** và được gọi **qua proxy** (từ bean khác, không phải this).
+3. Nếu method không trả giá trị (void), caller không nhận được kết quả và exception ném ra sẽ được gửi tới {{AsyncUncaughtExceptionHandler}} (mặc định in stack trace vào log, caller không biết).
+
+### Vì sao các phương án còn lại sai
+- **Chạy luồng riêng vì @EnableAsync**: @EnableAsync chỉ bật cơ chế, không làm mọi method này chạy async nếu gọi bypass proxy.
+- **Spring tự tạo thread pool mặc định**: nếu không định nghĩa bean {{TaskExecutor}}, Spring dùng {{SimpleAsyncTaskExecutor}} — tạo luồng mới mỗi lần, không reuse (xem câu sau).
+- **Bắt buộc interface**: @Async hoạt động với class thông thường qua CGLIB proxy.
+
+> Senior tip: @Async thích hợp cho tác vụ ngắn gọn, không quan trọng (gửi email, thông báo). Với tác vụ quan trọng, hãy dùng Kafka message hoặc scheduling có giám sát, vì @Async void không trông lại được kết quả và dễ bỏ lỡ exception.`
+
+},
+{
+  id: 'qz-spring-919',
+  topic: 'spring',
+  q: 'Spring Boot tự động cấu hình DataSource qua {{DataSourceAutoConfiguration}}. Bạn tự định nghĩa @Bean {{DataSource}} trong class @Configuration của ứng dụng. {{DataSourceAutoConfiguration}} có tạo thêm DataSource không?',
+  options: [
+    'Không — {{@ConditionalOnMissingBean}} làm bỏ qua auto-config khi ứng dụng đã định nghĩa bean cùng loại',
+    'Có, tạo hai DataSource và Spring chọn bean của ứng dụng',
+    'Không vì {{DataSourceAutoConfiguration}} bị vô hiệu hóa mặc định',
+    'Tạo nhưng bị bean của ứng dụng override hoàn toàn, không ảnh hưởng gì'
+  ],
+  answer: 0,
+  explain: `**Đáp án đúng: không tạo thêm, vì bean của ứng dụng đã thỏa mãn điều kiện.**
+
+### Vì sao đúng
+Auto-configuration của Spring Boot dùng các annotation điều kiện, phổ biến nhất là {{@ConditionalOnMissingBean}}. Nó kiểm tra container: nếu bean kiểu {{DataSource}} đã được đăng ký (do bạn định nghĩa @Bean), thì auto-configuration **không tạo** DataSource của mình. Bean của bạn là duy nhất và được dùng.
+
+Thứ tự nạp: các bean định nghĩa trong ứng dụng được nạp trước, sau đó mới xử lý các class auto-configuration, nên khi {{DataSourceAutoConfiguration}} chạy, bean DataSource của bạn đã có trong container.
+
+Các điều kiện thường gặp khác: {{@ConditionalOnClass}} (thư viện có trên classpath), {{@ConditionalOnMissingClass}}, {{@ConditionalOnProperty}} (có thuộc tính application.properties).
+
+~~~java
+@Configuration
+public class AppConfig {
+    @Bean
+    public DataSource dataSource() {
+        return DataSourceBuilder.create().url("...").build();   // DataSourceAutoConfiguration bỏ qua
+    }
+}
+~~~
+
+### Nguồn bản ghi auto-config
+- Spring Boot cũ: liệt kê class trong {{META-INF/spring.factories}}.
+- Spring Boot 3 (hiện tại): dùng {{META-INF/spring/org.springframework.boot.autoconfigure.AutoConfiguration.imports}}. Nếu bạn viết auto-config riêng, hãy dùng định dạng mới này.
+
+### Vì sao các phương án còn lại sai
+- **Tạo hai DataSource**: container không chấp nhận hai bean cùng kiểu không ghi rõ @Primary/@Qualifier khi inject; auto-config theo thiết kế là bỏ qua khi đã có bean.
+- **Bị vô hiệu hóa mặc định**: sai, DataSourceAutoConfiguration hoạt động mặc định, chỉ bỏ qua khi có bean trùng.
+- **Override hoàn toàn**: auto-config không "override" bean của bạn — nó đơn giản không chạy, nên không có bean thứ hai sinh ra.
+
+> Senior tip: muốn kiểm tra auto-config đã áp dụng gì, chạy ứng dụng với tham số {{--debug}}; Spring Boot in ra báo cáo positive matches và negative matches (và lý do bỏ qua) cho từng auto-configuration. Lệnh này là bài thuốc đầu tiên khi suspect auto-config bị bỏ qua.`
+
+},
+{
+  id: 'qz-spring-920',
+  topic: 'spring',
+  multi: true,
+  q: '@Transactional(propagation = Propagation.REQUIRES_NEW) method {{logAudit()}} được gọi từ method {{placeOrder()}} có {{@Transactional}} (mặc định REQUIRED). {{logAudit()}} ném {{RuntimeException}}, {{placeOrder()}} bắt exception đó rồi return bình thường. Chọn đúng (Chọn 2):',
+  options: [
+    '{{logAudit()}} mở transaction riêng, tạm gián đoạn (suspend) transaction của {{placeOrder()}}',
+    '{{logAudit()}} tham gia cùng transaction với {{placeOrder()}} (REQUIRED)',
+    'Khi {{logAudit()}} rollback transaction riêng của nó, transaction của {{placeOrder()}} không bị đánh dấu rollback-only',
+    '{{placeOrder()}} bị ném {{UnexpectedRollbackException}} khi commit vì transaction đã bị đánh dấu rollback-only'
+  ],
+  answer: [0, 2],
+  explain: `**Đáp án đúng: 0 và 2.**
+
+### Vì sao 0 đúng
+{{REQUIRES_NEW}} yêu cầu Spring mở transaction vật lý **mới**, hoàn toàn tách biệt. Transaction hiện hành của {{placeOrder()}} bị **suspend** (tạm hoãn) trong khi {{logAudit()}} chạy, được khôi phục lại sau khi {{logAudit()}} kết thúc.
+
+~~~text
+placeOrder [REQUIRED] mở TX-A
+  -> logAudit [REQUIRES_NEW] mở TX-B (TX-A bị suspend)
+     -> lỗi => đánh dấu rollback-only TX-B, rollback TX-B
+  -> khôi phục TX-A
+placeOrder catch exception, return bình thường => commit TX-A
+~~~
+
+### Vì sao 2 đúng
+Rollback chỉ diễn ra trên transaction của riêng {{logAudit()}} (TX-B). Cờ rollback-only được đặt trên TX-B, **không lan** sang TX-A (đã suspend, là đối tượng transaction khác). Vì {{placeOrder()}} bắt exception và không ném ra ngoài, proxy của placeOrder commit TX-A bình thường.
+
+### Vì sao 1 và 3 sai
+- **Tham gia cùng transaction (REQUIRED)**: đó là hành vi mặc định REQUIRED, không phải REQUIRES_NEW. Nếu dùng REQUIRED, exception trong logAudit đánh dấu rollback-only trên transaction chung, và khi placeOrder commit Spring sẽ rollback TX-A và ném {{UnexpectedRollbackException}}.
+- **UnexpectedRollbackException**: chỉ xảy ra khi transaction chung bị đánh dấu rollback-only rồi cố commit. Ở đây transaction của placeOrder không bị ảnh hưởng.
+
+### Lưu ý về exception
+Nếu bạn **muốn** placeOrder rollback khi logAudit lỗi, hãy để exception lan truyền ra ngoài placeOrder (không try/catch), hoặc dùng REQUIRED thay vì REQUIRES_NEW và không bắt exception.
+
+> Senior tip: REQUIRES_NEW phù hợp cho ghi log kiểm tra (audit log) — log vẫn được lưu dù nghiệp vụ chính rollback. Nhưng hãy giới hạn dùng, vì mỗi transaction mới = một kết nối DB mới từ pool HikariCP, dễ cạn pool khi gọi nhiều lần trong vòng lặp.`
+
+},
+{
+  id: 'qz-spring-921',
+  topic: 'spring',
+  multi: true,
+  q: '@Async method ném {{RuntimeException}} và không bị catch ở đâu. Ứng dụng không định nghĩa bean {{TaskExecutor}} nào. Chọn đúng (Chọn 2):',
+  options: [
+    'Exception bị nuốt lặng bởi Spring, caller không bao giờ biết',
+    'Exception được gửi tới {{AsyncUncaughtExceptionHandler}} (mặc định in stack trace vào log)',
+    'Spring dùng {{SimpleAsyncTaskExecutor}} mặc định — tạo luồng mới mỗi lần gọi, không giới hạn số lượng luồng',
+    'Spring dùng fixed pool 256 luồng, không thể thay đổi'
+  ],
+  answer: [1, 2],
+  explain: `**Đáp án đúng: 1 và 2.**
+
+### Vì sao 1 đúng
+Khi @Async method ném exception ra ngoài và không có ai catch, Spring không đưa exception ngược lại caller (caller đã nhận void và tiếp tục). Thay vào đó, exception được gửi tới bean {{AsyncUncaughtExceptionHandler}}. Mặc định Spring dùng {{SimpleAsyncUncaughtExceptionHandler}}: in stack trace vào log/error output, không ném lại. Do đó caller có thể tự cho rằng đã thành công trong khi thực tế tác vụ thất bại.
+
+### Vì sao 2 đúng
+Nếu không định nghĩa bean {{TaskExecutor}} (ví dụ {{ThreadPoolTaskExecutor}}), Spring Boot dùng {{SimpleAsyncTaskExecutor}}: mỗi lần gọi @Async tạo một **luồng Java mới**, chạy xong thì huỷ. Không có pool, không giới hạn số lượng. Trên production với nhiều tác vụ, điều này dễ làm spams luồng, tiêu tốn RAM và có thể gặp {{OutOfMemoryError: unable to create new native thread}}.
+
+Cách dùng đúng:
+~~~java
+@Bean
+public TaskExecutor taskExecutor() {
+    ThreadPoolTaskExecutor ex = new ThreadPoolTaskExecutor();
+    ex.setCorePoolSize(5);
+    ex.setMaxPoolSize(10);
+    ex.setQueueCapacity(25);
+    ex.setThreadNamePrefix("order-async-");
+    ex.initialize();
+    return ex;
+}
+~~~
+
+Spring sẽ tự dùng bean này cho @Async (tên bất kỳ, chỉ cần là duy nhất bean kiểu TaskExecutor).
+
+### Vì sao 0, 3, 4 sai
+- **Exception nuốt lặng**: sai, nó được đẩy tới AsyncUncaughtExceptionHandler, mặc định được in log — không hoàn toàn "lặng" nhưng caller vẫn không biết.
+- **Fixed pool 256**: không phải mặc định của Spring; 256 là số prefetch mặc định của RabbitMQ (hệ khác), không liên quan.
+- **Bắt buộc bean tên taskExecutor**: Spring tự tìm bean TaskExecutor duy nhất; tên không bắt buộc. Nếu không có bean thì dùng SimpleAsyncTaskExecutor, vẫn compile và chạy.
+
+> Senior tip: @Async void là "đi rồi quên" — phù hợp cho ghi log, gửi thông báo không quan trọng. Với tác vụ quan trọng (thanh toán, trừ kho), hãy dùng message queue (Kafka/RabbitMQ) có theo dõi, hoặc trả về {{CompletableFuture}} để caller theo dõi kết quả và xử lý lỗi.`
+
+},
+{
+  id: 'qz-spring-922',
+  topic: 'spring',
+  q: '@Transactional(readOnly = true) method dùng Hibernate/JPA load entity, rồi gọi setter thay đổi field của entity. Commit transaction xong, cơ sở dữ liệu có bị cập nhật không?',
+  options: [
+    'Có, Hibernate tự dirty-checking và cập nhật dù readOnly',
+    'Có nếu gọi {{entityManager.flush()}} trong method',
+    'Không — readOnly=true tắt flush tự động, đặt kết nối JDBC chỉ đọc; việc ghi bị từ chối (có thể ném SQLException "Connection is read-only")',
+    'Không compile được vì readOnly không cho gọi setter'
+  ],
+  answer: 2,
+  explain: `**Đáp án đúng: cơ sở dữ liệu không bị cập nhật, và attempt ghi có thể bị từ chối.**
+
+### Vì sao đúng
+{{readOnly = true}} nói với Spring transaction manager: transaction này chỉ đọc dữ liệu.
+- Với **JDBC**: Spring gọi {{Connection.setReadOnly(true)}} trên kết nối. PostgreSQL JDBC (và hầu hết driver) sẽ từ chối các câu ghi (INSERT/UPDATE/DELETE) với SQLException kiểu "Connection is read-only".
+- Với **Hibernate/JPA**: Spring đặt flush mode của session thành không tự động flush (manual/never). Hibernate vẫn theo dõi thay đổi đối tượng trong session (dirty-checking), nhưng khi commit session sẽ không flush các thay đổi xuống DB. Nếu bạn gọi {{entityManager.flush()}} hoặc {{session.flush()}} một cách rõ ràng, Hibernate sẽ ném lỗi ("cannot flush read-only session") hoặc JDBC driver ném SQLException khi thực thi câu update.
+
+~~~java
+@Transactional(readOnly = true)
+public void viewOrder(Long id) {
+    Order order = orderRepo.findById(id).orElseThrow();
+    order.setStatus("SHIPPED");   // thay đổi chỉ nằm trong bộ nhớ
+    // commit => không có câu UPDATE nào được gửi tới DB
+}
+~~~
+
+### Vì sao các phương án còn lại sai
+- **Hibernate tự dirty-checking và cập nhật**: dirty-checking chỉ đánh dấu đối tượng "đã thay đổi" trong session; cập nhật thực sự cần flush, và readOnly tắt flush.
+- **Có nếu gọi entityManager.flush()**: gọi flush trong transaction readOnly thường gây lỗi, không làm được việc ghi.
+- **Không compile**: gọi setter hoàn toàn hợp lệ, chỉ không được persist xuống DB.
+
+### Khi dùng readOnly
+Dùng cho truy vấn tìm kiếm, báo cáo, xuất file — giúp DB tránh mở transaction đọc/ghi không cần thiết và PostgreSQL có thể tối ưu hơn (ví dụ không cần lấy snapshot chi tiết cho đọc). Không dùng cho method vừa đọc vừa ghi.
+
+> Senior tip: readOnly=true không làm cho code của bạn "bất biến" — nó chỉ ngăn Spring/Hibernate đẩy thay đổi xuống DB. Nếu bạn truyền entity đã sửa ra ngoài service (ví dụ trả về controller), controller vẫn có thể thay đổi đối tượng đó; chỉ có DB không bị ảnh hưởng.`
 }
 );
