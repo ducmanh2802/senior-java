@@ -2328,38 +2328,38 @@ Loi hay gap: quench tra cung id khi loi (host khong biet yeu cau nao bi loi), bo
   id: 'lesson-claude-009',
   track: 'claude',
   order: 9,
-  title: 'Thiet ke tool cho MCP: ten, mo ta, schema, loi co ich, idempotent',
+  title: 'Thiết kế tool cho MCP: tên, mô tả, schema, lỗi có ích, idempotent',
   level: 'mid',
   minutes: 35,
   goals: [
-    'Dat ten tool theo domain-hanh dong va viet mo ta rang buoc khi su dung',
-    'Hieu JSON Schema co ban (type, required, enum, additionalProperties) va rang buoc dau vao o server',
-    'Xay dung loi tra ve co ich, khong ro noi bo, va biet idempotency key khac tool_use_id'
+    'Đặt tên tool theo domain-hành động và viết mô tả ràng buộc khi sử dụng',
+    'Hiểu JSON Schema cơ bản (type, required, enum, additionalProperties) và ràng buộc đầu vào ở server',
+    'Xây dựng lỗi trả về có ích, không lộ nội bộ, và biết idempotency key khác tool_use_id'
   ],
-  body: `**Tóm tắt:** Tool tot cho MCP phai dat ten theo domain-hanh dong, co mo ta noi rang khi su dung, khi khong su dung, dau vao lay tu dau va ket qua/loi nhu the nao. Input schema phai rang rang (trung bat buoc, kieu, gia tri cho phep, tu choi truong la). Server phai validate dau tien, sau moi kiem tra quyen va nghiep vu. Loi tra ve model phai de hieu, khong ro noi bo. Moi tool ghi du lieu phai idempotent: cung khoa idempotency (ma nghiep vu) chi thuc hien mot lan, ngay khi agent retry sau loi mang.
+  body: `**Tóm tắt:** Tool tốt cho MCP phải đặt tên theo domain-hành động, có mô tả nói rõ khi sử dụng, khi không sử dụng, đầu vào lấy từ đâu và kết quả/lỗi như thế nào. Input schema phải ràng buộc (trường bắt buộc, kiểu, giá trị cho phép, từ chối trường lạ). Server phải validate đầu tiên, sau mỗi kiểm tra quyền và nghiệp vụ. Lỗi trả về model phải dễ hiểu, không lộ nội bộ. Mọi tool ghi dữ liệu phải idempotent: cùng khóa idempotency (mã nghiệp vụ) chỉ thực hiện một lần, ngay khi agent retry sau lỗi mạng.
 
-### Ten tool: nhu dat ten API cho dong nghiep moi
+### Tên tool: như đặt tên API cho từng nghiệp vụ mới
 
-Model khong doc code Java o server. No quyet dinh goi tool nao dua tren ten va mo ta ban khai bao. Ten hay: {{orders_get_status}}, {{payments_refund}}, {{inventory_check_stock}}. Ten khong hay: {{get_data}}, {{run_action}}, {{do_thing}}, {{run_sql}} — model khong biet su dung khi nao, de goi nham. Dung chu thuong, dau gach duong, viet domain truoc roi hanh dong. Neu hai tool de nham (tra don hang so voi tra thanh toan), hua dat ten khac biet ro va ghi ranh gioi trong mo ta ("khong dung de tra thanh toan").
+Model không đọc code Java ở server. Nó quyết định gọi tool nào dựa trên tên và mô tả bạn khai báo. Tên hay: {{orders_get_status}}, {{payments_refund}}, {{inventory_check_stock}}. Tên không hay: {{get_data}}, {{run_action}}, {{do_thing}}, {{run_sql}} — model không biết dùng khi nào, dễ gọi nhầm. Dùng chữ thường, dấu gạch dưới, viết domain trước rồi hành động. Nếu hai tool dễ nhầm (tra đơn hàng so với tra thanh toán), hãy đặt tên khác biệt rõ và ghi ranh giới trong mô tả ("không dùng để tra thanh toán").
 
-### Mo ta tool: bon cau tra loi
+### Mô tả tool: bốn câu trả lời
 
-Mo ta tot phai tra loi: (1) tool lam cong viec gi, (2) su dung khi nao, (3) KHONG su dung khi nao, (4) dau vao lay tu dau, ket qua va loi nhu the nao. Mo ta doc nhu huong dan cho nhan vien moi, khong chi ghi "Tra don hang". Vi mo la phan model nhin thang tiep tuc, no tac tiep den ti le goi nham tool.
+Mô tả tốt phải trả lời: (1) tool làm công việc gì, (2) sử dụng khi nào, (3) KHÔNG sử dụng khi nào, (4) đầu vào lấy từ đâu, kết quả và lỗi như thế nào. Mô tả đọc như hướng dẫn cho nhân viên mới, không chỉ ghi "Tra đơn hàng". Vì mô tả là phần model nhìn thấy, nó trực tiếp ảnh hưởng đến tỷ lệ gọi nhầm tool.
 
-### Schema: hinh dang dau vao
+### Schema: hình dạng đầu vào
 
-JSON Schema don gian: {{type}} (string, integer, boolean), {{required}} (truong bat buoc), {{enum}} (tap gia tri cho phep), {{additionalProperties: false}} (tu choi truong khong khai bao). Schema giup model sinh dau vao dung hinh dang, nhung schema KHONG thay the kiem tra o server: schema co the dam bao {{order_id}} la chuoi, chung khong chung minh don ton tai hoac nguoi dung hien tai duoc xem don do.
+JSON Schema đơn giản: {{type}} (string, integer, boolean), {{required}} (trường bắt buộc), {{enum}} (tập giá trị cho phép), {{additionalProperties: false}} (từ chối trường không khai báo). Schema giúp model sinh đầu vào đúng hình dạng, nhưng schema KHÔNG thay thế kiểm tra ở server: schema có thể đảm bảo {{order_id}} là chuỗi, nhưng không chứng minh đơn tồn tại hay người dùng hiện tại được xem đơn đó.
 
-Vi du dinh nghia tool:
+Ví dụ định nghĩa tool:
 
 ~~~json
 {
   "name": "orders_get_status",
-  "description": "Tra trang thai don ORD. Su dung khi khach hoi don dang giao ho da giao. Khong dung cho thanh toan hoan toan. Tra trang thai va ngay giao du kien; neu khong tim thay thi tra NOT_FOUND.",
+  "description": "Tra trạng thái đơn ORD. Sử dụng khi khách hỏi đơn đang giao hoặc đã giao. Không dùng để tra thanh toán hay hoàn tiền. Trả trạng thái và ngày giao dự kiến; nếu không tìm thấy thì trả NOT_FOUND.",
   "input_schema": {
     "type": "object",
     "properties": {
-      "order_id": { "type": "string", "description": "Ma don ORD-123, lay tu khach hang" },
+      "order_id": { "type": "string", "description": "Mã đơn ORD-123, lấy từ khách hàng" },
       "view": { "type": "string", "enum": ["status", "delivery_date"] }
     },
     "required": ["order_id"],
@@ -2368,41 +2368,41 @@ Vi du dinh nghia tool:
 }
 ~~~
 
-### Ba lop bao ve o server
+### Ba lớp bảo vệ ở server
 
-1. Schema: kiem tra hinh dang (kieu, truong bat buoc, enum, truong la). Khong ep kieu va khong "sua" dau vao sai.
-2. Quyen: lay nguoi dung tu boi contexts da xac thuc (security context). KHONG tin {{customer_id}} do model gui. Kiem tra nguoi dung duoc xem ho sua doi tuong nao.
-3. Nghiep vu: trang thai doi tuong co cho phep hanh dong khong (vd don da giao thi khong the huy).
+1. Schema: kiểm tra hình dạng (kiểu, trường bắt buộc, enum, trường lạ). Không ép kiểu và không "sửa" đầu vào sai.
+2. Quyền: lấy người dùng từ security context đã xác thực. KHÔNG tin {{customer_id}} do model gửi. Kiểm tra người dùng được xem hoặc sửa đối tượng nào.
+3. Nghiệp vụ: trạng thái đối tượng có cho phép hành động không (ví dụ đơn đã giao thì không thể hủy).
 
-### Loi tra ve model: co ich va an toan
+### Lỗi trả về model: có ích và an toàn
 
-Khi tool that bai, tra ve loi co ma va thong diep bang ngon ngua thuong (vd "Ma don khong dung dinh dang ORD-XXX" hoac "Ban khong co quyen xem don nay"). KHONG tra stack trace, cau SQL, ma thong bao ho chi tiet noi bo. Model chi can du thong de quyet dinh buoc tiep (thu lai voi dau vao khac, goi tool khac, hoac xin loi khach hang).
+Khi tool thất bại, trả về lỗi có mã và thông điệp bằng ngôn ngữ thường ngày (ví dụ "Mã đơn không đúng định dạng ORD-XXX" hoặc "Bạn không có quyền xem đơn này"). KHÔNG trả stack trace, câu SQL, mã thông báo hoặc chi tiết nội bộ. Model chỉ cần đủ thông tin để quyết định bước tiếp (thử lại với đầu vào khác, gọi tool khác, hoặc xin lỗi khách hàng).
 
-### Idempotent: cung yeu cau chi chay mot lan
+### Idempotent: cùng yêu cầu chỉ chạy một lần
 
-Agent co the retry tool sau loi mang ma khong biet lan truoc da thanh chua. Khoa idempotency la ma nghiep vu (ma don hang, ma chuyen khoan). Server luu khoa da xu ly; yeu cau cung khoa lan nua tra ket qua cu, khong thuc hien lai. {{tool_use_id}} KHONG phai khoa idempotency: no chi danh ung mot lan goi model, co the thay doi khi retry.
+Agent có thể retry tool sau lỗi mạng mà không biết lần trước đã thành công chưa. Khóa idempotency là mã nghiệp vụ (mã đơn hàng, mã chuyển khoản). Server lưu khóa đã xử lý; yêu cầu cùng khóa lần nữa trả kết quả cũ, không thực hiện lại. {{tool_use_id}} KHÔNG phải khóa idempotency: nó chỉ đánh dấu một lần gọi model, có thể thay đổi khi retry.
 
-Vi du: chuyen tien khoa {{TX-100}} -> luu khoa, tru tien, tra thanh cong. Lan goi lai cung khoa {{TX-100}} -> tra ket qua cu, khong tru lai.
+Ví dụ: chuyển tiền khóa {{TX-100}} → lưu khóa, trừ tiền, trả thành công. Lần gọi lại cùng khóa {{TX-100}} → trả kết quả cũ, không trừ lại.
 
-### Vi du doi thuc
+### Ví dụ đời thực
 
-Trung tâm chăm sóc khach hang co 18 nhan vien dung agent. Ti le goi nham tool trang thai don so voi tool thanh toan la 11% tren 900 cau kiem tra, vi hai mo ta deu ghi "Tra don hang". Doi ten thanh {{orders_get_status}} va {{payments_get_summary}}, mo ta ro ranh gioi, them enum cho truong chon, dat {{additionalProperties: false}}. Backend Java validate kieu, kiem tra chu so huu don qua nguoi dung dang nhap roi moi goi service. Chay lai 900 cau: ti le nham giam con 1,4%; khong con dau vao sai schema nao den service. Day la phep do chat luong tool routing, khong la bang chung model luon dung.
+Trung tâm chăm sóc khách hàng có 18 nhân viên dùng agent. Tỷ lệ gọi nhầm tool trạng thái đơn so với tool thanh toán là 11% trên 900 câu kiểm tra, vì hai mô tả đều ghi "Tra đơn hàng". Đổi tên thành {{orders_get_status}} và {{payments_get_summary}}, mô tả rõ ranh giới, thêm enum cho trường chọn, đặt {{additionalProperties: false}}. Backend Java validate kiểu, kiểm tra chủ sở hữu đơn qua người dùng đăng nhập rồi mới gọi service. Chạy lại 900 câu: tỷ lệ nhầm giảm còn 1,4%; không còn đầu vào sai schema nào đến service. Đây là phép đo chất lượng tool routing, không phải bằng chứng model luôn đúng.
 
-### Tra loi mau khi phong vien
+### Trả lời mẫu khi phỏng vấn
 
-"Toi thiet ke tool nhu API noi bo cho mot dong nghiep moi: ten theo domain-hanh dong, mo ta rang khi su dung, khi khong su dung, dau vao lay tu dau va ket qua hoac loi nao co the nhan. JSON Schema mo ta object, truong bat buoc, kieu, enum va tu choi truong la. Schema chi kiem tra hinh dang, nen Java van phai validate cau truc, lay nguoi dung tu security context, kiem tra quyen va quy tach nghiep vu truoc khi goi service. Loi tra ve model co ma va thong diep de hieu, khong ro stack trace hay SQL. Moi tool ghi du lieu dung khoa idempotency lay tu ma nghiep vu de retry sau loi mang khong tao giao dich tram. tool_use_id chi danh ung lan goi model, khong the thay khoa idempotency. Toi co bo kiem tra cau dung, cau mo ho va cau thieu dau de do ti le goi nham tool."`,
+"Tôi thiết kế tool như API nội bộ cho một ngành nghiệp vụ mới: tên theo domain-hành động, mô tả rõ khi sử dụng, khi không sử dụng, đầu vào lấy từ đâu và kết quả hoặc lỗi nào có thể nhận. JSON Schema mô tả object, trường bắt buộc, kiểu, enum và từ chối trường lạ. Schema chỉ kiểm tra hình dạng, nên Java vẫn phải validate cấu trúc, lấy người dùng từ security context, kiểm tra quyền và quy tắc nghiệp vụ trước khi gọi service. Lỗi trả về model có mã và thông điệp dễ hiểu, không lộ stack trace hay SQL. Mọi tool ghi dữ liệu dùng khóa idempotency lấy từ mã nghiệp vụ để retry sau lỗi mạng không tạo giao dịch trùng. tool_use_id chỉ đánh dấu lần gọi model, không thể thay khóa idempotency. Tôi có bộ kiểm tra trường hợp đúng, mô phỏng và thiếu đầu vào để đo tỷ lệ gọi nhầm tool."`,
   exercises: [
     {
-      title: 'ToolRegistry: dang ky, validate dau vao, goi tool va idempotency',
-      prompt: `Hoàn thiện ToolRegistry de dang ky, validate va chay tool kieu MCP:
+      title: 'ToolRegistry: đăng ký, validate đầu vào, gọi tool và idempotency',
+      prompt: `Hoàn thiện ToolRegistry để đăng ký, validate và chạy tool kiểu MCP:
 
-1. register(def): dang ky ToolDef (ten, mo ta, schema, ham xu ly). Ten tool khong duoc trung.
+1. register(def): đăng ký ToolDef (tên, mô tả, schema, hàm xử lý). Tên tool không được trùng.
 2. call(name, input, idempotencyKey):
-   - Tool khong ton tai → ToolResult(ok=false, errors=["Tool khong ton tai: ten"])
-   - Dau vao khong khop schema (thieu truong bat buoc, sai kieu, gia tri ngoai enum, truong la khi additionalProperties=false) → errors liet ke van de
-   - Neu idempotencyKey khac null va da dung truoc do → tra ToolResult da luu, khong chay lai handler
-   - Nguoc lai chay handler, luu ket qua neu co khoa; handler nem RuntimeException → errors=["Loi thuc thi tool: ..."], khong ro stack trace
-3. validate(input, schema): kiem tra required, type (string, integer la Integer hoac Long, boolean; khong ep kieu), enum, additionalProperties. Thu tu loi theo ten truong alphabet.`,
+   - Tool không tồn tại → ToolResult(ok=false, errors=["Tool không tồn tại: ten"])
+   - Đầu vào không khớp schema (thiếu trường bắt buộc, sai kiểu, giá trị ngoài enum, trường lạ khi additionalProperties=false) → errors liệt kê vấn đề
+   - Nếu idempotencyKey khác null và đã dùng trước đó → trả ToolResult đã lưu, không chạy lại handler
+   - Ngược lại chạy handler, lưu kết quả nếu có khóa; handler ném RuntimeException → errors=["Lỗi thực thi tool: ..."], không rò stack trace
+3. validate(input, schema): kiểm tra required, type (string, integer là Integer hoặc Long, boolean; không ép kiểu), enum, additionalProperties. Thứ tự lỗi theo tên trường alphabet.`,
       starter: `// ====== Có sẵn (không cần sửa) ======
 record Rule(String type, boolean required, Set<?> enumValues) {}
 record SimpleSchema(Map<String, Rule> properties, boolean additionalProperties) {}
@@ -2595,48 +2595,48 @@ class ToolRegistry {
     }
 }`,
       hints: [
-        'Dung TreeSet duyet ten truong theo thu tu alphabet de loi co dinh.',
-        'Kiem tra required bang containsKey: truong co gia tri null van da co, duoc xem nhu co truong.',
-        'Kiem tra type truoc enum de khong so sanh gia tri sai kieu nhung no o tap gia tri.'
+        'Dùng TreeSet duyệt tên trường theo thứ tự alphabet để thứ tự lỗi cố định.',
+        'Kiểm tra required bằng containsKey: trường có giá trị null vẫn đã có mặt, được xem như có trường.',
+        'Kiểm tra type trước enum để không so sánh giá trị sai kiểu với tập giá trị.'
       ],
-      explain: `ToolRegistry thuc hien ba lop bao ve: schema xac nhan hinh dang dau vao, call bo qua tool khong ton tai va du lieu sai schema, handler duoc goi chi sau khi du lieu hop. Khoa idempotency duoc luu truoc khi chay handler: cung khoa goi lai tra ket qua cu, khong chay lai xu ly nghiep vu.
+      explain: `ToolRegistry thực hiện ba lớp bảo vệ: schema xác nhận hình dạng đầu vào, call bỏ qua tool không tồn tại và dữ liệu sai schema, handler chỉ được gọi sau khi dữ liệu hợp lệ. Khóa idempotency được lưu trước khi chạy handler: cùng khóa gọi lại trả kết quả cũ, không chạy lại xử lý nghiệp vụ.
 
-Loi hay gap: ep kieu dau vao sai (vd so thanh chuoi), tin customer_id tu model thay ve security context, va loi thuc thi tu bot stack trace den model. tool_use_id khong the thay the khoa idempotency vi no chi danh ung mot lan goi model, co the doi khi retry.`,
+Lỗi hay gặp: ép kiểu đầu vào sai (ví dụ số thành chuỗi), tin customer_id từ model thay vì security context, và để lỗi thực thi lộ stack trace ra model. tool_use_id không thể thay thế khóa idempotency vì nó chỉ đánh dấu một lần gọi model, có thể đổi khi retry.`,
     },
   ],
   check: [
     {
-      q: 'Mo ta tot cua tool orders_get_status phai noi gi?',
+      q: 'Mô tả tốt của tool orders_get_status phải nói gì?',
       options: [
-        "Chi ghi 'Tra don' de model su ly",
-        'Cong viec tool, khi su dung, khi KHONG su dung, dau vao lay tu dau, ket qua/loi',
-        'Chuan toan bo code Java cua service',
-        'Khong can mo ta input vi schema da co ten truong'
+        "Chỉ ghi 'Tra đơn' để model tự suy luận",
+        'Công việc tool làm, khi nào dùng, khi KHÔNG dùng, đầu vào lấy từ đâu, kết quả/lỗi ra sao',
+        'Chứa toàn bộ code Java của service',
+        'Không cần mô tả đầu vào vì schema đã có tên trường'
       ],
       answer: 1,
-      explain: 'Ten va mo la thong tin chinh model co ve tool. Ranh gioi, nguon dau vao va ket qua phan biet tool trang thai don voi tool thanh toan. Mo ta chung tang mo ho; model khong doc code backend; ten truong schema mot minh khong giai thuc nghiep vu.'
+      explain: 'Tên và mô tả là thông tin chính model thấy về tool. Ranh giới, nguồn đầu vào và kết quả giúp phân biệt tool trạng thái đơn với tool thanh toán. Mô tả chung chung tăng mơ hồ; model không đọc code backend; tên trường trong schema một mình không giải thích nghiệp vụ.'
     },
     {
-      q: 'Schema KHONG chung minh gi?',
+      q: 'Schema KHÔNG chứng minh được điều gì?',
       options: [
-        'order_id la chuoi',
-        'Nguoi dung dang nhap duoc xem don nay',
-        'Gia tri view o trong tap cho phep',
-        'Khong co truong la khi additionalProperties false'
+        'order_id là chuỗi',
+        'Người dùng đang đăng nhập được xem đơn này',
+        'Giá trị view nằm trong tập cho phép',
+        'Không có trường lạ khi additionalProperties false'
       ],
       answer: 1,
-      explain: 'Schema chi kiem tra hinh dang. Quyen xem don lay tu bối contexts xac thuc, khong tu customer_id model gui; schema chung chung minh don ton tai, trang thai co cho phep hay khong, hay nguoi dung co quyen.'
+      explain: 'Schema chỉ kiểm tra hình dạng. Quyền xem đơn lấy từ security context đã xác thực, không từ customer_id model gửi; schema không chứng minh đơn tồn tại, trạng thái có cho phép hành động hay người dùng có quyền.'
     },
     {
-      q: 'Tool_use_id va khoa idempotency khac nhau nhu the nao?',
+      q: 'tool_use_id và khóa idempotency khác nhau như thế nào?',
       options: [
-        'Giong nhau, danh ung mot yeu cau nghiep vu',
-        'tool_use_id danh ung mot lan goi model; khoa idempotency la ma nghiep vu dam bao cung yeu cau chi chay mot lan',
-        'Khoa idempotency ma hoa du lieu, tool_use_id gioi han so buoc',
-        'Chi dung tool_use_id o server, khoa idempotency chi o client'
+        'Giống nhau, cùng đánh dấu một yêu cầu nghiệp vụ',
+        'tool_use_id đánh dấu một lần gọi model; khóa idempotency là mã nghiệp vụ đảm bảo cùng yêu cầu chỉ chạy một lần',
+        'Khóa idempotency mã hoá dữ liệu, tool_use_id giới hạn số bước',
+        'Chỉ dùng tool_use_id ở server, khóa idempotency chỉ ở client'
       ],
       answer: 1,
-      explain: 'tool_use_id danh ung mot lan goi model, co the thay doi khi retry. Khoa idempotency la ma nghiep vu (ma don, ma chuyen khoan); server luu khoa da xu ly, yeu cung khoa tra ket qua cu, khong tao giao dich tram. Cung hai khong ma hoa du lieu va khong gioi han buoc.'
+      explain: 'tool_use_id đánh dấu một lần gọi model, có thể thay đổi khi retry. Khóa idempotency là mã nghiệp vụ (mã đơn, mã chuyển khoản); server lưu khóa đã xử lý, yêu cầu cùng khóa trả kết quả cũ, không tạo giao dịch trùng. Cả hai đều không mã hoá dữ liệu và không giới hạn số bước.'
     },
   ],
   related: ['claude-026', 'claude-001'],

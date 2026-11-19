@@ -2779,7 +2779,7 @@ window.DATA_INDEX = {
     {"id":"lesson-claude-006","track":"claude","order":6,"title":"Agent đa phụ trách: chia công việc, giao cho subagent và tổng hợp","level":"senior","minutes":45},
     {"id":"lesson-claude-007","track":"claude","order":7,"title":"Bảo vệ agent loop: xác nhận trước side effect và idempotency key","level":"senior","minutes":40},
     {"id":"lesson-claude-008","track":"claude","order":8,"title":"MCP: mô hình host-client-server, tools/resources/prompts, transport stdio và streamable HTTP","level":"senior","minutes":40},
-    {"id":"lesson-claude-009","track":"claude","order":9,"title":"Thiet ke tool cho MCP: ten, mo ta, schema, loi co ich, idempotent","level":"mid","minutes":35},
+    {"id":"lesson-claude-009","track":"claude","order":9,"title":"Thiết kế tool cho MCP: tên, mô tả, schema, lỗi có ích, idempotent","level":"mid","minutes":35},
     {"id":"lesson-claude-010","track":"claude","order":10,"title":"Claude Code cho team: CLAUDE.md, settings.json va permissions","level":"mid","minutes":30},
     {"id":"lesson-claude-011","track":"claude","order":11,"title":"Hooks, slash command, subagents, skills va chay headless trong CI","level":"senior","minutes":35},
     {"id":"lesson-claude-012","track":"claude","order":12,"title":"Đọc streaming SSE của Messages API: message_start, content_block_delta, message_delta, message_stop","level":"senior","minutes":40},
