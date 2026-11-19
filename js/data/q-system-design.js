@@ -11780,4 +11780,233 @@ Triệu chứng: 9h00:00 mở cửa, trong 3 giây đầu gateway nhận 21.000 
   follow: ['Lệnh đã ghi WAL nhưng matching crash trước khi khớp: standby xử lý thế nào để không khớp hai lần?', 'Client mất mạng sau khi nhận 202: làm sao biết lệnh đã khớp và tránh gửi lại?', 'Giờ ATO một mã quá nóng (chiếm 40% lưu lượng): bạn shard thế nào mà vẫn đúng thứ tự?'],
   tags: ['order management', 'OMS', 'low latency', 'WAL', 'sequencer', 'ATO', 'idempotency', 'sharding', 'SSE', 'system design']
 },
+{
+  id: 'architecture-069',
+  topic: 'architecture',
+  level: 'senior',
+  q: 'Event-driven architecture với Kafka: bạn thiết kế event schema, versioning và replay thế nào để không làm vỡ consumer và không mất dữ liệu?',
+  a: `**Tóm tắt:** Event là hợp đồng bất biến giữa các service; schema phải được version rõ ràng (Avro + Schema Registry), producer không bao giờ sửa/xóa event đã phát, còn replay là khả năng đọc lại log để rebuild state. Nếu làm đúng, consumer mới có thể thêm vào bất cứ lúc nào mà không downtime.
+
+### 1. Event là gì và vì sao không phải "message"
+- **Message** (yêu cầu): "hãy làm X", nhận thì xong. **Event** (sự kiện): "X đã xảy ra", tồn tại vĩnh viễn trong log.
+- Kafka lưu event trong partition theo thứ tự; consumer chỉ **đọc**, không xóa. Vì thế replay = đọc lại từ offset cũ.
+- Vì sao cần: decouple service (producer không biết ai consume), audit tự nhiên, và rebuild state khi có bug.
+
+### 2. Event schema — hợp đồng giữa producer và consumer
+- Schema nên chứa: {{eventId}} (UUID), {{eventType}} (vd "OrderPlaced"), {{aggregateId}}, {{occurredAt}}, {{version}}, {{payload}}.
+- Dùng **Avro** (binary compact, có schema) + **Schema Registry** (Confluent/Apicurio): producer gửi kèm schema id, consumer tải schema để decode.
+- Compatibility mode nên đặt **BACKWARD_TRANSITIVE** hoặc **FULL_TRANSITIVE**: schema mới phải đọc được dữ liệu cũ (và ngược lại cho FULL).
+
+### 3. Versioning — 3 chiến lược
+1. **Schema evolution** (thêm field optional, không xóa/rename): consumer cũ vẫn đọc được vì field mới có default. Đây là cách mặc định.
+2. **Event type versioning** ({{OrderPlacedV2}}): khi thay đổi breaking (đổi nghĩa field). Giữ topic cũ cho V1, topic mới cho V2; hoặc một topic với header {{schema-version}}.
+3. **Upcaster** (event sourcing): consumer đọc V1 và "nâng cấp" lên V2 trong code trước khi xử lý, nên không cần migrate dữ liệu.
+
+### 4. Replay — vì sao và cách làm
+- Replay dùng để: rebuild read model (CQRS), fix bug logic, onboarding service mới, debug bằng cách phát lại đúng đoạn.
+- Consumer lưu offset đã xử lý; để replay: reset offset về 0 ({{kafka-consumer-groups.sh --reset-offsets}}) hoặc tạo consumer group mới.
+- **Idempotency bắt buộc**: vì replay sẽ xử lý event đã xử lý rồi → dùng {{eventId}} làm khóa dedup (DB unique constraint hoặc Redis SETNX).
+
+### 5. Code Java ngắn — producer/consumer Avro
+~~~java
+// Producer: gửi event với schema đã đăng ký
+ProducerRecord<String, OrderPlaced> rec =
+    new ProducerRecord<>("order-events", order.getId(),
+        new OrderPlaced(order.getId(), order.getUserId(),
+            order.getTotal(), Instant.now(), 1));
+rec.headers().add("schema-version", "1".getBytes(StandardCharsets.UTF_8));
+producer.send(rec, (md, ex) -> {
+    if (ex != null) log.error("send failed", ex); // retry / DLQ
+});
+
+// Consumer: xử lý idempotent theo eventId
+@KafkaListener(topics = "order-events", groupId = "billing")
+public void onEvent(ConsumerRecord<String, OrderPlaced> rec) {
+    OrderPlaced e = rec.value();
+    if (processedRepo.exists(e.getEventId())) return; // dedup
+    billingService.charge(e);
+    processedRepo.save(e.getEventId());
+}
+~~~
+
+### 6. Bảng trade-off
+| Phương án | Ưu | Nhược |
+|---|---|---|
+| JSON tự do | Dễ debug, dễ đọc | Không có contract, consumer vỡ âm thầm khi field đổi |
+| Avro + Registry | Compact, evolution rõ ràng, enforce contract | Cần infrastructure Registry, debug khó hơn |
+| Protobuf | Compact, codegen tốt | Tooling Java kém hơn Avro trong Kafka ecosystem |
+
+### 7. Khi nào dùng / không dùng
+- Dùng Kafka event-driven khi cần decouple, audit, replay, throughput cao.
+- Không dùng khi cần transaction đồng bộ giữa producer-consumer (dùng request/response hoặc saga), hoặc khi ordering toàn cục quan trọng (Kafka chỉ đảm bảo thứ tự trong partition).
+
+### 8. Pitfall production
+- **Poison pill**: một event malformed làm consumer retry mãi → dùng DLQ (Dead Letter Queue) và skip sau N lần.
+- **Schema breaking change âm thầm**: rename field → consumer cũ NPE. Luôn thêm field mới optional + default.
+- **Consumer lag tăng**: replay toàn bộ topic lớn → partition nhiều, consumer scale ngang.
+- **Duplicate event**: producer retry khi ack timeout → idempotency là bắt buộc, không phải optional.
+
+### 9. Ví dụ đời thực
+Triệu chứng: service billing mới deploy cần rebuild số dư cho 90 ngày, nhưng consumer cũ đang chạy → không thể downtime. Điều tra: topic {{order-events}} có 1 partition? Không, 12 partition; consumer group billing có 4 instance. Cách xử lý: (1) tạo consumer group {{billing-rebuild}} mới, reset offset về đầu; (2) upcaster chuyển V1→V2 trong code; (3) dedup theo {{eventId}} để event đã xử lý không charge lại; (4) throttle để không làm nghẽn DB; (5) sau khi catch up, switch read traffic. Kết quả: rebuild 4.2 triệu event trong 3 giờ, không downtime, không charge trùng.
+
+### 10. Trả lời mẫu khi phỏng vấn
+"Em coi event là hợp đồng bất biến: mỗi event có eventId, type, aggregateId, occurredAt, version và payload, encode bằng Avro và đăng ký schema trong Schema Registry. Producer không bao giờ sửa hay xóa event đã phát; khi cần thay đổi breaking thì tạo version mới hoặc dùng upcaster ở consumer. Compatibility đặt BACKWARD_TRANSITIVE để schema mới đọc được dữ liệu cũ. Replay là khả năng đọc lại log: tạo consumer group mới hoặc reset offset, nên service mới onboarding không downtime. Vì replay xử lý event cũ, em bắt buộc idempotency: dedup theo eventId bằng unique constraint hoặc Redis. Pitfall chính là poison pill và duplicate event do producer retry, nên cần DLQ và idempotency key. Ở lần triển khai trước, em rebuild read model 4.2 triệu event trong 3 giờ không downtime nhờ replay + upcaster + dedup."
+
+> Senior tip: Khi interviewer hỏi "Kafka exactly-once", đừng trả lời "Kafka hỗ trợ". Nói đúng: Kafka chỉ đảm bảo at-least-once trong consumer; exactly-once là end-to-end = idempotent consumer + transactional producer + dedup store. Đó là câu trả lời senior.`,
+  follow: ['Làm sao xử lý poison pill mà không block toàn bộ partition?', 'Khi nào dùng upcaster thay vì version event type mới?', 'Schema Registry downtime thì producer/consumer xử lý thế nào?'],
+  tags: ['kafka', 'event-driven', 'avro', 'schema registry', 'versioning', 'replay', 'idempotency', 'DLQ', 'CQRS']
+},
+{
+  id: 'architecture-070',
+  topic: 'architecture',
+  level: 'senior',
+  q: 'Caching nhiều tầng: local Caffeine + Redis phân tán. Bạn thiết kế invalidation thế nào để tránh stale data mà vẫn giữ latency thấp?',
+  a: `**Tóm tắt:** Cache nhiều tầng = L1 (Caffeine, in-process, microsecond) + L2 (Redis, millisecond) + DB. Vấn đề khó nhất không phải đọc mà là **invalidation**: làm sao khi dữ liệu đổi, mọi node đều biết để xóa cache. Giải pháp phổ biến: TTL ngắn + pub/sub invalidation + versioning.
+
+### 1. Vì sao cần nhiều tầng
+- L1 (Caffeine): trong JVM, nanosecond-microsecond, nhưng mỗi instance có bản riêng → không share được giữa pod.
+- L2 (Redis): share giữa pod, millisecond, nhưng thêm hop mạng.
+- DB: nguồn sự thật, chậm nhất.
+- Mục tiêu: 99% request hit L1/L2, chỉ 1% chạm DB.
+
+### 2. Pattern đọc: cache-aside (lazy loading)
+1. Đọc L1 → hit: trả.
+2. Miss L1 → đọc L2 → hit: trả và promote lên L1.
+3. Miss L2 → đọc DB → ghi L2 (TTL) → ghi L1 → trả.
+- Vì sao cache-aside: đơn giản, chỉ cache dữ liệu thực sự đọc; nhược là thundering herd khi cold.
+
+### 3. Invalidation — 3 chiến lược
+1. **TTL only**: đơn giản, chấp nhận stale trong TTL (vd 30s). Phù hợp dữ liệu ít thay đổi.
+2. **Pub/sub invalidation**: khi dữ liệu đổi, publish message "invalidate key X" qua Redis channel; mọi pod nhận và xóa L1. Kết hợp TTL làm fallback.
+3. **Versioning**: cache key chứa version ({{product:123:v5}}); khi update, tăng version → key mới, key cũ tự expire theo TTL. Không cần broadcast.
+
+### 4. Code Java ngắn — Caffeine + Redis invalidation
+~~~java
+public Product getProduct(long id) {
+    // L1
+    Product p = l1.getIfPresent(id);
+    if (p != null) return p;
+    // L2
+    String json = redis.get("product:" + id);
+    if (json != null) {
+        p = parse(json);
+        l1.put(id, p); // promote
+        return p;
+    }
+    // DB
+    p = productRepo.findById(id).orElseThrow();
+    redis.setex("product:" + id, 300, toJson(p));
+    l1.put(id, p);
+    return p;
+}
+
+// Khi update: xóa L2 + broadcast để pod khác xóa L1
+public void updateProduct(Product p) {
+    productRepo.save(p);
+    redis.del("product:" + p.getId());
+    redis.publish("invalidate", "product:" + p.getId());
+}
+~~~
+
+### 5. Bảng trade-off
+| Phương án | Ưu | Nhược |
+|---|---|---|
+| TTL only | Đơn giản, tự phục hồi | Stale trong TTL, không kiểm soát được |
+| Pub/sub invalidation | Fresh gần như tức thì | Mất message → stale; cần TTL fallback; phức tạp |
+| Versioning | Không cần broadcast, dễ debug | Key nhiều version rác; cần cleanup |
+
+### 6. Khi nào dùng / không dùng
+- Dùng multi-tier khi read-heavy, latency p99 quan trọng (product page, catalog).
+- Không cache (hoặc TTL rất ngắn) dữ liệu tài chính (số dư, tồn kho chính xác) — dùng DB + lock.
+
+### 7. Pitfall production
+- **Thundering herd**: key hot expire → N request cùng đọc DB. Fix: mutex/single-flight (Redis SETNX lock hoặc Caffeine refreshAhead).
+- **Cache stampede khi deploy**: pod mới cold cache → spike DB. Fix: warm-up / pre-load.
+- **Stale L1 sau update**: pod khác không nhận pub/sub (mất message) → TTL ngắn làm safety net.
+- **Serialization cost**: Redis JSON serialize/deserialize tốn CPU; với object lớn cân nhắc MessagePack/Protobuf.
+- **Memory pressure**: Caffeine max size + weigher; eviction policy (W-TinyLFU mặc định) tốt cho hotspot.
+
+### 8. Ví dụ đời thực
+Triệu chứng: sau khi admin sửa giá sản phẩm, user vẫn thấy giá cũ trong 2 phút; metric {{cache_hit_ratio}} = 98% nhưng complaint tăng. Điều tra: TTL L1 = 120s, L2 = 300s, update chỉ xóa L2 trên pod thực hiện update; pod khác giữ L1 cũ đến khi TTL hết. Cách xử lý: (1) giảm TTL L1 xuống 30s; (2) thêm Redis pub/sub channel {{invalidate}} để broadcast xóa L1 mọi pod; (3) versioning key để fallback; (4) thêm single-flight cho key hot. Kết quả: propagation < 50ms, stale complaint về 0, hit ratio vẫn 96%.
+
+### 9. Trả lời mẫu khi phỏng vấn
+"Em dùng hai tầng: Caffeine in-process làm L1 cho microsecond latency, Redis làm L2 share giữa pod. Đọc theo cache-aside: L1 → L2 → DB, promote khi miss. Invalidation là phần khó: em kết hợp ba cơ chế — TTL ngắn làm safety net, Redis pub/sub broadcast xóa L1 mọi pod khi update, và versioning key để fallback khi mất message. Với key hot, em thêm single-flight để tránh thundering herd khi expire. Dữ liệu tài chính như số dư thì không cache hoặc TTL rất ngắn, dùng DB + lock. Pitfall chính là stale L1 sau update và cold cache khi deploy, nên luôn có TTL fallback và warm-up. Ở lần triển khai trước, propagation invalidation giảm từ 2 phút xuống dưới 50ms mà hit ratio vẫn 96%."
+
+> Senior tip: Cache là **tối ưu hóa**, không phải nguồn sự thật. Luôn có đường fallback về DB và TTL làm safety net. Người mới hay cache mọi thứ rồi invalidation sai → stale data production; senior luôn hỏi "nếu cache sai thì user thấy gì?" trước khi cache.`,
+  follow: ['Thundering herd trên key hot: bạn implement single-flight thế nào trong Spring?', 'Khi Redis pub/sub mất message (network blip), làm sao phát hiện và recover?', 'Cache-aside vs write-through vs write-behind: khi nào chọn cái nào?'],
+  tags: ['cache', 'caffeine', 'redis', 'invalidation', 'cache-aside', 'pub-sub', 'TTL', 'thundering herd', 'versioning']
+},
+{
+  id: 'architecture-071',
+  topic: 'architecture',
+  level: 'lead',
+  q: 'Trong hệ thống workflow (đơn hàng, trạng thái, lịch sử), bạn chọn SQL vs NoSQL (MongoDB/Redis/Cassandra) cho từng loại dữ liệu thế nào?',
+  a: `**Tóm tắt:** Không có "database tốt nhất", chỉ có database phù hợp từng access pattern. SQL (PostgreSQL) cho dữ liệu quan hệ/transaction; Redis cho cache/counter/lock; MongoDB cho document linh hoạt; Cassandra cho write-heavy time-series quy mô lớn. Trong workflow, thường kết hợp: SQL làm nguồn sự thật, các DB khác làm projection/read model.
+
+### 1. Phân loại dữ liệu trong workflow
+- **Core transactional**: đơn hàng, trạng thái, thanh toán → cần ACID, FK, transaction.
+- **Read model / search**: danh sách đơn theo user, filter → cần denormalize, full-text.
+- **Time-series / audit**: lịch sử trạng thái, event log → append-only, write-heavy.
+- **Hot counter / lock / session**: số lượng tồn, rate limit, distributed lock → in-memory.
+- **Document linh hoạt**: metadata đơn, form động → schema evolving.
+
+### 2. SQL (PostgreSQL) — nguồn sự thật
+- ACID transaction, FK, join, index B-tree, MVCC.
+- Dùng cho: order, payment, inventory (số dư chính xác), user account.
+- Vì sao: transaction bảo đảm "trừ kho + tạo đơn" cùng commit hoặc rollback.
+- Hạn chế: scale write khó (sharding phức tạp), join lớn chậm.
+
+### 3. Redis — hot data & coordination
+- In-memory, microsecond, data structures (hash, sorted set, stream).
+- Dùng cho: cache (L2), distributed lock (Redlock/Redisson), rate limiter, counter tồn kho tạm, session.
+- Vì sao: latency thấp, atomic ops (INCR, SETNX).
+- Hạn chế: dữ liệu mất khi crash (trừ AOF/RDB), memory đắt, không query phức tạp.
+
+### 4. MongoDB — document linh hoạt
+- BSON document, schema flexible, secondary index, aggregation pipeline.
+- Dùng cho: metadata đơn hàng (form động), catalog sản phẩm (thuộc tính khác nhau), user profile.
+- Vì sao: schema evolving không cần migration; nested document tự nhiên.
+- Hạn chế: transaction multi-doc có (từ 4.0) nhưng kém PostgreSQL; join ($lookup) chậm; consistency mặc định eventual cho replica.
+
+### 5. Cassandra — write-heavy time-series
+- Wide-column, LSM-tree, partition key + clustering key, eventual consistency tunable.
+- Dùng cho: event log, audit trail, metric time-series, trạng thái lịch sử (append-only).
+- Vì sao: write throughput cực cao (append sequential), scale ngang tuyến tính, không single point.
+- Hạn chế: query phải theo partition key; không join; update là insert mới; consistency trade-off (QUORUM).
+
+### 6. Bảng so sánh access pattern
+| Nhu cầu | Chọn | Lý do |
+|---|---|---|
+| Transaction ACID, FK | PostgreSQL | Nguồn sự thật, nhất quán mạnh |
+| Cache, lock, counter | Redis | Microsecond, atomic |
+| Schema linh hoạt, nested | MongoDB | Document tự nhiên |
+| Append-only time-series quy mô lớn | Cassandra | Write throughput, scale ngang |
+| Full-text search | Elasticsearch | Inverted index |
+
+### 7. Pattern kết hợp trong workflow (CQRS)
+- Write side: PostgreSQL (order, payment) trong transaction.
+- Read side: projection sang Redis (hot summary) + Elasticsearch (search/filter) + Cassandra (history).
+- Event (Kafka) đồng bộ projection.
+- Vì sao: tách read/write để mỗi DB làm điều nó giỏi.
+
+### 8. Khi nào dùng / không dùng
+- Dùng polyglot persistence khi scale và access pattern đa dạng.
+- Không dùng khi team nhỏ, traffic thấp: một PostgreSQL đủ, tránh operational complexity.
+
+### 9. Pitfall production
+- **Dual write**: ghi DB rồi publish event → crash giữa chừng → inconsistent. Fix: Outbox pattern (ghi event vào DB cùng transaction, CDC publish).
+- **Eventual consistency UX**: user update xong đọc vẫn cũ → hiển thị "đang xử lý" hoặc read-your-writes (route read về primary).
+- **Cassandra hot partition**: partition key quá coarse (vd ngày) → một node nhận toàn bộ. Fix: bucket theo (userId % N) + time.
+- **MongoDB schema drift**: không có schema → dữ liệu bẩn. Fix: validation rules + migration script.
+
+### 10. Ví dụ đời thực
+Triệu chứng: hệ thống đơn hàng 2 triệu đơn/ngày, query "đơn của user X trong 30 ngày" mất 4s, và audit trail 50GB/năm làm DB phình. Điều tra: một PostgreSQL làm tất cả: order + history + search. Cách xử lý: (1) giữ PostgreSQL cho order/payment (ACID); (2) event log + history sang Cassandra (append-only, TTL 7 năm); (3) projection read model vào Redis (hot) + Elasticsearch (search/filter); (4) Outbox pattern publish event qua Kafka. Kết quả: query đơn user còn 20ms, DB write load giảm 60%, audit lưu rẻ hơn 5x.
+
+### 11. Trả lời mẫu khi phỏng vấn
+"Em không chọn một database cho tất cả. Trong workflow, PostgreSQL là nguồn sự thật cho order/payment vì cần ACID và transaction. Redis làm cache L2, lock và counter. MongoDB phù hợp metadata/form động vì schema linh hoạt. Cassandra cho audit/event log append-only quy mô lớn vì write throughput và scale ngang. Read side projection sang Redis/Elasticsearch theo CQRS, đồng bộ qua Kafka. Quan trọng là tránh dual write bằng Outbox pattern: ghi event vào DB cùng transaction rồi CDC publish. Pitfall chính là eventual consistency UX và hot partition Cassandra. Ở lần triển khai trước, tách history sang Cassandra + read model sang Redis/Elasticsearch giảm query từ 4s còn 20ms và write load DB 60%."
+
+> Senior tip: Khi được hỏi "chọn database nào", câu trả lời senior luôn bắt đầu bằng "tùy access pattern" và liệt kê từng loại dữ liệu + lý do + trade-off. Trả lời "dùng MongoDB cho tất cả vì flexible" là red flag.`,
+  follow: ['Outbox pattern hoạt động thế nào và vì sao tránh được dual write?', 'Cassandra eventual consistency: bạn chọn consistency level nào cho write/read và vì sao?', 'Khi nào polyglot persistence không đáng công (over-engineering)?'],
+  tags: ['system design', 'SQL', 'NoSQL', 'PostgreSQL', 'MongoDB', 'Redis', 'Cassandra', 'CQRS', 'polyglot persistence', 'outbox', 'access pattern']
+},
 );
