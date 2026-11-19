@@ -8679,4 +8679,265 @@ Tổng số request chỉ phản ánh tỷ lệ chia traffic (5% so với 95%), 
 
 > Senior tip: canary cần chạy đủ lâu để lấp lửng các request hiếm (ví dụ thanh toán bằng thẻ hiếm dùng). Luôn có kế hoạch rollback trước khi bắt đầu canary.`
 },
+{
+  id: 'qz-design-071',
+  topic: 'design',
+  q: 'Hệ thống nhận đơn hàng từ client qua HTTP. Client có thể gửi lại cùng request do timeout. Bạn sẽ đảm bảo xử lý một lần bằng cách nào?',
+  options: [
+    'Dùng transaction database duy nhất cho mọi request.',
+    'Client gửi Idempotency-Key; server lưu kết quả theo key trong TTL ngắn và trả lại kết quả cũ khi trùng.',
+    'Tăng timeout client lên rất lớn để tránh retry.',
+    'Dùng queue FIFO để serialize toàn bộ request.'
+  ],
+  answer: 1,
+  explain: `**Đáp án đúng: client gửi Idempotency-Key; server lưu kết quả theo key trong TTL ngắn và trả lại kết quả cũ khi trùng.**
+
+### Tóm tắt
+Idempotency-Key là một khóa duy nhất do client tạo cho mỗi thao tác (ví dụ UUID). Server dùng khóa này để nhận biết request trùng và không thực hiện lại.
+
+### Vì sao đúng
+Retry do timeout là bình thường trong mạng. Idempotency-Key cho phép server trả về kết quả đã lưu thay vì tạo đơn mới. TTL ngắn (ví dụ 24 giờ) đủ để cover retry mà không phình bộ nhớ.
+
+### Vì sao các phương án còn lại sai
+- **Transaction duy nhất**: transaction đảm bảo atomic nhưng không ngăn tạo đơn trùng khi retry.
+- **Tăng timeout**: không giải quyết retry do lỗi mạng; còn làm UX tệ.
+- **Queue FIFO**: serialize làm chậm throughput, không đảm bảo idempotency.
+
+> Senior tip: lưu kết quả (response) chứ không chỉ trạng thái "đã xử lý", để retry nhận đúng response ban đầu.`
+},
+{
+  id: 'qz-design-072',
+  topic: 'design',
+  multi: true,
+  q: 'Khi nào nên dùng message queue (RabbitMQ/SQS) thay vì event stream (Kafka)? (Chọn 2)',
+  options: [
+    'Cần routing phức tạp và mỗi message xử lý một lần rồi xóa.',
+    'Cần lưu lịch sử sự kiện lâu dài để nhiều consumer replay.',
+    'Cần throughput rất cao và giữ log sự kiện để audit.',
+    'Cần task queue đơn giản với ACK và retry tự động.'
+  ],
+  answer: [0, 3],
+  explain: `**Đáp án đúng: cần routing phức tạp và mỗi message xử lý một lần rồi xóa; cần task queue đơn giản với ACK và retry tự động.**
+
+### Tóm tắt
+Message queue phù hợp cho công việc (task) cần được xử lý một lần và xóa. Event stream phù hợp cho luồng sự kiện cần lưu lâu và replay.
+
+### Vì sao đúng
+Queue có semantics ACK/nack, dead-letter, routing theo topic/exchange, phù hợp task. Stream giữ log append-only, nhiều consumer group đọc lại từ offset.
+
+### Vì sao các phương án còn lại sai
+- **Lưu lịch sử lâu dài để replay**: đó là thế mạnh của stream, không phải queue.
+- **Throughput cao + audit log**: stream tối ưu cho throughput lớn và retention dài.
+
+> Senior tip: chọn theo semantics (task vs event), không theo thương hiệu. Có thể dùng cả hai trong cùng hệ thống.`
+},
+{
+  id: 'qz-design-073',
+  topic: 'design',
+  q: 'Cache invalidation: dữ liệu sản phẩm thay đổi trong DB. Chiến lược nào đơn giản và an toàn nhất cho read-heavy?',
+  options: [
+    'Cache-aside: đọc từ cache, miss thì đọc DB và set cache; khi update DB thì xóa key cache.',
+    'Write-through: mọi write đi cache trước rồi DB.',
+    'Cache vĩnh viễn không expire.',
+    'Chỉ dùng DB, không cache.'
+  ],
+  answer: 0,
+  explain: `**Đáp án đúng: cache-aside: đọc từ cache, miss thì đọc DB và set cache; khi update DB thì xóa key cache.**
+
+### Tóm tắt
+Cache-aside (lazy loading) là pattern phổ biến: ứng dụng quản lý cache thủ công, xóa key khi dữ liệu thay đổi để lần đọc sau nạp lại.
+
+### Vì sao đúng
+Xóa key (invalidate) thay vì cập nhật cache tránh race condition giữa các write đồng thời. Đơn giản, dễ debug, phù hợp read-heavy.
+
+### Vì sao các phương án còn lại sai
+- **Write-through**: mọi write phải qua cache, tăng latency write và phức tạp invalidation liên quan.
+- **Cache vĩnh viễn**: dữ liệu cũ mãi mãi.
+- **Không cache**: DB bị quá tải với read-heavy.
+
+> Senior tip: đặt TTL ngắn làm safety net phòng trường hợp quên invalidate.`
+},
+{
+  id: 'qz-design-074',
+  topic: 'design',
+  q: 'Giao dịch chuyển tiền giữa 2 tài khoản ở 2 service khác nhau. Chọn saga hay 2PC?',
+  options: [
+    '2PC vì đảm bảo atomic tuyệt đối.',
+    'Saga với compensating transaction vì phù hợp microservices và tránh lock lâu.',
+    'Không cần transaction, eventual consistency là đủ.',
+    'Dùng distributed lock toàn cục.'
+  ],
+  answer: 1,
+  explain: `**Đáp án đúng: saga với compensating transaction vì phù hợp microservices và tránh lock lâu.**
+
+### Tóm tắt
+Saga chia giao dịch lớn thành các bước nhỏ, mỗi bước có hành động bù (compensating) nếu bước sau thất bại. 2PC (two-phase commit) khóa tài nguyên ở cả hai service trong quá trình commit.
+
+### Vì sao đúng
+Trong microservices, 2PC giữ lock lâu, giảm availability và khó scale. Saga chấp nhận eventual consistency nhưng tăng resilience; compensating transaction hoàn tác khi lỗi.
+
+### Vì sao các phương án còn lại sai
+- **2PC atomic tuyệt đối**: đúng về atomicity nhưng chi phí lock và coupling cao, không phù hợp service độc lập.
+- **Không cần transaction**: mất tiền hoặc tiền âm là không chấp nhận.
+- **Distributed lock toàn cục**: single point of failure và bottleneck.
+
+> Senior tip: thiết kế idempotent cho mỗi bước saga để retry an toàn.`
+},
+{
+  id: 'qz-design-075',
+  topic: 'design',
+  q: 'Sharding database theo user_id. Query thường lọc theo user_id và thời gian. Chọn sharding key nào?',
+  options: [
+    'Shard theo created_at (thời gian).',
+    'Shard theo user_id (hash).',
+    'Shard theo status đơn hàng.',
+    'Shard ngẫu nhiên.'
+  ],
+  answer: 1,
+  explain: `**Đáp án đúng: shard theo user_id (hash).**
+
+### Tóm tắt
+Sharding key quyết định dữ liệu nằm ở shard nào. Chọn key xuất hiện trong hầu hết query để tránh scatter-gather.
+
+### Vì sao đúng
+Query lọc theo user_id sẽ trúng một shard duy nhất, nhanh và predictable. Hash user_id phân bố đều.
+
+### Vì sao các phương án còn lại sai
+- **Theo created_at**: hotspot vào shard mới nhất, phân bố không đều.
+- **Theo status**: cardinality thấp, hotspot.
+- **Ngẫu nhiên**: mọi query phải scatter-gather tất cả shard.
+
+> Senior tip: tránh hot shard bằng cách thêm salt/hash cho key có traffic lệch (ví dụ celebrity user).`
+},
+{
+  id: 'qz-design-076',
+  topic: 'design',
+  multi: true,
+  q: 'Rate limiting API public. Cần chống burst và vẫn cho traffic hợp lệ. Chọn 2 thuật toán phù hợp? (Chọn 2)',
+  options: [
+    'Token bucket: cho phép burst trong giới hạn bucket.',
+    'Fixed window: đếm request trong cửa sổ cố định.',
+    'Leaky bucket: làm mượt traffic ra đều.',
+    'Random drop: ngẫu nhiên từ chối.'
+  ],
+  answer: [0, 2],
+  explain: `**Đáp án đúng: token bucket cho phép burst; leaky bucket làm mượt traffic.**
+
+### Tóm tắt
+Token bucket cấp token theo tốc độ, cho phép burst nếu có token dư. Leaky bucket xử lý request với tốc độ cố định, làm mượt.
+
+### Vì sao đúng
+Token bucket linh hoạt cho burst hợp lệ (ví dụ load trang). Leaky bucket bảo vệ downstream khỏi spike. Kết hợp cả hai là pattern phổ biến.
+
+### Vì sao các phương án còn lại sai
+- **Fixed window**: burst tại biên cửa sổ có thể vượt gấp đôi limit.
+- **Random drop**: không công bằng, không predictable.
+
+> Senior tip: trả header X-RateLimit-Remaining và Retry-After để client tự điều chỉnh.`
+},
+{
+  id: 'qz-design-077',
+  topic: 'design',
+  q: 'Service A gọi service B đồng bộ. B chậm làm A treo thread. Giải pháp nào tốt nhất?',
+  options: [
+    'Tăng thread pool của A lên rất lớn.',
+    'Dùng timeout + circuit breaker + fallback.',
+    'Retry vô hạn ngay lập tức.',
+    'Bỏ qua lỗi và trả 200.'
+  ],
+  answer: 1,
+  explain: `**Đáp án đúng: dùng timeout + circuit breaker + fallback.**
+
+### Tóm tắt
+Timeout giới hạn thời gian chờ. Circuit breaker ngắt call khi lỗi nhiều, tránh cascading failure. Fallback trả về giá trị mặc định/degraded.
+
+### Vì sao đúng
+Kết hợp ba cơ chế bảo vệ thread pool và hệ thống. Timeout giải phóng thread; circuit breaker tránh gọi service đã hỏng; fallback giữ UX.
+
+### Vì sao các phương án còn lại sai
+- **Tăng thread pool**: chỉ trì hoãn OOM, không giải quyết nguyên nhân.
+- **Retry vô hạn**: khuếch đại tải lên B.
+- **Bỏ qua lỗi**: trả sai dữ liệu, mất niềm tin.
+
+> Senior tip: đặt timeout nhỏ hơn SLA người dùng; circuit breaker có half-open để thử phục hồi.`
+},
+{
+  id: 'qz-design-078',
+  topic: 'design',
+  q: 'API cần trả danh sách rất lớn. Client scroll vô hạn. Thiết kế pagination nào scale tốt?',
+  options: [
+    'Offset/limit với offset lớn.',
+    'Cursor-based (keyset) pagination theo id hoặc timestamp.',
+    'Load toàn bộ vào memory rồi trả.',
+    'Random page.'
+  ],
+  answer: 1,
+  explain: `**Đáp án đúng: cursor-based (keyset) pagination theo id hoặc timestamp.**
+
+### Tóm tắt
+Cursor-based dùng điều kiện WHERE id > last_id ORDER BY id LIMIT n. Offset/limit dùng OFFSET lớn buộc DB scan nhiều dòng.
+
+### Vì sao đúng
+Keyset pagination ổn định O(log n) với index, không bị duplicate/missing khi dữ liệu thay đổi. Phù hợp infinite scroll.
+
+### Vì sao các phương án còn lại sai
+- **Offset lớn**: DB phải scan và discard nhiều dòng, chậm dần.
+- **Load toàn bộ**: OOM và latency cao.
+- **Random page**: không deterministic, UX tệ.
+
+> Senior tip: cursor phải opaque (encode base64) để client không phụ thuộc schema.`
+},
+{
+  id: 'qz-design-079',
+  topic: 'design',
+  q: 'Bạn cần đảm bảo thứ tự xử lý sự kiện theo user, nhưng scale ngang. Chọn partition key nào cho Kafka?',
+  options: [
+    'Partition ngẫu nhiên.',
+    'Partition theo user_id.',
+    'Một partition duy nhất.',
+    'Partition theo timestamp.'
+  ],
+  answer: 1,
+  explain: `**Đáp án đúng: partition theo user_id.**
+
+### Tóm tắt
+Kafka đảm bảo thứ tự trong một partition. Partition key quyết định event của cùng key đi vào cùng partition.
+
+### Vì sao đúng
+Partition theo user_id đảm bảo mọi event của một user được xử lý tuần tự bởi cùng consumer, giữ thứ tự và consistency per user.
+
+### Vì sao các phương án còn lại sai
+- **Ngẫu nhiên**: mất thứ tự per user.
+- **Một partition**: không scale ngang, bottleneck.
+- **Theo timestamp**: phân bố không đều, hotspot.
+
+> Senior tip: số partition quyết định max parallelism; không thể tăng mà không re-partition.`
+},
+{
+  id: 'qz-design-080',
+  topic: 'design',
+  q: 'Cache stampede: nhiều request đồng thời miss cache và cùng query DB. Cách giảm thiểu?',
+  options: [
+    'Tăng TTL cache lên rất lớn.',
+    'Dùng lock/mutex per key (single-flight) hoặc probabilistic early expiration.',
+    'Tắt cache.',
+    'Retry request ngay.'
+  ],
+  answer: 1,
+  explain: `**Đáp án đúng: dùng lock/mutex per key (single-flight) hoặc probabilistic early expiration.**
+
+### Tóm tắt
+Cache stampede (thundering herd) xảy ra khi cache hết hạn và nhiều request cùng regenerate. Single-flight chỉ cho một request regenerate, các request khác chờ.
+
+### Vì sao đúng
+Lock per key đảm bảo chỉ một query DB; probabilistic early expiration làm mới cache trước khi hết hạn, trải đều regenerate.
+
+### Vì sao các phương án còn lại sai
+- **Tăng TTL**: chỉ giảm tần suất, không giải quyết stampede khi hết hạn.
+- **Tắt cache**: DB quá tải.
+- **Retry**: tăng tải.
+
+> Senior tip: kết hợp TTL jitter để tránh nhiều key hết hạn cùng lúc.`
+}
+
 );
