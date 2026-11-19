@@ -8443,27 +8443,27 @@ Server 8 lớp, nhóm chung 7 luồng; Tomcat 200 luồng. 3 nhân viên cùng x
   id: 'scenario-142',
   topic: 'scenario',
   level: 'senior',
-  q: 'He thong su dung PostgreSQL chinh (primary) va mot ban sao chi doc (read replica) de giam tai co so du lieu. Khach hang cap nhat so dien thoai roi lap tai tai lai trang, nhung lai thay so dien thoai cu. Vao gio cao diem, do tre sach giua primary va replica tang len 10 giay. Nguyen nhan va thiet ke sao cho khach luon thay du lieu moi nhat sau khi chinh sua xong?',
-  a: `**Tóm tắt:** Read replica chi doc, du lieu duoc sao chep tu primary sau khi ghi xong tren primary. Viec sao chep khong luc lap, co the cham mot so giay den mot so phut (replication lag). Sau khi khach sua du lieu, neu doc ngay luc do thay replica van chua nhan du lieu moi, khach thay du lieu cu. Cach sua: ghi tren primary, sau do trong khoang thoi gian ngan (vi du 5 giay) doc lai tu primary cho cung mot phien lam viec; cac lan doc khac doc replica va chap nhan du lieu co the cu. Du lieu tien tien (so du, vi) luon doc primary, khong bao gi doc replica de ra quyet dich vu.
+  q: 'Hệ thống sử dụng PostgreSQL chính (primary) và một bản sao chỉ đọc (read replica) để giảm tải cơ sở dữ liệu. Khách hàng cập nhật số điện thoại rồi tải lại trang, nhưng lại thấy số điện thoại cũ. Vào giờ cao điểm, độ trễ sao chép giữa primary và replica tăng lên 10 giây. Nguyên nhân và thiết kế sao cho khách luôn thấy dữ liệu mới nhất sau khi chỉnh sửa xong?',
+  a: `**Tóm tắt:** Read replica chỉ đọc, dữ liệu được sao chép từ primary sau khi ghi xong trên primary. Việc sao chép không tức thì, có thể chậm một số giây đến một số phút (replication lag). Sau khi khách sửa dữ liệu, nếu đọc ngay lúc đó thấy replica vẫn chưa nhận dữ liệu mới, khách thấy dữ liệu cũ. Cách sửa: ghi trên primary, sau đó trong khoảng thời gian ngắn (ví dụ 5 giây) đọc lại từ primary cho cùng một phiên làm việc; các lần đọc khác đọc replica và chấp nhận dữ liệu có thể cũ. Dữ liệu tiền tệ (số dư, ví) luôn đọc primary, không bao giờ đọc replica để ra quyết định nghiệp vụ.
 
-### Cac khai nem can biet
-- **Primary:** co so du lieu chinh nhan moi ghi (them, sua, xoa).
-- **Read replica:** ban sao cua primary chi cho phep doc. Du lieu duoc sao chep tu primary qua mang sau khi ghi xong tren primary.
-- **Replication lag (do tre sach):** khoang thoi gian giua khi du lieu duoc ghi tren primary va khi ban sao nhan duoc du lieu do. Co the tu mot so giay den mot so phut.
-- **Read-your-writes consistency:** sau khi nguoi dung ghi du lieu, khi doc ngay sau do phai thay du lieu vua sua.
-- Nguyen nhan replica tre: nhieu ghi tren primary, mang cham, Postgres mac dinh sao chep bat dong bo (async), truy van chay dai tren replica lam cham trinh sao chep.
+### Các khái niệm cần biết
+- **Primary:** cơ sở dữ liệu chính nhận mọi ghi (thêm, sửa, xóa).
+- **Read replica:** bản sao của primary chỉ cho phép đọc. Dữ liệu được sao chép từ primary qua mạng sau khi ghi xong trên primary.
+- **Replication lag (độ trễ sao chép):** khoảng thời gian giữa khi dữ liệu được ghi trên primary và khi bản sao nhận được dữ liệu đó. Có thể từ một số giây đến một số phút.
+- **Read-your-writes consistency:** sau khi người dùng ghi dữ liệu, khi đọc ngay sau đó phải thấy dữ liệu vừa sửa.
+- Nguyên nhân replica trễ: nhiều ghi trên primary, mạng chậm, Postgres mặc định sao chép bất đồng bộ (async), truy vấn chạy dài trên replica làm chậm trình sao chép.
 
-### Cach xu ly
-1. Ghi tren primary.
-2. Sau khi ghi, danh dau phien lam viec cua khach la "vua ghi" trong khoang thoi gian ngan (vi du 5 giay). Trong khoang nay, tat ca doc cua khach di den primary.
-3. Cac lan doc khac di den replica, chap nhan du lieu co the cu mot so giay.
-4. Du lieu tien tien (so du, vi, han muc) luon doc primary, khong bao gi doc replica de ra quyet dich vu.
+### Cách xử lý
+1. Ghi trên primary.
+2. Sau khi ghi, đánh dấu phiên làm việc của khách là "vừa ghi" trong khoảng thời gian ngắn (ví dụ 5 giây). Trong khoảng này, tất cả đọc của khách đi đến primary.
+3. Các lần đọc khác đi đến replica, chấp nhận dữ liệu có thể cũ một số giây.
+4. Dữ liệu tiền tệ (số dư, ví, hạn mức) luôn đọc primary, không bao giờ đọc replica để ra quyết định nghiệp vụ.
 
-### Vi du code
+### Ví dụ code
 ~~~java
 public class KhachHangService {
-    private final KhachHangRepository primaryRepo;   // ghi va doc du lieu moi nhat
-    private final KhachHangRepository replicaRepo;   // doc du lieu co the cham mot so giay
+    private final KhachHangRepository primaryRepo;   // ghi và đọc dữ liệu mới nhất
+    private final KhachHangRepository replicaRepo;   // đọc dữ liệu có thể chậm một số giây
 
     public void capNhatSoDienThoai(String maKhach, String soDienThoai) {
         primaryRepo.capNhatSoDienThoai(maKhach, soDienThoai);   // ghi trên primary
@@ -8473,32 +8473,33 @@ public class KhachHangService {
 
     public KhachHang layThongTin(String maKhach) {
         if (luuTruPhien.vuaGhi(maKhach)) {
-            return primaryRepo.timTheoId(maKhach);   // doc primary de thay ngay du lieu vua sua
+            return primaryRepo.timTheoId(maKhach);   // đọc primary để thấy ngay dữ liệu vừa sửa
         }
-        return replicaRepo.timTheoId(maKhach);   // doc replica cho cac lan tra cuu binh thuong
+        return replicaRepo.timTheoId(maKhach);   // đọc replica cho các lần tra cứu bình thường
     }
 }
 ~~~
 
-### Vi du doi thuc
-Ngan hang so, khach sua so dien thoai trong app roi tai lai trang, thay so cu, goi CSKH nghi mat so. Replica lag trung binh 2 giay, gio cao diem 12 giay; khoang 8% khach tai reload ngay sau khi sua thay du lieu cu. Sau khi ap dung doc primary trong 5 giay sau moi lan sua: 0% truong hop thay du lieu cu, va p99 doc khong tang dan nghia vi chi mot phan nho luot truy cap doc primary.
+### Ví dụ đời thực
+Ngân hàng số, khách sửa số điện thoại trong app rồi tải lại trang, thấy số cũ, gọi CSKH nghi mất số. Replica lag trung bình 2 giây, giờ cao điểm 12 giây; khoảng 8% khách tải reload ngay sau khi sửa thấy dữ liệu cũ. Sau khi áp dụng đọc primary trong 5 giây sau mỗi lần sửa: 0% trường hợp thấy dữ liệu cũ, và p99 đọc không tăng đáng kể vì chỉ một phần nhỏ lưu lượng đọc primary.
 
-### Bang trade-off
-| Cach doc | Uu diet | Nhu diem |
-| Doc luon primary | du lieu luon moi nhat | primary som qua tai vi phuc vu ca doc ca ghi |
-| Doc luon replica | giam tai primary | du lieu co the cu, khong dam bao thay ngay du lieu vua sua |
-| Doc primary ngan thoi gian sau khi ghi | can thang giua tinh moi va tai | can theo doi phien lam viech cua tung khach |
+### Bảng trade-off
+| Cách đọc | Ưu điểm | Nhược điểm |
+| Đọc luôn primary | dữ liệu luôn mới nhất | primary sớm quá tải vì phục vụ cả đọc cả ghi |
+| Đọc luôn replica | giảm tải primary | dữ liệu có thể cũ, không đảm bảo thấy ngay dữ liệu vừa sửa |
+| Đọc primary ngắn thời gian sau khi ghi | cân bằng giữa tính mới và tải | cần theo dõi phiên làm việc của từng khách |
 
-> Senior tip: du lieu lien quan tien (so du, vi, han muc) luon doc primary, khong bao gi doc replica de ra quyet dich vu; replica dung cho bao cao, thong ke, danh sach san pham chap nhan du lieu cu mot so giay.
+> Senior tip: dữ liệu liên quan tiền (số dư, ví, hạn mức) luôn đọc primary, không bao giờ đọc replica để ra quyết định nghiệp vụ; replica dùng cho báo cáo, thống kê, danh sách sản phẩm chấp nhận dữ liệu cũ một số giây.
 
 `,
   follow: [
-    'Replication lag la gi va bo bang chi so nao tren PostgreSQL?',
-    'Khi nao nen dung synchronous_commit = on, va trade-off la gi?',
-    'Neu primary loi va chuyen doc sang replica (failover), can luu y gi?'
+    'Replication lag là gì và bộ bảng chỉ số nào trên PostgreSQL?',
+    'Khi nào nên dùng synchronous_commit = on, và trade-off là gì?',
+    'Nếu primary lỗi và chuyển đọc sang replica (failover), cần lưu ý gì?'
   ],
   tags: ['PostgreSQL', 'read replica', 'replication lag', 'consistency', 'primary-replica']
 },
+
 {
   id: 'scenario-143',
   topic: 'scenario',
@@ -8660,129 +8661,130 @@ API tim kiem don hang nhan tu khoa 'aaaaaaaaaaaaaaaa!' (16 ky tu a cua dau than)
   id: 'scenario-145',
   topic: 'scenario',
   level: 'senior',
-  q: 'Container Java bi OOMKilled ngay lap tuc nhung heap con trong bo nho. Nguyen co o bo nho native (ngan xep luong, bo nho truc tiep) va ban chan doan nhu the nao?',
-  a: `**Tóm tắt:** OOMKilled (ma thoat 137) la het bo nho cua container, khac OutOfMemoryError cua heap Java. Neu heap con trong nhung container van bi het RAM, nguyen co thuong o bo nho native ngoai heap — pho bien nhat la ngan xep luong (thread stack) khi co hang nghin luong platform, bo nho truc tiep (direct buffer), hoac metaspace. Chan doan bang top -H, /proc/<pid>/status, jstack va jcmd VM.native_memory.
+  q: 'Container Java bị OOMKilled ngay lập tức nhưng heap còn trong bộ nhớ. Nguyên cớ ở bộ nhớ native (ngăn xếp luồng, bộ nhớ trực tiếp) và bản chẩn đoán như thế nào?',
+  a: `**Tóm tắt:** OOMKilled (mã thoát 137) là hết bộ nhớ của container, khác OutOfMemoryError của heap Java. Nếu heap còn trong nhưng container vẫn bị hết RAM, nguyên cớ thường ở bộ nhớ native ngoài heap — phổ biến nhất là ngăn xếp luồng (thread stack) khi có hàng nghìn luồng platform, bộ nhớ trực tiếp (direct buffer), hoặc metaspace. Chẩn đoán bằng top -H, /proc/<pid>/status, jstack và jcmd VM.native_memory.
 
 ### Khái niệm cần biết
-- **Heap:** vung nho JVM luu doi tuong Java, garbage collection dong dlop.
-- **Bo nho native:** bo nho ngoai heap (ngan xep luong, metaspace, bo nho truc tiep), khong do GC Java quan ly, deu tinh vao gioi han RAM cua container.
-- **RSS:** bo nho thuc te (resident set size) cua tien trinh, kernel dung de quyet dinh OOMKill.
-- **Ma thoat 137:** container bi kernel gui SIGKILL (9 + 128 = 137) vi vuot gioi han RAM.
-- **Ngan xep luong:** moi luong Java chuan (platform thread) chiem khoang 1 MB vung ngan xep native, ton tai toan thoi gian cua luong.
+- **Heap:** vùng nhớ JVM lưu đối tượng Java, garbage collection dọn dẹp.
+- **Bộ nhớ native:** bộ nhớ ngoài heap (ngăn xếp luồng, metaspace, bộ nhớ trực tiếp), không do GC Java quản lý, đều tính vào giới hạn RAM của container.
+- **RSS:** bộ nhớ thực tế (resident set size) của tiến trình, kernel dùng để quyết định OOMKill.
+- **Mã thoát 137:** container bị kernel gửi SIGKILL (9 + 128 = 137) vì vượt giới hạn RAM.
+- **Ngăn xếp luồng:** mỗi luồng Java chuẩn (platform thread) chiếm khoảng 1 MB vùng ngăn xếp native, tồn tại toàn thời gian của luồng.
 
-### Buoc chan doan
-1. {{top -H -p PID_JAVA}}: so luong luong tang dan theo gio; cac luong it tieu CPU nhung van ton tai.
-2. {{cat /proc/PID_JAVA/status}} tim dong {{Threads:}} (so luong luong he dieu hanh, bao gom ca luong JVM).
-3. {{jstack PID_JAVA | grep -c '"'}}: dem so luong Java, so sanh giua hai thoi diem cach nhau bao nhieu gio.
-4. {{jcmd PID_JAVA VM.native_memory summary}}: neu muc {{Thread}} tang dan trong khi heap o din, nguyen co la ngan xep luong.
+### Bước chẩn đoán
+1. {{top -H -p PID_JAVA}}: số lượng luồng tăng dần theo giờ; các luồng ít tiêu CPU nhưng vẫn tồn tại.
+2. {{cat /proc/PID_JAVA/status}} tìm dòng {{Threads:}} (số lượng luồng hệ điều hành, bao gồm cả luồng JVM).
+3. {{jstack PID_JAVA | grep -c '"'}}: đếm số lượng Java, so sánh giữa hai thời điểm cách nhau bao nhiêu giờ.
+4. {{jcmd PID_JAVA VM.native_memory summary}}: nếu mục {{Thread}} tăng dần trong khi heap ở đáy, nguyên cớ là ngăn xếp luồng.
 
-### Vi du ma va sua
+### Ví dụ mã và sửa
 ~~~java
-// LOI: tao luong moi cho moi yeu cau, khong gioi han
+// LỖI: tạo luồng mới cho mỗi yêu cầu, không giới hạn
 public void xuLy(File f) {
-    new Thread(() -> xuLyFile(f)).start();   // moi luong khoang 1 MB native
+    new Thread(() -> xuLyFile(f)).start();   // mỗi luồng khoảng 1 MB native
 }
-// DUNG: pool co dinh va xoa ThreadLocal
+// ĐÚNG: pool cố định và xóa ThreadLocal
 private static final ExecutorService BO_LOC = Executors.newFixedThreadPool(200);
 
 public void xuLy(File f) {
     BO_LOC.submit(() -> {
         try { xuLyFile(f); }
-        finally { bienCucLy.remove(); }   // khong giu doi tuong theo luong
+        finally { bienCucLy.remove(); }   // không giữ đối tượng theo luồng
     });
 }
 ~~~
 
-### Vi du doi thuc
-Dich vu nhan file tu khach hang, moi file tach thanh 100 khoi, moi khoi xu ly tren mot luong moi, pool khong gioi han. Heap su dung 800MB/2GB (40%, o din), nhung sau 3 ngay co 3500 luong -> ngan xep 3,5GB native; tong RSS 4,3GB > gioi han container 4GB -> OOMKilled ma 137 moi ngay, khong co file heap dump vi day khong phai OutOfMemoryError cua heap. Sua: pool co dinh 200 luong, dung virtual threads cho viec cho I/O (Java 21), xoa {{ThreadLocal}} trong {{finally}}. RSS o din o 1,1GB, khong con OOMKilled trong hai thang.
+### Ví dụ đời thực
+Dịch vụ nhận file từ khách hàng, mỗi file tách thành 100 khối, mỗi khối xử lý trên một luồng mới, pool không giới hạn. Heap sử dụng 800MB/2GB (40%, ở đáy), nhưng sau 3 ngày có 3500 luồng -> ngăn xếp 3,5GB native; tổng RSS 4,3GB > giới hạn container 4GB -> OOMKilled mã 137 mỗi ngày, không có file heap dump vì đây không phải OutOfMemoryError của heap. Sửa: pool cố định 200 luồng, dùng virtual threads cho việc chờ I/O (Java 21), xóa {{ThreadLocal}} trong {{finally}}. RSS ở đáy ở 1,1GB, không còn OOMKilled trong hai tháng.
 
-### Bang trade-off
-| Phuong an | Uu diem | Nhu diem |
-| Pool co dinh | Duan so luong luong, du duoc bo nho | Gioi han so yeu cau xu ly cung luc |
-| Virtual threads (Java 21) | Ngan nho, tot cho viec cho I/O | Khong giup viec tinh toan trong |
-| Tao luong moi | Don gian | 1 MB/luong, de cham het bo nho container |
+### Bảng trade-off
+| Phương án | Ưu điểm | Nhược điểm |
+| Pool cố định | Duy trì số lượng luồng, đủ được bộ nhớ | Giới hạn số yêu cầu xử lý cùng lúc |
+| Virtual threads (Java 21) | Nhẹ nhàng, tốt cho việc chờ I/O | Không giúp việc tính toán nặng |
+| Tạo luồng mới | Đơn giản | 1 MB/luồng, dễ cạn hết bộ nhớ container |
 
-### Loi hay gap
-- Chi theo dõi heap (% su dung) thi bo qua bo nho native, khong phat hien OOMKilled som.
-- Luong bi giu do ThreadLocal khong xoa -> so luong luong tang dan voi thoi gian.
-- -Xss lon (kich thuoc ngan xep) tang bo nho moi luong nhung khong can thiet cho viec I/O.
+### Lỗi hay gặp
+- Chỉ theo dõi heap (% sử dụng) thì bỏ qua bộ nhớ native, không phát hiện OOMKilled sớm.
+- Luồng bị giữ do ThreadLocal không xóa -> số lượng luồng tăng dần với thời gian.
+- -Xss lớn (kích thước ngăn xếp) tăng bộ nhớ mỗi luồng nhưng không cần thiết cho việc I/O.
 
-### Tra loi mau khi phong van
-"OOMKilled ma 137 la het bo nho cua container, khong phai het heap cua Java; neu heap con trong nhung container van het RAM, bo nho native la ngươn can nghi dau tien. Mau thuong nhat la hang nghin luong platform, moi luong chiem khoang 1 MB ngan xep native, cac luong nay khong do garbage collection quan ly. Em chan doan bang top -H dem luong, /proc/PID/status xem so luong, jstack dem luong Java, va jcmd VM.native_memory xem muc Thread tang dan. Sua bang pool co dinh, xoa ThreadLocal trong finally, va dung virtual threads cho viec cho I/O Java 21. Neu nghi metaspace, em co the them -XX:MaxMetaspaceSize va kiem tra lop duoc tai len."
+### Trả lời mẫu khi phỏng vấn
+"OOMKilled mã 137 là hết bộ nhớ của container, không phải hết heap của Java; nếu heap còn trong nhưng container vẫn hết RAM, bộ nhớ native là nguyên cớ cần nghĩ đầu tiên. Mẫu thường gặp là hàng nghìn luồng platform, mỗi luồng chiếm khoảng 1 MB ngăn xếp native, các luồng này không do garbage collection quản lý. Em chẩn đoán bằng top -H đếm luồng, /proc/PID/status xem số lượng, jstack đếm luồng Java, và jcmd VM.native_memory xem mục Thread tăng dần. Sửa bằng pool cố định, xóa ThreadLocal trong finally, và dùng virtual threads cho việc chờ I/O Java 21. Nếu nghi metaspace, em có thể thêm -XX:MaxMetaspaceSize và kiểm tra lớp được tải lên."
 
-> Senior tip: quy tac cap bo nho JVM tren container: gioi han container = heap x 1,25 + bo dem cho metaspace, ngan xep luong va bo nho truc tiep (Netty, v.v.). Mot pod Xmx 1 GB voi gioi han 1 GB se bi OOMKilled trong gio cao diem.`,
+> Senior tip: quy tắc cấp bộ nhớ JVM trên container: giới hạn container = heap x 1,25 + bộ đệm cho metaspace, ngăn xếp luồng và bộ nhớ trực tiếp (Netty, v.v.). Một pod Xmx 1 GB với giới hạn 1 GB sẽ bị OOMKilled trong giờ cao điểm.`,
 
   follow: [
-    'Nen dat gioi han ngan xep luong (-Xss) bao nhieu va tac dong sao?',
-    'Metaspace tang cung gay OOMKilled; phan biet voi ngan xep luong ra sao?',
-    'Virtual threads co chiem ngan xep 1 MB khong?'
+    'Nên đặt giới hạn ngăn xếp luồng (-Xss) bao nhiêu và tác động sao?',
+    'Metaspace tăng cũng gây OOMKilled; phân biệt với ngăn xếp luồng ra sao?',
+    'Virtual threads có chiếm ngăn xếp 1 MB không?'
   ],
   tags: ['OOMKilled', 'bo-nho-native', 'ngan-xep-luong', 'Kubernetes', 'JVM']
 },
+
 {
   id: 'scenario-146',
   topic: 'scenario',
   level: 'senior',
-  q: 'Ung dung batch chay toi chay cham gấp 5 lan sau khi du lieu tang. Ban dieu tri va sua them cho du lieu lon nhat the nao?',
-  a: `**Tóm tắt:** chi phi cam tang theo hinh khong tuyen tinh (O(n^2), truy van N+1, doc toan bo bang vao RAM) thi voi du lieu nho khong dam bao ma voi du lieu lon thi cham noc. Dieu tri bang so sanh thoi gian chay voi so luong du lieu, {{EXPLAIN (ANALYZE, BUFFERS)}} va {{pg_stat_statements}}, sau do sua bang chi muc, truy van hop nhat (JOIN) va doc theo con tro (fetchSize/keyset) khong nap het vao RAM.
+  q: 'Ứng dụng batch chạy tới chạy chậm gấp 5 lần sau khi dữ liệu tăng. Bản điều trị và sửa thêm cho dữ liệu lớn nhất thế nào?',
+  a: `**Tóm tắt:** chi phí càng tăng theo hình không tuyến tính (O(n^2), truy vấn N+1, đọc toàn bộ bảng vào RAM) thì với dữ liệu nhỏ không đảm bảo mà với dữ liệu lớn thì chậm rõ. Điều trị bằng so sánh thời gian chạy với số lượng dữ liệu, {{EXPLAIN (ANALYZE, BUFFERS)}} và {{pg_stat_statements}}, sau đó sửa bằng chỉ mục, truy vấn hợp nhất (JOIN) và đọc theo con trỏ (fetchSize/keyset) không nạp hết vào RAM.
 
 ### Khái niệm cần biết
-- **Truy van N+1:** lay danh sach N don hang, sau do moi don hang chay them mot truy van lay chi tiet -> tong N+1 truy van, chi phi tang tuy theo so don hang.
-- **Doc toan bo bang (full table scan):** khi co chua chi muc khop, Postgres doc het bang, thoi gian tang theo kich thuoc bang.
-- **Con tro doc (fetchSize/keyset):** doc du lieu theo tung lo nhho nho thay thu nap toan bo vao RAM, tranh Garbage Collection dai.
-- **Garbage Collection (GC):** JVM dung ung dung de dong doi tuong khong dung; du lieu lon trong RAM lam GC thuc hien dai hon.
+- **Truy vấn N+1:** lấy danh sách N đơn hàng, sau đó mỗi đơn hàng chạy thêm một truy vấn lấy chi tiết -> tổng N+1 truy vấn, chi phí tăng tùy theo số đơn hàng.
+- **Đọc toàn bộ bảng (full table scan):** khi chưa có chỉ mục khớp, Postgres đọc hết bảng, thời gian tăng theo kích thước bảng.
+- **Con trỏ đọc (fetchSize/keyset):** đọc dữ liệu theo từng lô nhỏ thay vì nạp toàn bộ vào RAM, tránh Garbage Collection dài.
+- **Garbage Collection (GC):** JVM dừng ứng dụng để dọn đối tượng không dùng; dữ liệu lớn trong RAM làm GC thực hiện dài hơn.
 
-### Buoc dieu tri
-1. So sanh thoi gian chay voi so luong du lieu: 10.000 don 40 giay, 100.000 don 200 giay (gá 5 lan) -> chi phi siêu tuyen tinh, nghi N+1 hoac O(n^2).
-2. Chay {{EXPLAIN (ANALYZE, BUFFERS)}} tren truy van chinh: thay {{Seq Scan}} tren bang lon hoac nhieu truy van nho theo tung don hang.
-3. Xem {{pg_stat_statements}}: truy van chay nhieu nhat va tong thoi gian.
-4. Dung {{jstat -gcutil PID 5s}}: the he old tang dan -> ung dung u thiu RAM.
-5. Xem code: vong lap Java goi DB tung don hang.
+### Bước điều trị
+1. So sánh thời gian chạy với số lượng dữ liệu: 10.000 đơn 40 giây, 100.000 đơn 200 giây (gấp 5 lần) -> chi phí siêu tuyến tính, nghi N+1 hoặc O(n^2).
+2. Chạy {{EXPLAIN (ANALYZE, BUFFERS)}} trên truy vấn chính: thấy {{Seq Scan}} trên bảng lớn hoặc nhiều truy vấn nhỏ theo từng đơn hàng.
+3. Xem {{pg_stat_statements}}: truy vấn chạy nhiều nhất và tổng thời gian.
+4. Dùng {{jstat -gcutil PID 5s}}: thế hệ old tăng dần -> ứng dụng ứ đọng RAM.
+5. Xem code: vòng lặp Java gọi DB từng đơn hàng.
 
-### Cach sua
+### Cách sửa
 ~~~java
-// LOI: N+1, moi don hang truy van rieng
+// LỖI: N+1, mỗi đơn hàng truy vấn riêng
 for (DonHang dh : donHangs) {
     List<ChiTiet> ct = jdbc.query("SELECT * FROM chi_tiet WHERE don_hang_id = ?", dh.getId());
     tinhTien(dh, ct);
 }
-// DUNG: truy van nhat, doc theo con tro, khong nap het vao RAM
+// ĐÚNG: truy vấn nhất, đọc theo con trỏ, không nạp hết vào RAM
 String sql = "SELECT * FROM don_hang WHERE ngay_giao_dich = ? ORDER BY id";
 try (Connection conn = ds.getConnection();
      PreparedStatement ps = conn.prepareStatement(sql)) {
-    ps.setFetchSize(5000);   // doc 5000 dong moi lan, khong nap het vao RAM
+    ps.setFetchSize(5000);   // đọc 5000 dòng mỗi lần, không nạp hết vào RAM
     ps.setString(1, ngay);
     try (ResultSet rs = ps.executeQuery()) {
         while (rs.next()) {
-            xuLyNgay(rs);   // xu ly luon, khong luu toan bo danh sach
+            xuLyNgay(rs);   // xử lý luôn, không lưu toàn bộ danh sách
         }
     }
 }
 ~~~
 
-### Vi du doi thuc
-Ung dung batch doc soat 4 trieu giao dich, du lieu tang tu 100.000 len 1.000.000, thoi gian chay tu 40 phut len 200 phut (gá 5 lan). Nguyen co: moi giao dich goi them truy van kiem tra ton kho (N+1) va nap toan bo vao List (GC dai). Sua: them chi muc tren {{ngay_giao_dich}}, truy van JOIN chi tiet trong mot cau, xu ly theo lo 10.000 voi fetchSize. Thoi gian xuong con 45 phut, GC khong neu nua.
+### Ví dụ đời thực
+Ứng dụng batch đọc soát 4 triệu giao dịch, dữ liệu tăng từ 100.000 lên 1.000.000, thời gian chạy từ 40 phút lên 200 phút (gấp 5 lần). Nguyên cớ: mỗi giao dịch gọi thêm truy vấn kiểm tra tồn kho (N+1) và nạp toàn bộ vào List (GC dài). Sửa: thêm chỉ mục trên {{ngay_giao_dich}}, truy vấn JOIN chi tiết trong một câu, xử lý theo lô 10.000 với fetchSize. Thời gian xuống còn 45 phút, GC không còn nữa.
 
-### Bang trade-off
-| Phuong an | Uu diem | Nhu diem |
-| fetchSize lon | Giam lan truy van | Tang RAM cho moi lan doc |
-| Chi muc | Doc nhanh theo dieu kien | Ghi cham hon, tieu bo nho them |
-| JOIN mot cau | Khong bi N+1 | Cau truy van phuc tap hon |
+### Bảng trade-off
+| Phương án | Ưu điểm | Nhược điểm |
+| fetchSize lớn | Giảm lần truy vấn | Tăng RAM cho mỗi lần đọc |
+| Chỉ mục | Đọc nhanh theo điều kiện | Ghi chậm hơn, tiêu bộ nhớ thêm |
+| JOIN một câu | Không bị N+1 | Câu truy vấn phức tạp hơn |
 
-### Loi hay gap
-- Chua test voi kich thuoc du lieu thuc te production (staging du lieu it khong phat hien).
-- Quen them chi muc va quan trong them cac truy van khac cham vi chi muc qua nhieu.
-- Nap toan bo ket qua vao List thi List bi danh dai, GC lien tuc.
+### Lỗi hay gặp
+- Chưa test với kích thước dữ liệu thực tế production (staging dữ liệu ít không phát hiện).
+- Quên thêm chỉ mục và quan trọng thêm các truy vấn khác chậm vì chỉ mục quá nhiều.
+- Nạp toàn bộ kết quả vào List thì List bị danh dài, GC liên tục.
 
-### Tra loi mau khi phong van
-"Khi du lieu tang nhung batch cham gáp 5 lan, nghi nguyen co o chi phi siêu tuyen tinh: N+1 hay full table scan. Em so sanh thoi gian chay voi so luong du lieu, dung EXPLAIN ANALYZE de thay Seq Scan, dung pg_stat_statements de tim truy van chay nhieu nhat, va jstat de xem GC. Sua bang them chi muc, doi truy van N+1 thanh JOIN mot cau, doc theo con tro fetchSize khong nap het vao RAM, va xu ly theo lo nho. De kiem tra, em dung k6 hoac Gatling voi du lieu kich thuoc production thay vi staging du lieu it."
+### Trả lời mẫu khi phỏng vấn
+"Khi dữ liệu tăng nhưng batch chậm gấp 5 lần, nghi nguyên cớ ở chi phí siêu tuyến tính: N+1 hay full table scan. Em so sánh thời gian chạy với số lượng dữ liệu, dùng EXPLAIN ANALYZE để thấy Seq Scan, dùng pg_stat_statements để tìm truy vấn chạy nhiều nhất, và jstat để xem GC. Sửa bằng thêm chỉ mục, đổi truy vấn N+1 thành JOIN một câu, đọc theo con trỏ fetchSize không nạp hết vào RAM, và xử lý theo lô nhỏ. Để kiểm tra, em dùng k6 hoặc Gatling với dữ liệu kích thước production thay vì staging dữ liệu ít."
 
-> Senior tip: batch xu ly du lieu lon can kiem tra voi du lieu thuc te hoac sao y production, khong duoc chin thu trên staging voi du lieu it; chi phi O(n^2) voi du lieu nho rat nhanh ma voi du lieu lon thang het.`,
+> Senior tip: batch xử lý dữ liệu lớn cần kiểm tra với dữ liệu thực tế hoặc sao y production, không được chin thử trên staging với dữ liệu ít; chi phí O(n^2) với dữ liệu nhỏ rất nhanh mà với dữ liệu lớn thang hết.`,
 
   follow: [
-    'Khac biet giua OFFSET va con tro (keyset) xu ly batch du lieu lon?',
-    'Lam sao do chi phi thuc cua N+1 tren staging co du lieu nhu production?',
-    'Khi nao nen tach batch job thanh nhieu job chay song song?'
+    'Khác biệt giữa OFFSET và con trỏ (keyset) xử lý batch dữ liệu lớn?',
+    'Làm sao đo chi phí thực của N+1 trên staging có dữ liệu như production?',
+    'Khi nào nên tách batch job thành nhiều job chạy song song?'
   ],
   tags: ['batch', 'hieu-suat', 'SQL', 'chi-muc', 'N+1']
 },
@@ -8790,30 +8792,30 @@ Ung dung batch doc soat 4 trieu giao dich, du lieu tang tu 100.000 len 1.000.000
   id: 'scenario-147',
   topic: 'scenario',
   level: 'senior',
-  q: 'Bao cáo doanh thu theo ngay sai ngay sau khi chuyen server, va giao dich o gio chuan gio muc he sai ngay. Nguyen co va cach sua dung cho cong ty co khach hang o nhieu mui gio?',
-  a: `**Tóm tắt:** nguyen co thuong la su dung {{LocalDateTime}} (ngay gio khong biet mu gio) hoac {{ZoneId.systemDefault()}} (mu gio cua may chu, thay doi duoc) de tinh ngay nghiep ve. Dung dung: luu thoi điểm b?ng {{Instant}} va quy doi sang mu gio cua khach hang chi luc hien thi, lay mu gio tu ho so khach hang, khong bao gio su dung mac dinh cua may chu trong logic may chu.
+  q: 'Báo cáo doanh thu theo ngày sai ngày sau khi chuyển server, và giao dịch ở giờ chuẩn giờ mục hệ sai ngày. Nguyên cớ và cách sửa đúng cho công ty có khách hàng ở nhiều múi giờ?',
+  a: `**Tóm tắt:** nguyên cớ thường là sử dụng {{LocalDateTime}} (ngày giờ không biết múi giờ) hoặc {{ZoneId.systemDefault()}} (múi giờ của máy chủ, thay đổi được) để tính ngày nghiệp vụ. Đúng đúng: lưu thời điểm bằng {{Instant}} và quy đổi sang múi giờ của khách hàng chỉ lúc hiển thị, lấy múi giờ từ hồ sơ khách hàng, không bao giờ sử dụng mặc định của máy chủ trong logic máy chủ.
 
 ### Khái niệm cần biết
-- **Instant:** thoi diem duy nhất tren truc thoi gian, tinh tu 01/01/1970 00:00 UTC, khong thay doi khi ban chuyen thanh pho.
-- **LocalDateTime:** ngay gio 'trong tro' (2026-10-25 14:30) khong biet dang o mu gio nao.
-- **ZoneId.systemDefault():** mu gio mac dinh cua may chu, co the thay doi khi chuyen server — khong dung trong logic may chu.
-- **Ngay nghiep ve (business date):** ngay theo mu gio cua khach hang, khong phai ngay theo dong ho server UTC.
+- **Instant:** thời điểm duy nhất trên trục thời gian, tính từ 01/01/1970 00:00 UTC, không thay đổi khi bạn chuyển thành phố.
+- **LocalDateTime:** ngày giờ 'trong trọ' (2026-10-25 14:30) không biết đang ở múi giờ nào.
+- **ZoneId.systemDefault():** múi giờ mặc định của máy chủ, có thể thay đổi khi chuyển server — không dùng trong logic máy chủ.
+- **Ngày nghiệp vụ (business date):** ngày theo múi giờ của khách hàng, không phải ngày theo đồng hồ server UTC.
 
-### Buoc dieu tri
-1. So sanh bao cao theo mu gio server va theo ho so khach hang: thay lech.
-2. Kiem tra cron job 'bao cao ngay hom qua' chay 00:05 UTC = 07:05 gio Viet Nam, bo qua giao dich 00:00–07:00 dia phuong.
-3. Giao dich o khoang gio chuyen muc he (2:30 khong ton tai hoac 1:30 xuat hiện hai lan) neu chi luu LocalDateTime.
+### Bước điều trị
+1. So sánh báo cáo theo múi giờ server và theo hồ sơ khách hàng: thấy lệch.
+2. Kiểm tra cron job 'báo cáo ngày hôm qua' chạy 00:05 UTC = 07:05 giờ Việt Nam, bỏ qua giao dịch 00:00–07:00 địa phương.
+3. Giao dịch ở khoảng giờ chuyển múi hệ (2:30 không tồn tại hoặc 1:30 xuất hiện hai lần) nếu chỉ lưu LocalDateTime.
 
-### Cach sua
+### Cách sửa
 ~~~java
-// LOI: tinh ngay theo mu gio may chu, sai khi chuyen server
+// LỖI: tính ngày theo múi giờ máy chủ, sai khi chuyển server
 LocalDate ngay = thoiDiem.atZone(ZoneId.systemDefault()).toLocalDate();
 
-// DUNG: quy doi theo mu gio khach hang (luu trong ho so)
+// ĐÚNG: quy đổi theo múi giờ khách hàng (lưu trong hồ sơ)
 LocalDate ngay = thoiDiem.atZone(khachHang.getMuiGio()).toLocalDate();
 ~~~
 
-Bao cao theo ngay:
+Báo cáo theo ngày:
 ~~~java
 public BaoCao ngay(Instant thoiDiem, ZoneId muiGioKhachHang) {
     ZonedDateTime batDau = thoiDiem.atZone(muiGioKhachHang)
@@ -8823,29 +8825,29 @@ public BaoCao ngay(Instant thoiDiem, ZoneId muiGioKhachHang) {
 }
 ~~~
 
-### Vi du doi thuc
-San sang ban hang chuyen server tu UTC+7 sang UTC. Bao cao doanh thu ngay 25/10 su dung ZoneId.systemDefault() cua server moi (UTC): don hang 00:30 gio Viet Nam ngay 25/10 = 17:30 UTC ngay 24/10, bi xep vao ngay 24. Ket qua: 12% don nham ngay, doi soat sai 1,2 tỷ VND thang dau. Sua: luu mu gio khach hang, quy doi tai ranh gio bao cao, chay job theo ZoneId.of('Asia/Ho_Chi_Minh'). Sai so ve 0, khong con su co ngay chuyen server.
+### Ví dụ đời thực
+Sàn bán hàng chuyển server từ UTC+7 sang UTC. Báo cáo doanh thu ngày 25/10 sử dụng ZoneId.systemDefault() của server mới (UTC): đơn hàng 00:30 giờ Việt Nam ngày 25/10 = 17:30 UTC ngày 24/10, bị xếp vào ngày 24. Kết quả: 12% đơn nhầm ngày, đối soát sai 1,2 tỷ VND tháng đầu. Sửa: lưu múi giờ khách hàng, quy đổi tại ranh giới báo cáo, chạy job theo ZoneId.of('Asia/Ho_Chi_Minh'). Sai số về 0, không còn sự cố ngày chuyển server.
 
-### Bang trade-off
-| Luu thoi gian | Uu diem | Nhu diem |
-| Instant + TIMESTAMPTZ | Duy nhat, khong bi doi mu gio server | Can quy doi luc hien thi |
-| LocalDateTime + TIMESTAMP | Dang thap, quen thuoc | Bi doi khi server doi mu gio, loi o khoang chuyen muc he |
-| DATE | An toan cho ngay sinh, ngay hop dong | Khong luu gio, khong dung cho giao dich |
+### Bảng trade-off
+| Lưu thời gian | Ưu điểm | Nhược điểm |
+| Instant + TIMESTAMPTZ | Duy nhất, không bị đổi múi giờ server | Cần quy đổi lúc hiển thị |
+| LocalDateTime + TIMESTAMP | Dạng thấp, quen thuộc | Bị đổi khi server đổi múi giờ, lỗi ở khoảng chuyển múi hệ |
+| DATE | An toàn cho ngày sinh, ngày hợp đồng | Không lưu giờ, không dùng cho giao dịch |
 
-### Loi hay gap
-- Chuyen doi ngay thang o tung thinh may voi mac dinh khac nhau -> ket qua khong dien tu.
-- Dung java.util.Date hoac java.util.Calendar cu (doi tuong, thiet ke cu) thay vi java.time.
-- Cho nguoi dung nhap LocalDateTime trong form khong kèm mu gio -> khong biet thoi diem thuc su.
+### Lỗi hay gặp
+- Chuyển đổi ngày tháng ở từng thinh máy với mặc định khác nhau -> kết quả không điện tử.
+- Dùng java.util.Date hoặc java.util.Calendar cũ (đối tượng, thiết kế cũ) thay vì java.time.
+- Cho người dùng nhập LocalDateTime trong form không kèm múi giờ -> không biết thời điểm thực sự.
 
-### Tra loi mau khi phong van
-"Khi chuyen server va bao cao ngay bi sai, em nghi nguyen co o su dung LocalDateTime hoac ZoneId.systemDefault() — may chu moi co mui gio khac nhau voi cu, va ngay UTC khong trung voi ngay dia phuong cua khach. Em luu tat ca thoi diem su kien bang Instant cot TIMESTAMPTZ, chi quy doi sang mui gio cua khach hang (luu trong ho so) luc hien thi va tinh ngay nghiep ve. Code may chu khong bao gio goi ZoneId.systemDefault(). Job bao cao chay theo mui gio co dinh (vi du Asia/Ho_Chi_Minh) thay doi gio server. Voi form nhap gio, em bat buoc chon mui gio ro rang thay thay gia tri trong tro."
+### Trả lời mẫu khi phỏng vấn
+"Khi chuyển server và báo cáo ngày bị sai, em nghi nguyên cớ ở sử dụng LocalDateTime hoặc ZoneId.systemDefault() — máy chủ mới có múi giờ khác nhau với cũ, và ngày UTC không trùng với ngày địa phương của khách. Em lưu tất cả thời điểm sự kiện bằng Instant cột TIMESTAMPTZ, chỉ quy đổi sang múi giờ của khách hàng (lưu trong hồ sơ) lúc hiển thị và tính ngày nghiệp vụ. Code máy chủ không bao giờ gọi ZoneId.systemDefault(). Job báo cáo chạy theo múi giờ cố định (ví dụ Asia/Ho_Chi_Minh) thay đổi giờ server. Với form nhập giờ, em bắt buộc chọn múi giờ rõ ràng thay thay giá trị trong trọ."
 
-> Senior tip: truoc khi chon kieu cot thoi gian, hoi 'gia tri nay la thoi diem su kien da xay ra chi la ngay tren lich?'. Neu la thoi diem su kien (dat hang, thanh toan, ghi log), dung Instant + TIMESTAMPTZ; neu chi can ngay (ngay sinh, ngay ky hop dong), DATE du va an toan hon.`,
+> Senior tip: trước khi chọn kiểu cột thời gian, hỏi 'giá trị này là thời điểm sự kiện đã xảy ra chỉ là ngày trên lịch?'. Nếu là thời điểm sự kiện (đặt hàng, thanh toán, ghi log), dùng Instant + TIMESTAMPTZ; nếu chỉ cần ngày (ngày sinh, ngày ký hợp đồng), DATE đủ và an toàn hơn.`,
 
   follow: [
-    'Instant, LocalDateTime, ZonedDateTime, OffsetDateTime dung khi nao?',
-    'Vi sao khong su dung ZoneId.systemDefault() tren may chu?',
-    'Chuyen he thong dang dung LocalDateTime sang Instant co can doi schema khong?'
+    'Instant, LocalDateTime, ZonedDateTime, OffsetDateTime dùng khi nào?',
+    'Vì sao không sử dụng ZoneId.systemDefault() trên máy chủ?',
+    'Chuyển hệ thống đang dùng LocalDateTime sang Instant có cần đổi schema không?'
   ],
   tags: ['mui-gio', 'timezone', 'Instant', 'LocalDateTime', 'bao-cao']
 },
