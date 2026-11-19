@@ -3213,7 +3213,7 @@ Giống một quầy thu ngân đóng ca: quản lý vừa **tắt đèn quầy*
 
 ### Giả thuyết và cách xác minh
 1. **Race giữa SIGTERM và việc gỡ endpoint.** Ghi log thời điểm nhận SIGTERM (shutdown hook) và so với thời điểm IP biến mất khỏi {{kubectl get endpointslices -l kubernetes.io/service-name=payment -w}}; ingress vẫn gửi request tới IP đó sau SIGTERM 2–5 giây.
-2. **App tắt ngay, không chờ request đang chạy.** Kiểm tra {{server.shutdown}}: Spring Boot 3.4 trở đi mặc định là graceful; bản cũ hơn mặc định là immediate.
+2. **App tắt ngay, không chờ request đang chạy.** Kiểm tra {{server.shutdown}}: Spring Boot mặc định luôn là immediate (tắt ngay); muốn graceful phải đặt {{server.shutdown=graceful}}.
 3. **Grace period quá ngắn.** Request 15 giây + chờ endpoint, nhưng {{terminationGracePeriodSeconds}} vẫn 30 với shutdown phase dài, có thể bị SIGKILL (exit 137).
 4. **Pod mới nhận traffic quá sớm.** Readiness trả UP trước khi warm-up xong, request đầu bị timeout.
 
@@ -8855,31 +8855,31 @@ Sàn bán hàng chuyển server từ UTC+7 sang UTC. Báo cáo doanh thu ngày 2
   id: 'scenario-148',
   topic: 'scenario',
   level: 'lead',
-  q: 'Sau deploy, clients nhan loi 502/504 nhieu trong mot hai phut. Dien giai cac nghiep thu (graceful shutdown, keep-alive, cold start) va thiet kế deploy khong loi request.',
-  a: `**Tóm tắt:** 502 Bad Gateway (gateway khong nhan tra loi hop le tu pod nguon) va 504 (gateway timeout) sau deploy thuong co ba nghiep thu: (1) ket noi keep-alive tu client/gateway van duoc den pod da nhan SIGTERM, (2) pod moi readiness UP truoc khi warm-up xong (JIT, pool ket noi DB) de request dau timeout, (3) grace period ngan hon thoi gian request dai nhat nen bi SIGKILL giua chinh xu ly. Sua bang preStop, graceful shutdown, grace period du dai, readiness sau warm-up, va client retry co idempotency key.
+  q: 'Sau deploy, clients nhận lỗi 502/504 nhiều trong một hai phút. Diễn giải các nghịch lý (graceful shutdown, keep-alive, cold start) và thiết kế deploy không lỗi request.',
+  a: `**Tóm tắt:** 502 Bad Gateway (gateway không nhận trả lời hợp lệ từ pod nguồn) và 504 (gateway timeout) sau deploy thường có ba nghịch lý: (1) kết nối keep-alive từ client/gateway vẫn được đến pod đã nhận SIGTERM, (2) pod mới readiness UP trước khi warm-up xong (JIT, pool kết nối DB) để request đầu timeout, (3) grace period ngắn hơn thời gian request dài nhất nên bị SIGKILL giữa chính xử lý. Sửa bằng preStop, graceful shutdown, grace period đủ dài, readiness sau warm-up, và client retry có idempotency key.
 
 ### Khái niệm cần biết
-- **502 Bad Gateway:** gateway/load balancer gui request den pod nguon nhung khong nhan tra loi hop le (pod da tat hoac chua san sang).
-- **Keep-alive:** ung dung dung lai mot ket noi TCP cho nhieu request de tranh chi phi mo ket noi moi.
-- **Graceful shutdown:** dung nhan request moi, cho request dang chay xong roi moi tat.
-- **Readiness probe:** K8s kiem tra pod san sang nhan traffic chua; pod chua pass se khong nhan request tu Service.
-- **terminationGracePeriodSeconds:** thoi gian toi da tu luc bat dau tat den khi kernel gui SIGKILL (mac dinh 30s).
+- **502 Bad Gateway:** gateway/load balancer gửi request đến pod nguồn nhưng không nhận trả lời hợp lệ (pod đã tắt hoặc chưa sẵn sàng).
+- **Keep-alive:** ứng dụng dùng lại một kết nối TCP cho nhiều request để tránh chi phí mở kết nối mới.
+- **Graceful shutdown:** dừng nhận request mới, cho request đang chạy xong rồi mới tắt.
+- **Readiness probe:** K8s kiểm tra pod sẵn sàng nhận traffic chưa; pod chưa pass sẽ không nhận request từ Service.
+- **terminationGracePeriodSeconds:** thời gian tối đa từ lúc bắt đầu tắt đến khi kernel gửi SIGKILL (mặc định 30s).
 
-### Buoc dieu tri
-1. Xem access log gateway: 502 den IP pod cu sau SIGTERM, hay 504 toi IP pod moi trong phut dau deploy.
-2. Log pod cu: thoi gian nhan SIGTERM so voi thoi gian IP khoi EndpointSlice.
-3. Log pod moi: thoi gian tu khoi dong den readiness UP, va thoi gian request dau tien.
-4. Kiem tra {{server.shutdown}}: Spring Boot 3.4 tro len mac dinh graceful, ban cu mac dinh immediate (tat ngay).
+### Bước điều tra
+1. Xem access log gateway: 502 đến IP pod cũ sau SIGTERM, hay 504 tới IP pod mới trong phút đầu deploy.
+2. Log pod cũ: thời gian nhận SIGTERM so với thời gian IP khỏi EndpointSlice.
+3. Log pod mới: thời gian từ khởi động đến readiness UP, và thời gian request đầu tiên.
+4. Kiểm tra {{server.shutdown}}: Spring Boot mặc định luôn là immediate (tắt ngay); muốn graceful phải đặt {{server.shutdown=graceful}}.
 
-### Cach sua
+### Cách sửa
 ~~~yaml
 spec:
-  terminationGracePeriodSeconds: 60   # lon hon preStop (10s) + shutdown timeout (40s)
+  terminationGracePeriodSeconds: 60   # lớn hơn preStop (10s) + shutdown timeout (40s)
   containers:
   - name: payment
     lifecycle:
       preStop:
-        httpGet: { path: /actuator/shutdown, port: 8081 }   # hoac sleep 10s
+        httpGet: { path: /actuator/shutdown, port: 8081 }   # hoặc sleep 10s
     readinessProbe:
       httpGet: { path: /actuator/health/readiness, port: 8080 }
       failureThreshold: 3
@@ -8891,31 +8891,31 @@ server.shutdown=graceful
 spring.lifecycle.timeout-per-shutdown-phase=40s
 ~~~
 
-Them o client: retry voi idempotency key, gioi han tuoi ket noi connection pool, va LB idle timeout nho hon grace period.
+Thêm ở client: retry với idempotency key, giới hạn tuổi kết nối connection pool, và LB idle timeout nhỏ hơn grace period.
 
-### Vi du doi thuc
-Dich vu thanh toan 10 pod, deploy luc 14:00, khach nhan 200–400 loi 502/504 trong hai phut, tap trung o nhung client giu ket noi keep-alive den pod cu. Pod moi UP sau 3 giay nhung request dau 8 giay (cold start: JIT, pool ket noi DB) vuot timeout gateway 5s -> 504/502. Sua: preStop drain 10s, graceful shutdown 40s, grace 60s, readiness chi UP sau warm-up, maxUnavailable 0, client retry co idempotency key. Ket qua: 0 loi 5xx trong cua so deploy.
+### Ví dụ đời thực
+Dịch vụ thanh toán 10 pod, deploy lúc 14:00, khách nhận 200–400 lỗi 502/504 trong hai phút, tập trung ở những client giữ kết nối keep-alive đến pod cũ. Pod mới UP sau 3 giây nhưng request đầu 8 giây (cold start: JIT, pool kết nối DB) vượt timeout gateway 5s -> 504/502. Sửa: preStop drain 10s, graceful shutdown 40s, grace 60s, readiness chỉ UP sau warm-up, maxUnavailable 0, client retry có idempotency key. Kết quả: 0 lỗi 5xx trong cửa sổ deploy.
 
-### Bang trade-off
-| Phuong an | Uu diem | Nhu diem |
-| Graceful shutdown + preStop | Khong loi request dang chay | Deploy cham chut |
-| maxUnavailable: 0 | Luon co pod san sang | Can it nhat 2 pod de rolling |
-| Readiness sau warm-up | Khong gui traffic toi pod chua san | Can thiet lap warm-up |
+### Bảng trade-off
+| Phương án | Ưu điểm | Nhược điểm |
+| Graceful shutdown + preStop | Không lỗi request đang chạy | Deploy chậm chút |
+| maxUnavailable: 0 | Luôn có pod sẵn sàng | Cần ít nhất 2 pod để rolling |
+| Readiness sau warm-up | Không gửi traffic tới pod chưa sẵn | Cần thiết lập warm-up |
 
-### Loi hay gap
-- preStop sleep lon hon grace period: kernel SIGKILL giua chinh, tat ca request dang chay chet.
-- Chỉ cai {{server.shutdown=graceful}} quen preStop: van loi request vi race xoa endpoint.
-- Grace period ngan hon request dai nhat (vi du goi ngan hang 15 giay): bi SIGKILL giua chinh xu ly.
+### Lỗi hay gặp
+- preStop sleep lớn hơn grace period: kernel SIGKILL giữa chính, tất cả request đang chạy chết.
+- Chỉ cài {{server.shutdown=graceful}} quên preStop: vẫn lỗi request vì race xoá endpoint.
+- Grace period ngắn hơn request dài nhất (ví dụ gọi ngân hàng 15 giây): bị SIGKILL giữa chính xử lý.
 
-### Tra loi mau khi phong van
-"502 sau deploy co ba nghiep thu chinh: ket noi keep-alive cua client van duoc den pod da nhan SIGTERM, pod moi san sang truoc khi warm-up xong de request dau timeout, va grace period ngan hon request dai nhat bi SIGKILL giua chinh. Em xac minh bang access log gateway, log SIGTERM cua pod cu, va thoi gian readiness cua pod moi. Sua bang preStop drain, server.shutdown=graceful voi timeout lon hon nhat request, grace period bao trum preStop va shutdown, readiness chi UP sau warm-up, maxUnavailable: 0, va client retry co idempotency key de khong loi request neu can gui lai."
+### Trả lời mẫu khi phỏng vấn
+"502 sau deploy có ba nghịch lý chính: kết nối keep-alive của client vẫn được đến pod đã nhận SIGTERM, pod mới sẵn sàng trước khi warm-up xong để request đầu timeout, và grace period ngắn hơn request dài nhất bị SIGKILL giữa chính. Em xác minh bằng access log gateway, log SIGTERM của pod cũ, và thời gian readiness của pod mới. Sửa bằng preStop drain, server.shutdown=graceful với timeout lớn hơn nhất request, grace period bao trùm preStop và shutdown, readiness chỉ UP sau warm-up, maxUnavailable: 0, và client retry có idempotency key để không lỗi request nếu cần gửi lại."
 
-> Senior tip: con so grace period phai tinh tu request dai nhat chap nhan hoan tat, khong chon so lon; voi dich vu goi ngan hang p99.9 15 giay, em dat shutdown timeout 40 giay va grace 60 giay.`,
+> Senior tip: con số grace period phải tính từ request dài nhất chấp nhận hoàn tất, không chọn số lớn; với dịch vụ gọi ngân hàng p99.9 15 giây, em đặt shutdown timeout 40 giây và grace 60 giây.`,
 
   follow: [
-    'Vi sao readiness probe da co van can preStop?',
-    'Lam sao biet grace period du dai cho request dai nhat?',
-    'Khi client retry nhung request da xu ly xong o pod cu thi sao?'
+    'Vì sao readiness probe đã có vẫn cần preStop?',
+    'Làm sao biết grace period đủ dài cho request dài nhất?',
+    'Khi client retry nhưng request đã xử lý xong ở pod cũ thì sao?'
   ],
   tags: ['502', 'graceful-shutdown', 'deploy', 'Kubernetes', 'keep-alive']
 },
