@@ -16744,5 +16744,248 @@ SLO 99,9% theo tháng; 02:10 payment API lỗi tới 38%, kéo dài 26 phút (38
     'RCA',
     'Observability',
   ]
+},
+{
+  id: 'devops-190',
+  topic: 'devops',
+  level: 'senior',
+  q: 'Bạn viết Dockerfile cho service Spring Boot 3 như thế nào để image nhỏ và build nhanh? Giải thích multi-stage build và layered jar (Spring Boot 3 layer tools).',
+  a: `**Tóm tắt:** Dùng multi-stage build: stage 1 build bằng JDK + Maven/Gradle, stage 2 chạy trên JRE nhỏ (Eclipse Temurin JRE Alpine hoặc distroless). Spring Boot 3 hỗ trợ layered jar để cache dependency riêng, giúp rebuild nhanh và image nhỏ.
+
+### Vì sao image lớn là vấn đề
+Image lớn = pull chậm, deploy chậm, tốn registry, nhiều CVE surface. Một JAR Spring Boot thường 50-100 MB, JDK đầy đủ 300 MB → image 400 MB+. Multi-stage tách build tool ra khỏi runtime.
+
+### Multi-stage Dockerfile
+~~~dockerfile
+# Stage 1: build
+FROM eclipse-temurin:21-jdk AS build
+WORKDIR /app
+COPY . .
+RUN ./mvnw -q -DskipTests package
+# Stage 2: runtime
+FROM eclipse-temurin:21-jre-alpine
+WORKDIR /app
+COPY --from=build /app/target/*.jar app.jar
+ENTRYPOINT ["java","-jar","app.jar"]
+~~~
+
+### Layered jar (Spring Boot 3)
+Spring Boot plugin tách JAR thành layers: dependencies, spring-boot-loader, snapshot-dependencies, application. Dùng {{java -Djarmode=layertools -jar app.jar extract}} rồi COPY từng layer → cache Docker layer tốt hơn.
+
+~~~dockerfile
+FROM eclipse-temurin:21-jre-alpine
+WORKDIR /app
+COPY --from=build /app/target/extracted/dependencies/ ./
+COPY --from=build /app/target/extracted/spring-boot-loader/ ./
+COPY --from=build /app/target/extracted/snapshot-dependencies/ ./
+COPY --from=build /app/target/extracted/application/ ./
+ENTRYPOINT ["java","org.springframework.boot.loader.launch.JarLauncher"]
+~~~
+
+### Khi nào dùng
+- Service production: luôn multi-stage.
+- Dev/local: có thể dùng JAR trực tiếp.
+
+### Pitfall production
+- Base image Alpine + musl có thể gây vấn đề với native lib; cân nhắc distroless.
+- Không copy source code vào runtime image.
+- Pin version base image, không dùng latest.
+
+### Ví dụ đời thực
+Team có 30 service, image từ 480 MB xuống 180 MB sau multi-stage + layered jar; thời gian pull trên node mới từ 90s xuống 35s.
+
+### Trả lời mẫu khi phỏng vấn
+Tôi dùng multi-stage build: stage build với JDK và Maven, stage runtime với JRE nhỏ. Spring Boot 3 hỗ trợ layered jar, tách dependencies và application code thành layer riêng, giúp Docker cache dependencies và chỉ rebuild phần code thay đổi. Kết quả image nhỏ hơn, build nhanh hơn, fewer CVE. Tôi pin version base image và dùng non-root user.
+
+> Senior tip: Layered jar + Docker layer cache giảm thời gian build CI từ phút xuống giây khi chỉ thay đổi code.
+`,
+  follow: [
+    'Làm sao giảm thêm kích thước image bằng distroless?',
+    'Làm sao scan CVE image trong pipeline?'
+  ],
+  tags: ['Docker', 'Multi-stage', 'Layered jar', 'Spring Boot 3']
+},
+{
+  id: 'devops-191',
+  topic: 'devops',
+  level: 'senior',
+  q: 'JVM chạy trong container: vì sao cần cấu hình MaxRAMPercentage? Làm sao tránh OOMKilled?',
+  a: `**Tóm tắt:** JVM mặc định đọc RAM host thay vì container limit, dẫn đến heap quá lớn và bị container kill (exit 137). Dùng -XX:MaxRAMPercentage để giới hạn heap theo limit container.
+
+### Cơ chế
+Trước Java 8u191, JVM không nhận biết cgroup. Java 8u191+ và Java 17+ tự đọc cgroup limit. MaxRAMPercentage (mặc định 25%) đặt heap tối đa = % RAM container.
+
+### Cấu hình
+~~~bash
+java -XX:MaxRAMPercentage=75.0 -jar app.jar
+~~~
+Với container limit 2Gi, heap ~1.5Gi.
+
+### Vì sao không đặt 100%
+Cần RAM cho metaspace, thread stack, native, GC overhead. 70-75% là an toàn.
+
+### Pitfall
+- Nếu đặt -Xmx cố định lớn hơn limit → OOMKilled.
+- JVM ergonomics có thể chọn GC không phù hợp container; cân nhắc -XX:+UseContainerSupport (mặc định bật).
+- Monitor RSS vs heap; RSS = heap + native + off-heap.
+
+### Ví dụ đời thực
+Service limit 2Gi, heap default 25% = 512MB, CPU underutilized. Set 75% → heap 1.5Gi, throughput tăng 3x, không OOM.
+
+### Trả lời mẫu khi phỏng vấn
+Trong container, JVM cần biết limit qua cgroup. Tôi đặt MaxRAMPercentage 75 để heap vừa đủ, còn lại cho native/metastack. Tôi monitor RSS và heap, alert khi RSS gần limit.
+
+> Senior tip: RSS = heap + native; alert khi RSS > 85% limit để tránh OOMKilled.
+`,
+  follow: [
+    'Làm sao monitor RSS vs heap trong Grafana?',
+    'Khi nào dùng -Xmx thay vì MaxRAMPercentage?'
+  ],
+  tags: ['JVM', 'Container', 'MaxRAMPercentage', 'OOMKilled']
+},
+{
+  id: 'devops-192',
+  topic: 'devops',
+  level: 'senior',
+  q: 'Liveness, readiness và startup probe trong Kubernetes khác nhau thế nào? Khi nào dùng cái nào cho Spring Boot?',
+  a: `**Tóm tắt:** Liveness kiểm tra app còn sống (restart nếu fail). Readiness kiểm tra sẵn sàng nhận traffic (remove khỏi Service nếu fail). Startup probe cho app khởi động chậm, tắt liveness/readiness cho đến khi ready.
+
+### Cơ chế
+- Liveness: kubelet probe; fail → restart container.
+- Readiness: fail → remove Pod khỏi endpoints Service (không restart).
+- Startup: chỉ chạy lúc khởi động; success → bật liveness/readiness.
+
+### Cấu hình Spring Boot
+~~~yaml
+livenessProbe:
+  httpGet: { path: /actuator/health/liveness, port: 8080 }
+  periodSeconds: 10
+readinessProbe:
+  httpGet: { path: /actuator/health/readiness, port: 8080 }
+  periodSeconds: 5
+startupProbe:
+  httpGet: { path: /actuator/health, port: 8080 }
+  failureThreshold: 30
+  periodSeconds: 10
+~~~
+
+### Khi nào dùng
+- Liveness: deadlock, app hang.
+- Readiness: warming cache, DB chưa ready.
+- Startup: app khởi động > 30s (Flyway migrate).
+
+### Pitfall
+- Liveness quá nhạy → restart loop khi GC pause.
+- Readiness trỏ cùng endpoint liveness → traffic bị cắt oan.
+- Startup threshold quá thấp → restart trước khi boot xong.
+
+### Ví dụ đời thực
+Service boot 90s do Flyway. Trước: liveness kill lúc 30s → CrashLoop. Sau: startupProbe 30×10s → boot xong, liveness bật.
+
+### Trả lời mẫu khi phỏng vấn
+Tôi tách ba probe: startup cho boot chậm, liveness cho hang/deadlock, readiness cho traffic. Spring Boot Actuator cung cấp health group. Tôi tránh liveness check DB vì DB down không nên restart app.
+
+> Senior tip: Liveness không nên check dependency ngoài; chỉ check process còn sống.
+`,
+  follow: [
+    'Vì sao liveness không nên check database?',
+    'Làm sao tune threshold để tránh false positive?'
+  ],
+  tags: ['Kubernetes', 'Probe', 'Liveness', 'Readiness', 'Startup']
+},
+{
+  id: 'devops-193',
+  topic: 'devops',
+  level: 'lead',
+  q: 'Rolling update với graceful shutdown cho service Spring Boot consume Kafka: vì sao request/message bị mất và cách xử lý?',
+  a: `**Tóm tắt:** Khi Pod bị SIGTERM, app phải dừng nhận message mới, xử lý in-flight, commit offset, rồi thoát. server.shutdown=graceful + preStop hook + Kafka consumer pause/commit giải quyết.
+
+### Cơ chế mất message
+- K8s gửi SIGTERM, sau terminationGracePeriodSeconds (default 30s) gửi SIGKILL.
+- Spring Boot graceful shutdown chờ request HTTP xong, nhưng Kafka consumer thread có thể bị kill giữa chừng → message xử lý dở, offset chưa commit → duplicate hoặc mất.
+- Readiness chưa remove khỏi Service → traffic còn vào Pod đang shutdown.
+
+### Giải pháp
+1. preStop hook sleep vài giây để readiness remove Pod khỏi endpoints.
+2. server.shutdown=graceful (spring.task.execution.shutdown.await-termination).
+3. Kafka consumer: pause partitions, xử lý in-flight, commit sync, close.
+4. Tăng terminationGracePeriodSeconds đủ thời gian xử lý.
+
+~~~yaml
+terminationGracePeriodSeconds: 60
+lifecycle:
+  preStop:
+    exec: { command: ["sh","-c","sleep 5"] }
+~~~
+~~~properties
+server.shutdown=graceful
+spring.lifecycle.timeout-per-shutdown-phase=30s
+~~~
+
+### Pitfall
+- terminationGracePeriodSeconds < thời gian xử lý → SIGKILL.
+- Consumer không commit sync → duplicate sau restart.
+- preStop sleep quá dài → rollout chậm.
+
+### Ví dụ đời thực
+Service thanh toán consume Kafka, rolling update mỗi ngày. Trước: ~20 message duplicate/tuần. Sau: preStop 5s + graceful + commit sync → 0 duplicate.
+
+### Trả lời mẫu khi phỏng vấn
+Tôi kết hợp preStop để readiness remove Pod, graceful shutdown cho HTTP, và Kafka consumer pause + sync commit. Tôi đặt grace period 60s và monitor thời gian shutdown. Mục tiêu zero message loss và minimal duplicate.
+
+> Senior tip: Idempotent consumer + sync commit là belt-and-suspenders cho graceful shutdown.
+`,
+  follow: [
+    'Làm sao test graceful shutdown trong CI?',
+    'Khi nào dùng blue-green thay vì rolling update?'
+  ],
+  tags: ['Kubernetes', 'Rolling update', 'Graceful shutdown', 'Kafka', 'Spring Boot']
+},
+{
+  id: 'devops-194',
+  topic: 'devops',
+  level: 'lead',
+  q: 'Thiết kế pipeline CI/CD cho service Spring Boot có test, scan bảo mật và migration Flyway. Các stage nào, thứ tự ra sao, rollback thế nào?',
+  a: `**Tóm tắt:** Pipeline gồm: build+unit test → SAST/dependency scan → build image → integration test với Testcontainers → migration Flyway (dry-run) → deploy canary → smoke test → promote/rollback. Flyway migrate chạy trước app start, backward compatible.
+
+### Stage
+1. Build & unit test (Maven/Gradle).
+2. SAST (SonarQube) + dependency scan (OWASP DC).
+3. Build image (multi-stage) + push registry.
+4. Image scan (Trivy).
+5. Integration test (Testcontainers Postgres).
+6. Flyway migrate (dry-run trên staging).
+7. Deploy staging → smoke test.
+8. Deploy prod canary 5% → monitor 10 phút.
+9. Promote 100% hoặc rollback.
+
+### Flyway
+- Migration phải backward compatible (expand-contract).
+- App mới chạy với schema mới nhưng app cũ vẫn chạy được trong rollout.
+- Flyway chạy init container hoặc app startup (spring.flyway.enabled=true).
+
+### Rollback
+- Nếu smoke test fail → rollback image + revert migration (nếu có down script).
+- Prefer fix-forward cho migration vì rollback data rủi ro.
+
+### Pitfall
+- Migration non-backward-compatible → app cũ crash trong rollout.
+- Scan block pipeline khi false positive → tune policy.
+- Canary metric threshold không rõ → promote sớm.
+
+### Ví dụ đời thực
+Team deploy mỗi ngày. Pipeline 12 phút. Một migration thêm cột NOT NULL không default → rollout fail; sau đó đổi thành nullable + backfill → OK.
+
+### Trả lời mẫu khi phỏng vấn
+Tôi thiết kế pipeline fail-fast: test và scan trước, build image, integration test, Flyway dry-run, deploy staging, canary prod với metric gate. Migration theo expand-contract để zero downtime. Rollback image nhanh; migration prefer fix-forward.
+
+> Senior tip: Expand-contract migration là chìa khóa zero-downtime deploy với DB.
+`,
+  follow: [
+    'Làm sao rollback migration Flyway an toàn?',
+    'Khi nào dùng blue-green thay vì canary?'
+  ],
+  tags: ['CI/CD', 'Flyway', 'Security scan', 'Canary', 'Spring Boot']
 }
 );
+
