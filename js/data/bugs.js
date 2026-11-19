@@ -7016,7 +7016,13 @@ return total.divide(BigDecimal.valueOf(quantity), 2, RoundingMode.HALF_UP);
 2026-11-05 10:00:05.300 INFO Ledger : credited acc=W-1 amount=100000 ref=TX-1
 2026-11-05 10:00:05.400 INFO Ledger : credited acc=W-1 amount=100000 ref=TX-2` }
   ],
-  starter: `class WalletService {
+  starter: `// ===== Hạ tầng (KHÔNG cần sửa) =====
+interface Ledger {
+    void credit(String acc, long amount);
+}
+
+// ===== Code cần sửa =====
+class WalletService {
     private final Ledger ledger;
     WalletService(Ledger ledger) { this.ledger = ledger; }
     
@@ -7043,19 +7049,47 @@ return total.divide(BigDecimal.valueOf(quantity), 2, RoundingMode.HALF_UP);
     }
     
     public static void main(String[] args) {
-        FakeLedger l = new FakeLedger();
-        WalletService s = new WalletService(l);
-        s.withdraw("W1", "REQ1", 100);
-        s.withdraw("W1", "REQ1", 100); // retry
-        
-        check("khong_trung_lap", l.credits == 1, "kỳ vọng chỉ 1 lần trừ tiền, thực tế " + l.credits);
+        // 1. Same requestId retry: only one transaction
+        FakeLedger l1 = new FakeLedger();
+        WalletService s1 = new WalletService(l1);
+        s1.withdraw("W1", "REQ1", 100);
+        s1.withdraw("W1", "REQ1", 100); // retry
+        check("khong_trung_lap", l1.credits == 1, "kỳ vọng chỉ 1 lần trừ tiền, thực tế " + l1.credits);
+
+        // 2. Different requestIds: each creates a transaction
+        FakeLedger l2 = new FakeLedger();
+        WalletService s2 = new WalletService(l2);
+        s2.withdraw("W1", "REQ-A", 50);
+        s2.withdraw("W1", "REQ-B", 50);
+        check("khac_requestid_tao_rieng", l2.credits == 2 && l2.total == 100,
+            "hai requestId khác nhau phải tạo 2 giao dịch, thực tế credits=" + l2.credits + " total=" + l2.total);
+
+        // 3. Concurrent same requestId: only one succeeds
+        FakeLedger l3 = new FakeLedger();
+        WalletService s3 = new WalletService(l3);
+        ExecutorService pool = Executors.newFixedThreadPool(10);
+        CountDownLatch start = new CountDownLatch(1);
+        List<Future<?>> futures = new ArrayList<>();
+        for (int i = 0; i < 10; i++) {
+            futures.add(pool.submit(() -> { try { start.await(); } catch (InterruptedException e) {} s3.withdraw("W1", "REQ-CONCURRENT", 100); }));
+        }
+        start.countDown();
+        for (Future<?> f : futures) try { f.get(5, TimeUnit.SECONDS); } catch (Exception e) {}
+        pool.shutdownNow();
+        check("dong_thoi_cung_requestid", l3.credits == 1 && l3.total == 100,
+            "10 luồng cùng requestId chỉ được 1 giao dịch, thực tế credits=" + l3.credits + " total=" + l3.total);
+
         System.out.println("RESULT " + passed + "/" + total);
         System.exit(0);
     }
 }`,
-  reference: `class WalletService {
+reference: `interface Ledger {
+    void credit(String acc, long amount);
+  }
+  
+  class WalletService {
     private final Ledger ledger;
-    private final Set<String> processed = new HashSet<>();
+    private final Set<String> processed = ConcurrentHashMap.newKeySet();
     WalletService(Ledger ledger) { this.ledger = ledger; }
     
     synchronized void withdraw(String acc, String reqId, long amount) {
@@ -7063,7 +7097,7 @@ return total.divide(BigDecimal.valueOf(quantity), 2, RoundingMode.HALF_UP);
         ledger.credit(acc, amount);
         processed.add(reqId);
     }
-}`,
+  }`,
   hints: ['App retry cùng request, service nên kiểm tra đã xử lý requestId chưa.', 'Dùng Set để lưu các requestId đã xử lý thành công và cần đảm bảo thread-safe.', 'Transaction phải đảm bảo cả việc trừ tiền và đánh dấu requestId.'],
   rootCause: `**Thiếu tính idempotent (tính bình đẳng).** Service không kiểm tra xem requestId đã được xử lý chưa trước khi thực hiện giao dịch, dẫn đến việc xử lý nhiều lần cho cùng một request. Khi network timeout, client retry request với requestId cũ, và server thực hiện giao dịch lại lần nữa.`,
   fix: `### Cách sửa trong bài
@@ -7100,8 +7134,21 @@ Sử dụng một bảng (trong DB hoặc Redis) lưu các requestId đã xử l
 ... 1000 requests to DB at same time ...
 2026-11-05 10:00:00.600 ERROR DB : query too slow, timeout occurred` }
   ],
-  starter: `class SearchService {
+  starter: `// ===== Hạ tầng (KHÔNG cần sửa) =====
+class FakeDb {
+    int calls = 0;
+    String query(String q) {
+        calls++;
+        try { Thread.sleep(50); } catch (InterruptedException e) {}
+        return "res";
+    }
+}
+
+// ===== Code cần sửa =====
+class SearchService {
+    private final FakeDb db;
     Map<String, String> cache = new HashMap<>();
+    SearchService(FakeDb db) { this.db = db; }
     String search(String q) {
         if (cache.containsKey(q)) return cache.get(q);
         String res = db.query(q);
@@ -7109,7 +7156,16 @@ Sử dụng một bảng (trong DB hoặc Redis) lưu các requestId đã xử l
         return res;
     }
 }`,
-  tests: `public class Main {
+tests: `class FakeDb {
+    int calls = 0;
+    String query(String q) {
+        calls++;
+        try { Thread.sleep(50); } catch (InterruptedException e) {}
+        return "res";
+    }
+  }
+  
+  public class Main {
     static int passed = 0, total = 0;
     static void check(String name, boolean ok, String detail) {
         total++;
@@ -7117,29 +7173,60 @@ Sử dụng một bảng (trong DB hoặc Redis) lưu các requestId đã xử l
         else System.out.println("FAIL " + name + ": " + detail);
     }
     
-    static class FakeDb {
-        int calls = 0;
-        String query(String q) {
-            calls++;
-            try { Thread.sleep(50); } catch (InterruptedException e) {}
-            return "res";
-        }
-    }
-    
     public static void main(String[] args) throws Exception {
-        FakeDb db = new FakeDb();
-        SearchService s = new SearchService(db);
-        ExecutorService pool = Executors.newFixedThreadPool(10);
-        List<Future<String>> futures = new ArrayList<>();
-        for (int i=0; i<10; i++) futures.add(pool.submit(() -> s.search("q1")));
-        for (Future<String> f : futures) f.get();
-        
-        check("goi_db_mot_lan", db.calls == 1, "kỳ vọng chỉ gọi DB 1 lần, thực tế " + db.calls);
+        // 1. Same query concurrent: only one DB call
+        FakeDb db1 = new FakeDb();
+        SearchService s1 = new SearchService(db1);
+        ExecutorService pool1 = Executors.newFixedThreadPool(10);
+        List<Future<String>> futures1 = new ArrayList<>();
+        for (int i=0; i<10; i++) futures1.add(pool1.submit(() -> s1.search("q1")));
+        for (Future<String> f : futures1) f.get();
+        pool1.shutdownNow();
+        check("goi_db_mot_lan", db1.calls == 1, "kỳ vọng chỉ gọi DB 1 lần, thực tế " + db1.calls);
+
+        // 2. Different queries: each calls DB once
+        FakeDb db2 = new FakeDb();
+        SearchService s2 = new SearchService(db2);
+        ExecutorService pool2 = Executors.newFixedThreadPool(10);
+        List<Future<String>> futures2 = new ArrayList<>();
+        for (int i=0; i<5; i++) {
+            final String q = "q" + i;
+            futures2.add(pool2.submit(() -> s2.search(q)));
+            futures2.add(pool2.submit(() -> s2.search(q))); // second call same query
+        }
+        for (Future<String> f : futures2) f.get();
+        pool2.shutdownNow();
+        check("nhieu_query_rieng_biet", db2.calls == 5, "5 query khác nhau mỗi cái gọi DB 1 lần, thực tế " + db2.calls);
+
+        // 3. Concurrent different queries
+        FakeDb db3 = new FakeDb();
+        SearchService s3 = new SearchService(db3);
+        ExecutorService pool3 = Executors.newFixedThreadPool(20);
+        CountDownLatch start = new CountDownLatch(1);
+        List<Future<String>> futures3 = new ArrayList<>();
+        for (int i=0; i<20; i++) {
+            final String q = "concurrent-q" + (i % 4); // 4 distinct queries
+            futures3.add(pool3.submit(() -> { try { start.await(); } catch (InterruptedException e) {} return s3.search(q); }));
+        }
+        start.countDown();
+        for (Future<String> f : futures3) f.get(5, TimeUnit.SECONDS);
+        pool3.shutdownNow();
+        check("dong_thoi_nhieu_query", db3.calls == 4, "4 query khác nhau đồng thời mỗi cái gọi DB 1 lần, thực tế " + db3.calls);
+
         System.out.println("RESULT " + passed + "/" + total);
         System.exit(0);
     }
-}`,
-  reference: `class SearchService {
+  }`,
+reference: `class FakeDb {
+    int calls = 0;
+    String query(String q) {
+        calls++;
+        try { Thread.sleep(50); } catch (InterruptedException e) {}
+        return "res";
+    }
+  }
+  
+  class SearchService {
     private final ConcurrentHashMap<String, String> cache = new ConcurrentHashMap<>();
     private final FakeDb db;
     SearchService(FakeDb db) { this.db = db; }
@@ -7147,7 +7234,7 @@ Sử dụng một bảng (trong DB hoặc Redis) lưu các requestId đã xử l
     String search(String q) {
         return cache.computeIfAbsent(q, db::query);
     }
-}`,
+  }`,
   hints: ['Đọc log: 1000 request cùng miss. Vì sao cùng một query lại được gọi tới DB nhiều lần?', 'Kiểm tra (containsKey) và Ghi (put) không nguyên tử. Cần dùng computeIfAbsent.', 'Thao tác "kiểm tra + gọi DB + ghi cache" phải được gói gọn thành một bước nguyên tử (atomic) theo từng key.'],
   rootCause: `**Cache stampede (giẫm đạp cache).** Khi cache trống, nhiều request cùng miss, cùng kiểm tra (containsKey), thấy chưa có, rồi **tất cả** cùng gọi DB (câu query phức tạp, tốn thời gian). Kết quả là DB quá tải, và tất cả request này đều cố gắng ghi kết quả vào cache, gây lãng phí tài nguyên và làm treo hệ thống. Bản chất là race condition kiểu "check-then-act" không nguyên tử.`,
   fix: `### Cách sửa trong bài
@@ -8564,5 +8651,547 @@ Câu "phân phối công việc, xử lý lâu hơn hạn giao" xuất hiện �
 > Senior tip: Fencing token chỉ hữu ích nếu hệ thống bên nhận (DB, API thanh toán) cũng kiểm tra token. Chỉ kiểm tra ở scheduler thì worker cũ vẫn có thể gọi trực tiếp API bên nhận. Token phải đi cùng mọi tác động ghi.`,
   related: [],
   tags: ['lease', 'fencing token', 'heartbeat', 'distributed lock', 'double processing', 'task scheduler']
+},
+{
+  id: 'bug-045',
+  title: 'OEE nhà máy vượt 100%: cộng trùng message gateway gửi lại và lệch đơn vị phút/giây',
+  domain: 'Sản xuất / Chỉ số thiết bị (OEE)',
+  level: 'senior',
+  severity: 'P2',
+  minutes: 25,
+  story: `**Bối cảnh dự án:** Nhà máy thực phẩm có 40 dây chuyền đóng gói. Mỗi máy gắn một gateway (thiết bị nhỏ đọc bộ đếm sản phẩm của PLC — bộ điều khiển lập trình của máy — mỗi 5 giây) rồi gửi một message sản lượng lên Kafka. Service {{OeeService}} cộng dồn các message để tính OEE cho dashboard giám sát.
+
+**OEE là gì:** OEE (Overall Equipment Effectiveness — hiệu suất tổng thể thiết bị) là chỉ số 0–100% đo một máy "hữu ích" đến đâu, là tích của ba thành phần:
+- **Availability** (độ sẵn sàng) = thời gian máy thực chạy / thời gian sản xuất kế hoạch.
+- **Performance** (hiệu suất tốc độ) = (chu kỳ lý tưởng × tổng sản phẩm) / thời gian máy chạy. Chu kỳ lý tưởng là thời gian máy hoàn hảo cần để làm một sản phẩm (ở đây 2 giây).
+- **Quality** (chất lượng) = sản phẩm đạt / tổng sản phẩm.
+Ví dụ máy M-1 chạy 27.000 giây trong ca kế hoạch 28.800 giây, làm 12.300 sản phẩm (trong đó 12.000 đạt): Availability 93,75%, Performance 91,11%, Quality 97,56% → OEE ≈ **83,3%**. Không thành phần nào được vượt 100%.
+
+**Sự cố:** Dashboard hiển thị OEE máy M-1 là **5.000%**. Ban đầu mọi người tưởng lỗi hiển thị nên bỏ qua nhiều tuần; khi audit mới thấy hai nguyên nhân: gateway gửi "ít nhất một lần" (at-least-once) nên khi mạng chập chờn cùng một message bị gửi lại và service cộng trùng; đồng thời thời gian kế hoạch lưu bằng **phút** nhưng code lại chia cho thời gian chạy tính bằng **giây**, lệch 60 lần.
+**Nhiệm vụ của bạn:**
+1. Đọc {{OeeService.onMessage}} và {{OeeService.compute}}, tìm hai chỗ làm OEE vượt 100%.
+2. Sửa để message gửi lặp không bị cộng hai lần (dedup theo {{machineId}} + {{seq}}) và quy đổi đơn vị thời gian cho đúng.
+3. Bấm **Chạy test**: test nạp 4.100 message, gửi lặp 1.000 message, và kiểm tra OEE ra đúng 83,3% cùng các trường hợp lệch thứ tự, máy chưa có sản lượng.`,
+  artifacts: [
+    { name: 'oee-consumer.log', lang: 'text', content: `2026-11-18 08:41:11.902 INFO  oee-gw-bridge  : M-1 seq=2001 publish ack timeout -> resend in 40ms
+2026-11-18 08:41:12.004 INFO  oee-consumer-3 : recv M-1 seq=2001 good=3 scrap=0 offset=9184421
+2026-11-18 08:41:12.044 INFO  oee-consumer-5 : recv M-1 seq=2001 good=3 scrap=0 offset=9184422
+2026-11-18 08:41:12.047 DEBUG oee-service    : add M-1 seq=2001 total=11214 (không kiểm tra seq)
+2026-11-18 08:41:12.049 DEBUG oee-service    : add M-1 seq=2001 total=11217 (cộng lần 2)
+2026-11-18 08:41:15.301 WARN  oee-service    : OEE M-1 availability=5625.0% performance=113.3% quality=78.4% oee=5000.0%
+2026-11-18 08:41:15.302 INFO  oee-service    : inputs plannedProductionTime=480 MINUTES runTime=27000 SECONDS idealCycle=2 SECONDS
+2026-11-18 08:41:15.480 WARN  oee-consumer-5 : consumer group rebalance: partition 7 reassigned 9184300..9184500 replayed` },
+    { name: 'oee-audit-2026-11-18.txt', lang: 'text', content: `BIÊN BẢN KIỂM TRA CHỈ SỐ OEE — 18/11/2026
+Máy M-1, ca 06:00-14:00 (kế hoạch 480 phút = 28.800 giây)
+Số liệu đối chiếu lấy từ MES (hệ thống điều hành sản xuất), KHÔNG lấy từ gateway:
+  Thời gian máy chạy thực : 27.000 giây (7 giờ 30 phút)
+  Sản phẩm đạt            : 12.000
+  Phế phẩm                : 300
+  Tổng sản phẩm           : 12.300
+  Chu kỳ lý tưởng         : 2 giây/sản phẩm
+
+OEE đúng  : 93,75% x 91,11% x 97,56% = 83,3%
+OEE dashboard: 5.000%  (sai 60 lần)
+
+Ghi chú của đội gateway:
+  - Gateway cấp seq tăng dần riêng cho từng máy, gửi "ít nhất một lần" (có thể gửi lại).
+  - Trong ca có 1.000 message bị gửi lặp (ack timeout + consumer rebalance), mỗi message 3 sản phẩm đạt.
+  - Nếu không chống trùng, sản lượng bị thổi lên 15.300 (thừa 3.000 sản phẩm).` },
+  ],
+  starter: `// ===== Hạ tầng (đã có trong dự án, KHÔNG cần sửa) =====
+/** Một message sản lượng gateway gửi lên; seq tăng dần theo từng máy, gateway gửi "ít nhất một lần". */
+class ProdMessage {
+    final String machineId;
+    final long seq;      // số thứ tự do gateway cấp cho từng máy
+    final long good;     // sản phẩm đạt trong cửa sổ 5 giây
+    final long scrap;    // phế phẩm trong cửa sổ 5 giây
+    ProdMessage(String machineId, long seq, long good, long scrap) {
+        this.machineId = machineId; this.seq = seq; this.good = good; this.scrap = scrap;
+    }
+}
+
+/** Kết quả OEE; mỗi thành phần là tỉ lệ 0..1. */
+class OeeResult {
+    final double availability, performance, quality, oee;
+    OeeResult(double a, double p, double q, double o) {
+        availability = a; performance = p; quality = q; oee = o;
+    }
+}
+
+// ===== Code cần sửa =====
+class OeeService {
+    /** Chu kỳ lý tưởng của máy: 1 sản phẩm mất 2 giây khi máy chạy hoàn hảo. */
+    static final double IDEAL_CYCLE_SECONDS = 2.0;
+
+    static class MachineState {
+        long total;       // tổng sản phẩm (đạt + phế)
+        long good;        // sản phẩm đạt
+        long duplicates;  // số message bị coi là gửi lặp
+    }
+
+    private final Map<String, MachineState> machines = new HashMap<>();
+
+    /** Xử lý một message từ gateway. Trả về true nếu message được tính vào sản lượng. */
+    boolean onMessage(ProdMessage m) {
+        MachineState st = machines.computeIfAbsent(m.machineId, k -> new MachineState());
+        st.total += m.good + m.scrap;      // BUG 1: không kiểm tra seq đã xử lý chưa
+        st.good += m.good;
+        return true;
+    }
+
+    /** plannedMinutes: thời gian sản xuất kế hoạch (phút). runSeconds: thời gian máy thực chạy (giây). */
+    OeeResult compute(String machineId, long plannedMinutes, long runSeconds) {
+        MachineState st = machines.getOrDefault(machineId, new MachineState());
+        if (st.total == 0 || runSeconds <= 0) return new OeeResult(0, 0, 0, 0);
+        double availability = (double) runSeconds / plannedMinutes;   // BUG 2: giây chia phút
+        double performance = (IDEAL_CYCLE_SECONDS * st.total) / runSeconds;
+        double quality = (double) st.good / st.total;
+        return new OeeResult(availability, performance, quality, availability * performance * quality);
+    }
+
+    long total(String machineId) { return machines.getOrDefault(machineId, new MachineState()).total; }
+    long duplicates(String machineId) { return machines.getOrDefault(machineId, new MachineState()).duplicates; }
+}`,
+  tests: `public class Main {
+    static int passed = 0, total = 0;
+    static void check(String name, boolean ok, String detail) {
+        total++;
+        if (ok) { passed++; System.out.println("PASS " + name); }
+        else System.out.println("FAIL " + name + ": " + detail);
+    }
+
+    static final long PLANNED_MINUTES = 480;   // ca 8 giờ
+    static final long RUN_SECONDS = 27_000;    // máy chạy 7,5 giờ
+
+    /** Nạp 4.000 message good=3 rồi 100 message scrap=3: tổng 12.300, đạt 12.000. */
+    static void feed(OeeService svc) {
+        long seq = 1;
+        for (int i = 0; i < 4000; i++) svc.onMessage(new ProdMessage("M-1", seq++, 3, 0));
+        for (int i = 0; i < 100; i++) svc.onMessage(new ProdMessage("M-1", seq++, 0, 3));
+    }
+
+    static boolean near(double a, double b) { return Math.abs(a - b) < 0.001; }
+
+    public static void main(String[] args) {
+        // 1. Không gửi lặp: đúng số liệu MES -> OEE 83,3%
+        OeeService s1 = new OeeService();
+        feed(s1);
+        OeeResult r1 = s1.compute("M-1", PLANNED_MINUTES, RUN_SECONDS);
+        check("oee_dung_khi_khong_gui_lap",
+            near(r1.availability, 0.9375) && near(r1.performance, 0.9111) && near(r1.quality, 0.9756) && near(r1.oee, 0.8334),
+            "kỳ vọng A=0,9375 P=0,9111 Q=0,9756 OEE=0,8334; thực tế A=" + r1.availability
+                + " P=" + r1.performance + " Q=" + r1.quality + " OEE=" + r1.oee);
+
+        // 2. Gateway gửi lại 1.000 message đã xử lý: không được cộng thêm
+        OeeService s2 = new OeeService();
+        feed(s2);
+        for (int i = 1; i <= 1000; i++) s2.onMessage(new ProdMessage("M-1", i, 3, 0));   // gửi lặp seq 1..1000
+        OeeResult r2 = s2.compute("M-1", PLANNED_MINUTES, RUN_SECONDS);
+        check("gui_lai_khong_cong_trung",
+            s2.total("M-1") == 12_300 && s2.duplicates("M-1") == 1000 && near(r2.oee, 0.8334),
+            "kỳ vọng tổng 12300, 1000 bản trùng, OEE 0,8334; thực tế tổng " + s2.total("M-1")
+                + ", trùng " + s2.duplicates("M-1") + ", OEE " + r2.oee);
+
+        // 3. Đơn vị: availability phải là 0,9375 chứ không phải 56,25
+        check("don_vi_phut_va_giay",
+            near(r1.availability, 0.9375) && r1.availability <= 1.0,
+            "availability phải là 0,9375 (27000 giây / 28800 giây), thực tế " + r1.availability);
+
+        // 4. Message đến lệch thứ tự (seq 3 trước seq 2): không được mất sản lượng, vẫn chặn bản lặp
+        OeeService s4 = new OeeService();
+        s4.onMessage(new ProdMessage("M-2", 1, 10, 0));
+        s4.onMessage(new ProdMessage("M-2", 3, 10, 0));
+        s4.onMessage(new ProdMessage("M-2", 2, 10, 0));
+        s4.onMessage(new ProdMessage("M-2", 3, 10, 0));   // gửi lặp
+        check("lech_thu_tu_khong_mat_san_luong",
+            s4.total("M-2") == 30 && s4.duplicates("M-2") == 1,
+            "kỳ vọng tổng 30 (không mất seq 2) và 1 bản trùng; thực tế tổng " + s4.total("M-2")
+                + ", trùng " + s4.duplicates("M-2"));
+
+        // 5. Máy chưa có sản lượng: OEE 0, không chia cho 0
+        OeeService s5 = new OeeService();
+        OeeResult r5 = s5.compute("M-9", PLANNED_MINUTES, RUN_SECONDS);
+        check("chua_co_san_luong", r5.oee == 0.0 && r5.availability == 0.0,
+            "máy chưa có message phải ra 0 và không chia cho 0, thực tế " + r5.oee);
+
+        System.out.println("RESULT " + passed + "/" + total);
+    }
+}`,
+  reference: `class ProdMessage {
+    final String machineId;
+    final long seq;
+    final long good;
+    final long scrap;
+    ProdMessage(String machineId, long seq, long good, long scrap) {
+        this.machineId = machineId; this.seq = seq; this.good = good; this.scrap = scrap;
+    }
+}
+
+class OeeResult {
+    final double availability, performance, quality, oee;
+    OeeResult(double a, double p, double q, double o) {
+        availability = a; performance = p; quality = q; oee = o;
+    }
+}
+
+class OeeService {
+    static final double IDEAL_CYCLE_SECONDS = 2.0;
+    /** Cửa sổ chống trùng: đủ cho vài giờ gửi lại, có hạn để bộ nhớ không phình mãi. */
+    static final int DEDUP_WINDOW = 50_000;
+
+    static class MachineState {
+        final Set<Long> appliedSeq = new LinkedHashSet<>();   // các seq đã cộng vào sản lượng
+        long total, good, duplicates;
+    }
+
+    private final Map<String, MachineState> machines = new HashMap<>();
+
+    boolean onMessage(ProdMessage m) {
+        MachineState st = machines.computeIfAbsent(m.machineId, k -> new MachineState());
+        if (!st.appliedSeq.add(m.seq)) {          // seq đã có trong cửa sổ -> bản gửi lặp
+            st.duplicates++;
+            return false;
+        }
+        if (st.appliedSeq.size() > DEDUP_WINDOW) {   // quên seq cũ nhất, giữ cửa sổ có hạn
+            Iterator<Long> it = st.appliedSeq.iterator();
+            it.next();
+            it.remove();
+        }
+        st.total += m.good + m.scrap;
+        st.good += m.good;
+        return true;
+    }
+
+    OeeResult compute(String machineId, long plannedMinutes, long runSeconds) {
+        MachineState st = machines.getOrDefault(machineId, new MachineState());
+        long plannedSeconds = plannedMinutes * 60L;   // quy đổi về CÙNG đơn vị giây
+        if (st.total == 0 || runSeconds <= 0 || plannedSeconds <= 0) return new OeeResult(0, 0, 0, 0);
+        double availability = (double) runSeconds / plannedSeconds;
+        double performance = (IDEAL_CYCLE_SECONDS * st.total) / runSeconds;
+        double quality = (double) st.good / st.total;
+        return new OeeResult(availability, performance, quality, availability * performance * quality);
+    }
+
+    long total(String machineId) { return machines.getOrDefault(machineId, new MachineState()).total; }
+    long duplicates(String machineId) { return machines.getOrDefault(machineId, new MachineState()).duplicates; }
+}`,
+  hints: [
+    'Đọc log: cùng seq=2001 được hai consumer nhận và service in "add ... total=11214" rồi "total=11217" chỉ cách nhau 2ms. Message đó bị cộng hai lần. Gateway chỉ cam kết "ít nhất một lần", nên gửi lặp là chuyện bình thường, không phải lỗi hiếm.',
+    'Nhìn dòng inputs: plannedProductionTime=480 MINUTES nhưng runTime=27000 SECONDS. Code chia runSeconds cho plannedMinutes, tức là chia giây cho phút — thiếu bước nhân 60. Availability ra 56,25 thay vì 0,9375.',
+    'Cần một khoá nghiệp vụ để nhận ra message lặp: cặp (machineId, seq). Đừng dedup theo nội dung vì hai cửa sổ 5 giây khác nhau hoàn toàn có thể có cùng số sản phẩm. Và hãy đưa mọi thời lượng về cùng một đơn vị ngay tại biên (nơi nhận dữ liệu).',
+  ],
+  rootCause: `**Hai lỗi cộng lại, mỗi lỗi đều đủ làm OEE vô nghĩa.**
+
+1. **Cộng trùng khi gateway gửi lại (at-least-once).** Gateway và Kafka chỉ đảm bảo "ít nhất một lần": khi ack timeout hoặc consumer group rebalance (chia lại partition cho các consumer), cùng một message có thể đến hai lần. {{OeeService.onMessage}} cộng thẳng {{good + scrap}} mà không kiểm tra {{seq}} đã xử lý chưa, nên mỗi bản gửi lặp làm sản lượng tăng thêm. Log cho thấy seq=2001 được nhận hai lần cách nhau 40ms và bị cộng hai lần.
+2. **Lệch đơn vị phút và giây.** Thời gian kế hoạch lưu bằng phút (480), thời gian chạy bằng giây (27.000). Code tính {{runSeconds / plannedMinutes}} = 27.000 / 480 = 56,25 thay vì {{27.000 / 28.800}} = 0,9375 — sai đúng 60 lần. Vì Availability được nhân vào OEE nên chỉ riêng lỗi này đã đẩy OEE lên 60 lần.
+
+Kết hợp: Availability 56,25 × Performance 1,1333 (do cộng trùng 1.000 message × 3 sản phẩm) × Quality 0,7843 = **50,0**, dashboard hiển thị 5.000% thay vì 83,3%. Điều đáng sợ là chỉ số vô lý như vậy vẫn không có cảnh báo nào, nên nhà máy mất nhiều tuần mới phát hiện — trong lúc đó mọi quyết định dựa trên OEE đều sai.`,
+  fix: `### Cách sửa trong bài
+Hai thay đổi độc lập:
+- **Dedup theo khoá nghiệp vụ (machineId, seq).** Mỗi máy giữ tập các seq đã cộng; gặp seq đã có thì bỏ qua và tăng bộ đếm {{duplicates}}. Dùng tập có cửa sổ (ví dụ 50.000 seq gần nhất) để bộ nhớ không tăng mãi.
+- **Quy đổi đơn vị ngay khi tính.** {{plannedSeconds = plannedMinutes * 60}} rồi chia hai đại lượng cùng đơn vị giây.
+~~~java
+if (!st.appliedSeq.add(m.seq)) { st.duplicates++; return false; }
+st.total += m.good + m.scrap;
+st.good += m.good;
+
+long plannedSeconds = plannedMinutes * 60L;
+double availability = (double) runSeconds / plannedSeconds;
+~~~
+
+### Vì sao dedup theo (machineId, seq) mà không theo nội dung
+Hai cửa sổ 5 giây khác nhau hoàn toàn có thể có cùng {{good=3, scrap=0}} — nội dung giống nhau không có nghĩa là bản gửi lặp. Chỉ có cặp (máy, số thứ tự) do gateway cấp mới định danh duy nhất một message. Dùng tập seq (thay vì chỉ nhớ "seq lớn nhất") còn chịu được trường hợp message đến lệch thứ tự: seq 3 đến trước seq 2 vẫn được cộng đủ, không bị mất.
+
+### Trên production thật
+- **Unique index ở DB:** bảng {{machine_production(machine_id, seq, good, scrap)}} với khoá chính {{(machine_id, seq)}}; consumer ghi bằng {{INSERT ... ON CONFLICT (machine_id, seq) DO NOTHING}}. DB chặn trùng kể cả khi nhiều pod cùng xử lý, và không phụ thuộc bộ nhớ JVM.
+- **Consumer idempotent:** commit offset **sau** khi xử lý xong (xem bug-042), và khi rebalance phần replay sẽ bị unique index loại.
+- **Kafka idempotent producer + khoá theo {{machineId}}** để các message của cùng máy vào cùng partition, giữ thứ tự.
+- **Chuẩn hoá đơn vị tại biên:** mọi thời lượng lưu và truyền dưới dạng giây (hoặc {{java.time.Duration}}); đặt tên biến kèm đơn vị ({{plannedSeconds}}, {{runSeconds}}) để không ai chia nhầm lần nữa.
+- **Chặn chỉ số vô lý:** alert khi OEE > 1, Availability > 1, Performance > 1 hoặc tỉ lệ {{duplicates}} > 0,1%; đối chiếu tổng sản lượng gateway với MES mỗi ca.
+
+### Phòng ngừa
+- Test tải có gửi lặp và gửi lệch thứ tự, chạy trong CI.
+- Review mọi phép chia thời gian: hỏi "hai vế cùng đơn vị chưa?".
+- Với số liệu sản xuất, luôn có nguồn đối chiếu thứ hai (MES/sổ ca) để phát hiện lệch trong ngày, không đợi audit.
+
+### Liên hệ phỏng vấn
+Câu hỏi dạng "hệ thống nhận message ít nhất một lần, làm sao số liệu không bị cộng trùng?" — trả lời: khoá nghiệp vụ + unique index/idempotent consumer, vì sao không dedup theo nội dung, và cách xử lý message đến lệch thứ tự.
+
+> Senior tip: Chỉ số vượt ngưỡng vật lý (OEE > 100%, tỉ lệ > 100%, số dư âm) là tín hiệu lỗi dữ liệu, không phải "số đẹp". Hãy biến nó thành alert thay vì kẹp về 100% — kẹp lại chỉ che lỗi và làm mất luôn khả năng phát hiện cộng trùng.`,
+  related: [],
+  tags: ['OEE', 'idempotency', 'duplicate message', 'Kafka', 'at-least-once', 'unit conversion', 'manufacturing']
+},
+{
+  id: 'bug-046',
+  title: 'Truy xuất nguồn gốc mất liên kết lô: gộp 2 lô nhưng chỉ nhớ lô cha cuối cùng',
+  domain: 'Sản xuất / Truy xuất nguồn gốc lô',
+  level: 'senior',
+  severity: 'P1',
+  minutes: 30,
+  story: `**Bối cảnh dự án:** Nhà máy thực phẩm chức năng. Mỗi mẻ nguyên liệu nhập về được cấp một mã lô (lot — "lô" là một lượng hàng sản xuất hoặc nhập cùng một lần, cùng điều kiện, dùng chung giấy tờ kiểm nghiệm). Hệ thống truy xuất nguồn gốc (traceability) ghi lại lô đầu ra được làm từ những lô đầu vào nào, để khi một lô nguyên liệu bị lỗi có thể tìm ra **mọi** thành phẩm chứa nó (thu hồi) và ngược lại.
+- **Gộp lô (merge):** nhiều lô đầu vào trộn thành một lô đầu ra, ví dụ MIX-1 = RM-1 + RM-2.
+- **Tách lô (split):** một lô đầu vào chia thành nhiều lô đầu ra (một mẻ lớn đóng thành nhiều thùng), ví dụ PRD-10 tách thành SUB-A và SUB-B.
+
+**Sự cố:** Ngày 17/11, lô nguyên liệu RM-1 bị nhiễm melamine (chất cấm, 2,1 mg/kg so với ngưỡng 1,0). Đội QA chạy truy xuất từ thành phẩm SUB-A và hệ thống chỉ trả về PRD-10, MIX-2, RM-3 — **thiếu RM-1, MIX-1 và RM-2**. Vì thế 12.000 hộp thực phẩm chứa RM-1 không được thu hồi trong 6 giờ đầu; đến khi đối chiếu sổ giấy của xưởng trộn mới phát hiện. Nguyên nhân: cột {{parent_lot_id}} trong bảng lô chỉ chứa được **một** lô cha, nên khi gộp hai lô, lô ghi sau ghi đè lô ghi trước.
+**Nhiệm vụ của bạn:**
+1. Đọc {{TraceService.produce}}, {{ancestors}} và {{descendants}}, tìm vì sao truy ngược chỉ còn một nhánh.
+2. Sửa để lưu quan hệ nhiều-nhiều (bảng {{lot_link}}) và duyệt đồ thị lấy đủ tổ tiên/con cháu, có chống lặp.
+3. Bấm **Chạy test**: dữ liệu tách/gộp cố định, test kiểm tra đủ 6 lô tổ tiên của SUB-A và 5 lô con cháu của RM-2.`,
+  artifacts: [
+    { name: 'schema.sql', lang: 'sql', content: `-- Mỗi dòng là một lô: RM = nguyên liệu, WIP = bán thành phẩm, FG = thành phẩm
+CREATE TABLE lot (
+  lot_id        varchar(32) PRIMARY KEY,
+  lot_type      varchar(8)  NOT NULL,
+  parent_lot_id varchar(32) REFERENCES lot(lot_id)   -- DI SẢN: chỉ chứa được MỘT lô cha
+);
+
+-- Bảng mới đã tạo từ migration 2026_10 nhưng service vẫn ghi vào cột cũ
+CREATE TABLE lot_link (
+  parent_lot varchar(32) NOT NULL REFERENCES lot(lot_id),
+  child_lot  varchar(32) NOT NULL REFERENCES lot(lot_id),
+  PRIMARY KEY (parent_lot, child_lot)
+);
+CREATE INDEX lot_link_child_idx ON lot_link (child_lot);` },
+    { name: 'recall-trace-2026-11-17.txt', lang: 'text', content: `TRUY XUẤT NGUỒN GỐC — 17/11/2026 14:20
+Lô nghi nhiễm  : RM-1 (melamine 2,1 mg/kg, ngưỡng cho phép 1,0)
+Lô cần truy vết: SUB-A (thành phẩm đóng hộp, 12.000 hộp)
+
+Kết quả hệ thống trả về (đi theo cột parent_lot_id):
+  SUB-A -> PRD-10 -> MIX-2 -> RM-3
+  => 3 lô, KHÔNG có RM-1
+
+Sổ giấy của xưởng trộn:
+  MIX-1  = RM-1 + RM-2
+  MIX-2  = RM-2 + RM-3
+  PRD-10 = MIX-1 + MIX-2
+  SUB-A, SUB-B = tách từ PRD-10
+
+=> Thiếu MIX-1, RM-1, RM-2. Phải 6 giờ sau mới thu hồi đủ 12.000 hộp.
+   Thiệt hại ước tính: 380 triệu đồng hàng phải huỷ + tiền phạt công bố chậm.` },
+  ],
+  starter: `// ===== Hạ tầng (đã có trong dự án, KHÔNG cần sửa) =====
+/**
+ * Kho dữ liệu liên kết lô. Trong production:
+ *  - setLegacyParent / legacyParent / legacyChildren làm việc với cột cũ "parent_lot_id" (mỗi lô một cha).
+ *  - addLink / parentsOf / childrenOf làm việc với bảng mới "lot_link(parent_lot, child_lot)" (nhiều-nhiều).
+ */
+interface LotLinkStore {
+    void setLegacyParent(String childLot, String parentLot);   // ghi đè cha cũ nếu đã có
+    String legacyParent(String childLot);                      // null nếu chưa có
+    List<String> legacyChildren(String parentLot);             // các lô có parent_lot_id = parentLot
+
+    void addLink(String parentLot, String childLot);           // mỗi cặp chỉ lưu một lần
+    List<String> parentsOf(String childLot);
+    List<String> childrenOf(String parentLot);
+}
+
+// ===== Code cần sửa =====
+class TraceService {
+    private final LotLinkStore store;
+
+    TraceService(LotLinkStore store) { this.store = store; }
+
+    /** Ghi nhận lô đầu ra được tách/gộp từ danh sách lô đầu vào. */
+    void produce(String outputLot, List<String> inputLots) {
+        for (String in : inputLots) store.setLegacyParent(outputLot, in);   // BUG: ghi đè, chỉ còn 1 cha
+    }
+
+    /** Tất cả lô tổ tiên (đi ngược lên nguyên liệu), không gồm chính lotId. */
+    List<String> ancestors(String lotId) {
+        List<String> out = new ArrayList<>();
+        String cur = store.legacyParent(lotId);
+        while (cur != null && !out.contains(cur)) {
+            out.add(cur);
+            cur = store.legacyParent(cur);
+        }
+        return out;
+    }
+
+    /** Mọi lô chịu ảnh hưởng từ lotId (đi xuôi xuống thành phẩm), không gồm chính lotId. */
+    List<String> descendants(String lotId) {
+        List<String> out = new ArrayList<>();
+        Deque<String> queue = new ArrayDeque<>(store.legacyChildren(lotId));
+        while (!queue.isEmpty()) {
+            String cur = queue.poll();
+            if (out.contains(cur)) continue;
+            out.add(cur);
+            queue.addAll(store.legacyChildren(cur));
+        }
+        return out;
+    }
+}`,
+  tests: `public class Main {
+    static int passed = 0, total = 0;
+    static void check(String name, boolean ok, String detail) {
+        total++;
+        if (ok) { passed++; System.out.println("PASS " + name); }
+        else System.out.println("FAIL " + name + ": " + detail);
+    }
+
+    static Set<String> set(String... ids) { return new LinkedHashSet<>(Arrays.asList(ids)); }
+
+    /** Store giả lập đúng hai bảng trong artifact: cột legacy một cha và bảng lot_link nhiều-nhiều. */
+    static class FakeStore implements LotLinkStore {
+        final Map<String, String> legacy = new LinkedHashMap<>();
+        final Map<String, Set<String>> parents = new LinkedHashMap<>();
+        final Map<String, Set<String>> children = new LinkedHashMap<>();
+
+        public void setLegacyParent(String child, String parent) { legacy.put(child, parent); }
+        public String legacyParent(String child) { return legacy.get(child); }
+        public List<String> legacyChildren(String parent) {
+            List<String> out = new ArrayList<>();
+            for (Map.Entry<String, String> e : legacy.entrySet()) if (e.getValue().equals(parent)) out.add(e.getKey());
+            return out;
+        }
+        public void addLink(String parent, String child) {
+            parents.computeIfAbsent(child, k -> new LinkedHashSet<>()).add(parent);
+            children.computeIfAbsent(parent, k -> new LinkedHashSet<>()).add(child);
+        }
+        public List<String> parentsOf(String child) {
+            return new ArrayList<>(parents.getOrDefault(child, new LinkedHashSet<>()));
+        }
+        public List<String> childrenOf(String parent) {
+            return new ArrayList<>(children.getOrDefault(parent, new LinkedHashSet<>()));
+        }
+    }
+
+    public static void main(String[] args) {
+        FakeStore db1 = new FakeStore();
+        TraceService t1 = new TraceService(db1);
+        t1.produce("MIX-1", Arrays.asList("RM-1", "RM-2"));
+        t1.produce("MIX-2", Arrays.asList("RM-2", "RM-3"));
+        t1.produce("PRD-10", Arrays.asList("MIX-1", "MIX-2"));
+        t1.produce("SUB-A", Arrays.asList("PRD-10"));
+        t1.produce("SUB-B", Arrays.asList("PRD-10"));
+
+        // 1. Gộp 2 lô: truy ngược từ PRD-10 phải thấy đủ 5 tổ tiên
+        check("gop_lo_giu_du_hai_nhanh",
+            new LinkedHashSet<>(t1.ancestors("PRD-10")).equals(set("MIX-1", "MIX-2", "RM-1", "RM-2", "RM-3")),
+            "kỳ vọng {MIX-1, MIX-2, RM-1, RM-2, RM-3}, thực tế " + t1.ancestors("PRD-10"));
+
+        // 2. Tách lô: truy ngược từ SUB-A phải thấy PRD-10 và mọi nguyên liệu phía trên
+        check("tach_lo_truy_nguoc_day_du",
+            new LinkedHashSet<>(t1.ancestors("SUB-A")).equals(set("PRD-10", "MIX-1", "MIX-2", "RM-1", "RM-2", "RM-3")),
+            "kỳ vọng 6 lô tổ tiên của SUB-A, thực tế " + t1.ancestors("SUB-A"));
+
+        // 3. Thu hồi: từ nguyên liệu RM-2 phải tìm ra mọi thành phẩm chịu ảnh hưởng
+        check("truy_xuoi_tu_nguyen_lieu",
+            new LinkedHashSet<>(t1.descendants("RM-2")).equals(set("MIX-1", "MIX-2", "PRD-10", "SUB-A", "SUB-B")),
+            "kỳ vọng {MIX-1, MIX-2, PRD-10, SUB-A, SUB-B}, thực tế " + t1.descendants("RM-2"));
+
+        // 4. Một lô gộp từ đúng 2 cha: không được bỏ cha nào
+        check("mot_lo_hai_cha",
+            new LinkedHashSet<>(t1.ancestors("MIX-1")).equals(set("RM-1", "RM-2")),
+            "kỳ vọng {RM-1, RM-2}, thực tế " + t1.ancestors("MIX-1"));
+
+        // 5. Lô gốc / lô lá: không có tổ tiên, không có con cháu
+        check("khong_co_lien_ket",
+            t1.ancestors("RM-1").isEmpty() && t1.descendants("SUB-B").isEmpty(),
+            "RM-1 phải không có tổ tiên và SUB-B không có con cháu, thực tế "
+                + t1.ancestors("RM-1") + " / " + t1.descendants("SUB-B"));
+
+        System.out.println("RESULT " + passed + "/" + total);
+    }
+}`,
+  reference: `interface LotLinkStore {
+    void setLegacyParent(String childLot, String parentLot);
+    String legacyParent(String childLot);
+    List<String> legacyChildren(String parentLot);
+    void addLink(String parentLot, String childLot);
+    List<String> parentsOf(String childLot);
+    List<String> childrenOf(String parentLot);
+}
+
+class TraceService {
+    private final LotLinkStore store;
+
+    TraceService(LotLinkStore store) { this.store = store; }
+
+    /** Ghi MỌI cạnh cha -> con vào bảng nhiều-nhiều, không ghi đè ai. */
+    void produce(String outputLot, List<String> inputLots) {
+        for (String in : inputLots) store.addLink(in, outputLot);
+    }
+
+    /** Tất cả lô tổ tiên, không gồm chính lotId. */
+    List<String> ancestors(String lotId) {
+        return walk(store.parentsOf(lotId), true);
+    }
+
+    /** Mọi lô con cháu, không gồm chính lotId. */
+    List<String> descendants(String lotId) {
+        return walk(store.childrenOf(lotId), false);
+    }
+
+    /** Duyệt đồ thị theo chiều rộng; visited vừa khử trùng vừa chặn chu trình dữ liệu. */
+    private List<String> walk(List<String> starts, boolean upward) {
+        Set<String> seen = new LinkedHashSet<>();
+        Deque<String> queue = new ArrayDeque<>(starts);
+        while (!queue.isEmpty()) {
+            String cur = queue.poll();
+            if (!seen.add(cur)) continue;
+            queue.addAll(upward ? store.parentsOf(cur) : store.childrenOf(cur));
+        }
+        return new ArrayList<>(seen);
+    }
+}`,
+  hints: [
+    'Đối chiếu sổ giấy với kết quả: MIX-1 = RM-1 + RM-2 nhưng truy ngược từ PRD-10 chỉ ra MIX-2, tức là lần ghi RM-1 vào MIX-1 đã bị lần ghi RM-2 đè mất. Cùng một cột không thể chứa hai cha.',
+    'Quan hệ lô là đồ thị có hướng: mỗi lô có thể có NHIỀU cha (gộp) và nhiều con (tách). Đây là quan hệ nhiều-nhiều, cần bảng nối với khoá (parent_lot, child_lot), không phải một cột.',
+    'Duyệt đồ thị bằng hàng đợi (BFS) hoặc ngăn xếp (DFS) và giữ tập visited: nó khử trùng khi hai nhánh gặp nhau (RM-2 xuất hiện ở cả MIX-1 và MIX-2) và chặn chu trình nếu dữ liệu nhập tay tạo vòng.',
+  ],
+  rootCause: `**Mô hình dữ liệu sai: quan hệ nhiều-nhiều bị ép vào một cột một-cha.** Khi gộp MIX-1 từ RM-1 và RM-2, code gọi {{setLegacyParent("MIX-1", "RM-1")}} rồi {{setLegacyParent("MIX-1", "RM-2")}}. Lần ghi thứ hai **ghi đè** lần đầu, nên cột {{parent_lot_id}} chỉ còn RM-2 — RM-1 biến mất khỏi lịch sử dù nguyên liệu đó thật sự nằm trong lô.
+
+Hệ quả dây chuyền: truy ngược chỉ đi được một nhánh (SUB-A → PRD-10 → MIX-2 → RM-3), còn MIX-1 và toàn bộ nhánh RM-1/RM-2 bị mất. Dẫn chứng trong artifact: kết quả hệ thống trả 3 lô trong khi sổ giấy ghi 6 lô; lô nhiễm RM-1 không xuất hiện trong danh sách thu hồi.
+
+Lỗi này không ném exception, không có log ERROR — nó chỉ **âm thầm mất dữ liệu**, nên chỉ lộ ra khi có sự cố thu hồi, lúc mà sai sót là tốn kém nhất.`,
+  fix: `### Cách sửa trong bài
+Đổi mô hình sang nhiều-nhiều và duyệt đồ thị:
+- {{produce}} ghi từng cặp {{(parent, child)}} vào bảng liên kết, không ghi đè.
+- {{ancestors}} / {{descendants}} duyệt BFS bằng hàng đợi, mỗi lô thăm đúng một lần nhờ tập {{seen}}.
+~~~java
+void produce(String outputLot, List<String> inputLots) {
+    for (String in : inputLots) store.addLink(in, outputLot);
+}
+
+Set<String> seen = new LinkedHashSet<>();
+Deque<String> queue = new ArrayDeque<>(store.parentsOf(lotId));
+while (!queue.isEmpty()) {
+    String cur = queue.poll();
+    if (!seen.add(cur)) continue;                 // đã thăm -> bỏ qua (chống lặp và chu trình)
+    queue.addAll(store.parentsOf(cur));
+}
+~~~
+
+### Vì sao phải giữ tập visited
+Đồ thị lô không phải cây: RM-2 đi vào cả MIX-1 lẫn MIX-2, rồi hai nhánh gặp lại ở PRD-10. Không có {{seen}} thì kết quả bị trùng lô và tệ hơn là lặp vô hạn nếu dữ liệu nhập tay tạo vòng (A làm từ B, B làm từ A). Với tập visited, mỗi lô chỉ xuất hiện một lần và vòng lặp luôn dừng.
+
+### Trên production thật
+- **Bảng {{lot_link(parent_lot, child_lot)}}** với khoá chính kép — tự chặn cặp trùng; thêm index trên {{child_lot}} cho truy ngược và trên {{parent_lot}} cho truy xuôi.
+- **Insert-only:** không UPDATE, không DELETE liên kết. Sai thì thêm dòng đính chính có cột {{reason, created_by, created_at}} để giữ dấu vết kiểm toán (audit trail là yêu cầu bắt buộc của truy xuất thực phẩm/dược phẩm).
+- **Truy vấn bằng recursive CTE** thay vì kéo cả bảng về Java:
+~~~sql
+WITH RECURSIVE up AS (
+  SELECT parent_lot FROM lot_link WHERE child_lot = 'SUB-A'
+  UNION                                   -- UNION tự khử trùng, an toàn với chu trình
+  SELECT l.parent_lot FROM lot_link l JOIN up ON l.child_lot = up.parent_lot
+)
+SELECT parent_lot FROM up;
+~~~
+- **Giới hạn độ sâu** ({{depth < 50}}) và đếm số dòng trả về; dữ liệu bất thường thì cảnh báo thay vì treo.
+- **Bảng closure** ({{lot_closure(ancestor, descendant, depth)}}) cập nhật khi có liên kết mới nếu truy vấn thu hồi cần nhanh; hoặc cache kết quả theo lô.
+- **Migration:** backfill từ cột cũ {{parent_lot_id}} sang {{lot_link}} (mỗi dòng cũ thành một cặp), sau đó giữ cột cũ chỉ để đọc, không ghi nữa.
+
+### Phòng ngừa
+- Review schema: câu hỏi "một lô có thể có bao nhiêu cha?" — nếu câu trả lời là "nhiều" thì không được dùng cột đơn.
+- Test dữ liệu tách/gộp cố định trong CI, có cả trường hợp hai nhánh gặp nhau.
+- Diễn tập thu hồi (mock recall) mỗi quý: chọn một lô nguyên liệu, chạy truy xuất, đối chiếu sổ giấy.
+- Danh sách nguyên liệu gốc của một thành phẩm phải khớp 100% giữa hệ thống và hồ sơ sản xuất trước khi xuất hàng.
+
+### Liên hệ phỏng vấn
+Câu "làm sao truy xuất nguồn gốc khi có tách/gộp lô?" — trả lời: quan hệ nhiều-nhiều, bảng liên kết insert-only, duyệt đồ thị có visited (hoặc recursive CTE có UNION), và ý thức rằng sai mô hình dữ liệu sẽ mất dữ liệu âm thầm chứ không báo lỗi.
+
+> Senior tip: Lỗi tệ nhất trong hệ thống truy xuất không phải lỗi làm sập hệ thống, mà là trả về kết quả **thiếu mà trông hợp lý**. Hãy luôn có phép đối chiếu chéo (sổ giấy, MES) cho câu hỏi thu hồi, và viết test với dữ liệu gộp hai nhánh — đó là trường hợp một cột một-cha luôn thất bại.`,
+  related: [],
+  tags: ['traceability', 'lot', 'many-to-many', 'graph traversal', 'recall', 'manufacturing', 'data model']
 }
 );
