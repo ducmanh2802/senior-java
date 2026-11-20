@@ -9713,5 +9713,359 @@ Kafka chỉ đảm bảo thứ tự trong partition, nên partition key = machin
   ],
   tags: ['ordering', 'partition key', 'machineId', 'reorder buffer', 'Kafka'],
 },
+{
+  id: 'microservices-116',
+  topic: 'microservices',
+  level: 'senior',
+  q: 'Hai service cùng chạy nhiều pod, cùng lúc có 2 request xử lý cùng một đơn hàng (trừ tồn kho, cấp mã giảm giá). Bạn dùng distributed lock với Redis. Giải thích SET NX PX, vì sao lock hết hạn khi việc chưa xong, Redisson watchdog gia hạn, fencing token, và vì sao Redlock gây tranh cãi.',
+  a: `**Tóm tắt:** Distributed lock là một "chiếc chìa khóa" chung đặt trên Redis để nhiều pod không xử lý cùng một tài nguyên cùng lúc. Dùng {{SET key value NX PX 10000}} để chỉ một pod chiếm được khóa; NX nghĩa là chỉ set khi key CHƯA tồn tại. Khóa có TTL để không treo vĩnh viễn khi pod chết, nhưng TTL có thể hết trước khi việc xong nên phải gia hạn (Redisson watchdog). Fencing token (số thứ tự tăng dần) chặn "zombie" ghi đè dữ liệu cũ. Redlock (nhiều Redis độc lập) chống sập cụm nhưng bị Martin Kleppmann phản biện vì phụ thuộc đồng hồ.
+
+### Kiến thức cần biết trước
+- **Distributed lock**: khóa dùng chung giữa nhiều tiến trình trên nhiều máy, khác với synchronized hay ReentrantLock chỉ có tác dụng trong một JVM. Ví dụ đời thường: chìa khóa nhà tắm công cộng — ai cầm chìa thì được vào, người khác phải chờ.
+- **Redis**: kho key-value trong RAM, mỗi lệnh chạy gần như tức thì. {{SET key value NX}}: chỉ ghi nếu key chưa tồn tại (NX = Not eXists), trả về nil nếu đã có người giữ.
+- **TTL (time to live)**: thời gian sống của key, hết hạn thì Redis tự xóa. Ví dụ: vé gửi xe in giờ, quá giờ thì mất hiệu lực.
+- **Atomic (nguyên tử)**: thao tác không thể bị chen ngang giữa chừng. Redis thực thi lệnh tuần tự một luồng nên mỗi lệnh là atomic, nhưng một chuỗi lệnh thì không — muốn nhiều lệnh thành một khối phải dùng Lua hoặc MULTI.
+- **Redisson**: thư viện Java bọc Redis, cung cấp {{RLock}}, tự gia hạn và tự nhả khóa.
+- **Fencing token**: số nguyên tăng dần phát kèm mỗi lần cấp khóa; bên ghi dữ liệu từ chối token nhỏ hơn token lớn nhất đã thấy.
+
+### Cơ chế từng bước (lock an toàn tối thiểu)
+1. Pod A muốn khóa "lock:order:123": chạy {{SET lock:order:123 tokenA NX PX 10000}}. NX đảm bảo chỉ A thành công nếu chưa ai giữ; PX 10000 nghĩa là TTL 10 giây.
+2. Redis trả OK thì A vào vùng tới hạn (critical section). Trả nil thì A biết có người giữ, thử lại sau hoặc bỏ.
+3. A làm việc (trừ tồn kho). Trong lúc này khóa vẫn còn hạn.
+4. A nhả khóa: phải xóa ĐÚNG khóa của mình. Nếu chỉ {{DEL key}}, lỡ TTL đã hết và pod B đã chiếm, A sẽ xóa nhầm khóa của B.
+5. Vì vậy dùng Lua script so sánh token rồi mới xóa, để nguyên tử:
+~~~text
+-- Lua: chỉ xóa nếu giá trị đúng token của mình
+if redis.call("get", KEYS[1]) == ARGV[1] then
+  return redis.call("del", KEYS[1])
+else
+  return 0
+end
+~~~
+6. Pod chết giữa chừng: TTL hết, Redis tự xóa khóa, pod khác vào được → không treo vĩnh viễn.
+
+### Vấn đề: việc chưa xong nhưng TTL đã hết
+- Đặt TTL 10 giây nhưng việc (gọi API thanh toán) mất 15 giây → khóa hết hạn ở giây 10, pod B chiếm, giờ hai pod cùng xử lý → lỗi.
+- Giải pháp là watchdog của Redisson: khi đang giữ khóa, một task nền cứ mỗi {{lockWatchdogTimeout/3}} (mặc định 30 giây chia 3 = 10 giây) lại gia hạn TTL về 30 giây. Khi client chết, watchdog dừng, khóa tự hết hạn.
+- Watchdog chỉ có ở Redisson chứ không phải Redis; tự viết bằng tay rất dễ sai (quên gia hạn, gia hạn muộn).
+
+### Vấn đề zombie: fencing token
+- Pod A giữ khóa nhưng bị GC pause 20 giây. Khóa hết hạn, B chiếm và cập nhật DB version=2. A tỉnh lại, vẫn tưởng đang giữ khóa, ghi version=1 → ghi đè mất dữ liệu của B.
+- Lock không cứu được vì A không biết mình đã mất khóa. Giải pháp là mỗi lần cấp khóa kèm một fencing token tăng dần. Token phải đến từ nguồn đơn điệu ({{INCR}} trên Redis, sequence của DB, hoặc version/revision của tài nguyên) — bản thân {{SET NX}} chỉ trả về OK/nil chứ không phát số. Tài nguyên (DB, object storage) nhớ token lớn nhất đã thấy và từ chối ghi với token nhỏ hơn.
+- Ví dụ DB: thêm cột fencing_token, câu update có điều kiện where fencing_token <= :token. Token cũ bị chặn ngay tại DB.
+
+### Sơ đồ zombie write
+~~~text
+t1   A: SET lock TTL 10s  -> OK, token=1
+t2   A: bắt đầu xử lý
+t10  A: GC pause 20s (khóa hết hạn)
+t11  B: SET lock        -> OK, token=2
+t12  B: ghi DB version=2
+t30  A: tỉnh lại, vẫn tưởng đang giữ khóa
+t31  A: ghi DB version=1  -> MẤT dữ liệu của B
+     Fencing token chặn: DB chỉ nhận token > token đã thấy (2) -> A(token 1) bị từ chối
+~~~
+
+### Bảng trade-off
+| Cách | An toàn khi pod chết | An toàn khi GC pause | Độ phức tạp |
+|---|---|---|---|
+| SET NX PX thủ công | Có (nhờ TTL) | Không | Thấp |
+| Redisson RLock + watchdog | Có | Không (vẫn cần fencing) | Trung bình |
+| Redisson + fencing token ở tài nguyên | Có | Có | Cao |
+| Redlock (nhiều Redis) | Có nếu đủ quorum | Không | Rất cao, còn tranh cãi |
+
+### Tự thử trên máy
+Chạy Redis bằng Docker một dòng:
+~~~bash
+docker run --rm -p 6379:6379 redis:7
+~~~
+Terminal khác, dùng redis-cli:
+~~~bash
+# A chiếm khóa TTL 10s
+redis-cli SET lock:order:123 tokenA NX PX 10000
+# -> OK
+# B thử chiếm (thất bại vì đã có người giữ)
+redis-cli SET lock:order:123 tokenB NX PX 10000
+# -> (nil)
+# Xem khóa còn sống bao lâu
+redis-cli PTTL lock:order:123
+# -> khoảng 9000 (ms)
+# Nhả khóa đúng cách: so token rồi mới xóa bằng Lua
+redis-cli EVAL "if redis.call('get',KEYS[1])==ARGV[1] then return redis.call('del',KEYS[1]) else return 0 end" 1 lock:order:123 tokenA
+# -> 1
+redis-cli GET lock:order:123
+# -> (nil)
+~~~
+Kết quả mong đợi: lần SET thứ hai trả nil vì khóa đã bị chiếm; EVAL trả 1 khi token đúng, trả 0 nếu token sai.
+
+### Ví dụ đời thực
+Hệ thống flash sale 2 triệu request/phút cho 5.000 sản phẩm. Dùng SET NX PX TTL 5 giây để chống bán vượt kho. Triệu chứng: vẫn có 300 đơn "out of stock" nhưng kho bị âm. Điều tra log thấy p99 thời gian giữ khóa là 6,2 giây (do downstream chậm) vượt TTL 5 giây → khóa hết hạn giữa chừng, hai pod cùng trừ kho. Xử lý: (1) chuyển sang Redisson RLock + watchdog, (2) thêm fencing token vào bảng inventory và update kèm điều kiện version, (3) tách phần gọi API chậm ra ngoài vùng tới hạn. Kết quả: 0 đơn oversell trong 3 sự kiện sale, p99 thời gian giữ khóa còn 700 ms.
+
+### Tóm lại 3 ý
+- Distributed lock dùng SET NX PX; TTL tránh treo nhưng phải gia hạn (watchdog) vì việc có thể lâu hơn TTL.
+- Lock không chặn được zombie write do GC pause, phải có fencing token ở tài nguyên.
+- Nhả khóa phải nguyên tử (Lua so token), giữ vùng tới hạn ngắn, và luôn đo p99 thời gian giữ khóa so với TTL.
+
+### Trả lời mẫu khi phỏng vấn
+"Distributed lock trên Redis dùng SET key value NX PX ttl để chỉ một client chiếm được, TTL tránh treo khi pod chết. Nhưng TTL có thể hết trước khi việc xong nên cần gia hạn — Redisson watchdog tự gia hạn mỗi một phần ba timeout. Lock vẫn không đủ khi có GC pause dài: client tưởng còn giữ khóa nhưng đã mất, gây zombie write; giải pháp là fencing token tăng dần, tài nguyên từ chối token cũ. Nhả khóa phải nguyên tử bằng Lua so token rồi xóa, tránh xóa nhầm khóa của người khác. Redlock trên nhiều Redis độc lập chống sập cụm nhưng Martin Kleppmann chỉ ra nó phụ thuộc đồng hồ và không an toàn với GC pause, nên nhiều hệ thống chọn một Redis chính cộng fencing token. Kinh nghiệm: giữ vùng tới hạn ngắn, tách I/O chậm ra ngoài, luôn đo thời gian giữ khóa so với TTL."
+
+> Senior tip: Đừng coi lock phân tán là "đã đúng". Lock chỉ giảm xác suất trùng chứ không loại bỏ hoàn toàn; muốn đúng tuyệt đối phải có lớp bảo vệ thứ hai ở tài nguyên (fencing token, version/CAS, unique constraint). Trong flash sale, oversell thường không phải do lock sai mà do vùng tới hạn quá dài vì gọi API ngay lúc đang giữ khóa — hãy đo p99 thời gian giữ khóa trước khi tăng TTL.`,
+  follow: [
+    'Watchdog gia hạn gặp Redis sập giữa chừng thì khóa và việc xử lý ra sao?',
+    'Fencing token nên đặt ở DB, ở object storage, hay ở tầng service?',
+    'Khi nào dùng Redlock, khi nào một Redis chính + sentinel là đủ?'
+  ],
+  tags: ['distributed lock', 'Redis', 'Redisson', 'fencing token', 'watchdog', 'SET NX', 'idempotency'],
+},
+{
+  id: 'microservices-117',
+  topic: 'microservices',
+  level: 'senior',
+  q: 'Service A gọi service B hàng nghìn request mỗi giây. Một lập trình viên tạo HttpClient mới cho mỗi request. Triệu chứng: CPU tăng, latency p99 tăng, thỉnh thoảng lỗi "Cannot assign requested address". Giải thích keep-alive, connection pool, ephemeral port và TIME_WAIT, và cách tái sử dụng kết nối.',
+  a: `**Tóm tắt:** Mỗi request tạo kết nối TCP mới phải bắt tay 3 bước và nếu là HTTPS thì bắt tay TLS tốn thêm 1-2 vòng cùng CPU. Khi đóng, phía chủ động đóng giữ cổng ở trạng thái TIME_WAIT khoảng 60 giây. Cổng nguồn (ephemeral) chỉ khoảng 28 nghìn, nên tạo kết nối liên tục sẽ cạn cổng và báo "Cannot assign requested address". Giải pháp là tái sử dụng kết nối qua HTTP keep-alive cộng connection pool, giới hạn số kết nối và đặt timeout hợp lý.
+
+### Kiến thức cần biết trước
+- **TCP handshake**: 3 bước (SYN, SYN-ACK, ACK) trước khi gửi được byte đầu tiên. Trên cùng máy chủ chỉ mất dưới 1 ms, qua internet tốn 30-80 ms. Mỗi kết nối mới là trả lại chi phí này.
+- **TLS handshake**: HTTPS thêm 1-2 vòng trao đổi chứng chỉ và sinh khóa, tốn CPU và 1-2 RTT. Với hàng nghìn request mỗi giây, bắt tay TLS mỗi request có thể ngốn vài lõi CPU.
+- **Keep-alive (HTTP/1.1)**: sau khi trả response, kết nối KHÔNG đóng mà giữ lại cho request kế tiếp. Mặc định HTTP/1.1 đã bật keep-alive.
+- **Ephemeral port (cổng tạm)**: mỗi kết nối đi ra chiếm một cổng nguồn. Linux mặc định {{net.ipv4.ip_local_port_range}} là 32768-60999, tức khoảng 28 nghìn cổng cho mỗi cặp (IP đích, cổng đích).
+- **TIME_WAIT**: trạng thái sau khi một bên chủ động đóng kết nối, giữ cổng khoảng 2 lần MSL (Linux khoảng 60 giây) để tránh gói cũ gây nhiễu. Trong 60 giây đó cổng chưa dùng lại được.
+- **Connection pool**: tập hợp sẵn các kết nối đã bắt tay, cho mượn khi cần và trả lại khi xong, thay vì mở mới mỗi lần.
+
+### Cơ chế từng bước: vì sao cạn cổng
+1. Mỗi request tạo HttpClient mới, mở một kết nối TCP mới, chiếm một cổng nguồn.
+2. Đóng kết nối (phía ta chủ động đóng), cổng đó vào TIME_WAIT 60 giây.
+3. Tốc độ 500 request mỗi giây nhân 60 giây bằng 30.000 cổng, vượt 28.000 cổng khả dụng → cạn.
+4. Khi cạn, connect() trả lỗi EADDRNOTAVAIL, Java báo "Cannot assign requested address".
+5. CPU tăng vì liên tục bắt tay TCP và TLS, mà bắt tay TLS dùng mã hóa bất đối xứng rất tốn CPU.
+
+### Ví dụ số cụ thể
+Giả sử một pod gọi B với 800 request mỗi giây, mỗi request tạo kết nối mới:
+- Số cổng khả dụng: 60999 trừ 32768 cộng 1 bằng 28.232.
+- TIME_WAIT 60 giây, số cổng bị giữ cùng lúc xấp xỉ 800 nhân 60 bằng 48.000, lớn hơn 28.232 → cạn sau khoảng 35 giây.
+- Nếu bật keep-alive với pool 200 kết nối: chỉ 200 cổng bị giữ và tái sử dụng mãi → không cạn.
+- Về TLS: giả sử mỗi handshake tốn 1,5 ms CPU. 800 request mỗi giây nhân 1,5 ms bằng 1,2 giây CPU mỗi giây, tức hơn một lõi chỉ để bắt tay. Bật keep-alive thì còn gần như 0.
+
+### Sơ đồ TIME_WAIT
+~~~text
+Client (cổng nguồn)                 Server B
+   | --- SYN -------------------> |
+   | <-- SYN-ACK ---------------  |
+   | --- ACK ------------------->  |   (kết nối ESTABLISHED)
+   | ==== request / response ===  |
+   | --- FIN -------------------> |   (client chủ động đóng)
+   | <-- ACK -------------------- |
+   |  TIME_WAIT 60s (giữ cổng)    |
+   |  cổng 53123 chưa dùng lại     |
+~~~
+
+### Bảng trade-off
+| Cách | CPU bắt tay | Cổng dùng | Rủi ro |
+|---|---|---|---|
+| HttpClient mới mỗi request | Rất cao | Cạn nhanh | EADDRNOTAVAIL |
+| Keep-alive, pool nhỏ | Thấp | Ít | Nghẽn khi pool quá nhỏ |
+| Keep-alive, pool lớn | Thấp | Nhiều | Tốn tài nguyên phía server |
+| HTTP/2 multiplexing | Thấp nhất | 1 kết nối | Server phải hỗ trợ h2 |
+
+### Tự thử trên máy
+Quan sát TIME_WAIT và dải cổng trên Linux:
+~~~bash
+# Đếm số cổng đang TIME_WAIT
+ss -tan | grep TIME-WAIT | wc -l
+# Xem dải cổng tạm
+sysctl net.ipv4.ip_local_port_range
+# Mô phỏng mở nhiều kết nối (chỉ chạy trong VM/sandbox)
+for i in $(seq 1 30000); do (exec 3<>/dev/tcp/127.0.0.1/80) 2>/dev/null; done
+~~~
+Đếm số lần bắt tay TCP để so sánh tạo mới với tái sử dụng:
+~~~bash
+# Đếm gói SYN đi tới cổng 8080 (mỗi SYN = một kết nối mới)
+tcpdump -i any -n 'tcp[tcpflags] & tcp-syn != 0 and dst port 8080' | wc -l
+~~~
+Kết quả mong đợi: khi tạo mới mỗi request, số SYN xấp xỉ số request; khi dùng pool, số SYN xấp xỉ số kết nối trong pool, tức rất ít.
+
+### Ví dụ đời thực
+Payment service gọi cổng thanh toán 1.200 request mỗi giây. Sau ba tuần chạy, một số pod báo "Cannot assign requested address", CPU 90%, p99 tăng từ 40 ms lên 900 ms. Điều tra: code tạo HttpClient mới mỗi request bằng thư viện cũ, không keep-alive; ss cho thấy 27.000 cổng TIME_WAIT; tcpdump cho thấy mỗi request một SYN mới. Xử lý: (1) dùng một HttpClient singleton có connection pool, tối đa 200 kết nối, keep-alive 30 giây, (2) đặt connectTimeout 500 ms và readTimeout 2 giây, (3) bật HTTP/2 nếu cổng hỗ trợ. Kết quả: TIME_WAIT còn khoảng 200, CPU giảm còn 25%, p99 về 60 ms.
+
+### Tóm lại 3 ý
+- Tạo HttpClient mới mỗi request làm cạn cổng tạm (TIME_WAIT 60 giây) và tốn CPU bắt tay TCP/TLS.
+- Keep-alive cộng connection pool tái sử dụng kết nối, phải giới hạn số kết nối và đặt timeout.
+- Đo bằng ss (TIME_WAIT) và tcpdump (số SYN); lỗi Cannot assign requested address thường là cạn cổng chứ không phải server từ chối.
+
+### Trả lời mẫu khi phỏng vấn
+"Tạo HttpClient mới mỗi request là phản pattern vì mỗi lần phải bắt tay TCP và TLS, tốn RTT và CPU; khi đóng, cổng nguồn vào TIME_WAIT 60 giây, mà dải cổng tạm chỉ khoảng 28 nghìn, nên 800 request mỗi giây sẽ cạn sau khoảng 35 giây và báo Cannot assign requested address. Giải pháp là tái sử dụng kết nối: HTTP keep-alive giữ kết nối sau response, connection pool cho mượn rồi trả lại, giới hạn số kết nối và đặt timeout. Dùng một HttpClient singleton, không tạo mới mỗi request. HTTP/2 còn gộp nhiều request trên một kết nối. Kinh nghiệm: đo số SYN bằng tcpdump và số cổng TIME_WAIT bằng ss; pool quá nhỏ gây nghẽn, quá lớn gây tốn tài nguyên server, nên đặt theo p95 độ trễ và số song song thực tế."
+
+> Senior tip: "Cannot assign requested address" gần như luôn là cạn cổng do không tái sử dụng kết nối, không phải do server từ chối. Trước khi tăng dải cổng hay chỉnh sysctl, hãy kiểm tra code có tạo client mới mỗi request không — đây là lỗi phổ biến nhất khi dùng thư viện HTTP cũ trong Java.`,
+  follow: [
+    'Keep-alive với HTTP/1.1 khác HTTP/2 multiplexing thế nào về số kết nối?',
+    'Connection pool nên đặt bao nhiêu kết nối, và khi nào pool nhỏ gây nghẽn?',
+    'Làm sao phát hiện sớm cạn ephemeral port trên Kubernetes?'
+  ],
+  tags: ['HTTP keep-alive', 'connection pool', 'TIME_WAIT', 'ephemeral port', 'HttpClient', 'TLS'],
+},
+{
+  id: 'microservices-118',
+  topic: 'microservices',
+  level: 'senior',
+  q: 'Dùng Redis làm cache cho danh mục sản phẩm. p99 tăng đột biến dù cache hit 95%. Giải thích eviction policy (allkeys-lru so với volatile-lru), hot key, big key, vì sao lệnh KEYS chặn cả Redis, cache stampede, và cách đo.',
+  a: `**Tóm tắt:** Redis thực thi lệnh tuần tự trên một luồng, nên một lệnh chậm (KEYS, HGETALL trên hash khổng lồ, big key) sẽ chặn toàn bộ client. Eviction policy quyết định xóa key nào khi đầy RAM: noeviction (báo lỗi), allkeys-lru (xóa key ít dùng nhất trong mọi key), volatile-lru (chỉ xóa key có TTL). Hot key (một key bị đọc hàng trăm nghìn lần mỗi giây) làm nghẽn một shard. Cache stampede (nhiều request cùng miss) đập thẳng vào DB. Giải pháp: tránh KEYS (dùng SCAN), chia big key, nhân bản hot key, dùng singleflight hoặc mutex khi miss, thêm jitter vào TTL.
+
+### Kiến thức cần biết trước
+- **Single-thread**: Redis thực thi lệnh tuần tự trên một luồng chính (I/O có thể đa luồng nhưng phần logic lệnh là tuần tự). Hệ quả: một lệnh chậm sẽ chặn mọi lệnh khác. Ví dụ: một siêu thị chỉ có một thu ngân, ai thanh toán đồ lâu thì cả hàng chờ.
+- **Big key**: key chứa giá trị rất lớn (hash, set, list hàng triệu phần tử). Đọc hoặc xóa nó tốn nhiều CPU và có thể làm Redis khựng.
+- **Hot key**: một key được đọc hoặc ghi với tần suất cực cao, dồn vào một node duy nhất, gây nghẽn cục bộ dù tổng tải cả cụm thấp.
+- **Eviction policy**: khi RAM đầy, Redis phải xóa bớt key. LRU là Least Recently Used (ít dùng gần đây nhất), LFU là Least Frequently Used (ít dùng theo tần suất).
+- **TTL jitter**: thêm một random nhỏ vào TTL để nhiều key không cùng hết hạn một lúc.
+- **Stampede (thundering herd)**: nhiều request cùng miss một key, cùng lúc đi đập DB.
+
+### Cơ chế eviction
+| Policy | Xóa key nào | Khi nào dùng |
+|---|---|---|
+| noeviction | Không xóa, trả lỗi OOM | Dữ liệu không được mất (session, queue) |
+| allkeys-lru | Key ít dùng nhất trong TẤT CẢ key | Cache thuần |
+| allkeys-lfu | Key có tần suất dùng thấp nhất | Hot set ổn định, tránh quét |
+| volatile-lru | Chỉ xóa trong các key có TTL | Muốn giữ các key không TTL |
+| volatile-ttl | Key sắp hết hạn nhất | Ưu tiên xóa key gần hết hạn |
+
+### Vì sao KEYS chặn Redis
+- {{KEYS pattern}} duyệt TOÀN BỘ keyspace, độ phức tạp O(n). Với 10 triệu key, mỗi lần quét mất vài trăm ms, trong lúc đó mọi lệnh khác (GET của user) phải đứng chờ.
+- Thay bằng {{SCAN cursor}}: duyệt tăng dần, mỗi lần trả một phần, không chặn lâu. Nhược điểm là có thể trả trùng, phải khử trùng phía client.
+
+### Cache stampede từng bước
+1. Key product:123 hết hạn.
+2. 5.000 request cùng đến trong 100 ms, cùng miss.
+3. Cả 5.000 cùng truy vấn DB → DB quá tải → cả hệ thống chậm theo.
+4. Giải pháp singleflight: chỉ một request được đi lấy dữ liệu, số còn lại chờ kết quả; hoặc dùng mutex phân tán ({{SET nx}}) để chỉ một bên rebuild.
+
+### Sơ đồ stampede
+~~~text
+t0     product:123 hết hạn
+t0+1ms 5000 request cùng GET -> (nil)
+t0+2ms cả 5000 cùng SELECT từ DB   <-- DB quá tải
+Fix: chỉ 1 request giữ "lock rebuild", 4999 request chờ hoặc trả cache cũ (stale-while-revalidate)
+~~~
+
+### Bảng hot key và big key
+| Hiện tượng | Triệu chứng | Xử lý |
+|---|---|---|
+| Hot key | Một node CPU 100%, node khác rảnh | Nhân bản key (key cộng hậu tố 1..N), đọc ngẫu nhiên, thêm local cache |
+| Big key | Redis khựng, xóa chậm, network spike | Tách hash lớn, dùng SCAN, nén, chia shard |
+| KEYS | p99 tăng đều, Redis gần như treo | Dùng SCAN, theo dõi slowlog |
+
+### Tự thử trên máy
+~~~bash
+docker run --rm -p 6379:6379 redis:7
+# Xem policy hiện tại
+redis-cli CONFIG GET maxmemory-policy
+# -> "noeviction"
+# Đặt allkeys-lru và giới hạn 100MB
+redis-cli CONFIG SET maxmemory 100mb
+redis-cli CONFIG SET maxmemory-policy allkeys-lru
+# Đo độ trễ, rồi ở terminal khác chạy KEYS để thấy nó chặn
+redis-cli --latency
+# Terminal khác:
+redis-cli KEYS '*' | wc -l
+# Xem các lệnh chậm
+redis-cli SLOWLOG GET 5
+~~~
+Kết quả mong đợi: khi chạy KEYS trên hàng triệu key, lệnh --latency ở terminal khác cho p99 tăng từ dưới 1 ms lên hàng chục đến hàng trăm ms.
+
+### Ví dụ đời thực
+Danh mục sản phẩm 20 triệu key, hit ratio 95%. Flash sale, p99 từ 5 ms lên 800 ms dù CPU Redis chỉ 40%. Điều tra: slowlog thấy KEYS product:* chạy mỗi phút (job đồng bộ), mỗi lần 1,2 giây chặn toàn bộ; một hot key product:featured nhận 500 nghìn GET mỗi giây làm nghẽn một shard; một hash product:attr có 2 triệu field. Xử lý: (1) bỏ KEYS, thay bằng SCAN; (2) nhân bản hot key thành 16 bản và đọc ngẫu nhiên, thêm local cache Caffeine 5 giây; (3) tách big hash, chỉ lấy field cần; (4) singleflight khi miss. Kết quả: p99 về 8 ms, CPU các shard đều, 0 lần DB quá tải.
+
+### Tóm lại 3 ý
+- Redis single-thread: lệnh O(n) như KEYS chặn mọi client, phải dùng SCAN và tránh big key.
+- Eviction policy quyết định xóa key nào; hot key làm nghẽn một shard dù tổng tải thấp.
+- Cache stampede xử lý bằng singleflight hoặc mutex cộng TTL jitter; đo bằng slowlog và --latency.
+
+### Trả lời mẫu khi phỏng vấn
+"Redis chạy lệnh tuần tự một luồng nên lệnh O(n) như KEYS hay HGETALL trên big key chặn mọi client — phải dùng SCAN và tránh big key. Eviction policy quyết định xóa key nào khi đầy: allkeys-lru cho cache thuần, volatile-lru giữ key không TTL, noeviction cho dữ liệu không được mất. Hot key làm nghẽn một shard dù tổng tải thấp, xử lý bằng nhân bản key và local cache. Cache stampede khi nhiều request cùng miss thì dùng singleflight hoặc mutex để chỉ một request rebuild, các request khác chờ hoặc dùng giá trị cũ. TTL jitter tránh nhiều key hết hạn cùng lúc. Đo bằng slowlog, --latency và hit ratio; p99 tăng mà CPU thấp thường là do lệnh chậm hoặc hot key chứ không phải thiếu tài nguyên."
+
+> Senior tip: "Cache hit 95%" không có nghĩa cache tốt — 5% miss nếu rơi vào hot key vẫn đủ đánh sập DB. Hãy đo p99 của Redis bằng redis-cli --latency, xem slowlog và số key mỗi shard; một lệnh KEYS chạy cron có thể là thủ phạm làm p99 tăng đều mà không ai nghi ngờ.`,
+  follow: [
+    'allkeys-lru và allkeys-lfu khác nhau ra sao, chọn thế nào?',
+    'Hot key nên xử lý ở local cache hay nhân bản key?',
+    'Stale-while-revalidate đánh đổi gì so với singleflight?'
+  ],
+  tags: ['Redis', 'cache', 'eviction', 'hot key', 'big key', 'stampede', 'SCAN'],
+},
+{
+  id: 'microservices-119',
+  topic: 'microservices',
+  level: 'lead',
+  q: 'Order service dùng HikariCP, maximumPoolSize đặt 200 cho chắc. DB bắt đầu quá tải, latency tăng, càng tăng pool càng chậm. Giải thích vì sao pool quá lớn phản tác dụng, dùng định luật Little để tính pool, và cách đặt ngân sách kết nối cho cả cụm.',
+  a: `**Tóm tắt:** Pool quá lớn không làm nhanh hơn vì DB có giới hạn số lõi và số truy vấn chạy song song thực; 200 kết nối cùng chạy trên 8 vCPU chỉ làm mỗi truy vấn chậm thêm do tranh CPU và context switch. Định luật Little cho biết số truy vấn đang xử lý song song bằng tần suất nhân thời gian xử lý, từ đó suy ra pool hợp lý thường nhỏ (10-30), không phải hàng trăm. Trong microservices, phải chia ngân sách kết nối cho cả cụm: tổng pool các service không vượt quá số kết nối DB chịu được, nếu không sẽ quá tải DB.
+
+### Kiến thức cần biết trước
+- **Connection pool**: giữ sẵn một tập kết nối tới DB để không phải mở và đóng mỗi truy vấn, vì mở kết nối TCP cộng xác thực tốn vài ms. Ví dụ: thay vì gọi tổng đài mỗi lần, giữ sẵn vài đường dây nóng.
+- **HikariCP**: pool nhẹ và nhanh, mặc định của Spring Boot 3. Thông số chính: maximumPoolSize, minimumIdle, connectionTimeout, maxLifetime, keepaliveTime.
+- **Định luật Little**: L bằng lambda nhân W. Trong ngữ cảnh pool, số kết nối cần bằng tần suất truy vấn (query mỗi giây) nhân thời gian mỗi truy vấn (giây). Ví dụ 2.000 query mỗi giây nhân 5 ms bằng 10 kết nối đang dùng đồng thời.
+- **Context switch**: CPU chuyển đổi qua lại giữa các thread; càng nhiều thread chạy song song trên ít lõi thì càng nhiều chuyển đổi và cache CPU càng kém.
+- **Giới hạn kết nối của DB**: PostgreSQL mặc định {{max_connections}} là 100; vượt thì nhận lỗi "too many clients".
+
+### Vì sao pool lớn phản tác dụng
+1. DB thật sự chạy song song theo số vCPU, ví dụ 8 vCPU thì tối đa khoảng 8 truy vấn CPU-bound cùng lúc.
+2. 200 kết nối cùng gửi truy vấn, tức 200 thread trên DB tranh 8 lõi, mỗi truy vấn chậm hơn và context switch tăng.
+3. Người dùng thấy latency tăng nên giữ kết nối lâu hơn, pool cạn, lại tăng pool → vòng xoáy.
+4. Lock và I/O trên DB cũng tăng theo số kết nối, nên throughput giảm sau ngưỡng tối ưu.
+
+### Ví dụ số cụ thể
+Giả sử 4 pod order-service, mỗi pod pool 200, tổng 800 kết nối tới DB. DB 8 vCPU, max_connections 1.000 (đủ chỗ cho 800 kết nối, nên vấn đề là tranh chấp chứ không phải bị từ chối). Mỗi truy vấn trung bình 6 ms.
+- Theo định luật Little, mỗi pod 2.000 query mỗi giây nhân 0,006 giây bằng 12 kết nối cần đồng thời, nên 200 là dư khoảng 16 lần.
+- 800 kết nối cùng hoạt động trên 8 vCPU làm mỗi truy vấn chậm khoảng 10 lần, từ 6 ms thành 60 ms, throughput giảm.
+- Đặt lại mỗi pod 15, tổng 60 kết nối, DB không nghẽn, p99 truy vấn về 6-8 ms.
+
+### Sơ đồ pool quá lớn
+~~~text
+Pool=200, DB 8 vCPU:
+  200 request --> [8 lõi DB]   mỗi truy vấn 6ms -> 60ms (tranh CPU)
+  throughput giảm, latency tăng, pool cạn, tăng pool tiếp -> càng tệ
+Pool=15, DB 8 vCPU:
+  15 request --> [8 lõi DB]    mỗi truy vấn 6ms -> 7ms
+  throughput tăng, latency ổn định
+~~~
+
+### Bảng tham số HikariCP
+| Tham số | Ý nghĩa | Lời khuyên |
+|---|---|---|
+| maximumPoolSize | Số kết nối tối đa | Theo Little, thường 10-30 mỗi pod |
+| minimumIdle | Số kết nối giữ ấm | Bằng maximumPoolSize để cố định, tránh co giãn |
+| connectionTimeout | Chờ pool tối đa | 250-3000 ms, fail nhanh |
+| maxLifetime | Tuổi kết nối | Nhỏ hơn timeout của DB hoặc firewall |
+| keepaliveTime | Giữ kết nối ấm | Bật nếu DB có idle timeout |
+
+### Tự thử trên máy
+Đo pool thật bằng PostgreSQL:
+~~~bash
+# Số kết nối hiện tại theo trạng thái
+psql -c "select state, count(*) from pg_stat_activity group by state;"
+# Giới hạn kết nối của DB
+psql -c "show max_connections;"
+# HikariCP: đặt pool nhỏ và timeout ngắn
+# spring.datasource.hikari.maximum-pool-size=15
+# spring.datasource.hikari.connection-timeout=3000
+# Theo dõi số request đang chờ pool: metric hikaricp.connections.pending
+~~~
+Kết quả mong đợi: khi pool bằng 15, hikaricp.connections.pending xấp xỉ 0 và pg_stat_activity không vượt vài chục; khi pool bằng 200, pending có thể bằng 0 nhưng số active trên DB tăng vọt và latency truy vấn tăng theo.
+
+### Ví dụ đời thực
+Order service 6 pod, mỗi pod HikariCP pool 200, tổng 1.200. DB Aurora 8 vCPU, max_connections 2.000 (đủ chỗ cho 1.200 kết nối, nên DB không từ chối mà chỉ chậm vì tranh chấp). Ca sale, DB CPU 100%, p99 truy vấn từ 6 ms lên 180 ms, order timeout hàng loạt. Điều tra pg_stat_activity thấy 900 kết nối active, nhiều cái idle in transaction; pg_stat_statements thấy tổng thời gian tăng dù số query không đổi. Tính theo Little, mỗi pod chỉ cần khoảng 12 kết nối. Xử lý: (1) giảm pool xuống 20 mỗi pod, tổng 120; (2) bật statement timeout 2 giây và idle-in-transaction 5 giây; (3) thêm read replica cho truy vấn đọc. Kết quả: DB CPU 45%, p99 về 9 ms, 0 timeout. Bài học: pool lớn không mua được throughput, chỉ mua thêm tranh chấp.
+
+### Tóm lại 3 ý
+- Pool quá lớn phản tác dụng vì DB chạy song song theo số vCPU; dùng định luật Little để tính pool nhỏ.
+- Phải chia ngân sách kết nối cho cả cụm, không để tổng pool vượt khả năng của DB.
+- Đo pg_stat_activity và hikaricp.connections.pending; chỉ tăng pool khi đã chắc DB còn dư tài nguyên.
+
+### Trả lời mẫu khi phỏng vấn
+"Đặt pool 200 cho chắc là phản tác dụng vì DB chạy song song theo số vCPU; quá nhiều kết nối làm mỗi truy vấn chậm do tranh CPU và context switch, rồi request giữ kết nối lâu hơn, pool cạn, lại tăng pool — vòng xoáy. Dùng định luật Little: số kết nối đồng thời bằng throughput nhân thời gian truy vấn, nên pool thường chỉ 10-30 mỗi pod. Trong microservices phải chia ngân sách kết nối cho cả cụm: tổng pool nhỏ hơn hoặc bằng khả năng chịu của DB, nếu không sẽ quá tải DB dù mỗi service thấy pool của mình chưa cạn. Cấu hình thêm connectionTimeout để fail nhanh, maxLifetime nhỏ hơn timeout của DB, idle-in-transaction để tránh giữ kết nối. Kinh nghiệm: đo pg_stat_activity và hikaricp.connections.pending trước khi tăng pool; giảm pool thường làm latency giảm."
+
+> Senior tip: maximumPoolSize mặc định của HikariCP là 10, con số này gần đúng hơn 200 cho chắc trong hầu hết trường hợp. Hãy coi pool là tài nguyên dùng chung của cả cụm: 6 service nhân pool lớn bằng DB quá tải. Đo bằng pg_stat_activity và định luật Little trước, chỉ tăng pool khi đã chắc DB còn dư tài nguyên.`,
+  follow: [
+    'Định luật Little áp dụng thế nào khi truy vấn có cả đọc và ghi?',
+    'Tổng pool cả cụm nên chia theo lưu lượng hay đều cho mỗi service?',
+    'Read replica có giải quyết được pool cạn không?'
+  ],
+  tags: ['HikariCP', 'connection pool', 'Little law', 'PostgreSQL', 'capacity'],
+},
 );
 
