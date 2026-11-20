@@ -8295,4 +8295,664 @@ Tôi không thuyết phục bằng lý luận "test là cần thiết", mà bằ
   ],
   tags: ['shift-left', 'quality-gate', 'defect-escape', 'QA', 'leadership', 'pilot'],
 },
+{
+  id: 'behavioral-064',
+  topic: 'behavioral',
+  level: 'lead',
+  q: 'Khi yêu cầu sprint còn mơ hồ nhưng deadline đã bị ép, bạn estimate và lập kế hoạch thế nào để team không bị cháy và stakeholder vẫn tin tưởng?',
+  a: `**Tóm tắt:** Estimate khi chưa rõ yêu cầu không phải là "đoán số", mà là **công khai sự không chắc chắn** và xây dựng kế hoạch có **buffer có cơ sở**. Tôi dùng **"range estimate" (khoảng tin cậy)** thay vì con số đơn lẻ, tách scope thành "must-have / should-have / could-have", và cam kết giao phần cốt lõi trước — phần còn lại thương lượng tiếp theo sprint.
+
+### Interviewer muốn nghe gì (tín hiệu lead)
+- **Không hứa đơn lẻ**: nói "2–3 tuần" thay vì "2 tuần", và giải thích biến số nào làm thay đổi.
+- **Phân tầng rủi ro**: tách scope theo độ ưu tiên, có **walking skeleton** (luồng end-to-end chạy được) sớm nhất có thể.
+- **Giao tiếp sớm**: kéo stakeholder vào để loại bỏ giả định, không tự ngồi tính toán một mình.
+- **Buffer minh bạch**: 20% cho rủi ro kỹ thuật, 10% cho dependency bên ngoài — ghi rõ trong kế hoạch, không giấu.
+- **Điều chỉnh tuần một**: sprint planning không phải là "định giá cuối cùng", mà là điểm khởi đầu để inspect & adapt hàng tuần.
+
+### Khungestimate thực tế (3 bước)
+
+1. **Discovery workshop (30–60 phút)**: ngồi với PO/BA/stakeholder, vẽ **user story map**, hỏi từng màn hình: "nếu chỉ làm được một chuyện thì chuyện nào quan trọng nhất?". Mục đích: tìm **MVP trong sprint** (walking skeleton).
+2. **Range estimate bằng Affinity Estimation + Planning Poker**: team nhóm story theo kích thước (XS/S/M/L/XL), sau đó poker cho nhóm M/L. Kết quả: **min – max** (ví dụ 18–26 story points) thay vì số chính xác.
+3. **Sprint plan có buffer**: capacity thực tế = velocity trung bình 3 sprint gần nhất × 0.8 (trừ vắng mặt, meeting). Kéo story vào sprint theo thứ tự ưu tiên cho đến **80% capacity**, 20% để dành cho rủi ro và bug khẩn.
+
+### Code minh hoạ: tính capacity sprint an toàn
+~~~java
+public record SprintCapacity(
+    double avgVelocity,           // velocity TB 3 sprint gần nhất
+    double focusFactor,           // 0.6–0.8 tùy độ ổn định team
+    int teamSize,
+    int daysOff,                  // ngày nghỉ, off-site, meeting bắt buộc
+    double riskBufferPercent      // 0.15–0.25
+) {
+    public int committedPoints() {
+        int workDays = 10 - daysOff;                    // 2 tuần = 10 ngày làm việc
+        double raw = avgVelocity * focusFactor * workDays / 10.0; // scale về 10 ngày
+        double withBuffer = raw * (1 - riskBufferPercent);
+        return (int) Math.round(withBuffer);            // làm tròn xuống để an toàn
+    }
+}
+
+// Ví dụ: velocity TB = 42, focus = 0.75, 1 người nghỉ 2 ngày, buffer 20%
+// raw = 42 * 0.75 * 8/10 = 25.2, withBuffer = 25.2 * 0.8 = 20.16 -> commit 20 pts
+~~~
+
+### Bảng trade-off: estimate chi tiết vs estimate nhanh
+
+| Cách làm | Ưu điểm | Nhược điểm | Dùng khi |
+|---|---|---|---|
+| Estimate chi tiết từng task (giờ) | Dễ theo dõi, phát hiện sớm | Tốn 2–4h, dễ sai vì chưa rõ yêu cầu | Scope đã ổn định, team trưởng thành |
+| **Range estimate (story points)** | Nhanh, minh bạch rủi ro, dễ thương lượng | Cần PO hiểu points ≠ giờ | **Yêu cầu mơ hồ, deadline gấp** |
+| No estimate (#NoEstimates) | Tiết kiệm thời gian, tập trung giao giá trị | Khó cam kết deadline với business | Team rất ổn định, flow liên tục |
+
+### Bẫy thường gặp
+- **Đưa ra con số duy nhất** ("2 tuần") để PO vui → khi trễ, PO mất niềm tin và team bị ép thêm.
+- **Buffer giấu kín** (gán task 8h nhưng thực tế 5h) → sau này không ai tin estimate của team.
+- **Estimate một mình** (lead ngồi tính) → team không chủ động, không hiểu rủi ro, không cam kết.
+- **Không có walking skeleton** → cuối sprint có nhiều task 90% done nhưng không có luồng nào chạy hết.
+
+### Ví dụ đời thực
+Dự án tích hợp cổng thanh toán mới (VNPAY + MoMo), PO yêu cầu release trong 3 sprint (6 tuần) để kịp chiến dịch Tết. Yêu cầu chi tiết chỉ có 40% (còn lại "sẽ bàn sau"). Tôi tổ chức workshop 1 giờ với PO + BA + team: vẽ user story map, xác định walking skeleton là "tạo đơn → gọi VNPAY → callback thành công → cập nhật trạng thái". Team poker: walking skeleton = 13 pts (range 11–15), toàn bộ scope ước lượng 55–75 pts. Velocity TB team = 38 pts/sprint, focus factor 0.7 (có 1 junior), buffer 20% → commit an toàn = 38 × 0.7 × 0.8 ≈ 21 pts/sprint. Kế hoạch: Sprint 1 commit walking skeleton (13 pts) + 2 story phụ (8 pts) = 21 pts. Sprint 2–3 kéo thêm theo ưu tiên, review hàng tuần với PO. Kết quả: walking skeleton xong sớm 3 ngày so với dự kiến, demo cho stakeholder thấy luồng tiền chạy được → PO yên tâm duyệt ngân sách mở rộng scope. Cuối 3 sprint giao được 52 pts (trong khoảng 55–75), release kịp Tết, 0 bug P1.
+
+### Khung trả lời STAR
+- **S (Situation)**: nêu bối cảnh có số — "tích hợp VNPAY/MoMo, 3 sprint, yêu cầu mới rõ 40%, deadline Tết, team 5 người velocity 38 pts".
+- **T (Task)**: nói rõ vai trò — "tôi là người estimate và bảo vệ capacity, không phải người hứa một con số cho PO vui".
+- **A (Action)**: 3 hành động có tên gọi — workshop story map, range estimate 18–26 pts, walking skeleton, capacity = velocity × focus factor × buffer, cam kết 80% capacity.
+- **R (Result)**: số trước/sau — "giao 52 pts trong khoảng 55–75, skeleton sớm 3 ngày, 0 bug P1, PO duyệt mở rộng scope".
+
+### Nếu bạn chưa từng làm lead chính thức
+**Cách kể trung thực:** "Tôi chưa từng là lead chính thức, nhưng trong vai trò senior dev phụ trách module thanh toán, tôi đã tự estimate cho 3–4 người làm sprint planning thay PO khi PO bận. Tôi dùng range estimate và walking skeleton như trên, kéo stakeholder vào workshop 30 phút để chốt scope cốt lõi. Kết quả sprint đó team giao đúng hạn 18/20 pts, stakeholder hài lòng vì thấy demo sớm. Kinh nghiệm này cho thấy nguyên tắc range estimate + walking skeleton hoạt động ngay cả khi không có chức danh lead."
+
+### Trả lời mẫu khi phỏng vấn
+"Khi yêu cầu mơ hồ và deadline gấp, tôi không đưa ra con số duy nhất mà dùng range estimate (ví dụ 18–26 points) kèm walking skeleton — luồng cốt lõi chạy end-to-end sớm nhất. Tôi tổ chức workshop 30–60 phút với PO và team để vẽ story map, tách scope thành must/should/could, rồi poker cho nhóm lớn. Capacity sprint tôi tính từ velocity trung bình 3 sprint gần nhất nhân focus factor 0.7–0.8, trừ buffer 20% cho rủi ro. Sprint 1 chỉ commit 80% capacity cho walking skeleton + vài story phụ, 20% để dành. Hàng tuần inspect & adapt với PO: scope nào chưa rõ thì loại, scope nào rõ thì kéo vào. Ví dụ thực tế: tích hợp VNPAY/MoMo 3 sprint, yêu cầu mới rõ 40%; walking skeleton xong sớm 3 ngày, demo cho stakeholder thấy tiền chạy được, release kịp Tết với 0 bug P1. PO và team đều tin các con số tiếp theo vì cách estimate minh bạch."
+
+### Câu trả lời yếu thường gặp
+- **Đưa ngay một con số chắc chắn** ("2 tuần") để tỏ ra tự tin → khi trễ, PO mất niềm tin; người chấm coi đó là chưa hiểu rủi ro.
+- **Nói "không thể estimate được" rồi dừng** → bị đánh giá là né trách nhiệm, không đưa ra giải pháp.
+- **Nhận deadline rồi ép team OT** thay vì cắt scope → thiếu tư duy lead, tạo nợ kỹ thuật và burnout.
+- **Estimate một mình, không kéo PO/team vào** → con số không có buy-in, không ai bảo vệ khi bị chất vấn.
+- **Không có buffer và không có walking skeleton** → kế hoạch sụp khi dependency trễ hoặc yêu cầu đổi.
+
+> Senior tip: **Walkthrough sprint plan với PO trước khi bắt đầu** — không chỉ gửi file Excel. 15 phút đi qua từng story, hỏi "story này nếu trễ thì hệ quả gì?" sẽ tiết kiệm hàng giờ tranh luận sau này. PO hiểu rủi ro thì sẽ bảo vệ team khi deadline ép.`,
+  follow: [
+    'Khi PO ép "cho tôi một con số chắc chắn" để báo lên cấp trên, bạn trả lời như thế nào?',
+    'Làm sao xử lý khi walking skeleton xong nhưng stakeholder vẫn không hài lòng vì "chưa đủ tính năng"?',
+    'Nếu giữa sprint phát hiện một dependency bên ngoài trễ 1 tuần, bạn điều chỉnh kế hoạch ra sao?'
+  ],
+  tags: ['estimation', 'sprint-planning', 'agile', 'leadership', 'range-estimate', 'walking-skeleton'],
+},
+{
+  id: 'behavioral-065',
+  topic: 'behavioral',
+  level: 'lead',
+  q: 'Một thành viên trong team làm việc chậm, chất lượng chưa ổn định. Bạn làm 1:1, xây dựng kế hoạch cải thiện (PIP) như thế nào, và khi nào quyết định báo lên quản lý?',
+  a: `**Tóm tắt:** Xử lý thành viên hiệu suất thấp không phải là "truật ra" mà là **có quy trình công bằng, minh bạch, dựa trên số liệu** để cả hai bên đều biết mình đứng đâu. Tôi dùng **3 giai đoạn: chẩn đoán (tuần 1–2) → kế hoạch cải thiện có metrics (tuần 3–8) → quyết định (tuần 9)**. Mọi bước đều ghi chép, có mốc thời gian, và mục tiêu là giúp người đó thành công — nếu không được thì tách biệt cũng là kết quả công bằng.
+
+### Interviewer muốn nghe gì (tín hiệu lead)
+- **Tách biệt nhân cách và hành vi**: không nói "anh ấy lười", mà nói "trung bình 3 story/sprint trong khi team trung bình 8 story, 40% PR bị trả về ≥ 2 lần".
+- **1:1 dựa trên dữ liệu, không phải cảm tính**: mang số liệu cụ thể (cycle time, defect rate, PR size, review turnaround).
+- **PIP có metric đo lường được**: không phải "cố gắng hơn", mà "giảm cycle time từ 5 ngày xuống 3 ngày cho story M", "giảm defect rate từ 15% xuống 5%".
+- **Hỗ trợ thực tế**: pair programming, mentor gán, training, điều chỉnh workload — lead phải đầu tư thời gian.
+- **Quyết định đúng lúc**: đủ dữ liệu, đã hỗ trợ đầy đủ, vẫn không tiến triển → báo lên quản lý kèm hồ sơ hoàn chỉnh.
+
+### Giai đoạn 1: Chẩn đoán (tuần 1–2)
+- Thu thập số liệu 4–6 sprint gần: velocity cá nhân, cycle time, defect escape rate, PR size trung bình, số lần PR bị request changes, tỷ lệ commit vào giờ làm việc vs đêm/cuối tuần.
+- 1:1 riêng tư 45–60 phút: **"Tôi thấy số liệu sau... Tôi muốn hiểu từ góc nhìn của em là gì đang cản em?"** (mở cửa, không buộc tội).
+- Xác định nguyên nhân nhóm: **Kỹ năng (kỹ thuật/miền)**, **Quy trình (unclear req, chờ review, dependency)**, **Năng lực mềm (giao tiếp, ưu tiên, burnout)**, **Môi trường (tooling, CI chậm, meeting quá nhiều)**.
+
+### Giai đoạn 2: Kế hoạch cải thiện (PIP — Performance Improvement Plan, 4–6 tuần)
+
+~~~java
+public record PipPlan(
+    String member,
+    String lead,
+    LocalDate startDate,
+    LocalDate endDate,              // 4–6 tuần từ start
+    List<PipGoal> goals,            // 2–3 mục tiêu SMART
+    List<String> supportActions,    // những gì lead/công ty cung cấp
+    String checkInCadence,          // "Tuần 1 lần, 30 phút"
+    String escalationTrigger        // "Nếu 2/3 mục tiêu không đạt ở tuần 4"
+) {}
+
+public record PipGoal(
+    String description,             // "Giảm cycle time story M từ 5 ngày xuống 3 ngày"
+    String metric,                  // "cycle_time_p50_days"
+    double baseline,                // 5.0
+    double target,                  // 3.0
+    String measurementWindow        // "Tuần 3–6, đo trung vị trên ≥ 5 story"
+) {}
+
+// Ví dụ goals:
+// 1. Cycle time p50 cho story M: baseline 5.0 ngày → target ≤ 3.0 ngày (tuần 3–6, ≥ 5 story)
+// 2. Defect escape rate: baseline 15% → target ≤ 5% (tuần 2–6, đo trên production)
+// 3. PR first-time pass rate: baseline 40% → target ≥ 70% (tuần 2–6, ≥ 8 PR)
+~~~
+
+**Support actions bắt buộc:** gán mentor senior (pair 2h/tuần), giảm WIP limit cá nhân (từ 3 xuống 1 story), đào tạo ngắn (2h internal workshop về testing/debug), điều chỉnh meeting không cần thiết.
+
+### Giai đoạn 3: Quyết định (tuần 7–8)
+- **Đạt ≥ 2/3 mục tiêu** → công nhận nỗ lực, thoát PIP, tiếp tục theo dõi nhẹ (monthly check-in).
+- **Đạt 1/3 mục tiêu** → kéo dài 2 tuần, điều chỉnh support, nếu vẫn không đạt → báo lên.
+- **Đạt 0/3 mục tiêu** → báo lên quản lý HR/EM kèm hồ sơ: số liệu baseline, PIP plan, check-in notes, bằng chứng đã hỗ trợ.
+
+### Bảng trade-off: PIP nhanh vs PIP chậm
+
+| Cách | Ưu điểm | Nhược điểm | Dùng khi |
+|---|---|---|---|
+| PIP 2 tuần, metric cứng | Nhanh biết kết quả, ít tốn tài nguyên | Áp lực lớn, dễ gây stress, có thể mất người có tiềm năng | Vị trí junior, yêu cầu kỹ thuật rõ ràng |
+| **PIP 4–6 tuần, metric + support** | Công bằng, hỗ trợ thực tế, giữ được người tốt | Tốn thời gian lead, mentor | **Senior/mid, nguyên nhân phức tạp** |
+| Không PIP, chuyển việc ngay | Nhanh giải tỏa team | Rủi ro kiện, mất uy tín, team sợ | Chỉ khi vi phạm đạo đức/an toàn |
+
+### Bẫy thường gặp
+- **PIP chỉ có mục tiêu, không có support action** → "cố gắng hơn" không phải kế hoạch.
+- **Metric không đo được** ("cải thiện thái độ") → chủ quan, dẫn đến tranh chấp.
+- **Lead không check-in đều đặn** → PIP thành văn kiện, không có hiệu lực.
+- **Báo lên quản lý quá sớm** (tuần 2–3) chưa hỗ trợ đủ → HR từ chối, team thấy lead bỏ cuộc.
+- **Báo lên quá muộn** (3 tháng) → team kiệt sức, người khác phải gồng, uy tín lead giảm.
+
+### Ví dụ đời thực
+Một mid-level dev (2 năm kinh nghiệm) velocity trung bình 3 story points/sprint (team TB 9), cycle time p50 = 6.2 ngày cho story M, defect escape rate 18%, 60% PR bị request changes ≥ 2 lần. Giai đoạn 1: 1:1 phát hiện anh ấy ngại hỏi khi không hiểu requirement, thường tự mò code dẫn sai hướng, và không biết dùng debugger hiệu quả. Giai đoạn 2: PIP 6 tuần, 3 mục tiêu: (1) cycle time ≤ 3.5 ngày (baseline 6.2), (2) defect escape ≤ 6% (baseline 18%), (3) PR first-pass ≥ 70% (baseline 40%). Support: gán senior mentor pair 3h/tuần, workshop debugging 2h, giảm WIP xuống 1 story, lead review PR trong 2h. Kết quả tuần 6: cycle time 3.8 ngày, defect 7%, first-pass 68% — gần đạt 2/3 mục tiêu. Kéo dài 2 tuần: tuần 8 đạt đủ 3 mục tiêu. Anh ấy thoát PIP, 6 tháng sau trở thành senior, velocity ổn định 11 pts/sprint.
+
+### Khung trả lời STAR
+- **S (Situation)**: "mid-level 2 năm, velocity 3 so với team 9, defect escape 18%, 60% PR bị trả về từ 2 lần trở lên".
+- **T (Task)**: "tôi chịu trách nhiệm giúp người đó đạt kỳ vọng, hoặc ra quyết định công bằng cho team — không để cả team âm thầm gánh".
+- **A (Action)**: chẩn đoán 1–2 tuần, 1:1 dựa trên số liệu, PIP 6 tuần với 3 mục tiêu SMART và support cụ thể (mentor, giảm WIP, training), check-in hàng tuần.
+- **R (Result)**: "tuần 6 đạt 2/3 mục tiêu, tuần 8 đạt đủ; 6 tháng sau lên senior; hồ sơ minh bạch nên không có tranh chấp".
+
+### Nếu bạn chưa từng làm lead chính thức
+**Cách kể trung thực:** "Tôi chưa từng ký PIP chính thức, nhưng từng mentor một junior bị performance thấp trong 2 tháng. Tôi dùng cách tương tự: thu thập số liệu (velocity, bug rate, PR review time), 1:1 tâm sự tìm nguyên nhân (anh ấy sợ hỏi, tự code mò), gán pair programming 2h/tuần, đặt mục tiêu cụ thể: giảm bug từ 40% xuống 15%, cycle time từ 5 ngày xuống 3 ngày. Sau 6 tuần anh ấy đạt mục tiêu, 3 tháng sau được đánh giá vượt kỳ vọng. Kinh nghiệm này cho thấy quy trình có dữ liệu + hỗ trợ thực tế hiệu quả hơn phê phán."
+
+### Trả lời mẫu khi phỏng vấn
+"Khi thấy thành viên chậm hoặc chất lượng thấp, tôi không vội kết luận mà thu thập số liệu 4–6 sprint: velocity, cycle time, defect rate, PR quality. 1:1 riêng tư 45 phút, đưa số liệu ra bàn và hỏi góc nhìn của họ để tìm nguyên nhân gốc (kỹ năng, quy trình, giao tiếp, môi trường). Nếu là kỹ năng hoặc quy trình, tôi xây PIP 4–6 tuần với 2–3 mục tiêu SMART có metric đo được (ví dụ cycle time p50 từ 5 xuống 3 ngày, defect từ 15% xuống 5%), kèm support: mentor pair programming, giảm WIP, training, lead review PR ưu tiên. Check-in 30 phút mỗi tuần và ghi chép. Tuần 7–8 ra quyết định: đạt từ 2/3 mục tiêu thì thoát PIP; 0–1/3 sau khi đã hỗ trợ đầy đủ thì báo quản lý kèm hồ sơ. Một junior tôi mentor theo cách này đi từ velocity 3 pts, bug 18% lên 11 pts, bug 5% sau 2 tháng."
+
+### Câu trả lời yếu thường gặp
+- **Nói chung chung "em cố gắng hơn"** → không đo được, không có bằng chứng, dễ thành tranh chấp.
+- **Bỏ qua, để team tự gánh** → công bằng giả, team mất niềm tin, sau này càng khó xử lý.
+- **Báo quản lý ngay tuần 1–2** → bị coi là chưa hỗ trợ đủ; HR trả lại hồ sơ và mất cơ hội giúp người đó.
+- **PIP như một bản án, không có support action** → người đó stress và nghỉ, cả team sợ.
+- **So sánh công khai hoặc nói "anh lười"** → sai về HR và phá vỡ an toàn tâm lý.
+
+> Senior tip: **PIP không phải để sa thải, mà để cho cơ hội cuối cùng có số liệu**. Nếu lead vào PIP với tâm thế "chắc chắn sa thải", người đó sẽ cảm nhận được và không bao giờ thành công. Hãy vào với tâm thế "tôi sẽ làm mọi thứ để em qua được", và số liệu sẽ nói lên sự thật.`,
+  follow: [
+    'Làm sao phân biệt giữa "chậm do thiếu kỹ năng" và "chậm do burnout/quá tải meeting"?',
+    'Nếu thành viên từ chối tham gia PIP hoặc nói "tôi không cần", bạn xử lý thế nào?',
+    'Khi báo lên quản lý, bạn trình bày hồ sơ gì để HR/EM dễ ra quyết định?'
+  ],
+  tags: ['performance-improvement', 'PIP', '1on1', 'leadership', 'mentoring', 'underperformance'],
+},
+{
+  id: 'behavioral-066',
+  topic: 'behavioral',
+  level: 'lead',
+  q: 'Vì sao lead tự code hết là sai? Bạn chọn việc giao cho junior như thế nào, và làm sao để đảm bảo việc được giao vẫn đạt chất lượng?',
+  a: `**Tóm tắt:** Lead tự code hết là **lỗi quản trị phổ biến nhất** khi mới chuyển từ senior dev sang lead. Việc của lead không phải là "viết code tốt nhất" mà là **"tạo ra team viết code tốt"**. Delegation đúng = chọn việc phù hợp + định nghĩa rõ kỳ vọng + hỗ trợ đủ + kiểm tra theo milestone — không phải "ném việc và quên".
+
+### Interviewer muốn nghe gì (tín hiệu lead)
+- **Hiểu sự khác biệt output vs leverage**: 1 giờ lead code = 1 feature; 1 giờ lead mentor/review/kiến trúc = 5–10 feature của team trong dài hạn.
+- **Chọn việc theo ma trận "độ phức tạp – độ rủi ro – cơ hội học"**: junior làm được gì, làm gì sẽ học được, rủi ro bao nhiêu.
+- **Định nghĩa "Definition of Done" cho việc giao**: không chỉ "xong code", mà "có test, pass CI, review xong, deploy staging".
+- **Check-in theo milestone, không theo giờ**: tin tưởng nhưng xác minh — không micromanage.
+- **Chịu trách nhiệm cuối cùng**: việc giao sai, chất lượng kém → lead chịu trách nhiệm, không đổ lỗi cho junior.
+
+### Ma trận chọn việc giao (Delegation Matrix)
+
+| Loại việc | Độ phức tạp | Rủi ro | Ai làm | Cách lead hỗ trợ |
+|---|---|---|---|---|
+| Bug fix rõ nguyên nhân | Thấp | Thấp | Junior | Chỉ định file, link PR tương tự, review PR trong 2h |
+| Feature nhỏ, scope rõ | Thấp–Trung bình | Thấp | Junior/Mid | Viết spec 1 trang, walkthrough 15 phút, check-in giữa sprint |
+| Refactor nội bộ (có test) | Trung bình | Thấp | Mid | Đồng ý approach trước, review thiết kế, pair 1h nếu cần |
+| Tích hợp API bên ngoài | Trung bình | Trung bình | Mid/Senior | Lead làm spike trước, định nghĩa interface, junior implement |
+| **Kiến trúc mới, POC, decision gánh team** | **Cao** | **Cao** | **Lead + Senior** | **Lead chủ trì, junior observe/contribute nhỏ** |
+| **Hotfix production P1** | **Cao** | **Rất cao** | **Lead/Senior nhất** | **Lead trực tiếp hoặc pair với senior** |
+
+Nguyên tắc: **Junior làm việc "có lối thoát" (có test, có spec, có người hỏi) — không giao việc "mò mẫm rủi ro cao".**
+
+### Quy trình giao việc 4 bước (Delegation Framework)
+
+1. **Chuẩn bị (Before)**: Viết **Task Brief 1 trang** — mục tiêu, acceptance criteria, file liên quan, rủi ro đã biết, definition of done, deadline, người hỗ trợ (mentor).
+2. **Walkthrough (Handoff)**: 15–30 phút ngồi cùng: giải thích context, vẽ sơ đồ luồng, chỉ ra "chỗ dễ sai", hỏi "em hiểu chưa, chỗ nào lo?".
+3. **Check-in (During)**: Milestone-based — ngày 1 (khởi động), giữa sprint (progress), trước PR (pre-review). Không hỏi "xong chưa", mà hỏi "gần đây gặp khó khăn gì, cần giúp gì?".
+4. **Retro (After)**: PR merged → 1:1 10 phút: "Gì đi tốt? Gì chưa? Lần sau em sẽ làm khác như thế nào?" — đây mới là lúc junior thực sự học.
+
+### Code minh hoạ: Task Brief template
+~~~java
+public record TaskBrief(
+    String taskId,
+    String title,
+    String objective,               // "Tại sao task này quan trọng?"
+    List<String> acceptanceCriteria,// ["API trả 201", "Validation email", "Test coverage ≥ 80%"]
+    List<String> relatedFiles,      // ["OrderController.java", "OrderService.java"]
+    List<String> knownRisks,        // ["VNPAY sandbox timeout 30s", "Idempotency key trùng"]
+    String definitionOfDone,        // "Code + Unit test + Integration test + PR approved + Deploy staging"
+    LocalDate deadline,
+    String mentor,                  // "Anh Tuấn (senior)"
+    String leadNotes                // "Dùng OrderBuilder trong test, đừng hardcode JSON"
+) {}
+~~~
+
+### Bảng trade-off: Delegate nhiều vs Delegate ít
+
+| Cách | Ưu điểm | Nhược điểm | Dùng khi |
+|---|---|---|---|
+| Delegate hầu hết, lead chỉ review | Team tự chủ nhanh, lead rảnh làm strategy | Rủi ro quality, junior stress, lead mất touch code | Team senior, ổn định, domain quen |
+| **Delegate có chọn lọc + support mạnh** | **Cân bằng: junior học, quality giữ, lead vẫn hiểu code** | **Tốn thời gian lead (mentor, review, walkthrough)** | **Team mixed, domain mới, lead mới** |
+| Lead code critical path, delegate rest | Chắc chắn quality, lead nắm kiến trúc | Lead thành bottleneck, junior không lớn | Deadline gấp, P1, team rất non |
+
+### Bẫy thường gặp
+- **"Ném việc" (dump and run)**: giao xong không check-in, không mentor → junior mò mẫm, sai hướng, cuối sprint lead phải viết lại.
+- **Micromanage**: ngồi bên cạnh review từng dòng code → junior không tự chủ, lead mất thời gian.
+- **Giao việc quá lớn, không chia nhỏ**: junior bị overwhelmed, progress không nhìn thấy.
+- **Không có Definition of Done rõ** → junior nghĩ "build pass là xong", lead kỳ vọng "test + doc + staging".
+- **Lead không bao giờ code** → mất cảm giác codebase, review thành lời suông, team mất nể.
+
+### Ví dụ đời thực
+Team 6 người (1 lead, 2 senior, 2 mid, 1 junior). Lead mới nhận team, temptation là tự viết module thanh toán quan trọng (3 tuần). Thay vào đó: lead chia module thành 5 task con, junior nhận task "VNPAY callback handler" (spec rõ, có test case mẫu, mentor senior anh Tuấn). Lead viết Task Brief, walkthrough 20 phút, check-in ngày 3 và ngày 7. Junior hoàn thành ngày 10, PR có 12 unit test + 3 integration test, senior review approve, deploy staging thành công. Lead dùng 3 tuần đó để: (1) thiết kế migration DB cho phase 2, (2) setup contract testing giữa order-payment, (3) mentor mid-level lên senior. Kết quả: junior tự tin nhận task lớn hơn sau đó, team velocity tăng 15% trong 2 tháng, lead không thành bottleneck.
+
+### Khung trả lời STAR
+- **S (Situation)**: "team 6 người, module thanh toán 3 tuần, tôi mới nhận team, có 1 junior".
+- **T (Task)**: "vừa giao được việc, vừa giúp junior lớn, vừa giữ chất lượng — không biến mình thành bottleneck".
+- **A (Action)**: ma trận chọn việc, Task Brief 1 trang, walkthrough 20 phút, check-in ngày 3 và ngày 7, retro sau merge; giữ lại kiến trúc và hotfix P1.
+- **R (Result)**: "junior xong ngày 10 với 12 unit test + 3 integration test; lead làm migration DB và contract testing; velocity +15% sau 2 tháng".
+
+### Nếu bạn chưa từng làm lead chính thức
+**Cách kể trung thực:** "Tôi chưa từng là lead chính thức, nhưng khi là senior dev trong team 5 người, tôi thường tự giao việc cho 2 junior. Tôi dùng cách tương tự: viết spec 1 trang, walkthrough 15 phút, gán mentor (thường là chính tôi hoặc senior khác), check-in giữa sprint. Một junior tôi giao task 'refactor validation logic' — ban đầu anh ấy ngại, nhưng sau walkthrough và pair 1h, anh ấy làm xong sớm 2 ngày, PR quality cao. Tôi học được: junior không cần task dễ, junior cần task **có context rõ, có người hỏi, có definition done rõ**."
+
+### Trả lời mẫu khi phỏng vấn
+"Lead tự code hết sai vì leverage của lead là qua team, không qua bàn tay. 1 giờ lead mentor = 5–10 giờ output của team. Tôi chọn việc giao theo ma trận: junior nhận bug fix, feature nhỏ có spec rõ, refactor có test — những việc có 'lối thoát' (test, mentor, spec). Việc kiến trúc, POC, hotfix P1 thì lead/senior làm. Quy trình 4 bước: Task Brief 1 trang (mục tiêu, acceptance criteria, risk, DoD), walkthrough 15–30 phút, check-in milestone-based (ngày 1, giữa, trước PR), retro sau khi merge. Không micromanage, không ném việc. Ví dụ: junior nhận VNPAY callback, có spec, mentor senior, check-in 2 lần, xong PR quality cao, lead dùng thời gian làm migration DB và contract testing. Junior sau đó tự tin nhận task lớn hơn, team velocity tăng 15%. Sau 2 tháng, junior nhận thêm 2 feature độc lập và lead không còn là bottleneck."
+
+### Câu trả lời yếu thường gặp
+- **"Tôi code nhanh hơn nên tôi tự làm"** → không có tư duy leverage, lead thành bottleneck.
+- **Giao xong không check-in (dump and run)** → junior lạc hướng, cuối sprint lead phải viết lại.
+- **Micromanage từng dòng code** → junior không tự chủ, lead kiệt sức.
+- **Giao việc kiến trúc/P1 cho junior để "cho em cơ hội"** → rủi ro production và mất niềm tin.
+- **Không định nghĩa Definition of Done** → tranh cãi "xong" nghĩa là gì.
+
+> Senior tip: **Hãy code ít nhất 20% thời gian** — không phải để "giữ tay", mà để nắm codebase, review mới có ngữ cảnh, và team mới nể. Nhưng 20% đó hãy chọn: POC, spike, hotfix, refactor core — những việc leverage cao nhất cho kiến trúc, không phải feature thông thường.`,
+  follow: [
+    'Làm sao xử lý khi junior giao việc xong nhưng code không đạt chuẩn, deadline đã gần?',
+    'Bạn có bao giờ delegate một việc mà bạn tự biết mình làm nhanh hơn gấp 3 lần? Khi nào nên giữ lại, khi nào nên giao?',
+    'Junior sợ nhận việc mới vì sợ sai. Bạn tạo an toàn tâm lý (psychological safety) như thế nào?'
+  ],
+  tags: ['delegation', 'leadership', 'mentoring', 'task-brief', 'team-growth'],
+},
+{
+  id: 'behavioral-067',
+  topic: 'behavioral',
+  level: 'senior',
+  q: 'Bạn xây dựng văn hóa code review và coding convention cho team mới như thế nào? Từ zero đến team tự vận hành được.',
+  a: `**Tóm tắt:** Văn hóa code review không tự sinh ra — nó được **thiết kế, truyền cảm hứng, và củng cố mỗi ngày**. Với team mới, tôi dùng chiến lược **"3 tháng, 3 giai đoạn"**: tháng 1 — **chuẩn hóa & công cụ hóa** (formatter, linter, checklist); tháng 2 — **kỹ năng & thói quen** (workshop, pair review, mẫu comment tốt); tháng 3 — **tự vận hành** (bỏ gánh cho team, lead chỉ can thiệp khi cần).
+
+### Interviewer muốn nghe gì (tín hiệu senior/lead)
+- **Không bắt đầu bằng "ai review ai"**, mà bắt đầu bằng **"công cụ lo phần máy móc, con người lo phần tư duy"**.
+- **Checklist review có mức độ ưu tiên** (blocking / should / nit / question) — ai đọc cũng biết cái nào chặn merge.
+- **Định nghĩa "Good Review" rõ ràng**: review xong phải thấy được ý thiết kế, bắt được bug tiềm ẩn, học được gì đó.
+- **Metrics theo dõi**: first review response time, PR cycle time, review depth (comment/PR), rework rate.
+- **Khen công khai, sửa riêng tư** — xây dựng tâm lý an toàn.
+
+### Giai đoạn 1: Tháng 1 — Chuẩn hóa & Công cụ hóa (Foundation)
+
+**1.1 Formatter & Linter bắt buộc trong CI (không thương lượng)**
+~~~yaml
+# .github/workflows/ci.yml
+- name: Check format
+  run: ./mvnw spotless:check   # hoặc ktlint, prettier, gofmt
+- name: Static analysis
+  run: ./mvnw spotbugs:check checkstyle:check
+~~~
+
+**1.2 Coding Convention 1 trang (Markdown trong repo)**
+- Naming: class, method, variable, constant, package, test.
+- Import order: static, java.*, javax.*, third-party, project.
+- **Bắt buộc**: javadoc cho public API, **không** javadoc cho private/internal.
+- **Cấm**: {{System.out}}, {{printStackTrace}}, {{TODO}} không có ticket, và {{catch}} Exception rỗng (bắt lỗi rồi bỏ qua).
+- **Optional**: Lombok {{@Data}} vs {{@Getter}}/{{@Setter}}, record vs class.
+
+**1.3 PR Template + Review Checklist**
+~~~markdown
+## Mô tả thay đổi
+## Loại thay đổi: [ ] Bug fix [ ] Feature [ ] Refactor [ ] Docs
+## Checklist tác giả:
+- [ ] Test coverage ≥ 80% cho logic mới
+- [ ] Không có {{System.out}} / {{printStackTrace}}
+- [ ] Đã tự review diff trước khi assign
+## Checklist reviewer (mức độ):
+- 🔴 **BLOCKING**: logic sai, security, breaking API, N+1, transaction bao I/O
+- 🟡 **SHOULD**: naming, abstraction leak, test thiếu case edge, performance
+- 🔵 **NIT**: format, typo, comment phrasing (không chặn merge)
+- ❓ **QUESTION**: không hiểu, cần giải thích thêm
+~~~
+
+### Giai đoạn 2: Tháng 2 — Kỹ năng & Thói quen (Skill Building)
+
+**2.1 Workshop "Good Review" (2h, toàn team)**
+- Demo PR thật: review trước/sau, phân tích comment tốt/xấu.
+- **Bài tập**: mỗi người review 1 PR mẫu, so sánh với review của lead.
+- **Nguyên tắc comment tốt**: "Ở đây N+1 query (100 bản ghi = 101 round-trip), gợi ý dùng {{IN}} + map" — **có tại sao + hướng sửa**.
+
+**2.2 Pair Review (Buddy System)**
+- Cặp junior + senior, review cùng 1 PR, thảo luận trước khi post comment.
+- Junior học cách đọc diff, senior học cách giải thích không phải ra lệnh.
+
+**2.3 Mẫu comment chuẩn (Comment Templates)**
+~~~text
+🔴 BLOCKING: Transaction bao quanh HTTP call ra ngoài (paymentGateway.charge()) — nếu đối tác chậm 30s, connection pool cạn. Tách ra khỏi @Transactional hoặc dùng async compensation.
+🟡 SHOULD: Method {{calculateFee}} 45 dòng, 3 level nested if. Gợi ý tách strategy pattern: FeeCalculator interface + implement per region.
+🔵 NIT: Biến {{userList}} nên đặt {{users}} cho đúng convention plural.
+❓ QUESTION: Tại sao dùng {{synchronized}} thay vì {{ConcurrentHashMap}} ở đây?
+~~~
+
+**2.4 Metrics dashboard (GitHub Insights / Grafana)**
+- First review response time (mục tiêu < 4h làm việc)
+- PR cycle time (mục tiêu < 24h cho PR < 400 dòng)
+- Rework rate (số lần push sau review / tổng PR, mục tiêu < 30%)
+
+### Giai đoạn 3: Tháng 3 — Tự vận hành (Autonomy)
+
+**3.1 Bỏ gánh review cho team**
+- Lead không còn bắt buộc review mọi PR. Mỗi PR cần **2 approve** (trừ hotfix 1 approve).
+- Junior có thể approve PR của senior nếu review đủ chất lượng (đã qua giai đoạn 2).
+
+**3.2 Review Rotation (tuần)**
+- Mỗi tuần 1 người là "Review Captain" — chịu trách nhiệm PR không bị đọng > 24h.
+- Captain không review tất cả, mà **đảm bảo ai đó review** (ping, reassign, tự review nếu cần).
+
+**3.3 Retro review hàng tháng (30 phút)**
+- "PR nào review tốt nhất tháng này? Tại sao?"
+- "Comment nào gây hiểu lầm nhiều nhất? Cải thiện như thế nào?"
+- Cập nhật convention/checklist nếu cần.
+
+### Bảng trade-off: Review gắt gao vs Review nhẹ nhàng
+
+| Cách | Ưu điểm | Nhược điểm | Dùng khi |
+|---|---|---|---|
+| Gắt gao: mọi PR lead review, blocking nhiều | Quality cao, nhất quán | Lead bottleneck, team không tự chủ, chậm | Team mới, domain rủi ro cao (fintech, medical) |
+| **Cân bằng: tooling gắt, human mềm, checklist rõ mức độ** | **Team tự chủ, quality ổn định, lead rảnh strategy** | **Cần 2–3 tháng xây dựng** | **Đa số team production** |
+| Nhẹ nhàng: tự review, merge tự do | Nhanh, team thoải mái | Quality dao động, bug lọt production | Prototype, internal tool, team rất senior |
+
+### Bẫy thường gặp
+- **Convention 50 trang không ai đọc** → viết 1 trang, link chi tiết nếu cần.
+- **Checklist reviewer không có mức độ** → nitpick chặn merge, blocking bị bỏ qua.
+- **Lead review mọi PR** → team không học review, lead burnout.
+- **Không có metric** → không biết có tiến bộ không.
+- **Review chỉ tìm lỗi, không khen** → team sợ tạo PR, PR to, chậm merge.
+
+### Ví dụ đời thực
+Team mới thành lập 7 người (mixed level), không có convention, PR chờ review trung bình 3 ngày, nhiều conflict, bug production 8/tháng. Tháng 1: setup Spotless + Checkstyle + SpotBugs trong CI (fail build nếu vi phạm), convention 1 trang, PR template + checklist 4 mức độ. Tháng 2: workshop 2h, pair review 2 tuần, comment template, dashboard metrics. Tháng 3: rotation captain, 2 approve rule, retro hàng tháng. Kết quả 6 tháng sau: PR cycle time từ 3 ngày xuống 6 giờ, first review response 2.5h, rework rate 22%, bug production 2/tháng, lead không review thường xuyên (chỉ blocking/hotfix), junior tự review approve cho senior.
+
+### Khung trả lời STAR
+- **S (Situation)**: "team mới 7 người, không convention, PR chờ review 3 ngày, bug production 8/tháng".
+- **T (Task)**: "xây văn hóa review để team tự vận hành, không phụ thuộc vào một mình lead".
+- **A (Action)**: tháng 1 công cụ hóa (Spotless/Checkstyle/SpotBugs + checklist 4 mức), tháng 2 workshop + pair review + comment template, tháng 3 rotation captain + 2 approve + retro.
+- **R (Result)**: "PR cycle time từ 3 ngày xuống 6 giờ, bug từ 8 xuống 2/tháng, lead không còn review thường xuyên".
+
+### Nếu bạn chưa từng làm lead chính thức
+**Cách kể trung thực:** "Tôi chưa từng lead team mới từ zero, nhưng khi tham gia team 5 người đang thiếu convention, tôi đã đề xuất và triển khai giai đoạn 1: setup Spotless/Checkstyle trong CI, viết convention 1 trang, PR template với checklist blocking/should/nit. Tôi tự làm 'Review Captain' 1 tháng đầu, review mọi PR theo mẫu comment có tại sao + hướng sửa. Sau 2 tháng, team quen thói quen, tôi nhường quyền cho mọi người tự review, chỉ can thiệp blocking. Kết quả: PR cycle time giảm từ 2 ngày xuống 4h, bug production giảm 60%."
+
+### Trả lời mẫu khi phỏng vấn
+"Xây dựng văn hóa code review cho team mới tôi chia 3 giai đoạn 3 tháng. Tháng 1: công cụ hóa — formatter/linter bắt buộc CI (Spotless, Checkstyle, SpotBugs), convention 1 trang, PR template + checklist 4 mức độ (blocking/should/nit/question) để ai đọc cũng biết cái nào chặn merge. Tháng 2: kỹ năng — workshop 2h demo review tốt/xấu, pair review junior-senior, comment template 'có tại sao + hướng sửa', dashboard metrics (first response < 4h, cycle time < 24h). Tháng 3: tự vận hành — rotation captain đảm bảo PR không đọng, 2 approve rule, junior có thể approve senior, retro hàng tháng cập nhật convention. Kết quả thực tế: team 7 người từ PR chờ 3 ngày, bug 8/tháng xuống cycle time 6h, bug 2/tháng, lead không review thường. Nguyên tắc: tooling lo phần máy, con người lo phần tư duy; khen công khai, sửa riêng tư. Sau 6 tháng, team tự chạy quy trình mà không cần lead nhắc."
+
+### Câu trả lời yếu thường gặp
+- **Chỉ nói "mọi người review kỹ hơn"** → không có công cụ, quy trình và metric, không đo được tiến bộ.
+- **Lead review mọi PR** → bottleneck, team không học được cách review, lead burnout.
+- **Convention 50 trang không ai đọc** → bị coi là quan liêu, không vào được CI.
+- **Không phân mức blocking/should/nit** → nitpick chặn merge, review biến thành xung đột.
+- **Chỉ bắt lỗi, không bao giờ khen** → team sợ tạo PR, PR to và chậm merge.
+
+> Senior tip: **Đừng viết convention trước, hãy setup tooling trước**. Convention mà tooling không enforce sẽ thành "văn kiện". Spotless/Checkstyle/SpotBugs fail build ngay lập tức — team buộc phải tuân thủ, sau đó mới thảo luận exception. 1 trang convention + CI gắt gao > 50 trang convention + CI không có.`,
+  follow: [
+    'Làm sao xử lý khi senior dev từ chối tuân thủ convention mới ("tôi code 10 năm rồi")?',
+    'Nếu team đông (15+ người), rotation captain có hiệu quả không, hay cần chia sub-team?',
+    'Bạn đo lường "chất lượng review" như thế nào ngoài metrics thời gian?'
+  ],
+  tags: ['code-review', 'coding-convention', 'team-culture', 'leadership', 'automation', 'spotless'],
+},
+{
+  id: 'behavioral-068',
+  topic: 'behavioral',
+  level: 'senior',
+  q: 'Bạn onboarding người mới (fresher hoặc junior) để sau 2 tuần họ có thể commit code production được như thế nào?',
+  a: `**Tóm tắt:** Onboarding 2 tuần không phải là "đọc xong wiki" — là **có lộ trình cụ thể, deliverable mỗi ngày, và một task thật hoàn chỉnh cuối tuần 2**. Mục tiêu: người mới hiểu **architecture, flow, tooling, convention, cách debug, cách tạo PR** — đủ an toàn để ship code production có review.
+
+### Interviewer muốn nghe gì (tín hiệu senior)
+- **Lộ trình có ngày, có deliverable**, không phải "đọc tài liệu tuỳ hứng".
+- **Buddy system**: 1 người gán chuyên trách (không phải lead), kiểm tra tiến độ hàng ngày.
+- **Hands-on từ ngày 1**: clone, build, run local, debug, tạo PR hello-world ngay tuần 1.
+- **Task thật tuần 2**: bug fix nhỏ hoặc feature nhỏ có spec rõ, có test, có mentor review sát.
+- **Checklist "Ready to ship"**: build pass, test pass, CI xanh, convention tuân thủ, tự review PR trước khi assign.
+
+### Lộ trình 2 tuần (10 ngày làm việc)
+
+#### Tuần 1: Foundation & Hands-on
+| Ngày | Mục tiêu | Deliverable | Buddy check |
+|---|---|---|---|
+| 1 | Môi trường & Kiến trúc tổng quan | Clone repo, {{./mvnw spring-boot:run}} thành công, truy cập localhost, vẽ sơ đồ 5 hộp (controller-service-repo-DB-external) | ✅ Build chạy được |
+| 2 | Codebase walkthrough + Convention | Đọc convention 1 trang, Spotless/Checkstyle config, hiểu PR template, tự fix 1 lint error nhỏ | ✅ Hiểu convention |
+| 3 | **Debugging & Logging** | Chạy debug mode, đặt breakpoint, inspect variable, hiểu log structure (JSON, correlation ID), dùng {{jstack}}/{{jcmd}} cơ bản | ✅ Debug được |
+| 4 | **Test & CI** | Chạy unit test, integration test, hiểu Testcontainers, xem CI pipeline, fix 1 test fail giả | ✅ Test pass local & CI |
+| 5 | **Hello-world PR** | Tạo branch, thêm 1 endpoint {{/health}} hoặc fix typo, tự review diff, tạo PR, pass CI, merge (có thể revert sau) | ✅ PR flow end-to-end |
+
+#### Tuần 2: Task Thật & Autonomy
+| Ngày | Mục tiêu | Deliverable | Buddy check |
+|---|---|---|---|
+| 6 | **Task planning** | Nhận task thật (bug fix nhỏ / feature < 2 story points), cùng buddy viết Task Brief, walkthrough 30 phút | ✅ Hiểu task, có plan |
+| 7-8 | **Implementation** | Viết code + test, commit nhỏ, push thường xuyên, buddy review WIP PR (draft) từng ngày | ✅ Code quality, test coverage |
+| 9 | **PR & Review** | Tạo PR chính thức, tự review theo checklist, assign buddy + 1 người khác, xử lý comment, pass CI | ✅ PR quality, review skill |
+| 10 | **Deploy & Retro** | Deploy staging, smoke test, merge, retro 30 phút: "Gì khó? Gì dễ? Cần cải thiện gì cho onboarding sau?" | ✅ Ship production-ready |
+
+### Code minh hoạ: Onboarding Checklist (trong repo {{ONBOARDING.md}})
+~~~markdown
+# Onboarding Checklist - Tuần 1
+- [ ] Ngày 1: Clone, build, run local, truy cập Swagger/UI, vẽ architecture 5 hộp
+- [ ] Ngày 2: Đọc convention, hiểu PR template, fix 1 lint warning
+- [ ] Ngày 3: Debug breakpoint, inspect variable, đọc log JSON, chạy {{jstack}} pid
+- [ ] Ngày 4: Chạy test (unit + integration), hiểu Testcontainers, xem CI log
+- [ ] Ngày 5: Tạo PR hello-world (endpoint /health hoặc fix typo), pass CI, merge
+
+# Onboarding Checklist - Tuần 2
+- [ ] Ngày 6: Nhận task, viết Task Brief với buddy, walkthrough
+- [ ] Ngày 7-8: Implement + test, commit nhỏ, push daily, buddy review draft PR
+- [ ] Ngày 9: Tạo PR chính, tự review checklist, assign reviewer, pass CI
+- [ ] Ngày 10: Deploy staging, smoke test, merge, retro 30 phút
+
+## Ready to Ship (checklist trước khi merge PR đầu tiên)
+- [ ] {{./mvnw clean verify}} pass local
+- [ ] Test coverage ≥ 80% cho logic mới
+- [ ] Không có Spotless/Checkstyle/SpotBugs violation
+- [ ] Tự review diff: logic đúng? naming đúng? test đủ case edge?
+- [ ] PR description rõ: context, thay đổi, cách test, screenshot/log nếu có
+- [ ] Assign đúng reviewer (buddy + 1 domain expert)
+~~~
+
+### Bảng trade-off: Onboarding nhanh vs Onboarding sâu
+
+| Cách | Ưu điểm | Nhược điểm | Dùng khi |
+|---|---|---|---|
+| **2 tuần có task thật + buddy** | **Ship được, hiểu flow, tự tin, retention cao** | **Cần buddy đầu tư 30–60p/ngày, lead setup trước** | **Team production, hire junior/fresher** |
+| 1 tuần "đọc tài liệu + shadow" | Nhẹ nhàng, ít áp lực | Không hiểu sâu, ship lần đầu vẫn lo, dễ quit | Contractor ngắn hạn, senior hire |
+| 4 tuần training bài bản | Rất chắc chắn, bonding tốt | Tốn resources, chậm tạo giá trị | Enterprise lớn, batch hire 5+ người |
+
+### Bẫy thường gặp
+- **Không có buddy cố định** → người mới hỏi ai cũng được "chờ đã", không ai chịu trách nhiệm tiến độ.
+- **Task tuần 2 quá lớn / mơ hồ** → người mới overwhelmed, code sai hướng, buddy phải viết lại.
+- **Chỉ cho đọc wiki, không hands-on** → ngày 10 vẫn không biết debug, không biết CI chạy đâu.
+- **Buddy là lead** → lead bận, buddy check không đều, người mới ngại hỏi.
+- **Không có "Ready to Ship" checklist** → PR đầu tiên thiếu test, sai convention, chờ review 2 ngày.
+
+### Ví dụ đời thực
+Công ty tuyển 3 fresher Java cùng lúc. Lead thiết kế onboarding 2 tuần như trên, gán 3 mid-level làm buddy (mỗi buddy 1 fresher). Tuần 1: 3 fresher đều chạy được local ngày 1, tạo PR hello-world ngày 5 (2 fix typo, 1 thêm {{/actuator/info}}). Tuần 2: task bug fix "validation email cho phép ký tự đặc biệt" (1 story point). Kết quả: 2/3 fresher merge PR ngày 9, 1 fresher ngày 10 (cần hỗ trợ thêm test). 6 tháng sau: 3 người đều pass probation, 1 đã mentor fresher mới. Chi phí: mỗi buddy ~5h/tuần, lead setup 1 ngày. ROI: onboarding truyền thống 1 tháng, cách này 2 tuần → tiết kiệm 6 tuần người.
+
+### Khung trả lời STAR
+- **S (Situation)**: "3 fresher Java, onboarding truyền thống 1 tháng, chưa ai ship được trong 2 tuần".
+- **T (Task)**: "thiết kế lộ trình để người mới commit production an toàn vào cuối tuần 2".
+- **A (Action)**: 10 ngày có deliverable, buddy là mid-level không phải lead, ngày 5 PR hello-world, tuần 2 bug fix thật + Task Brief + draft PR hằng ngày + Ready to Ship checklist.
+- **R (Result)**: "2/3 merge ngày 9, 1/3 ngày 10; 6 tháng sau đều pass probation; tiết kiệm 6 tuần người so với cách cũ".
+
+### Nếu bạn chưa từng làm lead chính thức
+**Cách kể trung thực:** "Tôi chưa từng quản lý onboarding chính thức, nhưng khi team nhận 2 junior mới, tôi tự nguyện làm buddy cho 1 người. Tôi áp dụng mini-onboarding 5 ngày: ngày 1 build/run, ngày 2 convention, ngày 3 debug, ngày 4 test, ngày 5 PR hello-world. Tuần 2 tôi giao bug fix nhỏ, walkthrough, review draft PR hàng ngày. Junior đó merge PR đầu tiên ngày 9, 3 tháng sau trở thành mid-level. Tôi học được: onboarding cần **deliverable từng ngày**, **buddy không phải lead**, và **task thật tuần 2** — đọc wiki 2 tuần thì không bao giờ ship được."
+
+### Trả lời mẫu khi phỏng vấn
+"Onboarding 2 tuần tôi chia 2 phase: Tuần 1 foundation hands-on (ngày 1 build/run, ngày 2 convention, ngày 3 debug/log, ngày 4 test/CI, ngày 5 PR hello-world). Tuần 2 task thật: nhận bug fix nhỏ, cùng buddy viết Task Brief, implement 2 ngày commit nhỏ push daily, ngày 9 tạo PR tự review checklist, assign reviewer, pass CI, ngày 10 deploy staging, merge, retro. Mọi ngày có deliverable checklist. Buddy là mid-level (không phải lead), check-in 30p/ngày. Có 'Ready to Ship' checklist: build pass, test ≥ 80%, CI xanh, convention tuân thủ, tự review diff. Thực tế: 3 fresher onboarding cùng lúc, 2 người merge ngày 9, 1 người ngày 10, 6 tháng sau đều pass probation. Khác với onboarding truyền thống 'đọc wiki 2 tuần', cách này ship được code production từ ngày 10. Sau một quý, cả 3 đều nhận feature độc lập và lead không phải review từng dòng."
+
+### Câu trả lời yếu thường gặp
+- **Cho đọc wiki 2 tuần rồi giao task lớn** → không có deliverable, người mới overwhelmed và không dám hỏi.
+- **Không có buddy cố định** → hỏi ai cũng "chờ đã", không ai chịu trách nhiệm về tiến độ.
+- **Task tuần 2 là feature mơ hồ** → scope trôi, người mới code sai hướng, buddy phải viết lại.
+- **Buddy là lead** → lead bận, check-in không đều, người mới ngại làm phiền.
+- **Không có Ready to Ship checklist** → PR đầu tiên thiếu test, sai convention, chờ review 2 ngày.
+
+> Senior tip: **Task tuần 2 phải là bug fix thật, không phải exercise**. Bug fix có context rõ (steps to reproduce, expected behavior), scope nhỏ, dễ verify. Feature mới thường scope trôi, requirement đổi, khiến người mới stress. Hãy chọn bug đã có fix direction, để người mới tập trung vào *cách làm* chứ không phải *làm gì*.`,
+  follow: [
+    'Nếu người mới không kịp hoàn thành task tuần 2, bạn extend hay đổi task?',
+    'Làm sao onboarding remote (không gặp mặt) khác so với on-site?',
+    'Buddy bị bệnh/nghỉ giữa chừng, bạn có plan B không?'
+  ],
+  tags: ['onboarding', 'junior', 'buddy-system', 'task-brief', 'team-growth', 'leadership'],
+},
+{
+  id: 'behavioral-069',
+  topic: 'behavioral',
+  level: 'lead',
+  q: '90 ngày đầu tiên khi nhận một team/dự án mới, bạn làm gì để hiểu bối cảnh, xây dựng niềm tin, và tạo ra kết quả có thể đo lường?',
+  a: `**Tóm tắt:** 90 ngày đầu không phải để "chứng minh mình giỏi" — mà để **hiểu hệ thống, hiểu người, hiểu business**, và **giao một chiến lược 6–12 tháng có dữ liệu**. Tôi dùng khung **30-60-90**: 30 ngày *Listen & Learn*, 60 ngày *Assess & Quick Wins*, 90 ngày *Strategy & Commit*. Mỗi giai đoạn có deliverable cụ thể, không chỉ cảm tính.
+
+### Interviewer muốn nghe gì (tín hiệu lead)
+- **Không thay đổi gì lớn trong 30 ngày đầu** — quan sát, hỏi, đo, ghi chép.
+- **Quick wins ở ngày 60** — sửa những thứ đau nhất, dễ thấy, ít rủi ro (CI chậm, flaky test, logging thiếu, deploy thủ công).
+- **Chiến lược ngày 90** — tài liệu 2–3 trang: hiện trạng, mục tiêu 6 tháng, 3–5 initiative ưu tiên, metric thành công, rủi ro, resource cần.
+- **Xây dựng niềm tin** — 1:1 với từng thành viên, stakeholder, PM; nhớ tên, nắm context, follow-up cam kết.
+- **Số liệu mọi nơi** — không nói "team chậm", mà nói "cycle time p50 = 8 ngày, industry benchmark 3 ngày".
+
+### Giai đoạn 1: Ngày 1–30 — Listen & Learn (Hiểu & Được hiểu)
+
+**Deliverable: "Context Doc" (5–8 trang, chia sẻ với manager + team)**
+
+| Lĩnh vực | Câu hỏi khóa | Nguồn dữ liệu | Output |
+|---|---|---|---|
+| **Người** | Ai giỏi gì? Ai muốn lớn? Ai đang stress? Ai định nghỉ? | 1:1 45p × mỗi thành viên, team retro, survey ẩn danh | Team map: skill, aspiration, pain point, trust level |
+| **Kỹ thuật** | Architecture thực tế (không phải vẽ trên giấy), nợ kỹ thuật top 5, test strategy, CI/CD, incident history | Codebase walkthrough, ADR, postmortem, CI dashboard, APM | Tech radar: health score từng module, risk heatmap |
+| **Quy trình** | Sprint như nào? Definition of done? Release như nào? Incident response? | Theo dõi 2 sprint, đọc wiki, hỏi PO/Scrum Master | Process gaps: thiếu gì, dư gì, sai gì |
+| **Sản phẩm/Business** | Doanh thu từ module này? User journey quan trọng? SLA cam kết? OKR quý? | 1:1 PM, Sales, Support, đọc dashboard business | Business context: value stream, SLO, OKR alignment |
+| **Văn hóa** | Team giao tiếp như nào? Conflict resolution? Psychological safety? | Quan sát meeting, retro, chat channel, survey | Culture assessment: strengths, gaps |
+
+**Hành động bắt buộc ngày 1–30:**
+- 1:1 với **tất cả** thành viên (dev, QA, BA, PM) — 45p, câu hỏi: "Điều gì khiến em hài lòng nhất? Đau đầu nhất? Nếu em là lead thì em đổi gì đầu tiên?"
+- 1:1 với **stakeholder chính** (PM, EM, Architect, Sales, Support) — hiểu kỳ vọng, đau đầu, định nghĩa thành công.
+- **Theo dõi 2 sprint** không can thiệp (trừ P1) — xem thực tế planning, review, retro, deploy.
+- **Chạy code local**, debug 1 request end-to-end, deploy staging 1 lần — hiểu tooling, pain point dev.
+
+### Giai đoạn 2: Ngày 31–60 — Assess & Quick Wins (Đánh giá & Thắng nhanh)
+
+**Deliverable: "Quick Win Report" (2 trang) + "Improvement Backlog" (prioritized)**
+
+**Quick wins tiêu chuẩn (dễ, thấy rõ, ít rủi ro, 1–2 tuần/xong):**
+1. **CI/CD**: bỏ test flaky, cache dependency, song song hóa job → giảm 30–50% thời gian CI.
+2. **Logging/Observability**: thêm correlation ID, structured log JSON, alert cho error rate > 1% → MTTR giảm.
+3. **Developer Experience**: setup pre-commit hook (formatter), document run local 1 lệnh, fix flaky integration test.
+4. **Process**: definition of done rõ ràng, PR template, sprint goal bắt buộc, retro action item có owner+deadline.
+5. **Nợ kỹ thuật nhỏ**: xoá code chết, update dependency CVE critical, thêm index DB cho query top 5 chậm.
+
+**Cách chọn quick win:** Ma trận **Impact × Effort × Risk**. Chọn ô **High Impact, Low Effort, Low Risk**. Không chọn high risk (refactor core, đổi kiến trúc) ở giai đoạn này.
+
+**1:1 tuần 2 lần** (giảm từ 1 lần/tuần sau khi đã hiểu team) — focus: "Em thấy thay đổi nào? Cần hỗ trợ gì?"
+
+### Giai đoạn 3: Ngày 61–90 — Strategy & Commit (Chiến lược & Cam kết)
+
+**Deliverable: "Team Strategy 6–12 Months" (2–3 trang, review với EM + PM + Architect, sign-off)**
+
+~~~markdown
+# Team Strategy - [Team Name] - Q3-Q4 2026
+
+## 1. Hiện trạng (Baseline - có số liệu)
+- Cycle time p50: 8.2 ngày (target industry: 3 ngày)
+- Change failure rate: 18% (target: < 5%)
+- MTTR: 45 phút (target: < 15 phút)
+- Test coverage domain: 62% (target: 85%)
+- Team satisfaction (eNPS): +12 (target: +30)
+- Tech debt index (SonarQube): B (target: A)
+
+## 2. Mục tiêu 6 tháng (OKR style)
+O1: Delivery velocity bền vững
+  KR1: Cycle time p50 ≤ 4 ngày (tháng 6)
+  KR2: Change failure rate ≤ 5% (tháng 6)
+  KR3: Sprint predictability (committed/done) ≥ 85%
+
+O2: Chất lượng kỹ thuật & Developer Experience
+  KR1: Domain test coverage ≥ 85%
+  KR2: CI time ≤ 10 phút (PR < 400 dòng)
+  KR3: 0 flaky test trong 4 tuần liên tiếp
+
+O3: Team growth & Retention
+  KR1: eNPS ≥ +30
+  KR2: 2 junior → mid, 1 mid → senior (promotion ready)
+  KR3: 0 regretted attrition
+
+## 3. 5 Initiative ưu tiên (RICE scored)
+1. **Test Strategy Overhaul** (Reach: all, Impact: 5, Confidence: 0.9, Effort: 3) → RICE = 450
+   - Range estimate, contract testing, mutation testing, E2E rationalization
+2. **CI/CD Pipeline Rebuild** (RICE = 380)
+   - Cache, parallel, quality gate, canary deploy, rollback tự động
+3. **Observability Stack** (RICE = 320)
+   - Structured log, distributed trace, SLO-based alert, runbook
+4. **Architecture Modernization: Order Module** (RICE = 280)
+   - Tách domain, event-driven, saga pattern cho thanh toán
+5. **Mentoring & Career Framework** (RICE = 250)
+   - Skill matrix, 1:1 cadence, learning budget, internal tech talk
+
+## 4. Rủi ro & Mitigation
+| Rủi ro | Xác suất | Tác động | Mitigation |
+|---|---|---|---|
+| Key person nghỉ | Trung bình | Cao | Cross-training, documentation, hiring buffer |
+| Business đổi priority liên tục | Cao | Trung bình | Quarterly planning lock, sprint goal bảo vệ |
+| Legacy migration rủi ro cao | Trung bình | Cao | Strangler fig, feature flag, canary, rollback plan |
+
+## 5. Resource cần
+- 1 senior dev thêm (hiring plan Q3)
+- Budget training: 500 USD/người/năm
+- Tooling: Datadog APM upgrade, GitHub Advanced Security
+~~~
+
+### Bảng trade-off: 90 ngày hành động vs 90 ngày quan sát
+
+| Cách | Ưu điểm | Nhược điểm | Dùng khi |
+|---|---|---|---|
+| **30-60-90 có deliverable** | **Cân bằng: hiểu sâu, tạo giá trị sớm, có chiến lược** | **Cần discipline, không bị cuốn daily firefighting** | **Đa số lead mới nhận team** |
+| Hành động ngay từ ngày 1 (đổi quy trình, refactor) | Tạo ấn tượng mạnh, quick wins nhanh | Rủi ro sai context, mất niềm tin, phá vỡ thứ tự đang chạy | Crisis team, P1 liên tục, manager ép kết quả ngay |
+| Chỉ quan sát 90 ngày, không làm gì | Hiểu rất sâu, an toàn | Không tạo giá trị, team cảm thấy lead "không làm gì", manager lo | Rất hiếm, chỉ khi team cực ổn định |
+
+### Bẫy thường gặp
+- **Ngày 15 đã refactor core** → chưa hiểu domain, phá vỡ thứ tự, team kháng cự.
+- **Không có 1:1 có cấu trúc** → hỏi lan man, không nắm được pain point thật.
+- **Quick win chỉ là "dọn dẹp code"** → business không thấy giá trị, manager không hỗ trợ phase 3.
+- **Chiến lược ngày 90 quá dài (10+ trang) hoặc quá chung chung** → không ai đọc, không thể execute.
+- **Không review strategy với EM/PM/Architect** → sign-off giả, sau này không có resource.
+
+### Ví dụ đời thực
+Tôi nhận team Payment 6 dev (velocity 22 pts/sprint, cycle time 9 ngày, change failure 22%, 0 senior, 2 mid, 4 junior). Ngày 1–30: 1:1 6 người + 4 stakeholder, theo dõi 2 sprint, chạy local, đọc 12 postmortem. Context Doc: nợ kỹ thuật top = N+1 query thanh toán, CI 25 phút, không có contract test, deploy thủ công. Ngày 31–60: Quick wins — (1) cache Maven/Gradle + parallel CI job → CI 12 phút, (2) thêm correlation ID + structured log → MTTR 45→22 phút, (3) Definition of Done + PR template → rework rate 40%→22%, (4) xoá 3 flaky test + fix 2 CVE critical. Ngày 61–90: Strategy doc 3 trang, review với EM+PM+Architect, sign-off. 6 tháng sau: velocity 38 pts, cycle time 4.5 ngày, change failure 4%, MTTR 12 phút, 2 junior lên mid, eNPS +12→+35.
+
+### Khung trả lời STAR
+- **S (Situation)**: "nhận team Payment 6 dev, cycle time 9 ngày, change failure 22%, 0 senior, 4 junior".
+- **T (Task)**: "90 ngày để hiểu context, tạo niềm tin và giao một chiến lược 6–12 tháng có số liệu".
+- **A (Action)**: 30 ngày 1:1 + theo dõi 2 sprint + đọc postmortem → Context Doc; ngày 31–60 quick wins theo Impact×Effort×Risk; ngày 61–90 strategy RICE + sign-off với EM/PM/Architect.
+- **R (Result)**: "CI 25→12 phút, MTTR 45→22 phút; sau 6 tháng cycle time 4.5 ngày, change failure 4%, 2 junior lên mid".
+
+### Nếu bạn chưa từng làm lead chính thức
+**Cách kể trung thực:** "Tôi chưa từng nhận team mới với chức danh lead, nhưng khi tham gia dự án mới (team 5 người, tôi là senior dev), tôi tự áp dụng 30-60-90 cho bản thân. 30 ngày: 1:1 mọi người, chạy local, đọc postmortem, vẽ architecture thực tế. 60 ngày: đề xuất 3 quick wins — cache CI (12p→6p), thêm correlation ID, PR template — lead đồng ý và tôi implement. 90 ngày: viết strategy 2 trang cho module tôi phụ trách (test strategy, CI/CD, observability), review với lead và PM. Kết quả: module đó từ change failure 18% xuống 5% trong 4 tháng. Kinh nghiệm này cho thấy khung 30-60-90 hoạt động ngay cả khi không có chức danh."
+
+### Trả lời mẫu khi phỏng vấn
+"90 ngày đầu tôi dùng khung 30-60-90. 30 ngày Listen & Learn: 1:1 tất cả thành viên và stakeholder, theo dõi 2 sprint không can thiệp, chạy code local, đọc postmortem; output là Context Doc 5–8 trang (người, kỹ thuật, quy trình, business, văn hóa). 60 ngày Assess & Quick Wins: chọn quick wins theo ma trận Impact×Effort×Risk — cache/parallel CI, correlation ID/log, Definition of Done, xoá flaky test, fix CVE; output là Quick Win Report + Improvement Backlog. 90 ngày Strategy & Commit: Team Strategy 2–3 trang có baseline số liệu, OKR 6 tháng, 5 initiative RICE-scored, rủi ro, resource — review và sign-off với EM/PM/Architect. Thực tế: nhận team Payment 6 dev, cycle time 9 ngày, change failure 22%; sau quick wins CI 25→12 phút, MTTR 45→22 phút; sau 6 tháng cycle time 4.5 ngày, change failure 4%, 2 junior lên mid. Nguyên tắc: không đổi lớn trong 30 ngày đầu, quick wins phải business thấy giá trị, strategy phải có số liệu và sign-off."
+
+### Câu trả lời yếu thường gặp
+- **Ngày 15 đã refactor core** → chưa hiểu domain, phá vỡ thứ tự đang chạy, team kháng cự.
+- **Chỉ quan sát 90 ngày, không làm gì** → không tạo giá trị, manager mất kiên nhẫn.
+- **Quick win chỉ là dọn dẹp code** → business không thấy giá trị, không được bảo vệ ngân sách ở giai đoạn 3.
+- **Strategy 10+ trang, chung chung, không có baseline số** → không execute được, không ai đọc.
+- **Không 1:1, không đọc postmortem** → quyết định dựa trên cảm tính, lặp lại sai lầm cũ.
+
+> Senior tip: **Hãy xin 90 ngày không bị đánh giá kết quả business** — chỉ được đánh giá theo deliverable của 3 giai đoạn (Context Doc, Quick Wins, Strategy). Nếu manager ép kết quả business từ ngày 1, hãy thương lượng: "Cho tôi 30 ngày hiểu context, tôi sẽ giao quick wins ngày 60, strategy ngày 90. Nếu ngày 90 strategy không thuyết phục thì chúng ta thảo luận tiếp." Điều này bảo vệ cả lead lẫn team.`,
+  follow: [
+    'Nếu 30 ngày đầu phát hiện một vấn đề nghiêm trọng (ví dụ security hole, data loss risk), bạn xử lý ngay hay đợi quick win phase?',
+    'Làm sao xây dựng niềm tin với senior dev trong team có kinh nghiệm hơn bạn?',
+    'Nếu manager không đồng ý strategy ngày 90 (ví dụ cắt budget hiring), bạn điều chỉnh ra sao?'
+  ],
+  tags: ['90-days', 'first-90-days', 'leadership', 'strategy', 'quick-wins', 'team-takeover'],
+},
 );
