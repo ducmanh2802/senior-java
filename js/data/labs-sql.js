@@ -4806,5 +4806,421 @@ API tạo đơn -> PostgreSQL: lock được cấp, INSERT chạy tiếp
   ],
   tags: ['postgresql', 'foreign-key', 'index', 'lock', 'delete', 'concurrently', 'not-valid', 'validate-constraint'],
 },
+{
+  id: 'lab-sql-032',
+  category: 'sql',
+  title: 'Deadlock giữa 2 đơn hàng cập nhật tồn kho theo thứ tự ngược qua FK product',
+  level: 'senior',
+  scenario: `**Bối cảnh.** Sàn thương mại điện tử ShopFast chạy service {{order-inventory}} (Spring Boot 3.3, Hibernate 6.4, PostgreSQL 16.2 trên RDS, 8 vCPU / 64 GB RAM, HikariCP 30 connection). Bảng {{inventory}} lưu tồn kho theo SKU (primary key {{sku_id}}), bảng {{order_item}} lưu chi tiết đơn hàng với FK {{product_id}} tham chiếu {{product.id}}. Khi xác nhận đơn, service trừ tồn kho bằng cách: đọc {{order_item}} để lấy danh sách {{product_id}}, sau đó UPDATE {{inventory}} cho từng SKU trong một transaction duy nhất.
+
+**Triệu chứng (20/03/2026, 14:22).** Khoảng 0,4% đơn hàng bị lỗi {{CannotAcquireLockException: ERROR: deadlock detected}} (HTTP 500), tập trung vào hai đơn hàng {{ORD-20260320-88421}} và {{ORD-20260320-88422}} được xác nhận gần như cùng lúc (cách nhau 12 ms). **Cả hai đơn cùng chứa 2 SKU: 101 và 102** (thứ tự trong order_item khác nhau do logic sort theo category_name). PostgreSQL log ghi deadlock detected, HikariCP pool không cạn, CPU 15%.
+
+**Việc bạn có.** Ba artifact dưới đây lấy từ production lúc 14:22. Hãy tìm nguyên nhân gốc, chứng minh bằng pid/xid/timestamp, rồi đề xuất cách sửa ngắn hạn và phòng ngừa.`,
+  artifacts: [
+    {
+      name: 'postgresql-deadlock.log',
+      lang: 'text',
+      content: `2026-03-20 14:22:15.841 UTC [18421] ERROR:  deadlock detected
+2026-03-20 14:22:15.841 UTC [18421] DETAIL:  Process 18421 waits for ShareLock on transaction 987654; blocked by process 18422.
+        Process 18422 waits for ShareLock on transaction 987653; blocked by process 18421.
+2026-03-20 14:22:15.841 UTC [18421] HINT:  See server log for query details.
+2026-03-20 14:22:15.841 UTC [18421] CONTEXT:  while locking tuple (0,14) in relation "inventory"
+2026-03-20 14:22:15.841 UTC [18421] STATEMENT:  UPDATE inventory SET available = available - 1 WHERE sku_id = 101
+2026-03-20 14:22:15.842 UTC [18422] ERROR:  deadlock detected
+2026-03-20 14:22:15.842 UTC [18422] DETAIL:  Process 18422 waits for ShareLock on transaction 987653; blocked by process 18421.
+        Process 18421 waits for ShareLock on transaction 987654; blocked by process 18422.
+2026-03-20 14:22:15.842 UTC [18422] CONTEXT:  while locking tuple (0,15) in relation "inventory"
+2026-03-20 14:22:15.842 UTC [18422] STATEMENT:  UPDATE inventory SET available = available - 1 WHERE sku_id = 102`,
+    },
+    {
+      name: 'pg_stat_activity.txt',
+      lang: 'text',
+      content: ` pid  | usename | state  |         query_start         | wait_event_type | wait_event | xact_start
+-------+---------+--------+----------------------------+-----------------+------------+----------------------------
+ 18421 | shopapp | active | 2026-03-20 14:22:15.801+00 | Lock            | transactionid | 2026-03-20 14:22:15.785+00
+ 18422 | shopapp | active | 2026-03-20 14:22:15.803+00 | Lock            | transactionid | 2026-03-20 14:22:15.787+00
+-- xid: 18421 = 987653, 18422 = 987654
+-- order_item của đơn 88421: SKU 101 (product 101, category Electronics) rồi SKU 102 (product 102, category Fashion) — order by product_id ASC
+-- order_item của đơn 88422: SKU 102 (product 102, category Fashion) rồi SKU 101 (product 101, category Electronics) — order by category_name DESC (nhánh code promotion)
+-- TX1 (đơn 88421) UPDATE sku=101 trước, rồi chờ sku=102; TX2 (đơn 88422) UPDATE sku=102 trước, rồi chờ sku=101 → deadlock.`,
+    },
+    {
+      name: 'app-deadlock.log',
+      lang: 'text',
+      content: `2026-03-20T14:22:15.843Z ERROR [http-nio-8080-exec-14] o.h.engine.jdbc.spi.SqlExceptionHelper - SQL Error: 0, SQLState: 40P01
+2026-03-20T14:22:15.843Z ERROR [http-nio-8080-exec-14] o.s.orm.jpa.JpaSystemException - could not execute statement
+2026-03-20T14:22:15.843Z WARN  [http-nio-8080-exec-14] org.springframework.dao.CannotAcquireLockException - deadlock detected
+2026-03-20T14:22:15.843Z INFO  [http-nio-8080-exec-14] com.shopfast.inventory.InventoryService - confirmOrder(orderId=ORD-20260320-88421) FAILED after 56ms
+2026-03-20T14:22:15.844Z INFO  [http-nio-8080-exec-22] com.shopfast.inventory.InventoryService - confirmOrder(orderId=ORD-20260320-88422) OK after 58ms`,
+    },
+  ],
+  questions: [
+    'Nguyên nhân gốc deadlock là gì? Dẫn chứng từ artifact pid/xid/timestamp và câu UPDATE nào đang chạy khi deadlock.',
+    'Vì sao thứ tự UPDATE lại ngược nhau giữa hai đơn? Hãy giải thích dựa trên cách code Java sắp xếp order_item.',
+    'Bạn sẽ sửa thế nào (ngắn hạn và dài hạn) để loại bỏ deadlock?',
+  ],
+  hints: [
+    'Hai transaction cùng cập nhật 2 SKU chung (101 và 102) nhưng theo thứ tự ngược nhau do sort category_name khác nhau ở hai nhánh code.',
+    'Deadlock detector PostgreSQL phát hiện chu trình chờ: TX1 giữ lock SKU 102 chờ SKU 101, TX2 giữ lock SKU 101 chờ SKU 102.',
+  ],
+  answer: `**Tóm tắt:** Hai transaction xác nhận đơn hàng cùng cập nhật tồn kho của **hai SKU chung (101 và 102)** nhưng theo **thứ tự ngược nhau** do code Java sắp xếp {{order_item}} theo {{category_name}} và logic sắp xếp không nhất quán giữa các nhánh. TX1 (đơn 88421) cập nhật SKU 102 trước rồi SKU 101; TX2 (đơn 88422) cập nhật SKU 101 trước rồi SKU 102. PostgreSQL phát hiện chu trình chờ (wait-for cycle) sau {{deadlock_timeout}} (1 giây) và huỷ TX1 (pid 18421) với lỗi {{SQLState 40P01}}. Sửa: thống nhất thứ tự khóa theo {{sku_id}} tăng dần trong transaction, rút ngắn transaction, thêm retry có backoff.
+
+### Kiến thức nền: deadlock và wait-for graph
+**Deadlock** (khối chờ chết) xảy ra khi hai hoặc nhiều transaction mỗi bên giữ một tài nguyên (lock) và chờ tài nguyên mà bên kia đang giữ — tạo thành một **chu trình (cycle)** trong wait-for graph. PostgreSQL chạy deadlock detector mỗi {{deadlock_timeout}} (mặc định 1 giây); khi phát hiện cycle, nó chọn một transaction làm **victim** (nạn nhân), rollback transaction đó và trả lỗi {{SQLSTATE 40P01}} ({{deadlock_detected}}), transaction kia tiếp tục chạy.
+
+Row-level lock trong PostgreSQL: câu {{UPDATE ... WHERE sku_id = X}} lấy **exclusive lock** trên dòng (tuple) có {{sku_id = X}}. Lock này được lưu trong header của tuple ({{xmax}} = transaction id), không hiện trong {{pg_locks}}. Khi transaction khác muốn UPDATE cùng dòng, nó phải chờ **ShareLock** trên transaction id của transaction đang giữ lock — điều này **hiện** trong {{pg_locks}} với {{mode = ShareLock, granted = f}}.
+
+### Nguyên nhân gốc, từng bước
+1. **Cấu trúc đơn hàng**: Đơn 88421 chứa 2 sản phẩm: SKU 101 (product 101, category Electronics) và SKU 102 (product 102, category Fashion). Đơn 88422 cũng chứa 2 sản phẩm: SKU 101 và SKU 102 (cùng 2 SKU!).
+2. **Code Java lấy order_item**:
+   ~~~java
+   List<OrderItem> items = orderItemRepo.findByOrderId(orderId);
+   // Sắp xếp theo category_name để ưu tiên xử lý category nào trước
+   items.sort(Comparator.comparing(item -> item.getProduct().getCategory().getName()));
+   ~~~
+3. **Bug sắp xếp không nhất quán**: Trong nhánh xử lý đơn 88421, code sort {{DESC}} (Z-A) → category **Fashion** (F) đứng trước **Electronics** (E) → xử lý SKU 102 trước, SKU 101 sau. Nhưng trong nhánh xử lý đơn 88422 (code path khác, ví dụ do promotion áp dụng), sort {{ASC}} (A-Z) → **Electronics** đứng trước **Fashion** → xử lý SKU 101 trước, SKU 102 sau. (Hoặc do dữ liệu category_name có khoảng trắng/viết hoa khác nhau dẫn so sánh khác).
+4. **Thứ tự UPDATE trong transaction**:
+   - TX1 (pid 18421, xid 987653, đơn 88421): {{UPDATE inventory SET available = available - 1 WHERE sku_id = 102}} (chạy 14:22:15.801) → giữ lock SKU 102. Sau đó {{UPDATE ... WHERE sku_id = 101}} → **chờ lock SKU 101**.
+   - TX2 (pid 18422, xid 987654, đơn 88422): {{UPDATE inventory SET available = available - 1 WHERE sku_id = 101}} (chạy 14:22:15.803) → giữ lock SKU 101. Sau đó {{UPDATE ... WHERE sku_id = 102}} → **chờ lock SKU 102**.
+5. **Chu trình chờ**: TX1 giữ SKU 102 chờ SKU 101; TX2 giữ SKU 101 chờ SKU 102. Không bên nào nhả lock → deadlock detector chạy lúc 14:22:15.841 (sau ~1 giây chờ), chọn TX1 làm victim (vì TX1 bắt đầu chờ trước), rollback TX1.
+
+### Dẫn chứng
+- Artifact 1 (log server): **"ERROR: deadlock detected"** tại PID 18421, kèm DETAIL: **"Process 18421 waits for ShareLock on transaction 987654; blocked by process 18422."** và **"Process 18422 waits for ShareLock on transaction 987653; blocked by process 18421."** — hai cạnh của vòng chờ. Dòng **"CONTEXT: while locking tuple (0,14) in relation inventory"** và **"STATEMENT: UPDATE inventory SET available = available - 1 WHERE sku_id = 101"** chỉ ra TX1 đang chờ lock trên SKU 101 khi đã giữ SKU 102. TX2 log tương tự cho SKU 102 (đang chờ SKU 102 khi đã giữ SKU 101).
+- Artifact 2 (pg_stat_activity): PID 18421 (xid 987653) và 18422 (xid 987654) đều {{wait_event_type = Lock}}, {{wait_event = transactionid}} — đang chờ ShareLock trên transaction của bên kia. xact_start: TX1 14:22:15.785, TX2 14:22:15.787 (TX2 bắt đầu sớm hơn 98 ms).
+- Artifact 3 (log ứng dụng): {{CannotAcquireLockException}}, SQLState 40P01, đơn 88421 FAILED sau 56 ms, đơn 88422 OK sau 58 ms (TX2 thắng vì không bị chọn làm victim).
+
+### Cách sửa ngắn hạn (hôm nay)
+- **Thống nhất thứ tự khóa**: trong transaction xác nhận đơn, **luôn sort {{order_item}} theo {{sku_id}} tăng dần** trước khi UPDATE. Đơn giản, an toàn, không phụ thuộc category hay promotion path.
+  ~~~java
+  items.sort(Comparator.comparingLong(OrderItem::getSkuId)); // LUÔN theo sku_id tăng dần
+  for (OrderItem item : items) {
+      inventoryRepo.decreaseAvailable(item.getSkuId(), item.getQuantity());
+  }
+  ~~~
+- **Thêm retry cho deadlock**: bắt lỗi {{CannotAcquireLockException}} (Spring map từ SQLState 40P01) và retry toàn bộ transaction **3 lần** với exponential backoff + jitter (50 ms, 100 ms, 200 ms). Dùng {{@Retryable}} của Spring Retry trên method confirmOrder.
+- **Rút ngắn transaction**: chỉ giữ UPDATE inventory trong transaction; đọc order_item, tính toán promotion, validate **ngoài transaction**. Transaction chỉ bao quanh: khoá dòng inventory (SELECT ... FOR UPDATE theo sku_id ASC) → UPDATE available.
+
+### Cách sửa dài hạn
+- **Khoá theo thứ tự cố định tại mức DB**: dùng {{SELECT ... FOR UPDATE}} với {{ORDER BY sku_id}} ngay trong câu query để DB đảm bảo thứ tự, không phụ thuộc code Java:
+  ~~~sql
+  SELECT sku_id, available FROM inventory
+  WHERE sku_id IN (?, ?, ...)
+  ORDER BY sku_id
+  FOR UPDATE;
+  ~~~
+  Sau đó UPDATE theo cùng thứ tự. Vì LockRows nằm sau Sort trong plan, các dòng bị khóa theo thứ tự đã sắp.
+- **Advisory lock cấp ứng dụng**: nếu không thể sắp lại thứ tự UPDATE (logic phức tạp), dùng {{pg_advisory_xact_lock(hashtext(sku_id))}} cho từng SKU theo thứ tự sku_id tăng dần ở đầu transaction.
+- **Idempotency key**: mọi API xác nhận đơn phải có {{idempotency_key = orderId}} để retry an toàn, không tạo đơn kép.
+- **Phân tách tồn kho theo category**: nếu conflict deadlock quá nhiều, cân nhắc sharding bảng inventory theo category hoặc dùng Redis queue serial hóa các lệnh trừ tồn kho cùng SKU.
+
+### Phòng ngừa và monitoring
+- Bật {{log_lock_waits = on}}, {{deadlock_timeout = 1s}} (mặc định); cảnh báo khi {{pg_stat_database.deadlocks}} tăng theo giờ.
+- Theo dõi {{pg_stat_activity}} có {{wait_event_type = 'Lock'}} và {{wait_event = 'transactionid'}}; alert khi có phiên chờ lock > 500 ms.
+- Unit test concurrency: mô phỏng 2 thread xác nhận đơn có SKU chung, assert không deadlock sau khi áp dụng fix.
+- Dashboard: số deadlock/giờ, p99 confirmOrder, tỷ lệ retry.
+
+### Sơ đồ luồng
+~~~seq
+title: Deadlock hai đơn cập nhật SKU 101 & 102 theo thứ tự ngược
+actors: TX1 (ORD-88421) | TX2 (ORD-88422) | PostgreSQL | Inventory table
+TX1 -> Inventory table: UPDATE sku=102 (giảm 1) -> lock row 102
+TX2 -> Inventory table: UPDATE sku=101 (giảm 1) -> lock row 101
+TX1 -> Inventory table: UPDATE sku=101 -> CHỜ (row 101 bị TX2 giữ)
+TX2 -> Inventory table: UPDATE sku=102 -> CHỜ (row 102 bị TX1 giữ)
+note PostgreSQL: deadlock_timeout = 1s
+PostgreSQL -> TX1: ROLLBACK (victim, SQLState 40P01)
+PostgreSQL -> TX2: lock 102 được cấp, UPDATE xong, COMMIT
+~~~
+
+### Trả lời mẫu khi phỏng vấn
+"Hai đơn hàng cùng cập nhật SKU 101 và 102 nhưng thứ tự UPDATE ngược nhau do code sort order_item theo category_name không nhất quán giữa các nhánh. TX1 giữ lock SKU 102 chờ 101, TX2 giữ 101 chờ 102 → deadlock. PostgreSQL detector chạy sau 1s, chọn TX1 làm victim (40P01). Tôi sửa bằng: (1) sort order_item theo sku_id tăng dần **luôn luôn** trước khi UPDATE, (2) thêm retry 3 lần với backoff cho deadlock, (3) rút ngắn transaction chỉ bao quanh khoá+UPDATE. Dài hạn: SELECT FOR UPDATE ORDER BY sku_id ở DB level, advisory lock, idempotency key."
+
+> Senior tip: **Thứ tự khóa nhất quán là hợp đồng của cả hệ thống**. Một code path sắp xếp khác (category_name, promotion, sort ASC/DESC) đủ tạo deadlock hiếm gặp, khó tái hiện. Quy tắc của tôi: **mọi transaction cập nhật nhiều dòng phải khóa theo thứ tự PK tăng dần** — viết helper {{LockHelper.lockInOrder(skuIds)}} tập trung, cấm dev tự sort. Và nhớ: deadlock không phải bug của PostgreSQL, nó là cơ chế bảo vệ dữ liệu; mục tiêu là làm cho nó **rẻ và tự hồi phục** (thứ tự khóa cố định + retry + idempotency).`,
+  rubric: [
+    'Chỉ đúng nguyên nhân: 2 transaction cập nhật 2 SKU chung (101, 102) theo thứ tự ngược do sort category_name không nhất quán, tạo wait-for cycle',
+    'Dẫn chứng đúng: deadlock log Detail hai cạnh chu trình (xid 987653/987654), pg_stat_activity wait_event=transactionid, app log 40P01, TX1 victim',
+    'Giải thích đúng tại sao thứ tự ngược: sort category_name ASC vs DESC (hoặc dữ liệu category khác) ở hai nhánh code',
+    'Đề xuất sửa đúng: sort theo sku_id ASC trong transaction, retry 3 lần backoff+jitter, rút ngắn transaction, SELECT FOR UPDATE ORDER BY sku_id',
+    'Có phòng ngừa: log_lock_waits, alert deadlocks, unit test concurrency, idempotency key',
+  ],
+  tags: ['postgresql', 'deadlock', 'lock', 'inventory', 'order', 'for-update', 'retry'],
+},
+{
+  id: 'lab-sql-033',
+  category: 'sql',
+  title: 'Thêm index nhưng vẫn Seq Scan: WHERE lower(name) và so sánh varchar vs numeric',
+  level: 'senior',
+  scenario: `**Bối cảnh.** Sàn thương mại điện tử ShopEase chạy service {{product-search}} (Spring Boot 3.3, Hibernate 6.4, PostgreSQL 16.2 trên RDS, 8 vCPU / 64 GB RAM). Bảng {{product}} lưu **12.418.550 dòng** (~5,2 GB heap + 2,8 GB index). Mỗi phút khoảng 8.000 lần tìm kiếm qua endpoint {{GET /api/v1/products/search?q=iphone&category_id=10}}. Cột {{name}} kiểu {{varchar(256)}}, cột {{category_id}} kiểu {{bigint}}, cột {{price}} kiểu {{numeric(12,2)}}. Index hiện có: {{idx_product_name}} btree trên {{name}}, {{idx_product_category}} btree trên {{category_id}}, {{idx_product_price}} btree trên {{price}}.
+
+**Triệu chứng (21/03/2026, 09:15).** p95 endpoint search nhảy từ 340 ms lên **8,2 giây**, CPU RDS từ 20% lên 91%. DBA chạy EXPLAIN ANALYZE trên production và thấy **Seq Scan toàn bảng 12,4 triệu dòng** dù đã tạo index {{idx_product_name_lower}} (expression index {{CREATE INDEX ON product (lower(name))}}) và index {{idx_product_category_id}}. Dev trước đó đã "vá" lỗi "operator does not exist: character varying = bigint" trên cột {{supplier_code}} (varchar chứa số) bằng cách ép kiểu cột: {{WHERE supplier_code::bigint = ?}}.
+
+**Việc bạn có.** Ba artifact: EXPLAIN ANALYZE trước/sau khi tạo index, schema + danh sách index, và log ứng dụng. Hãy chỉ ra vì sao index không được dùng, và cách sửa đúng.`,
+  artifacts: [
+    {
+      name: 'explain-search.txt',
+      lang: 'text',
+      content: `-- 2026-03-21 09:16:02 +07, psql trên RDS shopease-primary (PostgreSQL 16.2)
+-- (1) Câu search: tìm theo tên (không phân biệt hoa thường) + category
+shopease=# EXPLAIN (ANALYZE, BUFFERS)
+SELECT id, name, price, category_id
+FROM product
+WHERE lower(name) = lower('iPhone 15 Pro')
+  AND category_id = 10;
+                                                          QUERY PLAN
+--------------------------------------------------------------------------------------------------------------------------------------------------------
+ Seq Scan on product  (cost=0.00..3841521.44 rows=1 width=64) (actual time=0.021..8231.444 rows=1 loops=1)
+   Filter: ((lower(name) = lower('iPhone 15 Pro'::text)) AND (category_id = 10))
+   Rows Removed by Filter: 12418549
+   Buffers: shared hit=1582040 read=120440
+ Planning Time: 0.312 ms
+ Execution Time: 8232.104 ms
+(6 rows)
+
+Time: 8232.520 ms
+
+-- (2) Dev đã tạo expression index lower(name) nhưng planner KHÔNG dùng
+shopease=# \d product
+Indexes:
+    "idx_product_name" btree (name)
+    "idx_product_name_lower" btree (lower(name))
+    "idx_product_category" btree (category_id)
+    "idx_product_price" btree (price)
+    "product_pkey" PRIMARY KEY, btree (id)
+
+-- (3) So sánh: cùng câu, bỏ lower() trên cột, bind tham số đã lower ở ứng dụng
+shopease=# EXPLAIN (ANALYZE, BUFFERS)
+SELECT id, name, price, category_id
+FROM product
+WHERE name = 'iPhone 15 Pro'
+  AND category_id = 10;
+                                                          QUERY PLAN
+--------------------------------------------------------------------------------------------------------------------------------------------------------
+ Index Scan using idx_product_name on product  (cost=0.56..8.58 rows=1 width=64) (actual time=0.041..0.312 rows=1 loops=1)
+   Index Cond: ((name = 'iPhone 15 Pro'::character varying) AND (category_id = 10))
+   Buffers: shared hit=12 read=2
+ Planning Time: 0.284 ms
+ Execution Time: 0.401 ms
+(5 rows)
+
+Time: 0.871 ms
+
+-- (4) Câu tra cứu supplier_code: varchar chứa số, Java truyền Long, dev "vá" bằng cast cột
+shopease=# EXPLAIN (ANALYZE, BUFFERS)
+SELECT id, name, supplier_code
+FROM product
+WHERE supplier_code::bigint = 20260314000142;
+                                                          QUERY PLAN
+--------------------------------------------------------------------------------------------------------------------------------------------------------
+ Seq Scan on product  (cost=0.00..3839895.61 rows=1 width=48) (actual time=0.023..4188.712 rows=1 loops=1)
+   Filter: ((supplier_code)::bigint = 20260314000142::bigint)
+   Rows Removed by Filter: 12418549
+   Buffers: shared hit=171000 read=140000
+ Planning Time: 0.298 ms
+ Execution Time: 4189.401 ms
+(6 rows)
+
+Time: 4189.720 ms
+
+-- (5) So sánh: truyền tham số dạng varchar (không cast cột)
+shopease=# EXPLAIN (ANALYZE, BUFFERS)
+SELECT id, name, supplier_code
+FROM product
+WHERE supplier_code = '20260314000142';
+                                                          QUERY PLAN
+--------------------------------------------------------------------------------------------------------------------------------------------------------
+ Index Scan using idx_product_supplier_code on product  (cost=0.43..8.45 rows=1 width=48) (actual time=0.048..0.512 rows=1 loops=1)
+   Index Cond: (supplier_code = '20260314000142'::character varying)
+   Buffers: shared hit=4 read=1
+ Planning Time: 0.284 ms
+ Execution Time: 0.704 ms
+(5 rows)
+
+Time: 0.871 ms`,
+    },
+    {
+      name: 'schema-and-index.txt',
+      lang: 'text',
+      content: `-- 2026-03-21 09:17:05 +07
+shopease=# \d product
+                                        Table "public.product"
+   Column        |           Type           | Collation | Nullable |      Default
+-----------------+--------------------------+-----------+----------+-------------------
+ id              | bigint                   |           | not null |
+ name            | character varying(256)   |           | not null |
+ category_id     | bigint                   |           | not null |
+ price           | numeric(12,2)            |           | not null |
+ supplier_code   | character varying(32)    |           | not null | -- mã NCC chỉ gồm chữ số
+ description     | text                     |           |          |
+ created_at      | timestamp with time zone |           | not null | now()
+Indexes:
+    "idx_product_name" btree (name)
+    "idx_product_name_lower" btree (lower(name))
+    "idx_product_category" btree (category_id)
+    "idx_product_price" btree (price)
+    "idx_product_supplier_code" btree (supplier_code)
+    "product_pkey" PRIMARY KEY, btree (id)
+
+-- Kích thước bảng:
+shopease=# SELECT reltuples::bigint AS est_rows,
+                 pg_size_pretty(pg_relation_size('product')) AS heap,
+                 pg_size_pretty(pg_total_index_size('product')) AS idx
+FROM pg_class WHERE relname = 'product';
+  est_rows | heap    | idx
+-----------+---------+--------
+ 12418550  | 5182 MB | 2784 MB
+
+-- Thống kê câu query 5 phút quanh sự cố (pg_stat_statements):
+shopease=# SELECT calls, round(total_exec_time::numeric, 1) AS total_ms,
+               round(mean_exec_time::numeric, 1) AS mean_ms, rows
+FROM pg_stat_statements
+WHERE query LIKE '%lower(name)%' OR query LIKE '%supplier_code%'
+ORDER BY total_exec_time DESC LIMIT 3;
+  calls |  total_ms  | mean_ms | rows
+-------+------------+---------+------
+   452 | 3721516.0  |  8233.0 |   452
+   118 |  491822.0  |  4168.0 |   118
+    56 |  21200.0   |   378.5 |    56`,
+    },
+    {
+      name: 'app-search-slow.log',
+      lang: 'text',
+      content: `2026-03-21 09:16:10.101 DEBUG [http-nio-8080-exec-22] o.h.SQL :
+    select p1_0.id,p1_0.name,p1_0.price,p1_0.category_id
+    from product p1_0
+    where lower(p1_0.name) = lower(?) and p1_0.category_id = ?
+2026-03-21 09:16:18.333 INFO  [http-nio-8080-exec-22] c.s.p.ProductController :
+    GET /api/v1/products/search?q=iphone 15 pro&category_id=10 -> 200 in 8234 ms
+2026-03-21 09:16:19.440 DEBUG [http-nio-8080-exec-5] o.h.SQL :
+    select p1_0.id,p1_0.name,p1_0.price,p1_0.category_id
+    from product p1_0
+    where lower(p1_0.name) = lower(?) and p1_0.category_id = ?
+2026-03-21 09:16:27.681 INFO  [http-nio-8080-exec-5] c.s.p.ProductController :
+    GET /api/v1/products/search?q=iphone 15 pro&category_id=10 -> 200 in 8241 ms
+-- pattern: mỗi request search mất ~8,2 giây, không có request nào dưới 1 giây
+
+2026-03-21 09:15:42.118 DEBUG [http-nio-8080-exec-14] o.h.SQL :
+    select p1_0.id,p1_0.name,p1_0.supplier_code
+    from product p1_0
+    where p1_0.supplier_code::bigint = ?
+2026-03-21 09:15:46.301 INFO  [http-nio-8080-exec-14] c.s.p.ProductController :
+    GET /api/v1/products/by-supplier/20260314000142 -> 200 in 4191 ms
+-- Lỗi trước khi "vá" (taken from app.log 20/03, 07:14:08):
+-- ERROR:  operator does not exist: character varying = bigint
+-- LINE 1: where supplier_code = ?
+--                      ^
+-- HINT:  No operator matches the given name and argument types. You might need to add explicit type casts.`,
+    },
+  ],
+  questions: [
+    'Vì sao expression index idx_product_name_lower (lower(name)) đã tạo nhưng planner KHÔNG dùng? Chỉ ra bằng dòng nào trong EXPLAIN.',
+    'Câu tra cứu supplier_code gặp lỗi gì trước đây và vì sao cách "vá" bằng cast cột (supplier_code::bigint) lại khiến Seq Scan? So sánh với câu WHERE supplier_code = \'...\'.',
+    'Bạn sửa query và index thế nào để search về dưới 100 ms? Khi nào nên dùng expression index, khi nào dùng partial index, và lưu ý gì về IMMUTABLE + ANALYZE?',
+  ],
+  hints: [
+    'Đọc dòng "Filter: ((lower(name) = lower(...)) AND (category_id = 10))": vế trái là biểu thức lower(name) CHO PHÉP expression index, NHƯNG planner vẫn chọn Seq Scan. Kiểm tra: index expression phải KHỚP HỆT với biểu thức trong WHERE — lower(name) vs lower(name) có khớp không? Và: có ANALYZE sau khi tạo index không?',
+    'Index chỉ được dùng khi vế trái là cột thuần, vế phải là hằng số/tham số. Ép kiểu cột (supplier_code::bigint) biến điều kiện thành biểu thức → planner không dùng index btree trên supplier_code (lưu varchar thô).',
+    'Sửa search: chuẩn hóa tham số ở ứng dụng (lower(q)) rồi WHERE name = :qLower AND category_id = :catId — dùng index (name, category_id). Hoặc composite expression index ((lower(name), category_id)). Sửa supplier_code: truyền String, hoặc cast vế tham số. Expression index cần IMMUTABLE (lower() OK) và ANALYZE.',
+  ],
+  answer: `**Tóm tắt:** Câu search viết {{WHERE lower(name) = lower(?) AND category_id = 10}} — **bọc hàm lower() quanh cột name** — làm planner chọn **Seq Scan 12,4 triệu dòng** (8,2 giây) dù đã tạo expression index {{idx_product_name_lower}} trên {{lower(name)}}. Nguyên nhân: (1) biểu thức trong WHERE là {{lower(name) = lower(?)}} (so sánh 2 biểu thức lower), không khớp với index expression {{lower(name)}} đơn độc; (2) thiếu **ANALYZE** sau khi tạo index nên planner không có statistics cho biểu thức. Câu tra cứu {{supplier_code}} dev "vá" lỗi "operator does not exist: character varying = bigint" bằng {{supplier_code::bigint = ?}} — **ép kiểu ở vế cột** — phá index, Seq Scan 4,2 giây. Sửa: search dùng {{WHERE name = :qLower AND category_id = ?}} với tham số đã lower ở app (composite index {{(name, category_id)}}), hoặc expression index {{(lower(name), category_id)}} + ANALYZE; supplier_code truyền String hoặc cast vế tham số.
+
+### Kiến thức nền: sargable, expression index, và implicit cast
+**Sargable** (Search ARGument Able): index chỉ dùng được khi điều kiện WHERE có dạng **cột_so_sánh_toán_tử_hằng_số** — vế trái là cột thuần, vế phải là hằng số/tham số. Bọc hàm ({{lower()}}, {{date_trunc()}}) hay ép kiểu ({{::bigint}}) quanh cột biến điều kiện thành **biểu thức**, planner không thể dùng index btree trên cột thô.
+
+**Expression index**: {{CREATE INDEX ... ON table (expression)}}. Index lưu giá trị của **biểu thức** (ví dụ {{lower(name)}}), không phải cột thô. Khi đó planner có thể dùng index cho câu {{WHERE lower(name) = ?}} vì biểu thức trong query **trùng khớp** với biểu thức trong index. **Điều kiện bắt buộc**: biểu thức trong index phải dùng hàm **IMMUTABLE** (kết quả chỉ phụ thuộc tham số, không phụ thuộc locale, timezone, session). {{lower()}} là IMMUTABLE với collation C (default PostgreSQL).
+
+**Implicit cast**: PostgreSQL không tự cast varchar ↔ bigint. Câu {{WHERE varchar_col = 123}} báo lỗi "operator does not exist". Dev thường "vá" bằng {{varchar_col::bigint = 123}} — **ép kiểu ở vế cột** — làm mất index. Sửa đúng: {{WHERE varchar_col = '123'}} (tham số String) hoặc {{WHERE varchar_col = CAST(123 AS varchar)}} (**ép kiểu ở vế tham số**).
+
+### Nguyên nhân gốc, từng bước
+
+**1. Câu search product (lower(name) + category_id):**
+- Query: {{WHERE lower(name) = lower(?) AND category_id = 10}}. Biểu thức vế trái: {{lower(name) = lower(?)}} — so sánh **hai biểu thức lower**, không phải {{lower(name) = 'constant'}}.
+- Index {{idx_product_name_lower}} lưu giá trị {{lower(name)}} cho mỗi dòng. Planner chỉ dùng index khi vế trái là {{lower(name)}} và vế phải là **hằng số/tham số**. Ở đây vế phải là {{lower(?)}} (cũng là biểu thức, dù tham số đã bind, planner nhìn thấy biểu thức lower bao quanh tham số).
+- Thiếu {{ANALYZE product}} sau khi tạo index → planner không có {{pg_statistic}} cho biểu thức {{lower(name)}}, ước lượng selectivity mặc định 0,5% → chọn Seq Scan.
+- Artifact 1: {{Seq Scan ... Filter: ((lower(name) = lower('iPhone 15 Pro'::text)) AND (category_id = 10))}}, {{Rows Removed by Filter: 12418549}}, {{Buffers: shared hit=1582040 read=120440}} (~1,7 GB page), {{Execution Time: 8232.104 ms}}.
+- Câu so sánh {{WHERE name = 'iPhone 15 Pro' AND category_id = 10}}: {{Index Scan using idx_product_name}}, {{Buffers: shared hit=12 read=2}}, {{Execution Time: 0.401 ms}} — nhanh **20.500 lần**.
+
+**2. Câu tra cứu supplier_code (varchar vs bigint):**
+- Cột {{supplier_code}} {{varchar(32)}} chứa mã NCC chỉ gồm số. Java nhận path variable {{Long}}, Hibernate bind {{bigint}}.
+- Lần đầu chạy: lỗi "operator does not exist: character varying = bigint".
+- Dev "vá": {{WHERE supplier_code::bigint = ?}} — **cast ở vế cột**. Index {{idx_product_supplier_code}} lưu giá trị varchar thô ("20260314000142"), không khớp biểu thức {{supplier_code::bigint}} → planner Seq Scan.
+- Artifact 1 câu (4): {{Seq Scan ... Filter: ((supplier_code)::bigint = ...)}}, {{Rows Removed by Filter: 12418549}}, {{Execution Time: 4189.401 ms}}.
+- Câu sửa {{WHERE supplier_code = '20260314000142'}}: {{Index Scan using idx_product_supplier_code}}, {{Execution Time: 0.704 ms}} — nhanh **5.950 lần**.
+
+### Dẫn chứng
+- Artifact 1: Seq Scan + Filter {{lower(name) = lower(...)}} + Rows Removed 12.4M + 8232 ms; Index Scan 0.4 ms khi bỏ lower(). Expression index {{idx_product_name_lower}} tồn tại (\\d product) nhưng không được dùng. Câu supplier_code: Seq Scan + Filter {{(supplier_code)::bigint}} + 4189 ms vs Index Scan 0.7 ms.
+- Artifact 2: Index {{idx_product_name_lower}} btree trên {{lower(name)}}; {{idx_product_supplier_code}} btree trên {{supplier_code}} (varchar). pg_stat_statements: 452 calls × 8233 ms = 3.721s CPU/5min cho search; 118 calls × 4168 ms = 491s CPU cho supplier_code.
+- Artifact 3: log ứng dụng search ~8,2s; supplier_code lỗi operator does not exist trước khi vá, sau vá ~4,2s.
+
+### Cách sửa
+
+**Ngắn hạn (hôm nay):**
+
+1. **Sửa câu search — cách 1 (khuyên dùng, không cần expression index):** Chuẩn hóa tham số ở ứng dụng, so sánh cột thô với tham số đã lower, dùng composite index:
+   ~~~java
+   // Java: String qLower = query.toLowerCase(Locale.ROOT);
+   // Repository:
+   @Query("SELECT p FROM Product p WHERE p.name = :qLower AND p.categoryId = :catId")
+   List<Product> searchByNameAndCategory(String qLower, Long catId);
+   ~~~
+   ~~~sql
+   CREATE INDEX CONCURRENTLY idx_product_name_category ON product (name, category_id);
+   ANALYZE product;
+   ~~~
+   → Index Scan trên {{(name, category_id)}}, đọc ~1 dòng, < 1 ms. Cách này an toàn nhất, không phụ thuộc expression index, hoạt động với mọi collation.
+
+2. **Sửa câu search — cách 2 (nếu bắt buộc giữ lower() trong query):** Tạo **composite expression index** khớp đúng biểu thức WHERE:
+   ~~~sql
+   CREATE INDEX CONCURRENTLY idx_product_lower_name_category
+     ON product (lower(name), category_id);
+   ANALYZE product;  -- BẮT BUỘC
+   ~~~
+   Query phải viết **trùng khớp**: {{WHERE lower(name) = :qLower AND category_id = 10}} (tham số đã lower, không lower(?) nữa). Planner dùng index, < 1 ms.
+
+3. **Sửa câu supplier_code:** Truyền tham số dạng String ({{String.valueOf(supplierCode)}}), viết {{WHERE supplier_code = :code}}. Hoặc nếu giữ Long: {{WHERE supplier_code = CAST(:code AS varchar)}} (cast ở **vế tham số**). Index {{idx_product_supplier_code}} dùng lại ngay.
+
+**Dài hạn:**
+- **Chuẩn hóa dữ liệu:** Thêm cột {{name_lower text GENERATED ALWAYS AS (lower(name)) STORED}} và index {{(name_lower, category_id)}} — query viết {{WHERE name_lower = :qLower AND category_id = ?}}, hoàn toàn sargable, không cần expression index.
+- **Đổi supplier_code sang bigint** qua mô hình expand/contract: thêm cột mới {{supplier_code_num bigint}}, backfill theo lô, dual-write, đổi index, drop cột cũ — tuyệt đối không {{ALTER TABLE ... TYPE}} trực tiếp trên 12 triệu dòng.
+- **Quy tắc review:** Mọi WHERE không được bọc hàm/cast lên cột. PR có query mới phải kèm EXPLAIN ANALYZE trên staging có dữ liệu tỉ lệ production.
+
+### So sánh các phương án cho search
+| Phương án | Index | Query phải viết | Ưu điểm | Nhược điểm |
+|---|---|---|---|---|
+| Composite btree (name, category_id) | {{(name, category_id)}} | {{name = ? AND category_id = ?}} | Nhanh, đơn giản, không phụ thuộc collation/IMMUTABLE | Phải lower() ở app trước khi bind |
+| Composite expression index | {{(lower(name), category_id)}} | {{lower(name) = ? AND category_id = ?}} | Giữ lower() trong SQL | Cần IMMUTABLE, ANALYZE, query phải khớp biểu thức từng ký tự |
+| Generated column + btree | {{name_lower}} + {{(name_lower, category_id)}} | {{name_lower = ? AND category_id = ?}} | Sargable hoàn toàn, statistics tốt | Thêm cột, tốn disk, mỗi write tính lại |
+
+### Lưu ý khi dùng expression index
+- **IMMUTABLE**: hàm trong index expression phải IMMUTABLE. {{lower()}} OK (với collation C), {{date_trunc()}} KHÔNG (phụ thuộc timezone), {{now()}} KHÔNG.
+- **ANALYZE**: bắt buộc sau CREATE INDEX, nếu không planner không có statistics → vẫn Seq Scan.
+- **CONCURRENTLY**: không chạy trong transaction block; gọi bằng psql, không đưa vào Flyway.
+- **Query phải khớp từng ký tự**: {{lower(name) = ?}} khác {{lower(name) = lower(?)}} — planner nhìn thấy lower(?) là biểu thức, không dùng index. Phải lower ở app, bind tham số đã lower.
+
+### Sơ đồ luồng
+~~~seq
+title: Search product: expression index không dùng do lower(?) và thiếu ANALYZE
+actors: Client | product-search | PostgreSQL
+Client -> product-search: GET /search?q=iPhone 15 Pro&category_id=10
+product-search -> PostgreSQL: SELECT ... WHERE lower(name) = lower(?) AND category_id = 10
+PostgreSQL -> PostgreSQL: Seq Scan 12.4M dòng (expression index lower(name) tồn tại nhưng WHERE có lower(?), thiếu ANALYZE)
+PostgreSQL --> product-search: 1 dòng, 8.2 giây
+note PostgreSQL: CREATE INDEX (lower(name), category_id) + ANALYZE; query: lower(name) = :qLower
+product-search -> PostgreSQL: cùng query, tham số đã lower
+PostgreSQL --> product-search: Index Scan, 0.4 ms
+~~~
+
+### Trả lời mẫu khi phỏng vấn
+"Câu search viết lower(name) = lower(?) AND category_id = 10. Planner Seq Scan 12.4M dòng (8.2s) dù đã có expression index lower(name). Hai lỗi: (1) WHERE so sánh lower(name) với lower(?) — vế phải cũng là biểu thức, không khớp index expression lower(name); (2) thiếu ANALYZE sau tạo index nên planner không có statistics. Câu supplier_code dev vá lỗi varchar=bigint bằng cast cột (supplier_code::bigint) — phá index, Seq Scan 4.2s. Tôi sửa search: lower() ở app, bind tham số đã lower, composite index (name, category_id) — 0.4ms. Supplier_code: truyền String hoặc cast vế tham số. Expression index cần IMMUTABLE, ANALYZE, query khớp biểu thức."
+
+> Senior tip: **Expression index là liều thuốc cuối cùng, không phải vitamin hàng ngày**. 90% trường hợp "index không dùng" sửa được bằng cách viết query sargable (cột thô = tham số đã chuẩn hóa) + composite index đúng thứ tự. Chỉ dùng expression index khi thực sự không thể sửa query (legacy, vendor code). Và nhớ: **thiếu ANALYZE = expression index không tồn tại** trong mắt planner. Luôn so EXPLAIN trước/sau, đừng tin index đã tạo là đã xong.`,
+  rubric: [
+    'Chỉ đúng nguyên nhân: lower(name) = lower(?) so sánh 2 biểu thức không khớp index lower(name); thiếu ANALYZE sau tạo expression index',
+    'Dẫn chứng đúng: Seq Scan + Filter lower(name) = lower(...) + Rows Removed 12.4M + 8232 ms; Index Scan 0.4 ms khi bỏ lower(); expression index tồn tại nhưng không dùng',
+    'Giải thích đúng supplier_code: cast ở vế cột phá index btree trên varchar; cast vế tham số hoặc truyền String khôi phục index',
+    'Đề xuất sửa đúng: cách 1 (chuẩn hóa tham số + composite btree name+category) — khuyên dùng; cách 2 (composite expression index + ANALYZE); supplier_code cast vế tham số',
+    'Nêu lưu ý IMMUTABLE, ANALYZE, CONCURRENTLY, query phải khớp biểu thức từng ký tự, so sánh 3 phương án',
+  ],
+  tags: ['postgresql', 'index', 'expression-index', 'sargable', 'lower', 'implicit-cast', 'analyze'],
+},
 );
 
