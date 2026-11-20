@@ -12619,6 +12619,267 @@ Service tra cứu đơn hàng chạy 900 platform thread, p99 210 ms ở 1.200 r
   a: `**Tóm tắt:** StructuredTaskScope ràng buộc vòng đời subtask với scope: nếu một subtask fail hoặc timeout, scope huỷ các subtask còn lại và cleanup tự động, tránh orphan thread và leak. CompletableFuture phải tự quản lý cancel và exception aggregation, dễ sai. Dùng ShutdownOnFailure cho "fail fast", ShutdownOnSuccess cho "lấy kết quả đầu tiên".`,
   follow: ['So sánh StructuredTaskScope với ExecutorService + invokeAll?', 'Preview API có production-ready không?'],
   tags: ['StructuredTaskScope', 'Java 21', 'structured concurrency']
+},
+{
+  id: 'concurrency-090',
+  topic: 'concurrency',
+  level: 'senior',
+  q: 'Trong một service, một reader giữ ReentrantReadWriteLock rồi thực hiện ghi socket mất 20 giây. Vì sao cả service đứng im, writer và các reader mới bị ảnh hưởng thế nào, và sửa ra sao?',
+  a: `**Tóm tắt:** Read lock cho nhiều thread đọc cùng lúc, nhưng khi một reader ôm lock suốt 20 giây để ghi socket (một thao tác chậm), writer phải chờ reader nhả lock; tệ hơn, ở chế độ non-fair mặc định, khi writer đã xếp hàng thì các reader mới cũng phải xếp hàng **sau** writer — nên toàn bộ request đọc sau đó đứng chờ theo. Cách sửa đúng: không bao giờ làm I/O (socket, DB, file) bên trong read lock — đọc snapshot xong nhả lock rồi mới I/O; hoặc dùng StampedLock optimistic read, hoặc copy-on-write cho dữ liệu đọc-nhiều.
+
+### Thuật ngữ
+- **Read lock (khoá đọc)**: nhiều thread cùng giữ được, dùng khi chỉ đọc dữ liệu.
+- **Write lock (khoá ghi)**: chỉ một thread giữ, loại trừ cả reader lẫn writer khác.
+- **Reentrant (vào lại được)**: cùng một thread đã giữ lock thì vào lại lần nữa không tự khoá mình.
+- **Non-fair / fair**: non-fair cho thread "chen ngang" (barge) khi lock đang trống; fair xếp hàng FIFO nghiêm ngặt.
+- **Writer starvation (writer bị bỏ đói)**: writer chờ mãi không được vì reader liên tục chen vào.
+- **Barge (chen ngang)**: thread mới cướp lock dù đang có người chờ.
+- **Optimistic read (đọc lạc quan)**: đọc không cần lock, sau đó kiểm tra "có ai sửa không" bằng một số phiên bản (stamp).
+
+### Cơ chế bên trong: vì sao một reader chậm làm cả service đứng
+1. Reader A gọi readLock().lock() → giữ read lock.
+2. A làm I/O ghi socket 20 giây (vì code đặt I/O bên trong try). Suốt 20 giây này read lock **vẫn bị giữ**.
+3. Writer B gọi writeLock().lock() → phải chờ **mọi** reader nhả. B xếp vào hàng chờ.
+4. Reader C mới gọi readLock().lock(). Trong non-fair mặc định, ReentrantReadWriteLock hỏi "người đầu hàng chờ có phải writer không?" — nếu đúng thì C **không được chen ngang**, phải xếp sau B.
+5. Kết quả: C (và mọi reader sau) đứng chờ B, B chờ A, A chờ I/O 20 giây. Cả service đóng băng.
+
+Nếu là fair: mọi thread xếp FIFO, A xong mới tới B, rồi mới tới C — công bằng nhưng chậm hàng loạt. Nếu là non-fair và A nhả nhanh thì reader mới có thể chen ngang và writer B bị bỏ đói. Dù góc nào, I/O trong lock cũng là gốc rễ.
+
+~~~java
+// SAI: I/O 20 giây nằm trong read lock
+private final ReentrantReadWriteLock lock = new ReentrantReadWriteLock();
+
+public void handle(Socket s) throws IOException {
+    lock.readLock().lock();
+    try {
+        String data = cache.get(key);              // đọc nhanh
+        s.getOutputStream().write(data.getBytes()); // 20 giây, VẪN GIỮ read lock
+    } finally {
+        lock.readLock().unlock();
+    }
+}
+~~~
+
+~~~java
+// ĐÚNG: chỉ giữ lock lúc đọc snapshot, I/O làm SAU khi nhả
+public void handle(Socket s) throws IOException {
+    String data;
+    lock.readLock().lock();
+    try {
+        data = cache.get(key);                     // copy nhanh, cỡ vài micro giây
+    } finally {
+        lock.readLock().unlock();                  // nhả NGAY
+    }
+    s.getOutputStream().write(data.getBytes());    // I/O chậm làm ngoài lock
+}
+~~~
+
+~~~java
+// StampedLock optimistic read: đọc không lock, chỉ validate
+StampedLock sl = new StampedLock();
+long stamp = sl.tryOptimisticRead();               // lấy "số phiên bản", không khoá
+String data = cache.get(key);
+if (!sl.validate(stamp)) {                         // có writer chen vào -> đọc lại
+    stamp = sl.readLock();
+    try { data = cache.get(key); } finally { sl.unlockRead(stamp); }
+}
+~~~
+
+### Trade-off
+| Cách | Khi nào dùng | Nhược điểm |
+|---|---|---|
+| Đọc ngoài lock, I/O sau (copy) | Gần như luôn đúng | Cần copy dữ liệu nếu muốn snapshot nhất quán |
+| StampedLock optimistic read | Đọc cực nhiều, ghi ít | Không reentrant, phải tự validate, dễ sai nếu lạm dụng |
+| CopyOnWriteArrayList / map snapshot | Dữ liệu gần như bất biến, ghi rất hiếm | Mỗi lần ghi copy toàn bộ mảng — tốn bộ nhớ |
+| ReentrantReadWriteLock | Cần khoá đọc/ghi thật, I/O không nằm trong lock | Không nâng cấp được read sang write, dễ ôm lock quá lâu |
+| synchronized / ReentrantLock | Ghi là chính, đọc ít | Loại trừ hoàn toàn, không song song đọc |
+
+### Pitfall production
+- **Không nâng cấp được read sang write**: ReentrantReadWriteLock không cho vừa giữ read lock vừa xin write lock (sẽ deadlock). Phải nhả read rồi xin lại write, và chấp nhận dữ liệu có thể đã đổi.
+- **Ôm lock qua ranh giới xa**: gọi hàm khác, hàm đó lại gọi service khác — lock vô hình bị giữ suốt.
+- **Quên finally**: nếu exception giữa chừng mà không nhả lock, cả service treo.
+- **Log hoặc đo metric trong lock**: một dòng log.info chậm cũng đủ hại khi tần suất cao.
+
+### Ví dụ đời thực
+Service gửi thông báo đẩy dùng ReentrantReadWriteLock bảo vệ một cache cấu hình. Một reader gọi readLock().lock() rồi viết socket tới client (mất trung bình 20 giây vì client chậm). Trong lúc đó p99 tăng từ 30 ms lên 18 giây, throughput rơi từ 800 xuống 12 request/giây. jstack cho thấy hàng trăm thread BLOCKED tại writeLock, một thread WAITING trên socket write, và các reader mới xếp sau writer. Sửa: tách I/O ra ngoài lock, chỉ giữ lock để copy cấu hình (khoảng 2 micro giây). Sau khi deploy lại, p99 về 35 ms, throughput 820 request/giây.
+
+### Trả lời mẫu khi phỏng vấn
+"Read lock cho phép nhiều reader cùng vào, nhưng nếu một reader ôm lock để làm I/O chậm như ghi socket 20 giây thì writer phải chờ mọi reader nhả, và ở chế độ non-fair mặc định các reader mới cũng xếp hàng sau writer, nên cả service đứng. Gốc rễ là tôi để I/O bên trong lock. Cách sửa là chỉ giữ lock lúc đọc snapshot — vài micro giây — rồi nhả lock và mới làm I/O. Nếu đọc cực nhiều ghi ít, tôi dùng StampedLock optimistic read: đọc không lock rồi validate stamp, chỉ khi có writer chen vào mới đọc lại dưới read lock. Với dữ liệu gần như bất biến thì CopyOnWriteArrayList hoặc map snapshot là lựa chọn đơn giản nhất. Điều tôi luôn tránh là nâng cấp read lên write trên ReentrantReadWriteLock vì nó không hỗ trợ và dễ deadlock."
+
+### Checklist
+1. Grep toàn bộ readLock/writeLock, tìm mọi lời gọi I/O (socket, HTTP, DB, file) bên trong.
+2. Tách: đọc snapshot dưới lock, nhả lock, rồi mới I/O.
+3. Cân nhắc StampedLock optimistic read cho đường đọc nóng.
+4. Kiểm tra có chỗ nào cố nâng cấp read sang write (deadlock tiềm ẩn).
+5. Bật jstack khi sự cố để xác nhận thread đang chờ ở đâu.
+6. Đo p99 và throughput trước/sau để chứng minh cải thiện.
+
+> Senior tip: Quy tắc bất di bất dịch là "lock chỉ bảo vệ bộ nhớ, không bảo vệ I/O". Khi thấy p99 tăng đột biến mà CPU thấp, hãy chụp jstack ngay: nếu hàng chục thread BLOCKED ở writeLock và một thread WAITING ở socket write, gần như chắc chắn có người làm I/O trong read lock. Sửa xong nên thêm một bài test tải nhỏ mô phỏng reader chậm để chặn tái phát.`
+  ,
+  follow: ['ReentrantReadWriteLock không nâng cấp được read lên write — điều đó dẫn tới rủi ro gì và xử lý ra sao?', 'StampedLock optimistic read khác read lock thường ở điểm nào, khi nào KHÔNG nên dùng?', 'Làm sao phát hiện nhanh I/O bị nhốt trong lock trên production đang chạy?'],
+  tags: ['ReentrantReadWriteLock', 'StampedLock', 'read lock', 'writer starvation', 'lock']
+},
+{
+  id: 'concurrency-091',
+  topic: 'concurrency',
+  level: 'lead',
+  q: 'Bạn tăng thread pool từ 50 lên 500 mà API vẫn chậm, và parallelStream trên container 2 CPU lại chậm hơn vòng lặp tuần tự. Giải thích vì sao và cách tính kích thước pool đúng?',
+  a: `**Tóm tắt:** Tăng số thread chỉ giúp khi nút thắt là "chờ" (I/O-bound). Nếu nút thắt là CPU hoặc một tài nguyên khác (pool DB 10 connection, downstream chậm) thì thêm thread chỉ làm tăng context switch và tranh chấp. Công thức: CPU-bound thì số thread xấp xỉ số core + 1; IO-bound thì xấp xỉ số core nhân (1 + thời gian chờ chia thời gian tính). Trong container, số core phải là số core mà JVM nhìn thấy (JDK 10+ mặc định tôn trọng cgroup), và parallelStream dùng commonPool có số thread bằng availableProcessors() trừ 1 nên trên 2 CPU nó chỉ có 1 thread.
+
+### Thuật ngữ
+- **CPU-bound**: công việc chủ yếu tính toán, không chờ gì — nghẽn ở CPU.
+- **IO-bound**: công việc chủ yếu chờ I/O (DB, HTTP, file) — thread nằm chờ.
+- **Context switch**: CPU lưu trạng thái thread này, nạp thread khác — tốn tài nguyên.
+- **availableProcessors()**: số CPU mà JVM thấy; từ JDK 10 mặc định tôn trọng giới hạn cgroup/container.
+- **Common pool (ForkJoinPool.commonPool)**: pool dùng chung cho parallelStream và CompletableFuture mặc định, số thread bằng availableProcessors() trừ 1.
+- **Little's law**: số việc đồng thời = throughput nhân thời gian xử lý mỗi việc.
+
+### Vì sao 50 lên 500 không giúp
+1. Nếu mỗi request chủ yếu chờ DB (I/O), nút thắt thật là pool connection Hikari (ví dụ 10). 500 thread cùng xin 10 connection thì 490 thread xếp hàng chờ connection, không nhanh hơn.
+2. Nếu nút thắt là CPU (2 core), 500 thread cùng chạy chỉ chia 2 core nên mỗi thread chậm hơn, thêm context switch.
+3. Nếu nút thắt là downstream (đối tác chỉ chịu 50 request/giây), thêm thread chỉ làm hàng chờ dài hơn, p99 tăng.
+
+### Công thức kích thước pool
+- **CPU-bound**: threads xấp xỉ số core + 1 (thừa 1 để bù lúc một thread thỉnh thoảng bị gián đoạn hoặc bị GC).
+- **IO-bound**: threads xấp xỉ số core nhân (1 + wait chia compute). Ví dụ 4 core, mỗi request chờ 90 ms và tính 10 ms thì 4 nhân (1 + 9) = 40.
+- **Kiểm chứng bằng Little's law**: nếu muốn 500 request/giây và mỗi request mất 50 ms thì cần 500 nhân 0,05 = 25 thread đang xử lý cùng lúc. Đây là sàn, không phải trần.
+
+### availableProcessors trong container
+- JDK 8u191+ và JDK 10+ bật UseContainerSupport (mặc định) nên Runtime.availableProcessors() trả về số core theo limit cgroup, không phải số core vật lý của host.
+- Nếu bạn tự đặt -XX:ActiveProcessorCount=N hoặc chạy JDK cũ, JVM có thể thấy nhầm core của host (ví dụ 64), khiến pool quá lớn và parallelStream tạo 63 thread trên máy chỉ được cấp 2 core.
+
+### parallelStream chậm hơn trên 2 CPU
+- parallelStream dùng commonPool có số thread bằng availableProcessors() trừ 1. Trên 2 CPU thì chỉ còn 1 thread, tức **không song song**, chỉ thêm chi phí chia việc fork/join và tranh chấp.
+- Nếu công việc có I/O, hoặc mỗi phần tử chỉ vài lệnh, thì overhead chia và gộp lớn hơn lợi ích, nên tuần tự nhanh hơn.
+
+~~~java
+// Đo đúng: so sánh tuần tự vs parallel trên chính dữ liệu, không đoán
+List<Task> tasks = ...;
+long t0 = System.nanoTime();
+tasks.forEach(this::process);                     // tuần tự
+long seqMs = (System.nanoTime() - t0) / 1_000_000;
+
+ForkJoinPool pool = new ForkJoinPool(4);          // pool riêng, không đụng commonPool
+long t1 = System.nanoTime();
+try {
+    pool.submit(() -> tasks.parallelStream().forEach(this::process)).get();
+} catch (Exception e) {
+    throw new RuntimeException(e);
+} finally {
+    pool.shutdown();
+}
+long parMs = (System.nanoTime() - t1) / 1_000_000;
+// chỉ chọn parallel nếu parMs < seqMs một cách có ý nghĩa
+~~~
+
+### Trade-off
+| Tình huống | Nên | Vì sao |
+|---|---|---|
+| CPU-bound, vừa đủ core | pool = core + 1 | thêm thread không tăng CPU |
+| I/O-bound, nhiều chờ | pool = core nhân (1 + wait chia compute) | cấp thêm thread cho lúc chờ |
+| Chờ I/O rất nhiều | virtual thread | block không tốn platform thread |
+| Việc nhỏ, ít phần tử | tuần tự hoặc stream thường | parallel overhead lớn hơn lợi ích |
+| Chung một pool cho mọi việc | tách pool theo loại | tránh I/O làm đói phần CPU-bound |
+
+### Pitfall production
+- Đặt pool quá lớn: nhiều context switch, p99 tăng dù throughput không đổi.
+- Dùng commonPool cho I/O: làm nghẽn parallelStream của thư viện khác.
+- Không đặt tên thread: khó đọc jstack khi sự cố.
+- Không đo: "thêm thread cho chắc" là phản mẫu.
+
+### Ví dụ đời thực
+API tính điểm tín dụng chạy 4 request/giây, mỗi request 800 ms (chờ DB 700 ms, tính 100 ms), pool 50 thread, p99 900 ms. Đội tăng pool lên 500 thì p99 vẫn 900 ms, CPU chỉ 30%. Đo bằng async-profiler: 85% thời gian thread chờ Hikari connection (pool 10). Tăng Hikari lên 30, đưa pool về 40 (= 4 core nhân (1 + 9)): throughput tăng gấp 3, p99 xuống 210 ms. Bài học: nút thắt là pool DB, không phải số thread.
+
+### Trả lời mẫu khi phỏng vấn
+"Tăng thread chỉ giúp khi nút thắt là chờ. Nếu mỗi request chờ DB 90% thời gian mà pool connection chỉ có 10, thì 500 thread chỉ làm 490 thread xếp hàng chờ connection — p99 không giảm, context switch còn tăng. Tôi tính kích thước pool theo loại việc: CPU-bound thì core cộng 1, IO-bound thì core nhân (1 + thời gian chờ chia thời gian tính), rồi kiểm chứng bằng Little's law. Trong container tôi phải chắc JVM thấy đúng số core — JDK 10+ tôn trọng cgroup, còn nếu đặt ActiveProcessorCount sai thì pool tính theo host. parallelStream dùng commonPool có số thread bằng availableProcessors trừ 1, nên trên container 2 CPU nó chỉ có 1 thread và chậm hơn tuần tự vì overhead chia việc. Với I/O thì tôi cân nhắc virtual thread, với việc nhỏ thì giữ tuần tự. Quan trọng nhất là đo bằng profiler trước và sau, không đoán."
+
+### Checklist
+1. Xác định nút thắt: CPU, pool DB, downstream, hay thread — đo bằng async-profiler.
+2. In Runtime.availableProcessors() và so với limit container.
+3. Tính lại kích thước pool theo công thức loại việc.
+4. Thử tuần tự vs parallel trên dữ liệu thật, chỉ chọn parallel nếu nhanh hơn rõ.
+5. Đặt tên thread cho pool để đọc jstack.
+6. Cân nhắc virtual thread cho phần I/O, giữ pool nhỏ cho CPU.
+
+> Senior tip: Trước khi tăng pool, hãy trả lời "nút thắt là gì". Nếu CPU chưa đầy và throughput không tăng, câu trả lời gần như luôn là một tài nguyên khác đang chặn — pool DB, downstream, hay một lock. Tăng thread trong trường hợp đó chỉ đẩy hàng chờ dài ra và làm p99 tệ hơn. Với I/O thì virtual thread là hướng đúng hơn là pool khổng lồ.`
+  ,
+  follow: ['CPU-bound và IO-bound khác nhau thế nào, và vì sao công thức pool lại khác nhau?', 'Trong container, làm sao chắc chắn JVM thấy đúng số core (không phải core của host)?', 'Khi nào virtual thread thay thế được pool lớn, và khi nào vẫn cần pool?'],
+  tags: ['thread pool', 'CPU-bound', 'IO-bound', 'parallelStream', 'container']
+},
+{
+  id: 'concurrency-092',
+  topic: 'concurrency',
+  level: 'senior',
+  q: 'Một dòng code trông vô hại gây OutOfMemoryError trên production: regex che token trong log trên chuỗi lớn, StringBuilder log khổng lồ, cache không giới hạn, ThreadLocal rò rỉ. Hãy giải thích từng cơ chế, bộ công cụ chẩn đoán (heap dump, JFR, NMT) và playbook cấp cứu.',
+  a: `**Tóm tắt:** OOM không chỉ do đặt heap quá nhỏ. Bốn thủ phạm hay gặp từ code vô hại: regex có quantifier lồng gây catastrophic backtracking (thử tổ hợp theo cấp số nhân, tốn CPU và bộ nhớ dựng call stack), StringBuilder nối trong vòng lặp tạo chuỗi khổng lồ, cache kiểu HashMap hay ConcurrentHashMap không giới hạn cứ phình, và ThreadLocal không remove() trong thread pool giữ object sống mãi. Bộ giác quan cần bật sẵn: -XX:+HeapDumpOnOutOfMemoryError (chụp ảnh heap khi OOM), JFR (profiling chi phí thấp), NMT (Native Memory Tracking) để tách heap ngoài. Playbook cấp cứu: giữ hiện trường, phân tích heap dump bằng MAT (dominator tree, GC roots), sửa gốc, rồi phòng ngừa.
+
+### Thuật ngữ
+- **OOM (OutOfMemoryError)**: JVM không cấp được bộ nhớ cho yêu cầu mới.
+- **Catastrophic backtracking**: regex với quantifier lồng nhau thử vô số cách khớp, bùng nổ theo cấp số nhân.
+- **Heap dump**: ảnh chụp toàn bộ object trên heap tại một thời điểm, mở bằng Eclipse MAT.
+- **Dominator tree**: cây quan hệ "ai giữ ai sống" trong MAT; retained size là bộ nhớ được giải phóng nếu xoá object đó.
+- **GC roots**: điểm gốc (thread sống, static field, JNI...) giữ object không bị thu.
+- **JFR (Java Flight Recorder)**: cơ chế profiling chi phí thấp ghi liên tục, mở bằng JMC.
+- **NMT (Native Memory Tracking)**: đếm bộ nhớ JVM dùng ngoài heap (metaspace, thread stack, direct buffer).
+
+### Cơ chế 1: regex catastrophic backtracking
+1. Pattern như {{((a+)+)+$}} có quantifier lồng: nhóm (a+) nằm trong nhóm (a+)+.
+2. Chuỗi nhiều chữ a rồi một ký tự không khớp buộc regex thử mọi cách chia a thành nhóm — số cách tăng theo cấp số nhân.
+3. Mỗi lần thử là một frame đệ quy; chuỗi 30 ký tự có thể cần hàng triệu phép thử, tốn CPU và bộ nhớ stack.
+
+### Cơ chế 2: StringBuilder khổng lồ
+- Nối String bằng toán tử + trong vòng lặp 1 triệu lần, hoặc đọc cả file vào một StringBuilder rồi toString, làm bộ nhớ tăng tuyến tính và có lúc cần gấp đôi (builder cộng String).
+
+### Cơ chế 3: cache không giới hạn
+- Một static Map không bao giờ evict thì mỗi key mới thêm entry, heap tăng mãi đến khi OOM.
+
+### Cơ chế 4: ThreadLocal rò rỉ
+- Thread pool giữ thread sống; ThreadLocal giữ object (ví dụ request context 1 MB) mà không remove() thì object không được GC, nhân theo số thread.
+
+### Bộ công cụ chẩn đoán
+| Công cụ | Dùng khi | Cờ lệnh |
+|---|---|---|
+| Heap dump on OOM | Chụp hiện trường tự động khi OOM | -XX:+HeapDumpOnOutOfMemoryError -XX:HeapDumpPath=/dumps |
+| Exit on OOM | Thoát ngay để orchestrator restart | -XX:+ExitOnOutOfMemoryError |
+| JFR | Profiling liên tục, tìm allocation và nghẽn | -XX:StartFlightRecording=... |
+| NMT | Tách heap với ngoài heap | -XX:NativeMemoryTracking=summary |
+| jcmd | Truy vấn runtime, yêu cầu heap dump | jcmd pid GC.heap_dump |
+
+### Playbook cấp cứu
+1. Giữ hiện trường: bật HeapDumpOnOutOfMemoryError từ trước (không bật lúc cháy thì mất bằng chứng).
+2. Khi OOM: đừng restart vội, copy heap dump ra khỏi pod.
+3. Mở MAT: xem dominator tree, tìm object chiếm nhiều nhất, xem path tới GC roots để biết ai giữ.
+4. Đối chiếu với code: regex nào, cache nào, ThreadLocal nào.
+5. Sửa gốc và phòng ngừa: giới hạn cache, remove ThreadLocal, sửa regex, log có mức.
+
+~~~java
+// Regex an toàn: tránh quantifier lồng, dùng possessive khi có thể
+private static final Pattern TOKEN = Pattern.compile("(a+)++"); // possessive, không lùi
+...
+// Log có kiểm soát, không nối cả chuỗi lớn
+if (log.isDebugEnabled()) {
+    log.debug("payload={}", summarize(large)); // summarize cắt ngắn
+}
+~~~
+
+### Ví dụ đời thực
+Service chuẩn hoá dữ liệu nhập gọi một hàm che token bằng regex {{replaceAll("(a+)+$", "***")}} trên trường mô tả dài. Một khách hàng dán 40 ký tự a rồi dấu than, regex backtracking khiến một request chiếm 100% CPU trong 3 phút, heap tăng do stack đệ quy và cuối cùng OOM. jstack cho thấy thread ở Pattern.match, heap dump cho thấy mảng char lớn trong stack. Sửa regex thành possessive {{((a+)++)+$}} và thêm giới hạn độ dài đầu vào 200 ký tự. OOM biến mất, p99 ổn định 40 ms.
+
+### Trả lời mẫu khi phỏng vấn
+"OOM không chỉ do heap nhỏ. Tôi gặp bốn thủ phạm từ code vô hại: regex với quantifier lồng gây catastrophic backtracking thử tổ hợp theo cấp số nhân làm bùng nổ CPU và stack; StringBuilder nối chuỗi trong vòng lặp trên dữ liệu lớn tạo bộ nhớ khổng lồ; cache HashMap không giới hạn cứ phình; và ThreadLocal không remove trong thread pool giữ object sống mãi. Để phát hiện tôi luôn bật sẵn HeapDumpOnOutOfMemoryError và ExitOnOutOfMemoryError, chạy JFR liên tục, và dùng NMT khi RSS cao hơn heap. Playbook cấp cứu: giữ hiện trường, copy heap dump, mở MAT xem dominator tree và GC roots để biết ai giữ object, đối chiếu code, rồi sửa gốc và phòng ngừa bằng giới hạn cache, remove ThreadLocal, sửa regex và log có mức."
+
+### Checklist
+1. Bật -XX:+HeapDumpOnOutOfMemoryError kèm HeapDumpPath trên mọi service.
+2. Bật -XX:+ExitOnOutOfMemoryError để pod restart sạch.
+3. Rà regex có quantifier lồng, thêm giới hạn độ dài đầu vào.
+4. Kiểm tra mọi cache có chính sách evict (Caffeine, TTL, max size).
+5. Rà ThreadLocal phải remove() trong finally.
+6. Tập mở MAT và JFR trên một dump mẫu trước khi cháy thật.
+
+> Senior tip: Hãy chuẩn bị "phòng cấp cứu" trước khi cần: một heap dump mẫu để tập mở MAT, các cờ HeapDumpOnOutOfMemoryError và ExitOnOutOfMemoryError đã bật, JFR chạy nền. Khi OOM xảy ra lúc 2 giờ sáng, người trực không có thời gian học công cụ — họ chỉ có thể làm theo playbook đã tập. Và luôn nhớ: regex trên dữ liệu người dùng nhập là quả bom nổ chậm, hãy đặt giới hạn độ dài đầu vào như một lớp phòng thủ mặc định.`
+  ,
+  follow: ['Catastrophic backtracking là gì, làm sao nhận biết và viết regex an toàn?', 'Cache không giới hạn và ThreadLocal rò rỉ khác nhau thế nào về cách GC xử lý?', 'Bạn bật những JVM flag nào để không mất bằng chứng khi OOM xảy ra?'],
+  tags: ['OutOfMemoryError', 'regex', 'HeapDumpOnOutOfMemoryError', 'JFR', 'NMT']
 }
 
 );
