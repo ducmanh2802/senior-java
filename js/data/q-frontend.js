@@ -294,5 +294,764 @@ ES Modules là tiêu chuẩn chia code JavaScript thành các tập tin riêng b
 `,
   tags: ['javascript', 'esm', 'vite'],
   follow: ['code splitting', 'HMR', 'import maps']
+},
+{
+  id: 'frontend-006',
+  topic: 'frontend',
+  level: 'senior',
+  q: 'Vue 3 dùng ref và reactive để làm phản ứng dữ liệu như thế nào? Những khác biệt cơ bản giữa hai cách này là gì?',
+  a: `**Tóm tắt:** Vue 3 có hệ thống phản ứng (reactivity system) tự động theo dõi dữ liệu và cập nhật giao diện khi dữ liệu thay đổi. ref dùng để gói giá trị nguyên thủy thành đối tượng phản ứng, reactive dùng để biến toàn bộ object thành đối tượng phản ứng; hai cách đều được xây dựng trên Proxy của JavaScript.
+
+### Cơ chế bên trong, từng bước
+Vue 3 gói dữ liệu vào một Proxy, đối tượng đặc biệt của JavaScript có thể bắt mọi lần đọc và ghi thuộc tính.
+1. Khi bạn tạo ref(0) hoặc reactive({ soLuong: 0 }), Vue gói dữ liệu vào Proxy.
+2. Lúc component hiển thị template, Vue đọc các thuộc tính dữ liệu. Proxy ghi nhận: "component này đang sử dụng thuộc tính soLuong".
+3. Khi bạn thay đổi dữ liệu (soLuong = 5), Proxy bắt sự kiện ghi, tìm ra các component phụ thuộc và yêu cầu chúng hiển thị lại.
+4. Vue chỉ vẽ lại những phần giao diện thực sự thay đổi, không vẽ lại toàn bộ trang.
+
+Vì Proxy là cơ chế nội place của JavaScript, Vue không cần quét lại toàn bộ dữ liệu để biết cái gì thay đổi, nên hiệu năng cao.
+
+### ref và reactive khác nhau ở đâu
+| Đặc điểm | ref | reactive |
+|---|---|---|
+| Dùng cho | Giá trị nguyên thủy (số, chuỗi, boolean) và object | Chỉ dùng cho object |
+| Cách truy cập trong script | Phải dùng .value (ví dụ dem.value) | Truy cập trực tiếp (ví dụ state.soLuong) |
+| Cách truy cập trong template | Không cần .value (viết dem) | Không cần .value |
+| Tạo mới | ref(0), ref({ ten: 'A' }) | reactive({ soLuong: 0 }) |
+
+### Ví dụ code
+~~~text
+import { ref, reactive } from 'vue';
+
+// ref: gói giá trị vào đối tượng { value: ... }
+var dem = ref(0);
+console.log('Số hiện tại: ' + dem.value); // 0
+dem.value = dem.value + 1;
+
+// reactive: biến toàn bộ object thành phản ứng
+var state = reactive({ ten: 'Máy chủ A', soLuong: 0 });
+console.log('Tên: ' + state.ten);
+state.soLuong = state.soLuong + 1;
+~~~
+
+Trong template của Vue, bạn viết dem (không cần .value) và state.soLuong, Vue tự động bổ sung .value khi cần.
+
+### Lỗi hay gặp
+- Thêm hoặc xóa thuộc tính mới vào đối tượng reactive sau khi tạo vẫn phản ứng được (Vue 3 dùng Proxy, khác Vue 2 cần Vue.set). Lỗi thường gặp là destructuring reactive object (var { a } = state) hoặc dùng spread ({...state}) làm mất bảo bóc Proxy, biến kết quả không còn phản ứng.
+- Gán lại toàn bộ object cho reactive (state = newState) làm mất phản ứng vì biến trong template vẫn trỏ đến object cũ. Cần mutate các thuộc tính thay vì gán mới, hoặc dùng ref chứa object.
+- Dùng .value ở trong template (viết dem.value) sẽ hiển thị undefined vì dem đã được auto-unwrap, chỉ dùng .value ở trong script.
+
+### Ví dụ đời thực
+Trang danh sách đơn hàng hiển thị tổng số đơn (1000 đơn). Kết thúc một đơn, cộng thêm 1 vào biến dem.ref. Vue cập nhật ngay số hiển thị từ 1000 sang 1001, không cần tải lại trang. Nếu bạn dùng biến thường không có ref, số hiển thị được cập nhật trong bộ nhớ nhưng giao diện vẫn cũ, người dùng thấy dữ liệu sai.
+
+### Trả lời mẫu khi phỏng vấn
+Vue 3 sử dụng Proxy để bảo bọc dữ liệu và bắt mọi lần đọc, ghi thuộc tính. ref gói một giá trị thành đối tượng có thuộc tính value, phù hợp cho giá trị nguyên thủy. reactive biến toàn bộ object thành phản ứng, truy cập trực tiếp. Khi dữ liệu thay đổi, Proxy biết thành phần nào sử dụng dữ liệu đó và chỉ cập nhật phần giao diện liên quan. Tôi luôn dùng ref cho giá trị đơn lẻ, reactive cho bộ dữ liệu liên quan nhau, và bổ sung .value ở script nhưng không viết .value ở template.
+
+> Senior tip: Nếu cần thêm thuộc tính động vào object phản ứng, hãy dùng toàn mảng reactive và thêm vào lúc khởi tạo, hoặc dùng ref với một object chứa tất cả trường cần thiết. Không thêm thuộc tính mới sau khi reactive đã được tạo.`,
+  tags: ['vue3', 'reactivity', 'ref', 'reactive'],
+  follow: ['Proxy', 'ref vs reactive', 'computed'],
+},
+{
+  id: 'frontend-007',
+  topic: 'frontend',
+  level: 'senior',
+  q: 'Composition API và Options API trong Vue 3 khác nhau như thế nào? Khi nào nên dùng cái nào?',
+  a: `**Tóm tắt:** Options API tổ chức component theo nhóm tùy chọn (data, methods, computed, mounted...), Composition API nhóm theo tính năng (feature) dùng setup() và ref/reactive. Composition API phù hợp hơn cho component lớn và truyền dụng logic qua composable.
+
+### Cơ chế hoạt động
+Options API: Vue tự kết nối các tùy chọn theo tên. Component được chia thành các nhóm phân loại, viết ở nhiều khoảng khác nhau trong cùng một file.
+Composition API: tất cả logic viết trong setup(), trả về một đối tượng để template truy cập. Vue chạy setup() một lần khi component tạo ra, lấy kết quả trả về hiển thị.
+
+### Ví dụ code
+~~~text
+// Options API
+export default {
+  data() { return { dem: 0 }; },
+  methods: { tang() { this.dem = this.dem + 1; } },
+  mounted() { console.log('Đã khởi tạo'); }
+};
+
+// Composition API
+import { ref, onMounted } from 'vue';
+export default {
+  setup() {
+    var dem = ref(0);
+    function tang() { dem.value = dem.value + 1; }
+    onMounted(function () { console.log('Đã khởi tạo'); });
+    return { dem, tang };
+  }
+};
+~~~
+
+### Bảng so sánh
+| Đặc điểm | Options API | Composition API |
+|---|---|---|
+| Tổ chức | Theo loại (data, methods...) | Theo tính năng (feature) |
+| Phù hợp | Component nhỏ, đơn giản | Component lớn, phức tạp |
+| Truyền dụng logic | Không dễ, phải mixin | Dễ qua composable |
+| TypeScript | Hỗ trợ hạn chế | Hỗ trợ tốt |
+
+### Lỗi hay gặp
+- Viết setup() quá dài, không chia thành composable, component khó đọc và bảo trì.
+- Quên trả về ref/reactive từ setup() làm template không truy cập được.
+- Dùng this trong setup() (this không có ý nghĩa ở đây), phải trả về biến cần thiết.
+
+### Ví dụ đời thực
+Một trang quản lý đơn hàng có 800 dòng code. Với Options API, logic lấy đơn hàng, lọc đơn hàng, tính tổng tiền nằm ở nhiều khoảng (data, methods, computed), sửa lỗi khó tìm. Với Composition API, bạn viết composable useDonHang() gồm tất cả logic liên quan đến đơn hàng, component gọn hơn ít dòng, sửa lỗi và thêm tính năng mới nhanh hơn.
+
+### Trả lời mẫu khi phỏng vấn
+Options API sắp xếp code theo loại tùy chọn như data, methods, computed, mounted, phù hợp với component nhỏ. Composition API viết tất cả logic trong setup(), nhóm theo tính năng, trả về đối tượng để template sử dụng, phù hợp với component lớn và truyền dụng logic qua composable. Nếu component có dưới 100 dòng, Options API đủ dùng; nếu component lớn hoặc cần chia logic nhiều trang sử dụng, chọn Composition API. Tôi luôn chia setup() thành các composable nhỏ để component gọn gàng và dễ kiểm thử.
+
+> Senior tip: Kết hợp hai cách cùng một component là thường xảy ra: Options API cho phần giao diện đơn giản, Composition API cho phần logic phức tạp. Nhưng nếu dự án đã chọn một cách, hãy duy trì nhất quán toàn bộ để không làm đối với mọi người.`,
+  tags: ['vue3', 'composition-api', 'options-api'],
+  follow: ['composable', 'setup()', 'mixin'],
+},
+{
+  id: 'frontend-008',
+  topic: 'frontend',
+  level: 'mid',
+  q: 'computed và watch trong Vue 3 khác nhau như thế nào? Khi nào nên dùng computed, khi nào nên dùng watch?',
+  a: `**Tóm tắt:** computed tính toán giá trị mới dựa trên các giá trị khác và lưu kết quả (cache), watch theo dõi sự thay đổi để thực hiện tác vụ phụ (side effect) như gọi API. computed dùng khi cần giá trị đã xử lý, watch dùng khi cần phản ứng với sự thay đổi.
+
+### Cơ chế hoạt động
+computed: phụ thuộc vào ref/reactive, chỉ tính lại khi giá trị phụ thuộc thay đổi, lưu kết quả lại nếu không có gì thay đổi. Như một biến tiền tính toán trong Java.
+watch: chạy callback khi giá trị thay đổi, phù hợp cho tác vụ phụ (gọi API, lưu localStorage, thêm sự kiện). Không lưu kết quả, chỉ thực hiện hành động.
+
+### Ví dụ code
+~~~text
+import { ref, computed, watch } from 'vue';
+
+export default {
+  setup() {
+    var soLuong = ref(0);
+    var donGia = ref(10000);
+
+    // computed: tiền tố tiền hàng, chỉ tính lại khi soLuong hoặc donGia thay đổi
+    var thanhTien = computed(function () {
+      return soLuong.value * donGia.value;
+    });
+
+    // watch: gửi thông báo khi thành tiền thay đổi quá 1 triệu
+    watch(thanhTien, function (moi, cu) {
+      if (moi > 1000000) {
+        console.log('Thành tiền quá 1 triệu: ' + moi);
+      }
+    });
+
+    return { soLuong, donGia, thanhTien };
+  }
+};
+~~~
+
+### Bảng so sánh
+| Đặc điểm | computed | watch |
+|---|---|---|
+| Mục đích | Tính giá trị đã xử lý | Thực hiện tác vụ phụ |
+| Lưu kết quả | Có (cache) | Không |
+| Chạy khi | Phụ thuộc thay đổi | Giá trị theo dõi thay đổi |
+| Trả về | Giá trị | Không trả về (chạy hàm) |
+| Ví dụ | Tính tổng tiền | Gửi thông báo, gọi API |
+
+### Lỗi hay gặp
+- Dùng watch để tính toán giá trị có thể dùng computed (không cần cache, code phức tạp hơn cần thiết).
+- Quên dọn dẹp side effect trong watch (ví dụ hủy request API khi component bị xoá), làm lọt request và mất bộ nhớ.
+- Dùng watch với giá trị không thay đổi, callback chạy lần đầu tiên luôn (nếu có immediate: true).
+
+### Ví dụ đời thực
+Trang tìm kiếm sản phẩm. Người dùng nhập từ khóa ở ô nhập. Bạn dùng watch theo dõi từ khóa, mỗi lần nhập gọi API tìm kiếm sau 300 mili-giây (debounce). Nếu dùng computed, API sẽ được gọi mỗi lần tiền tố tiền thành tiền được tính lại, không có nghĩa vì computed không làm side effect. Kết quả: danh sách sản phẩm cập nhật đúng lúc người dùng dừng nhập, không làm trễ trang.
+
+### Trả lời mẫu khi phỏng vấn
+computed tính toán giá trị mới dựa trên các giá trị khác và lưu kết quả, chỉ tính lại khi dữ liệu nhập thay đổi, thích hợp tính tổng tiền, lọc danh sách. watch theo dõi sự thay đổi để thực hiện tác vụ phụ như gọi API, gửi thông báo, lưu localStorage. Tôi dùng computed khi cần một giá trị đã xử lý, và dùng watch khi cần phản ứng với sự thay đổi để làm một hành động nào đó. Với tìm kiếm, tôi dùng watch với debounce để không gọi API quá nhiều lần.
+
+> Senior tip: Luôn ưu tiên computed nếu chỉ cần giá trị đã xử lý, chỉ dùng watch khi cần side effect. Nếu gọi API trong watch, hãy dùng debounce và hủy request cũ khi component bị xoá để không làm lọt request và mất bộ nhớ.`,
+  tags: ['vue3', 'computed', 'watch'],
+  follow: ['debounce', 'immediate', 'deep watch'],
+},
+{
+  id: 'frontend-009',
+  topic: 'frontend',
+  level: 'senior',
+  q: 'Props, emit và v-model trong Vue 3 hoạt động như thế nào? Phân biệt truyền dữ liệu một chiều và hai chiều.',
+  a: `**Tóm tắt:** Props truyền dữ liệu từ component cha sang component con, emit gửi sự kiện từ con lên cha, v-model là cách ngắn gọn để hai chiều liên kết dữ liệu giữa cha và con. Props là một chiều (cha -> con), emit là chiều ngược (con -> cha), v-model gộp hai chiều lại.
+
+### Cơ chế hoạt động
+Props: cha gõ thuộc tính xuống con, con chỉ đọc, không sửa props trực tiếp (Vue báo lỗi nếu sửa).
+Emit: con gọi emit('ten-su-kien', giaTri) để thông báo lên cha, cha lắng nghe và cập nhật state của mình.
+v-model: kết hợp props + emit. <con v-model="giaTri" /> tương đương <con :model-value="giaTri" @update:modelValue="giaTri = $event" />.
+
+### Ví dụ code
+~~~text
+// Component con: ModalChinhSua.vue
+export default {
+  props: ['modelValue'],
+  emits: ['update:modelValue'],
+  setup(props, { emit }) {
+    function capNhat(moi) {
+      emit('update:modelValue', moi);
+    }
+    return { capNhat };
+  }
+};
+
+// Template con
+// <input :value="modelValue" @input="capNhat($event.target.value)" />
+
+// Component cha
+export default {
+  setup() {
+    var ten = ref('Nguyen Van A');
+    return { ten };
+  }
+};
+
+// Template cha
+// <ModalChinhSua v-model="ten" />
+~~~
+
+### Bảng so sánh
+| Cách | Hướng | Dùng để |
+|---|---|---|
+| Props | Cha -> con | Truyền dữ liệu xuống con |
+| Emit | Con -> cha | Thông báo sự kiện lên cha |
+| v-model | Hai chiều | Liên kết dữ liệu hai chiều |
+
+### Lỗi hay gặp
+- Sửa props trực tiếp trong component con, Vue báo lỗi và dữ liệu không cập nhật đúng.
+- Quên emit làm cha không biết state đã thay đổi, giao diện bị động lạn.
+- Dùng v-model nhiều thuộc tính (v-model:ten, v-model:tuoi) nhưng quên khai báo emits cho mỗi thuộc tính.
+
+### Ví dụ đời thực
+Một form chỉnh sửa thông tin người dùng ở modal. Cha mở modal và dùng v-model="thongTinNguoiDung". Con hiển thị ô nhập, người dùng sửa tên, con emit 'update:modelValue' với giá trị mới, cha cập nhật thongTinNguoiDung. Lưu thành công, gửi API cập nhật. Nếu quên emit, người dùng sửa tên nhưng form vẫn hiện tên cũ, nghĩ app bị lỗi.
+
+### Trả lời mẫu khi phỏng vấn
+Props truyền dữ liệu từ cha xuống con, con chỉ đọc không sửa trực tiếp. Emit gửi sự kiện từ con lên để cha biết state đã thay đổi. v-model gộp hai chiều, tương đương props modelValue và sự kiện update:modelValue. Tôi dùng props để cấu hình con, emit để con báo lỗi thành công, v-model cho form hai chiều. Luôn khai báo emits cho mỗi sự kiện con gửi lên để Vue kiểm tra đúng.
+
+> Senior tip: Nếu cần nhiều thuộc tính hai chiều, dùng v-model:ten, v-model:tuoi (có thể tên khác modelValue bằng option modelModifiers). Không sửa props trong con, luôn emit để cha cập nhật, tránh dữ liệu bị động lạn giữa các component.`,
+  tags: ['vue3', 'props', 'emit', 'v-model'],
+  follow: ['v-model', 'emits', 'provide/inject'],
+},
+{
+  id: 'frontend-010',
+  topic: 'frontend',
+  level: 'lead',
+  q: 'Pinia quản lý state trong Vue 3 như thế nào? Khác biệt giữa Pinia và Vuex là gì?',
+  a: `**Tóm tắt:** Pinia là thư viện quản lý state chính thức của Vue 3, lưu trạng thái chung cho toàn bộ ứng dụng. Store chứa state (dữ liệu), getter (tính toán từ state), action (thay đổi state, có thể bất đồng bộ gọi API). Các component truy cập và cập nhật dữ liệu chung qua store.
+
+### Cơ chế hoạt động
+Pinia tạo store lưu state ở một nơi trung gian. Mọi component cùng store cùng thấy thay đổi nhau.
+- state: dữ liệu chung (ví danh sách đơn hàng, thông tin người dùng đăng nhập).
+- getter: tính toán từ state (giống computed), ví tổng số đơn hàng.
+- action: thay đổi state, có thể gọi API bất đồng bộ, ví thêm đơn hàng, cập nhật thông tin.
+Component gọi action, state thay đổi, tất cả component dùng store cập nhật lại giao diện.
+
+### Ví dụ code
+~~~text
+import { defineStore } from 'pinia';
+
+export const useDonHangStore = defineStore('donhang', {
+  state: () => ({
+    danhSach: [],
+    tong: 0
+  }),
+  getters: {
+    soLuongDon: (state) => state.danhSach.length
+  },
+  actions: {
+    async layDanhSach() {
+      var kq = await fetch('/api/don-hang');
+      this.danhSach = await kq.json();
+      this.tong = this.danhSach.length;
+    },
+    themDon(don) {
+      this.danhSach.push(don);
+      this.tong = this.danhSach.length;
+    }
+  }
+});
+
+// Dùng trong component
+import { useDonHangStore } from '@/stores/donhang';
+export default {
+  setup() {
+    var store = useDonHangStore();
+    console.log('Tổng đơn: ' + store.tong);
+    return { store };
+  }
+};
+~~~
+
+### Bảng so sánh Pinia và Vuex
+| Đặc điểm | Pinia | Vuex |
+|---|---|---|
+| Store | Nhiều store, tên khác nhau | Một store trung tâm |
+| Action | Bất đồng bộ có bản | Bất động bộ có bản (không cần plugin) |
+| TypeScript | Hỗ trợ tốt | Hỗ trợ tốt nhưng phức tạp hơn |
+| Trạng thái | Chính thức Vue 3 | Đã giữ nguyên, không phát triển thêm |
+
+### Lỗi hay gặp
+- Thực hiện side effect (gọi API) trực tiếp trong component thay vì action, component khó kiểm thử và dính chéo.
+- Lưu dữ liệu quá lớn vào store (ví danh sách 10000 bản ghi) làm hiệu năng giảm, chỉ lưu dữ liệu thực sự chung.
+
+### Ví dụ đời thực
+Một trang mua sách online có giỏ hàng. Người dùng thêm sách ở trang chi tiết, giỏ hàng ở header cập nhật luôn luôn. Pinia lưu giỏ hàng ở store chung, tất cả component thấy giỏ hàng hết số lượng sách. Sau 3 tháng, tổng số lượt thêm vào giỏ tăng lên 20000 đơn, trang hoạt động ổn định, không bị mất dữ liệu giỏ hàng khi chuyển trang.
+
+### Trả lời mẫu khi phỏng vấn
+Pinia là thư viện quản lý state chính thức của Vue 3, lưu trạng thái chung cho toàn ứng dụng. Store chứa state dữ liệu, getter tính toán từ state, action thay đổi state và có thể gọi API bất đồng bộ. Các component cùng store thấy thông tin nhau, cập nhật giao diện khi state thay đổi. Pinia khác Vuex ở chỗ cho phép nhiều store, hỗ trợ action bất đồng bộ có bản, và được ưu tiên cho Vue 3. Tôi dùng Pinia cho dữ liệu chung như thông tin người dùng, giỏ hàng, danh sách đơn hàng.
+
+> Senior tip: Chia store theo tính năng (donhang, nguoidung, giohang) thay vì một store to. Chỉ lưu dữ liệu thực sự chung vào store, dữ liệu của một component lưu ở component. Khi gọi API trong action, luôn bắt lỗi và hiển thị thông báo người dùng hiểu được.`,
+  tags: ['vue3', 'pinia', 'state-management', 'vuex'],
+  follow: ['store', 'getter', 'action', 'vuex vs pinia']
+},
+{
+  id: 'frontend-011',
+  topic: 'frontend',
+  level: 'senior',
+  q: 'Vòng đời component trong Vue 3 (onMounted, onUnmounted, onUpdated...) hoạt động như thế nào? So sánh với lifecycle class component trong React hoặc @PostConstruct/@PreDestroy trong Spring.',
+  a: `**Tóm tắt:** Vue 3 cung cấp các hook vòng đời trong Composition API (onMounted, onUnmounted, onUpdated, onBeforeMount, onBeforeUnmounted...) để chạy code tại các thời điểm chính xác của component. Giống @PostConstruct/@PreDestroy trong Spring, nhưng chạy trên luồng UI và gắn liền với việc render.
+ 
+### Các hook chính và thứ tự chạy
+1. onBeforeMount: chạy ngay trước component được gắn vào DOM, dữ liệu đã sẵn sàng nhưng DOM chưa có.
+2. onMounted: chạy sau khi component đã có trong DOM, đây là lúc thường gọi API, thêm sự kiện DOM, khởi tạo thư viện thứ ba.
+3. onBeforeUpdate: chạy khi dữ liệu thay đổi, trước khi DOM được cập nhật.
+4. onUpdated: chạy sau khi DOM đã cập nhật xong do dữ liệu thay đổi.
+5. onBeforeUnmount: chạy trước khi component bị xoá khỏi DOM, dùng để dọn dẹp (hủy timer, hủy đăng ký sự kiện, hủy WebSocket).
+6. onUnmounted: chạy sau khi component đã bị xoá hoàn toàn.
+ 
+### So sánh với Spring và React
+| Đặc điểm | Vue 3 (Composition API) | Spring Bean | React Class Component |
+|---|---|---|---|
+| Khởi tạo | onMounted | @PostConstruct | componentDidMount |
+| Hủy | onUnmounted | @PreDestroy | componentWillUnmount |
+| Cập nhật | onUpdated | Không có khái niệm tương đương | componentDidUpdate |
+| Phạm vi | Component UI | Bean toàn ứng dụng | Component UI |
+ 
+### Ví dụ code
+~~~text
+import { ref, onMounted, onUnmounted, onUpdated } from 'vue';
+ 
+export default {
+  setup() {
+    var thoiGian = ref(0);
+    var timerId = null;
+ 
+    onMounted(function () {
+      console.log('Component đã gắn vào DOM');
+      timerId = setInterval(function () {
+        thoiGian.value = thoiGian.value + 1;
+      }, 1000);
+    });
+ 
+    onUnmounted(function () {
+      console.log('Component sắp bị xoá, dọn dẹp timer');
+      clearInterval(timerId);
+    });
+ 
+    onUpdated(function () {
+      console.log('DOM đã cập nhật, thời gian: ' + thoiGian.value);
+    });
+ 
+    return { thoiGian };
+  }
+};
+~~~
+ 
+### Lỗi hay gặp
+- Quên clearInterval/clearTimeout trong onUnmounted gây rò rỉ bộ nhớ và callback chạy trên component đã chết.
+- Gọi API trong onBeforeMount thay vì onMounted, component có thể bị xoá trước khi API xong dẫn đến lỗi cập nhật state trên component không còn tồn tại.
+- Thực hiện side effect nặng trong onUpdated (ví dụ gọi API) gây vòng lặp vô hạn vì cập nhật state lại kích hoạt onUpdated.
+ 
+### Ví dụ đời thực
+Một dashboard theo dõi server real-time dùng WebSocket. onMounted mở kết nối, onUnmounted đóng kết nối. Nếu quên đóng trong onUnmounted, mỗi lần người dùng vào/ra trang dashboard tạo thêm một kết nối WebSocket. Sau 50 lần, server có 50 kết nối rác từ cùng một trình duyệt, tốn tài nguyên và làm chậm push dữ liệu thật.
+ 
+### Trả lời mẫu khi phỏng vấn
+Vue 3 cung cấp các hook vòng đời như onMounted, onUnmounted, onUpdated... trong Composition API. onMounted chạy sau khi component có trong DOM, dùng để gọi API, khởi tạo thư viện, thêm sự kiện. onUnmounted chạy trước khi xoá component, bắt buộc dùng để dọn dẹp timer, WebSocket, event listener. onUpdated chạy sau DOM cập nhật. Giống @PostConstruct/@PreDestroy trong Spring nhưng gắn liền với render UI. Tôi luôn dọn dẹp tài nguyên trong onUnmounted để tránh rò rỉ bộ nhớ.
+ 
+> Senior tip: Không dùng onUpdated để gọi API hoặc thay đổi state, rất dễ gây vòng lặp vô hạn. Nếu cần phản ứng với thay đổi dữ liệu, hãy dùng watch hoặc computed thay vì onUpdated.`,
+  tags: ['vue3', 'lifecycle', 'onMounted', 'onUnmounted'],
+  follow: ['onBeforeMount', 'onErrorCaptured', 'keep-alive']
+},
+{
+  id: 'frontend-012',
+  topic: 'frontend',
+  level: 'senior',
+  q: 'Vue Router navigation guard (beforeEach, beforeResolve, afterEach) dùng để làm gì? Viết guard kiểm tra quyền truy cập trang admin (chỉ cho phép role ADMIN).',
+  a: `**Tóm tắt:** Navigation guard trong Vue Router cho phép chặn, cho phép hoặc chuyển hướng điều hướng trước khi trang thực sự hiển thị. beforeEach chạy trước mọi điều hướng, beforeResolve chạy sau khi các component async đã tải xong, afterEach chạy sau khi điều hướng hoàn tất (không thể chặn). Dùng để kiểm tra đăng nhập, phân quyền, tải dữ liệu trước, ghi log.
+ 
+### Ba loại guard chính
+- beforeEach(to, from, next): chạy đầu tiên, có thể next() cho phép, next(false) hủy, next('/login') chuyển hướng. Phù hợp kiểm tra token, role.
+- beforeResolve(to, from, next): chạy sau beforeEach và sau khi các component lazy-load đã resolve. Dùng khi cần dữ liệu component trước khi quyết định cho phép.
+- afterEach(to, from): chạy sau điều hướng xong, không có next(), không thể chặn. Dùng cho analytics, scroll to top, đóng loading.
+ 
+### So sánh với Spring Security Filter Chain
+| Vue Router Guard | Spring Security Filter |
+|---|---|
+| beforeEach | Filter đầu tiên (SecurityContextPersistenceFilter) |
+| beforeResolve | Filter sau khi Authentication đã xác thực |
+| afterEach | Filter cuối (LoggingFilter) |
+Cả hai đều chạy theo chuỗi, có thể chặn request/điều hướng sớm.
+ 
+### Ví dụ code: Guard phân quyền admin
+~~~text
+import { createRouter, createWebHistory } from 'vue-router';
+import { useAuthStore } from '@/stores/auth';
+ 
+const routes = [
+  { path: '/', component: () => import('@/views/Home.vue') },
+  { path: '/login', component: () => import('@/views/Login.vue') },
+  { path: '/admin', component: () => import('@/views/Admin.vue'), meta: { requiresAuth: true, roles: ['ADMIN'] } },
+  { path: '/user', component: () => import('@/views/User.vue'), meta: { requiresAuth: true } }
+];
+ 
+const router = createRouter({
+  history: createWebHistory(),
+  routes
+});
+ 
+router.beforeEach(async (to, from, next) => {
+  const auth = useAuthStore();
+ 
+  // Chờ auth khởi tạo xong (nếu load token từ localStorage)
+  if (!auth.initialized) {
+    await auth.init();
+  }
+ 
+  // Trang công khai
+  if (!to.meta.requiresAuth) {
+    return next();
+  }
+ 
+  // Chưa đăng nhập -> về login
+  if (!auth.token) {
+    return next({ path: '/login', query: { redirect: to.fullPath } });
+  }
+ 
+  // Kiểm tra role
+  const requiredRoles = to.meta.roles || [];
+  if (requiredRoles.length > 0 && !requiredRoles.includes(auth.role)) {
+    return next({ path: '/403' }); // Không đủ quyền
+  }
+ 
+  // Đủ điều kiện
+  next();
+});
+ 
+router.afterEach((to, from) => {
+  // Ghi log, scroll top, analytics
+  window.scrollTo(0, 0);
+});
+~~~
+ 
+### Lỗi hay gặp
+- Gọi next() nhiều lần trong một guard (ví dụ trong if/else quên return) gây lỗi "Navigation guard called next() multiple times".
+- Quên await cho async function trong beforeEach, guard chạy xong trước khi dữ liệu sẵn sàng.
+- Đặt logic phân quyền phức tạp trong component (mounted) thay vì guard, người dùng thấy trang lóe lên rồi bị chuyển hướng.
+- Không xử lý trường hợp token hết hạn trong guard, dẫn đến API 401 lặp lại.
+ 
+### Ví dụ đời thực
+Hệ thống quản lý đơn hàng có 3 vai trò: ADMIN (xem tất cả), MANAGER (xem khu vực), STAFF (xem đơn của mình). Dùng beforeEach kiểm tra to.meta.roles. Nếu STAFF truy cập /admin, guard chuyển về /403 trong 50 ms, người dùng không bao giờ thấy giao diện admin. Log ghi nhận 1200 lần truy cập trái phép/tháng từ nhân viên mới, giúp team bảo mật audit.
+ 
+### Trả lời mẫu khi phỏng vấn
+Vue Router có ba guard chính: beforeEach chạy trước mọi điều hướng, dùng để kiểm tra đăng nhập và phân quyền; beforeResolve chạy sau khi component async đã tải, dùng khi cần dữ liệu component trước khi quyết định; afterEach chạy sau khi xong, dùng cho analytics. Để phân quyền admin, tôi thêm meta.roles: ['ADMIN'] vào route, trong beforeEach đọc authStore, nếu chưa đăng nhập chuyển về /login, nếu đăng nhập nhưng role không khớp chuyển về /403. Luôn return next() để tránh gọi nhiều lần.
+ 
+> Senior tip: Đăng ký guard ở cấp router (router.beforeEach) thay vì per-route (beforeEnter) để logic tập trung, dễ bảo trì. Nếu app lớn, hãy tách guard thành file riêng (guards/auth.js, guards/permission.js) và import vào router.`,
+  tags: ['vue3', 'vue-router', 'navigation-guard', 'auth', 'authorization'],
+  follow: ['beforeEnter', 'lazy loading', 'scrollBehavior']
+},
+{
+  id: 'frontend-013',
+  topic: 'frontend',
+  level: 'mid',
+  q: 'provide/inject trong Vue 3 dùng để làm gì? Khác biệt với props truyền nhiều cấp (prop drilling) như thế nào?',
+  a: `**Tóm tắt:** provide/inject cho phép component cha cung cấp dữ liệu/hàm cho bất kỳ component con cháu nào mà không cần truyền qua props từng cấp. Giải quyết vấn đề prop drilling (truyền props qua nhiều tầng component trung gian không cần dùng đến). Tương tự Dependency Injection trong Spring (@Autowired), nhưng ở cấp component UI.
+ 
+### Cơ chế hoạt động
+1. Component cha (hoặc tổ tiên) gọi provide('key', value) trong setup(). Value có thể là ref, reactive, hàm, object.
+2. Component con cháu bất kỳ gọi inject('key') để nhận value. Mặc định inject không phản ứng, nếu cần phản ứng hãy provide một ref hoặc reactive.
+3. Nếu không tìm thấy key, inject trả về undefined (hoặc giá trị mặc định inject('key', defaultValue)).
+ 
+### So sánh provide/inject vs Prop Drilling
+| Đặc điểm | Prop Drilling | provide/inject |
+|---|---|---|
+| Cách truyền | Props qua từng component trung gian | Cha provide, cháu inject trực tiếp |
+| Component trung gian | Phải khai báo props, truyền tiếp | Không cần biết, không khai báo gì |
+| Phản ứng | Tự động (props luôn phản ứng) | Cần provide ref/reactive mới phản ứng |
+| TypeScript | Dễ infer type | Cần InjectionKey để type-safe |
+| Phù hợp | 1-2 cấp, dữ liệu cục bộ | Nhiều cấp, dữ liệu toàn cục/theme/i18n |
+ 
+### Ví dụ code
+~~~text
+import { ref, provide, inject, computed } from 'vue';
+ 
+// Key duy nhất để tránh trùng lặp, dùng Symbol cho type-safe
+const THEME_KEY = Symbol('theme');
+ 
+// Component gốc App.vue
+export default {
+  setup() {
+    var theme = ref('light'); // ref để con cháu thay đổi được
+ 
+    function doiTheme() {
+      theme.value = theme.value === 'light' ? 'dark' : 'light';
+    }
+ 
+    provide(THEME_KEY, { theme, doiTheme });
+    return { theme, doiTheme };
+  }
+};
+ 
+// Component con cháu bất kỳ (Button.vue, Card.vue, Modal.vue...)
+export default {
+  setup() {
+    // inject trả về object { theme: ref, doiTheme: function }
+    const { theme, doiTheme } = inject(THEME_KEY, { theme: ref('light'), doiTheme: () => {} });
+    return { theme, doiTheme };
+  }
+};
+ 
+// Template Button.vue
+// <button @click="doiTheme" :class="theme">Chuyển theme</button>
+~~~
+ 
+### Lỗi hay gặp
+- Provide giá trị nguyên thủy (string, number) thay vì ref/reactive: con cháu inject được nhưng khi cha thay đổi, con không cập nhật (mất phản ứng).
+- Quên cung cấp giá trị mặc định cho inject: component dùng inject nhưng không có ancestor provide -> undefined, gây lỗi runtime.
+- Lạm dụng provide/inject cho mọi thứ: chỉ dùng cho dữ liệu thực sự chia sẻ rộng (theme, locale, user info, config). Dữ liệu cục bộ 1-2 cấp nên dùng props.
+ 
+### Ví dụ đời thực
+Ứng dụng admin có 50 component. Theme (light/dark) và ngôn ngữ (vi/en) cần dùng ở khắp nơi: header, sidebar, modal, table, form. Nếu dùng props, 50 component đều phải khai báo theme, locale, và 20 component trung gian phải truyền tiếp. Dùng provide/inject: App.vue provide một lần, 50 component inject trực tiếp, không component trung gian nào phải sửa code. Thêm theme mới chỉ sửa App.vue.
+ 
+### Trả lời mẫu khi phỏng vấn
+provide/inject cho phép component cha chia sẻ dữ liệu cho con cháu bất kỳ mà không truyền qua props. Cha gọi provide(key, value), cháu gọi inject(key). Giá trị nên là ref hoặc reactive để giữ phản ứng. Khác với prop drilling: prop drilling buộc component trung gian khai báo và truyền props, provide/inject bỏ qua trung gian. Tương tự DI trong Spring: cha là container, provide là đăng ký bean, inject là @Autowired. Tôi dùng cho theme, locale, user info, config toàn cục.
+ 
+> Senior tip: Luôn dùng Symbol làm key (const KEY = Symbol('name')) để tránh trùng lặp và hỗ trợ TypeScript tốt. Đặt giá trị mặc định cho inject để component có thể test độc lập không cần ancestor.`,
+  tags: ['vue3', 'provide', 'inject', 'dependency-injection'],
+  follow: ['InjectionKey', 'prop drilling', 'global store vs provide']
+},
+{
+  id: 'frontend-014',
+  topic: 'frontend',
+  level: 'senior',
+  q: 'Slots trong Vue 3 (default slot, named slot, scoped slot) hoạt động như thế nào? Viết component Card có header, content, footer tùy chỉnh.',
+  a: `**Tóm tắt:** Slot là chỗ trống trong component con để component cha truyền nội dung (HTML, component khác) vào. Default slot dùng khi có một nội dung duy nhất. Named slot (slot name="ten") cho phép nhiều khu vực nội dung riêng biệt. Scoped slot (v-slot:ten="props") cho phép component con truyền dữ liệu ra cho component cha quyết định hiển thị như thế nào. Giống children trong React nhưng mạnh hơn nhờ named slot và scoped slot.
+ 
+### Ba loại slot
+1. Default slot: <slot /> hoặc <slot>nội dung mặc định</slot>. Cha truyền nội dung không tên: <Child>nội dung</Child>.
+2. Named slot: <slot name="header" />. Cha truyền: <template #header>nội dung header</template>.
+3. Scoped slot: <slot name="item" :data="item" :index="index" />. Cha nhận props: <template #item="{ data, index }">...</template>.
+ 
+### So sánh với React children
+| Vue Slot | React |
+|---|---|
+| Default slot | props.children |
+| Named slot | props.header, props.footer (cần tự quy ước) |
+| Scoped slot | Render props pattern (props.renderItem(item)) |
+Vue slot là first-class citizen, declarative trong template, React dùng JSX pattern.
+ 
+### Ví dụ code: Component Card
+~~~text
+// Card.vue
+export default {
+  props: ['title'],
+  setup(props, { slots }) {
+    return () => (
+      <div class="card">
+        <div class="card-header">
+          {slots.header ? slots.header() : props.title}
+        </div>
+        <div class="card-body">
+          {slots.default ? slots.default() : 'Không có nội dung'}
+        </div>
+        <div class="card-footer">
+          {slots.footer ? slots.footer() : ''}
+        </div>
+      </div>
+    );
+  }
+};
+ 
+// Hoặc viết template (thông dụng hơn)
+~~~
+ 
+~~~text
+<!-- Card.vue template -->
+<template>
+  <div class="card">
+    <div class="card-header">
+      <slot name="header">{{ title }}</slot>
+    </div>
+    <div class="card-body">
+      <slot>Không có nội dung</slot>
+    </div>
+    <div class="card-footer">
+      <slot name="footer" />
+    </div>
+  </div>
+</template>
+ 
+<script>
+export default { props: ['title'] };
+</script>
+ 
+<!-- Sử dụng Card.vue -->
+<Card title="Đơn hàng #123">
+  <template #header>
+    <h3>Đơn hàng #123</h3>
+    <Badge>Chờ xử lý</Badge>
+  </template>
+ 
+  <template #default>
+    <OrderItems :items="donHang.items" />
+  </template>
+ 
+  <template #footer>
+    <Button @click="huyDon">Hủy</Button>
+    <Button variant="primary" @click="xemChiTiet">Xem chi tiết</Button>
+  </template>
+</Card>
+~~~
+ 
+### Scoped slot ví dụ: Bảng có thể tùy chỉnh cột
+~~~text
+<!-- DataTable.vue -->
+<template>
+  <table>
+    <thead>
+      <tr><th>STT</th><th>Tên</th><th>Thao tác</th></tr>
+    </thead>
+    <tbody>
+      <tr v-for="(item, index) in items" :key="item.id">
+        <td>{{ index + 1 }}</td>
+        <td>{{ item.ten }}</td>
+        <td>
+          <slot name="actions" :item="item" :index="index">
+            <button>Mặc định</button>
+          </slot>
+        </td>
+      </tr>
+    </tbody>
+  </table>
+</template>
+ 
+<!-- Cha tùy chỉnh cột actions -->
+<DataTable :items="danhSach">
+  <template #actions="{ item, index }">
+    <Button @click="sua(item)">Sửa</Button>
+    <Button danger @click="xoa(item)">Xóa</Button>
+  </template>
+</DataTable>
+~~~
+ 
+### Lỗi hay gặp
+- Quên kiểm tra slots.name trước khi render, slot trống vẫn tạo element wrapper rỗng làm CSS lệch.
+- Dùng scoped slot nhưng quên destructure props trong v-slot: <template #actions="props"> phải dùng props.item thay vì item.
+- Truyền quá nhiều dữ liệu qua scoped slot làm component cha phụ thuộc chặt vào cấu trúc dữ liệu con, khó tái cấu trúc.
+ 
+### Ví dụ đời thực
+Thư viện component nội bộ có DataTable dùng scoped slot cho cột actions. 15 trang dùng DataTable, mỗi trang tùy chỉnh nút Sửa/Xóa/Xem/In khác nhau. Khi yêu cầu thêm nút "Xuất Excel", team chỉ cập nhật DataTable.vue thêm slot action mặc định, 15 trang không cần sửa code. Nếu không có scoped slot, DataTable phải nhận mảng config cột phức tạp, khó bảo trì.
+ 
+### Trả lời mẫu khi phỏng vấn
+Vue có ba loại slot: default slot cho một nội dung, named slot cho nhiều khu vực (header, footer), scoped slot cho phép con truyền dữ liệu ra để cha quyết định render. Card component dùng named slot header, default, footer. DataTable dùng scoped slot truyền item, index ra để cha tự render nút hành động. Khác React children: Vue slot declarative trong template, hỗ trợ named và scoped sẵn. Tôi dùng slot để component linh hoạt, cha quyết định UI, con chỉ lo khung và logic.
+ 
+> Senior tip: Luôn đặt nội dung mặc định trong <slot>nội dung mặc định</slot> cho default/named slot. Với scoped slot, hãy định nghĩa rõ ràng props truyền ra (item, index, v.v.) và ghi chú JSDoc để IDE gợi ý cho người dùng component.`,
+  tags: ['vue3', 'slot', 'named-slot', 'scoped-slot'],
+  follow: ['slot fallback', 'dynamic slot name', 'renderless component']
+},
+{
+  id: 'frontend-015',
+  topic: 'frontend',
+  level: 'lead',
+  q: 'Async component (defineAsyncComponent), Suspense và Teleport trong Vue 3 giải quyết vấn đề gì? Khi nào nên dùng từng cái?',
+  a: `**Tóm tắt:** Ba tính năng nâng cao của Vue 3: defineAsyncComponent tải component khi cần (code splitting), Suspense hiển thị fallback trong khi chờ async component/async setup, Teleport render nội dung vào DOM node khác (modal, tooltip). Ba cái cùng mục đích: cải thiện trải nghiệm tải và vị trí render.
+ 
+### defineAsyncComponent (Code Splitting)
+Cho phép chia nhỏ bundle, chỉ tải component khi thực sự cần. Mặc định Vue tải lazy (khi component được render lần đầu).
+ 
+~~~text
+import { defineAsyncComponent } from 'vue';
+ 
+// Tải khi cần, có loading/error/delay/timeout
+const HeavyChart = defineAsyncComponent({
+  loader: () => import('./HeavyChart.vue'),
+  loadingComponent: ChartSkeleton,
+  errorComponent: ChartError,
+  delay: 200, // Chỉ hiện loading sau 200ms (tránh nháy)
+  timeout: 10000 // 10s timeout -> hiện error
+});
+ 
+// Dùng trong template: <HeavyChart />
+~~~
+ 
+### Suspense (Chờ async)
+Bọc component có setup() async hoặc async component, hiển thị #fallback trong khi chờ. Cần đặt ở component cha.
+ 
+~~~text
+<!-- Parent.vue -->
+<template>
+  <Suspense>
+    <template #default>
+      <Dashboard />  <!-- Dashboard.setup() là async, hoặc dùng HeavyChart -->
+    </template>
+    <template #fallback>
+      <PageSkeleton />  <!-- Hiển thị khi chờ -->
+    </template>
+  </Suspense>
+</template>
+ 
+<!-- Dashboard.vue -->
+<script>
+export default {
+  async setup() {
+    const data = await fetchDashboardData(); // Chờ dữ liệu xong mới render
+    return { data };
+  }
+};
+</script>
+~~~
+ 
+### Teleport (Dịch chuyển DOM)
+Render nội dung template vào DOM node khác (thường là body) thay vì vị trí component. Dùng cho modal, tooltip, dropdown, toast để tránh vấn đề z-index, overflow: hidden, stacking context.
+ 
+~~~text
+<!-- Modal.vue -->
+<template>
+  <Teleport to="body">
+    <div class="modal-overlay" v-if="hienThi">
+      <div class="modal-box">
+        <slot />
+        <button @click="$emit('close')">Đóng</button>
+      </div>
+    </div>
+  </Teleport>
+</template>
+ 
+<script>
+export default { props: ['hienThi'], emits: ['close'] };
+</script>
+ 
+<!-- Dùng: <Modal :hienThi="show" @close="show=false">Nội dung</Modal> -->
+~~~
+ 
+### Bảng so sánh khi dùng cái nào
+| Tính năng | Vấn đề giải quyết | Khi nào dùng |
+|---|---|---|
+| defineAsyncComponent | Bundle quá lớn, tải chậm trang đầu | Component nặng (biểu đồ, editor, bản đồ), trang ít truy cập |
+| Suspense | UI nháy, layout shift khi chờ dữ liệu | Trang cần dữ liệu trước khi hiển thị, tránh spinner lẻ tẻ |
+| Teleport | Modal bị cắt bởi overflow, z-index loạn | Modal, tooltip, dropdown, toast cần hiển thị trên tất cả |
+ 
+### Lỗi hay gặp
+- Dùng Suspense mà quên component con có async setup hoặc defineAsyncComponent -> Suspense không chờ, fallback không hiện.
+- Teleport to="body" nhưng body chưa sẵn sàng (SSR) hoặc multiple root app -> Teleport không tìm thấy target. Cần to="#modal-root" với &lt;div id="modal-root"&gt;&lt;/div&gt; trong index.html.
+- Async component không có errorComponent: khi mạng lỗi, ứng dụng trắng trang không thông báo.
+- Lồng Suspense trong Suspense không cần thiết, chỉ một cấp cha đủ.
+ 
+### Ví dụ đời thực
+Trang admin có Dashboard (tải 5 widget), Báo cáo (biểu đồ nặng 300KB), Cài đặt. Dùng defineAsyncComponent cho Báo cáo: bundle chính giảm từ 450KB xuống 150KB, First Contentful Paint cải thiện từ 2.1s xuống 1.3s. Dashboard dùng Suspense với PageSkeleton: người dùng thấy khung sườn ngay 0.8s, dữ liệu đổ vào 1.5s, không bị layout shift. Modal xác nhận xóa dùng Teleport to="#modal-root": không bị cắt bởi sidebar overflow: hidden, z-index luôn trên cùng.
+ 
+### Trả lời mẫu khi phỏng vấn
+defineAsyncComponent chia nhỏ bundle, tải component khi cần (lazy load), cấu hình loading/error/delay/timeout. Suspense bọc component async (setup async hoặc async component), hiển thị fallback cho đến khi xong, tránh spinner rải rác. Teleport render nội dung vào DOM node khác (body hoặc #modal-root), giải quyết modal bị cắt bởi overflow/z-index. Tôi dùng async component cho trang nặng, Suspense cho trang cần dữ liệu trước khi hiện, Teleport cho modal/tooltip. Ba tính năng cùng hướng tới UX mượt mà hơn.
+ 
+> Senior tip: Kết hợp ba cái: defineAsyncComponent tải component, Suspense chờ component đó xong (kèm dữ liệu async setup), Teleport đảm bảo modal hiển thị đúng chỗ. Trong vite.config.js, hãy cấu hình manualChunks để tách vendor và async component thành file riêng, tránh duplicate code.`,
+  tags: ['vue3', 'async-component', 'suspense', 'teleport', 'code-splitting'],
+  follow: ['defineAsyncComponent options', 'Suspense events', 'Teleport SSR']
 }
 );
