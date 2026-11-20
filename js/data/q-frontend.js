@@ -1053,5 +1053,477 @@ defineAsyncComponent chia nhỏ bundle, tải component khi cần (lazy load), c
 > Senior tip: Kết hợp ba cái: defineAsyncComponent tải component, Suspense chờ component đó xong (kèm dữ liệu async setup), Teleport đảm bảo modal hiển thị đúng chỗ. Trong vite.config.js, hãy cấu hình manualChunks để tách vendor và async component thành file riêng, tránh duplicate code.`,
   tags: ['vue3', 'async-component', 'suspense', 'teleport', 'code-splitting'],
   follow: ['defineAsyncComponent options', 'Suspense events', 'Teleport SSR']
+},
+{
+  id: 'frontend-016',
+  topic: 'frontend',
+  level: 'lead',
+  q: 'Gọi REST API bằng axios trong SPA Vue cần làm gì để an toàn? Hãy trình bày interceptor gắn JWT, cách xử lý refresh token khi hết hạn, xử lý phản hồi 401, và so sánh lưu token ở bộ nhớ trong, localStorage và cookie HttpOnly.',
+  a: `**Tóm tắt:** axios là thư viện JavaScript gọi HTTP từ trình duyệt, tương tự RestTemplate hoặc WebClient trong Spring. Interceptor là hàm can thiệp trước khi yêu cầu gửi đi và sau khi phản hồi về, giống Spring Servlet Filter. JWT (JSON Web Token) là mã thông báo đăng nhập do server ký, client không thể giả mạo. XSS (Cross-Site Scripting) là lỗ hổng cho attacker chèn JavaScript vào trang để trộm token. Nên lưu access token ở bộ nhớ trong của JavaScript hoặc cookie HttpOnly, không để trong localStorage vì JavaScript đọc được localStorage và attacker có thể trộm qua XSS.
+
+### Gọi API bằng axios, từng bước
+
+1. Tạo axios instance với baseURL và timeout, dùng chung cho mọi yêu cầu (giống cấu hình RestTemplate một lần).
+2. Gọi axios.get(...) trả về Promise (giống CompletableFuture Java): .then xử lý thành công, .catch xử lý lỗi.
+3. Phản hồi có data (nội dung JSON đã chuyển đổi), status (200, 401, 500…), headers.
+4. Lỗi mạng hoặc server 4xx/5xx đều ném vào .catch.
+
+~~~text
+import axios from 'axios';
+
+var api = axios.create({
+  baseURL: 'https://api.example.com',
+  timeout: 10000 // dùng 10 giây, quá thời gian sẽ bỏ qua
+});
+
+api.get('/san-pham?trang=1&kichThuoc=20')
+  .then(function (phanHoi) {
+    console.log('Danh sách: ' + JSON.stringify(phanHoi.data));
+  })
+  .catch(function (loi) {
+    console.log('Lỗi gọi API: ' + loi.message);
+  });
+~~~
+
+phanHoi.data là mảng hoặc object JSON đã được axios chuyển đổi tự động, không cần JSON.parse như fetch thuần.
+
+### Interceptor gắn JWT vào mọi yêu cầu
+
+Sau khi đăng nhập, server trả JWT. Client lưu vào biến, interceptor request gắn header Authorization: Bearer <jwt> trước mỗi lần gửi. Không phải gắn thủ công ở mỗi axios.get, giảm lỗi quên và tập trung ở một nơi (giống Filter hoặc ControllerAdvice tập trung).
+
+~~~text
+var token = null; // bộ nhớ trong, mất khi tải lại trang
+var refreshToken = null; // mã dài hạn để đổi access token mới
+
+api.interceptors.request.use(function (config) {
+  if (token) {
+    config.headers.Authorization = 'Bearer ' + token;
+  }
+  return config;
+}, function (loi) {
+  return Promise.reject(loi);
+});
+~~~
+
+### Refresh token và xử lý 401
+
+401 Unauthorized nghĩa là chưa xác thực hoặc JWT hết hạn. Refresh token là mã dài hạn (ví dụ 7 ngày) dùng để đổi JWT mới mà không bắt người dùng nhập lại mật khẩu.
+
+Khi nhận 401: gọi POST /auth/refresh với refresh token; nếu thành công, lưu JWT mới và gửi lại yêu cầu cũ; nếu refresh cũng hết hạn, xóa token và về trang đăng nhập. Đánh dấu yêu cầu đã thử lại (_retry = true) để tránh vòng lặp vô hạn.
+
+~~~text
+api.interceptors.response.use(function (phanHoi) {
+  return phanHoi;
+}, async function (loi) {
+  var yeuCau = loi.config;
+  if (loi.response && loi.response.status === 401 && !yeuCau._retry) {
+    yeuCau._retry = true;
+    try {
+      var moi = await api.post('/auth/refresh', { refreshToken: refreshToken });
+      token = moi.data.accessToken;
+      yeuCau.headers.Authorization = 'Bearer ' + token;
+      return api(yeuCau); // gửi lại yêu cầu cũ
+    } catch (loiRefresh) {
+      token = null;
+      window.location.href = '/dang-nhap';
+      return Promise.reject(loiRefresh);
+    }
+  }
+  return Promise.reject(loi);
+});
+~~~
+
+### Lưu token ở đâu
+
+| Vị trí | JavaScript đọc được | XSS trộm được | Gửi tự động | Ghi chú |
+|---|---|---|---|---|
+| Biến JS (bộ nhớ trong) | Có | Có | Không | Mất khi tải lại trang |
+| localStorage | Có | Có | Không | Không lưu JWT nhạy cảm |
+| Cookie HttpOnly | Không | Không | Có | Cần SameSite và CSRF token |
+
+Biến JS và localStorage đều có thể bị XSS đọc (XSS chạy JavaScript trong trang). Cookie HttpOnly JavaScript không đọc được, nên XSS không trộm được token, nhưng trình duyệt tự động gửi cookie với mỗi yêu cầu đến cùng domain, cần CSRF protection (SameSite cookie, CSRF token).
+
+Phòng XSS: không dùng innerHTML với dữ liệu người dùng, dùng v-text của Vue (tự thoát), sanitize HTML, đặt header Content-Security-Policy.
+
+### Lỗi hay gặp
+
+- Lưu JWT trong localStorage: XSS trộm được token, attacker gọi API thay người dùng.
+- Quên đánh dấu _retry: mỗi lần 401 gọi refresh, refresh lại 401, vòng lặp vô hạn.
+- Refresh token lưu cùng chỗ với access token, hoặc quá dài hạn.
+- Gắn token cho mọi domain (bao gồm API thứ ba): token rò rỉ ra ngoài mạng.
+- Xử lý 401 tại mỗi component thay vì interceptor: code phân tán, không bao giờ hết.
+
+### Ví dụ đời thực
+
+Hệ thống quản lý đơn hàng, 2000 nhân viên. JWT access token hết hạn sau 15 phút, refresh token 7 ngày. Nhân viên làm việc hết ngày trong một tab: lúc 10h00 JWT hết hạn, axios tự gọi /auth/refresh, lấy JWT mới, gửi lại yêu cầu lấy đơn hàng, người dùng không biết gì. Nếu không xử lý 401, yêu cầu bị từ chối, trang báo lỗi 401 lặp lại.
+
+### Trả lời mẫu khi phỏng vấn
+
+axios là thư viện gọi HTTP ở trình duyệt, trả về Promise như CompletableFuture Java. Tôi dùng interceptor request để gắn header Authorization: Bearer JWT vào mọi yêu cầu, không cần gắn tay ở mỗi nút. Khi server trả 401 (JWT hết hạn), interceptor response gọi /auth/refresh để lấy JWT mới, lưu và gửi lại yêu cầu cũ; nếu refresh cũng hết hạn, xóa token và chuyển về trang đăng nhập. Đánh dấu yêu cầu đã thử lại (_retry) để tránh vòng lặp vô hạn. Về lưu trữ, tôi ưu tiên biến JS hoặc cookie HttpOnly (XSS không đọc được), không lưu JWT trong localStorage; đều phải chống XSS (không dùng innerHTML với dữ liệu người dùng) và CSRF (SameSite cookie).
+
+> Senior tip: JWT hết hạn ngắn (15 phút) giúp giảm nguy cơ nếu token bị mất, nhưng phải có refresh token để không phải nhập mật khẩu liên tục. CORS không thay thế Spring Security: CORS chỉ chuyên ở trình duyệt, an toàn thực sự ở server (kiểm tra JWT, phân quyền).`,
+  tags: ['axios', 'jwt', 'refresh-token', 'xss', 'security'],
+  follow: ['refresh token', 'cookie HttpOnly', 'xử lý 401 tự động']
+},
+{
+  id: 'frontend-017',
+  topic: 'frontend',
+  level: 'senior',
+  q: 'CORS là gì, tại sao trình duyệt chặn gọi API từ domain khác, và cấu hình Spring Boot như thế nào?',
+  a: `**Tóm tắt:** CORS (Cross-Origin Resource Sharing) là cơ chế trình duyệt cho phép trang web ở domain A gọi API ở domain B khi server B cho phép. Trình duyệt tuân theo Same-Origin Policy (nguyên tác cùng nguồn gốc) để trang độc hại không đọc được dữ liệu của trang khác. Origin bao gồm giao thức, tên miền, cổng (ví dụ http://localhost:3000 và http://localhost:8080 là hai origin khác nhau vì cổng khác nhau). Cấu hình ở Spring Boot bởi lớp WebMvcConfigurer, addCorsMapping, chọn origin, method, header được phép.
+
+### Các bước xảy ra
+
+1. Trang Vue (http://localhost:3000) gọi API Spring (http://localhost:8080/api/don-hang).
+2. Nếu yêu cầu "đơn giản" (GET, header thông thường), trình duyệt vẫn gửi nhưng hủy phản hồi nếu header Access-Control-Allow-Origin không chứa origin của trang.
+3. Nếu yêu cầu "phức tạp" (PUT, DELETE, header Authorization…), trình duyệt gửi yêu cầu trước OPTIONS (preflight) hỏi server có cho phép không.
+4. Server trả 200 kèm Access-Control-Allow-Origin: http://localhost:3000, Access-Control-Allow-Methods, Access-Control-Allow-Headers. Mới lần sau trình duyệt gửi yêu cầu thực.
+
+~~~text
+Trang Vue (http://localhost:3000)           Spring Boot (http://localhost:8080)
+      |                                               |
+      |------- OPTIONS /api/don-hang ---------------->|
+      |                                               |
+      |<-- 200 + Allow-Origin: http://localhost:3000  |
+      |                                               |
+      |------- GET /api/don-hang -------------------->|
+      |                                               |
+      |<-- 200 + dữ liệu (trình duyệt chấp nhận) -----|
+~~~
+
+### Code cấu hình Spring Boot
+
+~~~text
+@Configuration
+public class CorsConfig implements WebMvcConfigurer {
+  @Override
+  public void addCorsMappings(CorsRegistry registry) {
+    registry.addMapping("/api/**")           // áp dụng tất cả dưới /api/**
+      .allowedOrigins("http://localhost:3000") // chỉ cho trang này gọi (không dùng * khi cần mật khẩu)
+      .allowedMethods("GET", "POST", "PUT", "DELETE", "OPTIONS")
+      .allowedHeaders("*")
+      .allowCredentials(true)               // cho phép gửi cookie và Authorization header
+      .maxAge(3600);                        // trình duyệt lưu kết quả phép 1 giờ, không cần OPTIONS lần sau
+  }
 }
+~~~
+
+WebMvcConfigurer chạy như một Filter: kiểm tra origin trước khi controller chạy. Cơ chế allowedOrigins("*") cho phép mọi trang gọi, chỉ dùng cho API công khai. Nếu allowCredentials(true) thì không thể dùng "*" (trình duyệt sẽ chặn).
+
+### Bảng trade-off
+
+| Cách | Ưu điểm | Nhược điểm | Khi dùng |
+|---|---|---|---|
+| Dùng "*" | Cấu hình ngắn, tất cả domain đều gọi được | Không dùng với cookie/Authorization; dễ bị attacker gọi API | API công khai không mật khẩu |
+| Liệt kê origin | Chuẩn xác domain client | Cần cập nhật khi thêm domain mới | API cần đăng nhập, dữ liệu nhạy cảm |
+
+### Lỗi hay gặp
+
+- Cấu hình CORS ở Spring mà quên thêm origin của frontend: console trình duyệt báo "blocked by CORS policy" (lỗi ở trình duyệt, không phải server trả 403).
+- allowCredentials(true) cùng allowedOrigins("*"): Spring khởi động thất bại hoặc trình duyệt chặn.
+- Quên preflight OPTIONS cho PUT/DELETE kèm header Authorization: gọi bị lỗi trước khi đến controller.
+- Lỗi CORS chỉ xảy ra ở trình duyệt; gọi bằng Postman/curl vẫn OK, dùng để phân biệt lỗi CORS với lỗi server.
+
+### Ví dụ đời thực
+
+Trang Vue chạy localhost:3000, Spring Boot localhost:8080. Gọi API đăng nhập kèm cookie, console báo CORS blocked. Sau addCorsMapping với allowedOrigins("http://localhost:3000") và allowCredentials(true), lỗi mất. Ở production: frontend https://app.example.com, API https://api.example.com, cấu hình tương tự. Một lần deploy thêm miền https://m.example.com, team thêm vào danh sách allowedOrigins.
+
+### Trả lời mẫu khi phỏng vấn
+
+CORS là cơ chế trình duyệt cho phép trang ở domain A gọi API ở domain B khi server cho phép, dựa trên nguyên tác Same-Origin Policy (giống tên miền, cổng, giao thức). Yêu cầu phức tạp (PUT, DELETE, header Authorization) được trình duyệt kiểm tra bằng OPTIONS preflight trước. Ở Spring, tạo class implements WebMvcConfigurer, addCorsMapping("/api/**"), allowedOrigins(lấy domain frontend), allowedMethods, allowedHeaders, allowCredentials(true) nếu dùng cookie hoặc Authorization. Không dùng "*" khi cần mật khẩu. CORS chỉ bảo vệ trình duyệt, không chặn curl/Postman, an toàn thực sự ở Spring Security (xác thực JWT, phân quyền).
+
+> Senior tip: Luôn liệt kê rõ domain frontend thay vì "*" cho API cần đăng nhập. CORS không phải tường lửa: attacker vẫn có thể gọi API bằng curl, nên bảo mật thực sự ở Spring Security (xác thực JWT, phân quyền) chứ không chỉ CORS.`,
+  tags: ['cors', 'spring-boot', 'webmvconfigurer', 'same-origin'],
+  follow: ['Same-Origin Policy', 'OPTIONS preflight', 'WebMvcConfigurer']
+},
+{
+  id: 'frontend-018',
+  topic: 'frontend',
+  level: 'senior',
+  q: 'Form nhiều trường trong Vue cần kiểm tra ở client và ở server (Spring Boot) như thế nào? Tại sao cần validation 2 phía?',
+  a: `**Tóm tắt:** Validation 2 phía: client-side kiểm tra trước khi gửi, phản hồi ngay, UX tốt; server-side kiểm tra lại cuối cùng, an toàn vì client có thể bị bỏ qua (tắt JavaScript, gọi API bằng Postman). Ở client viết hàm kiểm tra từng trường (email, số điện thoại, độ dài), hiển thị lỗi dưới ô nhập, ẩn nút Submit nếu chưa hợp lệ. Ở server Spring Boot dùng Jakarta Bean Validation (@NotBlank, @Size, @Email, @Pattern) kèm @Valid, nếu sai trả HTTP 400 kèm chi tiết từng trường. Client nhận lỗi và hiển thị tương ứng từng trường.
+
+### Các bước triển khai
+
+1. Xác định form lớn (ví dụ thông tin khách hàng: họ tên, email, số điện thoại, địa chỉ, danh sách sản phẩm).
+2. Client: biến form (ref/reactive), hàm kiểmTra() chạy khi bấm nút hoặc khi thay đổi, lưu lỗi từng trường, hiển thị dưới ô nhập.
+3. Gửi bằng axios POST nếu kiểmTra() trả về true.
+4. Server: DTO có @Valid, controller có BindingResult, nếu có lỗi trả 400 body là map {trường: thông báo lỗi}.
+5. Client hiển thị loiServer tương ứng.
+
+Code client:
+
+~~~text
+export default {
+  setup() {
+    var form = reactive({ hoTen: '', email: '', soDienThoai: '', loi: {}, loiServer: null });
+
+    function kiểmTra() {
+      var loi = {};
+      if (!form.hoTen || form.hoTen.trim().length < 2) loi.hoTen = 'Họ tên phải ít nhất 2 kí tự';
+      var emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+      if (!emailRegex.test(form.email)) loi.email = 'Email không hợp lệ';
+      if (!/^\d{10,11}$/.test(form.soDienThoai)) loi.soDienThoai = 'Số điện thoại phải 10-11 chữ số';
+      form.loi = loi;
+      return Object.keys(loi).length === 0;
+    }
+
+    async function gửi() {
+      if (!kiểmTra()) return;
+      try {
+        await axios.post('/api/khach-hang', form);
+        alert('Gửi thành công');
+      } catch (loi) {
+        form.loiServer = (loi.response && loi.response.status === 400) ? loi.response.data : 'Hệ thống lỗi, vui lòng thử lại sau';
+      }
+    }
+
+    return { form, kiểmTra, gửi };
+  }
+};
+~~~
+
+Regex ở JavaScript viết giữa hai dấu gạch ngang, không cần gọi thư viện thêm.
+
+Code server:
+
+~~~text
+public class KhachHangDto {
+  @NotBlank(message = "Họ tên không được để trống")
+  @Size(min = 2, max = 100)
+  private String hoTen;
+
+  @NotBlank
+  @Email(message = "Email không hợp lệ")
+  private String email;
+
+  @Pattern(regexp = "\\d{10,11}", message = "Số điện thoại phải 10-11 chữ số")
+  private String soDienThoai;
+}
+
+@RestController
+@RequestMapping("/api/khach-hang")
+public class KhachHangController {
+  @PostMapping
+  public ResponseEntity<?> thêm(@Valid @RequestBody KhachHangDto dto, BindingResult result) {
+    if (result.hasErrors()) {
+      var loi = result.getFieldErrors().stream().collect(
+        Collectors.toMap(fe -> fe.getField(), fe -> fe.getDefaultMessage(), (a, b) -> a));
+      return ResponseEntity.badRequest().body(loi);
+    }
+    return ResponseEntity.status(201).build();
+  }
+}
+~~~
+
+@Valid tự động chạy Bean Validation trước khi controller chạy (giống AOP/interceptor ở Spring). BindingResult chứa lỗi từng trường.
+
+### Bảng trade-off
+
+| Bước | Client-side | Server-side |
+|---|---|---|
+| Tốc độ | Ngay lập tức, không gửi mạng | Phải chờ phản hồi server |
+| UX | Báo lỗi ngay khi nhập sai | Báo lỗi sau bấm Submit |
+| Toàn cầu | Dễ bị bỏ qua (tắt JS, Postman) | Không thể bỏ qua, quyết định cuối |
+| Ví dụ | Email đúng định dạng, số dt 10 chữ số | Email đã tồn tại, đủ tiền, quyền truy cập |
+
+### Lỗi hay gặp
+
+- Chỉ validation client: attacker gọi API trực tiếp bằng Postman, dữ liệu rác vào CSDL.
+- Quên @Valid ở controller: Bean Validation không chạy, dữ liệu không kiểm tra.
+- Trả lời chung chung ("Có lỗi xảy ra"): người dùng không biết sửa trường nào.
+- Kiểm tra phức tạp (email đã tồn tại) ở client: chưa, dữ liệu client cũ.
+
+### Ví dụ đời thực
+
+Form tạo đơn hàng 25 trường, 500 đơn/ngày. Chỉ validation client, 3% đơn bị thiếu số điện thoại do công cụ tự động gọi API. Sau thêm @Valid server và trả lời từng trường, tỉ lệ đơn thiếu thông tin giảm xuống dưới 0.2%, team giảm 10 giây làm thủ tục mỗi tháng.
+
+### Trả lời mẫu khi phỏng vấn
+
+Validation 2 phía nghĩa là kiểm tra ở client và ở server. Client dùng hàm JavaScript kiểm tra từng trường (họ tên, email, số điện thoại) ngay khi người dùng nhập, hiển thị lỗi dưới ô nhập và ẩn nút Submit nếu chưa hợp lệ, nhưng client có thể bỏ qua nên không bao giờ tin cậy. Server Spring Boot dùng @Valid Jakarta Bean Validation (@NotBlank, @Email, @Pattern) với BindingResult, nếu sai trả HTTP 400 kèm map lỗi từng trường. Client hiển thị lỗi tương ứng từng trường. Client cho trải nghiệm người dùng nhanh, server duy trì chính xác và an toàn.
+
+> Senior tip: Validation client chỉ cho trải nghiệm người dùng, không bao giờ tin cậy. Luôn validation server trước khi ghi CSDL. Form lớn chia thành nhiều bước (multi-step form) và lưu tạm dữ liệu không nhạy cảm vào localStorage để không mất dữ liệu khi tải lại trang.`,
+  tags: ['form', 'validation', 'spring-boot', 'axios'],
+  follow: ['Jakarta Bean Validation', 'BindingResult', 'hiển thị lỗi từng trường']
+},
+{
+  id: 'frontend-019',
+  topic: 'frontend',
+  level: 'senior',
+  q: 'Bảng hiển thị hàng nghìn dòng ở Vue làm chậm trình duyệt. Phân trang server-side và virtual scroll giải quyết như thế nào, nào dùng cái nào?',
+  a: `**Tóm tắt:** Phân trang server-side: client chỉ yêu cầu trang hiện tại (ví dụ 20 dòng), server trả dữ liệu và tổng số dòng, trình duyệt render ít phần tử. Virtual scroll: chỉ render các dòng hiển thị trên màn hình (ví dụ 20 dòng), khi cuộn thay đổi nội dung của các phần tử đã có. Cả hai giúp bảng mượt với dữ liệu lớn.
+
+### Phân trang server-side
+
+1. Người dùng chọn trang/kích thước trang, client gửi GET /api/don-hang?trang=1&kichThuoc=20.
+2. Server lấy DB với LIMIT/OFFSET (PostgreSQL), trả danh sách 20 dòng và tổng 45230 dòng.
+3. Vue render 20 dòng, hiển thị thanh phân trang (trang 1 / 2262).
+4. Chuyển trang, gửi yêu cầu mới, thay thế danh sách.
+
+Code client:
+
+~~~text
+export default {
+  setup() {
+    var danhSach = ref([]);
+    var tongTrang = ref(1);
+    var đangTải = ref(false);
+
+    async function load(trang) {
+      đangTải.value = true;
+      var kq = await axios.get('/api/don-hang', {
+        params: { page: trang, size: 20 }
+      });
+      danhSach.value = kq.data.danhSach; // 20 dòng
+      tongTrang.value = Math.ceil(kq.data.tong / 20);
+      đangTải.value = false;
+    }
+
+    return { danhSach, tongTrang, đangTải, load };
+  }
+};
+~~~
+
+Code server:
+
+~~~text
+@GetMapping("/don-hang")
+public Page<DonHangDto> danhSach(
+    @RequestParam(defaultValue = "0") int page,
+    @RequestParam(defaultValue = "20") int size) {
+  Pageable pageable = PageRequest.of(page, size, Sort.by("ngayTao").descending());
+  return donHangRepository.findAll(pageable);
+}
+~~~
+
+Page chứa content, totalElements, totalPages. Ở PostgreSQL, Spring Data sinh câu truy vấn LIMIT/OFFSET.
+
+### Virtual scroll
+
+Với 100.000 dòng, render hết -> DOM lớn, treo. Virtual scroll chỉ render dòng nhìn thấy + kê đệm, khi cuộn thay đổi nội dung của các ô DOM đã có (giống RecyclerView Android hoặc JTable chỉ ô hiển thị).
+
+Code cơ chế:
+
+~~~text
+<div class="khung" :style="{ height: tổngDòng * chiềuCaoDòng + 'px' }" @scroll="xửLýCuộn">
+  <div class="nộiDung" :style="{ transform: 'translateY(' + bắtĐầu * chiềuCaoDòng + 'px)' }">
+    <div v-for="(item, i) in hiểnThị" :key="item.id">{{ item.tên }}</div>
+  </div>
+</div>
+~~~
+
+Khung cao bằng tổng dòng * chiều cao một dòng, phần hiển thị dịch chuyển theo vị trí cuộn. Thư viện vue-virtual-scroller làm việc tương tự.
+
+### Nào dùng cái nào
+
+| Tính năng | Dùng khi | Không dùng khi |
+|---|---|---|
+| Phân trang server-side | Dữ liệu ở DB, tổng số lớn, cần tìm theo trang, xuất Excel | Dữ liệu ít (dưới 200 dòng), muốn cuộn liên tục không chia trang |
+| Virtual scroll | Đã load hết dữ liệu ở client (ví dụ 5000 dòng), muốn cuộn liên tục | Dòng cao không bằng nhau và chưa xác định chiều cao cố định |
+| Kết hợp | Lấy dữ liệu bởi phân trang server, render trang hiện tại bởi virtual scroll | Ít gặp, thêm phức tạp |
+
+### Lỗi hay gặp
+
+- Phân trang client-side với 100.000 dòng: render hết, treo một số giây.
+- Virtual scroll với dòng cao không bằng nhau (văn bản nhiều dòng) chưa chiều cao cố định: vị trí cuộn bị sai.
+- Quên :key="item.id" ở virtual scroll: Vue dùng nhầm dữ liệu khi cuộn.
+- Phân trang server-side ORDER BY không có cột duy nhất: thứ tự dòng trôi dời giữa các trang.
+
+### Ví dụ đời thực
+
+Bảng lịch sử giao dịch ngân hàng 2 triệu dòng. Ban đầu load hết vào client: trình duyệt treo 8 giây. Chuyển sang phân trang server-side 50 dòng/trang: mỗi yêu cầu 120 ms, render ngay. Thanh cuộn hiển thị trang 1 / 40.000. Nhân viên tìm giao dịch tháng trước nhanh hơn.
+
+### Trả lời mẫu khi phỏng vấn
+
+Phân trang server-side chỉ yêu cầu trang hiện tại (ví dụ 20 dòng), server trả dữ liệu kèm tổng số (Spring Data Page, ở PostgreSQL là LIMIT/OFFSET), trình duyệt render ít phần tử. Virtual scroll chỉ render dòng nhìn thấy, khi cuộn thay đổi nội dung, dùng cho dữ liệu đã load hết ở client. Dùng phân trang server-side khi dữ liệu lớn ở DB cần tìm theo trang; dùng virtual scroll khi cuộn liên tục với dữ liệu nhỏ trung đã load hết; có thể kết hợp.
+
+> Senior tip: Ở PostgreSQL, OFFSET lớn (trang 10.000+) chậm vì database quét qua tất cả dòng trước. Nếu người dùng cuộn sâu, dùng "seek method" (WHERE id > cuốiTrangTrước ORDER BY id LIMIT 20) hoặc chỉ cho vào trang gần đầu.`,
+  tags: ['pagination', 'virtual-scroll', 'table', 'spring-data-jpa'],
+  follow: ['LIMIT OFFSET', 'seek method', 'vue-virtual-scroller']
+},
+{
+  id: 'frontend-020',
+  topic: 'frontend',
+  level: 'senior',
+  q: 'Trang Vue chậm khi tải lần đầu và tìm kiếm gặp gọi API nhiều lần. Lazy load route và debounce giúp như thế nào?',
+  a: `**Tóm tắt:** Hiệu năng trang đo bằng FCP (First Contentful Paint: lúc vẽ nội dung đầu tiên, mục tiêu dưới 1.8s), LCP (nội dung lớn nhất, dưới 2.5s), TTI (trang tương tác được, dưới 3.8s). Lazy load route chia bundle thành tập file, chỉ tải file khi người dùng vào trang đó, bundle chính nhỏ, FCP giảm. Debounce: chờ người dùng ngừng gõ 300-500ms mới gọi API, giảm số lượt yêu cầu mạng.
+
+### Lazy load route
+
+Ở Vue Router, khai báo component như hàm import:
+
+~~~text
+const routes = [
+  { path: '/', component: HomeView },
+  { path: '/don-hang', component: () => import('./views/DonHang.vue') },
+  { path: '/bao-cao', component: () => import('./views/BaoCao.vue') }
+];
+~~~
+
+Vite build tách DonHang.vue và Báo cáo thành file JS riêng, chỉ tải khi vào trang. Bundler chính không chứa code các trang ít truy cập. Giống lazy loading ở Spring (proxy tải cần) nhưng ở mức file JavaScript.
+
+~~~text
+Không lazy load:                      Có lazy load:
+[app.js 1.2 MB]                     [app.js 450 KB]  [don-hang.js 400 KB]
+                                    [bao-cao.js 350 KB]
+~~~
+
+### Debounce tìm kiếm
+
+Người dùng gõ "iphone" (6 ký tự), gõ liên tục 6 lần trong 1 giây. Không debounce: 6 yêu cầu API. Có debounce 300ms: chỉ 1 yêu cầu, giảm 5/6 mạng.
+
+~~~text
+export default {
+  setup() {
+    var từKhóa = ref('');
+    var timerId = null;
+    var kếtQuả = ref([]);
+
+    function tìmKiếm(moi) {
+      từKhóa.value = moi;
+      if (timerId) {
+        clearTimeout(timerId);
+      }
+      timerId = setTimeout(function () {
+        gọiApi();
+      }, 300); // cho 300ms không gõ, nếu gõ tiếp bỏ timer cũ
+    }
+
+    async function gọiApi() {
+      var kq = await axios.get('/api/san-pham', {
+        params: { q: từKhóa.value }
+      });
+      kếtQuả.value = kq.data;
+    }
+
+    return { từKhóa, tìmKiếm, kếtQuả };
+  }
+};
+~~~
+
+setTimeout đặt hàm vào macrotask, chạy sau 300ms. Nếu gõ tiếp, clearTimeout bỏ timer cũ, đếm mới. Giống ScheduledExecutorService.schedule ở Java nhưng ở luồng trình duyệt.
+
+### Hình ảnh
+
+Dùng <img loading="lazy"> để tải hình khi cuộn đến, dùng kích thước chính xác (không tải ảnh 2 MB để hiển thị thumbnail 200px), chuyển sang WebP.
+
+### Lỗi hay gặp
+
+- Lazy load tất cả route gồm trang chủ: trang chủ cũng chờ tải file riêng, FCP không giảm. Chỉ lazy load trang ít truy cập (báo cáo, cài đặt).
+- Debounce quá ngắn (50ms) còn nhiều yêu cầu; quá dài (1000ms) người dùng thấy chậm. 300-500ms phù hợp tìm kiếm.
+- Gọi API mỗi lần thay đổi ref ở watch không debounce: tác động server.
+- Quên clearTimeout sau khi component unmounted: timer chạy vùt ve, gọi API sau khi đã thoát trang.
+
+### Ví dụ đời thực
+
+Trang tìm kiếm sản phẩm 50.000 mục. Ban đầu bundle 1.2 MB, FCP 3.2s. Sau lazy load route: bundle chính 450 KB, FCP 1.1s. Thêm debounce 300ms: yêu cầu tìm kiếm giảm từ 1200 xuống 200 mỗi phút ở giờ cao điểm, giảm 83% tải server.
+
+### Trả lời mẫu khi phỏng vấn
+
+Lazy load route chia bundle thành các file, chỉ tải JavaScript của trang khi người dùng vào, giảm kích thước tải lần đầu và FCP (mục tiêu dưới 1.8s). Debounce chờ người dùng ngừng gõ 300-500ms mới gọi API, giảm số lượt yêu cầu mạng (ví dụ 6 lần gõ trở thành 1 gọi). Hình ảnh dùng loading="lazy" và kích thước chính xác. Đo bằng Lighthouse (Chrome DevTools). Lazy load giải quyết bundle lớn, debounce giải quyết gọi API ít, hai vấn đề khác nhau.
+
+> Senior tip: Đo trước khi tối ưu (Lighthouse), không đoán. Lazy load route giảm bundle đầu vào, debounce giảm tải server, cái nào giải quyết vấn đề khác nhau, đo theo cái cần thiết nhất.`,
+  tags: ['performance', 'lazy-load', 'debounce', 'vite'],
+  follow: ['Lighthouse Core Web Vitals', 'Vite manualChunks', 'debounce vs throttle']
+},
 );
