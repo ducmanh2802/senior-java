@@ -8646,5 +8646,261 @@ public void transfer(...) { ... }
 `,
   follow: ['Khi nào không nên retry?', 'Làm sao đảm bảo idempotency cho transfer tiền?', 'Metric nào theo dõi lock contention?'],
   tags: ['retry', 'deadlock', 'lock timeout', 'idempotency', 'backoff'],
+},
+{
+  id: 'sql-104',
+  topic: 'sql',
+  level: 'lead',
+  q: 'Bảng customer 40 triệu dòng, bảng orders 800 triệu dòng. Bạn viết "tìm khách chưa từng đặt hàng" bằng NOT IN (subquery) và thấy kết quả trả về rỗng dù chắc chắn có khách chưa mua; khi đổi sang NOT EXISTS thì có kết quả và nhanh gấp 60 lần. Vì sao rỗng, vì sao chậm, và đọc EXPLAIN thế nào để phân biệt?',
+  a: `**Tóm tắt:** {{NOT IN}} với subquery mà cột chứa {{NULL}} **luôn trả rỗng** cho toàn bộ kết quả, vì trong logic ba trị của SQL, {{x <> NULL}} là {{UNKNOWN}} (không phải TRUE), và "không có dòng nào thỏa" nghĩa là loại sạch. Ngay cả khi cột {{NOT NULL}}, PostgreSQL cũng không biến {{NOT IN (subquery)}} thành {{Hash Anti Join}} — nó chạy subquery dạng {{SubPlan}} (thực thi lại cho từng dòng) hoặc {{Hash SubPlan}} một lần rồi so từng dòng, rất chậm. {{NOT EXISTS}} mới được planner hạ thành {{Hash Anti Join}} đúng nghĩa: build hash từ bảng nhỏ, probe một lượt. Đọc {{EXPLAIN}}: {{NOT IN}} cho {{SubPlan}} hoặc {{Hash SubPlan}}; {{NOT EXISTS}} cho {{Hash Anti Join}}.
+
+### Hiểu nhanh
+Hãy tưởng tượng bạn đi hỏi bảo vệ: "Trong danh sách khách đã mua (list mua), có tên tôi không?" Nếu ai đó đưa cho bạn một danh sách nhưng một dòng bị **gạch trắng không rõ tên** (đó là NULL), bạn không thể trả lời chắc chắn "không có tên tôi" — vì biết đâu tên trắng đó chính là bạn. Câu trả lời an toàn duy nhất là "không chắc", và với {{NOT IN}}, "không chắc" bị coi như "loại". Kết quả: bạn không được vào, và vì điều này đúng cho *mọi* người hỏi, cả bảng trả về rỗng. Ngược lại, {{NOT EXISTS}} hỏi: "Có tồn tại ít nhất một dòng trong danh sách mà tên tôi trùng khớp chính xác không?" Nếu không tìm thấy dòng trùng nào, câu trả lời là "không tồn tại" — dứt khoát, kể cả khi có dòng trắng.
+
+### Cơ chế hoạt động — logic ba trị (three-valued logic)
+SQL không chỉ có TRUE/FALSE mà có thêm UNKNOWN. Mọi phép so sánh với NULL cho ra UNKNOWN:
+- {{5 = NULL}} → UNKNOWN (không phải FALSE)
+- {{5 <> NULL}} → UNKNOWN
+- {{NULL = NULL}} → UNKNOWN (khác Java, {{null == null}} là true)
+{{WHERE}} chỉ giữ dòng khi điều kiện là **TRUE**; UNKNOWN và FALSE đều bị loại.
+
+Với {{customer.id NOT IN (SELECT o.customer_id FROM orders o)}}:
+1. Bên trong có một dòng orders với {{customer_id = NULL}}.
+2. Với bất kỳ {{c.id}} nào, so sánh {{c.id <> NULL}} → UNKNOWN.
+3. Điều kiện {{NOT IN}} = {{c.id <> v1 AND c.id <> v2 AND … AND c.id <> NULL}} → vì có một vế UNKNOWN, cả biểu thức AND là UNKNOWN.
+4. {{WHERE UNKNOWN}} → loại dòng. Kết quả: **mọi dòng bị loại**, trả rỗng.
+
+> Đây là bẫy số một của {{NOT IN}}. {{NOT IN}} an toàn chỉ khi cột trong subquery chắc chắn {{NOT NULL}}.
+
+### Cơ chế thực thi trong PostgreSQL — vì sao chậm
+- {{NOT EXISTS}}: planner thấy {{SELECT 1 FROM orders o WHERE o.customer_id = c.id}} là **có tương quan** (correlated). Nó hạ thành **{{Hash Anti Join}}**: quét orders một lượt build bảng hash theo {{customer_id}}, rồi với mỗi customer probe — nếu **không** tìm thấy match thì giữ lại. Chi phí ~ {{O(N + M)}}, chỉ vài lượt quét tuần tự.
+- {{NOT IN (subquery)}}: planner không tạo {{Hash Anti Join}} cho anti-join dạng {{NOT IN}}. Nó dùng {{SubPlan}}: hoặc chạy subquery **một lần** thành {{Hash SubPlan}} (đọc hết orders, build set, rồi probe từng dòng), hoặc tệ hơn là **tái thực thi cho từng dòng** nếu không hash được. Trên bảng 800 triệu dòng, build hash 800 triệu giá trị tốn GB bộ nhớ, hoặc chạy lại từng lần tốn hàng trăm triệu lượt. Cùng kết quả đúng (khi không có NULL) nhưng chậm gấp hàng chục lần.
+
+### Code Java minh hoạ (JdbcTemplate)
+Dùng {{NOT EXISTS}} trong repository — an toàn NULL và cho planner hạ thành {{Hash Anti Join}}. {{WHERE o.created_at >= ?}} đặt bên trong subquery để giảm số dòng build hash.
+
+~~~java
+@Repository
+class CustomerRepository {
+    private final JdbcTemplate jdbc;
+    CustomerRepository(JdbcTemplate jdbc) { this.jdbc = jdbc; }
+
+    public List<Long> findWithoutOrders(LocalDate since) {
+        String sql = """
+            SELECT c.id
+            FROM customer c
+            WHERE NOT EXISTS (              -- KHÔNG dùng NOT IN: tránh bẫy NULL
+                SELECT 1 FROM orders o
+                WHERE o.customer_id = c.id  -- điều kiện tương quan -> Hash Anti Join
+                  AND o.created_at >= ?     -- lọc sớm để giảm hash
+            )
+            ORDER BY c.id
+            """;
+        return jdbc.queryForList(sql, Long.class, since);
+    }
 }
+~~~
+
+### So sánh
+| Cách viết | Xử lý NULL | Kế hoạch trong PostgreSQL | Chi phí |
+| {{NOT EXISTS}} | An toàn, không bị ảnh hưởng NULL ngoài | {{Hash Anti Join}} (hoặc {{Nested Loop Anti Join}} nếu bảng nhỏ) | Gần tuyến tính, một lượt |
+| {{NOT IN}} (subquery có NULL) | Sai — trả rỗng | Không dùng anti-join, {{SubPlan}}/{{Hash SubPlan}} | Rất chậm hoặc rỗng |
+| {{LEFT JOIN … WHERE o.id IS NULL}} | An toàn | {{Hash Anti Join}} | Tương đương NOT EXISTS |
+
+### Lỗi hay gặp / pitfall production
+1. Subquery có cột NULL: {{NOT IN}} trả rỗng im lặng, không lỗi, không cảnh báo — rất khó phát hiện. Luôn thêm {{WHERE … IS NOT NULL}} hoặc đổi sang {{NOT EXISTS}}.
+2. {{NOT IN}} với danh sách literal rỗng hoặc một phần NULL cũng dính bẫy tương tự.
+3. Trên PostgreSQL, {{NOT EXISTS}} đôi khi bị planner chọn {{Nested Loop}} thay vì {{Hash Anti Join}} nếu ước lượng sai; chạy {{ANALYZE}} cập nhật thống kê trước khi kết luận.
+4. So sánh NULL trong {{NOT EXISTS}}: {{o.customer_id = c.id}} không cần lo NULL vì chính việc không match mới là ý định; chỉ cần cột ngoài không NULL.
+
+### Ví dụ đời thực
+Bảng customer 40 triệu dòng, orders 800 triệu dòng, 2% đơn có {{customer_id = NULL}} do bug ETL. Câu {{NOT IN}}: trả rỗng sau 8 ms (planner thấy SubPlan, không chạy gì nhiều vì phát hiện NULL ngay — hoặc nếu không phát hiện thì chạy 190 giây). Câu {{NOT EXISTS}}: 3,2 giây, trả 12.400 khách chưa mua, dùng {{Hash Anti Join}} trên customer_id. Đọc {{EXPLAIN (ANALYZE, BUFFERS)}}: nhánh {{SubPlan}} xuất hiện dòng {{Filter: NOT (customer_id = …)}} thay vì {{Hash Anti Join}}; {{actual rows}} của subplan tăng dần (loops = 40.000.000) là dấu hiệu tái thực thi. Sau khi sửa bug ETL điền customer_id và thêm {{NOT NULL}}, hai cách cho cùng kết quả nhưng {{NOT EXISTS}} vẫn nhanh hơn nhờ anti-join.
+
+### Trả lời mẫu khi phỏng vấn
+"{{NOT IN}} với subquery có NULL luôn trả rỗng vì logic ba trị: so sánh với NULL cho UNKNOWN, mà WHERE chỉ giữ TRUE. Ngoài ra PostgreSQL không hạ {{NOT IN}} thành {{Hash Anti Join}}, nó chạy SubPlan nên chậm. Tôi đổi sang {{NOT EXISTS}} — planner biến thành {{Hash Anti Join}}: quét bảng con một lượt build hash, probe từng dòng cha, giữ dòng không match. Đọc {{EXPLAIN (ANALYZE, BUFFERS)}} phân biệt: {{NOT IN}} cho {{SubPlan}}/{{Hash SubPlan}}, {{NOT EXISTS}} cho {{Hash Anti Join}}. Trong production tôi luôn kiểm tra cột subquery có {{NOT NULL}} không, thêm ràng buộc, và dùng {{NOT EXISTS}} hoặc {{LEFT JOIN … WHERE IS NULL}} cho anti-join."
+
+### Checklist
+1. Tìm mọi {{NOT IN (SELECT …)}} trong codebase; kiểm tra cột subquery có thể NULL không.
+2. Đổi sang {{NOT EXISTS}} hoặc {{LEFT JOIN … WHERE IS NULL}} cho mọi anti-join.
+3. Thêm ràng buộc {{NOT NULL}} / {{CHECK}} cho khóa ngoại để chặn NULL từ gốc.
+4. Đọc {{EXPLAIN (ANALYZE, BUFFERS)}}: xác nhận {{Hash Anti Join}}, không có {{SubPlan}} với {{loops}} lớn.
+5. Chạy {{ANALYZE}} cập nhật thống kê trước khi kết luận một kế hoạch là chậm.
+6. Viết test SQL với một dòng NULL để chứng minh kết quả không rỗng.
+
+> Senior tip: "Nếu một câu query đột nhiên trả rỗng dù dữ liệu rõ ràng có, hãy nghĩ ngay tới NULL trong {{NOT IN}} trước khi nghi ngờ logic nghiệp vụ — đó là bẫy im lặng, không có exception nào."`,
+
+  follow: ['Tại sao LEFT JOIN ... WHERE IS NULL đôi khi được planner chọn thay vì NOT EXISTS?', 'Nếu bảng con không có index trên cột join, NOT EXISTS còn nhanh hơn NOT IN không?', 'Làm sao phát hiện sớm bug NOT IN với NULL trong code review?'],
+  tags: ['NOT IN', 'NOT EXISTS', 'NULL', 'anti join', 'SubPlan', 'Hash Anti Join', 'PostgreSQL', 'three-valued logic'],
+},
+{
+  id: 'sql-105',
+  topic: 'sql',
+  level: 'senior',
+  q: 'Hai bảng customer (id bigint) và order_item (customer_id varchar) khai báo cùng "mã khách" nhưng lệch kiểu; tương tự cột name dùng collation en_US.utf8 ở bảng này và C ở bảng kia. Câu JOIN giữa chúng không dùng index và chạy 45 giây trên 20 triệu dòng. Triệu chứng, cách đọc EXPLAIN, và cách sửa?',
+  a: `**Tóm tắt:** Khi cột JOIN lệch kiểu ({{bigint}} vs {{varchar}}) hoặc lệch collation ({{en_US.utf8}} vs {{C}}), DB phải **cast/normalize** một trong hai cột trước khi so sánh, khiến index trên cột đó **không dùng được** — planner chuyển sang {{Seq Scan}} + {{Nested Loop}} hoặc {{Hash Join}} đọc toàn bảng. Triệu chứng: query chậm đột ngột, EXPLAIN cho thấy {{Seq Scan}} ở cả hai bảng, không có {{Index Scan}}/{{Index Only Scan}} trên cột join. Cách sửa: **đồng bộ kiểu và collation** ngay trong schema ( migration ), hoặc thêm cột dẫn xuất đúng kiểu rồi index, hoặc diễn đạt lại query với cast tường minh đặt ở phía "một chiều" để không chặn index.
+
+### Hiểu nhanh
+Index giống như danh bạ điện thoại sắp xếp theo họ tên. Khi tra "Nguyễn Văn A", bạn lật đúng vần N → N-guyễn → tìm thấy nhanh. Nhưng nếu người hỏi đọc tên là "Nguyên Vănn A" (khác dấu, khác chữ) mà danh bạ xếp theo "Nguyễn", người tra phải **đọc lại từ đầu** vì hệ quy chiếu khác. Tương tự, nếu một cột là số (bigint 123) còn cột kia là chữ (varchar "123"), DB phải biến "123" thành số 123 trước khi so — việc biến đổi này phá vỡ thứ tự index, buộc quét tuần tự. Collation cũng vậy: {{en_US.utf8}} và {{C}} xếp "a" vs "ă" khác nhau, nên index theo collation này vô dụng khi so với giá trị theo collation kia.
+
+### Cơ chế — vì sao index mất tác dụng
+1. **Lệch kiểu (varchar vs bigint)**: PostgreSQL không cho phép so sánh trực tiếp giữa {{varchar}} và {{bigint}} (báo lỗi "operator does not exist"); phải cast tường minh một vế. Nếu cast lên cột có index thì index mất. Ví dụ {{WHERE o.customer_id = c.id}} với o.customer_id varchar, c.id bigint phải viết {{o.customer_id::bigint = c.id}} hoặc {{o.customer_id = c.id::text}}, và cast lên cột index khiến index trên cột đó mất tác dụng, buộc Seq Scan.
+2. **Lệch collation**: index được xây theo một collation xác định. Khi so sánh với literal/ cột có collation khác, planner không thể dùng index cũ vì thứ tự sắp xếp khác; nó phải normalize ({{LOWER}}, {{UNICODE_NORMALIZE}}) rồi so, hoặc Seq Scan.
+3. Hậu quả chung: {{Nested Loop}} với số vòng lặp bằng số dòng bảng ngoài (ví dụ 500.000 khách × quét 20 triệu đơn) → hàng nghìn tỷ phép so → 45 giây. Hoặc {{Hash Join}} phải đọc toàn bộ cả hai bảng vào bộ nhớ.
+
+### Triệu chứng nhận biết
+- Query chậm đột ngột dù dữ liệu không tăng (chỉ vì đổi schema hoặc thêm collation mới).
+- {{EXPLAIN}}: xuất hiện {{Seq Scan}} trên cả hai bảng tham gia; cột join không xuất hiện trong phần {{Index Scan}}/{{Index Cond}}.
+- Với lệch collation: trong {{EXPLAIN VERBOSE}} thấy {{Filter: (name COLLATE "en_US.utf8" = …)}}.
+- {{EXPLAIN}} cho {{Seq Scan}} trên cả hai bảng (full table scan); có thể thấy index có sẵn nhưng không được dùng ({{key: NULL}}).
+- Tăng CPU DB, tăng I/O đọc, không phải do lock.
+
+### Đọc EXPLAIN thế nào
+PostgreSQL: {{EXPLAIN (ANALYZE, BUFFERS, VERBOSE)}} câu join. Nếu thấy:
+- {{Seq Scan on orders}} → {{Filter}} có hàm/cast trên cột join.
+- {{Hash Cond: (o.customer_id = c.id)}} nhưng o.customer_id đã bị cast → không dùng index.
+PostgreSQL: xem cột {{Filter}} và {{Index Cond}} trong {{EXPLAIN (ANALYZE, BUFFERS, VERBOSE)}} để biết có cast/COLLATE nào chặn index không.
+
+### Cách sửa
+1. **Đồng bộ schema (tốt nhất)**: migration đổi cột về cùng kiểu và cùng collation. Ví dụ {{ALTER TABLE order_item ALTER COLUMN customer_id TYPE bigint USING customer_id::bigint}}, và thống nhất collation của mọi bảng {{en_US.utf8}} (hoặc {{C}} cho sắp xếp theo bytes). Đây là fix gốc.
+2. **Cột dẫn xuất + index**: thêm {{order_item.customer_id_big bigint}} sinh ra bằng cast đúng, rồi index cột đó; query JOIN qua cột dẫn xuất.
+3. **Cast có kiểm soát ở một phía**: diễn đạt lại để cast nằm ở bảng **không có index** cần dùng, hoặc ở literal. Ví dụ Postgres: {{WHERE o.customer_id = c.id::text}} — cast c.id sang text, giữ nguyên o.customer_id text để vẫn dùng được index trên o.customer_id. Nhưng chỉ hiệu quả nếu bạn chắc planner không lồng thêm cast khác.
+4. **Collation tường minh**: thêm {{COLLATE}} vào biểu thức so, đặt sao cho không chặn index: {{WHERE a.name COLLATE "C" = b.name COLLATE "C"}}. Cách này chỉ cứu được nếu một trong hai cột đã có index đúng collation "C"; nếu không, vẫn Seq Scan.
+
+### Code Java minh hoạ (JdbcTemplate)
+Sau khi đồng bộ kiểu, JOIN qua cột bigint ở **cả hai** phía để index dùng được; không bao giờ cast lên cột đang có index.
+
+~~~java
+@Repository
+class OrderItemRepository {
+    private final JdbcTemplate jdbc;
+    OrderItemRepository(JdbcTemplate jdbc) { this.jdbc = jdbc; }
+
+    public long countItemsOf(long customerId) {
+        // oi.customer_id_big (bigint) khớp c.id (bigint) -> dùng được index, không cast
+        String sql = """
+            SELECT count(*)
+            FROM order_item oi
+            JOIN customer c ON c.id = oi.customer_id_big
+            WHERE c.id = ?
+            """;
+        Long n = jdbc.queryForObject(sql, Long.class, customerId);
+        return n == null ? 0L : n;
+    }
+}
+~~~
+
+### Bảng trade-off
+| Cách sửa | Khi nào dùng | Ưu | Nhược |
+| Đồng bộ schema | Khi kiểm soát được cả hai bảng | Sửa gốc, mọi query đều nhanh | Migration nặng, cần downtime/online DDL |
+| Cột dẫn xuất + index | Khi không thể đổi cột gốc (bảng của bên thứ ba) | Không đụng schema gốc | Trùng dữ liệu, phải đồng bộ khi insert/update |
+| Cast một phía | Khi chỉ cần cứu một query gấp | Nhanh, không đổi schema | Dễ sai, planner có thể không tối ưu, fragile |
+
+### Lỗi hay gặp / pitfall production
+1. Cast lên cột có index ({{WHERE CAST(o.customer_id AS bigint) = c.id}}) → phá index trên o. Đặt cast ở phía bảng cần quét ít hơn, hoặc tạo cột dẫn xuất.
+2. Collation mặc định của DB thay đổi (ví dụ upgrade MySQL 5.7 → 8) khiến index cũ không tương thích; phải rebuild index bằng collation mới.
+3. Kiểu numeric vs text cho mã ({{zip_code}}) cũng gây lỗi tương tự; chọn kiểu nhất quán ngay từ thiết kế.
+4. Trong Postgres, {{varchar}} vs {{text}} cùng collation thì không sao, nhưng {{char(n)}} padded khác → so sánh khác.
+
+### Ví dụ đời thực
+Bảng customer 500.000 dòng (id bigint), order_item 20 triệu dòng (customer_id varchar). Một đồng nghiệp thêm cột collation mới, vô tình đặt order_item.customer_id sang collation en_US.utf8 trong khi customer.name dùng C; rồi viết {{JOIN ON o.customer_id = c.id}}. EXPLAIN cho Seq Scan cả hai, Nested Loop 500.000 × quét 20 triệu, chạy 45 giây, CPU DB 95%, p95 API đặt hàng tăng 8 giây. Đổi sang {{EXPLAIN (ANALYZE, BUFFERS)}}: thấy Filter (o.customer_id::bigint = c.id). Migration đổi customer_id sang bigint và đồng bộ collation; sau đó EXPLAIN cho {{Hash Join}} trên cả hai bảng, chạy 380 ms, CPU về 20%, p95 về 120 ms. Trong lúc chờ migration, dùng cột dẫn xuất để vá nóng: thêm order_item.customer_id_big bigint index, JOIN qua cột đó, giảm còn 1,1 giây.
+
+### Trả lời mẫu khi phỏng vấn
+"Khi cột JOIN lệch kiểu hoặc lệch collation, DB phải cast/normalize một vế, làm index trên cột đó mất tác dụng; planner chuyển sang Seq Scan và Nested Loop hoặc Hash Join đọc toàn bộ. Tôi nhận biết qua EXPLAIN: thấy Seq Scan cả hai bảng, cột join không có Index Cond, hoặc Filter có COLLATE/cast. Cách sửa gốc là đồng bộ schema — migration đổi kiểu và collation thống nhất, ví dụ ALTER COLUMN ... TYPE bigint USING ...::bigint và thống nhất en_US.utf8. Nếu không đổi được schema, tôi thêm cột dẫn xuất đúng kiểu rồi index, hoặc cast ở phía không cần index để không phá index. Tôi luôn kiểm tra bằng EXPLAIN (ANALYZE, BUFFERS) trước và sau, và thêm ràng buộc kiểm tra trong CI để phát hiện lệch kiểu sớm."
+
+### Checklist
+1. Liệt kê mọi cột JOIN và so sánh kiểu + collation hai bên (tra {{information_schema.columns}}).
+2. Đồng bộ kiểu bằng migration; thêm {{USING}} cast an toàn khi đổi cột.
+3. Thống nhất collation toàn schema ({{en_US.utf8}} hoặc {{C}}).
+4. Đọc {{EXPLAIN (ANALYZE, BUFFERS, VERBOSE)}}: xác nhận hết {{Seq Scan}}/cast/{{COLLATE}} trên cột join.
+5. Nếu chưa migration được, tạo cột dẫn xuất đúng kiểu + index rồi JOIN qua cột đó.
+6. Đưa kiểm tra schema drift (Flyway validate, pg_constraint) vào CI.
+
+> Senior tip: "Lệch kiểu/collation không gây lỗi — nó gây chậm. Hãy đưa việc kiểm tra schema drift vào CI (ví dụ dùng Flyway validate + pg_constraint so sánh kiểu join) để không bao giờ phải debug 45 giây lúc 2 giờ sáng."`,
+
+  follow: ['Trong PostgreSQL, varchar = bigint thực sự planner cast vế nào, và làm sao kiểm soát?', 'Tại sao char(n) padded và varchar lại so sánh khác nhau dù cùng là text?', 'Làm sao viết migration online đổi kiểu cột join trên bảng 800 triệu dòng?'],
+  tags: ['collation', 'type mismatch', 'index không dùng', 'Seq Scan', 'PostgreSQL', 'schema drift'],
+},
+{
+  id: 'sql-106',
+  topic: 'sql',
+  level: 'lead',
+  q: 'Bảng order 500 triệu dòng, index (status, merchant_id, created_at). Câu WHERE status = ? AND merchant_id = ? ORDER BY created_at DESC LIMIT 50 chạy 1,2 giây vì examine 180.000 dòng. Bạn đổi thứ tự cột và điều chỉnh query thế nào để rows examined giảm còn 24, Buffers từ 6.400 xuống 48? Khi nào PostgreSQL dùng BitmapAnd với 2 index rời?',
+  a: `**Tóm tắt:** Với index {{status, merchant_id, created_at}}, cột {{status}} ít chọn lọc (chỉ vài giá trị) đứng trước khiến quét nhiều entry không liên quan; đồng thời {{merchant_id}} đứng trước {{created_at}} nên không sắp xếp sẵn cho ORDER BY. Đổi thứ tự thành {{merchant_id, status, created_at}} để cột chọn lọc cao đứng trước (giảm entry), đồng thời vừa lọc theo {{merchant_id}} vừa sắp xếp {{created_at}} theo index. Hoặc tạo 2 index rời {{merchant_id}} và {{status, created_at}} rồi để PostgreSQL dùng {{BitmapAnd}}. Kết quả: examine giảm từ 180.000 xuống 24, Buffers từ 6.400 xuống 48, p95 từ 1,2 giây về 18 ms.
+
+### Hiểu nhanh
+Index composite giống như quyển sổ danh bạ nhiều cột: đầu tiên sắp theo Họ, rồi trong cùng Họ sắp theo Tên, rồi trong cùng Tên sắp theo Ngày sinh. Khi tra "họ Nguyễn, tên An, sinh sau 1990", nếu sổ sắp đúng thứ tự đó, bạn lật thẳng đến "Nguyễn An" rồi quét tiếp theo ngày sinh — cực nhanh. Nhưng nếu sổ sắp "Tên" trước "Họ", bạn phải lật cả quyển mới gom hết "An" của mọi họ, rất chậm. Vấn đề của index {{status, merchant_id, created_at}}: nó sắp theo {{status}} trước — mà {{status}} chỉ có 3 giá trị (OPEN/PAID/CLOSED), nên cả 1/3 bảng nằm cùng "OPEN", bạn phải lướt qua hàng trăm nghìn dòng mới tới đúng merchant. Đổi thành {{merchant_id, status, created_at}}: merchant_id chọn lọc cao (gần như unique), lật thẳng tới đúng merchant, rồi trong merchant đó lọc status, rồi đọc created_at theo đúng thứ tự sắp xếp của index.
+
+### Cơ chế — vì sao thứ tự cột quyết định
+1. **Leftmost prefix**: index {{a, b, c}} dùng được cho {{WHERE a=?}}, {{WHERE a=? AND b=?}}, {{WHERE a=? AND b=? AND c>?}}... nhưng không dùng cho {{WHERE b=?}} đứng một mình.
+2. **Độ chọn lọc (selectivity)**: cột có nhiều giá trị phân biệt (merchant_id) lọc mạnh hơn cột ít giá trị (status). Đặt cột chọn lọc cao trước giảm số entry phải duyệt.
+3. **ORDER BY + LIMIT**: nếu cột ORDER BY khớp với tiền tố index sau các cột bằng nhau, DB đọc tuần tự theo index, không phải sort. {{WHERE merchant_id=? AND status=? ORDER BY created_at DESC}} với index {{merchant_id, status, created_at DESC}} → index trả sẵn dòng theo đúng thứ tự, chỉ cần LIMIT 50.
+4. **rows examined**: số entry index + hàng heap mà DB phải đọc trước khi đủ LIMIT. 180.000 vs 24 là khác biệt giữa "duyệt cả nhóm status" và "định vị thẳng merchant rồi đọc 50 dòng".
+5. **Buffers**: số trang 8KB đọc từ đĩa/cache. Ít entry hơn → ít trang hơn → ít I/O hơn.
+
+### Cách sửa cụ thể
+- Đổi index: {{CREATE INDEX CONCURRENTLY idx_order_merchant_status_created ON "order" (merchant_id, status, created_at DESC)}}.
+- Với {{WHERE merchant_id=? AND status=? ORDER BY created_at DESC}}, dùng luôn index mới: không cần sort, chỉ đọc 50 entry liên tiếp.
+- Với query chỉ {{WHERE merchant_id=? ORDER BY created_at DESC}}, cột status ở giữa **cản** việc sắp xếp: chỉ dùng được prefix {{merchant_id}} để quét, rồi phải sort theo {{created_at}} vì trong index hàng của cùng merchant_id được sắp theo (status, created_at), không phải theo {{created_at}} đơn lẻ.
+
+### Khi nào dùng BitmapAnd với 2 index rời
+PostgreSQL có thể kết hợp nhiều index bằng {{BitmapAnd}}: quét mỗi index lấy một bitmap trang, rồi AND các bitmap lại, cuối cùng đọc heap theo bitmap. Ví dụ 2 index rời {{idx_merchant (merchant_id)}} và {{idx_status_created (status, created_at)}}. Query {{WHERE merchant_id=? AND status=? ORDER BY created_at}} → planner BitmapAnd: lấy bitmap của merchant_id (ít trang), bitmap của status (nhiều trang hơn), AND lại còn tập nhỏ, đọc heap theo bitmap.
+- **Ưu**: không cần tạo composite rộng, linh hoạt khi điều kiện kết hợp thay đổi; tận dụng index nhỏ riêng.
+- **Nhược**: không giữ được thứ tự ORDER BY (bitmap không sắp xếp), nên nếu cần ORDER BY + LIMIT thì BitmapAnd kém hơn composite. BitmapAnd tối ưu cho truy vấn chỉ lọc, không sort, hoặc sort trên tập nhỏ sau khi lọc.
+- Khi nào chọn: khi có nhiều tổ hợp WHERE khác nhau, không thể một composite phục vụ tất cả; hoặc khi ORDER BY không quan trọng / dữ liệu trả ít.
+
+### Code Java minh hoạ (JdbcTemplate)
+Trang đầu dùng index {{merchant_id, status, created_at DESC}}: index trả sẵn thứ tự {{created_at}}, chỉ đọc {{limit}} entry, không có bước Sort.
+
+~~~java
+@Repository
+class OrderRepository {
+    private final JdbcTemplate jdbc;
+    OrderRepository(JdbcTemplate jdbc) { this.jdbc = jdbc; }
+
+    public List<OrderRow> topOrders(String merchantId, String status, int limit) {
+        String sql = """
+            SELECT id, total_amount, created_at
+            FROM "order"
+            WHERE merchant_id = ? AND status = ?  -- khớp prefix index
+            ORDER BY created_at DESC
+            LIMIT ?                             -- đọc đúng 'limit' entry, dừng
+            """;
+        return jdbc.query(sql, orderRowMapper(), merchantId, status, limit);
+    }
+    // Kiểm chứng: EXPLAIN (ANALYZE, BUFFERS) phải cho Index Scan, KHÔNG có Sort.
+}
+~~~
+
+### Bảng trade-off
+| Thiết kế | rows examined | ORDER BY | Khi nào dùng |
+| Composite đúng thứ tự chọn lọc + ORDER BY | Thấp (24) | Dùng index, không sort | Query cố định, cần ORDER BY + LIMIT |
+| 2 index rời + BitmapAnd | Trung bình (bitmap AND) | Phải sort | Nhiều tổ hợp WHERE khác nhau, không cần sort |
+| Index cũ (status đứng trước) | Cao (180.000) | Phải sort created_at | Tránh dùng khi status ít chọn lọc |
+
+### Lỗi hay gặp / pitfall production
+1. Đặt cột ít chọn lọc trước trong composite rồi ORDER BY cột sau: vừa quét nhiều, vừa phải sort. Luôn cân nhắc: cột lọc trước, cột ORDER BY sau cùng.
+2. ORDER BY DESC vs index ASC: Postgres dùng được index ngược chiều, nhưng cẩn thận với NULLS FIRST/LAST.
+3. BitmapAnd đọc heap ngẫu nhiên theo bitmap → nếu bitmap lớn (nhiều trang), I/O ngẫu nhiên chậm hơn seq scan; chỉ lợi khi bitmap nhỏ.
+4. Thay đổi index trên bảng 500 triệu dòng phải dùng {{CREATE INDEX CONCURRENTLY}} để tránh lock ghi.
+5. Không bỏ index cũ ngay; kiểm tra query khác còn dùng không.
+
+### Ví dụ đời thực
+Bảng order 500 triệu dòng, query trang merchant: WHERE merchant_id='M123' AND status='OPEN' ORDER BY created_at DESC LIMIT 50. Index cũ (status, merchant_id, created_at): status OPEN chiếm 1/3 bảng = 166 triệu dòng; planner Index Scan trên status rồi filter merchant, examine 180.000 entry, Buffers 6.400, p95 1,2 giây (vì phải lọc 180k rồi sort). Tạo index mới (merchant_id, status, created_at DESC) CONCURRENTLY (mất 8 phút, không lock ghi): examine 24, Buffers 48, p95 18 ms, CPU DB giảm 40%. Với một báo cáo khác WHERE status='PAID' AND merchant_id BETWEEN 'M1' AND 'M9' ORDER BY created_at, planner chọn BitmapAnd 2 index (merchant_id, status+created_at) và trả sau 240 ms, vì tổ hợp WHERE này không khớp prefix merchant_id đơn lẻ.
+
+### Trả lời mẫu khi phỏng vấn
+"Với index status, merchant_id, created_at, cột status ít chọn lọc đứng trước khiến quét nhiều entry, lại không khớp ORDER BY created_at sau merchant. Tôi đổi thứ tự thành merchant_id, status, created_at DESC để cột chọn lọc cao lọc trước, còn created_at khớp ORDER BY nên index trả sẵn thứ tự, không sort. Kết quả examine giảm 180.000 xuống 24, Buffers 6.400 xuống 48, p95 1,2 giây về 18 ms. Khi không thể một composite phục vụ mọi tổ hợp WHERE, tôi để PostgreSQL dùng BitmapAnd với 2 index rời — nó AND bitmap các index rồi đọc heap; cách này linh hoạt cho nhiều điều kiện nhưng không giữ ORDER BY, nên chỉ lợi khi không cần sort hoặc tập trả nhỏ. Tôi luôn kiểm tra bằng EXPLAIN (ANALYZE, BUFFERS) và tạo index CONCURRENTLY trên bảng lớn."
+
+### Checklist
+1. Đo {{EXPLAIN (ANALYZE, BUFFERS)}} query chậm: ghi rows examined, Buffers, có Sort không.
+2. Xác định độ chọn lọc từng cột ({{count(DISTINCT col)}} / tổng dòng) để quyết định thứ tự.
+3. Tạo index mới {{CREATE INDEX CONCURRENTLY}} với cột chọn lọc cao trước, cột ORDER BY sau.
+4. Kiểm tra {{ORDER BY}} + {{LIMIT}} khớp tiền tố index để DB khỏi Sort.
+5. Cân nhắc 2 index rời + {{BitmapAnd}} khi có nhiều tổ hợp WHERE và không cần sort.
+6. So sánh rows examined / Buffers / p95 trước và sau; chỉ bỏ index cũ khi đã kiểm chứng.
+
+> Senior tip: "Thứ tự cột trong composite index là quyết định thiết kế, không phải cosmetic. Đặt sai một cột, bạn trả giá bằng rows examined gấp 7.500 lần — hãy đọc số đo (rows, Buffers) thay vì đoán."`,
+
+  follow: ['BitmapAnd và BitmapOr khác nhau thế nào, khi nào dùng BitmapOr?', 'Nếu ORDER BY created_at mà không có cột merchant_id trong WHERE thì index mới còn dùng được không?', 'Làm sao ước lượng selectivity của cột để quyết định thứ tự composite?'],
+  tags: ['composite index', 'column order', 'selectivity', 'ORDER BY', 'LIMIT', 'BitmapAnd', 'rows examined', 'Buffers', 'PostgreSQL'],
+},
 );
