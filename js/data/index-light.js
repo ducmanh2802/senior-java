@@ -927,6 +927,8 @@ window.DATA_INDEX = {
     ["security-069","security","senior"],
     ["security-070","security","senior"],
     ["security-071","security","senior"],
+    ["security-082","security","senior"],
+    ["security-083","security","lead"],
     ["microservices-001","microservices","mid"],
     ["microservices-002","microservices","senior"],
     ["microservices-003","microservices","mid"],

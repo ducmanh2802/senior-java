@@ -7141,6 +7141,174 @@ Tối thiểu theo quy định ngành: PCI DSS yêu cầu giữ **12 tháng**, t
     'Cần ghi những trường tối thiểu nào để một bản ghi audit vừa truy vết được sự cố vừa đáp ứng PCI DSS?'
   ],
   tags: ['Audit Log', 'Compliance', 'PCI DSS', 'Spring Security', 'Outbox', 'WORM', 'Observability']
+},
+{
+  id: 'security-082',
+  topic: 'security',
+  level: 'senior',
+  q: 'Khi thiết kế xác thực cho backend Java, khi nào chọn JWT và khi nào chọn session cookie? Làm sao quyết định dựa trên cửa sổ thu hồi nghiệp vụ chịu được?',
+  a: `**Tóm tắt:** JWT (JSON Web Token) là một chuỗi ký tự chứa thông tin người dùng, được ký số để mọi dịch vụ có khóa công khai đều verify được cục bộ trong vài micro giây, nhưng rất khó thu hồi trước khi hết hạn. Session cookie là một mã phiên ngắn lưu ở trình duyệt; server tra mã này trong kho Redis (kho lưu trữ key-value trên RAM, truy xuất khoảng 0,1 ms/lần) mỗi request, và xóa khóa là thu hồi tức thì. Quyết định nằm ở **cửa sổ thu hồi nghiệp vụ chịu được**: nếu đăng xuất hoặc khoá tài khoản phải hiệu lực dưới vài giây, chọn session hoặc JWT ngắn hạn kèm danh sách từ chối (denylist) trong Redis; nếu có nhiều dịch vụ và ít cần thu hồi ngay, JWT giảm tải đáng kể.
+
+### Cơ chế JWT — verify cục bộ, thu hồi khó
+
+1. **Ký**: sau khi đăng nhập, máy chủ xác thực tạo access token chứa các thông tin kèm theo (sub = mã khách hàng, exp = thời gian hết hạn, iat = thời gian cấp, jti = mã nhận dạng duy nhất của chiếc token) và ký bằng khóa riêng (RS256) hoặc khóa chung (HS256).
+2. **Truyền**: client gửi token trong header {{Authorization: Bearer <token>}} kèm mọi request.
+3. **Verify**: dịch vụ nhận request verify chữ ký và thời gian hết hạn **cục bộ**, không cần gọi máy chủ xác thực → vài micro giây/token, mở rộng tốt cho nhiều dịch vụ.
+4. **Thu hồi**: JWT đã phát ra vẫn hợp lệ đến khi hết hạn. Để thu hồi sớm, lưu jti vào Redis denylist với TTL bằng thời gian còn lại của token (exp trừ now); mỗi request tra Redis trước khi chấp nhận.
+
+Số liệu tham khảo: verify JWT cục bộ khoảng 2–5 microgiây/token; tra Redis khoảng 0,1 ms (100 microgiây) cộng độ trễ mạng trong trung tâm dữ liệu khoảng 0,5–2 ms. Tại 10.000 TPS (số giao dịch mỗi giây), JWT tốn khoảng 30 ms CPU mỗi giây (vội vàng một lõi), còn Redis tốn khoảng 1 giây CPU mỗi giây — dễ trở thành nút thắt nếu không dùng kết nối nhiều lần và nhiều nút Redis. Session lưu trên server: 100.000 phiên × khoảng 1 KB = khoảng 100 MB Redis; JWT không tốn bộ nhớ côté server.
+
+### Cơ chế session cookie — tra Redis mỗi request, thu hồi tức thì
+
+1. Đăng nhập thành công: server sinh sessionId, lưu {sessionId → userId} vào Redis với TTL (thời gian sống, sau khi hết dữ liệu tự xóa), gắn cookie HttpOnly, Secure, SameSite vào trình duyệt.
+2. Mỗi request: trình duyệt tự gửi cookie kèm; server tra Redis để lấy userId → biết ai đang gọi (giống bó chì khóa khách sạn nhận khi làm thủ tục, mỗi lần vào phòng đeo lại).
+3. Thu hồi: xóa khóa session:<sessionId> trong Redis → hết hiệu lực ngay, không cần chờ TTL.
+
+### Bảng chọn theo loại hệ thống
+
+| Hệ thống | Lựa chọn đề xuất | Lý do |
+|---|---|---|
+| Ngân hàng (đăng xuất/khoá ngay) | Session cookie, hoặc JWT ngắn hạn + denylist | Cửa sổ thu hồi dưới 30 giây |
+| Nội bộ nhà máy (mạng trong nhà, ít dịch vụ) | Session cookie | Dễ quản lý, Redis nhẹ, truy cập nội bộ |
+| Mobile app, nhiều dịch vụ | JWT access 10 phút + refresh token xoay vòng | Ít tra Redis, ổn định trên mạng di động yếu |
+
+Refresh token: mã dài hạn dùng để cấp access token mới khi cũ hết hạn, không yêu cầu người dùng nhập lại mật khẩu. Kết hợp **refresh token rotation** — mỗi lần dùng refresh token cũ thì thu hồi nó và cấp cặp mới (access + refresh mới); nếu phát hiện dùng lại cùng một refresh token → cho là bị đánh cắp, thu hồi toàn bộ chuỗi token của khách hàng.
+
+~~~java
+// Session: tra Redis mỗi request (~0,1 ms); xóa khóa là thu hồi tức thì
+public String getUserId(String sessionId) {
+    return redis.opsForValue().get("session:" + sessionId); // null = hết hạn hoặc đã đăng xuất
+}
+public void logout(String sessionId) {
+    redis.delete("session:" + sessionId); // hết hiệu lực ngay
 }
 
+// JWT: verify chữ ký cục bộ vài micro giây, không tra cơ sở dữ liệu mỗi request
+public boolean isValid(Jwt jwt) {
+    return !jwt.getExpiresAt().isBefore(Instant.now()); // Nimbus đã verify chữ ký trước đó
+}
+public void revoke(Jwt jwt, RedisTemplate<String, String> redis) {
+    long ttl = Duration.between(Instant.now(), jwt.getExpiresAt()).getSeconds();
+    if (ttl > 0) {
+        redis.opsForValue().set("jwt:deny:" + jwt.getId(), "1", ttl, TimeUnit.SECONDS); // jti: mã nhận dạng duy nhất của JWT
+    }
+}
+~~~
+
+### Pitfall production
+
+- JWT **không mã hoá** nội dung (chỉ base64), ai có token đều đọc được các thông tin kèm theo → không nhét số tài khoản, CCCD vào token.
+- Denylist không đặt TTL → Redis phình to mãi mãi.
+- Chỉ thu hồi access token mà quên refresh token → thiết bị cũ vẫn lấy token mới.
+- Session cookie thiếu HttpOnly/Secure/SameSite → dễ bị XSS lấy cắp và CSRF.
+- Tra denylist **sau khi** đã verify chữ ký; đừng tra Redis bằng jti của token chưa verify.
+
+### Ví dụ đời thực
+
+- **Triệu chứng**: một ứng dụng di động ngân hàng dùng JWT access token sống 2 giờ, ký bằng khóa chung HS256, không có denylist. Khách hàng đổi mật khẩu nhưng thiết bị cũ vẫn chuyển tiền được trong 2 giờ sau; đồng thời token bị ghi đầy đủ vào nhật ký của dịch vụ bên thứ ba → rò rỉ.
+- **Điều tra**: hệ thống chỉ kiểm tra chữ ký và thời gian hết hạn, không kiểm tra đối tượng nhận dạng (audience), không có danh sách từ chối, đổi mật khẩu chỉ xóa phiên web.
+- **Nguyên nhân gốc**: JWT tự chứa thông tin nên sau khi phát hành, mọi dịch vụ chấp nhận đến hết hạn; không thu hồi tức thì.
+- **Cách xử lý**: (1) chuyển sang RS256 + JWKS (khoá công khai tra từ máy chủ xác thực), máy chủ ký giữ khóa riêng, dịch vụ khác chỉ lưu khóa công khai. (2) access token rút xuống 10 phút, refresh token 7 ngày, one-time use + rotation. (3) denylist jti trong Redis, TTL = thời gian còn lại của token, để đăng xuất/khoá khẩn cấp có hiệu lực ngay. (4) kiểm tra iss (máy phát hành) và aud (đối tượng nhận token).
+- **Kết quả đo được**: đăng xuất mọi thiết bị có hiệu lực dưới 10 giây; kiểm thử dùng token đã thu hồi đều nhận HTTP 401 (100% bị chặn); chi phí thêm một lần tra Redis mỗi request.
+
+### Trả lời mẫu khi phỏng vấn
+
+"Em phân biệt JWT và session theo cửa sổ thu hồi nghiệp vụ chịu được. JWT là token tự chứa thông tin, verify cục bộ vài micro giây, mở rộng tốt cho nhiều dịch vụ, nhưng khó thu hồi: sau khi phát hành nó vẫn hợp lệ đến hết hạn. Session cookie lưu phiên trên server, mỗi request tra Redis khoảng 0,1 ms, và xóa khóa là thu hồi tức thì. Nếu yêu cầu đăng xuất hoặc khoá tài khoản phải hiệu lực dưới vài giây — ví dụ ngân hàng — em chọn session, hoặc JWT ngắn hạn (5–10 phút) kèm danh sách từ chối jti trong Redis. Access token ngắn, refresh token dài hơn và chỉ dùng một lần (rotation), phát hiện reuse thì thu hồi cả chuỗi. JWT verify bằng public key từ JWKS, kiểm tra exp/iss/aud, không tin thuật toán trong header. Session cookie đặt HttpOnly, Secure, SameSite. Trên một dự án trước, khách đổi mật khẩu mà thiết bị cũ vẫn chuyển tiền được hai giờ do JWT sống hai giờ không denylist; em rút TTL xuống 10 phút, thêm denylist và chuyển sang RS256 + JWKS, sau đó đăng xuất mọi thiết bị dưới 10 giây."
+
+### Checklist
+
+1. Xác định SLA thu hồi (đăng xuất/khoá tài khoản dưới bao giờ) trước khi chọn loại token.
+2. Nếu SLA dưới 30 giây: session cookie (xóa khóa Redis ngay) hoặc JWT ngắn hạn + denylist jti với TTL bằng thời gian còn lại.
+3. Access token ngắn (5–15 phút), refresh token dài hơn, one-time use + rotation, phát hiện reuse → thu hồi cả chuỗi.
+4. JWT verify bằng public key/JWKS, kiểm tra exp/iss/aud, không tin alg trong header.
+5. Session cookie đặt HttpOnly, Secure, SameSite=Lax/Strict.
+6. Giới hạn số phiên đồng thời mỗi người dùng trong Redis.
+7. Log mỗi lần tra denylist/thu hồi kèm mã liên hệ (correlation id).
+
+> Senior tip: trước khi chọn kiến trúc token, hãy chốt SLA thu hồi với bên nghiệp vụ — con số này quyết định TTL và chi phí hạ tầng. Mẫu thực tế hay dùng: access 10 phút, refresh 8 giờ có rotation, denylist cho đăng xuất và khoá khẩn cấp, kiểm tra phiên bản token khi đổi mật khẩu. Đo tỷ lệ cache hit của Redis denylist, đặt cảnh báo khi Redis chậm, và luôn có dự phòng đọc JWKS từ cache khi máy chủ xác thực down.
+`,
+  follow: [
+    'JWT verify cục bộ vài micro giây còn tra Redis khoảng 0,1 ms — ở 50.000 TPS Redis có thể bị quá tải, bạn giảm tải thế nào?',
+    'Refresh token xoay vòng phát hiện việc dùng lại token như thế nào mà không cần lưu toàn bộ token?',
+    'Session cookie nên đặt SameSite=Lax hay Strict cho ứng dụng ngân hàng? Tại sao?'
+  ],
+  tags: ['JWT', 'Session', 'Redis', 'Access Token', 'Refresh Token', 'Thu hồi token', 'Xác thực']
+},
+{
+  id: 'security-083',
+  topic: 'security',
+  level: 'lead',
+  q: 'API hiển thị ID tự tăng trên URL (ví dụ GET /orders/10482): đối thủ có thể đoán quy mô đơn hàng, làm IDOR, và dò ID không tồn tại gây cache penetration. Bạn xử lý thế nào?',
+  a: `**Tóm tắt:** ID tự tăng (1, 2, 3…) hiển thị trên URL để đối thủ dễ đoán quy mô đơn hàng (sau đơn #1000 là #1100 → ước lượng hàng trăm đơn trong khoảng thời gian đó), thực hiện IDOR (Insecure Direct Object Reference — xem/sửa đơn của người khác bằng đổi mã trong URL) và dò ID không tồn tại gây cache penetration (cache liên tục miss, tất cả đập vào cơ sở dữ liệu và quá tải). Cách xử lý: tạo **tầng dịch ID** ở ranh giới API — hiển thị mã công khai (Sqids/UUIDv7) thay vì khóa chính, giữ nguyên khóa chính bên trong mà không migrate bảng; kèm kiểm tra quyền sở hữu ở tầng service.
+
+### Các rủi ro của ID tự tăng
+
+1. **Đoán quy mô**: đối thủ thấy đơn #10482, sau đó #10582 → ước lượng khoảng 100 đơn trong khoảng đó; đoán TPS (số giao dịch mỗi giây) của hệ thống.
+
+2. **IDOR**: endpoint GET /orders/10482 không kiểm tra chủ sở hữu → đổi số thành đơn của người khác.
+3. **Cache penetration**: dò hàng ngàn ID không tồn tại → cache miss hết → hàng ngàn truy vấn DB/giây → quá tải cơ sở dữ liệu.
+
+### Giải pháp: tầng dịch ID ở ranh giới API
+
+- **Sqids/Hashids**: thư viện mã hóa số thành chuỗi ngắn an toàn dùng trên URL (ví dụ 10482 → jR9vL2), có thể dùng muối (salt) riêng để không đảo ngược được. Không cần lưu thêm bảng, decode ngay lập tức, nhưng chỉ là làm mờ (obfuscation), không mã hoá.
+- **UUIDv7**: mã định danh duy nhất có nhúng thời gian tạo, 16 byte, khó đoán, theo thứ tự thời gian giúp chỉ mục cơ sở dữ liệu không bị mảnh quá nhiều. Cần cột riêng trong bảng và chỉ mục.
+- **Không migrate khóa chính**: bảng nguyên bản vẫn dùng BIGINT tự tăng; mã công khai chỉ dùng để truyền trên API, dịch ngược về ID bên trong khi truy vấn.
+
+Bảng so sánh:
+
+| Cách | Kích thước | Độ đoán | Lưu thêm? | Khi nào dùng |
+|---|---|---|---|---|
+| ID tự tăng lộ ra | 8 byte | Dễ | Không | Không dùng cho API đối ngoại |
+| Sqids | 8–12 ký tự | Trung bình (với salt) | Không | URL ngắn, cần decode nhanh |
+| UUIDv7 | 16 byte | Khó | Có (cột mới) | Cần không đoán được, sắp xếp theo thời gian |
+
+~~~java
+public OrderDTO getOrder(String publicOrderId, String currentUserId) {
+    // 1. Dịch ID công khai về ID bên trong (khóa chính) tại ranh giới API
+    Long internalId = idTranslator.decode(publicOrderId); // Sqids/Hashids/UUIDv7, không thấm ID tự tăng ra ngoài
+    // 2. Kiểm tra quyền sở hữu — chặn IDOR
+    Order order = orderRepo.findByIdAndUserId(internalId, currentUserId)
+        .orElseThrow(() -> new NotFoundException("ORDER_NOT_FOUND")); // trả 404, không cho biết đơn có tồn tại hay không
+    return mapper.toDTO(order);
+}
+~~~
+
+### Pitfall production
+
+- Chỉ làm mờ ID mà không kiểm tra quyền sở hữu → attacker vẫn decode được (Sqids không phải mã hoá) và làm IDOR.
+- Trả 404 khác 403 cho đơn không thuộc user → không lộ sự tồn tại của đơn (anti-enumeration).
+- Cache key bằng ID công khai, nhưng kết quả "không tìm thấy" lưu cache lâu → dò ID không tồn tại làm đầy cache; hãy dùng TTL ngắn cho kết quả miss.
+- Rate limit theo IP + người dùng để chặn dò ID.
+
+### Ví dụ đời thực
+
+- **Triệu chứng**: hệ thống bán lẻ hiển thị GET /orders/10482. Pentester thấy đơn tăng dần, ước lượng hệ thống xử lý khoảng 150 đơn/giờ; sau đó đổi id thành đơn của khách khác và thấy được thông tin đơn hàng.
+- **Điều tra**: controller gọi orderRepo.findById(id) không lọc userId; log cho thấy cùng một IP truy vấn hàng ngàn id liên tiếp, nhiều id không tồn tại → cache miss và DB bị ùn.
+- **Nguyên nhân gốc**: ID tự tăng lộ ra URL, thiếu kiểm tra sở hữu, và không giới hạn tốc độ dò id.
+- **Cách xử lý**: (1) hiển thị UUIDv7/Sqids trên API, giữ BIGINT tự tăng bên trong, không migrate bảng. (2) service truy vấn findByIdAndUserId (chỉ số hợp thành trên id, user_id). (3) trả 404 cho id không tồn tại và id không thuộc user. (4) rate limit theo IP + user (ví dụ 100 request/phút/IP). (5) cache negative với TTL ngắn (5–10 giây).
+- **Kết quả đo được**: tỷ lệ trúng guess id giảm xuống gần 0; 10.000 truy vấn id không tồn tại/giây bị rate limit và cache negative TTL 10 giây → DB chỉ chịu khoảng 1.000 truy vấn/giây thay vì 10.000.
+
+### Trả lời mẫu khi phỏng vấn
+
+"Em không để ID tự tăng lộ ra URL. Đầu tiên, em tạo tầng dịch ID ở ranh giới API: dùng UUIDv7 (mã định danh duy nhất có nhúng thời gian tạo, 16 byte, khó đoán) hoặc Sqids (mã hóa số thành chuỗi ngắn có thể dùng muối riêng) để hiển thị mã công khai, còn khóa chính BIGINT tự tăng giữ nguyên bên trong mà không migrate bảng. Khi request đến, em dịch mã công khai về ID bên trong, rồi kiểm tra quyền sở hữu ở tầng service với câu truy vấn WHERE id = ? AND user_id = ?, trả 404 cho cả hai trường hợp id không tồn tại và id không thuộc user để không lộ sự tồn tại. Em cũng rate limit theo IP và người dùng để chặn dò ID, và cache kết quả 'không tìm thấy' với TTL ngắn (5–10 giây) để dò id không tồn tại không làm quá tải cơ sở dữ liệu. Trong một dự án bán lẻ trước, pentester ước lượng được hệ thống xử lý khoảng 150 đơn/giờ từ id tự tăng; sau khi đổi sang UUIDv7 và thêm kiểm tra sở hữu, tỷ lệ trúng id giảm gần không, và 10.000 truy vấn id không tồn tại mỗi giây chỉ làm DB chịu khoảng 1.000 truy vấn nhờ cache negative TTL ngắn."
+
+### Checklist
+
+1. Không để khóa chính tự tăng hiện ra URL; dùng mã công khai (Sqids/UUIDv7) ở ranh giới API.
+2. Giữ khóa chính BIGINT tự tăng nguyên bản, không migrate bảng lớn.
+3. Dịch mã công khai về ID bên trong, rồi kiểm tra sở hữu: WHERE id = ? AND user_id = ?.
+4. Trả 404 cho id không tồn tại và id không thuộc user (không phân biệt, chống dò id).
+5. Rate limit theo IP + người dùng cho endpoint truy xuất theo id.
+6. Cache kết quả 'không tìm thấy' với TTL ngắn (5–10 giây) chống cache penetration.
+7. Log truy cập id không sở hữu kèm mã liên hệ để phát hiện quét.
+
+> Senior tip: ID công khai chỉ là lớp làm mờ, chứ không thay thế kiểm tra quyền sở hữu. UUIDv7 giúp sắp xếp theo thời gian nhưng vẫn nên dùng salt/mã hóa thêm nếu cần hoàn toàn không đoán. Kết hợp với kiểm soát quyền theo object (BOLA/IDOR) và audit log để biết ai truy cập đơn của ai. Với hệ thống ngân hàng, mỗi lần truy cập đơn hàng phải ghi log mã đơn, mã khách hàng và địa chỉ IP.
+`,
+  follow: [
+    'Sqids vs UUIDv7: khi nào chọn cái nào cho ID công khai?',
+    'Không dùng ID công khai được sao, chỉ cần kiểm tra quyền sở hữu ở service là đủ chưa?',
+    'Dò ID không tồn tại gây cache penetration — bạn giới hạn như thế nào?'
+  ],
+  tags: ['IDOR', 'ID công khai', 'Sqids', 'UUIDv7', 'Cache penetration', 'Kiểm tra quyền sở hữu', 'Primary key']
+},
 );
