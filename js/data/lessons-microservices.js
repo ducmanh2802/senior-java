@@ -5542,4 +5542,744 @@ class SlaTimer {
   ], tags: ['sla', 'escalation', 'clock', 'timer', 'test']
 }
 
+,
+{
+  id: 'lesson-microservices-023', track: 'microservices', order: 23,
+  title: 'Kafka từ số 0: topic, partition, offset, consumer group và rebalance', level: 'senior', minutes: 50,
+  goals: ['Giải thích topic, partition, offset và vai trò của broker', 'Hiểu producer chọn partition bằng key (hash), consumer group chia partition', 'Phân biệt commit offset trước/sau xử lý: mất vs trùng message', 'Mô phỏng rebalance khi consumer vào/rời group'],
+  body: `**Tóm tắt:** Kafka là hệ thống event streaming (luồng sự kiện) phân tán. Topic (chủ đề) là tên luồng dữ liệu; mỗi topic chia thành nhiều partition (phân vùng — nhật ký chỉ-ghi-thêm, append-only). Mỗi bản ghi trong partition có offset (vị trí số thứ tự 0,1,2...). Producer (người gửi) ghi bản ghi; consumer (người đọc) đọc theo offset. Consumer group (nhóm consumer dùng chung group.id) chia sẻ việc đọc: mỗi partition chỉ gán cho TỐI ĐA 1 consumer trong group tại một thời điểm. Rebalance (cân bằng lại) xảy ra khi consumer vào/rời group — partition được gán lại.
+**Ví dụ đời thường:** Topic như cuốn sổ ghi chép chung; partition là các trang sổ (mỗi trang ghi liên tục, không xóa sửa); offset là số dòng trên trang. Producer viết thêm dòng mới vào trang. Consumer group là đội đọc sổ: mỗi người đọc một trang riêng, không ai đọc cùng trang. Người mới vào team (consumer join) → chia lại trang (rebalance).
+
+### Topic, Partition, Offset — bộ ba cốt lõi
+
+**Topic** là định danh logic (ví dụ "orders", "payments"). **Partition** chia topic thành nhiều nhật ký song song để scale throughput: mỗi partition có thể nằm trên broker khác nhau. **Offset** là chỉ số vị trí trong một partition, tăng dần từ 0, không bao giờ giảm. Kafka đảm bảo thứ tự trong một partition, KHÔNG đảm bảo thứ tự giữa các partition.
+
+~~~text
+Topic: orders (3 partition)
+Partition 0: [offset 0: Order#1] [1: Order#4] [2: Order#7] ...
+Partition 1: [offset 0: Order#2] [1: Order#5] [2: Order#8] ...
+Partition 2: [offset 0: Order#3] [1: Order#6] [2: Order#9] ...
+~~~
+
+**Broker** là máy chủ Kafka lưu trữ partition. replication factor (số bản sao) quyết định độ bền: partition leader nhận ghi, follower đồng bộ. {{acks=all}} đợi tất cả in-sync replica xác nhận.
+
+### Producer chọn partition như thế nào
+
+Khi gửi bản ghi, producer có thể cung cấp **key** (ví dụ {{orderId}}). Partition được chọn bằng {{hash(key) % số_partition}}. Cùng key → luôn cùng partition → giữ thứ tự cho cùng một key (ví dụ tất cả event của Order#123 vào partition 1). Nếu không có key → round-robin (xoay vòng) giữa các partition.
+
+~~~java
+// ProducerRecord(topic, key, value) — key quyết định partition
+new ProducerRecord<>("orders", "order-123", orderEvent); // key="order-123" → partition cố định
+new ProducerRecord<>("orders", null, orderEvent);        // không key → round-robin
+~~~
+
+**Ví dụ chạy tay:** Topic 3 partition, key "A", "B", "C", "A", "B". Hash đơn giản: độ dài key % 3.
+- "A" (len=1) % 3 = 1 → partition 1
+- "B" (len=1) % 3 = 1 → partition 1
+- "C" (len=1) % 3 = 1 → partition 1 (va chạm hash, thực tế Kafka dùng murmur2)
+- "A" → partition 1, "B" → partition 1
+Kết quả: cùng key cùng partition → event của A và B lần 1 và lần 2 vào cùng partition 1, thứ tự được bảo toàn.
+
+### Consumer Group — chia việc đọc
+
+Consumer group dùng chung {{group.id}}. Mỗi consumer trong group nhận một tập partition **không giao nhau**. Partition chỉ gán cho **một** consumer. Nếu consumer nhiều hơn partition → consumer thừa bị idle (nhàn). Nếu consumer ít hơn partition → một consumer đọc nhiều partition.
+
+~~~text
+Group "order-service" (2 consumer), Topic orders (3 partition)
+Consumer-0: đọc Partition 0, Partition 2
+Consumer-1: đọc Partition 1
+~~~
+
+Consumer gọi {{poll(Duration)}} để kéo batch bản ghi từ các partition được gán. Vị trí đọc hiện tại gọi là **position**. Offset đã commit (đã xử lý xong) lưu trong topic nội bộ {{__consumer_offsets}}.
+
+### Commit Offset: trước hay sau xử lý — mất hay trùng
+
+| Chiến lược | Khi commit | Crash sau commit, trước xử lý xong | Crash sau xử lý, trước commit |
+|---|---|---|---|
+| **At-most-once** (nhiều nhất một lần) | Trước xử lý | **Mất message** (offset đã tiến, message bị bỏ qua) | Không xảy ra (commit trước) |
+| **At-least-once** (ít nhất một lần) | Sau xử lý thành công | Không xảy ra | **Trùng message** (offset chưa tiến, poll lại đọc lại) |
+
+Kafka broker chỉ biết offset đã commit, KHÔNG biết nghiệp vụ đã xử lý xong. **At-least-once an toàn hơn về mất dữ liệu**, và consumer **BẮT BUỘC** idempotent (xử lý lặp không gây tác dụng phụ hai lần — dedup theo key/version, hoặc bảng inbox unique constraint).
+
+~~~java
+// At-least-once: commit SAU khi xử lý xong
+ConsumerRecords<String, OrderEvent> records = consumer.poll(Duration.ofMillis(500));
+for (ConsumerRecord<String, OrderEvent> r : records) {
+    handle(r.value());           // xử lý nghiệp vụ (ghi DB, gọi API...)
+}
+consumer.commitSync();           // commit offset = vị trí sau batch vừa xử lý
+// Nếu crash ở giữa vòng lặp handle → lần sau poll lại → trùng → cần idempotent
+~~~
+
+### Rebalance: khi consumer vào/rời group
+
+Rebalance xảy ra khi:
+- Consumer mới {{join}} group (scale up)
+- Consumer {{leave}} group (scale down, deploy mới, crash)
+- Heartbeat timeout (consumer treo quá lâu, bị coi là chết)
+- Thay đổi số partition (topic thêm partition)
+
+Trong rebalance, Kafka **thu hồi (revoke)** partition đang gán, rồi **gán lại (assign)** theo assignor:
+- {{RangeAssignor}}: chia partition liên tiếp **theo từng topic** cho consumer (dễ lệch tải khi nhiều topic)
+- {{RoundRobinAssignor}}: xoay vòng **tất cả partition của mọi topic** giữa consumer (cân bằng hơn)
+- {{CooperativeStickyAssignor}} (có từ Kafka 2.4, KIP-429; **không** phải mặc định — mặc định vẫn là RangeAssignor): thu hồi/gán **tăng dần**, giảm gián đoạn
+
+**Quan trọng:** Khi partition bị revoke, consumer NÊN commit offset đã xử lý (trong {{ConsumerRebalanceListener.onPartitionsRevoked}}) để không xử lý lại khi gán lại. Nếu không commit → at-least-once → trùng message sau rebalance.
+
+### Sơ đồ luồng đọc cơ bản
+
+~~~seq
+title: Consumer group đọc, commit offset, rebalance
+actors: Producer | Broker/Partition | Consumer-0 | Consumer-1 | OffsetStore
+Producer -> Broker/Partition: append(key=order-1) offset=0
+Producer -> Broker/Partition: append(key=order-2) offset=0
+Producer -> Broker/Partition: append(key=order-3) offset=0
+Consumer-0 -> Broker/Partition: poll(partition 0, 2)
+Broker/Partition --> Consumer-0: records [offset 0]
+Consumer-0 -> Consumer-0: handle(order-1)
+Consumer-0 -> OffsetStore: commitSync(offset=1)
+Consumer-1 -> Broker/Partition: poll(partition 1)
+Broker/Partition --> Consumer-1: records [offset 0]
+Consumer-1 -> Consumer-1: handle(order-2)
+Consumer-1 -> OffsetStore: commitSync(offset=1)
+note Consumer-0..Consumer-1: Rebalance: Consumer-0 rời, Consumer-1 nhận partition 0
+Consumer-1 -> OffsetStore: commitSync(offset=1 cho partition 0)
+~~~
+
+### Lỗi hay gặp trên production
+
+- **Bật {{enable.auto.commit=true}} (mặc định) mà xử lý lâu hơn {{auto.commit.interval.ms}}**: commit chạy nền có thể tiến offset của batch chưa xử lý hết → mất message.
+- **Commit offset từng record thay vì batch**: chậm, tăng tải broker; commit batch nhưng xử lý sai thứ tự so với offset commit.
+- **Không xử lý rebalance**: mất cơ hội commit offset đã xử lý trước khi partition bị thu hồi → trùng message sau rebalance.
+- **Nghĩ "exactly-once Kafka" (EOS) miễn là bật {{enable.idempotence}}**: EOS chỉ bao produce/consume trong Kafka (transactional.id, read_committed); ghi DB/JDBC ngoài vẫn cần idempotency/outbox.
+- **Consumer group chỉ 1 consumer nhưng partition nhiều**: consumer đơn lẻ đọc tất cả partition, throughput giới hạn bởi single thread. Cần thêm consumer để song song.
+
+### Liên hệ phỏng vấn
+
+- **Topic vs Partition vs Offset là gì?** Topic là tên luồng; partition là nhật ký append-only song song; offset là vị trí số trong partition.
+- **Producer chọn partition thế nào?** Key không null → hash(key) % partitions; key null → round-robin. Cùng key → cùng partition → giữ thứ tự.
+- **Consumer group chia partition ra sao?** Mỗi partition chỉ gán 1 consumer; consumer có thể đọc nhiều partition; consumer > partition thì consumer thừa idle.
+- **Commit offset trước xử lý vs sau xử lý khác nhau thế nào?** Trước → at-most-once (có thể mất); Sau → at-least-once (có thể trùng, cần idempotent). Production chọn at-least-once + idempotent consumer.
+- **Rebalance là gì, khi nào xảy ra?** Gán lại partition khi consumer join/leave/heartbeat timeout/partition thay đổi. Nên commit offset trong {{onPartitionsRevoked}}.
+
+> Senior tip: Theo dõi **consumer lag** (latest offset - committed offset) theo partition; lag tăng đột biến thường do xử lý chậm, rebalance, hoặc poison message chặn một partition. Alert lag > ngưỡng và lag không giảm sau N phút.
+
+### Cơ chế từng bước (tóm tắt để nhớ)
+
+1. **Producer** gửi {{ProducerRecord(topic, key, value)}}. Nếu có key → {{hash(key) % partitions}} chọn partition; không key → round-robin.
+2. **Broker** append vào partition leader, replicate sang follower (nếu {{acks=all}} đợi ISR), trả ACK kèm offset.
+3. **Consumer group** join với {{group.id}}. Assignor chia partition cho các consumer.
+4. **Consumer** gọi {{poll()}} kéo batch từ các partition được gán, bắt đầu từ position (hoặc committed offset nếu mới join).
+5. **Xử lý nghiệp vụ** cho từng record (ghi DB, gọi downstream...). **BẮT BUỘC** idempotent nếu chọn at-least-once.
+6. **Commit offset** (sync hoặc async) sau khi xử lý xong batch. Offset lưu trong {{__consumer_offsets}}.
+7. **Rebalance** xảy ra → {{onPartitionsRevoked}} commitSync offset đã xử lý → {{onPartitionsAssigned}} bắt đầu đọc từ offset đã commit.
+
+### Tự thử trên máy (Docker 1 dòng)
+
+~~~bash
+docker run -d --name kafka -p 9092:9092 -e KAFKA_NODE_ID=1 -e KAFKA_LISTENER_SECURITY_PROTOCOL_MAP=CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT -e KAFKA_LISTENERS=PLAINTEXT://0.0.0.0:9092,CONTROLLER://0.0.0.0:9093 -e KAFKA_ADVERTISED_LISTENERS=PLAINTEXT://localhost:9092 -e KAFKA_CONTROLLER_QUORUM_VOTERS=1@localhost:9093 -e KAFKA_PROCESS_ROLES=broker,controller -e KAFKA_CONTROLLER_LISTENER_NAMES=CONTROLLER apache/kafka:3.7.0
+~~~
+Tạo topic 3 partition:
+
+~~~bash
+docker exec kafka kafka-topics.sh --create --topic orders --partitions 3 --replication-factor 1 --bootstrap-server localhost:9092
+~~~
+
+Gửi message kèm key (định dạng key:value):
+
+~~~bash
+echo '{"id":1}' | docker exec -i kafka kafka-console-producer.sh --topic orders --bootstrap-server localhost:9092 --property parse.key=true --property key.separator=:
+~~~
+
+Đọc lại từ đầu:
+
+~~~bash
+docker exec kafka kafka-console-consumer.sh --topic orders --group test-group --from-beginning --bootstrap-server localhost:9092
+~~~
+
+### Tóm lại 3 ý
+
+1. **Topic chia partition, partition có offset** — partition là nhật ký append-only, offset là con trỏ đọc.
+2. **Consumer group chia partition** — mỗi partition chỉ 1 consumer; consumer có thể đọc nhiều partition.
+3. **Commit offset sau xử lý + idempotent consumer** — an toàn hơn (at-least-once), tránh mất dữ liệu; commit trước xử lý rủi ro mất message.
+
+### Liên hệ phỏng vấn
+
+- **Hỏi:** Topic 3 partition, consumer group 2 consumer. Phân bố partition ra sao? **Trả lời ngắn:** Assignor quyết định; RangeAssignor: consumer-0 đọc partition 0,1; consumer-1 đọc partition 2. RoundRobin: consumer-0 đọc 0,2; consumer-1 đọc 1.
+- **Hỏi:** Consumer crash giữa chừng xử lý batch, đã poll 10 record nhưng mới xử lý 3. Offset commit lúc nào thì an toàn? **Trả lời ngắn:** Chỉ commit SAU KHI xử lý xong 10 record. Commit sớm → crash → 7 record chưa xử lý bị mất vì offset đã tiến. Crash trước commit → poll lại 10 record → trùng 3 record đầu (cần idempotent).
+- **Hỏi:** Rebalance làm trùng message nếu không cẩn thận. Vì sao và chặn thế nào? **Trả lời ngắn:** Partition bị revoke, consumer chưa kịp commit offset đã xử lý; gán lại partition → đọc lại từ offset cũ. Chặn: {{onPartitionsRevoked}} commitSync offset đã xử lý trước khi trả partition.
+- **Hỏi:** Producer gửi key="order-123" 2 lần cách nhau 1 giờ. Có đảm bảo cùng partition không? **Trả lời ngắn:** Có, partition = hash(key) % partitions. Hash xác định (murmur2), không đổi theo thời gian. Nếu topic thêm partition thì hash % partitions mới có thể thay đổi → key có thể đổi partition (cần cân nhắc khi scale partition).
+
+> Senior tip: Không bao giờ dùng {{enable.auto.commit=true}} cho xử lý quan trọng. Luôn dùng {{commitSync()}} sau xử lý batch, và consumer phải idempotent (dedup theo business key/version hoặc inbox table unique constraint). Với EOS (exactly-once semantics), dùng {{transactional.id}} + {{read_committed}} isolation level, nhưng DB ngoài Kafka vẫn cần outbox/idempotency.`,
+  exercises: [{
+    title: 'MiniKafkaGroup: 1 topic 3 partition, 2 consumer group, commit strategy demo',
+    prompt: `Cài {{MiniKafkaGroup}} mô phỏng Kafka cơ bản: 1 topic, 3 partition (List<String>), consumer group 2 consumer chia partition.
+API:
+- {{append(topic, partition, key, message)}}: thêm message vào partition, trả offset (0-based). Key dùng để demo partition selection (không ảnh hưởng logic lưu).
+- {{joinGroup(groupId, consumerId, topic, numPartitions)}}: consumer join group, nhận assign partition (range assignor đơn giản: partition 0,1 -> consumer-0; partition 2 -> consumer-1). Trả List<Integer> partition được gán.
+- {{poll(groupId, consumerId, maxPerPartition)}}: consumer kéo batch từ các partition được gán. Đọc từ position (mặc định = committed offset, 0 nếu chưa commit). Trả Map<partition, List<Record>>. Record = {offset, key, message}. **Tăng position** sau khi đọc.
+- {{commitOffset(groupId, consumerId, partition, offset)}}: commit offset cho partition (offset = vị trí tiếp theo sẽ đọc, tức lastProcessed + 1).
+- {{position(groupId, consumerId, partition)}} / {{committed(groupId, consumerId, partition)}}: vị trí đọc hiện tại / offset đã commit.
+- {{leaveGroup(groupId, consumerId)}}: consumer rời group (trigger rebalance đơn giản: partition của consumer đó được gán lại cho consumer còn lại trong group).
+- {{rebalance(groupId, topic, numPartitions, consumerIds)}}: chạy rebalance thủ công (dùng khi test thêm consumer).
+
+Test yêu cầu:
+1. Append 9 message vào 3 partition (mỗi partition 3 message).
+2. 2 consumer join group → assign partition (range: p0,p1 -> c0; p2 -> c1).
+3. **At-most-once demo**: c0 poll, commitOffset TRƯỚC xử lý, rồi mô phỏng crash (leaveGroup + joinGroup lại) → message bị mất (poll trả rỗng vì committed đã tiến).
+4. **At-least-once demo**: c1 poll, xử lý xong (ghi vào Set processedKeys), commitOffset SAU xử lý, crash trước commit → joinGroup lại → poll trả lại message cũ → trùng key → dedup bằng Set (idempotent) → chỉ xử lý 1 lần.
+5. Kiểm tra: at-most-once mất message; at-least-once + idempotent không trùng hiệu ứng.
+Tất cả method {{synchronized}} để test deterministic.`,
+    starter: `import java.util.*;
+import java.util.concurrent.*;
+
+class MiniKafkaGroup {
+    // topic -> partition -> list of messages (offset = index)
+    private final Map<String, Map<Integer, List<Record>>> log = new HashMap<>();
+    // group -> consumer -> partition -> position (next to read)
+    private final Map<String, Map<String, Map<Integer, Integer>>> positions = new HashMap<>();
+    // group -> consumer -> partition -> committed offset
+    private final Map<String, Map<String, Map<Integer, Integer>>> committed = new HashMap<>();
+    // group -> consumer -> assigned partitions
+    private final Map<String, Map<String, Set<Integer>>> assignments = new HashMap<>();
+
+    record Record(int offset, String key, String message) {}
+
+    MiniKafkaGroup() {}
+
+    synchronized int append(String topic, int partition, String key, String message) { throw new UnsupportedOperationException("TODO"); }
+    synchronized List<Integer> joinGroup(String groupId, String consumerId, String topic, int numPartitions) { throw new UnsupportedOperationException("TODO"); }
+    synchronized Map<Integer, List<Record>> poll(String groupId, String consumerId, int maxPerPartition) { throw new UnsupportedOperationException("TODO"); }
+    synchronized void commitOffset(String groupId, String consumerId, int partition, int offset) { throw new UnsupportedOperationException("TODO"); }
+    synchronized int position(String groupId, String consumerId, int partition) { throw new UnsupportedOperationException("TODO"); }
+    synchronized int committed(String groupId, String consumerId, int partition) { throw new UnsupportedOperationException("TODO"); }
+    synchronized void leaveGroup(String groupId, String consumerId) { throw new UnsupportedOperationException("TODO"); }
+    synchronized void rebalance(String groupId, String topic, int numPartitions, List<String> consumerIds) { throw new UnsupportedOperationException("TODO"); }
+}`,
+    tests: `public class Main {
+  static int p=0,t=0; static void ck(String n,Runnable r){t++;try{r.run();p++;System.out.println("PASS " + n);}catch(Throwable e){System.out.println("FAIL " + n + ": " + e);}}
+  static void eq(Object a,Object b){if(!Objects.equals(a,b))throw new AssertionError(a + " != " + b);}
+  public static void main(String[] z){
+    ck("append returns offsets per partition",()->{
+      MiniKafkaGroup k=new MiniKafkaGroup();
+      eq(0,k.append("orders",0,"k1","m1")); eq(1,k.append("orders",0,"k2","m2"));
+      eq(0,k.append("orders",1,"k3","m3")); eq(0,k.append("orders",2,"k4","m4"));
+    });
+    ck("range assignor: 2 consumers, 3 partitions",()->{
+      MiniKafkaGroup k=new MiniKafkaGroup();
+      // c0 join trước (1 mình) -> đọc hết 3 partition
+      eq(List.of(0,1,2), k.joinGroup("g","c0","orders",3));
+      // c1 join -> rebalance: c1 nhận p2
+      eq(List.of(2), k.joinGroup("g","c1","orders",3));
+      // c0 join lại (mô phỏng onPartitionsAssigned sau rebalance) -> còn p0,p1
+      eq(List.of(0,1), k.joinGroup("g","c0","orders",3));
+    });
+    ck("at-most-once: commit before process -> crash -> message lost",()->{
+      MiniKafkaGroup k=new MiniKafkaGroup();
+      k.append("orders",0,"k1","m1"); k.append("orders",0,"k2","m2");
+      k.joinGroup("g","c0","orders",3); // c0 gets p0,p1
+      var batch=k.poll("g","c0",10);
+      // commit BEFORE processing (at-most-once)
+      k.commitOffset("g","c0",0,k.position("g","c0",0));
+      // crash: leave and rejoin (simulate restart)
+      k.leaveGroup("g","c0");
+      k.joinGroup("g","c0","orders",3);
+      // poll again -> should be empty because committed offset advanced
+      var again=k.poll("g","c0",10);
+      eq(0,again.getOrDefault(0,List.of()).size()); // messages lost!
+    });
+    ck("at-least-once: process then commit -> crash before commit -> duplicate poll -> idempotent dedup",()->{
+      MiniKafkaGroup k=new MiniKafkaGroup();
+      k.append("orders",2,"k3","m3"); k.append("orders",2,"k4","m4");
+      k.joinGroup("g","c1","orders",3); // c1 gets p2
+      var batch=k.poll("g","c1",10);
+      Set<String> processed=new HashSet<>();
+      for(var r: batch.getOrDefault(2,List.of())) {
+        if(processed.add(r.key())) { /* process */ }
+      }
+      // crash BEFORE commit
+      k.leaveGroup("g","c1");
+      k.joinGroup("g","c1","orders",3);
+      // poll again -> same messages
+      var again=k.poll("g","c1",10);
+      int processedCount=0;
+      for(var r: again.getOrDefault(2,List.of())) {
+        if(processed.add(r.key())) processedCount++; // idempotent: only new keys count
+      }
+      eq(0,processedCount); // no new keys processed (all duplicates deduped)
+      // now commit
+      k.commitOffset("g","c1",2,k.position("g","c1",2));
+      k.leaveGroup("g","c1");
+      k.joinGroup("g","c1","orders",3);
+      var afterCommit=k.poll("g","c1",10);
+      eq(0,afterCommit.getOrDefault(2,List.of()).size());
+    });
+    ck("rebalance reassigns partitions",()->{
+      MiniKafkaGroup k=new MiniKafkaGroup();
+      k.joinGroup("g","c0","orders",3);
+      k.joinGroup("g","c1","orders",3);
+      // c0 leaves, c1 should get all partitions
+      k.leaveGroup("g","c0");
+      k.rebalance("g","orders",3,List.of("c1"));
+      var assigned=k.joinGroup("g","c1","orders",3); // re-join to see assignment
+      eq(List.of(0,1,2),assigned);
+    });
+    System.out.println("RESULT " + p + "/" + t);
+  }
+}`,
+    reference: `import java.util.*;
+import java.util.concurrent.*;
+
+class MiniKafkaGroup {
+    private final Map<String, Map<Integer, List<Record>>> log = new HashMap<>();
+    private final Map<String, Map<String, Map<Integer, Integer>>> positions = new HashMap<>();
+    private final Map<String, Map<String, Map<Integer, Integer>>> committed = new HashMap<>();
+    private final Map<String, Map<String, Set<Integer>>> assignments = new HashMap<>();
+
+    record Record(int offset, String key, String message) {}
+
+    private String gkey(String g, String c) { return g + "|" + c; }
+    private List<Record> part(String topic, int p) {
+        return log.computeIfAbsent(topic, x -> new HashMap<>()).computeIfAbsent(p, x -> new ArrayList<>());
+    }
+    private Map<Integer, Integer> posMap(String g, String c) {
+        return positions.computeIfAbsent(g, x -> new HashMap<>()).computeIfAbsent(c, x -> new HashMap<>());
+    }
+    private Map<Integer, Integer> comMap(String g, String c) {
+        return committed.computeIfAbsent(g, x -> new HashMap<>()).computeIfAbsent(c, x -> new HashMap<>());
+    }
+    private Set<Integer> assignSet(String g, String c) {
+        return assignments.computeIfAbsent(g, x -> new HashMap<>()).computeIfAbsent(c, x -> new HashSet<>());
+    }
+
+    MiniKafkaGroup() {}
+
+    synchronized int append(String topic, int partition, String key, String message) {
+        List<Record> l = part(topic, partition);
+        int offset = l.size();
+        l.add(new Record(offset, key, message));
+        return offset;
+    }
+
+    synchronized List<Integer> joinGroup(String groupId, String consumerId, String topic, int numPartitions) {
+        // Simple range assignor: divide partitions evenly among current consumers in group
+        Set<String> consumers = assignments.getOrDefault(groupId, Collections.emptyMap()).keySet();
+        consumers = new HashSet<>(consumers);
+        consumers.add(consumerId);
+        List<String> sorted = new ArrayList<>(consumers);
+        Collections.sort(sorted);
+        int idx = sorted.indexOf(consumerId);
+        int perConsumer = (int) Math.ceil((double) numPartitions / sorted.size());
+        int start = idx * perConsumer;
+        int end = Math.min(start + perConsumer, numPartitions);
+        Set<Integer> assigned = new HashSet<>();
+        for (int p = start; p < end; p++) assigned.add(p);
+        assignSet(groupId, consumerId).clear();
+        assignSet(groupId, consumerId).addAll(assigned);
+        // Initialize position/committed from existing or 0
+        Map<Integer, Integer> pos = posMap(groupId, consumerId);
+        Map<Integer, Integer> com = comMap(groupId, consumerId);
+        for (int p : assigned) {
+            pos.putIfAbsent(p, com.getOrDefault(p, 0));
+        }
+        return new ArrayList<>(assigned);
+    }
+
+    synchronized Map<Integer, List<Record>> poll(String groupId, String consumerId, int maxPerPartition) {
+        Map<Integer, List<Record>> out = new HashMap<>();
+        Set<Integer> assigned = assignSet(groupId, consumerId);
+        Map<Integer, Integer> pos = posMap(groupId, consumerId);
+        for (int p : assigned) {
+            List<Record> l = log.getOrDefault("orders", Collections.emptyMap()).getOrDefault(p, Collections.emptyList());
+            int from = pos.getOrDefault(p, 0);
+            int to = Math.min(l.size(), from + Math.max(0, maxPerPartition));
+            if (from < to) {
+                out.put(p, new ArrayList<>(l.subList(from, to)));
+                pos.put(p, to);
+            }
+        }
+        return out;
+    }
+
+    synchronized void commitOffset(String groupId, String consumerId, int partition, int offset) {
+        comMap(groupId, consumerId).put(partition, Math.max(0, offset));
+    }
+
+    synchronized int position(String groupId, String consumerId, int partition) {
+        return posMap(groupId, consumerId).getOrDefault(partition, comMap(groupId, consumerId).getOrDefault(partition, 0));
+    }
+
+    synchronized int committed(String groupId, String consumerId, int partition) {
+        return comMap(groupId, consumerId).getOrDefault(partition, 0);
+    }
+
+    synchronized void leaveGroup(String groupId, String consumerId) {
+        assignments.getOrDefault(groupId, Collections.emptyMap()).remove(consumerId);
+        positions.getOrDefault(groupId, Collections.emptyMap()).remove(consumerId);
+    }
+
+    synchronized void rebalance(String groupId, String topic, int numPartitions, List<String> consumerIds) {
+        // Reassign all partitions to current consumers using range assignor
+        List<String> sorted = new ArrayList<>(consumerIds);
+        Collections.sort(sorted);
+        int perConsumer = (int) Math.ceil((double) numPartitions / sorted.size());
+        Map<String, Set<Integer>> newAssign = new HashMap<>();
+        for (int i = 0; i < sorted.size(); i++) {
+            String c = sorted.get(i);
+            int start = i * perConsumer;
+            int end = Math.min(start + perConsumer, numPartitions);
+            Set<Integer> assigned = new HashSet<>();
+            for (int p = start; p < end; p++) assigned.add(p);
+            newAssign.put(c, assigned);
+        }
+        Map<String, Set<Integer>> groupAssign = assignments.get(groupId);
+        if (groupAssign != null) {
+            groupAssign.clear();
+            groupAssign.putAll(newAssign);
+        }
+        // Reset position to committed for new assignments
+        for (String c : consumerIds) {
+            Map<Integer, Integer> pos = posMap(groupId, c);
+            Map<Integer, Integer> com = comMap(groupId, c);
+            pos.clear();
+            for (int p : groupAssign.getOrDefault(c, Collections.emptySet())) {
+                pos.put(p, com.getOrDefault(p, 0));
+            }
+        }
+    }
+}`,
+    hints: [
+      'append: thêm Record(offset, key, message) vào List của partition tương ứng. Offset = size trước khi add.',
+      'joinGroup: range assignor đơn giản — sort consumerId, chia partition đều (math.ceil). Khởi tạo position = committed (mặc định 0).',
+      'poll: với mỗi partition được gán, đọc từ position đến min(size, position+max). Cập nhật position = to.',
+      'commitOffset: lưu offset vào committed map. At-most-once: commit TRƯỚC xử lý. At-least-once: commit SAU xử lý.',
+      'leaveGroup: xóa assignment và position của consumer đó. rebalance: chạy lại range assignor cho consumer còn lại, reset position = committed.',
+      'Test at-most-once: poll -> commitOffset(position) -> leave+join -> poll again -> rỗng (mất message).',
+      'Test at-least-once: poll -> process (dedup Set) -> leave+join (chưa commit) -> poll again -> trùng key -> Set dedup -> 0 mới -> commitOffset -> leave+join -> poll rỗng.'
+    ],
+    explain: `Bài tập mô phỏng cốt lõi Kafka consumer group: partition log (List), position (con trỏ đọc trong RAM), committed offset (con trỏ bền vững). Assignor dùng range đơn giản: consumer đầu lấy partition đầu, v.v. Không mô phỏng network, replication, heartbeat, CooperativeStickyAssignor phức tạp.
+- **At-most-once**: commitOffset(position) TRƯỚC xử lý. Nếu crash (leave+join mô phỏng restart), position reset = committed (đã tiến) → poll trả rỗng → message bị bỏ qua (mất). Đây là rủi ro mất dữ liệu.
+- **At-least-once + idempotent**: xử lý xong (ghi processedKeys Set), commitOffset SAU. Crash trước commit → position chưa tiến, committed cũ → poll lại trả message cũ → trùng key → Set dedup loại bỏ → không xử lý lại hiệu ứng. Commit sau -> an toàn.
+- Production: dùng {{commitSync()}} sau xử lý batch, consumer idempotent (dedup theo business key/version hoặc inbox table unique constraint). {{enable.auto.commit=true}} nguy hiểm vì commit chạy nền có thể tiến offset của batch chưa xử lý xong.
+- Rebalance: {{onPartitionsRevoked}} commitSync offset đã xử lý; {{onPartitionsAssigned}} seek đến committed offset. Mô phỏng đơn giản bằng leaveGroup + rebalance + joinGroup.
+Lỗi thường gặp: nhầm position/committed; commit trước xử lý; không dedup khi chọn at-least-once; không commit trong onPartitionsRevoked.`,
+  }],
+  check: [
+    { q: 'Topic "orders" có 3 partition. Consumer group "svc" có 2 consumer. RangeAssignor phân bố partition như thế nào?', options: ['Consumer-0: partition 0,1; Consumer-1: partition 2', 'Consumer-0: partition 0,2; Consumer-1: partition 1', 'Consumer-0: partition 0; Consumer-1: partition 1,2', 'Ngẫu nhiên mỗi lần rebalance'], answer: 0, explain: 'RangeAssignor chia partition liên tiếp theo topic: sort consumerId, chia đều partition liên tiếp. 3 partition / 2 consumer = 2 cho consumer đầu (p0,p1), 1 cho consumer sau (p2). RoundRobinAssignor mới xoay vòng (p0,p2 cho c0; p1 cho c1).' },
+    { q: 'Producer gửi message với key="order-123". Partition được chọn như thế nào?', options: ['Round-robin luân phiên', 'hash(key) % số_partition (cùng key -> cùng partition)', 'Luôn partition 0', 'Dựa vào timestamp'], answer: 1, explain: 'Có key: partition = murmur2(key) % partitions. Cùng key đảm bảo cùng partition -> giữ thứ tự cho cùng key. Không key: round-robin.' },
+    { q: 'Consumer poll 10 record, xử lý 3 record rồi crash. Offset commit lúc nào thì KHÔNG mất message?', options: ['Commit trước khi poll', 'Commit sau khi xử lý 3 record đầu', 'Commit SAU KHI xử lý xong 10 record', 'Không commit, để auto.commit lo'], answer: 2, explain: 'Chỉ commit sau khi xử lý xong toàn bộ batch (at-least-once). Commit sớm (sau 3 record) → crash → 7 record chưa xử lý bị mất vì offset đã tiến. Không commit → auto.commit có thể commit sai lúc.' },
+    { q: 'Rebalance xảy ra khi consumer join/leave group. Consumer NÊN làm gì trong onPartitionsRevoked?', options: ['Không làm gì, Kafka tự lo', 'CommitSync offset đã xử lý của partition bị thu hồi', 'Xóa local cache', 'Tăng poll timeout'], answer: 1, explain: 'Partition bị revoke -> consumer mất quyền đọc. Nếu không commit offset đã xử lý, khi partition gán lại (có thể cho consumer khác) -> đọc lại từ offset cũ -> trùng message. CommitSync trong onPartitionsRevoked đảm bảo offset bền vững trước khi trả partition.' }
+  ], related: ['microservices-010', 'microservices-011', 'microservices-002'], tags: ['Kafka', 'topic', 'partition', 'offset', 'consumer group', 'rebalance', 'at-least-once', 'idempotent']
+},
+{
+  id: 'lesson-microservices-024', track: 'microservices', order: 24,
+  title: 'Kafka consumer lag monitoring, rebalance protocol và exactly-once semantics', level: 'senior', minutes: 45,
+  goals: ['Tính và giám sát consumer lag (độ trễ tiêu thụ)', 'Hiểu rebalance protocol: JoinGroup, SyncGroup, Heartbeat', 'Phân biệt exactly-once trong Kafka (EOS) vs end-to-end exactly-once', 'Cài đặt transactional producer + read_committed consumer'],
+  body: `**Tóm tắt:** Consumer lag là khoảng cách giữa offset mới nhất (high watermark) và offset đã commit — chỉ số quan trọng nhất để biết consumer có kịp xử lý không. Rebalance protocol (JoinGroup/SyncGroup/Heartbeat) quyết định partition gán cho ai và khi nào. Exactly-once semantics (EOS) trong Kafka dùng transactional.id + read_committed isolation level để đảm bảo produce/consume nguyên tử trong Kafka, nhưng **KHÔNG** tự động mở rộng ra DB/JDBC bên ngoài — vẫn cần outbox/idempotency.
+**Ví dụ đời thường:** Lag như hàng đợi tại quầy cafe: high watermark = số khách đã đặt đơn, committed offset = số khách đã phục vụ xong. Lag lớn = khách chờ lâu. Rebalance như ca làm việc đổi ca: nhân viên cũ giao ca (commit offset đã làm), nhân viên mới nhận ca (seek đến offset đã commit). EOS như giao dịch ngân hàng: hoặc tất cả thành công, hoặc không có gì xảy ra — nhưng chỉ trong sổ cái Kafka, không tự lan sang sổ cái ngân hàng thật.
+
+### Consumer Lag — chỉ số sống còn
+
+**High Watermark (HW)** = offset lớn nhất đã được replicate đủ ISR (in-sync replica) — offset mà consumer được phép đọc tới. **Committed Offset** = offset consumer đã commit (đã xử lý xong). **Consumer Lag** = HW - Committed Offset (tính theo từng partition).
+
+| Lag | Nghĩa | Hành động |
+|---|---|---|
+| 0 | Consumer kịp hoàn toàn | Bình thường |
+| 10–100 | Chậm nhẹ, có thể do burst | Quan sát, có thể scale consumer |
+| 1000+ | Xử lý chậm, hoặc bị chặn bởi poison message | Cần điều tra ngay: xử lý chậm? rebalance liên tục? partition chặn? |
+| Tăng liên tục | Throughput consumer < throughput producer | Scale consumer, tối ưu xử lý, hoặc kiểm tra backpressure |
+
+**Cách tính trong code (AdminClient):**
+~~~java
+// Lấy endOffsets (high watermark) và committed offsets
+Map<TopicPartition, Long> endOffsets = consumer.endOffsets(partitions);
+Map<TopicPartition, OffsetAndMetadata> committed = consumer.committed(partitions);
+for (TopicPartition tp : partitions) {
+    long lag = endOffsets.get(tp) - committed.get(tp).offset();
+    // push metric: consumer_lag{topic,partition}=lag
+}
+~~~
+
+**Lưu ý:** {{consumer.position(tp)}} = vị trí đang đọc tiếp theo (có thể > committed nếu đã poll nhưng chưa commit). {{committed(tp)}} = offset đã commit cuối cùng. Lag dùng committed, không dùng position.
+
+### Rebalance Protocol — JoinGroup, SyncGroup, Heartbeat
+
+Kafka dùng **coordinator** (broker được chọn quản lý group) để điều phối rebalance. Các giai đoạn:
+
+1. **JoinGroup**: Consumer gửi {{JoinGroupRequest}} kèm {{group.id}}, {{member.id}} (hoặc rỗng nếu mới), {{protocol}} (ví dụ {{range}}), {{subscription}} (topic regex). Coordinator chọn **leader** (thường consumer join sớm nhất) và gửi {{JoinGroupResponse}} cho leader kèm danh sách member + metadata subscription của cả group; **leader (phía client) mới là bên chạy assignor để tính partition cho từng member** (coordinator không tự gán partition).
+2. **SyncGroup**: Leader gửi {{SyncGroupRequest}} với assignment cho tất cả member. Coordinator phân phát assignment cho từng member qua {{SyncGroupResponse}}. Member nhận partition được gán, {{seek}} đến committed offset, bắt đầu poll.
+3. **Heartbeat**: Consumer gửi {{HeartbeatRequest}} định kỳ (mặc định 3s, {{heartbeat.interval.ms}}) để báo "còn sống". Nếu miss {{session.timeout.ms}} (mặc định 45s, hoặc {{max.poll.interval.ms}} cho xử lý) → coordinator kick consumer -> trigger rebalance.
+
+**Static Membership** ({{group.instance.id}}): Consumer cung cấp {{group.instance.id}} cố định. Khi restart, consumer giữ nguyên {{member.id}} -> **không trigger rebalance đầy đủ** (chỉ cần SyncGroup, bỏ qua JoinGroup) -> giảm downtime đáng kể. Dùng cho production quan trọng.
+
+### Exactly-Once Semantics (EOS) trong Kafka
+
+EOS bao gồm 2 phần:
+- **Idempotent Producer** ({{enable.idempotence=true}}, mặc định true): PID + sequence number per partition -> deduplicate retry, tránh OUT_OF_ORDER (xem bài 011).
+- **Transactions** ({{transactional.id}}): Gom nhiều produce + commit offset của consumer vào **một transaction Kafka**. {{producer.initTransactions()}} -> {{beginTransaction()}} -> {{send()}} + {{sendOffsetsToTransaction()}} -> {{commitTransaction()}}.
+
+**Isolation Level:**
+- {{read_uncommitted}} (mặc định): Consumer đọc cả message trong transaction chưa commit (có thể bị abort sau).
+- {{read_committed}}: Consumer **chỉ đọc message đã commit** (transaction hoàn tất). Message trong transaction abort sẽ không bao giờ bị consumer thấy.
+
+~~~java
+// Transactional producer + consumer read_committed
+Producer<String, String> producer = new Producer<>(props);
+producer.initTransactions();
+
+Consumer<String, String> consumer = new Consumer<>(props);
+consumer.subscribe(Collections.singleton("input-topic"));
+consumer.assign(partitions); // hoặc subscribe
+
+while (running) {
+    ConsumerRecords<String, String> records = consumer.poll(Duration.ofMillis(500));
+    producer.beginTransaction();
+    for (ConsumerRecord<String, String> r : records) {
+        // process -> produce output
+        producer.send(new ProducerRecord<>("output-topic", r.key(), transform(r.value())));
+    }
+    // Commit offset của consumer VÀ output produces trong CÙNG transaction
+    producer.sendOffsetsToTransaction(
+        Map.of(new TopicPartition("input-topic", 0), new OffsetAndMetadata(nextOffset)),
+        consumer.groupMetadata()
+    );
+    producer.commitTransaction();
+}
+~~~
+
+**Giới hạn EOS:**
+- Chỉ đảm bảo **trong Kafka** (produce + consume offset). Ghi DB, gọi HTTP, ghi file **NGOÀI KAFKA** không được bao phủ.
+- Cần {{transactional.id}} cố định (không random) để **fencing** (chặn) producer cũ khi deploy mới.
+- {{transaction.timeout.ms}} (mặc định 60s = 1 phút, tối đa theo {{transaction.max.timeout.ms}} mặc định 15 phút) là thời gian tối đa transaction tồn tại; vượt quá -> abort.
+- {{read_committed}} consumer có độ trễ cao hơn (chờ transaction commit/abort).
+
+### EOS vs End-to-End Exactly-Once
+
+| Phạm vi | Đảm bảo | Cách đạt |
+|---|---|---|
+| **Kafka EOS** | Produce + commit offset nguyên tử trong Kafka | {{transactional.id}} + {{read_committed}} |
+| **End-to-end** | Ghi DB + publish Kafka + consume + ghi DB2 — tất cả nguyên tử | **Không có đơn lẻ**. Cần: Outbox pattern (DB + Kafka trong 1 TX) + Idempotent consumer (dedup) + Idempotent downstream |
+
+**Kết luận:** EOS là công cụ mạnh **trong Kafka**, nhưng hệ thống end-to-end vẫn cần:
+1. **Transactional Outbox** (bài 001): DB state + event trong 1 DB transaction.
+2. **Idempotent Consumer** (bài 002): dedup theo event_id/version.
+3. **Idempotent Downstream**: API nhận event có idempotency key.
+
+### Sơ đồ EOS consume-transform-produce
+
+~~~seq
+title: EOS consume-transform-produce loop
+actors: Consumer | Producer(TX) | Input Topic | Output Topic | Offset Topic
+Consumer -> Input Topic: poll() -> records
+Producer(TX) -> Producer(TX): beginTransaction()
+Producer(TX) -> Output Topic: send(transform(record)) cho mỗi record
+Producer(TX) -> Offset Topic: sendOffsetsToTransaction(consumerOffsets, groupMetadata)
+Producer(TX) -> Producer(TX): commitTransaction()
+note Consumer: Nếu commitTransaction thất bại -> abort -> output không ghi, offset không commit -> poll lại
+~~~
+
+### Lỗi hay gặp trên production
+
+- **Dùng {{read_uncommitted}} (mặc định) cho consume-transform-produce**: Consumer đọc message từ transaction chưa commit -> nếu transaction abort, consumer đã xử lý message "ma" -> sai nghiệp vụ. **Phải dùng {{read_committed}}**.
+- **Không set {{transactional.id}} hoặc dùng random**: Deploy mới -> producer mới PID khác -> không fence producer cũ -> duplicate/out-of-order. **Phải set {{transactional.id}} cố định theo ứng dụng** (ví dụ {{order-service-producer}}).
+- **Transaction timeout quá ngắn**: Xử lý batch lớn > {{transaction.timeout.ms}} -> transaction abort giữa chừng -> lặp vô tận. **Set {{transaction.timeout.ms}} đủ lớn** (ví dụ 5-15 phút, không vượt {{transaction.max.timeout.ms}} mặc định 15 phút) và batch size hợp lý.
+- **Quên {{sendOffsetsToTransaction}}**: Commit offset riêng bằng {{commitSync()}} ngoài transaction -> offset commit nhưng output produce abort (hoặc ngược lại) -> mất đồng bộ. **Phải gom offset vào transaction**.
+- **Consumer lag alert không phân biệt partition**: Lag tổng thấp nhưng 1 partition lag cao (poison message) -> alert không kích hoạt. **Alert per partition**.
+
+### Liên hệ phỏng vấn
+
+- **Consumer lag là gì, tính như nào?** HW - committed offset. HW = offset lớn nhất đã replicate đủ ISR. Committed = offset đã commit. Lag > 0 nghĩa là consumer chậm.
+- **Rebalance protocol 3 bước là gì?** JoinGroup (consumer join, leader phân chia) -> SyncGroup (leader gửi assignment) -> Heartbeat (báo sống định kỳ, miss session.timeout -> kick -> rebalance).
+- **Static membership (group.instance.id) giải quyết vấn đề gì?** Restart consumer không trigger rebalance đầy đủ (bỏ qua JoinGroup) -> giảm downtime, không mất partition assignment tạm thời.
+- **EOS Kafka đảm bảo exactly-once cho DB không?** **Không**. Chỉ ensure produce + consume offset nguyên tử trong Kafka. DB ngoài cần outbox pattern + idempotent consumer.
+- **Transactional producer + read_committed consumer loop logic?** beginTransaction -> poll (read_committed) -> process -> send output -> sendOffsetsToTransaction(consumer offsets) -> commitTransaction. Abort -> rollback cả output lẫn offset -> poll lại an toàn.
+
+> Senior tip: Với EOS, set {{transaction.timeout.ms}} lớn hơn max xử lý batch (ví dụ 15 phút). Monitor {{producer-metrics.transaction-commit-rate}}, {{transaction-abort-rate}}. Abort rate > 0 thường do timeout hoặc broker error. Consumer {{read_committed}} bị chặn tới Last Stable Offset (LSO): nếu một transaction đang mở (chưa commit/abort) thì consumer không đọc được message nằm sau nó, nên độ trễ phụ thuộc thời gian transaction — cân nhắc trade-off.
+
+### Cơ chế từng bước (EOS loop)
+
+1. Consumer {{poll()}} lấy batch từ input topic (chỉ message đã commit nhờ {{read_committed}}).
+2. Producer {{beginTransaction()}} mở transaction mới.
+3. Với mỗi record: {{process()}} -> {{producer.send(output-topic)}}.
+4. Sau vòng lặp: {{producer.sendOffsetsToTransaction(offsets, groupMetadata)}} gom offset consumer vào transaction.
+5. {{producer.commitTransaction()}}: broker commit nguyên tử (output records + offset). Hoặc {{abortTransaction()}} nếu lỗi.
+6. Nếu commit thành công: offset bền vững, output records visible cho {{read_committed}} consumer. Nếu abort: output không ghi, offset không commit -> lần sau poll lại batch cũ -> idempotent xử lý lại an toàn.
+
+### Tự thử trên máy (Docker)
+
+~~~bash
+# Kafka 3.7+ KRaft mode (đã chạy ở bài 016)
+# Tạo topic input/output
+docker exec kafka kafka-topics.sh --create --topic input --partitions 3 --replication-factor 1 --bootstrap-server localhost:9092
+docker exec kafka kafka-topics.sh --create --topic output --partitions 3 --replication-factor 1 --bootstrap-server localhost:9092
+# Chạy producer transactional (cần code Java, xem bài tập)
+# Chạy consumer read_committed
+docker exec kafka kafka-console-consumer.sh --topic output --group tx-consumer --isolation-level read_committed --bootstrap-server localhost:9092
+~~~
+
+### Tóm lại 3 ý
+
+1. **Consumer lag = High Watermark - Committed Offset** (tính per partition). Lag tăng = consumer chậm hoặc bị chặn.
+2. **Rebalance protocol: JoinGroup -> SyncGroup -> Heartbeat**. Static membership ({{group.instance.id}}) tránh rebalance khi restart.
+3. **EOS Kafka = transactional producer + read_committed consumer**. Chỉ bao trong Kafka. End-to-end exactly-once vẫn cần Outbox + Idempotent Consumer + Idempotent Downstream.
+
+### Liên hệ phỏng vấn
+
+- **Hỏi:** Consumer lag tính như thế nào, alert khi nào? **Trả lời ngắn:** Lag = endOffset (high watermark) - committed offset, tính per partition. Alert khi lag > ngưỡng (ví dụ 1000) hoặc lag không giảm sau N phút. Phân biệt partition lag cao do poison message vs lag tổng cao do throughput thấp.
+- **Hỏi:** Rebalance mất bao lâu và giảm thế nào? **Trả lời ngắn:** Rebalance mất vài trăm ms đến vài giây (tùy số partition/consumer). Giảm bằng static membership ({{group.instance.id}}), CooperativeStickyAssignor, giảm số partition/consumer.
+- **Hỏi:** EOS consume-transform-produce loop có gì đặc biệt? **Trả lời ngắn:** beginTransaction -> poll (read_committed) -> process -> send output -> sendOffsetsToTransaction(consumer offsets) -> commitTransaction. Abort -> cả output lẫn offset rollback -> poll lại an toàn.
+- **Hỏi:** Vì sao read_committed consumer chậm hơn read_uncommitted? **Trả lời ngắn:** Phải chờ transaction commit hoặc abort mới thấy message. Message trong transaction đang chạy không visible cho read_committed (Last Stable Offset không tiến qua transaction đang mở). Độ trễ phụ thuộc thời gian transaction, không cố định.
+
+> Senior tip: Không bật EOS "cho vui" — nó thêm độ phức tạp (transactional.id management, fencing, timeout tuning, read_committed latency). Chỉ dùng khi cần consume-transform-produce loop trong Kafka (ví dụ stream processing, CDC relay). Đối với outbox relay đơn giản, idempotent producer + at-least-once consumer + idempotent downstream đủ và đơn giản hơn.`,
+  exercises: [{
+    title: 'ConsumerLagCalculator: tính lag per partition từ endOffsets và committed',
+    prompt: `Cài {{ConsumerLagCalculator}} nhận {{Consumer}} mock (interface có sẵn trong starter) và tính lag cho từng partition.
+API:
+- {{Map<TopicPartition, Long> endOffsets(Set<TopicPartition>)}}: trả high watermark (offset lớn nhất đã replicate ISR + 1, tức next offset).
+- {{Map<TopicPartition, OffsetAndMetadata> committed(Set<TopicPartition>)}}: trả committed offset + metadata.
+- {{Map<TopicPartition, Long> lag(Set<TopicPartition>)}}: trả lag = endOffset - committed.offset() cho mỗi partition. Nếu partition chưa có committed -> committed = 0.
+- {{boolean isHealthy(long maxLag)}}: true nếu tất cả partition lag <= maxLag.
+- {{TopicPartition worstPartition()}}: partition có lag lớn nhất (trả null nếu không có partition).
+
+{{TopicPartition}}, {{OffsetAndMetadata}} là class đơn giản trong starter. Test dùng mock Consumer trả giá trị cố định.`,
+    starter: `import java.util.*;
+import java.util.concurrent.*;
+
+final class TopicPartition {
+    final String topic; final int partition;
+    TopicPartition(String topic, int partition) { this.topic = topic; this.partition = partition; }
+    public boolean equals(Object o) { if (!(o instanceof TopicPartition)) return false; TopicPartition t = (TopicPartition) o; return topic.equals(t.topic) && partition == t.partition; }
+    public int hashCode() { return Objects.hash(topic, partition); }
+    public String toString() { return topic + "-" + partition; }
+}
+final class OffsetAndMetadata {
+    final long offset; final String metadata;
+    OffsetAndMetadata(long offset) { this(offset, ""); }
+    OffsetAndMetadata(long offset, String metadata) { this.offset = offset; this.metadata = metadata; }
+}
+interface Consumer {
+    Map<TopicPartition, Long> endOffsets(Set<TopicPartition> partitions);
+    Map<TopicPartition, OffsetAndMetadata> committed(Set<TopicPartition> partitions);
+}
+class ConsumerLagCalculator {
+    private final Consumer consumer;
+    ConsumerLagCalculator(Consumer consumer) { this.consumer = consumer; }
+    Map<TopicPartition, Long> lag(Set<TopicPartition> partitions) { throw new UnsupportedOperationException("TODO"); }
+    boolean isHealthy(Set<TopicPartition> partitions, long maxLag) { throw new UnsupportedOperationException("TODO"); }
+    TopicPartition worstPartition(Set<TopicPartition> partitions) { throw new UnsupportedOperationException("TODO"); }
+}`,
+    tests: `public class Main {
+  static int p=0,t=0; static void ck(String n,Runnable r){t++;try{r.run();p++;System.out.println("PASS " + n);}catch(Throwable e){System.out.println("FAIL " + n + ": " + e);}}
+  static void eq(Object a,Object b){if(!Objects.equals(a,b))throw new AssertionError(a + " != " + b);}
+  public static void main(String[] z){
+    ck("lag = endOffset - committed",()->{
+      TopicPartition tp0=new TopicPartition("t",0), tp1=new TopicPartition("t",1);
+      Consumer mock = new Consumer(){
+        public Map<TopicPartition,Long> endOffsets(Set<TopicPartition> ps){
+          return Map.of(tp0,100L,tp1,200L);
+        }
+        public Map<TopicPartition,OffsetAndMetadata> committed(Set<TopicPartition> ps){
+          return Map.of(tp0,new OffsetAndMetadata(90),tp1,new OffsetAndMetadata(150));
+        }
+      };
+      ConsumerLagCalculator calc=new ConsumerLagCalculator(mock);
+      Map<TopicPartition,Long> lag=calc.lag(Set.of(tp0,tp1));
+      eq(10L,lag.get(tp0)); eq(50L,lag.get(tp1));
+    });
+    ck("no committed -> treated as 0",()->{
+      TopicPartition tp=new TopicPartition("t",0);
+      Consumer mock = new Consumer(){
+        public Map<TopicPartition,Long> endOffsets(Set<TopicPartition> ps){ return Map.of(tp,50L); }
+        public Map<TopicPartition,OffsetAndMetadata> committed(Set<TopicPartition> ps){ return Map.of(); }
+      };
+      ConsumerLagCalculator calc=new ConsumerLagCalculator(mock);
+      eq(50L,calc.lag(Set.of(tp)).get(tp));
+    });
+    ck("isHealthy all partitions within threshold",()->{
+      TopicPartition tp0=new TopicPartition("t",0), tp1=new TopicPartition("t",1);
+      Consumer mock = new Consumer(){
+        public Map<TopicPartition,Long> endOffsets(Set<TopicPartition> ps){ return Map.of(tp0,100L,tp1,200L); }
+        public Map<TopicPartition,OffsetAndMetadata> committed(Set<TopicPartition> ps){ return Map.of(tp0,new OffsetAndMetadata(95),tp1,new OffsetAndMetadata(190)); }
+      };
+      ConsumerLagCalculator calc=new ConsumerLagCalculator(mock);
+      eq(true,calc.isHealthy(Set.of(tp0,tp1),10));
+      eq(false,calc.isHealthy(Set.of(tp0,tp1),5));
+    });
+    ck("worstPartition returns max lag",()->{
+      TopicPartition tp0=new TopicPartition("t",0), tp1=new TopicPartition("t",1), tp2=new TopicPartition("t",2);
+      Consumer mock = new Consumer(){
+        public Map<TopicPartition,Long> endOffsets(Set<TopicPartition> ps){ return Map.of(tp0,100L,tp1,200L,tp2,50L); }
+        public Map<TopicPartition,OffsetAndMetadata> committed(Set<TopicPartition> ps){ return Map.of(tp0,new OffsetAndMetadata(90),tp1,new OffsetAndMetadata(150),tp2,new OffsetAndMetadata(49)); }
+      };
+      ConsumerLagCalculator calc=new ConsumerLagCalculator(mock);
+      eq(tp1,calc.worstPartition(Set.of(tp0,tp1,tp2))); // lag 50
+    });
+    ck("empty partitions returns null worst",()->{
+      Consumer mock = new Consumer(){
+        public Map<TopicPartition,Long> endOffsets(Set<TopicPartition> ps){ return Map.of(); }
+        public Map<TopicPartition,OffsetAndMetadata> committed(Set<TopicPartition> ps){ return Map.of(); }
+      };
+      ConsumerLagCalculator calc=new ConsumerLagCalculator(mock);
+      eq(null,calc.worstPartition(Set.of()));
+    });
+    System.out.println("RESULT " + p + "/" + t);
+  }
+}`,
+    reference: `import java.util.*;
+import java.util.concurrent.*;
+
+final class TopicPartition {
+    final String topic; final int partition;
+    TopicPartition(String topic, int partition) { this.topic = topic; this.partition = partition; }
+    public boolean equals(Object o) { if (!(o instanceof TopicPartition)) return false; TopicPartition t = (TopicPartition) o; return topic.equals(t.topic) && partition == t.partition; }
+    public int hashCode() { return Objects.hash(topic, partition); }
+    public String toString() { return topic + "-" + partition; }
+}
+final class OffsetAndMetadata {
+    final long offset; final String metadata;
+    OffsetAndMetadata(long offset) { this(offset, ""); }
+    OffsetAndMetadata(long offset, String metadata) { this.offset = offset; this.metadata = metadata; }
+}
+interface Consumer {
+    Map<TopicPartition, Long> endOffsets(Set<TopicPartition> partitions);
+    Map<TopicPartition, OffsetAndMetadata> committed(Set<TopicPartition> partitions);
+}
+class ConsumerLagCalculator {
+    private final Consumer consumer;
+    ConsumerLagCalculator(Consumer consumer) { this.consumer = consumer; }
+    Map<TopicPartition, Long> lag(Set<TopicPartition> partitions) {
+        Map<TopicPartition, Long> end = consumer.endOffsets(partitions);
+        Map<TopicPartition, OffsetAndMetadata> com = consumer.committed(partitions);
+        Map<TopicPartition, Long> out = new HashMap<>();
+        for (TopicPartition tp : partitions) {
+            long e = end.getOrDefault(tp, 0L);
+            long c = com.getOrDefault(tp, new OffsetAndMetadata(0)).offset;
+            out.put(tp, Math.max(0, e - c));
+        }
+        return out;
+    }
+    boolean isHealthy(Set<TopicPartition> partitions, long maxLag) {
+        for (long l : lag(partitions).values()) if (l > maxLag) return false;
+        return true;
+    }
+    TopicPartition worstPartition(Set<TopicPartition> partitions) {
+        Map<TopicPartition, Long> lags = lag(partitions);
+        if (lags.isEmpty()) return null;
+        return Collections.max(lags.entrySet(), Map.Entry.comparingByValue()).getKey();
+    }
+}`,
+    hints: [
+      'endOffsets là high watermark (offset tiếp theo sẽ ghi). committed là offset đã commit cuối cùng.',
+      'lag = endOffset - committed.offset(). Nếu partition không có trong committed map -> committed = 0.',
+      'isHealthy: tất cả lag <= maxLag. worstPartition: Collections.max theo lag value.'
+    ],
+    explain: `Consumer lag là chỉ số quan trọng nhất để biết consumer có kịp không. endOffset (high watermark) là offset lớn nhất đã replicate đủ ISR — consumer chỉ được đọc đến đây. committed offset là vị trí consumer đã xác nhận xử lý xong. Lag = endOffset - committed. Nếu consumer chưa commit lần nào cho partition, committed = 0 -> lag = endOffset (đọc từ đầu). isHealthy kiểm tra tất cả partition đều trong ngưỡng. worstPartition tìm partition lag cao nhất — thường là partition bị poison message hoặc chặn bởi lỗi. Production: push metric per partition, alert per partition (không chỉ trung bình), track lag trend theo thời gian.`,
+  }],
+  check: [
+    { q: 'Consumer lag tính như thế nào?', options: ['position - committed', 'endOffsets (high watermark) - committed.offset()', 'endOffsets - position', 'committed - endOffsets'], answer: 1, explain: 'Lag = high watermark (offset lớn nhất đã replicate ISR, là endOffsets) - committed offset. Position là vị trí đang đọc (có thể > committed nếu poll chưa commit), không dùng để tính lag.' },
+    { q: 'Static membership (group.instance.id) giúp gì?', options: ['Tăng throughput', 'Restart consumer không trigger rebalance đầy đủ (bỏ qua JoinGroup)', 'Tự động commit offset', 'Bật exactly-once'], answer: 1, explain: 'Consumer cung cấp group.instance.id cố định -> restart giữ member.id -> coordinator nhận biết là consumer cũ -> chỉ cần SyncGroup, bỏ qua JoinGroup -> giảm downtime rebalance.' },
+    { q: 'EOS Kafka (transactional producer + read_committed consumer) đảm bảo exactly-once cho ghi DB ngoài Kafka?', options: ['Có, tự động', 'Không, chỉ bao produce/consume offset trong Kafka; DB ngoài cần outbox/idempotency', 'Có nếu dùng JDBC transaction', 'Không bao giờ'], answer: 1, explain: 'EOS chỉ đảm bảo atomicity produce + commit offset trong Kafka. Ghi DB, gọi HTTP, file system ngoài Kafka không nằm trong transaction Kafka -> cần outbox pattern + idempotent consumer.' },
+    { q: 'Trong consume-transform-produce loop EOS, sendOffsetsToTransaction gọi khi nào?', options: ['Trước beginTransaction', 'Sau khi send tất cả output record, trước commitTransaction', 'Sau commitTransaction', 'Không cần gọi nếu dùng auto.commit'], answer: 1, explain: 'Phải gom consumer offsets vào CÙNG transaction với output produces: beginTransaction -> send outputs -> sendOffsetsToTransaction -> commitTransaction. Nếu commit offset riêng (commitSync) ngoài transaction -> mất atomicity.' }
+  ], related: ['microservices-016', 'microservices-011', 'microservices-001', 'microservices-002'], tags: ['Kafka', 'consumer lag', 'rebalance', 'exactly-once', 'EOS', 'transactional', 'read_committed', 'monitoring']
+}
 );
