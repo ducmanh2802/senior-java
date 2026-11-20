@@ -1,0 +1,91 @@
+{
+  "date": "2026-11-20",
+  "intro": "Hôm nay thị trường Hà Nội khá mỏng: phần lớn tin Java Hà Nội tìm được (Woori Bank, VNDirect, Samsung SDS, One Mount, Eastgate, VPBank…) đã hết hạn, nên tôi đưa lại hai tin Hà Nội vẫn mở (VTI, CMC Global) cùng tin mới của GEM. Kèm ba tin mới khác có hạn đến cuối tháng 11 – đầu tháng 12/2026 (Techcombank, MoMo, NihonBridge), trong đó địa điểm cần xác nhận lại (Techcombank và NihonBridge không nêu thành phố, MoMo ghi cả Hà Nội lẫn HCM). ITviec, TopCV, VietnamWorks không mở được từ môi trường biên tập nên tin lấy từ Joboko và TopDev; nhiều trang Joboko ghi tên pháp nhân thu thập dữ liệu khác nhà tuyển dụng, hãy xác minh trước khi gửi thông tin cá nhân.",
+  "editor": "claude",
+  "items": [
+    {
+      "title": "Java Technical Lead",
+      "company": "GEM",
+      "url": "https://vn.joboko.com/viec-lam-java-technical-lead-xvi6765576",
+      "source": "Joboko",
+      "location": "Hà Nội",
+      "level": "lead",
+      "salary": "Thoả thuận (phần quyền lợi ghi up to 55 triệu)",
+      "skills": ["Java 17", "Spring Boot", "Microservices", "Kafka", "Docker", "Kubernetes"],
+      "summary": "Vị trí lead (từ 5 năm Java) thiết kế và xây dựng backend Java/Spring Boot, REST API và microservices, review code, xử lý sự cố phức tạp và dẫn dắt nhóm làm việc với khách hàng quốc tế. Ưu tiên kinh nghiệm ngân hàng, fintech, thanh toán; hệ thống giao dịch khối lượng lớn; Kafka/RabbitMQ, Redis, OAuth2/JWT, observability. Hạn nộp 08/12/2026, làm 5 ngày/tuần, check-in linh hoạt.",
+      "prep": "Ôn thiết kế microservices và hệ thống phân tán (idempotency, retry, eventual consistency), Kafka, caching, bảo mật OAuth2/JWT. Chuẩn bị câu chuyện dẫn dắt nhóm, review code và làm việc với khách nước ngoài; nên hỏi lại về khách hàng và mô hình outsource.",
+      "topics": ["microservices", "architecture", "spring", "security", "english"],
+      "tags": ["lead", "outsource"]
+    },
+    {
+      "title": "Java Developer (Middle - Senior) (vẫn mở)",
+      "company": "CMC Global",
+      "url": "https://vn.joboko.com/viec-lam-ha-noi-java-developer-middle-senior-xvi6721916",
+      "source": "Joboko",
+      "location": "Hà Nội (Hoàng Quốc Việt / Cầu Giấy)",
+      "level": "senior",
+      "salary": "Thoả thuận",
+      "skills": ["Java 8+", "Spring Boot", "REST API", "Microservices", "PostgreSQL", "SQL Server"],
+      "summary": "Phát triển và bảo trì ứng dụng web doanh nghiệp, REST API và microservices theo Agile/Scrum cho khách hàng Singapore. Yêu cầu từ 3 năm Java backend/fullstack, Spring Boot, SQL Server hoặc PostgreSQL, tiếng Anh giao tiếp tốt; ưu tiên cloud, CI/CD, Kubernetes và quen công cụ code AI. Hạn nộp 03/12/2026.",
+      "prep": "Ôn Spring Boot, thiết kế REST API, tối ưu SQL, nền tảng microservices; luyện trả lời phỏng vấn bằng tiếng Anh về dự án đã làm và cách bạn review code, mentor.",
+      "topics": ["spring", "microservices", "sql", "english"],
+      "tags": ["outsource", "singapore"]
+    },
+    {
+      "title": "Senior Java Developer (vẫn mở)",
+      "company": "Công ty TNHH VTI Technology Việt Nam",
+      "url": "https://vn.joboko.com/viec-lam-senior-java-developer-xvi6783573",
+      "source": "Joboko",
+      "location": "Hà Nội (Hà Đông)",
+      "level": "senior",
+      "salary": "Thoả thuận",
+      "skills": ["Java 17/21", "Spring Boot", "JPA/Hibernate", "Spring Security", "React", "Docker"],
+      "summary": "Vị trí senior (từ 5 năm) cho hệ thống chính phủ điện tử và chuyển đổi số, làm backend Java/Spring Boot, giao diện React, thiết kế dữ liệu và tối ưu SQL, bảo mật JWT/OAuth2, đồng thời mentor dev junior/mid. Tin ghi hạn nộp 14/12/2026 nhưng cũng có dòng \"expired\" mâu thuẫn, và tên pháp nhân trong form khác công ty đăng, nên cần xác nhận trước khi nộp.",
+      "prep": "Ôn Spring Security với JWT/OAuth2, JPA (N+1, index), SQL tuning và Clean Architecture. Hỏi lại mô hình bodyshop, khách hàng cuối và địa điểm làm việc thực tế.",
+      "topics": ["spring", "jpa", "security", "microservices"],
+      "tags": ["chính phủ điện tử", "bodyshop"]
+    },
+    {
+      "title": "Expert, Java Developer",
+      "company": "Techcombank",
+      "url": "https://vn.joboko.com/viec-lam-expert-java-developer-xvi6767538",
+      "source": "Joboko",
+      "location": "Tin không nêu thành phố",
+      "level": "lead",
+      "salary": "Thoả thuận",
+      "skills": ["Java", "Microservices", "Observability", "TypeScript", "Concurrency"],
+      "summary": "Vị trí expert (từ 5 năm) tham gia thiết kế kiến trúc mức thấp, xây dựng component hiệu năng cao, an toàn và mở rộng được; mentor kỹ sư, dẫn dắt code review, tối ưu hiệu năng/độ tin cậy, viết unit/integration/contract test và tài liệu kỹ thuật. Yêu cầu backend Java, biết SOLID, design pattern, microservices, observability, hệ thống concurrent và tiếng Anh. Hạn nộp 11/12/2026.",
+      "prep": "Ôn concurrency và tuning JVM, thiết kế microservices, observability (metrics, tracing), contract testing. Chuẩn bị ví dụ dẫn dắt kỹ thuật và tối ưu hiệu năng có số liệu; hỏi lại địa điểm làm việc.",
+      "topics": ["concurrency", "jvm", "microservices", "architecture", "banking"],
+      "tags": ["ngân hàng"]
+    },
+    {
+      "title": "Middle/Senior/Lead Software Engineer (Java, Spring)",
+      "company": "MoMo (M_Service)",
+      "url": "https://vn.joboko.com/viec-lam-middle-senior-lead-software-engineer-java-spring-xvi6603555",
+      "source": "Joboko",
+      "location": "TP.HCM (tin gắn thẻ Hà Nội nhưng địa chỉ làm việc ghi Phú Mỹ Hưng, HCM)",
+      "level": "senior",
+      "salary": "Thoả thuận",
+      "skills": ["Java", "Vert.x", "Kafka", "Redis", "MongoDB", "Kubernetes", "ClickHouse"],
+      "summary": "Đội xây nền tảng mạng xã hội thế hệ mới (feed cá nhân hoá, đánh giá, chat realtime, dịch vụ merchant) trên kiến trúc microservices cho hàng triệu người dùng, dùng ML/LLM cho gợi ý và chống gian lận. Yêu cầu từ 5 năm backend, JVM (Java/Vert.x), SQL và NoSQL, Docker/Kubernetes, quen công cụ code AI. Hạn nộp 09/12/2026.",
+      "prep": "Ôn thiết kế hệ thống chịu tải cao (graceful degradation, event-driven với Kafka/gRPC), chọn SQL hay NoSQL, pipeline phân tích dữ liệu. Hỏi lại địa điểm vì tin ghi cả Hà Nội lẫn HCM.",
+      "topics": ["design", "microservices", "db", "ai"],
+      "tags": ["fintech", "product"]
+    },
+    {
+      "title": "Java Developer",
+      "company": "NihonBridge",
+      "url": "https://vn.joboko.com/viec-lam-java-developer-xvi6732938",
+      "source": "Joboko",
+      "location": "Tin không nêu thành phố",
+      "level": "mid",
+      "salary": "Thoả thuận",
+      "skills": ["Java", "Spring Boot", "PostgreSQL", "Kafka", "Redis", "Kubernetes"],
+      "summary": "Làm việc trong nhóm Scrum với khách hàng: rà yêu cầu, phát triển, phát hành, hỗ trợ và xây API tin cậy kết nối sản phẩm với hệ thống ngoài. Yêu cầu từ 3 năm phát triển phần mềm, Java, OOP, SQL, tiếng Anh trôi chảy; stack gồm Spring, JPA/Hibernate, PostgreSQL/Oracle, Elasticsearch, Kafka, Redis, GitLab/Jenkins, Kubernetes. Hạn nộp 26/11/2026 (còn ít ngày).",
+      "prep": "Ôn Spring Boot, JPA/Hibernate, SQL (PostgreSQL/Oracle), nền tảng Kafka và Redis; luyện nói tiếng Anh về quy trình Scrum với khách hàng. Hỏi lại địa điểm và pháp nhân tuyển dụng vì form ghi tên công ty khác.",
+      "topics": ["spring", "jpa", "sql", "english"],
+      "tags": ["mid"]
+    }
+  ]
+}

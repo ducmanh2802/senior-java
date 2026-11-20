@@ -1,0 +1,79 @@
+{
+  "date": "2026-11-20",
+  "intro": "Hôm nay đáng chú ý nhất là lỗ hổng Java4Shell trong HotSpot (Base64 intrinsic AVX-512) kèm cách kiểm tra và giảm thiểu, cùng Spring Batch 6.1 với nhiều cải thiện hiệu năng JobRepository. Ngoài ra có bản vá Spring Vault, ví dụ thực tế về chi phí của audit logging trên Aurora PostgreSQL, ECR global token và KV caching phân tán cho LLM tự host.",
+  "editor": "claude",
+  "items": [
+    {
+      "title_vi": "Java4Shell: lỗi bộ nhớ trong Base64 decoder của HotSpot, Docker phát hành image đã vá",
+      "title": "Docker patches Java4Shell and the NGINX HTTP/2 with Docker Hardened Images",
+      "url": "https://www.docker.com/blog/docker-patches-java4shell-and-the-nginx-http-2-with-docker-hardened-images/",
+      "source": "Docker Blog",
+      "category": "devops",
+      "summary": "Java4Shell (CVE-2026-114938) là lỗi ghi vượt bộ đệm trong routine Base64 dùng AVX-512 của HotSpot, có thể dẫn tới thực thi mã từ xa. Ảnh hưởng OpenJDK 17.0.6 trở lên (17, 21, 25, 26, 27) chạy trên CPU x86-64 có AVX-512 VBMI; Java 8, 11 và ARM64 không bị. Bản vá: 17.0.21.1, 21.0.13.1, 25.0.5.1, 27.0.1.1. Tạm thời có thể đặt {{-XX:-UseBASE64Intrinsics}} qua {{JAVA_TOOL_OPTIONS}}. Docker đã vá Corretto, SapMachine, Zulu trong DHI, còn Temurin chưa kịp.",
+      "why": "Hầu hết service Spring Boot chạy JDK 17/21 trên node x86 hiện đại đều có thể trúng; bạn cần biết cách kiểm tra CPU flag, JVM flag và rebuild image khi tag không đổi.",
+      "interview_q": "Một CVE nghiêm trọng xuất hiện trong JDK mà các service của bạn đang dùng. Bạn xác định phạm vi ảnh hưởng, giảm thiểu tạm thời và rollout bản vá lên Kubernetes thế nào?",
+      "related": ["security-001", "devops-001"],
+      "tags": ["jvm", "security", "docker"]
+    },
+    {
+      "title_vi": "Spring Batch 6.1 GA: @JobParameter, PageableItemReader và tối ưu truy vấn JobRepository",
+      "title": "Spring Batch 6.1 is now GA!",
+      "url": "https://spring.io/blog/2026/11/19/spring-batch-6-1-0-available-now",
+      "source": "Spring Blog",
+      "category": "tech",
+      "summary": "Spring Batch 6.1 nâng lên Spring Framework 7.1.0 và Spring Data 2026.1.0. Tính năng mới gồm annotation {{@JobParameter}} thay cho SpEL, {{PageableItemReader}} an toàn kiểu, prefix cho MongoDB job repository, builder dạng staged DSL. Về hiệu năng: restart chỉ kiểm tra execution cuối, {{findJobExecutions}} giảm từ 1+3N còn 2 query, partitioned step có {{countRunningStepExecutions}} (một case 837 partition giảm bộ nhớ từ ~15 GB xuống ~1,5 GB). Có breaking change với builder, Avro và constructor của JDBC DAO.",
+      "why": "Batch job nặng ở ngân hàng/thương mại điện tử thường bị chậm vì chính bảng metadata của JobRepository; bản này sửa đúng các điểm đó và có breaking change cần đọc trước khi nâng cấp.",
+      "interview_q": "Một Spring Batch job restart nhiều lần ngày càng chậm và tốn bộ nhớ ở bước partition. Bạn điều tra từ đâu và tối ưu chunk, partition, JobRepository thế nào?",
+      "related": ["spring-001"],
+      "tags": ["spring", "batch"]
+    },
+    {
+      "title_vi": "Spring Vault 4.0.5 và 4.1.2 vá lỗ hổng path traversal",
+      "title": "Spring Vault 4.0.5 and 4.1.2 available",
+      "url": "https://spring.io/blog/2026/11/19/spring-vault-4-0-5-4-1-2-available",
+      "source": "Spring Blog",
+      "category": "tech",
+      "summary": "Hai bản Spring Vault 4.0.5 và 4.1.2 phát hành ngày 19/11/2026, gồm sửa lỗi, nâng dependency và bản vá bảo mật cho CVE-2026-41698: tham số đường dẫn secret không được làm sạch nên có thể bị path traversal. Bài viết không liệt kê chi tiết từng thay đổi; danh sách đầy đủ nằm trong changelog trên GitHub của dự án.",
+      "why": "Nếu service Spring đọc secret từ HashiCorp Vault qua Spring Vault, nên nâng bản vá và rà soát chỗ nào đường dẫn secret được ghép từ input bên ngoài.",
+      "interview_q": "Ứng dụng Java của bạn đọc secret từ Vault với đường dẫn lấy một phần từ request. Bạn phòng path traversal và giới hạn quyền truy cập secret thế nào?",
+      "related": ["security-002"],
+      "tags": ["spring", "vault", "security"]
+    },
+    {
+      "title_vi": "Tác động của logging quá mức lên Aurora PostgreSQL: pgaudit ALL làm throughput giảm gần 3 lần",
+      "title": "Performance impact of excessive logging in Amazon Aurora PostgreSQL",
+      "url": "https://aws.amazon.com/blogs/database/performance-impact-of-excessive-logging-in-amazon-aurora-postgresql/",
+      "source": "AWS Database Blog",
+      "category": "cloud",
+      "summary": "Thử nghiệm bằng pgbench trên db.r6i.4xlarge (Aurora PostgreSQL 17) với hàm PL/pgSQL chạy khoảng 15 câu lệnh mỗi lần gọi. Ở 8 client, log chi tiết gần như không tốn gì. Ở 800 client: log tối thiểu 16.202 TPS, log câu lệnh chi tiết 14.654 TPS (giảm khoảng 10%), thêm {{pgaudit.log = ALL}} chỉ còn 5.039 TPS, latency trung bình 158 ms so với 49 ms; DB load dồn vào CPU thay vì wait event thông thường.",
+      "why": "Audit log bật rộng khi lên production có thể ăn mất phần lớn công suất DB mà không hiện ra như slow query; cần đo ở mức concurrency thật trước khi bật.",
+      "interview_q": "Throughput DB giảm mạnh sau khi team security bật audit logging cho mọi câu lệnh. Bạn chẩn đoán thế nào và cân bằng giữa audit và hiệu năng ra sao?",
+      "related": ["db-001"],
+      "tags": ["postgresql", "aurora", "performance"]
+    },
+    {
+      "title_vi": "ECR hỗ trợ global authentication token dùng được ở mọi Region trong cùng partition",
+      "title": "Use Amazon ECR global authentication token across AWS Regions",
+      "url": "https://aws.amazon.com/blogs/containers/use-amazon-ecr-global-authentication-token-across-aws-regions/",
+      "source": "AWS Containers Blog",
+      "category": "cloud",
+      "summary": "Trước đây token ECR chỉ dùng được ở Region cấp token và sống 12 giờ. Nay một API mới của AWS Sign-In cấp một bearer token dùng để push/pull/delete ở mọi Region trong cùng partition; mặc định 12 giờ, có thể rút xuống tối thiểu 5 phút. Token mang quyền IAM của principal, không thêm quyền. Docker Credential Helper (từ 0.13.0), Kubernetes ECR credential provider và GitHub Action đăng nhập ECR hỗ trợ opt-in; CloudTrail ghi session ARN để truy vết.",
+      "why": "Hệ thống đa Region (DR, giảm latency) có thể bỏ việc quản lý token theo từng Region, và token ngắn hạn giúp giảm rủi ro lộ credential trong CI/CD.",
+      "interview_q": "Bạn thiết kế pipeline build và deploy image container đa Region có failover thế nào, và quản lý xác thực registry ra sao để vừa an toàn vừa đơn giản?",
+      "related": ["aws-001", "devops-002"],
+      "tags": ["ecr", "aws", "containers"]
+    },
+    {
+      "title_vi": "ElastiCache for Valkey GA: KV cache phân tán cho LLM tự host, giảm đến 80% TTFT",
+      "title": "Announcing distributed KV caching for self-hosted LLMs with Amazon ElastiCache",
+      "url": "https://aws.amazon.com/blogs/database/announcing-distributed-kv-caching-for-self-hosted-llms-with-amazon-elasticache/",
+      "source": "AWS Database Blog",
+      "category": "cloud",
+      "summary": "AWS công bố GA tính năng KV caching phân tán trên ElastiCache for Valkey: một tầng cache dùng chung cạnh GPU fleet lưu trạng thái KV của giai đoạn prefill để không tính lại prompt lặp. AWS nêu có thể giảm chi phí inference tự host đến 40% và time to first token đến 80%. vLLM, SGLang, TensorRT-LLM kết nối qua connector mã nguồn mở LMCache, chỉ cần đổi cấu hình, không sửa code.",
+      "why": "Dev Java làm ứng dụng AI/agent với prompt dài lặp lại sẽ gặp bài toán chi phí inference; hiểu prefill, decode và KV cache giúp nói chuyện kiến trúc LLM ở mức senior.",
+      "interview_q": "Chi phí và độ trễ phản hồi đầu tiên của dịch vụ chatbot dùng LLM tự host quá cao vì prompt hệ thống dài lặp lại. Bạn tối ưu thế nào ở tầng cache?",
+      "related": ["ai-001"],
+      "tags": ["llm", "cache", "valkey"]
+    }
+  ]
+}
