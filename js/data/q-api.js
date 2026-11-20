@@ -1007,5 +1007,207 @@
       'Pact verify chạy ở CI provider: làm sao tránh việc broker hoặc test trở thành điểm nghẽn khi có 30 consumer?',
     ],
     tags: ['OpenAPI', 'Contract testing', 'Pact', 'CI', 'API governance', 'Spectral'],
+  },
+
+{
+  id: 'api-081',
+  topic: 'api',
+  level: 'senior',
+  q: 'Export Excel/CSV hang tram nghin dong tu API ngan hang: lam the nao de khong lam treo server va khong timeout? Streaming vs chay nen + link tai.',
+  a: `**Tom tat:** Voi du lieu lon, khong tra file dong bo qua HTTP. Dung async job: tra 202 + jobId, worker streaming ghi file vao S3, client polling hoac webhook nhan link tai co thoi han. Streaming truc tiep chi dung khi < vai chuc MB.
+
+### Vi sao khong tra dong bo
+- Request HTTP giu connection lau, Tomcat thread bi chiem, memory chua toan bo du lieu -> OOM.
+- Proxy/load balancer timeout 30-60s.
+
+### Phuong an 1: Streaming truc tiep (nho)
+~~~java
+@GetMapping(value="/export", produces="text/csv")
+@Transactional(readOnly = true)
+public void export(HttpServletResponse res) throws IOException {
+  res.setHeader("Content-Disposition","attachment; filename=data.csv");
+  try (PrintWriter w = res.getWriter()) {
+    w.println("id,amount,date");
+    repo.streamAll().forEach(r -> w.println(r.toCsv()));
   }
+}
+~~~
+- JPA stream() tra Stream<T> backed by cursor, can @Transactional(readOnly=true) va fetch size.
+- Pitfall: connection leak neu khong close stream; proxy buffer.
+
+### Phuong an 2: Async job + link tai (khuyen dung)
+Luong:
+1. POST /exports -> 202 Accepted {jobId}
+2. Worker query theo batch (keyset pagination), ghi CSV/Excel vao S3 (multipart upload).
+3. Khi xong: update job status DONE, presigned URL TTL 1h.
+4. Client polling GET /exports/{jobId} hoac webhook callback.
+
+### Excel lon
+- Apache POI SXSSF (streaming writer) ghi row theo sliding window, tranh giu toan bo sheet trong RAM.
+- CSV nhanh hon, dung luong nho hon.
+
+### Trade-off
+| Cach | Uu | Nhuoc |
+|---|---|---|
+| Streaming truc tiep | don gian, realtime | timeout, OOM voi du lieu lon |
+| Async + S3 | robust, retry | phuc tap, can storage |
+
+### Vi du doi thuc
+Export sao ke 500k giao dich: streaming truc tiep P99 timeout 45s, OOM heap 2GB. Chuyen async + SXSSF + S3 presigned URL: job hoan thanh 90s, API P99 120ms, memory on dinh.
+
+### Tra loi mau khi phong van
+Voi du lieu lon toi khong tra file dong bo. Toi dung async job: API tra 202 va jobId, worker doc du lieu theo batch bang keyset pagination, ghi file streaming voi SXSSF cho Excel hoac PrintWriter cho CSV, upload len S3 bang multipart. Khi xong cap nhat trang thai va tao presigned URL thoi han 1 gio, client polling hoac webhook nhan link. Streaming truc tiep chi dung cho du lieu nho duoi vai chuc MB, kem transaction read-only va fetch size. Pitfall hay gap la connection leak, buffer proxy va memory blow-up neu giu toan bo list trong RAM.
+
+> Senior tip: Luon dat fetch size (vi du 1000) va read-only transaction; monitor job queue depth va thoi gian xu ly de scale worker.`,
+  follow: ['Lam sao de export Excel khong bi OOM voi Apache POI?', 'Keyset pagination khac offset nhu the nao khi export lon?', 'Cach xu ly job fail va retry an toan?'],
+  tags: ['export', 'streaming', 'async', 'S3', 'SXSSF', 'pagination'],
+},
+{
+  id: 'api-082',
+  topic: 'api',
+  level: 'senior',
+  q: 'Upload file lon (hang GB) tu client: multipart upload, chunked upload, gioi han kich thuoc va bao ve server the nao?',
+  a: `**Tom tat:** Khong nhan file lon qua mot request duy nhat. Dung multipart/chunked upload: client chia file thanh chunk, upload tung phan, server ghep va kiem tra checksum. Gioi han kich thuoc, validate content-type va scan malware truoc khi luu.
+
+### Multipart upload (Spring)
+~~~java
+@PostMapping("/upload")
+public ResponseEntity<?> upload(@RequestParam MultipartFile file) {
+  if (file.getSize() > 100 * 1024 * 1024) throw new MaxUploadSizeExceededException(100 * 1024 * 1024);
+}
+~~~
+- Spring multipart config: spring.servlet.multipart.max-file-size, max-request-size.
+- Khi vượt quá limit, Spring ném MaxUploadSizeExceededException; cần @ControllerAdvice map về 413 (mặc định Spring Boot chưa tự map). Tomcat maxSwallowSize chỉ là ngưỡng swallow body cũ, không phải trả 413.
+
+### Chunked upload (file hang GB)
+Luong:
+1. POST /uploads {fileName, size, checksum} -> 201 {uploadId}
+2. PUT /uploads/{id}/chunks/{n} voi body chunk (5-10MB moi chunk) -> 200
+3. POST /uploads/{id}/complete {checksum} -> server verify checksum, ghep file, tra 200.
+- Client retry chunk that bai; idempotent theo chunk number.
+- Server luu chunk tam, TTL cleanup neu khong complete.
+
+### Gioi han va bao ve
+- Gioi han kich thuoc tong va moi chunk.
+- Validate MIME thuc te (magic bytes), khong tin extension.
+- Scan virus (ClamAV) async truoc khi publish.
+- Rate limit theo user/IP de tranh abuse.
+- Presigned URL upload truc tiep len S3 (multipart) de giam tai server.
+
+### Trade-off
+| Cach | Uu | Nhuoc |
+|---|---|---|
+| Multipart don | don gian | timeout, memory |
+| Chunked | retry tung phan, resume | phuc tap |
+| Presigned S3 | server nhe | phu thuoc S3, CORS |
+
+### Vi du doi thuc
+Upload sao ke 2GB tu mobile 4G: multipart don fail sau 30s. Chunked 8MB + retry: hoan thanh 4 phut, resume duoc khi mat mang, server memory < 50MB.
+
+### Tra loi mau khi phong van
+Voi file lon toi khong nhan mot request. Toi thiet ke chunked upload: client tao upload session, gui tung chunk 5-10MB, server luu tam va ghep khi complete, verify checksum tong. Gioi han kich thuoc o Tomcat/Spring, validate magic bytes, scan virus async. Neu co S3, dung presigned multipart URL de server khong phai proxy du lieu. Idempotency theo chunk number cho phep retry an toan. Pitfall hay gap la partial file orphan va checksum mismatch.
+
+> Senior tip: Luon co cleanup job xoa chunk orphan theo TTL va monitor upload success rate theo kich thuoc file.`,
+  follow: ['Lam sao de resume upload khi mat mang?', 'Presigned URL upload truc tiep S3 co rui ro gi?', 'Cach validate file type an toan (magic bytes)?'],
+  tags: ['upload', 'multipart', 'chunked', 'S3', 'validation'],
+},
+{
+  id: 'api-083',
+  topic: 'api',
+  level: 'lead',
+  q: 'Bao cao chay lau (long-running report): thiet ke async job voi polling va webhook, xu ly worker bi kill giua chung.',
+  a: `**Tom tat:** Bao cao lau khong nen giu HTTP connection. Thiet ke job state machine: PENDING -> RUNNING -> DONE/FAILED, luu checkpoint de resume, client polling hoac webhook callback. Worker idempotent, retry voi backoff, dead-letter khi fail qua so lan.
+
+### State machine
+- PENDING: da nhan request, chua xu ly.
+- RUNNING: dang chay, co progress %.
+- DONE: co result URL.
+- FAILED: loi + reason.
+
+### API
+- POST /reports -> 202 {jobId}
+- GET /reports/{jobId} -> {status, progress, resultUrl}
+- Webhook callback khi DONE: POST partner URL voi chu ky HMAC + retry.
+
+### Checkpoint va resume
+- Worker luu tien do (last processed offset) vao DB moi batch.
+- Neu worker bi kill, job moi pickup tu checkpoint (idempotent).
+- Dung distributed lock (Redis/DB) de tranh 2 worker cung chay 1 job.
+
+### Failure handling
+- Retry voi exponential backoff (1s, 2s, 4s...).
+- Sau N lan fail -> DEAD_LETTER, alert.
+- Timeout toan job (vi du 30 phut) -> FAILED.
+
+### Trade-off polling vs webhook
+| Cach | Uu | Nhuoc |
+|---|---|---|
+| Polling | don gian, firewall-friendly | ton request, latency |
+| Webhook | realtime, it request | can endpoint partner, retry complexity |
+
+### Vi du doi thuc
+Bao cao doi soat 2 trieu giao dich: worker bi kill o 60% do deploy. Checkpoint moi 10k rows -> job moi resume tu 60%, hoan thanh them 2 phut. Khong checkpoint -> phai chay lai tu dau 15 phut.
+
+### Tra loi mau khi phong van
+Toi thiet ke job state machine PENDING/RUNNING/DONE/FAILED voi checkpoint theo batch de resume khi worker bi kill. API tra 202 va jobId, client polling hoac webhook callback co chu ky HMAC. Worker idempotent, retry exponential backoff, dead-letter sau N lan. Distributed lock tranh duplicate execution. Pitfall hay gap la job bi chay hai lan va report khong idempotent.
+
+> Senior tip: Luon luu checkpoint va lam job idempotent; monitor job duration P99 va failure rate theo loai report.`,
+  follow: ['Lam sao de tranh job chay trung khi worker scale out?', 'Checkpoint nen luu o dau va tan suat the nao?', 'Webhook retry va dead-letter xu ly the nao?'],
+  tags: ['async-job', 'polling', 'webhook', 'checkpoint', 'retry'],
+},
+{
+  id: 'api-084',
+  topic: 'api',
+  level: 'senior',
+  q: 'Timezone va thoi gian giua Vue (frontend) <-> Spring Boot <-> PostgreSQL: LocalDateTime vs Instant, cach luu va hien thi dung mui gio.',
+  a: `**Tom tat:** Luu thoi gian o DB va backend duoi dang UTC (Instant/timestamp with time zone). Frontend gui Instant (ISO-8601 UTC) va hien thi theo mui gio nguoi dung. Tranh LocalDateTime cho du lieu global; chi dung cho gio dia phuong khong can zone.
+
+### Khai niem
+- Instant: mot thoi diem tuyet doi tren timeline (epoch), khong phu thuoc mui gio.
+- LocalDateTime: ngay+gio khong zone, naive.
+- ZonedDateTime: Instant + zone.
+
+### Quy tac
+1. DB: cot timestamptz (PostgreSQL) luu UTC.
+2. JPA entity: dung Instant hoac OffsetDateTime; Hibernate 6 map sang timestamptz.
+3. API: serialize Instant thanh ISO-8601 UTC (2025-01-01T00:00:00Z).
+4. Frontend: parse thanh Date, hien thi theo Intl.DateTimeFormat voi timeZone cua user.
+
+### Code Spring
+~~~java
+@Entity
+public class Transaction {
+  @Column(columnDefinition = "timestamptz")
+  private Instant createdAt;
+}
+~~~
+- Jackson serialize Instant -> ISO-8601 UTC mac dinh.
+
+### Vue
+~~~js
+const d = new Date(isoUtc);
+const local = new Intl.DateTimeFormat('vi-VN', { timeZone: userTz, dateStyle:'medium', timeStyle:'short' }).format(d);
+~~~
+
+### Pitfall
+- Dung LocalDateTime luu UTC nhung frontend tuong local -> lech gio.
+- Server JVM timezone khac DB timezone -> lech.
+- DST transition: Instant an toan, LocalDateTime khong.
+- So sanh thoi gian giua service: luon dung Instant.
+
+### Khi nao dung LocalDateTime
+- Gio mo cua chi nhanh (8:00 sang local) khong can zone -> LocalDateTime + zone id rieng.
+- Bao cao theo ngay local.
+
+### Vi du doi thuc
+Giao dich luc 2025-01-01 00:30 UTC hien thi cho user VN la 07:30 01/01, cho user US la 19:30 31/12. Luu Instant -> dung ca hai. Luu LocalDateTime "00:30" -> US user thay sai.
+
+### Tra loi mau khi phong van
+Toi luu thoi gian o DB va backend duoi dang UTC dung Instant/timestamptz. API tra ISO-8601 UTC, frontend parse va format theo mui gio nguoi dung bang Intl. Tranh LocalDateTime cho du lieu global vi khong mang zone, de lech gio va DST. LocalDateTime chi dung cho gio dia phuong nhu gio mo cua. Pitfall hay gap la JVM timezone khac DB va serialize sai format.
+
+> Senior tip: Set JVM timezone UTC (-Duser.timezone=UTC) va DB timezone UTC; kiem tra bang test voi 2 mui gio khac nhau.`,
+  follow: ['Hibernate 6 map Instant sang PostgreSQL timestamptz nhu the nao?', 'DST (daylight saving) gay loi gi voi LocalDateTime?', 'Cach xu ly gio dia phuong cho chi nhanh ngan hang?'],
+  tags: ['timezone', 'Instant', 'LocalDateTime', 'PostgreSQL', 'Vue', 'Jackson'],
+},
+
 );
