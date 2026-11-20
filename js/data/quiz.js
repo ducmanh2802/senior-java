@@ -9613,6 +9613,189 @@ Vì microtask ưu tiên cao hơn macrotask, B chạy trước A. C chạy trư�
 - **{{===}} chỉ dùng cho số**: {{===}} dùng cho mọi kiểu dữ liệu, không giới hạn số.
 
 > Senior tip: luôn dùng {{===}} (và {{!==}}) trong code production để tránh kết quả bất ngờ từ ép kiểu, chỉ dùng {{==}} khi cố ý cần so sánh theo quy tắc ép kiểu của JavaScript.`
+},
+{
+  id: 'qz-db-030',
+  topic: 'db',
+  q: 'Trong MyBatis, sự khác biệt giữa #{ và \${} (đô-la-ngoặc) là gì?',
+  options: [
+    '#{ là placeholder an toàn, MyBatis tạo PreparedStatement với ? và bind tham số; \${} chèn trực tiếp vào SQL nên dễ SQL injection',
+    '#{ và \${} đều an toàn như nhau, chỉ khác cách viết',
+    '\${} an toàn hơn vì SQL được tạo trước rồi bind',
+    '#{ chỉ dùng cho số, \${} dùng cho chuỗi'
+  ],
+  answer: 0,
+  explain: `**Đáp án đúng: #{ là placeholder an toàn, MyBatis tạo PreparedStatement với ? và bind tham số; \${} chèn trực tiếp vào SQL nên dễ SQL injection.**
+
+### Vì sao đúng
+- #{ : MyBatis sinh {{?}} trong SQL và dùng JDBC PreparedStatement để bind giá trị. Giá trị được escape tự động, an toàn với SQL injection.
+- \${}: MyBatis thực hiện string substitution trực tiếp vào SQL trước khi gửi DB. Nếu đầu vào là chuỗi do user kiểm soát, attacker có thể chèn SQL.
+
+### Vì sao các phương án còn lại sai
+- **Cả hai an toàn như nhau**: sai, \${} không an toàn.
+- **\${} an toàn hơn**: ngược lại.
+- **#{ chỉ dùng cho số**: #{ dùng cho mọi kiểu.
+
+> Senior tip: luôn dùng #{ cho giá trị. \${} chỉ dùng cho tên bảng/cột/order by khi đã whitelist.`
+},
+{
+  id: 'qz-db-031',
+  topic: 'db',
+  multi: true,
+  q: 'Dynamic SQL trong MyBatis: các thẻ nào thường dùng? (Chọn 2)',
+  options: [
+    '{{<if>}}',
+    '{{<foreach>}}',
+    '{{<when>}}',
+    '{{<choose>}}'
+  ],
+  answer: [0, 1],
+  explain: `**Đáp án đúng: {{<if>}} và {{<foreach>}}.**
+
+### Vì sao đúng
+- {{<if>}}: điều kiện include fragment SQL.
+- {{<foreach>}}: lặp collection để sinh IN (...) hoặc batch insert.
+
+### Vì sao các phương án còn lại sai
+- {{<when>}} và {{<choose>}} là cấu trúc switch-case, không phải thẻ độc lập thường dùng nhất cho dynamic SQL đơn giản.
+
+> Senior tip: dùng {{<trim>}} để loại bỏ AND/OR thừa; tránh SQL injection bằng #{.`
+},
+{
+  id: 'qz-db-032',
+  topic: 'db',
+  q: 'resultMap trong MyBatis dùng để làm gì?',
+  options: [
+    'Ánh xạ kết quả query sang object Java, xử lý column-to-property mapping phức tạp',
+    'Tạo bảng tự động',
+    'Cache kết quả query',
+    'Validate input parameter'
+  ],
+  answer: 0,
+  explain: `**Đáp án đúng: ánh xạ kết quả query sang object Java, xử lý column-to-property mapping phức tạp.**
+
+### Vì sao đúng
+resultMap định nghĩa cách map cột DB sang property Java, hỗ trợ nested object, collection, discriminator.
+
+### Vì sao các phương án còn lại sai
+- Tạo bảng: DDL, không phải resultMap.
+- Cache: dùng <cache> hoặc second-level cache.
+- Validate input: không phải vai trò của resultMap.
+
+> Senior tip: dùng resultMap khi tên cột và property khác nhau hoặc có quan hệ lồng.`
+},
+{
+  id: 'qz-db-033',
+  topic: 'db',
+  q: 'N+1 problem trong ORM/MyBatis là gì?',
+  options: [
+    'Một query lấy danh sách rồi N query thêm để lấy dữ liệu liên quan cho mỗi phần tử',
+    'Lỗi syntax SQL',
+    'Quá nhiều connection pool',
+    'Index bị thiếu'
+  ],
+  answer: 0,
+  explain: `**Đáp án đúng: Một query lấy danh sách rồi N query thêm để lấy dữ liệu liên quan cho mỗi phần tử.**
+
+### Vì sao đúng
+Ví dụ lấy 100 order rồi mỗi order query customer → 101 query. Giải pháp: join fetch, batch loading, hoặc resultMap với nested select có fetchType.
+
+### Vì sao các phương án còn lại sai
+- Lỗi syntax, pool, index không phải N+1.
+
+> Senior tip: bật log SQL để đếm query; dùng @EntityGraph hoặc fetch join.`
+},
+{
+  id: 'qz-db-034',
+  topic: 'db',
+  q: 'Batch insert trong MyBatis nên dùng ExecutorType nào?',
+  options: [
+    'ExecutorType.BATCH',
+    'ExecutorType.SIMPLE',
+    'ExecutorType.REUSE',
+    'ExecutorType.CACHED'
+  ],
+  answer: 0,
+  explain: `**Đáp án đúng: ExecutorType.BATCH.**
+
+### Vì sao đúng
+BATCH gom nhiều statement và gửi một lần, giảm round-trip.
+
+### Vì sao các phương án còn lại sai
+- SIMPLE: thực thi từng statement.
+- REUSE: reuse PreparedStatement nhưng không batch.
+- CACHED: không tồn tại.
+
+> Senior tip: nhớ flush và commit; batch size vừa phải (500-1000).`
+},
+{
+  id: 'qz-db-035',
+  topic: 'db',
+  multi: true,
+  q: 'So sánh JPA và MyBatis: điểm mạnh của JPA là gì? (Chọn 2)',
+  options: [
+    'Quản lý entity lifecycle và dirty checking tự động',
+    'Viết SQL thuần dễ kiểm soát hiệu năng',
+    'Cache L1/L2 tích hợp',
+    'Không cần mapping'
+  ],
+  answer: [0, 2],
+  explain: `**Đáp án đúng: quản lý entity lifecycle/dirty checking và cache L1/L2.**
+
+### Vì sao đúng
+JPA tự động theo dõi thay đổi entity và flush; có cache cấp session và second-level.
+
+### Vì sao các phương án còn lại sai
+- Viết SQL thuần: thế mạnh MyBatis.
+- Không cần mapping: cả hai đều cần mapping.
+
+> Senior tip: chọn JPA cho CRUD phức tạp, MyBatis cho query phức tạp/report.`
+},
+{
+  id: 'qz-db-036',
+  topic: 'db',
+  q: 'Trong MyBatis, để reuse PreparedStatement, nên set executorType nào?',
+  options: [
+    'ExecutorType.REUSE',
+    'ExecutorType.SIMPLE',
+    'ExecutorType.BATCH',
+    'ExecutorType.PREPARED'
+  ],
+  answer: 0,
+  explain: `**Đáp án đúng: ExecutorType.REUSE.**
+
+### Vì sao đúng
+REUSE giữ lại PreparedStatement đã chuẩn bị để dùng lại trong cùng session, giảm overhead parse SQL.
+
+### Vì sao các phương án còn lại sai
+- SIMPLE: không reuse.
+- BATCH: batch, không reuse đơn lẻ.
+- PREPARED: không tồn tại.
+
+> Senior tip: SIMPLE thường đủ; REUSE hữu ích khi lặp nhiều query giống nhau.`
+},
+{
+  id: 'qz-db-037',
+  topic: 'db',
+  q: 'MyBatis mapper interface có thể được inject như Spring bean không?',
+  options: [
+    'Có, với @Mapper hoặc quét package mapper',
+    'Không, phải dùng SqlSession thủ công',
+    'Chỉ khi dùng XML',
+    'Chỉ trong Spring Boot 2'
+  ],
+  answer: 0,
+  explain: `**Đáp án đúng: Có, với @Mapper hoặc quét package mapper.**
+
+### Vì sao đúng
+Spring Boot auto-config MyBatis quét interface có @Mapper và tạo proxy bean.
+
+### Vì sao các phương án còn lại sai
+- Phải dùng SqlSession: không cần nếu dùng mapper interface.
+- Chỉ XML: annotation cũng được.
+- Chỉ Spring Boot 2: Spring Boot 3 cũng hỗ trợ.
+
+> Senior tip: dùng @MapperScan để quét package.`
 }
 
 );
