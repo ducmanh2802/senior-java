@@ -10776,4 +10776,234 @@ Hệ thống 3 triệu đối tác, 500 lần sửa mỗi ngày. Bản đầu gh
   ],
   tags: ['CRUD', 'authorization', 'audit', 'Spring-Security', 'PostgreSQL', 'concurrency', 'Vue']
 },
+{
+  id: 'scenario-175',
+  topic: 'scenario',
+  level: 'senior',
+  q: 'Máy quét barcode trên dây lắp ráp quét serial sản phẩm vào hệ thống MES, nhưng wifi yếu gây mất mạng ngẫu nhiên. Bạn thiết kế lưu scan tạm ở máy quét và đồng bộ lại khi mạng quay lại sao cho không bỏ scan, không xử lý trùng và thứ tự scans vẫn đúng?',
+  a: `**Tóm tắt:** mỗi scan gắn mã duy nhất do máy quét sinh (mã máy kèm số thứ tự), lưu hàng đợi local ngay khi quét, rồi worker đẩy lên server khi có mạng; server dùng unique constraint trên (mã máy, số thứ tự) để chặn scan bị gửi lại do retry, và máy quét chỉ xóa bản ghi local sau khi server xác nhận. Thứ tự giữ theo số thứ tự trên mỗi máy, không dùng đồng hồ của máy quét vì đồng hồ các máy có thể chênh lệch.
+
+### Làm rõ yêu cầu
+- Mạng yếu, mất mạng xảy ra thường xuyên, máy quét vẫn phải tiếp tục quét.
+- Không được bỏ scan, không được xử lý cùng một scan hai lần, và thứ tự scan trên mỗi máy không được đảo.
+- Khi đồng bộ lại, cần biết chính xác scan nào đã nhận, scan nào phải gửi lại.
+
+### Tại sao cần và cách hoạt động
+Nếu ứng dụng chỉ gửi ngay và bỏ scan khi mất mạng, dữ liệu sản xuất sẽ bị mất; nếu chờ mạng thì dừng cả dây lắp. Cách đúng là tách thành ba bước: (1) quét → sinh mã scan duy nhất (mã máy + số thứ tự) → ghi vào cơ sở dữ liệu local (SQLite trên máy quét) với trạng thái CHO_GỬI; (2) worker gửi lần lượt mỗi scan kèm tiêu đề Idempotency-Key, server INSERT theo unique constraint (mã máy, số thứ tự): nếu insert thành công thì xử lý và trả kết quả mới (200); nếu vi phạm unique thì server đọc bản ghi cũ — payload trùng thì trả lại kết quả cũ (200, idempotent), payload khác thì trả 409 (xung đột thật); (3) chỉ xóa bản ghi local khi nhận 200 (đã xử lý hoặc đã từng xử lý), còn 409 hay lỗi mạng thì giữ lại, không xóa.
+
+~~~java
+// Gửi lần lượt các scan chưa được server xác nhận
+for (ScanRow row : localDb.scanPending()) {
+    try {
+        // deviceId:seqNo là khóa duy nhất; server idempotent khi máy quét gửi lại
+        Response r = http.post("/api/scans", row, header("Idempotency-Key", row.deviceId + ":" + row.seqNo));
+        if (r.status == 200) {
+            localDb.markAcked(row.id);   // 200 = đã xử lý (mới hoặc đã từng) -> xóa local
+        } else if (r.status == 409) {
+            break;                       // xung đột thật (trùng khóa, khác nội dung) -> giữ lại, báo điều tra
+        } else if (r.status >= 500) {
+            break;                       // lỗi server, dừng và thử lại sau backoff
+        }
+    } catch (IOException e) {
+        break;                           // mất mạng, giữ hết hàng đợi local, thử lại sau
+    }
+}
+~~~
+
+### Thiết kế và khi nào dùng
+| Thiết kế | Khi nào dùng | Trade-off |
+| Lưu hàng đợi local, đẩy khi có mạng | Mạng yếu, máy quét phải hoạt động liên tục | Phải xử lý trùng, thứ tự, dung lượng local |
+| Gửi ngay mỗi scan, retry khi lỗi | Mạng tốt, cần dữ liệu gần thời gian thực | Mất scan nếu máy tắt hoặc crash giữa đường |
+| Mã scan do client sinh + unique constraint DB | Luôn nên, chống xử lý hai lần khi client retry | Client phải tạo và quản lý mã không trùng |
+
+### Pitfall thực tế
+- Không dùng đồng hồ client để sắp thứ tự scan: đồng hồ các máy quét có thể chênh lệch, phải dùng số thứ tự tăng dần trên từng máy.
+- Không xóa hàng đợi local ngay khi gửi; chỉ xóa sau khi nhận 200 từ server (đã xử lý hoặc trùng nội dung), còn 409 hay lỗi mạng thì giữ lại, nếu không mất scan khi mạng ngắt giữa đường.
+- Hai máy quét cùng quét một serial hai lần (quét lại do không chắc) → unique constraint chặn, lần gửi lại trả kết quả cũ (idempotent, 200).
+- Cùng khóa (mã máy, số thứ tự) nhưng nội dung khác nhau → đây là xung đột thật, server trả 409 và KHÔNG tạo scan mới; máy quét giữ bản ghi local để điều tra, không được tự xóa.
+
+### Ví dụ đời thực
+Xưởng lắp ráp 200 sản phẩm/giờ, 15 máy quét barcode tại trạm kiểm tra cuối, wifi yếu khoảng 12% lần quét đầu tiên thất bại. Trước đây: quét thất bại thì nhân viên quét lại, sau khi đồng bộ có khoảng 3% serial bị ghi hai lần trong MES, gây sai số lượng thành phẩm. Thiết kế lại: mỗi scan gắn mã deviceId:seqNo, lưu SQLite local, worker đẩy từng đợt 50 scan mỗi 5 giây và ngay khi wifi quay lại; server có unique constraint trên cặp đó, lần gửi lại trả kết quả cũ. Kết quả: 0 scan bị mất, serial trùng từ 3% xuống 0, hàng đợi local tối đa vài trăm bản ghi (khoảng 200KB) — không ảnh hưởng máy quét.
+
+### Trả lời mẫu khi phỏng vấn
+Tôi bắt đầu từ nguyên tắc: mạng yếu là điều bình thường, nên máy quét không được phụ thuộc vào mạng mỗi khi quét. Mỗi scan gắn mã duy nhất do máy sinh (mã máy kèm số thứ tự) và lưu vào cơ sở dữ liệu local ngay lập tức. Một worker đẩy các scan đang chờ lên server khi có mạng, và server dùng unique constraint trên mã máy cùng số thứ tự để nhận biết scan bị gửi lại do retry, trả về kết quả cũ thay vì tạo scan mới. Máy quét chỉ xóa bản ghi local sau khi nhận phản hồi từ server (thành công hoặc trùng), nếu mạng ngắt giữa đường thì giữ nguyên và thử lại sau. Thứ tự scans giữ theo số thứ tự trên mỗi máy, không dùng đồng hồ client vì các máy có thể giờ khác nhau. Với xưởng 15 máy quét, cách này giảm scan bị mất về không và serial trùng từ 3% xuống 0.
+
+> Senior tip: khi thiết kế offline-first, hãy coi sự kiện 'máy quét gửi lại scan tương tự' là chuyện chắc chắn xảy ra, không phải trường hợp ngoại lệ; luôn để server quyết định xem bản ghi đó là mới hay trùng, và chỉ cho phép xóa hàng đợi local sau khi server đã xác nhận.
+`,
+  follow: [
+    'Nếu hai máy quét cùng quét serial khác nhau nhưng trùng mã scan do sinh ngẫu nhiên thì xử lý sao?',
+    'Làm sao biết được scan nào đã thành công khi server trả timeout chứ không phải 200/409?',
+    'Hàng đợi local đầy khi mạng mất lâu: giữ hết hay lược bỏ scan cũ nhất?'
+  ],
+  tags: ['barcode', 'MES', 'offline', 'sync', 'idempotency']
+},
+{
+  id: 'scenario-176',
+  topic: 'scenario',
+  level: 'senior',
+  q: 'Nhà máy in tem/nhãn dán serial lên sản phẩm trước khi đóng hộp. Hai trạm in có thể in nhãn cùng một serial, hoặc máy in bị kẹt giấy khiến nhân viên in lại và tạo serial mới. Bạn thiết kế cấp serial và in nhãn sao cho không trùng serial và in lại an toàn?',
+  a: `**Tóm tắt:** serial được cấp tập trung từ cơ sở dữ liệu (bảng serial với mã duy nhất), không để mỗi trạm tự sinh ngẫu nhiên. Trước khi in, hệ thống đặt trạng thái serial là ĐANG_IN (RESERVED); khi máy in báo in thành công mới chuyển thành ĐÃ_IN (PRINTED). In lại nhãn của serial đã có chỉ được in lại nhãn cũ, không tạo serial mới; mọi thao tác cùng serial được bảo vệ bằng unique constraint và khóa hàng trong transaction.
+
+### Cơ chế
+1. Nhận yêu cầu in: trạm gửi serial và mã máy.
+2. Khóa hàng serial đó trong transaction (SELECT ... FOR UPDATE) để hai trạm không cùng xử lý một serial.
+3. Nếu serial chưa có → tạo bản ghi, trạng thái ĐANG_IN, gán cho trạm đó.
+4. Nếu serial đã ĐÃ_IN cùng trạm → trả lại nhãn cũ (in lại sau kẹt giấy, không tạo serial mới).
+5. Nếu serial đã ĐÃ_IN của trạm khác → từ chối.
+6. Sau khi máy báo in thành công → chuyển thành ĐÃ_IN, lưu nhãn, cùng transaction ghi audit.
+
+~~~java
+@Transactional
+public Label printLabel(String serial, String machineId) {
+    Serial s = serialRepo.findByIdForUpdate(serial);   // khóa hàng serial, tránh hai trạm cùng xử lý
+    if (s == null) throw new SerialNotFoundException(serial);
+    if (s.status == PRINTED && s.printedBy.equals(machineId)) {
+        return s.label;                                // in lại lần trước, không tạo serial mới
+    }
+    if (s.status == PRINTED) throw new SerialAlreadyPrintedException(serial);
+    s.status = PRINTED;
+    s.printedAt = now(); s.printedBy = machineId;
+    s.label = buildLabel(serial, s.product);           // mã vạch + serial đọc được
+    serialRepo.save(s);
+    audit.log("PRINT_LABEL", serial, machineId);       // cùng transaction với cập nhật serial
+    return s.label;
+}
+~~~
+
+### Thiết kế và khi nào dùng
+| Thiết kế | Khi nào dùng | Trade-off |
+| Cấp serial tập trung (DB sequence/bảng serial) | Luôn nên, dễ đảm bảo duy nhất toàn xưởng | Mỗi lần in phải gọi cơ sở dữ liệu (điểm nghẽn nếu in rất nhiều) |
+| Mỗi trạm cấp một dải serial (range) | Ít gọi cơ sở dữ liệu, in nhanh | Phải quản lý dải; trạm hỏng giữa dải có thể bỏ/lất serial |
+| Trạng thái RESERVED → PRINTED, in lại nhãn cũ | Cho phép in lại sau kẹt giấy, không trùng serial | Cần lưu bản in cũ và xử lý serial bị reserved mà không in được |
+
+### Pitfall thực tế
+- Không để client (máy in hay trạm) tự tạo serial ngẫu nhiên: hai trạm có thể tạo cùng serial.
+- Máy in bị kẹt giấy giữa đường: nhân viên bấm in lại, hệ thống phải in lại nhãn cũ, không được cấp serial mới (ngay cả serial mới cũng không giúp, vì hai tem cùng serial sẽ dán trên hai sản phẩm khác nhau).
+- Serial được RESERVED nhưng máy hỏng hoặc không in thành công → serial bị "kẹt"; cần job hết hạn RESERVED sau TTL và kiểm kho định kỳ.
+
+### Ví dụ đời thực
+Xưởng sản xuất linh kiện điện tử, 4 trạm in tem, khoảng 5.000 tem/ngày. Sự cố: máy in trạm 2 bị kẹt giấy, nhân viên bấm in lại, hệ thống cấp serial mới → hai tem serial SN-20260512-0847 được dán trên hai sản phẩm khác nhau. Kho xuất khẩu phát hiện trùng serial, phải kiểm lại toàn bộ lô 1.200 sản phẩm, xuất chậm 4 giờ. Thiết kế lại: bảng serial có unique constraint, trạng thái RESERVED khi bắt đầu in và PRINTED khi máy báo thành công, in lại chỉ trả nhãn đã lưu. Kết quả: trùng serial xuống 0; trong 3 tháng không có sự cố trùng serial nào, thời gian xử lý lại giảm từ 4 giờ xuống 0.
+
+### Trả lời mẫu khi phỏng vấn
+Tôi bắt đầu từ nguyên tắc: serial là khóa kinh doanh, không được để máy quét hay máy in tự sinh ngẫu nhiên vì hai trạm có thể trùng. Serial được cấp tập trung từ cơ sở dữ liệu với mã duy nhất, và trước khi in hệ thống đặt trạng thái RESERVED rồi mới chuyển thành PRINTED khi máy báo in thành công, tất cả trong một transaction với khóa hàng để hai trạm không cùng xử lý một serial. Nếu máy in kẹt giấy và nhân viên bấm in lại, hệ thống trả lại nhãn cũ đã lưu thay vì cấp serial mới, nên không bao giờ có hai tem cùng serial trên hai sản phẩm khác nhau. Mọi thay đổi trạng thái được ghi audit kèm mã người thao tác và thời gian để kiểm tra sau này. Với xưởng 4 trạm in, khoảng 5.000 tem mỗi ngày, cách này đặt trùng serial về không và giảm thời gian xử lý lại từ 4 giờ xuống không.
+
+> Senior tip: khi thiết kế in nhãn, hãy luôn hỏi: 'nếu máy in kẹt giấy và người thao tác bấm in lại mười lần, có tạo ra mười serial không?' — câu trả lời đúng phải là không, và nhà máy vẫn xuất hàng đúng hạn.
+`,
+  follow: [
+    'Serial được RESERVED nhưng máy hỏng không in thành công (serial bị kẹt): xử lý sao?',
+    'Nhà máy muốn in nhãn lại sau hai năm vì kho hàng đổi tên: thiết kế thế nào?',
+    'Serial dùng mã vạch GS1 hay mã nội bộ, chọn dựa trên yếu tố nào?'
+  ],
+  tags: ['label', 'serial', 'MES', 'printing', 'unique-constraint']
+},
+{
+  id: 'scenario-177',
+  topic: 'scenario',
+  level: 'lead',
+  q: 'Cuối mỗi ca làm việc, hệ thống MES báo số lượng thành phẩm sản xuất lên ERP để cập nhật kho, nhưng số lượng ở hai hệ lại chênh lệch (ví dụ MES báo 10.000 chiếc, ERP ghi nhận 9.870 chiếc). Bạn xử lý và ngăn chặn lệch số lượng cuối ca thế nào?',
+  a: `**Tóm tắt:** chọn một hệ làm nguồn sự thật cho từng loại số liệu (thành phẩm hoàn thành: MES là nguồn; nhập kho: ERP là nguồn) và đối soát cuối ca theo từng lệnh sản xuất/lô. Sai số trong ngưỡng cho phép (ví dụ 0,5% hoặc 50 sản phẩm) tự khớp bằng phiếu điều chỉnh có lý do; vượt ngưỡng đưa hàng đợi điều tra với duyệt hai người. Không bao giờ sửa số liệu trực tiếp trên cơ sở dữ liệu của hệ kia chỉ để làm cho hai hệ khớp.
+
+### Các bước xử lý
+1. Chốt ca: MES khóa dữ liệu ca làm việc (không cho sửa số lượng thành phẩm sau khi chốt).
+2. Đối soát: job so sánh số thành phẩm MES theo lệnh sản xuất/lô với số nhập kho ERP cùng khoảng thời gian.
+3. Phân loại sai số: nhỏ hơn ngưỡng tự khớp (phiếu điều chỉnh tự động, lưu lý do); lớn hơn ngưỡng đưa hàng chờ OPS duyệt hai người.
+4. Nguyên nhân gốc: phế phẩm chưa báo MES, hàng sửa lại bị tính hai lần, đơn vị tính khác (chiếc vs hộp), thời gian chốt khác nhau giữa hai hệ.
+5. Sửa gốc: cập nhật quy tắc báo số liệu, không sửa số liệu cũ một cách lén lút.
+
+~~~java
+@Scheduled(cron = "0 30 15 * * *")   // chạy sau kết thúc ca làm việc
+public void reconcileShift(Long shiftId) {
+    List<ShiftGap> gaps = repo.gapsAfterShift(shiftId, TOLERANCE_UNITS, TOLERANCE_PCT);
+    for (ShiftGap g : gaps) {
+        if (Math.abs(g.diff) <= AUTO_FIX_LIMIT) {      // sai nhỏ: ghi phiếu điều chỉnh tự động
+            posting.postAdjustment(g, "Tự khớp cuối ca", SYSTEM_ACTOR);
+        } else {                                        // sai lớn: OPS duyệt, không tự sửa
+            reviewQueue.add(g);                         // chờ kiểm toán viên duyệt hai người
+        }
+    }
+}
+~~~
+
+### Thiết kế và khi nào dùng
+| Thiết kế | Khi nào dùng | Trade-off |
+| Đối soát cuối ca theo lệnh/lô | Ít gọi ERP, phù hợp xưởng không chạy dữ liệu thực thời gian | Phát hiện lệch muộn (cuối ca), khó khôi phục ngữ cảnh |
+| Đối soát theo từng lệnh ngay khi hoàn thành | Phát hiện sớm, sửa kịp trước khi giao hàng | Tải ERP cao hơn, phải thiết kế idempotent |
+| MES là nguồn thành phẩm, ERP là nguồn kho | Mỗi hệ có một nguồn sự thật rõ ràng | Phải thống nhất đơn vị tính (hộp vs chiếc) và quy tắc làm tròn |
+
+### Pitfall thực tế
+- Không sửa trực tiếp số lượng trên cơ sở dữ liệu của ERP hoặc MES để 'khớp nhanh' — mất dấu vết kiểm toán và dễ gây lệch ngược.
+- Đơn vị tính khác nhau: MES đếm chiếc, ERP quản lý theo hộp (12 chiếc/hộp) → lệch tự nhiên nếu không quy đổi.
+- Phế phẩm/hàng sửa lại được MES tính nhưng chưa trừ ở ERP, hoặc ngược lại → phải thống nhất quy tắc 'thành phẩm đạt' được tính vào kho.
+- Thời gian chốt khác nhau giữa hai hệ (MES chốt 22:00, ERP chốt 23:59) → giao dịch giữa hai khoảng thời gian bị bỏ ở một bên.
+
+### Ví dụ đời thực
+Nhà máy sản xuất 12.500 chiếc/ca, MES báo 12.480 chiếc nhập kho ERP, lệch 20 chiếc. Điều tra: 20 chiếc bị hỏng chất lượng được ghi ở module kiểm chất MES nhưng chưa được gửi sang ERP làm giảm số lượng nhập kho → hai hệ lệch 20 chiếc. Quy trình mới: job đối soát cuối ca so sánh số thành phẩm MES theo mã lệnh/lô với số nhập kho ERP; sai số nhỏ hơn 50 chiếc tự ghi phiếu điều chỉnh có lý do; lớn hơn đưa hàng đợi OPS duyệt hai người. Sau một tháng: lệch từ 0,16% xuống 0, mỗi lần lệch đều có bằng chứng kèm người duyệt.
+
+### Trả lời mẫu khi phỏng vấn
+Tôi chọn một hệ làm nguồn sự thật cho từng loại số liệu: MES là nguồn cho thành phẩm hoàn thành, ERP là nguồn cho kho nhập, và chỉ đối soát số liệu giữa hai hệ chứ không sửa trơn một bên để khớp. Cuối mỗi ca, một job so sánh số thành phẩm MES theo lệnh sản xuất với số nhập kho ERP cùng khoảng thời gian. Sai số nhỏ (dưới ngưỡng, ví dụ 50 chiếc) tự ghi phiếu điều chỉnh kèm lý do; sai số lớn đưa vào hàng đợi để kiểm toán viên và quản lý duyệt hai người trước khi sửa. Nguyên nhân hay gặp là phế phẩm chưa báo MES, đơn vị tính khác nhau giữa hai hệ (chiếc so với hộp), hoặc thời gian chốt ca khác nhau — tôi sửa quy tắc báo số liệu ở gốc, không chỉ sửa số cuối cùng. Với nhà máy 12.500 chiếc mỗi ca, cách này giảm lệch từ 0,16% xuống không và mỗi lần lệch đều có bằng chứng kèm người duyệt.
+
+> Senior tip: trước khi thiết kế đồng bộ MES-ERP, hãy chốt câu hỏi: 'khi hai hệ sai, ai nói dứt?' — nếu không có nguồn sự thật duy nhất cho từng loại số liệu, mọi lần đối soát chỉ là vô tận.
+`,
+  follow: [
+    'Giao dịch xảy ra trong khoảng thời gian giữa lúc MES chốt ca và ERP chốt ca: xử lý sao?',
+    'Hai hệ dùng đơn vị tính khác nhau (MES đếm chiếc, ERP quản hộp): quy đổi thế nào cho chính xác?',
+    'Nhân viên nhập sai số lượng thành phẩm trên MES, sau khi đã gửi sang ERP: sửa sao cho cả hai hệ?'
+  ],
+  tags: ['MES', 'ERP', 'reconciliation', 'shift', 'inventory']
+},
+{
+  id: 'scenario-178',
+  topic: 'scenario',
+  level: 'senior',
+  q: 'Phần mềm MES trên xưởng chạy 24/7 theo ba ca làm việc, không được dừng để triển khai phiên bản mới. Bạn triển khai theo mô hình blue-green và chọn thời điểm cắt chuyển ở giờ đổi ca sao cho không gián đoạn sản xuất?',
+  a: `**Tóm tắt:** chạy hai môi trường đồng thời (blue bản cũ, green bản mới) cùng một cơ sở dữ liệu phải tương thích ngược; các phiên làm việc và lệnh sản xuất đang chạy trên blue được để hoàn thành, lệnh mới route sang green; cắt chuyển vào giờ đổi ca khi lượng giao dịch thấp, và có thể quay lại blue trong vài phút nếu phát hiện sự cố; migration cơ sở dữ liệu phải tương thích ngược (không xóa cột đang dùng) để cả hai phiên bản chạy song song được.
+
+### Các bước triển khai
+1. Xả green chạy song song với blue trên cùng hệ thống, cùng cơ sở dữ liệu.
+2. Chạy smoke test trên green (trang chủ, quét barcode, in tem, báo thành phẩm) trước giờ cao điểm.
+3. Lúc giờ đổi ca (lượng giao dịch thấp), kiểm tra không còn lệnh sản xuất nào đang xử lý trên blue rồi chuyển tải sang green (cắt chuyển qua load balancer hoặc cấu hình client).
+4. Theo dõi green trong khoảng an toàn (ví dụ 15–30 phút); nếu phát hiện sự cố, quay lại blue ngay lập tức.
+5. Nếu ổn định, ngừng blue sau một thời gian và chạy migration dọn dẹp (nếu có).
+
+~~~java
+public WorkOrderResult startWorkOrder(WorkOrderCommand cmd) {
+    if (cutoverService.isGreenActive() && !cmd.forceBlue()) {
+        return greenClient.start(cmd);   // lệnh mới chạy trên bản mới
+    }
+    return blueClient.start(cmd);        // phiên đang chạy hoàn thành trên bản cũ
+}
+
+boolean canCutover() {
+    return workOrderRepo.countInProgress() == 0   // không còn lệnh nào đang xử lý trên blue
+        && greenHealth.isHealthy()                 // green đã qua smoke test
+        && cutoverWindow.isShiftChange();          // chỉ cắt ở giờ đổi ca
+}
+~~~
+
+### Thiết kế và khi nào dùng
+| Thiết kế | Khi nào dùng | Trade-off |
+| Blue-green + cắt ở giờ đổi ca | Không gián đoạn xưởng, rollback nhanh (đổi lại load balancer) | Chạy hai môi trường gấp đôi chi phí; migration DB phải tương thích ngược |
+| Rolling update từng trạm/máy | Không cần chạy hai môi trường | Phiên bản lẫn lộn trên xưởng, khó kiểm thử toàn bộ luồng |
+
+### Pitfall thực tế
+- Không cắt chuyển giữa khi có lệnh sản xuất đang chạy trên blue — dữ liệu đang xử lý có thể mất hoặc phiên bản lẫn; phải đợi hoàn thành hoặc chuyển quyền sinh lệnh sang green trước.
+- Migration cơ sở dữ liệu không tương thích ngược (xóa cột, đổi kiểu) làm blue hỏng khi green đang chạy — phải dùng expand/contract, thêm cột mới trước, xóa cột cũ sau khi cả hai phiên bản không còn dùng.
+- Máy trạm/client xưởng phiên bản cũ lưu cache kết nối lâu, không nhận phiên bản mới sau cắt chuyển — cần kế hoạch khởi động lại trạm hoặc phiên bản client tương thích.
+- Không có kế hoạch quay lại dữ liệu đã ghi trên green (nhập kho, xuất sản phẩm) → rollback chỉ được trước khi có dữ liệu quan trọng, sau đó phải sửa phía trước (forward fix).
+
+### Ví dụ đời thực
+Xưởng lắp ráp 3 ca, MES chạy trên 20 máy trạm và máy chủ trung tâm, không được dừng. Triển khai bản MES 2.1: green chạy song song với blue trong 1 tháng, kiểm tra smoke test từng sáng. Lúc 6:00 Thứ Ba (giờ đổi ca ca 1 sang ca 2, lượng lệnh thấp), kiểm tra không còn lệnh đang xử lý trên blue rồi cắt chuyển tải balancer sang green. Trong 15 phút đầu green báo lỗi in tem trên một dây chuyền → lập tức quay lại blue, sửa lỗi cấu hình máy in trên green, thử lại ngày mai. Sau hai lần cắt, bản 2.1 chạy ổn định; tổng thời gian gián đoạn sản xuất là 0 phút, rollback mất dưới 2 phút.
+
+### Trả lời mẫu khi phỏng vấn
+Tôi chạy hai môi trường đồng thời: blue chạy bản cũ, green chạy bản mới, cùng một cơ sở dữ liệu và cả hai phải hoạt động song song được, nên mọi thay đổi cơ sở dữ liệu phải tương thích ngược (không xóa cột đang dùng, thêm cột mới trước). Lệnh sản xuất đang chạy trên blue được để hoàn thành, chỉ lệnh mới được route sang green. Tôi chọn cắt chuyển vào giờ đổi ca khi lượng giao dịch thấp, sau khi xác nhận không còn lệnh nào đang xử lý trên blue và green đã qua smoke test. Nếu phát hiện sự cố sau cắt (ví dụ lỗi in tem), tôi quay lại blue ngay lập tức trong vài phút. Việc không dừng xưởng là yêu cầu cứng, nên trước khi cắt tôi chạy green song song trong một thời gian, và sau khi ổn định mới ngừng blue. Với xưởng 3 ca và 20 máy trạm, cách này triển khai bản MES mới mà không gián đoạn sản xuất, rollback dưới hai phút nếu có sự cố.
+
+> Senior tip: khi triển khai phần mềm xưởng 24/7, hãy đặt câu hỏi: 'nếu cắt sang bản mới vào giữa ca làm việc, lệnh đang chạy trên máy trạm bị như thế nào?' — nếu câu trả là 'bị mất', thiết kế chưa xong; phải để lệnh cũ hoàn thành trên bản cũ trước khi cắt.
+`,
+  follow: [
+    'Migration cơ sở dữ liệu không tương thích ngược (ví dụ đổi kiểu cột) triển khai thế nào cho xưởng không được dừng?',
+    'Sau khi cắt sang green, máy trạm xưởng vẫn dùng phiên bản client cũ: nâng cấp client thế nào mà không dừng dây chuyền?',
+    'Nhập kho thành phẩm đã ghi trên green rồi phát hiện lỗi: rollback về blue hay sửa phía trước?'
+  ],
+  tags: ['MES', 'blue-green', 'deploy', 'cutover', '24/7']
+},
 );
