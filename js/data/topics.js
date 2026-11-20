@@ -14,6 +14,7 @@ window.TOPICS = [
   { id: 'jpa',           name: 'JPA / Hibernate',            icon: '🗄️', group: 'Framework',    file: 'q-spring-data.js' },
   { id: 'db',            name: 'Database & SQL',             icon: '💾', group: 'Framework',    file: 'q-spring-data.js' },
   { id: 'sql',           name: 'SQL thực hành (viết query)', icon: '🧮', group: 'Framework',    file: 'q-sql.js' },
+  { id: 'frontend',      name: 'Frontend cho dev Java (Vue/JS)', icon: '🖥️', group: 'Fullstack',   file: 'q-frontend.js' },
   { id: 'api',           name: 'REST API & Web',             icon: '🔌', group: 'Framework',    file: 'q-api.js' },
   { id: 'security',      name: 'Bảo mật ứng dụng',           icon: '🔐', group: 'Framework',    file: 'q-security.js' },
   { id: 'microservices', name: 'Microservices',              icon: '🧱', group: 'Architecture', file: 'q-microservices.js' },
