@@ -17097,4 +17097,164 @@ MyBatis resultMap cho phép map object phức tạp. association/collection có 
   tags: ['MyBatis', 'resultMap', 'N+1', 'JPA']
 }
 
+,
+{
+  id: 'db-068',
+  topic: 'db',
+  level: 'senior',
+  q: 'Redis single-threaded nhưng vì sao nhanh, và vì sao một lệnh KEYS hoặc big key có thể làm treo cả server?',
+  a: `**Tóm tắt:** Redis xử lý mọi lệnh trên một event loop đơn luồng; nhanh nhờ RAM + cấu trúc compact, nhưng lệnh O(N) lớn chặn toàn bộ request khác.
+
+### Kiến thức cần biết trước
+- Event loop: một vòng lặp nhận socket readable và xử lý lệnh.
+- Big key: key chứa rất nhiều phần tử.
+- KEYS: quét toàn bộ keyspace.
+
+### Cơ chế từng bước
+1. Client gửi lệnh qua TCP.
+2. Event loop poll socket, đọc command.
+3. Parse RESP, thực thi trên data structure RAM.
+4. Ghi response.
+
+VÌ SAO nhanh: không thread, không lock, không disk I/O nóng; cache CPU; compact structures.
+
+VÌ SAO treo: event loop không trả socket khác đến khi lệnh xong. KEYS * trên 10 triệu key có thể 100ms–s; big key HGETALL 1 triệu field serialize lớn.
+
+### Ví dụ đời thực
+Key session:cart chứa 2 triệu item. HGETALL mất 300ms → toàn client chờ, p99 từ 2ms lên 400ms.
+
+### Tự thử trên máy
+~~~bash
+docker run -d --name r -p 6379:6379 redis:7
+redis-cli SET big "$(python3 -c "print('a'*1000000)")"
+time redis-cli GET big
+redis-cli --latency
+~~~
+
+### Tóm lại 3 ý
+1. Single-thread = đơn giản, không lock, nhanh.
+2. Lệnh O(N) chặn event loop.
+3. Tránh KEYS/SMEMBERS lớn; dùng SCAN.
+
+> Senior tip: Production dùng SCAN thay KEYS, monitor big key bằng redis-cli --bigkeys.`,
+  follow: ['SCAN khác KEYS thế nào?', 'Làm sao phát hiện big key và hot key?'],
+  tags: ['Redis', 'event-loop', 'big-key']
+}
+,
+{
+  id: 'db-069',
+  topic: 'db',
+  level: 'senior',
+  q: 'Redis mã hoá cấu trúc dữ liệu bên trong (encoding) như listpack, skiplist, hashtable khác nhau thế nào và ảnh hưởng memory ra sao?',
+  a: `**Tóm tắt:** Redis chọn encoding nội bộ tuỳ size: nhỏ → listpack (compact, tiết kiệm RAM), lớn → hashtable/skiplist (truy cập nhanh). Encoding quyết định memory và tốc độ.
+
+### Kiến thức cần biết trước
+- Listpack: mảng liên tục compact.
+- Hashtable: bảng băm O(1).
+- Skiplist: danh sách nhiều tầng ordered, range query O(log N).
+
+### Cơ chế từng bước
+1. Key nhỏ (Hash < 128 field) → listpack.
+2. Vượt ngưỡng → convert hashtable (rehash).
+3. Sorted Set nhỏ → listpack; lớn → skiplist + dict.
+4. Conversion khi ghi, có thể spike latency.
+
+### Ví dụ đời thực
+1 triệu user profile Hash 5 field nhỏ: hashtable ~200MB; listpack ~80MB. Tiết kiệm 60%.
+
+### Tự thử trên máy
+~~~bash
+redis-cli HSET u:1 name a age 30
+redis-cli OBJECT ENCODING u:1
+redis-cli MEMORY USAGE u:1
+~~~
+
+### Tóm lại 3 ý
+1. Encoding tự động chọn theo size.
+2. Nhỏ = listpack tiết kiệm RAM; lớn = hashtable/skiplist nhanh.
+3. Hiểu encoding để tuning ngưỡng.
+
+> Senior tip: Dùng OBJECT ENCODING và MEMORY USAGE để audit.`,
+  follow: ['intset là gì?', 'Tại sao Sorted Set dùng cả dict và skiplist?'],
+  tags: ['Redis', 'encoding', 'listpack', 'skiplist']
+},
+{
+  id: 'db-070',
+  topic: 'db',
+  level: 'lead',
+  q: 'Redis persistence: RDB vs AOF khác nhau thế nào, và eviction policy chọn ra sao trên production?',
+  a: `**Tóm tắt:** RDB là snapshot định kỳ (compact, khôi phục nhanh, có thể mất dữ liệu giữa snapshot). AOF ghi mỗi lệnh (durable hơn, file lớn, khôi phục chậm). Eviction policy quyết định key bị xoá khi đầy memory.
+
+### Kiến thức cần biết trước
+- RDB: fork process, ghi snapshot binary.
+- AOF: append mỗi write; rewrite định kỳ.
+- fsync: appendfsync everysec mất tối đa 1s dữ liệu.
+
+### Cơ chế từng bước
+RDB: BGSAVE fork child (copy-on-write), child ghi snapshot, parent tiếp tục.
+
+AOF: mỗi write append buffer, fsync theo policy, rewrite compact.
+
+Eviction: noeviction trả lỗi OOM; allkeys-lru xoá ít dùng nhất; volatile-lru chỉ key có TTL; allkeys-lfu least frequently used.
+
+### Ví dụ đời thực
+Cache session 50GB RAM, TTL 30 phút. Dùng allkeys-lru + AOF everysec: cache miss chấp nhận, durability đủ.
+
+### Tự thử trên máy
+~~~bash
+redis-cli CONFIG SET maxmemory 100mb
+redis-cli CONFIG SET maxmemory-policy allkeys-lru
+redis-cli BGSAVE
+ls -lh /data/dump.rdb
+~~~
+
+### Tóm lại 3 ý
+1. RDB = snapshot, khôi phục nhanh.
+2. AOF = durable hơn, file lớn.
+3. Eviction policy phải khớp use case.
+
+> Senior tip: Cache dùng allkeys-lru/lfu; store dùng noeviction + AOF everysec; monitor evicted_keys.`,
+  follow: ['RDB fork có thể gây latency spike thế nào?', 'Khi nào nên dùng Redis làm primary store?'],
+  tags: ['Redis', 'RDB', 'AOF', 'eviction']
+},
+{
+  id: 'db-071',
+  topic: 'db',
+  level: 'lead',
+  q: 'Redis Cluster chia dữ liệu theo hash slot thế nào? Resharding và failover hoạt động ra sao?',
+  a: `**Tóm tắt:** Redis Cluster có 16384 hash slot. Mỗi key hash CRC16(key) mod 16384 → slot; slot gán cho node. Thêm/xoá node migrate slot. Master-slave + failover tự động.
+
+### Kiến thức cần biết trước
+- Hash slot: phân vùng logical.
+- CRC16: hàm hash cho key.
+- Resharding: di chuyển slot online.
+- Gossip: node trao đổi metadata.
+
+### Cơ chế từng bước
+1. Client tính slot (hoặc server trả MOVED).
+2. Slot thuộc master; replica đồng bộ.
+3. Thêm node: rebalance migrate slot online (MIGRATE).
+4. Master chết: replica promote (failover), gossip thông báo.
+
+VÌ SAO hash slot: đơn giản, rebalance linh hoạt, 16384 slot đủ granularity.
+
+### Ví dụ đời thực
+Cluster 3 master thêm node thứ 4: migrate ~1/4 slot online, không downtime; client thấy MOVED redirect.
+
+### Tự thử trên máy
+~~~bash
+redis-cli --cluster create 127.0.0.1:7000 127.0.0.1:7001 127.0.0.1:7002 --cluster-replicas 0
+redis-cli -p 7000 CLUSTER SLOTS
+redis-cli -p 7000 CLUSTER KEYSLOT mykey
+~~~
+
+### Tóm lại 3 ý
+1. 16384 hash slot, key→slot qua CRC16.
+2. Resharding migrate slot online.
+3. Failover tự động qua replica + gossip.
+
+> Senior tip: Dùng hash tag user:{id}:cart để cùng slot cho multi-key; tránh cross-slot transaction.`,
+  follow: ['Hash tag dùng khi nào?', 'Client library xử lý MOVED/ASK redirect thế nào?'],
+  tags: ['Redis', 'Cluster', 'hash-slot', 'resharding']
+}
 );
