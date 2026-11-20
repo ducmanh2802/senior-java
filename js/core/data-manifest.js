@@ -66,24 +66,24 @@
       exam: ['index', 'exams'],                               // pick screen from the light index; the view awaits 'quiz' for the rest
       algo: ['algos', 'glossary'],
       mock: ['questions', 'algos'],
-      companies: ['companies', 'questions'],                  // App.stats()
-      labs: ['labs', 'questions', 'glossary'],                // related-questions widget
+      companies: ['companies', 'index'],                    // App.stats() (light index)
+      labs: ['labs', 'index', 'glossary'],                  // related-questions widget
       account: ['index'],                                     // App.dueItems(), App.stats()
       legal: ['questions', 'quiz', 'algos'],                  // #/legal (= about page) shows counts
       'legal/about': ['questions', 'quiz', 'algos'],
       'legal/privacy': [],
       'legal/terms': [],
       interview: ['questions', 'companies'],                  // seeds from the bank + company presets
-      learn: ['lessons', 'questions', 'glossary'],
-      path: ['lessons', 'questions', 'glossary', 'pathbasics'],
+      learn: ['lessons', 'index', 'glossary'],
+      path: ['lessons', 'index', 'glossary', 'pathbasics'],
       speak: ['drills'],
       news: [],
-      sd: ['sd', 'questions', 'glossary'],
-      projects: ['projects', 'lessons', 'questions', 'glossary'],
-      career: ['questions', 'companies', 'stars'],
+      sd: ['sd', 'index', 'glossary'],
+      projects: ['projects', 'lessons', 'index', 'glossary'],
+      career: ['index', 'companies', 'stars'],
       sdlc: ['sdlc'],
       toeic: ['toeic'],
-      bugs: ['bugs', 'questions', 'glossary'],               // related-questions widget
+      bugs: ['bugs', 'index', 'glossary'],                  // related-questions widget
       'jobs/prep': ['questions', 'glossary'],               // #/jobs/prep/<jobId>: JD study plan + knowledge summary from the bank
       aws: ['aws'],                                           // window.AWS_PLAN + window.AWS_QUESTIONS
     },

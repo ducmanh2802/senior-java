@@ -134,7 +134,7 @@
   }
 
   function detail(root, p) {
-    const questions = App.questions(), lessons = App.lessons();
+    const questions = App.lite('questions'), lessons = App.lessons();
     const checked = p.milestones.map((_, i) => App.store.getStatus(p.id + '#m' + i) === 'known');
     const percent = Math.round(checked.filter(Boolean).length / checked.length * 100);
     const answers = Array.isArray(p.interview.answers) ? p.interview.answers : [];

@@ -182,7 +182,7 @@
       function matchQuestion(text) {
         const words = s => new Set((s || '').toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '').match(/[a-z0-9+#.]{3,}/g) || []);
         const needle = words(text); let best = null, score = 0;
-        App.questions().forEach(q => {
+        App.lite('questions').forEach(q => {
           const tokens = words(q.q); let n = 0; needle.forEach(w => { if (tokens.has(w)) n++; });
           const ratio = n / Math.max(needle.size, 1);
           if (n >= 2 && ratio > score) { best = q; score = ratio; }

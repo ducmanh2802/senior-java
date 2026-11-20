@@ -97,7 +97,7 @@
 
   const stages = () => trackData().slice().sort((a, b) => (a.order || 0) - (b.order || 0));
   const lessonById = id => App.lessons().find(l => l.id === id) || null;
-  const questionById = id => App.questions().find(q => q.id === id) || null;
+  const questionById = id => App.lite('questions').find(q => q.id === id) || null;
   const isKnown = id => App.store.getStatus(id) === 'known';
 
   /** Per-stage counters + done flag (all lessons known, >= 70% of key questions known). */
