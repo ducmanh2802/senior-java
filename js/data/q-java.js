@@ -13166,18 +13166,18 @@ Dịch vụ thanh toán của một sàn thương mại điện tử ban đầu 
   id: 'core-076',
   topic: 'core',
   level: 'senior',
-  q: 'Mot cong viec/lenh di qua cac trang thai (moi, dang xu ly, hoan thanh, bi tu choi), va hanh dong xu ly khac nhau tuy trang thai. Vi sao if-else theo trang thai kho bao tri, va State pattern giup gi?',
-  a: `**Tóm tắt:** State pattern goi moi trang thai cua mot object thanh mot class rieng, object chinh (context) thay doi hanh vi khi trang thai chuyen. Thay vi mot method dai if-else kiem tra trang thai, moi trang thai tu quyen xu ly va quyet dinh trang thai tiep theo, code ngan gon, de them trang thai moi.
+  q: 'Một công việc/lệnh đi qua các trạng thái (mới, đang xử lý, hoàn thành, bị từ chối), và hành động xử lý khác nhau tùy trạng thái. Tại sao if-else theo trạng thái khó bảo trì, và State pattern giúp gì?',
+  a: `**Tóm tắt:** State pattern gói mỗi trạng thái của một object thành một class riêng, object chính (context) thay đổi hành vi khi trạng thái chuyển. Thay vì một method dài if-else kiểm tra trạng thái, mỗi trạng thái tự xử lý và quyết định trạng thái tiếp theo, code ngắn gọn, để thêm trạng thái mới.
 
-### Cai gi - vi sao can - cach hoat dong
-- **Trang thai la gi?** Tinh trang hien tai cua object anh huong cach no phan tra. Vi du don hang "moi" co the bi huy, nhung don hang "da giao" khong the huy duoc.
-- **Van de if-else theo trang thai:** Method xuLy(DonHang dh) kiem tra if (trangThai == MOI) ... else if (DANG_XU_LY) ... . Them trang thai moi phai sua tat ca method kiem tra trang thai, de bo sot nhanh -> don hang bi ket trang thai cu.
-- **State pattern:** Dinh nghia interface TrangThaiTask co method xuLy() va tiepTheo(). Moi trang thai concrete (TaskMoi, TaskDangXuLy, TaskHoanThanh, TaskTuChoi) trien khai. Lop Task giu tham chieu trang thai hien tai, giao viec xu ly cho no. Khi can chuyen trang thai, Task gan trang thai moi.
+### Cái gì - vì sao cần - cách hoạt động
+- **Trạng thái là gì?** Tình trạng hiện tại của object ảnh hưởng cách nó phản hồi. Ví dụ đơn hàng "mới" có thể bị hủy, nhưng đơn hàng "đã giao" không thể hủy được.
+- **Vấn đề if-else theo trạng thái:** Method xuLy(DonHang dh) kiểm tra if (trangThai == MOI) ... else if (DANG_XU_LY) ... . Thêm trạng thái mới phải sửa tất cả method kiểm tra trạng thái, dễ bỏ sót -> đơn hàng bị kết trạng thái cũ.
+- **State pattern:** Định nghĩa interface TrangThaiTask có method xuLy() và tiepTheo(). Mỗi trạng thái concrete (TaskMoi, TaskDangXuLy, TaskHoanThanh, TaskTuChoi) triển khai. Lớp Task giữ tham chiếu trạng thái hiện tại, giao việc xử lý cho nó. Khi cần chuyển trạng thái, Task gán trạng thái mới.
 
-### Buoc buoc
+### Các bước
 1. Interface TrangThaiTask: void xuLy(Task task), TrangThaiTask tiepTheo().
-2. Class moi trang thai: TaskMoi.xuLy() chuyen sang DangXuLy; TaskDangXuLy.xuLy() chuyen sang HoanThanh hoac TuChoi; TaskHoanThanh va TaskTuChoi khong lam gi (trang thai ket thuc).
-3. Class Task: field trangThai, method xuLy() goi trangThai.xuLy(this), method setTrangThai() de chuyen trang thai.
+2. Class mỗi trạng thái: TaskMoi.xuLy() chuyển sang ĐangXuLy; TaskDangXuLy.xuLy() chuyển sang HoànThành hoặc TừChối; TaskHoànThành và TaskTừChối không làm gì (trạng thái kết thúc).
+3. Class Task: field trangThai, method xuLy() gọi trangThai.xuLy(this), method setTrangThai() để chuyển trạng thái.
 
 ~~~java
 interface TrangThaiTask {
@@ -13186,19 +13186,19 @@ interface TrangThaiTask {
 }
 class TaskMoi implements TrangThaiTask {
     @Override public void xuLy(Task task) {
-        System.out.println("Bat dau xu ly task");
+        System.out.println("Bắt đầu xử lý task");
         task.setTrangThai(new TaskDangXuLy());
     }
     @Override public TrangThaiTask tiepTheo() { return new TaskDangXuLy(); }
 }
 class TaskDangXuLy implements TrangThaiTask {
     @Override public void xuLy(Task task) {
-        System.out.println("Dang xu ly, cho phep huy");
+        System.out.println("Đang xử lý, cho phép hủy");
     }
     @Override public TrangThaiTask tiepTheo() { return new TaskHoanThanh(); }
 }
 class TaskHoanThanh implements TrangThaiTask {
-    @Override public void xuLy(Task task) { System.out.println("Da hoan thanh, khong xu ly them"); }
+    @Override public void xuLy(Task task) { System.out.println("Đã hoàn thành, không xử lý thêm"); }
     @Override public TrangThaiTask tiepTheo() { return this; }
 }
 class Task {
@@ -13208,55 +13208,55 @@ class Task {
 }
 ~~~
 
-### Bang so sanh / khi nao dung
-| Tieu chi | if-else theo trang thai | State pattern |
+### Bảng so sánh / khi nào dùng
+| Tiêu chí | if-else theo trạng thái | State pattern |
 |---|---|---|
-| Them trang thai moi | Sua tat ca method kiem tra trang thai | Them class trang thai moi |
-| Hanh dong | Mot method lon, kho doc | Moi trang thai bao dong rieng |
-| Chuyen trang thai | Nhieu chuc gan bien thu cong | Tap trung trong class trang thai |
-| Test | Phai test tat ca nhanh cung luc | Test tung trang thai rieng liet |
+| Thêm trạng thái mới | Sửa tất cả method kiểm tra trạng thái | Thêm class trạng thái mới |
+| Hành động | Một method lớn, khó đọc | Mỗi trạng thái bao đóng riêng |
+| Chuyển trạng thái | Nhiều chỗ gán biến thủ công | Tập trung trong class trạng thái |
+| Test | Phải test tất cả cùng lúc | Test từng trạng thái riêng lẻ |
 
-**Khi dung:** object co nhieu trang thai, hanh dong khac nhau ro rang, chuyen trang thai theo quy tac coc dinh (trinh tu cong viec).
-**Khi khong dung:** chi 2-3 trang thai va hanh dong hoac nhau giong nhau -> enum/boolean don gian hon.
+**Khi dùng:** object có nhiều trạng thái, hành động khác nhau rõ ràng, chuyển trạng thái theo quy tắc cố định (trình tự công việc).
+**Khi không dùng:** chỉ 2-3 trạng thái và hành động giống nhau -> enum/boolean đơn giản hơn.
 
 ### Pitfall production
-- **Vong chuyen trang thai:** neu tiepTheo() quay lai trang thai cu khong co dieu kien dung -> task lap vo han, tieu tieu CPU. Phai co trang thai ket thuc (hoan thanh/tu choi).
-- **State giu tham chieu context:** neu state object luu doi tuong task va task luu state, co the tao vong tham chieu. Thiet ke sao state khong luu context dai han.
-- **Khong thread-safe:** nhieu thread cung goi xuLy() tren mot task, trang thai co bi thay doi xung dot. Can dong bo hoac dam bao mot task chi duoc mot thread xu ly tai mot thoi diem.
+- **Vòng chuyển trạng thái:** nếu tiepTheo() quay lại trạng thái cũ không có điều kiện dừng -> task lặp vô hạn, tiêu tốn CPU. Phải có trạng thái kết thúc (hoàn thành/từ chối).
+- **State giữ tham chiếu context:** nếu state object lưu đối tượng task và task lưu state, có thể tạo vòng tham chiếu. Thiết kế sao state không lưu context dài hạn.
+- **Không thread-safe:** nhiều thread cùng gọi xuLy() trên một task, trạng thái có bị thay đổi xung đột. Cần đồng bộ hoặc đảm bảo một task chỉ được một thread xử lý tại một thời điểm.
 
-### Vi du doi thuc (production)
-He thong xu ly don hang cua mot cong ty logistics dung enum TrangThai va if-else trong DonHangService.xuLy(). Khi them trang thai "dang giao" va "da co giao that bai", dev sua 4 method khac nhau nhung bo sot nhanh trong method kiem tra phi ship -> don hang "da co giao" van duoc tinh phi nhu dang giao, mat khoang 45 trieu dong trong thang. Refactor sang State: moi trang thai la class, chuyen trang thai tap trung trong tiepTheo(). Sau do, them trang thai moi khong lam sai logic cu, va so incident lien quan trang thai don hang giam tu trung binh 6 ca/thang xuong 0 trong 3 thang sau.
+### Ví dụ đời thực (production)
+Hệ thống xử lý đơn hàng của một công ty logistics dùng enum TrạngThái và if-else trong DonHangService.xuLy(). Khi thêm trạng thái "đang giao" và "đã giao thất bại", dev sửa 4 method khác nhau nhưng bỏ sót trong method kiểm tra phí ship -> đơn hàng "đã giao" vẫn được tính phí như đang giao, mất khoảng 45 triệu đồng trong tháng. Refactor sang State: mỗi trạng thái là class, chuyển trạng thái tập trung trong tiepTheo(). Sau đó, thêm trạng thái mới không làm sai logic cũ, và số incident liên quan trạng thái đơn hàng giảm từ trung bình 6 ca/thang xuống 0 trong 3 tháng sau.
 
-### Tra loi mau khi phong van
-"Khi mot object co nhieu trang thai va hanh doi thay doi tuy trang thai, neu viet if-else kiem tra trang thai trong nhieu method thi them mot trang thai moi la phai sua het cac method do, de bo sot nhanh. State pattern giai quyet bang cach goi moi trang thai thanh mot class trien khai mot interface chung, vi du giao dien trang thai task co method xu ly va method tra ve trang thai tiep theo. Class task giu mot tham chieu den trang thai hien tai va giao viec xu ly cho no, nen task khong can biet chi tiet tung trang thai. Them trang thai moi chi la tao class moi, khong sua class task. Minh luu ý can co trang thai cuoi cung de tranh vong lap chuyen trang thai, va neu nhieu thread xu ly cung mot task thi phai dong bo de tranh thay doi trang thai xung dot."
+### Trả lời mẫu khi phỏng vấn
+"Khi một object có nhiều trạng thái và hành động thay đổi tùy trạng thái, nếu viết if-else kiểm tra trạng thái trong nhiều method thì thêm một trạng thái mới là phải sửa hết các method đó, dễ bỏ sót. State pattern giải quyết bằng cách gói mỗi trạng thái thành một class triển khai một interface chung, ví dụ giao diện trạng thái task có method xử lý và method trả về trạng thái tiếp theo. Class task giữ một tham chiếu đến trạng thái hiện tại và giao việc xử lý cho nó, nên task không cần biết chi tiết từng trạng thái. Thêm trạng thái mới chỉ là tạo class mới, không sửa class task. Minh lưu ý cần có trạng thái cuối cùng để tránh vòng lập chuyển trạng thái, và nếu nhiều thread xử lý cùng một task thì phải đồng bộ để tránh thay đổi trạng thái xung đột."
 
-> Senior tip: State pattern hop ly khi trang thai co quy tac chuyen tien ro rang (workflow). Neu trang thai chi dung de hien thi giao interface va hanh dong khong khac nhau, enum + switch don gian la du, khong tao them nhieu class state.
+> Senior tip: State pattern hợp lý khi trạng thái có quy tắc chuyển tiếp rõ ràng (workflow). Nếu trạng thái chỉ dùng để hiển thị giao diện và hành động không khác nhau, enum + switch đơn giản là đủ, không tạo thêm nhiều class state.
 `,
   follow: [
-    'Vi sao moi trang thai nen la mot class rieng thay vi chi la gia tri enum?',
-    'State pattern co the gay vong lap chuyen trang thai khong, va phong tranh ra sao?',
-    'Neu nhieu thread cung xu ly mot task co trang thai, can luu u gi?'
+    'Vì sao mỗi trạng thái nên là một class riêng thay vì chỉ là giá trị enum?',
+    'State pattern có thể gây vòng lập chuyển trạng thái không, và phòng tránh ra sao?',
+    'Nếu nhiều thread cùng xử lý một task có trạng thái, cần lưu ý gì?'
   ],
-  tags: ['core', 'State pattern', 'trang thai', 'workflow', 'refactor'],
+  tags: ['core', 'State pattern', 'trạng thái', 'workflow', 'refactor'],
 },
 {
   id: 'core-077',
   topic: 'core',
   level: 'lead',
-  q: 'Nhieu class con lam cung mot luong xu ly (vi du nhap file CSV, JSON, Excel) nhung chi tiet tung buoc khac nhau. Template Method giup tranh lap code nhu the nao, va nhuoc diem cua no la gi?',
-  a: `**Tóm tắt:** Template Method la mau thiet ke dinh nghia khung thuat toan trong class cha, de lai cac buoc chi tiet (phuong thuc abstract hoac hook) cho class con trien khai. Class cha kiem thu tu tu thuc hien, class con chi tu chinh buoc, tranh lap code va dam bao luong xu ly nhat quan.
+  q: 'Nhiều class con làm cùng một luồng xử lý (ví dụ nhập file CSV, JSON, Excel) nhưng chi tiết từng bước khác nhau. Template Method giúp tránh lặp code như thế nào, và nhược điểm của nó là gì?',
+  a: `**Tóm tắt:** Template Method là mẫu thiết kế định nghĩa khung thuật toán trong class cha, để lại các bước chi tiết (phương thức abstract hoặc hook) cho class con triển khai. Class cha kiểm soát tự thực hiện, class con chỉ tự chỉnh bước, tránh lặp code và đảm bảo luồng xử lý nhất quán.
 
-### Cai gi - vi sao can - cach hoat dong
-- **Template Method la gi?** Mot phuong thuc trong class cha dinh ro thu tu cac buoc (mo file -> doc -> chuyen doi -> kiem tra -> luu), danh la final de class con khong doi tu tu, cac buoc ben trong la abstract de class con override.
-- **Vi sao can:** neu moi loai file (CSV, JSON, Excel) viet lai toan bo luong mo-doc-luu thi code lap, va sua mot buoc chung (vi du them log) phai sua nhieu chuc.
-- **Cach hoat dong:** class cha NhapDuLieu co phuong thuc nhap() final goi moFile(), docDong(), chuyenDoi(), kiemTra(), luu(). Class con NhapCSV override docDong() doc dong phay, NhapJSON override doc JSON. Luong chung o chi, chi tiet o con.
-- **Hook:** phuong thuc co trien khai mac dinh, class con co the override neu muon (vi du kiemTra() mac dinh khong lam gi, class con override de kiem tra du lieu).
+### Cái gì - vì sao cần - cách hoạt động
+- **Template Method là gì?** Một phương thức trong class cha định rõ thứ tự các bước (mở file -> đọc -> chuyển đổi -> kiểm tra -> lưu), đã là final để class con không đổi, các bước bên trong là abstract để class con override.
+- **Vì sao cần:** nếu mỗi loại file (CSV, JSON, Excel) viết lại toàn bộ luồng mở-doc-lưu thì code lặp, và sửa một bước chung (ví dụ thêm log) phải sửa nhiều chỗ.
+- **Cách hoạt động:** class cha NhapDuLieu có phương thức nhap() final gọi moFile(), docDong(), chuyenDoi(), kiemTra(), luu(). Class con NhapCSV override docDong() đọc dòng phẩy, NhapJSON override doc JSON. Luồng chung ở cha, chi tiết ở con.
+- **Hook:** phương thức có triển khai mặc định, class con có thể override nếu muốn (ví dụ kiemTra() mặc định không làm gì, class con override để kiểm tra dữ liệu).
 
-### Buoc buoc
-1. Tao abstract class cha co phuong thuc xuLy() final, goi cac buoc buoc1(), buoc2()...
-2. Cac buoc bien doi danh abstract, class con trien khai.
-3. Cac buoc tu chinh danh hook, co trien khai mac dinh trong.
-4. Class con extends cha, chi override buoc can thiet.
+### Các bước
+1. Tạo abstract class cha có phương thức xuLy() final, gọi các bước buoc1(), buoc2()...
+2. Các bước đánh abstract, class con triển khai.
+3. Các bước tự chỉnh hook, có triển khai mặc định trong class cha.
+4. Class con extends cha, chỉ override bước cần thiết.
 
 ~~~java
 abstract class NhapDuLieu {
@@ -13271,8 +13271,8 @@ abstract class NhapDuLieu {
         }
         dongFile();
     }
-    void moFile(String path) { System.out.println("Mo " + path); }
-    void dongFile() { System.out.println("Dong file"); }
+    void moFile(String path) { System.out.println("Mở " + path); }
+    void dongFile() { System.out.println("Đóng file"); }
     abstract boolean coDongTiepTheo();
     abstract String docDong();
     abstract Object chuyenDoi(String dong);
@@ -13283,38 +13283,38 @@ class NhapCSV extends NhapDuLieu {
     @Override boolean coDongTiepTheo() { return true; }
     @Override String docDong() { return "a,b,c"; }
     @Override Object chuyenDoi(String dong) { return dong.split(","); }
-    @Override void luu(Object o) { System.out.println("Luu CSV"); }
+    @Override void luu(Object o) { System.out.println("Lưu CSV"); }
 }
 ~~~
 
-### Bang so sanh / khi nao dung
-| Tieu chi | Viet lai moi class con | Template Method |
+### Bảng so sánh / khi nào dùng
+| Tiêu chí | Viết lại mỗi class con | Template Method |
 |---|---|---|
-| Code chung | Lap o moi class con | Gan o class cha |
-| Sua luong chung | Sua nhieu class con | Sua mot chuc class cha |
-| Tu tu xu ly | Con co the doi sai | Cha kiem soat (final) |
-| Tu chinh buoc | De nhung rac | Ro rang qua abstract/hook |
+| Code chung | Lặp ở mỗi class con | Gắn ở class cha |
+| Sửa luồng chung | Sửa nhiều class con | Sửa một chỗ class cha |
+| Tự xử lý | Con có thể đổi sai | Cha kiểm soát (final) |
+| Tự chỉnh bước | Dễ bị rác | Rõ ràng qua abstract/hook |
 
-**Khi dung:** nhieu class con chia cung luong xu ly, chi khac o mot so buoc, muon dam bao tu tu khong bi con thay doi.
-**Khi khong dung:** chi 1-2 class con, hoac moi class luong hoan toan khac -> ke thua lam giam do linh hoat.
+**Khi dùng:** nhiều class con chia cùng luồng xử lý, chỉ khác ở một số bước, muốn đảm bảo tự xử lý không bị class con thay đổi.
+**Khi không dùng:** chỉ 1-2 class con, hoặc mỗi class luồng hoàn toàn khác -> kế thừa làm giảm độ linh hoạt.
 
 ### Pitfall production
-- **Class cha qua phuc tap:** cung nhieu buoc abstract, class cha qua kho doc, class con phai hieu toan bo khung moi trien khai dung.
-- **Kho debug:** loi xay ra trong class con nhung stack track qua class cha, lap trinh vien moi de nham la bug cua framework.
-- **Cang ke thua cang coc:** class con bi rang buoc boi khung cua cha, kho tai su dung buoc don le o noi khac. Neu chi can thay doi mot phan nho, coi lai composition (gop doi tuong) thay vi ke thua.
+- **Class cha quá phức tạp:** càng nhiều bước abstract, class cha quá khó đọc, class con phải hiểu toàn bộ khung mới triển khai được.
+- **Khó debug:** lỗi xảy ra trong class con nhưng stack trace qua class cha, lập trình viên dễ nhầm là bug của framework.
+- **Càng kế thừa càng cộc:** class con bị ràng buộc bởi khung của cha, khó tái sử dụng bước đơn lẻ ở nơi khác. Nếu chỉ cần thay đổi một phần nhỏ, xem lại composition (gộp đối tượng) thay vì kế thừa.
 
-### Vi du doi thuc (production)
-He thong bao cao co 3 loai xuat file (PDF, Excel, CSV) ban dau moi loai viet lai toan bo luong: truy xuat du lieu -> dinh dang -> ghi file -> ghi log. Team them yeu cau "ghi log moi lan xuat" thi phai sua 3 class. Refactor ap Template Method: class abstract XuatBaoCao dinh method xuat() final, buoc ghiLog() chung, buoc dinhDang() de con override. Them loai xuat moi (HTML) chi tao class con override dinhDang(), khong cham class cu. Thoi gian them loai xuat moi giam tu nua ngay xuong 30 phut, va bug "quen ghi log" bo mat vi log o class cha.
+### Ví dụ đời thực (production)
+Hệ thống báo cáo có 3 loại xuất file (PDF, Excel, CSV) ban đầu mỗi loại viết lại toàn bộ luồng: truy xuất dữ liệu -> định dạng -> ghi file -> ghi log. Team thêm yêu cầu "ghi log mỗi lần xuất" thì phải sửa 3 class. Refactor áp Template Method: class abstract XuatBaoCao định method xuat() final, bước ghiLog() chung, bước dinhDang() để con override. Thêm loại xuất mới (HTML) chỉ tạo class con override dinhDang(), không chạm class cũ. Thời gian thêm loại xuất mới giảm từ nửa ngày xuống 30 phút, và bug "quên ghi log" bỏ mất vì log ở class cha.
 
-### Tra loi mau khi phong van
-"Template Method la mau thiet ke de tranh lap code khi nhieu class con lam cung mot luong nhung chi tiet tung buoc khac nhau. Class cha dinh mot phuong thuc final chua tu tu cac buoc (mo, doc, chuyen doi, kiem tra, luu), cac buoc nay abstract de class con trien khai theo cach cua minh, con buoc tu chinh dung hook co trien khai mac dinh. Nhu thu class con khong can viet lai toan bo luong, chi override buoc can thiet, va tu tu xu ly duoc class cha kiem soat nen con khong doi sai luong. Nhuoc diem la class cha co the tro thanh phuc tap, kho debug khi loi o class con, va ke thua lam class con it linh hoat. Neu chi can thay doi mot phan nho, minh cau nhan composition thay vi ke thua sau."
+### Trả lời mẫu khi phỏng vấn
+"Template Method là mẫu thiết kế để tránh lặp code khi nhiều class con làm cùng một luồng nhưng chi tiết từng bước khác nhau. Class cha định một phương thức final chứa các bước (mở, đọc, chuyển đổi, kiểm tra, lưu), các bước này abstract để class con triển khai theo cách của mình, còn bước tự chỉnh dùng hook có triển khai mặc định. Như vậy class con không cần viết lại toàn bộ luồng, chỉ override bước cần thiết, và tự xử lý do class cha kiểm soát nên con không đổi sai luồng. Nhược điểm là class cha có thể trở thành phức tạp, khó debug khi lỗi ở class con, và kế thừa làm class con ít linh hoạt. Nếu chỉ cần thay đổi một phần nhỏ, mình cân nhắc composition thay vì kế thừa sau."
 
-> Senior tip: Template Method ngung quyen kiem soat tu class con len class cha. Neu thay class cha co qua nhieu phuong thuc abstract va class con chi trien khai mot phan, huy tach thanh cac component nho va gop bang composition thay vi ke thua sau.
+> Senior tip: Template Method ngược quyền kiểm soát từ class con lên class cha. Nếu thấy class cha có quá nhiều phương thức abstract và class con chỉ triển khai một phần, hãy tách thành các component nhỏ và gộp bằng composition thay vì kế thừa sau.
 `,
   follow: [
-    'Vi sao template method nen danh final, va class con co the lam gi neu khong final?',
-    'Hook la gi va khac phuong thuc abstract o diem nao?',
-    'Template Method va Strategy khac nhau ra sao, khi nao chon cai nao?'
+    'Vì sao template method nên đánh final, và class con có thể làm gì nếu không final?',
+    'Hook là gì và khác phương thức abstract ở điểm nào?',
+    'Template Method và Strategy khác nhau ra sao, khi nào chọn cái nào?'
   ],
   tags: ['core', 'Template Method', 'SOLID', 'OCP', 'abstract class', 'refactor'],
 },
@@ -13322,23 +13322,23 @@ He thong bao cao co 3 loai xuat file (PDF, Excel, CSV) ban dau moi loai viet lai
   id: 'core-078',
   topic: 'core',
   level: 'senior',
-  q: 'Tao mot doi tuong cau hinh co nhieu truong tu chon (host, port, timeout, SSL...) thi constructor dai va de nham tham so. Khi nao dung Builder, khi nao dung Factory, va hai pattern khac nhau ra sao?',
-  a: `**Tóm tắt:** Builder xay dung doi tuong tung buoc theo ten phuong thuc, giai quyet van de constructor dai va nham tham so khi doi tuong co nhieu truong tu chon. Factory quyet dinh tao class nao dua vao dau vao, an chi tiet khoi tao. Hai pattern giai quyet van de khac nhau: Builder ve "cach tao mot doi tuong phuc tap", Factory ve "tao doi tuong nao".
+  q: 'Tạo một đối tượng cấu hình có nhiều trường tùy chọn (host, port, timeout, SSL...) thì constructor dài và dễ nhầm tham số. Khi nào dùng Builder, khi nào dùng Factory, và hai pattern khác nhau ra sao?',
+  a: `**Tóm tắt:** Builder xây dựng đối tượng từng bước theo tên phương thức, giải quyết vấn đề constructor dài và nhầm tham số khi đối tượng có nhiều trường tùy chọn. Factory quyết định tạo class nào dựa vào đầu vào, ẩn chi tiết khởi tạo. Hai pattern giải quyết vấn đề khác nhau: Builder về "cách tạo một đối tượng phức tạp", Factory về "tạo đối tượng nào".
 
-### Cai gi - vi sao can - cach hoat dong
-- **Constructor dai:** constructor voi nhieu tham so, goi nhu new Config("localhost", 5432, 30, null, null, true, false) de nham thu tu va kho doc.
-- **Builder la gi?** Mot class tro giup (thuong la static nested class) co cac phuong thuc dat tung truong va tra ve chinh builder, method build() tao doi tuong cuoi cung. Goi nhu new Config.Builder().host("localhost").port(5432).timeout(30).ssl(true).build() — ro rang tung truong.
-- **Factory la gi?** Mot phuong thuc/class tao doi tuong dua vao dieu kien, client khong can biet class cu the. Vi du ConnectionFactory.create(loai) tra ve KetNoiMySQL hoac KetNoiPostgreSQL.
+### Cái gì - vì sao cần - cách hoạt động
+- **Constructor dài:** constructor với nhiều tham số, gọi như new Config("localhost", 5432, 30, null, null, true, false) để nhầm thứ tự và khó đọc.
+- **Builder là gì?** Một class trợ giúp (thường là static nested class) có các phương thức đặt từng trường và trả về chính builder, method build() tạo đối tượng cuối cùng. Gọi như new Config.Builder().host("localhost").port(5432).timeout(30).ssl(true).build() — rõ ràng từng trường.
+- **Factory là gì?** Một phương thức/class tạo đối tượng dựa vào điều kiện, client không cần biết class cụ thể. Ví dụ ConnectionFactory.create(loai) trả về KetNoiMySQL hoặc KetNoiPostgreSQL.
 
-### Buoc buoc Builder
-1. Tao class Config co constructor private, tat ca field final.
-2. Tao static nested class Builder co cac field tuong ung, moi phuong thuc setX() tra ve this.
-3. Method build() tao Config va co the validate truoc khi tra ve.
+### Các bước Builder
+1. Tạo class Config có constructor private, tất cả field final.
+2. Tạo static nested class Builder có các field tương ứng, mỗi phương thức setX() trả về this.
+3. Method build() tạo Config và có thể validate trước khi trả về.
 
-### Buoc buoc Factory
-1. Dinh nghia interface/lop abstract san pham (KetNoi).
-2. Tao class cu the (KetNoiMySQL, KetNoiPostgreSQL).
-3. Tao KetNoiFactory.create(loai) tra ve doi tuong phu hop.
+### Các bước Factory
+1. Định nghĩa interface/lớp abstract sản phẩm (KetNoi).
+2. Tạo class cụ thể (KetNoiMySQL, KetNoiPostgreSQL).
+3. Tạo KetNoiFactory.create(loai) trả về đối tượng phù hợp.
 
 ~~~java
 public class Config {
@@ -13358,7 +13358,7 @@ public class Config {
         public Builder port(int port) { this.port = port; return this; }
         public Builder ssl(boolean ssl) { this.ssl = ssl; return this; }
         public Config build() {
-            if (host == null || host.isEmpty()) throw new IllegalArgumentException("host bat buoc");
+            if (host == null || host.isEmpty()) throw new IllegalArgumentException("host bắt buộc");
             return new Config(this);
         }
     }
@@ -13366,35 +13366,35 @@ public class Config {
 Config cfg = new Config.Builder().host("db.prod.vn").port(5432).ssl(true).build();
 ~~~
 
-### Bang so sanh Builder vs Factory
-| Tieu chi | Builder | Factory |
+### Bảng so sánh Builder vs Factory
+| Tiêu chí | Builder | Factory |
 |---|---|---|
-| Giai quyet van de | Constructor nhieu tham so, nham thu tu | Khong biet truoc loai object can tao |
-| Cach dung | Goi tung phuong thuc dat truong, roi build() | Goi mot phuong thuc voi loai/kieu, nhan object |
-| Client biet class cu the | Biet (la Config) | Khong biet (nhan interface) |
-| Vi du | Tao Config co nhieu tu chon | Tao ket noi DB theo loai (MySQL/PostgreSQL) |
+| Giải quyết vấn đề | Constructor nhiều tham số, nhầm thứ tự | Không biết trước loại object cần tạo |
+| Cách dùng | Gọi từng phương thức đặt trường, rồi build() | Gọi một phương thức với loại/kiểu, nhận object |
+| Client biết class cụ thể | Biết (là Config) | Không biết (nhận interface) |
+| Ví dụ | Tạo Config có nhiều tùy chọn | Tạo kết nối DB theo loại (MySQL/PostgreSQL) |
 
-**Khi dung Builder:** doi tuong nhieu truong, it tu chon, muon code goi ro rang va co the validate truoc khi tao.
-**Khi dung Factory:** chon loai object dua vao dau vao/cau hinh, muon an class cu the khoi client.
-**Khi khong dung:** doi tuong chi 1-2 truong bat buoc -> constructor don gian la du.
+**Khi dùng Builder:** đối tượng nhiều trường, ít tùy chọn, muốn code gọi rõ ràng và có thể validate trước khi tạo.
+**Khi dùng Factory:** chọn loại object dựa vào đầu vào/cấu hình, muốn ẩn class cụ thể khỏi client.
+**Khi không dùng:** đối tượng chỉ 1-2 trường bắt buộc -> constructor đơn giản là đủ.
 
 ### Pitfall production
-- **Builder over-engineering:** doi tuong chi 2-3 truong, tao Builder lam code dai hon khong co loi ich.
-- **build() duoc goi nhieu lan voi builder dung chung:** neu builder khong reset field, object lan sau co gia tri cua lan truoc. Nhen moi build tao builder moi hoac tai lieu ro.
-- **Factory if-else dai:** if (loai.equals("MYSQL")) ... else if ... vi pham OCP, them loai moi phai sua factory. Cai thien bang registry Map<loai, Supplier<KetNoi>> hoac cau hinh.
+- **Builder over-engineering:** đối tượng chỉ 2-3 trường, tạo Builder làm code dài hơn không có lợi ích.
+- **build() được gọi nhiều lần với builder dùng chung:** nếu builder không reset field, object lần sau có giá trị của lần trước. Nên mỗi build tạo builder mới hoặc tài liệu rõ.
+- **Factory if-else dài:** if (loai.equals("MYSQL")) ... else if ... vi phạm OCP, thêm loại mới phải sửa factory. Cải thiện bằng registry Map<loai, Supplier<KetNoi>> hoặc cấu hình.
 
-### Vi du doi thuc (production)
-Mot dich vu ket noi co so du lieu ban dau co constructor KetNoiDB(String host, int port, String db, String user, String password, int timeout, int maxPool, boolean ssl) voi 8 tham so. Dev thuong tho nham port va timeout -> ket noi that bai, khoang 5% yeu cau loi trong dot deploy. Refactor sang KetNoiDB.Builder().host(...).port(...).db(...)...build() ro rang tung truong, va builder validate port trong khoang 1-65535 truoc khi tao. Sau do loi nham tham so ve 0, va them truong moi (vi du schema) khong anh huong code goi cu vi cac phuong thuc builder doc lap.
+### Ví dụ đời thực (production)
+Một dịch vụ kết nối cơ sở dữ liệu ban đầu có constructor KetNoiDB(String host, int port, String db, String user, String password, int timeout, int maxPool, boolean ssl) với 8 tham số. Dev thường tho nhầm port và timeout -> kết nối thất bại, khoảng 5% yêu cầu lỗi trong đợt deploy. Refactor sang KetNoiDB.Builder().host(...).port(...).db(...)...build() rõ ràng từng trường, và builder validate port trong khoảng 1-65535 trước khi tạo. Sau đó lỗi nhầm tham số về 0, và thêm trường mới (ví dụ schema) không ảnh hưởng code gọi cũ vì các phương thức builder độc lập.
 
-### Tra loi mau khi phong van
-"Khi tao mot doi tuong co nhieu truong tu chon nhu cau hinh ket noi co so du lieu, constructor dai de lam nham thu tu tham so va kho doc. Builder giai quyet bang cach cung cap cac phuong thuc dat tung truong voi ten ro rang, tra ve chinh builder, cuoi cung goi build() tao doi tuong va co the validate du lieu. Factory khac: no khong quan tâm cach dat tung truong, ma quyet dinh tao class nao dua vao dau vao, vi du tao ket noi MySQL hay PostgreSQL, va an class cu the khoi client. Minh dung Builder khi doi tuong co nhieu truong tu chon va muon code goi ro rang, dung Factory khi can chon loai object dua vao cau hinh. Neu doi tuong chi mot hai truong, constructor don gian la du, khong buoc them pattern."
+### Trả lời mẫu khi phỏng vấn
+"Khi tạo một đối tượng có nhiều trường tùy chọn như cấu hình kết nối cơ sở dữ liệu, constructor dài dễ làm nhầm thứ tự tham số và khó đọc. Builder giải quyết bằng cách cung cấp các phương thức đặt từng trường với tên rõ ràng, trả về chính builder, cuối cùng gọi build() tạo đối tượng và có thể validate dữ liệu. Factory khác: nó không quan tâm cách đặt từng trường, mà quyết định tạo class nào dựa vào đầu vào, ví dụ tạo kết nối MySQL hay PostgreSQL, và ẩn class cụ thể khỏi client. Mình dùng Builder khi đối tượng có nhiều trường tùy chọn và muốn code gọi rõ ràng, dùng Factory khi cần chọn loại object dựa vào cấu hình. Nếu đối tượng chỉ một hai trường, constructor đơn giản là đủ, không cần thêm pattern."
 
-> Senior tip: Neu factory if-else dai moi lan them loai moi, huy thay bang registry (Map loai -> ham tao) hoac cau hinh, de them loai moi khong sua factory. Va builder chi nen dung khi doi tuong thuc su co nhieu truong tu chon, khong tao Builder cho moi class.
+> Senior tip: Nếu factory if-else dài mỗi lần thêm loại mới, hãy thay bằng registry (Map loại -> hàm tạo) hoặc cấu hình, để thêm loại mới không sửa factory. Và builder chỉ nên dùng khi đối tượng thực sự có nhiều trường tùy chọn, không tạo Builder cho mọi class.
 `,
   follow: [
-    'Builder khac constructor co tham so mac dinh o diem nao?',
-    'Vi sao constructor cua class co Builder nen de private?',
-    'Factory if-else dai vi pham nguyen tac nao, va cai thien ra sao?'
+    'Builder khác constructor có tham số mặc định ở điểm nào?',
+    'Vì sao constructor của class có Builder nên để private?',
+    'Factory if-else dài vi phạm nguyên tắc nào, và cải thiện ra sao?'
   ],
   tags: ['core', 'Builder pattern', 'Factory pattern', 'constructor', 'refactor'],
 },
@@ -13402,26 +13402,26 @@ Mot dich vu ket noi co so du lieu ban dau co constructor KetNoiDB(String host, i
   id: 'core-079',
   topic: 'core',
   level: 'lead',
-  q: 'Mot class lam qua nhieu viec (vi pham SRP) va dung if-else de xu ly su kien (vi pham OCP). Ban refactor nhu the nao, Observer/event bus khac nhau the nao, va khi nao dung pattern thi bi over-engineering?',
-  a: `**Tóm tắt:** SRP (Single Responsibility Principle - nguyen tac tac nhiem don) bao mot class chi co mot, va chi mot, ly do de thay doi. Neu mot class vua kiem tra don hang, vua gui email, vua ghi log thi moi yeu cau moi lai phai sua class do. Refactor tach thanh cac class nho theo tac nhiem. Observer pattern de cac thanh dang ky nhan su kien va phan tra, giam ket dia. Event bus la trung tam phan phoi su kien. Ap pattern khong can thiet cho van de don gian la over-engineering, lam code kho hieu hon.
+  q: 'Một class làm quá nhiều việc (vi phạm SRP) và dùng if-else để xử lý sự kiện (vi phạm OCP). Bạn refactor như thế nào, Observer/event bus khác nhau thế nào, và khi nào dùng pattern thì bị over-engineering?',
+  a: `**Tóm tắt:** SRP (Single Responsibility Principle - nguyên lý trách nhiệm đơn) bảo một class chỉ có một, và chỉ một, lý do để thay đổi. Nếu một class vừa kiểm tra đơn hàng, vừa gửi email, vừa ghi log thì mỗi yêu cầu mới lại phải sửa class đó. Refactor tách thành các class nhỏ theo trách nhiệm. Observer pattern để các thành phần đăng ký nhận sự kiện và phản hồi, giảm kết dính. Event bus là trung tâm phân phối sự kiện. Áp pattern không cần thiết cho vấn đề đơn giản là over-engineering, làm code khó hiểu hơn.
 
-### Cai gi - vi sao can - cach hoat dong
-- **SRP la gi?** Mot class nen co mot, va chi mot, ly do de thay doi. Vi du DonHangService chi nen xu ly nghiep vu don hang, khong nen tu gui mail hoac viet log.
-- **Refactor theo SRP:** tach DonHangService thanh DonHangService (xu ly don), EmailService (gui mail), LogService (ghi log). Moi class mot ly do thay doi, sua giao dien mail khong dot code don hang.
-- **OCP trong refactor:** thay vi if-else xu ly loai su kien, moi loai su kien duoc xu ly boi handler rieng, them loai moi khong sua code cu.
-- **Observer pattern:** subject (phat su kien) giu danh sach observer, khi su kien xay ra goi capNhat() tren moi observer. Observer va subject khong biet chi tiet nhau, chi biet interface.
-- **Event bus:** trung tam nhan su kien tu publisher va chuyen den subscriber da dang ky. Publisher khong can biet ai subscribed.
+### Cái gì - vì sao cần - cách hoạt động
+- **SRP là gì?** Một class nên có một, và chỉ một, lý do để thay đổi. Ví dụ DonHangService chỉ nên xử lý nghiệp vụ đơn hàng, không nên tự gửi mail hoặc viết log.
+- **Refactor theo SRP:** tách DonHangService thành DonHangService (xử lý đơn), EmailService (gửi mail), LogService (ghi log). Mỗi class một lý do thay đổi, sửa giao diện mail không đụng code đơn hàng.
+- **OCP trong refactor:** thay vì if-else xử lý loại sự kiện, mỗi loại sự kiện được xử lý bởi handler riêng, thêm loại mới không sửa code cũ.
+- **Observer pattern:** subject (phát sự kiện) giữ danh sách observer, khi sự kiện xảy ra gọi capNhat() trên mỗi observer. Observer và subject không biết chi tiết nhau, chỉ biết interface.
+- **Event bus:** trung tâm nhận sự kiện từ publisher và chuyển đến subscriber đã đăng ký. Publisher không cần biết ai subscribed.
 
-### Su khac biet Observer vs Event bus
-| Tieu chi | Observer | Event bus |
+### Sự khác biệt Observer vs Event bus
+| Tiêu chí | Observer | Event bus |
 |---|---|---|
-| Ket noi | Subject giu tiep tuc danh sach observer | Publisher va subscriber khong biet nhau, cung biet bus |
-| Thiet lap | Subject dang ky observer thu cong | Subscriber dang ky vao bus trung tam |
-| Phu hop | It observer, quan he 1-n ro rang | Nhieu thanh, su kien khong dong bo, khong biet truoc ai xu ly |
+| Kết nối | Subject giữ tiếp tục danh sách observer | Publisher và subscriber không biết nhau, cùng biết bus |
+| Thiết lập | Subject đăng ký observer thủ công | Subscriber đăng ký vào bus trung tâm |
+| Phù hợp | Ít observer, quan hệ 1-n rõ ràng | Nhiều thành phần, sự kiện không đồng bộ, không biết trước ai xử lý |
 
-**Khi dung Observer:** it observer, quan he 1-n ro rang, muon subscriber phan tra ngay.
-**Khi dung Event bus:** nhieu thanh, khong muon chung biet nhau, su kien di qua nhieu he thong.
-**Khi over-engineering:** chi 1-2 subscriber, luong xu ly don gian, goi truc tiep da du; tao event bus va nhieu class handler lam code kho theo doi, debug kho vi luong dieu khien nhay qua nhieu class.
+**Khi dùng Observer:** ít observer, quan hệ 1-n rõ ràng, muốn subscriber phản hồi ngay.
+**Khi dùng Event bus:** nhiều thành phần, không muốn chung biết nhau, sự kiện đi qua nhiều hệ thống.
+**Khi over-engineering:** chỉ 1-2 subscriber, luồng xử lý đơn giản, gọi trực tiếp đã đủ; tạo event bus và nhiều class handler làm code khó theo dõi, debug khó vì luồng điều khiển nhảy qua nhiều class.
 
 ~~~java
 // TRUOC: vi pham SRP + OCP
@@ -13429,7 +13429,7 @@ public class DonHangService {
     public void xuLy(DonHang dh) {
         kiemTraDonHang(dh);
         luuDonHang(dh);
-        if (dh.isMoi()) { guiEmailXacNhan(dh); ghiLog("Tao " + dh.getId()); }
+        if (dh.isMoi()) { guiEmailXacNhan(dh); ghiLog("Tạo " + dh.getId()); }
         if (dh.getLoai().equals("NOI_BO")) { /* ... */ }
     }
 }
@@ -13441,7 +13441,7 @@ class GuiEmailHandler implements SuKienHandler {
     }
 }
 class GhiLogHandler implements SuKienHandler {
-    @Override public void xuLy(SuKienDonHang sk) { ghiLog("Don: " + sk.getDonHang().getId()); }
+    @Override public void xuLy(SuKienDonHang sk) { ghiLog("Đơn: " + sk.getDonHang().getId()); }
 }
 public class DonHangService {
     private final List<SuKienHandler> handlers;
@@ -13455,23 +13455,23 @@ public class DonHangService {
 ~~~
 
 ### Pitfall production
-- **Event bus lam luong dieu khien kho theo doi:** khi su kien di qua bus, lap trinh vien kho biet ai xu ly va thu tu nao, debug su kien bi bo sot mat nhieu thoi gian.
-- **Khong unregister observer:** observer dang ky nhung khong huy khi khong dung nua (vi du man hinh dong, service bi huy) -> giu tham chieu, gay mat bo nho.
-- **Thu tu xu ly khong dam bao:** neu handler A phai chay truoc handler B, event bus khong dam bao thu tu neu khong cau hinh ro.
-- **Xu ly su kien dong bo tren event bus:** mot handler cham lam cham toan bo chain. Can hang doi hoac xu ly khong dong bo cho su kien khong khan.
+- **Event bus làm luồng điều khiển khó theo dõi:** khi sự kiện đi qua bus, lập trình viên không biết ai xử lý và thứ tự nào, debug sự kiện bị bỏ sót mất nhiều thời gian.
+- **Không unregister observer:** observer đăng ký nhưng không hủy khi không dùng nữa (ví dụ màn hình đóng, service bị hủy) -> giữ tham chiếu, gây mất bộ nhớ.
+- **Thứ tự xử lý không đảm bảo:** nếu handler A phải chạy trước handler B, event bus không đảm bảo thứ tự nếu không cấu hình rõ.
+- **Xử lý sự kiện đồng bộ trên event bus:** một handler chậm làm chậm toàn bộ chain. Cần hàng đợi hoặc xử lý không đồng bộ cho sự kiện không khẩn.
 
-### Vi du doi thuc (production)
-Mot dich vu dat ve ban dau co class DatVeService lon lam het: kiem tra ghe, tinh tien, gui email xac nhan, ghi log, cap nhat ton kho. Moi lan team marketing thay doi noi dung email hoac team bao tri thay doi format log, lai phai sua class nay va chay lai toan bo test dat ve, duoi khong gay regression dat ve. Refactor tach thanh DatVeService, EmailService, GhiLogService, CapNhatTonKhoService, va dung event bus de cac service phu dang ky su kien "dat ve thanh cong". Sau do, thay doi noi dung email chi sua EmailService khong cham code dat ve, so incident do thay doi email/log giam tu trung binh 4 ca/thang xuong 0 trong 2 thang, va test dat ve chay nhanh hon vi khong khoi tao service mail/log trong moi test.
+### Ví dụ đời thực (production)
+Một dịch vụ đặt vé ban đầu có class DatVeService lớn làm hết: kiểm tra ghế, tính tiền, gửi email xác nhận, ghi log, cập nhật tồn kho. Mỗi lần team marketing thay đổi nội dung email hoặc team bảo trì thay đổi format log, lại phải sửa class này và chạy lại toàn bộ test đặt vé, dưới không gây regression đặt vé. Refactor tách thành DatVeService, EmailService, GhiLogService, CapNhatTonKhoService, và dùng event bus để các service phụ đăng ký sự kiện "đặt vé thành công". Sau đó, thay đổi nội dung email chỉ sửa EmailService không chạm code đặt vé, số incident do thay đổi email/log giảm từ trung bình 4 ca/thang xuống 0 trong 2 tháng, và test đặt vé chạy nhanh hơn vì không khởi tạo service mail/log trong mỗi test.
 
-### Tra loi mau khi phong van
-"Neu mot class vua xu ly don hang, vua gui email, vua ghi log thi no vi pham SRP vi co nhieu ly do de thay doi. Minh refactor tach ra thanh cac class nho, moi class mot tac nhiem: dich vu don hang chi xu ly don, dich vu email chi gui mail, dich vu log chi ghi log. De xu ly su kien sau khi dat ve, minh dung Observer hay event bus: cac handler dang ky nhan su kien, them loai su kien moi khong phai sua class dat hang (OCP). Observer phu hop khi co it observer va quan he ro rang; event bus phu hop khi nhieu thanh khong muon biet nhau. Nhung neu chi co mot hai subscriber va luong don gian, tao event bus la over-engineering, code kho theo doi hon la goi truc tiep. Minh cung luu ý phai unregister observer de tranh mat bo nho, va khong de luong xu ly quan tri bi lam cham boi handler khac tren event bus."
+### Trả lời mẫu khi phỏng vấn
+"Nếu một class vừa xử lý đơn hàng, vừa gửi email, vừa ghi log thì nó vi phạm SRP vì có nhiều lý do để thay đổi. Mình refactor tách thành các class nhỏ, mỗi class một trách nhiệm: dịch vụ đơn hàng chỉ xử lý đơn, dịch vụ email chỉ gửi mail, dịch vụ log chỉ ghi log. Để xử lý sự kiện sau khi đặt vé, mình dùng Observer hay event bus: các handler đăng ký nhận sự kiện, thêm loại sự kiện mới không phải sửa class đặt hàng (OCP). Observer phù hợp khi có ít observer và quan hệ rõ ràng; event bus phù hợp khi nhiều thành phần không muốn biết nhau. Nhưng nếu chỉ có một hai subscriber và luồng đơn giản, tạo event bus là over-engineering, code khó theo dõi hơn là gọi trực tiếp. Mình cũng lưu ý phải unregister observer để tránh mất bộ nhớ, và không để luồng xử lý quan trọng bị làm chậm bởi handler khác trên event bus."
 
-> Senior tip: Ap pattern vi "co the can trong tuong lai" thuong la over-engineering. Ap pattern khi van de thuc su da xuat hien va lam code kho bao tri. Voi event bus, luon co cach xem danh sach subscriber va thu tu xu ly, neu khong debug su kien mat se kho khan.
+> Senior tip: Áp pattern vì "có thể cần trong tương lai" thường là over-engineering. Áp pattern khi vấn đề thực sự đã xuất hiện và làm code khó bảo trì. Với event bus, luôn có cách xem danh sách subscriber và thứ tự xử lý, nếu không debug sự kiện mất sẽ khó khan.
 `,
   follow: [
-    'SRP va OCP khac nhau the nao, va refactor vi du duong thoa man ca hai chua?',
-    'Observer va event bus khac nhau o diem nao, chon cai nao cho truong hop gi?',
-    'Dau hieu nao nhan biet ban dang over-engineering khi ap mau thiet ke?'
+    'SRP và OCP khác nhau thế nào, và refactor ví dụ đáp ứng cả hai chưa?',
+    'Observer và event bus khác nhau ở điểm nào, chọn cái nào cho trường hợp gì?',
+    'Dấu hiệu nào nhận biết bạn đang over-engineering khi áp mẫu thiết kế?'
   ],
   tags: ['core', 'SRP', 'OCP', 'Observer', 'event bus', 'over-engineering', 'refactor'],
 },
