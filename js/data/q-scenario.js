@@ -10497,4 +10497,283 @@ Nhà máy sản xuất thiết bị gia dụng: ERP (SAP) gửi 500 work order m
   ],
   tags: ['MES', 'ERP', 'SAP', 'Kafka', 'idempotency', 'integration']
 },
+{
+  id: 'scenario-172',
+  topic: 'scenario',
+  level: 'senior',
+  q: 'Màn hình tra cứu hóa đơn trong hệ thống Vue + Spring Boot + PostgreSQL mất khoảng 8 giây, các màn khác vẫn nhanh. Bạn không được phép chỉ kết luận "DB chậm" — hãy trình bày cách lần theo từ browser DevTools, qua API, đến EXPLAIN ANALYZE để tìm nguyên nhân gốc và cách sửa.',
+  a: `**Tóm tắt:** chia bài toán thành bốn tầng có số đo riêng — browser (request nào chậm, TTFB bao nhiêu), backend (một request sinh bao nhiêu câu SQL, span nào dài), database (plan thật, số dòng quét, I/O), rồi mới sửa. Kinh nghiệm: chậm một màn hình thường là N+1 query, thiếu index đúng thứ tự, phân trang OFFSET sâu hoặc count(*) toàn bảng; muốn chứng minh phải đọc EXPLAIN ANALYZE BUFFERS trên chính câu query đó.
+
+### Làm rõ yêu cầu
+- Màn tra cứu lọc theo gì: mã hóa đơn, tên khách, khoảng ngày, trạng thái? Người dùng hay dùng tổ hợp nào nhất?
+- Một trang bao nhiêu dòng, có bắt buộc hiển thị tổng số bản ghi không? SLA là p95 dưới 500ms hay chỉ "cảm giác nhanh"?
+- Chậm từ khi nào: mới deploy, dữ liệu tăng, hay luôn chậm? Chỉ giờ cao điểm hay mọi lúc?
+
+### Điều tra từ ngoài vào trong
+Bước 1 — browser DevTools: mở tab Network, tích Disable cache, chọn request {{/api/orders}}, xem tab Timing. Nếu Queued/Stalled chiếm 5–6 giây thì thường là giới hạn kết nối HTTP/1.1 (trình duyệt chỉ mở khoảng 6 kết nối tới cùng một host) hoặc JavaScript chặn luồng; nếu Waiting (TTFB) chiếm 8 giây thì thời gian nằm ở backend hoặc database, không phải ở Vue render. Xem thêm Console: có 40 request lặp lại giống nhau không? Đó là dấu hiệu vòng lặp gọi API ở frontend hoặc N+1 ở backend.
+Bước 2 — backend: một request phải tương ứng một trace. Dùng Micrometer Tracing hoặc OpenTelemetry, xem span HTTP mất 7,9 giây, bên trong có 21 span JDBC. 21 bằng 1 câu danh sách cộng 20 câu lấy dòng hàng, đúng dạng N+1.
+Bước 3 — SQL: bật {{pg_stat_statements}} để biết câu nào chạy nhiều nhất và tốn tổng thời gian nhất; lấy {{EXPLAIN (ANALYZE, BUFFERS)}} cho câu chậm. Đọc theo thứ tự: Seq Scan hay Index Scan, số dòng thực tế so với số dòng ước lượng, loops, shared read (đọc đĩa) hay shared hit (đã có trong cache), và Sort có spill ra disk không.
+
+### Cơ chế N+1 và vì sao nó nguy hiểm
+Hibernate không tải quan hệ collection cùng lúc với danh sách gốc vì như vậy sẽ nhân bản dòng khi join, hoặc phải phân trang trong bộ nhớ. Khi vòng lặp chạm từng phần tử, proxy của collection mới bắn một SELECT riêng. Với 20 hóa đơn, 20 câu SELECT item, mỗi câu 180ms trên mạng nội bộ là 3,6 giây; DB còn phải parse và lập kế hoạch cho từng câu. Đây là lý do một trang 20 dòng vẫn có thể sinh 21 câu SQL.
+
+~~~java
+// Tránh N+1: phân trang lấy id trước, rồi lấy dữ liệu kèm item bằng một câu IN
+Page<Long> idPage = orderRepo.findIdsByStatus(status, pageRequest); // 1 SELECT nhẹ, chỉ 20 id
+List<Order> orders = orderRepo.findAllWithItemsByIds(idPage.getContent());
+// Nếu dùng join fetch trực tiếp với Pageable, Hibernate 6 sẽ phải phân trang trong bộ nhớ
+// và cảnh báo; hai bước trên giữ cho LIMIT áp dụng đúng vào bảng gốc.
+~~~
+
+### Đọc plan thật
+~~~text
+Limit (actual rows=20 loops=1)
+  -> Index Scan using idx_orders_status_created on orders o
+       Index Cond: (status = 'NEW')
+       Buffers: shared hit=8 read=24
+Seq Scan on order_items i (actual rows=40 loops=20)
+       Filter: (order_id = o.id)
+       Rows Removed by Filter: 1800000
+       Buffers: shared read=42120
+Execution Time: 7812.44 ms
+~~~
+Câu lấy danh sách chỉ mất 12ms, nhưng mỗi vòng lặp quét 1,8 triệu dòng của order_items; 20 vòng là 7,8 giây. Plan cho thấy đúng chỗ phải sửa: câu lấy item, không phải câu danh sách.
+
+### Các cách sửa và đánh đổi
+| Cách sửa | Khi dùng | Chi phí |
+|---|---|---|
+| Index composite (status, created_at desc) | Filter và sort cố định, cùng hướng | Ghi chậm hơn, tốn đĩa; phải tạo bằng CONCURRENTLY |
+| Tách hai bước id rồi IN | Có quan hệ một-nhiều | Hai round trip, code hơi phức tạp |
+| Keyset pagination | Trang sâu, dữ liệu lớn | Không nhảy trang tùy ý, cần khóa sắp xếp duy nhất |
+| Cache Redis | Dữ liệu ít đổi, đọc rất nhiều | TTL, invalidation, chấp nhận dữ liệu hơi cũ |
+| Materialized view | Báo cáo tổng hợp nặng | Phải refresh, chiếm đĩa, dễ lệch |
+
+### Pitfall production
+- {{OFFSET 100000 LIMIT 20}}: PostgreSQL vẫn phải duyệt 100020 dòng rồi bỏ 100000 dòng, nên p95 tăng tuyến tính theo số trang. Người dùng bấm tới trang 5000 là timeout.
+- Tạo index trên bảng 500 triệu dòng bằng {{CREATE INDEX}} thường sẽ giữ khóa chặn ghi; phải dùng {{CREATE INDEX CONCURRENTLY}} và theo dõi tiến độ.
+- Index không được dùng vì cột có hàm {{lower()}} hoặc cast, hoặc kiểu {{text}} với COLLATE khác; khi đó cần expression index hoặc đổi kiểu.
+- Thống kê cũ khiến planner chọn Seq Scan: chạy {{ANALYZE}} và kiểm tra autovacuum, đừng vội thêm index.
+- {{count(*)}} trên bảng lớn với filter phức tạp có thể tốn hơn cả truy vấn chính; nếu chỉ cần biết "có trang sau không" thì dùng {{EXISTS}}.
+- N+1 ẩn khi page size nhỏ: dev thử 20 dòng thấy nhanh, production để 200 dòng thì thành 200 câu SELECT.
+- Thêm index xong vẫn chậm vì ORDER BY theo cột khác; index phải khớp cả điều kiện WHERE lẫn thứ tự ORDER BY.
+
+### Ví dụ đời thực
+Một hệ thống hóa đơn 40 triệu dòng: màn tra cứu p95 8,4 giây, p50 1,1 giây, CPU database 35%. Trace một request cho thấy 21 câu SQL: 1 câu danh sách cộng 20 câu item. EXPLAIN câu danh sách là Index Scan 20 dòng, 12ms; câu item là Seq Scan 1,8 triệu dòng, loops 20, tổng 7,9 giây. Nguyên nhân: entity Order khai báo {{@OneToMany}} mặc định LAZY, còn code map sang DTO lại gọi getItems() trong vòng lặp. Xử lý: (1) tách hai bước id rồi IN, còn 3 câu SQL; (2) thêm index composite (status, created_at desc) bằng CONCURRENTLY; (3) bỏ count(*), chuyển trang sâu sang keyset; (4) giới hạn page size 50. Sau một tuần: p95 310ms, p50 180ms, CPU DB 22%, số câu SQL mỗi request giảm từ 21 xuống 3.
+
+### Trả lời mẫu khi phỏng vấn
+"Em không kết luận DB chậm khi chưa đo. Đầu tiên em mở DevTools xem request nào chậm và TTFB bao nhiêu, để tách phần render frontend khỏi backend. Nếu TTFB chiếm phần lớn, em xem trace: một request sinh 21 câu SQL thì gần như chắc chắn N+1. Em lấy EXPLAIN ANALYZE BUFFERS để thấy câu lấy item quét 1,8 triệu dòng mỗi hóa đơn và lặp 20 lần. Cách sửa là tách hai bước: phân trang lấy id trên bảng gốc, rồi lấy item bằng một câu IN, thêm index composite cho filter và sort, bỏ count(*) hoặc thay bằng đếm xấp xỉ, và chuyển trang sâu sang keyset pagination. Sau khi sửa, số câu SQL giảm từ 21 xuống 3, p95 từ 8,4 giây xuống 310ms. Em cũng thêm test đếm số câu SQL để chống tái phát, vì N+1 rất dễ quay lại khi có người thêm quan hệ mới."
+
+> Senior tip: tôi luôn yêu cầu số liệu ba tầng trước khi họp "tối ưu DB": TTFB từ trình duyệt, số câu SQL mỗi request từ trace, và execution time từ plan. Trong một dự án, chỉ riêng việc thêm test đếm câu SQL đã chặn được hai lần N+1 tái xuất hiện sau khi thêm quan hệ mới; đừng tin vào việc đọc code bằng mắt.`,
+  follow: [
+    'Phân trang keyset khác offset ở đâu, khi nào không dùng được keyset?',
+    'Làm sao phát hiện N+1 tự động trong CI thay vì phải mò bằng mắt?',
+    'Nếu index đã đúng mà vẫn chậm, bạn kiểm tra tiếp những gì?'
+  ],
+  tags: ['performance', 'N+1', 'EXPLAIN', 'PostgreSQL', 'Vue', 'fullstack', 'pagination']
+},
+{
+  id: 'scenario-173',
+  topic: 'scenario',
+  level: 'senior',
+  q: 'Sau khi deploy bản frontend Vue mới, một số user gặp màn trắng với lỗi "Failed to fetch dynamically imported module", user khác vẫn dùng bình thường; hard refresh thì hết. Cùng lúc, một nhóm app mobile cũ bắt đầu nhận 400 từ API. Bạn chẩn đoán hai hiện tượng này thế nào và phòng ngừa ra sao?',
+  a: `**Tóm tắt:** đây là hai lỗi khác nhau: (1) cache của browser hoặc CDN trộn index.html mới với chunk JS cũ đã bị xoá — sửa bằng cache-control đúng (index.html không cache, asset có hash thì cache vĩnh viễn) và giữ asset của release trước ít nhất một bản; (2) API breaking change hoặc lệch phiên bản khi deploy — sửa bằng hợp đồng additive, version và triển khai backend trước. Chẩn đoán bằng Network, Console và diff deploy, không đoán.
+
+### Hiện tượng 1: cache bundle
+SPA build sinh tên file theo content hash: {{index.html}} gần như cố định, còn {{assets/OrderList-3f9a2.js}} đổi tên mỗi lần nội dung đổi. Nếu CDN cache index.html 5 phút, user nhận index cũ tham chiếu chunk cũ; nhưng server đã deploy bản mới và xoá chunk cũ, nên dynamic import trả 404 hoặc trả HTML với MIME type {{text/html}}, Vue Router ném lỗi. Ngược lại, nếu index mới mà chunk cũ vẫn còn thì không sao, vì chunk cũ không đổi tên; vấn đề nằm ở chỗ xoá asset cũ ngay khi deploy.
+
+Diễn biến điển hình: 10:00 deploy v2, index.html trỏ tới OrderList-9c1e.js và xoá OrderList-3f9a2.js. Từ 10:00 đến 10:05, user có index v1 trong cache vẫn xin OrderList-3f9a2.js và nhận 404. Hard refresh buộc xin index mới nên hết lỗi. Nếu CDN giữ index cũ 10 phút thì số user bị ảnh hưởng là 10 phút nhân với lượng truy cập, không phải vài giây.
+
+Cách sửa:
+- index.html: {{Cache-Control: no-cache, must-revalidate}} hoặc {{no-store}}, và purge CDN mỗi lần deploy. HTML là file điều phối, phải luôn mới.
+- {{/assets/*}}: {{public, max-age=31536000, immutable}} vì tên đã có hash, đổi nội dung là đổi tên.
+- Giữ asset của release trước trong 2–3 release. Deploy atomic: upload lên thư mục có version rồi mới đổi symlink hoặc alias, không xoá ngay.
+- Vue: bắt {{router.onError}}, thử tải lại chunk một lần; dùng sessionStorage để tránh vòng lặp reload; kiểm tra {{/version.json}} và hiện thông báo "có bản mới, tải lại".
+- Nếu dùng service worker, đổi tên cache theo version và xoá cache cũ khi activate.
+
+~~~java
+@Configuration
+public class CacheHeaderConfig implements WebMvcConfigurer {
+  @Override
+  public void addResourceHandlers(ResourceHandlerRegistry registry) {
+    registry.addResourceHandler("/assets/**")
+        .addResourceLocations("classpath:/static/assets/")
+        .setCacheControl(CacheControl.maxAge(Duration.ofDays(365)).immutable())
+        .setOrder(0);
+    registry.addResourceHandler("/**")
+        .addResourceLocations("classpath:/static/")
+        .setCacheControl(CacheControl.noStore())
+        .setOrder(Ordered.LOWEST_PRECEDENCE);
+  }
+}
+~~~
+
+### Hiện tượng 2: lệch phiên bản API
+Client cũ gửi {{customer_code}}, server mới chỉ nhận {{customer.id}}; client mới gọi {{/api/v2/orders}} nhưng trong lúc rolling deploy còn pod cũ nên nhận 404. Khoảng thời gian old và new pod cùng chạy thường 3–5 phút, đủ để một phần request rơi vào nhầm phiên bản. Với app mobile thì không thể force update, nên server phải đọc được N-1 trong nhiều tháng.
+
+~~~java
+@RestController
+@RequestMapping("/api/orders")
+public class OrderController {
+  private final OrderService service;
+
+  @PostMapping
+  public ResponseEntity<OrderDto> create(@RequestBody @Valid OrderRequest req) {
+    // Một release lùi: nhận field cũ rồi map sang model mới
+    if (req.customer() == null && req.customerCode() != null) {
+      req = req.withCustomer(Customer.byCode(req.customerCode()));
+    }
+    OrderDto created = service.create(req);
+    return ResponseEntity.status(201).body(created);
+  }
+}
+~~~
+
+### Đánh đổi
+| Cách giữ tương thích | Ưu | Nhược |
+|---|---|---|
+| Additive: chỉ thêm field, không xoá | Đơn giản, client cũ và mới đều chạy | Schema phình, phải có lịch deprecate |
+| URL version {{/api/v1}}, {{/api/v2}} | Rõ ràng, dễ test | Nhân đôi code, phải bảo trì song song |
+| Header {{X-App-Version}} | URL gọn | Dễ quên, khó debug nếu log không ghi |
+| Expand–contract | An toàn cho mobile, có bước chuyển tiếp | Chậm, phải theo dõi traffic bản cũ |
+| Feature flag | Bật tắt nhanh | State phải đồng bộ, dễ ôm đồm |
+
+### Pitfall production
+- nginx mặc định có thể đặt {{max-age}} cho file HTML; CDN không purge khi deploy là nguyên nhân số một của lỗi "chỉ một số user".
+- Xoá asset cũ ngay khi deploy, kể cả blue-green: task cũ vẫn đang phục vụ và vẫn tham chiếu chunk cũ.
+- App mobile đóng gói bundle trong APK; user tắt auto-update thì bản 4.2 vẫn chạy cả năm.
+- Thêm enum mới: client cũ không hiểu và crash; phải để client map giá trị lạ thành {{UNKNOWN}}.
+- Đổi kiểu ngày hoặc số giữa các service: {{LocalDateTime}} so với {{Instant}}, Jackson cấu hình khác nhau, response lệch định dạng.
+- Service worker cache index.html vĩnh viễn khiến user kẹt ở bản cũ dù server đã đổi.
+- CORS hoặc domain mới sau deploy làm preflight thất bại, nhìn giống lỗi API nhưng thực ra là cấu hình gateway.
+
+### Ví dụ đời thực
+Deploy 10:00 thứ Ba. 10:02, 12% session báo màn trắng, Console ghi: Failed to fetch dynamically imported module: https://app.example.com/assets/OrderList-3f9a2.js. Network cho thấy request chunk trả 404, còn index.html trả 200 với header cache-control max-age=300 từ CDN. Điều tra: release trước xoá asset cũ, CDN còn giữ index cũ 5 phút. Xử lý khẩn: purge CDN, đổi index sang no-store, deploy lại và giữ asset cũ. 10:08 hết lỗi, khoảng 1.400 user bị ảnh hưởng trong 6 phút. Song song, API 400 tăng 3.400 request mỗi phút vì bản mobile 4.2 gửi customer_code còn backend v3 đổi sang customer.id. Fix: nhận field cũ trong hai release, thêm contract test replay 50 request thật từ mobile 4.2 vào staging, theo dõi header phiên bản.
+
+### Trả lời mẫu khi phỏng vấn
+"Em tách hai hiện tượng. Với màn trắng, em xem Console và Network để biết lỗi là chunk 404 hay API 404, rồi so index.html với danh sách asset trên server. Nguyên nhân thường là CDN cache index cũ, trong khi deploy đã xoá chunk cũ; em sửa bằng cách cho index.html no-cache, asset có hash thì cache một năm, purge CDN khi deploy và giữ asset của release trước. Với API 400, em xem version header và log theo User-Agent để biết client nào đang gọi; nếu là mobile cũ thì em nhận field cũ trong thời gian chuyển tiếp, thêm contract test replay request thật và triển khai backend trước frontend. Em cũng thêm router.onError để tải lại chunk một lần thay vì để user thấy màn trắng, và theo dõi tỉ lệ lỗi theo phiên bản để biết khi nào được phép bỏ tương thích."
+
+> Senior tip: cache là hợp đồng giữa build và hạ tầng; tôi luôn kiểm tra ba thứ trong checklist deploy: index không cache, asset hash cache immutable, và CDN đã purge. Với API, mobile là client không rollback được, nên quy tắc của tôi là backend phải đọc được N-1 và mọi thay đổi phá vỡ phải đi qua version mới sau khi traffic bản cũ xuống dưới ngưỡng.`,
+  follow: [
+    'Làm sao biết user đang dùng index cũ hay chunk cũ khi chỉ có log backend?',
+    'Service worker và CDN cache khác nhau thế nào trong sự cố này?',
+    'Khi nào nên dùng URL version, khi nào dùng header version?'
+  ],
+  tags: ['frontend', 'cache', 'CDN', 'SPA', 'API-versioning', 'deploy', 'Vue']
+},
+{
+  id: 'scenario-174',
+  topic: 'scenario',
+  level: 'lead',
+  q: 'Thiết kế end-to-end tính năng CRUD "hồ sơ đối tác" cho hệ thống nội bộ: Vue 3, Spring Boot 3, PostgreSQL 15, phân quyền theo vai trò và audit mọi thay đổi. Hãy trình bày schema, API, authorization, audit, concurrency, kiểm thử và vận hành.',
+  a: `**Tóm tắt:** thiết kế theo lớp với một nguyên tắc: mọi thay đổi dữ liệu phải qua API, mọi API phải qua authorization ở server, và audit ghi cùng transaction với thay đổi nghiệp vụ. Schema có version để chống mất ghi đè, soft delete để không mất lịch sử, audit_log lưu trước và sau dạng JSONB kèm actor từ SecurityContext; đọc audit phải theo entity cộng thời gian và có index tương ứng.
+
+### Làm rõ yêu cầu
+- Vai trò: admin, nhân viên, kiểm toán, service account? Ai được xem, sửa, xoá, duyệt?
+- Phạm vi dữ liệu: toàn hệ thống hay theo chi nhánh? Có cần phê duyệt hai bước cho thay đổi quan trọng?
+- Số bản ghi, số lần sửa mỗi ngày, thời gian lưu audit, và dữ liệu nào là PII cần che?
+
+### Schema
+~~~sql
+create table partner (
+  id bigserial primary key,
+  code varchar(32) not null,
+  name varchar(200) not null,
+  tax_code varchar(32),
+  status varchar(16) not null default 'ACTIVE',
+  version int not null default 1,          -- optimistic locking
+  created_by varchar(64) not null,
+  updated_by varchar(64),
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now(),
+  deleted_at timestamptz
+);
+create unique index ux_partner_code on partner (code) where deleted_at is null;
+create index ix_partner_name on partner (lower(name));
+
+create table audit_log (
+  id bigserial primary key,
+  entity varchar(64) not null,
+  entity_id varchar(64) not null,
+  action varchar(16) not null,             -- CREATE/UPDATE/DELETE
+  actor varchar(64) not null,
+  request_id varchar(64),
+  before_data jsonb,
+  after_data jsonb,
+  at timestamptz not null default now()
+);
+create index ix_audit_entity_time on audit_log (entity, entity_id, at desc);
+~~~
+{{timestamptz}} lưu thời điểm có múi giờ, tránh lỗi lệch ngày khi server đổi timezone. Unique index một phần cho phép xoá mềm nhiều lần cùng mã, vì chỉ bản ghi chưa xoá mới bị ràng buộc. JSONB cho phép lưu cấu trúc trước và sau linh hoạt mà không phải thêm cột mỗi lần entity đổi field; đổi lại là khó enforce schema, nên phải validate ở tầng ứng dụng.
+
+### API và hợp đồng
+~~~text
+GET    /api/partners?status=&q=&page=0&size=20   -> DTO, whitelist trường sort, size tối đa 100
+GET    /api/partners/{id}                        -> kèm ETag là version
+POST   /api/partners                             -> nhận Idempotency-Key để bấm hai lần không tạo hai bản ghi
+PUT    /api/partners/{id}                        -> thay toàn bộ, bắt buộc If-Match với version
+PATCH  /api/partners/{id}                        -> sửa một phần, vẫn kiểm tra version
+DELETE /api/partners/{id}                        -> xoá mềm, trả 204
+~~~
+Lệch version thì trả 409 hoặc 412. Lỗi dùng {{application/problem+json}} (RFC 9457) để client parse ổn định; không trả stack trace.
+
+### Authorization
+Spring Security 6 dùng {{SecurityFilterChain}} và {{@EnableMethodSecurity}}. Không chỉ ẩn nút trên UI; mọi đường vào gồm cả API nội bộ và job đều phải kiểm tra. Với danh sách, đừng dùng {{@PostFilter}} rồi mới phân trang, vì Spring sẽ lọc sau khi DB trả dữ liệu, gây sai tổng số và tốn tài nguyên. Hãy đưa phạm vi dữ liệu vào chính câu query (theo chi nhánh, tenant) hoặc dùng PostgreSQL Row Level Security.
+
+~~~java
+@Service
+public class PartnerService {
+  private final PartnerRepo repo;
+  private final AuditRepo audit;
+
+  @Transactional
+  @PreAuthorize("hasAuthority('partner:write')")
+  public PartnerDto update(Long id, PartnerCommand cmd, int expectedVersion, String actor) {
+    Partner p = repo.findByIdForUpdate(id)          // khóa hàng, tránh hai người sửa cùng lúc
+        .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND));
+    if (p.version() != expectedVersion) {           // client lấy version từ GET hoặc ETag
+      throw new ResponseStatusException(HttpStatus.CONFLICT, "Dữ liệu đã đổi, tải lại");
+    }
+    Partner before = p.copy();                       // chụp trước khi sửa để audit
+    p.apply(cmd);                                    // ghi updated_by, tăng version
+    repo.save(p);
+    audit.add(AuditEvent.of("PARTNER", id, "UPDATE", actor, before, p.copy()));
+    return PartnerDto.of(p);                         // cùng transaction: rollback thì audit cũng mất
+  }
+}
+~~~
+{{findByIdForUpdate}} là repository method có {{@Lock(LockModeType.PESSIMISTIC_WRITE)}}. Actor truyền tường minh từ SecurityContext thay vì để audit tự đọc ThreadLocal, vì audit có thể chạy trong thread khác hoặc job.
+
+### Audit: chọn cơ chế nào
+| Cách | Ưu | Nhược |
+|---|---|---|
+| Ghi cùng transaction ở app | Biết actor, request_id, đúng nghiệp vụ | Bỏ sót thay đổi ngoài ứng dụng |
+| Hibernate Envers | Tự động, có revision | Gắn chặt entity, khó query tùy biến, tăng chi phí ghi |
+| CDC Debezium | Bắt mọi thay đổi kể cả DB trực tiếp | Không biết actor của app, trễ vài trăm ms |
+| Trigger ở database | Bắt mọi thay đổi | Actor chỉ là DB user, khó đổi schema |
+Nên kết hợp: app ghi bản chính cùng transaction, CDC bù cho thay đổi ngoài app. Đọc audit từ read replica để không ảnh hưởng giao dịch.
+
+### Concurrency, validation, kiểm thử
+- Optimistic locking bằng version là mặc định; pessimistic lock chỉ cho thao tác gộp cần đọc nhiều dòng nhất quán. Tránh transaction dài vì giữ khóa và tăng deadlock.
+- Validate ở DTO bằng Jakarta Bean Validation; không tin client. Kiểm tra duy nhất mã đối tác, chuẩn hoá mã số thuế, giới hạn độ dài.
+- Soft delete cần job dọn dữ liệu cũ; unique index một phần tránh xung đột mã.
+- Test bằng Testcontainers với PostgreSQL thật, Flyway migration. Test phân quyền 401/403, IDOR (partner A đọc partner B), optimistic conflict bằng hai thread, audit trước và sau, và contract test cho client cũ.
+- Load test endpoint danh sách với 3 triệu bản ghi, đo p95 và số câu SQL.
+
+### Vận hành
+Audit 500 lần sửa mỗi ngày, mỗi bản ghi khoảng 5KB là 2,5MB mỗi ngày, gần 1GB mỗi năm. Chia partition theo tháng và đặt retention theo quy định; không để audit phình làm chậm insert. Che mã số thuế trong audit nếu không cần giá trị cũ đầy đủ; phân quyền đọc audit riêng với quyền nghiệp vụ. Giám sát slow query, số bản ghi mỗi trang, tỉ lệ 409 và 403 để phát hiện bất thường.
+
+### Ví dụ đời thực
+Hệ thống 3 triệu đối tác, 500 lần sửa mỗi ngày. Bản đầu ghi audit bằng {{@Async}}: 100% bản ghi có actor là anonymousUser vì SecurityContext không truyền sang thread khác, và khi transaction nghiệp vụ rollback thì audit vẫn còn, thành "đã sửa" sai. Bản hai ghi audit cùng transaction, actor truyền tường minh, thêm version và If-Match: sau 6 tháng không còn lost update; audit khoảng 183 nghìn dòng mỗi năm, truy vấn theo entity cộng at mất 15ms nhờ index; CDC bù thêm 12 thay đổi mỗi tháng từ script của DBA. P95 API đọc 180ms, ghi 42ms, trong đó JSONB audit thêm khoảng 6ms.
+
+### Trả lời mẫu khi phỏng vấn
+"Em thiết kế theo lớp. Schema có version để optimistic locking, soft delete để giữ lịch sử, và audit_log lưu before/after dạng JSONB kèm actor, request_id, thời gian. API dùng DTO, validate ở server, PUT yêu cầu If-Match, POST có idempotency key, lỗi trả problem+json. Authorization đặt ở server bằng Spring Security, phân quyền theo vai trò và đưa phạm vi dữ liệu vào câu query thay vì lọc sau phân trang. Audit ghi cùng transaction với thay đổi nghiệp vụ nên rollback là mất cả audit, tránh kẹt audit sai; actor truyền tường minh từ SecurityContext. Em kết hợp thêm CDC để bắt thay đổi ngoài ứng dụng, nhưng đọc audit từ read replica. Về kiểm thử, em dùng Testcontainers với PostgreSQL thật, test 403, IDOR, conflict version bằng hai thread và contract test cho client cũ. Vận hành thì partition audit theo tháng, che PII và giám sát 409, 403."
+
+> Senior tip: tôi luôn hỏi ba câu khi review thiết kế CRUD: ai được sửa dòng này, nếu hai người sửa cùng lúc thì mất của ai, và kiểm toán sáu tháng sau truy vấn thế nào. Nếu audit chỉ là log file hoặc chạy async, câu hỏi thứ ba sẽ trả lời không được; nếu phân quyền chỉ ở UI, câu hỏi thứ nhất sẽ sai khi có API nội bộ hoặc job.`,
+  follow: [
+    'Optimistic và pessimistic locking: chọn cái nào cho màn hình sửa hồ sơ thường có nhiều người mở cùng lúc?',
+    'Audit bằng Envers, CDC hay trigger: bạn chọn thế nào và vì sao?',
+    'Làm sao test được phân quyền theo dòng dữ liệu thay vì chỉ theo vai trò?'
+  ],
+  tags: ['CRUD', 'authorization', 'audit', 'Spring-Security', 'PostgreSQL', 'concurrency', 'Vue']
+},
 );
