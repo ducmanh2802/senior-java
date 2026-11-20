@@ -2403,6 +2403,11 @@ window.DATA_INDEX = {
     ["remote-064","remote","lead"],
     ["remote-065","remote","mid"],
     ["remote-066","remote","lead"],
+    ["frontend-001","frontend","senior"],
+    ["frontend-002","frontend","senior"],
+    ["frontend-003","frontend","senior"],
+    ["frontend-004","frontend","senior"],
+    ["frontend-005","frontend","lead"],
   ],
   algos: [
     {"id":"algo-001","title":"Two Sum","difficulty":"easy","pattern":"Hash Map"},
