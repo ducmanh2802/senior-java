@@ -18577,7 +18577,366 @@ Minh hoạ bảng với {{text1 = "abcde"}}, {{text2 = "ace"}}:
     }
 }`,
   complexity: 'Time O(m·n), Space O(m·n); có thể nén còn O(n)',
-  follow: ['Làm sao in ra chính chuỗi LCS chứ không chỉ độ dài?', 'So sánh bộ nhớ và tốc độ giữa bản O(m·n) và bản nén O(n) khi m, n cỡ 10^4.']
+  follow: ['Làm sao in ra chính chuỗi LCS chứ không chỉ độ dài?', 'So sánh bộ nhớ và tốc độ giữa bản O(m·n) và bản nén O(n) khi m, n cỡ 10^4.'],
+},
+{
+  id: 'algo-166',
+  title: 'Two Sum II — Input Array Is Sorted',
+  difficulty: 'medium',
+  pattern: 'Two Pointers',
+  tags: ['array', 'two-pointers', 'sorted'],
+  prompt: `Cho mảng số nguyên {{numbers}} đã được **sắp xếp tăng dần** và số {{target}}. Tìm hai phần tử có tổng bằng {{target}}, trả về **chỉ số (1-based)** của chúng (index bắt đầu từ 1, như trên LeetCode). Không được dùng cùng một phần tử hai lần. Đề bài đảm bảo có đúng một đáp án.
+
+### Ví dụ
+~~~text
+Input:  numbers = [2, 7, 11, 15], target = 9
+Output: [1, 2]
+Giải thích: numbers[0] + numbers[1] = 2 + 7 = 9, chỉ số 1-based là 1 và 2.
+
+Input:  numbers = [2, 3, 4], target = 6
+Output: [1, 3]
+~~~
+
+### Ràng buộc
+- {{2 <= numbers.length <= 3 * 10^4}}
+- {{-1000 <= numbers[i] <= 1000}}
+- {{numbers}} đã sắp xếp tăng (không giảm).
+- {{-1000 <= target <= 1000}}`,
+  hints: [
+    'Vì mảng đã sắp xếp, tổng của hai phần tử ở hai đầu thay đổi theo hướng dễ dự đoán khi di chuyển con trỏ.',
+    'Dùng hai con trỏ {{left}} ở đầu và {{right}} ở cuối. Nếu tổng lớn hơn {{target}}, giảm {{right}}; nếu nhỏ hơn, tăng {{left}}.',
+    'Mỗi bước thu hẹp khoảng cách, nên chỉ cần duyệt một lần → O(n), không cần bộ nhớ thêm.'
+  ],
+  solution: `### Ý tưởng
+Vì mảng đã sắp xếp, ta đặt hai con trỏ {{left = 0}} và {{right = n - 1}}. Mỗi bước tính tổng {{s = numbers[left] + numbers[right]}}:
+- {{s == target}}: tìm thấy, trả về chỉ số 1-based {{[left + 1, right + 1]}}.
+- {{s < target}}: cần tổng lớn hơn → tăng {{left}} để lấy số lớn hơn.
+- {{s > target}}: cần tổng nhỏ hơn → giảm {{right}} để lấy số nhỏ hơn.
+
+Bất biến: đáp án duy nhất luôn nằm trong đoạn {{[left, right]}} khi còn đang tìm, nên không bao giờ bỏ sót.
+
+~~~java
+class Solution {
+    public int[] twoSum(int[] numbers, int target) {
+        int left = 0, right = numbers.length - 1;
+        while (left < right) {
+            int sum = numbers[left] + numbers[right];
+            if (sum == target) {
+                return new int[]{left + 1, right + 1};   // 1-based index
+            }
+            if (sum < target) {
+                left++;
+            } else {
+                right--;
+            }
+        }
+        throw new IllegalArgumentException("no solution"); // de dam bao co dau an
+    }
+}
+~~~
+
+### Lưu ý khi phỏng vấn
+- Chỉ số trả về là **1-based** (bắt đầu từ 1), khác với Two Sum thông thường là 0-based — phải nhấn mạnh điểm này.
+- Điều kiện dừng {{while (left < right)}} đảm bảo không dùng cùng một phần tử hai lần (khi {{left == right}} dừng lại).
+- Nếu mảng chưa sắp xếp, Two Sum dùng hash map O(n) nhanh hơn sắp xếp O(n log n) kèm hai con trỏ.
+
+> Senior tip: Hai con trỏ trên mảng đã sắp xếp là mẫu "giảm độ phức tạp từ O(n²) xuống O(n) không cần bộ nhớ thêm" — xuất hiện trong đối soát giao dịch (tìm cặp lệnh khớp giá) và tính toán mức giá sàn. Luôn hỏi mảng đã sắp xếp hay chưa trước khi chọn cấu trúc.`,
+  starter: "class Solution {\n    public int[] twoSum(int[] numbers, int target) {\n        \n    }\n}",
+  tests: `public class Main {
+
+    static int passed = 0, total = 0;
+    interface Case { Object get() throws Throwable; }
+    static void run(String name, Object expected, Case c) {
+        total++;
+        try {
+            Object actual = c.get();
+            if (Objects.deepEquals(expected, actual)) {
+                passed++;
+                System.out.println("PASS " + name);
+            } else {
+                System.out.println("FAIL " + name + ": expected "
+                    + Arrays.deepToString(new Object[]{expected})
+                    + " got " + Arrays.deepToString(new Object[]{actual}));
+            }
+        } catch (Throwable t) {
+            System.out.println("FAIL " + name + ": threw " + t);
+        }
+    }
+    static void eq(String what, Object expected, Object actual) {
+        if (!Objects.deepEquals(expected, actual)) {
+            throw new AssertionError(what + " expected "
+                + Arrays.deepToString(new Object[]{expected})
+                + " got " + Arrays.deepToString(new Object[]{actual}));
+        }
+    }
+    static void runSteps(String name, Runnable r) {
+        total++;
+        try { r.run(); passed++; System.out.println("PASS " + name); }
+        catch (Throwable t) { System.out.println("FAIL " + name + ": threw " + t); }
+    }
+    static List<Integer> ints(int... v) {
+        List<Integer> r = new ArrayList<>();
+        for (int x : v) r.add(x);
+        return r;
+    }
+    static List<Integer> seq(int a, int b) {
+        List<Integer> r = new ArrayList<>();
+        for (int i = a; i <= b; i++) r.add(i);
+        return r;
+    }
+
+    public static void main(String[] args) {
+        run("example", new int[]{1, 2}, () -> new Solution().twoSum(new int[]{2, 7, 11, 15}, 9));
+        run("target sum end", new int[]{1, 3}, () -> new Solution().twoSum(new int[]{2, 3, 4}, 6));
+        run("negatives", new int[]{1, 5}, () -> new Solution().twoSum(new int[]{-5, -3, 0, 2, 4, 6}, -1));
+        run("duplicate values", new int[]{4, 5}, () -> new Solution().twoSum(new int[]{1, 2, 3, 4, 4, 9}, 8));
+        run("large", new int[]{15001, 30000}, () -> {
+            int[] a = new int[30000];
+            for (int i = 0; i < a.length; i++) a[i] = i - 15000;
+            return new Solution().twoSum(a, 14999);
+        });
+        System.out.println("RESULT " + passed + "/" + total);
+    }
+}`,
+  complexity: 'Time O(n), Space O(1)',
+  follow: ['Nếu mảng chưa sắp xếp thì chọn hash map hay sắp xếp + hai con trỏ?', 'Làm sao tìm tất cả các cặp có tổng bằng target không trùng?']
+},
+{
+  id: 'algo-167',
+  title: 'Find Pivot Index',
+  difficulty: 'easy',
+  pattern: 'Prefix Sum',
+  tags: ['array', 'prefix-sum'],
+  prompt: `Cho mảng số nguyên {{nums}}, tìm "chỉ số quay" (pivot index): chỉ số mà tổng các phần tử **bên trái** bằng tổng các phần tử **bên phải**. Phần tử ở chỉ số pivot không tính vào cả hai bên. Nếu có nhiều chỉ số thỏa mãn, trả về chỉ số nhỏ nhất; nếu không có, trả về {{-1}}.
+
+### Ví dụ
+~~~text
+Input:  nums = [1, 7, 3, 6, 5, 6]
+Output: 3
+Giải thích: tổng bên trái index 3 là 1+7+3 = 11, tổng bên phải là 5+6 = 11.
+
+Input:  nums = [1, 2, 3]
+Output: -1
+~~~
+
+### Ràng buộc
+- {{1 <= nums.length <= 10^4}}
+- {{-1000 <= nums[i] <= 1000}}`,
+  hints: [
+    'Tính tổng toàn bộ mảng trước, rồi duyệt từng chỉ số và duy trì tổng bên trái.',
+    'Tổng bên phải tại chỉ số {{i}} bằng tổng toàn mảng trừ tổng bên trái và trừ phần tử {{nums[i]}}.',
+    'So sánh hai tổng tại mỗi bước, trả về ngay khi bằng nhau.'
+  ],
+  solution: `### Ý tưởng
+Gọi {{total}} là tổng tất cả phần tử. Duyệt mảng từ trái sang phải, duy trì {{leftSum}} là tổng các phần tử trước vị trí hiện tại. Tại chỉ số {{i}}, tổng bên phải là {{total - leftSum - nums[i]}}. Nếu {{leftSum == rightSum}} thì {{i}} là pivot index.
+
+Cách này chỉ cần một biến phụ và duyệt mảng hai lần (tính tổng rồi duyệt), nên O(n) thời gian và O(1) bộ nhớ.
+
+~~~java
+class Solution {
+    public int pivotIndex(int[] nums) {
+        int total = 0;
+        for (int x : nums) {
+            total += x;
+        }
+        int leftSum = 0;
+        for (int i = 0; i < nums.length; i++) {
+            int rightSum = total - leftSum - nums[i];
+            if (leftSum == rightSum) {
+                return i;
+            }
+            leftSum += nums[i];
+        }
+        return -1;
+    }
+}
+~~~
+
+### Lưu ý khi phỏng vấn
+- Phần tử ở chỉ số pivot **không tính vào** cả tổng bên trái hay bên phải — đây là chỗ sai phổ biến nhất.
+- Với mảng chỉ có 1 phần tử, tổng bên trái và bên phải đều bằng 0, nên trả về 0.
+- Tổng có thể âm (phần tử có thể âm), nhưng phép so sánh vẫn đúng; ở đây {{10^4}} phần tử và {{±1000}} nên tổng nằm trong {{int}}.
+
+> Senior tip: Prefix sum là kỹ thuật cơ bản để trả lời câu "tổng đoạn" trong O(1) sau khi xử lý trước. Trong phần backend, biến thể này xuất hiện khi tính điểm trung tâm hoặc cân bằng tải (sharding) — tìm điểm chia sao hai bên cân bằng.`,
+  starter: "class Solution {\n    public int pivotIndex(int[] nums) {\n        \n    }\n}",
+  tests: `public class Main {
+
+    static int passed = 0, total = 0;
+    interface Case { Object get() throws Throwable; }
+    static void run(String name, Object expected, Case c) {
+        total++;
+        try {
+            Object actual = c.get();
+            if (Objects.deepEquals(expected, actual)) {
+                passed++;
+                System.out.println("PASS " + name);
+            } else {
+                System.out.println("FAIL " + name + ": expected "
+                    + Arrays.deepToString(new Object[]{expected})
+                    + " got " + Arrays.deepToString(new Object[]{actual}));
+            }
+        } catch (Throwable t) {
+            System.out.println("FAIL " + name + ": threw " + t);
+        }
+    }
+    static void eq(String what, Object expected, Object actual) {
+        if (!Objects.deepEquals(expected, actual)) {
+            throw new AssertionError(what + " expected "
+                + Arrays.deepToString(new Object[]{expected})
+                + " got " + Arrays.deepToString(new Object[]{actual}));
+        }
+    }
+    static void runSteps(String name, Runnable r) {
+        total++;
+        try { r.run(); passed++; System.out.println("PASS " + name); }
+        catch (Throwable t) { System.out.println("FAIL " + name + ": threw " + t); }
+    }
+    static List<Integer> ints(int... v) {
+        List<Integer> r = new ArrayList<>();
+        for (int x : v) r.add(x);
+        return r;
+    }
+    static List<Integer> seq(int a, int b) {
+        List<Integer> r = new ArrayList<>();
+        for (int i = a; i <= b; i++) r.add(i);
+        return r;
+    }
+
+    public static void main(String[] args) {
+        run("example", 3, () -> new Solution().pivotIndex(new int[]{1, 7, 3, 6, 5, 6}));
+        run("no pivot", -1, () -> new Solution().pivotIndex(new int[]{1, 2, 3}));
+        run("single", 0, () -> new Solution().pivotIndex(new int[]{2}));
+        run("first index", 0, () -> new Solution().pivotIndex(new int[]{-1, -1, -1, 0, 1, 1}));
+        run("all zero", 0, () -> new Solution().pivotIndex(new int[]{0, 0, 0, 0}));
+        run("middle pivot", 3, () -> new Solution().pivotIndex(new int[]{1, 2, 3, 4, 6}));
+        System.out.println("RESULT " + passed + "/" + total);
+    }
+}`,
+  complexity: 'Time O(n), Space O(1)',
+  follow: ['Tìm tất cả pivot index thay vì chỉ trả về một cái thì làm sao?', 'Mở rộng sang ma trận 2D tìm ô cân bằng theo hàng và cột.']
+},
+{
+  id: 'algo-168',
+  title: 'Flood Fill',
+  difficulty: 'easy',
+  pattern: 'BFS / DFS',
+  tags: ['matrix', 'bfs', 'dfs', 'flood-fill'],
+  prompt: `Cho ảnh {{image}} là ma trận các số nguyên màu và tọa độ xuất phát {{sr}}, {{sc}} cùng màu mới {{color}}. Tô màu mọi ô có cùng màu với ô xuất phát và nối với nó qua 4 hướng (trên, dưới, trái, phải) thành màu mới. Trả về ảnh sau khi tô.
+
+### Ví dụ
+~~~text
+Input:  image = [[1,1,1],
+                 [1,1,0],
+                 [1,0,1]], sr = 1, sc = 1, color = 2
+Output: [[2,2,2],
+         [2,2,0],
+         [2,0,1]]
+Giải thích: ô (1,1) màu 1 và các ô nối với nó bằng màu 1 được tô thành 2; ô (2,1) màu 0 và ô (2,2) màu 1 nhưng không nối qua màu 1 nên giữ nguyên.
+~~~
+
+### Ràng buộc
+- {{m == image.length}}, {{n == image[i].length}}
+- {{1 <= m, n <= 50}}
+- {{0 <= image[i][j], color < 2^16}}
+- {{0 <= sr < m}}, {{0 <= sc < n}}`,
+  hints: [
+    'Chỉ tô các ô có cùng màu ban đầu với ô xuất phát; ô khác màu sẽ chặn lan truyền.',
+    'Dùng hàng đợi (BFS): lấy ô ra, tô màu, đưa các ô kề cùng màu vào hàng đợi.',
+    'Đánh dấu ô đã tô bằng màu mới để không xử lý lại, tránh lặp vô hạn.'
+  ],
+  solution: `### Ý tưởng
+Lưu màu gốc {{origin = image[sr][sc]}}. Nếu {{origin == color}} thì ảnh đã đúng, trả về ngay (tránh lặp vô hạn). Dùng BFS: đưa ô xuất phát vào hàng đợi, mỗi lần lấy ô ra, tô thành {{color}}, rồi xét 4 ô kề: nếu trong biên lưới và vẫn có màu {{origin}} thì đưa vào hàng đợi.
+
+Mỗi ô được xử lý tối đa một lần, nên O(m·n) thời gian và O(m·n) bộ nhớ cho hàng đợi trong trường hợp trệ nhất.
+
+~~~java
+class Solution {
+    public int[][] floodFill(int[][] image, int sr, int sc, int color) {
+        int origin = image[sr][sc];
+        if (origin == color) {
+            return image;
+        }
+        int m = image.length, n = image[0].length;
+        Queue<int[]> q = new LinkedList<>();
+        q.offer(new int[]{sr, sc});
+        image[sr][sc] = color;
+        int[][] dirs = {{-1, 0}, {1, 0}, {0, -1}, {0, 1}};
+        while (!q.isEmpty()) {
+            int[] cell = q.poll();
+            int r = cell[0], c = cell[1];
+            for (int[] d : dirs) {
+                int nr = r + d[0], nc = c + d[1];
+                if (nr >= 0 && nr < m && nc >= 0 && nc < n && image[nr][nc] == origin) {
+                    image[nr][nc] = color;
+                    q.offer(new int[]{nr, nc});
+                }
+            }
+        }
+        return image;
+    }
+}
+~~~
+
+### Lưu ý khi phỏng vấn
+- Phải kiểm tra {{origin == color}} ngay đầu tiên; nếu không, BFS sẽ tô rồi xử lý lại cùng ô vô cùng (vì màu đã đổi thành {{color}} mà điều kiện kiểm tra là màu gốc).
+- Có thể dùng DFS đệ quy thay BFS, nhưng với lưới lớn có thể tràn stack; BFS an toàn hơn.
+- Đây là bài "lan truyền trong lưới" mẫu, cùng cấu trúc với Rotting Oranges và Number of Islands.
+
+> Senior tip: Flood fill là hình thức đơn giản nhất của "connected component trên lưới". Trong thực tế, biến thể này dùng trong xử lý ảnh, trò Minesweeper, hoặc tính vùng kết nối trong bản đồ trò chơi. Hãy nêu rõ sự khác biệt giữa BFS (queue) và DFS (stack/đệ quy) khi được hỏi.`,
+  starter: "class Solution {\n    public int[][] floodFill(int[][] image, int sr, int sc, int color) {\n        \n    }\n}",
+  tests: `public class Main {
+
+    static int passed = 0, total = 0;
+    interface Case { Object get() throws Throwable; }
+    static void run(String name, Object expected, Case c) {
+        total++;
+        try {
+            Object actual = c.get();
+            if (deepEquals(expected, actual)) {
+                passed++;
+                System.out.println("PASS " + name);
+            } else {
+                System.out.println("FAIL " + name + ": expected " + mat(expected) + " got " + mat(actual));
+            }
+        } catch (Throwable t) {
+            System.out.println("FAIL " + name + ": threw " + t);
+        }
+    }
+    static String mat(Object x) {
+        int[][] a = (int[][]) x;
+        StringBuilder sb = new StringBuilder("[");
+        for (int i = 0; i < a.length; i++) {
+            sb.append(Arrays.toString(a[i]));
+            if (i + 1 < a.length) sb.append(",");
+        }
+        return sb.append("]").toString();
+    }
+    static boolean deepEquals(Object a, Object b) {
+        int[][] x = (int[][]) a;
+        int[][] y = (int[][]) b;
+        if (x.length != y.length) return false;
+        for (int i = 0; i < x.length; i++) {
+            if (!Arrays.equals(x[i], y[i])) return false;
+        }
+        return true;
+    }
+    public static void main(String[] args) {
+        Solution s = new Solution();
+        run("example", new int[][]{{2, 2, 2}, {2, 2, 0}, {2, 0, 1}},
+            () -> s.floodFill(new int[][]{{1, 1, 1}, {1, 1, 0}, {1, 0, 1}}, 1, 1, 2));
+        run("same color", new int[][]{{0, 0, 0}, {0, 1, 1}},
+            () -> s.floodFill(new int[][]{{0, 0, 0}, {0, 1, 1}}, 0, 0, 0));
+        run("single cell", new int[][]{{3}},
+            () -> s.floodFill(new int[][]{{5}}, 0, 0, 3));
+        run("no neighbor same", new int[][]{{9, 2}, {3, 4}},
+            () -> s.floodFill(new int[][]{{1, 2}, {3, 4}}, 0, 0, 9));
+        run("large region", new int[][]{{7, 7}, {7, 7}},
+            () -> s.floodFill(new int[][]{{1, 1}, {1, 1}}, 0, 0, 7));
+        System.out.println("RESULT " + passed + "/" + total);
+    }
+}`,
+  complexity: 'Time O(m·n), Space O(m·n)',
+  follow: ['DFS đệ quy có vấn đề gì với lưới lớn?', 'Nếu cho phép tô theo 8 hướng (bao gồm chéo) thì sửa thế nào?']
 }
 );
 })();

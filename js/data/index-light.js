@@ -2604,6 +2604,9 @@ window.DATA_INDEX = {
     {"id":"algo-163","title":"Letter Combinations of a Phone Number","difficulty":"medium","pattern":"Backtracking"},
     {"id":"algo-164","title":"Next Greater Element II","difficulty":"medium","pattern":"Stack"},
     {"id":"algo-165","title":"Longest Common Subsequence","difficulty":"medium","pattern":"Dynamic Programming"},
+    {"id":"algo-166","title":"Two Sum II — Input Array Is Sorted","difficulty":"medium","pattern":"Two Pointers"},
+    {"id":"algo-167","title":"Find Pivot Index","difficulty":"easy","pattern":"Prefix Sum"},
+    {"id":"algo-168","title":"Flood Fill","difficulty":"easy","pattern":"BFS / DFS"},
   ],
   lessons: [
     {"id":"lesson-collections-001","track":"collections","order":1,"title":"HashMap từ bên trong: hash, bucket, resize và hợp đồng equals/hashCode","level":"mid","minutes":25},
