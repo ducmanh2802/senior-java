@@ -11462,5 +11462,121 @@ Yêu cầu rõ ràng là kỹ năng giao tiếp, không phải kỹ năng code. 
 `,
   follow: ['How do you handle a requirement change mid-sprint?', 'How do you say no to a stakeholder politely?', 'How do you document decisions for future reference?'],
   tags: ['english', 'communication', 'requirements', 'korean-team', 'lead']
+},
+{
+  id: 'english-223',
+  topic: 'english',
+  level: 'lead',
+  lang: 'en',
+  q: 'Tell me about a time you led a team through a difficult deadline. How did you keep delivery on track?',
+  a: `**Tóm tắt:** Khi deadline khó, Tech Lead không chỉ đẩy tốc độ mà phải thu nhỏ phạm vi, tăng khả năng quan sát tiến độ và bảo vệ team khỏi các ngắt quãng; thành công đo bằng việc giao đúng phần quan trọng đúng hạn, không phải làm mọi thứ.
+
+### Cách tiếp cận từng bước
+
+1. **Làm rõ mục tiêu:** xác định phần nào thực sự phải giao đúng ngày, phần nào có thể trễ.
+2. **Chia nhỏ và theo dõi:** chia công việc thành các slice có thể ship độc lập; theo dõi burn-down hằng ngày.
+3. **Giảm phạm vi:** thương lượng với stakeholder để hoãn các phần không thiết yếu (scope negotiation).
+4. **Bảo vệ focus:** chặn ngắt quãng, gom họp ngắn, quyết định nhanh.
+5. **Giao tiếp minh bạch:** cập nhật sớm khi có rủi ro, không giấu.
+
+### Ví dụ đời thực
+
+Team 6 người, deadline 3 tuần cho release thanh toán. Tôi chia thành 3 slice: core payment (tuần 1), retry/idempotency (tuần 2), dashboard (tuần 3). Tuần 2 phát hiện integration với core banking chậm → thương lượng hoãn dashboard, ship core + retry đúng hạn. Kết quả: giao đúng ngày, 0 sev1, dashboard trễ 1 tuần nhưng không ảnh hưởng revenue.
+
+### Trả lời mẫu khi phỏng vấn
+
+In my last project, we had a hard deadline for a payment release with a team of six. Instead of pushing everyone to work faster, I first clarified what was truly required for day one and split the work into three shippable slices: core payments, retry and idempotency, and an admin dashboard. I tracked progress daily with a simple burn-down and removed interruptions by consolidating meetings. When integration with the core banking system slipped in week two, I negotiated with the product owner to defer the dashboard and protected the two critical slices. We shipped on time with zero severity-one incidents; the dashboard followed one week later. The lesson I took away is that a Tech Lead's job under pressure is not to demand speed but to make trade-offs visible and protect the team's focus.
+
+> Senior tip: Deadline khó thường là bài toán ưu tiên, không phải bài toán tốc độ; nói rõ bạn thương lượng phạm vi thay vì ép team overtime.
+`,
+  follow: ['How do you say no to a stakeholder about scope?', 'How do you handle a missed milestone?', 'How do you keep morale up during crunch?'],
+  tags: ['english', 'leadership', 'deadline', 'tech-lead']
+},
+{
+  id: 'english-224',
+  topic: 'english',
+  level: 'senior',
+  lang: 'en',
+  q: 'How do you handle an underperforming team member? Walk me through your approach.',
+  a: `**Tóm tắt:** Xử lý thành viên kém hiệu suất bằng cách đặt kỳ vọng rõ, theo dõi dữ liệu, coaching 1:1 và kế hoạch cải thiện có thời hạn; nếu không cải thiện thì chuyển vai trò hoặc chia tay một cách tôn trọng.
+
+### Cách tiếp cận từng bước
+
+1. **Quan sát dữ liệu:** PR chậm, bug tăng, feedback đồng nghiệp → không phán xét sớm.
+2. **1:1 riêng tư:** hỏi về rào cản (không rõ yêu cầu, kỹ năng, cá nhân).
+3. **Đặt kỳ vọng:** mục tiêu SMART, mốc thời gian, hỗ trợ.
+4. **Theo dõi:** check-in hằng tuần, ghi nhận tiến bộ.
+5. **Quyết định:** nếu cải thiện → tiếp tục; nếu không → chuyển vai trò hoặc off-board.
+
+### Ví dụ đời thực
+
+Một dev senior mới chậm merge PR và hay gây regression. Sau 1:1 tôi phát hiện anh bị overload context switching. Tôi giảm WIP, pairing 2 buổi/tuần và đặt KPI: PR merge trong 3 ngày, regression 0 trong 4 tuần. Sau 6 tuần anh đạt mục tiêu và tự tin hơn.
+
+### Trả lời mẫu khi phỏng vấn
+
+When someone on my team is underperforming, I start with data rather than judgement: slower PR cycle time, more regressions, or feedback from peers. Then I have a private one-on-one to understand blockers, which are often unclear requirements, skill gaps, or personal issues rather than laziness. I set clear, measurable expectations with a timeline and concrete support, such as pairing sessions or reduced context switching. I review progress weekly and document everything. In one case, a senior developer was slow and causing regressions; after pairing twice a week and limiting work-in-progress, he met his goals within six weeks. If there is no improvement after a fair period, I escalate to role change or off-boarding respectfully. The key is to act early and keep it about growth, not punishment.
+
+> Senior tip: Đừng để vấn đề kéo dài; intervention sớm và có dữ liệu tốt hơn là feedback muộn.
+`,
+  follow: ['How do you give critical feedback?', 'How do you handle a defensive teammate?', 'When do you escalate to HR?'],
+  tags: ['english', 'leadership', 'performance', 'tech-lead']
+},
+{
+  id: 'english-225',
+  topic: 'english',
+  level: 'senior',
+  lang: 'en',
+  q: 'How do you make technical decisions when the team disagrees? Walk me through your process.',
+  a: `**Tóm tắt:** Khi team bất đồng, Tech Lead facilitator: làm rõ trade-off, thu thập dữ liệu, thử nghiệm nhỏ (spike/ADR), và quyết định có cơ sở; nếu vẫn bất đồng thì người chịu trách nhiệm quyết định và ghi lại lý do.
+
+### Cách tiếp cận từng bước
+
+1. **Định nghĩa vấn đề:** mọi người đồng ý về tiêu chí đánh giá (latency, cost, maintainability).
+2. **Thu thập ý kiến:** mỗi người trình bày lựa chọn + trade-off, không công kích.
+3. **Dữ liệu:** benchmark nhỏ, prototype, hoặc ADR (Architecture Decision Record).
+4. **Quyết định:** nếu đồng thuận → chọn; nếu không → Tech Lead quyết định dựa trên tiêu chí đã thống nhất.
+5. **Ghi lại:** ADR ghi lý do, khi nào xem lại.
+
+### Ví dụ đời thực
+
+Team tranh luận Kafka vs RabbitMQ cho event bus. Tôi tổ chức spike 2 ngày: đo throughput và độ phức tạp vận hành. Kết quả Kafka thắng về throughput nhưng RabbitMQ đủ cho hiện tại và đơn giản hơn. Team chọn RabbitMQ với điều kiện xem lại khi QPS > 5k. Ghi ADR.
+
+### Trả lời mẫu khi phỏng vấn
+
+When my team disagrees on a technical decision, I first make sure we agree on the evaluation criteria, such as latency, cost, and maintainability, rather than debating preferences. Then I ask each person to present their option with trade-offs. If data is missing, we run a small spike or prototype, often documented as an ADR. Once we have evidence, we usually converge. If not, as the Tech Lead I make the final call based on the agreed criteria and record the rationale and a review trigger. For example, we debated Kafka versus RabbitMQ; a two-day spike showed RabbitMQ was sufficient and simpler at our current scale, so we chose it with a trigger to revisit above five thousand QPS. This keeps decisions reversible and blame-free.
+
+> Senior tip: Quyết định tốt không phải là ai thắng, mà là tiêu chí rõ và có thể xem lại sau.
+`,
+  follow: ['What is an ADR and when do you write one?', 'How do you handle a decision you later regret?', 'How do you avoid analysis paralysis?'],
+  tags: ['english', 'decision-making', 'architecture', 'tech-lead']
+},
+{
+  id: 'english-226',
+  topic: 'english',
+  level: 'lead',
+  lang: 'en',
+  q: 'Describe your leadership style. How do you balance autonomy and accountability?',
+  a: `**Tóm tắt:** Phong cách leadership của tôi là servant leadership: đặt mục tiêu và ràng buộc rõ, trao quyền tự chủ trong cách thực hiện, theo dõi qua kết quả và feedback, và can thiệp sớm khi lệch mục tiêu.
+
+### Cách tiếp cận từng bước
+
+1. **Mục tiêu rõ:** OKR/quarterly goals, definition of done.
+2. **Trao quyền:** team tự chọn cách thực hiện trong khung ràng buộc (tech stack, SLA).
+3. **Quan sát:** dashboard, demo, 1:1; không micromanage.
+4. **Phản hồi:** khen ngợi công khai, góp ý riêng tư.
+5. **Can thiệp:** khi lệch mục tiêu hoặc rủi ro, escalate sớm.
+
+### Ví dụ đời thực
+
+Tôi đặt mục tiêu giảm p99 latency xuống 200ms trong quý. Team tự chọn tối ưu query và cache. Tôi theo dõi weekly metric và demo. Khi thấy một PR tăng complexity không cần thiết, tôi góp ý riêng và điều chỉnh. Kết quả đạt mục tiêu trước 2 tuần.
+
+### Trả lời mẫu khi phỏng vấn
+
+My leadership style is servant leadership: I set clear goals and constraints, then give the team autonomy in how to achieve them. For example, I might set a quarterly goal to cut p99 latency to two hundred milliseconds, and let the team decide whether to optimize queries or add caching. I track progress through weekly metrics and demos rather than daily status checks, and I give public praise and private feedback. I intervene early when we drift from the goal or take on unnecessary complexity. I believe accountability comes from clear outcomes and transparent metrics, not from micromanagement. The balance is: high autonomy within clear boundaries, with fast feedback loops.
+
+> Senior tip: Autonomy mà không có metric rõ ràng là chaos; accountability mà không có autonomy là micromanagement.
+`,
+  follow: ['How do you measure team health?', 'How do you handle conflict between autonomy and deadlines?', 'What is your biggest leadership mistake?'],
+  tags: ['english', 'leadership', 'tech-lead', 'management']
 }
 );
