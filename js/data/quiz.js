@@ -9360,6 +9360,259 @@ Một nhà máy dược có 320 triệu dòng genealogy sau 2 năm. Truy vấn "
 - **Lưu hai nơi không có id chung**: khi gateway và cloud lệch nhau, bạn không biết bản nào đúng và không thể đối soát. Phải có id duy nhất toàn cục và quy tắc gộp rõ ràng (ví dụ bản mới hơn theo updatedAt thắng, nhưng với genealogy thì cấm ghi đè).
 
 > Senior tip: hãy thử làm một cuộc diễn tập recall giả lập mỗi quý: chọn ngẫu nhiên một lô, đo thời gian ra danh sách serial và số serial tìm được. Nếu mất hơn 5 phút hoặc không giải thích được nguồn dữ liệu, thiết kế truy xuất chưa đạt.`
+},
+{
+  id: 'qz-frontend-001',
+  topic: 'api',
+  q: 'Một trang Vue 3 chạy đoạn JavaScript sau trên trình duyệt. Thứ tự in ra console là gì? setTimeout(() => {{console.log("A")}}, 0); Promise.resolve().then(() => {{console.log("B")}}); {{console.log("C")}};',
+  options: [
+    'C, B, A',
+    'C, A, B',
+    'B, C, A',
+    'A, B, C'
+  ],
+  answer: 0,
+  explain: `**Đáp án đúng: C, B, A.** JavaScript chỉ chạy trên một luồng chính, giống một Executor đơn luồng trong Java nhưng không có pool luồng. Các bước:
+1. {{console.log("C")}} là code đồng bộ, chạy ngay lập tức trên luồng chính → in C.
+2. {{setTimeout}} trình duyệt nhận lời gọi, giải phóng luồng, hẹn chạy callback sau. Callback này vào hàng đợi macrotask.
+3. {{Promise.resolve().then}} khi Promise hoàn tất, callback .then vào hàng đợi microtask.
+4. Event loop: chạy xong task đồng bộ → lấy hết microtask chạy (in B) → vẽ lại giao diện nếu có → lấy một macrotask (in A) → lặp lại.
+
+Vì microtask ưu tiên cao hơn macrotask, B chạy trước A. C chạy trước cả hai vì đồng bộ.
+
+### Vì sao các phương án còn lại sai
+- **C, A, B**: đặt macrotask trước microtask, ngược quy tắc event loop.
+- **B, C, A**: microtask không vượt qua code đồng bộ đang chạy trên luồng chính.
+- **A, B, C**: đảo ngược hoàn toàn; đồng bộ luôn chạy trước callback bất đồng bộ.
+
+> Senior tip: sự kiện click, lifecycle hook của Vue 3 cũng là macrotask. Cần chạy logic sau khi DOM render xong, hãy dùng nextTick của Vue, không nên giả sử Promise chạy ngay sau render.`
+},
+{
+  id: 'qz-frontend-002',
+  topic: 'api',
+  q: 'Một hàm async trong Vue 3 gọi API nhưng không dùng try/catch và không bắt lỗi của Promise. Khi API trả về lỗi mạng, kết quả là gì?',
+  options: [
+    'Lỗi được Vue tự động hiển thị thành thông báo lỗi cho người dùng.',
+    'Lỗi bị nuốt, component vẫn hiển thị, người dùng không biết gì, rất khó gỡ lỗi.',
+    'Trình duyệt tự động thử lại API đến khi thành công.',
+    'Hàm async ném lỗi ra ngoài và làm toàn ứng dụng crash ngay lập tức.'
+  ],
+  answer: 1,
+  explain: `**Đáp án đúng: Lỗi bị nuốt, component vẫn hiển thị, người dùng không biết gì, rất khó gỡ lỗi.** Một hàm async luôn trả về Promise. Nếu bên trong ném lỗi hoặc gọi API thất bại mà không có try/catch và không gán .catch(), Promise chuyển thành trạng thái rejected, nhưng không ai xử lý. Trình duyệt chỉ ghi cảnh báo unhandled rejection vào console (và có thể không hiển thị nổi bật), component không hiển thị lỗi, người dùng thấy trang vẫn chạy như bình thường. Đây là lỗi rất nguy hiểm trên production vì thiếu dấu hiệu dễ thấy.
+
+### Vì sao các phương án còn lại sai
+- **Vue tự hiển thị thông báo lỗi**: Vue không bắt lỗi Promise rejection của hàm async tự động; cần xử lý rõ ràng hoặc dùng errorHandler/global handler.
+- **Trình duyệt tự động thử lại**: không có cơ chế retry ngầm của trình duyệt; retry phải code rõ ràng.
+- **Toàn ứng dụng crash**: hàm async ném lỗi vào Promise, không ném ra luồng chính, nên không làm crash toàn ứng dụng ngay lập tức. Chỉ có unhandled rejection có thể chấm dứt Node.js process, không phải trình duyệt tab.
+
+> Senior tip: luôn bọc gọi API trong try/catch hoặc gán .catch(), và đăng ký app.config.errorHandler cùng xử lý unhandled rejection để không để lỗi "lặng" trên production.`
+},
+{
+  id: 'qz-frontend-003',
+  topic: 'api',
+  q: 'Trong Vue 3 Composition API, dev Java tạo một đối tượng state và gán lại toàn bộ đối tượng đó sau khi lấy dữ liệu từ API. Việc dùng {{ref}} hay {{reactive}} ảnh hưởng thế nào đến khả năng gán lại và cập nhật giao diện?',
+  options: [
+    'Cả hai đều cho phép gán lại toàn bộ đối tượng và giao diện vẫn cập nhật bình thường.',
+    '{{ref}} cho phép gán lại toàn bộ đối tượng bằng cách gán vào thuộc tính .value, giao diện cập nhật đúng; {{reactive}} không thể gán lại toàn bộ đối tượng bằng toán tử gán, chỉ được thay đổi thuộc tính bên trong.',
+    '{{reactive}} cho phép gán lại toàn bộ đối tượng bằng toán tử gán, còn {{ref}} không thể.',
+    'Không có khả năng gán lại toàn bộ đối tượng; phải thay đổi từng trường riêng lẻ.'
+  ],
+  answer: 1,
+  explain: `**Đáp án đúng: ref cho phép gán lại toàn bộ đối tượng qua .value; reactive không thể gán lại toàn bộ đối tượng bằng toán tử gán.** ref bọc giá trị trong một đối tượng có thuộc tính .value. Để thay đổi, bạn gán state.value = du lieu moi; hệ thống reactivity theo dõi .value, nên giao diện cập nhật đúng. reactive tạo một proxy đối tượng; khi bạn làm state = du lieu moi (toán tử gán), bạn chỉ thay đổi biến cục bộ trỏ tới đối tượng mới, proxy cũ bị bỏ qua, giao diện không cập nhật. Với reactive, bạn chỉ được thay đổi các thuộc tính bên trong, ví dụ state.ten = moi.
+
+### Vì sao các phương án còn lại sai
+- **Cả hai đều gán lại được**: reactive không theo dõi việc gán lại biến, chỉ theo dõi truy cập thuộc tính qua proxy.
+- **reactive gán lại được, ref không**: ngược lại; ref dùng .value mới gán lại được toàn bộ.
+- **Không gán lại được**: ref hoàn toàn gán lại được qua .value, đây là cách nên làm khi thay thế toàn bộ state.
+
+> Senior tip: khi cần gán lại toàn bộ đối tượng (ví dụ sau khi fetch API trả về object mới), hãy dùng ref. Dùng reactive khi chỉ cập nhật từng trường và tránh gán lại biến reactive.`
+},
+{
+  id: 'qz-frontend-004',
+  topic: 'api',
+  q: 'Một thành phần Vue 3 hiển thị tổng đơn hàng và cần tính lại tổng mỗi khi danh sách đơn hàng thay đổi. Dev nên dùng {{computed}} hay {{watch}} cho trường hợp này?',
+  options: [
+    'Dùng watch, vì computed chỉ dùng cho giá trị nguyên thủy, không dùng cho mảng.',
+    'Dùng computed thì phải gọi hàm chạy lại bằng tay mỗi khi danh sách thay đổi.',
+    'Dùng computed, vì nó tính giá trị dựa vào các phụ thuộc, cache kết quả và chỉ tính lại khi phụ thuộc thay đổi, phù hợp với hiển thị tổng.',
+    'Dùng watch, vì computed không thể truy cập các ref khác trong thành phần.'
+  ],
+  answer: 2,
+  explain: `**Đáp án đúng: Dùng computed, vì nó tính giá trị dựa vào các phụ thuộc, cache kết quả và chỉ tính lại khi phụ thuộc thay đổi, phù hợp với hiển thị tổng.** computed nhận một hàm get, trả về một giá trị reactive đã được cache. Vue tự động theo dõi các ref/reactive được đọc bên trong hàm get. Khi danh sách đơn hàng thay đổi, computed tính lại tổng tự động; nếu danh sách không thay đổi, Vue trả về giá trị đã cache, không tính lại. Điều này giống getter trong Java nhưng có cache dựa trên phụ thuộc.
+
+### Vì sao các phương án còn lại sai
+- **computed chỉ dùng cho nguyên thủy**: computed hoạt động với mọi kiểu giá trị, bao gồm mảng và đối tượng.
+- **phải gọi chạy lại bằng tay**: computed là khai báo, Vue tự chạy lại khi phụ thuộc thay đổi, không cần gọi bằng tay.
+- **computed không truy cập ref khác**: computed có thể đọc mọi ref/reactive trong thành phần, Vue sẽ theo dõi chúng làm phụ thuộc.
+- **watch là lựa chọn duy nhất**: watch dùng cho tác vụ phụ như gọi API, lưu localStorage, không phải để tính giá trị hiển thị.
+
+> Senior tip: dùng computed để tính giá trị hiển thị, dùng watch khi cần thực hiện tác vụ phụ (gọi API, gửi sự kiện analytics) sau khi giá trị thay đổi.`
+},
+{
+  id: 'qz-frontend-005',
+  topic: 'api',
+  q: 'Trong Vue 3, một ô input dùng {{v-model}} gắn với một ref. Khi người dùng gõ vào ô input, điều gì xảy ra?',
+  options: [
+    'Giá trị của ref chỉ thay đổi khi nhấn nút Submit, không thay đổi khi gõ.',
+    'Mỗi lần người dùng gõ, sự kiện input được kích hoạt, Vue cập nhật ref ngay lập tức, và giá trị mới hiển thị lại trên ô input nếu có ràng buộc hai chiều.',
+    'v-model chỉ gửi dữ liệu từ ref sang input, không đọc giá trị người dùng gõ vào.',
+    'v-model làm mất toàn bộ dữ liệu đã nhập khi render lại thành phần.'
+  ],
+  answer: 1,
+  explain: `**Đáp án đúng: Mỗi lần người dùng gõ, sự kiện input được kích hoạt, Vue cập nhật ref ngay lập tức, và giá trị mới hiển thị lại trên ô input nếu có ràng buộc hai chiều.** v-model là cú pháp ngắn gọn của ràng buộc hai chiều: nó gắn giá trị của ref vào thuộc tính value của input và lắng nghe sự kiện input. Khi người dùng gõ, sự kiện input xảy ra, Vue gán giá trị mới vào ref. Ref thay đổi gây ra render lại, và nếu input vẫn gắn value bằng ref, giá trị trên ô input được đồng bộ. Điều này tương tự gắn dữ liệu vào form trong Spring MVC nhưng tự động hai chiều.
+
+### Vì sao các phương án còn lại sai
+- **chỉ thay đổi khi nhấn Submit**: v-model cập nhật ref mỗi khi sự kiện input xảy ra (mỗi phím gõ), không chờ Submit.
+- **chỉ gửi từ ref sang input**: v-model là hai chiều, cả đọc giá trị từ input vào ref và gán giá trị từ ref lên input.
+- **mất dữ liệu khi render**: Vue cập nhật hiệu quả, không xóa nội dung input đang gõ trừ khi code tự làm vậy.
+
+> Senior tip: v-model dùng cho form inputs. Dùng v-model.trim hoặc v-model.number nếu muốn loại bỏ khoảng trắng hoặc chuyển sang số, tương tự annotation @RequestParam trong Spring nhưng xử lý ở client.`
+},
+{
+  id: 'qz-frontend-006',
+  topic: 'api',
+  multi: true,
+  q: 'Một dự án Vue 3 dùng Pinia để quản lý trạng thái toàn ứng dụng. Hai phát biểu nào đúng về Pinia? (Chọn 2)',
+  options: [
+    'Pinia cho phép tạo nhiều store, mỗi store có state, actions và getters, và các component có thể dùng cùng một store.',
+    'Pinia bắt buộc mỗi component phải tạo một store riêng biệt, không thể chia sẻ store giữa các component.',
+    'Getters trong Pinia tương tự computed trong component, cache kết quả và chỉ tính lại khi state thay đổi.',
+    'Pinia chỉ hoạt động với Options API, không dùng được với Composition API.',
+    'State trong Pinia không reactive, component không thể theo dõi sự thay đổi.'
+  ],
+  answer: [0, 2],
+  explain: `**Đáp án đúng: Pinia cho tạo nhiều store chia sẻ giữa component, và getters hoạt động như computed với cache.** Pinia là thư viện quản lý state chuẩn của Vue 3. Bạn có thể tạo nhiều store (ví dụ userStore, cartStore), mỗi store chứa state (dữ liệu), actions (hàm thay đổi state, giống service) và getters (giá trị suy ra, giống computed). Các component khác nhau có thể import và dùng cùng một store, nên state được chia sẻ toàn ứng dụng. Getters cache kết quả và chỉ tính lại khi state mà chúng đọc thay đổi.
+
+### Vì sao các phương án còn lại sai
+- **bắt buộc mỗi component một store**: Pinia cho phép nhiều component dùng chung một store; đây là mục đích chính của quản lý state toàn cục.
+- **Pinia chỉ với Options API**: Pinia làm việc tốt với cả Composition API (const store = useUserStore()) và Options API.
+- **state không reactive**: state trong Pinia là reactive, component đọc state sẽ tự render lại khi state thay đổi.
+
+> Senior tip: actions trong Pinia là nơi thích hợp để gọi API (giống service layer trong Spring), còn component chỉ nên gọi actions và hiển thị state, không gọi API trực tiếp.`
+},
+{
+  id: 'qz-frontend-007',
+  topic: 'api',
+  multi: true,
+  q: 'Giao diện Vue 3 chạy trên cổng 5173 gọi API Spring Boot chạy trên cổng 8080. Trình duyệt chặn yêu cầu do lỗi CORS. Hai phát biểu nào đúng về CORS? (Chọn 2)',
+  options: [
+    'CORS là cơ chế bảo mật của trình duyệt, cho phép trang web yêu cầu dữ liệu từ nguồn khác nếu server cho phép qua header Access-Control-Allow-Origin.',
+    'CORS do lỗi cấu hình Spring Boot không cho phép truy cập database, không liên quan đến trình duyệt.',
+    'Server Spring Boot cần cấu hình CorsRegistry để trả về header Access-Control-Allow-Origin cho nguồn http://localhost:5173, hoặc dùng annotation @CrossOrigin.',
+    'Thiết lập CORS trên frontend Vue 3 là đủ, trình duyệt sẽ cho phép gọi API cross-origin.',
+    'CORS chỉ ảnh hưởng đến yêu cầu GET, không ảnh hưởng đến POST, PUT, DELETE.'
+  ],
+  answer: [0, 2],
+  explain: `**Đáp án đúng: CORS là cơ chế bảo mật của trình duyệt, và server Spring Boot cần trả về header cho phép nguồn frontend.** CORS (Cross-Origin Resource Sharing) là cơ chế của trình duyệt: khi frontend (http://localhost:5173) gọi API khác nguồn (http://localhost:8080), trình duyệt gửi yêu cầu và kiểm tra phản hồi có header Access-Control-Allow-Origin cho phép nguồn frontend hay không. Nếu không, trình duyệt chặn JavaScript đọc phản hồi (yêu cầu vẫn có thể đi đến server, nhưng phản hồi bị chặn ở trình duyệt). Cách khắc phục: cấu hình Spring Boot qua CorsRegistry (WebMvcConfigurer) hoặc annotation @CrossOrigin để cho phép nguồn http://localhost:5173.
+
+### Vì sao các phương án còn lại sai
+- **lỗi cấu hình database**: CORS hoàn toàn là vấn đề trình duyệt và header HTTP, không liên quan đến database hay kết nối server đến database.
+- **cấu hình trên frontend là đủ**: CORS được kiểm soát bởi server qua header phản hồi; frontend không thể bypass CORS của riêng nó.
+- **chỉ ảnh hưởng GET**: CORS áp dụng mọi phương thức HTTP; với PUT/DELETE có preflight request OPTIONS trước, server cũng phải cho phép.
+
+> Senior tip: trên production, hạn chế cho phép * (mọi nguồn); nên chỉ liệt kê các domain frontend thật, và kết hợp CSRF token nếu dùng cookie để gửi yêu cầu.`
+},
+{
+  id: 'qz-frontend-008',
+  topic: 'api',
+  multi: true,
+  q: 'Một ứng dụng Vue 3 lưu JWT nhận được sau khi đăng nhập vào Spring Boot. Hai phát biểu nào đúng về cách lưu JWT an toàn? (Chọn 2)',
+  options: [
+    'Lưu JWT vào localStorage là an toàn nhất vì JavaScript có thể đọc dễ dàng và không bị mất khi refresh trang.',
+    'Lưu JWT trong HttpOnly cookie giúp JavaScript trên trang không thể đọc token, giảm nguy cơ bị trộm qua tấn công XSS.',
+    'Lưu JWT vào biến global hoặc state của Vue component thì token không thể bị truy cập bởi mã bên ngoài.',
+    'HttpOnly cookie vẫn cần server xác thực mỗi request và kết hợp CSRF token để ngăn tấn công giả mạo yêu cầu giữa các trang.',
+    'JWT lưu trong sessionStorage thì không ai có thể đọc được kể cả khi có mã độc chạy trên trang.'
+  ],
+  answer: [1, 3],
+  explain: `**Đáp án đúng: HttpOnly cookie ngăn JavaScript đọc token (giảm nguy cơ XSS), và cần kết hợp CSRF token để ngăn tấn công giả mạo yêu cầu giữa các trang.** localStorage và sessionStorage đều có thể đọc được bởi bất kỳ JavaScript nào chạy trên trang, bao gồm mã độc hoặc scripts bên thứ hai bị chèn vào qua XSS, nên lưu JWT ở đó rất nguy cơ token bị trộm. HttpOnly cookie không cho JavaScript đọc (chỉ trình duyệt gửi tự động cùng yêu cầu), do đó an toàn hơn trước XSS. Tuy nhiên, cookie tự động gửi cùng mọi yêu cầu đến cùng domain, điều này mở cửa cho tấn công CSRF (giả mạo yêu cầu giữa các trang); do đó cần dùng CSRF token hoặc SameSite attribute để phòng ngừa.
+
+### Vì sao các phương án còn lại sai
+- **localStorage an toàn nhất**: localStorage dễ bị đọc qua XSS, không phải lựa chọn an toàn cho JWT.
+- **biến global/state không thể truy cập**: bất kỳ JavaScript nào trên trang đều có thể truy cập biến global và state của component nếu có tham chiếu, không gì ngăn mã bên ngoài.
+- **sessionStorage không ai đọc được**: sessionStorage cũng có thể đọc bởi JavaScript trên cùng origin, chỉ khác localStorage ở thời gian sống (đóng tab thì mất).
+
+> Senior tip: nếu dùng HttpOnly cookie để lưu JWT, hãy bật SameSite=Strict hoặc Lax và dùng CSRF token cho các yêu cầu thay đổi dữ liệu, như Spring Security khuyên.`
+},
+{
+  id: 'qz-frontend-009',
+  topic: 'api',
+  q: 'Một thành phần Vue 3 hiển thị bình luận do người dùng nhập vào cơ sở dữ liệu, sau đó render lại cho mọi người xem bằng {{tenBinhLuan}}. Cách an toàn nhất để phòng ngừa XSS là gì?',
+  options: [
+    'Dùng {{tenBinhLuan}} (Vue tự động thoát HTML), chứ không dùng {{v-html}} với nội dung người dùng.',
+    'Dùng {{v-html}} để hiển thị bình luận, Vue sẽ tự động lọc bỏ mã độc.',
+    'Chỉ cần lưu bình luận vào cơ sở dữ liệu, cơ sở dữ liệu sẽ tự động chặn XSS.',
+    'Cho phép người dùng nhập HTML thoải mái, sau đó dùng JavaScript xóa thẻ script khi hiển thị.'
+  ],
+  answer: 0,
+  explain: `**Đáp án đúng: Dùng {{tenBinhLuan}} (Vue tự động thoát HTML), chứ không dùng {{v-html}} với nội dung người dùng.** Vue 3 dùng {{ }} (mustache) để hiển thị văn bản, và Vue sẽ tự động thoát các ký tự HTML đặc biệt (<, >, &, v.v.) thành mã thực thể. Do đó, nếu người dùng nhập <script>alert("xss")</script> vào bình luận, Vue hiển thị đúng chuỗi đó dưới dạng văn bản, không thực thi script. Điều này tương tự escaping hiển thị dữ liệu trong Thymeleaf hay JSP. v-html ngắt cơ chế thoát này, chèn thô HTML vào DOM, nên chỉ dùng với nội dung đáng tin cậy; nếu bắt buộc dùng với nội dung người dùng, phải truyền qua thư viện làm sạch HTML (sanitizer) để loại bỏ thẻ script và thuộc tính sự kiện như onclick trước.
+
+### Vì sao các phương án còn lại sai
+- **v-html an toàn vì Vue kiểm tra**: v-html không kiểm tra hay lọc nội dung, nó chèn thô HTML, rất dễ bị XSS.
+- **XSS chỉ ảnh hưởng người nhập**: XSS là tấn công qua trang web, kẻ tấn công chèn script vào bình luận, khi người khác mở trang thì script chạy trong trình duyệt của họ, có thể trộm cookie hoặc token.
+- **tắt JavaScript phòng ngừa hiệu quả**: tắt JavaScript làm hỏng hầu hết ứng dụng web hiện đại, không phải cách thực tế; cần xử lý đúng ở ứng dụng.
+
+> Senior tip: mặc định dùng {{ }} hoặc v-text cho nội dung người dùng; chỉ dùng v-html kèm sanitizer khi thực sự cần hiển thị HTML giàu định dạng (ví dụ bài viết đã được biên tập viên duyệt).`
+},
+{
+  id: 'qz-frontend-010',
+  topic: 'api',
+  q: 'Một thành phần Vue 3 dùng Options API viết methods như sau. Khi nhấn nút, hàm this.luuDonHang bị lỗi this là undefined. Nguyên nhân và cách sửa là gì?',
+  options: [
+    'Vì hàm được khai báo bằng arrow function, this được lấy từ ngữ cảnh bên ngoài và không trỏ tới instance của thành phần; hãy dùng hàm thông thường (không phải arrow function) trong methods.',
+    'Vì hàm là hàm thường, this luôn trùng với window; hãy chuyển sang arrow function để this trỏ tới thành phần.',
+    'Lỗi do Vue không hỗ trợ methods trong Options API, phải dùng Composition API.',
+    'Lỗi do this.luuDonHang không được khai báo trong data, cần thêm vào data trước khi gọi.'
+  ],
+  answer: 0,
+  explain: `**Đáp án đúng: hàm dùng arrow function nên this lấy từ ngữ cảnh bên ngoài, không trỏ tới instance thành phần; hãy dùng hàm thông thường.** Trong JavaScript, this của hàm thông thường được xác định khi gọi, và trong Options API Vue gán this trỏ tới instance của thành phần. Nhưng arrow function không có this riêng; nó kế thừa this từ nơi hàm được định nghĩa (lexical this). Nếu định nghĩa arrow function ở cấp module hoặc ngoài instance, this sẽ không phải instance thành phần (thường là undefined ở strict mode), gây lỗi khi truy cập this.luuDonHang hay this.donHang. Cách sửa: khai báo methods bằng hàm thông thường, ví dụ methods: { luuDonHang() { ... } }, hoặc gán const vm = this trước khi vào callback. Điều này khác Java, nơi this luôn trỏ tới đối tượng hiện tại trong lớp.
+
+### Vì sao các phương án còn lại sai
+- **chuyển sang arrow function**: arrow function lại làm this không phải instance, nên không sửa được lỗi.
+- **Vue không hỗ trợ methods**: Options API hoàn toàn hỗ trợ methods, đây là cách viết chuẩn.
+- **thêm vào data**: this undefined không phải do thiếu khai báo data, mà do cách hàm được định nghĩa.
+
+> Senior tip: tránh dùng arrow function cho methods, watcher hay lifecycle hook trong Options API khi cần truy cập this của thành phần; dùng hàm thông thường.`
+},
+{
+  id: 'qz-frontend-011',
+  topic: 'api',
+  q: 'Một hàm trong JavaScript tạo ra một hàm con và trả về hàm con đó, hàm con ghi nhớ các biến của hàm cha ngay cả sau khi hàm cha đã kết thúc. Khái niệm này gọi là gì?',
+  options: [
+    'Closure (trình bao buộc): hàm con ghi nhớ môi trường biến của hàm cha sau khi hàm cha kết thúc.',
+    'Hoisting: việc JavaScript đưa khai báo hàm và biến lên đầu phạm vi trước khi chạy.',
+    'Currying: việc biến đổi hàm nhận nhiều tham số thành chuỗi các hàm nhận một tham số.',
+    'Promise.all: việc chờ nhiều Promise hoàn thành cùng lúc.'
+  ],
+  answer: 0,
+  explain: `**Đáp án đúng: Closure (trình bao buộc).** Closure là hàm có quyền truy cập vào biến của hàm cha ngay cả sau khi hàm cha đã kết thúc chạy. Khi hàm cha trả về hàm con, hàm con "giữ lại" (giữ tham chiếu đến) môi trường biến của hàm cha. Điều này dùng để tạo dữ liệu private, hàm factory, hoặc ghi nhớ trạng thái giữa các lần gọi, giống như một đối tượng có trường private trong Java nhưng nhẹ hơn. Ví dụ hàm tạo bộ đếm: mỗi lần gọi trả về một hàm closure giữ biến đếm riêng.
+
+### Vì sao các phương án còn lại sai
+- **Hoisting**: hoisting chỉ là việc khai báo được đưa lên đầu phạm vi trước khi thực thi, không liên quan đến ghi nhớ biến của hàm cha.
+- **Currying**: currying biến đổi hàm đa tham số thành chuỗi hàm một tham số, không phải ghi nhớ môi trường biến cha.
+- **Promise.all**: dùng để chờ nhiều Promise hoàn thành, không phải cơ chế ghi nhớ biến hàm cha.
+
+> Senior tip: closure rất hữu ích nhưng cẩn thận giữ tham chiếu đến đối tượng lớn trong closure có thể gây rò rỉ bộ nhớ (memory leak) vì bộ nhớ không được giải phóng cho đến khi hàm con không còn dùng nữa.`
+},
+{
+  id: 'qz-frontend-012',
+  topic: 'api',
+  q: 'Trong JavaScript, dev Java so sánh hai giá trị. Sự khác biệt giữa {{==}} và {{===}} là gì?',
+  options: [
+    '{{==}} và {{===}} hoạt động hoàn toàn giống nhau trong JavaScript hiện đại.',
+    '{{===}} chỉ dùng cho số, {{==}} dùng cho chuỗi và đối tượng.',
+    '{{==}} so sánh giá trị và kiểu, {{===}} so sánh chỉ giá trị, ép kiểu trước khi so sánh.',
+    '{{==}} so sánh với ép kiểu (type coercion), còn {{===}} so sánh đồng giá trị và đồng kiểu, không ép kiểu.'
+  ],
+  answer: 3,
+  explain: `**Đáp án đúng: {{==}} so sánh với ép kiểu, còn {{===}} so sánh đồng giá trị và đồng kiểu, không ép kiểu.** Toán tử {{==}} (loose equality) sẽ chuyển đổi kiểu dữ liệu trước khi so sánh, ví dụ 5 == "5" trả về true vì chuỗi "5" được ép thành số 5. Toán tử {{===}} (strict equality) không ép kiểu: cả giá trị và kiểu phải giống nhau, nên 5 === "5" trả về false. Đối với dev Java, điều này dễ gây nhầm lẫn vì Java yêu cầu kiểu khớp khi so sánh (trừ boxing), còn JavaScript cho phép {{==}} ép kiểu ngầm dẫn đến kết quả bất ngờ (ví dụ: "" == 0 là true).
+
+### Vì sao các phương án còn lại sai
+- **{{==}} so sánh giá trị và kiểu, {{===}} so sánh chỉ giá trị**: hoàn toàn ngược lại; {{===}} mới cùng giá trị và cùng kiểu.
+- **hoạt động giống nhau**: khác nhau rõ rệt, đặc biệt khi so sánh các kiểu khác nhau như số và chuỗi.
+- **{{===}} chỉ dùng cho số**: {{===}} dùng cho mọi kiểu dữ liệu, không giới hạn số.
+
+> Senior tip: luôn dùng {{===}} (và {{!==}}) trong code production để tránh kết quả bất ngờ từ ép kiểu, chỉ dùng {{==}} khi cố ý cần so sánh theo quy tắc ép kiểu của JavaScript.`
 }
 
 );
