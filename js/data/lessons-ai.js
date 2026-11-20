@@ -5726,4 +5726,449 @@ Gợi ý: dùng {{HashSet}}.`,
   tags: ['ai', 'rag', 'evaluation', 'recall-at-k', 'precision-at-k', 'citation', 'cost', 'golden-dataset', 'cv'],
 }
 
+,
+{
+  id: 'lesson-ai-019',
+  track: 'ai', order: 19,
+  title: 'RAG hands-on: BM25 tu so 0 va Reciprocal Rank Fusion (RRF)',
+  level: 'senior',
+  minutes: 45,
+  goals: [
+    'Hieu vi sao vector search bo sot ma san pham/ma loi va vi sao can BM25.',
+    'Tu tinh BM25 cho 3 tai lieu nho, hieu tf, idf, do dai tai lieu, k1, b.',
+    'Gop ket qua BM25 va vector bang RRF (k=60) de tan dung ca hai.',
+    'Cai dat Bm25Index.search va Rrf.fuse deterministic trong Java thuan.',
+  ],
+  body: `**Tom tat:** Vector search (tim kiem vector: so sanh embedding - vector nhung) gioi gan nghia nhung bo sot tu khoa chinh xac nhu ma san pham PRD-1234 hoac ma loi ECONNRESET. BM25 la thuat toan xep hang tu khoa kinh dien (giong Elasticsearch/Lucene), tinh diem theo tf (tan suat tu trong tai lieu), idf (do hiem cua tu trong toan bo tap), va do dai tai lieu. Gop BM25 + vector bang RRF (Reciprocal Rank Fusion): moi tai lieu nhan 1/(k+rank) tu moi danh sach, tong lai -> tai lieu xuat hien o ca hai duoc thuong. k=60 la mac dinh pho bien.
+
+### 1. Vi sao vector search bo sot ma?
+Embedding nen y nghia thanh vector; cac tu hiem (ma) bi hoa tan vao ngu canh. "PRD-1234 bi loi" va "san pham XYZ bi loi" co the co vector gan nhau. Khi nguoi dung hoi "PRD-1234", vector search tra ve san pham khac cung "bi loi". Can lexical search (tim kiem tu vung chinh xac) de bat dung ma.
+
+### 2. BM25 - cong thuc va tung thanh phan
+Cho truy van q gom cac tu t, tai lieu d:
+score(d,q) = sum over t in q of IDF(t) * [ f(t,d)*(k1+1) / ( f(t,d) + k1*(1 - b + b*|d|/avgdl) ) ]
+
+- f(t,d): tf = so lan t xuat hien trong d.
+- |d|: do dai d (so tu). avgdl: do dai trung binh cua moi tai lieu.
+- k1 (thuong 1.2-2.0): bao hoa tf.
+- b (thuong 0.75): kiem soat chuan hoa theo do dai.
+- IDF(t) = ln( (N - n(t) + 0.5) / (n(t) + 0.5) + 1 ), N = so tai lieu, n(t) = so tai lieu chua t.
+
+### 3. Vi du tinh tay 3 tai lieu
+D1: "loi PRD-1234 thanh toan" (3 tu)
+D2: "loi thanh toan the" (3 tu)
+D3: "huong dan su dung the" (4 tu)
+avgdl = (3+3+4)/3 = 10/3 ~ 3.33. N=3.
+Truy van "loi thanh toan": tu "loi" n=2, "thanh toan" n=2.
+IDF("loi") = ln((3-2+0.5)/(2+0.5)+1)=ln(1.5/2.5+1)=ln(1.6)=0.47.
+IDF("thanh toan") tuong tu = 0.47.
+k1=1.5, b=0.75.
+D1: f("loi")=1, f("thanh toan")=1, |d|=3.
+Diem "loi": 0.47 * [1*(2.5)/(1+1.5*(1-0.75+0.75*3/3.33))].
+Denominator: 1 + 1.5*(0.25+0.675)=1+1.5*0.925=2.3875. Numerator 2.5. factor=1.047. contribution=0.492.
+"thanh toan" tuong tu=0.492. Tong D1=0.984.
+D2: tuong tu =0.984.
+D3: f ca hai =0 -> 0. Vay D1,D2 dong hang, D3 thap.
+
+### 4. RRF gop BM25 + vector
+Moi he thong tra top-N theo thu tu. RRF score(d) = sum over lists L of 1/(k + rank_L(d)), rank bat dau tu 1. k=60 lam muot. Tai lieu xuat hien cao o ca hai danh sach duoc thuong lon; tai lieu chi xuat hien o mot danh sach van duoc diem nhung thap hon.
+
+Vi du: vector list [A,B,C], BM25 list [B,D,A]. k=60.
+A: 1/(60+1)+1/(60+3)=0.0164+0.0159=0.0323.
+B: 1/(60+2)+1/(60+1)=0.0161+0.0164=0.0325 -> B thang nhe.
+C: 0.0159. D: 0.0161. Ket qua [B,A,D,C] (theo diem giam dan, hoa thi id tang dan).
+
+### 5. Khi nao dung gi
+- BM25: truy van chua ma/ID/ten rieng/tu khoa chinh xac.
+- Vector: truy van tu nhien, dong nghia.
+- Hybrid (RRF): hau het production RAG nen dung hybrid de Recall@k cao hon.
+
+### Lien he phong van
+Tra loi "Lam sao RAG khong bo sot ma san pham?": giai thich embedding hoa tan tu hiem, them BM25 lexical, gop bang RRF k=60, do Recall@k tren golden set. Trade-off: hybrid ton them chi phi va do tre; phai chuan hoa tokenization (lowercase, tach dau gach ngang) nhat quan giua index va query.
+
+> Senior tip: BM25 cua Lucene dung IDF smoothing khac mot chut; khi cai tay phai khop convention test. Luon lowercase va tokenize nhat quan; neu khong, IDF sai hoan toan.`,
+  exercises: [
+    {
+      title: 'Bm25Index.search va Rrf.fuse',
+      prompt: `Cai dat hai class Java thuan.
+
+1. class Bm25Index:
+   - Constructor Bm25Index(List<String> docs, double k1, double b) nhan danh sach tai lieu. Tinh avgdl va luu.
+   - List<String> search(String query, int topK): tokenize query theo khoang trang; voi moi tai lieu tinh BM25 (cong thuc tren, lowercase ca hai phia) va tra ve id tai lieu (index dang chuoi "0","1",...) cua topK tai lieu co diem cao nhat. Sap xep giam dan theo diem; hoa diem thi id tang dan (so sanh so). topK <= 0 tra rong. Neu query rong tra rong.
+   IDF: ln((N - n + 0.5)/(n + 0.5) + 1). n = so tai lieu chua tu (tf>0). Neu n=0 (tu khong co trong tap) thi IDF = 0.
+
+2. class Rrf:
+   - static List<String> fuse(List<List<String>> rankedLists, int k, int topK): voi moi danh sach (da xep hang, phan tu dau la hang 1), moi tai lieu nhan 1.0/(k + rank) voi rank tu 1. Tong diem cac danh sach. Tra ve topK id co tong diem cao nhat, giam dan theo diem, hoa thi id tang dan (so sanh chuoi). topK <= 0 tra rong. k <= 0 dung 1.
+
+Tokenize: split("\\\\s+"), lowercase (Locale.ROOT), bo token rong.`,
+      starter: `class Bm25Index {
+    Bm25Index(List<String> docs, double k1, double b) {
+        throw new UnsupportedOperationException("TODO");
+    }
+    List<String> search(String query, int topK) {
+        throw new UnsupportedOperationException("TODO");
+    }
+}
+
+class Rrf {
+    static List<String> fuse(List<List<String>> rankedLists, int k, int topK) {
+        throw new UnsupportedOperationException("TODO");
+    }
+}`,
+      tests: `public class Main {
+    static int passed = 0, total = 0;
+    static void check(String name, Runnable r) {
+        total++;
+        try { r.run(); passed++; System.out.println("PASS " + name); }
+        catch (Throwable t) { System.out.println("FAIL " + name + ": " + t); }
+    }
+    static void eq(Object expected, Object actual) {
+        if (!Objects.equals(expected, actual)) throw new AssertionError("expected " + expected + " got " + actual);
+    }
+    public static void main(String[] args) {
+        List<String> docs = Arrays.asList(
+            "loi prd-1234 thanh toan",
+            "loi thanh toan the",
+            "huong dan su dung the"
+        );
+        Bm25Index idx = new Bm25Index(docs, 1.5, 0.75);
+        check("bm25 top2 for 'loi thanh toan'", () -> {
+            eq(Arrays.asList("0", "1"), idx.search("loi thanh toan", 2));
+        });
+        check("bm25 all three when topK=3", () -> {
+            eq(Arrays.asList("0", "1", "2"), idx.search("loi thanh toan", 3));
+        });
+        check("bm25 topK<=0 empty", () -> eq(Collections.emptyList(), idx.search("loi", 0)));
+        check("bm25 empty query empty", () -> eq(Collections.emptyList(), idx.search("   ", 2)));
+
+        List<List<String>> lists = Arrays.asList(
+            Arrays.asList("A", "B", "C"),
+            Arrays.asList("B", "D", "A")
+        );
+        check("rrf fusion order", () -> {
+            eq(Arrays.asList("B", "A", "D", "C"), Rrf.fuse(lists, 60, 4));
+        });
+        check("rrf topK limit", () -> {
+            eq(Arrays.asList("B", "A"), Rrf.fuse(lists, 60, 2));
+        });
+        check("rrf topK<=0 empty", () -> {
+            eq(Collections.emptyList(), Rrf.fuse(lists, 60, 0));
+        });
+        System.out.println("RESULT " + passed + "/" + total);
+    }
+}`,
+      reference: `class Bm25Index {
+    private final List<String> docs;
+    private final double k1, b;
+    private final double avgdl;
+    private final int N;
+
+    Bm25Index(List<String> docs, double k1, double b) {
+        this.docs = new ArrayList<>(docs);
+        this.k1 = k1;
+        this.b = b;
+        this.N = docs.size();
+        double sum = 0;
+        for (String d : docs) sum += tokenize(d).size();
+        this.avgdl = N == 0 ? 0.0 : sum / N;
+    }
+
+    private static List<String> tokenize(String s) {
+        List<String> out = new ArrayList<>();
+        if (s == null) return out;
+        for (String t : s.toLowerCase(Locale.ROOT).split("\\\\s+")) {
+            if (!t.isEmpty()) out.add(t);
+        }
+        return out;
+    }
+
+    private double idf(String term) {
+        int n = 0;
+        for (String d : docs) {
+            if (tokenize(d).contains(term)) n++;
+        }
+        if (n == 0) return 0.0;
+        return Math.log((N - n + 0.5) / (n + 0.5) + 1.0);
+    }
+
+    List<String> search(String query, int topK) {
+        if (topK <= 0) return Collections.emptyList();
+        List<String> qTokens = tokenize(query);
+        if (qTokens.isEmpty()) return Collections.emptyList();
+        Set<String> uniq = new LinkedHashSet<>(qTokens);
+        List<double[]> scored = new ArrayList<>();
+        for (int i = 0; i < docs.size(); i++) {
+            List<String> dt = tokenize(docs.get(i));
+            int dl = dt.size();
+            double score = 0.0;
+            for (String t : uniq) {
+                double idfv = idf(t);
+                if (idfv == 0.0) continue;
+                int tf = 0;
+                for (String w : dt) if (w.equals(t)) tf++;
+                double denom = tf + k1 * (1.0 - b + b * (avgdl == 0 ? 0 : (double) dl / avgdl));
+                double contrib = idfv * (tf * (k1 + 1.0)) / (denom == 0 ? 1 : denom);
+                score += contrib;
+            }
+            scored.add(new double[]{i, score});
+        }
+        scored.sort((a, c) -> {
+            if (a[1] != c[1]) return Double.compare(c[1], a[1]);
+            return Double.compare(a[0], c[0]);
+        });
+        List<String> out = new ArrayList<>();
+        for (int i = 0; i < Math.min(topK, scored.size()); i++) {
+            out.add(String.valueOf((int) scored.get(i)[0]));
+        }
+        return out;
+    }
+}
+
+class Rrf {
+    static List<String> fuse(List<List<String>> rankedLists, int k, int topK) {
+        if (topK <= 0) return Collections.emptyList();
+        int kk = k <= 0 ? 1 : k;
+        Map<String, Double> scores = new LinkedHashMap<>();
+        for (List<String> list : rankedLists) {
+            for (int r = 0; r < list.size(); r++) {
+                String id = list.get(r);
+                double inc = 1.0 / (kk + (r + 1));
+                scores.put(id, scores.getOrDefault(id, 0.0) + inc);
+            }
+        }
+        List<Map.Entry<String, Double>> entries = new ArrayList<>(scores.entrySet());
+        entries.sort((a, c) -> {
+            if (!a.getValue().equals(c.getValue())) return Double.compare(c.getValue(), a.getValue());
+            return a.getKey().compareTo(c.getKey());
+        });
+        List<String> out = new ArrayList<>();
+        for (int i = 0; i < Math.min(topK, entries.size()); i++) out.add(entries.get(i).getKey());
+        return out;
+    }
+}`,
+      hints: [
+        'Tokenize lowercase nhat quan; idf=0 cho tu khong co trong tap.',
+        'RRF: rank bat dau tu 1; tai lieu khong co trong list thi bo qua.',
+        'Hoa diem tie-break id tang dan.',
+      ],
+      explain: `### Loi giai
+- Bm25Index luu docs, avgdl; idf tinh theo so tai lieu chua term. search tokenize query, tinh diem tung doc, sort giam dan theo diem hoa thi id tang dan.
+- Rrf.fuse cong 1/(k+rank) cho moi occurrence, sort giam dan hoa id tang dan.
+
+### Loi hay gap
+- Tokenize khong nhat quan giua index va query -> IDF/TF sai.
+- Dung rank 0-based -> lech diem.
+- Quen tie-break -> ket qua khong xac dinh.
+
+> Senior tip: production dung Elasticsearch/OpenSearch BM25 + vector kNN, gop bang RRF ngay trong engine; hieu cong thuc de tune k1/b va debug ranking.`,
+    },
+  ],
+  check: [
+    {
+      q: 'BM25 chuan hoa theo do dai tai lieu bang tham so nao?',
+      options: ['k1', 'b', 'idf', 'avgdl'],
+      answer: 1,
+      explain: 'b (thuong 0.75) kiem soat muc chuan hoa theo do dai: b=0 khong chuan hoa, b=1 chuan hoa day du.',
+    },
+    {
+      q: 'RRF voi k=60: tai lieu xuat hien o ca hai danh sach (BM25 va vector) o hang cao se the nao?',
+      options: [
+        'Bi phat vi trung lap',
+        'Duoc thuong vi tong hai phan 1/(60+rank), thuong vuot tai lieu chi xuat hien o mot danh sach',
+        'Bi loai khoi ket qua',
+        'Diem khong doi',
+      ],
+      answer: 1,
+      explain: 'RRF cong diem tu moi danh sach; xuat hien o ca hai -> tong cao hon, do la muc dich cua hybrid.',
+    },
+    {
+      q: 'Vi sao vector search thuong bo sot ma san pham nhu PRD-1234?',
+      options: [
+        'Vi embedding nen y nghia va hoa tan tu hiem, nen can lexical search/BM25 bo sung',
+        'Vi cosine similarity chi hoat dong voi so',
+        'Vi k qua nho',
+        'Vi LLM khong doc duoc ma',
+      ],
+      answer: 0,
+      explain: 'Embedding bieu dien y nghia tong the, tu hiem/ma bi hoa tan; lexical search bat chinh xac tu khoa.',
+    },
+  ],
+  related: ['ai-003', 'ai-005', 'ai-015', 'ai-016', 'ai-017'],
+  tags: ['ai', 'rag', 'bm25', 'hybrid-search', 'rrf', 'lexical', 'hands-on'],
+},
+{
+  id: 'lesson-ai-020',
+  track: 'ai', order: 20,
+  title: 'RAG hands-on: MMR re-ranking de ket qua vua lien quan vua da dang',
+  level: 'senior',
+  minutes: 35,
+  goals: [
+    'Hieu van de "5 chunk gan giong nhau" trong top-k vector search.',
+    'Hieu cong thuc MMR va vai tro lambda.',
+    'Cai dat Mmr.select deterministic trong Java thuan.',
+    'Biet khi nao dung MMR vs don gian lay top-k.',
+  ],
+  body: `**Tom tat:** Top-k vector search thuong tra ve k chunk gan giong nhau (vi du 5 doan deu noi "phi thuong nien 300k"), gay lang phi context va giam da dang thong tin. MMR (Maximal Marginal Relevance) chon tung chunk tiep theo toi da hoa: lambda * relevance(chunk, query) - (1-lambda) * max_similarity(chunk, da chon). lambda=0.7-0.9 thien ve lien quan; lambda thap thien ve da dang. Ket qua vua lien quan vua bao phu nhieu khia canh.
+
+### 1. Van de da dang
+Neu 5 chunk top-k deu noi cung mot y, LLM nhan ngu canh du thua va co the bo sot thong tin khac (vi du dieu kien mien phi nam dau). Can re-ranking (xep hang lai) can bang lien quan va da dang.
+
+### 2. Cong thuc MMR
+Cho tap ung vien C, da chon S (rong ban dau):
+MMR = argmax_{c in C\\S} [ lambda * sim(c, query) - (1-lambda) * max_{s in S} sim(c, s) ]
+Khi S rong, phan da dang = 0. Lap cho den khi chon du k. sim thuong la cosine similarity giua embedding. Neu lambda=1 -> chi lay lien quan (giong top-k). lambda=0 -> chi da dang (it dung).
+
+### 3. Vi du
+Query "phi the". Ung vien:
+A relevance 0.9, B relevance 0.85, C relevance 0.8.
+sim(A,B)=0.95 (rat giong), sim(A,C)=0.3, sim(B,C)=0.25.
+lambda=0.7.
+Buoc 1: chon A (relevance cao nhat) -> S={A}.
+Buoc 2: MMR(B)=0.7*0.85 - 0.3*0.95 = 0.595-0.285=0.310. MMR(C)=0.7*0.8 - 0.3*0.3 = 0.56-0.09=0.470. Chon C (da dang hon).
+Buoc 3: chi con B -> chon B.
+Ket qua [A,C,B] thay vi [A,B,C] - tranh hai chunk gan giong nhau lien tiep.
+
+### 4. Khi nao dung MMR
+- Context window han che, can bao phu nhieu khia canh.
+- Tai lieu co nhieu doan lap lai (FAQ, policy).
+- Khong can khi da dedup chunk truoc (vi du chunking tot + dedup exact/near-duplicate).
+
+### 5. Bien the va luu y trien khai
+- **Lambda tuning**: bat dau 0.7, do tren golden set; neu ket qua thieu da dang giam lambda, neu lac de tang.
+- **Near-duplicate dedup**: truoc MMR, loai chunk trung lap gan (cosine > 0.95) de giam kich thuoc ung vien.
+- **Max sim metric**: co the dung max cosine hoac max dot product (neu embedding chuan hoa thi tuong duong).
+- **Chi phi**: MMR O(k * N * d) voi d la so chieu, nhung N nho (top-20/50) nen re.
+- **Do luong**: do Recall@k va coverage (so khia canh duy nhat trong top-k) de chung minh MMR cai thien chat luong.
+
+### Lien he phong van
+Tra loi "Lam sao tranh 5 chunk giong nhau trong RAG?": neu MMR voi lambda, re-rank sau retrieve, trade-off lien quan vs da dang, do Recall@k va coverage. Neu lambda qua thap, ket qua da dang nhung kem lien quan -> tra loi sai.
+
+> Senior tip: MMR chay tren tap ung vien nho (top-20/50) de re; sim dung embedding da co san, khong goi model them. Co the thay cosine bang dot product neu embedding da chuan hoa.`,
+  exercises: [
+    {
+      title: 'Mmr.select',
+      prompt: `Cai dat class Mmr voi method:
+static List<Integer> select(double[] querySim, double[][] pairSim, int k, double lambda)
+- querySim[i]: do lien quan (relevance) cua ung vien i voi query, da tinh san (0..1).
+- pairSim[i][j]: do tuong dong giua ung vien i va j (0..1), doi xung.
+- Chon k ung vien theo MMR: moi buoc chon ung vien chua chon toi da hoa lambda*querySim[i] - (1-lambda)*maxSimToSelected (neu chua chon ai, maxSimToSelected=0).
+- Tra ve danh sach index da chon theo thu tu chon (khong phai sorted). k <= 0 tra rong. Neu k > so ung vien, chon tat ca.
+- Tie-break: khi hai ung vien co cung MMR score, chon index nho hon.
+
+Chi dung JDK chuan.`,
+      starter: `class Mmr {
+    static List<Integer> select(double[] querySim, double[][] pairSim, int k, double lambda) {
+        throw new UnsupportedOperationException("TODO");
+    }
+}`,
+      tests: `public class Main {
+    static int passed = 0, total = 0;
+    static void check(String name, Runnable r) {
+        total++;
+        try { r.run(); passed++; System.out.println("PASS " + name); }
+        catch (Throwable t) { System.out.println("FAIL " + name + ": " + t); }
+    }
+    static void eq(Object expected, Object actual) {
+        if (!Objects.equals(expected, actual)) throw new AssertionError("expected " + expected + " got " + actual);
+    }
+    public static void main(String[] args) {
+        double[] qs = new double[]{0.9, 0.85, 0.8};
+        double[][] ps = new double[][]{
+            {1.0, 0.95, 0.3},
+            {0.95, 1.0, 0.25},
+            {0.3, 0.25, 1.0}
+        };
+        check("mmr picks diverse", () -> {
+            eq(Arrays.asList(0, 2, 1), Mmr.select(qs, ps, 3, 0.7));
+        });
+        check("mmr k=1 picks highest relevance", () -> {
+            eq(Arrays.asList(0), Mmr.select(qs, ps, 1, 0.7));
+        });
+        check("mmr k<=0 empty", () -> {
+            eq(Collections.emptyList(), Mmr.select(qs, ps, 0, 0.7));
+        });
+        check("mmr k>size selects all", () -> {
+            eq(3, Mmr.select(qs, ps, 10, 0.7).size());
+        });
+        double[] qs2 = new double[]{0.5, 0.5};
+        double[][] ps2 = new double[][]{{1.0, 0.0},{0.0, 1.0}};
+        check("mmr tie-break", () -> {
+            eq(Arrays.asList(0, 1), Mmr.select(qs2, ps2, 2, 0.7));
+        });
+        System.out.println("RESULT " + passed + "/" + total);
+    }
+}`,
+      reference: `class Mmr {
+    static List<Integer> select(double[] querySim, double[][] pairSim, int k, double lambda) {
+        if (k <= 0) return Collections.emptyList();
+        int n = querySim.length;
+        List<Integer> selected = new ArrayList<>();
+        boolean[] used = new boolean[n];
+        while (selected.size() < k && selected.size() < n) {
+            int best = -1;
+            double bestScore = Double.NEGATIVE_INFINITY;
+            for (int i = 0; i < n; i++) {
+                if (used[i]) continue;
+                double maxSim = 0.0;
+                for (int s : selected) {
+                    if (pairSim[i][s] > maxSim) maxSim = pairSim[i][s];
+                }
+                double score = lambda * querySim[i] - (1.0 - lambda) * maxSim;
+                if (score > bestScore + 1e-12 || (Math.abs(score - bestScore) <= 1e-12 && (best == -1 || i < best))) {
+                    bestScore = score;
+                    best = i;
+                }
+            }
+            if (best == -1) break;
+            used[best] = true;
+            selected.add(best);
+        }
+        return selected;
+    }
+}`,
+      hints: [
+        'Moi buoc tinh MMR cho tung ung vien chua chon; maxSimToSelected = max pairSim voi da chon (0 neu none).',
+        'Tie-break index nho hon khi score bang nhau (dung epsilon).',
+        'Dung khi du k hoac het ung vien.',
+      ],
+      explain: `### Loi giai
+- Vong lap chon tung ung vien: tinh score = lambda*relevance - (1-lambda)*maxSim voi da chon; chon lon nhat, tie-break index nho.
+- Dung du k hoac het.
+
+### Loi hay gap
+- Dung maxSim = 0 cho buoc dau nhung quen cap nhat cho cac buoc sau.
+- Tie-break khong nhat quan -> ket qua khong xac dinh.
+- lambda ngoai [0,1] -> diem vo nghia.
+
+> Senior tip: MMR la re-ranker re va hieu qua; production thuong chay tren top-20/50 ung vien va sim dung embedding co san. Do coverage/diversity ben canh Recall@k.`,
+    },
+  ],
+  check: [
+    {
+      q: 'MMR voi lambda=1 tuong duong voi gi?',
+      options: ['Chi chon da dang, bo lien quan', 'Chi chon theo lien quan (giong top-k)', 'Loai bo tat ca', 'Ngau nhien'],
+      answer: 1,
+      explain: 'lambda=1 -> phan da dang bi nhan 0, chi con lambda*relevance, nen chon relevance cao nhat nhu top-k.',
+    },
+    {
+      q: 'Van de "5 chunk gan giong nhau" trong top-k vector search gay hau qua gi?',
+      options: [
+        'Tang toc do truy van',
+        'Lang phi context va bo sot thong tin khac, giam chat luong cau tra loi',
+        'Giam chi phi token',
+        'Tang Recall@k',
+      ],
+      answer: 1,
+      explain: 'Context du thua cung mot y, LLM co the bo sot dieu kien/thong tin khac; MMR tang da dang.',
+    },
+    {
+      q: 'MMR nen chay tren tap ung vien nhu the nao de tiet kiem chi phi?',
+      options: ['Toan bo tap tai lieu (N lon)', 'Top-20/50 ung vien da retrieve, dung embedding co san', 'Chi 1 chunk', 'Goi LLM de cham'],
+      answer: 1,
+      explain: 'Chay tren tap nho da retrieve, sim dung embedding co san, khong goi model them -> re.',
+    },
+  ],
+  related: ['ai-003', 'ai-005', 'ai-015', 'ai-016', 'ai-017'],
+  tags: ['ai', 'rag', 'mmr', 're-ranking', 'diversity', 'hands-on'],
+}
 );
