@@ -11578,5 +11578,192 @@ My leadership style is servant leadership: I set clear goals and constraints, th
 `,
   follow: ['How do you measure team health?', 'How do you handle conflict between autonomy and deadlines?', 'What is your biggest leadership mistake?'],
   tags: ['english', 'leadership', 'tech-lead', 'management']
-}
+},
+{
+  id: 'english-227',
+  topic: 'english',
+  level: 'mid',
+  q: 'How do you give a daily stand-up update in an outsource/FDI project when communicating in English?',
+  a: `**Tóm tắt:** Cập nhật hàng ngày chuẩn: **hôm qua làm gì → hôm nay làm gì → blocker**. Ngắn gọn (< 60 giây), tập trung vào **kết quả bàn giao (outcome)** chứ không phải hoạt động, và nêu rõ **ai có thể giúp** với **hạn chót**. Trong dự án outsource,Language barrier khiến câu update cần rõ ràng, ngắn gọn và có con số.
+
+### Sample answer
+"Yesterday I finished the idempotency key validation for the refund API and opened PR #3421. Today I will focus on completing the webhook retry with exponential backoff. The code is done, but I need the dead-letter topic in the staging cluster to test end-to-end.
+
+**Blocker:** The DLQ topic does not exist in staging yet. I need the platform team to create it with a 7-day retention period and monitoring alerts. I will ask @platform-team to pick this up today; we need it by tomorrow morning to unblock the deployment."
+
+### Useful phrases
+- **yesterday I finished**: hôm qua tôi hoàn thành
+- **today I will focus on**: hôm nay tôi tập trung vào
+- **blocker**: điểm chặn / trở ngại
+- **waiting on**: đang chờ
+- **unblock the deployment**: gỡ chặn việc deploy
+- **dead-letter queue (DLQ)**: hàng đợi thư chết
+- **retention period**: kỳ lưu giữ
+- **exponential backoff**: quay về theo cấp số nhân
+
+### Lỗi người Việt hay mắc
+- **Báo cáo hoạt động thay vì kết quả**: "I read code, I ran tests" → hãy nói "I finished X and opened PR #123".
+- **Im lặng khi không có blocker**: hãy nói **"No blockers"** rõ ràng.
+- **Blocker không cụ thể**: "I'm waiting for the platform team" → phải nói: "I need the platform team to create the DLQ topic by tomorrow 9 AM."
+- **Phát âm "blocker"**: /ˈblɒkə/ (Anh) hoặc /ˈblɑːkər/ (Mỹ), nhấn âm đầu.
+- **Dùng "yesterday I did"**: quá khứ đơn đúng, nhưng hãy dùng "I finished/completed" để nhấn mạnh kết quả.
+
+> Senior tip: Đừng biến stand-up thành **báo cáo trạng thái chi tiết** ("tôi đã mở file, đọc code, chạy test..."). Chỉ nói **outcome** và **blocker**. Nếu blocker cần quyết định, nói rõ: "I need a decision from @PO by 2pm on whether to cut scope or delay." Nếu không có blocker, nói "No blockers" — đừng im lặng. Phát âm **stand-up** /ˈstænd ʌp/, **retention** /rɪˈtɛnʃn/.`,
+  follow: [
+    'How do you handle a blocker that the team cannot resolve internally?',
+    'What do you do when a stand-up runs long because someone starts a technical discussion?',
+    'How would you give a stand-up update if you spent the whole day in meetings?',
+  ],
+  tags: ['standup', 'communication', 'agile', 'blocker', 'outsource'],
+  lang: 'en',
+},
+{
+  id: 'english-228',
+  topic: 'english',
+  level: 'senior',
+  q: 'How do you clarify unclear requirements by email in an outsource/FDI project?',
+  a: `**Tóm tắt:** Khi nhận yêu cầu không rõ ràng, hãy phản hồi sớm bằng email có cấu trúc: **vấn đề → câu hỏi cụ thể → kết quả nếu không clear**. Luôn ghi rõ **mục đích kinh doanh** và **hạn chót** để reviewer biết độ urgent. Trong dự án outsource, email là **evidence** (cơ sở bằng chứng) của sự hiểu sai hoặc chưa hiểu, giúp tránh conflict sau này.
+
+### Sample answer
+**Subject:** Clarification needed: refund API flow
+
+Hi [Partner Tech Lead],
+
+I want to make sure I understand the refund API requirements correctly before we start implementation.
+
+**Problem:** The product team mentioned "refund can be issued any time after purchase", but the payment gateway only supports refunds within 30 days. Could you confirm whether refunds after 30 days should be rejected or routed to a different process?
+
+**Business impact:** If we implement the 30-day window now and later need to support unlimited refunds, we will need to rework the database schema and retry logic, which delays the feature by one sprint.
+
+**Questions:**
+1. Is there a 30-day limit on refunds, or can refunds be issued anytime after purchase?
+2. If a refund is requested after 30 days, what should the API return — error code, partial refund, or a different workflow?
+3. Are there any regulatory requirements we need to consider for the refund window?
+
+Please let me know by EOD Thursday so we can finalize the acceptance criteria for this sprint. If something is unclear, I am happy to schedule a 15-minute call.
+
+Thanks,
+[Your Name]
+
+### Useful phrases
+- **I want to make sure I understand**: tôi muốn đảm bảo mình hiểu đúng
+- **before we start implementation**: trước khi bắt đầu triển khai
+- **business impact**: tác động vào kinh doanh
+- **rework the database schema**: tái cấu trúc cơ sở dữ liệu
+- **finalize the acceptance criteria**: xác nhận tiêu chí chấp nhận
+- **schedule a 15-minute call**: lên lịch gọi 15 phút
+- **EOD Thursday**: cuối ngày thứ Năm
+
+### Lỗi người Việt hay mắc
+- **Chờ quá lâu trước khi hỏi**: khách/project đánh giá bạn là không hiểu hoặc không chịu trách nhiệm. Hãy hỏi ngay khi nhận yêu cầu.
+- **Vague câu hỏi**: "Tôi không hiểu" → phải hỏi cụ thể: "LIMIT 30 ngày thì sao?".
+- **Không ghi rõ mục đích kinh tế**: email bị bỏ qua vì không thấy quan trọng. Luôn nêu "nếu không clear → delay bao nhiêu?".
+- **Phát âm "clarify"**: /ˈklærɪfaɪ/ (nhấn "MÔN"), không phải "khi-la-fai".
+- **Dùng "hoặc sao?"**: câu hỏi đúng là "hoặc sao là..." (không có "lại").
+
+> Senior tip: Email là evidence trong dự án outsource — luôn copy email vào ticket/report sau này. Khởi đầu email bằng **bottom line**: đề xuất ngay vấn đề cần clear. Luôn đưa **kết quả nếu không clear** (delay, rework) để đối phương thấy được urgent. Phát âm **clarify** /ˈklærɪfaɪ/, **regulatory** /ˈreɡjʊleɪtəri/. Đừng im lặng nếu yêu cầu không rõ — hỏi sớm hơn là sửa muộn.`,
+  follow: [
+    'What if the stakeholder replies with more vague language?',
+    'How do you handle a stakeholder who does not respond to clarification emails?',
+    'How do you confirm requirements during a real-time call after exchanging emails?',
+  ],
+  tags: ['communication', 'email', 'requirements', 'outsource'],
+  lang: 'en',
+},
+{
+  id: 'english-229',
+  topic: 'english',
+  level: 'senior',
+  q: 'How do you report a delay with a recovery plan to a non-technical client?',
+  a: `**Tóm tắt:** Nguyên tắc: **trung thực, sớm, có phương án, không đổ lỗi**. Cấu trúc: sự thật (delay bao lâu) → tác dụng đến khách → nguyên nhân gốc (ngắn gọn, không kỹ thuật sâu) → phương án khắc phục (có timeline) → cam kết báo cáo tiến độ. Luôn chủ động liên lạc trước deadline.
+
+### Sample answer
+"Hi [Client Name], I want to give you an early heads-up. The payment reconciliation feature we planned to release this Friday will be delayed by approximately one week.
+
+**Root cause:** During load testing, we found a race condition in the idempotency layer that could cause duplicate settlements under high concurrency. It does not show up in functional tests, only when many requests for the same payment arrive at the same time.
+
+**Impact:** The new target date is next Friday, January 19. No other deliverables are affected.
+
+**Mitigation:** We have identified the fix — adding a database-level unique constraint and making the consumer idempotent. The code change is ready and in review (PR #3456). We will deploy to staging by Wednesday, run a 48-hour soak test, and release on Friday. I will send you a daily status update at 4 PM UTC until release.
+
+We take reliability seriously, especially for financial features, and we would rather ship a week late than risk incorrect settlements. Please let me know if you have questions or need to adjust downstream plans."
+
+### Useful phrases
+- **early heads-up**: cảnh báo sớm
+- **root cause**: nguyên nhân gốc
+- **race condition**: điều kiện đua
+- **soak test**: kiểm tra ngâm (chạy lâu để bắt lỗi ngẫu nhiên)
+- **take reliability seriously**: coi trọng độ tin cậy
+- **downstream plans**: kế hoạch của các bên liên quan
+- **unique constraint**: ràng buộc duy nhất (tại database)
+- **critical path**: đường critical path (chuỗi tác vụ quyết định deadline)
+- **daily status update**: cập nhật trạng thái hàng ngày
+
+### Lỗi người Việt hay mắc
+- **Gửi email "we are delayed" rồi im lặng**: khách hàng quốc tế cần **proactive communication** — báo trước, cho timeline cụ thể, cam kết update hằng ngày.
+- **Dùng từ "fault" hay "blame"**: nghe như đổ lỗi. Hãy dùng **"root cause"** hoặc **"contributing factor"**.
+- **Delay do thay đổi requirement từ khách**: hãy nói thẳng nhưng lịch sự: "The scope change requested on January 10 added three days to the critical path."
+- **Phát âm "mitigation"**: /ˌmɪtɪˈɡeɪʃn/ (nhấn "GAY"), không phải "mi-ti-ge-tion".
+- **Thiếu con số cụ thể**: "delay một chút" → phải nói "delay approximately one week", "new target date is January 19".
+
+> Senior tip: Khách hàng quốc tế đánh giá cao **proactive communication**: báo trước, cho timeline cụ thể, cam kết update hằng ngày. Nếu delay do thay đổi requirement từ phía khách, hãy nói thẳng nhưng lịch sự: "The scope change requested on January 10 added three days to the critical path." Không dùng từ "fault" hay "blame" — dùng "root cause" hoặc "contributing factor". Luôn kết email bằng câu hỏi mở: "Please let me know if you have questions or need to adjust downstream plans." Điều này thể hiện ownership và sự quan tâm. Phát âm **proactive** /proʊˈæktɪv/, **deadline** /ˈdedlaɪn/.`,
+  follow: [
+    'What if the client pushes back and demands the original date?',
+    'How do you communicate a delay when the root cause is a third-party vendor?',
+    'How do you handle a delay that keeps growing (unknown unknowns)?',
+  ],
+  tags: ['communication', 'client', 'delay', 'stakeholder', 'recovery'],
+  lang: 'en',
+},
+{
+  id: 'english-230',
+  topic: 'english',
+  level: 'lead',
+  q: 'How do you explain a bug root cause to a non-technical client?',
+  a: `**Tóm tắt:** Sử hình metaphore đời thường + chỉ ra **tác động thực tế** (số liệu, triệu chứng) + giải ra ra sao (hành động đơn giản) + cam kết sửa và theo dõi. Tránh thuật ngữ kỹ thuật; tập trung vào **kết quả** mà khách quan tâm (tiền mất, hoạt động treo, dữ liệu sai).
+
+### Sample answer
+"Hi [Client Name], I want to explain why we are seeing some unexpected delays in the payment processing recently.
+
+Think of our payment system like a checkout counter at a store. Normally, each customer is served one by one, and the total time depends on how many items they have. Last week, we discovered that sometimes the system was 'double-counting' a customer's order — it was like the cashier accidentally ringing up the same purchase twice, which made the total appear higher than it actually was.
+
+**What we saw:** In the last 72 hours, about 150 out of 15,000 transactions (1%) showed a higher amount than expected. The bank flags these for review, and our team was spending about 2 hours a day fixing them.
+
+**Root cause:** A recent config change accidentally turned on a duplicate-detection feature that was meant for a different module. Because it was applied to the wrong place, it created the double-counting issue described above.
+
+**What we are doing:** We have rolled back that config change, and the duplicate count went to zero immediately. We are also adding a safeguard test so this cannot happen again. The fix is already deployed, and we expect no more of these issues going forward.
+
+**What this means for you:** Your payment settlement will return to normal within the next 24 hours, and the settlement report for this month will not be affected. We will send you a confirmation once the fix is fully verified."
+
+### Useful phrases
+- **like a checkout counter at a store**: giống hệ thống thu ngân tại cửa hàng
+- **double-counting**: đếm đôi (sai sót)
+- **the cashier accidentally ringing up the same purchase twice**: tài xế thanh toán vô tình quét cùng món hàng hai lần
+- **the total appear higher than it actually was**: tổng tiền trông cao hơn thực tế
+- **about 150 out of 15,000 transactions (1%)**: khoảng 150 trên 15.000 giao dịch (1%)
+- **the bank flags these for review**: ngân hàng đánh dấu để kiểm tra
+- **about 2 hours a day**: khoảng 2 giờ mỗi ngày
+- **recent config change**: thay đổi cấu hình gần đây
+- **accidentally turned on**: vô tình bật lên
+- **meant for a different module**: định cho module khác
+- **safeguard test**: test phòng ngừa
+- **duplicate count went to zero**: số lượng double-count giảm xuống 0
+- **fully verified**: được xác minh hoàn toàn
+
+### Lỗi người Việt hay mắc
+- **Dùng thuật ngữ kỹ thuật**: "race condition", "config mismatch", "feature flag" — khách không hiểu. Hãy dùng métaphore đời thường.
+- **Liệt kê nguyên nhân phức tạp**: "do thread contention trên JVM cùng với garbage collection" → hãy nói "như người thu ngận quét đôi món".
+- **Quên nói tác động thực tế**: khách quan tâm là "tiền mất không" hoặc "thời gian chờ lâu hơn", không phải lý do kỹ thuật.
+- **Phát âm "config"**: /ˈkɒnfaɡ/ (Anh) hoặc /ˈkɑːnfɪɡ/ (Mỹ), không phải "cấu hình" đọc từng âm.
+- **Không cam kết thời gian sửa**: Luôn có thời gian ước lượng: "Trở về normal trong 24 giờ".
+
+> Senior tip: Quan trọng nhất là **kết quả** khách quan tâm: tiền, thời gian chờ, dữ liệu đúng. Bắt đầu bằng métaphore quen thuộc (cửa hàng, shipper, y tá), chỉ ra **số liệu** (1% giao dịch affected, 2 giờ/ngày), rồi giải ra **hành động đơn giản** (rollback config). Luôn kết bằng **cam kết rõ**: "Settlement sẽ normal trong 24 giờ". Phát âm **refund** /rɪˈfʌnd/, **settlement** /ˈsetlmənt/, **config** /ˈkɒnfaɡ/. Đừng nói "the system had a bug" — hãy nói "chúng tôi phát hiện một vấn đề và đã sửa nó".`,
+  follow: [
+    'What if the client asks "how long will it take to fix?" and you are not sure?',
+    'How do you handle a client who keeps asking "why did this happen?" after you have explained?',
+    'How do you confirm the client understands the root cause without making them feel inadequate?',
+  ],
+  tags: ['communication', 'bug', 'client', 'explanation', 'non-technical'],
+  lang: 'en',
+},
 );
