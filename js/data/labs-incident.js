@@ -7571,5 +7571,118 @@ CREATE INDEX CONCURRENTLY idx_transactions_risk_correlation ON transactions (ris
     'Alert: pg_locks granted=f > 50, migration duration > 5p, hikari_pending > 100, flyway_schema_history execution_time trend.'
   ],
   tags: ['postgresql', 'migration', 'flyway', 'alter-table', 'zero-downtime', 'expand-contract', 'lock-timeout', 'online-schema-change', 'pg-repack']
+},
+{
+  id: 'lab-incident-050',
+  category: 'incident',
+  title: 'Trang danh sách khách hàng Vue mất 6 giây: network waterfall N+1 từ frontend',
+  level: 'senior',
+  scenario: `**Bối cảnh:** Ứng dụng admin **ShopVN** (Vue 3 + Vite) có trang "Danh sách khách hàng" {{/admin/customers}}. Màn hình hiển thị 50 dòng mỗi trang: mỗi dòng có tên, email, số đơn đã mua, tổng chi tiêu, trạng thái membership. Backend là Spring Boot 3.2 cung cấp REST.
+
+**Triệu chứng:** Từ build mới ngày **12/11/2026**, trang danh sách mất **6.2 giây** để hiển thị đầy đủ (trước đó 0.9 giây). Tab Network cho thấy **1 request danh sách** ({{GET /api/customers?page=0&size=50}}) mất ~120 ms, rồi **50 request chi tiết** ({{GET /api/customers/ID/stats}}) mỗi cái ~120 ms chạy tuần tự/đồng thời, tổng ~6 giây. CPU frontend không cao, backend CPU thấp, DB không có slow query. Khách phàn nàn dashboard admin chậm.`,
+  artifacts: [
+    {
+      name: 'network-waterfall.txt',
+      lang: 'text',
+      content: `# Chrome DevTools Network, trang /admin/customers, 12/11/2026 10:14:22
+# Throttle: No throttling. Cache: disabled.
+# Request 1:
+GET /api/customers?page=0&size=50  -> 200 OK  118 ms  (payload 12 KB, 50 items, mỗi item chỉ có id,name,email)
+# Request 2..51 (phát sinh từ CustomerList.vue onMounted -> fetchStats(id)):
+GET /api/customers/C-10001/stats  -> 200 OK  121 ms
+GET /api/customers/C-10002/stats  -> 200 OK  119 ms
+GET /api/customers/C-10003/stats  -> 200 OK  124 ms
+...
+GET /api/customers/C-10050/stats  -> 200 OK  120 ms
+# Tổng thời gian từ request đầu đến request cuối: 6180 ms
+# Concurrent connections tới origin: 6 (HTTP/1.1 limit của trình duyệt)
+# Backend log: không có query > 50 ms; hikari_pending = 0`
+    }
+  ],
+  questions: ['Nguyên nhân gốc là gì? Dẫn chứng từ artifact.', 'Bạn sẽ sửa thế nào, ngắn hạn và dài hạn?'],
+  hints: ['Đếm số request và thời gian mỗi request; nhân lên.', 'Vấn đề nằm ở phía client hay server? Có cần sửa DB không?'],
+  answer: `**Tóm tắt:** Frontend Vue trong {{onMounted}} lặp qua 50 khách hàng và gọi thêm {{GET /api/customers/ID/stats}} cho từng người (N+1 ở tầng client). Mỗi request ~120 ms, trình duyệt chỉ mở 6 kết nối song song nên tổng ~6 giây. Backend và DB không có vấn đề.
+
+### Nguyên nhân gốc
+Code mới (PR #482, ngày 11/11) thêm cột "số đơn" và "tổng chi tiêu" vào bảng, nhưng component {{CustomerList.vue}} gọi API stats riêng cho từng hàng thay vì server trả kèm. Đây là N+1 ở frontend: 1 request list + N request detail.
+
+### Dẫn chứng
+- Waterfall: {{GET /api/customers?page=0&size=50}} 118 ms, sau đó 50 request {{/stats}} mỗi ~120 ms.
+- Tổng 6180 ms; concurrent connections 6 (HTTP/1.1 limit).
+- Backend: không slow query, hikari_pending=0 → DB không phải nguyên nhân.
+
+### Cách sửa
+Ngắn hạn: gộp dữ liệu vào response list: {{GET /api/customers?page=0&size=50&include=stats}} trả thêm {{orderCount, totalSpent, membership}}. Dùng projection/JPA fetch join hoặc một query tổng hợp (GROUP BY customer).
+Dài hạn: pagination server-side đã có; thêm {{fields}} param để client chọn cột; cache stats với TTL ngắn; cân nhắc GraphQL/ BFF aggregation nếu nhiều màn hình cần dữ liệu khác nhau.
+
+### Phòng ngừa
+- Code review: cấm gọi API trong vòng lặp render; lint rule (eslint-plugin-vue) hoặc test e2e đo số request.
+- Metric: đếm số XHR trên trang (RUM), alert nếu > 10 request/trang.
+- Contract test: response list phải chứa các trường cần thiết cho UI.
+
+> Senior tip: N+1 không chỉ ở ORM. Ở frontend, "1 list + N detail" thường xuất hiện khi thêm cột mới mà không cập nhật API. Luôn đo số request trong tab Network khi review PR UI.`,
+  rubric: [
+    'Nhận diện đúng: N+1 ở frontend (1 request list + 50 request stats), mỗi ~120 ms, tổng ~6 giây.',
+    'Dẫn chứng waterfall: 6180 ms, 6 kết nối song song, backend không slow query.',
+    'Đề xuất sửa: API trả dữ liệu gộp (include=stats), fetch join/projection, pagination server-side.',
+    'Phòng ngừa: code review, lint, metric số request, contract test.'
+  ],
+  tags: ['frontend', 'vue', 'n-plus-one', 'network-waterfall', 'api-design', 'pagination']
+},
+{
+  id: 'lab-incident-051',
+  category: 'incident',
+  title: 'Trang chi tiết đơn hàng mobile gọi 40 request song song tới user-service',
+  level: 'senior',
+  scenario: `**Bối cảnh:** Ứng dụng mobile **ShopVN** (React Native) có màn hình "Chi tiết đơn hàng" hiển thị 40 sản phẩm trong đơn, mỗi sản phẩm cần tên người bán và rating. Backend BFF (Spring Boot 3.2) cung cấp {{GET /api/orders/ID}} trả danh sách item (chỉ có sellerId, productId). Client mobile sau đó gọi {{GET /api/users/SELLER_ID}} cho từng seller để lấy tên + rating.
+
+**Triệu chứng:** Từ phiên bản 2.4.0 (05/11/2026), màn hình chi tiết đơn hàng mất **4.8 giây** trên 4G. Tab Network (proxy Charles) cho thấy 1 request order + 40 request user. Mỗi request user ~110 ms, chạy song song nhưng bị giới hạn bởi connection pool của mobile HTTP client (max 6 concurrent) → tổng ~4.8 giây. Backend không có slow query.`,
+  artifacts: [
+    {
+      name: 'charles-proxy-log.txt',
+      lang: 'text',
+      content: `# Charles Proxy, ShopVN app v2.4.0, order ORD-26110500912, 05/11/2026 15:22:10
+GET /api/orders/ORD-26110500912  -> 200 OK  95 ms  (40 items, fields: sellerId, productId, qty, price)
+# Sau đó client gọi cho từng sellerId (có trùng lặp, không dedupe):
+GET /api/users/U-SELLER-001  -> 200 OK  108 ms
+GET /api/users/U-SELLER-002  -> 200 OK  112 ms
+...
+GET /api/users/U-SELLER-040  -> 200 OK  109 ms
+# Tổng thời gian: 4760 ms
+# Concurrent connections tới origin: 6 (mobile HTTP client pool)
+# Số sellerId duy nhất: 12 (trùng lặp không được dedupe)
+# Backend: không có query > 30 ms`
+    }
+  ],
+  questions: ['Nguyên nhân gốc là gì? Dẫn chứng từ artifact.', 'Bạn sẽ sửa thế nào, ngắn hạn và dài hạn?'],
+  hints: ['Đếm số request và số seller duy nhất.', 'Có thể dedupe ở client không? Tại sao vẫn cần sửa server?'],
+  answer: `**Tóm tắt:** Mobile client gọi 40 request user-service cho 40 item, trong đó chỉ có 12 seller duy nhất (không dedupe). Với 6 kết nối song song, tổng ~4.8 giây. Backend không có vấn đề; lỗi ở client + contract API.
+
+### Nguyên nhân gốc
+Màn hình chi tiết đơn hàng cần thông tin seller (tên, rating) nhưng API order chỉ trả sellerId. Client tự gọi user-service cho từng item, không dedupe sellerId và không có endpoint tổng hợp. Đây là N+1 ở client mobile.
+
+### Dẫn chứng
+- Charles: 1 request order (95 ms) + 40 request user (~110 ms mỗi cái).
+- Tổng 4760 ms; concurrent 6.
+- Số sellerId duy nhất chỉ 12 → 28 request thừa.
+- Backend không slow query.
+
+### Cách sửa
+Ngắn hạn: dedupe sellerId ở client (gọi tối đa 12 request), cache user info trong memory/session.
+Dài hạn: BFF trả kèm seller info trong response order ({{include=seller}}) hoặc endpoint {{GET /api/users?ids=...}} batch. Thêm projection/JPA fetch join ở backend.
+
+### Phòng ngừa
+- Contract test: order response phải chứa đủ dữ liệu cho UI chi tiết.
+- Code review: cấm gọi API trong vòng lặp; lint rule.
+- Metric: đếm số request trên màn hình (RUM), alert nếu > 10.
+
+> Senior tip: N+1 ở client thường xuất hiện khi thêm tính năng mới mà không cập nhật contract API. Dedupe là giải pháp tạm thời; giải pháp bền vững là thay đổi contract để server trả đủ dữ liệu một lần.`,
+  rubric: [
+    'Nhận diện đúng: N+1 ở client mobile (1 request order + 40 request user), chỉ 12 seller duy nhất.',
+    'Dẫn chứng: 4760 ms tổng, 6 kết nối song song, backend không slow query.',
+    'Đề xuất sửa: dedupe client, cache, endpoint batch, BFF trả kèm seller info.',
+    'Phòng ngừa: contract test, code review, lint, metric số request.'
+  ],
+  tags: ['mobile', 'react-native', 'n-plus-one', 'network-waterfall', 'api-design', 'bff']
 }
 );
