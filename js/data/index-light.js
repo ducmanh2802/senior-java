@@ -1373,6 +1373,8 @@ window.DATA_INDEX = {
     ["scenario-176","scenario","senior"],
     ["scenario-177","scenario","lead"],
     ["scenario-178","scenario","senior"],
+    ["scenario-179","scenario","senior"],
+    ["scenario-180","scenario","lead"],
     ["banking-001","banking","mid"],
     ["banking-002","banking","mid"],
     ["banking-003","banking","senior"],

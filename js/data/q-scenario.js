@@ -11006,4 +11006,155 @@ Tôi chạy hai môi trường đồng thời: blue chạy bản cũ, green ch�
   ],
   tags: ['MES', 'blue-green', 'deploy', 'cutover', '24/7']
 },
+{
+  id: 'scenario-179',
+  topic: 'scenario',
+  level: 'senior',
+  q: 'Tác vụ tạo báo cáo hàng ngày trong hệ thống bán hàng chạy trực tiếp trong request HTTP, nên khoảng 30 giây rồi gateway trả 504, đồng thời chiếm thread Tomcat và làm chậm các API khác. Bạn thiết kế chuyển sang xử lý bất đồng bộ ({{async job}}) thế nào?',
+  a: `**Tóm tắt:** Tác vụ chạy lâu không được để chạy trong luồng xử lý request, vì request sẽ treo, gateway trả 504 và một luồng Tomcat bị chiếm suốt thời gian tác vụ, làm cạn pool thread và kéo cả service xuống. Cách đúng là tách thành hai phần: API nhận yêu cầu, lưu một bản ghi vào bảng {{jobs}} (cột {{status}}, {{attempts}}, {{heartbeat_at}}, {{locked_by}}), trả {{jobId}} ngay cho client; worker riêng lấy job bằng {{SELECT ... FOR UPDATE SKIP LOCKED}}, xử lý theo batch, cập nhật tiến độ ({{checkpoint}}) và ghi file kết quả vào nơi chia sẻ, rồi cập nhật trạng thái {{DONE}}. Một tiến trình riêng gọi {{reaper}} quét job {{IN_PROGRESS}} mà {{heartbeat}} quá hạn, coi worker đã chết và đem job về {{PENDING}} để worker khác lấy lại. Client gọi API status để hỏi tiến độ và tải file. Chọn queue theo nấc: bảng DB cho ít job, Redis/SQS/RabbitMQ/Kafka cho nhiều job và phân tán.
+
+### Các khái niệm cần biết
+- **Tác vụ bất đồng bộ (async job):** công việc được xếp hàng và xử lý sau, không làm chờ người dùng. Hình dung như đặt món tại nhà hàng: bạn nhận số order, ngồi đợi, khi món xong gọi tên bạn.
+- **Bảng {{jobs}}:** bảng lưu từng tác vụ ({{status}}, {{attempts}}, {{heartbeat_at}}, {{locked_by}}, payload, result_url) để theo dõi tiến độ và khôi phục khi lỗi.
+- **{{SELECT ... FOR UPDATE SKIP LOCKED}}:** câu SQL khóa hàng đầu tiên thỏa mãn, nhưng nếu hàng đó đang bị transaction khác khóa thì bỏ qua và lấy hàng tiếp theo. Hai worker không bao giờ lấy trùng một job.
+- **{{heartbeat}}:** worker cập nhật {{heartbeat_at}} định kỳ (ví dụ 10 giây) để báo mình còn sống. Nếu heartbeat dừng, {{reaper}} biết worker đã chết.
+- **{{reaper}}:** tiến trình quét job {{IN_PROGRESS}} mà {{heartbeat_at}} quá hạn, coi worker đã chết và trả job về {{PENDING}} để worker khác lấy lại.
+- **{{checkpoint}}:** lưu tiến độ xử lý (ví dụ số dòng đã xử lý) vào job, nếu restart thì đọc checkpoint và chạy tiếp từ đâu dừng, không chạy từ đầu.
+
+### Cơ chế xử lý từng bước
+1. **Client gọi API tạo job:** API lưu hàng vào bảng {{jobs}} với {{status}} = {{PENDING}}, trả {{jobId}} ngay (khoảng 50 ms), không chờ xong.
+2. **Worker claim job:** worker chạy câu UPDATE đặt status = IN_PROGRESS, locked_by, heartbeat_at, attempts, lấy id và payload bằng {{SELECT ... FOR UPDATE SKIP LOCKED}} LIMIT 1. SKIP LOCKED đảm bảo hai worker không lấy cùng một job.
+3. **Worker heartbeat:** mỗi 10 giây worker cập nhật heartbeat_at = now() cho job của mình để gia hạn lease.
+4. **Xử lý theo checkpoint:** worker đọc payload, xử lý theo batch (ví dụ 5.000 dòng), sau mỗi batch cập nhật checkpoint và progress vào jobs. Nếu restart, đọc checkpoint và chạy tiếp.
+5. **{{Reaper}} reclaim:** mỗi phút {{reaper}} quét job IN_PROGRESS mà heartbeat_at hơn 5 phút trước, coi worker đã chết, đặt {{status}} = {{PENDING}}, {{locked_by}} = NULL để worker khác lấy.
+6. **Hoàn thành:** worker cập nhật {{status}} = {{DONE}}, ghi result_url (URL file kết quả), client gọi GET /api/jobs/{id} để hỏi tiến độ và tải file.
+
+### Ví dụ code
+~~~java
+// Worker claim một job: chỉ lấy job PENDING, bỏ qua job đang bị khóa bởi worker khác
+String claimSql = "UPDATE jobs " +
+    "SET status = 'IN_PROGRESS', locked_by = ?, heartbeat_at = now(), attempts = attempts + 1 " +
+    "WHERE id = (" +
+    "  SELECT id FROM jobs WHERE status = 'PENDING' " +
+    "  ORDER BY created_at FOR UPDATE SKIP LOCKED LIMIT 1" +
+    ") RETURNING id, payload;";
+Map<String, Object> row = jdbc.queryForMap(claimSql, workerId);
+Long jobId = (Long) row.get("id");
+
+// Heartbeat định kỳ: gia hạn lại lease, reaper biết worker còn sống
+jdbc.update("UPDATE jobs SET heartbeat_at = now() WHERE id = ? AND locked_by = ?", jobId, workerId);
+
+// Reaper: job IN_PROGRESS mà heartbeat quá hạn (5 phút) => worker đã chết, trả về PENDING
+int reclaimed = jdbc.update(
+    "UPDATE jobs SET status = 'PENDING', locked_by = NULL " +
+    "WHERE status = 'IN_PROGRESS' AND heartbeat_at < now() - interval '5 minutes'");
+~~~
+
+### Bảng trade-off: chọn queue theo nấc
+| Hàng đợi | Khi dùng | Trade-off |
+| Bảng jobs (PostgreSQL) | Ít job (< hàng trăm/giây), không muốn thêm infra | Dùng FOR UPDATE SKIP LOCKED, dễ vận hành, nhưng DB chịu tải claim |
+| Redis | Trung bình, cần tốc độ và TTL tự hết hạn | TTL hết hạn tự reclaim job, nhưng cần thêm infra Redis |
+| SQS / RabbitMQ | Nhiều job, nhiều worker phân tán, cần dead-letter queue | Phức tạp hơn, độ trễ cao hơn, phải quản lý visibility timeout |
+| Kafka | Rất lớn, sự kiện streaming, thứ tự quan trọng | Phức tạp nhất, không phù hợp job request-response |
+
+### Lỗi hay gặp (pitfall production)
+- Không có heartbeat => job {{IN_PROGRESS}} kẹt mãi khi worker chết, không ai xử lý lại.
+- Không checkpoint => restart job chạy từ đầu, có thể tạo báo cáo trùng hoặc xử lý lại dữ liệu cũ.
+- API status poll quá thường xuyên => đảo hàng chờ client, ảnh hưởng trải nghiệm.
+- File kết quả lưu ở máy worker cục bộ => client gọi status không tải được file.
+- Job chạy lại mà không idempotent => tạo nhiều bản báo cáo hoặc trừ tiền trùng.
+
+### Ví dụ đời thực
+Hệ thống bán hàng 50.000 đơn/ngày, job tạo báo cáo hàng ngày xử lý 2 triệu dòng. Trước khi đổi: request treo 30.000 ms rồi gateway trả 504, Tomcat 200 thread đều chờ job, API khác bị kéo chậm. Sau khi chuyển async: API trả {{jobId}} trong 50 ms, worker xử lý batch 5.000 dòng, checkpoint mỗi 5.000 dòng, file kết quả khoảng 2 MB lưu minio, status API trả progress percent. Claim đạt khoảng 200 job/giây trên bảng DB. {{Reaper}} reclaim job chết sau 5 phút. Tổng thời gian từ khi user nhấn đến khi có báo cáo là 45 giây, nhưng user không bị treo màn hình và có thể làm việc khác.
+
+### Trả lời mẫu khi phỏng vấn
+Tôi sẽ không để tác vụ chạy lâu chờ trong request HTTP, vì gateway sẽ trả 504 sau 30 giây và một luồng Tomcat bị chiếm cả lúc chạy, làm cạn pool thread. Tôi thiết kế bảng {{jobs}} với các cột {{status}}, {{attempts}}, {{heartbeat_at}}, {{locked_by}}. API nhận yêu cầu, ghi job trạng thái {{PENDING}}, trả {{jobId}} ngay. Worker claim job bằng {{SELECT ... FOR UPDATE SKIP LOCKED}} để hai worker không lấy trùng, rồi heartbeat mỗi 10 giây. Một {{reaper}} riêng quét job {{IN_PROGRESS}} quá 5 phút mà không heartbeat, coi worker đã chết và trả job về {{PENDING}}. Worker xử lý theo batch, lưu checkpoint và file kết quả vào minio, rồi cập nhật {{DONE}}. Client gọi API status để hỏi tiến độ và tải file. Với ít job tôi dùng bảng DB, với nhiều job và worker phân tán tôi dùng Redis, SQS/RabbitMQ hoặc Kafka. {{Reaper}} reclaim job chết sau 5 phút. Tổng thời gian từ khi user nhấn đến khi có báo cáo là 45 giây, nhưng user không bị treo màn hình và có thể làm việc khác.
+
+### Checklist cuối
+- [ ] Bảng {{jobs}} có cột {{status}}, {{attempts}}, {{heartbeat_at}}, {{locked_by}}, payload, result_url.
+- [ ] Worker claim job bằng {{SELECT ... FOR UPDATE SKIP LOCKED}}, tránh hai worker lấy trùng.
+- [ ] Worker heartbeat mỗi khoảng thời gian ngắn (ví dụ 10 giây) để {{reaper}} biết job còn sống.
+- [ ] {{Reaper}} quét job {{IN_PROGRESS}} quá {{heartbeat_at}}, chuyển về {{PENDING}} để worker khác lấy.
+- [ ] {{Checkpoint}} lưu tiến độ (số dòng đã xử lý) để restart không chạy từ đầu.
+- [ ] API status trả trạng thái, tiến độ và URL file kết quả; client polls thay vì chờ trực tiếp.
+- [ ] Chọn queue theo nấc: bảng DB cho ít job, Redis/SQS/Kafka cho nhiều job và phân tán.
+
+> Senior tip: xử lý bất đồng bộ không phải chỉ là "chuyển sang queue"; cần xử lý các lỗi phần thất bại: worker chết giữa chừng, job xử lý nửa, file kết quả bị hỏng. Luôn thiết kế idempotent (chạy lại job không làm hỏng dữ liệu) và có chỗ để xem logs của từng job.`,
+  follow: [
+    'Worker claim job bằng {{SELECT ... FOR UPDATE SKIP LOCKED}} khác hàng đợi Redis BLPOP như thế nào?',
+    'Nếu worker xử lý xong nhưng crash trước khi cập nhật trạng thái {{DONE}}, job sẽ chạy lại — bạn ngăn xử lý trùng thế nào?',
+    'Khi nào nên dời từ bảng {{jobs}} sang Redis hay SQS/Kafka?'
+  ],
+  tags: ['async-job', 'queue', 'worker', 'reaper', 'checkpoint', 'PostgreSQL']
+},
+{
+  id: 'scenario-180',
+  topic: 'scenario',
+  level: 'lead',
+  q: '{{50 luồng}} cùng cập nhật một hàng tồn kho trong PostgreSQL. Bạn chọn khoá lạc quan ({{version column}}) hay khoá bi quan ({{SELECT ... FOR UPDATE}}), và khi nào dùng {{Redis lock}}?',
+  a: `**Tóm tắt:** Không có khoá "tốt nhất" hoàn toàn, chỉ phù hợp với mức độ tranh chấp. Khi {{50 luồng}} tranh chấp 1 hàng, khoá lạc quan (version column) sẽ retry bão hoà: chỉ 1 luồng thành công, 49 luồng bị reject và phải retry, CPU lãng phí và TPS rớt sâu. Khoá bi quan (SELECT ... FOR UPDATE) xếp hàng và xử lý tuần tự, ổn định hơn nhưng giữ kết nối DB lâu. Dấu hiệu chọn: bán vé/tồn kho nóng (tranh chấp cao, ghi nhiều) chọn khoá bi quan hoặc {{Redis lock}}; sửa hồ sơ (tranh chấp thấp, đọc nhiều) chọn khoá lạc quan. {{FOR UPDATE}} nhả khoá tự động khi kết nối DB ngắt; version column không giữ khoá dài (không cần nhả); {{Redis lock}} cần lease TTL và fencing token để worker cũ không ghi đè worker mới sau khi process chết.
+
+### Các khái niệm cần biết
+- **Khoá lạc quan (optimistic lock):** không khóa hàng khi đọc, chỉ cập nhật thành công nếu version chưa đổi (UPDATE ... SET version = version + 1 WHERE id = ? AND version = ?). Nếu version khác, nghĩa là có người khác đã sửa, transaction bị hủy và phải retry.
+- **Khoá bi quan (pessimistic lock):** {{SELECT ... FOR UPDATE}} khóa hàng ngay khi đọc, giữ đến khi transaction commit hoặc rollback. Các transaction khác đọc cùng hàng phải chờ.
+- **{{Version column}}:** cột số nguyên tăng mỗi khi hàng được cập nhật, dùng để phát hiện xung đột ở khoá lạc quan.
+- **{{Redis lock}}:** khoá ngoài DB, dùng SET resource token NX EX ttl. Phải có TTL để lock không treo vĩnh viễn khi process chết, và fencing token (số tăng) để chỉ worker mới nhất được ghi.
+- **Fencing token:** số tăng mỗi lần claim khoá, DB hoặc dịch vụ lưu chỉ chấp nhận ghi với token lớn hơn, ngăn worker cũ (chết rồi hồi sinh) ghi đè dữ liệu mới.
+
+### Cơ chế chọn và xử lý
+1. **Đo mức độ tranh chấp:** nếu {{50 luồng}} tranh 1 hàng và collision > 5%, khoá lạc quan sẽ retry bão hoà, không nên dùng. Nếu collision < 1%, khoá lạc quan hiệu quả hơn.
+2. **Bán vé / tồn kho nóng:** tranh chấp cao, ghi nhiều, không chấp nhận retry nhiều lần → {{SELECT ... FOR UPDATE}} (xếp hàng) hoặc {{Redis lock}} + fencing token.
+3. **Sửa hồ sơ / đọc nhiều ghi ít:** tranh chấp thấp → version column, không khóa hàng dài, throughput cao.
+4. **Process có thể chết bất ngờ:** {{FOR UPDATE}} nhả khoá tự động khi kết nối DB breaks. {{Redis lock}} cần TTL (ví dụ 30 giây) và fencing token, nếu không process chết sẽ để lock treo.
+
+### Ví dụ code
+~~~java
+// Khoá lạc quan: cập nhật chỉ thành công nếu version chưa đổi, collision thấp thì nhanh
+int updated = jdbc.update(
+    "UPDATE san_pham SET so_luong = so_luong - 1, version = version + 1 " +
+    "WHERE id = ? AND so_luong > 0 AND version = ?",
+    id, version);
+if (updated == 0) throw new OptimisticLockException("Đã có người mua, vui lòng tải lại");
+
+// Khoá bi quan: khóa hàng trong transaction, các transaction khác phải chờ
+Product p = jdbc.queryForObject(
+    "SELECT * FROM san_pham WHERE id = ? FOR UPDATE", rowMapper, id);
+// xử lý nghiệp vụ, rồi cập nhật và commit; khoá được nhả sau commit/rollback
+~~~
+
+### Bảng trade-off: khi nào dùng khoá nào
+| Tình huống | Chọn | Lý do |
+| {{50 luồng}} tranh 1 hàng (bán vé, flash sale) | Khoá bi quan hoặc {{Redis lock}} | Khoá lạc quan retry bão hoà, 49/50 thread bị reject, TPS rơi sâu |
+| Sửa hồ sơ (tranh chấp thấp, đọc nhiều) | Khoá lạc quan version column | Không khóa hàng dài, throughput cao, collision hiếm |
+| Process có thể chết bất ngờ, cần khoá ngoài DB | {{Redis lock}} + TTL + fencing token | TTL ngăn lock treo, fencing token ngăn worker cũ ghi đè |
+| Cần keep kết nối DB ngắn | Khoá lạc quan hoặc {{Redis lock}} | {{FOR UPDATE}} giữ kết nối lâu, dễ làm cạn pool |
+
+### Lỗi hay gặp (pitfall production)
+- Khoá lạc quan ở tranh chấp cao => retry bão hoà, CPU lãng phí, TPS giảm, người dùng thấy lỗi tải lại nhiều lần.
+- Khoá bi quan transaction dài => giữ khóa hàng lâu, dễ deadlock và làm cạn pool kết nối DB.
+- {{Redis lock}} không có TTL => process chết giữa chừng để lock treo vĩnh viễn, không ai xử lý hàng đó nữa.
+- {{Redis lock}} không có fencing token => worker cũ thay được dữ liệu của worker mới sau khi process hồi sinh.
+
+### Ví dụ đời thực
+Flash sale 50.000 lượt mua/giây, 10.000 vé, mỗi vé bị {{50 luồng}} tranh chấp. Khoá lạc quan: chỉ 1/50 thành công lần đầu, 49/50 bị reject và retry, TPS từ 50.000/giây rơi xuống 2.000/giây, CPU 90%. Chuyển sang {{SELECT ... FOR UPDATE}}: các luồng xếp hàng, xử lý tuần tự, TPS ổn định khoảng 8.000/giây, CPU 40%. Sửa hồ sơ khách hàng: khoá lạc quan version, collision dưới 1%, throughput khoảng 20.000 yêu cầu/giây. {{Redis lock}} cho thanh toán: TTL 30 giây, fencing token tăng mỗi claim, ngăn thanh toán trùng khi worker chết giữa chừng.
+
+### Trả lời mẫu khi phỏng vấn
+Tôi không chọn khoá theo ý thích mà theo mức độ tranh chấp. Khi {{50 luồng}} tranh chấp cùng một hàng tồn kho, khoá lạc quan sẽ retry bão hoà: chỉ một luồng thành công, bốn mươi chín luồng bị từ chối và phải thử lại, CPU lãng và TPS rớt sâu. Tôi sẽ dùng khoá bi quan {{SELECT ... FOR UPDATE}} để xếp hàng và xử lý tuần tự, hoặc {{Redis lock}} với fencing token. Nếu là sửa hồ sơ khách hàng, tranh chấp thấp, tôi dùng khoá lạc quan {{version column}} để không khóa hàng dài và giữ throughput cao. Khoá bi quan nhả tự động khi kết nối DB ngắt, nên an toàn khi process chết. {{Redis lock}} cần TTL và fencing token để worker cũ không ghi đè dữ liệu mới. Ví dụ flash sale 50.000 lượt/giây, khoá lạc quan TPS từ 50.000 rơi xuống 2.000/giây, đổi khoá bi quan ổn định 8.000/giây. Sửa hồ sơ collision dưới 1%, throughput 20.000/giây.
+
+### Checklist cuối
+- [ ] Đo mức độ tranh chấp (collision %) trước khi chọn khoá.
+- [ ] Tranh chấp cao (bán vé, tồn kho nóng): dùng khoá bi quan hoặc {{Redis lock}}, tránh khoá lạc quan.
+- [ ] Tranh chấp thấp (sửa hồ sơ, đọc nhiều): dùng khoá lạc quan {{version column}}.
+- [ ] Khoá bi quan {{FOR UPDATE}} nhả tự động khi kết nối DB ngắt, giữ transaction ngắn.
+- [ ] {{Redis lock}} phải có TTL và fencing token, không để lock treo vĩnh viễn.
+- [ ] Giới hạn số lần retry của khoá lạc quan, tránh vòng lặp vô hạn.
+
+> Senior tip: khoá là sự đánh đổi giữa tính nhất quán và hiệu năng. Khoá bi quan an toàn nhưng chậm khi tranh chấp cao; khoá lạc quan nhanh khi ít tranh chấp nhưng bão hoà khi nhiều thread cùng chọc một hàng. Luôn đo collision % trên staging giống production trước khi chọn khoá.`,
+  follow: [
+    'Khoá lạc quan với {{50 luồng}} tranh 1 hàng: TPS rớt bao nhiêu, và bạn xử lý retry thế nào?',
+    '{{Redis lock}} process chết giữa chừng: TTL và fencing token đóng vai trò gì từng cái?',
+    'Khi nào kết hợp cả khoá bi quan DB và khoá ứng dụng ({{Redis lock}})?'
+  ],
+  tags: ['optimistic-lock', 'pessimistic-lock', 'version', 'FOR-UPDATE', 'Redis-lock', 'concurrency']
+},
 );
