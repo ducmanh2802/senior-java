@@ -5222,5 +5222,256 @@ PostgreSQL --> product-search: Index Scan, 0.4 ms
   ],
   tags: ['postgresql', 'index', 'expression-index', 'sargable', 'lower', 'implicit-cast', 'analyze'],
 },
+{
+  id: 'lab-sql-034',
+  category: 'sql',
+  title: 'Job dọn dữ liệu xoá 50% bảng orders: SELECT ... ORDER BY id LIMIT 1 mất 60 giây vì dead tuple',
+  level: 'senior',
+  scenario: `**Bối cảnh.** Sàn thương mại điện tử **MegaMart** chạy {{order-service}} (Spring Boot 3.3, Hibernate 6.4, PostgreSQL 15.6 trên RDS, 8 vCPU / 64 GB RAM). Bảng {{orders}} lưu đơn hàng: **40.000.000 dòng** (~9,3 GB tổng, heap ~4,6 GB, nằm gọn trong RAM), trung bình 38 nghìn giao dịch/ngày. Lúc 02:00 mỗi đêm, job dọn dữ liệu chạy {{DELETE FROM orders WHERE created_at < now() - interval '18 months'}} xoá khoảng **50% bảng** (20 triệu dòng). Sau khi job commit, màn hình "Đơn hàng mới nhất" gọi {{SELECT ... ORDER BY id LIMIT 1}} — trước đây 0,3 ms — nay mất **60 giây**. CPU RDS 95%, nhưng ReadIOPS gần như không đổi (đọc từ RAM). pg_stat_user_tables báo {{n_dead_tup}} tăng vọt. Có một phiên {{idle in transaction}} đã mở **6 giờ** trong log pg_stat_activity.
+
+**Việc bạn có.** Ba artifact: EXPLAIN (ANALYZE, BUFFERS) của câu SELECT ORDER BY id LIMIT 1, snapshot pg_stat_user_tables + pg_stat_activity, và log autovacuum. Hãy tìm nguyên nhân gốc, chứng minh bằng dòng cụ thể, và đề xuất cách sửa ngắn hạn và dài hạn.`,
+  artifacts: [
+    {
+      name: 'explain-select-limit.txt',
+      lang: 'text',
+      content: `-- 2026-03-14 03:12:41 +07, psql trên RDS megamart-primary (PostgreSQL 15.6)
+megamart=# EXPLAIN (ANALYZE, BUFFERS)
+SELECT id, customer_id, status, created_at FROM orders ORDER BY id LIMIT 1;
+                                                           QUERY PLAN
+------------------------------------------------------------------------------------------------------------------------------
+ Limit  (cost=0.56..0.60 rows=1 width=40) (actual time=60123.412..60123.415 rows=1 loops=1)
+   ->  Index Scan using orders_pkey on orders  (cost=0.56..0.60 rows=1 width=40) (actual time=0.041..60123.409 rows=1 loops=1)
+         Buffers: shared hit=598934 read=6178
+         ->  Heap Fetches: 598934
+ Planning Time: 0.284 ms
+ Execution Time: 60123.704 ms
+(6 rows)
+
+-- So sánh: trước khi chạy job dọn dữ liệu (snapshot 01:55):
+--   Limit ... rows=1 loops=1, Buffers: shared hit=3 read=0, Execution Time: 0.284 ms
+
+-- pg_stat_user_tables trước/sau:
+--   trước: n_live_tup = 40000000, n_dead_tup = 12000
+--   sau:   n_live_tup = 20000000, n_dead_tup = 20012000`,
+    },
+    {
+      name: 'pg-stat-activity.txt',
+      lang: 'text',
+      content: `-- 2026-03-14 03:10:00 +07, RDS megamart-primary
+megamart=# SELECT pid, state, now() - xact_start AS xact_age,
+       wait_event_type, wait_event, left(query, 70) AS query
+FROM pg_stat_activity
+WHERE datname = 'megamart' AND backend_type = 'client backend'
+ORDER BY xact_start
+LIMIT 8;
+  pid  |        state        |   xact_age   | wait_event_type | wait_event |                            query
+-------+---------------------+--------------+-----------------+------------+--------------------------------------------------------------
+ 18421 | idle in transaction | 06:00:12.402 | Client          | ClientRead | BEGIN; SELECT * FROM orders WHERE ...; -- chưa COMMIT
+ 18422 | active              | 00:00:00.014 |                 |            | SELECT id, customer_id, status, created_at FROM orders ORDER BY id LIMIT 1
+ 18423 | active              | 00:00:00.008 |                 |            | SELECT count(*) FROM orders WHERE status = $1
+ 18424 | idle                |              | Client          | ClientRead | <insufficient privilege>
+...
+-- xid age của phiên 18421: 41.200.000 (giữ snapshot cũ)
+-- max_connections = 200, active = 47, idle in transaction = 1`,
+    },
+    {
+      name: 'autovacuum-log.txt',
+      lang: 'text',
+      content: `-- 2026-03-14 03:11:00 +07, RDS megamart-primary
+-- log_autovacuum_min_duration = 0
+-- log:
+2026-03-14 03:08:14.112 UTC [40211] LOG:  automatic vacuum of table "public.orders": skipped because of lock conflict
+2026-03-14 03:08:14.113 UTC [40211] DETAIL:  dead row versions cannot be removed yet, oldest xmin: 12345678
+2026-03-14 03:09:02.441 UTC [40211] LOG:  automatic vacuum of table "public.orders": index vacuum skipped
+2026-03-14 03:09:41.772 UTC [40211] LOG:  automatic vacuum of table "public.orders": found 0 removable, 20012000 dead row versions
+-- pg_stat_user_tables:
+--   n_dead_tup = 20012000, n_live_tup = 20000000, last_autovacuum = 2026-03-07 02:10:00
+-- pg_relation_size('orders') = 4.6 GB heap (tăng từ 4.6 GB trước delete? thực tế heap không giảm)`,
+    },
+  ],
+  questions: [
+    'Vì sao câu SELECT ORDER BY id LIMIT 1 phải đọc 598.934 page (Heap Fetches) dù chỉ trả 1 dòng? Chỉ ra bằng dòng nào trong EXPLAIN.',
+    'Vì sao autovacuum không dọn được 20 triệu dead tuple dù đang bật và chạy liên tục? Dẫn chứng bằng artifact.',
+    'Bạn xử lý thế nào trong ngày 14/03 và thiết kế dài hạn để không tái diễn (vacuum, partitioning, job batch)?',
+  ],
+  hints: [
+    'Đọc dòng "Heap Fetches: 598934" trong EXPLAIN: Index Scan phải đi theo pointer từng entry trong index, fetch heap tuple, rồi kiểm tra visibility (xmax/xmin). Khi dead tuple chưa được vacuum, mỗi entry trong index trỏ tới một dead tuple → phải fetch heap để kiểm tra visibility.',
+    'Tìm phiên idle in transaction trong pg_stat_activity: nó giữ snapshot cũ (xmin), chặn autovacuum vì dead tuple vẫn cần cho snapshot của phiên đó.',
+    'n_dead_tup tăng + vacuum log skip ("dead row versions cannot be removed yet") = autovacuum bị chặn bởi snapshot.',
+  ],
+  answer: `**Tóm tắt:** Job DELETE xoá 20 triệu dòng sinh ra 20 triệu dead tuple. Một phiên {{idle in transaction}} mở 6 giờ giữ snapshot cũ → autovacuum không thể xoá dead tuple (chúng vẫn còn cần cho snapshot đó). Dead tuple tích luỹ → index scan phải fetch heap tuple để kiểm tra visibility → 598.934 Heap Fetches → 60 giây. Sửa: terminate phiên idle in transaction, VACUUM FULL ngoài giờ cao điểm, đặt idle_in_transaction_session_timeout, và thiết kế job batch commit theo lô + partitioning theo tháng để xoá dữ liệu cũ bằng DROP PARTITION thay vì DELETE hàng triệu dòng.
+### Nguyên nhân gốc
+1. Job DELETE xoá 20 triệu dòng (50% bảng) → mỗi dòng bị xoá trở thành dead tuple (vẫn còn trong heap, chỉ đánh dấu deleted).
+2. Phiên idle in transaction (pid 18421) opened 6 giờ trước giữ snapshot cũ (xmin). Autovacuum không thể xoá dead tuple vì chúng vẫn cần cho snapshot của phiên đó.
+3. Dead tuple tích luỹ: n_dead_tup = 20.012.000 (gần bằng n_live_tup). Index scan phải fetch heap tuple để kiểm tra visibility → 598.934 Heap Fetches → 60 giây.
+### Dẫn chứng
+- Artifact 1: Heap Fetches: 598934, Execution Time: 60123.704 ms, Buffers: shared hit=598934 read=6178. Trước job: 0,284 ms.
+- Artifact 2: pid 18421 state idle in transaction, xact_age 6 giờ, xid age 41.2M.
+- Artifact 3: vacuum log "dead row versions cannot be removed yet, oldest xmin: 12345678"; n_dead_tup = 20012000.
+### Cách sửa ngắn hạn
+- Terminate phiên idle in transaction ({{pg_terminate_backend(18421)}}) sau khi xác nhận không còn cần.
+- Chạy VACUUM (FULL nếu cần) ngoài giờ cao điểm để thu hồi space.
+- Bật {{idle_in_transaction_session_timeout}} (ví dụ 5 phút) để tự kill phiên treo.
+### Cách sửa dài hạn
+- Job dọn dữ liệu nên commit theo lô (batch) thay vì một transaction lớn.
+- Partitioning theo tháng: xoá dữ liệu cũ bằng {{ALTER TABLE ... DETACH PARTITION}} rồi {{DROP TABLE}} partition đó — nhanh, không sinh dead tuple.
+- Bật monitoring: alert khi n_dead_tup / n_live_tup > 20%, khi idle in transaction > 5 phút, khi xid age > 1 tỷ.
+- Tune autovacuum: giảm autovacuum_vacuum_scale_factor cho bảng lớn, tăng autovacuum_max_workers.
+> Senior tip: DELETE hàng triệu dòng là anti-pattern cho bảng lớn. Dùng partitioning + DROP PARTITION để xoá dữ liệu cũ mà không sinh dead tuple. Và luôn đặt idle_in_transaction_session_timeout — một transaction "quên COMMIT" giữ snapshot và chặn vacuum toàn bộ hệ thống.`,
+  rubric: [
+    'Chỉ đúng nguyên nhân: job DELETE sinh 20 triệu dead tuple, phiên idle in transaction giữ snapshot chặn autovacuum, dead tuple chưa vacuum làm index scan phải fetch heap → 598.934 Heap Fetches → 60 giây',
+    'Dẫn chứng đúng: Heap Fetches 598934, Execution Time 60123 ms, n_dead_tup 20012000, vacuum log skip, pid idle in transaction xact_age 6 giờ',
+    'Giải thích đúng vì sao dead tuple làm query chậm (nhiều heap fetch, cùng plan)',
+    'Đề xuất sửa đúng: terminate phiên, VACUUM FULL, idle_in_transaction_session_timeout, batch commit, partitioning + DROP PARTITION, monitoring',
+    'Có monitoring/phòng ngừa: alert n_dead_tup ratio, idle in transaction, xid age, tune autovacuum',
+  ],
+  tags: ['postgresql', 'mvcc', 'dead-tuple', 'vacuum', 'autovacuum', 'idle-in-transaction', 'partitioning'],
+},
+{
+  id: 'lab-sql-035',
+  category: 'sql',
+  title: 'MySQL InnoDB: 4 worker cập nhật các nhóm dòng không giao nhau vẫn deadlock vì thiếu index',
+  level: 'senior',
+  scenario: `**Bối cảnh.** Sàn thương mại điện tử **ShopMart** chạy {{inventory-service}} (Spring Boot 3.3, Hibernate 6.4, MySQL 8.0.36 trên RDS, 8 vCPU / 32 GB RAM). Bảng {{inventory}} lưu tồn kho theo SKU: **18.400.000 dòng**, isolation level mặc định **REPEATABLE READ**. Mỗi SKU có cột {{warehouse_id}} (kho) và {{quantity}}. Bảng có index {{idx_inventory_sku}} trên {{sku}} (primary key) nhưng **thiếu index trên {{warehouse_id}}**. 4 worker cùng chạy job "cập nhật tồn kho theo kho": worker 1 xử lý kho 1, worker 2 xử lý kho 2, worker 3 xử lý kho 3, worker 4 xử lý kho 4 — các nhóm dòng **không giao nhau** (không SKU nào thuộc hai kho).
+
+**Triệu chứng (15/03/2026, 11:30).** Khoảng 12% job bị lỗi {{Deadlock found when trying to get lock; try restarting transaction}} (SQLState 40001). SHOW ENGINE INNODB STATUS cho thấy LATEST DETECTED DEADLOCK với lock_mode X locks gap before rec / next-key. CPU RDS 35% (không quá tải), HikariCP pool không cạn. DBA nghi ngờ "thiếu index" nhưng không rõ vì sao các nhóm không giao nhau vẫn deadlock.
+
+**Việc bạn có.** Ba artifact: SHOW ENGINE INNODB STATUS (LATEST DETECTED DEADLOCK), SHOW CREATE TABLE + SHOW INDEX, và log ứng dụng. Hãy tìm nguyên nhân gốc, chứng minh bằng dòng cụ thể, và đề xuất cách sửa.`,
+  artifacts: [
+    {
+      name: 'innodb-deadlock-status.txt',
+      lang: 'text',
+      content: `-- 2026-03-15 11:31:00 +07, RDS shopmart-inventory (MySQL 8.0.36)
+mysql> SHOW ENGINE INNODB STATUS\\G
+...
+------------------------
+LATEST DETECTED DEADLOCK
+------------------------
+2026-03-15 11:30:45 0x7f8a1c0
+*** (1) TRANSACTION:
+TRANSACTION 42184321, ACTIVE 0.003 sec starting index read
+mysql tables in use 1, locked 1
+LOCK WAIT 2 lock struct(s), heap size 1136, 1 row lock(s)
+MySQL thread id 4121, OS thread handle 140234567890, query id 88412345 localhost 127.0.0.1 app updating
+UPDATE inventory SET quantity = quantity - 1 WHERE warehouse_id = 1 AND sku LIKE 'A%'
+*** (1) WAITING FOR THIS LOCK TO BE GRANTED:
+RECORD LOCKS space id 45 page no 8821 n bits 72 index PRIMARY of table shop.inventory
+lock_mode X locks gap before rec insert intention waiting
+Record lock, heap_no 44 PHYSICAL RECORD: n_fields 4; compact format; info bits 0
+ 0: len 8; hex 8000000000000001; (sku=1)  1: len 4; hex 80000001; (warehouse_id=1)  2: len 4; hex 8000000a; (quantity=10)  3: len 8; hex 8000000000000064; (id=100)
+
+*** (2) TRANSACTION:
+TRANSACTION 42184322, ACTIVE 0.003 sec starting index read
+mysql tables in use 1, locked 1
+LOCK WAIT 2 lock struct(s), heap size 1136, 1 row lock(s)
+MySQL thread id 4122, OS thread handle 140234567891, query id 88412346 localhost 127.0.0.1 app updating
+UPDATE inventory SET quantity = quantity - 1 WHERE warehouse_id = 2 AND sku LIKE 'A%'
+*** (2) WAITING FOR THIS LOCK TO BE GRANTED:
+RECORD LOCKS space id 45 page no 8821 n bits 72 index PRIMARY of table shop.inventory
+lock_mode X locks gap before rec insert intention waiting
+Record lock, heap_no 44 PHYSICAL RECORD: n_fields 4; compact format; info bits 0
+ 0: len 8; hex 8000000000000001; (sku=1)  1: len 4; hex 80000001; (warehouse_id=1)  2: len 4; hex 8000000a; (quantity=10)  3: len 8; hex 8000000000000064; (id=100)
+
+*** (2) HOLDS THE LOCK(S):
+RECORD LOCKS space id 45 page no 8821 n bits 72 index PRIMARY of table shop.inventory
+lock_mode X locks rec but not gap
+Record lock, heap_no 45 PHYSICAL RECORD: n_fields 4; compact format; info bits 0
+ 0: len 8; hex 8000000000000002; (sku=2)  1: len 4; hex 80000002; (warehouse_id=2)  2: len 4; hex 80000005; (quantity=5)  3: len 8; hex 8000000000000065; (id=101)
+
+*** WE ROLL BACK (2)
+
+-- Ghi chú: cả hai transaction đều đang quét cùng một page (page no 8821) của clustered index PRIMARY (sku PK).
+-- Dù warehouse_id khác nhau, vì không có index trên warehouse_id, InnoDB quét toàn bảng theo thứ tự sku (clustered index PK).
+-- Transaction 1 giữ lock trên sku=2 (warehouse 2), transaction 2 chờ gap lock trên sku=1 (warehouse 1) → deadlock.`,
+    },
+    {
+      name: 'schema-and-index.txt',
+      lang: 'text',
+      content: `-- 2026-03-15 11:32:00 +07, RDS shopmart-inventory
+mysql> SHOW CREATE TABLE inventory\\G
+*************************** 1. row ***************************
+       Table: inventory
+Create Table: CREATE TABLE \`inventory\` (
+  \`id\` bigint NOT NULL AUTO_INCREMENT,
+  \`sku\` bigint NOT NULL,
+  \`warehouse_id\` int NOT NULL,
+  \`quantity\` int NOT NULL,
+  \`updated_at\` timestamp NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  PRIMARY KEY (\`id\`),
+  UNIQUE KEY \`idx_inventory_sku\` (\`sku\`),
+  KEY \`idx_inventory_warehouse\` (\`warehouse_id\`)  -- index này TỒN TẠI nhưng chỉ có warehouse_id, không có sku
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+-- Ghi chú: index idx_inventory_warehouse chỉ có warehouse_id. Query WHERE warehouse_id = ? AND sku LIKE 'A%' cần composite index (warehouse_id, sku).
+
+mysql> SHOW INDEX FROM inventory;
++-----------+------------+------------------------+--------------+---------------+-----------+-------------+----------+--------+------+------------+---------+---------------+
+| Table     | Non_unique | Key_name               | Seq_in_index | Column_name   | Collation | Cardinality | Sub_part | Packed | Null | Index_type | Comment | Index_comment |
++-----------+------------+------------------------+--------------+---------------+-----------+-------------+----------+--------+------+------------+---------+---------------+
+| inventory |          0 | PRIMARY                |            1 | id            | A         |     18400000 |     NULL | NULL   |      | BTREE      |         |               |
+| inventory |          0 | idx_inventory_sku      |            1 | sku           | A         |     18400000 |     NULL | NULL   |      | BTREE      |         |               |
+| inventory |          1 | idx_inventory_warehouse|            1 | warehouse_id  | A         |            4 |     NULL | NULL   |      | BTREE      |         |               |
++-----------+------------+------------------------+--------------+---------------+-----------+-------------+----------+--------+------+------------+---------+---------------+
+
+mysql> EXPLAIN SELECT id, sku, quantity FROM inventory WHERE warehouse_id = 1 AND sku LIKE 'A%';
++----+-------------+-----------+------------+------+------------------------+------+---------+------+----------+----------+-------------+
+| id | select_type | table     | partitions | type | possible_keys          | key  | key_len | ref  | rows     | filtered | Extra       |
++----+-------------+-----------+------------+------+------------------------+------+---------+------+----------+----------+-------------+
+|  1 | SIMPLE      | inventory | NULL       | ALL  | idx_inventory_warehouse| NULL | NULL    | NULL | 18400000 |     0.25 | Using where |
++----+-------------+-----------+------------+------+------------------------+------+---------+------+----------+----------+-------------+
+-- type = ALL (full table scan), key = NULL (không dùng index nào) vì warehouse_id chỉ có 4 giá trị (cardinality 4), optimizer chọn full scan.
+-- Dù idx_inventory_warehouse tồn tại, optimizer bỏ qua vì selectivity quá thấp (4 kho → mỗi kho ~4.6 triệu dòng).`,
+    },
+    {
+      name: 'app-inventory-update.log',
+      lang: 'text',
+      content: `2026-03-15 11:30:44.801 INFO  [worker-1] c.s.inventory.InventoryJob : updateStock start warehouseId=1 skuPrefix=A
+2026-03-15 11:30:44.802 DEBUG [worker-1] o.h.SQL : update inventory set quantity = quantity - 1 where warehouse_id = ? and sku like ?
+2026-03-15 11:30:44.803 INFO  [worker-2] c.s.inventory.InventoryJob : updateStock start warehouseId=2 skuPrefix=A
+2026-03-15 11:30:44.804 DEBUG [worker-2] o.h.SQL : update inventory set quantity = quantity - 1 where warehouse_id = ? and sku like ?
+2026-03-15 11:30:45.012 ERROR [worker-1] c.s.inventory.InventoryJob : updateStock failed warehouseId=1
+com.mysql.cj.jdbc.exceptions.MySQLTransactionRollbackException: Deadlock found when trying to get lock; try restarting transaction
+2026-03-15 11:30:45.013 ERROR [worker-2] c.s.inventory.InventoryJob : updateStock failed warehouseId=2
+com.mysql.cj.jdbc.exceptions.MySQLTransactionRollbackException: Deadlock found when trying to get lock; try restarting transaction
+-- pattern: 4 worker cùng chạy, deadlock xảy ra ở worker 1 và 2 (và thỉnh thoảng worker 3/4), retry sau 200ms thành công.`,
+    },
+  ],
+  questions: [
+    'Vì sao 4 worker cập nhật các nhóm dòng không giao nhau (warehouse_id khác nhau) vẫn deadlock? Chỉ ra bằng dòng lock_mode trong SHOW ENGINE INNODB STATUS.',
+    'Giải thích cơ chế: InnoDB khoá theo đường quét index (clustered index PK theo sku), không theo WHERE. Khi thiếu index phù hợp, transaction quét toàn bảng theo thứ tự sku, giữ next-key lock/gap lock trên các dòng của kho khác → deadlock.',
+    'Bạn sửa thế nào để loại bỏ deadlock (index composite, transaction ngắn, retry)? Giải thích vì sao index (warehouse_id, sku) giúp mỗi transaction chỉ quét và khoá dòng của kho mình.',
+  ],
+  hints: [
+    'Đọc lock_mode "X locks gap before rec insert intention waiting" và "X locks rec but not gap" trong SHOW ENGINE INNODB STATUS: transaction 1 giữ lock trên sku=2 (warehouse 2), transaction 2 chờ gap lock trên sku=1 (warehouse 1) → deadlock.',
+    'InnoDB luôn khoá theo thứ tự index nó quét. Nếu không có index phù hợp, nó quét clustered index (PK theo sku/id) → thứ tự lock là sku tăng dần, không phải warehouse.',
+    'Index composite (warehouse_id, sku) cho phép InnoDB quét và khoá chỉ các dòng của warehouse mình, không chạm dòng của kho khác. Thêm retry cho deadlock (SQLState 40001) và giữ transaction ngắn.',
+  ],
+  answer: `**Tóm tắt:** 4 worker cập nhật các kho khác nhau nhưng deadlock vì **thiếu index phù hợp trên {{(warehouse_id, sku)}}**. InnoDB không khoá theo điều kiện WHERE; nó khoá theo **thứ tự quét index**. Vì {{idx_inventory_warehouse}} chỉ có {{warehouse_id}} (cardinality 4), optimizer chọn full table scan → InnoDB quét toàn bảng theo **clustered index (PK theo sku)**, giữ next-key lock/gap lock trên các dòng thuộc kho khác. Worker 1 giữ lock trên sku=2 (kho 2) và chờ gap lock trên sku=1 (kho 1); worker 2 giữ lock trên sku=1 và chờ sku=2 → deadlock. Sửa: tạo composite index {{(warehouse_id, sku)}} để mỗi transaction chỉ quét và khoá dòng của kho mình, thêm retry cho deadlock, và giữ transaction ngắn.
+### Nguyên nhân gốc
+1. Bảng {{inventory}} có {{idx_inventory_warehouse}} chỉ trên {{warehouse_id}} (cardinality 4 → mỗi kho ~4,6 triệu dòng). Optimizer chọn full table scan (type = ALL) vì selectivity quá thấp.
+2. InnoDB quét clustered index (PRIMARY theo {{id}}/sku) → thứ tự lock là **sku tăng dần**, không phải warehouse.
+3. Worker 1 (kho 1) quét toàn bảng, giữ next-key lock trên sku=2 (kho 2) và chờ gap lock trên sku=1 (kho 1). Worker 2 (kho 2) cũng quét toàn bảng, giữ lock trên sku=1 và chờ sku=2 → deadlock.
+4. Deadlock detector InnoDB phát hiện chu trình chờ và rollback một transaction (SQLState 40001).
+### Dẫn chứng
+- Artifact 1: lock_mode "X locks gap before rec insert intention waiting" trên sku=1 (warehouse 1), "X locks rec but not gap" trên sku=2 (warehouse 2). Transaction 1 giữ lock sku=2, transaction 2 chờ gap lock sku=1 → deadlock.
+- Artifact 2: idx_inventory_warehouse chỉ có warehouse_id (cardinality 4), EXPLAIN type = ALL, key = NULL. Thiếu composite index (warehouse_id, sku).
+- Artifact 3: 4 worker cùng chạy, deadlock ở worker 1 và 2, retry sau 200ms thành công.
+### Cách sửa
+**Ngắn hạn (hôm nay):**
+- Tạo composite index: {{CREATE INDEX idx_inventory_warehouse_sku ON inventory (warehouse_id, sku);}} (MySQL 8.0 hỗ trợ online DDL: {{ALGORITHM=INPLACE, LOCK=NONE}}).
+- Thêm retry cho deadlock (SQLState 40001) với backoff nhỏ (100 ms, 200 ms, 400 ms, tối đa 3 lần).
+**Dài hạn:**
+- Giữ transaction ngắn: chỉ UPDATE inventory trong transaction, đọc order_item và tính toán ngoài transaction.
+- Theo dõi deadlock rate trong {{SHOW ENGINE INNODB STATUS}} và metric {{innodb_deadlocks}} (performance_schema).
+- Nếu deadlock vẫn xảy ra do nhiều SKU chung, dùng advisory lock hoặc serialise theo SKU.
+> Senior tip: InnoDB **không** khoá theo WHERE; nó khoá theo thứ tự index nó quét. Vì vậy "các nhóm dòng không giao nhau" chỉ đúng về mặt logic, không đúng về mặt lock. Quy tắc: mọi transaction UPDATE nhiều dòng phải có index phù hợp để InnoDB chỉ quét và khoá dòng của nhóm mình. Và deadlock là cơ chế bảo vệ dữ liệu — mục tiêu là làm cho nó rẻ và tự hồi phục (index đúng + retry + idempotency).`,
+  rubric: [
+    'Chỉ đúng nguyên nhân gốc: thiếu composite index (warehouse_id, sku) → InnoDB quét clustered index theo sku, giữ next-key/gap lock trên dòng của kho khác → deadlock giữa các transaction cập nhật kho khác nhau',
+    'Dẫn chứng đúng: lock_mode X locks gap before rec / next-key trong SHOW ENGINE INNODB STATUS, transaction 1 giữ lock sku=2 (warehouse 2) chờ sku=1 (warehouse 1)',
+    'Giải thích đúng cơ chế: InnoDB khoá theo đường quét index, không theo WHERE; idx_inventory_warehouse chỉ có warehouse_id (cardinality 4) → optimizer chọn full scan',
+    'Đề xuất sửa đúng: composite index (warehouse_id, sku) với online DDL, retry cho deadlock (40001), transaction ngắn',
+    'Có monitoring/phòng ngừa: theo dõi deadlock rate, log_lock_waits, quy tắc review index cho query UPDATE',
+  ],
+  tags: ['mysql', 'innodb', 'deadlock', 'index', 'gap-lock', 'next-key-lock', 'composite-index'],
+},
 );
 
