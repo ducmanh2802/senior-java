@@ -12211,4 +12211,402 @@ Một hệ thống theo dõi vận đơn giao nhận có 200.000 sự kiện m�
   ],
   tags: ['data ingestion', 'pipeline', 'idempotency', 'at-least-once', 'dead letter queue', 'core']
 },
+{
+  id: 'architecture-072',
+  topic: 'architecture',
+  level: 'senior',
+  q: 'Elasticsearch tìm kiếm full-text nhanh nhờ cấu trúc gì bên dưới? Hãy giải thích inverted index, analyzer (char filter, tokenizer, token filter) và vì sao cùng một câu truy vấn lại cho kết quả khác nhau khi đổi analyzer hoặc mapping.',
+  a: `**Tóm tắt:** Elasticsearch tìm kiếm full-text nhanh không phải vì "quét từng dòng" mà vì khi ghi tài liệu, nó băm nhỏ nội dung thành các token (từ) rồi lập một bảng đối chiếu token → danh sách tài liệu chứa token đó, gọi là inverted index. Truy vấn chỉ tra bảng này rồi giao các danh sách, nên độ phức tạp phụ thuộc số từ khoá chứ không phụ thuộc số tài liệu. Analyzer là dây chuyền biến văn bản thô thành token; đổi analyzer hoặc kiểu field ({{text}} so với {{keyword}}) là đổi luôn cách khớp, vì vậy "tìm không ra" thường là lỗi cấu hình chứ không phải lỗi dữ liệu.
+
+### Kiến thức cần biết trước
+- **Full-text search (tìm kiếm toàn văn):** tìm theo nội dung chữ trong tài liệu, khác tìm chính xác một mã. Ví dụ tìm "đổi mật khẩu" trong 10 triệu bài hướng dẫn.
+- **Token:** một đơn vị từ nhỏ nhất sau khi băm câu. Câu "Đổi mật khẩu" có thể thành 3 token {{đổi}}, {{mật}}, {{khẩu}}. Token là thứ được tra cứu, không phải cả câu.
+- **Inverted index (chỉ mục đảo):** như mục lục cuối sách. Mục lục thường cho biết "trang → nội dung", còn chỉ mục đảo cho biết "từ → trang". Muốn biết từ "khóa" xuất hiện ở đâu, bạn tra chữ K một lần thay vì lật từng trang.
+- **Term dictionary (từ điển term):** danh sách tất cả token đã sắp xếp, thường nén bằng FST (finite state transducer — một cấu trúc nén chuỗi, tra tiền tố rất nhanh). Đây là "mục lục chữ cái" của inverted index.
+- **Postings list (danh sách trỏ):** với mỗi token, danh sách id tài liệu chứa nó, kèm tần suất (term frequency) và vị trí để tìm được cụm từ. Ví dụ token {{khóa}} → [doc3 (xuất hiện 2 lần, vị trí 5 và 9), doc7 (1 lần, vị trí 2)].
+- **Analyzer:** dây chuyền 3 chặng: char filter (lọc ký tự, ví dụ bỏ thẻ HTML) → tokenizer (cắt câu thành token) → token filter (biến đổi token, ví dụ chữ thường, bỏ stop word, bỏ dấu). Cùng một câu, analyzer khác nhau cho token khác nhau.
+- **Mapping:** khai báo kiểu dữ liệu của field. {{text}} được phân tích (dùng cho full-text), {{keyword}} không phân tích (dùng để lọc, sort, agg chính xác). Nhiều hệ thống map cả hai bằng multi-field.
+- **BM25:** hàm chấm điểm độ liên quan mặc định của ES, ưu tiên tài liệu chứa từ hiếm và tài liệu ngắn. Không cần nhớ công thức để trả lời phỏng vấn, chỉ cần biết nó xếp hạng chứ không chỉ lọc.
+
+### Cơ chế từng bước khi ghi tài liệu
+1. Tài liệu đến index {{docs}} với field {{title: "Hướng dẫn đổi mật khẩu"}}.
+2. Analyzer chạy: char filter bỏ thẻ, tokenizer cắt theo khoảng trắng và dấu câu, token filter đưa về chữ thường. Kết quả token: {{hướng}}, {{dẫn}}, {{đổi}}, {{mật}}, {{khẩu}}.
+3. Với mỗi token, ES tra term dictionary; nếu chưa có thì thêm token mới (sắp xếp, nén FST), nếu có thì thêm id tài liệu vào postings list và tăng tần suất.
+4. Song song, ES lưu bản gốc trong {{_source}} để trả về nguyên văn.
+5. Khi có truy vấn {{đổi mật khẩu}}, ES phân tích truy vấn, tra từng token, lấy postings list, giao (intersect) các danh sách, chấm điểm BM25, trả về top-k.
+6. Vì chỉ đọc các danh sách liên quan, thời gian truy vấn gần như không phụ thuộc tổng số tài liệu — đây là lý do ES vẫn nhanh khi kho có hàng tỷ dòng.
+
+~~~seq
+title: Từ tài liệu đến kết quả tìm kiếm
+actors: Client | Analyzer | Inverted Index | Query
+Client -> Analyzer: title "Hướng dẫn đổi mật khẩu"
+Analyzer --> Inverted Index: token đổi, mật, khẩu
+Query -> Inverted Index: tìm token "đổi"
+Inverted Index --> Query: postings doc3, doc7
+Query --> Client: top-k kèm điểm BM25
+~~~
+
+### Ví dụ số cụ thể chạy tay được
+Giả sử 4 tài liệu, analyzer chuẩn (cắt từ và chữ thường):
+
+| Tài liệu | title | Token |
+|---|---|---|
+| doc1 | đổi mật khẩu | đổi, mật, khẩu |
+| doc2 | khóa tài khoản | khóa, tài, khoản |
+| doc3 | hướng dẫn đổi khóa | hướng, dẫn, đổi, khóa |
+| doc4 | lấy lại mật khẩu | lấy, lại, mật, khẩu |
+
+Postings sau khi index (token → danh sách doc: tần suất):
+
+| Token | Postings |
+|---|---|
+| đổi | doc1:1, doc3:1 |
+| mật | doc1:1, doc4:1 |
+| khẩu | doc1:1, doc4:1 |
+| khóa | doc2:1, doc3:1 |
+| hướng | doc3:1 |
+
+Truy vấn {{mật khẩu}} (mặc định OR nếu operator là OR, hoặc AND nếu đặt {{operator: and}}):
+- Nếu OR: hợp kết quả của {{mật}} và {{khẩu}} → doc1 và doc4; doc1 khớp cả 2 token nên điểm cao hơn vì BM25 cộng điểm từng token.
+- Nếu AND: chỉ doc1 và doc4, vì cả hai đều có đủ {{mật}} và {{khẩu}}.
+- Truy vấn {{khóa}} chỉ ra doc2 và doc3. Truy vấn {{khoa}} (thiếu dấu) không khớp nếu analyzer không bỏ dấu — ví dụ kinh điển của "dữ liệu đúng nhưng không tìm thấy".
+
+### Tự thử trên máy
+Chạy Elasticsearch một dòng (bản 8.x, tắt bảo mật cho nhanh khi học):
+~~~bash
+docker run --rm -p 9200:9200 -e discovery.type=single-node -e xpack.security.enabled=false docker.elastic.co/elasticsearch/elasticsearch:8.13.4
+~~~
+Xem analyzer biến câu thành token gì:
+~~~bash
+curl -s -X POST "localhost:9200/_analyze" -H 'Content-Type: application/json' -d '{"analyzer":"standard","text":"Hướng dẫn đổi mật khẩu"}'
+# Kết quả mong đợi: token "hướng", "dẫn", "đổi", "mật", "khẩu" (chữ thường, bỏ dấu câu)
+~~~
+Tạo index có mapping text + keyword rồi tìm:
+~~~bash
+curl -s -X PUT "localhost:9200/docs" -H 'Content-Type: application/json' -d '{"mappings":{"properties":{"title":{"type":"text","fields":{"raw":{"type":"keyword"}}}}}}'
+curl -s -X POST "localhost:9200/docs/_doc/1" -H 'Content-Type: application/json' -d '{"title":"Đổi mật khẩu"}'
+curl -s "localhost:9200/docs/_search?q=title:đổi" | head -c 300
+# _source giữ bản gốc; title.raw dùng để sort và filter chính xác
+~~~
+Dùng {{_explain}} để xem điểm từng token:
+~~~bash
+curl -s "localhost:9200/docs/_search" -H 'Content-Type: application/json' -d '{"query":{"term":{"title":"đổi"}},"explain":true}'
+~~~
+
+### Code Java ngắn (Elasticsearch Java client của Spring Boot 3)
+~~~java
+// Biến tài liệu Java thành JSON rồi ghi; mapping khai báo analyzer ở index settings.
+ElasticsearchClient client = /* bean do Spring Boot cấu hình */;
+var doc = Map.of("title", "Hướng dẫn đổi mật khẩu", "status", "ACTIVE");
+
+// Ghi tài liệu, id ngoài (external) để lần sau ghi đè theo đúng id
+client.index(i -> i.index("docs").id("1").document(doc));
+
+// Tìm full-text: title dùng analyzer, status là keyword để lọc chính xác
+var resp = client.search(s -> s
+    .index("docs")
+    .query(q -> q.bool(b -> b
+        .must(m -> m.match(t -> t.field("title").query("đổi mật khẩu")))
+        .filter(f -> f.term(t -> t.field("status").value("ACTIVE")))))
+    .size(10), Object.class);
+
+resp.hits().hits().forEach(h -> System.out.println(h.source()));
+~~~
+Trong code trên, {{must}} ảnh hưởng điểm số (BM25), {{filter}} chỉ lọc, không tính điểm và được cache — đây là khác biệt quan trọng khi tối ưu.
+
+### Bảng trade-off
+| Cách | Ưu | Nhược | Khi nào |
+|---|---|---|---|
+| {{text}} + analyzer | Tìm mờ, hiểu từ, typo nhẹ nếu thêm filter | Không sort/filter chính xác; tốn CPU index | Nội dung bài viết, mô tả |
+| {{keyword}} | Lọc, sort, agg nhanh và chính xác | Không hiểu "gần nghĩa" | Mã, trạng thái, email |
+| Multi-field text + keyword | Có cả hai | Tốn gấp đôi lưu trữ và index | Field vừa cần tìm vừa cần lọc |
+| Ngram/edge ngram | Tìm giữa từ, autocomplete | Index phình, chậm ghi | Tìm kiếm mờ, gợi ý |
+| Bỏ dấu (icu_folding) | Khớp tiếng Việt không dấu | Cần plugin ICU, đổi hành vi | Người dùng gõ không dấu |
+
+### Pitfall production
+- **Nhầm {{text}} và {{keyword}}:** sort hoặc agg trên {{text}} lỗi "fielddata disabled"; phải dùng {{keyword}}.
+- **Quên analyzer cho tiếng Việt:** người dùng gõ "khoa" không ra "khóa"; cân nhắc {{icu_analyzer}} hoặc custom filter bỏ dấu.
+- **Truy vấn wildcard đầu chuỗi {{*mật}}:** phải quét term dictionary, rất chậm; ES 7.10+ có field type {{wildcard}} index 3-gram để tăng tốc, nhưng vẫn không thay được search hợp lý.
+- **Đổi mapping giữa chừng:** field {{text}} không thể đổi thành {{keyword}} nếu đã có dữ liệu; phải reindex sang index mới rồi đổi alias.
+- **Hiểu nhầm điểm số:** BM25 chỉ là heuristic xếp hạng; kết quả cần đánh giá bằng bộ test, có thể tune bằng {{boost}} hoặc {{function_score}}.
+- **Index field huge không cần tìm:** làm segment to, merge nặng; chỉ index field cần tìm.
+
+### Ví dụ đời thực
+Một sàn thương mại điện tử có 8 triệu sản phẩm, tìm kiếm theo tên. Triệu chứng: tìm "tai nghe" ra nhiều kết quả lạ, còn tìm "tai nghe chup tai" (gõ lỗi) thì gần như rỗng; p95 tìm kiếm 900 ms, tỷ lệ click vào kết quả đầu chỉ 12%. Điều tra: mọi field map {{text}} với analyzer mặc định, không bỏ dấu, không xử lý gõ sai; truy vấn dùng wildcard hai đầu {{*tai*nghe*}} nên quét term dictionary toàn bộ. Xử lý: (1) thêm {{icu_folding}} để bỏ dấu; (2) thêm field {{keyword}} cho mã và thương hiệu để lọc chính xác; (3) dùng edge ngram cho autocomplete thay wildcard; (4) đưa truy vấn về {{match}} + {{filter}} và giới hạn {{size}}. Kết quả: p95 còn 180 ms, tỷ lệ click kết quả đầu tăng lên 31%, tỷ lệ "không có kết quả" giảm từ 9% xuống 2%.
+
+### Tóm lại 3 ý
+- Inverted index là "từ → danh sách tài liệu"; truy vấn tra từ rồi giao danh sách nên không quét toàn bộ dữ liệu.
+- Analyzer quyết định token; {{text}} dùng analyzer để tìm mờ, {{keyword}} giữ nguyên để lọc và sort chính xác, và cấu hình sai là nguyên nhân phổ biến nhất của "tìm không thấy".
+- BM25 chấm điểm chứ không lọc; {{must}} tính điểm còn {{filter}} chỉ lọc và được cache, nên tối ưu truy vấn là tách đúng hai loại này.
+
+### Trả lời mẫu khi phỏng vấn
+"Elasticsearch không lưu văn bản để đọc tuần tự. Khi ghi, analyzer cắt câu thành token: char filter bỏ thẻ, tokenizer cắt từ, token filter đưa về chữ thường, bỏ stop word hoặc bỏ dấu. Mỗi token được ghi vào inverted index gồm term dictionary và postings list, tức danh sách id tài liệu kèm tần suất. Khi tìm, tôi phân tích truy vấn, tra từng token, giao các postings rồi chấm điểm BM25; vì chỉ đọc danh sách liên quan nên độ trễ gần như không phụ thuộc tổng số tài liệu. Tôi phân biệt {{text}} và {{keyword}}: {{text}} để tìm mờ, {{keyword}} để lọc, sort, agg. Khi người dùng gõ không dấu mà không ra, tôi kiểm tra analyzer, thường thêm icu_folding; khi sort lỗi fielddata, tôi chuyển sang sub-field {{keyword}}. Truy vấn wildcard đầu chuỗi rất chậm vì quét term dictionary, nên tôi dùng match hoặc edge ngram cho autocomplete. Cuối cùng, tôi tách {{must}} tính điểm và {{filter}} chỉ lọc để giảm tải và tăng cache."
+
+> Senior tip: Khi "tìm không ra", đừng vội kết luận dữ liệu sai — hãy chạy _analyze trên đúng câu truy vấn và so với token đã index. Phần lớn sự cố full-text là lệch analyzer hoặc nhầm text/keyword, không phải thuật toán xếp hạng.`,
+  follow: [
+    'Analyzer nào phù hợp cho tiếng Việt có dấu và không dấu? Bạn cấu hình custom analyzer thế nào?',
+    'Postings list lưu những gì và vì sao vị trí token lại quan trọng cho phrase query?',
+    'Vì sao không nên sort hoặc agg trực tiếp trên field text?'
+  ],
+  tags: ['Elasticsearch', 'inverted index', 'analyzer', 'mapping', 'BM25', 'full-text']
+},
+{
+  id: 'architecture-073',
+  topic: 'architecture',
+  level: 'senior',
+  q: 'Một tài liệu ghi vào Elasticsearch mất bao lâu thì tìm được, và vì sao không tìm được ngay? Giải thích segment, refresh, translog, merge, rồi tới shard/replica và cách chọn số shard cho hợp lý.',
+  a: `**Tóm tắt:** Elasticsearch không sửa tài liệu tại chỗ. Mỗi shard là một chỉ mục Lucene gồm nhiều segment bất biến; tài liệu mới nằm trong bộ đệm bộ nhớ và translog, sau mỗi refresh (mặc định 1 giây) được ghi thành một segment mới và trở nên tìm được — đó là near real-time. Xóa hoặc cập nhật chỉ đánh dấu tombstone trong segment cũ; khi merge, segment nhỏ được gộp và tài liệu đã xóa mới bị loại bỏ thật. Shard chia dữ liệu theo chiều ngang, replica nhân bản để chịu lỗi và tăng đọc; chọn số shard sai (quá nhỏ hoặc quá nhiều) là nguyên nhân phổ biến của chậm và tốn tài nguyên.
+
+### Kiến thức cần biết trước
+- **Node và cluster:** một máy chạy ES là node; nhiều node hợp thành cluster.
+- **Index:** bảng dữ liệu logic, giống database trong hệ quan hệ.
+- **Shard:** một lát của index, thực chất là một chỉ mục Lucene độc lập; số primary shard cố định khi tạo index.
+- **Replica:** bản sao của shard trên node khác; replica vừa dự phòng vừa phục vụ đọc.
+- **Segment:** file chỉ mục bất biến trên đĩa; không sửa được, chỉ tạo mới.
+- **Translog (transaction log):** nhật ký ghi trước khi commit, để không mất dữ liệu nếu node chết giữa chừng.
+- **Refresh:** đưa tài liệu từ bộ đệm thành segment mới, làm nó tìm được. **Flush:** ghi translog xuống đĩa và xóa translog cũ. **Merge:** gộp segment nhỏ thành lớn, dọn tài liệu đã xóa.
+- **NRT (near real-time):** gần thời gian thực, độ trễ khoảng 1 giây mặc định.
+- **Tombstone:** dấu "đã xóa" trên tài liệu trong segment cũ.
+
+### Cơ chế từng bước: một tài liệu đi từ request đến khi xóa được
+1. Client ghi tài liệu vào index {{orders}}. ES tính shard đích bằng {{hash(_id) % số_shard_primary}} (mặc định), chuyển tới primary shard.
+2. Primary ghi vào translog (để bền) và buffer trong bộ nhớ; tài liệu CHƯA tìm được ngay.
+3. Replica song song nhận bản ghi từ primary; cấu hình {{wait_for_active_shards}} quyết định client chờ bao nhiêu bản.
+4. Sau {{refresh_interval}} (mặc định 1 giây), buffer được ghi thành một segment mới trên primary và replica, đồng thời buffer được xóa. Từ giây phút này, tìm kiếm thấy tài liệu.
+5. Khi translog quá lớn (mặc định 512 MB) hoặc flush thủ công, ES flush: commit Lucene và xóa translog đã commit. Translog cũng được fsync định kỳ (mặc định 5 giây) để bền.
+6. Khi cập nhật: ES xóa tài liệu cũ (tombstone) rồi ghi tài liệu mới; tài liệu cũ vẫn nằm trong segment cho đến khi merge.
+7. Nền merge chạy theo chính sách tiers: gộp các segment nhỏ, loại bỏ tombstone, giảm số file. {{force merge}} gộp mạnh nhưng tốn I/O, chỉ dùng khi rảnh hoặc sau reindex.
+
+~~~seq
+title: Đường đi của một bản ghi
+actors: Client | Primary Shard | Translog | Segment | Replica
+Client -> Primary Shard: index đơn hàng
+Primary Shard -> Translog: ghi bền
+Primary Shard -> Segment: refresh sau 1s
+Segment -> Replica: nhân bản
+Primary Shard --> Client: 201 Created
+~~~
+
+### Ví dụ số cụ thể chạy tay được: refresh và merge
+Một index nhận 1.000 tài liệu mỗi giây, refresh 1 giây:
+
+| Thời điểm | Buffer | Segment trên đĩa | Số segment | Tìm được? |
+|---|---|---|---|---|
+| t0 | 0 | 0 | 0 | – |
+| t0+0,2s | 200 | 0 | 0 | Không |
+| t0+1s | 0 (vừa refresh) | 1.000 | 1 | Có |
+| t0+2s | 0 | 2.000 | 2 | Có |
+| t0+3s | 0 | 3.000 | 3 | Có |
+| t0+4s | 0 | 4.000 | 4 | Có |
+| t0+10s | 0 | 10.000 | 10 | Có (10 segment) |
+| sau merge | 0 | 10.000 | 1–2 | Có (đã gộp) |
+
+Điểm mấu chốt: trong 1 giây đầu, client ghi thành công nhưng tìm chưa thấy. Đây là "near real-time", không phải "real-time".
+
+### Tự thử trên máy
+Chạy ES như câu trước, ghi vài tài liệu rồi quan sát:
+~~~bash
+curl -s -X POST "localhost:9200/orders/_doc/1?refresh=false" -H 'Content-Type: application/json' -d '{"status":"NEW"}'
+# Ghi xong nhưng chưa refresh: tìm sẽ không thấy
+curl -s "localhost:9200/orders/_count"; sleep 1
+curl -s "localhost:9200/orders/_count"   # sau 1 giây mới thấy 1
+~~~
+Xem segment và merge:
+~~~bash
+curl -s "localhost:9200/_cat/segments/orders?v"
+curl -s -X POST "localhost:9200/orders/_forcemerge?max_num_segments=1"
+curl -s "localhost:9200/_cat/shards/orders?v"
+# PRIMARY và REPLICA cùng trạng thái STARTED; nếu replica chưa sẵn sàng -> YELLOW
+~~~
+Đổi refresh để so sánh độ trễ:
+~~~bash
+curl -s -X PUT "localhost:9200/orders/_settings" -H 'Content-Type: application/json' -d '{"index":{"refresh_interval":"5s"}}'
+# Giờ tài liệu mới mất tới 5 giây mới tìm được; đặt lại "1s" để cân bằng
+~~~
+
+### Code Java ngắn (Elasticsearch Java client)
+~~~java
+// Ghi kèm chính sách refresh tường minh; production nên để mặc định 1s.
+ElasticsearchClient client = /* bean */;
+client.index(i -> i.index("orders").id("1")
+        .document(Map.of("status", "NEW"))
+        .refresh(co.elastic.clients.elasticsearch._types.Refresh.True));
+
+// Nếu cần đọc ngay sau ghi, dùng Refresh.WaitFor để chờ thay vì True.
+var count = client.count(c -> c.index("orders"));
+System.out.println("docs=" + count.count()); // in 1 khi đã refresh
+
+// Khi cần đọc ngay, ưu tiên đọc từ DB nguồn, không dựa vào ES.
+~~~
+
+### Bảng trade-off
+| Thiết lập | Tác dụng | Đánh đổi |
+|---|---|---|
+| refresh_interval 1s | Gần thời gian thực | Nhiều segment nhỏ, merge nặng nếu ghi nhiều |
+| refresh_interval 5–30s | Giảm chi phí merge | Dữ liệu trễ hơn, người dùng không thấy ngay |
+| translog durability request | Bền từng request | Chậm hơn khi ghi |
+| translog durability async | Nhanh hơn | Có thể mất vài giây ghi nếu node chết |
+| 1 shard 50 GB | Cân bằng | Một shard quá to thì reindex và khôi phục lâu |
+| 1 shard 5 GB | Khôi phục nhanh | Quá nhiều shard gây overhead, tốn heap |
+| 1 primary + 1 replica | Chịu lỗi, tăng đọc | Tốn gấp đôi lưu trữ |
+| force merge | Giảm số segment | I/O cao, chỉ nên chạy khi rảnh |
+
+Nguyên tắc thực dụng: giữ mỗi shard khoảng 10–50 GB (vùng dễ chịu là 20–40 GB), tổng số shard mỗi node dưới khoảng 20 tùy heap, không chia nhỏ kiểu "mỗi ngày một shard" nếu dữ liệu ít.
+
+### Pitfall production
+- **Refresh quá thấp (100 ms):** mỗi giây tạo rất nhiều segment, merge không theo kịp, CPU và I/O tăng vọt; đây là lỗi hay gặp khi "muốn real-time".
+- **Ít shard nhưng mỗi shard quá lớn:** một shard 500 GB khiến reindex, khôi phục và di chuyển shard rất lâu, và một node nóng.
+- **Quá nhiều shard nhỏ:** mỗi shard có overhead (file, thread, heap); 10.000 shard 5 MB còn tệ hơn 100 shard 500 MB.
+- **Force merge trên index đang chạy:** khóa I/O, p99 tăng; chỉ chạy khi ít tải hoặc trên index chỉ đọc.
+- **Cập nhật bằng ghi đè toàn bộ:** mỗi update là xóa cộng ghi, tạo tombstone và tăng segment; dùng API {{update}} hoặc ghi tối thiểu.
+- **Bỏ qua trạng thái YELLOW:** replica chưa STARTED nghĩa là chưa có bản sao, mất node là mất khả năng chịu lỗi; phải xử lý phân mảnh (allocation) chứ không chỉ chờ.
+
+### Ví dụ đời thực
+Một hệ thống đơn hàng ghi 3.000 lệnh mỗi giây vào một index 2 shard, mỗi shard 120 GB. Triệu chứng: p99 ghi tăng từ 40 lên 900 ms mỗi khi merge, CPU node 85%, có lúc cluster YELLOW vì replica không kịp. Điều tra: refresh 200 ms do cấu hình "gần real-time" từ giai đoạn demo, mỗi giây sinh khoảng 15 segment; số shard chỉ 2 nên mỗi shard quá lớn, một node giữ cả primary lẫn replica của cùng shard. Xử lý: (1) đặt refresh về 1 giây cho index ghi nhiều, chấp nhận trễ 1 giây; (2) tăng lên 6 shard để mỗi shard khoảng 40 GB; (3) tách primary và replica sang node khác bằng allocation awareness; (4) chuyển translog sang async có kiểm soát rủi ro; (5) chạy force merge vào 2 giờ sáng khi lưu lượng thấp. Kết quả: p99 ghi còn 120 ms, CPU 55%, cluster GREEN, độ trễ tìm kiếm ổn định 1,2 giây.
+
+### Tóm lại 3 ý
+- Ghi là ghi vào translog cộng buffer; chỉ sau refresh mới có segment mới và tìm được — đó là bản chất near real-time.
+- Xóa và cập nhật là tombstone; merge mới dọn thật, nên số segment và tỷ lệ tài liệu bị xóa là chỉ số vận hành quan trọng.
+- Shard là đơn vị chia và nhân bản; chọn số shard theo dung lượng mục tiêu 10–50 GB mỗi shard và tránh cả "quá to" lẫn "quá nhiều".
+
+### Trả lời mẫu khi phỏng vấn
+"ES không sửa tại chỗ. Khi ghi, primary shard ghi vào translog và buffer; sau refresh mặc định 1 giây, buffer thành segment mới và tài liệu mới tìm được, nên hệ thống là near real-time chứ không real-time. Replica nhận bản ghi song song và phục vụ đọc. Khi update, ES đánh dấu tombstone ở segment cũ rồi ghi tài liệu mới; tài liệu cũ chỉ biến mất sau merge, nên tôi theo dõi số segment và tỷ lệ tài liệu bị xóa. Về shard, primary chia dữ liệu theo hash của _id; tôi chọn số shard sao cho mỗi shard khoảng 10–50 GB, thường 20–40 GB, và tránh chia quá nhỏ vì mỗi shard có overhead heap và file. Tôi cũng đặt refresh theo tải: ghi nhiều thì 1 giây hoặc cao hơn, chỉ đọc thì có thể lâu hơn. Nếu cluster YELLOW, tôi kiểm tra replica chưa STARTED, xem allocation, chứ không chỉ chờ. Force merge chỉ chạy khi rảnh, không chạy trên index đang ghi vì I/O cao."
+
+> Senior tip: Theo dõi ba chỉ số vận hành của ES trước khi tinh chỉnh: số segment mỗi shard, tỷ lệ tombstone (docs.deleted), và kích thước shard. Nếu p99 ghi xấu đi đúng lúc merge, thường là refresh quá thấp hoặc shard quá lớn, không phải "thiếu node".`,
+  follow: [
+    'Refresh, flush và merge khác nhau thế nào, mỗi thao tác ảnh hưởng tới độ bền và độ trễ ra sao?',
+    'Vì sao shard quá nhiều lại tốn heap, và bạn ước lượng số shard thế nào cho 5 TB dữ liệu?',
+    'Cập nhật một tài liệu thường xuyên có làm tăng tombstone không? Bạn giảm chi phí bằng cách nào?'
+  ],
+  tags: ['Elasticsearch', 'segment', 'refresh', 'merge', 'shard', 'translog', 'near real-time']
+},
+{
+  id: 'architecture-074',
+  topic: 'architecture',
+  level: 'lead',
+  q: 'Bạn đồng bộ PostgreSQL sang Elasticsearch để tra cứu sao kê: vì sao không được ghi hai nơi, outbox và CDC hoạt động thế nào, xử lý lệch dữ liệu ra sao, và vì sao phân trang sâu bằng from + size chậm còn search_after lại nhanh?',
+  a: `**Tóm tắt:** Trong kiến trúc CQRS, PostgreSQL là nguồn sự thật còn Elasticsearch là read model dẫn xuất, nên luôn có độ trễ. Cách đồng bộ an toàn là outbox: ghi dữ liệu và sự kiện vào cùng một transaction, rồi CDC (Debezium) đọc log giao dịch đẩy sang Kafka, consumer index vào ES. Cần versioning ngoài (external version) để bản ghi cũ không ghi đè bản mới, cùng job đối soát định kỳ để phát hiện lệch. Về phân trang sâu, {{from + size}} buộc mỗi shard trả về from cộng size kết quả rồi coordinator gộp, nên trang càng sâu càng chậm; {{search_after}} dùng con trỏ theo giá trị sắp xếp của tài liệu cuối trang, mỗi lần chỉ đọc thêm một trang, và ổn định khi dữ liệu thay đổi.
+
+### Kiến thức cần biết trước
+- **CQRS (Command Query Responsibility Segregation):** tách luồng ghi và luồng đọc; ghi vào DB chuẩn, đọc từ read model chuyên cho truy vấn.
+- **Read model và projection:** bản chiếu của dữ liệu gốc, tối ưu cho truy vấn; ES là một read model.
+- **Outbox pattern:** ghi dữ liệu nghiệp vụ và một bản ghi "sự kiện cần gửi" vào cùng transaction DB; một tiến trình đọc outbox và phát đi, tránh ghi hai nơi không nguyên tử.
+- **CDC (Change Data Capture):** đọc log giao dịch (WAL của PostgreSQL, binlog của MySQL) để biết dữ liệu đã đổi; Debezium là công cụ phổ biến, chạy trên Kafka Connect.
+- **Dual write:** ghi DB rồi ghi ES bằng hai lệnh riêng; nếu lệnh thứ hai lỗi, hai nơi lệch nhau — đây là anti-pattern chính.
+- **Versioning ngoài (external version):** gán mỗi tài liệu một số phiên bản (ví dụ updated_at millis hoặc version tăng dần); ES từ chối ghi nếu phiên bản đến nhỏ hơn phiên bản đã lưu.
+- **Eventual consistency:** nhất quán cuối cùng; hai nơi giống nhau sau một khoảng trễ, không phải tức thì.
+- **Phân trang offset (from cộng size):** bỏ qua from bản ghi đầu rồi lấy size bản ghi; trang càng sâu càng phải bỏ qua nhiều.
+- **search_after:** con trỏ tìm kiếm; truyền giá trị sort của tài liệu cuối trang trước để lấy trang tiếp theo, không cần from.
+- **PIT (point in time):** ảnh chụp nhất quán của index tại một thời điểm, dùng cho phân trang sâu và đọc ổn định.
+
+### Cơ chế đồng bộ DB sang ES từng bước
+1. Ứng dụng mở transaction, ghi đơn hàng vào PostgreSQL và ghi một dòng {{outbox}} (event) trong cùng transaction. Commit cả hai cùng lúc — không thể chỉ commit một nửa.
+2. Debezium (CDC) đọc WAL của PostgreSQL, thấy INSERT vào outbox, tạo message Kafka với key là {{orderId}} để cùng đơn vào cùng partition, giữ thứ tự.
+3. Indexer consumer đọc message, biến thành tài liệu ES, đặt {{version_type: external}} và {{version = updated_at_millis}}.
+4. ES so version: nếu message cũ hơn (do retry, do thứ tự lệch) thì từ chối ghi, tránh ghi đè dữ liệu mới bằng dữ liệu cũ.
+5. Khi xóa: event tombstone có {{deleted: true}}; consumer xóa tài liệu ES hoặc ghi bản ghi đã xóa tùy yêu cầu hiển thị.
+6. Job đối soát định kỳ đếm và checksum theo ngày so DB với ES; nếu lệch thì reindex phần lệch; index alias đổi con trỏ sang index mới khi reindex toàn bộ.
+
+~~~seq
+title: Đồng bộ PostgreSQL sang Elasticsearch
+actors: App | DB + Outbox | Debezium | Kafka | Indexer | ES
+App -> DB + Outbox: INSERT đơn + outbox cùng transaction
+Debezium -> Kafka: đọc WAL, đẩy event
+Kafka -> Indexer: event orderId
+Indexer -> ES: index version=updated_at
+ES --> Indexer: ack hoặc từ chối version cũ
+~~~
+
+### Ví dụ số cụ thể chạy tay được
+Bảng lệch dữ liệu khi đối soát (DB là chuẩn):
+
+| Ngày | DB count | ES count | Lệch | Lag p95 | Nguyên nhân |
+|---|---|---|---|---|---|
+| 2026-11-14 | 1.000.000 | 999.980 | 20 | 1,8s | consumer restart |
+| 2026-11-15 | 1.020.000 | 1.020.000 | 0 | 0,9s | ổn định |
+| 2026-11-16 | 1.045.000 | 1.044.700 | 300 | 4,2s | reindex dở, alias chưa đổi |
+| 2026-11-17 | 1.070.000 | 1.069.950 | 50 | 1,1s | xóa chưa đồng bộ |
+
+Bảng chi phí phân trang sâu (index 2 triệu tài liệu, 2 shard, đo trung vị):
+
+| Cách | from/size | Thời gian | Ghi chú |
+|---|---|---|---|
+| from cộng size | 0 + 20 | 12 ms | Trang đầu |
+| from cộng size | 1.000 + 20 | 45 ms | Bắt đầu chậm |
+| from cộng size | 100.000 + 20 | 900 ms | Mỗi shard trả 100.020 |
+| from cộng size | 1.000.000 + 20 | timeout | Quá sâu |
+| search_after | con trỏ + 20 | 12–18 ms | Không phụ thuộc độ sâu |
+
+Điểm mấu chốt: from cộng size phải lấy từ cộng size ở từng shard rồi mới gộp, nên tải tỉ lệ với độ sâu; search_after chỉ đọc thêm một trang.
+
+### Tự thử trên máy
+Index 1.000 tài liệu rồi so from cộng size với search_after:
+~~~bash
+curl -s -X PUT "localhost:9200/p" -H 'Content-Type: application/json' -d '{"settings":{"number_of_shards":2}}'
+# Nạp dữ liệu bằng _bulk với NDJSON, mỗi doc có seq tăng dần
+curl -s "localhost:9200/p/_search?filter_path=took,hits.total" -H 'Content-Type: application/json' -d '{"size":10,"sort":[{"seq":"asc"}]}'
+# Trang sâu: chậm hơn nhiều vì mỗi shard trả 100010 kết quả
+curl -s "localhost:9200/p/_search?filter_path=took" -H 'Content-Type: application/json' -d '{"from":100000,"size":10,"sort":[{"seq":"asc"}]}'
+# search_after: lấy sort value của doc cuối trang trước
+curl -s "localhost:9200/p/_search?filter_path=took" -H 'Content-Type: application/json' -d '{"size":10,"sort":[{"seq":"asc"}],"search_after":[500]}'
+~~~
+Với CDC, chạy Debezium và Kafka bằng Docker Compose là đủ để thấy message; kiểm tra lag bằng {{kafka-consumer-groups.sh --describe}}. Kết quả mong đợi: from bằng 100000 có {{took}} lớn hơn từ vài trăm đến vài nghìn ms, còn search_after ổn định khoảng chục ms.
+
+### Code Java ngắn (search_after bằng Elasticsearch Java client)
+~~~java
+// Phân trang sâu bằng search_after; sort phải ổn định (có tie-breaker là _id).
+ElasticsearchClient client = /* bean */;
+SortOptions sort = SortOptions.of(s -> s.field(f -> f.field("seq").order(SortOrder.Asc)));
+Object[] after = null;
+for (int page = 0; page < 100; page++) {
+    var req = SearchRequest.of(s -> s.index("p").size(100)
+            .sort(sort)
+            .searchAfter(after == null ? java.util.List.of() : java.util.Arrays.asList(after)));
+    var resp = client.search(req, Object.class);
+    if (resp.hits().hits().isEmpty()) break;
+    // xử lý resp.hits().hits() ...
+    var last = resp.hits().hits().get(resp.hits().hits().size() - 1);
+    after = last.sort().toArray();   // sort value của tài liệu cuối
+}
+~~~
+Điểm quan trọng: {{sort}} của tài liệu cuối trang phải được truyền lại; nếu không, vòng lặp sẽ lặp vô hạn hoặc nhảy trang.
+
+### Bảng trade-off
+| Cách đồng bộ | Ưu | Nhược | Khi nào |
+|---|---|---|---|
+| Dual write (DB + ES) | Đơn giản, ít hạ tầng | Lệch khi lỗi giữa chừng, không dễ sửa | Không khuyến nghị |
+| Outbox + CDC (Debezium) | Bền, đúng thứ tự, ít sửa code nghiệp vụ | Thêm Kafka và Connect, vận hành | Hệ thống cần nhất quán, audit |
+| Polling outbox (job đọc bảng) | Đơn giản hơn CDC | Trễ theo chu kỳ, tải DB | Quy mô nhỏ |
+| search_after | Ổn định độ sâu, stateless | Không nhảy trang ngẫu nhiên, cần sort | Nút next, cuộn vô hạn |
+| from cộng size | Nhảy trang tùy ý, đơn giản | Chậm dần, tải shard | Trang đầu, ít trang |
+| scroll hoặc PIT | Chụp nhất quán, đọc toàn bộ | Giữ tài nguyên, không realtime | Export, đọc một lần |
+
+### Pitfall production
+- **Dual write không nguyên tử:** ghi DB thành công, ghi ES lỗi mạng → tìm kiếm thiếu đơn; không có cách nào biết để sửa nếu không đối soát.
+- **Không dùng external version:** consumer retry ghi bản ghi cũ đè bản mới, dữ liệu "quay ngược thời gian"; luôn đặt version bằng updated_at và reject bản cũ.
+- **Xóa không đồng bộ:** chỉ xóa DB, quên xóa ES → kết quả chết vẫn hiện; cần event xóa và kiểm tra đối soát.
+- **Mapping lệch theo thời gian:** code thêm field mới, mapping ES không được cập nhật (dynamic mapping sai kiểu) → lỗi hoặc index bẩn; dùng template mapping và kiểm thử.
+- **{{from + size}} sâu:** người dùng nhảy tới trang 5.000 làm mỗi shard trả hàng trăm nghìn kết quả, coordinator quá tải; giới hạn số trang hoặc chuyển search_after.
+- **Alias không đổi sau reindex:** reindex xong nhưng client vẫn trỏ index cũ; luôn dùng alias và đổi alias nguyên tử.
+- **Theo dõi chỉ đếm tổng:** tổng có thể khớp nhưng từng tài liệu lệch; đối soát theo bucket hoặc ngày và checksum để phát hiện.
+
+### Ví dụ đời thực
+Một ngân hàng số có 40 triệu giao dịch, tra cứu sao kê bằng ES. Triệu chứng: khách thấy giao dịch mới "biến mất" rồi quay lại; có ngày đối soát thiếu 300 bản ghi; phân trang tới trang 200 mất 8 giây. Điều tra: đồng bộ bằng dual write (ghi DB rồi gọi client index ES trong cùng request); khi ES timeout 500 ms, request vẫn commit DB nhưng không có bản ghi ES, và không có cơ chế bù. Ngoài ra truy vấn dùng {{from = trang * 20}} nên trang sâu rất chậm. Xử lý: (1) chuyển sang outbox + Debezium, version ngoài bằng {{updated_at}}; (2) thêm job đối soát theo ngày và bucket, reindex phần lệch; (3) đổi API sang search_after với sort {{[timestamp, _id]}}; (4) dùng alias {{sao-ke}} trỏ index theo tháng để reindex không downtime. Kết quả: lag p95 còn 1,2 giây, đối soát lệch 0 trong 30 ngày, trang sâu p95 còn 25 ms, và lần reindex 2 TB chỉ cần đổi alias trong vài giây.
+
+### Tóm lại 3 ý
+- DB là nguồn sự thật, ES là read model; đừng dual write, hãy outbox + CDC để sự kiện ghi cùng transaction và có thể phát lại.
+- Dùng version ngoài để bản ghi cũ không ghi đè bản mới, và đối soát định kỳ để bắt lệch mà đếm tổng không thấy.
+- Phân trang sâu: from cộng size tải tỉ lệ độ sâu vì mỗi shard trả from cộng size; search_after dùng con trỏ nên chi phí mỗi trang không đổi.
+
+### Trả lời mẫu khi phỏng vấn
+"Tôi coi PostgreSQL là nguồn sự thật và Elasticsearch là read model, nên chấp nhận nhất quán cuối cùng. Để đồng bộ, tôi không ghi hai nơi bằng hai lệnh; tôi ghi dữ liệu và một dòng outbox trong cùng transaction, rồi Debezium đọc WAL đẩy sang Kafka, consumer index vào ES. Tôi đặt version ngoài bằng updated_at để ES từ chối bản ghi cũ hơn, tránh retry ghi đè dữ liệu mới. Xóa phải có event tombstone, và tôi có job đối soát theo ngày để bắt lệch mà đếm tổng không phát hiện. Khi reindex, tôi ghi vào index mới rồi đổi alias nguyên tử. Về phân trang, from cộng size buộc mỗi shard trả from cộng size rồi coordinator gộp, nên trang càng sâu càng chậm; tôi dùng search_after với sort ổn định [timestamp, _id], mỗi lần chỉ đọc thêm một trang và không lệ thuộc độ sâu. Với xuất dữ liệu lớn, tôi dùng PIT hoặc scroll để có ảnh nhất quán, nhưng không dùng cho UI realtime."
+
+> Senior tip: Một hệ thống đồng bộ tốt phải trả lời được ba câu hỏi trong 30 giây: lag hiện tại là bao nhiêu, bản ghi cũ có bị ghi đè không, và lần đối soát gần nhất lệch bao nhiêu. Nếu chưa có cả ba, bạn chưa vận hành được read model.`,
+  follow: [
+    'Outbox và CDC khác nhau thế nào, khi nào chỉ cần polling bảng outbox?',
+    'Vì sao search_after không nhảy được tới trang bất kỳ, và bạn thiết kế UI phân trang quanh giới hạn đó ra sao?',
+    'Reindex một index 2 TB mà không downtime: bạn dùng alias và snapshot thế nào, xử lý ghi trong lúc reindex?'
+  ],
+  tags: ['Elasticsearch', 'CQRS', 'outbox', 'CDC', 'Debezium', 'search_after', 'pagination', 'reindex']
+},
 );
