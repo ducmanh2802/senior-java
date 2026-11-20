@@ -9796,6 +9796,348 @@ Spring Boot auto-config MyBatis quét interface có @Mapper và tạo proxy bean
 - Chỉ Spring Boot 2: Spring Boot 3 cũng hỗ trợ.
 
 > Senior tip: dùng @MapperScan để quét package.`
-}
+},
+{
+  id: 'qz-frontend-013',
+  topic: 'frontend',
+  q: 'Một dự án giao diện người dùng (frontend, phần giao diện chạy trên trình duyệt) dùng TypeScript (ngôn ngữ thêm kiểu dữ liệu cho JavaScript, sau đó biên dịch ra JavaScript thuần). Dev Java nhận dữ liệu từ API (giao diện lập trình ứng dụng, backend cung cấp dữ liệu qua HTTP) mà chưa biết cấu trúc trước. Sự khác biệt giữa kiểu {{any}} và {{unknown}} là gì?',
+  options: [
+    '{{any}} và {{unknown}} giống nhau: cả hai cho phép gán bất kỳ giá trị và gọi method bất kỳ mà TypeScript không báo lỗi',
+    '{{any}} cho phép gán bất kỳ giá trị và gọi method bất kỳ mà không kiểm tra kiểu, còn {{unknown}} cho phép gán bất kỳ giá trị nhưng phải kiểm tra kiểu (ví dụ dùng {{typeof}}) trước khi gọi method hoặc gán sang kiểu khác',
+    '{{unknown}} bắt buộc phải có giá trị ngay khi khai báo, còn {{any}} có thể để trống',
+    '{{any}} chỉ dùng cho tham số của hàm, {{unknown}} chỉ dùng cho kiểu trả về của hàm'
+  ],
+  answer: 1,
+  explain: `**Đáp án đúng: {{any}} tắt bỏ kiểm tra kiểu của TypeScript, còn {{unknown}} cho phép gán mọi giá trị nhưng yêu cầu kiểm tra kiểu trước khi sử dụng.**
 
+### Vì sao đúng
+
+TypeScript là ngôn ngữ superset của JavaScript: thêm hệ thống kiểu dữ liệu, rồi trình biên dịch dịch sang JavaScript thuần trước khi chạy trên trình duyệt (giống Java compile sang bytecode rồi máy ảo Java chạy). Kiểu dữ liệu dùng để mô tả "giá trị này là số, chuỗi hay object", giúp trình biên dịch phát hiện lỗi sớm thay để để lỗi hiện ra khi người dùng dùng ứng dụng.
+
+- {{any}}: nghĩa là bảo TypeScript bỏ qua kiểm tra kiểu cho giá trị này. Bạn có thể gọi bất kỳ method (hàm thuộc object) nào, gán cho bất kỳ biến nào, TypeScript không cảnh báo. Giống dùng Object trong Java rồi cast vô học — tiện nhưng mất an toàn: nếu runtime trả về kiểu khác, ứng dụng crash trên trình duyệt mà không biết tại sao.
+- {{unknown}}: "giá trị này có kiểu gì đó nhưng chưa biết". Bạn có thể gán bất kỳ giá trị vào biến kiểu unknown, nhưng **không được gọi method hay truy xuất thuộc tính** cho đến khi thu hẹp kiểu (narrowing), ví dụ kiểm tra bằng {{typeof}}. Sau khi kiểm tra thì TypeScript tin và cho phép dùng.
+
+Ví dụ xử lý dữ liệu từ API:
+~~~text
+let duLieu: unknown = await goiApiLayDuLieu();
+// duLieu.ten;                       // LỖI: TypeScript từ chối, chưa biết duLieu có thuộc tính ten hay không
+if (typeof duLieu === 'object' && duLieu !== null && 'ten' in duLieu) {
+    console.log((duLieu as { ten: string }).ten);  // an toàn sau khi đã kiểm tra
+}
+~~~
+
+Với {{any}} thì dòng duLieu.ten được chấp nhận ngay, dù dữ liệu thực tế có thể là số và gây crash sau đó.
+
+### Vì sao các phương án còn lại sai
+- **Giống nhau, không báo lỗi**: sai. {{unknown}} vẫn báo lỗi nếu bạn gọi method chưa kiểm tra kiểu.
+- **unknown bắt buộc gán ngay**: sai, quy tắc khởi tạo của {{unknown}} giống các kiểu khác, không bắt buộc gán ngay khai báo.
+- **any chỉ tham số, unknown chỉ trả về**: sai, cả hai dùng được ở mọi nơi khai báo kiểu (biến, tham số hàm, kiểu trả về, thuộc tính).
+
+> Senior tip: dữ liệu từ API và từ bên ngoài hãy dùng {{unknown}} (hoặc định nghĩa interface đúng cấu trúc) rồi kiểm tra trước khi dùng; đừng dùng {{any}} "để xong việc", lỗi sẽ lạ mờ đến production mới hiện ra.`
+},
+{
+  id: 'qz-frontend-014',
+  topic: 'frontend',
+  multi: true,
+  q: 'Trong TypeScript (ngôn ngữ thêm kiểu dữ liệu cho JavaScript, sau đó biên dịch ra JavaScript thuần), dev Java so sánh hai cách khai báo kiểu dữ liệu: {{interface}} và {{type}}. Hai phát biểu nào đúng? (Chọn 2)',
+  options: [
+    '{{interface}} dùng để mô hình hình dạng của object, và có thể extends một interface khác để kế thừa trường',
+    '{{type}} không thể dùng để khai báo kiểu union (ví dụ string | number)',
+    '{{interface}} nếu khai báo trùng tên nhiều lần TypeScript sẽ gộp (merge) chúng thành một, còn {{type}} khai báo trùng tên sẽ báo lỗi',
+    '{{type}} chỉ dùng cho kiểu nguyên thủy (string, number, boolean), không dùng cho object',
+    '{{interface}} và {{type}} hoàn toàn giống nhau, không có khác biệt nào'
+  ],
+  answer: [0, 2],
+  explain: `**Đáp án đúng: {{interface}} hỗ trợ kế thừa và gộp khai báo trùng tên, còn {{type}} hỗ trợ kiểu union và các kiểu phức tạp nhưng không gộp khai báo.**
+
+### Vì sao đúng
+
+Cả hai đều dùng để đặt tên cho một kiểu dữ liệu, giúp trình biên dịch TypeScript kiểm tra lỗi trước khi chạy (giống class và kiểu trong Java giúp phát hiện lỗi compile time).
+
+- {{interface}}: mô hình object với danh sách tên trường và kiểu của từng trường. Một interface có thể {{extends}} interface khác để kế thừa trường, tương tự class extends class trong Java. Nếu khai báo hai interface cùng tên, TypeScript sẽ **gộp** chúng lại thành một (declaration merging) — hữu ích để mở rộng kiểu của thư viện mà không sửa mã nguồn thư viện.
+- {{type}}: đặt tên cho kiểu bất kỳ, bao gồm kiểu union ({{A | B}} nghĩa là "là A hoặc B", ví dụ trạng thái đơn hàng là 'cho_xac_nhan' | 'da_giao' | 'da_huy'), kiểu gộp và mảng. Nếu khai báo hai {{type}} cùng tên, TypeScript báo lỗi.
+
+Ví dụ:
+~~~text
+interface NguoiDung { ten: string; tuoi: number; }
+interface NhanVien extends NguoiDung { maNv: string; }   // kế thừa
+
+type TrangThai = 'cho_xac_nhan' | 'da_giao' | 'da_huy';   // kiểu union
+~~~
+
+### Vì sao các phương án còn lại sai
+- **type không thể khai báo union**: sai, kiểu union là điểm mạnh của {{type}}.
+- **type chỉ dùng cho nguyên thủy**: sai, {{type}} dùng cho object, mảng, union và mọi kiểu.
+- **Hai cách hoàn toàn giống nhau**: sai, chúng khác nhau ở kế thừa, quy tắc gộp khai báo và kiểu được hỗ trợ.
+
+> Senior tip: dùng {{interface}} cho mô hình object có thể mở rộng (ví dụ DTO của API), dùng {{type}} khi cần union hoặc kiểu phức tạp; tránh trùng tên kiểu trong cùng dự án để tránh nhầm lẫn khi gộp khai báo.`
+},
+{
+  id: 'qz-frontend-015',
+  topic: 'frontend',
+  q: 'Một thành phần Vue 3 (khối giao diện riêng lẻ, ví dụ form đặt hàng) cần gọi API Spring Boot để load danh sách sản phẩm ngay khi hiển thị lần đầu, đồng thời cần đặt con trỏ vào ô nhập liệu sau khi giao diện đã vẽ xong. Dev nên đặt code trong hàm cycle đời nào?',
+  options: [
+    'Trong data, vì data chứa toàn bộ dữ liệu của thành phần',
+    'Trong template (mã HTML), để gọi API trực tiếp khi vẽ giao diện',
+    'Trong mounted, vì lúc này thành phần đã gắn vào giao diện người dùng (DOM) nên có thể truy cập phần tử HTML, gọi API và hiển thị trạng thái loading cho người dùng chờ',
+    'Trong created, vì hàm này chạy sớm nhất trước khi thành phần gắn vào giao diện người dùng'
+  ],
+  answer: 2,
+  explain: `**Đáp án đúng: mounted, vì component đã có DOM nên có thể truy cập phần tử HTML và gọi API kèm hiển thị loading.**
+
+### Vì sao đúng
+
+Vue 3 là framework xây dựng giao diện người dùng (frontend) trên trình duyệt. Mỗi thành phần (component) trải qua chu trình sự kiện gọi là lifecycle: tạo → gắn vào DOM (cấu trúc HTML của trang) → cập nhật → xoá. Mỗi giai đoạn có hàm ("hook") để bạn gắn code vào.
+
+- created: thành phần được tạo, dữ liệu reactivity (dữ liệu mà giao diện tự động theo dõi và vẽ lại khi đổi) đã sẵn sàng, nhưng **DOM chưa tồn tại trên trang**. Dùng để khởi tạo dữ liệu và gọi API nếu không cần thao tác với phần tử HTML.
+- mounted: Vue đã chèn phần tử HTML vào DOM. Là lúc an toàn để truy cập phần tử HTML (ví dụ đặt con trỏ vào ô nhập, đo kích thước), và gọi API kèm hiển thị spinner (biểu tượng xoay cho biết đang tải) cho người dùng.
+- data: chỉ dùng để khai báo trạng thái ban đầu, không phải nơi gọi API (gọi API là tác vụ phụ, phải nằm trong hook).
+- template: chỉ mô tả cách vẽ giao diện, không chứa lệnh gọi API.
+
+Ví dụ:
+~~~text
+mounted() {
+  this.dangTai = true;                         // hiển thị spinner
+  goiApiLaySanPham().then(ketQua => {          // Promise: kết quả trả về sau, không chặn trình duyệt
+    this.sanPham = ketQua;
+    this.dangTai = false;
+    this.oNhap.focus();                        // chỉ chạy được ở mounted, sau khi DOM có ô nhập
+  });
+}
+~~~
+
+Lỗi hay gặp: gọi API trong created thì DOM chưa có nên focus sẽ bị lỗi "không tìm thấy phần tử"; gọi API trong template làm component vẽ lại liên tục.
+
+> Senior tip: chỉ dùng mounted khi thật sự cần truy cập DOM; nếu chỉ gọi API không cần thao tác phần tử HTML, created đã sớm đủ và người dùng thấy dữ liệu nhanh hơn một chút.`
+},
+{
+  id: 'qz-frontend-016',
+  topic: 'frontend',
+  multi: true,
+  q: 'Dev Java viết thành phần Vue 3 và muốn hiểu thứ tự các hàm cycle đời chạy khi thành phần hiển thị lên trang rồi bị xoá khỏi trang. Hai phát biểu nào đúng? (Chọn 2)',
+  options: [
+    'mounted chạy lại nhiều lần, mỗi khi dữ liệu thay đổi thì Vue mounted lại thành phần từ đầu',
+    'created chạy trước mounted: created dùng để khởi tạo dữ liệu, mounted chạy sau khi thành phần đã gắn vào giao diện người dùng (DOM)',
+    'created chỉ chạy sau khi dữ liệu từ API đã về xong',
+    'beforeUnmount (cũ gọi là beforeDestroy) chạy trước khi thành phần bị xoá, thích hợp để dọn dẹp timer và gỡ sự kiện toàn cục (ví dụ sự kiện cuộn trang trên window)',
+    'unmounted chạy trước beforeUnmount'
+  ],
+  answer: [1, 3],
+  explain: `**Đáp án đúng: created chạy trước mounted; beforeUnmount chạy trước khi thành phần bị xoá, là lúc dọn dẹp timer và sự kiện.**
+
+### Vì sao đúng
+
+Lifecycle của Vue 3 gồm các giai đoạn chạy theo thứ tự cố định:
+
+1. created: tạo thành phần, dữ liệu reactivity sẵn sàng, DOM chưa có. Dùng để khởi tạo dữ liệu, gọi API.
+2. mounted: đã gắn vào DOM, có thể truy cập phần tử HTML. Mỗi thành phần chỉ mounted **một lần** khi tạo.
+3. updated: chạy khi dữ liệu thay đổi và giao diện vẽ lại (không phải mounted lại).
+4. beforeUnmount: chạy ngay trước khi xoá thành phần khỏi DOM. Dùng để dọn dẹp: gọi clearInterval dừng timer, gỡ sự kiện toàn cục (ví dụ sự kiện cuộn trang trên window), ngắt kết nối WebSocket. Giống @PreDestroy trong Spring bean dùng để đóng tài nguyên trước khi bean bị hủy.
+5. unmounted: chạy sau khi thành phần đã bị xoá.
+
+### Vì sao các phương án còn lại sai
+- **mounted chạy lại khi dữ liệu thay đổi**: sai, mounted chỉ chạy một lần; dữ liệu thay đổi thì updated chạy.
+- **created chỉ chạy sau khi API về**: sai, created chạy khi tạo thành phần, thường trước khi API về (API là bất đồng bộ, trả về sau).
+- **unmounted chạy trước beforeUnmount**: sai, thứ tự ngược lại.
+
+> Senior tip: mọi thứ thành phần "mở" (timer, listener trên window, websocket, subscription) phải "đóng" trong beforeUnmount, tương tự try-with-resources đóng connection trong Java; nếu không, thành phần bị xoá mà timer vẫn chạy sẽ gây rò rỉ bộ nhớ.`
+},
+{
+  id: 'qz-frontend-017',
+  topic: 'frontend',
+  q: 'Một dự án Vue 3 dùng axios (thư viện JavaScript gửi yêu cầu HTTP đến API) để gọi API Spring Boot. Mọi yêu cầu sau khi đăng nhập cần kèm header Authorization chứa JWT (mã thông báo xác thực, chuỗi ký hiệu cho server biết người dùng là ai). Dev nên dùng cách nào để không phải sửa lại từng hàm gọi API?',
+  options: [
+    'Dùng axios interceptor (bộ chặn): viết một request interceptor một lần, axios sẽ gọi nó trước mỗi yêu cầu để gắn header Authorization vào mọi yêu cầu',
+    'Sửa thủ công mỗi hàm gọi API để thêm header Authorization',
+    'Dùng CORS để trình duyệt tự động thêm header JWT vào mỗi yêu cầu',
+    'Lưu JWT vào localStorage (kho lưu dữ liệu của trình duyệt) rồi axios tự động đọc và gắn header'
+  ],
+  answer: 0,
+  explain: `**Đáp án đúng: axios interceptor, bộ chặn được axios gọi tự động trước (request) hoặc sau (response) mỗi yêu cầu, xử lý tập trung ở một chỗ.**
+
+### Vì sao đúng
+
+Interceptor trong axios tương tự Spring HandlerInterceptor hoặc Servlet Filter trong backend Java: đoạn mã chạy theo quy tắc nhất quán cho mọi yêu cầu, thay vì viết lặp lại trong từng hàm.
+
+- Request interceptor: axios gọi trước khi gửi yêu cầu, bạn chỉnh cấu hình (gắn header Authorization, log yêu cầu, xử lý lỗi chuẩn) rồi trả về config để axios tiếp tục gửi.
+- Response interceptor: axios gọi sau khi nhận phản hồi, dùng để xử lý lỗi tập trung (ví dụ mã 401 Unauthorized thì xoá token và chuyển về trang đăng nhập).
+
+Ví dụ gắn token vào mọi request:
+~~~text
+api.interceptors.request.use(config => {
+  const token = layJwtTuLuuTru();        // lấy JWT từ nơi lưu trữ của trình duyệt
+  if (token) {
+    config.headers.Authorization = 'Bearer ' + token;   // định dạng tiêu chuẩn: Bearer <token>
+  }
+  return config;
+});
+~~~
+
+Sau đó mọi hàm gọi API trong component chỉ cần gọi axios, không quan tâm đến header. Giống AOP trong Spring xử lý cross-cutting (log, bảo mật) tập trung.
+
+Lỗi hay gặp: quên kiểm tra token có tồn tại hay không, hoặc gắn sai định dạng (phải là "Bearer " kèm chuỗi token, không thiếu khoảng trắng).
+
+> Senior tip: interceptor là nơi tập trung xử lý chung (mã token, log, xử lý lỗi 401/500); code gọi API trong component thì giữ gọn, chỉ xử lý dữ liệu nghiệp vụ.`
+},
+{
+  id: 'qz-frontend-018',
+  topic: 'frontend',
+  q: 'Một interceptor của axios bắt lỗi phản hồi API (ví dụ mã 401 Unauthorized, token hết hạn) và muốn điều hướng người dùng về trang đăng nhập. Dev nên viết xử lý này ở đâu?',
+  options: [
+    'Viết lại trong mỗi hàm gọi API, bắt lỗi bằng try/catch mỗi lần',
+    'Trong file CSS để ẩn trang khi hiện lỗi',
+    'Chỉ ở backend Spring Boot, frontend không cần làm gì',
+    'Trong response interceptor của axios, xử lý tập trung ở một chỗ cho tất cả phản hồi lỗi'
+  ],
+  answer: 3,
+  explain: `**Đáp án đúng: response interceptor của axios, xử lý lỗi tập trung cho tất cả phản hồi.**
+
+### Vì sao đúng
+
+Mọi phản hồi từ API (thành công hoặc lỗi) đều đi qua response interceptor trước khi đến component. Bạn viết một lần:
+
+~~~text
+api.interceptors.response.use(null, loi => {
+  if (loi.response && loi.response.status === 401) {
+    xoaJwt();                           // xoá token hết hạn
+    chuyenTrang('/dang-nhap');          // điều hướng về trang đăng nhập
+  }
+  return Promise.reject(loi);
+});
+~~~
+
+Tất cả thành phần gọi API sẽ được xử lý đều đặn khi token hết hạn, không cần viết try/catch lặp lại. Giống @ControllerAdvice trong Spring Boot, xử lý exception cho toàn bộ controller ở một chỗ.
+
+### Vì sao các phương án còn lại sai
+- **Viết lại trong mỗi hàm**: dở dang, dễ quên, khó bảo trì khi có thêm endpoint mới.
+- **Trong CSS**: CSS chỉ thay đổi hiển thị, không thể xử lý logic lỗi hay điều hướng trang.
+- **Chỉ ở backend**: backend trả về mã 401, nhưng frontend là bên nhận và điều hướng người dùng, nên frontend phải xử lý.
+
+> Senior tip: hãy để response interceptor xử lý các mã lỗi chung (401, 403, 500), còn mỗi component chỉ xử lý lỗi nghiệp vụ riêng của nó (ví dụ "mã khách hàng không tồn tại").`
+},
+{
+  id: 'qz-frontend-019',
+  topic: 'frontend',
+  q: 'Giao diện Vue 3 chạy trên http://localhost:5173 gọi API Spring Boot chạy trên http://localhost:8080. Hai hệ thống chạy trên cổng khác nhau nên là hai nguồn (origin) khác nhau. Trình duyệt gửi yêu cầu OPTIONS trước yêu cầu POST thật sự. Đây là gì?',
+  options: [
+    'CORS preflight: trình duyệt hỏi server xem nguồn http://localhost:5173 có được phép gọi API hay không, trước khi gửi yêu cầu thật',
+    'Lỗi mạng, phải restart modem',
+    'Yêu cầu DNS để tìm địa chỉ IP của server',
+    'Yêu cầu SSL/TLS để mã hóa kết nối'
+  ],
+  answer: 0,
+  explain: `**Đáp án đúng: CORS preflight là trình duyệt hỏi phép server trước khi gửi yêu cầu thật.**
+
+### Vì sao đúng
+
+CORS (Cross-Origin Resource Sharing) là cơ chế bảo mật của trình duyệt: khi frontend ở nguồn A gọi API ở nguồn B, trình duyệt kiểm tra phản hồi của B có header Access-Control-Allow-Origin cho phép A hay không; nếu không, trình duyệt chặn JavaScript đọc phản hồi (yêu cầu vẫn có thể đi đến server, nhưng phản hồi bị chặn ở trình duyệt).
+
+Preflight (yêu cầu hỏi trước): đối với yêu cầu "không đơn giản" (ví dụ POST với Content-Type: application/json, hoặc gửi header tùy chỉnh như Authorization), trình duyệt gửi yêu cầu OPTIONS trước để hỏi server. Server trả lời có header cho phép hay không, thì trình duyệt mới gửi yêu cầu thật. Giống gọi trước để hỏi phép trước khi vào một tòa nhà.
+
+Yêu cầu đơn giản (GET, hoặc POST gửi form thông thường) không gây ra preflight. Cách khắc phục là cấu hình ở **server**: Spring Boot qua CorsRegistry (hoặc @CrossOrigin) cho phép nguồn http://localhost:5173. Không thể sửa CORS chỉ ở frontend.
+
+### Vì sao các phương án còn lại sai
+- **Lỗi mạng, restart modem**: không, trình duyệt chủ động gửi OPTIONS do quy tắc bảo mật, không phải lỗi mạng.
+- **DNS**: DNS dùng để dịch tên miền thành địa chỉ IP, không liên quan đến quyền gọi API.
+- **SSL/TLS**: dùng để mã hóa kết nối, không dùng để kiểm soát quyền truy cập giữa hai nguồn.
+
+> Senior tip: trên production, không nên cho phép * (mọi nguồn); hãy liệt kê chính xác domain frontend và kết hợp CSRF token nếu dùng cookie gửi yêu cầu.`
+},
+{
+  id: 'qz-frontend-020',
+  topic: 'frontend',
+  q: 'Dev Java cập nhật file JavaScript trên server nhưng người dùng refresh trang vẫn chạy code cũ, vì trình duyệt lưu file cũ trong cache (bản sao lưu lại để tải nhanh lần sau). Cách phổ biến để buộc trình duyệt tải file mới là gì?',
+  options: [
+    'Thay đổi tên domain của server',
+    'Cache-busting: thêm tham số phiên bản vào URL file, ví dụ {{app.js?v=1.2}}, rồi tăng số phiên bản khi triển khai mới; trình duyệt coi đây là URL khác nên tải file mới thay vì dùng bản cache',
+    'Xoá toàn bộ dữ liệu trong cơ sở dữ liệu Spring Boot',
+    'Tắt JavaScript trong trình duyệt'
+  ],
+  answer: 1,
+  explain: `**Đáp án đúng: cache-busting, kỹ thuật đổi URL của file để trình duyệt coi là file mới và tải lại.**
+
+### Vì sao đúng
+
+Cache là trình duyệt lưu bản sao của file CSS, JavaScript, ảnh để không phải tải lại mỗi lần, giúp trang mở nhanh và tiết kiệm dữ liệu. Nhược điểm là khi bạn cập nhật code trên server, trình duyệt vẫn dùng bản cũ lưu trong cache.
+
+Cache-busting làm cache hết hiệu lực bằng cách đổi URL của file: thêm tham số truy vấn (query string) như {{app.js?v=1.2}} hoặc đổi tên file thành app.v1.2.js. Tham số ?v=1.2 nằm sau tên file, server thường bỏ qua khi tìm file, nhưng trình duyệt coi URL hoàn chỉnh là khóa cache, nên URL khác → tải file mới. Giống Maven/Gradle dùng phiên bản của artifact để không nhầm lẫn giữa các bản build.
+
+Khi triển khai phiên bản mới, tăng số phiên bản (ví dụ ?v=1.3), trình duyệt của mọi người dùng sẽ tải file mới.
+
+### Vì sao các phương án còn lại sai
+- **Thay đổi tên domain**: không liên quan, domain là địa chỉ server, không giúp trình duyệt nhận biết file mới.
+- **Xoá dữ liệu cơ sở dữ liệu**: dữ liệu server không ảnh hưởng đến cache file JavaScript trong trình duyệt.
+- **Tắt JavaScript**: làm hỏng hầu hết giao diện hiện đại, không phải cách thực tế.
+
+> Senior tip: kết hợp cache-busting với header Cache-Control của server; file thay đổi ít (thư viện) thì cache lâu, file main.js của frontend thì đổi phiên bản mỗi lần deploy.`
+},
+{
+  id: 'qz-frontend-021',
+  topic: 'frontend',
+  q: 'Ứng dụng Vue 3 dùng Vue Router ở chế độ history mode (URL trên thanh địa chỉ không có dấu #, ví dụ /don-hang/123). Người dùng mở trực tiếp trang này rồi nhấn F5, server Spring Boot trả về 404. Nguyên nhân và cách sửa là gì?',
+  options: [
+    'URL sai, phải thêm dấu # vào đầu đường dẫn',
+    'Không thể sửa, phải tắt nút refresh của trình duyệt',
+    'History mode dùng HTML5 history API để thay đổi URL mà không reload trang; khi refresh, trình duyệt gửi yêu cầu /don-hang/123 đến server thực sự, server không có file này nên trả 404. Cách sửa: cấu hình server trả file index.html của frontend cho mọi đường dẫn không phải API và không phải file tĩnh (fallback), rồi Vue Router đọc URL và hiển thị trang đúng',
+    'Phải đổi sang chế độ hash mode và viết lại toàn bộ URL'
+  ],
+  answer: 2,
+  explain: `**Đáp án đúng: history mode gửi yêu cầu thực sự đến server khi refresh, nên server phải được cấu hình trả index.html cho mọi route của frontend.**
+
+### Vì sao đúng
+
+History mode dùng history.pushState của trình duyệt để thay đổi URL trên thanh địa chỉ mà không gửi yêu cầu đến server (giống điều hướng trong ứng dụng đơn trang, single-page application). URL đẹp hơn (không có dấu #).
+
+Vấn đề xuất hiện khi người dùng refresh (nhấn F5): trình duyệt gửi yêu cầu /don-hang/123 đến server thực sự. Server Spring Boot không có endpoint hoặc file nào ở đường dẫn này, nên trả về 404 (không tìm thấy).
+
+Cách sửa: cấu hình server trả file index.html của frontend cho mọi đường dẫn không phải API và không phải file tĩnh (CSS, JavaScript, ảnh) — gọi là fallback. Sau khi nhận index.html, Vue Router đọc URL và hiển thị trang đúng. Ở Spring Boot có thể thêm controller forward đến index.html; trên nền tảng triển khai như Vercel, Netlify thì cấu hình rewrites.
+
+Chế độ hash mode (URL có dấu #, ví dụ /#/don-hang/123) không gặp vấn đề này vì phần sau dấu # không được gửi đến server, nhưng URL ít đẹp hơn.
+
+### Vì sao các phương án còn lại sai
+- **Thêm dấu #**: đây là hash mode, là cách khác chứ không phải sửa đúng vấn đề, và URL ít đẹp.
+- **Tắt nút refresh**: không thể và không thân thiện với người dùng.
+- **Đổi sang hash mode và viết lại URL**: làm việc thừa, history mode vẫn được khuyên dùng với cấu hình fallback đúng.
+
+> Senior tip: hãy cấu hình fallback cho history mode ngay khi khởi tạo dự án, đừng để phát hiện lúc khách truy cập nhập URL trực tiếp hay gửi link cho đồng nghiệp.`
+},
+{
+  id: 'qz-frontend-022',
+  topic: 'frontend',
+  q: 'Một thành phần Vue 3 dùng setInterval (hàm của trình duyệt chạy lại một lệnh định kỳ, ví dụ mỗi giây) để cập nhật đồng hồ. Khi người dùng rời khỏi trang, đồng hồ vẫn chạy sau bên lề và gây rò rỉ bộ nhớ. Dev nên làm gì?',
+  options: [
+    'Để setInterval chạy mãi, trình duyệt sẽ tự động dừng khi tab không dùng',
+    'Viết setInterval trong file CSS',
+    'Không cần làm gì, Vue tự động dừng mọi setInterval khi chuyển trang',
+    'Trong beforeUnmount (hook chạy trước khi thành phần bị xoá khỏi DOM), gọi clearInterval để dọn dẹp timer và giải phóng tài nguyên'
+  ],
+  answer: 3,
+  explain: `**Đáp án đúng: dùng beforeUnmount để gọi clearInterval và dọn dẹp tài nguyên trước khi thành phần bị xoá.**
+
+### Vì sao đúng
+
+setInterval(callback, 1000) là hàm của trình duyệt gọi lại callback mỗi 1000 mili giây, và trả về mã timer. Timer gắn với cửa sổ trình duyệt, **không gắn với thành phần Vue**, nên khi thành phần bị xoá khỏi trang, timer vẫn chạy mãi nếu không gọi clearInterval(ma_timer) để dừng.
+
+beforeUnmount là hook của Vue chạy ngay trước khi thành phần bị xoá khỏi DOM. Là lúc thích hợp để dọn dẹp: gọi clearInterval dừng timer, gỡ sự kiện trên window (ví dụ sự kiện cuộn trang), ngắt kết nối WebSocket. Giống @PreDestroy trong Spring bean dùng để đóng tài nguyên trước khi bean bị hủy.
+
+Ví dụ:
+~~~text
+let timerId = null;
+mounted() {
+  timerId = setInterval(() => { this.capNhatDongHo(); }, 1000);
+},
+beforeUnmount() {
+  if (timerId) clearInterval(timerId);
+}
+~~~
+
+Lỗi hay gặp: tạo và xoá thành phần lặp lại mà không dọn dẹp timer sẽ tạo nhiều timer chạy đồng bộ, gây rò rỉ bộ nhớ và đồng hồ của trang đã đóng vẫn cập nhật.
+
+### Vì sao các phương án còn lại sai
+- **Trình duyệt tự động dừng**: sai, timer không gắn với thành phần Vue nên vẫn chạy cho đến khi gọi clearInterval hoặc đóng tab.
+- **setInterval trong CSS**: CSS chỉ dùng để định dạng hiển thị, không chạy lệnh định kỳ.
+- **Vue tự động dừng**: sai, Vue không biết timer của bạn, phải tự gọi clearInterval.
+
+> Senior tip: mọi thứ thành phần "mở" (timer, listener trên window, websocket, subscription) phải "đóng" trong beforeUnmount, tương tự try-with-resources đóng connection trong Java.`
+}
 );
