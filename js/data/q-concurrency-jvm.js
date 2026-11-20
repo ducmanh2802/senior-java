@@ -12592,6 +12592,33 @@ Service tra cứu đơn hàng chạy 900 platform thread, p99 210 ms ở 1.200 r
   ,
   follow: ['Vì sao nên giới hạn đồng thời bằng Semaphore thay vì pool virtual thread?', 'ThreadLocal bùng nổ bộ nhớ khi bật virtual thread — bạn đo và xử lý thế nào?', 'JDK 24 (JEP 491) thay đổi gì với pinning do synchronized?'],
   tags: ['virtual thread', 'pinning', 'Spring Boot 3.2', 'JFR', 'ThreadLocal']
+},
+{
+  id: 'jvm-070',
+  topic: 'jvm',
+  level: 'senior',
+  q: 'Tại sao {{ThreadLocal}} lại là nguồn rò rỉ bộ nhớ trong thread pool, và cách dùng an toàn trong Spring Boot?',
+  a: `**Tóm tắt:** ThreadLocal lưu giá trị theo thread; trong thread pool thread không chết sau request nên giá trị cũ còn đó. Nếu không gọi remove() thì user A có thể thấy dữ liệu của user B, và GC không thu được object vì thread còn sống. Cách an toàn: luôn remove() trong finally, hoặc dùng ScopedValue (Java 21 preview).`,
+  follow: ['ScopedValue khác ThreadLocal ở điểm nào?', 'Bạn phát hiện rò rỉ ThreadLocal bằng công cụ nào?'],
+  tags: ['ThreadLocal', 'thread pool', 'memory leak']
+},
+{
+  id: 'jvm-071',
+  topic: 'jvm',
+  level: 'senior',
+  q: 'CompletableFuture.supplyAsync mặc định dùng commonPool — rủi ro gì và khi nào cần executor riêng?',
+  a: `**Tóm tắt:** commonPool có số thread bằng số core - 1 và dùng chung toàn JVM. Nếu supplyAsync chứa blocking I/O, nó chiếm thread của ForkJoinPool, làm chậm parallelStream và các CompletableFuture khác. Quy tắc: mọi I/O đi qua executor riêng có tên, commonPool chỉ cho CPU-bound.`,
+  follow: ['Làm sao giới hạn concurrency cho downstream bằng Semaphore?', 'parallelStream có dùng commonPool không?'],
+  tags: ['CompletableFuture', 'ForkJoinPool', 'executor']
+},
+{
+  id: 'jvm-072',
+  topic: 'jvm',
+  level: 'lead',
+  q: 'StructuredTaskScope (Java 21 preview) giải quyết vấn đề gì của CompletableFuture khi fan-out nhiều call?',
+  a: `**Tóm tắt:** StructuredTaskScope ràng buộc vòng đời subtask với scope: nếu một subtask fail hoặc timeout, scope huỷ các subtask còn lại và cleanup tự động, tránh orphan thread và leak. CompletableFuture phải tự quản lý cancel và exception aggregation, dễ sai. Dùng ShutdownOnFailure cho "fail fast", ShutdownOnSuccess cho "lấy kết quả đầu tiên".`,
+  follow: ['So sánh StructuredTaskScope với ExecutorService + invokeAll?', 'Preview API có production-ready không?'],
+  tags: ['StructuredTaskScope', 'Java 21', 'structured concurrency']
 }
 
 );
