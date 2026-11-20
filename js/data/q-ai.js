@@ -9625,5 +9625,359 @@ Tôi thiết kế vòng lặp human-in-the-loop gồm năm thành phần: phát 
     'Bạn retraining model bao nhiêu lần, và làm sao biết retraining thực sự cải thiện chứ không làm suy giảm chất lượng?'
   ],
   tags: ['human-in-the-loop', 'relabeling', 'active learning', 'ML ops', 'review queue']
+},
+{
+  id: 'ai-144',
+  topic: 'ai',
+  level: 'senior',
+  q: 'Service Spring Boot dùng ChatClient của Spring AI để trích xuất lệnh bảo trì từ tin nhắn khách hàng thành Java record. Bạn khai báo record, gắn Bean Validation, gọi entity(), và xử lý trường model thiếu hoặc sai thông tin thế nào mà không làm sập ứng dụng?',
+  a: `**Tóm tắt:** ChatClient.prompt().user(...).call().entity(MaintenanceOrder.class) buoc model tra ve Java record theo schema JSON ma Spring AI sinh tu record. Spring AI chi chuyen doi JSON thanh record — no **KHONG** ep rang buoc Bean Validation (@NotNull, @NotBlank...). Ban phai bat ngoai chuyen doi khi model tra sai schema, va chay Validator cua Jakarta Validation sau khi nhan record de bat truong thieu hoac sai, roi chuyen thanh thong bao nghiep vu thay de de exception lan ra ngoai. Lệnh bảo trì có thể thiếu ngày, sai mã phòng ban, hoặc mô tả rỗng — tất cả phải được phát hiện và xử lý rõ ràng.
+
+### Khai báo record và Bean Validation
+
+Record mô tả lệnh bảo trì với các trường bắt buộc và ràng buộc. Các annotation Bean Validation (@NotNull, @NotBlank, @PastOrPresent, @Size) ghi ràng buộc lên record, nhung Spring AI **KHONG** tu dong ep chung trong qua trinh deserialize. Spring AI chi chuyen doi JSON thanh record: truong thieu thanh null, sai kieu thanh loi chuyen doi. Ban phai chay Validator cua Jakarta Validation minh than sau khi .entity() tra ve, roi bat ConstraintViolationException minh khoi tao de thong bao truong nao loi.
+
+Vi du: model tra ve {"department": "KTC"} (thieu scheduledDate). Spring AI chua tra exception (scheduledDate = null) cho den khi ban goi validator.validate(order). Vay moi lan xu ly, ban phai validate minh than truoc khi luu database.
+
+~~~java
+public record MaintenanceOrder(
+    @NotBlank(message = "Ma phong ban khong duoc de trong")
+    String department,
+    @NotNull(message = "Ngay bao tri la bat buoc")
+    java.time.LocalDate scheduledDate,
+    @NotBlank(message = "Mo tai cong viec khong duoc de trong")
+    @Size(max = 500, message = "Mo tai qua dai")
+    String description
+) {}
+~~~
+
+### Goi ChatClient.entity()
+
+~~~java
+MaintenanceOrder order = chatClient.prompt()
+    .user("Trich xuat lenh bao tri tu: " + userMessage)
+    .call()
+    .entity(MaintenanceOrder.class);
+~~~
+
+Luu nguyen thu tu: **.call()** moi **.entity()** — .entity() la phuong thuc tren doi tuong tra ve cua .call(), khong phai noi truoc .call().
+
+Neu model tra ve JSON khong khop schema, hoac JSON sai kieu, Spring AI nem ngoai chuyen doi khi .entity() chay. Bat ngoai nay o phia service va chuyen thanh thong bao nghiep vu. Khong can dan theo class ngoai cu the — bat Exception va doc ly do trong ex.getMessage() la du.
+
+### Xu ly thieu truong va sai du lieu
+
+Khong bat exception chung chung. Phan biet:
+
+- Loi parse (model khong tra JSON dung schema): thong bao nguoi dung cung cap lai thong tin ro rang hon.
+- Loi validation (truong thieu, sai dinh dang): liet ke truong nao bi loi va yeu cau bo sung.
+- Loi provider (timeout, 429, 503): retry co gioi han hoac chuyen sang xu ly thu cong.
+
+~~~java
+public MaintenanceOrder extract(String input) {
+    Validator validator = Validation.buildDefaultValidatorFactory().getValidator();
+    try {
+        MaintenanceOrder order = chatClient.prompt()
+            .user("Trich xuat lenh bao tri tu: " + input)
+            .call()
+            .entity(MaintenanceOrder.class);
+        Set<ConstraintViolation<MaintenanceOrder>> violations = validator.validate(order);
+        if (!violations.isEmpty()) {
+            String fields = violations.stream()
+                .map(v -> v.getPropertyPath() + ": " + v.getMessage())
+                .collect(Collectors.joining("; "));
+            throw new InvalidMaintenanceRequestException("Thong tin lenh bao tri chua day du hoac sai: " + fields);
+        }
+        return order;
+    } catch (Exception ex) {
+        throw new InvalidMaintenanceRequestException("Model khong trich xuat duoc lenh bao tri. Vui long cung cap ngay va mo tai ro rang hon.", ex);
+    }
+}
+~~~
+
+Khong de exception ngoi tran ra controller. Chuyen thanh loi nghiep vu co thong bao than thien, ghi log chi tiet cho lap trinh vien.
+
+### Khong tien model hoan toan
+
+Model co the tra ve ngay trong tuong lai, ma phong ban khong ton tai, hoac mo tai ngan hon mot tu. Bean Validation chi bat rang buoc khai bao; kiem tra nghiep vu (ma phong ban co thuc, ngay khong phai cuoi tuan) phai chay sau khi parse, truoc khi luu vao database.
+
+### Vi du doi thuc
+
+He thong tiep nhan yeu cau bao tri may san xuat, 200 tin nhan/ngay. Ban dau service parse JSON thu cong va bo qua truong sai, dan toi 8% lenh thieu ngay bao tri duoc tao voi ngay mac dinh hom nay, ky su den cham hoac sai ca. Them ChatClient.call().entity() voi cac rang buoc tren record, chay Validator minh than sau .entity() va bat loi truong thieu/sai. Ty le lenh thieu ngay giam xuong 0,3%, va thong bao loi cu the giup nguoi dung sua ngay trong cung phien. Day la so lieu minh hoa, can do tren he thong thuc.
+
+### Tra loi mau khi pham van
+
+Toi dung ChatClient.call().entity() de bat model tra ve Java record co schema ro rang, ke Validator cua minh than de bat truong thieu hoac sai dinh dang ngay sau khi .entity(). Khi model tra ve JSON khong khop schema, Spring AI nem ngoai chuyen doi, toi bat va chuyen thanh thong bao nghiep vu ro rang: truong nao thieu, sai kieu gi, yeu cau nguoi dung bo sung. Toi khong de exception tran ra ngoai, va khong tien model ve ngay hoac ma phong ban — kiem tra nghiep vu tiep theo truoc khi luu. Neu provider loi hoac timeout, toi retry co gioi han hoac chuyen sang xu ly thu cong. Muc toi la khong bao gi tao lenh bao tri voi du lieu khong hop le, cung khong lam sap ung dung do loi cua model.
+
+> Senior tip: Bean Validation bat sai khai bao, khong bat sai nghiep vu. Luon them kiem tra domain (ma phong ban ton tai, ngay khong trung nghi le) sau khi parse thanh cong truoc khi ghi vao database.`,
+  follow: [
+    'Ban xu ly truong hop model tra ve them truong khong co trong record ra sao?',
+    'Neu Bean Validation bi bo qua do cau hinh Spring AI, ban bao ve du lieu nhu the nao?',
+    'Khi model lien tra ve JSON sai schema cho cung mot dau vao, ban chuyen sang cach nao?'
+  ],
+  tags: ['spring-ai', 'chatclient', 'entity', 'bean-validation', 'structured-output']
+},
+{
+  id: 'ai-145',
+  topic: 'ai',
+  level: 'senior',
+  q: 'Ban khai bao @Tool cho agent kiem tra ton kho hang hoa. Agent nhan ma don hang va co the truyen userId tu model. Tai sao ban khong duoc tin userId ma model dua vao tham so tool, va ban kiem tra quyen truy cap nhu the nao o server truoc khi goi repository?',
+  a: `**Tom tat:** userId trong tham so tool do model de xuat la du lieu khong tin cay: agent co bi prompt injection, hieu nham yeu cau, hoac co the truyen userId cua khach hang khac. Phan quyen phai duoc kiem tra o server dua tren danh tinh da xac thuc (principal) tu phien lam viec, khong tu tham so model truyen vao. Tool chi nhan ma don hang, server tra quyen cua nguoi thuc su goi.
+
+### Tai sao khong tin userId tu model
+
+Model la thanh component tao ra y de, khong phai thanh component quyet quyen. Neu agent nhan userId lam tham so, attacker co the dung prompt injection de khien agent truyen userId cua khach hang B khi kiem tra don hang cua khach hang A. Hoac agent co the nham luan userId giua cac phien thoai. userId tu model khong phai bang chung danh tinh.
+
+### Khai bao @Tool khong co userId
+
+Tool chi nhan thong tin nghiep vu can thiet, khong nhan userId:
+
+~~~java
+@Tool(description = "Kiem tra ton kho hang hoa theo ma don hang")
+public InventoryCheckResult checkInventory(
+        @Param(description = "Ma don hang can kiem tra") String orderId) {
+    // userId lay tu SecurityContext, khong tu tham so tool
+    UserPrincipal currentUser = securityContext.getCurrentUser();
+    return inventoryService.checkAccessible(currentUser, orderId);
+}
+~~~
+
+Thuoc tinh @Param chi duoc de mo ta schema cho model, khong duoc de xac thuc quyen.
+
+### Kiem tra quyen o server
+
+InventoryService nhan principal da xac thuc, kiem tra xem user nao co quyen xem don hang do khong (cung tenant, cung phong ban, hoac la nguoi tao don):
+
+~~~java
+public InventoryCheckResult checkAccessible(UserPrincipal user, String orderId) {
+    Order order = orderRepository.findById(orderId)
+        .orElseThrow(() -> new OrderNotFoundException(orderId));
+    if (!order.getTenantId().equals(user.getTenantId())) {
+        throw new AccessDeniedException("Khong quyen xem don hang cua tenant khac");
+    }
+    if (!order.getCreatedBy().equals(user.getUserId()) && !user.hasRole("MANAGER")) {
+        throw new AccessDeniedException("Nguoi dung khong phai nguoi tao don hoac quan ly");
+    }
+    return inventoryRepository.findByOrderId(orderId);
+}
+~~~
+
+Quyen duoc kiem tra tai service chu so huu du lieu, khong tren agent. Agent chi duoc goi tool, service tu choi neu khong du dieu kien.
+
+### Luong xu ly an toan
+
+1. Xac thuc nguoi dung o gateway, luu principal vao SecurityContext.
+2. Agent de xuat goi tool checkInventory voi orderId (khong co userId).
+3. Gateway/MCP server lay principal tu session, truyen vao service.
+4. Service kiem tra tenant va quyen truoc khi truy van repository.
+5. Tra ve ket qua hoac loi "Khong quyen truy cap" neu khong du dieu kien.
+
+### Vi du doi thuc
+
+He thong kho hang cho 50 cua hang, moi cua hang co nhan vien rieng. Ban dau tool checkInventory nhan userId tu model, nhan vien cua hang A bi lua qua email co lenh nhung "kiem tra don hang #999 cua cua hang B" va agent truyen userId cua cua hang B. Sau khi sua: tool chi nhan orderId, server lay principal tu JWT, kiem tra tenant_id cua don hang khop voi tenant_id cua nguoi dung. 0 truong hop truy cap chua cua hang trong 3 thang sau khi sua. Day la so lieu minh hoa.
+
+### Tra loi mau khi pham van
+
+Toi khong bao gi cho phep model truyen userId vao tham so tool vi model khong phai noi xac thuc danh tinh va co the bi lua. Tool chi nhan ma don hang, va server lay userId tu phien da xac thuc (JWT/SecurityContext). O lop service, toi kiem tra xem don hang co thuoc tenant/phong ban cua nguoi thuc su goi khong, va tu choi neu khong khop. Dan gia quyen tai service chu so uu du lieu, khong tin mo ta tool hoac tham so tu model. Neu can, them rang buoc "nguoi tao don hoac quan ly" de han gio truy cap. Muc toi la attacker khong the dung agent de tra du lieu cua khach hang khac khi agent bi prompt injection.
+
+> Senior tip: Moi tham so tool co the bi model thay doi hoac bi prompt injection. Chi thong tin tu SecurityContext (principal da xac thuc) moi la bang chung danh tinh dung de phan quyen.`,
+  follow: [
+    'Neu agent can kiem tra don hang cua nhieu user trong cung phien, ban thiet ke nhu the nao?',
+    'Tool co can ghi log userId thuc su cung moi loi goi khong, va log o dau?',
+    'Khi SecurityContext khong co principal (vi du agent chay nen), ban xu ly tool can quyen nhu the nao?'
+  ],
+  tags: ['spring-ai', 'tool-calling', 'authorization', 'security', 'access-control']
+},
+{
+  id: 'ai-146',
+  topic: 'ai',
+  level: 'lead',
+  q: 'Ban thiet ke bang chunk cho RAG tren PostgreSQL + pgvector voi vector(1024) va metadata jsonb. Ban tao index HNSW voi tham so m va ef_construction nhu the nao, viet SQL top-k co loc theo tenant va ngay, va giai thich pitfall loc sau khi tim gan dung (filter-after-ANN) voi ef_search va quet lap lai pgvector 0.8?',
+  a: `**Tom tat:** Bang chunk luu vector 1024 chieu, metadata jsonb, va ma tenant. Index HNSW giup tim gan dung nhanh nhung tham so m (so ket noi moi nut) va ef_construction (kich thuc danh sach ung vien khi xay index) can dieu chinh cho du lieu thuc. Truy van top-k phai loc tenant_id va ngay o muc co so du lieu, khong lay toan bo roi loc o ung dung, vi loc sau ANN co the bo tai lieu lien quan hoac tang latency vi quet them nhieu nut.
+
+### DDL bang chunk
+
+~~~sql
+CREATE TABLE document_chunk (
+    id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+    document_id uuid NOT NULL,
+    tenant_id uuid NOT NULL,
+    content text NOT NULL,
+    embedding vector(1024) NOT NULL,
+    metadata jsonb DEFAULT '{}'::jsonb,
+    created_at timestamptz NOT NULL DEFAULT now(),
+    updated_at timestamptz NOT NULL DEFAULT now()
+);
+
+CREATE INDEX idx_chunk_tenant ON document_chunk (tenant_id);
+CREATE INDEX idx_chunk_document ON document_chunk (document_id);
+CREATE INDEX idx_chunk_metadata_gin ON document_chunk USING GIN (metadata);
+~~~
+
+vector(1024) phai khop voi kich thuoc embedding cua model ban su dung (sai chieu thi pgvector bao loi khi tien search). metadata jsonb luu doi tac, loai tai lieu, phien ban, va cac truong tim kiem phu. GIN index tren metadata cho phep truy van JSONB nhanh.
+
+### Index HNSW
+
+~~~sql
+CREATE INDEX idx_chunk_embedding_hnsw ON document_chunk
+USING hnsw (embedding vector_cosine_ops)
+WITH (m = 16, ef_construction = 64);
+~~~
+
+- m: so ket toi da moi nut trong do thi. Cao hon = recall tot hon, nhung index lon hon va chen cham hon. 16 la gia tri mac dinh phu hop cho nhieu truong hop.
+- ef_construction: kich thuc hang doi uu tien khi xay index. Cao hon = index chinh xac hon, nhung xay cham hon va dung it RAM. 64 la gia tri khoi dau hop ly.
+
+Sau khi tao index, chay ANALYZE de planner cap nhat thong ke.
+
+### Truy van top-k voi loc tenant va ngay
+
+~~~sql
+SELECT id, document_id, content, metadata,
+       embedding <=> :queryEmbedding AS distance
+FROM document_chunk
+WHERE tenant_id = :tenantId
+  AND created_at >= :fromDate
+  AND created_at < :toDate
+ORDER BY embedding <=> :queryEmbedding
+LIMIT :k;
+~~~
+
+Loc tenant_id va ngay trong WHERE clause truoc khi tim vector gan. PostgreSQL + pgvector co the su dung index HNSW cung voi dieu kien loc, nhung hieu nang phu thuoc cach pgvector to chuc quet.
+
+### Pitfall: loc sau khi tim gan dung (filter-after-ANN)
+
+pgvector tim xap xi nearest neighbor (ANN) truoc, roi ap bo loc. Neu loc rat chon loc (chi mot bai tenant trong tram trieu chunk), HNSW co the tra hang nghin ung vien gan nhat truoc khi loc, va cuoi cung chi con it ban ghi phu hop tenant. Ket qua: recall giam (tai lieu lien quan cua tenant bi loai trong giai doan ANN) hoac latency tang (quet them nhieu nut hon du duan).
+
+Voi pgvector 0.8, cach khac phiap pho bien la tang ef_search (kich thuc danh sach tim kiem thuc thi) hoac dung quet lap lai (iterative scan): tang k nhieu lan, loc, neu chua du k ban ghi thi tang k va tim lai. Moi vong quet them chi phi.
+
+~~~sql
+SET hnsw.ef_search = 200; -- mac dinh la 40, tang de lam chat loc sau ANN
+~~~
+
+ef_search cao hon giup recall tot hon khi co bo loc, nhung latency tang.
+
+Cach an toan hon la dung tai lieu co san metadata trong index (filtered HNSW neu phien ban pgvector ho tro) hoac ket hop voi query loc chhat truoc khi gui pgvector, vi du lay danh sach document_id cua tenant trong khoang ngay roi chi tim trong danh sach do.
+
+### Bang danh doi tham so HNSW
+
+| Tham so | Gia tri thap | Gia tri cao | Khi dung |
+|---------|-------------|-------------|----------|
+| m | 8-12 | 24-48 | Cao hon khi can recall cao va RAM du |
+| ef_construction | 32-64 | 128-256 | Cao hon khi xay index mot lan va it thay doi |
+| ef_search | 10-40 | 100-200 | Cao hon khi truy van co bo loc chon loc cao |
+
+### Vi du doi thuc
+
+He thong RAG ho tro 100 tenant, moi tenant 50.000 chunk, vector 1024 chieu. Ban dau truy van khong loc tenant trong SQL ma lay top-50 toan he thong roi loc o ung dung: recall@5 chi 68% vi tai lieu tenant khac chiem cho trong top-50, va latency p95 800 ms. Them WHERE tenant_id = :tenantId va loc ngay vao SQL, dat ef_search = 128: recall@5 len 94%, latency p95 220 ms. Day la so lieu minh hoa, can benchmark tren du lieu thuc.
+
+### Tra loi mau khi pham van
+
+Toi thiet ke bang chunk voi vector(1024), metadata jsonb, va ma tenant tren moi dong. Index HNSW voi m = 16 va ef_construction = 64 la diem bat dau, sau do dieu chinh dua tren benchmark recall va latency. Truy van top-k luon co WHERE tenant_id va khoang ngay, khong lay toan bo roi loc o ung dung. Toi biet pitfall filter-after-ANN: pgvector tim gan dung truoc roi loc, nen voi bo loc chon loc cao, recall co the giam hoac latency tang do quet them nhieu nut. Toi tang ef_search hoac dung quet lap lai neu can, va uu tien loc chhat o SQL truoc khi gui pgvector. Moi thay doi tham so index toi do recall@k va p95 tren tap truy van thuc.
+
+> Senior tip: Index HNSW khong phai giai phap cho moi truy van loc. Khi bo loc chon loc rat cao (vi du mot tenant trong tram), hay xem co phan vung bang theo tenant hoac lay danh sach document_id truoc roi tim vector, thay cho viec chay lan ca hai len pgvector cung luc.`,
+  follow: [
+    'Ban chon m va ef_construction dua sur tieu chi nao, va sau do dieu chinh the nao?',
+    'ef_search cao hon luon tot hon khong, va trade-off la gi?',
+    'Khi bo loc tenant chon loc qua cao, ban co the thay HNSW bang cach nao?'
+  ],
+  tags: ['pgvector', 'hnsw', 'vector-search', 'postgresql', 'rag', 'metadata-filter']
+},
+{
+  id: 'ai-147',
+  topic: 'ai',
+  level: 'senior',
+  q: 'Ban viet unit test cho doan code Java goi LLM qua Spring AI ChatClient. Ban dung fake ChatModel hay WireMock de gia lap provider, to chuc eval set trong CI voi ngưỡng pass/fail, va dam bao khong goi model thao trong unit test the nao?',
+  a: `**Tom tat:** Unit test code goi LLM khong duoc goi model thao: chi phi, cham, khong xac dinh, va phu thuoc mang. Thay vao do, gia lap ChatModel (tra ve cau tra loi co dinh) hoac dung WireMock (gia lap HTTP endpoint provider). Eval set chay trong CI voi bo cau hoi co dap an du kien, ngưỡng pass/fail, va phai fall neu sai. Moi test don vi phai chay day du khong can Internet hoac API key thao.
+
+### Tai sao khong goi model thao trong unit test
+
+- Chi phi: moi lan chay test t token, chia he ngoan sach voi production.
+- Khong xac dinh: cung cau hoi co the tra khac nhau, test mot lan pass mot lan fail.
+- Cham: moi lan goi vay giay, lam build CI keo dai.
+- Phu thuoc moi truong: can API key, mang, va provider san sang, khong phu hop CI local.
+
+### Gia lap ChatModel
+
+Tao class fake tra ve cau tra loi co dinh (doi lieu thay the cho ChatClient/provider trong test), khong goi provider thao:
+
+~~~java
+public class FakeChatModel {
+    private final String fixedResponse;
+
+    public FakeChatModel(String fixedResponse) {
+        this.fixedResponse = fixedResponse;
+    }
+
+    public String call(String prompt) {
+        return fixedResponse;
+    }
+}
+~~~
+
+Service duoc inject FakeChatModel qua constructor trong test, thay the cho ChatClient thao trong production. Test kiem tra service xu ly dung phan hoi cua model: trich xuat field, gan gia tri mac dinh, hoac nem loi neu model tra JSON sai.
+
+### Dung WireMock gia lap HTTP provider
+
+Neu code goi provider qua HTTP (vi du OpenAI/Anthropic REST API), WireMock khoi dong server gia cu lac bo, tra ve JSON da chuan bi:
+
+~~~java
+@Test
+void shouldExtractOrderWhenModelReturnsValidJson() {
+    stubFor(post(urlEqualTo("/v1/chat/completions"))
+        .willReturn(aResponse()
+            .withHeader("Content-Type", "application/json")
+            .withBody("{\"choices\":[{\"message\":{\"content\":\"{\\\"department\\\":\\\"KTC\\\",\\\"scheduledDate\\\":\\\"2026-01-15\\\",\\\"description\\\":\\\"Sua may\\\"}\"}}]}")));
+
+    MaintenanceOrder result = service.extract("Sua may co KTC ngay 15 thang 1");
+
+    assertEquals("KTC", result.department());
+    assertEquals(LocalDate.of(2026, 1, 15), result.scheduledDate());
+}
+~~~
+
+WireMock cho phep kiem tra ca truong hop model tra ve ma loi 429/503, response trong, hoac JSON sai dinh dang.
+
+### Eval set trong CI
+
+Tao file eval chua cac cau hoi mau va dap an du kien:
+
+~~~json
+[
+  {"question": "Sua may co KTC ngay 15 thang 1", "expectedDepartment": "KTC"},
+  {"question": "Bo tri tu may chinh thuc ngay 20 thang 2", "expectedDepartment": "BDT"}
+]
+~~~
+
+Chay eval trong CI: moi cau hoi dua qua service, so sanh ket qua voi expected. Neu sai mot cau, build fall. Dat ngoung (vi du 100% cac truong hop phai dung don vi unit test, hoac >= 90% don vi integration eval).
+
+### Cach to chuc test
+
+| Loai test | Gia lap | Muc dich |
+|-----------|---------|----------|
+| Unit test service | FakeChatModel | Kiem tra logic xu ly response, validation, fallback |
+| Unit test controller | FakeChatModel | Kiem tra mapping request/response, ma trang thai HTTP |
+| Integration eval | WireMock | Kiem tra chuoi cuoi cung, response JSON dung schema |
+| Eval set CI | WireMock/Fake | Ngưỡng pass/fail, fall build neu xuong ngoung |
+
+### Khong goi model thao
+
+- Khong doc API key thao trong test (dung gia tri gia hoac bien moi truong test).
+- Khong cau hinh URL provider thao trong application-test.properties.
+- Cobertura/Jacoco kiem tra: class goi provider thao khong duoc instantiate trong test.
+
+### Vi du doi thuc
+
+Dich vu trich xuat lenh bao tri co 3 service: controller, extractor, validator. Unit test dung FakeChatModel tra ve JSON hop le, JSON thieu truong, va JSON sai kieu. Co 15 truong hop test, chay trong 2 giay, khong can mang. Eval set trong CI co 50 cau hoi, WireMock gia lap provider, ngoung pass 100%. Khi dev doi prompt va lam hong viec trich xuat ngay, eval CI fall ngap lap truoc khi merge. Day la so lieu minh hoa.
+
+### Tra loi mau khi pham van
+
+Toi khong bao gi goi model thao trong unit test vi chi phi, khong xac dinh, va cham. Thay vao do, toi gia lap ChatModel de tra ve cau tra loi co dinh, hoac dung WireMock de gia lap HTTP provider voi cac phan hoi chuan (thanh cong, thieu truong, sai kieu, loi 429/503). Service duoc inject doi tuong gia qua constructor trong test. Toi co eval set trong CI voi bo cau hoi va dap an du kien, chay moi lan build, va fall neu ket qua khong khop hoac xuong ngoung pass/fail. Application-test.properties khong cau hinh URL provider thao, va API key trong test la gia tri gia. Cach nay giup phat hon som khi thay doi prompt lam hong viec trich xuat, chay nhanh, va khong tont chi phi model.
+
+> Senior tip: Unit test kiem tra code cua ban xu ly response model the nao, khong kiem tra model co dung khong. Dan gia chat luong model de lai cho eval set nguoi hoac LLM-as-judge, chay chung chu ky hon (vi du moi ngay hoac moi sprint).`,
+  follow: [
+    'Ban to chuc eval set nhu the nao de de them truong hop moi va theo doi suat giam chat luong theo thoi gian?',
+    'Khi model tra ve JSON sai dinh dang, unit test cua ban bat duoc va tra loi nghiep vu ro rang chua?',
+    'Ban phan biet unit test (gia lap model) va integration eval (WireMock) o diem nao?'
+  ],
+  tags: ['spring-ai', 'chatclient', 'unit-test', 'wiremock', 'mock', 'eval', 'ci']
 }
 );
