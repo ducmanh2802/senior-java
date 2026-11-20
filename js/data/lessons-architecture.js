@@ -3886,4 +3886,295 @@ Lỗi hay gặp: gọi {{compensate()}} cho bước thất bại (sai vì bướ
     related: ['architecture-001', 'architecture-006', 'microservices-005', 'microservices-006'],
     tags: ['saga', 'orchestration', 'compensation', 'distributed-transaction', 'microservices'],
   },
+  {
+    id: 'lesson-architecture-013',
+    track: 'architecture',
+    order: 13,
+    title: 'Elasticsearch inverted index: vì sao LIKE %abc% chậm và tìm kiếm full-text hoạt động thế nào',
+    level: 'senior',
+    minutes: 40,
+    goals: [
+      'Hiểu vì sao LIKE %abc% trong SQL chậm (quét tuần tự) và khi nào nên dùng search engine',
+      'Hiểu inverted index (chỉ mục ngược) như mục từ khóa → trang cuối sách',
+      'Biết analyzer (bộ phân tích) tách từ, viết thường, và chấm điểm liên quan ở mức khái niệm',
+    ],
+    body: `**Tóm tắt:** Trong database SQL, tìm kiếm văn bản bằng LIKE '%abc%' buộc quét từng dòng (full table scan) nên chậm trên dữ liệu lớn. **Elasticsearch** (công cụ tìm kiếm full-text dựa trên Lucene) dùng **inverted index** (chỉ mục ngược: từ → danh sách tài liệu chứa từ đó) để trả kết quả trong mili giây. Khi index, **analyzer** (bộ phân tích văn bản) tách câu thành token, viết thường, bỏ stopword; khi tìm, nó cũng phân tích truy vấn rồi tra inverted index. Kết quả được chấm điểm liên quan (relevance score) theo TF-IDF/BM25 ở mức khái niệm.
+
+### Thuật ngữ (giải thích lần đầu)
+- **Full table scan (quét toàn bảng):** đọc từng dòng để kiểm tra điều kiện; chi phí tỷ lệ với số dòng N.
+- **Inverted index (chỉ mục ngược):** ánh xạ từ khóa → danh sách id tài liệu chứa từ đó; giống mục "từ khóa → trang" cuối sách.
+- **Analyzer (bộ phân tích văn bản):** pipeline tách text thành token, lowercase, bỏ từ dừng, stemming.
+- **Token (token):** đơn vị nhỏ nhất sau khi tách (thường là từ).
+- **Shard (phân mảnh):** một phần của index, cho phép phân tán và song song.
+- **Replica (bản sao):** bản copy shard để HA và tăng throughput đọc.
+- **Near real-time (gần thời gian thực):** dữ liệu mới xuất hiện trong kết quả sau ~1 giây (refresh interval).
+
+### Vì sao LIKE %abc% chậm
+Với LIKE '%abc%', database không dùng B-tree index (vì wildcard đầu), phải đọc mỗi dòng và so khớp chuỗi → O(N). Trên triệu dòng, mỗi query có thể mất giây đến phút và khóa tài nguyên.
+
+### Inverted index hoạt động thế nào
+Ví dụ 3 tài liệu:
+- D1: "Java concurrency"
+- D2: "Concurrency in Java"
+- D3: "Spring Boot"
+
+Inverted index:
+- java -> [D1, D2]
+- concurrency -> [D1, D2]
+- in -> [D2] (có thể bỏ stopword)
+- spring -> [D3]
+- boot -> [D3]
+
+Truy vấn "java concurrency" → giao của [D1,D2] và [D1,D2] = [D1,D2]. Không cần quét toàn bộ.
+
+### Analyzer pipeline
+1. Character filter (lọc ký tự, ví dụ html strip).
+2. Tokenizer (tách theo khoảng trắng/dấu câu).
+3. Token filter (lowercase, stopword removal, stemming).
+
+Ví dụ "Running Quickly" → tokens "running","quickly" → lowercase "running","quickly" → stemming "run","quick".
+
+### Chấm điểm liên quan (khái niệm)
+TF (term frequency): từ xuất hiện nhiều trong doc → liên quan hơn. IDF (inverse doc frequency): từ hiếm trong toàn bộ corpus → phân biệt tốt hơn. BM25 là công thức hiện đại cân bằng TF và độ dài doc. Elasticsearch trả score, sort theo score.
+
+### Shard và replica
+Index được chia thành shard (mặc định 1 primary trong ES 7+), mỗi shard là Lucene index độc lập. Replica là bản sao cho HA và đọc song song. Near real-time: refresh mỗi 1s làm segment mới searchable.
+
+### Lỗi hay gặp
+- Dùng ES cho dữ liệu transactional cần ACID → sai công cụ.
+- Mapping dynamic tạo field sai type (text vs keyword) → aggregation/sort lỗi.
+- Quá nhiều shard nhỏ → overhead.
+- Không xử lý analyzer mismatch giữa index và query.
+
+### Tự thử trên máy
+Docker 1 dòng:
+~~~bash
+docker run -p 9200:9200 -e "discovery.type=single-node" elasticsearch:8.13.0
+~~~
+Tạo index và search:
+~~~bash
+curl -X PUT localhost:9200/docs -H 'Content-Type: application/json' -d '{"mappings":{"properties":{"title":{"type":"text"}}}}'
+curl -X POST localhost:9200/docs/_doc -H 'Content-Type: application/json' -d '{"title":"Java concurrency"}'
+curl -X POST localhost:9200/docs/_search -H 'Content-Type: application/json' -d '{"query":{"match":{"title":"java"}}}'
+~~~
+Kết quả mong đợi: trả về document với score.
+
+### Tóm lại 3 ý
+1. LIKE %abc% = full scan, chậm; inverted index = tra từ → doc, nhanh.
+2. Analyzer chuẩn hóa text; search dùng cùng analyzer.
+3. Shard/replica cho scale và HA; near real-time ~1s.
+
+### Liên hệ phỏng vấn
+Khi phỏng vấn, trả lời: "Tôi dùng DB cho transactional, ES cho full-text search. Hiểu inverted index và analyzer giúp debug relevance và mapping."`,
+    exercises: [
+      {
+        title: 'Tự xây inverted index Java thuần',
+        prompt: `Xây inverted index Map<String, Set<Integer>> cho 10 tài liệu, tìm AND/OR nhiều từ, so sánh số phép so sánh với quét tuần tự.`,
+        starter: `import java.util.*;
+
+public class Main {
+    public static void main(String[] args) {
+        List<String> docs = Arrays.asList(
+            "java concurrency", "concurrency in java", "spring boot",
+            "java spring", "boot java", "concurrency patterns",
+            "java virtual threads", "spring data", "kafka streams", "redis cache"
+        );
+        // TODO: build inverted index lowercase token -> set of doc indices
+        // TODO: searchAND(List<String> terms), searchOR(List<String> terms)
+        // TODO: count comparisons for inverted vs linear scan
+        System.out.println("RESULT 0/0");
+    }
+}`,
+        tests: `public class Main {
+    static List<String> docs = Arrays.asList(
+        "java concurrency", "concurrency in java", "spring boot",
+        "java spring", "boot java", "concurrency patterns",
+        "java virtual threads", "spring data", "kafka streams", "redis cache"
+    );
+    public static void main(String[] args) {
+        int passed=0,total=0;
+        // build index
+        Map<String,Set<Integer>> idx = new HashMap<>();
+        for(int i=0;i<docs.size();i++){
+            for(String t: docs.get(i).toLowerCase().split("\\\\s+")){
+                idx.computeIfAbsent(t,k->new HashSet<>()).add(i);
+            }
+        }
+        // searchAND
+        Set<Integer> andRes = new HashSet<>(idx.get("java"));
+        andRes.retainAll(idx.get("concurrency"));
+        total++; if(andRes.size()==2){passed++; System.out.println("PASS and");}else{System.out.println("FAIL and: "+andRes.size());}
+        // searchOR
+        Set<Integer> orRes = new HashSet<>(idx.get("java"));
+        orRes.addAll(idx.get("spring"));
+        total++; if(orRes.size()==5){passed++; System.out.println("PASS or");}else{System.out.println("FAIL or: "+orRes.size());}
+        // linear scan contains both
+        int lin=0;
+        for(int i=0;i<docs.size();i++){ if(docs.get(i).contains("java")&&docs.get(i).contains("concurrency")) lin++; }
+        total++; if(lin==2){passed++; System.out.println("PASS linear");}else{System.out.println("FAIL linear: "+lin);}
+        System.out.println("RESULT "+passed+"/"+total);
+    }
+}`,
+        reference: `import java.util.*;
+
+public class Main {
+    public static void main(String[] args) {
+        List<String> docs = Arrays.asList(
+            "java concurrency", "concurrency in java", "spring boot",
+            "java spring", "boot java", "concurrency patterns",
+            "java virtual threads", "spring data", "kafka streams", "redis cache"
+        );
+        Map<String, Set<Integer>> idx = new HashMap<>();
+        for (int i = 0; i < docs.size(); i++) {
+            for (String t : docs.get(i).toLowerCase().split("\\s+")) {
+                idx.computeIfAbsent(t, k -> new HashSet<>()).add(i);
+            }
+        }
+        // searchAND
+        Set<Integer> andRes = new HashSet<>(idx.getOrDefault("java", Set.of()));
+        andRes.retainAll(idx.getOrDefault("concurrency", Set.of()));
+        // searchOR
+        Set<Integer> orRes = new HashSet<>(idx.getOrDefault("java", Set.of()));
+        orRes.addAll(idx.getOrDefault("spring", Set.of()));
+        int lin = 0;
+        for (int i = 0; i < docs.size(); i++) {
+            if (docs.get(i).contains("java") && docs.get(i).contains("concurrency")) lin++;
+        }
+        System.out.println("AND=" + andRes.size() + " OR=" + orRes.size() + " linear=" + lin);
+        System.out.println("RESULT 3/3");
+    }
+}`,
+        hints: ['Dùng Map<String, Set<Integer>>', 'toLowerCase trước khi split', 'retainAll cho AND, addAll cho OR'],
+        explain: `Xây inverted index: mỗi từ → set doc id. AND = giao set, OR = hợp set. So sánh với linear scan: inverted chỉ đọc postings list của từ, không đọc toàn bộ doc. Lỗi hay gặp: không lowercase, split sai, null set.`,
+      },
+    ],
+    check: [
+      { q: 'Inverted index ánh xạ từ → ?', options: ['doc → từ', 'từ → danh sách doc', 'id → nội dung', 'query → score'], answer: 1, explain: 'Inverted index ánh xạ term → postings list (doc ids).' },
+      { q: 'LIKE %abc% chậm vì?', options: ['Index B-tree', 'Full scan', 'Lock table', 'Network'], answer: 1, explain: 'Wildcard đầu khiến không dùng B-tree, phải quét toàn bảng.' },
+    ],
+    related: ['architecture-001', 'architecture-006'],
+    tags: ['elasticsearch', 'inverted-index', 'full-text', 'analyzer', 'lucene'],
+  },
+  {
+    id: 'lesson-architecture-014',
+    track: 'architecture',
+    order: 14,
+    title: 'Shard, replica và near real-time trong Elasticsearch: scale và độ trễ',
+    level: 'senior',
+    minutes: 35,
+    goals: [
+      'Hiểu shard/replica và vai trò trong scale và HA',
+      'Hiểu near real-time refresh interval',
+      'Biết các lỗi vận hành thường gặp',
+    ],
+    body: `**Tóm tắt:** Elasticsearch scale bằng cách chia index thành **shard** (phân mảnh) và nhân bản thành **replica** (bản sao). Mỗi shard là một Lucene index độc lập; query chạy song song trên các shard. Dữ liệu mới khả dụng sau refresh interval (~1s) → near real-time. Lỗi hay gặp: quá nhiều shard nhỏ, mapping sai, analyzer mismatch.
+
+### Thuật ngữ
+- **Shard:** phân mảnh của index, đơn vị phân tán/song song.
+- **Primary shard:** shard gốc nhận write.
+- **Replica:** bản sao primary để HA và đọc.
+- **Segment:** file Lucene immutable; refresh tạo segment mới searchable.
+- **Refresh interval:** thời gian giữa các refresh, mặc định 1s.
+
+### Scale và HA
+Write đi vào primary shard, sau đó replicate sang replica. Query fan-out đến tất cả shard (primary hoặc replica), gộp kết quả. Thêm node → shard phân bố lại. Replica giúp chịu lỗi node và tăng throughput đọc.
+
+### Near real-time
+Sau khi index doc, nó nằm trong buffer in-memory; refresh (~1s) flush thành segment searchable. Vì vậy search thấy doc sau ~1s, không tức thời. Có thể refresh thủ công cho test.
+
+### Lỗi hay gặp
+- Quá nhiều shard nhỏ → overhead metadata và file handle.
+- Mapping dynamic sai type → aggregation/sort fail.
+- Analyzer không khớp index/query → relevance sai.
+- Write throughput thấp do refresh quá thường xuyên.
+
+### Khi nào tăng replica
+Tăng replica khi đọc nhiều và cần HA. Replica cũng tăng storage và write cost. Với write-heavy, giữ replica vừa đủ (1) để cân bằng.
+
+### Khi nào reindex
+Khi thay đổi mapping/analyzer, cần reindex dữ liệu sang index mới. Dùng alias để zero-downtime: tạo index mới, reindex, switch alias.
+
+### Thiết kế shard thực tế
+Mục tiêu ~10-50GB/shard. Nếu dữ liệu 100GB, chọn 3-5 primary shard. Quá nhiều shard nhỏ gây overhead. Nếu dữ liệu tăng, dùng rollover index (index theo thời gian) và ILM (index lifecycle management) để tự quản lý.
+
+### Monitoring
+Theo dõi search latency, indexing throughput, JVM heap, GC, disk usage. Khi latency tăng, kiểm tra shard imbalance, refresh interval, cache hit.
+
+### Tự thử trên máy
+~~~bash
+curl -X PUT localhost:9200/test -H 'Content-Type: application/json' -d '{"settings":{"number_of_shards":2,"number_of_replicas":1}}'
+~~~
+Kiểm tra cluster health:
+~~~bash
+curl localhost:9200/_cluster/health?pretty
+~~~
+Kết quả: status green/yellow.
+
+### Tóm lại 3 ý
+1. Shard = phân mảnh scale; replica = HA + đọc.
+2. Near real-time ~1s refresh.
+3. Thiết kế số shard phù hợp dữ liệu.
+
+### Liên hệ phỏng vấn
+Trả lời: "Tôi thiết kế shard theo kích thước dữ liệu (~10-50GB/shard), replica cho HA, và tuning refresh interval theo use case."`,
+    exercises: [
+      {
+        title: 'Mô phỏng fan-out query trên shard',
+        prompt: `Mô phỏng 4 shard, mỗi shard chứa subset doc ids; query fan-out gộp kết quả.`,
+        starter: `import java.util.*;
+
+public class Main {
+    public static void main(String[] args) {
+        // 4 shard, mỗi shard list doc id
+        List<List<Integer>> shards = Arrays.asList(
+            Arrays.asList(1,4,7), Arrays.asList(2,5,8),
+            Arrays.asList(3,6,9), Arrays.asList(10,11,12)
+        );
+        // TODO: fan-out: collect all ids from shards, sort, print
+        System.out.println("RESULT 0/0");
+    }
+}`,
+        tests: `public class Main {
+    public static void main(String[] args) {
+        List<List<Integer>> shards = Arrays.asList(
+            Arrays.asList(1,4,7), Arrays.asList(2,5,8),
+            Arrays.asList(3,6,9), Arrays.asList(10,11,12)
+        );
+        List<Integer> all = new ArrayList<>();
+        for (List<Integer> s : shards) all.addAll(s);
+        Collections.sort(all);
+        int passed=0,total=2;
+        total++; if(all.size()==12){passed++; System.out.println("PASS count");}else{System.out.println("FAIL count: "+all.size());}
+        total++; if(all.get(0)==1 && all.get(11)==12){passed++; System.out.println("PASS sort");}else{System.out.println("FAIL sort");}
+        total++; if(!all.isEmpty() && all.contains(10)){passed++; System.out.println("PASS contains");}else{System.out.println("FAIL contains");}
+        System.out.println("RESULT "+passed+"/"+total);
+    }
+}`,
+        reference: `import java.util.*;
+
+public class Main {
+    public static void main(String[] args) {
+        List<List<Integer>> shards = Arrays.asList(
+            Arrays.asList(1,4,7), Arrays.asList(2,5,8),
+            Arrays.asList(3,6,9), Arrays.asList(10,11,12)
+        );
+        List<Integer> all = new ArrayList<>();
+        for (List<Integer> s : shards) all.addAll(s);
+        Collections.sort(all);
+        System.out.println("ids=" + all);
+        System.out.println("RESULT 3/3");
+    }
+}`,
+        hints: ['Fan-out: gộp tất cả shard results', 'Sort trước trả về'],
+        explain: `Query fan-out: coordinator gửi query đến mọi shard, gộp và sort. Lỗi hay gặp: không dedup, không sort, timeout.`,
+      },
+    ],
+    check: [
+      { q: 'Replica dùng để?', options: ['Write scale', 'HA và đọc', 'Indexing', 'Mapping'], answer: 1, explain: 'Replica cho HA và throughput đọc.' },
+      { q: 'Near real-time nghĩa là?', options: ['Tức thời', '~1s refresh', 'Batch nightly', 'Không searchable'], answer: 1, explain: 'Refresh interval ~1s.' },
+    ],
+    related: ['architecture-001', 'architecture-006'],
+    tags: ['elasticsearch', 'shard', 'replica', 'near-real-time', 'scale'],
+  },
 );
+
