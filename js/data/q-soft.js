@@ -8955,4 +8955,173 @@ Tôi nhận team Payment 6 dev (velocity 22 pts/sprint, cycle time 9 ngày, chan
   ],
   tags: ['90-days', 'first-90-days', 'leadership', 'strategy', 'quick-wins', 'team-takeover'],
 },
+{
+  id: 'behavioral-070',
+  topic: 'behavioral',
+  level: 'lead',
+  q: 'Bạn đo năng suất và chất lượng team bằng những metric nào (DORA, bug escape rate) mà không biến thành micro-manage?',
+  a: `**Tóm tắt:** Dùng DORA (deployment frequency, lead time, change failure rate, MTTR) + bug escape rate + cycle time; đo ở cấp team, không cá nhân, và pairing với qualitative retrospective để tránh gaming.
+
+### Interviewer muốn nghe gì (tín hiệu lead)
+- DORA metrics và bug escape rate là gì, vì sao chọn chúng.
+- Tránh micro-manage: không dùng metric cá nhân để ranking, không đặt KPI cá nhân từ metric team.
+
+### Khung trả lời STAR
+- Situation: team 8 dev, release 1 lần/tháng, bug escape rate 35%.
+- Task: cải thiện mà không tạo văn hóa sợ hãi.
+- Action: đo DORA hằng tuần, retrospective blameless, pairing.
+- Result: release weekly, escape rate 8%, team morale tăng.
+
+### Trả lời mẫu khi phỏng vấn
+"Đo lường phải phục vụ học hỏi, không phải trừng phạt. Tôi đo ở cấp team: DORA bốn chỉ số, bug escape rate (bug lọt production / tổng bug), cycle time. Tôi không ranking cá nhân vì sẽ gaming. Mỗi sprint retrospective blameless: nhìn metric, hỏi 'điều gì trong quy trình gây ra?' rồi chọn 1-2 experiment. Kết quả: release từ monthly lên weekly, escape rate 35%→8%, MTTR 2h→20 phút. Quan trọng: metric chỉ là tín hiệu, phải pairing với qualitative (morale, review quality)."
+
+### Câu trả lời yếu thường gặp
+- **Dùng story points/dev để ranking** → gaming, văn hóa độc hại.
+- **Chỉ đo output (lines of code)** → vô nghĩa.
+- **Metric không pairing với RCA** → không cải thiện.
+
+> Senior tip: **Metric team-level + blameless retro = văn hóa học hỏi. Metric cá nhân = văn hóa sợ hãi.**`,
+  follow: [
+    'Nếu một dev gaming metric (merge nhiều PR nhỏ), bạn xử lý thế nào?',
+    'DORA metric nào khó đo nhất trong outsource fixed-price?',
+    'Làm sao cân bằng throughput và quality?'
+  ],
+  tags: ['dora', 'metrics', 'quality', 'leadership', 'team-health'],
+},
+{
+  id: 'behavioral-071',
+  topic: 'behavioral',
+  level: 'lead',
+  q: 'Kể lại một quyết định kỹ thuật bạn làm sai và cách bạn nhận lỗi, sửa sai (failure story).',
+  a: `**Tóm tắt:** Failure story tốt là: thừa nhận nhanh, RCA blameless, fix + guardrail, chia sẻ học hỏi; interviewer đánh giá ownership và growth.
+
+### Interviewer muốn nghe gì (tín hiệu lead)
+- Ownership, không đổ lỗi.
+- RCA và guardrail cụ thể.
+- Ảnh hưởng đến team/stakeholder và cách repair trust.
+
+### Khung trả lời STAR
+- Situation: chọn cache Redis không TTL → stale data.
+- Task: fix production + trust.
+- Action: rollback, RCA, TTL + monitoring, postmortem.
+- Result: 0 incident sau, trust repaired.
+
+### Trả lời mẫu khi phỏng vấn
+"Ba năm trước tôi chọn cache Redis không TTL cho price list, nghĩ data thay đổi ít. Sau 2 tháng, sale cập nhật giá nhưng cache stale → bán sai giá 12 giờ, mất ~40 triệu VND. Tôi thừa nhận ngay trong standup, không đổ lỗi. RCA: thiếu TTL + không monitoring staleness. Fix: TTL 5 phút + cache-aside với event invalidation + alert age > 10 phút. Postmortem chia sẻ toàn team. Sau đó 18 tháng không incident tương tự. Bài học: mọi quyết định cache phải có TTL và invalidation strategy từ đầu."
+
+### Câu trả lời yếu thường gặp
+- **Đổ lỗi infra/vendor** → thiếu ownership.
+- **Chỉ nói 'rút kinh nghiệm' không guardrail** → sẽ lặp lại.
+- **Không quantify impact** → interviewer không đánh giá được.
+
+> Senior tip: **Failure story = ownership + guardrail + học hỏi chia sẻ.**`,
+  follow: [
+    'Làm sao repair trust với stakeholder sau incident?',
+    'Khi nào nên rollback vs hotfix?',
+    'Làm sao prevent blame culture trong team?'
+  ],
+  tags: ['failure-story', 'ownership', 'rca', 'leadership'],
+},
+{
+  id: 'behavioral-072',
+  topic: 'behavioral',
+  level: 'senior',
+  q: 'Bạn nói KHÔNG / đàm phán scope với khách hàng hoặc PM, đặc biệt khách Hàn/Nhật trong outsource.',
+  a: `**Tóm tắt:** Nói không bằng dữ liệu + alternative + trade-off, tôn trọng văn hóa (indirect, consensus), không blanket no; đưa ra options có cost.
+
+### Interviewer muốn nghe gì (tín hiệu lead)
+- Khả năng đàm phán scope.
+- Hiểu văn hóa khách Hàn/Nhật (indirect, consensus, quality emphasis).
+- Trade-off communication.
+
+### Khung trả lời STAR
+- Situation: khách Nhật yêu cầu thêm feature giữa sprint.
+- Task: bảo vệ scope + timeline.
+- Action: đưa 3 options với cost/time, consensus meeting.
+- Result: chọn option B, on-time.
+
+### Trả lời mẫu khi phỏng vấn
+"Với khách Nhật, tôi không nói 'không' trực tiếp vì văn hóa indirect. Tôi chuẩn bị 3 options: (A) thêm feature, trễ 3 tuần; (B) thêm feature, cắt feature Y; (C) giữ scope, feature vào sprint sau. Mỗi option có số liệu cost và rủi ro. Tôi gửi trước meeting để họ consensus nội bộ, rồi meeting chỉ confirm. Kết quả: chọn B, on-time, khách hài lòng. Nguyên tắc: không blanket no, luôn offer alternatives với trade-off rõ ràng, tôn trọng quy trình consensus."
+
+### Câu trả lời yếu thường gặp
+- **Nói không thẳng thừng** → khách mất mặt, quan hệ xấu.
+- **Đồng ý hết rồi overtime** → burnout, quality drop.
+- **Không quantify** → không có leverage.
+
+> Senior tip: **Options với số liệu + consensus trước meeting = đàm phán hiệu quả với khách Á.**`,
+  follow: [
+    'Khi khách ép deadline không thể, bạn escalate thế nào?',
+    'Khác biệt đàm phán với khách US vs khách Á?',
+    'Làm sao protect team khỏi scope creep?'
+  ],
+  tags: ['negotiation', 'scope', 'client', 'outsource', 'cross-culture'],
+},
+{
+  id: 'behavioral-073',
+  topic: 'behavioral',
+  level: 'senior',
+  q: 'Bạn cân bằng giữa code và quản lý — bạn còn code bao nhiêu % thời gian?',
+  a: `**Tóm tắt:** Lead còn code 20-40% (critical path, prototyping, review), phần còn lại dành cho mentoring, planning, unblock; code để giữ technical credibility nhưng không bottleneck.
+
+### Interviewer muốn nghe gì (tín hiệu lead)
+- Phân bổ thời gian hợp lý.
+- Code để credibility, không để control.
+- Tránh bottleneck.
+
+### Khung trả lời STAR
+- Situation: promote lên lead, coding 80% → bottleneck.
+- Task: rebalance.
+- Action: code 30%, delegate, pair programming.
+- Result: throughput tăng, team grow.
+
+### Trả lời mẫu khi phỏng vấn
+"Tôi code khoảng 30% thời gian: critical path (auth, payment), prototyping cho task mới, và code review. 40% mentoring/unblock, 20% planning/stakeholder, 10% ops/incident. Code để giữ credibility và hiểu pain của team, nhưng tôi không assign task chính cho mình để tránh bottleneck. Nếu tôi là critical path của mọi PR, team không grow. Pair programming với junior vừa code vừa dạy."
+
+### Câu trả lời yếu thường gặp
+- **Code 80%** → không lead, bottleneck.
+- **Code 0%** → mất technical credibility, không hiểu pain.
+- **Không delegate** → team không grow.
+
+> Senior tip: **Code để credibility và unblock, không để control; target 20-40%.**`,
+  follow: [
+    'Nếu team thiếu người, bạn code nhiều hơn bao lâu?',
+    'Làm sao giữ technical skills khi code ít?',
+    'Khi nào delegate task khó cho junior?'
+  ],
+  tags: ['time-management', 'leadership', 'coding', 'delegation'],
+},
+{
+  id: 'behavioral-074',
+  topic: 'behavioral',
+  level: 'lead',
+  q: 'Vì sao bạn muốn làm lead và điểm yếu của bạn khi làm lead?',
+  a: `**Tóm tắt:** Muốn lead vì leverage (impact qua người khác) + mentoring; điểm yếu: delegation khó, impatient; mitigation bằng feedback loop và coaching.
+
+### Interviewer muốn nghe gì (tín hiệu lead)
+- Motivation intrinsic (impact, mentoring) không phải title/pay.
+- Self-awareness về điểm yếu.
+- Mitigation cụ thể.
+
+### Khung trả lời STAR
+- Situation: junior lên mid nhờ mentoring.
+- Task: scale impact.
+- Action: pursue lead, work on delegation.
+- Result: team delivery tăng.
+
+### Trả lời mẫu khi phỏng vấn
+"Tôi muốn lead vì leverage: impact của tôi qua 6-8 người lớn hơn code của tôi. Tôi thích mentoring và thấy junior grow. Điểm yếu: tôi impatient, đôi khi làm thay junior thay vì coaching. Mitigation: tôi đặt rule 'không touch keyboard trong 1:1', chỉ hỏi guiding questions; sau mỗi sprint retro hỏi team 'tôi có làm thay bạn không?'. Tôi cũng seek feedback từ manager. Kết quả: 2 junior lên mid trong 1 năm, team delivery tăng 40%."
+
+### Câu trả lời yếu thường gặp
+- **Muốn title/money** → red flag.
+- **Không biết điểm yếu** → thiếu self-awareness.
+- **Điểm yếu không mitigation** → không grow.
+
+> Senior tip: **Motivation intrinsic + self-awareness + mitigation = lead material.**`,
+  follow: [
+    'Nếu không được promote lead, bạn làm gì?',
+    'Làm sao prove leadership trước khi có title?',
+    'Feedback nào thay đổi phong cách lead của bạn?'
+  ],
+  tags: ['motivation', 'self-awareness', 'leadership', 'weakness'],
+},
 );
