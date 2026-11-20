@@ -112,6 +112,7 @@
     aiResult: {},     // id -> kết quả App.ai.grade
     speech: {},       // id -> metrics của lần đọc gần nhất
     answerCollapsed: {}, // id -> true (thân đáp án đang thu gọn)
+    fullText: false,  // true sau khi tải toàn bộ câu hỏi để tìm trong đáp án
   };
 
   const HIDE_KEY = 'sjp.bank.hideAnswer';
@@ -159,19 +160,55 @@
     return html.replace(/<h4>/g, function () { return '<h4 id="' + esc(secId(qid, n++)) + '">'; });
   }
 
-  /** Câu hỏi sau khi áp dụng filter. */
-  function filtered() {
-    const list = App.filterQuestions({ topic: S.topic, level: S.level, status: S.status, q: S.q });
-    if (S.core) return list.filter(q => isCore(q));
-    return list;
+  /** Câu hỏi sau khi áp dụng filter — dùng light index khi chưa có full text. */
+  function mergedQuestions() {
+    const full = window.QUESTIONS || [];
+    const byId = Object.create(null);
+    full.forEach(q => { byId[q.id] = q; });
+    const lite = App.lite('questions');
+    return lite.map(q => byId[q.id] || q);
   }
 
   /** Câu hỏi có tag 'core' (bộ câu lõi cho 6 tháng ôn). */
-  function isCore(q) { return (q.tags || []).indexOf('core') !== -1; }
+  function isCore(q) {
+    if ((q.tags || []).indexOf('core') !== -1) return true;
+    const idx = App.lightIndex();
+    return !!(idx && idx.core && idx.core.indexOf(q.id) !== -1);
+  }
+
+  /** Trả về nhóm dữ liệu 'q:<file>' của chủ đề, hoặc null nếu chủ đề không có file riêng. */
+  function topicFileFor(topicId) {
+    const t = App.topic(topicId);
+    return t && t.file ? 'q:' + t.file : null;
+  }
 
   /** Số câu lõi trong chủ đề đang chọn (hoặc tổng nếu "Tất cả"). */
   function coreCount() {
-    return App.filterQuestions({ topic: S.topic, level: 'all', status: 'all', q: '' }).filter(isCore).length;
+    return mergedQuestions().filter(x => x.topic === S.topic || S.topic === 'all').filter(isCore).length;
+  }
+
+  /** Câu hỏi sau khi áp dụng filter. */
+  function filtered() {
+    const list = mergedQuestions();
+    const term = (S.q || '').trim().toLowerCase();
+    const out = list.filter(x => {
+      if (S.topic !== 'all' && x.topic !== S.topic) return false;
+      if (S.level !== 'all' && x.level !== S.level) return false;
+      if (S.status !== 'all') {
+        const s = App.store.getStatus(x.id);
+        if (S.status === 'bookmarked') { if (!App.store.isBookmarked(x.id)) return false; }
+        else if (S.status === 'unseen') { if (s) return false; }
+        else if (S.status === 'due') { if (!App.store.isDue(x.id)) return false; }
+        else if (s !== S.status) return false;
+      }
+      if (term) {
+        const hay = x.q + ' ' + ((x.tags || []).join(' ')) + ' ' + (x.a || '');
+        if (!hay.toLowerCase().includes(term)) return false;
+      }
+      return true;
+    });
+    if (S.core) return out.filter(isCore);
+    return out;
   }
 
   /** Ngày đến hạn ôn (dd/mm) hoặc null. */
@@ -327,11 +364,6 @@
       '</div>';
   }
 
-  /** Số câu lõi trong chủ đề đang chọn (hoặc tổng nếu "Tất cả"). */
-  function coreCount() {
-    return App.filterQuestions({ topic: S.topic, level: 'all', status: 'all', q: '' }).filter(isCore).length;
-  }
-
   /** Chips trạng thái + chip "Câu lõi". */
   function statusChips() {
     const chips = STATUS_CHIPS.map(s => '<button type="button" class="chip' + (S.status === s.id ? ' active' : '') +
@@ -359,6 +391,12 @@
     const open = filtersOpen;
     const activeInfo = (S.topic !== 'all' || S.status !== 'all' || S.level !== 'all' || S.q)
       ? '<span class="badge bank-filter-badge">đang lọc</span>' : '';
+    const fullTextBtn = S.fullText
+      ? '<button type="button" class="btn sm" id="bankFullTextOff">Tìm trong tiêu đề (giảm tải)</button>'
+      : '<button type="button" class="btn sm" id="bankFullTextOn">Tìm cả trong đáp án (tải toàn bộ câu hỏi)</button>';
+    const searchHint = !S.fullText && S.q
+      ? '<span class="small muted bank-search-hint">Tìm trên tiêu đề · <b>Tìm cả trong đáp án</b> để tìm trong đáp án và tag.</span>'
+      : '';
     return '<section class="card bank-filters">' +
       '<div class="bank-search-row">' +
         '<label class="field bank-search"><span>' + App.t('bank.searchLabel') + '</span>' +
@@ -371,7 +409,9 @@
           (hideAnswer() ? ' checked' : '') + '> <span>' + App.t('bank.hideAnswerLabel') + '</span></label>' +
         '<button type="button" class="btn sm bank-filters-toggle" id="bankFiltersToggle" aria-expanded="' + (open ? 'true' : 'false') + '">Bộ lọc ' + (open ? '▲' : '▼') + '</button>' +
         activeInfo +
+        fullTextBtn +
       '</div>' +
+      searchHint +
       '<div class="bank-filter-body' + (open ? ' is-open' : '') + '" id="bankFilterBody">' +
         topicChips() +
         statusChips() +
@@ -664,7 +704,7 @@
         const id = e.target.closest('#bankResumeBtn').dataset.resume;
         const banner = document.getElementById('bankResume');
         if (banner) banner.remove();
-        openAndScroll(id);
+        openAndScroll(id).catch(err => console.error(err));
         return;
       }
       if (e.target.closest('#bankResumeDismiss')) {
@@ -702,6 +742,21 @@
         return;
       }
 
+      if (e.target.closest('#bankFullTextOn')) {
+        S.fullText = true;
+        App.need(['questions']).then(() => renderList()).catch(() => { S.fullText = false; renderList(); });
+        return;
+      }
+
+      if (e.target.closest('#bankFullTextOff')) {
+        S.fullText = false;
+        S.q = '';
+        const search = document.getElementById('bankSearch');
+        if (search) search.value = '';
+        renderList();
+        return;
+      }
+
       const expandAll = e.target.closest('#bankExpandAll');
       if (expandAll) {
         toggleAll(expandAll.dataset.mode === 'close' ? 'close' : 'open');
@@ -711,17 +766,28 @@
     const head = e.target.closest('.bank-head');
     if (head) {
       const card = head.closest('.bank-card');
-      if (card) toggleCard(card.dataset.id);
+      if (card) toggleCard(card.dataset.id).catch(err => console.error(err));
     }
   }
 
-  /** Mở một câu và cuộn tới nó (kể cả nếu chưa render do phân trang). */
-  function openAndScroll(id) {
+  /** Mở một câu và cuộn tới nó (kể cả nếu chưa render do phân trang). Nếu file câu hỏi chưa tải,
+   tải nhóm q:<file> của chủ đề trước. */
+  async function openAndScroll(id) {
     if (!id) return;
     const all = filtered();
-    const idx = all.findIndex(q => q.id === id);
+    let q = all.find(x => x.id === id);
+    if (!q) return;
+    const idx = all.findIndex(x => x.id === id);
     if (idx === -1) return;
     if (idx >= S.shown) S.shown = Math.ceil((idx + 1) / PAGE_SIZE) * PAGE_SIZE;
+    // Nếu đây là bản light (chưa có đáp án), tải file của chủ đề.
+    if (!q.a) {
+      const file = topicFileFor(q.topic);
+      if (file) {
+        try { await App.need([file]); } catch (e) { /* continue with light object */ }
+        q = (App.questions() || []).find(x => x.id === id) || q;
+      }
+    }
     S.expanded[id] = true;
     lastOpenId = id;
     saveReadPos(id);
@@ -729,18 +795,53 @@
     renderList();
   }
 
-  /** Mở/thu gọn một câu hỏi (render lại card đó). */
-  function toggleCard(id) {
-    S.expanded[id] = !S.expanded[id];
+  /** Mở/thu gọn một câu hỏi (render lại card đó). Nếu đáp án chưa có (chưa tải file câu hỏi của chủ đề),
+   tải nhóm q:<file> trước rồi mới render. */
+  async function toggleCard(id) {
+    const wantOpen = !S.expanded[id];
+    S.expanded[id] = wantOpen;
     const card = rootEl.querySelector('.bank-card[data-id="' + CSS.escape(id) + '"]');
     if (!card) return;
-    const q = App.questions().find(x => x.id === id);
-    if (!q) return;
-    const open = !!S.expanded[id];
-    if (open) { lastOpenId = id; saveReadPos(id); }
-    card.classList.toggle('is-open', open);
-    card.innerHTML = headHtml(q, card.querySelector('.bank-idx') ? Number(card.querySelector('.bank-idx').textContent) : 0) +
-      (open ? bodyHtml(q) : '');
+    if (!wantOpen) {
+      card.classList.remove('is-open');
+      const q = App.questions().find(x => x.id === id) || (App.lite('questions') || []).find(x => x.id === id);
+      const idx = card.querySelector('.bank-idx') ? Number(card.querySelector('.bank-idx').textContent) : 0;
+      card.innerHTML = headHtml(q, idx);
+      return;
+    }
+    // Đang mở: nếu câu hỏi chưa có trong bộ nhớ, tải file của chủ đề đó.
+    let q = App.questions().find(x => x.id === id);
+    if (!q) {
+      const liteList = App.lite('questions') || [];
+      const liteQ = liteList.find(x => x.id === id);
+      if (!liteQ) { S.expanded[id] = false; card.classList.remove('is-open'); return; }
+      const file = topicFileFor(liteQ.topic);
+      if (!file) { S.expanded[id] = false; card.classList.remove('is-open'); return; }
+      const idx = card.querySelector('.bank-idx') ? Number(card.querySelector('.bank-idx').textContent) : 0;
+      card.innerHTML = headHtml(liteQ, idx) +
+        '<div class="bank-loading"><span class="small muted">Đang tải câu hỏi…</span></div>';
+      card.classList.add('is-open');
+      try {
+        await App.need([file]);
+      } catch (e) {
+        card.innerHTML = headHtml(liteQ, idx) +
+          '<div class="bank-error small muted">Không tải được câu hỏi.</div>';
+        S.expanded[id] = false;
+        card.classList.remove('is-open');
+        return;
+      }
+      q = App.questions().find(x => x.id === id);
+      if (!q) {
+        card.innerHTML = headHtml(liteQ, idx) +
+          '<div class="bank-error small muted">Không tìm thấy câu hỏi sau khi tải.</div>';
+        S.expanded[id] = false;
+        card.classList.remove('is-open');
+        return;
+      }
+    }
+    if (wantOpen) { lastOpenId = id; saveReadPos(id); }
+    const idx = card.querySelector('.bank-idx') ? Number(card.querySelector('.bank-idx').textContent) : 0;
+    card.innerHTML = headHtml(q, idx) + bodyHtml(q);
   }
 
   /** Render lại thân một card đang mở (giữ nguyên câu trả lời đang gõ). */

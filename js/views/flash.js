@@ -121,11 +121,18 @@ App.i18n.add({
     toastTimer: null,
   };
 
-  /** Câu hỏi của topic đang chọn. */
+  /** Câu hỏi của topic đang chọn. Dùng light index khi nhóm câu hỏi đầy đủ chưa tải (chế độ "Tất cả"). */
   function pool() {
-    const all = App.questions();
+    const full = App.questions();
+    const all = full.length ? full : (App.lite('questions') || []);
     if (S.topic === 'all') return all;
     return all.filter(q => q.topic === S.topic);
+  }
+
+  /** Nhóm dữ liệu 'q:<file>' của chủ đề, hoặc null nếu chủ đề không có file riêng. */
+  function topicFileFor(topicId) {
+    const t = App.topic(topicId);
+    return t && t.file ? 'q:' + t.file : null;
   }
 
   /** Sắp xếp theo độ ưu tiên của chế độ "thông minh". */
@@ -171,6 +178,12 @@ App.i18n.add({
     if (id === 'all') return 'Tất cả chủ đề';
     const t = App.topic(id);
     return (t.icon ? t.icon + ' ' : '') + t.name;
+  }
+
+  /** Nhóm dữ liệu 'q:<file>' của chủ đề, hoặc null nếu chủ đề không có file riêng. */
+  function topicFileFor(topicId) {
+    const t = App.topic(topicId);
+    return t && t.file ? 'q:' + t.file : null;
   }
   /** Badge level của câu hỏi. */
   function levelBadge(q) {
@@ -241,7 +254,7 @@ App.i18n.add({
         levelBadge(q) +
       '</div>' +
       '<div class="flash-q flash-q-back"' + (q.lang === 'en' ? ' lang="en"' : '') + '>' + App.md(q.q) + '</div>' +
-      '<div class="flash-a md">' + App.md(q.a) + '</div>' +
+      '<div class="flash-a md">' + App.md(q.a || 'Không tải được đáp án của câu hỏi này.') + '</div>' +
       (follow ? '<div class="flash-follow"><h4>Câu hỏi đào sâu thường gặp</h4><ul>' + follow + '</ul></div>' : '') +
       '<div class="flash-grade">' +
         '<span class="small muted">' + App.t('flash.gradeTitle') + '</span>' +
@@ -347,9 +360,26 @@ App.i18n.add({
     S.toastTimer = setTimeout(() => el.classList.remove('show'), 1800);
   }
 
-  /** Lật thẻ. */
-  function flip() {
+  /** Lật thẻ. Nếu đáp án chưa có (chế độ "Tất cả", câu hỏi chưa có full text) → tải nhóm q:<file> của chủ đề trước. */
+  async function flip() {
     if (!S.deck.length) return;
+    const q = S.deck[S.idx];
+    if (q.a == null) {
+      const file = topicFileFor(q.topic);
+      if (file) {
+        const content = document.getElementById('flashCardContent');
+        if (content) content.innerHTML = progressHtml() +
+          '<div class="card flash-card"><div class="flash-card-inner"><div class="flash-q"><span class="small muted">Đang tải câu hỏi…</span></div></div></div>' +
+          keysHtml();
+        try {
+          await App.need([file]);
+          const full = App.questions().find(x => x.id === q.id);
+          if (full) { q.a = full.a; q.follow = full.follow || []; }
+        } catch (e) {
+          showToast('Không tải được đáp án của câu này.');
+        }
+      }
+    }
     S.flipped = !S.flipped;
     renderCard();
   }
@@ -571,11 +601,15 @@ App.i18n.add({
       // Route #/flash/due => chế độ đến hạn; #/flash/<topicId> => chủ đề đó.
       if (p === 'due') {
         S.mode = 'due';
+        S.topic = 'all';
       } else if (p && App.topics().some(t => t.id === p)) {
         S.topic = p;
         if (S.mode === 'due') S.mode = 'smart';
+      } else {
+        S.topic = 'all';
       }
-      if (S.mode === 'due' && !App.questions().some(q => App.store.isDue(q.id))) {
+      if (S.mode === 'due' && App.questions().length &&
+        !App.questions().some(q => App.store.isDue(q.id))) {
         // Không có câu đến hạn: mặc định sang chế độ thông minh để vẫn có bài ôn.
         S.mode = 'smart';
       }

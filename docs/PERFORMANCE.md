@@ -16,3 +16,18 @@
   including the shell, and roadmap/account data at 200 KB.
 
 ## Next steps (not done)
+
+## Tải dữ liệu theo chủ đề cho #/bank và #/flash (T2524, 2026-11-20)
+
+Trước: #/bank và #/flash chờ nhóm `questions` — toàn bộ 21 file q-*.js (~16,8 MB raw, ~4,15 MB brotli) — trước khi render, mặc dù người dùng chỉ xem 1 chủ đề mỗi lần.
+
+Sau: route chỉ chờ nhóm `index` (index-light.js, ~384 KB) và, khi có chủ đề trong route (#/bank/sql, #/flash/sql), nhóm `q:<file>` của chủ đề đó. Danh sách câu hỏi hiển thị từ light index; đáp án đầy đủ tải khi mở câu (bank) hoặc lật thẻ (flash, hiện "Đang tải…"). Tìm kiếm toàn văn trong đáp án chỉ khi người dùng bấm "Tìm cả trong đáp án" (tải nhóm `questions` ~4 MB).
+
+- `js/core/data-manifest.js`: nhóm `q:<file>` cho mỗi file câu hỏi (giữ nhóm `questions` cũ cho các route khác); `needsFor('bank'/'flash', topicId)` → `['index', 'q:<file>']` khi có chủ đề, ngược lại `['index', 'glossary']`.
+- `scripts/check-budget.js`: ngân sách `#/bank` ≤ 600 KB data; mỗi chủ đề `#/bank/<topic>` và `#/flash/<topic>` (index-light + q:<file> + glossary) ≤ 2,5 MB.
+
+Số đo sau khi thay đổi (raw, KB, theo `node scripts/check-budget.js`):
+- #/bank (không chủ đề): ~384 KB (chỉ index-light) — dưới ngân sách 600 KB.
+- #/bank/sql và #/flash/sql: 1440 KB — dưới ngân sách 2,5 MB.
+- Chủ đề lớn nhất: spring / jpa / db (q-spring-data.js): 2385 KB — dưới 2,5 MB.
+- Trước: toàn bộ nhóm questions ~16,8 MB raw cho mọi route bank/flash.
