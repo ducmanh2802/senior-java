@@ -1526,4 +1526,161 @@ Lazy load route chia bundle thành các file, chỉ tải JavaScript của trang
   tags: ['performance', 'lazy-load', 'debounce', 'vite'],
   follow: ['Lighthouse Core Web Vitals', 'Vite manualChunks', 'debounce vs throttle']
 },
+{
+  id: 'frontend-021',
+  topic: 'frontend',
+  level: 'senior',
+  q: 'TypeScript cho dev Java: type vs interface, generics, union/narrowing, any vs unknown khác nhau thế nào?',
+  a: `**Tóm tắt:** TypeScript thêm kiểu tĩnh cho JavaScript; type và interface tương tự nhau nhưng interface hợp nhất khai báo và extends dễ hơn, type linh hoạt hơn với union/intersection. Generics tương tự Java. any tắt kiểm tra kiểu, unknown bắt buộc kiểm tra trước khi dùng.
+
+### type vs interface
+- interface: khai báo cấu trúc object, có thể merge (declaration merging), extends.
+- type: alias cho mọi kiểu, hỗ trợ union, intersection, tuple.
+
+### Generics
+Tương tự Java: function f<T>(x: T): T. Constraint: <T extends Foo>.
+
+### Union và narrowing
+union: string | number. Narrowing: typeof (primitive), discriminant property (interface), instanceof (class).
+
+### any vs unknown
+- any: bỏ qua kiểm tra, nguy hiểm.
+- unknown: an toàn, phải narrow trước khi dùng.
+
+### Ví dụ đời thực
+API response có thể {data} hoặc {error}: dùng union và narrowing để xử lý.
+
+### Trả lời mẫu khi phỏng vấn
+TypeScript cho dev Java là bước tự nhiên vì kiểu tĩnh quen thuộc. type và interface đều mô tả shape; interface hợp nhất khai báo và extends rõ ràng, type linh hoạt với union/intersection. Generics tương tự Java với constraint. Union kết hợp nhiều kiểu và narrowing thu hẹp kiểu bằng typeof/instanceof/discriminant. any tắt kiểm tra kiểu nên tránh; unknown an toàn hơn vì bắt buộc kiểm tra trước khi dùng. Trong dự án tôi dùng interface cho model domain, type cho union và utility. Pitfall: any lan truyền làm mất lợi ích kiểu. Senior tip: bật strict mode và noImplicitAny.
+
+> Senior tip: Bật strict: true và noUncheckedIndexedAccess; tránh any bằng unknown + narrowing.`,
+  tags: ['typescript', 'generics', 'narrowing'],
+  follow: ['strict mode', 'utility types', 'declaration merging']
+},
+{
+  id: 'frontend-022',
+  topic: 'frontend',
+  level: 'lead',
+  q: 'Build và deploy SPA Vue cùng Spring Boot: Vite build, serve static, history mode fallback, cache-busting hoạt động thế nào?',
+  a: `**Tóm tắt:** Vite build ra file tĩnh (HTML/CSS/JS hashed). Spring Boot serve static từ resources/static hoặc WebMvc. History mode cần fallback index.html cho route client. Cache-busting qua tên file hashed.
+
+### Vite build
+npm run build → dist/ với assets hashed (index-abc123.js).
+
+### Serve static Spring Boot
+Copy dist vào src/main/resources/static hoặc cấu hình ResourceHandler qua WebMvcConfigurer.
+
+### History mode fallback
+Vue Router history mode: route /users/123 không có file thật → server trả index.html. Spring Boot: controller @GetMapping("/**") return "forward:/index.html" hoặc ViewControllerRegistry.addViewController("/**").setViewName("forward:/index.html").
+
+### Cache-busting
+File hashed → cache lâu. index.html không cache hoặc cache ngắn.
+
+### Ví dụ đời thực
+Deploy jar chứa frontend + backend: một artifact, đơn giản CI/CD.
+
+### Trả lời mẫu khi phỏng vấn
+Build SPA bằng Vite tạo file tĩnh hashed. Spring Boot serve static. History mode cần fallback index.html cho route client-side. Cache-busting qua tên file hashed cho phép cache lâu assets. Pitfall: không fallback → 404 khi refresh trang con. Senior tip: tách build frontend trong CI rồi copy vào resources/static; đặt cache headers phù hợp.
+
+> Senior tip: Hashed assets cache immutable; index.html no-cache; fallback index.html cho mọi route không phải API.`,
+  tags: ['vite', 'deploy', 'spring-boot', 'spa'],
+  follow: ['hash routing vs history', 'nginx fallback', 'cache headers']
+},
+{
+  id: 'frontend-023',
+  topic: 'frontend',
+  level: 'senior',
+  q: 'Test frontend (Vitest + Vue Test Utils) ở mức khái niệm: unit test component, mock API, coverage như thế nào?',
+  a: `**Tóm tắt:** Vitest chạy unit test nhanh nhờ Vite transform; Vue Test Utils mount component để kiểm tra render và interaction; mock API bằng vi.mock hoặc MSW; coverage đo phần code được test nhưng không phải mục tiêu chính.
+
+### Unit test component
+mount(Component, {props}) trả về wrapper. Kiểm tra wrapper.text(), wrapper.find(selector), trigger('click'). flushPromises để chờ async.
+
+### Mock API
+vi.mock('axios') thay module; hoặc MSW intercept network ở mức HTTP, sát thực tế hơn. Mock ở boundary, không mock logic nội bộ.
+
+### Coverage
+v8/istanbul; ngưỡng trong CI (ví dụ 80%). Coverage là chỉ số, không phải mục tiêu; test behavior quan trọng hơn.
+
+### Ví dụ đời thực
+Test form validation: nhập sai → hiện lỗi; nhập đúng → gọi API mock và hiện thành công.
+
+### Pitfall production
+- Test implementation details (class internal) → refactor là vỡ test.
+- Không await async → test false positive.
+- Mock quá sâu → test không phản ánh thực tế.
+
+### Trả lời mẫu khi phỏng vấn
+Vitest nhanh vì dùng Vite transform và ESM. Vue Test Utils mount component và kiểm tra DOM/interaction. Mock API tránh phụ thuộc backend; MSW sát thực tế hơn vi.mock. Coverage theo dõi nhưng không phải mục tiêu chính. Pitfall: test implementation details thay vì behavior, không await async. Senior tip: test behavior, dùng data-testid, mock ở boundary, await flushPromises.
+
+> Senior tip: Test behavior không implementation; mock API boundary; coverage là chỉ số không phải mục tiêu.`,
+  tags: ['vitest', 'vue-test-utils', 'testing'],
+  follow: ['msw', 'e2e playwright', 'testing library']
+},
+{
+  id: 'frontend-024',
+  topic: 'frontend',
+  level: 'senior',
+  q: 'Form phức tạp nhiều bước (wizard) trong Vue cần quản lý state, validation và điều hướng như thế nào?',
+  a: `**Tóm tắt:** Wizard chia form thành steps; state tập trung (Pinia hoặc parent) để giữ dữ liệu qua steps; validation từng bước; điều hướng next/back với guard; persist draft để không mất khi refresh.
+
+### State
+Parent hoặc Pinia store lưu formData; mỗi step component bind v-model; step chỉ render UI.
+
+### Validation
+Validate step hiện tại trước khi next; disable nút next nếu invalid; validate toàn bộ trước submit.
+
+### Điều hướng
+Route per step hoặc component state; guard prevents skip; back không mất dữ liệu.
+
+### Ví dụ đời thực
+Đăng ký tài khoản 3 bước: thông tin → xác minh → hoàn tất; lưu draft sessionStorage.
+
+### Pitfall production
+- Mất dữ liệu khi refresh → persist sessionStorage/localStorage.
+- Validation chỉ client → server validate lại.
+- Submit trùng → idempotent key.
+
+### Trả lời mẫu khi phỏng vấn
+Wizard chia form thành steps. State tập trung giữ dữ liệu qua steps. Validation từng bước trước khi next. Điều hướng next/back với guard. Persist draft trong sessionStorage để không mất khi refresh. Pitfall: validation chỉ client, submit trùng. Senior tip: validate server-side cuối cùng, submit idempotent, lưu draft.
+
+> Senior tip: Persist draft trong sessionStorage; validate server-side cuối cùng; submit idempotent.`,
+  tags: ['form', 'wizard', 'validation'],
+  follow: ['vuelidate', 'zod', 'sessionStorage']
+},
+{
+  id: 'frontend-025',
+  topic: 'frontend',
+  level: 'mid',
+  q: 'i18n trong Vue/Spring Boot: quản lý bản dịch, pluralization, lazy load locale như thế nào?',
+  a: `**Tóm tắt:** vue-i18n quản lý bản dịch theo locale; key-based messages; pluralization theo rules ngôn ngữ; lazy load locale file khi chuyển; backend có thể dùng MessageSource hoặc frontend tự quản lý.
+
+### vue-i18n
+$t('key') trong template; messages theo locale; fallback locale.
+
+### Pluralization
+pluralization rules theo ngôn ngữ; ICU message format cho phức tạp.
+
+### Lazy load locale
+Dynamic import locale file khi switch; giảm bundle ban đầu.
+
+### Backend
+Spring MessageSource với Accept-Language; hoặc frontend tự quản lý và backend trả code.
+
+### Ví dụ đời thực
+App hỗ trợ vi/en: chuyển ngôn ngữ không reload trang; locale file lazy load.
+
+### Pitfall production
+- Hardcode text trong component.
+- Key không namespace → trùng.
+- Không fallback → missing key hiện raw key.
+
+### Trả lời mẫu khi phỏng vấn
+vue-i18n quản lý bản dịch theo locale. Key-based. Pluralization theo rules ngôn ngữ. Lazy load locale file khi chuyển. Backend có thể dùng MessageSource. Pitfall: hardcode text trong component, key không namespace. Senior tip: namespace theo feature, fallback locale, lazy load locale file.
+
+> Senior tip: Namespace theo feature; fallback locale; lazy load locale file.`,
+  tags: ['i18n', 'vue-i18n', 'localization'],
+  follow: ['ICU message format', 'Spring MessageSource', 'locale detection']
+},
 );
+
