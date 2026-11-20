@@ -8421,5 +8421,230 @@ Vi du so: fanout 400 -> depth 3 chua 64 trieu key. Hang trieu dong -> depth 3-4 
   follow: ['Expression index la gi va khi nao nen dung thay vi rewrite query?', 'Partial index giup selective query nhu the nao?', 'Lam sao phat hien stats cu va skew trong PostgreSQL?'],
   tags: ['sargability', 'index not used', 'selectivity', 'stale stats', 'EXPLAIN'],
 }
+,
+{
+  id: 'sql-099',
+  topic: 'sql',
+  level: 'senior',
+  q: 'Vì sao hai transaction chỉ update hai bản ghi hoàn toàn khác nhau vẫn deadlock trong InnoDB? Giải thích gap lock, next-key lock, khóa do foreign key và scan không có index.',
+  a: `**Tóm tắt:** Trong InnoDB deadlock không chỉ xảy ra khi hai transaction tranh cùng một dòng; khóa gap/next-key và khóa do kiểm tra foreign key có thể khóa nhiều dòng hơn bạn nghĩ, nên hai transaction "không liên quan" vẫn deadlock nếu thứ tự khóa ngược nhau.
 
+### Kiến thức cần biết trước
+- **Transaction**: nhóm câu SQL chạy như một khối, hoặc thành công hết, hoặc rollback hết.
+- **Row lock**: khóa trên một dòng cụ thể.
+- **Gap lock**: khóa "khoảng trống" giữa các giá trị index, ngăn insert vào khoảng đó.
+- **Next-key lock**: row lock + gap lock liền trước giá trị.
+- **Index**: cấu trúc giúp tìm nhanh; nếu không có index phù hợp, database phải scan và khóa nhiều dòng.
+
+### Cơ chế bên trong từng bước
+1. InnoDB khóa theo index, không theo bảng.
+2. Câu UPDATE/DELETE có WHERE trên cột không index → scan toàn bảng → lock nhiều dòng và gap.
+3. Foreign key kiểm tra cũng khóa index ở bảng cha/con.
+4. Hai transaction khóa các khoảng khác nhau nhưng thứ tự ngược → deadlock.
+
+### Ví dụ số cụ thể
+Bảng orders(id, user_id, status). Transaction A: UPDATE orders SET status='PAID' WHERE user_id=10. Transaction B: UPDATE orders SET status='PAID' WHERE user_id=20. Nếu user_id không có index, cả hai scan toàn bảng và lock cùng các gap → deadlock.
+
+### Tự thử trên máy
+~~~sql
+-- MySQL InnoDB
+SET SESSION innodb_lock_wait_timeout = 5;
+START TRANSACTION;
+UPDATE orders SET status='PAID' WHERE user_id=10;
+-- session 2
+START TRANSACTION;
+UPDATE orders SET status='PAID' WHERE user_id=20;
+~~~
+
+### Tóm lại 3 ý
+1. InnoDB khóa theo index.
+2. Không có index → khóa nhiều dòng/gap.
+3. Foreign key và scan làm deadlock "vô cớ".
+
+### Trả lời mẫu khi phỏng vấn
+"Deadlock trong InnoDB không chỉ do cùng một dòng. Vì khóa theo index, nếu WHERE không có index thì scan toàn bảng và khóa nhiều gap. Foreign key cũng khóa index ở bảng cha. Hai transaction khóa các khoảng khác nhau nhưng thứ tự ngược nhau vẫn deadlock. Giải pháp: thêm index phù hợp, giữ transaction ngắn, retry khi gặp deadlock."
+
+> Senior tip: "Deadlock log là bản đồ: đọc lock struct để biết transaction nào giữ lock gì."
+`,
+  follow: ['Làm sao đọc deadlock log MySQL/PostgreSQL?', 'Khi nào nên retry transaction deadlock?', 'Làm sao tránh deadlock do foreign key?'],
+  tags: ['deadlock', 'InnoDB', 'gap lock', 'next-key lock', 'foreign key'],
+},
+{
+  id: 'sql-100',
+  topic: 'sql',
+  level: 'senior',
+  q: 'Làm sao đọc deadlock log của PostgreSQL/MySQL và chẩn đoán nguyên nhân gốc?',
+  a: `**Tóm tắt:** Deadlock log cho biết transaction nào giữ lock gì và đang chờ lock gì; đọc theo thứ tự lock, tìm transaction giữ lock lâu nhất và thứ tự lock ngược.
+
+### Kiến thức cần biết trước
+- **Lock**: cơ chế ngăn hai transaction sửa cùng dữ liệu.
+- **Wait-for graph**: đồ thị transaction đang chờ nhau.
+- **Deadlock detection**: database phát hiện vòng chờ và chọn victim rollback.
+
+### Cơ chế bên trong từng bước
+1. Transaction A giữ lock X, chờ lock Y.
+2. Transaction B giữ lock Y, chờ lock X.
+3. Database phát hiện vòng → chọn victim → rollback.
+4. Log ghi cả hai transaction và lock.
+
+### Ví dụ số cụ thể
+PostgreSQL log: "Process 123 waits for ShareLock on transaction 456; blocked by process 789". MySQL log: "LATEST DETECTED DEADLOCK" với lock struct.
+
+### Tự thử trên máy
+~~~sql
+-- PostgreSQL
+SHOW deadlock_timeout;
+-- MySQL
+SHOW ENGINE INNODB STATUS;
+~~~
+
+### Tóm lại 3 ý
+1. Deadlock log là bằng chứng.
+2. Đọc wait-for graph để tìm victim.
+3. Fix bằng thứ tự lock nhất quán.
+
+### Trả lời mẫu khi phỏng vấn
+"Khi deadlock xảy ra, tôi đọc log để xem transaction nào giữ lock gì và đang chờ lock gì. Tôi tìm transaction giữ lock lâu nhất và thứ tự lock ngược. Sau đó tôi chuẩn hóa thứ tự lock trong code (luôn lock theo id tăng dần) và retry transaction deadlock với backoff nhỏ."
+
+> Senior tip: "Deadlock không phải bug; deadlock không retry mới là bug."
+`,
+  follow: ['Khi nào nên tăng deadlock_timeout?', 'Làm sao chuẩn hóa thứ tự lock trong code?', 'Retry deadlock có ảnh hưởng consistency không?'],
+  tags: ['deadlock log', 'wait-for graph', 'victim', 'retry'],
+},
+{
+  id: 'sql-101',
+  topic: 'sql',
+  level: 'senior',
+  q: 'Vì sao optimistic locking tệ cho import 20.000 dòng all-or-nothing, và pessimistic locking phù hợp hơn?',
+  a: `**Tóm tắt:** Optimistic locking cần kiểm tra version trước mỗi update; với 20.000 dòng all-or-nothing, số lần retry và conflict rất cao, nên pessimistic locking hoặc batch processing phù hợp hơn.
+
+### Kiến thức cần biết trước
+- **Optimistic locking**: đọc version, update nếu version khớp, fail nếu không.
+- **Pessimistic locking**: khóa trước khi sửa.
+- **All-or-nothing**: hoặc tất cả dòng thành công, hoặc rollback hết.
+
+### Cơ chế bên trong từng bước
+1. Optimistic: mỗi dòng cần check version.
+2. 20.000 dòng → 20.000 check, conflict cao.
+3. Retry toàn bộ transaction → tốn thời gian.
+4. Pessimistic: khóa trước, update tuần tự, ít conflict.
+
+### Ví dụ số cụ thể
+Import 20.000 sản phẩm: optimistic có thể conflict 5-10% mỗi batch → retry 2-3 lần → 60.000 check. Pessimistic: khóa 20.000 dòng, update 1 lần.
+
+### Tự thử trên máy
+~~~sql
+-- PostgreSQL
+BEGIN;
+SELECT * FROM product WHERE id IN (...) FOR UPDATE;
+UPDATE product SET price = ... WHERE id = ...;
+COMMIT;
+~~~
+
+### Tóm lại 3 ý
+1. Optimistic conflict cao với batch lớn.
+2. Retry tốn thời gian.
+3. Pessimistic phù hợp all-or-nothing.
+
+### Trả lời mẫu khi phỏng vấn
+"Với import 20.000 dòng all-or-nothing, optimistic locking tệ vì mỗi dòng phải check version và conflict cao. Retry toàn bộ transaction tốn thời gian. Pessimistic locking khóa trước, update tuần tự, ít conflict hơn. Nếu cần throughput cao, dùng batch processing với chunk nhỏ và retry từng chunk."
+
+> Senior tip: "Batch lớn + optimistic = retry storm."
+`,
+  follow: ['Khi nào dùng optimistic locking?', 'Chunk size bao nhiêu cho batch import?', 'Làm sao retry từng chunk?'],
+  tags: ['optimistic locking', 'pessimistic locking', 'batch import', 'all-or-nothing'],
+},
+{
+  id: 'sql-102',
+  topic: 'sql',
+  level: 'lead',
+  q: 'So sánh 4 cách cài pessimistic lock: SELECT FOR UPDATE, advisory lock, cột trạng thái/lease và distributed lock Redis. Trade-off từng cách?',
+  a: `**Tóm tắt:** SELECT FOR UPDATE khóa DB; advisory lock nhẹ hơn; cột trạng thái/lease không giữ connection; distributed lock Redis không giữ connection nhưng thêm dependency.
+
+### Kiến thức cần biết trước
+- **SELECT FOR UPDATE**: khóa dòng trong DB.
+- **Advisory lock**: khóa logic trong DB, không khóa dữ liệu.
+- **Lease**: cột trạng thái + thời gian hết hạn.
+- **Distributed lock**: khóa qua Redis/etcd.
+
+### Cơ chế bên trong từng bước
+1. SELECT FOR UPDATE: khóa dòng, giữ connection.
+2. Advisory lock: khóa logic, không dữ liệu.
+3. Lease: update cột status + expires_at, không giữ connection.
+4. Redis: SET NX EX, không giữ DB connection.
+
+### Bảng trade-off
+| Cách | Giữ connection | Khóa dữ liệu | Dependency | Use case |
+|---|---|---|---|---|
+| SELECT FOR UPDATE | Có | Có | DB | Transaction ngắn |
+| Advisory lock | Có | Không | DB | Job scheduler |
+| Lease | Không | Có | DB | Long-running |
+| Redis | Không | Có | Redis | Distributed |
+
+### Ví dụ số cụ thể
+Job chạy 5 phút: SELECT FOR UPDATE giữ connection 5 phút → pool exhausted. Lease: update status='RUNNING', expires_at=now+5min → release connection ngay.
+
+### Tự thử trên máy
+~~~sql
+-- PostgreSQL advisory lock
+SELECT pg_advisory_lock(123);
+-- release
+SELECT pg_advisory_unlock(123);
+~~~
+
+### Tóm lại 3 ý
+1. SELECT FOR UPDATE đơn giản nhưng giữ connection.
+2. Lease phù hợp long-running.
+3. Redis phù hợp distributed nhưng thêm dependency.
+
+### Trả lời mẫu khi phỏng vấn
+"Tôi chọn lock theo thời gian giữ connection. Transaction ngắn dùng SELECT FOR UPDATE. Job dài dùng lease/cột trạng thái để không giữ connection. Distributed system dùng Redis lock nhưng phải handle expiry và fencing token. Advisory lock phù hợp scheduler trong cùng DB."
+
+> Senior tip: "Lock không giữ connection là chìa khóa cho job dài."
+`,
+  follow: ['Fencing token là gì và vì sao cần?', 'Làm sao tránh lock leak với lease?', 'Khi nào dùng Redis lock thay vì DB lock?'],
+  tags: ['pessimistic lock', 'advisory lock', 'lease', 'distributed lock', 'Redis'],
+},
+{
+  id: 'sql-103',
+  topic: 'sql',
+  level: 'lead',
+  q: 'Thiết kế retry strategy cho deadlock và lock timeout trong Java/Spring: backoff, idempotency và observability?',
+  a: `**Tóm tắt:** Retry deadlock/lock timeout cần backoff exponential, idempotency để tránh duplicate, và metrics để theo dõi retry rate.
+
+### Kiến thức cần biết trước
+- **Deadlock**: database rollback victim.
+- **Lock timeout**: transaction chờ quá lâu.
+- **Idempotency**: chạy lại không thay đổi kết quả.
+- **Backoff**: chờ tăng dần giữa retry.
+
+### Cơ chế bên trong từng bước
+1. Catch SQLException với SQLState 40P01 (deadlock) hoặc 55P03 (lock not available).
+2. Retry với backoff exponential + jitter.
+3. Đảm bảo idempotency (upsert, unique constraint).
+4. Ghi metric retry count, latency.
+
+### Ví dụ số cụ thể
+Retry 3 lần với backoff 50ms, 100ms, 200ms. Nếu vẫn fail → throw. Retry rate > 5% → alert.
+
+### Tự thử trên máy
+~~~java
+// Spring
+@Retryable(retryFor = {DeadlockLoserDataAccessException.class}, maxAttempts = 3, backoff = @Backoff(delay = 50, multiplier = 2))
+public void transfer(...) { ... }
+~~~
+
+### Tóm lại 3 ý
+1. Retry deadlock với backoff.
+2. Idempotency bắt buộc.
+3. Monitor retry rate.
+
+### Trả lời mẫu khi phỏng vấn
+"Tôi retry deadlock/lock timeout với backoff exponential và jitter. Trước đó đảm bảo operation idempotent (upsert, unique constraint). Tôi ghi metric retry count và latency; nếu retry rate > 5% thì alert. Không retry vô hạn vì có thể mask bug logic."
+
+> Senior tip: "Retry là băng gạc, không phải thuốc chữa; root cause vẫn phải fix."
+`,
+  follow: ['Khi nào không nên retry?', 'Làm sao đảm bảo idempotency cho transfer tiền?', 'Metric nào theo dõi lock contention?'],
+  tags: ['retry', 'deadlock', 'lock timeout', 'idempotency', 'backoff'],
+}
 );
