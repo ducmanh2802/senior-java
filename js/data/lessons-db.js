@@ -4299,4 +4299,1149 @@ Trên production, hãy coi single-flight là lớp bảo vệ **trong một JVM*
   related: ['concurrency-030', 'db-024', 'db-009', 'spring-017'],
   tags: ['cache', 'stampede', 'single-flight', 'CompletableFuture', 'ConcurrentHashMap', 'Redis']
 },
+{
+  id: 'lesson-db-018',
+  track: 'db',
+  order: 18,
+  title: 'Redis bên trong: RAM, single thread, kiểu dữ liệu, TTL, persistence',
+  level: 'senior',
+  minutes: 40,
+  goals: [
+    'Giải thích Redis là gì và vì sao lưu trong RAM lại nhanh',
+    'Hiểu mô hình single-threaded event loop và tại sao một lệnh chậm làm treo tất cả',
+    'Phân biệt các kiểu dữ liệu cốt lõi và biết dùng cho bài toán nào',
+    'Nắm TTL, eviction policy và các chế độ persistence (RDB, AOF)'
+  ],
+  body: `**Tóm tắt:** Redis (Remote Dictionary Server) là một kho dữ liệu in-memory (trong bộ nhớ RAM) cấu trúc theo key-value, hỗ trợ nhiều kiểu dữ liệu phong phú. Nó đạt độ trễ cực thấp (sub-millisecond) nhờ đọc/ghi thẳng RAM và mô hình **single-threaded event loop** xử lý lệnh lần lượt, tránh chi phí khóa và context switch. Đổi lại, một lệnh chậm (như KEYS *, hoặc Lua script chạy lâu) sẽ chặn toàn bộ server.
+ 
+### Redis là gì và vì sao RAM nhanh
+ **Redis** là một server key-value chạy hoàn toàn trong RAM. RAM (Random Access Memory - bộ nhớ truy cập ngẫu nhiên) cho phép đọc/ghi bất kỳ địa chỉ nào trong thời gian hằng số (~100 ns), không cần chuyển động cơ học như ổ cứng (HDD) hay thậm chí SSD (có độ trễ ~50–100 µs). Với cùng một thao tác GET, Redis trong RAM mất ~0.3–1 ms (kể cả network round-trip trong cùng datacenter), trong khi PostgreSQL đọc từ đĩa (dù đã cache trong shared_buffers) thường 1–3 ms, join phức tạp 20–100 ms.
+ 
+ Ví dụ đời thường: RAM giống như bạn nhớ số điện thoại ngay lập tức (trong đầu), còn ổ cứng giống như tra điền trong sổ điện thoại trên kệ (phải đứng dậy, lật trang).
+ 
+### Single-threaded event loop: một luồng xử lý lần lượt
+ Redis dùng **một luồng chính (main thread)** để:
+ 1. Nhận kết nối từ client (accept)
+ 2. Đọc lệnh (parse RESP protocol)
+ 3. Thực thi lệnh (thao tác trên dictionary/hash table nội bộ)
+ 4. Ghi phản hồi về client
+ 
+ Mọi lệnh được xếp hàng trong **command queue** và thực thi tuần tự. Không có khóa (lock), không có race condition giữa các lệnh, code đơn giản và dễ bảo trì.
+ 
+ ~~~seq
+ title: Redis event loop xử lý 3 client
+ actors: Client A | Redis | Client B | Client C
+ Client A -> Redis: SET key1 value1
+ Redis -> Redis: thực thi SET
+ Redis --> Client A: OK
+ Client B -> Redis: GET key1
+ Redis -> Redis: thực thi GET
+ Redis --> Client B: value1
+ Client C -> Redis: INCR counter
+ Redis -> Redis: thực thi INCR
+ Redis --> Client C: 1
+ ~~~
+ 
+**Tại sao một lệnh chậm làm treo tất cả?** Vì chỉ có một luồng. Nếu Client A gửi {{KEYS *}} (quét toàn bộ keyspace, O(N)) trên 10 triệu key, lệnh đó chạy vài giây. Trong lúc đó, Client B muốn {{GET key1}} (O(1)) phải chờ cho {{KEYS *}} xong. Client C muốn {{INCR}} cũng chờ. Toàn bộ throughput sụt xuống 0.
+
+Cách tránh: không bao giờ dùng {{KEYS *}} trên production (dùng {{SCAN}} cursor-based), không chạy Lua script lâu, tách cluster nếu workload quá nặng.
+ 
+### Các kiểu dữ liệu cốt lõi và bài toán phù hợp
+ 
+ | Kiểu | Cấu trúc bên trong | Dùng cho bài toán gì | Lệnh điển hình |
+ |---|---|---|---|
+ | **String** | Simple Dynamic String (SDS), binary-safe | Cache giá trị đơn, counter (INCR), rate limiter, session token | SET, GET, INCR, DECR, GETSET |
+ | **Hash** | Hash table (field -> value) | Object/entity (user:100 -> {name, email, balance}), giảm key count so với flatten | HSET, HGET, HGETALL, HMGET |
+ | **List** | Doubly linked list (quicklist) | Queue (LPUSH/RPOP), stack, recent items feed, capped log | LPUSH, RPUSH, LPOP, RPOP, LRANGE |
+ | **Set** | Hash table (chỉ key, không value) | Tagging, unique visitors, intersection/union (SINTER/SUNION) | SADD, SREM, SISMEMBER, SINTER |
+ | **Sorted Set (ZSet)** | Skip list + hash table (score -> member) | **Leaderboard** (xếp hạng), delay queue (score = timestamp), rate limiter trượt | ZADD, ZRANGE, ZRANK, ZSCORE, ZREVRANGE |
+ 
+ **Ví dụ leaderboard với Sorted Set:**
+ 
+ ~~~text
+ ZADD game:rank 1250 "player:A"
+ ZADD game:rank 980  "player:B"
+ ZADD game:rank 2100 "player:C"
+ ZREVRANGE game:rank 0 9 WITHSCORES  -> top 10 cao nhất
+ ZRANK game:rank "player:B"         -> thứ hạng (0-based)
+ ZSCORE game:rank "player:A"        -> điểm số
+ ~~~
+ 
+ Skip list cho phép insert/delete/search O(log N) và duyệt theo thứ tự score nhanh, phù hợp cho xếp hạng thời gian thực.
+ 
+### TTL (Time To Live) và Eviction
+**TTL** gắn hạn sử dụng cho key: {{SET key value EX 300}} (hết hạn sau 300 giây). Redis lưu {{expireAt}} (timestamp Unix milliseconds) cho mỗi key.
+
+- **Lazy expiration**: khi client truy cập key, Redis kiểm tra {{now >= expireAt}} thì xoá và trả nil.
+- **Active expiration**: mỗi chu kỳ (mặc định 10 chu kỳ/giây) lấy mẫu ngẫu nhiên 20 key có TTL, xoá key hết hạn; nếu >25% mẫu hết hạn, lặp lại ngay trong chu kỳ đó (adaptive).
+
+Khi bộ nhớ chạm {{maxmemory}}, **eviction policy** quyết định key nào bị đuổi:
+
+| Policy | Mô tả | Phù hợp |
+|---|---|---|
+| {{noeviction}} | Mặc định, trả lỗi khi đầy | Không được phép mất dữ liệu |
+| {{allkeys-lru}} | Đuổi key lâu không dùng nhất (LRU xấp xỉ) | Cache thuần túy |
+| {{volatile-lru}} | Chỉ đuổi key **có TTL** theo LRU | Vừa cache vừa dữ liệu bền |
+| {{allkeys-lfu}} | Đuổi key ít dùng nhất theo tần suất | Hot key ổn định |
+| {{volatile-ttl}} | Đuổi key sắp hết hạn nhất | TTL là ưu tiên |
+
+> Redis LRU/LFU là **xấp xỉ** (approximated): lấy mẫu {{maxmemory-samples}} key (mặc định 5), đuổi key cũ/ít dùng nhất trong mẫu. Mẫu càng lớn càng chính xác nhưng tốn CPU.
+
+### Persistence: RDB và AOF
+Redis là in-memory, mất điện = mất dữ liệu. Hai cơ chế bền:
+
+1. **RDB (Redis Database)** - snapshot tại một thời điểm:
+   - {{SAVE}} (blocking) hoặc {{BGSAVE}} (fork process con, copy-on-write)
+   - File {{.rdb}} nén, khôi phục nhanh
+   - Mất dữ liệu từ snapshot cuối cùng đến lúc crash
+
+2. **AOF (Append-Only File)** - ghi nối đuôi mọi lệnh ghi:
+   - {{appendfsync always}} (mỗi lệnh fsync, an toàn nhất, chậm)
+   - {{appendfsync everysec}} (mặc định, fsync mỗi giây, cân bằng)
+   - {{appendfsync no}} (để OS quyết định, nhanh nhất, rủi ro mất ~30s)
+   - Rewrite định kỳ nén file (loại bỏ lệnh ghi đè nhau)
+
+**Kết hợp RDB + AOF** (khuyên dùng production): RDB cho backup/khôi phục nhanh, AOF cho độ bền giữa các snapshot.
+
+### Cơ chế từng bước: một lệnh SET đi qua đâu
+1. Client gửi {{SET mykey myvalue EX 60}} qua TCP (RESP protocol).
+2. Redis main thread đọc từ socket buffer, parse lệnh.
+3. Tra dictionary (hash table) tìm {{mykey}}: O(1) trung bình.
+4. Tạo/cập nhật entry: lưu SDS value, gán {{expireAt = now + 60000}}.
+5. Nếu bật AOF: append lệnh vào AOF buffer.
+6. Ghi phản hồi {{+OK\r\n}} vào socket write buffer.
+7. Event loop quay lại bước 1 cho client tiếp theo.
+
+Vì sao lại như vậy? Dictionary (hash table) cho O(1) truy cập; single thread loại bỏ lock contention; SDS tránh buffer overflow và cho phép binary data; event loop tận dụng CPU cache tốt.
+ 
+ ~~~java
+ // Mô phỏng đơn giản: dictionary + expire map + single thread loop
+ class MiniRedis {
+     private final Map<String, String> data = new HashMap<>();
+     private final Map<String, Long> expires = new HashMap<>();
+     private final Clock clock;
+ 
+     MiniRedis(Clock clock) { this.clock = clock; }
+ 
+     String set(String key, String value, long ttlMs) {
+         data.put(key, value);
+         if (ttlMs > 0) expires.put(key, clock.millis() + ttlMs);
+         else expires.remove(key);
+         return "OK";
+     }
+ 
+     String get(String key) {
+         if (isExpired(key)) { data.remove(key); expires.remove(key); return null; }
+         return data.get(key);
+     }
+ 
+     boolean isExpired(String key) {
+         Long exp = expires.get(key);
+         return exp != null && clock.millis() >= exp;
+     }
+ }
+ ~~~
+ 
+### Tự thử trên máy
+ Chạy Redis container và test cơ bản:
+ 
+ ~~~bash
+ docker run -d --name redis-demo -p 6379:6379 redis:7-alpine
+ redis-cli -h localhost -p 6379
+ ~~~
+ 
+Trong {{redis-cli}}:
+
+~~~text
+127.0.0.1:6379> SET user:1 "{\"name\":\"An\",\"balance\":1000}" EX 60
+OK
+127.0.0.1:6379> GET user:1
+"{\"name\":\"An\",\"balance\":1000}"
+127.0.0.1:6379> HSET user:2 name "Binh" email "binh@x.com" balance 500
+(integer) 3
+127.0.0.1:6379> HGETALL user:2
+1) "name" 2) "Binh" 3) "email" 4) "binh@x.com" 5) "balance" 6) "500"
+127.0.0.1:6379> ZADD leaderboard 1250 "player:A" 2100 "player:C" 980 "player:B"
+(integer) 3
+127.0.0.1:6379> ZREVRANGE leaderboard 0 2 WITHSCORES
+1) "player:C" 2) "2100" 3) "player:A" 4) "1250" 5) "player:B" 6) "980"
+127.0.0.1:6379> INCR api:counter
+(integer) 1
+127.0.0.1:6379> TTL user:1
+(integer) 55
+~~~
+
+Kết quả mong đợi: các lệnh trên đều trả về như minh hoạ, TTL giảm dần theo thời gian thực.
+
+### Lỗi hay gặp trên production
+1. **Dùng {{KEYS *}} trên production**. Triệu chứng: Redis CPU 100%, mọi request khác timeout. Nguyên nhân: {{KEYS}} quét toàn bộ keyspace O(N), chặn event loop. Sửa: dùng {{SCAN cursor MATCH pattern COUNT 100}} lặp qua cursor.
+2. **Lua script chạy lâu / khối lượng lớn**. Triệu chứng: tương tự {{KEYS}}, event loop bị chiếm. Nguyên nhân: Lua chạy atomically trong main thread. Sửa: viết script ngắn, tránh vòng lặp lớn; chia công việc thành nhiều script nhỏ thay vì một script nặng.
+3. **Không đặt {{maxmemory}} và {{maxmemory-policy}}**. Triệu chứng: Redis chiếm hết RAM máy chủ, OOM killer hạ process. Nguyên nhân: mặc định {{noeviction}}, viết thất bại khi đầy. Sửa: đặt {{maxmemory 2gb}} và {{maxmemory-policy allkeys-lru}} cho cache.
+4. **Lưu object lớn (JSON 100KB+) dưới một key String**. Triệu chứng: memory tăng vọt, network latency cao, replication lag. Sửa: tách thành Hash (mỗi field một cột) hoặc nén (LZ4/Snappy) trước khi SET.
+5. **Quên TTL cho cache key**. Triệu chứng: key cache cũ không bao giờ bị xoá, memory tăng liên tục. Sửa: luôn {{EX}}/{{PX}} khi SET cache; dùng {{EXPIRE}} cho key đã có.
+ 
+### Tóm lại 3 ý
+ 1. Redis nhanh nhờ **RAM + single-threaded event loop + O(1) hash table**; một lệnh chậm chặn toàn bộ server.
+ 2. **Kiểu dữ liệu** quyết định bài toán: String cho counter/cache đơn, Hash cho object, Sorted Set cho leaderboard, List cho queue, Set cho unique/tag.
+ 3. **TTL + eviction policy + persistence (RDB+AOF)** là ba chân vịt bảo vệ bộ nhớ và dữ liệu; thiếu một trong ba là rủi ro production.
+ 
+### Liên hệ phỏng vấn
+- **"Redis nhanh ở đâu? Vì sao single-threaded lại nhanh?"** → RAM truy cập hằng số, không lock, event loop tận dụng CPU cache, O(1) hash table. Đa luồng thêm chi phí context switch và lock contention.
+- **"Một lệnh chậm ảnh hưởng thế nào?"** → Chặn event loop, mọi client khác (kể cả {{GET}} O(1)) phải chờ. Không bao giờ {{KEYS *}}, dùng {{SCAN}}; giới hạn Lua script.
+- **"Khi nào dùng Sorted Set thay vì List cho leaderboard?"** → Cần xếp hạng theo điểm (score), cập nhật điểm thường xuyên, lấy top N hay rank của một player. List chỉ phù hợp queue/log theo thời gian.
+- **"TTL hoạt động ra sao? Lazy vs active expiration?"** → Mỗi key lưu {{expireAt}}. Lazy: đọc key thì kiểm tra. Active: sample ngẫu nhiên key có TTL, xoá hết hạn; >25% hết hạn thì lặp lại.
+- **"RDB và AOF khác gì, dùng cái nào?"** → RDB: snapshot định kỳ, khôi phục nhanh, mất dữ liệu từ snapshot cuối. AOF: ghi nối đuôi lệnh, {{everysec}} cân bằng. Production nên bật cả hai.
+- **"Vì sao Redis LRU là approximated?"** → Không duyệt toàn bộ key (chậm). Lấy mẫu {{maxmemory-samples}} key (mặc định 5), đuổi key cũ nhất trong mẫu. Trade-off CPU vs độ chính xác.
+ `,
+  exercises: [
+    {
+      title: 'MiniRedisCore: dictionary, TTL (fake clock), INCR atomic',
+      prompt: `Cài {{MiniRedisCore}} — một key-value store đơn luồng mô phỏng cốt lõi Redis: dictionary (HashMap), TTL kiểm tra bằng **đồng hồ giả** {{Clock}}, và **INCR atomic** (đọc-cộng-ghi như một phép toán không thể bị ngắt).
+ 
+ API:
+ - {{MiniRedisCore(Clock clock)}}: nạp đồng hồ giả để test xác định.
+ - {{String set(String key, String value, long ttlMs)}}: lưu value, gán hết hạn {{clock.millis() + ttlMs}} nếu {{ttlMs > 0}}; {{ttlMs <= 0}} nghĩa là vĩnh viễn (xoá expire). Trả {{"OK"}}.
+ - {{String get(String key)}}: nếu key không tồn tại hoặc **đã hết hạn** ({{clock.millis() >= expireAt}}) thì xoá entry và trả {{null}}; ngược lại trả value.
+ - {{long incr(String key)}}: **atomic increment**. Nếu key không tồn tại hoặc hết hạn -> coi như 0, set thành 1, trả 1. Nếu value không parse được thành long -> ném {{NumberFormatException}}. Toàn bộ đọc-cộng-ghi phải là một bước duy nhất (không cho phép lệnh khác xen vào giữa — mô phỏng bằng việc không có lệnh khác chạy song song trong bài test đơn luồng, nhưng code phải viết gộp logic).
+ - {{long ttl(String key)}}: trả mili giây còn lại trước khi hết hạn; key không tồn tại trả -2; key vĩnh viễn trả -1; đã hết hạn (chưa bị dọn) trả -2 sau khi dọn.
+ - {{void flush()}}: xoá toàn bộ dữ liệu.
+ 
+ Không dùng thread, không sleep. Cùng input + clock sequence luôn cho cùng output.`,
+      starter: `import java.time.Clock;
+ import java.util.*;
+ 
+ class MiniRedisCore {
+     private final Map<String, String> data = new HashMap<>();
+     private final Map<String, Long> expires = new HashMap<>();
+     private final Clock clock;
+ 
+     MiniRedisCore(Clock clock) {
+         this.clock = clock;
+     }
+ 
+     String set(String key, String value, long ttlMs) {
+         throw new UnsupportedOperationException("TODO");
+     }
+ 
+     String get(String key) {
+         throw new UnsupportedOperationException("TODO");
+     }
+ 
+     long incr(String key) {
+         throw new UnsupportedOperationException("TODO");
+     }
+ 
+     long ttl(String key) {
+         throw new UnsupportedOperationException("TODO");
+     }
+ 
+     void flush() {
+         throw new UnsupportedOperationException("TODO");
+     }
+ }
+ `,
+      tests: `import java.time.*;
+ import java.util.*;
+ 
+ public class Main {
+     static int p = 0, t = 0;
+     static void c(String name, Runnable r) {
+         t++;
+         try { r.run(); p++; System.out.println("PASS " + name); }
+         catch (Throwable e) { System.out.println("FAIL " + name + ": " + e); }
+     }
+     static void eq(Object expected, Object actual) {
+         if (!Objects.equals(expected, actual)) throw new AssertionError("expected " + expected + " but got " + actual);
+     }
+ 
+     static class FixedClock extends Clock {
+         long now = 0;
+         public ZoneId getZone() { return ZoneOffset.UTC; }
+         public Clock withZone(ZoneId zone) { return this; }
+         public Instant instant() { return Instant.ofEpochMilli(now); }
+         public long millis() { return now; }
+     }
+ 
+     public static void main(String[] args) {
+         c("set/get basic with TTL", () -> {
+             FixedClock clock = new FixedClock();
+             MiniRedisCore r = new MiniRedisCore(clock);
+             eq("OK", r.set("k", "v", 1_000));
+             eq("v", r.get("k"));
+             clock.now = 999;
+             eq("v", r.get("k"));
+             clock.now = 1_000;
+             eq(null, r.get("k"));
+             eq(-2L, r.ttl("k"));
+         });
+ 
+         c("incr creates key at 1", () -> {
+             FixedClock clock = new FixedClock();
+             MiniRedisCore r = new MiniRedisCore(clock);
+             eq(1L, r.incr("counter"));
+             eq(2L, r.incr("counter"));
+             eq("2", r.get("counter"));
+         });
+ 
+         c("incr on expired key restarts at 1", () -> {
+             FixedClock clock = new FixedClock();
+             MiniRedisCore r = new MiniRedisCore(clock);
+             r.set("counter", "5", 100);
+             clock.now = 200;
+             eq(1L, r.incr("counter"));
+             eq("1", r.get("counter"));
+         });
+ 
+         c("incr non-numeric throws", () -> {
+             FixedClock clock = new FixedClock();
+             MiniRedisCore r = new MiniRedisCore(clock);
+             r.set("k", "abc", 0);
+             boolean threw = false;
+             try { r.incr("k"); } catch (NumberFormatException e) { threw = true; }
+             if (!threw) throw new AssertionError("expected NumberFormatException");
+         });
+ 
+         c("ttl returns remaining ms, -1 for no expiry, -2 for missing/expired", () -> {
+             FixedClock clock = new FixedClock();
+             MiniRedisCore r = new MiniRedisCore(clock);
+             r.set("perm", "v", 0);
+             r.set("temp", "v", 5_000);
+             eq(-1L, r.ttl("perm"));
+             clock.now = 2_000;
+             eq(3_000L, r.ttl("temp"));
+             clock.now = 6_000;
+             eq(-2L, r.ttl("temp"));
+             eq(-2L, r.ttl("missing"));
+         });
+ 
+         c("flush clears everything", () -> {
+             FixedClock clock = new FixedClock();
+             MiniRedisCore r = new MiniRedisCore(clock);
+             r.set("a", "1", 0);
+             r.incr("b");
+             r.flush();
+             eq(null, r.get("a"));
+             eq(-2L, r.ttl("b"));
+         });
+ 
+         System.out.println("RESULT " + p + "/" + t);
+     }
+ }
+ `,
+      reference: `import java.time.Clock;
+ import java.util.*;
+ 
+ class MiniRedisCore {
+     private final Map<String, String> data = new HashMap<>();
+     private final Map<String, Long> expires = new HashMap<>();
+     private final Clock clock;
+ 
+     MiniRedisCore(Clock clock) {
+         this.clock = clock;
+     }
+ 
+     String set(String key, String value, long ttlMs) {
+         data.put(key, value);
+         if (ttlMs > 0) expires.put(key, clock.millis() + ttlMs);
+         else expires.remove(key);
+         return "OK";
+     }
+ 
+     String get(String key) {
+         if (isExpired(key)) {
+             data.remove(key);
+             expires.remove(key);
+             return null;
+         }
+         return data.get(key);
+     }
+ 
+     long incr(String key) {
+         // Atomic: read-increment-write as one logical step
+         long now = clock.millis();
+         Long exp = expires.get(key);
+         if (exp != null && now >= exp) {
+             // expired: treat as missing
+             data.remove(key);
+             expires.remove(key);
+         }
+         String cur = data.get(key);
+         long val = (cur == null) ? 0 : Long.parseLong(cur);
+         val++;
+         data.put(key, String.valueOf(val));
+         return val;
+     }
+ 
+     long ttl(String key) {
+         Long exp = expires.get(key);
+         if (exp == null) {
+             // no expiry set, but key might not exist
+             return data.containsKey(key) ? -1L : -2L;
+         }
+         long now = clock.millis();
+         if (now >= exp) {
+             // expired but not yet cleaned by get/incr
+             data.remove(key);
+             expires.remove(key);
+             return -2L;
+         }
+         return exp - now;
+     }
+ 
+     void flush() {
+         data.clear();
+         expires.clear();
+     }
+ 
+     private boolean isExpired(String key) {
+         Long exp = expires.get(key);
+         if (exp == null) return false;
+         if (clock.millis() >= exp) {
+             // will be cleaned by caller
+             return true;
+         }
+         return false;
+     }
+ }
+ `,
+      hints: [
+        'Dùng hai HashMap: data lưu value, expires lưu expireAt (ms từ epoch). Clock giả giúp test TTL xác định từng ms.',
+        'get/incr/ttl đều phải kiểm tra hết hạn (now >= expireAt) và dọn entry nếu đã hết hạn (lazy expiration).',
+        'incr: parseLong value hiện tại (0 nếu missing/expired), cộng 1, lưu lại chuỗi, trả về long mới. Toàn bộ trong một method -> atomic ở mức đơn luồng.',
+        'ttl: key không tồn tại -2; vĩnh viễn (expires không có key) -1; còn lại exp - now.'
+      ],
+      explain: `MiniRedisCore gói gọn ba ý cốt lõi của Redis: (1) **Dictionary O(1)** bằng HashMap; (2) **TTL lazy expiration** — chỉ kiểm tra khi truy cập, dùng Clock giả để test xác định; (3) **INCR atomic** — đọc, cộng, ghi trong một bước logic, không cho phép lệnh khác xen vào (đơn luồng đảm bảo điều này tự nhiên).
+ 
+ Đơn giản hoá so với Redis thật: không có RESP protocol, không có replication, không có AOF/RDB, không có eviction, không có Sorted Set/Hash/List/Set type system (chỉ String), không có client connection handling. Redis thật dùng SDS (Simple Dynamic String) để tránh realloc, dictionary dùng dict.c (hash table rehash dần), event loop dùng epoll/kqueue, INCR dùng long long và check overflow.
+ 
+ Lỗi hay gặp khi tự viết:
+ - Quên dọn entry hết hạn trong get/incr/ttl -> key "ma" vẫn trả value hoặc cản trở incr.
+ - TTL trả giá trị âm sai (ví dụ key vĩnh viễn trả 0 thay vì -1).
+ - incr không parse long mà cộng chuỗi -> "5" + 1 = "51".
+ - Clock dùng System.currentTimeMillis() -> test flaky, không xác định.`
+    }
+  ],
+  check: [
+    {
+      q: 'Tại sao Redis đơn luồng vẫn đạt throughput cao?',
+      options: [
+        'Vì nó dùng nhiều CPU core ngầm',
+        'Vì không có lock contention, context switch, và O(1) hash table tận dụng CPU cache tốt',
+        'Vì nó viết bằng C nên nhanh hơn Java',
+        'Vì nó không bền dữ liệu'
+      ],
+      answer: 1,
+      explain: 'Single thread loại bỏ chi phí khóa và chuyển ngữ cảnh; event loop + hash table O(1) + RAM = độ trễ sub-ms. Đa luồng thêm overhead chứ không nhất thiết nhanh hơn cho workload in-memory đơn giản.'
+    },
+    {
+      q: 'Lệnh {{KEYS *}} trên 10 triệu key gây ra hiện tượng gì?',
+      options: [
+        'Chỉ chậm client gửi lệnh đó, client khác không ảnh hưởng',
+        'Chặn event loop, toàn bộ server bị treo vài giây, mọi client khác timeout',
+        'Tự động chuyển sang SCAN',
+        'Chỉ làm chậm replication'
+      ],
+      answer: 1,
+      explain: 'Redis chỉ có một main thread. KEYS * quét O(N) keyspace, chiếm thread vài giây -> mọi lệnh khác (GET, INCR...) phải xếp hàng chờ.'
+    },
+    {
+      q: 'Khi nào nên dùng Sorted Set (ZSET) thay vì List cho bảng xếp hạng?',
+      options: [
+        'Khi cần đẩy/pop nhanh ở hai đầu',
+        'Khi cần xếp hạng theo điểm (score), cập nhật điểm thường xuyên, lấy top N / rank của một member',
+        'Khi dữ liệu chỉ thêm, không bao giờ sửa',
+        'Khi cần duy nhất hóa phần tử'
+      ],
+      answer: 1,
+      explain: 'ZSET dùng skip list + hash table: ZADD/ZINCRBY O(log N), ZRANGE/ZREVRANGE top N, ZRANK rank của member. List chỉ phù hợp queue/log theo thứ tự thời gian.'
+    },
+    {
+      q: 'Redis TTL lazy expiration hoạt động ra sao?',
+      options: [
+        'Một thread nền quét toàn bộ key mỗi giây và xoá hết hạn',
+        'Chỉ khi client truy cập key (GET/INCR/TTL...), Redis mới so sánh now với expireAt và xoá nếu đã hết hạn',
+        'Key hết hạn tự biến mất ngay lập tức tại expireAt',
+        'Chỉ kiểm tra khi SAVE/BGSAVE'
+      ],
+      answer: 1,
+      explain: 'Lazy expiration: không tốn CPU quét liên tục; chỉ dọn khi có ai đọc key. Active expiration bổ sung bằng cách sample ngẫu nhiên key có TTL để dọn key không ai đọc.'
+    }
+  ],
+  related: ['db-016', 'db-017', 'concurrency-030'],
+  tags: ['Redis', 'in-memory', 'single-threaded', 'TTL', 'eviction', 'persistence', 'Sorted Set']
+},
+{
+  id: 'lesson-db-019',
+  track: 'db',
+  order: 19,
+  title: 'Xây mini key-value store: BlockingQueue lệnh, TTL, INCR atomic, test xác định',
+  level: 'senior',
+  minutes: 45,
+  goals: [
+    'Hiểu kiến trúc single-threaded command processor qua BlockingQueue',
+    'Cài TTL với Clock giả và lazy expiration',
+    'Cài INCR atomic (compare-and-set logic) trong đơn luồng',
+    'Viết test xác định (deterministic) không phụ thuộc thread timing'
+  ],
+body: `**Tóm tắt:** Bài học này dẫn dắt bạn xây một **mini key-value store** mô phỏng Redis cốt lõi: một luồng worker duy nhất lấy lệnh từ {{BlockingQueue}}, thực thi lần lượt (SET, GET, INCR, TTL, FLUSH), và trả kết quả cho client qua {{CompletableFuture}}. Kiến trúc này chính là mẫu **actor / single-threaded event loop** — nền tảng của Redis, Netty, Disruptor, và nhiều hệ thống cao tải.
+
+### Vì sao single-threaded + queue?
+Đa luồng truy cập shared state (HashMap) cần khóa (lock) hoặc {{ConcurrentHashMap}} — vẫn có cache line bouncing, false sharing, và độ trễ không xác định. **Một luồng duy nhất** sở hữu state, không bao giờ cần khóa, code đơn giản, dễ suy luận, và throughput cao nhờ locality.
+
+Client gửi lệnh (Command object) vào {{BlockingQueue}}. Worker thread vòng lặp {{take()}}, thực thi, {{complete()}} future. Client {{join()}} đợi kết quả.
+ 
+ ~~~seq
+ title: Client -> Queue -> Worker -> Response
+ actors: Client A | BlockingQueue | Worker | Client B
+ Client A -> BlockingQueue: put(SET k v)
+ Client B -> BlockingQueue: put(GET k)
+ Worker -> BlockingQueue: take() -> SET k v
+ Worker -> Worker: exec SET, complete future A
+ Worker -> BlockingQueue: take() -> GET k
+ Worker -> Worker: exec GET, complete future B
+ ~~~
+ 
+### Command pattern và CompletableFuture
+Mỗi lệnh là một {{record}} (Java 16+) hoặc class immutable:
+ 
+ ~~~java
+ sealed interface Command permits SetCmd, GetCmd, IncrCmd, TtlCmd, FlushCmd { }
+ record SetCmd(String key, String value, long ttlMs, CompletableFuture<String> result) implements Command { }
+ record GetCmd(String key, CompletableFuture<String> result) implements Command { }
+ record IncrCmd(String key, CompletableFuture<Long> result) implements Command { }
+ record TtlCmd(String key, CompletableFuture<Long> result) implements Command { }
+ record FlushCmd(CompletableFuture<Void> result) implements Command { }
+ ~~~
+ 
+ Worker loop:
+ 
+ ~~~java
+ void run() {
+     while (!Thread.currentThread().isInterrupted()) {
+         try {
+             Command cmd = queue.take();
+             switch (cmd) {
+                 case SetCmd c -> c.result.complete(doSet(c.key, c.value, c.ttlMs));
+                 case GetCmd c -> c.result.complete(doGet(c.key));
+                 case IncrCmd c -> c.result.complete(doIncr(c.key));
+                 case TtlCmd c -> c.result.complete(doTtl(c.key));
+                 case FlushCmd c -> { doFlush(); c.result.complete(null); }
+             }
+         } catch (InterruptedException e) {
+             Thread.currentThread().interrupt(); break;
+         } catch (Throwable e) {
+             // completeExceptionally cho future tương ứng nếu cần
+         }
+     }
+ }
+ ~~~
+ 
+### TTL với Clock giả (fake clock)
+Để test xác định, **không bao giờ dùng {{System.currentTimeMillis()}}** trong logic. Thay vào đó, inject {{java.time.Clock}}:
+
+~~~java
+interface TimeSource { long millis(); }
+// Production: () -> System.currentTimeMillis()
+// Test: new TimeSource() { long now=0; public long millis(){return now;} }
+~~~
+
+Mỗi entry lưu {{expireAt}} (ms). {{GET}}/{{INCR}}/{{TTL}} kiểm tra {{clock.millis() >= expireAt}} -> coi như hết hạn, lazy delete.
+
+### INCR atomic trong đơn luồng
+Vì chỉ có một worker thread, **toàn bộ method {{doIncr}} chạy không bị ngắt quãng** (no preemption giữa các lệnh Java bytecode trong một thread trừ khi freiwillig yield). Do đó logic đọc-parse-cộng-ghi-lưu là **atomic** theo mặc định — không cần {{synchronized}}, không cần {{AtomicLong}}, không cần CAS.
+ 
+ ~~~java
+ long doIncr(String key) {
+     if (isExpired(key)) { data.remove(key); expires.remove(key); }
+     String cur = data.get(key);
+     long val = (cur == null) ? 0 : Long.parseLong(cur);
+     val++;
+     data.put(key, String.valueOf(val));
+     return val;
+ }
+ ~~~
+ 
+Nếu chuyển sang đa luồng, cần {{ConcurrentHashMap.compute(key, (k, v) -> ...)}} hoặc {{LongAdder}} cho counter riêng, nhưng đơn luồng thì logic tuần tự đã đủ an toàn.
+
+### Test xác định (deterministic)
+Test **không dùng {{Thread.sleep}}**, **không dùng real clock**, **không spawn thread worker thật** (hoặc spawn nhưng điều khiển bằng {{CountDownLatch}}/{{CompletableFuture}} để thứ tự thực thi cố định). Thay vào đó:
+
+1. Khởi tạo {{FixedClock}} (clock giả).
+2. Khởi tạo store + worker (có thể chạy inline trong test thread cho đơn giản).
+3. Gửi lệnh, {{join()}} future, kiểm tra kết quả.
+4. Tiến {{clock.now}} theo ý muốn, gửi lệnh tiếp, kiểm tra TTL/expiration.
+
+Cùng input + clock sequence -> cùng output. Không flaky.
+
+### Cơ chế từng bước: từ client đến worker
+1. Client tạo {{CompletableFuture}} và {{Command}} object, {{queue.put(cmd)}}.
+2. Worker {{queue.take()}} (block cho đến khi có lệnh).
+3. Worker {{switch}} trên loại lệnh, gọi handler.
+4. Handler đọc/ghi {{data}} + {{expires}} map, dùng {{clock.millis()}}.
+5. Handler {{future.complete(value)}} hoặc {{completeExceptionally(err)}}.
+6. Client {{future.join()}} nhận kết quả.
+
+Toàn bộ không có {{synchronized}}, không có {{Lock}}, không có {{volatile}} (trừ {{queue}} internal). Độ trễ = queue wait + handler time.
+ 
+ ~~~java
+ // Mini store hoàn chỉnh cho bài tập
+ class MiniKVStore {
+     private final BlockingQueue<Command> queue = new LinkedBlockingQueue<>();
+     private final Map<String, String> data = new HashMap<>();
+     private final Map<String, Long> expires = new HashMap<>();
+     private final Clock clock;
+     private final Thread worker;
+ 
+     MiniKVStore(Clock clock) {
+         this.clock = clock;
+         this.worker = new Thread(this::loop, "kv-worker");
+         this.worker.start();
+     }
+ 
+     private void loop() {
+         while (!Thread.interrupted()) {
+             try {
+                 Command cmd = queue.take();
+                 exec(cmd);
+             } catch (InterruptedException e) { Thread.currentThread().interrupt(); break; }
+         }
+     }
+ 
+     private void exec(Command cmd) {
+         if (cmd instanceof SetCmd c) c.result.complete(doSet(c.key, c.value, c.ttlMs));
+         else if (cmd instanceof GetCmd c) c.result.complete(doGet(c.key));
+         else if (cmd instanceof IncrCmd c) c.result.complete(doIncr(c.key));
+         else if (cmd instanceof TtlCmd c) c.result.complete(doTtl(c.key));
+         else if (cmd instanceof FlushCmd c) { doFlush(); c.result.complete(null); }
+     }
+ 
+     String doSet(String key, String value, long ttlMs) {
+         data.put(key, value);
+         if (ttlMs > 0) expires.put(key, clock.millis() + ttlMs);
+         else expires.remove(key);
+         return "OK";
+     }
+ 
+     String doGet(String key) {
+         if (isExpired(key)) { data.remove(key); expires.remove(key); return null; }
+         return data.get(key);
+     }
+ 
+     long doIncr(String key) {
+         if (isExpired(key)) { data.remove(key); expires.remove(key); }
+         String cur = data.get(key);
+         long val = (cur == null) ? 0 : Long.parseLong(cur);
+         val++;
+         data.put(key, String.valueOf(val));
+         return val;
+     }
+ 
+     long doTtl(String key) {
+         Long exp = expires.get(key);
+         if (exp == null) return data.containsKey(key) ? -1L : -2L;
+         long now = clock.millis();
+         if (now >= exp) { data.remove(key); expires.remove(key); return -2L; }
+         return exp - now;
+     }
+ 
+     void doFlush() { data.clear(); expires.clear(); }
+ 
+     boolean isExpired(String key) {
+         Long exp = expires.get(key);
+         return exp != null && clock.millis() >= exp;
+     }
+ 
+     void shutdown() { worker.interrupt(); }
+ 
+     // Client API
+     CompletableFuture<String> set(String key, String value, long ttlMs) {
+         var f = new CompletableFuture<String>();
+         queue.add(new SetCmd(key, value, ttlMs, f));
+         return f;
+     }
+     CompletableFuture<String> get(String key) {
+         var f = new CompletableFuture<String>();
+         queue.add(new GetCmd(key, f));
+         return f;
+     }
+     CompletableFuture<Long> incr(String key) {
+         var f = new CompletableFuture<Long>();
+         queue.add(new IncrCmd(key, f));
+         return f;
+     }
+     CompletableFuture<Long> ttl(String key) {
+         var f = new CompletableFuture<Long>();
+         queue.add(new TtlCmd(key, f));
+         return f;
+     }
+     CompletableFuture<Void> flush() {
+         var f = new CompletableFuture<Void>();
+         queue.add(new FlushCmd(f));
+         return f;
+     }
+ }
+ ~~~
+ 
+### Tự thử trên máy
+ Chạy test unit (không cần Docker) để thấy single-threaded queue xử lý lệnh lần lượt:
+ 
+ ~~~bash
+ # Biên dịch và chạy test (giả sử file MiniKVStoreTest.java đã có)
+ javac MiniKVStoreTest.java
+ java MiniKVStoreTest
+ ~~~
+ 
+ Kết quả mong đợi:
+ 
+ ~~~text
+ PASS set/get basic with TTL
+ PASS incr creates key at 1
+ PASS incr on expired key restarts at 1
+ PASS incr non-numeric throws NumberFormatException
+ PASS ttl returns -1 for no expiry, -2 for missing/expired, remaining ms for valid
+ PASS flush clears everything
+ PASS concurrent clients serialized by queue
+ PASS expired key lazy deleted on next access
+ RESULT 8/8
+ ~~~
+ 
+### Lỗi hay gặp
+1. **Dùng {{System.currentTimeMillis()}} trong logic** -> test không xác định, flaky trên CI chậm. Luôn inject {{Clock}} hoặc {{TimeSource}}.
+2. **Worker thread không handle {{InterruptedException}} đúng** -> {{interrupt()}} không dừng được, test treo ở {{shutdown()}}. Phải {{Thread.currentThread().interrupt(); break;}}.
+3. **Quên {{completeExceptionally}} khi handler ném lỗi** -> client {{join()}} treo mãi. Luôn try-catch trong {{exec()}} và {{completeExceptionally}}.
+4. **INCR parse Long không xử lý null/expired** -> NPE hoặc {{NumberFormatException}} sai chỗ. Check expired trước, missing thì coi như 0.
+5. **Test spawn worker thật nhưng không chờ worker kịp xử lý** -> race condition test. Dùng {{CompletableFuture.join()}} để đồng bộ, hoặc chạy worker inline trong test thread (đơn giản hơn).
+6. **{{BlockingQueue}} {{add}} vs {{put}}**: {{add}} ném exception khi đầy (unbounded {{LinkedBlockingQueue}} không bao giờ đầy), {{put}} block. Với unbounded queue, {{add}} an toàn và không block client.
+ 
+### Tóm lại 3 ý
+ 1. **Single-threaded worker + BlockingQueue** = actor model: state bị đóng gói, không lock, throughput cao, code dễ đúng.
+ 2. **Clock giả (fake clock)** là chìa khóa test TTL/expiration xác định; không bao giờ dùng real clock trong logic.
+ 3. **INCR atomic** nhờ đơn luồng: đọc-parse-cộng-ghi trong một method không bị ngắt; đa luồng mới cần CAS/ConcurrentHashMap.compute.
+ 
+### Liên hệ phỏng vấn
+- **"Tại sao Redis dùng single thread mà không dùng multi-thread?"** → Tránh lock contention, context switch, cache line bouncing; event loop + O(1) hash table đủ nhanh cho in-memory. Multi-thread thêm phức tạp và overhead cho workload này.
+- **"BlockingQueue trong kiến trúc actor/event loop đóng vai trò gì?"** → Hàng đợi lệnh (command queue), tách producer (client) và consumer (worker), bảo chứng tuần tự hóa, backpressure tự nhiên khi queue đầy (nếu bounded).
+- **"Làm sao test TTL xác định không flaky?"** → Inject {{Clock}}/{{TimeSource}} interface; test dùng {{FixedClock}} tiến thời gian thủ công ({{clock.now += 1000}}).
+- **"INCR trong Redis atomic như thế nào? Đơn luồng có đủ không?"** → Đơn luồng: một lệnh chạy hết mới đến lệnh sau, nên đọc-cộng-ghi không bị ngắt. Đa luồng (ví dụ client library pipeline) thì Redis dùng Lua script hoặc command atomic để đảm bảo.
+- **"Worker thread bị exception thì sao? Client treo không?"** → Phải {{try-catch}} trong loop {{exec()}}, {{future.completeExceptionally(e)}} để client nhận lỗi và không treo {{join()}}.
+ `,
+exercises: [
+    {
+      title: 'MiniKVStore: BlockingQueue worker, TTL (fake clock), INCR atomic',
+      prompt: `Cài {{MiniKVStore}} — key-value store đơn luồng với worker thread lấy lệnh từ {{BlockingQueue}}, hỗ trợ SET, GET, INCR, TTL, FLUSH. Mỗi lệnh trả {{CompletableFuture}} để client chờ kết quả.
+
+Yêu cầu:
+- Constructor {{MiniKVStore(Clock clock)}}: nạp đồng hồ giả, khởi động worker thread tên {{"kv-worker"}}.
+- {{CompletableFuture<String> set(String key, String value, long ttlMs)}}: lưu value, TTL ms (>0 có hạn, <=0 vĩnh viễn). Trả future complete {{"OK"}}.
+- {{CompletableFuture<String> get(String key)}}: trả future complete value hoặc {{null}} (missing/expired). Hết hạn thì lazy delete.
+- {{CompletableFuture<Long> incr(String key)}}: **atomic increment**. Missing/expired -> coi như 0, set 1, trả 1. Value không parse long -> future complete exceptionally {{NumberFormatException}}.
+- {{CompletableFuture<Long> ttl(String key)}}: trả future complete: -2 (missing/expired), -1 (vĩnh viễn), ms còn lại (valid). Hết hạn thì lazy delete.
+- {{CompletableFuture<Void> flush()}}: xoá toàn bộ, trả future complete {{null}}.
+- {{void shutdown()}}: interrupt worker thread, chờ kết thúc (join với timeout).
+
+Command objects: dùng {{record}} (Java 16+) hoặc class immutable. Queue: {{LinkedBlockingQueue<Command>}} unbounded.
+Worker loop (code block để tránh nested braces trong inline code):
+
+~~~java
+while (!Thread.currentThread().isInterrupted()) {
+    Command c = queue.take();
+    exec(c);
+}
+~~~
+
+với try-catch {{InterruptedException}} -> interrupt lại và break; catch {{Throwable}} -> {{completeExceptionally}} future tương ứng.
+
+Không dùng {{synchronized}}, {{Lock}}, {{Atomic*}}, {{ConcurrentHashMap}} cho data/expires (worker đơn luồng sở hữu state). Chỉ {{queue}} là thread-safe.`,
+      starter: `import java.time.Clock;
+ import java.util.*;
+ import java.util.concurrent.*;
+ 
+ class MiniKVStore {
+     private final BlockingQueue<Command> queue = new LinkedBlockingQueue<>();
+     private final Map<String, String> data = new HashMap<>();
+     private final Map<String, Long> expires = new HashMap<>();
+     private final Clock clock;
+     private final Thread worker;
+ 
+     MiniKVStore(Clock clock) {
+         this.clock = clock;
+         this.worker = new Thread(this::loop, "kv-worker");
+         this.worker.start();
+     }
+ 
+     private void loop() {
+         throw new UnsupportedOperationException("TODO");
+     }
+ 
+     private void exec(Command cmd) {
+         throw new UnsupportedOperationException("TODO");
+     }
+ 
+     // Handlers
+     private String doSet(String key, String value, long ttlMs) { throw new UnsupportedOperationException("TODO"); }
+     private String doGet(String key) { throw new UnsupportedOperationException("TODO"); }
+     private long doIncr(String key) { throw new UnsupportedOperationException("TODO"); }
+     private long doTtl(String key) { throw new UnsupportedOperationException("TODO"); }
+     private void doFlush() { throw new UnsupportedOperationException("TODO"); }
+     private boolean isExpired(String key) { throw new UnsupportedOperationException("TODO"); }
+ 
+     // Client API
+     public CompletableFuture<String> set(String key, String value, long ttlMs) { throw new UnsupportedOperationException("TODO"); }
+     public CompletableFuture<String> get(String key) { throw new UnsupportedOperationException("TODO"); }
+     public CompletableFuture<Long> incr(String key) { throw new UnsupportedOperationException("TODO"); }
+     public CompletableFuture<Long> ttl(String key) { throw new UnsupportedOperationException("TODO"); }
+     public CompletableFuture<Void> flush() { throw new UnsupportedOperationException("TODO"); }
+ 
+     public void shutdown() throws InterruptedException { throw new UnsupportedOperationException("TODO"); }
+ 
+     sealed interface Command permits SetCmd, GetCmd, IncrCmd, TtlCmd, FlushCmd { }
+     record SetCmd(String key, String value, long ttlMs, CompletableFuture<String> result) implements Command { }
+     record GetCmd(String key, CompletableFuture<String> result) implements Command { }
+     record IncrCmd(String key, CompletableFuture<Long> result) implements Command { }
+     record TtlCmd(String key, CompletableFuture<Long> result) implements Command { }
+     record FlushCmd(CompletableFuture<Void> result) implements Command { }
+ }
+ `,
+      tests: `import java.time.*;
+ import java.util.*;
+ import java.util.concurrent.*;
+ 
+ public class Main {
+     static int p = 0, t = 0;
+     static void c(String name, Runnable r) {
+         t++;
+         try { r.run(); p++; System.out.println("PASS " + name); }
+         catch (Throwable e) { System.out.println("FAIL " + name + ": " + e); }
+     }
+     static void eq(Object expected, Object actual) {
+         if (!Objects.equals(expected, actual)) throw new AssertionError("expected " + expected + " but got " + actual);
+     }
+ 
+     static class FixedClock extends Clock {
+         long now = 0;
+         public ZoneId getZone() { return ZoneOffset.UTC; }
+         public Clock withZone(ZoneId zone) { return this; }
+         public Instant instant() { return Instant.ofEpochMilli(now); }
+         public long millis() { return now; }
+     }
+ 
+     public static void main(String[] args) throws Exception {
+         c("set/get basic with TTL", () -> {
+             FixedClock clock = new FixedClock();
+             try (var store = new AutoCloseableMiniKVStore(clock)) {
+                 eq("OK", store.set("k", "v", 1_000).join());
+                 eq("v", store.get("k").join());
+                 clock.now = 999;
+                 eq("v", store.get("k").join());
+                 clock.now = 1_000;
+                 eq(null, store.get("k").join());
+             }
+         });
+ 
+         c("incr creates key at 1", () -> {
+             FixedClock clock = new FixedClock();
+             try (var store = new AutoCloseableMiniKVStore(clock)) {
+                 eq(1L, store.incr("counter").join());
+                 eq(2L, store.incr("counter").join());
+                 eq("2", store.get("counter").join());
+             }
+         });
+ 
+         c("incr on expired key restarts at 1", () -> {
+             FixedClock clock = new FixedClock();
+             try (var store = new AutoCloseableMiniKVStore(clock)) {
+                 store.set("counter", "5", 100).join();
+                 clock.now = 200;
+                 eq(1L, store.incr("counter").join());
+                 eq("1", store.get("counter").join());
+             }
+         });
+ 
+         c("incr non-numeric throws NumberFormatException", () -> {
+             FixedClock clock = new FixedClock();
+             try (var store = new AutoCloseableMiniKVStore(clock)) {
+                 store.set("k", "abc", 0).join();
+                 boolean threw = false;
+                 try { store.incr("k").join(); } catch (CompletionException e) {
+                     if (e.getCause() instanceof NumberFormatException) threw = true;
+                 }
+                 if (!threw) throw new AssertionError("expected NumberFormatException");
+             }
+         });
+ 
+         c("ttl returns -1 (no expiry), -2 (missing/expired), remaining ms (valid)", () -> {
+             FixedClock clock = new FixedClock();
+             try (var store = new AutoCloseableMiniKVStore(clock)) {
+                 store.set("perm", "v", 0).join();
+                 store.set("temp", "v", 5_000).join();
+                 eq(-1L, store.ttl("perm").join());
+                 clock.now = 2_000;
+                 eq(3_000L, store.ttl("temp").join());
+                 clock.now = 6_000;
+                 eq(-2L, store.ttl("temp").join());
+                 eq(-2L, store.ttl("missing").join());
+             }
+         });
+ 
+         c("flush clears everything", () -> {
+             FixedClock clock = new FixedClock();
+             try (var store = new AutoCloseableMiniKVStore(clock)) {
+                 store.set("a", "1", 0).join();
+                 store.incr("b").join();
+                 store.flush().join();
+                 eq(null, store.get("a").join());
+                 eq(-2L, store.ttl("b").join());
+             }
+         });
+ 
+         c("concurrent clients serialized by queue", () -> {
+             FixedClock clock = new FixedClock();
+             try (var store = new AutoCloseableMiniKVStore(clock)) {
+                 ExecutorService pool = Executors.newFixedThreadPool(8);
+                 try {
+                     List<CompletableFuture<Long>> futures = new ArrayList<>();
+                     for (int i = 0; i < 50; i++) {
+                         futures.add(store.incr("shared"));
+                     }
+                     CompletableFuture.allOf(futures.toArray(new CompletableFuture[0])).join();
+                     for (var f : futures) eq(true, f.isDone());
+                     eq("50", store.get("shared").join());
+                 } finally {
+                     pool.shutdownNow();
+                 }
+             }
+         });
+ 
+         c("expired key lazy deleted on next access", () -> {
+             FixedClock clock = new FixedClock();
+             try (var store = new AutoCloseableMiniKVStore(clock)) {
+                 store.set("k", "v", 100).join();
+                 clock.now = 200;
+                 // expired but not yet accessed
+                 eq(-2L, store.ttl("k").join()); // ttl also triggers lazy delete
+                 eq(null, store.get("k").join());
+                 // second get also null
+                 eq(null, store.get("k").join());
+             }
+         });
+ 
+         System.out.println("RESULT " + p + "/" + t);
+     }
+ 
+     // Helper để try-with-resources shutdown
+     static class AutoCloseableMiniKVStore implements AutoCloseable {
+         final MiniKVStore store;
+         AutoCloseableMiniKVStore(Clock clock) { this.store = new MiniKVStore(clock); }
+         CompletableFuture<String> set(String k, String v, long ttl) { return store.set(k, v, ttl); }
+         CompletableFuture<String> get(String k) { return store.get(k); }
+         CompletableFuture<Long> incr(String k) { return store.incr(k); }
+         CompletableFuture<Long> ttl(String k) { return store.ttl(k); }
+         CompletableFuture<Void> flush() { return store.flush(); }
+         public void close() {
+            try { store.shutdown(); } catch (InterruptedException e) { Thread.currentThread().interrupt(); }
+        }
+     }
+ }
+ `,
+      reference: `import java.time.Clock;
+ import java.util.*;
+ import java.util.concurrent.*;
+ 
+ class MiniKVStore {
+     private final BlockingQueue<Command> queue = new LinkedBlockingQueue<>();
+     private final Map<String, String> data = new HashMap<>();
+     private final Map<String, Long> expires = new HashMap<>();
+     private final Clock clock;
+     private final Thread worker;
+ 
+     MiniKVStore(Clock clock) {
+         this.clock = clock;
+         this.worker = new Thread(this::loop, "kv-worker");
+         this.worker.start();
+     }
+ 
+     private void loop() {
+         while (!Thread.interrupted()) {
+             try {
+                 Command cmd = queue.take();
+                 exec(cmd);
+             } catch (InterruptedException e) {
+                 Thread.currentThread().interrupt();
+                 break;
+             }
+         }
+     }
+ 
+     private void exec(Command cmd) {
+         try {
+             if (cmd instanceof SetCmd c) c.result.complete(doSet(c.key, c.value, c.ttlMs));
+             else if (cmd instanceof GetCmd c) c.result.complete(doGet(c.key));
+             else if (cmd instanceof IncrCmd c) c.result.complete(doIncr(c.key));
+             else if (cmd instanceof TtlCmd c) c.result.complete(doTtl(c.key));
+             else if (cmd instanceof FlushCmd c) { doFlush(); c.result.complete(null); }
+         } catch (Throwable t) {
+             if (cmd instanceof SetCmd c) c.result.completeExceptionally(t);
+             else if (cmd instanceof GetCmd c) c.result.completeExceptionally(t);
+             else if (cmd instanceof IncrCmd c) c.result.completeExceptionally(t);
+             else if (cmd instanceof TtlCmd c) c.result.completeExceptionally(t);
+             else if (cmd instanceof FlushCmd c) c.result.completeExceptionally(t);
+         }
+     }
+ 
+     private String doSet(String key, String value, long ttlMs) {
+         data.put(key, value);
+         if (ttlMs > 0) expires.put(key, clock.millis() + ttlMs);
+         else expires.remove(key);
+         return "OK";
+     }
+ 
+     private String doGet(String key) {
+         if (isExpired(key)) { data.remove(key); expires.remove(key); return null; }
+         return data.get(key);
+     }
+ 
+     private long doIncr(String key) {
+         if (isExpired(key)) { data.remove(key); expires.remove(key); }
+         String cur = data.get(key);
+         long val = (cur == null) ? 0 : Long.parseLong(cur);
+         val++;
+         data.put(key, String.valueOf(val));
+         return val;
+     }
+ 
+     private long doTtl(String key) {
+         Long exp = expires.get(key);
+         if (exp == null) return data.containsKey(key) ? -1L : -2L;
+         long now = clock.millis();
+         if (now >= exp) { data.remove(key); expires.remove(key); return -2L; }
+         return exp - now;
+     }
+ 
+     private void doFlush() {
+         data.clear();
+         expires.clear();
+     }
+ 
+     private boolean isExpired(String key) {
+         Long exp = expires.get(key);
+         return exp != null && clock.millis() >= exp;
+     }
+ 
+     public CompletableFuture<String> set(String key, String value, long ttlMs) {
+         var f = new CompletableFuture<String>();
+         queue.add(new SetCmd(key, value, ttlMs, f));
+         return f;
+     }
+ 
+     public CompletableFuture<String> get(String key) {
+         var f = new CompletableFuture<String>();
+         queue.add(new GetCmd(key, f));
+         return f;
+     }
+ 
+     public CompletableFuture<Long> incr(String key) {
+         var f = new CompletableFuture<Long>();
+         queue.add(new IncrCmd(key, f));
+         return f;
+     }
+ 
+     public CompletableFuture<Long> ttl(String key) {
+         var f = new CompletableFuture<Long>();
+         queue.add(new TtlCmd(key, f));
+         return f;
+     }
+ 
+     public CompletableFuture<Void> flush() {
+         var f = new CompletableFuture<Void>();
+         queue.add(new FlushCmd(f));
+         return f;
+     }
+ 
+     public void shutdown() throws InterruptedException {
+         worker.interrupt();
+         worker.join(2000);
+     }
+ 
+     sealed interface Command permits SetCmd, GetCmd, IncrCmd, TtlCmd, FlushCmd { }
+     record SetCmd(String key, String value, long ttlMs, CompletableFuture<String> result) implements Command { }
+     record GetCmd(String key, CompletableFuture<String> result) implements Command { }
+     record IncrCmd(String key, CompletableFuture<Long> result) implements Command { }
+     record TtlCmd(String key, CompletableFuture<Long> result) implements Command { }
+     record FlushCmd(CompletableFuture<Void> result) implements Command { }
+ }
+ `,
+      hints: [
+        'Worker loop: {{queue.take()}} block cho đến khi có lệnh; {{exec}} switch trên record type và complete future. Try-catch bao quanh exec để {{completeExceptionally}} nếu handler ném lỗi.',
+        'Clock giả: test dùng {{FixedClock}} extends {{Clock}} với field {{now}} tự tăng. Logic chỉ dùng {{clock.millis()}} -> test xác định.',
+        'INCR atomic: đơn luồng đảm bảo không lệnh khác xen vào giữa đọc-parse-cộng-ghi. Check expired trước, missing = 0, parseLong, ++, put, return.',
+        'TTL: -2 missing/expired (và lazy delete), -1 vĩnh viễn (expires không có key), exp - now còn lại.',
+        'shutdown: {{worker.interrupt(); worker.join(timeout);}}; loop bắt {{InterruptedException}}, {{interrupt()}} lại, {{break}}.'
+      ],
+      explain: `MiniKVStore minh hoạ **actor model / single-threaded event loop** — kiến trúc cốt lõi của Redis, Netty, Disruptor, Akka. Worker thread sở hữu state ({{data}}, {{expires}}), không bao giờ chia sẻ -> **không cần khóa**, không race condition, code đơn giản, throughput cao nhờ CPU cache locality.
+ 
+{{BlockingQueue}} tách **producer** (client thread) và **consumer** (worker). Client {{queue.add(cmd)}} (non-blocking với unbounded queue) và {{future.join()}} đợi. Worker {{queue.take()}} block cho đến khi có việc. Thứ tự lệnh được bảo toàn (FIFO).
+
+**Fake Clock** ({{Clock}} inject) là kỹ thuật bắt buộc để test TTL/expiration xác định. Production dùng {{Clock.systemUTC()}}; test dùng {{FixedClock}} tiến thời gian thủ công.
+
+**INCR atomic** nhờ đơn luồng: toàn bộ {{doIncr}} chạy liên tục không bị preempt bởi lệnh khác (Java thread chỉ yield tại các điểm an toàn như I/O, lock, park; bytecode đơn giản không yield). Nếu chuyển sang đa luồng worker, cần {{ConcurrentHashMap.compute}} hoặc {{LongAdder}}.
+ 
+ Đơn giản hoá so với Redis thật: không RESP protocol, không replication/pubsub, không Lua scripting, không cluster, không eviction, không AOF/RDB, chỉ String type. Redis thật dùng dict.c (rehashincremental), SDS, epoll/kqueue event loop, client output buffer.
+ 
+ Lỗi hay gặp:
+ - Quên {{completeExceptionally}} trong catch -> client {{join()}} treo vô hạn.
+ - {{shutdown()}} không {{join}} -> test kết thúc trước worker dọn dẹp, resource leak.
+ - Dùng {{System.currentTimeMillis()}} -> test flaky.
+ - {{queue.put}} thay vì {{add}} (put block nếu bounded queue, add an toàn unbounded).
+ - Không lazy delete trong ttl/get/incr -> key "ma" vẫn tồn tại, sai TTL và memory leak.`
+    }
+  ],
+  check: [
+    {
+      q: 'Tại sao kiến trúc single-threaded worker + BlockingQueue không cần {{synchronized}} hay {{ConcurrentHashMap}} cho state?',
+      options: [
+        'Vì Java tự động thread-local cho HashMap',
+        'Vì chỉ worker thread duy nhất truy cập state, không có chia sẻ -> không race condition',
+        'Vì BlockingQueue đã xử lý đồng bộ hóa',
+        'Vì HashMap an toàn khi chỉ đọc'
+      ],
+      answer: 1,
+      explain: 'State (data, expires) bị sở hữu độc quyền bởi worker thread. Client chỉ giao tiếp qua queue và future. Không có truy cập đồng thời -> không cần khóa hay cấu trúc concurrent.'
+    },
+    {
+      q: 'Fake Clock (Clock inject) giúp test TTL như thế nào?',
+      options: [
+        'Tăng tốc độ test 100 lần',
+        'Cho phép test tiến thời gian thủ công (clock.now += 1000) để kiểm tra expiration xác định, không flaky',
+        'Tự động mock System.currentTimeMillis()',
+        'Giảm bộ nhớ test'
+      ],
+      answer: 1,
+      explain: 'Test kiểm soát thời gian: set key TTL 1000ms, clock.now = 999 -> còn hạn; clock.now = 1000 -> hết hạn. Không phụ thuộc wall-clock, không Thread.sleep, không flaky trên CI chậm.'
+    },
+    {
+      q: 'INCR trong đơn luồng được coi là atomic vì sao?',
+      options: [
+        'Vì dùng AtomicLong',
+        'Vì worker thread chạy doIncr liên tục không bị ngắt bởi lệnh khác (FIFO queue), đọc-parse-cộng-ghi trong một method không yield',
+        'Vì HashMap thread-safe',
+        'Vì BlockingQueue khóa toàn bộ store'
+      ],
+      answer: 1,
+      explain: 'Đơn luồng + FIFO queue đảm bảo không lệnh nào xen vào giữa các bytecode của doIncr. Atomic ở mức logic ứng dụng, không cần CAS hay synchronized.'
+    },
+    {
+      q: 'Worker thread bị exception trong handler (ví dụ parseLong fail). Cách đúng để client không treo?',
+      options: [
+        'Bỏ qua exception, để future tự complete null',
+        'Try-catch trong exec(), future.completeExceptionally(e) để client nhận lỗi qua join()',
+        'Restart worker thread ngay lập tức',
+        'Log và trả về giá trị mặc định'
+      ],
+      answer: 1,
+      explain: 'Future không complete thì client join() treo mãi. Phải completeExceptionally với cause gốc để client xử lý (retry, fallback, log).'
+    }
+  ],
+  related: ['db-018', 'db-016', 'db-017', 'concurrency-030'],
+  tags: ['key-value-store', 'BlockingQueue', 'single-threaded', 'actor-model', 'fake-clock', 'atomic', 'CompletableFuture']
+},
 );
