@@ -10199,4 +10199,302 @@ Incident database failover: 47 alert rule cùng fire, trước đây mỗi rule 
   ],
   tags: ['escalation', 'notification', 'dedup', 'rate-limit', 'incident']
 },
+{
+  id: 'scenario-167',
+  topic: 'scenario',
+  level: 'senior',
+  q: 'Hệ thống nhà máy cần truy xuất nguồn gốc (traceability) từ nguyên liệu nhập về cho đến thành phẩm giao khách, theo lot và serial. Bạn thiết kế cơ sở dữ liệu và API thế nào?',
+  a: `**Tóm tắt:** traceability là khả năng theo dõi từng thành phần nguyên liệu vào từng sản phẩm thành phẩm bằng mã lot (lô sản xuất) và serial (số serial từng chiếc). Thiết kế gồm bảng lot, serial, bảng mapping cha-con (BOM), bảng event_trace lưu sự kiện sản xuất; mỗi sự kiện có timestamp, người thao tác, máy móc để kiểm toán.
+
+### Làm rõ yêu cầu
+- Theo dõi theo lot (hàng loạt nguyên liệu cùng loại) hay theo serial (từng sản phẩm riêng lẻ), hay cả hai?
+- Một thành phẩm gồm bao nhiêu cấp BOM (bill of materials: danh sách nguyên liệu cấu thành)?
+- Số lượng sự kiện sản xuất mỗi ngày là bao nhiêu, ảnh hưởng đến index và phân vùng như thế nào?
+
+### Điều tra / Phân tích
+- Vấn đề cốt lõi là quan hệ cha-con: mỗi lot thành phẩm tham chiếu nhiều lot nguyên liệu, mỗi serial thành phẩm tham chiếu nhiều serial thành phần con (nếu có).
+- Nếu chỉ lưu lot_id tại bảng thành phẩm, không biết nguyên liệu nào vào thành phẩm nào, nên khi thu hồi phải dò từng bảng.
+- Cần bảng junction (lot_mapping) để lưu quan hệ giữa lot thành phẩm và lot nguyên liệu, kèm số lượng dùng vào.
+
+### Giải pháp
+- Bảng lot (id, ma_lot, ma_vat_tu, ngay_san_xuat, nha_cung_cap, so_luong, don_vi).
+- Bảng serial (id, ma_serial, lot_id, trang_thai, ngay_san_xuat).
+- Bảng lot_mapping (lot_thanh_pham_id, lot_nguyen_lieu_id, so_luong_dung) — nhiều-nhiều giữa lot thành phẩm và lot nguyên liệu.
+- Bảng event_trace (lot_id, serial_id, loai_su_kien, thoi_gian, ma_cong_doan, nguoi_thao_tac, ghi_chu).
+- API GET /traceability/{ma_serial} truy xuất chuỗi từ nguyên liệu đến thành phẩm bằng recursive CTE hoặc đệ quy ở app.
+
+~~~sql
+-- Lấy toàn bộ nguyên liệu của một lot thành phẩm (recursive CTE PostgreSQL)
+WITH RECURSIVE trace AS (
+  SELECT lm.lot_nguyen_lieu_id, lm.so_luong_dung, 1 AS level
+  FROM lot_mapping lm
+  WHERE lm.lot_thanh_pham_id = :lot_id
+  UNION ALL
+  SELECT lm2.lot_nguyen_lieu_id, lm2.so_luong_dung, t.level + 1
+  FROM lot_mapping lm2
+  JOIN trace t ON lm2.lot_thanh_pham_id = t.lot_nguyen_lieu_id
+)
+SELECT * FROM trace;
+~~~
+
+### Trade-off & pitfall
+- Recursive CTE depth phải giới hạn để tránh vòng lặp vô hạn nếu dữ liệu mapping bị lỗi.
+- Bảng event_trace rất lớn (hàng triệu dòng mỗi tháng), cần phân vùng theo tháng và index trên lot_id, serial_id, thoi_gian.
+- Không nên chỉ lưu lot_id mà không lưu so_luong_dung — sau này không thể tính materials consumption chính xác.
+
+### Ví dụ đời thực
+Nhà máy sản xuất linh kiện điện tử: lot thành phẩm LT-20240601-001 (1000 bo mạch chủ) dùng 3 lot nguyên liệu: VL-20240501-001 (CPU, 500 thanh), VL-20240502-001 (bo nhớ, 1000 thanh), VL-20240503-001 (ổ cứng, 1000 cái). Khi lot CPU VL-20240501-001 bị khuyết tật, hệ thống truy xuất ngay thấy 500 bo mạch chủ có nguy cơ, thu hồi kịp thời trước khi giao 200 bo mạch chủ đã đóng gói. Số sự kiện trace mỗi ngày: 50.000, bảng event_trace 15 triệu dòng mỗi tháng, phân vùng theo tháng để query nhanh.
+
+### Trả lời mẫu khi phỏng vấn
+"Traceability trong nhà máy nghĩa là theo dõi từng thành phần nguyên liệu vào từng sản phẩm thành phẩm, dùng mã lot cho hàng loạt lô và mã serial cho từng sản phẩm. Tôi thiết kế bảng lot, serial, và bảng junction lot_mapping để lưu quan hệ cha-con giữa nguyên liệu và thành phẩm, kèm bảng event_trace ghi nhận mỗi sự kiện sản xuất (mã sự kiện là khóa chính, có timestamp, công đoạn, người thao tác; lot_id/serial_id dùng làm chỉ mục truy xuất). Để truy xuất, tôi dùng recursive CTE trên PostgreSQL đi từ thành phẩm ngược về nguyên liệu theo từng cấp BOM. Vì dữ liệu sự kiện rất lớn, tôi phân vùng bảng event_trace theo tháng và có index trên lot_id, serial_id, thời gian. Một ví dụ thực tế: khi lot nguyên liệu CPU bị khuyết, tôi truy xuất ngay 500 bo mạch chủ có nguy cơ và thu hồi kịp trước khi giao hàng."
+
+> Senior tip: traceability không chỉ là lưu mã lot, phải lưu cả số lượng nguyên liệu dùng vào từng lot thành phẩm — nếu không sau này không thể tính chi phí nguyên liệu chính xác hay thu hồi sản phẩm khi có khuyết tật.`,
+  follow: [
+    'Nếu một serial thành phẩm thay đổi cha (ví dụ sửa lại bo mạch) thì cập nhật mapping thế nào mà không mất lịch sử?',
+    'Truy xuất nguồn gốc 10 cấp BOM trên 15 triệu dòng event_trace — tối ưu query thế nào?',
+    'Lot và serial: khi nào dùng cái nào, có thể kết hợp không?'
+  ],
+  tags: ['traceability', 'lot', 'serial', 'MES', 'BOM']
+},
+{
+  id: 'scenario-168',
+  topic: 'scenario',
+  level: 'senior',
+  q: 'Nhà máy muốn tính OEE (Overall Equipment Effectiveness) cho từng máy từ dữ liệu cảm biến IoT. Bạn thiết kế pipeline tính OEE thế nào để chính xác và chạy real-time?',
+  a: `**Tóm tắt:** OEE = Availability × Performance × Quality, đo hiệu quả thực của máy so với kế hoạch. Pipeline gồm thu dữ liệu cảm biến (PLC, sensor) qua MQTT/Kafka, lưu time-series, tính 3 thành phần theo ca, và so sánh với baseline. Cần cẩn thận với planned stop, micro-stop, speed loss để không tính sai.
+
+### Làm rõ yêu cầu
+- Máy có bao nhiêu, tần suất gửi dữ liệu cảm biến bao nhiêu (1s, 10s, 1 phút)?
+- Kế hoạch sản xuất (planned production time) lấy từ đâu: ERP, MES, hay nhập thủ công?
+- Số lượng sản phẩm đạt/lỗi (quality) lấy từ đâu: cảm biến tự động hay kiểm tra thủ công?
+
+### Điều tra / Phân tích
+- Availability = Run Time / Planned Production Time. Run Time = Planned Time - Planned Stop - Unplanned Stop (downtime).
+- Performance = (Ideal Cycle Time × Total Count) / Run Time. Ideal Cycle Time là chu kỳ nhanh nhất thiết kế cho phép.
+- Quality = Good Count / Total Count. Good Count = Total Count - Reject Count - Rework Count.
+- Pitfall: nếu không phân biệt planned stop (bảo trì, nghỉ giải lao) và unplanned stop (hỏng máy) thì Availability sai hoàn toàn.
+
+### Giải pháp
+- Thu dữ liệu qua MQTT broker (EMQX, Mosquitto) hoặc Kafka Connect, lưu vào time-series DB (TimescaleDB, InfluxDB).
+- Job Spark/Flink tính OEE mỗi ca (8 giờ), mỗi máy, mỗi sản phẩm.
+- Dashboard hiển thị OEE real-time với màu xanh/vàng/đỏ theo ngưỡng (trên 85% xanh, 65-85 vàng, dưới 65 đỏ).
+
+~~~java
+// Tính OEE cho một máy một ca
+public Oee calculateOee(Shift shift, Machine machine) {
+  long plannedSeconds = shift.getPlannedSeconds();          // 8 giờ = 28800
+  long plannedStopSeconds = machine.downtime(shift, Type.PLANNED);
+  long unplannedStopSeconds = machine.downtime(shift, Type.UNPLANNED);
+  long runSeconds = plannedSeconds - plannedStopSeconds - unplannedStopSeconds;
+  long idealCycleMs = machine.getIdealCycleMs();            // ví dụ 2000ms
+  long totalCount = machine.totalCount(shift);
+  long rejectCount = machine.rejectCount(shift);
+  double availability = (double) runSeconds / plannedSeconds;
+  double performance = (double) (totalCount * idealCycleMs) / (runSeconds * 1000);
+  double quality = (double) (totalCount - rejectCount) / totalCount;
+  double oee = availability * performance * quality;
+  return new Oee(availability, performance, quality, oee);
+}
+~~~
+
+### Trade-off & pitfall
+- Performance > 100% nghĩa là ideal cycle time sai hoặc máy chạy nhanh hơn thiết kế (có thể nguy hiểm) — phải kiểm tra lại.
+- Micro-stop (dừng dưới 1-2 phút, ví dụ kẹt vật liệu) khó đo qua cảm biến rời rạc, phải log liên tục hoặc đặt ngưỡng.
+- Speed loss (máy chạy chậm hơn tốc độ tối đa) cần so sánh chu kỳ thực với ideal cycle, không chỉ đếm sản phẩm.
+
+### Ví dụ đời thực
+Nhà máy sản xuất chai nhựa có 10 máy ép phun. Máy M-03 OEE chỉ 58% trong khi các máy khác 78-82%. Điều tra: availability 71% (nhiều lần dừng ngắn 30-60 giây do kẹt nguyên liệu, không ai ghi nhận vì dưới 2 phút), performance 85% (máy chạy 85% tốc độ tối đa do khuôn cũ), quality 96%. Sau khi thêm cảm biến rung và log micro-stop, availability lên 79%, OEE lên 68%. Nhà máy quyết định thay khuôn máy M-03 để performance lên 95%, OEE đạt 73%.
+
+### Trả lời mẫu khi phỏng vấn
+"OEE là tích của Availability, Performance, Quality. Availability đo thời gian máy chạy so với kế hoạch, trừ cả planned stop và unplanned stop. Performance đo tốc độ thực so với lý thuyết, tính bằng ideal cycle time nhân số sản phẩm chia thời gian chạy. Quality đo tỷ lệ sản phẩm đạt. Pipeline của tôi thu dữ liệu cảm biến qua Kafka, lưu vào TimescaleDB, tính mỗi ca bằng job Spark, hiển thị dashboard real-time. Pitfall hay gặp là không phân biệt planned stop và unplanned stop, hoặc không đo micro-stop, khiến Availability sai. Performance trên 100% nghĩa là ideal cycle time sai, phải kiểm tra lại. Ví dụ máy ép phun OEE 58% do nhiều micro-stop không ghi nhận, sau khi log cảm biến rung OEE lên 68%."
+
+> Senior tip: OEE cao không có nghĩa là tốt — nếu quality thấp mà OEE cao, máy đang sản xuất nhiều phế phẩm. Luôn kiểm tra cả 3 thành phần, không chỉ số OEE cuối.`,
+  follow: [
+    'Làm sao phân biệt planned stop và unplanned stop tự động khi cảm biến chỉ gửi trạng thái bật/tắt?',
+    'Performance trên 100% có nghĩa gì, xử lý thế nào?',
+    'Micro-stop dưới 2 phút khó đo qua cảm biến rời rạc, bạn làm gì?'
+  ],
+  tags: ['OEE', 'IoT', 'time-series', 'MES', 'Kafka']
+},
+{
+  id: 'scenario-169',
+  topic: 'scenario',
+  level: 'senior',
+  q: 'Nhà máy có nhiều công đoạn (rèn, gia công, sơn, lắp ráp) và mỗi sản phẩm có routing (lộ trình công đoạn) khác nhau. Bạn thiết kế hệ thống quản lý lệnh sản xuất (work order) và routing thế nào để linh hoạt và không sai thứ tự?',
+  a: `**Tóm tắt:** work order là lệnh sản xuất một số lượng sản phẩm trong một khoảng thời gian, routing là danh sách công đoạn theo thứ tự. Thiết kế gồm bảng work_order, routing, routing_step, work_order_step; mỗi step có trạng thái (pending, in_progress, done, skip), timestamp vào/ra, và kiểm tra thứ tự bằng state machine ở app.
+
+### Làm rõ yêu cầu
+- Sản phẩm có routing cố định hay thay đổi theo tuỳ chọn khách hàng?
+- Công đoạn có thể song song (ví dụ sơn 2 mặt cùng lúc) hay chỉ tuần tự?
+- Có công đoạn tuỳ chọn (skip) hay bắt buộc phải làm hết?
+
+### Điều tra / Phân tích
+- Routing cố định: lưu routing_id trên work_order, mỗi work_order_step copy từ routing_step.
+- Routing động: cần bảng work_order_step riêng, có thể thêm/bớt step trong quá trình sản xuất.
+- State machine: từ pending chỉ sang in_progress hoặc skip, từ in_progress chỉ sang done, không quay lại pending (trừ rework).
+- Kiểm tra thứ tự: step N+1 chỉ bắt đầu khi step N done hoặc skip.
+
+### Giải pháp
+- Bảng work_order (id, ma_lenh, san_pham_id, so_luong, ngay_bat_dau, ngay_ket_thuc, trang_thai).
+- Bảng routing (id, ten, san_pham_id, mo_ta).
+- Bảng routing_step (id, routing_id, thu_tu, ten_cong_doan, may_id, thoi_gian_chuan, ghi_chu).
+- Bảng work_order_step (id, work_order_id, routing_step_id, trang_thai, thoi_gian_vao, thoi_gian_ra, so_luong_dat, so_luong_loi).
+- App kiểm tra transition hợp lệ bằng enum StateMachine.
+
+~~~java
+public enum StepState {
+  PENDING, IN_PROGRESS, DONE, SKIPPED, REWORK;
+
+  public boolean canTransition(StepState next) {
+    return switch (this) {
+      case PENDING -> next == IN_PROGRESS || next == SKIPPED;
+      case IN_PROGRESS -> next == DONE || next == REWORK;
+      case DONE -> next == REWORK;
+      case SKIPPED, REWORK -> false;
+    };
+  }
+}
+~~~
+
+### Trade-off & pitfall
+- Copy routing_step vào work_order_step khi tạo lệnh giúp không đổi routing gốc, nhưng nếu sửa routing thì work_order cũ không được cập nhật — chấp nhận được vì lệnh đã tạo phải giữ lộ trình cũ.
+- Rework (làm lại) tạo thêm step mới hay quay lại step cũ? Nên tạo step mới kèm note rework of step N để giữ lịch sử.
+- Không kiểm tra thứ tự ở DB mà ở app: DB không biết business rule, app phải validate trước khi ghi.
+
+### Ví dụ đời thực
+Nhà máy sản xuất khung nhôm cho xe máy có routing: cắt → hàn → sơn → lắp ráp → kiểm tra. Đơn hàng khẩn yêu cầu bỏ sơn (giao khung trần). Work order WO-20240601-005 tạo với routing_step sơn bị skip, lắp ráp bắt đầu ngay sau hàn. State machine từ SKIPPED sang IN_PROGRESS bị từ chối vì skip là terminal cho step đó, nên hệ thống tự tạo step mới thay vì quay lại. Kết quả: đơn giao kịp, không sai thứ tự, traceability vẫn đầy đủ.
+
+### Trả lời mẫu khi phỏng vấn
+"Work order là lệnh sản xuất, routing là lộ trình công đoạn. Tôi thiết kế bảng work_order, routing, routing_step, work_order_step. Mỗi work_order_step có trạng thái pending, in_progress, done, skip, rework, timestamp vào/ra, sản phẩm đạt/lỗi. State machine ở app kiểm tra transition hợp lệ: pending sang in_progress hoặc skip, in_progress sang done hoặc rework, không quay lại pending. Kiểm tra thứ tự: step N+1 chỉ bắt đầu khi step N done hoặc skip. Copy routing_step vào work_order_step khi tạo lệnh, không đổi routing gốc. Rework tạo step mới kèm note rework of step N để giữ lịch sử. Ví dụ đơn khẩn bỏ sơn, step sơn skip, lắp ráp bắt đầu ngay, hệ thống tự tạo step mới vì skip là terminal."
+
+> Senior tip: routing động (thay đổi theo tuỳ chọn khách) là nguồn gốc nhiều bug — luôn copy routing_step vào work_order_step khi tạo lệnh, không dùng routing gốc trực tiếp, để lịch sử lệnh không bị thay đổi retroactively.`,
+  follow: [
+    'Rework: tạo step mới hay quay lại step cũ, trade-off thế nào?',
+    'Công đoạn song song (sơn 2 mặt cùng lúc) mô hình hoá ra sao?',
+    'Làm sao kiểm tra thứ tự step ở DB mà không phải app?'
+  ],
+  tags: ['work-order', 'routing', 'state-machine', 'MES', 'manufacturing']
+},
+{
+  id: 'scenario-170',
+  topic: 'scenario',
+  level: 'lead',
+  q: 'Nhà máy cần phát hiện sớm lỗi chất lượng bằng SPC (Statistical Process Control) và control chart. Bạn thiết kế hệ thống thu thập dữ liệu đo lường, vẽ control chart, và alert khi nào?',
+  a: `**Tóm tắt:** SPC dùng thống kê để giám sát quá trình sản xuất, control chart (biểu đồ kiểm soát) vẽ dữ liệu đo được theo thời gian với giới hạn kiểm soát UCL/LCL (upper/lower control limit) tính từ dữ liệu, không phải từ spec. Alert khi dữ liệu vượt UCL/LCL hoặc có pattern (7 điểm liên tiếp 1 bên, xu hướng tăng/giảm).
+
+### Làm rõ yêu cầu
+- Đặc tính cần đo: kích thước (mm), trọng lượng (g), độ bền (MPa)? Đơn vị và tần suất đo?
+- Mẫu lấy bao nhiêu chiếc mỗi lô, bao lâu một lần?
+- Giới hạn spec (specification limit: yêu cầu kỹ thuật của khách) khác giới hạn kiểm soát (control limit: biến động tự nhiên của quá trình) — phải phân biệt rõ.
+
+### Điều tra / Phân tích
+- Control limit tính từ dữ liệu quá trình: trung bình cộng 3 sigma (UCL = mean + 3 sigma, LCL = mean - 3 sigma). Spec limit do khách yêu cầu, không tính từ dữ liệu.
+- Western Electric rules: 1 điểm ngoài 3 sigma, 2 trong 3 điểm ngoài 2 sigma cùng bên, 4 trong 5 điểm ngoài 1 sigma cùng bên, 8 điểm liên tiếp 1 bên trung tâm, 6 điểm liên tiếp tăng/giảm.
+- Process capability Cp/Cpk: Cp = (USL - LSL) / 6 sigma, Cpk = min((USL - mean)/3 sigma, (mean - LSL)/3 sigma). Cpk > 1.33 là đạt.
+
+### Giải pháp
+- Thu dữ liệu đo từ thiết bị đo (CMM, cân, máy đo độ bền) qua API hoặc file CSV, lưu vào bảng measurement (id, may_id, dac_tinh_id, gia_tri, thoi_gian, mau_id).
+- Job tính mean, sigma theo cửa sổ trượt 30 mẫu gần nhất, vẽ control chart.
+- Alert khi vi phạm Western Electric rules, gửi Slack/email kèm link chart.
+
+~~~java
+public class SpcChecker {
+  private static final int WINDOW = 30;
+
+  public SpcAlert check(List<Double> values) {
+    double mean = mean(values);
+    double sigma = stddev(values);
+    double ucl = mean + 3 * sigma;
+    double lcl = mean - 3 * sigma;
+    if (values.get(values.size() - 1) > ucl || values.get(values.size() - 1) < lcl) {
+      return new SpcAlert("Point outside 3 sigma", Severity.CRITICAL);
+    }
+    if (eightConsecutiveSameSide(values, mean)) {
+      return new SpcAlert("8 points one side of center", Severity.MAJOR);
+    }
+    if (sixConsecutiveTrend(values)) {
+      return new SpcAlert("6 points increasing/decreasing", Severity.MAJOR);
+    }
+    return null;
+  }
+}
+~~~
+
+### Trade-off & pitfall
+- Dùng spec limit thay cho control limit: sai hoàn toàn, spec là yêu cầu khách, control là biến động quá trình.
+- Cửa sổ quá nhỏ (10 mẫu) thì sigma unstable, alert giả nhiều; quá lớn (100 mẫu) thì phát hiện chậm.
+- Không kiểm tra tính ổn định của quá trình trước khi tính capability — Cp/Cpk chỉ có nghĩa khi quá trình ổn định (in control).
+
+### Ví dụ đời thực
+Nhà máy ép nhựa đo trọng lượng sản phẩm mỗi 30 phút, mỗi mẫu 5 chiếc. Trọng lượng spec 50g +/- 2g. Control chart cho thấy 8 điểm liên tiếp phía trên trung tâm (mean 50.3g), UCL 51.0g, LCL 49.6g. Alert tự động gửi cho kỹ sư. Điều tra: khuôn mòn làm trọng lượng tăng. Thay khuôn, mean về 50.0g, Cpk từ 1.1 lên 1.5. Trước khi có SPC, công nhân chỉ kiểm tra spec, không phát hiện xu hướng cho đến khi nặng 51.5g mới dừng, đã sinh 200 phế phẩm.
+
+### Trả lời mẫu khi phỏng vấn
+"SPC dùng thống kê để giám sát quá trình. Control chart vẽ dữ liệu đo được theo thời gian với UCL/LCL tính từ data (mean cộng 3 sigma), không phải spec. Alert khi dữ liệu vượt UCL/LCL hoặc có pattern: 8 điểm liên tiếp một bên, 6 điểm tăng/giảm liên tiếp, theo Western Electric rules. Spec limit do khách yêu cầu, control limit do quá trình tự xác định. Tôi thu dữ liệu từ thiết bị đo qua API, lưu vào bảng measurement, job tính mean và sigma theo cửa sổ 30 mẫu, vẽ chart, alert khi vi phạm rules. Ví dụ: ép nhựa đo trọng lượng, 8 điểm liên tiếp phía trên trung tâm, kỹ sư thay khuôn, Cpk từ 1.1 lên 1.5. Pitfall: đừng dùng spec limit thay control limit, đừng tính Cp/Cpk khi quá trình chưa ổn định."
+
+> Senior tip: control limit là tiếng nói của quá trình, spec limit là tiếng nói của khách. Nếu control limit nằm ngoài spec limit, quá trình không có khả năng (Cp/Cpk thấp), phải cải tiến quy trình, không phải siết chặt kiểm tra.`,
+  follow: [
+    'Sự khác nhau giữa control limit và spec limit, tại sao không thể thay thế?',
+    'Cp và Cpk khác nhau thế nào, khi nào nên dùng Cpk?',
+    'Cửa sổ tính mean/sigma bao nhiêu mẫu là hợp lý, trade-off thế nào?'
+  ],
+  tags: ['SPC', 'control-chart', 'quality', 'Cpk', 'statistical-process-control']
+},
+{
+  id: 'scenario-171',
+  topic: 'scenario',
+  level: 'lead',
+  q: 'Tích hợp MES với ERP (SAP) để đồng bộ lệnh sản xuất, vật tư tiêu hao, và thành phẩm nhập kho. Bạn thiết kế luồng dữ liệu qua API/message thế nào để đảm bảo nhất quán và chạy lại được khi lỗi?',
+  a: `**Tóm tắt:** MES là hệ thống điều hành sản xuất tại nhà máy, ERP (SAP) quản lý kế hoạch, vật tư, tài chính. Đồng bộ theo event-driven: ERP gửi work order qua message (Kafka/IDoc), MES gửi kết quả sản xuất (sản phẩm đạt/lỗi, vật tư tiêu hao) qua API hoặc message. Cần idempotency key, dead letter queue, và reconcile job chạy đêm để phát hiện sai lệch.
+
+### Làm rõ yêu cầu
+- Hướng đồng bộ: ERP đẩy lệnh xuống MES, MES đẩy kết quả lên ERP, hay cả hai?
+- Tần suất: real-time (mỗi sản phẩm) hay batch (mỗi ca)?
+- ERP chấp nhận retry hay phải đồng bộ tức thì?
+
+### Điều tra / Phân tích
+- ERP sang MES: work order, BOM, routing. MES sang ERP: production result, material consumption, scrap reason.
+- Đồng bộ real-time qua API đồng bộ dễ timeout khi ERP bận; qua message bất đồng bộ dễ mất thứ tự.
+- Cần idempotency key (message_id hoặc work_order_id + event_type) để ERP/MES không xử lý trùng khi retry.
+
+### Giải pháp
+- ERP đẩy work order qua Kafka topic mes-workorders, MES consumer đọc, lưu vào bảng work_order, gửi ack qua topic mes-workorders-ack.
+- MES đẩy production result qua REST API POST /api/production-results kèm idempotency key, ERP trả 200/201, nếu timeout MES retry với cùng idempotency key.
+- Dead letter queue cho message lỗi nhiều lần, reconcile job chạy đêm so sánh hai hệ thống.
+
+~~~java
+// MES consumer đọc work order từ Kafka, idempotent
+@KafkaListener(topics = "mes-workorders", groupId = "mes-group")
+public void consumeWorkOrder(ConsumerRecord<String, WorkOrderEvent> record,
+                             Acknowledgment ack) {
+  String eventId = new String(record.headers().lastHeader("idempotency_key").value(), StandardCharsets.UTF_8);
+  if (workOrderRepo.existsByEventId(eventId)) {
+    ack.acknowledge();  // đã xử lý rồi, bỏ qua
+    return;
+  }
+  WorkOrder wo = mapper.toWorkOrder(record.value());
+  wo.setEventId(eventId);
+  workOrderRepo.save(wo);
+  ack.acknowledge();
+}
+~~~
+
+### Trade-off & pitfall
+- API đồng bộ dễ hiểu nhưng timeout khi ERP bận, MES phải retry cẩn thận. Message bất đồng bộ khó debug thứ tự, cần idempotency key.
+- Không có idempotency key: retry tạo work order trùng, sản xuất 2 lần, hậu quả nghiêm trọng.
+- Không có reconcile job: sai lệch tích luỹ nhiều ngày mới phát hiện, đối soát khó.
+
+### Ví dụ đời thực
+Nhà máy sản xuất thiết bị gia dụng: ERP (SAP) gửi 500 work order mỗi sáng qua Kafka topic mes-workorders. MES consumer đọc, lưu, bắt đầu sản xuất. Mỗi ca kết thúc, MES gửi production result qua REST API POST /api/production-results kèm idempotency key (wo_id + ca). Một ngày SAP restart, 50 message gửi lại, MES nhận trùng nhưng nhờ idempotency key nên không tạo work order trùng. Reconcile job đêm so sánh: SAP ghi nhận 480 lệnh, MES ghi 480, khớp. Nếu không có reconcile, 20 lệnh sai lệch do network timeout sẽ tích luỹ cả tuần.
+
+### Trả lời mẫu khi phỏng vấn
+"Tôi thiết kế event-driven: ERP đẩy work order qua Kafka, MES consumer đọc và lưu idempotent (kiểm tra event_id đã xử lý chưa). MES đẩy production result qua REST API kèm idempotency key, ERP trả 200/201, timeout thì MES retry cùng key. Không có idempotency key, retry tạo work order trùng, sản xuất 2 lần. Dead letter queue cho message lỗi nhiều lần. Reconcile job đêm so sánh hai hệ thống, phát hiện sai lệch sớm. Ví dụ SAP restart gửi lại 50 message, MES nhờ idempotency key nên không trùng. Reconcile job phát hiện 20 lệnh sai lệch do network timeout, xử lý kịp trong đêm. Trade-off: API đồng bộ dễ hiểu nhưng timeout khi ERP bận; message bất đồng bộ khó debug thứ tự, cần idempotency key."
+
+> Senior tip: luôn có reconcile job chạy đêm so sánh hai hệ thống, dù message và idempotency key hoàn hảo — network partition, ERP bug, hay thao tác thủ công vẫn gây sai lệch. Phát hiện sớm trong đêm, sửa trong ngày, không để tích luỹ cả tuần.`,
+  follow: [
+    'ERP restart gửi lại message, MES nhận trùng — xử lý thế nào để không tạo work order trùng?',
+    'Reconcile job đêm phát hiện sai lệch, sửa như thế nào tự động?',
+    'API đồng bộ vs message bất đồng bộ: chọn cái nào cho production result?'
+  ],
+  tags: ['MES', 'ERP', 'SAP', 'Kafka', 'idempotency', 'integration']
+},
 );
