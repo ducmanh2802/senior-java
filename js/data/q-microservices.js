@@ -10067,5 +10067,154 @@ Order service 6 pod, mỗi pod HikariCP pool 200, tổng 1.200. DB Aurora 8 vCPU
   ],
   tags: ['HikariCP', 'connection pool', 'Little law', 'PostgreSQL', 'capacity'],
 },
+{
+  id: 'microservices-120',
+  topic: 'microservices',
+  level: 'lead',
+  q: 'Vì sao KHÔNG nên dùng Kafka làm work queue cho job chạy lâu (xử lý 1 message 5 phút)? So sánh với Share Groups, RabbitMQ, SQS và bảng jobs.',
+  a: `**Tóm tắt:** Kafka là log phân tán, không phải hàng đợi job. Một message xử lý 5 phút vượt {{max.poll.interval.ms}} (mặc định 5 phút) → consumer bị coi là chết → rebalance → throughput về 0; thêm head-of-line blocking trong partition và số consumer bị giới hạn bởi số partition.
+
+### Vì sao Kafka không hợp work queue
+
+1. **max.poll.interval.ms**: consumer phải gọi {{poll()}} trong khoảng này, nếu không coordinator đánh dấu consumer chết và rebalance. Job 5 phút → rebalance liên miên.
+2. **Head-of-line blocking**: message đầu partition chậm → các message sau bị chặn.
+3. **Số consumer ≤ số partition**: không scale theo job.
+4. **Không có ack per message / retry delay / priority** như broker truyền thống.
+
+### So sánh lựa chọn
+
+| Giải pháp | Ưu | Nhược | Khi dùng |
+|---|---|---|---|
+| Kafka (log) | throughput cao, replay | không hợp job dài | event streaming |
+| RabbitMQ | ack, retry, priority, DLQ | throughput thấp hơn | job queue truyền thống |
+| SQS | managed, visibility timeout | latency, chi phí | AWS serverless |
+| Bảng jobs (DB) | transaction với business data | polling, scale | job cần ACID |
+| Share Groups (KIP-932) | share partition giữa nhiều consumer | preview ở Kafka 4.x, chưa GA widely | khi cần share work trong Kafka |
+
+### Share Groups (KIP-932)
+
+Kafka 4.x giới thiệu Share Groups cho phép nhiều consumer cùng đọc một partition (khác consumer group truyền thống). Trạng thái: preview/early ở một số phiên bản 4.x; không nên coi là GA production cho workload quan trọng nếu chưa kiểm tra phiên bản cụ thể. Không chắc phiên bản → nói ít, kiểm tra docs.
+
+### Ví dụ đời thực
+
+Service render PDF 30s/message, dùng Kafka 12 partition, 12 consumer. Sau traffic tăng, processing 5 phút → max.poll.interval.ms vượt → rebalance mỗi 2 phút → throughput về 0, lag tăng millions. Chuyển sang RabbitMQ với visibility timeout 10 phút → ổn định, throughput 200 job/phút.
+
+### Trả lời mẫu khi phỏng vấn
+
+Kafka là log, không phải queue. Job dài vượt max.poll.interval.ms gây rebalance. Head-of-line blocking và số consumer ≤ partition. Dùng RabbitMQ/SQS/bảng jobs cho work queue. Share Groups (KIP-932, Kafka 4.x) đang preview, chưa GA widely. Production: job render PDF → RabbitMQ với ack + DLQ.
+
+### Checklist
+- [ ] Đặt max.poll.interval.ms phù hợp (không quá lớn)
+- [ ] Tách topic event vs topic job
+- [ ] Dùng RabbitMQ/SQS cho job dài
+- [ ] Theo dõi lag và rebalance
+- [ ] Test Share Groups trên staging nếu dùng
+- [ ] Có DLQ cho job thất bại
+
+> Senior tip: Kafka cho event, broker truyền thống cho job — đừng cố dùng một công cụ cho cả hai.
+`,
+  follow: ['Share Groups khác consumer group truyền thống thế nào?', 'Visibility timeout trong SQS là gì?', 'Khi nào dùng bảng jobs thay vì broker?'],
+  tags: ['Kafka', 'work queue', 'Share Groups', 'RabbitMQ', 'SQS'],
+},
+{
+  id: 'microservices-121',
+  topic: 'microservices',
+  level: 'senior',
+  q: 'Consumer batching trong Spring Kafka: vì sao commit từng message chậm hàng chục lần, và cách xử lý + ghi DB + commit theo lô an toàn.',
+  a: `**Tóm tắt:** Commit từng message gửi request tới broker → chậm 10–50 lần. Xử lý theo lô với batch listener + AckMode.BATCH/MANUAL, ghi DB một lần, commit offset lô → throughput tăng mạnh; crash giữa lô thì offset chưa commit → xử lý lại lô → cần dedup.
+
+### Vì sao commit từng message chậm
+
+Mỗi commit = 1 request tới broker (fsync metadata). 1000 msg/s → 1000 commit/s → CPU broker tăng, latency tăng. Batch commit 1 lần cho 100 msg → giảm 100 lần.
+
+### Spring Kafka batch listener
+
+~~~java
+@KafkaListener(topics = "orders", containerFactory = "batchFactory")
+public void handle(List<ConsumerRecord<String, Order>> records, Acknowledgment ack) {
+    // xử lý + ghi DB một lần
+    orderRepo.saveAll(records.stream().map(r -> r.value()).toList());
+    ack.acknowledge(); // commit offset cuối lô
+}
+~~~
+
+Config: {{spring.kafka.listener.ack-mode=BATCH}} hoặc MANUAL.
+
+### Chống trùng khi crash giữa lô
+
+- Crash trước commit → lô được xử lý lại → ghi DB phải idempotent (upsert theo eventId).
+- Dùng transaction DB + idempotency key.
+- Không commit per record trong batch (sẽ chậm lại).
+
+### Ví dụ đời thực
+
+Consumer xử lý 500 event/s, commit per msg → CPU broker 80%, lag 2 triệu. Chuyển batch 100 → commit 5 lần/s → CPU 8%, lag về 0. Crash test: kill pod giữa lô → restart xử lý lại lô → DB upsert theo eventId → không trùng.
+
+### Trả lời mẫu khi phỏng vấn
+
+Commit từng message chậm vì mỗi commit là request tới broker. Spring Kafka batch listener + AckMode.BATCH gom commit. Ghi DB một lần per lô. Crash giữa lô → offset chưa commit → xử lý lại → cần dedup bằng idempotency key/eventId. Đo: commit per msg 1000/s → CPU 80%; batch 100 → 5 commit/s → CPU 8%.
+
+### Checklist
+- [ ] Bật batch listener
+- [ ] AckMode.BATCH hoặc MANUAL
+- [ ] Ghi DB một lần per lô
+- [ ] Idempotency key per event
+- [ ] Test crash giữa lô
+- [ ] Theo dõi commit rate và lag
+
+> Senior tip: Batch commit là tối ưu lớn nhất cho Kafka consumer — nhưng bắt buộc dedup vì crash giữa lô sẽ replay.
+`,
+  follow: ['AckMode.MANUAL khác MANUAL_IMMEDIATE thế nào?', 'Batch size tối ưu là bao nhiêu?', 'Làm sao đo commit rate?'],
+  tags: ['Kafka', 'batch', 'Spring Kafka', 'commit', 'throughput'],
+},
+{
+  id: 'microservices-122',
+  topic: 'microservices',
+  level: 'senior',
+  q: 'Idempotent producer: vì sao max.in.flight=5 vẫn giữ thứ tự (sequence number theo partition), enable.idempotence mặc định từ Kafka 3.0, và vì sao consumer vẫn phải tự chống trùng.',
+  a: `**Tóm tắt:** Idempotent producer gán PID + sequence number per partition; broker từ chối duplicate sequence → không ghi trùng dù retry. max.in.flight=5 vẫn giữ thứ tự vì broker sắp xếp theo sequence. enable.idempotence mặc định true từ Kafka 3.0. Nhưng consumer vẫn phải dedup theo version/business key vì at-least-once ở consumer side và crash.
+
+### Cơ chế idempotent producer
+
+1. Producer nhận PID (producer id) từ broker khi init.
+2. Mỗi message có sequence number tăng dần per partition.
+3. Broker lưu (PID, partition, seq) đã thấy; nếu seq trùng → từ chối (duplicate).
+4. Retry network không tạo duplicate.
+
+### Vì sao max.in.flight=5 vẫn giữ thứ tự
+
+Broker sắp xếp theo sequence number, không theo thứ tự arrival. Dù request đến lộn xộn, broker ghi theo seq → thứ tự partition vẫn đúng. Trước idempotence, max.in.flight>1 có thể làm mất thứ tự khi retry.
+
+### enable.idempotence
+
+Mặc định true từ Kafka 3.0. Trước đó phải set thủ công. Khi bật, tự set acks=all, retries=Integer.MAX, max.in.flight≤5.
+
+### Vì sao consumer vẫn phải dedup
+
+- Idempotence chỉ bảo vệ producer→broker, không bảo vệ consumer.
+- Consumer at-least-once: crash giữa xử lý → replay → duplicate side effect.
+- Need dedup theo business key/version/idempotency key ở DB.
+
+### Ví dụ đời thực
+
+Producer gửi order event, network retry → không duplicate ở broker. Consumer xử lý, crash trước commit → replay → ghi DB trùng nếu không dedup. Thêm unique constraint eventId → an toàn.
+
+### Trả lời mẫu khi phỏng vấn
+
+Idempotent producer dùng PID + sequence number per partition; broker từ chối duplicate seq nên retry không tạo duplicate. max.in.flight=5 vẫn giữ thứ tự vì broker sắp theo seq. enable.idempotence mặc định true từ Kafka 3.0. Nhưng consumer vẫn phải dedup vì at-least-once ở consumer side; crash giữa xử lý → replay → duplicate side effect. Dedup bằng business key/version ở DB.
+
+### Checklist
+- [ ] Bật enable.idempotence (mặc định 3.0+)
+- [ ] Đặt max.in.flight ≤ 5
+- [ ] Consumer dedup theo eventId/version
+- [ ] DB unique constraint trên eventId
+- [ ] Test retry network
+- [ ] Theo dõi duplicate rate
+
+> Senior tip: Idempotent producer giải quyết producer side; consumer side vẫn là trách nhiệm của bạn — exactly-once effect cần cả hai.
+`,
+  follow: ['Idempotent producer khác transactional producer thế nào?', 'PID được cấp khi nào?', 'Làm sao dedup ở consumer side hiệu quả?'],
+  tags: ['Kafka', 'idempotent producer', 'sequence number', 'dedup', 'exactly-once'],
+},
 );
 
