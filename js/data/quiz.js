@@ -10140,4 +10140,243 @@ Lỗi hay gặp: tạo và xoá thành phần lặp lại mà không dọn dẹp
 
 > Senior tip: mọi thứ thành phần "mở" (timer, listener trên window, websocket, subscription) phải "đóng" trong beforeUnmount, tương tự try-with-resources đóng connection trong Java.`
 }
+,
+{
+  id: 'qz-ai-021',
+  topic: 'ai',
+  q: 'Đoạn code Spring AI gọi LLM dưới đây có lỗi gì nghiêm trọng nhất?\n\n~~~java\nChatResponse r = chatModel.call(new Prompt(prompt));\nString out = r.getResult().getOutput().getContent();\nreturn objectMapper.readValue(out, ResultDto.class);\n~~~',
+  options: [
+    'Thiếu timeout cho lời gọi HTTP tới LLM, retry cả lỗi 4xx, và không validate output trước khi deserialize',
+    'Chỉ cần thêm @Retryable là đủ, các vấn đề còn lại không quan trọng',
+    'LLM luôn trả JSON hợp lệ nên không cần validate',
+    'Timeout mặc định của HTTP client là đủ cho mọi model'
+  ],
+  answer: 0,
+  explain: `**Đáp án đúng: Thiếu timeout cho lời gọi HTTP tới LLM, retry cả lỗi 4xx, và không validate output trước khi deserialize.**
+
+### Vì sao đúng
+Một lời gọi LLM là HTTP request có thể kéo dài nhiều giây; nếu không đặt timeout, thread bị treo và pool cạn kiệt. Ba lớp bảo vệ bắt buộc:
+1. **Timeout rõ ràng** (connect/read) theo SLA, ví dụ 30 giây.
+2. **Retry chỉ cho lỗi tạm thời** (5xx, timeout, network), **không retry 4xx** (request sai, auth, rate limit logic) vì retry không sửa được nguyên nhân.
+3. **Validate output** trước khi deserialize: kiểm tra null/rỗng, parse JSON an toàn, validate schema/Bean Validation; không tin mô hình luôn trả đúng.
+
+### Vì sao các phương án còn lại sai
+- **Chỉ thêm @Retryable**: retry mặc định có thể retry cả 4xx và không giải quyết timeout/validate.
+- **LLM luôn trả JSON hợp lệ**: sai, mô hình có thể trả markdown fence, giải thích thêm, hoặc JSON sai schema.
+- **Timeout mặc định đủ**: mặc định thường rất dài hoặc không có; không phù hợp SLA.
+
+> Senior tip: coi LLM như một dịch vụ mạng không đáng tin cậy: timeout, circuit breaker, retry có chọn lọc, và validate mọi đầu ra.`
+},
+{
+  id: 'qz-ai-022',
+  topic: 'ai',
+  q: 'Một request dùng model giá $0.50/1M input token và $1.50/1M output token. Prompt 1200 token, output 300 token. Chi phí ước tính là bao nhiêu?',
+  options: [
+    'Khoảng $0.00105',
+    'Khoảng $0.00060',
+    'Khoảng $0.00180',
+    'Khoảng $0.00045'
+  ],
+  answer: 0,
+  explain: `**Đáp án đúng: Khoảng $0.00105.**
+
+### Vì sao đúng
+Chi phí = (input token × giá input + output token × giá output) / 1.000.000.
+= (1200 × 0.50 + 300 × 1.50) / 1.000.000
+= (600 + 450) / 1.000.000 = 0.00105 USD.
+
+### Vì sao các phương án còn lại sai
+- **$0.00060**: chỉ tính input, bỏ output.
+- **$0.00180**: tính cả hai nhưng dùng giá output cho input.
+- **$0.00045**: chỉ tính output.
+
+> Senior tip: output token thường đắt hơn input; tối ưu prompt dài và output dài cùng nhau, và cache prefix để giảm chi phí lặp.`
+},
+{
+  id: 'qz-ai-023',
+  topic: 'ai',
+  q: 'Khi chunking tài liệu cho RAG, chọn chunk size thế nào là hợp lý nhất cho đa số trường hợp?',
+  options: [
+    'Chunk càng lớn càng tốt để giữ toàn bộ ngữ cảnh',
+    'Chunk rất nhỏ (50 token) để tăng độ chính xác tìm kiếm',
+    'Khoảng 300-800 token, có overlap 10-20%, và cắt theo ranh giới tự nhiên (đoạn, tiêu đề)',
+    'Một chunk cho toàn bộ tài liệu'
+  ],
+  answer: 2,
+  explain: `**Đáp án đúng: Khoảng 300-800 token, có overlap 10-20%, và cắt theo ranh giới tự nhiên (đoạn, tiêu đề).**
+
+### Vì sao đúng
+Chunk quá lớn làm embedding bị pha loãng và vượt context; chunk quá nhỏ mất ngữ cảnh. Overlap giúp không mất thông tin ở biên. Cắt theo ranh giới tự nhiên giữ coherence.
+
+### Vì sao các phương án còn lại sai
+- **Càng lớn càng tốt**: embedding kém, tốn context.
+- **Rất nhỏ**: mất ngữ cảnh, nhiều chunk noise.
+- **Một chunk toàn tài liệu**: không tìm kiếm được chi tiết.
+
+> Senior tip: đo chất lượng bằng eval set; chunking là tham số quan trọng nhất của RAG.`
+},
+{
+  id: 'qz-ai-024',
+  topic: 'ai',
+  q: 'Khi vector embedding đã được chuẩn hoá (norm = 1), cosine similarity và dot product cho kết quả xếp hạng như thế nào?',
+  options: [
+    'Cosine và dot product cho cùng thứ tự xếp hạng',
+    'Dot product luôn lớn hơn cosine',
+    'Cosine chính xác hơn dot product',
+    'Hai cái không liên quan'
+  ],
+  answer: 0,
+  explain: `**Đáp án đúng: Cosine và dot product cho cùng thứ tự xếp hạng.**
+
+### Vì sao đúng
+Cosine = dot/(norm_a*norm_b). Khi cả hai vector đã chuẩn hoá, norm=1 nên cosine = dot product. Thứ tự theo dot product chính là thứ tự theo cosine.
+
+### Vì sao các phương án còn lại sai
+- **Dot luôn lớn hơn**: sai về giá trị tuyệt đối không đổi thứ tự.
+- **Cosine chính xác hơn**: cùng thứ tự khi đã chuẩn hoá.
+- **Không liên quan**: chúng liên quan trực tiếp.
+
+> Senior tip: DB vector thường dùng cosine hoặc inner product; nếu embedding chuẩn hoá, inner product nhanh hơn và tương đương.`
+},
+{
+  id: 'qz-ai-025',
+  topic: 'ai',
+  multi: true,
+  q: 'Với truy vấn chứa mã sản phẩm chính xác (SKU), khi nào nên dùng BM25 và khi nào dùng vector search? (Chọn 2)',
+  options: [
+    'BM25 tốt cho khớp từ khóa chính xác như SKU',
+    'Vector search tốt cho ý nghĩa ngữ nghĩa',
+    'Vector search luôn tốt hơn BM25',
+    'BM25 hiểu ngữ nghĩa sâu',
+    'Chỉ dùng một trong hai'
+  ],
+  answer: [0, 1],
+  explain: `**Đáp án đúng: BM25 tốt cho khớp từ khóa chính xác như SKU; Vector search tốt cho ý nghĩa ngữ nghĩa.**
+
+### Vì sao đúng
+BM25 là lexical matching, mạnh với token chính xác. Vector search mạnh với ngữ nghĩa paraphrase. Kết hợp hybrid thường tốt nhất.
+
+### Vì sao các phương án còn lại sai
+- **Vector luôn tốt hơn**: sai với mã chính xác.
+- **BM25 hiểu ngữ nghĩa**: sai, BM25 không hiểu ngữ nghĩa.
+- **Chỉ dùng một**: bỏ mất lợi thế hybrid.
+
+> Senior tip: dùng hybrid + RRF cho production RAG.`
+},
+{
+  id: 'qz-ai-026',
+  topic: 'ai',
+  q: 'RRF (Reciprocal Rank Fusion) được dùng để làm gì?',
+  options: [
+    'Gộp kết quả từ nhiều retriever bằng thứ hạng',
+    'Tính embedding',
+    'Huấn luyện model',
+    'Nén vector'
+  ],
+  answer: 0,
+  explain: `**Đáp án đúng: Gộp kết quả từ nhiều retriever bằng thứ hạng.**
+
+### Vì sao đúng
+RRF kết hợp danh sách kết quả từ nhiều nguồn (BM25, vector) bằng công thức dựa trên thứ hạng, không cần chuẩn hoá score.
+
+### Vì sao các phương án còn lại sai
+- **Tính embedding**: do model embedding.
+- **Huấn luyện**: không.
+- **Nén vector**: là quantization.
+
+> Senior tip: RRF đơn giản, robust, không cần tune trọng số.`
+},
+{
+  id: 'qz-ai-027',
+  topic: 'ai',
+  q: 'Semantic cache threshold nên đặt thế nào?',
+  options: [
+    'Threshold quá thấp làm cache miss nhiều; quá cao trả lời sai; cần eval trên dữ liệu thật',
+    'Luôn dùng 0.5',
+    'Không cần threshold',
+    'Threshold càng cao càng tốt'
+  ],
+  answer: 0,
+  explain: `**Đáp án đúng: Threshold quá thấp làm cache miss nhiều; quá cao trả lời sai; cần eval trên dữ liệu thật.**
+
+### Vì sao đúng
+Threshold quyết định độ tương đồng tối thiểu để reuse cached answer. Cần cân bằng precision/recall trên eval set.
+
+### Vì sao các phương án còn lại sai
+- **Luôn 0.5**: không phù hợp mọi domain.
+- **Không cần threshold**: sẽ trả lời sai.
+- **Càng cao càng tốt**: miss nhiều, mất lợi ích cache.
+
+> Senior tip: semantic cache hiệu quả nhất cho FAQ lặp lại.`
+},
+{
+  id: 'qz-ai-028',
+  topic: 'ai',
+  q: 'Prompt injection trong tài liệu RAG xảy ra khi nào?',
+  options: [
+    'Tài liệu chứa chỉ dẫn làm mô hình bỏ qua system prompt hoặc thực hiện hành động không mong muốn',
+    'Người dùng gõ sai chính tả',
+    'Model trả lời chậm',
+    'Token vượt giới hạn'
+  ],
+  answer: 0,
+  explain: `**Đáp án đúng: Tài liệu chứa chỉ dẫn làm mô hình bỏ qua system prompt hoặc thực hiện hành động không mong muốn.**
+
+### Vì sao đúng
+Nội dung retrieved có thể chứa instruction injection; cần sanitize, phân tách data vs instruction, và không cho model thực thi action từ tài liệu.
+
+### Vì sao các phương án còn lại sai
+- **Sai chính tả**: không liên quan.
+- **Trả lời chậm**: performance.
+- **Vượt token**: context length.
+
+> Senior tip: treat retrieved content as untrusted data, never as instructions.`
+},
+{
+  id: 'qz-ai-029',
+  topic: 'ai',
+  q: 'Tool ghi dữ liệu (write) trong tool calling nên xử lý thế nào?',
+  options: [
+    'Yêu cầu xác nhận người dùng hoặc chạy dry-run/read-only trước, có audit log',
+    'Cho mô hình tự gọi tự do',
+    'Không cần validation',
+    'Retry vô hạn khi lỗi'
+  ],
+  answer: 0,
+  explain: `**Đáp án đúng: Yêu cầu xác nhận người dùng hoặc chạy dry-run/read-only trước, có audit log.**
+
+### Vì sao đúng
+Tool ghi có side effect; cần human-in-the-loop, validation, rate limit, audit.
+
+### Vì sao các phương án còn lại sai
+- **Tự gọi tự do**: nguy hiểm.
+- **Không validate**: injection.
+- **Retry vô hạn**: cost/loop.
+
+> Senior tip: coi tool như API công khai.`
+},
+{
+  id: 'qz-ai-030',
+  topic: 'ai',
+  q: 'Khi nào nên dùng streaming response thay vì blocking?',
+  options: [
+    'Khi cần giảm perceived latency cho người dùng và hiển thị từng token',
+    'Khi cần JSON schema nghiêm ngặt',
+    'Khi cần retry dễ hơn',
+    'Khi cần tiết kiệm token'
+  ],
+  answer: 0,
+  explain: `**Đáp án đúng: Khi cần giảm perceived latency cho người dùng và hiển thị từng token.**
+
+### Vì sao đúng
+Streaming gửi token về ngay khi sinh, cải thiện UX. Blocking phù hợp khi cần parse JSON hoàn chỉnh.
+
+### Vì sao các phương án còn lại sai
+- **JSON schema nghiêm ngặt**: streaming khó parse partial.
+- **Retry dễ hơn**: streaming khó retry.
+- **Tiết kiệm token**: không liên quan.
+
+> Senior tip: kết hợp streaming cho UX và structured output cho data.`
+}
+
 );
