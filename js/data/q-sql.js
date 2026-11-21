@@ -8903,4 +8903,396 @@ Bảng order 500 triệu dòng, query trang merchant: WHERE merchant_id='M123' A
   follow: ['BitmapAnd và BitmapOr khác nhau thế nào, khi nào dùng BitmapOr?', 'Nếu ORDER BY created_at mà không có cột merchant_id trong WHERE thì index mới còn dùng được không?', 'Làm sao ước lượng selectivity của cột để quyết định thứ tự composite?'],
   tags: ['composite index', 'column order', 'selectivity', 'ORDER BY', 'LIMIT', 'BitmapAnd', 'rows examined', 'Buffers', 'PostgreSQL'],
 },
+{
+  id: 'sql-107',
+  topic: 'sql',
+  level: 'senior',
+  q: 'So sánh Oracle, PostgreSQL, MSSQL: sequence/identity, paging (OFFSET/FETCH vs ROWNUM), empty string = NULL, NVL/COALESCE/ISNULL, MERGE/upsert. Vì sao code chuyển DB bị sai lầm ở chỗ này?',
+a: `**Tóm tắt:** Oracle dùng SEQUENCE, PostgreSQL dùng SEQUENCE/IDENTITY (GENERATED AS IDENTITY), MSSQL dùng IDENTITY; paging: Oracle 12c+ dùng OFFSET/FETCH, cũ dùng ROWNUM, PostgreSQL dùng OFFSET/FETCH, MSSQL dùng OFFSET/FETCH; empty string: Oracle coi '' = NULL, PostgreSQL/MSSQL phân biệt; NULL handling: Oracle NVL, PostgreSQL COALESCE, MSSQL ISNULL/COALESCE; upsert: Oracle MERGE, PostgreSQL INSERT ON CONFLICT, MSSQL MERGE. Chuyển DB thường sai vì giả định hành vi giống nhau.
+
+### Sequence/Identity
+Oracle: {{CREATE SEQUENCE seq}} -> {{seq.NEXTVAL}}, độc lập bảng. {{seq.CURRVAL}} lấy giá trị vừa sinh trong session (phải gọi NEXTVAL trước). PostgreSQL: {{CREATE SEQUENCE seq}} hoặc {{GENERATED AS IDENTITY}} (PG 10+), sequence độc lập. MSSQL: {{IDENTITY(1,1)}} gắn cột, không độc lập. {{lastval()}} PG, {{SCOPE_IDENTITY()}} MSSQL.
+~~~sql
+-- Oracle
+CREATE SEQUENCE seq_order;
+INSERT INTO orders (id, ...) VALUES (seq_order.NEXTVAL, ...);
+
+-- PostgreSQL
+CREATE SEQUENCE seq_order;
+INSERT INTO orders (id, ...) VALUES (nextval('seq_order'), ...);
+-- Hoặc GENERATED AS IDENTITY
+INSERT INTO orders (...) VALUES (...); -- id tự động
+
+-- MSSQL
+CREATE TABLE orders (id BIGINT IDENTITY(1,1) PRIMARY KEY, ...);
+INSERT INTO orders (...) VALUES (...);
+SELECT SCOPE_IDENTITY();
+~~~
+
+### Paging
+Oracle 12c+: {{OFFSET n ROWS FETCH NEXT m ROWS ONLY}}. Cũ: {{ROWNUM}} trong subquery (phức tạp, dễ sai). PostgreSQL: {{LIMIT m OFFSET n}} hoặc chuẩn {{OFFSET n ROWS FETCH NEXT m ROWS ONLY}}. MSSQL: {{OFFSET n ROWS FETCH NEXT m ROWS ONLY}} (2012+). {{OFFSET}} lớn chậm ở cả 3 (phải quét n dòng), keyset pagination tốt hơn.
+
+### Empty string = NULL
+Oracle: '' **bằng** NULL ({{LENGTH('') IS NULL}}). PostgreSQL/MSSQL: '' **khác** NULL. Hệ quả: {{WHERE col = ''}} ở Oracle được hiểu như {{col IS NULL}}, PG/MSSQL chỉ khớp chuỗi rỗng thật; {{UNIQUE}} Oracle cho nhiều '' (vì NULL), PG/MSSQL chỉ cho một ''.
+~~~sql
+-- Oracle: unique cho phép nhiều empty string
+INSERT INTO t(col) VALUES (''); INSERT INTO t(col) VALUES (''); -- THÀNH CÔNG
+-- PostgreSQL/MSSQL: lỗi duplicate key
+~~~
+
+### NULL handling
+Oracle: {{NVL(expr1, expr2)}} (2 tham số). PostgreSQL: {{COALESCE}} (nhiều tham số, chuẩn SQL). MSSQL: {{ISNULL(expr1, expr2)}} (2 tham số, không chuẩn) và {{COALESCE}}. {{COALESCE}} portable nhất.
+~~~sql
+-- Oracle
+NVL(commission, 0)
+-- PostgreSQL
+COALESCE(commission, 0)
+-- MSSQL
+ISNULL(commission, 0) -- hoặc COALESCE
+~~~
+
+### Upsert/MERGE
+Oracle: {{MERGE INTO t USING ... ON (...) WHEN MATCHED THEN UPDATE ... WHEN NOT MATCHED THEN INSERT ...}}.
+PostgreSQL: {{INSERT INTO t (...) VALUES (...) ON CONFLICT (pk) DO UPDATE SET ...}} (ngắn, atomic).
+MSSQL: {{MERGE}} tương tự Oracle, hoặc {{UPSERT}} qua {{INSERT ... ON CONFLICT}} không hỗ trợ (dùng MERGE).
+~~~sql
+-- PostgreSQL (khuyên dùng)
+INSERT INTO accounts (id, balance) VALUES (1, 100)
+ON CONFLICT (id) DO UPDATE SET balance = accounts.balance + 100;
+
+-- Oracle MERGE
+MERGE INTO accounts a
+USING (SELECT 1 AS id, 100 AS amt FROM dual) s
+ON (a.id = s.id)
+WHEN MATCHED THEN UPDATE SET a.balance = a.balance + s.amt
+WHEN NOT MATCHED THEN INSERT (id, balance) VALUES (s.id, s.amt);
+
+-- MSSQL MERGE
+MERGE INTO accounts a
+USING (VALUES (1, 100)) s(id, amt)
+ON (a.id = s.id)
+WHEN MATCHED THEN UPDATE SET a.balance = a.balance + s.amt
+WHEN NOT MATCHED THEN INSERT (id, balance) VALUES (s.id, s.amt);
+~~~
+
+### Lỗi hay gặp khi chuyển DB
+1. Code Oracle dùng {{NVL}} -> PG/MSSQL lỗi. Dùng {{COALESCE}}.
+2. Code giả định empty string khác NULL -> Oracle sai logic unique/WHERE.
+3. {{MERGE}} Oracle/MSSQL cần {{USING}} clause, PG dùng {{ON CONFLICT}} đơn giản hơn.
+4. Sequence Oracle không reset khi truncate; PG sequence độc lập; MSSQL IDENTITY reset bằng {{TRUNCATE}} hoặc {{DBCC CHECKIDENT}}.
+5. {{LAST_INSERT_ID()}} MySQL, {{SCOPE_IDENTITY()}} MSSQL, {{currval}} Oracle, {{lastval()}} PG — không portable.
+
+### Ví dụ đời thực
+Dự án chuyển từ Oracle sang PostgreSQL: code dùng {{NVL}} -> đổi {{COALESCE}}; {{ROWNUM}} paging -> {{OFFSET/FETCH}}; empty string check {{col = ''}} không còn khớp NULL -> thêm {{col IS NULL OR col = ''}}; {{MERGE}} -> {{ON CONFLICT}}; sequence migration: tạo sequence PG, set value = max(id)+1 từ Oracle. Test 2 tuần phát hiện 12 chỗ quên {{COALESCE}} gây NULL propagation.
+
+### Trả lời mẫu khi phỏng vấn
+"Tôi nhớ 5 khác biệt chính: (1) Sequence Oracle/PG độc lập, MSSQL IDENTITY gắn cột; (2) Paging Oracle 12c+ và PG/MSSQL dùng OFFSET/FETCH, Oracle cũ dùng ROWNUM; (3) Oracle '' = NULL, PG/MSSQL khác; (4) NVL Oracle, COALESCE chuẩn, ISNULL MSSQL; (5) Upsert: PG ON CONFLICT gọn, Oracle/MSSQL MERGE phức tạp. Khi chuyển DB tôi không copy-paste SQL, mà viết lại theo chuẩn của DB đích và có test integration so sánh kết quả."
+
+> Senior tip: Đừng viết SQL "chạy được trên cả 3" — nó sẽ kém hiệu năng ở tất cả. Viết theo idiom của DB đang dùng, bọc trong repository pattern, test integration trên DB thật.`,
+  follow: [
+    'Oracle SEQUENCE cache size ảnh hưởng gì khi failover RAC?',
+    'PostgreSQL GENERATED AS IDENTITY có reset khi TRUNCATE không?',
+    'MERGE Oracle có atomic không, và race condition như thế nào?'
+  ],
+  tags: ['Oracle', 'PostgreSQL', 'MSSQL', 'sequence', 'identity', 'paging', 'empty string', 'NULL', 'NVL', 'COALESCE', 'MERGE', 'upsert', 'ON CONFLICT'],
+},
+{
+  id: 'sql-108',
+  topic: 'sql',
+  level: 'senior',
+  q: 'Một nhà máy có 3 ca (sáng/chiều/đêm), 10 dây chuyền. Viết query dùng window function tính: (1) sản lượng tích lũy theo ca trong ngày, (2) hiệu suất so với ca trước (delta %), (3) phát hiện ca nào giảm > 20% so với trung bình 7 ca gần nhất (rolling 7 shifts). Giải thích ROWS vs RANGE, FIRST_VALUE/LAST_VALUE, LAG/LEAD, NTILE.',
+a: `**Tóm tắt:** Window function cho phép tính toán trên cửa sổ dòng mà không GROUP BY làm mất chi tiết. Dùng {{SUM() OVER (PARTITION BY line_id, shift_date ORDER BY shift_id ROWS UNBOUNDED PRECEDING)}} cho tích lũy; {{LAG()}} so với ca trước; {{AVG() OVER (...) ROWS BETWEEN 6 PRECEDING AND CURRENT ROW}} cho trung bình 7 ca gần nhất; {{NTILE(3)}} phân chia hiệu suất 3 ca/ngày. {{ROWS}} đếm dòng vật lý, {{RANGE}} đếm theo giá trị ORDER BY (chỉ dùng cho số/ngày, không dùng cho timestamp có duplicate).
+
+### Schema mẫu
+~~~sql
+CREATE TABLE production_log (
+    id BIGSERIAL PRIMARY KEY,
+    line_id INT NOT NULL,           -- 1..10
+    shift_date DATE NOT NULL,       -- ngày sản xuất
+    shift_id INT NOT NULL,          -- 1=sáng, 2=chiều, 3=đêm
+    output_qty INT NOT NULL,        -- sản lượng ca
+    good_qty INT NOT NULL,          -- đạt chất lượng
+    created_at TIMESTAMPTZ DEFAULT now()
+);
+CREATE INDEX idx_prod_line_date ON production_log (line_id, shift_date, shift_id);
+~~~
+
+### (1) Sản lượng tích lũy theo ca trong ngày
+{{ROWS UNBOUNDED PRECEDING}} tính từ đầu partition tới dòng hiện tại.
+~~~sql
+SELECT
+    line_id, shift_date, shift_id,
+    output_qty,
+    SUM(output_qty) OVER (PARTITION BY line_id, shift_date ORDER BY shift_id
+        ROWS UNBOUNDED PRECEDING) AS cumulative_output,
+    SUM(good_qty) OVER (PARTITION BY line_id, shift_date ORDER BY shift_id
+        ROWS UNBOUNDED PRECEDING) AS cumulative_good
+FROM production_log
+ORDER BY line_id, shift_date, shift_id;
+~~~
+Kết quả: ca 1 = sản lượng ca 1; ca 2 = ca1+ca2; ca 3 = ca1+ca2+ca3.
+
+### (2) Hiệu suất so với ca trước (delta %)
+{{LAG}} lấy giá trị dòng trước trong cùng partition.
+~~~sql
+SELECT
+    line_id, shift_date, shift_id,
+    output_qty,
+    LAG(output_qty) OVER (PARTITION BY line_id ORDER BY shift_date, shift_id) AS prev_shift_qty,
+    CASE WHEN LAG(output_qty) OVER (PARTITION BY line_id ORDER BY shift_date, shift_id) = 0 THEN NULL
+         ELSE round(100.0 * (output_qty - LAG(output_qty) OVER (PARTITION BY line_id ORDER BY shift_date, shift_id))
+                          / LAG(output_qty) OVER (PARTITION BY line_id ORDER BY shift_date, shift_id), 2)
+    END AS pct_change_vs_prev_shift
+FROM production_log;
+~~~
+Tối ưu: dùng CTE tính LAG một lần.
+
+### (3) Phát hiện ca giảm > 20% so với trung bình 7 ngày
+{{AVG() OVER ... ROWS BETWEEN 6 PRECEDING AND CURRENT ROW}} cửa sổ trượt 7 ca (kể cả ca hiện tại).
+~~~sql
+WITH stats AS (
+    SELECT
+        line_id, shift_date, shift_id, output_qty,
+        AVG(output_qty) OVER (PARTITION BY line_id ORDER BY shift_date, shift_id
+            ROWS BETWEEN 6 PRECEDING AND CURRENT ROW) AS avg_7_shifts
+    FROM production_log
+)
+SELECT
+    line_id, shift_date, shift_id, output_qty, avg_7_shifts,
+    round(100.0 * (output_qty - avg_7_shifts) / NULLIF(avg_7_shifts, 0), 2) AS pct_vs_avg_7
+FROM stats
+WHERE output_qty < avg_7_shifts * 0.8  -- giảm > 20%
+ORDER BY line_id, shift_date, shift_id;
+~~~
+
+### ROWS vs RANGE — quan trọng
+- {{ROWS}}: đếm **số dòng vật lý**. {{ROWS BETWEEN 6 PRECEDING AND CURRENT ROW}} = 7 dòng gần nhất. An toàn cho mọi ORDER BY.
+- {{RANGE}}: đếm theo **giá trị ORDER BY**. {{RANGE BETWEEN INTERVAL '6 days' PRECEDING AND CURRENT ROW}} lấy các dòng có shift_date trong 6 ngày trước. Chỉ dùng cho ORDER BY kiểu số/ngày, **không** dùng cho timestamp có duplicate (sẽ gom toàn bộ dòng cùng timestamp).
+- Mặc định nếu không viết: {{RANGE UNBOUNDED PRECEDING}} (khác với ROWS!). Luôn viết tường minh {{ROWS}} cho cửa sổ trượt dòng.
+
+### FIRST_VALUE / LAST_VALUE
+{{FIRST_VALUE(output_qty) OVER (PARTITION BY line_id, shift_date ORDER BY shift_id)}} = sản lượng ca đầu tiên trong ngày.
+{{LAST_VALUE}} cần {{ROWS BETWEEN UNBOUNDED PRECEDING AND UNBOUNDED FOLLOWING}} mới lấy đúng dòng cuối partition (mặc định frame dừng ở current row).
+~~~sql
+SELECT DISTINCT ON (line_id, shift_date)
+    line_id, shift_date,
+    FIRST_VALUE(output_qty) OVER (PARTITION BY line_id, shift_date ORDER BY shift_id) AS first_shift_qty,
+    LAST_VALUE(output_qty) OVER (PARTITION BY line_id, shift_date ORDER BY shift_id
+        ROWS BETWEEN UNBOUNDED PRECEDING AND UNBOUNDED FOLLOWING) AS last_shift_qty
+FROM production_log;
+~~~
+
+### NTILE(3) — phân chia ba nhóm hiệu suất theo ngày
+~~~sql
+SELECT
+    line_id, shift_date, shift_id, output_qty,
+    NTILE(3) OVER (PARTITION BY line_id, shift_date ORDER BY output_qty DESC) AS performance_tertile
+FROM production_log;
+-- 1 = ca tốt nhất trong ngày, 3 = ca kém nhất trong ngày
+~~~
+
+### Lỗi hay gặp
+1. Quên {{PARTITION BY}} -> tính trên toàn bảng, sai ngữ nghĩa.
+2. Dùng {{RANGE}} cho timestamp có duplicate -> frame gom hết dòng cùng timestamp, kết quả nhảy.
+3. {{LAST_VALUE}} không có frame đầy đủ -> trả giá trị dòng hiện tại thay vì dòng cuối.
+4. {{LAG/LEAD}} truy cập ngoài partition -> trả NULL (không báo lỗi), dễ lầm tưởng dữ liệu thiếu.
+5. Window function không dùng được trong WHERE -> phải bọc CTE/subquery.
+
+### Ví dụ đời thực
+Nhà máy 10 dây chuyền, 3 ca/ngày, 6 tháng dữ liệu (~54.000 bản ghi). Query báo cáo hiệu suất ca: trước đây dùng 3 CTE + self-join, chạy 4.2 giây. Chuyển sang window function (cumulative SUM, LAG, AVG 7 ca, NTILE(3)): một CTE duy nhất, chạy 180 ms. Phát hiện ca đêm dây chuyền 7 giảm 25% so với trung bình 7 ca liên tục 3 ngày -> bảo trì dự phòng thay giảm áp suất bơm, tránh downtime 4 tiếng.
+
+### Trả lời mẫu khi phỏng vấn
+"Tôi dùng window function thay vì self-join cho bài toán chuỗi thời gian trên cùng thực thể. Tích lũy: SUM(...) OVER (PARTITION BY line,date ORDER BY shift ROWS UNBOUNDED PRECEDING). So với ca trước: LAG(output) OVER (...). Trung bình 7 ca trượt: AVG(...) OVER (ROWS BETWEEN 6 PRECEDING AND CURRENT ROW). Phân chia ba nhóm: NTILE(3) PARTITION BY line,date. Luôn dùng ROWS cho cửa sổ đếm dòng, tránh RANGE với timestamp. Window function không dùng trong WHERE nên bọc CTE. Kết quả: query 180 ms thay vì 4 giây, code gọn, dễ bảo trì."
+
+> Senior tip: Window function là "SQL nâng cao" nhưng thực tế chỉ là cách viết ngắn gọn cho self-join. Hãy thành thạo ROWS vs RANGE và frame mặc định (RANGE UNBOUNDED PRECEDING) — đó là nơi bug ẩn nhiều nhất.`,
+  follow: [
+    'Tại sao RANGE UNBOUNDED PRECEDING là frame mặc định, và nó gây bug gì với LAG?',
+    'NTILE(3) phân chia như thế nào khi số dòng không chia hết 3?',
+    'Cách tính "trung bình 7 ngày làm việc" (bỏ cuối tuần) thay vì 7 ca liên tiếp?'
+  ],
+  tags: ['window function', 'SUM OVER', 'LAG', 'LEAD', 'AVG OVER', 'ROWS', 'RANGE', 'FIRST_VALUE', 'LAST_VALUE', 'NTILE', 'PARTITION BY', 'frame clause'],
+},
+{
+  id: 'sql-109',
+  topic: 'sql',
+  level: 'lead',
+  q: 'Hệ thống truy xuất nguồn gốc (traceability) lot sản phẩm: bảng lot(id, parent_lot_id, qty, created_at). Một lot con có thể phân tách từ nhiều lot cha (nhập nguyên liệu), và một lot cha có thể chia thành nhiều lot con (đóng gói). Viết recursive CTE tìm tất cả tổ tiên (cha, ông, cụ...) của một lot cho đến gốc, và tất cả hậu duệ (con, cháu...) từ một lot gốc. So sánh PostgreSQL recursive CTE vs Oracle CONNECT BY, và giải thích cycle detection.',
+a: `**Tóm tắt:** Recursive CTE (PostgreSQL/SQL Server) dùng {{WITH RECURSIVE}}: anchor (gốc) -> recursive term (lặp) -> UNION. Oracle {{CONNECT BY PRIOR}} ngắn gọn hơn nhưng ít portable. Cycle detection: PG14+ dùng mệnh đề {{CYCLE}} hoặc tự kiểm tra bằng {{ARRAY}} lưu đường đi; Oracle dùng {{NOCYCLE}} và {{CONNECT_BY_ISCYCLE}}. Đồ thị lot là DAG (có thể nhiều cha, nhiều con) -> cần CTE hai chiều (theo parent_lot_id và theo id).
+
+### Schema lot traceability
+~~~sql
+CREATE TABLE lot (
+    id BIGSERIAL PRIMARY KEY,
+    code VARCHAR(50) NOT NULL UNIQUE,     -- mã lot nghiệp vụ
+    parent_lot_id BIGINT REFERENCES lot(id), -- NULL = lot gốc (nguyên liệu nhập)
+    qty NUMERIC(19,3) NOT NULL,
+    unit VARCHAR(10) NOT NULL DEFAULT 'KG',
+    status VARCHAR(20) NOT NULL DEFAULT 'ACTIVE', -- ACTIVE, CONSUMED, ARCHIVED
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    -- một lot có thể có nhiều cha (trộn nguyên liệu) -> cần bảng trung gian
+    -- nhưng ví dụ đơn giản: parent_lot_id đơn (một cha)
+);
+-- Mô hình thực tế nhiều-nhiều: lot_mix(lot_id, parent_lot_id, qty_contributed)
+CREATE TABLE lot_mix (
+    lot_id BIGINT NOT NULL REFERENCES lot(id),
+    parent_lot_id BIGINT NOT NULL REFERENCES lot(id),
+    qty_contributed NUMERIC(19,3) NOT NULL,
+    PRIMARY KEY (lot_id, parent_lot_id)
+);
+~~~
+
+### (1) Tìm tất cả tổ tiên (ancestors) của một lot — đi ngược lên gốc
+~~~sql
+WITH RECURSIVE ancestors AS (
+    -- Anchor: lot xuất phát
+    SELECT l.id, l.code, l.parent_lot_id, 1 AS level, l.code::TEXT AS path
+    FROM lot l
+    WHERE l.id = 12345  -- lot cần truy xuất
+    
+    UNION ALL
+    
+    -- Recursive term: tìm cha của dòng vừa tìm được
+    SELECT l.id, l.code, l.parent_lot_id, a.level + 1, a.path || ' > ' || l.code
+    FROM lot l
+    JOIN ancestors a ON l.id = a.parent_lot_id
+    WHERE a.level < 20  -- giới hạn độ sâu, phòng cycle
+)
+SELECT id, code, parent_lot_id, level, path
+FROM ancestors
+WHERE level > 1  -- bỏ qua chính lot xuất phát
+ORDER BY level;
+~~~
+Với bảng {{lot_mix}} (nhiều cha):
+~~~sql
+WITH RECURSIVE ancestors AS (
+    SELECT l.id, l.code, lm.parent_lot_id, 1 AS level, l.code::TEXT AS path
+    FROM lot l
+    JOIN lot_mix lm ON lm.lot_id = l.id
+    WHERE l.id = 12345
+    
+    UNION ALL
+    
+    SELECT l.id, l.code, lm.parent_lot_id, a.level + 1, a.path || ' > ' || l.code
+    FROM lot l
+    JOIN lot_mix lm ON lm.lot_id = l.id
+    JOIN ancestors a ON l.id = a.parent_lot_id
+    WHERE a.level < 20
+)
+SELECT * FROM ancestors WHERE level > 1;
+~~~
+
+### (2) Tìm tất cả hậu duệ (descendants) từ một lot gốc — đi xuôi xuống
+~~~sql
+WITH RECURSIVE descendants AS (
+    -- Anchor: lot gốc
+    SELECT l.id, l.code, l.parent_lot_id, 1 AS level, l.code::TEXT AS path
+    FROM lot l
+    WHERE l.id = 999  -- lot gốc
+    
+    UNION ALL
+    
+    -- Recursive term: tìm con của dòng vừa tìm được
+    SELECT l.id, l.code, l.parent_lot_id, d.level + 1, d.path || ' > ' || l.code
+    FROM lot l
+    JOIN descendants d ON l.parent_lot_id = d.id
+    WHERE d.level < 20
+)
+SELECT id, code, parent_lot_id, level, path
+FROM descendants
+WHERE level > 1
+ORDER BY level;
+~~~
+Với {{lot_mix}}: JOIN {{lot_mix lm ON lm.parent_lot_id = d.id}} thay vì {{l.parent_lot_id = d.id}}.
+
+### Cycle detection — phòng lặp vô tận
+Dữ liệu sai có thể tạo cycle: A -> B -> C -> A. Recursive CTE không có cycle detection sẽ chạy mãi (hoặc tới max recursion).
+
+**PostgreSQL 14+**: {{CYCLE}} clause (chuẩn SQL).
+~~~sql
+WITH RECURSIVE ancestors AS (
+    SELECT l.id, l.code, l.parent_lot_id, 1 AS level, ARRAY[l.id] AS path
+    FROM lot l WHERE l.id = 12345
+    
+    UNION ALL
+    
+    SELECT l.id, l.code, l.parent_lot_id, a.level + 1, a.path || l.id
+    FROM lot l
+    JOIN ancestors a ON l.id = a.parent_lot_id
+    WHERE NOT l.id = ANY(a.path)  -- kiểm tra cycle bằng mảng
+    AND a.level < 20
+)
+SELECT * FROM ancestors;
+~~~
+**PostgreSQL 14+ CYCLE clause** (tự động):
+~~~sql
+WITH RECURSIVE ancestors AS (
+    SELECT l.id, l.code, l.parent_lot_id, 1 AS level, ARRAY[l.id] AS path
+    FROM lot l WHERE l.id = 12345
+    
+    UNION ALL
+    
+    SELECT l.id, l.code, l.parent_lot_id, a.level + 1, a.path || l.id
+    FROM lot l
+    JOIN ancestors a ON l.id = a.parent_lot_id
+)
+CYCLE id SET is_cycle USING path  -- tự dừng khi gặp id đã có trong path
+SELECT * FROM ancestors WHERE NOT is_cycle;
+~~~
+**Oracle**: {{CONNECT BY NOCYCLE PRIOR parent_lot_id = id}} + {{CONNECT_BY_ISCYCLE}} pseudo-column.
+~~~sql
+SELECT id, code, parent_lot_id, LEVEL, SYS_CONNECT_BY_PATH(code, ' > ') AS path,
+       CONNECT_BY_ISCYCLE AS is_cycle
+FROM lot
+START WITH id = 12345
+CONNECT BY NOCYCLE PRIOR parent_lot_id = id;
+~~~
+
+### So sánh Recursive CTE vs CONNECT BY
+| Tiêu chí | Recursive CTE (PG, SQL Server) | CONNECT BY (Oracle) |
+|---|---|---|
+| Chuẩn SQL | Có (SQL:1999) | Không (Oracle proprietary) |
+| Cú pháp | Dài, tường minh (anchor + recursive) | Ngắn, khai báo (START WITH + CONNECT BY) |
+| Cycle detection | {{CYCLE}} clause (PG14+), hoặc tự viết {{NOT IN path}} | {{NOCYCLE}} + {{CONNECT_BY_ISCYCLE}} |
+| Multiple parents | Dễ (JOIN bảng trung gian) | Khó (CONNECT BY chỉ 1 cha) |
+| Performance | Tương đương | Tương đương |
+| Portable | Có (PG, SQL Server, MySQL 8+, DB2) | Chỉ Oracle |
+
+**Kết luận**: Viết Recursive CTE cho code portable. Oracle 12c+ cũng hỗ trợ Recursive CTE.
+
+### Tính tổng qty theo cây (rollup)
+~~~sql
+WITH RECURSIVE tree AS (
+    SELECT l.id, l.code, l.parent_lot_id, l.qty, 1 AS level
+    FROM lot l WHERE l.id = 999
+    
+    UNION ALL
+    
+    SELECT l.id, l.code, l.parent_lot_id, l.qty, t.level + 1
+    FROM lot l JOIN tree t ON l.parent_lot_id = t.id
+    WHERE t.level < 20
+)
+SELECT SUM(qty) AS total_qty_descendants FROM tree WHERE level > 1;
+~~~
+
+### Lỗi hay gặp
+1. Quên giới hạn độ sâu ({{WHERE level < 20}}) -> truy vấn chạy mãi đến hết tài nguyên/bị hủy khi có cycle.
+2. Dùng {{UNION}} thay {{UNION ALL}} -> loại trùng dòng, chậm và sai nếu có đường đi khác nhau tới cùng node.
+3. Anchor không chọn đúng cột -> recursive term JOIN sai.
+4. Cycle detection dùng {{NOT IN}} với subquery chậm -> dùng {{ARRAY}} hoặc {{CYCLE}} clause.
+5. Recursive CTE trong VIEW: PostgreSQL cho phép (từ 9.3+), nhưng một số DB khác không hỗ trợ -> kiểm tra tài liệu DB đích.
+
+### Ví dụ đời thực
+Nhà máy thực phẩm 50.000 lot, đồ thị trộn/chia 3 cấp. Khách phàn nàn lot L-8888 có dị vật. Dùng recursive CTE tìm tổ tiên: 0.8 giây trả 12 lot nguyên liệu gốc (gồm 3 lô gà nhập ngày 12/11). Tìm hậu duệ từ 3 lô gà đó: 1.2 giây trả 84 lot thành phẩm (đã bán 67 lot). Thu hồi 67 lot trong 4 tiếng. Oracle CONNECT BY trước đây mất 3 giây và không hỗ trợ nhiều cha (lot_mix) -> phải viết PL/SQL phức tạp. Chuyển sang recursive CTE trên PostgreSQL: code ngắn 60%, hỗ trợ trộn nguyên liệu tự nhiên.
+
+### Trả lời mẫu khi phỏng vấn
+"Tôi dùng Recursive CTE {{WITH RECURSIVE}}: anchor chọn lot xuất phát, recursive term JOIN ngược (tìm cha) hoặc xuôi (tìm con) qua parent_lot_id hoặc bảng lot_mix nếu nhiều cha. Luôn có {{WHERE level < 20}} và cycle detection: PG14+ dùng {{CYCLE id SET is_cycle USING path}}, cũ hơn dùng {{ARRAY}} lưu path kiểm tra {{NOT id = ANY(path)}}. Oracle CONNECT BY ngắn hơn nhưng proprietary, không hỗ trợ nhiều cha. Với traceability lot, recursive CTE là lựa chọn chuẩn, portable, và xử lý đồ thị DAG tự nhiên."
+
+> Senior tip: Recursive CTE thực thi breadth-first hoặc depth-first tuỳ planner. Để ổn định, hãy thêm {{ORDER BY level}} ở truy vấn ngoài. Và nhớ: anchor + recursive term phải trả VÙNG CÙNG SỐ CỘT, CÙNG KIỂU — đây là lỗi thường gặp nhất.`,
+  follow: [
+    'Recursive CTE thực thi breadth-first hay depth-first, và ảnh hưởng gì tới cycle detection?',
+    'Cách tìm "lowest common ancestor" của hai lot trong cây traceability?',
+    'Khi nào nên dùng materialized path (lưu path dạng chuỗi) thay vì recursive CTE truy vấn?'
+  ],
+  tags: ['recursive CTE', 'WITH RECURSIVE', 'CONNECT BY', 'traceability', 'lot', 'ancestors', 'descendants', 'cycle detection', 'CYCLE clause', 'lot_mix', 'DAG'],
+},
 );
