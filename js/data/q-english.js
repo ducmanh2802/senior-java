@@ -11766,4 +11766,303 @@ Think of our payment system like a checkout counter at a store. Normally, each c
   tags: ['communication', 'bug', 'client', 'explanation', 'non-technical'],
   lang: 'en',
 },
+{
+  id: 'english-231',
+  topic: 'english',
+  level: 'senior',
+  q: 'You must tell a Korean enterprise client that a milestone will slip by about two weeks. How do you structure the message and which options do you offer?',
+  a: `**Tóm tắt:** Với khách Hàn/Nhật, không báo một mốc trễ đơn lẻ rồi chờ phản đối. Cấu trúc chuẩn: **cảnh báo sớm bằng văn bản → sự thật (trễ bao lâu, vì sao) → 2–3 phương án A/B/C kèm rủi ro → đề nghị khách chọn → xác nhận lại bằng email**. Mục tiêu là để khách **cùng quyết định** thay vì bị áp đặt, giữ thể diện cho cả hai bên, và mọi trao đổi đều có bằng chứng (evidence) nếu sau này có tranh cãi.
+
+### Cơ chế bên trong từng bước và VÌ SAO
+
+1. **Gửi văn bản trước, gọi sau (written-first).** Khách Hàn/Nhật coi trọng sự trang trọng và thường cần thời gian đọc kỹ trước khi phản hồi. Một email rõ ràng cho họ thời gian chuẩn bị, còn cuộc gọi sau đó chỉ để chốt. Gọi trước rồi email "cho có" dễ khiến khách thấy bị dồn.
+2. **Nêu con số cụ thể.** "Trễ khoảng hai tuần" đáng tin hơn "trễ một chút". Nêu cả **nguyên nhân ngắn gọn** (ví dụ: dữ liệu thật làm lộ sai định dạng file của ngân hàng) để khách hiểu đây là rủi ro thật, không phải làm việc chậm.
+3. **Đưa 2–3 phương án, không đưa một.** Người Hàn/Nhật ra quyết định theo nhóm và theo cấp; đưa lựa chọn giúp họ không mất mặt khi phải "chấp nhận" một mình. Mỗi phương án ghi rõ: ngày mới, phạm vi, rủi ro.
+4. **Giữ thể diện (save face).** Tránh câu "we failed to estimate" (chúng ta ước lượng sai). Dùng "we uncovered an issue that needs more time" (chúng ta phát hiện vấn đề cần thêm thời gian). Không đổ lỗi cho cá nhân hay cho một vendor.
+5. **Xác nhận bằng văn bản và theo dõi.** Sau khi khách chọn, gửi email tóm tắt lựa chọn và cam kết cập nhật hằng ngày cho tới ngày go-live.
+
+### Code minh hoạ: dựng email báo trễ kèm 3 phương án
+
+~~~java
+// Mẫu nhỏ: dựng email báo trễ deadline kèm 3 phương án cho khách chọn.
+// Ý tưởng: KHÔNG gửi một mốc mới duy nhất; đưa A/B/C để khách cùng quyết.
+import java.time.LocalDate;
+import java.util.List;
+
+record DelayOption(String label, LocalDate date, String scope, String risk) {}
+
+class DelayNotice {
+  static String build(String client, String feature, int slipDays,
+                      List<DelayOption> options) {
+    var sb = new StringBuilder();
+    sb.append("Dear ").append(client).append(",\\n\\n")
+      .append("I want to give you an early update on ").append(feature).append(".\\n")
+      .append("The current plan needs about ").append(slipDays)
+      .append(" more working days than expected. Please find our options:\\n\\n");
+    for (var o : options) {
+      // Mỗi phương án ghi rõ ngày, phạm vi và rủi ro để khách cân nhắc.
+      sb.append(o.label()).append(") ").append(o.date())
+        .append(" - scope: ").append(o.scope())
+        .append(", risk: ").append(o.risk()).append("\\n");
+    }
+    return sb.toString();
+  }
+}
+~~~
+
+### Bảng trade-off: cách báo trễ
+
+| Cách báo | Ưu | Nhược | Khi nào dùng |
+|---|---|---|---|
+| Một mốc mới duy nhất | Nhanh, gọn | Khách dễ phản đối, không có đường lùi | Trễ rất nhỏ (1–2 ngày), ít ảnh hưởng |
+| 2–3 phương án A/B/C | Khách cùng chọn, giữ thể diện | Cần chuẩn bị số liệu kỹ | Trễ từ một tuần, ảnh hưởng go-live |
+| Chỉ gọi, không văn bản | Nhanh | Không có bằng chứng, dễ hiểu lầm | Gần như không bao giờ nên dùng với khách lớn |
+
+### Pitfall thực tế và lỗi hay gặp
+
+- **Báo sát deadline mới một ngày** khiến khách không kịp điều chỉnh kế hoạch downstream (các bên liên quan) → mất niềm tin. Cảnh báo càng sớm càng tốt.
+- **Giấu bớt mức trễ** để "an toàn", rồi trễ thêm lần hai → thiệt hại gấp đôi.
+- **Tự ý quyết một phương án** thay vì để khách chọn → khách mất quyền quyết và dễ từ chối.
+- **Quên nhắc tác động tới các bên khác** (đối tác, kế toán) → khách bất ngờ.
+- **Lỗi tiếng Anh hay gặp:** nói "we failed to estimate" nghe như nhận lỗi nặng; hãy nói "we uncovered an issue that needs more time". Phát âm **milestone** /ˈmaɪlstəʊn/ (nhấn âm đầu), **preference** /ˈprefrəns/.
+
+### Ví dụ đời thực
+
+Một dự án thanh toán cho khách Hàn có mốc go-live cố định. Tuần thứ 6, kiểm thử tích hợp phát hiện sai định dạng file với ngân hàng, chỉ lộ ra trên dữ liệu thật. Tôi gửi email trong vòng 2 giờ: trễ khoảng 2 tuần, kèm 3 phương án (giữ nguyên scope, lùi 2 tuần / go-live sớm với settlement lõi, báo cáo sau 2 tuần / thêm 2 kỹ sư để rút còn 1 tuần, tăng chi phí). Khách chọn phương án 2, giữ được ngày go-live, phần báo cáo giao sau đúng hẹn. Không có email phản đối, và khách chủ động cảm ơn vì "được tham gia quyết định".
+
+### Trả lời mẫu khi phỏng vấn
+
+Thank you for your patience. I want to give you an early update rather than wait until the deadline. The settlement module will need about two additional weeks, because our integration test uncovered a mismatch with the bank's file format that only appears with real data. I want to be transparent about that today. I have prepared three options so you can choose what fits your plans. Option A: keep the full scope and move go-live to the twenty-eighth, with no reduction in features. Option B: launch on the fourteenth with core settlement only, and add the reporting screens two weeks later. Option C: add two engineers to compress testing, which brings the date to the twenty-second but needs your approval on the extra cost. I recommend Option B, because it protects the launch date and the reporting can follow safely. Could you let me know your preference by Thursday? I will confirm the chosen plan in writing and send a short daily status until we go live. Please feel free to call me if you would like to discuss.
+
+> Senior tip: Với khách Hàn/Nhật, nguyên tắc là **cho lựa chọn chứ không áp đặt**, và **văn bản trước – giọng sau**. Đừng bao giờ nói "we failed to estimate"; hãy nói "we uncovered an issue that needs more time". Luôn có 2–3 phương án kèm ngày, phạm vi, rủi ro, và kết bằng "could you let me know your preference by ..." rồi xác nhận lại bằng email. Đó là cách giữ thể diện cho khách và giữ bằng chứng cho mình.`,
+  follow: [
+    'What if the client rejects all three options and insists on the original date?',
+    'How do you handle a client who stops replying to your delay emails?',
+    'How do you adapt this message for a Japanese client versus a Korean one?',
+  ],
+  tags: ['communication', 'client', 'delay', 'korean-japanese', 'options'],
+  lang: 'en',
+},
+{
+  id: 'english-232',
+  topic: 'english',
+  level: 'lead',
+  q: 'Two emails have not cleared up a Japanese client\'s requirement. In a call, how do you ask again without making them lose face, and how do you confirm you understood?',
+  a: `**Tóm tắt:** Không nói "I don't understand" hay "your requirement is unclear" vì điều đó làm khách mất mặt. Thay vào đó **nhận trách nhiệm về sự nhầm lẫn** ("I want to make sure I got it right"), **diễn đạt lại** điều mình nghe (paraphrase), **đưa 2–3 cách hiểu cụ thể để khách chọn** thay vì câu hỏi mở, rồi **xác nhận bằng văn bản** sau cuộc gọi.
+
+### Cơ chế bên trong từng bước và VÌ SAO
+
+1. **Nhận lỗi về phía mình, không về phía khách.** Câu "I want to make sure I explain this correctly on our side" chuyển sự thiếu rõ ràng thành trách nhiệm của bạn. Khách không phải "nói lại cho rõ" mà chỉ cần gật/xác nhận.
+2. **Diễn đạt lại (paraphrase) điều vừa nghe.** "So if I understand, the refund is allowed within thirty days, and after that it goes to manual review — is that right?" Việc này cho khách nghe lại chính ý của họ bằng từ ngữ của bạn; nếu sai, họ sửa nhẹ nhàng.
+3. **Đưa lựa chọn đóng thay vì câu hỏi mở.** "Should the system reject it, or should it create a task for an operator?" Dễ trả lời hơn nhiều so với "What should happen?". Người Nhật/Hàn thường ngại nói "không" trực tiếp, nên câu hỏi có sẵn phương án giúp họ chọn mà không mất mặt.
+4. **Lặp lại quyết định trong một câu và ghi biên bản.** Sau khi khách xác nhận, nhắc lại: "So we will auto-approve within thirty days, and route later requests to manual review."
+5. **Gửi email xác nhận ngắn.** "Please confirm: 1) auto-approve within 30 days; 2) after 30 days, create a manual task." Yêu cầu trả lời "yes" hoặc "no" cho từng dòng.
+
+### Code minh hoạ: biến yêu cầu mơ hồ thành tiêu chí chấp nhận
+
+~~~java
+// Mô hình hoá requirement mơ hồ thành tiêu chí chấp nhận (Given/When/Then),
+// để câu hỏi xác nhận là "đúng/sai" thay vì "bạn nói rõ lại đi".
+import java.util.List;
+
+record Acceptance(String given, String when, String then) {}
+
+class Clarifier {
+  // Trả về câu xác nhận lịch sự: paraphrase + đề nghị xác nhận đúng/sai.
+  static String confirm(Acceptance c) {
+    return "So if I understand, when " + c.when()
+      + ", we should " + c.then() + ". Is that correct?";
+  }
+
+  static void main(String[] args) {
+    var a = new Acceptance("a refund is requested",
+      "within 30 days of purchase",
+      "auto-approve and notify the customer");
+    System.out.println(Clarifier.confirm(a));
+  }
+}
+~~~
+
+### Bảng trade-off: cách hỏi lại
+
+| Cách hỏi | Ưu | Nhược | Khi nào dùng |
+|---|---|---|---|
+| Hỏi mở ("What happens if...?") | Linh hoạt | Khách dễ trả lời chung chung, khó chốt | Khi chưa biết bắt đầu từ đâu |
+| Đưa 2–3 cách hiểu để chọn | Dễ trả lời, chốt nhanh, giữ thể diện | Cần bạn hiểu đủ để nêu phương án | Phần lớn requirement mơ hồ |
+| Chỉ gật đầu rồi code | Nhanh | Rủi ro làm lại gấp 10 lần | Gần như không bao giờ nên |
+
+### Pitfall thực tế và lỗi hay gặp
+
+- **Hỏi "Is that clear?"** — khách ngại nói "chưa rõ" nên luôn gật. Hãy hỏi "Does that match your expectation?" (có đúng ý anh/chị không).
+- **Cãi "requirement của anh/chị không rõ"** — trực tiếp và làm mất mặt. Dùng "I want to make sure I got it right".
+- **Không ghi lại quyết định** → ba tuần sau tranh cãi "anh đã nói khác". Biên bản + email là bằng chứng.
+- **Lỗi tiếng Anh hay gặp:** nói "I can't understand you" nghe như đổ lỗi; hãy nói "Could you help me confirm my understanding?". Phát âm **clarify** /ˈklærɪfaɪ/, **paraphrase** /ˈpærəfreɪz/.
+
+### Ví dụ đời thực
+
+Một khách Nhật yêu cầu "dashboard realtime cho operator" qua hai email nhưng vẫn mơ hồ: realtime là 1 giây hay 30 giây? Bao nhiêu operator? Trong buổi họp, tôi không hỏi "chưa rõ chỗ nào" mà nói: "So if I understand, operators need to see new orders within thirty seconds, for about fifty concurrent users. Is that correct?" Khách xác nhận 30 giây, 50 người. Tôi làm spike polling 30 giây thay vì WebSocket, tiết kiệm 2 tuần. Quyết định được ghi vào biên bản và email xác nhận, không phát sinh tranh cãi về sau.
+
+### Trả lời mẫu khi phỏng vấn
+
+Fair question. I try never to say "I don't understand" or "your requirement is unclear", because that can cause a loss of face. Instead I take responsibility for the confusion. I say, "I want to make sure I got this right on our side", and then I paraphrase what I heard: "So if I understand, the refund should be allowed within thirty days, and after that it goes to manual review — is that correct?" I offer two or three concrete interpretations instead of an open question, because open questions are hard to answer politely. For example: "Should the system reject it, or should it create a task for an operator?" When they confirm, I repeat the decision in one sentence and note it in the minutes. After the call I send a short email with the confirmed points and ask for a simple yes or no. In Japanese and Korean teams, a written confirmation is not bureaucracy; it is how we protect the relationship and avoid rework. This approach reduced our requirement-related rework from roughly thirty percent to under ten.
+
+> Senior tip: Với khách Nhật/Hàn, "mặt" (face) quan trọng hơn việc bạn đúng. Đừng bao giờ nói "anh/chị nói không rõ" — hãy nói "I want to make sure I got it right". Đưa lựa chọn đóng thay vì câu hỏi mở, paraphrase lại, rồi chốt bằng email có dòng "please confirm". Sự rõ ràng là trách nhiệm của người làm, không phải của khách.`,
+  follow: [
+    'What if the client keeps answering vaguely even after you paraphrase?',
+    'How do you confirm understanding when there is a language barrier in the room?',
+    'How do you handle a requirement that keeps changing after you confirmed it?',
+  ],
+  tags: ['communication', 'requirements', 'clarify', 'japanese-client', 'lead'],
+  lang: 'en',
+},
+{
+  id: 'english-233',
+  topic: 'english',
+  level: 'senior',
+  q: 'How do you write a formal incident report to a Korean enterprise client after a two-hour outage? What sections, tone, and follow-up do you use?',
+  a: `**Tóm tắt:** Báo cáo sự cố cho khách doanh nghiệp là **văn bản chính thức, có cấu trúc**: tóm tắt + mức độ nghiêm trọng → **tác động tới khách bằng con số** → dòng thời gian (timeline) → nguyên nhân gốc (root cause) ngắn gọn → hành động đã làm và sẽ làm (kèm người chịu trách nhiệm và hạn) → lời xin lỗi đúng mực. Gửi trong 24 giờ, xác nhận đã nhận bằng điện thoại, và họp review trong vòng một tuần.
+
+### Cơ chế bên trong từng bước và VÌ SAO
+
+1. **Sáu phần cố định.** Khách doanh nghiệp (nhất là Hàn/Nhật) cần một tài liệu để lưu hồ sơ và báo cáo nội bộ. Cấu trúc lặp lại giúp họ đối chiếu nhanh: summary, impact, timeline, root cause, actions, prevention.
+2. **Tác động bằng con số.** "Khoảng 12.000 giao dịch lỗi trong 2 giờ" đáng tin hơn "một số giao dịch bị ảnh hưởng". Khách cần con số để quyết định có phạt hợp đồng (penalty) hay không.
+3. **Nguyên nhân gốc một–hai câu, tránh sâu kỹ thuật.** Khách không cần "thread pool cạn kiệt do logging đồng bộ"; họ cần "một thay đổi cấu hình gần đây làm tăng thời gian xử lý vượt giới hạn".
+4. **Hành động có người và hạn.** "Chúng tôi sẽ thêm alert" là chung chung. "Nguyễn Văn A thêm alert ngưỡng 80% trước 30/6" mới đo được và tạo trách nhiệm.
+5. **Giọng văn: sự thật + nhận trách nhiệm, không phòng thủ.** Xin lỗi một lần cho tác động, không thanh minh, không đổ lỗi cho cá nhân hay vendor. Với khách Hàn, văn phong trang trọng và khiêm tốn.
+6. **Follow-up.** Gửi báo cáo trong 24 giờ, gọi xác nhận đã nhận, họp review trong một tuần để đi qua từng hành động.
+
+### Code minh hoạ: dựng báo cáo sự cố 6 phần
+
+~~~java
+// Dựng báo cáo sự cố 6 phần cho khách doanh nghiệp.
+// Nguyên tắc: sự thật + con số + hành động có người chịu trách nhiệm và hạn.
+import java.time.Instant;
+import java.util.List;
+
+record Action(String owner, String due, String what) {}
+
+class IncidentReport {
+  static String build(String summary, Instant start, Instant end,
+                      String impact, String rootCause, List<Action> actions) {
+    var sb = new StringBuilder();
+    sb.append("Incident summary: ").append(summary).append("\\n")
+      .append("Window: ").append(start).append(" - ").append(end).append("\\n")
+      .append("Customer impact: ").append(impact).append("\\n")
+      .append("Root cause: ").append(rootCause).append("\\n")
+      .append("Preventive actions:\\n");
+    for (var a : actions) {
+      sb.append("- ").append(a.what())
+        .append(" (owner: ").append(a.owner()).append(", due: ").append(a.due()).append(")\\n");
+    }
+    return sb.toString();
+  }
+}
+~~~
+
+### Bảng trade-off: kênh báo cáo sự cố
+
+| Kênh | Ưu | Nhược | Khi nào dùng |
+|---|---|---|---|
+| Email/formal report | Có bằng chứng, lưu hồ sơ | Chậm hơn, khách cần đọc kỹ | Luôn dùng với khách doanh nghiệp |
+| Cuộc gọi | Nhanh, giải thích được ngay | Không có bằng chứng | Sau khi gửi văn bản, để chốt |
+| Chỉ họp, không văn bản | Thân thiện | Dễ hiểu lầm, không truy vết được | Không nên với sự cố nghiêm trọng |
+
+### Pitfall thực tế và lỗi hay gặp
+
+- **Gửi báo cáo sau nhiều ngày** → khách tự phát hiện, mất niềm tin. Mục tiêu là trong 24 giờ, kể cả khi chưa có root cause cuối cùng (gửi bản "sơ bộ").
+- **Che nhẹ tác động** để đỡ bị phạt → khi khách tự đo được số liệu thật, thiệt hại lớn hơn nhiều.
+- **Nguyên nhân gốc mơ hồ** ("do lỗi hệ thống") → khách không tin và yêu cầu giải thích thêm.
+- **Hành động không có người và hạn** → không ai làm, sự cố lặp lại.
+- **Lỗi tiếng Anh hay gặp:** nói "the system had a bug" nghe như đổ cho máy; hãy nói "we identified an issue and fixed it". Phát âm **incident** /ˈɪnsɪdənt/, **outage** /ˈaʊtɪdʒ/.
+
+### Ví dụ đời thực
+
+Một sự cố kéo dài 2 giờ: API thanh toán trả 500 với khoảng 35% giao dịch. Tôi gửi báo cáo trong 3 giờ: tóm tắt mức độ nghiêm trọng P1, cửa sổ 14:02–16:05; tác động ~12.000 giao dịch lỗi (đã replay thành công, không merchant nào mất tiền); timeline từ lúc alert đến lúc rollback; nguyên nhân gốc: một thay đổi cấu hình bật logging đồng bộ làm cạn thread pool; hành động: rollback (đã xong), async logging (owner: tôi, hạn 27/6), alert ngưỡng 80% (owner: team platform, hạn 30/6). Khách phản hồi tích cực vì "con số rõ ràng và có kế hoạch phòng ngừa", không áp dụng phạt.
+
+### Trả lời mẫu khi phỏng vấn
+
+I would send a written incident report within twenty-four hours, then offer a short call. I structure it in six parts. First, a one-line summary with the severity and the time window. Second, customer impact in numbers: which service, how many transactions, for how long. Third, a timeline from detection to recovery. Fourth, the root cause in one or two sentences, avoiding deep technical detail. Fifth, what we did immediately. Sixth, what we will change to prevent it, each with an owner and a due date. The tone is factual and accountable, not defensive: we state the facts, we apologise once for the impact, and we avoid blaming a person or a vendor. For a Korean enterprise client I keep the language formal and humble, and I confirm receipt by phone the same day. After the report I schedule a review meeting within one week to walk through the actions and answer questions. In one case this format turned an outage into a two-page report the client accepted without penalty, because the numbers and the prevention plan were clear.
+
+> Senior tip: Khách doanh nghiệp Hàn/Nhật đánh giá **sự minh bạch có cấu trúc** hơn lời xin lỗi hoa mỹ. Luôn: báo cáo trong 24 giờ (kể cả bản sơ bộ), tác động bằng con số, hành động có owner và hạn, rồi họp review trong một tuần. Xin lỗi đúng một lần, không thanh minh, không đổ lỗi cho vendor. Đó là cách biến sự cố thành bằng chứng về sự chuyên nghiệp.`,
+  follow: [
+    'What do you include in the first "preliminary" report before the root cause is known?',
+    'How do you handle a client who asks for compensation after an incident?',
+    'How do you decide the severity level of an incident?',
+  ],
+  tags: ['communication', 'incident', 'client', 'report', 'korean-enterprise'],
+  lang: 'en',
+},
+{
+  id: 'english-234',
+  topic: 'english',
+  level: 'lead',
+  q: 'A foreign PM asks you to squeeze an out-of-scope feature into the current sprint. How do you decline politely while keeping the relationship and offering an alternative?',
+  a: `**Tóm tắt:** Không nói "no" thẳng với PM Hàn/Nhật vì dễ gây mất mặt. Công thức: **ghi nhận giá trị → làm rõ ràng ràng buộc bằng dữ liệu (bao nhiêu ngày công, cái gì phải trượt) → đưa phương án thay thế (sprint sau / bản nhỏ / đánh đổi với item đang cam kết) → đẩy quyết định đúng cấp → xác nhận bằng văn bản**. Nói "không" với yêu cầu, nhưng không nói "không" với con người.
+
+### Cơ chế bên trong từng bước và VÌ SAO
+
+1. **Ghi nhận trước (acknowledge).** "That is a good idea, and I can see why it matters." Câu này không cam kết gì, nhưng cho PM thấy bạn tôn trọng đề xuất. Bỏ qua bước này khiến lời từ chối nghe như chống đối.
+2. **Làm ràng buộc trở nên hữu hình bằng dữ liệu.** "The current sprint is fully committed; adding this feature would take about eight engineer-days, which means either the payment retry work or the testing window slips by a week." Con số biến "không" thành "đánh đổi", không phải "lười".
+3. **Đưa phương án thay thế.** Người Hàn/Nhật hiếm khi chấp nhận "không" trần trụi; họ cần một lối đi. Ba lựa chọn kinh điển: nhận ở sprint sau, làm bản nhỏ hơn ngay, hoặc đánh đổi với một item đang cam kết.
+4. **Đẩy quyết định đúng cấp.** Nếu thay đổi scope đã cam kết, không tự quyết. "I will confirm with my lead and your product owner." Điều này bảo vệ bạn và cho PM thấy quy trình rõ ràng.
+5. **Xác nhận bằng văn bản.** "To confirm, we will defer this to the next sprint unless you want to swap it with the reporting item." Văn bản tránh hiểu lầm và tạo bằng chứng về quyết định.
+
+### Code minh hoạ: scope guard
+
+~~~java
+// Chặn scope creep: đánh giá yêu cầu ngoài phạm vi và trả lời lịch sự kèm phương án.
+enum Decision { ACCEPT, DEFER, TRADE_OFF }
+
+class ScopeGuard {
+  static Decision evaluate(int remainingDays, int requestedDays) {
+    if (remainingDays >= requestedDays) return Decision.ACCEPT;
+    if (remainingDays >= requestedDays / 2) return Decision.TRADE_OFF;
+    return Decision.DEFER; // không nhét vừa sprint này -> hoãn, nói rõ lý do
+  }
+
+  static String reply(Decision d, String feature) {
+    return switch (d) {
+      case ACCEPT -> "Happy to include " + feature + " in this sprint.";
+      case TRADE_OFF -> "We can do " + feature
+        + " if we swap it with a committed item - shall I list the trade-off?";
+      case DEFER -> "That is a good idea; it needs about two sprints, "
+        + "so I propose we schedule it next. I will confirm in writing.";
+    };
+  }
+}
+~~~
+
+### Bảng trade-off: cách xử lý yêu cầu ngoài scope
+
+| Cách xử lý | Ưu | Nhược | Khi nào dùng |
+|---|---|---|---|
+| Nhận hết rồi làm thêm giờ | Giữ quan hệ ngắn hạn | Scope creep, trễ n lần hai, burnout | Gần như không bao giờ |
+| Từ chối thẳng "no" | Rõ ràng | Mất mặt, căng quan hệ, nhất là Hàn/Nhật | Tránh |
+| Ghi nhận + dữ liệu + phương án | Giữ quan hệ, minh bạch, có đường lùi | Cần chuẩn bị số liệu | Mặc định nên dùng |
+
+### Pitfall thực tế và lỗi hay gặp
+
+- **Nói "no" ngay câu đầu** → PM mất mặt trước team, quan hệ xấu đi dù bạn đúng.
+- **Nhận bừa vì sợ mất lòng** → trễ sprint, team làm thêm giờ, chất lượng giảm.
+- **Không nêu con số** → PM nghĩ bạn "không muốn làm", không phải "không đủ chỗ".
+- **Tự ý hoán đổi item đang cam kết** → chính bạn tạo ra một khách hàng/PM khác bị trễ.
+- **Lỗi tiếng Anh hay gặp:** nói "I can't do it" nghe cụt; hãy nói "That would need us to move something else". Phát âm **scope** /skəʊp/, **trade-off** /ˈtreɪd ɒf/.
+
+### Ví dụ đời thực
+
+Một PM Hàn muốn thêm tính năng "mã khuyến mãi theo mùa" vào sprint hiện tại đã cam kết 6 hạng mục. Tôi không nói "không": tôi ghi nhận "ý hay, đúng mùa cao điểm", rồi nêu dữ liệu: sprint còn 3 ngày công, tính năng cần khoảng 8 ngày công, nên hoặc phần retry thanh toán trượt một tuần, hoặc rút bớt hai hạng mục báo cáo. Tôi đưa ba phương án và nói rõ sẽ chốt với tech lead và PO của PM. PM chọn hoãn sang sprint sau; tôi gửi email xác nhận. Kết quả: sprint này giao đúng hạn, không ai làm thêm giờ, và PM quay lại cảm ơn vì "được giải thích rõ ràng".
+
+### Trả lời mẫu khi phỏng vấn
+
+I never start with a flat "no", especially with Korean or Japanese stakeholders, because a direct refusal can feel like a loss of face. I start by acknowledging the value: "That is a good idea, and I can see why it matters." Then I make the constraint visible with data: "The current sprint is fully committed; adding this feature would take about eight engineer-days, which means either the payment retry work or the testing window slips by a week." Then I offer alternatives rather than just refusing: we can take it in the next sprint, we can deliver a smaller version now, or we can trade it against an existing item if the PM prefers. I make sure the decision belongs to the right level: if it changes the committed scope, I involve my lead and their product owner rather than deciding alone. Finally I confirm in writing: "To confirm, we will defer this to the next sprint unless you want to swap it with the reporting item." This keeps the relationship warm, keeps the commitment trustworthy, and still protects the team from silent scope creep. The goal is to say no to the request without saying no to the person.
+
+> Senior tip: Với PM Hàn/Nhật, từ chối thẳng là mất mặt cho cả hai. Công thức vàng: **ghi nhận → dữ liệu (bao nhiêu ngày công, cái gì trượt) → phương án thay thế → đúng cấp quyết định → xác nhận bằng văn bản**. Nhớ nguyên tắc: nói "không" với yêu cầu, không nói "không" với con người. Luôn có sẵn một phương án để PM không rơi vào đường cụt.`,
+  follow: [
+    'What if the PM escalates over your head to their director?',
+    'How do you say no when the request comes from a very senior stakeholder?',
+    'How do you document the trade-off so the decision is transparent?',
+  ],
+  tags: ['communication', 'scope', 'out-of-scope', 'negotiation', 'lead'],
+  lang: 'en',
+},
 );
