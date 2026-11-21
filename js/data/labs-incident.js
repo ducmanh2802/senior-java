@@ -7684,5 +7684,277 @@ Dài hạn: BFF trả kèm seller info trong response order ({{include=seller}})
     'Phòng ngừa: contract test, code review, lint, metric số request.'
   ],
   tags: ['mobile', 'react-native', 'n-plus-one', 'network-waterfall', 'api-design', 'bff']
+},
+{
+  id: 'lab-incident-052',
+  category: 'incident',
+  title: 'Agent LLM gọi công cụ tìm kiếm 25 bước mỗi phiên, chi phí LLM tăng 9 lần trong một đêm',
+  level: 'senior',
+  scenario: `**Bối cảnh:** Hệ thống hỗ trợ khách hàng dùng agent LLM (Spring AI / LangChain) với các công cụ: search (tìm kiếm tài liệu kiến thức), calculator, order_lookup. Agent xử lý mỗi yêu cầu khách hàng bằng cách lặp lại các bước: suy nghĩ -> gọi công cụ -> quan sát kết quả -> suy nghĩ tiếp. Mỗi bước agent ghi log dạng JSON lines với trace_id, step, tool, input_tokens, output_tokens, cache_read_tokens. Bảng chi phí theo giờ cho thấy chi phí LLM tăng từ khoảng 210 USD lên 1850 USD (gấp 9 lần) trong một đêm, trong khi số lượng yêu cầu khách hàng không thay đổi.
+**Triệu chứng:** Từ ngày 14/11/2026, chi phí LLM overnight vọt lên 9 lần. Response time của agent cũng tăng từ 2 giây lên 20 giây. Khách hàng phàn nàn phản hồi chậm. Log agent cho thấy mỗi phiên chạy trung bình 25 bước, và mỗi bước gửi lại toàn bộ lịch sử hội thoại.
+**Dữ liệu thu thập:** agent log JSON lines (một trace_id), bảng chi phí theo giờ, log lỗi công cụ search, cấu hình agent.`,
+  artifacts: [
+    {
+      name: 'agent-log-sample.jsonl',
+      lang: 'text',
+      content: `{"trace_id":"TRC-1001","step":1,"tool":"search","input_tokens":1200,"output_tokens":180,"cache_read_tokens":0,"cost_usd":0.006}
+{"trace_id":"TRC-1001","step":2,"tool":"search","input_tokens":2400,"output_tokens":190,"cache_read_tokens":0,"cost_usd":0.012}
+{"trace_id":"TRC-1001","step":3,"tool":"search","input_tokens":3600,"output_tokens":200,"cache_read_tokens":0,"cost_usd":0.018}
+...
+{"trace_id":"TRC-1001","step":25,"tool":"search","input_tokens":30000,"output_tokens":210,"cache_read_tokens":0,"cost_usd":0.150}
+{"trace_id":"TRC-1002","step":1,"tool":"search","input_tokens":1200,"output_tokens":175,"cache_read_tokens":0,"cost_usd":0.006}
+...
+# Tổng TRC-1001: 25 bước, input_tokens từ 1.200 lên 30.000, tổng khoảng 400.000 tokens, chi phí 2.0 USD cho một yêu cầu.
+# Bình thường trước sự cố: 5 bước/yêu cầu, tổng khoảng 80.000 tokens, chi phí 0.22 USD/yêu cầu.`,
+    },
+    {
+      name: 'hourly-cost-table.csv',
+      lang: 'text',
+      content: `hour,requests,total_input_tokens,total_output_tokens,cost_usd
+2026-11-14T00:00,980,48000000,180000,210.00
+2026-11-14T01:00,1020,50000000,190000,220.00
+...
+2026-11-15T02:00,1050,450000000,210000,1850.00
+2026-11-15T03:00,1030,420000000,200000,1780.00
+# Chi phí tăng 9 lần từ ~210 USD/lên ~1850 USD/giờ, số request không đổi (~1000/giờ).
+# Tổng input_tokens tăng 9 lần do mỗi yêu cầu chạy nhiều bước hơn và mỗi bước gửi lịch sử dài hơn.`,
+    },
+    {
+      name: 'search-tool-error.log',
+      lang: 'text',
+      content: `2026-11-15T02:15:03.104 [agent-03] ERROR ToolCall search failed: com.example.SearchToolException: Unexpected HTML response from search API (expected JSON)
+2026-11-15T02:15:03.200 [agent-03] WARN Agent retrying search tool (attempt 2/3) for trace_id=TRC-1001 query="làm sao đặt lại mật khẩu"
+2026-11-15T02:15:04.300 [agent-03] ERROR ToolCall search failed again: unexpected HTML response
+2026-11-15T02:15:04.400 [agent-03] WARN Agent retrying search tool (attempt 3/3) for trace_id=TRC-1001 query="làm sao đặt lại mật khẩu"
+2026-11-15T02:15:05.500 [agent-03] ERROR ToolCall search failed: unexpected HTML response
+2026-11-15T02:15:05.600 [agent-03] WARN Agent skipping search tool, falling back to knowledge base (no results)
+# Công cụ search bắt đầu trả về HTML thay vì JSON sau khi team bên search đổi cấu trúc API mà không thông báo.
+# Agent không xử lý lỗi graceful, retry cùng công cụ cùng tham số 3 lần, sinh thêm 3 bước không tiến bộ.`,
+    },
+    {
+      name: 'agent-config.yml',
+      lang: 'text',
+      content: `# application.yml (agent config)
+spring:
+  ai:
+    chat:
+      model: gpt-4o
+      temperature: 0.7
+    tool:
+      search:
+        enabled: true
+        timeout: 10s
+    # THIẾU: max-steps (giới hạn số bước mỗi phiên)
+    # THIẾU: history-compression (tóm tắt lịch sử sau N bước)
+    # THIẾU: tool-error-handling (xử lý lỗi công cụ, fallback)
+    # THIẾU: cost-alert (cảnh báo chi phí vượt ngưỡng)	`,
+    },
+  ],
+  questions: [
+    'Tại sao chi phí LLM tăng 9 lần trong một đêm trong khi số yêu cầu không đổi? Dẫn chứng từ agent log và bảng chi phí.',
+    'Giải thích liên hệ giữa search tool lỗi, retry, không có giới hạn bước, và gửi lại toàn bộ lịch sử mỗi bước. Tính toán token và chi phí cho một phiên 25 bước.',
+    'Thiết lập giới hạn bước, nén lịch sử hội thoại, xử lý lỗi công cụ, và cảnh báo chi phí để tránh sự cố lặp lại.',
+  ],
+  hints: [
+    'Mỗi bước agent gửi lại toàn bộ lịch sử (tất cả bước trước) nên input_tokens tăng dần theo số bước; 25 bước x lịch sử dài = input_tokens khổng lồ.',
+    'Search tool trả về lỗi văn bản (HTML thay vì JSON), agent không hiểu và thử lại cùng công cụ cùng tham số, sinh thêm bước mà không tiến bộ.',
+    'Không có max_steps nên agent chạy mãi cho đến khi hết token context hoặc thành công ngẫu nhiên.',
+  ],
+  answer: `**Tóm tắt:** Chi phí LLM tăng 9 lần vì agent LLM chạy 25 bước mỗi phiên (bình thường 5 bước), và mỗi bước gửi lại toàn bộ lịch sử hội thoại làm input_tokens tăng từ 1.200 lên 30.000 tokens. Root cause là công cụ search trả về HTML thay vì JSON (do team search đổi API), agent retry cùng công cụ 3 lần mỗi bước, và không có giới hạn số bước (max_steps) nên agent không bao giờ dừng. Sửa: đặt max_steps (ví dụ 8), nén/tóm tắt lịch sử sau mỗi vài bước, xử lý lỗi công cụ graceful (fallback không retry vô hạn), và đặt cảnh báo chi phí LLM theo giờ.
+
+### Nguyên nhân gốc
+
+**1. Agent không có giới hạn số bước (max_steps).** Mỗi yêu cầu khách hàng agent lặp lại cho đến khi có câu trả lời cuối cùng. Không có max_steps, agent có thể chạy 25 bước cho một câu hỏi đơn giản. Mỗi bước đều gọi LLM, sinh chi phí.
+**2. Mỗi bước gửi lại toàn bộ lịch sử.** Agent không nén hay tóm tắt lịch sử. Bước thứ 1 gửi 1.200 tokens, bước thứ 25 gửi 30.000 tokens (tất cả 24 bước trước kèm câu trả lời). Tổng input_tokens cho một phiên 25 bước khoảng 400.000 tokens, gấp 5-6 lần bình thường.
+**3. Công cụ search lỗi và retry vô sinh.** Search tool bắt đầu trả về HTML thay vì JSON (API thay đổi cấu trúc). Agent không hiểu phản hồi, retry cùng công cụ cùng tham số 3 lần, mỗi retry là một bước LLM mới không thêm giá trị.
+**4. Không có compression/tóm tắt lịch sử.** Lịch sử giữ nguyên cả các bước thất bại, làm input_tokens tăng dần mà không có giá trị thực.
+
+### Dẫn chứng (trích dòng cụ thể)
+
+- agent-log-sample.jsonl: TRC-1001 có 25 bước, tool=search ở mọi bước, input_tokens từ 1.200 (bước 1) lên 30.000 (bước 25), tổng khoảng 400.000 tokens, chi phí 2.0 USD/yêu cầu.
+- hourly-cost-table.csv: chi phí từ 210 USD/giờ (14/11 00:00) lên 1850 USD/giờ (15/11 02:00), gấp 9 lần; requests ổn định ~1000/giờ.
+- search-tool-error.log: ToolCall search failed: Unexpected HTML response, agent retry 3 lần cùng query, sau đó bỏ qua search không có kết quả.
+- agent-config.yml: không có max-steps, không có history-compression, không có tool-error-handling, không có cost-alert.
+
+### Cách sửa
+
+**Ngay trong sự cố:**
+1. Triển khai lại agent-config với max-steps=8 để agent dừng sau 8 bước.
+2. Xử lý lỗi search tool: nếu search thất bại 2 lần, fallback sang knowledge base cục bộ, không retry vô hạn.
+
+**Dài hạn:**
+1. **Giới hạn số bước:** max-steps=8 (hoặc 10), agent trả "tôi không tìm được câu trả lời" nếu vượt quá.
+2. **Nén lịch sử hội thoại:** sau mỗi 3 bước, tóm tắt lịch sử bằng LLM rẻ (gpt-3.5-turbo) và thay thế lịch sử chi tiết bằng tóm tắt. Giảm input_tokens từ 30.000 xuống dưới 5.000.
+3. **Xử lý lỗi công cụ:** phân loại lỗi công cụ (retryable: timeout, network; non-retryable: API thay đổi cấu trúc, auth lỗi). Non-retryable → fallback ngay, không retry.
+4. **Cảnh báo chi phí:** alert khi chi phí LLM tăng > 50% so với trung bình 7 ngày, hoặc cost/request > ngưỡng.
+5. **Giám sát số bước trung bình:** metric agent_steps_avg, alert nếu > 10.
+
+### Phòng ngừa
+
+- Luôn đặt max_steps cho agent LLM, coi nó như circuit breaker cho vòng lặp suy nghĩ.
+- Mỗi công cụ cần xử lý lỗi graceful: retry có giới hạn cho lỗi tạm thời, fallback ngay cho lỗi vĩnh viễn.
+- Lịch sử hội thoại phải được nén sau N bước, không gửi toàn bộ lịch sử mỗi bước.
+- Dashboard chi phí LLM theo giờ, theo model, theo công cụ; alert bất ngờ.
+- Integration test: agent với công cụ cố ý lỗi, xác nhận agent dừng sau max_steps và không sinh chi phí vượt ngưỡng.
+
+> Senior tip: Agent LLM chi phí không dự đoán được vì số bước và tokens mỗi bước không cố định. Luôn đặt max_steps (ví dụ 8-10), nén lịch sử, và có alert chi phí theo giờ. Việc search tool đổi API mà không thông báo là nguyên nhân kích hoạt, nhưng không có max_steps và nén lịch sử mới là nguyên nhân gốc khiến chi phí tăng 9 lần.`,
+  rubric: [
+    'Xác định đúng nguyên nhân: agent chạy 25 bước/yêu cầu (không có max_steps), mỗi bước gửi toàn bộ lịch sử (input_tokens tăng 1.200 -> 30.000), search tool lỗi HTML gây retry thêm bước.',
+    'Dẫn chứng: agent log TRC-1001 25 bước, hourly-cost-table chi phí 210->1850 USD/giờ (gấp 9), search-tool-error.log retry 3 lần, agent-config.yml thiếu max-steps/compression.',
+    'Giải thích tính toán: 25 bước x lịch sử kéo dài = tổng input_tokens ~400.000 tokens/yêu cầu vs bình thường ~80.000, chi phí từ 0.22 USD lên 2.0 USD/yêu cầu.',
+    'Đề xuất sửa: max_steps=8, nén/tóm tắt lịch sử sau mỗi 3 bước, xử lý lỗi công cụ (retryable/non-retryable), fallback, alert chi phí > 50% trung bình 7 ngày.',
+    'Phòng ngừa: max_steps như circuit breaker, xử lý lỗi công cụ graceful, nén lịch sử, dashboard chi phí, test công cụ lỗi.'
+  ],
+  tags: ['llm', 'agent', 'cost-spike', 'max-steps', 'history-compression', 'tool-error', 'retry', 'token-optimization']
+},
+{
+  id: 'lab-incident-053',
+  category: 'incident',
+  title: 'RAG chậm từ 300ms lên 4s sau khi thêm lọc theo factory_id: HNSW không dùng được với WHERE + ORDER BY embedding',
+  level: 'senior',
+  scenario: `**Bối cảnh (giải thích thuật ngữ):**
+- **RAG (Retrieval-Augmented Generation)** là kỹ thuật tìm kiếm tài liệu liên quan từ cơ sở dữ liệu vector, rồi đưa vào LLM để sinh câu trả lời.
+- **pgvector** là extension PostgreSQL cho kiểu dữ liệu vector và toán tử <=> (khoảng cách cosine). Index HNSW (Hierarchical Navigable Small World) giúp tìm cận vector gần nhất nhanh mà không quét toàn bộ bảng.
+- **Seq Scan** là quét tuần tự toàn bộ bảng, tính khoảng cách vector cho mọi hàng, rồi filter. Chậm trên bảng lớn.
+- **ef_search** là tham số HNSW: càng lớn thì chính xác hơn nhưng chậm hơn.
+- **ANN (Approximate Nearest Neighbor)** là tìm cận vector gần nhất (không chính xác 100% nhưng nhanh).
+
+Hệ thống **ProductRAG** (Spring Boot 3.3, PostgreSQL 15 + pgvector 0.7) hỗ trợ tìm kiếm tài liệu sản phẩm theo nghĩa hệ. Bảng documents có 5 triệu hàng, mỗi hàng có cột embedding (vector 1536 dimensi) và factory_id. Index HNSW trên cột embedding. Truy vấn trước khi thêm filter: {{SELECT * FROM documents ORDER BY embedding <=> $1 LIMIT 10}} → p99 300ms, dùng Index Scan HNSW.
+Sau khi thêm yêu cầu lọc theo nhà máy: {{SELECT * FROM documents WHERE factory_id = $1 ORDER BY embedding <=> $2 LIMIT 10}} → p99 4s, planner chọn Seq Scan vì không thể kết hợp HNSW với WHERE trên cột khác. pg_stat_statements cho thấy truy vấn này chiếm 85% tổng thời gian DB.
+
+**Triệu chứng:** Từ ngày 18/11/2026, API tìm kiếm sản phẩm chậm từ 300ms lên 4s. CPU DB lên 90%. pg_stat_statements cho thấy truy vấn RAG với factory_id là top query chi phí nhất.
+**Dữ liệu thu thập:** EXPLAIN ANALYZE trước và sau khi thêm filter, pg_stat_statements, schema bảng documents, cấu hình pgvector.`,
+  artifacts: [
+    {
+      name: 'explain-analyze-before.txt',
+      lang: 'text',
+      content: `-- Truy vấn trước khi thêm filter factory_id
+EXPLAIN (ANALYZE, BUFFERS) SELECT * FROM documents ORDER BY embedding <=> '[0.12,0.34,...]' LIMIT 10;
+
+                                                     QUERY PLAN
+-----------------------------------------------------------------------------------------------------------------------------
+ Limit  (cost=0.28..11.30 rows=10 width=1024) (actual time=0.15..285.400 rows=10 loops=1)
+   ->  Index Scan using idx_documents_embedding on documents  (cost=0.28..11284.50 rows=5000000 width=1024) (actual time=0.14..285.380 rows=10 loops=1)
+         Order By: (embedding <=> '[0.12,0.34,...]'::vector)
+ Planning time: 0.25 ms
+ Execution time: 285.450 ms
+# Index Scan HNSW, chỉ quét 10 hàng gần nhất, execution time 285 ms (~300ms p99).`,
+    },
+    {
+      name: 'explain-analyze-after.txt',
+      lang: 'text',
+      content: `-- Truy vấn sau khi thêm filter factory_id
+EXPLAIN (ANALYZE, BUFFERS) SELECT * FROM documents WHERE factory_id = 'FCT-001' ORDER BY embedding <=> '[0.12,0.34,...]' LIMIT 10;
+
+                                                     QUERY PLAN
+-----------------------------------------------------------------------------------------------------------------------------
+ Limit  (cost=100000.00..100011.30 rows=10 width=1024) (actual time=1200.50..4012.300 rows=10 loops=1)
+   ->  Seq Scan on documents  (cost=0.00..100000.00 rows=125000 width=1024) (actual time=1.10..4010.200 rows=450 loops=1)
+         Filter: (factory_id = 'FCT-001'::text)
+         Rows Removed by Filter: 4999550
+ Planning time: 0.30 ms
+ Execution time: 4012.450 ms
+# Seq Scan toàn bộ bảng 5 triệu hàng, tính khoảng cách vector cho mọi hàng, filter factory_id sau. Execution time 4012 ms (~4s p99).`,
+    },
+    {
+      name: 'pg-stat-statements.txt',
+      lang: 'text',
+      content: `# pg_stat_statements, top 5 queries theo total_time
+queryid | query | calls | total_time | mean_time | rows
+--------+-------+-------+------------+-----------+------
+1 | SELECT * FROM documents WHERE factory_id = $1 ORDER BY embedding <=> $2 LIMIT 10 | 45000 | 180000000 ms | 4000 ms | 450000
+2 | SELECT * FROM documents ORDER BY embedding <=> $1 LIMIT 10 | 12000 | 3600000 ms | 300 ms | 120000
+3 | SELECT * FROM orders WHERE ... | 80000 | 2400000 ms | 30 ms | 800000
+# Truy vấn RAG với factory_id: 45.000 cuộc gọi, 180.000 giây tổng thời gian, trung bình 4 giây/lần. Chiếm 85% tổng thời gian DB.`,
+    },
+    {
+      name: 'schema-documents.sql',
+      lang: 'text',
+      content: `-- Bảng documents
+CREATE TABLE documents (
+    id BIGSERIAL PRIMARY KEY,
+    factory_id TEXT NOT NULL,
+    title TEXT NOT NULL,
+    content TEXT NOT NULL,
+    embedding VECTOR(1536) NOT NULL,
+    created_at TIMESTAMPTZ DEFAULT now()
+);
+
+-- Index HNSW trên embedding (chỉ giúp ORDER BY embedding <=>)
+CREATE INDEX idx_documents_embedding ON documents USING hnsw (embedding vector_cosine_ops);
+
+-- THIẾU: index trên factory_id (để filter nhanh)
+-- THIẾU: partial index kết hợp factory_id + embedding
+-- Cấu hình pgvector: hnsw_ef_search = 40 (mặc định), hnsw_ef_construction = 100
+# 5 triệu hàng, khoảng 50.000 hàng/factory. Planner ước tính ~125.000 rows match factory_id (estimate), nhưng thực tế chỉ 450 hàng pass filter (Rows Removed by Filter: 4.999.550). Sau khi filter, Limit lấy 10 hàng gần nhất theo khoảng cách vector.`,
+    },
+  ],
+  questions: [
+    'Tại sao truy vấn RAG chậm từ 300ms lên 4s sau khi thêm WHERE factory_id? Dẫn chứng từ EXPLAIN ANALYZE.',
+    'Giải thích tại sao PostgreSQL không thể dùng HNSW index khi có WHERE trên cột khác + ORDER BY embedding <=> ?',
+    'Thiết lập lại index, truy vấn, và cấu hình pgvector để tìm kiếm vẫn nhanh với filter factory_id.',
+  ],
+  hints: [
+    'HNSW index chỉ hỗ trợ ORDER BY embedding <=> query LIMIT n. Khi thêm WHERE factory_id = x, planner không thể dùng HNSW vì index không lưu thông tin factory_id.',
+    'PostgreSQL buộc phải Seq Scan toàn bộ bảng, tính khoảng cách vector cho mọi hàng (5 triệu), rồi filter factory_id. Execution time từ 285ms lên 4012ms.',
+    'Fix: partial index (WHERE factory_id IN (...)) hoặc partition by factory_id, hoặc truy vấn hai bước (filter factory_id trước, sau đó ANN trên kết quả nhỏ), tăng ef_search.',
+  ],
+  answer: `**Tóm tắt:** Truy vấn RAG chậm từ 300ms lên 4s vì sau khi thêm {{WHERE factory_id = $1}}, PostgreSQL không thể dùng index HNSW trên cột {{embedding}} (HNSW chỉ hỗ trợ {{ORDER BY embedding <=> query}} không có filter trên cột khác). Planner chọn {{Seq Scan}} toàn bộ bảng 5 triệu hàng, tính khoảng cách vector cho mọi hàng, rồi filter {{factory_id}}. pg_stat_statements cho thấy truy vấn này chiếm 85% tổng thời gian DB. Sửa: tạo partial index kết hợp {{factory_id}} và {{embedding}}, hoặc partitioned by {{factory_id}}, truy vấn hai bước (filter trước, ANN sau), và tuning {{ef_search}}.
+
+### Nguyên nhân gốc
+
+**1. HNSW index không kết hợp được với WHERE trên cột khác.** Index HNSW trên {{embedding}} chỉ hỗ trợ tìm cận vector gần nhất ({{ORDER BY embedding <=> $1 LIMIT 10}}). Khi thêm {{WHERE factory_id = 'FCT-001'}}, planner không thể dùng HNSW vì index không lưu thông tin {{factory_id}}, không biết hàng nào thuộc factory nào.
+**2. Planner chọn Seq Scan.** Không có index phù hợp cho kết hợp {{WHERE factory_id}} + {{ORDER BY embedding <=>}}, PostgreSQL quét tuần tự toàn bộ bảng 5 triệu hàng, tính khoảng cách vector cho mỗi hàng, sau đó filter {{factory_id}} và lấy 10 hàng gần nhất.
+**3. ef_search mặc định thấp (40).** Kể khi có index phù hợp, ef_search=40 làm tìm kém chính xác, có thể bỏ lỡ các vector gần thực tế. Cần tăng lên 128-256 cho yêu cầu chính xác cao.
+**4. Truy vấn một lượt (single query) không tối ưu.** Filter và ANN trong cùng một câu SQL buộc planner chọn một trong hai: dùng HNSW (bỏ qua filter, quét hết kết quả HNSW rồi filter) hoặc Seq Scan (filter hết rồi ANN). Cả hai đều chậm.
+
+### Dẫn chứng (trích dòng cụ thể)
+
+- explain-analyze-before.txt: Index Scan using {{idx_documents_embedding}}, execution time {{285.450 ms}}, chỉ quét 10 hàng.
+- explain-analyze-after.txt: Seq Scan on {{documents}}, {{Rows Removed by Filter: 4999550}}, execution time {{4012.450 ms}} (~4s).
+- pg-stat-statements.txt: truy vấn với {{factory_id}} có {{calls=45000}}, {{total_time=180000000 ms}}, {{mean_time=4000 ms}}, chiếm 85% tổng thời gian DB.
+- schema-documents.sql: chỉ có index HNSW trên {{embedding}}, thiếu index trên {{factory_id}} hoặc partial index kết hợp.
+
+### Cách sửa
+
+**Ngắn hạn (deploy trong ngày):**
+1. **Truy vấn hai bước:** trước filter theo {{factory_id}} lấy ID của các tài liệu thuộc factory, sau đó chạy ANN trên danh sách ID nhỏ.
+   ~~~sql
+   -- Bước 1: lấy id tài liệu thuộc factory (dùng index trên factory_id)
+   CREATE INDEX idx_documents_factory ON documents (factory_id);
+   
+   -- Bước 2: ANN trên tập id nhỏ
+   SELECT * FROM documents WHERE id IN (SELECT id FROM documents WHERE factory_id = 'FCT-001' LIMIT 1000)
+     ORDER BY embedding <=> '[0.12,0.34,...]' LIMIT 10;
+   ~~~
+2. **Tăng {{ef_search}}:** {{SET hnsw_ef_search = 128;}} (hoặc 256) cho session tìm kiếm, trading chút tốc độ cho độ chính xác.
+
+**Dài hạn:**
+1. **Partial index:** tạo index HNSW chỉ cho các factory phổ biến.
+   ~~~sql
+   CREATE INDEX idx_documents_embedding_fct001 ON documents USING hnsw (embedding vector_cosine_ops) WHERE factory_id = 'FCT-001';
+   ~~~
+   Query với {{WHERE factory_id = 'FCT-001'}} sẽ dùng index này.
+2. **Partition by factory_id:** chia bảng documents thành các partition theo {{factory_id}}, mỗi partition có index HNSW riêng. Query với factory_id chỉ quét partition tương ứng.
+3. **Materialized view / bảng tra cứu:** nếu factory_id ít thay đổi, tạo bảng tra cứu ánh xạ factory_id sang danh sách document_id, join trước khi ANN.
+4. **Giám sát:** pg_stat_statements theo truy vấn RAG, alert nếu mean_time > 1 giây.
+
+### Phòng ngừa
+
+- Mọi truy vấn vector kèm filter phải kèm EXPLAIN ANALYZE trong code review; cấm Seq Scan trên bảng > 1 triệu hàng.
+- Index HNSW chỉ đúng cho truy vấn thuần {{ORDER BY embedding <=> query LIMIT n}} không có WHERE khác. Nếu có filter, cần partial index hoặc partition.
+- Tuning {{ef_search}} theo trade-off chính xác/tốc độ: 40 cho nhanh, 128-256 cho chính xác.
+- Load test RAG với dữ liệu production-scale (5 triệu hàng) và nhiều factory_id khác nhau.
+- Dashboard: p99 truy vấn RAG, tỷ lệ Index Scan vs Seq Scan, pg_stat_statements top queries.
+
+> Senior tip: pgvector HNSW là index cho tìm cận vector, không phải index tổng quát. Khi thêm WHERE trên cột khác, planner thường bỏ HNSW và chọn Seq Scan. Cách kiểm tra nhanh: chạy EXPLAIN ANALYZE, nếu thấy Seq Scan trên bảng vector lớn với WHERE + ORDER BY embedding <=>, bạn đã gặp vấn đề này. Fix chuẩn: partial index cho filter phổ biến, hoặc partition, hoặc truy vấn hai bước (filter trước, ANN sau).`,
+  rubric: [
+    'Xác định đúng nguyên nhân: HNSW không dùng được với WHERE factory_id + ORDER BY embedding <=>, planner chọn Seq Scan toàn bộ 5 triệu hàng, execution time 285ms -> 4012ms.',
+    'Dẫn chứng: explain-analyze-before (Index Scan 285ms), explain-analyze-after (Seq Scan 4012ms, 4.999.550 hàng bị loại), pg_stat_statements (truy vấn factory_id chiếm 85% thời gian DB).',
+    'Giải thích tại sao: HNSW chỉ lưu vector, không biết factory_id; planner không thể kết hợp index vector với filter cột khác trong một quét.',
+    'Đề xuất sửa: truy vấn hai bước (filter factory trước, ANN sau), partial index HNSW WHERE factory_id, partition by factory_id, tăng ef_search lên 128-256.',
+    'Phòng ngừa: EXPLAIN ANALYZE trong review, cấm Seq Scan bảng lớn, tuning ef_search, load test production-scale, dashboard p99 RAG.'
+  ],
+  tags: ['pgvector', 'hnsw', 'rag', 'postgresql', 'seq-scan', 'vector-search', 'factory-filter', 'explain-analyze', 'ef-search', 'partial-index']
 }
 );
