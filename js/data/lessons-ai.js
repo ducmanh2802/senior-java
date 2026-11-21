@@ -6170,5 +6170,738 @@ Chi dung JDK chuan.`,
   ],
   related: ['ai-003', 'ai-005', 'ai-015', 'ai-016', 'ai-017'],
   tags: ['ai', 'rag', 'mmr', 're-ranking', 'diversity', 'hands-on'],
+},
+{
+  id: 'lesson-ai-021',
+  track: 'ai',
+  order: 21,
+  title: 'Streaming LLM qua SSE: đọc luồng từng mẩu, ghép text và tool-call arguments',
+  level: 'senior',
+  minutes: 55,
+  goals: [
+    'Giải thích được vì sao LLM trả lời theo kiểu streaming và SSE hoạt động ra sao (event:, data:, dòng trống, [DONE]).',
+    'Đọc được luồng SSE bằng Java thuần: cắt theo dòng vì một chunk mạng có thể cắt giữa dòng.',
+    'Ghép các mẩu text delta thành câu trả lời và ghép các mảnh JSON của tool-call arguments theo đúng index.',
+    'Xử lý stop_reason/finish, [DONE] và lỗi giữa luồng (mất kết nối, event lỗi).',
+    'Nối SSE ra trình duyệt bằng SseEmitter (Spring MVC) và Flux<ServerSentEvent> (WebFlux) ở mức minh hoạ.',
+  ],
+  body: `**Tóm tắt:** Đa số LLM trả lời theo kiểu **streaming**: thay vì đợi viết xong toàn bộ câu trả lời (có thể mất 5–30 giây), server giữ **mở** một kết nối HTTP và đẩy về client từng mẩu chữ (token) ngay khi model sinh ra. Định dạng phổ biến nhất là **SSE** (Server-Sent Events — "sự kiện đẩy từ server"): mỗi sự kiện gồm các dòng {{data: ...}}, có thể thêm dòng {{event: ...}}, và **một dòng trống** để báo "hết sự kiện này"; dòng bắt đầu bằng dấu hai chấm {{:}} là comment (thường để giữ kết nối sống). Client phải làm bốn việc rất dễ sai: (1) **cắt theo dòng** vì một mẩu dữ liệu từ mạng (chunk) có thể rơi vào giữa dòng; (2) **ghép các mẩu text** {{delta.content}} thành câu trả lời; (3) **ghép các mảnh JSON** của tool-call arguments vì chúng bị chia nhỏ; (4) bắt **{{stop_reason}} / {{[DONE]}}** và xử lý **lỗi giữa luồng**. Cái khó không phải gọi API mà là **đọc cho đúng khi dữ liệu về từng mẩu**.
+
+### 1. Vì sao phải streaming
+Một câu trả lời 500 token nếu chờ viết xong mới gửi thì người dùng ngồi nhìn màn hình trống 10–30 giây — cảm giác "treo". Streaming đẩy token đầu tiên sau cỡ 300–800 ms, nên người dùng thấy chữ chạy ra ngay và cảm giác nhanh hơn nhiều lần, dù **tổng thời gian** không đổi. Đây là lý do mọi chatbot, autocomplete, "AI tóm tắt" đều bật streaming.
+
+Cơ chế: server không đóng kết nối sau khi gửi response mà giữ nó mở, rồi **đẩy** (push) thêm dữ liệu. SSE là giao thức một chiều (server → client) chạy trên HTTP thường, phù hợp vì chỉ cần đọc token chảy về. (Nếu cần hai chiều mới dùng WebSocket.)
+
+### 2. SSE trông như thế nào trên dây
+Một luồng SSE thô (mỗi dòng kết thúc bằng ký tự xuống dòng, sự kiện kết thúc bằng một dòng trống):
+~~~text
+data: {"choices":[{"delta":{"content":"Xin"}}]}
+
+data: {"choices":[{"delta":{"content":" chào"}}]}
+
+event: ping
+data: {"choices":[{"delta":{},"finish_reason":"stop"}]}
+
+data: [DONE]
+
+~~~
+Ba điều phải nhớ:
+- Mỗi sự kiện là các dòng {{data:}} (có thể nhiều dòng, sẽ được nối bằng ký tự xuống dòng), kết thúc bằng **dòng trống**.
+- Dòng {{data: [DONE]}} là "hồi kết" do nhiều provider (OpenAI) gửi để báo hết. Anthropic thì gửi sự kiện có {{type: "message_stop"}}.
+- Dòng {{: keep-alive}} là comment để giữ kết nối; bỏ qua, đừng coi là dữ liệu.
+
+### 3. Bẫy lớn nhất: chunk mạng không trùng ranh giới dòng
+HTTP body về theo **mẩu (chunk)** với kích thước bất kỳ. Một mẩu có thể là {{data:}}, mẩu sau là {{...\"content\":\"Hel\"...}}, mẩu nữa mới là {{llo}}. Nếu bạn xử lý từng chunk như một dòng hoàn chỉnh, bạn sẽ vỡ JSON và mất chữ. Cách đúng: **giữ một bộ đệm**, chỉ "nhả" ra những dòng đã có đủ ký tự xuống dòng, phần còn dở giữ lại chờ mẩu sau.
+
+Minh hoạ một lần nếm (feed) — chunk đầu chưa có dòng trống nên chưa trả về sự kiện nào, chunk sau mới đủ:
+~~~text
+feed("data: hel")   -> buffer = "data: hel"            -> 0 sự kiện (chưa có xuống dòng)
+feed("lo" + LF + LF)-> buffer = "data: hello" + LF + LF -> 1 sự kiện { event=message, data="hello" }
+~~~
+Đây chính là lý do bài tập phải **cắt chuỗi ở vị trí xấu**: code đúng phải cho ra cùng kết quả dù chunk rơi vào giữa từ, giữa JSON, hay ngay giữa dấu xuống dòng.
+
+### 4. Ghép text delta
+Mỗi sự kiện {{data:}} là một JSON nhỏ; với OpenAI, chữ nằm ở {{choices[0].delta.content}} (có thể null ở sự kiện cuối). Ghép text chỉ là nối các mẩu này theo **thứ tự đến**:
+~~~java
+StringBuilder answer = new StringBuilder();
+// với mỗi sự kiện SSE đã parse thành object:
+String piece = delta.path("choices").path(0).path("delta").path("content").asText("");
+if (!piece.isEmpty()) answer.append(piece);   // nối theo thứ tự, không sắp xếp
+~~~
+Text không có cấu trúc nên ghép rất đơn giản. Cái khó nằm ở **tool call**.
+
+### 5. Ghép tool-call arguments JSON bị chia mảnh
+Khi model muốn gọi hàm (ví dụ {{get_weather}}), nó không trả text mà trả một "tool call". Tên hàm và **định nghĩa** nằm rải rác; còn **arguments** là một chuỗi JSON bị **cắt thành nhiều mảnh** ở nhiều sự kiện khác nhau. Ví dụ ba mẩu ghép lại thành {"city":"Hanoi"}:
+~~~text
+mảnh 1 (index 0): {"ci
+mảnh 2 (index 0): ty":"Ha
+mảnh 3 (index 0): noi"}
+=> ghép lại: {"city":"Hanoi"}
+~~~
+Quy tắc ghép:
+- Mỗi tool call có một **index** (0, 1, 2…). Model có thể gọi **nhiều tool** cùng lúc; mảnh của tool 0 và tool 1 **đan xen** nhau trong luồng.
+- Vì vậy phải gom mảnh **theo index**, không phải theo thứ tự xuất hiện: mảnh thuộc index 1 có thể đến trước mảnh của index 0.
+- Tên hàm ({{function.name}}) thường chỉ xuất hiện ở mảnh **đầu** của mỗi tool; mảnh sau chỉ có thêm {{function.arguments}}. Đừng ghi đè tên bằng null.
+- Chỉ khi **hết luồng** ({{finish_reason: "tool_calls"}} hoặc {{[DONE]}}) thì chuỗi arguments mới là JSON hoàn chỉnh — lúc đó mới parse.
+
+~~~java
+// gom mảnh arguments theo index; TreeMap giữ tool theo thứ tự index
+class StreamAssembler {
+    static class ToolCall {
+        final int index; String id; String name;
+        final StringBuilder args = new StringBuilder();
+        ToolCall(int index) { this.index = index; }
+        String arguments() { return args.toString(); }
+    }
+    private final StringBuilder text = new StringBuilder();
+    private final java.util.TreeMap<Integer, ToolCall> tools = new java.util.TreeMap<>();
+    void text(String delta) { if (delta != null) text.append(delta); }
+    void toolStart(int idx, String id, String name) {
+        ToolCall t = tools.computeIfAbsent(idx, k -> new ToolCall(k));  // tạo nếu chưa có
+        if (id != null) t.id = id;          // id chỉ có ở mảnh đầu
+        if (name != null) t.name = name;    // name chỉ có ở mảnh đầu
+    }
+    void toolArgs(int idx, String fragment) {
+        tools.computeIfAbsent(idx, k -> new ToolCall(k)).args.append(fragment); // nối tiếp
+    }
+}
+~~~
+> Điểm chí tử: nếu bạn dùng {{Map}} thường (HashMap) thì thứ tự tool không ổn định; nếu bạn **chưa** gom theo index mà nối bừa vào một StringBuilder chung, JSON của hai tool sẽ trộn vào nhau và không parse được.
+
+### 6. stop_reason, finish và lỗi giữa luồng
+- **Kết thúc bình thường**: OpenAI gửi {{finish_reason}} ({{stop}} = model tự dừng, {{length}} = cắt vì {{max_tokens}}, {{tool_calls}} = model muốn gọi hàm). Anthropic gửi sự kiện {{content_block_stop}} rồi {{message_stop}}. Bạn nên đóng stream khi gặp các dấu này.
+- **{{[DONE]}}**: chỉ là "hết", không phải dữ liệu — đừng đưa vào answer.
+- **Lỗi giữa luồng**: kết nối có thể rớt (client mạng yếu, gateway timeout, provider 5xx giữa chừng). Khi đó bạn có **nửa câu trả lời**. Xử lý: (a) giữ phần text đã ghép, đánh dấu "đang dở", (b) **không** coi là hoàn chỉnh, (c) nếu còn ngân sách thì có thể thử lại **từ đầu** (không nối tiếp được vì không có API "tiếp tục"), (d) báo cho client biết đã lỗi. SSE có sự kiện {{event: error}} hoặc một chunk JSON chứa {{error}} — phải bắt riêng.
+- **Event lỗi từ provider**: một số provider chèn {{event: error}} kèm {{data:}} la JSON co truong {{error}}. Đọc {{event:}} để phân biệt với event dữ liệu thường.
+
+### 7. Nối ra trình duyệt (minh hoạ Spring)
+Spring MVC: dùng {{SseEmitter}} để đẩy từng mẩu về trình duyệt; Spring lo phần giữ kết nối và flush.
+~~~java
+SseEmitter emitter = new SseEmitter(0L);   // 0 = không tự timeout
+executor.submit(() -> {
+    try (BufferedReader in = new BufferedReader(
+            new InputStreamReader(response.body(), StandardCharsets.UTF_8))) {
+        String line;
+        while ((line = in.readLine()) != null) {   // readLine cắt theo LF, tự bỏ CR
+            if (line.isEmpty()) continue;           // dòng trống: kết thúc 1 event
+            if (line.startsWith("event:")) continue; // event lỗi/ping: xử lý riêng nếu cần
+            if (line.startsWith("data:")) {
+                String data = line.substring(5).trim();
+                if ("[DONE]".equals(data)) break;
+                emitter.send(SseEmitter.event().data(data));  // đẩy về client
+            }
+        }
+        emitter.complete();
+    } catch (Exception e) { emitter.completeWithError(e); }
+});
+~~~
+Spring WebFlux: dùng {{WebClient}} đọc thẳng thành luồng {{Flux<ServerSentEvent<String>>}} — framework đã lo cắt dòng và ghép event, bạn chỉ {{map}} lấy {{data}}.
+~~~java
+webClient.get().uri(url).retrieve()
+    .bodyToFlux(new ParameterizedTypeReference<ServerSentEvent<String>>() {})
+    .map(ServerSentEvent::data)
+    .takeUntil("[DONE]"::equals)      // dừng khi gặp [DONE]
+    .subscribe(System.out::println);
+~~~
+> Trình duyệt (nếu bạn tự làm, không qua Spring) dùng {{EventSource}} phía JS; nó tự nối lại khi rớt và tự bỏ qua comment. Nhưng {{EventSource}} chỉ hỗ trợ GET — nếu endpoint của bạn là POST (đa số LLM API) thì phải dùng {{fetch}} + {{ReadableStream}} rồi tự parse SSE, tức là bạn phải tự làm đúng cái parser trong bài tập này.
+
+### 8. Lỗi hay gặp trên production
+| Triệu chứng | Nguyên nhân | Cách sửa |
+|---|---|---|
+| Thiếu ký tự, JSON vỡ | Xử lý mỗi chunk như một dòng; chunk cắt giữa dòng | Giữ buffer, chỉ nhả dòng đã có đủ LF; phần dở chờ mẩu sau |
+| Câu trả lời thiếu chữ ở đầu/cuối | Bỏ qua sự kiện cuối hoặc nuốt {{[DONE]}} vào text | Nhận diện [DONE]/message_stop và dừng đúng chỗ |
+| Tool call không parse được JSON | Nối mảnh arguments không theo index; nhiều tool đan xen | Gom theo index (TreeMap/array), chỉ parse khi finish |
+| Tên hàm null sau khi ghép | Mảnh sau ghi đè name = null | Chỉ set name/id khi khác null (mảnh đầu mới có) |
+| Treo vô hạn | Không timeout, không đóng khi lỗi | Đặt timeout đọc; đóng/completeWithError khi rớt; giới hạn tổng thời gian |
+| Trùng lặp chữ khi reconnect | Client tự nối lại và server gửi lại từ đầu | Dùng id sự kiện ({{id:}}) hoặc đánh dấu offset, bỏ mảnh đã nhận |
+
+### Liên hệ phỏng vấn
+Câu hỏi hay gặp: "Bạn đọc SSE của LLM thế nào cho đúng?". Trả lời tốt nêu đủ: (1) giữ buffer và cắt theo **dòng trống**, không theo chunk; (2) ghép {{delta.content}} theo thứ tự; (3) gom {{tool_calls}} theo **index** vì nhiều tool đan xen, chỉ parse arguments khi có {{finish_reason: tool_calls}}; (4) bắt {{[DONE]}}/message_stop và sự kiện lỗi, đóng stream; (5) có timeout và xử lý rớt giữa chừng (không có API nối tiếp). Câu đào sâu: "SSE khác WebSocket?" — SSE một chiều server→client chạy HTTP, tự reconnect, nhẹ; WebSocket hai chiều, cần handshake riêng.
+
+> Senior tip: luôn đo **TTFT** (time to first token) và **tổng thời gian** tách biệt (bài sau). Streaming làm TTFT đẹp nhưng tổng thời gian không đổi; đừng dùng streaming như một thủ thuật giấu latency rồi tối ưu sai chỗ.`,
+  exercises: [
+    {
+      title: 'SseParser.feed: đọc SSE từng mẩu, chunk có thể cắt giữa dòng',
+      prompt: `Viết class {{SseParser}} với một instance có state (bộ đệm) và method {{List<Event> feed(String chunk)}}. {{chunk}} là một mẩu thô bất kỳ: có thể kết thúc giữa dòng, giữa từ, hoặc ngay trước dấu xuống dòng. {{feed}} phải trả về **danh sách sự kiện đã hoàn chỉnh** tại thời điểm gọi (mẩu cuối dở dang thì giữ lại, trả về ít hơn).
+
+Quy tắc parse (bám đúng đây, test theo đúng):
+- Nối {{chunk}} vào một bộ đệm chuỗi. Chỉ xử lý những **dòng đã kết thúc bằng LF** (ký tự có mã 10). Dòng dở ở cuối bộ đệm giữ nguyên chờ mẩu sau.
+- Bỏ một ký tự CR (mã 13) ở cuối dòng nếu có (hỗ trợ cả LF và CRLF).
+- Dòng rỗng → **kết thúc một sự kiện**: nếu đang có dữ liệu thì phát ra Event, rồi reset.
+- Dòng bắt đầu bằng {{:}} → comment, bỏ qua.
+- Dòng dạng {{field: value}}: {{field}} là phần trước dấu {{:}} đầu tiên; {{value}} là phần sau, **bỏ đúng một dấu cách đầu** nếu có. Field {{data}} thì nối vào bộ đệm dữ liệu (nhiều dòng {{data}} nối bằng ký tự xuống dòng); field {{event}} thì đặt tên sự kiện.
+- Tên sự kiện mặc định là {{message}}. Mỗi Event có {{event}} và {{data}} (public, đọc trực tiếp). Nếu bộ đệm dữ liệu rỗng khi gặp dòng trống thì **không** phát sự kiện (SSE: sự kiện không có data thì bỏ qua).
+
+Với {{feed("data: hel")}} rồi {{feed("lo" + LF + LF)}} phải thu được đúng một Event {{event="message"}}, {{data="hello"}}.
+
+Gợi ý: dùng {{String}} làm bộ đệm ({{indexOf(10)}} tìm LF), hoặc {{StringBuilder}} + chỉ số. Không cần xử lý {{id}}/{{retry}}.`,
+      starter: `class SseParser {
+    static class Event {
+        final String event;
+        final String data;
+        Event(String event, String data) { this.event = event; this.data = data; }
+    }
+
+    private String buf = "";
+    private final StringBuilder data = new StringBuilder();
+    private String event = "message";
+
+    java.util.List<Event> feed(String chunk) {
+        throw new UnsupportedOperationException("TODO");
+    }
+}`,
+      tests: `public class Main {
+    static int passed = 0, total = 0;
+    static void check(String name, Runnable r) {
+        total++;
+        try { r.run(); passed++; System.out.println("PASS " + name); }
+        catch (Throwable t) { System.out.println("FAIL " + name + ": " + t); }
+    }
+    static void eq(Object exp, Object act) {
+        if (!java.util.Objects.equals(exp, act)) throw new AssertionError("expected " + exp + " got " + act);
+    }
+    static String ev(SseParser.Event e) { return e.event + "|" + e.data; }
+
+    public static void main(String[] args) {
+        String NL = String.valueOf((char) 10);   // LF
+        check("single event", () -> {
+            SseParser p = new SseParser();
+            java.util.List<SseParser.Event> r = p.feed("data: hello" + NL + NL);
+            eq(1, r.size());
+            eq("message|hello", ev(r.get(0)));
+        });
+        check("split mid line", () -> {
+            SseParser p = new SseParser();
+            eq(0, p.feed("data: hel").size());
+            java.util.List<SseParser.Event> r = p.feed("lo" + NL + NL);
+            eq(1, r.size());
+            eq("message|hello", ev(r.get(0)));
+        });
+        check("two events one chunk", () -> {
+            SseParser p = new SseParser();
+            java.util.List<SseParser.Event> r = p.feed("data: a" + NL + NL + "data: b" + NL + NL);
+            eq(2, r.size());
+            eq("message|a", ev(r.get(0)));
+            eq("message|b", ev(r.get(1)));
+        });
+        check("multiline data joined", () -> {
+            SseParser p = new SseParser();
+            java.util.List<SseParser.Event> r = p.feed("data: line1" + NL + "data: line2" + NL + NL);
+            eq(1, r.size());
+            eq("message|line1" + NL + "line2", ev(r.get(0)));
+        });
+        check("event field", () -> {
+            SseParser p = new SseParser();
+            java.util.List<SseParser.Event> r = p.feed("event: ping" + NL + "data: x" + NL + NL);
+            eq(1, r.size());
+            eq("ping|x", ev(r.get(0)));
+        });
+        check("comment ignored", () -> {
+            SseParser p = new SseParser();
+            java.util.List<SseParser.Event> r = p.feed(": keepalive" + NL + NL + "data: y" + NL + NL);
+            eq(1, r.size());
+            eq("message|y", ev(r.get(0)));
+        });
+        check("crlf tolerated", () -> {
+            SseParser p = new SseParser();
+            String CR = String.valueOf((char) 13);
+            java.util.List<SseParser.Event> r = p.feed("data: hi" + CR + NL + CR + NL);
+            eq(1, r.size());
+            eq("message|hi", ev(r.get(0)));
+        });
+        check("done sentinel", () -> {
+            SseParser p = new SseParser();
+            java.util.List<SseParser.Event> r = p.feed("data: [DONE]" + NL + NL);
+            eq(1, r.size());
+            eq("message|[DONE]", ev(r.get(0)));
+        });
+        System.out.println("RESULT " + passed + "/" + total);
+    }
+}`,
+      reference: `class SseParser {
+    static class Event {
+        final String event;
+        final String data;
+        Event(String event, String data) { this.event = event; this.data = data; }
+    }
+
+    private String buf = "";
+    private final StringBuilder data = new StringBuilder();
+    private String event = "message";
+
+    java.util.List<Event> feed(String chunk) {
+        java.util.List<Event> out = new java.util.ArrayList<>();
+        if (chunk != null) buf = buf + chunk;
+        int idx;
+        while ((idx = buf.indexOf(10)) >= 0) {          // 10 = LF
+            String line = buf.substring(0, idx);
+            buf = buf.substring(idx + 1);
+            int len = line.length();
+            if (len > 0 && line.charAt(len - 1) == 13) line = line.substring(0, len - 1);  // 13 = CR
+            process(line, out);
+        }
+        return out;
+    }
+
+    private void process(String line, java.util.List<Event> out) {
+        if (line.isEmpty()) { dispatch(out); return; }   // dòng trống: kết thúc 1 event
+        if (line.charAt(0) == ':') return;               // comment
+        int colon = line.indexOf(':');
+        String field, value;
+        if (colon < 0) { field = line; value = ""; }
+        else {
+            field = line.substring(0, colon);
+            value = line.substring(colon + 1);
+            if (!value.isEmpty() && value.charAt(0) == ' ') value = value.substring(1);  // bỏ 1 space
+        }
+        if (field.equals("data")) {
+            if (data.length() > 0) data.append((char) 10);   // nối nhiều dòng data bằng LF
+            data.append(value);
+        } else if (field.equals("event")) {
+            event = value;
+        }
+    }
+
+    private void dispatch(java.util.List<Event> out) {
+        if (data.length() > 0) out.add(new Event(event, data.toString()));
+        data.setLength(0);
+        event = "message";
+    }
+}`,
+      hints: [
+        'Giữ một bộ đệm; chỉ cắt dòng khi tìm thấy ký tự LF (mã 10), phần cuối chưa có LF thì để lại.',
+        'Dòng rỗng mới là lúc phát sự kiện; nếu bộ đệm data rỗng thì bỏ qua (SSE không có data thì không phát).',
+        'Nhớ bỏ một dấu CR (mã 13) ở cuối dòng để chịu được cả LF và CRLF; nối nhiều dòng data bằng ký tự xuống dòng.',
+      ],
+      explain: `### Lời giải
+- Bộ đệm giữ phần chưa đủ dòng; mỗi lần {{feed}} chỉ "nhả" các dòng đã kết thúc bằng LF. Nhờ vậy chunk cắt giữa từ, giữa JSON hay ngay trước dấu xuống dòng đều không làm vỡ.
+- Dòng rỗng là tín hiệu kết thúc sự kiện. Lúc đó nếu có dữ liệu thì phát Event {{event}} + {{data}}, rồi reset tên về {{message}}.
+- {{data}} nhiều dòng được nối bằng LF; {{event}} đặt tên; dòng {{:}} là comment bỏ qua.
+
+### Lỗi hay gặp
+- Cắt theo từng chunk (coi mỗi chunk là một dòng) → vỡ JSON, mất chữ.
+- Quên bỏ CR khi gặp CRLF → {{data}} dính ký tự lạ.
+- Phát sự kiện cả khi data rỗng (SSE: sự kiện không data thì không phát).
+- Không reset {{event}} về {{message}} sau mỗi sự kiện → sự kiện sau bị gán nhầm tên.
+
+> Senior tip: ở production dùng {{BufferedReader.readLine()}} (Spring) hoặc {{Flux<ServerSentEvent>}} (WebFlux) để không phải tự cắt dòng; nhưng hiểu cách cắt dòng giúp bạn debug khi dùng fetch thủ công hoặc khi tự viết proxy SSE.`,
+    },
+    {
+      title: 'StreamAssembler: ghép text delta và tool-call arguments theo index',
+      prompt: `Viết class {{StreamAssembler}} gom các mẩu của một phản hồi streaming (mô phỏng sau khi đã parse SSE, chỉ còn các mẩu text và mẩu arguments).
+
+API:
+- {{void text(String delta)}}: nối một mẩu text vào câu trả lời.
+- {{void toolStart(int index, String id, String name)}}: một tool call mới (hoặc mảnh đầu của tool {{index}}) — {{id}}/{{name}} chỉ có ở mảnh đầu, có thể null ở mảnh sau.
+- {{void toolArgs(int index, String fragment)}}: nối một mảnh arguments JSON vào tool {{index}}.
+- {{String text()}}: câu trả lời đã ghép.
+- {{String finishReason()}}: lý do dừng (do {{finish}} đặt vào).
+- {{void finish(String reason)}}: đặt lý do dừng.
+- {{List<ToolCall> toolCalls()}}: danh sách tool call, **sắp theo index tăng dần**. Mỗi ToolCall có field public {{int index}}, {{String id}}, {{String name}}, và method {{String arguments()}}.
+
+Quy tắc:
+- Text nối theo **thứ tự gọi**.
+- Arguments của mỗi tool nối **theo index**, không theo thứ tự mảnh đến (mảnh của tool 1 có thể tới trước tool 0).
+- {{toolStart}} với {{id}}/{{name}} khác null thì gán; null thì **giữ nguyên** giá trị cũ (không ghi đè bằng null).
+- {{toolArgs}} cho một index chưa {{toolStart}} vẫn phải tạo ToolCall mới cho index đó.
+
+Ví dụ: toolArgs(0,"{\"ci") rồi toolArgs(0,"ty\":\"Ha") rồi toolArgs(0,"noi\"}") phải cho arguments = {"city":"Hanoi"}.`,
+      starter: `class StreamAssembler {
+    static class ToolCall {
+        public final int index;
+        public String id;
+        public String name;
+        private final StringBuilder args = new StringBuilder();
+        ToolCall(int index) { this.index = index; }
+        public String arguments() { return args.toString(); }
+        void append(String f) { if (f != null) args.append(f); }
+    }
+
+    private final StringBuilder text = new StringBuilder();
+    private final java.util.TreeMap<Integer, ToolCall> tools = new java.util.TreeMap<>();
+    private String finishReason;
+
+    void text(String delta) { throw new UnsupportedOperationException("TODO"); }
+    void toolStart(int index, String id, String name) { throw new UnsupportedOperationException("TODO"); }
+    void toolArgs(int index, String fragment) { throw new UnsupportedOperationException("TODO"); }
+    void finish(String reason) { throw new UnsupportedOperationException("TODO"); }
+    String text() { throw new UnsupportedOperationException("TODO"); }
+    String finishReason() { throw new UnsupportedOperationException("TODO"); }
+    java.util.List<ToolCall> toolCalls() { throw new UnsupportedOperationException("TODO"); }
+}`,
+      tests: `public class Main {
+    static int passed = 0, total = 0;
+    static void check(String name, Runnable r) {
+        total++;
+        try { r.run(); passed++; System.out.println("PASS " + name); }
+        catch (Throwable t) { System.out.println("FAIL " + name + ": " + t); }
+    }
+    static void eq(Object exp, Object act) {
+        if (!java.util.Objects.equals(exp, act)) throw new AssertionError("expected " + exp + " got " + act);
+    }
+    public static void main(String[] args) {
+        char Q = 34;   // ký tự " để không phải escape trong literal
+        check("text fragments join in order", () -> {
+            StreamAssembler a = new StreamAssembler();
+            a.text("Hel"); a.text("lo"); a.text(" world");
+            eq("Hello world", a.text());
+        });
+        check("tool args fragments join", () -> {
+            StreamAssembler a = new StreamAssembler();
+            a.toolStart(0, "call_1", "getWeather");
+            a.toolArgs(0, "{" + Q + "ci");
+            a.toolArgs(0, "ty" + Q + ":" + Q + "Ha");
+            a.toolArgs(0, "noi" + Q + "}");
+            eq("{" + Q + "city" + Q + ":" + Q + "Hanoi" + Q + "}", a.toolCalls().get(0).arguments());
+        });
+        check("tool name kept from first fragment", () -> {
+            StreamAssembler a = new StreamAssembler();
+            a.toolStart(0, "call_1", "getWeather");
+            a.toolArgs(0, "x");
+            eq("getWeather", a.toolCalls().get(0).name);
+            eq("call_1", a.toolCalls().get(0).id);
+        });
+        check("multiple tool calls ordered by index", () -> {
+            StreamAssembler a = new StreamAssembler();
+            a.toolStart(1, "call_b", "second");   // tới trước index 0
+            a.toolStart(0, "call_a", "first");
+            a.toolArgs(1, "bb");
+            a.toolArgs(0, "aa");
+            java.util.List<StreamAssembler.ToolCall> t = a.toolCalls();
+            eq(2, t.size());
+            eq(0, t.get(0).index);
+            eq("aa", t.get(0).arguments());
+            eq(1, t.get(1).index);
+            eq("bb", t.get(1).arguments());
+        });
+        check("finish reason stored", () -> {
+            StreamAssembler a = new StreamAssembler();
+            a.finish("tool_calls");
+            eq("tool_calls", a.finishReason());
+        });
+        check("mixed text and tool", () -> {
+            StreamAssembler a = new StreamAssembler();
+            a.text("Let me check. ");
+            a.toolStart(0, "c1", "lookup");
+            a.toolArgs(0, "k=v");
+            a.text(" done");
+            eq("Let me check.  done", a.text());
+            eq("k=v", a.toolCalls().get(0).arguments());
+        });
+        check("args without toolStart still works", () -> {
+            StreamAssembler a = new StreamAssembler();
+            a.toolArgs(2, "z");
+            eq(1, a.toolCalls().size());
+            eq(2, a.toolCalls().get(0).index);
+            eq("z", a.toolCalls().get(0).arguments());
+        });
+        System.out.println("RESULT " + passed + "/" + total);
+    }
+}`,
+      reference: `class StreamAssembler {
+    static class ToolCall {
+        public final int index;
+        public String id;
+        public String name;
+        private final StringBuilder args = new StringBuilder();
+        ToolCall(int index) { this.index = index; }
+        public String arguments() { return args.toString(); }
+        void append(String f) { if (f != null) args.append(f); }
+    }
+
+    private final StringBuilder text = new StringBuilder();
+    private final java.util.TreeMap<Integer, ToolCall> tools = new java.util.TreeMap<>();
+    private String finishReason;
+
+    void text(String delta) { if (delta != null) text.append(delta); }
+
+    void toolStart(int index, String id, String name) {
+        ToolCall t = tools.computeIfAbsent(index, k -> new ToolCall(k));
+        if (id != null) t.id = id;          // chỉ gán khi khác null (mảnh đầu mới có)
+        if (name != null) t.name = name;
+    }
+
+    void toolArgs(int index, String fragment) {
+        tools.computeIfAbsent(index, k -> new ToolCall(k)).append(fragment);
+    }
+
+    void finish(String reason) { this.finishReason = reason; }
+    String text() { return text.toString(); }
+    String finishReason() { return finishReason; }
+
+    java.util.List<ToolCall> toolCalls() {
+        return new java.util.ArrayList<>(tools.values());   // TreeMap: đã sắp theo index
+    }
+}`,
+      hints: [
+        'Dùng TreeMap<Integer,ToolCall> để tool tự sắp theo index; computeIfAbsent tạo ToolCall khi chưa có.',
+        'toolStart chỉ gán id/name khi khác null; mảnh sau truyền null thì giữ nguyên.',
+        'toolArgs phải tự tạo ToolCall nếu index chưa tồn tại (mảnh arguments có thể tới trước mảnh đầu).',
+      ],
+      explain: `### Lời giải
+- Text chỉ cần nối theo thứ tự gọi vào một StringBuilder.
+- Tool gom theo index bằng TreeMap nên dù mảnh của tool 1 tới trước tool 0, kết quả vẫn đúng thứ tự index.
+- {{toolStart}} không ghi đè id/name bằng null; {{toolArgs}} tự tạo ToolCall khi index mới.
+
+### Lỗi hay gặp
+- Nối tất cả arguments vào một StringBuilder chung → JSON của nhiều tool trộn vào nhau, không parse được.
+- Dùng HashMap → thứ tự tool không ổn định giữa các lần chạy.
+- Gán name = null ở mảnh sau → mất tên hàm.
+- Parse arguments **trước** khi hết luồng → JSON còn dở dang, lỗi.
+
+> Senior tip: chỉ parse chuỗi arguments khi đã có finish_reason = tool_calls hoặc [DONE]; lúc đó mới chắc chắn JSON trọn vẹn.`,
+    },
+  ],
+  check: [
+    {
+      q: 'Một chunk mạng của luồng SSE rơi vào giữa một dòng dữ liệu {{data:}}. Cách xử lý đúng là?',
+      options: [
+        'Coi mỗi chunk là một dòng hoàn chỉnh rồi parse ngay',
+        'Giữ chunk vào bộ đệm, chỉ cắt và xử lý những dòng đã có đủ ký tự xuống dòng',
+        'Bỏ chunk đó đi vì đã hỏng',
+        'Đợi đủ 1 giây rồi đọc lại từ đầu',
+      ],
+      answer: 1,
+      explain: 'Chunk mạng không trùng ranh giới dòng; phải giữ bộ đệm và chỉ "nhả" dòng đã kết thúc bằng LF, phần dở chờ mẩu sau. Coi mỗi chunk là một dòng sẽ vỡ JSON và mất chữ; bỏ chunk làm mất dữ liệu; đợi rồi đọc lại không giải quyết được việc ranh giới tùy ý.',
+    },
+    {
+      q: 'Vì sao phải gom tool-call arguments theo index, không nối bừa vào một chỗ?',
+      options: [
+        'Vì index quyết định độ dài câu trả lời',
+        'Vì model có thể gọi nhiều tool cùng lúc và mảnh của các tool đan xen nhau',
+        'Vì JSON không cho phép nhiều tool',
+        'Vì index là thứ tự chữ cái của tên hàm',
+      ],
+      answer: 1,
+      explain: 'Một lượt model có thể yêu cầu nhiều tool; mảnh arguments của tool 0 và tool 1 đến xen kẽ. Gom theo index giữ mỗi JSON của một tool liền mạch, parse được. Các phương án còn lại đều sai: index không liên quan độ dài, JSON hoàn toàn cho phép nhiều tool, và index là số thứ tự chứ không phải chữ cái.',
+    },
+    {
+      q: 'Khi gặp {{data: [DONE]}} trong luồng OpenAI, client nên làm gì?',
+      options: [
+        'Nối "[DONE]" vào câu trả lời',
+        'Coi là token mới và tiếp tục chờ',
+        'Dừng đọc, đóng stream, không đưa vào nội dung',
+        'Gọi lại API từ đầu',
+      ],
+      answer: 2,
+      explain: '[DONE] chỉ là tín hiệu kết thúc, không phải dữ liệu; phải dừng và đóng stream, không nối vào text. Coi là token sẽ làm bẩn câu trả lời; tiếp tục chờ là treo; gọi lại từ đầu là lãng phí và không cần thiết.',
+    },
+  ],
+  related: ['ai-001', 'ai-006', 'ai-007'],
+  tags: ['ai', 'llm', 'sse', 'streaming', 'tool-calling', 'hands-on']
+},
+{
+  id: 'lesson-ai-022',
+  track: 'ai',
+  order: 22,
+  title: 'Đo TTFT (time to first token) và tổng thời gian: đo đúng chỗ mới tối ưu đúng',
+  level: 'senior',
+  minutes: 45,
+  goals: [
+    'Phân biệt TTFT, tổng thời gian (total) và throughput (token/giây) — ba con số đo ba thứ khác nhau.',
+    'Tính TTFT và throughput từ mốc thời gian nhận từng token, bằng Java thuần.',
+    'Hiểu vì sao streaming làm TTFT đẹp nhưng không giảm tổng thời gian.',
+    'Chọn hướng tối ưu đúng: prompt cache/model nhỏ cho TTFT, batch/độ dài output cho throughput.',
+    'Tránh các bẫy đo sai: đo cả thời gian mạng, lẫn token đầu với token cuối, dùng đơn vị không nhất quán.',
+  ],
+  body: `**Tóm tắt:** Khi đánh giá một hệ thống LLM có ba con số thời gian khác nhau, đừng gộp làm một: **TTFT** (time to first token — từ lúc gửi request đến lúc thấy token đầu tiên), **tổng thời gian** (từ gửi đến khi stream kết thúc), và **throughput** (số token sinh ra mỗi giây sau token đầu). Người dùng **cảm nhận** TTFT ("chữ có chạy ra chưa?"), còn chi phí và throughput lại quyết định "chạy bao nhiêu job một lúc". Đo lẫn ba con số này dẫn tới tối ưu sai chỗ: ví dụ bật streaming để TTFT đẹp (cảm giác nhanh) nhưng tổng thời gian vẫn y nguyên, hệ thống vẫn chậm như cũ.
+
+### 1. Ba con số, ba câu hỏi khác nhau
+| Chỉ số | Định nghĩa | Trả lời câu hỏi |
+|---|---|---|
+| TTFT | requestStart → token đầu tiên | Người dùng chờ bao lâu mới thấy chữ? |
+| Total | requestStart → stream kết thúc | Tổng cộng mất bao lâu? |
+| Throughput | số token / (thời gian từ token đầu đến hết) | Model "chạy chữ" nhanh cỡ nào? |
+
+Ví dụ số: request bắt đầu tại mốc 0 ms; token đầu về tại 200 ms; các token sau về đều đặn mỗi 200 ms; token thứ 4 (cuối) tại 800 ms; stream kết thúc tại 1000 ms. Khi đó:
+- TTFT = 200 − 0 = **200 ms**
+- Total = 1000 − 0 = **1000 ms**
+- Số token = 4; cửa sổ sinh = 1000 − 200 = 800 ms = 0,8 s → throughput = 4 / 0,8 = **5 token/s**
+
+Ba con số này **không thay thế được nhau**. TTFT 200 ms mà total 1000 ms nghĩa là "chữ chạy ra nhanh, nhưng viết xong cả câu vẫn mất 1 giây" — hoàn toàn bình thường, không mâu thuẫn.
+
+### 2. Vì sao streaming làm đẹp TTFT nhưng không giảm Total
+Khi **không** streaming, client chỉ nhận được byte đầu tiên **sau khi model viết xong** → TTFT ≈ Total (cùng ~1 giây). Khi **streaming**, server đẩy token đầu sau ~200 ms → TTFT nhỏ, nhưng model vẫn cần đúng ngần ấy thời gian để viết hết → **Total không đổi**. Đây là hiểu lầm phổ biến: "bật streaming cho nhanh" — thực ra chỉ **cảm giác** nhanh, throughput và tổng thời gian không cải thiện. Muốn giảm Total thật thì phải giảm số token output, đổi model nhanh hơn, hoặc tăng song song (nhiều request cùng lúc trên hạ tầng đủ lớn).
+
+### 3. Đo thế nào cho đúng
+Ghi lại **mốc thời gian** (Instant/millis) tại các sự kiện: ngay trước khi gửi request (requestStart), ngay khi nhận mẩu đầu tiên (firstToken), và khi stream kết thúc (streamEnd). Từ đó:
+- TTFT = firstToken − requestStart
+- Total = streamEnd − requestStart
+- Throughput = sốToken / ((streamEnd − firstToken) / 1000.0)
+
+Hai lưu ý đo:
+- Đo ở **client** (đã gồm mạng) và ở **server** (chỉ phần sinh) để biết nút thắt là mạng hay model. Nếu client TTFT 2 s mà server 300 ms thì vấn đề là mạng/hàng đợi, không phải model.
+- Throughput nên tính trên **cửa sổ sau token đầu**, không chia cho toàn bộ Total — nếu không, TTFT lớn sẽ "ăn" mất throughput và bạn tưởng model sinh chậm.
+
+### 4. Công thức và ví dụ tính tay
+Cho mốc: requestStart = 0; các token về tại [200, 400, 600, 800] ms; streamEnd = 1000 ms.
+~~~text
+TTFT       = 200 - 0                       = 200 ms
+Total      = 1000 - 0                      = 1000 ms
+số token   = 4
+cửa sổ     = 1000 - 200 = 800 ms = 0.8 s
+throughput = 4 / 0.8                        = 5 token/s
+gap giữa token trung bình = (800 - 200) / (4 - 1) = 600 / 3 = 200 ms
+~~~
+Nếu mốc lệch (ví dụ chỉ có 1 token): throughput = 1 / cửa sổ; nếu streamEnd == firstToken (cửa sổ 0) thì **không chia** — quy ước throughput = 0 để tránh chia cho 0.
+
+### 5. Tối ưu đúng chỗ
+| Triệu chứng | Chỉ số hỏng | Hướng tối ưu |
+|---|---|---|
+| Người dùng thấy "chữ không chạy" | TTFT cao | Bật streaming; dùng prompt caching cho system prompt dài; chọn model nhỏ/nhanh; giảm độ dài prompt đầu vào; đặt server gần user (region) |
+| Tổng vẫn lâu dù chữ chạy sớm | Total/throughput thấp | Giảm số token output (max_tokens, prompt gọn); model nhanh hơn; tăng song song nếu throughput là nút thắt hạ tầng |
+| Hoá đơn token cao | (chi phí) | Cache, RAG lấy ít context, đặt max_tokens |
+
+Ví dụ: TTFT 1,5 s chủ yếu do system prompt 4000 token phải xử lý lại mỗi lần → bật **prompt caching** để phần đầu giống nhau được tái dùng, TTFT còn ~400 ms; throughput 5 token/s là do model, muốn nhanh hơn phải đổi model hoặc giảm output.
+
+### 6. Lỗi hay gặp khi đo
+| Triệu chứng | Nguyên nhân | Cách sửa |
+|---|---|---|
+| "Model chậm" nhưng thực ra là mạng | Chỉ đo ở client, không tách server | Đo cả hai phía, so sánh TTFT client vs server |
+| Throughput thấp giả tạo | Chia số token cho **toàn bộ** Total (gồm cả TTFT) | Chia cho cửa sổ sau token đầu |
+| Số liệu nhảy lung tung | Đo bằng currentTimeMillis phụ thuộc đồng hồ hệ thống; lẫn đơn vị ms/s | Dùng một nguồn thời gian (System.nanoTime cho khoảng ngắn), ghi rõ ms hay s |
+| Kết luận sai khi so hai model | Cùng số token nhưng khác độ dài output | Chuẩn hoá theo cùng độ dài output hoặc đo theo token/s |
+
+### Liên hệ phỏng vấn
+Câu hỏi: "Bạn đo và tối ưu latency cho ứng dụng LLM thế nào?". Trả lời tốt tách ba chỉ số: TTFT (cảm nhận người dùng), Total (tổng), throughput (công suất). Nói rõ streaming chỉ cải thiện TTFT, không giảm Total. Muốn giảm TTFT: prompt caching, model nhỏ, prompt gọn, region gần. Muốn giảm Total: ít token output hơn hoặc model nhanh hơn. Nhấn mạnh đo ở cả client và server để biết nút thắt là mạng hay model, và luôn ghi ms/s nhất quán.
+
+> Senior tip: đừng bao giờ báo "trung bình" mà không có p95. Một hệ thống TTFT trung bình 300 ms nhưng p95 3 s vẫn bị người dùng chê "lúc nhanh lúc treo"; p95 mới kể đúng câu chuyện trải nghiệm.`,
+  exercises: [
+    {
+      title: 'StreamMetrics: tính TTFT, tổng thời gian, gap trung bình và throughput',
+      prompt: `Viết class {{StreamMetrics}} với các method static (nhận mốc thời gian bằng **millisecond**, danh sách mốc các token theo thứ tự):
+
+1. {{long ttftMs(long requestStartMs, List<Long> arrivalsMs)}}: {{arrivalsMs.get(0) - requestStartMs}}. Nếu danh sách rỗng (null hoặc size 0) → ném {{IllegalArgumentException}}.
+2. {{long totalMs(long requestStartMs, long streamEndMs)}}: {{streamEndMs - requestStartMs}}.
+3. {{long avgGapMs(List<Long> arrivalsMs)}}: khoảng cách trung bình giữa các token liên tiếp = {{(last - first) / (n - 1)}} với n = số token. Nếu n < 2 → trả 0.
+4. {{double tokensPerSecond(List<Long> arrivalsMs, long streamEndMs)}}: {{n / ((streamEndMs - first) / 1000.0)}} với first = token đầu, n = số token. Nếu danh sách rỗng → 0.0; nếu cửa sổ {{streamEndMs - first <= 0}} → 0.0 (không chia cho 0).
+
+Ví dụ: {{arrivals = [200,400,600,800]}}, {{requestStart=0}}, {{streamEnd=1000}} → TTFT 200, total 1000, gap 200, throughput 5.0.`,
+      starter: `class StreamMetrics {
+    static long ttftMs(long requestStartMs, java.util.List<Long> arrivalsMs) {
+        throw new UnsupportedOperationException("TODO");
+    }
+    static long totalMs(long requestStartMs, long streamEndMs) {
+        throw new UnsupportedOperationException("TODO");
+    }
+    static long avgGapMs(java.util.List<Long> arrivalsMs) {
+        throw new UnsupportedOperationException("TODO");
+    }
+    static double tokensPerSecond(java.util.List<Long> arrivalsMs, long streamEndMs) {
+        throw new UnsupportedOperationException("TODO");
+    }
+}`,
+      tests: `public class Main {
+    static int passed = 0, total = 0;
+    static void check(String name, Runnable r) {
+        total++;
+        try { r.run(); passed++; System.out.println("PASS " + name); }
+        catch (Throwable t) { System.out.println("FAIL " + name + ": " + t); }
+    }
+    static void eq(Object exp, Object act) {
+        if (!java.util.Objects.equals(exp, act)) throw new AssertionError("expected " + exp + " got " + act);
+    }
+    static void near(double exp, double act) {
+        if (Math.abs(exp - act) > 1e-9) throw new AssertionError("expected " + exp + " got " + act);
+    }
+    static java.util.List<Long> L(long... xs) {
+        java.util.List<Long> r = new java.util.ArrayList<>();
+        for (long x : xs) r.add(x);
+        return r;
+    }
+    public static void main(String[] args) {
+        java.util.List<Long> arr = L(200, 400, 600, 800);
+        check("ttft basic", () -> eq(200L, StreamMetrics.ttftMs(0L, arr)));
+        check("total basic", () -> eq(1000L, StreamMetrics.totalMs(0L, 1000L)));
+        check("avg gap", () -> eq(200L, StreamMetrics.avgGapMs(arr)));
+        check("tokens per second", () -> near(5.0, StreamMetrics.tokensPerSecond(arr, 1000L)));
+        check("ttft nonzero start", () -> eq(200L, StreamMetrics.ttftMs(500L, L(700, 900, 1100, 1300))));
+        check("total nonzero start", () -> eq(1000L, StreamMetrics.totalMs(500L, 1500L)));
+        check("single arrival gap zero", () -> eq(0L, StreamMetrics.avgGapMs(L(300))));
+        check("single arrival tps", () -> near(1.0, StreamMetrics.tokensPerSecond(L(300), 1300L)));
+        check("empty arrivals ttft throws", () -> {
+            try { StreamMetrics.ttftMs(0L, L()); throw new AssertionError("no throw"); }
+            catch (IllegalArgumentException e) { }
+        });
+        check("empty arrivals tps zero", () -> near(0.0, StreamMetrics.tokensPerSecond(L(), 1000L)));
+        check("stream end equals first -> tps zero", () -> near(0.0, StreamMetrics.tokensPerSecond(L(300, 600), 300L)));
+        check("uneven gaps average", () -> eq(250L, StreamMetrics.avgGapMs(L(100, 200, 600))));
+        System.out.println("RESULT " + passed + "/" + total);
+    }
+}`,
+      reference: `class StreamMetrics {
+    static long ttftMs(long requestStartMs, java.util.List<Long> arrivalsMs) {
+        if (arrivalsMs == null || arrivalsMs.isEmpty()) throw new IllegalArgumentException("no token arrivals");
+        return arrivalsMs.get(0) - requestStartMs;      // token đầu - lúc gửi
+    }
+
+    static long totalMs(long requestStartMs, long streamEndMs) {
+        return streamEndMs - requestStartMs;            // kết thúc - lúc gửi
+    }
+
+    static long avgGapMs(java.util.List<Long> arrivalsMs) {
+        if (arrivalsMs == null || arrivalsMs.size() < 2) return 0L;
+        long span = arrivalsMs.get(arrivalsMs.size() - 1) - arrivalsMs.get(0);
+        return span / (arrivalsMs.size() - 1);          // trung bình các gap = span / (n-1)
+    }
+
+    static double tokensPerSecond(java.util.List<Long> arrivalsMs, long streamEndMs) {
+        if (arrivalsMs == null || arrivalsMs.isEmpty()) return 0.0;
+        long window = streamEndMs - arrivalsMs.get(0);  // cửa sổ SAU token đầu
+        if (window <= 0) return 0.0;                    // tránh chia cho 0
+        return arrivalsMs.size() / (window / 1000.0);   // số token / giây
+    }
+}`,
+      hints: [
+        'ttft = token đầu − requestStart; total = streamEnd − requestStart.',
+        'avg gap = (token cuối − token đầu) / (số token − 1); n < 2 thì trả 0.',
+        'Throughput = số token / (cửa sổ sau token đầu tính bằng giây); cửa sổ <= 0 thì trả 0.0.',
+      ],
+      explain: `### Lời giải
+- TTFT và Total chỉ là hai phép trừ mốc thời gian; TTFT lấy token đầu, Total lấy lúc kết thúc.
+- Gap trung bình = (last − first)/(n−1) đúng bằng trung bình các khoảng liên tiếp.
+- Throughput tính trên cửa sổ **sau** token đầu, đổi ms sang giây; chặn cửa sổ <= 0 để không chia 0.
+
+### Lỗi hay gặp
+- Chia throughput cho **toàn bộ** Total thay vì cửa sổ sau token đầu → throughput thấp giả tạo.
+- Quên chặn cửa sổ <= 0 → chia cho 0 (Infinity).
+- Với n = 1, avg gap phải là 0 chứ không phải lấy chính token đó.
+- Lẫn đơn vị ms và s (chia 1000.0 đúng chỗ).
+
+> Senior tip: đo thêm p50/p95 của TTFT và Total trên nhiều request, không chỉ trung bình; và tách đo client vs server để biết nút thắt là mạng hay model.`,
+    },
+  ],
+  check: [
+    {
+      q: 'Bật streaming cho chatbot thì chỉ số nào cải thiện rõ rệt?',
+      options: [
+        'Tổng thời gian giảm mạnh',
+        'Throughput (token/giây) tăng',
+        'TTFT giảm (người dùng thấy chữ chạy sớm hơn), còn tổng thời gian gần như không đổi',
+        'Chi phí token giảm',
+      ],
+      answer: 2,
+      explain: 'Streaming đẩy token đầu về sớm nên TTFT giảm, cảm giác nhanh hơn; nhưng model vẫn cần ngần ấy thời gian để viết hết nên Total không đổi, throughput cũng không tăng. Chi phí token không liên quan. Đây là hiểu lầm phổ biến "bật streaming cho nhanh".',
+    },
+    {
+      q: 'Cho requestStart=0, token về tại [200,400,600,800] ms, streamEnd=1000 ms. Throughput (token/s) là?',
+      options: ['4.0', '5.0', '0.8', '8.0'],
+      answer: 1,
+      explain: 'Số token = 4; cửa sổ sau token đầu = 1000 − 200 = 800 ms = 0,8 s; throughput = 4 / 0,8 = 5.0 token/s. "4.0" là lấy số token chia 1 giây tổng; "0.8" là cửa sổ tính bằng giây chứ chưa chia token; "8.0" là 4/0,5 (lấy sai token cuối).',
+    },
+    {
+      q: 'Vì sao không nên tính throughput = số token / tổng thời gian?',
+      options: [
+        'Vì tổng thời gian luôn bằng 0',
+        'Vì như vậy TTFT lớn sẽ bị tính vào mẫu số, làm throughput thấp giả tạo',
+        'Vì không được dùng số thực',
+        'Vì token không phải số nguyên',
+      ],
+      answer: 1,
+      explain: 'Chia cho tổng thời gian (gồm cả TTFT) khiến phần chờ token đầu bị tính như "model sinh chậm", làm throughput thấp giả tạo. Đúng ra chỉ tính trên cửa sổ sau token đầu. Các phương án còn lại sai vì tổng thời gian không bằng 0, số thực hoàn toàn dùng được, và token là số nguyên.',
+    },
+  ],
+  related: ['ai-004', 'ai-007'],
+  tags: ['ai', 'latency', 'ttft', 'streaming', 'metrics', 'performance']
 }
 );
