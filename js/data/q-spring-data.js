@@ -17257,4 +17257,212 @@ redis-cli -p 7000 CLUSTER KEYSLOT mykey
   follow: ['Hash tag dùng khi nào?', 'Client library xử lý MOVED/ASK redirect thế nào?'],
   tags: ['Redis', 'Cluster', 'hash-slot', 'resharding']
 }
+,
+{
+  id: 'jpa-083',
+  topic: 'jpa',
+  level: 'senior',
+  q: 'MyBatis mapper XML và annotation khác nhau thế nào, và dynamic SQL (if/where/foreach/choose) giải quyết bài toán gì?',
+  a: `**Tóm tắt:** MyBatis là SQL mapper: bạn viết SQL thật, MyBatis ánh xạ kết quả vào object. Annotation mapper gọn cho query đơn giản; XML mapper tách SQL ra file riêng, phù hợp SQL dài và dynamic SQL phức tạp. Dynamic SQL dùng if, where, foreach, choose để sinh SQL có điều kiện tại runtime an toàn, thay thế nối chuỗi thủ công.
+
+### 1. MyBatis vs JPA
+| Tiêu chí | JPA/Hibernate | MyBatis |
+|---|---|---|
+| Mô hình | ORM, sinh SQL | SQL mapper, bạn viết SQL |
+| Lazy loading | Có | Không mặc định |
+| Dirty checking | Tự động | Thủ công |
+| Kiểm soát SQL | Thấp | Tuyệt đối |
+
+### 2. Annotation vs XML
+- Annotation: @Select, @Insert trên interface, gọn, phù hợp CRUD đơn giản.
+- XML: file mapper riêng, phù hợp SQL dài, dynamic SQL, review SQL dễ.
+
+### 3. Dynamic SQL
+~~~xml
+<select id="search" resultType="User">
+  SELECT * FROM users
+  <where>
+    <if test="name != null"> AND name LIKE #{name} </if>
+    <if test="status != null"> AND status = #{status} </if>
+  </where>
+  <choose>
+    <when test="sort == 'new'"> ORDER BY created_at DESC </when>
+    <otherwise> ORDER BY id ASC </otherwise>
+  </choose>
+</select>
+~~~
+- where tự thêm WHERE và loại AND/OR thừa.
+- foreach sinh IN (...) an toàn với #{}.
+
+### 4. Pitfall
+- Nối chuỗi thủ công → SQL injection và lỗi cú pháp.
+- foreach với list rỗng → IN () lỗi.
+- if thiếu where → WHERE AND lỗi.
+
+### Ví dụ đời thực
+API tìm kiếm đơn hàng 8 filter tuỳ chọn. Bản đầu nối chuỗi: filter null sinh WHERE AND và crash. Chuyển XML với where + if: SQL luôn hợp lệ, review dễ, thời gian sửa bug giảm từ 2 giờ xuống 15 phút.
+
+### Trả lời mẫu khi phỏng vấn
+"MyBatis là SQL mapper, không ORM: tôi viết SQL thật và ánh xạ kết quả. So với JPA, MyBatis cho kiểm soát SQL tuyệt đối, phù hợp query phức tạp và báo cáo, nhưng mất dirty checking và lazy loading tự động. Mapper annotation gọn cho CRUD đơn giản; XML cho SQL dài và dynamic SQL. Dynamic SQL dùng if, where, foreach, choose để sinh SQL tại runtime an toàn, thay thế nối chuỗi. Pitfall: foreach list rỗng sinh IN () lỗi, if thiếu where sinh WHERE AND, trộn logic phức tạp trong annotation khó review. Tôi chọn JPA cho domain CRUD nhiều quan hệ, MyBatis cho query báo cáo và legacy schema."
+
+> Senior tip: dynamic SQL là lý do chính MyBatis tồn tại. Nếu chỉ viết SQL tĩnh, MyBatis chỉ là JDBC bọc thêm boilerplate; sức mạnh thật là sinh SQL có điều kiện an toàn với #{}, và XML là nơi chứa sức mạnh đó.`,
+
+  follow: ['Vì sao MyBatis dùng #{} an toàn hơn \${}?', 'Khi nào dùng MyBatis Generator?', 'Làm sao test mapper độc lập?'],
+  tags: ['MyBatis', 'dynamic-SQL', 'mapper']
+},
+{
+  id: 'jpa-084',
+  topic: 'jpa',
+  level: 'senior',
+  q: 'Trong MyBatis, resultMap với association và collection ánh xạ quan hệ thế nào? Vì sao nested select dễ gây N+1 và cách dùng nested result (join) để tránh?',
+  a: `**Tóm tắt:** resultMap là bản đồ ánh xạ cột SQL vào field Java. association ánh xạ quan hệ 1-1 (Order→Customer); collection ánh xạ 1-many (Order→List Item). Nested select gọi query con cho từng dòng → N+1. Nested result JOIN một lần → nhanh hơn nhưng SQL phức tạp và result set lặp dữ liệu.
+
+### 1. resultMap cơ bản
+~~~xml
+<resultMap id="orderMap" type="Order">
+  <id property="id" column="order_id"/>
+  <result property="total" column="total"/>
+  <association property="customer" javaType="Customer">
+    <id property="id" column="customer_id"/>
+    <result property="name" column="customer_name"/>
+  </association>
+  <collection property="items" ofType="OrderItem">
+    <id property="id" column="item_id"/>
+    <result property="qty" column="qty"/>
+  </collection>
+</resultMap>
+~~~
+
+### 2. Nested select
+~~~xml
+<association property="customer" column="customer_id" select="selectCustomerById"/>
+~~~
+Query chính trả N dòng → mỗi dòng gọi query con → 1+N query. Dễ viết, phù hợp dữ liệu nhỏ.
+
+### 3. Nested result (join)
+Một JOIN duy nhất, MyBatis gom dòng trùng id thành object cha và thêm con vào collection. Không N+1 nhưng SQL dài và dữ liệu lặp.
+
+### 4. So sánh
+| Tiêu chí | Nested select | Nested result |
+|---|---|---|
+| Số query | 1+N | 1 |
+| SQL | Đơn giản | Phức tạp |
+| Result set | Nhỏ | Lớn (lặp) |
+| Phù hợp | Dữ liệu ít | API trả full object |
+
+### 5. Pitfall
+- Quên id trong resultMap → không gom collection đúng.
+- Alias không khớp → field null im lặng.
+- JOIN quá nhiều bảng → result set khổng lồ.
+
+### Ví dụ đời thực
+API trả đơn hàng kèm khách và item. Bản đầu nested select cho cả khách và item: 1 query chính + 500 query khách + 500 query item = 1001 query, p99 1.8s. Chuyển nested result JOIN: 1 query, p99 120ms, result set từ 500 lên 4000 dòng. Compromise: 3 query riêng rồi assemble trong service, p99 150ms, dễ cache.
+
+### Trả lời mẫu khi phỏng vấn
+"resultMap là bản đồ ánh xạ cột SQL vào field Java. association ánh xạ 1-1 như Order→Customer; collection ánh xạ 1-many như Order→List Item. Nested select gọi query con cho mỗi dòng, dễ viết nhưng N+1, phù hợp dữ liệu nhỏ. Nested result JOIN một lần, nhanh, phù hợp API trả full object nhưng SQL phức tạp và result set lặp. N+1 xảy ra vì query chính trả N dòng rồi mỗi dòng gọi query con. Pitfall: quên id khiến MyBatis không gom collection đúng, alias không khớp gây null im lặng, JOIN quá nhiều bảng làm result set khổng lồ. Thực tế tôi thường dùng 3 query riêng rồi assemble trong service để cân bằng số query và độ phức tạp SQL."
+
+> Senior tip: N+1 trong MyBatis không tự động như JPA — bạn thấy SQL nên bạn kiểm soát được. Chính vì vậy nhiều team chọn MyBatis cho API nặng query: không có lazy proxy vô hình, mọi query đều hiện ra trong XML và review được.`,
+
+  follow: ['Vì sao phải khai báo id trong resultMap?', 'Nested select có lazy được không?', 'So sánh N+1 của MyBatis và JPA @EntityGraph?'],
+  tags: ['MyBatis', 'resultMap', 'association', 'collection', 'N+1']
+},
+{
+  id: 'jpa-085',
+  topic: 'jpa',
+  level: 'lead',
+  q: 'MyBatis: #{} và \${} khác nhau thế nào và vì sao \${} gây SQL injection? Batch insert với ExecutorType.BATCH hoạt động ra sao, và Spring quản lý transaction MyBatis thế nào?',
+  a: `**Tóm tắt:** #{} là placeholder PreparedStatement an toàn với SQL injection. \${} là string substitution nối trực tiếp vào SQL, dùng cho identifier (table, column, ORDER BY) nhưng nguy hiểm nếu nhận input người dùng. Batch với ExecutorType.BATCH gom nhiều INSERT/UPDATE gửi một lần, giảm round-trip; phải flush/commit. Spring quản lý transaction qua DataSourceTransactionManager, SqlSessionTemplate tự join transaction hiện có.
+
+### 1. #{} vs \${}
+| Tiêu chí | #{} | \${} |
+|---|---|---|
+| Cơ chế | PreparedStatement placeholder ? | String substitution vào SQL text |
+| SQL injection | An toàn | Nguy hiểm nếu input người dùng |
+| Dùng cho | Giá trị | Identifier không parameterize được |
+| Type handling | MyBatis set theo jdbcType | Text thô |
+
+Ví dụ nguy hiểm: ORDER BY \${column} với column = "id; DROP TABLE users". Cách an toàn: whitelist column trong Java rồi mới \${}.
+
+### 2. Batch insert
+~~~java
+SqlSession session = sqlSessionFactory.openSession(ExecutorType.BATCH);
+try {
+    UserMapper m = session.getMapper(UserMapper.class);
+    for (User u : users) m.insert(u);
+    session.flushStatements();
+    session.commit();
+} finally { session.close(); }
+~~~
+- Giảm round-trip: 1000 insert → 1 request.
+- Generated key có thể chỉ có sau flush.
+- Lỗi một dòng có thể fail toàn batch.
+
+### 3. Spring + MyBatis transaction
+Spring Boot dùng @Transactional + DataSourceTransactionManager. SqlSessionTemplate là thread-safe, tự join transaction hiện có. Nếu tự openSession() trong @Transactional, session đó không tham gia transaction → dữ liệu không commit đúng.
+
+### 4. Pitfall
+- Dùng \${} cho input người dùng → SQL injection.
+- Batch quên flush → dữ liệu chưa gửi.
+- Đọc generated key trước flush → null.
+- Batch size quá lớn → memory và lock; thường 500-1000 dòng/lô.
+
+### Ví dụ đời thực
+Job import 2 triệu user. Bản đầu SIMPLE: 2 triệu round-trip, 45 phút. Chuyển BATCH size 1000: 2000 batch, 4 phút. Dev đọc user.getId() ngay sau insert → null vì chưa flush; sửa bằng flushStatements() trước khi đọc key. Một lần filter sắp xếp dùng \${sortColumn} không whitelist: audit phát hiện injection; sửa bằng whitelist.
+
+### Trả lời mẫu khi phỏng vấn
+"Hash {} là placeholder PreparedStatement: MyBatis thay bằng ? và set value an toàn, xử lý type đúng. Dollar {} là string substitution nối trực tiếp vào SQL, dùng cho identifier không parameterize được như tên cột hay ORDER BY; nếu nhận input người dùng thì là SQL injection. Cách an toàn là whitelist trong Java rồi mới dollar. Batch với ExecutorType.BATCH gom nhiều INSERT/UPDATE và gửi một lần, giảm round-trip; phải flushStatements và commit, generated key chỉ có sau flush. Spring quản lý transaction qua DataSourceTransactionManager, SqlSessionTemplate tự join transaction hiện có nên @Transactional hoạt động bình thường; tự open session trong transaction là sai. Pitfall: batch size quá lớn gây memory và lock, đọc key trước flush trả null, dollar không whitelist là lỗ hổng."
+
+> Senior tip: quy tắc vàng: mọi giá trị dùng #{}, mọi identifier dùng \${} nhưng phải whitelist. Nếu thấy \${} nhận input người dùng trong code review, đó là P0 security issue. Batch là tối ưu lớn nhất của MyBatis so với JPA cho import dữ liệu, nhưng phải hiểu lifecycle flush/commit/generated key.`,
+
+  follow: ['Vì sao \${} không dùng cho giá trị WHERE id = ?', 'Làm sao lấy generated key khi dùng BATCH?', 'SqlSessionTemplate khác SqlSession thường thế nào?'],
+  tags: ['MyBatis', 'SQL-injection', 'batch', 'transaction', 'ExecutorType']
+},
+{
+  id: 'jpa-086',
+  topic: 'jpa',
+  level: 'senior',
+  q: 'Khi nào một dự án chọn MyBatis thay vì JPA? So sánh chi phí, kiểm soát SQL và rủi ro của từng lựa chọn.',
+  a: `**Tóm tắt:** Chọn MyBatis khi SQL phức tạp, báo cáo nặng, schema legacy, hoặc team cần kiểm soát SQL tuyệt đối (phổ biến ở Hàn/Nhật và finance). Chọn JPA khi domain CRUD nhiều quan hệ, cần dirty checking/lazy loading. Có thể dùng cả hai: JPA cho CRUD, MyBatis cho query/report.
+
+### 1. Vì sao Hàn/Nhật ưa MyBatis
+- Văn hoá code review SQL: SQL là tài sản, phải duyệt như code.
+- Hệ thống finance/legacy: schema phức tạp, query báo cáo nặng.
+- DBA tham gia review: dễ review SQL trong XML hơn HQL.
+- MyBatis (tiền thân là iBatis, một dự án Apache) có cộng đồng lớn; tại Hàn/Nhật tài liệu và ví dụ bản địa phong phú.
+
+### 2. So sánh chi phí
+| Tiêu chí | JPA | MyBatis |
+|---|---|---|
+| CRUD đơn giản | Rất nhanh | Boilerplate mapper + SQL |
+| Query phức tạp | Khó | Dễ (SQL thật) |
+| Kiểm soát SQL | Thấp | Tuyệt đối |
+| Lazy loading | Có | Không |
+| Dirty checking | Tự động | Thủ công |
+| N+1 | Ẩn | Hiện (bạn thấy query) |
+
+### 3. Khi nào chọn cái nào
+- JPA: domain nhiều quan hệ, CRUD nhiều, team quen ORM.
+- MyBatis: báo cáo, query join phức tạp, legacy schema, finance.
+- Hybrid: JPA cho CRUD và transaction boundary; MyBatis cho report và batch import.
+
+### 4. Rủi ro
+- JPA: N+1 ẩn, lazy exception ngoài transaction, mất kiểm soát SQL.
+- MyBatis: boilerplate, mapping thủ công, không dirty checking, N+1 nếu nested select.
+
+### 5. Pitfall khi chuyển từ JPA sang MyBatis
+- Quen dirty checking → quên gọi UPDATE → dữ liệu không lưu.
+- Quen lazy → trả object thiếu dữ liệu → NullPointerException.
+- MyBatis có local cache theo SqlSession, nhưng ngoài transaction mỗi lần gọi mở session mới nên không cache → query lặp; JPA giữ persistence context suốt request.
+
+### Ví dụ đời thực
+Fintech Hàn Quốc bắt đầu với JPA: CRUD nhanh nhưng báo cáo 12 bảng chạy 8s và Hibernate sinh SQL không tối ưu. Chuyển report sang MyBatis XML: query viết tay tối ưu index, chạy 200ms, DBA review SQL trong PR. CRUD vẫn JPA. p99 report giảm 40x. Chi phí: maintain hai stack mapping và training.
+
+### Trả lời mẫu khi phỏng vấn
+"Chọn MyBatis khi kiểm soát SQL là ưu tiên: báo cáo phức tạp, legacy schema, finance, hoặc team/DBA review SQL trực tiếp. Chọn JPA khi domain CRUD nhiều quan hệ và cần dirty checking, lazy loading. MyBatis cho SQL tuyệt đối nhưng boilerplate và mapping thủ công; JPA cho productivity nhưng mất kiểm soát SQL và rủi ro N+1 ẩn. Hybrid là lựa chọn thực tế: JPA cho CRUD và transaction boundary, MyBatis cho report và batch import. Khi chuyển từ JPA sang MyBatis, rủi ro lớn nhất là quên dirty checking và lazy loading. Tôi đánh giá theo số lượng query phức tạp và nhu cầu review SQL, không theo sở thích."
+
+> Senior tip: đừng đóng khung JPA vs MyBatis là đúng/sai. Câu hỏi phỏng vấn tốt là với use case này, chi phí của từng lựa chọn là gì và bạn sẽ hybrid thế nào. Senior trả lời bằng trade-off và ví dụ thật, không theo phe.`,
+
+  follow: ['Hybrid JPA + MyBatis trong Spring Boot cấu hình thế nào?', 'Làm sao tránh N+1 khi dùng cả hai?', 'Khi nào jOOQ là lựa chọn thứ ba tốt hơn cả hai?'],
+  tags: ['MyBatis', 'JPA', 'architecture', 'trade-off']
+}
 );
