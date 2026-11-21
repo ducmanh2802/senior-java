@@ -1682,5 +1682,830 @@ vue-i18n quản lý bản dịch theo locale. Key-based. Pluralization theo rule
   tags: ['i18n', 'vue-i18n', 'localization'],
   follow: ['ICU message format', 'Spring MessageSource', 'locale detection']
 },
+{
+  id: 'frontend-026',
+  topic: 'frontend',
+  level: 'senior',
+  q: 'Vue 3 reactivity hoạt động từ gốc như thế nào? Hãy giải thích Proxy, cơ chế track/trigger, vì sao destructure reactive làm mất phản ứng, và khi nào dùng toRef/toRefs, shallowRef, markRaw.',
+  a: `**Tóm tắt:** Vue 3 bọc dữ liệu trong Proxy. Khi component render, mọi lần đọc thuộc tính được ghi nhận là một phụ thuộc (track); khi có lệnh ghi, Vue tìm đúng những effect phụ thuộc và xếp lịch chạy lại (trigger). ref là một object { value } có getter/setter nên thay thế cả giá trị vẫn bắt được; reactive chỉ nhận object và trả về proxy. Destructure reactive lấy giá trị ra khỏi proxy, giống Java truyền primitive theo giá trị, nên thay đổi biến local không ảnh hưởng object gốc.
+
+### Cơ chế bên trong, từng bước
+
+1. Mỗi component có một effect chính là hàm render. Khi chạy, Vue đặt effect đó vào biến toàn cục activeEffect.
+2. Trong lúc render, đọc {{state.count}} làm Proxy chạy get trap, gọi track(target, 'count'): tìm map phụ thuộc của object và thêm effect vào tập effect của key count.
+3. Khi gán {{state.count}} = 5, Proxy chạy set trap: ghi giá trị bằng Reflect.set rồi gọi trigger(target, 'count') lấy đúng tập effect ở bước 2 và đưa vào hàng đợi job.
+4. Vue gom job trong cùng một tick (nextTick), khử trùng lặp, sau đó chạy lại component. Nhờ vậy 10 lần đổi giá trị trong một hàm chỉ render 1 lần.
+
+ref khác reactive ở chỗ nào:
+
+- {{ref(0)}} tạo object có value; getter/setter nằm trong value nên gán {{page.value}} = 2 là một phép ghi thuộc tính, Proxy bắt được. Dùng cho number, string, boolean, hoặc khi cần thay thế cả object.
+- {{reactive(obj)}} chỉ nhận object và trả proxy; đọc thuộc tính lồng nhau cũng được bọc proxy (deep, lazy: chỉ bọc khi có truy cập).
+- Trong template, ref tự động bọc: viết {{page}} in ra 1, không cần {{page.value}}. Trong JavaScript phải viết {{page.value}}.
+
+### Vì sao destructure làm mất phản ứng
+
+~~~text
+const state = reactive({ count: 0 });
+const { count } = state;              // count là số 0, đã rời proxy
+state.count = 1;                      // state đổi, count vẫn 0
+const { count: c } = toRefs(state);   // c là ref, giữ liên kết
+c.value = 2;                          // state.count = 2
+~~~
+
+Giống Java: {{state}} là một object, destructure là copy field ra biến local. Muốn giữ liên kết phải giữ reference (toRef/toRefs), không copy giá trị.
+
+### Bảng chọn công cụ
+
+| Công cụ | Dùng khi | Lưu ý |
+|---|---|---|
+| ref | primitive, hoặc cần thay cả object | trong JS phải .value |
+| reactive | object có cấu trúc, không gán lại cả biến | không destructure |
+| toRef / toRefs | cần destructure mà vẫn giữ liên kết | toRefs trả object gồm nhiều ref |
+| shallowRef | mảng hoặc object lớn, chỉ thay cả khối | sửa bên trong không cập nhật |
+| markRaw | class instance, object thư viện thứ ba | Vue không bao giờ bọc proxy |
+
+### Ví dụ code
+
+~~~text
+import { reactive, ref, toRefs, shallowRef, markRaw } from 'vue';
+
+const state = reactive({ count: 0, user: { name: 'An' } });
+const { count: countRef } = toRefs(state);  // giữ liên kết
+countRef.value++;                           // state.count = 1
+
+const page = ref(1);                        // ref bọc trong { value }
+page.value++;                               // trong JS phải có .value
+
+const big = shallowRef({ rows: [] });       // chỉ theo dõi khi thay cả object
+big.value = { rows: [1, 2, 3] };            // cập nhật
+big.value.rows.push(4);                     // KHÔNG cập nhật (shallow)
+
+const map = markRaw(new Map());             // Vue không bọc map này
+~~~
+
+### Lỗi hay gặp
+
+- Destructure reactive rồi gán: giao diện không đổi, thường mất 1–2 giờ mới thấy nguyên nhân.
+- Viết {{page.value}} trong template: template đã tự bọc, .value trở thành undefined nên ô trống.
+- Bọc object của thư viện (axios instance, dayjs, Three.js) bằng reactive: proxy làm chậm và có thể hỏng this; dùng markRaw.
+- So sánh reference (===) giữa proxy và object gốc: chúng là hai object khác nhau, thư viện bên thứ ba dễ hiểu nhầm.
+- watch một reactive object: mặc định deep, vô tình theo dõi cả danh sách 5000 dòng.
+- Gán lại biến reactive (state = reactive(...)): biến mất khỏi mọi component đang dùng proxy cũ.
+
+### Ví dụ đời thực
+
+Bảng 5000 dòng, mỗi dòng là một object trong reactive([]). Khi đổi sắp xếp, Vue phải bọc proxy 5000 phần tử; đo bằng performance.now thấy một lần sort mất 1,9 giây. Đổi sang shallowRef và thay cả mảng mới, cùng thao tác còn 18 ms. Lý do: component chỉ đọc cả mảng, không cần theo dõi từng field của từng dòng, nên bọc sâu là lãng phí.
+
+### Trả lời mẫu khi phỏng vấn
+
+Vue 3 dùng Proxy để bọc dữ liệu. Khi component render, mỗi lần đọc thuộc tính được ghi nhận là phụ thuộc; khi ghi, Vue chỉ chạy lại những component phụ thuộc đúng thuộc tính đó. ref là object có value với getter setter, dùng cho primitive hoặc khi cần thay cả object; reactive bọc object và trả proxy, đọc lồng nhau vẫn được theo dõi. Trong template ref tự bọc, trong JS phải dùng .value. Destructure reactive làm mất phản ứng vì nó copy giá trị ra khỏi proxy, giống Java truyền primitive theo giá trị; muốn giữ liên kết thì dùng toRef hoặc toRefs. shallowRef dùng cho mảng lớn khi chỉ thay cả khối, markRaw cho object của thư viện để Vue không bọc proxy. Tôi chọn theo dữ liệu: primitive thì ref, object có cấu trúc thì reactive, danh sách lớn thì shallowRef, object bên thứ ba thì markRaw.
+
+> Senior tip: Đo trước khi tối ưu: proxy chỉ đắt khi component đọc từng field của hàng nghìn object. Danh sách lớn thì shallowRef và thay mảng mới; đừng reactive từng phần tử.`,
+  tags: ['vue3', 'reactivity', 'proxy', 'ref', 'reactive'],
+  follow: ['toRef và toRefs khác nhau thế nào', 'computed cache hoạt động ra sao', 'watch deep và shallow']
+},
+{
+  id: 'frontend-027',
+  topic: 'frontend',
+  level: 'senior',
+  q: 'Trong Vue 3, state nên đặt ở đâu: ref trong component, props/emit, provide/inject hay Pinia? Hãy đưa ra tiêu chí quyết định và dấu hiệu cho thấy một Pinia store đang bị dùng sai.',
+  a: `**Tóm tắt:** Chọn theo phạm vi và vòng đời của state. Chỉ một component dùng thì để ref cục bộ; quan hệ cha–con trực tiếp thì props/emit; truyền sâu 3–4 cấp trong cùng một feature thì provide/inject; state dùng ở nhiều route, nhiều component không cùng cây, cần devtools, SSR hoặc persist thì Pinia. Dữ liệu lấy từ server (danh sách đơn hàng, hồ sơ người dùng) không phải client state: nó cần cache và invalidate, không nên nhân bản vào store rồi tự đồng bộ.
+
+### Ba loại state
+
+| Loại | Ví dụ | Nơi đặt |
+|---|---|---|
+| UI state | đang mở modal, tab đang chọn, nội dung gõ dở | ref cục bộ trong component |
+| Client state | giỏ hàng, người dùng đã đăng nhập, theme | Pinia; provide/inject nếu phạm vi hẹp |
+| Server state | đơn hàng, sản phẩm, kết quả tìm kiếm | cache riêng (TanStack Query) hoặc Pinia chỉ giữ trạng thái tải và lỗi |
+
+### Tiêu chí quyết định, 5 câu hỏi
+
+1. Chỉ component này dùng? Để ref cục bộ, không đưa lên store.
+2. Cha–con 1–2 cấp? props/emit: dữ liệu một chiều, sự kiện ngược lại.
+3. Sâu 3–4 cấp nhưng cùng một feature (theme, cấu hình form)? provide/inject, tránh prop drilling.
+4. Dùng ở nhiều route hoặc nhiều component không cùng cây? Pinia.
+5. Là dữ liệu từ API? cache cộng invalidate, đừng copy vào nhiều store.
+
+### Ví dụ code
+
+~~~text
+// props/emit: cha giữ dữ liệu, con chỉ hiển thị và báo sự kiện
+const props = defineProps({ user: Object });
+const emit = defineEmits(['update:name']);
+~~~
+
+~~~text
+// Pinia setup store: state, getter, action, dùng lại ở mọi nơi
+export const useUserStore = defineStore('user', function () {
+  const profile = ref(null);
+  const isAdmin = computed(function () {
+    return profile.value?.role === 'ADMIN';
+  });
+  async function load() {
+    profile.value = await api.get('/me');
+  }
+  function reset() {
+    profile.value = null;
+  }
+  return { profile, isAdmin, load, reset };
+});
+~~~
+
+So sánh với Java: props/emit giống gọi method và truyền callback; provide/inject giống bean trong DI container có scope; Pinia giống singleton @Service giữ state toàn ứng dụng, nên phải cẩn thận như biến static.
+
+### Dấu hiệu store bị dùng sai
+
+- Copy state từ store vào data cục bộ: const { user } = store làm mất liên kết, phải dùng storeToRefs hoặc computed.
+- Sửa trực tiếp props: Vue cảnh báo, component cha không biết dữ liệu đã đổi.
+- Store giữ dữ liệu server và không invalidate sau POST/PUT: danh sách cũ, người dùng thấy bản ghi đã xoá.
+- Reset store bằng cách gán object mới thay vì gọi action reset: component đang giữ tham chiếu cũ vẫn thấy dữ liệu cũ.
+- Gọi useUserStore() ngoài setup (trong module hoặc callback global): chưa có active pinia nên lỗi.
+- SSR dùng chung một store cho mọi request: người dùng A thấy dữ liệu người dùng B. Mỗi request phải tạo pinia mới.
+
+### Ví dụ đời thực
+
+Hệ thống 40 màn hình dùng chung một store user. Khi đăng xuất, code chỉ xoá token mà không reset store: người kế tiếp đăng nhập trên cùng máy thấy tên và avatar của người trước trong khoảng 2 giây, ghi nhận 12 báo cáo mỗi quý. Sửa bằng action reset gọi trong guard đăng xuất và sau khi đổi user, thêm test tự động kiểm tra store rỗng sau đăng xuất.
+
+### Trả lời mẫu khi phỏng vấn
+
+Tôi chọn theo phạm vi: ref cục bộ cho UI state, props/emit cho quan hệ cha–con 1–2 cấp, provide/inject khi phải truyền sâu trong cùng một feature, Pinia khi state sống qua nhiều route hoặc nhiều component không cùng cây. Với dữ liệu từ server, tôi không nhân bản vào store mà dùng một lớp cache có invalidate sau mutation, vì bản sao trong store rất dễ lệch. Store là singleton nên tôi luôn có action reset và gọi nó khi đăng xuất hoặc đổi người dùng, tránh rò dữ liệu giữa các phiên, nhất là khi SSR dùng chung một instance cho mọi request.
+
+> Senior tip: Trước khi tạo store, hỏi hai câu: state này có sống lâu hơn component không, và có ai ngoài cây component này cần nó không. Hai câu trả lời "không" thì đừng tạo store.`,
+  tags: ['vue3', 'pinia', 'props', 'emit', 'provide-inject', 'state-management'],
+  follow: ['storeToRefs dùng khi nào', 'state colocation là gì', 'pinia trên SSR mỗi request một instance']
+},
+{
+  id: 'frontend-028',
+  topic: 'frontend',
+  level: 'lead',
+  q: 'Form lớn khoảng 50 trường, có upload file và gọi API: bạn thiết kế luồng submit thế nào để không double submit, không nhận response cũ, và hiển thị lỗi từng trường từ server?',
+  a: `**Tóm tắt:** Coi mỗi lần submit là một giao dịch ở client với bốn trạng thái: idle, submitting, success, error. Vừa bấm là khoá ngay bằng cờ đồng bộ (không chờ await), sinh một idempotency key gửi kèm header; mỗi lần bấm tăng request id và chỉ áp dụng kết quả của id mới nhất; huỷ request cũ bằng AbortController khi người dùng sửa dữ liệu hoặc rời trang. Lỗi 4xx có body dạng ProblemDetail với map lỗi từng trường thì đổ vào errors theo tên field.
+
+### Máy trạng thái của nút submit
+
+| Trạng thái | Nút submit | Thông báo |
+|---|---|---|
+| idle | bấm được | ẩn |
+| submitting | disabled, có spinner | Đang gửi… |
+| success | disabled 1–2 giây | Đã tạo đơn hàng |
+| error | bấm lại được | lỗi tổng cộng lỗi từng field |
+
+### Chống double submit
+
+- Cờ submitting đặt đồng bộ trước await: hai sự kiện click trong cùng một tick vẫn bị chặn.
+- Idempotency-Key là UUID sinh một lần cho mỗi lần mở form; gửi lại cùng key thì server trả kết quả cũ thay vì tạo bản ghi mới. Lưu key trong Redis với TTL 24 giờ.
+- Chỉ sinh key mới khi người dùng sửa dữ liệu sau khi lỗi, vì lúc đó là một giao dịch khác.
+
+### Chống response cũ
+
+- Mỗi lần submit tăng seq; callback chỉ áp dụng nếu seq còn khớp.
+- AbortController huỷ request đang bay khi form đổi hoặc component unmount.
+- Không dùng chung một cờ loading cho nhiều request khác nhau.
+
+### Ví dụ code client
+
+~~~text
+let seq = 0;
+let controller = null;
+let submitKey = null;
+
+async function submit() {
+  if (submitting.value) return;        // chặn ngay trong cùng tick
+  const my = ++seq;                    // id của lần bấm này
+  controller = new AbortController();
+  submitKey = submitKey || crypto.randomUUID();
+  submitting.value = true;
+  errors.value = {};
+  try {
+    await api.post('/orders', form, {
+      headers: { 'Idempotency-Key': submitKey },
+      signal: controller.signal
+    });
+    if (my !== seq) return;            // đã có lần bấm mới hơn
+    status.value = 'success';
+  } catch (e) {
+    if (e.name === 'AbortError' || my !== seq) return;
+    errors.value = e.response?.data?.errors || {};
+    status.value = 'error';
+  } finally {
+    if (my === seq) submitting.value = false;
+  }
+}
+~~~
+
+### Ví dụ code server
+
+~~~java
+@PostMapping("/orders")
+ResponseEntity<OrderDto> create(@Valid @RequestBody OrderDto dto,
+                                @RequestHeader("Idempotency-Key") String key) {
+  // Redis SET key response NX EX 86400: nếu đã có thì trả lại response cũ
+  return ResponseEntity.ok(orderService.create(dto));
+}
+
+@ExceptionHandler(MethodArgumentNotValidException.class)
+ProblemDetail invalid(MethodArgumentNotValidException e) {
+  ProblemDetail pd = ProblemDetail.forStatus(HttpStatus.BAD_REQUEST);
+  Map<String, String> errors = new HashMap<>();
+  e.getBindingResult().getFieldErrors()
+    .forEach(f -> errors.put(f.getField(), f.getDefaultMessage()));
+  pd.setProperty("errors", errors);
+  return pd;
+}
+~~~
+
+### Ánh xạ mã lỗi sang hành vi
+
+| Mã | Ý nghĩa | Client làm gì |
+|---|---|---|
+| 400 kèm errors | sai từng field | đổ vào errors, focus field đầu tiên |
+| 401 | hết hạn token | refresh rồi gửi lại đúng một lần |
+| 409 | bản ghi đã tồn tại | hiện liên kết tới bản ghi, không tạo lại |
+| 422 | đúng cú pháp, sai nghiệp vụ | hiện lỗi tổng, giữ nguyên dữ liệu |
+| 5xx, timeout | lỗi tạm | cho thử lại, không xoá form |
+
+### Lỗi hay gặp
+
+- Dùng một cờ loading chung: hai request song song, request ngắn kết thúc tắt loading của request dài.
+- Không có idempotency key: người dùng bấm lại sau timeout tạo hai đơn.
+- Bỏ qua thứ tự response: form đổi số lượng khi request cũ đang bay, kết quả cũ ghi đè.
+- Hiện "Có lỗi xảy ra": người dùng không biết field nào sai.
+- Xoá form khi lỗi: mất toàn bộ dữ liệu đã nhập.
+- Gửi lại vô hạn khi 401: vòng lặp refresh.
+
+### Ví dụ đời thực
+
+Trang tạo đơn 50 trường, 1200 đơn mỗi ngày. Trước đây không có idempotency: khoảng 3% số lần bấm là double submit, tức 36 đơn trùng mỗi ngày, kế toán mất 2 giờ đối soát. Sau khi thêm idempotency key TTL 24 giờ và khoá nút đồng bộ, đơn trùng về 0. Ngoài ra thống kê 8 đơn sai số lượng do response cũ ghi đè; thêm seq và AbortController thì hết.
+
+### Trả lời mẫu khi phỏng vấn
+
+Tôi coi submit là một giao dịch ở client. Khi bấm, tôi khoá nút ngay bằng cờ đồng bộ, sinh idempotency key và tăng request id; chỉ response của id mới nhất mới được áp dụng, request cũ bị AbortController huỷ. Server nhận Idempotency-Key, lưu kết quả trong Redis 24 giờ để lần gửi lại cùng key trả về bản ghi cũ, không tạo trùng. Lỗi 400 có map lỗi từng field trong ProblemDetail, tôi đổ vào errors theo tên field và focus ô đầu tiên; 401 thì refresh token và gửi lại đúng một lần; 5xx thì giữ dữ liệu và cho thử lại. Tôi luôn giữ lại dữ liệu khi lỗi và chỉ sinh key mới khi người dùng thực sự sửa form, vì đó là một giao dịch khác.
+
+> Senior tip: Double submit không phải lỗi UI mà là lỗi thiết kế API: nếu server không idempotent thì client có làm gì cũng không an toàn tuyệt đối. Idempotency-Key cộng unique constraint ở DB là lớp phòng thủ cuối.`,
+  tags: ['form', 'submit', 'idempotency', 'abortcontroller', 'problem-detail'],
+  follow: ['idempotency key hoạt động thế nào', 'ProblemDetail RFC 7807', 'AbortController khi unmount']
+},
+{
+  id: 'frontend-029',
+  topic: 'frontend',
+  level: 'senior',
+  q: 'Bảng dữ liệu 45 nghìn dòng: bạn tổ chức phân trang, sắp xếp, lọc phía server và xử lý race condition khi người dùng gõ tìm kiếm nhanh như thế nào? Khi nào dùng keyset pagination thay OFFSET?',
+  a: `**Tóm tắt:** Đưa page, size, sort, q lên query string; server trả rows, total, page, pageSize và client chỉ render 20–50 dòng. Mỗi lần đổi bộ lọc là một request mới, nên phải debounce 300 ms cho ô tìm kiếm, huỷ request cũ bằng AbortController và đánh số request để bỏ response đến sau. Với trang sâu, OFFSET chậm vì DB phải bỏ qua N dòng; keyset pagination dùng WHERE (createdAt, id) < (?, ?) ORDER BY ... LIMIT n, chỉ đọc đúng 20 dòng.
+
+### Luồng một request
+
+1. URL là nguồn dữ liệu: /orders?page=3&size=20&sort=-createdAt&q=abc.
+2. watch các ref page, sort, q; q debounce 300 ms, sort và page phản hồi ngay.
+3. Gọi abort request trước, tăng seq.
+4. Gửi GET /api/orders với page, size, sort, q.
+5. Server dùng Pageable cộng Specification, chạy hai câu: SELECT dữ liệu với LIMIT/OFFSET và SELECT count(*).
+6. Client chỉ thay rows khi seq còn khớp, đồng thời hiện thông báo Đang tải cho screen reader.
+
+### Ví dụ code client
+
+~~~text
+let seq = 0;
+let controller = null;
+
+async function load() {
+  const my = ++seq;
+  if (controller) controller.abort();
+  controller = new AbortController();
+  loading.value = true;
+  try {
+    const res = await api.get('/orders', {
+      params: { page: page.value, size: 20, sort: sort.value, q: q.value },
+      signal: controller.signal
+    });
+    if (my !== seq) return;              // response cũ, bỏ
+    rows.value = res.data.rows;
+    total.value = res.data.total;
+  } finally {
+    if (my === seq) loading.value = false;
+  }
+}
+watch(q, debounce(load, 300));
+watch([page, sort], load);
+~~~
+
+### Ví dụ code server
+
+~~~java
+@GetMapping("/orders")
+Page<OrderDto> list(@RequestParam int page, @RequestParam int size,
+                    @RequestParam(defaultValue = "createdAt,desc") String sort,
+                    @RequestParam(required = false) String q) {
+  Sort s = Sort.by(Sort.Direction.DESC, "createdAt");
+  Pageable p = PageRequest.of(page, size, s);
+  return orderRepo.search(q, p);
+}
+~~~
+
+### OFFSET so với keyset
+
+| Tiêu chí | OFFSET/LIMIT | Keyset |
+|---|---|---|
+| Cú pháp | LIMIT 20 OFFSET 200000 | WHERE (created_at, id) < (?, ?) ORDER BY ... LIMIT 20 |
+| Trang đầu | nhanh | nhanh |
+| Trang sâu | chậm, DB bỏ qua N dòng | ổn định, chỉ đọc 20 dòng |
+| Nhảy ngẫu nhiên tới trang 57 | được | không |
+| Tổng số trang | có count(*) | không, chỉ next và prev |
+
+Câu SQL keyset:
+
+~~~sql
+SELECT id, code, total, created_at
+FROM orders
+WHERE (created_at, id) < (:lastCreatedAt, :lastId)
+ORDER BY created_at DESC, id DESC
+LIMIT 20;
+~~~
+
+Điều kiện dùng row constructor phải cùng thứ tự với ORDER BY; nếu các cột sắp xếp có chiều khác nhau thì không dùng được row constructor, phải viết điều kiện OR.
+
+### Lỗi hay gặp
+
+- Không huỷ request cũ: gõ ba ký tự sinh ba request, response của ký tự đầu về sau ghi đè kết quả của ký tự cuối.
+- ORDER BY nhận chuỗi từ client rồi nối vào SQL: nguy cơ injection; phải whitelist tên cột và sort qua enum.
+- count(*) với 10 triệu dòng mất vài trăm ms: dùng hasNext (LIMIT size + 1) hoặc đếm gần đúng.
+- Quên URL state: người dùng F5 hoặc bấm back mất bộ lọc.
+- Selection theo index: khi đổi sort, checkbox chọn nhầm dòng; lưu theo id trong Set.
+- Không có empty state: tìm kiếm 0 kết quả hiện bảng trống không lời giải thích.
+- Debounce đặt sai chỗ: debounce cả hàm load dùng cho phân trang làm nút chuyển trang bị trễ 300 ms.
+
+### Ví dụ đời thực
+
+Bảng đơn hàng 45.230 dòng. Trang đầu với OFFSET 0 mất 18 ms; trang 2.000 với OFFSET 40.000 mất 1,4 giây vì PostgreSQL quét 40.020 dòng rồi bỏ 40.000. Chuyển sang keyset theo (created_at, id), mọi trang còn 22–26 ms. Gõ tìm kiếm nhanh trước đây sinh 6 request và 2 lần hiện sai kết quả; debounce 300 ms cộng abort giảm còn 1 request mỗi lần ngừng gõ.
+
+### Trả lời mẫu khi phỏng vấn
+
+Tôi để page, size, sort, q trên URL để chia sẻ và F5 được. Với ô tìm kiếm tôi debounce 300 ms, mỗi lần load tăng request id và abort request trước, chỉ áp dụng response của id mới nhất. Server trả rows và total, dùng Pageable với sort whitelist; với trang sâu tôi dùng keyset pagination theo (createdAt, id) để tránh OFFSET quét N dòng, đổi lại không nhảy ngẫu nhiên tới trang 57. Với 45 nghìn dòng, OFFSET trang 2.000 mất 1,4 giây còn keyset khoảng 25 ms. Tôi lưu selection theo id trong Set, không theo index, và luôn có empty state khi 0 kết quả.
+
+> Senior tip: Đo bằng EXPLAIN (ANALYZE, BUFFERS) trên chính dữ liệu thật: OFFSET 200000 có thể đọc hàng trăm nghìn buffer. Nếu người dùng cần nhảy trang, giữ OFFSET nhưng giới hạn số trang; nếu cần cuộn liên tục hoặc đi sâu, dùng keyset.`,
+  tags: ['pagination', 'keyset', 'table', 'debounce', 'abortcontroller', 'spring-data-jpa'],
+  follow: ['keyset pagination', 'EXPLAIN ANALYZE', 'debounce cộng AbortController']
+},
+{
+  id: 'frontend-030',
+  topic: 'frontend',
+  level: 'senior',
+  q: 'Trong Vue 3 bạn thường viết lặp lại loading/error/data cộng onUnmounted abort ở mỗi component. Hãy thiết kế một composable useAsyncResource dùng chung: phải hủy request khi rời màn hình, bỏ qua response đến sau khi đã có request mới hơn, giữ dữ liệu cũ khi đang tải, và trả về data, error, loading, reload. Giải thích vì sao dùng shallowRef và markRaw, và vì sao gọi reload không được tạo vòng lặp.',
+  a: `**Tóm tắt:** Composable useAsyncResource gom ba việc mà mọi màn hình gọi API đều lặp lại: giữ trạng thái loading, error, data; hủy request khi rời màn hình; và bỏ qua response đến sau khi đã có request mới hơn. Điểm cốt lõi là mỗi lần chạy được đánh số phiên; chỉ phiên mới nhất được ghi vào state, còn AbortController hủy phần việc ở tầng mạng để tiết kiệm băng thông và tránh cập nhật state sau khi component đã bị hủy.
+
+### Vì sao cần một composable riêng
+
+Ba màn hình (danh sách đơn hàng, chi tiết sản phẩm, tìm kiếm khách hàng) nếu viết tay mỗi chỗ phải có: ba ref data, loading, error; onUnmounted để abort; một biến đếm để bỏ response cũ; và try/catch/finally. Đó là khoảng 40 dòng nhân ba, và bug kinh điển là thiếu bước đếm: người dùng gõ nhanh 5 ký tự sinh 5 request, response của ký tự thứ 2 về sau và ghi đè kết quả của ký tự thứ 5, người dùng thấy sai dữ liệu. Đóng gói một lần, ba màn hình dùng chung, mỗi chỗ chỉ cần truyền hàm fetch.
+
+### Cơ chế hoạt động, từng bước
+
+1. Gọi useAsyncResource(fetcher, { immediate: true }) trong setup của component.
+2. Bên trong tạo ba ref: loading, error, và data bằng shallowRef.
+3. Mỗi lần chạy: seq tăng 1, tạo AbortController mới, abort controller cũ nếu còn, loading = true, error = null.
+4. Await fetcher(signal). Nếu seq của lần chạy này khác seq hiện tại thì bỏ kết quả: đã có lần chạy mới hơn bắt đầu.
+5. catch: chỉ nhận lỗi khi seq còn khớp và lỗi không phải AbortError. Request bị chính mình hủy không phải lỗi người dùng cần thấy.
+6. finally: chỉ đặt loading = false khi seq còn khớp, nếu không sẽ tắt spinner của request đang chạy.
+7. onScopeDispose (hook chạy khi component unmount, kể cả khi composable nằm lồng trong composable khác) gọi abort và tăng seq để mọi await còn treo bị vô hiệu.
+8. reload() để gọi lại sau khi lưu form hoặc bấm nút thử lại.
+
+### Code composable
+
+~~~js
+import { ref, shallowRef, onScopeDispose } from 'vue';
+
+export function useAsyncResource(fetcher, opts = {}) {
+  const data = shallowRef(null);   // data lớn: không cần reactive sâu
+  const loading = ref(false);
+  const error = ref(null);
+  let seq = 0;
+  let ctrl = null;
+
+  async function run() {
+    const my = ++seq;                      // phiên của lần chạy này
+    if (ctrl) ctrl.abort();
+    ctrl = new AbortController();
+    loading.value = true;
+    error.value = null;
+    try {
+      const res = await fetcher(ctrl.signal);
+      if (my !== seq) return;              // đã có phiên mới hơn
+      data.value = res;
+    } catch (e) {
+      if (my !== seq || e.name === 'AbortError') return;
+      error.value = e;
+    } finally {
+      if (my === seq) loading.value = false;
+    }
+  }
+
+  onScopeDispose(() => { if (ctrl) ctrl.abort(); seq++; });
+  if (opts.immediate !== false) run();
+  return { data, loading, error, reload: run };
+}
+~~~
+
+Dùng trong component:
+
+~~~js
+const { data, loading, error, reload } = useAsyncResource(
+  signal => api.get('/orders', { signal })
+);
+~~~
+
+Vì sao shallowRef thay ref: ref bọc object lớn bằng reactive sâu, mỗi lần đọc field đi qua Proxy; với 5000 dòng thì chi phí này vô ích vì ta luôn thay cả object. markRaw dùng khi fetcher trả instance class có method: reactive sẽ bọc Proxy làm mất private field và danh tính object. Nếu dữ liệu về rồi chỉ đọc, không sửa từng field, shallowRef cộng gán lại là đủ và nhanh hơn.
+
+### Phía server: cho reload rẻ bằng ETag
+
+~~~java
+@GetMapping("/orders")
+ResponseEntity<OrderPage> list(@RequestParam int page,
+        @RequestHeader(value = "If-None-Match", required = false) String inm) {
+  OrderPage data = service.page(page);          // server là nơi tính
+  String tag = data.etag();                     // hash ổn định của nội dung
+  if (tag.equals(inm)) {
+    return ResponseEntity.status(HttpStatus.NOT_MODIFIED).eTag(tag).build();
+  }
+  return ResponseEntity.ok().eTag(tag).body(data);
+}
+~~~
+
+Client bấm reload vẫn gọi mạng nhưng nếu nội dung không đổi thì server trả 304 với body rỗng, không phải serialize lại 20 dòng JSON. Kết hợp với composable, đây là cách giảm tải khi nhiều người cùng mở một trang.
+
+### Bảng trade-off
+
+| Cách | Ưu | Nhược | Khi nào dùng |
+|---|---|---|---|
+| watch cộng ref trong component | không cần thêm file | lặp code, dễ quên abort | 1–2 chỗ, form nhỏ |
+| Composable useAsyncResource | dùng chung, tự abort | cần quy ước đặt tên và nơi giữ cache | từ 3 màn hình gọi API trở lên |
+| Pinia store giữ data | nhiều màn hình chia sẻ dữ liệu | dễ thành god store | dữ liệu dùng chéo như giỏ hàng |
+
+### Lỗi hay gặp
+
+- Quên nhánh e.name === 'AbortError': request bị hủy lại hiện toast lỗi đỏ.
+- Dùng reactive cho data lớn rồi push thêm dòng: mỗi lần thêm phải đi qua Proxy, chậm dần.
+- Đặt composable ở module scope (ngoài setup): dùng chung một data cho mọi component, trang sau thấy dữ liệu trang trước.
+- Gọi reload trong watch mà fetcher phụ thuộc chính data đang tải: vòng lặp vô hạn.
+- Không có trạng thái rỗng: data là mảng rỗng thì spinner tắt mà không có lời giải thích.
+- Chưa có timeout: mạng treo thì loading bật mãi; nên bọc AbortSignal.timeout hoặc setTimeout 10 giây.
+
+### Ví dụ đời thực
+
+Trang chi tiết sản phẩm gọi 3 request song song: sản phẩm, tồn kho, đánh giá. Người dùng gõ tìm kiếm 5 ký tự, mỗi ký tự kích hoạt bộ 3 request, tổng 15 request. Không có seq nên kết quả của ký tự thứ 2 về sau ghi đè ký tự thứ 5, khách hàng thấy đúng một sản phẩm rồi nhảy sang sản phẩm khác. Sau khi tách composable và thêm AbortController, chỉ 6 request thực sự chạy (hai bộ bị hủy giữa đường), không còn hiện sai, và số lần bật tắt spinner giảm từ 15 xuống 3.
+
+### Trả lời mẫu khi phỏng vấn
+
+Tôi không viết lại loading và error ở từng component mà tách một composable useAsyncResource. Bên trong có shallowRef cho data, ref cho loading và error, và một biến seq đếm phiên. Mỗi lần chạy tăng seq, tạo AbortController mới và abort cái cũ; sau khi await, nếu seq không còn khớp thì tôi bỏ kết quả, còn finally chỉ tắt loading khi seq khớp. Khi component unmount, onScopeDispose abort request và tăng seq để các await còn treo bị vô hiệu. Tôi dùng shallowRef vì data là object lớn, không cần reactive sâu, và markRaw cho instance class để không mất danh tính. Ở server tôi trả ETag để lần reload sau không phải tính lại. Kết quả đo được: trang tìm kiếm 5 ký tự giảm từ 15 request xuống 6 và không còn hiện sai dữ liệu.
+
+> Senior tip: Composable chỉ bảo vệ được UI; nếu proxy hay service worker trả response chậm bất thường thì seq vẫn đúng nhưng băng thông vẫn tốn. Ghép thêm timeout phía client, và kiểm tra bằng Network tab với throttling Slow 3G chứ đừng chỉ test trên máy local.`,
+  tags: ['vue3', 'composable', 'abortcontroller', 'race-condition', 'shallowref'],
+  follow: ['onScopeDispose khác onUnmounted thế nào', 'ETag và 304 hoạt động ra sao', 'composable có nên giữ cache toàn cục không']
+},
+{
+  id: 'frontend-031',
+  topic: 'frontend',
+  level: 'senior',
+  q: 'Form có danh sách dòng động (nhiều số điện thoại, nhiều dòng chi tiết đơn hàng): bạn quản lý state, key khi render, validate chéo (ví dụ tổng tiền), dirty tracking và map lỗi từ server như thế nào để xóa dòng ở giữa không làm nội dung nhảy chỗ?',
+  a: `**Tóm tắt:** Danh sách dòng động là mảng reactive các object, mỗi dòng có id ổn định; v-for phải dùng :key là id đó chứ không phải index, nếu không khi xóa dòng ở giữa Vue tái sử dụng DOM theo vị trí và nội dung người dùng đang gõ bị đổ sang dòng khác. Validate chéo như tổng tiền phải chạy lại khi bất kỳ dòng nào đổi nhưng có debounce và chỉ validate field liên quan. Lỗi server phải được map theo id dòng, vì chỉ số phía client có thể đã lệch so với lúc server nhận.
+
+### Vì sao key bằng index gây lỗi
+
+1. Vue dùng key để quyết định phần tử DOM nào được tái sử dụng cho phần tử dữ liệu nào.
+2. Với key = index, mảng [A, B, C] sau khi xóa dòng thứ hai thành [A, C]; key của C vẫn là 1, giống key của B trước đó.
+3. Vue giữ lại DOM của B, gồm cả chữ đã gõ, vị trí con trỏ và focus, rồi đổ dữ liệu của C vào đó. Người dùng thấy dòng mình đang gõ biến thành dòng khác.
+4. key = id dòng (1, 2, 3) thì C luôn được nối với đúng DOM của nó, việc xóa chỉ gỡ DOM của B.
+
+### Cơ chế form động
+
+- Thêm: push object mới với id tăng dần, rồi nextTick và focus ô đầu của dòng mới.
+- Xóa: tìm theo id rồi splice; chặn xóa dòng cuối để form luôn còn một dòng, hoặc cho xóa hết và validate riêng.
+- Validate: watch deep trên mảng dòng cộng debounce 250 ms; mỗi lần chỉ validate dòng vừa đổi cộng các trường phụ thuộc như tổng.
+- Gửi: mỗi dòng kèm id; server trả lỗi dạng lines[2].amount nhưng client phải dò theo id dòng tương ứng, không theo chỉ số.
+- Dirty: so sánh JSON hiện tại với snapshot lúc mở form; nếu dirty và người dùng điều hướng thì chặn bằng beforeRouteLeave và beforeunload.
+
+### Code state và thao tác
+
+~~~js
+const form = reactive({
+  email: '',
+  lines: [{ id: 1, name: '', amount: 0 }],
+});
+let nextId = 2;
+const lineRefs = {};
+
+function setLineRef(id, el) { if (el) lineRefs[id] = el; }
+
+function addLine() {
+  const id = nextId++;
+  form.lines.push({ id, name: '', amount: 0 });
+  nextTick(() => lineRefs[id] && lineRefs[id].focus());
+}
+
+function removeLine(id) {
+  if (form.lines.length === 1) return;      // luôn giữ một dòng
+  const i = form.lines.findIndex(l => l.id === id);
+  if (i >= 0) form.lines.splice(i, 1);
+}
+
+const total = computed(() =>
+  form.lines.reduce((s, l) => s + (Number(l.amount) || 0), 0)
+);
+~~~
+
+Template:
+
+~~~html
+<div v-for="line in form.lines" :key="line.id">
+  <input :ref="el => setLineRef(line.id, el)" v-model="line.name" />
+  <input v-model.number="line.amount" type="number" min="0" />
+  <button @click="removeLine(line.id)">Xóa</button>
+</div>
+<p>Tổng: {{ total }}</p>
+~~~
+
+v-model.number quan trọng: nếu không, amount là chuỗi và phép cộng sẽ nối chuỗi, tổng thành 010 thay vì 10.
+
+### Phía server: DTO và map lỗi
+
+~~~java
+public record OrderForm(@Email String email,
+                        @NotEmpty List<@Valid Line> lines) {
+  public record Line(Long id, @NotBlank String name,
+                     @Positive BigDecimal amount) {}
+}
+~~~
+
+Server trả ProblemDetail có errors kèm id dòng để client dò lại:
+
+~~~java
+@PostMapping("/orders")
+ResponseEntity<OrderView> create(@Valid @RequestBody OrderForm form,
+                                 BindingResult br) {
+  if (br.hasErrors()) {
+    ProblemDetail pd = ProblemDetail.forStatus(HttpStatus.BAD_REQUEST);
+    Map<String, String> errors = new HashMap<>();
+    br.getFieldErrors().forEach(f -> errors.put(f.getField(), f.getDefaultMessage()));
+    pd.setProperty("errors", errors);
+    return ResponseEntity.badRequest().body(pd);
+  }
+  return ResponseEntity.ok(service.create(form));
+}
+~~~
+
+### Bảng trade-off validate
+
+| Cách | Ưu | Nhược | Dùng khi |
+|---|---|---|---|
+| Chỉ validate field khi blur | nhẹ, thông báo rõ | bỏ sót lỗi chéo | form dưới 10 trường |
+| Validate toàn form mỗi keystroke | bắt hết ngay | lag, nhiễu thông báo | form rất nhỏ |
+| Watch deep cộng debounce 250 ms | cân bằng | phải dọn watcher khi unmount | form nhiều dòng như ở đây |
+| Validate ở server rồi map về | đúng nghiệp vụ | tốn một vòng mạng | luôn cần, nhưng không thay client |
+
+### Lỗi hay gặp
+
+- key bằng index, hoặc v-model trên phần tử mảng theo index sau khi splice.
+- Dùng v-model với type=number mà thiếu .number.
+- Gửi id dòng bằng index; khi client xóa dòng thì chỉ số lệch và map lỗi sai dòng.
+- Không chặn xóa dòng cuối, server trả 400 với @NotEmpty khó hiểu với người dùng.
+- Watch deep không debounce: mỗi ký tự chạy validate toàn bộ, form 200 dòng giật.
+- Reset bằng form.lines = [] làm mất tham chiếu, component con đang giữ props cũ; nên splice hoặc gán mảng mới rồi nextTick.
+- Quên beforeunload nên người dùng F5 mất dữ liệu đã gõ.
+
+### Ví dụ đời thực
+
+Form đơn hàng 200 dòng. Mỗi lần gõ amount, watcher deep chạy validate toàn bộ 200 dòng cộng parse 200 số, mất 320 ms mỗi ký tự, cảm giác lag rõ. Sau khi chỉ validate dòng đang sửa cộng tổng, thêm debounce 250 ms và .number, còn 45 ms. Một ca khác: người dùng xóa dòng thứ 3, nội dung của dòng 4 nhảy lên ô đang focus vì key bằng index; đổi sang key bằng id là hết.
+
+### Trả lời mẫu khi phỏng vấn
+
+Tôi giữ form là một reactive object với mảng lines, mỗi dòng có id tăng dần, và v-for dùng key là id đó; nếu dùng index thì xóa dòng ở giữa làm DOM bị tái sử dụng sai và nội dung nhảy chỗ. Thêm dòng thì push rồi nextTick focus ô đầu; xóa thì tìm theo id và splice, luôn giữ ít nhất một dòng. Tổng tiền là computed, và watcher deep có debounce 250 ms chỉ validate dòng vừa đổi cộng tổng, không validate cả form mỗi ký tự. Khi gửi, mỗi dòng kèm id; server trả lỗi kèm id dòng, tôi dò theo id chứ không theo chỉ số vì client có thể đã xóa dòng. Tôi thêm dirty tracking so với snapshot ban đầu và chặn điều hướng khi còn thay đổi chưa lưu.
+
+> Senior tip: v-model trên mảng theo index là nguồn bug âm thầm nhất trong form động, vì nó chỉ sai sau khi xóa hoặc sắp xếp lại. Luôn gắn id nghiệp vụ cho từng dòng ngay từ lúc tạo, đừng dùng id tạm bằng index.`,
+  tags: ['vue3', 'form', 'form-array', 'validation', 'key', 'dirty'],
+  follow: ['key bằng id khác index thế nào', 'watch deep và debounce phối hợp ra sao', 'beforeRouteLeave chặn điều hướng thế nào']
+},
+{
+  id: 'frontend-032',
+  topic: 'frontend',
+  level: 'senior',
+  q: 'Một Pinia store trong dự án Vue phình thành 40 field và 12 action, dùng cho cả giỏ hàng, thanh toán và trang admin. Bạn chia lại thế nào, khi nào dùng storeToRefs, SSR mỗi request phải làm gì để không lẫn dữ liệu người dùng, và logout thì reset ra sao?',
+  a: `**Tóm tắt:** Chia store theo miền nghiệp vụ giống như backend chia service: cart, checkout, session, ui; store chỉ giữ state, getter suy diễn và action gọi API. Dấu hiệu god store là nhiều màn hình không liên quan dùng chung một file, action gọi nhiều API khác nhau, và phải reset thủ công sau khi logout. Với SSR, mỗi request phải tạo một Pinia instance riêng, vì nếu dùng biến toàn cục thì người dùng A đọc được state của người dùng B. Setup store không có $reset, phải tự viết hàm reset.
+
+### Cơ chế bên trong Pinia
+
+1. defineStore(id, setup) nhận một hàm setup trả về các ref, computed và hàm; Pinia biến ref thành state, computed thành getter, hàm thành action.
+2. State là reactive thật: gán store.lines = [] là đổi state và component dùng nó sẽ cập nhật.
+3. Destructure state làm mất kết nối reactive, phải dùng storeToRefs. Destructure action thì được, vì action chỉ là hàm.
+4. Store khác gọi được bằng cách gọi useOtherStore() bên trong action hoặc setup, lúc đó đã có active pinia.
+5. $reset chỉ tồn tại ở option store, vì Pinia lưu state khởi tạo; setup store phải tự viết hàm reset hoặc tạo store mới.
+6. SSR: mỗi request tạo createPinia(), gọi app.use(pinia), rồi mới render; state nằm trong pinia đó nên không dùng chung giữa các request.
+7. Devtools hiển thị timeline action và snapshot state, hữu ích để thấy action nào làm đổi field nào.
+
+### Code store chia theo miền
+
+~~~js
+export const useCartStore = defineStore('cart', () => {
+  const lines = ref([]);                     // [{ sku, qty, price }]
+  const count = computed(() => lines.value.reduce((s, l) => s + l.qty, 0));
+  const total = computed(() => lines.value.reduce((s, l) => s + l.qty * l.price, 0));
+
+  async function load() {
+    const res = await api.get('/cart');      // server tính total, client chỉ hiển thị
+    lines.value = res.data.lines;
+  }
+  function add(sku, qty) {
+    const line = lines.value.find(l => l.sku === sku);
+    if (line) line.qty += qty;
+    else lines.value.push({ sku, qty, price: 0 });
+  }
+  function $reset() { lines.value = []; }    // setup store phải tự viết
+  return { lines, count, total, load, add, $reset };
+});
+
+export const useCheckoutStore = defineStore('checkout', () => {
+  const address = ref(null);
+  const shipping = ref('standard');
+  function $reset() { address.value = null; shipping.value = 'standard'; }
+  return { address, shipping, $reset };
+});
+
+export const useUiStore = defineStore('ui', () => {
+  const sidebarOpen = ref(false);
+  const modal = ref(null);
+  return { sidebarOpen, modal };
+});
+~~~
+
+Log out:
+
+~~~js
+function logout() {
+  useCartStore().$reset();
+  useCheckoutStore().$reset();
+  useSessionStore().$reset();
+  router.push('/login');
+}
+~~~
+
+Component dùng store đúng cách:
+
+~~~js
+const cart = useCartStore();
+const { count, total } = storeToRefs(cart);   // giữ reactive
+const { add } = cart;                          // action destructure được
+~~~
+
+### Phía server: tổng tiền do server tính
+
+~~~java
+record CartLine(String sku, int qty, BigDecimal price) {}
+record CartView(List<CartLine> lines, BigDecimal total, int count) {}
+
+@GetMapping("/cart")
+CartView cart(Principal p) {
+  List<CartLine> lines = cartService.linesOf(p.getName());
+  BigDecimal total = lines.stream()
+      .map(l -> l.price().multiply(BigDecimal.valueOf(l.qty)))
+      .reduce(BigDecimal.ZERO, BigDecimal::add);
+  return new CartView(lines, total, lines.size());
+}
+~~~
+
+Client không tự tính tổng để làm nguồn chân lý, vì giá có thể đổi sau khi thêm vào giỏ; client chỉ hiển thị và gọi lại API khi cần.
+
+### Bảng trade-off
+
+| Cách | Ưu | Nhược | Khi nào |
+|---|---|---|---|
+| Một store duy nhất | dễ chia sẻ, ít file | god store, khó test, dễ lệch | app dưới 5 màn hình |
+| Store theo miền cộng store session, ui | ranh giới rõ, test dễ | phải quy ước gọi chéo | hầu hết SPA vừa và lớn |
+| Pinia cộng TanStack Query cho server state | cache, invalidate, retry sẵn | thêm dependency | nhiều màn hình đọc cùng dữ liệu |
+
+### Lỗi hay gặp
+
+- Destructure state: const { count } = store làm mất reactive; phải dùng storeToRefs.
+- Gọi useCartStore() ở top-level module trước khi app.use(pinia) nên không có active pinia.
+- Logout quên reset: người dùng B vẫn thấy tên và giỏ hàng của người dùng A trên cùng trình duyệt.
+- Persist plugin lưu cả token hoặc dữ liệu cá nhân vào localStorage.
+- SSR dùng một pinia global nên state của request trước rò sang request sau.
+- Store chứa cả state chỉ một màn hình dùng, làm state colocation biến mất và khó biết field nào còn sống.
+
+### Ví dụ đời thực
+
+Store cart 40 field, 12 action, dùng chung cho giỏ hàng, thanh toán và trang admin. Sau khi logout, dropdown vẫn hiện tên khách cũ vì không reset; mỗi lần sửa một field nhỏ thì cả layout re-render. Chia thành cart (lines, count, total), checkout (address, shipping) và ui (sidebar, modal) giảm file từ 620 xuống 180 dòng; reset chỉ còn ba lời gọi, và số component re-render khi gõ địa chỉ giảm vì chúng chỉ đọc checkout.
+
+### Trả lời mẫu khi phỏng vấn
+
+Tôi chia store theo miền như backend chia service: cart, checkout, session, ui, mỗi store chỉ giữ state, getter suy diễn và action gọi API. Tổng tiền để server tính và trả về, client chỉ hiển thị, tránh lệch khi giá đổi. Destructure state thì tôi dùng storeToRefs, còn action thì destructure trực tiếp được. Logout phải gọi reset từng store, vì setup store không có $reset nên tôi tự viết. Với SSR, mỗi request tôi tạo createPinia() mới rồi app.use, nếu không state người dùng trước sẽ rò sang người sau. Tôi cũng không persist token vào localStorage.
+
+> Senior tip: Store lớn thường là dấu hiệu backend chưa có endpoint đúng miền, khiến client phải giữ tạm nhiều dữ liệu. Trước khi chia store, hãy xem có API nào gộp được dữ liệu không; chia store mà API vẫn trả từng mảnh thì chỉ dời chỗ rắc rối.`,
+  tags: ['vue3', 'pinia', 'state-management', 'ssr', 'storetores', 'reset'],
+  follow: ['$reset khác nhau giữa option store và setup store thế nào', 'storeToRefs khác toRefs ra sao', 'Pinia trên SSR vì sao mỗi request một instance']
+},
+{
+  id: 'frontend-033',
+  topic: 'frontend',
+  level: 'lead',
+  q: 'SPA lưu JWT thế nào cho an toàn? So sánh localStorage, sessionStorage, biến trong bộ nhớ và cookie HttpOnly; trình bày luồng refresh token có rotation và phát hiện tái sử dụng, single-flight khi nhiều request cùng 401, CSRF khi dùng cookie, và vì sao guard ở client không phải là bảo mật.',
+  a: `**Tóm tắt:** Nơi lưu token quyết định mô hình đe dọa: localStorage tiện nhưng mọi lỗ hổng XSS đều đọc được token và gửi về máy kẻ tấn công; cookie HttpOnly chặn JavaScript đọc nhưng trình duyệt tự đính kèm cookie nên mở cửa cho CSRF; biến trong bộ nhớ an toàn nhất với XSS nhưng mất sau F5. Kiến trúc thường dùng là access token ngắn hạn 5–15 phút giữ trong bộ nhớ, refresh token dài hạn trong cookie HttpOnly cộng Secure cộng SameSite, mỗi lần refresh xoay token, và nếu token cũ bị dùng lại thì thu hồi cả chuỗi.
+
+### Cơ chế, từng bước
+
+1. Đăng nhập thành công: server đặt cookie rt với HttpOnly, Secure, SameSite=Strict, path giới hạn ở /api/auth, Max-Age 14 ngày; trả access token cho client giữ trong biến JS.
+2. Mỗi request API gắn Authorization: Bearer cộng access token, kèm credentials include để cookie rt được gửi khi gọi refresh.
+3. Access token hết hạn thì server trả 401. Client không để từng request tự refresh, vì mười request cùng 401 sẽ sinh mười lần refresh.
+4. Client dùng single-flight: mọi request 401 xếp hàng chờ một lời gọi refresh duy nhất.
+5. Server nhận cookie rt, kiểm tra chữ ký và trạng thái thu hồi, cấp access token mới cộng refresh token mới, đồng thời đánh dấu token cũ là đã dùng.
+6. Nếu token cũ xuất hiện lần hai, coi như bị đánh cắp: thu hồi toàn bộ chuỗi của thiết bị đó và buộc đăng nhập lại.
+7. Logout gọi API thu hồi refresh token ở server, xóa cookie, xóa state.
+
+### Vì sao cần rotation cộng reuse detection
+
+Refresh token sống 14 ngày. Nếu không xoay, một lần lộ là kẻ tấn công dùng được 14 ngày, kể cả khi người dùng đã đổi mật khẩu. Rotation làm mỗi token chỉ dùng một lần; khi kẻ tấn công dùng token đã bị xoay, hệ thống phát hiện ngay và thu hồi chuỗi. Đây là cách các nhà cung cấp lớn làm, vì nó biến một lần lộ token thành một lần đăng nhập lại chứ không phải mất tài khoản.
+
+### Code client: single-flight
+
+~~~js
+let accessToken = null;          // chỉ trong bộ nhớ, không localStorage
+let refreshing = null;           // một Promise dùng chung cho mọi request
+
+async function refresh() {
+  const res = await fetch('/api/auth/refresh', {
+    method: 'POST', credentials: 'include',   // cookie rt đi kèm tự động
+  });
+  if (!res.ok) { accessToken = null; throw new Error('refresh failed'); }
+  accessToken = res.headers.get('X-Access-Token');
+}
+
+async function request(url, opts = {}) {
+  const send = () => fetch(url, {
+    ...opts, credentials: 'include',
+    headers: {
+      ...(opts.headers || {}),
+      ...(accessToken ? { Authorization: 'Bearer ' + accessToken } : {}),
+    },
+  });
+  let res = await send();
+  if (res.status !== 401) return res;
+  if (!refreshing) refreshing = refresh().finally(() => { refreshing = null; });
+  await refreshing;
+  if (!accessToken) throw new Error('session expired');
+  return send();                  // phát lại đúng một lần
+}
+~~~
+
+### Code server: cookie và rotation
+
+~~~java
+@PostMapping("/auth/refresh")
+ResponseEntity<Void> refresh(@CookieValue("rt") String rt,
+                             HttpServletResponse res) {
+  Session s = tokenService.rotate(rt);   // thu hồi rt cũ, cấp rt mới
+  ResponseCookie cookie = ResponseCookie.from("rt", s.refreshToken())
+      .httpOnly(true).secure(true).sameSite("Strict")
+      .path("/api/auth").maxAge(Duration.ofDays(14)).build();
+  res.addHeader(HttpHeaders.SET_COOKIE, cookie.toString());
+  return ResponseEntity.ok()
+      .header("X-Access-Token", s.accessToken())
+      .build();
+}
+~~~
+
+Nếu không muốn trả access token qua header, có thể để access token trong bộ nhớ bằng cách trả trong body JSON, nhưng khi đó phải đảm bảo response không bị log. Header chỉ là một lựa chọn, điểm chính là cookie rt không bao giờ cho JavaScript đọc.
+
+### Bảng so sánh nơi lưu token
+
+| Nơi lưu | XSS đọc được | CSRF | Mất khi F5 | Ghi chú |
+|---|---|---|---|---|
+| localStorage | Có | Không | Không | Tiện nhất, rủi ro nhất |
+| sessionStorage | Có | Không | Có | Ít rủi ro hơn chút, vẫn đọc được |
+| Biến trong bộ nhớ | Không | Không | Có | Phải ghép refresh cookie |
+| Cookie HttpOnly | Không | Có | Không | Phải có SameSite cộng CSRF token |
+
+### Lỗi hay gặp
+
+- Lưu cả access và refresh token ở localStorage: một lỗ hổng XSS ở thư viện render markdown là mất tài khoản.
+- Refresh không rotation, token lộ dùng được đến hết hạn.
+- Nhiều tab cùng hết hạn: năm tab cùng refresh, các token bị xoay lẫn nhau làm người dùng bị đăng xuất.
+- SameSite=None mà thiếu Secure: trình duyệt không gửi cookie, hoặc gửi trong ngữ cảnh không an toàn.
+- Access token trong query string: vào access log và header Referer.
+- Chỉ dựa vào guard ở client: guard chỉ để điều hướng, API vẫn phải kiểm tra token.
+- Logout chỉ xóa token ở client mà không thu hồi ở server.
+- Không đặt timeout cho refresh; mạng treo thì mọi request đứng im.
+
+### CSRF khi dùng cookie
+
+Cookie được trình duyệt tự gửi, kể cả khi request đến từ site khác, nên kẻ tấn công có thể dựng form POST tới /api/transfer. Ba lớp phòng thủ: SameSite=Strict hoặc Lax để cookie không đi kèm request cross-site; kiểm tra Origin hoặc Referer ở server; và CSRF token dạng double submit, server cấp một token ngẫu nhiên, client gửi lại ở header, server so khớp. Với API thuần JSON và CORS whitelist, SameSite cộng kiểm tra Origin thường đã đủ, nhưng vẫn nên có CSRF token cho các request ghi.
+
+### Ví dụ đời thực
+
+Một SPA lưu refresh token trong localStorage. Thư viện render markdown chèn HTML không escape tạo lỗ hổng XSS; kẻ tấn công đọc localStorage và gửi token về. Bốn tài khoản bị chiếm, kẻ tấn công dùng token trong 11 ngày. Sau khi chuyển sang cookie HttpOnly cộng Secure cộng SameSite=Strict, thêm rotation và CSP, cùng lỗ hổng XSS vẫn còn nhưng không đọc được token; thêm rotation thì cửa sổ lạm dụng giảm từ 14 ngày xuống 2 phút.
+
+### Trả lời mẫu khi phỏng vấn
+
+Tôi tách hai loại token: access token ngắn hạn 10 phút giữ trong biến JS, refresh token 14 ngày trong cookie HttpOnly, Secure, SameSite=Strict và path giới hạn ở /api/auth. Khi 401, client không cho mỗi request tự refresh mà dùng single-flight: các request xếp hàng chờ một lời gọi refresh, xong thì phát lại. Server xoay refresh token mỗi lần dùng và đánh dấu token đã dùng; nếu token cũ xuất hiện lần hai thì thu hồi cả chuỗi, coi như bị đánh cắp. Vì refresh dựa vào cookie, tôi thêm CSRF token double submit và kiểm tra Origin ở server. Guard ở client chỉ để điều hướng, mọi API vẫn kiểm tra token ở server. Tôi đo được cửa sổ lạm dụng giảm từ 14 ngày xuống 2 phút.
+
+> Senior tip: Câu hỏi này không có đáp án đúng tuyệt đối, vì localStorage cộng CSP nghiêm ngặt cũng là lựa chọn hợp lệ trong một số hệ thống nội bộ. Điều quan trọng là bạn nêu được mô hình đe dọa: XSS đọc được gì, CSRF gửi được gì, và mỗi lớp phòng thủ chặn được kịch bản nào.`,
+  tags: ['security', 'jwt', 'refresh-token', 'csrf', 'xss', 'single-flight'],
+  follow: ['rotation và reuse detection hoạt động thế nào', 'SameSite Lax khác Strict ra sao', 'guard ở client vì sao không phải bảo mật']
+},
 );
 
