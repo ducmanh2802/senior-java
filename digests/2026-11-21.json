@@ -1,0 +1,67 @@
+{
+  "date": "2026-11-21",
+  "intro": "Hôm nay là ngày của hệ sinh thái Spring: Spring AI 2.1 GA với 13 bản vá bảo mật và Session API thay ChatMemory, Spring Cloud 2025.1.5 vá hàng loạt lỗ hổng ở Config, Gateway, Kubernetes, kèm hai bản Spring Boot mới. Ngoài ra có Karpenter 1.15 cho dev làm việc với Kubernetes trên AWS và định hướng sản phẩm mới của Docker cho AI agent.",
+  "editor": "claude",
+  "items": [
+    {
+      "title_vi": "Spring AI 2.1 GA: Session API, xác nhận tool call, MCP stateless và 13 bản vá CVE",
+      "title": "Spring AI 2.1.0 GA and 2.0.3 GA Available Now",
+      "url": "https://spring.io/blog/2026/11/20/spring-ai-2-1-0-GA-available-now",
+      "source": "Spring Blog",
+      "category": "tech",
+      "summary": "Spring AI 2.1.0 chạy trên Spring Boot 4.2, ra sau 2.0.0 khoảng 5 tháng; 2.0.3 là bản vá cho nhánh 2.0. Điểm mới: hỗ trợ MCP bản stateless 2026-07-28, Session API (thay {{ChatMemory}}, vốn bị đánh dấu deprecated, sẽ gỡ ở 3.0.0), {{requiresConfirmation = true}} để tạm dừng vòng lặp tool call chờ người duyệt, giới hạn mặc định 40 lần gọi mỗi tool và 150 lần mỗi lượt. Bản này sửa 13 CVE, một số thay đổi hành vi như {{TikaDocumentReader}} giới hạn 10 triệu ký tự.",
+      "why": "Nếu service Java của bạn đang tích hợp LLM bằng Spring AI, đây là bản có vá bảo mật nên cần lên kế hoạch nâng cấp, và việc ChatMemory bị deprecated ảnh hưởng trực tiếp tới code quản lý hội thoại.",
+      "interview_q": "Bạn thiết kế một agent gọi tool trong service Spring thế nào để tránh vòng lặp tool call vô hạn và để người dùng duyệt các hành động nhạy cảm?",
+      "related": ["ai-001", "ai-002", "security-001"],
+      "tags": ["spring-ai", "mcp", "security"]
+    },
+    {
+      "title_vi": "Spring Cloud 2025.1.5 (Oakwood): vá lỗ hổng ở Config, Gateway, Kubernetes, Function",
+      "title": "Spring Cloud 2025.1.5 (aka Oakwood) Has Been Released",
+      "url": "https://spring.io/blog/2026/11/20/spring-cloud-2025-1-5-has-been-released",
+      "source": "Spring Blog",
+      "category": "tech",
+      "summary": "Release train dựa trên Spring Boot 4.0.10, gồm Gateway 5.0.5, Config 5.0.7, Stream 5.0.5... Có nhiều bản vá bảo mật: Config lộ credential Git/SVN qua tên property source và không kiểm tra SSH host key, Gateway rò rỉ phản hồi giữa các route ở local response cache và không bắt same-origin cho WebSocket, Kubernetes có RCE qua YAML của ConfigMap/Secret, Eureka lộ credential qua dashboard. Ngoài ra sửa NPE ở Consul khi không có leader và lỗi parse header {{X-Forwarded-*}}.",
+      "why": "Gateway, Config Server và Stream là thành phần phổ biến trong hệ microservices Spring; các lỗ hổng cache giữa route và lộ credential có thể gây rò rỉ dữ liệu thật trên production.",
+      "interview_q": "API Gateway của bạn bật response cache: bạn đảm bảo không trả nhầm dữ liệu riêng tư của user này cho user khác như thế nào?",
+      "related": ["microservices-001", "security-002", "spring-002"],
+      "tags": ["spring-cloud", "gateway", "security"]
+    },
+    {
+      "title_vi": "Spring Boot 4.1.3 và 4.0.10: bản vá định kỳ với 112 và 97 bug fix",
+      "title": "Spring Boot 4.1.3 available now",
+      "url": "https://spring.io/blog/2026/11/20/spring-boot-4-1-3-available-now",
+      "source": "Spring Blog",
+      "category": "tech",
+      "summary": "Spring Boot 4.1.3 (112 bug fix) và 4.0.10 (97 bug fix) cùng ra ngày 20/11/2026, kèm cải thiện tài liệu và nâng cấp dependency, có trên Maven Central. Bài đăng chỉ nêu số lượng, danh sách chi tiết nằm ở release notes trên GitHub và không nhắc CVE nào. Spring Cloud 2025.1.5 vừa phát hành dựa trên 4.0.10.",
+      "why": "Bản vá patch của Boot thường an toàn để nâng cấp và là cách rẻ nhất để nhận fix dependency; nên có quy trình cập nhật patch đều đặn thay vì để tồn đọng nhiều bản.",
+      "interview_q": "Bạn quản lý việc nâng cấp patch và minor của Spring Boot trên hàng chục service thế nào để giảm rủi ro mà vẫn không tụt phiên bản?",
+      "related": ["spring-001", "devops-002"],
+      "tags": ["spring-boot", "upgrade"]
+    },
+    {
+      "title_vi": "Karpenter v1.15: node repair thành disruption tự nguyện, metric mới và breaking change nhãn",
+      "title": "Karpenter v1.15: GPU-aware provisioning, smarter node repair, and more",
+      "url": "https://aws.amazon.com/blogs/containers/karpenter-v1-15-gpu-aware-provisioning-smarter-node-repair-and-more/",
+      "source": "AWS Containers Blog",
+      "category": "cloud",
+      "summary": "Theo release notes v1.15.0 trên GitHub: node repair chạy như một phương thức voluntary disruption (có cờ {{--legacy-node-repair}} để giữ controller cũ), có reboot node, repair node đăng ký nhưng không bao giờ initialize, và provisioning tính tới giới hạn volume của instance type. Về quan sát có counter pod bị disrupt và nhãn mới cho metric; lưu ý breaking change: nhãn reason của metric giờ viết thường. Phần GPU của bài blog chưa đọc được nội dung.",
+      "why": "Backend Java chạy trên EKS với Karpenter chịu ảnh hưởng trực tiếp bởi cách node bị thay thế; breaking change ở nhãn metric có thể làm hỏng dashboard và alert Prometheus hiện có.",
+      "interview_q": "Node trên EKS bị thay thế liên tục làm pod Java restart: bạn dùng PodDisruptionBudget, graceful shutdown và disruption budget của Karpenter thế nào để giảm gián đoạn?",
+      "related": ["devops-003", "aws-002"],
+      "tags": ["karpenter", "kubernetes", "eks"]
+    },
+    {
+      "title_vi": "Docker định hướng lại sang bảo vệ và quản trị AI agent",
+      "title": "Meet the New Docker: Built to Run on Trust",
+      "url": "https://www.docker.com/blog/meet-the-new-docker-built-to-run-on-trust/",
+      "source": "Docker Blog",
+      "category": "company",
+      "summary": "Docker đổi nhận diện thương hiệu và định vị mình quanh chữ trust cho kỷ nguyên agent: chuỗi cung ứng tin cậy, runtime cô lập agent và hệ sinh thái mở. Sản phẩm được nêu gồm Docker Sandboxes cho coding agent, Docker AI Governance, Docker Hardened Images và MCP Enterprise Gateway. Bài chủ yếu là định vị, ít chi tiết kỹ thuật; container vẫn là trung tâm quy trình phát triển.",
+      "why": "Nhiều team Java đang đưa coding agent và MCP tool vào quy trình; biết hướng đi của hạ tầng sandbox và governance giúp bạn cân nhắc cách cô lập và kiểm soát quyền của agent.",
+      "interview_q": "Nếu cho coding agent chạy lệnh trong môi trường CI hoặc máy dev, bạn cô lập quyền truy cập secret, mạng và filesystem của nó như thế nào?",
+      "related": ["devops-001", "security-003"],
+      "tags": ["docker", "ai-agent", "supply-chain"]
+    }
+  ]
+}
