@@ -3964,6 +3964,1282 @@ Trên production DB, optimistic locking thường kèm **retry limit** (tối đ
   ],
   related: ['sql-034', 'sql-035', 'sql-049', 'db-001', 'sql-057', 'concurrency-001'],
   tags: ['optimistic locking', 'CAS', 'CountDownLatch', 'AtomicReference', 'concurrent test', 'version check', 'retry loop'],
+},
+{
+  id: 'lesson-sql-017',
+  track: 'sql',
+  order: 17,
+  title: 'Index B+tree sâu: page 8KB, full scan, composite index, leftmost prefix, covering index',
+  level: 'senior',
+  minutes: 35,
+  goals: [
+    'Giải thích dữ liệu nằm trên đĩa theo page 8KB, full scan là gì, B+tree xây thế nào (vẽ cây 3 tầng)',
+    'Tìm 1 dòng trong 10 triệu dòng tốn mấy lần đọc page, composite index và leftmost prefix (ví dụ danh bạ sắp theo Họ rồi Tên)',
+    'Hiểu covering index và index-only scan, mô phỏng binary search vs sequential scan đếm "page reads"',
+  ],
+  body: `### Dữ liệu nằm trên đĩa như thế nào: page 8KB
+Trước khi nói index, hãy hiểu DB lưu trữ dữ liệu ra sao. PostgreSQL (và hầu hết DB quan hệ) chia không gian đĩa thành các **page** (trang) cỡ cố định **8 KB** (8192 byte). Một page chứa nhiều dòng (tuple) tuỳ theo độ rộng dòng. Ví dụ bảng {{orders}} có cột {{id BIGINT (8 byte)}}, {{user_id INT (4 byte)}}, {{amount INT (4 byte)}}, {{created_at TIMESTAMP (8 byte)}}, {{status SMALLINT (2 byte)}} cộng overhead ~24 byte = ~50 byte/dòng. Một page 8 KB chứa được khoảng {{8192 / 50 ≈ 160}} dòng.
+
+Khi bạn chạy {{SELECT * FROM orders WHERE user_id = 123}}, nếu **không có index** phù hợp, DB phải đọc **toàn bộ các page** của bảng từ đầu đến cuối, kiểm tra từng dòng. Đó là **full scan** (quét toàn bảng, hay còn gọi {{Seq Scan}}). Bảng 10 triệu dòng × 50 byte ≈ 500 MB dữ liệu, chia 8 KB/page ≈ **65.000 page**. Full scan = đọc 65.000 page (I/O đĩa, hoặc nếu đã trong RAM thì vẫn phải duyệt qua 65.000 page trong bộ nhớ).
+
+### B+tree index: cây 3 tầng tìm 1 dòng trong 10 triệu
+**B+tree** (B-plus tree) là cấu trúc index phổ biến nhất. Khác với B-tree cổ điển, B+tree chỉ lưu giá trị khóa (key) ở **tầng lá (leaf level)**, các tầng trên (internal nodes) chỉ chứa khóa định tuyến để dẫn đường. Tầng lá được **liên kết đôi (doubly linked list)** nên có thể duyệt tuần tự theo thứ tự khóa rất nhanh (hỗ trợ {{ORDER BY}}, range query).
+
+Ví dụ minh hoạ B+tree 3 tầng cho cột {{user_id}} trên bảng 10 triệu dòng (fanout ~200 khóa/node, thực tế PostgreSQL page 8 KB chứa được nhiều hơn):
+
+~~~text
+           [ROOT - Tầng 1]                          1 page
+          /        |        \
+    [1..200]  [201..400]  [401..600]  ...   [internal nodes - Tầng 2]   ~50 page
+    /   \      /   \      /   \
+... [LEAF - Tầng 3] ...                              ~50.000 page
+   (user_id, TID) (user_id, TID) ...
+~~~
+
+- **Tầng 1 (Root)**: 1 page, chứa các khóa phân chia khoảng giá trị.
+- **Tầng 2 (Internal)**: Khoảng 50 page, mỗi page trỏ đến ~200 node lá.
+- **Tầng 3 (Leaf)**: Khoảng 50.000 page, mỗi page chứa ~200 cặp {{(user_id, TID)}} (TID = tuple identifier, con trỏ tới dòng thật trong heap).
+
+Tìm 1 dòng {{user_id = 12345}}:
+1. Đọc **Root** (1 page) → biết đi nhánh nào.
+2. Đọc **Internal node** phù hợp (1 page) → biết leaf page nào.
+3. Đọc **Leaf page** (1 page) → tìm thấy {{(12345, TID)}}.
+4. (Tuỳ query) Dùng TID đọc **heap page** chứa dòng thật (1 page) nếu cần cột không có trong index.
+
+**Tổng: 3–4 lần đọc page** thay vì 65.000 page full scan. Đó là lý do index nhanh.
+
+> Số page thực tế: PostgreSQL page 8 KB, fanout internal node ~300-500 khóa, leaf entry ~20-30 byte (key + TID) → 1 leaf page chứa ~300 entry. 10 triệu dòng / 300 ≈ 33.000 leaf page. Internal fanout ~400 → 33.000/400 ≈ 83 internal page. Root 1 page. Cây 3 tầng vẫn chỉ đọc 3 page index (+1 heap nếu cần). Nếu dữ liệu tăng 100 triệu dòng, cây có thể thành 4 tầng, vẫn chỉ 4 lần đọc.
+
+### Composite index và leftmost prefix (tiền tố trái nhất)
+**Composite index** (chỉ mục tổ hợp) là index trên **nhiều cột**, ví dụ {{CREATE INDEX idx_user_status ON orders (user_id, status, created_at)}}. Trong B+tree, khóa sắp xếp là **bộ giá trị (user_id, status, created_at)** theo thứ tự từ trái sang phải.
+
+Quy tắc **leftmost prefix** (tiền tố trái nhất): Index chỉ hỗ trợ truy vấn khi điều kiện WHERE bắt đầu từ **cột đầu tiên** của index và có thể mở rộng sang các cột tiếp theo **liên tục** (không bỏ qua cột giữa).
+
+| Điều kiện WHERE | Dùng được index {{(user_id, status, created_at)}}? | Giải thích |
+|---|---|---|
+| {{WHERE user_id = 1}} | ✅ Có | Khớp cột 1 |
+| {{WHERE user_id = 1 AND status = 'NEW'}} | ✅ Có | Khớp cột 1, 2 |
+| {{WHERE user_id = 1 AND status = 'NEW' AND created_at > '2024-01-01'}} | ✅ Có | Khớp cột 1, 2, 3 (toàn bộ) |
+| {{WHERE status = 'NEW'}} | ❌ Không | **Bỏ qua cột 1 (user_id)** |
+| {{WHERE user_id = 1 AND created_at > '2024-01-01'}} | ⚠️ Một phần | Dùng cột 1, cột 3 **không dùng được** vì bỏ cột 2 (status) ở giữa |
+| {{WHERE created_at > '2024-01-01'}} | ❌ Không | Bỏ qua cột 1, 2 |
+
+**Ví dụ đời thường - Danh bạ điện thoại**: Danh bạ sắp theo **Họ → Tên → Số điện thoại**. Bạn muốn tìm "Nguyễn Văn An":
+- Biết Họ = "Nguyễn" → lật tới mục Họ "Nguyễn" (cột 1 ✅).
+- Biết Tên = "Văn An" → trong mục Họ "Nguyễn" tìm theo Tên (cột 2 ✅).
+- Chỉ biết Tên = "Văn An" (không biết Họ) → **phải lật toàn bộ danh bạ** vì các "Văn An" rải rác khắp các Họ khác nhau (cột 1 ❌).
+- Biết Họ = "Nguyễn" và Số điện thoại (bỏ qua Tên) → trong mục Họ "Nguyễn" bạn vẫn phải duyệt tất cả Tên để tìm Số, không thể nhảy thẳng (cột 2 bị bỏ qua ❌).
+
+### Covering index và index-only scan
+**Covering index** (chỉ mục bao phủ) là index chứa **đủ tất cả cột** mà câu query cần (cột trong {{SELECT}}, {{WHERE}}, {{JOIN}}, {{ORDER BY}} tuỳ trường hợp). Khi đó DB có thể trả kết quả **chỉ từ index**, không cần đọc heap (bảng dữ liệu gốc). PostgreSQL gọi khả năng này là **index-only scan**.
+
+~~~sql
+-- Ví dụ ý tưởng: query hay chạy
+-- SELECT status, total_amount FROM orders WHERE user_id = ? ORDER BY created_at DESC;
+-- Index có thể cân nhắc: (user_id, created_at DESC) INCLUDE (status, total_amount)
+~~~
+
+- {{(user_id, created_at DESC)}} là **key columns** (cột khóa) — dùng cho WHERE, JOIN, ORDER BY, sắp xếp B+tree.
+- {{INCLUDE (status, total_amount)}} là **non-key columns** (cột payload) — chỉ lưu ở leaf page, **không** tham gia sắp xếp, giúp index gọn hơn so với đưa vào khóa.
+
+> Điều kiện thực tế: index-only scan hiệu quả nhất khi **visibility map** cho phép xác nhận tuple "đủ mới" mà không phải kiểm tra heap. {{VACUUM}} cập nhật visibility map; bảng update nhiều có thể làm index-only scan kém lợi hơn.
+
+### Khi nào index KHÔNG giúp (hoặc ít giúp)
+- **Selectivity thấp**: cột boolean, status chỉ có vài giá trị (active/inactive/pending) — planner thường chọn Seq Scan vì index không loại bỏ được nhiều dòng.
+- **Hàm/biểu thức trên cột**: {{WHERE UPPER(email) = 'A@B.COM'}} thường không dùng index thường trên {{email}}. Cần **expression/functional index** phù hợp, ví dụ {{CREATE INDEX ... ON users (UPPER(email));}} và viết query khớp biểu thức.
+- **Kiểu dữ liệu/ép kiểu không khớp**: so sánh khác kiểu có thể gây cast ngầm, làm index khó dùng.
+- **Bảng nhỏ**: đọc thẳng vài trang còn rẻ hơn đi index rồi fetch heap.
+- **Write-heavy**: mỗi index thêm chi phí cho {{INSERT/UPDATE/DELETE}} (phải cập nhật cấu trúc index). Quá nhiều index làm ghi chậm và tốn dung lượng.
+
+### B-tree và các loại index khác (PostgreSQL 15+)
+| Loại | Phù hợp |
+|---|---|
+| **B-tree** | Mặc định, {{=}}, {{<}}, {{>}}, range, {{ORDER BY}}, đa số OLTP |
+| **Hash** | Chỉ {{=}}, không hỗ trợ ordering/range như B-tree. Ít dùng hơn B-tree |
+| **GiN** | Full-text search, {{jsonb}}, mảng, containment |
+| **GiST** | Hình học, range types, nearest-neighbor |
+| **BRIN** | Rất nhỏ, bảng lớn **append theo thứ tự vật lý** (time-series), không phù hợp dữ liệu ngẫu nhiên |
+
+### Liên hệ phỏng vấn
+Câu hay: "Khi nào thêm index, khi nào không?".
+Trả lời có cấu trúc:
+1. Xuất phát từ **query pattern** thật ({{WHERE/JOIN/ORDER BY}}), không thêm theo cảm tính.
+2. Kiểm tra bằng {{EXPLAIN (ANALYZE, BUFFERS)}} trước/sau để xác nhận planner dùng index và thời gian/I-O cải thiện.
+3. Cân nhắc **selectivity**, **covering/index-only scan**, chi phí ghi và bảo trì.
+4. Nhắc composite index tuân thủ **leftmost prefix**, covering index dùng {{INCLUDE}}, index không phải phép màu (có thể bị bỏ qua vì hàm, kiểu, thống kê sai).
+5. Xoá index không dùng (kiểm tra {{pg_stat_user_indexes}}) để giảm gánh nặng ghi.
+
+> Senior tip: Đừng chỉ nhìn "có index hay không". Hãy nhìn **cardinality ước lượng vs thực tế** trong {{EXPLAIN ANALYZE}}, số buffer đọc ({{BUFFERS}}), và tác động lên ghi. Một index "đúng" trên staging có thể vô dụng trên production nếu phân bố dữ liệu khác.`,
+  exercises: [
+    {
+      title: 'Binary search vs sequential scan: mô phỏng page reads trên mảng đã sắp',
+      prompt: `Giả sử dữ liệu đã được nạp vào RAM dưới dạng mảng các **page** (mỗi page là một mảng {{Row}} đã sắp xếp theo {{id}} tăng dần). Mỗi page chứa tối đa {{PAGE_SIZE = 100}} dòng. Viết lớp {{PageSim}}:
+- Constructor: {{PageSim(int totalRows, int pageSize = 100)}} — tạo dữ liệu mô phỏng {{totalRows}} dòng, {{id}} từ 1 đến {{totalRows}}, giá trị {{value = "v" + id}}. Chia thành các page cỡ {{pageSize}} (page cuối có thể ít hơn). Lưu tất cả page vào {{List<Row[]> pages}}.
+- {{sequentialScan(int targetId)}}: mô phỏng **full scan** — duyệt từng page, từng dòng trong page cho đến khi tìm thấy {{targetId}}. Trả về {{SearchResult}} chứa {{found (boolean)}}, {{pagesRead (int)}} (số page đã đọc, kể cả page cuối tìm thấy), {{rowsExamined (int)}} (tổng số dòng đã so sánh).
+- {{binarySearch(int targetId)}}: mô phỏng **index seek (B+tree)** — thực hiện binary search trên **toàn bộ dữ liệu logic** (giả lập tra cứu B+tree bằng binary search trên mảng phẳng). Để đơn giản, hãy gộp tất cả page thành một mảng lớn {{Row[] all}} (hoặc tính index toàn cục), rồi binary search. Trả về {{SearchResult}} với {{pagesRead}} ước lượng = **số page index lý thuyết (3 cho 10 triệu dòng)** + 1 heap page nếu tìm thấy. Đối với bài tập này, giả sử B+tree 3 tầng → {{pagesRead = 4}} (3 index page + 1 heap), {{rowsExamined = 0}} (index không so sánh từng dòng).
+- {{SearchResult}} là record/class có sẵn: {{found}}, {{pagesRead}}, {{rowsExamined}}.
+
+Mục đích: thấy chênh lệch **65.000 page reads (seq scan)** vs **4 page reads (index)** cho 10 triệu dòng.`,
+      starter: `class Row {
+    final int id;
+    final String value;
+    Row(int id, String value) { this.id = id; this.value = value; }
 }
 
+class SearchResult {
+    final boolean found;
+    final int pagesRead;
+    final int rowsExamined;
+    SearchResult(boolean found, int pagesRead, int rowsExamined) {
+        this.found = found; this.pagesRead = pagesRead; this.rowsExamined = rowsExamined;
+    }
+}
+
+class PageSim {
+    final int pageSize;
+    final List<Row[]> pages;      // các page đã chia
+    final Row[] allRows;          // mảng phẳng cho binary search
+
+    PageSim(int totalRows, int pageSize) {
+        this.pageSize = pageSize;
+        this.pages = new ArrayList<>();
+        this.allRows = new Row[totalRows];
+        // TODO: tạo dữ liệu, chia page, gán allRows
+        throw new UnsupportedOperationException("TODO");
+    }
+
+    SearchResult sequentialScan(int targetId) {
+        throw new UnsupportedOperationException("TODO");
+    }
+
+    SearchResult binarySearch(int targetId) {
+        throw new UnsupportedOperationException("TODO");
+    }
+}`,
+      tests: `public class Main {
+    static int passed = 0, total = 0;
+    static void check(String name, Runnable r) {
+        total++;
+        try { r.run(); passed++; System.out.println("PASS " + name); }
+        catch (Throwable t) { System.out.println("FAIL " + name + ": " + t); }
+    }
+    static void eq(Object e, Object a) { if (!Objects.equals(e, a)) throw new AssertionError("exp " + e + " got " + a); }
+
+    public static void main(String[] args) {
+        PageSim sim = new PageSim(1_000_000, 100); // 1 triệu dòng, page 100 => 10.000 page
+
+        check("sequential scan finds and reads many pages", () -> {
+            SearchResult r = sim.sequentialScan(500_000);
+            eq(true, r.found);
+            // target ở giữa ~ page 5.000, seq scan đọc ~5.000 page, xét ~500.000 dòng
+            if (r.pagesRead < 4900 || r.pagesRead > 5100) throw new AssertionError("pagesRead ~5000, got " + r.pagesRead);
+            if (r.rowsExamined < 490_000 || r.rowsExamined > 510_000) throw new AssertionError("rowsExamined ~500k, got " + r.rowsExamined);
+        });
+
+        check("sequential scan not found reads all pages", () -> {
+            SearchResult r = sim.sequentialScan(-1);
+            eq(false, r.found);
+            eq(10_000, r.pagesRead); // đọc hết 10.000 page
+            eq(1_000_000, r.rowsExamined);
+        });
+
+        check("binary search constant pagesRead (B+tree 3 tầng + heap)", () -> {
+            SearchResult r = sim.binarySearch(500_000);
+            eq(true, r.found);
+            eq(4, r.pagesRead);   // 3 index page + 1 heap page
+            eq(0, r.rowsExamined); // index không duyệt từng dòng
+        });
+
+        check("binary search not found still constant pages", () -> {
+            SearchResult r = sim.binarySearch(-1);
+            eq(false, r.found);
+            eq(4, r.pagesRead);
+            eq(0, r.rowsExamined);
+        });
+
+        check("small table still works", () -> {
+            PageSim small = new PageSim(50, 100); // 1 page
+            SearchResult r1 = small.sequentialScan(25);
+            eq(true, r1.found);
+            eq(1, r1.pagesRead);
+            SearchResult r2 = small.binarySearch(25);
+            eq(true, r2.found);
+            eq(4, r2.pagesRead); // mô phỏng vẫn 4 page lý thuyết
+        });
+
+        System.out.println("RESULT " + passed + "/" + total);
+    }
+}`,
+      reference: `class Row {
+    final int id;
+    final String value;
+    Row(int id, String value) { this.id = id; this.value = value; }
+}
+
+class SearchResult {
+    final boolean found;
+    final int pagesRead;
+    final int rowsExamined;
+    SearchResult(boolean found, int pagesRead, int rowsExamined) {
+        this.found = found; this.pagesRead = pagesRead; this.rowsExamined = rowsExamined;
+    }
+}
+
+class PageSim {
+    final int pageSize;
+    final List<Row[]> pages;
+    final Row[] allRows;
+
+    PageSim(int totalRows, int pageSize) {
+        this.pageSize = pageSize;
+        this.pages = new ArrayList<>();
+        this.allRows = new Row[totalRows];
+        for (int i = 1; i <= totalRows; i++) {
+            Row row = new Row(i, "v" + i);
+            this.allRows[i - 1] = row;
+        }
+        // chia page
+        for (int i = 0; i < totalRows; i += pageSize) {
+            int end = Math.min(i + pageSize, totalRows);
+            Row[] page = new Row[end - i];
+            System.arraycopy(allRows, i, page, 0, end - i);
+            pages.add(page);
+        }
+    }
+
+    SearchResult sequentialScan(int targetId) {
+        int pagesRead = 0;
+        int rowsExamined = 0;
+        for (Row[] page : pages) {
+            pagesRead++;
+            for (Row row : page) {
+                rowsExamined++;
+                if (row.id == targetId) {
+                    return new SearchResult(true, pagesRead, rowsExamined);
+                }
+            }
+        }
+        return new SearchResult(false, pagesRead, rowsExamined);
+    }
+
+    SearchResult binarySearch(int targetId) {
+        // mô phỏng B+tree 3 tầng: 3 index page + 1 heap page
+        int lo = 0, hi = allRows.length - 1;
+        while (lo <= hi) {
+            int mid = (lo + hi) >>> 1;
+            int midVal = allRows[mid].id;
+            if (midVal == targetId) {
+                return new SearchResult(true, 4, 0);
+            } else if (midVal < targetId) {
+                lo = mid + 1;
+            } else {
+                hi = mid - 1;
+            }
+        }
+        return new SearchResult(false, 4, 0);
+    }
+}`,
+      hints: [
+        'Constructor: tạo allRows trước, rồi chia thành các page cỡ pageSize (System.arraycopy).',
+        'sequentialScan: lồng 2 vòng for (page, row trong page), đếm pagesRead++ mỗi page, rowsExamined++ mỗi dòng. Trả về ngay khi tìm thấy.',
+        'binarySearch: binary search thường trên allRows. pagesRead trả hằng số 4 (3 tầng index + 1 heap) theo mô phỏng. rowsExamined = 0 vì index không duyệt từng dòng.',
+      ],
+      explain: `### Con số nói lên tất cả
+Bảng 1 triệu dòng, page 100 dòng = 10.000 page. Tìm dòng giữa (500.000):
+- **Seq scan**: đọc ~5.000 page, xét ~500.000 dòng.
+- **Binary search (mô phỏng B+tree)**: 4 page reads, 0 dòng so sánh.
+
+Mở rộng ra 10 triệu dòng: seq scan ~50.000 page / 5 triệu dòng; B+tree vẫn **4 page**. Đó là sức mạnh của O(log n) so với O(n).
+
+### Lỗi hay gặp
+- Quên đếm page cuối (page chứa dòng tìm thấy) trong pagesRead.
+- Binary search không xử lý not found (vẫn phải trả pagesRead = 4).
+- Tính rowsExamined nhầm trong binary search (phải là 0 theo mô phỏng này).
+
+### Tự thử trên máy
+~~~bash
+# Tạo bảng 10 triệu dòng PostgreSQL, so sánh EXPLAIN
+docker run -d --name pg -e POSTGRES_PASSWORD=pass postgres:15
+docker exec -i pg psql -U postgres -c "
+CREATE TABLE orders AS SELECT generate_series(1,10000000) AS id, 'v'||generate_series(1,10000000) AS val;
+CREATE INDEX ON orders(id);
+ANALYZE orders;
+EXPLAIN (ANALYZE, BUFFERS) SELECT * FROM orders WHERE id = 5000000;
+"
+# Kết quả mong đợi: Index Scan, buffers đọc ~4 (3 index + 1 heap), thời gian < 1ms
+# So với: EXPLAIN (ANALYZE, BUFFERS) SELECT * FROM orders WHERE id = 5000000; -- KHÔNG index -> Seq Scan, buffers ~65000
+~~~
+
+### Tóm lại 3 ý
+1. Dữ liệu trên đĩa chia page 8KB; full scan = đọc mọi page (O(n)).
+2. B+tree 3 tầng chỉ đọc 3–4 page để tìm 1 dòng trong 10 triệu (O(log n)).
+3. Composite index tuân thủ leftmost prefix; covering index (INCLUDE) cho phép index-only scan tránh đọc heap.
+
+### Liên hệ phỏng vấn
+Interviewer hỏi: "Tìm 1 user trong 10 triệu dòng mất bao nhiêu I/O?". Trả lời: "Với index B+tree 3 tầng: 3 lần đọc index page + 1 lần đọc heap page = 4 I/O. Không index: full scan ~65.000 page (10M dòng × ~50 byte / 8KB)." Sau đó nêu composite index leftmost prefix, covering index với INCLUDE, và khi nào index không giúp (low selectivity, hàm trên cột, write-heavy).`,
+    },
+    {
+      title: 'Composite index simulation: sort by 2 columns và leftmost prefix query',
+      prompt: `Viết lớp {{CompositeIdx}} mô phỏng composite index trên 2 cột {{(lastName, firstName)}} (giống danh bạ sắp theo Họ rồi Tên). Mỗi entry là {{Entry}} gồm {{lastName}}, {{firstName}}, {{phone}}.
+- Constructor: {{CompositeIdx(List<Entry> entries)}} — nhận danh sách entry, **sắp xếp** theo {{lastName}} tăng dần, nếu bằng thì {{firstName}} tăng dần. Lưu vào mảng đã sắp.
+- {{exactMatch(String lastName, String firstName)}}: tìm entry **khớp chính xác** cả 2 cột (binary search). Trả về {{phone}} hoặc {{null}}.
+- {{prefixMatch(String lastName)}}: tìm **tất cả** entry có {{lastName}} cho trước (leftmost prefix: chỉ điều kiện cột 1). Trả về {{List<String>}} các phone theo thứ tự firstName. Dùng binary search tìm phạm vi (lower bound, upper bound).
+- {{prefixMatchSkip(String lastName, String firstName)}}: điều kiện {{lastName = ? AND firstName = ?}} — dùng được index đầy đủ (cột 1 và 2).
+- {{skipColumn(String firstName)}}: điều kiện **chỉ {{firstName = ?}}** (bỏ cột 1) — **không dùng được index**, phải quét toàn bộ (linear scan). Trả về {{List<String>}}.
+
+Mô phỏng leftmost prefix: cột 1 có thể dùng một mình; cột 1+2 dùng được; chỉ cột 2 không dùng được index.`,
+      starter: `class Entry {
+    final String lastName;
+    final String firstName;
+    final String phone;
+    Entry(String lastName, String firstName, String phone) {
+        this.lastName = lastName; this.firstName = firstName; this.phone = phone;
+    }
+}
+
+class CompositeIdx {
+    private final Entry[] sorted;
+
+    CompositeIdx(List<Entry> entries) {
+        throw new UnsupportedOperationException("TODO");
+    }
+
+    String exactMatch(String lastName, String firstName) { throw new UnsupportedOperationException("TODO"); }
+    List<String> prefixMatch(String lastName) { throw new UnsupportedOperationException("TODO"); }
+    String prefixMatchSkip(String lastName, String firstName) { throw new UnsupportedOperationException("TODO"); }
+    List<String> skipColumn(String firstName) { throw new UnsupportedOperationException("TODO"); }
+}`,
+      tests: `public class Main {
+    static int passed = 0, total = 0;
+    static void check(String name, Runnable r) { total++; try { r.run(); passed++; System.out.println("PASS " + name); } catch (Throwable t) { System.out.println("FAIL " + name + ": " + t); } }
+    static void eq(Object e, Object a) { if (!Objects.equals(e, a)) throw new AssertionError("exp " + e + " got " + a); }
+    static Entry e(String ln, String fn, String ph) { return new Entry(ln, fn, ph); }
+
+    public static void main(String[] args) {
+        List<Entry> data = Arrays.asList(
+            e("Nguyen", "An", "0901"), e("Nguyen", "Binh", "0902"), e("Nguyen", "Cuong", "0903"),
+            e("Tran", "An", "0911"), e("Tran", "Binh", "0912"),
+            e("Le", "An", "0921")
+        );
+        CompositeIdx idx = new CompositeIdx(data);
+
+        check("exact match both columns", () -> {
+            eq("0902", idx.exactMatch("Nguyen", "Binh"));
+            eq(null, idx.exactMatch("Nguyen", "X"));
+        });
+
+        check("prefix match lastName only (leftmost prefix col 1)", () -> {
+            eq(Arrays.asList("0901", "0902", "0903"), idx.prefixMatch("Nguyen"));
+            eq(Arrays.asList("0911", "0912"), idx.prefixMatch("Tran"));
+            eq(Arrays.asList("0921"), idx.prefixMatch("Le"));
+            eq(Collections.emptyList(), idx.prefixMatch("Pham"));
+        });
+
+        check("prefix match both columns (col 1 + col 2)", () -> {
+            eq("0902", idx.prefixMatchSkip("Nguyen", "Binh"));
+            eq(null, idx.prefixMatchSkip("Nguyen", "X"));
+        });
+
+        check("skip column 1: only firstName (cannot use index, linear scan)", () -> {
+            eq(Arrays.asList("0901", "0911", "0921"), idx.skipColumn("An"));
+            eq(Arrays.asList("0902", "0912"), idx.skipColumn("Binh"));
+            eq(Collections.emptyList(), idx.skipColumn("X"));
+        });
+
+        System.out.println("RESULT " + passed + "/" + total);
+    }
+}`,
+      reference: `class Entry {
+    final String lastName;
+    final String firstName;
+    final String phone;
+    Entry(String lastName, String firstName, String phone) {
+        this.lastName = lastName; this.firstName = firstName; this.phone = phone;
+    }
+}
+
+class CompositeIdx {
+    private final Entry[] sorted;
+    private final Entry[] original;
+
+    CompositeIdx(List<Entry> entries) {
+        this.original = entries.toArray(new Entry[0]);
+        this.sorted = entries.toArray(new Entry[0]);
+        Arrays.sort(sorted, Comparator
+            .comparing((Entry e) -> e.lastName)
+            .thenComparing(e -> e.firstName));
+    }
+
+    // binary search helper: tim vi tri dau tien >= key (lower bound)
+    private int lowerBound(String lastName, String firstName) {
+        int lo = 0, hi = sorted.length;
+        while (lo < hi) {
+            int mid = (lo + hi) >>> 1;
+            int c = sorted[mid].lastName.compareTo(lastName);
+            if (c == 0) c = sorted[mid].firstName.compareTo(firstName);
+            if (c < 0) lo = mid + 1;
+            else hi = mid;
+        }
+        return lo;
+    }
+
+    String exactMatch(String lastName, String firstName) {
+        int pos = lowerBound(lastName, firstName);
+        if (pos < sorted.length && sorted[pos].lastName.equals(lastName) && sorted[pos].firstName.equals(firstName)) {
+            return sorted[pos].phone;
+        }
+        return null;
+    }
+
+    List<String> prefixMatch(String lastName) {
+        // lower bound cho (lastName, "")
+        int start = lowerBound(lastName, "");
+        // upper bound: lastName lon hon (dung chuoi ky tu lon nhat de bao dam)
+        int end = lowerBound(lastName, "\uFFFF");
+        List<String> out = new ArrayList<>();
+        for (int i = start; i < end; i++) out.add(sorted[i].phone);
+        return out;
+    }
+
+    String prefixMatchSkip(String lastName, String firstName) {
+        return exactMatch(lastName, firstName); // cung logic
+    }
+
+    List<String> skipColumn(String firstName) {
+        List<String> out = new ArrayList<>();
+        for (Entry e : original) if (e.firstName.equals(firstName)) out.add(e.phone);
+        return out;
+    }
+}`,
+      hints: [
+        'Constructor: Arrays.sort với Comparator.comparing(lastName).thenComparing(firstName).',
+        'Binary search lower bound: so sánh lastName trước, nếu bằng thì so firstName.',
+        'prefixMatch: tìm start = lowerBound(lastName, ""), end = lowerBound(lastName, "\\uFFFF") (ký tự Unicode lớn nhất). Duyệt từ start đến end-1.',
+        'skipColumn: duyệt tuyến tính toàn bộ mảng (linear scan) vì không dùng được index.',
+      ],
+      explain: `### Leftmost prefix trong hành động
+- {{prefixMatch("Nguyen")}}: chỉ điều kiện cột 1 → **dùng index** (binary search tìm phạm vi). Kết quả: 3 số điện thoại theo thứ tự firstName.
+- {{prefixMatchSkip("Nguyen", "Binh")}}: điều kiện cột 1 + cột 2 → **dùng index đầy đủ** (binary search chính xác 1 entry).
+- {{skipColumn("An")}}: chỉ điều kiện cột 2 (bỏ cột 1) → **không dùng được index**, phải linear scan. Kết quả: 3 số điện thoại (Nguyen An, Tran An, Le An) — đúng nhưng chậm trên dữ liệu lớn.
+
+Đây chính là nguyên tắc leftmost prefix: index {{(A, B)}} hỗ trợ WHERE A=?, WHERE A=? AND B=?, nhưng **không** hỗ trợ WHERE B=?.
+
+### Lỗi hay gặp
+- prefixMatch dùng linear scan thay vì binary search tìm range.
+- skipColumn cố dùng binary search (sai vì dữ liệu không sắp theo firstName).
+- So sánh String case-sensitive: test dùng chữ cái đầu viết hoa, nhất quán là được.
+
+### Liên hệ phỏng vấn
+Khi được hỏi "Composite index (a, b, c) dùng được cho WHERE nào?", trả lời: "WHERE a=?, WHERE a=? AND b=?, WHERE a=? AND b=? AND c=?. Không dùng cho WHERE b=?, WHERE c=?, WHERE a=? AND c=? (bỏ b ở giữa)." Nhắc ví dụ danh bạ Họ-Tên để dễ nhớ.`,
+    },
+  ],
+  check: [
+    {
+      q: 'Bảng 10 triệu dòng, mỗi dòng ~50 byte, page 8 KB. Ước lượng số page của bảng và số page index B+tree (3 tầng) cần đọc để tìm 1 dòng theo khóa chính.',
+      options: ['65.000 page bảng, 3 page index', '65.000 page bảng, 4 page index (3 index + 1 heap)', '10.000 page bảng, 4 page index', '1.000.000 page bảng, 10 page index'],
+      answer: 1,
+      explain: `**Phương án 2 đúng**: 10M × 50 byte = 500 MB / 8 KB ≈ 65.000 page dữ liệu. B+tree 3 tầng: đọc root (1) + internal (1) + leaf (1) = 3 page index, cộng 1 heap page lấy dòng thật = 4 page reads. Các phương án khác sai số page bảng hoặc số tầng index.`,
+    },
+    {
+      q: 'Composite index {{CREATE INDEX ON users (last_name, first_name, email)}}. Câu WHERE nào KHÔNG dùng được index (theo leftmost prefix)?',
+      options: [
+        'WHERE last_name = ?',
+        'WHERE last_name = ? AND first_name = ?',
+        'WHERE first_name = ? AND email = ?',
+        'WHERE last_name = ? AND first_name = ? AND email = ?'
+      ],
+      answer: 2,
+      explain: `**Phương án 3 đúng**: bỏ qua cột đầu tiên {{last_name}} (cột 1), chỉ dùng cột 2 và 3 → vi phạm leftmost prefix, index không dùng được. (A) dùng cột 1 ✅. (B) dùng cột 1, 2 ✅. (D) dùng đủ 3 cột ✅.`,
+    },
+    {
+      q: 'Covering index {{CREATE INDEX ON orders (user_id, created_at DESC) INCLUDE (status, total)}}. Câu query nào được index-only scan?',
+      options: [
+        'SELECT * FROM orders WHERE user_id = ?',
+        'SELECT status, total FROM orders WHERE user_id = ? ORDER BY created_at DESC',
+        'SELECT user_id, created_at FROM orders WHERE status = ?',
+        'SELECT COUNT(*) FROM orders WHERE user_id = ?'
+      ],
+      answer: 1,
+      explain: `**Phương án 2 đúng**: query chỉ cần cột {{user_id, created_at, status, total}} — toàn bộ có trong index (key columns + INCLUDE). Planner có thể dùng index-only scan, không đọc heap. (A) {{SELECT *}} cần cột khác không có trong index. (C) WHERE status không dùng được index (bỏ user_id). (D) COUNT(*) có thể dùng index-only scan nhưng (B) là ví dụ điển hình covering index.`,
+    },
+  ],
+  related: ['sql-001'],
+  tags: ['index', 'btree', 'b+tree', 'composite index', 'leftmost prefix', 'covering index', 'page', 'binary search'],
+},
+{
+  id: 'lesson-sql-018',
+  track: 'sql',
+  order: 18,
+  title: 'Query execution plan nâng cao: cost model, statistics, và paraméter hóa plan',
+  level: 'senior',
+  minutes: 35,
+  goals: [
+    'Giải thích cách planner tính cost (seq_page_cost, random_page_cost, cpu_tuple_cost) và tại sao cost ước lượng khác thực tế',
+    'Hiểu pg_stats (most_common_vals, histogram_bounds, correlation) và ANALYZE cập nhật thống kê như thế nào',
+    'Biết dùng {{EXPLAIN (ANALYZE, BUFFERS, SETTINGS)}} để debug plan và khi nào dùng {{PREPARE}} + {{EXECUTE}} để parameter hóa plan',
+  ],
+  body: `### Cost model: planner không đo mili-giây, nó tính "cost unit"
+Khi PostgreSQL so sánh hai kế hoạch (plan), nó không chạy thử để đo thời gian thực. Thay vào đó, nó gán **chi phí (cost)** cho từng thao tác dựa trên mô hình toán học, rồi chọn plan có **total cost** thấp nhất. Cost unit là đơn vị tương đối, **không phải mili-giây** — mặc định 1.0 = chi phí đọc một page tuần tự (seq_page_cost).
+
+Các tham số cost chính (mặc định PostgreSQL 15):
+- {{seq_page_cost = 1.0}}: chi phí đọc 1 page tuần tự (Seq Scan, đọc liên tiếp trên đĩa/OS cache).
+- {{random_page_cost = 4.0}}: chi phí đọc 1 page ngẫu nhiên (Index Scan, nhảy ngẫu nhiên). Trên SSD giá trị này nên hạ xuống ~1.1–1.5 vì không có độ trễ seek cơ học.
+- {{cpu_tuple_cost = 0.01}}: chi phí CPU xử lý 1 tuple (so sánh, projection).
+- {{cpu_index_tuple_cost = 0.005}}: chi phí CPU cho entry index.
+- {{cpu_operator_cost = 0.0025}}: chi phí CPU cho các phép toán (hàm, biểu thức).
+
+**Ví dụ**: Seq Scan 10.000 page → startup cost 0, total cost ≈ 10.000 × 1.0 + 100.000 tuple × 0.01 = **11.000**. Index Scan đọc 100 page ngẫu nhiên + 1.000 tuple → cost ≈ 100 × 4.0 + 1.000 × 0.01 = **410**. Planner chọn Index Scan vì cost thấp hơn. Nhưng nếu index selectivity thấp (khớp 50% bảng = 50.000 tuple), Index Scan cost ≈ 100 × 4.0 + 50.000 × 0.01 = **900**, vẫn thấp hơn Seq Scan 11.000 → planner vẫn chọn Index Scan. Chỉ khi khớp rất nhiều dòng (selectivity cực thấp) thì Seq Scan thắng.
+
+### Statistics (pg_stats): planner nhìn vào đâu để ước lượng
+Planner không đọc toàn bộ dữ liệu mỗi lần; nó dựa vào **statistics** (thống kê) được thu thập bởi lệnh {{ANALYZE}} (hoặc autovacuum) và lưu trong catalog {{pg_stats}} (view thân thiện của {{pg_statistic}}).
+
+Mỗi cột trong {{pg_stats}} có các trường quan trọng:
+- **n_distinct**: số giá trị khác nhau (nếu âm = tỷ lệ so với số dòng, ví dụ -0.1 = 10% số dòng là distinct).
+- **most_common_vals (MCV)**: mảng các giá trị xuất hiện nhiều nhất (top-N).
+- **most_common_freqs**: tần suất tương ứng của MCV.
+- **histogram_bounds**: các giá trị ranh giới chia histogram thành các bucket bằng nhau (mặc định 100 bucket), dùng để ước lượng range query.
+- **correlation**: độ tương quan giữa thứ tự vật lý của bảng (trên đĩa) và thứ tự logic của cột. **1.0** = hoàn toàn cùng thứ tự (ví dụ bảng được {{CLUSTER}} theo cột đó); **-1.0** = ngược hoàn toàn; **~0** = ngẫu nhiên. Correlation cao giúp planner ước lượng Index Scan rẻ hơn vì đọc page vật lý gần nhau (sequential-ish).
+
+**Khi nào thống kê sai?**
+- Bảng vừa **import hàng loạt** ({{COPY}}, {{INSERT}} lớn) mà chưa {{ANALYZE}}.
+- Phân bố dữ liệu **thay đổi mạnh** (ví dụ cột status trước đây đều 'NEW', giờ 90% là 'DONE').
+- **Autovacuum** chưa kịp chạy (ngưỡng mặc định 20% thay đổi + 50 dòng).
+
+Khi statistics sai, planner ước lượng **rows** sai → chọn sai plan (ví dụ chọn Nested Loop thay vì Hash Join). Bước đầu khi query bỗng chậm: **{{EXPLAIN (ANALYZE, BUFFERS)}} so {{rows}} ước lượng với {{actual rows}}** — lệch > 10 lần là manh mối lớn.
+
+> Pitfall thực tế: {{ANALYZE}} lấy mẫu ngẫu nhiên (default 100–300 trang). Với bảng cực lớn, mẫu có thể bỏ sót giá trị hiếm (MCV) hoặc histogram không khớp. Có thể tăng {{default_statistics_target}} (mặc định 100) lên 500–1000 cho cột quan trọng: {{ALTER TABLE t ALTER COLUMN c SET STATISTICS 1000;}} rồi {{ANALYZE}}.
+
+### Parameterized plan: PREPARE + EXECUTE vs generic plan
+Khi bạn dùng prepared statement ({{PREPARE}} / driver JDBC {{PreparedStatement}}), PostgreSQL có hai chế độ:
+1. **Custom plan** (lần đầu 5 lần thực thi): planner **thay thế tham số ($1, $2...) bằng giá trị thực** và tối ưu plan cho giá trị đó. Plan phụ thuộc vào giá trị tham số.
+2. **Generic plan** (từ lần thứ 6 trở đi, nếu cost không chênh lệch quá nhiều): planner **bỏ qua giá trị tham số**, dùng thống kê trung bình để tạo một plan dùng chung cho mọi giá trị. Plan này cache và tái dùng.
+
+{{plan_cache_mode}} (PostgreSQL 12+) điều khiển hành vi: {{auto}} (mặc định, như trên), {{force_custom_plan}}, {{force_generic_plan}}.
+
+**Ví dụ vấn đề**: Query {{SELECT * FROM orders WHERE status = $1}}. Khi $1 = 'NEW' (hiếm, 1%) → Index Scan tốt. Khi $1 = 'DONE' (phổ biến, 80%) → Seq Scan tốt. Nếu 5 lần đầu đều truyền 'NEW', custom plan dùng Index Scan. Lần 6 chuyển sang generic plan (dựa trên thống kê trung bình) có thể chọn Seq Scan → query với 'NEW' bỗng chậm.
+
+Giải pháp:
+- {{SET plan_cache_mode = 'force_custom_plan';}} (chi phí plan cao hơn nhưng an toàn).
+- Viết query tách riêng cho từng giá trị (hoặc dùng {{CASE WHEN}} + index partial).
+- Tạo **partial index**: {{CREATE INDEX ON orders (id) WHERE status = 'NEW';}} — chỉ index dòng hiếm, planner sẽ dùng khi $1 = 'NEW'.
+
+### BUFFERS và SETTINGS trong EXPLAIN
+{{EXPLAIN (ANALYZE, BUFFERS, SETTINGS)}} cho thấy:
+- **Buffers**: {{shared hit}} (page có sẵn trong shared_buffers), {{shared read}} (page phải đọc từ đĩa/OS), {{shared dirtied/written}} (page bị ghi do UPDATE/INSERT), {{temp read/written}} (page file tạm cho sort/hash vượt work_mem).
+- **Settings**: giá trị thực của các tham số cost/work_mem/etc. tại thời điểm chạy — hữu ích khi debug trên môi trường khác nhau.
+
+### Liên hệ phỏng vấn
+Câu hay: "EXPLAIN ANALYZE cho thấy rows ước lượng 100, actual 100.000 — nguyên nhân và sửa thế nào?".
+Trả lời: (1) Thống kê cũ → {{ANALYZE}} bảng. (2) Kiểm tra {{pg_stats}} cột liên quan: n_distinct, MCV, histogram. (3) Nếu correlation thấp mà planner chọn Index Scan, cân nhắc {{CLUSTER}} hoặc partial index. (4) Nếu dùng PreparedStatement, kiểm tra {{plan_cache_mode}} — generic plan có thể chọn sai cho giá trị tham số cụ thể; dùng {{force_custom_plan}} hoặc partial index. (5) Nếu Buffers hiện {{temp written}} lớn → tăng {{work_mem}} cục bộ.
+
+> Senior tip: Đừng chỉ "thêm index" khi chậm. Quy trình: {{EXPLAIN (ANALYZE, BUFFERS)}} → so rows ước lượng/actual → nếu lệch lớn → {{ANALYZE}} → nếu vẫn lệch → xem pg_stats (MCV/histogram/correlation) → điều chỉnh statistics target hoặc partial index → nếu dùng prepared statement → kiểm tra generic vs custom plan. Hiểu **vì sao** planner chọn plan đó mới là kỹ năng senior.`,
+  exercises: [
+    {
+      title: 'Ước lượng selectivity từ histogram và MCV đơn giản',
+      prompt: `Viết lớp {{SelectivityEstimator}} mô phỏng cách planner ước lượng selectivity (độ chọn lọc) cho điều kiện {{cột = giá trị}}.
+- {{double eqSelectivity(double[] mcvFreqs, int nDistinct, int totalRows, boolean valueInMCV, int mcvIndex)}}: ước lượng tỉ lệ dòng khớp {{cột = value}}.
+  - Nếu {{valueInMCV == true}}: trả {{mcvFreqs[mcvIndex]}} (tần suất MCV).
+  - Nếu {{valueInMCV == false}}: giá trị không nằm trong MCV → ước lượng bằng phân bố đồng đều trên các giá trị còn lại. Công thức: {{(1.0 - sumMCV) / (nDistinct - mcvFreqs.length)}}.
+  - Nếu kết quả < 0 hoặc > 1, clamp về [0, 1]. Nếu {{totalRows <= 0}} trả 0.
+- {{int estimateRows(double selectivity, int totalRows)}}: trả {{(int) Math.round(selectivity * totalRows)}}.
+- {{double rangeSelectivity(double minVal, double maxVal, double[] histogramBounds)}}: ước lượng tỉ lệ dòng trong khoảng {{[minVal, maxVal]}} (giả sử histogram đều). Histogram bounds là mảng {{k+1}} giá trị ranh giới (ví dụ 101 giá trị cho 100 bucket). Tính tỉ lệ bucket giao với khoảng, cộng dồn.
+
+Giả định: histogram đều, không có MCV trong khoảng range (đơn giản hóa).`,
+      starter: `class SelectivityEstimator {
+    double eqSelectivity(double[] mcvFreqs, int nDistinct, int totalRows, boolean valueInMCV, int mcvIndex) {
+        throw new UnsupportedOperationException("TODO");
+    }
+
+    int estimateRows(double selectivity, int totalRows) {
+        throw new UnsupportedOperationException("TODO");
+    }
+
+    double rangeSelectivity(double minVal, double maxVal, double[] histogramBounds) {
+        throw new UnsupportedOperationException("TODO");
+    }
+}`,
+      tests: `public class Main {
+    static int passed = 0, total = 0;
+    static void check(String name, Runnable r) { total++; try { r.run(); passed++; System.out.println("PASS " + name); } catch (Throwable t) { System.out.println("FAIL " + name + ": " + t); } }
+    static void eq(Object e, Object a) { if (!Objects.equals(e, a)) throw new AssertionError("exp " + e + " got " + a); }
+    static void eqD(double e, double a, double eps) { if (Math.abs(e - a) > eps) throw new AssertionError("exp " + e + " got " + a); }
+
+    public static void main(String[] args) {
+        SelectivityEstimator se = new SelectivityEstimator();
+        double[] mcv = {0.3, 0.2, 0.1}; // top 3 values: 30%, 20%, 10%
+        int nDistinct = 100;
+        int totalRows = 1_000_000;
+
+        check("MCV value uses MCV frequency", () -> eqD(0.3, se.eqSelectivity(mcv, nDistinct, totalRows, true, 0), 1e-9));
+        check("non-MCV value uses uniform remainder", () -> {
+            // sumMCV = 0.6, remaining 0.4 spread over 97 values
+            double expected = 0.4 / 97.0;
+            eqD(expected, se.eqSelectivity(mcv, nDistinct, totalRows, false, -1), 1e-9);
+        });
+        check("estimateRows rounds correctly", () -> eq(1000, se.estimateRows(0.001, 1_000_000)));
+        check("range selectivity uniform histogram", () -> {
+            // bounds: 0, 10, 20, ..., 100 (11 bounds = 10 buckets). Range [25, 75] covers buckets 3,4,5,6,7 = 5/10 = 0.5
+            double[] bounds = new double[11];
+            for (int i = 0; i <= 10; i++) bounds[i] = i * 10.0;
+            eqD(0.5, se.rangeSelectivity(25, 75, bounds), 1e-9);
+        });
+        check("range selectivity partial bucket", () -> {
+            double[] bounds = {0.0, 10.0, 20.0, 30.0};
+            // [5, 25] intersects bucket [0,10] (50%), [10,20] (100%), [20,30] (50%) -> (0.5+1+0.5)/3 = 0.666...
+            eqD(2.0/3.0, se.rangeSelectivity(5, 25, bounds), 1e-9);
+        });
+        System.out.println("RESULT " + passed + "/" + total);
+    }
+}`,
+      reference: `class SelectivityEstimator {
+    double eqSelectivity(double[] mcvFreqs, int nDistinct, int totalRows, boolean valueInMCV, int mcvIndex) {
+        if (totalRows <= 0) return 0.0;
+        if (valueInMCV && mcvIndex >= 0 && mcvIndex < mcvFreqs.length) {
+            return mcvFreqs[mcvIndex];
+        }
+        // non-MCV: uniform over remaining distinct values
+        double sumMCV = 0.0;
+        for (double f : mcvFreqs) sumMCV += f;
+        int remainingDistinct = nDistinct - mcvFreqs.length;
+        if (remainingDistinct <= 0) return 0.0;
+        double sel = (1.0 - sumMCV) / remainingDistinct;
+        if (sel < 0) sel = 0;
+        if (sel > 1) sel = 1;
+        return sel;
+    }
+
+    int estimateRows(double selectivity, int totalRows) {
+        return (int) Math.round(selectivity * totalRows);
+    }
+
+    double rangeSelectivity(double minVal, double maxVal, double[] histogramBounds) {
+        if (histogramBounds == null || histogramBounds.length < 2) return 0.0;
+        int buckets = histogramBounds.length - 1;
+        double totalOverlap = 0.0;
+        for (int i = 0; i < buckets; i++) {
+            double bMin = histogramBounds[i];
+            double bMax = histogramBounds[i + 1];
+            double overlapMin = Math.max(minVal, bMin);
+            double overlapMax = Math.min(maxVal, bMax);
+            if (overlapMax > overlapMin) {
+                totalOverlap += (overlapMax - overlapMin) / (bMax - bMin);
+            }
+        }
+        return totalOverlap / buckets;
+    }
+}`,
+      hints: [
+        'eqSelectivity: sum mcvFreqs trước, remaining = nDistinct - mcvFreqs.length. Clamp kết quả về [0,1].',
+        'estimateRows: Math.round(selectivity * totalRows).',
+        'rangeSelectivity: duyệt các bucket (histogramBounds[i] đến histogramBounds[i+1]). Tính phần giao của [minVal, maxVal] với bucket đó. Cộng tỷ lệ overlap, chia cho số bucket.',
+      ],
+      explain: `### Vì sao planner cần MCV và histogram
+MCV (Most Common Values) bắt các giá trị "nổi bật" — nếu query lọc bằng giá trị đó, planner biết chính xác tần suất thay vì đoán đều. Histogram bounds cho phép ước lượng range query ({{BETWEEN}}, {{>}}, {{<}}) bằng cách chia miền giá trị thành các bucket đều.
+
+Trong thực tế, planner còn kết hợp correlation, functional dependency (extended statistics), và nhiều yếu tố khác. Mô phỏng này chỉ cốt lõi: **MCV cho equality, histogram cho range**.
+
+### Lỗi hay gặp
+- Quên clamp select vào [0,1] khi remainingDistinct <= 0 hoặc sumMCV > 1.
+- rangeSelectivity: chia cho số bucket (không phải số bounds).
+- estimateRows dùng int mà không round (truncated) → sai số nhỏ.
+
+### Tự thử trên máy
+~~~bash
+docker run -d --name pg -e POSTGRES_PASSWORD=pass postgres:15
+docker exec -i pg psql -U postgres -c "
+CREATE TABLE t AS SELECT generate_series(1,1000000) AS id, (random()*100)::int AS val;
+ANALYZE t;
+SELECT * FROM pg_stats WHERE tablename = 't' AND attname = 'val';
+"
+# Quan sát n_distinct, most_common_vals, most_common_freqs, histogram_bounds, correlation
+~~~
+
+### Tóm lại 3 ý
+1. Planner dùng cost model (seq/random page cost, cpu cost) và statistics (MCV, histogram, correlation) để ước lượng rows và chọn plan rẻ nhất.
+2. Thống kê sai (chưa ANALYZE sau import, dữ liệu lệch) → planner chọn sai plan → query chậm. Bước đầu: so rows ước lượng vs actual.
+3. Prepared statement có thể chuyển sang generic plan (lần 6+) dùng thống kê trung bình → sai cho giá trị tham số cụ thể. Dùng {{force_custom_plan}} hoặc partial index.
+
+### Liên hệ phỏng vấn
+Khi được hỏi "Tại sao EXPLAIN ước lượng 100 dòng nhưng chạy ra 100.000?" trả lời: "Thống kê cũ hoặc không đại diện. Planner dùng pg_stats (MCV, histogram, correlation) để ước lượng. Sau import lớn cần ANALYZE. Nếu correlation thấp mà planner chọn Index Scan, cân nhắc CLUSTER. Với PreparedStatement, từ lần 6 có thể dùng generic plan — nếu giá trị tham số lệch so với trung bình, plan sai; giải pháp: force_custom_plan hoặc partial index."`,
+    },
+  ],
+  check: [
+    {
+      q: 'Trong pg_stats, trường {{correlation}} = 1.0 nghĩa là gì?',
+      options: [
+        'Cột có tương quan tuyệt đối với khóa chính',
+        'Thứ tự vật lý của bảng trên đĩa **hoàn toàn trùng khớp** thứ tự logic của cột này (ví dụ vừa CLUSTER theo cột đó)',
+        'Cột này là khóa ngoại',
+        'Giá trị của cột này không bao giờ null'
+      ],
+      answer: 1,
+      explain: `**Phương án 2 đúng**: correlation = 1.0 nghĩa là khi đọc index theo cột đó, các page heap được truy cập theo thứ tự vật lý liên tiếp (sequential I/O), giúp Index Scan rất rẻ. -1.0 là ngược hoàn toàn, ~0 là ngẫu nhiên. Các phương án khác không liên quan.`,
+    },
+    {
+      q: 'PreparedStatement chạy 5 lần đầu với tham số giá trị hiếm (selectivity 1%), plan dùng Index Scan. Lần 6 trở đi bỗng chọn Seq Scan. Nguyên nhân phổ biến nhất?',
+      options: [
+        'PostgreSQL tự động xoá index sau 5 lần chạy',
+        'Chuyển sang **generic plan** (dùng thống kê trung bình, bỏ qua giá trị tham số cụ thể) vì planner thấy cost chênh lệch không đáng kể',
+        'Buffer cache bị đầy',
+        'AUTOVACUUM vừa chạy xong và xoá thống kê'
+      ],
+      answer: 1,
+      explain: `**Phương án 2 đúng**: PostgreSQL 12+ mặc định {{plan_cache_mode = 'auto'}}: 5 lần đầu dùng custom plan (thay $1 bằng giá trị thật), từ lần 6 dùng generic plan (ước lượng bằng thống kê trung bình). Nếu giá trị tham số hiếm (1%) mà generic plan ước lượng selectivity cao → chọn Seq Scan. Giải pháp: {{SET plan_cache_mode = 'force_custom_plan'}} hoặc partial index.`,
+    },
+    {
+      q: 'Sau khi {{COPY}} 50 triệu dòng vào bảng, query bỗng chậm. Bước đầu tiên nên chạy lệnh gì?',
+      options: [
+        '{{REINDEX TABLE}}',
+        '{{ANALYZE}} bảng đó (hoặc {{VACUUM ANALYZE}})',
+        '{{DROP INDEX}} rồi tạo lại',
+        '{{SET enable_seqscan = off}}'
+      ],
+      answer: 1,
+      explain: `**Phương án 2 đúng**: {{COPY}}/{{INSERT}} lớn không cập nhật thống kê tự động (autovacuum chạy theo ngưỡng % thay đổi, có thể trễ). Planner dùng thống kê cũ (hoặc không có) → ước lượng rows sai → chọn sai plan. {{ANALYZE}} cập nhật pg_stats (MCV, histogram, n_distinct, correlation) để planner ước lượng đúng. {{REINDEX}} chỉ build lại index, không sửa thống kê. {{enable_seqscan = off}} là workaround không giải quyết nguyên nhân.`,
+    },
+  ],
+  related: ['sql-015', 'sql-017', 'db-001'],
+  tags: ['cost model', 'statistics', 'pg_stats', 'analyze', 'plan cache', 'generic plan', 'correlation', 'mcv', 'histogram'],
+},
+{
+  id: 'lesson-sql-020',
+  track: 'sql',
+  order: 20,
+  title: 'Index B+tree bên trong: page 8KB, full scan, độ sâu cây, composite index và leftmost prefix',
+  level: 'senior',
+  minutes: 35,
+  goals: [
+    'Giải thích dữ liệu trên đĩa tổ chức theo page 8KB, full scan là gì và vì sao chậm',
+    'Mô tả cấu trúc B+tree (root, branch, leaf), tính độ sâu cây và số lần đọc page để tìm 1 dòng trong 10 triệu dòng',
+    'Hiểu composite index (index nhiều cột), quy tắc leftmost prefix và khi nào index được dùng',
+  ],
+  body: `### Dữ liệu trên đĩa: page 8KB và full scan
+PostgreSQL (và hầu hết DB hiện đại) lưu dữ liệu trên đĩa theo **page** (trang), kích thước mặc định **8 KB**. Một bảng (heap) là một chuỗi các page; mỗi page chứa nhiều dòng (tuple) tuỳ theo độ rộng dòng. Khi bạn chạy {{SELECT * FROM orders WHERE status = 'NEW'}}, nếu không có index phù hợp, DB phải thực hiện **full scan** (quét toàn bộ bảng): đọc lần lượt từng page từ đầu đến cuối, kiểm tra mọi dòng trong page.
+
+Ví dụ: bảng {{orders}} có 10 triệu dòng, mỗi dòng khoảng 200 byte. Mỗi page 8 KB chứa được ~40 dòng. Tổng cộng cần ~250.000 page. Full scan phải đọc **250.000 lần I/O** (đọc page từ đĩa/bộ nhớ). Nếu dữ liệu không có sẵn trong shared buffer, đây là 250.000 lần đọc đĩa — rất chậm.
+
+Analog đời thường: full scan giống như bạn lật từng trang một cuốn sách 250.000 trang để tìm một từ khóa; index giống như bạn tra mục lục rồi nhảy thẳng đến trang cần.
+
+### B+tree index: cấu trúc cây cân bằng
+Index phổ biến nhất là **B+tree** (B-plus tree). Khác với B-tree thông thường, B+tree chỉ lưu dữ liệu (con trỏ tới dòng thật) ở **leaf node** (nút lá); các **branch node** (nút nhánh) và **root node** (gốc) chỉ chứa khóa (key) và con trỏ tới node con để dẫn đường.
+
+Cấu trúc 3 tầng điển hình cho 10 triệu dòng:
+
+~~~text
+ROOT (1 page)              -- chứa ~100-200 khóa phân cách
+  |
+  +-- BRANCH (cấp 1)       -- ~100 page, mỗi page ~100 con trỏ
+  |     |
+  |     +-- LEAF (cấp 2)   -- ~10.000 page, mỗi page ~100 entry (key + TID)
+  |
+  +-- BRANCH ...
+  |
+  +-- ...
+~~~
+
+Tìm 1 dòng bằng khóa (ví dụ {{id = 1234567}}):
+1. Đọc **root page** (1 I/O) → so sánh khóa, chọn nhánh con.
+2. Đọc **branch page** cấp 1 (1 I/O) → chọn nhánh con.
+3. Đọc **leaf page** (1 I/O) → tìm entry khớp, lấy TID (con trỏ dòng).
+4. Đọc **heap page** chứa dòng thật (1 I/O, có thể cache).
+
+Tổng: **3-4 lần đọc page** (I/O) để tìm 1 dòng trong 10 triệu — nhanh hơn full scan hàng chục nghìn lần.
+
+Độ sâu (height) của B+tree phụ thuộc **fanout** (số con trỏ mỗi node). PostgreSQL page 8 KB, mỗi entry index (key + pointer) khoảng 16-24 byte → fanout ~300-400. Công thức xấp xỉ: {{height = ceil(log_fanout(N))}}.
+
+| Số dòng (N) | Fanout ~300 | Độ sâu (leaf level) | I/O tìm 1 dòng (root→leaf + heap) |
+|---|---|---|---|
+| 1.000 | 300 | 1 (root = leaf) | 2 |
+| 100.000 | 300 | 2 | 3 |
+| 10.000.000 | 300 | 3 | 4 |
+| 1.000.000.000 | 300 | 4 | 5 |
+
+> **Lưu ý**: Root và branch page thường ở trong **shared buffer** (RAM) vì được truy cập liên tục, nên I/O thực tế thường chỉ 1-2 lần đọc đĩa (leaf + heap).
+
+### Composite index (index nhiều cột) và leftmost prefix
+Khi query lọc theo nhiều cột ({{WHERE a = 1 AND b = 2}}), tạo index trên **cả hai cột** (composite index) hiệu quả hơn nhiều so với hai index riêng lẻ. PostgreSQL composite index lưu khóa theo **thứ tự các cột khai báo**: {{CREATE INDEX idx_a_b ON t(a, b)}} sắp xếp trước theo {{a}}, trong mỗi {{a}} sắp theo {{b}}.
+
+Quy tắc **leftmost prefix** (tiền tố trái nhất): Composite index {{(a, b, c)}} có thể dùng cho:
+- {{WHERE a = 1}} ✓ (prefix {{a}})
+- {{WHERE a = 1 AND b = 2}} ✓ (prefix {{a, b}})
+- {{WHERE a = 1 AND b = 2 AND c = 3}} ✓ (prefix đầy đủ)
+- {{WHERE b = 2}} ✗ (thiếu {{a}})
+- {{WHERE b = 2 AND c = 3}} ✗ (thiếu {{a}})
+- {{WHERE a = 1 AND c = 3}} ✓ (dùng prefix {{a}}, {{c}} không giúp thêm vì bỏ sót {{b}})
+
+Analog đời thường: **Danh bạ điện thoại sắp theo Họ rồi Tên**. Bạn tìm "Nguyễn Văn A" rất nhanh (tra "Nguyễn" → "Văn" → "A"). Nhưng bạn **không thể** dùng danh bạ đó để tìm tất cả người tên "Văn A" (bỏ qua Họ), vì sách không sắp theo Tên.
+
+### Ví dụ thực tế: Composite index cho query đơn hàng
+Query hay gặp: {{SELECT * FROM orders WHERE user_id = ? AND status = ? ORDER BY created_at DESC}}.
+Index gợi ý: {{CREATE INDEX idx_orders_user_status_created ON orders(user_id, status, created_at DESC);}}
+- {{user_id}} = prefix đầu tiên → lọc chính xác user.
+- {{status}} = prefix thứ hai → lọc tiếp trạng thái trong user đó.
+- {{created_at DESC}} = prefix thứ ba → sắp xếp sẵn trong index, tránh sort và hỗ trợ {{LIMIT}}.
+
+### Khi composite index KHÔNG giúp
+- Điều kiện **không phải prefix**: {{WHERE status = 'NEW'}} (thiếu {{user_id}}) → planner thường chọn Seq Scan.
+- Hàm trên cột: {{WHERE UPPER(email) = ?}} → cần expression index {{ON users(UPPER(email))}}.
+- Selectivity thấp: cột đầu index chỉ có vài giá trị (boolean, enum ít giá trị) → index chọn lọc kém.
+
+### Liên hệ phỏng vấn
+Câu hay: "Tìm 1 dòng trong 10 triệu mất bao nhiêu I/O?", "Composite index (a,b,c) dùng được cho WHERE b=1 không?".
+Trả lời senior:
+1. B+tree 3 tầng, fanout ~300 → 3-4 I/O (root/branch thường cache, leaf + heap).
+2. Leftmost prefix: (a,b,c) chỉ dùng khi WHERE có a, hoặc a+b, hoặc a+b+c; thiếu a thì không dùng được (trừ index skip scan - PostgreSQL chưa hỗ trợ tốt).
+3. Thứ tự cột trong index **quan trọng**: cột equality ({{=}}) đặt trước, cột range/sort đặt sau.
+4. Kiểm tra bằng {{EXPLAIN (ANALYZE, BUFFERS)}}, xem {{Index Scan}} hay {{Seq Scan}}, số buffer đọc.`,
+  exercises: [
+    {
+      title: 'Ước lượng độ sâu B+tree và số I/O tìm dòng, áp dụng leftmost prefix',
+      prompt: `Viết lớp {{BtreeIdx}} mô phỏng các khái niệm:
+- {{height(long n, int fanout)}}: trả về độ sâu của B+tree (số tầng từ root đến leaf). Nếu {{n <= 0}} trả 0. Công thức: tìm {{h}} nhỏ nhất sao cho {{fanout^h >= n}}. Ví dụ: n=1.000.000, fanout=300 -> h=3 (300^2=90.000 < n, 300^3=27.000.000 >= n).
+- {{ioToFindRow(long n, int fanout)}}: ước lượng số I/O đọc page để tìm 1 dòng theo khóa. Giả định root và branch đã trong RAM (không tính I/O), chỉ tính leaf page + heap page = 2 I/O nếu height >= 2, hoặc 1 I/O nếu height = 1 (root = leaf). Nếu {{n <= 0}} trả 0.
+- {{canUseCompositeIndex(List<String> indexCols, List<String> queryCols)}}: indexCols là danh sách cột của composite index theo thứ tự (ví dụ {{["a","b","c"]}}). queryCols là danh sách cột xuất hiện trong điều kiện WHERE (thứ tự không quan trọng). Trả {{true}} nếu **mọi cột trong queryCols đều là prefix của indexCols** (theo thứ tự từ trái). Ví dụ: index={{a,b,c}}, query={{a}} -> true; query={{a,b}} -> true; query={{b}} -> false; query={{a,c}} -> true (a là prefix, c bỏ qua b không sao); query={{b,c}} -> false.
+- {{leftmostPrefixLength(List<String> indexCols, List<String> queryCols)}}: trả về độ dài prefix dùng được (số cột từ trái của indexCols khớp với queryCols theo thứ tự). Ví dụ: index={{a,b,c}}, query={{a,b}} -> 2; query={{a,c}} -> 1 (chỉ a khớp theo thứ tự); query={{b}} -> 0.`,
+      starter: `class BtreeIdx {
+    int height(long n, int fanout) { throw new UnsupportedOperationException("TODO"); }
+    int ioToFindRow(long n, int fanout) { throw new UnsupportedOperationException("TODO"); }
+    boolean canUseCompositeIndex(List<String> indexCols, List<String> queryCols) { throw new UnsupportedOperationException("TODO"); }
+    int leftmostPrefixLength(List<String> indexCols, List<String> queryCols) { throw new UnsupportedOperationException("TODO"); }
+}`,
+      tests: `public class Main {
+    static int passed = 0, total = 0;
+    static void check(String name, Runnable r) {
+        total++;
+        try { r.run(); passed++; System.out.println("PASS " + name); }
+        catch (Throwable t) { System.out.println("FAIL " + name + ": " + t); }
+    }
+    static void eq(Object e, Object a) { if (!Objects.equals(e, a)) throw new AssertionError("expected " + e + " got " + a); }
+    public static void main(String[] args) {
+        BtreeIdx b = new BtreeIdx();
+        check("height 1M fanout 300 = 3", () -> eq(3, b.height(1_000_000, 300)));
+        check("height 100k fanout 300 = 3", () -> eq(3, b.height(100_000, 300)));
+        check("height 1k fanout 300 = 2", () -> eq(2, b.height(1_000, 300)));
+        check("height 0 = 0", () -> eq(0, b.height(0, 300)));
+        check("io 10M fanout 300 = 2 (leaf+heap)", () -> eq(2, b.ioToFindRow(10_000_000, 300)));
+        check("io 100k fanout 300 = 2 (leaf+heap)", () -> eq(2, b.ioToFindRow(100_000, 300)));
+        check("io 1k fanout 300 = 2 (root+branch, leaf+heap)", () -> eq(2, b.ioToFindRow(1_000, 300)));
+        check("can use: query prefix a", () -> eq(true, b.canUseCompositeIndex(List.of("a","b","c"), List.of("a"))));
+        check("can use: query prefix a,b", () -> eq(true, b.canUseCompositeIndex(List.of("a","b","c"), List.of("a","b"))));
+        check("cannot use: missing a", () -> eq(false, b.canUseCompositeIndex(List.of("a","b","c"), List.of("b"))));
+        check("can use: query a,c (skip b)", () -> eq(true, b.canUseCompositeIndex(List.of("a","b","c"), List.of("a","c"))));
+        check("cannot use: query b,c", () -> eq(false, b.canUseCompositeIndex(List.of("a","b","c"), List.of("b","c"))));
+        check("prefix length a,b = 2", () -> eq(2, b.leftmostPrefixLength(List.of("a","b","c"), List.of("a","b"))));
+        check("prefix length a,c = 1 (b missing in sequence)", () -> eq(1, b.leftmostPrefixLength(List.of("a","b","c"), List.of("a","c"))));
+        check("prefix length b = 0", () -> eq(0, b.leftmostPrefixLength(List.of("a","b","c"), List.of("b"))));
+        System.out.println("RESULT " + passed + "/" + total);
+    }
+}`,
+      reference: `class BtreeIdx {
+    int height(long n, int fanout) {
+        if (n <= 0 || fanout <= 1) return 0;
+        int h = 0;
+        long capacity = 1;
+        while (capacity < n) {
+            capacity *= fanout;
+            h++;
+        }
+        return h;
+    }
+    int ioToFindRow(long n, int fanout) {
+        if (n <= 0) return 0;
+        int h = height(n, fanout);
+        if (h <= 1) return 1;       // root la leaf
+        return 2;                   // leaf page + heap page (root/branch cached)
+    }
+    boolean canUseCompositeIndex(List<String> indexCols, List<String> queryCols) {
+        if (queryCols == null || queryCols.isEmpty()) return true;
+        if (indexCols == null || indexCols.isEmpty()) return false;
+        Set<String> querySet = new HashSet<>(queryCols);
+        // Kiểm tra điều kiện leftmost: các cột query phải là subset của indexCols
+        // VÀ cột đầu tiên của indexCols phải có trong queryCols (prefix bắt đầu từ trái)
+        if (!querySet.contains(indexCols.get(0))) return false;
+        for (String c : queryCols) {
+            if (!indexCols.contains(c)) return false; // cột query không có trong index
+        }
+        return true;
+    }
+    int leftmostPrefixLength(List<String> indexCols, List<String> queryCols) {
+        if (indexCols == null || indexCols.isEmpty() || queryCols == null || queryCols.isEmpty()) return 0;
+        Set<String> querySet = new HashSet<>(queryCols);
+        int len = 0;
+        for (String c : indexCols) {
+            if (querySet.contains(c)) len++;
+            else break; // gãy prefix
+        }
+        return len;
+    }
+}`,
+      hints: [
+        '{{height}}: dùng vòng lặp nhân {{capacity *= fanout}} cho đến khi {{capacity >= n}}.',
+        '{{ioToFindRow}}: height >= 2 -> 2 I/O (leaf + heap); height = 1 -> 1 I/O (root = leaf).',
+        '{{canUseCompositeIndex}}: cột đầu index (indexCols[0]) BẮT BUỘC có trong queryCols. Tất cả cột query phải nằm trong indexCols. Thứ tự queryCols không quan trọng.',
+        '{{leftmostPrefixLength}}: duyệt indexCols từ trái, đếm số cột liên tiếp có trong querySet; gặp cột không có thì dừng.',
+      ],
+      explain: `### Giải thích
+- **Height**: 10 triệu dòng, fanout 300 -> 300^2=90k < 10M, 300^3=27M >= 10M -> height=3. Leaf level là cấp 3 (root=1, branch=2, leaf=3).
+- **I/O**: Tìm 1 dòng đi root->branch->leaf (3 page đọc) + heap page = 4 page truy cập. Nhưng root/branch thường đã trong shared buffer -> chỉ 2 I/O đĩa thực tế (leaf + heap).
+- **Leftmost prefix**: Composite index {{(a,b,c)}} được sắp xếp: trước a, trong a sắp b, trong b sắp c. Điều kiện WHERE chỉ dùng được khi bắt đầu từ a. Query {{b}} hoặc {{b,c}} không dùng được vì phải quét toàn bộ index (không có prefix a để nhảy tới vùng b).
+- **Query {{a,c}}**: Dùng được prefix {{a}} (nhảy tới vùng a), nhưng {{c}} không giúp thêm vì index trong vùng a sắp theo b rồi c; bỏ sót b nghĩa là phải quét hết các b trong a.
+
+### Lỗi hay gặp
+- Quên kiểm tra {{indexCols[0]}} trong {{canUseCompositeIndex}} -> query {{b}} bị coi là dùng được (sai).
+- {{leftmostPrefixLength}} không dừng khi gặp cột thiếu -> đếm nhầm các cột không liên tiếp.
+- {{height}} dùng log floating-point dễ sai làm tròn; vòng lặp nhân an toàn hơn.`,
+    },
+  ],
+  check: [
+    {
+      q: 'Bảng 10 triệu dòng, index B+tree fanout ~300. Tìm 1 dòng bằng khóa chính tốn khoảng bao nhiêu lần đọc page (I/O) thực tế?',
+      options: ['1', '2', '4', '10'],
+      answer: 1,
+      explain: `**2 đúng**: root và branch page thường ở trong shared buffer (RAM) -> không tính I/O đĩa. Chỉ tính leaf page (1 I/O) + heap page chứa dòng thật (1 I/O) = 2 I/O đĩa thực tế. Root/branch cache hit là hành vi thường thấy trên production.`,
+    },
+    {
+      q: 'Composite index {{CREATE INDEX idx ON t(a, b, c)}}. Câu query nào KHÔNG dùng được index này?',
+      options: [
+        '{{SELECT * FROM t WHERE a = 1}}',
+        '{{SELECT * FROM t WHERE a = 1 AND b = 2}}',
+        '{{SELECT * FROM t WHERE b = 2}}',
+        '{{SELECT * FROM t WHERE a = 1 AND c = 3}}',
+      ],
+      answer: 2,
+      explain: `**Phương án 3 đúng**: {{WHERE b = 2}} thiếu cột prefix {{a}}, composite index {{(a,b,c)}} không thể nhảy thẳng tới vùng {{b}} cụ thể. Các phương án khác đều có {{a}} làm prefix.`,
+    },
+    {
+      q: 'Vì sao composite index {{(user_id, status, created_at DESC)}} tốt cho query {{WHERE user_id = ? AND status = ? ORDER BY created_at DESC LIMIT 20}}?',
+      options: [
+        'Vì index chứa đủ 3 cột nên không cần đọc heap',
+        'Vì user_id (equality) lọc trước, status (equality) lọc tiếp, created_at DESC đã sắp xếp sẵn trong index hỗ trợ ORDER BY + LIMIT',
+        'Vì PostgreSQL tự động chuyển sang index-only scan khi có 3 cột',
+        'Vì created_at DESC làm index nhỏ hơn',
+      ],
+      answer: 1,
+      explain: `**Phương án 2 đúng**: Thứ tự cột trong composite index quan trọng: equality ({{=}}) đặt trước, range/sort đặt sau. Index {{(user_id, status, created_at DESC)}} khớp hệt WHERE (2 equality) và ORDER BY (created_at DESC), nên DB dùng index scan, không cần sort, và LIMIT 20 dừng sớm. Phương án 1 sai: index-only scan cần INCLUDE hoặc SELECT chỉ các cột trong index; ở đây SELECT * vẫn cần fetch heap. Phương án 3,4 không chính xác.`,
+    },
+  ],
+  related: ['sql-001', 'sql-007', 'sql-010', 'sql-012', 'db-001'],
+  tags: ['btree', 'b+tree', 'index', 'composite index', 'leftmost prefix', 'page', 'fanout', 'io'],
+},
+{
+  id: 'lesson-sql-021',
+  track: 'sql',
+  order: 21,
+  title: 'Covering index, index-only scan và bài tập Java: binary search vs sequential, mô phỏng composite index',
+  level: 'senior',
+  minutes: 35,
+  goals: [
+    'Giải thích covering index (index phủ) và index-only scan, khi nào hiệu quả',
+    'Tự cài binary search trên mảng đã sắp và so sánh với sequential scan bằng cách đếm "page reads"',
+    'Mô phỏng composite index (sort theo 2 cột) và trả lời truy vấn leftmost prefix',
+  ],
+  body: `### Covering index và index-only scan
+**Covering index** (index phủ) là index chứa **đủ mọi cột** mà câu query cần (cột trong {{SELECT}}, {{WHERE}}, {{JOIN}}, {{ORDER BY}}). Khi DB có thể trả kết quả **chỉ từ index** mà không cần đọc heap (bảng thật), PostgreSQL gọi là **index-only scan**.
+
+Tạo covering index bằng cách dùng {{INCLUDE}} (PostgreSQL 11+):
+~~~sql
+-- Query: SELECT status, total FROM orders WHERE user_id = ? ORDER BY created_at DESC LIMIT 10;
+-- Index: (user_id, created_at DESC) INCLUDE (status, total)
+CREATE INDEX idx_orders_user_created_cover
+    ON orders(user_id, created_at DESC)
+    INCLUDE (status, total);
+~~~
+
+Cột trong {{INCLUDE}} **không tham gia sắp xếp** (không ảnh hưởng thứ tự B+tree), chỉ lưu payload tại leaf. Điều này giữ index gọn hơn so với đưa mọi cột vào khóa chính.
+
+> Điều kiện thực tế: index-only scan cần **visibility map** (bản đồ khả năng nhìn thấy) cho phép xác nhận tuple "đủ mới" (all-visible) mà không phải kiểm tra heap. {{VACUUM}} cập nhật visibility map. Bảng {{UPDATE}}/{{DELETE}} nhiều (high churn) làm visibility map kém chính xác -> index-only scan có thể phải fallback đọc heap -> chậm hơn dự kiến.
+
+### Khi nào dùng covering index
+- Query chạy cực nhiều (hot path), latency quan trọng (API thanh toán, feed).
+- {{SELECT}} chỉ lấy vài cột, nhưng {{WHERE}}/{{ORDER BY}} dùng nhiều cột khác.
+- Bảng lớn, random I/O đọc heap là nút thắt.
+- Trade-off: index lớn hơn (chứa thêm payload), ghi chậm hơn ({{INSERT}}/{{UPDATE}} phải cập nhật thêm cột payload), dung lượng đĩa tăng.
+
+### Mô phỏng trong Java: Page, Sequential vs Binary Search
+Trên đĩa, dữ liệu nằm trong page 8 KB. Mô phỏng: một "page" chứa **50 record** (đơn giản hóa). Mảng {{data}} đã sắp xếp theo khóa.
+
+- **Sequential scan (full scan)**: duyệt từng phần tử, mỗi 50 phần tử đếm là đọc 1 page.
+- **Binary search**: chia đôi vùng tìm kiếm; mỗi lần truy cập mảng tại chỉ số mid được coi là đọc 1 page (giả lập truy cập ngẫu nhiên). Số page đọc ≈ {{ceil(log2(N/50)) + 1}}.
+
+Ví dụ 1 triệu record (20.000 page):
+- Sequential: đọc **20.000 page** (luôn đọc hết).
+- Binary search: {{log2(1.000.000) ≈ 20}} lần so sánh -> đọc **~20 page**.
+
+Chênh lệch **1000 lần** — đây là bản chất tại sao index nhanh.
+
+### Mô phỏng Composite Index (sort 2 cột) và Leftmost Prefix
+Composite index {{(col1, col2)}} tương đương sắp xếp mảng theo {{col1}} trước, trong mỗi {{col1}} sắp theo {{col2}}.
+- Truy vấn {{WHERE col1 = ?}}: binary search theo {{col1}} -> tìm được đoạn con.
+- Truy vấn {{WHERE col1 = ? AND col2 = ?}}: binary search {{col1}} -> trong đoạn con binary search {{col2}}.
+- Truy vấn {{WHERE col2 = ?}}: **không dùng được** (thiếu prefix {{col1}}), phải sequential scan.
+
+Bài tập dưới đây triển khai mô phỏng này.`,
+  exercises: [
+    {
+      title: 'Sequential scan vs Binary search: đếm page reads',
+      prompt: `Cho mảng {{int[] data}} đã sắp xếp tăng dần (giả lập cột index). Mỗi "page" chứa **50 phần tử**. Viết lớp {{ScanSim}}:
+- {{sequentialScan(int[] data, int target)}}: trả về mảng 2 phần tử {{long[]}} chứa {{foundIndex}} và {{pagesRead}}. Duyệt từ đầu, mỗi 50 phần tử tăng {{pagesRead}} 1. Nếu tìm thấy target trả index, không thì -1. pagesRead = số page đã đọc khi dừng (nếu tìm thấy ở giữa page, page đó vẫn tính đã đọc).
+- {{binarySearch(int[] data, int target)}}: trả về mảng 2 phần tử {{long[]}} chứa {{foundIndex}} và {{pagesRead}}. Binary search chuẩn. Mỗi lần truy cập {{data[mid]}} đếm là đọc 1 page (page chứa mid = {{mid / 50}}). {{pagesRead}} = số **page khác nhau** đã truy cập trong quá trình tìm kiếm (dùng {{Set<Integer>}} lưu page index). Nếu không tìm thấy trả -1.`,
+      starter: `class ScanSim {
+    long[] sequentialScan(int[] data, int target) { throw new UnsupportedOperationException("TODO"); }
+    long[] binarySearch(int[] data, int target) { throw new UnsupportedOperationException("TODO"); }
+}`,
+      tests: `public class Main {
+    static int passed = 0, total = 0;
+    static void check(String name, Runnable r) { total++; try { r.run(); passed++; System.out.println("PASS " + name); } catch (Throwable t) { System.out.println("FAIL " + name + ": " + t); } }
+    static void eqArr(long[] e, long[] a) { if (e.length != a.length) throw new AssertionError("len"); for (int i = 0; i < e.length; i++) if (e[i] != a[i]) throw new AssertionError("idx " + i + " exp " + e[i] + " got " + a[i]); }
+    public static void main(String[] args) {
+        ScanSim s = new ScanSim();
+        int[] data = new int[1000];
+        for (int i = 0; i < 1000; i++) data[i] = i * 2; // 0,2,4,...,1998
+        check("sequential finds at index 100, reads 3 pages (0-49,50-99,100-149)", () -> eqArr(new long[]{100, 3}, s.sequentialScan(data, 200)));
+        check("sequential not found reads all 20 pages", () -> eqArr(new long[]{-1, 20}, s.sequentialScan(data, 999)));
+        check("binary search finds at index 100, reads few pages", () -> {
+            long[] r = s.binarySearch(data, 200);
+            eqArr(new long[]{100, r[1]}, r); // foundIndex=100, pagesRead > 0
+            if (r[1] <= 0 || r[1] > 5) throw new AssertionError("pagesRead=" + r[1] + " unexpected");
+        });
+        check("binary search not found reads few pages", () -> {
+            long[] r = s.binarySearch(data, 999);
+            eqArr(new long[]{-1, r[1]}, r);
+            if (r[1] <= 0 || r[1] > 5) throw new AssertionError("pagesRead=" + r[1] + " unexpected");
+        });
+        check("empty array", () -> eqArr(new long[]{-1, 0}, s.sequentialScan(new int[0], 1)));
+        check("single element", () -> eqArr(new long[]{0, 1}, s.binarySearch(new int[]{5}, 5)));
+        System.out.println("RESULT " + passed + "/" + total);
+    }
+}`,
+      reference: `class ScanSim {
+    long[] sequentialScan(int[] data, int target) {
+        if (data == null || data.length == 0) return new long[]{-1, 0};
+        int pagesRead = 0;
+        for (int i = 0; i < data.length; i++) {
+            if (i % 50 == 0) pagesRead++; // mới page
+            if (data[i] == target) return new long[]{i, pagesRead};
+        }
+        return new long[]{-1, pagesRead};
+    }
+    long[] binarySearch(int[] data, int target) {
+        if (data == null || data.length == 0) return new long[]{-1, 0};
+        Set<Integer> pages = new HashSet<>();
+        int lo = 0, hi = data.length - 1;
+        while (lo <= hi) {
+            int mid = (lo + hi) >>> 1;
+            pages.add(mid / 50);
+            if (data[mid] == target) return new long[]{mid, pages.size()};
+            if (data[mid] < target) lo = mid + 1;
+            else hi = mid - 1;
+        }
+        return new long[]{-1, pages.size()};
+    }
+}`,
+      hints: [
+        '{{sequentialScan}}: tăng pagesRead khi {{i % 50 == 0}} (vào page mới). Trả về ngay khi tìm thấy.',
+        '{{binarySearch}}: dùng {{Set<Integer>>}} lưu {{mid / 50}} để đếm page khác nhau. Binary search chuẩn: {{lo <= hi}}, {{mid = (lo+hi)>>>1}}.',
+      ],
+      explain: `### Con số nói lên tất cả
+Với 1.000 phần tử (20 page):
+- Sequential tìm thấy ở index 100: đọc **3 page** (page 0,1,2).
+- Sequential không tìm thấy: đọc **20 page** (toàn bộ).
+- Binary search: chỉ đọc **~3-4 page** (tùy đường đi log2(1000) ≈ 10 bước, nhưng nhiều mid rơi cùng page).
+
+Với 1 triệu phần tử (20.000 page):
+- Sequential: 20.000 page.
+- Binary search: ~20 page.
+Chênh lệch **1000 lần** — chính là lý do index B-tree (binary search trên cây) thắng full scan.
+
+### Lỗi hay gặp
+- Sequential: quên tăng pagesRead ở page đầu (i=0).
+- Binary search: đếm số bước so sánh thay vì số page khác nhau.
+- Binary search: không xử lý mảng rỗng.`,
+    },
+    {
+      title: 'Mô phỏng Composite Index: sort 2 cột, truy vấn leftmost prefix',
+      prompt: `Cho class {{Record}} có {{int col1}}, {{int col2}}, {{String payload}}. Viết lớp {{CompositeIdx}} mô phỏng index {{(col1, col2)}}:
+- Constructor {{CompositeIdx(List<Record> data)}}: copy data, sort theo {{col1}} tăng dần, trong col1 bằng nhau thì {{col2}} tăng dần. Lưu mảng đã sort.
+- {{findByCol1(int col1Val)}}: binary search tìm **tất cả** record có {{col1 == col1Val}}. Trả về {{List<Record>}} (có thể rỗng). Phải dùng binary search tìm ranh giới trái/phải (lower/upper bound), không duyệt tuần tự.
+- {{findByCol1Col2(int col1Val, int col2Val)}}: tìm record có {{col1 == col1Val AND col2 == col2Val}}. Binary search {{col1}} -> trong đoạn con binary search {{col2}}. Trả về {{List<Record>}} (0 hoặc 1 phần tử vì cặp (col1,col2) giả định duy nhất).
+- {{findByCol2(int col2Val)}}: **sequential scan** toàn bộ mảng (vì thiếu prefix col1). Trả về {{List<Record>}}.
+- {{getAccessCount()}}: trả về số lần truy cập phần tử mảng ({{data[i]}}) trong lần gọi phương thức tìm kiếm gần nhất (reset 0 mỗi lần gọi). Mỗi lần đọc {{data[mid]}} hoặc {{data[i]}} trong vòng lặp đếm 1.`,
+      starter: `class Record {
+    final int col1;
+    final int col2;
+    final String payload;
+    Record(int col1, int col2, String payload) { this.col1 = col1; this.col2 = col2; this.payload = payload; }
+}
+
+class CompositeIdx {
+    private int accessCount = 0;
+    CompositeIdx(List<Record> data) { throw new UnsupportedOperationException("TODO"); }
+    List<Record> findByCol1(int col1Val) { throw new UnsupportedOperationException("TODO"); }
+    List<Record> findByCol1Col2(int col1Val, int col2Val) { throw new UnsupportedOperationException("TODO"); }
+    List<Record> findByCol2(int col2Val) { throw new UnsupportedOperationException("TODO"); }
+    int getAccessCount() { return accessCount; }
+}`,
+      tests: `public class Main {
+    static int passed = 0, total = 0;
+    static void check(String name, Runnable r) { total++; try { r.run(); passed++; System.out.println("PASS " + name); } catch (Throwable t) { System.out.println("FAIL " + name + ": " + t); } }
+    static void eq(Object e, Object a) { if (!Objects.equals(e, a)) throw new AssertionError("exp " + e + " got " + a); }
+    static Record r(int c1, int c2, String p) { return new Record(c1, c2, p); }
+    public static void main(String[] args) {
+        List<Record> data = Arrays.asList(
+            r(1, 10, "a"), r(1, 20, "b"), r(1, 30, "c"),
+            r(2, 10, "d"), r(2, 20, "e"),
+            r(3, 10, "f"), r(3, 20, "g"), r(3, 30, "h"), r(3, 40, "i")
+        );
+        CompositeIdx idx = new CompositeIdx(data);
+        check("findByCol1 exact match returns all 3", () -> {
+            List<Record> res = idx.findByCol1(1);
+            eq(3, res.size()); eq("a", res.get(0).payload); eq("c", res.get(2).payload);
+        });
+        check("findByCol1 not found empty", () -> eq(0, idx.findByCol1(99).size()));
+        check("findByCol1Col2 exact match single", () -> {
+            List<Record> res = idx.findByCol1Col2(2, 20);
+            eq(1, res.size()); eq("e", res.get(0).payload);
+        });
+        check("findByCol1Col2 not found empty", () -> eq(0, idx.findByCol1Col2(2, 99).size()));
+        check("findByCol2 sequential scan works but slower", () -> {
+            List<Record> res = idx.findByCol2(20);
+            eq(3, res.size());
+            // accessCount should be full scan (9 records)
+            if (idx.getAccessCount() != 9) throw new AssertionError("accessCount=" + idx.getAccessCount() + " expected 9");
+        });
+        check("findByCol1 access count is logarithmic (binary search)", () -> {
+            idx.findByCol1(3);
+            // binary search on 9 elements: lower_bound + upper_bound ~8 accesses, plus result collection
+            if (idx.getAccessCount() <= 0 || idx.getAccessCount() > 14) throw new AssertionError("accessCount=" + idx.getAccessCount());
+        });
+        check("findByCol1Col2 access count is logarithmic", () -> {
+            idx.findByCol1Col2(3, 30);
+            // binary search col1 range + binary search col2 in range ~12 accesses
+            if (idx.getAccessCount() <= 0 || idx.getAccessCount() > 16) throw new AssertionError("accessCount=" + idx.getAccessCount());
+        });
+        System.out.println("RESULT " + passed + "/" + total);
+    }
+}`,
+      reference: `class Record {
+    final int col1;
+    final int col2;
+    final String payload;
+    Record(int col1, int col2, String payload) { this.col1 = col1; this.col2 = col2; this.payload = payload; }
+}
+
+class CompositeIdx {
+    private final Record[] sorted;
+    private int accessCount = 0;
+    CompositeIdx(List<Record> data) {
+        this.sorted = data.toArray(new Record[0]);
+        Arrays.sort(sorted, Comparator.comparingInt((Record r) -> r.col1)
+                                      .thenComparingInt(r -> r.col2));
+    }
+    private void reset() { accessCount = 0; }
+    private Record get(int i) { accessCount++; return sorted[i]; }
+    List<Record> findByCol1(int col1Val) {
+        reset();
+        int n = sorted.length;
+        int lo = 0, hi = n;
+        while (lo < hi) { int mid = (lo + hi) >>> 1; if (get(mid).col1 < col1Val) lo = mid + 1; else hi = mid; }
+        int left = lo;
+        lo = 0; hi = n;
+        while (lo < hi) { int mid = (lo + hi) >>> 1; if (get(mid).col1 <= col1Val) lo = mid + 1; else hi = mid; }
+        int right = lo;
+        List<Record> out = new ArrayList<>();
+        for (int i = left; i < right; i++) out.add(get(i));
+        return out;
+    }
+    List<Record> findByCol1Col2(int col1Val, int col2Val) {
+        reset();
+        int n = sorted.length;
+        // lower_bound cho col1
+        int lo = 0, hi = n;
+        while (lo < hi) { int mid = (lo + hi) >>> 1; if (get(mid).col1 < col1Val) lo = mid + 1; else hi = mid; }
+        int left = lo;
+        // upper_bound cho col1
+        lo = 0; hi = n;
+        while (lo < hi) { int mid = (lo + hi) >>> 1; if (get(mid).col1 <= col1Val) lo = mid + 1; else hi = mid; }
+        int right = lo;
+        // binary search col2 trong đoạn [left, right)
+        lo = left; hi = right;
+        while (lo < hi) {
+            int mid = (lo + hi) >>> 1;
+            Record rec = get(mid);
+            if (rec.col2 < col2Val) lo = mid + 1;
+            else hi = mid;
+        }
+        if (lo < right && get(lo).col2 == col2Val) return List.of(get(lo));
+        return Collections.emptyList();
+    }
+    List<Record> findByCol2(int col2Val) {
+        reset();
+        List<Record> out = new ArrayList<>();
+        for (int i = 0; i < sorted.length; i++) {
+            Record rec = get(i);
+            if (rec.col2 == col2Val) out.add(rec);
+        }
+        return out;
+    }
+    int getAccessCount() { return accessCount; }
+}`,
+      hints: [
+        'Constructor: {{Arrays.sort}} với {{Comparator.comparingInt(r->r.col1).thenComparingInt(r->r.col2)}}.',
+        '{{findByCol1}}: dùng lower_bound (tìm đầu tiên >= col1Val) và upper_bound (tìm đầu tiên > col1Val). Đoạn [left, right) là kết quả.',
+        '{{findByCol1Col2}}: trước tìm đoạn col1 (dùng findByCol1 hoặc lower/upper bound), sau đó binary search col2 trong đoạn đó.',
+        '{{findByCol2}}: duyệt tuần tự toàn bộ mảng (sequential scan), đếm accessCount.',
+        'Mỗi lần đọc {{sorted[i]}} gọi {{get(i)}} để tăng accessCount.',
+      ],
+      explain: `### Vì sao composite index {{(col1, col2)}} dùng được cho col1 nhưng không cho col2
+Mảng sort theo col1 trước, col2 sau. Tức là các record col1=1 liền nhau, col1=2 liền nhau...
+- {{col1 = 3}}: binary search nhảy thẳng tới vùng col1=3 (O(log n)).
+- {{col1 = 3 AND col2 = 20}}: binary search col1=3 -> trong vùng đó binary search col2=20 (O(log n) + O(log m)).
+- {{col2 = 20}}: col2 phân tán khắp mảng (10,20,30 trong col1=1; 10,20 trong col1=2...). Không có cách nhảy thẳng -> phải quét hết (O(n)).
+
+Đây chính là **leftmost prefix rule**: index nhiều cột chỉ hỗ trợ truy vấn có cột prefix từ trái.
+
+### Access count phản ánh hiệu năng
+- {{findByCol1}}: binary search ~log2(n) truy cập (test n=9 -> ~4).
+- {{findByCol1Col2}}: binary search col1 + binary search col2 trong đoạn con.
+- {{findByCol2}}: sequential scan = n truy cập (test n=9 -> 9).
+
+Con số này mô phỏng **page reads** trên đĩa: binary search đọc ~log page, sequential scan đọc toàn bộ.
+
+### Lỗi hay gặp
+- Quên reset accessCount mỗi lần tìm kiếm.
+- findByCol1Col2 dùng sequential scan trong đoạn col1 thay vì binary search col2.
+- lower_bound/upper_bound sai điều kiện ({{<}} vs {{<=}}).
+- Không xử lý trường hợp không tìm thấy (trả list rỗng thay vì null).`,
+    },
+  ],
+  check: [
+    {
+      q: 'Covering index (index phủ) giúp gì cho query {{SELECT status, total FROM orders WHERE user_id = ? ORDER BY created_at DESC LIMIT 10}}?',
+      options: [
+        'Giảm kích thước bảng heap',
+        'Cho phép index-only scan: DB trả kết quả chỉ từ index, không đọc heap',
+        'Tự động cập nhật visibility map',
+        'Làm index nhỏ hơn',
+      ],
+      answer: 1,
+      explain: `**Phương án 2 đúng**: Covering index chứa đủ cột SELECT (status, total) + WHERE/ORDER BY (user_id, created_at) -> DB dùng index-only scan, tránh random I/O đọc heap. Phương án 1 sai: không giảm heap. Phương án 3 sai: VACUUM cập nhật visibility map, không phải index. Phương án 4 sai: covering index thường LỚN hơn vì chứa thêm payload.`,
+    },
+    {
+      q: 'Mảng 1.000.000 phần tử đã sắp, mỗi page 50 phần tử (20.000 page). Binary search tìm 1 phần tử đọc khoảng bao nhiêu page?',
+      options: ['20.000', '20', '1.000', '50'],
+      answer: 1,
+      explain: `**20 đúng**: log2(1.000.000) ≈ 20 bước so sánh, mỗi bước đọc 1 page -> ~20 page. Sequential scan phải đọc 20.000 page. Chênh lệch 1000 lần.`,
+    },
+    {
+      q: 'Composite index {{(col1, col2)}}. Query {{WHERE col2 = 5}} dùng index như thế nào?',
+      options: [
+        'Index scan nhanh như WHERE col1 = 5',
+        'Index skip scan (PostgreSQL tự động bỏ qua col1)',
+        'Không dùng được index (thiếu prefix col1), phải sequential scan',
+        'Dùng được nhưng chỉ filter col2 sau khi scan hết col1',
+      ],
+      answer: 2,
+      explain: `**Phương án 3 đúng**: Leftmost prefix rule - composite index {{(col1, col2)}} sắp xếp theo col1 trước. Query thiếu col1 không thể nhảy tới vùng col2 cụ thể, buộc sequential scan toàn index. PostgreSQL chưa hỗ trợ index skip scan tốt.`,
+    },
+  ],
+  related: ['sql-020', 'sql-007', 'sql-010', 'sql-012', 'db-001'],
+  tags: ['covering index', 'index-only scan', 'binary search', 'sequential scan', 'composite index', 'leftmost prefix', 'visibility map'],
+}
 );
