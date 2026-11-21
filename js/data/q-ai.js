@@ -9979,5 +9979,391 @@ Toi khong bao gi goi model thao trong unit test vi chi phi, khong xac dinh, va c
     'Ban phan biet unit test (gia lap model) va integration eval (WireMock) o diem nao?'
   ],
   tags: ['spring-ai', 'chatclient', 'unit-test', 'wiremock', 'mock', 'eval', 'ci']
-}
+},
+{
+  id: 'ai-148',
+  topic: 'ai',
+  level: 'senior',
+  q: 'Chatbot RAG trả lời sai: bạn debug theo quy trình nào — soi câu hỏi đã rewrite, top-k chunk và điểm similarity, chunk đúng có nằm trong index, tới prompt cuối cùng gửi cho model?',
+  a: `**Tóm tắt:** Đừng đoán. Chia sự cố thành bốn tầng (dữ liệu → truy hồi → xếp hạng → sinh) và soi đúng bốn thứ: câu hỏi sau rewrite, danh sách chunk kèm điểm similarity, chunk "vàng" có thật trong index hay không, và prompt cuối cùng gửi đi. Mỗi tầng có một phép thử rẻ; làm đúng thứ tự sẽ khoanh vùng nguyên nhân trong vài chục phút thay vì mò.
+
+### Vì sao phải chia tầng
+Một câu trả lời sai có thể do: tài liệu chưa được nạp, chunk bị cắt mất ngữ cảnh, embedding không hiểu tiếng Việt, retrieval trả về chunk của sản phẩm khác, rerank loại chunk đúng, prompt bị cắt vì context window, hoặc model bỏ qua tài liệu. Nếu chỉ nhìn câu trả lời cuối, bạn sẽ sửa lung tung và dễ làm hỏng chỗ đang đúng. Bốn tầng dưới đây đi từ rẻ tới đắt, mỗi tầng kiểm chứng được độc lập.
+
+### Bước 0 — Bật trace trước khi sự cố xảy ra
+- Ghi lại với mỗi lượt: traceId, câu hỏi gốc, câu hỏi sau rewrite, danh sách chunk (id, nguồn, điểm), prompt đã render, model, temperature, max_tokens, output, usage.
+- Nếu không log sẵn, bạn không thể debug trên production; log phải ẩn dữ liệu cá nhân nhưng giữ đủ để tái hiện.
+- Một trang nội bộ /debug/rag?traceId=... giúp dev tự tra, không phải đọc log thô hàng nghìn dòng.
+
+### Bước 1 — Soi câu hỏi đã rewrite
+Nhiều hệ RAG gọi một LLM nhỏ để "làm rõ" câu hỏi trước khi tìm: "còn loại b thì sao?" cần biết "loại b" là gì. Nhưng rewrite hay làm mất dữ liệu quan trọng: mã sản phẩm, chữ "không áp dụng", tên riêng, hoặc thêm từ không có trong tài liệu.
+
+- In cạnh nhau câu gốc và câu rewrite để so bằng mắt.
+- Thử tắt rewrite trên 50 câu sai: nếu recall@5 tăng rõ, lỗi nằm ở đây.
+- Chỉ rewrite khi câu hỏi có đại từ, viết tắt hoặc thiếu chủ ngữ; còn lại dùng câu gốc. Có thể tìm song song cả hai rồi hợp nhất kết quả.
+
+### Bước 2 — Soi top-k chunk và điểm similarity
+- Điểm cosine của embedding đã chuẩn hoá thường nằm trong khoảng 0..1; đừng so điểm vector với điểm BM25 vì khác thang đo.
+- Điểm cao nhất trên 0,85 mà câu trả lời vẫn sai: nghi tầng sinh (prompt, model), không phải retrieval.
+- Điểm cao nhất chỉ 0,2–0,4: truy hồi không tìm thấy nội dung liên quan; kiểm tra ngưỡng và cách chọn top-k.
+- Chunk trả về thuộc sản phẩm, tenant hoặc phiên bản khác: thiếu filter metadata.
+- Nhiều chunk gần trùng nhau: chunking hoặc index bị nhân bản.
+
+### Bước 3 — Chunk vàng có trong index không
+"Chunk vàng" là đoạn bạn biết chắc chứa câu trả lời. Lấy nó, tìm trong 200 kết quả gần nhất của chính câu hỏi gốc.
+
+- Không có: lỗi ingestion (chưa nạp, nạp thiếu, xoá nhầm, filter phiên bản loại nhầm).
+- Có nhưng điểm dưới 0,6: embedding không hợp ngôn ngữ hoặc thuật ngữ, chunk bị cắt, hoặc câu hỏi dùng từ khác hẳn tài liệu.
+- Có, điểm cao, nhưng không nằm trong top-k: top-k quá nhỏ, rerank loại, hoặc quá nhiều chunk rác chiếm chỗ.
+
+### Bước 4 — Đọc prompt cuối cùng
+In prompt y hệt phần gửi đi, không phải template.
+
+- Có bị cắt do context window không? system prompt và lịch sử chiếm bao nhiêu token?
+- Thứ tự chunk có quan trọng không? Model thường nhớ tốt phần đầu và cuối, kém phần giữa ("lost in the middle") — đặt chunk liên quan nhất ở đầu hoặc cuối.
+- Chỉ dẫn có mâu thuẫn không? system prompt bảo "chỉ dùng tài liệu", few-shot lại có ví dụ tự suy diễn.
+- Placeholder {{context}} đã được thay hết chưa? JSON có bị lỗi escape không?
+- Tắt streaming, đặt temperature 0, gửi đúng prompt đó cho model: nếu vẫn sai thì lỗi prompt/model; nếu đúng thì lỗi orchestration (mất chunk, cắt context).
+
+### Bảng triệu chứng → nguyên nhân
+| Triệu chứng | Nguyên nhân hay gặp | Phép thử nhanh |
+|---|---|---|
+| Đúng chủ đề, sai chi tiết | chunk đúng không vào top-k | đo recall@5 với chunk vàng |
+| Trả lời theo sản phẩm khác | thiếu filter metadata | xem id chunk trong trace |
+| "Không tìm thấy" dù có tài liệu | analyzer không xử lý không dấu, BM25 miss | query BM25 thủ công |
+| Bịa số liệu | prompt không buộc trích dẫn, temperature cao | gọi lại ở temperature 0 |
+| Sai mã đơn hàng, ngày tháng | chunking cắt bảng, embedding kém với mã | hybrid search cộng filter |
+| Chỉ trả lời ý đầu | chunk thiếu phần sau, không tách câu hỏi con | tách câu hỏi rồi tìm từng phần |
+| Đúng khi test tay, sai trên production | khác prompt, model hoặc index giữa môi trường | so sánh trace hai môi trường |
+| Chậm mà vẫn đúng | quét toàn bộ, rerank quá nhiều | đo thời gian từng chặng |
+
+### Code minh hoạ (Spring AI 1.x)
+~~~java
+// Minh hoạ: ghi trace bốn tầng cho một lượt RAG (rút gọn, không phải code production)
+var rewritten = rewriteQuery(original);                        // tầng 1
+var hits = vectorStore.similaritySearch(
+        SearchRequest.builder().query(rewritten).topK(20).build());   // tầng 2
+hits.forEach(h -> log.info("chunk={} score={} meta={}",
+        h.getId(), h.getScore(), h.getMetadata()));
+
+var wide = vectorStore.similaritySearch(
+        SearchRequest.builder().query(original).topK(200).build());   // tầng 3
+var golden = wide.stream().filter(h -> h.getId().equals(goldenId))
+        .findFirst();
+log.info("golden present={} score={}",
+        golden.isPresent(), golden.map(Document::getScore).orElse(-1.0));
+
+var prompt = template.render(original, top(hits, 5));          // tầng 4
+log.info("PROMPT >>> {}", prompt);
+log.info("OUT >>> {}", chat.prompt().user(prompt).call().content());
+~~~
+Bốn dòng log này đủ để trả lời: truy hồi có tìm được không, chunk đúng có tồn tại không, prompt gửi đi là gì, model trả lời ra sao.
+
+### Bẫy production
+- Chỉ log câu trả lời cuối, không log chunk và điểm: mọi sự cố đều thành "đoán".
+- Log toàn bộ prompt chứa dữ liệu khách hàng: vi phạm bảo mật; phải che PII.
+- Rewrite bằng model lớn, tốn 1–2 giây cho mọi câu hỏi kể cả câu đã rõ.
+- Đổi top-k, model embedding hoặc analyzer mà không reindex và không chạy lại bộ recall.
+- Sửa prompt theo cảm tính, không giữ bộ câu hỏi vàng để so trước và sau.
+
+### Ví dụ đời thực
+- Bối cảnh: chatbot RAG của một ngân hàng số, 38.000 chunk biểu phí và điều khoản, 6.000 lượt hỏi mỗi ngày; CSKH phản ánh khoảng 7,5% câu trả lời sai.
+- Điều tra: lấy 180 câu khách đã khiếu nại, gán chunk vàng. Đo recall@5 chỉ được 68%. Soi trace 40 câu sai:
+  - 22 câu: rewrite đổi "thẻ tín dụng" thành "thẻ", hệ thống trả biểu phí thẻ ghi nợ; khi tìm bằng câu gốc, chunk vàng nằm ở vị trí 47 với điểm 0,71 → lỗi rewrite.
+  - 9 câu: chunk đúng có trong index nhưng top-5 toàn bản trùng lặp của ba phiên bản tài liệu khác nhau; metadata {{version}} không được lọc → lỗi ingestion/filter.
+  - 6 câu: chunk vàng có điểm 0,81 nhưng prompt bị cắt còn 3 chunk vì system prompt chiếm 1.200 token trên cửa sổ 4.000 → lỗi orchestration.
+  - 3 câu: prompt đúng, gọi lại ở temperature 0 thì trả lời đúng → lỗi do temperature 0,7 cộng few-shot mâu thuẫn.
+- Xử lý: chỉ rewrite khi câu hỏi có đại từ, luôn tìm song song câu gốc; dedupe chunk theo hash; lọc phiên bản hiệu lực; giảm system prompt từ 1.200 xuống 400 token; tăng top-k từ 5 lên 6; hạ temperature xuống 0,1.
+- Kết quả sau 2 tuần: recall@5 từ 68% lên 91%, tỷ lệ sai từ 7,5% xuống 2,1%, token trung bình mỗi lượt giảm 11% nhờ prompt gọn hơn.
+
+### Trả lời mẫu khi phỏng vấn
+"Em không đoán. Em chia một lượt RAG thành bốn tầng và soi từng tầng. Đầu tiên em bật trace: câu hỏi gốc, câu hỏi sau rewrite, danh sách chunk kèm điểm, prompt đã render và output. Em kiểm tra rewrite trước, vì model hay làm mất mã sản phẩm hoặc tên riêng; em thử tắt rewrite trên các câu sai để xem recall có tăng không. Tiếp theo em xem top-k: điểm cao mà vẫn sai thì lỗi ở tầng sinh; điểm thấp thì truy hồi không tìm thấy; chunk của sản phẩm khác thì thiếu filter metadata. Em luôn giữ một bộ chunk vàng cho các câu đã biết đáp án, tìm nó trong 200 kết quả gần nhất: không có là lỗi nạp dữ liệu, có mà điểm thấp là embedding hoặc chunking, có mà không vào top-k là rerank hoặc top-k quá nhỏ. Cuối cùng em đọc đúng prompt gửi đi, kiểm tra bị cắt context, thứ tự chunk và chỉ dẫn mâu thuẫn, rồi gọi lại ở temperature 0 để tách lỗi prompt khỏi lỗi model. Em cũng giữ bộ 100–200 câu đánh giá để so sánh trước và sau mỗi lần sửa."
+
+> Senior tip: hãy coi trace là một tính năng, không phải log phụ. Mỗi lượt RAG phải trả lời được bốn câu hỏi: đã rewrite thành gì, đã lấy chunk nào với điểm bao nhiêu, chunk vàng có trong index không, prompt cuối là gì. Đầu tư một trang debug nội bộ, bạn tiết kiệm hàng giờ cho mỗi sự cố và không bao giờ phải "đoán xem model nghĩ gì".
+`,
+
+  follow: [
+    'Bạn tổ chức bộ chunk vàng và bộ câu hỏi đánh giá thế nào để dùng lại được sau nhiều tháng, khi tài liệu và model đã đổi?',
+    'Khi điểm similarity của chunk vàng khá cao nhưng model vẫn bỏ qua nó, bạn kiểm tra prompt theo thứ tự nào?',
+    'Bạn che dữ liệu cá nhân trong log prompt và chunk như thế nào mà vẫn giữ đủ thông tin để tái hiện sự cố?'
+  ],
+  tags: ['rag', 'debug', 'retrieval', 'observability', 'embedding', 'prompt', 'recall']
+},
+{
+  id: 'ai-149',
+  topic: 'ai',
+  level: 'senior',
+  q: 'Tiếng Việt tốn token hơn tiếng Anh: bạn ước lượng chi phí LLM trước khi build thế nào, đo token thật ở đâu, và giảm chi phí bằng cách nào?',
+  a: `**Tóm tắt:** Token là đơn vị tính tiền của LLM, không phải ký tự hay từ. Tiếng Việt có dấu và nhiều âm tiết nên cùng một nội dung thường tốn 1,4–2,2 lần token so với tiếng Anh, còn token output thường đắt gấp 3–8 lần token input. Trước khi build, ước lượng bằng công thức: chi phí tháng = số request mỗi ngày × 30 × (token vào trung bình × giá vào + token ra trung bình × giá ra) chia một triệu. Sau khi chạy, đo token thật từ trường usage trong response, tách theo từng phần prompt, rồi cắt phần chiếm nhiều token nhất trước.
+
+### Token hoạt động thế nào
+- Tokenizer (bộ tách văn bản) cắt chuỗi thành token theo kiểu BPE: nó học từ dữ liệu huấn luyện những cụm ký tự hay gặp, rồi thay mỗi cụm bằng một số nguyên. Model chỉ nhìn thấy dãy số này, không thấy chữ.
+- Tiếng Anh phổ biến có nhiều cụm dài như "ing", "tion", "the" nên khoảng 4 ký tự mỗi token. Tiếng Việt có dấu thanh tổ hợp, ít cụm lặp trong dữ liệu huấn luyện nên bị cắt vụn hơn; cùng số ký tự thường ra nhiều token hơn.
+- Hệ quả: một câu tiếng Việt 44 ký tự có thể là 22 token, câu tiếng Anh tương đương 41 ký tự chỉ 10 token. Tỉ lệ thật phải đo, nhưng đừng dùng hằng số 4 ký tự mỗi token cho tiếng Việt.
+
+### Công thức ước lượng
+chi phí tháng = request mỗi ngày × 30 × (token vào trung bình × giá vào + token ra trung bình × giá ra) / 1.000.000
+
+Ví dụ: 30.000 request mỗi ngày, 2.600 token vào, 320 token ra, giá vào 0,15 USD cho một triệu token, giá ra 0,60 USD cho một triệu token.
+- Token vào: 30.000 × 30 × 2.600 = 2,34 tỷ, tức 2.340 triệu × 0,15 = 351 USD.
+- Token ra: 30.000 × 30 × 320 = 288 triệu × 0,60 = 173 USD.
+- Tổng khoảng 524 USD mỗi tháng.
+
+Nếu tiếng Việt tốn gấp 1,8 lần tiếng Anh, token vào thành 4.680, chi phí vào là 632 USD và tổng khoảng 805 USD — chênh 281 USD mỗi tháng, đủ để phải đổi kiến trúc.
+
+### Đo token thật từ đâu
+- Với Spring AI: response.getMetadata().getUsage() cho promptTokens, completionTokens và totalTokens.
+- Với LangChain4j: response.tokenUsage() cho inputTokenCount, outputTokenCount và totalTokenCount.
+- Nếu dùng streaming, nhiều provider chỉ trả usage ở chunk cuối; có provider cần bật tuỳ chọn mới trả usage. Nếu không có usage, phải đếm bằng tokenizer của chính model đó.
+- Ghi metric theo endpoint và theo loại token (system prompt, lịch sử, RAG context, câu hỏi, output). Nếu không tách, bạn sẽ không biết phần lớn token đến từ đâu.
+
+### Code minh hoạ
+~~~java
+// Minh hoạ: đo token thật từ usage và cộng chi phí
+var response = chat.prompt().user(prompt).call().chatResponse();
+var usage = response.getMetadata().getUsage();
+long in = usage.getPromptTokens(), out = usage.getCompletionTokens();
+
+double cost = (in * PRICE_IN + out * PRICE_OUT) / 1_000_000.0;
+meter.counter("llm.tokens", "kind", "in").increment(in);
+meter.counter("llm.tokens", "kind", "out").increment(out);
+log.info("in={} out={} ratio={} cost={}", in, out,
+        in == 0 ? 0 : (double) out / in, cost);
+~~~
+Tỉ lệ out/in rất đáng chú ý: nếu out chỉ bằng 1/8 in thì token vào đang chiếm phần lớn khối lượng, nhưng token ra vẫn có thể chiếm phần lớn chi phí vì đơn giá cao hơn.
+
+### Đo như một thí nghiệm
+- Lấy 500–1.000 request thật đã ẩn danh, không phải request giả lập.
+- Tính p50 và p95 của token vào và token ra, không chỉ trung bình: một tài liệu dài 50 trang có thể gấp 20 lần trung bình.
+- Tách token theo nguồn: system prompt, lịch sử hội thoại, RAG context, câu hỏi, few-shot.
+- Đo tỉ lệ token tiếng Việt so với bản dịch tiếng Anh của cùng nội dung; con số này quyết định có nên dịch prompt hay không.
+- Ghi lại chi phí trên mỗi 1.000 request để so sánh giữa các model và các phiên bản prompt.
+
+### Cách giảm chi phí, xếp theo hiệu quả
+| Cách | Mức giảm thường thấy | Ảnh hưởng chất lượng |
+|---|---|---|
+| Giảm top-k và kích thước chunk | 30–50% token vào | Thấp nếu vẫn đủ ngữ cảnh |
+| Bỏ chunk trùng lặp | 10–20% token vào | Không đáng kể |
+| Tóm tắt hội thoại dài | 40–60% cho phiên dài | Thấp nếu tóm tắt tốt |
+| Yêu cầu trả lời ngắn, giới hạn output | 20–40% token ra | Cần đánh giá lại |
+| Model nhỏ cho rewrite, phân loại | 70–90% cho bước đó | Phải đo lại độ chính xác |
+| Cache ngữ nghĩa cho câu lặp | 10–30% tổng | Chỉ với câu hỏi lặp |
+| Batch cho tác vụ nền | 30–50% giá | Chậm hơn, không hợp thời gian thực |
+| Prompt caching | 50–90% phần lặp lại | Không đổi chất lượng |
+
+Ví dụ prompt caching: với Anthropic, đọc cache tính khoảng 10% giá input thường, ghi cache khoảng 125%; phần system prompt và SOP dài lặp lại mỗi lượt vì thế rẻ hơn nhiều. Con số cụ thể thay đổi theo provider, phải đọc trang giá hiện hành trước khi báo giá.
+
+### Bẫy production
+- Chỉ tính token vào, quên token ra vốn đắt gấp nhiều lần.
+- Dùng 4 ký tự mỗi token cho tiếng Việt; sai số có thể trên 40%.
+- Không tính token của RAG context, lịch sử và system prompt — đây thường là phần lớn nhất.
+- Không tính cache hit và giảm giá batch, nên báo giá sai cho lãnh đạo.
+- Đo trung bình mà không đo p95: vài tài liệu dài làm vỡ ngân sách.
+- Dịch toàn bộ prompt sang tiếng Anh để "rẻ hơn": tiết kiệm token nhưng có thể mất thuật ngữ và phải dịch ngược kết quả.
+- Quên rằng giá và tokenizer thay đổi theo phiên bản model.
+
+### Ví dụ đời thực
+- Bối cảnh: một fintech Việt Nam có chatbot CSKH và tính năng tóm tắt hồ sơ, 45.000 lượt mỗi ngày. Hoá đơn tháng đầu 2.180 USD, vượt ngân sách 1.400 USD.
+- Đo 1.200 lượt thật: token vào p50 là 2.480, p95 là 3.900; token ra p50 là 280, p95 là 610. Cùng nội dung, bản tiếng Việt tốn 2,4 lần token so với bản tiếng Anh. Cơ cấu token vào: 71% là RAG context (top-k 20, chunk khoảng 700 từ), 12% lịch sử, 9% system prompt, 8% câu hỏi.
+- Thay đổi: top-k từ 20 xuống 6, chunk từ 700 xuống 450 từ và bỏ chunk trùng, tóm tắt lịch sử sau 6 lượt, giới hạn câu trả lời 200 từ, đưa 30% tác vụ nền sang batch, bật cache ngữ nghĩa (tỉ lệ hit 17%).
+- Kết quả: token vào p50 từ 2.480 xuống 1.150 (giảm 54%), token ra từ 280 xuống 210, chi phí từ 2.180 xuống 1.060 USD mỗi tháng (giảm 51%). Điểm chất lượng trên bộ đánh giá 300 câu từ 88% xuống 87%, không khác biệt ý nghĩa.
+
+### Trả lời mẫu khi phỏng vấn
+"Em không ước lượng theo cảm tính. Trước khi build, em dựng một bảng tính: số request mỗi ngày nhân 30, nhân token vào và token ra trung bình, rồi nhân đơn giá từng loại. Em luôn tách riêng input và output vì output thường đắt gấp nhiều lần. Với tiếng Việt em không dùng hằng số 4 ký tự mỗi token; em đo bằng tokenizer của chính model trên một trăm câu thật, vì tiếng Việt có dấu thường tốn gấp rưỡi đến gấp đôi. Sau khi chạy, em đọc usage trong response của Spring AI hoặc LangChain4j, ghi metric theo endpoint và theo nguồn token: system prompt, lịch sử, RAG context, câu hỏi. Có số liệu rồi em cắt phần chiếm nhiều nhất trước, thường là RAG context: giảm top-k, bỏ chunk trùng, tóm tắt lịch sử, giới hạn output. Em cũng dùng model nhỏ cho rewrite và phân loại, cache ngữ nghĩa cho câu lặp, và batch cho tác vụ nền. Cuối cùng em đo lại p50, p95 và chi phí trên mỗi nghìn request, kèm điểm chất lượng, để chắc rằng giảm chi phí không làm giảm trải nghiệm."
+
+> Senior tip: hãy coi token là một chỉ số vận hành ngang với latency và lỗi. Đặt dashboard theo token vào, token ra, chi phí trên một nghìn request và tỉ lệ cache hit; khi một thay đổi prompt làm token vào tăng 20%, bạn biết ngay trong ngày thay vì đợi hoá đơn cuối tháng.
+`,
+
+  follow: [
+    'Bạn tách token theo nguồn (system prompt, lịch sử, RAG context) trong lúc đo như thế nào, và ngưỡng nào khiến bạn quyết định cắt nguồn đó?',
+    'Khi nào nên viết prompt bằng tiếng Việt và khi nào nên dịch sang tiếng Anh rồi dịch ngược kết quả?',
+    'Bạn ước lượng chi phí cho một tính năng mới ra sao khi chưa có dữ liệu thật, và sai số bạn chấp nhận là bao nhiêu?'
+  ],
+  tags: ['token', 'cost', 'vietnamese', 'usage', 'budget', 'prompt-caching', 'batch']
+},
+{
+  id: 'ai-150',
+  topic: 'ai',
+  level: 'lead',
+  q: 'Nhà máy FDI điện tử cần ba việc: RAG trên SOP máy, phân loại mô tả lỗi QC thành mã lỗi, tóm tắt ca trực. Bạn chọn prompt, RAG, fine-tune hay ML cổ điển cho từng việc, và giữ dữ liệu không ra ngoài thế nào?',
+  a: `**Tóm tắt:** Chọn theo bốn tiêu chí: tri thức đổi nhanh hay chậm, khối lượng bao nhiêu, có cần trích dẫn và giải thích không, dữ liệu có được phép rời nhà máy không. RAG thắng khi tài liệu đổi liên tục và cần trích dẫn; ML cổ điển thắng khi có nhiều nhãn ổn định và cần chi phí thấp; fine-tune chỉ đáng khi định dạng đầu ra cố định và khối lượng lớn; prompt đủ cho tác vụ viết lại có khuôn mẫu.
+
+### Bối cảnh để chốt lựa chọn
+- Nhà máy điện tử FDI ở Việt Nam, 11 chuyền, 2.400 công nhân, ba ca.
+- 1.200 SOP (Standard Operating Procedure — quy trình vận hành chuẩn) dạng PDF và Word, có bản scan, ngôn ngữ Anh, Hàn, Trung, Việt; sửa vài lần mỗi tuần.
+- 38.000 bản ghi QC mỗi tháng, 180 mã lỗi, mô tả do công nhân gõ tay, nhiều viết tắt và lỗi chính tả.
+- Ba báo cáo ca mỗi ngày, mỗi báo cáo 600–900 từ, gồm sự cố, hành động và tồn đọng.
+- Ràng buộc: dữ liệu sản phẩm, hình ảnh và mã lỗi không được gửi ra ngoài; đối tác yêu cầu kho dữ liệu đặt trong mạng nhà máy.
+
+### Bảng chọn giải pháp
+| Việc | Lựa chọn | Vì sao |
+|---|---|---|
+| Hỏi đáp SOP | RAG vector cộng BM25, có LLM | SOP đổi liên tục, cần trích dẫn điều khoản, không cần học thuộc |
+| Phân loại lỗi QC | ML cổ điển trước, LLM cho ca khó | 38.000 nhãn mỗi tháng, 180 lớp, cần chi phí thấp và ổn định |
+| Tóm tắt ca trực | Prompt cộng template, model nhỏ | Đầu ra có khuôn mẫu, 3 lần mỗi ngày, khối lượng nhỏ |
+| Chuẩn hoá mô tả lỗi | LLM few-shot hoặc fine-tune nhỏ | Cần hiểu văn xuôi, viết tắt, đa ngôn ngữ |
+| Dự đoán lỗi tương lai | ML cổ điển hoặc model chuỗi thời gian | Cần dữ liệu lịch sử, không phải sinh văn bản |
+
+### Vì sao RAG cho SOP
+- SOP thay đổi: thêm máy mới, đổi thông số, đổi tiêu chuẩn. Fine-tune không cập nhật được nếu không huấn luyện lại; RAG chỉ cần nạp lại tài liệu.
+- Người dùng cần biết "theo mục 4.2 của SOP XYZ"; RAG giữ được nguồn để trích dẫn, fine-tune thường không.
+- Chi phí thấp khi hỏi ít: không cần GPU thường trực nếu dùng tác vụ theo lô.
+- Cấu trúc: đọc PDF và Word, OCR bản scan, tách theo mục, gắn metadata (máy, chuyền, phiên bản, ngôn ngữ, ngày hiệu lực), embedding đa ngôn ngữ, chỉ mục vector cộng BM25.
+- Đo bằng recall@3, tỉ lệ trích dẫn đúng và thời gian tra cứu trung bình.
+
+### Vì sao ML cổ điển cho QC
+- 38.000 nhãn mỗi tháng là dữ liệu có giám sát tốt. TF-IDF hoặc embedding nhỏ cộng SVM hay logistic regression huấn luyện trong vài phút trên CPU, suy luận dưới 10 ms, không tốn token.
+- 180 lớp lệch nhau nhiều: nên chia hai tầng, nhóm lỗi lớn (5–8 nhóm) rồi phân loại chi tiết trong nhóm; báo cáo macro-F1 vì lớp nhỏ rất dễ bị bỏ.
+- LLM zero-shot hoặc few-shot thường đạt độ chính xác thấp hơn trên tiếng Việt viết tắt và đắt hơn hàng trăm lần khi chạy 38.000 bản ghi.
+- Chỉ đẩy sang LLM khi độ tin cậy thấp (ví dụ dưới ngưỡng) hoặc khi taxonomy đổi; kết quả đó đưa cho công nhân xác nhận, tức human-in-the-loop.
+- Nếu mô tả dài, đa ngôn ngữ và cần hiểu ngữ cảnh, dùng embedding đa ngôn ngữ cộng classifier, hoặc fine-tune một model nhỏ; chỉ fine-tune khi có ít nhất vài nghìn nhãn chất lượng và taxonomy ổn định.
+
+### Khi nào fine-tune
+- Đáng: đầu ra phải theo một khuôn cố định như JSON hoặc mã lỗi, thuật ngữ nội bộ dày, khối lượng lớn, cần độ trễ thấp, dữ liệu không được rời hạ tầng.
+- Không đáng: tri thức đổi liên tục (fine-tune không phải cơ chế cập nhật), ít dữ liệu, cần trích dẫn nguồn, cần giải thích.
+- Fine-tune dạy "phong cách và định dạng" tốt hơn là dạy "kiến thức mới". Muốn thêm kiến thức thì dùng RAG.
+
+### Giữ dữ liệu không ra ngoài
+| Phương án | Kiểm soát dữ liệu | Chi phí và vận hành | Khi nào chọn |
+|---|---|---|---|
+| Self-host trong mạng nhà máy | Cao nhất, dữ liệu không rời mạng | GPU, MLOps, vá lỗi, đánh giá | Dữ liệu nhạy cảm, tải lớn và đều |
+| Cloud theo region, không dùng dữ liệu huấn luyện, PrivateLink | Cao, nhưng dữ liệu đi qua hạ tầng cloud | Thấp hơn, có IAM, log, guardrail | Được pháp chế chấp thuận |
+| Kết hợp | Tuỳ luồng | Cân bằng | Phân loại và tóm tắt ở on-prem, tác vụ không nhạy cảm ở cloud |
+
+- Self-host thường dùng vLLM hoặc TGI với model mở; cần GPU, cần người biết tối ưu GPU, theo dõi chất lượng và cập nhật model.
+- Hợp đồng với nhà cung cấp phải nói rõ: không huấn luyện trên dữ liệu, không lưu sau một số ngày, region cụ thể, nghĩa vụ thông báo sự cố.
+- Kiểm tra cả log: prompt và response có bị ghi vào hệ thống observability của bên thứ ba không.
+- Mã hoá khi lưu và khi truyền, phân quyền theo vai trò, che dữ liệu cá nhân trong log.
+
+### Kiến trúc đề xuất
+1. Ingestion: đọc tài liệu, OCR, tách mục, gắn metadata, embedding đa ngôn ngữ, index vector và BM25 trong mạng nội bộ.
+2. Truy vấn SOP: nhận tiếng Việt, Hàn, Trung, tìm hybrid, trả lời kèm trích dẫn mục và phiên bản.
+3. QC: chạy batch mỗi 15 phút, ML cổ điển phân loại, đặt ngưỡng tin cậy, ca thấp chuyển LLM hoặc người.
+4. Tóm tắt ca: mỗi ca một lần, gom sự kiện từ MES và log, LLM tóm tắt theo khuôn "sự cố, hành động, tồn đọng, rủi ro", lưu vào hệ thống.
+5. Giám sát: recall@3, macro-F1, tỉ lệ chuyển người, thời gian xử lý, chi phí GPU và token.
+
+### Ví dụ đời thực
+- Bối cảnh: nhà máy điện tử ở Bắc Ninh, 11 chuyền, 1.200 SOP, 38.000 bản ghi QC mỗi tháng, 180 mã lỗi.
+- RAG SOP: 1.100 câu hỏi mỗi tháng. Sau khi thêm BM25 và filter metadata theo máy, recall@3 tăng từ 0,84 lên 0,93; thời gian tra SOP trung bình từ 12 phút xuống 90 giây.
+- QC: thử ba phương án trên 6.000 bản ghi đã gán nhãn. TF-IDF cộng SVM tuyến tính đạt độ chính xác top-1 0,89 và macro-F1 0,81; LLM zero-shot đạt 0,76; fine-tune model nhỏ đạt 0,91 nhưng cần 9.000 nhãn và huấn luyện lại mỗi quý. Chọn ML cổ điển, LLM chỉ chạy cho 6% bản ghi có độ tin cậy thấp, chi phí LLM giảm khoảng 94% so với chạy toàn bộ.
+- Tóm tắt ca: 3 bản mỗi ngày, từ 800 từ xuống 250 từ, trưởng ca chấp nhận 92% bản tóm tắt, tiết kiệm khoảng 25 phút mỗi ca.
+- Hạ tầng: 2 GPU L40S chạy vLLM với model mở 14B cho RAG và tóm tắt, tổng chi phí khoảng 6.800 USD mỗi tháng gồm GPU và vận hành, so với 1.400 USD mỗi tháng nếu dùng API; chênh lệch được chấp nhận vì dữ liệu không được ra ngoài và vì có thể dùng lại GPU cho việc khác vào ban đêm.
+
+### Trả lời mẫu khi phỏng vấn
+"Em chọn theo bốn câu hỏi: tri thức đổi nhanh hay chậm, khối lượng bao nhiêu, có cần trích dẫn không, và dữ liệu có được ra ngoài không. Với SOP máy, tài liệu đổi liên tục và người dùng cần biết áp dụng theo mục nào, nên em dùng RAG vector cộng BM25, có trích dẫn nguồn, không fine-tune. Với phân loại lỗi QC, em có ba mươi tám nghìn nhãn mỗi tháng và một trăm tám mươi mã, nên em bắt đầu bằng ML cổ điển: TF-IDF hoặc embedding nhỏ cộng SVM, chia hai tầng nhóm lỗi lớn rồi phân loại chi tiết, báo cáo macro-F1 vì lớp lệch nhiều. LLM chỉ chạy cho vài phần trăm bản ghi có độ tin cậy thấp, và công nhân xác nhận kết quả. Với tóm tắt ca, em dùng prompt theo khuôn cố định và model nhỏ, ba lần mỗi ngày nên chi phí không đáng kể. Fine-tune em chỉ dùng khi cần định dạng cố định và có đủ nhãn chất lượng; còn kiến thức mới thì RAG cập nhật nhanh hơn. Về dữ liệu, em ưu tiên self-host trong mạng nhà máy cho việc nhạy cảm, hoặc cloud theo region với cam kết không huấn luyện trên dữ liệu, PrivateLink và che PII trong log; em luôn kiểm tra cả log của bên thứ ba, không chỉ API."
+
+> Senior tip: đừng bắt đầu bằng fine-tune. Hãy dựng baseline rẻ nhất trước (regex hoặc ML cổ điển), đo bằng dữ liệu thật, rồi chỉ nâng lên LLM hoặc fine-tune khi baseline sai ở nhóm lỗi rõ ràng và bạn chứng minh được bằng số liệu. Trong nhà máy, một mô hình nhỏ chạy ổn định trên CPU thường thắng một mô hình lớn phải chờ GPU và cần MLOps.
+`,
+
+  follow: [
+    'Bạn đo macro-F1 và ma trận nhầm lẫn cho bài toán 180 mã lỗi thế nào, và bạn ưu tiên giảm loại lỗi nào trước?',
+    'Nếu đối tác yêu cầu dữ liệu không rời nhà máy nhưng team không có người vận hành GPU, bạn chọn phương án nào và thuyết phục lãnh đạo ra sao?',
+    'Bạn cập nhật SOP mới cho RAG thế nào để câu trả lời không trộn phiên bản cũ và vẫn giữ được trích dẫn đúng mục?'
+  ],
+  tags: ['manufacturing', 'on-prem', 'rag', 'classic-ml', 'fine-tune', 'sop', 'qc', 'data-residency']
+},
+{
+  id: 'ai-151',
+  topic: 'ai',
+  level: 'senior',
+  q: 'Chatbot RAG của bạn mất 8 giây mới trả lời. Bạn đo và tối ưu thế nào để đưa p50 xuống khoảng 2 giây?',
+  a: `**Tóm tắt:** Đo từng chặng trước, đừng đoán: rewrite câu hỏi, embedding, truy hồi, rerank, ghép prompt, thời gian tới token đầu (TTFT) và thời gian sinh. Thường 70–80% thời gian nằm ở một hoặc hai chặng; tối ưu đúng chỗ đó rồi mới tính tiếp. Kết hợp: model nhỏ cho bước phụ, chạy song song các bước độc lập, bỏ rerank khi không cần, giảm top-k, cache, và streaming để người dùng thấy chữ đầu tiên sớm.
+
+### Vì sao 8 giây là "cảm giác chậm" chứ không chỉ là số
+- Người dùng đánh giá theo thời gian thấy chữ đầu tiên (TTFT), không theo tổng thời gian. Nếu TTFT là 1,1 giây và chữ chạy đều, 8 giây đọc vẫn dễ chịu hơn 2 giây im lặng.
+- Nhưng p50 8 giây thường đi kèm p95 12 giây, và trong giờ cao điểm còn tệ hơn. Mục tiêu phải là p50 và p95, không phải trung bình.
+- Đo bằng timestamp ở hai đầu (client và server) để loại thời gian mạng; log từng chặng bằng System.nanoTime.
+
+### Ngân sách latency cho mục tiêu 2 giây
+| Chặng | Ví dụ trước | Sau tối ưu | Cách giảm |
+|---|---|---|---|
+| Rewrite câu hỏi | 1.400 ms | 180 ms | model nhỏ 1–3B, chỉ rewrite khi có đại từ |
+| Embedding câu hỏi | 90 ms | 60 ms | model nhỏ, cache, batch |
+| Truy hồi vector cộng BM25 | 420 ms | 160 ms | chạy song song, top-k 20 xuống 10 |
+| Rerank | 650 ms | 0–120 ms | bỏ khi câu ngắn, chỉ rerank 10 ứng viên |
+| Ghép prompt | 40 ms | 20 ms | giữ template gọn |
+| TTFT của LLM | 1.100 ms | 380 ms | prompt ngắn, model nhỏ hơn, kết nối sẵn |
+| Sinh phần còn lại | 4.200 ms | 1.400 ms | giới hạn output, trả lời ngắn |
+| Tổng | khoảng 7.900 ms | khoảng 2.200 ms | |
+
+### Đo từng chặng
+- Ghi log: t0 đầu request, t1 sau rewrite, t2 sau truy hồi, t3 sau rerank, t4 khi nhận token đầu, t5 khi xong.
+- Tính p50 và p95 cho từng chặng trên 1.000 request thật. Nếu không đo, bạn sẽ tối ưu chặng chiếm 90 ms trong khi chặng LLM chiếm 5 giây.
+- Dùng trace id để ghép log của các service (gateway, retrieval, rerank, LLM).
+
+### Các đòn tối ưu, theo thứ tự nên làm
+1. **Đo và bỏ việc không cần**: rewrite bằng LLM cho mọi câu là lãng phí; câu đã đủ rõ thì bỏ. Câu hỏi ngắn có từ khoá rõ thì không cần rerank.
+2. **Chạy song song**: embedding và BM25 không phụ thuộc nhau; dùng CompletableFuture hoặc reactive để chạy cùng lúc.
+3. **Model nhỏ cho bước phụ**: rewrite, phân loại, tóm tắt dùng model 1–3B hoặc model nano; chỉ câu trả lời cuối dùng model lớn. Đo lại chất lượng, đừng đổi cảm tính.
+4. **Giảm top-k và rerank có chọn lọc**: top-k 20 là quá nhiều cho hầu hết câu hỏi; rerank chỉ khi điểm cao nhất chưa đủ chắc hoặc khi có nhiều ứng viên gần điểm.
+5. **Prompt ngắn**: bỏ few-shot dài, bỏ lịch sử không cần, yêu cầu trả lời trực tiếp. Mỗi 1.000 token vào thêm khoảng 300–700 ms TTFT tuỳ model và tải.
+6. **Giới hạn output**: nếu nghiệp vụ chỉ cần 200 từ, đặt max_tokens thấp; đừng để model viết 800 từ.
+7. **Streaming**: không giảm tổng thời gian nhưng giảm TTFT cảm nhận; dùng SSE, đẩy token ngay khi có.
+8. **Cache**: cache ngữ nghĩa cho câu hỏi lặp (đo tỉ lệ hit trước), cache embedding của tài liệu, prompt caching cho system prompt dài.
+9. **Hạ tầng**: giữ kết nối HTTP tới provider (connection pool, keep-alive), đặt service cùng region, tránh gọi chéo châu lục, tránh khởi tạo client mỗi request.
+10. **Đo lại sau mỗi thay đổi**: giữ bộ 100 câu đại diện, so p50, p95, chất lượng và chi phí.
+
+### Code minh hoạ
+~~~java
+// Minh hoạ: đo từng chặng và chạy song song truy hồi
+long t0 = System.nanoTime();
+var rewritten = rewriteQuery(original);                  // bước 1
+long t1 = System.nanoTime();
+
+var byVector = CompletableFuture.supplyAsync(() ->
+        vectorStore.similaritySearch(
+                SearchRequest.builder().query(rewritten).topK(10).build()));
+var byKeyword = CompletableFuture.supplyAsync(() ->
+        keywordSearch(original));
+var hits = merge(byVector.join(), byKeyword.join());     // song song, bước 2
+long t2 = System.nanoTime();
+
+var prompt = template.render(original, top(hits, 5));
+long t3 = System.nanoTime();
+var stream = chat.prompt().user(prompt).stream().content();  // TTFT, bước 3
+long t4 = System.nanoTime();
+
+log.info("rewrite={} retrieve={} prompt={} ttft={}",
+        ms(t1 - t0), ms(t2 - t1), ms(t3 - t2), ms(t4 - t3));
+~~~
+Nếu chỉ có một dòng log tổng thời gian, bạn sẽ không biết nên sửa gì.
+
+### Bảng đánh đổi
+| Thay đổi | Tác dụng | Rủi ro |
+|---|---|---|
+| Streaming | TTFT giảm mạnh, cảm giác nhanh | Tổng thời gian không đổi, cần xử lý lỗi giữa luồng |
+| Model nhỏ cho rewrite | Giảm khoảng 1 giây | Rewrite kém hơn, cần đo |
+| Bỏ rerank | Giảm khoảng 500 ms | Giảm độ chính xác với câu khó |
+| Cache ngữ nghĩa | Giảm toàn bộ lượt lặp | Trả lời cũ, cần TTL và ngưỡng tương đồng |
+| Giảm top-k | Giảm token và thời gian | Có thể mất chunk đúng |
+| Giới hạn output | Giảm thời gian sinh | Thiếu ý nếu nghiệp vụ cần dài |
+
+### Bẫy production
+- Chỉ đo trung bình: p50 đẹp nhưng p95 tệ, người dùng vẫn phàn nàn.
+- Tối ưu sai chỗ vì không có điểm đo từng chặng.
+- Dùng model lớn cho rewrite và rerank bằng model lớn trên 500 chunk.
+- Gọi provider ở region khác làm mỗi request thêm 200–400 ms.
+- Prompt dài 8.000 token vì nhồi cả lịch sử và tài liệu.
+- Không cache, không tái sử dụng kết nối, khởi tạo client mỗi request.
+- Thay đổi nhiều thứ cùng lúc rồi không biết cái nào có tác dụng.
+
+### Ví dụ đời thực
+- Bối cảnh: chatbot nội bộ của một công ty bảo hiểm, 4.000 lượt mỗi ngày, p50 7,9 giây, p95 12,4 giây; người dùng gọi là "chậm".
+- Đo 1.000 lượt: rewrite 1.400 ms, embedding 90 ms, truy hồi 420 ms, rerank 650 ms, ghép prompt 40 ms, LLM TTFT 1.100 ms, sinh 4.200 ms.
+- Thay đổi: thay model rewrite lớn bằng model 1,5B (180 ms); chạy embedding và BM25 song song, top-k từ 20 xuống 10 (160 ms); bỏ rerank cho câu ngắn, chỉ rerank khi điểm cao nhất dưới 0,8 (trung bình 90 ms); giảm system prompt từ 2.400 xuống 700 token; giới hạn output 400 token; bật streaming SSE; thêm cache ngữ nghĩa (tỉ lệ hit 17% trong giờ cao điểm).
+- Kết quả sau 3 tuần: p50 từ 7.900 xuống 2.100 ms, p95 từ 12.400 xuống 3.400 ms, TTFT từ 1.100 xuống 380 ms. Chất lượng trên bộ 150 câu tăng nhẹ từ 87% lên 89% nhờ prompt gọn và ít mâu thuẫn; chi phí token giảm 38%.
+
+### Trả lời mẫu khi phỏng vấn
+"Em không tối ưu trước khi đo. Em gắn timestamp cho từng chặng: rewrite câu hỏi, embedding, truy hồi vector và BM25, rerank, ghép prompt, thời gian tới token đầu và thời gian sinh. Em chạy trên một nghìn request thật rồi xem p50 và p95 của từng chặng, vì trung bình thường che mất phần đuôi. Trong trường hợp tám giây, em thấy rewrite bằng model lớn chiếm một giây bốn, rerank sáu trăm năm mươi mili giây và sinh bốn giây hai. Em thay model rewrite bằng model nhỏ, chạy embedding và BM25 song song, bỏ rerank cho câu ngắn và chỉ rerank khi điểm cao nhất chưa đủ chắc, giảm top-k, rút gọn system prompt, giới hạn output và bật streaming. Em cũng thêm cache ngữ nghĩa cho câu hỏi lặp và giữ kết nối tới provider. Sau ba tuần, p50 xuống hai giây một, p95 còn ba giây bốn, TTFT còn ba trăm tám mươi mili giây. Em luôn đo lại chất lượng và chi phí sau mỗi thay đổi, vì giảm latency bằng cách đổi model mà làm sai câu trả lời thì không phải tối ưu."
+
+> Senior tip: hãy coi latency là một ngân sách chia cho từng chặng, giống như ngân sách bộ nhớ của một hàm. Khi một chặng vượt ngân sách, bạn biết ngay phải sửa gì; và luôn báo cáo p50, p95, TTFT cùng với tỉ lệ lỗi, đừng chỉ báo một con số trung bình.
+`,
+
+  follow: [
+    'Bạn đo TTFT và tổng thời gian trong môi trường streaming thế nào, và bạn đặt ngân sách cho từng chặng ra sao?',
+    'Khi cache ngữ nghĩa trả về câu trả lời cũ cho câu hỏi mới, bạn phát hiện và xử lý bằng cách nào?',
+    'Bạn quyết định khi nào nên đổi sang model nhỏ hơn: tiêu chí chất lượng, chi phí và độ trễ cụ thể là gì?'
+  ],
+  tags: ['latency', 'performance', 'streaming', 'cache', 'ttft', 'rerank', 'p95']
+},
 );
