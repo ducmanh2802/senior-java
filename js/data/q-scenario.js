@@ -11157,4 +11157,248 @@ Tôi không chọn khoá theo ý thích mà theo mức độ tranh chấp. Khi {
   ],
   tags: ['optimistic-lock', 'pessimistic-lock', 'version', 'FOR-UPDATE', 'Redis-lock', 'concurrency']
 },
+{
+  id: 'scenario-181',
+  topic: 'scenario',
+  level: 'senior',
+  q: 'Nhà máy có 20 line sản xuất. Dashboard sản lượng realtime cho quản đốc xem trên TV xưởng. Chọn polling vs SSE vs WebSocket, và làm sao không dập DB?',
+  a: `**Tóm tắt:** Dùng SSE (Server-Sent Events) đẩy delta mỗi 2-5 giây từ backend aggregate trong Redis; DB chỉ bị query bởi worker aggregate, dashboard không chạm DB. WebSocket chỉ dùng nếu cần bidirectional (điều khiển máy); polling đơn giản nhưng tốn connection và độ trễ cao.
+
+### Cơ chế và VÌ SAO
+
+- **Polling**: client gọi REST mỗi N giây. 20 line × 10 màn hình = 200 request/5s → DB query liên tục, connection pool cạn. Độ trễ = chu kỳ polling.
+- **SSE**: HTTP một chiều server→client, auto-reconnect, đi qua proxy/firewall dễ. Phù hợp dashboard chỉ nhận dữ liệu.
+- **WebSocket**: bidirectional, overhead handshake cao, cần quản lý session. Dùng cho điều khiển máy (start/stop), không cho dashboard.
+- **Aggregate**: PLC gateway ghi raw event vào Redis stream; worker tổng hợp counts theo line vào Redis hash (line:count, line:rate). Dashboard subscribe SSE đọc hash mỗi 2s.
+
+### Code Java ngắn (Spring Boot 3)
+
+~~~java
+@RestController
+public class DashboardController {
+  private final ScheduledExecutorService scheduler = Executors.newScheduledThreadPool(1); // shared bean trong thực tế
+
+  @GetMapping(value = "/dashboard/stream", produces = MediaType.TEXT_EVENT_STREAM_VALUE)
+  public SseEmitter stream() {
+    SseEmitter emitter = new SseEmitter(0L); // 0L = không timeout
+    scheduler.scheduleAtFixedRate(() -> {
+      try {
+        Map<String, Long> counts = redis.opsForHash().entries("line:counts");
+        emitter.send(SseEmitter.event().data(counts));
+      } catch (Exception ex) { emitter.completeWithError(ex); }
+    }, 0, 2, TimeUnit.SECONDS);
+    emitter.onCompletion(scheduler::shutdown); // chú ý: shutdown shared scheduler không phù hợp, demo đơn giản
+    return emitter;
+  }
+}
+~~~
+
+### Trade-off
+
+| Tiêu chí | Polling | SSE | WebSocket |
+|---|---|---|---|
+| Độ trễ | chu kỳ | ~2s | realtime |
+| Tải DB | cao | thấp (qua cache) | thấp |
+| Proxy/firewall | dễ | dễ | cần upgrade |
+| Bidirectional | không | không | có |
+
+### Pitfall production
+- SseEmitter chạy trên async servlet nên trả thread Tomcat về pool ngay khi mở kết nối; mỗi kết nối chỉ tốn một socket/FD + một task scheduler + bộ nhớ, không giữ thread suốt phiên. Nếu vẫn dùng servlet blocking (mỗi request giữ thread) thì bật virtual threads: {{spring.threads.virtual.enabled=true}} (Spring Boot 3.2+, Java 21). Luôn dùng shared scheduler bean thay vì tạo mới mỗi request.
+- Reconnect storm khi deploy → client exponential backoff.
+- Redis single point → cluster + sentinel.
+
+### Ví dụ đời thực
+Nhà máy 20 line, 10 TV dashboard. Trước polling mỗi 5s với 200 màn hình → 40 QPS chỉ cho dashboard. Sau SSE + Redis aggregate → DB 0 QPS từ dashboard, CPU DB giảm 40%, độ trễ hiển thị 2s.
+
+### Trả lời mẫu khi phỏng vấn
+Với dashboard sản lượng 20 line, tôi chọn SSE vì dữ liệu một chiều và đi qua proxy dễ. Backend aggregate PLC event vào Redis hash mỗi giây; SSE endpoint đọc Redis mỗi 2 giây đẩy delta xuống client. DB không bị dashboard chạm. WebSocket chỉ dùng khi cần điều khiển máy. Polling đơn giản nhưng tốn connection và độ trễ cao. Lưu ý: SseEmitter dùng async servlet nên không giữ thread Tomcat; mỗi kết nối tốn một task scheduler + FD, nên dùng shared scheduler thay vì tạo mới mỗi request. Nếu dùng servlet blocking thì bật virtual threads ({{spring.threads.virtual.enabled=true}}, Spring Boot 3.2+). Reconnect storm xử lý bằng exponential backoff. Redis cluster tránh SPOF.
+
+> Senior tip: Dashboard là read model — tách khỏi OLTP DB, aggregate vào cache, push qua SSE.`,
+  follow: ['SSE reconnect storm xử lý thế nào?', 'Khi nào cần WebSocket thay SSE?', 'Aggregate Redis hash có vấn đề gì khi scale?'],
+  tags: ['sse', 'websocket', 'polling', 'redis', 'dashboard', 'mes', 'realtime']
+}
+, {
+  id: 'scenario-182',
+  topic: 'scenario',
+  level: 'senior',
+  q: 'PLC/OPC-UA qua gateway đổ dữ liệu máy vào MES với 5.000 bản ghi/giây. Thiết kế ingestion thế nào để không mất dữ liệu và không quá tải DB?',
+  a: `**Tóm tắt:** Gateway batch insert vào Kafka, consumer group ghi DB theo batch (JDBC batch insert), idempotency key (machine+timestamp+sequence) để dedup. DB partition theo thời gian. Backpressure qua queue depth.
+
+### Cơ chế và VÌ SAO
+
+- **5.000 rec/s** = 432 triệu/ngày. Insert từng dòng qua JPA → OOM, connection cạn.
+- **Batch**: JDBC batch insert 1000 dòng/lần.
+- **Queue**: gateway không ghi DB trực tiếp; đẩy vào Kafka topic partition theo machineId.
+- **Idempotency**: PLC retry → dedup bằng unique key (machine_id, tag, ts, seq). DB unique constraint trên 4 cột.
+- **Partition**: bảng telemetry partition theo ngày; drop partition cũ.
+- **Backpressure**: queue depth tăng → alert, consumer pause.
+
+### Code Java ngắn
+
+~~~java
+@KafkaListener(topics = "telemetry", groupId = "mes-ingest", containerFactory = "batchFactory")
+public void consume(List<TelemetryEvent> batch) {
+  jdbcTemplate.batchUpdate(
+    "INSERT INTO telemetry (machine_id, tag, value, ts, seq) VALUES (?,?,?,?,?) " +
+    "ON CONFLICT (machine_id, tag, ts, seq) DO NOTHING",
+    batch, 1000, (ps, e) -> {
+      ps.setString(1, e.machineId());
+      ps.setString(2, e.tag());
+      ps.setDouble(3, e.value());
+      ps.setTimestamp(4, Timestamp.from(e.ts()));
+      ps.setLong(5, e.seq());
+    });
+}
+~~~
+
+### Trade-off
+
+| Lựa chọn | Throughput | Durability | Complexity |
+|---|---|---|---|
+| Direct DB insert | thấp | cao | thấp |
+| Kafka + batch | cao | cao | trung bình |
+| Redis stream | rất cao | trung bình | thấp |
+
+### Pitfall production
+- Kafka consumer lag nếu DB chậm.
+- ON CONFLICT cần unique index đúng columns (machine_id, tag, ts, seq).
+- Partition pruning: query phải filter theo ts range.
+- Batch listener cần config {{AckMode.BATCH}} hoặc {{RECORD}} tùy yêu cầu.
+
+### Ví dụ đời thực
+Nhà máy 50 máy, mỗi máy 100 tag/s = 5.000/s. Trước JPA save từng dòng → DB CPU 95%, lag 10s. Sau Kafka + batch 1000 + partition ngày → DB CPU 30%, lag <1s.
+
+### Trả lời mẫu khi phỏng vấn
+Với 5.000 bản ghi/giây tôi không ghi DB trực tiếp. Gateway đẩy vào Kafka partition theo machineId. Consumer group đọc batch, JDBC batch insert 1000 dòng với ON CONFLICT dedup (key: machine+tag+ts+seq). Bảng telemetry partition theo ngày. Backpressure qua queue depth. Scale consumer horizontal.
+
+> Senior tip: Ingestion là bài toán throughput + durability. Tách write path khỏi read path.`,
+  follow: ['Làm sao xử lý out-of-order events?', 'Retention policy cho telemetry thế nào?', 'Gateway mất kết nối thì buffer ở đâu?'],
+  tags: ['kafka', 'batch-insert', 'telemetry', 'opc-ua', 'plc', 'partition', 'mes']
+}
+, {
+  id: 'scenario-183',
+  topic: 'scenario',
+  level: 'senior',
+  q: 'Khách báo lỗi sản phẩm serial X. Trong 30 giây phải tìm lot linh kiện, máy sản xuất, ca và công nhân liên quan. Thiết kế truy vết thế nào?',
+  a: `**Tóm tắt:** Bảng genealogy với index trên serial, truy vấn recursive CTE PostgreSQL. Pre-compute traceability path khi sản xuất. Cache hot serial trong Redis.
+
+### Cơ chế và VÌ SAO
+
+- **Genealogy**: mỗi sản phẩm có serial; mỗi công đoạn ghi (serial, lot_component, machine, shift, operator, timestamp).
+- **Write-time path**: insert row vào product_genealogy (serial, parent_serial, lot, ...). Query chỉ cần index trên serial.
+- **Recursive CTE**: WITH RECURSIVE đi từ serial thành phẩm ngược về nguyên liệu. Depth ≤ 10.
+- **Index**: index trên serial (unique), parent_serial.
+- **Cache**: serial vừa sản xuất cache trong Redis 7 ngày.
+
+### Code SQL
+
+~~~sql
+WITH RECURSIVE trace AS (
+  SELECT serial, parent_serial, lot_id, machine_id, shift_id, operator_id, 0 AS depth
+  FROM product_genealogy WHERE serial = ?
+  UNION ALL
+  SELECT g.serial, g.parent_serial, g.lot_id, g.machine_id, g.shift_id, g.operator_id, t.depth+1
+  FROM product_genealogy g JOIN trace t ON g.parent_serial = t.serial
+  WHERE t.depth < 10
+)
+SELECT * FROM trace;
+~~~
+
+### Java service
+
+~~~java
+public TraceResult trace(String serial) {
+  String cacheKey = "trace:" + serial;
+  TraceResult cached = redis.get(cacheKey);
+  if (cached != null) return cached;
+  List<TraceRow> rows = jdbc.query(TRACE_SQL, serial);
+  TraceResult r = build(rows);
+  redis.set(cacheKey, r, Duration.ofDays(7));
+  return r;
+}
+~~~
+
+### Trade-off
+
+| Lựa chọn | Query speed | Write cost | Complexity |
+|---|---|---|---|
+| Recursive CTE on demand | trung bình | thấp | thấp |
+| Write-time path | rất nhanh | cao | trung bình |
+| Graph DB | rất nhanh | cao | cao |
+
+### Pitfall production
+- Serial chưa index → full scan.
+- Recursive CTE không có depth limit → infinite loop.
+- Cache stale khi rework → invalidate on update.
+
+### Ví dụ đời thực
+Khách báo serial SN-2024-001234 lỗi. Query trả về lot L-456, máy M-12, ca đêm 2024-10-15, công nhân NV-789 trong 0.3s. Trước không có index → 45s timeout.
+
+### Trả lời mẫu khi phỏng vấn
+Tôi thiết kế bảng genealogy ghi tại thời điểm sản xuất. Index trên serial và parent_serial. Truy vết dùng recursive CTE PostgreSQL với depth limit 10. Cache hot serial trong Redis. SLA 30 giây dư dả. Pitfall: thiếu index, cycle, cache stale khi rework.
+
+> Senior tip: Traceability là write-time investment. Ghi đầy đủ lúc sản xuất, query chỉ cần index lookup.`,
+  follow: ['Khi nào dùng graph DB thay relational?', 'Làm sao xử lý rework làm thay đổi genealogy?', 'Retention dữ liệu traceability bao lâu?'],
+  tags: ['traceability', 'genealogy', 'recursive-cte', 'postgresql', 'mes', 'serial']
+}
+, {
+  id: 'scenario-184',
+  topic: 'scenario',
+  level: 'lead',
+  q: 'Nâng cấp hệ thống MES đang chạy 24/7 không dừng xưởng: blue-green deployment và migration DB tương thích ngược. Thiết kế thế nào?',
+  a: `**Tóm tắt:** Blue-green: hai môi trường identical, switch traffic qua load balancer. Migration DB theo expand-contract: add cột nullable → deploy code mới dual-write → backfill → deploy code chỉ dùng cột mới → drop cột cũ. Rollback an toàn.
+
+### Cơ chế và VÌ SAO
+
+- **Blue-green**: environment Blue (đang chạy) và Green (mới), hai môi trường giống hệt nhau. Deploy lên Green, smoke test, switch LB. Rollback = switch lại Blue.
+- **Expand-contract**: không drop cột trong cùng release. Sequence:
+  1. Expand: add cột mới nullable + index (online, CONCURRENTLY).
+  2. Deploy code mới: ghi cả cột cũ và mới, đọc ưu tiên mới fallback cũ.
+  3. Backfill: batch update chunked.
+  4. Contract: deploy code chỉ dùng cột mới.
+  5. Drop cột cũ (release sau).
+- **Tương thích ngược**: schema cũ và mới cùng tồn tại.
+
+### Code Java (Flyway)
+
+~~~sql
+ALTER TABLE work_order ADD COLUMN new_status VARCHAR(20);
+CREATE INDEX CONCURRENTLY idx_wo_new_status ON work_order(new_status);
+~~~
+
+~~~java
+public void updateStatus(Long id, String status) {
+  repo.updateBoth(id, status);
+}
+public String getStatus(WorkOrder wo) {
+  return wo.getNewStatus() != null ? wo.getNewStatus() : wo.getStatus();
+}
+~~~
+
+### Trade-off
+
+| Phương án | Downtime | Risk | Complexity |
+|---|---|---|---|
+| Big-bang | cao | cao | thấp |
+| Blue-green only | thấp | trung bình | trung bình |
+| Blue-green + expand-contract | ~0 | thấp | cao |
+
+### Pitfall production
+- Migration lớn trong transaction → lock bảng. Dùng CREATE INDEX CONCURRENTLY và chunked backfill; lưu ý CONCURRENTLY không chạy được trong transaction nên với Flyway cần {{executeInTransaction=false}} hoặc migration Java.
+- Rollback code nhưng schema đã expand → OK.
+- Feature flag để tắt code mới.
+- Session externalize (Redis).
+- Connection pool double khi cả hai env chạy.
+
+### Ví dụ đời thực
+MES 24/7, 3 ca. Release thêm cột priority vào work_order. Expand add cột. Deploy Green dual-write. Backfill 2 triệu row chunked. Switch LB. Verify 24h. Contract drop cột cũ release sau. Zero downtime.
+
+### Trả lời mẫu khi phỏng vấn
+Với MES 24/7 tôi dùng blue-green. Migration theo expand-contract: add cột nullable, deploy code dual-write, backfill chunked async, contract drop cột cũ. Schema tương thích ngược nên rollback an toàn. Flyway versioned migration, index CONCURRENTLY. Feature flag. Chú ý connection pool double và externalize session.
+
+> Senior tip: Deploy và release là hai sự kiện khác nhau. Expand-contract cho phép deploy code mới mà không break schema cũ.`,
+  follow: ['Làm sao rollback khi đã backfill xong?', 'Feature flag vs blue-green khác nhau thế nào?', 'Khi nào dùng canary thay blue-green?'],
+  tags: ['blue-green', 'expand-contract', 'migration', 'zero-downtime', 'flyway', 'mes', 'deployment']
+}
+
 );
