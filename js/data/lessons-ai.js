@@ -6903,5 +6903,795 @@ Ví dụ: {{arrivals = [200,400,600,800]}}, {{requestStart=0}}, {{streamEnd=1000
   ],
   related: ['ai-004', 'ai-007'],
   tags: ['ai', 'latency', 'ttft', 'streaming', 'metrics', 'performance']
+},
+{
+  id: `lesson-ai-023`,
+  track: `ai`,
+  order: 23,
+  title: `Human-in-the-loop cho agent`,
+  level: `senior`,
+  minutes: 40,
+  goals: [
+    `Giải thích vì sao tool ghi (chuyển/hoàn tiền, khoá thẻ, dừng dây chuyền) phải có người duyệt còn tool đọc thì không.`,
+    `Mô tả một PendingAction và máy trạng thái PROPOSED → APPROVED/REJECTED → EXECUTED/EXPIRED.`,
+    `Cài ApprovalQueue bằng Java thuần: submit/approve/reject/execute/state với TTL và idempotency key.`,
+    `Chỉ ra vai trò của idempotency key (chống chạy hai lần) và audit log (truy vết, tuân thủ).`,
+    `Tránh các bẫy: chạy trước duyệt, execute hai lần, duyệt theo dữ liệu đã hết hạn.`
+  ],
+  body: `**Tóm tắt:** Human-in-the-loop (HITL — tạm dịch "con người đứng trong vòng lặp") là kiểu thiết kế trong đó agent không tự động thực thi các hành động nguy hiểm (chuyển tiền, hoàn tiền, khoá thẻ, dừng dây chuyền) mà tạo một "hành động chờ duyệt" (PendingAction), đưa cho người có thẩm quyền bấm Duyệt hoặc Từ chối, rồi mới cho thực thi. Mỗi hành động đi qua một máy trạng thái PROPOSED → APPROVED hoặc REJECTED → EXECUTED hoặc EXPIRED, có idempotency key chống chạy hai lần, có thời hạn (expire) và audit log để truy vết.
+
+### 1. Vì sao cần con người ở giữa
+Một LLM agent (agent = chương trình để model tự chọn công cụ và hành động thay vì đi theo kịch bản cứng) rất giỏi hiểu ý người dùng, nhưng **không đảm bảo đúng 100%**. Model có thể "ảo giác" (hallucination — bịa ra thông tin nghe rất hợp lý nhưng sai) và gọi nhầm tool với tham số sai. Với **tool đọc** (read tool — tra cứu, tính toán, không làm đổi dữ liệu) thì sai cũng không nghiêm trọng: cùng lắm trả lời sai, người dùng làm lại. Nhưng với **tool ghi** (write tool — công cụ làm thay đổi dữ liệu hệ thống, ví dụ {{ChuyenTien.refund(...)}}, {{The.khoa(...)}}, {{DayChuyen.dung(...)}}) thì một lần gọi sai là **thiệt hại thật và khó hoàn tác**: tiền đã chuyển, thẻ đã khoá, dây chuyền đã dừng.
+
+Nguyên tắc thực dụng: **đọc thì cho chạy tự do, ghi thì bắt buộc có người duyệt**. Đó chính là ý tưởng cốt lõi của human-in-the-loop.
+
+### 2. PendingAction: không chạy ngay mà tạo "việc chờ duyệt"
+Thay vì gọi thẳng tool ghi, agent tạo một bản ghi PendingAction và trả lời người dùng "đã ghi nhận yêu cầu, đang chờ duyệt". Bản ghi gồm:
+- {{id}}: mã hành động, ví dụ {{a123}}
+- {{action}}: mô tả hành động kèm tham số, ví dụ hoàn 5.000.000đ cho hoá đơn H123
+- {{state}}: hiện {{PROPOSED}}
+- {{createdAt}} và {{expiresAt}}: mốc tạo và hạn dùng
+- {{idempotencyKey}}: khoá chống trùng lặp
+
+Người duyệt thấy màn hình: "Agent đề nghị hoàn 5.000.000đ cho hoá đơn H123 — số tiền, khách hàng, hoá đơn đều khớp. [Duyệt] [Từ chối]". Chỉ khi bấm Duyệt, hệ thống mới thực sự gọi tool ghi.
+
+### 3. Máy trạng thái của một hành động
+| Trạng thái | Ý nghĩa | Hàm đặt |
+|---|---|---|
+| PROPOSED | Agent vừa đề xuất, đang chờ duyệt | {{submit()}} |
+| APPROVED | Người có thẩm quyền đã đồng ý | {{approve()}} |
+| REJECTED | Người duyệt đã từ chối | {{reject()}} |
+| EXECUTED | Đã gọi tool ghi xong | {{execute()}} |
+| EXPIRED | Quá hạn mà chưa quyết, hoặc đã duyệt nhưng quá hạn khi chạy | hết {{ttlMs}} |
+
+Chỉ những chuyển sau là hợp lệ: PROPOSED → APPROVED hoặc REJECTED; APPROVED → EXECUTED; PROPOSED hoặc APPROVED → EXPIRED khi quá hạn. Không bao giờ cho APPROVED → PROPOSED, hay EXECUTED → APPROVED.
+
+### 4. Idempotency key chống chạy hai lần
+Người duyệt có thể bấm "Duyệt" hai lần do mạng chập, hoặc client tự retry. Nếu không có idempotency key, tiền có thể bị hoàn hai lần. Cách chuẩn: mỗi hành động gắn một idempotency key duy nhất; {{submit()}} với cùng key trả về **đúng id cũ** chứ không tạo bản ghi mới; {{execute()}} chỉ chạy khi {{state == APPROVED}} và ngay sau khi chạy chuyển sang EXECUTED, nên lần gọi {{execute()}} thứ hai thấy {{state != APPROVED}} và không chạy lại.
+
+### 5. Hết hạn (expire) sau N phút
+Một đề xuất treo mãi rất nguy hiểm: người duyệt vào sau 3 ngày, lúc đó số dư và trạng thái khách hàng đã đổi; "duyệt" theo dữ liệu cũ là duyệt sai. Vì vậy đặt TTL (time-to-live — thời gian sống của một đề xuất): quá {{ttlMs}} mà chưa quyết thì đánh dấu EXPIRED, không cho approve hay execute nữa. Đây cũng là lý do màn hình duyệt phải hiển thị "còn 12 phút" để người duyệt biết phải quyết nhanh.
+
+### 6. Audit log để truy vết
+Mọi lần chuyển trạng thái phải ghi một bản ghi bất biến (audit log): ai (approver), lúc nào (thời điểm), hành động gì, từ trạng thái nào sang trạng thái nào. Khi khách khiếu nại "tiền của tôi bị hoàn, ai duyệt?", audit log là bằng chứng. Nó cũng cần cho tuân thủ (compliance) và điều tra sự cố.
+
+### 7. Ví dụ số liệu
+Một yêu cầu hoàn tiền 5.000.000đ cho hoá đơn H123:
+- 09:00:00 — agent {{submit("H123-refund", "refund H123 5000000", 0)}} → {{a1}}, {{PROPOSED}}
+- 09:02:10 — chuyên viên bấm Duyệt → {{a1}} {{APPROVED}}
+- 09:02:11 — hệ thống {{execute("a1", ...)}} → {{a1}} {{EXECUTED}}, ghi audit "chuyenvienA duyet 09:02:10, thuc thi 09:02:11"
+- Nếu 09:31 (TTL 30 phút) vẫn chưa ai duyệt → {{a1}} {{EXPIRED}}
+
+### 8. Bài tập
+Bạn cài một hàng đợi duyệt nhỏ {{ApprovalQueue}} bằng Java thuần (mô phỏng phần lõi của một workflow engine): {{submit}}, {{approve}}, {{reject}}, {{execute}}, {{state}}, có TTL và idempotency key. Bài tập buộc bạn nghĩ tới các trường hợp: chạy trước duyệt, chạy hai lần, duyệt sau hạn, và cùng idempotency key.
+
+### Liên hệ phỏng vấn
+Câu hỏi: "Agent có thể chuyển tiền hoặc xoá dữ liệu, bạn thiết kế human-in-the-loop thế nào để an toàn?" Trả lời tốt đi theo bốn ý: (1) tách tool đọc (tự do) và tool ghi (bắt buộc duyệt); (2) mỗi hành động là một PendingAction có máy trạng thái PROPOSED → APPROVED/REJECTED → EXECUTED/EXPIRED; (3) idempotency key chống double-submit và double-execute; (4) TTL tránh duyệt theo dữ liệu cũ, cộng audit log ghi ai/lúc nào/gì để truy vết và tuân thủ. Nhấn mạnh execute chỉ được chạy đúng một lần và chỉ sau khi APPROVED.
+
+> Senior tip: đừng biến nút "Duyệt" thành một cái bẫy mệt mỏi. Nếu mỗi ngày agent tạo 500 yêu cầu mà con người phải bấm 500 lần thì họ sẽ duyệt theo phản xạ, không đọc nữa — và lúc đó HITL không còn an toàn. Hãy phân loại rủi ro: hành động giá trị nhỏ, người dùng tự phục vụ thì cho chạy kèm hạn mức; chỉ đẩy lên người duyệt những hành động vượt ngưỡng (số tiền lớn, nhiều người bị ảnh hưởng, thao tác không thể hoàn tác).`,
+  exercises: [
+    {
+      title: `ApprovalQueue: submit, approve, reject, execute với TTL và idempotency`,
+      prompt: `Viết class {{ApprovalQueue}} mô phỏng hàng đợi chờ duyệt cho agent, chỉ dùng JDK chuẩn. Các hằng trạng thái: {{PROPOSED=0}}, {{APPROVED=1}}, {{REJECTED=2}}, {{EXECUTED=3}}, {{EXPIRED=4}}. Constructor {{ApprovalQueue(long ttlMs)}} đặt thời hạn (millisecond).
+
+Các method:
+1. {{String submit(String key, String action, long now)}}: tạo hành động mới ở trạng thái {{PROPOSED}}, {{createdAt=now}}, trả về id dạng {{a1}}, {{a2}}… tăng dần. Nếu {{key}} (idempotency key) đã tồn tại thì **không tạo mới** mà trả về id cũ.
+2. {{boolean approve(String id, long now)}}: chỉ chuyển sang {{APPROVED}} nếu đang {{PROPOSED}} và chưa quá hạn ({{now - createdAt <= ttlMs}}); nếu quá hạn thì chuyển {{EXPIRED}} và trả {{false}}; nếu không ở {{PROPOSED}} thì trả {{false}}.
+3. {{boolean reject(String id, long now)}}: tương tự approve nhưng chuyển sang {{REJECTED}}.
+4. {{boolean execute(String id, long now)}}: chỉ chạy khi đang {{APPROVED}} và chưa quá hạn; sau khi chạy chuyển {{EXECUTED}} và trả {{true}}; nếu đã {{EXECUTED}} hoặc không ở {{APPROVED}} thì trả {{false}} (idempotent, không chạy lại).
+5. {{int state(String id)}}: trả trạng thái hiện tại; nếu id không tồn tại trả {{-1}}.
+
+Ví dụ: {{ttlMs=1000}}; {{id=submit("k1","refund",0)}} → {{state=PROPOSED}}; {{execute(id,100)}} → {{false}} (chưa duyệt); {{approve(id,200)}} → {{true}}; {{execute(id,300)}} → {{true}}; {{execute(id,400)}} → {{false}} (đã chạy rồi).`,
+      starter: `class ApprovalQueue {
+    static final int PROPOSED = 0, APPROVED = 1, REJECTED = 2, EXECUTED = 3, EXPIRED = 4;
+    ApprovalQueue(long ttlMs) { }
+    String submit(String key, String action, long now) { throw new UnsupportedOperationException("TODO"); }
+    boolean approve(String id, long now) { throw new UnsupportedOperationException("TODO"); }
+    boolean reject(String id, long now) { throw new UnsupportedOperationException("TODO"); }
+    boolean execute(String id, long now) { throw new UnsupportedOperationException("TODO"); }
+    int state(String id) { throw new UnsupportedOperationException("TODO"); }
+}`,
+      tests: `public class Main {
+    static int passed = 0, total = 0;
+    static void check(String name, Runnable r) {
+        total++;
+        try { r.run(); passed++; System.out.println("PASS " + name); }
+        catch (Throwable t) { System.out.println("FAIL " + name + ": " + t); }
+    }
+    static void eq(Object exp, Object act) {
+        if (!java.util.Objects.equals(exp, act)) throw new AssertionError("expected " + exp + " got " + act);
+    }
+    public static void main(String[] args) {
+        check("new action is PROPOSED", () -> {
+            ApprovalQueue q = new ApprovalQueue(1000);
+            String id = q.submit("k1", "refund", 0);
+            eq(ApprovalQueue.PROPOSED, q.state(id));
+        });
+        check("approve moves to APPROVED", () -> {
+            ApprovalQueue q = new ApprovalQueue(1000);
+            String id = q.submit("k1", "refund", 0);
+            eq(true, q.approve(id, 100));
+            eq(ApprovalQueue.APPROVED, q.state(id));
+        });
+        check("execute only after approve", () -> {
+            ApprovalQueue q = new ApprovalQueue(1000);
+            String id = q.submit("k1", "refund", 0);
+            eq(false, q.execute(id, 100));
+            eq(true, q.approve(id, 200));
+            eq(true, q.execute(id, 300));
+            eq(ApprovalQueue.EXECUTED, q.state(id));
+        });
+        check("execute is idempotent", () -> {
+            ApprovalQueue q = new ApprovalQueue(1000);
+            String id = q.submit("k1", "refund", 0);
+            q.approve(id, 100);
+            eq(true, q.execute(id, 200));
+            eq(false, q.execute(id, 300));
+            eq(ApprovalQueue.EXECUTED, q.state(id));
+        });
+        check("reject blocks execute", () -> {
+            ApprovalQueue q = new ApprovalQueue(1000);
+            String id = q.submit("k1", "refund", 0);
+            eq(true, q.reject(id, 100));
+            eq(ApprovalQueue.REJECTED, q.state(id));
+            eq(false, q.execute(id, 200));
+        });
+        check("idempotency key returns same id", () -> {
+            ApprovalQueue q = new ApprovalQueue(1000);
+            String a = q.submit("same", "refund", 0);
+            String b = q.submit("same", "refund", 50);
+            eq(a, b);
+        });
+        check("expired pending cannot be approved", () -> {
+            ApprovalQueue q = new ApprovalQueue(1000);
+            String id = q.submit("k1", "refund", 0);
+            eq(false, q.approve(id, 5000));
+            eq(ApprovalQueue.EXPIRED, q.state(id));
+        });
+        check("expired approved cannot execute", () -> {
+            ApprovalQueue q = new ApprovalQueue(1000);
+            String id = q.submit("k1", "refund", 0);
+            eq(true, q.approve(id, 100));
+            eq(false, q.execute(id, 5000));
+            eq(ApprovalQueue.EXPIRED, q.state(id));
+        });
+        check("approve non-existent returns false", () -> {
+            ApprovalQueue q = new ApprovalQueue(1000);
+            eq(false, q.approve("nope", 0));
+            eq(-1, q.state("nope"));
+        });
+        System.out.println("RESULT " + passed + "/" + total);
+    }
+}`,
+      reference: `class ApprovalQueue {
+    static final int PROPOSED = 0, APPROVED = 1, REJECTED = 2, EXECUTED = 3, EXPIRED = 4;
+    private final long ttlMs;
+    private final java.util.Map<String, String> idByKey = new java.util.LinkedHashMap<>();
+    private final java.util.Map<String, Action> actions = new java.util.LinkedHashMap<>();
+    private long seq = 0;
+
+    static class Action {
+        String id;
+        String action;
+        int state = PROPOSED;
+        long createdAt;
+    }
+
+    ApprovalQueue(long ttlMs) {
+        this.ttlMs = ttlMs;
+    }
+
+    String submit(String key, String action, long now) {
+        String existing = idByKey.get(key);
+        if (existing != null) return existing;              // idempotency: cùng key -> id cũ
+        String id = "a" + (++seq);
+        Action a = new Action();
+        a.id = id;
+        a.action = action;
+        a.createdAt = now;
+        actions.put(id, a);
+        idByKey.put(key, id);
+        return id;
+    }
+
+    boolean approve(String id, long now) {
+        Action a = actions.get(id);
+        if (a == null || a.state != PROPOSED) return false;
+        if (expired(a, now)) { a.state = EXPIRED; return false; }
+        a.state = APPROVED;
+        return true;
+    }
+
+    boolean reject(String id, long now) {
+        Action a = actions.get(id);
+        if (a == null || a.state != PROPOSED) return false;
+        if (expired(a, now)) { a.state = EXPIRED; return false; }
+        a.state = REJECTED;
+        return true;
+    }
+
+    boolean execute(String id, long now) {
+        Action a = actions.get(id);
+        if (a == null || a.state != APPROVED) return false;  // chỉ chạy khi đã duyệt
+        if (expired(a, now)) { a.state = EXPIRED; return false; }
+        a.state = EXECUTED;                                  // idempotent: lần sau state != APPROVED
+        return true;
+    }
+
+    int state(String id) {
+        Action a = actions.get(id);
+        return a == null ? -1 : a.state;
+    }
+
+    private boolean expired(Action a, long now) {
+        return now - a.createdAt > ttlMs;
+    }
+}`,
+      hints: [
+        `submit: nếu idempotency key đã tồn tại thì trả id cũ, không tạo bản ghi mới.`,
+        `approve/reject: chỉ khi state == PROPOSED và now - createdAt <= ttlMs; quá hạn thì chuyển EXPIRED và trả false.`,
+        `execute: chỉ khi state == APPROVED; sau khi chạy đặt EXECUTED nên lần hai trả false (idempotent).`,
+        `state: tra map, id không tồn tại trả về -1.`
+      ],
+      explain: `### Lời giải
+- {{submit}}: tra {{idByKey}} trước; nếu key đã có thì trả id cũ (idempotent). Ngược lại tạo id mới {{a}}, {{++seq}}, lưu vào hai map rồi trả id.
+- {{approve}} và {{reject}}: chỉ thao tác khi {{state == PROPOSED}}; nếu {{now - createdAt > ttlMs}} thì đánh dấu {{EXPIRED}} và trả {{false}}.
+- {{execute}}: chỉ chạy khi {{state == APPROVED}}; sau khi chạy đặt {{EXECUTED}} nên lần gọi sau {{state != APPROVED}} → trả {{false}} (đây là điểm idempotent).
+- {{state}}: tra map, không thấy trả {{-1}}.
+
+### Lỗi hay gặp
+- Cho execute chạy khi chưa APPROVED → mất tác dụng của bước duyệt.
+- Không kiểm tra hết hạn lúc execute → có thể chạy một hành động đã duyệt từ lâu, dữ liệu đã đổi.
+- Tạo id mới mỗi lần submit cùng key → hoàn tiền hai lần.
+- Quên chuyển trạng thái sau execute → execute lần hai vẫn chạy tiếp.
+
+> Senior tip: trong hệ thống thật, hãy lưu PendingAction vào DB (không chỉ trong RAM) và đặt unique constraint trên idempotency key; như vậy kể cả khi tiến trình khởi động lại cũng không tạo bản ghi trùng.`
+    }
+  ],
+  check: [
+    {
+      q: `Hành động nào bắt buộc phải qua bước người duyệt (human-in-the-loop)?`,
+      options: [
+        `Tra cứu lịch sử giao dịch của khách`,
+        `Chuyển 50 triệu đồng cho tài khoản ngoài`,
+        `Tính tổng tiền trong giỏ hàng`,
+        `Đọc tồn kho sản phẩm`
+      ],
+      answer: 1,
+      explain: `Chuyển tiền là tool ghi, thay đổi dữ liệu thật và khó hoàn tác, nên bắt buộc người duyệt. Ba phương án còn lại chỉ là đọc/tính toán, không làm đổi dữ liệu, có thể cho chạy tự do. Ranh giới chung: đọc tự do, ghi phải duyệt.`
+    },
+    {
+      q: `Vì sao submit cùng một idempotency key phải trả về id cũ thay vì tạo bản ghi mới?`,
+      options: [
+        `Để tiết kiệm bộ nhớ`,
+        `Để chống việc tạo hai hành động trùng và thực thi hai lần (ví dụ hoàn tiền hai lần)`,
+        `Vì id phải luôn bắt đầu bằng chữ a`,
+        `Vì state chỉ nhận giá trị PROPOSED`
+      ],
+      answer: 1,
+      explain: `Idempotency key đảm bảo mỗi hành động nghiệp vụ chỉ tồn tại một bản ghi; nếu client retry hoặc người duyệt bấm hai lần, hệ thống vẫn trả về đúng id cũ và execute chỉ chạy một lần. Tiết kiệm bộ nhớ không phải mục đích chính, id không cần bắt đầu bằng a, và state có nhiều giá trị.`
+    },
+    {
+      q: `Một đề xuất APPROVED nhưng tới lúc execute đã quá TTL thì nên làm gì?`,
+      options: [
+        `Vẫn execute vì đã được duyệt`,
+        `Chuyển sang EXPIRED và không execute, vì dữ liệu đã lỗi thời`,
+        `Chuyển ngược về PROPOSED để duyệt lại từ đầu`,
+        `Execute rồi ghi log cảnh báo`
+      ],
+      answer: 1,
+      explain: `Duyệt theo dữ liệu cũ khi đã quá hạn là rủi ro (số dư, trạng thái khách hàng đã đổi), nên chuyển EXPIRED và không chạy. Không được execute, không quay lại PROPOSED, và chỉ ghi log cảnh báo là chưa đủ an toàn.`
+    },
+    {
+      q: `Audit log cho mỗi chuyển trạng thái dùng để làm gì?`,
+      options: [
+        `Tăng tốc độ thực thi tool`,
+        `Truy vết ai duyệt, lúc nào, hành động gì; phục vụ điều tra và tuân thủ`,
+        `Thay thế idempotency key`,
+        `Giảm số bước trong máy trạng thái`
+      ],
+      answer: 1,
+      explain: `Audit log là bằng chứng bất biến: ai (approver), lúc nào, hành động gì, từ trạng thái nào sang trạng thái nào; dùng khi khách khiếu nại và cho tuân thủ. Nó không tăng tốc, không thay thế idempotency key và không giảm số bước.`
+    }
+  ],
+  related: [
+    `ai-004`,
+    `ai-063`,
+    `ai-071`
+  ],
+  tags: [
+    `ai`,
+    `agent`,
+    `human-in-the-loop`,
+    `approval`,
+    `idempotency`,
+    `audit`
+  ]
+},
+{
+  id: `lesson-ai-024`,
+  track: `ai`,
+  order: 24,
+  title: `Structured output an toàn`,
+  level: `senior`,
+  minutes: 40,
+  goals: [
+    `Giải thích vì sao không được tin JSON của model và vì sao cần validate riêng phần nghiệp vụ.`,
+    `Bóc code fence và cắt văn bản thừa trước khi parse JSON.`,
+    `Tự viết parser JSON object phẳng và validate theo schema (required, type, enum).`,
+    `Cài retry đúng 1 lần kèm thông báo lỗi cho model, rồi fallback giá trị an toàn.`,
+    `Tránh các bẫy: retry vô hạn, nhầm null với lỗi parse, và âm thầm dùng dữ liệu sai.`
+  ],
+  body: `**Tóm tắt:** "Structured output" (đầu ra có cấu trúc) là ép model trả về JSON theo một schema (cấu trúc dữ liệu) cố định để ứng dụng đọc được bằng code. Nhưng model **không đảm bảo** trả JSON hợp lệ: nó hay bọc JSON trong một khối code (code fence), thêm câu dẫn kiểu "Đây là JSON:", hoặc trả JSON sai cú pháp, sai kiểu, thiếu field. Quy trình an toàn gồm 4 bước: (1) bóc khối code và cắt văn bản thừa; (2) parse JSON; (3) validate theo schema tự viết (field bắt buộc, kiểu, enum); (4) nếu lỗi thì **retry đúng 1 lần** kèm thông báo lỗi cho model, cuối cùng **fallback** về giá trị an toàn thay vì làm sập ứng dụng.
+
+### 1. Vì sao model trả JSON bẩn
+Model được huấn luyện để trả lời như người, nên kể cả khi được yêu cầu "chỉ trả JSON", nó vẫn có thể thêm lời chào, bọc code fence, hoặc "sáng tạo" thêm field. Ngoài ra model có thể trả JSON **đúng cú pháp nhưng sai ràng buộc nghiệp vụ**: tuổi là chuỗi "abc", role là "superadmin" không nằm trong danh sách cho phép. Vì vậy không được tin JSON của model; phải coi mọi đầu ra là **dữ liệu chưa kiểm chứng**.
+
+### 2. Bóc code fence và cắt văn bản thừa
+Đầu ra thực tế của model thường không sạch. Model có thể bọc object trong một khối code có nhãn json, thêm câu dẫn phía trước và câu chốt phía sau. Vì vậy bước đầu tiên là bóc khối code (lấy phần giữa dòng mở và dòng đóng khối), rồi cắt tới dấu mở ngoặc nhọn đầu tiên và dấu đóng ngoặc nhọn cuối cùng để loại câu dẫn, câu chốt. Nếu không có khối code thì chỉ cần cắt theo cặp ngoặc nhọn đầu và cuối. Kết quả phải là một object JSON trọn vẹn, ví dụ:
+~~~json
+{"name": "Alice", "age": 30}
+~~~
+
+### 3. Parse JSON
+Sau khi có chuỗi JSON sạch, dùng một parser nhỏ để biến thành {{Map<String,Object>}}. Bài tập tự viết parser cho object phẳng (không lồng nhau), nhận diện: chuỗi (trong ngoặc kép), số nguyên hoặc số thực, {{true}}/{{false}}/{{null}}. Nếu cú pháp sai (thiếu dấu phẩy, thiếu ngoặc, có rác ở cuối) thì trả {{null}} — coi như parse thất bại.
+
+### 4. Validate theo schema tự viết
+Schema do bạn định nghĩa gồm:
+- {{required}}: danh sách field bắt buộc phải có.
+- {{types}}: field nào là {{string}}, {{number}}, {{boolean}}.
+- {{enums}}: field nào chỉ được nhận một tập giá trị cho trước (ví dụ {{role}} chỉ nhận {{user}} hoặc {{editor}}).
+
+{{validate()}} trả về một chuỗi mô tả lỗi ({{null}} nếu hợp lệ). Đây là bước quan trọng nhất: nó biến "JSON đúng cú pháp" thành "JSON đúng nghiệp vụ".
+
+### 5. Retry 1 lần kèm lỗi, rồi fallback
+Nếu {{validate}} báo lỗi, **đừng** ném ngoại lệ làm sập. Hãy gọi lại model **đúng một lần**, kèm thông báo lỗi cụ thể ("thiếu field age", "field age phải là number") để model sửa. Nếu lần hai vẫn sai, **fallback**: trả về giá trị mặc định an toàn (ví dụ map rỗng hoặc {{null}}) và ghi log để đo tỉ lệ lỗi. Nguyên tắc: **không tạo vòng lặp retry vô hạn** (mỗi lần gọi model tốn tiền và thời gian), và **không âm thầm dùng dữ liệu sai**.
+
+### 6. Ví dụ số liệu
+Lần 1, model trả về kèm câu dẫn và sai kiểu:
+~~~text
+Đây là JSON:
+{"name": "Alice", "age": "abc"}
+~~~
+Sau khi bóc và parse, {{validate}} thấy {{age}} là chuỗi trong khi schema yêu cầu {{number}} → báo lỗi "sai kieu field age". Hệ thống gọi lại model đúng một lần kèm lỗi đó; lần 2 model trả:
+~~~json
+{"name": "Alice", "age": 30}
+~~~
+{{validate}} báo hợp lệ, dùng luôn. Nếu lần 2 vẫn sai thì fallback {{null}} và ghi log {{structured_output_failed}} để đo tỉ lệ lỗi.
+
+### 7. Bài tập
+Bạn cài {{OutputValidator}} (kèm một {{FakeModel}} trả JSON soạn sẵn để mô phỏng model) gồm: {{extractJson}} (bóc code fence và cắt rác), {{parseFlat}} (parse JSON object phẳng), {{validate}} (kiểm required/type/enum), và {{generate}} (gọi model, validate, retry 1 lần, fallback). Bài tập buộc bạn xử lý đủ các trường hợp: JSON bọc code fence, JSON sai cú pháp, thiếu field, sai kiểu, sai enum, và model trả đúng ngay lần đầu.
+
+### Liên hệ phỏng vấn
+Câu hỏi: "Model thỉnh thoảng trả JSON hỏng, thiếu field hoặc sai kiểu. Bạn thiết kế lớp structured output, validate và retry thế nào?" Trả lời theo bốn bước: (1) bóc code fence và cắt văn bản thừa; (2) parse JSON, thất bại thì coi như lỗi; (3) validate theo schema tự viết (required, type, enum) để bắt JSON sai nghiệp vụ chứ không chỉ sai cú pháp; (4) retry đúng 1 lần kèm thông báo lỗi, nếu vẫn sai thì fallback giá trị an toàn và ghi log. Nhấn mạnh: không retry vô hạn (tốn tiền), không âm thầm dùng dữ liệu sai.
+
+> Senior tip: đừng dựa vào một tầng duy nhất. "Structured output" nên kết hợp: (a) ràng buộc phía API nếu nhà cung cấp hỗ trợ (JSON schema hoặc function calling) để giảm lỗi ngay từ đầu; (b) validate phía bạn để bắt ràng buộc nghiệp vụ mà schema chung không diễn tả được; (c) đo tỉ lệ fallback theo model/version để biết khi nào cần đổi model hoặc sửa prompt.`,
+  exercises: [
+    {
+      title: `OutputValidator: extractJson, parseFlat, validate và generate có retry`,
+      prompt: `Viết các class {{FakeModel}}, {{Schema}} và {{OutputValidator}} bằng Java thuần (JDK chuẩn).
+
+{{FakeModel}}: mô phỏng model, nhận một danh sách câu trả lời soạn sẵn qua constructor {{FakeModel(String... responses)}}; {{String complete(String prompt)}} trả lần lượt từng câu, nếu hết thì lặp lại câu cuối; {{int calls()}} trả số lần đã gọi; {{String lastPrompt()}} trả prompt của lần gọi gần nhất.
+
+{{Schema}}: {{Schema(String[] required, Map<String,String> types, Map<String,Set<String>> enums)}} — mô tả field bắt buộc, kiểu ({{string}}/{{number}}/{{boolean}}), và tập giá trị enum.
+
+{{OutputValidator}} (các method static):
+1. {{String extractJson(String raw)}}: bóc khối code (nếu có) và cắt tới dấu mở ngoặc nhọn đầu cộng dấu đóng ngoặc nhọn cuối; trả {{null}} nếu không tìm thấy.
+2. {{Map<String,Object> parseFlat(String json)}}: parse object JSON phẳng (giá trị là chuỗi, số, {{true}}/{{false}}/{{null}}); trả {{null}} nếu cú pháp sai.
+3. {{String validate(Map<String,Object> obj, Schema schema)}}: trả thông báo lỗi ({{null}} nếu hợp lệ). Kiểm tra: đủ field {{required}}, đúng kiểu trong {{types}}, giá trị enum nằm trong {{enums}}.
+4. {{Map<String,Object> generate(FakeModel model, Schema schema, String prompt)}}: gọi {{model.complete(prompt)}}, parse cộng validate; nếu lỗi thì gọi lại **đúng 1 lần** với prompt kèm thông báo lỗi; nếu vẫn lỗi thì trả {{null}} (fallback).`,
+      starter: `class FakeModel {
+    private final java.util.List<String> responses;
+    private int idx = 0;
+    private String lastPrompt = "";
+    FakeModel(String... responses) {
+        this.responses = new java.util.ArrayList<>();
+        for (String r : responses) this.responses.add(r);
+    }
+    String complete(String prompt) {
+        this.lastPrompt = prompt;
+        if (responses.isEmpty()) return "";
+        if (idx >= responses.size()) return responses.get(responses.size() - 1);
+        return responses.get(idx++);
+    }
+    int calls() { return idx; }
+    String lastPrompt() { return lastPrompt; }
+}
+
+class Schema {
+    final String[] required;
+    final java.util.Map<String, String> types;
+    final java.util.Map<String, java.util.Set<String>> enums;
+    Schema(String[] required, java.util.Map<String, String> types, java.util.Map<String, java.util.Set<String>> enums) {
+        this.required = required;
+        this.types = types;
+        this.enums = enums;
+    }
+}
+
+class OutputValidator {
+    static String extractJson(String raw) { throw new UnsupportedOperationException("TODO"); }
+    static java.util.Map<String, Object> parseFlat(String json) {
+        throw new UnsupportedOperationException("TODO");
+    }
+    static String validate(java.util.Map<String, Object> obj, Schema schema) {
+        throw new UnsupportedOperationException("TODO");
+    }
+    static java.util.Map<String, Object> generate(FakeModel model, Schema schema, String prompt) {
+        throw new UnsupportedOperationException("TODO");
+    }
+}`,
+      tests: `public class Main {
+    static int passed = 0, total = 0;
+    static void check(String name, Runnable r) {
+        total++;
+        try { r.run(); passed++; System.out.println("PASS " + name); }
+        catch (Throwable t) { System.out.println("FAIL " + name + ": " + t); }
+    }
+    static void eq(Object exp, Object act) {
+        if (!java.util.Objects.equals(exp, act)) throw new AssertionError("expected " + exp + " got " + act);
+    }
+    static void truth(boolean cond, String msg) {
+        if (!cond) throw new AssertionError(msg);
+    }
+    static java.util.Set<String> set(String... xs) {
+        java.util.Set<String> s = new java.util.HashSet<>();
+        for (String x : xs) s.add(x);
+        return s;
+    }
+    static Schema demoSchema() {
+        java.util.Map<String, String> types = new java.util.LinkedHashMap<>();
+        types.put("name", "string");
+        types.put("age", "number");
+        java.util.Map<String, java.util.Set<String>> enums = new java.util.LinkedHashMap<>();
+        enums.put("role", set("user", "editor"));
+        return new Schema(new String[]{"name", "age"}, types, enums);
+    }
+    public static void main(String[] args) {
+        check("extractJson strips code fence", () -> {
+            String raw = "Here you go:\\n\`\`\`json\\n{\\"name\\":\\"Alice\\"}\\n\`\`\`\\nDone";
+            eq("{\\"name\\":\\"Alice\\"}", OutputValidator.extractJson(raw));
+        });
+        check("extractJson trims extra text", () -> {
+            String raw = "prefix {\\"a\\":1} suffix";
+            eq("{\\"a\\":1}", OutputValidator.extractJson(raw));
+        });
+        check("parseFlat valid object", () -> {
+            java.util.Map<String, Object> m = OutputValidator.parseFlat("{\\"name\\":\\"Alice\\",\\"age\\":30,\\"active\\":true}");
+            eq("Alice", m.get("name"));
+            eq(30L, m.get("age"));
+            eq(true, m.get("active"));
+        });
+        check("parseFlat invalid trailing comma", () -> {
+            eq(null, OutputValidator.parseFlat("{\\"name\\":\\"Alice\\",}"));
+        });
+        check("parseFlat invalid garbage", () -> {
+            eq(null, OutputValidator.parseFlat("not json at all"));
+        });
+        check("validate missing required field", () -> {
+            java.util.Map<String, Object> m = new java.util.LinkedHashMap<>();
+            m.put("name", "Alice");
+            truth(OutputValidator.validate(m, demoSchema()) != null, "should report missing age");
+        });
+        check("validate wrong type", () -> {
+            java.util.Map<String, Object> m = new java.util.LinkedHashMap<>();
+            m.put("name", "Alice");
+            m.put("age", "abc");
+            truth(OutputValidator.validate(m, demoSchema()) != null, "should report wrong age type");
+        });
+        check("validate invalid enum", () -> {
+            java.util.Map<String, Object> m = new java.util.LinkedHashMap<>();
+            m.put("name", "Alice");
+            m.put("age", 30L);
+            m.put("role", "superadmin");
+            truth(OutputValidator.validate(m, demoSchema()) != null, "should report invalid role");
+        });
+        check("validate ok returns null", () -> {
+            java.util.Map<String, Object> m = new java.util.LinkedHashMap<>();
+            m.put("name", "Alice");
+            m.put("age", 30L);
+            m.put("role", "user");
+            eq(null, OutputValidator.validate(m, demoSchema()));
+        });
+        check("generate retries then succeeds", () -> {
+            FakeModel m = new FakeModel("{\\"name\\":\\"Alice\\",\\"age\\":\\"abc\\"}", "{\\"name\\":\\"Alice\\",\\"age\\":30}");
+            java.util.Map<String, Object> out = OutputValidator.generate(m, demoSchema(), "extract");
+            eq("Alice", out.get("name"));
+            eq(30L, out.get("age"));
+            eq(2, m.calls());
+            truth(m.lastPrompt().contains("age"), "retry prompt must include the error");
+        });
+        check("generate fallback after second failure", () -> {
+            FakeModel m = new FakeModel("{\\"name\\":\\"Alice\\",\\"age\\":\\"abc\\"}", "{\\"name\\":\\"Alice\\",\\"age\\":\\"xyz\\"}");
+            java.util.Map<String, Object> out = OutputValidator.generate(m, demoSchema(), "extract");
+            eq(null, out);
+            eq(2, m.calls());
+        });
+        System.out.println("RESULT " + passed + "/" + total);
+    }
+}`,
+      reference: `class FakeModel {
+    private final java.util.List<String> responses;
+    private int idx = 0;
+    private String lastPrompt = "";
+    FakeModel(String... responses) {
+        this.responses = new java.util.ArrayList<>();
+        for (String r : responses) this.responses.add(r);
+    }
+    String complete(String prompt) {
+        this.lastPrompt = prompt;
+        if (responses.isEmpty()) return "";
+        if (idx >= responses.size()) return responses.get(responses.size() - 1);
+        return responses.get(idx++);
+    }
+    int calls() { return idx; }
+    String lastPrompt() { return lastPrompt; }
+}
+
+class Schema {
+    final String[] required;
+    final java.util.Map<String, String> types;
+    final java.util.Map<String, java.util.Set<String>> enums;
+    Schema(String[] required, java.util.Map<String, String> types, java.util.Map<String, java.util.Set<String>> enums) {
+        this.required = required;
+        this.types = types;
+        this.enums = enums;
+    }
+}
+
+class OutputValidator {
+    private static final Object ERR = new Object();   // sentinel: lỗi cú pháp (khác null hợp lệ)
+
+    static String extractJson(String raw) {
+        if (raw == null) return null;
+        String s = raw;
+        int fence = s.indexOf("\`\`\`");                 // bóc khối code nếu có
+        if (fence >= 0) {
+            int start = fence + 3;
+            if (start < s.length() && Character.isLetter(s.charAt(start))) {
+                while (start < s.length() && !Character.isWhitespace(s.charAt(start))) start++;   // bỏ nhãn json
+            }
+            int end = s.indexOf("\`\`\`", start);
+            if (end >= 0) s = s.substring(start, end);
+            else s = s.substring(start);
+        }
+        int lb = s.indexOf("{");
+        int rb = s.lastIndexOf("}");
+        if (lb >= 0 && rb > lb) return s.substring(lb, rb + 1);
+        return s.trim();
+    }
+
+    static java.util.Map<String, Object> parseFlat(String json) {
+        if (json == null) return null;
+        int[] p = {0};
+        skipWs(json, p);
+        if (!expect(json, p, '{')) return null;
+        java.util.Map<String, Object> map = new java.util.LinkedHashMap<>();
+        skipWs(json, p);
+        if (peek(json, p) == '}') { p[0]++; return finishParse(json, p, map); }
+        while (true) {
+            skipWs(json, p);
+            Object k = parseString(json, p);
+            if (k == ERR) return null;
+            skipWs(json, p);
+            if (!expect(json, p, ':')) return null;
+            skipWs(json, p);
+            Object v = parseValue(json, p);
+            if (v == ERR) return null;
+            map.put((String) k, v);
+            skipWs(json, p);
+            char c = peek(json, p);
+            if (c == ',') { p[0]++; continue; }
+            if (c == '}') { p[0]++; return finishParse(json, p, map); }
+            return null;
+        }
+    }
+
+    private static java.util.Map<String, Object> finishParse(String s, int[] p, java.util.Map<String, Object> map) {
+        skipWs(s, p);
+        return p[0] == s.length() ? map : null;       // còn rác ở cuối -> lỗi
+    }
+
+    private static Object parseValue(String s, int[] p) {
+        char c = peek(s, p);
+        if (c == '"') return parseString(s, p);
+        if (c == '{' || c == '[') return ERR;         // bài này chỉ hỗ trợ object phẳng
+        if (c == 't' || c == 'f') return parseBool(s, p);
+        if (c == 'n') return parseNull(s, p);
+        if (c == '-' || (c >= '0' && c <= '9')) return parseNumber(s, p);
+        return ERR;
+    }
+
+    private static Object parseString(String s, int[] p) {
+        if (peek(s, p) != '"') return ERR;
+        p[0]++;
+        StringBuilder sb = new StringBuilder();
+        while (p[0] < s.length()) {
+            char c = s.charAt(p[0]++);
+            if (c == '"') return sb.toString();
+            if (c == '\\\\') {
+                if (p[0] >= s.length()) return ERR;
+                char e = s.charAt(p[0]++);
+                if (e == '"') sb.append('"');
+                else if (e == '\\\\') sb.append('\\\\');
+                else if (e == '/') sb.append('/');
+                else if (e == 'n') sb.append('\\n');
+                else if (e == 't') sb.append('\\t');
+                else if (e == 'r') sb.append('\\r');
+                else return ERR;
+            } else {
+                sb.append(c);
+            }
+        }
+        return ERR;                                   // thiếu dấu " đóng
+    }
+
+    private static Object parseBool(String s, int[] p) {
+        if (match(s, p, "true")) return Boolean.TRUE;
+        if (match(s, p, "false")) return Boolean.FALSE;
+        return ERR;
+    }
+
+    private static Object parseNull(String s, int[] p) {
+        if (match(s, p, "null")) return null;         // null là giá trị hợp lệ
+        return ERR;
+    }
+
+    private static Object parseNumber(String s, int[] p) {
+        int start = p[0];
+        if (peek(s, p) == '-') p[0]++;
+        while (p[0] < s.length() && Character.isDigit(s.charAt(p[0]))) p[0]++;
+        boolean dec = false;
+        if (p[0] < s.length() && s.charAt(p[0]) == '.') {
+            dec = true; p[0]++;
+            while (p[0] < s.length() && Character.isDigit(s.charAt(p[0]))) p[0]++;
+        }
+        String num = s.substring(start, p[0]);
+        try {
+            return dec ? (Object) Double.valueOf(num) : (Object) Long.valueOf(num);
+        } catch (NumberFormatException e) {
+            return ERR;
+        }
+    }
+
+    static String validate(java.util.Map<String, Object> obj, Schema schema) {
+        if (obj == null) return "khong phai JSON object hop le";
+        for (String req : schema.required) {
+            if (!obj.containsKey(req)) return "thieu field bat buoc: " + req;
+        }
+        for (java.util.Map.Entry<String, String> e : schema.types.entrySet()) {
+            String field = e.getKey();
+            if (!obj.containsKey(field)) continue;
+            if (!typeOk(obj.get(field), e.getValue())) return "sai kieu field " + field + ": can " + e.getValue();
+        }
+        for (java.util.Map.Entry<String, java.util.Set<String>> e : schema.enums.entrySet()) {
+            String field = e.getKey();
+            if (!obj.containsKey(field)) continue;
+            Object v = obj.get(field);
+            if (!(v instanceof String)) return "field " + field + " phai la chuoi enum";
+            if (!e.getValue().contains(v)) return "gia tri khong hop le cho " + field + ": " + v;
+        }
+        return null;
+    }
+
+    private static boolean typeOk(Object v, String want) {
+        if ("number".equals(want)) return v instanceof Number;
+        if ("string".equals(want)) return v instanceof String;
+        if ("boolean".equals(want)) return v instanceof Boolean;
+        return true;
+    }
+
+    static java.util.Map<String, Object> generate(FakeModel model, Schema schema, String prompt) {
+        String raw = model.complete(prompt);
+        java.util.Map<String, Object> data = parseFlat(extractJson(raw));
+        String err = validate(data, schema);
+        if (err == null) return data;
+        String feedback = prompt + "\\nLan truoc bi loi: " + err + ". Hay tra lai JSON dung schema.";
+        String raw2 = model.complete(feedback);
+        java.util.Map<String, Object> data2 = parseFlat(extractJson(raw2));
+        String err2 = validate(data2, schema);
+        if (err2 == null) return data2;
+        return null;                                  // fallback: khong co du lieu hop le
+    }
+
+    private static char peek(String s, int[] p) {
+        return p[0] < s.length() ? s.charAt(p[0]) : '\\0';
+    }
+
+    private static void skipWs(String s, int[] p) {
+        while (p[0] < s.length() && Character.isWhitespace(s.charAt(p[0]))) p[0]++;
+    }
+
+    private static boolean expect(String s, int[] p, char c) {
+        if (peek(s, p) == c) { p[0]++; return true; }
+        return false;
+    }
+
+    private static boolean match(String s, int[] p, String lit) {
+        if (s.regionMatches(p[0], lit, 0, lit.length())) { p[0] += lit.length(); return true; }
+        return false;
+    }
+}`,
+      hints: [
+        `extractJson: bóc khối code (nếu có) rồi cắt tới dấu mở ngoặc nhọn đầu và dấu đóng ngoặc nhọn cuối.`,
+        `parseFlat: trả null khi cú pháp sai; phân biệt sentinel ERR với giá trị null hợp lệ.`,
+        `validate: kiểm required trước, rồi type (instanceof), rồi enum (Set.contains).`,
+        `generate: gọi model, validate; nếu lỗi thì gọi lại đúng 1 lần kèm thông báo lỗi; vẫn lỗi thì trả null.`
+      ],
+      explain: `### Lời giải
+- {{extractJson}}: tìm khối code (nếu có) rồi cắt giữa hai dòng mở/đóng khối, bỏ nhãn {{json}}; sau đó cắt tới dấu mở ngoặc nhọn đầu và dấu đóng ngoặc nhọn cuối.
+- {{parseFlat}}: duyệt ký tự với một con trỏ; đọc lần lượt dấu mở ngoặc nhọn, key, dấu hai chấm, giá trị, rồi dấu phẩy hoặc dấu đóng ngoặc nhọn; phân biệt {{ERR}} (lỗi cú pháp) với {{null}} (giá trị null hợp lệ). Cuối cùng kiểm tra không còn ký tự rác.
+- {{validate}}: lần lượt kiểm required ({{containsKey}}), type ({{instanceof Number/String/Boolean}}), enum ({{Set.contains}}); trả thông báo lỗi đầu tiên gặp.
+- {{generate}}: gọi model, parse cộng validate; nếu lỗi thì gọi lại 1 lần kèm {{err}}; nếu vẫn lỗi thì trả {{null}} (fallback).
+
+### Lỗi hay gặp
+- Tin luôn JSON của model mà không validate → dữ liệu sai nghiệp vụ lọt vào hệ thống.
+- Retry vô hạn khi model luôn sai → tốn tiền và treo request.
+- Nhầm {{null}} (giá trị hợp lệ) với thất bại parse → parseFlat phải phân biệt bằng sentinel riêng.
+- Bỏ quên cắt câu dẫn/câu chốt → parse thất bại dù JSON bên trong đúng.
+
+> Senior tip: hãy đo tỉ lệ parse lỗi và tỉ lệ validate lỗi theo từng model/version; nếu tỉ lệ cao, đừng chỉ tăng retry mà hãy sửa prompt, siết schema, hoặc đổi model. Retry là van an toàn, không phải chiến lược.`
+    }
+  ],
+  check: [
+    {
+      q: `Model trả về một khối code bọc JSON kèm câu dẫn. Bước đầu tiên nên làm gì?`,
+      options: [
+        `Ném ngoại lệ vì đầu ra không đúng chuẩn`,
+        `Bóc khối code và cắt tới cặp ngoặc nhọn đầu/cuối để lấy object JSON`,
+        `Gửi lại prompt ngay lập tức`,
+        `Cắt bỏ mọi ký tự không phải chữ cái`
+      ],
+      answer: 1,
+      explain: `Đầu ra của model thường lẫn câu dẫn, câu chốt và khối code; phải bóc lấy object JSON bên trong rồi mới parse. Ném ngoại lệ là quá cực đoan, gửi lại prompt ngay là lãng phí, và cắt mọi ký tự không phải chữ cái sẽ phá JSON.`
+    },
+    {
+      q: `Vì sao chỉ kiểm tra JSON đúng cú pháp là chưa đủ?`,
+      options: [
+        `Vì cú pháp đúng thì luôn đúng nghiệp vụ`,
+        `Vì JSON có thể đúng cú pháp nhưng sai kiểu, thiếu field bắt buộc hoặc sai enum nghiệp vụ`,
+        `Vì JSON không có kiểu`,
+        `Vì model không biết viết JSON`
+      ],
+      answer: 1,
+      explain: `JSON đúng cú pháp vẫn có thể sai ràng buộc nghiệp vụ: tuổi là chuỗi, role ngoài danh sách, thiếu field bắt buộc. Vì vậy cần validate riêng theo schema (required, type, enum), không chỉ dựa vào cú pháp.`
+    },
+    {
+      q: `Chiến lược retry nào là hợp lý khi model trả JSON sai?`,
+      options: [
+        `Retry liên tục cho tới khi đúng, không giới hạn`,
+        `Retry đúng 1 lần kèm thông báo lỗi, nếu vẫn sai thì fallback giá trị an toàn và ghi log`,
+        `Không bao giờ retry, luôn ném ngoại lệ`,
+        `Retry 100 lần mỗi request`
+      ],
+      answer: 1,
+      explain: `Retry đúng 1 lần kèm lỗi cụ thể cho model cơ hội sửa, nhưng không tạo vòng lặp vô hạn tốn tiền và treo request; nếu vẫn sai thì fallback an toàn và ghi log để đo tỉ lệ lỗi. Retry không giới hạn hoặc 100 lần là lãng phí, còn không retry thì bỏ mất cơ hội sửa.`
+    },
+    {
+      q: `Trong parser, vì sao cần phân biệt sentinel lỗi với giá trị null?`,
+      options: [
+        `Vì null không phải giá trị hợp lệ trong JSON`,
+        `Vì null là giá trị JSON hợp lệ, còn lỗi cú pháp phải trả về sentinel riêng để không nhầm`,
+        `Vì Java không có null`,
+        `Vì sentinel giúp tăng tốc parse`
+      ],
+      answer: 1,
+      explain: `Trong JSON, null là một giá trị hợp lệ (field có thể mang null). Nếu dùng null để báo lỗi cú pháp thì không phân biệt được "null hợp lệ" với "parse thất bại". Vì vậy cần một sentinel riêng (ví dụ ERR) cho lỗi cú pháp.`
+    }
+  ],
+  related: [
+    `ai-016`,
+    `ai-056`,
+    `ai-084`
+  ],
+  tags: [
+    `ai`,
+    `llm`,
+    `structured-output`,
+    `json`,
+    `validation`,
+    `retry`,
+    `fallback`
+  ]
 }
 );

@@ -2902,6 +2902,8 @@ window.DATA_INDEX = {
     {"id":"lesson-ai-020","track":"ai","order":20,"title":"RAG hands-on: MMR re-ranking de ket qua vua lien quan vua da dang","level":"senior","minutes":35},
     {"id":"lesson-ai-021","track":"ai","order":21,"title":"Streaming LLM qua SSE: đọc luồng từng mẩu, ghép text và tool-call arguments","level":"senior","minutes":55},
     {"id":"lesson-ai-022","track":"ai","order":22,"title":"Đo TTFT (time to first token) và tổng thời gian: đo đúng chỗ mới tối ưu đúng","level":"senior","minutes":45},
+    {"id":"lesson-ai-023","track":"ai","order":23,"title":"Human-in-the-loop cho agent","level":"senior","minutes":40},
+    {"id":"lesson-ai-024","track":"ai","order":24,"title":"Structured output an toàn","level":"senior","minutes":40},
     {"id":"lesson-claude-001","track":"claude","order":1,"title":"Vòng lặp agent với tool use: tool_use, tool_result, stop_reason và giới hạn số bước","level":"senior","minutes":40},
     {"id":"lesson-claude-002","track":"claude","order":2,"title":"Retry đúng cách cho 429, 529 và 5xx: retry-after, exponential backoff và full jitter","level":"mid","minutes":30},
     {"id":"lesson-claude-003","track":"claude","order":3,"title":"Ngân sách context và prompt caching: cắt lịch sử an toàn, đặt cache_control và đọc usage","level":"senior","minutes":35},
