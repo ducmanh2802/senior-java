@@ -1,0 +1,102 @@
+{
+  "date": "2026-11-22",
+  "intro": "Hôm nay tin Java ít hơn thường lệ: đáng chú ý nhất là hướng dẫn của Apache Kafka về lỗ hổng Java4Shell trong JDK (không phải trong Kafka), Spring Cloud 2026.0.0 ra mắt trên Spring Boot 4.2, và hai bài của Kubernetes về việc loại bỏ kube-proxy IPVS cùng lộ trình bỏ cgroup v1, cả hai ảnh hưởng tới service Java chạy trên K8s.",
+  "editor": "claude",
+  "items": [
+    {
+      "title_vi": "Kafka hướng dẫn xử lý Java4Shell (CVE-2026-114938): lỗi nằm ở JDK, không cần nâng cấp Kafka",
+      "title": "Mitigating CVE-2026-114938 (\"Java4Shell\") in Apache Kafka deployments",
+      "url": "https://kafka.apache.org/blog/2026/11/19/mitigating-cve-2026-114938-java4shell-in-apache-kafka-deployments/",
+      "source": "Apache Kafka Blog",
+      "category": "tech",
+      "summary": "Java4Shell là lỗi trong JDK (intrinsic AVX-512 VBMI dùng để giải mã Base64 trên x86-64), không phải trong Kafka. Broker, controller, Connect, Streams và client đều bị ảnh hưởng nếu chạy Java 17.0.6–17.0.21, 21 đến 21.0.13 hoặc 25, 27 trên CPU có AVX-512 VBMI; bản sửa là 17.0.21.1, 21.0.13.1, 25.0.5.1, 27.0.1.1. Cách xử lý tạm là thêm {{-XX:-UseBASE64Intrinsics}} qua {{KAFKA_OPTS}}. Image {{apache/kafka}} hiện đều chứa JRE dính lỗi, còn {{apache/kafka-native}} không bị ảnh hưởng.",
+      "why": "Nhiều service Java dùng Kafka chạy trong container có JDK dính lỗi. Biết kiểm tra phiên bản JDK trong image, áp dụng cờ JVM tạm thời và lên kế hoạch nâng JDK là việc của một Senior.",
+      "interview_q": "Một lỗ hổng nằm ở JDK được công bố, bạn kiểm tra mức độ ảnh hưởng với hàng chục service Java trong container và triển khai bản vá thế nào mà không gián đoạn?",
+      "related": [
+        "security-001",
+        "devops-001",
+        "jvm-001"
+      ],
+      "tags": [
+        "security",
+        "kafka",
+        "jdk"
+      ]
+    },
+    {
+      "title_vi": "Spring Cloud 2026.0.0 (Paddington) ra mắt trên Spring Boot 4.2, kèm loạt bản vá bảo mật",
+      "title": "Spring Cloud 2026.0.0 (aka Paddington) Has Been Released",
+      "url": "https://spring.io/blog/2026/11/20/spring-cloud-2026-0-0-has-been-released",
+      "source": "Spring Blog",
+      "category": "tech",
+      "summary": "Release train mới dựa trên Spring Boot 4.2.0, các module ở bản 5.1.0. Spring Cloud Bus được gộp vào Spring Cloud Stream; Config client hỗ trợ OAuth 2; Gateway MVC có WebSocket và filter LocalResponseCache; Kubernetes Configuration Watcher có HA. Deprecated: module RSocket và gRPC của Function, Kafka Binder reactive và Schema Registry của Stream. Eureka client không còn dùng builder {{@LoadBalanced}} để gọi Eureka server. Bản này cũng vá nhiều CVE ở Config, Gateway, Kubernetes, Function, Netflix, Stream.",
+      "why": "Hệ microservices Spring thường dùng Gateway, Config và Stream; việc nâng lên Boot 4.2 kèm các deprecation cần được đưa vào kế hoạch nâng cấp, và bản vá bảo mật là lý do không nên trì hoãn.",
+      "interview_q": "Bạn lên kế hoạch nâng cấp cả hệ microservices từ release train Spring Cloud cũ lên bản mới thế nào để giảm rủi ro?",
+      "related": [
+        "microservices-001",
+        "spring-001",
+        "security-002"
+      ],
+      "tags": [
+        "spring-cloud",
+        "spring-boot"
+      ]
+    },
+    {
+      "title_vi": "Kubernetes lên lịch gỡ kube-proxy IPVS: chuyển sang nftables",
+      "title": "Scheduling the removal of the kube-proxy IPVS backend",
+      "url": "https://kubernetes.io/blog/2026/11/16/ipvs-removal/",
+      "source": "Kubernetes Blog",
+      "category": "devops",
+      "summary": "Backend {{ipvs}} của kube-proxy bị deprecated từ Kubernetes 1.35 và dự kiến gỡ ở 1.40, vì API IPVS của kernel không khớp với Services API và chưa bao giờ xử lý hết các trường hợp biên. Khuyến nghị chuyển sang {{nftables}} (GA từ 1.33; nên dùng từ K8s 1.36 trở lên, kernel 5.13+), hoặc {{iptables}} nếu cụm cũ. Đổi {{mode}} trong ConfigMap kube-proxy rồi restart pod; với iptables nên reboot node.",
+      "why": "Service Java trên K8s phụ thuộc kube-proxy để định tuyến Service. Nếu cụm đang dùng IPVS, cần hiểu kế hoạch di chuyển để không bất ngờ khi nâng cấp cluster.",
+      "interview_q": "Kube-proxy chuyển lưu lượng tới Service như thế nào, và so sánh các chế độ iptables, ipvs, nftables khi chọn cho cụm lớn?",
+      "related": [
+        "devops-001",
+        "devops-002"
+      ],
+      "tags": [
+        "kubernetes",
+        "networking"
+      ]
+    },
+    {
+      "title_vi": "Kubernetes và cgroup v2: v1 bị loại dần, ảnh hưởng tới cách JVM đọc giới hạn container",
+      "title": "The Shift to cgroup v2 in Kubernetes: What You Need to Know",
+      "url": "https://kubernetes.io/blog/2026/10/06/kubernetes-cgroups-v2-shift/",
+      "source": "Kubernetes Blog",
+      "category": "devops",
+      "summary": "cgroup v2 GA từ K8s 1.25, v1 vào chế độ bảo trì từ 1.31. Từ 1.35, kubelet mặc định không khởi động trên node cgroup v1 ({{failCgroupV1}} = true) và kubeadm báo lỗi; bản fallback v1 dự kiến gỡ ở 1.38. Trên v2, OOM mặc định giết mọi tiến trình trong cgroup của container, PSI metrics được bật và công cụ đọc trực tiếp file cgroup phải cập nhật. Bài khuyên kiểm tra phiên bản Java tương thích.",
+      "why": "JVM đọc giới hạn CPU và memory từ cgroup để chọn heap và thread pool; JDK cũ có thể báo sai trên node cgroup v2, dẫn tới OOMKilled hoặc pool sai kích thước.",
+      "interview_q": "Pod Java bị OOMKilled sau khi cụm chuyển sang cgroup v2, bạn điều tra thế nào và cấu hình heap, container support ra sao?",
+      "related": [
+        "jvm-001",
+        "devops-001"
+      ],
+      "tags": [
+        "kubernetes",
+        "jvm",
+        "cgroup"
+      ]
+    },
+    {
+      "title_vi": "Inside Java: vì sao mất 3000 commit để đưa value objects của Valhalla vào JDK",
+      "title": "Why It Takes 3000 Commits to Bring Valhalla's Value Objects to the JDK",
+      "url": "https://inside.java/2026/11/16/devoxxbelgium-valhalla-value-objects/",
+      "source": "Inside Java",
+      "category": "tech",
+      "summary": "Video bài nói tại Devoxx Belgium 2026 của David Simms về JEP 401 (Value Objects), đang vào OpenJDK dưới dạng tính năng preview với mô hình kiểu mới và ít thay đổi code. Bài nói giải thích value object là gì, lợi ích với JVM, lịch sử Project Valhalla, cách triển khai và hướng tới việc nối object với primitive, kèm hỗ trợ tương lai như {{List}}. Trang không nêu số liệu hiệu năng cụ thể.",
+      "why": "Value objects hứa hẹn thay đổi cách bố trí dữ liệu trong bộ nhớ và chi phí allocation của Java; dev Senior nên nắm hướng đi của nền tảng để trả lời câu hỏi về JVM và hiệu năng.",
+      "interview_q": "Value object khác object thường ở đâu, và theo bạn nó tác động thế nào tới memory layout và GC của ứng dụng Java?",
+      "related": [
+        "jvm-002",
+        "jvm-003"
+      ],
+      "tags": [
+        "valhalla",
+        "jdk",
+        "jvm"
+      ]
+    }
+  ]
+}
