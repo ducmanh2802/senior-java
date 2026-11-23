@@ -12609,4 +12609,236 @@ Một ngân hàng số có 40 triệu giao dịch, tra cứu sao kê bằng ES. 
   ],
   tags: ['Elasticsearch', 'CQRS', 'outbox', 'CDC', 'Debezium', 'search_after', 'pagination', 'reindex']
 },
+{
+  id: 'architecture-075',
+  topic: 'architecture',
+  level: 'lead',
+  q: 'Một hệ thống cần đủ sẵn sàng, mở rộng, dễ bảo trì, dễ quan sát, bảo mật và dễ kiểm thử cùng lúc — nhưng bạn không thể tối ưu tất cả. Bạn định nghĩa và chọn thuộc tính kiến trúc (architectural characteristics, gọi tắt là -ilities) ra sao cho sản phẩm Java, và ví dụ khi nào ưu tiên cái nào?',
+  a: `**Tóm tắt:** Thuộc tính kiến trúc là các đặc tính phi chức năng của hệ thống: sẵn sàng, mở rộng, bảo trì, quan sát, bảo mật và kiểm thử. Không có hệ thống tối ưu tất cả cùng lúc; kiến trúc sư phải xác định thuộc tính quan trọng nhất cho từng nghiệp vụ, đo bằng số liệu và chấp nhận trade-off.
+
+### Các thuộc tính phổ biến và định nghĩa
+Giải thích từ gốc để cả team thảo luận không nói nhầm mục:
+
+| Thuộc tính | Nghĩa đơn giản | Câu hỏi kiểm tra |
+|---|---|---|
+| Sẵn sàng (Availability) | Hệ thống trả lời yêu cầu trong tỷ lệ thời gian bao nhiêu | Hệ ngừng hoạt động bao giờ, bao lâu mỗi tháng? |
+| Mở rộng (Scalability) | Tăng tải mà không làm sập, chi phí tăng thế nào | Traffic gấp 10 lần, chi phí gấp bao nhiêu? |
+| Dễ bảo trì (Maintainability) | Thay đổi an toàn, nhanh, ít rủi ro | Thêm trường vào đơn hàng cần sửa mấy chỗ? |
+| Dễ quan sát (Observability) | Biết hệ thống đang làm gì từ bên ngoài qua metric, log, trace | Lỗi ở đâu, vì sao chậm, user nào bị ảnh hưởng? |
+| Bảo mật (Security) | Chỉ người được phép mới xem/sửa dữ liệu và thực hiện hành động | Ai có thể xóa đơn hàng của người khác? |
+| Dễ kiểm thử (Testability) | Tự động hóa kiểm thử dễ, chạy nhanh, độc lập | Thêm tính năng mới cần triển khai thật mới kiểm thử được không? |
+
+### Cách xác định và ưu tiên
+1. Lập danh sách từ yêu cầu nghiệp vụ. Ví dụ thanh toán cần sẵn sàng cao và bảo mật cao; news feed cần mở rộng và đọc nhanh.
+2. Gán trọng số. Mỗi thuộc tính không quan trọng bằng nhau. Ví dụ: sẵn sàng 30%, mở rộng 25%, bảo trì 20%, quan sát 15%, bảo mật 10%.
+3. Đo lường có bằng chứng. Sẵn sàng = thời gian hoạt động chia tổng thời gian; mở rộng = QPS tối đa khi tăng instance; bảo trì = thời gian trung bình đưa một thay đổi vào production; quan sát = thời gian từ phát hiện sự cố đến tìm nguyên nhân gốc.
+4. Chấp nhận trade-off. Tăng sẵn sàng thường giảm hiệu năng (thêm replica); tăng bảo mật thường tăng độ trễ (mã hóa, kiểm tra quyền); chia module nhỏ tăng độ dễ bảo trì nhưng phức tạp vận hành ban đầu.
+
+### Ví dụ số
+- Hệ thống log không quan trọng: sẵn sàng 99% chấp nhận được, không cần multi-region.
+- Ví điện tử: sẵn sàng 99,99% (ít hơn 53 phút ngừng hoạt động/năm), bảo mật cao, mở rộng cao theo sự kiện thanh toán.
+- News feed: sẵn sàng 99,5% (trễ vài giây chấp nhận được), mở rộng cực cao (tỷ tỷ bản ghi feed), bảo mật trung bình.
+
+### Code Java ngắn: mỗi lệnh ưu tiên thuộc tính khác nhau
+~~~java
+public class ArchitecturalTraits {
+    // Thanh toán: retry ít, fail nhanh, log chi tiết → ưu tiên tính đúng đắn và dễ bảo trì
+    public PaymentResult processPayment(PaymentRequest req) {
+        for (int attempt = 1; attempt <= 3; attempt++) {
+            try {
+                return paymentGateway.charge(req);
+            } catch (TransientException e) {
+                log.warn("Lỗi tạm thời thử lần {}", attempt, e);
+            }
+        }
+        throw new PaymentFailedException("Không thanh toán được sau 3 lần thử");
+    }
+
+    // Xem feed: đọc cache, miss thì trả dữ liệu cũ thay vì chậm → ưu tiên mở rộng và sẵn sàng
+    public FeedPage getFeed(String userId, int page) {
+        FeedPage cached = feedCache.get(userId);
+        if (cached != null) return cached;
+        return feedRepository.findRecent(userId, page); // chấp nhận dữ liệu hơi cũ để phản hồi nhanh
+    }
+}
+~~~
+Mã cho thấy lệnh khác nhau cần thuộc tính khác nhau: thanh toán ưu tiên tính đúng đắn, dễ bảo trì; feed ưu tiên mở rộng, sẵn sàng, chấp nhận dữ liệu hơi cũ (stale).
+
+### Bảng trade-off
+| Mục tiêu | Lựa chọn | Lợi ích | Hy sinh |
+|---|---|---|---|
+| Sẵn sàng cao | Nhiều replica, active-active | Không ngừng khi một node chết | Chi phí gấp 2–3 lần, chỉ đạt nhất quán cuối cùng |
+| Mở rộng cao | Sharding, phân vùng, cache | QPS cao hơn khi thêm máy | Truy vấn chéo shard phức tạp, nhất quán yếu hơn |
+| Dễ bảo trì | Module theo nghiệp vụ, kiểm thử tự động | Thay đổi nhanh, regression ít | Thiết kế ban đầu chậm hơn, cần kiến thức domain |
+| Dễ quan sát | Metric, log có cấu trúc, distributed trace | Phát hiện sự cố nhanh | Tốn lưu trữ, cần đồng ý định dạng giữa team |
+| Bảo mật mạnh | Mã hóa, kiểm tra quyền mọi lớp | Dữ liệu không rò rỉ | Độ trễ tăng, trải nghiệm người dùng phức tạp hơn |
+
+### Pitfall production
+- Chọn tất cả thuộc tính cùng lúc: thiết kế quá phức tạp, không ai vận hành được. Chọn 2–3 thuộc tính quan trọng nhất cho giai đoạn hiện tại.
+- Không có số liệu: nói "hệ thống cần sẵn sàng cao" mà không định nghĩa con số (99,9% hay 99,99%) thì không biết khi nào đủ.
+- Quan sát chỉ sau khi sự cố xảy ra: metric và log phải thiết kế cùng code, không bổ sung lúc đang cháy nhà.
+- Bảo mật chỉ ở lớp gateway: phải bảo vệ dữ liệu trong toàn bộ luồng, không chỉ cửa vào.
+- Kiểm thử chỉ chạy khi deploy: kiểm thử tự động phải chạy trong CI mỗi pull request, không phụ thuộc tester thủ công.
+
+### Ví dụ đời thực
+Một nền tảng thanh toán nội bộ có 2 triệu tài khoản. Triệu chứng: vào giờ cao điểm, p99 giao dịch tăng từ 200 ms lên 8 giây; có 12 trường hợp khách báo bị trừ tiền nhưng không nhận hàng; dashboard không biết lỗi ở dịch vụ nào. Điều tra: team chỉ quan tâm mở rộng (thêm instance) mà quên sẵn sàng và quan sát. Log không có correlation ID nên không thể nối luồng yêu cầu qua các dịch vụ; circuit breaker không cấu hình nên một dịch vụ chậm làm sập cả hệ. Nguyên nhân gốc: thiết kế ban đầu không ưu tiên sẵn sàng và quan sát như thuộc tính chính; chỉ đo QPS tổng thể, không theo dõi lỗi từng dịch vụ. Xử lý: (1) thêm metric p99 latency và error rate theo từng endpoint, dashboard Grafana; (2) cấu hình circuit breaker và timeout cho mỗi gọi giữa dịch vụ; (3) gán correlation ID vào mọi request và log structured JSON; (4) đặt SLO sẵn sàng 99,9% cho API thanh toán và cảnh báo khi vi phạm. Kết quả đo được: p99 giao dịch về 250 ms, thời gian phát hiện sự cố từ 45 phút xuống 5 phút, không còn trường hợp trừ tiền thiếu hàng trong 3 tháng theo dõi.
+
+### Trả lời mẫu khi phỏng vấn
+Khi thiết kế hệ thống Java, tôi không bảo hệ thống cần tốt mọi mặt. Tôi liệt kê các thuộc tính kiến trúc: sẵn sàng, mở rộng, dễ bảo trì, dễ quan sát, bảo mật, dễ kiểm thử, rồi hỏi sản phẩm cần cái nào nhất. Ví dụ thanh toán ưu tiên sẵn sàng 99,99% và bảo mật; news feed ưu tiên mở rộng và đọc nhanh. Mỗi thuộc tính phải có con số: sẵn sàng là tỷ lệ thời gian hoạt động, mở rộng là QPS tối đa khi tăng máy, dễ bảo trì là thời gian đưa thay đổi vào production. Tôi chấp nhận trade-off: nhiều replica tăng sẵn sàng nhưng gấp đôi chi phí; mã hóa tăng bảo mật nhưng thêm độ trễ. Trong code, lệnh thanh toán retry ít, fail nhanh, log chi tiết để dễ bảo trì; xem feed đọc cache, chấp nhận dữ liệu hơi cũ để mở rộng. Thực tế tôi từng sửa hệ thống thanh toán chỉ tập trung mở rộng, quên quan sát; sau khi thêm metric theo endpoint, circuit breaker và correlation ID, p99 giao dịch về 250 ms và phát hiện sự cố từ 45 phút xuống 5 phút.
+> Senior tip: thuộc tính kiến trúc không chỉ để viết tài liệu; nó phải trở thành SLO có số liệu và cảnh báo. Nếu không có con số và cảnh báo, thuộc tính đó chỉ là tiêu từ trên slide.`,
+  follow: [
+    'Bạn xử lý khi hai thuộc tính mâu thuẫn, ví dụ sẵn sàng cao versus nhất quán tuyệt đối, ra sao?',
+    'Làm sao thiết kế metric và log cho cả hệ thống microservice?',
+    'SLO (service level objective) là gì và khác SLA thế nào?'
+  ],
+  tags: ['architectural characteristics', '-ilities', 'availability', 'scalability', 'observability', 'SLO']
+},
+{
+  id: 'architecture-076',
+  topic: 'architecture',
+  level: 'senior',
+  q: 'Bạn đưa tính năng mới lên production cho ứng dụng Java/Spring Boot. So sánh blue-green, canary, rolling update và feature flag: cơ chế, khi nào dùng, làm sao theo dõi metrics và rollback nhanh?',
+  a: `**Tóm tắt:** Có 4 cách phổ biến đưa code mới lên production mà giảm rủi ro: blue-green (chuyển toàn bộ traffic sang môi trường mới), canary (gửi một phần traffic sang mới, tăng dần), rolling update (thay thế từng instance), và feature flag (bật/tắt tính năng mà không triển khai lại). Mỗi cách phù hợp với một tình huống và đều cần theo dõi metrics để rollback nhanh khi có sự cố.
+
+### Các chiến lược triển khai từng bước
+
+**1. Blue-green:** Chuẩn bị hai môi trường giống hệt: hiện tại (xanh) và mới (xanh lá). Triển khai code mới vào xanh lá, kiểm thử, rồi chuyển toàn bộ traffic từ xanh sang xanh lá bằng load balancer. Nếu có lỗi, chuyển ngược lại trong vài giây.
+- Khi nào dùng: Thay đổi lớn, cần rollback tức thì, có tài nguyên chạy đôi hệ thống.
+- Nhược: Chi phí gấp đôi; migration dữ liệu phức tạp nếu schema thay đổi.
+
+**2. Canary:** Gửi một phần nhỏ traffic (ví dụ 1%, 5%, 10%) sang phiên bản mới, theo dõi lỗi và độ trễ, rồi tăng dần lên 100%. Hai phiên bản chạy song song một thời gian.
+- Khi nào dùng: Thay đổi có thể ảnh hưởng hành vi người dùng, muốn kiểm tra trên traffic thật trước khi mở rộng.
+- Nhược: Cần điều hướng traffic theo phần trăm; hai phiên bản phải tương thích dữ liệu trong khoảng chạy song song.
+
+**3. Rolling update:** Thay thế từng instance cũ bằng instance mới, nhóm nhỏ từng lượt, giữ đủ instance cũ phục vụ trong khi cập nhật.
+- Khi nào dùng: Hệ thống stateless, chạy container/Kubernetes, không cần chạy hai phiên bản lâu dài.
+- Nhược: Trong lúc cập nhật hai phiên bản cùng chạy; nếu schema không tương thích ngược, có thể lỗi.
+
+**4. Feature flag:** Triển khai code mới nhưng gói tính năng trong cờ (flag). Mặc định tắt, bật cho nhóm người dùng hoặc toàn bộ khi khẳng định ổn định. Tắt cờ là rollback ngay, không cần build lại.
+- Khi nào dùng: Tính năng lớn muốn kiểm thử dần, thí nghiệm A/B, nút tắt khẩn cấp.
+- Nhược: Code chứa nhiều cờ phải dọn dẹp sau khi ổn định, nếu không gây rác kỹ thuật.
+
+### Mã Java ngắn: feature flag đơn giản
+~~~java
+public class CheckoutService {
+    private final FeatureFlags flags;   // đọc từ cấu hình hoặc dịch vụ cờ
+    private final PaymentGateway newGateway; // cổng thanh toán mới
+
+    public PaymentResult pay(PaymentRequest req) {
+        if (flags.isEnabled("new-payment-gateway", req.userId())) {
+            return newGateway.charge(req); // tính năng mới, bật theo cờ
+        }
+        return legacyGateway.charge(req); // đường đi cũ
+    }
+}
+~~~
+Cờ có thể bật theo userId (ví dụ 5% người dùng ngẫu nhiên) hoặc toàn bộ hệ thống. Phát hiện lỗi thì tắt cờ là rollback ngay lập tức, không cần build lại.
+
+### Bảng trade-off
+| Chiến lược | Khi nào dùng | Lợi ích | Nhược điểm |
+|---|---|---|---|
+| Blue-green | Thay đổi lớn, rollback tức thì | Chuyển đổi ngay, bất ngờ ít | Gấp đôi tài nguyên, schema phải tương thích |
+| Canary | Kiểm tra trên traffic thật, giảm thiệt hại | Phát hiện lỗi sớm với ít người bị ảnh hưởng | Cần điều hướng traffic phần trăm |
+| Rolling update | Hệ thống stateless, container | Không downtime, tài nguyên ổn định | Hai phiên bản cùng chạy trong lúc cập nhật |
+| Feature flag | Tính năng lớn, thí nghiệm, nút tắt khẩn cấp | Rollback không cần triển khai lại | Phải dọn dẹp cờ sau khi dùng |
+
+### Theo dõi và rollback
+Không chỉ theo dõi "có crash hay không". Các chỉ số bắt buộc trong 15–30 phút đầu sau khi triển khai:
+- Error rate (tỷ lệ HTTP 5xx, ngoại lệ không bắt được) của phiên bản mới so với cũ.
+- p99 latency của endpoint quan trọng (ví dụ thanh toán, đặt đơn).
+- Tỷ lệ đơn hàng thành công mỗi phút.
+- Tài nguyên: CPU, memory, kết nối DB của instance mới.
+
+Nếu bất kỳ chỉ số nào xấu hơn phiên bản cũ rõ rệt → rollback: chuyển ngược traffic (blue-green), giảm canary về 0, hoặc tắt feature flag. Luôn có runbook viết sẵn trước khi triển khai.
+
+### Pitfall production
+- Triển khai mà không có metrics: không biết lỗi cho đến khi khách khiếu nại.
+- Rolling update khi schema không tương thích ngược: instance cũ ghi định dạng cũ, instance mới đọc sai → dữ liệu hỏng. Phải mở rộng schema trước, mã hóa đọc hai định dạng, sau đó xóa cột cũ.
+- Canary chạy quá lâu: hai phiên bản chạy song song nhiều tuần phức tạp vận hành và khó dọn dữ liệu.
+- Feature flag quên xóa: code ngày càng rác, tester không biết đường nào thực sự chạy.
+- Không thử rollback trước: chạy rollback lần đầu khi sự cố xảy ra thường thất bại do runbook cũ hoặc quyền hạn thiếu.
+
+### Ví dụ đời thực
+Một ứng dụng bán hàng nội bộ có 300.000 đơn/tháng. Triệu chứng: sau khi triển khai phiên bản mới của dịch vụ thanh toán, error rate 5xx tăng từ 0,1% lên 2% trong 10 phút, và p99 thanh toán từ 400 ms lên 6 giây. Khách báo bấm thanh toán thì quay lại trang giỏ hàng. Điều tra: triển khai dùng rolling update tất cả 8 instance cùng lúc, không có canary. Log mới cho thấy ngoại lệ NullPointerException khi gọi dịch vụ khuyến mãi do trường promotionId null trong một số đơn cũ. Nguyên nhân gốc: không triển khai canary để phát hiện lỗi trên một phần nhỏ traffic trước; code mới không xử lý dữ liệu cũ thiếu trường mới. Xử lý: (1) rollback ngay về phiên bản cũ, error rate về 0,1% trong 3 phút; (2) sửa code xử lý null và thêm kiểm thử tự động cho đơn cũ; (3) lần sau dùng canary 1% → 5% → 10% → 100%, mỗi mức theo dõi 15 phút; (4) thêm alert tự động khi error rate vượt 0,5% trong 5 phút. Kết quả đo được: lần triển khai sau, lỗi mới chỉ ảnh hưởng dưới 0,1% đơn trước khi phát hiện và rollback bằng feature flag trong 2 phút.
+
+### Trả lời mẫu khi phỏng vấn
+Khi đưa tính năng mới lên production cho ứng dụng Java, tôi chọn chiến lược theo rủi ro của thay đổi. Blue-green chạy hai môi trường giống hệt và chuyển toàn bộ traffic bằng load balancer, phù hợp khi cần rollback tức thì nhưng tốn gấp đôi tài nguyên. Canary gửi một phần nhỏ traffic sang phiên bản mới, theo dõi error rate và p99 latency, rồi tăng dần — tốt khi muốn kiểm tra trên traffic thật. Rolling update thay thế từng instance, phù hợp hệ thống stateless trên container, nhưng trong lúc cập nhật hai phiên bản cùng chạy nên schema phải tương thích ngược. Feature flag gói tính năng trong cờ, bật/tắt mà không cần triển khai lại, thích hợp tính năng lớn và nút tắt khẩn cấp. Tôi luôn theo dõi error rate, p99 latency và tỷ lệ đơn thành công trong 15–30 phút đầu; nếu chỉ số xấu, rollback ngay bằng cách chuyển ngược traffic hoặc tắt cờ. Thực tế tôi từng rollback phiên bản thanh toán trong 3 phút sau khi error rate nhảy lên 2% do lỗi null với đơn cũ; lần sau dùng canary 1% đến 100% và thêm alert tự động, lỗi mới chỉ ảnh hưởng dưới 0,1% đơn.
+> Senior tip: tính năng mới không được coi là đã triển khai xong cho đến khi chạy ổn định trong 24–48 giờ và có metrics chứng minh. Luôn có runbook rollback viết trước, và hãy luyện chạy rollback trên staging — chạy rollback lần đầu khi sự cố xảy ra thường thất bại.`,
+  follow: [
+    'Bạn xử lý migration cơ sở dữ liệu khi schema mới và cũ phải cùng chạy trong thời gian canary ra sao?',
+    'Feature flag nên lưu ở đâu: cấu hình ứng dụng, cơ sở dữ liệu, hay dịch vụ cờ riêng?',
+    'Làm sao triển khai canary khi không có Kubernetes hay service mesh?'
+  ],
+  tags: ['deployment', 'blue-green', 'canary', 'rolling update', 'feature flag', 'rollback']
+},
+{
+  id: 'architecture-077',
+  topic: 'architecture',
+  level: 'senior',
+  q: 'Bạn chọn công nghệ cho hệ thống Java mới (cơ sở dữ liệu, message broker, cache, v.v.). Làm sao lựa chọn có căn cứ, không theo xu hướng: quy trình đánh giá, chạy PoC và ví dụ khi nào chọn PostgreSQL, Cassandra, Kafka hay RabbitMQ?',
+  a: `**Tóm tắt:** Không có công nghệ tốt nhất tuyệt đối, chỉ có công nghệ phù hợp nhất với ràng buộc của team. Việc chọn phải bắt đầu bằng yêu cầu, chạy thử thực tế (PoC), đánh giá theo các tiêu chí có trọng số, và xem xét chi phí dài hạn không chỉ chi phí mua hay làm.
+
+### Quy trình chọn công nghệ từng bước
+1. Viết yêu cầu rõ: throughput mong muốn, latency p99, dung lượng dữ liệu, cần transaction hay không, team biết dùng gì, số lượng dev, ngân sách vận hành mỗi tháng.
+2. Lập danh sách công nghệ khả thi: không bỏ qua công nghệ team đã dùng (ví dụ PostgreSQL đã vận hành ổn định) trừ khi có lý do rõ.
+3. Chấm theo tiêu chí có trọng số: ví dụ throughput 25%, latency 20%, vận hành 20%, kinh nghiệm team 20%, chi phí 3 năm 15%. Điểm chỉ hỗ trợ thảo luận, không thay thế phán đoán.
+4. Chạy PoC (proof of concept): xây dựng nhỏ nhất thể hiện tải thực tế (ví dụ ghi 5.000 bản ghi/giây, đọc 50.000/giây), đo số liệu thật, không chỉ đọc tài liệu nhà sản xuất.
+5. Tính chi phí đầy đủ: license, máy chủ, lưu trữ, nhân sự vận hành, đào tạo, migration, thời gian ngừng hoạt động khi đổi sau này.
+6. Xem xét vendor lock-in: nếu dịch vụ đám mây chỉ có một nhà cung cấp, dữ liệu khó ra sao, hãy tính rủi ro khi muốn đổi nhà cung cấp sau này.
+
+### Ví dụ lựa chọn theo kịch bản
+| Kịch bản | Chọn | Lý do |
+|---|---|---|
+| Dữ liệu tài chính, cần transaction, join | PostgreSQL | ACID mạnh, sinh thái Java/Hibernate ổn định, truy vấn phức tạp |
+| Ghi cực lớn, cấu trúc đơn giản, không cần join | Cassandra/ScyllaDB | Mở rộng theo hàng, không có điểm bịt một mình |
+| Message cần lưu lâu, replay được, thứ tự quan trọng | Kafka | Giữ message theo thời gian lưu trữ, partition theo khóa |
+| Task ngắn hạn, email, job, không cần replay | RabbitMQ/SQS | Dễ vận hành, acknowledge đơn giản |
+| Cache đọc nhiều, TTL ngắn | Redis | In memory, cấu trúc dữ liệu phong phú, độ trễ thấp |
+
+### Mã Java ngắn: abstraction để thay đổi công nghệ sau này
+~~~java
+public interface OrderRepository {
+    void save(Order order);
+    Order findById(String id);
+}
+
+// Triển khai bằng PostgreSQL hiện tại; nếu sang Cassandra sau,
+// chỉ cần viết lớp triển khai mới, không đổi code gọi
+public class JpaOrderRepository implements OrderRepository {
+    private final EntityManager em;
+    public void save(Order order) { em.persist(order); }
+    public Order findById(String id) { return em.find(Order.class, id); }
+}
+~~~
+Giao diện này giúp team thay đổi công nghệ lưu trữ sau này mà không viết lại toàn bộ ứng dụng — lý do Dependency Inversion có giá trị trong quyết định kiến trúc.
+
+### Bảng trade-off
+| Tiêu chí | SQL quan hệ | NoSQL wide-column | Message broker |
+|---|---|---|---|
+| Dữ liệu cấu trúc | Có | Khó thay đổi schema | Không áp dụng |
+| Transaction ACID | Mạnh | Yếu, tùy hệ | Không áp dụng |
+| Ghi cực lớn | Giữ được một node | Mở rộng ngang tốt | Không áp dụng |
+| Truy vấn linh hoạt | SQL mạnh | Chỉ theo khóa chính | Không áp dụng |
+| Lưu tin nhắn | Không tối ưu | Không phải mục đích | Là mục đích chính |
+
+### Pitfall production
+- Chọn theo xu hướng: công nghệ mới có bài viết hay nhưng ít tài liệu, ít nhân sự biết sử dụng, rủi ro cao cho sản phẩm chạy tiền thật.
+- PoC không bằng tải thực tế: thử với 100 bản ghi thì pass, nhưng chạy 1 triệu bản ghi trong production lại chậm hoặc hết bộ nhớ.
+- Chỉ tính chi phí license: chi phí vận hành, nhân sự và migration thường lớn hơn chi phí mua công nghệ.
+- Bỏ qua vendor lock-in: dữ liệu ở dịch vụ đám mây duy nhất, khó chuyển nhà sau 2 năm.
+- Mỗi service chọn một công nghệ khác nhau: hệ thống trở nên rối, vận hành khủng khiếp. Giữ số lượng công nghệ ít nhất có thể.
+
+### Ví dụ đời thực
+Một startup tài chính chọn MongoDB cho dữ liệu giao dịch vì scale dễ và không cần thiết kế schema. Triệu chứng: sau 6 tháng, báo cáo riun cuối tháng chậm hơn 30 giây, dữ liệu có nhiều bản ghi trùng hoặc thiếu trường do không có ràng buộc schema, và team không ai quen dùng aggregation pipeline. Điều tra: yêu cầu thực tế là giao dịch cần transaction (chuyển tiền giữa hai tài khoản phải cùng thành công hay cùng thất bại) và truy vấn theo nhiều trường khác nhau. MongoDB ban đầu không hỗ trợ transaction đa tài liệu tốt, và không có schema nghĩa là mỗi dev lưu kiểu khác nhau. Nguyên nhân gốc: chọn công nghệ theo xu hướng NoSQL scale dễ mà không xem xét yêu cầu transaction và truy vấn của dữ liệu tài chính. Xử lý: (1) chuyển dữ liệu giao dịch sang PostgreSQL với transaction và schema rõ ràng; (2) giữ MongoDB cho dữ liệu log và sự kiện không cần transaction; (3) viết quy trình chọn công nghệ mới: yêu cầu, tiêu chí có trọng số, PoC bằng tải thực, tính chi phí 3 năm. Kết quả đo được: báo cáo riun cuối tháng từ 30 giây xuống 2 giây, không còn dữ liệu thiếu trường, và team có quy trình chọn công nghệ có căn cứ cho các dự án sau.
+
+### Trả lời mẫu khi phỏng vấn
+Khi chọn công nghệ cho hệ thống Java, tôi không theo xu hướng mà bắt đầu bằng yêu cầu: throughput, latency p99, dung lượng, cần transaction hay không, team biết dùng gì và ngân sách vận hành. Tôi so sánh theo tiêu chí có trọng số — ví dụ throughput 25%, latency 20%, vận hành 20%, kinh nghiệm team 20%, chi phí 3 năm 15% — và chạy PoC với tải thực tế, không chỉ đọc tài liệu nhà sản xuất. Ví dụ dữ liệu tài chính chọn PostgreSQL vì ACID và truy vấn phức tạp; ghi cực lớn chọn Cassandra; cần replay message chọn Kafka; task ngắn hạn chọn RabbitMQ. Tôi cũng tính chi phí đầy đủ: license, máy chủ, vận hành, đào tạo, và rủi ro vendor lock-in. Để thay đổi sau này dễ dàng, tôi viết code đặt phía sau giao diện, ví dụ OrderRepository, nên đổi từ PostgreSQL sang Cassandra chỉ cần viết triển khai mới. Thực tế tôi từng thấy startup chọn MongoDB cho giao dịch tài chính, sau 6 tháng báo cáo chậm 30 giây và dữ liệu thiếu trường vì không có schema; chuyển sang PostgreSQL thì báo cáo từ 30 giây xuống 2 giây. Công nghệ tốt nhất thường là công nghệ team đã vận hành ổn định, trừ khi yêu cầu thực tế không thể thỏa mãn.
+> Senior tip: mỗi công nghệ mới trong hệ thống là một kỹ năng team phải vận hành thêm. Giảm thiểu số lượng công nghệ khác nhau, đừng chọn MongoDB chỉ vì scale dễ khi dữ liệu của bạn cần transaction ACID.`,
+  follow: [
+    'Làm sao thuyết phục sếp không đổi công nghệ chỉ vì một công nghệ mới đang hot?',
+    'PoC nên chạy bao lâu và đo những chỉ số nào trước khi quyết định?',
+    'Khi nào nên chấp nhận dùng nhiều ngôn ngữ hoặc cơ sở dữ liệu trong một hệ thống?'
+  ],
+  tags: ['technology selection', 'PoC', 'database', 'message broker', 'vendor lock-in', 'architecture']
+},
 );
