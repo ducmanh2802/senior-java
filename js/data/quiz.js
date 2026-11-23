@@ -10142,6 +10142,302 @@ Lỗi hay gặp: tạo và xoá thành phần lặp lại mà không dọn dẹp
 }
 ,
 {
+  id: 'qz-frontend-023',
+  topic: 'frontend',
+  q: 'Một danh sách bình luận render bằng v-for, mỗi bình luận có ô input để chỉnh sửa tên. Dev gán :key="index" theo vị trí trong mảng. Khi xóa bình luận ở giữa danh sách, điều gì xảy ra và cách khắc phục đúng là gì?',
+  options: [
+    'Vue dùng index làm key nên xóa phần tử giữa không ảnh hưởng, các ô input giữ nguyên tên bình luận tương ứng',
+    'Khi xóa phần tử giữa, Vue gán lại key theo vị trí mới, khiến trạng thái của ô input (ví dụ chữ đang gõ) dính vào bình luận sai và hiển thị tên không khớp dữ liệu; nên dùng id duy nhất của bình luận từ server làm key',
+    'Vue không cho dùng index làm key và sẽ báo lỗi ngay khi biên dịch',
+    'Phải dùng key="index" để v-for biết thứ tự, id cơ sở dữ liệu không được dùng làm key'
+  ],
+  answer: 1,
+  explain: `**Đáp án đúng: khi xóa phần tử giữa, trạng thái ô input bị dính sai bình luận vì key theo vị trí; nên dùng id duy nhất làm key.**
+
+### Vì sao đúng
+
+Key là dấu hiệu giúp Vue nhận diện từng phần tử trong danh sách sau khi dữ liệu thay đổi, giống số nhận dạng của từng tờ giấy trong một kho. Nếu key là index (vị trí), khi xóa bình luận ở giữa, các phần tử sau dịch lên một vị trí. Vue gán phần tử DOM ở vị trí i cho dữ liệu mới ở vị trí i, nên ô input và chữ đang gõ ở vị trí cũ vẫn ở đó, trong khi dữ liệu đã thành bình luận khác. Kết quả: chữ đang gõ bị lẫn vào bình luận sai, trải nghiệm người dùng hỏng.
+
+Ví dụ: danh sách [A(id 1), B(id 2), C(id 3)], người dùng đang gõ vào ô của B. Xóa A. Với key index, danh sách mới là [B, C], nhưng ô input ở vị trí 2 vẫn giữ chữ của B trong khi dữ liệu hiển thị là C. Với key là id duy nhất từ server, Vue biết chính xác bình luận id 1 bị xoá, chỉ xoá phần tử DOM đó, ô input của B và C giữ đúng bình luận của mình.
+
+### Vì sao các phương án còn lại sai
+
+- **Xóa không ảnh hưởng**: sai, key theo vị trí sẽ làm trạng thái tạm (vị trí con trỏ, chữ đang gõ) rớt vào phần tử khác khi danh sách thay đổi.
+- **Vue báo lỗi dùng index**: sai, Vue cho phép index làm key nhưng không khuyên dùng khi danh sách có thể thêm, xóa hoặc sắp xếp.
+- **Phải dùng index, không được dùng id**: sai ngược lại; id duy nhất là khuyến khích, index chỉ ổn khi danh sách tĩnh không có state tạm ở mỗi mục.
+
+> Senior tip: dùng key bằng id từ cơ sở dữ liệu (hoặc mã duy nhất sinh ra ở client) cho danh sách có thao tác thêm/xóa/sắp xếp; chỉ dùng index khi danh sách tĩnh không có state tạm ở mỗi mục.`,
+},
+{
+  id: 'qz-frontend-024',
+  topic: 'frontend',
+  q: 'Trong Composition API của Vue 3, dev Java viết const dem = reactive(0), nút bấm tăng dem++ và hiển thị {{ dem }} trong template, nhưng số trên giao diện không đổi. Tại sao?',
+  options: [
+    'reactive chỉ hoạt động với đối tượng (dùng Proxy bao bọc), không thể biến kiểu nguyên thủy như số, chuỗi, boolean thành reactive; gán lại giá trị nguyên thủy không bị hệ thống reactivity theo dõi, nên nên dùng ref(0) và thay đổi qua dem.value++',
+    'reactive chỉ dùng được trong Options API, Composition API phải dùng ref',
+    'JavaScript chặn dem++ vì primitive là chỉ đọc',
+    'Phải khai báo dem trong data trước khi sử dụng reactive'
+  ],
+  answer: 0,
+  explain: `**Đáp án đúng: reactive không biến kiểu nguyên thủy thành reactive, phải dùng ref cho số, chuỗi, boolean.**
+
+### Vì sao đúng
+
+reactive trong Vue 3 tạo Proxy, một lớp bọc giúp theo dõi khi truy cập hoặc thay đổi thuộc tính. Proxy chỉ bao bọc được đối tượng (object). Kiểu nguyên thủy (number, string, boolean, null, undefined) được gán theo giá trị, không có đối tượng để gắn Proxy vào, nên const dem = reactive(0) không tạo ra giá trị reactive theo dõi được. Khi làm dem++, biến dem chỉ lưu số mới cục bộ, template không biết cần vẽ lại.
+
+Cách đúng: const dem = ref(0), truy cập và thay đổi qua dem.value++, template hiển thị {{ dem }} (Vue tự lấy .value khi render). ref dùng wrapper object có thuộc tính value, nên Proxy có thể theo dõi sự thay đổi.
+
+### Vì sao các phương án còn lại sai
+
+- **reactive chỉ trong Options API**: sai, reactive dùng được cả trong Composition API, chỉ không dùng được với kiểu nguyên thủy.
+- **primitive là chỉ đọc**: sai, số nguyên thủy có thể gán lại, chỉ không thể làm reactive được.
+- **khai báo trong data**: data là của Options API, không áp dụng trong Composition API.
+
+> Senior tip: ghi nhắc "ref cho giá trị đơn, reactive cho đối tượng". Khi cần gán lại toàn bộ đối tượng (ví dụ sau khi gọi API), dùng ref và gán state.value = dữ liệu mới, vì reactive không cho phép gán lại biến bằng toán tử gán.`,
+},
+{
+  id: 'qz-frontend-025',
+  topic: 'frontend',
+  q: 'Component có đối tượng reactive user = { profile: { ten: "An" } }. Dev viết watch(() => user.profile, callback) để phản hồi khi tên thay đổi, nhưng sửa user.profile.ten thì callback không chạy. Cách làm đúng là gì?',
+  options: [
+    'watch không thể theo dõi đối tượng reactive, phải thay bằng computed',
+    'Phải đổi reactive sang ref cho đối tượng lồng nhau',
+    'Thêm tùy chọn { deep: true } vào watch, hoặc viết watch(() => user.profile.ten, callback) theo dõi trực tiếp thuộc tính cần quan sát, vì watch mặc định chỉ so sánh tham chiếu của giá trị trả về',
+    'Watcher chỉ chạy một lần khi component tạo ra, không chạy lại sau đó'
+  ],
+  answer: 2,
+  explain: `**Đáp án đúng: thêm { deep: true } vào watch, hoặc watch hàm getter trả về thuộc tính cần theo dõi.**
+
+### Vì sao đúng
+
+watch theo dõi giá trị trả về của hàm getter. Với watch(() => user.profile, callback), getter trả về đối tượng profile. Vue so sánh tham chiếu đối tượng trước và sau. Khi chỉ thay đổi thuộc tính bên trong (user.profile.ten = "Binh"), đối tượng profile vẫn là đối tượng cũ (cùng tham chiếu), nên watcher không được kích hoạt.
+
+Cách khắc phục:
+- Thêm { deep: true }: Vue duyệt sâu vào tất cả thuộc tính lồng nhau và theo dõi chúng, nên đổi user.profile.ten sẽ kích hoạt callback.
+- Hoặc watch(() => user.profile.ten, callback): getter trả về chuỗi ten, Vue so sánh giá trị chuỗi, thay đổi ten thì watcher chạy.
+
+computed khác watch ở chỗ computed tự động theo dõi mọi thuộc tính được đọc trong hàm get và tính lại khi chúng thay đổi, phù hợp để hiển thị giá trị suy ra. Watch dùng cho tác vụ phụ (gọi API, log, analytics).
+
+### Vì sao các phương án còn lại sai
+
+- **watch không theo dõi reactive**: sai, watch theo dõi được, chỉ cần cấu hình đúng getter hoặc deep.
+- **đổi sang ref**: ref và reactive không quyết định khả năng theo dõi thuộc tính lồng nhau.
+- **chỉ chạy một lần**: sai, watch chạy lại mỗi khi giá trị được theo dõi thay đổi.
+
+> Senior tip: deep watch đối tượng lớn tốn hiệu năng vì Vue phải duyệt tất cả thuộc tính lồng nhau; ưu tiên watch thuộc tính cụ thể cần quan sát, dùng deep chỉ khi thực sự cần theo dõi toàn bộ cây đối tượng.`,
+},
+{
+  id: 'qz-frontend-026',
+  topic: 'frontend',
+  multi: true,
+  q: 'Hai thành phần cha-con trong Vue 3 cần phối hợp, đồng thời trạng thái đăng nhập cần dùng bởi nhiều thành phần khác nhau trên trang. Hai phát biểu nào đúng về props/emit và Pinia? (Chọn 2)',
+  options: [
+    'Thành phần con báo cho cha biết sự kiện (ví dụ nhấn nút Lưu) bằng emit, cha lắng nghe qua v-on/@tên-sự-kien',
+    'Pinia là lựa chọn phù hợp để lưu trạng thái dùng chung bởi nhiều thành phần không quan hệ cha-con, ví dụ thông tin người dùng hoặc giỏ hàng',
+    'Props dùng để thành phần con truyền dữ liệu lên cha',
+    'Pinia thay thế hoàn toàn props và emit, sau đó không nên dùng props nữa',
+    'Emit chỉ hoạt động khi hai thành phần nằm trong cùng một file'
+  ],
+  answer: [0, 1],
+  explain: `**Đáp án đúng: cha-con giao tiếp bằng props/emit; trạng thái dùng chung ở nhiều thành phần khác nhau dùng Pinia.**
+
+### Vì sao đúng
+
+- Props: cha truyền dữ liệu xuống con (chỉ một chiều, từ cha xuống con). Con không thể dùng props để gửi dữ liệu ngược lại cha.
+- Emit: con kích hoạt sự kiện (this.$emit('luu-don-hang', dữ liệu) trong Options API hoặc defineEmits trong Composition API), cha lắng nghe (@luu-don-hang = handler) và xử lý. Đây là cách con thông báo với cha.
+- Pinia: tạo store toàn cục, bất kỳ thành phần nào cũng có thể đọc và thay đổi. Dùng cho trạng thái cần chia sẻ giữa nhiều thành phần không liên quan cha-con (ví dụ userStore lưu thông tin đăng nhập, cartStore lưu giỏ hàng), tránh truyền props qua nhiều cấp.
+
+### Vì sao các phương án còn lại sai
+
+- **con truyền dữ liệu lên cha bằng props**: sai, props chỉ cha truyền xuống con; con lên cha dùng emit.
+- **Pinia thay thế hoàn toàn props/emit**: sai, props/emit vẫn cần cho giao tiếp cha-con cục bộ; Pinia không thay thế toàn bộ.
+- **emit chỉ cùng file**: sai, emit hoạt động giữa thành phần cha render con bất kể chúng được khai báo ở file nào.
+
+> Senior tip: quy tắc đơn giản: cha truyền dữ liệu xuống con qua props, con báo sự kiện lên cha qua emit; chỉ dùng Pinia khi trạng thái cần được nhiều thành phần ở các vị trí khác nhau truy cập, tránh đưa mọi thứ vào Pinia khiến ứng dụng khó theo dõi luồng dữ liệu.`,
+},
+{
+  id: 'qz-frontend-027',
+  topic: 'frontend',
+  q: 'Trong Composition API của Vue 3, dev muốn gọi API lấy dữ liệu ngay sau khi component hiển thị, và dọn dẹp timer hoặc sự kiện trên window trước khi component bị xoá. Nên dùng hook nào?',
+  options: [
+    'onMounted chạy trước khi component được tạo, dùng để khai báo biến ban đầu',
+    'onMounted chạy lại mỗi khi dữ liệu trong component thay đổi',
+    'onMounted chỉ chạy khi hiển thị ở server-side rendering, không chạy trên trình duyệt',
+    'onMounted chạy sau khi component đã gắn vào DOM (lần duy nhất khi tạo), dùng để gọi API và truy cập phần tử HTML; onBeforeUnmount chạy trước khi component bị xoá, dùng để dọn dẹp timer và listener, tương tự @PreDestroy trong Spring'
+  ],
+  answer: 3,
+  explain: `**Đáp án đúng: onMounted gọi API sau khi gắn vào DOM; onBeforeUnmount dọn dẹp trước khi component bị xoá.**
+
+### Vì sao đúng
+
+Composition API tổ chức code bằng hàm setup và các hook cycle đời:
+- onMounted: chạy sau khi component đã được chèn vào DOM. Là lúc an toàn để gọi API lấy dữ liệu ban đầu, đặt con trỏ vào ô input, đo kích thước phần tử. Mỗi component chỉ chạy onMounted một lần khi tạo.
+- onBeforeUnmount: chạy ngay trước khi component bị xoá khỏi DOM. Dùng để gọi clearInterval dừng timer, gỡ sự kiện trên window (ví dụ sự kiện cuộn trang), ngắt WebSocket. Giống @PreDestroy của Spring bean dùng để giải phóng tài nguyên trước khi bean bị hủy.
+
+Hook khác: onBeforeMount chạy trước khi gắn vào DOM (DOM chưa có), onUpdated chạy khi dữ liệu thay đổi và giao diện vẽ lại.
+
+### Vì sao các phương án còn lại sai
+
+- **chạy trước khi tạo**: sai, đó là giai đoạn trước setup hoặc onBeforeMount; onMounted cần DOM đã có.
+- **chạy lại khi dữ liệu thay đổi**: sai, dữ liệu thay đổi thì onUpdated chạy; onMounted chỉ chạy một lần.
+- **chỉ chạy SSR**: sai, onMounted chạy trên trình duyệt khi client-side render.
+
+> Senior tip: không gọi API trong onBeforeMount hy vọng lấy dữ liệu sớm hơn, vì DOM chưa có và nếu code cần truy cập phần tử HTML sẽ lỗi; onMounted là điểm gọi API chuẩn khi cần thao tác DOM sau khi lấy dữ liệu.`,
+},
+{
+  id: 'qz-frontend-028',
+  topic: 'frontend',
+  q: 'Ứng dụng Vue 3 lưu access token (mã truy cập ngắn hạn) và refresh token (mã làm mới để lấy access token mới) sau khi đăng nhập. Khi API trả về 401 Unauthorized, dev muốn xử lý tập trung thay vì viết lại trong mỗi hàm gọi API. Cách làm đúng với axios interceptor là gì?',
+  options: [
+    'Mỗi hàm gọi API tự bắt lỗi 401 và gọi endpoint làm mới token riêng lẻ',
+    'Access token không bao giờ hết hạn nên không cần interceptor',
+    'Response interceptor bắt lỗi 401, gọi endpoint làm mới token một lần, dùng access token mới để gửi lại yêu cầu cũ; nếu làm mới thất bại thì xoá token và chuyển về trang đăng nhập. Các yêu cầu khác bị 401 cùng lúc chờ lần làm mới duy nhất',
+    'Refresh token được gửi kèm mọi yêu cầu thay vì access token'
+  ],
+  answer: 2,
+  explain: `**Đáp án đúng: xử lý tập trung trong response interceptor, làm mới token một lần và gửi lại yêu cầu cũ.**
+
+### Vì sao đúng
+
+Response interceptor của axios chạy cho mọi phản hồi (thành công hoặc lỗi) trước khi dữ liệu đến component. Dev viết một lần:
+- Khi nhận 401 từ API, interceptor gọi endpoint POST /auth/refresh kèm refresh token để lấy access token mới.
+- Nếu thành công, lưu access token mới, gán vào header Authorization của yêu cầu cũ rồi gửi lại yêu cầu đó.
+- Nếu làm mới cũng thất bại (refresh token hết hạn), xoá tất cả token, chuyển người dùng về trang đăng nhập.
+- Để tránh gọi endpoint làm mới nhiều lần khi nhiều yêu cầu bị 401 cùng lúc, giữ một promise làm mới duy nhất; các yêu cầu khác chờ promise đó hoàn tất rồi dùng token mới.
+
+### Vì sao các phương án còn lại sai
+
+- **mỗi hàm tự gọi làm mới**: dở dang, khó bảo trì, có thể gọi làm mới trùng lặp nhiều lần.
+- **access token không hết hạn**: sai, access token thường ngắn hạn (phút) để giảm rủi ro nếu bị trộm.
+- **gửi refresh token mọi yêu cầu**: refresh token chỉ dùng để lấy access token mới, không gửi kèm yêu cầu API thường ngày.
+
+> Senior tip: access token lưu trong bộ nhớ hoặc HttpOnly cookie, refresh token chỉ gửi qua endpoint làm mới; khi làm mới thất bại phải xử lý đều đặn (xoá token, về login) để không để ứng dụng ở trạng thái nửa chừng với token đã hết hạn.`,
+},
+{
+  id: 'qz-frontend-029',
+  topic: 'frontend',
+  multi: true,
+  q: 'Giao diện Vue 3 chạy trên http://localhost:5173 gọi API Spring Boot trên http://localhost:8080, mỗi yêu cầu kèm header Authorization chứa JWT. Trình duyệt gửi yêu cầu OPTIONS trước yêu cầu thật (preflight). Hai phát biểu nào đúng về xử lý này? (Chọn 2)',
+  options: [
+    'Preflight chỉ xảy ra với yêu cầu GET, yêu cầu POST kèm header tùy chỉnh như Authorization không cần preflight',
+    'Trình duyệt gửi preflight OPTIONS để hỏi server xem nguồn http://localhost:5173 có được phép gọi API với header Authorization hay không; server Spring Boot phải trả header cho phép origin cụ thể, phương thức và header Authorization',
+    'Trả header Access-Control-Allow-Origin: * là đủ cho mọi trường hợp, kể cả khi gửi cookie hoặc header tùy chỉnh',
+    'Preflight được xử lý hoàn toàn ở frontend Vue, Spring Boot không cần cấu hình CORS',
+    'Nếu gửi cookie cùng yêu cầu, server phải trả Access-Control-Allow-Credentials: true và không được dùng ký tự * cho origin'
+  ],
+  answer: [1, 4],
+  explain: `**Đáp án đúng: preflight là trình duyệt hỏi phép trước yêu cầu không đơn giản; server phải cấu hình cho phép origin cụ thể, header và (nếu dùng cookie) credentials, không dùng *.**
+
+### Vì sao đúng
+
+CORS (chia sẻ tài nguyên ngang nguồn) là cơ chế bảo mật của trình duyệt. Yêu cầu "không đơn giản" — ví dụ POST với Content-Type: application/json, hoặc kèm header tùy chỉnh như Authorization — gây ra preflight: trình duyệt gửi OPTIONS trước, hỏi server xem nguồn frontend và header đó được phép hay không. Chỉ khi server trả lời đồng ý (qua header Access-Control-Allow-Origin, Access-Control-Allow-Methods, Access-Control-Allow-Headers) thì trình duyệt mới gửi yêu cầu thật.
+
+Server Spring Boot cấu hình qua CorsRegistry (WebMvcConfigurer) hoặc @CrossOrigin: liệt kê origin http://localhost:5173, cho phép phương thức POST và header Authorization. Nếu yêu cầu kèm cookie (credentials), server phải trả Access-Control-Allow-Credentials: true, và trong trường hợp này không được dùng ký tự * cho origin, phải liệt kê chính xác domain frontend.
+
+### Vì sao các phương án còn lại sai
+
+- **Preflight chỉ với GET**: sai, GET đơn giản không gây preflight; POST kèm header tùy chỉnh thì gây.
+- **dùng * đủ mọi trường hợp**: sai, * không dùng được khi gửi credentials/cookie, và không phải mọi server đều cho phép * trong production.
+- **Xử lý ở frontend**: sai, CORS được kiểm soát bằng header phản hồi từ server; frontend không thể tự bỏ qua.
+
+> Senior tip: trên production, hạn chế sử dụng *; liệt kê chính xác domain frontend và kết hợp CSRF token nếu dùng cookie để gửi yêu cầu thay đổi dữ liệu.`,
+},
+{
+  id: 'qz-frontend-030',
+  topic: 'frontend',
+  q: 'Sau khi chạy npm run build (Vite) cho dự án Vue 3, dev nhận thư mục dist và copy vào thư mục src/main/resources/static của Spring Boot để triển khai. Phát biểu nào đúng về quá trình build và triển khai này?',
+  options: [
+    'dist là các file tĩnh (HTML, JavaScript, CSS đã được tối ưu, rút gọn và đổi tên có mã băm) có thể phục vụ trực tiếp bằng Spring Boot hoặc máy chủ lưu trữ tĩnh, không cần Node.js chạy ở production; npm run dev chỉ dùng khi phát triển',
+    'dist chứa mã nguồn Vue cần Node.js chạy ở production, giống như npm run dev',
+    'Phải đổi tên mọi file trong dist trước khi đưa vào Spring Boot',
+    'dist chỉ có một file index.html, các component Vue được sinh lại mỗi khi người dùng truy cập'
+  ],
+  answer: 0,
+  explain: `**Đáp án đúng: dist là tập file tĩnh, phục vụ trực tiếp mà không cần Node.js ở production; npm run dev chỉ dành cho phát triển.**
+
+### Vì sao đúng
+
+npm run build với Vite biên dịch các component Vue, JavaScript, CSS thành các file tĩnh trong thư mục dist: file HTML, file JavaScript và CSS đã được rút gọn (minify), đổi tên kèm mã băm (ví dụ app.a1b2.js) để trình duyệt cache hiệu quả. Những file này có thể đưa vào src/main/resources/static của Spring Boot (Spring Boot tự phục vụ file tĩnh), hoặc lên Nginx, Vercel, Amazon S3... Người dùng truy cập nhận file tĩnh, trình duyệt chạy JavaScript, không cần Node.js server ở phía production.
+
+npm run dev khởi động Vite dev server trên cổng như 5173, hỗ trợ tải lại khi lưu code (hot module replacement) — chỉ dùng trong môi trường phát triển, không nên chạy trên production.
+
+Sau khi triển khai SPA, nếu dùng history mode (URL không dấu #), vẫn cần cấu hình Spring Boot trả file index.html cho mọi route không phải API và không phải file tĩnh, rồi Vue Router đọc URL và hiển thị trang đúng.
+
+### Vì sao các phương án còn lại sai
+
+- **dist cần Node.js ở production**: sai, dist đã biên dịch xong thành file tĩnh.
+- **đổi tên mọi file**: sai, Vite đã tự đặt tên file kèm mã băm, không cần đổi thêm.
+- **chỉ có index.html**: sai, dist chứa đầy đủ HTML, JavaScript, CSS và các tài nguyên tĩnh.
+
+> Senior tip: file thư viện thay đổi ít (Vue, axios) có thể cache lâu bằng header Cache-Control; file main.js của ứng dụng nên đổi mã băm mỗi lần build (Vite làm tự động) để người dùng luôn nhận phiên bản mới nhất.`,
+},
+{
+  id: 'qz-frontend-031',
+  topic: 'frontend',
+  q: 'Dev Java muốn truy cập phần tử HTML của ô input sau khi component Vue 3 hiển thị, rồi đặt con trỏ vào ô đó. Cách làm đúng trong Composition API là gì?',
+  options: [
+    'Dùng ref() cho giá trị reactive (const so = ref(0)) và gắn vào ô input',
+    'Chỉ cần dùng document.getElementById, Vue cản việc truy cập DOM trực tiếp',
+    'Dùng template ref: khai báo const inputEl = ref(null) trong setup, gắn ref="inputEl" lên phần tử template; sau khi component mounted, inputEl.value là phần tử DOM, gọi inputEl.value.focus() để đặt con trỏ',
+    'Template ref có sẵn giá trị ngay trong hàm setup trước khi component hiển thị'
+  ],
+  answer: 2,
+  explain: `**Đáp án đúng: dùng template ref, khác với ref() dùng cho giá trị reactive.**
+
+### Vì sao đúng
+
+Vue 3 có hai ý niệm khác nhau cùng dùng từ ref:
+- ref() (nhập từ vue): tạo giá trị reactive cho số, chuỗi, đối tượng, dùng để lưu state.
+- Template ref: thuộc tính ref trên phần tử trong template, dùng để tham chiếu trực tiếp đến phần tử DOM sau khi render.
+
+Cách làm:
+import { ref, onMounted } from 'vue'
+const inputEl = ref(null)
+onMounted(() => {
+  inputEl.value.focus() // inputEl.value là phần tử HTML input
+})
+// Trong template gắn ref="inputEl" lên phần tử input
+
+Sau khi mounted, inputEl.value chính là phần tử HTML input trong DOM, nên gọi .focus() được. Trước khi mounted (trong setup), inputEl.value vẫn là null vì DOM chưa tạo.
+
+### Vì sao các phương án còn lại sai
+
+- **ref() reactive gắn vào input**: ref() tạo state reactive, không phải tham chiếu đến phần tử DOM.
+- **document.getElementById**: có thể dùng nhưng không phải phong cách Vue, dễ lỗi khi component dùng nhiều lần hoặc render lại; template ref là cách khuyên dùng.
+- **có sẵn trong setup**: sai, DOM chưa tồn tại khi setup chạy, template ref chỉ có giá trị sau mounted.
+
+> Senior tip: tên template ref phải khớp giữa thuộc tính ref trong template và tên biến trong setup; nếu dùng v-for, ref sẽ là mảng các phần tử DOM thay vì một phần tử đơn.`,
+},
+{
+  id: 'qz-frontend-032',
+  topic: 'frontend',
+  q: 'Một thành phần cha muốn truyền dữ liệu xuống nhiều cấp thành phần cháu mà không phải truyền props qua mỗi cấp trung gian. Cách làm đúng trong Vue 3 là gì?',
+  options: [
+    'Chỉ có props/emit, không có cách nào tránh truyền props qua nhiều cấp',
+    'Provide/inject chỉ truyền dữ liệu từ thành phần cháu lên tổ tiên',
+    'Dùng localStorage để chia sẻ dữ liệu giữa các thành phần',
+    'Provide/inject: thành phần tổ tiên cung cấp dữ liệu bằng provide, thành phần cháu lấy dữ liệu bằng inject; truyền ref hoặc reactive để cháu có thể theo dõi sự thay đổi của dữ liệu'
+  ],
+  answer: 3,
+  explain: `**Đáp án đúng: dùng provide/inject để chia sẻ dữ liệu theo chiều tổ tiên xuống cháu, tránh props drilling.**
+
+### Vì sao đúng
+
+Props drilling là tình huống dữ liệu phải truyền qua nhiều cấp thành phần trung gian dù các cấp giữa không dùng đến, khiến code khó bảo trì. Provide/inject giải quyết:
+- Thành phần tổ tiên gọi provide('ten-khoa', giá trị) để cung cấp dữ liệu.
+- Thành phần cháu ở cấp sâu bất kỳ gọi inject('ten-khoa') để nhận dữ liệu, không cần các thành phần trung gian biết về dữ liệu đó.
+- Nếu muốn cháu phản ứng khi dữ liệu thay đổi, tổ tiên cung cấp ref hoặc reactive (ví dụ provide('userStore', userRef)), cháu inject ref đó và đọc .value, giao diện sẽ cập nhật khi giá trị đổi.
+
+### Vì sao các phương án còn lại sai
+
+- **Không có cách nào tránh props drilling**: sai, provide/inject đã giải quyết.
+- **Provide/inject từ cháu lên tổ tiên**: sai, chiều đúng là từ tổ tiên xuống cháu (provide ở trên, inject ở dưới).
+- **localStorage**: dùng để lưu dữ liệu trình duyệt, không phải cơ chế truyền dữ liệu giữa component trong Vue, và không kích hoạt reactivity của component.
+
+> Senior tip: dùng provide/inject khi dữ liệu thực sự cần dùng ở nhiều cấp sâu (ví dụ theme, thông tin người dùng, store); tránh lạm dụng vì làm luồng dữ liệu khó theo dõi, nếu chỉ cha-con trực tiếp thì props/emit đủ và rõ ràng hơn.`,
+}
+,
+{
   id: 'qz-ai-021',
   topic: 'ai',
   q: 'Đoạn code Spring AI gọi LLM dưới đây có lỗi gì nghiêm trọng nhất?\n\n~~~java\nChatResponse r = chatModel.call(new Prompt(prompt));\nString out = r.getResult().getOutput().getContent();\nreturn objectMapper.readValue(out, ResultDto.class);\n~~~',
