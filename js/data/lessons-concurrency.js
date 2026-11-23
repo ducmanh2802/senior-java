@@ -6770,4 +6770,167 @@ public class Main {
   related: ['concurrency-003', 'concurrency-012'],
   tags: ['retry', 'backoff', 'exponential', 'jitter', 'DLQ', 'idempotency', 'worker pool'],
 },
+
+{
+  id: 'lesson-concurrency-022',
+  track: 'concurrency',
+  order: 22,
+  title: 'Semaphore: giới hạn số tác vụ chạy song song (rate limit)',
+  level: 'senior',
+  minutes: 30,
+  goals: [
+    'Giải thích được Semaphore làm gì và vì sao nó là công cụ cho rate limit',
+    'Dùng acquire/release đúng cách, kể cả khi tác vụ ném exception',
+    'Viết được lớp giới hạn tối đa N request đồng thời gọi đối tác',
+  ],
+  body: `### Vấn đề: gọi đối tác quá nhiều cùng lúc
+Khi service của bạn gọi một service khác (payment gateway, DB, API bên thứ ba), đối tác thường có giới hạn: tối đa 20 request song song, hoặc 100 request/giây. Nếu bạn tạo 200 thread cùng gọi, đối tác trả về 429 (Too Many Requests) hoặc bị quá tải. Cần một cơ chế **đếm và chặn**: chỉ cho tối đa N tác vụ vào vùng nguy hiểm cùng lúc, các tác vụ còn lại chờ.
+
+### Semaphore là gì
+{{Semaphore}} là một bộ đếm (permits) với hai thao tác:
+- {{acquire()}}: chờ đến khi còn permit thì giảm permit đi 1 và vào.
+- {{release()}}: tăng permit lên 1, đánh thức thread đang chờ.
+
+Nó không gắn với thread (không giống lock): thread A acquire, thread B có thể release. Vì vậy Semaphore không phải công cụ mutual exclusion cho dữ liệu; nó là công cụ **điều tiết lưu lượng** (throttling).
+
+### Ví dụ: giới hạn 20 request song song
+~~~java
+class PartnerClient {
+    private final Semaphore sem = new Semaphore(20);   // tối đa 20 request đồng thời
+
+    Response call(Request req) throws Exception {
+        sem.acquire();              // chờ nếu đã có 20 request đang chạy
+        try {
+            return doHttp(req);     // gọi đối tác
+        } finally {
+            sem.release();          // LUÔN nhả permit, kể cả khi ném exception
+        }
+    }
+}
+~~~
+
+Điểm quan trọng: {{release()}} phải nằm trong {{finally}}. Nếu {{doHttp}} ném exception mà không release, permit bị "rò", sau N lần lỗi service sẽ tự khoá vĩnh viễn.
+
+### Fair và unfair
+- Mặc định {{new Semaphore(n)}} là **unfair**: thread mới có thể "chen ngang" trước thread đang chờ, throughput cao hơn.
+- {{new Semaphore(n, true)}} là **fair**: FIFO, thread chờ lâu nhất được phục vụ trước. Dùng khi cần tránh starvation, nhưng throughput thấp hơn.
+
+### tryAcquire: không chờ
+{{tryAcquire()}} trả về false ngay nếu không còn permit; {{tryAcquire(timeout, unit)}} chờ tối đa timeout. Dùng để trả về lỗi 503 ngay thay vì làm queue phình to:
+~~~java
+if (!sem.tryAcquire()) {
+    throw new ServiceUnavailableException("đối tác đang bận, thử lại sau");
+}
+~~~
+
+### Semaphore vs ThreadPoolExecutor
+Semaphore giới hạn **số tác vụ chạy đồng thời**; ThreadPoolExecutor giới hạn **số thread**. Nếu mỗi tác vụ rất nhẹ, dùng thread pool lớn với queue có thể giữ hàng nghìn tác vụ chờ; Semaphore giữ số tác vụ "đang làm việc" nhỏ, phần còn lại bị từ chối ngay. Trong microservices, thường kết hợp cả hai: pool thread nhỏ + Semaphore giới hạn request song song tới từng downstream.
+
+### Lỗi production hay gặp
+- Quên {{release()}} trong finally sau exception → deadlock dần dần.
+- acquire() trong thread đã giữ permit rồi acquire lại: Semaphore không reentrant theo thread, nên deadlock ngay.
+- Dùng Semaphore để bảo vệ dữ liệu (mutual exclusion): sai công cụ, dùng ReentrantLock/synchronized.
+- Đặt permit quá cao (ví dụ 1000) thì Semaphore không còn tác dụng bảo vệ đối tác.
+
+### Liên hệ phỏng vấn
+Interviewer hay hỏi: "Làm sao giới hạn tối đa 20 request đồng thời tới payment gateway?" Câu trả lời senior nêu Semaphore (hoặc Resilience4j Bulkhead), nhấn mạnh release trong finally, và phân biệt với rate limit theo thời gian (token bucket).`,
+  exercises: [
+    {
+      title: 'Giới hạn đồng thời gọi đối tác',
+      prompt: `Viết {{BoundedExecutor}}: thực thi các task với tối đa {{maxConcurrency}} task chạy cùng lúc. Các task vượt quá phải **chờ** (không bị từ chối). Khi một task xong (thành công hay exception), slot được nhả cho task chờ.
+
+Yêu cầu:
+- Constructor {{BoundedExecutor(int maxConcurrency)}}.
+- {{submit(Runnable task)}}: block cho tới khi có slot, chạy task trong thread hiện tại, rồi nhả slot. Trả về void.
+- Nếu task ném exception, slot vẫn được nhả và exception được propagate.
+- {{active()}}: số task đang chạy.
+
+Ràng buộc: dùng {{Semaphore}} (hoặc cơ chế tương đương).`,
+      starter: `class BoundedExecutor {
+    BoundedExecutor(int maxConcurrency) {
+        throw new UnsupportedOperationException("TODO");
+    }
+    void submit(Runnable task) {
+        throw new UnsupportedOperationException("TODO");
+    }
+    int active() {
+        throw new UnsupportedOperationException("TODO");
+    }
+}`,
+      tests: `public class Main {
+    static int passed = 0, total = 0;
+    static void check(String name, Runnable r) { total++; try { r.run(); passed++; System.out.println("PASS " + name); } catch (Throwable t) { System.out.println("FAIL " + name + ": " + t); } }
+    static void eq(Object e, Object a) { if (!Objects.equals(e,a)) throw new AssertionError("expected "+e+" got "+a); }
+    static void pause(long ms){ try{Thread.sleep(ms);}catch(InterruptedException e){Thread.currentThread().interrupt();} }
+    public static void main(String[] args) {
+        check("max concurrency respected", () -> {
+            BoundedExecutor be = new BoundedExecutor(2);
+            AtomicInteger active = new AtomicInteger(), maxActive = new AtomicInteger();
+            CountDownLatch start = new CountDownLatch(1), done = new CountDownLatch(4);
+            for (int i=0;i<4;i++) new Thread(() -> {
+                try { start.await(); be.submit(() -> { int a=active.incrementAndGet(); maxActive.updateAndGet(m->Math.max(m,a)); pause(50); active.decrementAndGet(); }); }
+                catch (InterruptedException e){Thread.currentThread().interrupt();}
+                finally { done.countDown(); }
+            }).start();
+            start.countDown();
+            try { done.await(5, TimeUnit.SECONDS); } catch (InterruptedException e){throw new AssertionError(e);}
+            if (maxActive.get() > 2) throw new AssertionError("maxActive="+maxActive.get()+" > 2");
+            eq(0, be.active());
+        });
+        check("exception releases slot", () -> {
+            BoundedExecutor be = new BoundedExecutor(1);
+            try { be.submit(() -> { throw new IllegalStateException("boom"); }); } catch (IllegalStateException e) {  }
+            AtomicInteger ran = new AtomicInteger();
+            be.submit(() -> ran.incrementAndGet());
+            eq(1, ran.get());
+            eq(0, be.active());
+        });
+        check("all tasks run", () -> {
+            BoundedExecutor be = new BoundedExecutor(3);
+            AtomicInteger count = new AtomicInteger();
+            for (int i=0;i<10;i++) be.submit(count::incrementAndGet);
+            eq(10, count.get());
+        });
+        System.out.println("RESULT " + passed + "/" + total);
+    }
+}`,
+      reference: `import java.util.concurrent.Semaphore;
+
+class BoundedExecutor {
+    private final Semaphore sem;
+    private final int max;
+    BoundedExecutor(int maxConcurrency) {
+        this.sem = new Semaphore(maxConcurrency);
+        this.max = maxConcurrency;
+    }
+    void submit(Runnable task) {
+        try { sem.acquire(); } catch (InterruptedException e) { Thread.currentThread().interrupt(); throw new RuntimeException(e); }
+        try { task.run(); }
+        finally { sem.release(); }
+    }
+    int active() {
+        return max - sem.availablePermits();
+    }
+}`,
+      hints: ['Dùng Semaphore(maxConcurrency); acquire trước khi chạy, release trong finally.'],
+      explain: 'Semaphore đảm bảo không quá maxConcurrency tác vụ chạy đồng thời. release trong finally đảm bảo slot được nhả dù exception. active() = max - availablePermits().',
+    },
+  ],
+  check: [
+    {
+      q: 'Semaphore khác lock ở điểm nào?',
+      options: ['Semaphore nhanh hơn', 'Semaphore không gắn với thread: thread A acquire, thread B có thể release', 'Semaphore đảm bảo mutual exclusion', 'Semaphore không block'],
+      answer: 1,
+      explain: 'Semaphore là bộ đếm permits, không gắn với thread đang giữ. Lock/monitor gắn với thread. Vì vậy Semaphore phù hợp điều tiết lưu lượng, không phù hợp bảo vệ dữ liệu.',
+    },
+    {
+      q: 'Vì sao release() phải nằm trong finally?',
+      options: ['Để nhanh hơn', 'Để permit được nhả kể cả khi task ném exception', 'Để fair', 'Để tránh deadlock với chính nó'],
+      answer: 1,
+      explain: 'Nếu task ném exception mà không release, permit bị rò, sau N lần lỗi service tự khoá. finally đảm bảo release luôn chạy.',
+    },
+  ],
+  related: ['concurrency-003', 'concurrency-012'],
+  tags: ['Semaphore', 'rate limit', 'throttling', 'concurrency'],
+},
 );
