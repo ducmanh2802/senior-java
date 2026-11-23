@@ -2747,5 +2747,243 @@ Lỗi hay gặp:
 - Quên tạo entry rỗng cho order trước → order không có line bị mất khỏi map.
 - Không check empty trước khi gọi linesBatch → IN () rỗng lỗi SQL.
 - FETCH_JOIN dùng linesBatch hoặc ngược lại → đếm query sai.`,}],check:[{q:'Fetch join collection + Pageable (phân trang 20 order/trang). Hibernate 6 xử lý thế nào?',options:['Tải toàn bộ kết quả rồi cắt trang trong RAM, chỉ in cảnh báo (trừ khi bật fail_on_pagination_over_collection_fetch)','Đưa LIMIT 20 xuống SQL và luôn trả đúng 20 order đầy đủ lines','Tự tách thành hai query: phân trang order rồi tải lines','Ném lỗi biên dịch JPQL'],answer:0,explain:`JOIN nhân dòng theo số line, nên LIMIT ở SQL sẽ cắt giữa collection. Hibernate vì vậy phân trang trong RAM và cảnh báo HHH90003004, rất nguy hiểm với bảng lớn. Nó không tự tách thành hai query (đó là việc bạn phải làm), và JPQL vẫn hợp lệ nên không có lỗi biên dịch.`},{q:'Batch fetching với batchSize=50, load 120 order rồi duyệt lines. Khoảng bao nhiêu query?',options:['1','121','2','Khoảng 4: 1 query order + 3 query lines IN'],answer:3,explain:`Batch fetching gom tối đa 50 id mỗi lô: 120 order cần 3 lô (50+50+20) → 3 query IN cho lines, cộng 1 query order = 4 query. Không còn tăng theo từng order.`},{q:'Tại sao fetch join không phù hợp danh sách lớn (5000 order, 3 lines/order)?',options:['Vì fetch join không hỗ trợ collection','Vì payload 15.000 dòng nhân dòng, chậm hơn nhiều query IN gọn nhẹ','Vì Hibernate không cho phép fetch join nhiều order','Vì fetch join chỉ dùng được cho to-one'],answer:1,explain:`Fetch join nhân dòng: 5000 order × 3 lines = 15.000 dòng result set. Payload lớn, tốn network, heap, thời gian parse. Batch fetching: 1 query order (5000 dòng) + ceil(5000/batchSize) query IN (mỗi query vài trăm dòng) → payload gọn, song song hóa tốt hơn.`},{q:'Khi dùng batch fetching, giới hạn tham số IN của database cần lưu ý gì?',options:['Không có giới hạn','Oracle 1000, SQL Server ~2100, PostgreSQL không giới hạn nhưng hiệu năng giảm','Chỉ MySQL có giới hạn','Giới hạn là 100 cho mọi DB'],answer:1,explain:`Oracle cứng 1000 tham số cho IN. SQL Server ~2100. PostgreSQL không cứng nhưng query quá dài chậm. Khi batchSize lớn (500–1000) cần chia lô thủ công hoặc dùng temp table / CTE. Hibernate batch fetching tự chia lô theo batchSize nên an toàn miễn batchSize ≤ 1000.`}],related:['jpa-002','jpa-012','jpa-015'],tags:['N+1','fetch join','batch fetching','@BatchSize','query counting']
+},
+{
+  id:'lesson-jpa-017',track:'jpa',order:17,title:'Persistence context và dirty checking: import theo chunk, flush rồi clear',level:'senior',minutes:30,
+  goals:['Giải thích vì sao transaction dài với nhiều entity làm persistence context phình to (RAM, snapshot) và flush chậm','Hiểu flush gửi SQL tích lũy xuống DB trong transaction, clear giải phóng identity map và snapshot','Mô phỏng import theo chunk: persist → flush → clear, không mất thay đổi và không phình RAM','Phân biệt flush, clear và commit; biết entity thành detached sau clear và phải load lại nếu muốn sửa'],
+  body:`### Hiểu nhanh: persistence context là "bàn làm việc" phình to theo số entity
+Persistence context (EntityManager của JPA, Session của Hibernate) là vùng nhớ chứa các entity mà Hibernate đang **quản lý (managed)**. Trong một transaction Spring (đánh dấu bằng {{@Transactional}}), mọi entity load ra đều nằm trên "bàn" này, kèm một **snapshot** (bản sao giá trị lúc đọc) để dirty checking so sánh lúc flush. Vấn đề: nếu bạn import 500.000 dòng trong một transaction, bàn làm việc chứa 500.000 entity + 500.000 snapshot → heap phình, mỗi flush duyệt toàn bộ → chậm, dễ OOM (hết bộ nhớ heap). Cách làm đúng: chia **chunk** (ví dụ 500 entity), mỗi chunk persist xong gọi {{flush()}} (gửi SQL tích lũy xuống DB) rồi {{clear()}} (dọn bàn làm việc, mọi entity thành detached).
+
+### Vì sao flush rồi clear, theo thứ tự đó
+{{flush()}} gửi các câu INSERT/UPDATE đang chờ xuống database **trong transaction hiện tại** (chưa commit, vẫn rollback được). {{clear()}} xóa toàn bộ persistence context: identity map và snapshot. Nếu clear trước flush, các thay đổi chưa gửi sẽ **mất** vì không còn ai theo dõi entity đó nữa. Vì vậy thứ tự bắt buộc là: persist → flush → clear.
+
+### Cơ chế từng bước
+1. {{persist(entity mới)}}: Hibernate thêm entity vào identity map, đánh dấu là new (chưa có snapshot vì chưa có trong DB).
+2. {{flush()}}: duyệt identity map, entity nào là new → sinh INSERT; entity managed có field khác snapshot → sinh UPDATE. Sau flush, cập nhật snapshot, entity new trở thành managed "đã đồng bộ".
+3. {{clear()}}: xóa identity map + snapshot. Mọi entity bạn đang giữ trong biến trở thành detached; setter sau đó không sinh SQL.
+4. Lặp lại chunk tiếp theo.
+
+### Ví dụ số liệu
+Import 10.000 entity, chunk 1.000: 10 lần flush, mỗi flush 1.000 INSERT → 10.000 INSERT. Persistence context mỗi lúc chỉ giữ 1.000 entity + snapshot → heap ổn định. Nếu không chunk: 1 flush cuối với 10.000 entity → heap lớn gấp 10 lần, flush chậm vì duyệt 10.000 entity một lượt.
+
+### Lỗi hay gặp
+- clear trước flush → mất INSERT/UPDATE chưa gửi.
+- flush trước clear nhưng quên clear → persistence context vẫn phình.
+- Sau clear, sửa entity cũ rồi commit → không có UPDATE (đã detached).
+- Đọc lại entity sau clear: phải load lại từ DB, không dùng object cũ.
+
+### Liên hệ phỏng vấn
+"Vì sao import lớn phải chia chunk và flush rồi clear?" Trả lời: persistence context giữ entity + snapshot, phình to theo số entity → heap và thời gian flush tăng tuyến tính. Chia chunk giữ context nhỏ; flush trước clear để gửi SQL tích lũy trước khi giải phóng. Sau clear entity thành detached, muốn sửa phải load lại. Dùng {{@Transactional(readOnly = true)}} cho phần chỉ đọc.`,
+  exercises:[{title:'ChunkImporter: persist, flush, clear, load lại từ DB',prompt:`Cài {{ChunkImporter}} mô phỏng persistence context khi import theo chunk. Entity {{Row}} có {{id}} và {{name}}. DB là map id → name.
+- {{persist(id, name)}}: tạo Row mới, thêm vào managed map. Entity mới **chưa có snapshot** (chưa có trong DB).
+- {{load(id)}}: nếu managed map đã có thì trả về **cùng object** đó; nếu chưa thì tạo Row từ DB (map {{db}}), thêm vào managed map, lưu snapshot, đánh dấu đã INSERT.
+- {{flush()}}: duyệt managed theo thứ tự load. Entity chưa có snapshot → sinh {{INSERT INTO row(id,name) VALUES(...)}} và cập nhật db + snapshot. Entity có snapshot mà name khác → sinh {{UPDATE row SET name='...' WHERE id=...}} và cập nhật db + snapshot. Trả về danh sách câu SQL.
+- {{clear()}}: xóa managed map và snapshot (entity thành detached).
+- {{commit()}}: clear rồi xóa tập đã-INSERT (mọi thứ đã bền).`,
+  starter:`class Row {long id;String name;Row(long i,String n){id=i;name=n;}}
+class ChunkImporter {
+    Map<Long,String> db=new HashMap<>();
+    Map<Long,Row> managed=new LinkedHashMap<>();
+    Map<Long,String> snapshot=new HashMap<>();
+    Set<Long> inserted=new HashSet<>();
+    void persist(long id,String name){throw new UnsupportedOperationException("TODO");}
+    Row load(long id){throw new UnsupportedOperationException("TODO");}
+    List<String> flush(){throw new UnsupportedOperationException("TODO");}
+    void clear(){throw new UnsupportedOperationException("TODO");}
+    void commit(){throw new UnsupportedOperationException("TODO");}
+}`,
+  tests:`public class Main {
+    static int passed=0,total=0;
+    static void check(String name,boolean ok,String detail){total++;if(ok){passed++;System.out.println("PASS "+name);}else System.out.println("FAIL "+name+": "+detail);}
+    public static void main(String[] args){
+        ChunkImporter imp=new ChunkImporter();
+        imp.persist(1,"A");imp.persist(2,"B");imp.persist(3,"C");
+        List<String> sql1=imp.flush();
+        check("flush inserts new entities",sql1.equals(List.of("INSERT INTO row(id,name) VALUES(1,'A')","INSERT INTO row(id,name) VALUES(2,'B')","INSERT INTO row(id,name) VALUES(3,'C')")),"sql="+sql1);
+        imp.clear();
+        check("clear empties context",imp.managed.isEmpty(),"managed="+imp.managed.size());
+        Row r=imp.load(1);
+        check("load after clear reads from DB",r.name.equals("A"),"name="+r.name);
+        check("load after clear no insert",imp.flush().isEmpty(),"flush="+imp.flush());
+        r.name="X";
+        List<String> sql2=imp.flush();
+        check("update dirty field",sql2.equals(List.of("UPDATE row SET name='X' WHERE id=1")),"sql="+sql2);
+        imp.clear();
+        check("update persisted",imp.load(1).name.equals("X"),"name="+imp.load(1).name);
+        ChunkImporter imp2=new ChunkImporter();
+        int totalInsert=0,flushCount=0;
+        for(int i=1;i<=5;i++){
+            imp2.persist(i,"N"+i);
+            if(i%2==0){List<String> s=imp2.flush();flushCount++;totalInsert+=s.size();imp2.clear();}
+        }
+        List<String> last=imp2.flush();
+        check("chunk flush count",flushCount==2 && last.size()==1,"flushCount="+flushCount+", last="+last.size());
+        check("chunk total inserts",totalInsert+last.size()==5,"total="+(totalInsert+last.size()));
+        imp2.clear();
+        check("all rows readable after chunk",imp2.load(1).name.equals("N1")&&imp2.load(5).name.equals("N5"),"loaded");
+        imp2.commit();
+        check("commit clears context",imp2.managed.isEmpty(),"managed="+imp2.managed.size());
+        System.out.println("RESULT "+passed+"/"+total);
+    }
+}`,
+  reference:`class Row {long id;String name;Row(long i,String n){id=i;name=n;}}
+class ChunkImporter {
+    Map<Long,String> db=new HashMap<>();
+    Map<Long,Row> managed=new LinkedHashMap<>();
+    Map<Long,String> snapshot=new HashMap<>();
+    Set<Long> inserted=new HashSet<>();
+    void persist(long id,String name){
+        if(managed.containsKey(id)||snapshot.containsKey(id))throw new IllegalArgumentException("not transient");
+        managed.put(id,new Row(id,name));
+    }
+    Row load(long id){
+        Row r=managed.get(id);
+        if(r!=null)return r;
+        r=new Row(id,db.get(id));
+        managed.put(id,r);snapshot.put(id,r.name);inserted.add(id);return r;
+    }
+    List<String> flush(){
+        List<String> sql=new ArrayList<>();
+        for(Row r:managed.values()){
+            String old=snapshot.get(r.id);
+            if(old==null){sql.add("INSERT INTO row(id,name) VALUES("+r.id+",'"+r.name+"')");db.put(r.id,r.name);snapshot.put(r.id,r.name);inserted.add(r.id);}
+            else if(!Objects.equals(old,r.name)){sql.add("UPDATE row SET name='"+r.name+"' WHERE id="+r.id);db.put(r.id,r.name);snapshot.put(r.id,r.name);}
+        }
+        return sql;
+    }
+    void clear(){managed.clear();snapshot.clear();}
+    void commit(){clear();inserted.clear();}
+}`,
+  hints:['persist chỉ thêm vào managed map, KHÔNG thêm snapshot (entity mới chưa có trong DB).','load kiểm tra managed trước; nếu không có thì đọc từ db rồi thêm managed + snapshot + inserted.','flush phân biệt entity mới (snapshot null → INSERT) với entity cũ đổi field (snapshot khác → UPDATE), cập nhật db và snapshot sau mỗi câu.','clear xóa managed và snapshot; commit gọi clear rồi xóa inserted.'],
+  explain:`Bài tập buộc bạn tách bạch ba việc: persist (đưa entity mới vào context), flush (sinh SQL và cập nhật DB + snapshot), clear (giải phóng context). Lỗi hay gặp:
+- Thêm snapshot ngay khi persist → entity mới bị coi là "đã có trong DB", flush không sinh INSERT.
+- clear trước flush → INSERT/UPDATE chưa gửi bị mất.
+- Quên cập nhật snapshot sau flush → flush lần sau lặp lại INSERT/UPDATE.
+- Sau clear, load lại entity phải đọc từ db (không phải object cũ), nếu không sẽ thấy giá trị cũ.
+
+Ngoài đời, chunk size thường bằng hibernate.jdbc.batch_size (ví dụ 50–100) để batch insert hoạt động, và phải flush trước clear.`,
+  }],
+  check:[{q:'Thứ tự đúng khi import theo chunk là gì?',options:['persist → clear → flush','persist → flush → clear','clear → persist → flush','flush → persist → clear'],answer:1,explain:`flush gửi SQL tích lũy xuống DB trong transaction; clear giải phóng persistence context. Nếu clear trước flush, entity đã detached nên thay đổi chưa gửi bị mất. Thứ tự bắt buộc: persist → flush → clear.`},{q:'Sau {{clear()}}, entity bạn đang giữ trong biến có còn được Hibernate theo dõi không?',options:['Có, vì vẫn còn trong transaction','Không, nó thành detached; setter không sinh SQL, phải load lại nếu muốn sửa','Có, nếu gọi save()','Tùy cấu hình'],answer:1,explain:`clear xóa identity map và snapshot, mọi entity thành detached. Setter trên detached chỉ đổi RAM, không sinh SQL, không báo lỗi. Muốn sửa phải load lại entity trong context mới.`},{q:'Vì sao import 500.000 dòng trong một transaction dễ OOM?',options:['Vì database từ chối','Vì persistence context giữ 500.000 entity + snapshot, heap phình, flush duyệt toàn bộ','Vì Hibernate không hỗ trợ số lớn','Vì thiếu unique constraint'],answer:1,explain:`Mỗi entity managed tốn RAM cho object và snapshot; mỗi flush duyệt tất cả. 500.000 entity cùng lúc → heap lớn, flush chậm, dễ OOM. Chia chunk + flush + clear giữ context nhỏ.`}],
+  related:['jpa-022','jpa-025'],
+  tags:['persistence context','dirty checking','chunk','flush','clear']
+},
+{
+  id:'lesson-jpa-018',track:'jpa',order:18,title:'Optimistic locking với @Version: hai transaction xen kẽ, xung đột và retry',level:'senior',minutes:30,
+  goals:['Giải thích lost update và vì sao isolation mặc định không chặn được','Hiểu @Version sinh UPDATE ... WHERE version=? và xung đột khi 0 hàng','Mô phỏng hai transaction xen kẽ: A commit trước, B thất bại, B retry đọc version mới','Biết retry đúng: transaction mới, áp dụng lại ý định, giới hạn số lần; khi nào dùng pessimistic lock'],
+  body:`### Hiểu nhanh: lost update và @Version
+Lost update xảy ra khi hai transaction cùng đọc một bản ghi, cùng sửa trong RAM, rồi ghi đè lẫn nhau: A đọc balance=100, B cũng đọc 100; A ghi 120, B ghi 150 → mất thay đổi của A. {{@Version}} thêm cột version: mỗi entity có version, khi flush Hibernate sinh {{UPDATE ... SET balance=?, version=? WHERE id=? AND version=?}} (version đọc lúc đầu). Nếu transaction khác đã tăng version, câu UPDATE ảnh hưởng 0 hàng → {{OptimisticLockException}}. "Optimistic" vì không giữ lock trong lúc tính toán, chỉ phát hiện xung đột lúc ghi.
+
+### Cơ chế từng bước (hai transaction xen kẽ)
+1. A đọc row (version=0, balance=0), giữ snapshot v0.
+2. B đọc row (version=0, balance=0), giữ snapshot v0.
+3. A sửa balance=100, commit: {{UPDATE WHERE version=0}} → 1 hàng → version=1, balance=100.
+4. B sửa balance=200, commit: {{UPDATE WHERE version=0}} → 0 hàng (DB đã v1) → OptimisticLockException.
+5. B retry: mở "transaction mới" (đọc lại row v1), áp dụng lại ý định (cộng delta, không ghi lại 200), commit {{WHERE version=1}} → thành công, version=2.
+
+### Retry đúng cách
+Retry phải ở lớp ngoài method {{@Transactional}} (transaction cũ đã rollback-only). Mỗi lần thử: đọc version mới, áp dụng lại **ý định** (ví dụ "cộng 50"), giới hạn 3 lần, backoff nhỏ khi tải cao. Không retry vô hạn (khuếch đại tải khi tranh chấp). Nếu xung đột do người dùng sửa dữ liệu khác (giá mới), trả 409 cho người dùng xem lại thay vì retry mù.
+
+### Bẫy production
+- Bulk JPQL {{UPDATE}} không tự tăng version → phải {{SET version = version + 1}} hoặc HQL {{UPDATE VERSIONED}}.
+- {{@Version}} chỉ bảo vệ từng hàng, không bảo vệ ràng buộc nhiều hàng.
+- Hàng nóng (bộ đếm mọi request) → optimistic liên tục fail, dùng UPDATE nguyên tử {{SET stock = stock - 1 WHERE stock > 0}} hoặc pessimistic lock.
+- Retry trong cùng transaction là sai.
+
+### Ví dụ đời thực: hai nhân viên cùng sửa đơn hàng
+Hệ thống bán vé có 30.000 lượt xem/ngày, 5% chốt đơn. Một nhân viên mở đơn 42 (version=7) lúc 9:00, người khác cũng mở đơn 42 lúc 9:01 (vẫn version=7 vì chưa ai lưu). Người thứ nhất đổi địa chỉ giao, lưu lúc 9:05 → version=8. Người thứ hai đổi ghi chú, lưu lúc 9:06 với version=7 → UPDATE WHERE version=7 ảnh hưởng 0 hàng → ObjectOptimisticLockingFailureException. API trả 409 kèm version=8; giao diện báo "Đơn vừa được người khác cập nhật, tải lại?". Người thứ hai tải lại, thấy địa chỉ mới, chỉ đổi ghi chú, lưu thành công (version=9). Kết quả: không mất thay đổi, tỷ lệ 409 dưới 1% và được ghi log để phát hiện UI cache quá lâu.
+
+### So sánh optimistic và pessimistic lock
+| Tiêu chí | Optimistic (@Version) | Pessimistic (SELECT FOR UPDATE) |
+|---|---|---|
+| Thời điểm phát hiện xung đột | Lúc ghi (flush) | Lúc đọc (giữ lock ngay) |
+| Giữ lock trong DB | Không | Có, suốt transaction |
+| Phù hợp | Đọc nhiều ghi ít, form mở lâu, xung đột hiếm | Tranh chấp cao trên ít hàng nóng, đoạn xử lý ngắn |
+| Rủi ro | Phải retry hoặc trả 409 | Chờ, timeout, deadlock |
+| Ví dụ | Sửa hồ sơ khách hàng, đơn hàng | Trừ tồn kho, đặt ghế, bộ đếm |
+
+### Liên hệ phỏng vấn
+"Lost update là gì, @Version ngăn thế nào, retry ra sao?" Trả lời: hai transaction đọc cùng version, ghi đè nhau; @Version thêm {{WHERE version=?}} vào UPDATE, 0 hàng → exception. Retry: transaction mới, đọc version mới, áp dụng lại ý định, giới hạn 3 lần. Pessimistic lock (SELECT FOR UPDATE) khi tranh chấp cao trên hàng nóng, đoạn xử lý ngắn.`,
+  exercises:[{title:'Hai transaction xen kẽ: version check, xung đột và retry',prompt:`Mô phỏng optimistic locking. {{VersionedRow}} có {{balance}} và {{version}}.
+- {{update(expected, newBalance)}}: nếu {{version}} hiện tại khác {{expected}} thì trả {{false}} và **không** đổi gì; nếu khớp thì đặt balance=newBalance, tăng version thêm 1, trả {{true}} (giống UPDATE ... WHERE version = ?).
+- {{Tx}}: {{read(row)}} đọc balance và version hiện tại vào object; {{commit(row)}} gọi row.update(version, balance).
+- {{Service.applyDelta(row, delta)}}: thử tối đa **3 lần**; mỗi lần tạo Tx mới, read row, cộng delta vào balance, commit. Thành công thì dừng. Sau 3 lần thất bại ném {{IllegalStateException}}.`,
+  starter:`class VersionedRow {long balance;int version;
+    boolean update(int expected,long newBalance){throw new UnsupportedOperationException("TODO");}
+}
+class Tx {long balance;int version;
+    void read(VersionedRow r){throw new UnsupportedOperationException("TODO");}
+    boolean commit(VersionedRow r){throw new UnsupportedOperationException("TODO");}
+}
+class Service {
+    boolean applyDelta(VersionedRow row,long delta){throw new UnsupportedOperationException("TODO");}
+}`,
+  tests:`public class Main {
+    static int passed=0,total=0;
+    static void check(String name,boolean ok,String detail){total++;if(ok){passed++;System.out.println("PASS "+name);}else System.out.println("FAIL "+name+": "+detail);}
+    public static void main(String[] args){
+        VersionedRow row=new VersionedRow();
+        Tx a=new Tx();a.read(row);
+        Tx b=new Tx();b.read(row);
+        a.balance=100;
+        check("A commits first",a.commit(row),"A commit failed");
+        check("version bumped to 1",row.version==1 && row.balance==100,"v="+row.version+", bal="+row.balance);
+        b.balance=200;
+        check("B stale commit fails",!b.commit(row),"B commit should fail");
+        check("DB unchanged after failed B",row.version==1 && row.balance==100,"v="+row.version+", bal="+row.balance);
+        Tx b2=new Tx();b2.read(row);
+        b2.balance=300;
+        check("B retry succeeds",b2.commit(row),"retry commit failed");
+        check("final state v2 bal 300",row.version==2 && row.balance==300,"v="+row.version+", bal="+row.balance);
+        VersionedRow row2=new VersionedRow();
+        Service svc=new Service();
+        boolean ok=svc.applyDelta(row2,50);
+        check("service applies delta",ok && row2.balance==50 && row2.version==1,"ok="+ok+", v="+row2.version+", bal="+row2.balance);
+        class FlakyRow extends VersionedRow {int calls;
+            boolean update(int expected,long newBal){if(calls++==0){version++;return false;}return super.update(expected,newBal);}
+        }
+        FlakyRow flaky=new FlakyRow();
+        boolean ok2=svc.applyDelta(flaky,10);
+        check("service retries after conflict",ok2 && flaky.balance==10 && flaky.version==2 && flaky.calls==2,"ok="+ok2+", v="+flaky.version+", calls="+flaky.calls);
+        class BusyRow extends VersionedRow {int attempts;
+            boolean update(int expected,long newBal){attempts++;return false;}
+        }
+        BusyRow busy=new BusyRow();
+        boolean thrown=false;
+        try{svc.applyDelta(busy,5);}catch(IllegalStateException e){thrown=true;}
+        check("gives up after 3 attempts",thrown && busy.attempts==3,"thrown="+thrown+", attempts="+busy.attempts);
+        System.out.println("RESULT "+passed+"/"+total);
+    }
+}`,
+  reference:`class VersionedRow {long balance;int version;
+    boolean update(int expected,long newBalance){
+        if(version!=expected)return false;
+        balance=newBalance;version++;return true;
+    }
+}
+class Tx {long balance;int version;
+    void read(VersionedRow r){balance=r.balance;version=r.version;}
+    boolean commit(VersionedRow r){return r.update(version,balance);}
+}
+class Service {
+    boolean applyDelta(VersionedRow row,long delta){
+        for(int i=0;i<3;i++){
+            Tx tx=new Tx();tx.read(row);
+            tx.balance=tx.balance+delta;
+            if(tx.commit(row))return true;
+        }
+        throw new IllegalStateException("conflict after 3 attempts");
+    }
+}`,
+  hints:['update so version truoc; khong khop thi return false ngay, khong doi balance/version.','Tx.read doc ca balance va version; Tx.commit goi update(version, balance).','applyDelta: moi lan thu tao Tx moi, read lai row (version moi), cong delta vao balance, commit; het 3 lan thi throw IllegalStateException.'],
+  explain:`Bài tập tách bạch ba bước mà optimistic locking làm ở tầng database: đọc state (balance + version), sửa trong RAM (cộng delta), ghi có điều kiện version. Lỗi hay gặp:
+- Đọc version một lần trước vòng lặp → sau xung đột, lần thử sau vẫn dùng version cũ nên fail mãi. Test FlakyRow bắt đúng lỗi này.
+- Ghi lại kết quả cũ (200) thay vì áp dụng lại ý định (cộng delta) → sai nghiệp vụ.
+- Retry trong cùng transaction → transaction đã rollback-only, không dùng tiếp được.
+
+Ở ứng dụng thật, mỗi lần thử là một transaction mới (đọc entity mới từ DB), vòng retry nằm ngoài method @Transactional, giới hạn 3 lần có backoff.`,
+  }],
+  check:[{q:'Hai transaction cùng đọc version=5. A commit thành công (version=6). B commit với version=5. Điều gì xảy ra?',options:['B thành công vì sửa field khác','B bị OptimisticLockException vì UPDATE ... WHERE version=5 ảnh hưởng 0 hàng','B tự động retry','B ghi đè A'],answer:1,explain:`@Version thêm điều kiện WHERE version=? vào UPDATE. Khi A đã tăng version lên 6, câu UPDATE của B với version=5 không khớp hàng nào → 0 row affected → Hibernate ném OptimisticLockException. Không phân biệt field nào đổi: version là điều kiện chung cho cả hàng.`},{q:'Retry sau OptimisticLockException đúng cách là gì?',options:['Gửi lại UPDATE với version cũ','Mở transaction mới, đọc entity (version mới), áp dụng lại ý định, giới hạn số lần','Xóa cột version','Bắt exception rồi tiếp tục trong cùng transaction'],answer:1,explain:`Version cũ chắc chắn fail. Transaction hiện tại đã rollback-only nên không thể tiếp tục. Phải mở transaction mới, đọc state mới, áp dụng lại ý định (ví dụ cộng delta), có giới hạn (3 lần) và backoff. Retry vô hạn khuếch đại tải khi tranh chấp.`},{q:'Khi nào pessimistic lock (SELECT ... FOR UPDATE) hợp hơn @Version?',options:['Xung đột cực hiếm','Tranh chấp cao trên ít hàng nóng, đoạn xử lý ngắn','Người dùng mở form sửa 10 phút','Muốn tránh hoàn toàn deadlock'],answer:1,explain:`Tranh chấp cao trên hàng nóng làm optimistic liên tục fail và retry; giữ lock ngắn hiệu quả hơn. Form mở 10 phút mà giữ lock DB thì chặn người khác suốt thời gian đó → optimistic hợp hơn. Xung đột hiếm cũng là đất của optimistic. Pessimistic lock vẫn có thể deadlock chứ không tránh được.`}],
+  related:['jpa-024','jpa-022'],
+  tags:['optimistic locking','@Version','lost update','retry','pessimistic lock']
 }
 );
