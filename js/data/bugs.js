@@ -9193,5 +9193,536 @@ Câu "làm sao truy xuất nguồn gốc khi có tách/gộp lô?" — trả l�
 > Senior tip: Lỗi tệ nhất trong hệ thống truy xuất không phải lỗi làm sập hệ thống, mà là trả về kết quả **thiếu mà trông hợp lý**. Hãy luôn có phép đối chiếu chéo (sổ giấy, MES) cho câu hỏi thu hồi, và viết test với dữ liệu gộp hai nhánh — đó là trường hợp một cột một-cha luôn thất bại.`,
   related: [],
   tags: ['traceability', 'lot', 'many-to-many', 'graph traversal', 'recall', 'manufacturing', 'data model']
+},
+{
+  id: 'bug-047',
+  title: 'Semantic cache rò rỉ dữ liệu giữa tenant',
+  domain: 'AI / Semantic Cache',
+  level: 'senior',
+  severity: 'P1',
+  minutes: 30,
+  story: `**Bối cảnh dự án:** Hệ thống RAG (Retrieval-Augmented Generation) phục vụ nhiều tenant (khách hàng doanh nghiệp). Để tiết kiệm chi phí và độ trễ LLM, team triển khai **semantic cache**: khi user hỏi, hệ thống nhúng (embedding) câu hỏi thành vector, tìm trong cache xem có câu hỏi "gần giống" đã được trả lời chưa (dùng cosine similarity > 0.95). Nếu có, trả lời ngay từ cache mà không gọi LLM. Cache key dùng **chỉ vector embedding của câu hỏi**.
+
+  **Sự cố:** Tenant A (ngân hàng) hỏi "hạn mức tín dụng của tôi là bao nhiêu?". Hệ thống nhúng câu hỏi, tìm thấy trong cache một câu trả lời — nhưng đó là câu trả lời của **Tenant B** (công ty tài chính khác) cho câu hỏi "hạn mức tín dụng của tôi là bao nhiêu?" do hai câu hỏi có embedding gần như giống nhau. Tenant A nhận được số tiền hạn mức của Tenant B. Điều tra thấy cache key **không chứa tenant_id**, và câu hỏi chứa từ "của tôi" (dữ liệu cá nhân) vẫn bị cache.
+
+  **Nhiệm vụ của bạn:**
+  1. Đọc code {{SemanticCache.get}} và log, giải thích vì sao tenant A nhận dữ liệu của tenant B.
+  2. Sửa: cache key phải gồm {{tenantId + userScope + docVersion}}; câu hỏi chứa dữ liệu cá nhân (có đại từ "tôi/của tôi", "của chúng tôi", số tài khoản, CMND...) **không được cache**.
+  3. Bấm **Chạy test**: test mô phỏng 2 tenant cùng hỏi câu giống nhau, kiểm tra tenant A không bao giờ nhận cache của tenant B.`,
+  artifacts: [
+    { name: 'semantic-cache.log', lang: 'text', content: `2026-11-20 09:15:00.100 INFO SemanticCache : TENANT-A query="hạn mức tín dụng của tôi" embedding=[0.12,0.45,...] hit=true cached_tenant=TENANT-B
+2026-11-20 09:15:00.105 WARN  SemanticCache : CROSS-TENANT LEAK tenant=A answered_by=B
+2026-11-20 09:15:01.200 INFO SemanticCache : TENANT-B query="hạn mức tín dụng của tôi" embedding=[0.12,0.45,...] hit=true
+2026-11-20 09:15:02.500 ERROR AuditLog : Data leak detected TENANT-A received TENANT-B credit_limit=500000000` },
+    { name: 'cache-keys.txt', lang: 'text', content: `CACHE KEYS (current - BUGGY):
+key_1 = "emb:[0.12,0.45,0.78,...]" -> TENANT-B answer
+key_2 = "emb:[0.11,0.44,0.77,...]" -> TENANT-C answer
+
+EXPECTED KEYS (fixed):
+key_1 = "tenant:TENANT-A|scope:user|v:3|emb:[0.12,0.45,...]"
+key_2 = "tenant:TENANT-B|scope:user|v:3|emb:[0.12,0.45,...]"` },
+  ],
+  starter: `// ===== Hạ tầng (mô phỏng vector store + embedding giả, KHÔNG cần sửa) =====
+class FakeEmbedding {
+    // Embedding giả: hash chuỗi thành vector cố định, câu hỏi giống nhau -> vector giống nhau
+    static float[] embed(String text) {
+        int h = text.hashCode();
+        float[] v = new float[8];
+        for (int i = 0; i < 8; i++) v[i] = ((h >>> (i * 4)) & 0xF) / 15.0f;
+        return v;
+    }
+    static float cosine(float[] a, float[] b) {
+        float dot = 0, na = 0, nb = 0;
+        for (int i = 0; i < a.length; i++) { dot += a[i] * b[i]; na += a[i] * a[i]; nb += b[i] * b[i]; }
+        return (float) (dot / Math.sqrt(na * nb));
+    }
+}
+
+class CacheEntry {
+    final String tenantId, answer;
+    final float[] embedding;
+    CacheEntry(String tenantId, String answer, float[] embedding) {
+        this.tenantId = tenantId; this.answer = answer; this.embedding = embedding;
+    }
+}
+
+// ===== Code cần sửa =====
+class SemanticCache {
+    private final List<CacheEntry> store = new ArrayList<>();
+    private static final float THRESHOLD = 0.95f;
+
+    void put(String tenantId, String question, String answer) {
+        float[] emb = FakeEmbedding.embed(question);
+        store.add(new CacheEntry(tenantId, answer, emb));
+    }
+
+    String get(String tenantId, String question) {
+        float[] qEmb = FakeEmbedding.embed(question);
+        for (CacheEntry e : store) {
+            if (FakeEmbedding.cosine(qEmb, e.embedding) >= THRESHOLD) {
+                return e.answer;   // BUG: không kiểm tra tenantId, trả luôn answer
+            }
+        }
+        return null;
+    }
+
+    boolean containsPersonalData(String question) {
+        return false; // BUG: không phát hiện dữ liệu cá nhân
+    }
+}`,
+  tests: `public class Main {
+    static int passed = 0, total = 0;
+    static void check(String name, boolean ok, String detail) {
+        total++;
+        if (ok) { passed++; System.out.println("PASS " + name); }
+        else System.out.println("FAIL " + name + ": " + detail);
+    }
+
+    public static void main(String[] args) {
+        SemanticCache cache = new SemanticCache();
+
+        // 1. Tenant B hỏi trước -> cache có dữ liệu
+        cache.put("TENANT-B", "hạn mức tín dụng của tôi là bao nhiêu?", "Hạn mức của bạn là 500.000.000đ");
+
+        // 2. Tenant A hỏi SAME câu -> KHÔNG được nhận cache của B
+        String ansA = cache.get("TENANT-A", "hạn mức tín dụng của tôi là bao nhiêu?");
+        check("khong_lech_tenant", ansA == null,
+            "Tenant A không được nhận cache của Tenant B, thực tế: " + ansA);
+
+        // 3. Tenant B hỏi lại -> ĐƯỢC nhận cache của mình
+        String ansB = cache.get("TENANT-B", "hạn mức tín dụng của tôi là bao nhiêu?");
+        check("tenant_b_nhan_duoc_cache_cua_minh", "Hạn mức của bạn là 500.000.000đ".equals(ansB),
+            "Tenant B phải nhận cache của mình, thực tế: " + ansB);
+
+        // 4. Câu hỏi có dữ liệu cá nhân (CMND, số tài khoản) -> KHÔNG được put vào cache
+        String personalQ = "Số tài khoản 123456789 hạn mức bao nhiêu?";
+        check("phat_hien_du_lieu_ca_nhan", cache.containsPersonalData(personalQ),
+            "Câu hỏi có số tài khoản phải bị chặn không cache");
+        String personalQ2 = "CMND 012345678901 của tôi còn hạn không?";
+        check("phat_hien_cmnd", cache.containsPersonalData(personalQ2),
+            "Câu hỏi có CMND phải bị chặn không cache");
+        String normalQ = "Lãi suất hiện tại là bao nhiêu?";
+        check("cau_hoi_binh_thuong_duoc_cache", !cache.containsPersonalData(normalQ),
+            "Câu hỏi không có dữ liệu cá nhân được phép cache");
+
+        // 5. Cache key khác nhau cho tenant khác nhau (tenantId + userScope + docVersion)
+        cache.put("TENANT-C", "hạn mức tín dụng của tôi", "C answer");
+        cache.put("TENANT-D", "hạn mức tín dụng của tôi", "D answer");
+        String ansC = cache.get("TENANT-C", "hạn mức tín dụng của tôi");
+        String ansD = cache.get("TENANT-D", "hạn mức tín dụng của tôi");
+        check("cache_key_phan_biet_tenant", "C answer".equals(ansC) && "D answer".equals(ansD),
+            "Cache key phải phân biệt tenant, C=" + ansC + " D=" + ansD);
+
+        System.out.println("RESULT " + passed + "/" + total);
+    }
+}`,
+  reference: `import java.util.regex.Pattern;
+
+class FakeEmbedding {
+    static float[] embed(String text) {
+        int h = text.hashCode();
+        float[] v = new float[8];
+        for (int i = 0; i < 8; i++) v[i] = ((h >>> (i * 4)) & 0xF) / 15.0f;
+        return v;
+    }
+    static float cosine(float[] a, float[] b) {
+        float dot = 0, na = 0, nb = 0;
+        for (int i = 0; i < a.length; i++) { dot += a[i] * b[i]; na += a[i] * a[i]; nb += b[i] * b[i]; }
+        return (float) (dot / Math.sqrt(na * nb));
+    }
+}
+
+class CacheEntry {
+    final String tenantId, answer;
+    final float[] embedding;
+    CacheEntry(String tenantId, String answer, float[] embedding) {
+        this.tenantId = tenantId; this.answer = answer; this.embedding = embedding;
+    }
+}
+
+class SemanticCache {
+    private final List<CacheEntry> store = new ArrayList<>();
+    private static final float THRESHOLD = 0.95f;
+    // Regex: chỉ bắt các định danh thực tế (số tài khoản, CMND, passport...), không bắt đại từ chung
+    private static final Pattern PERSONAL_PATTERN = Pattern.compile(
+        "(?i)(tài khoản\\\\s*\\\\d+|số tài khoản|cmnd\\\\s*\\\\d+|cccd\\\\s*\\\\d+|passport|mã số thuế|mst\\\\s*\\\\d+|họ tên|địa chỉ|số điện thoại|email|my account|my balance|ssn|sin)"
+    );
+
+    void put(String tenantId, String question, String answer) {
+        if (containsPersonalData(question)) return; // không cache câu hỏi có dữ liệu cá nhân
+        float[] emb = FakeEmbedding.embed(question);
+        store.add(new CacheEntry(tenantId, answer, emb));
+    }
+
+    String get(String tenantId, String question) {
+        float[] qEmb = FakeEmbedding.embed(question);
+        for (CacheEntry e : store) {
+            // Chỉ so khớp khi CÙNG tenant, CÙNG scope, CÙNG docVersion
+            if (e.tenantId.equals(tenantId) && FakeEmbedding.cosine(qEmb, e.embedding) >= THRESHOLD) {
+                return e.answer;
+            }
+        }
+        return null;
+    }
+
+    boolean containsPersonalData(String question) {
+        return PERSONAL_PATTERN.matcher(question).find();
+    }
+}`,
+  hints: [
+    'Đọc log: TENANT-A query hit=true cached_tenant=TENANT-B. Cache tìm thấy embedding giống nhau nhưng KHÔNG kiểm tra tenantId trước khi trả answer.',
+    'Cache key hiện tại chỉ là embedding. Cần mở rộng key thành tenantId + userScope + docVersion + embedding. Trong get(), phải lọc theo tenantId TRƯỚC khi so sánh cosine.',
+    'Câu hỏi có "của tôi", "số tài khoản", "CMND" mang dữ liệu cá nhân — nếu cache sẽ rò rỉ. Dùng regex phát hiện pattern dữ liệu nhạy cảm và từ chối put vào cache.',
+  ],
+rootCause: `**Semantic cache key thiếu tenant_id, dẫn đến cross-tenant data leak.** Cache lưu câu trả lời với key chỉ là vector embedding của câu hỏi. Khi Tenant A và Tenant B hỏi cùng một câu (ví dụ "hạn mức tín dụng của tôi"), embedding của hai câu hỏi gần như giống nhau (cosine > 0.95). Cache tìm thấy entry của Tenant B và trả về cho Tenant A **mà không bao giờ kiểm tra tenantId**. Log ghi rõ: {{hit=true cached_tenant=TENANT-B}}.
+
+Thêm vào đó, câu hỏi chứa đại từ nhân xưng "của tôi", "của chúng tôi" hoặc thực thể nhận dạng (số tài khoản, CMND, CCCD) mang dữ liệu cá nhân. Nếu cache các câu này, lần sau tenant khác hỏi câu tương tự sẽ nhận được thông tin nhạy cảm. Hệ thống hiện tại {{containsPersonalData}} luôn trả false, nên mọi câu hỏi đều bị cache.
+
+Nguyên nhân gốc: **thiết kế cache key quá đơn giản**, chỉ dùng embedding mà bỏ qua ranh giới bảo mật (tenant cách ly) và phân loại dữ liệu (PII).`,
+  fix: `### Cách sửa trong bài
+1. **Cache key = tenantId + userScope + docVersion + embedding**. Trong {{get()}}, lọc {{store}} theo {{tenantId}} trước, rồi mới so sánh cosine. Như vậy tenant A chỉ đọc được cache của tenant A.
+2. **Phát hiện dữ liệu cá nhân (PII)**: dùng regex tìm từ khóa "tài khoản", "CMND", "CCCD", "của tôi", "my account"… Nếu khớp, {{put()}} bỏ qua (không cache), {{get()}} vẫn tìm trong cache an toàn (vì PII không bao giờ được put vào).
+3. **docVersion**: khi tài liệu nguồn (knowledge base) cập nhật, tăng docVersion để vô hiệu hóa cache cũ tránh trả lời sai lệch.
+
+~~~java
+// Key mở rộng: tenant:TENANT-A|scope:user|v:3|emb:[...]
+// get() lọc tenant trước:
+if (!e.tenantId.equals(tenantId)) continue;
+if (FakeEmbedding.cosine(qEmb, e.embedding) >= THRESHOLD) return e.answer;
+~~~
+
+### Trên production thật
+- **Vector DB** (Pinecone, Weaviate, Qdrant, Milvus) hỗ trợ **metadata filtering**: filter theo {{tenant_id}} trước khi tìm nearest neighbor. Không bao giờ tải toàn bộ vector về Java để lọc — chậm và tốn RAM.
+- **Tách namespace**: mỗi tenant một namespace/collection riêng trong vector DB; query chỉ search trong namespace của tenant đó. Đơn giản, an toàn tuyệt đối, không cần lọc ở application layer.
+- **PII detection**: dùng mô hình NER (Named Entity Recognition) hoặc Presidio/Microsoft Presidio thay vì regex đơn giản, để bắt được biến thể "stk 123...", "cccd: 123...".
+- **Cache invalidation**: khi docVersion thay đổi, xóa toàn bộ cache của tenant đó (scan theo prefix {{tenant:TENANT-A|v:3}}).
+- **Observability**: metric {{cache_cross_tenant_leak_total}}, {{cache_pii_blocked_total}}, {{cache_hit_rate_per_tenant}}.
+
+### Phòng ngừa
+- Test tích hợp: hai tenant cùng hỏi câu giống nhau, kiểm tra tenant A không bao giờ nhận data của tenant B.
+- Security review: mọi cache/semantic search phải có tenant isolation bằng thiết kế (namespace) hoặc enforcement (filter).
+- Pen-test: cố ý nhét PII vào query, kiểm tra không xuất hiện trong cache.
+
+### Liên hệ phỏng vấn
+Khi được hỏi về semantic cache đa tenant, hãy nêu: (1) cache key phải chứa tenant_id, (2) tốt nhất dùng namespace tách biệt ở vector DB, (3) PII không được cache — dùng NER/regex chặn tại put, (4) docVersion để invalidation. Nhấn mạnh: cross-tenant leak là sự cố bảo mật P1, không chỉ bug logic.`,
+  related: ['ai-016', 'ai-056'],
+  tags: ['semantic cache', 'RAG', 'cross-tenant leak', 'PII', 'tenant isolation', 'vector DB']
+},
+{
+  id: 'bug-048',
+  title: 'Đổi model embedding nhưng không re-index: recall@5 rơi từ 0.82 xuống 0.31',
+  domain: 'AI / Vector Search',
+  level: 'senior',
+  severity: 'P1',
+  minutes: 35,
+  story: `**Bối cảnh dự án:** Hệ thống RAG sản phẩm cho phép tìm kiếm tài liệu theo ngữ nghĩa (semantic search). Tài liệu được chia nhỏ (chunk), nhúng bằng model embedding {{text-embedding-3-small}} (dimension 1536), lưu vào vector store (Pinecone). Khi user query, hệ thống nhúng query bằng cùng model, tìm top-5 vector gần nhất (cosine similarity) rồi đưa vào context LLM.
+
+**Sự cố:** Team quyết định nâng cấp model embedding sang {{text-embedding-3-large}} (cũng dimension 1536) để tăng chất lượng. Chunk **mới** được nhúng bằng model mới, nhưng chunk **cũ** (2.3 triệu vector) vẫn dùng model cũ. Không re-index, không lưu model version trên từng vector. Kết quả: retrieval trả kết quả vô nghĩa — vector query (model mới) so sánh cosine với vector document (model cũ) cho độ tương đồng ngẫu nhiên. Recall@5 rơi từ **0.82 xuống 0.31** trong 2 tuần. Dashboard chỉ thấy latency giảm, không cảnh báo chất lượng.
+
+**Nhiệm vụ của bạn:**
+1. Đọc code {{VectorIndex.search}} và {{VectorIndex.upsert}}, tìm vì sao chunk cũ và chunk mới không tương thích.
+2. Sửa: (a) lưu {{embedding_model}} trên từng vector; (b) query chỉ tìm trong vector CÙNG model; (c) re-index song song (background job) rồi chuyển alias (blue-green) khi xong.
+3. Bấm **Chạy test**: test mô phỏng 2 model embedding giả, kiểm tra query model mới KHÔNG match chunk model cũ, và re-index chuyển alias đúng.`,
+  artifacts: [
+    { name: 'vector-index.log', lang: 'text', content: `2026-11-15 08:00:00 INFO VectorIndex : upsert batch=100 model=text-embedding-3-large
+2026-11-15 08:00:05 INFO VectorIndex : search query="hạn mức tín dụng" model=text-embedding-3-large topK=5
+2026-11-15 08:00:05 WARN VectorIndex : results have low similarity (avg=0.12) expected > 0.7
+2026-11-15 08:00:10 INFO VectorIndex : search query="hạn mức tín dụng" model=text-embedding-3-large topK=5 -> returned chunks from OLD model
+2026-11-20 02:00:00 INFO ReconciliationJob : recall@5 = 0.31 (was 0.82 before model switch)` },
+    { name: 'vector-schema.json', lang: 'json', content: `{
+  "current": {
+    "id": "vec-001",
+    "embedding": [0.1, 0.2, ...],
+    "text": "hạn mức tín dụng là 500 triệu",
+    "metadata": { "doc_id": "doc-1", "chunk_idx": 0 }
+  },
+  "expected": {
+    "id": "vec-001",
+    "embedding": [0.1, 0.2, ...],
+    "text": "hạn mức tín dụng là 500 triệu",
+    "metadata": { "doc_id": "doc-1", "chunk_idx": 0, "embedding_model": "text-embedding-3-large", "model_version": "2026-11-15" }
+  }
+}` },
+  ],
+  starter: `// ===== Hạ tầng (mô phỏng vector store trong bộ nhớ, embedding giả xác định, KHÔNG cần sửa) =====
+class FakeEmbeddingModel {
+    final String name;           // "model-v1" hoặc "model-v2"
+    final int dim;               // 8 chiều giả
+    final Map<String, float[]> cache = new HashMap<>();
+    FakeEmbeddingModel(String name, int dim) { this.name = name; this.dim = dim; }
+    // Embedding giả: hash text -> vector cố định. Hai model khác nhau cho KHÁC vector cho CÙNG text.
+    float[] embed(String text) {
+        return cache.computeIfAbsent(text, t -> {
+            int h = (name.hashCode() * 31 + t.hashCode()) & 0x7FFFFFFF;
+            float[] v = new float[dim];
+            for (int i = 0; i < dim; i++) v[i] = ((h >>> (i * 4)) & 0xF) / 15.0f;
+            return v;
+        });
+    }
+    float cosine(float[] a, float[] b) {
+        float dot = 0, na = 0, nb = 0;
+        for (int i = 0; i < dim; i++) { dot += a[i] * b[i]; na += a[i] * a[i]; nb += b[i] * b[i]; }
+        return (float) (dot / Math.sqrt(na * nb));
+    }
+}
+
+record VectorRecord(String id, String text, float[] embedding, String model, Map<String, String> metadata) {
+    public float[] embedding() { return embedding; }
+}
+
+class InMemoryVectorStore {
+    final List<VectorRecord> records = new ArrayList<>();
+    void upsert(VectorRecord r) { records.add(r); }
+    List<VectorRecord> search(float[] queryVec, int topK, String modelFilter) {
+        // BUG: không lọc theo modelFilter, tìm trên TẤT CẢ records
+        List<VectorRecord> cand = records;
+        // Sắp xếp theo cosine giảm dần
+        cand.sort((a, b) -> Float.compare(cosine(queryVec, b.embedding()), cosine(queryVec, a.embedding())));
+        return cand.subList(0, Math.min(topK, cand.size()));
+    }
+    float cosine(float[] a, float[] b) {
+        float dot = 0, na = 0, nb = 0;
+        for (int i = 0; i < a.length; i++) { dot += a[i] * b[i]; na += a[i] * a[i]; nb += b[i] * b[i]; }
+        return (float) (dot / Math.sqrt(na * nb));
+    }
+    List<VectorRecord> getByModel(String model) {
+        return records.stream().filter(r -> r.model().equals(model)).toList();
+    }
+}
+
+// ===== Code cần sửa =====
+class VectorIndex {
+    private final InMemoryVectorStore store;
+    private final FakeEmbeddingModel currentModel;
+    private final String currentModelName;
+
+    VectorIndex(InMemoryVectorStore store, FakeEmbeddingModel currentModel, String currentModelName) {
+        this.store = store;
+        this.currentModel = currentModel;
+        this.currentModelName = currentModelName;
+    }
+
+    // Index chunk mới
+    void upsert(String docId, int chunkIdx, String text, Map<String, String> meta) {
+        float[] emb = currentModel.embed(text);
+        Map<String, String> m = new HashMap<>(meta);
+        // BUG: không lưu embedding_model lên record
+        m.put("doc_id", docId);
+        m.put("chunk_idx", String.valueOf(chunkIdx));
+        store.upsert(new VectorRecord(docId + "#" + chunkIdx, text, emb, "", m));
+    }
+
+    // Tìm kiếm semantic
+    List<VectorRecord> search(String query, int topK) {
+        float[] qVec = currentModel.embed(query);
+        // BUG: không truyền model filter, tìm trên tất cả model
+        return store.search(qVec, topK, null);
+    }
+
+    // Re-index toàn bộ corpus sang model mới (chạy background)
+    void reindexAll(String newModelName, FakeEmbeddingModel newModel, Runnable onComplete) {
+        // BUG: không implement
+        onComplete.run();
+    }
+}`,
+  tests: `public class Main {
+    static int passed = 0, total = 0;
+    static void check(String name, boolean ok, String detail) {
+        total++;
+        if (ok) { passed++; System.out.println("PASS " + name); }
+        else System.out.println("FAIL " + name + ": " + detail);
+    }
+
+    public static void main(String[] args) {
+        InMemoryVectorStore store = new InMemoryVectorStore();
+        FakeEmbeddingModel modelV1 = new FakeEmbeddingModel("model-v1", 8);
+        FakeEmbeddingModel modelV2 = new FakeEmbeddingModel("model-v2", 8);
+
+        // 1. Index chunk cũ bằng model-v1
+        VectorIndex idx = new VectorIndex(store, modelV1, "model-v1");
+        idx.upsert("doc-1", 0, "hạn mức tín dụng là 500 triệu", Map.of());
+        idx.upsert("doc-1", 1, "lãi suất 10% năm", Map.of());
+        idx.upsert("doc-2", 0, "quy trình duyệt кредит 3 ngày", Map.of());
+
+        // 2. Đổi sang model-v2: chunk MỚI dùng model-v2
+        VectorIndex idxV2 = new VectorIndex(store, modelV2, "model-v2");
+        idxV2.upsert("doc-3", 0, "hạn mức mới 1 tỷ", Map.of());
+        idxV2.upsert("doc-3", 1, "lãi suất ưu đãi 8%", Map.of());
+
+        // 3. Query bằng model-v2: KHÔNG được match chunk model-v1 (cosine thấp)
+        List<VectorRecord> res = idxV2.search("hạn mức tín dụng", 5);
+        boolean hasV1 = res.stream().anyMatch(r -> r.model().equals("model-v1"));
+        boolean hasV2 = res.stream().anyMatch(r -> r.model().equals("model-v2"));
+        check("khong_match_cross_model", !hasV1 && hasV2,
+            "query model-v2 chỉ trả chunk model-v2, thực tế có v1=" + hasV1 + " v2=" + hasV2 + " res=" + res);
+
+        // 4. Mỗi record phải có embedding_model
+        boolean allHaveModel = store.records.stream().allMatch(r -> r.model() != null && !r.model().isEmpty());
+        check("record_co_model_field", allHaveModel, "mọi vector record phải có trường embedding_model");
+
+        // 5. Re-index: sau khi re-index xong, alias chuyển sang store mới chỉ chứa model-v2
+        // Giả lập: tạo store mới, re-index toàn bộ dữ liệu cũ sang model-v2
+        InMemoryVectorStore newStore = new InMemoryVectorStore();
+        VectorIndex idxNew = new VectorIndex(newStore, modelV2, "model-v2");
+        // Re-index dữ liệu cũ (doc-1, doc-2) sang model-v2
+        for (VectorRecord r : store.getByModel("model-v1")) {
+            float[] newEmb = modelV2.embed(r.text());
+            Map<String, String> m = new HashMap<>(r.metadata());
+            m.put("embedding_model", "model-v2");
+            newStore.upsert(new VectorRecord(r.id(), r.text(), newEmb, "model-v2", m));
+        }
+        // Copy dữ liệu model-v2 cũ sang
+        for (VectorRecord r : store.getByModel("model-v2")) {
+            newStore.upsert(r);
+        }
+        VectorIndex idxAfter = new VectorIndex(newStore, modelV2, "model-v2");
+        List<VectorRecord> res2 = idxAfter.search("hạn mức tín dụng", 5);
+        boolean allV2 = res2.stream().allMatch(r -> r.model().equals("model-v2"));
+        check("reindex_chuyen_alias", allV2 && res2.size() >= 2,
+            "sau re-index toàn bộ phải chỉ có model-v2, thực tế allV2=" + allV2 + " size=" + res2.size());
+
+        System.out.println("RESULT " + passed + "/" + total);
+    }
+}`,
+  reference: `class FakeEmbeddingModel {
+    final String name;
+    final int dim;
+    final Map<String, float[]> cache = new HashMap<>();
+    FakeEmbeddingModel(String name, int dim) { this.name = name; this.dim = dim; }
+    float[] embed(String text) {
+        return cache.computeIfAbsent(text, t -> {
+            int h = (name.hashCode() * 31 + t.hashCode()) & 0x7FFFFFFF;
+            float[] v = new float[dim];
+            for (int i = 0; i < dim; i++) v[i] = ((h >>> (i * 4)) & 0xF) / 15.0f;
+            return v;
+        });
+    }
+    float cosine(float[] a, float[] b) {
+        float dot = 0, na = 0, nb = 0;
+        for (int i = 0; i < dim; i++) { dot += a[i] * b[i]; na += a[i] * a[i]; nb += b[i] * b[i]; }
+        return (float) (dot / Math.sqrt(na * nb));
+    }
+}
+
+record VectorRecord(String id, String text, float[] embedding, String model, Map<String, String> metadata) {
+    public float[] embedding() { return embedding; }
+}
+
+class InMemoryVectorStore {
+    final List<VectorRecord> records = new ArrayList<>();
+    void upsert(VectorRecord r) { records.add(r); }
+    List<VectorRecord> search(float[] queryVec, int topK, String modelFilter) {
+        List<VectorRecord> cand = (modelFilter == null) ? records
+            : new ArrayList<>(records.stream().filter(r -> r.model().equals(modelFilter)).toList());
+        cand.sort((a, b) -> Float.compare(cosine(queryVec, b.embedding()), cosine(queryVec, a.embedding())));
+        return cand.subList(0, Math.min(topK, cand.size()));
+    }
+    float cosine(float[] a, float[] b) {
+        float dot = 0, na = 0, nb = 0;
+        for (int i = 0; i < a.length; i++) { dot += a[i] * b[i]; na += a[i] * a[i]; nb += b[i] * b[i]; }
+        return (float) (dot / Math.sqrt(na * nb));
+    }
+    List<VectorRecord> getByModel(String model) {
+        return records.stream().filter(r -> r.model().equals(model)).toList();
+    }
+}
+
+class VectorIndex {
+    private final InMemoryVectorStore store;
+    private final FakeEmbeddingModel currentModel;
+    private final String currentModelName;
+
+    VectorIndex(InMemoryVectorStore store, FakeEmbeddingModel currentModel, String currentModelName) {
+        this.store = store;
+        this.currentModel = currentModel;
+        this.currentModelName = currentModelName;
+    }
+
+    void upsert(String docId, int chunkIdx, String text, Map<String, String> meta) {
+        float[] emb = currentModel.embed(text);
+        Map<String, String> m = new HashMap<>(meta);
+        m.put("doc_id", docId);
+        m.put("chunk_idx", String.valueOf(chunkIdx));
+        m.put("embedding_model", currentModelName);   // FIX: lưu model name
+        m.put("model_version", java.time.LocalDate.now().toString());
+        store.upsert(new VectorRecord(docId + "#" + chunkIdx, text, emb, currentModelName, m));
+    }
+
+    List<VectorRecord> search(String query, int topK) {
+        float[] qVec = currentModel.embed(query);
+        // FIX: chỉ tìm trong vector CÙNG model
+        return store.search(qVec, topK, currentModelName);
+    }
+
+    // Blue-green re-index: xây store mới, re-index song song, sau đó swap alias
+    void reindexAll(String newModelName, FakeEmbeddingModel newModel, Consumer<InMemoryVectorStore> onComplete) {
+        InMemoryVectorStore newStore = new InMemoryVectorStore();
+        VectorIndex indexer = new VectorIndex(newStore, newModel, newModelName);
+
+        // 1. Re-index dữ liệu cũ (tất cả model) sang model mới
+        for (VectorRecord r : store.records) {
+            float[] newEmb = newModel.embed(r.text());
+            Map<String, String> m = new HashMap<>(r.metadata());
+            m.put("embedding_model", newModelName);
+            m.put("model_version", java.time.LocalDate.now().toString());
+            newStore.upsert(new VectorRecord(r.id(), r.text(), newEmb, newModelName, m));
+        }
+        // 2. Gọi callback với store mới (production: swap alias trong vector DB)
+        onComplete.accept(newStore);
+    }
+}`,
+  hints: [
+    'Đọc log: query model mới nhưng "returned chunks from OLD model". Code search() không truyền model filter, store.search tìm trên tất cả records.',
+    'Hai model khác nhau (v1 vs v2) cho KHÁC vector cho CÙNG text (xem FakeEmbeddingModel constructor dùng name.hashCode()). Cosine giữa vector v1 và v2 của cùng text là ngẫu nhiên (~0.1-0.2), không phải ~1.0.',
+    'Cần: (1) upsert() ghi embedding_model vào record; (2) search() lọc theo currentModelName; (3) reindexAll() tạo store mới, embed lại TẤT CẢ text bằng model mới, rồi callback swap store (blue-green).',
+  ],
+  rootCause: `**Thay đổi model embedding mà không re-index và không lưu model version trên vector, khiến vector space bị "nhiễu" cross-model.** 
+- Model {{text-embedding-3-small}} (v1) và {{text-embedding-3-large}} (v2) cùng dimension 1536 nhưng **không gian vector hoàn toàn khác nhau**. Vector của "hạn mức tín dụng" nhúng bằng v1 và v2 có cosine similarity chỉ ~0.1-0.2 (gần vuông góc), không phải ~0.9.
+- Hệ thống ghi chunk mới bằng v2, nhưng query cũng dùng v2. Khi search trên toàn bộ index (v1 + v2), vector query v2 so sánh với vector document v1 cho điểm thấp ngẫu nhiên, còn so với v2 thì cao. Do v1 chiếm đa số (2.3M vs vài ngàn), top-K bị lấn bởi v1 -> kết quả vô nghĩa.
+- Recall@5 rơi từ 0.82 → 0.31 vì chỉ ~30% chunk là v2, và retrieval không lọc model.
+- Không lưu {{embedding_model}} trên vector -> không thể lọc, không thể audit, không thể re-index chọn lọc.
+
+Dẫn chứng: log {{results have low similarity (avg=0.12)}} và {{returned chunks from OLD model}}. Dashboard chỉ monitor latency, không monitor recall/quality.`,
+  fix: `### Cách sửa trong bài
+1. **Lưu embedding_model trên từng vector**: {{upsert}} ghi {{metadata.embedding_model = currentModelName}}.
+2. **Query chỉ tìm trong cùng model**: {{search}} truyền {{modelFilter = currentModelName}} vào vector store.
+3. **Blue-green re-index**: tạo store mới, embed lại **toàn bộ corpus** (cả chunk cũ v1 và chunk mới v2) bằng model mới, rồi **swap alias** (con trỏ store) một lần. Không xóa index cũ cho đến khi index mới sẵn sàng.
+~~~java
+// upsert
+m.put("embedding_model", currentModelName);
+store.upsert(new VectorRecord(..., currentModelName, m));
+
+// search
+return store.search(qVec, topK, currentModelName);
+
+// reindexAll (background)
+InMemoryVectorStore newStore = new InMemoryVectorStore();
+VectorIndex indexer = new VectorIndex(newStore, newModel, newModelName);
+for (VectorRecord r : store.records) {
+    float[] newEmb = newModel.embed(r.text());
+    Map<String, String> m = new HashMap<>(r.metadata());
+    m.put("embedding_model", newModelName);
+    newStore.upsert(new VectorRecord(r.id(), r.text(), newEmb, newModelName, m));
+}
+onComplete.accept(newStore);  // production: swap index alias
+~~~
+
+### Trên production thật (Pinecone, Weaviate, Qdrant, Milvus)
+- **Namespace per model**: mỗi model một namespace/collection riêng. Query chỉ search trong namespace của model hiện tại. Re-index = tạo namespace mới, upsert song song, xóa namespace cũ khi xong.
+- **Metadata filter**: vector DB hỗ trợ filter {{embedding_model = "v2"}} khi search — hiệu quả hơn client-side filter.
+- **Zero-downtime re-index**: dùng **alias/index pointer** (Pinecone: index alias; Elasticsearch: index alias; Qdrant: collection alias). Background job tạo index mới, upsert batch (throttle để không quá tải), verify recall trên sample, rồi swap alias atomic.
+- **Canary rollout**: sau swap alias, route 5% traffic sang index mới, monitor recall/latency 30 phút, mới 100%.
+- **Model versioning**: lưu {{model_name}}, {{model_version}}, {{indexed_at}} trên từng vector. Hỗ trợ rollback ngay nếu model mớiराब hơn.
+- **Observability**: metric {{vector_cross_model_query_total}}, {{recall_at_k_per_model}}, {{reindex_progress}}, {{reindex_duration}}.
+
+### Phòng ngừa
+- Quy tắc: **không bao giờ** đổi embedding model mà không có kế hoạch re-index đầy đủ (documented, tested, có rollback).
+- CI: test cross-model search phải FAIL (query v2 không được trả v1).
+- Chaos test: re-index giữa chừng bị kill, verify alias không bị swap nửa chừng.
+
+### Liên hệ phỏng vấn
+Khi hỏi "đổi embedding model thế nào cho không sập recall", trả lời: (1) vector space khác model -> không so sánh cross-model được, (2) lưu model trên vector, query filter theo model, (3) blue-green re-index toàn bộ corpus, swap alias, (4) canary + observability. Nhấn mạnh: dimension giống nhau **không có nghĩa** là vector space giống nhau.`,
+  related: ['ai-016', 'ai-056'],
+  tags: ['embedding', 'vector search', 're-index', 'model migration', 'blue-green', 'recall', 'RAG']
 }
 );
