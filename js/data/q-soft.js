@@ -9558,4 +9558,185 @@ Khi junior gây sự cố production, tôi tách rõ "sửa sự cố" khỏi "�
   ],
   tags: ['mentoring', 'blameless', 'incident', 'coaching', 'culture', 'leadership'],
 },
+{
+  id: 'behavioral-081',
+  topic: 'behavioral',
+  level: 'senior',
+  q: 'Bạn bất đồng với tech lead về kiến trúc: anh ấy muốn tách hệ thống thành microservice ngay, nhưng bạn cho rằng monolith vẫn ổn. Bạn xử lý thế nào?',
+  a: `**Tóm tắt:** Khi bất đồng kiến trúc, mục tiêu không phải là "thắng" tech lead mà là **ra quyết định có bằng chứng cho sản phẩm**. Cách xử lý: lắng nghe lý do của tech lead, thu thập số liệu thực tế (lưu lượng, quy mô team, chi phí vận hành), làm spike nhỏ để đánh giá, rồi trình bày trade-off bằng ngôn ngữ kinh doanh. Nếu tech lead vẫn quyết định theo ý mình, bạn comply trọn vẹn và đề xuất mốc xem xét lại — đó là disagree and commit.
+
+### Cái gì là monolith và microservice
+- **Monolith**: tất cả chức năng của hệ thống nằm trong một ứng dụng duy nhất, chạy như một process, các module gọi nhau trực tiếp trong cùng JVM. Ví dụ: một Spring Boot app duy nhất chứa đặt hàng, thanh toán và tồn kho.
+- **Microservice**: chia hệ thống thành nhiều service độc lập, mỗi service sở hữu database riêng, giao tiếp qua HTTP hoặc message broker (ví dụ Kafka). Mỗi service có thể được deploy độc lập bởi team riêng.
+- **Bounded context**: ranh giới rõ ràng giữa một phần nghiệp vụ (ví dụ "đặt hàng" và "thanh toán"). Trong monolith vẫn nên tách gói code theo bounded context để sau này tách service dễ dàng.
+
+### Khi nào nên tách microservice
+| Tiêu chí | Monolith phù hợp | Microservice phù hợp |
+|---|---|---|
+| Kích thước team | dưới 10 người | trên 10–12 người, chia thành team nhỏ |
+| Yêu cầu | chưa ổn định, thay đổi thường xuyên | đã ổn định, module có lưu lượng khác nhau |
+| Triển khai | 1 ứng dụng, đơn giản | nhiều service, cần service discovery, config tập trung |
+| Gọi nội bộ | method gọi trực tiếp, nhanh | HTTP/messages, chậm hơn, có lỗ mạng |
+| Dữ liệu | 1 database, transaction ACID | mỗi service 1 database, phân tán khó quản lý |
+| Sửa lỗi | debug trong 1 ứng dụng | phải theo dấu requests qua nhiều service |
+
+Quy tắc thực tế: với team nhỏ và yêu cầu chưa rõ, bắt đầu bằng **monolith có bounded context rõ ràng**. Chỉ tách service khi có bằng chứng: một module bị lỗi ảnh hưởng module khác, team lớn quá đến khi merge code gặp xung đột, hoặc một module cần scale riêng.
+
+### Xử lý bất đồng theo 5 bước
+1. **Lắng nghe và hiểu**: hỏi tech lead lý do muốn tách (scale, deploy độc lập, team phát triển song song). Không phản đối ngay lập tức.
+2. **Thu thập bằng chứng**: đo lưu lượng hiện tại, số request mỗi giây, số lượng team, thời gian deploy hiện tại. Viết ADR (tài liệu ghi quyết định kiến trúc và lý do) để ghi các lựa chọn.
+3. **Làm spike nhỏ (thử nghiệm giới hạn thời gian)**: tách một module ra service riêng trong 2–3 ngày, đo thực tế: độ trễ tăng bao nhiêu, effort vận hành bao nhiêu.
+4. **Trình bày trade-off**: dùng bảng trên, nêu rõ chi phí vận hành của microservice (monitoring, logging tập trung, distributed tracing, deployment phức tạp).
+5. **Quyết định và cam kết**: nếu tech lead vẫn quyết định tách, bạn comply và đề xuất mốc xem xét lại (ví dụ: sau 3 tháng đánh giá lại).
+
+### Luồng xử lý bằng sơ đồ sequence
+~~~seq
+actors: Bạn | Tech lead | PM
+Bạn -> Tech lead: hỏi lý do muốn tách
+Tech lead --> Bạn: scale, deploy độc lập
+Bạn -> Bạn: đo lưu lượng, viết ADR
+Bạn -> Tech lead: trình bày trade-off
+Tech lead --> Bạn: quyết định tách hoặc giữ
+Bạn -> PM: báo cáo tiến độ và rủi ro
+~~~
+
+### Pitfall production
+- **Tách sớm quá**: distributed transaction, network failure, debug khó hơn gấp nhiều lần.
+- **Gọi đồng bộ giữa service**: khi service A chờ service B, cả hai treo cùng lúc (cascading failure).
+- **Database dùng chung**: hai service viết vào cùng một bảng → không độc lập thực sự.
+- **Không có monitoring tập trung**: lỗi ở service nào thì không biết nguồn gốc.
+
+### Ví dụ đời thực
+Team 6 người, hệ thống đặt hàng Spring Boot 3.2 trên PostgreSQL 15, lưu lượng trung bình 40 request mỗi giây, cao nhất 120 request mỗi giây. Tech lead muốn tách thành 4 microservice ngay để "scale". Tôi hỏi lý do và đo số liệu: hiện tại deploy toàn bộ app mất 7 phút, nhưng chỉ có 2 dev cùng deploy. Tôi đề xuất giữ monolith với bounded context rõ ràng (gói code đặt hàng, thanh toán, tồn kho không gọi lẫn lộn), và tách khi lưu lượng đạt 500 request mỗi giây hoặc team đạt 12 người. Kết quả: trong 3 tháng sau, lưu lượng chỉ tăng lên 180 request mỗi giây, team không tách service, và code vẫn dễ maintain vì bounded context đã rõ. Nếu tách ngay, team sẽ phải vận hành 4 service với monitoring tập trung mà chưa có kinh nghiệm vận hành distributed system — rủi ro cao hơn lợi ích.
+
+### Trả lời mẫu khi phỏng vấn
+"Khi bất đồng với tech lead về kiến trúc, ví dụ anh ấy muốn tách microservice ngay, tôi không phản đối ngay mà hỏi lý do và thu thập số liệu: lưu lượng, số team, thời gian deploy hiện tại. Tôi viết ADR và làm spike nhỏ 2–3 ngày để đánh giá chi phí vận hành thực tế của microservice (monitoring, distributed tracing, deployment). Sau đó tôi trình bày trade-off: monolith phù hợp với team nhỏ và yêu cầu chưa ổn định, microservice chỉ tách khi có bằng chứng như lưu lượng cao hoặc team lớn. Nếu tech lead vẫn quyết định tách, tôi comply và đề xuất mốc xem xét lại sau 3 tháng. Thực tế: team 6 người, lưu lượng 40–120 request mỗi giây, tôi đề xuất giữ monolith có bounded context rõ ràng, sau 3 tháng lưu lượng chỉ 180 request mỗi giây, không cần tách. Mục tiêu là quyết định bằng bằng chứng, không bằng cảm tính, và cam kết với quyết định cuối cùng."
+
+> Senior tip: mang số liệu và spike vào cuộc họb nghe thuyết phục hơn cả lý luận. Nếu tech lead vẫn quyết định theo ý mình, hãy comply trọn vẹn và đặt mốc xem xét lại — đây là dấu hiệu của kỹ sư trưởng thành, không phải người khó tính.`,
+  follow: [
+    'Nếu tech lead không chấp nhận spike và muốn quyết định ngay, bạn làm gì?',
+    'Bạn viết ADR (tài liệu quyết định kiến trúc) như thế nào, và ai là người duyệt?',
+    'Khi nào bạn chấp nhận tách microservice dù team còn nhỏ?'
+  ],
+  tags: ['architecture', 'microservice', 'monolith', 'conflict', 'ADR', 'STAR'],
+},
+{
+  id: 'behavioral-082',
+  topic: 'behavioral',
+  level: 'senior',
+  q: 'Bạn nhận vào một hệ thống legacy không có test, và phải giao tính năng mới trong 2 tuần. Bạn làm gì để giao đúng hạn mà không làm nặng thêm nợ kỹ thuật?',
+  a: `**Tóm tắt:** Legacy system là hệ thống cũ, ít tài liệu, không có test tự động, và mọi thay đổi đều rủi ro. Trong 2 tuần không thời gian viết test toàn bộ hệ thống. Chiến lược đúng là: hiểu hệ thống, viết test cho vùng cần thay đổi (characterization test — ghi lại hành vi hiện tại), cắt scope giao tính năng cần thiết nhất, và dùng feature flag để tắt nhanh nếu có sự cố.
+
+### Cái gì là legacy system và nợ kỹ thuật
+- **Legacy system**: hệ thống đã chạy production nhiều năm, code viết bởi người khác, ít tài liệu, không có test tự động. Mỗi lần sửa code, dev không biết điều gì sẽ hỏng.
+- **Nợ kỹ thuật**: quyết định tắt ta nhanh hiện tại (ví dụ bỏ qua test, viết code vội) gây ra công việc phải sửa lại sau. Càng để lâu, nợ càng nặng và team càng chậm.
+- **Characterization test**: test ghi lại hành vi hiện tại của code (đúng hay sai cũng ghi lại), dùng làm mạng an toàn khi thay đổi. Nếu hành vi sau khi thay đổi khác baseline, test sẽ fail và phát hiện sự cố ngay.
+
+### Chiến lược 4 bước
+1. **Hiểu hệ thống trước khi đụng code**: đọc code, vẽ luồng chính (request vào → xử lý → database), ghi lại dữ liệu của các bảng quan trọng. Không suy đoán, hãy xác thực bằng log hoặc chạy debug.
+2. **Viết test cho vùng cần thay đổi**: chỉ viết test cho class và method liên quan trực tiếp đến tính năng mới. Dùng characterization test để khóa hành vi hiện tại.
+3. **Cắt scope**: giao tính năng cần thiết nhất (phiên bản có đủ tính năng cốt lõi để giao sớm), edge case vào sprint sau. Không cố giao hết yêu cầu trong 2 tuần.
+4. **Feature flag (cờ bật/tắt tính năng mà không cần deploy lại code)**: bật/tắt tính năng mới mà không cần redeploy. Nếu có lỗi, tắt flag ngay để rollback trong giây.
+
+### Ví dụ code characterization test
+~~~java
+public class OrderPricingLegacyTest {
+    @Test void khong_qua_nguong_mien_ship_van_thu_phi() {
+        // Hành vi hiện tại của hệ thống legacy: đơn dưới 200.000 đồng vẫn thu ship
+        Order order = Order.of(1L, List.of(Item.of("SKU-1", 1, 150_000L)));
+        var result = pricingService.tinhTien(order);
+        assertThat(result.shipping()).isEqualTo(25_000L);
+    }
+
+    @Test void don_tren_200_trieu_mien_ship() {
+        Order order = Order.of(2L, List.of(Item.of("SKU-2", 1, 250_000L)));
+        var result = pricingService.tinhTien(order);
+        assertThat(result.shipping()).isEqualTo(0L);
+    }
+}
+~~~
+- Test trên ghi lại hành vi hiện tại, không giả định logic mới. Khi bạn thêm tính năng giảm giá, chạy lại test này để biết code cũ đã bị ảnh hưởng hay chưa.
+- Nếu class cũ khó instantiate (constructor có nhiều dependency), hãy tạo wrapper nhỏ gọi method cần test thay vì sửa constructor.
+
+### Bảng trade-off: viết test thế nào trong 2 tuần
+| Cách làm | Lợi ích | Rủi ro |
+|---|---|---|
+| Viết test toàn bộ hệ thống | an toàn tuyệt đối | không đủ thời gian, không giao được tính năng |
+| Không viết test gì | giao nhanh hôm nay | mỗi thay đổi lại hỏng một chỗ khác, nợ nặng hơn |
+| Viết test cho vùng thay đổi (khuyên dùng) | mạng an toàn cho chỗ sửa, giao đúng hạn | các khu vực khác vẫn không có bảo vệ |
+
+### Pitfall production
+- **Viết test gắn chặt vào cách triển khai**: đổi một chút code bên trong là test fail, team bắt đầu bỏ qua test.
+- **Không sao lưu database trước khi thử**: sửa sai dữ liệu production thì không khôi phục được.
+- **Không có rollback**: tính năng mới gây lỗi mà không biết tắt nhanh.
+- **Bỏ qua review vì gấp**: lỗi đơn giản lọt production.
+
+### Ví dụ đời thực
+Nhận vào hệ thống quản lý đơn hàng viết 5 năm, Spring Boot 2.5, PostgreSQL 12, không có test tự động, tài liệu chỉ có email cũ. Yêu cầu: thêm tính năng "giảm giá 10% cho đơn trên 2 triệu đồng" trong 2 tuần. Tôi làm: (1) đọc class TinhTienService và vẽ luồng gọi trong 4 giờ; (2) viết 6 characterization test cho class này, khóa hành vi hiện tại (tính ship, tính thuế); (3) trong khi chạy test, phát hiện 2 bug hiện có: đơn đúng 2 triệu không được miễn ship, và thuế tính sai 0,5%; (4) cắt scope: chỉ giao giảm giá 10% cho đơn trên 2 triệu, edge case (trường hợp hiếm, biên) "giảm giá kết hợp voucher" vào sprint sau; (5) dùng feature flag {{discount.new-rule}} để bật/tắt. Kết quả: giao đúng hạn ngày thứ 10, sau khi bật flag trong 1 tuần không có sự cố P1 liên quan, và 6 test characterization đã bắt được 1 regression (lỗi cũ mới lại xuất hiện) khi dev khác sửa class TinhTienService. Sau 2 sprint, tôi thêm test cho từng vùng team tiếp tục sửa.
+
+### Trả lời mẫu khi phỏng vấn
+"Khi nhận hệ thống legacy không có test và chỉ có 2 tuần, tôi không cố viết test toàn bộ hệ thống vì không đủ thời gian. Tôi đầu tiên hiểu hệ thống: đọc code, vẽ luồng chính, ghi lại dữ liệu quan trọng. Sau đó tôi viết characterization test — test ghi lại hành vi hiện tại — chỉ cho vùng cần thay đổi, dùng làm mạng an toàn. Tôi cũng cắt scope: giao tính năng cần thiết nhất, edge case vào sprint sau, và dùng feature flag để tắt nhanh nếu có lỗi. Thực tế: hệ thống quản lý đơn hàng 5 năm, không test, tôi viết 6 characterization test, phát hiện 2 bug hiện có, cắt scope và dùng flag discount.new-rule. Kết quả: giao đúng hạn ngày thứ 10, 1 tuần sau không có sự cố P1, và 6 test đã bắt được 1 regression khi teammates sửa cùng class. Nguyên tắc: trong thời gian ngắn, hãy bảo vệ chỗ bạn sửa chứ không phải bảo vệ toàn bộ hệ thống."
+
+> Senior tip: trước khi thay đổi code legacy, hãy chạy nó và ghi lại output của các case quan trọng (golden master — bản ghi hành vi làm chuẩn). Nếu không có test, chính hệ thống đang chạy là tài liệu đáng tin nhất — hãy khai thác nó thay vì suy đoán.`,
+  follow: [
+    'Characterization test khác test thông thường ở điểm nào?',
+    'Nếu sau 2 tuần vẫn không giao được, bạn báo gì cho PM?',
+    'Bạn có nên refactor code legacy trước khi thêm tính năng không?'
+  ],
+  tags: ['legacy', 'characterization-test', 'feature-flag', 'scope', 'STAR'],
+},
+{
+  id: 'behavioral-083',
+  topic: 'behavioral',
+  level: 'lead',
+  q: 'Một junior viết code chậm và mắc nhiều lỗi lặp lại. Bạn mentor anh ta thế nào mà vẫn đảm bảo tiến độ team?',
+  a: `**Tóm tắt:** Không sửa code thay junior (nhanh hôm nay, chậm lâu dài), mà chẩn đoán nguyên nhân (kiến thức, chuẩn mực, phân rã bài toán, công cụ), rồi xây hệ thống mentor nhỏ: mục tiêu rõ ràng, pair programming, checklist cá nhân, review ngược, và theo dõi số liệu tiến bộ. Mục tiêu là junior tự tìm và sửa lỗi, team vẫn giao được sản phẩm.
+
+### Cái gì là junior và lý do code chậm/lỗi
+- **Junior**: kỹ sư ít kinh nghiệm (dưới 1–2 năm), có thể viết code chạy nhưng chưa biết viết code bảo trì được, chưa có thói quen tự test và tự review.
+- Nguyên nhân code chậm: không biết dùng debugger, không phân rã bài toán thành nhánh nhỏ, đợi người khác hướng dẫn mỗi bước, hoặc không hiểu yêu cầu business.
+- Nguyên nhân lỗi lặp lại: bỏ sót null check (kiểm tra giá trị null trước khi dùng), không viết test cho edge case (trường hợp hiếm, biên), copy-paste code không hiểu, hoặc hiểu nhầm yêu cầu.
+
+### Hệ thống mentor 4 bước
+1. **Chẩn đoán nguyên nhân**: ngồi pair programming (hai dev cùng làm một máy, một người gõ code, người khác hỏi hướng) 1–2 giờ, quan sát junior viết code, ghi lại chỗ này gấp, chỗ kia đứng yên. Phân biệt "không biết" và "không cẩn thận".
+2. **Đặt mục tiêu ngắn hạn**: ví dụ 2 tuần "tự viết test cho class mới trước khi gửi PR", "không còn lỗi null check trong 3 PR liên tiếp". Mục tiêu phải đo được.
+3. **Pair programming và review ngược**: pair 4 giờ mỗi tuần, để junior chạy tay keyboard, bạn chỉ hỏi hướng. Sau đó review ngược: bạn gửi lại PR của junior kèm số lượng lỗi tìm được (không chỉ vị trí), để junior tự tìm và đối chiếu.
+4. **Checklist cá nhân**: junior tự viết checklist lỗi mình hay mắc (ví dụ: null check, đóng connection, viết test), kiểm tra trước khi gửi PR.
+
+### Luồng mentor
+~~~seq
+actors: Bạn | Junior | PM
+Bạn -> Junior: pair programming, junior gõ code
+Junior --> Bạn: hỏi khi gặp vấn đề
+Bạn -> Junior: review ngược, gửi số lượng lỗi
+Junior -> Junior: tự sửa lỗi theo checklist
+Bạn -> PM: báo cáo tiến độ và rủi ro
+~~~
+
+### Bảng trade-off: sửa thay hay dạy
+| Cách làm | Tốc độ hiện tại | Tốc độ sau 1–2 tháng | Phù hợp khi |
+|---|---|---|---|
+| Sửa code thay junior | nhanh | chậm (junior không học, bạn thành nút thắt) | sự cố production, deadline hôm nay |
+| Dạy junior tự viết | chậm | nhanh (junior tự chủ, team giảm tải) | dự án dài hạn, muốn xây team |
+
+### Pitfall production
+- **Sửa code thay junior mỗi lần**: junior không học, bạn trở thành nút thắt, team chậm dần.
+- **Công kích tính cách**: nói "bạn thiếu cẩn thận" thay vì mô tả hành vi cụ thể ("PR này thiếu test null check").
+- **Không theo dõi**: coaching một lần rồi quên → lỗi lặp lại.
+- **Bỏ qua yêu cầu business**: mentor sao cho đúng nhưng quên deadline → team không giao được sản phẩm.
+
+### Ví dụ đời thực
+Junior mới 10 tháng kinh nghiệm làm module thanh toán. Viết code chậm: 3 ngày mới làm xong 1 task đơn giản, và PR hay bị trả lại do lỗi null check và thiếu test. Tôi mentor 6 tuần: (1) pair programming 4 giờ/tuần, junior chạy tay, tôi chỉ hỏi "nếu giá trị này là null thì sao?"; (2) mục tiêu "tự viết test cho class mới trước khi gửi PR"; (3) review ngược: tôi gửi lại PR kèm số lượng lỗi, junior tự tìm; (4) checklist cá nhân: "null check cho mọi tham số", "viết test cho edge case". Kết quả: vòng sửa PR trung bình giảm từ 3,5 xuống 1,2; thời gian hoàn thành task từ 3 ngày xuống 1,5 ngày; sau 2 tháng junior tự giao 3 tính năng nhỏ mà không cần tôi review trước. Tôi cũng đảm bảo team vẫn giao đúng hạn bằng cách giao cho junior task rủi ro thấp, và mình phụ trách phần phức tạp.
+
+### Trả lời mẫu khi phỏng vấn
+"Một junior viết code chậm và mắc nhiều lỗi lặp lại, ví dụ null check và thiếu test. Tôi không sửa code thay anh ta, mà chẩn đoán nguyên nhân bằng pair programming, rồi xây hệ thống mentor nhỏ: mục tiêu ngắn hạn đo được (ví dụ tự viết test trước khi gửi PR), pair programming 4 giờ/tuần với junior chạy tay và tôi chỉ hỏi hướng, review ngược bằng cách gửi lại PR kèm số lượng lỗi để anh ta tự tìm, và checklist lỗi cá nhân. Kết quả 6 tuần: vòng sửa PR từ 3,5 xuống 1,2, thời gian task từ 3 ngày xuống 1,5 ngày, sau 2 tháng junior tự giao 3 tính năng nhỏ. Để đảm bảo tiến độ team, tôi giao junior task rủi ro thấp và mình phụ trách phần phức tạp. Nguyên tắc: dạy junior tự tìm lỗi chứ không phải sửa thay, vì sửa thay nhanh hôm nay nhưng làm chậm cả team lâu dài."
+
+> Senior tip: mentor hiệu quả nhất là thiết kế để junior tự tạo ra phản hồi, bạn chỉ đóng vai trò đặt câu hỏi và cung cấp feedback đúng lúc. Nếu bạn sửa hết code của junior, bạn không xây team, bạn chỉ xây thêm một nút thắt cho chính mình.`,
+  follow: [
+    'Nếu sau 1–2 tháng junior vẫn không tiến bộ, bạn xử lý ra sao?',
+    'Bạn cân bằng mentor junior và đảm bảo deadline của team như thế nào?',
+    'Checklist cá nhân của junior nên có những mục nào?'
+  ],
+  tags: ['mentoring', 'junior', 'pair-programming', 'checklist', 'leadership', 'STAR'],
+},
 );
