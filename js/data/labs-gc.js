@@ -4609,5 +4609,386 @@ public PaymentResult callCoreBanking(PaymentRequest request) {
       'Đề xuất có chiều sâu: streaming parser (JsonParser skipChildren) loại bỏ humongous hoàn toàn; bulkhead giới hạn đồng thời; bỏ log response body; giải thích tăng RegionSize/heap chỉ là workaround; alert To-space exhausted / Humongous cause.'
     ],
     tags: ['g1', 'humongous', 'full-gc', 'gc-log', 'streaming', 'jackson', 'grpc', 'jdk21', 'jfr']
+  },
+  {
+    id: 'lab-gc-024',
+    category: 'gc',
+    title: 'Humongous allocation khi xuất Excel: mảng byte[] 3MB vượt ngưỡng region 4M, full GC lặp',
+    level: 'senior',
+    scenario: `**Bối cảnh (background):** App **báo cáo tài chính** (Spring Boot 3.3, JDK 17.0.11, G1) cho phép người dùng xuất báo cáo Excel hàng tháng. Endpoint {{GET /api/report/excel}} đọc dữ liệu từ PostgreSQL, ghi workbook Apache POI, rồi trả về **byte[]**. JVM: {{-Xms4g -Xmx4g -XX:+UseG1GC -XX:G1HeapRegionSize=4m -Xlog:gc*:file=/logs/gc.log:time,uptime,level,tags}}. Container: 2 vCPU, memory limit 4Gi.
+
+**Thuật ngữ giải thích:**
+- **Humongous object:** Trong G1, heap chia region bằng nhau (ở đây 4 MB). Object ≥ 50% region (≥ 2 MB) là humongous, cấp phát thẳng vào Old Gen trên region liên tiếp, không qua Eden.
+- **G1HeapRegionSize=4m:** Mỗi region 4 MB. Ngưỡng humongous = 2 MB. Mảng byte[] 3 MB từ xuất Excel là humongous → chiếm 1 region liên tiếp, phần trống trong region bị lãng vì humongous object không chia region với object khác.
+- **To-space exhausted:** Khi young GC cần copy object sống sang region mới nhưng không đủ region trống (bị humongous chiếm), G1 ném To-space exhausted → Full GC.
+
+**Triệu chứng:** Từ **09:00-09:45 ngày 15/10/2026** (lần xuất báo cáo hàng tháng), p99 {{GET /api/report/excel}} tăng từ 800 ms lên **4-6 giây**. GC log ghi nhận **Pause Young (Concurrent Start) (G1 Humongous Allocation)** dày đặc, rồi **To-space exhausted**, **Pause Full (G1 Compaction Pause)** 2-3 giây. Heap used chỉ ~2.6 GB / 4 GB. Sau 09:45 xuất xong báo cáo, hệ thống ổn định. Dev đề xuất: "Tăng heap lên 8 GB và G1HeapRegionSize lên 8 MB."
+
+**Dữ liệu thu thập:** GC log JDK 17, heap histogram lúc 09:30, đoạn code {{ReportService}} xuất Excel, JFR allocation profiling.`,
+    artifacts: [
+      {
+        name: 'gc-report-excel.log',
+        lang: 'text',
+        content: `[2026-10-15T08:00:00.012+0700][0.012s][info][gc,init] Version: 17.0.11+7 (release)
+[2026-10-15T08:00:00.012+0700][0.012s][info][gc,init] CPUs: 2 total, 2 available
+[2026-10-15T08:00:00.012+0700][0.012s][info][gc,init] Memory: 4096M
+[2026-10-15T08:00:00.012+0700][0.012s][info][gc,init] Heap Region Size: 4M
+[2026-10-15T08:00:00.012+0700][0.012s][info][gc,init] Heap Min Capacity: 4G
+[2026-10-15T08:00:00.012+0700][0.012s][info][gc,init] Heap Initial Capacity: 4G
+[2026-10-15T08:00:00.012+0700][0.012s][info][gc,init] Heap Max Capacity: 4G
+... (young GC bình thường, heap sau GC ~400-700 MB) ...
+[2026-10-15T09:05:22.104+0700][4092.104s][info][gc] GC(112) Pause Young (Normal) (G1 Evacuation Pause) 1850M->520M(4096M) 14.201ms
+[2026-10-15T09:08:12.330+0700][4292.330s][info][gc,start] GC(113) Pause Young (Concurrent Start) (G1 Humongous Allocation)
+[2026-10-15T09:08:12.392+0700][4292.392s][info][gc,heap] GC(113) Old regions: 210->380
+[2026-10-15T09:08:12.392+0700][4292.392s][info][gc,heap] GC(113) Humongous regions: 80->160
+[2026-10-15T09:08:12.392+0700][4292.392s][info][gc] GC(113) Pause Young (Concurrent Start) (G1 Humongous Allocation) 1850M->1420M(4096M) 58.114ms
+[2026-10-15T09:10:10.102+0700][4430.102s][info][gc] GC(114) Pause Young (Normal) (G1 Humongous Allocation) 2450M->1980M(4096M) 72.340ms
+[2026-10-15T09:10:10.102+0700][4430.102s][info][gc,heap] GC(114) Old regions: 580->720
+[2026-10-15T09:10:10.102+0700][4430.102s][info][gc,heap] GC(114) Humongous regions: 160->280
+[2026-10-15T09:11:45.440+0700][4525.440s][info][gc] GC(115) Pause Young (Normal) (G1 Humongous Allocation) 2890M->2410M(4096M) 88.602ms
+[2026-10-15T09:11:45.440+0700][4525.440s][info][gc,heap] GC(115) Old regions: 720->890
+[2026-10-15T09:11:45.440+0700][4525.440s][info][gc,heap] GC(115) Humongous regions: 280->380
+[2026-10-15T09:13:20.210+0700][4620.210s][info][gc] GC(116) Pause Young (Normal) (G1 Humongous Allocation) 3320M->2850M(4096M) 102.771ms
+[2026-10-15T09:13:20.210+0700][4620.210s][info][gc] GC(116) To-space exhausted
+[2026-10-15T09:13:20.210+0700][4620.210s][info][gc,heap] GC(116) Humongous regions: 380->460
+[2026-10-15T09:13:20.211+0700][4620.211s][info][gc,start] GC(117) Pause Full (G1 Compaction Pause)
+[2026-10-15T09:13:22.355+0700][4622.355s][info][gc,heap] GC(117) Old regions: 1020->110
+[2026-10-15T09:13:22.355+0700][4622.355s][info][gc,heap] GC(117) Humongous regions: 460->460
+[2026-10-15T09:13:22.355+0700][4622.355s][info][gc] GC(117) Pause Full (G1 Compaction Pause) 3420M->1120M(4096M) 2144.902ms
+[2026-10-15T09:17:55.979+0700][4975.979s][info][gc] GC(118) To-space exhausted
+[2026-10-15T09:17:55.979+0700][4975.979s][info][gc] GC(118) Pause Young (Normal) (G1 Evacuation Pause) 3120M->3080M(4096M) 319.004ms
+[2026-10-15T09:18:10.001+0700][4990.001s][info][gc] GC(119) Pause Full (G1 Compaction Pause) 3080M->1180M(4096M) 2011.447ms
+[2026-10-15T09:18:10.001+0700][4990.001s][info][gc,heap] GC(119) Humongous regions: 500->500
+[2026-10-15T09:25:10.001+0700][5290.001s][info][gc] GC(120) Pause Young (Normal) (G1 Evacuation Pause) 2100M->480M(4096M) 18.102ms
+[2026-10-15T09:25:10.001+0700][5290.001s][info][gc,heap] GC(120) Humongous regions: 500->10`
+      },
+      {
+        name: 'jmap-histo-0930.txt',
+        lang: 'text',
+        content: `$ kubectl exec report-service-7d8f6c-x4k2p -- jmap -histo 1 | head -20
+ num     #instances         #bytes  class name (module)
+-------------------------------------------------------
+   1:        125000      1250000000  [B (java.base@17.0.11)
+   2:         10450       33440000  java.lang.String
+   3:          8300       26560000  org.apache.poi.xssf.usermodel.XSSFCell
+   4:          6200       19840000  org.apache.poi.xssf.usermodel.XSSFRow
+   5:          4150       13280000  vn.report.model.ReportRow
+Total        154100      1343120000`
+      },
+      {
+        name: 'ReportService.java',
+        lang: 'text',
+        content: `package vn.report.service;
+
+import org.apache.poi.xssf.usermodel.XSSFWorkbook;
+import org.springframework.stereotype.Service;
+import vn.report.model.ReportData;
+import java.util.List;
+
+@Service
+public class ReportService {
+
+    private final ReportRepository repo;
+
+    public byte[] exportExcel(String month) {
+        List<ReportData> rows = repo.findByMonth(month);  // 50.000 dòng
+        XSSFWorkbook workbook = new XSSFWorkbook();
+        // ghi rows vào workbook ...
+        // ĐỌC TOÀN BỘ workbook vào byte[] (3 MB)
+        ByteArrayOutputStream baos = new ByteArrayOutputStream();
+        workbook.write(baos);
+        return baos.toByteArray();  // humongous nếu > 2 MB (region 4M)
+    }
+}`
+      },
+      {
+        name: 'jfr-allocation-0930.txt',
+        lang: 'text',
+        content: `$ jcmd 1 JFR.start duration=2m filename=/tmp/report.jfr settings=profile
+$ jfr print --events jdk.ObjectAllocationSample /tmp/report.jfr | head -50
+
+jdk.ObjectAllocationSample {
+  startTime = 09:12:03.412
+  objectClass = byte[] (classLoader = bootstrap)
+  weight = 3.1 MB
+  eventThread = "http-nio-8080-exec-12"
+  stackTrace = [
+    java.util.Arrays.copyOf(byte[], int) line: 3537
+    java.io.ByteArrayOutputStream.toByteArray() line: 211
+    vn.report.service.ReportService.exportExcel(ReportService.java:28)
+  ]
+}
+
+# Tổng hợp allocation rate lúc 09:12 (500 req/s):
+# byte[] (ByteArrayOutputStream.toByteArray)  ~ 3.1 MB × 500 = 1.5 GB/s
+# XSSFCell/XSSFRow/ReportRow                  ~ 800 MB/s
+# TỔNG allocation rate ≈ 2.3 GB/s (chỉ cho export Excel)`
+      }
+    ],
+    questions: [
+      'Tại sao G1 liên tục báo "G1 Humongous Allocation", rồi "To-space exhausted" và "Pause Full"? Trích dòng cụ thể trong GC log và giải thích với region size 4 MB.',
+      'Từ histogram và JFR, chứng minh object humongous là mảng byte[] nào, kích thước bao nhiêu, từ đâu.',
+      'Chứng minh đây KHÔNG phải memory leak. Tăng heap hoặc G1HeapRegionSize có phải lời giải gốc không.',
+      'Sửa ngắn hạn (code) và dài hạn (kiến trúc). Streaming export, giới hạn kích thước file, hay tăng region size?'
+    ],
+    hints: [
+      'Region size 4 MB → ngưỡng humongous = 2 MB. Mảng byte[] 3 MB là humongous, chiếm 1 region liên tiếp, phần trống trong region bị lãng. Nhìn Humongous regions: 80 -> 160 -> 280 -> 380 -> 460 -> 500 (tăng đều), Full GC không giảm (460->460, 500->500).',
+      'Histogram: {{jmap -histo}} gộp mọi mảng byte[] vào MỘT dòng (~125k instance, 1.25 GB); phần lớn dung lượng đến từ các mảng 3 MB của request xuất Excel đang chạy. JFR chỉ rõ byte[] 3.1 MB tại ReportService.java dòng 28 — ByteArrayOutputStream.toByteArray.',
+      'GC(120) khi traffic giảm: Humongous regions 500->10, heap 2100M->480M. Khác với leak (leak thì heap sau GC tăng dần, Full GC không giảm humongous).',
+      'Tăng G1HeapRegionSize 8 MB: ngưỡng humongous = 4 MB, response 3 MB không còn humongous, nhưng region 8 MB → heap 4 GB chỉ còn 512 region, giảm độ linh hoạt của G1. Chỉ là workaround.'
+    ],
+    answer: `**Tóm tắt:** Service đọc dữ liệu PostgreSQL, ghi workbook Apache POI vào **byte[]** ~3 MB, trả về cho client. Với **G1HeapRegionSize=4 MB**, mọi object **≥ 2 MB là humongous** → mảng byte[] 3 MB chiếm **1 region liên tiếp** trong Old Gen, phần trống trong region bị lãng. Nhiều request xuất Excel đồng thời tạo hàng trăm humongous object, Humongous regions tăng 80 → 500 (~2 GB), chặn region trống → {{To-space exhausted}} → **Pause Full 2-3 giây**. Khi traffic giảm, GC(120) thu hồi humongous 500->10 trong young GC thường, chứng minh **không leak**. Sửa gốc: **streaming export** (ghi workbook trực tiếp vào {{OutputStream}} của HTTP response, không đệm toàn bộ vào byte[]), giới hạn kích thước file xuất.
+
+### Nguyên nhân gốc
+
+1. **Region và ngưỡng:** GC log {{Heap Region Size: 4M}}. G1 coi object ≥ 2 MB là humongous. Cấp phát thẳng vào Old Gen trên region liên tiếp.
+2. **Mảng byte[] 3 MB là humongous:** ReportService.exportExcel() đọc toàn bộ workbook vào byte[] qua {{ByteArrayOutputStream.toByteArray()}}. Mỗi mảng 3 MB ≥ 2 MB → chiếm 1 region (4 MB), phần 1 MB trống bị lãng.
+3. **Allocation rate:** 500 req/s × 3.1 MB = 1.5 GB/s chỉ cho byte[], plus XSSFCell/XSSFRow/ReportRow ~800 MB/s. Tổng ~2.3 GB/s. Mỗi request tạo một humongous object → Humongous regions tăng 80 → 500.
+4. **To-space exhausted:** Humongous regions chiếm 500 × 4 MB = 2 GB Old Gen. Chỉ còn ~2 GB region trống cho Eden+Survivor+Old thường. Khi Eden đầy, không đủ region trống để evacuate → To-space exhausted → Full GC.
+5. **Full GC không giảm humongous:** GC(117) {{Humongous regions: 460->460}}, GC(119) {{500->500}}. Vì humongous object **vẫn được tham chiếu** bởi thread đang xử lý request (stack frame giữ byte[]), chúng là live data. Full GC chỉ di chuyển object còn sống, không thu hồi object vẫn reachable.
+
+### Dẫn chứng (trích dòng cụ thể trong artifact)
+
+| GC / Thời điểm | Dòng log trích | Ý nghĩa |
+|---|---|---|
+| GC(113) 09:08 | {{Pause Young (Concurrent Start) (G1 Humongous Allocation)}}, {{Humongous regions: 80->160}} | Bắt đầu có humongous |
+| GC(114) 09:10 | {{Humongous regions: 160->280}} | +120 region = 480 MB humongous mới |
+| GC(115) 09:11 | {{Humongous regions: 280->380}} | +100 region = 400 MB |
+| GC(116) 09:13 | {{To-space exhausted}}, {{Humongous regions: 380->460}} | Cạn region trống |
+| GC(117) 09:13 | {{Pause Full (G1 Compaction Pause) 3420M->1120M 2144ms}}, {{Humongous regions: 460->460}} | Full GC đầu, humongous không giảm |
+| GC(119) 09:18 | {{Pause Full ... 2011ms}}, {{Humongous regions: 500->500}} | Full GC thứ 2, humongous không giảm |
+| GC(120) 09:25 | {{Pause Young ... 2100M->480M}}, {{Humongous regions: 500->10}} | **Bằng chứng không leak**: traffic giảm, humongous 500->10, heap về 480 MB |
+| JFR | {{weight = 3.1 MB}} tại {{ByteArrayOutputStream.toByteArray}} (ReportService.java:28) | Mảng byte[] 3 MB humongous mỗi request |
+| Histogram | {{byte[]}} một dòng: 125.000 instance, 1.25 GB | {{jmap -histo}} gộp mọi mảng byte[] theo class, phần lớn là mảng 3 MB của request đang chạy |
+
+### Cách sửa
+
+**Ngắn hạn (giảm rủi ro ngay, deploy hôm nay):**
+1. **Giới hạn đồng thời (bulkhead):** {{Semaphore}} hoặc Resilience4j Bulkhead tối đa 20-30 request xuất Excel đồng thời/pod. Trả 429 khi vượt.
+2. **Giới hạn kích thước file:** Reject yêu cầu xuất > 10.000 dòng hoặc chuyển sang xuất theo khoảng thời gian nhỏ hơn.
+
+**Dài hạn (sửa gốc, loại bỏ humongous):**
+1. **Streaming export (khuyên dùng nhất):** Ghi workbook trực tiếp vào {{HttpServletResponse.getOutputStream()}}, không đệm toàn bộ vào byte[].
+
+~~~java
+public void exportExcel(String month, HttpServletResponse response) {
+    List<ReportData> rows = repo.findByMonth(month);
+    XSSFWorkbook workbook = new XSSFWorkbook();
+    // ghi workbook trực tiếp vào response output stream, không đệm byte[]
+    response.setContentType("application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");
+    try (OutputStream out = response.getOutputStream()) {
+        workbook.write(out);
+    }
+}
+~~~
+
+2. **Tách luồng:** Export lớn đẩy vào queue, trả 202 Accepted ngay, client tải file khi xong. Không ảnh hưởng latency API.
+
+### Phòng ngừa
+
+- Alert khi GC log có {{To-space exhausted}} hoặc {{Pause Full (G1 Compaction Pause)}}.
+- Alert khi cause {{G1 Humongous Allocation}} xuất hiện > 10 lần/phút.
+- Theo dõi {{jvm_gc_live_data_size_bytes}} và allocation rate trên mỗi request.
+- Code review: cám {{ByteArrayOutputStream.toByteArray()}}, {{workbook.write(baos)}} cho payload > 256 KB không có streaming. Yêu cầu ghi trực tiếp vào {{OutputStream}}.
+
+### Trả lời mẫu khi phỏng vấn
+
+"Khi xuất Excel, service đọc toàn bộ workbook vào một mảng byte[] khoảng 3 MB. Với G1HeapRegionSize 4 MB, mọi object lớn hơn 2 MB được coi là humongous, được cấp phát thẳng vào Old Gen trên các region liên tiếp. Khi có nhiều request xuất đồng thời, humongous region tăng nhanh, chiếm chỗ region trống, gây To-space exhausted và buộc Full GC mỗi 2-3 giây. Chứng minh không phải leak là khi traffic giảm, young GC thu hồi humongous region từ 500 xuống 10, heap trở về mức bình thường. Cách sửa là streaming export: ghi workbook trực tiếp vào output stream của HTTP response, không đệm byte[] trong heap, kết hợp bulkhead giới hạn số request xuất đồng thời."
+
+> Senior tip: Humongous allocation là "kẻ giết G1 thầm lặng" vì app chạy ngon tuần đầu, sập khi payload lớn hơn một chút. Quy tắc: **mọi byte[] lớn từ file, report, export phải có giới hạn kích thước hoặc ghi streaming trực tiếp ra response**. Khi debug GC log, tìm chuỗi: {{G1 Humongous Allocation}} → {{To-space exhausted}} → {{Pause Full}} và so sánh {{Humongous regions}} trước/sau Full GC — nếu humongous không giảm sau Full GC nhưng giảm mạnh ở young GC sau khi tải hết, đó là humongous còn sống do request giữ, không phải leak.`,
+    rubric: [
+      'Giải thích đúng cơ chế: region 4M → ngưỡng 2M, object ≥ ngưỡng cấp phát thẳng Old Gen trên region liên tiếp, mảng byte[] 3 MB là humongous.',
+      'Dẫn chứng GC log: Humongous regions 80→160→280→380→460→500, To-space exhausted (GC 116), Pause Full ~2s nhưng Humongous regions không giảm (460->460, 500->500).',
+      'Chứng minh không leak: GC(120) Humongous regions 500->10, heap 2100M->480M khi traffic giảm; phân biệt humongous sống tạm vs leak.',
+      'Chỉ đúng code gây ra: ReportService.java dòng 28, ByteArrayOutputStream.toByteArray tạo mảng byte[] 3 MB; JFR weight 3.1 MB khớp.',
+      'Đề xuất có chiều sâu: streaming export ghi trực tiếp vào OutputStream loại bỏ humongous hoàn toàn; bulkhead giới hạn đồng thời; giới hạn kích thước file; giải thích tăng RegionSize/heap chỉ là workaround.'
+    ],
+    tags: ['g1', 'humongous', 'full-gc', 'gc-log', 'excel', 'poi', 'streaming', 'jdk17', 'jfr']
+  },
+  {
+    id: 'lab-gc-025',
+    category: 'gc',
+    title: 'Metaspace tăng mãi sau mỗi reload script: GroovyClassLoader mới mỗi lần, cache class không xóa',
+    level: 'senior',
+    scenario: `**Bối cảnh (background):** App **quyết định tín dụng** (Spring Boot 3.3, JDK 17.0.11, G1) cho phép admin viết script Groovy để tính toán quy tắc tín dụng động. Mỗi khi file script thay đổi, app reload bằng cách tạo {{GroovyClassLoader}} mới. JVM: {{-Xms4g -Xmx4g -XX:+UseG1GC -XX:MetaspaceSize=256m -XX:MaxMetaspaceSize=512m -Xlog:gc*:file=/logs/gc.log:time,uptime,level,tags}}. Container: 2 vCPU, memory limit 4Gi.
+
+**Thuật ngữ giải thích:**
+- **Metaspace:** Vùng bộ nhớ native lưu metadata của class (tên class, method, constant pool, bytecode). Thay thế PermArea từ Java 8. Metaspace có thể tự co giãn nhưng bị hạn chế bởi {{-XX:MaxMetaspaceSize}}.
+- **GroovyClassLoader:** ClassLoader của Groovy dùng để biên dịch script .groovy thành class Java tại runtime. Mỗi instance GroovyClassLoader giữ các class nó đã compile.
+- **ClassLoader GC:** Một ClassLoader chỉ có thể bị GC khi **không còn instance nào** của class mà nó đã load và chính ClassLoader đó không còn được tham chiếu. Nếu app giữ reference đến class/script, ClassLoader cũ không thể bị thu hồi → Metaspace tăng mãi.
+- **Full GC (Metadata GC Threshold):** Khi Metaspace đạt ngưỡng, G1 chạy Full GC để thu hồi class không dùng nữa. Nếu classloader cũ vẫn bị giữ, Metaspace không giảm, Full GC lặp lại mãi.
+
+**Triệu chứng:** Từ **10:00-12:00 ngày 20/10/2026**, admin sửa script tính toán tín dụng 4 lần (mỗi lần sửa 1 ký tự). Sau mỗi lần sửa, Metaspace tăng ~80 MB và không giảm trở lại. Full GC (Metadata GC Threshold) chạy mỗi 15-30 phút, mỗi lần 300-500 ms, nhưng Metaspace chỉ giảm vài MB. Heap used ổn định ~2.5 GB / 4 GB. CPU tăng do Full GC lặp lại.
+
+**Dữ liệu thu thập:** GC log JDK 17, jcmd class_stats, đoạn code {{ScriptEngine}} reload script, ví dụ script Groovy.`,
+    artifacts: [
+      {
+        name: 'gc-metaspace.log',
+        lang: 'text',
+        content: `[2026-10-20T08:00:00.012+0700][0.012s][info][gc,init] Version: 17.0.11+7 (release)
+[2026-10-20T08:00:00.012+0700][0.012s][info][gc,init] CPUs: 2 total, 2 available
+[2026-10-20T08:00:00.012+0700][0.012s][info][gc,init] Memory: 4096M
+[2026-10-20T08:00:00.012+0700][0.012s][info][gc,init] Heap Region Size: 4M
+[2026-10-20T08:00:00.012+0700][0.012s][info][gc,init] Metaspace Size: 256M
+[2026-10-20T08:00:00.012+0700][0.012s][info][gc,init] Max Metaspace Size: 512M
+... (Metaspace 256M lúc khởi động, young GC bình thường) ...
+[2026-10-20T10:15:30.102+0700][7530.102s][info][gc] GC(200) Pause Young (Normal) 1850M->520M(4096M) 14.201ms
+[2026-10-20T10:15:30.102+0700][7530.102s][info][gc,heap] Metaspace 320M->320M(512M)
+[2026-10-20T11:02:45.440+0700][7935.440s][info][gc] GC(201) Pause Full (Metadata GC Threshold) 3120M->3080M(4096M) 319.004ms
+[2026-10-20T11:02:45.440+0700][7935.440s][info][gc,heap] Metaspace 480M->480M(512M)
+[2026-10-20T11:30:10.001+0700][8110.001s][info][gc] GC(202) Pause Full (Metadata GC Threshold) 3080M->3050M(4096M) 411.207ms
+[2026-10-20T11:30:10.001+0700][8110.001s][info][gc,heap] Metaspace 510M->510M(512M)
+[2026-10-20T11:45:20.001+0700][8220.201s][info][gc] GC(203) Pause Full (Metadata GC Threshold) 3050M->3020M(4096M) 502.301ms
+[2026-10-20T11:45:20.001+0700][8220.201s][info][gc,heap] Metaspace 511M->511M(512M)`
+      },
+      {
+        name: 'jcmd-metaclass.txt',
+        lang: 'text',
+        content: `$ jcmd 1 GC.class_stats | grep GroovyClassLoader
+   1247  1247  1247  1247  1247  groovy.lang.GroovyClassLoader
+   1248  1248  1248  1248  1248  groovy.lang.GroovyClassLoader
+   1249  1249  1249  1249  1249  groovy.lang.GroovyClassLoader
+   1250  1250  1250  1250  1250  groovy.lang.GroovyClassLoader
+   ...
+# Tổng cộng: 1250 instance GroovyClassLoader, mỗi instance giữ 1 class Script_NNN đã compile
+# Metaspace: 511 MB / 512 MB (gần đầy)
+# Chỉ có 1 instance ScriptEngine nhưng giữ reference đến 1250 class qua GroovyClassLoader`
+      },
+      {
+        name: 'ScriptEngine.java',
+        lang: 'text',
+        content: `package vn.script.engine;
+
+import groovy.lang.GroovyClassLoader;
+import groovy.lang.Script;
+import org.springframework.stereotype.Service;
+import java.io.File;
+import java.nio.file.Path;
+import java.nio.file.Paths;
+
+@Service
+public class ScriptEngine {
+
+    private final Path scriptDir = Paths.get("/etc/app/scripts");
+
+    public Object run(String scriptName, Object... args) {
+        File scriptFile = scriptDir.resolve(scriptName + ".groovy").toFile();
+        // TẠO GroovyClassLoader MỖI LẦN gọi, không cache class
+        GroovyClassLoader gcl = new GroovyClassLoader();
+        Class<?> clazz = gcl.parseClass(scriptFile);
+        try {
+            Script script = (Script) clazz.getDeclaredConstructor().newInstance();
+            return script.run(args);
+        } catch (Exception e) {
+            throw new IllegalStateException(e);
+        }
+    }
+}`
+      },
+      {
+        name: 'credit-score.groovy',
+        lang: 'text',
+        content: `class CreditScoreScript {
+    static Object run(Object... args) {
+        // Tính điểm tín dụng từ thông tin khách hàng, gọi DB, trả Map kết quả
+        return [score: 720, level: 'tốt', month: args[0]]
+    }
+}`
+      }
+    ],
+    questions: [
+      'Tại sao Metaspace tăng mãi sau mỗi reload script dù heap ổn định? Trích dòng cụ thể trong GC log và jcmd.',
+      'Tại sao Full GC (Metadata GC Threshold) không làm Metaspace giảm? classloader cũ bị ai giữ reference?',
+      'Chứng minh đây KHÔNG phải memory leak trong heap. Tăng MaxMetaspaceSize có phải lời giải gốc không?',
+      'Sửa ngắn hạn và dài hạn. Cache class/classloader, kiểm tra reference, hay tăng Metaspace?'
+    ],
+    hints: [
+      'GC log: Metaspace 320M->480M->510M->511M, Full GC (Metadata GC Threshold) lặp lại nhưng Metaspace không giảm (480M->480M, 510M->510M, 511M->511M).',
+      'jcmd: 1250 instance GroovyClassLoader, mỗi instance giữ 1 class Script_NNN. Mỗi lần reload tạo GroovyClassLoader mới, class cũ không bị GC vì ScriptEngine vẫn giữ reference qua biến cục bộ gcl hoặc cache không được xóa.',
+      'Heap ổn định ~2.5 GB → không phải heap leak. Vấn đề nằm ở Metaspace (native memory cho class metadata).',
+      'Tăng MaxMetaspaceSize 1G: Metaspace vẫn tăng mãi, chỉ trì hoãn sự cố. Full GC vẫn chạy dày, CPU vẫn tăng.'
+    ],
+    answer: `**Tóm tắt:** App reload script Groovy bằng cách tạo {{GroovyClassLoader}} mới mỗi lần, không cache class đã compile. Mỗi script được compile thành class Java riêng, được load bởi classloader của nó. Khi ScriptEngine chạy script, nó giữ reference đến class và classloader đó. Vì classloader cũ không bao giờ bị thu hồi (vẫn có reference), class metadata của nó stays trong Metaspace mãi. Sau 4 lần reload, Metaspace tăng ~80 MB/lần, đạt 511 MB/512 MB, Full GC (Metadata GC Threshold) chạy liên tục nhưng không thu hồi được classloader cũ.
+
+### Nguyên nhân gốc
+
+1. **Metaspace và class metadata:** Metaspace lưu tên class, method, bytecode, constant pool. Giống heap nhưng lưu class metadata thay vì object instance. Bị giới hạn bởi {{-XX:MaxMetaspaceSize=512m}}.
+2. **GroovyClassLoader mới mỗi lần:** ScriptEngine.run() tạo {{new GroovyClassLoader()}} mỗi lần gọi. Mỗi classloader compile script thành class Java, giữ class đó trong Metaspace.
+3. **ClassLoader không bị GC:** Một ClassLoader chỉ bị GC khi không còn instance của class nó load và chính ClassLoader không còn được tham chiếu. ScriptEngine giữ reference đến class/script qua biến cục bộ hoặc stack frame, nên classloader cũ không thể bị thu hồi.
+4. **Full GC không giảm Metaspace:** GC(201) {{Metaspace 480M->480M}}, GC(202) {{510M->510M}}, GC(203) {{511M->511M}}. Vì classloader cũ vẫn còn reference, class metadata vẫn là live data. Full GC chỉ quét và đánh dấu, không thu hồi được classloader còn sống.
+5. **Tăng Metaspace không phải fix gốc:** Metaspace vẫn tăng mỗi lần reload, chỉ bị chậm hơn. Cuối cùng cũng đầy 512 MB, Full GC lặp lại mãi.
+
+### Dẫn chứng (trích dòng cụ thể trong artifact)
+
+| Thời điểm | Dòng log trích | Ý nghĩa |
+|---|---|---|
+| GC(200) 10:15 | {{Metaspace 320M->320M(512M)}} | Metaspace ban đầu 320 MB, ổn định |
+| GC(201) 11:02 | {{Pause Full (Metadata GC Threshold)}}, {{Metaspace 480M->480M(512M)}} | Full GC đầu, Metaspace không giảm sau GC |
+| GC(202) 11:30 | {{Pause Full (Metadata GC Threshold)}}, {{Metaspace 510M->510M(512M)}} | Metaspace gần đầy, Full GC không giúp |
+| GC(203) 11:45 | {{Pause Full (Metadata GC Threshold)}}, {{Metaspace 511M->511M(512M)}} | Metaspace 511/512 MB, sắp hết |
+| jcmd | {{1250 instance GroovyClassLoader}} | Mỗi reload tạo 1 classloader mới, không bao giờ bị GC |
+| jcmd | {{Mỗi instance giữ 1 class Script_NNN}} | Class metadata của script cũ stays trong Metaspace mãi |
+
+### Cách sửa
+
+**Ngắn hạn (giảm rủi ro ngay, deploy hôm nay):**
+1. **Tăng MaxMetaspaceSize tạm thời:** Tăng lên 1 GB để trì hoãn sự cố, nhưng KHÔNG phải fix gốc.
+2. **Giới hạn tần suất reload:** Chỉ reload script không quá 1 lần/phút, tránh tạo quá nhiều classloader.
+
+**Dài hạn (sửa gốc, loại bỏ rò rỉ Metaspace):**
+1. **Cache class theo tên script:** Dùng {{ConcurrentHashMap<String, Class<?>>}} cache class đã compile. Chỉ compile lại khi file script thực sự thay đổi (kiểm tra lastModified).
+2. **Sử dụng một GroovyClassLoader cha và cache:** Tạo một GroovyClassLoader duy nhất, cache class theo tên script. Khi script thay đổi, tạo classloader mới chỉ cho script đó, xóa classloader cũ khỏi cache để cho phép GC.
+
+~~~java
+private final Map<String, Class<?>> scriptCache = new ConcurrentHashMap<>();
+private final Map<String, Long> scriptLastModified = new ConcurrentHashMap<>();
+private final GroovyClassLoader parentLoader = new GroovyClassLoader();
+
+public Object run(String scriptName, Object... args) {
+    File scriptFile = scriptDir.resolve(scriptName + ".groovy").toFile();
+    long lastModified = scriptFile.lastModified();
+    Long cachedModified = scriptLastModified.get(scriptName);
+    if (cachedModified != null && cachedModified == lastModified) {
+        Class<?> clazz = scriptCache.get(scriptName);
+        return runScript(clazz, args);
+    }
+    Class<?> clazz = parentLoader.parseClass(scriptFile);
+    scriptCache.put(scriptName, clazz);
+    scriptLastModified.put(scriptName, lastModified);
+    return runScript(clazz, args);
+}
+
+private Object runScript(Class<?> clazz, Object... args) {
+    try {
+        Script script = (Script) clazz.getDeclaredConstructor().newInstance();
+        return script.run(args);
+    } catch (Exception e) {
+        throw new IllegalStateException(e);
+    }
+}
+~~~
+
+3. **Clear cache khi cần:** Nếu script bị xóa, xóa entry trong cache để classloader có thể bị GC.
+
+### Phòng ngừa
+
+- Alert khi Metaspace > 80% MaxMetaspaceSize.
+- Theo dõi số lượng ClassLoader qua {{jcmd GC.class_stats}}.
+- Giới hạn số script được reload, không cho phép admin sửa script quá thường xuyên.
+- Code review: cấm tạo {{new GroovyClassLoader()}} hoặc {{new URLClassLoader()}} trong vòng lặp hoặc mỗi request. Cache class theo tên file.
+
+### Trả lời mẫu khi phỏng vấn
+
+"App reload script Groovy bằng cách tạo GroovyClassLoader mới mỗi lần file thay đổi. Mỗi script được compile thành class Java, được load bởi classloader của nó. Khi ScriptEngine chạy script, nó giữ reference đến class và classloader. Vì classloader cũ không bao giờ bị thu hồi, class metadata của nó stays trong Metaspace mãi. Sau 4 lần reload, Metaspace tăng từ 320 MB lên 511 MB, Full GC (Metadata GC Threshold) chạy liên tục nhưng không giảm được Metaspace. Cách sửa là cache class theo tên script: dùng ConcurrentHashMap lưu class đã compile, chỉ compile lại khi file thực sự thay đổi, dùng một GroovyClassLoader cha dùng chung. Khi script bị xóa, xóa khỏi cache để classloader có thể bị GC và Metaspace được thu hồi."
+
+> Senior tip: Metaspace leak do classloader là "kẻ giết silenzieux" sau mỗi lần deploy hoặc reload config. Mỗi ClassLoader tạo ra là một vùng Metaspace không bao giờ được thu hồi nếu class vẫn có instance sống. Quy tắc vàng: **không bao giờ tạo ClassLoader mới mà không có kế hoạch xóa nó**. Luôn cache class theo tên, dùng một classloader cha, và clear cache khi không cần nữa. Giám sát Metaspace bằng {{jcmd GC.class_stats}} và alert khi Metaspace > 80% MaxMetaspaceSize.`,
+    rubric: [
+      'Giải thích đúng cơ chế: Metaspace lưu class metadata, GroovyClassLoader mới mỗi lần reload, classloader cũ không bị GC vì vẫn có reference.',
+      'Dẫn chứng GC log: Metaspace 320M->480M->510M->511M, Full GC (Metadata GC Threshold) không giảm Metaspace (480->480, 510->510, 511->511).',
+      'Chứng minh không heap leak: heap ổn định ~2.5 GB, vấn đề nằm ở Metaspace (native memory cho class metadata).',
+      'Chỉ đúng code gây ra: ScriptEngine.java tạo {{new GroovyClassLoader()}} mỗi lần gọi, không cache class; jcmd cho thấy 1250 instance GroovyClassLoader.',
+      'Đề xuất có chiều sâu: cache class theo tên script trong ConcurrentHashMap, kiểm tra lastModified trước khi compile lại, dùng một GroovyClassLoader cha, clear cache khi script xóa; giải thích tăng MaxMetaspaceSize chỉ là workaround.'
+    ],
+    tags: ['metaspace', 'classloader', 'groovy', 'full-gc', 'metadata-gc-threshold', 'cache', 'jdk17']
   }
 );
