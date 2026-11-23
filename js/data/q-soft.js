@@ -9124,4 +9124,438 @@ Tôi nhận team Payment 6 dev (velocity 22 pts/sprint, cycle time 9 ngày, chan
   ],
   tags: ['motivation', 'self-awareness', 'leadership', 'weakness'],
 },
+{
+  id: 'behavioral-075',
+  topic: 'behavioral',
+  level: 'lead',
+  q: 'Trong dự án outsource Hàn–Nhật, PM (Product Manager phía khách hàng) liên tục đổi yêu cầu sát ngày giao. Bạn tổ chức quy trình quản lý thay đổi (change control) thế nào để vừa đáp ứng khách vừa bảo vệ đội?',
+  a: `**Tóm tắt:** Thay đổi yêu cầu là **bình thường** trong outsource, không phải sự cố — điều quan trọng là biến mỗi thay đổi thành một **yêu cầu có bút toán (change request)**: ghi lại, quy ra ngày công và rủi ro, rồi để khách chọn (làm gì, bỏ gì, trễ bao lâu) và **xác nhận bằng văn bản** trước khi code. Nếu không có bút toán, đội gánh chi phí ẩn bằng OT (overtime — làm thêm giờ) và bug.
+
+### Vì sao vấn đề này khó (cơ chế bên trong)
+
+Trong outsource, hợp đồng thường là fixed-price (trọn gói) hoặc theo milestone (mốc bàn giao). Khi khách đổi yêu cầu, có hai luồng chi phí: một là **chi phí ẩn** đội tự gánh (OT, bug vì code vội), hai là **chi phí lộ** nếu mình báo "cái này là thay đổi, tính lại". Nếu nhận miệng (verbal) rồi lặng lẽ làm, công phát sinh không ai trả, đội kiệt sức, chất lượng giảm — và cuối cùng chính mình chịu trách nhiệm khi trễ. Nếu từ chối thẳng, khách Hàn/Nhật (vốn coi trọng hoà khí và quan hệ lâu dài) dễ mất mặt và căng thẳng.
+
+Vì vậy cơ chế đúng là **quy trình hoá**: biến "khách đổi ý" thành "một yêu cầu được đánh giá và quyết định có ý thức". Trước hết phải phân biệt hai loại: (a) **spec (đặc tả) chưa rõ do mình hiểu sai** — cái này là nghĩa vụ của mình, sửa miễn phí; (b) **yêu cầu mới nằm ngoài baseline (phạm vi gốc đã chốt)** — cái này là thay đổi, phải tính lại. Không phân biệt hai loại thì hoặc mình chịu oan, hoặc mình bắt khách trả tiền cho lỗi của mình.
+
+### Quy trình change control từng bước (vì sao mỗi bước tồn tại)
+
+1. **Baseline scope**: tài liệu phạm vi đã ký (danh sách tính năng, màn hình, tiêu chí). Vì sao: không có baseline thì mọi thứ đều trở thành "thay đổi", không đo được.
+2. **Mọi yêu cầu miệng → chuyển thành ticket có id**. Vì sao: lời nói tan, ticket lưu vết; có id thì sau này không tranh cãi "anh có nói đâu".
+3. **Đánh giá tác động**: ngày công (person-day), dependency (phụ thuộc hệ thống/bên thứ ba), rủi ro kỹ thuật. Vì sao: khách cần con số để quyết định, không phải cảm giác.
+4. **Phân loại MoSCoW** (Must / Should / Could / Won't): không phải cái nào cũng làm ngay. Vì sao: cùng một ngân sách, phải chọn.
+5. **Trình 2–3 option có cost**: ví dụ (A) thêm tính năng, trễ 1 tuần; (B) thêm tính năng, bỏ tính năng phụ X; (C) để sprint sau. Vì sao: khách Á thích chọn trong phương án, không thích bị ép "có/không".
+6. **Khách xác nhận bằng email/ticket** → mới code. Vì sao: xác nhận bằng miệng biến mất, bằng văn bản thì có căn cứ khi tổng dự án chất vấn.
+7. **Cập nhật baseline + log**: mỗi thay đổi đã duyệt thì baseline mới, log cũ vẫn giữ. Vì sao: lần sau lại có mốc so sánh.
+
+### Code minh hoạ: sổ quản lý thay đổi (scope ledger)
+
+Mỗi yêu cầu mới là một bản ghi có bút toán; code chỉ làm khi còn ngân sách ngày công.
+
+~~~java
+// Mỗi thay đổi yêu cầu là một ChangeRequest có id, ngày công và mức ưu tiên
+record ChangeRequest(String id, String desc, int personDays, String priority) {}
+
+class ScopeLedger {
+    private final List<ChangeRequest> log = new ArrayList<>();   // lưu vết, KHÔNG ghi đè
+    private int budgetLeft;                                      // ngày công còn của sprint
+
+    ScopeLedger(int budget) { this.budgetLeft = budget; }
+
+    // Khách đã xác nhận bằng văn bản -> mới ghi sổ và trừ ngân sách
+    void apply(ChangeRequest cr) {
+        log.add(cr);
+        budgetLeft -= cr.personDays;                             // công phát sinh phải có người trả
+    }
+
+    // Chỉ nhận khi CÒN ngân sách và là việc bắt buộc
+    boolean canDo(ChangeRequest cr) {
+        return budgetLeft >= cr.personDays && cr.priority().equals("MUST");
+    }
+
+    int remaining() { return budgetLeft; }
+}
+~~~
+
+Code trên biến "nhận hay không" thành quyết định có số: muốn thêm việc thì phải biết còn bao nhiêu ngày công, và ai trả. Đây chính là thứ biến OT ẩn thành chi phí nhìn thấy được.
+
+### Bảng trade-off: ba cách xử lý thay đổi
+
+| Cách | Ưu điểm | Nhược điểm | Khi nào dùng |
+|---|---|---|---|
+| Nhận hết, không bút toán | Khách vui ngay, quan hệ êm | Chi phí ẩn dồn vào OT, bug, burnout; trễ vẫn bị chửi | Gần như không bao giờ nên dùng lâu dài |
+| Từ chối thẳng mọi thay đổi | Bảo vệ đội | Mất lòng khách Á, căng thẳng, dễ bị thay | Chỉ khi hợp đồng đã quá rõ và khách vô lý |
+| **Change control (bút toán + option)** | Minh bạch, khách tự quyết, đội được bảo vệ | Tốn 30–60 phút/đợt để estimate và trao đổi | **Mặc định trong outsource Hàn–Nhật** |
+
+### Bẫy thường gặp
+
+- **Nhận miệng, không log**: 3 tuần sau khách nói "cái này trong hợp đồng mà", mình không có bằng chứng ngược lại.
+- **Estimate thiếu dependency**: tính 2 ngày code nhưng quên chờ API bên thứ ba 5 ngày → cam kết sai.
+- **Ép làm rồi OT**: "làm đi rồi tính sau" — cuối kỳ không ai tính, đội chịu.
+- **Xác nhận bằng chat rồi chat biến mất**: luôn chốt lại bằng email/ticket chính thức có người có thẩm quyền.
+- **Không phân biệt lỗi spec vs yêu cầu mới**: nhận thay cho cả cái mình làm sai → vừa mất tiền vừa mất uy tín.
+- **Log quá nặng**: bắt khách điền form 10 trang → khách phản ứng, quy trình chết. Giữ form 5 dòng là đủ.
+
+### Ví dụ đời thực
+
+Dự án outsource 6 dev, sprint 2 tuần, khách Nhật. Cuối sprint 3, PM gửi một loạt thay đổi: đổi luồng xác thực OTP, thêm màn hình báo cáo, đổi định dạng file xuất. Nếu nhận hết, ước tính đội phải OT 18 giờ/tuần trong 2 tuần. Tôi lập change log: mỗi thay đổi một dòng có id, mô tả, ngày công, priority. Tổng 5 thay đổi = 22 ngày công, vượt 11 ngày công còn lại của sprint. Tôi trình 3 option cho PM: (A) làm hết, trễ 1.5 tuần; (B) làm OTP + file xuất (13 ngày), dời 2 màn hình báo cáo sang sprint sau; (C) giữ nguyên, dời hết. PM chọn (B), xác nhận bằng email. Kết quả: giao đúng hạn, OT giảm từ 18 giờ/tuần xuống 3 giờ/tuần, 0 bug P1. Sau 3 tháng dùng quy trình, số lượng yêu cầu "vượt baseline" giảm khoảng 40% vì khách quen phải chọn có ý thức, và các yêu cầu còn lại đều được ghi nhận đúng công.
+
+### Trả lời mẫu khi phỏng vấn
+
+Với tôi, thay đổi yêu cầu sát deadline là chuyện bình thường của outsource, không phải sự cố. Tôi không nhận miệng rồi lặng lẽ làm, cũng không từ chối thẳng, vì khách Hàn–Nhật coi trọng hoà khí. Tôi lập baseline scope đã ký, rồi mọi yêu cầu mới đều biến thành một ticket có id, có ngày công, có mức ưu tiên. Tôi đánh giá tác động, phân loại MoSCoW, rồi trình khách hai đến ba phương án kèm chi phí: làm hết thì trễ bao lâu, hoặc làm phần này và dời phần kia. Khách chọn bằng email xác nhận, tôi mới code. Cách này biến overtime ẩn thành chi phí nhìn thấy, nên khách tự quyết có ý thức. Ví dụ dự án 6 người, năm thay đổi cuối sprint 3 vượt 11 ngày công còn lại; tôi trình ba option, khách chọn làm phần lõi và dời hai màn hình, giao đúng hạn, OT từ 18 xuống 3 giờ mỗi tuần, không có bug P1. Sau ba tháng, số yêu cầu vượt baseline giảm khoảng 40%.
+
+### Câu trả lời yếu thường gặp
+
+- **Nhận hết rồi âm thầm OT** → bị coi là không biết bảo vệ đội, dồn rủi ro về sau.
+- **Nói "cái đó ngoài hợp đồng, không làm"** một cách cứng nhắc → thiếu tinh thần hợp tác, khách Á dễ tự ái.
+- **Estimate áng chừng "chắc 2 ngày"** → không có số liệu, không thuyết phục.
+- **Không phân biệt lỗi mình vs yêu cầu mới** → hoặc chịu oan, hoặc mất uy tín.
+- **Không chốt bằng văn bản** → tranh cãi về sau không có căn cứ.
+
+> Senior tip: **Luôn quy đổi thay đổi thành ngày công và ngân sách còn lại trước khi nói "được".** Câu thần thánh với PM là: "Được, đây là ba cách, anh chọn cách nào?" — người Á thích chọn trong phương án hơn là bị từ chối.`,
+  follow: [
+    'Nếu khách khăng khăng "cái này nằm trong hợp đồng" mà bạn không có baseline rõ, bạn xử lý ra sao?',
+    'Làm sao thuyết phục PM chấp nhận quy trình change control khi họ đang gấp và không muốn điền form?',
+    'Khi nào bạn chủ động đề xuất dời một tính năng đã cam kết để bảo vệ chất lượng phần còn lại?'
+  ],
+  tags: ['change-request', 'scope-creep', 'outsource', 'client-management', 'cross-culture', 'leadership'],
+},
+{
+  id: 'behavioral-076',
+  topic: 'behavioral',
+  level: 'senior',
+  q: 'Khách Nhật yêu cầu báo cáo tiến độ, rủi ro rất chi tiết và thường xuyên. Bạn tổ chức báo cáo thế nào cho hiệu quả, khác gì khách Âu–Mỹ, và làm sao không biến nó thành thủ tục hình thức tốn thời gian?',
+  a: `**Tóm tắt:** Văn hoá Nhật coi trọng **hourensou** — báo cáo + liên lạc + trao đổi: chủ động, định lượng, nêu rủi ro sớm. Tôi chuẩn hoá một mẫu báo cáo cố định (đã làm / đang làm / kế tiếp + blocker + risk + plan), tự động hoá bằng script, và coi báo cáo là **công cụ quản trị rủi ro** chứ không phải thủ tục.
+
+### Giải thích thuật ngữ (đọc kỹ nếu bạn chưa từng làm với khách Nhật)
+
+**Hourensou** là ghép của ba từ Nhật La-tinh hoá: **houkoku** (báo cáo), **renraku** (liên lạc), **soudan** (trao đổi/thảo luận). Khách Nhật đánh giá rất cao việc nhân viên **chủ động báo ngay khi có vấn đề**, kể cả tin xấu. Trong văn hoá đó, **im lặng bị coi là che giấu**, và một rủi ro bị giấu đến sát hạn là lỗi nặng hơn cả bản thân rủi ro.
+
+"PM" (Product Manager) là người quản lý sản phẩm phía khách, chịu trách nhiệm ưu tiên tính năng. "Blocker" là thứ đang chặn tiến độ (ví dụ chờ API đối tác). "Milestone" là mốc bàn giao lớn.
+
+Điểm quan trọng: **báo cáo chi tiết không có nghĩa là dài dòng**. Nó có nghĩa là **định lượng** (có con số) và **sớm** (nêu trước khi thành sự cố). Một báo cáo "ổn định" suông không phải báo cáo tốt — nó là báo cáo rỗng.
+
+### Cơ chế bên trong hoạt động thế nào và vì sao
+
+Khách Nhật thường làm việc theo quy trình rõ ràng và họ muốn **dự đoán được**. Họ không sợ vấn đề, họ sợ **bất ngờ**. Vì vậy khi bạn chủ động nói "task X chậm 2 ngày vì API đối tác chưa xong, tôi đang đẩy, ảnh hưởng đến mốc Y", bạn đang cho họ thời gian điều chỉnh kế hoạch — đó là giá trị. Nếu bạn giấu rồi sát hạn mới nói, họ mất niềm tin vì bị đặt vào thế bất ngờ.
+
+Khác biệt với khách Âu–Mỹ: khách Mỹ thường thiên về **kết quả và tự do**, ít meeting, không thích báo cáo vi mô; khách Nhật thiên về **quy trình và hoà khí**, muốn thông tin minh bạch và sớm. Cùng một dữ liệu, cách đóng gói khác nhau.
+
+### Tôi tổ chức báo cáo thế nào (từng bước, vì sao)
+
+1. **Mẫu cố định** (done / doing / next / blocker / risk / plan): vì sao — khách biết trước đọc ở đâu, không phải mò; mình không quên mục rủi ro.
+2. **Định lượng**: % hoàn thành, số task còn, ngày dự kiến. Vì sao — "gần xong" vô nghĩa, "8/12 task, còn 2 ngày" thì kiểm chứng được.
+3. **Nêu rủi ro sớm, kèm mức độ** (thấp/trung/cao): vì sao — đúng tinh thần hourensou, và khách có cơ sở can thiệp.
+4. **Tự động hoá** bằng script lấy từ issue tracker (Jira/Redmine): vì sao — giảm 30 phút chép tay mỗi ngày và tránh quên.
+5. **Ngôn ngữ đơn giản, có số**: vì sao — khách không phải dịch giả, thông tin phải trôi.
+
+### Code minh hoạ: sinh báo cáo định lượng, tự động
+
+~~~java
+// Mỗi dòng task đã ở dạng số liệu, render() ghép thành báo cáo chuẩn
+record TaskReport(String id, String status, int done, int total,
+                  String blocker, String risk) {
+    int percent() { return total == 0 ? 0 : done * 100 / total; }   // % hoàn thành
+}
+
+class DailyReport {
+    String render(List<TaskReport> tasks) {
+        StringBuilder sb = new StringBuilder("Project X | ")
+            .append(java.time.LocalDate.now()).append('\n');
+        for (TaskReport t : tasks) {
+            sb.append(t.id()).append(" | ").append(t.status())
+              .append(" | ").append(t.percent()).append("% (")
+              .append(t.done()).append('/').append(t.total()).append(")")
+              .append(" | blocker: ").append(t.blocker().isBlank() ? "-" : t.blocker())
+              .append(" | risk: ").append(t.risk().isBlank() ? "-" : t.risk())
+              .append('\n');
+        }
+        return sb.toString();
+    }
+}
+~~~
+
+Mỗi dòng báo cáo đều có số, và cột risk luôn hiện diện — kể cả khi rỗng cũng ghi dấu "-". Chính sự nhất quán này làm khách tin rằng bạn không giấu gì.
+
+### Bảng trade-off: báo cáo kiểu Nhật vs Âu–Mỹ
+
+| Tiêu chí | Khách Nhật | Khách Âu–Mỹ |
+|---|---|---|
+| Tần suất | Hằng ngày hoặc 2 lần/tuần | Tuần hoặc theo sprint |
+| Mức chi tiết | Chi tiết, định lượng, nhiều mục | Tóm tắt, tập trung kết quả |
+| Rủi ro | Nêu sớm, chủ động, chi tiết | Nêu khi thật sự chặn |
+| Ngôn ngữ | Đơn giản, lịch sự, gián tiếp | Thẳng, ngắn gọn |
+| Mục đích | Minh bạch, dự đoán được, giữ hoà khí | Trao quyền, ít kiểm soát |
+
+### Bẫy thường gặp
+
+- **Báo cáo dài dòng không có số**: "mọi thứ đang tiến triển tốt" — khách không kiểm chứng được, mất tin.
+- **Giấu rủi ro đến sát hạn**: đúng điều tối kỵ trong hourensou, hậu quả nặng hơn cả rủi ro.
+- **Chỉ báo khi bị hỏi (thụ động)**: khách phải "moi" thông tin → bị đánh giá thiếu chủ động.
+- **Copy-paste "ổn định" mỗi ngày**: một tuần sau không ai đọc nữa.
+- **Dùng tiếng lóng / thuật ngữ nội bộ**: khách không hiểu, phải hỏi lại, mất thời gian hai bên.
+- **Biến báo cáo thành bản cáo trạng dài 5 trang**: không ai đọc, tốn công vô ích.
+
+### Ví dụ đời thực
+
+Team Việt 5 dev làm cho một công ty Nhật. Tháng đầu, tôi gửi báo cáo kiểu "mọi phần đang ổn định, sẽ kịp milestone" mỗi tối. Khách phản hồi bằng một email dài hỏi lại 11 câu (task nào, còn bao nhiêu, rủi ro gì) — nghĩa là báo cáo của tôi không đủ thông tin, và họ phải làm việc thay tôi. Tôi đổi sang mẫu cố định: mỗi task một dòng có phần trăm hoàn thành, số task còn, blocker, risk; mỗi rủi ro có mức độ và ngày dự kiến ảnh hưởng. Tôi viết một script nhỏ đọc từ issue tracker và render báo cáo tự động, mất 5 phút thay vì 30 phút chép tay. Kết quả đo được trong 2 tháng: số câu hỏi làm rõ từ khách giảm khoảng 60%; cuộc meeting hằng ngày rút từ 30 phút xuống 15 phút vì khách đã đọc báo cáo trước; và một rủi ro API đối tác trễ 4 ngày được tôi nêu sớm giúp khách kịp điều chỉnh lịch tích hợp, tránh trễ milestone. Khách nói rõ họ "ngủ ngon hơn" vì không bị bất ngờ.
+
+### Trả lời mẫu khi phỏng vấn
+
+Với khách Nhật, báo cáo không phải thủ tục mà là cách giữ niềm tin, vì văn hoá của họ coi trọng hourensou: báo cáo, liên lạc, trao đổi một cách chủ động. Tôi dùng một mẫu cố định: đã làm gì, đang làm gì, kế tiếp, blocker, risk, plan — mỗi task một dòng có phần trăm hoàn thành và số task còn. Tôi luôn nêu rủi ro sớm kèm mức độ, vì khách Nhật sợ bất ngờ hơn sợ vấn đề; giấu rủi ro đến sát hạn là lỗi nặng nhất. Tôi tự động hoá báo cáo bằng script đọc từ issue tracker để không tốn thời gian chép tay và không quên mục risk. Khác với khách Âu–Mỹ chuộng tóm tắt và tự do, khách Nhật muốn chi tiết và định lượng để dự đoán được. Ví dụ team năm người, ban đầu tôi báo "ổn định" suông thì khách hỏi lại 11 câu; sau khi chuyển sang mẫu định lượng và tự động, số câu hỏi giảm khoảng 60%, meeting hằng ngày từ 30 xuống 15 phút, và một rủi ro API trễ 4 ngày được nêu sớm giúp tránh trễ milestone. Báo cáo tốt giúp khách ngủ ngon vì không bị bất ngờ.
+
+### Câu trả lời yếu thường gặp
+
+- **Báo cáo "ổn định" suông, không số** → khách không tin, phải hỏi lại.
+- **Giấu rủi ro đến hạn** → mất niềm tin nặng nhất trong văn hoá Nhật.
+- **Chỉ trả lời khi bị hỏi** → bị đánh giá thụ động.
+- **Báo cáo 5 trang dài dòng** → không ai đọc, tốn công.
+- **Không hiểu hourensou, áp văn hoá Việt "im lặng là vàng"** → khách hiểu nhầm là che giấu.
+
+> Senior tip: **Luôn có một dòng "risk" trong báo cáo, kể cả khi rỗng cũng ghi dấu "-".** Sự nhất quán này tạo thói quen tin tưởng: khách biết khi nào bạn có rủi ro thật, bạn sẽ nói. Một rủi ro nêu sớm được khách cảm ơn; một rủi ro giấu đến hạn sẽ bị coi là sự cố.`,
+  follow: [
+    'Nếu khách không phản hồi email báo cáo nhiều ngày, bạn có coi đó là "đã đồng ý" không, và vì sao?',
+    'Làm sao báo cáo tin xấu (trễ deadline) cho khách Nhật mà vẫn giữ được niềm tin?',
+    'Bạn tự động hoá báo cáo như thế nào để không biến nó thành bản copy-paste vô hồn?'
+  ],
+  tags: ['cross-culture', 'japan', 'reporting', 'hourensou', 'communication', 'stakeholder'],
+},
+{
+  id: 'behavioral-077',
+  topic: 'behavioral',
+  level: 'lead',
+  q: 'Deadline dự án gấp nhưng bạn có 1–2 junior mới. Bạn vừa đảm bảo tiến độ vừa kèm cặp họ thế nào? Kể cách bạn giao việc, hỗ trợ và review để họ vừa học vừa không làm chậm team.',
+  a: `**Tóm tắt:** Trong dự án gấp, không phải "tự code cho nhanh" mà là **giao junior việc vừa sức, ranh giới rõ, kèm Definition of Done**, pair phần khó, và cam kết thời gian phản hồi để junior không bị chặn. Đây là đòn bẩy: đầu tư 1 giờ hướng dẫn đổi lấy vài ngày công của junior.
+
+### Vì sao vấn đề này khó (cơ chế bên trong)
+
+Khi deadline gấp, phản xạ tự nhiên của lead/senior là "tự code cho nhanh, để junior sang bên". Nhưng như thế có ba tác hại: một là **mình thành bottleneck** (mọi việc dồn qua một người), hai là junior không học được gì và vẫn là gánh nặng ở dự án sau, ba là chất lượng phần mình code vội cũng giảm. Ngược lại, giao bừa việc khó cho junior khi gấp thì họ bí, làm sai, mình phải sửa còn tốn thời gian hơn.
+
+Nút thắt là **sự phân bổ**: chọn đúng việc để giao, kèm đúng lúc, vàreview đủ để lỗi không lọt mà không biến mình thành người duyệt mọi dòng code. "Junior" là lập trình viên ít kinh nghiệm; "pair programming" là hai người ngồi cùng máy, một người gõ một người hướng dẫn; "critical path" (đường găng) là chuỗi việc quyết định ngày giao — nếu nó trễ thì cả dự án trễ.
+
+### Tôi làm gì (từng bước, vì sao)
+
+1. **Chọn task vừa sức, không nằm trên đường găng**: ví dụ các màn hình CRUD (tạo/xem/sửa/xoá cơ bản), báo cáo, validate form — sai thì sửa được, không cháy dự án. Vì sao: junior học được mà rủi ro thấp; phần khó (thanh toán, phân quyền, migration) mình giữ.
+2. **Viết task rõ: input, output, Definition of Done (tiêu chí hoàn thành), link tài liệu mẫu**. Vì sao: junior không phải đoán, giảm hẳn số câu hỏi lặp; DoD giúp họ tự kiểm trước khi nhờ review.
+3. **Pair phần khó buổi sáng 1 giờ, rồi junior tự làm phần lặp**. Vì sao: học qua làm thật; phần lặp (CRUD) họ tự làm để nhớ.
+4. **Review theo checklist, comment dạy "vì sao", không chỉ bắt lỗi**. Vì sao: junior hiểu nguyên tắc, lần sau tự tránh; review chỉ nói "sai" thì họ không tiến bộ.
+5. **Cam kết thời gian phản hồi** (ví dụ trong 2 giờ trong giờ làm): vì sao — junior không đứng chờ, không tự đoán sai rồi đi xa.
+6. **Giao dần từ nhỏ đến lớn**: tuần đầu task nhỏ có ví dụ mẫu, sau đó tăng độ khó. Vì sao: xây niềm tin và năng lực theo bậc.
+
+### Code minh hoạ: task board với Definition of Done
+
+~~~java
+// Task có DoD và cờ criticalPath -> junior tự kiểm, và không nhận việc trên đường găng
+record Task(String title, List<String> dod, boolean criticalPath) {}
+
+class TaskBoard {
+    // Chỉ giao cho junior việc KHÔNG nằm trên đường găng; phần lõi lead tự làm
+    boolean canDelegate(Task t) { return !t.criticalPath(); }
+
+    // Junior gọi trước khi nhờ review: đã tick đủ tiêu chí chưa?
+    boolean readyForReview(Task t, List<String> doneItems) {
+        return doneItems.containsAll(t.dod());           // so khớp đủ tiêu chí mới review
+    }
+}
+~~~
+
+Cờ {{criticalPath}} đảm bảo junior không nhận nhầm phần quyết định ngày giao khi dự án đang gấp; còn {{readyForReview}} biến việc "nhờ anh xem giúp" thành "em đã xong đủ tiêu chí, mình review nhé" — giảm hẳn các vòng hỏi qua lại làm loãng thời gian của lead.
+
+### Bảng trade-off: tự code vs giao junior (khi gấp)
+
+| Tiêu chí | Tự code | Giao junior (có kèm) |
+|---|---|---|
+| Tốc độ ngắn hạn | Nhanh hơn 20–30% | Chậm hơn lúc đầu |
+| Tốc độ dài hạn | Lead thành bottleneck | Team throughput tăng |
+| Chất lượng phần lõi | Cao | Lead vẫn giữ phần lõi |
+| Phát triển đội | Junior không tiến bộ | Junior lên tay sau vài dự án |
+| Rủi ro | Burnout, bus factor 1 | Cần đầu tư 1:1 và review |
+
+### Bẫy thường gặp
+
+- **Giao task mơ hồ hoặc quá lớn** ("làm module báo cáo") → junior bơi, mình sửa lại tốn gấp đôi.
+- **Micro-manage, làm thay**: ngồi sửa từng dòng của junior → họ không học, mình không rảnh.
+- **Không cam kết thời gian phản hồi** → junior chờ, hoặc tự đoán rồi đi sai hướng hàng giờ.
+- **Review chỉ bắt lỗi chính tả / format** → không dạy tư duy, junior không tiến bộ.
+- **Giao critical path cho junior khi gấp** → rủi ro trễ cả dự án vì một chỗ.
+- **Giao rồi biến mất** → junior mắc kẹt, khi quay lại thì đã trễ.
+
+### Ví dụ đời thực
+
+Dự án gấp 3 tuần (tích hợp cổng thanh toán + trang quản trị), team có tôi (senior) và 2 junior: một người 6 tháng kinh nghiệm, một người 1 năm. Nếu tự làm hết, tôi ước tính phải OT 20 giờ/tuần. Tôi chia task: phần thanh toán, callback, idempotency giữ cho mình (critical path); junior làm các màn hình quản trị đơn hàng, form nhập liệu, báo cáo, validate — đều không nằm trên đường găng. Mỗi task có Definition of Done 4–5 dòng và link một màn hình mẫu. Mỗi sáng tôi pair 1 giờ với từng junior phần khó nhất (ví dụ cách gọi API có xử lý lỗi), rồi họ tự làm phần lặp. Tôi cam kết phản hồi trong 2 giờ. Kết quả: junior hoàn thành khoảng 60% số task (các màn hình CRUD), tôi tập trung phần thanh toán; deadline đạt đúng hạn, OT còn 4 giờ/tuần. Sau 6 tháng, một junior lên mid, và số câu hỏi lặp (kiểu "làm thế nào để...") giảm khoảng 70% vì họ đã có DoD và mẫu.
+
+### Trả lời mẫu khi phỏng vấn
+
+Khi deadline gấp mà có junior mới, tôi không tự code hết cho nhanh, vì như thế tôi thành bottleneck và junior không tiến bộ. Tôi chọn giao junior những việc vừa sức và không nằm trên đường găng: các màn hình CRUD, báo cáo, validate form — sai thì sửa được, không cháy dự án. Mỗi task tôi viết rõ input, output, Definition of Done vài dòng và đính kèm một màn hình mẫu, để junior tự kiểm và không phải hỏi lại. Phần khó nhất tôi pair với họ một giờ buổi sáng, còn phần lặp để họ tự làm. Tôi review theo checklist và luôn giải thích vì sao, chứ không chỉ bắt lỗi. Tôi cũng cam kết phản hồi trong hai giờ để junior không bị chặn. Ví dụ dự án ba tuần với hai junior: họ làm khoảng 60% task, tôi giữ phần thanh toán, deadline đạt, OT chỉ còn 4 giờ mỗi tuần. Sau sáu tháng một bạn lên mid. Bài học: đầu tư một giờ hướng dẫn đổi lấy vài ngày công, và đội mạnh lên cho dự án sau.
+
+### Câu trả lời yếu thường gặp
+
+- **"Để em tự làm cho nhanh rồi... em không kịp kèm"** → bị coi là không biết coaching, đội không mạnh lên.
+- **Giao bừa việc khó cho junior** → họ bí, mình sửa còn tốn hơn.
+- **Micro-manage, làm thay từng dòng** → junior không học, mình không rảnh.
+- **Giao rồi biến mất** → junior mắc kẹt, trễ.
+- **Không có Definition of Done** → "xong" mỗi người hiểu một kiểu, phải làm lại.
+
+> Senior tip: **Đầu tư một giờ hướng dẫn đầu task đổi lấy vài ngày công của junior, và đổi lấy một người biết việc cho các dự án sau.** Khi gấp, đừng hỏi "ai làm nhanh nhất" mà hỏi "việc nào giao đi mà không làm trễ đường găng".`,
+  follow: [
+    'Nếu junior làm sai một phần nằm ngoài đường găng và bạn chỉ phát hiện khi review, bạn xử lý thế nào để không trễ?',
+    'Làm sao giao việc khó dần cho junior mà vẫn đảm bảo deadline gấp?',
+    'Bạn đo sự tiến bộ của junior bằng dấu hiệu cụ thể nào, thay vì cảm tính?'
+  ],
+  tags: ['mentoring', 'junior', 'delegation', 'deadline', 'leadership', 'pair-programming'],
+},
+{
+  id: 'behavioral-078',
+  topic: 'behavioral',
+  level: 'senior',
+  q: 'Requirement từ PM/client còn mơ hồ, deadline đã bị ép. Bạn ước lượng và cam kết thế nào để không "đoán mò" và không trễ?',
+  a: `**Tóm tắt:** Không báo một con số duy nhất khi chưa rõ scope; thay vào đó tách việc thành spike nhỏ có thời gian cố định, đưa ra range (optimistic/likely/pessimistic) kèm giả định rõ ràng, và cam kết theo milestone thay vì theo ngày cố định.
+
+### Vì sao estimate sai thường xảy ra
+
+Estimate sai không phải vì dev kém, mà vì **scope chưa được khám phá**. Khi requirement mơ hồ, mỗi người trong đầu hình dung một sản phẩm khác nhau; báo một con số duy nhất là đánh cược vào sự hiểu lầm.
+
+### Playbook ước lượng khi mơ hồ
+
+1. **Decompose trước, estimate sau** — tách feature thành task nhỏ ≤ 2 ngày. Task nào không tách được thì đó là "unknown" và cần spike.
+2. **Spike có timebox** — cấp 1–2 ngày để làm rõ; kết quả spike là **danh sách câu hỏi + prototype**, không phải code production.
+3. **3-point estimate** — optimistic / likely / pessimistic. Expected = (O + 4L + P) / 6 (PERT).
+4. **Nêu giả định rõ ràng** — "ước lượng này giả định reuse service X, không migration dữ liệu". Nếu giả định sai, estimate phải được cập nhật.
+5. **Confidence level** — "80% tự tin giao trong 3 tuần". PM/client chọn: giao sớm với rủi ro, hay thêm thời gian.
+6. **Cam kết theo milestone** — milestone 1 (core flow) sau 1 tuần, milestone 2 (edge cases) sau 2 tuần. Nếu trễ milestone 1, client biết sớm và có thể điều chỉnh scope.
+
+### Bảng trade-off
+
+| Cách | Ưu | Nhược |
+|---|---|---|
+| Báo số duy nhất | Đơn giản, PM dễ planning | Sai thường xuyên, mất niềm tin |
+| Range + giả định | Trung thực, điều chỉnh được | PM phải ra quyết định |
+| Spike trước | Giảm unknown | Tốn thời gian upfront |
+
+### Pitfall production
+
+- Estimate theo "lý tưởng" (không buffer review, test, deploy). Thực tế cộng 20–30% cho integration + bug fix.
+- Không cập nhật estimate khi requirement đổi. Estimate phải là "living document".
+- Cam kết deadline trước khi spike → buộc phải làm tắt, nợ kỹ thuật tăng.
+
+### Ví dụ đời thực
+
+Dự án tích hợp thanh toán cho client Nhật: requirement ban đầu "thanh toán thẻ". Spike 2 ngày phát hiện cần 3DS, refund flow, webhook retry. Estimate ban đầu 2 tuần → thực tế 4 tuần. Nhờ báo range + milestone sớm (tuần 1), client cắt bớt refund flow phase 2, giao phase 1 đúng hạn. Nếu báo "2 tuần chắc chắn" thì trễ cả hai phase và mất niềm tin.
+
+### Trả lời mẫu khi phỏng vấn
+
+Khi requirement mơ hồ, tôi không báo một con số duy nhất vì đó là đánh cược vào sự hiểu lầm. Tôi tách feature thành task nhỏ, phần nào không tách được thì làm spike có timebox 1–2 ngày để làm rõ; kết quả spike là danh sách câu hỏi và prototype, không phải code production. Sau đó tôi dùng 3-point estimate: optimistic, likely, pessimistic, tính expected theo PERT. Tôi nêu rõ giả định: ví dụ "ước lượng này giả định reuse service thanh toán, không migration dữ liệu"; nếu giả định sai thì estimate phải cập nhật. Tôi cũng báo confidence level: "80% tự tin giao trong ba tuần", để PM/client chọn giao sớm với rủi ro hay thêm thời gian. Cuối cùng tôi cam kết theo milestone thay vì một ngày cố định: milestone 1 core flow sau một tuần, milestone 2 edge case sau hai tuần. Nếu milestone 1 trễ, client biết sớm và có thể điều chỉnh scope. Pitfall tôi tránh là estimate theo lý tưởng không buffer review, test, deploy; thực tế tôi cộng 20–30% cho integration và bug fix. Và tôi luôn cập nhật estimate khi requirement đổi, vì estimate là living document chứ không phải lời hứa một lần.
+
+> Senior tip: **Estimate tốt không phải con số chính xác, mà là sự trung thực về độ không chắc chắn cộng với cơ chế phát hiện trễ sớm.** PM ghét bị bất ngờ hơn ghét con số lớn.`,
+  follow: [
+    'Khi spike cho thấy scope lớn hơn nhiều so với ban đầu, bạn báo cáo và điều chỉnh cam kết như thế nào?',
+    'Làm sao cân bằng giữa "cam kết để client yên tâm" và "trung thực về rủi ro"?',
+    'Bạn xử lý khi PM ép phải báo một ngày cố định dù requirement chưa rõ?'
+  ],
+  tags: ['estimation', 'planning', 'ambiguity', 'spike', 'commitment', 'leadership'],
+},
+{
+  id: 'behavioral-079',
+  topic: 'behavioral',
+  level: 'senior',
+  q: 'Bạn phải nói "không" hoặc đàm phán scope với PM/client Hàn–Nhật mà không làm mất quan hệ. Bạn làm thế nào?',
+  a: `**Tóm tắt:** Không nói "không" trực tiếp; thay bằng "có, nhưng với điều kiện" — đưa ra trade-off có số liệu (thời gian/chất lượng/phạm vi), để client tự chọn, và luôn đi kèm đề xuất thay thế.
+
+### Vì sao "nói không" khó với client Hàn–Nhật
+
+Văn hóa Hàn–Nhật coi **quan hệ và sự tin tưởng** quan trọng hơn hiệu quả ngắn hạn. Nói "không" thẳng bị xem là "không hợp tác". Nhưng nói "có" cho mọi thứ thì trễ deadline, chất lượng giảm, và cuối cùng vẫn mất niềm tin. Kỹ năng là **nói không một cách xây dựng**.
+
+### Playbook đàm phán scope
+
+1. **Lắng nghe và xác nhận** — "Tôi hiểu anh muốn X trước ngày Y". Đảm bảo client cảm thấy được nghe.
+2. **Nêu ràng buộc bằng số liệu** — "Để làm X đúng chất lượng, cần 5 ngày; nếu làm trong 2 ngày, rủi ro bug tăng 3 lần (dữ liệu từ sprint trước)".
+3. **Đưa 2–3 lựa chọn**, không chỉ "không":
+   - Option A: làm đủ nhưng trễ 3 ngày.
+   - Option B: làm core flow đúng hạn, edge case vào phase 2.
+   - Option C: thêm 1 dev, đúng hạn nhưng chi phí tăng.
+4. **Đề xuất thay thế** — "Thay vì feature Y, chúng ta có thể đạt mục tiêu bằng Z với effort nhỏ hơn".
+5. **Cam kết những gì làm được** — "Tôi cam kết deliver core flow đúng hạn, và báo cáo tiến độ mỗi ngày".
+6. **Ghi nhận bằng văn bản** — sau cuộc họp gửi email tóm tắt quyết định, để không có "hiểu nhầm".
+
+### Bảng phong cách giao tiếp
+
+| Phong cách | Phản ứng client | Kết quả |
+|---|---|---|
+| Nói "không" thẳng | Mất mặt, mất quan hệ | Xấu |
+| Nói "có" cho tất cả | Trễ, chất lượng giảm | Xấu lâu dài |
+| Trade-off có số liệu + lựa chọn | Client cảm thấy được tôn trọng | Tốt, bền vững |
+
+### Pitfall production
+
+- Đàm phán bằng cảm xúc thay vì số liệu. "Em không kịp" không đủ; "em cần 3 ngày nữa vì integration test chưa pass" thuyết phục hơn.
+- Không chuẩn bị trước. Phải dự liệu trước yêu cầu và có phương án sẵn.
+- Quên follow-up bằng văn bản. Client Hàn–Nhật rất coi trọng tài liệu; "đã nói rồi" không đủ nếu không có email.
+
+### Ví dụ đời thực
+
+Client Nhật yêu cầu thêm export PDF 2 ngày trước deadline. Thay vì từ chối, tôi nói: "Export PDF đầy đủ cần 4 ngày và sẽ đẩy deadline. Nếu cần đúng hạn, tôi đề xuất export CSV trước (1 ngày), PDF đầy đủ vào sprint sau. Hoặc thêm 1 dev để làm song song với rủi ro integration." Client chọn CSV + PDF phase 2. Quan hệ không bị tổn hại, và chúng tôi giao đúng hạn. Sau đó tôi gửi email tóm tắt quyết định.
+
+### Trả lời mẫu khi phỏng vấn
+
+Khi phải nói không với client Hàn–Nhật, tôi không bao giờ nói "không" trực tiếp vì văn hóa của họ coi trọng quan hệ và sự tin tưởng. Tôi dùng kỹ thuật "có, nhưng với điều kiện": xác nhận yêu cầu trước, rồi nêu ràng buộc bằng số liệu — "để làm X đúng chất lượng cần 5 ngày, nếu làm trong 2 ngày rủi ro bug tăng 3 lần theo dữ liệu sprint trước". Sau đó tôi đưa 2–3 lựa chọn thay vì một câu từ chối: làm đủ nhưng trễ, làm core flow đúng hạn và edge case vào phase 2, hoặc thêm dev với chi phí tăng. Tôi luôn đi kèm đề xuất thay thế đạt cùng mục tiêu với effort nhỏ hơn. Cuối cùng tôi cam kết những gì làm được và báo cáo tiến độ mỗi ngày. Điều quan trọng là ghi nhận bằng văn bản sau cuộc họp — client Hàn–Nhật rất coi trọng tài liệu, "đã nói rồi" không đủ nếu không có email. Pitfall tôi tránh là đàm phán bằng cảm xúc; số liệu và lựa chọn rõ ràng làm client cảm thấy được tôn trọng thay vì bị từ chối.
+
+> Senior tip: **Nói "không" xây dựng = đưa lựa chọn + số liệu + đề xuất thay thế, để client tự chọn.** Client không ghét dev khó tính; họ ghét bị bất ngờ và không có phương án.`,
+  follow: [
+    'Khi client khăng khăng giữ deadline và scope đầy đủ, bạn escalate như thế nào?',
+    'Làm sao giữ quan hệ khi phải từ chối nhiều lần liên tiếp?',
+    'Bạn xử lý khi PM (phía mình) không ủng hộ việc đàm phán với client?'
+  ],
+  tags: ['communication', 'negotiation', 'scope', 'client', 'korean-japanese', 'leadership'],
+},
+{
+  id: 'behavioral-080',
+  topic: 'behavioral',
+  level: 'lead',
+  q: 'Junior trong team mắc lỗi gây sự cố production. Bạn xử lý thế nào để vừa sửa sự cố, vừa coaching mà không tạo văn hóa sợ hãi?',
+  a: `**Tóm tắt:** Tách "sửa sự cố" khỏi "điều tra người", áp dụng blameless postmortem, coaching 1:1 riêng tư tập trung vào hệ thống và quy trình, và biến lỗi thành cải tiến (guardrail, checklist) để cả team học.
+
+### Vì sao blame culture nguy hiểm
+
+Khi dev sợ bị blame, họ **giấu lỗi**, không báo sớm, và sự cố nhỏ thành sự cố lớn. Blame culture giết observability của team: không ai dám nói "tôi vừa push code có thể gây lỗi". Ngược lại, blameless culture khuyến khích báo sớm và học hỏi.
+
+### Playbook xử lý
+
+1. **Stabilize first** — ưu tiên khôi phục service (rollback, feature flag off). Không điều tra người trong lúc sự cố đang diễn ra.
+2. **Blameless postmortem** — sau sự cố, viết RCA tập trung vào **hệ thống và quy trình**: "điều gì trong process cho phép lỗi này lọt production", không phải "ai làm sai".
+3. **Coaching 1:1 riêng tư** — gặp junior riêng, không trước team. Hỏi "em nghĩ điều gì đã xảy ra", "em sẽ làm khác thế nào". Mục tiêu: em tự nhận ra bài học.
+4. **Phân biệt intent vs impact** — junior không cố ý gây lỗi; vấn đề là thiếu guardrail. Coaching về "tại sao process cho phép lỗi này".
+5. **Biến lỗi thành cải tiến** — thêm CI check, checklist review, test case. Junior thấy lỗi của mình giúp team tốt hơn → tự hào thay vì xấu hổ.
+6. **Theo dõi tiến bộ** — sau 2–4 tuần kiểm tra junior có áp dụng bài học không (qua code review). Nếu lặp lại thì coaching sâu hơn.
+
+### Bảng blame vs blameless
+
+| | Blame culture | Blameless culture |
+|---|---|---|
+| Phản ứng sự cố | Tìm người chịu trách | Tìm lỗ hổng hệ thống |
+| Báo cáo lỗi | Giấu, báo muộn | Báo sớm |
+| Học hỏi | Không, vì sợ | Có, vì an toàn |
+| Tốc độ sửa | Chậm (đổ lỗi) | Nhanh (fix hệ thống) |
+
+### Pitfall production
+
+- Coaching trước team → junior xấu hổ, team sợ. Luôn riêng tư.
+- Chỉ blame junior mà bỏ qua review process. Nếu code review không bắt được, đó là lỗi của team, không chỉ junior.
+- Không có follow-up. Coaching một lần rồi quên → lỗi lặp lại.
+- Quá "soft" → junior không hiểu nghiêm trọng. Phải rõ: lỗi ảnh hưởng production, khách hàng; nhưng không phải lỗi cá nhân.
+
+### Ví dụ đời thực
+
+Junior push code thiếu null check cho API thanh toán, gây 500 error cho 2% request trong 30 phút. Tôi rollback trong 5 phút, sau đó gặp junior riêng: "em hãy reproduce và viết test case". Postmortem blameless: root cause là thiếu contract test giữa service; thêm CI check và require review cho payment module. Junior viết test case và PR fix. Sau 3 tháng không lặp lại. Junior sau đó tự đề xuất thêm guardrail cho team.
+
+### Trả lời mẫu khi phỏng vấn
+
+Khi junior gây sự cố production, tôi tách rõ "sửa sự cố" khỏi "điều tra người". Ưu tiên đầu tiên là khôi phục service — rollback hoặc tắt feature flag — không điều tra ai trong lúc sự cố đang diễn ra. Sau đó tôi viết RCA blameless: tập trung vào hệ thống và quy trình, "điều gì trong process cho phép lỗi này lọt production", không phải "ai làm sai". Tôi coaching 1:1 riêng tư, không trước team, hỏi junior "em nghĩ điều gì đã xảy ra" và "em sẽ làm khác thế nào" để em tự nhận ra bài học. Tôi phân biệt intent và impact: junior không cố ý, vấn đề là thiếu guardrail. Sau đó tôi biến lỗi thành cải tiến — thêm CI check, checklist review, test case — để junior thấy lỗi của mình giúp team tốt hơn. Tôi cũng theo dõi tiến bộ sau 2–4 tuần qua code review. Pitfall tôi tránh là blame culture: khi dev sợ bị blame, họ giấu lỗi và sự cố nhỏ thành lớn. Và tôi tránh coaching trước team vì junior sẽ xấu hổ. Mục tiêu cuối cùng là văn hóa an toàn để báo sớm và học hỏi.
+
+> Senior tip: **Blameless không phải "không có trách nhiệm", mà là "trách nhiệm thuộc về hệ thống, coaching thuộc về cá nhân".** Team mạnh lên khi lỗi được biến thành guardrail, không khi người bị blame.`,
+  follow: [
+    'Nếu cùng một junior lặp lại lỗi tương tự sau coaching, bạn xử lý thế nào?',
+    'Làm sao cân bằng giữa "an toàn để báo lỗi" và "trách nhiệm cá nhân"?',
+    'Bạn xử lý khi leadership yêu cầu "tìm người chịu trách nhiệm" cho sự cố?'
+  ],
+  tags: ['mentoring', 'blameless', 'incident', 'coaching', 'culture', 'leadership'],
+},
 );
