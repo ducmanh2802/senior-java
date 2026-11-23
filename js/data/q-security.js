@@ -7311,4 +7311,267 @@ public OrderDTO getOrder(String publicOrderId, String currentUserId) {
   ],
   tags: ['IDOR', 'ID công khai', 'Sqids', 'UUIDv7', 'Cache penetration', 'Kiểm tra quyền sở hữu', 'Primary key']
 },
+{
+  id: "security-084",
+  topic: "security",
+  level: "senior",
+  q: "Vấn đề mật khẩu DB dài hạn: dùng dynamic/ephemeral credentials (Vault database secrets engine hoặc RDS IAM auth) hoạt động thế nào, lease TTL và revoke ra sao, và tích hợp Spring Boot/HikariCP thế nào để xoay vòng không downtime?",
+  a: `**Tóm tắt:** Mật khẩu DB dài hạn (static) một khi lộ là lộ mãi cho tới khi con người đổi tay, và không biết đã bị dùng ở đâu. Dynamic/ephemeral credentials (Vault database secrets engine, hoặc RDS IAM auth) sinh credential NGẮN HẠN ngay khi cần, gắn lease (hợp đồng thuê) có TTL, rồi tự động thu hồi khi hết hạn hoặc khi pod tắt. Mấu chốt để không downtime là làm vòng đời kết nối (HikariCP maxLifetime) ngắn hơn TTL lease, để connection cũ bị thay trước khi user DB tạm bị xóa.
+
+### 1. Vì sao mật khẩu DB dài hạn nguy hiểm
+- Một mật khẩu tĩnh nằm trong secret manager vẫn có vòng đời bằng vòng đời con người: không tự đổi, không biết ai đã copy, khi nghi lộ phải đổi tay toàn bộ.
+- Ai từng đọc được nó (log cũ, image cũ, máy dev) giữ được vĩnh viễn, vì mật khẩu không tự hết hạn.
+- Dynamic credentials giải quyết gốc rễ: credential chỉ sống vài phút đến vài giờ, dùng xong tự biến mất, nên đọc được một lần không còn giá trị lâu dài.
+
+### 2. Cơ chế dynamic secret hoạt động từng bước (vì sao)
+Vault (hoặc hệ tương đương) giữ một role mô tả: app này được cấp user chỉ-đọc trên schema X. Khi app xin credential:
+1. App gọi Vault với danh tính của nó (Kubernetes service account qua auth method K8s, hoặc AppRole).
+2. Vault kiểm tra policy; nếu hợp lệ, Vault tự tạo một user DB tạm bằng quyền admin (ví dụ {{CREATE USER + GRANT}}), hoặc đổi mật khẩu một user map sẵn.
+3. Vault trả về username + password + leaseId + TTL cho app.
+4. App dùng credential đó để mở kết nối HikariCP.
+5. Khi hết TTL mà app không renew (gia hạn), Vault tự thu hồi: xóa user hoặc set mật khẩu về giá trị vô dụng.
+
+~~~seq
+title: Cấp và thu hồi credential DB ngắn hạn
+actors: App | Vault | Postgres
+App -> Vault: xin credential (danh tính K8s/AppRole)
+Vault -> Postgres: tạo user tạm + GRANT theo role
+Vault --> App: username, password, leaseId, TTL 1h
+App -> Postgres: kết nối bằng credential tạm
+note App..Vault: còn sống thì gia hạn lease trước khi hết TTL
+App --> Vault: renew(leaseId) (tùy chọn)
+note Vault..Postgres: hết TTL & không renew thì tự REVOKE/drop user
+~~~
+
+### 3. Vòng đời lease: TTL, renew, revoke
+- TTL (ví dụ 1h) là thời gian tối đa credential còn hiệu lực; max TTL là trần cứng không thể gia hạn quá (ví dụ 24h), chống app xin một lần rồi giữ mãi.
+- Renew: app phải chủ động gọi renew trước khi TTL gần hết nếu connection còn cần. Nếu app chết đột ngột, không ai renew thì Vault tự thu hồi, không để lại user mồ côi.
+- Revoke: khi pod bị xóa hoặc nghi lộ, thu hồi lease làm user bị xóa ngay, mọi kết nối dùng nó đứt.
+
+### 4. Tích hợp Spring Boot + HikariCP không downtime (ý tưởng)
+Điểm khó: HikariCP giữ connection sống lâu, nên nếu chỉ đổi mật khẩu mà pool vẫn giữ connection cũ thì hoặc lỗi, hoặc tệ hơn là connection cũ vẫn chạy tới khi user bị drop. Cách đúng là để pool tái tạo connection ngắn hơn lease:
+
+~~~java
+// Mỗi khi pool cần một Connection MỚI: xin credential ngắn hạn từ Vault
+ConnectionCreator creator = () -> {
+    VaultResponse r = vaultTemplate.load("database/creds/app-ro"); // user tạm, TTL 1h
+    Map<String, String> d = r.getData();
+    return DriverManager.getConnection(
+        "jdbc:postgresql://db.prod:5432/app", d.get("username"), d.get("password"));
+};
+HikariConfig hc = new HikariConfig();
+hc.setConnectionCreator(creator);
+// maxLifetime < TTL lease: connection chết TRƯỚC khi user tạm bị thu hồi
+hc.setMaxLifetime(Duration.ofMinutes(30).toMillis()); // lease 1h, mỗi 30' thay connection
+DataSource ds = new HikariDataSource(hc);
+~~~
+
+Cách này khiến cứ mỗi 30 phút HikariCP mở connection mới (xin lease mới), connection cũ đóng trước khi user cũ bị Vault xóa. Không cần đổi mật khẩu tay, không downtime khi rotation, vì rotation là tự nhiên theo vòng đời connection.
+
+### 5. So sánh các lựa chọn
+| Cách | Ưu điểm | Nhược điểm / khi nào dùng |
+|---|---|---|
+| Static trong Secrets Manager | Đơn giản, mọi app hiểu | Phải đổi tay khi lộ; credential dài hạn; hợp hệ thống nhỏ |
+| Vault dynamic (DB secrets) | Ngắn hạn, tự thu hồi, audit rõ | Cần vận hành Vault; DB phải cho Vault quyền tạo user |
+| RDS IAM auth | Không có password, token 15' tự làm mới | Chỉ RDS/Aurora; driver phải sinh token mỗi connection |
+| K8s short-lived | Gần workload, không secret tĩnh | Chỉ giải quyết nạp secret, không tự thu hồi ở DB |
+
+### 6. Pitfall production
+- maxLifetime > TTL: connection sống lâu hơn user, khi user bị drop thì pool lỗi hàng loạt. Luôn đặt maxLifetime < lease TTL.
+- Không renew: app bận không gia hạn thì giữa chừng bị thu hồi. Cần job/strategy renew, hoặc dùng connection-per-lease ngắn.
+- Vault là điểm chết đơn (SPOF): nếu Vault sập lúc pool cần connection mới, app không mở được kết nối. Cần Vault HA và cache credential còn hạn.
+- Bùng nổ user: mỗi connection tạo một user DB tạm; nếu pool churn nhanh và TTL dài thì DB có nhiều user. Đặt TTL hợp lý và cho Vault dọn.
+- Log lộ credential tạm: password động cũng có thể bị log; vẫn phải mask.
+
+### 7. Ví dụ đời thực
+Một hệ thống ví điện tử dùng chung một user DB {{app_rw}} với mật khẩu tĩnh cho 12 service. Khi pentest báo mật khẩu nằm trong log khởi động của một service, đội an ninh không thể đổi ngay vì 12 service dùng chung và đổi là downtime cả cụm. Chuyển sang Vault database secrets: mỗi service có role riêng ({{svc-wallet-ro}}), HikariCP đặt maxLifetime 20 phút với lease TTL 1 giờ. Sau một tuần: không còn mật khẩu DB tĩnh trong bất kỳ secret nào; khi nghi lộ một lease, thu hồi lease đó chỉ ảnh hưởng đúng service trong dưới 30 giây, 0 downtime; số connection lỗi do credential giảm về 0 sau khi chỉnh maxLifetime.
+
+### 8. Trả lời mẫu khi phỏng vấn
+Em coi mật khẩu DB dài hạn là rủi ro gốc vì một khi lộ là lộ vĩnh viễn cho tới khi đổi tay. Em dùng dynamic/ephemeral credentials: Vault database secrets engine (hoặc RDS IAM auth) sinh credential ngắn hạn ngay khi pool cần, gắn lease có TTL và tự thu hồi khi hết hạn hoặc khi pod tắt. Về tích hợp Spring Boot, điểm mấu chốt là vòng đời kết nối phải ngắn hơn lease: em đặt HikariCP maxLifetime nhỏ hơn TTL (ví dụ 30 phút với lease 1 giờ) và dùng connection creator để xin credential mới mỗi khi tạo connection, nhờ vậy connection cũ đóng trước khi user DB tạm bị xóa, không downtime. So với static trong Secrets Manager, dynamic tốn công vận hành Vault hơn nhưng đổi lại không còn secret dài hạn và thu hồi tức thì khi nghi lộ. Em từng chuyển 12 service từ một user DB tĩnh sang role riêng per-service; sau khi chỉnh maxLifetime thì số lỗi do credential về 0 và thu hồi lease chỉ ảnh hưởng đúng service trong dưới 30 giây.
+
+> Senior tip: Với dynamic credential, xoay vòng không downtime không đến từ việc đổi mật khẩu khéo, mà từ việc connection chết trước credential. Luôn giữ bất đẳng thức maxLifetime < lease TTL, và test bằng cách chủ động revoke lease giữa chừng để xem pool có tự hồi phục không. Đừng để Vault thành SPOF: cache credential còn hạn và chạy Vault HA, vì pool không mở được connection mới khi Vault sập.`,
+  follow: [
+    "maxLifetime và lease TTL quan hệ thế nào, và vì sao đặt sai thứ tự gây lỗi hàng loạt khi thu hồi credential?",
+    "Dynamic secret của Vault khác gì secret tĩnh xoay vòng định kỳ về mô hình đe dọa (thời gian sống, bán kính lộ)?",
+    "Khi nào nên chọn RDS IAM auth thay cho Vault dynamic, và driver phải xử lý token hết hạn ra sao?"
+  ],
+  tags: ["Secret Management", "Vault", "Dynamic Secret", "HikariCP", "IRSA", "Rotation", "RDS IAM Auth"]
+},
+{
+  id: "security-085",
+  topic: "security",
+  level: "senior",
+  q: "OTP 6 chữ số chỉ có 1.000.000 tổ hợp: giải thích TOTP (RFC 6238) và HOTP hoạt động thế nào, vì sao phải giới hạn số lần thử (online guessing entropy), và thiết kế attempt budget + lockout thế nào để an toàn mà không khóa oan người dùng?",
+  a: `**Tóm tắt:** OTP 6 chữ số chỉ có 1.000.000 tổ hợp (10 mũ 6), nên bản thân nó không đủ mạnh; an toàn đến từ ngắn hạn + giới hạn số lần thử + ràng buộc giao dịch. TOTP (RFC 6238) là OTP do chính thiết bị người dùng tính bằng {{HMAC-SHA1(secret, ô-thời-gian)}} rồi cắt còn 6 chữ số; HOTP (RFC 4226) dùng bộ đếm sự kiện thay vì thời gian. Online guessing entropy giải thích vì sao phải giới hạn số lần thử: kẻ tấn công chỉ đoán được vài lần trong thời gian OTP còn hiệu lực.
+
+### 1. Vì sao 6 chữ số tự nó không an toàn
+- Không gian khóa = 10 mũ 6 = 1.000.000. Nghe lớn, nhưng nếu kẻ tấn công được thử không giới hạn trong thời gian OTP còn hiệu lực (2 đến 5 phút), xác suất trúng không hề nhỏ.
+- Ví dụ: nếu cho 100.000 lần thử trong 5 phút, xác suất trúng một OTP cụ thể xấp xỉ 100.000 / 1.000.000 = 10%. Đó là lý do giới hạn số lần thử là bắt buộc, không phải tùy chọn.
+- Online guessing entropy là số lần thử thực tế kẻ tấn công làm được trước khi OTP hết hạn. An toàn là giữ con số này nhỏ hơn nhiều lần so với không gian khóa.
+
+### 2. TOTP hoạt động thế nào (RFC 6238)
+TOTP sinh mã từ ba thứ: secret chia sẻ (Base32, lưu ở server và app authenticator), thời gian chia thành bước (mặc định 30 giây), và thuật toán HMAC. Công thức:
+- T = floor((now trừ T0) chia X), X = 30 giây. Cứ mỗi 30 giây T tăng 1, mã đổi.
+- hash = HMAC-SHA1(secret, T), trong đó T đóng gói thành 8 byte big-endian.
+- Lấy 4 byte theo dynamic truncation, mod 1.000.000, ra 6 chữ số.
+
+~~~java
+// TOTP (RFC 6238): secret Base32, time-step 30s, HMAC-SHA1, dynamic truncation
+static String totp(byte[] secretKey, long nowEpochSec, int stepSec) {
+    long counter = nowEpochSec / stepSec;                  // T = floor((now - T0)/X)
+    byte[] msg = ByteBuffer.allocate(8).putLong(counter).array();
+    Mac mac = Mac.getInstance("HmacSHA1");                 // HMAC dùng secret chia sẻ
+    mac.init(new SecretKeySpec(secretKey, "HmacSHA1"));
+    byte[] hash = mac.doFinal(msg);
+    int off = hash[hash.length - 1] & 0x0f;                // dynamic truncation
+    int bin = ((hash[off] & 0x7f) << 24) | ((hash[off + 1] & 0xff) << 16)
+            | ((hash[off + 2] & 0xff) << 8) | (hash[off + 3] & 0xff);
+    return String.format("%06d", bin % 1_000_000);         // 6 chữ số
+}
+~~~
+
+Vì sao an toàn hơn SMS OTP? Mã do chính người dùng tính từ secret, không đi qua mạng nhà mạng, nên không bị SIM swap hay chặn SMS. Đổi lại secret phải an toàn ở cả hai đầu, và đồng hồ phải khớp.
+
+### 3. HOTP khác TOTP thế nào (RFC 4226)
+- HOTP dùng bộ đếm sự kiện (counter tăng mỗi lần bấm) thay vì thời gian. Ưu: không phụ thuộc đồng hồ. Nhược: nếu người dùng bấm sinh mã mà không dùng, bộ đếm lệch (drift), cần resync (chấp nhận một cửa sổ counter phía trước).
+- TOTP tránh drift bằng cách gắn với thời gian, nên chỉ cần đồng hồ lệch trong 1 đến 2 bước (cho phép cộng trừ 1 cửa sổ 30 giây khi verify).
+
+### 4. SMS và email OTP khác TOTP/HOTP
+- SMS OTP và email OTP do server sinh ngẫu nhiên rồi gửi đi; bảo mật dựa vào kênh gửi, TTL và giới hạn thử.
+- TOTP/HOTP do thiết bị tính, không cần kênh gửi, nhưng cần quá trình đăng ký (enrollment) an toàn để nạp secret.
+
+### 5. Thiết kế attempt budget và khóa an toàn
+- Giới hạn số lần thử mỗi OTP challenge (ví dụ 5 lần sai thì vô hiệu OTP đó, buộc gửi lại).
+- Rate limit việc gửi hoặc gửi lại OTP theo số điện thoại/thiết bị (ví dụ 3 lần/phút, 10 lần/ngày) để chặn spam và tấn công vét.
+- Ràng buộc OTP với giao dịch hoặc phiên: OTP chỉ hợp lệ cho đúng amount/recipient/session mà nó được sinh ra, chặn đổi ngữ cảnh (phishing proxy).
+- Không phân biệt thông báo OTP sai với OTP hết hạn, để không cho kẻ tấn công biết họ đã gần đúng.
+- Khi quá ngưỡng dùng chờ tăng dần (exponential backoff) thay vì khóa cứng vĩnh viễn, để attacker không khóa oan người dùng khác.
+
+### 6. So sánh các loại OTP/2FA
+| Loại | Ưu | Nhược |
+|---|---|---|
+| TOTP (authenticator app) | Không cần mạng, không SIM swap | Cần enrollment; đồng hồ phải khớp |
+| HOTP (token phần cứng) | Không cần đồng hồ | Drift counter, cần resync |
+| SMS OTP | Dễ dùng, phổ biến | SIM swap, SS7, phụ thuộc nhà mạng |
+| Push notification | UX tốt, gắn thiết bị | Cần app; fatigue attack |
+| Passkey/WebAuthn | Chống phishing mạnh nhất | Cần hạ tầng và thiết bị hỗ trợ |
+
+### 7. Pitfall production
+- Cửa sổ thời gian quá rộng (cộng trừ 3 bước = 90 giây) làm tăng gấp bội số mã hợp lệ cùng lúc, giảm entropy. Giữ cộng trừ 1 bước.
+- Replay trong cửa sổ: một mã còn hiệu lực có thể bị dùng lại nếu không đánh dấu đã dùng; cần lưu counter hoặc mã đã dùng.
+- Lưu secret TOTP dạng plaintext: secret bị lộ là sinh được OTP vô hạn. Phải mã hóa secret at rest.
+- Không rate limit gửi OTP: bị vét SMS tốn tiền và làm loãng.
+- Quá nhiều lần thử: 6 chữ số cộng không giới hạn thử là vô hiệu.
+
+### 8. Ví dụ đời thực
+App ví cho nhập OTP 6 số để xác nhận chuyển tiền. Log cho thấy một tài khoản bị thử 80.000 lần trong 4 phút qua nhiều IP, mỗi IP vài trăm lần, vì endpoint verify không giới hạn theo tài khoản mà chỉ theo IP. Điều tra: OTP TTL 5 phút, không giới hạn số lần thử, nên xác suất trúng đáng kể. Xử lý: giới hạn 5 lần sai mỗi challenge rồi vô hiệu OTP; rate limit gửi theo số điện thoại; ràng buộc OTP với amount và recipient; cho phép cộng trừ 1 cửa sổ thời gian. Kết quả đo được: số lần thử thành công của kẻ tấn công trên mỗi OTP giảm từ không giới hạn xuống tối đa 5; tỷ lệ OTP bị đoán trúng về 0 trong 30 ngày; không tăng khiếu nại từ người dùng thật (chỉ chặn hành vi bất thường).
+
+### 9. Trả lời mẫu khi phỏng vấn
+Em luôn nói rõ: OTP 6 chữ số chỉ có một triệu tổ hợp, nên an toàn không đến từ bản thân con số mà từ ba thứ: thời gian sống ngắn, giới hạn số lần thử, và ràng buộc với giao dịch. Em giải thích online guessing entropy: nếu cho thử không giới hạn trong 5 phút thì xác suất trúng là đáng kể, nên em giới hạn 5 lần sai cho mỗi challenge rồi vô hiệu OTP, cộng rate limit việc gửi OTP theo số điện thoại để chặn vét. Với TOTP theo RFC 6238, mã do thiết bị người dùng tự tính bằng HMAC-SHA1 của secret với ô thời gian 30 giây rồi cắt còn 6 chữ số; em cho phép lệch cộng trừ 1 cửa sổ để dung sai đồng hồ nhưng không hơn, vì nới rộng làm giảm entropy. Em cũng ràng buộc OTP với đúng số tiền và người nhận để chặn phishing proxy, và không phân biệt thông báo OTP sai với OTP hết hạn. So với SMS OTP, em ưu tiên TOTP hoặc passkey vì không bị SIM swap.
+
+> Senior tip: OTP mạnh là ngộ nhận chết người: 6 chữ số cộng không rate limit là có thể đoán. Hãy tính thử: TTL 5 phút, 5 lần thử, xác suất trúng xấp xỉ 5 trên 1.000.000 mỗi OTP; nhưng một triệu kẻ tấn công song song thì khác hẳn. Phòng thủ thật sự là nhiều lớp nhỏ: TTL ngắn, attempt budget nhỏ, rate limit gửi, ràng buộc giao dịch, và ưu tiên TOTP hoặc passkey thay SMS ở đâu được.`,
+  follow: [
+    "TOTP và HOTP khác nhau thế nào, và vấn đề counter drift của HOTP được xử lý ra sao?",
+    "Vì sao cho phép cộng trừ 1 cửa sổ thời gian khi verify TOTP là cần thiết nhưng nới rộng hơn thì nguy hiểm?",
+    "OTP qua SMS có những rủi ro gì (SIM swap, SS7) và vì sao TOTP hoặc passkey an toàn hơn?"
+  ],
+  tags: ["OTP", "TOTP", "HOTP", "RFC 6238", "Brute Force", "2FA", "Online Guessing Entropy", "Rate Limiting"]
+},
+{
+  id: "security-086",
+  topic: "security",
+  level: "lead",
+  q: "Audit log tài chính phải bất biến (không sửa/xóa), nhưng GDPR cho người dùng quyền được xóa dữ liệu cá nhân. Hai yêu cầu này xung đột: bạn thiết kế thế nào để vừa giữ bằng chứng bất biến vừa xóa được dữ liệu cá nhân khi được yêu cầu (crypto-shredding, tokenization, pseudonymization)?",
+  a: `**Tóm tắt:** Audit log tài chính phải bất biến (không sửa/xóa, giữ 5 đến 7 năm), nhưng GDPR cho người dùng quyền được xóa dữ liệu cá nhân. Hai bên xung đột: không thể vừa xóa vừa giữ nguyên. Giải pháp thực dụng là không bao giờ để PII trực tiếp trong audit: audit chỉ giữ định danh giả (pseudonym) cộng bằng chứng băm, còn PII được mã hóa theo từng chủ thể bằng data key riêng. Khi có yêu cầu xóa, ta hủy data key (crypto-shredding) khiến ciphertext không thể giải mã, coi như đã xóa PII, trong khi bản ghi audit vẫn còn nguyên và vẫn kiểm tra được tính toàn vẹn.
+
+### 1. Vì sao xung đột là thật
+- Quy định tài chính (ví dụ yêu cầu lưu trữ sổ sách nhiều năm) bắt buộc không được sửa/xóa audit.
+- GDPR Điều 17 (right to erasure) cho chủ thể yêu cầu xóa dữ liệu cá nhân khi không còn lý do xử lý.
+- Nếu audit chứa email, CCCD hay số tài khoản của khách, và khách rút dịch vụ yêu cầu xóa, bạn kẹt giữa phải xóa và không được xóa.
+
+### 2. Nguyên tắc gỡ: tách bằng chứng khỏi danh tính
+- Audit chỉ cần trả lời ai làm gì khi nào ở mức định danh giả (subjectRef ngẫu nhiên, không phải CCCD hay email).
+- PII (tên, CCCD, số tài khoản) không nằm trong bản ghi audit; nếu cần chi tiết nghiệp vụ thì mã hóa riêng.
+- Vì bản ghi audit không chứa PII, việc xóa PII không đụng tới tính bất biến của audit.
+
+### 3. Crypto-shredding: xóa bằng cách hủy khóa
+Mỗi chủ thể có một data key riêng (AES-256). PII được mã hóa bằng data key đó; data key lại được bọc (wrap) bởi KMS master key. Khi cần xóa một chủ thể:
+1. Hủy data key của chủ thể (KMS schedule deletion hoặc destroy).
+2. Đánh dấu chủ thể là shredded trong bảng ánh xạ.
+3. Mọi ciphertext của chủ thể đó (kể cả trong backup) trở thành rác không giải mã được, trên thực tế là đã xóa.
+4. Bản ghi audit (subjectRef cộng hash chain) vẫn còn nguyên, nên vẫn chứng minh được hành vi đã xảy ra, chỉ là không còn truy ra danh tính.
+
+~~~seq
+title: Xóa dữ liệu cá nhân mà vẫn giữ audit bất biến
+actors: Khách | App | KMS | AuditDB
+Khách -> App: yêu cầu xóa dữ liệu (DSAR)
+App -> AuditDB: đọc bản ghi của subjectRef (chỉ pseudonym)
+App -> KMS: hủy data key của chủ thể
+KMS --> App: data key đã được scheduled/destroy
+App -> AuditDB: đánh dấu subject = shredded
+note AuditDB: bản ghi audit GIỮ NGUYÊN, chỉ mất khả năng giải mã PII
+~~~
+
+~~~sql
+-- Audit KHÔNG chứa PII; chỉ định danh giả + tham chiếu khóa
+CREATE TABLE audit_log (
+  id          BIGSERIAL PRIMARY KEY,
+  at_utc      TIMESTAMPTZ NOT NULL,
+  actor_ref   TEXT NOT NULL,       -- pseudonym, KHÔNG phải email/CCCD
+  action      TEXT NOT NULL,
+  subject_ref TEXT NOT NULL,       -- trỏ tới data key của chủ thể
+  payload_ct  BYTEA,               -- nếu cần chi tiết: đã mã hóa bằng data key
+  prev_hash   CHAR(64),
+  record_hash CHAR(64) NOT NULL
+);
+-- Ánh xạ chủ thể tới data key (bọc bởi KMS). Xóa = hủy data key.
+CREATE TABLE subject_key (
+  subject_ref TEXT PRIMARY KEY,
+  wrapped_key BYTEA NOT NULL,      -- data key bọc bởi KMS master
+  status      TEXT NOT NULL        -- active | shredded
+);
+~~~
+
+~~~java
+// Khi có yêu cầu xóa: KHÔNG xóa audit, chỉ shred khóa của chủ thể
+public void eraseSubject(String subjectRef) {
+    amazonKMS.scheduleKeyDeletion(subjectRef, 30);      // hủy data key (KMS có thời gian chờ 30 ngày)
+    subjectKeyRepo.markShredded(subjectRef);       // ciphertext còn nhưng không giải mã được
+    // audit record vẫn còn nguyên (bất biến) nhưng PII không thể khôi phục
+}
+~~~
+
+### 4. Cảnh báo pháp lý (nói thật khi phỏng vấn)
+- Crypto-shredding có được coi là xóa không tùy cơ quan quản lý. Lập luận ủng hộ: nếu khóa thực sự bị hủy, không còn cách nào khôi phục, nên dữ liệu coi như đã xóa. Nhưng cần có tài liệu chính sách và đảm bảo không còn bản sao khóa ở nơi khác.
+- Cách tiếp cận thay thế: tokenization vault (lưu PII ở kho riêng, audit chỉ giữ token; xóa ở kho token), hoặc pseudonymization. Nhưng pseudonymization không phải xóa nếu còn bảng ánh xạ, nên vẫn cần hủy ánh xạ.
+
+### 5. So sánh các cách
+| Cách | Ưu | Nhược |
+|---|---|---|
+| Không ghi PII (chỉ pseudonym) | Đơn giản, audit bất biến dễ | Mất chi tiết điều tra; cần kho riêng cho PII |
+| Crypto-shredding | Giữ ciphertext, xóa bằng hủy khóa | KMS có thời gian chờ; cần quản lý vòng đời khóa |
+| Tokenization vault | Tách PII ra kho chuyên biệt | Thêm hạ tầng; token có thể bị ánh xạ lại |
+| Pseudonymization | Dễ triển khai | Vẫn còn ánh xạ, chưa xóa đúng nghĩa |
+
+### 6. Pitfall production
+- Backup còn giữ khóa: nếu backup chứa cả data key, xóa không có nghĩa. Phải đảm bảo hủy khóa ở mọi nơi, kể cả bản sao.
+- KMS chờ xóa 7 đến 30 ngày: AWS KMS mặc định có thời gian chờ, nên xóa ngay không khả thi tức thì; phải thiết kế SLA với pháp chế.
+- Log phụ lề chứa PII: audit sạch nhưng log ứng dụng, trace, error lại in PII, gây rò rỉ ngoài ý muốn.
+- Tái định danh (re-identification): kết hợp nhiều trường giả có thể lần ra cá nhân; cần cân nhắc k-anonymity khi phân tích.
+- Chuyển dữ liệu xuyên biên giới: PII mã hóa vẫn là dữ liệu cá nhân, vẫn thuộc phạm vi GDPR.
+
+### 7. Ví dụ đời thực
+Một ngân hàng số nhận yêu cầu xóa tài khoản từ khách đã rời đi. Audit hiện tại lưu cả email và số CMND trong trường JSON, nên không thể xóa vì luật lưu trữ 7 năm. Thiết kế lại: audit chuyển sang subjectRef (UUID giả) cộng payload mã hóa theo data key per-subject; PII thật nằm trong một kho customer riêng, mã hóa, có data key. Khi khách yêu cầu xóa: hủy data key của subject (KMS schedule deletion), đánh dấu shredded, xóa PII trong kho customer. Kết quả đo được: yêu cầu DSAR được xử lý trong SLA (ví dụ 72 giờ, trừ thời gian chờ KMS); audit vẫn đầy đủ 100% bản ghi, job verify hash chain vẫn pass; không còn PII giải mã được cho chủ thể đã xóa; kiểm toán viên chấp nhận lập luận crypto-shredding sau khi có tài liệu chính sách.
+
+### 8. Trả lời mẫu khi phỏng vấn
+Em xem đây là bài toán dung hòa hai nghĩa vụ pháp lý xung đột: audit tài chính phải bất biến nhiều năm, nhưng GDPR cho quyền được xóa. Cách em gỡ là không để PII trực tiếp trong audit: bản ghi chỉ giữ định danh giả (subjectRef) và bằng chứng băm, còn PII mã hóa riêng theo từng chủ thể bằng data key bọc bởi KMS. Khi có yêu cầu xóa, em không xóa audit mà hủy data key của chủ thể (crypto-shredding): ciphertext còn đó nhưng không giải mã được, coi như đã xóa, trong khi audit vẫn nguyên vẹn và kiểm tra được. Em nói rõ với pháp chế rằng crypto-shredding được chấp nhận nếu khóa thực sự bị hủy ở mọi nơi, kể cả backup, và phải có tài liệu chính sách; nếu không, dùng tokenization vault để tách PII hẳn ra kho riêng. Em cũng cảnh báo về thời gian chờ xóa của KMS và nguy cơ log phụ in PII. Kết quả là vừa giữ được tính bất biến, vừa đáp ứng DSAR trong SLA.
+
+> Senior tip: Đừng hứa xóa ngay khi dùng KMS, vì thời gian chờ xóa (7 đến 30 ngày) là ràng buộc thật, phải đưa vào SLA với pháp chế. Chìa khóa thành công là nguyên tắc tối thiểu dữ liệu ngay từ đầu: audit không chứa PII thì xung đột biến mất. Luôn kiểm kê mọi nơi PII có thể lọt (log, trace, backup, data warehouse) trước khi tuyên bố đã xóa, vì xóa chỉ đúng khi không còn bản sao nào giải mã được.`,
+  follow: [
+    "Crypto-shredding có được coi là xóa theo GDPR không, và cần điều kiện gì để lập luận đó đứng vững?",
+    "Tokenization vault khác gì crypto-shredding, và khi nào mỗi cách phù hợp?",
+    "Audit sạch PII nhưng log ứng dụng hoặc trace vẫn in PII: bạn kiểm soát rò rỉ ngoài audit thế nào?"
+  ],
+  tags: ["Audit Log", "GDPR", "Crypto-Shredding", "Tokenization", "Pseudonymization", "KMS", "Compliance"]
+},
 );
