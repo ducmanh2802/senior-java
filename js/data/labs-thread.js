@@ -5294,5 +5294,400 @@ Hoặc lock theo key với Redisson (striped lock) nếu cần đa pod, kèm tim
     'Nêu phòng ngừa: review synchronized scope, JFR/Micrometer contention, test tải nhiều account.'
   ],
   tags: ['synchronized', 'contention', 'lock-granularity', 'database', 'throughput']
+},
+{
+  id: 'lab-thread-026',
+  category: 'thread',
+  title: 'Job @Scheduled fixedRate chạy trễ dần và dồn việc: TaskScheduler 1 thread bị chiếm',
+  level: 'senior',
+  scenario: `**Bối cảnh:** **PayVN Recon** (Spring Boot 3.4, Java 21, pod 4 vCPU) có nhiều tác vụ @Scheduled: health check mỗi 30 giây, flush metrics mỗi 60 giây, cleanup session mỗi 5 phút, đối soát hàng ngày. Tất cả dùng TaskScheduler mặc định của Spring Boot (pool size = 1, thread duy nhất tên {{scheduling-1}}). Tác vụ flush metrics gọi API đối tác thu thập số liệu, đôi khi chậm bất thường (từ 2 giây lên 90 giây).\n\n**Triệu chứng:** Từ lúc flush metrics bắt đầu chạy lâu (10:05), các tác vụ khác (health check, cleanup) đều bị trễ hẳn: health check 30 giây/lần thực tế chạy cách 5–10 phút, cleanup 5 phút/lần chạy cách 30–60 phút. CPU pod chỉ ~8%, không exception, thread dump chỉ thấy {{scheduling-1}} RUNNABLE ở lời gọi HTTP. Restart pod thì hết nhưng đợt sau flush metrics lại chậm thì tái diễn.\n\n**Dữ liệu thu thập:** {{jcmd 1 Thread.print}} lúc 10:12:00, log ứng dụng, và cấu hình {{spring.task.scheduling.pool.size}}.`,
+  artifacts: [
+    {
+      name: 'jstack-scheduler-delay.txt',
+      lang: 'text',
+      content: `2026-10-25 10:12:00
+Full thread dump OpenJDK 64-Bit Server VM (21.0.4+7-LTS-151 mixed mode, sharing):
+
+"scheduling-1" #21 [4211] prio=5 os_prio=0 cpu=45120.33ms elapsed=2000.10s tid=0x00007f58ac21a000 nid=4211 runnable  [0x00007f5865cfd000]
+   java.lang.Thread.State: RUNNABLE
+        at sun.nio.ch.Net.poll(java.base@21.0.4/Native Method)
+        at sun.nio.ch.NioSocketImpl.park(java.base@21.0.4/NioSocketImpl.java:191)
+        at sun.nio.ch.NioSocketImpl.timedRead(java.base@21.0.4/NioSocketImpl.java:280)
+        at sun.nio.ch.NioSocketImpl.implRead(java.base@21.0.4/NioSocketImpl.java:304)
+        at java.net.Socket$SocketInputStream.read(java.base@21.0.4/Socket.java:1099)
+        at sun.security.ssl.SSLSocketInputRecord.read(java.base@21.0.4/SSLSocketInputRecord.java:489)
+        at sun.security.ssl.SSLSocketImpl.readApplicationRecord(java.base@21.0.4/SSLSocketImpl.java:1461)
+        at sun.security.ssl.SSLSocketImpl$AppInputStream.read(java.base@21.0.4/SSLSocketImpl.java:1066)
+        at org.apache.hc.core5.http.impl.io.SessionInputBufferImpl.fillBuffer(SessionInputBufferImpl.java:149)
+        at org.apache.hc.core5.http.impl.io.SessionInputBufferImpl.readLine(SessionInputBufferImpl.java:280)
+        at org.apache.hc.core5.http.impl.io.AbstractMessageParser.parse(AbstractMessageParser.java:247)
+        at org.apache.hc.core5.http.impl.io.DefaultBHttpClientConnection.receiveResponseHeader(DefaultBHttpClientConnection.java:333)
+        at org.apache.hc.client5.http.impl.classic.InternalHttpClient.doExecute(InternalHttpClient.java:174)
+        at org.apache.hc.client5.http.impl.classic.CloseableHttpClient.execute(CloseableHttpClient.java:87)
+        at vn.pay.recon.MetricsFlushTask.flush(MetricsFlushTask.java:44)
+        at vn.pay.recon.SchedulerConfig$$SpringCGLIB$$0.flush(<generated>)
+        at java.util.concurrent.Executors$RunnableAdapter.call(Executors.java:572)
+        at java.util.concurrent.FutureTask.runAndReset(FutureTask.java:358)
+        at java.util.concurrent.ScheduledThreadPoolExecutor$ScheduledFutureTask.run(ScheduledThreadPoolExecutor.java:305)
+        at java.util.concurrent.ThreadPoolExecutor.runWorker(ThreadPoolExecutor.java:1144)
+        at java.util.concurrent.ThreadPoolExecutor$Worker.run(ThreadPoolExecutor.java:642)
+        at java.lang.Thread.runWith(java.base@21.0.4/Thread.java:1596)
+        at java.lang.Thread.run(java.base@21.0.4/Thread.java:1583)
+
+"main" #1 [4097] prio=5 os_prio=0 cpu=1880.11ms elapsed=212.40s tid=0x00007f58ac028000 nid=4097 waiting on condition  [0x00007f58b33fe000]
+   java.lang.Thread.State: WAITING (parking)
+        at jdk.internal.misc.Unsafe.park(java.base@21.0.4/Native Method)
+        - parking to wait for  <0x0000000714a0f010> (a java.util.concurrent.locks.AbstractQueuedSynchronizer$ConditionObject)
+        at java.util.concurrent.locks.LockSupport.park(java.base@21.0.4/LockSupport.java:221)
+        at java.util.concurrent.AbstractQueuedSynchronizer.awaitNanos(AbstractQueuedSynchronizer.java:2153)
+        at java.util.concurrent.ThreadPoolExecutor.awaitTermination(ThreadPoolExecutor.java:1462)
+        at vn.pay.recon.ReconApp.stop(ReconApp.java:30)
+
+# Ghi chú on-call:
+#   Chỉ có 1 thread scheduling-1 (Spring mặc định pool.size=1)
+#   scheduling-1 RUNNABLE ở MetricsFlushTask.flush (đọc socket HTTP) — đã chạy 120 giây và còn dở
+#   Không thread nào khác chạy HealthCheckTask/SessionCleanupTask (chưa được lời gọi)`
+    },
+    {
+      name: 'scheduler-delay-metrics.txt',
+      lang: 'text',
+      content: `# spring.task.scheduling.pool.size=1 (mặc định Spring Boot)
+# Tác vụ: healthCheck (fixedRate 30000), metricsFlush (fixedRate 60000), sessionCleanup (fixedRate 300000)
+
+2026-10-25 10:05:00 INFO  MetricsFlushTask.flush -> start (gọi API báo cáo, dự kiến 2 giây)
+2026-10-25 10:05:30 ... (HealthCheckTask lần kế KHÔNG chạy)
+2026-10-25 10:06:00 ... (MetricsFlushTask lần kế KHÔNG chạy - fixedRate nhưng slot trễ)
+2026-10-25 10:07:00 ... (HealthCheckTask lần kế KHÔNG chạy)
+2026-10-25 10:10:00 ... MetricsFlushTask vẫn đang chạy (API đối tác chậm 90 giây)
+2026-10-25 10:11:30 INFO  MetricsFlushTask.flush -> done (450 giây do timeout/retry)
+2026-10-25 10:11:32 INFO  HealthCheckTask.run -> start (chạy lại sau khi slot rỗng)
+2026-10-25 10:15:00 INFO  SessionCleanupTask.cleanup -> start (trễ 10 phút)
+
+# scheduler.lastRun.healthCheck = 10:05:00, thực tế lần sau = 10:11:32 (trễ 6 phút)
+# scheduler.lastRun.metricsFlush = 10:05:00, thực tế lần sau = 10:11:30 (trễ 6 phút)
+# CPU 8%, không exception, heap ổn định`
+    },
+    {
+      name: 'SchedulerConfig.java',
+      lang: 'java',
+      content: `@Configuration
+public class SchedulerConfig {
+    @Bean
+    public TaskScheduler taskScheduler() {
+        ThreadPoolTaskScheduler scheduler = new ThreadPoolTaskScheduler();
+        scheduler.setPoolSize(1);  // mặc định Spring Boot
+        scheduler.setThreadNamePrefix("scheduling-");
+        return scheduler;
+    }
+}
+
+@Component
+public class MetricsFlushTask {
+    @Scheduled(fixedRate = 60000)
+    public void flush() {
+        metricsClient.pushAll();  // gọi HTTP, có thể chạy 90 giây
+    }
+}
+
+@Component
+public class HealthCheckTask {
+    @Scheduled(fixedRate = 30000)
+    public void run() {
+        healthClient.ping();
+    }
+}
+
+@Component
+public class SessionCleanupTask {
+    @Scheduled(fixedRate = 300000)
+    public void cleanup() {
+        sessionRepo.deleteExpired();
+    }
+}`
+    }
+  ],
+  questions: [
+    'Tại sao một tác vụ chạy dài (flush metrics 90 giây) làm trễ hẳn tất cả tác vụ @Scheduled khác? Giải thích cơ chế ScheduledThreadPoolExecutor với pool size = 1.',
+    'Phân biệt fixedRate và fixedDelay trong trường hợp này: khi tác vụ trước chạy quá lâu, fixedRate có "bù" các lần chạy bị bỏ lỡ không?',
+    'Đề xuất cách sửa: tăng pool size, tách tác vụ dài ra executor riêng, dùng fixedDelay, đặt timeout HTTP, và cân nhắc ShedLock khi chạy đa instance.'
+  ],
+  hints: [
+    'Spring Boot mặc định scheduler pool size = 1 (thread scheduling-1). Tất cả @Scheduled chia sẻ thread này.',
+    'ScheduledThreadPoolExecutor chỉ khởi chạy tác vụ kế tiếp khi thread rảnh lấy từ DelayedWorkQueue; tác vụ đang chạy chiếm thread => các tác vụ sau xếp hàng, trễ hẳn (không bị bỏ).',
+    'Nhìn log: metrics flush bắt đầu 10:05:00, health check lần kế (10:05:30) không xuất hiện => chưa được chạy. fixedRate tính toán theo mốc thời gian gốc, nhưng các mốc đã qua sẽ chạy lại sớm nhất có thể khi thread rảnh (catch up), không bỏ lỡ.',
+    'Khi chạy đa instance (Kubernetes), mọi pod cùng chạy @Scheduled cùng lúc => trùng lặp tác vụ. Cần ShedLock hoặc leader election.'
+  ],
+  answer: `**Tóm tắt:** Mọi @Scheduled chạy trên duy nhất 1 thread {{scheduling-1}} (Spring mặc định {{spring.task.scheduling.pool.size=1}}). Một tác vụ chạy dài (flush metrics gọi API chậm 90 giây) chiếm hết thread, các tác vụ định kỳ khác (health check 30 giây, cleanup 5 phút) bị trễ hẳn trong {{DelayedWorkQueue}} cho tới khi slot trống. fixedRate tính toán theo mốc thời gian gốc, nhưng các mốc đã qua sẽ chạy lại sớm nhất có thể khi thread rảnh (catch up), không bỏ lỡ. Vì vậy sau khi flush xong, health check sẽ chạy nhiều lần liên tiếp để bù các mốc bỏ lỡ, chứ không chỉ chạy 1 lần.
+ 
+### Nguyên nhân gốc
+
+Spring Boot tạo {{TaskScheduler}} bằng {{ThreadPoolTaskScheduler}} với pool size mặc định = 1. Đối với @Scheduled, Spring dùng {{ScheduledThreadPoolExecutor}}: có 1 worker thread {{scheduling-1}} và một {{DelayedWorkQueue}} lưu các tác vụ sắp đến thời gian chạy.
+
+Khi đến lúc chạy một tác vụ, worker lấy nó từ hàng đợi và chạy đến khi xong. Trong thời gian đó, các tác vụ khác đã đến thời gian chạy cũng xuống hàng đợi nhưng **không có thread rảnh để lấy**, nên bị trễ hẳn. Khi tác vụ dài xong, worker quay lại lấy tác vụ kế tiếp từ hàng đợi.
+
+Vòng lặp chính:
+~~~text
+ScheduledThreadPoolExecutor worker:
+  1. Lấy task từ DelayedWorkQueue (chờ đến thời gian chạy)
+  2. Chạy task.run() — BỊ CHẶN Ở ĐÂY NẾU TASK DÀI
+  3. Lặp lại bước 1
+~~~
+
+Tác vụ {{metricsFlush}} gọi API chậm chạy 90 giây, chiếm {{scheduling-1}}. Health check (fixedRate 30s) các mốc 10:05:30, 10:06:00... xuống queue nhưng không có thread lấy => bị trễ. Cleanup (fixedRate 5 phút) cũng tương tự. Khi flush xong 10:11:30, worker mới lấy health check chạy 10:11:32 (trễ 6 phút). fixedRate tính theo mốc thời gian gốc, nhưng các mốc quá hạn chạy lại sớm nhất có thể (catch up). Sau khi flush xong 10:11:30, worker sẽ chạy health check nhiều lần liên tiếp (10:05:30, 10:06:00, …, 10:11:30) để bù các mốc bỏ lỡ, mới rồi mới quay lại chu kỳ 30s bình thường.
+
+### Dẫn chứng từ artifact
+
+- Chỉ có 1 thread {{scheduling-1}} trong dump (mặc định Spring {{pool.size=1}}).
+- {{scheduling-1}} RUNNABLE ở {{MetricsFlushTask.flush(MetricsFlushTask.java:44)}} -> đọc socket HTTP (Net.poll/read), đã chạy 120 giây và còn dở.
+- Không thread nào đang chạy {{HealthCheckTask}}/{{SessionCleanupTask}} (chưa được lời gọi).
+- Log: {{metricsFlush}} bắt đầu 10:05:00, {{healthCheck}} lần kế (10:05:30) không xuất hiện; chúng thực tế chạy lại 10:11:32 sau khi {{metricsFlush}} xong.
+- CPU thấp, không exception — lỗi ở cấu hình pool, không tài nguyên.
+
+### Cách sửa
+
+**Cách 1: Tăng pool size scheduling** (nhanh, nhưng chưa tách biệt rủi ro)
+~~~properties
+spring.task.scheduling.pool.size=8
+~~~
+Mỗi @Scheduled có thể chạy song song trên thread riêng. Phù hợp khi số tác vụ ít và mức độ chồng chất thấp.
+
+**Cách 2: Tách tác vụ dài ra @Async với executor riêng (khuyến nghị)**
+~~~java
+@Async("metricsExecutor")
+@Scheduled(fixedRate = 60000)
+public void flush() { ... }
+
+@Bean(name = "metricsExecutor")
+public ThreadPoolTaskExecutor metricsExecutor() {
+    ThreadPoolTaskExecutor ex = new ThreadPoolTaskExecutor();
+    ex.setCorePoolSize(4);
+    ex.setMaxPoolSize(8);
+    ex.setQueueCapacity(100);
+    return ex;
+}
+~~~
+Scheduler chỉ điều khiển thời gian, nhảy việc chạy thật ra executor riêng. Thread {{scheduling-1}} không bao giờ bị chiếm.
+
+**Cách 3: Dùng fixedDelay thay fixedRate cho tác vụ I/O** — đảm bảo khoảng cách giữa 2 lần chạy thực tế, tránh dồn ép khi upstream chậm. Luôn đặt timeout cho gọi HTTP trong tác vụ ({{metricsClient.pushAll}} có connect/read timeout) để tác vụ không chạy vĩnh viễn.
+
+**Cách 4: Không gọi code chặn (HTTP, DB) trực tiếp trên thread @Scheduled; đưa vào executor có giới hạn concurrency (Semaphore/bulkhead) để tránh bão saturation dịch vụ xa.**
+
+**Cách 5 (đa instance): Dùng ShedLock** — khi chạy trên Kubernetes nhiều pod, mọi pod cùng chạy @Scheduled cùng lúc => trùng lặp tác vụ. {{ShedLock}} dùng DB/Redis làm distributed lock để chỉ 1 instance chạy tác vụ tại một thời điểm.
+~~~java
+@Scheduled(fixedRate = 60000)
+@SchedulerLock(name = "metricsFlush", lockAtLeastFor = "30s", lockAtMostFor = "5m")
+public void flush() { ... }
+~~~
+
+### Phòng ngừa
+
+- Code review rule: không được chặn thread @Scheduled (mọi @Scheduled phải nhanh hoặc chuyển sang executor riêng).
+- Giám sát {{scheduler.lastRun}} của mỗi tác vụ; alert nếu tác vụ không chạy quá 2 chu kỳ.
+- Đặt timeout tất cả gọi HTTP/DB trong tác vụ định kỳ.
+- Tham khảo lab thread-010/012: chung tập chung có thể gây đợi khi một tác vụ chiếm nguyên tài nguyên.
+
+> Senior tip: @Scheduled không là "chạy nền" tự động an toàn — chúng chia sẻ một pool có kích thước. Nếu một tác vụ chạy dài, toàn bộ hệ thống định kỳ bị đợi. Nguyên tắc: thread @Scheduled chỉ được phép làm việc CPU ít, nhàn nhát, không chặn; mức nào cần I/O thì chuyển sang executor riêng có giới hạn và theo dõi metric lần chạy cuối cùng. Với đa instance, luôn dùng ShedLock hoặc leader election — đừng để 10 pod cùng flush metrics cùng lúc.`,
+  rubric: [
+    'Giải thích đúng: Spring @Scheduled dùng ThreadPoolTaskScheduler mặc định pool.size=1 (1 thread scheduling-1); một tác vụ dài chiếm thread, các tác vụ khác bị trễ hẳn trong DelayedWorkQueue không có thread lấy.',
+    'Trích dẫn artifact: chỉ có scheduling-1 RUNNABLE ở MetricsFlushTask.flush đọc socket; log healthCheck lần kế không chạy; thực tế chạy lại 10:11:32.',
+    'Phân biệt fixedRate vs fixedDelay: fixedRate tính theo mốc gốc nhưng các mốc quá hạn chạy lại sớm nhất có thể (catch up); fixedDelay tính từ lúc kết thúc lần trước, không chồng chéo.',
+    'Đề xuất sửa: tăng spring.task.scheduling.pool.size, hoặc tách tác vụ dài sang @Async/executor riêng, đặt timeout gọi I/O, fixedDelay, ShedLock cho đa instance.'
+  ],
+  tags: ['scheduled', 'scheduledthreadpoolexecutor', 'thread-pool', 'spring-boot', 'task-scheduler', 'starvation', 'shedlock', 'jstack']
+},
+{
+  id: 'lab-thread-027',
+  category: 'thread',
+  title: 'Log ghi đồng bộ chặn toàn bộ request: 187 thread BLOCKED tại Logback OutputStreamAppender',
+  level: 'senior',
+  scenario: `**Bối cảnh:** **PayVN Notify** (Spring Boot 3.4, Java 21, Logback 1.5, Tomcat 200 thread) gửi OTP và thông báo giao dịch qua SMS/email. Log ghi ra file {{/var/log/app/notify.log}} qua {{RollingFileAppender}} được bọc bởi {{AsyncAppender}} (mặc định Logback, không khai báo neverBlock). Mỗi lần gửi SMS thất bại, code ghi log {{warn}} kèm **toàn bộ stack trace** (khoảng 9 KB, 62 dòng); retry 3 lần rồi ghi {{error}}.\n\n**Triệu chứng:** Lúc **11:32 ngày 25/10/2026**, nhà cung cấp SMS bắt đầu trả HTTP 503. Từ 11:33, **cả service** (kể cả email và health check) chậm: p99 từ 80ms lên **28s**, ingress trả 504, readiness probe fail. CPU pod chỉ **9%**, heap bình thường, DB bình thường. Khi nhà cung cấp SMS hồi phục lúc 11:51, service tự khỏi sau ~1 phút.\n\n**Dữ liệu thu thập:** {{jcmd 1 Thread.print}} lúc 11:41:20 (đã đếm sẵn), cấu hình {{logback-spring.xml}}, thông tin mount và số liệu log rate.`,
+  artifacts: [
+    {
+      name: 'thread-print-notify-11-41.txt',
+      lang: 'text',
+      content: `2026-10-25 11:41:20
+Full thread dump OpenJDK 64-Bit Server VM (21.0.4+7-LTS-151 mixed mode, sharing):
+
+"http-nio-8080-exec-41" #179 [5021] daemon prio=5 os_prio=0 cpu=2211.30ms elapsed=95101.92s tid=0x00007fb0a91e4000 nid=5021 waiting on condition  [0x00007fb03affd000]
+   java.lang.Thread.State: WAITING (parking)
+        at jdk.internal.misc.Unsafe.park(java.base@21.0.4/Native Method)
+        - parking to wait for  <0x00000007c08a3b10> (a java.util.concurrent.locks.AbstractQueuedSynchronizer$ConditionObject)
+        at java.util.concurrent.locks.LockSupport.park(java.base@21.0.4/LockSupport.java:371)
+        at java.util.concurrent.locks.AbstractQueuedSynchronizer$ConditionNode.block(java.base@21.0.4/AbstractQueuedSynchronizer.java:519)
+        at java.util.concurrent.ForkJoinPool.unmanagedBlock(java.base@21.0.4/ForkJoinPool.java:3780)
+        at java.util.concurrent.ForkJoinPool.managedBlock(java.base@21.0.4/ForkJoinPool.java:3725)
+        at java.util.concurrent.locks.AbstractQueuedSynchronizer$ConditionObject.await(java.base@21.0.4/AbstractQueuedSynchronizer.java:1712)
+        at java.util.concurrent.ArrayBlockingQueue.put(java.base@21.0.4/ArrayBlockingQueue.java:370)
+        at ch.qos.logback.core.AsyncAppenderBase.putUninterruptibly(AsyncAppenderBase.java:189)
+        at ch.qos.logback.core.AsyncAppenderBase.put(AsyncAppenderBase.java:180)
+        at ch.qos.logback.core.AsyncAppenderBase.append(AsyncAppenderBase.java:162)
+        at ch.qos.logback.core.UnsynchronizedAppenderBase.doAppend(UnsynchronizedAppenderBase.java:84)
+        at ch.qos.logback.core.spi.AppenderAttachableImpl.appendLoopOnAppenders(AppenderAttachableImpl.java:51)
+        at ch.qos.logback.classic.Logger.appendLoopOnAppenders(Logger.java:272)
+        at ch.qos.logback.classic.Logger.callAppenders(Logger.java:259)
+        at ch.qos.logback.classic.Logger.buildLoggingEventAndAppend(Logger.java:426)
+        at ch.qos.logback.classic.Logger.filterAndLog_1(Logger.java:400)
+        at ch.qos.logback.classic.Logger.warn(Logger.java:688)
+        at vn.pay.notify.sms.SmsSender.send(SmsSender.java:77)
+        at vn.pay.notify.NotifyController.otp(NotifyController.java:52)
+
+"http-nio-8080-exec-97" #235 [5133] daemon prio=5 os_prio=0 cpu=1987.04ms elapsed=95101.80s tid=0x00007fb0a9372000 nid=5133 waiting on condition  [0x00007fb0372fc000]
+   java.lang.Thread.State: WAITING (parking)
+        at jdk.internal.misc.Unsafe.park(java.base@21.0.4/Native Method)
+        - parking to wait for  <0x00000007c08a3b10> (a java.util.concurrent.locks.AbstractQueuedSynchronizer$ConditionObject)
+        at java.util.concurrent.locks.LockSupport.park(java.base@21.0.4/LockSupport.java:371)
+        at java.util.concurrent.locks.AbstractQueuedSynchronizer$ConditionNode.block(java.base@21.0.4/AbstractQueuedSynchronizer.java:519)
+        at java.util.concurrent.ForkJoinPool.unmanagedBlock(java.base@21.0.4/ForkJoinPool.java:3780)
+        at java.util.concurrent.ForkJoinPool.managedBlock(java.base@21.0.4/ForkJoinPool.java:3725)
+        at java.util.concurrent.locks.AbstractQueuedSynchronizer$ConditionObject.await(java.base@21.0.4/AbstractQueuedSynchronizer.java:1712)
+        at java.util.concurrent.ArrayBlockingQueue.put(java.base@21.0.4/ArrayBlockingQueue.java:370)
+        at ch.qos.logback.core.AsyncAppenderBase.putUninterruptibly(AsyncAppenderBase.java:189)
+        at ch.qos.logback.core.AsyncAppenderBase.put(AsyncAppenderBase.java:180)
+        at ch.qos.logback.core.AsyncAppenderBase.append(AsyncAppenderBase.java:162)
+        at ch.qos.logback.core.UnsynchronizedAppenderBase.doAppend(UnsynchronizedAppenderBase.java:84)
+        at ch.qos.logback.core.spi.AppenderAttachableImpl.appendLoopOnAppenders(AppenderAttachableImpl.java:51)
+        at ch.qos.logback.classic.Logger.appendLoopOnAppenders(Logger.java:272)
+        at ch.qos.logback.classic.Logger.callAppenders(Logger.java:259)
+        at ch.qos.logback.classic.Logger.buildLoggingEventAndAppend(Logger.java:426)
+        at ch.qos.logback.classic.Logger.filterAndLog_2(Logger.java:414)
+        at ch.qos.logback.classic.Logger.error(Logger.java:540)
+        at vn.pay.notify.email.EmailSender.send(EmailSender.java:61)
+        at vn.pay.notify.NotifyController.txnMail(NotifyController.java:71)
+
+# Ghi chú on-call (đếm trên toàn bộ dump):
+#   grep -c '"http-nio-8080-exec-' td.txt                          -> 200
+#   grep -c 'AsyncAppenderBase.put(' td.txt                         -> 187
+#   grep -c 'parking to wait for  <0x00000007c08a3b10>' td.txt       -> 187
+#   13 thread exec còn lại: idle trong TaskQueue.take (chờ request mới)
+#   Lấy thêm 2 dump lúc 11:41:30 và 11:41:40: worker AsyncAppender luôn ở FileOutputStream.writeBytes`
+    },
+    {
+      name: 'logback-mount-rates.txt',
+      lang: 'text',
+      content: `<!-- logback-spring.xml (trích) -->
+<appender name="FILE" class="ch.qos.logback.core.rolling.RollingFileAppender">
+  <file>/var/log/app/notify.log</file>
+  <rollingPolicy class="ch.qos.logback.core.rolling.SizeAndTimeBasedRollingPolicy">
+    <fileNamePattern>/var/log/app/notify.%d{yyyy-MM-dd}.%i.log</fileNamePattern>
+    <maxFileSize>200MB</maxFileSize>
+  </rollingPolicy>
+  <encoder><pattern>%d %-5level [%thread] %logger{36} : %msg%n</pattern></encoder>
+  <!-- immediateFlush không khai báo => mặc định true -->
+</appender>
+<appender name="ASYNC_FILE" class="ch.qos.logback.classic.AsyncAppender">
+  <queueSize>256</queueSize>
+  <!-- discardingThreshold không khai báo => mặc định queueSize/5 = 51 -->
+  <!-- neverBlock không khai báo => mặc định false -->
+  <appender-ref ref="FILE"/>
+</appender>
+<root level="INFO"><appender-ref ref="ASYNC_FILE"/></root>
+
+$ mount | grep /var/log/app
+fs-0a1b2c3d.efs.ap-southeast-1.amazonaws.com:/ on /var/log/app type nfs4 (rw,relatime,vers=4.1,rsize=1048576,wsize=1048576,hard,proto=tcp,timeo=600,retrans=2)
+
+# Số liệu log (Prometheus logback_events_total, đếm lúc gọi logger, trước khi vào appender)
+# khung giờ        info/s   warn/s   error/s   bytes ghi file/s
+11:20-11:30          310        2        0       ~0.2 MB/s
+11:33-11:50          290     3 900    1 300      ~1.1 MB/s (giới hạn bởi worker)
+# Kích thước trung bình 1 event WARN/ERROR có stack trace: ~9 KB (62 dòng)
+# Đo thời gian ghi của worker (async-profiler wall, 30s): trung bình 2.9 ms / event, ~340 event/s
+
+# p99 theo endpoint 11:40
+/notify/otp      28.1 s     /notify/txn-mail   27.4 s     /actuator/health/readiness   timeout (1s)`
+    }
+  ],
+  questions: [
+    'Vì sao lỗi của nhà cung cấp SMS làm chậm cả endpoint email và health check? Chỉ ra điểm nghẽn trong dump.',
+    'Giải thích cơ chế AsyncAppender với cấu hình mặc định: khi nào event bị bỏ, khi nào thread gọi log bị chặn? Vì sao INFO vẫn trôi mà WARN/ERROR lại chặn?',
+    'Đề xuất cách sửa ngắn hạn và dài hạn, kèm đánh đổi (mất log vs chặn request).'
+  ],
+  hints: [
+    '187 thread HTTP cùng park trên một ConditionObject {{<0x00000007c08a3b10>}} ở {{ArrayBlockingQueue.put}} gọi từ {{AsyncAppenderBase.put}}: chúng đang chờ hàng đợi log có chỗ trống.',
+    'Chỉ có 1 thread {{AsyncAppender-Worker-ASYNC_FILE}} lấy event ra và ghi xuống file trên NFS. So sánh tốc độ ghi (~340 event/s) với tốc độ sinh WARN+ERROR (~5 200 event/s).',
+    'Logback: khi chỗ trống còn dưới {{discardingThreshold}} (mặc định 20% hàng đợi) thì event mức TRACE/DEBUG/INFO bị **bỏ**, còn WARN/ERROR **không bao giờ** bị bỏ; nếu {{neverBlock=false}} thì {{put}} chặn khi đầy.'
+  ],
+  answer: `**Tóm tắt:** "Async" logging vẫn **chặn** được thread nghiệp vụ. Khi SMS provider lỗi, mỗi giây sinh ~5 200 event WARN/ERROR có stack trace, nhưng **một** worker của {{AsyncAppender}} chỉ ghi được ~340 event/s xuống EFS (NFS, flush mỗi event). Hàng đợi 256 phần tử đầy trong chưa tới 0,1 giây; với cấu hình mặc định ({{neverBlock=false}}), mọi thread gọi {{log.warn/error}} bị park trong {{ArrayBlockingQueue.put}} — 187/200 thread Tomcat kẹt, nên cả email và health check cũng chết theo. Sửa: {{neverBlock=true}}, ghi log ra stdout/đĩa local, giảm lượng log lỗi (không in stack trace mỗi lần retry, circuit breaker).
+ 
+### Hiểu từ gốc: AsyncAppender hoạt động thế nào
+
+Ghi file là IO chậm (vài ms, NFS còn chậm hơn), nên Logback cho phép bọc appender thật bằng {{AsyncAppender}}: thread nghiệp vụ chỉ **bỏ event vào một hàng đợi** ({{ArrayBlockingQueue}}, mặc định 256 chỗ) rồi đi tiếp; một **thread worker duy nhất** lấy event ra và ghi file. Giống quầy nhận thư: khách bỏ thư vào hộp rồi về, một nhân viên mang thư đi gửi.
+
+Câu hỏi quan trọng: **hộp thư đầy thì sao?** Logback có 2 núm:
+
+| Thuộc tính | Mặc định | Ý nghĩa |
+|---|---|---|
+| {{queueSize}} | 256 | Sức chứa hàng đợi |
+| {{discardingThreshold}} | queueSize/5 (= 51) | Khi chỗ trống còn **ít hơn** ngưỡng này, event mức TRACE/DEBUG/INFO bị **bỏ**; WARN/ERROR **không bao giờ** bị bỏ |
+| {{neverBlock}} | false | false: {{put()}} chờ tới khi có chỗ (chặn thread gọi log). true: dùng {{offer()}}, đầy thì bỏ event |
+
+Vậy với cấu hình mặc định, khi hàng đợi gần đầy: INFO bị lặng lẽ bỏ (thread không bị chặn), còn **WARN/ERROR phải chờ chỗ trống**. Đó là lý do trong dump cả 187 thread đều đang ở {{Logger.warn}} hoặc {{Logger.error}} — đúng loại event không được phép bỏ.
+
+### Vì sao worker quá chậm
+
+~~~text
+Sinh event:  WARN 3 900/s + ERROR 1 300/s = 5 200 event/s (mỗi event ~9 KB stack trace)
+Tiêu thụ:    1 worker × (1 / 2.9 ms) ≈ 340 event/s
+Chênh lệch:  ~4 860 event/s dư thừa -> hàng đợi 256 đầy trong ~0,05 s
+Sau đó:      tốc độ log của CẢ JVM = tốc độ worker = 340 event/s
+             -> mỗi thread phải đợi tới lượt mới được log rồi mới trả response
+~~~
+
+Worker chậm vì 2 lý do chồng nhau: {{immediateFlush=true}} (mặc định) nên mỗi event là một lần {{write()}} xuống file; và file nằm trên **NFS qua mạng** (EFS), mỗi write phải đi round-trip tới server lưu trữ. Ổ đĩa local hoặc stdout nhanh hơn nhiều bậc.
+
+Vì sao **email và health check** cũng chết? Vì chúng dùng chung 200 thread Tomcat. Khi 187 thread kẹt ở log, chỉ còn 13 thread cho mọi request; email cũng log ERROR (ví dụ {{EmailSender.send}} dòng 61 log lỗi template) nên cũng bị kẹt. Readiness probe timeout → Kubernetes rút pod khỏi Service → tải dồn sang pod khác → các pod khác cũng kẹt theo. Một sự cố của **đối tác bên ngoài** đã lan thành sự cố toàn service qua **tài nguyên dùng chung là hàng đợi log**.
+
+### Dẫn chứng từ artifact
+
+- 187 thread exec park trên **cùng** {{<0x00000007c08a3b10>}} ({{ConditionObject}} "notFull" của hàng đợi) tại {{ArrayBlockingQueue.put}} ← {{AsyncAppenderBase.putUninterruptibly}} ← {{Logger.warn}}/{{Logger.error}}.
+- Duy nhất thread {{AsyncAppender-Worker-ASYNC_FILE}} RUNNABLE ở {{FileOutputStream.writeBytes}} (native), cả 3 dump liên tiếp đều ở đó; cpu tích luỹ rất lớn (912s) vì nó làm việc liên tục.
+- Cấu hình: {{queueSize=256}}, không khai báo {{neverBlock}} → false, không khai báo {{immediateFlush}} → true; mount {{nfs4}} từ EFS.
+- Số liệu: warn+error tăng từ 2/s lên 5 200/s đúng lúc SMS lỗi, trong khi worker chỉ ~340 event/s. INFO giảm nhẹ (310 → 290/s) chỉ vì request ít đi; nhiều INFO thực tế đã bị bỏ trong appender mà không ai biết.
+- CPU 9%: thread đang park, không phải đang tính toán.
+
+### Cách sửa
+
+**Ngắn hạn:**
+- Bật {{<neverBlock>true</neverBlock>}}: khi đầy thì bỏ event thay vì chặn — chấp nhận mất log còn hơn mất service.
+- Giảm log: retry thất bại chỉ log {{warn}} một dòng (không kèm stack trace), log stack trace một lần khi hết retry; thêm **circuit breaker** (Resilience4j) cho SMS provider để ngừng gọi và ngừng log khi đối tác đang chết.
+
+~~~java
+// Trước: 3 lần retry x stack trace 62 dòng
+log.warn("SMS send failed attempt={} to={}", attempt, maskedPhone, e);
+// Sau: một dòng gọn, stack trace chỉ log ở DEBUG
+log.warn("SMS send failed attempt={} status={} msg={}", attempt, status, e.getMessage());
+~~~
+
+**Dài hạn:**
+- Ghi log ra **stdout** (hoặc đĩa local của node) và để agent (Fluent Bit, CloudWatch agent) gửi đi; không ghi log trực tiếp lên NFS.
+- {{immediateFlush=false}} cho appender file nếu chấp nhận mất vài event cuối khi JVM crash.
+- Cân nhắc appender không chặn hẳn (ví dụ Log4j2 async logger với chính sách discard) và **metric số event bị bỏ** để biết khi nào mất log.
+- Đưa "hàng đợi log" vào danh sách tài nguyên dùng chung cần bulkhead, giống connection pool.
+
+| Lựa chọn | Thread nghiệp vụ bị chặn? | Mất log? |
+|---|---|---|
+| Mặc định (neverBlock=false) | Có, khi đầy | INFO mất khi gần đầy |
+| neverBlock=true | Không | Mất cả WARN/ERROR khi đầy |
+| queueSize lớn (ví dụ 8192) | Chỉ trì hoãn | Ít hơn, nhưng tốn RAM, burst dài vẫn đầy |
+| Giảm lượng log + circuit breaker | Hiếm | Ít nhất — sửa tận gốc |
+
+### Lỗi hay gặp
+
+- Tin rằng "AsyncAppender = không bao giờ chặn". Mặc định của Logback là **chặn** cho WARN/ERROR.
+- Chỉ tăng {{queueSize}}: burst kéo dài vài phút thì hàng đợi lớn mấy cũng đầy, chỉ làm chậm thời điểm sự cố và tăng RAM.
+- Log stack trace ở mỗi lần retry hoặc trong vòng lặp; một lỗi đối tác tạo ra hàng chục MB log/giây.
+- Đọc dump thấy WAITING rồi nghĩ "thread rảnh"; phải xem chúng chờ **cái gì** (cùng một ConditionObject = cùng một hàng đợi).
+
+### Trả lời miệng 1 phút
+
+"Dump cho thấy 187 trên 200 thread Tomcat park ở ArrayBlockingQueue.put trong AsyncAppender của Logback, cùng một condition, tất cả đang gọi log.warn hoặc log.error. Chỉ có một worker ghi log xuống EFS với khoảng 340 event mỗi giây, trong khi SMS lỗi sinh 5 nghìn event WARN/ERROR có stack trace mỗi giây. Mặc định Logback bỏ INFO khi hàng đợi gần đầy nhưng không bao giờ bỏ WARN/ERROR, và neverBlock là false nên thread bị chặn. Vì dùng chung thread pool, email và health check cũng chết. Tôi bật neverBlock, giảm log stack trace, thêm circuit breaker cho SMS và chuyển log sang stdout thay vì NFS."
+
+> Senior tip: Trong postmortem, tôi luôn hỏi "đường log có phải là một dependency đồng bộ không?". Log, metric, tracing exporter đều là IO; nếu chúng có thể chặn thread nghiệp vụ thì chúng là điểm lỗi chung. Một con số đáng nhớ: một stack trace Spring điển hình 60–100 dòng, ~8–10 KB; 1 000 lỗi/s là ~10 MB/s chỉ riêng log — đủ làm nghẽn nhiều hệ thống log. Hãy rate-limit log lỗi lặp lại và đo cả "log events dropped".`,
+  rubric: [
+    'Xác định đúng điểm nghẽn: 187 thread HTTP park ở ArrayBlockingQueue.put trong AsyncAppenderBase (cùng ConditionObject 0x00000007c08a3b10), một worker duy nhất đang ghi file NFS.',
+    'Giải thích đúng cơ chế mặc định của Logback AsyncAppender: queueSize 256, discardingThreshold 20% chỉ bỏ TRACE/DEBUG/INFO, WARN/ERROR không bị bỏ, neverBlock=false nên put chặn khi đầy.',
+    'Định lượng: sinh ~5200 event WARN/ERROR/s vs worker ~340 event/s (immediateFlush + NFS), giải thích vì sao email và health check cùng chết (dùng chung 200 thread Tomcat).',
+    'Đề xuất sửa có đánh đổi: neverBlock=true (chấp nhận mất log), giảm log stack trace/rate-limit, circuit breaker cho SMS, log ra stdout/đĩa local thay vì NFS, metric event bị bỏ.'
+  ],
+  tags: ['logback', 'async-appender', 'logging', 'blocking-queue', 'jstack', 'nfs', 'circuit-breaker']
 }
 );
