@@ -4684,14 +4684,13 @@ GROUP BY l.locktype, l.mode, l.granted, a.state ORDER BY n DESC;
  relation  | RowExclusiveLock  | t       |   1 | active (DELETE)
 
 -- Trên bảng orders (FK đã khai báo, KHÔNG CÓ INDEX trên customer_id):
-  locktype |       mode        | granted |  n  | state
------------+-------------------+---------+-----+--------
- relation  | RowExclusiveLock  | t       |   1 | active (DELETE customers)
- relation  | AccessShareLock   | f       | 1200| active (INSERT orders)
- relation  | RowExclusiveLock  | f       | 1200| active (INSERT orders)
+  locktype |               mode               | granted |  n  | state
+-----------+----------------------------------+---------+-----+--------
+ relation  | ShareRowExclusiveLock            | t       |   1 | active (DELETE customers)
+ relation  | RowExclusiveLock                 | f       | 1200| active (INSERT orders)
 
--- DELETE customers đang giữ RowExclusiveLock trên CẢ HAI BẢNG customers VÀ orders.
--- 1.200 INSERT orders xin AccessShareLock + RowExclusiveLock trên orders bị CHỜ (granted = f).
+-- DELETE customers đang giữ ShareRowExclusiveLock trên bảng orders (và RowExclusiveLock trên customers).
+-- 1.200 INSERT orders xin RowExclusiveLock trên orders bị CHỜ (granted = f).
 
 megamart=# SELECT pid, pg_blocking_pids(pid) AS blocked_by
 FROM pg_stat_activity
@@ -4722,11 +4721,11 @@ ORDER BY pid LIMIT 3;
     'Bạn sửa thế nào để không chặn ghi đơn hàng? Trình bày: (1) tạo index CONCURRENTLY trên orders.customer_id, (2) FK đã có sẵn, sau khi index xong planner dùng Index Scan, (3) nếu chưa có FK thì thêm FK NOT VALID + VALIDATE CONSTRAINT. Giải thích vì sao index giúp planner dùng Index Scan thay vì Seq Scan, từ đó không cần lock toàn bảng child.',
   ],
   hints: [
-    'Đọc pg_locks: DELETE customers giữ RowExclusiveLock trên orders (n = 1). 1.200 INSERT orders xin AccessShareLock/RowExclusiveLock trên orders bị granted = f. pg_blocking_pids trỏ về pid DELETE.',
-    'PostgreSQL rule: DELETE/UPDATE trên parent table cần kiểm tra FK (qua trigger RI). Nếu child table có index trên cột FK → Index Scan (nhanh, lock tuple-level). Nếu KHÔNG CÓ index → Seq Scan toàn bảng child, giữ RowExclusiveLock trên relation (toàn bảng) suốt quá trình scan.',
+    'Đọc pg_locks: DELETE customers giữ ShareRowExclusiveLock trên orders (n = 1). 1.200 INSERT orders xin RowExclusiveLock trên orders bị granted = f. pg_blocking_pids trỏ về pid DELETE.',
+    'PostgreSQL rule: DELETE/UPDATE trên parent table cần kiểm tra FK (qua trigger RI). Nếu child table có index trên cột FK → Index Scan (nhanh, lock tuple-level). Nếu KHÔNG CÓ index → Seq Scan toàn bảng child, giữ ShareRowExclusiveLock trên relation (toàn bảng) suốt quá trình scan.',
     'Index CONCURRENTLY không chặn ghi. Nếu chưa có FK: ADD CONSTRAINT NOT VALID không quét dữ liệu cũ. VALIDATE CONSTRAINT dùng ShareUpdateExclusiveLock (không chặn INSERT/UPDATE/DELETE).',
   ],
-  answer: `**Tóm tắt:** Admin chạy {{DELETE FROM customers WHERE id = 998877}}. Bảng {{orders}} có cột {{customer_id}} tham chiếu {{customers.id}} — **FK đã khai báo ở DB** nhưng **thiếu index** trên {{customer_id}}. PostgreSQL khi DELETE parent row **bắt buộc phải kiểm tra** child table không có row tham chiếu (thông qua trigger RI nội bộ). Vì {{orders}} không có index trên {{customer_id}}, planner dùng **Seq Scan toàn bảng 48.752.110 dòng** để kiểm tra — trong lúc scan, nó giữ **RowExclusiveLock trên bảng orders** (relation-level) → 1.200 INSERT/giây bị chờ lock, pool cạn, API tạo đơn trả 504 trong 2 giây. Sửa: tạo index {{CONCURRENTLY}} trên {{orders.customer_id}}.
+  answer: `**Tóm tắt:** Admin chạy {{DELETE FROM customers WHERE id = 998877}}. Bảng {{orders}} có cột {{customer_id}} tham chiếu {{customers.id}} — **FK đã khai báo ở DB** nhưng **thiếu index** trên {{customer_id}}. PostgreSQL khi DELETE parent row **bắt buộc phải kiểm tra** child table không có row tham chiếu (thông qua trigger RI nội bộ). Vì {{orders}} không có index trên {{customer_id}}, planner dùng **Seq Scan toàn bảng 48.752.110 dòng** để kiểm tra — trong lúc scan, nó giữ **ShareRowExclusiveLock trên bảng orders** (relation-level) → 1.200 INSERT/giây bị chờ lock, pool cạn, API tạo đơn trả 504 trong 2 giây. Sửa: tạo index {{CONCURRENTLY}} trên {{orders.customer_id}}.
 
 ### Kiến thức nền: FK và lock trên child table
 Khi bạn chạy {{DELETE}} hoặc {{UPDATE khóa chính}} trên bảng parent ({{customers}}), PostgreSQL **phải đảm bảo tính toàn vẹn tham chiếu**: không được để child table ({{orders}}) chứa row trỏ đến parent row đã xoá/sửa. Việc kiểm tra này diễn ra **tự động thông qua trigger RI (Referential Integrity)** — trigger này được tạo ngầm khi bạn khai báo {{FOREIGN KEY}}.
@@ -4739,14 +4738,14 @@ Khi bạn chạy {{DELETE}} hoặc {{UPDATE khóa chính}} trên bảng parent (
 1. Admin chạy {{DELETE FROM customers WHERE id = 998877}}.
 2. PostgreSQL kích hoạt trigger RI trên {{orders}} để kiểm tra FK {{customer_id}} = 998877.
 3. Bảng {{orders}} **KHÔNG CÓ index** trên {{customer_id}} → planner chọn **Seq Scan**.
-4. Seq Scan đọc 48.752.110 dòng, trong lúc đó giữ **RowExclusiveLock trên bảng orders** (relation-level lock).
+4. Seq Scan đọc 48.752.110 dòng, trong lúc đó giữ **ShareRowExclusiveLock trên bảng orders** (relation-level lock).
 5. 1.200 INSERT/giây vào {{orders}} xin {{AccessShareLock}} (cho INSERT) và {{RowExclusiveLock}} → bị chờ vì xung đột với RowExclusiveLock của DELETE.
 6. Mỗi INSERT chờ ~2 giây (thời gian Seq Scan), timeout Hikari 3 giây → 504, pool cạn.
 7. CPU 92%: 1.200 thread cùng chạy Seq Scan + overhead context switch + lock contention.
 
 ### Dẫn chứng
 - Artifact 1: {{DELETE}} chỉ 1 dòng trên {{customers}} (Index Scan customers_pkey) nhưng **Execution Time: 1843.401 ms** — thời gian chủ yếu do Seq Scan {{orders}} ẩn trong trigger RI. Chạy lại không traffic: 0,8 ms (không chờ lock).
-- Artifact 2: {{pg_locks}}: DELETE (pid 41210) giữ {{RowExclusiveLock granted = t}} trên {{orders}} (n = 1). 1.200 INSERT xin {{AccessShareLock granted = f}} và {{RowExclusiveLock granted = f}} trên {{orders}} (n = 1200). {{pg_blocking_pids}} của các INSERT đều trả về **{41210}**.
+- Artifact 2: {{pg_locks}}: DELETE (pid 41210) giữ {{ShareRowExclusiveLock granted = t}} trên {{orders}} (n = 1). 1.200 INSERT xin {{RowExclusiveLock granted = f}} trên {{orders}} (n = 1200). {{pg_blocking_pids}} của các INSERT đều trả về **{41210}**.
 - Artifact 3: log ứng dụng INSERT orders chờ ~2 giây, timeout 3 giây → 504.
 
 ### Cách sửa
@@ -4786,7 +4785,7 @@ title: DELETE parent chặn INSERT child do thiếu index FK
 actors: Admin | PostgreSQL | orders (child) | API tạo đơn
 Admin -> PostgreSQL: DELETE FROM customers WHERE id = 998877
 PostgreSQL -> PostgreSQL: trigger RI kiểm tra FK trên orders.customer_id
-note PostgreSQL: KHÔNG CÓ index → Seq Scan 48.7M dòng, giữ RowExclusiveLock trên orders
+note PostgreSQL: KHÔNG CÓ index → Seq Scan 48.7M dòng, giữ ShareRowExclusiveLock trên orders
 API tạo đơn -> PostgreSQL: INSERT INTO orders ... (cần RowExclusiveLock)
 PostgreSQL --> API tạo đơn: CHỜ (bị RowExclusiveLock của DELETE chặn)
 Admin -> PostgreSQL: DELETE xong (sau ~2 giây), nhả lock
@@ -4794,12 +4793,12 @@ API tạo đơn -> PostgreSQL: lock được cấp, INSERT chạy tiếp
 ~~~
 
 ### Trả lời mẫu khi phỏng vấn
-"Admin DELETE 1 khách hàng, API tạo đơn hàng bị treo 2 giây rồi timeout. pg_locks thấy DELETE giữ RowExclusiveLock trên bảng orders, 1.200 INSERT chờ lock. Nguyên nhân: orders có FK customer_id tham chiếu customers.id nhưng THIẾU INDEX. PostgreSQL kiểm tra FK khi DELETE parent: không index → Seq Scan toàn bảng 48.7 triệu dòng, giữ RowExclusiveLock trên cả bảng orders → chặn mọi INSERT. Tôi tạo index CONCURRENTLY trên orders.customer_id → planner dùng Index Scan, chỉ khóa vài dòng liên quan, DELETE xong < 10 ms, INSERT không bị chặn."
+"Admin DELETE 1 khách hàng, API tạo đơn hàng bị treo 2 giây rồi timeout. pg_locks thấy DELETE giữ ShareRowExclusiveLock trên bảng orders, 1.200 INSERT chờ lock. Nguyên nhân: orders có FK customer_id tham chiếu customers.id nhưng THIẾU INDEX. PostgreSQL kiểm tra FK khi DELETE parent: không index → Seq Scan toàn bảng 48.7 triệu dòng, giữ ShareRowExclusiveLock trên cả bảng orders → chặn mọi INSERT. Tôi tạo index CONCURRENTLY trên orders.customer_id → planner dùng Index Scan, chỉ khóa vài dòng liên quan, DELETE xong < 10 ms, INSERT không bị chặn."
 
 > Senior tip: **Mọi cột khóa ngoại (FK) ở bảng con BẮT BUỘC có index**. Đây là quy tắc số 1 khi thiết kế schema quan hệ. Không index = Seq Scan khi parent DELETE/UPDATE = chặn toàn bộ ghi trên bảng con = sự cố production. Index CONCURRENTLY tạo không chặn ghi, chi phí nhỏ, hiệu quả to. Và khi thêm FK trên bảng lớn: LUÔN dùng NOT VALID + VALIDATE CONSTRAINT riêng — nó tách "thêm quy tắc cho dữ liệu mới" (nhanh, lock nhẹ) và "kiểm tra dữ liệu cũ" (chậm, lock ShareUpdateExclusiveLock, không chặn ghi).`,
   rubric: [
-    'Chỉ đúng nguyên nhân: DELETE parent buộc kiểm tra child table, thiếu index trên cột FK → Seq Scan toàn bảng 48.7M dòng → giữ RowExclusiveLock relation-level → chặn 1.200 INSERT/giây',
-    'Dẫn chứng đúng: pg_locks RowExclusiveLock granted=t trên orders (DELETE), AccessShareLock/RowExclusiveLock granted=f n=1200 (INSERT), pg_blocking_pids trỏ về pid DELETE, Execution Time 1843 ms',
+    'Chỉ đúng nguyên nhân: DELETE parent buộc kiểm tra child table, thiếu index trên cột FK → Seq Scan toàn bảng 48.7M dòng → giữ ShareRowExclusiveLock relation-level → chặn 1.200 INSERT/giây',
+    'Dẫn chứng đúng: pg_locks ShareRowExclusiveLock granted=t trên orders (DELETE), RowExclusiveLock granted=f n=1200 (INSERT), pg_blocking_pids trỏ về pid DELETE, Execution Time 1843 ms',
     'Giải thích đúng cơ chế: có index → Index Scan + tuple lock (không chặn ghi); không index → Seq Scan + relation lock (chặn ghi)',
     'Đề xuất sửa đúng: CREATE INDEX CONCURRENTLY trên child FK (FK đã có sẵn), hoặc ADD CONSTRAINT NOT VALID + VALIDATE CONSTRAINT nếu chưa có FK',
     'Nêu lỗi hay gặp: tạo index không CONCURRENTLY, FK không NOT VALID, quên VALIDATE, quên ANALYZE',
@@ -5117,11 +5116,11 @@ ORDER BY total_exec_time DESC LIMIT 3;
     'Bạn sửa query và index thế nào để search về dưới 100 ms? Khi nào nên dùng expression index, khi nào dùng partial index, và lưu ý gì về IMMUTABLE + ANALYZE?',
   ],
   hints: [
-    'Đọc dòng "Filter: ((lower(name) = lower(...)) AND (category_id = 10))": vế trái là biểu thức lower(name) CHO PHÉP expression index, NHƯNG planner vẫn chọn Seq Scan. Kiểm tra: index expression phải KHỚP HỆT với biểu thức trong WHERE — lower(name) vs lower(name) có khớp không? Và: có ANALYZE sau khi tạo index không?',
+    'Đọc dòng "Filter: ((lower(name) = lower(...)) AND (category_id = 10))": vế trái lower(name) khớp với index expression, nhưng index đơn lẻ không bao phủ category_id và thiếu ANALYZE sau khi tạo index. Có ANALYZE sau khi tạo index không?',
     'Index chỉ được dùng khi vế trái là cột thuần, vế phải là hằng số/tham số. Ép kiểu cột (supplier_code::bigint) biến điều kiện thành biểu thức → planner không dùng index btree trên supplier_code (lưu varchar thô).',
     'Sửa search: chuẩn hóa tham số ở ứng dụng (lower(q)) rồi WHERE name = :qLower AND category_id = :catId — dùng index (name, category_id). Hoặc composite expression index ((lower(name), category_id)). Sửa supplier_code: truyền String, hoặc cast vế tham số. Expression index cần IMMUTABLE (lower() OK) và ANALYZE.',
   ],
-  answer: `**Tóm tắt:** Câu search viết {{WHERE lower(name) = lower(?) AND category_id = 10}} — **bọc hàm lower() quanh cột name** — làm planner chọn **Seq Scan 12,4 triệu dòng** (8,2 giây) dù đã tạo expression index {{idx_product_name_lower}} trên {{lower(name)}}. Nguyên nhân: (1) biểu thức trong WHERE là {{lower(name) = lower(?)}} (so sánh 2 biểu thức lower), không khớp với index expression {{lower(name)}} đơn độc; (2) thiếu **ANALYZE** sau khi tạo index nên planner không có statistics cho biểu thức. Câu tra cứu {{supplier_code}} dev "vá" lỗi "operator does not exist: character varying = bigint" bằng {{supplier_code::bigint = ?}} — **ép kiểu ở vế cột** — phá index, Seq Scan 4,2 giây. Sửa: search dùng {{WHERE name = :qLower AND category_id = ?}} với tham số đã lower ở app (composite index {{(name, category_id)}}), hoặc expression index {{(lower(name), category_id)}} + ANALYZE; supplier_code truyền String hoặc cast vế tham số.
+  answer: `**Tóm tắt:** Câu search viết {{WHERE lower(name) = lower(?) AND category_id = 10}} — **bọc hàm lower() quanh cột name** — làm planner chọn **Seq Scan 12,4 triệu dòng** (8,2 giây) dù đã tạo expression index {{idx_product_name_lower}} trên {{lower(name)}}. Nguyên nhân: (1) index expression {{lower(name)}} khớp với vế trái, nhưng index đơn lẻ không bao phủ {{category_id = 10}} và thiếu **ANALYZE** sau khi tạo index nên planner không có statistics cho biểu thức; (2) câu supplier_code dev vá bằng cast ở vế cột, phá index. Câu tra cứu {{supplier_code}} dev "vá" lỗi "operator does not exist: character varying = bigint" bằng {{supplier_code::bigint = ?}} — **ép kiểu ở vế cột** — phá index, Seq Scan 4,2 giây. Sửa: search dùng {{WHERE name = :qLower AND category_id = ?}} với tham số đã lower ở app (composite index {{(name, category_id)}}), hoặc expression index {{(lower(name), category_id)}} + ANALYZE; supplier_code truyền String hoặc cast vế tham số.
 
 ### Kiến thức nền: sargable, expression index, và implicit cast
 **Sargable** (Search ARGument Able): index chỉ dùng được khi điều kiện WHERE có dạng **cột_so_sánh_toán_tử_hằng_số** — vế trái là cột thuần, vế phải là hằng số/tham số. Bọc hàm ({{lower()}}, {{date_trunc()}}) hay ép kiểu ({{::bigint}}) quanh cột biến điều kiện thành **biểu thức**, planner không thể dùng index btree trên cột thô.
@@ -5133,9 +5132,7 @@ ORDER BY total_exec_time DESC LIMIT 3;
 ### Nguyên nhân gốc, từng bước
 
 **1. Câu search product (lower(name) + category_id):**
-- Query: {{WHERE lower(name) = lower(?) AND category_id = 10}}. Biểu thức vế trái: {{lower(name) = lower(?)}} — so sánh **hai biểu thức lower**, không phải {{lower(name) = 'constant'}}.
-- Index {{idx_product_name_lower}} lưu giá trị {{lower(name)}} cho mỗi dòng. Planner chỉ dùng index khi vế trái là {{lower(name)}} và vế phải là **hằng số/tham số**. Ở đây vế phải là {{lower(?)}} (cũng là biểu thức, dù tham số đã bind, planner nhìn thấy biểu thức lower bao quanh tham số).
-- Thiếu {{ANALYZE product}} sau khi tạo index → planner không có {{pg_statistic}} cho biểu thức {{lower(name)}}, ước lượng selectivity mặc định 0,5% → chọn Seq Scan.
+- Query: {{WHERE lower(name) = lower(?) AND category_id = 10}}. Vế trái {{lower(name)}} khớp với index expression {{lower(name)}}, nhưng index đơn lẻ không bao phủ {{category_id}} và thiếu {{ANALYZE product}} sau khi tạo index → planner không có {{pg_statistic}} cho biểu thức {{lower(name)}}, ước lượng selectivity mặc định 0,5% → chọn Seq Scan.
 - Artifact 1: {{Seq Scan ... Filter: ((lower(name) = lower('iPhone 15 Pro'::text)) AND (category_id = 10))}}, {{Rows Removed by Filter: 12418549}}, {{Buffers: shared hit=1582040 read=120440}} (~1,7 GB page), {{Execution Time: 8232.104 ms}}.
 - Câu so sánh {{WHERE name = 'iPhone 15 Pro' AND category_id = 10}}: {{Index Scan using idx_product_name}}, {{Buffers: shared hit=12 read=2}}, {{Execution Time: 0.401 ms}} — nhanh **20.500 lần**.
 
@@ -5214,7 +5211,7 @@ PostgreSQL --> product-search: Index Scan, 0.4 ms
 
 > Senior tip: **Expression index là liều thuốc cuối cùng, không phải vitamin hàng ngày**. 90% trường hợp "index không dùng" sửa được bằng cách viết query sargable (cột thô = tham số đã chuẩn hóa) + composite index đúng thứ tự. Chỉ dùng expression index khi thực sự không thể sửa query (legacy, vendor code). Và nhớ: **thiếu ANALYZE = expression index không tồn tại** trong mắt planner. Luôn so EXPLAIN trước/sau, đừng tin index đã tạo là đã xong.`,
   rubric: [
-    'Chỉ đúng nguyên nhân: lower(name) = lower(?) so sánh 2 biểu thức không khớp index lower(name); thiếu ANALYZE sau tạo expression index',
+    'Chỉ đúng nguyên nhân: index expression lower(name) khớp với vế trái, nhưng index đơn lẻ không bao phủ category_id và thiếu ANALYZE sau tạo expression index',
     'Dẫn chứng đúng: Seq Scan + Filter lower(name) = lower(...) + Rows Removed 12.4M + 8232 ms; Index Scan 0.4 ms khi bỏ lower(); expression index tồn tại nhưng không dùng',
     'Giải thích đúng supplier_code: cast ở vế cột phá index btree trên varchar; cast vế tham số hoặc truyền String khôi phục index',
     'Đề xuất sửa đúng: cách 1 (chuẩn hóa tham số + composite btree name+category) — khuyên dùng; cách 2 (composite expression index + ANALYZE); supplier_code cast vế tham số',
@@ -5689,6 +5686,346 @@ Lấy advisory lock trên một khóa đại diện (min(id1, id2)) trước khi
       'Có phòng ngừa: metric deadlocks, transaction ngắn, idempotent retry, quy tắc code review',
     ],
     tags: ['postgresql', 'deadlock', 'row-lock', 'transaction', 'lock-ordering', 'concurrency'],
+  },
+  {
+    id: 'lab-sql-038',
+    category: 'sql',
+    title: 'Báo cáo chậm vì thống kê cũ: planner ước lượng 120 dòng, thực tế 1.800.000, chọn Nested Loop',
+    level: 'senior',
+    scenario: `**Bối cảnh.** Công ty thương mại điện tử **AnKhánh** vận hành service {{report-svc}} (Spring Boot 3.3, JdbcTemplate, PostgreSQL 15.6 trên RDS, 8 vCPU / 64 GB). Bảng {{shipment_line}} là bảng **append-only** (mỗi dòng vận đơn chỉ INSERT một lần, không UPDATE, không DELETE): sau 4 năm đã có **20.004.118 dòng** (~6,1 GB heap + 2,3 GB index). Mỗi khi một đối tác mới kết nối, dữ liệu của họ được nạp dần vào bảng.
+
+**Triệu chứng (14/10/2026, 06:05).** Báo cáo "Đơn đã điều phối theo kho" cho DC mới {{warehouse_id = 9}} (mới go-live 01/09) chạy **72 giây**, trong khi cùng loại báo cáo cho các DC cũ chỉ khoảng **1,5 giây**. {{pg_stat_activity}} cho thấy 1 core RDS chạy 100% suốt 70 giây, CPU toàn instance chỉ ~12%. Đội đã thử tăng {{work_mem}}, tăng connection, tạo read-replica — không giảm.
+
+**Điều đã thử mà không ăn.** DBA nghi "thiếu index" nên tạo thêm index trên {{status}} — vẫn chậm. Một bạn đề xuất "tăng {{work_mem}}", một bạn đề xuất "ép {{enable_nestloop = off}}".
+
+**Việc bạn có.** Ba artifact dưới đây lấy từ production: EXPLAIN ANALYZE lúc 06:05, EXPLAIN sau khi DBA chạy tay ANALYZE lúc 08:30, và snapshot thống kê. Hãy tìm vì sao planner chọn Nested Loop, vì sao chạy ANALYZE lại nhanh, và vì sao thống kê lại cũ tới 3 tháng.`,
+    artifacts: [
+      {
+        name: 'explain-report-0605.txt',
+        lang: 'text',
+        content: `-- psql 15.6, RDS ankhanh-primary, 2026-10-14 06:05:41 +07
+-- auto_explain: log_min_duration=500ms, log_analyze=on, log_buffers=on
+ankhanh=# EXPLAIN (ANALYZE, BUFFERS)
+SELECT l.id, l.sku, l.qty, w.name
+FROM shipment_line l
+JOIN warehouse w ON w.id = l.warehouse_id
+WHERE l.warehouse_id = 9
+  AND l.status = 'ALLOCATED'
+  AND l.created_at >= '2026-09-01';
+                                                         QUERY PLAN
+---------------------------------------------------------------------------------------------------------------------------
+ Nested Loop  (cost=0.72..184512.44 rows=120 width=52) (actual time=0.061..71923.552 rows=1800000 loops=1)
+   Buffers: shared hit=14388201 read=2144
+   ->  Index Scan using idx_shipment_line_wh_status on shipment_line l  (cost=0.57..183902.10 rows=120 width=44) (actual time=0.042..2410.887 rows=1800000 loops=1)
+         Index Cond: ((warehouse_id = 9) AND ((status)::text = 'ALLOCATED'::text) AND (created_at >= '2026-09-01'::timestamp with time zone))
+         Buffers: shared hit=38421 read=1987
+   ->  Seq Scan on warehouse w  (cost=0.00..4.62 rows=462 width=16) (actual time=0.001..0.038 rows=1 loops=1800000)
+         Filter: (w.id = l.warehouse_id)
+         Rows Removed by Filter: 461
+         Buffers: shared hit=14349780
+ Planning Time: 0.612 ms
+ Execution Time: 71925.104 ms
+-- Ghi chú: rows=120 là ước lượng của planner; actual rows=1800000.
+-- Seq Scan trên warehouse (bảng chiều 462 dòng) bị lặp 1.800.000 lần.`,
+      },
+      {
+        name: 'explain-after-analyze-0830.txt',
+        lang: 'text',
+        content: `-- 2026-10-14 08:30:12 +07, sau khi DBA chạy tay: ANALYZE shipment_line;
+ankhanh=# EXPLAIN (ANALYZE, BUFFERS)
+SELECT l.id, l.sku, l.qty, w.name
+FROM shipment_line l
+JOIN warehouse w ON w.id = l.warehouse_id
+WHERE l.warehouse_id = 9
+  AND l.status = 'ALLOCATED'
+  AND l.created_at >= '2026-09-01';
+                                                         QUERY PLAN
+---------------------------------------------------------------------------------------------------------------------------
+ Hash Join  (cost=68.21..421883.10 rows=1798422 width=52) (actual time=1.104..1983.442 rows=1800000 loops=1)
+   Hash Cond: (l.warehouse_id = w.id)
+   Buffers: shared hit=38421 read=1987
+   ->  Index Scan using idx_shipment_line_wh_status on shipment_line l  (cost=0.57..401887.32 rows=1798422 width=44) (actual time=0.041..1840.229 rows=1800000 loops=1)
+         Index Cond: ((warehouse_id = 9) AND ((status)::text = 'ALLOCATED'::text) AND (created_at >= '2026-09-01'::timestamp with time zone))
+         Buffers: shared hit=38421 read=1987
+   ->  Hash  (cost=4.62..4.62 rows=462 width=16) (actual time=0.221..0.221 rows=462 loops=1)
+         Buckets: 1024  Batches: 1  Memory Usage: 29kB
+         ->  Seq Scan on warehouse w  (cost=0.00..4.62 rows=462 width=16) (actual time=0.006..0.204 rows=462 loops=1)
+               Buffers: shared hit=8
+ Planning Time: 0.588 ms
+ Execution Time: 1985.610 ms
+-- rows ước lượng 1.798.422, thực tế 1.800.000 (lệch < 1%).`,
+      },
+      {
+        name: 'stats-snapshot.txt',
+        lang: 'text',
+        content: `-- snapshot 2026-10-14 08:31 +07
+ankhanh=# SELECT relname, n_live_tup, n_mod_since_analyze, last_analyze, last_autoanalyze
+           FROM pg_stat_user_tables WHERE relname = 'shipment_line';
+    relname    | n_live_tup | n_mod_since_analyze | last_analyze |       last_autoanalyze
+---------------+------------+---------------------+--------------+-------------------------------
+ shipment_line |   20004118 |             1890442 |              | 2026-07-16 03:12:44.812+07
+
+-- Ngưỡng autoanalyze mặc định (thống kê toàn cục):
+ankhanh=# SHOW autovacuum_analyze_scale_factor;   -- 0.1
+ankhanh=# SHOW autovacuum_analyze_threshold;      -- 50
+-- Ngưỡng = 50 + 0.1 x 20.004.118 = 2.000.462 thay đổi
+-- Hiện tại 1.890.442 < 2.000.462  =>  autoanalyze CHUA kip kich hoat
+
+-- 43 ngày DC 9 go-live (01/09 -> 14/10) đã nạp ~1.800.000 dòng,
+-- nhưng tổng thay đổi 3 tháng mới 1.890.442 => chưa chạm ngưỡng 10%.
+
+ankhanh=# SELECT attname, n_distinct FROM pg_stats
+           WHERE tablename='shipment_line' AND attname IN ('warehouse_id','status');
+   attname    | n_distinct
+--------------+------------
+ warehouse_id |         12
+ status       |          4
+
+ankhanh=# SELECT most_common_vals FROM pg_stats
+           WHERE tablename='shipment_line' AND attname='warehouse_id';
+ most_common_vals
+-------------------
+ {1,2,3,4,5,6,7,8,10,11,12}   -- KHONG co 9 (kho moi, thong ke chup 16/07)
+
+ankhanh=# ALTER TABLE shipment_line SET (autovacuum_analyze_scale_factor = 0.005);
+ALTER TABLE`,
+      },
+    ],
+    questions: [
+      'Vì sao cùng bảng, cùng index, cùng câu query mà lúc 06:05 planner chọn Nested Loop còn sau ANALYZE lại chọn Hash Join? Chỉ ra con số ước lượng sai trong plan.',
+      'Con số 120 dòng đến từ đâu, và vì sao thống kê lại cũ tới 3 tháng dù autovacuum vẫn bật? Giải thích vai trò của autovacuum_analyze_scale_factor.',
+      'Bạn sửa thế nào cho báo cáo của DC mới (và mọi DC sau này) luôn nhanh? Đánh giá hai đề xuất tăng work_mem và ép enable_nestloop = off.',
+    ],
+    hints: [
+      'So sánh rows=120 (ước lượng) với actual rows=1800000 ở node Index Scan, rồi nhìn loops=1800000 ở Seq Scan on warehouse.',
+      'Trong snapshot: last_autoanalyze = 16/07, n_mod_since_analyze = 1.890.442, ngưỡng 50 + 0,1 x 20.004.118 = 2.000.462. Con số nào quyết định autoanalyze chưa chạy?',
+      'Nguyên nhân gốc: bảng append-only 20 triệu dòng, DC mới go-live chỉ chiếm 1,8 triệu thay đổi, chưa chạm ngưỡng 10% nên thống kê đứng yên 3 tháng. Lower scale_factor theo bảng + ANALYZE tường minh + partition theo thời gian là hướng sửa.',
+    ],
+    answer: `**Tóm tắt:** Planner chọn **Nested Loop** vì thống kê của bảng {{shipment_line}} đã cũ 3 tháng: trong đó {{warehouse_id = 9}} chưa tồn tại, nên nó ước lượng chỉ **120 dòng** và cho rằng "quét bảng chiều {{warehouse}} 462 dòng một lần cho 120 dòng là rẻ". Thực tế có **1.800.000 dòng** của DC 9, nên Seq Scan trên {{warehouse}} bị lặp 1,8 triệu lần. Nguyên nhân gốc là {{autovacuum_analyze_scale_factor = 0.1}}: ngưỡng autoanalyze là 50 + 0,1 × 20.004.118 ≈ **2.000.462** thay đổi, trong khi 3 tháng qua chỉ có 1.890.442 thay đổi — chưa chạm ngưỡng nên autoanalyze chưa chạy dù vẫn bật. Sửa: {{ANALYZE}} tường minh + hạ {{autovacuum_analyze_scale_factor}} cho bảng + partition theo thời gian + extended statistics.
+
+### Kiến thức nền: planner "đoán" số dòng như thế nào
+PostgreSQL không đếm dữ liệu trước khi chạy. Nó là **cost-based optimizer**: với mỗi plan (Nested Loop, Hash Join, Merge Join), nó ước lượng **số dòng** của từng bước rồi chọn plan có chi phí thấp nhất. Số dòng dự kiến lấy từ bảng thống kê {{pg_statistic}} (xem qua {{pg_stats}}), do {{ANALYZE}} (hoặc autoanalyze) tạo ra bằng cách **lấy mẫu** 300 × {{default_statistics_target}} = 30.000 dòng.
+
+Ví dụ đời thường: bạn nhớ "tuần trước nhà 4 người ăn" nên mua 1 kg thịt. Hôm nay có 30 khách mà bạn không cập nhật, bạn vẫn mua 1 kg — plan đúng với dữ liệu cũ, thảm hoạ với dữ liệu mới.
+
+Các thống kê chính:
+| Thống kê | Ý nghĩa |
+|---|---|
+| {{reltuples}} | tổng số dòng ước lượng |
+| {{most_common_vals/freqs}} (MCV) | giá trị phổ biến và tần suất (dùng cho {{=}}) |
+| {{histogram_bounds}} | phân bố các giá trị còn lại (dùng cho {{<}}, {{>}}) |
+| {{n_distinct}} | số giá trị khác nhau |
+
+### Nguyên nhân gốc, từng bước
+1. **16/07** autoanalyze chạy lần cuối. Lúc đó DC 9 chưa go-live nên {{warehouse_id = 9}} không có trong MCV, gần như 0 dòng.
+2. **01/09** DC 9 go-live, dữ liệu nạp dần. Đến **14/10** đã có **1.800.000** dòng của warehouse 9, nhưng tổng thay đổi 3 tháng chỉ **1.890.442**.
+3. Ngưỡng autoanalyze = {{autovacuum_analyze_threshold + autovacuum_analyze_scale_factor × reltuples}} = 50 + 0,1 × 20.004.118 = **2.000.462**. Vì 1.890.442 < 2.000.462, **autoanalyze chưa kích hoạt** dù autovacuum vẫn bật.
+4. Thống kê vẫn là của 16/07: planner "thấy" warehouse 9 gần như không có, kết hợp selectivity nhỏ của {{status = 'ALLOCATED'}} và {{created_at >= '2026-09-01'}} (ngoài histogram cũ) → ước lượng **120 dòng**.
+5. Với "120 dòng" ở vòng ngoài, Nested Loop là rẻ nhất: quét {{warehouse}} (462 dòng, 8 page) một lần rồi so sánh. Ước lượng cả câu chỉ **184.512**.
+6. Thực tế vòng ngoài trả **1.800.000** dòng → Seq Scan {{warehouse}} chạy **1.800.000 lần**. 1,8 triệu × 8 page ≈ 14,4 triệu buffer → 72 giây, một core RDS 100%.
+
+~~~text
+Nested Loop (thống kê cũ)                 Hash Join (sau ANALYZE)
+for l in shipment_line(1.800.000):         h = hash(warehouse)  -- 462 dòng, 1 lần
+   for w in warehouse(462):                  for l in shipment_line(1.800.000):
+      if match: emit                            w = h.get(l.warehouse_id)
+=> 1,8 triệu lần Seq Scan, 72 s            => 1,8 triệu lần tra hash, 2,0 s
+~~~
+
+### Dẫn chứng
+- Artifact 1: **"Nested Loop (cost=0.72..184512.44 rows=120 ...) (actual ... rows=1800000 ...)"** — ước lượng 120, thực tế 1,8 triệu; **"Seq Scan on warehouse w ... loops=1800000"** và **"Rows Removed by Filter: 461"** lặp 1,8 triệu lần; **"Buffers: shared hit=14349780"**; **"Execution Time: 71925.104 ms"**.
+- Artifact 2: sau ANALYZE, **"Hash Join ... rows=1798422 ... (actual ... rows=1800000)"**, Seq Scan warehouse **loops=1**, **"Execution Time: 1985.610 ms"** — nhanh ~36 lần.
+- Artifact 3: {{last_autoanalyze = 2026-07-16}}, {{n_mod_since_analyze = 1890442}}, ngưỡng **2.000.462**; MCV của {{warehouse_id}} là **{1,2,3,4,5,6,7,8,10,11,12}** — **không có 9**.
+
+### Cách sửa ngắn hạn (tức thì)
+- {{ANALYZE shipment_line;}} — chỉ lấy mẫu 30.000 dòng, mất vài giây, đưa thống kê về hiện tại. Sau đó câu chuyển sang Hash Join (artifact 2).
+- Đặt {{statement_timeout}} cho role báo cáo (ví dụ 120 giây) để một plan xấu không chiếm DB 72 giây; job retry sau khi ANALYZE.
+
+### Cách sửa dài hạn
+1. **Hạ ngưỡng autoanalyze cho bảng này:** {{ALTER TABLE shipment_line SET (autovacuum_analyze_scale_factor = 0.005);}} → ngưỡng còn 50 + 0,005 × 20.004.118 ≈ 100.000 thay đổi, autoanalyze chạy thường xuyên hơn nhiều. Với bảng append-only lớn, đây là chỉnh quan trọng nhất.
+2. **Partition theo thời gian** (theo tháng, RANGE trên {{created_at}}): mỗi partition nhỏ (vài trăm nghìn đến 1–2 triệu dòng) nên ngưỡng autoanalyze theo **từng partition** nhỏ hơn nhiều; nạp xong một partition mới thì ANALYZE riêng partition đó. Đây cũng là cách tốt nhất cho bảng append-only.
+3. **ANALYZE tường minh** sau mỗi mẻ nạp lớn (tương tự lab bulk load).
+4. **Extended statistics** khi các cột tương quan: {{CREATE STATISTICS shipment_line_wh_status (dependencies) ON warehouse_id, status FROM shipment_line;}} rồi ANALYZE — vì warehouse 9 gần như toàn ALLOCATED, hai cột này **không độc lập**.
+5. **Index phù hợp** đã có {{idx_shipment_line_wh_status}} — vấn đề không phải thiếu index mà là **ước lượng sai** khiến planner không dùng Hash Join.
+
+**Về hai đề xuất:**
+- **Tăng work_mem:** vô ích — Hash Join chỉ cần vài chục kB (bảng chiều 462 dòng), không spill. Vấn đề là ước lượng, không phải bộ nhớ.
+- **Ép {{enable_nestloop = off}}:** chữa triệu chứng, ảnh hưởng toàn instance, và vẫn không sửa gốc. Khi warehouse 9 nhỏ hơn hoặc query đổi, plan có thể lại sai.
+
+### Phòng ngừa và monitoring
+- Cảnh báo khi {{n_mod_since_analyze}} tiến gần ngưỡng: {{n_mod_since_analyze > 0.8 × (threshold + scale_factor × reltuples)}}.
+- Cảnh báo {{last_autoanalyze}} cũ hơn N ngày trên bảng lớn; theo dõi {{pg_stat_user_tables}}.
+- Bật {{auto_explain}} ({{log_analyze}}, {{log_buffers}}) và soi tỉ lệ **rows thực tế / rows ước lượng** > 10 lần ở mọi node — dấu hiệu plan xấu.
+- Test hiệu năng với dữ liệu tỉ lệ production (DC mới, warehouse lệch).
+
+### Trả lời mẫu khi phỏng vấn
+"Plan lúc 06:05 là Nested Loop với ước lượng 120 dòng nhưng thực tế 1,8 triệu, nên Seq Scan bảng warehouse bị lặp 1,8 triệu lần, 72 giây. Ước lượng sai vì thống kê cũ 3 tháng: warehouse 9 chưa có trong MCV. Autoanalyze chưa chạy vì bảng 20 triệu dòng với scale_factor mặc định 0,1 cần 2 triệu thay đổi, mà 3 tháng mới có 1,89 triệu. Tôi chạy ANALYZE để chữa cháy, hạ scale_factor xuống 0,005 cho bảng append-only, partition theo tháng để autoanalyze theo từng partition nhỏ, thêm ANALYZE sau mỗi mẻ nạp và extended statistics cho cặp warehouse_id/status vì chúng tương quan. Tăng work_mem hay tắt nestloop không giải quyết gốc."
+
+> Senior tip: "Báo cáo của khách mới chậm, khách cũ nhanh" gần như luôn là **thống kê chưa kịp phản ánh dữ liệu mới**. Với bảng append-only lớn, scale_factor mặc định 0,1 khiến autoanalyze chạy thưa; hãy hạ theo bảng hoặc partition theo thời gian. Và khi đọc EXPLAIN ANALYZE, việc đầu tiên là tìm node có **rows ước lượng lệch thực tế nhiều bậc** — gần như mọi plan tệ bắt nguồn từ đó, không phải từ "thiếu index".`,
+    rubric: [
+      'Chỉ đúng ước lượng sai: rows=120 so với actual rows=1800000 ở Index Scan khiến planner chọn Nested Loop, Seq Scan warehouse chạy 1.800.000 lần',
+      'Giải thích đúng vì sao thống kê cũ 3 tháng: DC 9 chưa có trong MCV, last_autoanalyze 16/07, n_mod_since_analyze 1.890.442 < ngưỡng 50 + 0,1 x 20.004.118 = 2.000.462 nên autoanalyze chưa kích hoạt dù vẫn bật',
+      'Giải thích vì sao sau ANALYZE lại nhanh (statistics mới -> Hash Join, Seq Scan loops=1, ~2 giây) và vì sao estimates vẫn có thể lệch (cột tương quan -> extended statistics)',
+      'Đề xuất sửa đúng: ANALYZE tường minh, hạ autovacuum_analyze_scale_factor cho bảng, partition theo thời gian + ANALYZE partition mới, extended statistics, statement_timeout cho role báo cáo',
+      'Phản biện đúng work_mem (Hash không spill) và enable_nestloop (chữa triệu chứng); nêu monitoring n_mod_since_analyze/last_autoanalyze và auto_explain tỉ lệ estimate vs actual',
+    ],
+    tags: ['postgresql', 'explain', 'statistics', 'analyze', 'autovacuum', 'nested-loop', 'scale-factor'],
+  },
+  {
+    id: 'lab-sql-039',
+    category: 'sql',
+    title: 'Bảng phình to, query chậm dần vì một transaction export mở 6 giờ giữ xmin horizon',
+    level: 'senior',
+    scenario: `**Bối cảnh.** Sàn thương mại điện tử **VinaShop** chạy {{order-service}} (Spring Boot 3.3, Hibernate 6.4, PostgreSQL 15.6 trên RDS, 8 vCPU / 32 GB RAM). Bảng {{orders}} là bảng OLTP nóng: mỗi đơn được UPDATE nhiều lần (PENDING -> PAID -> SHIPPED...), khoảng 1.100 giao dịch/giây. Sau 2 năm bảng có **9.214.330 dòng** (~3,1 GB heap khi khoẻ, 2,0 GB index).
+
+**Triệu chứng (14/05/2026).** Trong 2 tuần, p95 của các câu {{SELECT ... FROM orders WHERE id = $1}} tăng từ **6 ms** lên **128 ms**, CPU RDS leo từ 22% lên 61%, dung lượng đĩa tăng ~180 MB/ngày dù traffic không đổi. DBA nghi "thiếu index" và tạo thêm index — p95 vẫn không giảm. Điểm lạ: plan không đổi, cùng index, nhưng số page đọc tăng gấp đôi.
+
+**Điều đã thử.** Tạo thêm index, tăng {{work_mem}}, restart read-replica — không ăn. Một bạn đề xuất {{VACUUM FULL}} ngay trong giờ cao điểm.
+
+**Việc bạn có.** Ba artifact: snapshot {{pg_stat_activity}} lúc 14:10, thống kê {{pg_stat_user_tables}} của {{orders}}, và log của service export. Hãy chỉ ra vì sao autovacuum không dọn được dead tuple, vì sao bảng phình làm query chậm, và đề xuất cách sửa.`,
+    artifacts: [
+      {
+        name: 'pg-stat-activity.txt',
+        lang: 'text',
+        content: `-- 2026-05-14 14:10:00 +07, RDS vinashop-primary (PostgreSQL 15.6)
+shop=# SELECT pid, application_name, state, now() - xact_start AS xact_age,
+       wait_event_type, wait_event, age(backend_xmin) AS xmin_age, left(query, 50) AS query
+FROM pg_stat_activity
+WHERE backend_xmin IS NOT NULL
+ORDER BY xact_start
+LIMIT 5;
+  pid  | application_name |        state        |    xact_age     | wait_event_type |  wait_event  |  xmin_age  |                       query
+-------+------------------+---------------------+-----------------+-----------------+--------------+------------+---------------------------------------------------
+ 23119 | report-export    | idle in transaction | 05:59:48        | Client          | ClientRead   |   43260112 | DECLARE csr NO SCROLL CURSOR FOR SELECT ... FR
+ 23087 | order-service    | active              | 00:00:00.412    |                 |              |   43260044 | UPDATE orders SET status = $1 WHERE id = $2
+ 23091 | order-service    | active              | 00:00:00.377    |                 |              |   43259980 | SELECT id, status FROM orders WHERE id = $1
+-- Ghi chu: 23119 la phien export, idle in transaction gan 6 gio, giu backend_xmin cu.
+-- age(backend_xmin) = 43.260.112 giao dich: khoang 6 gio x ~2.000 giao dich/giay.
+
+shop=# SELECT state, wait_event_type, count(*) FROM pg_stat_activity
+WHERE datname = 'shop' AND backend_type = 'client backend' GROUP BY 1, 2 ORDER BY 3 DESC;
+        state        | wait_event_type | count
+---------------------+-----------------+-------
+ active              |                 |    41
+ idle in transaction | Client          |     1
+ idle                | Client          |    12
+(3 rows)`,
+      },
+      {
+        name: 'pg-stat-user-tables.txt',
+        lang: 'text',
+        content: `-- 2026-05-14 14:10:30 +07
+shop=# SELECT relname, n_live_tup, n_dead_tup, last_vacuum, last_autovacuum, autovacuum_count
+FROM pg_stat_user_tables WHERE relname = 'orders';
+  relname | n_live_tup | n_dead_tup | last_vacuum |       last_autovacuum        | autovacuum_count
+----------+------------+------------+-------------+------------------------------+------------------
+  orders  |    9214330 |    4127004 |             | 2026-05-14 14:04:33.104+07 |              312
+
+-- n_dead_tup / n_live_tup = 4.127.004 / 9.214.330 = 44.8%
+-- last_autovacuum = 14:04 (6 phut truoc) => autovacuum VAN chay deu,
+-- nhung khong xoa duoc dead tuple moi hon snapshot cua phien 23119.
+
+shop=# SELECT pg_size_pretty(pg_relation_size('orders')) AS heap,
+       pg_size_pretty(pg_total_relation_size('orders')) AS total;
+  heap  | total
+--------+-------
+ 5.4 GB | 7.6 GB
+-- 2 tuan truoc (05/01): heap 3.1 GB, total 5.3 GB
+
+shop=# SELECT relname, age(relfrozenxid) AS xid_age
+FROM pg_class WHERE relname = 'orders';
+  relname | xid_age
+----------+---------
+  orders  |  118420334
+-- age(relfrozenxid) ~118 trieu, duoi autovacuum_freeze_max_age (200 trieu)
+-- => day KHONG phai wraparound, van de la xmin horizon bi giu.
+
+-- Prometheus: p95 uri="/api/orders/{id}"
+-- 2026-05-01: 6 ms
+-- 2026-05-14: 128 ms`,
+      },
+      {
+        name: 'export-service.log',
+        lang: 'text',
+        content: `2026-05-14 08:10:12.114 INFO  [export-thread-1] c.v.r.ExportJob     : START export warehouseId=9 format=csv target=s3://vina-export/2026-05-14/wh9.csv
+2026-05-14 08:10:12.402 DEBUG [export-thread-1] org.mybatis.logging.jdbc.ConnectionLogger : ==>  Preparing: SET TRANSACTION ISOLATION LEVEL REPEATABLE READ
+2026-05-14 08:10:12.455 DEBUG [export-thread-1] org.mybatis.logging.jdbc.ConnectionLogger : ==>  Preparing: DECLARE csr NO SCROLL CURSOR FOR SELECT id, status, amount, created_at FROM orders WHERE warehouse_id = ? ORDER BY id
+2026-05-14 08:10:12.470 DEBUG [export-thread-1] org.mybatis.logging.jdbc.ConnectionLogger : ==> Parameters: 9
+2026-05-14 08:10:13.001 INFO  [export-thread-1] c.v.r.ExportJob     : fetched 1000 rows, streaming to s3 (slow consumer)
+2026-05-14 13:58:40.552 WARN  [export-thread-1] c.v.r.ExportJob     : still exporting after 5h48m, fetched 812000 rows, downstream consumer slow
+2026-05-14 14:10:05.118 WARN  [export-thread-1] c.v.r.ExportJob     : export stalled ~6h, transaction STILL OPEN (REPEATABLE READ + cursor)
+-- Ghi chu: phien export mo transaction REPEATABLE READ roi khai bao cursor,
+-- sau do bi ket khi ghi ra S3 cham. Trong luc cho ghi S3, phien o trang thai
+-- "idle in transaction" nhung van giu snapshot (backend_xmin) cua luc 08:10.`,
+      },
+    ],
+    questions: [
+      'Vì sao autovacuum chạy đều (last_autovacuum = 14:04) mà n_dead_tup vẫn 4,1 triệu và bảng vẫn phình? Dẫn chứng từ artifact.',
+      'Vì sao một transaction export mở 6 giờ lại làm chậm các câu SELECT theo id dù plan không đổi? Giải thích cơ chế xmin horizon / snapshot.',
+      'Bạn xử lý thế nào trong ngày, và sửa code ra sao để không tái diễn? Vì sao đây không phải lỗi autovacuum bị lock?',
+    ],
+    hints: [
+      'Tìm phiên có state = "idle in transaction" trong pg_stat_activity: pid 23119, xact_age ~6 giờ, wait_event = ClientRead (server chờ ứng dụng, không chờ lock).',
+      'age(backend_xmin) = 43.260.112 cho thấy snapshot của phiên này đang giữ chân trời xmin ở 6 giờ trước; mọi dead tuple mới hơn đều "cần" cho snapshot đó nên vacuum không xoá được.',
+      'Phân biệt: autovacuum KHÔNG bị lock (last_autovacuum vẫn 14:04), mà bị chặn bởi xmin horizon. Sửa: idle_in_transaction_session_timeout, và dùng COPY TO STDOUT thay vì giữ transaction + cursor qua I/O mạng.',
+    ],
+    answer: `**Tóm tắt:** Một phiên {{report-export}} mở transaction **REPEATABLE READ** rồi khai báo cursor để export, nhưng bị kẹt gần **6 giờ** khi ghi kết quả ra S3 chậm → trạng thái **idle in transaction**. Transaction này giữ {{backend_xmin}} (snapshot tại 08:10), nên autovacuum chạy đều nhưng **không thể xoá dead tuple mới hơn snapshot** → {{n_dead_tup}} leo lên **4.127.004** (44,8%), bảng phình từ 3,1 GB lên 5,4 GB → cùng plan nhưng đọc nhiều page hơn → p95 tăng từ 6 ms lên 128 ms. Đây **không phải** autovacuum bị lock (nó vẫn chạy) mà là **xmin horizon** bị giữ bởi một snapshot cũ.
+
+### Kiến thức nền: xmin horizon và dead tuple
+PostgreSQL dùng **MVCC** (đa phiên bản): mỗi câu UPDATE tạo ra một **phiên bản mới** của dòng và biến bản cũ thành **dead tuple**. Dead tuple không xoá ngay vì các transaction đang chạy có thể vẫn cần đọc bản cũ (để đọc được ảnh chụp nhất quán tại thời điểm transaction của họ bắt đầu).
+
+Mỗi transaction có một **snapshot** = một {{xmin}} (xid nhỏ nhất mà nó còn có thể nhìn thấy thay đổi). **xmin horizon** = xmin nhỏ nhất trong toàn bộ các transaction đang chạy. Autovacuum chỉ được xoá dead tuple **cũ hơn** mọi snapshot đang tồn tại — tức cũ hơn xmin horizon. Nếu một transaction giữ xmin rất cũ, dead tuple mới hơn không xoá được.
+
+Ví dụ đời thường: cả nhà cùng xem một album ảnh chụp 6 tháng trước. Bạn muốn bỏ ảnh cũ, nhưng vì còn người đang xem cuốn album đó, bạn phải giữ lại. Khi người cuối cùng gấp album, bạn mới dọn được. Phiên export 6 giờ chính là "người đang giữ cuốn album".
+
+### Nguyên nhân gốc, từng bước
+1. **08:10:12** phiên {{report-export}} (pid 23119) chạy {{SET TRANSACTION ISOLATION LEVEL REPEATABLE READ}} rồi {{DECLARE ... CURSOR}}. Từ giây phút này, nó giữ một snapshot ({{backend_xmin = 774120000}}).
+2. Sau câu khai báo cursor, ứng dụng bắt đầu ghi kết quả ra S3. S3 chậm / nghẽn → thread ứng dụng **chờ I/O mạng**, không gửi lệnh mới cho DB.
+3. Phiên DB trở thành **idle in transaction**: không chạy câu nào ({{wait_event_type = Client}}, {{wait_event = ClientRead}}) nhưng **transaction vẫn mở**, vẫn giữ snapshot. Đây là trạng thái nguy hiểm nhất vì nó **không tốn CPU**.
+4. Trong 6 giờ, {{order-service}} vẫn UPDATE {{orders}} bình thường (1.100 giao dịch/giây) → sinh ra **hàng triệu dead tuple**.
+5. Autovacuum chạy đều ({{last_autovacuum = 14:04}}, 312 lần), nhưng mọi dead tuple sinh sau 08:10 đều **mới hơn {{backend_xmin}}** của phiên 23119 → không xoá được. {{n_dead_tup}} leo lên 4,1 triệu.
+6. Dead tuple chiếm chỗ trong heap → bảng phình từ 3,1 GB lên 5,4 GB. Cùng plan {{Index Scan}} nhưng phải đọc nhiều page hơn (index trỏ tới các dòng đã chết, phải theo con trỏ tới heap, thấy dead, bỏ qua) → p95 tăng gấp ~20 lần.
+
+### Dẫn chứng
+- Artifact 1: pid **23119**, {{application_name = report-export}}, {{state = idle in transaction}}, {{xact_age = 05:59:48}}, {{wait_event_type = Client}}, {{wait_event = ClientRead}}, {{age(backend_xmin) = 43.260.112}}. Phiên này không chờ lock — nó **im lặng giữ snapshot**.
+- Artifact 2: {{n_dead_tup = 4.127.004}}, {{n_live_tup = 9.214.330}} (44,8%); {{last_autovacuum = 2026-05-14 14:04:33}} — autovacuum vẫn chạy, **không** phải "skipped because of lock conflict". {{pg_relation_size = 5.4 GB}} so với 3,1 GB hai tuần trước.
+- Artifact 2: {{age(relfrozenxid) = 118.420.334}} < {{autovacuum_freeze_max_age}} (200 triệu) → **không phải wraparound**, loại trừ nhầm hướng "sắp wraparound".
+- Artifact 3: {{SET TRANSACTION ISOLATION LEVEL REPEATABLE READ}}, {{DECLARE csr ... CURSOR}}, rồi {{export stalled ~6h, transaction STILL OPEN}} — chuỗi nhân quả trực tiếp.
+
+### Cách sửa ngắn hạn (trong ngày)
+- {{SELECT pg_terminate_backend(23119);}} — kết thúc phiên export treo; transaction bị rollback, snapshot được nhả. ({{pg_cancel_backend}} chỉ huỷ câu đang chạy, vô dụng với phiên đang idle.) Sau đó {{VACUUM (ANALYZE) orders;}} để dọn dead tuple; câu SELECT theo id nhanh lại.
+- Nếu buộc phải thu hồi dung lượng về OS: {{VACUUM FULL orders}} — nhưng nó cần **AccessExclusiveLock** và downtime, chỉ chạy ngoài giờ cao điểm. Plain {{VACUUM}} trả chỗ cho chính bảng tái dùng, thường đủ.
+- {{ALTER ROLE report_export SET idle_in_transaction_session_timeout = '5min';}} hoặc đổi parameter group ({{idle_in_transaction_session_timeout = 300000}}) để lần sau tự dọn phiên treo. Lưu ý: chỉ áp dụng cho connection **mới**, cần recycle pool.
+
+### Cách sửa dài hạn (tầng code)
+1. **Không giữ transaction qua I/O mạng.** Với export nhất quán, dùng {{COPY (SELECT ...) TO STDOUT}}: nó chạy trong **một câu duy nhất** với snapshot **tạm thời**, không bao giờ ở trạng thái idle in transaction. Đây là cách đúng nhất.
+2. Nếu buộc dùng cursor: đặt {{idle_in_transaction_session_timeout}} + {{statement_timeout}} cho role export, và bọc export trong một transaction **có kiểm soát thời gian**; export từ **read-replica** để không ảnh hưởng primary.
+3. **Không để transaction mở khi chờ I/O:** mọi lời gọi S3/HTTP/file phải nằm **ngoài** transaction. Nếu cần nhất quán, dùng hai pha: (a) lấy danh sách id trong transaction ngắn, (b) tải dữ liệu ngoài transaction theo lô.
+4. **Tự dọn phiên treo:** job quét {{pg_stat_activity}} mỗi 30 giây, terminate các phiên {{idle in transaction}} quá 5 phút, kèm cảnh báo.
+5. **Giảm bloat:** tune autovacuum ({{autovacuum_vacuum_scale_factor}} theo bảng), cân nhắc {{pg_repack}} (online, không downtime) thay cho {{VACUUM FULL}}.
+
+### Vì sao đây KHÔNG phải "autovacuum bị lock"
+- Nếu bị lock, log sẽ có {{automatic vacuum ... skipped because of lock conflict}} và {{last_autovacuum}} sẽ cũ. Ở đây {{last_autovacuum = 14:04}} (6 phút trước), autovacuum **vẫn chạy đều**.
+- Nguyên nhân là **xmin horizon**: dead tuple không xoá được vì còn cần cho snapshot của phiên 23119, chứ không phải vì tranh chấp lock. Đây là khác biệt quan trọng so với bài "autovacuum bị lock" — cùng triệu chứng (bảng phình) nhưng cơ chế khác, cách sửa khác (không phải kill phiên giữ lock, mà kill phiên giữ snapshot).
+
+### Phòng ngừa và monitoring
+- Cảnh báo {{SELECT count(*) FROM pg_stat_activity WHERE state = 'idle in transaction'}} > 0, và {{age(backend_xmin)}} tăng nhanh.
+- Cảnh báo {{n_dead_tup / n_live_tup > 0,2}} trên bảng nóng; theo dõi {{last_autovacuum}}.
+- Cảnh báo {{age(relfrozenxid)}} tiến gần {{autovacuum_freeze_max_age}} (wraparound) — nhưng đó là vấn đề khác.
+- Quy tắc review: **transaction không được chứa lời gọi mạng/đĩa**; export nhất quán dùng {{COPY ... TO STDOUT}}.
+
+### Trả lời mẫu khi phỏng vấn
+"Một phiên export mở transaction REPEATABLE READ và cursor, rồi kẹt 6 giờ khi ghi S3, ở trạng thái idle in transaction. Nó giữ backend_xmin tại 08:10 nên autovacuum dù chạy đều vẫn không xoá được dead tuple mới hơn snapshot; n_dead_tup lên 4,1 triệu (45%), bảng phình từ 3,1 lên 5,4 GB, p95 từ 6 lên 128 ms. Đây không phải autovacuum bị lock — last_autovacuum vẫn 14:04. Tôi terminate phiên treo rồi VACUUM, đặt idle_in_transaction_session_timeout, và sửa code dùng COPY TO STDOUT thay vì giữ transaction qua I/O mạng; theo dõi idle in transaction và n_dead_tup."
+
+> Senior tip: "idle in transaction" là trạng thái nguy hiểm nhất của PostgreSQL vì nó **không tốn CPU** — DB có vẻ rảnh mà vẫn ì ạch, khiến team đi tìm sai chỗ (thêm CPU, thêm connection). Quy tắc: **CPU thấp + latency cao = blocking hoặc giữ snapshot**. Hãy nhìn {{pg_stat_activity.state}} và {{age(backend_xmin)}} trước khi đụng tới hiệu năng. Và bài học lớn: **transaction chỉ nên chứa SQL** — mọi lời gọi S3, HTTP, file đều phải nằm ngoài transaction.`,
+    rubric: [
+      'Chỉ đúng phiên gây bloat: pid 23119 idle in transaction ~6 giờ, wait_event ClientRead, giữ backend_xmin (age 43.260.112) nên autovacuum không xoá được dead tuple mới hơn snapshot',
+      'Dẫn chứng đúng: n_dead_tup 4.127.004 / n_live_tup 9.214.330 (44,8%), last_autovacuum 14:04 (autovacuum vẫn chạy, không bị lock), heap 3.1->5.4 GB, p95 6->128 ms, age(relfrozenxid) 118M loại trừ wraparound',
+      'Giải thích đúng cơ chế xmin horizon / MVCC: dead tuple cần cho snapshot đang chạy, một transaction giữ snapshot cũ chặn vacuum; và vì sao plan không đổi mà vẫn chậm (đọc nhiều page do bloat)',
+      'Đề xuất sửa đúng: pg_terminate_backend phiên treo, VACUUM (FULL khi cần), idle_in_transaction_session_timeout, và sửa code dùng COPY TO STDOUT / không giữ transaction qua I/O',
+      'Phân biệt rõ với autovacuum bị lock (last_autovacuum cũ + log lock conflict) và có monitoring idle in transaction, age(backend_xmin), n_dead_tup ratio',
+    ],
+    tags: ['postgresql', 'vacuum', 'bloat', 'idle-in-transaction', 'xmin-horizon', 'mvcc'],
   },
 );
 
