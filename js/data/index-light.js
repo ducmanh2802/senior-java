@@ -3069,6 +3069,8 @@ window.DATA_INDEX = {
     {"id":"sd-040","title":"Hệ thống gợi ý sản phẩm cho thương mại điện tử"},
     {"id":"sd-041","title":"Nền tảng đánh giá (eval) LLM cho nhiều team"},
     {"id":"sd-042","title":"Phát hiện gian lận giao dịch thời gian thực bằng stream processing"},
+    {"id":"sd-043","title":"Hệ thống trả góp BNPL (mua ngay trả sau)"},
+    {"id":"sd-044","title":"Hệ thống eKYC mở tài khoản online (chụp CCCD + selfie + chip NFC)"},
   ],
   drills: [
     {"id":"drill-shadow-001","kind":"shadow","en":"I am a backend engineer with eight years of experience building Java services for fintech products."},

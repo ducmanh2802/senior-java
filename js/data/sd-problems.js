@@ -6057,4 +6057,377 @@ Một ngày thứ Sáu, một nhóm tài khoản bị chiếm (account takeover)
   ],
   related: ['design-005', 'security-001', 'ai-051', 'architecture-012']
 },
+{
+  id: 'sd-043',
+  title: 'Hệ thống trả góp BNPL (mua ngay trả sau)',
+  kind: 'bank',
+  level: 'senior',
+  prompt: `Bạn thiết kế hệ thống trả góp BNPL (Buy Now Pay Later, mua ngay trả sau) cho sàn thương mại điện tử: khách hàng chọn trả góp khi thanh toán, hệ thống phải duyệt hạn mức trong dưới 3 giây, tạo lịch trả nợ 3-6 kỳ, gửi nhắc nợ trước mỗi hạn, công phạt khi trả trễ hạn, và đối soát hằng ngày với đối tác bán hàng (sàn) về đơn đã giao và tiền đã thu. Quy mô: 2 triệu khách hàng BNPL, 300.000 giao dịch/tháng, duyệt hạn mức dưới 3 giây, đối soát chênh lệch gần không. Bạn có 45 phút.`,
+  phases: [
+    { name: 'Requirements', minutes: 5, guide: `Làm rõ functional: duyệt hạn mức dưới 3 giây khi khách nhấn thanh toán trả góp, tạo lịch trả nợ 3-6 kỳ, nhắc nợ trước hạn, phạt trễ hạn, đối soát hằng ngày với đối tác bán hàng. Non-functional: latency duyệt dưới 3 giây, số tiền không sai, không được duyệt nhầm khách không đủ khả năng trả. Hỏi: gọi bureau tín dụng đồng bộ hay không, giới hạn số đơn mỗi khách, phạt trễ hạn tính ra sao, khách có thể thanh toán trước kỳ không. Out-of-scope: thẻ tín dụng, vay mua hàng lớn. Chốt: mỗi đơn bán hàng chỉ tạo một đơn BNPL, yêu cầu duyệt đi kèm Idempotency-Key.` },
+    { name: 'Estimation', minutes: 5, guide: `300.000 giao dịch/tháng = 10.000/ngày (khoảng 0,12 yêu cầu/giây trung bình), peak giờ cao điểm gấp 10 (khoảng 1,2 yêu cầu duyệt/giây). Mỗi đơn tạo trung bình 4 kỳ thanh toán => 1,2 triệu kỳ/năm. Lưu đơn 1 KB => 300 MB/tháng, 3,6 GB/năm. Kết luận: tải không cao, nhưng latency dưới 3 giây là bắt buộc, và lưu trữ nhỏ nên chạy trên một cơ sở dữ liệu quan hệ phân vùng theo tháng.` },
+    { name: 'API & data model', minutes: 5, guide: `API: POST /credit-limit/check (kèm Idempotency-Key) duyệt hạn mức, POST /bnpl/orders tạo đơn, GET /repayments xem lịch thanh toán. Bảng: customer (khách hàng), credit_limit (hạn mức còn lại), bnpl_order (đơn BNPL, trạng thái, số kỳ), repayment_schedule (từng kỳ đến hạn), late_fee (phạt theo ngày), outbox (sự kiện gửi thông báo). Ràng buộc: UNIQUE (merchant_order_id) chống tạo hai đơn từ một đơn bán hàng; Idempotency-Key chống khách bấm lại tạo hai đơn.` },
+    { name: 'High-level design', minutes: 15, guide: `Vẽ: App/sàn -> API gateway -> BNPL service (scorecard quy tắc + cache hạn mức) -> CSDL (PostgreSQL). Job hàng ngày: quét kỳ đến hạn gửi nhắc nợ, quét kỳ quá hạn công phạt. Job đối soát: đọc file đối soát từ đối tác qua SFTP, so với đơn BNPL, xử lý chênh lệch. Thông báo khách qua SMS/app/email. Nêu tại sao không gọi bureau tín dụng đồng bộ trong 3 giây.` },
+    { name: 'Deep dive', minutes: 15, guide: `Đào sâu: scorecard quy tắc tính điểm (tuổi, thu nhập, lịch sử nợ, đơn trước trả đúng hay không); state machine đơn BNPL (REQUESTED, APPROVED, ACTIVE, PAID, OVERDUE, CLOSED) và chuyển trạng thái có điều kiện; idempotency hai tầng (API + DB); công phạt tránh công hai lần qua UNIQUE (order_id, installment_no, fee_date); đối soát chênh lệch (mất đơn, thu thiếu, tiền sai); bảo mật (không lưu số thẻ, RBAC, audit log); giám sát (tỷ lệ duyệt, p99 latency duyệt, nợ quá hạn, lệch đối soát).` }
+  ],
+  rubric: [
+    'Làm rõ yêu cầu duyệt hạn mức dưới 3 giây, lịch trả nợ, nhắc nợ, phạt, đối soát; chốt out-of-scope',
+    'Ước lượng tải: 10.000 giao dịch/ngày, peak x10, lưu lịch 4 kỳ/đơn, dung lượng nhỏ',
+    'Duyệt hạn mức nhanh: cache hạn mức, scorecard quy tắc, không gọi bureau đồng bộ trong 3 giây',
+    'Mô hình dữ liệu: khách hàng, hạn mức, đơn BNPL, lịch từng kỳ, phạt theo ngày; tiền lưu bằng số nguyên',
+    'Idempotency-Key và UNIQUE (merchant_order_id) chống tạo hai đơn khi khách bấm lại',
+    'State machine đơn BNPL và chuyển trạng thái có điều kiện (REQUESTED -> APPROVED -> ACTIVE -> PAID/OVERDUE/CLOSED)',
+    'Job hàng ngày nhắc nợ và công phạt, tránh công phạt hai lần',
+    'Đối soát hằng ngày với đối tác qua file, xử lý mất đơn và thu thiếu',
+    'Bảo mật: không lưu số thẻ đầy đủ, RBAC, audit log',
+    'Giám sát: tỷ lệ duyệt, p99 latency duyệt, nợ quá hạn, lệch đối soát'
+  ],
+  reference: `**Tóm tắt:** Trả góp BNPL (Buy Now Pay Later, mua ngay trả sau) cho phép khách hàng nhận hàng ngay mà không trả toàn bộ tiền lúc mua, sau đó trả theo các kỳ đã đồng ý. Với ngân hàng/sàn, đây là tín dụng nhỏ cho hàng triệu người, nên ba vấn đề quyết định là: duyệt hạn mức rất nhanh (dưới 3 giây), quản lý từng khoản nợ nhỏ cho hàng triệu khách, và công phạt/đối soát chính xác để không mất tiền hay thu thiếu. Ba trụ cột: quy tắc duyệt nhanh, lịch trả nợ từng kỳ với công phạt tự động, đối soát hằng ngày với đối tác bán hàng.
+
+### 1. Yêu cầu và quy mô
+- Khách nhấn thanh toán bằng trả góp trên app sàn; hệ thống duyệt hạn mức trong dưới 3 giây và trả kết quả ngay.
+- Tạo lịch trả nợ: 3 hoặc 6 kỳ, mỗi kỳ một số tiền cố định, ngày đến hạn cách nhau 30 ngày.
+- Nhắc nợ trước mỗi hạn thanh toán; công phạt trễ hạn (ví dụ 0,05% số nợ quá hạn mỗi ngày) nếu khách trả muộn.
+- Đối soát hằng ngày với đối tác bán hàng: đối tác gửi file liệt kê đơn đã giao thành công, hệ thống so với đơn BNPL đã duyệt để phát hiện mất đơn hoặc thu thiếu.
+- Quy mô: 2 triệu khách BNPL, 300.000 giao dịch/tháng (~10.000/ngày, peak gấp 10), không được duyệt nhầm khách không đủ khả năng trả.
+
+### 2. Thuật ngữ lần đầu xuất hiện
+- BNPL (Buy Now Pay Later): hình thức "mua ngay, trả sau" — khách nhận hàng ngay, hệ thống chi tiền cho sàn, khách trả hệ thống theo kỳ.
+- Hạn mức (credit limit): số tiền tối đa hệ thống cho phép khách nợ, giống hạn mức thẻ tín dụng; mỗi giao dịch trừ tương ứng từ hạn mức.
+- Idempotency (khả năng-idempotent): thực hiện cùng thao tác nhiều lần với cùng khóa chỉ có hiệu lực một lần, tránh tạo hai đơn hay trừ tiền hai lần khi mạng gián đoạn và khách bấm lại.
+- Idempotency-Key: giá trị duy nhất khách gửi trong header yêu cầu, hệ thống dùng để nhận biết yêu cầu trùng và trả kết quả cũ.
+- State machine (máy trạng thái): đơn BNPL đi qua các trạng thái rõ ràng (chờ duyệt -> đã duyệt -> đang trả -> trả xong / quá hạn), mỗi chuyển trạng thái phải tuân theo quy tắc, không được nhảy tự tiện.
+- Reconciliation (đối soát): so sánh hai bộ dữ liệu từ hai bên (hệ thống nội bộ và đối tác) để tìm chênh lệch và xử lý kịp thời.
+- Cron job (hệ từ hẹn giờ): tác vụ tự động chạy theo lịch (ví dụ mỗi ngày 0 giờ) như nhắc nợ, công phạt.
+
+### 3. Ước lượng (có phép tính)
+| Đại lượng | Phép tính | Kết quả |
+|---|---|---|
+| Giao dịch/tháng | cho sẵn | 300.000 |
+| Giao dịch/ngày | 300.000 / 30 | 10.000 |
+| Peak duyệt hạn mức | 10.000 / 86.400 x 10 | ~1,2 yêu cầu/giây |
+| Kỳ thanh toán/năm | 300.000 x 4 kỳ trung bình x 12 tháng | 14,4 triệu kỳ |
+| Lưu trữ đơn | 300.000 x 1 KB x 12 tháng | 3,6 GB/năm |
+
+Kết luận: tải duyệt hạn mức thấp (~1 yêu cầu/giây trung bình), nhưng latency dưới 3 giây là bắt buộc; lưu trữ nhỏ, chạy thoải mái trên một cơ sở dữ liệu quan hệ phân vùng theo tháng.
+
+### 4. Mô hình dữ liệu
+~~~sql
+CREATE TABLE customer (
+  customer_id     BIGINT PRIMARY KEY,
+  id_number       VARCHAR(30) NOT NULL,
+  phone           VARCHAR(20) NOT NULL,
+  monthly_income  BIGINT,
+  status          VARCHAR(20) NOT NULL,
+  created_at      TIMESTAMPTZ NOT NULL
+);
+CREATE TABLE credit_limit (
+  customer_id     BIGINT PRIMARY KEY,
+  limit_amount    BIGINT NOT NULL,
+  used_amount     BIGINT NOT NULL DEFAULT 0,
+  updated_at      TIMESTAMPTZ NOT NULL
+);
+CREATE TABLE bnpl_order (
+  id              UUID PRIMARY KEY,
+  customer_id     BIGINT NOT NULL,
+  merchant_order_id VARCHAR(64) NOT NULL,
+  amount          BIGINT NOT NULL,
+  status          VARCHAR(20) NOT NULL,
+  installments    INT NOT NULL,
+  amount_per_installment BIGINT NOT NULL,
+  first_due_date  DATE NOT NULL,
+  created_at      TIMESTAMPTZ NOT NULL,
+  UNIQUE (merchant_order_id)
+);
+CREATE TABLE repayment_schedule (
+  id              UUID PRIMARY KEY,
+  order_id        UUID NOT NULL,
+  installment_no  INT NOT NULL,
+  due_date        DATE NOT NULL,
+  amount          BIGINT NOT NULL,
+  status          VARCHAR(20) NOT NULL,
+  paid_at         TIMESTAMPTZ,
+  UNIQUE (order_id, installment_no)
+);
+CREATE TABLE late_fee (
+  id              UUID PRIMARY KEY,
+  order_id        UUID NOT NULL,
+  installment_no  INT NOT NULL,
+  fee_date        DATE NOT NULL,
+  amount          BIGINT NOT NULL,
+  status          VARCHAR(20) NOT NULL,
+  UNIQUE (order_id, installment_no, fee_date)
+);
+CREATE TABLE outbox (
+  id              BIGSERIAL PRIMARY KEY,
+  aggregate_id    UUID NOT NULL,
+  type            VARCHAR(50) NOT NULL,
+  payload         JSONB NOT NULL,
+  created_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
+  published_at    TIMESTAMPTZ
+);
+~~~
+- Tiền lưu bằng số nguyên đơn vị nhỏ nhất (đồng), không dùng số thực vì sai số làm lệch tiền.
+- UNIQUE (merchant_order_id) đảm bảo một đơn bán hàng chỉ tạo một đơn BNPL; Idempotency-Key chống khách bấm lại tạo hai đơn.
+
+### 5. Luồng duyệt hạn mức dưới 3 giây
+1. Khách nhấn "thanh toán bằng trả góp"; sàn gọi API duyệt hạn mức kèm Idempotency-Key.
+2. BNPL service kiểm tra credit_limit: nếu limit_amount - used_amount >= amount thì duyệt ngay, không cần tính lại.
+3. Nếu chưa có hạn mức hoặc hết hạn mức, chạy scorecard (bộ quy tắc tính điểm): tuổi, thu nhập, lịch sử nợ xấu, đơn trước đã trả đúng hay không. Điểm đủ thì cấp hạn mức.
+4. Scorecard không gọi cơ quan tín dụng đồng bộ trong 3 giây (quá chậm); gọi bất đồng bộ để cập nhật hạn mức sau, hoặc cấp hạn mức thấp ban đầu rồi tăng dần.
+5. Trả kết quả ngay cho khách: đã duyệt hay từ chối, kèm lý do ngắn nếu từ chối.
+
+~~~seq
+title: Duyệt hạn mức BNPL
+actors: Khách | Sàn TMĐT | BNPL service | Scorecard | CSDL
+Khách -> Sàn TMĐT: nhấn thanh toán trả góp
+Sàn TMĐT -> BNPL service: duyệt hạn mức, Idempotency-Key
+BNPL service -> CSDL: đọc hạn mức khách
+CSDL --> BNPL service: hạn mức còn lại
+BNPL service -> Scorecard: tính điểm nếu cần hạn mức mới
+Scorecard --> BNPL service: điểm và hạn mức đề xuất
+BNPL service -> CSDL: ghi đơn, cập nhật hạn mức
+BNPL service --> Sàn TMĐT: kết quả duyệt dưới 3 giây
+Sàn TMĐT --> Khách: hiển thị kết quả
+~~~
+
+- Nếu khách mạng gián đoạn và bấm lại cùng Idempotency-Key, BNPL service trả kết quả cũ, không tạo hai đơn.
+- Lý do từ chối: ví dụ "điểm số chưa đủ" hoặc "đang có nợ quá hạn", để khách và CSKH biết xử lý ra sao.
+
+### 6. Lịch trả nợ, nhắc nợ và phạt trễ hạn
+Khi đơn chuyển sang ACTIVE, BNPL service ghi các kỳ vào repayment_schedule. Ví dụ đơn 6 triệu VND, 4 kỳ: mỗi kỳ 1,5 triệu VND, hạn cách nhau 30 ngày.
+
+Mỗi ngày 0 giờ, job hàng ngày làm hai việc:
+- Nhắc nợ: quét kỳ đến hạn trong 3 ngày tới, status PENDING, gửi thông báo nhắc nhở qua SMS/app/email.
+- Công phạt: quét kỳ quá hạn (due_date qua, status PENDING), đánh OVERDUE, công phạt vào late_fee theo số tiền x tỷ lệ phạt x ngày quá hạn, gửi thông báo cảnh.
+
+~~~seq
+title: Job hàng ngày nhắc nợ và phạt
+actors: Job hàng ngày | CSDL | Thông báo | Khách
+Job hàng ngày -> CSDL: quét kỳ đến hạn và quá hạn
+CSDL --> Job hàng ngày: danh sách kỳ
+Job hàng ngày -> Thông báo: gửi nhắc nhở / cảnh báo phạt
+Thông báo --> Khách: SMS, app, email
+Job hàng ngày -> CSDL: cập nhật trạng thái kỳ, ghi phạt
+CSDL --> Job hàng ngày: OK
+~~~
+
+Lỗi hay gặp: công phạt hai lần vì job chạy lại sau sự cố. Xử lý: late_fee có UNIQUE (order_id, installment_no, fee_date), job chỉ công phạt khi chưa có bản ghi cho ngày đó.
+
+### 7. Đối soát hàng ngày với đối tác bán hàng
+Mỗi sáng, đối tác gửi file đối soát qua SFTP chứa đơn đã giao thành công. BNPL service đọc file, so với đơn BNPL status APPROVED/ACTIVE:
+- Đơn trong hệ thống không có trong file: đơn bị hủy sau khi duyệt => mở lại hạn mức khách, đánh đơn CLOSED.
+- Đơn trong file không có trong hệ thống: đơn bị mất, hệ thống không tạo BNPL => điều tra, tạo đơn và thanh toán lại theo chính sách.
+- Số tiền trong file khác số tiền duyệt: chênh lệch phí => điều chỉnh, ghi vào sổ cái.
+
+~~~text
+File đối soát (một đơn một dòng):
+don_hang|ngay_giao|tien|trang_thai
+DH-123|2026-10-05|5000000|DA_GIAO
+DH-124|2026-10-05|2000000|DA_GIAO
+~~~
+
+Đối soát phát hiện "mất đơn" và "thu thiếu", quan trọng vì tiền của đối tác được thanh toán sau (ví dụ sau 7 ngày từ khi giao hàng).
+
+### 8. Bảo mật và tuân thủ
+- Không lưu số thẻ toàn bộ nếu không cần; chỉ lưu mã giả (token) từ nhà thanh toán.
+- Giới hạn nhân viên xem hồ sơ tài chính khách (RBAC: chỉ nhóm rủi ro và CSKH cao cấp được xem hạn mức).
+- Ghi log mọi truy vấn hạn mức và mọi phán duyệt (audit log) để kiểm tra sau này.
+
+### 9. Giám sát
+- Tỷ lệ duyệt hạn mức (được duyệt và từ chối).
+- Thời gian duyệt p99 (phải dưới 3 giây).
+- Số đơn quá hạn và tổng nợ quá hạn.
+- Lệch đối soát hàng ngày (phải gần 0; nếu lớn hơn 0 thì cảnh báo người vận hành).
+
+### Ví dụ đời thực
+Đơn 6 triệu VND, 4 kỳ, mỗi kỳ 1,5 triệu VND đến hạn ngày 5 hàng tháng. Khách trả kỳ 1 đúng, quên kỳ 2: job ngày 6 công phạt 0,05% x 1,5 triệu = 750 VND/ngày và gửi SMS nhắc. Khách trả kỳ 2 kèm phạt vào ngày 10 => kết thúc công phạt, hạn mức được phục hồi sau khi trả xong hết. Ví dụ này minh họa chu trình "trả nợ -> trễ hạn -> phạt -> trả lại -> khôi phục hạn mức" của một khách thực tế.
+
+### Trả lời mẫu khi phỏng vấn (90 giây)
+"Tôi thiết kế BNPL quanh ba phần: duyệt hạn mức dưới 3 giây dựa trên quy tắc và điểm số, không gọi bureau tín dụng đồng bộ; lưu lịch trả nợ từng kỳ và tự động nhắc nợ, công phạt qua job hàng ngày với UNIQUE để không phạt hai lần; và đối soát hằng ngày với đối tác bằng file SFTP để phát hiện mất đơn hoặc thu thiếu. Hạn mức và tiền lưu bằng số nguyên, mỗi đơn BNPL duy nhất qua merchant_order_id, yêu cầu duyệt đi kèm Idempotency-Key để khách bấm lại không tạo hai đơn. Metric theo dõi: tỷ lệ duyệt, p99 thời gian duyệt, nợ quá hạn, lệch đối soát."
+
+> Senior tip: BNPL đúng chất là tín dụng nhỏ cho hàng triệu người. Sai lầm lớn nhất là duyệt quy mô lớn trước khi có dữ liệu về tỷ lệ khách không trả nợ (default rate). Bắt đầu với hạn mức rất thấp, tăng dần khi khách trả đúng kỳ, và luôn có quy trình thu hồi nợ khi quá hạn trên 30-60 ngày.`,
+  followups: [
+    'Nếu tỷ lệ khách không trả nợ (default rate) cao hơn dự kiến, bạn điều chỉnh hạn mức và scorecard ra sao?',
+    'Khách thanh toán trước kỳ: hệ thống tính lại phạt và hạn mức ra sao?',
+    'Nếu đối tác gửi file đối soát trễ hoặc sai định dạng, quy trình xử lý ra sao?',
+    'Bạn mở rộng BNPL sang trả góp ở cửa hàng trực tiếp (offline) ra sao?'
+  ],
+},
+{
+  id: 'sd-044',
+  title: 'Hệ thống eKYC mở tài khoản online (chụp CCCD + selfie + chip NFC)',
+  kind: 'bank',
+  level: 'senior',
+  prompt: `Bạn thiết kế hệ thống eKYC (xác thực khách hàng qua kênh điện tử) cho ngân hàng số: khách tải app, chụp ảnh mặt trước và mặt sau CCCD (căn cước công dân), chụp selfie, đọc chip NFC trong CCCD nếu thiết bị hỗ trợ, hệ thống trích thông tin qua OCR, đối chiếu selfie với ảnh CCCD (face match), kiểm tra người thật (liveness), rồi đưa hồ sơ vào hàng đợi duyệt thủ công cho nhân viên ngân hàng phê duyệt. Ảnh hồ sơ chứa thông tin cá nhân nhạy cảm nên phải lưu an toàn (mã hóa, URL có thời hạn, kiểm soát truy cập). Quy mô: 50.000 hồ sơ/ngày, duyệt thủ công dưới 24 giờ, lưu hồ sơ 5 năm theo quy định. Bạn có 45 phút.`,
+  phases: [
+    { name: 'Requirements', minutes: 5, guide: `Làm rõ functional: chụp CCCD trước/sau, selfie, đọc NFC (tùy chọn), OCR trích họ tên, số CCCD, ngày sinh, quê quán, face match selfie với ảnh CCCD, liveness, hàng đợi duyệt thủ công dưới 24 giờ, lưu ảnh an toàn 5 năm. Non-functional: bảo mật thông tin cá nhân nhạy cảm (PII), availability, latency xử lý ảnh. Hỏi: bắt buộc NFC không, duyệt tự động hay toàn bộ thủ công, quy định lưu bao lâu, ảnh được xem bởi ai. Out-of-scope: video gọi KYC, mở tài khoản doanh nghiệp.` },
+    { name: 'Estimation', minutes: 5, guide: `50.000 hồ sơ/ngày (khoảng 2.083/giờ), peak sáng gấp 3 (khoảng 6.250/giờ, ~1,7/giây). Dung lượng hồ sơ khoảng 800 KB (ảnh trước + sau + selfie + dữ liệu NFC) => 40 GB/ngày, ~73 TB/5 năm. Kết luận: ghi ảnh không nhiều (khoảng 1 hồ sơ/giây trung bình), chi phí lưu trữ đối tượng rẻ, cái khó là xử lý ảnh (OCR/face/NFC) cần máy tính và bảo mật nghiêm ngặt.` },
+    { name: 'API & data model', minutes: 5, guide: `API: POST /kyc/profiles tạo hồ sơ, GET /kyc/profiles/{id} xem tra cứu, POST /review-tasks/{id}/decision nhân viên duyệt. Bảng: kyc_profile (hồ sơ, trạng thái), kyc_document (tài liệu, lưu khoá lưu trữ đối tượng), nfc_record (kết quả đọc chip), face_check (kết quả đối chiếu mặt), review_task (nhiệm vụ duyệt thủ công), audit_log (nhật ký ai làm gì). Ảnh lưu lưu trữ đối tượng, CSDL chỉ lưu khoá và metadata. UNIQUE (id_number) chống một CCCD mở hai tài khoản.` },
+    { name: 'High-level design', minutes: 15, guide: `Vẽ: App -> API gateway -> eKYC service -> lưu trữ đối tượng (mã hóa) -> worker xử lý ảnh (OCR, face match, liveness, NFC) -> hàng đợi duyệt thủ công -> nhân viên duyệt qua signed URL -> core banking tạo tài khoản -> thông báo khách. Nêu luồng xử lý ảnh, tại sao ảnh không lưu trong CSDL, và quyết định duyệt tự động hay thủ công.` },
+    { name: 'Deep dive', minutes: 15, guide: `Đào sâu: OCR (nhận diện ký tự quang học: chuyển ảnh chữ thành văn bản máy đọc được), chip NFC (viên chip trong CCCD đọc bằng điện thoại có NFC), face match (so sánh hai ảnh khuôn mặt), liveness (kiem tra người thật, không ảnh in/video); bảo mật ảnh: mã hóa lưu trữ, signed URL thời gian ngắn, RBAC, không ghi CCCD vào log, audit log; trường hợp đặc biệt: không có NFC, ảnh mờ, selfie không khớp, quá hạn; tuân thủ: lưu 5 năm, xóa/khoá sau đó; đối soát hàng ngày ba con số (tạo, duyệt/từ chối, tài khoản mới); giám sát: tỷ lệ duyệt tự động, thời gian duyệt, lỗi xử lý ảnh, lần xem ảnh.` }
+  ],
+  rubric: [
+    'Làm rõ yêu cầu eKYC: CCCD, selfie, NFC, OCR, face match, liveness, hàng đợi duyệt thủ công, lưu an toàn, quy mô 50.000/ngày',
+    'Giải thích thuật ngữ lần đầu xuất hiện: eKYC, CCCD, chip NFC, OCR, face match, liveness, PII, encryption at rest, signed URL, RBAC, audit log',
+    'Luồng xử lý từng bước: chụp -> gửi -> lưu mã hóa -> OCR/face/NFC -> hàng đợi duyệt -> nhân viên duyệt -> core banking tạo tài khoản',
+    'Mô hình dữ liệu: hồ sơ, tài liệu (khoá lưu trữ đối tượng), kết quả NFC, kiểm tra mặt, nhiệm vụ duyệt, nhật ký; ảnh không lưu trong CSDL',
+    'Bảo mật ảnh: mã hóa lưu trữ, signed URL thời gian ngắn, RBAC, không ghi CCCD vào log',
+    'Xử lý trường hợp đặc biệt: không có NFC, ảnh mờ, selfie không khớp, quá hạn',
+    'Tuân thủ: lưu 5 năm, xóa/khoá sau đó, đối soát hàng ngày',
+    'Idempotency và UNIQUE (id_number) chống một CCCD mở hai tài khoản',
+    'Giám sát: tỷ lệ duyệt tự động, thời gian duyệt, lỗi xử lý ảnh, lần xem ảnh',
+    'Trade-off tự động vs thủ công: chi phí nhân viên vs sai sót'
+  ],
+  reference: `**Tóm tắt:** eKYC (xác thực khách hàng qua kênh điện tử) cho phép mở tài khoản ngân hàng bằng điện thoại không cần đến chi nhánh. Khách chụp ảnh CCCD (căn cước công dân, giấy tờ chứng minh danh tính của dân tộc Việt Nam, bản mới có chip NFC chứa thông tin đã mã hóa), chụp selfie, đọc chip NFC nếu có; hệ thống trích thông tin (OCR: nhận diện ký tự quang học, chuyển ảnh chữ thành văn bản máy đọc được), đối chiếu selfie với ảnh CCCD (face match: so sánh hai ảnh khuôn mặt để xác định có phải cùng người không), kiểm tra người thật (liveness: không phải ảnh in hoặc video quay lại), rồi đưa hồ sơ vào hàng đợi duyệt thủ công (manual review queue: hàng đợi chờ người duyệt) cho nhân viên ngân hàng phê duyệt hoặc từ chối. Ảnh hồ sơ chứa thông tin cá nhân nhạy cảm (PII: tên, số CCCD, ảnh, ngày sinh — thông tin có thể xác định một người cụ thể, cần bảo mật cao) nên phải mã hóa khi lưu, chỉ mở bằng URL có thời hạn (signed URL: URL có chữ ký, chỉ mở được trong thời gian ngắn, ví dụ 15 phút), và nhật ký ai đã xem (audit log). Ba nguyên tắc: xác thực đúng chủ hộ giấy tờ, lưu an toàn, duyệt theo quy trình rõ ràng.
+
+### 1. Yêu cầu và quy mô
+- Khách tải app ngân hàng, chụp ảnh mặt trước và mặt sau CCCD, chụp selfie, đọc chip NFC nếu thiết bị hỗ trợ.
+- Hệ thống trích họ tên, số CCCD, ngày sinh, quê quán qua OCR.
+- Đối chiếu selfie với ảnh trên CCCD (face match) và kiểm tra liveness (người thật, không ảnh in hoặc video quay lại).
+- Hồ sơ tự động chưa chắc chắn vào hàng đợi duyệt thủ công: nhân viên ngân hàng xem và phê duyệt hoặc từ chối, tối thiểu dưới 24 giờ.
+- Lưu ảnh an toàn theo quy định pháp luật (ví dụ lưu hồ sơ 5 năm), mã hóa ảnh khi lưu, URL chỉ mở được trong thời gian ngắn.
+- Quy mô: 50.000 hồ sơ/ngày (khoảng 2.000/giờ, peak gấp 3), lưu ảnh từng hồ sơ khoảng 800 KB => khoảng 40 GB/ngày, lưu trữ đối tượng (dịch vụ lưu file lớn trên Internet, chi phí thấp).
+
+### 2. Thuật ngữ lần đầu xuất hiện
+- eKYC (electronic Know Your Customer): xác thực danh tính khách qua kênh điện tử, thay vì làm trực tiếp tại chi nhánh.
+- CCCD: căn cước công dân, giấy tờ chứng minh danh tính của dân tộc Việt Nam, bản mới có chip NFC chứa thông tin đã mã hóa.
+- Chip NFC: viên chip nhỏ trong CCCD đọc được bằng điện thoại có NFC (gần trường truyền thông: hai thiết bị trao đổi dữ liệu khi sát nhau vài centimet).
+- OCR: nhận diện ký tự quang học, đọc chữ từ ảnh ra văn bản.
+- Face match: so sánh hai ảnh khuôn mặt để xác định có phải cùng người không.
+- Liveness: kiểm tra người đang trước camera là người thật, không ảnh in, màn hình hoặc video đánh lừa.
+- Manual review queue: hàng đợi chờ người duyệt thủ công.
+- PII (thông tin cá nhân nhận dạng được): tên, số CCCD, ảnh, ngày sinh — thông tin có thể xác định một người cụ thể, cần bảo mật cao.
+- Encryption at rest: mã hóa dữ liệu khi lưu trên ổ đĩa/lưu trữ đối tượng.
+- Signed URL: URL có chữ ký, chỉ mở được trong thời gian ngắn.
+- RBAC: phân quyền dựa trên vai trò (nhân viên duyệt, giám sát, phát triển có quyền khác nhau).
+- Audit log: nhật ký ai làm gì, khi nào, để kiểm tra sau này.
+
+### 3. Ước lượng (có phép tính)
+| Đại lượng | Phép tính | Kết quả |
+|---|---|---|
+| Hồ sơ/ngày | cho sẵn | 50.000 |
+| Hồ sơ/giờ trung bình | 50.000 / 24 | ~2.083 |
+| Peak sáng (gấp 3) | 2.083 x 3 | ~6.250/giờ (~1,7/giây) |
+| Dung lượng/hồ sơ | ảnh trước + sau + selfie + dữ liệu NFC | ~800 KB |
+| Dung lượng/ngày | 50.000 x 800 KB | ~40 GB/ngày (~1,2 TB/tháng) |
+| Lưu 5 năm | 40 GB x 365 x 5 | ~73 TB (dễ chịu với lưu trữ đối tượng rẻ) |
+
+Kết luận: ghi ảnh không nhiều (khoảng 1 hồ sơ/giây trung bình), chi phí lưu trữ đối tượng rẻ, cái khó là xử lý ảnh (OCR/face/NFC) cần máy tính và bảo mật nghiêm ngặt.
+
+### 4. Mô hình dữ liệu
+~~~sql
+CREATE TABLE kyc_profile (
+  id             UUID PRIMARY KEY,
+  customer_id    BIGINT NOT NULL,
+  id_number      VARCHAR(30) NOT NULL,
+  full_name      VARCHAR(100) NOT NULL,
+  dob            DATE NOT NULL,
+  address        TEXT,
+  status         VARCHAR(20) NOT NULL,
+  created_at     TIMESTAMPTZ NOT NULL,
+  decided_at     TIMESTAMPTZ,
+  decided_by     BIGINT,
+  UNIQUE (id_number)
+);
+CREATE TABLE kyc_document (
+  id             UUID PRIMARY KEY,
+  profile_id     UUID NOT NULL,
+  type           VARCHAR(20) NOT NULL,
+  object_key     VARCHAR(200) NOT NULL,
+  signed_url     VARCHAR(500),
+  ocr_result     JSONB,
+  created_at     TIMESTAMPTZ NOT NULL
+);
+CREATE TABLE nfc_record (
+  profile_id     UUID PRIMARY KEY,
+  chip_data_hash VARCHAR(64) NOT NULL,
+  read_at        TIMESTAMPTZ NOT NULL,
+  device_id      VARCHAR(100)
+);
+CREATE TABLE face_check (
+  profile_id     UUID PRIMARY KEY,
+  selfie_document_id UUID NOT NULL,
+  id_photo_document_id UUID NOT NULL,
+  similarity     REAL NOT NULL,
+  passed         BOOLEAN NOT NULL,
+  liveness_passed BOOLEAN NOT NULL
+);
+CREATE TABLE review_task (
+  id             UUID PRIMARY KEY,
+  profile_id     UUID NOT NULL,
+  reviewer_id    BIGINT,
+  decision       VARCHAR(20),
+  reason         TEXT,
+  decided_at     TIMESTAMPTZ,
+  created_at     TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE TABLE audit_log (
+  id             BIGSERIAL PRIMARY KEY,
+  profile_id     UUID NOT NULL,
+  actor_id       BIGINT NOT NULL,
+  action         VARCHAR(50) NOT NULL,
+  created_at     TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+~~~
+- Không lưu ảnh CCCD/selfie vào bảng làm cột lớn (làm chậm CSDL); lưu lưu trữ đối tượng, CSDL chỉ lưu khoá và metadata.
+- UNIQUE (id_number) ngăn một số CCCD mở hai tài khoản cùng lúc (giả sử mỗi người một tài khoản theo quy định ngân hàng).
+
+### 5. Luồng xử lý eKYC từ chụp ảnh đến mở tài khoản
+1. Khách chụp ảnh CCCD trước/sau và selfie trên app. App kiểm tra chất lượng ảnh (không mờ, đủ sáng) trước khi gửi để giảm lượt xử lý không cần thiết.
+2. App gửi ảnh qua API kèm mã thiết bị. eKYC service lưu ảnh vào lưu trữ đối tượng đã mã hóa, tạo hồ sơ status PENDING.
+3. Worker xử lý ảnh: OCR trích thông tin CCCD; đọc chip NFC nếu khách cung cấp (dữ liệu chip đã mã hóa, cần mã giải mã theo quy chuẩn của chip); face match selfie với ảnh CCCD; kiểm tra liveness.
+4. Kết quả tự động: nếu OCR khớp, face match cao (ví dụ trên 0,9) và liveness pass -> hồ sơ chuyển MANUAL_REVIEW hoặc APPROVED tùy quy trình ngân hàng; nếu thấp hoặc bị từ chối -> REJECTED hoặc gửi lại hàng đợi.
+5. Nhân viên ngân hàng mở hàng đợi duyệt thủ công, xem ảnh (qua signed URL hiệu lực ngắn) và thông tin OCR, bấm duyệt hoặc từ chối kèm lý do. Mọi thao tác ghi audit_log.
+6. Hồ sơ APPROVED -> hệ thống core banking (hệ thống chính của ngân hàng quản lý tài khoản) tạo tài khoản khách hàng, gửi SMS/email thông báo khách.
+
+~~~seq
+title: Luồng eKYC từ chụp ảnh đến duyệt
+actors: Khách | App | eKYC service | Xử lý ảnh | Nhân viên duyệt | Core banking
+Khách -> App: chụp CCCD, selfie, đọc NFC
+App -> eKYC service: gửi ảnh và dữ liệu NFC
+eKYC service -> Xử lý ảnh: OCR, face match, liveness, NFC
+Xử lý ảnh --> eKYC service: kết quả kiểm tra
+eKYC service -> Nhân viên duyệt: đưa vào hàng đợi duyệt thủ công
+Nhân viên duyệt -> eKYC service: duyệt / từ chối (xem ảnh qua URL thời hạn)
+eKYC service -> Core banking: tạo tài khoản khi duyệt
+Core banking --> Khách: SMS thông báo mở tài khoản thành công
+~~~
+
+### 6. Bảo mật ảnh và thông tin cá nhân
+- Ảnh mã hóa khi lưu (encryption at rest): ngay cả quản trị lưu trữ cũng không xem được ảnh nếu không có khóa giải mã.
+- Nhân viên duyệt xem ảnh qua signed URL (URL có chữ ký) hiệu lực 15-30 phút, sau đó hết hạn; không lưu ảnh vào email hay chat.
+- Giới hạn xem: chỉ nhân viên trong phòng duyệt được xem hồ sơ của khách được phân quyền; lập trình viên không được xem ảnh khách hàng trên môi trường production.
+- Không ghi số CCCD hoặc ảnh vào log; log chỉ ghi mã hồ sơ và hành động.
+- Xoá/hủy hồ sơ theo quy định sau thời gian lưu (ví dụ 5 năm) hoặc khi khách yêu cầu theo quy định pháp luật, ghi lại trong audit_log.
+
+### 7. Xử lý trường hợp đặc biệt
+- Ảnh mờ, CCCD gãy, selfie không khớp: hệ thống từ chối hoặc yêu cầu khách chụp lại, ghi lý do rõ ràng trên app để khách biết tại sao bị từ chối và chụp lại nếu cần.
+- Khách không có thiết bị đọc NFC: vẫn cho chụp ảnh CCCD + selfie, nhưng hồ sơ ưu tiên vào hàng đợi duyệt thủ công (vì không có dữ liệu chip để tự động tin cậy).
+- Hồ sơ quá hạn (ví dụ khách không hoàn thành trong 24 giờ): đánh EXPIRED, khách phải bắt đầu lại.
+
+### 8. Tuân thủ và đối soát
+- Giữ hồ sơ theo quy định (ví dụ 5 năm) để cơ quan quản lý kiểm tra; sau đó xoá hoặc khoá vĩnh viễn tuỳ quy định.
+- Đối soát hàng ngày: số hồ sơ tạo trong app vs số hồ sơ đã duyệt/từ chối vs số tài khoản được tạo trong core banking; ba con số phải khớp, chênh lệch phải điều tra.
+
+### 9. Giám sát
+- Số hồ sơ/ngày, tỷ lệ tự động duyệt (không cần nhân viên) vs phải duyệt thủ công.
+- Thời gian duyệt trung bình (mục tiêu dưới 24 giờ).
+- Lỗi OCR / face match / NFC (tỷ lệ thất bại xử lý ảnh).
+- Số lần xem ảnh qua signed URL (phát hiện xem ảnh bất thường).
+
+### Ví dụ đời thực
+Khách Nam chụp CCCD, selfie, không có NFC: OCR đọc "Nguyen Van A", face match 0,95 -> chuyển hàng đợi duyệt. Nhân viên xem ảnh qua URL 15 phút, so sánh ảnh CCCD với selfie, bấm duyệt -> core banking tạo tài khoản, SMS thông báo Nam. Lần sau khách quên chụp ảnh mặt sau -> app yêu cầu chụp lại ảnh mặt sau, không chặn toàn bộ hồ sơ.
+
+### Trả lời mẫu khi phỏng vấn (90 giây)
+"Tôi thiết kế eKYC như một pipeline: khách chụp CCCD trước/sau, selfie và đọc NFC; app gửi ảnh đã mã hóa lên lưu trữ đối tượng; worker chạy OCR, face match selfie với ảnh CCCD và kiểm tra liveness. Hồ sơ không chắc chắn vào hàng đợi duyệt thủ công, nhân viên xem qua URL thời hạn 15 phút rồi bấm duyệt hoặc từ chối, mọi thao tác ghi audit_log. Ảnh mã hóa khi lưu, không ghi CCCD vào log, RBAC ngăn lập trình viên xem ảnh production. Hồ sơ duyệt thì core banking tạo tài khoản và thông báo khách. Số CCCD duy nhất trong hệ thống ngăn mở hai tài khoản. Đối soát hàng ngày ba con số: tạo, duyệt/từ chối, tài khoản mới tạo. Metric: tỷ lệ duyệt tự động, thời gian duyệt dưới 24 giờ, lỗi xử lý ảnh."
+
+> Senior tip: eKYC là bộ môn "an toàn trước nhất". Sai lầm lớn nhất là lưu ảnh CCCD không mã hóa hoặc cho toàn bộ lập trình viên xem — một vụ rò rỉ ảnh CCCD hàng nghìn khách là sự cố uy tín và pháp lý. Hãy coi ảnh CCCD như số thẻ crédito: mã hóa, xem qua URL thời hạn, nhật ký ai xem, và chỉ giữ trong thời gian pháp luật cho phép.`,
+  followups: [
+    'Nếu cơ quan yêu cầu lấy lại ảnh CCCD của một khách hàng, bạn tra cứu và cung cấp ra sao?',
+    'Khách đọc chip NFC thất bại lặp lại: hệ thống xử lý ra sao, và có nên bắt buộc NFC không?',
+    'Nhân viên duyệt bị làm sao để nhận biết ảnh CCCD đã bị sửa đổi (photoshop)?',
+    'Nếu số lượng hồ sơ tăng gấp 10 trong tháng khai trương, bạn scale worker xử lý ảnh và hàng đợi duyệt ra sao?'
+  ],
+},
 ];
