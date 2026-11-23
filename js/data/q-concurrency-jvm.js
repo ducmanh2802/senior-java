@@ -12988,5 +12988,104 @@ Tôi bật JFR allocation profiling trong 5 phút peak, mở flame graph và tì
 `,
   follow: ['JFR allocation event có overhead bao nhiêu và khi nào không bật trên prod?', 'Escape analysis bị vô hiệu khi nào (synchronization, publish)?', 'Cách đo allocation rate chính xác (JFR vs async-profiler alloc mode)?'],
   tags: ['JFR', 'allocation', 'profiling', 'escape analysis', 'GC']
+},
+{
+  id: 'concurrency-093',
+  topic: 'concurrency',
+  level: 'senior',
+  q: 'Bạn bật virtual thread trong Spring Boot 3.2 bằng {{spring.threads.virtual.enabled=true}}. Pinning với {{synchronized}} trên JDK 21, {{ThreadLocal}}/MDC, và khi nào KHÔNG nên bật?',
+  a: `**Tóm tắt:** Virtual thread là thread do JVM quản lý, rất rẻ, phù hợp workload I/O-bound. Bật trong Spring Boot 3.2 chỉ cần property, nhưng pinning (khoá carrier thread) khi gặp {{synchronized}} hoặc native call sẽ triệt tiêu lợi ích; ThreadLocal/MDC phải được propagate cẩn thận.
+
+### Virtual thread là gì
+Thread ảo (virtual thread) là luồng thực thi do JVM lên lịch trên một số ít carrier thread (platform thread). Tạo hàng triệu virtual thread vẫn rẻ vì không reserve stack lớn cố định.
+
+### Khi nào bật
+Workload I/O-bound: gọi DB, HTTP, Kafka. Mỗi request một virtual thread, không cần pool lớn.
+
+### Pinning là gì
+Khi virtual thread vào khối {{synchronized}} hoặc gọi hàm native/JNI, nó bị "pin" vào carrier thread: carrier không thể chạy virtual thread khác. Nếu pinning kéo dài, lợi ích biến mất.
+
+### Pinning với synchronized trên JDK 21/24
+JDK 21: virtual thread **vẫn pin** trên **tất cả** khối {{synchronized}} (method hoặc block). Không có ngoại lệ.
+JDK 24 (JEP 491): bỏ pinning cho {{synchronized}} trong hầu hết trường hợp (monitor enter/exit không còn gắn carrier thread).
+Giải pháp an toàn trên JDK 21: thay {{synchronized}} bằng {{ReentrantLock}} (không pin) cho critical section dài.
+
+### ThreadLocal và MDC
+Virtual thread hỗ trợ ThreadLocal, và **khi tạo virtual thread con qua {{Thread.ofVirtual().start()}} hoặc structured concurrency, ThreadLocal được kế thừa từ thread cha**. MDC (SLF4J) dùng ThreadLocal để gắn traceId. Spring Boot 3.2+ tự propagate MDC context sang virtual thread; nếu tự quản lý thread, dùng {{MDC.getCopyOfContextMap()}} / {{MDC.setContextMap()}} để copy thủ công.
+
+### Khi nào KHÔNG bật
+- CPU-bound nặng (tính toán): virtual thread không tăng throughput, chỉ thêm scheduling overhead.
+- Code dùng nhiều {{synchronized}} dài hoặc native library.
+- Thư viện không tương thích (một số driver cũ).
+- Cần thread affinity / thread-local caching lớn.
+
+### Ví dụ đời thực
+Service Spring Boot 3.2, 200 req/s, mỗi request gọi payment gateway 300 ms. Platform thread pool 200 → saturate. Bật virtual thread: throughput tăng 5x, latency p99 giảm từ 1.2s xuống 350ms. Nhưng module legacy dùng {{synchronized}} quanh cache → pinning 40ms → rollback module đó về ReentrantLock.
+
+### Trả lời mẫu khi phỏng vấn
+Virtual thread trong Spring Boot 3.2 bật qua property {{spring.threads.virtual.enabled=true}}, Tomcat sẽ tạo virtual thread cho mỗi request. Phù hợp I/O-bound. Pinning xảy ra với {{synchronized}} và native call, giữ carrier thread; JDK 21 pin tất cả synchronized, JDK 24 bỏ pinning cho hầu hết trường hợp; nên thay bằng {{ReentrantLock}} cho critical section dài. ThreadLocal/MDC được kế thừa khi tạo virtual thread con; Spring Boot 3.2+ tự propagate MDC. Không nên bật cho CPU-bound, code synchronized dài (JDK 21), hoặc thư viện không tương thích. Đo bằng JFR pinning event.
+
+> Senior tip: Theo dõi JFR event "jdk.VirtualThreadPinned" trên prod; nếu pinning > 1% request, đó là tín hiệu refactor synchronized sang ReentrantLock.`,
+  follow: ['JDK 24 cải thiện pinning thế nào?', 'Cách propagate MDC sang virtual thread?', 'Virtual thread vs reactive (WebFlux) khi nào chọn?'],
+  tags: ['virtual thread', 'Spring Boot 3.2', 'pinning', 'MDC', 'ThreadLocal']
+},
+{
+  id: 'concurrency-094',
+  topic: 'concurrency',
+  level: 'senior',
+  q: 'CompletableFuture timeout + fallback: dùng {{orTimeout}} và {{completeOnTimeout}} thế nào, và xử lý exception đúng?',
+  a: `**Tóm tắt:** {{orTimeout}} huỷ future bằng TimeoutException sau deadline; {{completeOnTimeout}} điền giá trị fallback. Luôn attach {{exceptionally}}/{{handle}} để tránh unhandled exception và nhớ huỷ công việc nền nếu có thể.
+
+### orTimeout
+{{cf.orTimeout(800, TimeUnit.MILLISECONDS)}}: nếu chưa complete sau 800ms, complete exceptionally với TimeoutException. Future trả về TimeoutException cho caller.
+
+### completeOnTimeout
+{{cf.completeOnTimeout(fallback, 800, MILLISECONDS)}}: nếu chưa complete, điền fallback value và complete normally. Phù hợp graceful degradation.
+
+### Exception handling
+CompletableFuture nuốt exception nếu không có consumer. Luôn dùng {{handle((res, ex) -> ...)}} hoặc {{exceptionally}}. Với {{orTimeout}}, TimeoutException được propagate qua {{join()}}/{{get()}}.
+
+### Huỷ công việc nền
+{{orTimeout}} không tự huỷ task đang chạy trong executor. Nếu task gọi HTTP/DB, nên truyền CancellationToken/Interrupt, hoặc dùng executor hỗ trợ cancel.
+
+### Ví dụ đời thực
+Service gọi 3 đối tác; đối tác B chậm. Dùng {{completeOnTimeout(defaultB, 500ms)}} để trả cache cũ, log warning. Đối tác C dùng {{orTimeout}} + {{exceptionally}} → trả lỗi rõ ràng cho client. SLA p99 1s giữ vững.
+
+### Trả lời mẫu khi phỏng vấn
+Dùng {{orTimeout}} khi muốn caller biết timeout (TimeoutException) và xử lý ở lớp trên; dùng {{completeOnTimeout}} khi muốn fallback value im lặng. Luôn attach {{handle}} để log và chuyển đổi exception. Nhớ rằng timeout không huỷ task nền, cần cancellation token. Kết hợp {{allOf}} với per-future timeout để fan-out an toàn.
+
+> Senior tip: Đừng dùng {{get(timeout)}} trên thread chính trong web request; dùng {{orTimeout}} + async pipeline để không block carrier thread.`,
+  follow: ['Cách huỷ HTTP call khi future timeout?', 'allOf với timeout từng phần?', 'exceptionally vs handle khác nhau?'],
+  tags: ['CompletableFuture', 'orTimeout', 'completeOnTimeout', 'timeout', 'fallback']
+},
+{
+  id: 'concurrency-095',
+  topic: 'concurrency',
+  level: 'lead',
+  q: 'Thiết kế bulkhead khi gọi 3 đối tác chậm: thread pool riêng, semaphore, timeout, circuit breaker kết hợp thế nào?',
+  a: `**Tóm tắt:** Bulkhead cô lập tài nguyên cho từng dependency để một đối tác chậm không kéo sập toàn service. Kết hợp thread pool/semaphore per dependency + timeout + circuit breaker; đo saturation và fallback.
+
+### Bulkhead là gì
+Bulkhead (vách ngăn) là pattern cô lập: mỗi dependency có pool tài nguyên riêng (thread pool hoặc semaphore). Nếu A chậm, chỉ pool A đầy, B/C vẫn chạy.
+
+### Thread pool vs semaphore
+- Thread pool bulkhead: isolate cả thread và queue; overhead cao hơn nhưng observability tốt.
+- Semaphore bulkhead: chỉ giới hạn concurrency, dùng chung thread; nhẹ, phù hợp reactive.
+
+### Thiết kế cho 3 đối tác
+A, B, C mỗi cái: pool size = (latency target / processing time) × concurrency. Timeout per call. Circuit breaker per dependency. Fallback: cache cũ hoặc default.
+
+### Kết hợp
+Bulkhead giới hạn concurrency → timeout cắt call chậm → circuit breaker mở khi tỷ lệ lỗi cao → fallback trả degraded response. Retry chỉ trên lỗi transient, với backoff.
+
+### Ví dụ đời thực
+Service checkout gọi Payment A, Inventory B, Shipping C. A pool 20 threads, B 30, C 10. A chậm 5s → pool A đầy, circuit breaker mở sau 50% lỗi trong 10s, fallback "payment pending". B,C unaffected, checkout vẫn trả "order accepted, payment processing".
+
+### Trả lời mẫu khi phỏng vấn
+Bulkhead là vách ngăn tài nguyên. Chọn thread pool bulkhead cho blocking code, semaphore cho reactive. Mỗi dependency có pool size tính từ SLO và latency. Kết hợp timeout, circuit breaker, fallback và retry với backoff. Đo saturation (queue depth, active threads) và alert. Không nên share pool chung cho nhiều dependency.
+
+> Senior tip: Pool size tính theo Little's Law: L = λ × W. Nếu SLO 200ms và 50 rps, concurrency ~10; đặt pool 15-20 để có headroom.`,
+  follow: ['Little\'s Law tính pool size thế nào?', 'Circuit breaker threshold đặt ra sao?', 'Khi nào dùng semaphore thay thread pool?'],
+  tags: ['bulkhead', 'circuit breaker', 'thread pool', 'resilience', 'timeout']
 }
 );
