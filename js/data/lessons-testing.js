@@ -541,6 +541,7 @@ class TrialService {
     }
 }`,
       tests: `import java.time.*;
+import java.util.Objects;
 
 public class Main {
     static int passed = 0, total = 0;
@@ -4684,56 +4685,41 @@ Lỗi hay gặp: quên ưu tiên @SpringBootTest khiến test web bị nhận nh
   id: 'lesson-testing-013',
   track: 'testing',
   order: 13,
-  title: 'Test xác định cho service: fake repository + Clock cố định, diệt flaky do thời gian và thứ tự',
-  level: 'senior',
-  minutes: 35,
+  title: 'Test double: stub vs mock vs fake vs spy — viết fake repository và đếm lời gọi',
+  level: 'mid',
+  minutes: 30,
   goals: [
-    'Giải thích test xác định (deterministic) là gì và vì sao phụ thuộc thời gian/thứ tự sinh ra flaky',
-    'Viết fake repository có đếm truy vấn và tiêm java.time.Clock cố định để test service không cần DB, không ngủ',
-    'Bảo đảm test độc lập: mỗi test tự tạo dữ liệu, không chia sẻ state, và có thể chạy lại cho cùng kết quả',
+    'Phân biệt được dummy, stub, spy, mock và fake, cùng hai kiểu kiểm chứng state và interaction',
+    'Tự viết được một fake repository và một spy đếm lời gọi bằng Java thuần, không cần Mockito',
+    'Nhận ra mùi over-mocking và biết khi nào nên thay mock bằng fake hoặc test tích hợp',
   ],
-  body: `**Tóm tắt:** Test xác định (deterministic) là test cùng input, cùng code thì luôn cho cùng kết quả. Ba nguồn làm test flaky (lúc xanh lúc đỏ) ở tầng service là: đọc đồng hồ thật ({{Instant.now()}}), chia sẻ state giữa các test (static, DB dùng chung), và phụ thuộc thứ tự chạy. Cách diệt: tiêm {{Clock}} cố định, mỗi test tự tạo fake repository mới, và không giả định thứ tự chạy.
+  body: `**Tóm tắt:** Test double gồm năm loại — dummy, stub, spy, mock, fake — khác nhau ở mục đích: stub trả lời câu hỏi, mock kiểm tra hành vi, fake thay cả một cài đặt. Có hai cách khẳng định một test: state verification (kiểm tra trạng thái cuối) và interaction verification (kiểm tra service đã gọi collaborator đúng cách). Bài học này giúp bạn chọn đúng loại double để test không cản trở refactor.
 
-### Flaky là gì và vì sao nó nguy hiểm
-Một test **xác định** (deterministic — cùng input, cùng code thì luôn cho cùng kết quả) là điều kiện tối thiểu để test có giá trị. Test **flaky** (chập chờn) là test có lúc xanh lúc đỏ dù bạn không đổi một dòng code nào. Nó nguy hiểm vì khi team thấy "suite đỏ", phản xạ đầu tiên là chạy lại — nếu xanh thì bỏ qua. Dần dần mọi người mất niềm tin vào CI, và bug thật cũng bị coi là "chắc lại flaky".
+### Vì sao cần test double
+Một unit test tốt chỉ muốn kiểm tra **một** đơn vị logic. Nhưng đơn vị đó thường gọi ra ngoài: database, HTTP, hàng đợi, đồng hồ hệ thống. Nếu test thật sự gọi Postgres hay API ngân hàng thì test sẽ chậm, flaky và không chạy được trên máy không có hạ tầng. **Test double** là object thay thế cho collaborator thật, được tạo riêng cho mục đích kiểm thử.
 
-Ba nguồn flaky phổ biến nhất ở tầng service:
+Gerard Meszaros và Martin Fowler phân biệt năm loại, khác nhau ở **mục đích** chứ không phải ở cách viết:
 
-| Nguồn | Triệu chứng | Cách diệt |
+| Loại | Nhiệm vụ | Ví dụ |
 |---|---|---|
-| Phụ thuộc thời gian thật ({{Instant.now()}}, {{System.currentTimeMillis()}}) | Test hết hạn token lúc xanh lúc đỏ | Tiêm {{Clock}} cố định |
-| Chia sẻ dữ liệu giữa các test (static, DB dùng chung) | Xanh khi chạy một mình, đỏ khi chạy cùng | Mỗi test tự tạo dữ liệu, không dùng chung state |
-| Phụ thuộc thứ tự chạy / thread | Đỏ khi đảo thứ tự test | Mỗi test độc lập, không giả định thứ tự |
+| Dummy | Chỉ để lấp tham số, không bao giờ được gọi | Truyền {{null}} cho một logger không dùng |
+| Stub | Trả về dữ liệu định trước cho lời gọi | Repository luôn trả tài khoản có số dư 1.000 |
+| Spy | Ghi lại lời gọi để test kiểm tra sau | Đếm số lần gửi email, lưu tham số |
+| Mock | Đối tượng mà test **đặt kỳ vọng** tương tác lên | Kỳ vọng {{send}} được gọi đúng một lần |
+| Fake | Cài đặt thật nhưng đơn giản hơn | Repository lưu trong {{HashMap}} |
 
-### Nguyên tắc 1: không để service tự đọc đồng hồ
-Đoạn code hay viết:
+Ranh giới giữa spy và mock khá mờ: Mockito gọi tất cả là mock, còn "verify" chính là kiểm chứng interaction. Điểm cần nhớ: **stub trả lời câu hỏi, mock kiểm tra hành vi, fake thay thế cả một cài đặt**.
 
-~~~java
-boolean isExpired(Instant issuedAt) {
-    return Duration.between(Instant.now(), issuedAt).isNegative();  // đọc đồng hồ thật
-}
-~~~
+### State verification và interaction verification
+Có hai cách khẳng định một test:
 
-Test muốn kiểm tra "token hết hạn sau 30 phút" thì phải chờ thật 30 phút, hoặc dùng {{Thread.sleep}} (chậm + vẫn flaky dưới tải). Cách đúng: đưa thời gian vào từ ngoài bằng {{java.time.Clock}}:
+- **State verification**: chạy xong, nhìn vào trạng thái cuối cùng. Ví dụ sau khi chuyển 200, số dư hai tài khoản phải là 800 và 700. Cách này bền vững vì nó không quan tâm service gọi repository mấy lần, miễn kết quả đúng.
+- **Interaction verification**: khẳng định service đã gọi collaborator đúng cách. Ví dụ phải gọi {{notifier.transferCompleted("ACC-2", 200)}} đúng một lần. Cách này cần thiết khi tác dụng phụ **không quan sát được** qua state, như gửi email, publish event, gọi cổng thanh toán.
 
-~~~java
-class TokenService {
-    private final Clock clock;
-    private final Duration ttl;
+Sai lầm phổ biến là dùng interaction verification cho mọi thứ. Khi đó test biết quá nhiều về **cách** service làm việc. Bạn đổi từ hai lần {{save}} thành một lần {{saveAll}} — hành vi nghiệp vụ không đổi nhưng hàng chục test đỏ. Đây là **over-specification**, nguyên nhân số một khiến test cản trở refactor.
 
-    TokenService(Clock clock, Duration ttl) { this.clock = clock; this.ttl = ttl; }
-
-    boolean isExpired(Instant issuedAt) {
-        Instant now = clock.instant();                       // chỉ đọc clock ở đây
-        return !now.isBefore(issuedAt.plus(ttl));            // hết hạn khi now >= issuedAt + ttl
-    }
-}
-~~~
-
-Trong test, {{Clock.fixed(instant, zone)}} "đóng băng" thời gian tại một mốc. Bạn kiểm tra được cả ba biên: trước hết hạn, đúng hết hạn, sau hết hạn — mà không cần chờ.
-
-### Nguyên tắc 2: fake repository thay cho database thật
-Một service đọc/ghi qua repository. Nếu test cần Postgres thật, mỗi test tốn vài trăm mili giây cộng hạ tầng. **Fake repository** cài đặt cùng interface bằng bộ nhớ ({{HashMap}}), đủ để service chạy end-to-end:
+### Fake repository: thay cả một cài đặt
+Fake không phải "trả dữ liệu giả" đơn thuần. Nó cài đặt **cùng interface** với cài đặt thật, nhưng bằng cấu trúc dữ liệu đơn giản, và cố gắng giữ đúng ngữ nghĩa quan trọng:
 
 ~~~java
 interface AccountRepository {
@@ -4742,169 +4728,162 @@ interface AccountRepository {
 }
 
 class FakeAccountRepository implements AccountRepository {
-    private final Map<String, Account> store = new HashMap<>();
+    private final Map<String, Account> accounts = new HashMap<>();
 
     @Override public Optional<Account> find(String id) {
-        return Optional.ofNullable(store.get(id));       // đúng ngữ nghĩa "không có" = empty
+        return Optional.ofNullable(accounts.get(id));   // đúng ngữ nghĩa "không có"
     }
 
     @Override public void save(Account account) {
-        store.put(account.id(), account);                // upsert: cùng id thì ghi đè
+        accounts.put(account.id(), account);            // save là upsert, giống JPA merge
     }
 }
 ~~~
 
-Ưu điểm lớn nhất: test kiểm tra **state** (số dư cuối cùng) thay vì kiểm tra service gọi repository mấy lần. Nhờ vậy refactor bên trong service không làm test đỏ. Nếu cần phát hiện N+1, thêm bộ đếm truy vấn vào fake (như bài 011).
+Vì fake lưu thật trong bộ nhớ, bạn test được **cả chuỗi** đọc-sửa-ghi: gieo hai tài khoản, gọi chuyển tiền, rồi đọc lại số dư. Test không cần biết service gọi {{find}} hay {{save}} bao nhiêu lần, nên refactor bên trong service không làm test đỏ. Fake đặc biệt hợp với repository, gateway, cache, clock — những collaborator có hành vi **có trạng thái**.
 
-### Nguyên tắc 3: mỗi test tự tạo dữ liệu, không chia sẻ state
-Đây là nguyên tắc bị vi phạm nhiều nhất. Nếu bạn dùng một field static cho fake repository, hoặc một database dùng chung không dọn, thì thứ tự test ảnh hưởng lẫn nhau. Cách đúng: **mỗi test tạo fake mới** (hoặc gọi {{@BeforeEach}} để reset):
+Cái giá: fake là **code phải bảo trì**. Nếu fake xử lý khác thật (ví dụ {{save}} ghi đè trong khi database có ràng buộc unique) thì test xanh mà production đỏ. Giữ fake nhỏ, chỉ mô phỏng hành vi mà test thật sự dựa vào, và đừng dùng fake để thay thế integration test cho SQL phức tạp.
+
+### Stub: chỉ cần một câu trả lời
+Stub dùng khi test cần collaborator trả về một giá trị cụ thể, không quan tâm nó bị gọi thế nào:
 
 ~~~java
-class TokenServiceTest {
-
-    private FakeAccountRepository repo;
-    private TokenService service;
-
-    @BeforeEach
-    void setUp() {
-        repo = new FakeAccountRepository();                              // fake MỚI mỗi test
-        Clock clock = Clock.fixed(Instant.parse("2026-03-01T00:00:00Z"), ZoneOffset.UTC);
-        service = new TokenService(clock, Duration.ofMinutes(30));
-    }
-
-    @Test
-    void expired_afterTtl() {
-        Instant issued = Instant.parse("2026-03-01T00:00:00Z");
-        // tại 00:30 đúng hạn: coi là hết hạn
-        // (đổi clock trong test này nếu cần)
-    }
+class FixedRateGateway implements RateGateway {
+    private final BigDecimal rate;
+    FixedRateGateway(String rate) { this.rate = new BigDecimal(rate); }
+    @Override public BigDecimal rateFor(String currency) { return rate; }  // luôn 25.100
 }
 ~~~
 
-Nếu bạn cần thay đổi thời gian trong một test, hãy tạo {{Clock}} mới cho test đó ({{Clock.offset}} hoặc một {{MutableClock}} tự viết). Đừng dùng chung một clock mutable giữa các test rồi advance — test trước advance làm test sau lệch, sinh flaky.
+Với Mockito, stub viết bằng {{when(gateway.rateFor("USD")).thenReturn(new BigDecimal("25100"))}}. Stub rất rẻ và không cần verify. Nhưng nếu bạn stub quá nhiều method để "chạy được", đó là dấu hiệu object đang phụ thuộc quá nhiều thứ.
 
-### Đi trọn một ví dụ: service rút tiền với phí theo giờ
-Hãy viết một service rút tiền: phí = 0 nếu rút trong giờ hành chính (giờ UTC 8:00–17:00), ngược lại phụ phí 10.000. Service đọc giờ từ {{Clock}} và đọc/ghi tài khoản qua repository. Test cần phủ:
+### Spy: ghi lại để kiểm tra sau
+Khi tác dụng phụ không nhìn thấy được qua state, hãy dùng spy hoặc mock để kiểm tra interaction. Một spy viết tay rất đơn giản:
 
-| Test | Mốc giờ (Clock) | Kỳ vọng |
+~~~java
+class RecordingNotifier implements Notifier {
+    private final List<String> calls = new ArrayList<>();
+
+    @Override public void transferCompleted(String accountId, long amount) {
+        calls.add(accountId + ":" + amount);          // ghi lại đúng tham số
+    }
+
+    List<String> calls() { return calls; }            // test đọc sau khi chạy
+}
+~~~
+
+Sau đó test khẳng định {{calls.size() == 1}} và {{calls.get(0).equals("ACC-2:200")}}. Đây là interaction verification nhưng **không phụ thuộc thư viện**, dễ đọc và dễ debug hơn {{verify(notifier).transferCompleted(...)}} khi tham số phức tạp.
+
+Đừng lạm dụng: chỉ verify những tương tác **là hợp đồng nghiệp vụ**. "Phải gửi đúng một thông báo cho người nhận" là hợp đồng. "Phải gọi {{find}} trước {{save}}" thường chỉ là chi tiết cài đặt.
+
+### Khi nào dùng cái nào
+| Tình huống | Nên dùng | Lý do |
 |---|---|---|
-| Giờ hành chính | 2026-03-02T10:00:00Z | Phí 0, số dư giảm đúng amount |
-| Ngoài giờ | 2026-03-02T20:00:00Z | Phí 10.000, số dư giảm amount + 10.000 |
-| Không đủ tiền | 2026-03-02T10:00:00Z | Ném exception, không save gì |
-| Tài khoản không tồn tại | 2026-03-02T10:00:00Z | Ném IllegalArgumentException, không save |
+| Repository, cache, gateway có trạng thái | Fake | Test được cả luồng đọc-ghi, không khoá vào số lời gọi |
+| Collaborator chỉ cấp dữ liệu vào | Stub | Một giá trị cố định là đủ |
+| Gửi email, publish event, gọi thanh toán | Mock hoặc spy | Tác dụng phụ không quan sát được qua state |
+| Value object, DTO, record | Không double | Tạo object thật rẻ hơn và đúng hơn |
+| SQL, transaction, serialization | Test tích hợp | Double sẽ che mất lỗi thật của hạ tầng |
 
-Bốn test này dùng cùng một fake repository mới ở mỗi test, và một {{Clock.fixed}} khác nhau. Không cần database, không cần ngủ, chạy trong vài mili giây và cho cùng kết quả mọi lúc.
+Một quy tắc thực dụng: **mock ở biên của hệ thống, fake ở biên của tầng, còn logic thuần thì không cần double nào**. Nếu một class cần mock 6 dependency, vấn đề không nằm ở test mà ở thiết kế class đang ôm quá nhiều trách nhiệm.
 
 ### Bẫy production hay gặp
-- **Dùng {{Thread.sleep}} để "chờ" cho hết hạn**: làm suite chậm, và vẫn flaky vì đồng hồ hệ thống không chính xác tuyệt đối.
-- **Một {{MutableClock}} static dùng chung**: test này advance, test sau thấy thời gian đã bị dịch. Tạo clock mới mỗi test.
-- **Fake repository static hoặc dùng chung**: dữ liệu rò rỉ, test phụ thuộc thứ tự. Luôn tạo fake mới trong {{@BeforeEach}} hoặc đầu mỗi test.
-- **Test phụ thuộc thứ tự chạy**: đặt tên {{test1}}, {{test2}} và giả định JUnit chạy theo thứ tự đó. JUnit không đảm bảo thứ tự; chạy song song sẽ vỡ. Mỗi test phải độc lập.
-- **So sánh thời gian bằng {{equals}}**: {{Instant.now()}} trên JDK 17 có độ phân giải nano giây, còn database thường lưu micro giây. Lưu rồi đọc lại, giá trị bị cắt nên {{equals}} false. Dùng clock cố định, hoặc so sánh bằng {{isBefore}}/{{isAfter}} trên biên đã thống nhất.
+- **Mock trả giá trị "rỗng" theo mặc định**: method chưa stub trên mock Mockito trả {{null}} cho object thường, 0/false cho kiểu nguyên thuỷ, collection rỗng và {{Optional.empty()}} — nên test có thể "xanh" vì đi nhầm nhánh "không tìm thấy", hoặc đỏ vì {{NullPointerException}} khó hiểu. Dùng {{@ExtendWith(MockitoExtension.class)}}: chế độ strict stubs mặc định báo {{UnnecessaryStubbingException}} khi có stub không được dùng tới, giúp phát hiện stub sai tham số.
+- **Verify quá chặt**: {{verify(repo, times(2)).save(any())}} làm test đỏ khi refactor sang {{saveAll}}. Ưu tiên state verification khi có thể.
+- **Fake lệch thật**: fake cho phép hai bản ghi trùng key trong khi database có unique constraint. Test xanh, production lỗi. Những ràng buộc quan trọng phải được test ở tầng tích hợp.
+- **Chia sẻ fake có trạng thái giữa các test**: dữ liệu rò rỉ làm test phụ thuộc thứ tự. Tạo fake mới trong mỗi test hoặc có hàm {{clear()}} gọi ở {{@BeforeEach}}.
+- **Mock value object và kiểu JDK**: đừng mock {{List}}, {{BigDecimal}}, {{LocalDate}} hay DTO của bạn — tạo object thật vừa rẻ vừa đúng hơn. Tương tự nguyên tắc "don't mock what you don't own": thay vì mock trực tiếp client của thư viện bên thứ ba (AWS SDK, RestTemplate), hãy bọc nó sau một interface của mình rồi mock/fake interface đó, còn client thật thì test tích hợp (WireMock, Testcontainers).
 
-> Senior tip: quy ước của mình là "không có {{now()}} không tham số trong domain code". Mọi chỗ cần thời gian đều nhận {{Clock}} từ ngoài; chỉ bean cấu hình mới gọi {{Clock.systemUTC()}}. Khi review, {{grep -n '\\.now()' js/ src/}} là ra ngay vi phạm. Một test flaky không phải "xui rủi" — nó là bằng chứng thiết kế đang giấu một dependency ẩn (thời gian, thứ tự, hoặc state dùng chung).
+> Senior tip: khi review test, hãy hỏi "nếu ngày mai tôi đổi cách cài đặt bên trong service, test này có đỏ không?". Nếu có mà hành vi nghiệp vụ không đổi, test đang kiểm tra implementation chứ không kiểm tra hợp đồng. Đội trưởng giỏi thường giữ tỉ lệ verify interaction rất thấp, chỉ ở những biên như thanh toán, thông báo và event.
 
-### Ví dụ đời thực: test hết hạn token đỏ 1 trong 20 lần
-Một suite có hai test dùng chung một {{MutableClock}} {{static}}: test A "advance 31 ngày rồi kiểm tra token hết hạn" chạy trước, test B "token còn hạn tại ngày 0" chạy sau và thấy đồng hồ đã bị advance nên đỏ. Chạy riêng từng test thì cả hai đều xanh, nên cả team tưởng là "CI bị xui" và cứ chạy lại cho tới khi xanh. Thực tế còn một test thứ ba dùng fake repository {{static}}, nên dữ liệu cũng rò rỉ giữa các test. Cách sửa: mỗi test tự tạo {{Clock.fixed}} và fake repository mới (hoặc reset trong {{@BeforeEach}}), bỏ mọi {{Thread.sleep}}. Sau đó suite chạy 200 lần liên tiếp không đỏ lần nào, và tổng thời gian giảm vì không còn đoạn nào phải ngủ.
+### Ví dụ đời thực: service chuyển tiền và 23 test đỏ
+Một team đang maintain {{TransferService}}. Ban đầu mọi test đều dùng Mockito: mock repository, mock notifier. Khi team refactor bên trong service — đổi từ hai lần {{save}} thành một lần {{saveAll}} để giảm round-trip database — **23 test đỏ** dù hành vi nghiệp vụ không đổi: số dư cuối cùng hai tài khoản vẫn đúng 800 và 700. Đội mất hai ngày phân loại: test nào kiểm tra kết quả (dùng fake), test nào kiểm tra số lần gọi (over-specification). Sau khi thay {{FakeAccountRepository}}, 23 test đỏ giảm còn 3 — chỉ những test kiểm tra interaction thực sự (gửi đúng một thông báo cho người nhận) còn đỏ. Kết quả: CI từ 12 phút xuống 4 phút và refactor không còn bị test cản trở.
 
 ### Trả lời mẫu khi phỏng vấn
-"Khi được hỏi 'làm sao đảm bảo test không flaky?', tôi nói: trước hết định nghĩa test xác định — cùng input, cùng code thì luôn cho cùng kết quả. Ba nguồn flaky tôi luôn soi là thời gian thật, state dùng chung và thứ tự chạy. Với thời gian, tôi tiêm {{java.time.Clock}} vào service rồi dùng {{Clock.fixed}} hoặc {{Clock.offset}} trong test, không bao giờ {{Thread.sleep}}. Với state, mỗi test tự tạo dữ liệu của nó, không dùng field {{static}} hay database dùng chung không dọn. Với thứ tự, tôi không đặt tên {{test01}}, {{test02}} rồi dựa vào thứ tự đó — JUnit không đảm bảo thứ tự, chạy song song sẽ vỡ. Và khi một test đỏ mà chạy một mình lại xanh, tôi không chạy lại cho qua: đó gần như luôn là shared state, phải tìm cho ra chỗ dữ liệu bị để lại."
+"Khi interviewer hỏi 'phân biệt stub và mock', tôi sẽ nói: stub là người trả lời câu hỏi, mock là người kiểm tra hành vi. Stub chỉ cung cấp dữ liệu định trước — ví dụ repository luôn trả tài khoản có số dư 1.000 — mà không quan tâm nó được gọi thế nào. Mock đặt kỳ vọng về tương tác: {{verify(notifier).transferCompleted('ACC-2', 200)}} khẳng định đúng một lần gọi với đúng tham số. Fake là thứ thay cả một cài đặt: implement cùng interface bằng cấu trúc dữ liệu đơn giản, ví dụ HashMap, và giữ đúng ngữ nghĩa đọc-sau-ghi. Tôi chọn fake cho repository vì nó cho phép test cả chuỗi đọc-sửa-ghi mà không khóa vào số lần gọi method, nên refactor bên trong service không làm test đỏ. Mock chỉ dùng cho tác dụng phụ không quan sát được qua state, như gửi email hoặc publish event. Quy tắc thực dụng: mock ở biên của hệ thống, fake ở biên của tầng, logic thuần thì không cần double nào."
 
 ### Liên hệ phỏng vấn
-Interviewer hay hỏi: "Làm sao test một service phụ thuộc thời gian?", "Fake repository khác mock ở điểm nào khi test service?", "Bạn đảm bảo các test độc lập thế nào?", "Thế nào là test xác định?". Trả lời tốt: tiêm {{Clock}} và dùng {{Clock.fixed/offset}} để kiểm soát biên thời gian; dùng fake repository để test state thay vì số lời gọi; mỗi test tự tạo dữ liệu của nó, không chia sẻ state, không giả định thứ tự; và kết luận "test flaky là lỗi thiết kế, không phải may rủi". Bài tập dưới đây bắt bạn viết đúng một service như vậy: fake repository + clock cố định + các test độc lập.`,
+Interviewer hay hỏi: "Phân biệt stub và mock", "fake khác mock ở đâu", "vì sao mock quá nhiều là code smell", và đưa một class có 5 dependency rồi hỏi bạn test thế nào. Câu trả lời tốt không phải là liệt kê định nghĩa mà là nói rõ **bạn đang kiểm chứng state hay interaction**, và vì sao chọn cách đó. Bài tập dưới đây bắt bạn tự viết fake và spy để thấy rõ khác biệt thay vì học thuộc.`,
   exercises: [
     {
-      title: 'WithdrawalService: fake repository + Clock cố định, test độc lập',
-      prompt: `Viết một service rút tiền có phí phụ thuộc giờ, rồi viết fake repository và các tiện ích test (tất cả trong các class cho sẵn):
+      title: 'Tự viết fake repository và spy notifier cho luồng chuyển tiền',
+      prompt: `Cho sẵn interface {{AccountRepository}}, {{Notifier}}, class {{Account}} và {{TransferService}}. Hãy hoàn thiện hai test double:
 
-**1. {{WithdrawalService.withdraw(accountId, amount)}}** (đơn vị: đồng):
-- Nếu {{amount <= 0}} → ném {{IllegalArgumentException}}.
-- Tìm tài khoản bằng {{repo.find(accountId)}}; không có → ném {{IllegalArgumentException}}.
-- Nếu {{balance < amount + fee}} → ném {{IllegalStateException}} (không đủ tiền, tính cả phí).
-- Phí = {{0}} nếu giờ hiện tại (theo {{clock}}) nằm trong giờ hành chính {{8:00..17:00}} UTC (bao gồm 8:00, **không** bao gồm 17:00); ngược lại phí = {{10_000}}.
-- Trừ {{amount + fee}} khỏi số dư và lưu lại ({{repo.save}}). Trả về {{WithdrawalResult}} gồm {{account}} sau khi trừ và {{fee}}.
-- Nếu số dư không đủ (sau khi tính phí) thì không được save.
+- {{FakeAccountRepository}}: lưu account trong {{HashMap}} theo {{id}}. {{find(id)}} trả {{Optional.empty()}} nếu chưa có, ngược lại trả account đã lưu. {{save(account)}} là **upsert** (cùng id thì ghi đè).
+- {{RecordingNotifier}}: mỗi lần {{transferCompleted(accountId, amount)}} được gọi thì thêm chuỗi {{accountId + ":" + amount}} vào danh sách; {{calls()}} trả danh sách đó để test kiểm tra.
 
-**2. {{FakeAccountRepository}}**:
-- {{find(id)}}: trả {{Optional.ofNullable(store.get(id))}}.
-- {{save(account)}}: {{store.put(account.id(), account)}} (upsert).
-- {{seed(id, balance)}}: tiện ích tạo và lưu tài khoản mới.
-- {{balanceOf(id)}}: trả số dư hiện tại, hoặc {{null}} nếu không có.
+Không cần Mockito. Chú ý: fake phải giữ đúng ngữ nghĩa đọc-sau-ghi, vì {{TransferService}} đọc số dư rồi ghi lại.`,
+      starter: `interface AccountRepository {
+    Optional<Account> find(String id);
+    void save(Account account);
+}
 
-**3. {{FixedClockServiceTestRunner}}}**: không cần viết test JUnit thật; hãy viết {{runWithClock(instant)}} tiện ích: tạo một {{Clock.fixed}} tại {{instant}} (UTC), khởi tạo {{WithdrawalService}} với clock đó và fake repository đã seed, rồi trả về service.
+interface Notifier {
+    void transferCompleted(String accountId, long amount);
+}
 
-Chú ý: giờ hành chính tính theo {{clock.instant()}} đã chuyển sang UTC, không dùng giờ hệ thống.`,
-      starter: `import java.time.*;
-import java.util.*;
+final class Account {
+    private final String id;
+    private final String owner;
+    private final long balance;
 
-class WithdrawalService {
-    interface AccountRepository {
-        Optional<Account> find(String id);
-        void save(Account account);
+    Account(String id, String owner, long balance) {
+        this.id = id;
+        this.owner = owner;
+        this.balance = balance;
     }
 
-    static final class Account {
-        final String id;
-        long balance;
-        Account(String id, long balance) { this.id = id; this.balance = balance; }
-        String id() { return id; }
-        long balance() { return balance; }
+    String id() { return id; }
+    String owner() { return owner; }
+    long balance() { return balance; }
+}
+
+class FakeAccountRepository implements AccountRepository {
+    private final Map<String, Account> accounts = new HashMap<>();
+
+    @Override public Optional<Account> find(String id) {
+        throw new UnsupportedOperationException("TODO");
     }
 
-    static final class WithdrawalResult {
-        final Account account;
-        final long fee;
-        WithdrawalResult(Account account, long fee) { this.account = account; this.fee = fee; }
-        Account account() { return account; }
-        long fee() { return fee; }
+    @Override public void save(Account account) {
+        throw new UnsupportedOperationException("TODO");
     }
 
+    int size() { return accounts.size(); }
+}
+
+class RecordingNotifier implements Notifier {
+    private final List<String> calls = new ArrayList<>();
+
+    @Override public void transferCompleted(String accountId, long amount) {
+        throw new UnsupportedOperationException("TODO");
+    }
+
+    List<String> calls() { return calls; }
+}
+
+class TransferService {
     private final AccountRepository repo;
-    private final Clock clock;
+    private final Notifier notifier;
 
-    WithdrawalService(AccountRepository repo, Clock clock) {
+    TransferService(AccountRepository repo, Notifier notifier) {
         this.repo = repo;
-        this.clock = clock;
+        this.notifier = notifier;
     }
 
-    WithdrawalResult withdraw(String accountId, long amount) {
-        throw new UnsupportedOperationException("TODO");
-    }
-
-    static long feeFor(Clock clock) {
-        throw new UnsupportedOperationException("TODO");
-    }
-}
-
-class FakeAccountRepository implements WithdrawalService.AccountRepository {
-    private final Map<String, WithdrawalService.Account> store = new HashMap<>();
-
-    @Override public Optional<WithdrawalService.Account> find(String id) {
-        throw new UnsupportedOperationException("TODO");
-    }
-
-    @Override public void save(WithdrawalService.Account account) {
-        throw new UnsupportedOperationException("TODO");
-    }
-
-    void seed(String id, long balance) {
-        throw new UnsupportedOperationException("TODO");
-    }
-
-    Long balanceOf(String id) {
-        throw new UnsupportedOperationException("TODO");
-    }
-}
-
-class FixedClockServiceTestRunner {
-    static WithdrawalService withClock(String instant, FakeAccountRepository repo) {
-        throw new UnsupportedOperationException("TODO");
+    void transfer(String fromId, String toId, long amount) {
+        if (amount <= 0) throw new IllegalArgumentException("amount must be positive");
+        Account from = repo.find(fromId)
+                .orElseThrow(() -> new IllegalArgumentException("unknown account " + fromId));
+        Account to = repo.find(toId)
+                .orElseThrow(() -> new IllegalArgumentException("unknown account " + toId));
+        if (from.balance() < amount) throw new IllegalStateException("insufficient funds");
+        repo.save(new Account(from.id(), from.owner(), from.balance() - amount));
+        repo.save(new Account(to.id(), to.owner(), to.balance() + amount));
+        notifier.transferCompleted(to.id(), amount);
     }
 }`,
-      tests: `import java.time.*;
-import java.util.*;
-
-public class Main {
+      tests: `public class Main {
     static int passed = 0, total = 0;
     static void check(String name, Runnable r) {
         total++;
@@ -4917,221 +4896,459 @@ public class Main {
     static void throwsType(Class<? extends Throwable> type, Runnable r) {
         try { r.run(); } catch (Throwable t) {
             if (type.isInstance(t)) return;
-            throw new AssertionError("mong doi " + type.getSimpleName() + " nhung nhan " + t.getClass().getSimpleName());
+            throw new AssertionError("mong đợi " + type.getSimpleName() + " nhưng nhận " + t.getClass().getSimpleName());
         }
-        throw new AssertionError("mong doi " + type.getSimpleName() + " nhung khong nem gi");
+        throw new AssertionError("mong đợi " + type.getSimpleName() + " nhưng không ném gì");
     }
-    static final String IN_HOURS = "2026-03-02T10:00:00Z";   // 10:00 UTC -> trong gio hanh chinh
-    static final String OFF_HOURS = "2026-03-02T20:00:00Z";  // 20:00 UTC -> ngoai gio
-    static final String BOUNDARY_START = "2026-03-02T08:00:00Z";
-    static final String BOUNDARY_END = "2026-03-02T17:00:00Z";
-
+    static FakeAccountRepository seeded() {
+        FakeAccountRepository repo = new FakeAccountRepository();
+        repo.save(new Account("ACC-1", "An", 1_000));
+        repo.save(new Account("ACC-2", "Binh", 500));
+        return repo;
+    }
     public static void main(String[] args) {
-        check("business hours: no fee and balance decreases by amount", () -> {
-            FakeAccountRepository repo = new FakeAccountRepository();
-            repo.seed("A1", 100_000);
-            WithdrawalService svc = FixedClockServiceTestRunner.withClock(IN_HOURS, repo);
-            WithdrawalService.WithdrawalResult r = svc.withdraw("A1", 30_000);
-            eq(0L, r.fee());
-            eq(70_000L, r.account().balance());
-            eq(70_000L, repo.balanceOf("A1"));
+        check("fake stores and finds an account", () -> {
+            FakeAccountRepository repo = seeded();
+            eq(1_000L, repo.find("ACC-1").orElseThrow().balance());
+            eq(Optional.empty(), repo.find("missing"));
+            eq(2, repo.size());
         });
-        check("off hours: 10.000 fee added to the debit", () -> {
-            FakeAccountRepository repo = new FakeAccountRepository();
-            repo.seed("A2", 100_000);
-            WithdrawalService svc = FixedClockServiceTestRunner.withClock(OFF_HOURS, repo);
-            WithdrawalService.WithdrawalResult r = svc.withdraw("A2", 30_000);
-            eq(10_000L, r.fee());
-            eq(60_000L, r.account().balance());        // 100.000 - 30.000 - 10.000
+        check("fake save replaces the account with the same id", () -> {
+            FakeAccountRepository repo = seeded();
+            repo.save(new Account("ACC-1", "An", 999));
+            eq(999L, repo.find("ACC-1").orElseThrow().balance());
+            eq(2, repo.size());
         });
-        check("boundary 08:00 is business hours (inclusive), 17:00 is not", () -> {
-            FakeAccountRepository repo1 = new FakeAccountRepository();
-            repo1.seed("B", 50_000);
-            eq(0L, FixedClockServiceTestRunner.withClock(BOUNDARY_START, repo1).withdraw("B", 10_000).fee());
-            FakeAccountRepository repo2 = new FakeAccountRepository();
-            repo2.seed("B", 50_000);
-            eq(10_000L, FixedClockServiceTestRunner.withClock(BOUNDARY_END, repo2).withdraw("B", 10_000).fee());
+        check("transfer moves money and keeps both balances", () -> {
+            FakeAccountRepository repo = seeded();
+            RecordingNotifier notifier = new RecordingNotifier();
+            new TransferService(repo, notifier).transfer("ACC-1", "ACC-2", 200);
+            eq(800L, repo.find("ACC-1").orElseThrow().balance());
+            eq(700L, repo.find("ACC-2").orElseThrow().balance());
         });
-        check("insufficient funds: throws and does not save (balance unchanged)", () -> {
-            FakeAccountRepository repo = new FakeAccountRepository();
-            repo.seed("A3", 25_000);
-            WithdrawalService svc = FixedClockServiceTestRunner.withClock(IN_HOURS, repo);
-            throwsType(IllegalStateException.class, () -> svc.withdraw("A3", 30_000));
-            eq(25_000L, repo.balanceOf("A3"));          // không save
+        check("spy records exactly one notification with receiver and amount", () -> {
+            FakeAccountRepository repo = seeded();
+            RecordingNotifier notifier = new RecordingNotifier();
+            new TransferService(repo, notifier).transfer("ACC-1", "ACC-2", 200);
+            eq(1, notifier.calls().size());
+            eq("ACC-2:200", notifier.calls().get(0));
         });
-        check("fee counts toward affordability: 100.000 cannot withdraw 95.000 off hours", () -> {
-            FakeAccountRepository repo = new FakeAccountRepository();
-            repo.seed("A4", 100_000);
-            WithdrawalService svc = FixedClockServiceTestRunner.withClock(OFF_HOURS, repo);
-            throwsType(IllegalStateException.class, () -> svc.withdraw("A4", 95_000));
-            eq(100_000L, repo.balanceOf("A4"));
+        check("insufficient funds: no save, no notification", () -> {
+            FakeAccountRepository repo = seeded();
+            RecordingNotifier notifier = new RecordingNotifier();
+            TransferService service = new TransferService(repo, notifier);
+            throwsType(IllegalStateException.class, () -> service.transfer("ACC-2", "ACC-1", 10_000));
+            eq(1_000L, repo.find("ACC-1").orElseThrow().balance());
+            eq(500L, repo.find("ACC-2").orElseThrow().balance());
+            eq(0, notifier.calls().size());
         });
-        check("unknown account throws IllegalArgumentException", () -> {
-            FakeAccountRepository repo = new FakeAccountRepository();
-            WithdrawalService svc = FixedClockServiceTestRunner.withClock(IN_HOURS, repo);
-            throwsType(IllegalArgumentException.class, () -> svc.withdraw("ghost", 10_000));
+        check("unknown receiver: no notification; amount must be positive", () -> {
+            FakeAccountRepository repo = seeded();
+            RecordingNotifier notifier = new RecordingNotifier();
+            TransferService service = new TransferService(repo, notifier);
+            throwsType(IllegalArgumentException.class, () -> service.transfer("ACC-1", "ghost", 10));
+            throwsType(IllegalArgumentException.class, () -> service.transfer("ACC-1", "ACC-2", 0));
+            eq(0, notifier.calls().size());
+            eq(1_000L, repo.find("ACC-1").orElseThrow().balance());
         });
-        check("non-positive amount throws IllegalArgumentException", () -> {
-            FakeAccountRepository repo = new FakeAccountRepository();
-            repo.seed("A5", 50_000);
-            WithdrawalService svc = FixedClockServiceTestRunner.withClock(IN_HOURS, repo);
-            throwsType(IllegalArgumentException.class, () -> svc.withdraw("A5", 0));
-            throwsType(IllegalArgumentException.class, () -> svc.withdraw("A5", -5));
-            eq(50_000L, repo.balanceOf("A5"));
+        System.out.println("RESULT " + passed + "/" + total);
+    }
+}`,
+      reference: `interface AccountRepository {
+    Optional<Account> find(String id);
+    void save(Account account);
+}
+
+interface Notifier {
+    void transferCompleted(String accountId, long amount);
+}
+
+final class Account {
+    private final String id;
+    private final String owner;
+    private final long balance;
+
+    Account(String id, String owner, long balance) {
+        this.id = id;
+        this.owner = owner;
+        this.balance = balance;
+    }
+
+    String id() { return id; }
+    String owner() { return owner; }
+    long balance() { return balance; }
+}
+
+class FakeAccountRepository implements AccountRepository {
+    private final Map<String, Account> accounts = new HashMap<>();
+
+    @Override public Optional<Account> find(String id) {
+        return Optional.ofNullable(accounts.get(id));
+    }
+
+    @Override public void save(Account account) {
+        accounts.put(account.id(), account);
+    }
+
+    int size() { return accounts.size(); }
+}
+
+class RecordingNotifier implements Notifier {
+    private final List<String> calls = new ArrayList<>();
+
+    @Override public void transferCompleted(String accountId, long amount) {
+        calls.add(accountId + ":" + amount);
+    }
+
+    List<String> calls() { return calls; }
+}
+
+class TransferService {
+    private final AccountRepository repo;
+    private final Notifier notifier;
+
+    TransferService(AccountRepository repo, Notifier notifier) {
+        this.repo = repo;
+        this.notifier = notifier;
+    }
+
+    void transfer(String fromId, String toId, long amount) {
+        if (amount <= 0) throw new IllegalArgumentException("amount must be positive");
+        Account from = repo.find(fromId)
+                .orElseThrow(() -> new IllegalArgumentException("unknown account " + fromId));
+        Account to = repo.find(toId)
+                .orElseThrow(() -> new IllegalArgumentException("unknown account " + toId));
+        if (from.balance() < amount) throw new IllegalStateException("insufficient funds");
+        repo.save(new Account(from.id(), from.owner(), from.balance() - amount));
+        repo.save(new Account(to.id(), to.owner(), to.balance() + amount));
+        notifier.transferCompleted(to.id(), amount);
+    }
+}`,
+      hints: [
+        'Fake repository: {{find}} dùng {{Optional.ofNullable(accounts.get(id))}}, {{save}} dùng {{accounts.put(account.id(), account)}}.',
+        'Spy chỉ cần một {{ArrayList}}; trong {{transferCompleted}} thêm {{accountId + ":" + amount}}. Test đọc {{calls()}} sau khi service chạy xong.',
+        'Chú ý thứ tự: service kiểm tra số dư **trước khi** save, nên trường hợp lỗi không được ghi hay thông báo gì.',
+      ],
+      explain: `Điểm chính của bài này là **state verification** và **interaction verification** cùng tồn tại trong một test:
+
+- Fake repository cho phép nhìn trạng thái cuối (số dư hai tài khoản) mà không quan tâm service gọi {{find}}/{{save}} mấy lần. Đây là cách bền vững khi refactor.
+- Spy notifier kiểm tra đúng một tương tác không quan sát được qua state: thông báo cho người nhận với đúng số tiền.
+
+Lỗi hay gặp:
+- Dùng {{List}} làm fake repository nhưng quên upsert theo id, khiến {{save}} cùng id tạo hai bản ghi và test đọc sai.
+- Trả {{null}} thay vì {{Optional.empty()}} trong {{find}}, gây {{NullPointerException}} trong {{orElseThrow}}.
+- Ghi thông báo trước khi kiểm tra số dư, khiến trường hợp lỗi vẫn gửi thông báo.
+- Trả thẳng danh sách nội bộ từ {{calls()}} rồi test vô tình sửa nó. Trong code thật nên trả {{List.copyOf(calls)}} nếu muốn bảo vệ trạng thái.
+
+Khi dùng Mockito, bài này tương đương {{when(repo.find("ACC-1")).thenReturn(...)}} cho stub, {{verify(notifier).transferCompleted("ACC-2", 200)}} cho interaction, còn fake repository thường được thay bằng Testcontainers ở tầng tích hợp.`,
+    },
+  ],
+  check: [
+    {
+      q: 'Bạn cần kiểm tra service gửi **đúng một** email xác nhận sau khi đặt hàng. Cách nào phù hợp nhất?',
+      options: [
+        'Dùng fake email sender và kiểm tra file trên đĩa',
+        'Dùng spy/mock ghi lại lời gọi rồi verify đúng một lần với đúng tham số',
+        'Dùng stub luôn trả về true, không cần kiểm tra gì thêm',
+        'Không cần test vì email không ảnh hưởng nghiệp vụ',
+      ],
+      answer: 1,
+      explain: `Gửi email là tác dụng phụ không quan sát được qua state của service, nên cần **interaction verification**: spy hoặc mock ghi lại lời gọi rồi khẳng định số lần và tham số. Fake ghi ra đĩa là quá nặng và phụ thuộc môi trường; stub chỉ trả lời mà không chứng minh có gọi; bỏ test là bỏ mất hợp đồng nghiệp vụ quan trọng.`,
+    },
+    {
+      q: 'Vì sao {{verify(repo, times(2)).save(any())}} thường là dấu hiệu test quá chặt?',
+      options: [
+        'Vì Mockito không hỗ trợ {{times(2)}}',
+        'Vì verify chỉ dùng được với static method',
+        'Vì nó khoá test vào số lần gọi nội bộ, nên refactor đúng đắn cũng làm test đỏ',
+        'Vì {{save}} không bao giờ được gọi hai lần trong thực tế',
+      ],
+      answer: 2,
+      explain: `Số lần gọi bên trong thường là chi tiết cài đặt. Nếu hành vi nghiệp vụ chỉ yêu cầu dữ liệu cuối cùng đúng, việc đổi hai lần {{save}} thành một lần {{saveAll}} là refactor hợp lệ nhưng test sẽ đỏ. Mockito hỗ trợ {{times(2)}} bình thường; verify dùng được với mọi mock, không riêng static; và không có quy tắc "save không bao giờ gọi hai lần".`,
+    },
+    {
+      q: 'Khi nào **fake** (in-memory repository) tốt hơn mock?',
+      options: [
+        'Khi cần test cả chuỗi đọc-sửa-ghi và không muốn phụ thuộc số lời gọi',
+        'Khi collaborator là một interface không có cài đặt thật',
+        'Khi muốn kiểm tra chính xác thứ tự gọi các method',
+        'Khi cần mô phỏng lỗi mạng ngẫu nhiên',
+      ],
+      answer: 0,
+      explain: `Fake cài đặt cùng interface bằng cấu trúc dữ liệu đơn giản, nên test được trạng thái sau nhiều bước mà không cần verify từng lời gọi. "Interface chưa có cài đặt thật" không phải lý do để chọn fake thay vì mock — trường hợp đó dùng được cả hai tuỳ mục đích. Muốn kiểm tra thứ tự gọi thì dùng mock/spy với {{InOrder}}; mô phỏng lỗi mạng ngẫu nhiên là fault injection, không phải ưu điểm của fake.`,
+    },
+  ],
+  related: ['testing-003', 'testing-010'],
+  tags: ['test double', 'fake', 'stub', 'mock', 'spy', 'unit test'],
+},
+{
+  id: 'lesson-testing-014',
+  track: 'testing',
+  order: 14,
+  title: 'Test code phụ thuộc thời gian bằng Clock cố định — tính phí trễ hạn theo ngày',
+  level: 'senior',
+  minutes: 25,
+  goals: [
+    'Giải thích được vì sao {{LocalDateTime.now()}} là dependency ẩn và làm test không deterministic',
+    'Inject {{java.time.Clock}} và dùng {{Clock.fixed}}/{{Clock.offset}} để test đúng biên hạn dùng',
+    'Viết service tính phí trễ hạn theo ngày (làm tròn lên) và test bằng Clock cố định',
+  ],
+  body: `**Tóm tắt:** Thời gian là một dependency ẩn: {{Instant.now()}} gọi đồng hồ thật nên test không thể kiểm soát được các biên (trước expiry, đúng expiry, sau expiry). Giải pháp là tiêm {{java.time.Clock}} vào service, dùng {{Clock.fixed()}} để đóng băng và {{Clock.offset()}} để dịch chuyển, từ đó test được mọi mốc trong vài mili giây mà không cần ngủ.
+
+### Thời gian là một dependency, không phải hằng số
+Đoạn code sau trông vô hại nhưng là một trong những nguyên nhân flaky test phổ biến nhất:
+
+~~~java
+boolean isOverdue(Instant dueDate) {
+    return Instant.now().isAfter(dueDate);          // đọc đồng hồ hệ thống ngay bên trong
+}
+~~~
+
+{{Instant.now()}} gọi đồng hồ thật. Test muốn kiểm tra "quá hạn đúng lúc" thì phải chờ thời gian trôi, hoặc dựng dữ liệu quanh {{now}} và hy vọng test chạy đủ nhanh. Khi CI chậm, test đỏ; khi chạy lại trên máy khác, test xanh. Tệ hơn, không thể test được các mốc biên như "còn đúng 1 giây", "vừa quá hạn", "qua năm nhuận" nếu không đợi thật.
+
+Cách đúng là **đưa thời gian vào từ bên ngoài**. Java 8 có sẵn abstraction {{java.time.Clock}}:
+
+~~~java
+class LateFeeService {
+    private final Clock clock;
+
+    LateFeeService(Clock clock) { this.clock = clock; }
+
+    long calculateFee(Instant dueDate, long dailyRate) {
+        Instant now = clock.instant();                    // chỉ đọc clock ở đây
+        if (now.isBefore(dueDate) || now.equals(dueDate)) return 0;  // đúng hạn hoặc trước hạn: không phí
+        long seconds = Duration.between(dueDate, now).getSeconds();
+        long days = (seconds + 86_399) / 86_400;          // ceiling: 1 giây vượt cũng tính 1 ngày
+        return days * dailyRate;
+    }
+}
+~~~
+
+Production truyền {{Clock.systemUTC()}} (hoặc bean tương ứng timezone nghiệp vụ); test truyền {{Clock.fixed(...)}} hoặc {{Clock.offset(...)}}. Từ đây mọi mốc thời gian đều điều khiển được, test chạy trong vài mili giây và cho cùng kết quả mọi lúc.
+
+### Các loại Clock có sẵn
+| Clock | Ý nghĩa | Dùng khi |
+|---|---|---|
+| {{Clock.systemUTC()}} | Đồng hồ thật, múi giờ UTC | Production cho mốc thời gian tuyệt đối |
+| {{Clock.systemDefaultZone()}} | Đồng hồ thật theo timezone JVM | Hiếm khi nên dùng trong server |
+| {{Clock.fixed(instant, zone)}} | Luôn trả cùng một instant | Test một mốc cố định |
+| {{Clock.offset(base, duration)}} | Dịch đồng hồ nền thêm một khoảng | Test "sau 23 giờ", "sau 7 ngày" |
+| {{Clock.tick(base, duration)}} | Làm tròn **xuống** theo bước {{duration}} (ví dụ bỏ hết mili giây) | Test code nhạy với độ phân giải thời gian, như cache đếm theo giây |
+
+~~~java
+Instant base = Instant.parse("2026-03-01T00:00:00Z");
+Clock day0  = Clock.fixed(base, ZoneOffset.UTC);
+Clock plus23h = Clock.offset(day0, Duration.ofHours(23));
+Clock day7  = Clock.offset(day0, Duration.ofDays(7));
+~~~
+
+Chú ý {{Clock.fixed}} **không tự chạy**. Nếu code cần thời gian trôi trong một lần test (ví dụ timeout, retry backoff), hãy dùng một mutable clock tự viết: giữ {{volatile Instant}} hoặc {{AtomicReference<Instant>}} và cho test gọi {{advance(Duration)}}. Không dùng {{Thread.sleep}} để "chờ" — nó làm chậm suite và vẫn flaky dưới tải.
+
+### Chọn Instant hay LocalDate
+Quy tắc thực dụng:
+
+- **Hạn dùng, token expiry, timeout** nên lưu và tính bằng {{Instant}} (hoặc {{ZonedDateTime}} nếu cần lịch địa phương). {{Instant}} là mốc tuyệt đối, không phụ thuộc timezone, nên test bằng {{Clock.fixed}} rất ổn định.
+- **Nghiệp vụ theo ngày lịch** (sao kê cuối tháng, "hết hạn trong hôm nay") cần {{LocalDate.now(clock)}} với một timezone nghiệp vụ **cố định**, ví dụ {{ZoneId.of("Asia/Ho_Chi_Minh")}}. Đừng để mặc định theo JVM, vì server có thể chạy UTC còn người dùng ở múi giờ khác.
+- **DST**: cộng {{ChronoUnit.DAYS}} trên {{Instant}} là cộng đúng 24 giờ, còn trên {{ZonedDateTime}} là cộng một ngày lịch và có thể dài 23 hoặc 25 giờ. Chọn theo yêu cầu nghiệp vụ và viết test cho cả hai nếu hệ thống có người dùng ở vùng có DST.
+
+### Biên thời gian: sai một giây là sai hợp đồng
+Hãy định nghĩa rõ "quá hạn" là **trước** hay **tại** thời điểm dueDate. Nếu dùng {{isBefore}}, tại đúng mốc dueDate phí vẫn là 0. Test phải phủ ba điểm: trước dueDate một chút, đúng dueDate, sau dueDate một chút. Đây là những case mà test dựa vào {{now}} gần như không thể viết ổn định.
+
+~~~java
+// trong test
+LateFeeService s = new LateFeeService(Clock.fixed(dueDate, ZoneOffset.UTC));
+assertEquals(0, s.calculateFee(dueDate, 1000));   // đúng mốc: chưa quá hạn
+~~~
+
+### Trong Spring Boot
+Khai báo một bean {{Clock}} và inject vào service thay vì gọi static:
+
+~~~java
+@Configuration
+class TimeConfig {
+    @Bean Clock clock() { return Clock.systemUTC(); }
+}
+~~~
+
+Unit test thì tạo service trực tiếp với clock giả, không cần Spring. Với integration test cần cả context dùng chung một clock giả, hãy khai báo trong {{@TestConfiguration}} một bean {{Clock}} **tên khác** và đánh dấu {{@Primary}} (Spring Boot mặc định cấm ghi đè bean cùng tên). Với legacy code chưa inject được, một số đội dùng {{Mockito.mockStatic(...)}} (mockito-inline, mặc định từ Mockito 5) để giả lập phương thức static trả thời gian — nhưng đó là giải pháp tạm: mock static chỉ có hiệu lực trên thread hiện tại, phải đóng đúng lúc ({{try-with-resources}}), dễ vỡ và che giấu thiết kế phụ thuộc ẩn.
+
+### Bẫy production hay gặp
+- **Quên truyền clock vào nhánh code khác**: service nhận clock nhưng một helper vẫn gọi {{LocalDate.now()}}. Test xanh vì nhánh đó không chạy, production sai vào nửa đêm.
+- **Clock mutable dùng chung giữa các test**: test này advance làm test khác lệch. Tạo clock mới mỗi test, hoặc reset trong {{@BeforeEach}}.
+- **Lưu {{LocalDateTime}} vào database**: mất offset, đọc lại ở múi giờ khác bị lệch. Ưu tiên {{Instant}}/{{OffsetDateTime}} với cột {{timestamptz}}.
+- **So sánh thời gian bằng {{equals}} sau khi qua database**: {{Instant.now()}} trên JDK 17 có độ phân giải tới micro giây (thậm chí nano), còn cột {{timestamptz}} của PostgreSQL chỉ lưu micro giây, MySQL {{DATETIME}} mặc định chỉ lưu giây. Lưu rồi đọc lại, giá trị bị cắt nên {{equals}} trả false. Dùng clock cố định trong test, hoặc {{truncatedTo(ChronoUnit.MICROS)}} trước khi lưu và so.
+- **Test quá phụ thuộc đồng hồ thật ở tầng tích hợp**: với schedule, hãy tách phần "quyết định có chạy không" thành hàm nhận {{clock}}, còn phần trigger framework để integration test riêng.
+
+> Senior tip: khi hệ thống có bug "chỉ lỗi sau 23h" hoặc "chỉ lỗi ngày cuối tháng", gần như luôn là do timezone hoặc do tính ngày bằng {{LocalDate.now()}} không có clock. Một đội trưởng tốt đặt quy ước: **không có {{now()}} không tham số trong domain code**, chỉ có {{clock.instant()}}; review có thể grep là thấy ngay chỗ vi phạm.
+
+### Ví dụ đời thực: phí trễ hạn 10.000/ngày tính nhầm do timezone
+Một app fintech tính phí trễ hạn: 10.000/ngày, làm tròn lên (1 ngày 1 phút = 2 ngày phí). Backend viết test bằng {{LocalDate.now()}} và deploy lên staging. Khi test chạy trên CI (múi giờ UTC) thì mọi thứ xanh, nhưng production ở múi giờ Việt Nam (UTC+7) lại **bắt đầu tính phí sớm một ngày** — một số khách thấy bị tính phí ngày thứ 30 thay vì ngày thứ 31. Đội điều tra: test ở staging không phát hiện vì nó cũng chạy theo múi giờ CI, còn production dùng {{LocalDate.now()}} theo timezone JVM. Sau khi đổi sang {{Instant}} + {{Clock}} injection, test được viết lại với ba biên (trước dueDate, đúng dueDate, sau dueDate) và chạy dưới 50 mili giây. Vấn đề không bao giờ tái hiện ở staging nữa.
+
+### Trả lời mẫu khi phỏng vấn
+"Khi hỏi 'test code phụ thuộc thời gian thế nào?', tôi sẽ nói: đầu tiên nhận ra {{Instant.now()}} là một dependency ẩn — test không thể kiểm soát được nó. Giải pháp là tiêm {{Clock}} vào service: production truyền {{Clock.systemUTC()}}, test truyền {{Clock.fixed()}} để đóng băng thời gian tại một mốc cố định hoặc {{Clock.offset()}} để dịch chuyển tương đối. Với phí trễ hạn, tôi test ba điểm: một giây trước dueDate (phí 0), đúng dueDate (phí 0), một giây sau (phí 1 ngày). Dùng {{Instant}} cho mốc tuyệt đối vì nó không phụ thuộc timezone. Không bao giờ dùng {{Thread.sleep}} trong unit test — nó làm suite chậm và vẫn flaky dưới tải CI. Trong Spring Boot, khai báo {{@Bean Clock clock()}} là bean và inject; nếu code legacy chưa thể inject, dùng {{Mockito.mockStatic}} trong {{try-with-resources}} nhưng đó là giải pháp tạm thời."
+
+### Liên hệ phỏng vấn
+Interviewer hay hỏi: "Làm sao test code phụ thuộc thời gian?", "{{Clock.fixed}} khác {{Clock.offset}} thế nào?", "Xử lý phí trễ hạn qua DST ra sao?", và đưa một test đang {{Thread.sleep(2000)}} để hỏi cách sửa. Câu trả lời tốt là: inject {{Clock}}, test bằng fixed/offset, phủ ba điểm biên, và dùng Instant cho mốc tuyệt đối. Bài tập dưới đây mô phỏng đúng bài toán phí trễ hạn với clock injection.`,
+  exercises: [
+    {
+      title: 'LateFeeService với Clock: tính phí trễ hạn theo ngày, làm tròn lên',
+prompt: `Hoàn thiện {{LateFeeService}} nhận {{Clock}} qua constructor:
+ 
+ - {{calculateFee(dueDate, dailyRate)}}: trả về phí trễ hạn ({{long}}).
+   - Nếu thời điểm hiện tại **trước** dueDate **hoặc bằng** dueDate: phí = 0.
+   - Nếu **sau** dueDate: số ngày phí = ceiling của tổng giây chênh lệch chia 86400 (công thức: {{(Duration.between(dueDate, now).getSeconds() + 86_399) / 86_400}}).
+   - Phí = số ngày * dailyRate.
+ - {{daysOverdue(dueDate)}}: trả về số ngày đã quá hạn (0 nếu chưa quá hạn, làm tròn lên như trên).
+ 
+ Test sẽ tạo {{Clock.fixed}} và {{Clock.offset}} với các mốc cố định, nên kết quả phải không phụ thuộc thời gian chạy thật.`,
+      starter: `import java.time.*;
+
+class LateFeeService {
+    private final Clock clock;
+
+    LateFeeService(Clock clock) {
+        this.clock = clock;
+    }
+
+    long calculateFee(Instant dueDate, long dailyRate) {
+        throw new UnsupportedOperationException("TODO");
+    }
+
+    long daysOverdue(Instant dueDate) {
+        throw new UnsupportedOperationException("TODO");
+    }
+}`,
+      tests: `import java.time.*;
+
+public class Main {
+    static int passed = 0, total = 0;
+    static void check(String name, Runnable r) {
+        total++;
+        try { r.run(); passed++; System.out.println("PASS " + name); }
+        catch (Throwable t) { System.out.println("FAIL " + name + ": " + t); }
+    }
+    static void eq(Object expected, Object actual) {
+        if (!Objects.equals(expected, actual)) throw new AssertionError("expected " + expected + " got " + actual);
+    }
+    static final Instant BASE = Instant.parse("2026-03-01T00:00:00Z");
+    static Clock at(String instant) { return Clock.fixed(Instant.parse(instant), ZoneOffset.UTC); }
+    public static void main(String[] args) {
+        check("fee is zero before and at dueDate", () -> {
+            LateFeeService s = new LateFeeService(at("2026-02-28T23:59:59Z"));
+            eq(0L, s.calculateFee(BASE, 10_000));
+            eq(0L, s.daysOverdue(BASE));
+            s = new LateFeeService(at("2026-03-01T00:00:00Z"));
+            eq(0L, s.calculateFee(BASE, 10_000));
+            eq(0L, s.daysOverdue(BASE));
         });
-        check("fake repository upsert and balanceOf", () -> {
-            FakeAccountRepository repo = new FakeAccountRepository();
-            eq(null, repo.balanceOf("none"));
-            repo.seed("X", 1_000);
-            eq(1_000L, repo.balanceOf("X"));
-            repo.save(new WithdrawalService.Account("X", 500));
-            eq(500L, repo.balanceOf("X"));              // upsert ghi de
+        check("fee rounds up: 1 second after dueDate = 1 day fee", () -> {
+            LateFeeService s = new LateFeeService(at("2026-03-01T00:00:01Z"));
+            eq(10_000L, s.calculateFee(BASE, 10_000));
+            eq(1L, s.daysOverdue(BASE));
         });
-        check("tests are independent: a fresh repo per test has no leaked state", () -> {
-            FakeAccountRepository repoA = new FakeAccountRepository();
-            repoA.seed("A", 10_000);
-            WithdrawalService svcA = FixedClockServiceTestRunner.withClock(IN_HOURS, repoA);
-            svcA.withdraw("A", 10_000);
-            eq(0L, repoA.balanceOf("A"));
-            FakeAccountRepository repoB = new FakeAccountRepository();  // fake mới, không thấy state của A
-            eq(null, repoB.balanceOf("A"));
+        check("fee rounds up: 23 hours after dueDate = 1 day fee", () -> {
+            LateFeeService s = new LateFeeService(Clock.offset(at("2026-03-01T00:00:00Z"), Duration.ofHours(23)));
+            eq(10_000L, s.calculateFee(BASE, 10_000));
+            eq(1L, s.daysOverdue(BASE));
+        });
+        check("fee exact multiple of 24 hours", () -> {
+            LateFeeService s = new LateFeeService(at("2026-03-02T00:00:00Z"));
+            eq(10_000L, s.calculateFee(BASE, 10_000));
+            eq(1L, s.daysOverdue(BASE));  // 24h = 1 ngày (đúng 1 ngày, không cần làm tròn)
+            s = new LateFeeService(at("2026-03-03T00:00:00Z"));
+            eq(20_000L, s.calculateFee(BASE, 10_000));
+            eq(2L, s.daysOverdue(BASE));  // 48h = 2 ngày
+        });
+        check("zone of clock does not change instant-based results", () -> {
+            Clock tokyo = Clock.fixed(Instant.parse("2026-03-02T00:00:00Z"), ZoneId.of("Asia/Tokyo"));
+            LateFeeService s = new LateFeeService(tokyo);
+            eq(10_000L, s.calculateFee(BASE, 10_000));
+            eq(1L, s.daysOverdue(BASE));
+        });
+        check("dailyRate can be any positive value", () -> {
+            LateFeeService s = new LateFeeService(at("2026-03-02T00:00:00Z"));
+            eq(7_500L, s.calculateFee(BASE, 7_500));
+            eq(1L, s.daysOverdue(BASE));
         });
         System.out.println("RESULT " + passed + "/" + total);
     }
 }`,
       reference: `import java.time.*;
-import java.util.*;
 
-class WithdrawalService {
-    interface AccountRepository {
-        Optional<Account> find(String id);
-        void save(Account account);
-    }
-
-    static final class Account {
-        final String id;
-        long balance;
-        Account(String id, long balance) { this.id = id; this.balance = balance; }
-        String id() { return id; }
-        long balance() { return balance; }
-    }
-
-    static final class WithdrawalResult {
-        final Account account;
-        final long fee;
-        WithdrawalResult(Account account, long fee) { this.account = account; this.fee = fee; }
-        Account account() { return account; }
-        long fee() { return fee; }
-    }
-
-    private final AccountRepository repo;
+class LateFeeService {
     private final Clock clock;
 
-    WithdrawalService(AccountRepository repo, Clock clock) {
-        this.repo = repo;
+    LateFeeService(Clock clock) {
         this.clock = clock;
     }
 
-    WithdrawalResult withdraw(String accountId, long amount) {
-        if (amount <= 0) throw new IllegalArgumentException("amount must be positive");
-        Account account = repo.find(accountId)
-                .orElseThrow(() -> new IllegalArgumentException("unknown account " + accountId));
-        long fee = feeFor(clock);
-        long total = amount + fee;
-        if (account.balance() < total) throw new IllegalStateException("insufficient funds");
-        Account updated = new Account(account.id(), account.balance() - total);
-        repo.save(updated);
-        return new WithdrawalResult(updated, fee);
+    long calculateFee(Instant dueDate, long dailyRate) {
+        Instant now = clock.instant();
+        if (now.isBefore(dueDate) || now.equals(dueDate)) return 0;
+        long seconds = Duration.between(dueDate, now).getSeconds();
+        long days = (seconds + 86_399) / 86_400;   // ceiling: 1 giây vượt cũng tính 1 ngày
+        return days * dailyRate;
     }
 
-    static long feeFor(Clock clock) {
-        int hour = ZonedDateTime.ofInstant(clock.instant(), ZoneOffset.UTC).getHour();
-        return (hour >= 8 && hour < 17) ? 0L : 10_000L;   // [8:00, 17:00) UTC
-    }
-}
-
-class FakeAccountRepository implements WithdrawalService.AccountRepository {
-    private final Map<String, WithdrawalService.Account> store = new HashMap<>();
-
-    @Override public Optional<WithdrawalService.Account> find(String id) {
-        return Optional.ofNullable(store.get(id));
-    }
-
-    @Override public void save(WithdrawalService.Account account) {
-        store.put(account.id(), account);
-    }
-
-    void seed(String id, long balance) {
-        store.put(id, new WithdrawalService.Account(id, balance));
-    }
-
-    Long balanceOf(String id) {
-        WithdrawalService.Account a = store.get(id);
-        return a == null ? null : a.balance();
-    }
-}
-
-class FixedClockServiceTestRunner {
-    static WithdrawalService withClock(String instant, FakeAccountRepository repo) {
-        Clock clock = Clock.fixed(Instant.parse(instant), ZoneOffset.UTC);
-        return new WithdrawalService(repo, clock);
+    long daysOverdue(Instant dueDate) {
+        Instant now = clock.instant();
+        if (now.isBefore(dueDate) || now.equals(dueDate)) return 0;
+        long seconds = Duration.between(dueDate, now).getSeconds();
+        return (seconds + 86_399) / 86_400;
     }
 }`,
       hints: [
-        '{{feeFor}}: chuyển {{clock.instant()}} sang UTC bằng {{ZonedDateTime.ofInstant(clock.instant(), ZoneOffset.UTC)}}, lấy {{getHour()}}, giờ hành chính là {{hour >= 8 && hour < 17}} (bao gồm 8:00, không bao gồm 17:00).',
-        '{{withdraw}}: kiểm tra {{amount <= 0}} trước, tìm tài khoản, tính {{fee}}, nếu {{balance < amount + fee}} thì ném {{IllegalStateException}} **trước khi** save, ngược lại trừ và save.',
-        '{{FakeAccountRepository}}: {{find}} dùng {{Optional.ofNullable(store.get(id))}}; {{save}} là {{store.put}}; {{balanceOf}} trả {{null}} nếu không có.',
-        '{{withClock}}: {{Clock.fixed(Instant.parse(instant), ZoneOffset.UTC)}} — mỗi test tạo một clock riêng nên không có state dùng chung.',
+        'Dùng {{clock.instant()}} để lấy "bây giờ". Kiểm tra {{now.isBefore(dueDate) || now.equals(dueDate)}} để phí 0 tại đúng mốc dueDate.',
+        'Số ngày làm tròn lên: lấy {{Duration.between(dueDate, now).getSeconds()}} rồi áp dụng công thức ceiling {{(seconds + 86_399) / 86_400}}. {{toDays()}} chỉ đếm ngày 24h trọn vẹn, nên 1 giây vượt cho 0; công thức ceiling xử lý đúng mọi trường hợp.',
+        'Cùng logic cho {{daysOverdue}}; chỉ khác là không nhân dailyRate.',
       ],
-      explain: `Bài này ghép ba kỹ thuật chống flaky:
-
-- **Clock cố định**: {{feeFor}} đọc giờ từ {{clock.instant()}}, không gọi {{Instant.now()}}. Nhờ vậy test kiểm tra được giờ hành chính, ngoài giờ, và đúng biên 8:00/17:00 mà không cần chờ thời gian thật.
-- **Fake repository**: service đọc/ghi qua fake in-memory, test kiểm tra **state** (số dư cuối) chứ không kiểm tra số lời gọi. Refactor bên trong service không làm test đỏ.
-- **Độc lập**: mỗi test tạo fake repository mới qua {{seed}}, không chia sẻ state. Test "fresh repo per test" chứng minh không có rò rỉ dữ liệu.
+      explain: `Bài này cho thấy lợi ích rõ nhất của clock injection: cùng một đoạn code, test kiểm tra được chính xác **một giây trước dueDate**, **đúng dueDate**, và **sau dueDate** mà không cần ngủ. Nếu dùng {{Instant.now()}} bên trong, ba case này gần như không thể viết ổn định.
 
 Lỗi hay gặp:
-- Dùng {{hour <= 8}} hoặc {{hour <= 17}} làm lệch biên 8:00 và 17:00. Phải là {{hour >= 8 && hour < 17}}.
-- Tính phí sau khi trừ tiền, hoặc trừ tiền trước khi kiểm tra đủ tiền → số dư âm.
-- Save khi không đủ tiền (quên kiểm tra trước) → dữ liệu sai.
-- Dùng {{Instant.now()}} trong service thay vì clock → test không kiểm soát được thời gian.`,
+- Đổi sang {{LocalDateTime}} bằng timezone mặc định của JVM rồi mới cộng ngày và so sánh: cùng một đoạn code cho kết quả khác nhau trên laptop (giờ Việt Nam) và server (UTC).
+- Viết điều kiện phí 0 là {{!now.isAfter(dueDate)}}: trông tương đương {{isBefore || equals}} nhưng tại **đúng** mốc dueDate, {{isAfter}} trả false nên phí vẫn 0 — đúng quy ước. Nhưng nếu nhầm dùng {{now.isBefore(dueDate)}} (bỏ sót equals) thì đúng mốc dueDate sẽ bị tính phí 1 ngày — lệch một tích tắc so với hợp đồng. Chỉ test biên "đúng mốc dueDate" mới bắt được lỗi này.
+- Tính ngày làm tròn lên bằng {{toDays() + 1}}: tại đúng 24 giờ (1 ngày trọn), {{toDays()}} trả 1, cộng 1 ra 2 — sai quy ước "1 ngày trọn = 1 ngày phí". Phải dùng ceiling của tổng giây: {{(seconds + 86_399) / 86_400}}.
+- Cộng ngày bằng {{86_400_000}} mili giây: đúng với Instant nhưng sai với {{ZonedDateTime}} qua DST. Dùng API thời gian thay vì số học tay.
+
+Trong Spring Boot, hãy khai báo {{Clock}} là bean và inject; đừng gọi {{Clock.systemUTC()}} rải rác trong service, vì như vậy lại quay về dependency ẩn.`,
     },
   ],
   check: [
     {
-      q: 'Vì sao tiêm {{Clock}} vào service quan trọng cho test xác định?',
+      q: 'Vì sao test dùng {{Thread.sleep(2000)}} để chờ quá hạn là lựa chọn tồi?',
       options: [
-        'Vì {{Clock}} nhanh hơn {{Instant.now()}}',
-        'Vì {{Clock.fixed/offset}} cho phép đóng băng hoặc dịch thời gian, kiểm tra được biên mà không cần chờ thật',
-        'Vì {{Instant.now()}} bị deprecated',
-        'Vì {{Clock}} tự động dùng UTC',
+        'Vì sleep làm hỏng đồng hồ hệ thống',
+        'Vì sleep luôn ném InterruptedException',
+        'Vì test chậm, vẫn flaky dưới tải, và không kiểm tra được mốc biên chính xác',
+        'Vì Java không cho sleep trong test',
       ],
-      answer: 1,
-      explain: '{{Clock.fixed}} đóng băng thời gian tại một mốc, {{Clock.offset}} dịch thêm một khoảng. Nhờ vậy test kiểm tra "đúng lúc hết hạn" hay "ngoài giờ" trong vài mili giây, thay vì chờ đồng hồ thật. Clock không nhanh hơn đáng kể; Instant.now() không bị deprecated; và Clock không tự động dùng UTC (bạn chọn zone khi tạo).',
+      answer: 2,
+      explain: `Sleep làm suite chậm và chỉ "hy vọng" thời gian trôi đủ: trên CI tải cao, thread có thể thức dậy muộn hơn nhiều so với 2 giây, còn dueDate có thể hết hạn sớm/muộn hơn dự kiến một chút tuỳ lúc test tạo nó — kết quả lúc xanh lúc đỏ. Nó cũng không cho phép kiểm tra chính xác thời điểm một giây sau dueDate. Sleep không làm hỏng đồng hồ, chỉ ném InterruptedException khi bị ngắt (có thể khai báo), và hoàn toàn hợp lệ về mặt ngôn ngữ — vấn đề là độ tin cậy và tốc độ.`,
     },
     {
-      q: 'Test của bạn xanh khi chạy một mình nhưng đỏ khi chạy cùng các test khác. Cách sửa đúng?',
+      q: '{{Clock.offset(clock, Duration.ofHours(23))}} khác {{Clock.fixed(instant, zone)}} ở điểm nào?',
       options: [
-        'Tăng timeout cho suite',
-        'Đảm bảo mỗi test tự tạo dữ liệu của nó, không chia sẻ fake repository hay DB dùng chung',
-        'Đảo thứ tự chạy test',
-        'Tắt chạy song song',
+        'Offset trả về thời điểm của clock nền cộng thêm 23 giờ; fixed luôn trả đúng một instant cố định',
+        'Offset chỉ dùng được với timezone UTC',
+        'Fixed tự chạy theo thời gian thật, offset thì đứng yên',
+        'Không khác gì, cả hai đều đứng yên',
       ],
-      answer: 1,
-      explain: 'Triệu chứng này là dấu hiệu của shared state: test khác để lại dữ liệu làm test này thấy bản ghi đã tồn tại. Cách sửa là mỗi test tạo fake/DB riêng hoặc dọn trong @BeforeEach. Tăng timeout không giải quyết; đảo thứ tự chỉ che; tắt song song chỉ giảm triệu chứng chứ không diệt nguyên nhân gốc (dữ liệu rò rỉ vẫn còn khi chạy tuần tự).',
+      answer: 0,
+      explain: `{{Clock.offset}} bọc một clock khác và dịch kết quả thêm một khoảng, nên nếu clock nền là system thì nó vẫn chạy; nếu nền là fixed thì nó đứng yên tại instant cộng offset. {{Clock.fixed}} luôn trả cùng một instant. Offset không bị giới hạn ở UTC, và fixed không tự chạy — đó là đặc điểm của {{Clock.systemUTC}}.`,
     },
     {
-      q: 'Giờ hành chính là [8:00, 17:00) UTC. Lúc 17:00 đúng thì phí là bao nhiêu?',
+      q: 'Nghiệp vụ "phí trễ hạn 10.000/ngày, làm tròn lên (1 ngày 1 phút = 2 ngày)". dueDate = 01/03 00:00 UTC. Lúc 02/03 00:00:01 UTC phí là bao nhiêu?',
       options: [
-        '0 (vì 17:00 vẫn trong giờ)',
-        '10.000 (vì 17:00 đã ngoài giờ)',
-        '5.000 (nửa phí)',
-        'Không xác định',
+        '10.000',
+        '20.000',
+        '30.000',
+        '0',
       ],
       answer: 1,
-      explain: 'Khoảng [8:00, 17:00) bao gồm 8:00 nhưng không bao gồm 17:00. Lúc 17:00 đúng, giờ không còn trong giờ hành chính nên phải chịu phí 10.000. Nếu dùng điều kiện {{hour <= 17}} sẽ tính nhầm 17:00 là trong giờ — lỗi biên kinh điển.',
+      explain: `01/03 00:00 đến 02/03 00:00 là đúng 1 ngày (24h). Vượt thêm 1 giây -> làm tròn lên thành 2 ngày phí. 2 * 10.000 = 20.000. Đáp án 10.000 là quên làm tròn lên; 30.000 là nhầm 2 ngày trọn + 1; 0 là nhầm dueDate exclusive.`,
     },
   ],
-  related: ['testing-002', 'testing-005', 'testing-010'],
-  tags: ['deterministic test', 'Clock', 'fake repository', 'flaky', 'shared state', 'withdrawal', 'timezone'],
+  related: ['testing-005', 'testing-010'],
+  tags: ['Clock', 'time', 'flaky test', 'Instant', 'timezone', 'late fee'],
 },
 );
