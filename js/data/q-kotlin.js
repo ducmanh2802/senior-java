@@ -1865,4 +1865,184 @@ Một thư viện xử lý cấu hình Kotlin có helper {{missing(): Nothing}} 
   follow: ['Vì sao nhánh {{Nothing}} vẫn tương thích với biểu thức có kiểu {{User}}?', '{{Nothing?}} chỉ có thể chứa giá trị nào?', 'Java {{CompletableFuture<Void>}} được Kotlin nhìn như thế nào trong thư viện bạn đang dùng?'],
   tags: ['Kotlin', 'Unit', 'Nothing', 'Java interop', 'type system']
 },
+{
+  id: 'kotlin-036', topic: 'kotlin', level: 'senior',
+  q: 'Kotlin gọi Java API trả về {{List<String>}} không có chú thích nullability: phần tử bên trong danh sách có thể null không, và bạn xử lý collection từ Java chứa phần tử null ra sao?',
+  a: `**Tóm tắt:** Java generic không mang thông tin nullability của phần tử trong bytecode trừ khi có chú thích type-use đáng tin (JSR-305, JSpecify…). Kotlin hiểu phần tử theo kiểu khai báo (non-null nếu Java viết String), nhưng trên JVM phần tử vẫn có thể là null. Hãy kiểm tra và lọc phần tử null ngay ở ranh giới Java–Kotlin, đừng để null trôi sâu vào miền nghiệp vụ.
+
+### Kiểu container và kiểu phần tử
+Khi Java method khai báo {{List<String>}} mà không chú thích nullability, Kotlin import nó thành {{List<String>!}}: tham chiếu chính danh sách là platform type, compiler không bắt kiểm tra null trên danh sách. Kiểu phần tử {{String}} bên trong được Kotlin hiểu là non-null theo khai báo Java, nhưng **JVM không ép điều này khi chạy** — generic bị xóa kiểu (type erasure), một danh sách Java hoàn toàn có thể chứa phần tử null dù Kotlin nghĩ là non-null.
+
+Nếu Java dùng chú thích type-use {{List<@Nullable String>}} và compiler Kotlin được cấu hình đọc chú thích đó, Kotlin hiểu phần tử là nullable: phần tử kiểu {{String?}}. Nếu chú thích trên container {{@Nullable List<String>}} thì chính danh sách có thể null, còn phần tử non-null theo khai báo. Cần phân biệt rõ hai vị trí: chú thích trên container nói về chính danh sách, chú thích trên kiểu phần tử nói về mỗi phần tử bên trong.
+
+### Mã minh hoạ xử lý phần tử null
+~~~kotlin
+// Java: List<String> getTags() không có chú thích nullability
+val tags: List<String> = javaClient.getTags() // tham chiếu platform type, phần tử non-null theo khai báo nhưng có thể null thật
+
+// Sai: giả định phần tử không null
+val firstLength = tags[0]?.length // có thể NPE nếu phần tử đầu là null
+
+// Đúng: xử lý phần tử null ngay ở ranh giới
+val safeTags = tags.filterNotNull().map { it.trim().lowercase() }
+val mandatory = tags.firstOrNull() ?: throw IllegalArgumentException("Danh sách tag không được để trống")
+~~~
+
+### Các cách xử lý collection Java
+- {{filterNotNull()}}: loại phần tử null, dùng khi null có ý nghĩa "bỏ qua".
+- {{mapNotNull()}}: biến đổi và loại null trong một lần.
+- {{requireNotNull()}} hoặc {{checkNotNull()}}: phần tử bắt buộc, null là lỗi dữ liệu → ném lỗi rõ ràng ngay ranh giới.
+- Không truyền thẳng collection Java mutable sâu vào domain; đổi thành danh sách Kotlin read-only đã xử lý.
+- Với Java {{Optional<T>}}: Kotlin thấy {{Optional<T>!}}, dùng {{orElse(null)}} rồi xử lý kiểu nullable, đừng gọi {{get()}} tuỳ tiện.
+~~~kotlin
+val ten = javaClient.findTen(id)?.orElse(null) // String? an toàn
+~~~
+
+### Bảng lựa chọn xử lý phần tử null
+| Tình huống | Cách xử lý |
+|---|---|
+| Phần tử null có ý nghĩa bỏ qua | {{filterNotNull()}} / {{mapNotNull()}} |
+| Phần tử bắt buộc, null là lỗi dữ liệu | {{requireNotNull()}} hoặc ném exception có thông báo |
+| Không chắc phần tử null | Xử lý như kiểu nullable {{String?}} toàn đường dẫn |
+| Chính danh sách có thể null | Kiểm tra {{tags ?: emptyList()}} trước khi duyệt |
+
+### Pitfall production
+- {{List<String>}} từ Java có thể chứa phần tử null; code Kotlin tin non-null thì NPE khi truy cập phần tử.
+- {{filterNotNull()}} lặng lẽ loại dữ liệu, có thể làm thiếu báo cáo hoặc thống kê sai.
+- Các thư viện Java chú thích nullability khác nhau; xác nhận compiler Kotlin đọc được bộ chú thích mà dự án dùng.
+- Collection Java mutable có thể bị sửa đổi sau khi đưa sang Kotlin; sao chép ra danh sách Kotlin không thay đổi.
+
+### Ví dụ đời thực
+Một hệ thống đặt hàng (Spring Boot 3, Kotlin 1.9) gọi SDK Java của đối tác vận tải: getTrackingCodes(orderId) trả {{List<String>}} không chú thích. Team viết Kotlin xử lý các phần tử của danh sách bằng map, giả định phần tử non-null.
+- **Triệu chứng:** đợt khuyến mãi, khoảng 08:30–09:15 có 1.040 lỗi {{NullPointerException}} tại TrackingService.kt:42, tỷ lệ 500 API POST /shipments tăng từ 0,2% lên 3,8% (khoảng 900 đơn/giờ bị ảnh hưởng), dashboard doanh thu giảm 12% so với cùng khung giờ hôm trước.
+- **Điều tra:** theo requestId trong hệ thống log tập trung (ELK) thấy stack trace NPE khi gọi toUpperCase trên phần tử null; metric số request status 500 đỉnh cùng lúc. Dữ liệu đơn hàng có mã vận tải trống khiến SDK trả danh sách chứa phần tử null.
+- **Nguyên nhân gốc:** Kotlin coi kiểu phần tử {{String}} là non-null theo khai báo Java, nhưng JVM không ép nullability của phần tử generic. Phần tử null đi sâu vào code Kotlin và NPE xảy ra tại điểm dùng, chứ không phải tại ranh giới.
+- **Cách xử lý:** (1) khai báo {{val codes: List<String?> = javaClient.getTrackingCodes(orderId)}}; (2) tại adapter: lọc phần tử null rồi biến đổi; (3) bỏ mã vận tải null khi theo dõi, hiển thị "Chưa có mã"; (4) viết contract test với fixture mã vận tải null.
+- **Kết quả đo được:** sau deploy, lỗi NPE liên quan mã vận tải giảm về 0 trong 14 ngày theo dõi, tỷ lệ 500 API POST /shipments về 0,2%, dashboard hoạt động bình thường.
+
+### Trả lời mẫu khi phỏng vấn
+"Khi gọi Java API trả collection không có chú thích nullability, Kotlin biết tham chiếu danh sách có thể null (platform type) và phần tử theo kiểu khai báo, nhưng JVM không ép nullability của phần tử generic khi chạy. Do đó {{List<String>}} từ Java vẫn có thể chứa phần tử null, và NPE có thể xảy ra ở điểm dùng chứ không phải ranh giới. Tôi xử lý ngay ở ranh giới: coi tham chiếu như nullable, dùng {{filterNotNull()}} hay {{mapNotNull()}} để loại phần tử null, dùng {{requireNotNull()}} nếu phần tử bắt buộc, và chuyển sang danh sách Kotlin read-only đã xử lý trước khi đưa vào domain. Tôi không gọi {{Optional.get()}} tuỳ tiện và viết contract test với fixture null để bắt lỗi sớm, chứ không để NPE xảy ra muộn bên trong service. Với collection Java mutable, tôi luôn sao chép ra danh sách Kotlin read-only để tránh dữ liệu bị thay đổi sau khi truyền qua ranh giới."
+
+> Senior tip: coi mọi collection từ Java là có thể chứa phần tử null cho đến khi có chú thích type-use đáng tin và test thực tế; xử lý null ở adapter một lần, đừng để nullable lan toàn miền nghiệp vụ.
+`,
+
+  follow: ['Kotlin phân biệt chú thích trên container {{@Nullable List<String>}} và trên kiểu phần tử {{List<@Nullable String>}} như thế nào?', 'Java {{Optional<T>}} gặp Kotlin thì xử lý ra sao?', 'Vì sao không nên truyền thẳng collection Java mutable vào domain?'],
+  tags: ['null safety', 'platform types', 'Java generics', 'collections']
+},
+{
+  id: 'kotlin-037', topic: 'kotlin', level: 'lead',
+  q: 'Bật virtual thread trong Spring Boot 3 thì @Transactional JDBC và SecurityContext còn chạy đúng không, và khác nhau thế nào với coroutine suspend?',
+  a: `**Tóm tắt:** Virtual thread vẫn là luồng JVM, nên dữ liệu gắn với luồng (ThreadLocal — gồm transaction JDBC, SecurityContext, MDC) được giữ trong suốt cuộc gọi blocking; coroutine suspend tạm nhường luồng và có thể tiếp tục trên luồng khác, làm mất ThreadLocal trừ khi truyền rõ ràng. Chọn virtual thread để giữ mã blocking Java/JDBC, chọn coroutine khi cần structured concurrency và hủy tác vụ tự động.
+
+### Virtual thread giữ ThreadLocal
+Virtual thread gắn (mount) và tháo (unmount) khỏi luồng chở (carrier thread), nhưng dữ liệu ThreadLocal gắn với chính virtual thread, không phải luồng chở. Khi endpoint chạy trên virtual thread và gọi cơ sở dữ liệu block, TransactionSynchronizationManager của Spring (dùng ThreadLocal để giữ transaction JDBC/JPA) vẫn thấy transaction hiện tại, nên {{@Transactional}} chạy đúng và rollback khi lỗi. SecurityContext và MDC request id cũng còn nguyên trong suốt vòng đời request.
+
+Mã ví dụ:
+~~~kotlin
+// Virtual thread, Spring Boot 3.2+: không đổi mã blocking
+@GetMapping("/orders/{id}")
+fun get(@PathVariable id: Long): OrderDto = service.load(id) // @Transactional JDBC vẫn theo ThreadLocal
+
+// Coroutine suspend: khác cơ chế
+suspend fun get(@PathVariable id: Long): OrderDto =
+    withContext(Dispatchers.IO) { service.load(id) } // coroutine có thể tiếp tục trên luồng khác
+~~~
+
+### Khi coroutine mất ngữ cảnh gắn luồng
+{{@Transactional}} của Spring với JDBC/JPA giữ transaction trong ThreadLocal. Coroutine suspend tại điểm chờ (suspension point) rồi tiếp tục trên luồng khác → ngữ cảnh transaction không theo được, rollback có thể không đúng, SecurityContext mất authentication, MDC mất request id. Với coroutine cần truyền rõ ràng: MDC qua kotlinx-coroutines-slf4j, SecurityContext theo cơ chế truyền ngữ cảnh của Spring 6, hoặc gói thao tác cơ sở dữ liệu trong một coroutine trên cùng dispatcher và dùng TransactionTemplate. WebFlux + R2DBC dùng TransactionalOperator vì transaction được giữ trong Reactor Context, không phải ThreadLocal.
+
+### Virtual thread và rủi ro pinning
+Lệnh {{synchronized}} quanh thao tác I/O có thể làm virtual thread bị "pin" (ghim) vào luồng chở, không unmount được khi block → mất lợi ích virtual thread (JDK 21–23; JDK 24 JEP 491 giảm giới hạn này). Khuyên dùng {{ReentrantLock}} thay {{synchronized}} khi cần khóa quanh I/O. Virtual thread cũng không làm cơ sở dữ liệu nhanh hơn; pool kết nối và giới hạn downstream vẫn là nút thắt, cần bulkhead (HikariCP pool, semaphore).
+
+### Bảng so sánh ngữ cảnh gắn luồng
+| Tiêu chí | Virtual thread | Coroutine suspend |
+|---|---|---|
+| ThreadLocal (transaction, SecurityContext, MDC) | Được giữ | Mất khi resume trên luồng khác, cần truyền rõ ràng |
+| @Transactional JDBC | Chạy đúng theo ThreadLocal | Có thể mất transaction, cần cách xử lý riêng |
+| Hủy tác vụ | Thủ công | Tự động qua structured concurrency |
+| Mã blocking JDBC | Giữ nguyên, chạy trên virtual thread | Ép sang {{Dispatchers.IO}} cho phần block |
+
+### Chọn cái nào trong Spring Boot 3
+- Codebase chủ yếu Java, dùng JDBC/RestTemplate, muốn thay đổi ít mã: bật {{spring.threads.virtual.enabled=true}} và dùng virtual thread.
+- Codebase Kotlin, cần async/await, Flow, hủy tác vụ tự động khi yêu cầu hủy: dùng coroutine.
+- Trộn cả hai trong cùng một request làm ngữ cảnh khó theo dõi và debug; hãy chọn một mô hình cho mỗi ranh giới.
+
+### Ví dụ đời thực
+Một API gateway Spring Boot 3.2 chuyển từ Tomcat thread pool (200 luồng) sang virtual thread để xử lý burst 10.000 request/giây.
+- **Trước khi chuyển:** p99 800ms, 200 luồng thực, CPU 60%, nhiều request chờ luồng trống.
+- **Sau khi bật virtual thread:** p99 120ms, khoảng 15.000 virtual thread nhưng chỉ 48 luồng chở (số lõi CPU), CPU 35%.
+- **Vấn đề phát hiện:** một endpoint gọi stored procedure MySQL có lệnh {{synchronized}} quanh kết nối → pin luồng chở. Dưới tải 5.000 request/giây, luồng chở bị cạn, p99 nhảy lên 5 giây. JFR ghi nhận sự kiện {{jdk.VirtualThreadPinned}}.
+- **Cách xử lý:** thay {{synchronized}} bằng {{ReentrantLock}}, tăng pool HikariCP từ 20 lên 50 kết nối.
+- **Kết quả đo được:** p99 ổn định 150ms, throughput 12.000 request/giây, không cần thêm máy. Nếu viết lại bằng coroutine suspend + WebClient/R2DBC cũng đạt tương tự nhưng phải viết lại 15 endpoint; virtual thread chỉ đổi cấu hình và sửa pinning. Trong toàn bộ trường hợp này, @Transactional JDBC vẫn rollback đúng vì virtual thread giữ ThreadLocal — điều coroutine suspend không tự làm được.
+
+### Trả lời mẫu khi phỏng vấn
+"Virtual thread là luồng JVM thực nhưng rẻ, mount/unmount trên luồng chở; dữ liệu ThreadLocal gắn với virtual thread nên @Transactional JDBC, SecurityContext và MDC vẫn hoạt động khi gọi cơ sở dữ liệu block, chỉ cần bật cấu hình Spring Boot 3.2. Coroutine suspend của Kotlin tạm nhường luồng tại điểm chờ và có thể tiếp tục trên luồng khác, nên ThreadLocal bị mất: transaction JDBC có thể không rollback đúng, SecurityContext và MDC mất. Tôi chọn virtual thread khi codebase chủ yếu Java, dùng JDBC, muốn thay đổi ít mã; chọn coroutine khi codebase Kotlin, cần async/await, Flow và hủy tác vụ tự động. Cảnh báo: synchronized quanh I/O trên virtual thread (JDK 21–23) gây pin luồng chở, hãy dùng ReentrantLock; virtual thread cũng không làm cơ sở dữ liệu nhanh hơn, pool kết nối và giới hạn downstream vẫn là nút thắt, cần bulkhead. Nếu trộn cả hai trong cùng một request, ngữ cảnh khó theo dõi và debug — hãy chọn một mô hình cho mỗi ranh giới."
+
+> Senior tip: bật virtual thread nếu team viết nhiều Java và dùng JDBC; chuyển sang coroutine khi cần hủy tác vụ, kết hợp bất đồng bộ và codebase đã dùng Kotlin. Đo p99 và số luồng thực tế trước khi quyết định, đừng chỉ tin vào benchmark đơn lẻ.
+`,
+
+  follow: ['Bạn phát hiện virtual thread bị pin luồng chở bằng công cụ nào?', 'Transaction JDBC của coroutine suspend có thể mất rollback như thế nào?', 'Khi nào virtual thread không giúp tăng throughput?'],
+  tags: ['virtual thread', 'coroutine', 'Spring Boot', 'transaction', 'ThreadLocal']
+},
+{
+  id: 'kotlin-038', topic: 'kotlin', level: 'senior',
+  q: 'Plugin kotlin-jpa sinh constructor không tham số cho entity Kotlin, nhưng constructor đó không chạy khối init và initializer: thuộc tính non-null có thể tạm thời null khi Hibernate vừa tạo entity, bạn thiết kế entity Kotlin có constructor nghiệp vụ ra sao?',
+  a: `**Tóm tắt:** Constructor không tham số do plugin kotlin-jpa (no-arg) sinh ra chỉ gọi được qua reflection, **không chạy** khối init và initializer của thuộc tính; Hibernate tạo đối tượng trống rồi gán trường từ ResultSet sau đó. Thuộc tính non-null có thể tạm thời là null, và invariant đặt trong init không được Hibernate tôn trọng. Hãy kết hợp constructor protected không tham số (dành cho JPA) với constructor nghiệp vụ, dùng kiểu nullable cho trường Hibernate gán sau, và kiểm tra equals/hashCode ổn định sau khi persist.
+
+### Constructor sinh bởi kotlin-jpa
+~~~kotlin
+@Entity
+open class Order protected constructor() {
+    @Id
+    var id: UUID? = null              // Hibernate gán sau khi sinh constructor
+
+    lateinit var code: String         // chưa gán khi constructor no-arg chạy, null tạm thời
+
+    var createdAt: Instant = Instant.now() // initializer KHÔNG chạy trong constructor no-arg
+
+    constructor(code: String) : this() {
+        this.code = code
+        this.id = UUID.randomUUID()
+    }
+}
+~~~
+Hibernate gọi constructor không tham số qua reflection, tạo đối tượng có trường ở giá trị mặc định JVM (null hoặc 0), sau đó gán từng trường từ ResultSet. Khối init của Kotlin chỉ chạy khi constructor Kotlin được gọi theo cách thường, nên **không đặt invariant quan trọng trong init** hay initializer của thuộc tính entity.
+
+### Thuộc tính non-null tạm thời null
+- lateinit var code chưa gán: đọc trước khi Hibernate gán sẽ ném {{UninitializedPropertyAccessException}}.
+- var createdAt: Instant = Instant.now(): initializer không chạy, trường là null cho đến khi Hibernate gán từ ResultSet.
+- Trường nguyên thủy non-null (Int, Long) sẽ là 0 tạm thời, có thể làm sai logic kiểm tra.
+- Nên khai báo nullable cho trường Hibernate gán sau (ví dụ var code: String? = null), hoặc chỉ đọc thuộc tính sau khi entity đã được load trong transaction.
+
+### Thiết kế entity Kotlin an toàn
+1. Constructor protected không tham số chỉ dành cho Hibernate, không chứa logic nghiệp vụ.
+2. Constructor nghiệp vụ gán id và business key, thực hiện validation ngay.
+3. equals/hashCode theo business key bất biến (ví dụ mã đơn hàng), **không** theo id (null trước khi persist) và **không** đưa collection lazy.
+4. toString chỉ in business key, không chạm quan hệ lazy.
+5. Entity khai báo {{open}} (hoặc all-open cho {{jakarta.persistence.Entity}}) để Hibernate tạo proxy lazy.
+6. Nếu id do ứng dụng gán, Spring Data thấy id khác null và coi là entity cũ → gọi merge (SELECT trước). Cài {{Persistable}} với cờ {{isNew}} để save dùng persist.
+
+### Pitfall production
+- equals dựa trên id: hai entity mới cùng id null có thể bị coi là bằng nhau; trả về false trừ khi cùng instance.
+- hashCode thay đổi sau khi Hibernate gán id → đối tượng đã nằm trong {{HashSet}} không còn tìm thấy.
+- toString chạm collection lazy → {{LazyInitializationException}} khi log ngoài transaction.
+- Validation trong init block không chạy khi Hibernate tạo đối tượng qua constructor không tham số → dữ liệu không hợp lệ có thể được lưu.
+
+### Ví dụ đời thực
+Một hệ thống đơn hàng (Spring Boot 3, Hibernate 6, Kotlin) viết entity Order với lateinit var code: String và khối init có require(code.isNotBlank()) { "Mã đơn hàng không được để trống" }.
+- **Triệu chứng:** sau deploy, báo cáo đối soát phát hiện 47 đơn hàng không mã trong một ngày; một số request ném {{UninitializedPropertyAccessException}} khi đọc code sớm; dashboard chất lượng dữ liệu báo lỗi.
+- **Điều tra:** javap thấy constructor không tham số synthetic sinh bởi kotlin-jpa; log Hibernate thấy entity được tạo qua reflection khi load. Constructor không tham số không chạy init block, nên validate mã trong init không áp dụng đối với entity Hibernate tạo; đồng thời code là null tạm thời cho đến khi Hibernate gán từ ResultSet, và createdAt initializer cũng không chạy.
+- **Nguyên nhân gốc:** kotlin-jpa constructor không tham số không chạy init/initializer; Hibernate gán trường sau. Validation đặt trong init hoặc initializer không được áp dụng khi Hibernate tạo đối tượng; thuộc tính non-null tạm thời null.
+- **Cách xử lý:** (1) constructor nghiệp vụ constructor(code: String) : this() gán code và gọi require(code.isNotBlank()) ngay; (2) constructor không tham số protected chỉ dành cho Hibernate, không chứa logic; (3) khai báo code nullable hoặc chỉ đọc sau khi load trong transaction; (4) equals/hashCode theo mã đơn hàng (business key), toString chỉ in mã; (5) test: thêm entity vào {{HashSet}}, persist/flush, kiểm tra contains vẫn đúng.
+- **Kết quả đo được:** đơn hàng không mã giảm về 0, createdAt đúng, không còn lỗi truy cập thuộc tính sớm, p95 endpoint ổn định.
+
+### Trả lời mẫu khi phỏng vấn
+"Constructor không tham số do kotlin-jpa sinh ra chỉ gọi được qua reflection và không chạy khối init hay initializer; Hibernate tạo đối tượng trống rồi gán trường từ ResultSet sau đó. Do đó thuộc tính non-null có thể tạm thời là null, và validation đặt trong init không áp dụng khi Hibernate tạo đối tượng — dữ liệu không hợp lệ có thể lọt qua. Tôi thiết kế entity với constructor protected không tham số chỉ dành cho JPA, cùng constructor nghiệp vụ gán business key và validate ngay; equals/hashCode theo business key bất biến, toString chỉ in business key, entity open để Hibernate tạo proxy. Nếu id do ứng dụng gán, tôi cài Persistable với isNew để Spring Data dùng persist thay vì merge. Trước khi deploy, viết test thêm entity vào HashSet, persist, flush và kiểm tra contains vẫn đúng; không đọc thuộc tính non-null ngay sau khi tạo đối tượng qua constructor không tham số."
+
+> Senior tip: invariant nghiệp vụ phải nằm trong constructor nghiệp vụ, không phải init block; initializer của thuộc tính entity không chạy khi Hibernate dùng constructor không tham số, đừng phụ thuộc vào giá trị mặc định của initializer.
+`,
+
+  follow: ['Vì sao kotlin-jpa constructor không tham số không chạy init block?', 'Thuộc tính lateinit của entity có nguy hiểm khi nào?', 'Persistable với isNew giải quyết vấn đề gì?'],
+  tags: ['JPA', 'Hibernate', 'kotlin-jpa', 'no-arg', 'entity']
+},
 );
