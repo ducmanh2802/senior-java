@@ -12165,6 +12165,264 @@ Two quarters ago, a Korean client asked for an extra reporting module one week b
   follow: ['How do you handle conflicting priorities?', 'Tell me about a failure.'],
   tags: ['deadline', 'overtime', 'stress', 'lead'],
   lang: 'en',
-},
+}
+
+,{
+  id: 'english-239',
+  topic: 'english',
+  level: 'senior',
+  q: 'Tell me about a production incident you handled. Walk me through the timeline, the root cause, and the action items.',
+  a: `**Tóm tắt (30-second spoken answer):** I would tell the story in four beats: impact (what users saw and how big), timeline (detect, mitigate, resolve), **root cause** (nguyên nhân gốc rễ — lý do sâu khiến sự cố xảy ra, không chỉ triệu chứng), and action items (việc làm để ngăn lặp lại). I keep it factual, time-based, and focused on learning rather than blaming people.
+
+### Key terms (giải thích cho người mới)
+- **Incident** (sự cố): sự kiện làm dịch vụ suy giảm hoặc gián đoạn (lỗi tăng, chậm, mất dữ liệu). **Severity/SEV** là mức độ nghiêm trọng (SEV-1 thường ảnh hưởng lớn, cần xử lý ngay).
+- **MTTD / MTTR**: Mean Time To Detect / To Recover — thời gian trung bình để phát hiện / để khôi phục. Số liệu này cho thấy năng lực vận hành.
+- **Mitigation** (giảm thiểu): hành động làm giảm tác động cho người dùng ngay (rollback, bật feature flag tắt tính năng, chuyển traffic), có thể thực hiện trước khi tìm ra root cause.
+- **Postmortem** (họp/ghi chép sau sự cố): phân tích nguyên nhân và hành động cải tiến, theo tinh thần **blameless** (không đổ lỗi cá nhân, tập trung vào hệ thống/quy trình).
+- **Action item** (hạng mục hành động): việc cụ thể có người chịu trách nhiệm và hạn chót.
+
+### A clear structure to speak (timeline table)
+| Time (UTC+7) | What happened | Action |
+|---|---|---|
+| 19:05 | Alert: checkout error rate > 5% (p95 latency spiking) | On-call acknowledged, opened incident channel |
+| 19:10 | Confirmed impact ~15% of payments failing | Mitigated: rolled back last release (previous image) |
+| 19:18 | Error rate back to normal | Monitored 15 min, declared mitigated |
+| Next day | Root cause analysis in postmortem | Action items assigned |
+
+### Sample answer (natural B2-C1)
+"Last year, around 7 p.m., we got an alert that the checkout error rate had jumped above five percent. About fifteen percent of payments were failing. I was the primary on-call. Within five minutes we confirmed a recent deploy correlated with the spike, so we mitigated first by rolling back to the previous image. Errors returned to normal by 7:18.
+
+The root cause was a query change that removed an index hint path on a high-traffic table; under peak load it triggered full scans and exhausted the database connection pool (nhóm kết nối DB có giới hạn). We had tested it on a small dataset, so we missed the scale effect.
+
+Our action items were: add an EXPLAIN/performance check for queries touching large tables in CI, set a connection-pool saturation alert, and require a canary step for checkout changes. Each item had an owner and a due date, and we verified them in the next postmortem review."
+
+### Common pitfalls when telling the story
+- Jumping straight to the fix without stating **impact** (how many users, how long).
+- Blaming a person ("the dev broke it") instead of the system gap (missing test/gate).
+- No action items, or vague ones ("be more careful") — they must be concrete and verifiable.
+
+### Useful phrases
+- "We detected the issue through an alert on error rate and latency."
+- "We mitigated first to reduce user impact, then investigated the root cause."
+- "In the blameless postmortem we identified three concrete action items."
+
+### Common mistakes (Vietnamese speakers)
+- Using present tense for a past incident — keep past simple/past continuous: "we rolled back", "errors were increasing".
+- Saying "root reason"; the standard term is "root cause".
+- Overusing "very very serious" — quantify instead: "error rate rose to 8 percent for 13 minutes".
+
+### Full sample answer (60-90 seconds)
+Start with the one-line summary, then walk through STAR in order. Keep each part to one or two sentences and land on a concrete number or outcome. End with one sentence about what you learned, because interviewers listen for growth. Practice aloud until it fits 90 seconds; record yourself and cut filler words.
+
+### Vocabulary and phrases to reuse
+- "I took ownership of..." / "I proposed..." / "The trade-off was..." / "As a result..." / "Since then, I have...".
+- Avoid vague "we did"; name your specific contribution and the data you used.
+
+### Delivery tips for Vietnamese speakers
+- Slow down on numbers and proper nouns; English interviewers need time to parse them.
+- Use short sentences; long compound sentences are hard to follow when nervous.
+- If you lose a word, paraphrase instead of stopping; fluency beats perfect grammar.
+
+> Senior tip: Strong candidates separate **mitigation** from **resolution** and show they protect users first. Quantify impact and timing (MTTD/MTTR), name one or two systemic fixes (tests, gates, alerts), and close the loop by saying how you verified the action items worked. That signals operational maturity, not just firefighting.
+  `,
+  follow: [
+      "How do you decide whether to roll back or to roll forward during an incident?",
+      "What makes a postmortem truly blameless and useful?",
+      "How do you communicate incident status to non-technical stakeholders while it is ongoing?"
+  ],
+  tags: [
+      "incident",
+      "on-call",
+      "postmortem",
+      "devops",
+      "english"
+  ],
+  lang: 'en',
+},{
+  id: 'english-240',
+  topic: 'english',
+  level: 'senior',
+  q: 'How would you explain eventual consistency to a non-technical product manager?',
+  a: `**Tóm tắt (30-second spoken answer):** I would use a simple analogy and focus on the business impact. **Eventual consistency** (tính nhất quán cuối cùng: dữ liệu sẽ đồng bộ sau một khoảng thời gian ngắn) giống như việc bạn gửi tin nhắn cho đồng nghiệp — họ không đọc ngay lập tức, nhưng cuối cùng họ sẽ thấy và phản hồi. Tôi giải thích tại sao chúng ta chấp nhận sự trễ này (để hệ thống nhanh và ổn định hơn), và những rủi ro có thể xảy ra (dữ liệu hiển thị cũ trong vài giây/phút).
+
+### Key terms (giải thích bằng ngôn ngữ đời thường)
+- **Consistency** (tính nhất quán): mọi người nhìn thấy cùng một dữ liệu tại cùng một thời điểm.
+- **Strong consistency** (nhất quán mạnh): đọc ngay lập tức thấy dữ liệu mới nhất — chậm hơn, tốn tài nguyên hơn.
+- **Eventual consistency** (nhất quán cuối cùng): cho phép dữ liệu khác nhau trong một thời gian rất ngắn, rồi tự đồng bộ.
+- **Replication lag** (độ trễ sao chép): thời gian dữ liệu từ master sao sang replica.
+- **Conflict resolution** (giải quyết xung đột): khi hai nơi sửa cùng một dữ liệu, hệ thống quyết định lấy phiên bản nào.
+
+### Analogy: The shared spreadsheet
+Imagine a team editing a shared Google Sheet. Person A changes a cell. Person B might not see it instantly if their screen hasn't refreshed — but within a few seconds, everyone sees the same value. That is eventual consistency. If we required strong consistency, every edit would lock the whole sheet until all screens updated — nobody could work in parallel.
+
+### Trade-off table (what a PM cares about)
+| Dimension | Strong consistency | Eventual consistency |
+|---|---|---|
+| User sees latest data | Always | Within milliseconds to seconds |
+| Write latency | Higher (wait for quorum) | Lower (ack fast, replicate async) |
+| Availability during network issues | Lower (may reject writes) | Higher (accepts writes, sync later) |
+| Complexity | Simpler mental model | Need conflict resolution, idempotency |
+| Typical use case | Payments, inventory | Feed, analytics, notifications |
+
+### Sample answer (natural B2-C1)
+"Think of it like a shared document. When you edit a cell, your colleague might not see the change for a second or two, but eventually everyone sees the same value. We use eventual consistency for things like the activity feed or notifications because it lets the system stay fast and available even if one database replica is slow. The trade-off is that a user might see a slightly stale number for a few seconds — for example, a like count that updates a moment later. For payments or inventory, we use strong consistency because those numbers must be exact immediately."
+
+### Common pitfalls when explaining to non-technical PMs
+- Saying "data is inconsistent" without clarifying it is temporary and bounded.
+- Not giving concrete examples of what "stale" looks like to the user.
+- Promising "it will be consistent eventually" without defining the maximum lag.
+
+### Useful phrases
+- "We accept a small delay in exchange for higher availability and lower latency."
+- "The data converges typically within a few hundred milliseconds."
+- "For this feature, eventual consistency is fine because a one-second delay does not change the user decision."
+- "We have a fallback: if the user needs the absolute latest, we can read from the primary."
+
+### Common mistakes (Vietnamese speakers)
+- Translating "eventual" as "cuối cùng" which sounds like "never" — use "sau một khoảng thời gian ngắn" or "tự đồng bộ".
+- Saying "data is wrong" instead of "data is temporarily stale".
+- Forgetting to mention the upper bound on lag (e.g., "usually under 500ms, max 2s").
+
+> Senior tip: Always define the **staleness window** (khoảng thời gian dữ liệu có thể cũ) and the **read-your-writes** guarantee (người dùng đọc được dữ liệu mình vừa ghi). If the PM asks "how long", give a p99 number from production, not a guess. For user-facing features, consider read-after-write consistency for the author so they see their own changes immediately.
+  `,
+  follow: [
+      "When would you choose strong consistency over eventual consistency for a user-facing feature?",
+      "How do you handle a case where the user reads their own write but it has not replicated yet?",
+      "What metrics would you monitor to ensure eventual consistency stays within bounds?"
+  ],
+  tags: [
+      "eventual-consistency",
+      "distributed-systems",
+      "communication",
+      "english"
+  ],
+  lang: 'en',
+},{
+  id: 'english-241',
+  topic: 'english',
+  level: 'senior',
+  q: 'How do you estimate a feature when the requirements are unclear?',
+  a: `**Tóm tắt (30-second spoken answer):** I separate what I know from what I don't, timebox a spike to reduce uncertainty, and give a range with explicit assumptions instead of a single date. I present options (scope vs time) so stakeholders can make trade-off decisions, and I set checkpoints to re-estimate as we learn.
+
+### Key terms (giải thích cho người mới)
+- **Spike** (thử nghiệm có giới hạn thời gian): làm một prototypes nhỏ trong 1-2 ngày để lấy dữ liệu ước lượng, không phải deliverable.
+- **Range estimate** (ước lượng theo khoảng): ví dụ "2-4 tuần" thay vì "3 tuần", thể hiện độ bất định.
+- **Assumptions** (giả định): điều kiện tôi coi là đúng để ước lượng có nghĩa (ví dụ: API bên ngoài sẵn sàng, schema dữ liệu ổn định).
+- **MoSCoW** (phân loại ưu tiên): Must have / Should have / Could have / Won't have — dùng để thương lượng scope.
+- **Checkpoint** (mốc kiểm tra): thời điểm xem lại ước lượng khi có thông tin mới.
+
+### Step-by-step process
+1. **Clarify the outcome**: "What does success look like for this feature?" — focus on business outcome, not output.
+2. **List knowns and unknowns**: write down what is clear (tech stack, existing APIs) and what is not (exact rules, data volume, third-party integration).
+3. **Timebox spikes**: for each major unknown, propose a 1-2 day investigation with a concrete question to answer.
+4. **Decompose into slices**: break the feature into small, independently shippable pieces.
+5. **Estimate each slice with a range**: use recent velocity or analogous work, add 20-30% buffer for uncertainty.
+6. **Present options**: "We can deliver core scope in 3 weeks, or full scope in 5-6 weeks. Here is what differs."
+7. **Set checkpoints**: "We will re-estimate after the spike completes and after slice 1 ships."
+
+### Sample answer (natural B2-C1)
+"When requirements are unclear, I don't guess a date. First, I ask what the business outcome is — that helps me prioritize what to build first. Then I list what I know and what I don't. For the unknowns, I propose timeboxed spikes: for example, two days to test the third-party API latency and data format. After that, I break the feature into shippable slices and estimate each as a range — say, two to three weeks for the core flow, one to two weeks for the admin UI. I present options to the PM: we can ship the happy path in three weeks, or the full feature in five. We agree on checkpoints: after the spike, after slice one, and before the final slice. This way the estimate improves as we learn, and the PM always knows the trade-offs."
+
+### Trade-off table
+| Approach | Pros | Cons |
+|---|---|---|
+| Single date, no assumptions | Simple for PM | High risk of missing; hides uncertainty |
+| Range with assumptions | Transparent; invites collaboration | Requires PM to engage |
+| "I will tell you later" | Honest | PM cannot plan; erodes trust |
+
+### Useful phrases
+- "I can estimate the parts that are clear, and here are the assumptions for the rest."
+- "Let us spend two days on a spike to answer this specific question."
+- "My estimate is two to four weeks, assuming the external API responds under 200ms."
+- "We can deliver the core value in three weeks if we defer the advanced filters."
+- "We will re-estimate at the end of week one based on what we learn."
+
+### Common mistakes (Vietnamese speakers)
+- Saying "I cannot estimate because requirements are unclear" — you can estimate the clear parts and flag the rest.
+- Giving a single number to sound confident — a range with assumptions is more professional.
+- Not defining what "done" looks like for each slice.
+- Forgetting to set a checkpoint date to re-estimate.
+
+> Senior tip: The most senior answer is **timebox the uncertainty, then commit to a range**. Always separate estimation (dự đoán) from commitment (cam kết). If a stakeholder pushes for a fixed date, ask: "If I commit to this date, which scope items are you willing to drop?" That forces a business trade-off conversation.
+  `,
+  follow: [
+      "What do you do if the stakeholder refuses to accept a range and demands a fixed date?",
+      "How do you estimate work in a domain where the team has zero experience?",
+      "How do you handle a spike that reveals the work is much larger than expected?"
+  ],
+  tags: [
+      "estimation",
+      "planning",
+      "spike",
+      "communication",
+      "english"
+  ],
+  lang: 'en',
+},{
+  id: 'english-242',
+  topic: 'english',
+  level: 'senior',
+  q: 'How do you push back on an unrealistic deadline without damaging the relationship?',
+  a: `**Tóm tắt (30-second spoken answer):** I acknowledge the urgency, make the constraint visible with data (effort, risk, what slips), and offer alternatives — not just "no". The goal is to say "no to the date, yes to the outcome" by trading scope, adding resources, or phasing delivery. I keep the conversation collaborative and confirm the decision in writing.
+
+### Key terms (giải thích cho người mới)
+- **Push back** (đẩy lùi/thương lượng): nói "không" hoặc "chưa thể" với lý do và phương án, không phải từ chối thẳng.
+- **Trade-off** (đánh đổi): được cái này, mất cái kia — ví dụ: giữ deadline nhưng cắt scope, hoặc giữ scope nhưng dời ngày.
+- **MVP** (Minimum Viable Product): phiên bản tối thiểu có giá trị, giao được ngay.
+- **Capacity** (năng lực): thời gian thực tế team có sau khi trừ on-call, meeting, bug fix.
+- **Critical path** (đường gãy): chuỗi task quyết định deadline, không thể song song.
+
+### Step-by-step approach
+1. **Acknowledge the goal**: "I understand this date is important because of the marketing launch / contract / compliance."
+2. **Show the math with data**: "The team has 50 engineer-days this sprint. This feature needs 70 days based on our decomposition. Here is the breakdown."
+3. **Explain the risk of forcing it**: "If we compress without cutting scope, we skip tests and code review. The last time we did that, we had a SEV-1 incident that took three days to recover."
+4. **Offer 2-3 concrete alternatives**:
+   - Option A (scope): "Deliver MVP (happy path + core validation) by the date, defer advanced rules to phase 2."
+   - Option B (time): "Keep full scope, move date by two weeks."
+   - Option C (resources): "Add two contractors for the integration layer, keep date and scope, cost increases 20%."
+5. **Let the stakeholder choose**: "Which outcome matters more — the date or the full scope?"
+6. **Confirm in writing**: "To confirm, we will deliver Option A by [date]. I will send a summary email."
+
+### Sample answer (natural B2-C1)
+"When a deadline is unrealistic, I don't just say no. I show the numbers. Last quarter, a stakeholder asked for a new reconciliation report in two weeks. I broke it down: data pipeline changes (5 days), UI (3 days), testing and hardening (4 days) — 12 days minimum with our current capacity of 10 days. I explained that rushing would skip the integration tests that caught a data mismatch last month. I offered three options: ship the core report in two weeks with manual validation, extend to three weeks for full automation, or add a contractor to keep both date and scope. The PM chose the core report in two weeks. We delivered on time, and the automated version followed in the next sprint. The relationship stayed strong because I gave them a choice, not a refusal."
+
+### Trade-off table
+| Alternative | Keeps Date | Keeps Scope | Keeps Quality | Cost |
+|---|---|---|---|---|
+| Cut to MVP | Yes | No | Yes | Low |
+| Extend date | No | Yes | Yes | Opportunity cost |
+| Add resources | Yes | Yes | Yes | Budget + onboarding time |
+| Compress (crunch) | Yes | Yes | No | Technical debt + burnout |
+
+### Useful phrases
+- "I want to make sure we deliver quality on this date. Here is what the math says."
+- "If we keep the date and the full scope, here is the risk we take."
+- "I can offer you three options. Which trade-off do you prefer?"
+- "We are not saying no to the feature; we are saying yes to a realistic plan."
+- "Let us agree on the MVP for this date and phase the rest."
+
+### Common mistakes (Vietnamese speakers)
+- Saying "I cannot do it" or "It is impossible" — sounds uncooperative.
+- Not showing the breakdown — stakeholders cannot evaluate what they cannot see.
+- Offering only one alternative — gives the stakeholder no agency.
+- Saying "we will try our best" — commits to an unrealistic date implicitly.
+- Forgetting to confirm the agreed option in writing.
+
+> Senior tip: Always have a **capacity snapshot** (năng lực thực tế sau on-call/meeting) ready before the conversation. The phrase "no to the date, yes to the outcome" reframes the conversation from confrontation to collaboration. If the stakeholder insists on the original date without accepting trade-offs, escalate to your lead with the data — protecting the team from unsustainable pressure is part of the job.
+  `,
+  follow: [
+      "What if the stakeholder is a VP who says the date cannot move?",
+      "How do you handle a deadline that keeps getting pulled earlier?",
+      "How do you say no when the request comes with 'this is a company priority'?"
+  ],
+  tags: [
+      "deadline",
+      "negotiation",
+      "stakeholder",
+      "pushback",
+      "english"
+  ],
+  lang: 'en',
+}
 
 );
