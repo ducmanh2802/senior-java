@@ -10377,6 +10377,247 @@ Streaming gửi token về ngay khi sinh, cải thiện UX. Blocking phù hợp 
 - **Tiết kiệm token**: không liên quan.
 
 > Senior tip: kết hợp streaming cho UX và structured output cho data.`
+},
+{
+  id: 'qz-db-911',
+  topic: 'db',
+  q: 'MyBatis bật cache cấp session (L1) mặc định. Phát biểu nào về LocalCacheScope là đúng?',
+  options: [
+    'LOCAL_CACHE_SESSION (mặc định): cùng một SqlSession gọi select hai lần cùng một query → lần thứ hai đọc cache L1, thậm chí trả về cùng một object instance',
+    'Cache L1 được chia sẻ giữa tất cả SqlSession trong toàn bộ ứng dụng',
+    'Đặt LocalCacheScope = STATEMENT là không được phép',
+    'Cache L1 lưu kết quả mãi mãi cho dù SqlSession đã đóng'
+  ],
+  answer: 0,
+  explain: `**Đáp án đúng: LOCAL_CACHE_SESSION (mặc định) → cùng SqlSession select lại cùng query thì đọc cache L1.**
+
+### Vì sao đúng
+Cache cấp session (L1) của MyBatis gắn với **SqlSession** — đối tượng đại diện cho một phiên làm việc với database. Mặc định phạm vi là LOCAL_CACHE_SESSION: trong cùng một SqlSession, nếu bạn gọi select cùng một query hai lần, lần thứ hai MyBatis đọc kết quả từ cache L1, không truy vấn database lại, thậm chí trả về cùng một object instance. Khi SqlSession đóng, cache L1 của nó cũng bị huỷ.
+
+### Vì sao các phương án còn lại sai
+- **Cache L1 chia sẻ giữa mọi SqlSession**: sai, L1 chỉ sống trong một SqlSession. Cache chia sẻ giữa các session là cache cấp hai (L2), phải cấu hình thêm.
+- **LocalCacheScope = STATEMENT không được phép**: sai, STATEMENT là giá trị hợp lệ — cache chỉ tồn tại trong thời gian chạy một câu statement, sau đó xóa. Hữu ích khi dữ liệu thay đổi liên tục trong cùng session.
+- **Cache L1 lưu mãi mãi**: sai, L1 huỷ theo SqlSession, không vĩnh viễn.
+
+> Senior tip: L1 cache có thể gây "dữ liệu cũ" nếu bạn cập nhật database bên ngoài MyBatis trong cùng session; cần flush cache hoặc dùng STATEMENT khi cần đọc dữ liệu mới nhất mỗi lần.`
+},
+{
+  id: 'qz-db-912',
+  topic: 'db',
+  q: 'Chèn đơn hàng mới và cần lấy ID mà database sinh ra (cột identity hoặc sequence). Cách đúng trong MyBatis là gì?',
+  options: [
+    'Sau <insert>, luôn gọi SELECT MAX(id) để lấy ID vừa chèn',
+    '<insert> không hỗ trợ lấy khóa sinh ra, chỉ dùng <selectKey>',
+    '<insert useGeneratedKeys="true" keyProperty="id">: MyBatis gán giá trị khóa database sinh ra vào thuộc tính id',
+    'MyBatis không tương thích với cột identity/sequence'
+  ],
+  answer: 2,
+  explain: `**Đáp án đúng: <insert useGeneratedKeys="true" keyProperty="id"> cho MyBatis gán khóa sinh ra vào thuộc tính id.**
+
+### Vì sao đúng
+Với cột khóa sinh ra tự động (identity, sequence, serial...), ứng dụng không biết ID trước khi chèn. MyBatis cung cấp useGeneratedKeys="true" cùng keyProperty="id": sau khi <insert> chạy, MyBatis lấy khóa database sinh ra (JDBC getGeneratedKeys hoặc <selectKey> tùy driver) và gán vào thuộc tính id của đối tượng Java, sau đó đối tượng đó đã có ID đúng để dùng bước sau.
+
+### Vì sao các phương án còn lại sai
+- **SELECT MAX(id) sau insert**: không an toàn dưới tải cao — nhiều transaction chèn cùng lúc có thể lấy nhầm ID của người khác, và MAX id không reflect được transaction chưa commit.
+- **<insert> không hỗ trợ, chỉ <selectKey>**: sai, <selectKey> là một cách (đặc biệt với database không hỗ trợ getGeneratedKeys), không phải cách duy nhất.
+- **Không tương thích identity/sequence**: sai, MyBatis làm việc tốt với cột sinh khóa tự động của hầu hết database.
+
+> Senior tip: useGeneratedKeys dựa vào JDBC driver hỗ trợ getGeneratedKeys; với một số database/đriver cũ, cần fallback sang <selectKey> hoặc query như SELECT LAST_INSERT_ID() (MySQL) hay currval (PostgreSQL) tùy database.`
+},
+{
+  id: 'qz-db-913',
+  topic: 'db',
+  q: 'Viết câu UPDATE động chỉ cập nhật các cột khác null (ví dụ tên, tuổi, địa chỉ). Cách nào đúng? (Chọn 2)',
+  options: [
+    'Dùng <set> bao quanh các <if> cột, MyBatis tự thêm từ khóa SET và xóa dấu phẩy thừa',
+    'Luôn UPDATE tất cả cột cho đơn giản',
+    'Dùng <trim prefix="SET" suffixOverrides=","> bao quanh các <if> cột',
+    'Dùng <select> để viết câu UPDATE'
+  ],
+  multi: true,
+  answer: [0, 2],
+  explain: `**Đáp án đúng: <set> hoặc <trim prefix="SET" suffixOverrides=","> bao quanh các <if> cột.**
+
+### Vì sao đúng
+UPDATE động chỉ nên ghi các cột người dùng thực sự cung cấp:
+- <set> tự chèn từ khóa SET và xóa dấu phẩy cuối cùng nếu có, tránh lỗi UPDATE orders SET , name = ? hoặc SET name = ?,.
+- <trim prefix="SET" suffixOverrides=","> làm việc tương tự, cho phép kiểm soát chính xác từ bỏ dấu phẩy (hoặc AND/OR) đầu/cuối dòng.
+
+Cả hai đều kết hợp <if test="tên != null">tên = #{tên},</if> nên chỉ các cột khác null mới được gửi xuống database, các giá trị dùng #{} an toàn chống SQL injection.
+
+### Vì sao các phương án còn lại sai
+- **UPDATE tất cả cột**: gây ghi database thừa, kích hoạt trigger, và dễ ghi đè giá trị của người khác đang sửa cùng lúc (mất cập nhật).
+- **<select> viết câu UPDATE**: <select> chỉ dùng để truy vấn dữ liệu, không dùng cho lệnh ghi.
+
+> Senior tip: <set> là viết tắt ngắn gọn của <trim> trong trường hợp này; dùng <trim> khi cần kiểm soát chặt hơn (ví dụ prefixOverrides xóa cả AND/OR).`
+},
+{
+  id: 'qz-db-914',
+  topic: 'db',
+  q: 'Dùng MyBatis cùng Spring Boot, gọi mapper interface được Spring inject. Ai mở/commit/rollback/đóng SqlSession?',
+  options: [
+    'Code phải gọi sqlSession.commit() và close() thủ công ở mỗi method',
+    'MyBatis mở một SqlSession chung cho toàn bộ ứng dụng, không bao giờ đóng',
+    'Database tự mở và đóng SqlSession',
+    'Spring (MyBatis-Spring), gắn SqlSession với transaction @Transactional; code ứng dụng không tự mở/đóng'
+  ],
+  answer: 3,
+  explain: `**Đáp án đúng: Spring (MyBatis-Spring) quản lý SqlSession, gắn với transaction @Transactional.**
+
+### Vì sao đúng
+Trong Spring Boot, MyBatis được cấu hình qua SqlSessionFactoryBean; mapper interface được Spring tạo proxy bean (@Mapper/@MapperScan). Khi gọi method mapper, MyBatis-Spring tự lấy/tạo SqlSession, gắn nó với transaction hiện tại của Spring (nếu có @Transactional), commit hoặc rollback theo kết quả transaction, rồi đóng/trả SqlSession về pool khi kết thúc. Code ứng dụng không tự gọi openSession()/commit()/close() — làm vậy sẽ làm hỏng việc quản lý transaction của Spring và dễ rò rỉ connection.
+
+### Vì sao các phương án còn lại sai
+- **Gọi commit()/close() thủ công**: SqlSession đó sẽ không tham gia transaction của Spring, dẫn đến dữ liệu không commit đúng và dễ rò rỉ connection.
+- **Một SqlSession chung toàn bộ ứng dụng**: SqlSession không an toàn khi nhiều luồng cùng gọi; mỗi yêu cầu nên có riêng SqlSession của nó.
+- **Database tự mở/đóng SqlSession**: database không biết SqlSession (đó là đối tượng trong ứng dụng Java); connection được quản lý bởi pool (HikariCP), SqlSession đóng vai trò bọc connection đó.
+
+> Senior tip: viết code nghiệp vụ chỉ gọi trực tiếp interface mapper được Spring inject, không tự khởi tạo SqlSession hay SqlSessionTemplate.`
+},
+{
+  id: 'qz-db-915',
+  topic: 'db',
+  q: '<sql> trong MyBatis dùng để làm gì?',
+  options: [
+    'Tạo bảng tạm trong database',
+    'Định nghĩa một mảnh SQL có thể dùng lại bằng <include refid="..."> trong nhiều mapper',
+    'Lưu cache truy vấn vào bộ nhớ',
+    'Thay thế hoàn toàn câu lệnh <select>'
+  ],
+  answer: 1,
+  explain: `**Đáp án đúng: Định nghĩa mảnh SQL dùng lại bằng <include refid="...">.**
+
+### Vì sao đúng
+<sql> cho đặt tên một đoạn SQL (ví dụ các cột chọn, điều kiện lọc thường dùng), rồi các câu <select>/<insert>/<update>/<delete> khác dùng <include refid="ten_mau"> để chèn đoạn đó vào. Giúp tránh viết lại chung các mảnh SQL dài và dễ bảo trì: đổi tên cột ở một nơi là đủ.
+
+### Vì sao các phương án còn lại sai
+- **Tạo bảng tạm**: <sql> không tạo đối tượng database nào, chỉ là mảnh văn bản SQL được chèn vào câu lệnh cha.
+- **Lưu cache**: cache dùng <cache> hoặc cấu hình cấp hai, không phải <sql>.
+- **Thay thế hoàn toàn <select>**: <sql> không thể đứng allein, chỉ dùng làm thành phần bên trong các câu lệnh mapper.
+
+> Senior tip: dùng <sql> cho các mảnh lặp đi lặp lại nhiều lần (danh sách cột báo cáo, điều kiện phân quyền), đừng lạm dụng cho mọi câu query nhỏ vì làm mã khó đọc.`
+},
+{
+  id: 'qz-db-916',
+  topic: 'db',
+  q: 'Truy vấn trả về hàng triệu dòng, không muốn làm đầy bộ nhớ RAM bằng toàn bộ kết quả. Cách nào phù hợp?',
+  options: [
+    'Đặt fetchSize nhỏ và/hoặc dùng ResultHandler để xử lý từng dòng thay vì load toàn bộ kết quả vào danh sách Java',
+    'Luôn dùng resultType List để load hết rồi mới xử lý',
+    'Tắt fetchSize để load càng nhiều càng tốt',
+    'Chỉ dùng <select> kèm resultMap'
+  ],
+  answer: 0,
+  explain: `**Đáp án đúng: fetchSize nhỏ và/hoặc ResultHandler xử lý từng dòng.**
+
+### Vì sao đúng
+Mặc định MyBatis lấy toàn bộ kết quả vào bộ nhớ Java (một danh sách object) — với hàng triệu dòng sẽ hết RAM (OutOfMemoryError). Hai cách tránh:
+- **fetchSize**: hint cho JDBC driver lấy từng đợt nhỏ các dòng thay vì tất cả cùng lúc (ví dụ fetchSize = 100). Lưu ý số liệu này chỉ là hint, một số driver có thể bỏ qua.
+- **ResultHandler**: MyBatis gọi handler.handle() cho từng dòng kết quả, ứng dụng tự xử lý và không cần giữ toàn bộ danh sách trong RAM.
+
+### Vì sao các phương án còn lại sai
+- **resultType List load hết**: chính là cách gây OutOfMemoryError với tập kết quả lớn.
+- **Tắt fetchSize**: driver sẽ nỗ lực lấy toàn bộ kết quả một lần — nguy hiểm hơn, không phải giải pháp.
+- **<select> kèm resultMap**: resultMap chỉ ánh xạ cột sang thuộc tính, không thay đổi cách MyBatis lấy dữ liệu về RAM.
+
+> Senior tip: fetchSize là hint, không phải lệnh bắt buộc; với PostgreSQL cần đặt autocommit = false hoặc dùng transaction để fetchSize được ghi nhận.`
+},
+{
+  id: 'qz-db-917',
+  topic: 'db',
+  q: '@Options trên mapper method. Khẳng định nào đúng? (Chọn 2)',
+  options: [
+    'useCache = false khiến kết quả select của lần gọi đó không được lưu vào cache L1/L2',
+    'flushCache = true trên <select> sẽ xóa các cache L1/L2 sau khi truy vấn chạy xong',
+    'flushCache = true trên <select> làm rollback transaction database',
+    '@Options không thể dùng trên <select>'
+  ],
+  multi: true,
+  answer: [0, 1],
+  explain: `**Đáp án đúng: useCache = false không cache kết quả lần gọi đó; flushCache = true trên select xóa cache L1/L2 sau truy vấn.**
+
+### Vì sao đúng
+@Options điều chỉnh hành vi của một câu mapper:
+- **useCache = false**: select đó sẽ không đọc cache và không ghi kết quả vào cache L1/L2 cho lần gọi đó — hữu ích khi cần dữ liệu mới nhất.
+- **flushCache = true trên <select>**: sau khi truy vấn chạy xong, MyBatis xóa các mục liên quan trong cache L1/L2 — dùng khi dữ liệu dưới database đã đổi do lý do bên ngoài MyBatis.
+
+### Vì sao các phương án còn lại sai
+- **flushCache = true làm rollback transaction database**: sai, flushCache chỉ xóa cache của MyBatis trong ứng dụng, không tác động đến transaction hay dữ liệu trong database.
+- **@Options không thể dùng trên <select>**: sai, @Options dùng được trên <select>, <insert>, <update>, <delete>.
+
+> Senior tip: flushCache = true trên select vừa đọc vừa xóa cache có thể làm chậm hệ thống vì lần sau phải truy vấn database lại; dùng chỉ khi thật sự cần dữ liệu mới nhất từ nguồn bên ngoài.`
+},
+{
+  id: 'qz-db-918',
+  topic: 'db',
+  q: 'StatementType trong MyBatis chi phối điều gì?',
+  options: [
+    'Kiểu dữ liệu của tham số #{}',
+    'Cách map kết quả sang class Java',
+    'Cách MyBatis gửi SQL đến database: PreparedStatement, CallableStatement hay Statement',
+    'Mức cache L1/L2 được bật hay tắt'
+  ],
+  answer: 2,
+  explain: `**Đáp án đúng: Cách MyBatis gửi SQL đến database: PreparedStatement, CallableStatement hay Statement.**
+
+### Vì sao đúng
+StatementType chọn loại JDBC statement dùng để chạy SQL:
+- **PREPARED** (mặc định): dùng PreparedStatement, SQL được chuẩn bị trước, tham số bind qua #{} — an toàn chống SQL injection và cho phép reuse câu chuẩn bị.
+- **CALLABLE**: dùng CallableStatement để gọi stored procedure của database.
+- **STATEMENT**: dùng Statement đơn giản, tham số được chèn trực tiếp vào chuỗi SQL — dễ bị SQL injection, chỉ dùng khi thực sự cần (ví dụ DDL động).
+
+### Vì sao các phương án còn lại sai
+- **Kiểu dữ liệu tham số #{}**: kiểu tham số được suy ra từ giá trị Java / jdbcType, không do StatementType.
+- **Map kết quả sang class Java**: là vai trò của resultType/resultMap.
+- **Mức cache L1/L2**: cấu hình riêng (cacheEnabled, LocalCacheScope, @Options useCache).
+
+> Senior tip: mặc định PREPARED là an toàn và đủ cho hầu hết trường hợp; chỉ dùng STATEMENT khi cần chạy lệnh DDL động hoặc các câu SQL không thể chuẩn bị trước.`
+},
+{
+  id: 'qz-db-919',
+  topic: 'db',
+  q: 'Mapper method có hai tham số gắn @Param("code") và @Param("status"). Trong XML tham chiếu thế nào?',
+  options: [
+    '#{param1} và #{param2}',
+    '#{arg0} và #{arg1}',
+    'Không thể tham chiếu',
+    '#{code} và #{status}'
+  ],
+  answer: 3,
+  explain: `**Đáp án đúng: #{code} và #{status} theo tên đặt trong @Param.**
+
+### Vì sao đúng
+Khi mapper method có nhiều tham số, MyBatis cần biết tham số nào tương ứng với #{...} trong XML. Gắn @Param("code") và @Param("status") lên các tham số, thì trong XML dùng #{code} và #{status} để tham chiếu đúng giá trị. Các giá trị này được bind qua PreparedStatement, an toàn chống SQL injection.
+
+### Vì sao các phương án còn lại sai
+- **#{param1} và #{param2}**: chỉ áp dụng khi KHÔNG gắn @Param (và tên cụ thể arg1/arg2 hay param1/param2 phụ thuộc cách compile), không dùng khi đã có @Param.
+- **#{arg0} và #{arg1}**: không phải quy ước của MyBatis khi đã dùng @Param.
+- **Không thể tham chiếu**: sai, @Param chính là cách tham chiếu rõ ràng.
+
+> Senior tip: nếu chỉ có một tham số, MyBatis thường tự nhận biết và có thể bỏ @Param, nhưng ghi @Param vẫn rõ ràng và an toàn hơn khi duy trì mã sau này.`
+},
+{
+  id: 'qz-db-920',
+  topic: 'db',
+  q: 'Khi nào nên dùng resultType thay vì resultMap?',
+  options: [
+    'Luôn dùng resultType vì nhanh hơn resultMap',
+    'Kết quả truy vấn ánh xạ 1-1 với một class Java (hoặc kiểu nguyên thủy) và tên cột trùng tên thuộc tính',
+    'Chỉ khi có quan hệ lồng nhau',
+    'Chỉ khi tên cột khác tên thuộc tính'
+  ],
+  answer: 1,
+  explain: `**Đáp án đúng: resultType khi kết quả ánh xạ 1-1 với class Java và tên cột trùng tên thuộc tính.**
+
+### Vì sao đúng
+resultType là cách ngắn gọn: MyBatis tự ánh xạ từng cột kết quả vào thuộc tính cùng tên của class Java (hoặc kiểu nguyên thủy như Long, String) — phù hợp khi truy vấn trả về đối tượng đơn giản và tên cột database đã đặt khớp với tên thuộc tính (ví dụ cột ma_don vs thuộc tính maDon tùy cấu hình autoMapping, hoặc dùng cột cùng tên).
+
+### Vì sao các phương án còn lại sai
+- **Luôn dùng resultType vì nhanh hơn**: sai, hiệu năng hai cách gần như bằng nhau; resultType không xử lý được tên cột khác tên thuộc tính hoặc quan hệ lồng nhau.
+- **Chỉ khi có quan hệ lồng nhau**: ngược lại, quan hệ lồng nhau (đối tượng con, danh sách con) cần resultMap với <association>/<collection>.
+- **Chỉ khi tên cột khác tên thuộc tính**: đó là trường hợp cần resultMap (để đổi tên cột), không phải resultType.
+
+> Senior tip: khi tên cột database (snake_case) khác tên thuộc tính Java (camelCase) nhiều cột, resultMap ngắn gọn và rõ ràng hơn từ cài đặt autoMapping hoặc đổi tên cột trong SQL.`
 }
 
 );
