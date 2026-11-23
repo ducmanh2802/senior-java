@@ -1,0 +1,79 @@
+{
+  "date": "2026-11-23",
+  "intro": "Cuối tuần tin ít: đáng chú ý là JEP 547 (Lazy Constants, preview lần 4) nhắm tới JDK 28 mà không đổi API, Spring Boot 4.0.10 với 97 bản sửa lỗi, cùng các bài AWS về Aurora PostgreSQL vào VPC không cần migrate, Valkey observability bằng OpenTelemetry và pipeline CDC dùng Iceberg.",
+  "editor": "claude",
+  "items": [
+    {
+      "title_vi": "JEP 547: Lazy Constants preview lần 4, nhắm tới JDK 28 và không đổi API",
+      "title": "JEP targeted to JDK 28: 547: Lazy Constants (4th Preview)",
+      "url": "https://inside.java/2026/11/20/jep547-target-jdk28/",
+      "source": "Inside Java",
+      "category": "tech",
+      "summary": "JEP 547 được nhắm tới JDK 28. Lazy constants là object giữ dữ liệu bất biến, được JVM coi như hằng số thật nên tối ưu được như field {{final}}, nhưng cho phép khởi tạo muộn và đảm bảo chỉ khởi tạo tối đa một lần dù đa luồng. JDK 28 re-preview mà không đổi API; trước đó JDK 27 đã thêm {{Set.ofLazy(...)}} bên cạnh lazy List và Map. API xuất hiện từ JDK 25 với tên {{StableValue}} và được đổi thành {{LazyConstant}} ở JDK 26.",
+      "why": "Lazy constants là lựa chọn gọn hơn double-checked locking hay holder idiom khi cần khởi tạo trì hoãn thread-safe, và giúp giảm thời gian khởi động của service Java.",
+      "interview_q": "So sánh lazy initialization bằng double-checked locking, initialization-on-demand holder và LazyConstant của JDK mới: khi nào chọn cái nào?",
+      "related": ["concurrency-001", "jvm-001"],
+      "tags": ["jdk28", "jep", "concurrency"]
+    },
+    {
+      "title_vi": "Spring Boot 4.0.10: 97 bản sửa lỗi, nâng Spring Framework 7.0.11 và Netty 4.2.20",
+      "title": "Spring Boot 4.0.10 available now",
+      "url": "https://spring.io/blog/2026/11/20/spring-boot-4-0-10-available-now",
+      "source": "Spring Blog",
+      "category": "tech",
+      "summary": "Bản vá 4.0.10 gồm 97 thay đổi. Theo release notes trên GitHub có sửa lỗi graceful shutdown không chờ request đang chạy sau khi Tomcat/Jetty restart, context close có thể treo khi bật Hikari pool suspension, cấu hình SSL bundle bị bỏ qua với RabbitMQ/Kafka/JavaMail, và lỗi trong {{BasicJsonParser}}/{{JsonWriter}}. Dependency nâng lên Spring Framework 7.0.11, Spring Security 7.0.9, Jackson 3.1.8, Micrometer 1.16.9, Netty 4.2.20. Release notes không gắn nhãn CVE nào.",
+      "why": "Nếu đang chạy 4.0.x, các bản sửa graceful shutdown và SSL bundle ảnh hưởng trực tiếp tới rolling deploy và kết nối an toàn tới broker.",
+      "interview_q": "Bạn kiểm tra thế nào để graceful shutdown của Spring Boot thực sự chờ hết request đang chạy khi rolling deploy trên Kubernetes?",
+      "related": ["spring-001", "devops-001"],
+      "tags": ["spring-boot", "release"]
+    },
+    {
+      "title_vi": "Amazon ElastiCache for Valkey: metric OpenTelemetry, detailed monitoring 15 giây và PromQL alarm",
+      "title": "Monitor Valkey clusters with OpenTelemetry metrics in Amazon ElastiCache",
+      "url": "https://aws.amazon.com/blogs/database/monitor-valkey-clusters-with-opentelemetry-metrics-in-amazon-elasticache/",
+      "source": "AWS Database Blog",
+      "category": "cloud",
+      "summary": "ElastiCache for Valkey đẩy metric dạng OpenTelemetry thẳng lên CloudWatch, không cần exporter hay collector, lọc được theo node, shard, command, loại lỗi. Detailed monitoring phát metric chọn lọc mỗi 15 giây (hơn 100 metric, 69 chỉ có ở chế độ này), cùng ElastiCache Insights và PromQL query/alarm, một alarm theo dõi mọi node kể cả khi scale. Chế độ standard mặc định vẫn là 60 giây.",
+      "why": "Cache nằm trên đường găng của API; thấy được hot shard hay spike latency của một command trong vài chục giây giúp điều tra sự cố Redis/Valkey nhanh hơn nhiều.",
+      "interview_q": "Latency API tăng và nghi do cache: bạn phân biệt hot shard, command chậm hay node chạm giới hạn memory/connection bằng metric nào?",
+      "related": ["aws-001", "db-001"],
+      "tags": ["valkey", "observability", "cache"]
+    },
+    {
+      "title_vi": "Aurora PostgreSQL express configuration: chuyển cluster vào VPC bằng một lệnh modify, giữ nguyên endpoint",
+      "title": "From instant Aurora PostgreSQL databases to production-ready in your VPC",
+      "url": "https://aws.amazon.com/blogs/database/from-instant-aurora-postgresql-databases-to-production-ready-in-your-vpc/",
+      "source": "AWS Database Blog",
+      "category": "cloud",
+      "summary": "Ngày 19/11/2026 AWS công bố VPC networking cho Aurora PostgreSQL express configuration. Cluster tạo nhanh (truy cập qua internet access gateway bằng IAM auth) giờ có thể chuyển vào private subnet bằng một thao tác modify, giữ nguyên dữ liệu và endpoint, trước đây phải restore snapshot sang cluster mới. Việc chuyển mất vài giây nhưng ngắt các kết nối hiện có, nên cần connection pool hoặc retry reconnect. Hai kiểu kết nối loại trừ nhau.",
+      "why": "Đưa prototype lên production thường vướng yêu cầu VPC, security group, RDS Proxy; bài cho thấy cái giá là đứt kết nối ngắn mà app phải chịu được.",
+      "interview_q": "Khi chuyển database sang mạng riêng (VPC) mà connection bị ngắt vài giây, bạn cấu hình connection pool và retry ở service Spring Boot thế nào?",
+      "related": ["aws-001", "db-001"],
+      "tags": ["aurora", "vpc", "postgresql"]
+    },
+    {
+      "title_vi": "Aderant dựng pipeline CDC kiểu medallion trên Iceberg + Lambda: từ 15 phút xuống vài giây mỗi event",
+      "title": "Aderant modernizes analytics data pipeline with Apache Iceberg and AWS Lambda",
+      "url": "https://aws.amazon.com/blogs/architecture/aderant-modernizes-analytics-data-pipeline-with-apache-iceberg-and-aws-lambda/",
+      "source": "AWS Architecture Blog",
+      "category": "cloud",
+      "summary": "Aderant phục vụ 700 môi trường khách hàng với 266 bảng nguồn SQL Server, khoảng 380 triệu CDC event mỗi tháng. Pipeline batch cũ mất khoảng 15 phút mỗi chu kỳ; kiến trúc mới dùng DMS ghi Parquet vào S3, S3 event qua SQS kích hoạt Lambda ghi bảng bronze Iceberg trong vài giây, Glue chuyển tiếp silver/gold, Redshift phục vụ truy vấn. Bài nêu truy vấn nhanh hơn 10–26 lần và giảm 77% chi phí so với phương án khác.",
+      "why": "Mẫu event-driven CDC + bảng Iceberg (MERGE, ACID) là câu chuyện điển hình khi backend Java phải đưa dữ liệu giao dịch sang analytics gần thời gian thực.",
+      "interview_q": "Bạn thiết kế luồng đưa thay đổi dữ liệu từ OLTP sang analytics gần real-time thế nào, và xử lý event trùng hay đến sai thứ tự ra sao?",
+      "related": ["architecture-001", "microservices-001"],
+      "tags": ["cdc", "iceberg", "data-pipeline"]
+    },
+    {
+      "title_vi": "CloudFormation StackSets cho phép execution role tuỳ chỉnh: bớt AdministratorAccess, hỗ trợ nested stack/macro/transform",
+      "title": "Announcing custom execution roles for AWS CloudFormation StackSets",
+      "url": "https://aws.amazon.com/blogs/devops/announcing-custom-execution-roles-for-aws-cloudformation-stacksets/",
+      "source": "AWS DevOps Blog",
+      "category": "devops",
+      "summary": "Mặc định StackSets tạo execution role AdministratorAccess ở mỗi account đích. Với service-managed stack set, giờ có thể truyền template định nghĩa IAM role riêng (một resource {{AWS::IAM::Role}}, tên bắt đầu bằng {{stacksets-exec-custom-}}) để giới hạn quyền, đồng thời deploy được template có nested stack, macro và transform như SAM. Role mặc định không tự bị xoá, muốn least-privilege thật cần xoá thủ công sau khi kiểm chứng.",
+      "why": "Quản lý hạ tầng multi-account bằng IaC là phần việc của Senior/Lead; nguyên tắc least-privilege cho role triển khai thường bị hỏi trong vòng DevOps và security.",
+      "interview_q": "Bạn rollout baseline bảo mật tới hàng chục AWS account bằng IaC thế nào mà không cấp quyền admin thừa cho role triển khai?",
+      "related": ["devops-001", "aws-001"],
+      "tags": ["cloudformation", "iam", "iac"]
+    }
+  ]
+}
