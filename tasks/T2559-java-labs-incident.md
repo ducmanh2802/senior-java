@@ -1,6 +1,6 @@
 # T2559 — 2 debug lab (incident) vào labs-incident.js
 
-Status: DONE
+Status: REOPENED
 Agent: kilo
 Owns: `js/data/labs-incident.js`
 After: T2549

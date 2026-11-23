@@ -1,6 +1,6 @@
 # T2517 — 2 bài học (sql) vào lessons-sql.js
 
-Status: DONE
+Status: REOPENED
 Agent: kilo
 Owns: `js/data/lessons-sql.js`
 After: T2516

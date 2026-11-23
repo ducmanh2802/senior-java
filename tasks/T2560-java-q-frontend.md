@@ -1,6 +1,6 @@
 # T2560 — 4 câu hỏi Senior Java (frontend) vào q-frontend.js
 
-Status: DONE
+Status: REOPENED
 Agent: kilo
 Owns: `js/data/q-frontend.js`
 After: T2555
