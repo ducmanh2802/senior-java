@@ -12065,4 +12065,106 @@ I never start with a flat "no", especially with Korean or Japanese stakeholders,
   tags: ['communication', 'scope', 'out-of-scope', 'negotiation', 'lead'],
   lang: 'en',
 },
+
+{
+  id: 'english-235',
+  topic: 'english',
+  level: 'senior',
+  q: 'Introduce yourself to a Korean/Japanese/FDI interviewer, highlighting your experience in a Samsung factory IT team.',
+  a: `**Tóm tắt:** Tôi là Senior Java fullstack với 4 năm kinh nghiệm, trong đó 2 năm làm IT nhà máy Samsung (hệ thống MES nội bộ), chuyên backend Spring Boot + frontend Vue, quen làm việc với PM/BA nước ngoài và deadline khắt khe.
+
+### Cấu trúc trả lời (Present–Past–Future)
+1. **Present**: tên, vị trí hiện tại, stack chính.
+2. **Past**: kinh nghiệm nhà máy Samsung — MES, tích hợp máy móc, OT cao điểm.
+3. **Future**: vì sao applying vào công ty này.
+
+### Ví dụ đời thực
+"Tôi là Nguyễn Văn A, Senior Java Developer với 4 năm kinh nghiệm. Hiện tại tôi làm fullstack cho hệ thống MES của một nhà máy Samsung: backend Spring Boot 3, frontend Vue 3, PostgreSQL, deploy trên Kubernetes. Tôi thường làm việc trực tiếp với PM Hàn Quốc và BA Nhật, xử lý yêu cầu thay đổi trong sprint. Điểm mạnh là debug production nhanh và giao tiếp rõ ràng bằng tiếng Anh trong daily stand-up."
+
+### Trả lời mẫu khi phỏng vấn
+I am a Senior Java fullstack developer with four years of experience. For the past two years I have worked in the IT department of a Samsung factory, building and maintaining an internal MES. On the backend I use Spring Boot 3 with PostgreSQL and Redis; on the frontend I use Vue 3. I collaborate daily with Korean PMs and Japanese BAs, so I am used to changing requirements and tight deadlines. One highlight was reducing a production report query from twelve seconds to under one second by adding a composite index and caching. I am now looking for a role where I can keep growing in system design while contributing to a global team.
+
+> Senior tip: Chuẩn bị 3 phiên bản: 30s, 60s, 90s; luôn kết bằng "vì sao applying vào công ty này".`,
+  follow: ['Tell me about a challenging project you worked on.', 'What is your greatest strength?'],
+  tags: ['introduction', 'samsung', 'mes', 'interview'],
+  lang: 'en',
+},
+{
+  id: 'english-236',
+  topic: 'english',
+  level: 'senior',
+  q: 'Describe a project you built for a factory (MES/internal system) using the STAR method.',
+  a: `**Tóm tắt:** STAR = Situation–Task–Action–Result; kể dự án MES nhà máy: tình huống báo cáo chậm, nhiệm vụ tối ưu, hành động thêm index/cache, kết quả giảm 12s→0.8s.
+
+### STAR
+- **Situation**: nhà máy Samsung, hệ thống MES theo dõi sản lượng theo ca; báo cáo cuối ca mất 12s, công nhân chờ.
+- **Task**: giảm thời gian báo cáo xuống < 2s, không downtime.
+- **Action**: profile query, thêm composite index, cache Redis với TTL 30s, pagination.
+- **Result**: 12s → 0.8s, giảm 40% ticket support.
+
+### Ví dụ đời thực
+Trong sprint 2 tuần, tôi và BA Hàn thống nhất scope; viết ADR; rollout blue/green; monitor Grafana. Sau rollout, p95 latency 0.9s, CPU DB giảm 30%.
+
+### Trả lời mẫu khi phỏng vấn
+In my Samsung factory MES project, the situation was that end-of-shift production reports took twelve seconds, blocking operators. My task was to cut it below two seconds without downtime. I profiled the SQL, added a composite index on (line_id, shift_date), and cached the aggregated result in Redis with a thirty-second TTL. I also added pagination for large ranges. The result: report time dropped to zero point eight seconds, support tickets fell by forty percent, and database CPU dropped thirty percent. I documented the decision in an ADR and rolled out with blue-green deployment.
+
+> Senior tip: Luôn có số liệu trước/sau; nếu không có số, dùng "about X%".`,
+  follow: ['What was the hardest bug you fixed?', 'How did you handle changing requirements?'],
+  tags: ['star', 'mes', 'project', 'interview'],
+  lang: 'en',
+},
+{
+  id: 'english-237',
+  topic: 'english',
+  level: 'senior',
+  q: 'Why do you want to move from backend-only to fullstack (Java + Vue)?',
+  a: `**Tóm tắt:** Fullstack giúp đóng vòng feedback nhanh, hiểu UX, giảm round-trip với frontend, và phù hợp team nhỏ FDI.
+
+### Lý do
+1. **Feedback loop**: tự sửa UI → backend → test, không chờ frontend.
+2. **Hiểu người dùng**: thấy pain point từ giao diện.
+3. **Team nhỏ**: FDI/Hàn/Nhật thường team compact, cần đa năng.
+4. **Ownership**: chịu trách nhiệm end-to-end.
+
+### Trade-off
+- Backend depth vs breadth: cần giữ vững core (transaction, concurrency).
+- Risk: jack of all trades → mitigate bằng specialization trong domain.
+
+### Ví dụ đời thực
+Trong MES, tôi tự làm component Vue cho dashboard và API Spring Boot; giảm thời gian feature từ 2 sprint xuống 1.
+
+### Trả lời mẫu khi phỏng vấn
+I want to move to fullstack because in my factory MES work I often waited on frontend colleagues to adjust small UI details, which slowed delivery. By learning Vue 3, I can now close the feedback loop myself: design the API contract, implement the backend, and ship the UI in the same sprint. It also helps me understand user pain points directly from the screen instead of guessing from tickets. I am aware of the trade-off: spreading across two stacks can dilute depth, so I deliberately keep my backend fundamentals strong—transactions, concurrency, and database tuning—while using Vue for productivity. In our last release, a dashboard feature that used to take two sprints took one because one person owned it end to end.
+
+> Senior tip: Nhấn mạnh bạn vẫn giữ depth backend, không "bỏ" Java.`,
+  follow: ['What is your preferred stack?', 'How do you keep learning?'],
+  tags: ['fullstack', 'motivation', 'career'],
+  lang: 'en',
+},
+{
+  id: 'english-238',
+  topic: 'english',
+  level: 'lead',
+  q: 'Describe a time you worked under a tight deadline and overtime. How did you manage it?',
+  a: `**Tóm tắt:** Deadline gấp → ưu tiên scope, chia nhỏ, OT có kế hoạch, giao tiếp sớm với stakeholder, post-mortem.
+
+### Cách xử lý
+1. **Clarify scope**: MoSCoW (Must/Should/Could/Won't).
+2. **Slice**: chia task nhỏ, daily checkpoint.
+3. **OT có kế hoạch**: không OT liên tục; xoay ca; theo dõi fatigue.
+4. **Giao tiếp**: báo sớm risk, recovery plan.
+5. **Post-mortem**: rút kinh nghiệm, tự động hoá.
+
+### Ví dụ đời thực
+Sprint cuối quý, client Hàn yêu cầu thêm báo cáo; tôi đề xuất Must-have 3 báo cáo, Won't 2; OT 2 ngày; giao hàng đúng hạn; sau đó thêm automation test để tránh lặp.
+
+### Trả lời mẫu khi phỏng vấn
+Two quarters ago, a Korean client asked for an extra reporting module one week before a milestone. I first clarified scope using MoSCoW: three must-have reports, two won't-haves deferred. I broke work into daily slices with a checkpoint each morning. We planned overtime for two days only, rotated pairs to avoid fatigue, and I sent a daily risk update to the PM. We delivered on time. Afterward I added integration tests and a deploy checklist to reduce manual effort next time. The key lesson: overtime is a tool, not a plan—scope clarity and early communication matter more.
+
+> Senior tip: Không khoe OT nhiều; nhấn mạnh quản lý scope và sức khoẻ team.`,
+  follow: ['How do you handle conflicting priorities?', 'Tell me about a failure.'],
+  tags: ['deadline', 'overtime', 'stress', 'lead'],
+  lang: 'en',
+},
+
 );
