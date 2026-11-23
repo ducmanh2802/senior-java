@@ -4867,5 +4867,432 @@ Với 120 GB/s allocation rate của {{OrderEvent}}, trong 1 giây, hệ thống
   answer: '**Tom tat:** 150 thread cung cho mot monitor cua RoutingCache vi method lookup synchronized toan object.\n\n### Nguyen nhan goc\nMethod lookup synchronized tren toan object nen moi request phai xep hang.\n\n### Dan chung\nArtifact: 150 thread BLOCKED tai RoutingCache.lookup, waiting to lock <0x000000076ab2d0a0>.\n\n### Cach sua\nDung ConcurrentHashMap va computeIfAbsent; hoac striping; hoac snapshot volatile.\n\n### Phong ngua\nAlert so thread BLOCKED; review hot path.\n\n> Senior tip: Contention khong ton CPU nhung kill latency; do bang JFR.',
   rubric: ['Chi ra 150 thread BLOCKED', 'Giai thich synchronized toan method', 'De xuat ConcurrentHashMap/striping', 'Phong ngua'],
   tags: ['contention', 'synchronized', 'cache']
+},
+{
+  id: 'lab-thread-024',
+  category: 'thread',
+  title: 'CompletableFuture chạy trên commonPool bị chặn bởi I/O, parallelStream cũng treo',
+  level: 'senior',
+  scenario: `**Bối cảnh:** Service **PayVN FX** (Spring Boot 3.4, Java 21) tính tỉ giá và phí cho giao dịch quốc tế. Một endpoint {{/quote}} gọi 3 nguồn tỉ giá độc lập rồi tổng hợp. Dev dùng {{CompletableFuture.supplyAsync(() -> fetchRate(...))}} không truyền executor, và ở một chỗ khác dùng {{rates.parallelStream().map(...)}} để quy đổi tiền tệ.
+
+**Triệu chứng:** Lúc cao điểm, endpoint {{/quote}} treo 10–20 giây, p99 tăng từ 200ms lên 18s. CPU ~15%, không exception. Service khác dùng chung JVM cũng chậm theo (dashboard admin treo). Restart thì hết nhưng peak lại tái diễn. Actuator: {{ForkJoinPool.commonPool}} active=8 (max 8 trên máy 8 core), queued=0.
+
+**Dữ liệu:** Thread dump lúc 10:23:15 và log JSON.`,
+  artifacts: [
+    {
+      name: 'jstack-fx-commonpool.txt',
+      lang: 'text',
+      content: `2026-10-23 10:23:15
+Full thread dump OpenJDK 64-Bit Server VM (21.0.4+7-LTS-151 mixed mode, sharing):
+
+"ForkJoinPool.commonPool-worker-1" #41 [24101] prio=5 os_prio=0 cpu=912.04ms elapsed=1840.12s tid=0x00007f2c8c1a1000 nid=24101 runnable  [0x00007f2c3d7f6000]
+   java.lang.Thread.State: RUNNABLE
+         at sun.nio.ch.Net.poll(java.base@21.0.4/Native Method)
+         at sun.nio.ch.NioSocketImpl.park(java.base@21.0.4/Native Method)
+         at sun.nio.ch.NioSocketImpl.timedRead(java.base@21.0.4/NioSocketImpl.java:280)
+         at sun.nio.ch.NioSocketImpl.implRead(java.base@21.0.4/NioSocketImpl.java:304)
+         at java.net.Socket$SocketInputStream.read(java.base@21.0.4/Socket.java:1099)
+         at org.apache.hc.core5.http.impl.io.SessionInputBufferImpl.fillBuffer(SessionInputBufferImpl.java:149)
+         at org.apache.hc.core5.http.impl.io.SessionInputBufferImpl.readLine(SessionInputBufferImpl.java:280)
+         at org.apache.hc.core5.http.impl.io.AbstractMessageParser.parse(AbstractMessageParser.java:247)
+         at org.apache.hc.core5.http.impl.io.DefaultBHttpClientConnection.receiveResponseHeader(DefaultBHttpClientConnection.java:333)
+         at org.apache.hc.core5.http.impl.io.HttpRequestExecutor.execute(HttpRequestExecutor.java:197)
+         at org.apache.hc.client5.http.impl.classic.InternalHttpClient.doExecute(InternalHttpClient.java:174)
+         at org.apache.hc.client5.http.impl.classic.CloseableHttpClient.execute(CloseableHttpClient.java:87)
+         at org.springframework.http.client.HttpComponentsClientHttpRequest.executeInternal(HttpComponentsClientHttpRequest.java:95)
+         at org.springframework.web.client.RestTemplate.doExecute(RestTemplate.java:889)
+         at vn.pay.fx.RateClient.fetchRate(RateClient.java:44)
+         at vn.pay.fx.QuoteService.lambda$quote$2(QuoteService.java:38)
+         at java.util.concurrent.CompletableFuture$AsyncSupply.run(CompletableFuture.java:1768)
+         at java.util.concurrent.ForkJoinTask$AdaptedRunnableAction.exec(ForkJoinTask.java:1407)
+         at java.util.concurrent.ForkJoinPool$WorkQueue.topLevelExec(ForkJoinPool.java:1182)
+         at java.util.concurrent.ForkJoinPool.scan(ForkJoinPool.java:1655)
+         at java.util.concurrent.ForkJoinPool.runWorker(ForkJoinPool.java:1622)
+         at java.util.concurrent.ForkJoinPool$WorkQueue.runTask(ForkJoinPool.java:1139)
+         at java.util.concurrent.ForkJoinPool$WorkQueue.execLocalTasks(ForkJoinPool.java:1107)
+         at java.util.concurrent.ForkJoinPool.runWorker(ForkJoinPool.java:1622)
+         at java.util.concurrent.ForkJoinTask$AdaptedRunnableAction.exec(ForkJoinTask.java:1407)
+         at java.util.concurrent.ForkJoinPool$WorkQueue.topLevelExec(ForkJoinPool.java:1182)
+         at java.util.concurrent.ForkJoinPool.scan(ForkJoinPool.java:1655)
+         at java.util.concurrent.ForkJoinPool.runWorker(ForkJoinPool.java:1622)
+         at java.lang.Thread.runWith(java.base@21.0.4/Thread.java:1596)
+         at java.lang.Thread.run(java.base@21.0.4/Thread.java:1583)
+
+"ForkJoinPool.commonPool-worker-2" #42 [24102] prio=5 os_prio=0 cpu=898.21ms elapsed=1839.98s tid=0x00007f2c8c1a2000 nid=24102 runnable  [0x00007f2c3d8f7000]
+   java.lang.Thread.State: RUNNABLE
+         at sun.nio.ch.Net.poll(java.base@21.0.4/Native Method)
+         at sun.nio.ch.NioSocketImpl.park(java.base@21.0.4/Native Method)
+         at sun.nio.ch.NioSocketImpl.timedRead(java.base@21.0.4/NioSocketImpl.java:280)
+         at java.net.Socket$SocketInputStream.read(java.base@21.0.4/Socket.java:1099)
+         at org.apache.hc.core5.http.impl.io.SessionInputBufferImpl.fillBuffer(SessionInputBufferImpl.java:149)
+         at org.apache.hc.core5.http.impl.io.SessionInputBufferImpl.readLine(SessionInputBufferImpl.java:280)
+         at org.apache.hc.core5.http.impl.io.AbstractMessageParser.parse(AbstractMessageParser.java:247)
+         at org.apache.hc.core5.http.impl.io.DefaultBHttpClientConnection.receiveResponseHeader(DefaultBHttpClientConnection.java:333)
+         at org.apache.hc.core5.http.impl.io.HttpRequestExecutor.execute(HttpRequestExecutor.java:197)
+         at org.apache.hc.client5.http.impl.classic.InternalHttpClient.doExecute(InternalHttpClient.java:174)
+         at org.apache.hc.client5.http.impl.classic.CloseableHttpClient.execute(CloseableHttpClient.java:87)
+         at org.springframework.http.client.HttpComponentsClientHttpRequest.executeInternal(HttpComponentsClientHttpRequest.java:95)
+         at org.springframework.web.client.RestTemplate.doExecute(RestTemplate.java:889)
+         at vn.pay.fx.RateClient.fetchRate(RateClient.java:44)
+         at vn.pay.fx.QuoteService.lambda$quote$3(QuoteService.java:39)
+         at java.util.concurrent.CompletableFuture$AsyncSupply.run(CompletableFuture.java:1768)
+         at java.util.concurrent.ForkJoinTask$AdaptedRunnableAction.exec(ForkJoinTask.java:1407)
+         at java.util.concurrent.ForkJoinPool$WorkQueue.topLevelExec(ForkJoinPool.java:1182)
+         at java.util.concurrent.ForkJoinPool.scan(ForkJoinPool.java:1655)
+         at java.util.concurrent.ForkJoinPool.runWorker(ForkJoinPool.java:1622)
+         at java.lang.Thread.runWith(java.base@21.0.4/Thread.java:1596)
+         at java.lang.Thread.run(java.base@21.0.4/Thread.java:1583)
+
+"http-nio-8080-exec-12" #33 [24090] prio=5 os_prio=0 cpu=201.44ms elapsed=1841.02s tid=0x00007f2c8c19b000 nid=24090 waiting on condition  [0x00007f2c3d4f5000]
+   java.lang.Thread.State: WAITING (parking)
+         at jdk.internal.misc.Unsafe.park(java.base@21.0.4/Native Method)
+         - parking to wait for  <0x000000076b1e2210> (a java.util.concurrent.ForkJoinPool)
+         at java.util.concurrent.ForkJoinPool.awaitQuiescence(ForkJoinPool.java:2903)
+         at java.util.stream.ReferencePipeline.collect(ReferencePipeline.java:686)
+         at vn.pay.fx.QuoteService.convertBatch(QuoteService.java:67)
+         at vn.pay.fx.QuoteController.quote(QuoteController.java:41)
+         at jdk.internal.reflect.DirectMethodHandleAccessor.invoke(java.base@21.0.4/DirectMethodHandleAccessor.java:103)
+         at java.lang.reflect.Method.invoke(java.base@21.0.4/Method.java:580)
+         at org.springframework.web.method.support.InvocableHandlerMethod.doInvoke(InvocableHandlerMethod.java:205)
+         at org.springframework.web.servlet.mvc.method.annotation.RequestMappingHandlerAdapter.invokeHandlerMethod(RequestMappingHandlerAdapter.java:930)
+         at org.springframework.web.servlet.mvc.method.annotation.RequestMappingHandlerAdapter.handleInternal(RequestMappingHandlerAdapter.java:865)
+         at org.springframework.web.servlet.mvc.method.annotation.RequestMappingHandlerAdapter.handle(RequestMappingHandlerAdapter.java:777)
+         at org.springframework.web.servlet.DispatcherServlet.doDispatch(DispatcherServlet.java:1089)
+         at org.springframework.web.servlet.DispatcherServlet.doService(DispatcherServlet.java:977)
+         at org.springframework.web.servlet.FrameworkServlet.processRequest(FrameworkServlet.java:1014)
+         at org.springframework.web.servlet.FrameworkServlet.doPost(FrameworkServlet.java:914)
+         at jakarta.servlet.http.HttpServlet.service(HttpServlet.java:590)
+         at jakarta.servlet.http.HttpServlet.service(HttpServlet.java:658)
+         at org.apache.catalina.core.ApplicationFilterChain.internalDoFilter(ApplicationFilterChain.java:195)
+         at org.apache.catalina.core.StandardWrapperValve.invoke(StandardWrapperValve.java:164)
+         at org.apache.catalina.core.StandardContextValve.invoke(StandardContextValve.java:90)
+         at org.apache.catalina.core.StandardHostValve.invoke(StandardHostValve.java:116)
+         at org.apache.catalina.core.StandardEngineValve.invoke(StandardHostValve.java:74)
+         at org.apache.catalina.connector.CoyoteAdapter.service(CoyoteAdapter.java:344)
+         at org.apache.catalina.core.StandardEngineValve.invoke(StandardEngineValve.java:74)
+         at org.apache.catalina.connector.CoyoteAdapter.service(CoyoteAdapter.java:344)
+         at org.apache.catalina.core.StandardEngineValve.invoke(StandardEngineValve.java:74)
+         at org.apache.catalina.connector.CoyoteAdapter.service(CoyoteAdapter.java:344)
+         at org.apache.catalina.connector.CoyoteAdapter.service(CoyoteAdapter.java:344)
+         at org.apache.tomcat.util.net.NioEndpoint$SocketProcessor.doRun(NioEndpoint.java:1759)
+         at org.apache.tomcat.util.net.NioEndpoint$SocketProcessor.run(NioEndpoint.java:1715)
+         at org.apache.tomcat.util.threads.ThreadPoolExecutor.runWorker(ThreadPoolExecutor.java:1144)
+         at org.apache.tomcat.util.threads.ThreadPoolExecutor$Worker.run(ThreadPoolExecutor.java:642)
+         at org.apache.tomcat.util.threads.TaskThread$WrappingRunnable.run(TaskThread.java:63)
+         at java.lang.Thread.runWith(java.base@21.0.4/Thread.java:1596)
+         at java.lang.Thread.run(java.base@21.0.4/Thread.java:1583)
+
+"HikariPool-1 housekeeper" #27 [72] daemon prio=5 os_prio=0 cpu=88.71ms elapsed=51840.20s tid=0x00007f2c8c19b000 nid=72 waiting on condition  [0x00007f2c3d4f5000]
+   java.lang.Thread.State: TIMED_WAITING (parking)
+         at jdk.internal.misc.Unsafe.park(java.base@21.0.4/Native Method)
+         at java.util.concurrent.locks.LockSupport.parkNanos(java.base@21.0.4/LockSupport.java:269)
+         at java.util.concurrent.ScheduledThreadPoolExecutor$DelayedWorkQueue.take(ScheduledThreadPoolExecutor.java:1182)
+         at java.util.concurrent.ScheduledThreadPoolExecutor$DelayedWorkQueue.take(ScheduledThreadPoolExecutor.java:899)
+         at java.util.concurrent.ThreadPoolExecutor.getTask(ThreadPoolExecutor.java:1070)
+         at java.util.concurrent.ThreadPoolExecutor.runWorker(ThreadPoolExecutor.java:1130)
+         at java.util.concurrent.ThreadPoolExecutor$Worker.run(ThreadPoolExecutor.java:642)
+         at java.lang.Thread.run(java.base@21.0.4/Thread.java:1583)
+
+"admin-dashboard-3" #55 [24120] prio=5 os_prio=0 cpu=12.10ms elapsed=1840.01s tid=0x00007f2c8c1c0000 nid=24120 waiting on condition  [0x00007f2c3e0f9000]
+   java.lang.Thread.State: WAITING (parking)
+         at jdk.internal.misc.Unsafe.park(java.base@21.0.4/Native Method)
+         - parking to wait for  <0x000000076b1e2210> (a java.util.concurrent.ForkJoinPool)
+         at java.util.concurrent.ForkJoinPool.awaitQuiescence(ForkJoinPool.java:2903)
+         at java.util.stream.ReferencePipeline.collect(ReferencePipeline.java:686)
+         at vn.pay.admin.ReportService.summarise(ReportService.java:22)
+         at vn.pay.admin.AdminController.dashboard(AdminController.java:18)
+         at jakarta.servlet.http.HttpServlet.service(HttpServlet.java:658)
+         at org.apache.catalina.core.ApplicationFilterChain.internalDoFilter(ApplicationFilterChain.java:195)
+         at org.apache.catalina.core.StandardWrapperValve.invoke(StandardWrapperValve.java:164)
+         at org.apache.catalina.core.StandardContextValve.invoke(StandardContextValve.java:90)
+         at org.apache.catalina.core.StandardHostValve.invoke(StandardHostValve.java:116)
+         at org.apache.catalina.core.StandardEngineValve.invoke(StandardEngineValve.java:74)
+         at org.apache.catalina.connector.CoyoteAdapter.service(CoyoteAdapter.java:344)
+         at org.apache.tomcat.util.net.NioEndpoint$SocketProcessor.doRun(NioEndpoint.java:1759)
+         at org.apache.tomcat.util.net.NioEndpoint$SocketProcessor.run(NioEndpoint.java:1715)
+         at org.apache.tomcat.util.threads.ThreadPoolExecutor.runWorker(ThreadPoolExecutor.java:1144)
+         at org.apache.tomcat.util.threads.ThreadPoolExecutor$Worker.run(ThreadPoolExecutor.java:642)
+         at org.apache.tomcat.util.threads.TaskThread$WrappingRunnable.run(TaskThread.java:63)
+         at java.lang.Thread.runWith(java.base@21.0.4/Thread.java:1596)
+         at java.lang.Thread.run(java.base@21.0.4/Thread.java:1583)`
+    },
+    {
+      name: 'fx-pod.log',
+      lang: 'text',
+      content: `{"@timestamp":"2026-10-23T10:22:58.112+07:00","level":"INFO","logger":"vn.pay.fx.QuoteController","thread":"http-nio-8080-exec-12","message":"quote request id=Q-771 amount=1000 USD->EUR"}
+{"@timestamp":"2026-10-23T10:23:05.412+07:00","level":"WARN","logger":"vn.pay.fx.QuoteService","thread":"http-nio-8080-exec-12","message":"convertBatch took 7200ms waiting for commonPool quiescence"}
+{"@timestamp":"2026-10-23T10:23:10.003+07:00","level":"INFO","logger":"vn.pay.admin.AdminController","thread":"admin-dashboard-3","message":"dashboard request started"}
+{"@timestamp":"2026-10-23T10:23:15.001+07:00","level":"WARN","logger":"vn.pay.fx.QuoteService","thread":"http-nio-8080-exec-12","message":"quote p99=18400ms rateClient p99=9200ms commonPool active=8 queued=0"}`
+    }
+  ],
+  questions: [
+    'Vì sao tất cả 8 worker của commonPool đều RUNNABLE trong socket read, và vì sao parallelStream ở thread khác cũng treo dù không gọi mạng?',
+    'Tại sao CPU thấp mà latency lại tăng 90 lần? commonPool có queued=0 nghĩa là gì?',
+    'Sửa thế nào trong 30 phút và trong sprint tới để không tái diễn, kể cả khi đối tác chậm?'
+  ],
+  hints: [
+    'CompletableFuture.supplyAsync(task) không truyền executor thì dùng ForkJoinPool.commonPool. commonPool có bao nhiêu worker? (số core - 1, tối thiểu 1).',
+    'parallelStream() cũng dùng commonPool. Nếu worker đang bị I/O chặn thì stream phải chờ pool quiesce (awaitQuiescence).',
+    'Đối tác p99 ~9s, timeout HTTP không đặt. commonPool worker bị giữ ~9s/lần; peak N request đồng thời thì pool cạn ngay.'
+  ],
+  answer: `**Tóm tắt:** Lỗi không phải CPU hay DB. {{CompletableFuture.supplyAsync}} mặc định chạy trên {{ForkJoinPool.commonPool}}; khi task bên trong làm I/O (HTTP tỉ giá) thì toàn bộ worker của commonPool bị giữ. {{parallelStream}} cũng dùng chung commonPool nên bị treo theo. Sửa gốc là tách I/O ra executor riêng có bound và timeout, không dùng commonPool cho blocking I/O.
+
+### Nguyên nhân gốc
+
+Trong {{QuoteService}}:
+
+~~~java
+// QuoteService.java — phiên bản lỗi
+public Quote quote(String from, String to, BigDecimal amount) {
+    CompletableFuture<Rate> r1 = CompletableFuture.supplyAsync(() -> rateClient.fetchRate(from, "USD")); // commonPool
+    CompletableFuture<Rate> r2 = CompletableFuture.supplyAsync(() -> rateClient.fetchRate("EUR", to));   // commonPool
+    CompletableFuture<Rate> r3 = CompletableFuture.supplyAsync(() -> rateClient.fetchRate("GBP", to));   // commonPool
+    ...
+}
+
+public List<Converted> convertBatch(List<Money> list) {
+    return list.parallelStream().map(m -> convert(m)).collect(Collectors.toList()); // cũng commonPool
+}
+~~~
+
+{{ForkJoinPool.commonPool}} có số worker = số core - 1 (tối thiểu 1). Trên máy 8 core là 7–8 worker. Nó được thiết kế cho **CPU-bound** task ngắn, không cho blocking I/O. Khi task làm HTTP blocking (RestTemplate.execute đồng bộ), worker bị giữ nguyên cho đến khi response về. Khi peak có nhiều request đồng thời, 8 worker bị giữ hết; các task mới (cả CompletableFuture lẫn parallelStream) xếp hàng hoặc chờ pool quiesce, nên latency tăng tuyến tính và dashboard admin cũng treo vì dùng chung pool.
+
+### Dẫn chứng
+
+- 2 worker {{ForkJoinPool.commonPool-worker-1/2}} RUNNABLE tại {{sun.nio.ch.Net.poll}} ← {{RestTemplate.doExecute}} ← {{RateClient.fetchRate}} ← {{CompletableFuture.AsyncSupply.run}} ← {{ForkJoinPool.runWorker}}.
+- Thread {{http-nio-8080-exec-12}} WAITING (parking) tại {{ForkJoinPool.awaitQuiescence}} ← {{ReferencePipeline.collect}} ← {{QuoteService.convertBatch}} ← parallelStream.
+- Thread {{admin-dashboard-3}} cũng WAITING tại cùng {{awaitQuiescence}} ← {{ReportService.summarise}}.
+- Log: {{commonPool active=8 queued=0}}, {{rateClient p99=9200ms}}, {{quote p99=18400ms}}.
+
+### Cách sửa
+
+**Ngắn hạn (30 phút):** đặt timeout HTTP (connect/read) và giảm concurrency: giới hạn số request đồng thời gọi rate service (semaphore/bulkhead). Tắt parallelStream trong convertBatch, dùng stream thường hoặc executor riêng.
+
+**Dài hạn (sprint):**
+
+~~~java
+// Dedicated bounded executor for blocking I/O
+private final ExecutorService ioPool = new ThreadPoolExecutor(
+    16, 64, 60, TimeUnit.SECONDS,
+    new ArrayBlockingQueue<>(256),
+    new ThreadPoolExecutor.CallerRunsPolicy());
+
+CompletableFuture<Rate> r1 = CompletableFuture.supplyAsync(() -> rateClient.fetchRate(from, "USD"), ioPool);
+...
+// convertBatch
+list.stream().map(this::convert).collect(Collectors.toList());
+// hoặc nếu cần song song: dùng ioPool với parallel stream custom
+~~~
+
+Thêm: timeout per call (RestTemplate setReadTimeout), circuit breaker (Resilience4j) khi đối tác chậm, cache tỉ giá với TTL ngắn, và fallback giá cũ khi timeout.
+
+### Phòng ngừa
+
+- Quy tắc: **không bao giờ** làm blocking I/O trên commonPool; luôn truyền executor cho supplyAsync/thenApplyAsync.
+- Alert theo ForkJoinPool.commonPool active threads và latency endpoint.
+- Test tải peak với đối tác bị delay (WireMock delay) trong CI.
+- Review code: grep {{CompletableFuture.supplyAsync(}} không có tham số executor thứ hai.
+
+> Senior tip: commonPool là "kho chung" của cả JVM: parallelStream, CompletableFuture mặc định, và nhiều lib dùng nó. Một chỗ blocking I/O có thể làm chậm toàn bộ service và các service khác chia pod. Hãy coi commonPool như CPU thread pool, và mọi I/O phải đi qua executor riêng có bound + queue + rejection policy.`,
+  rubric: [
+    'Chỉ ra 8 worker commonPool RUNNABLE trong socket read (RestTemplate.fetchRate) và parallelStream/admin dashboard treo qua awaitQuiescence.',
+    'Giải thích commonPool mặc định cho CompletableFuture/parallelStream, số worker = core-1, không phù hợp blocking I/O; queued=0 không có nghĩa là không nghẽn.',
+    'Đề xuất executor riêng có bound + timeout HTTP + circuit breaker/cache, và tắt parallelStream trên commonPool.',
+    'Nêu phòng ngừa: quy tắc không I/O trên commonPool, alert, test tải với delay.'
+  ],
+  tags: ['completablefuture', 'forkjoinpool', 'commonpool', 'parallelstream', 'io-blocking']
+},
+{
+  id: 'lab-thread-025',
+  category: 'thread',
+  title: 'synchronized bao quanh gọi DB làm 200 thread BLOCKED trên cùng monitor',
+  level: 'senior',
+  scenario: `**Bối cảnh:** Service **PayVN Ledger** ghi sổ cái cho mỗi giao dịch. Method {{postEntry}} được đánh dấu {{synchronized}} để đảm bảo thứ tự ghi theo account, bên trong gọi repository.save và audit log (cả hai đều đi DB).
+
+**Triệu chứng:** p99 tăng từ 50ms lên 1.2s; 200 thread BLOCKED trên monitor <0x000000076ab2d0a0>; CPU ~25%; DB chỉ ~30% CPU, không có lock wait đáng kể. Restart không giúp vì tải tăng lại.
+
+**Dữ liệu:** Thread dump lúc 11:00:00.`,
+  artifacts: [
+    {
+      name: 'jstack-ledger-sync.txt',
+      lang: 'text',
+      content: `2026-10-23 11:00:00
+Full thread dump OpenJDK 64-Bit Server VM (21.0.4+7-LTS-151 mixed mode, sharing):
+
+"http-nio-8080-exec-1" #28 [24081] prio=5 os_prio=0 cpu=41.02ms elapsed=611.88s tid=0x00007f2c8c1a1000 nid=24081 waiting for monitor entry  [0x00007f2c3d7f6000]
+   java.lang.Thread.State: BLOCKED (on object monitor)
+         at vn.pay.ledger.LedgerService.postEntry(LedgerService.java:27)
+         - waiting to lock <0x000000076ab2d0a0> (a vn.pay.ledger.LedgerService)
+         at vn.pay.ledger.LedgerController.post(LedgerController.java:22)
+         at jakarta.servlet.http.HttpServlet.service(HttpServlet.java:658)
+         at org.apache.catalina.core.ApplicationFilterChain.internalDoFilter(ApplicationFilterChain.java:195)
+         at org.apache.catalina.core.StandardWrapperValve.invoke(StandardWrapperValve.java:164)
+         at org.apache.catalina.core.StandardContextValve.invoke(StandardContextValve.java:90)
+         at org.apache.catalina.core.StandardHostValve.invoke(StandardHostValve.java:116)
+         at org.apache.catalina.core.StandardEngineValve.invoke(StandardEngineValve.java:74)
+         at org.apache.catalina.core.StandardEngineValve.invoke(StandardEngineValve.java:74)
+         at org.apache.catalina.connector.CoyoteAdapter.service(CoyoteAdapter.java:344)
+         at org.apache.tomcat.util.net.NioEndpoint$SocketProcessor.doRun(NioEndpoint.java:1759)
+         at org.apache.tomcat.util.net.NioEndpoint$SocketProcessor.run(NioEndpoint.java:1715)
+         at org.apache.tomcat.util.threads.ThreadPoolExecutor.runWorker(ThreadPoolExecutor.java:1144)
+         at org.apache.tomcat.util.threads.ThreadPoolExecutor$Worker.run(ThreadPoolExecutor.java:642)
+         at org.apache.tomcat.util.threads.TaskThread$WrappingRunnable.run(TaskThread.java:63)
+         at java.lang.Thread.runWith(java.base@21.0.4/Thread.java:1596)
+         at java.lang.Thread.run(java.base@21.0.4/Thread.java:1583)
+
+"http-nio-8080-exec-2" #29 [24082] prio=5 os_prio=0 cpu=38.11ms elapsed=611.90s tid=0x00007f2c8c1a2000 nid=24082 waiting for monitor entry  [0x00007f2c3d8f7000]
+   java.lang.Thread.State: BLOCKED (on object monitor)
+         at vn.pay.ledger.LedgerService.postEntry(LedgerService.java:27)
+         - waiting to lock <0x000000076ab2d0a0> (a vn.pay.ledger.LedgerService)
+         at vn.pay.ledger.LedgerController.post(LedgerController.java:22)
+         at jakarta.servlet.http.HttpServlet.service(HttpServlet.java:658)
+         at org.apache.catalina.core.ApplicationFilterChain.internalDoFilter(ApplicationFilterChain.java:195)
+         at org.apache.catalina.core.StandardWrapperValve.invoke(StandardWrapperValve.java:164)
+         at org.apache.catalina.core.StandardContextValve.invoke(StandardContextValve.java:90)
+         at org.apache.catalina.core.StandardHostValve.invoke(StandardHostValve.java:116)
+         at org.apache.catalina.core.StandardEngineValve.invoke(StandardEngineValve.java:74)
+         at org.apache.catalina.connector.CoyoteAdapter.service(CoyoteAdapter.java:344)
+         at org.apache.tomcat.util.net.NioEndpoint$SocketProcessor.doRun(NioEndpoint.java:1759)
+         at org.apache.tomcat.util.net.NioEndpoint$SocketProcessor.run(NioEndpoint.java:1715)
+         at org.apache.tomcat.util.threads.ThreadPoolExecutor.runWorker(ThreadPoolExecutor.java:1144)
+         at org.apache.tomcat.util.threads.ThreadPoolExecutor$Worker.run(ThreadPoolExecutor.java:642)
+         at org.apache.tomcat.util.threads.TaskThread$WrappingRunnable.run(TaskThread.java:63)
+         at java.lang.Thread.runWith(java.base@21.0.4/Thread.java:1596)
+         at java.lang.Thread.run(java.base@21.0.4/Thread.java:1583)
+
+"http-nio-8080-exec-3" #30 [24083] prio=5 os_prio=0 cpu=1205.33ms elapsed=611.85s tid=0x00007f2c8c1a3000 nid=24083 runnable  [0x00007f2c3d9f8000]
+   java.lang.Thread.State: RUNNABLE
+         at sun.nio.ch.Net.poll(java.base@21.0.4/Native Method)
+         at sun.nio.ch.NioSocketImpl.park(java.base@21.0.4/Native Method)
+         at sun.nio.ch.NioSocketImpl.timedRead(java.base@21.0.4/NioSocketImpl.java:280)
+         at java.net.Socket$SocketInputStream.read(java.base@21.0.4/Socket.java:1099)
+         at org.postgresql.core.PGStream.receiveChar(PGStream.java:465)
+         at org.postgresql.core.v3.QueryExecutorImpl.processResults(QueryExecutorImpl.java:2132)
+         at org.postgresql.core.v3.QueryExecutorImpl.execute(QueryExecutorImpl.java:361)
+         at org.postgresql.jdbc.PgStatement.executeInternal(PgStatement.java:496)
+         at org.postgresql.jdbc.PgPreparedStatement.execute(PgPreparedStatement.java:248)
+         at com.zaxxer.hikari.pool.ProxyPreparedStatement.execute(ProxyPreparedStatement.java:44)
+         at org.hibernate.engine.jdbc.internal.ResultSetReturnImpl.execute(ResultSetReturnImpl.java:104)
+         at org.hibernate.engine.jdbc.internal.ResultSetReturnImpl.executeQuery(ResultSetReturnImpl.java:118)
+         at org.hibernate.loader.Loader.doQuery(Loader.java:956)
+         at org.hibernate.loader.Loader.doQueryAndInitializeNonLazyCollections(Loader.java:357)
+         at org.hibernate.loader.Loader.loadEntity(Loader.java:2320)
+         at org.hibernate.persister.entity.AbstractEntityPersister.load(AbstractEntityPersister.java:4659)
+         at org.hibernate.event.internal.DefaultLoadEventListener.onLoad(DefaultLoadEventListener.java:265)
+         at org.hibernate.event.internal.DefaultLoadEventListener.onLoad(DefaultLoadEventListener.java:103)
+         at org.hibernate.internal.SessionImpl.fireLoad(SessionImpl.java:1268)
+         at org.hibernate.internal.SessionImpl.immediateLoad(SessionImpl.java:1094)
+         at org.hibernate.internal.SessionImpl.get(SessionImpl.java:1036)
+         at org.hibernate.internal.SessionImpl.get(SessionImpl.java:1029)
+         at org.springframework.orm.jpa.SharedEntityManagerCreator$SharedEntityManagerInvocationHandler.invoke(SharedEntityManagerCreator.java:319)
+         at jdk.proxy2.$Proxy128.find(Unknown Source)
+         at vn.pay.ledger.LedgerService.postEntry(LedgerService.java:30)
+         - locked <0x000000076ab2d0a0> (a vn.pay.ledger.LedgerService)
+         at vn.pay.ledger.LedgerController.post(LedgerController.java:22)
+         at jakarta.servlet.http.HttpServlet.service(HttpServlet.java:658)
+         at org.apache.catalina.core.ApplicationFilterChain.internalDoFilter(ApplicationFilterChain.java:195)
+         at org.apache.catalina.core.StandardWrapperValve.invoke(StandardWrapperValve.java:164)
+         at org.apache.catalina.core.StandardContextValve.invoke(StandardContextValve.java:90)
+         at org.apache.catalina.core.StandardHostValve.invoke(StandardHostValve.java:116)
+         at org.apache.catalina.core.StandardEngineValve.invoke(StandardEngineValve.java:74)
+         at org.apache.catalina.core.StandardEngineValve.invoke(StandardEngineValve.java:74)
+         at org.apache.catalina.connector.CoyoteAdapter.service(CoyoteAdapter.java:344)
+         at org.apache.tomcat.util.net.NioEndpoint$SocketProcessor.doRun(NioEndpoint.java:1759)
+         at org.apache.tomcat.util.net.NioEndpoint$SocketProcessor.run(NioEndpoint.java:1715)
+         at org.apache.tomcat.util.threads.ThreadPoolExecutor.runWorker(ThreadPoolExecutor.java:1144)
+         at org.apache.tomcat.util.threads.ThreadPoolExecutor$Worker.run(ThreadPoolExecutor.java:642)
+         at org.apache.tomcat.util.threads.TaskThread$WrappingRunnable.run(TaskThread.java:63)
+         at java.lang.Thread.runWith(java.base@21.0.4/Thread.java:1596)
+         at java.lang.Thread.run(java.base@21.0.4/Thread.java:1583)
+
+"197 threads tuong tu" note: all BLOCKED waiting to lock <0x000000076ab2d0a0> (a vn.pay.ledger.LedgerService)`
+    },
+    {
+      name: 'ledger-pod.log',
+      lang: 'text',
+      content: `{"@timestamp":"2026-10-23T10:59:50.112+07:00","level":"INFO","logger":"vn.pay.ledger.LedgerController","thread":"http-nio-8080-exec-3","message":"post account=ACC-771 amount=1200000"}
+{"@timestamp":"2026-10-23T10:59:55.003+07:00","level":"WARN","logger":"vn.pay.ledger.LedgerService","thread":"http-nio-8080-exec-3","message":"postEntry held lock 1180ms db roundtrip included"}
+{"@timestamp":"2026-10-23T11:00:00.001+07:00","level":"WARN","logger":"vn.pay.ops.ThreadStats","thread":"scheduling-1","message":"BLOCKED threads=197 on monitor <0x000000076ab2d0a0> p99=1240ms db cpu=30%"}`
+    }
+  ],
+  questions: [
+    'Vì sao 197 thread đều BLOCKED trên cùng monitor <0x000000076ab2d0a0> trong khi DB chỉ 30% CPU?',
+    'Tại sao synchronized trên method không bảo vệ được đồng thời theo account, mà lại serial hoá toàn bộ service?',
+    'Thiết kế lại để chỉ khoá theo account (hoặc bỏ khoá JVM) và đo lường contention.'
+  ],
+  hints: [
+    'Monitor <0x000000076ab2d0a0> là object LedgerService (this), không phải từng account.',
+    'Thread đang RUNNABLE (exec-3) giữ lock và làm DB query bên trong critical section; thời gian giữ lock = thời gian DB roundtrip.',
+    'Little: throughput = 1 / thời gian giữ lock. Nếu giữ lock 1.2s thì tối đa ~0.8 req/s cho toàn service.'
+  ],
+  answer: `**Tóm tắt:** Lỗi là {{synchronized}} trên toàn method {{postEntry}} (lock trên object service {{this}}) bao trùm cả gọi DB. Một thread đang giữ lock và chờ DB roundtrip; 197 thread khác BLOCKED trên cùng monitor. Throughput bị giới hạn bởi thời gian DB, không phải CPU. Sửa gốc là thu hẹp critical section: chỉ bảo vệ thứ tự ghi theo account, không giữ lock qua I/O/DB, hoặc dùng lock theo key / DB transaction.
+
+### Nguyên nhân gốc
+
+~~~java
+// LedgerService.java — phiên bản lỗi
+public synchronized void postEntry(long accountId, Entry e) {   // lock trên this (toàn service)
+    Account a = repo.find(accountId);                          // DB query trong critical section
+    a.apply(e);
+    repo.save(a);                                              // DB write
+    audit.log(e);                                              // DB insert audit
+}                                                              // trả lock
+~~~
+
+{{synchronized}} trên method instance lock trên {{this}} (object LedgerService), nên **mọi** request postEntry serial hoá toàn cục, bất kể account nào. Vì bên trong critical section có 2–3 roundtrip DB (~1.2s tổng), throughput tối đa ~0.8 req/s cho cả service. DB chỉ 30% CPU vì app chỉ gửi 1 query tại một thời điểm.
+
+### Dẫn chứng
+
+- 197 thread {{BLOCKED (on object monitor)}} tại {{LedgerService.postEntry}} line 27, {{waiting to lock <0x000000076ab2d0a0> (a vn.pay.ledger.LedgerService)}}.
+- 1 thread RUNNABLE giữ lock: {{postEntry line 30 - locked <0x000000076ab2d0a0>}} với stack DB query (PostgreSQL receiveChar).
+- Log: {{postEntry held lock 1180ms db roundtrip included}}, {{BLOCKED threads=197 ... p99=1240ms db cpu=30%}}.
+
+### Cách sửa
+
+**Thu hẹp critical section (chỉ bảo vệ thứ tự theo account):**
+
+~~~java
+private final ConcurrentHashMap<Long, Object> locks = new ConcurrentHashMap<>();
+
+public void postEntry(long accountId, Entry e) {
+    Object lock = locks.computeIfAbsent(accountId, k -> new Object());
+    synchronized (lock) {                 // chỉ serialise theo account
+        Account a = repo.find(accountId); // vẫn DB trong lock — chưa tối ưu
+        a.apply(e);
+        repo.save(a);
+    }
+    audit.log(e);                        // audit ngoài lock
+}
+~~~
+
+**Tốt hơn (không giữ JVM lock qua DB):** dùng DB transaction + optimistic/pessimistic lock theo row:
+
+~~~java
+@Transactional
+public void postEntry(long accountId, Entry e) {
+    Account a = repo.findByIdForUpdate(accountId); // SELECT ... FOR UPDATE theo row
+    a.apply(e);
+    repo.save(a);
+    // audit qua outbox/event sau commit
+}
+~~~
+
+Hoặc lock theo key với Redisson (striped lock) nếu cần đa pod, kèm timeout. Audit log nên ghi async (outbox) để không kéo dài transaction.
+
+### Phòng ngừa
+
+- Review: {{synchronized}} trên method public của service xử lý request là smell; lock scope phải nhỏ hơn hoặc bằng một aggregate.
+- Đo contention: JFR Lock event, Micrometer {{jvm_threads_states_threads}} với tag state=blocked, alert BLOCKED > 0 kéo dài.
+- Test tải theo nhiều account khác nhau (không chỉ một account) để lộ serial hoá toàn cục.
+- Tách I/O/DB ra khỏi critical section; nếu cần ordering thì lock theo key, không theo service.
+
+> Senior tip: synchronized không "miễn phí" — nó serial hoá theo object lock. Lock trên service = global lock. Nếu chỉ cần bảo vệ một aggregate (account), hãy lock theo aggregate; nếu cần đa instance, hãy đẩy lock xuống DB (row lock) thay vì JVM. Và đừng bao giờ giữ lock qua I/O/DB: thời gian giữ lock = thời gian chậm nhất trong critical section.`,
+  rubric: [
+    'Chỉ ra 197 thread BLOCKED trên monitor <0x000000076ab2d0a0> (object LedgerService) và 1 thread RUNNABLE giữ lock với DB query trong critical section.',
+    'Giải thích synchronized trên method lock trên this => serialise toàn service; throughput bị giới hạn bởi DB roundtrip, DB CPU thấp.',
+    'Đề xuất thu hẹp critical section (lock theo account) hoặc DB row lock/optimistic locking + audit async.',
+    'Nêu phòng ngừa: review synchronized scope, JFR/Micrometer contention, test tải nhiều account.'
+  ],
+  tags: ['synchronized', 'contention', 'lock-granularity', 'database', 'throughput']
 }
 );
