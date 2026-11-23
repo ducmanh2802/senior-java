@@ -12880,6 +12880,113 @@ Service chuẩn hoá dữ liệu nhập gọi một hàm che token bằng regex 
   ,
   follow: ['Catastrophic backtracking là gì, làm sao nhận biết và viết regex an toàn?', 'Cache không giới hạn và ThreadLocal rò rỉ khác nhau thế nào về cách GC xử lý?', 'Bạn bật những JVM flag nào để không mất bằng chứng khi OOM xảy ra?'],
   tags: ['OutOfMemoryError', 'regex', 'HeapDumpOnOutOfMemoryError', 'JFR', 'NMT']
-}
+},
+{
+  id: 'jvm-073',
+  topic: 'jvm',
+  level: 'senior',
+  q: 'Bạn có service Spring Boot heap 4 GB, allocation rate ~200 MB/s, SLO p99 < 10 ms. Bạn chọn G1 hay Generational ZGC (JDK 21)? Nêu tiêu chí và cách benchmark để chứng minh.',
+  a: `**Tóm tắt:** Với SLO p99 < 10 ms và heap vừa (4 GB), Generational ZGC thường cho pause < 1 ms nhưng tốn CPU/throughput hơn; G1 pause thường 5–20 ms. Quyết định dựa trên đo thực tế bằng JFR + HDR Histogram, không đoán.
 
+### Cơ chế pause của hai collector
+- **G1**: chia heap thành region; pause chính là Young/Mixed GC, STW (stop-the-world) copy live object. Pause thường 5–20 ms với heap 4 GB.
+- **ZGC Generational (JDK 21)**: phần lớn công việc (mark, relocate) chạy concurrent với ứng dụng; STW chỉ vài trăm micro-giây đến ~1 ms. Đổi lại dùng nhiều CPU và có load barrier overhead.
+
+### Tiêu chí chọn
+| Tiêu chí | G1 | Gen ZGC |
+|---|---|---|
+| p99 pause | 5–20 ms | < 1 ms |
+| Throughput | cao hơn ~5–15% | thấp hơn |
+| CPU overhead | thấp | cao hơn |
+| Heap khuyến nghị | 1–32 GB | ≥ 2 GB, tốt với heap lớn |
+| JDK | 17+ | 21+ (generational) |
+
+### Khi nào chọn cái nào
+- Chọn ZGC khi p99 < 5 ms là bắt buộc và CPU còn dư (≥ 30% headroom).
+- Chọn G1 khi throughput quan trọng hơn, hoặc CPU đã saturated, hoặc cần JDK 17.
+
+### Ví dụ đời thực
+Service thanh toán p99 mục tiêu 8 ms. Đo G1: p99 = 14 ms, pause max 18 ms. Chuyển Gen ZGC: p99 = 6 ms, CPU tăng từ 45% lên 62%, throughput giảm 8%. Chấp nhận vì SLO.
+
+### Trả lời mẫu khi phỏng vấn
+Với SLO p99 dưới 10 ms và heap 4 GB, tôi sẽ bắt đầu với G1 và đo thực tế bằng JFR cùng HDR Histogram. Nếu pause max vượt ngân sách, chuyển sang Generational ZGC trên JDK 21, chấp nhận CPU và throughput trade-off. Quyết định phải dựa trên số đo, không đoán. Tôi cũng kiểm tra allocation rate và GC frequency, vì pause chỉ là một phần; GC overhead cao cũng làm p99 xấu. Sau khi chọn, tôi đặt MaxGCPauseMillis cho G1 hoặc ZCollectionInterval/ZUncommitDelay cho ZGC và theo dõi liên tục.
+
+> Senior tip: Đừng chọn GC theo "ZGC nhanh hơn" chung chung; cùng workload, G1 đôi khi throughput cao hơn 15% và CPU thấp hơn. Luôn có benchmark A/B trên production-like load trước khi đổi.
+`,
+  follow: ['ZGC generational khác non-generational ở điểm nào?', 'Làm sao đo pause distribution đúng (không coordinated omission)?', 'Khi nào Shenandoah là lựa chọn tốt hơn?'],
+  tags: ['G1', 'ZGC', 'generational', 'latency', 'benchmark']
+},
+{
+  id: 'jvm-074',
+  topic: 'jvm',
+  level: 'senior',
+  q: 'Pod Java bị OOMKilled dù heap sau GC còn nhiều. Giải thích vì sao và checklist điều tra native memory (thread stack, direct buffer, metaspace).',
+  a: `**Tóm tắt:** OOMKilled dựa trên RSS của process/container, không phải heap Java. Heap chỉ là một phần; thread stack, direct buffer, metaspace, JIT code cache, và native lib cũng chiếm RAM. Cần NMT + /proc để phân rã.
+
+### Cơ chế: RSS vs heap
+- Container memory limit so với RSS (resident set size) của process, không phải -Xmx.
+- RSS = heap + metaspace + thread stacks + direct buffers + code cache + native allocations (JNI, allocator overhead) + JVM overhead.
+- -XX:MaxRAMPercentage chỉ đặt heap tối đa theo container limit; không giới hạn native.
+
+### Các nguồn native thường gặp
+- Thread stack: mỗi thread ~1 MB (Xss mặc định ~1 MB trên 64-bit). 500 thread = 500 MB.
+- Direct ByteBuffer: allocateDirect không nằm trong heap, giải phóng qua Cleaner/GC.
+- Metaspace: class metadata, tăng khi redeploy/leak classloader.
+- Code cache: JIT compiled code.
+- Native libs: Netty, gRPC, LevelDB, JNI.
+
+### Checklist điều tra
+1. Bật NMT: -XX:NativeMemoryTracking=summary/detail và jcmd <pid> VM.native_memory summary.
+2. Xem RSS: cat /proc/<pid>/status | grep VmRSS; so với limit.
+3. Đếm thread: jcmd <pid> Thread.print | wc -l; hoặc jstack.
+4. Direct buffer: jcmd <pid> VM.native_memory detail | grep "Internal" / "Other"; hoặc JFR event jdk.DirectBufferStatistics.
+5. Metaspace: jcmd <pid> VM.metaspace.
+
+### Ví dụ đời thực
+Pod limit 2 GB, heap 1.2 GB. RSS 1.95 GB → OOMKilled. NMT cho thấy thread stack 400 MB (400 request thread), direct buffer 250 MB (Netty). Giảm thread pool xuống 100 + dùng pooled direct buffer → RSS 1.5 GB, ổn định.
+
+### Trả lời mẫu khi phỏng vấn
+OOMKilled là limit của container trên RSS, không phải heap. Tôi bật NMT và so sánh từng vùng với limit. Thread stack thường bị bỏ qua: 500 thread × 1 MB = 500 MB. Direct buffer từ Netty/gRPC không trong heap. Metaspace leak khi redeploy. Sau khi phân rã, tôi giảm thread, pool buffer, và đặt -XX:MaxRAMPercentage thấp hơn để chừa headroom native, thường heap ~60–70% limit.
+
+> Senior tip: Quy tắc ngón tay: heap ≤ 60–70% container limit cho service có nhiều thread/direct buffer; phần còn lại cho native. Luôn bật NMT trên staging để biết baseline.
+`,
+  follow: ['Làm sao giới hạn direct buffer (maxDirectMemorySize)?', 'Thread stack size -Xss có nên giảm xuống 512k?', 'NMT overhead và khi nào bật detail vs summary?'],
+  tags: ['OOMKilled', 'native memory', 'NMT', 'direct buffer', 'thread stack', 'container']
+},
+{
+  id: 'jvm-075',
+  topic: 'jvm',
+  level: 'lead',
+  q: 'Allocation rate cao làm GC chạy nhiều. Cách dùng JFR để tìm allocation hotspot và tối ưu theo thứ tự ưu tiên?',
+  a: `**Tóm tắt:** Bật JFR với event jdk.ObjectAllocationInNewTLAB / jdk.ObjectAllocationOutsideTLAB, xem flame graph theo allocation, tối ưu top site trước. Thường 80% allocation nằm ở 3–5 chỗ.
+
+### Cơ chế JFR allocation profiling
+- JFR sampling allocation events: mỗi khi thread allocate object trong TLAB (Thread Local Allocation Buffer) hoặc ngoài TLAB, ghi stack trace.
+- Overhead thấp (~1–2%) nếu sampling threshold hợp lý; continuous profiling an toàn trên production.
+- Kết quả: danh sách class + stack trace + số byte allocated.
+
+### Quy trình
+1. Bật: jcmd <pid> JFR.start name=alloc settings=profile duration=300s filename=alloc.jfr
+   hoặc -XX:StartFlightRecording=filename=...
+2. Phân tích trong JMC: Memory → Allocations, hoặc flame graph theo stack.
+3. Tìm top allocation sites (class + method).
+4. Ưu tiên tối ưu: chỗ allocate nhiều nhất và dễ sửa nhất (object tạm, boxing, string concat, stream).
+
+### Kỹ thuật tối ưu thường gặp
+- Tránh boxing: dùng primitive stream, int[] thay List<Integer>.
+- Tái sử dụng buffer: StringBuilder, thread-local buffer, object pool cho object lớn.
+- Giảm string concat trong hot path: dùng StringBuilder hoặc template.
+- Escape analysis: JIT có thể stack-allocate object không escape; viết code để object không escape (không publish).
+
+### Ví dụ đời thực
+JFR cho thấy 60% allocation là ArrayList boxing trong endpoint /search, 20% từ JSON serializer tạo object tạm. Đổi sang int[] + primitive collection và cache serializer → allocation rate giảm từ 1.2 GB/s xuống 300 MB/s, GC young giảm 4 lần, p99 giảm 30%.
+
+### Trả lời mẫu khi phỏng vấn
+Tôi bật JFR allocation profiling trong 5 phút peak, mở flame graph và tìm top 3 allocation sites. Tôi tối ưu theo impact × effort: boxing và object tạm trước, sau đó buffer reuse. Mỗi thay đổi đo lại allocation rate và GC pause. Tôi cũng kiểm tra escape analysis không bị phá (không publish object). Mục tiêu giảm allocation rate, không chỉ GC pause, vì allocation rate thấp = ít GC = ít pause.
+
+> Senior tip: JFR allocation event mặc định sampling; với allocation rate cực cao, tăng threshold để giảm overhead nhưng vẫn đủ tín hiệu. So sánh before/after bằng cùng JFR settings.
+`,
+  follow: ['JFR allocation event có overhead bao nhiêu và khi nào không bật trên prod?', 'Escape analysis bị vô hiệu khi nào (synchronization, publish)?', 'Cách đo allocation rate chính xác (JFR vs async-profiler alloc mode)?'],
+  tags: ['JFR', 'allocation', 'profiling', 'escape analysis', 'GC']
+}
 );
