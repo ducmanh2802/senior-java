@@ -5472,6 +5472,223 @@ com.mysql.cj.jdbc.exceptions.MySQLTransactionRollbackException: Deadlock found w
     'Có monitoring/phòng ngừa: theo dõi deadlock rate, log_lock_waits, quy tắc review index cho query UPDATE',
   ],
   tags: ['mysql', 'innodb', 'deadlock', 'index', 'gap-lock', 'next-key-lock', 'composite-index'],
-},
+  },
+  {
+    id: 'lab-sql-036',
+    category: 'sql',
+    title: 'Sai kiểu tham số khiến index không được dùng',
+    level: 'senior',
+    scenario: `**Bối cảnh:** Hệ thống ngân hàng lưu số điện thoại khách hàng trong cột {{phone}} kiểu {{varchar(20)}} của bảng {{customers}} (PostgreSQL 15). Có B-tree index trên {{phone}}. API tra cứu khách hàng theo số điện thoại nhận tham số từ client, nhưng do sai kiểu trong PreparedStatement, JDBC gửi tham số kiểu numeric. Khi chạy query, EXPLAIN cho thấy PostgreSQL thực hiện **Seq Scan** trên cả bảng (đang 4 triệu dòng) thay vì index scan, vì phải ép kiểu cột {{phone}} về numeric trước khi so sánh. Hệ thống chậm rõ rệt vào giờ cao điểm.
+
+**Số liệu:** Bảng {{customers}} 4.2 triệu dòng, index trên {{phone}} tồn tại. Query tra cứu một SĐT duy nhất nhưng đọc khoảng 1.2 triệu trang buffer, CPU DB tăng từ 15% lên 85%, thời gian trung bình từ 2 ms lên 480 ms.
+
+**Nhiệm vụ:** Chỉ ra vì sao index không được dùng, dẫn chứng từ EXPLAIN, và sửa sao cho index scan được sử dụng lại.`,
+    artifacts: [
+      {
+        name: 'schema-customers.sql',
+        lang: 'sql',
+        content: `CREATE TABLE customers (
+  id bigserial primary key,
+  phone varchar(20) not null,
+  full_name varchar(100) not null,
+  status varchar(20) default 'active',
+  created_at timestamp default now()
+);
+
+CREATE INDEX idx_customers_phone ON customers (phone);
+
+-- Dữ liệu mẫu: 4.2 triệu dòng, SĐT dạng chuỗi như '0901234567', '0987654321'.
+INSERT INTO customers (phone, full_name) VALUES ('0901234567', 'Nguyen Van A');
+-- ... 4.2 triệu dòng tương tự`,
+      },
+      {
+        name: 'explain-analyze.log',
+        lang: 'text',
+        content: `2026-04-02 10:15:23 +07 LOG:  duration: 478.321 ms  statement: PREPARE stmt AS SELECT id, full_name FROM customers WHERE phone = $1;
+2026-04-02 10:15:23 +07 LOG:  duration: 478.321 ms  statement: EXECUTE stmt(901234567);  -- tham số gửi kiểu numeric (không có nháy đơn) trong code Java
+
+postgres=# EXPLAIN (ANALYZE, BUFFERS) SELECT id, full_name FROM customers WHERE phone = '0901234567';
+                                                   QUERY PLAN
+-----------------------------------------------------------------------------------------------------------------
+ Index Scan using idx_customers_phone on customers  (cost=0.43..8.45 rows=1 width=40) (actual time=0.023..0.028 rows=1 loops=1)
+   Index Cond: (phone = '0901234567'::text)
+   Buffers: shared hit=3
+ Planning time: 0.102 ms
+ Execution time: 0.044 ms
+(5 rows)
+
+postgres=# EXPLAIN (ANALYZE, BUFFERS) SELECT id, full_name FROM customers WHERE phone = 901234567;  -- thiếu nháy đơn, PostgreSQL coi là numeric literal
+                                                   QUERY PLAN
+-----------------------------------------------------------------------------------------------------------------
+ Seq Scan on customers  (cost=0.00..118742.42 rows=1 width=40) (actual time=0.015..478.123 rows=1 loops=1)
+   Filter: ((phone)::numeric = 901234567::numeric)
+   Rows Removed by Filter: 4199999
+   Buffers: shared hit=1249998
+ Planning time: 0.115 ms
+ Execution time: 478.159 ms
+(5 rows)
+
+-- Dòng quan trọng: "Filter: ((phone)::numeric = 901234567::numeric)" — PostgreSQL ép kiểu cột phone về numeric để so sánh với tham số numeric, do đó không thể dùng B-tree index trên phone (kiểu varchar). Seq Scan quét toàn bộ 4.2 triệu dòng.`,
+      },
+    ],
+    questions: [
+      'Vì sao query với tham số numeric lại gây Seq Scan mặc dù có index trên cột phone varchar? Chỉ ra chính xác dòng nào trong EXPLAIN chứng minh điều này.',
+      'Sai việc nằm ở layer nào (JDBC/PreparedStatement, SQL, hay kiểu dữ liệu cột)?',
+      'Sửa thế nào để index scan được dùng lại, và tại sao cách sửa là an toàn đối với dữ liệu đã có?',
+    ],
+    hints: [
+      'PostgreSQL không tự động chuyển đổi tham số numeric sang varchar để khớp index; ngược lại nó ép kiểu cột về kiểu của tham số. Khi cột được ép kiểu, B-tree index trên cột gốc không thể dùng.',
+      'Dòng "Filter: ((phone)::numeric = ...)" trong EXPLAIN là bằng chứng: cột phone bị ép kiểu ngay trong điều kiện lọc, index bị bỏ qua.',
+      'Cách sửa đơn giản nhất là gửi tham số đúng kiểu (chuỗi, có dấu ngoặc đơn) hoặc cast tham số về varchar. Không nên đổi kiểu cột vì sẽ ảnh hưởng toàn bộ dữ liệu và ứng dụng khác.',
+    ],
+    answer: `**Tóm tắt:** Query tra cứu SĐT dùng tham số kiểu numeric trong khi cột {{phone}} là {{varchar}}. PostgreSQL không thay đổi kiểu tham số để khớp index, mà **ép kiểu cột {{phone}} về numeric** trong điều kiện WHERE (xem dòng {{Filter: ((phone)::numeric = ...)}} trong EXPLAIN). Khi cột được ép kiểu, B-tree index trên {{phone}} (kiểu varchar) không thể sử dụng → PostgreSQL chọn **Seq Scan** quét 4.2 triệu dòng, CPU và thời gian phản hồi tăng xấp xỉ 240 lần (2 ms → 480 ms).
+
+### Nguyên nhân gốc
+1. Cột {{phone}} khai báo kiểu {{varchar(20)}}, có B-tree index {{idx_customers_phone}} trên cột này.
+2. Code Java gửi tham số vào PreparedStatement dưới kiểu numeric (hoặc thiếu nháy đơn khiến PostgreSQL hiểu là số). PostgreSQL ưu tiên ép kiểu cột về kiểu của tham số thay vì ngược lại.
+3. Biểu thức {{(phone)::numeric = 901234567::numeric}} không còn là so sánh trực tiếp trên cột {{phone}} mà là so sánh trên kết quả ép kiểu. B-tree index được xây dựng trên giá trị gốc (varchar), không hỗ trợ tìm kiếm trên giá trị sau khi ép kiểu → index bị bỏ qua.
+4. PostgreSQL chọn Seq Scan (type = ALL tương đương) vì không có index nào khả dụng cho biểu thức đã ép kiểu.
+
+### Dẫn chứng
+- Artifact 2 (EXPLAIN với tham số chuỗi): Index Scan, cost 0.43..8.45, execution time 0.044 ms, chỉ đọc 3 buffer → index hoạt động đúng khi tham số đúng kiểu.
+- Artifact 2 (EXPLAIN với tham số numeric): Seq Scan, cost 0.00..118742.42, execution time 478.159 ms, "Rows Removed by Filter: 4199999", dòng {{Filter: ((phone)::numeric = 901234567::numeric)}} → bằng chứng trực tiếp của việc ép kiểu cột.
+- Số liệu: đọc khoảng 1.25 triệu trang buffer (shared hit=1249998) cho một tra cứu duy nhất, CPU DB tăng từ 15% lên 85%.
+
+### Cách sửa
+**Cách 1 (khuyên dùng, ít tốn công nhất): Gửi tham số đúng kiểu varchar.**
+Trong Java, truyền giá trị SĐT dưới dạng chuỗi (String) vào PreparedStatement, luôn bao quanh bằng dấu ngoặc đơn trong SQL (hoặc để JDBC tự xử lý binding):
+{{String sql = "SELECT id, full_name FROM customers WHERE phone = ?";}}
+{{ps.setString(1, "0901234567");}}
+PostgreSQL nhận tham số kiểu text/varchar, không ép cột, index scan được dùng lại.
+
+**Cách 2: Cast tham số trong SQL.**
+{{SELECT id, full_name FROM customers WHERE phone = $1::varchar}}
+hoặc
+{{WHERE phone = CAST($1 AS varchar)}}.
+
+**Không khuyến khích:** Đổi kiểu cột {{phone}} từ varchar thành numeric. Sẽ ảnh hưởng toàn bộ dữ liệu (SĐT có dấu +, dấu gạch ngang, leading zero), cần migration lớn và sửa mọi truy vấn khác dùng cột này.
+
+### Phòng ngừa
+- Luôn kiểm tra kiểu tham số khi viết PreparedStatement; SĐT, mã thẻ, mã số thuế là chuỗi, không phải số, dù chỉ chứa chữ số.
+- Thêm guardrail: theo dõi pg_stat_statements, cảnh báo khi một query có rowsRemoved lớn so với rows trả về (tỷ lệ > 1000:1) hoặc sử dụng Seq Scan trên bảng lớn.
+- Review SQL: tránh hàm hoặc ép kiểu trên cột được index trong mệnh đề WHERE (sargable).
+> Senior tip: Điều quan trọng then chốt là **index chỉ giúp khi cột không bị biến đổi** trong WHERE. Hàm, ép kiểu, hay thao tác chuỗi trên cột index đều khiến PostgreSQL bỏ qua index. Nếu nhìn thấy ::numeric, ::text, cast, hoặc hàm như lower() trên cột index trong EXPLAIN, đó là tín hiệu sớm của vấn đề hiệu năng.`,
+    rubric: [
+      'Chỉ đúng nguyên nhân gốc: tham số numeric khiến PostgreSQL ép kiểu cột phone (varchar) về numeric, dòng "Filter: ((phone)::numeric = ..." trong EXPLAIN là bằng chứng, index bị bỏ qua → Seq Scan.',
+      'Dẫn chứng đúng: so sánh hai EXPLAIN (chuỗi → Index Scan 0.04 ms; numeric → Seq Scan 478 ms, rowsRemoved 4.2 triệu), chỉ ra dòng Filter có ::numeric.',
+      'Sửa đúng: gửi tham số đúng kiểu varchar (setString) hoặc cast tham số ::varchar; không đổi kiểu cột vì ảnh hưởng dữ liệu',
+      'Có phân tích tại sao không đổi kiểu cột (SĐT có ký tự đặc biệt, leading zero, migration lớn) và phương án phòng ngừa (pg_stat_statements, sargable query, guardrail rowsRemoved)',
+    ],
+    tags: ['postgresql', 'index', 'implicit-cast', 'seq-scan', 'explain', 'sargable'],
+  },
+  {
+    id: 'lab-sql-037',
+    category: 'sql',
+    title: 'Deadlock do hai giao dịch cập nhật số dư theo thứ tự khác nhau',
+    level: 'senior',
+    scenario: `**Bối cảnh:** Hệ thống ví điện tử có bảng {{accounts}} (id bigserial, balance numeric) lưu số dư từng khách hàng. Hai chức năng chạy song song: (1) chuyển tiền từ tài khoản A sang B, (2) chuyển tiền từ B sang A (hoặc hai giao dịch cập nhật cùng hai tài khoản nhưng theo thứ tự ngược nhau). Mỗi giao dịch bắt đầu transaction, khóa và cập nhật số dư của hai tài khoản theo thứ tự khác nhau. PostgreSQL phát hiện deadlock và rollback một trong hai transaction.
+
+**Số liệu:** Bảng {{accounts}} 500.000 dòng. Hai transaction T1 và T2 cùng cập nhật tài khoản id=101 và id=102. T1 cập nhật 101 trước rồi 102; T2 cập nhật 102 trước rồi 101. Deadlock xảy ra trong vài giây, lỗi SQLState 40P01.
+
+**Nhiệm vụ:** Phân tích log deadlock, chỉ ra nguyên nhân, và sửa sao các transaction luôn khóa theo thứ tự cố định.`,
+    artifacts: [
+      {
+        name: 'schema-accounts.sql',
+        lang: 'sql',
+        content: `CREATE TABLE accounts (
+  id bigserial primary key,
+  owner varchar(100) not null,
+  balance numeric(18,2) not null default 0,
+  currency varchar(3) default 'VND',
+  updated_at timestamp default now()
+);
+
+CREATE INDEX idx_accounts_owner ON accounts (owner);
+
+-- Dữ liệu mẫu
+INSERT INTO accounts (owner, balance, currency) VALUES ('Nguyen Van A', 10000000, 'VND');  -- id = 101
+INSERT INTO accounts (owner, balance, currency) VALUES ('Tran Thi B', 10000000, 'VND');    -- id = 102`,
+      },
+      {
+        name: 'postgres-deadlock.log',
+        lang: 'text',
+        content: `2026-04-05 14:22:10.123 +07 [12345] LOG:  duration: 0.123 ms  statement: BEGIN;
+2026-04-05 14:22:10.124 +07 [12345] LOG:  duration: 0.045 ms  statement: UPDATE accounts SET balance = balance - 500000 WHERE id = 101;
+2026-04-05 14:22:10.500 +07 [12346] LOG:  duration: 0.110 ms  statement: BEGIN;
+2026-04-05 14:22:10.501 +07 [12346] LOG:  duration: 0.038 ms  statement: UPDATE accounts SET balance = balance - 300000 WHERE id = 102;
+2026-04-05 14:22:10.600 +07 [12345] LOG:  duration: 0.095 ms  statement: UPDATE accounts SET balance = balance - 200000 WHERE id = 102;  -- T1 chờ lock trên id=102 do T2 giữ
+2026-04-05 14:22:10.601 +07 [12346] LOG:  duration: 0.088 ms  statement: UPDATE accounts SET balance = balance - 100000 WHERE id = 101;  -- T2 chờ lock trên id=101 do T1 giữ
+2026-04-05 14:22:10.602 +07 [12346] ERROR:  deadlock detected
+2026-04-05 14:22:10.602 +07 [12346] DETAIL:  Process 12346 waits for ShareLock on transaction 12345; blocked by process 12345.
+2026-04-05 14:22:10.602 +07 [12346] DETAIL:  Process 12345 waits for ShareLock on transaction 12346; blocked by process 12346.
+2026-04-05 14:22:10.602 +07 [12346] HINT:  See server log for wait events.
+2026-04-05 14:22:10.602 +07 [12346] CONTEXT:  SQL statement "UPDATE accounts SET balance = balance - 100000 WHERE id = 101"
+2026-04-05 14:22:10.602 +07 [12346] ERROR:  canceling statement due to deadlock
+
+-- T1 (pid 12345) cập nhật id=101 trước, sau đó chờ id=102.
+-- T2 (pid 12346) cập nhật id=102 trước, sau đó chờ id=101.
+-- Chu kỳ chờ: T1 → id=102 (do T2 giữ), T2 → id=101 (do T1 giữ) => deadlock.
+-- PostgreSQL hủy transaction T2 (SQLState 40P01), rollback các thay đổi của T2.`,
+      },
+    ],
+    questions: [
+      'Vì sao hai transaction cập nhật các dòng khác nhau (id=101 và id=102) lại deadlock? Giải thích bằng thứ tự khóa trong log.',
+      'Chính xác transaction nào bị hủy và tại sao PostgreSQL chọn transaction đó (không phải transaction nào chạy trước)?',
+      'Sửa code Java sao cho hai transaction không bao giờ deadlock, kể cả khi nhiều luồng cùng chạy chuyển tiền ngược chiều?',
+    ],
+    hints: [
+      'Deadlock xảy ra vì T1 giữ lock id=101 rồi chờ id=102, còn T2 giữ lock id=102 rồi chờ id=101 — tạo thành chu kỳ chờ cyclic. Thứ tự khóa không nhất quán giữa các transaction.',
+      'PostgreSQL chọn hủy transaction thực hiện câu lệnh gây deadlock (câu lệnh thứ hai trong chu kỳ chờ), không phải transaction bắt đầu trước. Đây là hành vi mặc định của deadlock detector.',
+      'Sửa bằng cách tất cả transaction luôn cập nhật các tài khoản theo thứ tự id tăng dần (hoặc giảm dần), sau đó mới thực hiện các thao tác khác. Nếu thứ tự không biết trước, dùng advisory lock hoặc SERIALIZABLE với retry.',
+    ],
+    answer: `**Tóm tắt:** Hai transaction T1 và T2 cùng cập nhật hai tài khoản {{id=101}} và {{id=102}} nhưng theo thứ tự ngược nhau: T1 khóa 101 rồi đến 102, T2 khóa 102 rồi đến 101. PostgreSQL dùng row-level lock (FOR UPDATE ngầm qua UPDATE) và giữ lock đến hết transaction. T1 giữ lock id=101 và chờ id=102; T2 giữ lock id=102 và chờ id=101 → chu kỳ chờ → PostgreSQL phát hiện deadlock, hủy transaction T2 (SQLState 40P01), rollback các thay đổi của T2.
+
+### Nguyên nhân gốc
+1. Mỗi UPDATE trên bảng {{accounts}} với điều kiện {{WHERE id = ?}} tự động khóa dòng tương ứng (row-level exclusive lock), giữ cho đến khi COMMIT/ROLLBACK.
+2. T1 (pid 12345) thực hiện UPDATE id=101 trước, giữ lock đó, sau đó Thực hiện UPDATE id=102 — nhưng id=102 đang bị T2 giữ.
+3. T2 (pid 12346) thực hiện UPDATE id=102 trước, giữ lock đó, sau đó Thực hiện UPDATE id=101 — nhưng id=101 đang bị T1 giữ.
+4. T1 và T2 tạo thành chu kỳ chờ (wait-for cycle): T1 chờ T2, T2 chờ T1. Deadlock detector PostgreSQL phát hiện chu kỳ này và chọn hủy một transaction (ở đây T2) để phá chu kỳ.
+5. Việc hai transaction cập nhật các dòng "khác nhau" không ngăn deadlock vì vấn đề không nằm ở dữ liệu mà nằm ở **thứ tự lấy khóa**.
+
+### Dẫn chứng
+- Artifact 2 (postgres-deadlock.log): T1 (pid 12345) UPDATE id=101 ở 14:22:10.124, rồi UPDATE id=102 ở 14:22:10.600 (bị chờ). T2 (pid 12346) UPDATE id=102 ở 14:22:10.501, rồi UPDATE id=101 ở 14:22:10.601 (bị chờ).
+- Dòng "Process 12346 waits for ShareLock on transaction 12345; blocked by process 12345" và ngược lại "Process 12345 waits for ShareLock on transaction 12346" chứng minh chu kỳ chờ hai chiều.
+- Lỗi "deadlock detected" và "canceling statement due to deadlock" ở pid 12346 → PostgreSQL hủy T2.
+
+### Cách sửa
+**Cách 1 (khuyên dùng): Luôn khóa theo thứ tự id tăng dần.**
+Trước khi cập nhật, sắp xếp các id tài khoản tăng dần, sau đó cập nhật theo thứ tự đó. Ví dụ chuyển tiền từ A sang B:
+~~~java
+if (fromId < toId) {
+    update(fromId);
+    update(toId);
+} else {
+    update(toId);
+    update(fromId);
+}
+~~~
+Với T1 và T2 cùng cập nhật 101 và 102, cả hai sẽ cập nhật 101 trước rồi 102 → không còn chu kỳ chờ → không deadlock.
+
+**Cách 2: Dùng advisory lock (khi thứ tự id không thực tế).**
+Lấy advisory lock trên một khóa đại diện (min(id1, id2)) trước khi cập nhật, đảm bảo chỉ một transaction xử lý cặp tài khoản đó tại một thời điểm.
+
+**Cách 3: SERIALIZABLE isolation + retry.**
+Đặt isolation level SERIALIZABLE, bắt lỗi serialization/deadlock (40001, 40P01), retry toàn bộ transaction. Tốn chi phí hơn cách 1.
+
+### Phòng ngừa
+- Code review: mọi transaction cập nhật nhiều dòng phải sắp xếp khóa theo thứ tự cố định (id tăng dần).
+- Thêm metric deadlock count (pg_stat_database.deadlocks) và cảnh báo khi > 0.
+- Luôn giữ transaction ngắn: chỉ thao tác DB trong transaction, tính toán và gọi service ngoài transaction.
+- Viết lại idempotent: retry an toàn nếu deadlock xảy ra (có unique constraint hoặc kiểm tra trạng thái).
+> Senior tip: Deadlock không phải do "hai transaction chạm cùng một dòng" mà do **thứ tự khóa không nhất quán**. Quy tắc vàng: sắp xếp tất cả khóa theo thứ tự cố định trước khi lock. Điều này áp dụng cho tất cả CSDL quan hệ (MySQL InnoDB, PostgreSQL, SQL Server...), không chỉ PostgreSQL.`,
+    rubric: [
+      'Chỉ đúng nguyên nhân gốc: thứ tự cập nhật id không nhất quán (T1: 101→102, T2: 102→101) tạo chu kỳ chờ, không phải do dữ liệu giao nhau',
+      'Dẫn chứng đúng từ log: pid 12345 cập nhật 101 rồi chờ 102, pid 12346 cập nhật 102 rồi chờ 101; dòng deadlock detected và canceling statement',
+      'Giải thích đúng transaction bị hủy: PostgreSQL hủy transaction thực hiện câu lệnh gây deadlock (T2), không phải transaction bắt đầu trước',
+      'Sửa đúng: sắp xếp id tăng dần trước khi cập nhật (hoặc advisory lock / SERIALIZABLE + retry), áp dụng cho cả hai chiều chuyển tiền',
+      'Có phòng ngừa: metric deadlocks, transaction ngắn, idempotent retry, quy tắc code review',
+    ],
+    tags: ['postgresql', 'deadlock', 'row-lock', 'transaction', 'lock-ordering', 'concurrency'],
+  },
 );
 
