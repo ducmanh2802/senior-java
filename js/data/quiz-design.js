@@ -3233,5 +3233,364 @@ với dev chỉ code/test.`,
 { id: 'qz-microservices-049', topic: 'microservices', q: 'Distributed tracing (OpenTelemetry) primarily cung cấp gì?', options: ['Metric CPU của từng pod', 'Trace end-to-end qua nhiều service với traceId/spanId', 'Log tập trung', 'Backup DB'], answer: 1, explain: `**Tóm tắt:** Trace gắn traceId/spanId qua header (traceparent) để theo dõi một request đi qua nhiều service, tìm bottleneck.\n\n### Vì sao các phương án khác sai\n- A: metric là Prometheus.\n- C: log tập trung là ELK/Loki.\n- D: backup là DB ops.\n\n> Senior tip: Propagate context qua messaging (Kafka headers) để trace không bị đứt.` },
 { id: 'qz-microservices-050', topic: 'microservices', q: 'Kafka consumer group đảm bảo điều gì về thứ tự message?', options: ['Thứ tự toàn cục trên topic', 'Thứ tự được bảo toàn trong mỗi partition; cùng key → cùng partition', 'Thứ tự ngẫu nhiên giữa các consumer', 'Không có đảm bảo nào'], answer: 1, explain: `**Tóm tắt:** Kafka chỉ bảo toàn thứ tự trong một partition; message có cùng key được hash vào cùng partition → xử lý theo thứ tự per key.\n\n### Vì sao các phương án khác sai\n- A: topic có nhiều partition → không có thứ tự toàn cục.\n- C: consumer group chia partition, mỗi partition một consumer → thứ tự trong partition vẫn giữ.\n- D: có đảm bảo per-partition.\n\n> Senior tip: Nếu cần thứ tự theo entity, dùng entityId làm key.` },
 { id: 'qz-microservices-051', topic: 'microservices', multi: true, q: 'Để retry an toàn với Kafka consumer (Chọn 2)', options: ['Commit offset trước khi xử lý', 'Xử lý idempotent theo message key/id', 'Dùng manual commit sau khi xử lý xong', 'Tăng partitions để retry nhanh hơn', 'Disable rebalance'], answer: [1, 2], explain: `**Tóm tắt:** Idempotent processing + manual commit sau xử lý đảm bảo at-least-once không duplicate side-effect.\n\n### Vì sao đúng\n- Idempotent: xử lý lại cùng message không tạo duplicate (dedupe theo id).\n- Manual commit sau xử lý: crash giữa chừng → reprocess, không mất message.\n\n### Vì sao các phương án khác sai\n- A: commit trước xử lý → mất message nếu crash.\n- D: thêm partition không liên quan retry.\n- E: rebalance cần cho scale.\n\n> Senior tip: Kết hợp dead-letter topic cho poison pill.` },
-{ id: 'qz-microservices-052', topic: 'microservices', q: 'Choreography saga vs orchestration saga: khi nào chọn orchestration?', options: ['Khi có ≤ 2 service và flow đơn giản', 'Khi flow phức tạp, nhiều bước, cần quan sát tập trung và retry/compensation rõ ràng', 'Khi không cần compensation', 'Khi dùng Kafka'], answer: 1, explain: `**Tóm tắt:** Flow phức tạp → orchestrator tập trung giúp theo dõi, retry, compensation rõ ràng; flow đơn giản → choreography đủ.\n\n### Vì sao các phương án khác sai\n- A: flow đơn giản nên choreography.\n- C: saga luôn cần compensation.\n- D: broker không quyết định kiểu saga.\n\n> Senior tip: Orchestrator có thể trở thành SPOF; làm nó resilient + observable.` }
+{ id: 'qz-microservices-052', topic: 'microservices', q: 'Choreography saga vs orchestration saga: khi nào chọn orchestration?', options: ['Khi có ≤ 2 service và flow đơn giản', 'Khi flow phức tạp, nhiều bước, cần quan sát tập trung và retry/compensation rõ ràng', 'Khi không cần compensation', 'Khi dùng Kafka'], answer: 1, explain: `**Tóm tắt:** Flow phức tạp → orchestrator tập trung giúp theo dõi, retry, compensation rõ ràng; flow đơn giản → choreography đủ.\n\n### Vì sao các phương án khác sai\n- A: flow đơn giản nên choreography.\n- C: saga luôn cần compensation.\n- D: broker không quyết định kiểu saga.\n\n> Senior tip: Orchestrator có thể trở thành SPOF; làm nó resilient + observable.` },
+{
+  id: 'qz-banking-028',
+  topic: 'banking',
+  q: 'Khách A chuyển 1.000.000 VND sang khách B, phí 10.000 VND do A chịu. Theo ghi sổ kép (double-entry bookkeeping), ít nhất mấy bút toán và ghi vào tài khoản nào là đúng?',
+  options: [
+    '1 bút toán: nợ A 1.010.000, có B 1.000.000',
+    '3 bút toán: nợ A 1.010.000; có B 1.000.000; có khoản phí 10.000 (doanh thu ngân hàng)',
+    '2 bút toán: nợ A 1.000.000, có B 1.000.000; phí không ghi vào sổ cái',
+    'Nợ B 1.000.000, có A 1.000.000 (chiều ngược lại nghiệp vụ)'
+  ],
+  answer: 1,
+  explain: `**Đáp án đúng: 3 bút toán — nợ A 1.010.000; có B 1.000.000; có khoản phí 10.000.**
+
+**Tóm tắt:** Trong sổ kế toán, mỗi giao dịch phải có ít nhất một bút toán ghi nợ (debit) và một bút toán ghi có (credit), và tổng số tiền ghi nợ phải bằng tổng số tiền ghi có trong cùng giao dịch. Khoản phí cần bút toán riêng để ghi nhận doanh thu.
+
+### Vì sao đúng
+Ba bút toán trên cân bằng:
+- Nợ tài khoản A 1.010.000: số dư khả dụng của A giảm một triệu mười nghìn (một triệu tiền chuyển thêm mười nghìn phí).
+- Có tài khoản B 1.000.000: số dư B tăng một triệu.
+- Có khoản phí thu 10.000: doanh thu ngân hàng tăng mười nghìn.
+
+Tổng nợ = 1.010.000; tổng có = 1.000.000 + 10.000 = 1.010.000. Hai bên bằng nhau, sổ cái vẫn cân bằng.
+
+Ví dụ minh hoạ:
+~~~text
+Giao dịch: A chuyển 1.000.000 cho B, phí 10.000 do A trả
+
+             NỢ (debit)           CÓ (credit)
+Tài khoản A:   1.010.000           (số dư giảm)
+Tài khoản B:                   1.000.000   (số dư tăng)
+Khoản phí thu:                      10.000   (doanh thu)
+Tổng:              1.010.000   =  1.010.000  cân bằng
+~~~
+
+### Vì sao các phương án khác sai
+- **1 bút toán nợ A 1.010.000, có B 1.000.000**: nợ 1.010.000 không bằng có 1.000.000, sai nguyên tắc cân bằng sổ kép; khoản phí 10.000 biến mất không được ghi nhận ở đâu cả.
+- **2 bút toán nợ A 1.000.000, có B 1.000.000, phí không ghi**: bỏ qua khoản phí, không ghi mọi sự biến động tiền tệ vào sổ cái; sau này không truy vết được phí từ đâu và số dư toàn hệ thống sẽ sai.
+- **Nợ B, có A**: chiều ghi ngược nghĩa là B chuyển tiền cho A, sai hoàn toàn nghiệp vụ.
+
+> Senior tip: Thiết kế bảng bút toán ledger với các cột account_id, amount, direction (debit/credit), transaction_id. Trước khi commit một giao dịch, hãy tính tổng debit và tổng credit của cùng transaction_id; nếu khác nhau thì rollback toàn bộ giao dịch, chứ không chỉ rollback một bút toán.`
+},
+{
+  id: 'qz-banking-029',
+  topic: 'banking',
+  q: 'Khách nhấn nút "Gửi" chuyển tiền hai lần nhanh, ứng dụng gửi hai HTTP request cùng idempotency key lên server. Server nhận cả hai request song song trên hai luồng khác nhau. Cách xử lý đúng là gì?',
+  options: [
+    'Xử lý cả hai request vì chúng đến trên hai luồng khác nhau',
+    'Kiểm tra idempotency key trong cơ sở dữ liệu; nếu key đã được xử lý thì trả lại kết quả cũ, không thực hiện lại bút toán; việc kiểm tra và lưu key phải nằm trong cùng một transaction DB với bút toán',
+    'Dùng thời gian gửi của client để phân biệt; hai request đến khác mili giây thì coi là hai giao dịch khác nhau',
+    'Từ chối request thứ hai bằng mã HTTP 409 Conflict'
+  ],
+  answer: 1,
+  explain: `**Đáp án đúng: Kiểm tra idempotency key trong DB; nếu key đã được xử lý thì trả lại kết quả cũ, không thực hiện lại bút toán; kiểm tra và lưu key phải nằm trong cùng một transaction DB với bút toán.**
+
+**Tóm tắt:** Idempotency key là mã định danh duy nhất (thường do client tạo, ví dụ UUID) gắn cho mỗi ý định giao dịch. Cùng một key nghĩa là cùng một ý định (ví dụ "chuyển 200.000 cho B"), nên server chỉ xử lý một lần; các lần gửi lại do nhấn nhầm hoặc mạng retry đều nhận lại kết quả đã lưu. Để tránh hai luồng cùng đọc "chưa có key" rồi cùng thực hiện, kiểm tra và lưu key phải nguyên tử, nằm trong cùng một transaction DB.
+
+Thuật ngữ:
+- **Idempotency (tính lũy đẳng)**: thực hiện cùng thao tác nhiều lần cho kết quả như thực hiện một lần.
+- **Idempotency key**: chuỗi định danh duy nhất gắn với mỗi yêu cầu, server dùng để nhận biết yêu cầu trùng.
+
+### Vì sao đúng
+Kịch bản nhấn nút Gửi hai lần nhanh:
+1. Luồng 1 kiểm tra key "abc-123" trong DB: chưa có.
+2. Luồng 2 cũng kiểm tra key "abc-123": chưa có (vì luồng 1 chưa kịp lưu).
+3. Nếu cả hai đều thực hiện bút toán → tiền bị trừ hai lần (race condition).
+Cách đúng: dùng transaction DB, ví dụ SELECT ... FOR UPDATE để khóa dòng key, hoặc INSERT ... ON CONFLICT DO NOTHING rồi kiểm tra số dòng bị ảnh hưởng: nếu không chèn được dòng nào thì key đã tồn tại, trả lại kết quả đã lưu.
+
+~~~text
+Luồng 1:                      Luồng 2:
+SELECT key=abc... không có     SELECT key=abc... không có
+(trả rỗng)                     (trả rỗng)
+     |                               |
+     v                               v
+trừ tiền 1 triệu             trừ tiền 1 triệu  <-- tiền bị trừ hai lần
+     |                               |
+     v                               v
+INSERT key=abc thành công    INSERT key=abc → lỗi trùng khóa (tiền đã bị trừ)
+~~~
+
+Kiểm tra-lưu key trong cùng transaction với bút toán làm toàn bộ thành nguyên tử: hoặc toàn bộ thành công hoặc toàn bộ rollback.
+
+### Vì sao các phương án khác sai
+- **Xử lý cả hai vì hai luồng khác nhau**: hai luồng khác nhau vẫn là hai yêu cầu trùng cùng một ý định; xử lý cả hai là trừ tiền hai lần, sai nghiêm trọng trong thanh toán.
+- **Dùng thời gian client để phân biệt**: đồng hồ client không đáng tin cậy (có thể lệch, bị chỉnh lại giờ) và hai retry của cùng ý định có thể có thời gian khác; không dùng thời gian để định danh ý định giao dịch.
+- **Từ chối HTTP 409**: client hoặc đối tác nhận 409 sẽ hiểu là xung đột và thường gửi lại, dẫn đến client bị kẹt, giao dịch không có kết quả rõ ràng. Đúng là trả 200 kèm kết quả đã lưu.
+
+> Senior tip: idempotency key phải đại diện cho ý định nghiệp vụ, không phải mã vận chuyển nội bộ. Đặt TTL cho key (ví dụ 24-72 giờ) để bảng không tăng vô hạn, nhưng TTL phải dài hơn cửa sổ retry của đối tác hoặc client.`
+},
+{
+  id: 'qz-banking-030',
+  topic: 'banking',
+  q: 'File đối soát từ đối tác không có mã tham chiếu chung với hệ thống của bạn, chỉ có số tiền, thời gian và hướng giao dịch. Làm sao đối soát đúng?',
+  options: [
+    'So sánh tổng tiền cuối ngày; nếu tổng bằng nhau thì coi như tất cả giao dịch đều khớp',
+    'Match từng cặp theo (số tiền, hướng, thời gian trong cửa sổ nhỏ, ví dụ 5 phút); những giao dịch không tìm được cặp đưa vào hàng chờ unmatched để điều tra',
+    'Tự động tạo giao dịch trong hệ thống của bạn để khớp số liệu ngay lập tức',
+    'Bỏ qua vì không có mã tham chiếu thì không thể đối soát'
+  ],
+  answer: 1,
+  explain: `**Đáp án đúng: Match từng cặp theo (số tiền, hướng, thời gian gần nhau trong cửa sổ nhỏ, ví dụ 5 phút); giao dịch không tìm được cặp đưa vào hàng chờ unmatched để điều tra.**
+
+**Tóm tắt:** Khi không có mã tham chiếu chung, hệ thống phải ghép cặp giao dịch bằng các thuộc tính có sẵn (số tiền, hướng nộp/trừ, thời gian giao dịch) với dung sai thời gian nhỏ. Mỗi giao dịch chỉ được ghép một lần (1-1), những giao dịch chưa khớp phải giữ lại để điều tra, không được tự động tạo giao dịch hay kết luận chỉ từ tổng tiền.
+
+Thuật ngữ:
+- **Đối soát (reconciliation)**: so sánh dữ liệu giao dịch giữa hai bên để đảm bảo khớp nhau.
+- **Matched / Unmatched**: khớp cặp / chưa tìm được cặp đối ứng.
+- **Timing difference**: lệch do thời gian, ví dụ bên này đã ghi nhưng bên kia ghi sau.
+
+### Vì sao đúng
+Ví dụ minh hoạ:
+~~~text
+Hệ thống của bạn:         Đối tác:
+1.000.000 VND, 14:05:12    1.000.000 VND, 14:05:45   <- cùng số tiền, cùng hướng, chênh 33 giây < 5 phút → MATCH
+2.500.000 VND, 14:10:00    (không có)                  <- không tìm cặp → UNMATCHED, đưa vào hàng chờ
+~~~
+Nếu đối tác có hai dòng 1.000.000 VND trong cùng cửa sổ 5 phút, hệ thống không được tự động chọn một dòng vì có thể ghép nhầm; đưa về điều tra thủ công.
+
+### Vì sao các phương án khác sai
+- **So sánh tổng tiền cuối ngày; tổng bằng nhau thì coi như khớp**: rất rủi ro vì hai sai lệch có thể triệt tiêu nhau (một giao dịch thừa 100.000, một giao dịch thiếu 100.000) làm tổng vẫn bằng nhau nhưng chi tiết sai. Đối soát tài chính bắt buộc phải khớp ở mức từng giao dịch.
+- **Tự động tạo giao dịch trong hệ thống của bạn**: tự động tạo giao dịch để "cho khớp" có thể ghi nhận giao dịch không hợp lệ hoặc bị trùng; mọi giao dịch trong core banking phải có bằng chứng nghiệp vụ rõ ràng.
+- **Bỏ qua**: không có mã tham chiếu không có nghĩa là không đối soát, chỉ là đối soát bằng các thuộc tính khác kém chính xác hơn, cần cẩn thận hơn.
+
+> Senior tip: Đặt cửa sổ thời gian (ví dụ 5 phút hoặc 1 giờ) dựa trên SLA của đối tác, không được quá rộng để tránh ghép nhầm giao dịch khác có cùng số tiền. Tạo báo cáo aging cho unmatched (ví dụ > 24 giờ) để đội vận hành ưu tiên điều tra.`
+},
+{
+  id: 'qz-banking-031',
+  topic: 'banking',
+  multi: true,
+  q: 'Giao dịch chuyển tiền sang đối tác: hệ thống của bạn đã trừ tiền và gửi yêu cầu qua API đối tác, nhưng đối tác trả timeout (không có phản hồi rõ ràng). Giao dịch treo ở trạng thái PENDING. Các xử lý nào đúng? (Chọn 2)',
+  options: [
+    'Giữ trạng thái PENDING và cung cấp API cho khách hàng tra cứu trạng thái theo mã tham chiếu giao dịch',
+    'Job tra soát định kỳ: đối các giao dịch PENDING quá hạn, gửi inquiry/reversal đến đối tác theo mã tham chiếu gốc để xác định trạng thái thực',
+    'Tự động hoàn tiền cho khách ngay khi timeout vì không biết kết quả',
+    'Tự động gửi lại yêu cầu chuyển tiền với mã giao dịch mới để đảm bảo đối tác nhận được'
+  ],
+  answer: [0, 1],
+  explain: `**Đáp án đúng: Giữ trạng thái PENDING và cung cấp API tra cứu theo mã tham chiếu · Job tra soát định kỳ gửi inquiry/reversal cho giao dịch PENDING quá hạn theo mã tham chiếu gốc.**
+
+**Tóm tắt:** Timeout tạo ra trạng thái "không xác định": bạn không biết đối tác đã xử lý, đang xử lý hay chưa xử lý. Không được tự động hoàn tiền hay tự động gửi lại, vì nếu giao dịch thực ra đã thành công ở đối tác thì hoàn tiền làm mất tiền và gửi lại làm trừ tiền hai lần.
+
+Thuật ngữ:
+- **Giao dịch treo (hung transaction)**: giao dịch đã bắt đầu nhưng kết thúc ở trạng thái trung gian (PENDING, AUTHORIZED) vì không nhận được phản hồi cuối cùng.
+- **Inquiry (tra soát)**: gọi API riêng của đối tác để hỏi trạng thái giao dịch theo mã tham chiếu gốc.
+- **Reversal (đảo ngược)**: yêu cầu hủy hoặc hoàn tác một giao dịch đã ủy quyền theo quy trình của đối tác.
+
+### Vì sao đúng
+- Giữ PENDING và cung cấp API tra cứu: khách hàng biết giao dịch đang được xử lý, không bấm lại, hệ thống không đoán trạng thái.
+- Job tra soát định kỳ: sau một khoảng thời gian (ví dụ 30 phút, 2 giờ), hệ thống tự động gọi inquiry hoặc reversal đối với các giao dịch PENDING quá hạn, sau đó cập nhật trạng thái thành SUCCESS hoặc FAILED và thông báo khách hàng.
+
+~~~text
+Trạng thái PENDING:
+  Khách chuyển tiền → Core trừ tiền → Gửi yêu cầu đối tác → Timeout
+                                                      |
+                                                      v
+                                              Giao dịch treo PENDING
+                                                      |
+                                              Job tra soát định kỳ
+                                                      |
+                                              Inquiry/Reversal đối tác
+                                                      |
+                                              Cập nhật SUCCESS/FAILED
+~~~
+
+### Vì sao các phương án khác sai
+- **Tự động hoàn tiền ngay khi timeout**: nếu giao dịch thực ra đã thành công ở đối tác (tiền đã đi), hoàn tiền làm số dư sai và khó đối soát.
+- **Tự động gửi lại với mã giao dịch mới**: nếu đối tác đã xử lý yêu cầu cũ, yêu cầu mới tạo giao dịch thứ hai → trừ tiền hai lần. Retry chỉ an toàn khi dùng cùng idempotency key/mã tham chiếu gốc và đối tác hỗ trợ xử lý trùng.
+
+> Senior tip: Thiết kế máy trạng thái giao dịch rõ ràng (PENDING, SUCCESS, FAILED, UNKNOWN). Các giao dịch UNKNOWN phải được job tra soát tự động xử lý và có cảnh báo nếu vượt quá thời gian cho phép. Luôn log đầy đủ mã tham chiếu hai phía để đội vận hành đối chiếu nhanh.`
+},
+{
+  id: 'qz-banking-032',
+  topic: 'banking',
+  q: 'Backend Java cần tích hợp chuyển tiền ngay (real-time payment) qua hệ thống thanh toán tức thời dùng ISO 20022. So sánh với kết nối thẻ qua ISO 8583, phát biểu nào đúng ở mức khái niệm?',
+  options: [
+    'ISO 20022 là bản nén của ISO 8583 để truyền nhanh hơn trên mạng chậm',
+    'ISO 8583 dùng thông điệp có cấu trúc phong phú (XML) và end-to-end ID, còn ISO 20022 dùng field cố định với bitmap qua TCP socket',
+    'ISO 20022 dùng thông điệp có cấu trúc phong phú (thường là XML) với ngữ nghĩa rõ ràng và mã tham chiếu liên cuối (end-to-end ID, UETR), thường kết nối qua API hoặc hàng đợi tin nhắn; ISO 8583 dùng field cố định với bitmap qua kết nối TCP socket dài hạn, tối ưu cho giao dịch thẻ thời gian thực',
+    'ISO 20022 chỉ dùng cho tiền mã hóa (crypto), ngân hàng truyền thống vẫn dùng ISO 8583'
+  ],
+  answer: 2,
+  explain: `**Đáp án đúng: ISO 20022 dùng thông điệp có cấu trúc phong phú (thường là XML) với ngữ nghĩa rõ ràng và end-to-end ID (UETR), thường qua API hoặc hàng đợi tin nhắn; ISO 8583 dùng field cố định với bitmap qua TCP socket dài hạn, tối ưu cho giao dịch thẻ.**
+
+**Tóm tắt:** Hai chuẩn phục vụ bối cảnh khác nhau và có thể cùng tồn tại trong một hệ thống: ISO 8583 cho thẻ (ATM, POS), ISO 20022 cho chuyển tiền và thanh toán hiện đại.
+
+Thuật ngữ:
+- **Real-time payment (thanh toán tức thời)**: chuyển tiền được xử lý và tài khoản được cập nhật trong vài giây, ngay lập tức, không phải đợi batch cuối ngày.
+- **ISO 20022**: chuẩn quốc tế định nghĩa mô hình dữ liệu và cú pháp thông điệp tài chính (thường là XML), mỗi trường có tên và ý nghĩa rõ ràng.
+- **End-to-end ID / UETR**: mã duy nhất gắn theo giao dịch từ đầu đến cuối, giúp hai bên tra cứu cùng một giao dịch mà không nhầm.
+- **Bitmap**: chuỗi bit chỉ ra trường nào có mặt trong thông điệp ISO 8583.
+- **TCP socket dài hạn**: kết nối giữ luôn giữa hai hệ thống, dùng để gửi nhiều thông điệp liên tục.
+
+### Vì sao đúng
+ISO 20022 thông điệp dài, có cấu trúc, dễ mở rộng, mang nhiều thông tin nghiệp vụ (tên người nhận đầy đủ, mục đích thanh toán, mã tham chiếu liên cuối UETR). Backend Java thường parse/generate XML qua API REST hoặc hàng đợi tin nhắn (message queue). ISO 8583 thông điệp ngắn, field cố định, dùng bitmap để biết field nào hiện, gửi qua kết nối TCP socket giữ lâu, tối ưu độ trễ thấp cho giao dịch thẻ.
+
+### Vì sao các phương án khác sai
+- **ISO 20022 là bản nén của ISO 8583**: sai, hai chuẩn khác nhau về mô hình và mục tiêu; thông điệp ISO 20022 thường lớn hơn vì mang nhiều thông tin.
+- **ISO 8583 dùng XML và end-to-end ID, ISO 20022 dùng bitmap**: ngược lại hoàn toàn.
+- **ISO 20022 chỉ dùng cho tiền mã hóa (crypto)**: sai, ISO 20022 được dùng rộng trong chuyển tiền ngân hàng (ví dụ SWIFT, hệ thống thanh toán tức thời), không dành cho crypto.
+
+> Senior tip: Khi tích hợp ISO 20022, hãy lưu bản gốc thông điệp để tra soát và tuân thủ, và chú ý mapping trường (tên người nhận, địa chỉ, mã mục đích) vì mỗi ngân hàng có thể dùng profile khác nhau. Giữ end-to-end ID (UETR) đi kèm mọi yêu cầu để các bên dễ đối soát.`
+},
+{
+  id: 'qz-banking-033',
+  topic: 'banking',
+  q: 'Khách gọi tổng đài hỗ trợ quên số thẻ, yêu cầu nhân viên đọc lại toàn bộ số thẻ (PAN) và mã CVV để xác thực chủ thẻ trước khi hỗ trợ. Cách xử lý đúng theo PCI DSS là gì?',
+  options: [
+    'Nhân viên đọc lại toàn bộ PAN và CVV vì khách là chủ thẻ, đây là cách xác thực nhanh nhất',
+    'Không đọc lại PAN đầy đủ (chỉ xác nhận 4 số cuối) và tuyệt đối không đọc CVV vì CVV không được lưu và không được xuất lại; xác thực bằng cách khác như OTP, CMND/CCCD, thông tin tài khoản',
+    'Đọc PAN đầy đủ nhưng che CVV, vì PAN đã được mã hóa trong cơ sở dữ liệu',
+    'Yêu cầu khách gửi ảnh cả mặt trước và mặt sau của thẻ qua email tổng đài'
+  ],
+  answer: 1,
+  explain: `**Đáp án đúng: Không đọc lại PAN đầy đủ (chỉ xác nhận 4 số cuối) và tuyệt đối không đọc CVV; xác thực bằng cách khác như OTP, CMND/CCCD, thông tin tài khoản.**
+
+**Tóm tắt:** PCI DSS cấm lưu dữ liệu xác thực nhạy cảm như CVV/CVC sau khi giao dịch được ủy quyền, và chỉ cho phép hiển thị PAN ở dạng che bớt (masking), ví dụ chỉ 4 số cuối. Nhân viên hỗ trợ không được đọc lại toàn bộ số thẻ và CVV cho khách.
+
+Thuật ngữ:
+- **PAN (Primary Account Number)**: số thẻ đầy đủ in trên mặt thẻ.
+- **CVV/CVC**: mã xác thực (thường 3 chữ số ở mặt sau thẻ) dùng để chứng minh người dùng đang giữ thực vật thẻ khi thanh toán không gặp mặt.
+- **Masking**: che bớt dữ liệu nhạy cảm khi hiển thị, ví dụ chỉ hiện 4 số cuối (**** **** **** 1234).
+- **Dữ liệu xác thực nhạy cảm (sensitive authentication data)**: CVV, mã PIN, dữ liệu pát thẻ (magnetic stripe) — không được lưu sau khi ủy quyền, dù đã mã hóa.
+
+### Vì sao đúng
+CVV mục đích là chứng minh người mua đang giữ thẻ vật lý. Nếu hệ thống lưu CVV hoặc nhân viên đọc lại CVV cho khách, thì khi hệ thống bị xâm nhập hoặc thông tin bị nghe trộm, kẻ tấn công có đủ thông tin để giao dịch không gặp mặt. PAN đầy đủ cũng chỉ nên hiển thị dạng che bớt để giảm thiệt hại nếu log hoặc màn hình bị lộ.
+
+Xác thực chủ thẻ nên dùng các kênh khác: OTP gửi đến điện thoại đã đăng ký, CMND/CCCD, thông tin tài khoản chỉ chủ nhân biết.
+
+### Vì sao các phương án khác sai
+- **Đọc lại toàn bộ PAN và CVV**: vi phạm nghiêm trọng PCI DSS; CVV tuyệt đối không được xuất lại, PAN đầy đủ không được đọc lại ở kênh tổng đài.
+- **Đọc PAN đầy đủ nhưng che CVV**: PAN đầy đủ cũng không được đọc lại trong tương tác hỗ trợ; mã hóa trong cơ sở dữ liệu không cho phép hiển thị PAN đầy đủ cho nhân viên tổng đài.
+- **Yêu cầu khách gửi ảnh thẻ qua email**: email không phải kênh an toàn để truyền dữ liệu thẻ, và ảnh thẻ chứa PAN đầy đủ plus CVV (mặt sau), rất dễ bị lộ.
+
+> Senior tip: Thiết kế hệ thống để giảm phạm vi PCI DSS: đẩy việc nhập thẻ sang trang thanh toán của cổng (hosted payment page), backend chỉ nhận token. Kiểm tra log, exception và tracing để chắc chắn không vô tình in PAN hoặc CVV.`
+},
+{
+  id: 'qz-banking-034',
+  topic: 'banking',
+  q: 'Phí chuyển tiền là 0.1% số tiền, tính bằng BigDecimal. Với giao dịch 100.005 VND, phát biểu nào đúng về cách tính và làm tròn phí?',
+  options: [
+    'Dùng double tính rồi làm tròn ở cuối là chính xác vì sai số nhỏ không quan trọng với số tiền nhỏ',
+    'Phí = 100.005 x 0.001 = 0.100005 VND, làm tròn về 2 chữ số thập phân theo HALF_UP là 0.10 VND; phép chia BigDecimal phải chỉ rõ RoundingMode, không thì ném ArithmeticException; trên một triệu giao dịch, sai số 1-2 đồng mỗi lần tích lũy thành chục triệu VND',
+    'BigDecimal chia không cần RoundingMode, kết quả tự động và chính xác',
+    'Dùng long lưu theo đơn vị xu thì không bao giờ cần làm tròn'
+  ],
+  answer: 1,
+  explain: `**Đáp án đúng: Phí 0.10 VND theo HALF_UP; phép chia BigDecimal phải chỉ rõ RoundingMode; sai số tích lũy lớn trên hàng triệu giao dịch.**
+
+**Tóm tắt:** Tiền phải tính chính xác tuyệt đối. Double là số nhị phân không thể biểu diễn chính xác 0.1, nên sai số tích lũy. BigDecimal lưu số thập phân chính xác, nhưng phép chia có thể cho kết quả thập phân vô hạn, nên phải quy tắc làm tròn (RoundingMode).
+
+Thuật ngữ:
+- **BigDecimal**: lớp Java biểu diễn số thập phân với độ chính xác tuyệt đối, gồm phần số nguyên và scale (số chữ số thập phân).
+- **RoundingMode.HALF_UP**: làm tròn lên nếu chữ số cuối cùng bị loại là 5 hoặc hơn, ngược lại làm tròn xuống.
+- **ArithmeticException**: exception ném khi phép chia BigDecimal cho kết quả thập phân vô hạn mà không chỉ rõ RoundingMode.
+
+### Vì sao đúng
+Phí = 100.005 × 0.001 = 0.100005 VND. Làm tròn 2 chữ số thập phân theo HALF_UP: chữ số thứ ba là 0, nên kết quả là 0.10 VND. Phép chia trong BigDecimal (ví dụ chia tỷ giá) phải chỉ rõ RoundingMode; nếu kết quả thập phân vô hạn như 10 chia 3 và không chỉ rõ quy tắc, Java ném ArithmeticException.
+
+Ví dụ sai số tích lũy: nếu mỗi giao dịch bị lệch 1-2 đồng do double, trên một triệu giao dịch thì lệch chục triệu VND, không chấp nhận được trong sổ cái.
+
+### Vì sao các phương án khác sai
+- **Dùng double rồi làm tròn ở cuối**: double đã mang sai số từ đầu (0.1 + 0.2 = 0.30000000000000004), làm tròn ở cuối không cứu được sai số đã tích lũy trong quá trình tính toán.
+- **BigDecimal chia không cần RoundingMode**: sai, khi kết quả thập phân vô hạn BigDecimal ném ArithmeticException.
+- **Dùng long theo đơn vị xu**: long tránh được số thập phân khi lưu, nhưng khi đổi đơn vị (ví dụ từ VND sang xu hoặc ngược lại) vẫn có thể cần làm tròn, và long không tự mang thông tin về đơn vị tiền, dễ nhầm lẫn. BigDecimal vẫn là lựa chọn chuẩn cho nghiệp vụ tài chính.
+
+> Senior tip: Luôn dùng BigDecimal(String) thay vì BigDecimal(double) để không mang sai số của double vào đầu vào. So sánh BigDecimal bằng compareTo, không dùng equals (vì 2.0 và 2.00 không bằng nhau theo equals). Hiển thị phí và số tiền với setScale(2, RoundingMode.HALF_UP).`
+},
+{
+  id: 'qz-banking-035',
+  topic: 'banking',
+  q: 'Ngân hàng đặt cut-off 15h30. Khách A chuyển tiền vào thứ Sáu 15h29, khách B chuyển vào thứ Sáu 15h31. Thứ Bảy và Chủ Nhật là cuối tuần, thứ Hai là ngày lễ quốc gia. Value date (ngày giá trị) của mỗi giao dịch là ngày nào?',
+  options: [
+    'Cả hai đều value date thứ Sáu vì giao dịch cùng ngày',
+    'A: thứ Sáu (trước cut-off), B: thứ Ba (sau cut-off, trượt qua cuối tuần và ngày lễ thứ Hai)',
+    'B: thứ Bảy vì batch EOD chạy vào buổi tối thứ Sáu',
+    'Value date luôn là ngày giao dịch cộng một ngày lịch sử, không coi cuối tuần hay ngày lễ'
+  ],
+  answer: 1,
+  explain: `**Đáp án đúng: A có value date thứ Sáu; B có value date thứ Ba (sau cut-off thứ Sáu, trượt qua cuối tuần thứ Bảy-Chủ Nhật và ngày lễ thứ Hai).**
+
+**Tóm tắt:** Cut-off là mốc thời gian trong ngày để phân loại giao dịch vào ngày giá trị nào. Giao dịch trước cut-off ghi vào ngày làm việc hiện tại; giao dịch sau cut-off ghi vào ngày làm việc tiếp theo. Ngày làm việc loại trừ cuối tuần và ngày lễ, nên thứ Ba là ngày làm việc tiếp theo sau thứ Sáu khi thứ Hai là ngày lễ.
+
+Thuật ngữ:
+- **Cut-off (giờ cắt)**: mốc kỹ thuật trong ngày; giao dịch nhận trước cut-off thuộc ngày làm việc hiện tại, sau cut-off thuộc ngày làm việc tiếp theo.
+- **Value date (ngày giá trị)**: ngày chính thức giao dịch được ghi vào sổ cái và bắt đầu tính lãi / hạn mức.
+- **Ngày làm việc (business day)**: ngày trong tuần trừ cuối tuần và ngày lễ quốc gia, khác với ngày lịch sử (calendar day) tính 365 ngày một năm.
+
+### Vì sao đúng
+- Khách A 15h29 thứ Sáu: trước cut-off 15h30 → value date là thứ Sáu, batch EOD thứ Sáu tổng kết giao dịch này.
+- Khách B 15h31 thứ Sáu: sau cut-off → ghi vào ngày làm việc tiếp theo. Ngày làm việc tiếp theo sau thứ Sáu là thứ Hai (bỏ qua thứ Bảy, Chủ Nhật), nhưng thứ Hai là ngày lễ → tiếp tục là thứ Ba. Value date của B là thứ Ba.
+
+### Vì sao các phương án khác sai
+- **Cả hai đều thứ Sáu**: sai, B sau cut-off nên không thuộc ngày thứ Sáu.
+- **B: thứ Bảy vì batch EOD tối thứ Sáu**: batch EOD chỉ xử lý giao dịch thuộc ngày làm việc hiện tại; giao dịch sau cut-off của B chưa thuộc ngày thứ Sáu, EOD không thấy nó.
+- **Value date luôn +1 ngày lịch sử**: sai vì ngày làm việc loại trừ cuối tuần và ngày lễ; tính theo ngày lịch sử sẽ ghi lãi sai và giao dịch bị trễ.
+
+> Senior tip: Dev phải dùng một BusinessDayService dùng chung cho toàn hệ thống, không được tính ngày tùy tiện ở từng màn hình. Cut-off và ngày làm việc khác nhau giữa sản phẩm (tiết kiệm, vay, thẻ) — hỏi rõ specification trước khi code.`
+},
+{
+  id: 'qz-banking-036',
+  topic: 'banking',
+  multi: true,
+  q: 'Thiết kế API chuyển tiền để chống yêu cầu trùng do client retry. Thực hành nào đúng về idempotency key? (Chọn 2)',
+  options: [
+    'Cùng một ý định giao dịch (ví dụ "chuyển 200.000 cho B") dù gửi lại bao nhiêu lần cũng phải dùng cùng một idempotency key',
+    'Hai giao dịch khác nhau (chuyển cho A và chuyển cho B) có thể dùng cùng key nếu số tiền khác nhau',
+    'Kiểm tra key đã tồn tại và lưu key + kết quả trong cùng một transaction DB với bút toán nghiệp vụ',
+    'Dùng timestamp của client làm idempotency key vì mỗi lần gửi thì thời gian khác nhau'
+  ],
+  answer: [0, 2],
+  explain: `**Đáp án đúng: Cùng ý định giao dịch phải dùng cùng key · Kiểm tra và lưu key + kết quả trong cùng transaction DB với bút toán.**
+
+**Tóm tắt:** Idempotency key đại diện cho ý định nghiệp vụ, không phải cho mỗi lần gửi HTTP. Cùng ý định (có thể retry) dùng cùng key; ý định khác phải dùng key khác. Kiểm tra và lưu key phải nguyên tử, nằm trong cùng transaction với bút toán để tránh race condition.
+
+Thuật ngữ:
+- **Ý định giao dịch**: hành động người dùng muốn thực hiện (ví dụ "chuyển 200.000 cho B"). Dù gửi lại nhiều lần do retry, đó vẫn là cùng một ý định.
+- **Transaction DB**: nhóm các thao tác cơ sở dữ liệu thành một đơn vị, hoặc tất cả thành công hoặc tất cả rollback.
+
+### Vì sao đúng
+- Cùng ý định dùng cùng key: server nhận thấy key đã xử lý thì trả lại kết quả cũ, client retry an toàn không bị trừ tiền hai lần.
+- Lưu key + kết quả trong cùng transaction: tránh trường hợp hai request cùng đọc "chưa có key" rồi cùng thực hiện bút toán (race condition). Transaction đảm bảo chỉ một request thắng.
+
+### Vì sao các phương án khác sai
+- **Hai giao dịch khác nhau dùng cùng key nếu số tiền khác nhau**: sai, key định danh ý định, không định danh số tiền. Hai giao dịch khác nhau dùng cùng key sẽ làm server coi chúng là một và từ chối xử lý giao dịch thứ hai.
+- **Dùng timestamp client làm key**: đồng hồ client không đáng tin cậy (có thể lệch, chỉnh giờ) và không thể dùng làm định danh ý định nghiệp vụ.
+
+> Senior tip: Đặt TTL cho key (ví dụ 24-72 giờ) để bảng không tăng vô hạn, nhưng TTL phải dài hơn cửa sổ retry của client và đối tác. Khi gặp unique constraint do request trùng, hãy đọc lại kết quả đã lưu và trả về phản hồi thành công tương ứng thay vì báo lỗi 500.`
+},
+{
+  id: 'qz-banking-037',
+  topic: 'banking',
+  multi: true,
+  q: 'Giảm phạm vi hệ thống phải tuân thủ PCI DSS (PCI scope) khi nhận thanh toán thẻ. Hành động nào đúng? (Chọn 2)',
+  options: [
+    'Dùng trang thanh toán của cổng thanh toán (hosted payment page) hoặc SDK, khách nhập thẻ trên trang cổng; hệ thống của bạn chỉ nhận token giao dịch thay vì PAN/CVV',
+    'Lưu PAN đã mã hóa AES trong cơ sở dữ liệu của mình thì hệ thống tự động thoát khỏi PCI DSS scope',
+    'Tokenization thay PAN thật bằng mã đại diện không có giá trị nếu bị lộ, giúp giảm dữ liệu nhạy cảm hệ thống của bạn phải giữ',
+    'Ghi toàn bộ request/response kèm PAN vào log DEBUG để lập trình viên dễ debug lỗi thanh toán'
+  ],
+  answer: [0, 2],
+  explain: `**Đáp án đúng: Dùng hosted payment page/SDK, backend chỉ nhận token · Tokenization thay PAN thật bằng mã đại diện giúp giảm dữ liệu nhạy cảm hệ thống phải giữ.**
+
+**Tóm tắt:** PCI DSS áp dụng cho mọi hệ thống lưu trữ, xử lý hoặc truyền dữ liệu thẻ. Cách giảm phạm vi hiệu quả nhất là không để PAN/CVV đi qua hệ thống của bạn: dùng trang thanh toán của cổng hoặc tokenization, backend chỉ làm việc với token.
+
+Thuật ngữ:
+- **PCI DSS (Payment Card Industry Data Security Standard)**: tiêu chuẩn bảo mật cho hệ thống lưu trữ, xử lý hoặc truyền dữ liệu thẻ thanh toán.
+- **Hosted payment page**: trang thu thẻ do cổng thanh toán cung cấp, khách nhập thẻ trên hạ tầng của cổng, không qua hệ thống của bạn.
+- **Token**: mã đại diện thay cho dữ liệu thẻ thật, dùng để tham chiếu giao dịch mà không lộ PAN.
+- **Tokenization**: thay PAN thật bằng mã đại diện; hệ thống an toàn riêng ánh xạ token về PAN khi cần.
+
+### Vì sao đúng
+- Hosted payment page/SDK: PAN/CVV không đi qua backend của bạn, nên hệ thống của bạn không tiếp xúc dữ liệu nhạy cảm → phạm vi tuân thủ nhỏ hơn, chi phí kiểm tra bảo mật thấp hơn.
+- Tokenization: thay PAN thật bằng mã đại diện không có giá trị nếu bị lộ; nếu token bị đánh cắp, kẻ tấn công không thể dùng để giao dịch mà không có hệ thống ánh xạ riêng.
+
+### Vì sao các phương án khác sai
+- **Lưu PAN mã hóa AES thì thoát khỏi PCI DSS**: sai. Mã hóa PAN vẫn nằm trong PCI DSS scope; bạn vẫn phải mã hóa khóa, kiểm soát truy cập, giám sát và kiểm tra định kỳ. Mã hóa giảm rủi ro, không loại bỏ hoàn toàn sự tuân thủ.
+- **Ghi toàn bộ request/response kèm PAN vào log DEBUG**: sai, rất dễ rò rỉ PAN. Luôn redact (loại bỏ) trường nhạy cảm trước khi ghi log.
+
+> Senior tip: Rà soát toàn bộ chuỗi: log ứng dụng, APM/tracing, message queue, error tracker và bản sao lưu. Nhiều sự cố lộ thẻ đến từ hệ thống quan sát (observability) hoặc dump lỗi, không chỉ từ cơ sở dữ liệu chính.`
+}
 );
