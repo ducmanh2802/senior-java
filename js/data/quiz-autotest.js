@@ -1093,4 +1093,356 @@ System.out.println(res.headers()); // debug header
   answer: 1,
   explain: `**Tóm tắt:** Tính cô lập (isolation) là yếu tố sống còn của test bền vững; dữ liệu rác từ test trước là nguồn gốc của lỗi flaky.`
 },
+{
+  id: 'qz-autotest-051',
+  topic: 'autotest',
+  q: 'Trong Selenium, khác biệt cốt lõi giữa implicit wait (chờ ngầm) và explicit wait (chờ tường minh) là gì?',
+  options: [
+    'Implicit wait chờ một điều kiện cụ thể, còn explicit wait áp dụng cho mọi lệnh tìm phần tử',
+    'Hai cơ chế giống hệt nhau, chỉ khác tên gọi giữa Selenium 3 và 4',
+    'Implicit wait khai báo một lần và áp dụng cho MỌI lệnh tìm phần tử; explicit wait chờ MỘT điều kiện cụ thể trên phần tử',
+    'Implicit wait thay thế được explicit wait hoàn toàn'
+  ],
+  answer: 2,
+  explain: `**Tóm tắt:** Implicit wait (chờ ngầm) khai báo một lần qua {{driver.manage().timeouts().implicitlyWait(Duration.ofSeconds(10))}} rồi áp dụng cho mọi lệnh {{findElement}}; nó chỉ chờ phần tử XUẤT HIỆN. Explicit wait (chờ tường minh) dùng {{WebDriverWait}} cộng {{ExpectedConditions}} để chờ một điều kiện cụ thể (click được, visible, có text...).
+
+**Giải thích từng bước:**
+- **Implicit wait hoạt động thế nào:** Bạn đặt một khoảng thời gian tối đa; mỗi lần gọi {{findElement}} mà phần tử chưa có, Selenium lặp dò (poll) cho tới khi thấy hoặc hết giờ thì ném {{NoSuchElementException}}. Nó chỉ giải quyết bài toán "phần tử đã có trong DOM chưa", KHÔNG xử lý được "phần tử đã enable chưa", "đã hết animation chưa".
+- **Explicit wait hoạt động thế nào:** Bạn chỉ định rõ điều kiện cần chờ và áp dụng cho một phần tử/điều kiện riêng:
+~~~java
+WebDriverWait wait = new WebDriverWait(driver, Duration.ofSeconds(10));
+wait.until(ExpectedConditions.elementToBeClickable(By.id("send")));
+driver.findElement(By.id("send")).click();
+~~~
+- **Vì sao không nên trộn hai cái:** Khi vừa đặt implicit wait vừa dùng explicit wait, thời gian chờ thực tế có thể cộng dồn và khó đoán (WebDriverWait bị ảnh hưởng bởi implicit timeout), gây test chậm bất thường mà không rõ lý do. Khuyến nghị thực tế: đặt implicit wait = 0 và dùng explicit wait có kiểm soát.
+
+**Lỗi hay gặp:** Dùng {{Thread.sleep(5000)}} (chờ cứng) thay cho explicit wait - vừa chậm vừa vẫn flaky khi môi trường chậm hơn 5 giây.
+
+> Senior tip: Trong dự án thật, chuẩn hóa chỉ dùng explicit wait (hoặc web-first assertion của Playwright). Implicit wait để mặc định 0 vì nó khó kiểm soát khi kết hợp nhiều loại chờ.
+
+### Vì sao các phương án còn lại sai
+- **Đảo ngược vai trò**: Sai. Implicit mới là cái áp dụng cho mọi findElement; explicit mới là cái theo điều kiện cụ thể.
+- **Giống hệt nhau, chỉ khác tên**: Sai bản chất; chúng là hai cơ chế khác nhau cả về phạm vi lẫn khả năng.
+- **Implicit thay thế hoàn toàn explicit**: Sai. Implicit không chờ được các điều kiện như clickable/visible/text.`
+},
+{
+  id: 'qz-autotest-052',
+  topic: 'autotest',
+  q: 'Bạn cần click nút "Gửi" nhưng nút chỉ enable sau khi nhập xong (mất khoảng 1 giây). Trong Selenium 4, cách chờ đúng và ổn định nhất là gì?',
+  options: [
+    'wait.until(ExpectedConditions.elementToBeClickable(btn)); rồi btn.click() (với WebDriverWait có timeout)',
+    'Thread.sleep(2000) rồi btn.click()',
+    'btn.click() trực tiếp vì Selenium mặc định tự retry đến khi click được',
+    'Đặt driver.manage().timeouts().implicitlyWait(...) vì implicit wait xử lý được điều kiện enable'
+  ],
+  answer: 0,
+  explain: `**Tóm tắt:** Dùng {{WebDriverWait}} với {{ExpectedConditions.elementToBeClickable}}: nó chờ nút vừa visible vừa enabled (và nhận được click) trước khi trả về phần tử an toàn để click.
+
+**Giải thích từng bước:**
+- **elementToBeClickable là gì:** Một điều kiện chờ của Selenium, chỉ thỏa khi phần tử có trên DOM, hiển thị (visible) và đang bấm được (enabled). Đây đúng nhu cầu "nút chưa sẵn sàng thì đừng click".
+- **Vì sao click không tự retry:** {{element.click()}} trong Selenium KHÔNG tự lặp lại; nếu phần tử chưa enabled tại đúng thời điểm gọi, nó ném {{ElementNotInteractableException}} ngay. Trách nhiệm chờ thuộc về bạn.
+- **Ví dụ (Java):**
+~~~java
+WebDriverWait wait = new WebDriverWait(driver, Duration.ofSeconds(10));
+WebElement btn = wait.until(
+    ExpectedConditions.elementToBeClickable(By.id("send")));
+btn.click();
+~~~
+
+**Lỗi hay gặp:** Click bằng locator cũ (WebElement đã tìm trước đó) sau khi DOM đổi - dễ gặp {{StaleElementReferenceException}}; nên để {{until}} trả về phần tử mới nhất rồi mới click.
+
+> Senior tip: Chọn đúng ExpectedCondition theo tình huống: clickable (click), visibilityOf (đọc/điền), presenceOfElementLocated (chỉ cần có trong DOM). Đặt timeout hợp lý theo SLA trang, không quá dài để fail nhanh.
+
+### Vì sao các phương án còn lại sai
+- **Thread.sleep(2000)**: Chờ cứng (fixed wait) - chậm cố định, và vẫn flaky nếu thao tác mất hơn 2 giây trên máy CI chậm.
+- **click() trực tiếp tự retry**: Sai. Selenium click không tự chờ điều kiện; ném exception ngay nếu chưa bấm được.
+- **Implicit wait xử lý enable**: Sai. Implicit wait chỉ chờ phần tử xuất hiện (presence), không xét trạng thái enable/visible.`
+},
+{
+  id: 'qz-autotest-053',
+  topic: 'autotest',
+  q: 'Trong Selenium, {{PageFactory.initElements(driver, pageObject)}} kết hợp annotation {{@FindBy}} làm gì?',
+  options: [
+    'Tự chuyển mọi locator CSS sang XPath để chạy nhanh hơn',
+    'Cho phép chạy nhiều test song song trên cùng một page object',
+    'Tự động chụp screenshot toàn trang mỗi khi tìm phần tử',
+    'Tạo proxy cho các WebElement, khởi tạo phần tử theo kiểu lazy (lười): chỉ tìm khi phần tử thực sự được dùng'
+  ],
+  answer: 3,
+  explain: `**Tóm tắt:** {{PageFactory.initElements}} quét các field {{@FindBy}} trong page object và tạo proxy; phần tử thật chỉ được định vị khi bạn gọi tới nó (lazy), giúp page object gọn và bền hơn.
+
+**Giải thích từng bước:**
+- **Page Object Model (POM) là gì:** Mẫu thiết kế tách "mô tả trang" (locator + hành động) ra khỏi "kịch bản test". Mỗi trang có một class; khi UI đổi, chỉ sửa class đó thay vì hàng chục test.
+- **PageFactory làm gì:** Thay vì tự gọi {{driver.findElement}} cho từng field, bạn khai báo locator bằng annotation rồi để PageFactory khởi tạo:
+~~~java
+public class LoginPage {
+    @FindBy(id = "user") private WebElement username;
+    @FindBy(id = "pass") private WebElement password;
+
+    public LoginPage(WebDriver driver) {
+        PageFactory.initElements(driver, this); // tạo proxy cho các field
+    }
+    public void login(String u, String p) {
+        username.sendKeys(u);
+        password.sendKeys(p); // phần tử mới được định vị tại đây
+    }
+}
+~~~
+- **Lazy nghĩa là gì:** Proxy không giữ sẵn WebElement đã tìm; mỗi lần bạn gọi method trên field, nó mới đi tìm theo locator. Nhờ vậy nếu trang điều hướng làm phần tử cũ hỏng, lần dùng sau vẫn tìm lại được (giảm lỗi so với giữ WebElement đã tìm sẵn một lần).
+
+**Lỗi hay gặp:** Khởi tạo page object một lần trong {{@BeforeAll}} rồi tái dùng cho nhiều test với driver đã đổi - locator/proxy gắn với driver cũ sẽ hỏng. Nên tạo page object mới sau mỗi lần điều hướng.
+
+> Senior tip: POM + PageFactory giúp giảm trùng lặp, nhưng đừng biến page object thành "ông thần" chứa mọi logic nghiệp vụ. Page object chỉ nên bọc tương tác trang; assertion và luồng nghiệp vụ để trong test (hoặc một lớp service riêng).
+
+### Vì sao các phương án còn lại sai
+- **Chuyển CSS sang XPath**: Không có chức năng này; PageFactory chỉ khởi tạo WebElement theo locator bạn khai báo.
+- **Chạy song song**: Liên quan đến cấu hình test runner (JUnit/TestNG), không phải PageFactory.
+- **Tự chụp screenshot**: Đó là việc của thư viện report/Allure hoặc code của bạn, không phải PageFactory.`
+},
+{
+  id: 'qz-autotest-054',
+  topic: 'autotest',
+  q: 'Bạn gọi POST /users bằng RestAssured và cần lấy trường {{id}} trong response JSON để dùng cho request kế tiếp. Cách viết đúng là gì?',
+  options: [
+    'int id = response.getId(); vì RestAssured tự map response thành object User',
+    'int id = given().when().post("/users").then().extract().path("id");',
+    'Không thể lấy được giá trị từ response, bắt buộc dùng RestTemplate',
+    'int id = given().when().post("/users").body();'
+  ],
+  answer: 1,
+  explain: `**Tóm tắt:** Dùng chuỗi {{given().when().post(...).then().extract().path("id")}}: {{extract()}} lấy về đối tượng {{Response}}, còn {{path("id")}} đọc giá trị theo đường dẫn JSON (JSON path) rồi gán vào biến.
+
+**Giải thích từng bước:**
+- **given / when / then là gì:** DSL (ngôn ngữ miền hẹp - cú pháp riêng dễ đọc) của RestAssured. {{given()}} thiết lập input (body, header, query), {{when()}} mô tả hành động HTTP, {{then()}} mô tả mong đợi (assert) và có thể lấy dữ liệu ra.
+- **extract().path() làm gì:** {{then().extract()}} trả về {{Response}} để bạn không assert mà chỉ lấy dữ liệu; {{path("id")}} duyệt JSON theo khóa và trả về giá trị (RestAssured suy ra kiểu, ở đây Integer nên gán vào int được). Với JSON lồng nhau dùng {{path("data.user.id")}}.
+- **Ví dụ (Java):**
+~~~java
+int id = given()
+        .contentType(ContentType.JSON)
+        .body("{\"name\":\"An\"}")
+    .when()
+        .post("/users")
+    .then()
+        .statusCode(201)
+        .extract().path("id");   // lấy id để tái sử dụng
+~~~
+
+**Lỗi hay gặp:** Gọi {{path()}} mà không có {{extract()}} (sai chuỗi), hoặc giả định RestAssured tự populate một POJO - nó không làm điều đó nếu bạn không dùng thư viện mapping như Jackson.
+
+> Senior tip: Tách bước "tạo dữ liệu" (qua API) khỏi bước "kiểm tra UI". Dùng API để seed/test và {{extract().path()}} để lấy id; đây là cách nhanh và ổn định hơn thao tác UI.
+
+### Vì sao các phương án còn lại sai
+- **response.getId() tự map User**: Sai. RestAssured không tự sinh object theo model của bạn; bạn phải dùng {{extract().as(User.class)}} (qua Jackson) nếu muốn object.
+- **Không lấy được, phải RestTemplate**: Sai. {{extract().path()}} là cách chuẩn, tích hợp sẵn.
+- **given().when().post(...).body()**: {{body()}} trên {{RequestSpecification}} là để gửi body request, không phải đọc response; đọc response dùng {{extract().body()/path()}}.`
+},
+{
+  id: 'qz-autotest-055',
+  topic: 'autotest',
+  multi: true,
+  q: 'Trong Allure (công cụ báo cáo test), những cách nào giúp báo cáo dễ đọc và dễ chẩn đoán hơn? (Chọn 2)',
+  options: [
+    'Dùng {{@Step}} để gom các hành động thành cây bước (step) có thể mở/đóng trong báo cáo',
+    'Dùng {{@Attachment}} để đính kèm screenshot, log hoặc JSON vào kết quả test',
+    'Ghi mọi thông tin ra {{System.out.println}} vì Allure tự thu thập thành bước',
+    'Tắt hết assertion để báo cáo luôn xanh, dễ nhìn'
+  ],
+  answer: [0, 1],
+  explain: `**Tóm tắt:** {{@Step}} tổ chức test thành các bước nghiệp vụ có cấu trúc, còn {{@Attachment}} gắn bằng chứng (ảnh, log, payload) vào đúng test - hai thứ này giúp người đọc báo cáo hiểu ngay chuyện gì đã xảy ra.
+
+**Giải thích từng bước:**
+- **@Step là gì:** Đánh dấu một method là một "bước" trong luồng. Allure dựng cây bước lồng nhau, mỗi bước có trạng thái pass/fail và thời gian - nhìn vào là biết khâu nào hỏng.
+~~~java
+@Step("Đăng nhập user {user}")
+void login(String user) { /* ... */ }
+
+@Attachment(value = "Response", type = "application/json")
+String attach(String json) { return json; }
+~~~
+- **@Attachment là gì:** Đính kèm dữ liệu (screenshot khi fail, response API, log) vào test; khi đọc báo cáo không cần chạy lại vẫn thấy bối cảnh.
+- **Vì sao có giá trị:** Báo cáo thô kiểu "1 test failed" rất khó điều tra; Allure biến nó thành tài liệu có cấu trúc, nhất là khi CI chạy hàng trăm test.
+
+**Lỗi hay gặp:** Đặt tên step chung chung ("bước 1", "thao tác") - mất tác dụng; nên đặt tên nghiệp vụ rõ ràng ("Thanh toán bằng thẻ thành công").
+
+> Senior tip: Đính screenshot tự động khi fail (dùng listener/TestWatcher trong JUnit 5) và đính trace/log quan trọng. Báo cáo tốt rút ngắn thời gian điều tra fail từ hàng chục phút xuống vài phút.
+
+### Vì sao các phương án còn lại sai
+- **System.out.println thay @Step**: Allure không tự biến log stdout thành bước có cấu trúc; bạn phải dùng API của nó (@Step/@Attachment) để có cây bước và đính kèm.
+- **Tắt assertion để xanh**: Che giấu lỗi - phản tác dụng; báo cáo xanh nhưng phần mềm vẫn sai.`
+},
+{
+  id: 'qz-autotest-056',
+  topic: 'autotest',
+  multi: true,
+  q: 'Khi tích hợp test automation vào CI (GitHub Actions, GitLab CI...), practice nào giúp pipeline ổn định và đáng tin cậy hơn? (Chọn 2)',
+  options: [
+    'Chạy test trong môi trường/container sạch, cô lập và cùng cấu hình mỗi lần để tránh "chỉ fail trên máy tôi"',
+    'Tự động retry vô hạn mọi test fail để pipeline luôn xanh',
+    'Cache dependency (Maven/Gradle) và lưu lại báo cáo/artifact để debug, tránh build lại từ đầu mỗi lần',
+    'Chạy toàn bộ E2E cho mọi commit nhỏ, kể cả đổi một dòng chữ'
+  ],
+  answer: [0, 2],
+  explain: `**Tóm tắt:** Hai practice đúng là (1) môi trường cô lập, tái lập được, và (2) cache phụ thuộc cùng lưu artifact để debug - chúng làm kết quả CI nhất quán và nhanh hơn.
+
+**Giải thích từng bước:**
+- **Môi trường cô lập:** Nếu mỗi lần chạy dùng cùng container/image, cùng biến môi trường, cùng dữ liệu seed, thì fail là do code chứ không do "máy khác". Đây là nền tảng để loại bỏ flaky do môi trường.
+- **Cache + artifact:** Cache {{~/.m2}} (Maven) hay {{~/.gradle}} giúp không tải lại thư viện mỗi lần; lưu lại báo cáo (Allure/HTML), screenshot, log làm build artifact để điều tra khi fail mà không cần chạy lại.
+- **Ví dụ (ý tưởng CI):**
+~~~yaml
+steps:
+  - run: mvn -B verify         # chạy test
+  - uses: actions/upload-artifact@v4
+    if: failure()              # chỉ lưu khi fail cho đỡ tốn
+    with: { name: test-reports, path: target/ }
+~~~
+
+**Lỗi hay gặp:** Chạy E2E nặng cho mọi commit nhỏ làm pipeline chậm hàng chục phút; nên phân tầng: unit/integration cho mọi commit, E2E cho PR/định kỳ. Hoặc retry vô hạn che giấu bug thật.
+
+> Senior tip: Retry chỉ áp dụng có kiểm soát cho flake đã biết (ví dụ 1 lần) kèm cảnh báo, không phải "retry tới khi xanh". Theo dõi tỷ lệ flaky theo thời gian; CI xanh nhờ retry liên tục là dấu hiệu hệ thống test đang mất niềm tin.
+
+### Vì sao các phương án còn lại sai
+- **Retry vô hạn cho mọi test fail**: Che giấu lỗi thật, làm pipeline chậm và người ta mất tin vào màu xanh.
+- **Chạy toàn bộ E2E cho mọi commit nhỏ**: Rất chậm và tốn tài nguyên; vi phạm nguyên tắc kim tự tháp test (đẩy test nhanh/nhiều xuống dưới).`
+},
+{
+  id: 'qz-autotest-057',
+  topic: 'autotest',
+  q: 'Bạn bật chạy test song song trong JUnit 5 ({{junit.jupiter.execution.parallel.enabled=true}}). Rủi ro lớn nhất cần phòng là gì?',
+  options: [
+    'JUnit 5 không hỗ trợ chạy nhiều thread nên cấu hình vô nghĩa',
+    'Test sẽ luôn chạy nhanh hơn nên không cần lo lắng gì thêm',
+    'State dùng chung dạng static/biến toàn cục bị nhiều test truy cập đồng thời gây kết quả sai, không xác định',
+    'Chạy song song làm toàn bộ assertion bị bỏ qua'
+  ],
+  answer: 2,
+  explain: `**Tóm tắt:** Khi chạy song song, nhiều test chạy cùng lúc trên các thread khác nhau; nếu chúng chia sẻ state (static field, DB chung, file chung) mà không đồng bộ, kết quả sẽ phụ thuộc thứ tự chạy và trở nên flaky.
+
+**Giải thích từng bước:**
+- **Song song hoạt động thế nào:** JUnit 5 có thể chạy các class/method trên nhiều thread. Mặc định mỗi test method dùng một instance mới ({{PER_METHOD}}), nên field instance thường an toàn - nhưng {{static}} field và tài nguyên ngoài (DB, port, file tạm) thì KHÔNG tự cô lập.
+- **Vì sao nguy hiểm:** Ví dụ hai test cùng ghi vào một bảng rồi cùng đếm số dòng - test A thấy cả dữ liệu của test B, assertion sai. Hoặc hai test cùng chiếm một port cố định.
+- **Cách phòng (thực tế):**
+  - Tránh {{static}} mutable; nếu buộc dùng, đồng bộ hoặc dùng ThreadLocal.
+  - Cô lập dữ liệu: mỗi test một schema/transaction rollback, hoặc dùng Testcontainers với DB riêng.
+  - Cấu hình độ song song (parallelism) vừa với tài nguyên CPU/RAM.
+~~~java
+// junit-platform.properties
+junit.jupiter.execution.parallel.enabled=true
+junit.jupiter.execution.parallel.mode.default=concurrent
+~~~
+
+**Lỗi hay gặp:** Bật song song cho cả suite cũ vốn thiết kế tuần tự, phụ thuộc thứ tự - bùng nổ flaky không rõ nguyên nhân.
+
+> Senior tip: Trước khi bật parallel, làm cho từng test độc lập (không phụ thuộc thứ tự, không share mutable state). Test có I/O nặng hoặc dùng chung tài nguyên nên đánh dấu chạy riêng (resource lock) thay vì cho tất cả đại trà.
+
+### Vì sao các phương án còn lại sai
+- **JUnit 5 không hỗ trợ**: Sai. JUnit 5 hỗ trợ parallel execution chính thức qua cấu hình.
+- **Luôn nhanh hơn, không cần lo**: Sai. Nhanh hơn nhưng phải trả giá bằng yêu cầu thread-safety; bỏ qua sẽ sinh lỗi.
+- **Song song làm mất assertion**: Sai. Assertion vẫn chạy bình thường; vấn đề nằm ở state dùng chung.`
+},
+{
+  id: 'qz-autotest-058',
+  topic: 'autotest',
+  q: 'Test Selenium giữ một WebElement nút "Lưu"; sau khi bấm và danh sách tải lại, gọi {{element.click()}} bị {{StaleElementReferenceException}}. Nguyên nhân và cách xử lý đúng là gì?',
+  options: [
+    'Do biến element bị null; chỉ cần kiểm tra null trước khi click',
+    'Phần tử đã bị tách khỏi DOM (DOM bị dựng lại) nên tham chiếu cũ hết hiệu lực; cần tìm lại phần tử hoặc dùng {{ExpectedConditions.refreshed}}/{{stalenessOf}}',
+    'Do driver bị đóng; mở lại driver là hết lỗi',
+    'Do thiếu implicit wait cho thao tác click'
+  ],
+  answer: 1,
+  explain: `**Tóm tắt:** {{StaleElementReferenceException}} xảy ra khi WebElement bạn giữ trỏ tới một nút đã bị trình duyệt thay thế/dựng lại trong DOM; tham chiếu cũ không còn hợp lệ, phải định vị lại.
+
+**Giải thích từng bước:**
+- **"Stale" (cũ/thay) nghĩa là gì:** Khi bạn {{findElement}} lần đầu, Selenium trả về một con trỏ tới đúng phần tử đó trong DOM. Nếu trang render lại (AJAX cập nhật, điều hướng, đóng/mở modal), DOM tạo phần tử mới và phần tử cũ bị "detach" (tách rời) - con trỏ cũ trỏ vào hư không.
+- **Vì sao xảy ra:** Rất phổ biến với ứng dụng đơn trang (SPA) - React/Angular thay thế node khi state đổi. Test giữ WebElement qua nhiều bước dễ dính.
+- **Cách sửa đúng:**
+~~~java
+// Cách 1: tìm lại ngay trước khi dùng
+By saveBtn = By.id("save");
+wait.until(ExpectedConditions.elementToBeClickable(saveBtn)).click();
+
+// Cách 2: chờ cho tới khi phần tử cũ "tỉnh lại" (refreshed)
+wait.until(ExpectedConditions.refreshed(
+    ExpectedConditions.stalenessOf(oldElement)));
+~~~
+- **Nguyên tắc:** Đừng giữ WebElement qua các thao tác có thể làm reload DOM; dùng {{By}} locator và tìm lại, hoặc dùng framework tự retry (Playwright locator giải quyết gốc vấn đề này).
+
+**Lỗi hay gặp:** Bọc {{try/catch}} rồi bỏ qua exception để "test khỏi đỏ" - chỉ giấu bug; hoặc chèn {{Thread.sleep}} để né timing thay vì định vị lại đúng cách.
+
+> Senior tip: Với ứng dụng động, ưu tiên locator khai báo theo {{By}} và để framework tự resolve mỗi lần dùng. Nếu buộc giữ WebElement (ví dụ thao tác trong danh sách lớn), hãy thao tác trọn trong một "lượt" không có render lại xen giữa.
+
+### Vì sao các phương án còn lại sai
+- **Biến null, kiểm tra null**: Sai bản chất; phần tử không null, nó chỉ trỏ tới node đã bị thay.
+- **Driver bị đóng**: Nếu driver đóng sẽ là {{NoSuchSessionException}}/ WebDriverException khác, không phải stale element.
+- **Thiếu implicit wait**: Stale element không liên quan thời gian chờ; phần tử đã từng tồn tại nhưng bị thay.`
+},
+{
+  id: 'qz-autotest-059',
+  topic: 'autotest',
+  q: 'Bạn muốn chạy bộ test Selenium trên nhiều máy và nhiều trình duyệt khác nhau song song (một máy Chrome, một máy Firefox). Phát biểu nào đúng?',
+  options: [
+    'Selenium chỉ chạy được một trình duyệt trên một máy, không thể phân tán',
+    'Phải viết lại toàn bộ test bằng Playwright mới chạy song song được',
+    'Selenium Grid chỉ dùng để chụp screenshot',
+    'Dùng Selenium Grid: một hub điều phối, các node (mỗi máy/trình duyệt) thực thi; test tạo {{RemoteWebDriver}} trỏ tới endpoint của hub kèm capability mong muốn'
+  ],
+  answer: 3,
+  explain: `**Tóm tắt:** Selenium Grid phân tán việc chạy test: hub (trung tâm) nhận yêu cầu, node (các máy có trình duyệt) thực thi; client dùng {{RemoteWebDriver}} chỉ tới URL hub và khai báo browser/OS qua capabilities.
+
+**Giải thích từng bước:**
+- **Vì sao cần Grid:** Một bộ test lớn chạy tuần tự trên một máy rất lâu; Grid chia tải ra nhiều máy/trình duyệt (ma trận) để chạy song song và kiểm thử đa nền tảng.
+- **Kiến trúc:** Hub giữ danh sách node và điều phối phiên; mỗi node đăng ký capability nó có (ví dụ browserName=chrome, platform=WINDOWS). Client xin một phiên khớp capability, Grid cấp cho node phù hợp.
+- **Ví dụ (Java):**
+~~~java
+ChromeOptions opts = new ChromeOptions();
+WebDriver driver = new RemoteWebDriver(
+    new URL("http://grid-hub:4444/wd/hub"), opts);
+// driver thực thi trên node từ xa, code test không đổi nhiều
+~~~
+- **Lưu ý Selenium 4:** Grid có kiến trúc mới (Router, Distributor, Session Map, Event Bus) nhưng khái niệm hub/node và RemoteWebDriver vẫn là cách dùng phổ biến để nói về phân tán.
+
+**Lỗi hay gặp:** Quên rằng test trên Grid chậm hơn do độ trễ mạng; screenshot/trace hữu ích để chẩn đoán. Hoặc thiết kế test phụ thuộc máy local (đường dẫn file cứng, port cố định) sẽ hỏng trên node khác.
+
+> Senior tip: Với CI, kết hợp containerize node theo trình duyệt cần test và chạy song song theo ma trận (browser x OS). Test phải độc lập máy: không giả định localhost, không hardcode đường dẫn tuyệt đối.
+
+### Vì sao các phương án còn lại sai
+- **Chỉ một trình duyệt, không phân tán**: Sai; Grid sinh ra chính để phân tán đa trình duyệt/đa máy.
+- **Phải viết lại bằng Playwright**: Sai. Playwright có cơ chế riêng để song song, nhưng Selenium hoàn toàn phân tán được bằng Grid.
+- **Grid chỉ chụp screenshot**: Sai; Grid điều phối việc chạy test trên nhiều node, không phải công cụ chụp ảnh.`
+},
+{
+  id: 'qz-autotest-060',
+  topic: 'autotest',
+  multi: true,
+  q: 'Trong RestAssured, những phát biểu nào đúng? (Chọn 2)',
+  options: [
+    '{{matchesJsonSchema(...)}} dùng để xác minh body response khớp một JSON Schema cho trước',
+    'RestAssured chỉ gọi được HTTP GET, không gọi được POST/PUT/DELETE',
+    'Có thể dùng Hamcrest matcher như {{equalTo}}/{{hasItem}} trong {{then().body(...)}} để assert nội dung',
+    'RestAssured là công cụ chạy test giao diện browser E2E'
+  ],
+  answer: [0, 2],
+  explain: `**Tóm tắt:** RestAssured hỗ trợ xác minh cấu trúc bằng {{matchesJsonSchema}} (đối chiếu JSON Schema) và assert giá trị bằng Hamcrest matcher trong {{then().body(...)}} - rất mạnh cho kiểm thử API.
+
+**Giải thích từng bước:**
+- **matchesJsonSchema là gì:** JSON Schema là "khuôn mẫu" mô tả cấu trúc và kiểu dữ liệu mà response phải theo. {{then().body(matchesJsonSchema(...))}} kiểm tra toàn bộ response có đúng khuôn không - hữu ích khi bạn cần đảm bảo contract ổn định.
+- **Hamcrest matcher là gì:** Bộ "mô tả điều kiện" như {{equalTo(5)}}, {{hasItem("A")}}, {{greaterThan(0)}}; ghép vào {{body("data[0].id", equalTo(5))}} để assert một trường, hoặc {{body("tags", hasItem("vip"))}} cho mảng.
+- **Ví dụ (Java):**
+~~~java
+given().when().get("/users/1")
+    .then().statusCode(200)
+        .body("id", equalTo(1))
+        .body("roles", hasItem("ADMIN"))
+        .body(matchesJsonSchema(new ClassPathResource("user-schema.json")));
+~~~
+- **Vì sao mạnh:** Kiểm tra cả status, từng trường lẫn cấu trúc tổng thể chỉ bằng DSL dễ đọc, thay vì tự parse JSON thủ công.
+
+**Lỗi hay gặp:** Dùng JsonPath sai cú pháp ({{data[0].id}} vs {{data.id}}) làm matcher chạy trên giá trị null; nên in response ra log khi assert fail để dò.
+
+> Senior tip: Dùng JSON Schema validation cho các API contract quan trọng để bắt sớm thay đổi phá vỡ client; kết hợp Hamcrest cho từng trường nghiệp vụ. Tách file schema ra resources để tái dùng.
+
+### Vì sao các phương án còn lại sai
+- **Chỉ GET, không POST/PUT**: Sai. RestAssured hỗ trợ đủ method ({{get/post/put/patch/delete}}).
+- **Là công cụ chạy browser E2E**: Sai. Đó là Selenium/Playwright; RestAssured chuyên kiểm thử API REST.`
+},
 );
