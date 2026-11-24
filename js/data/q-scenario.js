@@ -11399,6 +11399,188 @@ Với MES 24/7 tôi dùng blue-green. Migration theo expand-contract: add cột 
 > Senior tip: Deploy và release là hai sự kiện khác nhau. Expand-contract cho phép deploy code mới mà không break schema cũ.`,
   follow: ['Làm sao rollback khi đã backfill xong?', 'Feature flag vs blue-green khác nhau thế nào?', 'Khi nào dùng canary thay blue-green?'],
   tags: ['blue-green', 'expand-contract', 'migration', 'zero-downtime', 'flyway', 'mes', 'deployment']
-}
+},
+{
+  id: 'scenario-185',
+  topic: 'scenario',
+  level: 'senior',
+  q: 'Bảng orders 40 triệu dòng trong production bị xoá nhầm lúc 15:00 bằng một lệnh SQL thiếu điều kiện WHERE (ví dụ DELETE hoặc DROP TABLE). Bạn xử lý thế nào, các bước khôi phục bằng PITR ra sao, và giao tiếp như thế nào trong suốt sự cố?',
+  a: `**Tóm tắt:** Ngừng ngay mọi ghi vào database, xác định thời điểm lệnh xoá chạy, sau đó dùng point-in-time recovery (PITR) để khôi phục database về trạng thái ngay trước lệnh xoá bằng base backup + WAL archive, kiểm chứng dữ liệu rồi chuyển traffic, đồng thời thông báo rõ ràng cho các bên liên quan trong suốt sự cố.
 
+### Nguyên nhân và TÌM HIỂU
+- Lỗi con người: chạy DELETE hoặc DROP TABLE thiếu WHERE clause trên production thay vì staging.
+- Không có soft-delete hoặc flashback, dữ liệu bị mất vĩnh viễn nếu không có backup và WAL archive.
+- Vì sao phải dừng write ngay: ghi mới sau thời điểm muốn khôi phục sẽ làm phức tạp việc quay lại đúng thời điểm trước lỗi.
+
+### Cơ chế PITR (PostgreSQL)
+- Base backup: {{pg_basebackup}} lấy snapshot toàn bộ database cluster tại thời điểm T0.
+- WAL archive: {{archive_command}} lưu mỗi đoạn WAL vào lưu trữ ngoài (S3/NFS) liên tục, cho phép replay lại từng giao dịch.
+- Khôi phục: sao chép base backup về instance riêng, cấu hình {{restore_command}}, đặt {{recovery_target_time}} ngay trước lệnh xoá (ví dụ 14:59:58), đặt {{recovery_target_action}} = 'promote'.
+- PostgreSQL áp dụng WAL từ T0 đến thời điểm mục tiêu; dữ liệu trước lệnh xoá được giữ nguyên, lệnh xoá và những gì sau không được áp dụng.
+- Không restore thẳng vào production đang chạy; restore ra instance riêng, verify, rồi switch connection string.
+
+### Các bước cụ thể
+1. Dừng ứng dụng ghi, đánh dấu incident, thông báo on-call và PM.
+2. Xác định LSN/thời điểm của lệnh xoá qua log database và {{pg_stat_activity}}.
+3. Lấy base backup mới nhất và WAL archive, sao chép về server khôi phục.
+4. Tạo file {{recovery.signal}}, cấu hình postgresql.conf, khởi động PostgreSQL.
+5. PostgreSQL replay WAL đến 14:59:58 rồi promote instance.
+6. Kiểm chứng: COUNT, checksum, so sánh dữ liệu quan trọng (số đơn hàng, tổng tiền).
+7. Chuyển traffic sang instance khôi phục (repoint connection string hoặc failover).
+8. Ghi lesson learned, thêm rào cản: yêu cầu WHERE clause cho DELETE trên production, bật soft-delete, giới hạn quyền DROP TABLE.
+
+### Code: cấu hình khôi phục (PostgreSQL)
+~~~sql
+-- Trong postgresql.conf của instance khôi phục
+restore_command = 'cp /mnt/wal_archive/%f %p'
+recovery_target_time = '2026-11-24 14:59:58'
+recovery_target_action = 'promote'
+~~~
+~~~bash
+pg_basebackup -D /var/lib/pgsql/restore -Fp -Xs -P -h primary
+# sau đó tạo recovery.signal và khởi động lại instance
+~~~
+
+### Trade-off & pitfall
+| Phương án | Thời gian khôi phục | Mất dữ liệu | Phức tạp |
+|---|---|---|---|
+| PITR tới trước 15:00 | nhanh (phụ thuộc base backup) | nhỏ (từ thời điểm mục tiêu đến giờ lỗi) | cần WAL archive đã bật |
+| Restore từ backup đêm hôm trước | chậm hơn | tối đa 24 giờ dữ liệu | đơn giản, không cần WAL |
+| Không có backup | không khôi phục được | 100% dữ liệu | không có cách |
+
+### Pitfall production
+- PITR chỉ hữu ích khi WAL archive đã được bật trước sự cố và restore đã được kiểm tra thường xuyên.
+- recovery_target_time phải đặt chính xác trước lệnh xoá; đặt sai sẽ khôi phục trạng thái sau khi đã mất dữ liệu.
+- Không kiểm chứng dữ liệu trước khi chuyển traffic có thể đưa dữ liệu sai vào production.
+
+### Ví dụ đời thực
+Bảng orders 40 triệu dòng (khoảng 8 GB). Lúc 15:00, một thành viên dev chạy {{DELETE FROM orders}} thiếu điều kiện trên production thay vì staging. Base backup lúc 02:00 hôm nay, WAL archive lưu mỗi 16 MB. Khôi phục PITR đến 14:59:58 mất khoảng 8 phút. Kiểm chứng thấy 39,8 triệu dòng (200.000 dòng sau 14:59:58 đã bị mất, sau đó nhập lại từ log giao dịch). Downtime tổng cộng 30 phút. Nếu không có WAL archive, chỉ có backup đêm hôm trước → mất đến 13 giờ dữ liệu.
+
+### Trả lời mẫu khi phỏng vấn
+"Đầu tiên tôi dừng mọi ghi vào database và đánh dấu incident để không làm thêm hư. Sau đó xác định chính xác thời điểm lệnh xoá chạy từ log và pg_stat_activity. Tôi dùng point-in-time recovery: lấy base backup mới nhất, áp dụng WAL archive qua restore_command, thiết lập recovery_target_time ngay trước lệnh xoá (14:59:58) trên một instance riêng, rồi kiểm chứng dữ liệu bằng COUNT và checksum. Khi xác nhận đúng, tôi chuyển connection string sang instance đã khôi phục. Tôi cũng thông báo on-call, PM và compliance trong suốt quá trình. Sau sự cố tôi thêm rào cản: yêu cầu WHERE clause cho DELETE trên production, bật soft-delete, giới hạn quyền DROP TABLE, và định kỳ kiểm tra restore PITR."
+
+> Senior tip: PITR chỉ hữu ích khi WAL archive đã được bật và restore đã được kiểm tra thường xuyên. Một backup chưa thử restore là chưa có backup.`,
+  follow: [
+    'Nếu không có WAL archive, chỉ có base backup đêm hôm trước, bạn làm gì?',
+    'Khác biệt giữa PITR của PostgreSQL và flashback / binlog point-in-time của MySQL là gì?'
+  ],
+  tags: ['PITR', 'postgresql', 'disaster-recovery', 'backup', 'incident']
+},
+{
+  id: 'scenario-186',
+  topic: 'scenario',
+  level: 'senior',
+  q: 'Sau khi deploy bản mới, CPU của service tăng từ 30% lên gần 90% trên mọi pod, p99 tăng từ 200ms lên 700ms, trong khi traffic không đổi. Bạn điều tra bằng JFR và async-profiler thế nào?',
+  a: `**Tóm tắt:** CPU tăng sau deploy không phải do traffic; đầu tiên phân biệt app code đốt CPU, GC đốt CPU, hay container bị throttling. Dùng JFR thu thập mẫu việc thực thi (ExecutionSample) và sự kiện GC/safepoint, cùng async-profiler flame graph, để xác định method nóng; sau đó so sánh với bản trước deploy và sửa hoặc rollback.
+
+### Phân loại nguyên nhân sau deploy
+1. **Code mới đốt CPU hơn**: vòng lặp nặng, parse JSON, regex, copy mảng lớn trên mỗi request.
+2. **Task nền mới**: {{@Scheduled}} hoặc ExecutorService chạy thường xuyên, quét toàn bộ bảng.
+3. **GC chạy nhiều hơn**: cấu hình heap/GC thay đổi hoặc rò rỉ bộ nhớ làm GC thread chiếm CPU.
+4. **Container bị throttling**: CPU limit bị giảm xuống dưới nhu cầu, latency tăng như thể CPU cao.
+
+### Điều tra bằng JFR
+- Bắt JFR trên pod đang xảy sự cố: {{jcmd <pid> JFR.start name=cpu-profile duration=60s filename=/tmp/cpu.jfr}}
+- JFR ghi sự kiện {{jdk.ExecutionSample}} (method nào đang chạy), {{jdk.GC*}}, {{jdk.Safepoint}}.
+- Xuất ra xem: {{jfr print /tmp/cpu.jfr --events jdk.ExecutionSample}} (hoặc dùng JMC/JFR Viewer).
+- So sánh JFR trước/sau deploy: method mới xuất hiện và chiếm phần lớn sample.
+
+### Điều tra bằng async-profiler
+- Flame graph CPU: {{./profiler.sh -e cpu -d 30 -f /tmp/cpu.html <pid>}}
+- Cột rộng = method chiếm nhiều CPU. Nếu thấy java.lang.ref.Reference hay jdk.internal... là GC; nếu thấy method nghiệp vụ mới là code nóng.
+
+### Ví dụ code: task nền mới quét toàn bộ
+~~~java
+// SAI: chạy mỗi phút, load toàn bộ 5 triệu đơn hàng vào bộ nhớ
+@Scheduled(cron = "0 * * * * *")
+public void cleanup() {
+  List<Order> all = orderRepository.findAll(); // memory + CPU đột ngột
+  all.stream().filter(o -> o.isExpired()).forEach(this::expire);
+}
+// ĐÚNG: chỉ lấy đơn hàng cần xử lý, dùng query với điều kiện + batch
+@Scheduled(cron = "0 * * * * *")
+public void cleanup() {
+  List<Order> expired = orderRepository.findExpiredBefore(LocalDateTime.now(), PageRequest.of(0, 1000));
+  expired.forEach(this::expire);
+}
+~~~
+
+### Trade-off & pitfall
+| Công cụ | Ưu điểm | Nhược điểm |
+|---|---|---|
+| JFR | có sẵn JDK 17, overhead thấp, lấy cả GC/safepoint | cần biết đọc JFR hoặc dùng JMC |
+| async-profiler | flame graph trực quan, dễ thấy method nóng | chỉ lấy sample CPU, không thấy GC chi tiết |
+| Thread dump | nhanh, không cài thêm | chỉ chụp một thời điểm, cần nhiều lần |
+
+- Không cho restart ngay trước khi có bằng chứng; restart làm mất trạng thái và khó chẩn đoán.
+- JFR/async-profiler cần quyền truy cập JVM (đôi khi bị chặn bằng {{-XX:+DisableAttachOption}}).
+- Phải kiểm tra CPU limit/throttling trước khi kết luận là code nóng.
+
+### Ví dụ đời thực
+Service Java 17 trên Kubernetes, 6 pod, CPU bình thường 350m (0,35 core). Sau deploy lúc 10:00 CPU nhảy lên 980m (limit 1 vCPU), p99 từ 180ms lên 700ms, traffic vẫn 1.200 req/s. async-profiler flame graph cho thấy 42% CPU ở method {{OrderCleanupTask.cleanup()}} mới được thêm trong deploy; thread dump xác nhận nhiều thread http-nio đang chờ kết quả của task này. Sửa: thay {{findAll()}} bằng query phân trang có điều kiện, giới hạn 1.000 đơn/lần, chạy sau giờ thấp điểm. Sau sửa lúc 20:00: CPU về 360m, p99 190ms. Thêm cảnh báo {{container_cpu_cfs_throttled_periods_total > 0,2}} trong 5 phút.
+
+### Trả lời mẫu khi phỏng vấn
+"Traffic không đổi nên tôi không nghĩ là tăng tải; tôi tìm chỗ đốt CPU hơn sau deploy. Trước hết kiểm tra container bị throttling hay không bằng metric CPU limit. Sau đó tôi chạy JFR lấy mẫu việc thực thi và sự kiện GC trong 60 giây, đồng thời async-profiler để xem flame graph. Nếu flame graph chỉ method nghiệp vụ mới chiếm phần lớn, đó là code nóng; nếu chỉ GC thread thì là cấu hình heap/GC. Tôi so sánh với bản trước deploy, sửa hoặc rollback, rồi thêm cảnh báo throttling. Trong một sự cố, task nền mới quét toàn bộ bảng mỗi phút làm CPU tăng gấp ba; tôi đổi thành query có điều kiện và chạy batch, CPU về bình thường."
+
+> Senior tip: CPU 100% trên dashboard có thể là 100% của **limit 1 vCPU**, chứ không phải node hết CPU; lúc đó node vẫn idle nhưng pod bị kernel bóp, latency tăng như thể app bị treo. Luôn kiểm tra throttling trước khi tối ưu code.`,
+  follow: [
+    'JFR và async-profiler khác nhau thế nào, khi nào dùng cái nào?',
+    'Nếu không cài được profiler trên production, bạn dùng công cụ nào để tìm method nóng?'
+  ],
+  tags: ['CPU', 'performance', 'JFR', 'async-profiler', 'JVM', 'Kubernetes']
+},
+{
+  id: 'scenario-187',
+  topic: 'scenario',
+  level: 'lead',
+  q: 'Đối tác báo nhận webhook từ hệ thống của bạn cho cùng một giao dịch lên đến 3 lần (cùng mã sự kiện). Bạn tìm nguyên nhân và sửa thế nào để không gửi trùng?',
+  a: `**Tóm tắt:** Gửi webhook mặc định là at-least-once: publisher retry khi timeout/5xx, nên đối tác có thể nhận cùng một sự kiện nhiều lần. Nguyên nhân thường là retry không có idempotency key hoặc timeout quá ngắn khiến publisher nghĩ gửi thất bại. Sửa bằng gắn idempotency key vào mỗi sự kiện, cho đối tác deduplication, và thiết kế retry có kiểm soát.
+
+### Nguyên nhân gửi trùng
+- HTTP client retry tự động khi partner trả 5xx hoặc timeout (không nhận được phản hồi kịp).
+- Message queue (Kafka/SQS) lưu lại và gửi lại nếu không có ack thành công.
+- Không gắn mã sự kiện duy nhất (idempotency key) nên đối tác không biết đã nhận.
+- Timeout chậm hơn thời gian chờ của publisher → gửi lại trước khi nhận được 200 OK.
+
+### Giải pháp
+- **Idempotency key**: mỗi webhook kèm mã sự kiện duy nhất (event_id), partner lưu danh sách event_id đã xử lý, bỏ qua nếu trùng.
+- **Deduplication phía đối tác**: table processed_events (event_id, thời gian, trạng thái), kiểm tra trong cùng transaction với nghiệp vụ.
+- **Retry có kiểm soát**: giới hạn số lần retry (ví dụ 3–5 lần), backoff tăng dần (exponential backoff + jitter), không retry vô hạn.
+- **Timeout phù hợp**: set timeout HTTP ngắn (ví dụ 5 giây), partner trả 200 OK ngay khi nhận (không chờ xử lý xong).
+
+### Sơ đồ sequence webhook gửi trùng
+~~~seq
+title: Gửi webhook và đối tác nhận trùng
+actors: Hệ thống chúng ta | Đối tác
+Hệ thống chúng ta -> Đối tác: POST webhook event E1
+Đối tác --> Hệ thống chúng ta: 200 OK (mất trên đường)
+Hệ thống chúng ta -> Đối tác: POST webhook event E1 retry
+Đối tác --> Hệ thống chúng ta: 200 OK
+Đối tác -> Đối tác: dedup event_id E1, bỏ qua trùng
+~~~
+
+### Trade-off & pitfall
+| Phương án | Khi nào dùng | Rủi ro |
+|---|---|---|
+| Idempotency key + dedup | luôn cần cho webhook | đối tác phải lưu và kiểm tra event_id |
+| Giới hạn retry | tránh spam đối tác | có thể bỏ lỡ event nếu partner down lâu |
+| Partner trả 200 ngay khi nhận | giảm retry không cần thiết | partner phải xử lý async sau đó |
+
+- Không bao giờ retry vô hạn mà không có backoff; dễ gây quá tải đối tác.
+- event_id phải duy nhất toàn hệ thống (UUID), không dùng mã giao dịch dễ trùng.
+- Deduplication table cần TTL/xoá cũ để không phát triển vô hạn.
+
+### Ví dụ đời thực
+Hệ thống thanh toán gửi webhook thanh toán thành công cho đối tác đối soát. Lúc cao điểm, đối tác trả 500 do quá tải, HTTP client của chúng ta retry 3 lần, đối tác nhận cùng event_id E1 ba lần. Trước khi có dedup, đối tác cập nhật trạng thái giao dịch 3 lần, gây sai sót trong báo cáo. Sau khi thêm idempotency key vào header {{Idempotency-Key: E1}} và đối tác lưu {{processed_events}} trong cùng transaction, lần thứ hai và thứ ba bị bỏ qua, giao dịch chỉ được cập nhật 1 lần. Số lần gọi trùng giảm từ 15% xuống dưới 0,1%.
+
+### Trả lời mẫu khi phỏng vấn
+"Gửi webhook mặc định là at-least-once, nên nhận trùng là hiện tượng bình thường khi có retry. Nguyên nhân thường là HTTP client hoặc message queue gửi lại sau khi không nhận được phản hồi kịp, kèm theo không có mã sự kiện duy nhất để đối tác deduplication. Tôi sửa bằng gắn idempotency key (UUID) vào mỗi webhook, yêu cầu đối tác lưu event_id đã xử lý trong cùng transaction với nghiệp vụ và bỏ qua trùng. Đồng thời giới hạn số lần retry (3–5 lần) với backoff tăng dần và jitter, đặt timeout HTTP ngắn và yêu cầu đối tác trả 200 OK ngay khi nhận để tránh retry không cần thiết. Table deduplication cần TTL để không phát triển vô hạn."
+
+> Senior tip: Idempotency key phải do **giao dịch tạo ra** (ví dụ event_id của giao dịch thanh toán), không phải do lần gửi tạo ra, nếu không mỗi retry lại sinh key mới và deduplication mất ý nghĩa.`,
+  follow: [
+    'Idempotency key nên do ai tạo: hệ thống gửi hay hệ thống nhận?',
+    'Deduplication table nên lưu bao lâu và làm sao xoá dữ liệu cũ?'
+  ],
+  tags: ['webhook', 'idempotency', 'retry', 'deduplication', 'event-driven']
+}
 );
