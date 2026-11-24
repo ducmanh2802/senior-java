@@ -9739,4 +9739,118 @@ Junior mới 10 tháng kinh nghiệm làm module thanh toán. Viết code chậm
   ],
   tags: ['mentoring', 'junior', 'pair-programming', 'checklist', 'leadership', 'STAR'],
 },
+{
+  id: 'testing-066',
+  topic: 'testing',
+  level: 'senior',
+  q: 'Bạn thiết kế chiến lược test cho hệ thống chuyển tiền (unit, integration, contract, E2E): tỉ lệ và thứ tự chạy như thế nào?',
+  a: `**Tóm tắt:** Áp dụng kim tự tháp test: nhiều unit test nhanh kiểm tra logic tính tiền/validate, integration test kiểm tra DB + Kafka, contract test giữa các service, và rất ít E2E chạy nightly; thứ tự từ dưới lên để phát hiện lỗi sớm và rẻ.
+
+### Kim tự tháp test là gì
+Test cũng có chi phí. Unit test chạy milliseconds, E2E chạy phút và flaky. Kim tự tháp: đáy rộng (unit) → giữa (integration/contract) → đỉnh hẹp (E2E).
+
+### Tỉ lệ gợi ý cho chuyển tiền
+- Unit ~70%: tính phí, rounding, validate số dư, idempotency key logic.
+- Integration ~20%: repository + DB thật (Testcontainers), Kafka producer/consumer.
+- Contract ~5%: giữa payment service và fraud service.
+- E2E ~5%: happy path + 1-2 case lỗi chạy nightly.
+
+### Thứ tự chạy trong CI
+1. Unit (PR) — fail nhanh.
+2. Integration + contract (PR, parallel).
+3. E2E (merge/main, nightly).
+
+### Ví dụ đời thực
+Hệ thống chuyển tiền xử lý 2 triệu giao dịch/ngày. Ban đầu 400 E2E chạy mỗi PR mất 45 phút, flaky 15%. Chuyển sang kim tự tháp: 1800 unit (2 phút), 120 integration (8 phút), 8 contract (3 phút), 12 E2E nightly. PR feedback còn 10 phút, flaky giảm xuống 2%.
+
+> Senior tip: E2E test cho chuyển tiền chỉ nên kiểm tra happy path và 1 case lỗi quan trọng; mọi edge case đưa xuống unit/integration để chạy nhanh và ổn định.`,
+  follow: [
+    'Nếu budget CI hạn chế, bạn bỏ loại test nào đầu tiên?',
+    'Làm sao giữ contract test không bị outdated khi API thay đổi?',
+    'E2E flaky thì xử lý thế nào: retry hay quarantine?'
+  ],
+  tags: ['testing', 'test-pyramid', 'integration', 'contract', 'E2E', 'CI'],
+},
+{
+  id: 'testing-067',
+  topic: 'testing',
+  level: 'senior',
+  q: 'Làm sao test idempotency và retry của luồng chuyển tiền bằng WireMock giả lỗi?',
+  a: `**Tóm tắt:** Dùng WireMock để giả lập lỗi mạng/5xx/timeout theo kịch bản, gửi cùng idempotency key nhiều lần, kiểm tra kết quả cuối cùng chỉ có 1 giao dịch và số tiền đúng; retry phải exponential backoff + jitter và dừng sau N lần.
+
+### Cơ chế idempotency
+Client gửi header {{Idempotency-Key}}. Server lưu key + kết quả. Nếu retry cùng key, server trả kết quả đã lưu mà không xử lý lại.
+
+### WireMock scenario
+- Request 1: trả 503 (giả lỗi).
+- Request 2: trả timeout.
+- Request 3: trả 200 OK.
+
+Test: gửi 3 request cùng key, assert DB chỉ có 1 record, tổng tiền chỉ trừ 1 lần.
+
+### Code mẫu
+~~~java
+stubFor(post(urlEqualTo("/transfer"))
+  .inScenario("retry")
+  .whenScenarioStateIs(STARTED)
+  .willSetStateTo("first-failed")
+  .willReturn(aResponse().withStatus(503)));
+stubFor(post(urlEqualTo("/transfer"))
+  .inScenario("retry")
+  .whenScenarioStateIs("first-failed")
+  .willReturn(aResponse().withStatus(200).withBody("{\"ok\":true}")));
+~~~
+
+### Pitfall production
+- Retry không idempotency → trừ tiền 2 lần.
+- Backoff quá ngắn → DDOS chính mình.
+- Không có ceiling retry → retry vô hạn khi service chết.
+
+### Ví dụ đời thực
+Payment gateway partner trả 502 ngẫu nhiên 0.3% request. Trước fix: retry 3 lần không jitter → traffic spike. Sau: idempotency key + exponential backoff với jitter, max 5 lần, alert nếu fail. Tỉ lệ thành công tăng từ 99.4% lên 99.97%.
+
+> Senior tip: idempotency key phải có TTL (ví dụ 24h) và lưu trong DB với unique constraint, không chỉ in-memory, vì retry có thể đến sau restart.`,
+  follow: [
+    'Idempotency key nên do client hay server tạo?',
+    'Làm sao xử lý retry khi đã trừ tiền nhưng response bị mất (partial failure)?',
+    'Outbox pattern có liên quan thế nào đến idempotency?'
+  ],
+  tags: ['idempotency', 'retry', 'wiremock', 'testing', 'payment', 'backoff'],
+},
+{
+  id: 'testing-068',
+  topic: 'testing',
+  level: 'lead',
+  q: 'Mutation testing (PIT) có đáng chạy không và đọc kết quả thế nào?',
+  a: `**Tóm tắt:** PIT thay đổi code (mutation) và kiểm tra test có fail không; nếu test vẫn pass → test yếu. Đáng chạy cho logic quan trọng (tính tiền, phân quyền) trong nightly, không chạy mọi PR vì chậm.
+
+### PIT hoạt động thế nào
+PIT tạo các bản sao code với thay đổi nhỏ: đổi {{+}} thành {{-}}, đổi {{>}} thành {{>=}}, xóa điều kiện. Chạy test suite trên mỗi bản. Nếu test pass → mutant "sống" → test không bắt được lỗi.
+
+### Kết quả đọc thế nào
+- Mutation score = killed / total mutants. Mục tiêu ≥ 80% cho module critical.
+- Survived mutant: xem dòng code, viết test bổ sung hoặc xóa code chết.
+- Equivalent mutant: thay đổi không ảnh hưởng hành vi (false positive) — ignore.
+
+### Khi nào đáng chạy
+- Logic tính tiền, phân quyền, state machine: đáng.
+- DTO, getter/setter, config: không đáng.
+- Chạy nightly hoặc pre-release, không mỗi PR (chậm).
+
+### Pitfall
+- Mutation score 100% không có nghĩa code đúng, chỉ nghĩa test bắt được thay đổi.
+- Quá nhiều survived mutant → noise, team bỏ qua.
+- Equivalent mutant nhiều → tuning threshold.
+
+### Ví dụ đời thực
+Module tính phí chuyển tiền coverage 95% nhưng PIT score 62%. Phát hiện 12 survived mutant: test không kiểm tra rounding mode và boundary số dư. Bổ sung 8 test → score 89%, và phát hiện 1 bug thật: khi số dư đúng bằng phí, code không reject. Fix trước release.
+
+> Senior tip: dùng PIT như công cụ review chất lượng test, không phải metric KPI; mục tiêu là tìm lỗ hổng test, không phải đạt số.`,
+  follow: [
+    'PIT khác code coverage ở điểm nào cơ bản?',
+    'Làm sao giảm thời gian chạy PIT trong CI?',
+    'Equivalent mutant là gì và xử lý thế nào?'
+  ],
+  tags: ['mutation-testing', 'PIT', 'test-quality', 'coverage', 'lead'],
+},
 );
