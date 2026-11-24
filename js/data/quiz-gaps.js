@@ -2885,4 +2885,210 @@ Format: minute hour day-of-month month day-of-week. "0 2 * * 1-5" = phút 0, gi�
 > Senior tip: log timezone và dùng UTC nhất quán để tránh lệch giờ.`
 }
 
+,
+{
+  id: 'qz-frontend-033',
+  topic: 'frontend',
+  q: 'Trong Vue 3, một ref tên {{count}} được khai báo trong <script setup>. Trong template, để hiển thị giá trị, cú pháp đúng là gì?',
+  options: [
+    '{{count}} (không cần .value)',
+    '{{count.value}}',
+    '{{count.getValue()}}',
+    '{{ref(count)}}'
+  ],
+  answer: 0,
+  explain: `**Đáp án đúng: {{count}} (không cần .value).** Trong <script setup>, ref trả về một đối tượng có thuộc tính .value. Khi dùng trong template, Vue tự động unwrap (bỏ bọc) ref cấp cao nhất, nên viết {{count}} là đủ. Trong script (JavaScript), bạn phải dùng count.value để đọc/ghi. Nếu viết count.value trong template, Vue sẽ tìm thuộc tính value của đối tượng đã unwrap, thường không tồn tại → hiển thị rỗng hoặc undefined.
+
+### Vì sao các phương án còn lại sai
+- **count.value trong template**: template đã unwrap, .value không còn là thuộc tính cần truy cập.
+- **getValue()**: ref không có method getValue; đây là API của Java Atomic (giống AtomicReference.get()).
+- **ref(count)**: ref() là hàm tạo ref, không phải cách đọc giá trị.
+
+> Senior tip: quy tắc: script dùng .value, template không. Khi truyền ref vào hàm hoặc vào component con, hãy dùng toRefs/toRef để giữ reactivity.`
+},
+{
+  id: 'qz-frontend-034',
+  topic: 'frontend',
+  q: 'Trong Vue 3, khi nào nên dùng {{watch}} thay vì {{watchEffect}}?',
+  options: [
+    'Khi muốn chạy tác vụ phụ ngay lập tức và tự động theo dõi mọi phụ thuộc được đọc trong callback.',
+    'Khi cần theo dõi một nguồn dữ liệu cụ thể, biết giá trị cũ và mới, và chỉ chạy khi nguồn đó thay đổi (không chạy ngay lập tức theo mặc định).',
+    'Khi cần cache giá trị tính toán để hiển thị trên giao diện.',
+    'watch và watchEffect hoàn toàn giống nhau, không có khác biệt.'
+  ],
+  answer: 1,
+  explain: `**Đáp án đúng: watch theo dõi nguồn cụ thể, có giá trị cũ/mới, mặc định không chạy ngay.** watch(source, callback) nhận một nguồn (ref/reactive/getter) và callback nhận (newValue, oldValue). Mặc định callback chỉ chạy khi nguồn thay đổi, không chạy ngay khi khai báo (trừ khi đặt immediate: true). watchEffect(callback) chạy ngay lập tức và tự động theo dõi mọi reactive được đọc trong callback, không có oldValue, phù hợp tác vụ phụ đơn giản.
+
+### Vì sao các phương án còn lại sai
+- **chạy ngay và tự theo dõi mọi phụ thuộc**: đó là watchEffect, không phải watch.
+- **cache giá trị tính toán**: đó là computed, không phải watch/watchEffect.
+- **giống nhau**: khác nhau về thời điểm chạy, nguồn theo dõi và oldValue.
+
+> Senior tip: dùng computed cho giá trị hiển thị; dùng watch khi cần biết oldValue (so sánh trước/sau) hoặc theo dõi một nguồn cụ thể; dùng watchEffect cho tác vụ phụ đơn giản cần chạy ngay.`
+},
+{
+  id: 'qz-frontend-035',
+  topic: 'frontend',
+  multi: true,
+  q: 'Danh sách Vue 3 render bằng v-for. Hai phát biểu nào đúng về thuộc tính {{key}}? (Chọn 2)',
+  options: [
+    '{{key}} giúp Vue tái sử dụng và sắp xếp lại các phần tử DOM hiệu quả khi danh sách thay đổi.',
+    'Dùng index làm {{key}} luôn là lựa chọn tốt nhất cho mọi danh sách.',
+    'Nếu không có {{key}}, Vue dùng thuật toán heuristic mặc định, có thể gây lỗi state component (input focus, checkbox) khi danh sách reorder/insert.',
+    'key phải là duy nhất trong toàn ứng dụng, không chỉ trong danh sách.',
+    '{{key}} chỉ ảnh hưởng style, không ảnh hưởng logic.'
+  ],
+  answer: [0, 2],
+  explain: `**Đáp án đúng: key giúp Vue tái sử dụng DOM hiệu quả, và thiếu key có thể gây lỗi state component khi reorder/insert.** Vue dùng thuật toán diff để cập nhật DOM. key cung cấp định danh ổn định cho mỗi phần tử, giúp Vue biết phần tử nào di chuyển, thêm, xóa thay vì patch theo vị trí. Khi reorder hoặc insert giữa danh sách, thiếu key Vue có thể tái sử dụng sai phần tử, làm mất focus input, trạng thái checkbox, hoặc animation sai. key chỉ cần duy nhất trong danh sách hiện tại (v-for), không cần toàn ứng dụng. Dùng index làm key chỉ an toàn khi danh sách không thay đổi thứ tự và không insert/remove ở giữa; nếu có, nên dùng id ổn định.
+
+### Vì sao các phương án còn lại sai
+- **index luôn tốt nhất**: index thay đổi khi reorder/insert, nên không ổn định; dùng id thực sự.
+- **key toàn ứng dụng**: chỉ cần duy nhất trong v-for hiện tại.
+- **chỉ ảnh hưởng style**: key ảnh hưởng reconciliation DOM và state component.
+
+> Senior tip: luôn dùng id ổn định (database id) làm key; tránh index khi danh sách có thể reorder hoặc thay đổi.`
+},
+{
+  id: 'qz-frontend-036',
+  topic: 'frontend',
+  q: 'Một component Vue 3 đăng ký một interval (setInterval) trong onMounted nhưng không xóa trong onUnmounted. Hậu quả là gì?',
+  options: [
+    'Interval tự động dừng khi component bị hủy.',
+    'Interval tiếp tục chạy sau khi component bị hủy, gây rò rỉ bộ nhớ và có thể cập nhật state của component đã hủy (cảnh báo Vue).',
+    'Vue tự động xóa interval khi component bị hủy.',
+    'Không có hậu quả, interval chỉ chạy một lần.'
+  ],
+  answer: 1,
+  explain: `**Đáp án đúng: Interval tiếp tục chạy sau khi component bị hủy, gây rò rỉ bộ nhớ và có thể cập nhật state component đã hủy.** setInterval tạo một timer trong trình duyệt, độc lập với lifecycle component. Nếu không clearInterval trong onUnmounted, timer vẫn chạy dù component đã unmount, giữ tham chiếu đến component (closure), gây rò rỉ bộ nhớ. Khi callback cố setState trên component đã hủy, Vue cảnh báo "Cannot update state on unmounted component" (Vue 2) hoặc bỏ qua (Vue 3) nhưng vẫn lãng phí tài nguyên. Đây tương tự không đóng ExecutorService/Timer trong Java.
+
+### Vì sao các phương án còn lại sai
+- **tự động dừng**: trình duyệt không tự dừng interval khi component Vue bị hủy.
+- **Vue tự xóa**: Vue không theo dõi setInterval; dev phải tự clearInterval.
+- **chỉ chạy một lần**: setInterval lặp lại cho đến khi clearInterval.
+
+> Senior tip: mọi subscription, listener, timer, websocket tạo trong onMounted phải được cleanup trong onUnmounted (hoặc onBeforeUnmount), dùng pattern: const id = setInterval(...); onUnmounted(() => clearInterval(id)).`
+},
+{
+  id: 'qz-frontend-037',
+  topic: 'frontend',
+  multi: true,
+  q: 'Vue 3 dùng axios gọi API Spring Boot với JWT. Access token hết hạn (401). Hai phát biểu nào đúng về cách xử lý refresh token đúng? (Chọn 2)',
+  options: [
+    'Trong response interceptor, khi gặp 401, gọi refresh token endpoint, sau đó retry yêu cầu gốc với token mới.',
+    'Nếu nhiều yêu cầu cùng lúc trả về 401, phải queue chúng và chỉ refresh một lần, rồi retry tất cả bằng token mới.',
+    'Mỗi yêu cầu 401 tự gọi refresh token riêng, không cần queue.',
+    'Refresh token nên lưu trong localStorage cùng access token để JavaScript đọc dễ dàng.',
+    'Không cần retry yêu cầu gốc sau refresh; người dùng tự tải lại trang.'
+  ],
+  answer: [0, 1],
+  explain: `**Đáp án đúng: interceptor refresh token và retry yêu cầu gốc; queue các yêu cầu 401 để refresh một lần.** Khi access token hết hạn, server trả 401. Interceptor bắt lỗi, gọi endpoint refresh (với refresh token) để lấy access token mới, rồi retry yêu cầu gốc với token mới. Nếu nhiều yêu cầu cùng lúc trả 401, không nên refresh nhiều lần (race condition, refresh token có thể bị invalidate); cần một promise/queue chung: yêu cầu đầu tiên refresh, các yêu cầu sau chờ kết quả rồi retry. Điều này giống pattern retry với circuit breaker trong Java.
+
+### Vì sao các phương án còn lại sai
+- **mỗi 401 tự refresh**: gây race condition và có thể invalidate refresh token (rotation).
+- **refresh token trong localStorage**: rủi ro XSS trộm token; nên HttpOnly cookie.
+- **không retry**: trải nghiệm người dùng kém, phải tự tải lại.
+
+> Senior tip: lưu refresh token trong HttpOnly cookie, dùng một biến isRefreshing + queue promise để đồng bộ refresh; xử lý refresh thất bại (đăng xuất).`
+},
+{
+  id: 'qz-frontend-038',
+  topic: 'frontend',
+  q: 'Vue 3 (localhost:5173) gọi API Spring Boot (localhost:8080) với header Authorization và Content-Type: application/json. Trình duyệt gửi preflight OPTIONS trước. Spring Security trả về 401/403 cho OPTIONS. Nguyên nhân và cách sửa?',
+  options: [
+    'Vì Spring Security chặn OPTIONS do chưa xác thực; cần permitAll() cho requestMatchers(OPTIONS, "/**") hoặc cấu hình CORS trước security filter.',
+    'Vì Vue gửi sai phương thức; đổi sang GET sẽ không preflight.',
+    'Vì browser không hỗ trợ CORS với Spring Boot; phải dùng proxy Vite.',
+    'Vì preflight là lỗi mạng; retry sẽ tự thành công.'
+  ],
+  answer: 0,
+  explain: `**Đáp án đúng: Spring Security chặn OPTIONS vì chưa xác thực; cần permitAll cho OPTIONS hoặc cấu hình CORS trước security filter.** Khi yêu cầu cross-origin có header không đơn giản (Authorization, Content-Type: application/json), trình duyệt gửi preflight OPTIONS. Nếu Spring Security yêu cầu xác thực cho mọi endpoint, OPTIONS bị trả 401/403 → preflight thất bại → trình duyệt chặn yêu cầu thật. Cách sửa: cấu hình CORS (CorsConfigurationSource) và đảm bảo SecurityFilterChain permitAll cho OPTIONS "/**", hoặc đặt CORS filter trước security. Vite proxy chỉ giải quyết dev, không phải production.
+
+### Vì sao các phương án còn lại sai
+- **đổi sang GET**: GET với custom header vẫn preflight; và không phù hợp semantic.
+- **browser không hỗ trợ**: CORS được hỗ trợ đầy đủ; vấn đề là server config.
+- **retry tự thành công**: preflight thất bại deterministic, retry không giúp.
+
+> Senior tip: cấu hình CorsFilter/CorsConfigurationSource và http.cors() trong SecurityFilterChain; permitAll OPTIONS; trên production chỉ cho phép domain frontend cụ thể.`
+},
+{
+  id: 'qz-frontend-039',
+  topic: 'frontend',
+  q: 'SPA Vue 3 (build ra index.html + assets) deploy cùng Spring Boot. Người dùng refresh trang ở route /users/42, server trả 404. Cách sửa đúng là gì?',
+  options: [
+    'Cấu hình Spring Boot forward mọi route không phải API/static về index.html (WebMvcConfigurer hoặc controller với @RequestMapping("/**")).',
+    'Đổi route Vue sang hash mode (#/) để không cần server config.',
+    'Thêm try/catch trong Vue router.',
+    'Tăng timeout server.'
+  ],
+  answer: 0,
+  explain: `**Đáp án đúng: cấu hình Spring Boot forward mọi route không phải API/static về index.html.** SPA dùng client-side routing: route /users/42 không tồn tại trên server. Khi refresh, server tìm file /users/42 → 404. Cách sửa: cấu hình server trả index.html cho mọi path không khớp API/static (SPA fallback). Spring Boot: WebMvcConfigurer addViewControllers hoặc controller @RequestMapping("/**") forward tới index.html, đồng thời đảm bảo /api/** và static assets được xử lý trước. Hash mode (#/) tránh vấn đề nhưng URL xấu và SEO kém; history mode + fallback là chuẩn production.
+
+### Vì sao các phương án còn lại sai
+- **hash mode**: giải pháp thay thế nhưng không phải cách sửa chuẩn; URL có #, SEO kém.
+- **try/catch router**: không liên quan server 404.
+- **tăng timeout**: không liên quan.
+
+> Senior tip: dùng history mode + SPA fallback trên server; đảm bảo API prefix (/api) được exclude khỏi fallback để không nuốt API 404.`
+},
+{
+  id: 'qz-frontend-040',
+  topic: 'frontend',
+  q: 'Trong Vue 3, khi nào nên dùng {{v-show}} thay vì {{v-if}}?',
+  options: [
+    'Khi cần toggle thường xuyên và chi phí render lại lớn; v-show chỉ toggle display CSS, giữ DOM, hiệu quả hơn.',
+    'Khi phần tử chỉ render một lần và không bao giờ thay đổi.',
+    'v-show và v-if giống hệt nhau, không có khác biệt hiệu năng.',
+    'v-show phù hợp khi cần xóa hoàn toàn phần tử khỏi DOM để tiết kiệm bộ nhớ.'
+  ],
+  answer: 0,
+  explain: `**Đáp án đúng: v-show toggle display CSS, giữ DOM, hiệu quả khi toggle thường xuyên.** v-if thêm/xóa phần tử khỏi DOM (chạy mount/unmount, lifecycle, component child). v-show luôn render phần tử, chỉ toggle style display: none. Nếu toggle thường xuyên (ví dụ dropdown, tab), v-show tránh chi phí mount/unmount. Nếu phần tử hiếm khi hiển thị hoặc nặng, v-if tiết kiệm bộ nhớ/initial render.
+
+### Vì sao các phương án còn lại sai
+- **render một lần không thay đổi**: v-if/v-show đều không phù hợp đặc biệt; dùng v-once.
+- **giống hệt**: khác nhau về DOM presence và lifecycle.
+- **v-show xóa khỏi DOM**: ngược lại, v-if mới xóa khỏi DOM.
+
+> Senior tip: dropdown/tab/tooltip toggle thường xuyên → v-show; modal/panel nặng hoặc điều kiện hiếm → v-if.`
+},
+{
+  id: 'qz-frontend-041',
+  topic: 'frontend',
+  q: 'Trong Vue 3 Composition API, component cha muốn truyền dữ liệu xuống component con nhiều cấp mà không qua props drilling. API nào phù hợp?',
+  options: [
+    '{{provide}} ở cha và {{inject}} ở con (hoặc hậu duệ) để chia sẻ dữ liệu mà không qua props.',
+    'Chỉ có thể dùng Pinia store cho mọi trường hợp.',
+    'Dùng $emit từ cha xuống con.',
+    'Dùng v-model trên component root.'
+  ],
+  answer: 0,
+  explain: `**Đáp án đúng: provide/inject.** provide (ở component cha) cung cấp giá trị; inject (ở component con/hậu duệ bất kỳ cấp) nhận giá trị đó. Không cần truyền qua từng cấp props. Phù hợp theme, locale, config, hoặc dependency injection nhẹ. Pinia store cũng giải quyết nhưng nặng hơn cho dữ liệu đơn giản; $emit là con→cha, không phải cha→con; v-model là two-way binding cho component, không phải deep sharing.
+
+### Vì sao các phương án còn lại sai
+- **chỉ Pinia**: provide/inject là built-in, không cần store.
+- **$emit**: hướng con→cha, không phù hợp.
+- **v-model root**: không giải quyết multi-level sharing.
+
+> Senior tip: provide/inject tốt cho dependency injection (ví dụ i18n, theme); với state phức tạp dùng Pinia. Provide reactive object hoặc ref để giữ reactivity.`
+},
+{
+  id: 'qz-frontend-042',
+  topic: 'frontend',
+  q: 'Vue 3 {{Teleport}} dùng để làm gì?',
+  options: [
+    'Di chuyển (render) một phần giao diện ra ngoài cây DOM của component, ví dụ modal/dialog vào body, để tránh vấn đề z-index/overflow.',
+    'Chuyển component sang thread khác để tăng hiệu năng.',
+    'Lazy load component khi cần.',
+    'Tạo portal đến server (SSR).'
+  ],
+  answer: 0,
+  explain: `**Đáp án đúng: Teleport render nội dung ra ngoài cây DOM của component (ví dụ vào body) để tránh z-index/overflow.** Modal/dialog/popover thường bị cắt bởi overflow:hidden hoặc z-index của parent. Teleport cho phép giữ logic component ở chỗ khai báo nhưng render DOM vào target (thường <body>), giải quyết stacking context. Không liên quan thread, lazy load hay SSR portal.
+
+### Vì sao các phương án còn lại sai
+- **thread**: JS đơn luồng, Teleport không tạo thread.
+- **lazy load**: dùng defineAsyncComponent.
+- **SSR portal**: không phải mục đích.
+
+> Senior tip: modal/toast/notification dùng Teleport to="body"; kết hợp Transition để animation; chú ý accessibility (focus trap).`
+}
+
 );
