@@ -1,0 +1,77 @@
+{
+  "date": "2026-11-24",
+  "intro": "Tuần của các bản phát hành lớn: Spring Cloud 2026.0.0 dựa trên Spring Boot 4.2.0, Spring AI 2.1 GA và Spring Batch 6.1, Apache Kafka 4.4.0 với transactional state store cho Streams, cùng bản xem trước Kubernetes v1.38 (dự kiến 16/12) có thay đổi cgroupDriver gây breaking. Thêm bài của Brian Goetz về cách Java tiến hoá.",
+  "editor": "claude",
+  "items": [
+    {
+      "title_vi": "Spring Cloud 2026.0.0 (Paddington) GA, dựa trên Spring Boot 4.2.0",
+      "title": "Spring Cloud 2026.0.0 (aka Paddington) Has Been Released",
+      "url": "https://spring.io/blog/2026/11/20/spring-cloud-2026-0-0-has-been-released",
+      "source": "Spring Blog",
+      "category": "tech",
+      "summary": "Spring Cloud 2026.0.0 GA ngày 20/11/2026, nền là Spring Boot 4.2.0. Spring Cloud Bus được gộp vào Spring Cloud Stream; Config client hỗ trợ OAuth 2 với Config Server; Gateway MVC hỗ trợ WebSocket và có filter LocalResponseCache; Resilience4j lên 2.4.0. Có bản vá nhiều CVE và deprecate các module RSocket/gRPC của Spring Cloud Function, reactive Kafka Binder, Schema Registry của Stream.",
+      "why": "Nếu hệ thống microservices dùng Gateway, Config, Circuit Breaker hay Kafka Binder thì cần lên kế hoạch nâng cấp cùng Boot 4.2 và xử lý các thành phần bị deprecate.",
+      "interview_q": "Bạn sẽ lên kế hoạch nâng cấp một hệ thống microservices từ Spring Cloud release train cũ lên bản mới (kèm Boot major) như thế nào để giảm rủi ro?",
+      "related": ["microservices-018"],
+      "tags": ["spring-cloud", "upgrade"]
+    },
+    {
+      "title_vi": "Spring AI 2.1 GA: MCP stateless, Session API thay ChatMemory, giới hạn tool call",
+      "title": "Spring AI 2.1.0 GA and 2.0.3 GA Available Now",
+      "url": "https://spring.io/blog/2026/11/20/spring-ai-2-1-0-GA-available-now",
+      "source": "Spring Blog",
+      "category": "tech",
+      "summary": "Spring AI 2.1 chạy trên Spring Boot 4.2 và MCP Java SDK 2.2.0. Điểm mới: hỗ trợ bản MCP stateless 2026-07-28, API Decision Models cho quyết định có kiểu (yes/no, choice, score), message gồm nhiều part để giữ reasoning và tool call, Session API thay {{ChatMemory}} (deprecated, sẽ bỏ ở 3.0.0), tool call có thể chờ phê duyệt và bị giới hạn mỗi lượt (mặc định 40 mỗi tool, 150 tổng). Bản 2.0.3 vá 13 CVE.",
+      "why": "Dev Java đang đưa LLM/agent vào backend cần biết cách Spring AI quản lý memory, giới hạn tool call và MCP để vận hành an toàn.",
+      "interview_q": "Khi cho LLM agent gọi tool trong service Java, bạn giới hạn và kiểm soát rủi ro (vòng lặp tool call, hành động nhạy cảm) như thế nào?",
+      "related": ["ai-001", "ai-002"],
+      "tags": ["spring-ai", "mcp"]
+    },
+    {
+      "title_vi": "Spring Batch 6.1 GA: @JobParameter, restart nhẹ hơn, chuyển sang JdbcClient",
+      "title": "Spring Batch 6.1 is now GA",
+      "url": "https://spring.io/blog/2026/11/19/spring-batch-6-1-0-available-now",
+      "source": "Spring Blog",
+      "category": "tech",
+      "summary": "Spring Batch 6.1 dựa trên Spring Framework 7.1.0 và Spring Data 2026.1.0. Có annotation {{@JobParameter}} thay biểu thức {{@Value}} SpEL, {{PageableItemReader}} an toàn kiểu, hỗ trợ JSON Lines. Hiệu năng: restart không còn nạp toàn bộ lịch sử job instance, ít query hơn, partitioned step tốn ít bộ nhớ hơn. Breaking: Avro reflection yêu cầu khai báo item type tin cậy; Derby bị deprecate.",
+      "why": "Job batch chạy lâu thường chậm dần theo số lần restart và số worker; các cải tiến này chạm đúng điểm đau đó, đồng thời có breaking change cần kiểm tra khi nâng cấp.",
+      "interview_q": "Một job Spring Batch xử lý hàng chục triệu bản ghi bị lỗi giữa chừng, bạn thiết kế restart, chunk size và partitioning thế nào?",
+      "related": ["spring-020"],
+      "tags": ["spring-batch"]
+    },
+    {
+      "title_vi": "Apache Kafka 4.4.0: state store có giao dịch cho Streams, DLQ cho share group",
+      "title": "Apache Kafka 4.4.0 Release Announcement",
+      "url": "https://kafka.apache.org/blog/2026/10/22/apache-kafka-4.4.0-release-announcement/",
+      "source": "Apache Kafka",
+      "category": "tech",
+      "summary": "Kafka 4.4.0 có KIP-892 (transactional state store, bật bằng {{enable.transactional.statestores}}, mặc định tắt): với exactly-once, state không còn bị xoá khi gặp lỗi. KIP-1191 thêm dead-letter queue cho share group (cần {{share.version}} 2). Ngoài ra có custom task assignor phía broker cho Streams (KIP-1357), tiered storage trì hoãn upload (KIP-1241), và deprecate {{broker.id}} (KIP-1232). Lưu ý KIP-1170: thư mục đã format bằng bản kafka-storage mới không tương thích ngược.",
+      "why": "Dev dùng Kafka Streams hoặc exactly-once sẽ giảm thời gian restore state sau lỗi; ai chạy broker cần chú ý thay đổi định dạng storage khi nâng cấp/rollback.",
+      "interview_q": "Kafka Streams với exactly-once xử lý lỗi và khôi phục state store như thế nào, và transactional state store giải quyết vấn đề gì?",
+      "tags": ["kafka", "streams"]
+    },
+    {
+      "title_vi": "Kubernetes v1.38 sneak peek: bỏ cgroupDriver trong kubelet, EvictionRequest alpha",
+      "title": "Kubernetes v1.38 Sneak Peek",
+      "url": "https://kubernetes.io/blog/2026/11/23/kubernetes-v1-38-sneak-peek/",
+      "source": "Kubernetes Blog",
+      "category": "devops",
+      "summary": "v1.38 dự kiến ra ngày 16/12/2026. Trường {{cgroupDriver}} của kubelet bị deprecate (breaking): runtime phải báo driver qua CRI {{RuntimeConfig}}, kubeadm không còn mặc định {{systemd}}. Admission webhook sẽ không nhận review request ảo như TokenReview hay SubjectAccessReview. Pod-level resources và kuberc dự kiến lên stable; có alpha EvictionRequest API cho eviction phối hợp (không thay PodDisruptionBudget). Hỗ trợ cgroup v1 tiếp tục bị loại dần.",
+      "why": "Service Java chạy trên K8s bị ảnh hưởng bởi thay đổi swap/pod-level memory và cgroup; nắm trước giúp tránh bất ngờ khi cluster nâng cấp.",
+      "interview_q": "Làm sao để Pod Java không bị mất request khi bị evict hay rolling update trên Kubernetes (graceful shutdown, probe, PDB)?",
+      "related": ["devops-017", "devops-016"],
+      "tags": ["kubernetes"]
+    },
+    {
+      "title_vi": "Brian Goetz: Java tiến hoá có chủ đích như thế nào (keynote JavaOne)",
+      "title": "Evolving the Java Language: An Inside Perspective",
+      "url": "https://inside.java/2026/11/23/evolving-java-language/",
+      "source": "Inside Java",
+      "category": "company",
+      "summary": "Bài tóm tắt keynote JavaOne của Brian Goetz về cách một ý tưởng ngôn ngữ trở thành tính năng Java. Ông dùng ví dụ lambda, record, pattern matching và virtual thread để nói rằng ý tưởng hay mới chỉ là điểm bắt đầu, cần hiểu vấn đề trước khi đề xuất giải pháp, thay đổi nhỏ có thể kéo theo độ phức tạp lớn, và phải bảo toàn khoản đầu tư vào code hiện có.",
+      "why": "Hiểu triết lý thiết kế giúp giải thích được vì sao Java chọn giải pháp như record hay virtual thread, câu hay gặp ở vòng phỏng vấn Senior/Architect.",
+      "interview_q": "Vì sao Java chọn virtual thread thay vì async/await như một số ngôn ngữ khác? Trade-off là gì?",
+      "tags": ["java", "language-design"]
+    }
+  ]
+}

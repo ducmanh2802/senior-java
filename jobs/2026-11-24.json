@@ -1,0 +1,217 @@
+{
+  "date": "2026-11-24",
+  "intro": "Hôm nay chọn 8 tin còn hạn (đã mở tin gốc kiểm tra hạn nộp), 4 tin Hà Nội. Hôm nay không tìm thêm được tin Hà Nội mới còn hạn nên 4 tin Hà Nội được đưa lại từ các ngày trước (ghi chú vẫn mở); tin mới là Techcombank (2 vị trí, tin không nêu thành phố), MoMo và VMO Holdings. Nhóm ngân hàng/fintech nhấn mạnh microservices, DDD và hệ thống chịu tải cao.",
+  "editor": "claude",
+  "items": [
+    {
+      "title": "Java Technical Lead (vẫn mở)",
+      "company": "GEM",
+      "url": "https://vn.joboko.com/viec-lam-java-technical-lead-xvi6765576",
+      "source": "Joboko",
+      "location": "Hà Nội",
+      "level": "lead",
+      "skills": [
+        "Java",
+        "Spring Boot",
+        "Microservices",
+        "PostgreSQL",
+        "Kafka"
+      ],
+      "summary": "Vị trí Tech Lead Java, cần từ 5 năm kinh nghiệm, hạn nộp 08/12/2026. Yêu cầu Java 8/11/17+, Spring Boot, REST API, microservices và hệ thống phân tán, SQL (PostgreSQL/MySQL/Oracle), dẫn dắt và mentor developer, tiếng Anh tốt. Ưu tiên kinh nghiệm fintech/payment, Kafka/RabbitMQ/Redis, Docker/Kubernetes, cloud, OAuth2/JWT. Tin có nhắc mức tới 55M, phần chính thức ghi thoả thuận.",
+      "prep": "Ôn thiết kế microservices và hệ thống phân tán (consistency, idempotency), Kafka, bảo mật OAuth2/JWT; chuẩn bị ví dụ dẫn dắt team, code review và mentor bằng tiếng Anh.",
+      "topics": [
+        "microservices",
+        "architecture",
+        "spring",
+        "security"
+      ],
+      "tags": [
+        "tech-lead",
+        "fintech"
+      ]
+    },
+    {
+      "title": "Java Developer (Expert) (vẫn mở)",
+      "company": "Ngân hàng TMCP Kỷ Nguyên Thịnh Vượng (GPBank)",
+      "url": "https://vn.joboko.com/viec-lam-java-developer-expert-xvi6752989",
+      "source": "Joboko",
+      "location": "Hà Nội (Hoàn Kiếm)",
+      "level": "lead",
+      "skills": [
+        "Java",
+        "Spring Boot",
+        "React",
+        "DDD",
+        "Docker"
+      ],
+      "summary": "Vị trí expert tại ngân hàng, cần 8+ năm full-stack, hạn nộp 07/12/2026. Yêu cầu 5+ năm Spring/Spring Boot với SQL/NoSQL, SPA bằng React hoặc Angular, thiết kế API-first, microservices theo DDD, hệ thống event-driven, CI/CD, Docker, cloud, có kinh nghiệm ngân hàng và dẫn dắt team; tiếng Anh bắt buộc.",
+      "prep": "Ôn DDD và bounded context, event-driven/messaging, thiết kế API, CI/CD; chuẩn bị câu chuyện về nghiệp vụ ngân hàng và vai trò dẫn dắt team.",
+      "topics": [
+        "banking",
+        "microservices",
+        "architecture",
+        "spring"
+      ],
+      "tags": [
+        "banking"
+      ]
+    },
+    {
+      "title": "Java Developer (Middle - Senior) (vẫn mở)",
+      "company": "CMC Global",
+      "url": "https://vn.joboko.com/viec-lam-ha-noi-java-developer-middle-senior-xvi6721916",
+      "source": "Joboko",
+      "location": "Hà Nội (Hoàng Quốc Việt, Cầu Giấy)",
+      "level": "senior",
+      "skills": [
+        "Java",
+        "Spring Boot",
+        "REST API",
+        "PostgreSQL",
+        "Kubernetes"
+      ],
+      "summary": "Cần từ 3 năm Java backend hoặc full-stack, hạn nộp 03/12/2026. Yêu cầu Java 8+, Spring Boot, REST API, SQL Server/PostgreSQL, tích hợp hệ thống quy mô doanh nghiệp, code review và mentor, tiếng Anh tốt để làm việc với team quốc tế. Ưu tiên cloud, CI/CD, Kubernetes và từng dùng công cụ AI hỗ trợ code.",
+      "prep": "Ôn Spring Boot, thiết kế REST API, tối ưu SQL; luyện giới thiệu dự án bằng tiếng Anh và nói về cách dùng AI hỗ trợ code có kiểm soát.",
+      "topics": [
+        "spring",
+        "api",
+        "sql",
+        "english"
+      ],
+      "tags": [
+        "outsource"
+      ]
+    },
+    {
+      "title": "Senior Java Developer (vẫn mở, cần kiểm tra lại hạn)",
+      "company": "VTI Technology Việt Nam",
+      "url": "https://vn.joboko.com/viec-lam-senior-java-developer-xvi6770200",
+      "source": "Joboko",
+      "location": "Hà Nội (Hà Đông)",
+      "level": "senior",
+      "skills": [
+        "Java 17/21",
+        "Spring Boot",
+        "JPA",
+        "React",
+        "Docker"
+      ],
+      "summary": "Cần 5+ năm Java, tuyển 5 người, hạn nộp ghi 11/12/2026 (trang cũng có dòng ghi hết hạn 13/11, nên xác nhận lại trước khi nộp). Yêu cầu Java 17/21, Spring Boot/Data JPA/Security, thiết kế REST và microservices, React, SQL tuning, JWT/OAuth2, Docker và CI/CD; mô tả thực chất là vai trò fullstack.",
+      "prep": "Ôn Spring Security với JWT/OAuth2, JPA và tối ưu truy vấn, Docker/CI-CD; chuẩn bị kiến thức React cơ bản vì vai trò fullstack.",
+      "topics": [
+        "spring",
+        "jpa",
+        "security",
+        "frontend"
+      ],
+      "tags": [
+        "fullstack"
+      ]
+    },
+    {
+      "title": "Middle/Senior/Lead Software Engineer (Java, Spring)",
+      "company": "MoMo (Công ty CP Dịch Vụ Di Động Trực Tuyến)",
+      "url": "https://vn.joboko.com/viec-lam-middle-senior-lead-software-engineer-java-spring-xvi6603555",
+      "source": "Joboko",
+      "location": "TP.HCM (tin ghi Hà Nội ở phần đầu, văn phòng trong mô tả là Phú Mỹ Hưng)",
+      "level": "senior",
+      "skills": [
+        "Java",
+        "Spring",
+        "Redis",
+        "MongoDB",
+        "Kubernetes",
+        "Kafka"
+      ],
+      "summary": "Hạn nộp 09/12/2026, cần 5+ năm xây dựng và vận hành backend. Stack nhắc tới Java, Spring, Vert.x, Redis, MongoDB, MySQL, gRPC, Kafka, Elasticsearch, ClickHouse, Docker/Kubernetes và một nền tảng cloud lớn. Tin có thông tin địa điểm không thống nhất nên cần xác nhận khi ứng tuyển.",
+      "prep": "Ôn caching với Redis, Kafka, thiết kế hệ thống chịu tải cao cho thanh toán, vận hành trên Kubernetes; chuẩn bị ví dụ tối ưu latency hoặc throughput có số liệu.",
+      "topics": [
+        "design",
+        "devops",
+        "db",
+        "microservices"
+      ],
+      "tags": [
+        "fintech",
+        "product"
+      ]
+    },
+    {
+      "title": "Expert, Java Developer",
+      "company": "Techcombank",
+      "url": "https://vn.joboko.com/viec-lam-expert-java-developer-xvi6767538",
+      "source": "Joboko",
+      "location": "Tin không nêu thành phố",
+      "level": "lead",
+      "skills": [
+        "Java",
+        "Microservices",
+        "Observability",
+        "Concurrency"
+      ],
+      "summary": "Hạn nộp 11/12/2026, cần 5+ năm kỹ sư phần mềm. Backend Java, hiểu SOLID, design pattern, microservices và observability (monitoring, logging, tracing), hệ thống hiệu năng cao và đồng thời, bảo mật, hiểu cơ chế compiler/runtime; có kinh nghiệm dẫn dắt team kỹ thuật.",
+      "prep": "Ôn JVM internals và concurrency, observability (metrics/logs/trace), pattern thiết kế microservices; chuẩn bị ví dụ dẫn dắt kỹ thuật.",
+      "topics": [
+        "jvm",
+        "concurrency",
+        "microservices",
+        "banking"
+      ],
+      "tags": [
+        "banking"
+      ]
+    },
+    {
+      "title": "Java Technical Lead (Expert)",
+      "company": "Techcombank",
+      "url": "https://vn.joboko.com/viec-lam-java-technical-lead-expert-xvi6737672",
+      "source": "Joboko",
+      "location": "Tin không nêu thành phố",
+      "level": "lead",
+      "skills": [
+        "Java",
+        "Spring Boot",
+        "Microservices",
+        "CI/CD"
+      ],
+      "summary": "Hạn nộp 01/12/2026 (sắp hết), cần 9+ năm, vị trí quản lý kỹ thuật. Yêu cầu Java Spring Boot, microservices, observability, hệ thống hiệu năng cao và đồng thời, bảo mật, JVM runtime, CI/CD, kinh nghiệm quản lý team và hoà giải trong công việc.",
+      "prep": "Ôn kiến trúc microservices và JVM tuning, bảo mật, quy trình delivery; chuẩn bị câu chuyện STAR về quản lý team và giải quyết xung đột.",
+      "topics": [
+        "architecture",
+        "jvm",
+        "behavioral",
+        "microservices"
+      ],
+      "tags": [
+        "banking",
+        "lead"
+      ]
+    },
+    {
+      "title": "Java Developer (HCM)",
+      "company": "VMO Holdings",
+      "url": "https://vn.joboko.com/viec-lam-java-developer-hcm-hot-xvi6801481",
+      "source": "Joboko",
+      "location": "TP.HCM",
+      "level": "mid",
+      "skills": [
+        "Kotlin",
+        "Java",
+        "Spring Boot",
+        "PostgreSQL",
+        "Kubernetes"
+      ],
+      "summary": "Hạn nộp 27/12/2026. Xây dựng ứng dụng server-side bằng Kotlin và Spring Boot, phối hợp product/architecture/frontend, code review, viết unit test, tối ưu hiệu năng. Cần kinh nghiệm Kotlin hoặc Java, REST API, MySQL/PostgreSQL/MongoDB, Docker/Kubernetes, Git, CI, Agile và tiếng Anh giao tiếp.",
+      "prep": "Ôn Kotlin cơ bản cho dev Java (null safety, coroutines), Spring Boot, unit test; chuẩn bị giới thiệu bản thân bằng tiếng Anh.",
+      "topics": [
+        "kotlin",
+        "spring",
+        "testing",
+        "english"
+      ],
+      "tags": [
+        "kotlin"
+      ]
+    }
+  ]
+}
