@@ -10914,6 +10914,304 @@ resultType là cách ngắn gọn: MyBatis tự ánh xạ từng cột kết qu�
 - **Chỉ khi tên cột khác tên thuộc tính**: đó là trường hợp cần resultMap (để đổi tên cột), không phải resultType.
 
 > Senior tip: khi tên cột database (snake_case) khác tên thuộc tính Java (camelCase) nhiều cột, resultMap ngắn gọn và rõ ràng hơn từ cài đặt autoMapping hoặc đổi tên cột trong SQL.`
+},
+{
+  id: 'qz-testing-021',
+  topic: 'testing',
+  q: `Với đoạn test JUnit 5 sau, nó chạy và báo cáo thế nào?
+~~~java
+class DiscountTest {
+  static java.util.stream.Stream<org.junit.jupiter.params.provider.Arguments> cases() {
+    return java.util.stream.Stream.of(
+      org.junit.jupiter.params.provider.Arguments.of(100, 10),
+      org.junit.jupiter.params.provider.Arguments.of(200, 20));
+  }
+
+  @ParameterizedTest
+  @MethodSource("cases")
+  void computes(int price, int expected) { /* ... */ }
+}
+~~~`,
+  options: [
+    'Test chỉ chạy 1 lần với bộ tham số đầu tiên, các bộ sau bị bỏ qua',
+    'Mỗi bộ Arguments là một lần chạy riêng (2 lần); tên hiển thị mặc định kèm chỉ số và giá trị tham số',
+    'Lỗi biên dịch vì @MethodSource không dùng được với @ParameterizedTest',
+    'Chạy 2 lần nhưng dùng chung một instance và một bộ tham số cho cả hai'
+  ],
+  answer: 1,
+  explain: `**Đáp án đúng: mỗi bộ Arguments là một lần chạy riêng (2 lần); tên hiển thị mặc định kèm chỉ số và giá trị tham số.**
+
+### Vì sao đúng
+{{@ParameterizedTest}} biến một method test thành "khuôn" để chạy nhiều lần. Mỗi phần tử trong {{Stream}} của {{@MethodSource}} là một bộ tham số; ở đây có 2 phần tử {{Arguments.of(100, 10)}} và {{Arguments.of(200, 20)}} nên JUnit sinh ra **2 invocation** độc lập. Mỗi invocation được coi là một test riêng: nếu một bộ đỏ, bộ kia vẫn chạy, và báo cáo hiển thị dạng {{computes(int, int)[1] 100, 10}} để bạn biết bộ nào hỏng.
+
+### Vì sao các phương án còn lại sai
+- **Chỉ chạy 1 lần**: nhầm với việc chỉ lấy phần tử đầu; thực tế JUnit duyệt hết mọi phần tử của stream.
+- **Lỗi biên dịch**: {{@MethodSource}} chính là cách chuẩn để cấp dữ liệu cho {{@ParameterizedTest}}; nó hoàn toàn hợp lệ.
+- **Dùng chung một bộ tham số**: mỗi invocation nhận tham số riêng từ phần tử tương ứng; không có chuyện dùng lại.
+
+### Lưu ý khi dùng
+- Factory method nên là {{static}} (mặc định JUnit yêu cầu vậy, trừ khi lớp test dùng {{@TestInstance(PER_CLASS)}}).
+- Nếu cần nhiều tham số ghép lại, dùng {{Arguments}} thay vì nhiều stream rời; có thể đặt {{@MethodSource}} không tên nếu method nguồn cùng tên method test.
+
+> Senior tip: với dữ liệu nhiều dòng, hãy cân nhắc {{@CsvSource}}/{{@CsvFileSource}} cho gọn, nhưng giữ {{@MethodSource}} khi cần dựng object phức tạp. Đặt tên method nguồn rõ ràng và tránh phụ thuộc trạng thái dùng chung giữa các bộ tham số — đó là nguồn flaky test.`
+},
+{
+  id: 'qz-testing-022',
+  topic: 'testing',
+  q: 'Bạn cần khẳng định service đã gọi repository.save(...) với đúng object (ví dụ kiểm tra email đã chuẩn hoá). Mockito dùng công cụ nào?',
+  options: [
+    'ArgumentCaptor dùng để giả lập giá trị trả về của mock',
+    'ArgumentCaptor chỉ dùng được với method void',
+    'ArgumentCaptor dùng để ép kiểu tham số',
+    'ArgumentCaptor lấy giá trị tham số thực sự truyền vào mock khi verify, rồi có thể assert trên giá trị đó'
+  ],
+  answer: 3,
+  explain: `**Đáp án đúng: ArgumentCaptor lấy giá trị tham số thực sự truyền vào mock khi verify, rồi có thể assert trên giá trị đó.**
+
+### Vì sao đúng
+{{when(...).thenReturn(...)}} chỉ điều khiển **giá trị trả về**, còn {{ArgumentCaptor}} giúp **bắt lại tham số đầu vào** mà code đã truyền cho mock. Cách dùng điển hình:
+~~~java
+ArgumentCaptor<Order> captor = ArgumentCaptor.forClass(Order.class);
+verify(repo).save(captor.capture());          // vừa verify vừa bắt tham số
+Order saved = captor.getValue();              // object thật đã truyền vào
+assertEquals("a@x.com", saved.getEmail());    // assert trên nội dung
+~~~
+Với nhiều lời gọi, {{captor.getAllValues()}} trả về danh sách mọi giá trị theo thứ tự. Mockito còn có annotation {{@Captor}} để inject captor thay vì tự tạo.
+
+### Vì sao các phương án còn lại sai
+- **Giả lập giá trị trả về**: đó là việc của {{when/thenReturn}}, không phải captor.
+- **Chỉ dùng cho void**: captor dùng cho cả method có giá trị trả về; nó không quan tâm void hay không.
+- **Ép kiểu tham số**: ép kiểu là việc của cast; captor chỉ ghi lại giá trị thực sự truyền vào.
+
+> Senior tip: captor rất mạnh nhưng đừng lạm dụng để "kiểm tra chi tiết cách hiện thực" (implementation detail) thay vì hành vi. Nếu phải bắt 3–4 tham số rồi assert từng cái, hãy cân nhắc dùng một DTO bất biến và so sánh bằng equals — test sẽ ít giòn hơn khi tái cấu trúc.`
+},
+{
+  id: 'qz-testing-023',
+  topic: 'testing',
+  q: 'Bạn cần kiểm tra cả **loại** exception lẫn **message** của nó. Cách đúng với JUnit 5?',
+  options: [
+    'Gán kết quả assertThrows vào biến rồi assertEquals trên message của exception đó',
+    'assertThrows không trả về gì nên phải dùng try/catch thủ công',
+    'Dùng assertEquals(expectedMessage, assertThrows(...))',
+    'assertThrows chỉ kiểm tra loại exception, không thể kiểm tra message'
+  ],
+  answer: 0,
+  explain: `**Đáp án đúng: gán kết quả assertThrows vào biến rồi assertEquals trên message của exception đó.**
+
+### Vì sao đúng
+{{assertThrows}} không chỉ kiểm tra exception được ném ra, mà còn **trả về chính exception đó** (kiểu generic suy ra từ class truyền vào), nên bạn có thể assert tiếp:
+~~~java
+IllegalArgumentException ex = assertThrows(
+    IllegalArgumentException.class,
+    () -> service.withdraw(-100));
+assertEquals("Số tiền phải > 0", ex.getMessage());
+assertNull(ex.getCause());   // có thể kiểm tra cả cause
+~~~
+Nếu không có exception hoặc sai loại, chính {{assertThrows}} đã fail ngay, phần assert message chỉ chạy khi loại đã đúng.
+
+### Vì sao các phương án còn lại sai
+- **assertThrows không trả về gì**: sai, nó trả về exception; đây chính là điểm hay bị bỏ qua khiến người ta viết try/catch thừa.
+- **assertEquals(message, assertThrows(...))**: so sánh một String với một object exception — luôn fail; phải lấy {{getMessage()}} trước.
+- **Chỉ kiểm tra loại, không xem message**: sai, kết quả trả về cho phép assert message, cause, suppressed…
+
+> Senior tip: message assert nên nhắm vào phần **ổn định** của thông điệp ({{contains}} một từ khoá) thay vì so khớp cả chuỗi dài; message dễ đổi khi refactor và làm test giòn. Với exception nghiệp vụ, cân nhắc kiểm tra **mã lỗi** (error code) thay vì câu chữ.`
+},
+{
+  id: 'qz-testing-024',
+  topic: 'testing',
+  q: 'Lớp test dùng {{@ExtendWith(MockitoExtension.class)}} (strict stubbing mặc định). Bạn khai báo {{when(repo.findById(1L)).thenReturn(...)}} nhưng test lại đi nhánh khác nên **không gọi** tới nó. Chuyện gì xảy ra?',
+  options: [
+    'Test vẫn xanh vì stub thừa không ảnh hưởng',
+    'NullPointerException ngay khi khởi tạo mock',
+    'UnnecessaryStubbingException làm test fail, vì strict stubbing coi stub không dùng là lỗi cấu hình test',
+    'Mockito tự xoá stub và chạy tiếp bình thường'
+  ],
+  answer: 2,
+  explain: `**Đáp án đúng: UnnecessaryStubbingException làm test fail, vì strict stubbing coi stub không dùng là lỗi cấu hình test.**
+
+### Vì sao đúng
+Từ Mockito 2, {{MockitoExtension}} và {{MockitoJUnitRunner}} mặc định dùng **strict stubbing**. Triết lý: một stub mà test không bao giờ dùng thường là dấu hiệu test đang đi sai nhánh, hoặc setup thừa gây hiểu nhầm. Khi kết thúc, Mockito kiểm tra các stub đã khai báo; stub nào không được kích hoạt sẽ ném {{UnnecessaryStubbingException}} và **đánh dấu test thất bại** (hoặc lớp test thất bại tuỳ cấu hình). Thông điệp lỗi chỉ đúng dòng khai báo thừa, giúp bạn phát hiện test "xanh giả" do đi nhầm logic.
+
+### Vì sao các phương án còn lại sai
+- **Vẫn xanh**: đó là hành vi của lenient stubbing; strict là mặc định nên sẽ đỏ.
+- **NullPointerException khi tạo mock**: việc tạo mock không liên quan; lỗi chỉ xảy ra ở bước kiểm tra cuối.
+- **Tự xoá và chạy tiếp**: không có cơ chế tự xoá; Mockito chủ động báo lỗi.
+
+### Cách xử lý đúng
+- Xoá stub không dùng, hoặc sửa test để đi đúng nhánh cần kiểm tra.
+- Nếu **cố ý** để stub dùng chung cho nhiều test (setup ở {{@BeforeEach}}), đánh dấu {{lenient()}} có chủ đích, hoặc dùng {{@MockitoSettings(strictness = Strictness.LENIENT)}} — nhưng đây là con dao hai lưỡi, dễ che mất test hỏng.
+
+> Senior tip: strict stubbing là bạn, không phải kẻ thù: nó biến "test xanh nhưng vô nghĩa" thành "test đỏ có gợi ý". Đừng vội hạ xuống lenient; trước tiên hãy hỏi vì sao test lại không đi tới nhánh mình nghĩ.`
+},
+{
+  id: 'qz-testing-025',
+  topic: 'testing',
+  q: 'Service có method {{void send()}}. Bạn muốn test rằng khi gọi {{send()}} thì nó ném {{IOException}}. Cách viết đúng với Mockito?',
+  options: [
+    'when(service.send()).thenThrow(new IOException())',
+    'doThrow(new IOException()).when(service).send()',
+    'given(service.send()).willThrow(new IOException())',
+    'Gọi service.send() rồi mong exception tự ném'
+  ],
+  answer: 1,
+  explain: `**Đáp án đúng: doThrow(new IOException()).when(service).send().**
+
+### Vì sao đúng
+{{when(...).thenReturn(...)}} cần một **giá trị trả về** để bắt đầu chuỗi stub, nên nó không dùng được cho method {{void}}. Với method void, Mockito cung cấp họ {{doThrow/doAnswer/doNothing/doCallRealMethod}} theo mẫu {{doXxx(...).when(mock).voidMethod()}}:
+~~~java
+doThrow(new IOException("mất mạng"))
+    .when(service).send();
+assertThrows(IOException.class, () -> service.send());
+~~~
+{{doThrow}} không cần gọi method thật khi thiết lập stub, nên an toàn với void (và cả với spy).
+
+### Vì sao các phương án còn lại sai
+- **when(service.send()).thenThrow(...)**: {{send()}} trả về void, không thể truyền void làm tham số cho {{when}} — lỗi biên dịch.
+- **given(service.send()).willThrow(...)**: BDDMockito cũng cần giá trị trả về, cùng vấn đề với void.
+- **Gọi rồi mong tự ném**: không thiết lập gì cả; nếu code không ném thì test đỏ mà không rõ lý do.
+
+> Senior tip: quy tắc nhớ nhanh — method **có giá trị trả về** dùng {{when/thenReturn}}; method **void** dùng {{doThrow/doNothing/when}}. Khi thấy mình phải bọc một lời gọi void vào đâu đó để stub, đó là lúc chuyển sang họ {{do*}}.`
+},
+{
+  id: 'qz-testing-026',
+  topic: 'testing',
+  multi: true,
+  q: 'Những nhận định nào **đúng** về test pyramid? (Chọn 2)',
+  options: [
+    'Đáy pyramid là nhiều unit test chạy nhanh, rẻ; càng lên cao (integration, E2E) càng ít và đắt hơn',
+    'Nên có thật nhiều E2E test để bắt mọi lỗi, vì chúng giống hành vi người dùng nhất',
+    'E2E test chậm và dễ flaky, nên chỉ giữ số lượng nhỏ cho các luồng quan trọng',
+    'Không cần unit test vì integration test đã bao phủ hết'
+  ],
+  answer: [0, 2],
+  explain: `**Đáp án đúng: Đáy pyramid là nhiều unit test chạy nhanh, rẻ; càng lên cao càng ít và đắt · E2E chậm và dễ flaky nên chỉ giữ số lượng nhỏ cho luồng quan trọng.**
+
+### Vì sao đúng
+Test pyramid (Mike Cohn) mô tả tỉ lệ nên có: **rộng ở đáy, hẹp ở đỉnh**.
+- **Đáy — unit test**: nhiều nhất, chạy mili giây, không cần hạ tầng, khoanh vùng lỗi chính xác.
+- **Giữa — integration test**: ít hơn, kiểm tra kết nối DB/HTTP/broker thật, chậm hơn vài giây đến vài chục giây.
+- **Đỉnh — E2E/UI test**: ít nhất, đi qua toàn hệ thống, đắt và dễ vỡ, chỉ dùng cho vài luồng sống còn (đăng nhập, thanh toán).
+
+Lý do là **chi phí và độ tin cậy tăng dần theo chiều cao**: unit test vừa nhanh vừa ổn định nên chạy ở mỗi lần lưu code; E2E chậm và nhạy cảm môi trường nên chạy ít và có chọn lọc.
+
+### Vì sao các phương án còn lại sai
+- **Thật nhiều E2E**: đây là "ice cream cone" (phễu ngược) — chậm hàng chục phút, flaky, khó biết bug nằm ở đâu. Bất khả thi để bắt **mọi** lỗi bằng E2E.
+- **Không cần unit test**: sai ngược nguyên tắc; bỏ đáy pyramid khiến vòng phản hồi chậm và mọi lỗi đều phải đi qua tầng đắt đỏ mới lộ ra.
+
+> Senior tip: con số tham khảo cho một service vừa: khoảng 70% unit, 20% integration, 10% E2E. Quan trọng hơn con số là **vòng phản hồi**: nếu phải chờ 30 phút mới biết code sai một dòng, bạn đã đặt quá nhiều trọng lượng lên đỉnh pyramid.`
+},
+{
+  id: 'qz-testing-027',
+  topic: 'testing',
+  q: 'Bạn dùng {{Mockito.mockStatic(Utility.class)}}. Vì sao nên bọc trong try-with-resources với {{MockedStatic}}?',
+  options: [
+    'Để tăng tốc độ chạy test',
+    'Vì mockStatic không mock được nếu thiếu try',
+    'Để biến static method thành instance method',
+    'MockedStatic cần được đóng (close) để gỡ mock khỏi thread hiện tại, tránh rò rỉ sang test khác chạy trên cùng thread'
+  ],
+  answer: 3,
+  explain: `**Đáp án đúng: MockedStatic cần được đóng (close) để gỡ mock khỏi thread hiện tại, tránh rò rỉ sang test khác chạy trên cùng thread.**
+
+### Vì sao đúng
+Static mocking (Mockito 3.4+) tạo một {{MockedStatic}} gắn với **thread hiện tại**. Chừng nào chưa đóng, mọi lời gọi static {{Utility.xxx()}} trên thread đó đều bị chặn và trả theo stub, kể cả ở test khác chạy sau. {{try-with-resources}} bảo đảm {{close()}} luôn được gọi (kể cả khi test ném exception):
+~~~java
+try (MockedStatic<Clock> mocked = Mockito.mockStatic(Clock.class)) {
+    mocked.when(Clock::systemUTC).thenReturn(fixedClock);
+    // ... test dùng fixedClock
+}   // tự đóng, gỡ mock khỏi thread
+~~~
+Nếu quên đóng, kết quả phụ thuộc test nào chạy trước và có thể làm hỏng các test không liên quan — một dạng rò rỉ trạng thái rất khó lần.
+
+### Vì sao các phương án còn lại sai
+- **Tăng tốc độ**: try-with-resources không ảnh hưởng hiệu năng; nó là vấn đề đúng/sai.
+- **Không có try thì không mock được**: vẫn mock được, nhưng mock tồn tại dai dẳng ngoài ý muốn.
+- **Biến static thành instance**: mock static không thay đổi bản chất method; nó chỉ đánh chặn lời gọi.
+
+> Senior tip: static mock chỉ nên dùng khi không còn cách nào khác (API bên thứ ba, thư viện cũ) vì nó can thiệp vào lớp mà bạn không sở hữu. Với code của mình, hãy bọc đối tượng cần thay thế rồi inject — sẽ không cần mockStatic và test trong sáng hơn.`
+},
+{
+  id: 'qz-testing-028',
+  topic: 'testing',
+  q: 'Đoạn code có điều kiện {{if (a && b)}}. Báo cáo JaCoCo cho 100% line coverage nhưng vẫn lọt bug. Chỉ số nào phát hiện tốt hơn?',
+  options: [
+    'Line coverage, vì nó đếm từng dòng đã chạy',
+    'Branch coverage, vì đo từng nhánh true/false của điều kiện; 100% line vẫn có thể thiếu một nhánh của &&',
+    'Mutation coverage luôn bằng line coverage',
+    'Không chỉ số coverage nào có giá trị'
+  ],
+  answer: 1,
+  explain: `**Đáp án đúng: branch coverage, vì đo từng nhánh true/false của điều kiện; 100% line vẫn có thể thiếu một nhánh của &&.**
+
+### Vì sao đúng
+**Line coverage** chỉ hỏi "dòng {{if}} có được thực thi không" — chỉ cần điều kiện đúng một lần là dòng đó được tính, dù nhánh còn lại chưa từng chạy. **Branch coverage** (còn gọi decision/condition coverage tuỳ công cụ) hỏi "mỗi đường rẽ true và false đã được đi qua chưa". Với {{a && b}}, có tới 3–4 tổ hợp (a=false; a=true,b=false; a=true,b=true); line coverage có thể xanh trong khi tổ hợp {{a=true, b=false}} chưa được test — chính chỗ bug hay ẩn.
+
+### Vì sao các phương án còn lại sai
+- **Line coverage tốt hơn**: ngược lại, line là chỉ số yếu hơn; 100% line không đảm bảo mọi nhánh.
+- **Mutation coverage = line coverage**: mutation là kỹ thuật khác (đổi code rồi xem test có bắt được không), không bằng line.
+- **Coverage vô dụng**: sai; coverage không chứng minh không có bug nhưng cho biết vùng **chưa được chạm tới**, là chỉ dẫn để viết thêm test.
+
+### Lưu ý
+Đừng tôn thờ con số: 100% branch vẫn có thể thiếu case (ví dụ tổ hợp giá trị cụ thể). Coverage là **điều kiện cần để tra vấn đề**, không phải bằng chứng đúng đắn; kết hợp với mutation test và review logic.
+
+> Senior tip: JaCoCo mặc định nhấn mạnh line + branch; khi thấy branch thấp ở một class, hãy tự hỏi "thiếu nhánh nào" thay vì cố nhồi con số. Các nhánh && / ?: / catch là nơi branch coverage có ích nhất, và cũng là nơi bug logic hay trú.`
+},
+{
+  id: 'qz-testing-029',
+  topic: 'testing',
+  q: `Đoạn test JUnit 5 sau in ra gì?
+~~~java
+class V {
+  @ParameterizedTest
+  @ValueSource(strings = {"a", "bb"})
+  void len(String s) { System.out.println(s.length()); }
+}
+~~~`,
+  options: [
+    'In 1 lần rồi lỗi vì @ValueSource cần @MethodSource',
+    'In 0 1',
+    'In 1 2',
+    'In 2 1'
+  ],
+  answer: 2,
+  explain: `**Đáp án đúng: in 1 2.**
+
+### Vì sao đúng
+{{@ValueSource}} với thuộc tính {{strings}} là nguồn tham số đơn giản nhất: mỗi phần tử là **một bộ tham số một đối số**, nên method {{len}} chạy **2 lần**: lần đầu với {{s="a"}} (in {{1}}), lần sau với {{s="bb"}} (in {{2}}). JUnit tự suy kiểu tham số {{String}} khớp với {{strings}}. Tương tự có {{@ValueSource(ints=..., doubles=...)}}, {{@NullSource}}, {{@EmptySource}}, {{@EnumSource}}.
+
+### Vì sao các phương án còn lại sai
+- **1 lần rồi lỗi**: @ValueSource độc lập, không cần @MethodSource; nó chạy hết mọi giá trị.
+- **0 1**: đảo ngược — "a" dài 1, "bb" dài 2, không phải 0 và 1.
+- **2 1**: cũng đảo; phần tử đầu là "a" nên in 1 trước.
+
+> Senior tip: @ValueSource chỉ hợp với tham số **đơn giản, một đối số**. Khi cần nhiều tham số hoặc object, chuyển sang @MethodSource hoặc @CsvSource. Và nhớ JUnit có {{@NullAndEmptySource}}, {{@NullSource}}, {{@EmptySource}} để test biên mà không phải tự khai báo.`
+},
+{
+  id: 'qz-testing-030',
+  topic: 'testing',
+  multi: true,
+  q: 'Integration test dùng chung một database thật. Những cách nào giúp **cô lập dữ liệu** giữa các test? (Chọn 2)',
+  options: [
+    'Đặt @Transactional trên lớp test để mỗi test tự rollback (hiệu quả khi thao tác qua cùng transaction/connection)',
+    'Dùng Thread.sleep để chờ test trước đó ghi xong',
+    'Mỗi test tự tạo dữ liệu với định danh riêng (unique id, tenant) thay vì phụ thuộc dữ liệu có sẵn',
+    'Chạy mọi test song song trên cùng một bản ghi để nhanh hơn'
+  ],
+  answer: [0, 2],
+  explain: `**Đáp án đúng: @Transactional để mỗi test tự rollback (khi cùng transaction/connection) · Mỗi test tự tạo dữ liệu với định danh riêng thay vì phụ thuộc dữ liệu có sẵn.**
+
+### Vì sao đúng
+- **@Transactional trên test**: Spring Test mặc định mở một transaction cho mỗi method test và **rollback khi kết thúc**, nên dữ liệu test ghi ra không tồn tại sau đó. Lưu ý: cách này chỉ "thấy" dữ liệu khi thao tác diễn ra trên **cùng connection/thread** của transaction test; nếu test đi qua HTTP thật (RANDOM_PORT) thì server dùng transaction khác và rollback không với tới.
+- **Dữ liệu định danh riêng**: mỗi test tạo bản ghi với khóa/tenant riêng (ví dụ {{userId = UUID}}) và không giả định dữ liệu khác đã tồn tại. Nhờ vậy các test độc lập, không tranh chấp, chạy song song vẫn an toàn.
+
+### Vì sao các phương án còn lại sai
+- **Thread.sleep**: không giải quyết cô lập dữ liệu, chỉ che race; còn làm test chậm và flaky.
+- **Chạy song song trên cùng bản ghi**: các test ghi đè lẫn nhau, kết quả không xác định — nguồn flaky kinh điển. Song song chỉ an toàn khi dữ liệu đã được phân vùng (mỗi test một khóa riêng).
+
+### Lưu ý
+Rollback không phải viên đạn bạc: với DB thật dùng chung và test đi qua nhiều tầng (server riêng, message queue), hãy kết hợp dọn dẹp tường minh ({{@Sql}}, truncate theo class) và dữ liệu định danh riêng.
+
+> Senior tip: nguyên tắc vàng của integration test là **"mỗi test tự dựng bối cảnh của nó"** (self-contained). Khi một test đỏ chỉ vì test khác đã chạy trước, đó là lỗi thiết kế test, không phải lỗi may rủi — hãy cô lập dữ liệu trước khi tăng sleep hay retry.`
 }
 
 );
