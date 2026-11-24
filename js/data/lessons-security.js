@@ -5228,4 +5228,166 @@ Bẫy thường gặp:
   related: ['security-001', 'security-002'],
   tags: ['IDOR', 'Authorization', 'Service Layer', 'Access Control'],
 },
+  {
+  id: 'lesson-security-015',
+  track: 'security',
+  order: 15,
+  title: 'JWT từ bên trong: ký và kiểm tra HMAC-SHA256',
+  level: 'senior',
+  minutes: 30,
+  goals: [
+    'Giải thích được JWT gồm 3 phần và vì sao chỉ ký chứ không mã hóa',
+    'Tự ký và kiểm tra HMAC-SHA256 bằng javax.crypto.Mac',
+    'Kiểm tra exp và từ chối alg sai (alg:none, alg confusion)'
+  ],
+  body: `**Tóm tắt:** JWT là 3 chuỗi Base64URL nối bằng dấu chấm: header.payload.signature. Chữ ký HMAC-SHA256 chứng minh payload chưa bị sửa, nhưng payload chỉ là Base64URL nên ai cũng đọc được — JWT không phải là mã hóa.
+
+### JWT là gì
+JWT (JSON Web Token) là một chuỗi compact dùng để truyền thông tin giữa các bên. Nó gồm 3 phần:
+
+1. **Header**: metadata, ví dụ {"alg":"HS256","typ":"JWT"}.
+2. **Payload**: claims (sub, exp, iat, roles...).
+3. **Signature**: chữ ký HMAC-SHA256 của header.payload với secret.
+
+Các phần được nối bằng dấu chấm: header.payload.signature. Mỗi phần là Base64URL (Base64 với + / = thay bằng - _ và bỏ padding).
+
+### Vì sao ký mà không mã hóa
+Base64URL chỉ là mã hóa ký tự, không phải bảo mật. Bất kỳ ai cũng giải mã được payload. JWT dùng chữ ký để đảm bảo **tính toàn vẹn** (integrity) và **xác thực nguồn gốc** (authenticity), không phải bảo mật dữ liệu. Vì vậy không nên đặt thông tin nhạy cảm (password, SSN) vào payload.
+
+### Ký HMAC-SHA256
+HMAC (Hash-based Message Authentication Code) dùng một secret key để tạo hash. Chỉ ai có secret mới tạo được chữ ký hợp lệ. javax.crypto.Mac là API JDK để làm HMAC.
+
+~~~java
+import javax.crypto.Mac;
+import javax.crypto.spec.SecretKeySpec;
+import java.nio.charset.StandardCharsets;
+import java.util.Base64;
+
+String secret = "my-secret-key";
+String data = "header.payload";
+Mac mac = Mac.getInstance("HmacSHA256");
+mac.init(new SecretKeySpec(secret.getBytes(StandardCharsets.UTF_8), "HmacSHA256"));
+byte[] sig = mac.doFinal(data.getBytes(StandardCharsets.UTF_8));
+String signature = Base64.getUrlEncoder().withoutPadding().encodeToString(sig);
+~~~
+
+### Kiểm tra exp
+Claim exp (expiration) là timestamp Unix (giây). Server phải so sánh với thời gian hiện tại. Nếu now >= exp thì token hết hạn, phải từ chối.
+
+### Từ chối alg sai
+Lỗi kinh điển: attacker đổi header alg thành "none" và bỏ signature. Nếu server tin header và không kiểm tra alg, attacker có thể tự ký token. Hoặc alg confusion: server dùng RS256 (RSA public key) nhưng attacker gửi HS256 với public key làm secret. Vì vậy server phải **cố định alg** (ví dụ chỉ HS256) và từ chối mọi alg khác.
+
+### Ví dụ đời thực
+Một API gateway nhận JWT từ client. Nó kiểm tra chữ ký HMAC với secret chung, kiểm tra exp, và kiểm tra alg == "HS256". Nếu attacker gửi token alg "none", gateway từ chối ngay.
+
+### Trả lời mẫu khi phỏng vấn
+JWT gồm 3 phần Base64URL. Chữ ký HMAC-SHA256 đảm bảo payload không bị sửa, nhưng payload ai cũng đọc được nên không đặt thông tin nhạy cảm. Server phải kiểm tra chữ ký, exp, và cố định alg để tránh alg:none và alg confusion.
+
+> Senior tip: Luôn cố định alg ở server, không tin header. Dùng library đã kiểm tra đầy đủ (jjwt, nimbus) thay vì tự viết.
+### Liên hệ phỏng vấn
+Interviewer hay hỏi tiếp: JWT có mã hóa không, exp xử lý thế nào, alg:none là gì. Làm bài tập dưới đây để trả lời được.
+`,
+  exercises: [
+    {
+      title: 'Ký và kiểm tra JWT HMAC-SHA256',
+      prompt: 'Viết class JwtUtil có 2 method: sign(payload, secret) trả về signature Base64URL, và verify(payload, secret, signature) trả về boolean. Dùng javax.crypto.Mac HmacSHA256.',
+      starter: 'import javax.crypto.Mac;\nimport javax.crypto.spec.SecretKeySpec;\nimport java.util.Base64;\n\nclass JwtUtil {\n    static String sign(String payload, String secret) {\n        // TODO\n        throw new UnsupportedOperationException("TODO");\n    }\n    static boolean verify(String payload, String secret, String signature) {\n        // TODO\n        throw new UnsupportedOperationException("TODO");\n    }\n}',
+      tests: 'public class Main {\n    static int passed = 0, total = 0;\n    static void check(String name, boolean ok, String detail) {\n        total++;\n        if (ok) { passed++; System.out.println("PASS " + name); }\n        else System.out.println("FAIL " + name + ": " + detail);\n    }\n    public static void main(String[] args) {\n        String payload = "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjMifQ";\n        String secret = "secret-key";\n        String sig = JwtUtil.sign(payload, secret);\n        check("sign not null", sig != null && !sig.isEmpty(), "sig rong");\n        check("verify correct", JwtUtil.verify(payload, secret, sig), "verify sai");\n        check("verify wrong secret", !JwtUtil.verify(payload, "wrong", sig), "verify sai");\n        check("verify tampered", !JwtUtil.verify(payload + "x", secret, sig), "verify sai");\n        System.out.println("RESULT " + passed + "/" + total);\n    }\n}',
+      reference: 'import javax.crypto.Mac;\nimport javax.crypto.spec.SecretKeySpec;\nimport java.nio.charset.StandardCharsets;\nimport java.util.Base64;\n\nclass JwtUtil {\n    static String sign(String payload, String secret) {\n        try {\n            Mac mac = Mac.getInstance("HmacSHA256");\n            mac.init(new SecretKeySpec(secret.getBytes(StandardCharsets.UTF_8), "HmacSHA256"));\n            byte[] sig = mac.doFinal(payload.getBytes(StandardCharsets.UTF_8));\n            return Base64.getUrlEncoder().withoutPadding().encodeToString(sig);\n        } catch (Exception e) {\n            throw new RuntimeException(e);\n        }\n    }\n    static boolean verify(String payload, String secret, String signature) {\n        String expected = sign(payload, secret);\n        return java.security.MessageDigest.isEqual(\n            expected.getBytes(StandardCharsets.UTF_8), signature.getBytes(StandardCharsets.UTF_8));\n    }\n}',
+      hints: ['Mac.getInstance("HmacSHA256")', 'SecretKeySpec(secret.getBytes(), "HmacSHA256")'],
+      explain: 'Lỗi hay gặp: dùng Base64 chuẩn thay vì Base64URL, hoặc so sánh chữ ký bằng equals (timing attack). Dùng MessageDigest.isEqual để so sánh hằng thời gian.'
+    }
+  ],
+  check: [
+    { q: 'JWT có mã hóa payload không?', options: ['Có, payload được mã hóa', 'Không, payload chỉ Base64URL', 'Có nếu dùng HS256', 'Tùy thư viện'], answer: 1, explain: 'Payload chỉ Base64URL, ai cũng giải mã được. JWT ký để đảm bảo toàn vẹn, không mã hóa.' },
+    { q: 'Lỗi alg:none là gì?', options: ['Token không có alg', 'Attacker đổi alg thành none và bỏ signature', 'Alg sai định dạng', 'Token hết hạn'], answer: 1, explain: 'Attacker đổi header alg thành none và bỏ signature; nếu server tin header thì chấp nhận token không chữ ký.' }
+  ],
+  related: ['security-001'],
+  tags: ['JWT', 'HMAC', 'Mac', 'exp', 'alg'],
+  },
+  {
+  id: 'lesson-security-016',
+  track: 'security',
+  order: 16,
+  title: 'Lưu mật khẩu đúng cách: PBKDF2 và so sánh hằng thời gian',
+  level: 'senior',
+  minutes: 30,
+  goals: [
+    'Giải thích được vì sao không lưu plaintext và không dùng MD5/SHA1',
+    'Tự hash mật khẩu bằng PBKDF2 với salt bằng SecretKeyFactory',
+    'So sánh hash hằng thời gian bằng MessageDigest.isEqual'
+  ],
+  body: `**Tóm tắt:** Mật khẩu phải được hash bằng hàm chậm có salt (PBKDF2/bcrypt/argon2). So sánh hash phải hằng thời gian (MessageDigest.isEqual) để tránh timing attack. Không dùng MD5/SHA1.
+
+### Vì sao không plaintext và không MD5/SHA1
+Lưu plaintext: nếu DB bị lộ, attacker có ngay mật khẩu. Dùng MD5/SHA1: hash nhanh, attacker brute-force hàng tỷ/giây bằng GPU. Cần hàm chậm có salt.
+
+### PBKDF2
+PBKDF2 (Password-Based Key Derivation Function 2) lặp hash nhiều lần để làm chậm. JDK cung cấp qua SecretKeyFactory với thuật toán "PBKDF2WithHmacSHA256". Salt là chuỗi ngẫu nhiên cho mỗi user, lưu kèm hash.
+
+~~~java
+import javax.crypto.SecretKeyFactory;
+import javax.crypto.spec.PBEKeySpec;
+import java.security.SecureRandom;
+import java.util.Base64;
+
+byte[] salt = new byte[16];
+new SecureRandom().nextBytes(salt);
+PBEKeySpec spec = new PBEKeySpec(password.toCharArray(), salt, 65536, 256);
+SecretKeyFactory f = SecretKeyFactory.getInstance("PBKDF2WithHmacSHA256");
+byte[] hash = f.generateSecret(spec).getEncoded();
+~~~
+
+### So sánh hằng thời gian
+So sánh bằng String.equals() trả về false ngay khi gặp ký tự khác → attacker đo thời gian để đoán hash. MessageDigest.isEqual so sánh toàn bộ byte trong thời gian cố định.
+
+~~~java
+MessageDigest.isEqual(storedHash, computedHash);
+~~~
+
+### Ví dụ đời thực
+Một hệ thống auth lưu password hash PBKDF2 + salt. Khi login, hash lại password nhập vào với salt đã lưu, so sánh hằng thời gian. Nếu DB lộ, attacker phải brute-force từng password với cost factor cao. Một GPU cao cấp có thể thử rất nhiều PBKDF2-HMAC-SHA256 (100.000 vòng) mỗi giây vì không tốn RAM, nên password 8 ký tự thường (chữ thường/số) có thể bị dò trong vài ngày đến vài tuần, không phải hàng năm — chỉ password dài, ngẫu nhiên mới an toàn thực sự.
+
+### Lỗi hay gặp
+- Dùng MD5/SHA1: quá nhanh, GPU thử tỷ/giây.
+- Không salt: rainbow table tra cứu ngay.
+- Iterations quá thấp: không đủ chậm.
+- So sánh bằng equals: timing attack đoán hash.
+
+### Bảng so sánh
+| Thuật toán | Tốc độ | Salt | Khuyến nghị |
+|---|---|---|---|
+| MD5/SHA1 | Rất nhanh | Có (thường bỏ qua) | Không dùng |
+| PBKDF2 | Chậm vừa | Có | OK |
+| bcrypt | Chậm | Có | Tốt |
+| argon2 | Chậm + memory hard | Có | Tốt nhất |
+
+### Ví dụ đời thực 2
+Một hệ thống cũ dùng SHA1 không salt bị lộ DB. Attacker dùng rainbow table và crack 80% password trong vài phút. Sau khi chuyển sang PBKDF2 + salt, cùng DB bị lộ, attacker không crack được password nào trong thời gian hợp lý.
+
+### Trả lời mẫu khi phỏng vấn
+Mật khẩu hash bằng PBKDF2 với salt và iterations cao. So sánh bằng MessageDigest.isEqual để tránh timing attack. Không dùng MD5/SHA1 vì quá nhanh.
+
+> Senior tip: Cost factor tăng theo phần cứng; bcrypt/argon2 tốt hơn PBKDF2 cho password. Spring Security cung cấp PasswordEncoder.
+### Liên hệ phỏng vấn
+Interviewer hay hỏi tiếp: vì sao salt, vì sao timing attack, bcrypt vs PBKDF2.
+`,
+  exercises: [
+    {
+      title: 'Hash và verify password bằng PBKDF2',
+      prompt: 'Viết class PasswordHasher với hash(password) trả về "salt:hash" (Base64) và verify(password, stored) trả về boolean. Dùng SecretKeyFactory PBKDF2WithHmacSHA256, salt 16 byte, iterations 10000, key length 256 bit.',
+      starter: 'import javax.crypto.SecretKeyFactory;\nimport javax.crypto.spec.PBEKeySpec;\nimport java.security.SecureRandom;\nimport java.util.Base64;\n\nclass PasswordHasher {\n    static String hash(String password) {\n        // TODO\n        throw new UnsupportedOperationException("TODO");\n    }\n    static boolean verify(String password, String stored) {\n        // TODO\n        throw new UnsupportedOperationException("TODO");\n    }\n}',
+      tests: 'public class Main {\n    static int passed = 0, total = 0;\n    static void check(String name, boolean ok, String detail) {\n        total++;\n        if (ok) { passed++; System.out.println("PASS " + name); }\n        else System.out.println("FAIL " + name + ": " + detail);\n    }\n    public static void main(String[] args) {\n        String stored = PasswordHasher.hash("P@ssw0rd");\n        check("hash not null", stored != null && stored.contains(":"), "hash rong");\n        check("verify correct", PasswordHasher.verify("P@ssw0rd", stored), "verify sai");\n        check("verify wrong", !PasswordHasher.verify("wrong", stored), "verify sai");\n        String stored2 = PasswordHasher.hash("P@ssw0rd");\n        check("salt random", !stored.equals(stored2), "salt khong random");\n        System.out.println("RESULT " + passed + "/" + total);\n    }\n}',
+      reference: 'import javax.crypto.SecretKeyFactory;\nimport javax.crypto.spec.PBEKeySpec;\nimport java.security.SecureRandom;\nimport java.util.Base64;\n\nclass PasswordHasher {\n    static String hash(String password) {\n        try {\n            byte[] salt = new byte[16];\n            new SecureRandom().nextBytes(salt);\n            PBEKeySpec spec = new PBEKeySpec(password.toCharArray(), salt, 10000, 256);\n            SecretKeyFactory f = SecretKeyFactory.getInstance("PBKDF2WithHmacSHA256");\n            byte[] hash = f.generateSecret(spec).getEncoded();\n            return Base64.getEncoder().encodeToString(salt) + ":" + Base64.getEncoder().encodeToString(hash);\n        } catch (Exception e) {\n            throw new RuntimeException(e);\n        }\n    }\n    static boolean verify(String password, String stored) {\n        try {\n            String[] parts = stored.split(":");\n            byte[] salt = Base64.getDecoder().decode(parts[0]);\n            byte[] expected = Base64.getDecoder().decode(parts[1]);\n            PBEKeySpec spec = new PBEKeySpec(password.toCharArray(), salt, 10000, 256);\n            SecretKeyFactory f = SecretKeyFactory.getInstance("PBKDF2WithHmacSHA256");\n            byte[] computed = f.generateSecret(spec).getEncoded();\n            return java.security.MessageDigest.isEqual(expected, computed);\n        } catch (Exception e) {\n            return false;\n        }\n    }\n}',
+      hints: ['SecureRandom.nextBytes(salt)', 'PBEKeySpec(password.toCharArray(), salt, 10000, 256)'],
+      explain: 'Lỗi hay gặp: không dùng salt (rainbow table), dùng iterations thấp, so sánh bằng equals (timing attack). Dùng MessageDigest.isEqual.'
+    }
+  ],
+  check: [
+    { q: 'Vì sao cần salt?', options: ['Để mã hóa', 'Để mỗi user có hash khác nhau ngay cả mật khẩu giống', 'Để tăng tốc', 'Để lưu plaintext'], answer: 1, explain: 'Salt ngẫu nhiên cho mỗi user, tránh rainbow table và hash giống nhau.' },
+    { q: 'So sánh hash nên dùng gì?', options: ['String.equals', 'MessageDigest.isEqual', '==', 'Arrays.equals'], answer: 1, explain: 'MessageDigest.isEqual so sánh hằng thời gian, tránh timing attack.' }
+  ],
+  related: ['security-002'],
+  tags: ['password', 'PBKDF2', 'salt', 'timing attack'],
+  },
 );
