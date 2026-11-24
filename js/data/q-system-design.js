@@ -12841,4 +12841,203 @@ Khi chọn công nghệ cho hệ thống Java, tôi không theo xu hướng mà 
   ],
   tags: ['technology selection', 'PoC', 'database', 'message broker', 'vendor lock-in', 'architecture']
 },
+{
+  id: 'design-071',
+  topic: 'design',
+  level: 'senior',
+  q: 'Bạn thiết kế hệ thống đặt lịch khám cho chuỗi 50 phòng khám: giữ slot, hết hạn giữ chỗ, lịch bác sĩ. Xử lý thế nào để không double-booking?',
+  a: `**Tóm tắt:** Dùng bảng slot với trạng thái AVAILABLE/HELD/BOOKED, giữ chỗ có thời hạn (hold TTL) bằng Redis + DB row lock; xác nhận đặt lịch dùng transaction + unique constraint trên (doctor_id, start_time); job quét slot hết hạn trả về AVAILABLE.
+
+### 1. Mô hình dữ liệu
+Bảng {{slot}}: id, clinic_id, doctor_id, start_time, end_time, status (AVAILABLE/HELD/BOOKED), held_by, held_until, version (optimistic lock).
+
+### 2. Luồng giữ chỗ (hold)
+1. User chọn slot → API kiểm tra status AVAILABLE.
+2. UPDATE slot SET status=HELD, held_by=user, held_until=now+5min WHERE id=? AND status=AVAILABLE (row-level lock).
+3. Nếu 0 row affected → slot đã bị người khác giữ → trả lỗi.
+4. Lưu hold token vào Redis với TTL 5 phút (backup, tự hết hạn).
+
+### 3. Xác nhận đặt lịch (confirm)
+BEGIN TRANSACTION
+SELECT slot ... FOR UPDATE
+kiểm tra held_by == user && held_until > now
+INSERT appointment (unique (doctor_id, start_time))
+UPDATE slot SET status=BOOKED
+COMMIT
+
+Unique constraint là chốt chặn cuối cùng chống double-booking dù race condition.
+
+### 4. Hết hạn giữ chỗ
+Scheduled job mỗi 30s: UPDATE slot SET status=AVAILABLE WHERE status=HELD AND held_until < now. Hoặc dùng Redis keyspace notification.
+
+### 5. Lịch bác sĩ
+Bảng {{doctor_schedule}}: doctor_id, day_of_week, start, end, clinic_id. Slot sinh theo schedule (batch job mỗi tuần). Nghỉ phép override.
+
+### Bảng trade-off
+| Cách | Ưu | Nhược |
+|---|---|---|
+| DB lock pessimistic | Đơn giản, chính xác | Contention cao |
+| Optimistic lock version | Throughput cao | Retry |
+| Redis distributed lock | Nhanh | Phức tạp, clock skew |
+
+### Pitfall production
+- Clock skew giữa app và DB: dùng DB now() cho held_until.
+- Hold TTL quá ngắn: user chưa điền form đã hết.
+- Không có idempotency key: retry tạo 2 appointment.
+
+### Ví dụ đời thực
+Phòng khám A có 10 bác sĩ, mỗi người 16 slot/ngày = 160 slot. Giờ cao điểm 100 user cùng chọn slot 9h bác X → row lock serialize → chỉ 1 người giữ được, còn lại nhận "slot vừa được người khác chọn" trong < 50ms. Hold 5 phút, 90% confirm trong 2 phút. Job quét hết hạn chạy mỗi 30s, slot trả về trong ≤ 5.5 phút.
+
+### Trả lời mẫu khi phỏng vấn
+Tôi thiết kế slot như một state machine AVAILABLE/HELD/BOOKED với row-level lock pessimistic ở DB. Khi user chọn slot, transaction UPDATE với điều kiện status=AVAILABLE; nếu 0 row thì slot đã bị giữ. Hold có TTL 5 phút lưu cả DB (held_until) và Redis (backup tự hết hạn). Confirm đặt lịch dùng transaction: SELECT FOR UPDATE, kiểm tra hold hợp lệ, INSERT appointment với unique constraint (doctor_id, start_time) làm chốt chặn cuối cùng chống double-booking. Job quét mỗi 30s trả slot hết hạn về AVAILABLE. Lịch bác sĩ lưu ở bảng schedule, sinh slot theo tuần, có override nghỉ phép. Idempotency key trên confirm để retry an toàn. Ưu tiên correctness hơn throughput vì đặt lịch y tế không được trùng.
+
+> Senior tip: Unique constraint trên (doctor_id, start_time) là "phao cứu sinh" cuối cùng; mọi logic ở app chỉ là tối ưu UX, DB constraint mới là sự thật.
+`,
+  follow: ['Nếu user giữ slot rồi đóng trình duyệt, làm sao trả slot nhanh nhất?', 'So sánh pessimistic lock vs optimistic lock trong bài toán đặt lịch.', 'Làm sao scale lên 500 phòng khám với hàng triệu slot/ngày?'],
+  tags: ['booking', 'slot', 'hold', 'locking', 'scheduling']
+},
+{
+  id: 'design-072',
+  topic: 'design',
+  level: 'senior',
+  q: 'Bạn cần import file Excel 500.000 dòng vào hệ thống mà không làm treo ứng dụng. Thiết kế thế nào?',
+  a: `**Tóm tắt:** Không xử lý đồng bộ trong request; nhận file → lưu storage → publish job Kafka → worker chunked batch insert với backpressure; báo tiến độ qua polling/SSE; retry + DLQ; idempotent bằng checksum.
+
+### 1. Tại sao đồng bộ là sai
+HTTP request timeout ~30-60s. Parse 500k dòng + insert DB có thể mất phút-giờ → connection pool cạn, thread bị chặn, OOM.
+
+### 2. Kiến trúc async
+~~~seq
+title: Import Excel async
+actors: Client | API | S3 | Kafka | Worker | DB
+Client -> API: upload file
+API -> S3: lưu file
+API -> DB: insert import_job (PENDING, checksum)
+API --> Client: 202 Accepted + jobId
+API -> Kafka: publish import.requested
+Worker -> S3: download file
+Worker -> Worker: parse streaming (Apache POI XSSFReader)
+Worker -> DB: batch insert 1000 dòng/transaction
+Worker -> DB: update progress
+Worker --> Client: SSE/poll progress
+~~~
+
+### 3. Streaming parse
+Dùng Apache POI {{XSSFReader}} (event model) để đọc từng row mà không load toàn bộ file vào heap. Chunk 1000 rows → batch insert.
+
+### 4. Backpressure & throughput
+- Worker concurrency giới hạn (ví dụ 4 thread).
+- Batch size 1000, mỗi batch 1 transaction.
+- Nếu DB chậm → Kafka consumer lag tăng → auto scale worker.
+- Rate limit theo DB connection pool (HikariCP max 20).
+
+### 5. Idempotency & retry
+- Checksum file (SHA-256) → nếu đã import thì trả kết quả cũ.
+- Mỗi row có business key → upsert (INSERT ... ON CONFLICT UPDATE) để retry an toàn.
+- Lỗi từng row → ghi vào bảng import_error, không fail cả job.
+- Job fail → Kafka retry 3 lần → DLQ.
+
+### 6. Tiến độ
+Bảng import_job: status, total_rows, processed_rows, failed_rows, started_at, finished_at. Client poll mỗi 2s hoặc SSE.
+
+### Bảng trade-off
+| Cách | Throughput | Memory | Complexity |
+|---|---|---|---|
+| Đồng bộ parse all | Thấp | OOM risk | Thấp |
+| Async chunked | Cao | Thấp | Cao |
+| DB COPY | Rất cao | Thấp | Trung bình (PostgreSQL specific) |
+
+### Pitfall production
+- Apache POI mặc định load toàn bộ → OOM. Phải dùng streaming.
+- Batch quá lớn → transaction timeout. Giữ ≤ 1000.
+- Không validate header → import sai cột.
+- File chứa formula → evaluate chậm. Convert sang value trước.
+
+### Ví dụ đời thực
+File Excel 500k dòng, 50 cột, ~80MB. Synchronous: 4 phút, OOM tại 256MB heap, connection pool cạn → app treo. Async chunked: API trả 202 trong 200ms, worker parse streaming 5 phút, batch insert 500 batch × 1000 row, DB CPU 40%, progress cập nhật mỗi batch. Client thấy progress bar. Nếu fail ở row 300k, retry từ checkpoint, không import lại từ đầu.
+
+### Trả lời mẫu khi phỏng vấn
+Tôi không xử lý import đồng bộ trong HTTP request. Client upload file lên S3 qua presigned URL, API tạo import_job với checksum SHA-256 và publish event Kafka. Worker download file, parse streaming bằng Apache POI XSSFReader để không OOM, chunk 1000 rows per transaction batch insert với upsert theo business key để idempotent. Progress cập nhật mỗi batch vào DB, client poll hoặc SSE. Lỗi từng row ghi vào bảng import_error, không fail cả job. Job retry 3 lần qua Kafka, fail cuối cùng vào DLQ. Backpressure qua consumer concurrency và connection pool. PostgreSQL COPY có thể dùng cho throughput cao hơn. Checksum chống duplicate import.
+
+> Senior tip: Streaming parse (XSSFReader) là bắt buộc cho file lớn; load toàn bộ workbook vào heap là lý do số 1 gây OOM khi import Excel.
+`,
+  follow: ['Làm sao đảm bảo thứ tự xử lý nếu có dependency giữa các row?', 'So sánh Kafka vs RabbitMQ cho job queue import.', 'Làm sao rollback nếu import fail ở giữa chừng?'],
+  tags: ['import', 'excel', 'async', 'kafka', 'batch', 'streaming']
+},
+{
+  id: 'design-073',
+  topic: 'design',
+  level: 'lead',
+  q: 'Bạn thiết kế xuất hoá đơn điện tử gửi cơ quan thuế với retry và đối soát. Xử lý thế nào để không mất hoá đơn và không gửi trùng?',
+  a: `**Tóm tắt:** Outbox pattern: lưu hoá đơn + event trong cùng transaction DB; worker publish sang thuế qua API với idempotency key; retry exponential backoff + DLQ; đối soát định kỳ so sánh trạng thái local vs thuế; reconciliation job phát hiện lệch.
+
+### 1. Yêu cầu nghiệp vụ
+- Hoá đơn phải được gửi đến cơ quan thuế (TCT) trong thời gian quy định.
+- Không gửi trùng (idempotent).
+- Không mất (durable).
+- Có thể retry khi thuế downtime.
+- Đối soát để phát hiện lệch.
+
+### 2. Outbox pattern
+Trong transaction tạo đơn hàng:
+INSERT invoice (status=PENDING)
+INSERT outbox_event (type=INVOICE_SUBMIT, payload, status=PENDING)
+COMMIT
+
+Worker poll outbox → gửi HTTP đến thuế với idempotency key = invoice_id → đánh dấu SENT. Nếu crash trước mark SENT → retry gửi, thuế dedup bằng idempotency key.
+
+### 3. State machine hoá đơn
+PENDING → SUBMITTED → ACCEPTED / REJECTED → (nếu rejected) CORRECTED → SUBMITTED.
+
+### 4. Retry strategy
+- Exponential backoff: 1s, 2s, 4s, 8s, ... max 1h.
+- Max retry 10 lần → DLQ + alert.
+- Phân biệt lỗi: 4xx (không retry, mark REJECTED), 5xx/timeout (retry).
+
+### 5. Idempotency key
+Gửi header {{Idempotency-Key: invoice_id}}. Thuế trả cùng kết quả nếu key đã thấy. Lưu response vào DB để trả lại khi retry.
+
+### 6. Đối soát (reconciliation)
+Job chạy mỗi đêm:
+- Lấy danh sách invoice status SUBMITTED/ACCEPTED local.
+- Gọi API thuế query theo ngày.
+- So sánh: local có nhưng thuế không có → retry gửi; thuế có nhưng local không → điều tra (có thể manual).
+- Ghi reconciliation_report.
+
+### 7. Sơ đồ sequence
+~~~seq
+title: Submit invoice
+actors: App | DB | Worker | TaxAPI
+App -> DB: INSERT invoice + outbox (tx)
+Worker -> DB: poll outbox PENDING
+Worker -> TaxAPI: POST invoice (Idempotency-Key)
+TaxAPI --> Worker: 200 accepted
+Worker -> DB: mark SENT + ACCEPTED
+~~~
+
+### Bảng trade-off
+| Pattern | Consistency | Complexity |
+|---|---|---|
+| Direct sync call | Weak (crash mất) | Thấp |
+| Outbox + worker | Strong (at-least-once) | Trung bình |
+| Saga + compensating | Strong | Cao |
+
+### Pitfall production
+- Thuế API rate limit → queue + throttle.
+- Idempotency key phải stable (invoice_id), không dùng timestamp.
+- Clock skew: dùng server thuế trả về timestamp.
+- Không lưu raw response → không điều tra được.
+- Reconciliation phải idempotent và không gửi duplicate alert.
+
+### Ví dụ đời thực
+Hệ thống bán hàng 10k đơn/ngày. Thuế API downtime 2h vào giờ cao điểm. Outbox giữ 1200 event PENDING. Worker retry exponential, khi thuế online lại drain queue trong 8 phút. Reconciliation đêm phát hiện 3 invoice local ACCEPTED nhưng thuế trả REJECTED (lỗi schema) → alert team, sửa và resend. Không mất hoá đơn nào, không gửi trùng nhờ idempotency key.
+
+### Trả lời mẫu khi phỏng vấn
+Tôi dùng Outbox pattern: trong transaction tạo đơn, insert cả invoice và outbox_event. Worker poll outbox, gửi HTTP đến thuế với Idempotency-Key = invoice_id để dedup. Lỗi 5xx/timeout retry exponential backoff, 4xx mark REJECTED không retry. Sau 10 lần fail → DLQ + alert. State machine rõ ràng PENDING→SUBMITTED→ACCEPTED/REJECTED. Reconciliation job đêm so sánh local vs thuế: local có thuế không có → retry; thuế có local không có → điều tra. Lưu raw response để audit. At-least-once delivery + idempotency key = exactly-once hiệu quả. Đây là pattern chuẩn cho integration với hệ thống bên ngoài không đáng tin.
+
+> Senior tip: Outbox + idempotency key là cặp bài trùng cho mọi integration với hệ thống bên ngoài; "at-least-once + dedup" đơn giản và robust hơn cố gắng "exactly-once".
+`,
+  follow: ['So sánh Outbox pattern vs Saga pattern.', 'Làm sao xử lý khi thuế thay đổi schema hoá đơn?', 'Thiết kế dead letter queue và alerting cho integration fail.'],
+  tags: ['invoice', 'outbox', 'idempotency', 'retry', 'reconciliation', 'tax']
+}
 );
