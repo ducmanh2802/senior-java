@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
-# Warm jsDelivr for the pinned DATA_SHA right after a push: the first requests for a brand-new commit can get
+# Warm jsDelivr for the commit just pushed (HEAD; stamp-data-sha.sh pins it at the next push): the first requests for a brand-new commit can get
 # 403 while jsDelivr fetches it from GitHub (seen 2026-11-24 on index-light.js). Fetches every js/data + js/i18n
 # file once on both hostnames, 8 at a time, retrying a failure up to 5 times. Run in the background by autopilot.
 cd "$(dirname "$0")/.." || exit 1
-sha=$(grep -o "DATA_SHA = '[0-9a-f]*'" js/core/data-base.js | grep -o "[0-9a-f]\{40\}")
+sha=${1:-$(git rev-parse HEAD)}   # default: the commit just pushed (pinned by the NEXT push)
 [ -n "$sha" ] || exit 1
 fetch() {
   local h u i
