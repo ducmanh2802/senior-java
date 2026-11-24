@@ -6353,4 +6353,237 @@ SecurityFilterChain api(HttpSecurity http) throws Exception {
 > Senior tip: luôn breakpoint hoặc log {{authentication.getAuthorities()}} sau khi cấu hình converter để xác nhận authority thực tế. Đây là lỗi phổ biến nhất khiến {{hasAuthority("SCOPE_read")}} luôn false dù token có scope read.`
 },
  
+  {
+  id: 'qz-db-931',
+  topic: 'db',
+  q: `Trong PostgreSQL isolation level Repeatable Read, transaction A đọc X=100. Transaction B commit cập nhật X=200. A đọc lại X. Kết quả?`,
+  options: [
+    '200 (đọc giá trị mới)',
+    '100 (snapshot của A giữ nguyên)',
+    'serialization_failure',
+    'NULL, A bị rollback tự động'
+  ],
+  answer: 1,
+  explain: `**Đáp án đúng: 100, vì Repeatable Read giữ snapshot.**
+
+### Vì sao đúng
+PostgreSQL thực hiện Repeatable Read bằng MVCC snapshot: mọi statement trong transaction thấy cùng một snapshot dữ liệu được chụp lúc transaction bắt đầu. Vì vậy A vẫn thấy X=100 dù B đã commit X=200.
+
+### Vì sao các phương án còn lại sai
+- **200**: hành vi của Read Committed, nơi mỗi statement lấy snapshot mới.
+- **serialization_failure**: xảy ra khi hai transaction cùng ghi và xung đột, không phải khi chỉ đọc.
+- **NULL/rollback**: PostgreSQL không tự rollback chỉ vì có commit khác.
+
+> Senior tip: Repeatable Read trong PostgreSQL mạnh hơn chuẩn SQL (không cho phantom read); cần phát hiện xung đột ghi thì dùng {{SERIALIZABLE}}.`
+  },
+  {
+  id: 'qz-db-932',
+  topic: 'db',
+  q: `Câu nào mô tả đúng về MVCC trong PostgreSQL?`,
+  options: [
+    'MVCC khóa toàn bộ bảng khi có transaction ghi',
+    'Mỗi phiên bản dòng (tuple) được giữ với xmin/xmax; reader không bị writer chặn và writer không bị reader chặn',
+    'MVCC chỉ hoạt động với isolation level Serializable',
+    'MVCC tự động xóa các dòng cũ ngay khi transaction commit'
+  ],
+  answer: 1,
+  explain: `**Đáp án đúng: MVCC giữ nhiều phiên bản dòng, reader/writer không chặn nhau.**
+
+### Vì sao đúng
+PostgreSQL lưu mỗi thay đổi thành một tuple mới với {{xmin}} (transaction tạo) và {{xmax}} (transaction xóa/cập nhật). Transaction đọc chọn tuple phù hợp snapshot của mình, nên reader không bị writer chặn và writer không bị reader chặn.
+
+### Vì sao các phương án còn lại sai
+- **Khóa toàn bảng**: đó là pessimistic locking truyền thống, không phải MVCC.
+- **Chỉ Serializable**: MVCC áp dụng ở mọi isolation level.
+- **Tự xóa ngay**: dòng cũ được VACUUM dọn sau, không ngay lập tức.
+
+> Senior tip: MVCC làm PostgreSQL đọc nhanh nhưng tạo dead tuple cần VACUUM; theo dõi {{pg_stat_user_tables.n_dead_tup}}.`
+  },
+  {
+  id: 'qz-db-933',
+  topic: 'db',
+  multi: true,
+  q: `Khi nào nên dùng index GIN thay vì B-tree trong PostgreSQL? (Chọn 2)`,
+  options: [
+    'Tìm kiếm full-text (tsvector)',
+    'Truy vấn JSONB với toán tử {{@>}}',
+    'Index cột số nguyên để range scan',
+    'Khóa chính tự tăng',
+    'Index cột boolean duy nhất'
+  ],
+  answer: [0, 1],
+  explain: `**Đáp án đúng: full-text search và JSONB containment.**
+
+### Vì sao đúng
+GIN (Generalized Inverted Index) tối ưu cho dữ liệu composite chứa nhiều phần tử: full-text search trên {{tsvector}}, và JSONB với toán tử containment {{@>}}, {{?}}, {{?|}}.
+
+### Vì sao các phương án còn lại sai
+- **Range scan số nguyên**: B-tree tối ưu cho so sánh thứ tự và range.
+- **Khóa chính tự tăng**: B-tree mặc định, hỗ trợ unique và range.
+- **Boolean duy nhất**: B-tree đủ dùng; GIN tốn chi phí ghi lớn cho dữ liệu đơn giản.
+
+> Senior tip: GIN chậm khi ghi; cân nhắc {{fastupdate}} và theo dõi kích thước index.`
+  },
+  {
+  id: 'qz-db-934',
+  topic: 'db',
+  q: `BRIN index trong PostgreSQL phù hợp nhất cho loại dữ liệu nào?`,
+  options: [
+    'Bảng nhỏ, truy cập ngẫu nhiên theo khóa chính',
+    'Bảng lớn với dữ liệu có thứ tự vật lý rõ ràng (time-series theo thời gian insert)',
+    'Cột có cardinality cao và phân tán ngẫu nhiên',
+    'Tra cứu JSONB containment'
+  ],
+  answer: 1,
+  explain: `**Đáp án đúng: bảng lớn có thứ tự vật lý (time-series).**
+
+### Vì sao đúng
+BRIN (Block Range Index) lưu min/max cho từng block range (mặc định 128 trang). Nếu dữ liệu được insert theo thứ tự (ví dụ timestamp tăng dần), BRIN rất nhỏ và cho phép loại bỏ nhanh các block không chứa giá trị cần.
+
+### Vì sao các phương án còn lại sai
+- **Bảng nhỏ/random access**: B-tree tốt hơn.
+- **Cardinality cao phân tán**: BRIN không hiệu quả vì min/max range quá rộng.
+- **JSONB**: dùng GIN.
+
+> Senior tip: BRIN nhỏ hơn B-tree rất nhiều; kiểm tra {{pg_stat_user_indexes}} để xem index có được dùng.`
+  },
+  {
+  id: 'qz-db-935',
+  topic: 'db',
+  q: `Partial index trong PostgreSQL là gì và khi nào dùng?`,
+  options: [
+    'Index chỉ chứa một phần cột của bảng',
+    'Index chỉ đánh index các dòng thỏa điều kiện WHERE, hữu ích cho trạng thái hiếm (ví dụ đơn chưa xử lý)',
+    'Index được tạo song song trên nhiều cột',
+    'Index tự động xóa sau một thời gian'
+  ],
+  answer: 1,
+  explain: `**Đáp án đúng: index có điều kiện WHERE, cho trạng thái hiếm.**
+
+### Vì sao đúng
+Partial index: {{CREATE INDEX ... WHERE status = 'pending'}}. Chỉ index các dòng thỏa điều kiện, nên index nhỏ hơn, ghi nhanh hơn, và truy vấn lọc theo điều kiện đó dùng index hiệu quả.
+
+### Vì sao các phương án còn lại sai
+- **Chỉ một phần cột**: đó là covering index / expression index, không phải partial.
+- **Song song nhiều cột**: đó là composite index.
+- **Tự xóa**: không có cơ chế này.
+
+> Senior tip: Partial index kết hợp covering (INCLUDE) cho query hot path; kiểm tra planner có dùng index với điều kiện khớp.`
+  },
+  {
+  id: 'qz-db-936',
+  topic: 'db',
+  q: `Covering index trong PostgreSQL (INCLUDE) giúp gì?`,
+  options: [
+    'Cho phép index tự động update',
+    'Cho phép truy vấn lấy thêm cột từ index mà không cần truy cập heap (index-only scan)',
+    'Giảm kích thước index xuống 0',
+    'Thay thế primary key'
+  ],
+  answer: 1,
+  explain: `**Đáp án đúng: index-only scan không cần heap.**
+
+### Vì sao đúng
+{{CREATE INDEX ... ON t(col) INCLUDE (col2, col3)}} lưu thêm col2, col3 trong index. Nếu query chỉ cần các cột này và visibility map cho biết tất cả tuple visible, PostgreSQL thực hiện index-only scan, tránh random I/O vào heap.
+
+### Vì sao các phương án còn lại sai
+- **Tự update**: index luôn được update khi ghi, không liên quan INCLUDE.
+- **Kích thước 0**: INCLUDE tăng kích thước index.
+- **Thay PK**: covering index không thay primary key.
+
+> Senior tip: Index-only scan cần visibility map được vacuum; bảng churn cao có thể fallback heap scan.`
+  },
+  {
+  id: 'qz-db-937',
+  topic: 'db',
+  q: `Khi nào dùng advisory lock thay vì row-level lock trong PostgreSQL?`,
+  options: [
+    'Khi cần khóa một dòng cụ thể theo primary key',
+    'Khi cần khóa một tài nguyên logic không tương ứng dòng (ví dụ job scheduler, migration, distributed lock)',
+    'Khi cần khóa toàn bộ bảng',
+    'Khi cần tăng tốc SELECT'
+  ],
+  answer: 1,
+  explain: `**Đáp án đúng: khóa tài nguyên logic không phải dòng.**
+
+### Vì sao đúng
+Advisory lock ({{pg_advisory_lock}}) là lock do ứng dụng tự quản lý trên một số nguyên/bigint, không gắn với dòng nào. Phù hợp distributed lock, job scheduler đảm bảo chỉ một instance chạy, migration lock, tránh duplicate processing. Row-level lock ({{SELECT FOR UPDATE}}) gắn với dòng cụ thể.
+
+### Vì sao các phương án còn lại sai
+- **Khóa dòng theo PK**: dùng SELECT FOR UPDATE.
+- **Khóa toàn bảng**: dùng LOCK TABLE.
+- **Tăng tốc SELECT**: advisory lock không tăng tốc đọc.
+
+> Senior tip: Advisory lock transaction-level ({{pg_advisory_xact_lock}}) tự giải phóng khi commit/rollback, an toàn hơn session-level.`
+  },
+  {
+  id: 'qz-db-938',
+  topic: 'db',
+  q: `PostgreSQL row-level lock: SELECT ... FOR UPDATE và FOR SHARE khác nhau thế nào?`,
+  options: [
+    'FOR UPDATE cho phép reader khác đọc; FOR SHARE chặn mọi reader',
+    'FOR UPDATE khóa ghi (writer), FOR SHARE khóa ghi nhưng cho phép reader khác cũng SHARE',
+    'Cả hai đều khóa toàn bảng',
+    'FOR SHARE nhanh hơn FOR UPDATE vì không ghi log'
+  ],
+  answer: 1,
+  explain: `**Đáp án đúng: FOR UPDATE khóa ghi mạnh hơn; FOR SHARE cho phép nhiều reader SHARE.**
+
+### Vì sao đúng
+{{SELECT ... FOR UPDATE}} lấy exclusive row lock: transaction khác không thể UPDATE/DELETE dòng đó (phải chờ). {{SELECT ... FOR SHARE}} lấy shared row lock: nhiều transaction có thể SHARE cùng lúc, nhưng UPDATE/DELETE phải chờ.
+
+### Vì sao các phương án còn lại sai
+- **FOR UPDATE cho phép reader**: reader thường không bị chặn (MVCC), nhưng writer bị chặn.
+- **Khóa toàn bảng**: đó là LOCK TABLE.
+- **FOR SHARE nhanh hơn**: cả hai đều ghi WAL và có chi phí.
+
+> Senior tip: Dùng {{FOR UPDATE SKIP LOCKED}} cho queue pattern để worker không chờ nhau.`
+  },
+  {
+  id: 'qz-db-939',
+  topic: 'db',
+  q: `Connection pool sizing: theo công thức phổ biến, maximumPoolSize nên đặt khoảng bao nhiêu?`,
+  options: [
+    'Bằng số thread trong ứng dụng (ví dụ 200)',
+    'Khoảng (core_count * 2) + số disk spindle, thường 10-20 cho DB đơn',
+    'Càng lớn càng tốt để tránh pending',
+    'Bằng max_connections của PostgreSQL'
+  ],
+  answer: 1,
+  explain: `**Đáp án đúng: (core*2)+spindle, thường 10-20.**
+
+### Vì sao đúng
+Công thức HikariCP/PostgreSQL: connections = ((core_count * 2) + effective_spindle_count). DB xử lý I/O và CPU; quá nhiều connection gây context switching và lock contention, giảm throughput.
+
+### Vì sao các phương án còn lại sai
+- **Bằng số thread**: thread nhiều nhưng DB không xử lý song song được; gây contention.
+- **Càng lớn càng tốt**: tăng latency và có thể làm DB quá tải.
+- **Bằng max_connections**: dành toàn bộ connection cho một app, không còn cho admin/monitoring.
+
+> Senior tip: Theo dõi {{hikaricp_connections_pending}} và {{pg_stat_activity}}; nếu pending > 0 mới tăng pool.`
+  },
+  {
+  id: 'qz-db-940',
+  topic: 'db',
+  q: `VACUUM trong PostgreSQL làm gì và autovacuum khi nào chạy?`,
+  options: [
+    'VACUUM xóa toàn bộ dữ liệu cũ để giải phóng disk ngay',
+    'VACUUM đánh dấu dead tuple là có thể tái sử dụng; autovacuum chạy khi dead tuple vượt ngưỡng (scale_factor * rows + threshold)',
+    'VACUUM chỉ chạy thủ công, autovacuum không tồn tại',
+    'VACUUM rebuild toàn bộ index'
+  ],
+  answer: 1,
+  explain: `**Đáp án đúng: VACUUM đánh dấu dead tuple tái sử dụng; autovacuum theo ngưỡng.**
+
+### Vì sao đúng
+MVCC tạo dead tuple khi UPDATE/DELETE. VACUUM dọn dead tuple, đánh dấu không gian trống để tái sử dụng và cập nhật visibility map (hỗ trợ index-only scan). Autovacuum tự chạy khi dead tuple vượt {{autovacuum_vacuum_scale_factor * n_live_tup + autovacuum_vacuum_threshold}}. VACUUM không giải phóng disk về OS trừ khi VACUUM FULL.
+
+### Vì sao các phương án còn lại sai
+- **Xóa toàn bộ dữ liệu cũ**: VACUUM không xóa dữ liệu còn sống.
+- **Chỉ thủ công**: autovacuum mặc định bật.
+- **Rebuild index**: đó là REINDEX, không phải VACUUM.
+
+> Senior tip: Bảng churn cao cần tune autovacuum (scale_factor thấp, cost_limit cao); theo dõi {{last_autovacuum}} và {{n_dead_tup}}.`
+  },
+
 );
