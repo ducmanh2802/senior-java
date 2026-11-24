@@ -5939,5 +5939,417 @@ public void transfer(Account from, Account to, long amount) {
     'Đề xuất sửa đúng: sắp xếp tài khoản theo id trước khi khóa (consistent lock ordering), hoặc dùng tryLock với timeout.'
   ],
   tags: ['deadlock', 'synchronized', 'lock-ordering', 'monitor', 'jstack', 'concurrency']
+},
+{
+  id: 'lab-thread-030',
+  category: 'thread',
+  title: 'parallelStream trong thư viện bên thứ ba chèn ForkJoinPool.commonPool do blocking I/O',
+  level: 'senior',
+  scenario: `### Bối cảnh
+
+Hệ thống xử lý đơn hàng trực tuyến (Spring Boot 3.2, Java 21) sử dụng một thư viện tạo PDF phổ biến (open-source, 50k+ star) để xuất hóa đơn. Thư viện này dùng {{parallelStream()}} nội bộ để render nhiều trang PDF song song nhằm tăng tốc độ.
+
+Vào giờ cao điểm Black Friday, traffic tăng 10x. Metrics cho thấy:
+- Latency P99 của endpoint **POST /orders/{id}/pdf** (tham số path variable) tăng từ 800ms lên 45s.
+- CPU usage chỉ 15% (bình thường 60-70%).
+- Thread count trong JVM tăng vọt: {{ForkJoinPool.commonPool-worker-*}} từ 7 lên 200+ thread.
+- Tất cả worker thread đều ở trạng thái {{RUNNABLE}} trên {{java.net.SocketInputStream.socketRead0}} (đang chờ I/O socket; JVM báo RUNNABLE chứ không phải đang chạy CPU work).
+
+### Triệu chứng
+
+- Endpoint trả về PDF timeout sau 30s (default Tomcat connection timeout).
+- Các request khác hoàn toàn không liên quan đến PDF (ví dụ {{GET /health}}, {{POST /api/v1/orders}}) cũng bị chậm, latency tăng 10-20x.
+- Không có exception nào được log, chỉ có warning từ thư viện PDF: Rendering page 3/10 took 12s.
+- Restart pod Kubernetes tạm thời khắc phục, nhưng sau 5-10 phút tình trạng tái diễn.
+
+### Số liệu quan trọng
+
+- Máy 8 vCPU → ForkJoinPool.commonPool parallelism = 7 (mặc định {{Runtime.getRuntime().availableProcessors() - 1}}).
+- Thư viện PDF gọi API bên ngoài ({{GET https://font-service.internal/fonts/roboto.woff2}}) để tải font cho mỗi trang PDF.
+- Mỗi request PDF 10 trang → 10 task parallelStream → 10 HTTP call blocking.
+- Under load: 200 concurrent request PDF → 2000 HTTP call đồng thời → commonPool bị chèn hoàn toàn.`,
+  artifacts: [
+    {
+      name: 'jstack-pdf-starvation.txt',
+      lang: 'text',
+      content: `2024-11-24 14:32:15
+Full thread dump OpenJDK 64-Bit Server VM (21.0.2+13-LTS mixed mode, sharing):
+
+"ForkJoinPool.commonPool-worker-0" #15 daemon prio=5 os_prio=0 cpu=12.34ms elapsed=120.50s tid=0x00007f8b1c001000 nid=0x1b58 runnable [0x00007f8a9c7f0000]
+   java.lang.Thread.State: RUNNABLE
+        at java.net.SocketInputStream.socketRead0(java.base@21.0.2/Native Method)
+        at java.net.SocketInputStream.socketRead(java.base@21.0.2/SocketInputStream.java:115)
+        at java.net.SocketInputStream.read(java.base@21.0.2/SocketInputStream.java:168)
+        at java.io.BufferedInputStream.fill(java.base@21.0.2/BufferedInputStream.java:252)
+        at java.io.BufferedInputStream.read1(java.base@21.0.2/BufferedInputStream.java:292)
+        at java.io.BufferedInputStream.read(java.base@21.0.2/BufferedInputStream.java:351)
+        - locked <0x00000000e1b2a3c0> (a java.io.BufferedInputStream)
+        at sun.net.www.http.HttpClient.parseHTTPHeader(java.base@21.0.2/HttpClient.java:754)
+        at sun.net.www.http.HttpClient.parseHTTP(java.base@21.0.2/HttpClient.java:689)
+        at sun.net.www.protocol.http.HttpURLConnection.getInputStream0(java.base@21.0.2/HttpURLConnection.java:1615)
+        - locked <0x00000000e1b2a4d0> (a sun.net.www.protocol.http.HttpURLConnection)
+        at sun.net.www.protocol.http.HttpURLConnection.getInputStream(java.base@21.0.2/HttpURLConnection.java:1520)
+        - locked <0x00000000e1b2a4d0> (a sun.net.www.protocol.http.HttpURLConnection)
+        at com.pdf.lib.FontLoader.downloadFont(FontLoader.java:87)
+        at com.pdf.lib.PdfRenderer.lambda$renderPages$0(PdfRenderer.java:142)
+        at java.util.stream.ReferencePipeline$3$1.accept(java.base@21.0.2/ReferencePipeline.java:197)
+        at java.util.ArrayList$ArrayListSpliterator.forEachRemaining(java.base@21.0.2/ArrayList.java:1655)
+        at java.util.stream.AbstractPipeline.copyInto(java.base@21.0.2/AbstractPipeline.java:509)
+        at java.util.stream.ReferencePipeline.forEachOrdered(java.base@21.0.2/ReferencePipeline.java:632)
+        at java.util.stream.ReferencePipeline$Head.forEachOrdered(java.base@21.0.2/ReferencePipeline.java:762)
+        at com.pdf.lib.PdfRenderer.renderPages(PdfRenderer.java:138)
+        at com.myapp.service.PdfService.generatePdf(PdfService.java:45)
+        at com.myapp.controller.OrderController.downloadPdf(OrderController.java:62)
+
+"ForkJoinPool.commonPool-worker-1" #16 daemon prio=5 os_prio=0 cpu=11.87ms elapsed=119.80s tid=0x00007f8b1c002000 nid=0x1b59 runnable [0x00007f8a9c6f0000]
+   java.lang.Thread.State: RUNNABLE
+        at java.net.SocketInputStream.socketRead0(java.base@21.0.2/Native Method)
+        at java.net.SocketInputStream.socketRead(java.base@21.0.2/SocketInputStream.java:115)
+        ... (giống worker-0) ...
+        at com.pdf.lib.FontLoader.downloadFont(FontLoader.java:87)
+        at com.pdf.lib.PdfRenderer.lambda$renderPages$0(PdfRenderer.java:142)
+
+"ForkJoinPool.commonPool-worker-2" #17 daemon prio=5 os_prio=0 cpu=10.45ms elapsed=118.20s tid=0x00007f8b1c003000 nid=0x1b5a runnable [0x00007f8a9c5f0000]
+   java.lang.Thread.State: RUNNABLE
+        at java.net.SocketInputStream.socketRead0(java.base@21.0.2/Native Method)
+        ... (giống worker-0) ...
+        at com.pdf.lib.FontLoader.downloadFont(FontLoader.java:87)
+        at com.pdf.lib.PdfRenderer.lambda$renderPages$0(PdfRenderer.java:142)
+
+... (tương tự worker-3 đến worker-199, tất cả RUNNABLE trên SocketInputStream.socketRead0) ...
+
+"http-nio-8080-exec-45" #250 prio=5 os_prio=0 cpu=2.10ms elapsed=45.30s tid=0x00007f8b1c050000 nid=0x1c12 waiting on condition [0x00007f8a9bff0000]
+   java.lang.Thread.State: WAITING (parking)
+        at jdk.internal.misc.Unsafe.park(java.base@21.0.2/Unsafe.java:1234)
+        - parking to wait for <0x00000000e0a1b2c0> (a java.util.concurrent.ForkJoinPool)
+        at java.util.concurrent.locks.LockSupport.park(LockSupport.java:341)
+        at java.util.concurrent.ForkJoinPool.awaitJoin(java.base@21.0.2/ForkJoinPool.java:2455)
+        at java.util.concurrent.ForkJoinPool.awaitJoin(java.base@21.0.2/ForkJoinPool.java:2451)
+        at java.util.concurrent.ForkJoinTask.awaitJoin(java.base@21.0.2/ForkJoinTask.java:415)
+        at java.util.concurrent.ForkJoinTask.join(java.base@21.0.2/ForkJoinTask.java:733)
+        at java.util.stream.ReduceOps$ReduceOp.evaluateParallel(java.base@21.0.2/ReduceOps.java:950)
+        at java.util.stream.ReduceOps$ReduceOp.evaluateParallel(java.base@21.0.2/ReduceOps.java:921)
+        at java.util.stream.AbstractPipeline.evaluate(java.base@21.0.2/AbstractPipeline.java:233)
+        at java.util.stream.ReferencePipeline.collect(java.base@21.0.2/ReferencePipeline.java:678)
+        at com.myapp.service.SearchService.searchProducts(SearchService.java:88)
+        at com.myapp.controller.ProductController.search(ProductController.java:41)
+
+"http-nio-8080-exec-46" #251 prio=5 os_prio=0 cpu=1.98ms elapsed=44.80s tid=0x00007f8b1c051000 nid=0x1c13 waiting on condition [0x00007f8a9bef0000]
+   java.lang.Thread.State: WAITING (parking)
+        at jdk.internal.misc.Unsafe.park(java.base@21.0.2/Unsafe.java:1234)
+        - parking to wait for <0x00000000e0a1b2c0> (a java.util.concurrent.ForkJoinPool)
+        at java.util.concurrent.locks.LockSupport.park(LockSupport.java:341)
+        at java.util.concurrent.ForkJoinPool.awaitJoin(java.base@21.0.2/ForkJoinPool.java:2455)
+        ... (giống exec-45) ...
+
+"http-nio-8080-exec-47" #252 prio=5 os_prio=0 cpu=2.05ms elapsed=44.20s tid=0x00007f8b1c052000 nid=0x1c14 waiting for monitor entry [0x00007f8a9bdf0000]
+   java.lang.Thread.State: BLOCKED (on object monitor)
+        at java.util.concurrent.ForkJoinPool.awaitJoin(java.base@21.0.2/ForkJoinPool.java:2455)
+        - waiting to lock <0x00007f8a9bdf0000> (a java.util.concurrent.ForkJoinPool)
+        ... (giống exec-45) ...
+
+"http-nio-8080-exec-48" #253 prio=5 os_prio=0 cpu=0.12ms elapsed=120.50s tid=0x00007f8b1c053000 nid=0x1c15 runnable [0x00007f8a9bcf0000]
+   java.lang.Thread.State: RUNNABLE
+        at java.net.SocketInputStream.socketRead0(java.base@21.0.2/Native Method)
+        at java.net.SocketInputStream.socketRead(java.base@21.0.2/SocketInputStream.java:115)
+        at java.net.SocketInputStream.read(java.base@21.0.2/SocketInputStream.java:168)
+        at org.apache.coyote.http11.Http11InputBuffer.fill(Http11InputBuffer.java:720)
+        at org.apache.coyote.http11.Http11InputBuffer.parseRequestLine(Http11InputBuffer.java:385)
+        at org.apache.coyote.http11.Http11Processor.service(Http11Processor.java:290)
+        at org.apache.coyote.AbstractProcessorLight.process(AbstractProcessorLight.java:65)
+        at org.apache.coyote.AbstractProtocol$ConnectionHandler.process(AbstractProtocol.java:890)
+        at org.apache.tomcat.util.net.NioEndpoint$SocketProcessor.doRun(NioEndpoint.java:1785)
+        at org.apache.tomcat.util.net.SocketProcessorBase.run(SocketProcessorBase.java:49)
+        at java.util.concurrent.ThreadPoolExecutor.runWorker(java.base@21.0.2/ThreadPoolExecutor.java:1144)
+        at java.util.concurrent.ThreadPoolExecutor$Worker.run(java.base@21.0.2/ThreadPoolExecutor.java:642)
+        at java.lang.Thread.run(java.base@21.0.2/Thread.java:840)
+`
+    }
+  ],
+  questions: [
+    'Tại sao parallelStream trong thư viện PDF làm chậm toàn bộ ứng dụng, kể cả các endpoint không dùng PDF?',
+    'Ở đâu trong artifact chứng minh commonPool bị chiếm dụng bởi blocking I/O thay vì CPU work?',
+    'Giải pháp ngắn hạn và dài hạn là gì để tách biệt workload I/O-bound khỏi commonPool?'
+  ],
+  hints: [
+    'Chú ý thread name: ForkJoinPool.commonPool-worker-* đều RUNNABLE trên SocketInputStream.socketRead0, không phải RUNNABLE làm CPU work (trạng thái RUNNABLE trong Java bao gồm cả block I/O).',
+    'Tomcat thread (http-nio-8080-exec-*) bị BLOCKED trên ForkJoinPool.awaitJoin → chúng đang chờ parallelStream xong nhưng commonPool không có thread rảnh.',
+    'commonPool là shared resource toàn JVM: một thư viện dùng sai làm ảnh hưởng toàn bộ ứng dụng.'
+  ],
+  answer: `### Nguyên nhân gốc
+
+Thư viện PDF sử dụng {{parallelStream()}} (chạy trên {{ForkJoinPool.commonPool}}) để render các trang PDF song song. Code render trang bao gồm gọi HTTP blocking ({{FontLoader.downloadFont()}}) để tải font từ service bên ngoài. Mỗi request PDF 10 trang tạo ra 10 task I/O-bound chạy trên commonPool.
+
+Khi load cao (200 request đồng thời → 2000 task), commonPool bị chiếm hết bởi các thread đang chờ I/O (socket read). commonPool mặc định parallelism = {{availableProcessors() - 1}} = 7 (trên 8 vCPU), nhưng ForkJoinPool sẽ tạo thêm thread (compensatory threads) khi detect worker bị block → thread count bùng nổ lên 200+.
+
+Hệ quả: **Toàn bộ ứng dụng dùng commonPool** (kể cả {{parallelStream}} trong code riêng, {{CompletableFuture.supplyAsync()}} không chỉ định executor, {{CompletableFuture.runAsync()}}) đều bị chặn vì không có thread rảnh. Tomcat thread gọi {{ForkJoinTask.join()}} chờ kết quả parallelStream → thread bị WAITING (parking) hoặc BLOCKED trên monitor của ForkJoinPool.
+
+### Dẫn chứng
+
+1. **commonPool worker làm I/O blocking**: {{"ForkJoinPool.commonPool-worker-0" ... RUNNABLE ... at java.net.SocketInputStream.socketRead0 ... at com.pdf.lib.FontLoader.downloadFont ... at com.pdf.lib.PdfRenderer.lambda$renderPages$0}} — worker thread đang đọc socket HTTP, không chạy bytecode Java.
+
+2. **Tomcat thread chờ commonPool**: {{"http-nio-8080-exec-45" ... WAITING (parking) ... at java.util.concurrent.ForkJoinPool.awaitJoin ... - parking to wait for <0x00000000e0a1b2c0> (a java.util.concurrent.ForkJoinPool)}} — thread web chờ parallelStream hoàn thành nhưng pool không có worker rảnh.
+
+3. **Thread count bùng nổ**: 200+ {{ForkJoinPool.commonPool-worker-*}} thread (so với parallelism 7) → ForkJoinPool tạo compensatory threads vì detect worker bị block lâu.
+
+4. **CPU thấp (15%)**: Xác nhận workload là I/O-bound, không phải CPU-bound.
+
+### Cách sửa
+
+**Ngắn hạn (hotfix, deploy trong giờ):** Tắt parallelStream trong thư viện PDF bằng config hoặc wrapper. Nếu thư viện không hỗ trợ config, fork thư viện và thay {{parallelStream()}} → {{stream()}} (sequential). Hoặc set system property: {{-Djava.util.concurrent.ForkJoinPool.common.parallelism=1}} (giảm thiệt hại nhưng không giải quyết gốc rễ).
+
+**Dài hạn (root cause fix):**
+
+1. **Không bao giờ dùng commonPool cho I/O-bound work**. Tạo dedicated executor cho thư viện PDF:
+   ~~~java
+   // Config executor cho PDF generation
+   @Bean
+   public ExecutorService pdfExecutor() {
+       return new ThreadPoolExecutor(
+           4, 16, 60L, TimeUnit.SECONDS,
+           new LinkedBlockingQueue<>(100),
+           new ThreadFactoryBuilder().setNameFormat("pdf-worker-%d").build(),
+           new ThreadPoolExecutor.CallerRunsPolicy() // backpressure
+       );
+   }
+
+   // Service dùng executor riêng
+   @Service
+   public class PdfService {
+       private final ExecutorService pdfExecutor;
+
+       public CompletableFuture<byte[]> generatePdfAsync(Order order) {
+           return CompletableFuture.supplyAsync(() -> {
+               return pdfLib.generate(order); // thư viện dùng sequential stream bên trong
+           }, pdfExecutor);
+       }
+   }
+   ~~~
+
+2. **Cập nhật thư viện PDF** lên bản mới (nếu có) đã fix vấn đề này, hoặc PR fix lên upstream: thay parallelStream bằng sequential hoặc cho phép inject custom ExecutorService.
+
+3. **Bảo vệ commonPool**: Thêm {{ForkJoinPool.ManagedBlocker}} cho blocking I/O nếu buộc phải dùng commonPool (không khuyến khích). Hoặc dùng {{CompletableFuture.supplyAsync(() -> blockingCall(), customExecutor)}} ở mọi nơi.
+
+4. **Monitoring**: Alert khi {{ForkJoinPool.commonPool.getPoolSize() > parallelism * 2}} hoặc thread count commonPool worker > 50.
+
+### Phòng ngừa
+
+- **Code review**: Bắt buộc flag mọi {{parallelStream()}}, {{CompletableFuture.supplyAsync()}} không có executor tùy chỉnh. Yêu cầu justify: "Tại sao workload này là CPU-bound và an toàn cho commonPool?".
+- **Architecture decision**: Quy định commonPool **chỉ** dùng cho CPU-bound, short-lived task (parallel sort, map-reduce thuần tính toán). Mọi I/O (DB, HTTP, file) phải dùng dedicated executor.
+- **Dependency audit**: Quét thư viện bên thứ ba dùng ForkJoinPool (grep {{parallelStream}}, {{ForkJoinPool}}, {{CompletableFuture}} trong jar). Test load thư viện trước khi tích hợp.
+- **Chaos engineering**: Inject latency vào font-service, quan sát ảnh hưởng đến endpoint không liên quan.
+- **Documentation**: Ghi rõ trong ADR: "commonPool là shared resource, không isolate được tenant/workload".
+
+> Senior tip: commonPool là "tragedy of the commons" trong JVM. Một thư viện dùng sai (blocking I/O trong parallelStream) làm sập toàn bộ ứng dụng. Luôn giả định thư viện bên thứ ba có thể dùng commonPool sai → wrap bằng executor riêng hoặc chạy ở process riêng (sidecar). Trong Spring Boot 3.2+, dùng {{@Async("pdfExecutor")}} thay vì CompletableFuture thủ công để nhất quán.`,
+  rubric: [
+    'Xác định đúng: thư viện PDF dùng parallelStream trên commonPool, task làm blocking HTTP call → commonPool bị chiếm dụng bởi I/O.',
+    'Trích dẫn artifact: commonPool-worker-* RUNNABLE trên SocketInputStream.socketRead0 (block I/O); Tomcat exec-* WAITING/BLOCKED trên ForkJoinPool.awaitJoin chờ commonPool.',
+    'Giải thích mechanism: ForkJoinPool tạo compensatory threads khi worker block → thread count bùng nổ, CPU thấp xác nhận I/O-bound.',
+    'Đề xuất sửa ngắn hạn: tắt parallelStream hoặc giảm parallelism; dài hạn: dedicated executor cho PDF, không cho I/O-bound vào commonPool.',
+    'Phòng ngừa: code review flag parallelStream/CompletableFuture không có executor, dependency audit, monitoring pool size.'
+  ],
+  tags: ['forkjoinpool', 'commonpool', 'parallelstream', 'blocking-io', 'thread-starvation', 'library', 'pdf', 'compensatory-threads', 'spring-boot']
+},
+{
+  id: 'lab-thread-031',
+  category: 'thread',
+  title: 'synchronized bao phủ DB call gây hàng chục ngàn thread BLOCKED trên cùng monitor',
+  level: 'senior',
+  scenario: `### Bối cảnh
+
+Hệ thống ví điện tử (Spring Boot 3.1, Java 17, PostgreSQL 15, HikariCP pool size 50) xử lý nạp tiền qua ngân hàng. Code nạp tiền sử dụng {{synchronized}} trên object {{accountId}} để đảm bảo tính nhất quán số dư (tránh double-topup).
+
+Khi ngân hàng partenaire gặp sự cố, API {{POST /api/v1/topup/callback}} response time tăng từ 200ms lên 30s (timeout ngân hàng). Hệ thống nhận 5000 callback/phút (giả lập retry từ ngân hàng).
+
+Metrics:
+- Active thread count: 4000+ (bình thường 200).
+- Tất cả thread {{http-nio-8080-exec-*}} ở trạng thái {{BLOCKED}}.
+- HikariCP: {{activeConnections=50}}, {{idleConnections=0}}, {{threadsAwaitingConnection=3950}}.
+- PostgreSQL: {{max_connections=200}}, {{active=50}}, {{idle_in_transaction=0}}.
+- CPU usage: 5% (idle).
+
+### Triệu chứng
+
+- Health check {{GET /actuator/health}} timeout (Tomcat thread pool exhausted).
+- Không thể deploy mới (k8s readiness probe fail).
+- Log chỉ thấy: {{WARN ... HikariPool-1 - Thread starvation or clock leap detected}}.
+- Restart pod không giúp: callback queue tích tụ, pod mới lên lại bị nghẽn ngay.
+
+### Số liệu quan trọng
+
+- {{synchronized(accountLock)}} bao quanh toàn bộ logic: validate → select for update → gọi ngân hàng (HTTP 30s) → update balance → commit.
+- {{accountLock}} là {{new String(accountId).intern()}} hoặc {{ConcurrentHashMap.computeIfAbsent}}.
+- 5000 callback/phút ≈ 83 request/giây, mỗi request giữ lock 30s → tại một thời điểm ~2500 thread chờ lock cho cùng một account (nếu tập trung vào vài account hot).
+- HikariCP pool size 50 << thread count → hầu hết thread chờ connection pool, nhưng root cause là lock serialization.`,
+  artifacts: [
+    {
+      name: 'jstack-topup-blocked.txt',
+      lang: 'text',
+      content: `2024-11-24 14:45:22
+Full thread dump OpenJDK 64-Bit Server VM (17.0.10+7-LTS mixed mode, sharing):
+
+"http-nio-8080-exec-10" #45 prio=5 os_prio=0 cpu=120.45ms elapsed=28.50s tid=0x00007f8b2c001000 nid=0x1f4a waiting for monitor entry [0x00007f8a8c7f0000]
+   java.lang.Thread.State: BLOCKED (on object monitor)
+        at com.myapp.service.TopupService.processCallback(TopupService.java:67)
+        - waiting to lock <0x00000000f1a2b3c0> (a java.lang.String)
+        at com.myapp.controller.TopupController.callback(TopupController.java:35)
+        at java.lang.invoke.MethodHandle.invokeWithArguments(java.base@17.0.10/MethodHandle.java:710)
+        ... (spring dispatch) ...
+
+"http-nio-8080-exec-11" #46 prio=5 os_prio=0 cpu=118.32ms elapsed=27.80s tid=0x00007f8b2c002000 nid=0x1f4b waiting for monitor entry [0x00007f8a8c6f0000]
+   java.lang.Thread.State: BLOCKED (on object monitor)
+        at com.myapp.service.TopupService.processCallback(TopupService.java:67)
+        - waiting to lock <0x00000000f1a2b3c0> (a java.lang.String)
+        ... (giống exec-10) ...
+
+... (tương tự exec-12 đến exec-2490, tất cả BLOCKED waiting to lock <0x00000000f1a2b3c0>) ...
+
+"http-nio-8080-exec-2491" #2526 prio=5 os_prio=0 cpu=115.20ms elapsed=26.10s tid=0x00007f8b2c050000 nid=0x1f50 waiting for monitor entry [0x00007f8a8bff0000]
+   java.lang.Thread.State: BLOCKED (on object monitor)
+        at com.myapp.service.TopupService.processCallback(TopupService.java:67)
+        - waiting to lock <0x00000000f1a2b3c0> (a java.lang.String)
+        ... (giống exec-10) ...
+
+"http-nio-8080-exec-2492" #2527 prio=5 os_prio=0 cpu=0.05ms elapsed=30.00s tid=0x00007f8b2c051000 nid=0x1f51 runnable [0x00007f8a8bef0000]
+   java.lang.Thread.State: RUNNABLE
+        at java.net.SocketInputStream.socketRead0(java.base@17.0.10/Native Method)
+        at java.net.SocketInputStream.socketRead(java.base@17.0.10/SocketInputStream.java:115)
+        at java.net.SocketInputStream.read(java.base@17.0.10/SocketInputStream.java:168)
+        at org.postgresql.core.PGStream.receiveChar(PGStream.java:389)
+        at org.postgresql.core.v3.QueryExecutorImpl.processResults(QueryExecutorImpl.java:2105)
+        at org.postgresql.jdbc.PgStatement.executeInternal(PgStatement.java:448)
+        at org.postgresql.jdbc.PgStatement.execute(PgStatement.java:369)
+        at org.postgresql.jdbc.PgPreparedStatement.executeWithFlags(PgPreparedStatement.java:168)
+        at org.postgresql.jdbc.PgPreparedStatement.executeUpdate(PgPreparedStatement.java:135)
+        at com.zaxxer.hikari.pool.ProxyPreparedStatement.executeUpdate(ProxyPreparedStatement.java:61)
+        at com.zaxxer.hikari.pool.HikariProxyPreparedStatement.executeUpdate(HikariProxyPreparedStatement.java)
+        at com.myapp.service.TopupService.updateBalance(TopupService.java:142)
+        - locked <0x00000000f1a2b3c0> (a java.lang.String)
+        at com.myapp.service.TopupService.processCallback(TopupService.java:95)
+        at com.myapp.controller.TopupController.callback(TopupController.java:35)
+
+"http-nio-8080-exec-2493" #2528 prio=5 os_prio=0 cpu=0.03ms elapsed=29.50s tid=0x00007f8b2c052000 nid=0x1f52 waiting on condition [0x00007f8a8bdf0000]
+   java.lang.Thread.State: WAITING (parking)
+        at jdk.internal.misc.Unsafe.park(java.base@17.0.10/Unsafe.java:1234)
+        - parking to wait for <0x00000000e0a1b2c0> (a java.util.concurrent.locks.AbstractQueuedSynchronizer$ConditionObject)
+        at java.util.concurrent.locks.LockSupport.park(LockSupport.java:341)
+        at com.zaxxer.hikari.pool.HikariPool.awaitConnection(HikariPool.java:632)
+        at com.zaxxer.hikari.pool.HikariPool.getConnection(HikariPool.java:246)
+        at com.zaxxer.hikari.pool.HikariPool.getConnection(HikariPool.java:212)
+        at com.zaxxer.hikari.HikariDataSource.getConnection(HikariDataSource.java:134)
+        at org.hibernate.engine.jdbc.connections.internal.DatasourceConnectionProviderImpl.getConnection(DatasourceConnectionProviderImpl.java:122)
+        at org.hibernate.internal.NonContextualJdbcConnectionAccess.obtainConnection(NonContextualJdbcConnectionAccess.java:35)
+        at org.hibernate.engine.jdbc.internal.LogicalConnectionImpl.obtainConnection(LogicalConnectionImpl.java:280)
+        at org.hibernate.engine.jdbc.internal.LogicalConnectionImpl.getConnection(LogicalConnectionImpl.java:168)
+        at org.hibernate.resource.jdbc.internal.LogicalConnectionManagedImpl.getConnection(LogicalConnectionManagedImpl.java:113)
+        at org.hibernate.resource.transaction.backend.jdbc.internal.JdbcResourceLocalTransactionCoordinatorImpl$TransactionDriverControlImpl.getConnection(JdbcResourceLocalTransactionCoordinatorImpl.java:253)
+        at com.myapp.service.TopupService.selectForUpdate(TopupService.java:118)
+        - locked <0x00000000f1a2b3c0> (a java.lang.String)
+        at com.myapp.service.TopupService.processCallback(TopupService.java:89)
+        at com.myapp.controller.TopupController.callback(TopupController.java:35)
+
+... (exec-2494 đến exec-4000: mixing BLOCKED on String lock và WAITING trên HikariPool.awaitConnection) ...
+`
+    }
+  ],
+  questions: [
+    'Tại sao synchronized bao quanh toàn bộ callback (kể cả gọi HTTP ngân hàng) gây thread explosion?',
+    'Trong artifact, thread nào đang HOLD lock <0x00000000f1a2b3c0>? Thread đó đang làm gì?',
+    'Tại sao HikariCP báo "Thread starvation" mà CPU chỉ 5%?'
+  ],
+  hints: [
+    'Chú ý: exec-2492 là thread DUY NHẤT đang RUNNABLE và HOLD lock <0x00000000f1a2b3c0> — nó đang thực hiện UPDATE DB (postgresql). Tất cả thread khác BLOCKED chờ lock này.',
+    'exec-2493 WAITING trên HikariPool.awaitConnection — nó đã lấy được lock, nhưng chờ DB connection vì pool size 50 đã hết do thread trước giữ connection quá lâu.',
+    'Lock scope quá rộng: validate → select → HTTP call (30s) → update → commit. Chỉ cần lock quanh select-for-update + update.'
+  ],
+  answer: `### Nguyên nhân gốc
+
+{{synchronized(accountLock)}} bao phủ **toàn bộ quy trình callback**: validate input → {{SELECT ... FOR UPDATE}} → gọi HTTP ngân hàng (blocking, 30s timeout) → {{UPDATE balance}} → commit transaction.
+
+Khi ngân hàng chậm (30s), thread đang xử lý callback giữ lock {{accountLock}} trong 30s. Các callback retry cho cùng {{accountId}} (hot account) pile up: 83 req/s × 30s = ~2500 thread chờ lock. Tomcat thread pool (default 200) nhanh chóng exhausted → health check fail, không nhận request mới.
+
+HikariCP pool size 50 << 2500 thread → hầu hết thread sau khi lấy lock vẫn phải chờ DB connection (WAITING trên {{HikariPool.awaitConnection}}). Log {{Thread starvation or clock leap detected}} do HikariCP detect thread chờ connection quá lâu.
+
+### Dẫn chứng
+
+1. **Thread Hold lock**: {{"http-nio-8080-exec-2492" ... RUNNABLE ... - locked <0x00000000f1a2b3c0> (a java.lang.String) ... at com.myapp.service.TopupService.updateBalance ... at com.myapp.service.TopupService.processCallback}} — thread này đang HOLD lock và đang chạy UPDATE DB (postgresql socket read).
+
+2. **2500+ thread BLOCKED chờ lock**: {{"http-nio-8080-exec-10" ... BLOCKED ... - waiting to lock <0x00000000f1a2b3c0> ... at com.myapp.service.TopupService.processCallback}} — tất cả chờ cùng một String lock.
+
+3. **Thread sau khi lấy lock lại chờ connection**: {{"http-nio-8080-exec-2493" ... WAITING ... parking to wait for <0x00000000e0a1b2c0> (a ... ConditionObject) ... at com.zaxxer.hikari.pool.HikariPool.awaitConnection ... at com.myapp.service.TopupService.selectForUpdate ... - locked <0x00000000f1a2b3c0>}} — thread này ĐÃ lấy lock ({{- locked <0x00000000f1a2b3c0>}}) nhưng WAITING connection pool.
+
+4. **CPU 5%**: Xác nhận workload bị serialize hoàn toàn, không có parallelism.
+
+### Cách sửa
+
+**Ngắn hạn (giảm thiệt hại ngay):**
+- Giảm Tomcat {{maxThreads}} từ 200 xuống 100 (giảm memory pressure).
+- Tăng HikariCP {{maximumPoolSize}} lên 100 (nếu DB cho phép).
+- Set timeout cho HTTP call ngân hàng: {{httpClient.setConnectTimeout(5000); httpClient.setReadTimeout(10000);}}.
+- Thêm {{@Transactional(timeout = 15)}} để rollback sớm nếu DB call chậm.
+
+**Dài hạn (root cause fix): Thu hẹp critical section tối đa**
+
+Chỉ lock quanh **DB critical section** (select-for-update + update), **KHÔNG** lock quanh HTTP call:
+
+~~~java
+@Service
+@RequiredArgsConstructor
+public class TopupService {
+    private final AccountRepository accountRepo;
+    private final BankClient bankClient; // HTTP client với timeout 10s
+    private final ConcurrentMap<String, Object> lockMap = new ConcurrentHashMap<>();
+
+    @Transactional
+    public void processCallback(TopupCallback callback) {
+        String accountId = callback.getAccountId();
+        Object accountLock = lockMap.computeIfAbsent(accountId, k -> new Object());
+
+        // 1. Validate NGOÀI lock (nhanh, không side effect)
+        validateCallback(callback);
+
+        // 2. Critical section: CHỈ DB operations
+        synchronized (accountLock) {
+            // select-for-update + update trong CÙNG transaction
+            Account account = accountRepo.findByIdForUpdate(accountId);
+            account.addBalance(callback.getAmount());
+            accountRepo.save(account);
+        }
+        // Lock released HERE — trước khi gọi HTTP
+
+        // 3. Gọi ngân hàng NGOÀI lock (async, non-blocking)
+        try {
+            bankClient.confirmTopup(callback.getTransactionId());
+        } catch (Exception e) {
+            log.warn("Bank confirm failed, will retry via scheduler", e);
+            // Enqueue retry thay vì block thread
+            retryQueue.offer(callback);
+        }
+    }
+}
+~~~
+
+**Cải tiến nâng cao:**
+- Dùng **optimistic locking** ({{@Version}} field) thay vì {{SELECT FOR UPDATE}} + synchronized → bỏ hẳn lock application-level.
+- **Idempotency key**: callback chứa {{idempotencyKey}}, check {{processed_callbacks}} table trước khi xử lý (INSERT ... ON CONFLICT DO NOTHING). Hoàn toàn bỏ synchronized.
+- **Async processing**: Callback trả 200 ngay, push message vào Kafka/RabbitMQ, consumer xử lý DB + HTTP riêng biệt với retry policy.
+
+### Phòng ngừa
+
+- **Code review rule**: {{synchronized}} / {{ReentrantLock}} chỉ được bao quanh **in-memory state** hoặc **DB operations trong cùng transaction**. **CẤM** gọi I/O (HTTP, RPC, file, sleep) bên trong critical section.
+- **Static analysis**: SpotBugs rule {{UL_UNRELEASED_LOCK}}, {{LC_LOCK_WAIT}} hoặc custom Error Prone check cho synchronized block chứa method call có {{@MayBlock}} annotation.
+- **Load test**: Simulate slow downstream (toxiproxy delay 30s), verify thread count không vượt {{maxThreads * 0.5}}.
+- **Observability**: Metric {{lock_wait_time_seconds}} per account, alert khi P99 > 1s. Dashboard {{thread_pool_queue_size}}, {{hikari_pool_waiting_threads}}.
+- **Architecture**: Callback endpoint phải **fire-and-forget** (ACK ngay, xử lý async). Không bao giờ giữ thread chờ downstream.
+
+> Senior tip: synchronized trên String.intern() hoặc ConcurrentHashMap key là **anti-pattern** trong high-throughput system. String.intern() leak memory (PermGen/Metaspace), ConcurrentHashMap key lock gây contention toàn bộ map. Dùng **stripe lock** (array of ReentrantLock, hash accountId % N) hoặc **optimistic locking** (JPA @Version). Trong banking, idempotency key + DB unique constraint là giải pháp chuẩn: "INSERT INTO processed_callbacks (idempotency_key) VALUES (?) ON CONFLICT DO NOTHING" — trả về affected rows = 0 → đã xử lý, bỏ qua. Zero lock, zero contention, horizontally scalable.`,
+  rubric: [
+    'Xác định đúng: synchronized bao quanh HTTP call ngân hàng (30s) → thread giữ lock quá lâu → hàng nghìn thread BLOCKED chờ lock.',
+    'Trích dẫn artifact: exec-2492 RUNNABLE HOLD lock <0x00000000f1a2b3c0> đang UPDATE DB; exec-10..2490 BLOCKED waiting to lock cùng address; exec-2493 đã lấy lock nhưng WAITING HikariCP connection.',
+    'Giải thích chain reaction: lock serialization → thread pile up → Tomcat exhausted → HikariCP starvation → health check fail → cascade failure.',
+    'Đề xuất sửa: thu hẹp critical section chỉ quanh DB (select-for-update + update), HTTP call ra ngoài lock. Nâng cao: optimistic locking hoặc idempotency key bỏ hẳn lock.',
+    'Phòng ngừa: code review cấm I/O trong synchronized, static analysis, load test slow downstream, observability lock wait time.'
+  ],
+  tags: ['synchronized', 'critical-section', 'blocking-io', 'thread-explosion', 'hikaricp', 'thread-starvation', 'lock-contention', 'idempotency', 'optimistic-locking', 'callback', 'banking']
 }
 );
