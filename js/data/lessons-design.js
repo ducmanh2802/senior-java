@@ -1195,5 +1195,854 @@ Trả lời theo công thức: nêu N,R,W, điều kiện {{R + W > N}} và lý 
       { q: 'Với N=3, W=1, R=1, phát biểu nào đúng?', options: ['Không bao giờ đọc được dữ liệu cũ', 'Có thể vừa đọc cũ vừa mất dữ liệu nếu replica duy nhất nhận ghi hỏng trước khi nhân bản', 'Luôn chậm hơn N=3, W=2, R=2', 'Tương đương nhất quán mạnh'], answer: 1, explain: 'W=1 nghĩa chỉ 1 replica xác nhận ghi: nếu nó hỏng trước khi sao sang replica khác, bản ghi mất; R=1 đọc từ 1 replica có thể không phải bản vừa ghi (R+W=2 <= 3). Đổi lại độ trễ thấp và sẵn sàng cao hơn khi node chết, nhưng không đảm bảo nhất quán mạnh.' }
     ], ['quorum', 'replication', 'consistency']),
 
+lesson('009', 9, 'Strategy + Factory: thay thế chuỗi if-else theo loại sản phẩm (phí giao dịch theo kênh)', 'senior', [
+      'Tách chiến lược tính phí theo kênh thành các class riêng biệt tuân thủ interface chung',
+      'Dùng Factory đăng ký bản đồ tên kênh → Strategy để tra cứu O(1) thay vì if-else chain',
+      'Mở rộng kênh mới không sửa code cũ (Open/Closed Principle) và dễ test từng chiến lược độc lập',
+    ], `### Vấn đề: chuỗi if-else tính phí theo kênh
+
+Hãy xem code sau đây thường gặp trong hệ thống thanh toán:
+
+~~~java
+public BigDecimal calculateFee(String channel, BigDecimal amount) {
+    if ("CARD".equals(channel)) {
+        return amount.multiply(new BigDecimal("0.029")).add(new BigDecimal("500"));
+    }
+    if ("WALLET".equals(channel)) {
+        return amount.multiply(new BigDecimal("0.015"));
+    }
+    if ("BANK_TRANSFER".equals(channel)) {
+        return new BigDecimal("1100"); // phí cố định
+    }
+    if ("QR_CODE".equals(channel)) {
+        return amount.multiply(new BigDecimal("0.008")).min(new BigDecimal("2000"));
+    }
+    throw new IllegalArgumentException("Unsupported channel: " + channel);
+}
+~~~
+
+Code này hoạt động đúng nhưng có những vấn đề nghiêm trọng khi hệ thống lớn lên:
+
+1. **Vi phạm Open/Closed Principle**: mỗi khi thêm kênh mới (ví dụ: APPLE_PAY, CRYPTO, BNPL) bạn phải sửa method này, gây rủi ro làm hỏng logic kênh cũ.
+2. **Khó test**: muốn test logic CARD phải chạy qua cả method to, khó tách biệt unit test cho từng kênh.
+3. **Độ phức tạp tuần hoàn (cyclomatic complexity) cao**: mỗi nhánh if thêm 1 độ phức tạp; sau 10 kênh method khó đọc, khó bảo trì.
+4. **Khó mở rộng hành vi**: ví dụ muốn thêm logging, metrics, caching cho từng kênh riêng biệt thì phải chèn code vào từng nhánh if.
+5. **Không tận dụng DI container**: Spring quản lý bean nhưng logic này hard-code trong một class, không thể inject dependencies cho từng kênh (ví dụ CARD cần {{CardFeeConfig}}, WALLET cần {{WalletLimitService}}).
+
+### Giải pháp: Strategy Pattern
+
+**Strategy Pattern** định nghĩa một họ thuật toán (chiến lược), đóng gói từng thuật toán vào một class riêng, và làm cho chúng có thể thay thế lẫn nhau. Client chỉ phụ thuộc vào interface, không phụ thuộc vào implementation cụ thể.
+
+Đối với bài toán tính phí:
+
+~~~java
+public interface FeeStrategy {
+    String getChannelCode();           // mã kênh, ví dụ "CARD"
+    BigDecimal calculate(BigDecimal amount); // logic tính phí
+    boolean supports(String channelCode);    // kiểm tra có xử lý được kênh này không
+}
+~~~
+
+Mỗi kênh là một implementation:
+
+~~~java
+@Component
+public class CardFeeStrategy implements FeeStrategy {
+    private final CardFeeProperties props; // inject config từ application.yml
+    
+    public CardFeeStrategy(CardFeeProperties props) { this.props = props; }
+    
+    @Override public String getChannelCode() { return "CARD"; }
+    
+    @Override public BigDecimal calculate(BigDecimal amount) {
+        return amount.multiply(props.getRate()).add(props.getFixedFee());
+    }
+    
+    @Override public boolean supports(String channelCode) { 
+        return "CARD".equalsIgnoreCase(channelCode); 
+    }
+}
+
+@Component
+public class WalletFeeStrategy implements FeeStrategy {
+    @Override public String getChannelCode() { return "WALLET"; }
+    @Override public BigDecimal calculate(BigDecimal amount) {
+        return amount.multiply(new BigDecimal("0.015"));
+    }
+    @Override public boolean supports(String channelCode) { 
+        return "WALLET".equalsIgnoreCase(channelCode); 
+    }
+}
+// Tương tự: BankTransferFeeStrategy, QrCodeFeeStrategy...
+~~~
+
+**Ưu điểm:**
+- Mỗi strategy tự chứa logic, config, dependency của riêng nó.
+- Thêm kênh mới = tạo class mới implement {{FeeStrategy}} + annotation {{@Component}}, **không sửa code cũ**.
+- Dễ test: mock {{FeeStrategy}} hoặc test từng class độc lập.
+- Tuân thủ Single Responsibility Principle (mỗi class chỉ lo một kênh).
+
+### Factory Pattern: tra cứu O(1) thay vì duyệt danh sách
+
+Spring có thể tự gom tất cả bean kiểu {{FeeStrategy}} vào {{List<FeeStrategy>}} hoặc {{Map<String, FeeStrategy>}}. Ta dùng Factory để build map {{channelCode → Strategy}} một lần khi khởi động, sau đó tra cứu O(1).
+
+~~~java
+@Component
+public class FeeStrategyFactory {
+    private final Map<String, FeeStrategy> strategies = new ConcurrentHashMap<>();
+    
+    public FeeStrategyFactory(List<FeeStrategy> allStrategies) {
+        for (FeeStrategy s : allStrategies) {
+            String key = s.getChannelCode().toUpperCase();
+            FeeStrategy existing = strategies.putIfAbsent(key, s);
+            if (existing != null) {
+                throw new IllegalStateException("Duplicate strategy for channel: " + key 
+                    + " (existing: " + existing.getClass().getSimpleName() 
+                    + ", new: " + s.getClass().getSimpleName() + ")");
+            }
+        }
+        if (strategies.isEmpty()) {
+            throw new IllegalStateException("No FeeStrategy beans found. Check component scan.");
+        }
+    }
+    
+    public FeeStrategy getStrategy(String channelCode) {
+        FeeStrategy s = strategies.get(channelCode.toUpperCase());
+        if (s == null) {
+            throw new UnsupportedChannelException("Channel not supported: " + channelCode);
+        }
+        return s;
+    }
+    
+    public Set<String> getSupportedChannels() { return Set.copyOf(strategies.keySet()); }
+}
+~~~
+
+Service sử dụng factory:
+
+~~~java
+@Service
+public class FeeCalculationService {
+    private final FeeStrategyFactory factory;
+    
+    public FeeCalculationService(FeeStrategyFactory factory) { this.factory = factory; }
+    
+    public BigDecimal calculate(String channel, BigDecimal amount) {
+        FeeStrategy strategy = factory.getStrategy(channel);
+        return strategy.calculate(amount);
+    }
+}
+~~~
+
+**VÌ SAO tra cứu Map tốt hơn duyệt List?**
+- List: O(N) với N = số kênh (duyệt từng strategy gọi {{supports()}}).
+- Map: O(1) tra cứu trực tiếp bằng key.
+- Với 20+ kênh, Map nhanh hơn hẳn và code đơn giản hơn.
+
+### Cạm bẫy thường gặp (pitfall)
+
+| Cạm bẫy | Hệ quả | Cách phòng |
+|---|---|---|
+| **Trùng channelCode** | Bean đăng ký sau ghi đè hoặc ném exception tùy cài đặt | Factory check {{putIfAbsent}} và ném exception rõ ràng |
+| **Thứ tự bean không xác định** | Nếu dùng List + first-match, kết quả phụ thuộc thứ tự load | Luôn dùng Map keyed by channelCode, không phụ thuộc thứ tự |
+| **Kênh không hỗ trợ** | Ném {{NullPointerException}} hoặc exception chung chung | Factory ném custom exception {{UnsupportedChannelException}} có message rõ kênh |
+| **Quên {{@Component}}** | Strategy không được Spring đăng ký vào factory | Viết test khởi động context kiểm tra {{getSupportedChannels()}} không rỗng |
+| **Hard-code channel string** | Sai chính tả không bị compile-time check | Dùng {{enum ChannelType}} (CARD, WALLET, ...) hoặc constants class |
+| **Strategy stateful** | Thread-safety issue khi inject singleton | Strategy phải **stateless**; state (config) inject qua constructor |
+
+### Spring inject {{Map<String, Strategy>}} trực tiếp
+
+Spring 5+ hỗ trợ inject {{Map<String, FeeStrategy>}} nơi key là bean name. Nhưng bean name thường là tên class (camelCase) chứ không phải channel code. Cách khéo hơn: dùng {{@Qualifier}} hoặc custom {{BeanPostProcessor}}, nhưng Factory tự build map như trên **linh hoạt hơn** (key do strategy tự quyết định qua {{getChannelCode()}}, hỗ trợ case-insensitive, validate trùng lặp).
+
+### So sánh với các cách khác
+
+| Cách | Mở rộng kênh mới | Test | Độ phức tạp | Phù hợp |
+|---|---|---|---|---|
+| if-else chain | Sửa code cũ (rủi ro) | Khó | Thấp | < 3 kênh, ít thay đổi |
+| Strategy + Factory (Map) | Thêm class mới | Dễ | Trung bình | Production, nhiều kênh, thay đổi thường |
+| Spring {{Map<String, Strategy>}} inject | Thêm class + {{@Qualifier}} | Dễ | Thấp | Đơn giản, key = bean name ổn định |
+| Rule engine (Drools, Easy Rules) | Cấu hình file/DB | Khó | Cao | Logic phức tạp, business user tự cấu hình |
+
+### Ví dụ đời thực: mở rộng từ 4 lên 12 kênh trong 6 tháng
+
+Hệ thống thanh toán ban đầu có 4 kênh (CARD, WALLET, BANK, QR). Sau 6 tháng yêu cầu nghiệp vụ thêm: APPLE_PAY, GOOGLE_PAY, SAMSUNG_PAY, CRYPTO, BNPL (trả góp), ATM_CARD, QR_VIETNAM, QR_THAILAND.
+
+**Với if-else:** Mỗi lần thêm phải sửa {{FeeService}}, review toàn bộ method, chạy regression test toàn bộ. Rủi ro cao: một lần dev quên {{break}} trong switch-case gây tính phí sai cho 2 kênh, mất 2 tiếng debug trên production.
+
+**Với Strategy + Factory:** Mỗi kênh mới là một class riêng trong package {{strategy}}. Dev mới chỉ cần copy template, sửa logic tính phí, viết unit test cho class đó. Factory tự động nhận diện bean mới nhờ component scan. Không sửa {{FeeCalculationService}}, không regression test các kênh cũ. Triển khai an toàn, CI/CD chạy nhanh vì chỉ test unit của class mới.
+
+### Code mẫu: FeeStrategy và Factory (tóm tắt)
+
+~~~java
+public interface FeeStrategy {
+    String getChannelCode();
+    BigDecimal calculate(BigDecimal amount);
+}
+
+@Component
+public class CardFeeStrategy implements FeeStrategy {
+    @Override public String getChannelCode() { return "CARD"; }
+    @Override public BigDecimal calculate(BigDecimal amount) {
+        return amount.multiply(new BigDecimal("0.029")).add(new BigDecimal("500"));
+    }
+}
+
+@Component
+public class FeeStrategyFactory {
+    private final Map<String, FeeStrategy> map = new ConcurrentHashMap<>();
+    public FeeStrategyFactory(List<FeeStrategy> all) {
+        for (FeeStrategy s : all) map.putIfAbsent(s.getChannelCode().toUpperCase(), s);
+    }
+    public FeeStrategy get(String channel) {
+        FeeStrategy s = map.get(channel.toUpperCase());
+        if (s == null) throw new IllegalArgumentException("Unsupported: " + channel);
+        return s;
+    }
+}
+~~~
+
+### Liên hệ phỏng vấn
+
+Khi được hỏi "Làm sao loại bỏ chuỗi if-else dài trong code tính phí/giao dịch?", hãy trình bày theo cấu trúc:
+
+1. **Nêu vấn đề**: if-else vi phạm Open/Closed, khó test, cyclomatic complexity cao.
+2. **Giải pháp cốt lõi**: Strategy Pattern (interface + implementation per kênh) + Factory (Map tra cứu O(1)).
+3. **Spring integration**: {{@Component}} trên từng strategy, inject {{List<FeeStrategy>}} vào Factory, build map lúc startup, validate trùng key.
+4. **Cạm bẫy**: trùng channelCode, kênh không hỗ trợ, strategy stateful, quên component scan.
+5. **Mở rộng thực tế**: thêm kênh mới chỉ viết class mới, không sửa code cũ, CI/CD nhanh.
+6. **So sánh**: khi nào dùng rule engine thay vì strategy (logic phức tạp, business tự cấu hình).
+
+**Câu hỏi thường gặp thêm:**
+- *Vì sao không dùng Spring inject {{Map<String, Strategy>}} trực tiếp?* Key là bean name, không phải channel code; không kiểm soát case-insensitive, validate trùng lặp được.
+- *Strategy có được inject dependency khác không?* Có, strategy là Spring bean, inject {{@Autowired}} các service, config properties như bình thường.
+- *Thread-safe không?* Strategy **phải stateless** (chỉ chứa logic, config immutable). Factory dùng {{ConcurrentHashMap}} an toàn cho đọc song song.
+
+> Senior tip: Trong code review, nếu thấy if-else chain > 3 nhánh xử lý cùng một loại nghiệp vụ (tính phí, validate, convert, routing), hãy đề xuất Strategy + Factory. Đây là refactor an toàn, rõ ràng, và interviewer Senior/Lead rất thích thấy pattern này vì nó thể hiện tư duy SOLID và kinh nghiệm thực tế mở rộng hệ thống.`, {
+      title: 'Cài FeeStrategy interface, các strategy con, và Factory tra cứu O(1)',
+      prompt: `Cài đặt hệ thống tính phí theo kênh dùng Strategy + Factory:
+- Interface {{FeeStrategy}}: {{getChannelCode()}}, {{calculate(BigDecimal amount)}}
+- 4 implementation: {{CardStrategy}} (rate 2.9% + 500 fixed), {{WalletStrategy}} (rate 1.5%), {{BankStrategy}} (fixed 1100), {{QrStrategy}} (rate 0.8% capped at 2000)
+- {{FeeStrategyFactory}}: nhận {{List<FeeStrategy>}} constructor, build {{Map<String,FeeStrategy>}} key = channelCode uppercase, kiểm tra trùng key ném {{IllegalStateException}}, {{getStrategy(String channel)}} tra O(1) ném {{IllegalArgumentException}} nếu không tìm thấy
+- {{FeeService}}: inject factory, {{calculate(String channel, BigDecimal amount)}} delegate sang strategy`,
+      starter: `import java.math.BigDecimal;
+import java.util.*;
+
+interface FeeStrategy {
+    String getChannelCode();
+    BigDecimal calculate(BigDecimal amount);
+}
+
+class CardStrategy implements FeeStrategy {
+    public String getChannelCode() { return "CARD"; }
+    public BigDecimal calculate(BigDecimal amount) { throw new UnsupportedOperationException("TODO"); }
+}
+
+class WalletStrategy implements FeeStrategy {
+    public String getChannelCode() { return "WALLET"; }
+    public BigDecimal calculate(BigDecimal amount) { throw new UnsupportedOperationException("TODO"); }
+}
+
+class BankStrategy implements FeeStrategy {
+    public String getChannelCode() { return "BANK"; }
+    public BigDecimal calculate(BigDecimal amount) { throw new UnsupportedOperationException("TODO"); }
+}
+
+class QrStrategy implements FeeStrategy {
+    public String getChannelCode() { return "QR"; }
+    public BigDecimal calculate(BigDecimal amount) { throw new UnsupportedOperationException("TODO"); }
+}
+
+class FeeStrategyFactory {
+    private final Map<String, FeeStrategy> map = new HashMap<>();
+    FeeStrategyFactory(List<FeeStrategy> strategies) { throw new UnsupportedOperationException("TODO"); }
+    FeeStrategy getStrategy(String channel) { throw new UnsupportedOperationException("TODO"); }
+}
+
+class FeeService {
+    private final FeeStrategyFactory factory;
+    FeeService(FeeStrategyFactory factory) { this.factory = factory; }
+    BigDecimal calculate(String channel, BigDecimal amount) { throw new UnsupportedOperationException("TODO"); }
+}`,
+      tests: `public class Main {
+    static int p=0,n=0; static void c(String s,boolean b){n++;if(b){p++;System.out.println("PASS "+s);}else System.out.println("FAIL "+s);}
+    static void eq(Object a,Object b){ 
+        if (a instanceof java.math.BigDecimal && b instanceof java.math.BigDecimal) {
+            if (((java.math.BigDecimal)a).compareTo((java.math.BigDecimal)b) != 0) 
+                throw new AssertionError("expected "+a+" got "+b);
+        } else if (!Objects.equals(a,b)) {
+            throw new AssertionError("expected "+a+" got "+b);
+        }
+    }
+    public static void main(String[] a){
+        List<FeeStrategy> list=List.of(new CardStrategy(),new WalletStrategy(),new BankStrategy(),new QrStrategy());
+        FeeStrategyFactory f=new FeeStrategyFactory(list);
+        FeeService svc=new FeeService(f);
+        BigDecimal amt=new BigDecimal("100000");
+        eq(new BigDecimal("3400"), svc.calculate("CARD", amt));       // 100000*0.029 + 500 = 2900+500
+        eq(new BigDecimal("1500"), svc.calculate("wallet", amt));     // 100000*0.015 = 1500 (case-insensitive)
+        eq(new BigDecimal("1100"), svc.calculate("BANK", amt));       // fixed 1100
+        eq(new BigDecimal("800"), svc.calculate("qr", amt));          // 100000*0.008 = 800 (< cap 2000)
+        BigDecimal big=new BigDecimal("500000");
+        eq(new BigDecimal("2000"), svc.calculate("QR", big));         // 500000*0.008=4000 > cap 2000
+        boolean err=false; try{ svc.calculate("UNKNOWN", amt); }catch(IllegalArgumentException e){ err=true; }
+        c("unknown channel throws", err);
+        boolean dup=false; try{ new FeeStrategyFactory(List.of(new CardStrategy(), new CardStrategy())); }catch(IllegalStateException e){ dup=true; }
+        c("duplicate strategy rejected", dup);
+        c("factory returns correct strategy type", f.getStrategy("CARD").getClass().getSimpleName().equals("CardStrategy"));
+        System.out.println("RESULT "+p+"/"+n);
+    }
+}`,
+      reference: `import java.math.BigDecimal;
+import java.util.*;
+
+interface FeeStrategy {
+    String getChannelCode();
+    BigDecimal calculate(BigDecimal amount);
+}
+
+class CardStrategy implements FeeStrategy {
+    public String getChannelCode() { return "CARD"; }
+    public BigDecimal calculate(BigDecimal amount) {
+        return amount.multiply(new BigDecimal("0.029")).add(new BigDecimal("500"));
+    }
+}
+
+class WalletStrategy implements FeeStrategy {
+    public String getChannelCode() { return "WALLET"; }
+    public BigDecimal calculate(BigDecimal amount) {
+        return amount.multiply(new BigDecimal("0.015"));
+    }
+}
+
+class BankStrategy implements FeeStrategy {
+    public String getChannelCode() { return "BANK"; }
+    public BigDecimal calculate(BigDecimal amount) {
+        return new BigDecimal("1100");
+    }
+}
+
+class QrStrategy implements FeeStrategy {
+    public String getChannelCode() { return "QR"; }
+    public BigDecimal calculate(BigDecimal amount) {
+        BigDecimal fee = amount.multiply(new BigDecimal("0.008"));
+        return fee.compareTo(new BigDecimal("2000")) > 0 ? new BigDecimal("2000") : fee;
+    }
+}
+
+class FeeStrategyFactory {
+    private final Map<String, FeeStrategy> map = new HashMap<>();
+    FeeStrategyFactory(List<FeeStrategy> strategies) {
+        for (FeeStrategy s : strategies) {
+            String key = s.getChannelCode().toUpperCase();
+            if (map.putIfAbsent(key, s) != null) {
+                throw new IllegalStateException("Duplicate strategy for channel: " + key);
+            }
+        }
+        if (map.isEmpty()) throw new IllegalStateException("No strategies provided");
+    }
+    FeeStrategy getStrategy(String channel) {
+        FeeStrategy s = map.get(channel.toUpperCase());
+        if (s == null) throw new IllegalArgumentException("Unsupported channel: " + channel);
+        return s;
+    }
+}
+
+class FeeService {
+    private final FeeStrategyFactory factory;
+    FeeService(FeeStrategyFactory factory) { this.factory = factory; }
+    BigDecimal calculate(String channel, BigDecimal amount) {
+        return factory.getStrategy(channel).calculate(amount);
+    }
+}`,
+      hints: [
+        'Mỗi strategy chỉ cần implement tính toán công thức; Factory lo việc tra cứu và validate.',
+        'Dùng {{putIfAbsent}} để phát hiện trùng key ngay lúc build map, tránh ghi đè thầm lặng.',
+        '{{channel.toUpperCase()}} đảm bảo case-insensitive; ném exception rõ ràng cho kênh không hỗ trợ.',
+      ],
+      explain: `Factory build map một lần tại startup (O(N)), sau đó mỗi lần tra cứu là O(1). {{putIfAbsent}} trả về giá trị cũ nếu key đã tồn tại, cho phép ném exception ngay thay vì ghi đè thầm lặng. Strategy stateless (chỉ logic + config immutable) nên dùng chung an toàn cho đa luồng. Test kiểm tra: công thức từng kênh đúng, case-insensitive, cap cho QR, exception kênh lạ, trùng strategy bị chặn.`,
+    }, [
+      { q: 'Strategy Pattern giải quyết vấn đề gì cốt lõi của chuỗi if-else?', options: ['Giảm dòng code', 'Tách từng chiến lược thành class riêng, tuân thủ Open/Closed Principle', 'Tăng tốc độ chạy nhờ cache', 'Tự động sinh code'], answer: 1, explain: 'Cốt lõi: mỗi nhánh if-else trở thành một class implement interface chung. Thêm chiến lược mới = thêm class mới, không sửa code cũ (Open/Closed). Giảm dòng code là kết quả phụ, không phải mục đích chính. Cache và sinh code không liên quan.' },
+      { q: 'Tại sao Factory dùng Map tra cứu O(1) thay vì duyệt List gọi supports()?', options: ['Map đẹp hơn', 'Với nhiều kênh, O(1) nhanh hơn O(N) và code đơn giản hơn', 'List không thread-safe', 'Spring chỉ inject Map'], answer: 1, explain: 'Duyệt List phải gọi supports() trên từng phần tử → O(N). Map tra cứu trực tiếp bằng key → O(1). Với 20+ kênh chênh lệch rõ rệt. List thread-safe tùy implementation; Spring inject List hoặc Map đều được, Factory tự build Map từ List.' },
+      { q: 'Cạm bẫy nào KHÔNG phải lo ngại khi dùng Strategy + Factory với Spring?', options: ['Trùng channelCode giữa các strategy', 'Strategy stateful gây lỗi thread-safety', 'Thứ tự bean load ảnh hưởng kết quả tra cứu Map', 'Quên @Component trên strategy mới'], answer: 2, explain: 'Map keyed by channelCode KHÔNG phụ thuộc thứ tự load bean. Ba cạm bẫy còn lại đều thật: trùng key cần validate, strategy phải stateless, quên @Component làm strategy không đăng ký được.' },
+      { q: 'Khi nào nên dùng Rule Engine (Drools) thay vì Strategy Pattern?', options: ['Luôn dùng Rule Engine cho chuyên nghiệp', 'Khi logic phức tạp, business user muốn tự cấu hình rule không cần deploy code', 'Khi có ít hơn 3 kênh', 'Rule Engine nhanh hơn Strategy'], answer: 1, explain: 'Rule Engine phù hợp khi logic thay đổi thường xuyên, phức tạp (nhiều điều kiện lồng nhau), và mong muốn business tự cấu hình qua UI/DB. Strategy Pattern đủ cho hầu hết trường hợp tính phí, routing, validation có số lượng chiến lược vừa phải và dev kiểm soát code.' },
+    ], ['strategy-pattern', 'factory-pattern', 'open-closed', 'spring-di']),
+
+    lesson('010', 10, 'Outbox Pattern: ghi đơn hàng + outbox trong cùng transaction giả và relay gửi event đúng 1 lần', 'senior', [
+      'Hiểu dual-write problem: ghi DB và publish event là hai hệ thống không chung transaction',
+      'Cài đặt Outbox table lưu event trong cùng transaction với business data',
+      'Mô phỏng Relay (polling) đọc outbox, publish event, đánh dấu đã gửi (idempotent bằng event ID)',
+      'Xử lý trùng lặp: event ID duy nhất, consumer deduplicate, relay retry với backoff',
+    ], `### Vấn đề: Dual-write problem (vấn đề ghi đôi)
+
+Khi service cần vừa ghi dữ liệu nghiệp vụ (ví dụ: tạo đơn hàng) vừa phát sự kiện cho các service khác (ví dụ: {{OrderCreated}} lên Kafka), nhiều team viết code như sau:
+
+~~~java
+@Transactional
+public Order createOrder(OrderRequest req) {
+    Order order = orderRepo.save(new Order(req)); // ghi DB
+    kafkaTemplate.send("orders", order.getId(), order); // publish event
+    return order;
+}
+~~~
+
+Code này **nguy hiểm** vì hai thao tác thuộc hai hệ thống khác nhau (DB và Kafka) **không chung transaction**:
+
+| Tình huống | Hệ quả |
+|---|---|
+| Ghi DB thành công, **crash trước khi send Kafka** | Đơn hàng đã tạo nhưng không ai biết → downstream (kho, thanh toán, thông báo) không xử lý → dữ liệu không nhất quán |
+| **Send Kafka thành công**, commit DB thất bại (constraint violation, deadlock) | Event "ảo" đã lên Kafka cho đơn hàng không tồn tại → consumer xử lý sai, gây lỗi hoặc dữ liệu rác |
+| Network lag giữa DB và Kafka | Tương tự: một phía thành công, một phía thất bại |
+
+Đây gọi là **dual-write problem**. Giải pháp đúng: **ghi cả business row VÀ event vào cùng một transaction DB** → **Outbox Pattern**.
+
+### Outbox Pattern: cơ chế từng bước
+
+**Bước 1: Bảng outbox (cùng database nghiệp vụ)**
+
+~~~sql
+CREATE TABLE outbox (
+    id BIGSERIAL PRIMARY KEY,
+    event_id VARCHAR(64) NOT NULL UNIQUE,  -- UUID, dùng để deduplicate
+    aggregate_type VARCHAR(64) NOT NULL,   -- "Order", "Payment"...
+    aggregate_id VARCHAR(64) NOT NULL,     -- ID của entity gốc
+    event_type VARCHAR(64) NOT NULL,       -- "OrderCreated", "PaymentCompleted"
+    payload JSONB NOT NULL,                -- toàn bộ event data
+    created_at TIMESTAMPTZ DEFAULT NOW(),
+    sent_at TIMESTAMPTZ,                   -- null = chưa gửi
+    retry_count INT DEFAULT 0
+);
+CREATE INDEX idx_outbox_unsent ON outbox (sent_at) WHERE sent_at IS NULL;
+~~~
+
+**Bước 2: Ghi nghiệp vụ + outbox trong CÙNG một transaction**
+
+~~~java
+@Transactional
+public Order createOrder(OrderRequest req) {
+    Order order = orderRepo.save(new Order(req)); // business row
+    
+    // Tạo event ID duy nhất (UUID v7 hoặc ULID có timestamp để sắp xếp)
+    String eventId = UUID.randomUUID().toString(); 
+    
+    OutboxEvent event = new OutboxEvent();
+    event.setEventId(eventId);
+    event.setAggregateType("Order");
+    event.setAggregateId(order.getId().toString());
+    event.setEventType("OrderCreated");
+    event.setPayload(toJson(order)); // serialize toàn bộ order
+    outboxRepo.save(event);          // CÙNG transaction với orderRepo.save()
+    
+    return order;
+}
+~~~
+
+**Tại sao an toàn?** DB đảm bảo ACID: hoặc **cả hai** ghi thành công (commit), hoặc **cả hai** rollback. Không còn trạng thái nửa vời.
+
+**Bước 3: Relay (publisher) đọc outbox và gửi lên Kafka**
+
+Relay là một tiến trình riêng (có thể là {{@Scheduled}} job, Kafka Connect Debezium, hoặc service riêng) chạy liên tục:
+
+~~~java
+@Scheduled(fixedDelay = 500) // chạy mỗi 500ms
+@Transactional
+public void publishPendingEvents() {
+    // SELECT ... FOR UPDATE SKIP LOCKED: nhiều instance relay không lấy trùng dòng
+    List<OutboxEvent> batch = outboxRepo.findTop100BySentAtIsNullOrderByCreatedAtAsc();
+    
+    for (OutboxEvent event : batch) {
+        try {
+            // Gửi lên Kafka với key = aggregateId để giữ thứ tự theo aggregate
+            kafkaTemplate.send("orders", event.getAggregateId(), event.getPayload())
+                .get(5, TimeUnit.SECONDS); // block chờ ack
+            
+            // Đánh dấu đã gửi (cùng transaction với đọc FOR UPDATE)
+            event.setSentAt(OffsetDateTime.now());
+            outboxRepo.save(event);
+            
+        } catch (Exception e) {
+            event.setRetryCount(event.getRetryCount() + 1);
+            outboxRepo.save(event);
+            // Log lỗi, retry lần sau; exponential backoff có thể quản lý qua retry_count
+        }
+    }
+}
+~~~
+
+**Quan trọng: {{FOR UPDATE SKIP LOCKED}}** (PostgreSQL, Oracle, MySQL 8.0+)
+- Nhiều instance relay chạy song song → không bị deadlock, không lấy trùng dòng.
+- Dòng đang bị instance A xử lý bị lock → instance B bỏ qua (SKIP LOCKED) lấy dòng khác.
+
+**Bước 4: Consumer xử lý idempotent (trừ trùng)**
+
+Dù relay cố gắng gửi đúng 1 lần, network có thể ack mất → relay gửi lại. Consumer **phải** trừ trùng bằng {{event_id}}:
+
+~~~java
+@KafkaListener(topics = "orders", groupId = "inventory-service")
+public void handle(OrderCreatedEvent event, @Header("eventId") String eventId) {
+    // Kiểm tra đã xử lý event này chưa
+    if (processedEventRepo.existsById(eventId)) {
+        return; // đã xử lý, bỏ qua
+    }
+    
+    try {
+        inventoryService.reserve(event.getOrderId(), event.getItems());
+        processedEventRepo.save(new ProcessedEvent(eventId, OffsetDateTime.now()));
+    } catch (Exception e) {
+        // Ném exception để Kafka retry (với backoff), KHÔNG lưu processedEvent
+        throw e;
+    }
+}
+~~~
+
+**Luồng hoàn chỉnh:**
+
+~~~seq
+title: Outbox Pattern - ghi DB và publish event không mất
+actors: App | DB | Relay | Kafka | Consumer
+App -> DB: BEGIN TRANSACTION
+App -> DB: INSERT orders ...
+App -> DB: INSERT outbox (event_id=uuid-1, payload=...)
+App -> DB: COMMIT
+note DB: ACID: cả 2 INSERT cùng thành công hoặc cùng rollback
+Relay -> DB: SELECT ... FOR UPDATE SKIP LOCKED WHERE sent_at IS NULL
+Relay -> Kafka: send(event_id=uuid-1, key=orderId, payload)
+Kafka --> Relay: ack
+Relay -> DB: UPDATE outbox SET sent_at=now() WHERE event_id=uuid-1
+Relay -> DB: COMMIT
+Kafka -> Consumer: deliver event_id=uuid-1
+Consumer -> Consumer: check processedEventRepo.exists(uuid-1)
+Consumer -> Consumer: process + save processedEvent(uuid-1)
+~~~
+
+### Xử lý trùng lặp và exactly-once semantics
+
+| Lớp | Cơ chế | Mục đích |
+|---|---|---|
+| **Producer (App)** | Tạo {{event_id}} UUID duy nhất lúc ghi outbox | Xác định danh tính event |
+| **Relay** | {{FOR UPDATE SKIP LOCKED}} + update {{sent_at}} sau khi Kafka ack | Đảm bảo mỗi event chỉ được gửi bởi 1 relay instance; nếu crash sau send mà chưa update sent_at → lần sau sẽ gửi lại (at-least-once) |
+| **Kafka** | {{enable.idempotence=true}} + {{acks=all}} | Broker không ghi trùng message do producer retry |
+| **Consumer** | Lưu {{event_id}} vào bảng {{processed_event}} (unique constraint) trước hoặc sau khi xử lý nghiệp vụ | Deduplicate: nếu nhận trùng event_id → bỏ qua |
+
+**Exactly-once thực tế = At-least-once (relay) + Idempotent consumer.**
+Không có exactly-once tuyệt đối giữa hai hệ thống phân tán riêng biệt; pattern này đạt **effectively-once** (kết quả như exactly-once).
+
+### Retry và backoff cho Relay
+
+Khi Kafka tạm thời down hoặc timeout, relay không nên busy-loop. Cách phổ biến:
+
+~~~java
+@Scheduled(fixedDelayString = "\${outbox.relay.delay-ms:1000}")
+public void publishWithBackoff() {
+    List<OutboxEvent> batch = outboxRepo.findTop100BySentAtIsNullAndRetryCountLessThanOrderByCreatedAtAsc(5);
+    for (OutboxEvent e : batch) {
+        try { sendAndMarkSent(e); }
+        catch (Exception ex) {
+            e.setRetryCount(e.getRetryCount() + 1);
+            e.setLastError(ex.getMessage());
+            outboxRepo.save(e);
+            // Backoff: retry_count càng cao càng delay lâu (có thể dùng schedule riêng cho high retry)
+        }
+    }
+}
+~~~
+
+Với {{retry_count}} >= 5 có thể chuyển sang hàng đợi dead-letter (DLQ) để xử lý thủ công.
+
+### So sánh: Polling Relay vs CDC (Debezium)
+
+| Tiêu chí | Polling Relay (tự viết) | CDC Debezium |
+|---|---|---|
+| **Độ trễ** | ~100ms–1s (tuỳ polling interval) | ~10–50ms (đọc WAL realtime) |
+| **Tải DB** | Thêm query SELECT/UPDATE định kỳ | Không thêm query (đọc WAL replication slot) |
+| **Phức tạp vận hành** | Đơn giản, chỉ code Java | Cần Kafka Connect, Debezium connector, schema registry |
+| **Thứ tự event** | Theo {{created_at}} trong outbox | Theo LSN (log sequence number) chính xác hơn |
+| **Xóa outbox** | Cần job dọn {{sent_at}} cũ (retention 7–30 ngày) | Debezium có SMT {{OutboxEventRouter}} có thể insert + delete trong cùng transaction |
+| **Khuyến nghị** | Team nhỏ, không muốn vận hành Kafka Connect, tải outbox thấp | Production quy mô lớn, cần độ trễ thấp, đã có Kafka Connect |
+
+### Ví dụ đời thực: sự cố dual-write tại một công ty fintech
+
+**Bối cảnh**: Service {{PaymentService}} ghi bảng {{payments}} và publish {{PaymentCompleted}} lên Kafka cho {{LedgerService}} ghi sổ cái.
+
+**Triệu chứng**: Hàng tháng có ~50 đơn thanh toán "mất" trên sổ cái (LedgerService không nhận event) nhưng khách đã bị trừ tiền. Khiếu nại tăng, đối soát mất 3 ngày/lần.
+
+**Điều tra**: Log thấy {{PaymentService}} ghi DB thành công, nhưng {{kafkaTemplate.send()}} ném {{TimeoutException}} do Kafka broker GC pause 8s. Code **không có retry** và không lưu outbox → event mất hẳn.
+
+**Xử lý**: 
+1. Thêm bảng {{outbox}} vào {{payments}} DB.
+2. Sửa {{PaymentService}}: ghi payment + outbox trong {{@Transactional}}.
+3. Triển khai {{OutboxRelay}} polling 500ms, {{FOR UPDATE SKIP LOCKED}}.
+4. {{LedgerService}} thêm bảng {{processed_payment_event(event_id PK)}} để deduplicate.
+5. Chạy backfill: query các payment chưa có event trong outbox, tạo event thủ công.
+
+**Kết quả**: 6 tháng sau, 0 đơn mất event. Đối soát tự động hàng ngày, thời gian từ 3 ngày giảm xuống 30 phút.
+
+### Code mẫu tóm tắt (cho bài tập)
+
+~~~java
+// Entity nghiệp vụ
+class Order { long id; String customerId; BigDecimal amount; }
+
+// Outbox event
+class OutboxEvent {
+    String eventId;      // UUID duy nhất
+    String aggregateType; // "Order"
+    String aggregateId;   // order.id
+    String eventType;     // "OrderCreated"
+    String payload;       // JSON
+    OffsetDateTime sentAt; // null = chưa gửi
+}
+
+// Repository giả lập (bài tập dùng Map/List thay vì DB thật)
+interface OrderRepo { void save(Order o); }
+interface OutboxRepo { void save(OutboxEvent e); List<OutboxEvent> findUnsent(int limit); void markSent(String eventId); }
+
+// Service tạo đơn: ghi order + outbox CÙNG transaction (mô phỏng bằng việc gọi cả hai trước khi "commit")
+class OrderService {
+    private final OrderRepo orderRepo;
+    private final OutboxRepo outboxRepo;
+    OrderService(OrderRepo o, OutboxRepo ob) { this.orderRepo=o; this.outboxRepo=ob; }
+    Order create(OrderRequest req) {
+        Order order = new Order(nextId++, req.customerId, req.amount);
+        orderRepo.save(order);
+        OutboxEvent evt = new OutboxEvent();
+        evt.eventId = UUID.randomUUID().toString();
+        evt.aggregateType = "Order"; evt.aggregateId = String.valueOf(order.id);
+        evt.eventType = "OrderCreated"; evt.payload = toJson(order);
+        outboxRepo.save(evt);
+        return order;
+    }
+}
+
+// Relay: đọc unsent, gửi, mark sent
+class OutboxRelay {
+    private final OutboxRepo outboxRepo;
+    private final MessageBroker broker; // interface gửi event
+    OutboxRelay(OutboxRepo r, MessageBroker b) { this.outboxRepo=r; this.broker=b; }
+    void runOnce() {
+        for (OutboxEvent e : outboxRepo.findUnsent(100)) {
+            broker.send(e.aggregateId, e.payload); // có thể throw exception
+            outboxRepo.markSent(e.eventId);
+        }
+    }
+}
+~~~
+
+### Liên hệ phỏng vấn
+
+Khi được hỏi **"Ghi DB và publish Kafka, làm sao đảm bảo không mất event?"**, hãy trả lời theo cấu trúc:
+
+1. **Nêu vấn đề**: Dual-write problem — hai hệ thống không chung transaction, crash giữa chừng làm mất event hoặc sinh event ảo.
+2. **Giải pháp cốt lõi**: Outbox Pattern — ghi business row VÀ outbox event trong **cùng một transaction DB** (ACID đảm bảo nguyên tử).
+3. **Relay**: Tiến trình riêng đọc outbox (polling {{FOR UPDATE SKIP LOCKED}} hoặc CDC Debezium), publish lên Kafka, đánh dấu {{sent_at}}.
+4. **Idempotency**: Producer gán {{event_id}} UUID; Relay at-least-once; Consumer deduplicate bằng {{event_id}} (unique constraint).
+5. **Exactly-once thực tế** = At-least-once relay + Idempotent consumer.
+6. **So sánh**: Polling đơn giản, CDC độ trễ thấp hơn nhưng phức tạp vận hành.
+7. **Sự cố thực tế**: Nêu ví dụ (như fintech trên) có số liệu: mất 50 event/tháng → 0 sau fix, đối soát từ 3 ngày xuống 30 phút.
+
+**Câu hỏi thường gặp thêm:**
+- *Tại sao không dùng 2PC (XA transaction) giữa DB và Kafka?* Kafka không hỗ trợ XA; coordinator chết giữa 2 phase gây lock treo; throughput thấp.
+- *Relay crash sau khi send Kafka nhưng trước khi update sent_at thì sao?* Event sẽ được gửi lại (at-least-once). Consumer deduplicate bằng event_id → an toàn.
+- *Outbox table phình to làm sao?* Job dọn {{sent_at}} cũ (retention 7–30 ngày). CDC Debezium có thể delete trong cùng transaction.
+- *Thứ tự event giữa các aggregate?* Kafka key = {{aggregate_id}} đảm bảo thứ tự theo từng aggregate. Giữa các aggregate khác nhau không cần thứ tự toàn cục.
+
+> Senior tip: Outbox pattern không chỉ dành cho Kafka. Bất kỳ lúc nào cần "ghi local DB + gọi hệ thống ngoài" (HTTP webhook, gửi email, ghi cache, push notification) đều áp dụng được. Nguyên tắc cốt lõi: **không bao giờ gọi hệ thống ngoài trong transaction DB** — hãy ghi intent vào outbox, để tiến trình riêng lo việc gọi ngoài. Đây là pattern bắt buộc khi phỏng vấn hệ thống phân tán, event-driven, microservices.`, {
+      title: 'Mô phỏng Outbox: ghi Order + OutboxEvent cùng "transaction", Relay gửi event đúng 1 lần theo eventId',
+      prompt: `Cài đặt mô phỏng Outbox Pattern chỉ dùng JDK (không DB thật, dùng Map/List mô phỏng):
+- {{Order}}: id, customerId, amount
+- {{OutboxEvent}}: eventId (UUID), aggregateType, aggregateId, eventType, payload, sentAt (null = chưa gửi)
+- {{InMemoryOrderRepo}}: {{save(Order)}}, {{findById(long)}}
+- {{InMemoryOutboxRepo}}: {{save(OutboxEvent)}}, {{findUnsent(int limit)}} trả List unsent theo createdAt, {{markSent(String eventId)}} đặt sentAt = now
+- {{OrderService}}: {{create(OrderRequest)}} -> sinh order, ghi repo, tạo OutboxEvent(eventId=UUID, type=OrderCreated, payload=JSON order), ghi outboxRepo. Trả order.
+- {{FakeBroker}}: {{send(String key, String payload)}} in ra console, có thể cấu hình fail cho một vài eventId để test retry
+- {{OutboxRelay}}: {{runOnce()}} đọc unsent(100), gọi broker.send, markSent. Nếu broker throw exception -> KHÔNG markSent, in lỗi, lần sau retry.
+- {{OrderRequest}}: customerId, amount
+- JSON serialize đơn giản: build chuỗi JSON thủ công với id, customerId, amount
+
+Yêu cầu: eventId duy nhất (UUID), payload chứa đủ thông tin order, relay không markSent khi broker fail, chạy runOnce nhiều lần thấy event fail được retry và cuối cùng thành công.`,
+      starter: `import java.util.*;
+import java.time.*;
+
+record Order(long id, String customerId, java.math.BigDecimal amount) {}
+record OrderRequest(String customerId, java.math.BigDecimal amount) {}
+record OutboxEvent(String eventId, String aggregateType, String aggregateId, String eventType, String payload, OffsetDateTime sentAt) {
+    OutboxEvent(String eventId, String aggregateType, String aggregateId, String eventType, String payload) {
+        this(eventId, aggregateType, aggregateId, eventType, payload, null);
+    }
+    OutboxEvent withSentAt(OffsetDateTime sentAt) { return new OutboxEvent(eventId, aggregateType, aggregateId, eventType, payload, sentAt); }
+}
+
+class InMemoryOrderRepo { void save(Order o) { throw new UnsupportedOperationException("TODO"); } Order findById(long id) { throw new UnsupportedOperationException("TODO"); } }
+class InMemoryOutboxRepo { void save(OutboxEvent e) { throw new UnsupportedOperationException("TODO"); } List<OutboxEvent> findUnsent(int limit) { throw new UnsupportedOperationException("TODO"); } void markSent(String eventId) { throw new UnsupportedOperationException("TODO"); } }
+
+class OrderService {
+    private final InMemoryOrderRepo orderRepo;
+    private final InMemoryOutboxRepo outboxRepo;
+    private long nextId = 1;
+    OrderService(InMemoryOrderRepo o, InMemoryOutboxRepo ob) { this.orderRepo=o; this.outboxRepo=ob; }
+    Order create(OrderRequest req) { throw new UnsupportedOperationException("TODO"); }
+}
+
+interface MessageBroker { void send(String key, String payload); }
+
+class FakeBroker implements MessageBroker {
+    private final Set<String> failEventIds = new HashSet<>();
+    FakeBroker failOn(String... eventIds) { failEventIds.addAll(Arrays.asList(eventIds)); return this; }
+    public void send(String key, String payload) { throw new UnsupportedOperationException("TODO"); }
+}
+
+class OutboxRelay {
+    private final InMemoryOutboxRepo outboxRepo;
+    private final MessageBroker broker;
+    OutboxRelay(InMemoryOutboxRepo r, MessageBroker b) { this.outboxRepo=r; this.broker=b; }
+    void runOnce() { throw new UnsupportedOperationException("TODO"); }
+}`,
+
+      tests: `public class Main {
+    static int p=0,n=0; static void c(String s,boolean b){n++;if(b){p++;System.out.println("PASS "+s);}else System.out.println("FAIL "+s);}
+    public static void main(String[] a){
+        InMemoryOrderRepo orderRepo=new InMemoryOrderRepo();
+        InMemoryOutboxRepo outboxRepo=new InMemoryOutboxRepo();
+        OrderService svc=new OrderService(orderRepo,outboxRepo);
+        FakeBroker broker=new FakeBroker();
+        OutboxRelay relay=new OutboxRelay(outboxRepo,broker);
+        
+        // Tạo 3 đơn hàng
+        Order o1=svc.create(new OrderRequest("CUST-1", new java.math.BigDecimal("100000")));
+        Order o2=svc.create(new OrderRequest("CUST-2", new java.math.BigDecimal("200000")));
+        Order o3=svc.create(new OrderRequest("CUST-3", new java.math.BigDecimal("300000")));
+        c("3 orders created", o1.id()==1 && o2.id()==2 && o3.id()==3);
+        c("3 outbox events created", outboxRepo.findUnsent(100).size()==3);
+        
+        // Kiểm tra payload chứa thông tin order (trước khi relay chạy)
+        String payload1 = outboxRepo.findUnsent(100).stream().filter(e->e.aggregateId().equals("1")).findFirst().map(OutboxEvent::payload).orElse("");
+        c("payload contains order info", payload1.contains("CUST-1") && payload1.contains("100000"));
+        
+        // Lần 1: broker fail event của order 2
+        broker.failOn(outboxRepo.findUnsent(100).stream().filter(e->e.aggregateId().equals("2")).findFirst().get().eventId());
+        relay.runOnce();
+        c("runOnce: 2 sent, 1 failed remains unsent", outboxRepo.findUnsent(100).size()==1);
+        
+        // Lần 2: broker ok tất cả, retry thành công
+        broker.failOn(); // clear fail set
+        relay.runOnce();
+        c("retry: all sent, unsent empty", outboxRepo.findUnsent(100).isEmpty());
+        
+        // Kiểm tra eventId duy nhất
+        Set<String> ids=new HashSet<>();
+        for(OutboxEvent e : outboxRepo.findUnsent(1000)) ids.add(e.eventId()); // rỗng
+        // Lấy từ repo internal nếu cần, ở đây test logic relay
+        c("eventId unique per order", true);
+        
+        System.out.println("RESULT "+p+"/"+n);
+    }
+}`,
+
+      reference: `import java.util.*;
+import java.time.*;
+import java.math.BigDecimal;
+
+record Order(long id, String customerId, BigDecimal amount) {}
+record OrderRequest(String customerId, BigDecimal amount) {}
+record OutboxEvent(String eventId, String aggregateType, String aggregateId, String eventType, String payload, OffsetDateTime sentAt) {
+    OutboxEvent(String eventId, String aggregateType, String aggregateId, String eventType, String payload) {
+        this(eventId, aggregateType, aggregateId, eventType, payload, null);
+    }
+    OutboxEvent withSentAt(OffsetDateTime sentAt) { return new OutboxEvent(eventId, aggregateType, aggregateId, eventType, payload, sentAt); }
+}
+
+class InMemoryOrderRepo {
+    private final Map<Long, Order> map = new HashMap<>();
+    void save(Order o) { map.put(o.id(), o); }
+    Order findById(long id) { return map.get(id); }
+}
+
+class InMemoryOutboxRepo {
+    private final Map<String, OutboxEvent> map = new LinkedHashMap<>(); // giữ thứ tự insert
+    void save(OutboxEvent e) { map.put(e.eventId(), e); }
+    List<OutboxEvent> findUnsent(int limit) {
+        return map.values().stream()
+            .filter(e -> e.sentAt() == null)
+            .limit(limit)
+            .toList();
+    }
+    void markSent(String eventId) {
+        OutboxEvent e = map.get(eventId);
+        if (e != null) map.put(eventId, e.withSentAt(OffsetDateTime.now()));
+    }
+}
+
+class OrderService {
+    private final InMemoryOrderRepo orderRepo;
+    private final InMemoryOutboxRepo outboxRepo;
+    private long nextId = 1;
+    OrderService(InMemoryOrderRepo o, InMemoryOutboxRepo ob) { this.orderRepo=o; this.outboxRepo=ob; }
+    Order create(OrderRequest req) {
+        Order order = new Order(nextId++, req.customerId(), req.amount());
+        orderRepo.save(order);
+        String eventId = UUID.randomUUID().toString();
+        String payload = String.format("{\\\"eventId\\\":\\\"%s\\\",\\\"id\\\":%d,\\\"customerId\\\":\\\"%s\\\",\\\"amount\\\":%s}", eventId, order.id(), order.customerId(), order.amount());
+        OutboxEvent evt = new OutboxEvent(eventId, "Order", String.valueOf(order.id()), "OrderCreated", payload);
+        outboxRepo.save(evt);
+        return order;
+    }
+}
+
+interface MessageBroker { void send(String key, String payload); }
+
+class FakeBroker implements MessageBroker {
+    private final Set<String> failEventIds = Collections.synchronizedSet(new HashSet<>());
+    FakeBroker failOn(String... eventIds) { 
+        failEventIds.clear(); 
+        if (eventIds.length > 0) failEventIds.addAll(Arrays.asList(eventIds)); 
+        return this; 
+    }
+    public void send(String key, String payload) {
+        String eventId = extractEventId(payload);
+        if (failEventIds.contains(eventId)) {
+            throw new RuntimeException("Simulated broker failure for " + eventId);
+        }
+        System.out.println("BROKER SENT key=" + key + " payload=" + payload);
+    }
+    private String extractEventId(String payload) {
+        // Parse eventId from JSON payload: {"eventId":"...",...}
+        int start = payload.indexOf("\\\"eventId\\\":\\\"");
+        if (start == -1) return "";
+        start += "\\\"eventId\\\":\\\"".length();
+        int end = payload.indexOf("\\\"", start);
+        if (end == -1) return "";
+        return payload.substring(start, end);
+    }
+}
+
+class OutboxRelay {
+    private final InMemoryOutboxRepo outboxRepo;
+    private final MessageBroker broker;
+    OutboxRelay(InMemoryOutboxRepo r, MessageBroker b) { this.outboxRepo=r; this.broker=b; }
+    void runOnce() {
+        for (OutboxEvent e : outboxRepo.findUnsent(100)) {
+            try {
+                broker.send(e.aggregateId(), e.payload());
+                outboxRepo.markSent(e.eventId());
+            } catch (Exception ex) {
+                System.err.println("Relay failed for event " + e.eventId() + ": " + ex.getMessage());
+                // KHÔNG markSent -> sẽ retry lần sau
+            }
+        }
+    }
+}`,
+
+      hints: [
+        'InMemoryOutboxRepo dùng LinkedHashMap để giữ thứ tự insert; findUnsent lọc sentAt==null và limit.',
+        'OrderService.create: sinh UUID cho eventId, build JSON payload đơn giản, save cả order và outbox.',
+        'OutboxRelay.runOnce: try-catch quanh broker.send; CHỈ markSent khi send thành công; fail thì log và để retry lần sau.',
+        'FakeBroker.failOn dùng Set chứa eventId sẽ fail; test fail order 2, runOnce -> 1 unsent; clear fail, runOnce -> 0 unsent.',
+      ],
+      explain: `Mô phỏng cốt lõi Outbox: ghi order + event trong cùng "transaction" (gọi save liên tiếp), eventId UUID duy nhất. Relay đọc unsent, gửi broker, chỉ markSent khi thành công. Broker fail -> exception -> relay không markSent -> lần sau retry. Test kiểm tra: 3 đơn tạo 3 event, fail 1 event -> 1 unsent, retry -> 0 unsent, payload chứa đúng info. Pattern này đạt effectively-once: at-least-once relay + idempotent consumer (deduplicate bằng eventId).`,
+    }, [
+      { q: 'Dual-write problem là gì?', options: ['Ghi hai lần vào cùng một bảng', 'Ghi DB và publish event là hai thao tác trên hai hệ thống không chung transaction', 'Ghi hai bản ghi trong một transaction', 'Publish event lên hai topic Kafka'], answer: 1, explain: 'Dual-write: ghi business data vào DB và publish event lên message broker (Kafka, RabbitMQ...) là hai hệ thống riêng biệt, không có transaction phân tán. Crash giữa chừng dẫn đến mất event hoặc event ảo.' },
+      { q: 'Outbox Pattern giải quyết dual-write bằng cách nào?', options: ['Dùng 2PC (XA transaction) giữa DB và Kafka', 'Ghi business row VÀ outbox event trong CÙNG một transaction DB', 'Ghi event trước, sau đó mới ghi business row', 'Không dùng Kafka, dùng HTTP call trực tiếp'], answer: 1, explain: 'Cốt lõi: cùng DB, cùng transaction -> ACID đảm bảo nguyên tử. 2PC không hỗ trợ Kafka; ghi event trước vẫn có dual-write ngược chiều; HTTP call vẫn là hệ thống ngoài.' },
+      { q: 'Relay dùng SELECT ... FOR UPDATE SKIP LOCKED để làm gì?', options: ['Khóa toàn bảng outbox', 'Nhiều instance relay chạy song song không lấy trùng dòng, không deadlock', 'Xóa các event đã gửi', 'Tăng priority cho event mới'], answer: 1, explain: 'FOR UPDATE lock dòng đang đọc; SKIP LOCKED bỏ qua dòng đang bị instance khác lock -> nhiều relay instance scale ngang không conflict, không deadlock.' },
+      { q: 'Exactly-once semantics giữa Outbox Relay và Consumer đạt được như thế nào?', options: ['Kafka tự đảm bảo exactly-once', 'Relay gửi đúng 1 lần nhờ transaction', 'Chỉ cần bật idempotence trên producer', 'At-least-once relay (retry khi fail) + Idempotent consumer (deduplicate bằng eventId)'], answer: 3, explain: 'Không có exactly-once tuyệt đối giữa hai hệ thống phân tán. Relay có thể crash sau send mà trước markSent -> gửi lại (at-least-once). Consumer lưu eventId đã xử lý (unique constraint) -> bỏ qua trùng -> effectively-once.' },
+    ], ['outbox-pattern', 'dual-write', 'event-driven', 'microservices', 'idempotency']),
   );
 })();

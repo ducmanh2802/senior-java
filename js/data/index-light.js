@@ -2803,6 +2803,8 @@ window.DATA_INDEX = {
     {"id":"lesson-design-007","track":"design","order":7,"title":"Sharding: chọn shard key, hot partition và resharding","level":"senior","minutes":30},
     {"id":"lesson-design-006","track":"design","order":6,"title":"Consistent hashing: đo phân bố key và dịch chuyển khi thêm bớt node","level":"senior","minutes":30},
     {"id":"lesson-design-008","track":"design","order":8,"title":"Quorum đọc/ghi: khi nào đọc được dữ liệu cũ và vì sao R + W > N","level":"lead","minutes":30},
+    {"id":"lesson-design-009","track":"design","order":9,"title":"Strategy + Factory: thay thế chuỗi if-else theo loại sản phẩm (phí giao dịch theo kênh)","level":"senior","minutes":30},
+    {"id":"lesson-design-010","track":"design","order":10,"title":"Outbox Pattern: ghi đơn hàng + outbox trong cùng transaction giả và relay gửi event đúng 1 lần","level":"senior","minutes":30},
     {"id":"lesson-microservices-001","track":"microservices","order":1,"title":"Transactional outbox: không mất event giữa database và broker","level":"senior","minutes":30},
     {"id":"lesson-microservices-002","track":"microservices","order":2,"title":"Idempotent consumer: chống duplicate và sự kiện cũ","level":"senior","minutes":25},
     {"id":"lesson-microservices-003","track":"microservices","order":3,"title":"Saga orchestration: bù trừ khi quy trình nhiều service thất bại","level":"lead","minutes":30},
