@@ -3357,6 +3357,8 @@ window.DATA_INDEX = {
     {"id":"sd-046","title":"Hệ thống thu hộ / thanh toán hoá đơn (điện, nước, học phí)"},
     {"id":"sd-047","title":"Đặt phòng khách sạn đa kênh (website + OTA)"},
     {"id":"sd-048","title":"Quản lý kho và giao hàng chặng cuối (last-mile)"},
+    {"id":"sd-049","title":"Nền tảng form và khảo sát trực tuyến (form động, chống spam, xuất báo cáo, webhook)"},
+    {"id":"sd-050","title":"Log tập trung cho 200 service (thu thập, lưu nóng/lạnh, tìm kiếm, cảnh báo, chi phí 30 ngày)"},
   ],
   drills: [
     {"id":"drill-shadow-001","kind":"shadow","en":"I am a backend engineer with eight years of experience building Java services for fintech products."},

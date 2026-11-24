@@ -7121,5 +7121,330 @@ Tôi tách bài toán thành ba phần rõ ràng. Thứ nhất, tồn kho nhiề
     'Làm sao phát hiện sớm kho báo sai tồn trước khi khách nhận hàng đã âm?'
   ],
   related: ['design-005']
+},
+{
+  id: 'sd-049',
+  title: 'Nền tảng form và khảo sát trực tuyến (form động, chống spam, xuất báo cáo, webhook)',
+  kind: 'bigtech',
+  level: 'senior',
+  prompt: `Bạn thiết kế nền tảng tạo **form và khảo sát trực tuyến** (giống Google Forms / Typeform): người dùng kéo-thả tạo form động (câu hỏi text, chọn một, chọn nhiều, thang điểm, lưới bảng), publish ra link, và thu thập câu trả lời. Quy mô: **1 triệu lượt trả lời mỗi ngày**, peak gấp 8 lần khi một chiến dịch khảo sát được đẩy qua email/newsletter; một form phổ biến có thể nhận 20.000 câu trả lời trong một giờ. Yêu cầu: **chống spam** (bot, trả lời trùng), **xuất báo cáo** CSV/Excel, **gửi webhook** khi có câu trả lời mới, và form vẫn xem được khi creator offline. Bạn có 45 phút. Hãy trình bày.`,
+  phases: [
+    { name: 'Requirements', minutes: 5, guide: `Làm rõ functional: tạo form động (nhiều loại câu hỏi, logic nhảy câu có điều kiện), publish, thu thập câu trả lời, chống spam, xuất báo cáo, webhook theo từng câu trả lời hoặc theo lô, thống kê realtime. Non-functional: 1 triệu/ngày ~ 12/s trung bình, peak x8; câu trả lời không được mất; p99 submit dưới 200 ms; availability cao. Hỏi: form có logic nhảy câu (conditional branching) không, giới hạn số câu, có thu PII không, webhook per-response hay batch, creator có sửa form sau khi publish không (versioning). Out-of-scope: phân tích nâng cao, A/B testing.` },
+    { name: 'Estimation', minutes: 5, guide: `1.000.000 / 86.400 ~ 11,6 lượt/s trung bình; peak x8 ~ 93/s; chiến dịch lớn đẩy qua email có thể dồn 20.000 câu/giờ cho một form ~ 5,6/s nhưng nhiều form cùng lúc. Đọc form (xem) nhiều gấp hàng trăm lần ghi câu trả lời. Mỗi câu trả lời ~ 2 KB => ~ 2 GB/ngày; kèm index/answer rows ~ vài GB. Export: 1 triệu dòng x vài trăm byte = vài trăm MB, phải chạy async. Webhook: thêm ~ 1 triệu event/ngày ra ngoài. Kết luận: đọc form phục vụ từ cache/CDN; ghi câu trả lời là queue + DB phân vùng; export và webhook là async job.` },
+    { name: 'API & data model', minutes: 5, guide: `API: POST /forms (schema), PUT /forms/{id} (version mới), GET /forms/{id} (schema, cache), POST /forms/{id}/responses (Idempotency-Key), GET /forms/{id}/responses (export cursor), POST /forms/{id}/export (async), POST /forms/{id}/webhooks. Bảng form (id, owner_id, title, schema jsonb, version, status DRAFT/PUBLISHED/CLOSED, updated_at); response (id, form_id, respondent_token, status, submitted_at, ip_hash, spam_score); answer (response_id, question_id, value jsonb); webhook_sub (id, form_id, url, secret, events, active); export_job (id, form_id, status, file_key, created_at). Unique (form_id, respondent_token) chống trả lời trùng.` },
+    { name: 'High-level design', minutes: 15, guide: `Vẽ: Creator -> Form service (CRUD schema, version) -> DB; schema publish đẩy snapshot lên CDN/cache. Respondent -> CDN (form tĩnh + schema) -> Response ingest service -> Kafka (buffer) -> Response consumer ghi DB phân vùng theo form_id/thời gian; Anti-spam chấm điểm trước khi nhận; Webhook dispatcher đọc outbox -> gọi URL (HMAC, retry); Export worker tạo file CSV/Parquet -> S3 -> presigned URL. Giải thích vì sao submit không ghi thẳng DB khi peak, vì sao dùng outbox cho webhook.` },
+    { name: 'Deep dive', minutes: 15, guide: `Đào sâu: lưu schema JSON versioned (sửa form không phá câu trả lời cũ), logic nhảy câu đánh giá phía server, chống spam nhiều lớp (rate limit, captcha, honeypot, device/IP fingerprint, phát hiện trùng nội dung), ghi câu trả lời chịu tải (queue + partition), xuất báo cáo lớn (streaming, async, presigned), webhook tin cậy (outbox + retry backoff + HMAC + idempotent), bảo vệ PII và phân quyền, failure modes (queue tắc, webhook đích chết, export OOM).` }
+  ],
+  rubric: [
+    'Làm rõ yêu cầu, con số scale; phân biệt đọc form (rất nhiều) và ghi câu trả lời',
+    'Form schema lưu JSON có version; xem form phục vụ từ cache/CDN',
+    'Ghi câu trả lời qua queue (Kafka) rồi mới ghi DB, chịu được peak theo chiến dịch',
+    'Chống trả lời trùng bằng respondent_token + unique constraint, có Idempotency-Key',
+    'Chống spam nhiều lớp: rate limit, captcha, honeypot, fingerprint, phát hiện trùng nội dung',
+    'Logic nhảy câu (conditional branching) đánh giá phía server để không tin client',
+    'Xuất báo cáo bất đồng bộ: job -> object storage -> presigned URL, streaming cho file lớn',
+    'Webhook tin cậy: outbox + retry backoff + chữ ký HMAC + idempotent phía nhận',
+    'Bảo vệ PII (che IP, phân quyền form, retention) và tuân thủ',
+    'Failure modes và giám sát (tỉ lệ spam, queue lag, webhook thất bại, độ trễ export)'
+  ],
+  reference: `**Tóm tắt:** Nền tảng form là bài toán **đọc cực nhiều, ghi theo đợt, và tích hợp ra ngoài**. Ba quyết định chính: (1) form lưu dưới dạng **schema JSON có version** và phục vụ từ cache/CDN vì ai cũng xem nhưng ít người tạo; (2) câu trả lời đi qua **queue** (Kafka) rồi mới ghi DB phân vùng, để một chiến dịch email không dội thẳng vào DB; (3) **webhook và export** là async job tin cậy (outbox + retry cho webhook, object storage + presigned URL cho export). Chống spam phải nhiều lớp vì đây là cửa mở cho bot.
+
+### Giải thích thuật ngữ (đọc trước)
+- **Form động (dynamic form):** form không cố định trong code mà định nghĩa bằng dữ liệu (một danh sách câu hỏi mô tả bằng JSON), nên người dùng tự tạo/sửa mà không cần deploy.
+- **Webhook:** khi có sự kiện (câu trả lời mới), hệ thống chủ động gọi một URL do khách đăng ký, thay vì để khách hỏi lặp lại (polling).
+- **Honeypot (bẫy mật):** một trường ẩn mà người thật không thấy; bot điền vào thì bị nhận diện là spam.
+- **Respondent token:** mã định danh ẩn danh của người trả lời (cookie hoặc link token), dùng để chống một người trả lời nhiều lần.
+
+### Yêu cầu và quy mô
+- 1 triệu lượt trả lời/ngày, peak gấp 8 lần; một form có thể nhận 20.000 câu trong một giờ.
+- Form động nhiều loại câu hỏi, có thể có logic nhảy câu; publish link; thu thập; chống spam; xuất CSV/Excel; webhook.
+- Xem form phải nhanh; câu trả lời không được mất; submit p99 dưới 200 ms.
+
+### Ước lượng
+| Đại lượng | Phép tính | Kết quả |
+|---|---|---|
+| Viết trung bình | 1.000.000 / 86.400 | ~11,6 lượt/s |
+| Viết đỉnh (x8) | 11,6 x 8 | ~93 lượt/s |
+| Một form chiến dịch | 20.000 câu / 3.600 giây | ~5,6 lượt/s (nhưng đồng thời nhiều form) |
+| Dữ liệu/ngày | 1.000.000 x 2 KB | ~2 GB |
+| Webhook/ngày | 1 câu trả lời x 1 webhook | ~1.000.000 event |
+
+Đọc form (xem, mở link) lớn hơn ghi câu trả lời hàng trăm lần: đây là dữ liệu tĩnh theo phiên bản, phục vụ từ CDN/cache. Điểm nghẽn là **ghi theo đợt** và **tích hợp ra ngoài**, không phải đọc.
+
+### Mô hình dữ liệu
+~~~sql
+CREATE TABLE form (
+  id          UUID PRIMARY KEY,
+  owner_id    BIGINT NOT NULL,
+  title       TEXT NOT NULL,
+  schema      JSONB NOT NULL,          -- danh sách câu hỏi + logic nhảy câu
+  version     INT NOT NULL DEFAULT 1,
+  status      VARCHAR(12) NOT NULL,    -- DRAFT, PUBLISHED, CLOSED
+  updated_at  TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE TABLE form_response (
+  id                UUID PRIMARY KEY,
+  form_id           UUID NOT NULL,
+  respondent_token  VARCHAR(64) NOT NULL,
+  status            VARCHAR(12) NOT NULL,   -- RECEIVED, SPAM, QUARANTINED
+  spam_score        SMALLINT NOT NULL DEFAULT 0,
+  ip_hash           VARCHAR(64),
+  submitted_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
+  UNIQUE (form_id, respondent_token)
+);
+CREATE TABLE answer (
+  response_id   UUID NOT NULL,
+  question_id   VARCHAR(40) NOT NULL,
+  value         JSONB NOT NULL,
+  PRIMARY KEY (response_id, question_id)
+);
+CREATE TABLE export_job (
+  id          UUID PRIMARY KEY,
+  form_id     UUID NOT NULL,
+  status      VARCHAR(12) NOT NULL,
+  file_key    VARCHAR(256),
+  created_at  TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+~~~
+Bảng form_response phân vùng theo form_id và thời gian; answer chỉ INSERT, không UPDATE.
+
+### Kiến trúc
+~~~text
+Creator -> Form service (CRUD + version) -> DB form (schema JSON)
+                | publish
+                v
+          Snapshot schema -> CDN / cache (form tĩnh theo version)
+
+Respondent -> CDN (form + schema) -> Response ingest service
+                                        |  chấm spam, gán respondent_token
+                                        v
+                                   Kafka (responses, buffer)
+                                        |
+                                 Response consumer -> DB (partition theo form_id)
+                                        |
+                                  outbox -> Webhook dispatcher -> URL khách (HMAC)
+                                        |
+                                 Export worker -> CSV/Parquet -> S3 -> presigned URL
+~~~
+
+~~~seq
+title: Thu thập câu trả lời, chống spam và bắn webhook
+actors: Respondent | CDN | Ingest | Kafka | DB | Webhook dispatcher
+Respondent -> CDN: mở form (schema từ cache)
+Respondent -> Ingest: POST /responses (Idempotency-Key)
+Ingest -> Ingest: chấm spam + gán respondent_token
+Ingest -> Kafka: produce event (acks=all)
+Kafka --> Ingest: ack
+Ingest --> Respondent: 202 (đã nhận)
+Kafka --> DB: consumer ghi response + answer (idempotent)
+DB --> Webhook dispatcher: outbox có sự kiện mới
+Webhook dispatcher -> Respondent: POST tới URL khách (HMAC, retry)
+~~~
+
+- **Submit không ghi thẳng DB khi peak:** ingest chỉ cần ghi bền vào Kafka rồi trả 202; consumer ghi DB theo nhịp của nó. Một chiến dịch 93 lượt/s (hoặc đỉnh cao hơn) không làm nghẽn DB.
+- **Outbox cho webhook:** sự kiện "có câu trả lời mới" được ghi vào outbox cùng transaction với response; dispatcher đọc outbox và gọi URL khách, không bao giờ mất webhook kể cả khi DB commit xong mà service chết.
+
+### Form động và logic nhảy câu
+- Schema là JSON mô tả câu hỏi: id, loại, bắt buộc, lựa chọn, và **điều kiện hiển thị** (ví dụ "nếu câu 3 = A thì hiện câu 4").
+- Logic nhảy câu được **đánh giá phía server** khi nhận câu trả lời (hoặc phía client để UX, nhưng server vẫn kiểm tra lại): không tin client đã gửi đúng nhánh, vì client có thể bị sửa.
+- Khi creator sửa form đã publish: tạo **version mới**; câu trả lời cũ vẫn gắn với version cũ để không vỡ dữ liệu. Xem form theo version đang publish.
+
+### Chống spam nhiều lớp
+| Lớp | Cơ chế | Chặn được |
+|---|---|---|
+| Rate limit | Theo IP/thiết bị/form: ví dụ 5 lượt/phút | Bot gửi nhanh |
+| Captcha | Chỉ bật khi nghi ngờ (rate cao, hành vi lạ) | Bot tự động |
+| Honeypot | Trường ẩn, người thật không điền | Bot điền mọi field |
+| Fingerprint | Thu thập đặc điểm thiết bị, user-agent | Cùng thiết bị trả lời nhiều lần |
+| Trùng nội dung | Hash câu trả lời, cờ giống hàng loạt | Spam cùng nội dung |
+| Phát hiện thời gian | Trả lời quá nhanh (< 2 giây) là nghi ngờ | Bot điền tức thì |
+
+Câu trả lời nghi ngờ không xoá thẳng mà chuyển **status = SPAM/QUARANTINED** để creator xem lại, tránh oan.
+
+### Xuất báo cáo
+- Người dùng bấm "Xuất Excel/CSV" tạo **export_job**; worker đọc toàn bộ câu trả lời của form, ghi file ra object storage theo định dạng (CSV hoặc Parquet), cập nhật job DONE kèm presigned URL.
+- File lớn (hàng trăm nghìn dòng) phải **streaming** (ghi từng dòng ra output stream), không dựng cả file trong RAM; nếu không sẽ OOM.
+- Presigned URL có TTL; tải xong hết hạn, không public vĩnh viễn.
+
+### Webhook tin cậy
+- Mỗi webhook_sub có url, secret, danh sách sự kiện (response.created, form.closed).
+- Dispatcher đọc outbox, ký payload bằng **HMAC** với secret + timestamp, POST tới url; khách trả 2xx là xong, lỗi/timeout thì retry theo exponential backoff (1s, 5s, 30s, 2m...) tối đa vài lần rồi đẩy DLQ.
+- Khách nhận phải idempotent theo event_id; hệ thống gửi kèm event_id để khách khử trùng. Có thể gộp theo lô (batch) cho form traffic cao để giảm số lần gọi.
+
+### Failure modes
+| Sự cố | Ảnh hưởng | Cách xử lý |
+|---|---|---|
+| Kafka tắc lúc chiến dịch | Câu trả lời chậm vào DB | Ingest vẫn nhận (ghi Kafka), tăng consumer, giám sát lag |
+| Webhook đích chết | Khách không nhận sự kiện | Outbox + retry backoff + DLQ, alert |
+| Export file quá lớn | OOM worker | Streaming ra S3, giới hạn theo lô, job nền |
+| Bot spam ồ ạt | DB đầy rác | Nhiều lớp chống spam, quarantine thay vì ghi thẳng |
+| Creator sửa form giữa chừng | Câu trả lời cũ vỡ | Version schema, câu trả lời gắn version |
+| Trùng câu trả lời do retry | Đếm hai lần | respondent_token + unique, Idempotency-Key |
+
+### Giám sát
+- Tỉ lệ submit thành công, tỉ lệ bị đánh spam, p99 submit latency, queue lag, số webhook đang retry/DLQ, thời gian hoàn thành export, số câu trả lời/giờ theo form (phát hiện bất thường).
+
+### Ví dụ đời thực
+Một chiến dịch khảo sát gửi email tới 2 triệu khách lúc 9h sáng. Form cũ ghi thẳng mỗi câu trả lời vào một bảng, và bật captcha cho mọi lượt. Kết quả: p99 submit tăng lên 1,8 giây do DB tranh chấp, và 30% người bỏ giữa chừng vì captcha khó. Nhóm sửa: chuyển submit sang ghi Kafka rồi consumer ghi DB phân vùng theo form_id; chỉ bật captcha khi nghi ngờ (rate cao hoặc honeypot bị điền). Sau chiến dịch: p99 submit còn 120 ms, tỉ lệ hoàn thành tăng từ 62% lên 81%, spam lọt vào báo cáo giảm 94% nhờ quarantine nhiều lớp.
+
+### Trả lời mẫu khi phỏng vấn
+"Tôi tách ba luồng. Xem form là luồng nóng nhưng dữ liệu tĩnh theo version, nên tôi build snapshot schema và đẩy lên CDN/cache. Ghi câu trả lời đi qua ingest service: chấm spam nhiều lớp, gán respondent_token, ghi bền vào Kafka rồi trả 202, còn consumer ghi DB phân vùng theo form_id để một chiến dịch email không dội thẳng vào DB. Chống trùng bằng unique (form_id, respondent_token) và Idempotency-Key. Form lưu schema JSON có version, logic nhảy câu đánh giá phía server. Xuất báo cáo là async job ghi streaming ra S3 rồi trả presigned URL. Webhook đi qua outbox, ký HMAC, retry backoff và idempotent theo event_id nên không mất và không nhân đôi. Tôi giám sát tỉ lệ spam, queue lag, webhook DLQ và độ trễ export."
+
+> Senior tip: với form/khảo sát, kẻ thù không phải lưu lượng người thật mà là **bot và đợt spam theo chiến dịch**. Vì vậy tôi luôn thiết kế cửa nhận câu trả lời như một hệ thống chống lạm dụng (rate limit + fingerprint + quarantine), và luôn tách "nhận" khỏi "ghi bền" bằng queue. Một đợt submit 93 lượt/s nghe nhỏ, nhưng một chiến dịch đẩy sai (hoặc bị bot tấn công) có thể gấp trăm lần; queue và outbox là thứ giữ hệ thống sống và giữ lời hứa "không mất câu trả lời, không mất webhook".`,
+  followups: [
+    'Form có logic nhảy câu phức tạp (điều kiện lồng nhau, phụ thuộc nhiều câu trước): bạn biểu diễn và đánh giá thế nào cho đúng và nhanh?',
+    'Một khách trả lời 500 form/ngày bằng script: bạn thiết kế cơ chế chống lạm dụng mà không làm phiền người thật ra sao?',
+    'Webhook đích của khách trả 200 nhưng xử lý sai (nhận rồi mất): bạn giúp khách và mình phát hiện, đối soát thế nào?',
+    'Cần xuất báo cáo realtime (dashboard cập nhật mỗi phút) thay vì file tĩnh: bạn đổi thiết kế ra sao?',
+    'Form thu dữ liệu nhạy cảm (sức khỏe, tài chính): bạn mã hoá, phân quyền và tuân thủ thế nào?'
+  ],
+  related: ['design-028', 'design-067', 'design-070']
+},
+{
+  id: 'sd-050',
+  title: 'Log tập trung cho 200 service (thu thập, lưu nóng/lạnh, tìm kiếm, cảnh báo, chi phí 30 ngày)',
+  kind: 'bigtech',
+  level: 'senior',
+  prompt: `Bạn thiết kế **hệ thống log tập trung** cho 200 microservice chạy trên Kubernetes. Mỗi service ghi log ra stdout dạng JSON (có traceId, spanId, level). Yêu cầu: **thu thập** log từ mọi pod, **lưu nóng** (hot) vài ngày để tìm kiếm nhanh và **lưu lạnh** (cold) tới **30 ngày**, **tìm kiếm** full-text và theo traceId, **cảnh báo** khi tỉ lệ lỗi của một service tăng đột biến, và **kiểm soát chi phí lưu 30 ngày** (chi phí chính đến từ lượng dữ liệu được index). Bạn có 45 phút. Hãy trình bày.`,
+  phases: [
+    { name: 'Requirements', minutes: 5, guide: `Làm rõ functional: thu thập từ stdout, parse JSON, làm giàu metadata Kubernetes (pod, namespace, service), tìm kiếm full-text + structured (traceId, service, level, khoảng thời gian), retention hot 7 ngày + cold 30 ngày, cảnh báo dựa trên log (tỉ lệ lỗi tăng), dashboard. Non-functional: throughput đủ cho peak, log searchable trong dưới 1 phút, không mất log khi một node chết, chi phí 30 ngày kiểm soát được. Hỏi: 200 service x bao nhiêu dòng/s mỗi service, có cần tương quan traceId xuyên service không, PII/secret trong log. Phân biệt rõ log với metrics.` },
+    { name: 'Estimation', minutes: 5, guide: `200 service x 50 dòng/s = 10.000 dòng/s trung bình, peak x5 = 50.000 dòng/s. Mỗi dòng ~300 byte => 10.000 x 300 = 3 MB/s ~ 259 GB/ngày thô; nén 8 lần ~ 32 GB/ngày. Hot 7 ngày ~ 1,8 TB thô (kèm index còn lớn hơn); cold 30 ngày ~ 1 TB nén. Nếu index full-text toàn bộ 30 ngày (7,7 TB thô + chỉ mục) thì rất đắt => chỉ index hot, cold chỉ quét. Metrics tách riêng, không nhồi vào log.` },
+    { name: 'API & data model', minutes: 5, guide: `Log entry (timestamp, service, namespace, pod, level, trace_id, span_id, message, fields jsonb). Index nóng: service+level+timestamp, full-text message; trace_id index riêng để điều tra xuyên service. Retention: hot store (OpenSearch/Loki) 7 ngày, cold sink (S3 Parquet) 30 ngày. Alert rule (id, service, condition error_rate > X trong cửa sổ, severity, state). API: GET /search?q=&service=&level=&traceId=&from=&to=; GET /alerts.` },
+    { name: 'High-level design', minutes: 15, guide: `Vẽ: Pod (stdout JSON) -> DaemonSet agent (Fluent Bit/Filebeat) mỗi node đọc container log -> Kafka (buffer chống mất) -> Processor (parse, làm giàu k8s metadata, che PII/secret) -> Hot store (OpenSearch/Loki) + Cold sink (S3 Parquet). Query API truy vấn hot (nhanh) và cold (federated/scan khi cần). Alerting: stream job tính tỉ lệ lỗi theo service theo cửa sổ -> Alertmanager. Giải thích vì sao cần Kafka đệm, vì sao chỉ index hot.` },
+    { name: 'Deep dive', minutes: 15, guide: `Đào sâu: agent per node (DaemonSet) đọc stdout, backpressure khi downstream chậm; Kafka buffer chống mất log khi hot store quá tải; hot/cold tiering và chi phí index; chiến lược index (chỉ hot) và cardinality; tìm kiếm full-text + structured + traceId; log-based alerting (tỉ lệ lỗi theo service, cửa sổ trượt); che PII/secret; retention và lifecycle; failure modes (agent chết, Kafka lag, hot store OOM, cardinality nổ); multi-tenancy theo namespace.` }
+  ],
+  rubric: [
+    'Ước lượng log/s, dung lượng thô và nén, nhận ra chi phí nằm ở dữ liệu được index',
+    'Thu thập bằng DaemonSet agent đọc stdout, làm giàu metadata Kubernetes',
+    'Kafka làm bộ đệm chống mất log khi downstream chậm, có backpressure',
+    'Phân tầng hot (vài ngày, index để tìm kiếm) và cold (object storage, quét) cho 30 ngày',
+    'Chỉ index dữ liệu nóng; giải thích vì sao index full-text 30 ngày là quá đắt',
+    'Tìm kiếm full-text + structured (service, level, khoảng thời gian) + theo traceId',
+    'Cảnh báo dựa trên log: tỉ lệ lỗi theo service theo cửa sổ trượt, có ngưỡng và severity',
+    'Che PII/secret trong log trước khi lưu; phân quyền theo namespace',
+    'Kiểm soát cardinality (không đưa label giá trị cao vào index/metric)',
+    'Failure modes (agent chết, Kafka lag, hot store OOM) và giám sát ingest lag, chi phí'
+  ],
+  reference: `**Tóm tắt:** Log tập trung tách thành bốn tầng: **thu thập** (DaemonSet agent đọc stdout, làm giàu metadata), **đệm** (Kafka để không mất log khi hạ tầng bên dưới chậm), **xử lý** (parse, che PII), rồi ghi vào hai nơi: **hot store** (OpenSearch/Loki) index để tìm kiếm vài ngày, và **cold store** (S3 Parquet) quét cho 30 ngày. Quyết định quan trọng nhất về chi phí là **chỉ index dữ liệu nóng**: index full-text 30 ngày là thứ giết ngân sách. Cảnh báo là bài toán riêng: tính tỉ lệ lỗi theo service trên cửa sổ trượt.
+
+### Giải thích thuật ngữ (đọc trước)
+- **Log:** dòng sự kiện do ứng dụng ghi ra (có timestamp, mức độ, nội dung). Khác **metric** (con số đo theo thời gian như CPU, QPS) — log là văn bản chi tiết, metric là số tổng hợp.
+- **Index (chỉ mục):** cấu trúc giúp tìm kiếm nhanh; index càng nhiều trường thì càng tốn bộ nhớ và tiền.
+- **Hot / cold storage:** hot là kho nhanh-đắt để tìm kiếm (vài ngày gần đây), cold là kho rẻ-chậm (object storage) cho dữ liệu cũ.
+- **traceId:** mã định danh một chuỗi request đi qua nhiều service, giúp ghép log của cùng một giao dịch xuyên service.
+- **Cardinality:** số giá trị khác nhau của một trường; cardinality cao (ví dụ userId trong label) làm chỉ mục/metric nổ.
+
+### Yêu cầu và quy mô
+- 200 service, mỗi service ghi log JSON ra stdout có traceId.
+- Hot 7 ngày để tìm kiếm nhanh; cold 30 ngày.
+- Tìm kiếm full-text và theo traceId; cảnh báo khi tỉ lệ lỗi tăng.
+- Kiểm soát chi phí lưu 30 ngày.
+
+### Ước lượng
+| Đại lượng | Phép tính | Kết quả |
+|---|---|---|
+| Trung bình | 200 service x 50 dòng/s | 10.000 dòng/s |
+| Đỉnh (x5) | 10.000 x 5 | 50.000 dòng/s |
+| Băng thông thô | 10.000 x 300 byte | 3 MB/s |
+| Dung lượng thô/ngày | 3 MB/s x 86.400 | ~259 GB |
+| Sau nén (x8) | 259 / 8 | ~32 GB/ngày |
+| Cold 30 ngày | 32 x 30 | ~1 TB |
+| Hot 7 ngày (thô + index) | 259 x 7 | ~1,8 TB + chỉ mục |
+
+Kết luận: 32 GB/ngày nén là nhỏ; cái đắt là **index**. Index full-text cho 259 GB/ngày x 30 ngày (~7,7 TB thô cộng chỉ mục) tốn kém hơn nhiều so với chỉ index 7 ngày nóng và để cold dạng Parquet nén trên S3.
+
+### Kiến trúc
+~~~text
+Pod (stdout JSON) --đọc--> DaemonSet agent (mỗi node: Fluent Bit/Filebeat)
+                                   | produce
+                                   v
+                            Kafka (log.raw, buffer + nhiều partition theo service)
+                                   |
+                            Processor (parse JSON, làm giàu k8s metadata, che PII)
+                              |                              |
+                              v                              v
+                    Hot store (OpenSearch/Loki)       Cold sink -> S3 (Parquet theo giờ)
+                      index, searchable 7 ngày              quét, rẻ, 30 ngày
+                              ^
+   Query API --tìm hot (nhanh) ------------------------------+
+            --quét cold (federated) ---------------------------+
+
+   Stream job (tỉ lệ lỗi theo service) -> Alertmanager -> Oncall
+~~~
+
+~~~seq
+title: Đường log từ pod tới tìm kiếm và cảnh báo
+actors: Pod | Agent | Kafka | Processor | Hot store | Stream job
+Pod -> Agent: ghi log JSON ra stdout
+Agent -> Kafka: produce log.raw (theo service)
+Kafka --> Processor: consume log
+Processor -> Hot store: index log đã che PII
+Stream job -> Hot store: đọc cửa sổ gần để tính tỉ lệ lỗi
+Stream job --> Processor: vượt ngưỡng -> cảnh báo cho service
+~~~
+
+### Thu thập: DaemonSet agent
+- Mỗi node Kubernetes chạy một **DaemonSet** (một bản agent trên mỗi node) đọc log stdout của mọi container trên node đó, gắn metadata (pod, namespace, service) rồi đẩy đi.
+- Log ứng dụng nên là **JSON có cấu trúc** (không phải text tự do) để parse rẻ và ổn định; service, level, trace_id là các trường bắt buộc.
+- Agent có **backpressure**: nếu Kafka/downstream chậm, agent giữ buffer cục bộ có giới hạn (không phình RAM đĩa node), ưu tiên không làm chết ứng dụng.
+
+### Kafka làm đệm vì sao cần
+- Hot store (OpenSearch) có thể quá tải hoặc restart; nếu agent ghi thẳng vào nó, log sẽ mất hoặc agent bị chặn.
+- Kafka nhận log trước, giữ vài giờ, nhiều consumer đọc với tốc độ riêng; hot store chậm thì log vẫn nằm an toàn trong Kafka và được xử lý lại.
+- Partition theo service để song song hoá và giữ thứ tự tương đối theo service.
+
+### Hot / cold tiering
+- **Hot (7 ngày):** OpenSearch hoặc Loki, **index** để full-text và structured search nhanh; đây là nơi dev truy vấn hằng ngày.
+- **Cold (30 ngày):** ghi Parquet (định dạng cột, nén tốt) lên S3 theo giờ; truy vấn bằng engine scan (Athena/Trino) hoặc Loki/ES với frozen tier.
+- Dữ liệu cũ hơn 7 ngày tự chuyển từ hot sang cold (lifecycle); khi cần điều tra sự cố cũ, truy vấn cold chậm hơn nhưng rẻ hơn nhiều.
+
+### Tìm kiếm
+- Full-text trên message + structured filter (service, level, khoảng thời gian, namespace).
+- Theo **traceId**: index riêng trường trace_id để khi có một request lỗi xuyên 5 service, ghép toàn bộ log theo traceId trong vài ms thay vì quét.
+- Query API phân biệt hot (mặc định, nhanh) và cold (federated, cảnh báo "chậm hơn") để người dùng biết mình đang tìm ở đâu.
+
+### Cảnh báo dựa trên log (log-based alerting)
+- Một **stream job** đọc cửa sổ trượt (ví dụ 5 phút) từ hot store, tính tỉ lệ dòng level=ERROR theo service; vượt ngưỡng (ví dụ > 5% trong 5 phút, hoặc > N lỗi/giây) thì sinh cảnh báo cho Alertmanager -> oncall.
+- Phân biệt với **log-based metric** rồi alert trên metric (bền hơn): đếm lỗi theo service thành time-series, alert trên đó để không phụ thuộc truy vấn log mỗi lần.
+- Cảnh báo phải có ngưỡng theo service (service A thường 0,1% lỗi, service B 2%) để tránh nhiễu; dùng đường baseline học theo giờ trong ngày.
+
+### Chi phí và cardinality
+- Chi phí chính = **dữ liệu được index**, không phải lưu thô. Vì vậy: chỉ index 7 ngày nóng; cold chỉ Parquet nén; giảm trường index thừa.
+- **Không đưa giá trị cardinality cao vào index/metric** (userId, requestId đầy đủ, URL có query): mỗi giá trị mới tạo một "bucket" làm chỉ mục/metric nổ. traceId để ở trường riêng, không làm label metric.
+- Lấy mẫu log DEBUG ở production (bỏ hoặc giảm), giữ INFO/WARN/ERROR; log quá nhiều dòng rác là nguồn chi phí lớn nhất.
+
+### Che PII và bảo mật
+- Processor che email, số điện thoại, token, số thẻ... trước khi ghi store; secret không bao giờ vào log (log thư viện phải cẩn thận).
+- Phân quyền theo namespace: team chỉ xem log của service mình; truy vấn audit lại.
+- Mã hoá at-rest (S3 SSE) và TLS khi truyền.
+
+### Failure modes
+| Sự cố | Ảnh hưởng | Cách xử lý |
+|---|---|---|
+| Agent trên một node chết | Mất log node đó tạm thời | DaemonSet tự chạy lại; buffer đĩa cục bộ giữ log tới khi gửi |
+| Kafka lag | Log vào store trễ | Giám sát lag, scale consumer, tăng số partition theo service |
+| Hot store OOM/quá tải | Tìm kiếm chậm, có thể mất | Kafka đệm, giới hạn ghi, circuit breaker, chuyển bớt sang cold |
+| Cardinality nổ (label cao) | Hot store/metric chậm dần | Cấm label giá trị cao, chỉ index trường cần, tách traceId |
+| Log rác quá nhiều | Chi phí tăng vọt | Lấy mẫu DEBUG, tỉa log ở agent, cảnh báo theo lưu lượng |
+| Che PII sót | Rò dữ liệu nhạy cảm | Test mẫu, danh sách pattern cập nhật, không log payload thô |
+
+### Giám sát
+- Ingest lag (Kafka -> hot store), log/giây theo service, tỉ lệ lỗi theo service, dung lượng hot/cold theo ngày, chi phí index, số cảnh báo theo service (nhiễu hay không), tỉ lệ log bị drop do backpressure.
+
+### Ví dụ đời thực
+Một công ty 200 service thấy hoá đơn observability tăng gấp 3 trong một quý dù lưu lượng không đổi. Điều tra: một team bật log DEBUG cho một service tần suất cao, và hot store đang index full-text toàn bộ 30 ngày. Nhóm sửa: hạ DEBUG về INFO ở production, giảm hot index xuống 7 ngày và đẩy phần còn lại sang Parquet trên S3, thêm che PII ở processor. Kết quả: chi phí lưu giảm 64%, ingest lag p95 từ 40 giây xuống 6 giây, còn khả năng điều tra sự cố cũ vẫn giữ nhờ cold store quét được theo traceId.
+
+### Trả lời mẫu khi phỏng vấn
+"Tôi chia thành bốn tầng. Thu thập: mỗi node chạy một DaemonSet agent đọc stdout JSON, gắn metadata Kubernetes rồi đẩy vào Kafka làm đệm để không mất log khi hạ tầng bên dưới chậm. Xử lý: consumer parse, che PII, rồi ghi vào hai nơi — hot store (OpenSearch/Loki) index để tìm kiếm 7 ngày, và cold store (S3 Parquet) quét cho 30 ngày. Quyết định chi phí quan trọng nhất là chỉ index dữ liệu nóng: index full-text 30 ngày là thứ giết ngân sách. Tìm kiếm hỗ trợ full-text, structured filter và traceId để ghép log xuyên service. Cảnh báo là stream job tính tỉ lệ lỗi theo service trên cửa sổ trượt rồi đẩy Alertmanager, có baseline theo giờ để tránh nhiễu. Tôi kiểm soát cardinality bằng cách không đưa giá trị cao vào label, và giám sát ingest lag cùng chi phí index."
+
+> Senior tip: trong log tập trung, câu hỏi không phải "chọn Elasticsearch hay Loki" mà là "index cái gì và giữ bao lâu". 80% chi phí đến từ dữ liệu được index, nên hot 7 ngày có index + cold Parquet trên S3 là mô hình tiết kiệm mà vẫn điều tra được. Và đừng bao giờ để log DEBUG chạy vô tội vạ ở production — một dòng log thừa ở service 50.000 req/s là hàng trăm GB mỗi ngày.`,
+  followups: [
+    'Một service bắt đầu log một trường có hàng triệu giá trị khác nhau (cardinality cao): hệ thống của bạn xử lý và bảo vệ thế nào?',
+    'Bạn cần tương quan log với metrics và trace (một request chậm: xem trace nào, log nào, metric nào): thiết kế liên kết ba tín hiệu ra sao?',
+    'Chi phí hot store vẫn vượt ngân sách dù đã giảm retention: bạn dùng chiến lược sampling hoặc tiering nào tiếp theo?',
+    'Log chứa dữ liệu nhạy cảm bị phát hiện sót sau khi đã lưu: bạn xử lý thu hồi, xoá và tuân thủ thế nào?',
+    '200 service tăng lên 2.000 service: kiến trúc agent, Kafka partition và hot store thay đổi ra sao?'
+  ],
+  related: ['design-019', 'design-069', 'design-070']
 }
 ];
