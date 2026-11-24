@@ -112,6 +112,53 @@
   });
 
   const tr = (key, vars) => App.t('rm.' + key, vars);
+  let materialsOpen = {};
+
+  const LAB_CAT_TOPIC = { thread: ['concurrency'], gc: ['jvm'], sql: ['db', 'sql'], incident: ['scenario', 'microservices', 'devops'] };
+
+  function dataIdx() { return (window.DATA_INDEX && typeof window.DATA_INDEX === 'object') ? window.DATA_INDEX : {}; }
+  function materialsHtml(w) {
+    const topics = w.topics || [];
+    const DI = dataIdx();
+    const lessons = (DI.lessons || []).filter(l => topics.indexOf(l.track) >= 0).sort((a, b) => (a.order || 0) - (b.order || 0)).slice(0, 4);
+    const labs = (DI.labs || []).filter(l => {
+      const ts = LAB_CAT_TOPIC[l[1]] || [];
+      return ts.some(t => topics.indexOf(t) >= 0);
+    }).slice(0, 2);
+    const bugs = (DI.bugs || []).filter(b => Array.isArray(b[3]) && b[3].some(t => topics.indexOf(t) >= 0)).slice(0, 2);
+    const total = lessons.length + labs.length + bugs.length;
+    if (!total) return '';
+    const open = !!materialsOpen[w.id];
+    let html = `<details class="rm-materials" data-week="${esc(w.id)}"${open ? ' open' : ''}>
+      <summary>📘 Bài học · 🧪 Lab · 🐞 Sửa bug (${total})</summary>
+      <div class="rm-materials-body">`;
+    if (lessons.length) {
+      html += `<div class="rm-mat-group"><span class="rm-mat-label">📘 Bài học</span><ul class="rm-mat-list">`;
+      lessons.forEach(l => {
+        const done = App.store.getStatus(l.id) === 'known';
+        html += `<li><a href="#/learn/${encodeURIComponent(l.id)}">${esc(l.title)}</a> <span class="badge">${esc(l.level)}</span> <span class="muted small">${l.minutes || 0} phút</span>${done ? ' ✓' : ''}</li>`;
+      });
+      html += `</ul></div>`;
+    }
+    if (labs.length) {
+      html += `<div class="rm-mat-group"><span class="rm-mat-label">🧪 Lab</span><ul class="rm-mat-list">`;
+      labs.forEach(l => {
+        const done = App.store.getStatus(l[0]) === 'known';
+        html += `<li><a href="#/labs/${encodeURIComponent(l[0])}">${esc(l[2])}</a> <span class="badge">${esc(l[3])}</span>${done ? ' ✓' : ''}</li>`;
+      });
+      html += `</ul></div>`;
+    }
+    if (bugs.length) {
+      html += `<div class="rm-mat-group"><span class="rm-mat-label">🐞 Sửa bug</span><ul class="rm-mat-list">`;
+      bugs.forEach(b => {
+        const done = App.store.getStatus(b[0]) === 'known';
+        html += `<li><a href="#/bugs/${encodeURIComponent(b[0])}">${esc(b[1])}</a> <span class="badge">${esc(b[2])}</span>${done ? ' ✓' : ''}</li>`;
+      });
+      html += `</ul></div>`;
+    }
+    html += `</div></details>`;
+    return html;
+  }
   const MAIN_WEEKS = 26;
   const JD_WEEKS = 20;
   const WEEK_MS = 7 * App.DAY;
@@ -301,6 +348,7 @@
         <span class="badge rm-week-badge ${pct === 100 ? 'ok' : 'accent'}">${pct}%</span>
       </div>
       ${topicChipsHtml(w.topics)}
+      ${materialsHtml(w)}
       ${w.algo ? `<p class="rm-algo-goal"><b>${esc(tr('algoGoal'))}</b> ${esc(w.algo)}</p>` : ''}
       ${taskListHtml(w)}`;
   }
@@ -431,6 +479,7 @@
           <div class="rm-week-body">
             <div class="progress rm-week-bar"><i class="${pct === 100 ? 'ok' : 'accent'}" style="width:${pct}%"></i></div>
             ${topicChipsHtml(w.topics)}
+            ${materialsHtml(w)}
             ${w.algo ? `<p class="rm-algo-goal"><b>${esc(tr('algoGoal'))}</b> ${esc(w.algo)}</p>` : ''}
             ${taskListHtml(w)}
           </div>
@@ -680,8 +729,15 @@
       bindStart(root);
       bindChecks(root);
       bindNote(root);
-      bindHeatmap(root);
-      return () => {};
+       bindHeatmap(root);
+       root.addEventListener('toggle', e => {
+         const d = e.target && e.target.closest && e.target.closest('.rm-materials');
+         if (d) {
+           const wid = d.getAttribute('data-week');
+           if (wid) materialsOpen[wid] = d.open;
+         }
+       }, true);
+       return () => {};
     },
   });
 })();

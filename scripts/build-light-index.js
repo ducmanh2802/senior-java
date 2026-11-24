@@ -20,7 +20,7 @@ const OUT_NAME = 'index-light.js';
 const OUT = path.join(DATA, OUT_NAME);
 const CMD = 'node scripts/build-light-index.js';
 // groups the index summarises (everything else is either eager or not needed by light routes)
-const SOURCE_GROUPS = ['questions', 'algos', 'lessons', 'sd', 'drills', 'companies', 'quiz'];
+const SOURCE_GROUPS = ['questions', 'algos', 'lessons', 'sd', 'drills', 'companies', 'quiz', 'labs', 'bugs'];
 
 const pick = (o, keys) => {
   const r = {};
@@ -36,6 +36,8 @@ function build(w) {
     questions: arr(w.QUESTIONS).map(q => q.lang === 'en' ? [q.id, q.topic, q.level, 'en', q.q] : [q.id, q.topic, q.level]),
     algos: arr(w.ALGOS).map(a => pick(a, ['id', 'title', 'difficulty', 'pattern'])),
     lessons: arr(w.LESSONS).map(l => pick(l, ['id', 'track', 'order', 'title', 'level', 'minutes'])),
+    labs: arr(w.LABS).map(l => [l.id, l.category, l.title, l.level]),
+    bugs: arr(w.BUGS).map(b => [b.id, b.title, b.level, Array.from(new Set((b.related || []).map(r => String(r).split('-')[0])))]),
     sd: arr(w.SD_PROBLEMS).map(p => pick(p, ['id', 'title'])),
     drills: arr(w.DRILLS).map(d => pick(d, ['id', 'kind', 'q', 'term', 'example', 'en'])),
     companies: arr(w.COMPANIES).map(c => pick(c, ['id', 'name', 'focus'])),
