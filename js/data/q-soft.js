@@ -10128,4 +10128,134 @@ Bộ test 2000 case, khoảng 19% đỏ ngẫu nhiên trên main. Triệu chứn
   ],
   tags: ['flaky-test', 'leadership', 'CI/CD', 'determinism', 'test-process', 'lead'],
 },
+{
+  id: 'behavioral-084',
+  topic: 'behavioral',
+  level: 'lead',
+  q: 'Bạn bất đồng với tech lead về lựa chọn kiến trúc (microservices vs monolith, event-driven vs đồng bộ). Bạn xử lý thế nào để không làm hỏng quan hệ và vẫn ra quyết định tốt?',
+  a: `**Tóm tắt:** Interviewer không hỏi bạn có bất đồng không, mà đánh giá bạn **tranh luận bằng dữ liệu và lợi ích sản phẩm**, hiểu lý do bên kia, và **cam kết với quyết định cuối cùng**. Câu trả lời mạnh thể hiện sự trưởng thành: thuyết phục được hoặc không thuyết phục được nhưng vẫn thực hiện đầy đủ và đề xuất cách đo lại.
+
+### Interviewer muốn đánh giá gì
+- **Kỹ năng ảnh hưởng không quyền lực**: bạn thuyết phục người giữ quyền quyết định không?
+- **Chất lượng lập luận**: dùng số liệu, demo hay cảm tính?
+- **Khả năng đồng cảm**: bạn hiểu lý do đứng phía bên kia không?
+- **Tính chuyên nghiệp khi thua**: nhiều ứng viên trả lời tệ nhất ở đây.
+- **Sự cụ thể**: có số liệu và kết quả thật không.
+
+### Khung STAR cho câu này
+- **S — Situation**: ai đưa ra đề xuất gì, bối cảnh áp lực ra sao (deadline, khách hàng).
+- **T — Task**: bạn phải làm gì — thách thức quyết định mà vẫn giữ quan hệ làm việc.
+- **A — Action**: cách bạn thu thập bằng chứng, đề xuất phương án thay thế, cách trình bày.
+- **R — Result**: quyết định cuối cùng là gì, số liệu ra sao, quan hệ làm việc còn tốt không.
+
+### Câu trả lời mẫu
+> "Tech lead muốn tách module thanh toán thành microservice riêng để scale độc lập. Tôi phản đối: team chỉ 4 người, chưa có observability, chưa có contract test. Tôi đề xuất ADR (Architecture Decision Record) ghi rõ giả định, và đo thử: deploy service mới trên 5% traffic trong 2 tuần. Kết quả: p99 tăng 40ms do network hop, 3 lần incident do retry storm, chi phí vận hành tăng. Tech lead đồng ý giữ monolith thêm 2 quý, và tôi viết package boundary rõ ràng để sau này tách dễ. 6 tháng sau điều kiện xảy ra, việc tách mất 3 tuần thay vì 2 tháng nhờ boundary đã có. Bài học: phản biện bằng bằng chứng, không bằng cảm tính, và luôn để lại cách đo để xem xét lại."
+
+### Những điều nên tránh
+- **Câu chuyện không có bằng chứng**: "tôi nghĩ cách đó sẽ chậm".
+- **Công kích cá nhân**: "sếp tôi sai".
+- **Đặt mình lên trên người khác**: "tôi đã cảnh báo rồi".
+- **Bỏ qua khía cạnh con người**: thiếu chi tiết về cách bảo vệ quan hệ làm việc.
+
+### Ví dụ đời thực
+Một dự án thanh toán (Spring Boot 3.0, PostgreSQL 14, Redis 7) chịu tải 2.000 RPS cao điểm. Tech lead đề xuất tách module thanh toán thành microservice riêng để scale độc lập. Triệu chứng sau khi deploy thử 5% traffic trong 2 tuần: p99 tăng 40ms do network hop, 3 lần incident do retry storm, chi phí vận hành tăng. Điều tra: tôi dùng {{pg_stat_statements}} và APM trace, phát hiện 60% tải thanh toán đến từ một query thiếu index và retry policy không có backoff. Cách xử lý: tôi trình bày số liệu cho tech lead — p99 +40ms, 3 incident, chi phí tăng — và đề xuất giữ monolith thêm 2 quý với package boundary rõ ràng. Tech lead đồng ý. Kết quả đo được sau 6 tháng: khi tách service, mất 3 tuần thay vì 2 tháng nhờ boundary đã có, p99 giảm xuống 180ms, chi phí vận hành giảm 20%. Tech lead sau đó mời tôi review cùng các đề xuất kiến trúc tiếp theo.
+
+### Trả lời mẫu khi phỏng vấn
+"Tech lead muốn tách module thanh toán thành microservice để scale độc lập. Tôi phản đối vì team nhỏ, chưa có observability. Tôi đề xuất ADR và đo thử 5% traffic 2 tuần: p99 tăng 40ms do network hop, 3 incident do retry storm, chi phí tăng. Tôi trình bày bằng số liệu. Tech lead đồng ý giữ monolith thêm 2 quý, tôi viết package boundary rõ ràng. 6 tháng sau tách service mất 3 tuần thay vì 2 tháng. Bài học: bất đồng phải dùng bằng chứng, không dùng cảm tính, và luôn đề xuất phương án thay thế có đo được."
+
+> Senior tip: chuẩn bị **hai phiên bản** cho cùng một sự kiện: một cho senior tập trung làm rõ vấn đề và bằng chứng; một cho lead tập trung lựa chọn đã cân nhắc chi phí cơ hội và tự quyết khi không có đồng thuận.`,
+  follow: [
+    'Bạn có bao giờ phải **không** thuyết phục được người khác không? Bạn xử lý việc đó thế nào?',
+    'Với PM, khác biệt giữa "phản đối giải pháp" và "phản đối mục tiêu" là gì?',
+    'Nếu quyết định cuối cùng đi ngược ý bạn và sau đó có sự cố, bạn xử lý thế nào?'
+  ],
+  tags: ['conflict', 'architecture', 'ADR', 'STAR', 'lead']
+},
+{
+  id: 'behavioral-085',
+  topic: 'behavioral',
+  level: 'senior',
+  q: 'Bạn nhận một hệ thống legacy không có test và phải giao tính năng trong 2 tuần. Bạn xử lý thế nào?',
+  a: `**Tóm tắt:** Interviewer muốn xem bạn **quản lý rủi ro** trong codebase không quen thuộc: bạn không viết lại toàn bộ, mà **thêm characterization test, giới hạn phạm vi thay đổi, và ship theo slice nhỏ**. Câu trả lời mạnh có số liệu: thời gian onboard, coverage tăng, bug regression.
+
+### Interviewer muốn đánh giá gì
+- **Khả năng đọc code lạ**: bạn dùng công cụ gì (jstack, profiler, git blame)?
+- **Quản lý rủi ro**: bạn giới hạn thay đổi thế nào để không phá hệ thống?
+- **Ưu tiên**: làm tính năng nào trước, defer phần nào?
+- **Giao tiếp**: bạn báo cáo tiến độ và rủi ro với stakeholder thế nào?
+- **Sự cụ thể**: có số liệu trước/sau.
+
+### Khung STAR cho câu này
+- **S — Situation**: hệ thống legacy như thế nào, deadline ra sao.
+- **T — Task**: bạn phải giao tính năng gì trong bao lâu.
+- **A — Action**: các bước cụ thể bạn làm (characterization test, slice, feature flag).
+- **R — Result**: số liệu đo được.
+
+### Câu trả lời mẫu
+> "Tôi nhận một service Spring Boot 2.3 quản lý đơn hàng, 40k LOC, không có test, DB schema 80 bảng. Phải thêm tính năng 'đổi địa chỉ giao hàng sau khi đặt' trong 2 tuần. Tôi không viết lại. Tuần 1: chạy characterization test bằng cách ghi lại input/output của 20 luồng chính (approval test) để có baseline; thêm feature flag để rollout dần; viết test cho phần 'đổi địa chỉ' mới. Tuần 2: implement với transaction rõ ràng, thêm audit log, deploy canary 5% traffic. Kết quả: ship đúng hạn, không regression, coverage từ 0 lên 35% cho phần mới, 2 bug phát hiện sớm nhờ approval test. Bài học: legacy không phải viết lại, mà là **thêm an toàn quanh chỗ bạn chạm vào**."
+
+### Những điều nên tránh
+- **Viết lại toàn bộ**: không có thời gian, rủi ro cao.
+- **Không có test**: ship mà không có safety net.
+- **Thay đổi quá rộng**: chạm nhiều file không liên quan.
+- **Không báo cáo rủi ro**: stakeholder không biết tiến độ.
+
+### Ví dụ đời thực
+Một service Spring Boot 2.3 (Java 11, PostgreSQL 12) quản lý đơn hàng, 40k LOC, 0 test, 80 bảng. Phải thêm tính năng 'đổi địa chỉ giao hàng sau khi đặt' trong 2 tuần cho Black Friday. Triệu chứng ban đầu: không biết luồng nào ảnh hưởng. Điều tra: tôi chạy approval test ghi lại input/output của 20 luồng chính (đặt hàng, thanh toán, hủy, hoàn tiền) để có baseline; thêm feature flag {{address-change-enabled}}; viết test cho phần mới. Tuần 1: characterization test xong, baseline lưu trong Git. Tuần 2: implement với @Transactional rõ ràng, thêm audit log, deploy canary 5% traffic. Kết quả đo được: ship đúng hạn 14 ngày, 0 regression (approval test pass), coverage từ 0 lên 35% cho phần mới, 2 bug phát hiện sớm (null address, race condition khi đổi đồng thời). Chi phí: 3 ngày viết approval test, 4 ngày implement, 3 ngày canary và monitoring.
+
+### Trả lời mẫu khi phỏng vấn
+"Nhận service legacy 40k LOC không test, phải ship tính năng đổi địa chỉ trong 2 tuần. Tôi không viết lại. Tuần 1: approval test cho 20 luồng chính để có baseline, thêm feature flag. Tuần 2: implement với transaction rõ ràng, audit log, deploy canary 5%. Kết quả: ship đúng hạn, 0 regression, coverage từ 0 lên 35%, 2 bug phát hiện sớm. Bài học: legacy không phải viết lại, mà thêm an toàn quanh chỗ bạn chạm vào, và ship theo slice nhỏ có thể rollback."
+
+> Senior tip: trong legacy, **approval test** (ghi output thực tế làm baseline) là công cụ nhanh nhất để có safety net mà không cần hiểu toàn bộ code. Nhưng phải cảnh giác: nếu code đang sai, baseline sẽ sai theo — nên review output trước khi commit.`,
+  follow: [
+    'Bạn dùng công cụ gì để đọc code legacy nhanh (jstack, profiler, git blame)?',
+    'Làm sao bạn quyết định phạm vi thay đổi tối thiểu?',
+    'Khi nào bạn nên đề xuất rewrite thay vì patch?'
+  ],
+  tags: ['legacy', 'testing', 'risk-management', 'STAR', 'core']
+},
+{
+  id: 'behavioral-086',
+  topic: 'behavioral',
+  level: 'senior',
+  q: 'Junior trong team bạn viết code chậm và hay lỗi. Bạn xử lý mentoring và đo lường tiến bộ thế nào?',
+  a: `**Tóm tắt:** Interviewer muốn xem bạn **nhân bản năng lực** chứ không chỉ làm thay. Câu trả lời mạnh có hệ thống: mục tiêu cụ thể, review ngược, đo lường bằng số liệu, và một câu chuyện về người không tiến bộ để thể hiện bạn hiểu mentoring không phải công thức.
+
+### Interviewer muốn đánh giá gì
+- **Phương pháp có hệ thống** hay chỉ "giúp khi nào hỏi".
+- **Khả năng truyền đạt**: giải thích vì sao thay vì đưa đáp án.
+- **Tư duy phân tích năng lực**: tìm đúng điểm yếu.
+- **Khả năng đo lường**: mentoring mà không đo thì không quản lý được.
+- **Sự kiên nhẫn và tinh thần**: coi việc dạy là phần việc.
+
+### Khung STAR cho câu này
+- **S — Situation**: người được mentoring là ai, bối cảnh team, điểm yếu cụ thể.
+- **T — Task**: mục tiêu năng lực cụ thể, không phải "dạy code".
+- **A — Action**: các hoạt động cụ thể và cách đo.
+- **R — Result**: số liệu thay đổi và bằng chứng năng lực lớn lên.
+
+### Câu trả lời mẫu
+> "Junior 8 tháng kinh nghiệm làm module thanh toán. Vấn đề: PR sửa 2,8 vòng, review 2 ngày, hay bỏ sót null check và race condition. Tôi không dạy Java/framework. Tôi làm ba việc: (1) mục tiêu 'tự review PR trước khi gửi'; (2) review ngược: mỗi tuần tôi gửi lại PR kèm **số lượng** lỗi tôi tìm được, để bạn tự tìm rồi đối chiếu; (3) 1-1 hàng tháng hỏi 'tháng này bạn tự bắt lỗi gì mà trước đây không bắt được?'. Sau 5 tháng: vòng sửa PR từ 2,8 xuống 1,1; review time từ 2 ngày xuống 4 giờ; bạn tự viết 4 module mới không cần review trước; được lên lead nhóm 3 người. Có một người mentoring 3 tháng không tiến vì ngại hỏi — tôi chuyển sang pairing 2h/tuần, sau 6 tuần vòng sửa xuống 1,5. Bài học: mentoring là thiết kế để người học tự tạo phản hồi, không phải nói thay."
+
+### Những điều nên tránh
+- **Con số không kiểm chứng**: "tôi mentoring 5 người, họ đều lên senior".
+- **Mentoring kiểu "tôi làm thay"**: người học không tiến bộ.
+- **Chỉ dạy kiến thức, không dạy cách làm việc**: kỹ sư giỏi nhưng không biết ưu tiên vẫn không lên được.
+- **Bỏ qua quan hệ**: mentoring chỉ hiệu quả khi người đó tin bạn.
+- **Không kết nối với công việc thật**: không có gì để đo.
+
+### Ví dụ đời thực
+Junior 8 tháng kinh nghiệm được giao module thanh toán VNPAY/MoMo. Vấn đề: PR sửa 2,8 vòng trung bình, review 2 ngày, hay bỏ sót null check và race condition khi tạo đơn. Tôi thiết kế hệ thống mentoring 5 tháng: (1) mục tiêu 'tự review PR trước khi gửi'; (2) review ngược — tôi gửi lại PR kèm số lượng lỗi (không chỉ vị trí), để bạn tự tìm và đối chiếu; (3) 1-1 hàng tháng với câu hỏi 'tháng này bạn tự bắt lỗi gì mà trước đây không bắt được?'. Kết quả đo được: vòng sửa PR từ 2,8 xuống 1,1; review time từ 2 ngày xuống 4 giờ; bạn tự viết 4 module mới không cần review trước; sau đó được lên lead nhóm 3 người. Bổ sung: một người khác mentoring 3 tháng không tiến (vẫn PR sửa 3 vòng) vì ngại hỏi và không làm bài tập review ngược — tôi chuyển sang pairing trực tiếp 2h/tuần, sau 6 tuần vòng sửa xuống 1,5.
+
+### Trả lời mẫu khi phỏng vấn
+"Tôi mentoring một kỹ sư 8 tháng kinh nghiệm làm module thanh toán. Vấn đề: PR sửa 2,8 vòng, review 2 ngày, hay bỏ sót null check và race condition. Tôi đặt mục tiêu 'tự review PR trước khi gửi', dùng review ngược (tôi gửi lại PR kèm số lượng lỗi để bạn tự tìm), và 1-1 hàng tháng hỏi 'bạn tự bắt lỗi gì tháng này?'. Kết quả 5 tháng: vòng sửa từ 2,8 xuống 1,1, review time từ 2 ngày xuống 4 giờ, bạn tự viết 4 module mới và lên lead nhóm 3 người. Có một người mentoring 3 tháng không tiến do ngại hỏi, tôi chuyển sang pairing 2h/tuần, 6 tuần sau vòng sửa xuống 1,5. Bài học: mentoring phải thiết kế để người học tự tạo phản hồi, không phải nói thay, và phải điều chỉnh phương pháp cho từng người."
+
+> Senior tip: khi được hỏi về mentoring ở vòng phỏng vấn senior/lead, hãy chuẩn bị **một câu chuyện có số liệu trước/sau** và **một câu chuyện về một người bạn không mentoring thành công**. Câu thứ hai cho thấy bạn hiểu mentoring không phải công thức áp cho mọi người.`,
+  follow: [
+    'Bạn đo lường hiệu quả của mentoring bằng cách nào ngoài cảm nhận chủ quan?',
+    'Làm sao mentoring một người có tính cách khác bạn (ví dụ hướng nội, thích làm một mình)?',
+    'Bạn có bao giờ phải nói với một người rằng họ chưa phù hợp với vị trí không? Bạn xử lý ra sao?'
+  ],
+  tags: ['mentoring', 'leadership', 'onboarding', 'STAR', 'core']
+},
 );

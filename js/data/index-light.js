@@ -2206,6 +2206,9 @@ window.DATA_INDEX = {
     ["testing-070","testing","senior"],
     ["testing-071","testing","senior"],
     ["testing-072","testing","lead"],
+    ["behavioral-084","behavioral","lead"],
+    ["behavioral-085","behavioral","senior"],
+    ["behavioral-086","behavioral","senior"],
     ["english-001","english","mid","en","Tell me about yourself. Give the short version you would use at the start of a Senior Java backend interview."],
     ["english-002","english","senior","en","Walk me through your current project and its architecture. How would you explain it to another backend engineer?"],
     ["english-003","english","mid","en","Why are you leaving your current job, and why do you want to join us?"],
@@ -7287,5 +7290,7 @@ window.DATA_INDEX = {
     "testing-069",
     "testing-070",
     "testing-071",
+    "behavioral-085",
+    "behavioral-086",
   ]
 };
