@@ -110,7 +110,9 @@ commit_task() {   # $1 = task file, $2 = task id
   files="$(owns "$1") $1 $([ -f "$r" ] && echo "$r")"
   git reset -q
   git add $files
-  case " $files" in *" js/data/"*|*"\`js/data/"*) stage_light_index ;; esac
+  # $(echo $files) joins owns() lines into one: a js/data file listed after another owned file was on its own line,
+  # did not match, and the stale working-tree index-light.js got staged (T2552 failed verify 4x, 2026-11-24)
+  case " $(echo $files) " in *" js/data/"*) stage_light_index ;; esac
   if out=$(scripts/verify-staged.sh 2>&1); then
     # commit the index as verified (a pathspec commit would take working-tree copies instead)
     git commit -q -m "Content: $2 (auto-committed after ${REVIEWER} review + verify)
