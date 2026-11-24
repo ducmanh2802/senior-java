@@ -4990,5 +4990,215 @@ private Object runScript(Class<?> clazz, Object... args) {
       'Đề xuất có chiều sâu: cache class theo tên script trong ConcurrentHashMap, kiểm tra lastModified trước khi compile lại, dùng một GroovyClassLoader cha, clear cache khi script xóa; giải thích tăng MaxMetaspaceSize chỉ là workaround.'
     ],
     tags: ['metaspace', 'classloader', 'groovy', 'full-gc', 'metadata-gc-threshold', 'cache', 'jdk17']
+  },
+  {
+    id: 'lab-gc-026',
+    category: 'gc',
+    title: 'Full GC (Ergonomics) 4.2 giây trên heap 24 GB dùng Parallel GC',
+    level: 'senior',
+    scenario: `**Bối cảnh:** Hệ thống đặt vé máy bay (Spring Boot 3.1, JDK 17.0.11) chạy trên pod 8 vCPU, memory limit 32Gi, JVM khởi động với {{-Xms24g -Xmx24g -XX:+UseParallelGC -XX:+UseParallelOldGC}} và bật GC log bằng {{-Xlog:gc*:file=/logs/gc.log:time,uptime,level,tags}}. Trên heap 24 GB, đối tượng ngắn sống được phân phối đều, promotion vào Old Generation ổn định khoảng 300–400 MB/giờ. Không có memory leak, heap dùng ổn định ~16 GB trong 24 giờ.
+
+**Triệu chứng:** Lúc 03:15–03:20 ngày 20/11/2026, p99 của API đặt vé tăng từ 200 ms lên khoảng 5 giây, Prometheus ghi nhận Full GC mỗi khoảng 2 giờ, CPU chỉ khoảng 2.5/8 core. Pod không bị OOMKilled, không có {{OutOfMemoryError}}. Dev on-call nghi memory leak và đề xuất tăng heap lên 32 GB.
+
+**Dữ liệu thu thập:** GC log của pod (đã lược bớt các đoạn lặp) và thông số JVM hiện tại.`,
+    artifacts: [
+      {
+        name: 'gc-booking-24g.log',
+        lang: 'text',
+        content: `[2026-11-20T03:10:00.000+0700][0.000s][info][gc,init] Version: 17.0.11+9 (release)
+[2026-11-20T03:10:00.000+0700][0.000s][info][gc,init] CPUs: 8 total, 8 available
+[2026-11-20T03:10:00.000+0700][0.000s][info][gc,init] Memory: 32768M
+[2026-11-20T03:10:00.000+0700][0.000s][info][gc,init] Heap Min Capacity: 24G
+[2026-11-20T03:10:00.000+0700][0.000s][info][gc,init] Heap Max Capacity: 24G
+[2026-11-20T03:10:00.000+0700][0.000s][info][gc,init] UseParallelGC: true
+[2026-11-20T03:10:00.000+0700][0.000s][info][gc,init] UseParallelOldGC: true
+[2026-11-20T03:15:30.123+0700][330.123s][info][gc] GC(0) Pause Young (Allocation Failure) 812M->164M(24576M), 0.145s
+[2026-11-20T03:15:30.270+0700][330.270s][info][gc] GC(1) Pause Full (Ergonomics) 164M->158M(24576M), 4.212s
+[2026-11-20T03:17:00.456+0700][420.456s][info][gc] GC(2) Pause Young (Allocation Failure) 790M->170M(24576M), 0.138s
+[2026-11-20T03:17:00.596+0700][420.596s][info][gc] GC(3) Pause Full (Ergonomics) 170M->162M(24576M), 4.189s
+[2026-11-20T05:15:00.100+0700][7200.100s][info][gc] GC(10) Pause Young (Allocation Failure) 805M->168M(24576M), 0.142s
+[2026-11-20T05:15:00.250+0700][7200.250s][info][gc] GC(11) Pause Full (Ergonomics) 168M->160M(24576M), 4.205s`
+      }
+    ],
+    questions: [
+      'Nguyên nhân gốc của pause 4.2 giây là gì? Đây có phải memory leak không? Dẫn chứng từ GC log.',
+      'Bạn sẽ sửa thế nào ngắn hạn và dài hạn? Giải thích tại sao không nên chỉ tăng heap lên 32 GB.'
+    ],
+    hints: [
+      'Nhìn vào tên loại GC trong log: Pause Full (Ergonomics) nghĩa là JVM tự quyết định full GC, không phải do hết heap.',
+      'So sánh thời gian: Young GC 0.14s, Full GC 4.2s. Heap sau full GC vẫn gần 24 GB (164M->158M của 24576M), chỉ thu hồi 6 MB.',
+      'Heap 24 GB với Parallel GC, full GC phải quét và nén toàn bộ heap → pause dài. Heap dùng ổn định ~16 GB chứng minh không có memory leak.'
+    ],
+    answer: `**Tóm tắt:** Ứng dụng dùng Parallel GC với heap 24 GB, mỗi khoảng 2 giờ JVM kích hoạt Full GC (Ergonomics) để nén heap, pause stop-the-world 4.2 giây, làm p99 API vọt lên 5 giây. Nguyên nhân không phải memory leak, mà là Parallel GC dừng toàn bộ ứng dụng để compact heap lớn. Sửa bằng chuyển sang G1 hoặc ZGC, giới hạn pause qua {{MaxGCPauseMillis}}; không nên chỉ tăng heap.
+
+### Nguyên nhân gốc
+
+JDK 17 với {{-XX:+UseParallelGC}} dùng Parallel Scavenge cho young generation và Parallel Old cho old generation. Khi heap đạt ngưỡng ergonomics (dùng khoảng 60–70% heap hoặc allocation rate cao), JVM kích hoạt Full GC (Ergonomics) — một pause stop-the-world để compact toàn bộ heap. Trên heap 24 GB, việc quét và nén 24 GB cần vài giây, nên pause 4.2 giây là tiêu chuẩn với Parallel GC. Heap dùng ổn định ~16 GB và promotion ổn định chứng minh không có memory leak.
+
+### Dẫn chứng
+
+GC log ghi rõ:
+
+~~~text
+[2026-11-20T03:15:30.123+0700][330.123s][info][gc] GC(0) Pause Young (Allocation Failure) 812M->164M(24576M), 0.145s
+[2026-11-20T03:15:30.270+0700][330.270s][info][gc] GC(1) Pause Full (Ergonomics) 164M->158M(24576M), 4.212s
+[2026-11-20T05:15:00.250+0700][7200.250s][info][gc] GC(11) Pause Full (Ergonomics) 168M->160M(24576M), 4.205s
+~~~
+
+- Pause Full (Ergonomics): full GC do chính JVM quyết định, không phải allocation thất bại.
+- 164M->158M(24576M): chỉ thu hồi 6 MB, heap sau GC vẫn gần đầy 24 GB, mục đích là compact heap không phải thu hồi rác.
+- 4.212s và 4.205s: pause stop-the-world khoảng 4.2 giây, khớp với p99 API 5 giây.
+- Young GC chỉ 0.138–0.145s, không gây vấn đề; vấn đề nằm ở Full GC hiếm nhưng dài.
+- Promotion ổn định 300–400 MB/giờ, heap ~16 GB ổn định 24 giờ, không có memory leak, không nên tăng heap.
+
+### Cách sửa
+
+1. Chuyển sang G1GC (khuyên dùng cho heap lớn):
+~~~java
+-XX:+UseG1GC -XX:MaxGCPauseMillis=200 -Xms24g -Xmx24g
+~~~
+G1 chia heap thành vùng, compact tăng dần, không dừng toàn bộ heap trong 4 giây. Với heap 24 GB, G1 thường giữ pause dưới 200 ms.
+
+2. Nếu latency cực kỳ nhạy cảm, dùng ZGC (JDK 17 có ZGC ổn định):
+~~~java
+-XX:+UseZGC -Xms24g -Xmx24g
+~~~
+ZGC pause thường dưới 10 ms, không phụ thuộc heap size.
+
+3. Giảm heap nếu không cần 24 GB: heap dùng ~16 GB, có thể giảm xuống 16–20 GB để Full GC ngắn hơn nếu vẫn dùng Parallel GC.
+
+Không nên chỉ tăng heap lên 32 GB: Full GC sẽ thậm chí dài hơn, không giải quyết gốc rễ.
+
+### Phòng ngừa
+
+- Alert khi pause GC > 1 giây qua Prometheus hoặc parse GC log.
+- Theo dõi Full GC (Ergonomics) tần suất; xuất hiện định kỳ mỗi 1–2 giờ là dấu hiệu JVM đang nén heap, cần đổi GC.
+- Trước khi thay đổi GC trên production, chạy test nhẹ với cùng heap và workload để đo pause thực tế.
+- Không cài MaxGCPauseMillis quá thấp (ví dụ 10 ms) với G1 trên heap 24 GB nếu throughput bị ảnh hưởng; 100–200 ms là điểm cân bằng hợp lý.
+
+> Senior tip: Full GC (Ergonomics) trên heap lớn với Parallel GC là kẻ giết silencio của latency. Không phải mọi pause dài là memory leak; heap ổn định nhưng full GC 4 giây là yếu cấu trúc của GC lựa chọn. Quy tắc: heap trên 4–8 GB và latency nhạy cảm nên dùng G1 hoặc ZGC, không dùng Parallel GC. Luôn đo pause thực tế bằng GC log trước khi quyết định tăng heap.`,
+    rubric: [
+      'Giải thích đúng cơ chế: Full GC (Ergonomics) là JVM tự kích hoạt để compact heap, không phải do OutOfMemory hoặc allocation thất bại.',
+      'Dẫn chứng GC log: Pause Full (Ergonomics), 164M->158M(24576M) chỉ thu hồi 6 MB, pause 4.212s/4.205s khớp p99 5 giây.',
+      'Chứng minh không heap leak: heap ổn định ~16 GB, promotion ổn định, không OOMKilled.',
+      'Chỉ đúng gốc rễ: heap 24 GB + Parallel GC, full GC quét nén toàn bộ heap gây pause dài.',
+      'Đề xuất có chiều sâu: chuyển G1 hoặc ZGC, cài MaxGCPauseMillis, giảm heap nếu không cần; giải thích tại sao không tăng heap lên 32 GB.'
+    ],
+    tags: ['gc', 'full-gc', 'ergonomics', 'parallel-gc', 'g1gc', 'zgc', 'maxgcpausemillis', 'heap-24gb', 'jdk17', 'pause']
+  },
+  {
+    id: 'lab-gc-027',
+    category: 'gc',
+    title: 'Young GC mỗi 300 ms do StringBuilder từ ghép chuỗi trong log.debug',
+    level: 'senior',
+    scenario: `**Bối cảnh:** Hệ thống xử lý đơn hàng (Spring Boot 3.1, JDK 17.0.11, SLF4J + Logback) chạy trên pod 4 vCPU, memory limit 8Gi, JVM {{-Xms4g -Xmx4g -XX:+UseG1GC}}. Ứng dụng ghi log rất nhiều ở mức DEBUG trong module xử lý đơn hàng, ví dụ:
+
+log.debug("Đã xử lý đơn " + orderId + " của khách " + customerName + " tổng " + total + " lúc " + now);
+
+Mỗi request ghi 5–10 dòng như vậy. Heap 4 GB, allocation rate cao.
+
+**Triệu chứng:** Từ 14:00–14:30 ngày 20/11/2026, Young GC xảy ra mỗi khoảng 300 ms, mỗi lần pause 50–80 ms, CPU dành cho GC đạt 35–40%. p99 API xử lý đơn tăng từ 150 ms lên 700 ms. Heap dùng ổn định ~2.5 GB, không tăng theo thời gian, không có {{OutOfMemoryError}}. JFR ghi nhận StringBuilder và String[] là top đối tượng được phân phối, chủ yếu là từ thread http-nio-8080-exec-XX. Dev on-call nghi memory leak và đề xuất tăng heap lên 8 GB.
+
+**Dữ liệu thu thập:** GC log và tóm tắt JFR (allocations by class, by thread).`,
+    artifacts: [
+      {
+        name: 'gc-order-4g.log',
+        lang: 'text',
+        content: `[2026-11-20T14:00:00.000+0700][0.000s][info][gc] GC(0) Pause Young (Allocation Failure) 850M->210M(4096M), 0.052s
+[2026-11-20T14:00:00.300+0700][0.300s][info][gc] GC(1) Pause Young (Allocation Failure) 880M->215M(4096M), 0.061s
+[2026-11-20T14:00:00.600+0700][0.600s][info][gc] GC(2) Pause Young (Allocation Failure) 890M->212M(4096M), 0.058s
+[2026-11-20T14:00:00.900+0700][0.900s][info][gc] GC(3) Pause Young (Allocation Failure) 900M->218M(4096M), 0.070s
+[2026-11-20T14:00:01.200+0700][1.200s][info][gc] GC(4) Pause Young (Allocation Failure) 895M->214M(4096M), 0.055s
+[2026-11-20T14:00:01.500+0700][1.500s][info][gc] GC(5) Pause Young (Allocation Failure) 888M->216M(4096M), 0.063s`
+      },
+      {
+        name: 'jfr-allocation-top.txt',
+        lang: 'text',
+        content: `JFR Allocation by class (top 5, 14:00-14:30):
+1. java.lang.StringBuilder: 1840 MB, 46M instances, thread http-nio-8080-exec-01..20
+2. java.lang.String[]: 950 MB, 24M instances
+3. char[]: 620 MB
+4. java.lang.String: 410 MB
+5. java.util.ArrayList: 90 MB
+
+Allocation rate: 6 GB/phut
+Young GC: moi 300 ms, pause 50-80 ms, GC CPU 38%`
+      }
+    ],
+    questions: [
+      'Nguyên nhân gốc của Young GC moi 300 ms la gi? Dang chung tu GC log va JFR.',
+      'Ban se sua code the nao? Gian thich tai sao dung placeholder {} thay vi phep cong +.',
+      'Tai sao heap dung on dinh 2.5 GB nhung GC CPU van dat 38%?'
+    ],
+    hints: [
+      'Nhìn vào GC log: Young GC moi 300 ms chinh xac, pause 50-80 ms, heap sau GC chi 210 MB trong 4 GB, cap phat cao khong het day.',
+      'JFR cho thay StringBuilder la top allocation, tu thread xu ly request, ma code tao StringBuilder tam trong moi dong log.',
+      'Phep cong chuoi voi + luon duoc tinh toan truoc khi goi log.debug, ngay khi DEBUG bi tat. Dung placeholder {} cua SLF4J de tham so chi duoc danh gia khi DEBUG bat.'
+    ],
+    answer: `**Tom tat:** Ung dung dung phep cong chuoi (+) trong log.debug, tao ra StringBuilder tam thoi cho moi dong log ngay khi DEBUG bi tat. Cap phat khoang 6 GB/phut gat Young GC moi 300 ms, pause 50-80 ms, GC CPU 38%. Heap dung on dinh 2.5 GB chung minh khong co memory leak. Sua bang placeholder {} cua SLF4J va tu chon boc bang isDebugEnabled. Khong nen tang heap.
+
+### Nguyen nhan goc
+
+Trong Java, phep cong chuoi voi + duoc compiler dich thanh new StringBuilder().append(...).toString(). Moi lan goi:
+
+log.debug("Da xu ly don " + orderId + " cua khach " + customerName + " tong " + total);
+
+may ao tao mot StringBuilder va nhieu String trung gian, roi goi log.debug. Neu Logback dang o muc INFO, debug message bi bo qua, nhung StringBuilder da duoc tao va phai duoc GC. Voi 5-10 dong log moi request va hang ngan request/giay, cap phat dat vay GB/phut, Eden vung nhanh day, Young GC kich hoat moi 300 ms.
+
+### Dan chung
+
+GC log:
+
+~~~text
+[2026-11-20T14:00:00.000+0700][0.000s][info][gc] GC(0) Pause Young (Allocation Failure) 850M->210M(4096M), 0.052s
+[2026-11-20T14:00:00.300+0700][0.300s][info][gc] GC(1) Pause Young (Allocation Failure) 880M->215M(4096M), 0.061s
+[2026-11-20T14:00:00.600+0700][0.600s][info][gc] GC(2) Pause Young (Allocation Failure) 890M->212M(4096M), 0.058s
+~~~
+
+- Young GC moi 300 ms chinh xac (0.000, 0.300, 0.600, 0.900, 1.200, 1.500 giay).
+- 850M->210M(4096M): sau moi GC chi con song 210 MB, heap 4 GB con rat trong, khong het day ma la Eden day do cap phat cao.
+- Pause 50-80 ms, GC CPU 38%, phan lon CPU dung cho GC thay vi xu ly request.
+
+JFR:
+- StringBuilder: 1840 MB, 46 trieu instances, tu thread http-nio-8080-exec.
+- String[]: 950 MB.
+- Cap phat: 6 GB/phut.
+
+Heap dung on dinh 2.5 GB, khong tang thoi gian, khong co memory leak.
+
+### Cach sua
+
+1. Dung placeholder {} cua SLF4J:
+~~~java
+log.debug("Da xu ly don {} cua khach {} tong {} luc {}", orderId, customerName, total, now);
+~~~
+Voi SLF4J, cac tham so chi duoc chuyen thanh chuoi khi DEBUG bat. Neu Logback o muc INFO, khong tao StringBuilder nao.
+
+2. Tu chon: boc bang isDebugEnabled cho doi tuong tốn kém de tao chuoi:
+~~~java
+if (log.isDebugEnabled()) {
+    log.debug("Da xu ly don {} cua khach {} tong {}", orderId, customerName, expensiveToString());
+}
+~~~
+isDebugEnabled tránh goi expensiveToString() khi DEBUG tat.
+
+3. Khong nen dung phep cong + trong log.debug, log.info, ngay khi muc log bi tat.
+
+### Phong ngua
+
+- Code review: cam phep cong chuoi (+) trong cac lenh log.debug/log.info/log.trace.
+- Theo doi cap phat va Young GC tan suat qua JFR / GC log; Young GC duoi 1 giay mot lan la binh thuong, moi 300 ms la bat thuong.
+- Alert khi GC CPU 20% lien tuc.
+- Trong production, de Logback o muc INFO hoac WARN, chi bat DEBUG tam thoi khi debug su co.
+
+> Senior tip: Phep cong chuoi trong log.debug la ke giet silencio cua throughput, heap khong rot rinh nhung cap phat cao lam GC CPU tieu tốn 30-40%. Luon dung placeholder {} cua SLF4J, no mien phi khi DEBUG tat. Neu doi tuong log tốn kém de tao chuoi, boc bang isDebugEnabled. Tang heap khong sua van de cap phat, chi lam Young GC it lan hon nhung moi lan dai hon.`,
+    rubric: [
+      'Giai thich dung co che: phep cong + trong log.debug tao StringBuilder tam ngay khi DEBUG bi tat.',
+      'Dang chung GC log: Young GC moi 300 ms, pause 50-80 ms, 850M->210M(4096M) chi con 210 MB, heap con trong.',
+      'Dang chung JFR: StringBuilder top allocation, cap phat 6 GB/phut, GC CPU 38%.',
+      'Chung minh khong heap leak: heap on dinh 2.5 GB, khong tang thoi gian.',
+      'De xuat co chieu sau: dung placeholder {} cua SLF4J, tu chon isDebugEnabled; giai thich tai sao khong tang heap.'
+    ],
+    tags: ['gc', 'young-gc', 'allocation-rate', 'stringbuilder', 'slf4j', 'logback', 'log-debug', 'string-concatenation', 'jdk17', 'g1gc']
   }
 );
