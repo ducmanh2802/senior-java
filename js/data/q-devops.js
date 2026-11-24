@@ -17408,6 +17408,185 @@ Kết quả đo được: 0 secret trong Git/ConfigMap. Rotation tự động 30
       'Sealed Secrets hay External Secrets Operator: chọn cái nào khi team nhỏ, GitOps thuần, không có AWS/Vault?'
     ],
     tags: ['Secrets', 'External Secrets Operator', 'AWS Secrets Manager', 'Rotation', 'Spring Boot', 'configtree', 'HikariCP']
+  },
+  {
+    id: 'devops-198',
+    topic: 'devops',
+    level: 'senior',
+    q: 'Bạn sẽ tối giản thời gian CI từ 25 phút xuống dưới 10 phút cho monorepo Java như thế nào?',
+    a: `**Tóm tắt:** Sử dụng cache Maven/Gradle với BuildKit, chạy test song song theo module, và chỉ build module thay đổi thông qua file changed detection. Kết quả: thời gian build từ 25 phút xuống dưới 10 phút cho monorepo 30 service.
+
+### Hiểu nhanh
+Docker cache hoạt động theo layer: nếu lệnh và input không đổi, layer tái sử dụng. Với Maven, cache ~/.m2 tránh download lại dependency; với Gradle, cache daemon và build cache nội bộ. Chạy test song song bằng cách chia test ra các worker độc lập. Changed detection chỉ build module có file sửa qua git diff hoặc Maven build metadata.
+
+### Vì sao không chỉ {{mvn package}} mọi lần
+Mọi lần chạy {{mvn package}} trên monorepo sẽ compile lại cả 30 service dù chỉ sửa 1 file. Docker cache toàn bộ layer jar đổi, registry phải pull lại 100+ MB. Thay vào đó, tách dependency ra layer đầu tiên, chỉ copy source sau, dùng {{git diff}} hoặc Maven build matrix chỉ build module liên quan.
+
+### Ví dụ
+~~~bash
+FROM eclipse-temurin:21 AS build
+WORKDIR /src
+COPY .mvn .mvn
+COPY mvnw pom.xml ./
+RUN --mount=type=cache,target=/root/.m2 ./mvnw -q dependency:go-offline
+COPY src src
+RUN --mount=type=cache,target=/root/.m2 ./mvnw -q package -DskipTests -pl module-changed
+~~~
+
+### Từng quyết định và lý do
+| Quyết định | Lý do |
+|---|---|
+| Cache ~/.m2 qua BuildKit | Giảm 3–5 phút download dependency mỗi build |
+| Chỉ build module thay đổi | Giảm từ 30 service xuống 1–2 service |
+| Test song song per module | Giảm thời gian feedback loop từ phút đến giây |
+| Sử dụng Gradle build cache | Gradle tự tracking input/output, cache hit phần lớn task/test |
+
+### Câu trả lời sai phổ biến
+- "Tăng runner CPU là giải pháp": hiệu quả giảm khi bottleneck là I/O dependency.
+- "Chạy test đơn lẻ đủ nhanh": test integration thường phụ thuộc DB/Redis và chậm.
+- "Cache tự động đủ tốt": cần cấu hình {{mvnw dependency:go-offline}} để tránh tải dependency qua network mỗi build.
+
+### Trả lời miệng 1 phút
+Để giảm CI từ 25 phút xuống dưới 10 phút, tôi dùng kết hợp: cache Maven ~/.m2 qua BuildKit {{--mount=type=cache}} để tránh download dependency lại, chỉ build module thay đổi bằng {{-pl}} flag hoặc Gradle {{--configure-on-demand}}, và chạy test song song qua per-module test split. Việc tăng runner CPU có giới hạn hiệu quả khi bottleneck là I/O và download dependency. Quy tắc vàng là: dependency cache + module build chỉ + test parallel.
+
+### Ví dụ đời thực
+Triệu chứng: monorepo 30 service Java, mỗi build CI mất 25–30 phút, pipeline chậm gây delay release.
+Nghiên cứu: {{docker history}} cho thấy layer jar toàn bộ thay đổi mỗi build, registry pull 150 MB mỗi lần. Cấu hình {{mvnw dependency:go-offline}} và cache {{/root/.m2}} trên runner.
+Cách xử lý: Thêm step cache Maven/Gradle ở pipeline CI, chỉ build module thay đổi qua {{mvnw -pl module-changed}}, tách test integration ra chạy trên DB container riêng với testcontainers. Kết quả đo được: build từ 25 phút xuống 8 phút, registry pull giảm từ 150 MB xuống 5 MB mỗi build.
+
+### Ví dụ đời thực (tiêu chí đo)
+KPI chính: build time từ 25p → dưới 10p; registry pull 150 MB → 5 MB; test feedback loop từ 30p → dưới 5p. KPI phụ: cache hit ratio Maven/Gradle, test pass rate song song. Đo bằng Docker history, Prometheus CI metrics, và báo cáo sprint sự cố.
+
+> Senior tip: Đo bằng {{docker history}} trước và sau; nếu layer root jar đổi thì mọi thứ đổi. Cấu hình {{mvnw dependency:go-offline}} là bước đầu tiên bắt buộc. Kết hợp {{git diff}} để phát hiện module thay đổi hoặc các tool như {{Turborepo}}/{{Nx}} cho monorepo JavaScript/TypeScript; còn phần Java dùng {{-pl}} và {{Maven profile}} động.
+`,
+
+    follow: [
+      'Turborepo/Nx có hỗ trợ cho monorepo Java không?',
+  'Cách cấu hình Maven module build order để tránh dependency tuần hoàn?'
+],
+tags: ['CI', 'CD', 'Maven', 'Gradle', 'Build cache']
+  },
+  {
+    id: 'devops-199',
+    topic: 'devops',
+    level: 'mid',
+    q: 'Image container Java an toàn và nhỏ thế nào khi chạy production?',
+    a: `**Tóm tắt:** Sử dụng distroless hoặc JRE-minimal base image, chạy dưới user non-root với UID số, quét CVE tự động tại mỗi build và chỉ copy layer ít thay đổi nhất. Kết quả: bề mặt tấn công giảm 80%, image size từ 150 MB xuống dưới 50 MB.
+
+### Hiểu nhanh
+Image distroless chỉ chứa runtime và ứng dụng, không có shell, package manager hay Tools. Image non-root chạy dưới user có UID số khác 0 (ví dụ 10001) thay vì root, tránh container escape cơ bản. CVE scan tìm các vulnerability trong OS package và Java library trước khi deploy. Hai giải pháp này có thể kết hợp: build trên JRE rồi chuyển sang distroless chạy non-root.
+
+### Thuật ngữ
+- **Distroless**: image chỉ chứa runtime, không có shell, curl, wget, text editor hay bất kỳ tiện ích nào khác; chỉ ứng dụng và các dependency cần thiết.
+- **Non-root**: chạy container dưới user có UID số thay vì root (UID 0), giảm rủi ro container escape và privilege escalation.
+- **CVE (Common Vulnerabilities and Exposures)**: danh sách lỗ hổng bảo mật công khai, mỗi CVE có CVSS score đánh giá mức độ nghiêm trọng.
+- **SBOM (Software Bill of Materials)**: danh sách đầy đủ mọi thành phần và version trong image, dùng cho CVE scan.
+- **Base image**: image nền đầu tiên trong Dockerfile (ví dụ: eclipse-temurin, ubuntu, debian).
+
+### Vì sao không chỉ {{FROM eclipse-temurin:21}} mọi lần
+Image {{eclipse-temurin:21}} khoảng vài trăm MB và chứa shell ({{bash}}), utility ({{curl}}, {{wget}}) và nhiều package hệ điều hành khác. Nếu dùng image này trực tiếp trong production, bề mặt tấn công rất rộng và image lớn làm tăng thời lượng push/pull registry. Phải tách stage build và runtime: stage build có JDK để compile, stage runtime chỉ có JRE hoặc distroless.
+
+### Ví dụ
+~~~text
+FROM eclipse-temurin:21-jdk AS build
+WORKDIR /src
+COPY . .
+RUN ./mvnw -q package -DskipTests
+
+# Stage runtime: chỉ JRE, non-root, an toàn
+FROM eclipse-temurin:21-jre
+RUN useradd --system --uid 10001 app
+WORKDIR /app
+COPY --from=build /src/target/*.jar app.jar
+USER 10001
+ENTRYPOINT ["java", "-XX:MaxRAMPercentage=75", "-jar", "app.jar"]
+~~~
+
+### Từng quyết định và lý do
+| Quyết định | Lý do |
+|---|---|
+| Sử dụng distroless/runtime JRE | Giảm bề mặt tấn công: không có shell, không thể thực thi lệnh tùy ý |
+| Chạy user non-root với UID số | Kubernetes {{runAsNonRoot: true}} và {{seccomp}} có hiệu lực; container escape khó hơn |
+| Quét CVE tại mỗi build | Trình quét như Trivy, Snyk phát hiện lỗ hổng mới; chặn CRITICAL trước khi push registry |
+| Copy layer ít thay đổi nhất | Dependencies thay đổi ít hơn code, cache Docker được tận dụng tốt hơn |
+
+### Câu trả lời sai phổ biến
+- "Distroless debug khó nên không dùng": có thể dùng ephemeral container qua {{kubectl debug}} để attach vào lúc cần.
+- "Non-root làm app chạy sai": hầu hết app Java chạy tốt dưới non-root trừ khi cần port < 1024 hoặc ghi file hệ thống.
+- "Chạy CVE scan chỉ 1/tuần": lỗ hổng mới xuất hiện mỗi ngày; cần scan mỗi build hoặc mỗi nightly.
+
+### Trả lời miệng 1 phút
+Để image Java production an toàn và nhỏ, tôi dùng multi-stage build: stage build có JDK (eclipse-temurin:21-jdk) để compile, stage runtime chỉ có JRE (eclipse-temurin:21-jre) hoặc distroless, và chạy dưới user non-root có UID số. Tôi cũng bật CVE scan tự động qua Trivy tại mỗi build pipeline, chặn CRITICAL trước khi push registry. Kết quả: image size từ 150 MB (fat jar + JRE + tools) xuống dưới 50 MB, bề mặt tấn công giảm mạnh. Với distroless, debug cần dùng {{kubectl debug}} ephemeral container hoặc thêm tạm thời một container phụ có shell; trade-off là tăng độ phức tạp khi debug nhưng an toàn hơn nhiều.
+> Senior tip: Nếu team chưa sẵn sàng distroless, hãy bắt đầu từ JRE-minimal image và non-root user; kết hợp CVE scan trong pipeline là bước bắt buộc đầu tiên.
+`,
+
+    follow: [
+      'Làm sao debug một container distroless đang CrashLoopBackOff khi không có shell? (gợi ý: kubectl debug, ephemeral container)',
+  'Có nên bật -XX:MaxRAMPercentage cho distroless image không?'
+],
+tags: ['Docker', 'Distroless', 'Non-root', 'CVE', 'Image security']
+  },
+  {
+    id: 'devops-200',
+    topic: 'devops',
+    level: 'lead',
+    q: 'Chọn 4 golden signals và viết alert không gây mệt mỏi cho team operations?',
+    a: `**Tóm tắt:** 4 golden signals của SRE: latency, traffic, errors, saturation. Viết alert theo cách: ngưỡng cố định cho service mới, ngưỡng tương đối cho service đã ổn định, cooldown dài để tránh alert liên tục. Kết quả: số alert giảm 70%, MTTR cải thiện do team không bị fatigue.
+
+### Hiểu nhanh
+4 golden signals giống các chỉ số quan trọng trên bảng điều khiển vận hành (control tower): latency (thời gian phản hồi), traffic (số lượng request), errors (số lượng lỗi), saturation (mức sử dụng tài nguyên). Alert fatigue xảy ra khi team nhận quá nhiều cảnh báo vô nghĩa hoặc cảnh báo liên tục mà không có sự cố thực. Cách tránh là chỉ cảnh báo khi ngưỡng vượt quá ngưỡng an toàn có khả năng khắc phục, và có thời gian cooldown.
+
+### Thuật ngữ
+- **Latency**: thời gian phản hồi từ khi gửi request đến khi nhận response; p50, p95, p99 là các phân vị (percentile) phổ biến.
+- **Traffic**: số lượng request được xử lý trong một khoảng thời gian; có thể là request/sec, bandwidth.
+- **Errors**: số lượng request trả về lỗi (5xx, 4xx); có thể là error rate = errors / traffic.
+- **Saturation**: mức tài nguyên (CPU, memory, disk, network) được sử dụng; 100% nghĩa là đầy hết.
+- **Alert fatigue**: trạng thái kiệt sức của team khi nhận quá nhiều cảnh báo vô nghĩa, dẫn đến việc bỏ qua cảnh báo thực.
+- **SLO (Service Level Objective)**: mục tiêu cấp level dịch vụ (ví dụ: 99.9% availability trong tháng).
+- **SLA (Service Level Agreement)**: cam kết với khách hàng (ví dụ: 99.9% uptime).
+
+### Vì sao không chỉ đặt alert ngưỡng cố định mọi lúc mọi nơi
+Service mới có thể có tải cao ban đầu do warm-up, không nên coi đó là sự cố. Service đã ổn định có lịch sử và ngưỡng đã biết. Đặt cùng một ngưỡng cho cả hai sẽ khiến service mới luôn có false positive, service đã ổn định thì cảnh báo không kịp thời. Cần tách các chiến lược cảnh báo theo loại service: service mới có cooldown dài, service đã ổn định có ngưỡng chặt và alert tức thì.
+
+### Ví dụ
+~~~text
+# 4 golden signals Prometheus metrics
+# Latency: p99 latency over 1 minute (histogram bucket -> quantile)
+histogram_quantile(0.99, sum(rate(http_request_duration_seconds_bucket[1m])) by (le))
+
+# Traffic: request per second
+sum(rate(http_requests_total[1m]))
+
+# Errors: 5xx error rate
+(sum(rate(http_requests_total{status=~"5.."}[1m])) / sum(rate(http_requests_total[1m]))) * 100
+
+# Saturation: memory usage percentage
+(container_memory_working_set_bytes / container_spec_memory_limit_bytes) * 100
+~~~
+
+### Từng quyết định và lý do
+| Quyết định | Lý do |
+|---|---|
+| Phân tách alert theo trạng thái service | Service mới cần thời gian warm-up, không đặt ngưỡng giống service đã ổn định |
+| Cooldown 15–30 phút cho alert ban đầu | Tránh team đánh cảnh báo liên tục khi deploy mới hoặc tăng tải nội bộ |
+| Cùng SLO/SLI làm cơ sở | Cảnh báo chỉ kích hoạt khi SLI vượt ngưỡng, không dựa trên giá trị tuyệt đối vô nghĩa |
+| Nhật ký mỗi alert (reason, owner) | Team có thể xem lịch sử và cải thiện ngưỡng theo thời gian |
+
+### Câu trả lời sai phổ biến
+- "Cảnh báo càng sớm càng tốt": cảnh báo sớm nhưng vô nghĩa làm team mất tin tưởng vào alert và bỏ qua cảnh báo thực.
+- "Set alert 99% availability": 99% là chỉ tiêu SLA với khách hàng, không phải ngưỡng cảnh báo vận hành; thường dùng SLO chặt hơn SLA (ví dụ 99.9%) để phát hiện sớm.
+- "Không có alert tốt hơn là theo dõi thủ công": monitoring tốt nhưng thiếu alert sẽ làm team phản ứng chậm khi sự cố xảy ra.
+
+### Trả lời miệng 1 phút
+4 golden signals SRE: latency (p99 latency), traffic (request/sec), errors (error rate 5xx), saturation (CPU/memory %). Viết alert không gây fatigue: phân tách service mới (cooldown 15–30 phút, ngưỡng nhẹ) và service đã ổn định (ngưỡng chặt, alert tức). Căn cứ vào SLO/SLI thay vì ngưỡng tuyệt đối, và luôn có owner và reason cho mỗi alert. Kết quả: team vận hành nhận alert có ý nghĩa, MTTR cải thiện từ 2h xuống 30 phút do không bị fatigue.
+> Senior tip: Định nghĩa SLO cho service của bạn (ví dụ: p95 latency < 200ms trong 30 ngày), rồi đặt alert khi SLI vượt ngưỡng. Dùng cơ chế silence (tạm tắt alert) cho phép team bỏ qua alert khi biết đang deploy, và luôn có runbook kèm các bước để triage alert nhanh nhất.
+`,
+
+    follow: [
+      'Bạn có đặt SLO/SLA cho service của mình như thế nào? SLO là bao nhiêu, SLA là bao nhiêu?',
+  'Cảnh báo latency p99 cao nhưng error rate bình thường. Bạn nghi ngờ điểm nghẽn ở đâu?'
+],
+tags: ['SRE', 'Monitoring', 'Alert', 'Golden signals', 'SLO']
   }
 );
 
