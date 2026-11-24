@@ -6821,5 +6821,321 @@ switch (s) { case Circle c -> ...; case Shape s -> ...; }
 "Exhaustiveness cần case cụ thể cho từng subtype. Guard pattern chỉ lọc thêm, không thay thế case cơ bản. Tôi luôn viết case không guard cho từng subtype, rồi thêm guard case nếu cần lọc."
  
 > Senior tip: compiler báo lỗi "does not cover all possible input values" chính xác subtype nào bị thiếu — rất hữu ích khi maintain sealed hierarchy.`
+},
+{
+  id: 'qz-kotlin-021', topic: 'kotlin',
+  q: `Kotlin có toán tử safe call {{?.}} và Elvis {{?:}}. Đoạn sau in ra gì?
+~~~kotlin
+fun doDaiMacDinh(s: String?): Int = s?.length ?: -1
+fun main() {
+    println(doDaiMacDinh(null))
+    println(doDaiMacDinh("Kotlin"))
 }
-);
+~~~`,
+  options: [
+    `-1 6`,
+    `0 6`,
+    `null 6`,
+    `Lỗi biên dịch vì không gán được null cho Int`
+  ],
+  answer: 0,
+  explain: `**Đáp án đúng: -1 6.**
+
+### Cơ chế
+- {{s?.length}}: nếu {{s}} là null thì biểu thức toàn bộ trả về null, không ném Ngoại lệ con trỏ null. Nếu không null thì trả về chiều dài chuỗi.
+- {{s?.length ?: -1}}: toán tử Elvis {{?:}} — nếu bên trái null thì lấy giá trị bên phải (-1).
+- Gọi với null → -1; gọi với "Kotlin" → 6. Kiểu trả về là {{Int}} (không phải {{Int?}}) nhờ Elvis.
+
+### Vì sao các phương án sai
+- **0 6**: chiều dài của null không được quy ước là 0; safe call trả về null rồi Elvis thay bằng -1.
+- **null 6**: hàm khai báo trả về {{Int}} non-null, không thể in null; Elvis đã thay thế giá trị null.
+- **Lỗi biên dịch vì không gán được null cho Int**: biểu thức {{s?.length}} có kiểu {{Int?}}, nhưng toán tử {{?:}} ép kết quả về {{Int}} non-null, nên hợp lệ.
+
+> Senior tip: safe call {{?.}} và Elvis {{?:}} thường dùng cùng nhau để cung cấp giá trị mặc định an toàn. Tránh dùng {{!!}} (not-null assertion) vì nó ném Ngoại lệ con trỏ null khi giá trị thực sự null, làm sập ứng dụng.`
+},
+{
+  id: 'qz-kotlin-022', topic: 'kotlin',
+  q: `Data class sinh ra các hàm thành phần component1(), component2(), … để hỗ trợ gỡ r gói. Đoạn sau in ra gì?
+~~~kotlin
+data class DonHang(val id: Long, val khachHang: String, val soTien: Double)
+fun main() {
+    val donHang = DonHang(100L, "An", 500000.0)
+    val (id, khachHang, soTien) = donHang
+    println(id + " " + khachHang + " " + soTien)
+    val (a, b) = donHang
+    println(a + " " + b)
+}
+~~~`,
+  options: [
+    `100 An 500000.0 rồi 100 500000.0`,
+    `100 An 500000.0 rồi 100 An`,
+    `100 An 500000.0 rồi lỗi biên dịch vì gỡ r gói phải lấy đủ số thành phần`,
+    `Lỗi biên dịch vì data class không được gỡ r gói`
+  ],
+  answer: 1,
+  explain: `**Đáp án đúng: 100 An 500000.0 rồi 100 An.**
+
+### Cơ chế
+- Data class tự sinh {{component1()}}, {{component2()}}, {{component3()}} tương ứng với các tham số constructor chính.
+- {{val (id, khachHang, soTien) = donHang}} gọi ba hàm thành phần, gán ba biến.
+- Kotlin cho phép gỡ r gói **ít hơn** số thành phần: {{val (a, b) = donHang}} chỉ gọi {{component1()}} và {{component2()}} → {{a = 100}}, {{b = "An"}}.
+- Không được gỡ r gói **nhiều hơn** số thành phần (lỗi biên dịch).
+
+### Vì sao các phương án sai
+- **100 An 500000.0 rồi 100 500000.0**: sai, {{(a, b)}} lấy thành phần thứ nhất và thứ hai (id, khachHang), không bỏ qua khachHang.
+- **100 An 500000.0 rồi lỗi biên dịch vì gỡ r gói phải lấy đủ số thành phần**: sai, Kotlin cho phép lấy ít thành phần hơn.
+- **Lỗi biên dịch vì data class không được gỡ r gói**: sai, gỡ r gói là tính năng tiêu chuẩn của data class.
+
+> Senior tip: gỡ r gói dựa trên thứ tự tham số trong constructor chính, không theo tên biến. Nếu sau này thêm hoặc xóa tham số, mọi chỗ gỡ r gói có thể hỏng — hãy cẩn thận khi dùng với data class làm API công khai.`
+},
+{
+  id: 'qz-kotlin-023', topic: 'kotlin',
+  q: `Kotlin cho phép khai báo hàm mở (extension function) cho kiểu có thể null. Đoạn sau in ra gì?
+~~~kotlin
+fun String?.hoaInHoa(): String = this?.uppercase() ?: ""
+fun main() {
+    val s: String? = null
+    println("[" + s.hoaInHoa() + "]")
+    println("[" + "xin chao".hoaInHoa() + "]")
+}
+~~~`,
+  options: [
+    `[null] [XIN CHAO]`,
+    `Ném Ngoại lệ con trỏ null khi gọi hoaInHoa trên null`,
+    `[] [XIN CHAO]`,
+    `Lỗi biên dịch vì không thể gọi hàm mở trên kiểu nullable`
+  ],
+  answer: 2,
+  explain: `**Đáp án đúng: [] [XIN CHAO].**
+
+### Cơ chế
+- Hàm mở có thể khai báo trên kiểu nullable {{String?}}. Bên trong, {{this}} có kiểu {{String?}}.
+- {{this?.uppercase() ?: ""}}: safe call — nếu {{this}} null thì kết quả là chuỗi rỗng (giá trị mặc định của Elvis), không ném Ngoại lệ con trỏ null.
+- Gọi trên null → {{[]}}; gọi trên "xin chao" → {{[XIN CHAO]}}.
+
+### Vì sao các phương án sai
+- **[null] [XIN CHAO]**: safe call không trả về {{null}} vào chuỗi; Elvis đã thay bằng chuỗi rỗng.
+- **Ném Ngoại lệ con trỏ null khi gọi hoaInHoa trên null**: sai vì hàm mở được gọi như hàm thường, và bên trong dùng {{?.}} xử lý null an toàn. {{!!}} mới ném ngoại lệ khi null.
+- **Lỗi biên dịch vì không thể gọi hàm mở trên kiểu nullable**: sai, Kotlin cho phép và đây là cách phổ biến viết hàm xử lý null.
+
+> Senior tip: hàm mở trên kiểu nullable rất hữu ích cho các hàm tiện ích xử lý null tập trung ở một chỗ, giúp nơi gọi code gọn gàng hơn, không cần kiểm tra null trước mỗi lần dùng.`
+},
+{
+  id: 'qz-kotlin-024', topic: 'kotlin', multi: true,
+  q: `Kotlin có nhóm hàm xử lý phạm vi: let, apply, also, run. Những nhận định nào sau đây là đúng? (Chọn 2)`,
+  options: [
+    `let và run dùng tham số {{it}}, còn apply và also dùng receiver {{this}}`,
+    `apply và also trả về chính đối tượng nhận (receiver), còn let và run trả về giá trị lambda trả`,
+    `also thích hợp cho tác vụ phụ (ví dụ ghi log) vì nhận đối tượng qua {{it}} và trả về chính đối tượng đó`,
+    `run không thể truy cập thành viên của đối tượng gốc`
+  ],
+  answer: [1, 2],
+  explain: `**Đáp án đúng: {{apply}} và {{also}} trả về chính đối tượng nhận; {{let}} và {{run}} trả về giá trị lambda trả; {{also}} thích hợp cho tác vụ phụ.**
+
+### Cơ chế
+- {{let}} và {{also}}: đối tượng được truyền vào làm tham số {{it}} của lambda.
+  - {{let}} trả về kết quả của lambda.
+  - {{also}} trả về chính đối tượng gốc (dùng cho ghi log, tác vụ phụ).
+- {{apply}} và {{run}}: đối tượng là receiver {{this}} trong lambda.
+  - {{apply}} trả về chính đối tượng (dùng để cấu hình đối tượng).
+  - {{run}} trả về kết quả của lambda (dùng để tính toán và trả giá trị).
+- Bảng tóm tắt:
+
+| Hàm | Tham chiếu | Trả về | Dùng cho |
+|---|---|---|---|
+| let | it | kết quả lambda | biến đổi, kiểm tra null |
+| apply | this | đối tượng gốc | cấu hình đối tượng |
+| also | it | đối tượng gốc | side effect, log |
+| run | this | kết quả lambda | tính toán, trả giá trị |
+
+### Vì sao các phương án sai
+- **{{let}} và {{run}} dùng tham số {{it}}, còn {{apply}} và {{also}} dùng receiver {{this}}**: sai, ngược lại: {{let}}/{{also}} dùng {{it}}, {{apply}}/{{run}} dùng {{this}}.
+- **{{run}} không thể truy cập thành viên của đối tượng gốc**: sai, {{run}} dùng {{this}} nên truy cập thành viên được (trừ khi bị che khuất bởi biến cục bộ cùng tên).
+
+> Senior tip: chọn {{apply}} khi muốn cấu hình rồi trả về đối tượng (ví dụ khởi tạo UI, cấu hình client); chọn {{let}} khi muốn biến đổi giá trị hoặc thực hiện khi không null. Tránh lồng quá nhiều hàm xử lý phạm vi khiến code khó đọc.`
+},
+{
+  id: 'qz-kotlin-025', topic: 'kotlin',
+  q: `Kotlin có kiểu khép kín (sealed class). Đoạn sau có vấn đề gì?
+~~~kotlin
+sealed class KetQua
+data class ThanhCong(val duLieu: String) : KetQua()
+object Loi : KetQua()
+
+fun moTa(r: KetQua): String = when (r) {
+    is ThanhCong -> "ok:" + r.duLieu
+    Loi -> "loi"
+}
+~~~`,
+  options: [
+    `Lỗi biên dịch vì when biểu thức bắt buộc phải có nhánh else`,
+    `Lỗi biên dịch vì sealed class không thể có đối tượng đơn (object) như Loi`,
+    `Chỉ biên dịch được khi KetQua là interface thay vì class`,
+    `Biên dịch được; when là biểu thức nên mỗi nhánh phải trả giá trị, và sealed cho compiler biết tất cả kiểu con nên không cần nhánh else`
+  ],
+  answer: 3,
+  explain: `**Đáp án đúng: Biên dịch được; when là biểu thức nên mỗi nhánh phải trả giá trị, và sealed cho compiler biết tất cả kiểu con nên không cần nhánh else.**
+
+### Cơ chế
+- {{sealed class KetQua}}: compiler biết **tất cả** kiểu con (phải cùng module, cùng package). Ở đây chỉ có {{ThanhCong}} và {{Loi}}.
+- {{when (r)}} dùng làm **biểu thức** trả về {{String}}. Mỗi nhánh trả về {{String}}, và vì đã xử lý đủ mọi kiểu con của sealed nên **không cần else**.
+- Nếu sau này thêm kiểu con mới, mọi {{when}} chưa xử lý sẽ báo lỗi biên dịch — đây là lợi ích lớn của kiểu khép kín.
+
+### Vì sao các phương án sai
+- **Lỗi biên dịch vì when biểu thức bắt buộc phải có nhánh else**: sai, với kiểu sealed khi đủ nhánh thì không bắt buộc else.
+- **Lỗi biên dịch vì sealed class không thể có đối tượng đơn (object) như Loi**: sai, {{object}} là kiểu con hợp lệ và phổ biến cho trạng thái không mang dữ liệu.
+- **Chỉ biên dịch được khi KetQua là interface thay vì class**: sai, {{sealed class}} và {{sealed interface}} đều được, hành vi khi dùng {{when}} tương tự.
+
+> Senior tip: tránh thêm nhánh {{else ->}} "để chắc chắn" khi {{when}} trên kiểu khép kín; nhánh else sẽ tắt cảnh báo của compiler, và kiểu con mới sẽ lặng lẽ rơi vào else mà không ai biết.`
+},
+{
+  id: 'qz-kotlin-026', topic: 'kotlin',
+  q: `Coroutine có hai hàm tạo phổ biến: launch và async. Đoạn sau in ra gì, và sai lầm lớn nhất là gì?
+~~~kotlin
+fun main() = runBlocking {
+    val congViec = launch { delay(200); println("xong") }
+    val treo = async { delay(100); 42 }
+    println(treo.await())
+    congViec.join()
+}
+~~~`,
+  options: [
+    `In xong rồi 42`,
+    `In 42 rồi xong; launch trả về Job không lấy kết quả, async trả về Deferred<Integer> lấy kết quả bằng await()`,
+    `launch và async đều trả về Deferred, gọi await() được cả hai`,
+    `async không cần await, kết quả tự có sẵn sau khi chạy`
+  ],
+  answer: 1,
+  explain: `**Đáp án đúng: In 42 rồi xong; launch trả về Job không lấy kết quả, async trả về Deferred<Integer> lấy kết quả bằng await().**
+
+### Cơ chế
+- {{launch}}: chạy lua chéo (fire-and-forget), trả về {{Job}}. Dùng để điều khiển vòng đời (join, cancel), **không lấy giá trị** từ lambda.
+- {{async}}: chạy lua chéo, trả về {{Deferred<T>}}. Gọi {{await()}} để chờ và nhận kết quả {{T}}; nếu coroutine con ném lỗi thì {{await()}} ném lại lỗi đó.
+- Cả hai đều chạy song song trong cùng {{runBlocking}} (structured concurrency). async xong sau 100 ms in 42, launch xong sau 200 ms in xong, nên in theo thứ tự 42 rồi xong.
+
+### Vì sao các phương án sai
+- **In xong rồi 42**: sai, async xong sớm hơn (100 ms) nên in 42 trước, launch in xong sau (200 ms).
+- **launch và async đều trả về Deferred, gọi await() được cả hai**: sai, {{launch}} trả về {{Job}}, không có {{await()}}.
+- **async không cần await, kết quả tự có sẵn sau khi chạy**: sai, {{async}} chạy bất đồng bộ, kết quả chỉ có khi gọi {{await()}}.
+
+> Senior tip: dùng {{launch}} khi chỉ quan tâm đến tác vụ phụ (gửi email, ghi log) và không cần kết quả; dùng {{async}} khi cần lấy giá trị trở lại. Luôn bọc trong {{runBlocking}} hoặc scope có quản lý để lỗi không bị nuốt.`
+},
+{
+  id: 'qz-kotlin-027', topic: 'kotlin',
+  q: `Kotlin gọi từ Java cũ thường gặp vấn đề tham số mặc định, vì Java không có tính năng này. Đoạn Kotlin sau dùng {{@JvmOverloads}}. Gọi từ Java như thế nào?
+~~~kotlin
+@JvmOverloads
+fun baoCao(tieuDe: String, ma: Int = 200, thongBao: String = "OK") { ... }
+~~~`,
+  options: [
+    `Java phải truyền đủ 3 tham số; {{@JvmOverloads}} không ảnh hưởng đối với Java`,
+    `Java chỉ có thể gọi baoCao(String, int, String), còn {{@JvmOverloads}} chỉ dùng khi Kotlin gọi Java`,
+    `{{@JvmOverloads}} sinh thêm overload baoCao(String), baoCao(String, int), baoCao(String, int, String) để Java gọi linh hoạt`,
+    `{{@JvmOverloads}} làm tham số mặc định trở thành bắt buộc trong Java`
+  ],
+  answer: 2,
+  explain: `**Đáp án đúng: {{@JvmOverloads}} sinh thêm overload baoCao(String), baoCao(String, int), baoCao(String, int, String) để Java gọi linh hoạt.**
+
+### Cơ chế
+- Kotlin cho phép tham số mặc định, nhưng Java không. Nếu không có annotation, code Java gọi hàm Kotlin này phải truyền đủ 3 tham số.
+- {{@JvmOverloads}} cho compiler Kotlin sinh thêm các overload Java, mỗi overload bỏ đi một tham số mặc định từ cuối về đầu.
+- overload đầu tiên là baoCao(String tieuDe), dùng ma = 200 và thongBao = "OK"; overload thứ hai là baoCao(String tieuDe, int ma) dùng thongBao = "OK"; overload ba là baoCao(String tieuDe, int ma, String thongBao) truyền đầy đủ.
+- Annotation này không ảnh hưởng đến cách Kotlin gọi Kotlin (Kotlin vẫn dùng tham số mặc định như bình thường).
+
+### Vì sao các phương án sai
+- **Java phải truyền đủ 3 tham số; {{@JvmOverloads}} không ảnh hưởng đối với Java**: sai, với annotation Java có thể gọi ít tham số hơn.
+- **Java chỉ có thể gọi baoCao(String, int, String), còn {{@JvmOverloads}} chỉ dùng khi Kotlin gọi Java**: sai, với annotation Java có thể gọi ít tham số hơn, và annotation ảnh hưởng code Java gọi Kotlin.
+- **{{@JvmOverloads}} làm tham số mặc định trở thành bắt buộc trong Java**: sai, annotation làm Java gọi được linh hoạt hơn, không bắt buộc gì thêm.
+
+> Senior tip: khi đưa API Kotlin ra bên Java cũ, hãy viết thử một lớp test bằng Java gọi các hàm công khai; đó là cách sớm nhất phát hiện API không thân thiện với Java (tham số mặc định, tên hàm top-level, checked exception...).`
+},
+{
+  id: 'qz-kotlin-028', topic: 'kotlin',
+  q: `Toán tử {{!!}} trong Kotlin khẳng định giá trị không null. Đoạn sau xảy ra gì khi gọi {{kiemTra()}}?
+~~~kotlin
+var ten: String? = null
+fun kiemTra() {
+    println(ten!!.length)
+}
+~~~`,
+  options: [
+    `Ném Ngoại lệ con trỏ null vì ten là null khi gọi {{!!}}`,
+    `In 0 vì ten null thì chiều dài hiểu là 0`,
+    `Lỗi biên dịch vì không thể dùng {{!!}} với kiểu nullable`,
+    `Trả về null an toàn mà không ném ngoại lệ`
+  ],
+  answer: 0,
+  explain: `**Đáp án đúng: Ném Ngoại lệ con trỏ null vì ten là null khi gọi {{!!}}.**
+
+### Cơ chế
+- {{ten!!}} là not-null assertion: ép Kotlin coi {{ten}} là non-null. Nếu {{ten}} thực sự null thì ném Ngoại lệ con trỏ null ngay lập tức.
+- Ở đây {{ten}} chưa gán giá trị (null), nên {{ten!!.length}} ném ngoại lệ và làm sập hàm.
+- {{!!}} không kiểm tra hay xử lý null, nó chỉ bỏ qua kiểm tra an toàn của Kotlin.
+
+### Vì sao các phương án sai
+- **In 0 vì ten null thì chiều dài hiểu là 0**: sai, null không có chiều dài; {{!!}} không trả về giá trị mặc định.
+- **Lỗi biên dịch vì không thể dùng {{!!}} với kiểu nullable**: sai, cú pháp {{!!}} được thiết kế riêng cho kiểu nullable, biên dịch được, lỗi là lúc chạy.
+- **Trả về null an toàn mà không ném ngoại lệ**: sai, đó là hành vi của safe call {{?.}} kết hợp Elvis {{?:}}, không phải {{!!}}.
+
+> Senior tip: tránh dùng {{!!}} trong code production trừ khi đã chứng minh giá trị không bao giờ null; một {{!!}} sai chỗ là nguyên nhân phổ biến của sự cố sập ứng dụng (crash) trên production. Ưu tiên {{?.}} + {{?:}} hoặc kiểm tra {{if (ten != null)}}.`
+},
+{
+  id: 'qz-kotlin-029', topic: 'kotlin', multi: true,
+  q: `Data class trong Kotlin có một số ràng buộc khi khai báo. Những nhận định nào sau đây là đúng? (Chọn 2)`,
+  options: [
+    `Data class phải có ít nhất một tham số trong constructor chính`,
+    `Data class có thể khai báo open để cho phép kế thừa`,
+    `Data class có thể khai báo abstract`,
+    `Data class tự sinh equals, hashCode, toString, componentN và copy`
+  ],
+  answer: [0, 3],
+  explain: `**Đáp án đúng: Data class phải có ít nhất một tham số trong constructor chính; và tự sinh equals, hashCode, toString, componentN và copy.**
+
+### Cơ chế
+- Data class phải có **ít nhất một tham số** trong constructor chính (không được để trống constructor).
+- Data class **không được** khai báo {{open}}, {{sealed}}, {{inner}} hay {{abstract}}.
+- Từ các thuộc tính {{val}}/{{var}} trong constructor chính, Kotlin tự sinh {{equals()}} / {{hashCode()}} so sánh theo các thuộc tính đó, {{toString()}}, {{component1()}}, {{component2()}}, … để gỡ r gói, và {{copy()}} để tạo bản sao thay đổi một số thuộc tính.
+
+### Vì sao các phương án sai
+- **Data class có thể khai báo open để cho phép kế thừa**: sai, data class final, không được open.
+- **Data class có thể khai báo abstract**: sai, data class không được abstract.
+
+> Senior tip: chỉ những thuộc tính {{val}}/{{var}} trong constructor chính mới tham gia {{equals}}/{{hashCode}}. Thuộc tính khai báo trong thân class không ảnh hưởng, và collection mutable bên trong có thể làm {{hashCode}} thay đổi sau khi đưa vào Map/Set — rất nguy hiểm.`
+},
+{
+  id: 'qz-kotlin-030', topic: 'kotlin',
+  q: `Hàm khung (suspend function) chỉ được gọi trong ngữ cảnh coroutine. Đoạn sau có vấn đề gì?
+~~~kotlin
+suspend fun layDuLieu(): String {
+    delay(100)
+    return "ket qua"
+}
+
+fun main() {
+    val x = layDuLieu()
+    println(x)
+}
+~~~`,
+  options: [
+    `Hàm suspend có thể gọi ở bất kỳ đâu như hàm thường`,
+    `Chỉ coroutine sử dụng launch mới được gọi hàm suspend`,
+    `Hàm suspend phải chạy trên luồng chính (Main thread)`,
+    `Hàm suspend chỉ có thể gọi từ trong coroutine (runBlocking, launch, suspend function khác), không gọi được từ hàm thường như main`
+  ],
+  answer: 3,
+  explain: `**Đáp án đúng: Hàm suspend chỉ có thể gọi từ trong coroutine (runBlocking, launch, suspend function khác), không gọi được từ hàm thường như main.**
+
+### Cơ chế
+- {{suspend fun}} là hàm có thể "treo" (suspend) tại các điểm như {{delay()}}, rồi tiếp tục sau. Nó chỉ an toàn khi chạy bên trong coroutine.
+- Hàm thông thường (không suspend) như {{main}} ở trên không gọi trực tiếp được {{layDuLieu()}} → lỗi biên dịch.
+- Cách sửa: đổi {{main}} thành {{suspend fun main()}} và chạy trong {{runBlocking}}, hoặc gọi {{layDuLieu()}} bên trong {{runBlocking}} hoặc {{launch}}.
+- Không bắt buộc phải chạy trên luồng chính (Main thread); coroutine có thể chạy trên dispatcher khác (Default, IO…).
+
+### Vì sao các phương án sai
+- **Hàm suspend có thể gọi ở bất kỳ đâu như hàm thường**: sai, hàm suspend chỉ gọi được trong ngữ cảnh coroutine.
+- **Chỉ coroutine sử dụng launch mới được gọi hàm suspend**: sai, {{runBlocking}}, {{async}}, và hàm suspend khác cũng gọi được.
+- **Hàm suspend phải chạy trên luồng chính (Main thread)**: sai, Main thread là khái niệm Android; backend có thể dùng {{Dispatchers.Default}} hay {{Dispatchers.IO}}.
+
+> Senior tip: khi cần gọi hàm suspend từ code không phải coroutine (ví dụ main cũ), hãy dùng {{runBlocking}} để khởi tạo coroutine và chờ kết quả. Tránh {{runBlocking}} bên trong ứng dụng web đã có coroutine vì nó chặn luồng.`
+}
+)
