@@ -3850,5 +3850,131 @@ Lỗi hay gặp:
   ],
   related: ['jvm-003', 'jvm-005', 'jvm-007'],
   tags: ['class loader', 'parent delegation', 'metaspace', 'classloader leak', 'ThreadLocal', 'redeploy', 'WebappClassLoader'],
-}
+},
+
+{
+  id: 'lesson-jvm-011',
+  track: 'jvm',
+  order: 11,
+  title: 'Đọc thread dump: deadlock và lock bị chờ nhiều nhất',
+  level: 'senior',
+  minutes: 30,
+  goals: ['Hiểu thread dump', 'Nhận diện deadlock', 'Đếm BLOCKED theo lock', 'Phân biệt contention'],
+  body: `**Tóm tắt:** Thread dump là bản chụp trạng thái mọi thread. Deadlock xuất hiện với dòng Found one Java-level deadlock. Lock contention không phải deadlock nhưng gây chậm.
+
+### 1) Thread dump là gì
+- Bản chụp trạng thái tất cả thread tại một thời điểm.
+- Lấy bằng jstack <pid> hoặc jcmd <pid> Thread.print.
+
+### 2) Deadlock
+Thread A giữ L1 chờ L2, thread B giữ L2 chờ L1 → treo mãi. JVM phát hiện và in Found one Java-level deadlock.
+
+### 3) Lock contention
+Nhiều thread BLOCKED trên cùng monitor → throughput giảm. Đếm số thread chờ mỗi lock id.
+
+### 4) Ví dụ đời thực
+Dịch vụ thanh toán treo: nhiều thread Tomcat BLOCKED trên lock OrderService; thread giữ lock gọi DB query chậm. Sửa giảm phạm vi synchronized.
+
+### 5) Trả lời mẫu khi phỏng vấn
+Khi hệ thống có dấu hiệu treo, tôi lấy thread dump ngay lúc đang xảy ra bằng jcmd <pid> Thread.print (hoặc jstack <pid>). Đầu tiên quét tìm dòng "Found one Java-level deadlock"; nếu có, JVM đã chỉ ra thread và lock id (<0x...>) tham gia, tôi phá chu kỳ khóa — thường là sắp xếp thứ tự lấy lock hoặc giảm phạm vi synchronized. Nếu không có deadlock, tôi nhóm theo lock id, đếm số thread BLOCKED chờ cùng một monitor: lock có nhiều BLOCKED nhất là điểm nghẽn. Tôi lấy 2–3 dump cách nhau 5–10 giây; stack không đổi qua mọi dump = thread treo thực sự, stack đổi = chỉ chờ tạm thời. Cuối cùng xem thread đang "locked" lock đó gọi SQL/API gì, rồi xử lý query chậm hoặc dùng concurrent collection.
+
+### 6) Chi tiết phân tích
+Khi đọc thread dump, trước tiên tìm dòng "Found one Java-level deadlock". Nếu có, JVM đã liệt kê đầy đủ thread và lock liên quan. Nếu không, cần phân tích contention: đếm số thread BLOCKED trên cùng lock id. Lock id có dạng <0x...>. Thread giữ lock được ghi "locked" trong stack. So sánh nhiều dump cách nhau vài giây để xem thread có tiến triển không. Nếu stack giống nhau qua nhiều dump → thread bị treo thực sự (deadlock hoặc lock lâu). Nếu stack thay đổi → đang chờ tạm thời.
+
+### 7) Lỗi hay gặp
+- Nhầm contention với deadlock và kill process vô ích.
+- Chỉ nhìn deadlock section, bỏ qua contention.
+- Không lấy dump đúng lúc sự cố.
+
+### 8) Trade-off và phòng ngừa
+- Giảm scope synchronized, dùng concurrent collections, thêm timeout cho lock.
+- Tránh nested lock; nếu cần nhiều lock, acquire theo thứ tự cố định (lock ordering).
+- Monitor số thread BLOCKED và latency lock.
+
+### 9) Mở rộng: kinh nghiệm thực chiến
+Khi production treo, hãy lấy 2–3 thread dump cách nhau 5–10 giây (jcmd <pid> Thread.print hoặc jstack <pid>) và đối chiếu stack trace: thread có stack giống hệt qua mọi dump là bị treo thực sự (deadlock hoặc giữ lock lâu), stack thay đổi là chỉ chờ tạm thời. Xem deadlock section trước; nếu trống, nhóm theo lock id (<0x...>) và đếm số thread BLOCKED trên mỗi lock — lock nhiều BLOCKED nhất là điểm nóng. Thread ở WAITING/TIMED_WAITING (Object.wait, Thread.sleep, LockSupport.park) không giữ monitor nên không trực tiếp gây contention, nhưng có thể là caller đang chờ kết quả. Nếu nghi ngờ deadlock mà JVM không in, hãy theo stacks: thread "locked <0x...>" và thread "waiting to lock <0x...>" rồi tìm chu trình theo cách tay.
+
+> Senior tip: Lấy 2-3 dump cách 5-10 giây để xác nhận treo thực sự.`,
+  exercises: [
+    {
+      title: 'Đếm thread BLOCKED trên từng lock',
+      prompt: 'Viết hàm countBlockedByLock parse dump và đếm waiting to lock theo lock id.',
+      starter: 'import java.util.*;\npublic class LockCounter {\n    public static Map<String,Integer> countBlockedByLock(String dump) {\n        throw new UnsupportedOperationException("TODO");\n    }\n}',
+      tests: 'import java.util.*;\npublic class Main {\n    public static void main(String[] args) {\n        String d1 = "a waiting to lock <0xabc>\\nb waiting to lock <0xabc>\\nc waiting to lock <0xdef>";\n        Map<String,Integer> r1 = LockCounter.countBlockedByLock(d1);\n        if (r1.get("<0xabc>")==2) System.out.println("PASS count-abc"); else System.out.println("FAIL count-abc: " + r1);\n        if (r1.get("<0xdef>")==1) System.out.println("PASS count-def"); else System.out.println("FAIL count-def: " + r1);\n        Map<String,Integer> r2 = LockCounter.countBlockedByLock("");\n        if (r2.isEmpty()) System.out.println("PASS empty"); else System.out.println("FAIL empty: " + r2);\n        System.out.println("RESULT " + (r1.get("<0xabc>")==2 && r1.get("<0xdef>")==1 && r2.isEmpty() ? 3 : 0) + "/3");\n    }\n}',
+      reference: 'import java.util.*;\npublic class LockCounter {\n    public static Map<String,Integer> countBlockedByLock(String dump) {\n        Map<String,Integer> m = new HashMap<>();\n        if (dump == null) return m;\n        for (String line : dump.split("\\n")) {\n            int i = line.indexOf("waiting to lock");\n            if (i < 0) continue;\n            int s = line.indexOf(\'<\', i);\n            int e = line.indexOf(\'>\', s);\n            if (s < 0 || e < 0) continue;\n            String lock = line.substring(s, e+1);\n            m.put(lock, m.getOrDefault(lock,0)+1);\n        }\n        return m;\n    }\n}',
+      hints: ['Tìm waiting to lock rồi trích giữa < và >.'],
+      explain: 'Duyệt từng dòng, trích lock id, đếm bằng HashMap.',
+    },
+  ],
+  check: [
+    { q: 'Deadlock cấp Java được JVM báo thế nào?', options: ['OutOfMemoryError', 'Found one Java-level deadlock', 'StackOverflowError', 'Thread death'], answer: 1, explain: 'JVM in rõ Found one Java-level deadlock.' },
+    { q: 'Trạng thái thread chờ synchronized lock?', options: ['RUNNABLE', 'BLOCKED', 'WAITING', 'TIMED_WAITING'], answer: 1, explain: 'BLOCKED.' },
+  ],
+  related: ['jvm-003'],
+  tags: ['thread dump', 'deadlock', 'lock contention', 'jstack'],
+},
+
+{
+  id: 'lesson-jvm-012',
+  track: 'jvm',
+  order: 12,
+  title: 'Memory leak điển hình: cache static không giới hạn và sửa bằng LRU',
+  level: 'senior',
+  minutes: 30,
+  goals: ['Nhận diện leak do static Map', 'Hiểu GC không thu gom', 'Sửa bằng giới hạn + LRU', 'Đo kích thước cache'],
+  body: `**Tóm tắt:** Memory leak Java thường là giữ tham chiếu không cần thiết nên GC không thu gom. Ví dụ static Map cache không giới hạn → OOM. Sửa bằng cache có giới hạn và LRU eviction.
+
+### 1) Memory leak trong Java
+GC chỉ thu gom object không reachable. Giữ tham chiếu (static field, collection, listener) → object sống mãi.
+
+### 2) Cache static không giới hạn
+Mỗi entry mới không bao giờ xóa → heap đầy → OOM. Static field là GC root.
+
+### 3) Phát hiện
+Heap dump retained size; metric cache size tăng không ngừng; OOM Java heap space.
+
+### 4) Sửa: giới hạn + LRU
+Dùng LinkedHashMap accessOrder=true và remove eldest; hoặc Caffeine maximumSize + TTL.
+
+### 5) Ví dụ đời thực
+Cache in-memory không giới hạn → heap lớn, full GC diễn ra liên tục và lâu. Chuyển sang Caffeine có maximumSize và TTL → heap ổn định ở mức thấp, full GC biến mất.
+
+### 6) Chi tiết và phòng ngừa
+- Luôn đặt maximumSize ngay từ đầu.
+- Gắn metric kích thước cache và alert khi tăng không ngừng.
+- Dùng TTL để entry cũ tự hết hạn.
+- Tránh cache key chứa object lớn; theo dõi retained size qua heap dump.
+- So sánh cache size với traffic để phát hiện leak sớm.
+
+### 7) Lỗi hay gặp
+- Dùng HashMap làm cache rồi tự xóa thủ công.
+- Cache key chứa object lớn → retained size lớn.
+- Không đo kích thước cache.
+
+### 8) Trả lời mẫu khi phỏng vấn
+Memory leak Java thường không phải do "quên new", mà do giữ tham chiếu không cần thiết — ví dụ static Map làm cache không giới hạn: static field là GC root nên mỗi entry mới sống mãi, heap tăng dần, full GC thường xuyên, rồi OOM. Tôi phát hiện bằng heap dump (xem retained size trong MAT) và metric cache size tăng không ngừng. Cách sửa là giới hạn cache (maximumSize) với chính sách loại LRU, kèm TTL để entry cũ tự hết hạn; trên production tôi dùng Caffeine thay vì tự viết LinkedHashMap. Trong phỏng vấn tôi nhấn mạnh: trước khi cho là heap không đủ, hãy kiểm tra live set sau full GC — nếu vẫn tăng đều qua các lần dọn, đó là leak, không phải thiếu RAM.
+
+### 9) Mở rộng: kinh nghiệm thực chiến
+Trên production thật, hãy đặt maximumSize ngay từ đầu thay để cache tăng tự do, và gắn metric cache size (số entry, hit/miss) với alert khi kích thước tăng không ngừng theo thời gian — đó là dấu hiệu leak sớm nhất. Dùng TTL (expireAfterWrite/expireAfterAccess) để entry cũ tự hết hạn dù vẫn được truy cập. Tránh dùng object lớn làm key (retained size tính cả đồ thị object giữ bởi key) và so sánh cache size với traffic: cache tăng nhanh hơn traffic là dấu hiệu đáng nghi ngờ. Caffeine là lựa chọn mặc định hiện nay (near-eviction, không khóa toàn bộ cache khi evict), LinkedHashMap chỉ nên tự viết khi không thể thêm thư viện.
+
+> Senior tip: Gắn metric kích thước cache và alert khi tăng không ngừng.`,
+  exercises: [
+    {
+      title: 'Cache LRU giới hạn kích thước',
+      prompt: 'Viết BoundedCache với get, put, capacity, evict LRU.',
+      starter: 'import java.util.*;\npublic class BoundedCache<K,V> {\n    private final int cap;\n    private final LinkedHashMap<K,V> map;\n    public BoundedCache(int cap) { this.cap = cap; this.map = new LinkedHashMap<>(16,0.75f,true); }\n    public V get(K k) { throw new UnsupportedOperationException("TODO"); }\n    public void put(K k, V v) { throw new UnsupportedOperationException("TODO"); }\n    public int size() { return map.size(); }\n}',
+      tests: 'import java.util.*;\npublic class Main {\n    public static void main(String[] args) {\n        BoundedCache<Integer,Integer> c = new BoundedCache<>(2);\n        c.put(1,10); c.put(2,20); c.get(1); c.put(3,30);\n        if (c.size()==2) System.out.println("PASS size"); else System.out.println("FAIL size: " + c.size());\n        if (c.get(2)==null) System.out.println("PASS evicted"); else System.out.println("FAIL evicted: " + c.get(2));\n        if (c.get(1)==10) System.out.println("PASS retained"); else System.out.println("FAIL retained: " + c.get(1));\n        System.out.println("RESULT " + (c.size()==2 && c.get(2)==null && c.get(1)==10 ? 3 : 0) + "/3");\n    }\n}',
+      reference: 'import java.util.*;\npublic class BoundedCache<K,V> {\n    private final int cap;\n    private final LinkedHashMap<K,V> map;\n    public BoundedCache(int cap) { this.cap = cap; this.map = new LinkedHashMap<>(16,0.75f,true); }\n    public V get(K k) { return map.get(k); }\n    public void put(K k, V v) {\n        map.put(k,v);\n        if (map.size() > cap) {\n            Iterator<K> it = map.keySet().iterator();\n            it.next(); it.remove();\n        }\n    }\n    public int size() { return map.size(); }\n}',
+      hints: ['LinkedHashMap accessOrder=true.'],
+      explain: 'accessOrder=true giữ thứ tự truy cập; evict key đầu khi vượt capacity.',
+    },
+  ],
+  check: [
+    { q: 'Vì sao static Map cache gây leak?', options: ['GC không chạy', 'static field là GC root', 'HashMap chậm', 'key là String'], answer: 1, explain: 'Static field là root.' },
+    { q: 'LRU eviction loại bỏ entry nào?', options: ['Mới nhất', 'Ít dùng gần đây nhất', 'Lớn nhất', 'Ngẫu nhiên'], answer: 1, explain: 'LRU.' },
+  ],
+  related: ['jvm-004'],
+  tags: ['memory leak', 'cache', 'LRU', 'OOM'],
+},
+
 );

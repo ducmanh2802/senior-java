@@ -2892,6 +2892,8 @@ window.DATA_INDEX = {
     {"id":"lesson-jvm-008","track":"jvm","order":8,"title":"GC thế hệ thu nhỏ: eden, survivor, tuổi object và premature promotion","level":"senior","minutes":35},
     {"id":"lesson-jvm-009","track":"jvm","order":9,"title":"Heap, Stack, Metaspace và các loại OutOfMemoryError: Cách chẩn đoán từ log","level":"senior","minutes":40},
     {"id":"lesson-jvm-010","track":"jvm","order":10,"title":"Class loader hierarchy, parent delegation, metaspace và leak khi redeploy","level":"senior","minutes":40},
+    {"id":"lesson-jvm-011","track":"jvm","order":11,"title":"Đọc thread dump: deadlock và lock bị chờ nhiều nhất","level":"senior","minutes":30},
+    {"id":"lesson-jvm-012","track":"jvm","order":12,"title":"Memory leak điển hình: cache static không giới hạn và sửa bằng LRU","level":"senior","minutes":30},
     {"id":"lesson-sql-001","track":"sql","order":1,"title":"Join từ bên trong: nested loop, hash join, merge join và đếm phép so sánh","level":"senior","minutes":30},
     {"id":"lesson-sql-002","track":"sql","order":2,"title":"Offset và keyset pagination: vì sao trang càng xa càng chậm","level":"senior","minutes":25},
     {"id":"lesson-sql-003","track":"sql","order":3,"title":"Window function: ROW_NUMBER, RANK và running total, tự cài bằng Java","level":"senior","minutes":30},
