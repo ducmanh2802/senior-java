@@ -1795,4 +1795,1496 @@ Mặt khác của bài tập: DynamoDB **không** có transaction ở đây, kh�
   related: ['aws-005', 'aws-006', 'aws-011'],
   tags: ['DynamoDB', 'partition key', 'sort key', 'Query vs Scan', 'RCU/WCU', 'conditional write', 'optimistic locking', 'GSI', 'sparse GSI', 'TTL', 'Streams'],
 },
+{
+  id: 'lesson-aws-007',
+  track: 'aws',
+  order: 7,
+  title: 'SQS tiêu chuẩn: vòng đời message, consumer idempotent và gia hạn lease cho job dài',
+  level: 'senior',
+  minutes: 45,
+  goals: [
+    'Giải thích tại sao SQS standard là at-least-once và consumer phải idempotent',
+    'Thiết lập visibility timeout theo p99 thời gian xử lý, dùng ChangeMessageVisibility cho job dài',
+    'Xử lý message độc bằng DLQ, maxReceiveCount và alarm trên DLQ',
+    'Chọn standard hay FIFO; gán MessageGroupId theo đơn vị cần thứ tự (mã khách hàng, mã đơn)',
+  ],
+  body: `### Tóm tắt
+SQS standard giao mỗi message **ít nhất một lần**: nếu mạng rớt hoặc worker sập giữa chừng, message sẽ được giao lại, thậm chí có thể nhận hai lần. Consumer phải dựa vào **receipt handle** của lần nhận, đặt **visibility timeout** dài hơn thời gian xử lý thực (theo p99), dùng **ChangeMessageVisibility** để gia hạn khi job kéo dài, và phải **idempotent** — mã đơn/event id plus bảng đã xử lý — để nhận lại message không làm hỏng dữ liệu. Message lỗi lặp lại vượt {{maxReceiveCount}} bị chuyển sang **DLQ (dead-letter queue)**.
+
+### Tại sao SQS chọn "thà giao trùng còn hơn mất"
+Khi worker gọi DeleteMessage, gói tin xác nhận có thể mất trên đường về SQS. SQS không biết worker đã xử lý xong hay chưa, nên lựa chọn an toàn là **giao lại message** sau khi visibility timeout hết hạn, thay vì mất message. Hệ quả: cùng một message có thể được giao hai lần (hoặc hơn), và thứ tự giao chỉ đảm bảo khi dùng FIFO. Bản chất: SQS ưu tiên **không mất message** hơn **không giao trùng message** — người nhận phải chịu được trùng, đó là lý do consumer phải idempotent.
+
+### Vòng đời một message SQS
+~~~text
+Gửi message   Nhận (ẩn trong visibility timeout)   Xoá / hết hạn
+[Producer] --m1-> [SQS VISIBLE] --ReceiveMessage--> [Consumer IN-FLIGHT] --DeleteMessage--> [m1 mất]
+                                                             |                   ^
+                                                             |                   | hết timeout, chưa xóa
+                                                             v                   |
+                                                      [m1 quay lại VISIBLE] --+
+                                                             ReceiveCount + 1
+~~~
+1. Producer gửi message, trạng thái **VISIBLE**.
+2. Consumer gọi ReceiveMessage, nhận tối đa 10 message; mỗi message kèm **receipt handle** (mã tham chiếu đúng lần nhận này).
+3. Message trở nên **IN-FLIGHT**: ẩn khỏi consumer khác trong **visibility timeout** (mặc định 30 giây, tối đa 12 giờ).
+4. Xử lý xong → gọi DeleteMessage với receipt handle → message mất vĩnh viễn.
+5. Nếu worker sập chưa xử lý xong hoặc xử lý quá dài → hết timeout → message hiện lại VISIBLE, **ReceiveCount tăng 1**, có thể được giao cho consumer khác.
+6. ReceiveCount vượt {{maxReceiveCount}} → SQS chuyển message sang **DLQ**.
+
+### Receipt handle gắn với "lần nhận", không với message
+Mỗi lần ReceiveMessage sinh handle mới (ví dụ {{m1#1}}, {{m1#2}}…). Handle cũ bị SQS từ chối. Lý do: consumer A nhận m1, xử lý lâu, hết timeout; consumer B nhận m1 nữa; nếu handle cũ của A vẫn xóa được thì A có thể xóa message trong khi B đang xử lý → mất dữ liệu. Mỗi handle chỉ dùng đúng cho lần nhận đó.
+
+### Đặt visibility timeout thế nào, khi nào gia hạn
+Thiết lập lớn hơn thời gian xử lý thực (p99) cộng thêm đệm. Ví dụ worker gửi email p99 70 giây → đặt timeout 90 giây.
+- Quá ngắn: message hiện lại trong khi worker đang xử lý → xử lý trùng, receiveCount tăng nhanh, đủ lượt thì vào DLQ dù không lỗi gì.
+- Quá dài: message độc (poison message) bị ẩn quá lâu, consumer khác chờ lâu trước khi mất hy vọng.
+
+Job dài (encode video, gọi API ngoài nhiều phút): đừng đặt timeout 12 giờ cho tất cả. Gọi **ChangeMessageVisibility** định kỳ (heartbeat) để gia hạn thêm, ví dụ mỗi 2 phút gia hạn 5 phút; xử lý xong gọi DeleteMessage. Muốn trả message ngay cho consumer khác, gọi ChangeMessageVisibility với timeout 0.
+
+### Consumer phải idempotent: nhận hai lần như nhận một lần
+Vì SQS có thể giao lại message, xử lý của bạn phải an toàn khi chạy nhiều lần với cùng đầu vào:
+- Mỗi message mang **mã nghiệp vụ** (orderId, eventId…).
+- Trong **cùng một giao dịch database**, kiểm tra bảng {{processed_events}} (có unique constraint trên mã nghiệp vụ): nhập trùng → đã xử lý trước đó → bỏ qua, chỉ gọi DeleteMessage.
+- Hoặc thao tác tự nhiên idempotent: {{UPDATE orders SET status = 'PAID' WHERE id = ? AND status = 'PENDING'}} — cập nhật 0 dòng nghĩa là đơn đã được xử lý rồi.
+- Side effect bên ngoài (gửi email, gọi cổng thanh toán): truyền **idempotency key** cho bên kia nếu họ hỗ trợ.
+
+~~~java
+String orderId = message.body();                         // mã nghiệp vụ từ message
+boolean moi = db.insertProcessedEvent(orderId);          // unique constraint, trả false nếu đã có
+if (!moi) {                                              // nhận trùng: chỉ xóa message, không xử lý lại
+    sqs.deleteMessage(handle);
+    return;
+}
+emailGuiXacNhanDon(orderId);                             // xử lý nghiệp vụ
+sqs.deleteMessage(handle);                               // xóa SAU KHI xử lý xong
+~~~
+Lưu ý: gọi DeleteMessage **sau khi** nghiệp vụ thành công. Nếu sập giữa hai bước, message hiện lại và được xử lý lại — nhưng insert processed_events lần thứ hai bị từ chối, nên vẫn an toàn.
+
+### DLQ và message độc
+Message "độc" (poison message): JSON hỏng, dữ liệu vi phạm ràng buộc, gọi API đối tác lỗi mãi. Nó sẽ fail mãi, được giao lại liên tục, tốn tiền và làm che khuất message tốt. **Redrive policy** gắn queue nguồn với DLQ: ReceiveCount vượt {{maxReceiveCount}} → chuyển sang DLQ.
+- {{maxReceiveCount}} 3–5 là phổ biến; đừng đặt 1 (lỗi mạng tạm thời cũng đưa message vào DLQ).
+- Đặt alarm trên số message của DLQ (ApproximateNumberOfMessagesVisible > 0). DLQ không ai nhìn thì dữ liệu chết lặng lẽ.
+- Retention DLQ nên dài hơn queue nguồn: với standard queue, tuổi message tính từ lúc gửi ban đầu, không reset khi chuyển sang DLQ.
+- Sửa lỗi xong dùng **DLQ redrive** để đẩy message trở lại queue nguồn.
+
+### Standard vs FIFO
+| Tiêu chí | Standard | FIFO |
+|---|---|---|
+| Thứ tự | Best-effort, không đảm bảo | Đảm bảo trong cùng MessageGroupId |
+| Giao trùng | Có thể (at-least-once) | Có thể sau crash consumer (dedup chỉ 5 phút phía gửi) |
+| Throughput | Rất cao | Thấp hơn (~300 API call/giây chế độ thường) |
+| Message độc | Vào DLQ, không chặn hàng khác | Chặn cả group đến khi xử lý xong hoặc vào DLQ |
+
+Chọn FIFO khi cần thứ tự theo một đơn vị (mã khách hàng, mã đơn) và gán {{MessageGroupId}} theo đơn vị đó — **không** dùng một group id cho mọi message, nếu không toàn bộ queue chạy tuần tự. Consumer FIFO vẫn phải idempotent.
+
+### Ví dụ đời thực
+Hệ thống đặt hàng của một công ty bán lẻ: service order gửi {{OrderPlaced}} vào SQS standard, worker email xử lý tại mức 50.000 message/giờ. Giai đoạn cao điểm, khách kháng nghị nhận **hai email xác nhận cùng một đơn**. Điều tra thấy: worker gọi API email bên ngoài p99 50 giây, visibility timeout của queue để mặc định 30 giây → SQS giao lại message trong khi worker đang chờ API → email gửi hai lần; một số message lỗi mãi vào DLQ nhưng team không đặt alarm nên không ai biết.
+Sửa: đặt visibility timeout 90 giây (> p99 75s có đệm), worker gọi ChangeMessageVisibility để gia hạn nếu API đang chậm, thêm bảng {{processed_events}} deduplicate theo {{orderId}} trong cùng giao dịch, đặt alarm DLQ. Kết quả: email trùng giảm xuống 0, DLQ bắt được 12 message/ngày từ một producer legacy gửi JSON hỏng, sau khi sửa producer thì DLQ về 0.
+
+### Trả lời mẫu khi phỏng vấn
+"SQS standard đảm bảo at-least-once: message có thể được giao nhiều lần khi mạng lỗi hoặc worker crash trước khi delete. Tôi sẽ thiết kế consumer idempotent — mỗi message mang orderId, tôi kiểm tra bảng processed_events với unique constraint trong cùng giao dịch trước khi ghi đơn, trùng thì bỏ qua và delete message. Visibility timeout đặt lớn hơn p99 thời gian xử lý, và dùng ChangeMessageVisibility để gia hạn cho job dài thay vì đặt timeout cố định lớn. Message lỗi lặp lại vượt maxReceiveCount (thường để 3–5) chuyển sang DLQ, kèm alarm để xử lý sớm. Nếu cần thứ tự theo từng khách hàng, tôi dùng FIFO với MessageGroupId là mã khách hàng."
+
+> Senior tip: Đặt alarm cho tuổi message của queue nguồn (ApproximateAgeOfOldestMessage), không chỉ dài lượng queue. Tuổi message tăng đều là dấu hiệu consumer chậm hoặc có poison message đang bị retry, thường thấy trước khi khách hàng kêu.
+
+### Liên hệ phỏng vấn
+Câu hay gặp:
+- "Visibility timeout đặt bao nhiêu là hợp lý?" → lớn hơn p99 xử lý thêm đệm; job dài dùng ChangeMessageVisibility.
+- "Message bị xử lý hai lần, xử lý ra sao?" → consumer idempotent, mã nghiệp vụ + bảng đã xử lý.
+- "Lambda đọc SQS batch 10, 1 message lỗi thì sao?" → mặc định cả batch quay lại; bật partial batch response (ReportBatchItemFailures) và handler idempotent (aws-028).
+- "Standard hay FIFO?" → FIFO nếu cần thứ tự theo khách hàng/đơn, chấp nhận throughput thấp hơn và chọn group id cẩn thận (aws-008).
+- "DLQ và maxReceiveCount?" → 3–5, alarm trên DLQ, retention dài hơn, redrive sau khi sửa.
+  `,
+  exercises: [
+    {
+      title: 'Mô phỏng consumer SQS: nhận message, gia hạn lease, xử lý idempotent và DLQ',
+      prompt: `Mô phỏng một consumer SQS standard trong bộ nhớ. Thời gian lấy từ **đồng hồ giả** (mili giây), nên test không cần sleep.
+
+Đã có sẵn: record {{Received}} và lớp {{SqsQueue}} với constructor, {{send}} (id dạng {{m1}}, {{m2}}…), {{size}}, {{dlqSize}}. Bạn cài:
+
+1. {{receive(max)}}: duyệt message theo thứ tự gửi, lấy tối đa {{max}} message **đang visible** ({{visibleAt <= now}}). Với mỗi message:
+   ▸ nếu {{receiveCount >= maxReceiveCount}}: xoá khỏi queue chính, thêm vào DLQ (giữ nguyên id, body), **không** trả về, không tính vào {{max}};
+   ▸ ngược lại: {{receiveCount++}}, {{visibleAt = now + visibilityMs}}, receipt handle mới = {{id + "#" + receiveCount}}, thêm vào kết quả.
+2. {{receiveDlq(max)}}: cùng như {{receive}} nhưng hoạt động trên DLQ (không chuyển tiếp DLQ nữa).
+3. {{heartbeat(handle, extraMs)}}: với message có handle **hiện tại**, gia hạn {{visibleAt = now + extraMs}}, trả về true; handle cũ hoặc không tồn tại trả về false.
+4. {{process(handle)}}: consumer đã xử lý xong message. Nếu body (mã đơn/event id) đã nằm trong tập đã xử lý → **bỏ qua**: xoá message, trả về false (idempotent). Ngược lại: thêm body vào tập đã xử lý, xoá message, trả về true.
+5. {{delete(handle)}}: xoá message có handle hiện tại, trả về true; handle cũ/không tồn tại trả về false.`,
+
+      starter: `record Received(String messageId, String body, String receiptHandle, int receiveCount) {}
+
+class SqsQueue {
+    private static final class Msg {
+        final String id, body;
+        int receiveCount;
+        long visibleAt;
+        String handle;
+        Msg(String id, String body) { this.id = id; this.body = body; }
+    }
+
+    private final LongSupplier clock;
+    private final long visibilityMs;
+    private final int maxReceiveCount;
+    private final List<Msg> messages = new ArrayList<>();
+    private final List<Msg> dlq = new ArrayList<>();
+    private final Set<String> processed = new HashSet<>();
+    private int seq = 0;
+
+    SqsQueue(LongSupplier clock, long visibilityMs, int maxReceiveCount) {
+        this.clock = clock;
+        this.visibilityMs = visibilityMs;
+        this.maxReceiveCount = maxReceiveCount;
+    }
+
+    String send(String body) {
+        String id = "m" + (++seq);
+        messages.add(new Msg(id, body));
+        return id;
+    }
+
+    int size() { return messages.size(); }
+    int dlqSize() { return dlq.size(); }
+
+    List<Received> receive(int max) {
+        throw new UnsupportedOperationException("TODO");
+    }
+
+    List<Received> receiveDlq(int max) {
+        throw new UnsupportedOperationException("TODO");
+    }
+
+    boolean heartbeat(String handle, long extraMs) {
+        throw new UnsupportedOperationException("TODO");
+    }
+
+    boolean process(String handle) {
+        throw new UnsupportedOperationException("TODO");
+    }
+
+    boolean delete(String handle) {
+        throw new UnsupportedOperationException("TODO");
+    }
+}`,
+
+      tests: `public class Main {
+    static int passed = 0, total = 0;
+    static void eq(String name, Object expected, Supplier<Object> actual) {
+        total++;
+        try {
+            Object got = actual.get();
+            if (Objects.equals(expected, got)) { passed++; System.out.println("PASS " + name); }
+            else System.out.println("FAIL " + name + ": mong đợi " + expected + ", nhận " + got);
+        } catch (RuntimeException e) {
+            System.out.println("FAIL " + name + ": ném " + e);
+        }
+    }
+    static String ids(List<Received> rs) {
+        return rs.stream().map(r -> r.messageId() + ":" + r.receiveCount()).collect(Collectors.joining(","));
+    }
+    public static void main(String[] args) {
+        long[] now = { 0 };
+        LongSupplier clock = () -> now[0];
+
+        // 1. nhận, ẩn trong visibility timeout, hết hạn thì giao lại
+        SqsQueue q = new SqsQueue(clock, 30_000, 5);
+        q.send("order-1"); q.send("order-2"); q.send("order-3");
+        eq("nhận đúng số lượng tối đa", "m1:1,m2:1", () -> ids(q.receive(2)));
+        eq("đang trong timeout bị ẩn khỏi consumer khác", "m3:1", () -> ids(q.receive(10)));
+        eq("chưa hết giờ không có message nào hiện", "", () -> { now[0] = 29_999; return ids(q.receive(10)); });
+        eq("hết timeout giao lại với receiveCount 2", "m1:2,m2:2,m3:2", () -> { now[0] = 30_000; return ids(q.receive(10)); });
+
+        // 2. receipt handle cũ bị từ chối
+        eq("xoá handle cũ không thành công", false, () -> q.delete("m1#1"));
+        eq("xoá handle hiện tại thành công", true, () -> q.delete("m1#2") && q.size() == 2);
+        eq("handle không tồn tại", false, () -> q.delete("m9#1"));
+
+        // 3. heartbeat gia hạn lease cho job dài
+        long[] t2 = { 0 };
+        SqsQueue w = new SqsQueue(() -> t2[0], 5_000, 5);
+        w.send("job-xử-ly-dài");
+        String h = w.receive(1).get(0).receiptHandle();
+        eq("gia hạn handle hiện tại", true, () -> { t2[0] = 2_000; return w.heartbeat(h, 10_000); });
+        eq("vẫn ẩn sau timeout cũ", 0, () -> { t2[0] = 6_000; return w.receive(1).size(); });
+        eq("hiện lại sau timeout mới", "m1:2", () -> { t2[0] = 13_000; return ids(w.receive(1)); });
+        eq("heartbeat với handle cũ bị từ chối", false, () -> w.heartbeat("m1#1", 1_000));
+        eq("timeout 0 giải phóng ngay", "m1:3", () -> { w.heartbeat("m1#2", 0); return ids(w.receive(1)); });
+
+        // 4. idempotent: hai message cùng mã đơn
+        long[] t3 = { 0 };
+        SqsQueue idem = new SqsQueue(() -> t3[0], 1_000, 5);
+        idem.send("order-42"); idem.send("order-42");
+        List<Received> batch = idem.receive(10);
+        eq("nhận hai message trùng mã đơn", "m1:1,m2:1", () -> ids(batch));
+        eq("xử lý message đầu tiên", true, () -> idem.process(batch.get(0).receiptHandle()));
+        eq("message trùng mã đơn bị bỏ qua", false, () -> idem.process(batch.get(1).receiptHandle()));
+        eq("queue rỗng sau xử lý", 0, () -> idem.size());
+        eq("xoá handle đã xử lý lại lần nữa", false, () -> idem.delete(batch.get(0).receiptHandle()));
+
+        // 5. poison message vào DLQ
+        long[] t4 = { 0 };
+        SqsQueue poison = new SqsQueue(() -> t4[0], 1_000, 2);
+        poison.send("độc-hỏng");
+        poison.receive(1);
+        t4[0] = 1_000;
+        poison.receive(1);
+        t4[0] = 2_000;
+        List<Received> lan3 = poison.receive(10);
+        eq("lượt nhận vượt maxReceiveCount không trả về", "", () -> ids(lan3));
+        eq("queue chính rỗng", 0, () -> poison.size());
+        eq("DLQ có đúng 1 message", 1, () -> poison.dlqSize());
+        eq("DLQ giữ id và body gốc", "m1/độc-hỏng", () -> {
+            Received r = poison.receiveDlq(1).get(0);
+            return r.messageId() + "/" + r.body();
+        });
+
+        System.out.println("RESULT " + passed + "/" + total);
+    }
+}`,
+
+      reference: `record Received(String messageId, String body, String receiptHandle, int receiveCount) {}
+
+class SqsQueue {
+    private static final class Msg {
+        final String id, body;
+        int receiveCount;
+        long visibleAt;
+        String handle;
+        Msg(String id, String body) { this.id = id; this.body = body; }
+    }
+
+    private final LongSupplier clock;
+    private final long visibilityMs;
+    private final int maxReceiveCount;
+    private final List<Msg> messages = new ArrayList<>();
+    private final List<Msg> dlq = new ArrayList<>();
+    private final Set<String> processed = new HashSet<>();
+    private int seq = 0;
+
+    SqsQueue(LongSupplier clock, long visibilityMs, int maxReceiveCount) {
+        this.clock = clock;
+        this.visibilityMs = visibilityMs;
+        this.maxReceiveCount = maxReceiveCount;
+    }
+
+    String send(String body) {
+        String id = "m" + (++seq);
+        messages.add(new Msg(id, body));
+        return id;
+    }
+
+    int size() { return messages.size(); }
+    int dlqSize() { return dlq.size(); }
+
+    List<Received> receive(int max) {
+        long now = clock.getAsLong();
+        List<Received> out = new ArrayList<>();
+        Iterator<Msg> it = messages.iterator();
+        while (it.hasNext() && out.size() < max) {
+            Msg m = it.next();
+            if (m.visibleAt > now) continue;                       // đang in-flight: bỏ qua
+            if (m.receiveCount >= maxReceiveCount) {               // vượt lượt → DLQ
+                it.remove();
+                dlq.add(m);
+                continue;
+            }
+            m.receiveCount++;
+            m.visibleAt = now + visibilityMs;                      // ẩn trong visibility timeout
+            m.handle = m.id + "#" + m.receiveCount;                // mỗi lần nhận một handle mới
+            out.add(new Received(m.id, m.body, m.handle, m.receiveCount));
+        }
+        return out;
+    }
+
+    List<Received> receiveDlq(int max) {
+        long now = clock.getAsLong();
+        List<Received> out = new ArrayList<>();
+        Iterator<Msg> it = dlq.iterator();
+        while (it.hasNext() && out.size() < max) {
+            Msg m = it.next();
+            if (m.visibleAt > now) continue;
+            m.receiveCount++;
+            m.visibleAt = now + visibilityMs;
+            m.handle = m.id + "#" + m.receiveCount;
+            out.add(new Received(m.id, m.body, m.handle, m.receiveCount));
+        }
+        return out;
+    }
+
+    private Msg byHandle(List<Msg> store, String handle) {
+        for (Msg m : store) if (handle.equals(m.handle)) return m;
+        return null;
+    }
+
+    boolean heartbeat(String handle, long extraMs) {
+        Msg m = byHandle(messages, handle);
+        if (m == null) return false;
+        m.visibleAt = clock.getAsLong() + extraMs;
+        return true;
+    }
+
+    boolean process(String handle) {
+        Msg m = byHandle(messages, handle);
+        if (m == null) return false;
+        if (processed.contains(m.body)) {
+            messages.remove(m);                                    // trùng: chỉ xoá, không xử lý lại
+            return false;
+        }
+        processed.add(m.body);
+        messages.remove(m);
+        return true;
+    }
+
+    boolean delete(String handle) {
+        Msg m = byHandle(messages, handle);
+        return m != null && messages.remove(m);
+    }
+}`,
+
+      hints: [
+        'Dùng {{Iterator}} để vừa duyệt messages vừa xoá khi chuyển message sang DLQ, tránh {{ConcurrentModificationException}}.',
+        'Kiểm tra {{receiveCount >= maxReceiveCount}} **trước** khi tăng: với ngưỡng 2, message được giao 2 lần, lượt thứ 3 mới vào DLQ.',
+        'Heartbeat chỉ nhận handle của **lần nhận gần nhất**; handle cũ bị từ chối — chính là cách SQS tránh consumer cũ xoá message đang được consumer khác xử lý.',
+        'Tập {{processed}} trong {{process}} mô phỏng bảng {{processed_events}} có unique constraint: mã đơn đã xử lý thì nhận lại cũng bỏ qua, chỉ xoá message.',
+      ],
+      explain: `### Cơ chế bạn vừa cài
+- **Visibility timeout là một "lease" mềm**: message không bị khoá cứng, chỉ ẩn tới một thời điểm. Worker sập thì lease hết hạn và message tự hiện lại — SQS chọn **giao lại** thay vì **mất**, đó là tại sao SQS là at-least-once.
+- **Receipt handle gắn với lần nhận**, không với message. Mỗi lần receive sinh handle mới; handle cũ bị từ chối khi delete/heartbeat, ngăn consumer A xoá message đang được consumer B xử lý.
+- **{{process}} mô phỏng consumer idempotent**: tập {{processed}} giống bảng {{processed_events}} có unique constraint — mã đơn đã xử lý thì nhận lại cũng bỏ qua, chỉ xoá message. Ngoài đời bạn chèn mã đơn và ghi đơn trong **cùng một giao dịch** để không mất trùng.
+- **DLQ dựa trên số lần nhận**, không phải số lần "lỗi": SQS không biết message lỗi hay worker chậm, nên visibility timeout quá ngắn cũng đẩy message tốt vào DLQ.
+
+### Lỗi hay gặp
+- Tăng {{receiveCount}} trước rồi mới so với ngưỡng: message vào DLQ sớm một lượt.
+- Heartbeat hoặc delete với handle cũ: test "handle cũ bị từ chối" bắt lỗi này.
+- Dùng for-each rồi xoá trong vòng lặp: ném {{ConcurrentModificationException}}.
+- Về mặt SQS thật còn thiếu: long polling, retention, delay queue, thứ tự không đảm bảo của standard queue, và ReceiveCount chỉ là giá trị xấp xỉ (Approximate).
+    `,
+    },
+  ],
+  check: [
+    {
+      q: 'Consumer xử lý mỗi message mất trung bình 40 giây, p99 là 75 giây; visibility timeout của queue để mặc định 30 giây. Triệu chứng nào sẽ xuất hiện?',
+      options: ['SQS tự xóa message sau 30 giây', 'Message hiện lại khi worker vẫn đang xử lý → xử lý trùng, receiveCount tăng, có thể vào DLQ', 'SQS tự gia hạn timeout theo thời gian xử lý', 'Worker nhận lỗi "VisibilityTimeoutExceeded" khi gọi ReceiveMessage'],
+      answer: 1,
+      explain: `Hết 30 giây, message hiện lại và consumer khác nhận nó trong khi worker đầu vẫn chạy: xử lý trùng, receiveCount tăng nhanh, đủ lượt thì vào DLQ. SQS không tự xóa (chỉ xóa khi consumer gọi DeleteMessage), không tự gia hạn (bạn phải gọi ChangeMessageVisibility hoặc đặt timeout lớn hơn p99), và ReceiveMessage không báo lỗi này.`,
+    },
+    {
+      q: 'Hai worker cùng nhận message đơn #1001 có cùng mã đơn, xử lý xong ghi database. Cách nào đảm bảo đơn không bị xử lý hai lần?',
+      options: ['SQS FIFO tự động chặn trùng nên không cần làm gì', 'Lưu mã đơn vào bảng đã xử lý có ràng buộc duy nhất (unique) trong cùng giao dịch với việc ghi đơn; nhập trùng thì bỏ qua', 'Tăng visibility timeout lên 12 giờ', 'Gửi message đến DLQ sau lần nhận đầu tiên'],
+      answer: 1,
+      explain: `FIFO chỉ deduplicate phía gửi trong 5 phút và không chặn trường hợp consumer nhận rồi crash trước khi delete. Bảng đã xử lý với unique constraint trong cùng giao dịch là cách chuẩn: nhập trùng thì từ chối, bạn bỏ qua và delete message. Timeout dài chỉ che giấu vấn đề; DLQ sau 1 lần là sai vì lỗi tạm thời (mạng, timeout) cũng sẽ vào DLQ.`,
+    },
+    {
+      q: 'maxReceiveCount nên đặt bao nhiêu, và tại sao không nên đặt 1?',
+      options: ['1, để message lỗi vào DLQ sớm nhất', '3–5, để vượt qua lỗi tạm thời (mạng, timeout) trước khi kết luận là message độc', '100, để DLQ gần như không bao giờ nhận message', 'Không quan trọng, SQS tự điều chỉnh'],
+      answer: 1,
+      explain: `Với 1, một lần mạng rớt trong xử lý là message vào DLQ ngay. 3–5 cho message được giao lại vài lần sau lỗi tạm thời; chỉ vào DLQ khi thực sự xử lý không thành công nhiều lần. SQS không tự điều chỉnh maxReceiveCount.`,
+    },
+    {
+      q: 'Cần thứ tự xử lý của các đơn thuộc **cùng một khách hàng**, nhưng khách hàng khác nhau xử lý song song. Cấu hình nào đúng?',
+      options: ['Standard queue, sắp xếp lại ở consumer theo thời gian', 'FIFO với MessageGroupId = mã khách hàng', 'Một queue riêng cho mỗi khách hàng', 'SNS topic với filter policy theo khách hàng'],
+      answer: 1,
+      explain: `FIFO giữ thứ tự **trong cùng một** message group và cho các group chạy song song, nên group id = mã khách hàng đúng yêu cầu. Group id cố định làm toàn bộ queue tuần tự; standard queue không đảm bảo thứ tự và sắp xếp lại ở consumer rất khó đúng khi có retry; filter policy của SNS chỉ lọc, không đảm bảo thứ tự.`,
+    },
+  ],
+  related: ['aws-008', 'aws-028'],
+  tags: ['SQS', 'visibility timeout', 'receipt handle', 'DLQ', 'idempotency', 'ChangeMessageVisibility', 'FIFO'],
+},
+{
+  id: 'lesson-aws-008',
+  track: 'aws',
+  order: 8,
+  title: 'S3 multipart upload: upload từng phần, tính ETag và ghép object',
+  level: 'mid',
+  minutes: 40,
+  goals: [
+    'Hiểu multipart upload: tạo upload, upload từng phần, CompleteMultipartUpload ghép theo số phần',
+    'Tính ETag của object multipart và không lầm với MD5 của toàn bộ file',
+    'Dùng presigned URL để client upload từng phần trực tiếp lên S3, không qua app server',
+    'Phát hiện và dọn upload dở dang bằng lifecycle AbortIncompleteMultipartUpload',
+  ],
+  body: `### Tóm tắt
+Một lần PUT object lên S3 được giới hạn 5 GB và buộc client giữ toàn bộ file trong một kết nối HTTP — với file hàng trăm MB thì rất dễ bị timeout và phải chạy lại từ đầu. Multipart upload chia file thành các phần (part), upload mỗi phần độc lập (có thể song song, phần nào lỗi thì chạy lại phần đó), rồi dùng CompleteMultipartUpload để S3 ghép thành object. Mỗi phần đi kèm ETag (MD5 của phần đó); ETag của object multipart được tính từ các MD5 của các phần ghép lại, có dạng {{d41d8cd98f00b204e9800998ecf8427e-3}}. Client có thể upload từng phần qua **presigned URL** — app chỉ sinh URL ký sẵn, không đụng đến bytes của file, giảm băng thông và loại bỏ timeout của server. Phần của upload chưa hoàn thành vẫn tính phí lưu trữ, nên cần lifecycle rule {{AbortIncompleteMultipartUpload}} dọn dẹp định kỳ.
+
+### Vì sao file lớn cần multipart upload
+- Giới hạn 5 GB mỗi lần PUT.
+- Một kết nối HTTP lâu dài rất dễ bị ngắt (timeout của load balancer, mạng di động yếu); chạy lại từ đầu tốn kém.
+- Chia thành các phần (tối thiểu 5 MiB, tối đa 5 GiB, phần cuối có thể nhỏ hơn), tối đa 10.000 phần, upload song song, phần lỗi chạy lại riêng.
+- File ít hơn 100 MB thường PUT đơn lẻ là đủ; từ vài trăm MB trở lên dùng multipart.
+
+### Ba bước của multipart upload
+1. {{CreateMultipartUpload}} → S3 trả {{uploadId}}.
+2. {{UploadPart}} từng phần kèm số phần (1–10.000) và dữ liệu; S3 trả ETag của phần trong header phản hồi.
+3. {{CompleteMultipartUpload}} gửi danh sách (số phần, ETag) → S3 ghép object theo thứ tự số phần.
+
+~~~text
+Client                      App                         S3
+  |----1. xin presigned URL part 1--->
+  |<--2. URL ký sẵn, hết hạn sau 10p--
+  |----3. PUT part 1 trực tiếp ------->
+  |                      |----4. PUT part 2 trực tiếp ---->
+  |                      |<--5. S3 trả ETag của phần ------
+  |----6. danh sách part + ETag ----->
+  |                      |--7. CompleteMultipartUpload --->
+  |                      |<--8. ETag object cuối ---------
+~~~
+
+### ETag của object multipart KHÔNG phải MD5 của toàn bộ file
+Với object PUT một lần, ETag thường là MD5 của file. Với multipart, ETag của S3 là:
+
+**hex(MD5(nối chuỗi raw digest 16 byte của từng part theo thứ tự số phần)) + "-" + số phần**
+
+Ví dụ 3 part có MD5 lần lượt là {{0ec51de3e0558f88056f9dab2cff1fc5}}, {{b58a60e7f8de89defa242ae3decd3866}}, {{142d518a4abfedd9db024307873f033d}} → ETag cuối cùng là {{e65de1d647a787fe758bca460d6bf40a-3}}.
+
+Dùng ETag để xác nhận file không bị hỏng trong truyền tải: client tính toán lại ở bên mình và so sánh. **Lưu ý:** không bao giờ quy định ETag = MD5(file) với object multipart — suffix {{-3}} là dấu hiệu rõ ràng.
+
+### Presigned URL cho từng phần
+App không nhận bytes video: client xin presigned PUT URL cho part N từ app (app kiểm tra quyền, sinh key), client PUT trực tiếp lên S3, S3 trả ETag, app lưu cặp (partNumber, ETag). Cuối cùng client (hoặc app) gọi CompleteMultipartUpload. Lợi ích: app server không tốn bandwidth, không bị timeout load balancer, scale theo số request không theo kích thước file.
+
+### Upload dở dang vẫn tính phí
+Phần đã upload chưa Complete/Abort vẫn chiếm dung lượng và **không hiện khi LIST object**. Bucket nhận upload từ mobile/mạng rớt sẽ dồn phí im lặng. Cách sửa: lifecycle rule {{AbortIncompleteMultipartUpload}} (ví dụ hủy sau 7 ngày) trên bucket nhận upload.
+
+### Ví dụ đời thực
+Hệ thống cho phép khách hàng upload video sản phẩm khoảng 500 MB. Thiết kế ban đầu: mobile POST video lên Spring Boot, server stream PUT lên S3 → timeout load balancer sau 30 giây, server tốn bandwidth, một số video upload xong 90% rồi mạng rớt phải chạy lại từ đầu.
+Thiết kế mới: mobile chia video thành 8 part × 64 MiB, xin 8 presigned PUT URL, upload 8 part song song. Một part lỗi chỉ chạy lại phần đó; hoàn thành trung bình 12 giây thay vì 95 giây đơn luồng. App kiểm tra ETag cuối cùng so với giá trị client tính được. Trước khi có lifecycle, khoảng 3% upload dở dang dồn phí im lặng; sau khi bật {{AbortIncompleteMultipartUpload}} sau 7 ngày, chi phí lưu trữ phần tạm giảm hơn 40%.
+
+### Trả lời mẫu khi phỏng vấn
+"Đối với file lớn trên S3 tôi dùng multipart upload: chia file thành các part (tối thiểu 5 MiB, tối đa 5 GiB, tối đa 10.000 part), upload song song, part lỗi chạy lại phần đó, rồi CompleteMultipartUpload với danh sách số part và ETag. ETag của object multipart **không** là MD5 của toàn bộ file — nó là MD5 của các MD5 của các part ghép lại, kèm số part, nên tôi không bao giờ giả định ETag dùng để kiểm tra toàn vẹn nếu không biết công thức. Để client upload trực tiếp mà không qua server, tôi sinh presigned PUT URL cho từng part; app chỉ kiểm tra quyền và lưu danh sách ETag. Cuối cùng, bật lifecycle AbortIncompleteMultipartUpload để dọn các upload dở dang vẫn tính phí lưu trữ."
+
+> Senior tip: Với hệ có rất nhiều file nhỏ, đừng dùng multipart cho mỗi file — chi phí request và độ trễ khởi tạo uploadId sẽ cao hơn lợi ích. Multipart chỉ đáng giá từ vài trăm MB trở lên; file nhỏ một PUT đơn lẻ (hạn 5 GB là đủ rộng cho phần lớn trường hợp) là đủ.
+
+### Liên hệ phỏng vấn
+Câu hay gặp:
+- "PUT object tối đa bao nhiêu, multipart cho phép tối đa bao nhiêu part?" → 5 GB/một lần PUT; 1–10.000 part, mỗi part 5 MiB–5 GiB (trừ phần cuối).
+- "ETag của object multipart có gì khác?" → MD5 của các MD5 phần ghép lại + "-" + số phần; không phải MD5 của file.
+- "Tại sao không để server nhận file rồi PUT S3?" → tránh tốn bandwidth/timeout server, dùng presigned URL part upload.
+- "Upload dở dang phát hiện và sửa ra sao?" → lifecycle AbortIncompleteMultipartUpload; LIST không thấy phần dở dang nhưng vẫn tính phí lưu trữ.
+  `,
+  exercises: [
+    {
+      title: 'Mô phỏng S3 multipart upload: upload phần, tính ETag, ghép và kiểm tra',
+      prompt: `Mô phỏng multipart upload của S3 trong bộ nhớ (không dùng AWS SDK).
+
+{{createUpload()}} tạo một upload và trả về {{uploadId}}. {{uploadPart(uploadId, partNumber, data)}} lưu một phần và trả về ETag của phần (MD5 hex lowercase của bytes data). {{completeUpload(uploadId, parts)}} nhận danh sách {{PartETag(partNumber, etag)}} và:
+
+- số phần phải tạo thành dãy liền kề {{1..N}} (không trùng, không trống, không bỏ phần giữa chừng),
+- ETag của mỗi phần phải khớp MD5 của dữ liệu phần đó đã lưu,
+- ETag của object cuối = hex MD5 của **nối các raw digest (16 byte) của từng phần theo thứ tự số phần**, rồi nối {{"-" + N}}.
+
+{{abort(uploadId)}} hủy upload. Sau khi complete hoặc abort, mọi thao tác trên {{uploadId}} đó ném {{IllegalArgumentException}}.`,
+
+      starter: `import java.security.MessageDigest;
+import java.security.NoSuchAlgorithmException;
+import java.nio.charset.StandardCharsets;
+import java.util.ArrayList;
+import java.util.HashMap;
+import java.util.List;
+import java.util.Map;
+import java.util.TreeMap;
+
+record PartETag(int partNumber, String etag) {}
+
+class MultipartUpload {
+    String createUpload() {
+        throw new UnsupportedOperationException("TODO");
+    }
+
+    String uploadPart(String uploadId, int partNumber, byte[] data) {
+        throw new UnsupportedOperationException("TODO");
+    }
+
+    String completeUpload(String uploadId, List<PartETag> parts) {
+        throw new UnsupportedOperationException("TODO");
+    }
+
+    void abort(String uploadId) {
+        throw new UnsupportedOperationException("TODO");
+    }
+}`,
+
+      tests: `import java.nio.charset.StandardCharsets;
+import java.util.List;
+
+public class Main {
+    static int passed = 0, total = 0;
+    static void eq(String name, Object expected, Supplier<Object> actual) {
+        total++;
+        try {
+            Object got = actual.get();
+            if (Objects.equals(expected, got)) { passed++; System.out.println("PASS " + name); }
+            else System.out.println("FAIL " + name + ": mong đợi " + expected + ", nhận " + got);
+        } catch (RuntimeException e) {
+            System.out.println("FAIL " + name + ": ném " + e);
+        }
+    }
+    static String catchIae(Supplier<Object> s) {
+        try { s.get(); return "no exception"; } catch (IllegalArgumentException e) { return "IAE"; }
+    }
+    public static void main(String[] args) {
+        MultipartUpload u = new MultipartUpload();
+        String id1 = u.createUpload();
+        String id2 = u.createUpload();
+        eq("hai upload khác nhau có id khác nhau", true, () -> !id1.equals(id2));
+        eq("id không rỗng", true, () -> id1 != null && !id1.isEmpty());
+
+        byte[] d1 = "don-hang-001".getBytes(StandardCharsets.UTF_8);
+        byte[] d2 = "don-hang-002".getBytes(StandardCharsets.UTF_8);
+        byte[] d3 = "don-hang-003".getBytes(StandardCharsets.UTF_8);
+        String e1 = u.uploadPart(id1, 1, d1);
+        String e2 = u.uploadPart(id1, 2, d2);
+        String e3 = u.uploadPart(id1, 3, d3);
+        eq("etag phần là 32 ký tự hex lowercase", true, () -> e1.matches("[0-9a-f]{32}"));
+        eq("cùng dữ liệu có cùng etag", true, () -> u.uploadPart(id1, 1, d1).equals(e1));
+        eq("dữ liệu khác có etag khác", true, () -> !u.uploadPart(id1, 4, d2).equals(e3));
+
+        eq("ghép 3 phần theo thứ tự", "9ffa069295e38c0d33a776af530a0e16-3", () -> u.completeUpload(id1, List.of(new PartETag(1, e1), new PartETag(2, e2), new PartETag(3, e3))));
+
+        String id3 = u.createUpload();
+        String f1 = u.uploadPart(id3, 1, d1);
+        eq("một phần duy nhất", "c783668b635eedcdf7019c092043d174-1", () -> u.completeUpload(id3, List.of(new PartETag(1, f1))));
+
+        String id4 = u.createUpload();
+        String g1 = u.uploadPart(id4, 1, d1);
+        String g2 = u.uploadPart(id4, 2, d2);
+        String g3 = u.uploadPart(id4, 3, d3);
+        eq("ghép ngược thứ tự vẫn cùng ETag", "9ffa069295e38c0d33a776af530a0e16-3", () -> u.completeUpload(id4, List.of(new PartETag(3, g3), new PartETag(1, g1), new PartETag(2, g2))));
+
+        String id5 = u.createUpload();
+        u.uploadPart(id5, 1, d1); u.uploadPart(id5, 3, d3);
+        eq("bỏ phần giữa chừng bị từ chối", "IAE", () -> catchIae(() -> u.completeUpload(id5, List.of(new PartETag(1, e1), new PartETag(3, e3)))));
+
+        String id6 = u.createUpload();
+        u.uploadPart(id6, 1, d1);
+        eq("etag phần sai bị từ chối", "IAE", () -> catchIae(() -> u.completeUpload(id6, List.of(new PartETag(1, "00000000000000000000000000000000")))));
+
+        String id7 = u.createUpload();
+        u.uploadPart(id7, 1, d1); u.uploadPart(id7, 1, d2);
+        eq("phần trùng bị từ chối", "IAE", () -> catchIae(() -> u.completeUpload(id7, List.of(new PartETag(1, e1), new PartETag(1, e2)))));
+
+        String idA = u.createUpload();
+        u.uploadPart(idA, 1, d1);
+        eq("phần số 0 bị từ chối", "IAE", () -> catchIae(() -> u.completeUpload(idA, List.of(new PartETag(0, e1)))));
+
+        String id8 = u.createUpload();
+        u.abort(id8);
+        eq("sau abort thì complete bị từ chối", "IAE", () -> catchIae(() -> u.completeUpload(id8, List.of())));
+        eq("upload id không tồn tại", "IAE", () -> catchIae(() -> u.uploadPart("không-tồn-tại", 1, d1)));
+
+        String id9 = u.createUpload();
+        u.uploadPart(id9, 1, d1);
+        u.completeUpload(id9, List.of(new PartETag(1, e1)));
+        eq("sau complete thì abort bị từ chối", "IAE", () -> catchIae(() -> { u.abort(id9); return null; }));
+
+        System.out.println("RESULT " + passed + "/" + total);
+    }
+}`,
+
+      reference: `import java.security.MessageDigest;
+import java.security.NoSuchAlgorithmException;
+import java.util.*;
+import java.util.concurrent.ConcurrentHashMap;
+
+record PartETag(int partNumber, String etag) {}
+
+class MultipartUpload {
+    private static final class Upload {
+        final String id;
+        final Map<Integer, byte[]> parts = new TreeMap<>();
+        boolean done;
+        Upload(String id) { this.id = id; }
+    }
+
+    private final Map<String, Upload> uploads = new HashMap<>();
+    private int seq = 0;
+
+    String createUpload() {
+        String id = "u" + (++seq);
+        uploads.put(id, new Upload(id));
+        return id;
+    }
+
+    String uploadPart(String uploadId, int partNumber, byte[] data) {
+        Upload upload = get(uploadId);
+        if (partNumber < 1) throw new IllegalArgumentException("số phần phải ≥ 1");
+        upload.parts.put(partNumber, data.clone());
+        return hex(md5(data));
+    }
+
+    String completeUpload(String uploadId, List<PartETag> parts) {
+        Upload upload = get(uploadId);
+        int n = parts.size();
+        if (n == 0) throw new IllegalArgumentException("danh sách phần trống");
+        boolean[] seen = new boolean[n + 1];
+        byte[][] digests = new byte[n + 1][];
+        for (PartETag part : parts) {
+            int num = part.partNumber();
+            if (num < 1 || num > n) throw new IllegalArgumentException("phần " + num + " nằm ngoài 1.." + n);
+            if (seen[num]) throw new IllegalArgumentException("phần trùng: " + num);
+            seen[num] = true;
+            byte[] stored = upload.parts.get(num);
+            if (stored == null) throw new IllegalArgumentException("chưa upload phần " + num);
+            byte[] digest = md5(stored);
+            if (!hex(digest).equals(part.etag())) throw new IllegalArgumentException("ETag phần " + num + " không khớp");
+            digests[num] = digest;
+        }
+        byte[] cat = new byte[16 * n];
+        int off = 0;
+        for (int i = 1; i <= n; i++) {
+            System.arraycopy(digests[i], 0, cat, off, 16);
+            off += 16;
+        }
+        upload.done = true;
+        return hex(md5(cat)) + "-" + n;
+    }
+
+    void abort(String uploadId) {
+        Upload upload = get(uploadId);
+        upload.done = true;
+        uploads.remove(uploadId);
+    }
+
+    private Upload get(String id) {
+        Upload upload = uploads.get(id);
+        if (upload == null || upload.done) throw new IllegalArgumentException("upload không tồn tại: " + id);
+        return upload;
+    }
+
+    static byte[] md5(byte[] data) {
+        try { return MessageDigest.getInstance("MD5").digest(data); }
+        catch (NoSuchAlgorithmException e) { throw new IllegalStateException(e); }
+    }
+
+    static String hex(byte[] bytes) { return HexFormat.of().formatHex(bytes); }
+}`,
+
+      hints: [
+        'Lưu mỗi phần vào {{TreeMap<Integer, byte[]>}} với key là số phần: ghép sau này tự theo thứ tự số phần.',
+        'ETag cuối tính từ **raw digest** (16 byte) của từng phần, nối lại rồi băm một lần nữa — không phải băm chuỗi hex, không phải băm dữ liệu gốc.',
+        'Trong {{completeUpload}}, kiểm tra **trước** khi ghép: dãy 1..N liền kề, không trùng, mỗi phần đã upload, ETag khớp; lỗi nào cũng ném {{IllegalArgumentException}} và không thay đổi trạng thái upload.',
+      ],
+      explain: `### Cơ chế bạn vừa cài
+- Mỗi part được băm bằng MD5 (16 byte) và ETag của part là chuỗi hex của digest đó — giống S3 trả ETag trong header phản hồi của UploadPart.
+- ETag của object multipart = hex(MD5(nối raw digest của các phần theo thứ tự phần)) + "-" + số phần. Suffix {{-N}} là dấu hiệu nhận biết object upload bằng multipart; nó **không** bằng MD5 của toàn bộ file, nên client không nên giả định ETag dùng để kiểm tra toàn vẹn nếu không áp dụng đúng công thức.
+- {{TreeMap}} theo số phần cho phép client gửi danh sách phần theo bất kỳ thứ tự nào (ví dụ từ nhiều luồng upload song song hoàn thành theo thứ tự khác nhau), S3 vẫn ghép đúng thứ tự.
+- {{abort}} đánh dấu upload là done và xoá khỏi bảng: upload dở dang không bao giờ bị "quên" nền tảng; ngoài đời, lifecycle rule {{AbortIncompleteMultipartUpload}} cần được bật để dọn phần upload bị client bỏ ngỏ.
+
+### Lỗi hay gặp
+- Ghép hex chuỗi thay vì raw digest: kết quả ETag sẽ khác S3.
+- Không kiểm tra dãy liền kề: parts [1, 3] không được ghép thành object có "phần 2 bị thiếu".
+- Sau khi abort/complete, phải từ chối mọi thao tác tiếp theo trên cùng uploadId.
+    `,
+    },
+  ],
+  check: [
+    {
+      q: 'PUT object tối đa bao nhiêu, và multipart upload cho phép tối đa bao nhiêu phần?',
+      options: ['5 GB và tối đa 10.000 phần', '5 TB và tối đa 100 phần', 'Không giới hạn, chỉ phải chia nếu file quá 100 MB', '1 GB và tối đa 500 phần'],
+      answer: 0,
+      explain: `Một lần PUT tối đa 5 GB. Multipart upload cho phép 1–10.000 phần, mỗi phần 5 MiB–5 GiB (trừ phần cuối có thể nhỏ hơn). File dưới 100 MB thường PUT đơn lẻ là đủ.`,
+    },
+    {
+      q: 'ETag của object upload bằng multipart có gì đặc biệt?',
+      options: ['Luôn bằng MD5 của toàn bộ file', 'Là MD5 của các MD5 của các phần ghép lại, kèm số phần, ví dụ ...-3', 'Chỉ có khi bật versioning', 'Là SHA-256, không phải MD5'],
+      answer: 1,
+      explain: `ETag multipart = hex(MD5(nối raw digest 16 byte của các phần theo thứ tự)) + "-" + số phần. Suffix {{-3}} là dấu hiệu rõ ràng object này upload bằng multipart. Không nên dùng ETag làm checksum toàn vẹn file nếu không áp dụng đúng công thức này; với PUT một lần ETag thường là MD5 của file, nhưng đó là trường hợp khác.`,
+    },
+    {
+      q: 'Ứng dụng cho phép client upload video lên S3 nhưng không muốn video stream qua server. Thiết kế nào hợp lý?',
+      options: ['Server nhận multipart request rồi PUT lên S3', 'Server sinh presigned PUT URL cho từng part, client PUT trực tiếp S3, server lưu part number + ETag để CompleteMultipartUpload', 'Client PUT trực tiếp bằng access key của server nhúng vào ứng dụng', 'Lưu video vào DynamoDB'],
+      answer: 1,
+      explain: `Presigned URL part upload: server không đụng bytes, không bị timeout load balancer, scale theo số request. Access key nhúng vào ứng dụng client là lỗ hổng bảo mật (không thể thu hồi). DynamoDB không dùng để lưu file video lớn (giới hạn item 400 KB).`,
+    },
+    {
+      q: 'Upload video bị gián đoạn thường xuyên, phần đã upload vẫn còn ở S3 nhưng không thấy trong LIST. Nguyên nhân và sửa?',
+      options: ['S3 đã xóa phần tự động, không cần làm gì', 'Multipart upload dở dang vẫn tính phí lưu trữ và không hiện trong LIST; thêm lifecycle rule AbortIncompleteMultipartUpload', 'Bucket bị hết hạn, phải gia hạn gói dịch vụ', 'Phần bị mã hoá bằng KMS nên không liệt kê được'],
+      answer: 1,
+      explain: `Phần của upload chưa complete/abort vẫn chiếm dung lượng và **không hiện** trong LIST object — khớp triệu chứng. Lifecycle {{AbortIncompleteMultipartUpload}} dọn tự động. S3 không tự xóa phần; hết hạn gói dịch vụ là lý do khác hoàn toàn; mã hoá KMS không ảnh hưởng đến khả năng liệt kê.`,
+    },
+  ],
+related: ['aws-007'],
+  tags: ['S3', 'multipart upload', 'ETag', 'presigned URL', 'AbortIncompleteMultipartUpload', 'lifecycle'],
+},
+{
+  id: 'lesson-aws-009',
+  track: 'aws',
+  order: 9,
+  title: 'SQS FIFO: thứ tự, dedup và khi nào trả tiền cho FIFO',
+  level: 'senior',
+  minutes: 35,
+  goals: [
+    'Phân biệt standard và FIFO theo throughput, thứ tự và chi phí',
+    'Dùng MessageGroupId và MessageDeduplicationId đúng cách',
+    'Thiết kế idempotent consumer cho standard queue',
+  ],
+  body: `### Tóm tắt
+SQS standard là at-least-once và không đảm bảo thứ tự; FIFO đảm bảo thứ tự trong cùng MessageGroupId và loại trùng theo MessageDeduplicationId trong 5 phút, nhưng throughput thấp hơn (mặc định 300 TPS mỗi API action, đạt 3.000 msg/s khi dùng batching; bật high-throughput mode thì cao hơn nhiều) và giá cao hơn.
+
+### Standard vs FIFO
+| Tiêu chí | Standard | FIFO |
+|---|---|---|
+| Throughput | gần như không giới hạn | 300 TPS/API action (3.000 msg/s khi batching) |
+| Thứ tự | không đảm bảo | theo MessageGroupId |
+| Loại trùng | không | 5 phút theo dedup id |
+| Giá | thấp hơn | cao hơn |
+
+### Khi nào dùng FIFO
+Chỉ dùng khi nghiệp vụ thật sự cần thứ tự trong một đơn vị (một khách hàng, một đơn hàng). Không dùng FIFO cho toàn bộ hệ thống nếu chỉ cần throughput.
+
+### Idempotent consumer
+Với standard queue, consumer phải idempotent: ghi DB với unique constraint theo messageId; nếu insert trùng thì bỏ qua.
+
+### Idempotent consumer chi tiết
+Khi dùng standard queue, cùng một message có thể được giao nhiều lần. Consumer nên ghi kết quả với khóa duy nhất theo messageId, và bỏ qua nếu đã xử lý.
+
+### Chi phí và throughput
+FIFO có giá cao hơn và throughput thấp hơn. Chỉ dùng khi nghiệp vụ cần thứ tự trong một đơn vị.
+
+### Cơ chế hoạt động từng bước
+1. Producer gửi message vào queue.
+2. SQS lưu message và trả messageId.
+3. Consumer nhận message, xử lý, rồi delete message.
+4. Nếu consumer crash trước delete, message sẽ xuất hiện lại sau visibility timeout.
+
+### So sánh và khi nào dùng
+Standard queue phù hợp throughput lớn và chấp nhận xử lý lại. FIFO phù hợp khi thứ tự quan trọng trong một đơn vị.
+
+### Ví dụ đời thực
+Một hệ thống xử lý đơn hàng dùng SQS standard. Consumer ghi DB với unique constraint theo messageId. Nếu message bị giao lại, insert trùng bị bỏ qua, không tạo đơn trùng.
+
+### Lỗi hay gặp
+- Dùng FIFO cho mọi thứ làm giảm throughput.
+- Không idempotent consumer dẫn đến xử lý trùng.
+- Visibility timeout quá ngắn làm message xử lý lại.
+
+### Pitfall thực tế
+Dùng FIFO cho toàn bộ hệ thống sẽ làm throughput giảm và chi phí tăng mà không cần thiết. Standard + idempotent consumer thường là lựa chọn đúng.
+
+### Ghi nhớ
+Standard + idempotent consumer cho throughput lớn. FIFO chỉ cho đơn vị cần thứ tự. Dedup window 5 phút.
+
+### Tổng kết
+SQS standard phù hợp throughput lớn với idempotent consumer. FIFO chỉ dùng khi cần thứ tự. Presigned URL an toàn và resume multipart tiết kiệm thời gian.
+
+### Liên hệ phỏng vấn
+Interviewer hay hỏi: vì sao không dùng FIFO cho mọi thứ, dedup window là bao lâu, và cách làm idempotent với standard queue. Trả lời: standard + idempotent cho throughput lớn; FIFO chỉ cho đơn vị cần thứ tự.`,
+  exercises: [
+    {
+      title: 'Dedup cache theo cửa sổ 5 phút',
+      prompt: 'Implement DedupCache với seen(dedupId) trả true nếu đã thấy trong cửa sổ, và record(dedupId) ghi nhận.',
+      starter: 'class DedupCache {\n    private final Map<String, Long> seen = new HashMap<>();\n    private final long windowMs;\n    DedupCache(long windowMs) { this.windowMs = windowMs; }\n    boolean seen(String id) { throw new UnsupportedOperationException("TODO"); }\n    void record(String id) { throw new UnsupportedOperationException("TODO"); }\n}',
+      tests: 'public class Main {\n    static int passed=0,total=0;\n    static void check(String n, Runnable r){total++;try{r.run();passed++;System.out.println("PASS "+n);}catch(Throwable t){System.out.println("FAIL "+n+": "+t);}}\n    static void eq(Object e,Object a){if(!Objects.equals(e,a))throw new AssertionError("exp "+e+" got "+a);}\n    public static void main(String[] args){\n      check("first not seen",()->{DedupCache c=new DedupCache(1000);eq(false,c.seen("a"));});\n      check("after record seen",()->{DedupCache c=new DedupCache(1000);c.record("a");eq(true,c.seen("a"));});\n      check("different id not seen",()->{DedupCache c=new DedupCache(1000);c.record("a");eq(false,c.seen("b"));});\n      System.out.println("RESULT "+passed+"/"+total);\n    }\n}',
+      reference: 'class DedupCache {\n    private final Map<String, Long> seen = new HashMap<>();\n    private final long windowMs;\n    DedupCache(long windowMs) { this.windowMs = windowMs; }\n    boolean seen(String id) { Long t=seen.get(id); if(t==null) return false; if(System.currentTimeMillis()-t>windowMs){seen.remove(id);return false;} return true; }\n    void record(String id) { seen.put(id,System.currentTimeMillis()); }\n}',
+      hints: ['Lưu timestamp khi record; seen kiểm tra còn trong cửa sổ.'],
+      explain: 'Dedup theo cửa sổ thời gian; hết hạn thì cho phép lại.',
+    },
+  ],
+  check: [
+    { q: 'SQS FIFO dedup window là bao lâu?', options: ['1 phút', '5 phút', '15 phút', '24 giờ'], answer: 1, explain: 'FIFO loại trùng theo MessageDeduplicationId trong 5 phút.' },
+    { q: 'Khi nào nên dùng FIFO?', options: ['Mọi hệ thống để đảm bảo thứ tự', 'Khi cần thứ tự trong một đơn vị như một khách hàng', 'Khi throughput rất lớn', 'Khi không cần idempotent'], answer: 1, explain: 'FIFO chỉ nên dùng khi nghiệp vụ cần thứ tự trong một đơn vị cụ thể.' },
+  ],
+  related: ['aws-007'],
+  tags: ['SQS', 'FIFO', 'dedup', 'idempotent'],
+},
+{
+  id: 'lesson-aws-010',
+  track: 'aws',
+  order: 10,
+  title: 'S3 presigned URL: bảo mật và resume multipart',
+  level: 'senior',
+  minutes: 35,
+  goals: [
+    'Sinh presigned URL an toàn, giới hạn thời gian và quyền',
+    'Resume multipart upload bằng danh sách part đã có',
+    'Tránh lộ access key và xử lý expiry',
+  ],
+  body: `### Tóm tắt: presigned URL cho client upload trực tiếp, resume để không làm lại từ đầu
+**Presigned URL** là một URL đã được **ký** bằng credentials của server, cho phép client upload hoặc download trực tiếp một object S3 trong một khoảng thời gian giới hạn mà **không cần** credentials. **Resume multipart** là khả năng upload tiếp phần còn thiếu sau khi mạng gián đoạn, thay vì upload lại toàn bộ file.
+
+### Bắt đầu từ gốc: vì sao không cho file chạy qua server
+Cách làm ngây thơ: client upload file 2 GB lên Spring Boot, server đọc stream rồi PUT lên S3. Cách này tốn băng thông gấp đôi, tốn RAM và thread của server, và timeout của load balancer trở thành giới hạn kích thước file. Giải pháp: server chỉ **ký URL**, client PUT trực tiếp lên S3. Server không chạm vào bytes, chỉ làm việc nhẹ là sinh URL.
+
+### Presigned URL hoạt động thế nào
+Presigned URL là URL có sẵn **chữ ký SigV4** (Signature Version 4 — cơ chế ký request của AWS) tạo bằng credentials của **server**. Ai cầm URL thì làm được đúng một thao tác (GET hoặc PUT) trên đúng một key, cho tới khi hết hạn. Việc ký diễn ra hoàn toàn ở phía server, không gọi mạng tới AWS.
+
+Ba điểm phải nhớ:
+- Quyền của URL **bằng quyền của credentials đã ký**. Role của server không có {{s3:PutObject}} thì URL ký ra cũng bị 403.
+- Thời hạn tối đa của URL ký bằng SigV4 là **7 ngày**. Nếu ký bằng credentials tạm thời (role), URL còn **hết hạn sớm hơn khi session của credentials hết hạn**, dù bạn đặt duration dài hơn.
+- URL bị lộ (log, referrer, chat) thì ai cũng dùng được tới khi hết hạn: đặt thời hạn ngắn (vài phút), không log nguyên URL.
+
+### Bảo mật presigned URL
+- **Thời hạn ngắn**: đặt vài phút cho upload, ngắn hơn cho download. Càng ngắn càng ít rủi ro khi URL bị lộ.
+- **Giới hạn method và key**: URL PUT chỉ ghi được đúng key đã ký, URL GET chỉ đọc đúng object đó; không ký một URL "muốn làm gì cũng được".
+- **Không nhúng access key vào client**: client chỉ nhận URL, không bao giờ nhận secret. Đây là lý do presigned URL an toàn hơn việc phát credentials cho app mobile.
+- **Không log nguyên URL**: URL là "vé vào cửa"; log nó ra CloudWatch/Sentry là mở cửa cho người đọc log.
+
+### Multipart và resume
+Một lần PUT tối đa 5 GB; file lớn nên dùng **multipart upload**: chia thành các part (5 MiB–5 GiB, tối đa 10.000 part), upload song song, rồi Complete. Khi upload gián đoạn (mạng rớt, app bị kill), client gọi **ListParts** để biết part nào đã lên S3, chỉ upload các part còn thiếu, rồi Complete. Không resume thì phải upload lại từ đầu — rất tốn thời gian với file vài GB.
+
+### Xử lý URL hết hạn giữa chừng
+Nếu presigned URL hết hạn khi upload còn dở, client xin server một URL mới (server kiểm tra quyền rồi ký lại), rồi tiếp tục. Vì URL chỉ sống vài phút, client nên **xin URL theo từng part** hoặc gia hạn trước khi hết hạn, thay vì xin một URL 7 ngày cho cả file.
+
+### Cơ chế hoạt động từng bước (upload lớn có resume)
+1. Client xin server danh sách presigned URL cho từng part (hoặc từng part một).
+2. Client PUT từng part trực tiếp lên S3; part nào lỗi thì retry riêng part đó.
+3. Nếu gián đoạn, client gọi ListParts để biết part 1..k đã có.
+4. Client upload các part còn thiếu rồi CompleteMultipartUpload với danh sách part + ETag.
+5. Server (hoặc client) gọi AbortIncompleteMultipartUpload định kỳ để dọn part rác.
+
+### Ví dụ đời thực có số liệu
+Một app mobile cho upload video 2 GB. Ban đầu không resume: cứ rớt mạng ở phút thứ 3 là người dùng phải chọn lại file và upload từ đầu, tỷ lệ bỏ ngang 35%. Sau khi chuyển sang multipart + ListParts + presigned URL từng part: khi rớt ở part 12/40, app chỉ upload 28 part còn lại; tỷ lệ hoàn thành tăng lên 98%, thời gian upload trung bình giảm vì tận dụng song song. Server không còn nhận bytes nên không còn timeout 60 giây của load balancer.
+
+### Lỗi hay gặp
+- Đặt thời hạn presigned URL quá dài (7 ngày) rồi URL bị lộ trong log.
+- Không resume: file lớn rớt mạng là làm lại từ đầu.
+- Nhúng access key vào client thay vì ký URL.
+- Không đặt lifecycle AbortIncompleteMultipartUpload: part rác vẫn tính tiền lưu trữ và không hiện trong LIST.
+
+### Bảng trade-off
+| Tiêu chí | Lựa chọn | Lý do |
+|---|---|---|
+| Bảo mật | Presigned URL thời hạn ngắn | Không lộ credentials, URL tự hết hạn |
+| Upload lớn | Multipart + ListParts | Resume, song song, không chạy qua server |
+| Dọn rác | AbortIncompleteMultipartUpload | Part dở dang vẫn tính tiền |
+| Tải file lớn | CloudFront + presigned | Giảm tải S3, CDN gần người dùng |
+
+### Liên hệ phỏng vấn
+Interviewer hay hỏi: "Presigned URL bảo mật thế nào?", "URL hết hạn giữa chừng xử lý ra sao?", "Resume upload lớn thế nào?". Trả lời tốt: URL ký SigV4 có thời hạn ngắn, quyền bằng credentials đã ký, không nhúng secret vào client; hết hạn thì xin URL mới và tiếp tục; resume bằng ListParts rồi chỉ upload phần thiếu; thêm lifecycle abort part rác. Bài tập dưới đây cho bạn tự cài bộ theo dõi part đã upload để resume.`,
+  exercises: [
+    {
+      title: 'Theo dõi part đã upload để resume',
+      prompt: 'Implement PartTracker ghi nhận (partNumber, etag) và missing(totalParts) trả danh sách số phần chưa upload.',
+      starter: 'class PartTracker {\n    private final Map<Integer, String> parts = new TreeMap<>();\n    void record(int partNumber, String etag) { throw new UnsupportedOperationException("TODO"); }\n    List<Integer> missing(int totalParts) { throw new UnsupportedOperationException("TODO"); }\n}',
+      tests: 'public class Main {\n    static int passed=0,total=0;\n    static void check(String n, Runnable r){total++;try{r.run();passed++;System.out.println("PASS "+n);}catch(Throwable t){System.out.println("FAIL "+n+": "+t);}}\n    static void eq(Object e,Object a){if(!Objects.equals(e,a))throw new AssertionError("exp "+e+" got "+a);}\n    public static void main(String[] args){\n      check("all missing initially",()->{PartTracker t=new PartTracker();eq(List.of(1,2,3),t.missing(3));});\n      check("record removes from missing",()->{PartTracker t=new PartTracker();t.record(2,"etag2");eq(List.of(1,3),t.missing(3));});\n      check("all present",()->{PartTracker t=new PartTracker();t.record(1,"a");t.record(2,"b");t.record(3,"c");eq(List.of(),t.missing(3));});\n      System.out.println("RESULT "+passed+"/"+total);\n    }\n}',
+      reference: 'class PartTracker {\n    private final Map<Integer, String> parts = new TreeMap<>();\n    void record(int partNumber, String etag) { parts.put(partNumber, etag); }\n    List<Integer> missing(int totalParts) { List<Integer> m=new ArrayList<>(); for(int i=1;i<=totalParts;i++) if(!parts.containsKey(i)) m.add(i); return m; }\n}',
+      hints: ['Dùng TreeMap theo số phần; missing là các số chưa có.'],
+      explain: 'Theo dõi part đã có để resume upload bị gián đoạn.',
+    },
+  ],
+  check: [
+    { q: 'Presigned URL nên có thời hạn bao lâu?', options: ['Vài phút', '24 giờ', '7 ngày', 'Vĩnh viễn'], answer: 0, explain: 'Thời hạn ngắn giảm rủi ro lộ URL.' },
+    { q: 'Làm sao resume multipart upload?', options: ['Upload lại toàn bộ file', 'Gọi ListParts rồi upload phần thiếu', 'Tạo bucket mới', 'Dùng access key client'], answer: 1, explain: 'ListParts cho biết part nào đã có, client chỉ upload phần thiếu.' },
+  ],
+  related: ['aws-008'],
+  tags: ['S3', 'presigned URL', 'resume', 'security'],
+},
+{
+  id: 'lesson-aws-011',
+  track: 'aws',
+  order: 11,
+  title: 'SQS message timer (delay queue) kết hợp visibility timeout, DLQ và consumer idempotent',
+  level: 'senior',
+  minutes: 45,
+  goals: [
+    'Hiểu message timer (DelaySeconds) là gì và khác visibility timeout ở điểm nào',
+    'Mô phỏng một hàng đợi có cả delay, visibility timeout, DLQ và idempotent trong Java thuần',
+    'Giải thích vì sao at-least-once buộc consumer phải idempotent, và "cửa sổ crash" giữa xử lý và delete',
+    'Tránh các lỗi production: delay đặt sai, visibility timeout ngắn hơn thời gian xử lý, DLQ không ai canh',
+  ],
+  body: `### Tóm tắt: message timer hoãn việc xử lý, visibility timeout chống giao trùng
+**Message timer** (còn gọi delay queue) là lệnh "hãy giao message này cho consumer sau N giây nữa", còn **visibility timeout** là "khoá mềm" giữ message khỏi bị consumer khác nhận trong lúc bạn đang xử lý. Hai cơ chế này độc lập nhưng hay bị nhầm; bài này mô phỏng cả hai cùng DLQ và idempotency để bạn nắm chắc vòng đời một message.
+
+### Bắt đầu từ gốc: queue là gì
+**Queue** (hàng đợi) là một danh sách message mà nhiều người gửi vào (producer) và nhiều người lấy ra (consumer) theo tốc độ của họ. Ví dụ đời thường: quầy bánh mì có một tờ giấy ghi order; khách gọi món (producer) ghi vào tờ giấy, thợ làm bánh (consumer) đọc và làm. Tờ giấy giúp khách không phải chờ thợ, và thợ không bị quá tải khi có 50 khách cùng lúc. Trong hệ thống phần mềm, queue giúp **tách rời** service gửi và service xử lý, **hấp thụ đỉnh tải** và **thử lại** khi xử lý lỗi.
+
+### Message timer (delay queue): hoãn xử lý có chủ đích
+SQS cho phép đặt {{DelaySeconds}} (0–900 giây, tức tối đa 15 phút) khi gửi, hoặc cấu hình delay mặc định cho cả queue. Message vẫn nằm trong queue nhưng **chưa được giao** cho tới khi hết delay. Việc "chưa được giao" này **khác** với visibility timeout:
+
+| | Message timer (delay) | Visibility timeout |
+|---|---|---|
+| Mục đích | Hoãn có chủ đích (scheduling) | Chống giao trùng khi đang xử lý |
+| Ai đặt | Producer đặt lúc gửi (hoặc queue mặc định) | Queue cấu hình; consumer gia hạn bằng ChangeMessageVisibility |
+| Tính từ lúc nào | Từ lúc message được gửi | Từ lúc message được nhận (receive) |
+| Hết hạn thì sao | Message mới bắt đầu **hiện ra** để nhận | Message **quay lại** visible, ReceiveCount +1 |
+
+Ví dụ: bạn muốn gửi email nhắc "đơn hàng chưa thanh toán" sau 24 giờ. Thay vì viết một cron job quét DB, bạn gửi message SQS với {{DelaySeconds}} = 86400? Không — delay tối đa chỉ 900 giây, nên với 24 giờ bạn phải dùng cơ chế khác (ví dụ Lambda đọc SQS rồi gửi lại, hoặc EventBridge Scheduler). Delay queue chỉ hợp cho hoãn ngắn (vài phút tới 15 phút): "gọi lại API đối tác sau 5 phút nếu lần đầu timeout".
+
+### Visibility timeout: khoá mềm chống giao trùng
+Khi consumer gọi {{ReceiveMessage}}, message **không bị xoá** mà trở nên **vô hình** với consumer khác trong {{visibility timeout}} (mặc định 30 giây, tối đa 12 giờ). Nếu consumer xử lý xong và gọi {{DeleteMessage}} trước khi hết giờ, message biến mất. Nếu consumer crash hoặc xử lý quá lâu, hết giờ message **hiện lại** và được giao lại (ReceiveCount tăng). Đây là lý do SQS là **at-least-once**: hệ thống thà giao lại còn hơn làm mất.
+
+Hệ quả quan trọng: visibility timeout phải **lớn hơn** thời gian xử lý thực tế (p99, không phải trung bình). Nếu đặt 30 giây mà consumer xử lý 45 giây, message sẽ bị giao lại khi consumer đầu **vẫn đang chạy** → xử lý trùng, ReceiveCount tăng nhanh, đủ ngưỡng thì rơi vào DLQ dù không hề lỗi.
+
+### DLQ và maxReceiveCount: nơi message "độc" đi vào
+**Poison message** là message mà consumer không bao giờ xử lý nổi: JSON hỏng, dữ liệu vi phạm ràng buộc DB, gọi API đối tác trả 500 mãi. Nếu cứ giao lại vô hạn, nó tốn tiền, che khuất message tốt và làm loãng metric. **Dead-letter queue (DLQ)** là queue rác: khi số lần nhận ({{ApproximateReceiveCount}}) **vượt** {{maxReceiveCount}}, SQS chuyển message sang DLQ. Chọn maxReceiveCount 3–5 là phổ biến (đủ vượt lỗi tạm thời, không quá muộn). DLQ phải có **alarm** (số message > 0) và quy trình **redrive** (đẩy ngược lại queue nguồn sau khi sửa lỗi).
+
+### At-least-once và "cửa sổ crash"
+Ngay cả khi SQS không giao trùng, chính bạn vẫn tạo ra trùng: consumer xử lý xong (ghi DB, gửi email), nhưng **crash trước khi** gọi DeleteMessage → message quay lại và bị xử lý lần hai. Khoảng thời gian giữa "tác dụng phụ xong" và "delete xong" chính là **cửa sổ crash**. Cách chống:
+- Mỗi message mang **business id** ({{orderId}}, {{eventId}}).
+- Trong **cùng transaction** với thay đổi nghiệp vụ, insert id vào bảng {{processed_events}} có unique constraint. Trùng id nghĩa là đã xử lý → bỏ qua rồi delete.
+- Thao tác tự nhiên idempotent ({{UPDATE ... WHERE status = 'PENDING'}}) hoặc truyền **idempotency key** cho bên nhận side effect.
+
+### Sơ đồ vòng đời kết hợp
+~~~text
+ send(body, delay=5s)        [CHỜ DELAY 5s] --hết delay--> [VISIBLE]
+       |                                                        |
+       |                                              receive --> [IN-FLIGHT, ẩn visibilityMs]
+       |                                                        |                 |
+       |                                              delete OK |   hết timeout    |
+       |                                                        v                 v
+       |                                                   (biến mất)   [VISIBLE], ReceiveCount+1
+       |                                                                          |
+       |                                              ReceiveCount > max --> [DLQ]
+       v
+ processed_events (unique business id) -- chống xử lý trùng khi ReceiveCount tăng
+~~~
+
+### Ví dụ đời thực có số liệu
+Một service gửi 12.000 message "đồng bộ tồn kho" mỗi giờ. Ban đầu visibility timeout để mặc định 30 giây, nhưng p99 xử lý là 52 giây (gọi ERP đối tác). Triệu chứng: tỷ lệ message vào DLQ tăng từ 0 lên 4%/ngày, và tồn kho bị trừ hai lần ở một số SKU. Điều tra: log cho thấy cùng một {{eventId}} được xử lý 2–3 lần cách nhau đúng 30 giây. Xử lý: (1) nâng visibility timeout lên 90 giây (> p99 52s có dư), (2) thêm bảng {{processed_events}} unique theo {{eventId}} trong cùng transaction cập nhật tồn kho, (3) đặt alarm DLQ + redrive 3.000 message tồn. Kết quả sau 1 tuần: DLQ về 0, không còn trừ trùng.
+
+### Lỗi hay gặp
+- Đặt delay quá lớn rồi hỏi "vì sao message không được xử lý": delay tối đa 900 giây, và message **chưa hiện** trong queue nên ReceiveMessage trả rỗng — không phải lỗi.
+- Visibility timeout ngắn hơn p99: giao trùng + DLQ oan. Đặt theo p99 rồi cộng dư, hoặc dùng ChangeMessageVisibility/heartbeat cho job dài.
+- Không idempotent: chỉ một lần crash giữa xử lý và delete là đủ gây side effect kép (gửi email hai lần, trừ tiền hai lần).
+- DLQ không alarm: message độc nằm im, không ai biết, dữ liệu chết lặng lẽ.
+
+### Liên hệ phỏng vấn
+Interviewer hay hỏi: "Delay queue khác visibility timeout thế nào?", "Vì sao SQS là at-least-once và consumer phải làm gì?", "Visibility timeout nên đặt bao nhiêu?", "DLQ hoạt động ra sao?". Trả lời tốt: delay là hoãn có chủ đích từ lúc gửi, visibility là khoá mềm từ lúc nhận; at-least-once nên consumer phải idempotent bằng business id + unique constraint; visibility timeout > p99 (có dư) hoặc gia hạn bằng heartbeat; DLQ theo maxReceiveCount, phải có alarm và redrive. Bài tập dưới đây cho bạn tự cài một queue có đủ delay + visibility + DLQ + idempotent để nắm chắc vòng đời.
+
+> Senior tip: Đừng đặt visibility timeout cực lớn (12 giờ) để "cho chắc": message bị khoá 12 giờ nếu consumer chết giữa chừng, và bạn mất khả năng retry nhanh. Đặt vừa p99, và với job dài thì gia hạn bằng ChangeMessageVisibility định kỳ — đó là "lease renewal" đúng nghĩa.`,
+  exercises: [
+    {
+      title: 'Mô phỏng queue có message timer, visibility timeout, DLQ và idempotent',
+      prompt: `Cài đặt một hàng đợi trong bộ nhớ mô phỏng SQS (đơn giản hoá: thứ tự theo lúc gửi). Thời gian lấy từ **đồng hồ giả** ({{LongSupplier}} trả mili giây) nên test không cần sleep.
+
+Đã có sẵn: record {{Received}}, lớp {{Msg}} (gồm {{id}}, {{body}}, {{notBefore}} = thời điểm sớm nhất được giao, {{receiveCount}}, {{visibleAt}}, {{handle}}), constructor, {{send(body)}} và {{send(body, delayMs)}} (đặt {{notBefore = now + delayMs}}), {{size}}. Bạn cài:
+
+1. {{receive(max)}}: duyệt message theo thứ tự, lấy tối đa {{max}} message **đang visible**. Một message visible khi {{notBefore <= now}} (đã hết delay) **và** {{visibleAt <= now}} (không còn in-flight). Với mỗi message:
+   ▸ nếu có DLQ và {{receiveCount >= maxReceiveCount}}: xoá khỏi queue này và chuyển sang DLQ (giữ nguyên id, body, notBefore), **không** trả về, không tính vào {{max}};
+   ▸ ngược lại: {{receiveCount++}}, {{visibleAt = now + visibilityMs}}, receipt handle mới = {{id + "#" + receiveCount}}, thêm vào kết quả.
+2. {{delete(handle)}}: xoá message có receipt handle **hiện tại**, trả về true; handle cũ hoặc không tồn tại trả về false.
+3. {{process(handle)}}: consumer xử lý xong. Nếu không tìm thấy handle thì trả về false. Nếu {{body}} (mã đơn/event id) đã nằm trong tập đã xử lý → **bỏ qua**: xoá message, trả về false (idempotent). Ngược lại: thêm {{body}} vào tập đã xử lý, xoá message, trả về true.`,
+      starter: `record Received(String messageId, String body, String receiptHandle, int receiveCount) {}
+
+class DelayQueue {
+    private static final class Msg {
+        final String id, body;
+        final long notBefore;     // thời điểm sớm nhất message được phép giao (message timer)
+        int receiveCount;         // số lần đã được giao
+        long visibleAt;           // thời điểm message hiện lại; 0 = visible ngay
+        String handle;            // receipt handle của lần nhận gần nhất
+        Msg(String id, String body, long notBefore) { this.id = id; this.body = body; this.notBefore = notBefore; }
+    }
+
+    private final LongSupplier clock;          // mili giây, inject để test xác định
+    private final long visibilityMs;
+    private final int maxReceiveCount;
+    private final DelayQueue dlq;              // có thể null
+    private final List<Msg> messages = new ArrayList<>();
+    private final Set<String> processed = new HashSet<>();
+    private int seq = 0;
+
+    DelayQueue(LongSupplier clock, long visibilityMs, int maxReceiveCount, DelayQueue dlq) {
+        this.clock = clock;
+        this.visibilityMs = visibilityMs;
+        this.maxReceiveCount = maxReceiveCount;
+        this.dlq = dlq;
+    }
+
+    String send(String body) { return send(body, 0); }
+
+    String send(String body, long delayMs) {
+        String id = "m" + (++seq);
+        messages.add(new Msg(id, body, clock.getAsLong() + delayMs));
+        return id;
+    }
+
+    int size() { return messages.size(); }
+
+    List<Received> receive(int max) {
+        throw new UnsupportedOperationException("TODO");
+    }
+
+    boolean delete(String handle) {
+        throw new UnsupportedOperationException("TODO");
+    }
+
+    boolean process(String handle) {
+        throw new UnsupportedOperationException("TODO");
+    }
+}`,
+      tests: `public class Main {
+    static int passed = 0, total = 0;
+    static void eq(String name, Object expected, Supplier<Object> actual) {
+        total++;
+        try {
+            Object got = actual.get();
+            if (Objects.equals(expected, got)) { passed++; System.out.println("PASS " + name); }
+            else System.out.println("FAIL " + name + ": mong đợi " + expected + ", nhận " + got);
+        } catch (RuntimeException e) {
+            System.out.println("FAIL " + name + ": ném " + e);
+        }
+    }
+    static String ids(List<Received> rs) {
+        return rs.stream().map(r -> r.messageId() + ":" + r.receiveCount()).collect(Collectors.joining(","));
+    }
+    public static void main(String[] args) {
+        // A. message timer + visibility timeout
+        long[] a = { 0 };
+        DelayQueue qa = new DelayQueue(() -> a[0], 30_000, 5, null);
+        qa.send("later", 5_000); qa.send("now");
+        eq("delay ẩn message trước khi hết timer", "m2:1", () -> ids(qa.receive(10)));
+        eq("hết delay thì message hiện ra", "m1:1", () -> { a[0] = 5_000; return ids(qa.receive(10)); });
+        eq("in-flight bị ẩn trong visibility window", "", () -> { a[0] = 6_000; return ids(qa.receive(10)); });
+        eq("hết visibility timeout thì giao lại", "m1:2,m2:2", () -> { a[0] = 35_000; return ids(qa.receive(10)); });
+
+        // B. idempotent theo body
+        long[] b = { 0 };
+        DelayQueue qb = new DelayQueue(() -> b[0], 1_000, 5, null);
+        qb.send("order-42"); qb.send("order-42");
+        List<Received> batch = qb.receive(10);
+        eq("nhận hai message trùng mã đơn", "m1:1,m2:1", () -> ids(batch));
+        eq("xử lý message đầu", true, () -> qb.process(batch.get(0).receiptHandle()));
+        eq("message trùng mã đơn bị bỏ qua", false, () -> qb.process(batch.get(1).receiptHandle()));
+        eq("queue rỗng sau xử lý", 0, () -> qb.size());
+        eq("xoá handle đã xử lý lại lần nữa", false, () -> qb.delete(batch.get(0).receiptHandle()));
+        eq("handle không tồn tại", false, () -> qb.delete("m9#1"));
+
+        // C. DLQ theo maxReceiveCount
+        long[] c = { 0 };
+        DelayQueue cdlq = new DelayQueue(() -> c[0], 30_000, 10, null);
+        DelayQueue qc = new DelayQueue(() -> c[0], 1_000, 2, cdlq);
+        qc.send("poison"); qc.send("ok");
+        eq("lượt giao đầu", "m1:1,m2:1", () -> ids(qc.receive(10)));
+        eq("xoá message ok", true, () -> qc.delete("m2#1"));
+        eq("lượt giao hai của poison", "m1:2", () -> { c[0] = 1_000; return ids(qc.receive(10)); });
+        eq("lượt nhận vượt maxReceiveCount không trả về", "", () -> { c[0] = 2_000; return ids(qc.receive(10)); });
+        eq("queue chính rỗng", 0, () -> qc.size());
+        eq("DLQ có đúng 1 message", 1, () -> cdlq.size());
+        eq("DLQ giữ id và body gốc", "m1/poison", () -> {
+            Received r = cdlq.receive(1).get(0);
+            return r.messageId() + "/" + r.body();
+        });
+        System.out.println("RESULT " + passed + "/" + total);
+    }
+}`,
+      reference: `record Received(String messageId, String body, String receiptHandle, int receiveCount) {}
+
+class DelayQueue {
+    private static final class Msg {
+        final String id, body;
+        final long notBefore;
+        int receiveCount;
+        long visibleAt;
+        String handle;
+        Msg(String id, String body, long notBefore) { this.id = id; this.body = body; this.notBefore = notBefore; }
+    }
+
+    private final LongSupplier clock;
+    private final long visibilityMs;
+    private final int maxReceiveCount;
+    private final DelayQueue dlq;
+    private final List<Msg> messages = new ArrayList<>();
+    private final Set<String> processed = new HashSet<>();
+    private int seq = 0;
+
+    DelayQueue(LongSupplier clock, long visibilityMs, int maxReceiveCount, DelayQueue dlq) {
+        this.clock = clock;
+        this.visibilityMs = visibilityMs;
+        this.maxReceiveCount = maxReceiveCount;
+        this.dlq = dlq;
+    }
+
+    String send(String body) { return send(body, 0); }
+
+    String send(String body, long delayMs) {
+        String id = "m" + (++seq);
+        messages.add(new Msg(id, body, clock.getAsLong() + delayMs));
+        return id;
+    }
+
+    int size() { return messages.size(); }
+
+    List<Received> receive(int max) {
+        long now = clock.getAsLong();
+        List<Received> out = new ArrayList<>();
+        Iterator<Msg> it = messages.iterator();
+        while (it.hasNext() && out.size() < max) {
+            Msg m = it.next();
+            if (m.notBefore > now) continue;                  // message timer: chưa tới hạn delay
+            if (m.visibleAt > now) continue;                  // đang in-flight trong visibility timeout
+            if (dlq != null && m.receiveCount >= maxReceiveCount) {  // lần nhận này sẽ VƯỢT ngưỡng
+                it.remove();
+                dlq.messages.add(new Msg(m.id, m.body, m.notBefore));  // chuyển sang DLQ, giữ id/body
+                continue;
+            }
+            m.receiveCount++;
+            m.visibleAt = now + visibilityMs;                 // ẩn trong visibility timeout
+            m.handle = m.id + "#" + m.receiveCount;           // mỗi lần nhận một handle mới
+            out.add(new Received(m.id, m.body, m.handle, m.receiveCount));
+        }
+        return out;
+    }
+
+    private Msg byHandle(String handle) {
+        for (Msg m : messages) if (handle.equals(m.handle)) return m;
+        return null;
+    }
+
+    boolean delete(String handle) {
+        Msg m = byHandle(handle);
+        return m != null && messages.remove(m);
+    }
+
+    boolean process(String handle) {
+        Msg m = byHandle(handle);
+        if (m == null) return false;                          // đã bị xoá trước đó
+        boolean daXuLy = processed.contains(m.body);          // idempotent theo business id
+        processed.add(m.body);
+        messages.remove(m);
+        return !daXuLy;
+    }
+}`,
+      hints: [
+        'Một message visible khi {{notBefore <= now}} **và** {{visibleAt <= now}}. Nhận xong thì đẩy {{visibleAt = now + visibilityMs}} — đó là "khoá mềm".',
+        'Dùng {{Iterator}} để vừa duyệt vừa {{remove}} khi chuyển message sang DLQ, tránh {{ConcurrentModificationException}}.',
+        'Kiểm tra DLQ **trước** khi tăng {{receiveCount}}: với maxReceiveCount = 2, message được giao 2 lần, lần nhận thứ 3 mới chuyển sang DLQ.',
+        'Idempotent: giữ một {{Set<String> processed}} theo {{body}}; gặp lại body đã có thì xoá message và trả về false.',
+      ],
+      explain: `### Lời giải
+- {{receive}} duyệt message theo thứ tự, bỏ qua message chưa hết delay ({{notBefore > now}}) và message đang in-flight ({{visibleAt > now}}). Message đủ điều kiện thì hoặc chuyển sang DLQ (nếu lần nhận này vượt {{maxReceiveCount}}), hoặc được "khoá mềm" bằng cách đẩy {{visibleAt}} ra {{now + visibilityMs}} và cấp handle mới.
+- {{process}} là điểm chống trùng: tra {{body}} trong {{processed}}; đã có thì bỏ qua (false), chưa có thì ghi nhớ và xử lý (true). Kết hợp với việc xoá message, nó mô phỏng đúng "insert vào processed_events trong cùng transaction".
+- {{delete}} chỉ nhận handle **hiện tại**; handle cũ (từ lần nhận trước) bị từ chối, tránh consumer cũ xoá message khi consumer mới đang xử lý.
+
+### Vì sao at-least-once buộc idempotent
+SQS không có cơ chế "exactly-once" cho standard queue: message có thể được giao lại do timeout, do crash giữa xử lý và delete, hoặc do SQS phân tán trên nhiều server. Thay vì cố chống trùng ở tầng queue (rất đắt), ta đẩy việc chống trùng xuống consumer bằng business id + unique constraint — đó là mẫu "idempotent consumer" chuẩn.
+
+### Lỗi hay gặp
+- So {{receiveCount}} với ngưỡng **sau** khi tăng: message vào DLQ sớm hơn một lần.
+- Lưu handle là id message: consumer cũ xoá được message của consumer mới.
+- Quên rằng message có delay **chưa hiện** trong queue: tưởng message mất, thực ra chỉ chưa tới hạn.`,
+    },
+  ],
+  check: [
+    {
+      q: 'Message gửi với {{DelaySeconds}} = 300, consumer poll ngay sau đó. Vì sao ReceiveMessage trả về rỗng?',
+      options: ['Message đã vào DLQ', 'Message chưa tới hạn delay nên chưa được giao, không phải mất', 'Queue bị lỗi', 'Cần đổi visibility timeout mới nhận được'],
+      answer: 1,
+      explain: `Message timer hoãn việc **giao** message: trong 300 giây đầu message nằm trong queue nhưng chưa visible, nên ReceiveMessage trả rỗng. Đây không phải mất message (delay hết thì message hiện ra), không phải DLQ (DLQ chỉ khi vượt maxReceiveCount), và visibility timeout không liên quan (nó tính từ lúc nhận).`,
+    },
+    {
+      q: 'Consumer xử lý p99 = 52 giây nhưng visibility timeout để 30 giây. Hậu quả?',
+      options: ['Message mất vĩnh viễn', 'Message bị giao lại khi consumer đầu vẫn chạy, gây xử lý trùng và có thể vào DLQ oan', 'SQS tự động gia hạn', 'Consumer nhận ngoại lệ'],
+      answer: 1,
+      explain: `Hết 30 giây message hiện lại và consumer khác nhận trong khi consumer đầu vẫn xử lý (p99 52s): trùng, ReceiveCount tăng, đủ ngưỡng thì vào DLQ dù không lỗi. SQS không tự gia hạn (phải gọi ChangeMessageVisibility); không làm mất message; không ném ngoại lệ. Đặt visibility timeout > p99 có dư, hoặc gia hạn định kỳ.`,
+    },
+    {
+      q: 'Để chống xử lý trùng khi message bị giao lại, consumer nên làm gì?',
+      options: ['Đặt visibility timeout = 12 giờ', 'Dùng business id + bảng processed_events unique trong cùng transaction với thay đổi nghiệp vụ', 'Tắt DLQ', 'Gọi DeleteMessage trước khi xử lý'],
+      answer: 1,
+      explain: `At-least-once nên phải idempotent: unique constraint theo business id trong cùng transaction đảm bảo mỗi id chỉ có tác dụng một lần. Visibility timeout 12 giờ chỉ khoá message lâu, không chống trùng; tắt DLQ làm message độc kẹt; delete trước khi xử lý gây mất message nếu xử lý lỗi.`,
+    },
+  ],
+  related: ['aws-008', 'aws-028', 'aws-007'],
+  tags: ['SQS', 'message timer', 'delay queue', 'visibility timeout', 'DLQ', 'idempotent'],
+},
+{
+  id: 'lesson-aws-012',
+  track: 'aws',
+  order: 12,
+  title: 'S3 multipart upload: ETag ghép từ part và conditional write (If-None-Match) chống ghi đè',
+  level: 'senior',
+  minutes: 45,
+  goals: [
+    'Hiểu ETag của object đơn (MD5) khác ETag của object multipart (MD5-của-MD5 + "-N")',
+    'Mô phỏng multipart upload: upload part, kiểm tra ETag từng part, ghép và tính ETag cuối',
+    'Dùng conditional write (If-None-Match: *) để "chỉ tạo nếu chưa tồn tại", chống hai client ghi trùng',
+    'Biết vì sao ETag KHÔNG phải hash nội dung đáng tin với multipart và object SSE-KMS',
+  ],
+  body: `### Tóm tắt: multipart ghép part bằng ETag, conditional write chống ghi đè
+**Multipart upload** chia file lớn thành nhiều **part** upload song song rồi ghép lại; **ETag** là "mã vân tay" của object dùng để kiểm tra toàn vẹn. **Conditional write** ({{If-None-Match: *}}) là "chỉ ghi nếu object chưa tồn tại" — một khoá lạc quan đơn giản ngay trong S3, chống hai client cùng tạo một key.
+
+### Bắt đầu từ gốc: vì sao cần multipart
+Một lần {{PUT}} S3 tối đa **5 GB**. Với file 2 GB, upload một lần rất rủi ro: mạng rớt là phải làm lại từ đầu, và không tận dụng được băng thông song song. **Multipart upload** chia file thành các part (mỗi part 5 MiB–5 GiB, tối đa 10.000 part), upload từng part (có thể song song, part nào lỗi thì upload lại riêng part đó), rồi {{CompleteMultipartUpload}} để S3 ghép thành object. Lợi ích: **resume** (mất mạng không mất part đã xong), **song song** (nhanh hơn), **kiểm tra từng phần**.
+
+### ETag là gì
+**ETag** (entity tag) là một chuỗi định danh phiên bản của object, S3 trả về khi PUT và trong header {{ETag}} khi GET/HEAD. Với object **ghi một lần** (không multipart), ETag = **MD5 hex** của nội dung (32 ký tự hex). Với object **multipart**, ETag = MD5 hex của **nối các digest 16 byte của từng part theo thứ tự số phần**, rồi thêm **"-N"** (N = số part), ví dụ {{9ffa069295e38c0d33a776af530a0e16-3}}. Nhờ hậu tố "-N", bạn biết ngay object này được ghép từ 3 part.
+
+~~~text
+part 1 --MD5--> d1 (16 byte) --\
+part 2 --MD5--> d2 (16 byte) ----> nối d1+d2+d3 --MD5--> hex + "-3"  = ETag object
+part 3 --MD5--> d3 (16 byte) --/
+~~~
+
+### Conditional write: khoá lạc quan trong S3
+Từ 2024, S3 hỗ trợ **conditional write** trên {{PutObject}} và {{CompleteMultipartUpload}}:
+- {{If-None-Match: *}}: chỉ ghi nếu **chưa có** object ở key đó. Nếu đã có → trả về 412 (Precondition Failed). Đây là cách "create if not exists" nguyên tử, không cần đọc-rồi-ghi (vốn có race).
+- {{If-Match: <etag>}}: chỉ ghi nếu object hiện tại đúng ETag đó (optimistic concurrency, chống lost update).
+
+Ví dụ: hai client cùng upload {{reports/2026/r1.json}} với presigned URL và {{If-None-Match: *}}. Dù đến gần như đồng thời, chỉ **một** request thành công, request kia nhận 412 — không có chuyện cả hai ghi đè nhau. Đây chính là "khoá lạc quan" (optimistic locking) ở tầng object store.
+
+### Presigned URL ghép với multipart
+Với upload lớn từ client (mobile, browser), server không nên nhận bytes. Server sinh **presigned URL cho từng part** (mỗi URL ký cho đúng một {{UploadPart}}), client PUT trực tiếp từng part lên S3, rồi gọi Complete. Kết hợp {{If-None-Match: *}} ở bước Complete để chống trùng khi client bấm "tạo" hai lần hoặc retry.
+
+### ETag KHÔNG phải hash nội dung đáng tin
+Một cái bẫy lớn: ETag của object **multipart** không bằng MD5 của toàn file, nên không dùng để so sánh nội dung được. Thêm nữa, object mã hoá bằng **SSE-KMS** có ETag **không phải** MD5 (S3 không expose MD5 cho object KMS). Muốn checksum toàn vẹn thật sự, dùng **Checksum SHA-256** ({{x-amz-checksum-sha256}}) hoặc tính MD5 ở client trước khi upload và tự so sánh. Đừng bao giờ giả định "ETag == MD5(file)" cho mọi object.
+
+### Ví dụ đời thực có số liệu
+Một app cho upload video 2 GB từ mobile. Ban đầu Complete không kiểm ETag part, và nút "Tạo album" bị double-tap tạo hai bản ghi. Triệu chứng: một số video xuất hiện hai lần, và 0,3% upload Complete fail vì thiếu part giữa chừng (mạng rớt). Xử lý: (1) Complete kiểm tra part tạo dãy 1..N liên tục và ETag từng part khớp MD5 đã lưu → thiếu/sai part bị từ chối ngay; (2) thêm {{If-None-Match: *}} khi tạo key album → double-tap chỉ một lần thành công; (3) lifecycle {{AbortIncompleteMultipartUpload}} sau 7 ngày dọn part rác. Kết quả: không còn album trùng, tỷ lệ Complete fail giảm còn 0,02% (client resume part thiếu thay vì làm lại).
+
+### Lỗi hay gặp
+- Coi ETag multipart == MD5(file): sai, dùng checksum SHA-256 nếu cần toàn vẹn.
+- Complete mà không kiểm part: thiếu part giữa chừng vẫn có thể thành object thiếu dữ liệu (nếu client tự ghép danh sách sai).
+- Không dùng conditional write: hai request đồng thời cùng key ghi đè nhau (lost update), hoặc double-submit tạo trùng.
+- Quên abort upload dở dang: part rác vẫn tính tiền lưu trữ và không hiện trong LIST.
+
+### Liên hệ phỏng vấn
+Interviewer hay hỏi: "ETag của multipart khác ETag thường thế nào?", "Làm sao chống hai client cùng ghi một key?", "ETag có phải MD5 đáng tin không?", "Thiết kế upload video 2 GB từ mobile". Trả lời tốt: multipart ETag = MD5-của-các-MD5 + "-N"; dùng If-None-Match để create-if-absent nguyên tử; ETag multipart/SSE-KMS không phải MD5 nội dung, cần checksum SHA-256; presigned URL từng part + Complete có kiểm ETag + abort + conditional write. Bài tập dưới đây cho bạn tự cài ghép part, kiểm ETag và conditional write.
+
+> Senior tip: Conditional write là "compare-and-set" của object store — rẻ, nguyên tử, không cần thêm một lần đọc. Khi thiết kế "tạo mới nếu chưa có" (idempotent create), luôn nghĩ tới If-None-Match trước khi nghĩ tới đọc-rồi-kiểm-rồi-ghi, vì cách sau luôn có cửa sổ race.`,
+  exercises: [
+    {
+      title: 'Mô phỏng multipart upload: ETag part, ghép 1..N, ETag cuối và conditional write',
+      prompt: `Mô phỏng multipart upload của S3 trong bộ nhớ (không dùng AWS SDK), có thêm **conditional write**.
+
+Đã có sẵn: record {{PartETag(partNumber, etag)}}, lớp {{Upload}} (gồm {{key}}, {{parts}} = TreeMap số phần → bytes, {{done}}), constructor, {{createUpload(key)}} (trả về {{uploadId}}, gắn với key đích), {{abort}} chưa cài. Bạn cài:
+
+1. {{uploadPart(uploadId, partNumber, data)}}: nếu uploadId không tồn tại hoặc đã {{done}} → ném {{IllegalArgumentException}}; nếu {{partNumber < 1}} → ném {{IllegalArgumentException}}. Lưu {{data}} vào {{parts[partNumber]}} và trả về **ETag của part** = MD5 hex lowercase (32 ký tự) của {{data}}.
+2. {{complete(uploadId, parts, ifNoneMatchStar)}}:
+   ▸ nếu uploadId không tồn tại hoặc đã {{done}} → ném {{IllegalArgumentException}};
+   ▸ nếu {{ifNoneMatchStar == true}} và {{key}} đã có trong store → ném {{IllegalArgumentException}} (mô phỏng 412 Precondition Failed của {{If-None-Match: *}});
+   ▸ {{parts}} phải tạo thành dãy số phần {{1..N}} (N = {{parts.size()}}), không trùng, không thiếu, không có số ngoài {{1..N}}; mỗi part phải đã upload và ETag truyền vào phải khớp MD5 của bytes đã lưu — sai bất kỳ điều kiện nào → ném {{IllegalArgumentException}};
+   ▸ ETag object cuối = MD5 hex của **nối các raw digest 16 byte của từng part theo thứ tự số phần**, rồi nối {{"-" + N}}; lưu vào store theo {{key}}, đánh dấu {{done}}, trả về ETag đó.
+3. {{abort(uploadId)}}: nếu không tồn tại hoặc đã {{done}} → ném {{IllegalArgumentException}}; ngược lại đánh dấu {{done}}.
+
+{{md5Hex}} và {{md5Raw}} là hai hàm tiện ích có sẵn trong lời giải mẫu (dùng {{MessageDigest}}).`,
+      starter: `import java.security.MessageDigest;
+import java.security.NoSuchAlgorithmException;
+import java.util.ArrayList;
+import java.util.HashMap;
+import java.util.List;
+import java.util.Map;
+import java.util.TreeMap;
+
+record PartETag(int partNumber, String etag) {}
+
+class ConditionalMultipart {
+    private static final class Upload {
+        final String key;
+        final Map<Integer, byte[]> parts = new TreeMap<>();
+        boolean done;
+        Upload(String key) { this.key = key; }
+    }
+
+    private final Map<String, Upload> uploads = new HashMap<>();
+    private final Map<String, String> store = new HashMap<>();   // key -> ETag object đã complete
+    private int seq = 0;
+
+    String createUpload(String key) {
+        String id = "u" + (++seq);
+        uploads.put(id, new Upload(key));
+        return id;
+    }
+
+    String uploadPart(String uploadId, int partNumber, byte[] data) {
+        throw new UnsupportedOperationException("TODO");
+    }
+
+    String complete(String uploadId, List<PartETag> parts, boolean ifNoneMatchStar) {
+        throw new UnsupportedOperationException("TODO");
+    }
+
+    void abort(String uploadId) {
+        throw new UnsupportedOperationException("TODO");
+    }
+
+    private static byte[] md5Raw(byte[] data) {
+        try { return MessageDigest.getInstance("MD5").digest(data); }
+        catch (NoSuchAlgorithmException e) { throw new IllegalStateException(e); }
+    }
+
+    private static String md5Hex(byte[] data) {
+        return HexFormat.of().formatHex(md5Raw(data));
+    }
+}`,
+      tests: `import java.nio.charset.StandardCharsets;
+import java.util.List;
+
+public class Main {
+    static int passed = 0, total = 0;
+    static void eq(String name, Object expected, Supplier<Object> actual) {
+        total++;
+        try {
+            Object got = actual.get();
+            if (Objects.equals(expected, got)) { passed++; System.out.println("PASS " + name); }
+            else System.out.println("FAIL " + name + ": mong đợi " + expected + ", nhận " + got);
+        } catch (RuntimeException e) {
+            System.out.println("FAIL " + name + ": ném " + e);
+        }
+    }
+    static String catchIae(Supplier<Object> s) {
+        try { s.get(); return "no exception"; } catch (IllegalArgumentException e) { return "IAE"; }
+    }
+    public static void main(String[] args) {
+        ConditionalMultipart u = new ConditionalMultipart();
+        byte[] d1 = "don-hang-001".getBytes(StandardCharsets.UTF_8);
+        byte[] d2 = "don-hang-002".getBytes(StandardCharsets.UTF_8);
+        byte[] d3 = "don-hang-003".getBytes(StandardCharsets.UTF_8);
+
+        String id1 = u.createUpload("invoices/inv-1");
+        String e1 = u.uploadPart(id1, 1, d1);
+        String e2 = u.uploadPart(id1, 2, d2);
+        String e3 = u.uploadPart(id1, 3, d3);
+        eq("etag phần là 32 ký tự hex lowercase", true, () -> e1.matches("[0-9a-f]{32}"));
+        eq("cùng dữ liệu có cùng etag", true, () -> u.uploadPart(id1, 1, d1).equals(e1));
+        eq("ghép 3 phần theo thứ tự", "9ffa069295e38c0d33a776af530a0e16-3", () -> u.complete(id1, List.of(new PartETag(1, e1), new PartETag(2, e2), new PartETag(3, e3)), false));
+
+        String id2 = u.createUpload("invoices/inv-2");
+        String f1 = u.uploadPart(id2, 1, d1);
+        eq("một phần duy nhất", "c783668b635eedcdf7019c092043d174-1", () -> u.complete(id2, List.of(new PartETag(1, f1)), false));
+
+        String id3 = u.createUpload("k3");
+        String g1 = u.uploadPart(id3, 1, d1);
+        String g2 = u.uploadPart(id3, 2, d2);
+        String g3 = u.uploadPart(id3, 3, d3);
+        eq("ghép ngược thứ tự vẫn cùng ETag", "9ffa069295e38c0d33a776af530a0e16-3", () -> u.complete(id3, List.of(new PartETag(3, g3), new PartETag(1, g1), new PartETag(2, g2)), false));
+
+        String id4 = u.createUpload("k4");
+        u.uploadPart(id4, 1, d1); u.uploadPart(id4, 3, d3);
+        eq("bỏ phần giữa chừng bị từ chối", "IAE", () -> catchIae(() -> u.complete(id4, List.of(new PartETag(1, e1), new PartETag(3, e3)), false)));
+
+        String id5 = u.createUpload("k5");
+        u.uploadPart(id5, 1, d1);
+        eq("etag phần sai bị từ chối", "IAE", () -> catchIae(() -> u.complete(id5, List.of(new PartETag(1, "00000000000000000000000000000000")), false)));
+
+        String idA = u.createUpload("reports/r1");
+        String a1 = u.uploadPart(idA, 1, d1);
+        eq("conditional create thành công khi chưa tồn tại", "c783668b635eedcdf7019c092043d174-1", () -> u.complete(idA, List.of(new PartETag(1, a1)), true));
+
+        String idB = u.createUpload("reports/r1");
+        String b1 = u.uploadPart(idB, 1, d2);
+        eq("conditional create bị từ chối khi đã tồn tại", "IAE", () -> catchIae(() -> u.complete(idB, List.of(new PartETag(1, b1)), true)));
+
+        String idC = u.createUpload("kC");
+        u.abort(idC);
+        eq("sau abort thì complete bị từ chối", "IAE", () -> catchIae(() -> u.complete(idC, List.of(), false)));
+        eq("upload id không tồn tại", "IAE", () -> catchIae(() -> u.uploadPart("không-tồn-tại", 1, d1)));
+
+        String idD = u.createUpload("kD");
+        String dOne = u.uploadPart(idD, 1, d1);
+        u.complete(idD, List.of(new PartETag(1, dOne)), false);
+        eq("sau complete thì abort bị từ chối", "IAE", () -> catchIae(() -> { u.abort(idD); return null; }));
+
+        System.out.println("RESULT " + passed + "/" + total);
+    }
+}`,
+      reference: `import java.security.MessageDigest;
+import java.security.NoSuchAlgorithmException;
+import java.util.ArrayList;
+import java.util.HashMap;
+import java.util.List;
+import java.util.Map;
+import java.util.TreeMap;
+
+record PartETag(int partNumber, String etag) {}
+
+class ConditionalMultipart {
+    private static final class Upload {
+        final String key;
+        final Map<Integer, byte[]> parts = new TreeMap<>();
+        boolean done;
+        Upload(String key) { this.key = key; }
+    }
+
+    private final Map<String, Upload> uploads = new HashMap<>();
+    private final Map<String, String> store = new HashMap<>();
+    private int seq = 0;
+
+    String createUpload(String key) {
+        String id = "u" + (++seq);
+        uploads.put(id, new Upload(key));
+        return id;
+    }
+
+    String uploadPart(String uploadId, int partNumber, byte[] data) {
+        Upload u = uploads.get(uploadId);
+        if (u == null || u.done) throw new IllegalArgumentException("upload không tồn tại hoặc đã kết thúc");
+        if (partNumber < 1) throw new IllegalArgumentException("partNumber phải >= 1");
+        u.parts.put(partNumber, data);
+        return md5Hex(data);                                  // ETag của part = MD5 hex nội dung
+    }
+
+    String complete(String uploadId, List<PartETag> parts, boolean ifNoneMatchStar) {
+        Upload u = uploads.get(uploadId);
+        if (u == null || u.done) throw new IllegalArgumentException("upload không tồn tại hoặc đã kết thúc");
+        if (ifNoneMatchStar && store.containsKey(u.key)) {    // If-None-Match: * => chỉ tạo nếu chưa có
+            throw new IllegalArgumentException("object đã tồn tại");
+        }
+        int n = parts.size();
+        if (n < 1) throw new IllegalArgumentException("phải có ít nhất 1 part");
+        boolean[] seen = new boolean[n + 1];
+        byte[][] digests = new byte[n][];
+        for (PartETag pe : parts) {
+            if (pe.partNumber() < 1 || pe.partNumber() > n || seen[pe.partNumber()]) {
+                throw new IllegalArgumentException("số phần không hợp lệ hoặc trùng");
+            }
+            seen[pe.partNumber()] = true;
+            byte[] data = u.parts.get(pe.partNumber());
+            if (data == null) throw new IllegalArgumentException("chưa upload part " + pe.partNumber());
+            if (!md5Hex(data).equals(pe.etag())) {            // kiểm tra toàn vẹn từng part
+                throw new IllegalArgumentException("etag part " + pe.partNumber() + " sai");
+            }
+            digests[pe.partNumber() - 1] = md5Raw(data);
+        }
+        byte[] all = new byte[n * 16];                        // nối raw digest theo thứ tự 1..N
+        for (int i = 0; i < n; i++) System.arraycopy(digests[i], 0, all, i * 16, 16);
+        String etag = md5Hex(all) + "-" + n;                  // ETag multipart = MD5(các MD5) + "-N"
+        u.done = true;
+        store.put(u.key, etag);
+        return etag;
+    }
+
+    void abort(String uploadId) {
+        Upload u = uploads.get(uploadId);
+        if (u == null || u.done) throw new IllegalArgumentException("upload không tồn tại hoặc đã kết thúc");
+        u.done = true;
+    }
+
+    private static byte[] md5Raw(byte[] data) {
+        try { return MessageDigest.getInstance("MD5").digest(data); }
+        catch (NoSuchAlgorithmException e) { throw new IllegalStateException(e); }
+    }
+
+    private static String md5Hex(byte[] data) {
+        return HexFormat.of().formatHex(md5Raw(data));
+    }
+}`,
+      hints: [
+        'ETag part = {{HexFormat.of().formatHex(MessageDigest.getInstance("MD5").digest(data))}}. ETag object = MD5 của **nối các digest 16 byte** theo thứ tự số phần, rồi + {{"-" + N}}.',
+        'Để kiểm tra dãy 1..N: dùng mảng {{boolean[] seen}} đánh dấu số phần đã gặp; gặp số ngoài {{1..n}} hoặc đã seen → ném IllegalArgumentException. ETag từng part phải khớp MD5 đã lưu.',
+        'Conditional write: nếu {{ifNoneMatchStar}} và {{store.containsKey(key)}} → ném lỗi (mô phỏng 412). Đây là "create if not exists" nguyên tử.',
+      ],
+      explain: `### Lời giải
+- {{uploadPart}} lưu bytes theo số phần và trả MD5 hex của part — đúng như S3 trả ETag cho mỗi UploadPart.
+- {{complete}} kiểm tra ba lớp: (1) dãy số phần liên tục 1..N không trùng (mảng {{seen}}), (2) mỗi part đã upload và ETag khớp MD5 đã lưu, (3) nếu {{ifNoneMatchStar}} thì key phải chưa tồn tại. Sau đó tính ETag multipart = MD5 của các raw digest 16 byte nối theo thứ tự, thêm "-N".
+- {{abort}} chỉ đánh dấu {{done}}; mọi thao tác sau đó trên uploadId bị từ chối, mô phỏng việc S3 không cho complete/abort hai lần.
+
+### Vì sao ETag multipart là "MD5 của MD5"
+S3 ghép object từ các part đã upload riêng; để có một mã vân tay ổn định mà không phải đọc lại toàn bộ bytes, S3 lấy MD5 của **các digest part** (mỗi digest 16 byte) nối theo thứ tự rồi thêm số part. Vì vậy ETag này **không** bằng MD5 của file gộp, và không dùng để so sánh nội dung toàn file được — muốn toàn vẹn thật thì dùng checksum SHA-256.
+
+### Lỗi hay gặp
+- Dùng {{parts.size()}} làm N nhưng parts truyền vào thiếu số giữa: mảng {{seen}} và kiểm {{partNumber > n}} sẽ bắt được (số 3 với n = 2 → lỗi).
+- Quên kiểm ETag part: object ghép từ part bị hỏng vẫn "thành công".
+- Conditional write đặt sau khi đã ghi: mất tác dụng; phải kiểm **trước** khi commit vào store.`,
+    },
+  ],
+  check: [
+    {
+      q: 'ETag của một object upload bằng multipart 3 part có dạng nào?',
+      options: ['MD5 hex 32 ký tự của toàn file', 'MD5 hex của nối các MD5 part theo thứ tự, thêm "-3"', 'Một số ngẫu nhiên S3 sinh', 'Giống hệt ETag của lần upload một phần'],
+      answer: 1,
+      explain: `ETag multipart = MD5-của-các-MD5-part (mỗi part 16 byte) nối theo thứ tự số phần, rồi thêm "-N". Nó **không** bằng MD5 toàn file (32 hex), không ngẫu nhiên, và khác ETag object đơn. Hậu tố "-3" cho biết ghép từ 3 part.`,
+    },
+    {
+      q: 'Hai client cùng CompleteMultipartUpload lên cùng key với {{If-None-Match: *}}. Kết quả?',
+      options: ['Cả hai thành công, bản sau ghi đè bản trước', 'Chỉ một request thành công, request kia nhận 412 Precondition Failed', 'Cả hai đều nhận 412', 'S3 trả về lỗi 500'],
+      answer: 1,
+      explain: `{{If-None-Match: *}} là conditional write "chỉ tạo nếu chưa tồn tại", nguyên tử: request đầu tạo object, request sau thấy key đã có nên bị từ chối 412. Không có ghi đè, không phải cả hai cùng lỗi, và không phải 500. Đây là optimistic concurrency ở tầng object store.`,
+    },
+    {
+      q: 'Vì sao không nên dùng ETag để so sánh nội dung một object multipart mã hoá SSE-KMS?',
+      options: ['Vì ETag luôn rỗng', 'Vì ETag multipart không phải MD5 toàn file, và object SSE-KMS có ETag không phải MD5', 'Vì ETag chỉ có khi bật versioning', 'Vì ETag đổi mỗi lần GET'],
+      answer: 1,
+      explain: `ETag multipart là MD5-của-MD5 + "-N", không bằng MD5 file gộp; object SSE-KMS còn không expose MD5 (ETag không phải MD5 nội dung). Muốn toàn vẹn thật phải dùng checksum SHA-256 hoặc tự tính MD5 ở client. ETag không rỗng, không phụ thuộc versioning, và không đổi theo GET.`,
+    },
+  ],
+  related: ['aws-007', 'aws-013', 'aws-014'],
+  tags: ['S3', 'multipart upload', 'ETag', 'conditional write', 'If-None-Match', 'checksum'],
+},
+
 );
