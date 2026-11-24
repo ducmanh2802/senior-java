@@ -6607,4 +6607,157 @@ Một công ty chứng khoán tính margin theo lô 60 giây. Trong một phiên
   ],
   tags: ['margin', 'call margin', 'force sell', 'ký quỹ', 'chứng khoán', 'risk']
 },
+{
+  id: 'banking-087',
+  topic: 'banking',
+  level: 'senior',
+  q: 'Tính lãi tiền gửi/tiền vay theo ngày dùng quy ước actual/365 như thế nào? Làm tròn ra sao và xử lý ngày nghỉ, ngày lễ?',
+  a: `**Tóm tắt:** Dùng BigDecimal, tính số ngày thực tế giữa hai ngày (actual), chia cho 365 (hoặc 360 theo quy ước của sản phẩm), làm tròn theo Half-Up ở bước cuối cùng, và chỉ tính ngày làm việc theo lịch cut-off; tiền lãi luôn ghi nhận như một bút toán riêng, không cộng vào gốc tự động nếu hợp đồng không cho phép.
+
+### Actual/365 là gì
+- Actual/365: lãi = gốc × lãi suất × (số ngày thực tế / 365).
+- Actual/360: chia cho 360 (phổ biến trong vay USD).
+- 30/360: giả định mỗi tháng 30 ngày (phổ biến trái phiếu).
+- Phải thống nhất theo sản phẩm và ghi rõ trong hợp đồng.
+
+### Tính số ngày
+- Dùng LocalDate và ChronoUnit.DAYS.between(start, end).
+- Ngày bắt đầu không tính, ngày kết thúc tính (convention) hoặc ngược lại — ghi rõ trong code và hợp đồng.
+- Ngày nghỉ/lễ: nếu ngày đến hạn rơi vào cuối tuần hoặc lễ, dời theo quy tắc modified following (dời đến ngày làm việc tiếp theo, trừ khi sang tháng khác thì lùi lại).
+
+### Làm tròn
+- Tính lãi theo từng kỳ với độ chính xác cao (scale 10), chỉ làm tròn ở bước cuối.
+- Dùng RoundingMode.HALF_UP hoặc HALF_EVEN theo quy định ngân hàng.
+- Tiền lãi nhỏ (< 1 đồng) tích lũy vào kỳ sau, không mất.
+
+### Code ví dụ
+~~~java
+public BigDecimal calcInterest(BigDecimal principal, BigDecimal rate, LocalDate from, LocalDate to) {
+    long days = ChronoUnit.DAYS.between(from, to);
+    BigDecimal factor = new BigDecimal(days).divide(new BigDecimal(365), 10, RoundingMode.HALF_UP);
+    return principal.multiply(rate).multiply(factor).setScale(0, RoundingMode.HALF_UP);
+}
+~~~
+
+### Ví dụ đời thực
+Một ngân hàng tính lãi tiết kiệm 100.000.000 VND, lãi suất 5%/năm, từ 01/01 đến 31/01 (30 ngày): lãi = 100.000.000 × 0,05 × 30/365 = 410.958,9 VND → làm tròn 410.959 VND. Nếu dùng double thì sai vài đồng ở biên; nếu làm tròn từng ngày rồi cộng thì sai nhiều hơn.
+
+### Trả lời mẫu khi phỏng vấn
+"Tôi dùng BigDecimal cho mọi tính toán tiền, không dùng double. Quy ước ngày actual/365 hoặc 360 theo sản phẩm, tính số ngày bằng ChronoUnit, làm tròn HALF_UP ở bước cuối với scale đủ lớn. Ngày nghỉ/lễ dời theo modified following. Tiền lãi ghi nhận riêng, không cộng gốc trừ khi hợp đồng cho phép. Tôi viết unit test cho biên: ngày đầu/kết, năm nhuận, làm tròn .5, và so sánh với kết quả Excel của phòng kế toán."
+
+> Senior tip: Sai lầm phổ biến nhất là làm tròn lãi từng ngày rồi cộng lại — sai số tích lũy rất lớn. Luôn tính cả kỳ rồi làm tròn một lần. Và đừng quên năm nhuận: 365 hay 366 ảnh hưởng trực tiếp đến lãi.
+
+### Cụm từ: actual/365 là tính lãi theo số ngày thực tế chia cho 365. Modified following là quy tắc dời ngày đến hạn rơi vào ngày nghỉ sang ngày làm việc tiếp theo. Half-Up là làm tròn nửa lên.
+`,
+  follow: [
+    'Bạn xử lý thế nào khi ngày đến hạn rơi vào ngày lễ và dời sang tháng khác?',
+    'Làm sao đảm bảo kết quả tính lãi khớp với phòng kế toán?',
+    'Bạn lưu trữ và kiểm toán lịch sử tính lãi như thế nào?'
+  ],
+  tags: ['interest', 'BigDecimal', 'actual/365', 'rounding', 'banking']
+},
+{
+  id: 'banking-088',
+  topic: 'banking',
+  level: 'senior',
+  q: 'Giờ cut-off giao dịch liên ngân hàng và ngày làm việc kế tiếp ảnh hưởng thế nào đến xử lý và hiển thị cho khách?',
+  a: `**Tóm tắt:** Cut-off là thời điểm trong ngày sau đó giao dịch không còn được xử lý trong ngày làm việc hiện tại mà chuyển sang ngày làm việc tiếp theo; mọi hiển thị "tiền về khi nào" phải tính theo cut-off và lịch ngày nghỉ, không theo thời gian thực của khách.
+
+### Cut-off là gì
+- Cut-off: giờ chốt xử lý trong ngày (ví dụ 16:00 cho chuyển tiền liên ngân hàng).
+- Giao dịch trước cut-off: xử lý trong ngày, tiền về cùng ngày (nếu cùng hệ thống) hoặc T+1.
+- Giao dịch sau cut-off: chuyển sang ngày làm việc tiếp theo, tiền về T+1 hoặc T+2.
+
+### Ngày làm việc
+- Ngày làm việc = thứ 2–6, trừ ngày lễ theo lịch ngân hàng.
+- Phải có bảng lịch ngày nghỉ được cập nhật hàng năm và có hiệu lực theo ngày.
+- Khi tính ngày làm việc kế tiếp, bỏ qua cuối tuần và lễ.
+
+### Ảnh hưởng đến xử lý
+- Khi nhận giao dịch sau cut-off, hệ thống đặt trạng thái PENDING và lên lịch xử lý vào ngày làm việc kế tiếp.
+- Phải hiển thị cho khách: "Giao dịch sẽ được xử lý vào ngày X" chứ không phải "thành công".
+- Nếu khách chuyển vào thứ 6 sau cut-off, tiền về thứ 2 (bỏ qua cuối tuần).
+
+### Code ví dụ
+~~~java
+public LocalDate nextBusinessDay(LocalDate date) {
+    LocalDate d = date.plusDays(1);
+    while (isWeekend(d) || isHoliday(d)) d = d.plusDays(1);
+    return d;
+}
+public boolean isBeforeCutOff(LocalTime now, LocalTime cutOff) {
+    return now.isBefore(cutOff);
+}
+~~~
+
+### Ví dụ đời thực
+Một khách chuyển tiền liên ngân hàng lúc 17:30 thứ 6. Cut-off là 16:00, nên giao dịch được đặt PENDING và xử lý thứ 2. Nếu hệ thống hiển thị "thành công" ngay, khách sẽ gọi hotline khi không thấy tiền về. Sau khi thêm thông báo "dự kiến về thứ 2" và trạng thái PENDING rõ ràng, số cuộc gọi về giao dịch chuyển tiền giảm 30%.
+
+### Trả lời mẫu khi phỏng vấn
+"Cut-off và ngày làm việc là hai khái niệm cốt lõi trong banking. Tôi thiết kế một service tính ngày làm việc kế tiếp dựa trên lịch ngày nghỉ, và mọi giao dịch sau cut-off được đặt PENDING với ngày xử lý dự kiến. Hiển thị cho khách phải khớp với trạng thái thực tế, không được báo thành công khi chưa xử lý. Tôi cũng đảm bảo scheduler chạy đúng giờ cut-off và có cơ chế retry nếu job thất bại."
+
+> Senior tip: Đừng hard-code lịch ngày nghỉ trong code. Lưu trong database với effective date và cache trong memory, cập nhật qua admin. Một năm có năm nhuận và thay đổi lịch lễ; hard-code sẽ gây lỗi đúng lúc lễ.
+
+### Cụm từ: cut-off là giờ chốt xử lý trong ngày. Ngày làm việc là ngày ngân hàng mở cửa xử lý giao dịch. PENDING là trạng thái chờ xử lý.
+`,
+  follow: [
+    'Bạn xử lý thế nào khi lịch ngày nghỉ thay đổi giữa chừng?',
+    'Làm sao đảm bảo scheduler chạy đúng giờ cut-off và không bị miss?',
+    'Bạn hiển thị trạng thái giao dịch cho khách như thế nào để tránh hiểu lầm?'
+  ],
+  tags: ['cut-off', 'business day', 'pending', 'banking']
+},
+{
+  id: 'banking-089',
+  topic: 'banking',
+  level: 'lead',
+  q: 'Tích hợp với core banking cũ qua lớp middleware/ESB: timeout, đối soát và giới hạn throughput xử lý thế nào?',
+  a: `**Tóm tắt:** Middleware/ESB là lớp trung gian giữa kênh số và core banking cũ; phải thiết kế timeout ngắn, retry có kiểm soát, idempotency key, circuit breaker và đối soát tự động để xử lý trường hợp timeout không rõ kết quả.
+
+### Middleware/ESB là gì
+- Middleware (phần mềm trung gian): lớp nằm giữa các hệ thống, chuyển đổi định dạng và điều phối message.
+- ESB (Enterprise Service Bus): một dạng middleware tập trung, định tuyến và chuyển đổi protocol.
+- Core banking cũ thường chỉ hỗ trợ protocol cũ (ISO 8583, MQ, SOAP) và throughput thấp.
+
+### Timeout
+- Đặt timeout ngắn (3–5 giây) cho mỗi call đến core.
+- Nếu timeout, không biết giao dịch thành công hay thất bại → trạng thái UNKNOWN.
+- Phải có cơ chế tra soát (inquiry) để hỏi lại core về trạng thái giao dịch.
+
+### Idempotency
+- Mỗi request mang idempotency key (transaction id).
+- Nếu retry, core phải nhận ra key đã xử lý và trả kết quả cũ, không xử lý lại.
+- Lưu key trong database với TTL phù hợp.
+
+### Circuit breaker
+- Dùng Resilience4j hoặc Spring Cloud Circuit Breaker.
+- Khi core lỗi liên tục, ngắt mạch để không làm nghẽn kênh số.
+- Sau thời gian chờ, thử lại với một request (half-open).
+
+### Đối soát
+- Chạy batch định kỳ (mỗi 5 phút hoặc cuối ngày) so sánh giao dịch giữa kênh và core.
+- Phát hiện lệch và tự động xử lý hoặc alert.
+
+### Giới hạn throughput
+- Core cũ có giới hạn TPS thấp (ví dụ 50 TPS).
+- Dùng queue/buffer để làm phẳng traffic, tránh spike.
+- Rate limit ở gateway để bảo vệ core.
+
+### Ví dụ đời thực
+Một ngân hàng có core banking cũ xử lý tối đa 30 TPS. Trong giờ cao điểm, kênh số gửi 200 TPS → core quá tải, timeout hàng loạt. Sau khi thêm queue làm phẳng traffic, rate limit ở gateway (25 TPS), circuit breaker và cơ chế tra soát tự động, tỷ lệ timeout giảm từ 8% xuống 0,3%, và mọi giao dịch timeout đều được tra soát và xử lý trong vòng 2 phút.
+
+### Trả lời mẫu khi phỏng vấn
+"Tôi thiết kế một adapter layer bọc core banking cũ, với timeout ngắn, idempotency key, circuit breaker và retry có kiểm soát. Khi timeout, đặt trạng thái UNKNOWN và lên lịch tra soát tự động. Dùng queue để làm phẳng traffic và rate limit để bảo vệ core. Đối soát chạy định kỳ và alert khi có lệch. Tôi cũng ghi log đầy đủ để điều tra khi có sự cố."
+
+> Senior tip: Sai lầm lớn nhất là retry ngay khi timeout mà không có idempotency — có thể trừ tiền khách hai lần. Luôn có idempotency key và cơ chế tra soát trước khi retry. Và đừng quên circuit breaker: khi core đang chết, tiếp tục gọi chỉ làm mọi thứ tệ hơn.
+
+### Cụm từ: ESB là bus dịch vụ doanh nghiệp, trung gian giữa các hệ thống. Circuit breaker là cơ chế ngắt mạch khi downstream lỗi liên tục. Idempotency là đảm bảo thực thi nhiều lần cho cùng kết quả.
+`,
+  follow: [
+    'Bạn xử lý thế nào khi tra soát cũng timeout?',
+    'Làm sao đảm bảo idempotency key không bị trùng giữa các hệ thống?',
+    'Bạn monitor và alert cho integration với core như thế nào?'
+  ],
+  tags: ['core banking', 'ESB', 'middleware', 'timeout', 'idempotency', 'circuit breaker']
+}
 );
