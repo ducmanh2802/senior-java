@@ -2835,6 +2835,8 @@ window.DATA_INDEX = {
     {"id":"lesson-microservices-022","track":"microservices","order":22,"title":"Timer escalation theo SLA: Clock giả và kiểm tra quá hạn","level":"senior","minutes":30},
     {"id":"lesson-microservices-023","track":"microservices","order":23,"title":"Kafka từ số 0: topic, partition, offset, consumer group và rebalance","level":"senior","minutes":50},
     {"id":"lesson-microservices-024","track":"microservices","order":24,"title":"Kafka consumer lag monitoring, rebalance protocol và exactly-once semantics","level":"senior","minutes":45},
+    {"id":"lesson-microservices-025","track":"microservices","order":25,"title":"Circuit breaker từ bên trong: 3 trạng thái với Clock giả và sliding window","level":"senior","minutes":30},
+    {"id":"lesson-microservices-026","track":"microservices","order":26,"title":"Idempotency key cho API thanh toán: lưu kết quả theo key, lặp trả cùng kết quả, khác payload bị từ chối","level":"senior","minutes":30},
     {"id":"lesson-db-001","track":"db","order":1,"title":"Isolation level qua lịch xen kẽ: dirty read, non-repeatable read và lost update","level":"senior","minutes":30},
     {"id":"lesson-db-002","track":"db","order":2,"title":"Optimistic locking: version check và retry có giới hạn","level":"senior","minutes":25},
     {"id":"lesson-db-003","track":"db","order":3,"title":"B-tree index và full scan: đếm phép so sánh, hiểu chọn lọc","level":"mid","minutes":25},

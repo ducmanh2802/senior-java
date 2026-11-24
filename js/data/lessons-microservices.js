@@ -6281,5 +6281,152 @@ class ConsumerLagCalculator {
     { q: 'EOS Kafka (transactional producer + read_committed consumer) đảm bảo exactly-once cho ghi DB ngoài Kafka?', options: ['Có, tự động', 'Không, chỉ bao produce/consume offset trong Kafka; DB ngoài cần outbox/idempotency', 'Có nếu dùng JDBC transaction', 'Không bao giờ'], answer: 1, explain: 'EOS chỉ đảm bảo atomicity produce + commit offset trong Kafka. Ghi DB, gọi HTTP, file system ngoài Kafka không nằm trong transaction Kafka -> cần outbox pattern + idempotent consumer.' },
     { q: 'Trong consume-transform-produce loop EOS, sendOffsetsToTransaction gọi khi nào?', options: ['Trước beginTransaction', 'Sau khi send tất cả output record, trước commitTransaction', 'Sau commitTransaction', 'Không cần gọi nếu dùng auto.commit'], answer: 1, explain: 'Phải gom consumer offsets vào CÙNG transaction với output produces: beginTransaction -> send outputs -> sendOffsetsToTransaction -> commitTransaction. Nếu commit offset riêng (commitSync) ngoài transaction -> mất atomicity.' }
   ], related: ['microservices-016', 'microservices-011', 'microservices-001', 'microservices-002'], tags: ['Kafka', 'consumer lag', 'rebalance', 'exactly-once', 'EOS', 'transactional', 'read_committed', 'monitoring']
+},
+{
+  id: 'lesson-microservices-025',
+  track: 'microservices',
+  order: 25,
+  title: 'Circuit breaker từ bên trong: 3 trạng thái với Clock giả và sliding window',
+  level: 'senior',
+  minutes: 30,
+  goals: [
+    'Giải thích được 3 trạng thái closed/open/half-open và lý do tồn tại',
+    'Tự viết được circuit breaker với Clock giả và sliding window đếm lỗi',
+    'Biết khi nào breaker nên mở, khi nào đóng lại, và cách tránh half-open storm'
+  ],
+  body: `### Circuit breaker là gì
+
+**Tóm tắt:** Circuit breaker là một "cầu chì thông minh" đặt trước lời gọi tới dependency (service khác, DB, API ngoài): khi dependency liên tục lỗi, breaker **ngắt** lời gọi ngay lập tức (fail fast) và trả fallback, thay vì để hàng nghìn thread xếp hàng chờ timeout. Sau một thời gian, breaker cho phép **một vài** lời gọi thử lại (half-open); nếu thành công thì đóng lại, nếu vẫn lỗi thì mở lại.
+
+Tại sao cần? Nếu service B chậm/chết, service A vẫn gọi B và chờ timeout 5 giây. Thread bị giữ → thread pool cạn → A cũng chết theo → hiệu ứng domino. Circuit breaker cắt chuỗi này.
+
+### 3 trạng thái
+
+1. **Closed (đóng)**: mọi lời gọi được phép. Breaker đếm lỗi trong một cửa sổ thời gian (sliding window). Nếu tỉ lệ lỗi vượt ngưỡng → chuyển sang Open.
+2. **Open (mở)**: mọi lời gọi bị từ chối ngay (ném exception hoặc trả fallback), **không** gọi dependency. Sau một thời gian chờ (reset timeout), chuyển sang Half-open.
+3. **Half-open (nửa mở)**: cho phép đúng **N** lời gọi thử (thường 1–3). Nếu tất cả thành công → Closed. Nếu có lỗi → Open lại, reset timer.
+
+~~~java
+// Mô phỏng đơn giản: breaker bọc lời gọi tới payment service
+CircuitBreaker cb = new CircuitBreaker(clock, 5, Duration.ofSeconds(10), 3);
+try {
+    return cb.call(() -> paymentClient.charge(amount));
+} catch (CircuitOpenException e) {
+    return fallbackCharge(amount);   // trả về hàng đợi / cache
 }
+~~~
+
+### Vì sao dùng Clock giả
+
+Trong test, thời gian thật làm test **không xác định** (flaky): test phải sleep 10 giây để kiểm tra reset. Dùng {{Clock}} (java.time.Clock) cho phép inject thời gian giả trong test: {{Clock.fixed(...)}} hoặc tự viết Clock tăng theo ý muốn. Đây là pattern chung cho mọi logic phụ thuộc thời gian (timeout, TTL, SLA).
+
+### Sliding window đếm lỗi
+
+Có hai kiểu:
+- **Count-based**: đếm N lời gọi gần nhất, tính tỉ lệ lỗi. Đơn giản nhưng chậm phản ứng khi traffic thấp.
+- **Time-based**: đếm lỗi trong cửa sổ thời gian (ví dụ 10 giây). Phản ánh traffic thực tế hơn.
+
+Triển khai thật thường dùng ring buffer (mảng vòng) lưu timestamp các lỗi, hoặc bucket theo giây (Hystrix-style). **Bài tập dưới đây dùng bản đơn giản hoá cho dễ hiểu: đếm số lỗi liên tiếp (consecutive failures) — cứ một lời gọi thành công là reset bộ đếm về 0, khi số lỗi liên tiếp đạt {{failureThreshold}} thì mở.** Bản này bỏ phần cửa sổ trượt để tập trung vào 3 trạng thái và cách dùng Clock; production (Resilience4j) mới dùng cửa sổ trượt theo số lần gọi hoặc theo thời gian.
+
+### Half-open storm
+
+Khi breaker chuyển sang Half-open, nếu có 1000 thread cùng gọi, cả 1000 sẽ thử → dependency bị dội lại đúng lúc nó đang cố hồi phục. Giải pháp: half-open chỉ cho phép **một số lượng giới hạn** (permittedNumberOfCallsInHalfOpenState), các lời gọi khác bị từ chối như khi Open.
+
+### Ví dụ đời thực
+
+Service thanh toán gọi fraud-check service. Fraud-check bị quá tải → p99 latency tăng từ 50ms lên 8s. Không có breaker: thread pool 200 thread bị giữ hết, payment service không trả được cho khách → toàn hệ thống treo. Có breaker: sau 5 lỗi trong 10 giây, breaker mở; các request sau trả ngay fallback "giao dịch đang xử lý, sẽ thông báo sau"; fraud-check có thời gian hồi phục; 30 giây sau breaker half-open, 3 request thử thành công → đóng lại. Khách hàng thấy chậm vài giây thay vì sập toàn hệ thống.
+
+### Trả lời mẫu khi phỏng vấn
+
+Circuit breaker là cầu chì thông minh: khi dependency liên tục lỗi, nó ngắt lời gọi ngay lập tức để thread không bị giữ, tránh hiệu ứng domino. Ba trạng thái: Closed cho phép gọi và đếm lỗi trong cửa sổ trượt; vượt ngưỡng thì Open, từ chối mọi gọi và trả fallback; sau reset timeout chuyển Half-open, cho phép một số ít gọi thử — thành công thì Closed, thất bại thì Open lại. Hai điều quan trọng: half-open phải giới hạn số gọi thử để tránh dội lại dependency đang hồi phục, và logic thời gian nên dùng Clock injectable để test được. Trong production tôi cũng thêm fallback (cache, queue) và metric (số lần mở, thời gian mở) để theo dõi.
+
+> Senior tip: Đừng đặt ngưỡng breaker quá thấp (mở vì 2 lỗi đơn lẻ) cũng đừng quá cao (chờ 100 lỗi mới mở). Theo kinh nghiệm, tỉ lệ lỗi 50% trong cửa sổ 10 giây + tối thiểu 20 lời gọi là điểm khởi đầu hợp lý. Và luôn có fallback có ý nghĩa — breaker chỉ là cơ chế, fallback mới là giá trị cho người dùng.
+`,
+  exercises: [
+    {
+      title: 'Tự viết circuit breaker 3 trạng thái',
+      prompt: 'Viết class {{CircuitBreaker}} nhận {{Clock clock}}, {{int failureThreshold}}, {{Duration openDuration}}, {{int halfOpenPermits}}. Phương thức {{boolean tryCall(Callable<T> action)}}: nếu Closed → chạy action, ghi nhận lỗi/thành công; nếu lỗi làm tỉ lệ vượt ngưỡng → Open. Nếu Open và chưa hết openDuration → trả false (không gọi). Nếu hết openDuration → chuyển Half-open, cho phép tối đa halfOpenPermits gọi thử. Half-open: gọi thành công đủ permits → Closed; gọi thất bại → Open.\n\nDùng Clock để lấy "thời gian hiện tại" để test được.',
+      starter: 'import java.time.*;\nimport java.util.concurrent.*;\n\nclass CircuitBreaker {\n    enum State { CLOSED, OPEN, HALF_OPEN }\n    private final Clock clock;\n    private final int failureThreshold;\n    private final Duration openDuration;\n    private final int halfOpenPermits;\n\n    CircuitBreaker(Clock clock, int failureThreshold, Duration openDuration, int halfOpenPermits) {\n        this.clock = clock;\n        this.failureThreshold = failureThreshold;\n        this.openDuration = openDuration;\n        this.halfOpenPermits = halfOpenPermits;\n    }\n\n    State state() { return State.CLOSED; }\n\n    // trả về true nếu gọi được action và thành công; false nếu breaker mở (không gọi); ném exception nếu action ném\n    <T> boolean tryCall(Callable<T> action) throws Exception {\n        throw new UnsupportedOperationException("TODO");\n    }\n}',
+      tests: 'import java.time.*;\npublic class Main {\n    static int passed = 0, total = 0;\n    static void check(String name, Runnable r) { total++; try { r.run(); passed++; System.out.println("PASS " + name); } catch (Throwable t) { System.out.println("FAIL " + name + ": " + t); } }\n    static void eq(Object e, Object a) { if (!java.util.Objects.equals(e,a)) throw new AssertionError("expected "+e+" got "+a); }\n    public static void main(String[] args) {\n        // Fixed clock mutable via array\n        class MutableClock extends Clock {\n            Instant now = Instant.parse("2026-01-01T00:00:00Z");\n            public ZoneId getZone(){return ZoneId.of("UTC");}\n            public Clock withZone(ZoneId z){return this;}\n            public Instant instant(){return now;}\n        }\n        MutableClock clock = new MutableClock();\n        CircuitBreaker cb = new CircuitBreaker(clock, 3, Duration.ofSeconds(10), 2);\n        check("starts closed", () -> eq(CircuitBreaker.State.CLOSED, cb.state()));\n        // 2 failures not enough\n        try { cb.tryCall(() -> { throw new RuntimeException("boom"); }); } catch (Exception ignored){}\n        try { cb.tryCall(() -> { throw new RuntimeException("boom"); }); } catch (Exception ignored){}\n        check("still closed after 2 failures", () -> eq(CircuitBreaker.State.CLOSED, cb.state()));\n        // 3rd failure opens\n        try { cb.tryCall(() -> { throw new RuntimeException("boom"); }); } catch (Exception ignored){}\n        check("opens after threshold", () -> eq(CircuitBreaker.State.OPEN, cb.state()));\n        // while open, calls rejected without invoking action\n        check("rejected while open", () -> {\n            boolean[] invoked = {false};\n            boolean r = false;\n            try { r = cb.tryCall(() -> { invoked[0]=true; return 1; }); } catch (Exception e){}\n            if (r) throw new AssertionError("should be rejected");\n            if (invoked[0]) throw new AssertionError("action should not be invoked");\n        });\n        // after openDuration, half-open\n        clock.now = clock.now.plusSeconds(11);\n        check("half-open after timeout", () -> eq(CircuitBreaker.State.HALF_OPEN, cb.state()));\n        // permit success closes\n        try { cb.tryCall(() -> 1); } catch (Exception ignored){}\n        try { cb.tryCall(() -> 1); } catch (Exception ignored){}\n        check("closes after permits succeed", () -> eq(CircuitBreaker.State.CLOSED, cb.state()));\n        System.out.println("RESULT " + passed + "/" + total);\n    }\n}',
+      reference: 'import java.time.*;\nimport java.util.concurrent.*;\n\nclass CircuitBreaker {\n    enum State { CLOSED, OPEN, HALF_OPEN }\n    private final Clock clock;\n    private final int failureThreshold;\n    private final Duration openDuration;\n    private final int halfOpenPermits;\n    private State state = State.CLOSED;\n    private int consecutiveFailures = 0;\n    private Instant openedAt = null;\n    private int halfOpenSuccess = 0;\n    private int halfOpenAttempts = 0;\n\n    CircuitBreaker(Clock clock, int failureThreshold, Duration openDuration, int halfOpenPermits) {\n        this.clock = clock; this.failureThreshold = failureThreshold;\n        this.openDuration = openDuration; this.halfOpenPermits = halfOpenPermits;\n    }\n\n    State state() {\n        if (state == State.OPEN && clock.instant().isAfter(openedAt.plus(openDuration))) state = State.HALF_OPEN;\n        return state;\n    }\n\n    <T> boolean tryCall(Callable<T> action) throws Exception {\n        State s = state();\n        if (s == State.OPEN) return false;\n        if (s == State.HALF_OPEN) {\n            if (halfOpenAttempts >= halfOpenPermits) return false;\n            halfOpenAttempts++;\n        }\n        try {\n            action.call();\n            if (state == State.HALF_OPEN) {\n                halfOpenSuccess++;\n                if (halfOpenSuccess >= halfOpenPermits) { state = State.CLOSED; consecutiveFailures = 0; halfOpenSuccess = 0; halfOpenAttempts = 0; }\n            } else {\n                consecutiveFailures = 0;\n            }\n            return true;\n        } catch (Exception e) {\n            if (state == State.HALF_OPEN) { state = State.OPEN; openedAt = clock.instant(); halfOpenSuccess = 0; halfOpenAttempts = 0; }\n            else { consecutiveFailures++; if (consecutiveFailures >= failureThreshold) { state = State.OPEN; openedAt = clock.instant(); } }\n            throw e;\n        }\n    }\n}',
+      hints: [
+        'State() phải tự kiểm tra thời gian để chuyển OPEN → HALF_OPEN.',
+        'Half-open cần đếm số attempt đã cho phép, không chỉ success.'
+      ],
+      explain: 'Lỗi hay gặp: quên reset counter khi chuyển trạng thái, hoặc cho phép không giới hạn gọi trong half-open (storm). Trong production dùng Resilience4j thay vì tự viết, nhưng hiểu cơ chế giúp tune đúng.'
+    }
+  ],
+  check: [
+    { q: 'Circuit breaker chuyển từ Closed sang Open khi nào?', options: ['Sau 1 lỗi bất kỳ', 'Khi tỉ lệ lỗi trong cửa sổ trượt vượt ngưỡng', 'Khi latency vượt ngưỡng', 'Khi thread pool đầy'], answer: 1, explain: 'Closed đếm lỗi trong cửa sổ; vượt ngưỡng (tỉ lệ hoặc số) thì mở. Latency cao có thể là tín hiệu nhưng breaker cổ điển dựa vào lỗi/timeout.' },
+    { q: 'Vì sao half-open phải giới hạn số gọi thử?', options: ['Để tiết kiệm CPU', 'Để dependency đang hồi phục không bị dội lại (storm)', 'Vì thread pool nhỏ', 'Không cần giới hạn'], answer: 1, explain: 'Nếu cho phép tất cả thread cùng thử khi half-open, dependency đang yếu sẽ bị tấn công đúng lúc nó cố hồi phục → fail lại → mở lại. Giới hạn 1–3 gọi thử.' },
+    { q: 'Dùng Clock giả trong test giúp gì?', options: ['Chạy nhanh hơn', 'Test logic thời gian mà không sleep, deterministic', 'Tránh GC', 'Không liên quan'], answer: 1, explain: 'Clock.injectable cho phép điều khiển thời gian trong test → không sleep, không flaky. Pattern chung cho timeout, TTL, SLA.' }
+  ],
+  related: ['microservices-015', 'microservices-016', 'microservices-017'],
+  tags: ['circuit-breaker', 'resilience', 'fault-tolerance', 'clock']
+},
+{
+  id: 'lesson-microservices-026',
+  track: 'microservices',
+  order: 26,
+  title: 'Idempotency key cho API thanh toán: lưu kết quả theo key, lặp trả cùng kết quả, khác payload bị từ chối',
+  level: 'senior',
+  minutes: 30,
+  goals: [
+    'Giải thích được vì sao API thanh toán bắt buộc phải idempotent',
+    'Tự viết được store idempotency key với in-flight dedup và payload hash',
+    'Biết xử lý request lặp và request khác payload cùng key'
+  ],
+  body: `### Vì sao thanh toán phải idempotent
+
+**Tóm tắt:** Mạng không đáng tin: client gửi request thanh toán, server xử lý xong nhưng response bị mất → client retry → server xử lý lần nữa → khách bị trừ tiền 2 lần. Idempotency key giải quyết: client gửi kèm một key duy nhất (UUID) cho mỗi "ý định thanh toán"; server lưu kết quả theo key; request lặp với cùng key trả **cùng kết quả** mà **không** xử lý lại; request với cùng key nhưng **payload khác** bị từ chối (409/422) để phát hiện bug client.
+
+### Luồng xử lý
+
+1. Client tạo key = UUID v4 cho mỗi ý định thanh toán (ví dụ click nút "Thanh toán"), retry dùng **cùng key**.
+2. Server nhận request: kiểm tra store theo key.
+   - Chưa có → tạo record trạng thái "in-flight" (đang xử lý), xử lý thanh toán, lưu kết quả, đánh dấu "completed".
+   - Đang in-flight (request trước chưa xong) → chờ hoặc trả 409 Conflict (hoặc 202 với retry-after).
+   - Đã completed → trả kết quả đã lưu, không xử lý lại.
+3. Kiểm tra payload: hash payload (hoặc so field quan trọng). Nếu key đã có nhưng payload hash khác → 422 (client bug: cùng key nhưng dữ liệu khác).
+
+### In-flight dedup
+
+Vấn đề: hai request cùng key đến cùng lúc (client retry trước khi server trả lời). Nếu cả hai đều "chưa có" và cùng xử lý → duplicate. Giải pháp: dùng lock theo key hoặc conditional insert (INSERT ... ON CONFLICT / compare-and-swap) để chỉ một request "giành" được quyền xử lý; request kia chờ hoặc trả in-flight.
+
+### TTL và phantom
+
+Key không lưu mãi mãi (tốn bộ nhớ). TTL thường 24h–7 ngày. Sau TTL, key bị xoá → request lặp muộn sẽ xử lý lại (phantom duplicate). Đây là trade-off chấp nhận được: retry muộn (sau TTL) hiếm, và hệ thống downstream (payment gateway) cũng phải idempotent theo transaction id.
+
+### Ví dụ đời thực
+
+E-commerce: khách bấm "Đặt hàng" → client sinh key K1, gửi POST /orders với K1. Server xử lý, trừ kho, tạo order O1, lưu kết quả theo K1. Response bị mất do mạng. Client retry với K1 → server thấy K1 completed → trả O1, không trừ kho lần nữa. Nếu client bug gửi K1 nhưng payload khác (thêm sản phẩm) → server trả 422, client phải tạo key mới. Đo: trước khi có idempotency, duplicate order ~0.3% giao dịch; sau khi có, ~0.
+
+### Trả lời mẫu khi phỏng vấn
+
+Idempotency key là bắt buộc cho API thanh toán vì mạng không đáng tin và client retry. Client sinh UUID cho mỗi ý định, retry dùng cùng key. Server lưu kết quả theo key: chưa có thì xử lý và lưu; đã xong thì trả kết quả lưu; đang xử lý thì trả 409/202. Cùng key nhưng payload khác → 422 để phát hiện bug. Cần in-flight dedup bằng conditional insert/lock theo key, và TTL (24h–7 ngày) chấp nhận phantom duplicate muộn. Payment gateway downstream cũng phải idempotent theo transaction id — idempotency ở API gateway chỉ giải quyết retry của client, không giải quyết toàn bộ.
+
+> Senior tip: Key phải do client sinh (server không biết "ý định" nào là cùng một), và client phải retry với cùng key. Nếu server sinh key thì retry của client không biết key cũ → vô dụng. Lưu ý: idempotency không thay thế cho transaction idempotent ở downstream — hai lớp phải phối hợp.
+`,
+  exercises: [
+    {
+      title: 'Store idempotency key với in-flight dedup và payload hash',
+      prompt: 'Viết class {{IdempotencyStore}} với phương thức {{Result handle(String key, String payloadHash, Supplier<Result> processor)}}. Quy tắc:\n- Nếu key chưa có: đánh dấu in-flight, chạy processor, lưu kết quả, trả về.\n- Nếu key đang in-flight (chưa xong): ném {{InFlightException}}.\n- Nếu key đã completed với cùng payloadHash: trả kết quả đã lưu.\n- Nếu key đã completed nhưng payloadHash khác: ném {{PayloadMismatchException}}.\n\nDùng ConcurrentHashMap và conditional put (putIfAbsent) để dedup đồng thời.',
+      starter: 'import java.util.*;\nimport java.util.concurrent.*;\nimport java.util.function.*;\n\nclass IdempotencyStore {\n    static class Result { final int status; final String body; Result(int s, String b){status=s;body=b;} }\n    static class InFlightException extends RuntimeException {}\n    static class PayloadMismatchException extends RuntimeException {}\n\n    // TODO: implement\n    Result handle(String key, String payloadHash, Supplier<Result> processor) {\n        throw new UnsupportedOperationException("TODO");\n    }\n}',
+      tests: 'import java.util.*;\nimport java.util.concurrent.*;\npublic class Main {\n    static int passed=0,total=0;\n    static void check(String n, Runnable r){total++;try{r.run();passed++;System.out.println("PASS "+n);}catch(Throwable t){System.out.println("FAIL "+n+": "+t);}}\n    public static void main(String[] args) {\n        IdempotencyStore s = new IdempotencyStore();\n        check("first call processes", () -> {\n            IdempotencyStore.Result r = s.handle("k1","h1", () -> new IdempotencyStore.Result(201,"order-1"));\n            if (r.status != 201 || !"order-1".equals(r.body)) throw new AssertionError("bad result");\n        });\n        check("repeat returns same result without processing", () -> {\n            boolean[] processed = {false};\n            IdempotencyStore.Result r = s.handle("k1","h1", () -> { processed[0]=true; return new IdempotencyStore.Result(201,"order-X"); });\n            if (processed[0]) throw new AssertionError("processor should not run");\n            if (!"order-1".equals(r.body)) throw new AssertionError("should return stored result");\n        });\n        check("payload mismatch throws", () -> {\n            try { s.handle("k1","h2", () -> new IdempotencyStore.Result(201,"x")); throw new AssertionError("should throw"); }\n            catch (IdempotencyStore.PayloadMismatchException e) {}\n        });\n        check("different key independent", () -> {\n            IdempotencyStore.Result r = s.handle("k2","h9", () -> new IdempotencyStore.Result(200,"ok"));\n            if (r.status != 200) throw new AssertionError("bad");\n        });\n        System.out.println("RESULT "+passed+"/"+total);\n    }\n}',
+      reference: 'import java.util.*;\nimport java.util.concurrent.*;\nimport java.util.function.*;\n\nclass IdempotencyStore {\n    static class Result { final int status; final String body; Result(int s, String b){status=s;body=b;} }\n    static class InFlightException extends RuntimeException {}\n    static class PayloadMismatchException extends RuntimeException {}\n\n    static class Entry {\n        volatile boolean done = false;\n        String payloadHash;\n        Result result;\n    }\n\n    private final ConcurrentHashMap<String, Entry> store = new ConcurrentHashMap<>();\n\n    Result handle(String key, String payloadHash, Supplier<Result> processor) {\n        Entry e = new Entry();\n        Entry existing = store.putIfAbsent(key, e);\n        if (existing != null) {\n            // wait for completion (simplified: spin with small sleep)\n            long deadline = System.currentTimeMillis() + 5000;\n            while (!existing.done && System.currentTimeMillis() < deadline) {\n                try { Thread.sleep(5); } catch (InterruptedException ie) { Thread.currentThread().interrupt(); break; }\n            }\n            if (!existing.done) throw new InFlightException();\n            if (!existing.payloadHash.equals(payloadHash)) throw new PayloadMismatchException();\n            return existing.result;\n        }\n        // we own it\n        e.payloadHash = payloadHash;\n        try {\n            Result r = processor.get();\n            e.result = r; e.done = true;\n            return r;\n        } catch (RuntimeException ex) {\n            store.remove(key);\n            throw ex;\n        }\n    }\n}',
+      hints: [
+        'Dùng ConcurrentHashMap.putIfAbsent để chỉ một thread "giành" key.',
+        'Lưu payloadHash trong entry để so sánh khi repeat.'
+      ],
+      explain: 'Lỗi hay gặp: không dedup đồng thời (hai thread cùng xử lý), hoặc không lưu payload hash (client bug không bị phát hiện). Trong production dùng DB với unique constraint trên key và transaction; in-memory chỉ dùng cho bài tập/single node.'
+    }
+  ],
+  check: [
+    { q: 'Idempotency key nên do ai sinh?', options: ['Server', 'Client', 'Database', 'Gateway'], answer: 1, explain: 'Client sinh key cho mỗi ý định thanh toán; retry dùng cùng key. Server sinh key thì client retry không biết key cũ → vô dụng.' },
+    { q: 'Request lặp với cùng key nhưng payload khác nên xử lý thế nào?', options: ['Xử lý lại', 'Trả kết quả cũ', 'Từ chối (422/409)', 'Bỏ qua'], answer: 2, explain: 'Cùng key khác payload = client bug; phải từ chối để phát hiện, không xử lý lại (có thể duplicate) cũng không trả kết quả cũ (sai dữ liệu).' },
+    { q: 'In-flight request (chưa xong) đến cùng lúc nên?', options: ['Xử lý song song', 'Chờ hoặc trả 409/202', 'Từ chối vĩnh viễn', 'Retry vô hạn'], answer: 1, explain: 'Không xử lý song song (duplicate). Chờ hoặc trả 409 Conflict / 202 Accepted với retry-after.' }
+  ],
+  related: ['microservices-006', 'microservices-011', 'microservices-001'],
+  tags: ['idempotency', 'payment', 'api', 'dedup']
+},
 );
