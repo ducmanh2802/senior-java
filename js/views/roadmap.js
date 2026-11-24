@@ -647,6 +647,15 @@
     });
   }
 
+  /* ---------- khối bài học/lab/bug (materials) ---------- */
+  function bindMaterials(root) {
+    root.querySelectorAll('.rm-materials').forEach(d => {
+      const wid = d.getAttribute('data-week');
+      if (!wid) return;
+      d.addEventListener('toggle', () => { materialsOpen[wid] = d.open; });
+    });
+  }
+
   /* ---------- chọn lộ trình (chips) ---------- */
   function planChipsHtml() {
     if (!window.JD_PLAN) return '';
@@ -729,15 +738,9 @@
       bindStart(root);
       bindChecks(root);
       bindNote(root);
-       bindHeatmap(root);
-       root.addEventListener('toggle', e => {
-         const d = e.target && e.target.closest && e.target.closest('.rm-materials');
-         if (d) {
-           const wid = d.getAttribute('data-week');
-           if (wid) materialsOpen[wid] = d.open;
-         }
-       }, true);
-       return () => {};
+      bindHeatmap(root);
+      bindMaterials(root);
+      return () => {};
     },
   });
 })();

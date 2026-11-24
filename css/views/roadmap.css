@@ -33,6 +33,27 @@
 .view-roadmap .rm-topics { margin: 8px 0; }
 .view-roadmap .rm-topic { text-decoration: none; }
 .view-roadmap .rm-topic:hover { border-color: var(--accent); text-decoration: none; }
+
+/* ---------- khối bài học · lab · sửa bug ---------- */
+.view-roadmap .rm-materials {
+  margin: 8px 0; border: 1px solid var(--border); border-radius: var(--radius-sm);
+  background: var(--surface-2);
+}
+.view-roadmap .rm-materials > summary {
+  cursor: pointer; padding: 8px 12px; font-size: .9rem; font-weight: 600;
+  list-style: none; display: flex; align-items: center; gap: 8px;
+}
+.view-roadmap .rm-materials > summary::-webkit-details-marker { display: none; }
+.view-roadmap .rm-materials > summary::before { content: "▸"; color: var(--muted); }
+.view-roadmap .rm-materials[open] > summary::before { content: "▾"; }
+.view-roadmap .rm-materials-body { padding: 0 12px 10px; display: grid; gap: 10px; }
+.view-roadmap .rm-mat-group { display: grid; gap: 4px; }
+.view-roadmap .rm-mat-label { font-size: .8rem; text-transform: uppercase; letter-spacing: .04em; color: var(--muted); }
+.view-roadmap .rm-mat-list { list-style: none; margin: 0; padding: 0; display: grid; gap: 4px; }
+.view-roadmap .rm-mat-list li { font-size: .92rem; display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.view-roadmap .rm-mat-list a { text-decoration: none; }
+.view-roadmap .rm-mat-list a:hover { text-decoration: underline; }
+
 .view-roadmap .rm-algo-goal { margin: 8px 0; font-size: .92rem; }
 .view-roadmap .rm-tasks { list-style: none; margin: 12px 0 0; padding: 0; display: grid; gap: 8px; }
 .view-roadmap .rm-task label { display: flex; gap: 10px; align-items: flex-start; cursor: pointer; }
