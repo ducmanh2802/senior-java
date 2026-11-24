@@ -6036,5 +6036,321 @@ Khi nào câu UPDATE cho status được chạy?`,
  
 > Senior tip: vì dirty checking chạy trên toàn bộ entity managed, một method {{readOnly = false}} vô tình sửa field sẽ âm thầm ghi DB. Dùng readOnly cho method đọc để biến "quên" thành an toàn.`
 },
+{
+  id: 'qz-security-038',
+  topic: 'security',
+  q: 'Spring Security 6 yêu cầu cấu hình chuỗi bộ lọc bảo mật bằng cách khai báo bean {{SecurityFilterChain}}. Phát biểu nào mô tả đúng cơ chế chọn chuỗi cho một request?',
+  options: [
+    'Mỗi request đi qua tất cả các SecurityFilterChain theo thứ tự @Order',
+    'Spring duyệt các chuỗi theo @Order tăng dần, chọn chuỗi đầu tiên có securityMatcher khớp request',
+    'Chỉ chuỗi có @Order nhỏ nhất được dùng cho mọi request',
+    'Request được phân chia ngẫu nhiên giữa các chuỗi để cân bằng tải'
+  ],
+  answer: 1,
+  explain: `**Đáp án đúng: Spring duyệt các chuỗi theo @Order tăng dần, chọn chuỗi đầu tiên có securityMatcher khớp.**
+
+### Vì sao đúng
+Trong Spring Security 6, mỗi {{SecurityFilterChain}} là một bộ lọc độc lập gắn với một {{securityMatcher}}. Khi request đến, Spring duyệt các chuỗi theo thứ tự {{@Order}} tăng dần và **chọn chuỗi đầu tiên** mà {{securityMatcher}} khớp. Ví dụ: chuỗi Order 1 matcher {{/api/**}} xử lý {{/api/orders}}; chuỗi Order 2 matcher {{/admin/**}} không bao giờ thấy request này. Đây là lý do thứ tự {{@Order}} rất quan trọng: nếu chuỗi 1 khai báo matcher rộng (ví dụ {{/**}}) đặt trước, nó sẽ "ăn" mọi request và các chuỗi sau thành vô dụng.
+
+### Vì sao các phương án còn lại sai
+- **Đi qua tất cả các chuỗi**: một request chỉ đi qua **một** chuỗi filter duy nhất, không nối tiếp. Đây khác với cách filter servlet truyền thống.
+- **Chỉ chuỗi Order nhỏ nhất dùng cho mọi request**: chỉ đúng nếu matcher của nó khớp mọi request. Nếu matcher hẹp thì chỉ xử lý phần khớp.
+- **Phân chia ngẫu nhiên**: không có cơ chế load balancing giữa các SecurityFilterChain.
+
+> Senior tip: luôn đặt chuỗi **cụ thể** (matcher hẹp) lên trước (Order nhỏ), chuỗi **chung** ({{/**}}) xuống sau cùng. Thêm test dùng {{spring-security-test}}'s {{MockMvc}} để chắc mỗi endpoint đi đúng chuỗi mong muốn, tránh lỗ hổng "quên route" do matcher lỡ tay rộng.`
+},
+{
+  id: 'qz-security-039',
+  topic: 'security',
+  q: 'JWT access token (stateless) ký bằng thuật toán RS256, TTL 15 phút. Server dùng public key để verify chữ ký. Một kẻ tấn công đánh cắp token và chỉnh sửa claim {{"role": "user"}} thành {{"role": "admin"}}. Điều gì xảy ra khi token này gửi lên server?',
+  options: [
+    'Server verify chữ ký thất bại vì hash của payload đã đổi, từ chối token',
+    'Server verify chữ ký thành công vì chỉ kiểm tra header, không kiểm tra payload',
+    'Server accept token vì RS256 không bảo vệ integrity của payload',
+    'Server ném exception do thuật toán không khớp'
+  ],
+  answer: 0,
+  explain: `**Đáp án đúng: verify chữ ký thất bại vì hash của payload đã đổi, từ chối token.**
+
+### Vì sao đúng
+JWT (JSON Web Token) gồm 3 phần: {{header}}, {{payload}}, {{signature}}. Chữ ký được tính bằng cách ký **hash của header + payload** dùng private key (RS256). Khi verify, server dùng public key để kiểm tra chữ ký có khớp với header+payload hiện tại không. Nếu kẻ tấn công sửa payload, hash thay đổi, chữ ký không còn khớp → verify thất bại → token bị từ chối. Đây là tính chất **integrity** (toàn vẹn) của chữ ký số: không thể sửa payload mà không có private key.
+
+### Vì sao các phương án còn lại sai
+- **Chỉ kiểm tra header**: sai, chữ ký bao phủ cả header và payload.
+- **RS256 không bảo vệ integrity**: ngược lại, RS256 (RSA + SHA-256) chính là cơ chế bảo vệ integrity và authenticity.
+- **Thuật toán không khớp**: thuật toán trong header (alg) vẫn là RS256, không đổi; vấn đề là chữ ký không khớp dữ liệu.
+
+> Senior tip: luôn dùng thuật toán bất đối xứng (RS256, ES256) cho JWT production thay vì HS256 (đối xứng), để resource server chỉ cần public key mà không cần chia sẻ secret. Kiểm tra {{alg}} trong header khớp với cấu hình server để chống algorithm confusion attack.`
+},
+{
+  id: 'qz-security-040',
+  topic: 'security',
+  multi: true,
+  q: 'Hệ thống dùng JWT access token (TTL 15 phút) + refresh token (TTL 7 ngày, lưu trong DB, có rotation). Phát biểu nào đúng về cơ chế refresh token rotation? (Chọn 2)',
+  options: [
+    'Mỗi lần dùng refresh token, server trả về access token mới VÀ refresh token mới, rồi thu hồi (revoke) refresh token cũ',
+    'Refresh token rotation chỉ cần thiết khi dùng HS256, với RS256 thì không cần',
+    'Nếu kẻ tấn công đánh cắp refresh token và dùng trước user thật, server phát hiện vì refresh token cũ đã bị thu hồi (reuse detection)',
+    'Refresh token không cần lưu trong DB nếu dùng JWT cho cả hai loại token',
+    'Rotation làm user phải đăng nhập lại mỗi 15 phút'
+  ],
+  answer: [0, 2],
+  explain: `**Đáp án đúng: mỗi lần refresh trả access token mới + refresh token mới + thu hồi token cũ; reuse detection phát hiện token bị đánh cắp.**
+
+### Vì sao đúng
+Refresh token rotation là kỹ thuật: mỗi lần client gửi refresh token hợp lệ, server:
+1. Kiểm tra refresh token trong DB (chưa hết hạn, chưa bị revoke).
+2. **Thu hồi (revoke) refresh token cũ** ngay lập tức.
+3. Tạo **cặp mới**: access token mới (TTL ngắn) + refresh token mới (TTL dài), lưu refresh token mới vào DB.
+
+**Reuse detection**: nếu kẻ tấn công đánh cắp refresh token và dùng trước user thật, request của kẻ tấn công sẽ thành công (vì token chưa revoke), nhưng refresh token đó bị đánh dấu revoke. Khi user thật sau đó dùng cùng token đó, server thấy token đã revoke → **phát hiện reuse** → có thể thu hồi toàn bộ session của user (bảo vệ tài khoản).
+
+### Vì sao các phương án còn lại sai
+- **Chỉ cần với HS256**: rotation độc lập với thuật toán ký; nó bảo vệ refresh token (trạng thái) chứ không phải access token.
+- **Không cần lưu trong DB**: rotation **bắt buộc** lưu trạng thái refresh token trong DB (hoặc Redis) để kiểm tra revoke. JWT cho refresh token không tự hủy được.
+- **Đăng nhập lại mỗi 15 phút**: access token 15 phút, nhưng refresh token 7 ngày + rotation cho phép lấy access token mới mà không nhập lại mật khẩu.
+
+> Senior tip: luôn triển khai reuse detection (revoke toàn bộ chuỗi token khi phát hiện reuse). Với refresh token, hãy lưu {{userId}}, {{clientId}}, {{issuedAt}}, {{revokedAt}}, {{replacedByTokenId}} để trace được chuỗi xoay vòng.`
+},
+{
+  id: 'qz-security-041',
+  topic: 'security',
+  q: 'Ứng dụng Spring Boot 3 dùng session cookie (JSESSIONID) để xác thực. Một trang web độc hại {{evil.com}} nhúng form ẩn tự submit POST tới {{/api/transfer}} của ứng dụng khi victim truy cập. Ví dụ victim đã đăng nhập, trình duyệt tự gửi cookie. Cấu hình Spring Security 6 nào ngăn chặn tấn công này?',
+  options: [
+    '{{http.csrf(csrf -> csrf.disable())}} để tắt CSRF vì API dùng cookie',
+    '{{http.csrf(csrf -> csrf.csrfTokenRepository(CookieCsrfTokenRepository.withHttpOnlyFalse()))}} bật CSRF với cookie token',
+    '{{http.csrf(csrf -> csrf.requireCsrfProtectionMatcher(request -> false))}} tắt CSRF cho mọi request',
+    'Mặc định Spring Security 6 đã bật CSRF protection cho các request state-changing (POST, PUT, DELETE...) khi dùng session'
+  ],
+  answer: 3,
+  explain: `**Đáp án đúng: Spring Security 6 mặc định bật CSRF protection cho request state-changing khi dùng session.**
+
+### Vì sao đúng
+CSRF (Cross-Site Request Forgery) khai thác việc trình duyệt **tự động gửi cookie** (session cookie) khi request cross-origin. Spring Security 6 mặc định:
+- Bật CSRF protection cho các method state-changing: {{POST}}, {{PUT}}, {{DELETE}}, {{PATCH}}.
+- Yêu cầu token CSRF (mặc định lưu trong session, hoặc qua {{CookieCsrfTokenRepository}}) phải có trong request (header {{X-CSRF-TOKEN}} hoặc parameter {{_csrf}}).
+- Với ứng dụng truyền thống (server-side rendering Thymeleaf/JSP), token được render vào form hidden.
+
+Trong tình huống trên, {{evil.com}} không thể đọc CSRF token của ứng dụng (Same-Origin Policy), nên request POST từ form ẩn sẽ thiếu token → Spring từ chối với 403.
+
+### Vì sao các phương án còn lại sai
+- **{{csrf().disable()}}**: tắt bảo vệ, mở cửa cho tấn công CSRF.
+- **{{CookieCsrfTokenRepository.withHttpOnlyFalse()}}**: dùng cho SPA (React/Vue) đọc cookie bằng JS; không phải mặc định và không cần thiết cho server-side rendering.
+- **{{requireCsrfProtectionMatcher(...)}} trả false**: tắt CSRF cho mọi request, tương tự disable.
+
+> Senior tip: với API REST stateless dùng JWT trong header Authorization (không cookie), hãy **tắt CSRF** vì không có cookie để khai thác. Với ứng dụng dùng session cookie, giữ CSRF bật (mặc định). Luôn test bằng cách submit form từ domain khác để xác nhận 403.`
+},
+{
+  id: 'qz-security-042',
+  topic: 'security',
+  q: 'OAuth2 Authorization Code Flow với PKCE (Proof Key for Code Exchange) được thiết kế để bảo vệ điều gì trong public client (SPA, mobile app) không thể giữ client secret?',
+  options: [
+    'Bảo vệ access token không bị lộ trên URL redirect',
+    'Ngăn chặn authorization code bị interception (đ nghe) và dùng bởi kẻ tấn công để đổi lấy token',
+    'Mã hoá refresh token trong lưu trữ client',
+    'Xác thực resource owner mà không cần password'
+  ],
+  answer: 1,
+  explain: `**Đáp án đúng: ngăn chặn authorization code bị interception và dùng bởi kẻ tấn công.**
+
+### Vì sao đúng
+Trong Authorization Code Flow chuẩn, public client (SPA, mobile) không thể giữ {{client_secret}} an toàn. Kẻ tấn công có thể nghe thấy {{authorization_code}} trên redirect URI (qua log server, history trình duyệt, hoặc man-in-the-middle nếu không HTTPS). Nếu có code, kẻ tấn công có thể gọi {{/token}} endpoint (vì không cần client secret cho public client) để đổi lấy access token.
+
+**PKCE (RFC 7636)** giải quyết bằng cách:
+1. Client sinh ngẫu nhiên {{code_verifier}} (chuỗi dài, high-entropy).
+2. Tính {{code_challenge = BASE64URL(SHA256(code_verifier))}} (hoặc plain).
+3. Gửi {{code_challenge}} và {{code_challenge_method}} trong request {{/authorize}}.
+4. Authorization server lưu {{code_challenge}}.
+5. Khi đổi code lấy token ({{/token}}), client **bắt buộc** gửi {{code_verifier}}.
+6. Server verify {{SHA256(code_verifier) == code_challenge}}.
+
+Kẻ tấn công có code nhưng **không có code_verifier** → không đổi được token.
+
+### Vì sao các phương án còn lại sai
+- **Bảo vệ access token trên URL**: PKCE bảo vệ authorization code, không phải access token. Access token không bao giờ qua URL redirect (trừ Implicit Flow - đã deprecated).
+- **Mã hoá refresh token**: PKCE không liên quan đến lưu trữ refresh token.
+- **Xác thực resource owner**: đó là việc của bước {{/authorize}} (login, consent), PKCE chỉ bảo vệ bước trao đổi code.
+
+> Senior tip: luôn bật PKCE ({{code_challenge_method=S256}}) cho mọi public client. Spring Authorization Server và các provider (Keycloak, Auth0, Google) đều hỗ trợ. Đừng dùng Implicit Flow (đã bị OAuth 2.1 deprecated).`
+},
+{
+  id: 'qz-security-043',
+  topic: 'security',
+  q: 'Hệ thống lưu mật khẩu user bằng BCrypt strength 12. Một dev mới đề xuất đổi sang Argon2id (memory=64MB, iterations=3, parallelism=4). Phát biểu nào đúng về việc chọn giữa BCrypt và Argon2id?',
+  options: [
+    'BCrypt tốt hơn vì đã được chứng minh qua thời gian, Argon2id còn mới và rủi ro',
+    'Argon2id tốt hơn vì thiết kế chống GPU/ASIC qua tham số memory-hard, BCrypt chỉ CPU-hard',
+    'Hai thuật toán tương đương, chỉ khác API; BCrypt strength 12 ≈ Argon2id memory=64MB',
+    'Argon2id chỉ dùng cho hash file, không dùng cho mật khẩu'
+  ],
+  answer: 1,
+  explain: `**Đáp án đúng: Argon2id tốt hơn vì memory-hard, chống GPU/ASIC hiệu quả hơn BCrypt (chỉ CPU-hard).**
+
+### Vì sao đúng
+- **BCrypt**: "CPU-hard" — làm chậm bằng cách lặp nhiều vòng (cost factor). GPU hiện đại có thể parallel hóa tốt, giảm hiệu quả chống brute-force.
+- **Argon2id** (biến thể của Argon2, thắng Password Hashing Competition 2015): **memory-hard** — yêu cầu lượng RAM lớn (ví dụ 64MB) cho mỗi lần hash. GPU/ASIC bị giới hạn bởi bandwidth bộ nhớ, rất khó parallel hóa hàng nghìn hash cùng lúc. Argon2id kết hợp Argon2i (chống side-channel) và Argon2d (chống GPU), cân bằng an toàn.
+
+Spring Security 5.8+ hỗ trợ {{Argon2PasswordEncoder}} (cần dependency BouncyCastle). Cấu hình điển hình:
+~~~java
+new Argon2PasswordEncoder(16, 32, 4, 65536, 3); // (saltLength, hashLength, parallelism, memoryKiB=64MiB, iterations)
+~~~
+
+### Vì sao các phương án còn lại sai
+- **BCrypt tốt hơn vì cũ**: "cũ" không đồng nghĩa "an toàn hơn". Argon2 được thiết kế hiện đại hơn, giải quyết điểm yếu GPU của BCrypt.
+- **Tương đương**: không, memory-hard tạo rào cản lớn hơn cho attacker có phần cứng chuyên dụng.
+- **Chỉ hash file**: Argon2 được thiết kế **chính thức cho password hashing**, không phải hash file.
+
+> Senior tip: khi migrate từ BCrypt sang Argon2id, dùng {{DelegatingPasswordEncoder}} để hỗ trợ cả hai: hash cũ vẫn verify bằng BCrypt, hash mới dùng Argon2id. Không cần reset mật khẩu toàn bộ user.`
+},
+{
+  id: 'qz-security-044',
+  topic: 'security',
+  q: 'Endpoint {{GET /products?sort=price,asc}} cho phép client truyền động tham số {{sort}} để ORDER BY. Code backend nối chuỗi trực tiếp: {{"ORDER BY " + sort}}. Kẻ tấn công gửi {{sort=price,asc; DROP TABLE users; --}}. Điều gì xảy ra và cách phòng đúng?',
+  options: [
+    'JDBC driver tự chặn multiple statements, không có nguy hiểm',
+    'SQL Injection: nếu driver cho phép multiple statements, bảng users bị xóa. Phòng bằng cách validate sort đối với whitelist các cột cho phép',
+    'Chỉ có nguy hiểm nếu dùng PreparedStatement sai cách',
+    'Spring Data JPA tự escape tham số sort nên an toàn'
+  ],
+  answer: 1,
+  explain: `**Đáp án đúng: SQL Injection qua dynamic ORDER BY; phòng bằng whitelist cột cho phép.**
+
+### Vì sao đúng
+ORDER BY **không thể dùng parameter binding** ({{?}}) như WHERE — nó là một phần của cú pháp SQL, không phải giá trị. Nhiều dev sai lầm nghĩ "chỉ WHERE mới bị injection". Khi nối chuỗi {{"ORDER BY " + sort}}, kẻ tấn công có thể chèn SQL tùy ý:
+- {{price,asc; DROP TABLE users; --}} (nếu driver cho multiple statements)
+- {{price,asc; UPDATE users SET role='admin' WHERE id=1; --}}
+- {{(SELECT CASE WHEN (1=1) THEN price ELSE password END)}} (blind injection)
+
+**Cách phòng duy nhất an toàn**: **whitelist** các giá trị sort hợp lệ.
+~~~java
+Set<String> allowed = Set.of("price,asc", "price,desc", "name,asc", "createdAt,desc");
+String safeSort = allowed.contains(sort) ? sort : "createdAt,desc";
+query = "SELECT * FROM products ORDER BY " + safeSort;
+~~~
+Không dùng regex thay thế, không dùng "sanitize" — whitelist là chuẩn.
+
+### Vì sao các phương án còn lại sai
+- **JDBC tự chặn multiple statements**: nhiều driver (MySQL, PostgreSQL) cho phép multiple statements nếu bật flag ({{allowMultiQueries=true}}), và ngay cả khi tắt, injection vẫn có thể qua subquery hoặc UNION.
+- **Chỉ PreparedStatement mới bị**: injection xảy ra ở **mọi nơi** nối chuỗi SQL, không chỉ PreparedStatement.
+- **Spring Data JPA tự escape**: Spring Data JPA {{Sort}} object an toàn nếu bạn dùng API đúng ({{Sort.by("price")}}), nhưng nếu bạn tự viết query native và nối chuỗi thì **không** có bảo vệ tự động.
+
+> Senior tip: đừng bao giờ cho client truyền thô tên cột/hướng sort. Luôn map từ enum hoặc code ngắn ({{"price_asc"}}) sang câu ORDER BY an toàn trong code server.`
+},
+{
+  id: 'qz-security-045',
+  topic: 'security',
+  q: 'IDOR (Insecure Direct Object Reference) xảy ra khi API endpoint trả về chi tiết đơn hàng chỉ dựa trên {{orderId}} trong path (ví dụ: ~~~text GET /api/orders/{orderId} ~~~), **không kiểm tra** người gọi có sở hữu đơn hàng đó. User A ({{id=10}}) đổi {{orderId}} từ 1001 sang 1002 (của User B) và thấy đơn hàng. Cách khắc phục cốt lõi là gì?',
+  options: [
+    'Dùng UUID thay vì Long cho orderId để kẻ tấn công không đoán được',
+    'Kiểm tra quyền ở server: lấy principal từ token đã xác thực, so sánh với order.ownerId, trả 403 nếu không khớp',
+    'Ẩn endpoint này khỏi tài liệu API (Swagger) để kẻ tấn công không biết',
+    'Rate limit endpoint này để hạn chế số lần thử orderId'
+  ],
+  answer: 1,
+  explain: `**Đáp án đúng: kiểm tra quyền ở server so sánh principal với owner của tài nguyên.**
+
+### Vì sao đúng
+IDOR là lỗi **authorization** (phân quyền), không phải lỗi định danh. UUID chỉ làm khó đoán (security by obscurity), không ngăn user hợp pháp truy cập tài nguyên người khác nếu họ biết ID (qua log, chia sẻ link, brute-force UUID v4 vẫn có collision). Rate limit chỉ chậm tấn công, không ngăn bản chất. Swagger không công khai không bảo vệ gì vì attacker có thể brute-force endpoint.
+
+**Cách khắc phục đúng**: ở tầng service/controller, **luôn** kiểm tra quyền sở hữu trước khi trả dữ liệu:
+~~~java
+@GetMapping("/orders/{orderId}")
+public OrderDto getOrder(@PathVariable Long orderId, Authentication auth) {
+    Long userId = getUserIdFromAuth(auth); // từ JWT principal
+    Order order = orderRepo.findByIdAndOwnerId(orderId, userId)
+        .orElseThrow(() -> new AccessDeniedException("Không có quyền"));
+    return OrderDto.from(order);
+}
+~~~
+Query {{findByIdAndOwnerId}} đảm bảo chỉ trả đơn hàng của đúng user. Hoặc dùng Spring Security {{@PreAuthorize("@orderSecurity.isOwner(authentication, #orderId)")}}.
+
+### Vì sao các phương án còn lại sai
+- **UUID khó đoán**: security by obscurity; nếu ID lộ (log, email, referral) thì bảo vệ tan vỡ. Không thay thế được authorization check.
+- **Ẩn khỏi Swagger**: attacker vẫn gọi được endpoint; Swagger chỉ là tài liệu.
+- **Rate limit**: chỉ hạn chế tần suất, user kiên nhẫn vẫn truy cập được tài nguyên không phải của họ.
+
+> Senior tip: IDOR là lỗi #1 trong OWASP API Top 10 (Broken Object Level Authorization). Luôn test với 2 user khác nhau và cùng một resource ID. Viết integration test: user A tạo order, user B gọi GET order của A → kỳ vọng 403.`
+},
+{
+  id: 'qz-security-046',
+  topic: 'security',
+  multi: true,
+  q: 'Ứng dụng Spring Boot 3 có hai SecurityFilterChain: chuỗi A ({{@Order(1)}}) matcher {{/api/**}}, chuỗi B ({{@Order(2)}}) matcher {{/**}}. Cả hai đều dùng {{authorizeHttpRequests}}. Phát biểu nào đúng? (Chọn 2)',
+  options: [
+    'Request {{GET /api/orders}} được xử lý bởi chuỗi A; chuỗi B không bao giờ thấy request này',
+    'Request {{GET /admin/dashboard}} được xử lý bởi chuỗi A vì matcher {{/api/**}} khớp tiền tố',
+    'Nếu chuỗi A khai báo matcher {{/**}} (rộng) và Order 1, nó sẽ "ăn" mọi request, chuỗi B thành vô dụng',
+    'Hai chuỗi chạy song song cho mỗi request để tăng bảo mật',
+    'Thứ tự @Order không quan trọng, Spring tự sắp theo độ cụ thể của matcher'
+  ],
+  answer: [0, 2],
+  explain: `**Đáp án đúng: request {{/api/**}} đi chuỗi A; chuỗi matcher rộng Order thấp sẽ "ăn" mọi request làm chuỗi sau vô dụng.**
+
+### Vì sao đúng
+Trong Spring Security 6, mỗi {{SecurityFilterChain}} là bộ lọc độc lập với {{securityMatcher}}. Khi request đến, Spring duyệt các chuỗi theo **@Order tăng dần** và chọn **chuỗi đầu tiên** mà matcher khớp.
+- {{GET /api/orders}}: khớp {{/api/**}} của chuỗi A (Order 1) → xử lý bởi A, dừng lại. Chuỗi B ({{/**}}) không bao giờ thấy.
+- Nếu chuỗi A khai báo matcher {{/**}} (rộng nhất) và đặt {{@Order(1)}} (ưu tiên cao), nó khớp **mọi** request → chuỗi B và các chuỗi sau **hoàn toàn không bao giờ được chạy**. Đây là lỗi cấu hình phổ biến.
+
+### Vì sao các phương án còn lại sai
+- **{{/admin/dashboard}} đi chuỗi A**: matcher {{/api/**}} **không** khớp {{/admin/**}}.
+- **Hai chuỗi song song**: một request chỉ đi qua **một** chuỗi duy nhất.
+- **Spring tự sắp theo độ cụ thể**: không, thứ tự do {{@Order}} quyết định, không phải độ cụ thể của matcher. Dev phải chủ động đặt chuỗi cụ thể (matcher hẹp) Order thấp, chuỗi chung Order cao.
+
+> Senior tip: quy tắc an toàn: **matcher hẹp (cụ thể) -> Order nhỏ (ưu tiên cao); matcher rộng (chung) -> Order lớn (ưu tiên thấp)**. Luôn test với {{MockMvc}} xác nhận mỗi endpoint đi đúng chuỗi mong muốn.`
+},
+{
+  id: 'qz-security-047',
+  topic: 'security',
+  multi: true,
+  q: 'Resource Server dùng JWT (Spring Security 6, {{oauth2ResourceServer().jwt()}}). Token có claim {{"scope": "read write"}}, {{"client_id": "mobile-app"}}, {{"exp"}} hợp lệ. Cấu hình authority mapping đúng để {{hasAuthority("SCOPE_read")}} hoạt động? (Chọn 2)',
+  options: [
+    'Mặc định Spring Security tự map claim "scope" thành authority "SCOPE_read", "SCOPE_write"',
+    'Cần cấu hình JwtAuthenticationConverter với JwtGrantedAuthoritiesConverter đọc claim "scope", tách bởi space, thêm tiền tố "SCOPE_"',
+    'Claim "scope" trong JWT phải là mảng JSON {{["read", "write"]}} thay vì chuỗi',
+    'Cần đặt {{jwt().jwtAuthenticationConverter(converter)}} trong SecurityFilterChain',
+    'Spring Security chỉ đọc claim "authorities" hoặc "roles", không bao giờ đọc "scope"'
+  ],
+  answer: [1, 3],
+  explain: `**Đáp án đúng: cần JwtAuthenticationConverter đọc claim "scope" + tiền tố "SCOPE_", và đăng ký trong SecurityFilterChain.**
+
+### Vì sao đúng
+Spring Security 6 khi parse JWT, **mặc định không** map claim {{scope}} thành authority. Mặc định {{JwtAuthenticationConverter}} chỉ tạo authority từ claim {{authorities}} (nếu có) hoặc {{roles}}.
+Claim {{scope: "read write"}} (chuỗi, tách bởi space, theo chuẩn OAuth2) **không tự động** thành {{SCOPE_read}} {{SCOPE_write}}. Bạn phải cấu hình:
+1. {{JwtGrantedAuthoritiesConverter}} đọc claim {{scope}}, split space, map sang {{SimpleGrantedAuthority("SCOPE_" + s)}}.
+2. Đăng ký converter vào {{JwtAuthenticationConverter}}.
+3. Đăng ký converter vào {{SecurityFilterChain}} qua {{oauth2ResourceServer(oauth2 -> oauth2.authenticationManagerResolver(...))}} hoặc {{.jwt(jwt -> jwt.jwtAuthenticationConverter(converter))}}.
+
+~~~java
+@Bean
+JwtAuthenticationConverter jwtAuthenticationConverter() {
+    JwtAuthenticationConverter converter = new JwtAuthenticationConverter();
+    converter.setJwtGrantedAuthoritiesConverter(jwt -> {
+        String scope = jwt.getClaimAsString("scope");
+        if (scope == null) return List.of();
+        return Arrays.stream(scope.split(" "))
+            .map(s -> "SCOPE_" + s)
+            .map(SimpleGrantedAuthority::new)
+            .collect(Collectors.toList());
+    });
+    return converter;
+}
+
+@Bean
+SecurityFilterChain api(HttpSecurity http) throws Exception {
+    return http
+        .oauth2ResourceServer(oauth2 -> oauth2
+            .jwt(jwt -> jwt.jwtAuthenticationConverter(jwtAuthenticationConverter())))
+        ...
+        .build();
+}
+~~~
+
+### Vì sao các phương án còn lại sai
+- **Mặc định tự map scope**: sai, đây là lỗi #1 khi setup resource server JWT. Mặc định chỉ đọc claim {{authorities}}/{{roles}}.
+- **Scope phải là mảng JSON**: JWT spec cho phép scope là chuỗi space-delimited (RFC 6749); Spring đọc được cả hai nếu cấu hình converter đúng.
+- **Chỉ đọc authorities/roles**: sai, có thể đọc scope nếu cấu hình converter.
+
+> Senior tip: luôn breakpoint hoặc log {{authentication.getAuthorities()}} sau khi cấu hình converter để xác nhận authority thực tế. Đây là lỗi phổ biến nhất khiến {{hasAuthority("SCOPE_read")}} luôn false dù token có scope read.`
+},
  
 );
