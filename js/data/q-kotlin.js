@@ -2045,4 +2045,86 @@ Một hệ thống đơn hàng (Spring Boot 3, Hibernate 6, Kotlin) viết entit
   follow: ['Vì sao kotlin-jpa constructor không tham số không chạy init block?', 'Thuộc tính lateinit của entity có nguy hiểm khi nào?', 'Persistable với isNew giải quyết vấn đề gì?'],
   tags: ['JPA', 'Hibernate', 'kotlin-jpa', 'no-arg', 'entity']
 },
+{
+  id: 'kotlin-039', topic: 'kotlin', level: 'senior',
+  q: 'Kotlin code được Java caller gọi và trả về nullable type: Java nhìn thấy annotation nào, và bạn bảo vệ null contract ở ranh giới Kotlin→Java thế nào?',
+  a: `**Tóm tắt:** Khi Kotlin khai báo hàm trả về {{String?}}, compiler tự thêm annotation nullability (JetBrains {{@Nullable}}) vào bytecode, nên Java caller biết có thể null. Nếu dùng {{@JvmName}}, {{@JvmStatic}}, overload default argument, hoặc inline, annotation có thể bị xóa/thay đổi; phải kiểm tra bằng javap và test Java thực tế.
+
+### Annotation Kotlin sinh ra
+Kotlin biên dịch nullable type thành Java type kèm annotation nullability theo bộ chú thích mà Kotlin dùng mặc định (org.jetbrains.annotations). Java IDE và compiler đọc được annotation này để cảnh báo NPE. Non-null type {{String}} được gắn {{@NotNull}} (hoặc tương đương). Annotation này nằm ở bytecode, không phải Java source.
+
+### Cạm bẫy ở ranh giới Kotlin→Java
+- {{@JvmOverloads}} sinh nhiều overload Java; annotation nullability của tham số mặc định có thể không rõ ràng cho Java caller. Nếu tham số Kotlin nullable có default {{null}}, overload Java tương ứng có thể nhận {{null}} và gây NPE nếu Kotlin code giả định non-null.
+- {{@JvmStatic}} trên companion/object sinh phương thức static cầu nối; annotation nullability thường được giữ, nhưng phải kiểm tra bằng javap.
+- {{inline}} function: Kotlin inline vào caller Kotlin, nhưng nếu Java caller gọi thì không inline được (Java không hiểu inline); hàm vẫn tồn tại như thường, annotation giữ nguyên.
+- {{@JvmName}} đổi tên phương thức; annotation nullability giữ nguyên nhưng tên mới phải ổn định cho Java caller.
+- Generic type argument: annotation nullability trên {{List<String?>}} có thể không được compiler Kotlin sinh đầy đủ ở bytecode generic (type erasure), Java caller không thấy.
+
+### Cách bảo vệ contract
+1. Với API dùng từ Java nhiều, thêm annotation rõ ràng từ thư viện Java (JSpecify {{@Nullable}}/{{@NonNull}}, Jakarta, Spring) thay vì chỉ dựa vào annotation Kotlin mặc định.
+2. Viết smoke test Java gọi hàm Kotlin theo cách thực tế (truyền null, nhận null) để phát hiện annotation bị mất.
+3. Tránh default argument nullable cho API public Java-facing; dùng overload tường minh hoặc Builder.
+4. Kiểm tra bằng {{javap -v}} hoặc decompiler trước khi release.
+
+### Ví dụ đời thực
+Một module Kotlin cung cấp hàm {{fun findUser(id: Long): User?}} cho module Java. Java caller viết {{User u = KotlinApi.findUser(1L); if (u != null) ...}} — IDE cảnh báo nullable đúng. Sau đó team thêm {{@JvmOverloads}} với default argument nullable cho tham số thứ hai: overload Java sinh ra cho phép truyền null vào tham số mà Kotlin giả định non-null → NPE trong production khi Java caller gọi overload đó. Sửa: bỏ default argument nullable, thêm overload tường minh, viết smoke test Java.
+
+### Trả lời mẫu khi phỏng vấn
+"Kotlin nullable type {{String?}} được biên dịch thành Java type kèm annotation nullability mặc định của Kotlin, nên Java caller biết có thể null và IDE cảnh báo. Nhưng khi dùng @JvmOverloads, @JvmStatic, inline hoặc generic, annotation có thể bị xóa hoặc không rõ. Tôi bảo vệ contract bằng cách thêm annotation Java rõ ràng (JSpecify, Spring), tránh default argument nullable cho API Java-facing, và viết smoke test Java gọi thực tế trước khi release, kiểm tra bằng javap."
+
+> Senior tip: API dùng từ Java nhiều nên được thiết kế như Java API: annotation rõ ràng, overload tường minh, và test bằng Java caller thực tế, không chỉ tin vào compiler Kotlin.`,
+  follow: ['@JvmOverloads ảnh hưởng nullability annotation thế nào?', 'Inline function có tồn tại cho Java caller không?', 'Làm sao kiểm tra annotation nullability trong bytecode?'],
+  tags: ['Java interop', 'null safety', '@JvmOverloads', '@JvmStatic']
+},
+{
+  id: 'kotlin-040', topic: 'kotlin', level: 'lead',
+  q: 'Coroutine trong Spring Boot 3: khi client ngắt kết nối giữa chừng, structured concurrency hủy tác vụ thế nào, và bạn xử lý tài nguyên (DB connection, HTTP client) ra sao?',
+  a: `**Tóm tắt:** Coroutine có structured concurrency: coroutine con được gắn với scope cha; khi scope cha hủy (ví dụ request kết thúc), mọi coroutine con bị hủy. Nhưng hủy chỉ đặt cờ cancellation; code đang block JDBC/HTTP không tự dừng trừ khi kiểm tra cancellation hoặc dùng thư viện suspend. Phải đóng tài nguyên bằng use/finally và dùng thư viện hỗ trợ cancellation.
+
+### Structured concurrency và cancellation
+{{coroutineScope}} hoặc {{supervisorScope}} tạo scope; coroutine con {{async}}/{{launch}} được gắn vào scope cha. Khi scope cha bị hủy (CancellationException), mọi coroutine con nhận tín hiệu hủy. {{Job.cancel()}} chỉ đặt cờ; coroutine chỉ dừng tại suspension point hoặc khi gọi {{ensureActive()}}/{{yield()}}.
+
+### Vấn đề với blocking code
+JDBC blocking và HTTP client đồng bộ (RestTemplate) không hỗ trợ cancellation của coroutine: coroutine bị hủy nhưng thread vẫn chạy query đến cùng → leak connection, tài nguyên không giải phóng. Phải dùng thư viện suspend (R2DBC, WebClient) hoặc đẩy blocking sang {{Dispatchers.IO}} và đóng resource trong {{use}}/finally.
+
+### Xử lý tài nguyên
+- Dùng {{use}} cho Closeable (connection, stream) để đảm bảo đóng khi coroutine kết thúc hoặc hủy.
+- Kiểm tra {{isActive}} hoặc gọi {{ensureActive()}} trong vòng lặp dài.
+- Với DB: dùng connection pool với timeout, và transaction rollback khi cancellation.
+- Với HTTP client: dùng WebClient (suspend) hỗ trợ cancellation thật sự.
+
+### Ví dụ đời thực
+Endpoint tổng hợp 5 API nội bộ bằng coroutineScope + async. Client ngắt kết nối sau 2 giây (timeout gateway 3s). Scope request bị hủy → các coroutine con nhận cancellation. Nhưng 2 trong 5 dùng RestTemplate blocking → thread vẫn chạy query đến cùng, connection pool bị cạn sau 50 request đồng thời bị hủy. Sửa: chuyển sang WebClient suspend + R2DBC, thêm ensureActive() trong vòng lặp xử lý, dùng use cho connection. Kết quả: cancellation thật sự, pool không cạn, throughput ổn định.
+
+### Trả lời mẫu khi phỏng vấn
+"Structured concurrency của coroutine gắn coroutine con với scope cha; khi request kết thúc, scope bị hủy và mọi con bị hủy. Nhưng hủy chỉ đặt cờ cancellation, code blocking JDBC/HTTP không tự dừng. Tôi dùng thư viện suspend (WebClient, R2DBC) hỗ trợ cancellation thật, đóng tài nguyên bằng use/finally, kiểm tra isActive trong vòng lặp dài, và đặt timeout cho connection pool. Nếu codebase blocking, virtual thread thường đơn giản hơn."
+
+> Senior tip: cancellation chỉ hiệu quả khi toàn bộ đường đi là suspend-aware; mixing blocking code trong coroutine làm cancellation vô hiệu và leak tài nguyên.`,
+  follow: ['CancellationException khác Exception thế nào?', 'SupervisorScope khác coroutineScope ra sao?', 'Làm sao test cancellation trong coroutine?'],
+  tags: ['coroutine', 'structured concurrency', 'cancellation', 'Spring Boot']
+},
+{
+  id: 'kotlin-041', topic: 'kotlin', level: 'senior',
+  q: 'Data class làm JPA entity: vì sao equals/hashCode theo tất cả thuộc tính phá vỡ Set/Map và Hibernate proxy, và bạn thiết kế identity thế nào?',
+  a: `**Tóm tắt:** Data class sinh {{equals}}/{{hashCode}} trên tất cả thuộc tính primary constructor. Dùng làm JPA entity thì identity thay đổi sau khi persist (id được gán), hashCode thay đổi → đối tượng trong HashSet/HashMap không còn tìm thấy. Lazy association trong equals cũng kích hoạt query ngoài ý muốn. Dùng business key bất biến hoặc identity theo id với equals/hashCode ổn định.
+
+### Cơ chế data class equals/hashCode
+Data class sinh {{equals}} so sánh tất cả thuộc tính primary constructor, {{hashCode}} từ chúng. Nếu entity có id do DB gán (null trước persist, có giá trị sau), hashCode thay đổi → đối tượng đã trong HashSet không còn tìm thấy. Lazy collection trong equals → truy vấn DB khi so sánh.
+
+### Thiết kế identity cho entity
+1. Business key bất biến (ví dụ mã đơn hàng, email): equals/hashCode theo business key, không theo id.
+2. Nếu không có business key: equals/hashCode theo id, nhưng id null trước persist → hai entity mới coi là bằng nhau (cả hai id null). Giải pháp: equals trả false trừ khi cùng instance khi id null.
+3. Không đưa collection lazy vào equals/hashCode/toString.
+4. Dùng {{Persistable}} với isNew để Spring Data dùng persist thay vì merge khi id do ứng dụng gán.
+
+### Ví dụ đời thực
+Entity Order data class có id: Long? (null trước persist). Service thêm Order mới vào HashSet để kiểm tra trùng. Sau save, id được gán → hashCode thay đổi → contains trả false → đơn hàng trùng được thêm lần nữa. Sửa: equals/hashCode theo mã đơn hàng (business key), toString chỉ in mã, test thêm vào HashSet, persist, flush, kiểm tra contains.
+
+### Trả lời mẫu khi phỏng vấn
+"Data class sinh equals và hashCode trên tất cả thuộc tính primary constructor, nên dùng làm JPA entity thì identity thay đổi sau persist (id được gán) → hashCode thay đổi → đối tượng trong HashSet/HashMap không còn tìm thấy. Lazy association trong equals cũng kích hoạt query ngoài ý muốn. Tôi thiết kế identity theo business key bất biến (mã đơn hàng, email), equals/hashCode chỉ trên business key, không đưa collection lazy. Nếu không có business key, equals trả false trừ khi cùng instance khi id null, và dùng Persistable với isNew để Spring Data persist đúng."
+
+> Senior tip: invariant identity phải ổn định trước và sau persist; test bằng cách thêm entity vào HashSet, persist, flush, rồi kiểm tra contains vẫn đúng.`,
+  follow: ['Persistable với isNew giải quyết vấn đề gì?', 'equals theo id có vấn đề gì khi id null?', 'Làm sao tránh LazyInitializationException trong toString của entity?'],
+  tags: ['data class', 'JPA', 'Hibernate', 'equals', 'hashCode', 'entity']
+}
 );
