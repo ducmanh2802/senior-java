@@ -4164,4 +4164,1147 @@ class IdempotencyStore {
   related: ['api-003'],
   tags: ['idempotency'],
 },
+{
+  id: 'lesson-api-013',
+  track: 'api',
+  order: 13,
+  title: 'Rate limiting: token bucket tự cài',
+  level: 'senior',
+  minutes: 30,
+  goals: ['Hiểu token bucket và leaky bucket', 'Cài token bucket với Clock giả để test deterministic', 'Giới hạn theo từng client độc lập', 'Xử lý burst và refill'],
+  body: `### Vì sao cần giới hạn tốc độ (rate limiting)
+Một API public nếu không giới hạn, một client có thể gửi hàng nghìn request/giây và làm sập server hoặc làm cạn quota của người khác. Rate limiting trả lời câu hỏi: "client X được gọi API này bao nhiêu lần trong một khoảng thời gian?".
+
+### Hai thuật toán phổ biến
+- **Token bucket**: mỗi client có một "xô" chứa token. Token được thêm vào theo thời gian (refill). Mỗi request tiêu tốn 1 token; nếu xô rỗng thì từ chối (429 Too Many Requests). Cho phép **burst** ngắn vì xô có thể chứa nhiều token.
+- **Leaky bucket**: request vào hàng đợi, xử lý với tốc độ cố định. Không cho burst, mượt mà hơn nhưng dễ làm client timeout.
+
+Token bucket phổ biến hơn vì đơn giản và cho phép burst hợp lý.
+
+### Cơ chế token bucket
+Mỗi client có: capacity (số token tối đa trong xô), refillRate (token/giây), và lastRefill (thời điểm refill gần nhất). Khi có request:
+1. Tính thời gian trôi qua từ lastRefill.
+2. Thêm token: tokens = min(capacity, tokens + elapsed * refillRate).
+3. Cập nhật lastRefill = now.
+4. Nếu tokens >= 1: tokens--, cho phép (200).
+5. Ngược lại: từ chối (429), kèm header Retry-After.
+
+### Vì sao dùng Clock giả
+Trong test, nếu dùng thời gian thực, test sẽ chậm và không deterministic (phụ thuộc tốc độ máy). Giải pháp: truyền vào một Clock giả có thể điều khiển (advance). Bài tập dùng interface Clock với now() trả về long (milliseconds). Test gọi clock.advance(1000) để giả lập 1 giây trôi qua, rồi kiểm tra refill.
+
+### Nhiều client độc lập
+Mỗi client có xô riêng, keyed by clientId. Dùng ConcurrentHashMap<String, Bucket>. Cần xử lý race condition: hai request cùng client cùng lúc. Dùng synchronized trên bucket hoặc atomic update.
+
+### Pitfall thực tế
+- **Clock skew**: nếu dùng thời gian máy chủ, cần NTP đồng bộ. Nếu dùng distributed rate limiter (Redis), cần clock nhất quán.
+- **Burst quá lớn**: capacity quá lớn cho phép burst lớn, có thể làm sập downstream. Cần cân bằng.
+- **Memory leak**: nếu lưu bucket cho mọi client từng gọi, memory tăng vô hạn. Cần TTL hoặc LRU cache để xoá bucket không dùng.
+- **Race condition**: hai request đồng thời có thể cả hai thấy tokens=1 và cả hai pass. Cần atomic decrement (compareAndSet) hoặc lock.
+
+### Header trả về
+- X-RateLimit-Limit: capacity
+- X-RateLimit-Remaining: tokens còn lại
+- X-RateLimit-Reset: thời điểm refill tiếp theo (epoch seconds)
+- Retry-After: số giây cần chờ khi bị 429
+
+### Ví dụ đời thực
+API gateway của một SaaS: mỗi tenant có quota 100 req/s với burst 200. Khi tenant A gửi 300 request trong 1 giây, 200 request đầu pass, 100 request sau nhận 429 với Retry-After: 1. Sau 1 giây, xô refill 100 token, request tiếp pass.
+
+### Trả lời mẫu khi phỏng vấn
+"Em dùng token bucket vì cho phép burst hợp lý và dễ cài. Mỗi client có xô với capacity và refill rate. Dùng Clock giả trong test để deterministic. Nhiều client keyed by id trong ConcurrentHashMap. Xử lý race bằng atomic decrement. Trả header chuẩn để client biết còn quota. Production dùng Redis với Lua script để atomic, và TTL để tránh memory leak."
+
+### Liên hệ phỏng vấn
+Interviewer hay hỏi: token bucket vs leaky bucket, xử lý race, distributed rate limiting, header chuẩn, memory leak.
+`,
+  exercises: [
+    {
+      title: 'TokenBucket',
+      prompt: `Cài token bucket với Clock giả. tryAcquire(clientId) trả true nếu còn token và tiêu 1 token; false nếu hết. Hỗ trợ nhiều client độc lập. Refill theo thời gian.`,
+      starter: `interface Clock { long now(); void advance(long ms); }
+
+class TokenBucket {
+    TokenBucket(int capacity, int refillPerSecond, Clock clock) { throw new UnsupportedOperationException("TODO"); }
+    boolean tryAcquire(String clientId) { throw new UnsupportedOperationException("TODO"); }
+    long tokens(String clientId) { throw new UnsupportedOperationException("TODO"); }
+}`,
+      tests: `public class Main {
+    static int passed = 0, total = 0;
+    static void check(String name, Runnable r) { total++; try { r.run(); passed++; System.out.println("PASS " + name);} catch(Throwable t){ System.out.println("FAIL "+name+": "+t);} }
+    static void eq(Object e, Object a){ if(!Objects.equals(e,a)) throw new AssertionError("expected "+e+" got "+a); }
+    static void assertTrue(boolean b){ if(!b) throw new AssertionError("expected true"); }
+    static void assertFalse(boolean b){ if(b) throw new AssertionError("expected false"); }
+    public static void main(String[] args) {
+        class FakeClock implements Clock {
+            long t = 0;
+            public long now(){ return t; }
+            public void advance(long ms){ t += ms; }
+        }
+        check("burst within capacity", () -> {
+            FakeClock c = new FakeClock();
+            TokenBucket b = new TokenBucket(3, 1, c);
+            assertTrue(b.tryAcquire("A"));
+            assertTrue(b.tryAcquire("A"));
+            assertTrue(b.tryAcquire("A"));
+            assertFalse(b.tryAcquire("A"));
+        });
+        check("refill after time", () -> {
+            FakeClock c = new FakeClock();
+            TokenBucket b = new TokenBucket(2, 2, c);
+            assertTrue(b.tryAcquire("A"));
+            assertTrue(b.tryAcquire("A"));
+            assertFalse(b.tryAcquire("A"));
+            c.advance(1000);
+            assertTrue(b.tryAcquire("A"));
+            assertTrue(b.tryAcquire("A"));
+            assertFalse(b.tryAcquire("A"));
+        });
+        check("independent clients", () -> {
+            FakeClock c = new FakeClock();
+            TokenBucket b = new TokenBucket(1, 1, c);
+            assertTrue(b.tryAcquire("A"));
+            assertFalse(b.tryAcquire("A"));
+            assertTrue(b.tryAcquire("B"));
+            assertFalse(b.tryAcquire("B"));
+        });
+        check("tokens count", () -> {
+            FakeClock c = new FakeClock();
+            TokenBucket b = new TokenBucket(5, 1, c);
+            eq(5L, b.tokens("X"));
+            b.tryAcquire("X");
+            eq(4L, b.tokens("X"));
+        });
+        System.out.println("RESULT "+passed+"/"+total);
+    }
+}`,
+      reference: `interface Clock { long now(); void advance(long ms); }
+
+class TokenBucket {
+    private static final class Bucket { int tokens; long lastRefill; }
+    private final int capacity;
+    private final double refillPerMs;
+    private final Clock clock;
+    private final java.util.concurrent.ConcurrentHashMap<String, Bucket> buckets = new java.util.concurrent.ConcurrentHashMap<>();
+    TokenBucket(int capacity, int refillPerSecond, Clock clock) {
+        this.capacity = capacity;
+        this.refillPerMs = refillPerSecond / 1000.0;
+        this.clock = clock;
+    }
+    private Bucket bucket(String id) { return buckets.computeIfAbsent(id, k -> { Bucket b = new Bucket(); b.tokens = capacity; b.lastRefill = clock.now(); return b; }); }
+    boolean tryAcquire(String clientId) {
+        Bucket b = bucket(clientId);
+        synchronized (b) {
+            long now = clock.now();
+            long elapsed = now - b.lastRefill;
+            if (elapsed > 0) {
+                b.tokens = (int) Math.min(capacity, b.tokens + elapsed * refillPerMs);
+                b.lastRefill = now;
+            }
+            if (b.tokens >= 1) { b.tokens--; return true; }
+            return false;
+        }
+    }
+    long tokens(String clientId) {
+        Bucket b = bucket(clientId);
+        synchronized (b) {
+            long now = clock.now();
+            long elapsed = now - b.lastRefill;
+            if (elapsed > 0) b.tokens = (int) Math.min(capacity, b.tokens + elapsed * refillPerMs);
+            return b.tokens;
+        }
+    }
+}`,
+      hints: ['Dùng ConcurrentHashMap.computeIfAbsent để tạo bucket cho client mới.', 'Synchronized trên bucket để xử lý race.'],
+      explain: `Mỗi client có bucket riêng; refill theo thời gian; synchronized để tránh race; Clock giả cho test deterministic.`,
+    },
+  ],
+  check: [
+    {
+      q: 'Token bucket cho phép burst vì sao?',
+      options: ['Vì refill liên tục', 'Vì xô có thể chứa nhiều token', 'Vì không từ chối request', 'Vì dùng Redis'],
+      answer: 1,
+      explain: 'Xô chứa capacity token, cho phép burst đến capacity request ngay lập tức.',
+    },
+    {
+      q: 'Vì sao dùng Clock giả trong test?',
+      options: ['Để nhanh hơn', 'Để deterministic, không phụ thuộc thời gian thực', 'Để tiết kiệm CPU', 'Không cần'],
+      answer: 1,
+      explain: 'Clock giả cho phép điều khiển thời gian, test deterministic và nhanh.',
+    },
+  ],
+  related: ['api-001'],
+  tags: ['rate-limiting', 'token-bucket'],
+  },
+  {
+  id: 'lesson-api-014',
+  track: 'api',
+  order: 14,
+  title: 'Phân trang cursor (keyset pagination)',
+  level: 'senior',
+  minutes: 30,
+  goals: ['Hiểu offset pagination và vấn đề của nó', 'Cài cursor pagination với mã hoá Base64', 'Trang kế tiếp ổn định khi có bản ghi mới', 'So sánh offset vs cursor'],
+  body: `### Offset pagination và vấn đề
+Phân trang phổ biến nhất là OFFSET/LIMIT: SELECT * FROM orders ORDER BY created_at DESC LIMIT 20 OFFSET 40. Đơn giản nhưng có vấn đề:
+- **Hiệu năng**: OFFSET lớn, DB phải scan và bỏ qua nhiều dòng → chậm khi trang sâu.
+- **Không ổn định**: nếu có bản ghi mới chèn vào giữa, các trang bị lệch: bản ghi có thể bị lặp hoặc bị bỏ sót.
+- **Tổng số**: COUNT(*) trên bảng lớn tốn kém.
+
+### Cursor pagination (keyset)
+Thay vì "trang thứ N", dùng "trang sau bản ghi X". Client gửi cursor = thông tin bản ghi cuối cùng đã thấy (id + createdAt). Server trả các bản ghi có (createdAt, id) nhỏ hơn cursor, theo thứ tự giảm dần. Cursor là **opaque** (client không cần hiểu), thường mã hoá Base64.
+
+### Tại sao id + createdAt
+Chỉ dùng createdAt không đủ vì nhiều bản ghi có thể cùng timestamp (insert cùng millisecond). Thêm id (unique) làm tie-breaker. Thứ tự sắp xếp: ORDER BY created_at DESC, id DESC. Cursor chứa (createdAt, id) của bản ghi cuối cùng. Trang kế: WHERE (created_at, id) < (cursorCreatedAt, cursorId) ORDER BY created_at DESC, id DESC LIMIT pageSize.
+
+### Mã hoá cursor
+Cursor chứa dữ liệu nhạy cảm? Không nhạy cảm nhưng nên opaque để client không parse. Mã hoá Base64 của "id|createdAt" (hoặc JSON). Có thể thêm chữ ký HMAC để chống tamper, nhưng thường không cần cho read-only pagination. Validate cursor khi decode: nếu sai format → 400 Bad Request.
+
+### Ổn định khi có bản ghi mới
+Vì cursor dựa trên giá trị bản ghi cuối, không phải offset, khi có bản ghi mới chèn vào đầu, trang kế tiếp vẫn đúng: nó bắt đầu sau bản ghi cũ, không bị lệch. Đây là ưu điểm lớn so với offset.
+
+### So sánh
+| Tiêu chí | Offset | Cursor |
+|---|---|---|
+| Trang sâu | Chậm (O(offset)) | Nhanh (O(log n) với index) |
+| Ổn định khi insert | Không | Có |
+| Nhảy đến trang N | Có | Không (chỉ next/prev) |
+| Tổng số trang | Có | Không (hoặc approximate) |
+| Phức tạp | Thấp | Trung bình |
+
+### Index cần thiết
+Index trên (created_at DESC, id DESC) để query nhanh. Nếu không có index, DB vẫn phải sort → chậm.
+
+### Pitfall thực tế
+- **Sort key không unique**: nếu không có tie-breaker, pagination bị sai khi nhiều bản ghi cùng timestamp.
+- **Cursor tampering**: client có thể sửa cursor để xem dữ liệu không được phép. Cần validate và giới hạn range.
+- **Backward pagination**: hỗ trợ "previous" cần cursor ngược (first item của trang hiện tại).
+- **Deleted records**: nếu bản ghi bị xoá, cursor vẫn hoạt động vì nó dựa trên giá trị, không phải vị trí.
+
+### Ví dụ đời thực
+API danh sách đơn hàng: client gọi GET /orders?cursor=...&limit=20. Server decode cursor, query WHERE (created_at, id) < (cursor values), trả 20 đơn hàng mới nhất sau cursor đó, kèm nextCursor. Khi có đơn hàng mới, trang kế tiếp không bị lệch.
+
+### Trả lời mẫu khi phỏng vấn
+"Em dùng cursor pagination cho API list lớn. Cursor chứa id + createdAt mã hoá Base64, opaque với client. Query dùng WHERE (createdAt, id) < (cursor) ORDER BY ... LIMIT pageSize, với index phù hợp. Ổn định khi có insert mới, nhanh cho trang sâu. Trade-off: không nhảy đến trang N, cần index. Offset chỉ dùng cho admin/small dataset."
+
+### Liên hệ phỏng vấn
+Interviewer hay hỏi: offset vs cursor, xử lý duplicate timestamp, index, ổn định khi insert, backward pagination.
+`,
+  exercises: [
+    {
+      title: 'CursorCodec',
+      prompt: `Mã hoá và giải mã cursor chứa id (long) và createdAt (long, epoch millis). Encode trả Base64 của "id|createdAt". Decode trả long[] {id, createdAt}. Cursor không hợp lệ ném IllegalArgumentException.`,
+      starter: `class CursorCodec {
+    static String encode(long id, long createdAt) { throw new UnsupportedOperationException("TODO"); }
+    static long[] decode(String cursor) { throw new UnsupportedOperationException("TODO"); }
+}`,
+      tests: `public class Main {
+    static int passed = 0, total = 0;
+    static void check(String name, Runnable r) { total++; try { r.run(); passed++; System.out.println("PASS " + name);} catch(Throwable t){ System.out.println("FAIL "+name+": "+t);} }
+    static void eq(Object e, Object a){ if(!Objects.equals(e,a)) throw new AssertionError("expected "+e+" got "+a); }
+    static void assertArrayEq(long[] e, long[] a){ if(e.length!=a.length) throw new AssertionError("len"); for(int i=0;i<e.length;i++) if(e[i]!=a[i]) throw new AssertionError("idx "+i); }
+    static void expectThrows(Class<? extends Throwable> t, Runnable r){ try{r.run();}catch(Throwable x){ if(t.isInstance(x)) return; throw new AssertionError("wrong: "+x);} throw new AssertionError("expected "+t.getSimpleName()); }
+    public static void main(String[] args) {
+        check("roundtrip", () -> {
+            String c = CursorCodec.encode(123L, 1700000000000L);
+            long[] d = CursorCodec.decode(c);
+            assertArrayEq(new long[]{123L, 1700000000000L}, d);
+        });
+        check("different values", () -> {
+            String c = CursorCodec.encode(999L, 1600000000000L);
+            long[] d = CursorCodec.decode(c);
+            assertArrayEq(new long[]{999L, 1600000000000L}, d);
+        });
+        check("invalid cursor", () -> {
+            expectThrows(IllegalArgumentException.class, () -> CursorCodec.decode("not-base64!!!"));
+        });
+        check("null cursor", () -> {
+            expectThrows(IllegalArgumentException.class, () -> CursorCodec.decode(null));
+        });
+        System.out.println("RESULT "+passed+"/"+total);
+    }
+}`,
+      reference: `import java.util.Base64;
+class CursorCodec {
+    static String encode(long id, long createdAt) {
+        String raw = id + "|" + createdAt;
+        return Base64.getEncoder().encodeToString(raw.getBytes(java.nio.charset.StandardCharsets.UTF_8));
+    }
+    static long[] decode(String cursor) {
+        if (cursor == null || cursor.trim().isEmpty()) throw new IllegalArgumentException("null cursor");
+        try {
+            String raw = new String(Base64.getDecoder().decode(cursor), java.nio.charset.StandardCharsets.UTF_8);
+            String[] parts = raw.split("\\\\|", -1);
+            if (parts.length != 2) throw new IllegalArgumentException("bad format");
+            long id = Long.parseLong(parts[0]);
+            long createdAt = Long.parseLong(parts[1]);
+            return new long[]{id, createdAt};
+        } catch (IllegalArgumentException e) {
+            throw e;
+        } catch (Exception e) {
+            throw new IllegalArgumentException("invalid cursor", e);
+        }
+    }
+}`,
+      hints: ['Dùng java.util.Base64 để encode/decode.', 'Format "id|createdAt", split bằng \\.'],
+      explain: `Encode Base64 của "id|createdAt"; decode kiểm tra format và parse long; invalid → IllegalArgumentException.`,
+    },
+  ],
+  check: [
+    {
+      q: 'Vì sao cursor dùng cả id và createdAt?',
+      options: ['Để bảo mật', 'Để tie-break khi cùng timestamp', 'Để nén dữ liệu', 'Không cần id'],
+      answer: 1,
+      explain: 'Nhiều bản ghi có thể cùng createdAt, id làm tie-breaker để không bỏ sót/lặp.',
+    },
+    {
+      q: 'Ưu điểm lớn của cursor so với offset?',
+      options: ['Nhảy đến trang N dễ hơn', 'Ổn định khi có bản ghi mới chèn vào', 'Tổng số trang chính xác', 'Đơn giản hơn'],
+      answer: 1,
+      explain: 'Cursor dựa trên giá trị bản ghi cuối, không phải vị trí, nên không bị lệch khi insert.',
+    },
+  ],
+  related: ['api-002'],
+  tags: ['pagination', 'cursor'],
+  },
+{
+  id: 'lesson-api-015',
+  track: 'api',
+  order: 15,
+  title: 'Rate limiting token bucket: tự cài với Clock giả, nhiều client độc lập',
+  level: 'senior',
+  minutes: 40,
+  goals: [
+    'Giải thích được cơ chế token bucket: capacity, refill rate, burst, Retry-After',
+    'Hiểu vì sao cần Clock giả để test deterministic và tránh lệch đồng hồ thực',
+    'Cài được TokenBucket an toàn đa luồng với synchronized và KeyedRateLimiter quản lý nhiều client',
+    'Biết xử lý cost (trọng số request), clamp capacity, và giới hạn bộ nhớ bằng TTL/LRU',
+  ],
+  body: `### Tóm tắt
+**Rate limiting (giới hạn tốc độ)** trả lời câu hỏi: "Client X được gọi API này bao nhiêu lần trong một khoảng thời gian?". Nếu không giới hạn, một client có thể gửi hàng nghìn request/giây làm sập server hoặc làm cạn quota người khác. **Token bucket** là thuật toán phổ biến nhất: mỗi client có một "xô" chứa tối đa {{capacity}} token, được nạp {{refillPerSecond}} token/giây. Mỗi request tiêu tốn {{cost}} token (mặc định 1); nếu xô rỗng thì trả {{429 Too Many Requests}} kèm header {{Retry-After}}. Token bucket cho phép **burst** (bùng nổ ngắn) hợp lý vì xô có thể chứa nhiều token, khác với leaky bucket ép tất cả request đều nhịp đều.
+
+### Thuật ngữ (giải thích lần đầu)
+- **Rate limit**: trần số request một client được phép trong một đơn vị thời gian, ví dụ 100 request/phút.
+- **Quota**: tổng lượng dùng trong kỳ dài hơn (tháng/năm), bảo vệ năng lực vận hành và hoá đơn.
+- **Burst**: một loạt request dồn tới rất nhanh trong thời gian ngắn. Token bucket cho phép burst tới {{capacity}}.
+- **Retry-After**: header nói client "đợi bao lâu thì thử lại", đơn vị giây hoặc HTTP-date.
+- **Cost (trọng số request)**: một request nặng (xuất báo cáo) có thể tốn nhiều token hơn request nhẹ (health check).
+- **Clock giả (fake clock)**: interface Clock với hai phương thức {{now()}} trả về thời điểm hiện tại (epoch millis) và {{advance(ms)}} dịch chuyển thời gian về trước dùng trong test, giúp test deterministic (cùng input ra cùng output) và nhanh, không phụ thuộc {{System.currentTimeMillis}}.
+
+### Vì sao token bucket
+| Tiêu chí | Fixed window | Sliding window counter | Token bucket |
+|---|---|---|---|
+| Boundary burst | Có (2× limit ở ranh giới cửa sổ) | Khắc phục khá tốt | Không có ranh giới, nạp liên tục |
+| Burst hợp lệ | Không | Hạn chế | Có, tới {{capacity}} |
+| Retry-After | Ước lượng | Ước lượng | **Chính xác** (thiếu bao nhiêu token / tốc độ nạp) |
+| State mỗi client | 1 counter | 2 counter + mốc | 2 số (tokens, lastRefill) |
+
+Token bucket thắng ở: cho burst tự nhiên, Retry-After chính xác, state tối thiểu.
+
+### Cơ chế token bucket chi tiết
+Mỗi client giữ state:
+- {{tokens}}: số token hiện có (số thực, cho phép "nửa token" khi thời gian chưa tròn giây)
+- {{lastRefill}}: mốc thời gian lần cập nhật gần nhất (mili-giây)
+- {{capacity}}: sức chứa tối đa
+- {{refillPerSecond}}: tốc độ nạp token/giây
+
+Khi có request tại thời điểm {{now}}:
+1. Tính token khả dụng: {{available = min(capacity, tokens + (now - lastRefill) / 1000.0 * refillPerSecond)}}
+2. Nếu {{available >= cost}}: {{tokens = available - cost}}, {{lastRefill = now}}, cho phép.
+3. Ngược lại: {{tokens = available}} (giữ phần lẻ), {{lastRefill = now}}, từ chối, trả {{Retry-After = ceil((cost - available) / refillPerSecond * 1000)}} mili-giây.
+
+**Hai chi tiết dễ sai:**
+- **Phải clamp bằng {{min(capacity, ...)}}**: nếu không, sau thời gian im lặng token tăng vô hạn → burst khổng lồ lọt qua, phá mục đích bảo vệ.
+- **Dùng số thực cho token**: nếu chỉ dùng số nguyên, request đến giữa giây vẫn phải chờ đủ 1 giây, gây chậm không cần thiết.
+
+### Clock giả: tại sao không dùng System.currentTimeMillis
+Trong production, token bucket dùng {{System.nanoTime()}} (đơn điệu, không bị nhảy khi NTP đồng bộ). Nhưng trong test, nếu dùng thời gian thực:
+- Test chậm (phải {{Thread.sleep}} chờ refill)
+- Không deterministic: cùng code, máy nhanh ra pass, máy chậm ra fail
+- Không thể dựng chính xác mốc boundary (ví dụ 990ms rồi 1006ms)
+
+Giải pháp: truyền một **Clock interface** vào constructor:
+~~~java
+interface Clock { long now(); void advance(long ms); }
+~~~
+Test tạo {{FakeClock}}: {{now()}} trả mốc nội bộ, {{advance(ms)}} tăng mốc đó. Điều khiển thời gian tùy ý, test chạy trong mili-giây, kết quả hoàn toàn deterministic.
+
+### Nhiều client độc lập: KeyedRateLimiter
+Mỗi client (API key, tenant, IP) có một bucket riêng. Dùng {{ConcurrentHashMap<String, TokenBucket>}}:
+~~~java
+TokenBucket bucket = buckets.computeIfAbsent(key, k -> new TokenBucket(capacity, refill, clock));
+return bucket.tryAcquire(now);
+~~~
+{{computeIfAbsent}} đảm bảo mỗi key chỉ tạo **một** bucket (nguyên tử). Bucket riêng phải thread-safe: {{synchronized}} trên các method cập nhật là đủ vì vùng tới hạn chỉ có vài phép số học, không I/O.
+
+### Cost: không phải request nào cũng bằng nhau
+{{GET /health}} nhẹ, {{POST /reports}} nặng (chạy 3 giây, đọc 50 MB). Nếu đều tốn 1 token, client gửi toàn request nặng vẫn "đúng hạn mức" mà làm backend quá tải.
+- {{tryAcquire(now, cost)}}: {{cost > 0}}, nếu {{cost > capacity}} thì **không bao giờ** đủ token → trả false ngay, {{Retry-After = Long.MAX_VALUE}}.
+- Hệ thống nào muốn "không từ chối request nặng" có thể cho token âm (mượn trước, trả sau), nhưng dễ làm request nhẹ bị chặn lâu; chỉ dùng khi thực sự muốn giới hạn **tổng tải**.
+
+### Thread safety: hai biến, một hành động
+Cập nhật bucket là "đọc tokens & lastRefill, tính, ghi lại". Hai thread cùng làm không đồng bộ:
+| Thời điểm | Thread A | Thread B | tokens |
+|---|---|---|---|
+| t1 | đọc 1.9 | | 1.9 |
+| t2 | | đọc 1.9 | 1.9 |
+| t3 | tính 0.9 | | 1.9 |
+| t4 | ghi 0.9 | tính 0.9 | 0.9 |
+| t5 | | ghi 0.9 | 0.9 |
+
+Cả hai cùng được cho qua trong khi chỉ còn 0.9 token: **vượt hạn mức**. Cách sửa: {{synchronized}} trên method (vùng tới hạn ngắn, không I/O), hoặc CAS với {{AtomicLong}}, hoặc actor model. Phân tán (nhiều instance) thì dùng Redis Lua script ("đọc - tính - ghi" nguyên tử).
+
+### Giới hạn bộ nhớ: TTL và LRU
+Lưu bucket cho mọi client từng gọi → memory tăng vô hạn. Cần dọn:
+- **TTL (time to live)**: bucket không dùng quá {{X}} phút thì xoá. Dùng {{Caffeine}} cache với {{expireAfterAccess}} hoặc job định kỳ quét map.
+- **LRU**: giới hạn số bucket tối đa, xoá bucket lâu nhất không dùng khi đầy.
+Production thường dùng Redis (TTL tự động) thay vì map trong JVM.
+
+### Header trả về (chuẩn hoá cho client biết trạng thái)
+- {{X-RateLimit-Limit}}: {{capacity}}
+- {{X-RateLimit-Remaining}}: token còn lại sau request này
+- {{X-RateLimit-Reset}}: epoch seconds khi bucket đầy lại (hoặc {{Retry-After}} giây)
+- {{Retry-After}}: số giây chờ khi bị 429 (bắt buộc)
+
+### Lỗi hay gặp
+- **Không clamp capacity**: sau im lặng token tăng vô hạn → burst khổng lồ lọt qua.
+- **Dùng int cho token**: mất phần lẻ, request giữa giây bị chờ đủ 1 giây.
+- **Gọi Thread.sleep trong request thread**: Tomcat 200 thread, 200 request chờ 1 giây = nghẽn toàn bộ. Rate limit đúng là **từ chối ngay** kèm Retry-After.
+- **Bộ đếm trong bộ nhớ từng instance**: 6 instance → hạn mức thực tế gấp 6 lần. Phải dùng Redis/gateway.
+- **Không trả Retry-After**: client đoán bừa retry ngay → **retry storm** (hàng nghìn client cùng gửi lại, làm quá tải nặng hơn).
+- **Không có TTL cho key**: map phình vô hạn.
+- **Dùng rate limit thay cho auth**: rate limit chỉ giảm tần suất, không xác định danh tính.
+
+### Ví dụ đời thực
+API gateway của một SaaS: mỗi tenant quota 100 req/s, burst 200. Tenant A gửi 300 request trong 1 giây: 200 request đầu pass (burst trong capacity), 100 request sau nhận 429 + {{Retry-After: 1}}. Sau 1 giây xô refill 100 token, request tiếp pass. Header {{X-RateLimit-Remaining}} giúp client tự điều tiết trước khi bị chặn.
+
+### Trả lời mẫu khi phỏng vấn
+"Em dùng token bucket vì cho phép burst hợp lý và Retry-After chính xác. Mỗi client có xô với capacity, refill rate. Dùng Clock giả trong test để deterministic. Nhiều client keyed by id trong ConcurrentHashMap, synchronized trên bucket. Cost cho request nặng. Production dùng Redis Lua script để atomic phân tán, TTL tránh memory leak. Trả header chuẩn X-RateLimit-* và Retry-After."
+
+### Liên hệ phỏng vấn
+Interviewer hay hỏi: token bucket vs leaky bucket vs fixed window, xử lý race condition, distributed rate limiting (Redis Lua), header chuẩn, cost-based limiting, memory leak prevention, clock skew. Nêu được 4 câu: hạn mức theo ai, thuật toán nào, state đặt đâu, client nhận gì khi chạm hạn mức.`,
+  exercises: [
+    {
+      title: 'TokenBucket thread-safe với cost, Clock giả và KeyedRateLimiter',
+      prompt: `Viết hai class dùng **đồng hồ truyền vào** ({{nowMillis}}, mili-giây), không dùng {{System.nanoTime}}/{{System.currentTimeMillis}}, không {{Thread.sleep}}, không I/O. Mọi method public phải an toàn khi nhiều thread gọi cùng lúc.
+
+1) {{class TokenBucket}}
+- Constructor {{TokenBucket(double capacity, double refillPerSecond)}}: capacity > 0, refillPerSecond > 0, lọ bắt đầu **đầy**. Lần gọi đầu tiên với {{nowMillis = T0}} lấy mốc T0.
+- {{synchronized boolean tryAcquire(long nowMillis)}}: lấy 1 token.
+- {{synchronized boolean tryAcquire(long nowMillis, double cost)}}: {{cost > 0}} (sai thì ném {{IllegalArgumentException}}); nếu token khả dụng (nạp bù tới nowMillis, tối đa capacity) >= cost thì trừ cost, cập nhật mốc, trả true; ngược lại không trừ, lưu phần token khả dụng (giữ phần lẻ), trả false.
+- {{synchronized long retryAfterMillis(long nowMillis, double cost)}}: {{cost > 0}} (sai thì ném {{IllegalArgumentException}}); trả 0 nếu đủ token; nếu {{cost > capacity}} trả {{Long.MAX_VALUE}}; ngược lại trả mili-giây chờ tối thiểu, làm tròn **lên** (ceil). **Không được thay đổi trạng thái**.
+- {{synchronized double availableTokens(long nowMillis)}}: số token khả dụng tại nowMillis, không thay đổi trạng thái.
+
+2) {{class KeyedRateLimiter}}
+- Constructor {{KeyedRateLimiter(double capacity, double refillPerSecond)}}.
+- {{boolean tryAcquire(String key, long nowMillis)}}: key null/rỗng/toàn khoảng trắng thì ném {{IllegalArgumentException}}; mỗi key có một {{TokenBucket}} riêng.
+- {{int size()}}: số key đang được theo dõi.`,
+      starter: `class TokenBucket {
+    private final double capacity;
+    private final double refillPerSecond;
+
+    TokenBucket(double capacity, double refillPerSecond) {
+        this.capacity = capacity;
+        this.refillPerSecond = refillPerSecond;
+    }
+
+    boolean tryAcquire(long nowMillis) {
+        throw new UnsupportedOperationException("TODO");
+    }
+
+    boolean tryAcquire(long nowMillis, double cost) {
+        throw new UnsupportedOperationException("TODO");
+    }
+
+    long retryAfterMillis(long nowMillis, double cost) {
+        throw new UnsupportedOperationException("TODO");
+    }
+
+    double availableTokens(long nowMillis) {
+        throw new UnsupportedOperationException("TODO");
+    }
+}
+
+class KeyedRateLimiter {
+    private final double capacity;
+    private final double refillPerSecond;
+
+    KeyedRateLimiter(double capacity, double refillPerSecond) {
+        this.capacity = capacity;
+        this.refillPerSecond = refillPerSecond;
+    }
+
+    boolean tryAcquire(String key, long nowMillis) {
+        throw new UnsupportedOperationException("TODO");
+    }
+
+    int size() {
+        throw new UnsupportedOperationException("TODO");
+    }
+}`,
+      tests: `public class Main {
+    static int passed = 0, total = 0;
+    static void check(String name, Runnable r) {
+        total++;
+        try { r.run(); passed++; System.out.println("PASS " + name); }
+        catch (Throwable t) { System.out.println("FAIL " + name + ": " + t); }
+    }
+    static void eq(Object expected, Object actual) {
+        if (!Objects.equals(expected, actual)) throw new AssertionError("expected " + expected + " got " + actual);
+    }
+    static void expectThrows(Class<? extends Throwable> type, Runnable r) {
+        try { r.run(); }
+        catch (Throwable t) {
+            if (type.isInstance(t)) return;
+            throw new AssertionError("wrong exception: " + t);
+        }
+        throw new AssertionError("expected " + type.getSimpleName());
+    }
+    public static void main(String[] args) {
+        check("starts full: burst up to capacity then rejects", () -> {
+            TokenBucket b = new TokenBucket(5, 1.0);
+            eq(true, b.tryAcquire(0));
+            eq(true, b.tryAcquire(0));
+            eq(true, b.tryAcquire(0));
+            eq(true, b.tryAcquire(0));
+            eq(true, b.tryAcquire(0));
+            eq(false, b.tryAcquire(0));
+            eq(1000L, b.retryAfterMillis(0, 1));
+            eq(true, b.tryAcquire(1000));
+        });
+        check("refill is proportional and clamped to capacity", () -> {
+            TokenBucket b = new TokenBucket(3, 2.0);
+            eq(true, b.tryAcquire(0));
+            eq(true, b.tryAcquire(0));
+            eq(true, b.tryAcquire(0));
+            eq(false, b.tryAcquire(0));
+            eq(500L, b.retryAfterMillis(0, 1));
+            eq(true, b.tryAcquire(500));
+            eq(3.0, b.availableTokens(60_000));
+            eq(true, b.tryAcquire(60_000));
+            eq(true, b.tryAcquire(60_000));
+            eq(true, b.tryAcquire(60_000));
+            eq(false, b.tryAcquire(60_000));
+        });
+        check("fractional tokens are kept across calls", () -> {
+            TokenBucket b = new TokenBucket(2, 1.0);
+            eq(true, b.tryAcquire(0));
+            eq(true, b.tryAcquire(0));
+            eq(false, b.tryAcquire(0));
+            eq(0.5, b.availableTokens(500));
+            eq(500L, b.retryAfterMillis(500, 1));
+            eq(false, b.tryAcquire(500));
+            eq(true, b.tryAcquire(1000));
+        });
+        check("cost larger than one token", () -> {
+            TokenBucket b = new TokenBucket(5, 1.0);
+            eq(true, b.tryAcquire(0, 4));
+            eq(false, b.tryAcquire(0, 2));
+            eq(1000L, b.retryAfterMillis(0, 2));
+            eq(true, b.tryAcquire(1000, 2));
+            eq(false, b.tryAcquire(1000, 1));
+        });
+        check("cost greater than capacity never succeeds", () -> {
+            TokenBucket b = new TokenBucket(3, 1.0);
+            eq(false, b.tryAcquire(0, 4));
+            eq(Long.MAX_VALUE, b.retryAfterMillis(0, 4));
+            eq(true, b.tryAcquire(0, 3));
+        });
+        check("retryAfterMillis does not change state", () -> {
+            TokenBucket b = new TokenBucket(2, 1.0);
+            eq(true, b.tryAcquire(0));
+            eq(true, b.tryAcquire(0));
+            eq(500L, b.retryAfterMillis(500, 1));
+            eq(500L, b.retryAfterMillis(500, 1));
+            eq(false, b.tryAcquire(500));
+            eq(true, b.tryAcquire(1000));
+        });
+        check("concurrent calls at the same instant allow exactly capacity", () -> {
+            TokenBucket b = new TokenBucket(6, 1.0);
+            int n = 20;
+            ExecutorService pool = Executors.newFixedThreadPool(n);
+            CountDownLatch start = new CountDownLatch(1);
+            List<Future<Boolean>> futures = new ArrayList<>();
+            try {
+                for (int i = 0; i < n; i++) {
+                    futures.add(pool.submit(() -> {
+                        start.await();
+                        return b.tryAcquire(0);
+                    }));
+                }
+                start.countDown();
+                int allowed = 0;
+                for (Future<Boolean> f : futures) if (f.get(5, TimeUnit.SECONDS)) allowed++;
+                eq(6, allowed);
+                eq(false, b.tryAcquire(0));
+            } catch (Exception e) {
+                throw new AssertionError(e);
+            } finally {
+                pool.shutdownNow();
+            }
+        });
+        check("keys are independent and blank keys are rejected", () -> {
+            KeyedRateLimiter rl = new KeyedRateLimiter(2, 1.0);
+            eq(true, rl.tryAcquire("a", 0));
+            eq(true, rl.tryAcquire("a", 0));
+            eq(false, rl.tryAcquire("a", 0));
+            eq(true, rl.tryAcquire("b", 0));
+            eq(true, rl.tryAcquire("b", 0));
+            eq(false, rl.tryAcquire("b", 0));
+            eq(2, rl.size());
+            eq(true, rl.tryAcquire("a", 1000));
+            expectThrows(IllegalArgumentException.class, () -> rl.tryAcquire("  ", 0));
+            expectThrows(IllegalArgumentException.class, () -> rl.tryAcquire(null, 0));
+        });
+        check("invalid arguments are rejected", () -> {
+            expectThrows(IllegalArgumentException.class, () -> new TokenBucket(0, 1.0));
+            expectThrows(IllegalArgumentException.class, () -> new TokenBucket(1, 0));
+            TokenBucket b = new TokenBucket(2, 1.0);
+            expectThrows(IllegalArgumentException.class, () -> b.tryAcquire(0, 0));
+            expectThrows(IllegalArgumentException.class, () -> b.retryAfterMillis(0, -1));
+        });
+        System.out.println("RESULT " + passed + "/" + total);
+    }
+}`,
+      reference: `class TokenBucket {
+    private final double capacity;
+    private final double refillPerSecond;
+    private double tokens;
+    private long lastMillis;
+    private boolean anchored;
+
+    TokenBucket(double capacity, double refillPerSecond) {
+        if (capacity <= 0) throw new IllegalArgumentException("capacity must be > 0");
+        if (refillPerSecond <= 0) throw new IllegalArgumentException("refillPerSecond must be > 0");
+        this.capacity = capacity;
+        this.refillPerSecond = refillPerSecond;
+        this.tokens = capacity;
+    }
+
+    private double tokensAt(long nowMillis) {
+        if (!anchored) return tokens;
+        if (nowMillis <= lastMillis) return tokens;
+        double refilled = tokens + (nowMillis - lastMillis) / 1000.0 * refillPerSecond;
+        return refilled > capacity ? capacity : refilled;
+    }
+
+    private void anchor(long nowMillis) {
+        if (!anchored || nowMillis > lastMillis) {
+            lastMillis = nowMillis;
+            anchored = true;
+        }
+    }
+
+    synchronized boolean tryAcquire(long nowMillis) {
+        return tryAcquire(nowMillis, 1.0);
+    }
+
+    synchronized boolean tryAcquire(long nowMillis, double cost) {
+        if (cost <= 0) throw new IllegalArgumentException("cost must be > 0");
+        double available = tokensAt(nowMillis);
+        anchor(nowMillis);
+        tokens = available;
+        if (available >= cost) {
+            tokens = available - cost;
+            return true;
+        }
+        return false;
+    }
+
+    synchronized long retryAfterMillis(long nowMillis, double cost) {
+        if (cost <= 0) throw new IllegalArgumentException("cost must be > 0");
+        double available = tokensAt(nowMillis);
+        if (available >= cost) return 0;
+        if (cost > capacity) return Long.MAX_VALUE;
+        double missing = cost - available;
+        return (long) Math.ceil(missing / refillPerSecond * 1000.0);
+    }
+
+    synchronized double availableTokens(long nowMillis) {
+        return tokensAt(nowMillis);
+    }
+}
+
+class KeyedRateLimiter {
+    private final ConcurrentHashMap<String, TokenBucket> buckets = new ConcurrentHashMap<>();
+    private final double capacity;
+    private final double refillPerSecond;
+
+    KeyedRateLimiter(double capacity, double refillPerSecond) {
+        this.capacity = capacity;
+        this.refillPerSecond = refillPerSecond;
+    }
+
+    boolean tryAcquire(String key, long nowMillis) {
+        if (key == null || key.isBlank()) throw new IllegalArgumentException("key is required");
+        TokenBucket bucket = buckets.computeIfAbsent(key, k -> new TokenBucket(capacity, refillPerSecond));
+        return bucket.tryAcquire(nowMillis);
+    }
+
+    int size() {
+        return buckets.size();
+    }
+}`,
+      hints: [
+        'Tách hàm {{tokensAt(nowMillis)}} (thuần, chỉ tính) khỏi phần ghi trạng thái. {{retryAfterMillis}} và {{availableTokens}} chỉ gọi {{tokensAt}}, còn {{tryAcquire}} mới cập nhật {{tokens}}/{{lastMillis}}.',
+        'Neo mốc ({{anchored}}) ở lần gọi đầu tiên: nếu chưa neo thì coi lọ đầy tại thời điểm đó; sau đó chỉ cập nhật mốc khi {{nowMillis > lastMillis}} để đồng hồ lùi không nạp sai.',
+        'Đặt {{synchronized}} lên các method cập nhật; với {{KeyedRateLimiter}}, dùng {{ConcurrentHashMap.computeIfAbsent}} để mỗi key có đúng một bucket.',
+      ],
+      explain: `### Công thức và hai cái bẫy
+Số token tại một thời điểm là {{min(capacity, tokens + delta giây × rate)}}. Thiếu {{min}} thì sau thời gian im lặng token tăng vô hạn; dùng số nguyên thì mất phần lẻ và request đến giữa giây vẫn bị chờ đủ một giây.
+
+### Vì sao retryAfterMillis phải thuần
+Nếu hàm "xem trước" cập nhật {{lastMillis}} mà không cập nhật đúng {{tokens}}, một lần gọi để tính header sẽ làm mất phần token lẻ; các lần sau tính sai và có thể từ chối oan. Cách đúng là chỉ {{tryAcquire}} ghi trạng thái.
+
+### Vì sao synchronized là đủ
+Vùng tới hạn chỉ có vài phép số học, không có I/O, nên giữ lock rất ngắn. Nếu bạn gọi mạng trong lúc giữ lock, mọi request cùng bucket sẽ chờ theo thời gian mạng — đó là lỗi phải tránh. Khi hệ thống nhiều instance, một bucket cục bộ không đủ: cần Redis Lua script (đọc - tính - ghi nguyên tử) hoặc gateway.
+
+### Test xác định
+Truyền {{nowMillis}} vào cho phép dựng chính xác các mốc 0, 500, 1000ms và kiểm tra phần lẻ 0.5 token. Test đồng thời dùng {{CountDownLatch}} để 20 thread cùng bắt đầu tại cùng một mốc: khi đó số request được cho qua phải đúng bằng {{capacity}}, không phụ thuộc thứ tự lập lịch.`,
+    },
+  ],
+  check: [
+    {
+      q: 'capacity = 10, refill = 2 token/giây, lọ đầy tại t = 0. Có 4 request tại t = 0 và 1 request tại t = 1 giây. Request thứ 5 có được cho qua không? (Chọn 1)',
+      options: [
+        'Không, vì đã dùng 4 token nên bị 429',
+        'Có, vì lúc đó còn 10 - 4 + 2 = 8 token',
+        'Không, vì lọ chỉ nạp khi có request mới',
+        'Có, nhưng bị tính 2 token',
+      ],
+      answer: 1,
+      explain: 'Lọ bắt đầu đầy 10 token; 4 request tại t=0 để lại 6 token; sau 1 giây nạp thêm 2 token thành 8, đủ cho request thứ 5. Nạp bù được tính theo thời gian trôi, không cần request mới.',
+    },
+    {
+      q: 'Vì sao phải giới hạn số token theo capacity? (Chọn 1)',
+      options: [
+        'Để lọ không chiếm quá nhiều bộ nhớ',
+        'Vì token phải là số nguyên',
+        'Vì nếu không, sau thời gian im lặng token tăng vô hạn và một burst khổng lồ sẽ lọt qua',
+        'Vì rate limit yêu cầu token giảm dần',
+      ],
+      answer: 2,
+      explain: 'Token bucket cho phép tích trữ quota tối đa capacity. Nếu không clamp, một giờ im lặng tạo ra hàng nghìn token và toàn bộ burst lọt qua, phá mục đích bảo vệ backend.',
+    },
+    {
+      q: 'Vì sao {{retryAfterMillis}} không được cập nhật {{lastMillis}}? (Chọn 1)',
+      options: [
+        'Vì nó phải là hàm thuần: nếu cập nhật, một lần xem trước làm mất phần token lẻ và các lần gọi sau tính sai',
+        'Vì lastMillis là hằng số',
+        'Vì Java không cho sửa field trong method trả về long',
+        'Vì nó chỉ dùng cho request GET',
+      ],
+      answer: 0,
+      explain: 'retryAfterMillis chỉ để tính header, không được thay đổi trạng thái. Nếu nó ghi lastMillis mà không ghi đúng tokens, phần token lẻ bị mất và các lần tryAcquire sau tính sai. Chỉ tryAcquire được phép ghi.',
+    },
+    {
+      q: 'Hai thread cùng đọc tokens = 1.9 rồi cùng ghi 0.9. Hậu quả là gì? (Chọn 1)',
+      options: [
+        'Không sao, vì cả hai đều trừ 1 token',
+        'Chương trình ném exception',
+        'Token bị âm vô hạn',
+        'Hai request cùng được cho qua trong khi chỉ còn 0.9 token: vượt hạn mức',
+      ],
+      answer: 3,
+      explain: 'Đó là race condition đọc-ghi: cả hai cùng đọc 1.9, cùng tính 0.9 và cùng ghi 0.9, nên hai request đều đi qua dù chỉ đủ một. Cần synchronized, CAS hoặc Redis Lua để cập nhật nguyên tử.',
+    },
+  ],
+  related: ['api-019', 'api-036', 'api-057'],
+  tags: ['rate limiting', 'token bucket', 'thread-safe', 'Retry-After', 'cost', 'fake clock'],
+},
+{
+  id: 'lesson-api-016',
+  track: 'api',
+  order: 16,
+  title: 'Phân trang cursor (keyset pagination): mã hoá Base64, ổn định khi chèn bản ghi mới',
+  level: 'senior',
+  minutes: 35,
+  goals: [
+    'Giải thích được vì sao OFFSET/LIMIT chậm ở trang sâu và gây trùng/sót khi có bản ghi mới chèn vào',
+    'Hiểu cơ chế cursor (keyset pagination): mã hoá (id, createdAt) thành Base64 opaque, truy vấn "sau mốc này"',
+    'Cài được CursorCodec encode/decode Base64 và CursorPager trả items + nextCursor ổn định khi có insert',
+    'Biết yêu cầu index (createdAt, id) và các pitfall: tie-breaker, backward pagination, cursor tampering',
+  ],
+  body: `### Tóm tắt
+**Phân trang (pagination)** chia danh sách lớn thành nhiều trang nhỏ để API không trả hàng triệu bản ghi một lần. Hai cách phổ biến: **offset/limit** ("bỏ qua N bản ghi đầu") và **cursor/keyset** ("lấy các bản ghi sau mốc X"). Offset đơn giản nhưng chậm ở trang sâu và **không ổn định** khi dữ liệu thay đổi; cursor khắc phục cả hai nhờ bám theo giá trị mốc thay vì đếm vị trí.
+
+### Thuật ngữ (giải thích lần đầu)
+- **Offset**: số bản ghi cần bỏ qua tính từ đầu. Ví dụ đời thường: đọc sách từ trang 101 nghĩa là bỏ qua 100 trang đầu.
+- **Cursor (con trỏ vị trí)**: một mốc đánh dấu "tôi đang ở đây". Ví dụ đời thường: cái kẹp sách đánh dấu trang bạn đọc dở, dù ai có rút thêm trang ở trước thì kẹp vẫn chỉ đúng chỗ bạn dở.
+- **Keyset pagination**: dùng giá trị của (các) cột đã sắp xếp làm cursor, thay vì đếm vị trí. "Keyset" = tập khoá định vị.
+- **Ổn định (stable sort)**: thứ tự sắp xếp không đổi khi có phần tử bằng nhau; thường đạt bằng cách thêm cột duy nhất (như {{id}}) làm tiêu chí phụ.
+- **Base64**: cách mã hoá dữ liệu nhị phân/chuỗi thành chuỗi ký tự an toàn để đặt trong URL; không phải mã hoá bí mật.
+- **Opaque (đối xứng với trong suốt)**: client không cần hiểu cấu trúc bên trong cursor, chỉ truyền y nguyên cho request sau.
+
+### Vì sao cần: offset chậm và sai khi dữ liệu thay đổi
+**Offset chậm ở trang sâu:** {{SELECT * FROM orders ORDER BY created_at DESC LIMIT 20 OFFSET 100000}} buộc DB vẫn phải duyệt và bỏ qua 100.000 dòng đầu rồi mới lấy 20 dòng. Trang càng sâu càng chậm (O(offset + limit)).
+
+**Offset trùng/sót khi có chèn/xoá:** Bạn đang xem trang 1 (bản ghi A, B). Trước khi bạn sang trang 2 (OFFSET 2), có bản ghi mới X được chèn lên đầu. Danh sách giờ là X, A, B. Trang 2 với OFFSET 2 sẽ trả B lần nữa (trùng), còn nếu có bản ghi bị xoá bạn có thể bị sót. Đây là lỗi rất hay gặp ở feed/thông báo realtime.
+
+| | Offset/limit | Cursor/keyset |
+|---|---|---|
+| Cú pháp | {{?page=5001}} hoặc {{?offset=100000&limit=20}} | {{?cursor=abc&limit=20}} |
+| Trang sâu | Chậm (quét bỏ offset dòng) | Nhanh đều (đi thẳng tới mốc nhờ index) |
+| Chèn/xoá giữa chừng | Dễ trùng/sót | **Không trùng, không sót** (bám theo mốc) |
+| Nhảy tới trang N tuỳ ý | Được | Không trực tiếp (chỉ đi tiếp/lùi) |
+| Triển khai | Đơn giản | Cần sort ổn định + mã hoá cursor |
+
+### Hoạt động thế nào: cursor mã hoá (createdAt, id)
+Chọn cột sắp xếp có thứ tự ổn định, ví dụ {{(createdAt DESC, id DESC)}} (id làm tiêu chí phụ để phá vỡ trường hợp cùng thời gian). Trang đầu:
+- Query: lấy 20 bản ghi mới nhất (không cần WHERE theo cursor).
+- {{nextCursor}} = Base64 của "{{createdAt}}|{{id}}" của **bản ghi cuối** trang.
+
+Trang sau, client gửi lại {{cursor}}:
+- Giải mã ra {{(t, i)}}.
+- Query: {{WHERE (createdAt < t) OR (createdAt = t AND id < i) ORDER BY createdAt DESC, id DESC LIMIT 20}}.
+- DB dùng index trên {{(createdAt, id)}} để nhảy thẳng tới mốc, không quét bỏ.
+
+Vì ta bám theo giá trị mốc chứ không đếm vị trí, một bản ghi mới chèn "phía trên" (mới hơn mốc) không làm đổi tập bản ghi "sau mốc". **Không trùng, không sót**.
+
+### Ví dụ cụ thể (Java thuần, mô phỏng)
+~~~java
+import java.util.*;
+
+class Item {
+    final long createdAt; final long id; final String name;
+    Item(long createdAt, long id, String name){ this.createdAt=createdAt; this.id=id; this.name=name; }
+}
+
+class PageResult { final List<Item> items; final String nextCursor;
+    PageResult(List<Item> items, String nextCursor){ this.items=items; this.nextCursor=nextCursor; } }
+~~~
+
+**Minh hoạ không trùng/sót:** trang 1 trả [A, B], cursor trỏ sau B. Có bản ghi X mới chèn lên đầu danh sách. Trang 2 hỏi "sau B" → vẫn trả [C, D], không lặp A/B và không sót C/D, dù X chen ngang.
+
+### Mã hoá cursor: Base64 của "createdAt|id"
+Cursor chứa dữ liệu không nhạy cảm (chỉ vị trí), nhưng nên **opaque** (client không parse) để dễ thay đổi format sau này. Cách phổ biến:
+1. Tạo chuỗi raw: "{{createdAt}}|{{id}}" (dùng dấu {{|}} phân cách, không xuất hiện trong số).
+2. Encode Base64 (URL-safe, không padding): {{Base64.getUrlEncoder().withoutPadding().encodeToString(raw.getBytes(StandardCharsets.UTF_8))}}.
+3. Decode: Base64 decode → split {{|}} → parse long.
+
+**Validate khi decode:** nếu cursor null/rỗng → trang đầu; nếu Base64 sai, split không ra 2 phần, parse long lỗi → ném {{IllegalArgumentException}} (trả 400 Bad Request).
+
+### Cài CursorPager trong Java thuần
+~~~java
+class CursorPager {
+    static PageResult page(List<Item> sortedData, String cursor, int size) {
+        long ct = Long.MAX_VALUE, ci = Long.MAX_VALUE; // trang đầu: không chặn
+        if (cursor != null && !cursor.isEmpty()) {
+            String dec = new String(Base64.getUrlDecoder().decode(cursor));
+            String[] p = dec.split("[|]");
+            ct = Long.parseLong(p[0]); ci = Long.parseLong(p[1]);
+        }
+        List<Item> out = new ArrayList<>();
+        for (Item it : sortedData) { // sortedData: DESC (createdAt,id)
+            boolean after = (it.createdAt < ct) || (it.createdAt == ct && it.id < ci);
+            if (after) { out.add(it); if (out.size() == size) break; }
+        }
+        String next = null;
+        if (out.size() == size) {
+            Item last = out.get(out.size() - 1);
+            next = Base64.getUrlEncoder().withoutPadding()
+                    .encodeToString((last.createdAt + "|" + last.id).getBytes());
+        }
+        return new PageResult(out, next);
+    }
+}
+~~~
+
+**Điểm mấu chốt:** điều kiện "đứng sau mốc" theo thứ tự giảm dần là {{createdAt < ct || (createdAt == ct && id < ci)}}. Trang đầu coi mốc là vô cực. {{nextCursor}} chỉ đặt khi trang đầy ({{items.size() == size}}); trang cuối trả {{null}} để client biết dừng.
+
+### Yêu cầu index
+Truy vấn cursor cần index kép: {{CREATE INDEX idx_orders_created_at_id ON orders (created_at DESC, id DESC)}}. Không có index thì DB vẫn phải sort toàn bộ bảng → mất lợi thế tốc độ.
+
+### Lỗi hay gặp
+- **Sort không ổn định**: chỉ {{ORDER BY createdAt}} mà nhiều bản ghi cùng {{createdAt}} → thứ tự giữa chúng không xác định, cursor có thể bỏ sót/lặp. **Luôn thêm cột duy nhất ({{id}}) làm tie-breaker.**
+- **Cursor lộ thông tin nội bộ nhạy cảm**: cursor chỉ là vị trí, nhưng đừng nhét dữ liệu bí mật; có thể ký (HMAC) nếu sợ client sửa cursor để dò dữ liệu.
+- **Dùng offset cho feed vô hạn**: feed thêm liên tục + người dùng cuộn sâu → vừa chậm vừa trùng. Feed/notification gần như luôn nên dùng cursor.
+- **Quên index (createdAt, id)**: không có index thì truy vấn cursor vẫn quét bảng.
+- **Cursor tampering**: client sửa cursor để xem dữ liệu không được phép → validate format, giới hạn range.
+- **Backward pagination**: hỗ trợ "previous" cần cursor ngược (first item của trang hiện tại) và query ngược.
+- **Luôn trả nextCursor kể cả trang cuối**: làm client lặp vô hạn. Kiểm tra {{out.size() == size}}.
+
+### Ví dụ đời thực
+API danh sách đơn hàng ngân hàng: client gọi {{GET /orders?cursor=...&limit=20}}. Server decode cursor, query WHERE (created_at, id) < (cursor values) với index, trả 20 đơn hàng mới nhất sau cursor đó, kèm nextCursor. Khi có đơn hàng mới chèn vào, trang kế tiếp không bị lệch. Header {{Link: <...>; rel="next"}} cho client tự động load trang sau.
+
+### Trả lời mẫu khi phỏng vấn
+"Em dùng cursor pagination cho API list lớn. Cursor chứa id + createdAt mã hoá Base64, opaque với client. Query dùng WHERE (createdAt, id) < (cursor) ORDER BY ... LIMIT pageSize, với index phù hợp. Ổn định khi có insert mới, nhanh cho trang sâu. Trade-off: không nhảy đến trang N, cần index. Offset chỉ dùng cho admin/small dataset."
+
+### Liên hệ phỏng vấn
+Interviewer hay hỏi: offset vs cursor, xử lý duplicate timestamp (tie-breaker id), index cần thiết, ổn định khi insert, backward pagination, cursor tampering, khi nào vẫn dùng offset. Nêu được ví dụ "chèn bản ghi mới giữa hai lần tải trang" là cộng điểm thực tế.
+
+> **Senior tip:** Trả {{nextCursor: null}} (hoặc bỏ field) ở trang cuối để client biết dừng, tránh vòng lặp vô hạn. Với dữ liệu cho phép "nhảy trang" (bảng quản trị), có thể dùng offset nhưng vẫn nên đặt trần offset tối đa; với API public/volume lớn, cursor gần như luôn là lựa chọn đúng.`,
+  exercises: [
+    {
+      title: 'CursorCodec + CursorPager: mã hoá cursor Base64 và phân trang không trùng không sót',
+      prompt: `Viết hai class dùng **đồng hồ không cần**, chỉ xử lý chuỗi và danh sách trong bộ nhớ. Không I/O, không Thread.sleep.
+
+1) {{class CursorCodec}}
+- {{static String encode(long id, long createdAt)}}: trả Base64 URL-safe (không padding) của chuỗi {{"id|createdAt"}}.
+- {{static long[] decode(String cursor)}}: trả mảng long 2 phần tử [id, createdAt]. Cursor null/rỗng/sai format/Base64 hỏng/split không ra 2 phần/parse long lỗi → ném {{IllegalArgumentException}}.
+
+2) {{class CursorPager}}
+- {{static PageResult page(List<Item> sortedData, String cursor, int size)}}
+- {{Item}} có sẵn: {{final long createdAt; final long id; final String name;}} và constructor {{Item(long createdAt, long id, String name)}}.
+- {{PageResult}} có sẵn: {{final List<Item> items; final String nextCursor;}} và constructor {{PageResult(List<Item> items, String nextCursor)}}.
+- {{sortedData}} đã sắp xếp **giảm dần** theo {{(createdAt, id)}} (mới nhất trước). Danh sách này có thể được thêm phần tử mới ở đầu giữa các lần gọi {{page}} (mô phỏng dữ liệu mới chèn vào).
+- {{cursor == null}} hoặc rỗng: trả trang đầu tiên (tối đa {{size}} phần tử đầu danh sách).
+- Ngược lại: giải mã cursor và trả tối đa {{size}} phần tử **đứng sau** mốc đó theo đúng thứ tự giảm dần.
+- {{nextCursor}} là Base64 của {{"id|createdAt"}} của **phần tử cuối** trong {{items}} trả về; nếu không còn phần tử phía sau thì {{nextCursor = null}}.
+- Yêu cầu: khi có phần tử mới chèn vào đầu {{sortedData}} giữa trang 1 và trang 2, việc dùng {{nextCursor}} của trang 1 vẫn cho kết quả **không trùng, không sót** so với tập phần tử cũ.`,
+      starter: `import java.util.*;
+
+class Item {
+    final long createdAt;
+    final long id;
+    final String name;
+    Item(long createdAt, long id, String name) { this.createdAt = createdAt; this.id = id; this.name = name; }
+}
+
+class PageResult {
+    final List<Item> items;
+    final String nextCursor;
+    PageResult(List<Item> items, String nextCursor) { this.items = items; this.nextCursor = nextCursor; }
+}
+
+class CursorCodec {
+    static String encode(long id, long createdAt) {
+        throw new UnsupportedOperationException("TODO");
+    }
+    static long[] decode(String cursor) {
+        throw new UnsupportedOperationException("TODO");
+    }
+}
+
+class CursorPager {
+    static PageResult page(List<Item> sortedData, String cursor, int size) {
+        throw new UnsupportedOperationException("TODO");
+    }
+}`,
+      tests: `import java.util.*;
+public class Main {
+    static int passed = 0, total = 0;
+    static void check(String name, boolean ok, String detail) {
+        total++;
+        if (ok) { passed++; System.out.println("PASS " + name); }
+        else System.out.println("FAIL " + name + ": " + detail);
+    }
+    static void check(String name, Runnable r) {
+        try { total++; r.run(); passed++; System.out.println("PASS " + name); }
+        catch (Throwable t) { System.out.println("FAIL " + name + ": " + t); }
+    }
+    static void eq(Object expected, Object actual) {
+        if (!Objects.equals(expected, actual)) throw new AssertionError("expected " + expected + " got " + actual);
+    }
+    static void assertArrayEq(long[] e, long[] a) {
+        if (e.length != a.length) throw new AssertionError("len");
+        for (int i = 0; i < e.length; i++) if (e[i] != a[i]) throw new AssertionError("idx " + i);
+    }
+    static void expectThrows(Class<? extends Throwable> t, Runnable r) {
+        try { r.run(); }
+        catch (Throwable x) { if (t.isInstance(x)) return; throw new AssertionError("wrong: " + x); }
+        throw new AssertionError("expected " + t.getSimpleName());
+    }
+    static String ids(List<Item> items) {
+        StringBuilder b = new StringBuilder();
+        for (Item it : items) { if (b.length() > 0) b.append(','); b.append(it.id); }
+        return b.toString();
+    }
+    static List<Item> base() {
+        List<Item> a = new ArrayList<>();
+        a.add(new Item(100, 5, "E")); a.add(new Item(90, 4, "D"));
+        a.add(new Item(80, 3, "C")); a.add(new Item(70, 2, "B")); a.add(new Item(60, 1, "A"));
+        return a; // DESC by (createdAt,id)
+    }
+    public static void main(String[] args) {
+        // CursorCodec
+        check("encode/decode roundtrip", () -> {
+            String c = CursorCodec.encode(123L, 1700000000000L);
+            long[] d = CursorCodec.decode(c);
+            assertArrayEq(new long[]{123L, 1700000000000L}, d);
+        });
+        check("different values", () -> {
+            String c = CursorCodec.encode(999L, 1600000000000L);
+            long[] d = CursorCodec.decode(c);
+            assertArrayEq(new long[]{999L, 1600000000000L}, d);
+        });
+        check("invalid base64", () -> {
+            expectThrows(IllegalArgumentException.class, () -> CursorCodec.decode("not-base64!!!"));
+        });
+        check("null cursor", () -> {
+            expectThrows(IllegalArgumentException.class, () -> CursorCodec.decode(null));
+        });
+        check("bad format after decode", () -> {
+            expectThrows(IllegalArgumentException.class, () -> CursorCodec.decode(new String(java.util.Base64.getUrlEncoder().encodeToString("onlyonepart".getBytes()))));
+        });
+
+        // CursorPager
+        check("first page items and nextCursor", () -> {
+            PageResult p1 = CursorPager.page(base(), null, 2);
+            eq("5,4", ids(p1.items));
+            eq(true, p1.nextCursor != null && !p1.nextCursor.isEmpty());
+        });
+        check("second page using cursor from first", () -> {
+            PageResult p1 = CursorPager.page(base(), null, 2);
+            PageResult p2 = CursorPager.page(base(), p1.nextCursor, 2);
+            eq("3,2", ids(p2.items));
+        });
+        check("last page returns remaining items and null nextCursor", () -> {
+            PageResult p1 = CursorPager.page(base(), null, 2);
+            PageResult p2 = CursorPager.page(base(), p1.nextCursor, 2);
+            PageResult p3 = CursorPager.page(base(), p2.nextCursor, 2);
+            eq("1", ids(p3.items));
+            eq(null, p3.nextCursor);
+        });
+        check("insert at head between page 1 and 2: no dup, no gap", () -> {
+            PageResult p1 = CursorPager.page(base(), null, 2);
+            List<Item> changed = base();
+            changed.add(0, new Item(110, 6, "F")); // new record inserted at head
+            PageResult p2b = CursorPager.page(changed, p1.nextCursor, 2); // use old cursor (points after id=4)
+            eq("3,2", ids(p2b.items));
+        });
+        check("size >= total returns all items with null nextCursor", () -> {
+            PageResult all = CursorPager.page(base(), null, 10);
+            eq("5,4,3,2,1", ids(all.items));
+            eq(null, all.nextCursor);
+        });
+        check("tie-breaker by id when createdAt equal", () -> {
+            List<Item> tie = new ArrayList<>();
+            tie.add(new Item(100, 9, "X")); tie.add(new Item(100, 8, "Y")); tie.add(new Item(100, 7, "Z"));
+            PageResult t1 = CursorPager.page(tie, null, 1);
+            PageResult t2 = CursorPager.page(tie, t1.nextCursor, 2);
+            eq("9", ids(t1.items));
+            eq("8,7", ids(t2.items));
+        });
+        System.out.println("RESULT " + passed + "/" + total);
+    }
+}`,
+      reference: `import java.util.*;
+import java.util.Base64;
+import java.nio.charset.StandardCharsets;
+
+class Item {
+    final long createdAt;
+    final long id;
+    final String name;
+    Item(long createdAt, long id, String name) { this.createdAt = createdAt; this.id = id; this.name = name; }
+}
+
+class PageResult {
+    final List<Item> items;
+    final String nextCursor;
+    PageResult(List<Item> items, String nextCursor) { this.items = items; this.nextCursor = nextCursor; }
+}
+
+class CursorCodec {
+    static String encode(long id, long createdAt) {
+        String raw = id + "|" + createdAt;
+        return Base64.getUrlEncoder().withoutPadding().encodeToString(raw.getBytes(StandardCharsets.UTF_8));
+    }
+    static long[] decode(String cursor) {
+        if (cursor == null || cursor.trim().isEmpty()) throw new IllegalArgumentException("null cursor");
+        try {
+            String raw = new String(Base64.getUrlDecoder().decode(cursor), StandardCharsets.UTF_8);
+            String[] parts = raw.split("\\\\|", -1);
+            if (parts.length != 2) throw new IllegalArgumentException("bad format");
+            long id = Long.parseLong(parts[0]);
+            long createdAt = Long.parseLong(parts[1]);
+            return new long[]{id, createdAt};
+        } catch (IllegalArgumentException e) {
+            throw e;
+        } catch (Exception e) {
+            throw new IllegalArgumentException("invalid cursor", e);
+        }
+    }
+}
+
+class CursorPager {
+    static PageResult page(List<Item> sortedData, String cursor, int size) {
+        long ct = Long.MAX_VALUE, ci = Long.MAX_VALUE;
+        if (cursor != null && !cursor.isEmpty()) {
+            long[] decoded = CursorCodec.decode(cursor);
+            ct = decoded[1]; // createdAt
+            ci = decoded[0]; // id
+        }
+        List<Item> out = new ArrayList<>();
+        for (Item it : sortedData) {
+            boolean after = (it.createdAt < ct) || (it.createdAt == ct && it.id < ci);
+            if (after) {
+                out.add(it);
+                if (out.size() == size) break;
+            }
+        }
+        String next = null;
+        if (out.size() == size) {
+            Item last = out.get(out.size() - 1);
+            next = CursorCodec.encode(last.id, last.createdAt);
+        }
+        return new PageResult(out, next);
+    }
+}`,
+      hints: [
+        'Dùng {{Base64.getUrlEncoder().withoutPadding()}} và {{Base64.getUrlDecoder()}}. Chuỗi raw: {{"id|createdAt"}}, split bằng {{"\\\\|"}} (trong Java string cần escape dấu | cho regex).',
+        'Phần tử "đứng sau" mốc (ct, ci) theo thứ tự giảm dần (createdAt, id) khi {{createdAt < ct || (createdAt == ct && id < ci)}}. Trang đầu thì coi mốc là vô cực để lấy từ đầu.',
+        'Chỉ đặt {{nextCursor}} khi trang đầy ({{items.size() == size}}); trang cuối trả {{null}}.',
+      ],
+      explain: `### Cursor là "cái kẹp sách"
+Cursor bám theo **giá trị (createdAt, id)** thay vì **vị trí (offset)**. Khi có phần tử mới chèn vào đầu danh sách, các phần tử cũ vẫn giữ nguyên giá trị (createdAt, id), nên điều kiện "sau mốc" vẫn chọn đúng tập phần tử kế tiếp: **không trùng, không sót**.
+
+### Hai điểm dễ sai
+1. **Quên tie-breaker {{id}}** khi {{createdAt}} bằng nhau: phần tử cùng mốc thời gian bị lặp/bỏ sót. Luôn sort và so sánh theo cặp {{(createdAt, id)}}.
+2. **Luôn trả {{nextCursor}} kể cả trang cuối**: làm client lặp vô hạn. Kiểm tra {{out.size() == size}} là cách đơn giản (chấp nhận một lần gọi thừa ở biên); cách chặt hơn là lấy thêm 1 phần tử để biết còn hay không.
+
+### Tại sao decode trả long[] {id, createdAt} chứ không phải object
+Bài tập đơn giản hoá: chỉ cần 2 số. Production có thể dùng record {{Cursor(long id, long createdAt)}}.
+
+### Ở API thật
+Thay vì duyệt list trong bộ nhớ, ta đưa điều kiện "sau mốc" vào câu SQL với index {{(createdAt DESC, id DESC)}} để DB nhảy thẳng tới mốc.`,
+    },
+  ],
+  check: [
+    {
+      q: 'Vì sao {{SELECT ... LIMIT 20 OFFSET 100000}} thường chậm hơn nhiều so với truy vấn dùng cursor ở trang tương đương? (Chọn 1)',
+      options: [
+        'Vì LIMIT không hoạt động khi có OFFSET',
+        'Vì DB vẫn phải duyệt/bỏ qua 100000 dòng trước khi lấy 20 dòng, trong khi cursor dùng mốc + index để đi thẳng tới vị trí',
+        'Vì cursor không cần ORDER BY',
+        'Vì OFFSET bắt buộc trả về toàn bộ bảng',
+      ],
+      answer: 1,
+      explain: 'Offset không "nhảy cóc": DB phải thực hiện công việc tạo ra 100000 dòng đầu rồi loại bỏ. Cursor/keyset đặt điều kiện WHERE (createdAt, id) < (t, i) khớp index, nên chỉ đọc vùng cần thiết. Trang càng sâu, offset càng chậm tuyến tính; cursor gần như đều.',
+    },
+    {
+      q: 'Người dùng đang xem trang 1 (offset) của feed. Trước khi họ tải trang 2, một bài viết mới được đăng lên đầu feed. Hệ quả thường gặp là gì? (Chọn 1)',
+      options: [
+        'Trang 2 trả đúng như cũ, không ảnh hưởng',
+        'Trang 2 có thể lặp lại một mục đã thấy ở trang 1 và/hoặc bỏ sót một mục (do các phần tử bị đẩy dịch)',
+        'Server tự động chuyển sang cursor',
+        'Trang 1 bị xoá khỏi DB',
+      ],
+      answer: 1,
+      explain: 'Offset đếm theo vị trí: chèn 1 phần tử lên đầu làm mọi phần tử cũ dịch xuống 1 bậc. Trang 2 (bỏ qua N) giờ bỏ qua cả phần tử mới, nên phần tử cuối trang 1 cũ rơi vào trang 2 (trùng) và chuỗi bị lệch. Cursor bám theo giá trị mốc nên không bị hiệu ứng này.',
+    },
+    {
+      q: 'Khi thiết kế cursor cho danh sách sắp xếp theo {{createdAt DESC}}, vì sao nên thêm {{id}} làm tiêu chí phụ (ORDER BY createdAt DESC, id DESC)? (Chọn 1)',
+      options: [
+        'Để truy vấn trông phức tạp hơn',
+        'Để sort ổn định khi nhiều bản ghi cùng createdAt, tránh bỏ sót/lặp phần tử có cùng mốc thời gian',
+        'Vì Base64 chỉ mã hoá được số nguyên',
+        'Vì index không hoạt động trên cột thời gian',
+      ],
+      answer: 1,
+      explain: 'Nếu chỉ sort theo {{createdAt}} và nhiều bản ghi cùng giá trị, thứ tự tương đối giữa chúng không xác định giữa các truy vấn; cursor đặt tại một mốc thời gian đó có thể bỏ sót hoặc lặp các bản ghi "đồng hạng". Thêm {{id}} (duy nhất) làm tie-breaker tạo thứ tự toàn phần, ổn định, và cursor {{(createdAt, id)}} định vị chính xác.',
+    },
+    {
+      q: 'Khi nào offset/limit vẫn là lựa chọn chấp nhận được so với cursor? (Chọn 1)',
+      options: [
+        'Khi làm feed mạng xã hội vô hạn cho hàng triệu người dùng',
+        'Khi cần "nhảy tới trang 50" trong màn hình quản trị, tập dữ liệu nhỏ/ít biến động và trang sâu hiếm',
+        'Khi dữ liệu thay đổi liên tục từng giây',
+        'Offset luôn tốt hơn cursor trong mọi trường hợp',
+      ],
+      answer: 1,
+      explain: 'Offset cho phép nhảy trang tuỳ ý và triển khai đơn giản, phù hợp màn hình admin nội bộ với dữ liệu tương đối ổn định, ít bản ghi, không cuộn sâu vô hạn. Với feed realtime, API public volume lớn, hoặc dữ liệu biến động, cursor tránh được cả vấn đề hiệu năng trang sâu lẫn trùng/sót khi chèn/xoá.',
+    },
+  ],
+  related: ['api-001', 'api-014', 'api-015'],
+  tags: ['pagination', 'cursor', 'keyset', 'offset', 'REST', 'performance'],
+},
 );
