@@ -6027,5 +6027,348 @@ Ví dụ đời thường: cả nhà cùng xem một album ảnh chụp 6 tháng
     ],
     tags: ['postgresql', 'vacuum', 'bloat', 'idle-in-transaction', 'xmin-horizon', 'mvcc'],
   },
+
+{
+  id: 'lab-sql-040',
+  category: 'sql',
+  title: 'ALTER TABLE giờ cao điểm làm treo API: AccessExclusiveLock giữ mọi query',
+  level: 'senior',
+  scenario: `**Bối cảnh.** Sàn thương mại điện tử MiniShop vận hành service {{catalog}} (Spring Boot 3.3, Hibernate 6.4, PostgreSQL 15.6 trên RDS primary 8 vCPU / 64 GB RAM). Bảng {{product}} giữ danh mục sản phẩm: **18.724.512 dòng** (~3,4 GB heap + 1,1 GB index). Giờ cao điểm 12:00–13:30 có khoảng 2.400 request/giây, 70% đọc danh mục, 30% ghi tồn kho.
+
+**Triệu chứng (14/03/2026, 12:04).** Đúng 12:04, DBA chạy migration ALTER TABLE product ADD COLUMN discount_rate numeric(5,2) NOT NULL DEFAULT 0. Trong vòng **8 giây**, toàn bộ endpoint đọc danh mục trả 504. RDS CPU chỉ 12% nhưng số connection active nhảy từ 40 lên 512, pg_stat_activity đầy các SELECT đang chờ lock. Migration treo tới 12:09 mới kết thúc; downtime đọc danh mục khoảng 5 phút.
+
+**Điều đã thử, không ăn.** Tăng max_connections lên 800, tăng pool Hikari lên 100 — p95 vẫn timeout vì mọi connection đều bị chặn. DBA cho rằng "migration nhỏ, không nên chậm"; thực tế là lock, không phải CPU.
+
+**Việc bạn có.** Ba artifact: log server PostgreSQL lúc 12:04–12:09, snapshot pg_locks lúc 12:04:12, và script migration. Hãy dựng lại chu trình chờ, chỉ ra nguyên nhân gốc ở tầng thiết kế, và đề xuất cách migration an toàn trên bảng lớn.`,
+  artifacts: [
+    {
+      name: 'postgres-lock-wait.log',
+      lang: 'text',
+      content: `# log server PostgreSQL 15.6 (RDS product-primary), timezone Asia/Ho_Chi_Minh
+# log_lock_waits = on, deadlock_timeout = 1s, lock_timeout = 0 (không đặt)
+# statement_timeout = 0
+2026-03-14 12:04:00.012 +07 [24117] LOG:  duration: 0.041 ms  execute S_1: BEGIN
+2026-03-14 12:04:00.015 +07 [24117] LOG:  duration: 0.038 ms  execute <unnamed>: ALTER TABLE product ADD COLUMN discount_rate numeric(5,2) NOT NULL DEFAULT 0
+2026-03-14 12:04:00.016 +07 [24117] LOG:  duration: 0.011 ms  execute <unnamed>: (chờ lock)
+2026-03-14 12:04:00.089 +07 [24118] LOG:  duration: 0.022 ms  execute S_1: BEGIN
+2026-03-14 12:04:00.091 +07 [24118] LOG:  duration: 0.031 ms  execute <unnamed>: SELECT id, name, price, stock FROM product WHERE category_id = $1 LIMIT 20
+2026-03-14 12:04:00.092 +07 [24118] LOG:  duration: 0.009 ms  execute <unnamed>: (chờ lock)
+2026-03-14 12:04:00.103 +07 [24119] LOG:  duration: 0.024 ms  execute S_1: BEGIN
+2026-03-14 12:04:00.105 +07 [24119] LOG:  duration: 0.029 ms  execute <unnamed>: SELECT id, name, price, stock FROM product WHERE id = $1
+2026-03-14 12:04:00.106 +07 [24119] LOG:  duration: 0.010 ms  execute <unnamed>: (chờ lock)
+2026-03-14 12:04:00.118 +07 [24120] LOG:  duration: 0.023 ms  execute S_1: BEGIN
+2026-03-14 12:04:00.120 +07 [24120] LOG:  duration: 0.030 ms  execute <unnamed>: UPDATE product SET stock = stock - $1 WHERE id = $2
+2026-03-14 12:04:00.121 +07 [24120] LOG:  duration: 0.011 ms  execute <unnamed>: (chờ lock)
+# ... (487 phiên đang chờ AccessExclusiveLock của migration)
+2026-03-14 12:04:08.001 +07 [24117] LOG:  duration: 7985.123 ms  execute <unnamed>: (ALTER TABLE hoàn tất)
+2026-03-14 12:04:08.002 +07 [24117] LOG:  duration: 0.040 ms  execute S_2: COMMIT
+2026-03-14 12:04:08.012 +07 [24118] LOG:  duration: 7920.987 ms  execute <unnamed>: SELECT ... (trả về)
+2026-03-14 12:04:08.013 +07 [24119] LOG:  duration: 7907.909 ms  execute <unnamed>: SELECT ... (trả về)
+2026-03-14 12:04:08.014 +07 [24120] LOG:  duration: 7909.909 ms  execute <unnamed>: UPDATE ... (trả về)
+# ... (487 phiên drain xong trong ~3 giây sau khi migration commit)`,
+    },
+    {
+      name: 'pg-locks-migration.txt',
+      lang: 'text',
+      content: `-- 2026-03-14 12:04:12 +07, chụp từ RDS product-primary (trong lúc migration đang chạy)
+product=# SELECT pid, state, wait_event_type, wait_event, now() - xact_start AS xact_age,
+       left(query, 60) AS query
+FROM pg_stat_activity
+WHERE pid IN (24117, 24118, 24119, 24120, 24121, 24122);
+  pid  | state  | wait_event_type | wait_event   | xact_age  |                              query
+-------+--------+-----------------+--------------+-----------+--------------------------------------------------------------
+ 24117 | active | Lock            | relation     | 00:00:12  | ALTER TABLE product ADD COLUMN discount_rate numeric(5,2) NOT
+ 24118 | active | Lock            | relation     | 00:00:12  | SELECT id, name, price, stock FROM product WHERE category_id
+ 24119 | active | Lock            | relation     | 00:00:12  | SELECT id, name, price, stock FROM product WHERE id = $1
+ 24120 | active | Lock            | relation     | 00:00:12  | UPDATE product SET stock = stock - $1 WHERE id = $2
+ 24121 | active | Lock            | relation     | 00:00:12  | SELECT count(*) FROM product WHERE category_id = $1
+ 24122 | active | Lock            | relation     | 00:00:12  | SELECT id, name, price, stock FROM product WHERE id = $1
+
+product=# SELECT l.pid, l.locktype, l.relation::regclass AS relation, l.mode, l.granted
+FROM pg_locks l
+WHERE l.pid IN (24117, 24118, 24119, 24120, 24121, 24122)
+ORDER BY l.pid, l.granted, l.locktype;
+  pid  | locktype | relation |          mode          | granted
+-------+----------+----------+------------------------+---------
+ 24117 | relation | product  | AccessExclusiveLock    | f
+ 24118 | relation | product  | AccessShareLock        | f
+ 24119 | relation | product  | AccessShareLock        | f
+ 24120 | relation | product  | RowExclusiveLock       | f
+ 24121 | relation | product  | AccessShareLock        | f
+ 24122 | relation | product  | AccessShareLock        | f
+
+product=# SELECT count(*) AS waiting_sessions FROM pg_locks
+WHERE NOT granted AND locktype = 'relation' AND relation = 'product'::regclass;
+ waiting_sessions
+------------------
+              487
+
+product=# SELECT pg_blocking_pids(24118) AS blocks_24118;
+ blocks_24118
+--------------
+ {24117}
+
+-- Ghi chú DBA: migration (pid 24117) đang CHỜ AccessExclusiveLock (granted = f) vì
+-- còn một transaction cũ giữ AccessShareLock chưa commit. Trong lúc chờ, mọi câu
+-- SELECT/UPDATE mới vào cũng CHỜ lock của migration (queue FIFO) -> toàn bộ bảng bị "treo"
+-- dù migration chưa thực sự chạy. Đây là "lock queue amplification".`,
+    },
+    {
+      name: 'migration-script.sql',
+      lang: 'sql',
+      content: `-- migration V20260314_1204__add_discount_rate.sql (Flyway)
+-- Chạy bởi DBA thủ công lúc 12:04:00 ngày 14/03 (giờ cao điểm)
+ALTER TABLE product
+  ADD COLUMN discount_rate numeric(5,2) NOT NULL DEFAULT 0;
+
+-- Mục đích: lưu chiết khấu theo sản phẩm cho chương trình khuyến mãi tháng 3.
+-- Bảng product: 18.724.512 dòng, giờ cao điểm 2.400 req/s (70% đọc, 30% ghi).
+-- DBA nhận xét: "câu đơn giản, không nên chậm" -> chạy trực tiếp trong giờ cao điểm.`,
+    },
+  ],
+  questions: [
+    'Vì sao migration ALTER TABLE chưa thực sự chạy (pid 24117 granted = f) mà toàn bộ endpoint đọc danh mục đã timeout? Chỉ ra cơ chế "lock queue amplification" bằng dòng nào trong artifact.',
+    'Vì sao CPU chỉ 12% trong khi 487 phiên đang chờ? Đây là vấn đề gì: CPU, I/O, hay lock?',
+    'Hãy đề xuất cách migration an toàn trên bảng 18 triệu dòng: cột nullable + backfill theo lô, CREATE INDEX CONCURRENTLY, và cách đặt lock_timeout / statement_timeout để migration tự bỏ cuộc thay vì treo cả hệ thống.',
+  ],
+  hints: [
+    'Đọc kỹ snapshot pg_locks: migration (pid 24117) granted = f (chưa có AccessExclusiveLock), còn 487 phiên khác cũng granted = f — vì sao chúng không được phục vụ dù migration chưa chạy?',
+    'PostgreSQL xếp hàng lock theo thứ tự FIFO: một phiên chờ AccessExclusiveLock sẽ chặn mọi lock yếu hơn vào sau nó. Đây là "lock queue amplification".',
+    'Cột NOT NULL DEFAULT trên bảng lớn: PostgreSQL 11+ lưu default trong catalog (không rewrite bảng), nhưng vẫn cần AccessExclusiveLock để sửa schema — và lock đó bị chặn bởi transaction cũ chưa commit.',
+    'Migration an toàn = nhiều bước nhỏ: thêm cột nullable (không default), backfill theo lô, thêm NOT NULL constraint (VALIDATE CONSTRAINT), rồi mới đặt default ở tầng ứng dụng.',
+  ],
+  answer: `**Tóm tắt:** Migration ALTER TABLE ... ADD COLUMN ... NOT NULL DEFAULT 0 cần **AccessExclusiveLock** trên bảng product. Vì còn một transaction cũ chưa commit giữ AccessShareLock, migration phải chờ; và vì PostgreSQL xếp hàng lock **FIFO**, mọi câu SELECT/UPDATE mới vào sau migration cũng phải chờ sau migration -> "lock queue amplification": 487 phiên bị chặn dù migration chưa chạy. CPU chỉ 12% vì đây là vấn đề **lock**, không phải CPU/I/O. Sửa: thêm cột nullable (không default) trong giờ cao điểm với lock_timeout ngắn, backfill theo lô, thêm constraint VALIDATE, và CREATE INDEX CONCURRENTLY ngoài giờ cao điểm.
+
+### Kiến thức nền: lock levels trong PostgreSQL
+PostgreSQL có nhiều mức lock trên bảng (relation lock), từ yếu đến mạnh:
+- **AccessShareLock**: SELECT cần (yếu nhất).
+- **RowExclusiveLock**: INSERT/UPDATE/DELETE cần.
+- **AccessExclusiveLock**: DDL như ALTER TABLE, DROP, TRUNCATE, VACUUM FULL cần — mạnh nhất, **không tương thích với bất kỳ lock nào khác** (kể cả AccessShareLock).
+
+Quy tắc quan trọng: lock được cấp theo **thứ tự FIFO**. Nếu một phiên đang chờ AccessExclusiveLock, mọi phiên đến sau (dù chỉ cần AccessShareLock) phải xếp hàng sau nó — không được "chen" trước. Đây là "lock queue amplification": một migration chờ lock có thể làm treo cả bảng dù migration chưa chạy.
+
+Ví dụ đời thường: một cửa hàng có nhiều khách đang vào ra (AccessShareLock). Một người muốn đóng cửa để sửa sang (AccessExclusiveLock) phải chờ khách cũ ra hết. Nhưng trong lúc anh ta đứng chờ ở cửa, các khách mới cũng không được vào — phải xếp hàng sau anh ta. Kết quả: cửa hàng "đóng" dù anh ta chưa làm gì.
+
+### Nguyên nhân gốc, từng bước
+1. **12:04:00.015**: DBA chạy ALTER TABLE product ADD COLUMN discount_rate numeric(5,2) NOT NULL DEFAULT 0. Câu này cần **AccessExclusiveLock**.
+2. Có một transaction cũ (không hiện trong snapshot nhưng là nguyên nhân) đang giữ **AccessShareLock** trên product chưa commit (ví dụ một SELECT dài hoặc transaction mở qua I/O). Migration phải chờ lock.
+3. **12:04:00.089 trở đi**: các câu SELECT/UPDATE mới của ứng dụng liên tục vào. Vì migration đang chờ AccessExclusiveLock ở đầu hàng, mọi câu mới phải xếp hàng sau migration -> **không được phục vụ**.
+4. **12:04:08.001**: transaction cũ commit -> migration có lock -> ALTER TABLE chạy (chỉ mất vài ms vì PostgreSQL 11+ lưu default trong catalog, không rewrite bảng) -> commit -> 487 phiên drain xong trong ~3 giây.
+5. Tổng downtime đọc danh mục: ~8 giây migration + ~3 giây drain = ~11 giây thực sự không phục vụ, nhưng vì timeout gateway 30 giây và retry, người dùng thấy 504 trong ~5 phút.
+
+### Dẫn chứng
+- Artifact 2, snapshot pg_locks lúc 12:04:12: migration (pid 24117) AccessExclusiveLock **granted = f** (chưa có lock); 5 phiên ứng dụng khác AccessShareLock/RowExclusiveLock cũng **granted = f**; waiting_sessions = 487.
+- Artifact 2: pg_blocking_pids(24118) = {24117} — mọi phiên ứng dụng bị chặn bởi migration.
+- Artifact 1: log cho thấy các câu SELECT/UPDATE của ứng dụng đều (chờ lock) ngay sau khi gửi, và drain xong trong ~3 giây sau khi migration commit.
+- Artifact 2: CPU 12% (RDS metric) — xác nhận đây là vấn đề **lock**, không phải CPU/I/O. wait_event_type = Lock, wait_event = relation.
+
+### Cách sửa ngắn hạn (trong ngày)
+- **Hủy migration đang treo**: SELECT pg_cancel_backend(24117); (hoặc pg_terminate_backend). Migration bị cancel, hàng đợi giải phóng, ứng dụng phục hồi ngay. Flyway sẽ đánh dấu migration failed -> chạy lại sau.
+- **Đặt lock_timeout cho migration**: SET lock_timeout = '2s'; trước khi chạy ALTER. Nếu không có lock trong 2 giây, migration tự bỏ cuộc với lỗi lock timeout thay vì treo cả hệ thống. Flyway/Liquibase hỗ trợ đặt lock_timeout trong script.
+- **Chạy migration ngoài giờ cao điểm** (02:00–04:00) hoặc trong maintenance window.
+- **Bảo vệ ứng dụng**: đặt statement_timeout cho role ứng dụng (ví dụ 5 giây) để câu bị chặn không giữ connection mãi; retry với backoff ở gateway.
+
+### Cách sửa dài hạn (migration an toàn trên bảng lớn)
+Nguyên tắc: **mỗi bước chỉ giữ lock ngắn, không giữ lock qua backfill**.
+
+1. **Thêm cột nullable, không default** (lock ngắn, vài ms):
+   ALTER TABLE product ADD COLUMN discount_rate numeric(5,2);
+   PostgreSQL 11+ không rewrite bảng khi thêm cột nullable không default -> lock chỉ vài ms. Đây là bước an toàn trong giờ cao điểm.
+
+2. **Backfill theo lô** (không lock, chạy ngoài transaction lớn):
+   UPDATE product SET discount_rate = 0 WHERE discount_rate IS NULL AND id > :lastId LIMIT 10000;
+   Lặp cho đến hết. Mỗi batch commit riêng -> không giữ lock lâu, không bloat WAL. Có thể chạy trong giờ cao điểm với throttle.
+
+3. **Thêm NOT NULL constraint bằng VALIDATE** (lock ngắn):
+   ALTER TABLE product ADD CONSTRAINT product_discount_rate_not_null CHECK (discount_rate IS NOT NULL) NOT VALID;
+   ALTER TABLE product VALIDATE CONSTRAINT product_discount_rate_not_null;
+   NOT VALID chỉ thêm constraint mà không quét bảng (lock ngắn). VALIDATE CONSTRAINT quét bảng nhưng chỉ cần ShareUpdateExclusiveLock (không chặn SELECT/UPDATE). Sau đó có thể đổi sang SET NOT NULL (lock ngắn vì constraint đã validate).
+
+4. **Đặt default ở tầng ứng dụng** (không cần ALTER TABLE): code mới ghi discount_rate = 0 khi tạo sản phẩm. Hoặc ALTER TABLE product ALTER COLUMN discount_rate SET DEFAULT 0 (chỉ sửa catalog, lock ngắn).
+
+5. **CREATE INDEX CONCURRENTLY** (không lock bảng):
+   CREATE INDEX CONCURRENTLY idx_product_discount_rate ON product (discount_rate);
+   CONCURRENTLY build index trong 2 pass, không giữ lock mạnh; không thể chạy trong transaction. Nếu fail giữa chừng, index ở trạng thái INVALID -> drop rồi chạy lại.
+
+6. **Expand/contract cho rename/drop cột**: thêm cột mới -> dual-write -> backfill -> chuyển đọc -> drop cột cũ (mỗi bước một migration, deploy ứng dụng giữa các bước).
+
+### Phòng ngừa và monitoring
+- **Bắt buộc lock_timeout cho mọi migration**: SET lock_timeout = '2s'; (hoặc SET LOCAL lock_timeout trong transaction). Migration tự bỏ cuộc thay vì treo cả hệ thống.
+- **Chạy migration ngoài giờ cao điểm** hoặc trong maintenance window; với Flyway/Liquibase, đặt lock_timeout trong script và alert khi migration fail.
+- **Theo dõi lock wait**: pg_stat_activity với wait_event_type = 'Lock'; alert khi số phiên chờ lock > 50 hoặc thời gian chờ > 5 giây.
+- **Quy tắc review**: mọi migration phải kèm ước lượng thời gian lock và số dòng ảnh hưởng; migration trên bảng > 1 triệu dòng phải có kế hoạch expand/contract.
+- **Test migration trên dữ liệu production-like** (clone RDS) trước khi apply production.
+
+> Senior tip: "migration nhỏ không nên chậm" là suy nghĩ nguy hiểm nhất. Vấn đề không phải thời gian chạy ALTER mà là **lock**. PostgreSQL có thể thêm cột nullable trong vài ms, nhưng AccessExclusiveLock vẫn cần — và lock đó bị chặn bởi bất kỳ transaction nào chưa commit. Quy tắc vàng: **không bao giờ chạy DDL trong giờ cao điểm mà không có lock_timeout**
+`,
+  rubric: [
+    'Chỉ đúng cơ chế lock queue amplification: migration chờ AccessExclusiveLock (granted = f) chặn 487 phiên SELECT/UPDATE sau nó vì PostgreSQL xếp hàng lock FIFO',
+    'Dẫn chứng đúng từ artifact: pg_locks cho migration granted = f, waiting_sessions = 487, pg_blocking_pids cho thấy mọi phiên bị chặn bởi migration; CPU 12% xác nhận vấn đề là lock không phải CPU/I/O',
+    'Đề xuất migration an toàn đúng: thêm cột nullable không default (lock ngắn), backfill theo lô, ADD CONSTRAINT NOT VALID + VALIDATE CONSTRAINT (ShareUpdateExclusiveLock), CREATE INDEX CONCURRENTLY, bắt buộc lock_timeout cho migration',
+  ],
+  tags: ['postgresql', 'lock', 'migration', 'alter-table', 'lock-queue-amplification'],
+},
+
+{
+  id: 'lab-sql-041',
+  category: 'sql',
+  title: 'Query chậm do OR giữa 2 cột: Seq Scan dù có 2 index',
+  level: 'senior',
+  scenario: `**Bối cảnh.** Dịch vụ tra cứu đơn hàng {{order-lookup}} (Spring Boot 3.3, Hibernate 6.4, PostgreSQL 15.6 trên RDS, 8 vCPU / 64 GB RAM). Bảng {{orders}} giữ toàn bộ đơn hàng: **31.402.881 dòng** (~6,2 GB heap + 2,1 GB index). Có 2 index: idx_orders_buyer_id trên buyer_id và idx_orders_seller_id trên seller_id. Endpoint GET /api/v1/orders/search?buyerId=...&sellerId=... cho phép tìm đơn theo người mua HOẶC người bán (logic OR).
+
+**Triệu chứng (14/03/2026, 10:00–12:00).** p95 của endpoint nhảy từ 12 ms lên **1,8 giây**; RDS CPU leo từ 18% lên 89%. Slow query log cho thấy câu query với OR quét toàn bảng dù cả 2 cột đều có index. DBA nghi ngờ "index không hiệu quả" và đề xuất xóa index cũ tạo composite — nhưng composite (buyer_id, seller_id) không giúp vì điều kiện là OR, không phải AND.
+
+**Việc bạn có.** Ba artifact: EXPLAIN ANALYZE của câu query OR, EXPLAIN ANALYZE của câu query viết lại bằng UNION ALL, và danh sách index hiện có. Hãy chỉ ra vì sao planner không dùng 2 index, và đề xuất cách viết lại để planner dùng BitmapOr hoặc UNION ALL, kèm đo lại.`,
+  artifacts: [
+    {
+      name: 'explain-or-query.txt',
+      lang: 'text',
+      content: `-- 2026-03-14 10:12:03 +07, RDS order-lookup-primary (PostgreSQL 15.6)
+orderdb=# EXPLAIN (ANALYZE, BUFFERS)
+SELECT o.id, o.buyer_id, o.seller_id, o.status, o.total_amount, o.created_at
+FROM orders o
+WHERE o.buyer_id = '9f3c1a44-6b2e-4f0a-9d21-7c5b8e2f1041'::uuid
+   OR o.seller_id = 'b7f3c9e2-5d41-4a08-9c6b-1e2f3a4b5c6d'::uuid
+ORDER BY o.created_at DESC
+LIMIT 50;
+                                                          QUERY PLAN
+--------------------------------------------------------------------------------------------------------------------------------------
+ Limit  (cost=1241482.52..1241482.56 rows=50 width=64) (actual time=4123.498..4123.503 rows=50 loops=1)
+   ->  Sort  (cost=1241482.52..1241482.56 rows=50 width=64) (actual time=4123.495..4123.499 rows=50 loops=1)
+         Sort Key: created_at DESC
+         Sort Method: top-N heapsort  Memory Usage: 32kB
+   ->  Seq Scan on orders o  (cost=0.00..1239895.56 rows=15701440 width=64) (actual time=0.031..4120.902 rows=15701440 loops=1)
+         Filter: ((buyer_id = '9f3c1a44-...'::uuid) OR (seller_id = 'b7f3c9e2-...'::uuid))
+         Rows Removed by Filter: 15701441
+         Buffers: shared hit=598934 read=6178
+ Planning Time: 0.284 ms
+ Execution Time: 4123.781 ms
+(10 rows)
+
+Time: 4124.012 ms`,
+    },
+    {
+      name: 'explain-union-all.txt',
+      lang: 'text',
+      content: `-- 2026-03-14 10:18:41 +07, RDS order-lookup-primary (PostgreSQL 15.6)
+orderdb=# EXPLAIN (ANALYZE, BUFFERS)
+WITH matched AS (
+  SELECT o.id, o.buyer_id, o.seller_id, o.status, o.total_amount, o.created_at
+  FROM orders o
+  WHERE o.buyer_id = '9f3c1a44-6b2e-4f0a-9d21-7c5b8e2f1041'::uuid
+  UNION ALL
+  SELECT o.id, o.buyer_id, o.seller_id, o.status, o.total_amount, o.created_at
+  FROM orders o
+  WHERE o.seller_id = 'b7f3c9e2-5d41-4a08-9c6b-1e2f3a4b5c6d'::uuid
+)
+SELECT DISTINCT ON (id) id, buyer_id, seller_id, status, total_amount, created_at
+FROM matched
+ORDER BY id, created_at DESC
+LIMIT 50;
+                                                          QUERY PLAN
+--------------------------------------------------------------------------------------------------------------------------------------
+ Limit  (cost=12.44..12.48 rows=50 width=64) (actual time=0.412..0.415 rows=50 loops=1)
+   ->  Unique  (cost=12.44..12.48 rows=50 width=64) (actual time=0.410..0.413 rows=50 loops=1)
+         ->  Sort  (cost=12.44..12.48 rows=50 width=64) (actual time=0.408..0.411 rows=50 loops=1)
+               Sort Key: id, created_at DESC
+               Sort Method: quicksort  Memory Usage: 32kB
+   ->  Append  (cost=0.42..12.36 rows=100 width=64) (actual time=0.031..0.387 rows=100 loops=1)
+         ->  Index Scan using idx_orders_buyer_id on orders o  (cost=0.42..6.18 rows=50 width=64) (actual time=0.021..0.192 rows=50 loops=1)
+               Index Cond: (buyer_id = '9f3c1a44-...'::uuid)
+               Order By: created_at DESC
+         ->  Index Scan using idx_orders_seller_id on orders o  (cost=0.42..6.18 rows=50 width=64) (actual time=0.020..0.191 rows=50 loops=1)
+               Index Cond: (seller_id = 'b7f3c9e2-...'::uuid)
+               Order By: created_at DESC
+ Planning Time: 0.312 ms
+ Execution Time: 0.428 ms
+(16 rows)
+
+Time: 0.712 ms`,
+    },
+    {
+      name: 'show-index-orders.txt',
+      lang: 'text',
+      content: `-- 2026-03-14 10:20:11 +07, RDS order-lookup-primary
+orderdb=# \d orders
+                  Table "public.orders"
+   Column      |           Type           | Collation | Nullable |    Default
+---------------+--------------------------+-----------+----------+-----------
+ id            | uuid                     |           | not null |
+ buyer_id      | uuid                     |           | not null |
+ seller_id     | uuid                     |           | not null |
+ status        | character varying(16)    |           | not null |
+ total_amount  | numeric(12,2)            |           | not null |
+ created_at    | timestamp with time zone |           | not null | now()
+ updated_at    | timestamp with time zone |           | not null | now()
+Indexes:
+    "orders_pkey" PRIMARY KEY, btree (id)
+    "idx_orders_buyer_id" btree (buyer_id, created_at DESC)
+    "idx_orders_seller_id" btree (seller_id, created_at DESC)
+
+orderdb=# SELECT count(*) AS total_rows FROM orders;
+ total_rows
+------------
+   31402881`,
+    },
+  ],
+  questions: [
+    'Vì sao câu query với OR giữa 2 cột buyer_id và seller_id không dùng được 2 index sẵn có, dù mỗi cột riêng lẻ đều có index? Chỉ ra bằng dòng nào trong plan.',
+    'Planner ước tính rows=15701440 (gần nửa bảng). Vì sao selectivity của OR lại cao như vậy, và điều này ảnh hưởng thế nào đến quyết định của planner?',
+    'Hãy đề xuất cách viết lại query (UNION ALL hoặc BitmapOr) để planner dùng index, kèm đo lại hiệu năng và cách xử lý trùng lặp (đơn mà cùng là buyer và seller).',
+  ],
+  hints: [
+    'PostgreSQL không thể "OR" hai index scan theo cách đơn giản: nó phải gom TID (tuple id) từ cả 2 index rồi sort/unique — đó là BitmapOr. Planner chỉ chọn BitmapOr khi ước tính chi phí thấp hơn Seq Scan.',
+    'Khi selectivity của OR cao (ước tính nhiều dòng khớp), planner kết luận Seq Scan rẻ hơn vì đọc tuần tự toàn bảng còn rẻ hơn random I/O từ index.',
+    'Viết lại bằng UNION ALL: mỗi nhánh dùng đúng index của mình (buyer_id hoặc seller_id), rồi DISTINCT ON (id) để loại trùng. Planner push down LIMIT vào mỗi nhánh -> chỉ đọc 50 dòng mỗi nhánh.',
+    'Index (buyer_id, created_at DESC) và (seller_id, created_at DESC) đã có sẵn và đúng thứ tự -> mỗi nhánh không cần sort thêm.',
+  ],
+  answer: `**Tóm tắt:** Câu query WHERE buyer_id = X OR seller_id = Y không dùng được 2 index vì planner ước tính selectivity của OR rất thấp (rows=15.701.440, gần nửa bảng) -> kết luận Seq Scan rẻ hơn BitmapOr. Sửa bằng cách viết lại bằng UNION ALL (mỗi nhánh dùng đúng index của mình) + DISTINCT ON (id) để loại trùng; hiệu năng tăng từ 4.123 ms xuống 0,428 ms (~9.600 lần). Index composite (buyer_id, seller_id) không giúp vì điều kiện là OR, không phải AND.
+
+### Kiến thức nền: tại sao OR khó dùng index
+Với điều kiện AND, planner có thể dùng một index duy nhất (hoặc intersection của nhiều index). Với điều kiện OR, planner phải gom kết quả từ nhiều index khác nhau — PostgreSQL hỗ trợ điều này qua **BitmapOr**: quét index 1 lấy danh sách TID (tuple id), quét index 2 lấy danh sách TID, OR hai danh sách, rồi đọc heap theo TID. Nhưng BitmapOr chỉ có lợi khi **tổng số dòng khớp nhỏ** (selectivity cao). Nếu OR trả về nhiều dòng (selectivity thấp), chi phí random I/O từ index + sort TID lớn hơn đọc tuần tự toàn bảng -> planner chọn Seq Scan.
+
+Ví dụ đời thường: bạn có 2 sổ danh bạ (index) — một theo tên người mua, một theo tên người bán. Tìm "đơn của A HOẶC đơn của B": bạn có thể tra từng sổ rồi gộp (BitmapOr), nhưng nếu A và B là khách hàng lớn (mỗi người 1000 đơn), tra sổ rồi gộp mất **thời gian hơn đọc hết cuốn sổ** -> Seq Scan nhanh hơn.
+
+### BitmapOr: khi nào planner chọn
+Planner chọn BitmapOr khi ước tính tổng số dòng khớp đủ nhỏ (thường < 5-10% bảng). Trong trường hợp này, hai UUID cụ thể mỗi cái chỉ khớp vài chục đơn (selectivity rất cao), nhưng **planner không biết giá trị tham số lúc plan** (parameterized query) -> dùng ước lượng chung từ statistics: n_distinct của buyer_id và seller_id đều lớn, nhưng histogram không phản ánh được sự phân bố lệch của từng giá trị -> planner ước lượng sai, chọn Seq Scan.
+
+### Cách viết lại bằng UNION ALL (khuyên dùng)
+UNION ALL tách thành 2 nhánh độc lập, mỗi nhánh dùng đúng index của mình. Planner push down LIMIT 50 vào mỗi nhánh -> chỉ đọc 50 dòng mỗi nhánh. DISTINCT ON (id) loại trùng lặp (đơn mà cùng là buyer và seller).
+~~~sql
+WITH matched AS (
+  SELECT o.id, o.buyer_id, o.seller_id, o.status, o.total_amount, o.created_at
+  FROM orders o
+  WHERE o.buyer_id = $1
+  UNION ALL
+  SELECT o.id, o.buyer_id, o.seller_id, o.status, o.total_amount, o.created_at
+  FROM orders o
+  WHERE o.seller_id = $2
+)
+SELECT DISTINCT ON (id) id, buyer_id, seller_id, status, total_amount, created_at
+FROM matched
+ORDER BY id, created_at DESC
+LIMIT 50;
+~~~
+Kết quả: **0,428 ms** (artifact 2) so với **4.123 ms** — nhanh ~9.600 lần. Index (buyer_id, created_at DESC) và (seller_id, created_at DESC) đã có sẵn thứ tự sort -> không cần sort thêm.
+
+### Cách khác: BitmapOr với enable_bitmapscan = on
+Nếu buộc dùng câu OR gốc: đảm bảo statistics mới (ANALYZE), có thể dùng extended statistics cho cặp (buyer_id, seller_id) nếu có tương quan. Nhưng UNION ALL an toàn hơn vì không phụ thuộc quyết định planner.
+
+### Phòng ngừa
+- Tránh OR giữa các cột khác nhau trong WHERE trên bảng lớn; viết lại bằng UNION ALL.
+- Chạy ANALYZE định kỳ; trên bảng lớn cân nhắc partition để statistics chính xác hơn từng partition.
+- Extended statistics: {{CREATE STATISTICS orders_buyer_seller (dependencies) ON buyer_id, seller_id FROM orders;}} ANALYZE — giúp planner hiểu mối quan hệ giữa 2 cột.
+
+### Trả lời mẫu khi phỏng vấn
+"Câu query OR giữa buyer_id và seller_id chạy Seq Scan 4 giây vì planner ước lượng 15,7 triệu dòng khớp (gần nửa bảng) và chọn Seq Scan rẻ hơn BitmapOr. Thực tế mỗi UUID chỉ khớp vài chục đơn. Tôi viết lại bằng UNION ALL: mỗi nhánh dùng index của mình, LIMIT push down, DISTINCT ON (id) loại trùng. Từ 4.123 ms xuống 0,428 ms. Composite index không giúp vì điều kiện là OR. Phòng ngừa: tránh OR trên cột khác nhau, dùng UNION ALL, cập nhật statistics, extended statistics cho cặp cột."
+> Senior tip: OR giữa hai cột khác nhau là "kẻ giết index" thầm lặng. Planner không thể push down LIMIT vào BitmapOr, và ước lượng selectivity của OR thường sai lệch lớn khi giá trị tham số không đều. UNION ALL tách biệt logic, cho phép planner tối ưu từng nhánh riêng — đây là pattern chuẩn cho tìm kiếm "A HOẶC B" trên bảng lớn.
+`,
+  rubric: [
+    'Chỉ đúng nguyên nhân: planner ước lượng rows=15.701.440 cho OR (gần nửa bảng) -> chọn Seq Scan; không dùng được 2 index vì BitmapOr chỉ chọn khi selectivity cao, và planner không biết giá trị tham số lúc plan',
+    'Dẫn chứng đúng: artifact 1 Seq Scan rows=15701440, artifact 2 UNION ALL dùng 2 Index Scan, Execution Time 4.123 ms -> 0,428 ms; index (buyer_id, created_at DESC) và (seller_id, created_at DESC) khớp ORDER BY',
+    'Đề xuất sửa đúng: UNION ALL + DISTINCT ON (id) để loại trùng, LIMIT push down, giải thích vì sao composite index không giúp (OR không phải AND), nêu phòng ngừa: tránh OR, ANALYZE, extended statistics',
+  ],
+  tags: ['postgresql', 'index', 'or-condition', 'union-all', 'bitmap-or', 'selectivity'],
+},
 );
 
