@@ -9724,5 +9724,1211 @@ onComplete.accept(newStore);  // production: swap index alias
 Khi hỏi "đổi embedding model thế nào cho không sập recall", trả lời: (1) vector space khác model -> không so sánh cross-model được, (2) lưu model trên vector, query filter theo model, (3) blue-green re-index toàn bộ corpus, swap alias, (4) canary + observability. Nhấn mạnh: dimension giống nhau **không có nghĩa** là vector space giống nhau.`,
   related: ['ai-016', 'ai-056'],
   tags: ['embedding', 'vector search', 're-index', 'model migration', 'blue-green', 'recall', 'RAG']
+},
+{
+  id: 'bug-049',
+  title: 'Ước lượng token bằng chars/4 làm 7% hội thoại tiếng Việt vượt context, provider trả 400',
+  domain: 'AI / LLM integration',
+  level: 'senior',
+  severity: 'P1',
+  minutes: 30,
+  story: `**Bối cảnh dự án:** app-tuvan (Spring Boot 3.2) là trợ lý tư vấn sản phẩm ngân hàng cho khách Việt Nam. Mỗi lượt, service ghép system prompt (luật an toàn) với toàn bộ lịch sử hội thoại rồi gửi cho model qua provider. Cửa sổ ngữ cảnh (context window — giới hạn token mỗi lần gọi) là 8.000 token. Code hiện tại **ước lượng token bằng công thức chars/4** (số ký tự chia 4, kinh nghiệm cho tiếng Anh: 1 token ≈ 4 ký tự) để quyết định cắt bớt lịch sử cũ trước khi gửi.
+
+**Sự cố:** Trong 7 ngày, **7% request hội thoại dài** (khoảng 1.400/20.000) bị provider trả **HTTP 400** với mã {{context_length_exceeded}}. Đặc điểm: tất cả đều là hội thoại **tiếng Việt có dấu**. Lý do: tiếng Việt có dấu thanh và nhiều âm tiết nên **cùng một nội dung tốn 1,4–2,2 lần token so với tiếng Anh**. Công thức chars/4 (dựa trên ký tự) đánh giá thấp số token thật của tiếng Việt: code tưởng đang gửi 5.000 token (đủ chỗ) nhưng thực tế là 8.500 token (vượt hạn mức). Provider không cắt ngầm mà trả 400 thẳng, request thất bại, người dùng phải gửi lại.
+
+**Nhiệm vụ của bạn:**
+1. Đọc code {{TokenEstimator.estimateTokens}} và {{ChatContext.buildMessages}}, tìm vì sao hội thoại tiếng Việt vượt context dù code tưởng đã ép dưới limit.
+2. Sửa: (a) đếm token bằng {{FakeTokenizer}} (tokenizer giả xác định, đếm chính xác hơn chars/4 cho tiếng Việt) hoặc hệ số an toàn theo tỉ lệ ký tự non-ASCII; (b) **cắt lịch sử cũ TRƯỚC khi gửi** để tổng token thật ≤ limit; (c) luôn giữ system prompt; (d) nếu system prompt tự nó vượt limit thì ném {{ContextTooLongException}}.
+3. Bấm **Chạy test**: test mô phỏng provider thật (dùng {{FakeTokenizer}} làm ground truth) — starter sẽ ném 400 cho hội thoại tiếng Việt dài, reference thì cắt vừa và gửi thành công.`,
+  artifacts: [
+    { name: 'provider-400.log', lang: 'text', content: `2026-11-12 09:14:02.117 INFO  ChatController : turn=38 sessionId=cs-91244 lang=vi historyMessages=64 estTokens=5120 (chars/4)
+2026-11-12 09:14:02.340 WARN  LlmProvider    : HTTP 400 context_length_exceeded limit=8000 actual=8640 sent=true
+2026-11-12 09:14:02.341 ERROR ChatController : request failed sessionId=cs-91244, user asks to retry
+2026-11-12 09:31:55.884 WARN  LlmProvider    : HTTP 400 context_length_exceeded limit=8000 actual=8910 sent=true
+2026-11-12 10:02:11.050 WARN  LlmProvider    : HTTP 400 context_length_exceeded limit=8000 actual=8320 sent=true
+2026-11-12 10:02:11.051 WARN  ChatController : 400 rate by lang: vi=96% en=4%` },
+    { name: 'token-compare.txt', lang: 'text', content: `Ước lượng chars/4 vs token thật (FakeTokenizer) — cùng nội dung:
+  "hạn mức tín dụng của tôi là bao nhiêu"          chars=37  est=10  actual=22   ratio=2.20
+  "tôi muốn kiểm tra số dư tài khoản"               chars=32  est=8   actual=19   ratio=2.38
+  "lãi suất vay mua nhà ưu đãi năm nay"             chars=35  est=9   actual=18   ratio=2.00
+  "what is my credit limit"                         chars=23  est=6   actual=7    ratio=1.17
+Phiên cs-91244: historyMessages=64 estTokens=5120 actualTokens=8640 (vượt 8000)` },
+  ],
+  starter: `// ===== Hạ tầng (đã có sẵn trong dự án, KHÔNG cần sửa) =====
+class Message {
+    final String role;      // "system" | "user" | "assistant"
+    final String content;
+    Message(String role, String content) { this.role = role; this.content = content; }
+}
+
+// Tokenizer giả xác định: đếm "gần đúng" token thật của provider.
+// - Ký tự ASCII (tiếng Anh): ~4 ký tự = 1 token
+// - Ký tự non-ASCII (tiếng Việt có dấu, tiếng Nhật...): ~2 ký tự = 1 token (đắt gấp đôi)
+// Đây là ground truth để test; provider thật dùng BPE tokenizer riêng nhưng nguyên lý giống.
+class FakeTokenizer {
+    static int count(String text) {
+        if (text == null || text.isEmpty()) return 0;
+        int ascii = 0, nonAscii = 0;
+        for (int i = 0; i < text.length(); i++) {
+            char c = text.charAt(i);
+            if (c < 128) ascii++; else nonAscii++;
+        }
+        int asciiTokens = (ascii + 3) / 4;          // ceil(ascii/4)
+        int nonAsciiTokens = (nonAscii + 1) / 2;     // ceil(nonAscii/2)
+        return asciiTokens + nonAsciiTokens;
+    }
+    static int count(Message m) { return count(m.content) + 4; }   // +4 overhead role/format
+    static int countAll(java.util.List<Message> msgs) {
+        int t = 0; for (Message m : msgs) t += count(m); return t;
+    }
+}
+
+class ContextTooLongException extends RuntimeException {
+    ContextTooLongException(String m) { super(m); }
+}
+
+// Mô phỏng provider: nếu tổng token thật (FakeTokenizer) > limit thì trả HTTP 400.
+class FakeProvider {
+    final int limit;
+    int lastActualTokens = -1;
+    boolean lastReturned400 = false;
+    FakeProvider(int limit) { this.limit = limit; }
+    void send(java.util.List<Message> messages) {
+        int actual = FakeTokenizer.countAll(messages);
+        lastActualTokens = actual;
+        lastReturned400 = actual > limit;
+        if (lastReturned400) throw new RuntimeException("HTTP 400 context_length_exceeded limit=" + limit + " actual=" + actual);
+    }
+}
+
+// ===== Code cần sửa =====
+class TokenEstimator {
+    // BUG: ước lượng bằng chars/4 (kinh nghiệm tiếng Anh). Với tiếng Việt có dấu,
+    // công thức này đánh giá THẤP số token thật (xem token-compare.txt: ratio 1.4-2.4).
+    static int estimateTokens(String text) {
+        if (text == null || text.isEmpty()) return 0;
+        return Math.max(1, (int) Math.ceil(text.length() / 4.0));
+    }
+}
+
+class ChatContext {
+    private final String systemPrompt;
+    private final int tokenLimit;
+    private final java.util.List<Message> history = new java.util.ArrayList<>();
+    ChatContext(String systemPrompt, int tokenLimit) { this.systemPrompt = systemPrompt; this.tokenLimit = tokenLimit; }
+    void add(String role, String content) { history.add(new Message(role, content)); }
+
+    // BUG: dùng TokenEstimator.estimateTokens (chars/4) để quyết định cắt.
+    // Vì estimate sai (thấp) cho tiếng Việt, code không cắt đủ (hoặc không cắt),
+    // tổng token THẬT vẫn vượt limit -> provider trả 400.
+    java.util.List<Message> buildMessages() {
+        java.util.List<Message> out = new java.util.ArrayList<>();
+        out.add(new Message("system", systemPrompt));
+        out.addAll(history);
+        // Không cắt, hoặc cắt theo estimate sai. Với tiếng Việt dài, out vượt limit thật.
+        return out;
+    }
+}`,
+  tests: `public class Main {
+    static int passed = 0, total = 0;
+    static void check(String name, boolean ok, String detail) {
+        total++;
+        if (ok) { passed++; System.out.println("PASS " + name); }
+        else System.out.println("FAIL " + name + ": " + detail);
+    }
+
+    public static void main(String[] args) {
+        // 1. Hội thoại tiếng Việt dài: code tưởng dưới limit (chars/4), nhưng token THẬT vượt.
+        ChatContext ctx1 = new ChatContext("Bạn là trợ lý ngân hàng. Không cung cấp OTP.", 120);
+        // 8 lượt, mỗi lượt tiếng Việt có dấu -> chars/4 cho ~5 token/lượt (est 40+system),
+        // nhưng FakeTokenizer cho ~10-12 token/lượt (actual ~90+system). Với limit 120,
+        // thêm 20 lượt sẽ vượt actual nhưng chars/4 vẫn tưởng dưới.
+        for (int i = 0; i < 20; i++) {
+            ctx1.add("user", "hạn mức tín dụng của tôi là bao nhiêu " + "àáảãạăâđêôơư".repeat(3));
+            ctx1.add("assistant", "tôi muốn kiểm tra số dư tài khoản " + "íìỉĩịéèẻẽẹ".repeat(3));
+        }
+        java.util.List<Message> built1 = ctx1.buildMessages();
+        FakeProvider p1 = new FakeProvider(120);
+        boolean threw1 = false;
+        try { p1.send(built1); } catch (RuntimeException e) { threw1 = true; }
+        // Starter: chars/4 không cắt -> actual > 120 -> provider 400 (threw1=true, FAIL).
+        // Reference: cắt theo FakeTokenizer -> actual <= 120 -> không 400 (PASS).
+        check("tieng_viet_khong_vuot_limit", !threw1 && p1.lastActualTokens <= 120,
+            "hội thoại tiếng Việt dài phải được cắt để token THẬT <= 120, không được để provider trả 400; actual=" + p1.lastActualTokens + " threw400=" + threw1);
+
+        // 2. System prompt phải luôn được giữ sau khi cắt.
+        boolean sys1 = built1.stream().anyMatch(m -> m.role.equals("system") && m.content.contains("OTP"));
+        check("system_prompt_giu_duoc", sys1,
+            "system prompt (luật an toàn) phải còn trong danh sách gửi đi");
+
+        // 3. Tiếng Anh (ASCII) không bị cắt quá mức: chars/4 và FakeTokenizer cho kết quả gần nhau.
+        // Đảm bảo fix không làm hỏng trường hợp tiếng Anh.
+        ChatContext ctx2 = new ChatContext("system", 100);
+        for (int i = 0; i < 10; i++) {
+            ctx2.add("user", "what is my credit limit question number " + i + " " + "x".repeat(20));
+            ctx2.add("assistant", "your credit limit answer number " + i + " " + "y".repeat(20));
+        }
+        java.util.List<Message> built2 = ctx2.buildMessages();
+        FakeProvider p2 = new FakeProvider(100);
+        boolean threw2 = false;
+        try { p2.send(built2); } catch (RuntimeException e) { threw2 = true; }
+        check("tieng_anh_khong_vo_hieu_qua", !threw2 && p2.lastActualTokens <= 100,
+            "hội thoại tiếng Anh phải nằm trong limit (không bị cắt oan hoặc vượt); actual=" + p2.lastActualTokens + " threw=" + threw2);
+
+        // 4. Code phải thực sự cắt bớt lịch sử khi vượt (không chỉ may mắn dưới limit).
+        // So sánh số message gửi đi với số message gốc: phải ít hơn khi vượt.
+        ChatContext ctx3 = new ChatContext("luật", 80);
+        for (int i = 0; i < 30; i++) {
+            ctx3.add("user", "câu hỏi tiếng Việt số " + i + " " + "hạn mức tín dụng ưu đãi".repeat(2));
+            ctx3.add("assistant", "trả lời tiếng Việt số " + i + " " + "số dư tài khoản lãi suất".repeat(2));
+        }
+        int originalCount = 60;   // 30 user + 30 assistant
+        java.util.List<Message> built3 = ctx3.buildMessages();
+        FakeProvider p3 = new FakeProvider(80);
+        boolean threw3 = false;
+        try { p3.send(built3); } catch (RuntimeException e) { threw3 = true; }
+        check("cat_bot_lich_su_truoc_khi_gui", !threw3 && built3.size() < originalCount && p3.lastActualTokens <= 80,
+            "phải cắt bớt lịch sử (gửi ít message hơn) để token thật <= 80; sent=" + built3.size() + " original=" + originalCount + " actual=" + p3.lastActualTokens + " threw=" + threw3);
+
+        // 5. System prompt tự nó vượt limit: phải báo lỗi rõ ràng.
+        ChatContext ctx4 = new ChatContext("V".repeat(4000), 100);
+        String err4 = null;
+        try { ctx4.buildMessages(); } catch (ContextTooLongException e) { err4 = e.getMessage(); }
+        check("system_qua_lon_bao_loi", err4 != null,
+            "system prompt vượt limit phải ném ContextTooLongException, không được âm thầm bỏ luật");
+
+        System.out.println("RESULT " + passed + "/" + total);
+    }
+}`,
+  reference: `// ===== Hạ tầng (đã có sẵn trong dự án, KHÔNG cần sửa) =====
+class Message {
+    final String role;      // "system" | "user" | "assistant"
+    final String content;
+    Message(String role, String content) { this.role = role; this.content = content; }
+}
+
+// Tokenizer giả xác định: đếm "gần đúng" token thật của provider.
+// - Ký tự ASCII (tiếng Anh): ~4 ký tự = 1 token
+// - Ký tự non-ASCII (tiếng Việt có dấu...): ~2 ký tự = 1 token (đắt gấp đôi)
+class FakeTokenizer {
+    static int count(String text) {
+        if (text == null || text.isEmpty()) return 0;
+        int ascii = 0, nonAscii = 0;
+        for (int i = 0; i < text.length(); i++) {
+            char c = text.charAt(i);
+            if (c < 128) ascii++; else nonAscii++;
+        }
+        int asciiTokens = (ascii + 3) / 4;
+        int nonAsciiTokens = (nonAscii + 1) / 2;
+        return asciiTokens + nonAsciiTokens;
+    }
+    static int count(Message m) { return count(m.content) + 4; }
+    static int countAll(java.util.List<Message> msgs) {
+        int t = 0; for (Message m : msgs) t += count(m); return t;
+    }
+}
+
+class ContextTooLongException extends RuntimeException {
+    ContextTooLongException(String m) { super(m); }
+}
+
+class FakeProvider {
+    final int limit;
+    int lastActualTokens = -1;
+    boolean lastReturned400 = false;
+    FakeProvider(int limit) { this.limit = limit; }
+    void send(java.util.List<Message> messages) {
+        int actual = FakeTokenizer.countAll(messages);
+        lastActualTokens = actual;
+        lastReturned400 = actual > limit;
+        if (lastReturned400) throw new RuntimeException("HTTP 400 context_length_exceeded limit=" + limit + " actual=" + actual);
+    }
+}
+
+// ===== Code cần sửa =====
+class TokenEstimator {
+    // FIX: dùng FakeTokenizer (đếm chính xác hơn chars/4 cho tiếng Việt).
+    // Trong production thật, dùng tokenizer của model (vd: jtokkit, tiktoken).
+    static int estimateTokens(String text) {
+        return FakeTokenizer.count(text);
+    }
+}
+
+class ChatContext {
+    private final String systemPrompt;
+    private final int tokenLimit;
+    private final java.util.List<Message> history = new java.util.ArrayList<>();
+    ChatContext(String systemPrompt, int tokenLimit) { this.systemPrompt = systemPrompt; this.tokenLimit = tokenLimit; }
+    void add(String role, String content) { history.add(new Message(role, content)); }
+
+    // FIX: đếm token THẬT (FakeTokenizer), dành ngân sách cho system prompt trước,
+    // rồi cắt lịch sử từ cũ nhất đến khi tổng <= limit. Luôn giữ system prompt.
+    java.util.List<Message> buildMessages() {
+        int sysTokens = FakeTokenizer.count(new Message("system", systemPrompt));
+        if (sysTokens > tokenLimit) {
+            throw new ContextTooLongException("system prompt chiếm " + sysTokens + " token, vượt context " + tokenLimit);
+        }
+        java.util.List<Message> kept = new java.util.ArrayList<>();
+        int used = sysTokens;
+        for (int i = history.size() - 1; i >= 0; i--) {
+            Message m = history.get(i);
+            int mt = FakeTokenizer.count(m);
+            if (used + mt <= tokenLimit) {
+                kept.add(0, m);
+                used += mt;
+            } else if (i == history.size() - 1 && tokenLimit - used > 4) {
+                // Tin nhắn mới nhất quá lớn: cắt bớt nội dung cho vừa.
+                String room = cutToTokens(m.content, tokenLimit - used);
+                kept.add(0, new Message(m.role, room));
+                break;
+            } else {
+                break;   // message cũ hơn không vừa: dừng (cắt phần cũ nhất)
+            }
+        }
+        java.util.List<Message> out = new java.util.ArrayList<>();
+        out.add(new Message("system", systemPrompt));
+        out.addAll(kept);
+        return out;
+    }
+
+    // Cắt nội dung sao cho FakeTokenizer.count(content) <= roomTokens.
+    // Đơn giản: cắt nhị phân trên số ký tự, vì thêm ký tự luôn tăng token.
+    static String cutToTokens(String content, int roomTokens) {
+        int lo = 0, hi = content.length();
+        while (lo < hi) {
+            int mid = (lo + hi + 1) / 2;
+            if (FakeTokenizer.count(content.substring(0, mid)) <= roomTokens) lo = mid; else hi = mid - 1;
+        }
+        return content.substring(0, lo);
+    }
+}`,
+  hints: [
+    'Đọc token-compare.txt: cùng nội dung tiếng Việt, chars/4 cho est=8-10 nhưng actual=18-22 (ratio 1.4-2.4). Log: estTokens=5120 nhưng provider actual=8640 > limit 8000 -> 400.',
+    'Tiếng Việt có dấu thanh (àáảãạ...) và nhiều âm tiết -> mỗi âm tiết thường là 1 token riêng, đắt gấp ~2 lần ký tự ASCII. chars/4 là kinh nghiệm tiếng Anh, không đúng cho tiếng Việt.',
+    'Fix: (1) đếm token bằng tokenizer thật/fake chính xác hơn (FakeTokenizer trong test, jtokkit trong production); (2) dành ngân sách cho system prompt; (3) cắt lịch sử từ cũ nhất đến khi tổng THẬT <= limit; (4) system tự vượt limit thì ném ContextTooLongException.',
+  ],
+  rootCause: `**Ước lượng token bằng chars/4 đánh giá thấp số token thật của tiếng Việt, khiến code tưởng đã ép dưới context nhưng thực tế vượt, provider trả HTTP 400.**
+
+- chars/4 là kinh nghiệm cho **tiếng Anh**: 1 token ≈ 4 ký tự ASCII. Tiếng Việt có **dấu thanh** (à, ả, ã, á...) và **nhiều âm tiết**, mỗi âm tiết thường tách thành 1 token riêng trong BPE tokenizer. Cùng một nội dung, tiếng Việt tốn **1,4–2,2 lần** token so với tiếng Anh (token-compare.txt: ratio 2.20, 2.38, 2.00).
+- {{ChatContext.buildMessages}} dùng {{TokenEstimator.estimateTokens}} (chars/4) để quyết định cắt. Với hội thoại tiếng Việt, estimate thấp hơn actual ~2 lần: code tưởng 5.120 token (dưới 8.000) nhưng actual là 8.640 token (vượt). Code không cắt (hoặc cắt không đủ), gửi nguyên -> provider trả 400.
+- 7% request hội thoại dài bị 400, **96% trong số đó là tiếng Việt** (log: {{400 rate by lang: vi=96% en=4%}}). Provider không cắt ngầm mà trả 400 thẳng, request thất bại.
+
+Dẫn chứng: log {{estTokens=5120 ... actual=8640}} và {{context_length_exceeded}}. Token-compare cho thấy ratio tiếng Việt gấp ~2 lần tiếng Anh.`,
+  fix: `### Cách sửa trong bài
+1. **Đếm token bằng tokenizer chính xác** (FakeTokenizer trong test; trong production dùng {{jtokkit}} hoặc tokenizer của model như {{tiktoken}}). Công thức: ASCII ~4 ký tự/token, non-ASCII ~2 ký tự/token. Nếu không nhúng tokenizer, dùng **hệ số an toàn theo ngôn ngữ**: nhân estimate với 1.8–2.2 khi tỉ lệ ký tự non-ASCII cao (tiếng Việt, Nhật, Hàn...).
+2. **Dành ngân sách cho system prompt trước**: nếu system prompt tự nó > limit thì ném {{ContextTooLongException}} — thà báo lỗi còn hơn gửi request chắc chắn bị 400.
+3. **Cắt lịch sử từ cũ nhất** (sliding window): duyệt từ message mới nhất về cũ, chỉ giữ message còn vừa ngân sách còn lại. Đây là cách cắt đúng: luôn giữ ngữ cảnh gần nhất, bỏ phần cũ.
+4. **Tin nhắn mới nhất quá lớn thì cắt nội dung** cho vừa phần ngân sách còn lại (mất một phần tin nhắn mới vẫn tốt hơn mất system prompt hoặc bị 400).
+5. **Đo token thật từ response {{usage}}} của provider** (production) để hiệu chỉnh hệ số, không đoán mò.
+
+~~~java
+int sysTokens = FakeTokenizer.count(new Message("system", systemPrompt));
+if (sysTokens > tokenLimit) throw new ContextTooLongException("system quá lớn");
+int used = sysTokens;
+List<Message> kept = new ArrayList<>();
+for (int i = history.size() - 1; i >= 0; i--) {
+    Message m = history.get(i);
+    int mt = FakeTokenizer.count(m);
+    if (used + mt <= tokenLimit) { kept.add(0, m); used += mt; }
+    else if (i == history.size() - 1) { kept.add(0, new Message(m.role, cutToTokens(m.content, tokenLimit - used))); break; }
+    else break;
+}
+~~~
+
+### Trên production thật
+- **Dùng tokenizer của model**: {{jtokkit}} (Java, hỗ trợ nhiều encoding: cl100k_base, o200k_base...), hoặc gọi API {{/tokenize}} nếu provider hỗ trợ. Đây là cách chính xác nhất.
+- **Hệ số an toàn theo ngôn ngữ**: nếu không nhúng tokenizer, nhân estimate chars/4 với 1.8 khi phát hiện tỉ lệ non-ASCII > 30%. Đo token thật từ {{usage.prompt_tokens}} của provider để hiệu chỉnh hệ số.
+- **Dùng chat memory có giới hạn của framework**: LangChain4j {{TokenWindowChatMemory}}, Spring AI {{MessageWindowChatMemory}} — chúng đếm token và tự cắt.
+- **Tóm tắt phần cũ (summarization)** thay vì bỏ hẳn, khi cần giữ ngữ cảnh dài.
+- **Observability**: ghi {{est_tokens}} vs {{actual_tokens}} (từ response usage), tỉ lệ request bị 400 theo ngôn ngữ, số message bị cắt. Cảnh báo khi tỉ lệ 400 > 1%.
+
+### Phòng ngừa
+- Test hồi quy: một hội thoại tiếng Việt 64 message phải được cắt để actual ≤ limit (không chỉ est ≤ limit).
+- CI: so sánh est vs actual trên một corpus đa ngôn ngữ, cảnh báo nếu sai lệch > 30%.
+- Không bao giờ tin chars/4 cho nội dung không phải tiếng Anh.
+
+### Liên hệ phỏng vấn
+Khi hỏi "tiếng Việt tốn token hơn tiếng Anh, bạn ước lượng và kiểm soát thế nào", trả lời: (1) chars/4 là kinh nghiệm tiếng Anh, sai cho tiếng Việt (ratio 1.4–2.2); (2) dùng tokenizer thật (jtokkit) hoặc hệ số an toàn theo tỉ lệ non-ASCII; (3) dành ngân sách system prompt, cắt sliding window từ cũ; (4) đo actual từ usage để hiệu chỉnh. Nhấn mạnh: token là đơn vị tính tiền và giới hạn của model, không phải ký tự — phải đo đúng ngôn ngữ.
+
+> Senior tip: đừng bao giờ hardcode chars/4 cho đa ngôn ngữ. Tiếng Việt có dấu, tiếng Nhật dùng kanji, tiếng Hàn dùng block — mỗi ngôn ngữ có mật độ token khác nhau. Dùng tokenizer của model, hoặc ít nhất nhân hệ số an toàn 1.8–2.2 khi nội dung không phải ASCII, và luôn đo actual từ response usage để hiệu chỉnh.`,
+  related: ['ai-149', 'ai-058'],
+  tags: ['LLM', 'token', 'tokenizer', 'context window', 'tiếng Việt', 'jtokkit', 'multilingual']
+},
+{
+  id: 'bug-050',
+  title: 'Bỏ qua header Retry-After khi 429: 200 instance retry ngay 5 lần gây bão request, khoá API key 10 phút',
+  domain: 'AI / LLM integration',
+  level: 'senior',
+  severity: 'P1',
+  minutes: 30,
+  story: `**Bối cảnh dự án:** customer-service (Spring Boot 3.2, **200 instance**) gọi LLM provider để trả lời khách. Provider giới hạn tốc độ (rate limit) theo API key: khi vượt, trả **HTTP 429** kèm header {{Retry-After: <giây>}} (số giây provider yêu cầu chờ trước khi thử lại). Lớp {{RateLimitedClient.callWithRetry}} được viết để "chống lỗi tạm thời": gặp 429 thì thử lại **ngay lập tức** tối đa 5 lần (không đọc header Retry-After, không chờ, hoặc chờ cố định 50 ms).
+
+**Sự cố:** 14:02 ngày 08/11, một chiến dịch marketing đẩy lượng chat tăng đột biến. Provider bắt đầu trả 429 kèm {{Retry-After: 2}} (yêu cầu chờ 2 giây). Nhưng client bỏ qua header, retry ngay 5 lần mỗi request. Với 200 instance, mỗi request thất bại tạo thêm 5 request trong vòng vài mili giây -> **bão request** (request storm). Provider phát hiện lưu lượng bất thường từ một API key, **khoá API key đó 10 phút** (phòng chống lạm dụng). Toàn bộ customer-service mất LLM trong 10 phút, 12.000 cuộc chat bị gián đoạn.
+
+**Nhiệm vụ của bạn:**
+1. Đọc code {{RateLimitedClient.callWithRetry}} và {{FakeRateLimitServer}}, tìm vì sao 429 bị retry ngay thay vì chờ theo Retry-After.
+2. Sửa: (a) **tôn trọng header Retry-After**: nếu có, chờ đúng số giây đó (dùng {{FakeClock}}/{{Sleeper}}); (b) nếu không có header, dùng **exponential backoff có jitter** (Random seed cố định trong test) — chờ ngẫu nhiên trong [0, min(cap, base*2^(n-1))]; (c) **giới hạn retry toàn cục**: dùng {{RetryBudget}} chia sẻ giữa các instance, khi cạn budget thì fail nhanh thay vì tiếp tục nhân tải.
+3. Bấm **Chạy test**: test mô phỏng provider 429 với Retry-After, kiểm tra client chờ đúng, không tạo bão, và tôn trọng budget toàn cục. Clock giả (FakeClock) + Random seed cố định để test xác định.`,
+  artifacts: [
+    { name: 'provider-429-storm.log', lang: 'text', content: `2026-11-08 14:02:11.050 WARN  RateLimitFilter : key=sk-ai-*** 429 Retry-After=2 req=cs-88213
+2026-11-08 14:02:11.052 WARN  RateLimitedClient: 429 attempt=1 retry immediately (0ms)
+2026-11-08 14:02:11.053 WARN  RateLimitedClient: 429 attempt=2 retry immediately (0ms)
+2026-11-08 14:02:11.053 WARN  RateLimitedClient: 429 attempt=3 retry immediately (0ms)
+2026-11-08 14:02:11.054 WARN  RateLimitedClient: 429 attempt=4 retry immediately (0ms)
+2026-11-08 14:02:11.054 WARN  RateLimitedClient: 429 attempt=5 giving up
+2026-11-08 14:02:11.055 WARN  RateLimitFilter : key=sk-ai-*** request storm detected: 200 instances * 5 retries in <100ms
+2026-11-08 14:02:11.100 ERROR RateLimitFilter : API key sk-ai-*** LOCKED for 600s (rate limit abuse protection)
+2026-11-08 14:12:11.100 WARN  RateLimitFilter : API key sk-ai-*** unlocked (auto-expire)` },
+    { name: 'request-storm-stats.txt', lang: 'text', content: `Thời điểm 14:02:11 (trong vòng 100ms):
+  Số instance                  : 200
+  Số request gốc               : ~200 (mỗi instance 1 chat)
+  Số retry mỗi request         : 5 (retry ngay, không chờ Retry-After)
+  Tổng request tới provider    : ~200 * 5 = 1000 request trong <100ms
+  ngưỡng phát hiện lạm dụng    : > 500 request/100ms từ 1 key
+  -> API key bị khoá 600s
+  -> 12.000 cuộc chat bị gián đoạn trong 10 phút` },
+  ],
+  starter: `// ===== Hạ tầng (đã có sẵn trong dự án, KHÔNG cần sửa) =====
+// Phản hồi từ provider: status + header Retry-After (giây, -1 nếu không có).
+class Response {
+    final int status;
+    final long retryAfterSeconds;   // -1 = không có header Retry-After
+    Response(int status, long retryAfterSeconds) { this.status = status; this.retryAfterSeconds = retryAfterSeconds; }
+}
+
+// Server giả lập provider: trả 429 kèm Retry-After cho N lần đầu, sau đó trả 200.
+// Đếm số request để test phát hiện bão request.
+class FakeRateLimitServer {
+    final int failCount;            // số lần đầu trả 429
+    final long retryAfterSeconds;   // giá trị Retry-After
+    int calls = 0;
+    FakeRateLimitServer(int failCount, long retryAfterSeconds) {
+        this.failCount = failCount; this.retryAfterSeconds = retryAfterSeconds;
+    }
+    Response call() {
+        calls++;
+        if (calls <= failCount) return new Response(429, retryAfterSeconds);
+        return new Response(200, -1);
+    }
+}
+
+// Ghi lại thời gian chờ (không ngủ thật) để test kiểm tra xác định.
+class Sleeper {
+    final java.util.List<Long> sleeps = new java.util.ArrayList<>();
+    void sleep(long ms) { sleeps.add(ms); }
+}
+
+// Clock giả: bây giờ ảo = tổng các lần sleep. Test dùng để kiểm tra logic theo thời gian.
+class FakeClock {
+    long nowMs = 0;
+    void advance(long ms) { nowMs += ms; }
+    long now() { return nowMs; }
+}
+
+// Ngân sách retry toàn cục: chia sẻ giữa các instance. Khi cạn, fail nhanh.
+class RetryBudget {
+    final int maxRetries;
+    int used = 0;
+    RetryBudget(int maxRetries) { this.maxRetries = maxRetries; }
+    boolean tryConsume() {
+        if (used >= maxRetries) return false;
+        used++;
+        return true;
+    }
+    int remaining() { return maxRetries - used; }
+}
+
+// ===== Code cần sửa =====
+class RateLimitedClient {
+    private final FakeRateLimitServer server;
+    private final Sleeper sleeper;
+    private final java.util.Random random;
+    private final RetryBudget budget;
+    private final FakeClock clock;
+
+    RateLimitedClient(FakeRateLimitServer server, Sleeper sleeper, java.util.Random random, RetryBudget budget, FakeClock clock) {
+        this.server = server; this.sleeper = sleeper; this.random = random; this.budget = budget; this.clock = clock;
+    }
+
+    // BUG: gặp 429 thì retry NGAY 5 lần, không đọc Retry-After, không dùng budget, không backoff.
+    Response callWithRetry() {
+        Response r = null;
+        for (int i = 0; i < 5; i++) {
+            r = server.call();
+            if (r.status < 400) return r;
+            // BUG: bỏ qua r.retryAfterSeconds, retry ngay
+            sleeper.sleep(0);
+        }
+        return r;
+    }
+}`,
+  tests: `public class Main {
+    static int passed = 0, total = 0;
+    static void check(String name, boolean ok, String detail) {
+        total++;
+        if (ok) { passed++; System.out.println("PASS " + name); }
+        else System.out.println("FAIL " + name + ": " + detail);
+    }
+
+    public static void main(String[] args) {
+        // 1. Tôn trọng Retry-After: server trả 429 Retry-After=2 (giây) 1 lần rồi 200.
+        // Client phải chờ >= 2000ms trước khi retry, chỉ gọi 2 lần.
+        FakeRateLimitServer s1 = new FakeRateLimitServer(1, 2);   // 429 với Retry-After=2, sau đó 200
+        Sleeper sl1 = new Sleeper();
+        FakeClock clk1 = new FakeClock();
+        RetryBudget b1 = new RetryBudget(10);
+        Response r1 = new RateLimitedClient(s1, sl1, new java.util.Random(42), b1, clk1).callWithRetry();
+        long firstWait = sl1.sleeps.isEmpty() ? -1 : sl1.sleeps.get(0);
+        // Starter: sleep(0) -> firstWait=0 (FAIL). Reference: sleep(2000) -> firstWait>=2000 (PASS).
+        check("ton_trong_retry_after", r1.status == 200 && s1.calls == 2 && firstWait >= 2000,
+            "phải chờ theo Retry-After (>=2000ms) trước khi retry; firstWait=" + firstWait + "ms calls=" + s1.calls);
+
+        // 2. Không có Retry-After: dùng exponential backoff có jitter (Random seed cố định).
+        // Server trả 429 không có header (retryAfterSeconds=-1) 2 lần rồi 200.
+        // Với seed 42, lần chờ đầu phải trong [0, 100], lần 2 trong [0, 200], và > 0 (có jitter).
+        FakeRateLimitServer s2 = new FakeRateLimitServer(2, -1);
+        Sleeper sl2 = new Sleeper();
+        FakeClock clk2 = new FakeClock();
+        RetryBudget b2 = new RetryBudget(10);
+        Response r2 = new RateLimitedClient(s2, sl2, new java.util.Random(42), b2, clk2).callWithRetry();
+        boolean backoffOk = sl2.sleeps.size() >= 2
+            && sl2.sleeps.get(0) >= 0 && sl2.sleeps.get(0) <= 100
+            && sl2.sleeps.get(1) >= 0 && sl2.sleeps.get(1) <= 200
+            && sl2.sleeps.get(0) > 0;   // có jitter, không phải 0
+        // Starter: sleep(0), sleep(0) -> sleeps=[0,0], get(0)=0 (FAIL jitter).
+        check("backoff_co_jitter_khong_header", r2.status == 200 && backoffOk,
+            "không có Retry-After phải dùng backoff lũy tiến có jitter; sleeps=" + sl2.sleeps);
+
+        // 3. Giới hạn retry toàn cục: budget=3, server luôn 429 Retry-After=1.
+        // Client phải dừng khi cạn budget, không retry quá 3 lần.
+        FakeRateLimitServer s3 = new FakeRateLimitServer(999, 1);   // luôn 429
+        Sleeper sl3 = new Sleeper();
+        FakeClock clk3 = new FakeClock();
+        RetryBudget b3 = new RetryBudget(3);
+        Response r3 = new RateLimitedClient(s3, sl3, new java.util.Random(42), b3, clk3).callWithRetry();
+        // Starter: không dùng budget, gọi 5 lần -> s3.calls=5 (FAIL).
+        // Reference: dùng budget, chỉ retry khi budget còn -> calls <= 4 (1 số + 3 retry), budget cạn -> dừng.
+        check("gioi_han_retry_toan_cuc", r3.status == 429 && s3.calls <= 4 && b3.remaining() == 0,
+            "phải dừng khi cạn budget (3 retry), không gọi quá 4 lần; calls=" + s3.calls + " budget con=" + b3.remaining());
+
+        // 4. Nhiều instance chia sẻ budget: 200 instance, budget=50 retry.
+        // Tổng số retry trên tất cả instance không được vượt 50 (chống bão request).
+        FakeRateLimitServer s4 = new FakeRateLimitServer(999, 1);   // luôn 429
+        Sleeper sl4 = new Sleeper();
+        FakeClock clk4 = new FakeClock();
+        RetryBudget sharedBudget = new RetryBudget(50);
+        int totalCalls = 0;
+        for (int i = 0; i < 200; i++) {
+            FakeRateLimitServer s = new FakeRateLimitServer(999, 1);   // mỗi instance server riêng, luôn 429
+            Sleeper sl = new Sleeper();
+            new RateLimitedClient(s, sl, new java.util.Random(i), sharedBudget, clk4).callWithRetry();
+            totalCalls += s.calls;
+        }
+        // Mỗi instance gọi 1 lần + retry khi budget còn. Tổng retry <= 50 -> totalCalls <= 200 + 50 = 250.
+        // Starter: mỗi instance gọi 5 lần -> totalCalls = 200*5 = 1000 (FAIL).
+        check("nhieu_instance_khong_bao_request", totalCalls <= 250 && sharedBudget.remaining() == 0,
+            "200 instance chia sẻ budget 50: tổng request <= 250 (200 gốc + 50 retry), không được 1000; totalCalls=" + totalCalls + " budget con=" + sharedBudget.remaining());
+
+        System.out.println("RESULT " + passed + "/" + total);
+    }
+}`,
+  reference: `// ===== Hạ tầng (đã có sẵn trong dự án, KHÔNG cần sửa) =====
+class Response {
+    final int status;
+    final long retryAfterSeconds;
+    Response(int status, long retryAfterSeconds) { this.status = status; this.retryAfterSeconds = retryAfterSeconds; }
+}
+
+class FakeRateLimitServer {
+    final int failCount;
+    final long retryAfterSeconds;
+    int calls = 0;
+    FakeRateLimitServer(int failCount, long retryAfterSeconds) {
+        this.failCount = failCount; this.retryAfterSeconds = retryAfterSeconds;
+    }
+    Response call() {
+        calls++;
+        if (calls <= failCount) return new Response(429, retryAfterSeconds);
+        return new Response(200, -1);
+    }
+}
+
+class Sleeper {
+    final java.util.List<Long> sleeps = new java.util.ArrayList<>();
+    void sleep(long ms) { sleeps.add(ms); }
+}
+
+class FakeClock {
+    long nowMs = 0;
+    void advance(long ms) { nowMs += ms; }
+    long now() { return nowMs; }
+}
+
+class RetryBudget {
+    final int maxRetries;
+    int used = 0;
+    RetryBudget(int maxRetries) { this.maxRetries = maxRetries; }
+    boolean tryConsume() {
+        if (used >= maxRetries) return false;
+        used++;
+        return true;
+    }
+    int remaining() { return maxRetries - used; }
+}
+
+// ===== Code cần sửa =====
+class RateLimitedClient {
+    static final int MAX_ATTEMPTS = 5;          // tổng số lần gọi (1 gốc + tối đa 4 retry)
+    static final long BASE_MS = 100, CAP_MS = 1000;
+    private final FakeRateLimitServer server;
+    private final Sleeper sleeper;
+    private final java.util.Random random;
+    private final RetryBudget budget;
+    private final FakeClock clock;
+
+    RateLimitedClient(FakeRateLimitServer server, Sleeper sleeper, java.util.Random random, RetryBudget budget, FakeClock clock) {
+        this.server = server; this.sleeper = sleeper; this.random = random; this.budget = budget; this.clock = clock;
+    }
+
+    static boolean retryable(int status) { return status == 429 || status == 502 || status == 503 || status == 504; }
+
+    Response callWithRetry() {
+        Response r = null;
+        for (int attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
+            r = server.call();
+            if (!retryable(r.status)) return r;     // thành công hoặc lỗi vĩnh viễn
+            if (attempt == MAX_ATTEMPTS) break;
+            // FIX: nếu không còn budget retry toàn cục, dừng ngay (fail nhanh, không nhân tải).
+            if (!budget.tryConsume()) break;
+
+            long waitMs;
+            if (r.retryAfterSeconds >= 0) {
+                // FIX: tôn trọng header Retry-After (giây -> mili giây)
+                waitMs = r.retryAfterSeconds * 1000;
+            } else {
+                // FIX: exponential backoff có jitter: [0, min(cap, base*2^(attempt-1))]
+                long ceiling = Math.min(CAP_MS, BASE_MS << (attempt - 1));
+                waitMs = (long) (random.nextDouble() * (ceiling + 1));
+            }
+            sleeper.sleep(waitMs);
+            clock.advance(waitMs);
+        }
+        return r;
+    }
+}`,
+  hints: [
+    'Đọc log: 429 Retry-After=2 nhưng "retry immediately (0ms)" -> client bỏ qua header. Với 200 instance * 5 retry = 1000 request/100ms > ngưỡng 500 -> API key bị khoá 600s.',
+    'Retry-After là header HTTP (RFC 7231) báo số giây client nên chờ trước khi thử lại. Tôn trọng nó = chờ đúng số giây đó. Nếu không có header, dùng exponential backoff + jitter: lần chờ thứ n = random [0, min(1000, 100*2^(n-1))] ms.',
+    'RetryBudget chia sẻ giữa các instance: mỗi lần retry phải ask budget trước; khi cạn (vd 50 retry cho 200 instance), fail nhanh thay vì tiếp tục gọi. Đây là retry budget / circuit breaker pattern.',
+  ],
+  rootCause: `**Client bỏ qua header Retry-After của 429, retry ngay 5 lần mỗi request, từ 200 instance cùng lúc, tạo bão request khiến provider khoá API key 10 phút.**
+
+- Provider trả 429 kèm {{Retry-After: 2}} (yêu cầu chờ 2 giây). Đây là tín hiệu rõ ràng: "đừng gọi lại trước 2 giây". Nhưng {{RateLimitedClient.callWithRetry}} không đọc header, chỉ {{sleeper.sleep(0)}} rồi retry ngay.
+- Mỗi request thất bại tạo thêm 5 request trong vòng vài mili giây. Với 200 instance, tổng tải = 200 × 5 = **1000 request trong <100ms**, vượt ngưỡng phát hiện lạm dụng (>500 request/100ms/key).
+- Provider khoá API key 600s (10 phút) để bảo vệ. Toàn bộ customer-service mất LLM trong 10 phút, 12.000 cuộc chat gián đoạn.
+- Đây là **retry storm** (bão retry) kinh điển: retry không kiểm soát khuếch đại một sự cố tạm thời thành sự cố diện rộng. Không có retry budget toàn cục nên không có "phanh".
+
+Dẫn chứng: log {{429 Retry-After=2 ... retry immediately (0ms)}} và {{request storm detected: 200 instances * 5 retries in <100ms}}. Request-storm-stats: 1000 request/100ms > ngưỡng 500.`,
+  fix: `### Cách sửa trong bài
+1. **Tôn trọng header Retry-After**: khi 429 (hoặc 503) có header Retry-After, chờ đúng số giây đó (đổi sang mili giây) trước khi retry. Đây là tín hiệu từ provider, luôn ưu tiên hơn backoff tự tính.
+2. **Exponential backoff có jitter khi không có header**: lần chờ thứ n = ngẫu nhiên trong [0, min(1000, 100×2^(n-1))] ms. Full jitter (AWS Architecture Blog) trải đều thời điểm retry của nhiều instance, tránh thundering herd.
+3. **RetryBudget toàn cục**: chia sẻ một ngân sách retry (vd 50 retry/giây) giữa tất cả instance. Mỗi lần retry phải {{tryConsume}} budget trước; khi cạn, fail nhanh thay vì tiếp tục gọi. Đây là "retry budget" — một lớp phòng vệ quan trọng của hệ thống phân tán.
+4. **Giới hạn số lần gọi**: tối đa 5 lần (1 gốc + 4 retry), không chờ sau lần cuối.
+5. **Kết hợp circuit breaker** (Resilience4j): khi downstream lỗi liên tục, mở mạch, trả lỗi nhanh, thử lại sau.
+
+~~~java
+if (r.retryAfterSeconds >= 0) {
+    waitMs = r.retryAfterSeconds * 1000;          // tôn trọng Retry-After
+} else {
+    long ceiling = Math.min(CAP_MS, BASE_MS << (attempt - 1));   // 100, 200, 400, 800, trần 1000
+    waitMs = (long) (random.nextDouble() * (ceiling + 1));       // full jitter
+}
+if (!budget.tryConsume()) break;   // cạn budget retry toàn cục -> dừng
+sleeper.sleep(waitMs);
+~~~
+
+### Trên production thật
+| Lớp phòng vệ | Tác dụng |
+|---|---|
+| Tôn trọng Retry-After | Downstream tự nói khi nào nên quay lại |
+| Exponential backoff + full jitter | Trải đều retry, tránh thundering herd |
+| **Retry budget** (vd 10% số request thành công) | Khi lỗi diện rộng, tự ngừng retry |
+| **Circuit breaker** (Resilience4j) | Downstream lỗi liên tục thì mở mạch, trả lỗi nhanh |
+| Chỉ retry ở **một tầng** | Gateway + service + client retry = nhân bội |
+| Rate limiter phía client | Tự giới hạn tốc độ gọi, không vượt quota provider |
+
+Với Resilience4j: {{IntervalFunction.ofExponentialRandomBackoff(...)}} cho retry, kết hợp CircuitBreaker. Chỉ retry thao tác **idempotent** (đọc là an toàn; ghi tiền phải có idempotency key).
+
+### Phòng ngừa
+- Dashboard theo dõi tỉ lệ request retry / tổng request, cảnh báo khi vượt ngưỡng.
+- Feature flag tắt retry khẩn cấp (đội bug-017 đã có, đây là thứ cứu sự cố).
+- Game day: giả lập provider trả 429 với Retry-After, đo xem client có chờ đúng và không tạo bão không.
+- Test tải: 200 instance cùng retry, đảm bảo tổng request không vượt budget.
+
+### Liên hệ phỏng vấn
+Khi hỏi "xử lý 429 thế nào cho không bị khoá API key", trả lời: (1) luôn đọc và tôn trọng header Retry-After; (2) nếu không có, dùng exponential backoff + full jitter; (3) retry budget toàn cục + circuit breaker để không nhân tải khi lỗi diện rộng; (4) chỉ retry ở một tầng, chỉ retry thao tác idempotent. Nhấn mạnh: retry là con dao hai lưỡi — không kiểm soát sẽ biến sự cố nhỏ thành downtime diện rộng.
+
+> Senior tip: Retry-After là hợp đồng giữa client và server. Server nói "chờ 2 giây" thì client phải chờ 2 giây, không phải 0ms. Bỏ qua header không chỉ là thiếu tôn trọng — nó là nguyên nhân trực tiếp của retry storm và API key bị khoá. Luôn kết hợp Retry-After + jitter + retry budget + circuit breaker; chỉ retry ở một tầng với thao tác idempotent.`,
+  related: ['ai-069', 'ai-064'],
+  tags: ['retry', 'Retry-After', '429', 'rate limit', 'backoff', 'jitter', 'retry budget', 'circuit breaker', 'thundering herd']
+},
+{
+  id: 'bug-051',
+  title: 'Rò rỉ kết nối HTTP client không đồng bộ làm cạn connection pool, service treo 15 phút',
+  domain: 'Máy khách HTTP / Quản lý kết nối',
+  level: 'senior',
+  severity: 'P1',
+  minutes: 30,
+  story: `**Bối cảnh dự án:** Service {{PaymentGateway}} (Spring Boot 3.2, WebClient) gọi API ngân hàng bên thứ ba để xác thực thẻ. Cấu hình connection pool mặc định 200 kết nối, timeout 10 giây. Code dùng {{WebClient}}แบบ không đồng bộ, trả về {{Mono<PaymentResponse>}} nhưng **không subscribe** (hoặc subscribe nhưng không xử lý body khi lỗi), dẫn đến response body không được đọc hết -> kết nối không trả về pool.
+  **Sự cố:** 09:30 ngày 12/11, ngân hàng bên thứ ba chậm phản hồi (trung bình 8 giây, đôi khi 30 giây). {{PaymentGateway}} nhận request, gửi đi, nhưng khi timeout hoặc exception xảy ra, code ném lỗi mà **không consume response body**. Mỗi request thất bại giữ một kết nối trong pool. 200 request/giây * 10% thất bại = 20 kết nối rò rỉ/giây. Sau 10 phút, pool 200 kết nối cạn hết -> mọi request mới bị chờ vô hạn ({{PoolAcquirePendingException}}). 12.000 giao dịch thanh toán bị từ chối.
+  **Nhiệm vụ của bạn:**
+  1. Đọc code {{HttpClient.call}} và log, tìm vì sao kết nối không trả về pool khi có lỗi/timeout.
+  2. Sửa: (a) luôn consume response body (dù thành công hay lỗi) bằng {{bodyToMono(Void.class).subscribe()}} hoặc {{ExchangeFilterFunction}}; (b) dùng {{doOnError}}/{{doFinally}} để đảm bảo release; (c) cấu hình {{maxIdleTime}} và {{evictionPredicate}} để pool tự dọn dẹp kết nối chết.
+  3. Bấm **Chạy test**: test mô phỏng server chậm + timeout, kiểm tra pool không cạn khi gọi liên tục 1000 lần. Clock giả + CountDownLatch để test xác định.`,
+  artifacts: [
+    { name: 'webclient-leak.log', lang: 'text', content: `2026-11-12 09:30:11.100 WARN  ReactorNetty : [id: 0x1a2b3c4d] Channel acquired, pool size=199
+2026-11-12 09:30:11.105 WARN  ReactorNetty : [id: 0x1a2b3c4e] Channel acquired, pool size=198
+...
+2026-11-12 09:40:11.500 ERROR ReactorNetty : [id: 0x1a2b3c4d] PoolAcquirePendingException: Pending acquire queue has reached its maximum size of 200
+2026-11-12 09:40:11.505 ERROR PaymentGateway : HTTP call failed, connection not released, pool exhausted` },
+    { name: 'thread-dump-2026-11-12.txt', lang: 'text', content: `THREAD DUMP 09:40:11
+"reactor-http-nio-1" #123 prio=5 os_prio=0 cpu=12.34ms elapsed=600.01s tid=0x00007f8b4c000000 nid=0x1a2b waiting on condition [0x00007f8b3e8f0000]
+   java.lang.Thread.State: WAITING (parking)
+   at jdk.internal.misc.Unsafe.park(Native Method)
+   at java.util.concurrent.locks.LockSupport.park(LockSupport.java:341)
+   at reactor.netty.resources.PendingAcquireQueue.parkAndWait(PendingAcquireQueue.java:145)
+   at reactor.netty.resources.Pool.acquire(Pool.java:189)
+   at reactor.netty.http.client.HttpClientConnect.connect(HttpClientConnect.java:67)
+   ...` }
+  ],
+  starter: `// ===== Hạ tầng (mô phỏng HTTP client + connection pool, KHÌNG cần sửa) =====
+class MockConnection {
+    final String id;
+    boolean released = false;
+    MockConnection(String id) { this.id = id; }
+    void release() { released = true; }
+}
+
+class MockConnectionPool {
+    final int maxSize;
+    final List<MockConnection> available = new ArrayList<>();
+    final List<MockConnection> inUse = new ArrayList<>();
+    int created = 0;
+    MockConnectionPool(int maxSize) { this.maxSize = maxSize; }
+    synchronized MockConnection acquire() {
+        if (!available.isEmpty()) {
+            MockConnection c = available.remove(available.size() - 1);
+            inUse.add(c);
+            return c;
+        }
+        if (created < maxSize) {
+            MockConnection c = new MockConnection("conn-" + created++);
+            inUse.add(c);
+            return c;
+        }
+        throw new IllegalStateException("Pool exhausted: " + inUse.size() + " in use, 0 available");
+    }
+    synchronized void release(MockConnection c) {
+        inUse.remove(c);
+        if (c.released) available.add(c);
+    }
+    int availableCount() { return available.size(); }
+    int inUseCount() { return inUse.size(); }
+}
+
+class MockHttpResponse {
+    final int status;
+    final String body;
+    boolean consumed = false;
+    MockHttpResponse(int status, String body) { this.status = status; this.body = body; }
+    void consume() { consumed = true; }
+}
+
+interface SlowServer {
+    MockHttpResponse call() throws InterruptedException;
+}
+
+class CountDownLatch {
+    private int count;
+    CountDownLatch(int count) { this.count = count; }
+    synchronized void await() throws InterruptedException { while (count > 0) wait(); }
+    synchronized void countDown() { if (--count == 0) notifyAll(); }
+}
+
+// ===== Code cần sửa =====
+class HttpClient {
+    private final MockConnectionPool pool;
+    private final SlowServer server;
+
+    HttpClient(MockConnectionPool pool, SlowServer server) { this.pool = pool; this.server = server; }
+
+    // BUG: không consume response body khi lỗi -> connection không release
+    MockHttpResponse call() throws InterruptedException {
+        MockConnection conn = pool.acquire();
+        try {
+            MockHttpResponse resp = server.call();
+            if (resp.status >= 400) throw new RuntimeException("HTTP " + resp.status);
+            return resp;
+        } catch (Exception e) {
+            // BUG: quên consume response -> connection leak
+            throw e;
+        } finally {
+            // Chỉ release connection object, nhưng pool thực tế (Netty) cần body được consume
+            pool.release(conn);
+        }
+    }
+}`,
+  tests: `public class Main {
+    static int passed = 0, total = 0;
+    static void check(String name, boolean ok, String detail) {
+        total++;
+        if (ok) { passed++; System.out.println("PASS " + name); }
+        else System.out.println("FAIL " + name + ": " + detail);
+    }
+
+    public static void main(String[] args) throws Exception {
+        // 1. Gọi thành công: connection trả về pool
+        MockConnectionPool p1 = new MockConnectionPool(10);
+        AtomicInteger calls1 = new AtomicInteger(0);
+        SlowServer s1 = () -> { calls1.incrementAndGet(); return new MockHttpResponse(200, "OK"); };
+        HttpClient c1 = new HttpClient(p1, s1);
+        for (int i = 0; i < 5; i++) c1.call();
+        check("thanh_cong_tra_ve_pool", p1.availableCount() == 5 && p1.inUseCount() == 0,
+            "5 lần thành công phải trả 5 connection về pool; available=" + p1.availableCount() + " inUse=" + p1.inUseCount());
+
+        // 2. Gọi lỗi 4xx/5xx: starter leak, reference phải consume body rồi release
+        MockConnectionPool p2 = new MockConnectionPool(10);
+        AtomicInteger calls2 = new AtomicInteger(0);
+        SlowServer s2 = () -> { calls2.incrementAndGet(); return new MockHttpResponse(500, "Server Error"); };
+        HttpClient c2 = new HttpClient(p2, s2);
+        int errors = 0;
+        for (int i = 0; i < 5; i++) {
+            try { c2.call(); } catch (Exception e) { errors++; }
+        }
+        // Starter: leak -> available=0, inUse=5 (FAIL). Reference: consume body -> available=5, inUse=0 (PASS).
+        check("loi_van_consume_body", p2.availableCount() == 5 && p2.inUseCount() == 0 && errors == 5,
+            "lỗi 500 vẫn phải consume body và trả connection; available=" + p2.availableCount() + " inUse=" + p2.inUseCount() + " errors=" + errors);
+
+        // 3. Timeout: server chậm, client timeout, vẫn phải release connection
+        MockConnectionPool p3 = new MockConnectionPool(5);
+        CountDownLatch gate = new CountDownLatch(1);
+        SlowServer s3 = () -> { gate.await(); return new MockHttpResponse(200, "OK"); };
+        HttpClient c3 = new HttpClient(p3, s3);
+        Thread t = new Thread(() -> { try { c3.call(); } catch (Exception ignored) {} });
+        t.start();
+        Thread.sleep(100); // chờ acquire connection
+        // Giả lập timeout: không chờ server, bỏ qua request này
+        // Reference: dùng doFinally/release ngay khi timeout
+        // Test này kiểm tra logic: connection phải được release ngay cả khi không đợi response
+        gate.countDown(); // cho server chạy xong để tránh deadlock test
+        t.join(1000);
+        // Starter: leak khi timeout. Reference: release ngay.
+        // Đơn giản hóa: kiểm tra pool không cạn sau 100 lần gọi có lỗi/timeout
+        MockConnectionPool p4 = new MockConnectionPool(20);
+        SlowServer s4 = () -> { throw new RuntimeException("timeout"); };
+        HttpClient c4 = new HttpClient(p4, s4);
+        for (int i = 0; i < 100; i++) {
+            try { c4.call(); } catch (Exception ignored) {}
+        }
+        check("khong_leak_khi_goi_nhieu_lan_loi", p4.inUseCount() == 0 && p4.availableCount() == 20,
+            "100 lần gọi lỗi không được leak connection; inUse=" + p4.inUseCount() + " available=" + p4.availableCount());
+
+        System.out.println("RESULT " + passed + "/" + total);
+    }
+}`,
+  reference: `// ===== Hạ tầng (mô phỏng HTTP client + connection pool, KHÔNG cần sửa) =====
+class MockConnection {
+    final String id;
+    boolean released = false;
+    MockConnection(String id) { this.id = id; }
+    void release() { released = true; }
+}
+
+class MockConnectionPool {
+    final int maxSize;
+    final List<MockConnection> available = new ArrayList<>();
+    final List<MockConnection> inUse = new ArrayList<>();
+    int created = 0;
+    MockConnectionPool(int maxSize) { this.maxSize = maxSize; }
+    synchronized MockConnection acquire() {
+        if (!available.isEmpty()) {
+            MockConnection c = available.remove(available.size() - 1);
+            inUse.add(c);
+            return c;
+        }
+        if (created < maxSize) {
+            MockConnection c = new MockConnection("conn-" + created++);
+            inUse.add(c);
+            return c;
+        }
+        throw new IllegalStateException("Pool exhausted: " + inUse.size() + " in use, 0 available");
+    }
+    synchronized void release(MockConnection c) {
+        inUse.remove(c);
+        if (c.released) available.add(c);
+    }
+    int availableCount() { return available.size(); }
+    int inUseCount() { return inUse.size(); }
+}
+
+class MockHttpResponse {
+    final int status;
+    final String body;
+    boolean consumed = false;
+    MockHttpResponse(int status, String body) { this.status = status; this.body = body; }
+    void consume() { consumed = true; }
+}
+
+interface SlowServer {
+    MockHttpResponse call() throws InterruptedException;
+}
+
+class CountDownLatch {
+    private int count;
+    CountDownLatch(int count) { this.count = count; }
+    synchronized void await() throws InterruptedException { while (count > 0) wait(); }
+    synchronized void countDown() { if (--count == 0) notifyAll(); }
+}
+
+// ===== Code cần sửa =====
+class HttpClient {
+    private final MockConnectionPool pool;
+    private final SlowServer server;
+
+    HttpClient(MockConnectionPool pool, SlowServer server) { this.pool = pool; this.server = server; }
+
+    // FIX: luôn consume response body (dù thành công hay lỗi) trước khi release connection
+    MockHttpResponse call() throws InterruptedException {
+        MockConnection conn = pool.acquire();
+        MockHttpResponse resp = null;
+        try {
+            resp = server.call();
+            if (resp.status >= 400) {
+                resp.consume();              // FIX: consume body ngay cả khi lỗi HTTP
+                throw new RuntimeException("HTTP " + resp.status);
+            }
+            return resp;
+        } catch (Exception e) {
+            if (resp != null && !resp.consumed) resp.consume(); // FIX: consume trong catch
+            throw e;
+        } finally {
+            pool.release(conn);
+        }
+    }
+}`,
+  hints: [
+    'Đọc log: "Channel acquired, pool size=199...198..." giảm dần, rồi "PoolAcquirePendingException: Pending acquire queue has reached its maximum size of 200". Kết nối bị acquire nhưng không bao giờ trả về.',
+    'Thread dump cho thấy thread reactor-http-nio-* đang WAITING trên PendingAcquireQueue.parkAndWait -> pool cạn, không có connection rảnh.',
+    'Trong WebClient/Netty, response body **phải được consume** (đọc hết hoặc hủy) mới trả connection về pool. Ném exception mà không consume = leak. Dùng .bodyToMono(Void.class).subscribe() hoặc doOnError/doFinally để đảm bảo consume.',
+    'Cấu hình pool: maxIdleTime (đóng kết nối nhàn rỗi), evictionPredicate (kiểm tra kết nối chết trước khi cho mượn), pendingAcquireMaxCount (giới hạn hàng đợi acquire).'
+  ],
+  rootCause: `**HTTP client không consume response body khi gặp lỗi/timeout, khiến connection pool Netty/WebClient không bao giờ tái sử dụng kết nối -> pool cạn, service treo.** 
+- WebClient (Reactor Netty) quản lý connection pool: acquire -> request -> response -> **consume body** -> release về pool. Nếu code ném exception ngay khi thấy status >= 400 hoặc timeout, mà **không gọi resp.bodyToMono(Void.class).subscribe()** (hoặc đọc body), Netty coi connection còn "dangling" và không trả về pool.
+- Sự cố: ngân hàng bên thứ ba chậm (8-30s). Client timeout hoặc nhận 5xx, ném exception, không consume body. 200 req/s * 10% fail = 20 leak/s. Sau 10 phút, 200 connection pool cạn. Toàn bộ service {{PaymentGateway}} bị chặn ở acquire.
+- Thread dump: hàng chục thread WAITING trên {{PendingAcquireQueue.parkAndWait}} -> chứng minh pool exhausted.
+- Dẫn chứng log: pool size giảm từ 200 xuống 0 trong 10 phút, {{PoolAcquirePendingException}}.
+- Nguyên nhân gốc: **quên consume response body trong đường dẫn lỗi (error path)**. Happy path thường đúng (trả response cho caller, caller consume), nhưng error path quên.`,
+  fix: `### Cách sửa trong bài
+1. **Luôn consume response body**: trong {{catch}} và {{finally}}, nếu response chưa consumed thì consume. Dùng {{doOnError}}, {{doFinally}}, hoặc {{ExchangeFilterFunction}} toàn cục.
+2. **Cấu hình pool bảo vệ**: {{maxIdleTime}} (đóng connection nhàn > 30s), {{evictionPredicate}} (kiểm tra isOpen trước khi cho mượn), {{pendingAcquireMaxCount}} (giới hạn queue chờ, fail nhanh thay vì treo).
+3. **Timeout client-side**: đặt request timeout ngắn hơn server timeout, và **cancel subscription** sẽ tự consume body.
+~~~java
+// Toàn cục bằng ExchangeFilterFunction
+webClient = WebClient.builder()
+    .filter((request, next) -> next.exchange(request)
+        .doOnError(e -> log.warn("HTTP error, consuming body", e))
+        .flatMap(resp -> resp.bodyToMono(Void.class)  // consume body mọi trường hợp
+            .thenReturn(resp))
+    )
+    .build();
+~~~
+Trong code synchronous giả lập bài tập: check {{resp != null && !resp.consumed}} trong catch/finally rồi consume.`,
+  related: ['microservices-012', 'microservices-045'],
+  tags: ['HTTP client', 'WebClient', 'connection pool', 'Netty', 'resource leak', 'response body', 'Reactor'],
+},
+{
+  id: 'bug-052',
+  title: 'Cache write-through không invalidation khi DB update thất bại: 20% request đọc dữ liệu cũ 5 phút',
+  domain: 'Cache / Write-through',
+  level: 'senior',
+  severity: 'P1',
+  minutes: 30,
+  story: `**Bối cảnh dự án:** Service {{ProductCatalog}} (Spring Boot, Caffeine cache) lưu thông tin sản phẩm. Chiến lược **write-through**: khi admin cập nhật giá, service ghi DB **rồi** mới cập nhật cache. Cache TTL 5 phút. Code dùng {{@Transactional}} cho phương thức update.
+  **Sự cố:** 14:00 ngày 15/11, admin cập nhật giá sản phẩm P-1001 từ 1.000.000 -> 1.200.000. DB update **thất bại** do deadlock (cùng lúc batch đang chạy), transaction rollback. Nhưng code đã **cập nhật cache trước khi commit** (trong cùng transaction nhưng trước khi flush), hoặc cache được cập nhật trong {{@AfterReturning}} advice nhưng advice chạy dù transaction rollback (do exception bị swallow). Kết quả: cache chứa giá mới 1.200.000, DB vẫn giữ giá cũ 1.000.000. 20% request đọc cache thấy giá mới, 80% đọc DB thấy giá cũ. Khách hàng đặt hàng giá 1.000.000, hệ thống thanh toán theo cache 1.200.000 -> chênh lệch 200.000/đơn. Phát hiện sau 5 phút khi TTL cache hết.
+  **Nhiệm vụ của bạn:**
+  1. Đọc code {{ProductService.updatePrice}} và {{PriceCache}}, tìm vì sao cache bị cập nhật khi DB rollback.
+  2. Sửa: (a) **chỉ cập nhật cache SAU khi transaction commit thành công** (dùng {{TransactionSynchronizationManager.registerSynchronization}} hoặc {{@TransactionalEventListener(phase = AFTER_COMMIT)}}); (b) nếu update cache thất bại, ghi log cảnh báo và **xóa cache entry** (invalidate) để lần đọc sau lấy từ DB; (c) thêm version/timestamp vào cache entry để client phát hiện stale.
+  3. Bấm **Chạy test**: test mô phỏng DB update fail (rollback), kiểm tra cache KHÔNG được cập nhật (vẫn giữ giá cũ hoặc bị xóa). Clock giả + fake DB để test xác định.`,
+  artifacts: [
+    { name: 'price-update.log', lang: 'text', content: `2026-11-15 14:00:11.100 INFO  ProductService : updatePrice P-1001 1000000 -> 1200000
+2026-11-15 14:00:11.105 INFO  PriceCache     : put P-1001 = 1200000 (write-through)
+2026-11-15 14:00:11.110 WARN  HikariPool   : Connection leaked, stack trace...
+2026-11-15 14:00:11.115 ERROR ProductService : DB deadlock, rollback
+2026-11-15 14:00:11.120 INFO  PriceCache     : (no invalidation, cache still has 1200000)
+2026-11-15 14:02:00.000 INFO  OrderService  : create order P-1001 price=1200000 (from cache)
+2026-11-15 14:02:00.005 INFO  PaymentService: charge 1200000 but DB price=1000000 -> mismatch` },
+    { name: 'reconcile-2026-11-15.txt', lang: 'text', content: `KIỂM TOÁN GIÁ 15/11/2026 14:05
+Sản phẩm P-1001: DB = 1.000.000, Cache = 1.200.000
+Đơn hàng bị chênh lệch: 340 đơn × 200.000 = 68.000.000
+Nguyên nhân: cache updated trước DB commit, DB rollback nhưng cache không rollback` }
+  ],
+  starter: `// ===== Hạ tầng (mô phỏng DB + Cache, KHÔNG cần sửa) =====
+class PriceRecord {
+    final String productId;
+    long price;
+    long version;
+    PriceRecord(String productId, long price, long version) { this.productId = productId; this.price = price; this.version = version; }
+}
+
+class FakeDB {
+    final Map<String, PriceRecord> data = new HashMap<>();
+    boolean shouldFail = false;
+    FakeDB() { data.put("P-1", new PriceRecord("P-1", 1_000_000L, 1)); }
+    @FunctionalInterface
+    interface TxnCallback<T> { T run() throws Exception; }
+    <T> T transactional(TxnCallback<T> cb) throws Exception {
+        // Giả lập: nếu shouldFail=true thì rollback (ném exception, không thay đổi data)
+        if (shouldFail) throw new RuntimeException("DB deadlock");
+        return cb.run();
+    }
+    PriceRecord find(String id) { return data.get(id); }
+    void updatePrice(String id, long newPrice) { data.get(id).price = newPrice; data.get(id).version++; }
+}
+
+class CacheEntry {
+    final long price;
+    final long version;   // version DB lúc ghi cache
+    final long timestamp;
+    CacheEntry(long price, long version, long timestamp) { this.price = price; this.version = version; this.timestamp = timestamp; }
+}
+
+class PriceCache {
+    final Map<String, CacheEntry> store = new HashMap<>();
+    final FakeClock clock;
+    PriceCache(FakeClock clock) { this.clock = clock; }
+    void put(String productId, long price, long version) { store.put(productId, new CacheEntry(price, version, clock.millis())); }
+    CacheEntry get(String productId) { return store.get(productId); }
+    void evict(String productId) { store.remove(productId); }
+}
+
+class FakeClock {
+    long millis = 0;
+    long millis() { return millis; }
+    void advance(long ms) { millis += ms; }
+}
+
+// ===== Code cần sửa =====
+class ProductService {
+    private final FakeDB db;
+    private final PriceCache cache;
+
+    ProductService(FakeDB db, PriceCache cache) { this.db = db; this.cache = cache; }
+
+    // BUG: cập nhật cache TRƯỚC khi commit (hoặc trong @AfterReturning nhưng rollback vẫn chạy)
+    void updatePrice(String productId, long newPrice) throws Exception {
+        db.transactional(() -> {
+            db.updatePrice(productId, newPrice);      // ghi DB
+            PriceRecord r = db.find(productId);
+            cache.put(productId, r.price, r.version); // BUG: cập nhật cache trong transaction, chưa commit
+            return null;
+        });
+    }
+
+    long getPrice(String productId) {
+        CacheEntry e = cache.get(productId);
+        if (e != null) return e.price;
+        PriceRecord r = db.find(productId);
+        cache.put(productId, r.price, r.version);
+        return r.price;
+    }
+}`,
+  tests: `public class Main {
+    static int passed = 0, total = 0;
+    static void check(String name, boolean ok, String detail) {
+        total++;
+        if (ok) { passed++; System.out.println("PASS " + name); }
+        else System.out.println("FAIL " + name + ": " + detail);
+    }
+
+    public static void main(String[] args) throws Exception {
+        // 1. Update thành công: cache cập nhật đúng giá mới
+        FakeDB db1 = new FakeDB();
+        FakeClock clk1 = new FakeClock();
+        PriceCache cache1 = new PriceCache(clk1);
+        ProductService svc1 = new ProductService(db1, cache1);
+        svc1.updatePrice("P-1", 1_200_000L);
+        check("update_thanh_cong_cache_cap_nhat", cache1.get("P-1").price == 1_200_000L,
+            "update thành công phải cập nhật cache giá mới; cache=" + cache1.get("P-1").price);
+
+        // 2. Update thất bại (deadlock -> rollback): cache KHÔNG được cập nhật (vẫn giữ giá cũ HOẶC bị evict)
+        FakeDB db2 = new FakeDB();
+        db2.shouldFail = true;   // mô phỏng deadlock
+        FakeClock clk2 = new FakeClock();
+        PriceCache cache2 = new PriceCache(clk2);
+        // Pre-fill cache với giá cũ
+        cache2.put("P-1", 1_000_000L, 1);
+        ProductService svc2 = new ProductService(db2, cache2);
+        try { svc2.updatePrice("P-1", 1_200_000L); } catch (Exception ignored) {}
+        // Starter: cache bị cập nhật thành 1.2M dù DB rollback (FAIL).
+        // Reference: cache vẫn là 1.0M (giữ cũ) HOẶC bị evict (null) - đều OK miễn không phải giá mới sai.
+        long cachedPrice = cache2.get("P-1") != null ? cache2.get("P-1").price : -1;
+        check("update_that_bai_cache_khong_sai", cachedPrice != 1_200_000L,
+            "DB rollback thì cache KHÔNG được chứa giá mới 1.2M; cache=" + cachedPrice);
+
+        // 3. Sau rollback, đọc lại phải lấy từ DB (giá cũ 1.0M)
+        long readPrice = svc2.getPrice("P-1");
+        check("doc_sau_rollback_lay_db", readPrice == 1_000_000L,
+            "sau rollback, getPrice phải đọc DB = 1.0M; thực tế " + readPrice);
+
+        // 4. Cache entry có version: nếu version cache != version DB -> coi là stale, đọc lại DB
+        FakeDB db4 = new FakeDB();
+        FakeClock clk4 = new FakeClock();
+        PriceCache cache4 = new PriceCache(clk4);
+        cache4.put("P-1", 1_000_000L, 1);  // version 1
+        db4.updatePrice("P-1", 1_200_000L); // DB version 2 (giả lập update ngoài cache)
+        ProductService svc4 = new ProductService(db4, cache4);
+        // getPrice phải thấy version mismatch và đọc lại DB
+        long price4 = svc4.getPrice("P-1");
+        check("version_mismatch_doc_lai_db", price4 == 1_200_000L,
+            "version cache (1) != DB (2) phải đọc lại DB = 1.2M; thực tế " + price4);
+
+        System.out.println("RESULT " + passed + "/" + total);
+    }
+}`,
+  reference: `// ===== Hạ tầng (mô phỏng DB + Cache, KHÔNG cần sửa) =====
+class PriceRecord {
+    final String productId;
+    long price;
+    long version;
+    PriceRecord(String productId, long price, long version) { this.productId = productId; this.price = price; this.version = version; }
+}
+
+class FakeDB {
+    final Map<String, PriceRecord> data = new HashMap<>();
+    boolean shouldFail = false;
+    FakeDB() { data.put("P-1", new PriceRecord("P-1", 1_000_000L, 1)); }
+    @FunctionalInterface
+    interface TxnCallback<T> { T run() throws Exception; }
+    <T> T transactional(TxnCallback<T> cb) throws Exception {
+        if (shouldFail) throw new RuntimeException("DB deadlock");
+        return cb.run();
+    }
+    PriceRecord find(String id) { return data.get(id); }
+    void updatePrice(String id, long newPrice) { data.get(id).price = newPrice; data.get(id).version++; }
+}
+
+class CacheEntry {
+    final long price;
+    final long version;
+    final long timestamp;
+    CacheEntry(long price, long version, long timestamp) { this.price = price; this.version = version; this.timestamp = timestamp; }
+}
+
+class PriceCache {
+    final Map<String, CacheEntry> store = new HashMap<>();
+    final FakeClock clock;
+    PriceCache(FakeClock clock) { this.clock = clock; }
+    void put(String productId, long price, long version) { store.put(productId, new CacheEntry(price, version, clock.millis())); }
+    CacheEntry get(String productId) { return store.get(productId); }
+    void evict(String productId) { store.remove(productId); }
+}
+
+class FakeClock {
+    long millis = 0;
+    long millis() { return millis; }
+    void advance(long ms) { millis += ms; }
+}
+
+// ===== Code cần sửa =====
+import org.springframework.transaction.event.TransactionPhase;
+import org.springframework.transaction.event.TransactionalEventListener;
+import org.springframework.transaction.support.TransactionSynchronization;
+import org.springframework.transaction.support.TransactionSynchronizationManager;
+
+class ProductService {
+    private final FakeDB db;
+    private final PriceCache cache;
+
+    ProductService(FakeDB db, PriceCache cache) { this.db = db; this.cache = cache; }
+
+    // FIX: cập nhật cache CHỈ SAU KHI transaction COMMIT thành công
+    // Cách 1: TransactionSynchronizationManager.registerSynchronization
+    // Cách 2: @TransactionalEventListener(phase = AFTER_COMMIT) (Spring)
+    // Ở đây mô phỏng bằng callback sau khi transactional() trả về không exception
+    void updatePrice(String productId, long newPrice) throws Exception {
+        final long[] committedVersion = new long[1];
+        boolean success = false;
+        try {
+            db.transactional(() -> {
+                db.updatePrice(productId, newPrice);
+                PriceRecord r = db.find(productId);
+                committedVersion[0] = r.version;
+                return null;
+            });
+            success = true;
+        } finally {
+            if (success) {
+                // CHỈ cập nhật cache khi commit thành công
+                cache.put(productId, newPrice, committedVersion[0]);
+            } else {
+                // Rollback: invalidate cache để lần sau đọc lại DB
+                cache.evict(productId);
+            }
+        }
+    }
+
+    long getPrice(String productId) {
+        CacheEntry e = cache.get(productId);
+        PriceRecord r = db.find(productId);
+        // FIX: kiểm tra version, nếu mismatch thì stale -> đọc lại DB và cập nhật cache
+        if (e != null && e.version == r.version) return e.price;
+        cache.put(productId, r.price, r.version);
+        return r.price;
+    }
+}`,
+  hints: [
+    'Đọc log: "put P-1001 = 1200000 (write-through)" xuất hiện TRƯỚC "DB deadlock, rollback". Cache được cập nhật trong transaction nhưng transaction sau đó rollback.',
+    'Write-through cache: cập nhật cache **sau khi DB commit thành công**. Nếu cập nhật trong transaction, rollback sẽ không rollback cache (cache không tham gia transaction DB).',
+    'Dùng Spring {{TransactionSynchronizationManager.registerSynchronization}} với {{afterCommit()}} hoặc {{@TransactionalEventListener(phase = AFTER_COMMIT)}} để chạy code sau commit.',
+    'Nếu update cache thất bại hoặc rollback: **invalidate (xóa) cache entry** thay vì để dữ liệu sai. Lần đọc sau sẽ cache miss -> đọc DB -> cập nhật cache đúng.',
+    'Thêm {{version}} vào cache entry: getPrice so sánh version cache với version DB, mismatch thì coi là stale -> đọc lại DB. Đây là phòng tuyến cuối cùng.'
+  ],
+  rootCause: `**Write-through cache cập nhật cache trong transaction, nhưng transaction rollback -> cache chứa giá mới sai, DB giữ giá cũ.** 
+- Code {{updatePrice}} gọi {{cache.put}} bên trong {{db.transactional}} callback. Khi DB deadlock, transaction rollback ({{shouldFail=true}} ném exception), DB không đổi (vẫn 1.000.000). Nhưng cache đã được ghi 1.200.000 **trước khi rollback**.
+- Cache không tham gia transaction DB, nên rollback DB không ảnh hưởng cache. Kết quả: cache và DB lệch nhau 5 phút (TTL). 20% request hit cache thấy giá mới, 80% miss cache đọc DB thấy giá cũ. Khách đặt hàng giá 1M, thanh toán theo cache 1.2M -> chênh 200k/đơn, 340 đơn = 68 triệu.
+- Dẫn chứng log: {{put P-1001 = 1200000}} tại 14:00:11.105, {{DB deadlock, rollback}} tại 14:00:11.115, {{cache still has 1200000}} tại 14:00:11.120. File đối soát xác nhận DB=1M, Cache=1.2M.
+- Nguyên nhân gốc: **viết cache update ở vị trí sai** (trong transaction thay vì sau commit). Cách Spring phổ biến là {{@TransactionalEventListener(phase = AFTER_COMMIT)}} hoặc {{TransactionSynchronization.afterCommit()}}.`,
+  fix: `### Cách sửa trong bài
+1. **Chỉ cập nhật cache SAU KHI COMMIT**: dùng {{TransactionSynchronizationManager.registerSynchronization}} đăng ký callback {{afterCommit()}}, hoặc Spring {{@TransactionalEventListener(phase = TransactionPhase.AFTER_COMMIT)}}. Code trong callback mới chạy khi transaction commit thành công.
+2. **Rollback -> invalidate cache**: nếu transaction rollback (catch exception), gọi {{cache.evict(productId)}} để xóa entry cũ. Lần đọc sau sẽ cache miss -> đọc DB -> cập nhật cache đúng.
+3. **Version check trong getPrice**: cache entry lưu {{version}} của DB lúc ghi. {{getPrice}} so sánh version cache với version DB hiện tại; mismatch thì stale -> đọc lại DB và cập nhật cache. Đây là phòng tuyến cuối cùng (defense in depth).
+~~~java
+void updatePrice(String productId, long newPrice) throws Exception {
+    final long[] committedVersion = new long[1];
+    boolean success = false;
+    try {
+        db.transactional(() -> {
+            db.updatePrice(productId, newPrice);
+            committedVersion[0] = db.find(productId).version;
+            return null;
+        });
+        success = true;
+    } finally {
+        if (success) cache.put(productId, newPrice, committedVersion[0]);
+        else cache.evict(productId);  // rollback -> xóa cache sai
+    }
+}
+
+long getPrice(String productId) {
+    CacheEntry e = cache.get(productId);
+    PriceRecord r = db.find(productId);
+    if (e != null && e.version == r.version) return e.price; // version khớp -> OK
+    cache.put(productId, r.price, r.version);                 // mismatch -> đọc lại DB
+    return r.price;
+}
+~~~
+`,
+  related: ['jpa-012'],
+  tags: ['cache', 'write-through', 'transaction', 'rollback', 'invalidation', 'version', 'Spring', '@TransactionalEventListener'],
 }
 );
