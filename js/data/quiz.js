@@ -11212,6 +11212,240 @@ class V {
 Rollback không phải viên đạn bạc: với DB thật dùng chung và test đi qua nhiều tầng (server riêng, message queue), hãy kết hợp dọn dẹp tường minh ({{@Sql}}, truncate theo class) và dữ liệu định danh riêng.
 
 > Senior tip: nguyên tắc vàng của integration test là **"mỗi test tự dựng bối cảnh của nó"** (self-contained). Khi một test đỏ chỉ vì test khác đã chạy trước, đó là lỗi thiết kế test, không phải lỗi may rủi — hãy cô lập dữ liệu trước khi tăng sleep hay retry.`
-}
+},
+  {
+    id: 'qz-scenario-021',
+    topic: 'scenario',
+    q: 'API đặt hàng p99 nhảy từ 200 ms lên 8 giây đột ngột. Metric CPU và memory của pod vẫn bình thường. Bước điều tra đầu tiên đúng là gì?',
+    options: [
+      'Restart pod ngay để khôi phục nhanh',
+      'Kiểm tra DB connection pool và slow query log',
+      'Tăng số replica pod',
+      'Bật debug log toàn bộ ứng dụng'
+    ],
+    answer: 1,
+    explain: `**Đáp án đúng: Kiểm tra DB connection pool và slow query log.**
+
+### Vì sao đúng
+Khi CPU/memory bình thường nhưng latency tăng mạnh, rất thường nguyên nhân là **I/O chờ**: DB connection pool cạn, lock table, hoặc một query chậm mới xuất hiện (plan regress, thiếu index). Kiểm tra pool (Hikari active/idle/pending) và slow query là bước rẻ nhất, ít rủi ro nhất, và cho dữ liệu trực tiếp.
+
+### Vì sao các phương án khác sai
+- **Restart pod**: xóa triệu chứng tạm thời, mất dấu vết điều tra; nếu nguyên nhân ở DB thì pod mới vẫn chậm.
+- **Tăng replica**: thêm tài nguyên vào hệ thống đang nghẽn I/O không giải quyết nguyên nhân.
+- **Bật debug log**: tăng overhead và rác log khi đang sự cố; làm sau khi đã khoanh vùng.
+
+> Senior tip: nguyên tắc "đo trước, sửa sau" — snapshot metric (pool, DB wait, GC) trước khi làm bất cứ điều gì có thể phá bằng chứng.`
+  },
+  {
+    id: 'qz-scenario-022',
+    topic: 'scenario',
+    multi: true,
+    q: 'Log lỗi {{HikariPool-1 - Connection is not available, request timed out after 30000ms}} xuất hiện liên tục. Chọn 2 nguyên nhân/thao tác đúng đầu tiên (Chọn 2).',
+    options: [
+      'DB đang lock table hoặc transaction giữ connection quá lâu',
+      'Pool size quá nhỏ so với lưu lượng',
+      'Tăng connectionTimeout lên 60s để hết lỗi',
+      'Kiểm tra thread dump xem thread nào đang giữ connection',
+      'Restart DB ngay'
+    ],
+    answer: [0, 3],
+    explain: `**Đáp án đúng: DB đang lock table/transaction giữ connection quá lâu · Kiểm tra thread dump xem thread nào đang giữ connection.**
+
+### Vì sao đúng
+Lỗi này nghĩa là app **đợi connection từ pool quá lâu**. Hai nguyên nhân phổ biến: (1) connection bị giữ lâu do transaction/lock chưa commit; (2) có thread bị kẹt trong query. Thread dump ({{jstack}}) cho thấy thread nào đang {{getConnection}}/query và đang giữ lock gì; kết hợp với DB lock view ({{pg_locks}}) xác định culprit.
+
+### Vì sao các phương án khác sai
+- **Pool size quá nhỏ**: có thể là nguyên nhân thứ yếu, nhưng tăng pool mà không giải quyết lock chỉ làm DB quá tải hơn.
+- **Tăng connectionTimeout**: che lỗi, làm request treo lâu hơn, tăng rủi ro cascade.
+- **Restart DB**: phá toàn bộ traffic, mất dữ liệu điều tra; chỉ làm khi đã cô lập và cần khôi phục khẩn.
+
+> Senior tip: {{maximumPoolSize}} nên tính theo công thức Hikari: connections = ((core_count * 2) + effective_spindle_count); pool lớn không đồng nghĩa throughput cao.`
+  },
+  {
+    id: 'qz-scenario-023',
+    topic: 'scenario',
+    q: 'Consumer Kafka lag tăng từ 0 lên 2 triệu trong 10 phút sau deploy mới. Bước nào đúng đầu tiên?',
+    options: [
+      'Tăng số partition topic',
+      'Rollback deploy và kiểm tra log consumer mới',
+      'Tăng max.poll.records lên 10000',
+      'Restart toàn bộ consumer group'
+    ],
+    answer: 1,
+    explain: `**Đáp án đúng: Rollback deploy và kiểm tra log consumer mới.**
+
+### Vì sao đúng
+Lag tăng **đột ngột sau deploy** → nguyên nhân khả năng cao là code mới (xử lý chậm hơn, exception bị nuốt, hoặc poll loop bị block). Rollback nhanh để khôi phục SLA, đồng thời đọc log consumer mới để tìm nguyên nhân gốc (exception, slow DB call, GC pause).
+
+### Vì sao các phương án khác sai
+- **Tăng partition**: không tăng throughput consumer ngay lập tức (cần rebalance, và consumer count phải đủ); không giải quyết code chậm.
+- **Tăng max.poll.records**: xử lý nhiều record mỗi poll có thể gây timeout poll và rebalance lặp; không phải fix gốc.
+- **Restart consumer group**: mất offset progress tracking, có thể gây duplicate; không giải quyết nếu code mới chậm.
+
+> Senior tip: đặt alert lag theo **tốc độ tăng** (rate of change) chứ không chỉ ngưỡng tuyệt đối, để phát hiện sớm hơn.`
+  },
+  {
+    id: 'qz-scenario-024',
+    topic: 'scenario',
+    q: 'Sau deploy, heap usage tăng liên tục và OOM sau 2 giờ. GC log cho thấy Full GC không thu hồi được memory. Điều tra đầu tiên là gì?',
+    options: [
+      'Tăng -Xmx gấp đôi',
+      'Chụp heap dump và phân tích retained size theo dominator tree',
+      'Tắt cache để giảm memory',
+      'Restart định kỳ mỗi giờ'
+    ],
+    answer: 1,
+    explain: `**Đáp án đúng: Chụp heap dump và phân tích retained size theo dominator tree.**
+
+### Vì sao đúng
+Full GC không thu hồi memory → **memory leak** (object bị giữ reference). Heap dump ({{jmap -dump}} hoặc {{-XX:+HeapDumpOnOutOfMemoryError}}) + phân tích dominator tree (Eclipse MAT) cho thấy object nào giữ bao nhiêu memory và qua path nào. Đây là cách duy nhất xác định gốc rễ.
+
+### Vì sao các phương án khác sai
+- **Tăng -Xmx**: chỉ trì hoãn OOM, không sửa leak; còn che vấn đề.
+- **Tắt cache**: có thể giảm memory nhưng mất hiệu năng; không xác định leak thật.
+- **Restart định kỳ**: workaround vận hành, không phải giải pháp kỹ thuật; dễ bị quên và gây downtime.
+
+> Senior tip: bật {{-XX:+HeapDumpOnOutOfMemoryError -XX:HeapDumpPath=...}} từ đầu trong production để luôn có bằng chứng khi OOM.`
+  },
+  {
+    id: 'qz-scenario-025',
+    topic: 'scenario',
+    multi: true,
+    q: 'Cache stampede: key hot hết hạn, 1000 request cùng lúc tràn vào DB. Chọn 2 biện pháp đúng (Chọn 2).',
+    options: [
+      'Dùng lock/mutex để chỉ 1 request rebuild cache',
+      'Dùng probabilistic early expiration (PER) để rebuild trước khi hết hạn',
+      'Tắt cache hoàn toàn',
+      'Tăng TTL lên 1 ngày cho mọi key',
+      'Đặt DB connection pool lớn hơn'
+    ],
+    answer: [0, 1],
+    explain: `**Đáp án đúng: Dùng lock/mutex để chỉ 1 request rebuild cache · Dùng probabilistic early expiration (PER) để rebuild trước khi hết hạn.**
+
+### Vì sao đúng
+Cache stampede (thundering herd) xảy ra khi nhiều request cùng miss cache. **Single-flight lock** đảm bảo chỉ 1 request rebuild, các request khác chờ hoặc trả stale. **PER** rebuild cache trước khi TTL hết hạn dựa trên xác suất, tránh hết hạn đồng thời.
+
+### Vì sao các phương án khác sai
+- **Tắt cache**: làm DB chịu toàn bộ tải → tệ hơn.
+- **Tăng TTL 1 ngày**: làm dữ liệu stale lâu, không giải quyết stampede khi hết hạn.
+- **Pool lớn hơn**: DB vẫn bị 1000 query đồng thời; chỉ làm chậm hơn.
+
+> Senior tip: kết hợp stale-while-revalidate: trả dữ liệu cũ ngay, rebuild async — UX tốt và bảo vệ DB.`
+  },
+  {
+    id: 'qz-scenario-026',
+    topic: 'scenario',
+    q: 'Một downstream service trả 503. Client có retry không backoff. Hiện tượng retry storm làm service càng quá tải. Bước xử lý đúng đầu tiên ở client là gì?',
+    options: [
+      'Tăng số thread pool client',
+      'Thêm exponential backoff + jitter và circuit breaker',
+      'Retry ngay lập tức với số lần lớn hơn',
+      'Tắt health check'
+    ],
+    answer: 1,
+    explain: `**Đáp án đúng: Thêm exponential backoff + jitter và circuit breaker.**
+
+### Vì sao đúng
+Retry storm = retry đồng thời amplification. **Exponential backoff + jitter** rải retry ra thời gian, giảm peak. **Circuit breaker** ngừng gọi khi downstream đang fail, cho nó thời gian hồi phục và bảo vệ thread pool client.
+
+### Vì sao các phương án khác sai
+- **Tăng thread pool**: thêm fuel vào fire; downstream càng quá tải.
+- **Retry ngay với số lớn hơn**: amplification tệ hơn.
+- **Tắt health check**: mất khả năng phát hiện phục hồi, không giải quyết storm.
+
+> Senior tip: phân biệt retryable (503, timeout) vs non-retryable (400, 404); chỉ retry lỗi transient.`
+  },
+  {
+    id: 'qz-scenario-027',
+    topic: 'scenario',
+    q: 'JFR recording cho thấy method {{OrderService.calculateDiscount}} chiếm 60% CPU. Profiling flame graph xác nhận. Bước tiếp theo hợp lý nhất?',
+    options: [
+      'Tăng CPU limit pod',
+      'Tối ưu algorithm trong method đó (cache, giảm complexity)',
+      'Chuyển method sang async',
+      'Thêm index DB'
+    ],
+    answer: 1,
+    explain: `**Đáp án đúng: Tối ưu algorithm trong method đó (cache, giảm complexity).**
+
+### Vì sao đúng
+Flame graph đã xác định hot method consuming 60% CPU → **compute bottleneck**, không phải I/O. Tối ưu thuật toán (memoization, giảm độ phức tạp, tránh object churn) giải quyết gốc. Tăng CPU chỉ trì hoãn.
+
+### Vì sao các phương án khác sai
+- **Tăng CPU limit**: giảm triệu chứng, không sửa gốc; chi phí cao.
+- **Chuyển async**: không giảm tổng CPU work; có thể thêm overhead scheduling.
+- **Thêm index DB**: không liên quan nếu method là pure computation (đã xác nhận flame graph).
+
+> Senior tip: luôn xác nhận hot path bằng profiler trước khi tối ưu; đừng đoán.`
+  },
+  {
+    id: 'qz-scenario-028',
+    topic: 'scenario',
+    q: 'Một API trả 200 nhưng dữ liệu sai (stale). Cache Redis đang phục vụ dữ liệu cũ. Nguyên nhân đầu tiên cần kiểm tra là gì?',
+    options: [
+      'TTL cache quá ngắn',
+      'Cache invalidation không được gọi khi update DB',
+      'Redis cluster failover',
+      'Network latency cao'
+    ],
+    answer: 1,
+    explain: `**Đáp án đúng: Cache invalidation không được gọi khi update DB.**
+
+### Vì sao đúng
+Dữ liệu stale = cache không đồng bộ với DB. Nguyên nhân kinh điển: update DB thành công nhưng **không delete/refresh cache key** (hoặc invalidation thất bại). Kiểm tra code path update: có gọi cache.evict không, có transaction ordering issue không.
+
+### Vì sao các phương án khác sai
+- **TTL quá ngắn**: sẽ gây cache miss nhiều, không gây stale.
+- **Redis failover**: thường gây error/timeout, không phải stale silently.
+- **Network latency**: ảnh hưởng thời gian, không nội dung.
+
+> Senior tip: dùng cache-aside với invalidation tường minh; cân nhắc outbox pattern để đảm bảo invalidation đáng tin cậy.`
+  },
+  {
+    id: 'qz-scenario-029',
+    topic: 'scenario',
+    q: 'Pod bị OOMKilled mặc dù heap usage trong app chỉ 50% -Xmx. Nguyên nhân khả dĩ nhất là gì?',
+    options: [
+      'Memory leak trong heap',
+      'Native/off-heap memory (DirectByteBuffer, thread stack, Metaspace) vượt container limit',
+      'GC pause quá dài',
+      'CPU throttling'
+    ],
+    answer: 1,
+    explain: `**Đáp án đúng: Native/off-heap memory (DirectByteBuffer, thread stack, Metaspace) vượt container limit.**
+
+### Vì sao đúng
+Container limit áp dụng cho **RSS tổng** (heap + off-heap). Heap chỉ 50% -Xmx nhưng native memory (Netty DirectByteBuffer, thread stack mỗi thread ~1MB, Metaspace, JNI) có thể đẩy RSS vượt limit → OOMKilled. Cần đo RSS vs heap và rà off-heap.
+
+### Vì sao các phương án khác sai
+- **Memory leak heap**: sẽ thấy heap tăng liên tục; không khớp "heap chỉ 50%".
+- **GC pause**: gây latency, không OOMKilled.
+- **CPU throttling**: gây chậm, không OOM.
+
+> Senior tip: set container memory limit = heap + 20-30% headroom cho native; monitor RSS riêng.`
+  },
+  {
+    id: 'qz-scenario-030',
+    topic: 'scenario',
+    q: 'Một batch job xử lý 1 triệu bản ghi, chạy 4 giờ, rồi fail ở bản ghi 999999 do constraint violation. Cách thiết kế đúng là gì?',
+    options: [
+      'Chạy lại từ đầu và hy vọng không gặp lỗi',
+      'Chia thành chunk nhỏ, idempotent, lưu checkpoint offset để resume',
+      'Tăng transaction timeout lên 4 giờ',
+      'Bỏ qua bản ghi lỗi và tiếp tục'
+    ],
+    answer: 1,
+    explain: `**Đáp án đúng: Chia thành chunk nhỏ, idempotent, lưu checkpoint offset để resume.**
+
+### Vì sao đúng
+Batch lớn phải **resumable và idempotent**: xử lý theo chunk, lưu offset/checkpoint, nếu fail thì resume từ checkpoint. Idempotency đảm bảo retry không tạo duplicate. Đây là pattern chuẩn (Spring Batch chunk-oriented).
+
+### Vì sao các phương án khác sai
+- **Chạy lại từ đầu**: lãng phí 4 giờ; có thể fail lại ở cùng chỗ.
+- **Tăng transaction timeout**: transaction 4 giờ giữ lock/undo quá lâu, rủi ro cao; không giải quyết lỗi dữ liệu.
+- **Bỏ qua bản ghi lỗi**: mất dữ liệu, vi phạm integrity; phải xử lý lỗi tường minh (DLQ).
+
+> Senior tip: thiết kế batch theo "at-least-once + idempotent" và có dead-letter queue cho bản ghi lỗi.`
+  },
 
 );
