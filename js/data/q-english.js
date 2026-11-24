@@ -12423,6 +12423,280 @@ Imagine a team editing a shared Google Sheet. Person A changes a cell. Person B 
       "english"
   ],
   lang: 'en',
+},
+
+{
+  id: 'english-243',
+  topic: 'english',
+  level: 'senior',
+  q: 'Explain how a Java HashMap works internally, and tell me when you would choose a different Map implementation instead.',
+  a: `**Tóm tắt:** HashMap là một bảng băm (hash table) lưu trên mảng các bucket; tra cứu trung bình O(1) nhờ hàm băm và chỉ số mảng là lũy thừa của hai. Không nên dùng HashMap khi cần thứ tự chèn (dùng LinkedHashMap), khi cần sắp xếp khóa (dùng TreeMap), hoặc khi nhiều luồng ghi đồng thời (dùng ConcurrentHashMap).
+
+### Cơ chế bên trong và VÌ SAO
+Bước 1: Băm khóa. Java gọi hashCode của khóa, sau đó dùng spread function — phép XOR các bit cao vào bit thấp — để các bit cao không bị lãng khi mảng nhỏ.
+Bước 2: Tính chỉ số bucket. index = hash AND (length minus one). Vì capacity luôn là lũy thừa của hai, phép AND này rẻ hơn phép modulo, nên tra cứu là O(1).
+Bước 3: Vào bucket. Java so sánh khóa bằng equals. Nếu hai khóa khác có cùng hash (xung đột), chúng được chứa trong cùng một bucket.
+Bước 4: Xử lý xung đột. Java 8 trở lên dùng danh sách liên kết; khi một bucket đạt tám entries và bảng có ít nhất sáu mươi bốn bucket, bucket đó chuyển thành cây đỏ đen, nên tra cứu giảm xuống O(log n) thay vì O(n).
+Bước 5: Resize. Load factor mặc định là 0.75, nên khi bảng đầy bảy mươi lăm phần trăm, capacity gấp đôi và mọi entry được phân bổ lại.
+
+### Khi nào KHÔNG nên dùng HashMap (bảng trade-off)
+| Map | Tra cứu trung bình | Thứ tự | Ghi đa luồng | Khi dùng |
+| HashMap | O(1) | Không | Không | Tra cứu nhanh, dùng chung |
+| LinkedHashMap | O(1) | Chèn hoặc truy cập | Không | Giữ thứ tự chèn, LRU cache |
+| TreeMap | O(log n) | Sắp xếp theo khóa | Không | Truy vấn phạm vi, sắp xếp khóa |
+| ConcurrentHashMap | O(1) | Không | Có (mạnh) | Bộ nhớ đệm chia sẻ, đếm lượt truy cập |
+
+~~~java
+import java.util.*;
+public class MapChoiceDemo {
+  public static void main(String[] args) {
+    // Đếm từ: không cần thứ tự -> HashMap
+    Map<String, Integer> count = new HashMap<>();
+    count.put("order", count.getOrDefault("order", 0) + 1);
+
+    // Ghi nhiều luồng cùng lúc -> ConcurrentHashMap
+    Map<String, Integer> hits = new ConcurrentHashMap<>();
+    hits.merge("api", 1, Integer::sum);
+  }
+}
+~~~
+
+### Pitfall trên production
+HashMap không an toàn luồng. Chia HashMap giữa nhiều luồng có thể mất entry hoặc, trên Java 7, làm vòng lặp vô hạn trong khi resize. Trên Java 8 vẫn không an toàn luồng, nên không được dùng làm bộ nhớ đệm chia sẻ giữa các luồng.
+
+### Ví dụ đời thực
+Hệ thống thanh toán đếm số lần lỗi theo mã lỗi. Ban đầu dùng HashMap trong service chạy nhiều luồng -> đôi khi thiếu dữ liệu, callback bỏ lỡ khoảng 3% giao dịch không được ghi lỗi. Chuyển sang ConcurrentHashMap với computeIfAbsent -> đếm chính xác 100%, không khóa toàn bộ bảng. Dữ liệu: từ 3% thiếu dữ liệu xuống 0%, p99 của phép đếm không đổi.
+
+### Sample answer
+A HashMap is a hash table backed by an array of buckets. When you call put, Java hashes the key, mixes the high bits into the low bits with a spread function, and computes the bucket index as hash AND (length minus one). Because capacity is always a power of two, that AND is a cheap modulo - that is the O(1) path. Collisions are stored in a linked list inside the bucket, and since Java 8 a bucket with eight entries or more becomes a red-black tree, so lookup degrades to O(log n) instead of O(n). At seventy-five percent full, load factor zero point seven five, the table doubles in size.
+
+I would not choose HashMap when I need insertion order - then LinkedHashMap; when I need keys sorted - then TreeMap; or when multiple threads write concurrently - then ConcurrentHashMap. HashMap is not thread-safe, so sharing it across threads can silently lose entries.
+
+### Useful phrases
+- hash table bảng băm: cấu trúc dữ liệu ánh xạ khóa đến giá trị bằng hàm băm
+- bucket: thùng chứa các entry cùng chỉ số mảng
+- collision xung đột: hai khóa khác rơi vào cùng một bucket
+- load factor zero point seven five: ngưỡng bảy mươi lăm phần trăm trước khi gấp đôi bảng
+- red-black tree: cây nhị phân tìm kiếm cân bằng, tra cứu O(log n)
+- thread-safe an toàn luồng: nhiều luồng truy cập cùng lúc mà không hỏng dữ liệu
+
+### Lỗi người Việt hay mắc
+- Nói O(1) luôn luôn: HashMap trung bình O(1), nhưng worst case O(n) nếu mọi khóa cùng hash và không Comparable.
+- Phát âm bucket: /ˈbʌkɪt/, không phải "búc-két".
+- Quên rằng HashMap không đồng bộ: dùng trong multi-thread cần ConcurrentHashMap hoặc Collections.synchronizedMap.
+- Dùng TreeMap chỉ để tra cứu: TreeMap chậm hơn O(log n) và đòi khóa Comparable, chỉ dùng khi cần sắp xếp.
+- Nhầm load factor với capacity: load factor 0.75 là ngưỡng tải, capacity là kích thước mảng.
+
+> Senior tip: Đừng chỉ nói "HashMap dùng hashCode để tìm index" — phải nhắc spread function và power of two, đây là chốt điểm O(1). Cũng không nhầm load factor với capacity. Khi phỏng vấn, hãy nêu ví dụ thực tế (LRU cache, truy vấn phạm vi, bộ nhớ đệm đa luồng) để chứng minh bạn biết chọn công cụ đúng, không chỉ đáp lý thuyết.
+`,
+  follow: [
+    'What happens if two keys have the same hashCode but are not equal?',
+    'Why is the initial capacity of a HashMap usually not set exactly to the expected size?',
+    'How does ConcurrentHashMap differ from HashMap internally?'
+  ],
+  tags: ['java', 'collections', 'hashmap', 'interview'],
+  lang: 'en',
+},
+
+{
+  id: 'english-244',
+  topic: 'english',
+  level: 'lead',
+  q: 'Describe your current system architecture in two minutes, as if I were a non-technical stakeholder.',
+  a: `**Tóm tắt:** Nói theo mạch: vấn đề kinh doanh → thành phần chính và luồng request đơn giản → dữ liệu và hạ tầng → con số quy mô → một trade-off bạn trực tiếp chịu trách nhiệm. Dùng phép so sánh đời thường, tránh thuật ngữ, kết bằng khuyến nghị rõ ràng. Mục tiêu là stakeholder hiểu hệ thống làm gì, tại sao thiết kế như vậy, rủi ro lớn nhất là gì trong 2 phút.
+
+### Cấu trúc câu trả lời (4 phần, mỗi phần 30 giây)
+1. Vấn đề kinh doanh: hệ thống giải quyết gì, ai sử dụng.
+2. Thành phần và luồng: request đi từ đâu đến đâu, dùng phép so sánh (API gateway là cổng bảo vệ).
+3. Dữ liệu và hạ tầng: PostgreSQL lưu trạng thái, Redis cache, QPS và p99, số service và vùng lưu trữ.
+4. Trade-off và khuyến nghị: một quyết định bạn trực tiếp chịu trách nhiệm và tại sao.
+
+### Lưu ý khi nói với người không kỹ thuật
+- Không dùng thuật ngữ như "partition", "eventual consistency", "idempotency" trừ khi giải thích ngay.
+- Dùng phép so sánh: hệ thống như một siêu thị (khai hàng, kho hàng, giao hàng).
+- Gắn con số thực tế: "khoảng 400 request/giây", "p99 180ms", "hai vùng lưu trữ".
+- Kết bằng một khuyến nghị rõ ràng, không nói "it depends" rồi dừng.
+
+~~~text
+Khách hàng -> API Gateway -> Payment Service -> Kafka -> Orchestrator -> Acquirer
+                                               |                 |
+                                          PostgreSQL          Webhook Email
+~~~
+
+### Bảng so sánh thành phần
+| Thành phần | Vai trò đơn giản | Tại sao chọn |
+| API Gateway | Cổng vào, kiểm tra quyền, giới hạn tốc độ | Bảo vệ các service bên trong |
+| Payment Service | Xác nhận yêu cầu, ghi trạng thái đơn thanh toán | Nơi chứa quy tắc kinh doanh chính |
+| Kafka | Hàng đợi tin nhắn giữa các service | Cho phép xử lý khác lúc, không bị kẹt nếu một service chậm |
+| PostgreSQL | Lưu trạng thái đơn thanh toán (nguồn dữ liệu chính) | Dữ liệu tiền phải chính xác, không bị mất |
+| Redis | Lưu mã duy nhất để không xử lý trùng đơn | Tra cứu cực nhanh, hết hạn sau 24 giờ |
+
+### Pitfall trên production
+Nói quá nhiều thuật ngữ làm stakeholder khó theo dõi; không gắn con số nên không có cảm giác về quy mô; không có khuyến nghị rõ ràng nên người quản lý không biết quyết định gì.
+
+### Ví dụ đời thực
+Dự án cổng thanh toán B2B. Người dùng merchant gọi API để thanh toán, hệ thống chuyển đến một trong các nhà thanh toán acquirer tùy thẻ, tiền tệ, lịch sử thành công. Dữ liệu: khoảng 400 request/giây ở giờ cao điểm, p99 đường xử lý đồng bộ khoảng 180 ms, hệ thống chạy hai vùng lưu trữ availability zones. Phần tôi phụ trách là tầng điều phối orchestrator. Quyết định kiến trúc: mọi thay đổi trạng thái phải idempotent và ghi thêm append-only, vì với tiền không thể tin tưởng vào giao đúng một lần. Điểm đau hiện tại: webhook retry có thể dồn vào một merchant nhỏ sau khi sự cố, chúng tôi đang khắc phục bằng áp lực ngược theo từng merchant. Kết quả: sau khi áp dụng, tỷ lệ lỗi thanh toán giảm từ 1,2% xuống dưới 0,1%.
+
+### Sample answer
+Sure. The product is a B2B payment gateway. A merchant calls our API to charge a customer, and we route that charge to one of several acquirers depending on card network, currency and success-rate history.
+
+Think of it as three layers. The edge is an API gateway, like a reception desk that checks who is calling, applies limits per merchant, and forwards to our payment API. The payment API is the main service: it validates the request, writes a payment record with status pending, and sends an event to Kafka. Downstream, orchestration workers read that event and call the acquirer adapter; each adapter has its own retry and circuit-breaker policy. The result drives webhooks and reconciliation.
+
+Data-wise, PostgreSQL is the source of truth for payment state, Redis holds idempotency keys for twenty-four hours, and we keep an audit trail in S3. We run about four hundred requests per second at peak, p99 of the synchronous path is around 180 milliseconds, and the system runs across two availability zones.
+
+The part I own is the orchestration layer. The key decision was to make every state change idempotent and append-only, because with money you cannot rely on exactly-once delivery. Today our main pain point is webhook retries storming a small merchant after an outage, which we are fixing with per-merchant backpressure.
+
+### Useful phrases
+- at a high level: ở mức tổng quan
+- the source of truth is: nguồn dữ liệu chuẩn là
+- the synchronous path: đường xử lý đồng bộ
+- the main pain point: điểm đau chính
+- per-merchant backpressure: áp lực ngược theo từng merchant
+- we route that charge to: chúng tôi chuyển yêu cầu thanh toán đến
+
+### Lỗi người Việt hay mắc
+- Dùng thuật ngữ chưa giải thích: "eventual consistency", "idempotency" khiến stakeholder khó theo dõi; hãy giải thích ngay hoặc không dùng.
+- Không gắn con số: "hệ thống xử lý nhiều" quá chung; hãy nói "400 request/giây", "p99 180ms".
+- Kết bằng "it depends": stakeholder cần một khuyến nghị rõ ràng, có điều kiện.
+- Nói quá dài, thiếu ưu tiên: 2 phút là ngắn gọn; hãy luyện với đồng hồ.
+- Phát âm availability zone: /əˌveɪləˈbɪləti zoʊn/, nhấn âm "VAIL" và "ZONE".
+
+> Senior tip: Người quản lý không nhớ sơ đồ kiến trúc, họ nhớ câu chuyện và con số. Chuẩn bị sẵn một phép so sánh đời thường và một con số thiệt hại thật cho mỗi quyết định lớn bạn đã đề xuất. Luôn kết bằng "My recommendation is" kèm điều kiện. Nếu stakeholder đã cam kết microservices với ban giám đốc, hãy nói rõ timeline và chi phí thực tế thay vì đối đầu.
+`,
+  follow: [
+    'How do you decide which part of the architecture to change first?',
+    'What would break first if traffic grew ten times?',
+    'How do you explain the cost of a network call to someone who only thinks in money?'
+  ],
+  tags: ['architecture', 'communication', 'stakeholder', 'system-design'],
+  lang: 'en',
+},
+
+{
+  id: 'english-245',
+  topic: 'english',
+  level: 'senior',
+  q: 'What would you do right now if a deployment breaks production?',
+  a: `**Tóm tắt:** Câu này kiểm tra phản xạ và quản lý rủi ro. Mục tiêu: giảm thiệt hại trước, tìm nguyên nhân sau. Các bước: khôi phục (rollback hoặc feature flag) → giao tiếp thường xuyên → điều tra trong môi trường an toàn → sửa và triển khai lại có kiểm soát → phòng ngừa (postmortem, alert, test). Nếu rollback không được, chuyển sang fix-forward hoặc tắt tính năng.
+
+### Xử lý khi deployment làm hỏng production (bước bước qua)
+1. Đánh giá tác động ngay: tỷ lệ lỗi, số giao dịch bị ảnh hưởng, có mất tiền hay dữ liệu không.
+2. Giảm thiệt hại trước: rollback deployment (thường là nhanh nhất), hoặc tắt feature flag, hoặc chuyển traffic về phiên bản cũ. Mục tiêu là hệ thống quay lại ổn định trong vài phút.
+3. Giao tiếp: cập nhật kênh sự cố định kỳ mỗi 5–10 phút, stakeholder và hỗ trợ biết nói gì với khách hàng.
+4. Điều tra an toàn: chỉ dùng lệnh chỉ đọc, không profiling trên mọi node, lấy thread dump, GC log, distributed tracing, deploy timeline.
+5. Sửa và triển khai lại: sửa trên staging, deploy có canary một phần traffic trước khi full rollout.
+6. Phòng ngừa: postmortem, thêm alert trên triệu chứng (p99, tỷ lệ lỗi), thêm test và release checklist.
+
+### Rollback vs fix-forward
+| Tùy chọn | Khi dùng | Rủi ro |
+| Rollback quay lại phiên bản cũ | Lỗi ngay sau deploy, nguyên nhân chưa rõ | Nếu lỗi do dữ liệu hoặc schema mới thì rollback không cứu được |
+| Fix-forward sửa ngay | Rollback không được hoặc lỗi do dữ liệu | Cần kiểm tra kỹ, có thể gây lỗi mới |
+| Tắt feature flag | Tính năng mới gây lỗi | Chỉ tắt được tính năng có cờ |
+
+### Pitfall trên production
+Không rollback vì sợ thất mặt → mất tiền mỗi phút; debug trực tiếp trên production dưới áp lực dễ gây lỗi mới; restart service không hiểu rủi ro.
+
+### Ví dụ đời thực
+Triển khai config mới vào thứ Sáu tối, API thanh toán trả 500 cho khoảng 30% thanh toán thẻ. Khoảng 12.000 giao dịch lỗi trong 20 phút, engineer trực là junior mới vào 3 tháng. Tôi, senior trực, gia nhập chiến phòng, nhận vai trò liên lạc để junior tập trung điều tra, đăng cập nhật mỗi 5 phút. Lỗi bắt đầu ngay sau khi triển khai config, nên tôi quyết định rollback config thay vì debug tiếp — đây là phán đoán rủi ro: rollback mất quy tắc định tuyến mới vài giờ, nhưng rõ ràng an toàn hơn tiếp tục thất bại thanh toán. Rollback mất 4 phút, tỷ lệ lỗi quay lại bình thường. Sau đó replay lại 12.000 giao dịch từ Kafka sáng hôm sau, không merchant nào mất tiền. Nguyên nhân: quy tắc định tuyến mới trùng trường tiền tệ trống. Thêm test validation cho mọi quy tắc và bước canary gửi 1% traffic trong 10 phút trước khi full rollout. Từ đó không còn sự cố liên quan config.
+
+### Sample answer
+My first move is always to stop the bleeding, not to debug. If a deployment breaks production, I would check the error rate and how many transactions are affected, then roll back the release or flip the feature flag off within minutes. Rollback is usually the fastest way to restore normal service, and I would only consider fixing forward if rollback is not possible or the problem is data-related.
+
+While the system recovers, I would post updates in the incident channel every five to ten minutes so support knows what to tell customers. I would take the communication role myself so any junior on call can focus on debugging.
+
+For investigation, I would use read-only commands only - no profiling on every node - and look at the deploy timeline, distributed tracing, and thread dumps. The deploy timeline alone solves a surprising number of incidents. Once I find the root cause, I would fix it on staging, deploy with a canary to a small percentage of traffic, and then roll out fully.
+
+After the fix I would add an alert on the actual symptom, run a postmortem, and add a release checklist item so the same mistake does not happen twice.
+
+### Useful phrases
+- stop the bleeding first: cầm máu trước đã
+- roll back the release: quay lại phiên bản trước
+- flip the feature flag off: tắt cờ tính năng
+- I took the communication role: tôi nhận vai trò liên lạc
+- read-only commands: lệnh chỉ đọc
+- deploy timeline: lịch sử triển khai
+
+### Lỗi người Việt hay mắc
+- Không rollback vì sợ thất mặt: mỗi phút hệ thống lỗi là mất tiền; senior biết khi nào dừng và quay lại.
+- Debug trực tiếp trên production dưới áp lực: dễ gây lỗi mới; chỉ dùng lệnh chỉ đọc.
+- Nói "we" suốt câu: hãy nói "I" cho vai trò của riêng bạn.
+- Thiếu giao tiếp trong sự cố: stakeholder không biết phản hồi khách hàng như thế nào.
+- Alert trên CPU thay vì triệu chứng: alert phải trên p99 latency, tỷ lệ lỗi — thứ khách hàng thấy.
+
+> Senior tip: Điều quan trọng nhất là "I made the call to roll back" — một senior engineer biết khi nào dừng và rollback thay vì debug tiếp khi hệ thống đang mất tiền mỗi phút. Mỗi bước nên có số liệu (số giao dịch lỗi, thời gian khôi phục). Sau sự cố, nêu hành động phòng ngừa cụ thể (postmortem, alert, release checklist) — đó là chi tiết phân biệt người sửa lỗi với người làm hệ thống tốt lên.
+`,
+  follow: [
+    'What would you do if the rollback did not work?',
+    'How do you decide between roll back and fix forward?',
+    'Who else is involved, and how do you divide the work?'
+  ],
+  tags: ['incident', 'deployment', 'production', 'rollback'],
+  lang: 'en',
+},
+
+{
+  id: 'english-246',
+  topic: 'english',
+  level: 'senior',
+  q: 'Tell me about a time you improved the performance of a slow database query.',
+  a: `**Tóm tắt:** Câu hỏi này về tối ưu SQL thực tế. Kể theo STAR: query chậm như thế nào (số liệu), bạn tìm nguyên nhân như thế nào (execution plan, index, thống kê), bạn sửa thế nào (thêm index, viết lại query), kết quả đo được (trước/sau), và bài học. Nếu chưa có câu thật, hãy dùng ví dụ giả định nhưng kèm số liệu rõ ràng.
+
+### Các bước tối ưu một query chậm
+1. Lấy query thực tế: log chậm, ứng dụng log, hoặc chạy lại query với tham số thật.
+2. Xem execution plan: EXPLAIN ANALYZE BUFFERS trên PostgreSQL — xem scan gì (seq scan hay index scan), join loại nào, estimated so actual rows.
+3. Tìm nguyên nhân phổ biến: thiếu index trên cột WHERE/JOIN, index không dùng được (hàm trên cột, LIKE '%x%'), thống kê lỗi thời, join quá nhiều bảng, select *.
+4. Sửa: thêm index phù hợp (B-tree, composite), viết lại query, giới hạn kết quả (LIMIT), phân trang (cursor), phân vùng bảng lớn.
+5. Kiểm tra trước khi deploy: chạy trên dữ liệu gần production, so sánh execution plan và thời gian trước/sau.
+6. Giám sát sau deploy: alert trên p99 latency của query đó.
+
+~~~sql
+-- Truy vấn trước: quét toàn bộ bảng đơn hàng (seq scan)
+SELECT * FROM orders WHERE merchant_id = ? AND created_at > ?;
+
+-- Sau: chỉ quét chỉ mục phù hợp
+CREATE INDEX idx_orders_merchant_created ON orders (merchant_id, created_at DESC);
+SELECT id, total, status FROM orders WHERE merchant_id = ? AND created_at > ? ORDER BY created_at DESC LIMIT 50;
+~~~
+
+### Pitfall trên production
+Thêm index làm chậm ghi (INSERT, UPDATE), tốn thêm dung lượng; EXPLAIN trên dữ liệu nhỏ không phản ánh production; tạo quá nhiều index.
+
+### Ví dụ đời thực
+Hệ thống quản lý đơn hàng, màn hình lọc đơn theo merchant trong 30 ngày gần nhất. Trước khi tối ưu: query lấy hơn 2 triệu dòng, seq scan toàn bộ bảng orders, p99 khoảng 3,2 giây, timeout trên giao diện. Tôi lấy execution plan, thấy không có index trên (merchant_id, created_at). Tạo index composite, viết lại chỉ lấy cột cần thiết và LIMIT 50, phân trang bằng cursor. Sau khi deploy: p99 giảm xuống 120 ms, CPU của database giảm 40% trong đợt cao điểm, giao diện không còn timeout. Dữ liệu: từ 3,2 giây xuống 0,12 giây (gấp khoảng 27 lần nhanh hơn).
+
+### Sample answer
+Last quarter our merchant dashboard was timing out when filtering orders from the last thirty days. The query was scanning more than two million rows in the orders table with a sequential scan, and p99 latency was about three point two seconds.
+
+I reproduced the query with real parameters and ran EXPLAIN ANALYZE. The plan showed a sequential scan over the whole table because there was no index on the filter columns. I also saw we were selecting every column, including a large JSON payload we did not need.
+
+I created a composite index on merchant_id and created_at descending, rewrote the query to select only the columns we needed, added LIMIT 50, and switched to cursor-based pagination. I tested it on a staging copy of production data first: latency dropped from three point two seconds to about one hundred and twenty milliseconds, roughly twenty-five times faster. After deployment, database CPU during peak traffic fell by about forty percent, and the dashboard stopped timing out.
+
+What I learned is to always look at the execution plan before adding hardware, and to test indexes on realistic data volume because a plan that looks fast on a small table can still scan millions of rows in production.
+
+### Useful phrases
+- execution plan: kế hoạch thực thi
+- sequential scan: quét tuần tự toàn bộ bảng
+- composite index: chỉ mục ghép nhiều cột
+- cursor-based pagination: phân trang theo con trỏ
+- p99 latency: độ trễ ở phần trăm thứ chín mươi chín
+- EXPLAIN ANALYZE: lệnh xem kế hoạch và thời gian thực thi thật
+
+### Lỗi người Việt hay mắc
+- Thêm index không xem execution plan: có thể không giúp gì nếu query không dùng index.
+- Quên index làm chậm ghi: mỗi index tăng chi phí INSERT, UPDATE và dùng dung lượng.
+- EXPLAIN trên dữ liệu nhỏ: plan trên staging nhỏ không phản ánh production với triệu dòng.
+- Nói "tăng RAM" ngay: đó là che triệu chứng, không phải nguyên nhân.
+- Chọn index sai thứ tự cột: chỉ mục ghép (merchant_id, created_at) không giúp nếu truy vấn chỉ theo created_at.
+
+> Senior tip: Luôn chạy EXPLAIN ANALYZE trên dữ liệu gần production trước khi khẳng định nguyên nhân. Một chỉ mục ghép đúng thứ tự cột có thể biến query từ ba giây xuống một trăm hai mươi miligiây. Sau khi deploy, hãy alert trên độ trễ thực tế của query (p99) chứ không chỉ CPU tổng thể. Và nhớ: mỗi index mới là một giao dịch đánh đổi giữa đọc nhanh và ghi chậm.
+`,
+  follow: [
+    'How do you know whether an index is actually being used?',
+    'What would you do if adding an index slows down writes too much?',
+    'When would you choose partitioning over indexing?'
+  ],
+  tags: ['sql', 'performance', 'postgresql', 'indexing'],
+  lang: 'en'
 }
 
 );
