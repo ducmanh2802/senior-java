@@ -17727,5 +17727,251 @@ Cùng hệ thống, team lầm bước bật 2LC cho entity {{Account}} (số d�
     'Bạn tắt second-level cache cho entity nào, và khi nào?'
   ],
   tags: ['second-level cache', 'CacheConcurrencyStrategy', 'READ_ONLY', 'READ_WRITE', 'distributed cache', 'stale data', 'bulk insert']
+},
+{
+  id: 'spring-105',
+  topic: 'spring',
+  level: 'lead',
+  q: 'Bạn phát hành một Spring Boot starter nội bộ dùng chung cho 20 service: làm sao để auto-configuration không phá vỡ service nào khi starter lên phiên bản mới — dùng configuration metadata, semantic versioning và cơ chế bật/tắt an toàn thế nào?',
+  a: `**Tóm tắt:** Starter nội bộ là một dependency (jar) gom auto-configuration + default bean + property type-safe để 20 service dùng chung mà không lặp code. Để lên phiên bản mới không phá service nào, cần ba lớp phòng thủ: (1) **condition đúng** — mọi bean mặc định có {{@ConditionalOnMissingBean}}, tính năng mới/rủi ro đặt {{@ConditionalOnProperty}} với {{matchIfMissing=false}}; (2) **configuration metadata** — dùng {{spring-boot-configuration-processor}} sinh {{spring-configuration-metadata.json}} để IDE gợi ý và validate property, đánh dấu {{deprecated}} kèm lý do + property thay thế; (3) **quy trình** — semantic versioning, giữ alias cho property cũ vài bản, phát hành kèm changelog và migration guide.
+
+### Starter gồm những gì
+1. Một jar chứa auto-configuration: class {{@AutoConfiguration}} đăng ký qua file {{META-INF/spring/org.springframework.boot.autoconfigure.AutoConfiguration.imports}}.
+2. Các {{@Bean}} mặc định có điều kiện, cộng {{@ConfigurationProperties}} để bind config type-safe.
+3. Tuỳ chọn: file {{additional-spring-configuration-metadata.json}} mô tả property không đến từ {{@ConfigurationProperties}} (ví dụ property đọc bằng {{@Value}} trong code starter).
+
+### Vì sao auto-config "an toàn" hoặc "phá vỡ" 20 service
+Service không viết config gì cho starter vẫn chạy được nhờ default bean. Khi starter lên bản mới, rủi ro là: (a) bean mới vô tình tạo ra (gọi mạng, mở thread) ở service chưa bật; (b) đổi tên hoặc đổi giá trị property khiến service cũ mất config âm thầm; (c) default cũ bị thay bằng implementation mới đổi hành vi. Vì starter dùng chung, một thay đổi nhỏ nhân 20 lần sự cố → coi starter là **API công khai**.
+
+### Condition: mặc định bật hay tắt
+~~~java
+@AutoConfiguration
+@ConditionalOnClass(RedisClient.class)              // thiếu thư viện thì bỏ qua, không lỗi
+@ConditionalOnProperty(prefix = "acme.cache",
+        name = "enabled", matchIfMissing = false)   // tính năng mới: MẶC ĐỊNH TẮT
+class AcmeCacheAutoConfiguration {
+    @Bean
+    @ConditionalOnMissingBean                        // service tự khai báo thì nhường đường
+    CacheClient cacheClient(AcmeProperties props) {
+        return new CacheClient(props.getUri());
+    }
+}
+~~~
+{{matchIfMissing=false}} cho tính năng mới: 20 service nâng starter vẫn chạy như cũ, chỉ service nào chủ động đặt {{acme.cache.enabled=true}} mới nhận bean mới → rollout theo từng service (canary).
+
+### Configuration metadata: để IDE và CI "nhìn thấy" config
+Thêm dependency ở phạm vi annotation processor:
+~~~text
+annotationProcessor("org.springframework.boot:spring-boot-configuration-processor")
+~~~
+Nó sinh {{META-INF/spring-configuration-metadata.json}} từ các class {{@ConfigurationProperties}}: mỗi field kèm kiểu, default, {{@Min}}/{{@Pattern}}. Nhờ vậy khi gõ {{acme.cache.}} trong {{application.yml}}, IDE autocomplete và báo sai kiểu ngay lúc gõ, không cần chạy app.
+
+Đánh dấu property cũ là deprecated để hướng dẫn migrate:
+~~~json
+{
+  "properties": [
+    { "name": "acme.cache.uri", "type": "java.lang.String" },
+    { "name": "acme.cache.host", "type": "java.lang.String",
+      "deprecation": {
+        "level": "warning",
+        "reason": "Dùng acme.cache.uri",
+        "replacement": "acme.cache.uri"
+      } }
+  ]
+}
+~~~
+Đặt vào {{src/main/resources/META-INF/additional-spring-configuration-metadata.json}}. IDE gạch ngang property cũ; trong {{@ConfigurationProperties}} vẫn giữ {{host}} như alias vài bản rồi mới bỏ.
+
+### Quy trình phát hành
+| Việc | Cách làm |
+|---|---|
+| Semantic version | MAJOR khi đổi/bỏ property; MINOR khi thêm bean/property tương thích |
+| Khử tương thích | Giữ property cũ (alias) + log cảnh báo một lần, bỏ sau ít nhất 1 MAJOR |
+| Tài liệu | CHANGELOG + bảng "property cũ → mới" |
+| Kiểm thử | Mỗi starter có {{ApplicationContextRunner}} test các nhánh bật/tắt/override |
+| Boot version | Khai báo starter build với một Boot 3.x cụ thể; không trộn starter nhiều Boot major |
+
+### Pitfall production
+- Tính năng mới đặt {{matchIfMissing=true}} → 20 service tự dính bean mới (mở kết nối, thread) ngay lần nâng cấp → sự cố diện rộng.
+- Thiếu {{@ConditionalOnMissingBean}} → đè config của service.
+- Đổi tên property mà không giữ alias → service cũ mất config, dùng default sai, không ai biết.
+- Không có metadata → dev gõ sai tên property, chỉ lộ lúc runtime.
+
+### Ví dụ đời thực
+Công ty có {{acme-observability-starter}} dùng chung 20 service. Bản 1.2 thêm bean {{MetricsTee}} mở một kết nối tới collector, đặt {{matchIfMissing=true}}. Sau khi cả 20 service nâng, 6 service không hề cấu hình collector bắt đầu mở kết nối dư → collector quá tải, p99 ingest tăng gấp 3, 2 service chạm {{Too many open files}}. Điều tra: condition report cho thấy {{MetricsTee}} match ở mọi service. Xử lý: đổi sang {{matchIfMissing=false}}, thêm metadata deprecated cho property cũ, phát hành 1.3 kèm migration guide, bật dần từng service. Kết quả: collector ổn định, chỉ 3 service cần tính năng mới bật.
+
+### Trả lời mẫu khi phỏng vấn
+"Starter nội bộ tôi coi là API công khai dùng cho 20 service, nên mọi thay đổi đều nhân 20 lần rủi ro. Auto-configuration đăng ký qua AutoConfiguration.imports; mọi bean mặc định có ConditionalOnMissingBean để service tự override, còn tính năng mới hoặc rủi ro thì đặt ConditionalOnProperty với matchIfMissing=false, để nâng starter không tự bật ở service chưa chủ động. Tôi thêm spring-boot-configuration-processor sinh spring-configuration-metadata.json cho IDE autocomplete và validate; property cũ đánh dấu deprecated kèm replacement và giữ alias vài bản trước khi bỏ. Tôi phát hành theo semantic version, MAJOR khi bỏ property, kèm changelog và bảng migrate, và mỗi starter có test ApplicationContextRunner cho các nhánh bật/tắt/override. Nhờ vậy nâng starter không phá service nào, và một thay đổi xấu bị chặn ở một service trước khi lan ra cả 20."
+
+> Senior tip: coi mỗi starter là sản phẩm có người dùng là 20 team khác. Ba thứ bắt buộc trước khi merge: mặc định bean có ConditionalOnMissingBean, tính năng mới default tắt, và metadata + migration guide. Thiếu một trong ba, hóa đơn sự cố sẽ đến từ service của người khác chứ không phải của bạn.`,
+  follow: [
+    'Vì sao tính năng mới nên đặt matchIfMissing=false còn tính năng cũ ổn định mới matchIfMissing=true?',
+    'spring-configuration-metadata.json sinh ra có lợi gì cho người dùng starter ngoài autocomplete?',
+    'Starter build với Boot 3.2 rồi đem dùng ở service Boot 3.1 thì chuyện gì xảy ra, vì sao không nên trộn?'
+  ],
+  tags: ['Spring Boot', 'auto-configuration', 'starter', 'configuration metadata', 'semantic versioning', 'ConditionalOnProperty', 'ApplicationContextRunner']
+},
+{
+  id: 'spring-106',
+  topic: 'spring',
+  level: 'senior',
+  q: '{{@ConfigurationProperties}} đã có {{@NotNull}}/{{@Min}}, nhưng cần ràng buộc chéo (cross-field: nếu type=HTTP thì url bắt buộc) và ràng buộc theo profile (prod bắt buộc bật TLS) thì validate thế nào cho ra lỗi rõ ràng lúc startup?',
+  a: `**Tóm tắt:** Annotation đặt trên field ({{@NotNull}}, {{@Min}}, {{@Pattern}}) chỉ kiểm tra **từng field một**. Ràng buộc **chéo** ("nếu type=HTTP thì url bắt buộc", "phải có password HOẶC token") không biểu diễn được bằng annotation trên field. Cách làm: ràng buộc chéo dùng **class-level constraint** {{@AssertTrue}} trên một method không tham số trả boolean — Hibernate Validator gọi nó khi {{@ConfigurationProperties}} được validate lúc startup, lỗi hiện trong banner {{Binding to target ... failed}} kèm tên property. Ràng buộc **phụ thuộc môi trường** (prod bắt buộc TLS) không nên nhét vào properties mà kiểm ở một bước khởi tạo riêng ({{ApplicationRunner}} hoặc {{SmartInitializingSingleton}}) đọc {{Environment}}.
+
+### Vì sao annotation trên field không đủ
+- {{@NotNull}} trên {{url}} không biết rằng chỉ khi {{type=HTTP}} url mới bắt buộc → đặt NOT NULL thì lại chặn cả cấu hình hợp lệ khác.
+- "password hoặc token" là điều kiện **giữa các field**: không có field nào sai riêng lẻ để gắn nhãn lỗi.
+
+### Ràng buộc chéo bằng @AssertTrue
+~~~java
+@ConfigurationProperties(prefix = "app.auth")
+@Validated
+public class AuthProperties {
+    private AuthType type = AuthType.NONE;
+    private String password;   // bắt buộc nếu type=PASSWORD
+    private String token;      // bắt buộc nếu type=TOKEN
+
+    @AssertTrue(message = "phải có password khi type=PASSWORD, token khi type=TOKEN")
+    boolean isCredentialPresent() {          // không tham số, trả boolean
+        return switch (type) {
+            case PASSWORD -> password != null && !password.isBlank();
+            case TOKEN    -> token != null && !token.isBlank();
+            case NONE     -> true;
+        };
+    }
+    // getter/setter ...
+}
+~~~
+Khi bind xong, {{@Validated}} khiến Boot chạy Bean Validation trên object; {{@AssertTrue}} là class-level constraint nên validator gọi {{isCredentialPresent()}}. Sai → {{BindValidationException}} → context fail lúc startup, banner in rõ message và prefix {{app.auth}}.
+
+### Ràng buộc theo profile / môi trường
+"Nếu đang ở prod thì bắt buộc TLS, secret không rỗng" phụ thuộc {{Environment}} (profile). Properties nên là **dữ liệu thuần, bất biến**, đừng nhét logic profile vào getter. Kiểm ở bước khởi tạo riêng:
+~~~java
+@Component
+class ProdSecurityCheck implements ApplicationRunner {
+    private final AppProperties props;
+    private final Environment env;
+    ProdSecurityCheck(AppProperties props, Environment env) {
+        this.props = props; this.env = env;
+    }
+    public void run(ApplicationArguments args) {
+        boolean prod = List.of(env.getActiveProfiles()).contains("prod");
+        if (prod && !props.isTlsEnabled()) {
+            throw new IllegalStateException("prod bắt buộc bật TLS"); // fail-fast lúc start
+        }
+    }
+}
+~~~
+{{ApplicationRunner}} chạy sau khi context ready; {{SmartInitializingSingleton}} chạy cuối quá trình tạo singleton. Vì nó ném exception, app không "sống" ở cấu hình không an toàn.
+
+### Record: constructor validate vs @AssertTrue
+- Trong {{record}}, có thể validate chéo ngay trong **compact constructor** (ném {{IllegalArgumentException}}). NHƯNG lỗi này **không** đi qua failure analyzer của Boot: thông báo thô, không có property path, khó cho người trực đêm.
+- {{@AssertTrue}} đi qua Bean Validation nên báo cáo gộp vào {{BindValidationException}} với {{Binding to target ... failed}} và tên property — dễ sửa hơn. Ưu tiên {{@AssertTrue}} cho ràng buộc chéo; constructor chỉ dùng cho bất biến thuần (điều không biểu diễn được bằng annotation).
+
+### Bảng chọn cách
+| Loại ràng buộc | Cách | Kết quả lỗi |
+|---|---|---|
+| Một field (null, min, pattern) | annotation trên field | banner startup, có tên field |
+| Chéo nhiều field | {{@AssertTrue}} method | banner startup, có message |
+| Phụ thuộc profile/env | ApplicationRunner / SmartInitializingSingleton | fail lúc start, thông báo tự viết |
+| Bất biến thuần (vd list không phần tử null) | constructor check | IllegalArgumentException thô |
+
+### Pitfall production
+- {{@AssertTrue}} method phải là method **không tham số, trả boolean**; nếu trả void hoặc có tham số, validator bỏ qua âm thầm.
+- Quên {{@Valid}} trên nested → ràng buộc chéo trong nested không chạy.
+- Nhét logic profile vào getter của properties → properties không còn thuần, getter bị gọi nhiều lần gây side effect.
+- Ném exception trong constructor làm mất property path → khó debug.
+- Validation chỉ chạy lúc **bind** (startup), không tự chạy lại khi property đổi runtime.
+
+### Ví dụ đời thực
+Hệ thống có {{AuthProperties}} với {{type}}, {{password}}, {{token}}. Một deploy prod cấu hình {{type=TOKEN}} nhưng quên {{token}} (chỉ điền {{password}} từ env cũ). Field-level không bắt được vì mỗi field đều "hợp lệ" riêng lẻ → app start OK, mọi request gọi API đối tác trả 401, sự cố kéo dài 1 giờ. Thêm {{@AssertTrue isCredentialPresent()}} + test {{ApplicationContextRunner}}: thiếu {{token}} khi {{type=TOKEN}} → context fail với "phải có password khi type=PASSWORD, token khi type=TOKEN". Lần deploy sau thiếu token app không start, log chỉ đúng chỗ. Thêm {{ProdSecurityCheck}}: prod mà {{tls.enabled=false}} → fail-fast, chặn một cấu hình mất an toàn lọt lên production.
+
+### Trả lời mẫu khi phỏng vấn
+"Annotation trên field chỉ validate từng field riêng lẻ, nên ràng buộc chéo như 'nếu type là PASSWORD thì bắt buộc có password' hay 'phải có password hoặc token' tôi dùng class-level constraint @AssertTrue trên một method trả boolean. Vì ConfigurationProperties có @Validated, lúc bind xong Boot chạy Bean Validation và @AssertTrue được gọi; sai thì context fail lúc startup với banner Binding to target ... failed kèm message và property, dễ cho người trực sửa. Với ràng buộc phụ thuộc môi trường như 'prod bắt buộc bật TLS', tôi không nhét vào properties mà kiểm ở ApplicationRunner hoặc SmartInitializingSingleton đọc Environment, ném IllegalStateException để app không chạy ở cấu hình không an toàn. Tôi tránh validate chéo trong constructor record vì lỗi đó là IllegalArgumentException thô, mất property path; constructor chỉ dùng cho bất biến thuần. Tôi luôn có test ApplicationContextRunner cho cả cấu hình hợp lệ và cấu hình sai bắt buộc."
+
+> Senior tip: hãy phân biệt ba tầng: annotation field cho ràng buộc một field, @AssertTrue cho ràng buộc chéo, và một bước khởi tạo riêng cho ràng buộc theo môi trường. Trộn logic profile vào getter properties là cái bẫy phổ biến nhất, vì getter bị gọi nhiều lần và properties không còn là dữ liệu thuần để test.`,
+  follow: [
+    'Vì sao validate trong constructor record lại cho thông báo lỗi khó đọc hơn @AssertTrue?',
+    'Làm sao test một ràng buộc chéo bằng ApplicationContextRunner mà không dựng cả ứng dụng?',
+    '@Valid trên nested khác @Validated trên class cha thế nào, khi nào validation không lan xuống nested?'
+  ],
+  tags: ['ConfigurationProperties', 'validation', 'AssertTrue', 'cross-field', 'fail-fast', 'ApplicationContextRunner', 'ApplicationRunner']
+},
+{
+  id: 'spring-107',
+  topic: 'spring',
+  level: 'senior',
+  q: 'Bạn đặt tên metric và tag thế nào cho chuẩn với Micrometer/Prometheus (đơn vị giây, hậu tố _total, chấm thành gạch dưới) và dùng MeterFilter để chặn high cardinality tập trung trong một starter dùng chung ra sao?',
+  a: `**Tóm tắt:** Tên metric và tag là một phần của **hợp đồng quan sát** giữa code và hệ thống giám sát. Quy ước Micrometer/Prometheus: tên metric viết bằng **chấm** (namespace), rồi {{PrometheusNamingConvention}} tự đổi thành **gạch dưới**; timer đo bằng **giây** (đơn vị cơ sở), counter có hậu tố **_total**; tag/label viết thường snake_case và chỉ nhận **tập giá trị hữu hạn** (low cardinality). Để cưỡng chế tập trung cho starter dùng chung, đăng ký {{MeterFilter}} qua bean {{MeterRegistryCustomizer}}: {{ignoreTags}} vứt tag nguy hiểm ({{userId}}, {{requestId}}), {{maximumAllowableTags}} chặn số giá trị mỗi tag, {{denyNameStartsWith}} chặn metric rác.
+
+### Cái gì — vì sao tên và tag quan trọng
+- Một **time series** = tên metric + một tổ hợp tag. Tên sai hoặc tag cardinality cao ({{userId}}) làm Prometheus sinh hàng triệu series → OOM, biểu đồ chậm, chi phí tăng vọt.
+- Đổi tên hoặc đơn vị về sau là phá dashboard và alert → phải đúng từ đầu.
+
+### Quy ước đặt tên (Micrometer + Prometheus)
+| Quy tắc | Đúng | Sai |
+|---|---|---|
+| Namespace bằng dấu chấm | {{http.server.requests}} | {{http_server_requests}} ngay trong code |
+| Đơn vị cơ sở (giây, byte) | timer xuất {{_seconds}} | đặt tên {{...Ms}} rồi vẫn ra giây → hiểu nhầm 1000 lần |
+| Counter hậu tố | Micrometer tự thêm {{_total}} | tự thêm {{_total}} vào tên → thành {{..._total_total}} |
+| Tag/label | {{region}}, {{outcome}}, snake_case thường | {{UserId}}, {{user-id}} lẫn lộn |
+| URI dạng mẫu, không ID thật | uri theo route template {{/orders/:id}} | {{uri=/orders/12345}} |
+
+{{PrometheusNamingConvention}} tự đổi {{.}} thành {{_}}, camelCase thành snake_case, thêm đơn vị và hậu tố. Nên trong code cứ dùng tên chấm với {{Timer}}; đừng tự nhúng đơn vị vào tên.
+
+~~~java
+// Counter: ten co chấm, tag it gia tri
+registry.counter("acme.orders.created", "channel", channel).increment();
+// Timer: don vi giay do Micrometer xu ly -> acme_order_processing_seconds_*
+registry.timer("acme.order.processing").record(Duration.ofMillis(d));
+~~~
+
+### Tag: chỉ low cardinality
+- Cho phép: {{region}} (VN/US), {{channel}} (WEB/APP), {{outcome}} (SUCCESS/FAILED), {{method}} (GET/POST) — dưới khoảng 50 giá trị.
+- Cấm trên metric: {{userId}}, {{orderId}}, {{requestId}}, {{sessionId}} — mỗi request một giá trị. Những cái này thuộc về **trace** (span attribute) hoặc log, không phải metric.
+
+### Cưỡng chế tập trung bằng MeterFilter (trong starter)
+~~~java
+@Configuration(proxyBeanMethods = false)
+class MetricsGuard {
+    @Bean
+    MeterRegistryCustomizer<MeterRegistry> guard() {
+        return registry -> registry.config()
+            .commonTags("service", "order-api", "env", "prod")   // tag chung, ít giá trị
+            .meterFilter(MeterFilter.ignoreTags("userId", "requestId", "sessionId"))
+            .meterFilter(MeterFilter.maximumAllowableTags(
+                    "http.server.requests", 100, "status", "method"))
+            .meterFilter(MeterFilter.denyNameStartsWith("acme.debug.")); // chặn metric rác
+    }
+}
+~~~
+- {{ignoreTags}}: tag có tên trong danh sách bị **bỏ khỏi** mọi metric → chặn high cardinality ngay tại app.
+- {{maximumAllowableTags}}: giới hạn số giá trị cho các tag chỉ định ({{status}}, {{method}}).
+- {{commonTags}}: gắn {{service}}/{{env}} cho mọi metric, tránh mỗi service tự gắn lệch tên.
+- Đặt trong bean {{MeterRegistryCustomizer}} của **starter dùng chung** → 20 service thừa hưởng cùng một luật.
+
+### Khi nào dùng và giới hạn
+- {{MeterFilter}} chặn ở **phía app** (giảm heap của chính registry), khác với {{labeldrop}} ở Prometheus chỉ chặn lúc ingest (app vẫn tạo meter nên vẫn tốn heap).
+- Khi vượt trần, {{maximumAllowableTags}} ngừng nhận giá trị mới (hành vi chi tiết tùy bản Micrometer). Hãy coi nó là lớp phòng thủ, không phải công tắc hoàn hảo; vẫn cần review tag trong PR.
+
+### Pitfall production
+- Tự thêm đơn vị vào tên ({{...Ms}}) → Prometheus hiểu là giây, biểu đồ lệch 1000 lần.
+- Tag {{uri}} chứa ID thật → cardinality nổ; phải dùng route template (Spring đã tự template {{uri}} cho {{http.server.requests}}).
+- Đặt {{commonTags}} với giá trị động ({{instance}}, {{pod}}) → lại cardinality cao.
+- Không có test → một PR thêm tag {{userId}} lọt vào, vài giờ sau Prometheus OOM.
+
+### Ví dụ đời thực
+Service dùng chung {{acme-observability-starter}}. Một team thêm tag {{orderId}} vào metric {{order.created}} "cho dễ debug". Sau 2 ngày {{prometheus_tsdb_head_series}} tăng từ 15k lên 900k, chi phí ingest gấp 40 lần, Grafana timeout. Điều tra: mỗi order một series. Xử lý: thêm {{MeterFilter.ignoreTags("orderId")}} vào starter (mọi service), chuyển orderId sang span attribute, thêm test CI khẳng định {{order.created}} không có tag {{orderId}} (dùng {{registry.find("order.created").getId().getTags()}} kiểm tra không có tag {{orderId}}). Cardinality về 18k, và mọi service khác cũng được chặn cùng luật.
+
+### Trả lời mẫu khi phỏng vấn
+"Tên metric và tag là hợp đồng quan sát. Tôi đặt tên theo namespace chấm như http.server.requests hay acme.order.processing, để PrometheusNamingConvention tự đổi thành gạch dưới; dùng đơn vị cơ sở giây cho timer và để Micrometer tự thêm _total cho counter, không tự nhúng đơn vị vào tên vì sẽ lệch 1000 lần. Tag chỉ nhận tập hữu hạn như region, channel, outcome; còn userId hay orderId thì thuộc về trace chứ không phải metric, vì mỗi giá trị là một time series. Để cưỡng chế cho starter dùng chung, tôi đăng ký MeterRegistryCustomizer với MeterFilter: ignoreTags bỏ tag nguy hiểm, maximumAllowableTags giới hạn số giá trị mỗi tag, commonTags gắn service và env. Filter này chặn ở phía app nên giảm cả heap của registry, khác labeldrop chỉ chặn lúc ingest. Tôi thêm test CI khẳng định metric quan trọng không có tag userId, và đo prometheus_tsdb_head_series trước khi merge PR thêm tag."
+
+> Senior tip: tên metric và tag là hợp đồng, đổi là phá dashboard. Trong starter dùng chung tôi chặn cardinality bằng MeterFilter ngay tại app (ignoreTags cho userId/requestId, maximumAllowableTags cho status/method) và gắn commonTags service/env một chỗ duy nhất. Một quy tắc dễ nhớ: nếu giá trị tăng theo số request thì nó thuộc trace, không thuộc metric.`,
+  follow: [
+    'Vì sao MeterFilter ở phía app tốt hơn labeldrop ở Prometheus khi muốn giảm heap của registry?',
+    'Timer Micrometer đo mili giây nhưng Prometheus lại thấy giây — chuyện gì xảy ra và cấu hình ở đâu?',
+    'commonTags đặt instance hoặc pod có làm cardinality tăng không, khi nào chấp nhận được?'
+  ],
+  tags: ['Micrometer', 'metric naming', 'PrometheusNamingConvention', 'MeterFilter', 'cardinality', 'commonTags', 'observability']
 }
 );
