@@ -6759,5 +6759,391 @@ Một ngân hàng có core banking cũ xử lý tối đa 30 TPS. Trong giờ ca
     'Bạn monitor và alert cho integration với core như thế nào?'
   ],
   tags: ['core banking', 'ESB', 'middleware', 'timeout', 'idempotency', 'circuit breaker']
+},
+{
+  id: 'banking-090',
+  topic: 'banking',
+  level: 'senior',
+  q: `Bạn thiết kế quy trình đối soát cuối ngày giữa sổ core và file settlement hàng ngày của NAPAS/đối tác thanh toán như thế nào? Hãy nói rõ chuẩn hóa file, khóa khớp, phân loại break (lệch), xử lý tự động và thủ công, và đặc biệt xử lý khi số tiền khớp nhưng phí/service charge do đối tác khấu trừ khác kỳ vọng.`,
+  a: `**Tóm tắt:** Đối soát cuối ngày là quy trình khớp từng giao dịch giữa sổ của ngân hàng chúng ta và file settlement (báo cáo kết quả thanh toán) hàng ngày của đối tác thanh toán — NAPAS, ngân hàng liên kết hay ngân hàng đại lý nước ngoài — để phát hiện khoản tiền lệch (break). Mỗi dòng trong file của đối tác phải khớp với một dòng trong sổ của chúng ta qua mã tham chiếu duy nhất; nếu khớp thì hoàn tất, nếu lệch thì phân loại và xử lý theo quy trình. Đặc biệt, khi số tiền khớp nhưng số tiền thực tế nhận được ít hơn vì đối tác khấu trừ phí khác kỳ vọng, không được xem đây là lỗi giao dịch thông thường, mà phải đối soát fee riêng biệt và điều chỉnh sổ qua bút toán mới có người duyệt.
+
+### Đối soát cuối ngày là gì (giải thích từ đầu)
+Hãy tưởng tượng cuối ca thu ngân hàng, bạn đếm tiền mặt trong két và so với số trên máy điểm bán — nếu lệch một đồng, phải tìm ra giao dịch nào sai. Đối soát trong ngân hàng cũng vậy: "két" của chúng ta là sổ core, "máy tính đối tác" là file settlement gửi hàng ngày. Hai bên ghi nhận cùng một giao dịch độc lập, qua mạng có thể timeout, mất phản hồi, hoặc xử lý sai định dạng, nên hai sổ có thể không khớp. Đối soát cuối ngày là lưới an toàn bắt những giao dịch có "trạng thái mơ hồ" và đảm bảo không đồng nào bị treo không rõ chủ.
+
+### Quy trình đối soát điển hình
+~~~seq
+title: Doi soat cuoi ngay voi Napas/doi tac thanh toan
+actors: Core | Công việc | File đối tác | Nhân viên
+Core -> Công việc: xuất danh sách giao dịch ngày T
+File đối tác -> Công việc: gửi file settlement ngày T
+Công việc -> Công việc: chuẩn hóa, map mã phản hồi
+Công việc -> Công việc: khớp theo mã tham chiếu duy nhất
+Công việc -> Công việc: phân loại MATCH / BREAK
+Công việc -> Nhân viên: báo cáo break cần xử lý
+Nhân viên -> Core: điều chỉnh bút toán mới, có duyệt
+~~~
+
+### Chuẩn hóa file từ đối tác
+File từ đối tác có thể là CSV, XML (ISO 20022 camt.053) hoặc MT940 (SWIFT). Trước khi khớp, công việc đầu tiên là chuẩn hóa về một mô hình chung:
+- Kiểm tra toàn vẹn: checksum, số dòng, tổng tiền ở dòng cuối, chữ ký số nếu có. File sai thì từ chối và yêu cầu gửi lại, **không xử lý một phần** — nếu xử lý nửa vời, số liệu sẽ sai lẫn và rất khó bảo mật.
+- Parse về mô hình chung: mã tham chiếu đối tác, số tiền theo đơn vị nhỏ nhất (VND = đồng, không có phần thập phân), loại tiền, trạng thái, ngày giá trị, phí, mô tả.
+- Chuyển múi giờ về UTC, chuẩn hóa ngày nghiệp vụ (business date).
+- Map mã phản hồi của đối tác sang mã trạng thái nội bộ (THÀNH_CÔNG, THẤT_BẠI, CHỜ, ĐÃ_HOÀN).
+
+### Khóa khớp (matching key)
+Không được khớp chỉ theo số tiền + thời gian, vì nhiều giao dịch cùng số tiền sẽ bị ghép nhầm. Phải khớp theo mã tham chiếu duy nhất (ví dụ RRN trong giao dịch thẻ, STAN, hoặc mã tham chiếu do chúng ta sinh và gửi kèm lệnh). Nếu mã của hai bên khác định dạng, cần bảng mapping (mã của chúng ta ↔ mã của đối tác) duy trì lâu dài. Ưu tiên khớp 1-1 theo mã tham chiếu, mới dùng các tiêu chí phụ (số tiền + tài khoản + ngày) khi mã bị lệch định dạng, và vẫn cần người duyệt.
+
+### Phân loại break (lệch)
+~~~text
+Loại break            Mô tả                                      Xử lý
+---------------------  -----------------------------------------  -----------------------------
+Có ở ta, không ở ĐT    Ta ghi nhận nhưng đối tác không có        Tra cứu: ta ghi nhầm? hay đối tác chưa post?
+Có ở ĐT, không ở ta    Đối tác có nhưng ta không có              Tra cứu: timeout mất phản hồi? bổ sung bút toán
+Khớp mã, lệch tiền     Cùng giao dịch nhưng số tiền khác         Kiểm tra phí, làm tròn, tỷ giá; điều chỉnh
+Khớp mã, lệch trạng thái Ta PENDING, ĐT THÀNH_CÔNG (hoặc ngược lại) Chạy inquiry/cập nhật trạng thái
+Trùng lặp              Cùng ref xuất hiện 2 lần một bên           Kiểm tra retry/idempotency, đảo bút toán thừa
+~~~
+
+### Phí và service charge khác kỳ vọng — góc mới
+Một trường hợp thông thường nhưng dễ sai: giao dịch cùng mã tham chiếu, số tiền gốc khớp, nhưng số tiền thực tế nhận được ít hơn vì đối tác khấu trừ phí khác kỳ vọng đã thống nhất (ví dụ phí chuyển khoản, phí correspondent). Nếu xem lệch này là lỗi giao dịch thông thường và điều chỉnh toàn bộ số tiền, ta sẽ điều chỉnh sai: tiền gốc đã đúng, chỉ phần phí mới sai. Cách xử lý đúng:
+- Đối soát **fee riêng biệt**: so sánh phí thực đối tác khấu trừ với phí kỳ vọng theo bảng phí.
+- Nếu chênh lệch nằm trong quy tắc đã duyệt trước (ví dụ phí đối tác thay đổi theo thông báo) → ghi bút toán điều chỉnh cho phần phí, tài khoản phí đúng loại.
+- Nếu chênh lệch ngoài quy tắc → đưa vào hàng đợi maker-checker, không được tự động điều chỉnh.
+- Lưu phần phí vào tài khoản kế toán phí riêng, không lẫn vào số tiền giao dịch chính, để báo cáo lãi/lỗ (P&L) đúng.
+
+### Xử lý tự động và hàng đợi maker-checker
+- Xử lý tự động chỉ cho nhóm có quy tắc rõ ràng, được duyệt trước (rule engine): giao dịch treo ta PENDING nhưng ĐT THÀNH_CÔNG → cập nhật THÀNH_CÔNG; lệch do ranh giới ngày → sửa ngày thời gian; trùng lặp → gửi bút toán thừa; lệch phí nằm trong quy tắc -> ghi bút toán phí.
+- Còn lại đưa vào hàng đợi thủ công có trạng thái: MỚI -> ĐANG TRA CỨU -> ĐƯỢC ĐỀ XUẤT -> DUYỆT / TỪ CHOÍ.
+- Maker (nhân viên tra cứu): xem bằng chứng (log, file đối tác, phản hồi inquiry), đề xuất bút toán mới, lý do, tham chiếu.
+- Checker (kiểm soát viên, KHÁC người maker): duyệt hoặc từ chối. Bắt buộc với số tiền vượt ngưỡng.
+- Hệ thống ghi bút toán điều chỉnh **thêm mới (append-only)**, không sửa dòng gốc, có audit trail đầy đủ.
+
+### Mã code ý tưởng (Java)
+~~~java
+record Break(String ref, String type, BigDecimal ourAmt, BigDecimal theirAmt) {}
+
+enum Action { TU_DONG, THU_CONG }
+
+Action phanLoai(Break b, Map<String, BigDecimal> bangPhi) {
+    if (b.ourAmt().compareTo(b.theirAmt()) == 0) {
+        BigDecimal phi = bangPhi.get(b.ref());
+        if (phi != null && b.theirAmt().add(phi).compareTo(b.ourAmt()) == 0)
+            return Action.TU_DONG;    // lệch chỉ là phí đã biết
+        return Action.THU_CONG;       // lệch tiền không rõ nguyên nhân
+    }
+    return Action.THU_CONG;
 }
+~~~
+
+Bảng bangPhi lưu phí kỳ vọng theo mã giao dịch; hàm phanLoai chỉ tự động xử lý khi lệch toàn bộ là phí đã biết. Còn lại đưa hàng đợi người duyệt.
+
+### Lỗi hay gặp
+- Khớp theo số tiền + thời gian thay vì mã tham chiếu duy nhất -> ghép nhầm giao dịch cùng số tiền.
+- Xử lý file một phần -> số liệu sai lẫn, khó bảo mật.
+- Xem lệch phí là lỗi giao dịch và điều chỉnh toàn bộ số tiền -> điều chỉnh sai, báo cáo sai.
+- Điều chỉnh số theo tay không qua người duyệt -> nguy cơ gian lận.
+- Không theo dõi tuổi break (số ngày chưa xử lý) -> break tồn đọng tháng năm.
+
+### Ví dụ đời thực
+Một ngân hàng đối soát cuối ngày với NAPAS: 10.000 giao dịch ngày T, tổng 5 tỷ VND. File NAPAS báo 9.998 giao dịch, tổng 4 tỷ 990 triệu đồng — thiếu 2 giao dịch, 10 triệu đồng. Điều tra thấy: (1) giao dịch G-112 cùng mã tham chiếu, số tiền khớp nhưng NAPAS khấu trừ phí 50.000 không thuộc bảng phí -> ta bổ sung bút toán điều chỉnh phí vào tài khoản phí, không sửa giao dịch chính. (2) giao dịch G-225 ta có nhưng NAPAS không có (timeout mất phản hồi) -> tra cứu, NAPAS xác nhận thành công -> cập nhật THÀNH_CÔNG. Sau khi sửa, tổng hai hệ thống khớp 100%, 0 break chưa giải thích. Thời gian xử lý giảm từ 4 giờ/ngày xuống 30 phút.
+
+### Trả lời mẫu khi phỏng vấn
+"Quy trình đối soát cuối ngày của tôi: xuất danh sách giao dịch ngày T từ core, nhận file settlement từ đối tác, kiểm tra toàn vẹn file (checksum, tổng tiền, chữ ký), file sai thì yêu cầu gửi lại chứ không xử lý một phần. Chuẩn hóa về mô hình chung (mã tham chiếu, số tiền đồng, trạng thái, ngày giá trị), map mã phản hồi đối tác sang mã nội bộ, rồi khớp theo mã tham chiếu duy nhất — không theo số tiền + thời gian. Kết quả phân loại thành MATCH hoặc BREAK, và BREAK đi vào pipeline có trạng thái với người phụ trách và hạn xử lý. Các loại lệch phổ biến: có ở một bên, lệch số tiền, lệch trạng thái, trùng lặp. Đặc biệt, khi số tiền khớp nhưng số tiền nhận ít hơn do đối tác khấu trừ phí khác kỳ vọng, tôi đối soát fee riêng biệt theo bảng phí, chỉ điều chỉnh phần phí vào tài khoản phí, không xem đây là lỗi giao dịch thông thường. Điều chỉnh sổ chỉ qua bút toán mới append-only, có người duyệt khác người tạo. Thực tế: với 10.000 giao dịch/ngày, tôi khớp 100% sau khi xử lý lệch phí và giao dịch treo, thời gian đối soát giảm từ 4 giờ xuống 30 phút."
+
+> Senior tip: Luôn bắt đối tác cung cấp mã tham chiếu duy nhất cho mọi giao dịch, không dùng số tiền + thời gian để khớp (hai giao dịch cùng số tiền sẽ bị ghép nhầm). Thống kê nguyên nhân break theo từng tuần: mỗi nhóm lặp lại là cơ hội thêm rule hoặc sửa gốc hệ thống ngoài, mục tiêu là hàng đợi thủ công ngày càng ngắn, không thu thêm người đối soát.
+
+> Cụm từ: Break (lệch) là giao dịch không khớp giữa hai bên. Settlement file là file báo cáo kết quả thanh toán hàng ngày do đối tác gửi. Matching key là khóa dùng để khớp hai bản ghi (mã tham chiếu duy nhất). Maker-checker là một người đề xuất, người khác duyệt.
+  `,
+  follow: [
+    'Nếu file đối tác đến muộn 2 ngày hoặc bị gửi trùng, job đối soát cần xử lý thế nào để idempotent?',
+    'Làm sao phân biệt lệch thật (bug) và lệch do parse sai file?',
+    'Khi số tiền khớp nhưng phí đối tác khác kỳ vọng, bạn điều chỉnh phần phí như thế nào mà không sai giao dịch chính?'
+  ],
+  tags: ['core', 'đối soát', 'NAPAS', 'EOD', 'break', 'phí dịch vụ', 'maker-checker']
+},
+{
+  id: 'banking-091',
+  topic: 'banking',
+  level: 'senior',
+  q: `Trong hệ thống chuyển tiền liên ngân hàng, giao dịch có thể bị treo ở trạng thái PENDING do lỗi phía chính hệ thống (ví dụ job crash giữa chừng sau khi đã ghi hold tiền nhưng chưa gửi lệnh đến NAPAS). Bạn thiết kế xử lý thế nào để phát hiện, khôi phục, và không để tiền bị hold vĩnh viễn?`,
+  a: `**Tóm tắt:** Giao dịch treo (PENDING) là giao dịch đã tạo hold tiền nhưng chưa chốt kết quả (chưa gửi được lệnh đến đối tác, hoặc gửi được nhưng mất kết nối trước khi nhận phản hồi). Timeout hoặc lỗi hệ thống **không có nghĩa là thất bại** — chỉ là chưa biết kết quả. Thiết kế đúng: giữ trạng thái chờ, giữ hold tiền, không tự động hoàn hay retry mù, phát hiện qua job reconcile hàng giờ, khôi phục bằng outbox/saga, liên hệ đối tác ngoài hệ thống nếu cần, chỉ hoàn tiền khi có xác nhận thất bại hoặc quá thời hạn.
+
+### Vì sao giao dịch treo nguy hiểm
+Ba khả năng khi giao dịch không được chốt:
+1. Hệ thống ta đã ghi hold tiền nhưng vẫn chưa gửi lệnh đến đối tác -> tiền vẫn ở ta, khách chỉ thấy số dư khả dụng giảm.
+2. Đã gửi lệnh nhưng mất phản hồi -> đối tác có thể đã xử lý thành công.
+3. Hệ thống giữa giây mất lúc -> không biết trạng thái thực sự.
+Nếu coi treo = thất bại và hoàn tiền ngay, hoặc cho khách gửi lại lệnh mới, tiền sẽ đi hai lần hoặc bị mất.
+
+### Máy trạng thái giao dịch
+~~~text
+[TAO_HOLD] -> gửi lệnh thành công -> [ĐÃ_GỬI]
+[ĐÃ_GỬI] -> nhận THÀNH_CÔNG -> [THÀNH_CÔNG] -> chốt trừ tiền
+[ĐÃ_GỬI] -> nhận THẤT_BẠI -> [THẤT_BẠI] -> hoàn tiền hold
+[ĐÃ_GỬI] -> timeout/lỗi hệ thống -> [CHỢ XỬ LÝ] --tiền bị hold--
+[CHỢ XỬ LÝ] -> tra cứu: THÀNH_CÔNG -> [THÀNH_CÔNG]
+[CHỢ XỬ LÝ] -> tra cứu: THẤT_BẠI -> [THẤT_BẠI] -> hoàn tiền hold
+[CHỢ XỬ LÝ] -> quá hạn, chưa rõ -> [ĐIỀU TRA THỦ CÔNG] -> hệ thống/đối tác
+~~~
+
+### Phát hiện giao dịch treo
+- Mỗi giao dịch có trạng thái và thời gian tạo (created_at) plus thời gian tra cứu kế tiếp (next_inquiry_at).
+- Job chạy mỗi giờ (hoặc ngắn hơn) quét các giao dịch CHỢ XỬ LÝ quá 48 giờ chưa có kết quả -> gửi cảnh báo Slack/Email cho nhóm vận hành.
+- Vận hành liên hệ đối tác ngoài hệ thống (email/điện thoại) để xác định trạng thái.
+
+### Khôi phục giao dịch treo
+1. Nếu đối tác xác nhận THÀNH_CÔNG -> cập nhật THÀNH_CÔNG, chốt trừ tiền người gửi, thông báo khách.
+2. Nếu đối tác xác nhận THẤT_BẠI -> chạy bút toán đảo ngược (reversal): Credit tài khoản người gửi, Debit tài khoản trung gian, giải phóng hold, cập nhật số dư khả dụng, thông báo khách "giao dịch thất bại, tiền đã hoàn về tài khoản".
+3. Nếu đối tác không phản hồi sau 7 ngày -> leo thang cấp quản lý rủi ro, hoàn tiền theo chính sách (có phê duyệt).
+4. Nếu lỗi ở hệ thống ta (job crash giữa chừng, chưa gửi lệnh) -> dùng outbox: bảng ghi yêu cầu gửi có trạng thái, worker duyệt lại hoặc hủy bút toán hold để trả tiền về khách.
+
+### Mã code ý tưởng (Java)
+~~~java
+enum TrangThai { TAO_HOLD, DA_GUI, CHO_XU_LY, THANH_CONG, THAT_BAI, DIEU_TRA_THU_CONG }
+
+@Transactional
+void xuLyTreo(String maGiaoDich) {
+    var gd = repo.findById(maGiaoDich).orElseThrow();
+    if (gd.getTrangThai() == TrangThai.CHO_XU_LY && quaHan(gd)) {
+        var ketQua = doiTacClient.traCuu(maGiaoDich);
+        if (ketQua.isThanhCong()) {
+            gd.setTrangThai(TrangThai.THANH_CONG);
+            ledgerService.truTien(gd.getTaiKhoanNguon(), gd.getSoTien());
+        } else if (ketQua.isThatBai()) {
+            gd.setTrangThai(TrangThai.THAT_BAI);
+            ledgerService.daoBoToan(gd.getTaiKhoanNguon(), gd.getSoTien()); // hoàn hold
+        } else {
+            gd.lichHenTraCuuKeTiep(); // backoff
+        }
+        repo.save(gd);
+    }
+}
+~~~
+
+~~~sql
+-- job quét giao dịch treo quá hạn
+SELECT id FROM giao_dich
+WHERE trang_thai = 'CHO_XU_LY' AND created_at < now() - interval '48 hours';
+~~~
+
+### Lỗi hay gặp
+- Coi treo = thất bại và hoàn tiền ngay -> tiền đi hai lần nếu đối tác đã xử lý thành công.
+- Cho khách bấm "Thử lại" tạo giao dịch mới khi đang CHỢ XỬ LÝ -> tiền trùng.
+- Không lưu mã tham chiếu duy nhất -> không tra cứu được.
+- Tự động hoàn sau N phút timeout chưa xác định -> hoàn nhầm nếu đối tác đã xử lý thành công.
+- CHỢ XỬ LÝ không có TTL/giới hạn -> tiền bị hold vĩnh viễn.
+
+### Ví dụ đời thực
+Một ngân hàng số xử lý chuyển khoản liên ngân hàng qua NAPAS. Một ngày, worker ghi hold tiền cho giao dịch G-999 (5 triệu VND) nhưng crash giữa chừng trước khi gửi lệnh đến NAPAS. Giao dịch G-999 ở trạng thái CHỢ XỬ LÝ, tiền người gửi bị hold, app hiển thị "đang xử lý". Job quét hết hạn phát hiện sau 48 giờ, nhóm vận hành liên hệ NAPAS qua điện thoại -> NAPAS xác nhận chưa nhận lệnh G-999. Hệ thống hủy bút toán hold, trả 5 triệu VND về số dư khả dụng của khách, thông báo khách "giao dịch bị hủy do lỗi hệ thống". Nếu NAPAS đã xử lý thành công nhưng phản hồi bị mất, hệ thống sẽ chốt THÀNH_CÔNG và trừ tiền, không hoàn sai. Kết quả: 0 trường hợp trừ tiền hai lần, tiền không bị hold vĩnh viễn, thời gian phát hiện giảm từ cuối ngày xuống dưới một giờ.
+
+### Trả lời mẫu khi phỏng vấn
+"Giao dịch treo (PENDING) nghĩa là chưa biết kết quả, chứ không phải thất bại. Tôi thiết kế máy trạng thái: giao dịch chuyển sang CHỢ XỬ LÝ khi lỗi hệ thống hoặc timeout, tiền bị hold (tạm giữ) nhưng không tự động hoàn hay retry mù. Tôi có job quét hàng giờ phát hiện giao dịch CHỢ XỬ LÝ quá 48 giờ chưa có kết quả, rồi vận hành liên hệ đối tác ngoài hệ thống (email, điện thoại) để xác định trạng thái. Nếu đối tác xác nhận thành công thì chốt trừ tiền, xác nhận thất bại thì chạy reversal (bút toán đảo) để hoàn hold, và chỉ khi quá thời hạn tra cứu (ví dụ 7 ngày) mới leo thang lên cấp quản lý để quyết định hoàn tiền. Nếu lỗi nằm ở hệ thống ta (job crash giữa chừng), dùng outbox để duyệt lại yêu cầu gửi hoặc hủy hold, không để tiền bị giữ vĩnh viễn. Nguyên tắc: tiền thật an toàn hơn trải nghiệm nhanh — thà báo khách chờ còn hơn hoàn/ghi trùng sai."
+
+> Senior tip: Luôn có job quét PENDING quá hạn và leo thang cho nhân viên. Không bao giờ tự động hoàn tiền ngay khi timeout, vì tiền có thể đã được xử lý ở đối tác. Nếu cần hoàn, phải có xác nhận thất bại hoặc quy trình rủi ro phê duyệt.
+
+> Cụm từ: Hold (tạm giữ) là khóa số dư khả dụng, chưa trừ sổ cái. Reversal (đảo ngược) là bút toán hoàn tiền mới (append-only). Outbox là bảng ghi yêu cầu gửi cùng transaction để không mất yêu cầu khi hệ thống lỗi.
+  `,
+  follow: [
+    'Job quét giao dịch treo chạy bao nhiêu lần một ngày, và giới hạn tra cứu là bao lâu?',
+    'Nếu đối tác xác nhận THẤT_BẠI nhưng ta đã chốt THÀNH_CÔNG (do tra cứu báo sai), xử lý ra sao?',
+    'PENDING treo 7 ngày, hoàn tự động hay cần phê duyệt?'
+  ],
+  tags: ['core', 'timeout', 'pending', 'tra cứu', 'hoàn tiền', 'outbox']
+},
+{
+  id: 'banking-092',
+  topic: 'banking',
+  level: 'lead',
+  q: `Khách hàng có nhiều loại hạn mức giao dịch theo ngày (hạn mức tổng ngày, hạn mức theo kênh chuyển tiền, hạn mức gửi đến thụ hưởng mới) cộng dồn với nhau. Khi nhiều request song song, bạn thiết kế kiểm tra và trừ hạn mức như thế nào để không vượt bất kỳ loại nào, và khi giao dịch thất bại thì giải phóng đúng tất cả các hold đã đặt?`,
+  a: `**Tóm tắt:** Hạn mức theo ngày yêu cầu tổng giao dịch của khách trong một ngày nghiệp vụ không vượt ngưỡng. Khi có nhiều loại hạn mức cộng dồn, mỗi giao dịch phải kiểm tra **tất cả** các loại liên quan (ví dụ tổng ngày + theo kênh + theo thụ hưởng mới) và chỉ được chấp nhận nếu **cả ba** đều còn đủ. Phép kiểm tra và trừ hạn mức phải nguyên tử (check-and-reserve trong một bước) cho mọi loại liên quan, dùng DB atomic update hoặc khóa phù hợp, cùng với idempotency key để retry không trừ hạn mức hai lần. Khi giao dịch thất bại, phải giải phóng đúng tất cả các hold đã đặt cho giao dịch đó.
+
+### Bài toán và vì sao "đọc rồi ghi" bị lỗi
+Giả sử hạn mức tổng ngày 10.000.000, đã dùng 9.000.000, còn 1.000.000. Hai giao dịch 800.000 chạy đồng thời:
+~~~text
+T1: đọc đã dùng = 9.000.000 -> còn 1.000.000 >= 800.000 -> CHẤP NHẬN
+T2: đọc đã dùng = 9.000.000 -> còn 1.000.000 >= 800.000 -> CHẤP NHẬN (cùng lúc!)
+Kết quả: tổng đã dùng 10.600.000 > 10.000.000 -> VUỘT HẠN MỨC
+~~~
+Đây là race condition kinh điển (giống banking-023). Với traffic cao (mua sắp, lương về), xác suất xảy ra lớn. Thêm vào đó, nếu chỉ kiểm tra một loại hạn mức (tổng ngày) mà bỏ qua loại theo kênh, khách có thể vượt hạn mức theo kênh.
+
+### Mô hình dữ liệu: nhiều loại hạn mức cộng dồn
+~~~text
+daily_limit_usage:
+  customer_id, business_date, loại_hạn_mức (TỔNG_NGAY/THEO_KÊNH/TỔNG_TIỀU_HƯỢNG_MỚI)
+  hạn_mức, đã_sử_dụng, đã_giữ (hold cho giao dịch PENDING)
+  version
+Ràng buộc: đã_sử_dụng + đã_giữ + amount_mới <= hạn_mức
+~~~
+Lưu theo (customer_id, business_date, loại_hạn_mức) với unique constraint. business_date lấy theo quy tắc cut-off, không lấy ngày giờ server mù quáng.
+
+### Kiểm tra và trừ hạn mức nguyên tử
+Thực hiện kiểm tra và trừ trong một câu lệnh để DB đảm bảo nguyên tử:
+~~~sql
+UPDATE daily_limit_usage
+SET đã_giữ = đã_giữ + :amount, version = version + 1
+WHERE customer_id = :cid AND business_date = :bdate AND loại_hạn_mức = :type
+  AND (đã_sử_dụng + đã_giữ + :amount) <= hạn_mức;
+~~~
+Nếu kết quả 1 dòng = thành công (đã giữ chỗ), 0 dòng = vượt hạn mức -> từ chối. Với giao dịch cần kiểm tra nhiều loại hạn mức, phải chạy tất cả UPDATE trong một DB transaction; nếu một loại vượt, rollback hết và từ chối giao dịch, không được giữ một loại và bỏ loại khác.
+
+~~~java
+boolean reserveAll(List<LimitKey> keys, BigDecimal amount) {
+    return txTemplate.execute(status -> {
+        for (LimitKey k : keys) {
+            int rows = jdbc.update(ATOMIC_RESERVE_SQL, amount, k.customerId, k.businessDate, k.type, amount);
+            if (rows == 0) {
+                throw new LimitExceededException("Vượt hạn mức: " + k.type); // rollback hết
+            }
+        }
+        return true; // tất cả loại đã được giữ
+    });
+}
+~~~
+
+Ưu điểm: nếu giao dịch cần 3 loại hạn mức, 3 UPDATE cùng nhau trong 1 transaction, hoàn toàn thành công hoặc hoàn toàn không. Chỉ có một khách "nóng" (nhiều giao dịch cùng lúc) có thể thành điểm nghẹn (khóa trên một dòng) — chấp nhận được vì hạn mức theo từng khách.
+
+### Idempotency và vòng đời giữ chỗ
+- Mỗi yêu cầu giao dịch có idempotency_key. Nếu client retry cùng key, trả kết quả cũ và **không trừ hạn mức lần 2**. Lưu mapping idempotency_key -> tx_id, số tiền đã giữ; kiểm tra trước khi reserve.
+- Giao dịch PENDING: đã reserve hạn mức. SUCCESS -> chuyển đã giữ thành đã sử dụng (hoặc xác nhận). FAILED/REVERSED -> trả lại (giảm đã giữ/đã sử dụng). Nếu PENDING treo quá hạn (timeout tra cứu, banking-025), cần job giải phóng có kiểm soát.
+- Reset theo ngày: khi sang business_date mới, bản ghi ngày mới đã_sử_dụng = 0 (tạo lười khi giao dịch đầu tiên đến, dùng INSERT ... ON CONFLICT DO NOTHING).
+
+~~~seq
+title: Kiểm tra hạn mức nhiều loại (atomic, chống vượt)
+actors: App | LimitService | DB
+App -> LimitService: chuyển 800.000 (idem=K1)
+LimitService -> DB: kiểm tra idem K1 đã xử lý?
+DB --> LimitService: chưa
+LimitService -> DB: BEGIN; UPDATE hạn mức TỔNG_NGAY ... WHERE còn đủ
+LimitService -> DB: UPDATE hạn mức THEO_KÊNH ... WHERE còn đủ
+LimitService -> DB: UPDATE hạn mức TỔNG_TIỀU_HƯỢNG ... WHERE còn đủ
+LimitService -> DB: COMMIT
+DB --> LimitService: tất cả OK hoặc rollback nếu một loại vượt
+LimitService --> App: thành công hoặc từ chối "vượt hạn mức ngày"
+~~~
+
+### Lỗi hay gặp
+- Kiểm tra-tự-thực hiện tách rời (đọc đã dùng ở app, so sánh, rồi UPDATE cộng thêm) -> race condition vượt hạn.
+- Retry không idempotent -> mỗi lần retry trừ thêm hạn mức, khách bị khóa oan.
+- Chỉ kiểm tra một loại hạn mức (tổng ngày) mà bỏ qua loại theo kênh/thụ hưởng mới -> khách vượt hạn mức theo kênh.
+- Reserve khi gửi nhưng quên trả lại khi THAT_BAI/THỜI_GIAN -> hạn mức bị "kẹo".
+- Dùng business_date sai (ngày dương lịch thay vì ngày nghiệp vụ) -> lệch sổ sách.
+
+### Ví dụ đời thực
+Một ngân hàng số có 500.000 khách, giờ cao điểm lương về có 20.000 giao dịch/phút. Khách có hạn mức tổng ngày 100 triệu, hạn mức theo kênh chuyển tiền 50 triệu, hạn mức gửi đến thụ hưởng mới 20 triệu. Code cũ kiểm tra từng loại hạn mức trong nhiều transaction riêng lẻ: giao dịch 15 triệu gửi đến thụ hưởng mới được chấp nhận (còn đủ từng loại), nhưng tổng 3 giao dịch cùng lúc = 45 triệu vượt hạn mức tổng ngày 40 triệu (gia giữa) — hệ thống chưa phát hiện. Dev sửa: kiểm tra tất cả loại hạn mức trong một DB transaction với UPDATE nguyên tử, thêm idempotency_key, job giải phóng hold của giao dịch THAT_BAI. Kết quả: 0 trường hợp vượt hạn mức, số lỗi "vượt hạn mức" giảm 100%.
+
+### Trả lời mẫu khi phỏng vấn
+"Hạn mức theo ngày của tôi hỗ trợ nhiều loại cộng dồn: tổng ngày, theo kênh, và theo thụ hưởng mới. Mỗi giao dịch phải kiểm tra tất cả các loại liên quan, và chỉ được chấp nhận nếu cả ba đều còn đủ. Phép kiểm tra và trừ hạn mức phải nguyên tử: tôi dùng một DB transaction chứa các UPDATE ... WHERE (đã_sử_dụng + đã_giữ + amount) <= hạn_mức cho mỗi loại; nếu một loại vượt, toàn bộ rollback và từ chối giao dịch, không được giữ một loại và bỏ loại khác. Mọi giao dịch có idempotency_key do client sinh, nên retry cùng key trả kết quả cũ và không trừ hạn mức lần hai. Khi giao dịch thất bại, tôi giải phóng đúng tất cả các hold đã đặt cho giao dịch đó. Thực tế: trước đây kiểm tra từng loại trong các transaction riêng khiến khách vượt hạn mức tổng ngày; sau khi chuyển sang kiểm tra nhiều loại nguyên tử, số trường hợp vượt hạn mức về 0."
+
+> Senior tip: Câu trả lời lead cần cân bằng đúng nghiệp vụ và khả năng mở rộng: bắt đầu từ atomic update trong DB (đúng, đơn giản, đủ cho đa số trường hợp vì tranh chấp theo từng khách), chỉ đưa vào Redis/Lua khi có số liệu chứng minh nút thắt. Ba bắt buộc: (1) quyết định chấp nhận và trừ hạn mức phải nguyên tử, (2) mọi bước có idempotency key, (3) mọi trạng thái trung gian (PENDING/reserved) đều có đường ra (commit hoặc release). Hỏi ngược interviewer: hạn mức tính theo ngày nghiệp vụ hay ngày dương lịch, có loại hạn mức nào cộng dồn (tổng ngày + theo kênh) không — vì nó quyết định mô hình dữ liệu.
+
+> Cụm từ: Idempotency key là mã duy nhất gắn với một yêu cầu, dùng để phát hiện yêu cầu được gửi lại (retry) và chỉ xử lý một lần. Business date là ngày sổ sách của ngân hàng, khác ngày dương lịch.
+  `,
+  follow: [
+    'Nếu một khách có nhiều loại hạn mức cộng dồn (tổng ngày + theo kênh + theo thụ hưởng mới), bạn đảm bảo cập nhật tất cả nguyên tử thế nào?',
+    'Khi giao dịch bị timeout (PENDING_UNKNOWN), bạn giữ reserved hạn mức bao lâu và cơ chế nào giải phóng an toàn mà không mở khe vượt hạn?',
+    'So sánh trade-off giữa atomic DB update và Redis Lua cho bài toán này: ngưỡng nào thì chuyển giải pháp và bạn kiểm chứng ra sao?'
+  ],
+  tags: ['hạn mức ngày', 'concurrency', 'atomic', 'idempotency', 'nhiều loại hạn mức', 'lead']
+},
+{
+  id: 'banking-093',
+  topic: 'banking',
+  level: 'senior',
+  q: `Mỗi giao dịch trong sổ cái kép phải cân bằng (tổng nợ = tổng có), nhưng trên hệ thống lớn vẫn có thể xảy ra sai lệch do bug hoặc lỗi giữa chừng. Bạn thiết kế job reconcile định kỳ kiểm tra tổng nợ = tổng có toàn hệ thống như thế nào, phát hiện sai sớm, và xử lý khi phát hiện sai?`,
+  a: `**Tóm tắt:** Sổ cái kép ghi mỗi giao dịch thành ít nhất hai bút toán (Nợ và Có) và tổng Nợ phải bằng tổng Có cho mỗi giao dịch. Tuy nhiên, trên hệ thống lớn, sai lệch vẫn có thể xảy ra do bug, lỗi giữa chừng, hoặc race condition. Vì vậy cần một job reconcile định kỳ kiểm tra tổng Nợ = tổng có toàn hệ thống (không chỉ mỗi giao dịch), phát hiện sai sớm, và xử lý bằng bút toán điều chỉnh mới (append-only) có người duyệt (maker-checker), không được sửa trực tiếp số liệu cũ.
+
+### Tổng nợ = tổng có là gì (giải thích từ đầu)
+Mỗi giao dịch chuyển 2.000.000 VND từ A sang B tạo hai dòng:
+- Dòng 1: tài khoản A, Nợ 2.000.000 (A giảm tiền)
+- Dòng 2: tài khoản B, Có 2.000.000 (B được cộng)
+Tổng Nợ và Tổng Có của giao dịch phải bằng nhau (2.000.000 = 2.000.000). Nếu không bằng, giao dịch bị từ chối. Chỉ được INSERT dòng mới, không UPDATE hay xóa dòng cũ (append-only), để luôn có lịch sử kiểm toán.
+
+### Tại sao cần job reconcile toàn hệ thống
+Kiểm tra tại mỗi giao dịch (mỗi giao dịch kết hợp luôn) không đủ. Sai có thể xảy ra:
+- Code ghi hai dòng nhưng quên bọc trong một DB transaction -> mất một dòng, số sai.
+- Bug batch tính lãi cập nhật nhầm 1 triệu tài khoản.
+- Race condition giữa hai ứng dụng ghi vào cùng một tài khoản.
+- Hệ thống giữa giây mất lúc khi ghi hai dòng -> một dòng đơn lẻ gây mất tiền.
+Job reconcile toàn hệ thống tính tổng Nợ và Tổng Có của tất cả tài khoản (hoặc theo ngày nghiệp vụ) và báo cáo lệch nếu có. Phát hiện sớm để không cho sai lệch tiếp tục.
+
+### Thiết kế job reconcile
+~~~text
+1. Chọn ngày nghiệp vụ T (hoặc tất cả ngày chưa chốt).
+2. Tính tổng Nợ và Tổng Có của từng tài khoản từ bảng ledger_entries.
+3. So với bảng số dư snapshot (nếu có).
+4. Nếu tổng Nợ != Tổng Có -> báo cáo lệch, chi tiết tài khoản và số tiền lệch.
+5. Điều tra: tìm giao dịch lệch, xem log, hash chain audit.
+6. Xử lý: tạo bút toán điều chỉnh mới (append-only), có người duyệt (maker-checker), không sửa dòng cũ.
+~~~
+
+~~~sql
+-- kiểm tra tổng Nợ = tổng Có theo ngày nghiệp vụ
+SELECT 
+    tx_id,
+    SUM(CASE WHEN direction = 'DEBIT' THEN amount ELSE 0 END) AS tong_no,
+    SUM(CASE WHEN direction = 'CREDIT' THEN amount ELSE 0 END) AS tong_co,
+    SUM(CASE WHEN direction = 'DEBIT' THEN amount ELSE -amount END) AS lech
+FROM ledger_entries
+WHERE business_date = :T
+GROUP BY tx_id
+HAVING ABS(SUM(CASE WHEN direction = 'DEBIT' THEN amount ELSE -amount END)) > 0;
+~~~
+
+~~~java
+record LedgerImbalance(String txId, BigDecimal imbalance) {}
+
+List<LedgerImbalance> findImbalances(LocalDate bizDate) {
+    return ledgerRepo.findTxWithImbalance(bizDate); // query SQL trên
+}
+
+@Transactional
+void fixImbalance(String txId, BigDecimal adjustment, String reason, User checker) {
+    // tạo bút toán điều chỉnh MỚI, không sửa dòng cũ
+    ledgerRepo.insertEntry(txId, "ADJUSTMENT", adjustment, reason, checker);
+    audit.log("FIX_IMBALANCE", checker, txId, adjustment, reason);
+}
+~~~
+
+### Xử lý khi phát hiện sai
+- Nếu lệch nhỏ và có nguyên nhân rõ ràng (ví dụ phí thiếu ghi) -> tạo bút toán điều chỉnh mới, maker để xóa, checker duyệt.
+- Nếu lệch lớn và không rõ nguyên nhân -> đóng băng giao dịch liên quan (tạm ngừng giao dịch mới cho những tài khoản ảnh hưởng), báo quản lý rủi ro và kiểm toán, tra cứu đến transaction_id.
+- Lưu audit trail: ai, lúc nào, hành động, tài nguyên, trước/sau, IP. Audit trail phải append-only, WORM (ghi một lần đọc nhiều).
+- Không bao giờ UPDATE hay xóa dòng ledger cũ -> mất lịch sử kiểm toán.
+
+~~~seq
+title: Job reconcile tổng Nợ tổng Có
+actors: Job | Ledger | Báo cáo | Nhân viên | Hệ thống
+Job -> Ledger: tính tổng Nợ / Tổng Có ngày T
+Ledger --> Job: có lệch tài khoản X
+Job -> Báo cáo: báo cáo lệch chi tiết
+Báo cáo -> Nhân viên: thông báo cần xử lý
+Nhân viên -> Hệ thống: đề xuất bút toán điều chỉnh mới
+Hệ thống -> Nhân viên: checker duyệt (người khác)
+Hệ thống -> Ledger: INSERT bút toán điều chỉnh, audit trail
+~~~
+
+### Lỗi hay gặp
+- Chỉ kiểm tra tổng toàn hệ thống không theo từng tài khoản -> hai sai lệch bù trừ nhau bị bỏ qua (thiếu 1 tỷ tại A, thừa 1 tỷ tại B, tổng vẫn đẹp).
+- Điều chỉnh số liệu cũ (UPDATE xóa dữ liệu cũ) -> mất lịch sử kiểm toán.
+- Không quản lý thời gian của tiền trong tài khoản cho đối soát -> tiền ở tài khoản cho đối soát tháng năm.
+- Điều chỉnh không qua người duyệt -> nhân viên có thể sửa số tiền theo ý muốn.
+- Job chạy không idempotent -> chạy lại tạo trùng bút toán.
+
+### Ví dụ đời thực
+Một ngân hàng có 2 triệu tài khoản. Một đêm, job reconcile phát hiện lệch 1.2 tỷ VND tại tài khoản X: tổng Nợ 5.2 tỷ, tổng Có 4 tỷ. Điều tra thấy code batch tính lãi hàng ngày ghi thiếu một dòng Có cho 12 giao dịch (hệ thống giữa giây mất lúc khi ghi hai dòng ledger). Cách xử lý: tạo 12 bút toán điều chỉnh mới (append-only) với lý do "bổ sung dòng Có thiếu", maker để xóa, kiểm toán duyệt, cập nhật số dư snapshot. Sau khi sửa, job reconcile ngay sau không còn lệch, 0 tài khoản sai. Thời gian phát hiện giảm từ cuối ngày xuống dưới 30 phút nhưng job chạy tất cả đêm.
+
+### Trả lời mẫu khi phỏng vấn
+"Mỗi giao dịch trong sổ cái kép của tôi phải cân bằng: tổng Nợ bằng Tổng Có, chỉ INSERT mới, không sửa dòng cũ. Nhưng trên hệ thống lớn, sai lệch vẫn có thể xảy ra do bug, lỗi giữa chừng, hoặc race condition, nên tôi cần một job reconcile định kỳ kiểm tra tổng Nợ = Tổng Có toàn hệ thống (không chỉ mỗi giao dịch). Job tính tổng Nợ và Tổng Có của từng transaction theo ngày nghiệp vụ, báo cáo chi tiết nếu có lệch. Khi phát hiện sai, tôi điều tra tìm transaction_id bị lệch, tạo bút toán điều chỉnh mới (append-only), không sửa dòng cũ, và yêu cầu maker-checker (người khác duyệt) trước khi ghi sổ. Lưu audit trail đầy đủ (ai, lúc nào, trước/sau, IP). Thực tế: một ngân hàng phát hiện lệch 1.2 tỷ do batch lỡ thiếu dòng Có, tôi tạo 12 bút toán điều chỉnh mới có duyệt, sau đó job reconcile không còn lệch, thời gian phát hiện giảm từ cuối ngày xuống dưới 30 phút."
+
+> Senior tip: Không chỉ kiểm tra tổng toàn hệ thống — phải kiểm tra từng tài khoản và từng giao dịch, vì tổng khớp có thể che sai lệch bù trừ nhau. Mọi điều chỉnh phải là bút toán mới append-only, có người duyệt khác người tạo, và có audit trail. Job reconcile phải chạy idempotent (chạy lại không tạo bút toán trùng).
+
+> Cụm từ: Reconcile (đối soát) là so sánh hai bộ ghi chép để tìm sai lệch. Append-only là chỉ thêm dòng mới, không sửa/xóa. Maker-checker là một người đề xuất, người khác duyệt.
+  `,
+  follow: [
+    'Nếu tổng Nợ = Tổng Có tại tổng hệ thống nhưng sai từng tài khoản, bạn phát hiện ra sao?',
+    'Job reconcile chạy bao nhiêu lần một ngày, và báo động khi nào?',
+    'Nếu phát hiện sai lớn và không rõ nguyên nhân, bạn xử lý thế nào?'
+  ],
+  tags: ['core', 'sổ cái kép', 'ledger', 'đối soát', 'lệch', 'maker-checker']
+},
 );
