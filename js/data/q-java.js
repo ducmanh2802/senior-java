@@ -13475,4 +13475,198 @@ Một dịch vụ đặt vé ban đầu có class DatVeService lớn làm hết:
   ],
   tags: ['core', 'SRP', 'OCP', 'Observer', 'event bus', 'over-engineering', 'refactor'],
 },
+{
+  id: 'core-080',
+  topic: 'core',
+  level: 'senior',
+  q: 'Hai module khác nhau dùng {{synchronized("CONFIG")}} và {{synchronized("")}} trên cùng một JVM — tại sao chúng lại chặn nhau, và cách khắc phục đúng là gì?',
+  a: `**Tóm tắt:** String literal được intern vào string pool duy nhất trên toàn JVM, nên {{synchronized("CONFIG")}} lấy khóa của chính instance pool đó — mọi đoạn code dùng literal trùng nhau (class khác, thư viện khác) dùng chung một khóa. Không bao giờ khóa trên String; hãy khóa trên object riêng {{private final Object lock = new Object()}}.
+
+### Cái gì - vì sao cần - cơ chế bên trong
+- **String pool là gì:** bảng băm trên heap chứa các chuỗi hằng; hai literal nội dung giống nhau trỏ tới cùng một object String (từ Java 7 pool nằm trên heap, không còn PermGen).
+- **{{synchronized}} lấy khóa của object:** khi vào block {{synchronized(obj)}} thread phải nắm monitor của object đó; thread khác muốn vào block cùng object phải chờ (trạng thái BLOCKED).
+- **Vì sao literal gây chặn chéo:** class A viết {{synchronized("CONFIG")}} và class B viết {{synchronized("CONFIG")}} — hai literal trùng nội dung nên cùng instance, cả hai block dùng cùng một monitor. Code không liên quan lại bị ảnh hưởng. Cùng logic với {{synchronized("")}}: literal rỗng cũng là instance pool duy nhất, khóa hầu như toàn ứng dụng.
+- **Khóa trên this cũng vậy:** nếu không kiểm soát ai giữ instance, khóa this cũng ảnh hưởng đối tượng khác.
+
+### Code sai và code đúng
+~~~java
+// SAI: khóa trên literal - instance pool được dùng chung khắp JVM
+synchronized ("CONFIG") {
+    capNhatCauHinh();
+}
+
+// ĐÚNG: khóa trên object riêng, chỉ module của bạn sử dụng
+private final Object configLock = new Object();
+
+void capNhatCauHinh() {
+    synchronized (configLock) {
+        // thao tác cấu hình
+    }
+}
+~~~
+
+### Hình minh họa hai luồng chờ cùng một monitor của string pool
+~~~seq
+title: Hai module khóa sai chung một string pool instance
+actors: Luồng A | Luồng B | String pool ("CONFIG")
+Luồng A -> String pool: synchronized("CONFIG") lấy monitor
+Luồng B -> String pool: synchronized("CONFIG") - bị khóa, trạng thái BLOCKED
+String pool -> Luồng A: trả về sau khi A thoát khỏi block
+~~~
+
+### Bảng so sánh
+| Cách khóa | Đặc điểm | Khi dùng |
+|---|---|---|
+| {{synchronized("CONFIG")}} | Khóa instance pool dùng chung, không kiểm soát được code khác | Không bao giờ |
+| {{synchronized("")}} | Literal rỗng cũng là instance duy nhất, khóa hầu như toàn ứng dụng | Không bao giờ |
+| {{private final Object lock}} | Khóa riêng, bạn kiểm soát hết nơi dùng | Mặc định cho khối khóa trong class |
+| {{ReentrantLock}} | Khóa linh hoạt (thử khóa, chờ hết hạn, khóa công bằng) | Cần tính năng nâng cao, tránh quá thiết kế |
+
+Nguyên tắc tương tự cũng áp với {{Boolean}}, {{Integer}} boxed (giá trị -128..127 được cache) và {{this}} (trừ khi bạn kiểm soát instance).
+
+### Pitfall production
+- **Boxed {{Boolean}} và {{Integer}}:** {{Boolean.TRUE}} và các {{Integer}} trong khoảng -128..127 được cache, dùng chung instance → khóa trên chúng cũng bị chặn chéo như String.
+- **Không biết ai cũng khóa:** thư viện hay framework có thể khóa trên cùng literal, bạn không chủ động biết.
+- **Khóa lâu trên string pool instance** làm luồng xếp hàng, latency tăng, thread pool web cạn kiệt.
+
+### Ví dụ đời thực (production)
+Dịch vụ báo cáo có module A khóa {{synchronized("REPORT")}} khi sinh file báo cáo (chạy khoảng 30 giây), module B khóa literal giống nhau khi xóa cache báo cáo (dưới 1 giây). Lúc cao điểm, hàng chục luồng của module B bị BLOCKED chờ monitor của instance pool "REPORT"; p99 truy xuất cache nhảy từ 50 ms lên 8 giây, thread pool web gần cạn kiệt. Dùng {{jstack}} (công cụ JDK) thấy chuỗi: luồng web → BLOCKED trên monitor → object String pool instance "REPORT" → được nắm bởi luồng sinh báo cáo. Sửa: mỗi module dùng private final Object riêng. Kết quả: p99 về 60 ms, không còn luồng BLOCKED trên monitor đó, heap không đổi.
+
+### Trả lời mẫu khi phỏng vấn
+"String literal được intern vào một string pool duy nhất trên toàn JVM, nên hai literal nội dung giống nhau là cùng một object. synchronized lấy khóa (monitor) của object đó, nên synchronized("CONFIG") ở module này và module khác dùng chung một khóa, mặc dù code hoàn toàn không liên quan — luồng nào vào trước nắm khóa, luồng khác trạng thái BLOCKED chờ. Cái thường gặp khác là synchronized("") khóa instance rỗng dùng chung toàn ứng dụng, và boxed Boolean/Integer trong vùng cache -128..127 cũng bị tương tự vì các giá trị nhỏ được tái sử dụng. Cách xử lý đúng là khóa trên object riêng khai báo private final Object trong class, chỉ module mình sử dụng. Nếu nghi ngờ tranh chấp khóa, tôi dùng jstack để xem luồng BLOCKED và đối tượng đang giữ monitor, sau đó sửa mã dùng khóa riêng. Nguyên tắc này cũng áp cho this nếu bạn không kiểm soát ai giữ instance."
+
+> Senior tip: Không bao giờ khóa trên String, Boolean, Integer boxed, hoặc this (trừ khi kiểm soát instance); dùng private final Object; nghi ngờ tranh chấp thì dùng jstack tìm luồng BLOCKED và đối tượng đang giữ monitor.`,
+  follow: [
+    'Vì sao {{synchronized("")}} đặc biệt nguy hiểm?',
+    'Boxed {{Boolean}}/{{Integer}} có vấp phải vấn đề tương tự không, tại sao?',
+    'Dùng {{jstack}} thấy luồng BLOCKED trên một monitor, xác nhận được đối tượng khóa là string pool instance không?'
+  ],
+  tags: ['String', 'string pool', 'intern', 'synchronized', 'concurrency', 'monitor', 'jstack'],
+},
+{
+  id: 'core-081',
+  topic: 'core',
+  level: 'senior',
+  q: 'Service gọi 3 hệ thống đối tác trong một yêu cầu kinh doanh: hệ thống nào nên dừng ngay, hệ thống nào nên thử lại hoặc có giá trị thay thế, và quy tắc wrap/giữ cause áp dụng ra sao?',
+  a: `**Tóm tắt:** Phân loại luồng xử lý: quan trọng -> fail-fast và báo lỗi ngay; phụ bổ sung -> thử lại một lần (chỉ tác động idempotent) rồi fallback giá trị mặc định; bắt lỗi hạ tầng, wrap thành ngoại lệ nghiệp vụ kèm cause và mã lỗi, ghi log một lần ở ranh giới kèm correlation ID, không nuốt exception.
+
+### Cái gì - vì sao cần - cơ chế bên trong
+- **Checked vs unchecked ở tầng service:** checked exception bắt buộc bắt và làm bẩn chữ ký phương thức, khó dùng trong lambda/stream. Đa số service hiện đại dùng ngoại lệ unchecked có base class {{BusinessException}} mang mã lỗi (ví dụ {{ORDER_NOT_FOUND}}). Spring mặc định rollback transaction với unchecked, không rollback với checked (trừ khi khai báo {{rollbackFor}}).
+- **Wrap và giữ cause:** bắt {{SQLException}} hay {{IOException}} từ đối tác, ném {{new BusinessException("PAYMENT_DOWN", "Cổng thanh toán không phản hồi", e)}} — luôn truyền {{cause}} để giữ stack gốc. Không viết {{new RuntimeException(e.getMessage())}} vì mất vết lỗi ban đầu.
+- **Không log rồi ném lại ở mọi tầng:** cùng lỗi bị log nhiều lần, stack dày, khó tracer. Chọn một ranh giới (thường là {{@RestControllerAdvice}}) để log một lần kèm traceId; tầng dưới chỉ ném, không log.
+- **CompletableFuture:** lỗi nằm trong future, phải dùng {{exceptionally}}/{{handle}}/{{whenComplete}} hoặc {{join}}/{{get}} để bắt, nếu không lỗi biến mất im lặng.
+
+### Ví dụ xử lý nhiều đối tác
+~~~java
+public void datHang(DonHang dh) {
+    try {
+        khoClient.kiemTra(dh);                  // quan trọng: lỗi -> fail ngay
+    } catch (Exception e) {
+        throw new BusinessException("KHONG_CO_HANG", "Hết hàng", e);
+    }
+    try {
+        giaClient.layGia(dh.getSanPham());      // phụ: thử lại 1 lần, có fallback
+    } catch (Exception e) {
+        throw new BusinessException("GIA_DOWN", "Dịch vụ giá không phản hồi", e);
+    }
+    try {
+        kiemTraGianLuan(dh);                    // phụ: lỗi -> bỏ qua, đánh dấu xét lại
+    } catch (Exception e) {
+        log.warn("Kiểm tra gian lận không xác thực, traceId={}", traceId, e);
+        dh.setCanXetLai(true);
+    }
+}
+~~~
+
+### Bảng lựa chọn fail-fast vs fallback
+| Loại | Hành động | Ví dụ |
+|---|---|---|
+| Quan trọng, không có thay thế | Ném ngay, không gọi hệ thống khác | Kiểm tra tồn kho trước khi đặt hàng |
+| Phụ, có giá trị mặc định | Thử lại 1 lần, sau đó dùng giá mặc định/đánh dấu | Lấy giá, kiểm tra gian lận |
+| Tác dụng phụ (ghi tiền, trừ tiền) | Không retry mù quên để tránh thực hiện 2 lần | Thanh toán |
+
+### Pitfall production
+- **Catch {{Exception}} rồi log và ném tiếp ở 3 tầng:** cùng lỗi xuất hiện nhiều lần trong log, stack dày, không biết lỗi lần đầu từ đâu.
+- **Nuốt lỗi:** catch rồi không làm gì, hoặc trong CompletableFuture không xử lý lỗi → request trả thành công nhưng dữ liệu thiếu.
+- **Retry thao tác không idempotent:** gọi lại thanh toán có thể trừ tiền 2 lần.
+- **Lộ stack trace/mã bảng vào response client:** chỉ trả mã lỗi và thông điệp an toàn, chi tiết lưu log server.
+
+### Ví dụ đời thực (production)
+Dịch vụ đặt hàng gọi 3 hệ thống đối tác: tồn kho, giá, kiểm tra gian lận. Ban đầu mỗi lớp bắt {{Exception}}, log lại rồi ném {{RuntimeException(e.getMessage())}} → mọi lỗi trở thành HTTP 500, call center không phân biệt lỗi từ hệ thống nào, stack gốc mất, khoảng 150 cuộc gọi hỗ trợ/tháng do khách hàng bị từ chối đơn mà không biết lý do. Điều tra qua log tập trung và traceId thấy đa số lỗi từ dịch vụ giá ngắt khoảng 2% yêu cầu. Thiết kế lại: ngoại lệ nghiệp vụ unchecked có mã lỗi cố định, wrap kèm cause, dịch vụ giá retry 1 lần rồi fallback giá mặc định, kiểm tra gian lận lỗi thì bỏ qua và đánh dấu đơn cần xem xét lại. {{@RestControllerAdvice}} log một lần kèm traceId và mã lỗi, trả HTTP 422/502 kèm mã an toàn. Kết quả: lỗi 500 giảm 90% (phần còn lại là lỗi thật), cuộc gọi hỗ trợ về vấn đề đặt hàng xuống khoảng 40/tháng, p95 đặt hàng từ 300 ms xuống 220 ms.
+
+### Trả lời mẫu khi phỏng vấn
+"Khi gọi nhiều hệ thống đối tác, tôi phân loại luồng xử lý: tồn kho là quan trọng, lỗi thì fail-fast và báo người dùng ngay; dịch vụ giá là phụ, tôi retry một lần vì gọi lấy giá là idempotent, sau đó dùng giá mặc định hoặc đánh dấu cần xác nhận; kiểm tra gian lận lỗi thì bỏ qua và đánh dấu đơn xem xét lại, không làm hỏng toàn bộ yêu cầu. Tất cả lỗi hạ tầng tôi wrap thành ngoại lệ nghiệp vụ unchecked với mã lỗi cố định và luôn giữ cause để không mất stack gốc. Tôi cấm catch rồi log và ném lại ở mọi tầng — chỉ log một lần ở ranh giới (@RestControllerAdvice) kèm correlation ID, trả client mã lỗi an toàn không lộ stack trace hay tên bảng. Với CompletableFuture tôi luôn xử lý lỗi bằng exceptionally hay handle, không để lỗi biến mất trong future."
+
+> Senior tip: Mã lỗi ổn định (enum/hằng) để client và monitoring phân tích; không trả stack trace hay dữ liệu khách hàng cho client; retry chỉ thao tác idempotent; dùng traceId liên suốt các hệ thống.`,
+  follow: [
+    'Vì sao không log lại rồi ném tiếp ở mỗi tầng?',
+    'Lỗi hệ thống nào nên retry, lỗi nào không nên?',
+    'Correlation ID/traceId giúp gì khi một yêu cầu gọi 3 hệ thống?'
+  ],
+  tags: ['exception', 'checked', 'unchecked', 'wrap', 'cause', 'correlation ID', 'fallback', 'rest controller advice'],
+},
+{
+  id: 'core-082',
+  topic: 'core',
+  level: 'lead',
+  q: 'Viết hàm chuyển phần tử từ danh sách nguồn sang danh sách đích trong thư viện dùng chung: tại sao chọn {{List<? extends T>}} cho nguồn và {{List<? super T>}} cho đích, và tại sao khai báo {{List<?>}} rồi gọi {{add()}} lại bị lỗi biên dịch?',
+  a: `**Tóm tắt:** Áp dụng PECS: Producer Extends (nguồn chỉ đọc → {{? extends T}}), Consumer Super (đích chỉ ghi → {{? super T}}). Java coi generic là invariant: {{List<Integer>}} không phải subtype của {{List<Number>}}, wild-card mở rộng an toàn theo một chiều. Biến kiểu {{List<?>}} chỉ đọc được {{Object}} và **không thêm** phần tử (trừ null) vì kiểu "capture of ?" ẩn danh không thể viết ra — nếu cần ghi, để caller truyền kiểu rõ ràng qua generic method {{<T>}}.
+
+### Cái gì - vì sao cần - cơ chế bên trong
+- **Invariant:** {{List<String>}} và {{List<Object>}} là kiểu khác, không có quan hệ con-cha, dù {{String}} là subtype của {{Object}}. Nếu cho phép, ta có thể thêm {{Integer}} vào danh sách được khai báo là {{List<String>}} → kiểu không an toàn.
+- **{{? extends T}}:** đọc được kiểu {{T}} (hoặc subtype), không ghi được (trừ null) vì compiler không biết subtype cụ thể là gì.
+- **{{? super T}}:** ghi được {{T}}, đọc được chỉ {{Object}}.
+- **Capture of ?:** khi truyền {{List<String>}} vào tham số {{List<?>}}, compiler tạo kiểu ẩn "capture of ?" (kiểu mới không tên, chỉ biết là subtype của Object). Bạn đọc được Object, nhưng không gán {{String}} vào vì danh sách thực tế có thể là {{List<Integer>}}.
+
+### Code mẫu: PECS và bẫy capture
+~~~java
+// PECS: src chỉ đọc, dst chỉ ghi
+public static <T> void saoChep(List<? extends T> src, List<? super T> dst) {
+    for (T x : src) {
+        dst.add(x); // OK: dst chấp nhận kiểu T
+    }
+}
+
+// SAU KHÔNG: List<?> không thể thêm phần tử (ngoài null)
+public static void themVao(List<?> ds, String x) {
+    ds.add(x); // LỖI: String không thể gán cho kiểu capture of ?
+}
+
+// ĐÚNG: generic method, caller cung cấp kiểu rõ ràng
+public static <T> void them(List<T> ds, T x) {
+    ds.add(x);
+}
+// Gọi: them(danhSachString, "ABC"); // T được suy luận là String
+~~~
+
+### Bảng so sánh
+| Khai báo | Đọc | Ghi | Khi dùng |
+|---|---|---|---|
+| {{List<T>}} | {{T}} | {{T}} | Kiểu rõ ràng, trả về API |
+| {{List<? extends T>}} | {{T}} | Không (trừ null) | Nguồn chỉ đọc, nhận nhiều loại hơn |
+| {{List<? super T>}} | {{Object}} | {{T}} | Đối tượng chỉ ghi, ví dụ đích của Collections.copy |
+| {{List<?>}} | {{Object}} | Không (trừ null) | Ít biết về kiểu, chỉ đọc |
+
+**Quy tắc thiết kế API:** wildcard ở **tham số vào** để khách hàng truyền nhiều loại hơn; kiểu **trả về** dùng cụ thể, tránh {{List<?>}} làm caller phải xử lý kiểu ẩn.
+
+### Pitfall production
+- **Raw type {{List}}:** tắt kiểm tra kiểu, sinh cảnh báo, có thể ném {{ClassCastException}} ở nơi gọi khác, xa chỗ gây lỗi.
+- **{{List<Object>}} không nhận {{List<String>}}** (invariant); cần wildcard.
+- **{{extends}} destination không add được; {{super}} source chỉ đọc {{Object}}.**
+- **Lạm dụng wildcard ở trả về:** caller nhận {{List<?>}} và làm gì với nó được ít.
+
+### Ví dụ đời thực (production)
+Thư viện báo cáo nội bộ có hàm xuất dữ liệu ra Excel: ban đầu khai báo {{xuat(List<NguonDuLieu> src, List<Object> dst)}} → caller mang {{List<SanPham>}} bị lỗi biên dịch vì invariant; team bỏ cảnh báo và dùng raw type {{List}}. Sau đó giao dịch lẫn loại trong cùng danh sách, ném {{ClassCastException}} khoảng 3 ca/quý, lỗi chỉ phát hiện ở regression test muộn. Refactor sang {{xuat(List<? extends NguonDuLieu> src, List<? super DongBo> dst)}}: caller truyền {{List<SanPham>}}, {{List<HoaDon>}} hoặc {{List<Object>}} đều được, kiểm tra kiểu xảy ra lúc biên dịch. Bật {{-Xlint:unchecked -Werror}} cho module, sửa lại 12 điểm gọi raw type. Kết quả: 0 lỗi {{ClassCastException}} do kiểu trong 6 tháng sau, lỗi loại chuyển từ runtime thành **lỗi biên dịch**.
+
+### Trả lời mẫu khi phỏng vấn
+"Generic trong Java là invariant: List of Integer không phải subtype của List of Number, nếu không sẽ thêm Integer vào danh sách String bị hỏng kiểu. Wildcard mở rộng an toàn theo một chiều theo quy tắc PECS: nguồn chỉ dùng để đọc thì dùng extends, đích chỉ dùng để ghi thì dùng super, như phương thức sao chép phần tử từ danh sách nguồn sang danh sách đích. Với List<?> compiler tạo kiểu capture of ? ẩn danh, bạn chỉ đọc được Object và không thể thêm String vào vì danh sách thực tế có thể là List<Integer>. Nếu cần ghi, viết generic method <T> để caller cung cấp kiểu rõ ràng. Khi thiết kế API thư viện, tôi đặt wildcard ở tham số vào để khách hàng truyền nhiều loại hơn, kiểu trả về dùng cụ thể, và bật -Werror để lỗi lộ ra lúc biên dịch chứ không phải runtime."
+
+> Senior tip: Wildcard chỉ ở tham số vào, kiểu trả về dùng cụ thể; tránh raw type; bật -Xlint:unchecked -Werror; nếu team mới với generic, bắt đầu từ generic method <T> trước wildcard phức tạp.`,
+  follow: [
+    'Vì sao {{List<Integer>}} không phải subtype của {{List<Number>}}?',
+    '{{List<?>}} đọc được gì và ghi được gì?',
+    'Khi nào dùng generic method {{<T>}} thay vì wildcard?'
+  ],
+  tags: ['generics', 'wildcard', 'PECS', 'capture of ?', 'invariant', 'raw type', 'API design'],
+},
 );
