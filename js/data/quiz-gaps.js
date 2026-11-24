@@ -2699,7 +2699,7 @@ Conditional GET: client có bản cache với ETag "abc123". Nếu server ETag c
 > Senior tip: combine ETag với Cache-Control để giảm tải API và cải thiện latency.`
 },
 {
-  id: 'qz-devops-094',
+  id: 'qz-devops-124',
   topic: 'devops',
   q: `Khác biệt chính giữa git rebase và git merge là gì?`,
   options: [
@@ -2722,7 +2722,7 @@ Conditional GET: client có bản cache với ETag "abc123". Nếu server ETag c
 > Senior tip: dùng rebase cho branch cá nhân trước khi PR; dùng merge (hoặc squash merge) khi tích hợp vào main.`
 },
 {
-  id: 'qz-devops-095',
+  id: 'qz-devops-125',
   topic: 'devops',
   q: `Bạn cần đưa một commit từ branch feature sang main mà không merge cả branch. Lệnh nào đúng?`,
   options: ['git cherry-pick <commit>', 'git rebase main', 'git merge --squash feature', 'git apply patch.diff'],
@@ -2736,10 +2736,10 @@ cherry-pick lấy diff của commit chỉ định và áp lên HEAD hiện tại
 - Nếu commit phụ thuộc commit trước, cherry-pick có thể conflict.
 - Sau cherry-pick, commit gốc và mới có hash khác; merge sau có thể gây conflict.
 
-> Senior tip: cherry-pick hotfix vào main rồi merge main zurück vào feature để đồng bộ.`
+> Senior tip: cherry-pick hotfix vào main rồi merge main về feature để đồng bộ.`
 },
 {
-  id: 'qz-devops-096',
+  id: 'qz-devops-126',
   topic: 'devops',
   q: `Bạn muốn huỷ commit cuối cùng đã push lên remote mà không làm mất lịch sử. Lệnh nào đúng?`,
   options: ['git reset --hard HEAD~1', 'git revert HEAD', 'git checkout HEAD~1', 'git clean -fd'],
@@ -2753,7 +2753,7 @@ cherry-pick lấy diff của commit chỉ định và áp lên HEAD hiện tại
 > Senior tip: trên main/shared, luôn revert; reset chỉ dùng local chưa push.`
 },
 {
-  id: 'qz-devops-097',
+  id: 'qz-devops-127',
   topic: 'devops',
   q: `Fast-forward merge xảy ra khi nào?`,
   options: [
@@ -2775,7 +2775,7 @@ Nếu main chưa advance so với feature, merge chỉ di chuyển con trỏ mai
 > Senior tip: trên main, dùng --no-ff để audit rõ ràng từng feature.`
 },
 {
-  id: 'qz-devops-098',
+  id: 'qz-devops-128',
   topic: 'devops',
   q: `Lệnh nào lưu tạm thay đổi chưa commit để chuyển branch?`,
   options: ['git stash', 'git commit --amend', 'git reset --soft', 'git checkout -- .'],
@@ -2792,7 +2792,7 @@ stash lưu working tree + index vào stack, working tree sạch. Dùng {{git sta
 > Senior tip: stash với message để dễ quản lý: {{git stash push -m "wip: login"}}.`
 },
 {
-  id: 'qz-devops-099',
+  id: 'qz-devops-129',
   topic: 'devops',
   q: `Để kiểm tra port 8080 đang được process nào listen, lệnh nào phù hợp?`,
   options: ['top', 'ss -lntp | grep :8080', 'lsof -i :8080', 'Cả B và C'],
@@ -2811,7 +2811,7 @@ stash lưu working tree + index vào stack, working tree sạch. Dùng {{git sta
 > Senior tip: {{ss -lntp}} là lệnh đầu tiên khi debug "port already in use".`
 },
 {
-  id: 'qz-devops-100',
+  id: 'qz-devops-130',
   topic: 'devops',
   q: `Trong top, cột %CPU hiển thị >100% cho một process. Điều đó nghĩa là gì?`,
   options: ['CPU quá tải, hệ thống sẽ crash', 'Process dùng nhiều hơn 1 core (top mặc định theo CPU logical)', 'Lỗi hiển thị', 'Process đang sleep'],
@@ -2828,7 +2828,7 @@ top mặc định %CPU tính trên một CPU; trên máy nhiều core, process �
 > Senior tip: khi CPU cao, kiểm tra thread count và GC; với Java, jstack để xem thread đang làm gì.`
 },
 {
-  id: 'qz-devops-101',
+  id: 'qz-devops-131',
   topic: 'devops',
   q: `Lệnh grep nào tìm lỗi "OutOfMemory" trong file log lớn mà không load toàn bộ file vào RAM?`,
   options: ['cat app.log | grep OOM', 'grep "OutOfMemory" app.log', 'less app.log | grep OOM', 'tail -f app.log | grep OOM'],
@@ -2845,7 +2845,7 @@ grep đọc file theo stream, không load toàn bộ. {{cat | grep}} tạo thêm
 > Senior tip: {{grep -n "OutOfMemory" app.log}} kèm -n để có số dòng; combine với tail -f khi đang theo dõi.`
 },
 {
-  id: 'qz-devops-102',
+  id: 'qz-devops-132',
   topic: 'devops',
   q: `Chmod 755 trên một file thực thi có ý nghĩa gì?`,
   options: ['Owner rwx, group r-x, others r-x', 'Owner rw-, group r--, others r--', 'Tất cả đều rwx', 'Chỉ owner đọc'],
@@ -2862,7 +2862,7 @@ grep đọc file theo stream, không load toàn bộ. {{cat | grep}} tạo thêm
 > Senior tip: với secret/config, dùng 600/640; không bao giờ 777 trong production.`
 },
 {
-  id: 'qz-devops-103',
+  id: 'qz-devops-133',
   topic: 'devops',
   multi: true,
   q: `Cron expression "0 2 * * 1-5" chạy khi nào? (Chọn 2)`,
@@ -2884,7 +2884,6 @@ Format: minute hour day-of-month month day-of-week. "0 2 * * 1-5" = phút 0, gi�
 
 > Senior tip: log timezone và dùng UTC nhất quán để tránh lệch giờ.`
 }
-
 ,
 {
   id: 'qz-frontend-033',
