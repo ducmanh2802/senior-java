@@ -7446,5 +7446,457 @@ Một công ty 200 service thấy hoá đơn observability tăng gấp 3 trong m
     '200 service tăng lên 2.000 service: kiến trúc agent, Kafka partition và hot store thay đổi ra sao?'
   ],
   related: ['design-019', 'design-069', 'design-070']
+},
+{
+  id: 'sd-051',
+  title: 'Chấm điểm tín dụng cho vay tiêu dùng (credit scoring)',
+  kind: 'bank',
+  level: 'senior',
+  prompt: `Thiết kế hệ thống chấm điểm tín dụng cho vay tiêu dùng (credit scoring) tại một công ty fintech. Quy mô: 5 triệu người dùng, 20.000 đơn vay/ngày, peak 200 đơn/phút. Yêu cầu: thu thập dữ liệu từ nhiều nguồn (bureau tín dụng, ngân hàng, viễn thông, thương mại điện tử, hành vi app), tính điểm realtime khi khách bấm "Xác nhận vay", giải thích điểm (explainability) cho khách và nhân viên phê duyệt, tuân thủ quy định bảo vệ dữ liệu cá nhân, hỗ trợ A/B test mô hình và rollback. Bạn có 45 phút. Hãy trình bày.`,
+  phases: [
+    { name: 'Requirements', minutes: 5, guide: `Làm rõ functional: lấy dữ liệu từ bureau, ngân hàng, telco, e-commerce, app behavior; tính điểm realtime (< 500 ms); giải thích điểm (top factors); rule engine cho chính sách (tuổi, thu nhập, nợ xấu); A/B test mô hình; audit trail đầy đủ. Non-functional: latency p99, availability, data privacy, model versioning, rollback < 5 phút. Hỏi: bureau sync hay async? Có gọi realtime không? Mô hình hiện tại là rule-based hay ML? Phân biệt scoring (tính điểm) và decisioning (phê duyệt/điều kiện).` },
+    { name: 'Estimation', minutes: 5, guide: `20.000 đơn/ngày ~ 0,23 đơn/s trung bình, peak 200 đơn/phút ~ 3,3 đơn/s. Mỗi đơn gọi 5-8 nguồn dữ liệu ngoài, timeout per nguồn 100-300 ms, tổng scoring path < 500 ms p99; cần parallel fetch, timeout chặt, fallback cache. Dữ liệu feature: ~200 features/người, 5 triệu người = 1 tỷ feature rows; feature store partition theo user_id. Model inference < 50 ms. Lưu application log để audit 5 năm. Kết luận: scoring path timeout < 500 ms nhờ cache hit rate cao, feature store cache, model serving tách biệt.` },
+    { name: 'API & data model', minutes: 5, guide: `API: POST /applications (submit), GET /applications/{id}/score (tính điểm), POST /applications/{id}/decision (rule engine), GET /applications/{id}/explanation. Bảng application (id, user_id, idem_key unique, status, product_id, requested_amount, created_at), feature_snapshot (application_id, feature_name, feature_value, source, fetched_at), score_result (application_id, model_version, score, probability_default, top_factors jsonb, computed_at), decision (application_id, rule_version, action APPROVE/REJECT/MANUAL_REVIEW, conditions jsonb, decided_at). Model registry: model_version, artifact_uri, metrics, status.` },
+    { name: 'High-level design', minutes: 15, guide: `Vẽ: Client -> API -> Application service -> Feature aggregator (parallel fetch bureau, bank, telco, ecom, app behavior với timeout/fallback) -> Feature store (cache) -> Model serving (inference) -> Score result -> Rule engine (chính sách) -> Decision. Model registry quản lý version, A/B traffic split. Audit log ghi mọi bước. Giải thích vì sao feature aggregator tách biệt, caching strategy, và rollback model.` },
+    { name: 'Deep dive', minutes: 15, guide: `Đào sâu: feature store (online/offline), điểm tín dụng là xác suất vỡ nợ (PD), explainability (SHAP/LIME) tính top factors, rule engine như decision table, A/B test bằng traffic split và statistical guardrails, data lineage và consent, failure modes (bureau down, model drift, feature staleness), monitoring (score distribution, approval rate, model latency, feature freshness). Feature aggregator timeout < 500 ms p99 nhờ cache hit rate cao và timeout chặt per nguồn.` }
+  ],
+  rubric: [
+    'Làm rõ yêu cầu, phân biệt scoring (tính điểm) và decisioning (phê duyệt), con số scale',
+    'Feature aggregator parallel fetch với timeout/fallback cho từng nguồn dữ liệu ngoài',
+    'Feature store online/offline: online Redis cache cho realtime, offline warehouse cho training',
+    'Model serving tách biệt (TensorFlow Serving/TorchServe/ONNX), inference < 50 ms',
+    'Explainability: SHAP values tính top factors, trả về cho khách và nhân viên phê duyệt',
+    'Rule engine: decision table versioned, điều kiện (tuổi, thu nhập, nợ xấu, điểm cắt), action',
+    'Model registry + A/B test: traffic split, guardrails (approval rate, bad rate, population stability index)',
+    'Data privacy: consent ghi nhận, PII che khi log, data lineage, right to be forgotten',
+    'Rollback model < 5 phút: feature flag model version, canary deploy, metric guardrails',
+    'Giám sát: score distribution drift, PSI, approval rate, bad rate, feature freshness, bureau success rate'
+  ],
+  reference: `**Tóm tắt:** Credit scoring là bài toán **tính xác suất vỡ nợ (PD) realtime từ nhiều nguồn dữ liệu ngoài, rồi áp dụng rule engine để ra quyết định**. Ba cột sống: (1) **Feature aggregator** gọi song song bureau, ngân hàng, telco, e-com, app behavior với timeout/fallback; (2) **Feature store** online cache cho realtime, offline cho training; (3) **Model serving + Rule engine** tách biệt — model chỉ trả PD, rule engine áp dụng chính sách nghiệp vụ. Explainability (SHAP) bắt buộc để giải thích cho khách và tuân thủ. Model registry quản lý version, A/B test có guardrails, rollback < 5 phút bằng feature flag.
+  
+### Giải thích thuật ngữ (đọc trước)
+- **Credit scoring / chấm điểm tín dụng:** tính xác suất một người vay không trả nợ (Probability of Default - PD) dựa trên lịch sử và hành vi.
+- **Bureau tín dụng (Credit Bureau):** tổ chức tập trung lịch sử vay/trả nợ của người dân (Ví dụ: CIC - Trung tâm Thông tin CREDIT tại Việt Nam).
+- **PD (Probability of Default):** xác suất vỡ nợ trong 12 tháng tới; điểm score thường là biến đổi mono của PD (ví dụ score = 600 - 50 * ln(PD/(1-PD))).
+- **Feature store:** kho lưu trữ feature đã tính toán; online (Redis) cho inference realtime, offline (data warehouse) cho training.
+- **Rule engine / Decisioning:** áp dụng chính sách nghiệp vụ trên điểm và feature (ví dụ: score < 500 -> REJECT; score 500-600 -> MANUAL_REVIEW; có nợ xấu -> REJECT).
+- **SHAP (SHapley Additive exPlanations):** phương pháp giải thích mô hình ML, tính đóng góp của từng feature vào điểm của một cá thể cụ thể.
+- **PSI (Population Stability Index):** chỉ số đo sự dịch chuyển phân bố score của population so với lúc train; PSI > 0.25 là drift đáng báo động.
+- **Guardrails:** các ràng buộc an toàn khi A/B test (ví dụ bad rate không tăng > 10% so với control).
+
+### Yêu cầu và quy mô
+- 5 triệu người dùng, 20.000 đơn/ngày, peak 200 đơn/phút (~3,3 đơn/s).
+- Nguồn dữ liệu: bureau (CIC), ngân hàng (open banking), viễn thông (telco), thương mại điện tử, hành vi trong app.
+- Tính điểm realtime < 500 ms khi khách bấm "Xác nhận vay".
+- Giải thích điểm (top factors) cho khách và nhân viên phê duyệt.
+- Tuân thủ bảo vệ dữ liệu cá nhân (consent, PII masking, right to be forgotten).
+- Hỗ trợ A/B test mô hình và rollback < 5 phút.
+
+### Ước lượng
+| Đại lượng | Phép tính | Kết quả |
+|---|---|---|
+| Đơn trung bình | 20.000 / 86.400 | ~0,23 đơn/s |
+| Đơn đỉnh | 200 / 60 | ~3,3 đơn/s |
+| Nguồn dữ liệu/đơn | 5-8 nguồn | parallel fetch |
+| Timeout nguồn ngoài | 100-300 ms | tổng < 500 ms (p99) |
+| Feature/người | ~200 features | feature vector |
+| Tổng feature rows | 5 triệu x 200 | 1 tỷ rows |
+| Model inference | - | < 50 ms (ONNX/TensorRT) |
+| Audit retention | - | 5 năm |
+
+Điểm nghẽn: **gọi nguồn ngoài** (bureau, ngân hàng) chậm và không ổn định; **feature freshness** (dữ liệu cũ cho điểm sai); **model drift** theo thời gian.
+
+### Feature aggregator (điểm nhạy cảm nhất)
+- Gọi **song song** 5-8 nguồn: bureau, ngân hàng (statement, loan), telco (top-up, usage), e-com (mua sắm, trả góp), app behavior (session, click, device).
+- Mỗi nguồn có **timeout riêng** (bureau 300 ms, ngân hàng 300 ms, telco 200 ms, e-com 200 ms, app 100 ms) — **tổng timeout scoring path < 500 ms** (p99).
+- **Fallback**: nếu nguồn timeout/lỗi, dùng cached feature (nếu có trong feature store online, max age 24h) hoặc default value (neutral), ghi flag {{code}}feature_missing: true{{/code}} để rule engine xem xét. Với bureau (ngu quan trọng nhất), cache hit rate phải > 90% để đảm bảo SLA.
+- Idempotent: application_id + source unique, retry an toàn.
+- Kết quả ghi feature_snapshot (application_id, feature_name, value, source, fetched_at) cho audit và training.
+
+### Feature store: online / offline
+- **Offline (training):** Data warehouse (BigQuery/Snowflake/ClickHouse), partition theo ngày, feature vector đầy đủ cho training batch hàng tuần.
+- **Online (inference):** Redis cluster, key = {{code}}user_id:feature_name{{/code}}, value = feature_value + timestamp. TTL 24-48h. Inference đọc online store; nếu miss -> tính on-the-fly (nếu feature tính nhanh) hoặc fallback default.
+- **Feature freshness metric**: theo dõi % feature có age > 24h; alert nếu > 5%.
+
+### Model serving
+- Model train offline (XGBoost/LightGBM/Neural Net) -> export **ONNX** -> deploy lên **model server** (Triton/TorchServe/TensorFlow Serving) hoặc embed ONNX Runtime trong service.
+- Inference < 50 ms (không tính feature fetch).
+- **Model versioning**: mỗi model có version (v1.2.3), metrics (AUC, KS, PSI trên validation), artifact_uri.
+- **Traffic split**: feature flag hoặc nginx split (90% control, 10% treatment). Guardrails: treatment bad rate không tăng > 10% so với control, approval rate không giảm > 20%, PSI < 0.1.
+
+### Explainability (SHAP)
+- Mô hình tree-based (XGBoost/LightGBM) tính SHAP values rất nhanh (TreeSHAP).
+- Trả về **top 5-7 factors** đóng góp lớn nhất vào điểm của cá thể đó (ví dụ: "Số lượng truy vấn CIC 6 tháng: -45 điểm", "Thu nhập ổn định 12 tháng: +30 điểm").
+- Lưu top_factors trong score_result để audit và hiển thị cho khách/nhân viên.
+
+### Rule engine (Decisioning)
+- Tách biệt hoàn toàn với model: model chỉ trả PD/score, rule engine áp dụng chính sách.
+- **Decision table versioned** (rule_version): mỗi row là một rule (condition -> action).
+- Ví dụ rule:
+  - IF has_bad_debt = true THEN REJECT (hard rule)
+  - IF age < 20 OR age > 65 THEN REJECT
+  - IF score >= 650 AND income_verified = true THEN APPROVE
+  - IF score 550-649 THEN MANUAL_REVIEW
+  - ELSE REJECT
+- Action: APPROVE / REJECT / MANUAL_REVIEW / APPROVE_WITH_CONDITIONS (giảm hạn mức, tăng lãi, yêu cầu bảo chứng).
+- Rule engine chạy < 10 ms; decision log ghi application_id, rule_version, action, matched_rules.
+
+### Model registry & A/B test
+- Model registry lưu: version, artifact_uri, training_date, dataset_version, metrics (AUC, KS, Gini, PSI), status (STAGING/PRODUCTION/ARCHIVED).
+- A/B test: deploy treatment version song song control, traffic split bằng feature flag (ví dụ 10% treatment).
+- **Guardrails** (bắt buộc):
+  - Bad rate treatment <= bad rate control * 1.1
+  - Approval rate treatment >= approval rate control * 0.8
+  - PSI score distribution treatment vs control < 0.1
+  - Sample size đủ power (minimum 1000 ứng dụng/treatment)
+- Nếu vi phạm guardrail -> tự động rollback treatment (feature flag off) và alert.
+
+### Data privacy & compliance
+- **Consent**: mỗi lần submit đơn ghi nhận consent_id, scope (bureau, bank, telco, ecom, app), expiry.
+- **PII masking**: log không ghi CCCD, số thẻ, số điện thoại đầy đủ; hash (SHA-256 + salt) khi cần join.
+- **Data lineage**: feature_snapshot ghi source, fetched_at; có thể truy vết feature nào từ đâu.
+- **Right to be forgotten**: API xoá dữ liệu cá nhân -> xoá feature_snapshot, ẩn PII trong application, ghi audit log deletion.
+- **Data residency**: bureau data không ra khỏi VN; feature store online deploy trong VPC VN.
+
+### Kiến trúc
+~~~text
+Client -> API Gateway -> Application Service
+                                    |
+                            Feature Aggregator (parallel fetch + timeout/fallback)
+                                    |
+                            Feature Store Online (Redis cache)
+                                    |
+                            Model Serving (ONNX, inference < 50ms) -> Score (PD, score, SHAP top factors)
+                                    |
+                            Rule Engine (decision table versioned) -> Decision (APPROVE/REJECT/REVIEW)
+                                    |
+                            Audit Log (kafka -> warehouse) + Notification
+~~~
+
+~~~seq
+title: Chấm điểm và quyết định đơn vay
+actors: Khách | API Gateway | App Service | Feature Aggregator | Feature Store | Model Server | Rule Engine
+Khách -> API Gateway: POST /applications (thông tin cá nhân, consent)
+API Gateway -> App Service: tạo application PENDING
+App Service -> Feature Aggregator: fetch features cho user_id
+Feature Aggregator -> Bureau/Bank/Telco/Ecom/App: parallel call (timeout/fallback)
+Feature Aggregator -> Feature Store: ghi feature_snapshot + cập nhật cache
+Feature Aggregator --> App Service: feature vector
+App Service -> Model Server: inference (feature vector)
+Model Server --> App Service: PD, score, SHAP top_factors
+App Service -> Rule Engine: score + features + rule_version
+Rule Engine --> App Service: decision (APPROVE/REJECT/REVIEW + conditions)
+App Service -> Audit Log: ghi toàn bộ luồng (kafka)
+App Service --> API Gateway: decision + explanation
+API Gateway --> Khách: kết quả + top factors
+~~~
+
+### Failure modes
+| Sự cố | Ảnh hưởng | Cách xử lý |
+|---|---|---|
+| Bureau CIC down / timeout | Thiếu feature quan trọng | Fallback cached feature (max 24h) + flag missing; rule engine có rule "nếu bureau_missing -> MANUAL_REVIEW" |
+| Model server quá tải / lỗi | Không tính được điểm | Circuit breaker; fallback rule-based score (heuristic); alert oncall |
+| Feature staleness > 48h | Điểm sai lệch thực tế | Metric feature_freshness alert; tự động trigger re-fetch batch |
+| Model drift (PSI > 0.25) | Mô hình không còn phù hợp | Monitoring PSI hàng ngày; alert; rollback version trước; retrain |
+| Data leakage (PII trong log) | Vi phạm quy định, phạt | PII masking ở application layer; test tự động scan log; rotation salt |
+| A/B test vi phạm guardrail | Bad rate tăng bất thường | Tự động tắt treatment feature flag; alert; phân tích root cause |
+
+### Giám sát
+- **Score distribution** (histogram theo ngày) so với baseline training.
+- **PSI** hàng ngày so với population training.
+- **Approval rate**, **Bad rate** (vỡ nợ thực tế 30/60/90 ngày) theo model version.
+- **Feature freshness**: % feature age > 24h, > 48h.
+- **Bureau success rate**, latency p50/p99 per source.
+- **Model inference latency** p50/p99.
+- **Rule engine decision distribution** (APPROVE/REJECT/REVIEW ratio).
+- **Drift detection**: feature distribution shift (KS test per feature).
+
+### Ví dụ đời thực
+Một fintech deploy model XGBoost v2.1 thay vì v1.8. Tuần đầu approval rate tăng 15% (tốt) nhưng bad rate 30 ngày tăng từ 2.1% lên 3.8% (vượt guardrail 10%). Hệ thống tự động tắt treatment (feature flag) trong 2 phút. Điều tra: v2.1 train trên dữ liệu có nhiều khách hàng mới (new-to-credit) mà feature bureau thiếu -> SHAP cho thấy bureau_missing weight quá cao. Sửa: thêm rule "bureau_missing -> MANUAL_REVIEW" và retrain v2.2 với feature engineering tốt hơn cho new-to-credit. Sau deploy v2.2: approval rate +12%, bad rate 1.9%.
+
+### Trả lời mẫu khi phỏng vấn
+"Tôi chia scoring path thành ba giai đoạn. Thứ nhất, Feature Aggregator gọi song song 5-8 nguồn dữ liệu ngoài (bureau, ngân hàng, telco, e-com, app behavior) với timeout và fallback riêng cho từng nguồn; nếu nguồn nào fail, dùng cached feature trong Redis (max 24h) và gắn flag missing để rule engine xử lý. Thứ hai, Feature vector vào Model Serving (ONNX trên Triton) inference < 50 ms, trả PD, score và SHAP top factors để giải thích. Thứ ba, Rule Engine tách biệt áp dụng decision table versioned (hard rule nợ xấu, tuổi, điểm cắt) ra quyết định cuối cùng. Model Registry quản lý version, A/B test có guardrails (bad rate, approval rate, PSI), rollback bằng feature flag < 5 phút. Data privacy: consent ghi nhận, PII masking trong log, data lineage, right to be forgotten. Giám sát: score distribution, PSI, approval/bad rate, feature freshness, bureau success rate."
+
+> Senior tip: trong credit scoring, **model chỉ là một phần nhỏ**; phần lớn công sức và rủi ro nằm ở **feature engineering, data quality, và rule engine**. Một model AUC 0.85 với feature bureau missing 30% sẽ cho điểm sai cho 30% khách. Tôi luôn đầu tư vào feature store (online/offline nhất quán), fallback strategy cho từng nguồn, và rule engine versioned riêng model. Và **explainability không phải tùy chọn** — ở Việt Nam, khách hàng có quyền biết tại sao bị từ chối, và regulator sẽ kiểm tra.
+
+`,
+  followups: [
+    'Nếu bureau CIC thay đổi API từ sync sang async (callback/webhook), bạn điều chỉnh kiến trúc feature aggregator thế nào?',
+    'Một khách hàng mới (new-to-credit) không có lịch sử bureau: bạn thiết kế feature và rule thế nào để vẫn chấm được điểm?',
+    'Model drift phát hiện PSI > 0.25 vào thứ 7 tối; quy trình rollback và retrain khẩn cấp của bạn ra sao?',
+    'Cần hỗ trợ đa sản phẩm (vay tiêu dùng, thẻ tín dụng, vay Experian/SCB): bạn tái sử dụng model và rule engine ra sao?',
+    'Regulator yêu cầu audit trail 5 năm với truy vết từng feature đến nguồn: bạn lưu trữ và truy vấn thế nào?'
+  ],
+  related: ['design-005', 'design-028']
+},
+{
+  id: 'sd-052',
+  title: 'Livestream shopping: giỏ hàng + coupon, 100k viewers, chống bán vượt (anti-oversell)',
+  kind: 'bigtech',
+  level: 'lead',
+  prompt: `Thiết kế hệ thống livestream shopping (bán hàng trên livestream) cho một sàn thương mại điện tử. Quy mô: một livestream lớn có **100.000 người xem đồng thời**, **50.000 người thêm vào giỏ**, **10.000 đơn đặt hàng/phút** tại đỉnh (flash sale trong livestream). Yêu cầu: giỏ hàng realtime (thêm/xoá/sửa số lượng), coupon áp dụng tự động (giảm giá, tặng kèm, mua 1 tặng 1), **chống bán vượt hàng (anti-oversell) tuyệt đối**, hiển thị tồn kho còn lại realtime cho người xem, xử lý thanh toán và tạo đơn. Bạn có 45 phút. Hãy trình bày.`,
+  phases: [
+    { name: 'Requirements', minutes: 5, guide: `Làm rõ functional: xem livestream (video), xem sản phẩm ghim, thêm vào giỏ, áp dụng coupon tự động, xem tồn kho realtime, đặt hàng, thanh toán. Non-functional: 100k viewers, 50k giỏ hàng active, 10k orders/min peak (167 đơn/s), tồn kho hiển thị độ trễ < 500 ms, **oversell = 0**, coupon tính đúng, video latency thấp. Hỏi: giỏ hàng lưu server hay client? Coupon stackable không? Tồn kho trung tâm hay per livestream? Có giữ hàng (hold) khi ở giỏ không? Out-of-scope: video streaming CDN, chat, recommendation.` },
+    { name: 'Estimation', minutes: 5, guide: `100k viewers xem -> WebSocket connection 100k. 50k giỏ hàng active -> Redis hash per cart. 10k orders/min = 167 đơn/s peak, flash sale 5-10 phút. Mỗi đơn 3-5 dòng -> 500-800 order lines/s. Tồn kho hiển thị: 100k viewer subscribe stock updates -> fan-out 100k message/s khi stock đổi; cần aggregation/throttle (ví dụ push mỗi 500 ms hoặc delta). Hold TTL 5-10 phút. Kết luận: tách read path (stock display, cart) khỏi write path (checkout), atomic reserve cho oversell=0, WebSocket fan-out có batch.` },
+    { name: 'API & data model', minutes: 5, guide: `API: GET /livestreams/{id}/products (danh sách sản phẩm ghim), POST /carts (tạo/cập nhật giỏ), GET /carts/{id}, POST /carts/{id}/checkout, GET /stock/stream (WebSocket tồn kho realtime). Coupon: POST /coupons/validate {cart_id, coupon_code}. Bảng livestream_product (livestream_id, product_id, sku_id, total_stock, sold_stock, hold_stock, price, display_order), cart (id, user_id, livestream_id, status ACTIVE/CHECKED_OUT/EXPIRED, updated_at), cart_item (cart_id, sku_id, qty, unit_price, applied_coupons jsonb), coupon (id, code, type PERCENT/FIXED/BUY_X_GET_Y/GIFT, conditions jsonb, usage_limit, used_count, valid_from, valid_to), stock_reservation (id, sku_id, cart_id, qty, expires_at, status ACTIVE/COMMITTED/RELEASED).` },
+    { name: 'High-level design', minutes: 15, guide: `Vẽ: Viewer -> CDN (video) + WebSocket (stock updates) -> API Gateway -> Cart service (Redis) + Stock service (atomic reserve) + Coupon service. Checkout -> Order service -> Payment -> Commit reservation. Stock service emit stock change event -> WebSocket fan-out (batch/throttle). Giải thích atomic reserve, hold TTL, coupon engine, và vì sao tách stock display (read) khỏi reserve (write).` },
+    { name: 'Deep dive', minutes: 15, guide: `Đào sâu: atomic reserve (UPDATE ... WHERE available >= qty) chống oversell, hold TTL và job thu hồi, coupon engine (rule-based, stackable, priority), WebSocket fan-out 100k connections (sharding, batch push), idempotency checkout, thanh toán thất bại -> release hold, failure modes (stock service down, WebSocket storm, coupon race), monitoring (oversell count = 0, stock update latency, cart abandonment, coupon error rate).` }
+  ],
+  rubric: [
+    'Làm rõ yêu cầu, con số scale 100k viewers, 10k orders/min, oversell = 0',
+    'Atomic reserve: UPDATE stock SET sold = sold + qty WHERE available >= qty (hoặc available = available - qty, reserved = reserved + qty)',
+    'Hold TTL (5-10 phút) khi thêm vào giỏ, job thu hồi idempotent khi hết hạn/huỷ',
+    'Coupon engine: rule-based, hỗ trợ PERCENT/FIXED/BUY_X_GET_Y/GIFT, stackable, priority, usage limit',
+    'WebSocket fan-out 100k connections: sharding, batch push (throttle 500ms), delta update',
+    'Tách read path (stock display, cart Redis) và write path (atomic reserve, checkout)',
+    'Idempotency checkout: idem_key, trạng thái cart CHECKED_OUT ngăn đặt hai lần',
+    'Thanh toán fail -> release hold (saga hoặc compensating transaction)',
+    'Failure modes: stock service down (circuit breaker, cached stock), WebSocket storm (backpressure), coupon race (distributed lock per cart)',
+    'Giám sát: oversell count = 0, stock update latency p99, cart->checkout conversion, coupon validation latency, WebSocket connection count'
+  ],
+  reference: `**Tóm tắt:** Livestream shopping là bài toán **đọc cực nhiều (100k viewer xem stock realtime), ghi tập trung vào đỉnh (10k orders/min), và ràng buộc cứng oversell = 0**. Ba quyết định chính: (1) **Atomic reserve** ở DB là nguồn sự thật duy nhất — mọi lần thêm giỏ/chốt đơn là một câu UPDATE có điều kiện {{code}}available >= qty{{/code}}; (2) **Hold TTL** khi thêm vào giỏ (5-10 phút) để giữ chỗ, job thu hồi idempotent; (3) **WebSocket fan-out** tồn kho realtime cho 100k viewer dùng sharding + batch push (throttle 500ms, delta) để không ngập server. Coupon engine tách biệt, rule-based, validate tại giỏ và lại tại checkout. Thanh toán fail -> compensating release hold.
+  
+### Giải thích thuật ngữ (đọc trước)
+- **Livestream shopping:** người bán bán hàng trực tiếp qua video livestream; người xem xem video, bấm mua sản phẩm ghim trên màn hình.
+- **Oversell / bán vượt:** bán nhiều hơn số lượng hàng thật trong kho. Đây là sự cố nghiêm trọng: phải hoàn tiền, mất uy tín, có thể vi phạm pháp luật bảo vệ người tiêu dùng.
+- **Hold / giữ hàng tạm:** khi khách thêm vào giỏ, trừ {{code}}available{{/code}} và cộng {{code}}reserved{{/code}} trong 5-10 phút; nếu khách không thanh toán thì nhả lại.
+- **Atomic reserve:** một câu SQL UPDATE có điều kiện {{code}}WHERE available >= qty{{/code}}; nếu affected rows = 0 thì hết hàng, không tạo hold. Đây là cách duy nhất đảm bảo oversell = 0 dưới concurrent cao.
+- **Coupon stackable:** nhiều coupon áp dụng cùng lúc (ví dụ: giảm 10% + freeship + mua 1 tặng 1). Cần quy tắc ưu tiên và giới hạn.
+- **WebSocket fan-out:** server đẩy cập nhật tồn kho đến 100k kết nối WebSocket cùng lúc; cần sharding và batch để không OOM/CPU 100%.
+
+### Yêu cầu và quy mô
+- 100.000 người xem đồng thời một livestream lớn.
+- 50.000 giỏ hàng active (người xem thêm sản phẩm).
+- 10.000 đơn/phút tại đỉnh (flash sale 5-10 phút trong livestream) = ~167 đơn/s.
+- Giỏ hàng realtime: thêm/xoá/sửa số lượng, áp dụng coupon tự động.
+- Tồn kho hiển thị realtime cho 100k viewer (độ trễ < 500 ms).
+- **Chống bán vượt (oversell = 0) tuyệt đối**.
+- Coupon: giảm %, giảm cố định, mua 1 tặng 1, tặng kèm, stackable, usage limit.
+
+### Ước lượng
+| Đại lượng | Phép tính | Kết quả |
+|---|---|---|
+| Viewers | - | 100.000 WebSocket connections |
+| Active carts | - | 50.000 (Redis hash) |
+| Peak orders | 10.000 / 60 | ~167 đơn/s |
+| Order lines | 167 x 4 | ~668 lines/s |
+| Stock updates | mỗi order line giảm stock | ~668 events/s -> fan-out 100k viewers |
+| Hold TTL | 5-10 phút | 50k carts x TTL -> job thu hồi |
+| Coupon validations | thêm giỏ + checkout | ~100k validations/phút đỉnh |
+
+Điểm nghẽn: **WebSocket fan-out 100k connections** (CPU, memory, network), **atomic reserve contention** trên SKU hot, **coupon validation race** khi nhiều người dùng cùng coupon limited.
+
+### Mô hình dữ liệu
+~~~sql
+CREATE TABLE livestream_product (
+  livestream_id  BIGINT NOT NULL,
+  sku_id         BIGINT NOT NULL,
+  total_stock    INT NOT NULL CHECK (total_stock >= 0),
+  sold_stock     INT NOT NULL DEFAULT 0 CHECK (sold_stock >= 0),
+  hold_stock     INT NOT NULL DEFAULT 0 CHECK (hold_stock >= 0),
+  price_minor    BIGINT NOT NULL CHECK (price_minor > 0),
+  display_order  INT NOT NULL DEFAULT 0,
+  PRIMARY KEY (livestream_id, sku_id)
+);
+-- available = total_stock - sold_stock - hold_stock
+
+CREATE TABLE cart (
+  id             UUID PRIMARY KEY,
+  user_id        BIGINT NOT NULL,
+  livestream_id  BIGINT NOT NULL,
+  status         VARCHAR(16) NOT NULL DEFAULT 'ACTIVE',  -- ACTIVE, CHECKED_OUT, EXPIRED
+  idem_key       VARCHAR(64) UNIQUE,
+  created_at     TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_at     TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX idx_cart_user_live ON cart (user_id, livestream_id);
+
+CREATE TABLE cart_item (
+  cart_id           UUID NOT NULL,
+  sku_id            BIGINT NOT NULL,
+  qty               INT NOT NULL CHECK (qty > 0),
+  unit_price_minor  BIGINT NOT NULL,
+  applied_coupons   JSONB NOT NULL DEFAULT '[]',
+  PRIMARY KEY (cart_id, sku_id)
+);
+
+CREATE TABLE coupon (
+  id              UUID PRIMARY KEY,
+  code            VARCHAR(32) NOT NULL UNIQUE,
+  type            VARCHAR(16) NOT NULL,  -- PERCENT, FIXED, BUY_X_GET_Y, GIFT
+  value_minor     BIGINT,                -- cho PERCENT/FIXED
+  conditions      JSONB NOT NULL,        -- {min_order, max_discount, applicable_skus, stackable, priority, buy_x_get_y: {x, y, gift_sku}}
+  usage_limit     INT,
+  used_count      INT NOT NULL DEFAULT 0,
+  valid_from      TIMESTAMPTZ NOT NULL,
+  valid_to        TIMESTAMPTZ NOT NULL,
+  status          VARCHAR(12) NOT NULL DEFAULT 'ACTIVE'
+);
+
+CREATE TABLE stock_reservation (
+  id            UUID PRIMARY KEY,
+  livestream_id BIGINT NOT NULL,
+  sku_id        BIGINT NOT NULL,
+  cart_id       UUID NOT NULL,
+  qty           INT NOT NULL CHECK (qty > 0),
+  expires_at    TIMESTAMPTZ NOT NULL,
+  status        VARCHAR(12) NOT NULL DEFAULT 'ACTIVE',  -- ACTIVE, COMMITTED, RELEASED
+  created_at    TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX idx_reservation_sku_exp ON stock_reservation (livestream_id, sku_id, expires_at) WHERE status = 'ACTIVE';
+~~~
+- {{code}}available = total_stock - sold_stock - hold_stock{{/code}}. Chỉ {{code}}available{{/code}} được bán.
+- {{code}}hold_stock{{/code}} tăng khi thêm giỏ, giảm khi checkout (commit) hoặc huỷ/hết hạn (release).
+- {{code}}sold_stock{{/code}} chỉ tăng khi checkout thành công (thanh toán xong).
+
+### Atomic reserve (chốt chặn oversell)
+Mọi lần giữ hàng (thêm giỏ) và chốt đơn (checkout) đều chạy **một câu SQL atomic**:
+
+~~~sql
+-- Thêm giỏ: reserve hold
+UPDATE livestream_product
+SET hold_stock = hold_stock + :qty
+WHERE livestream_id = :live AND sku_id = :sku
+  AND total_stock - sold_stock - hold_stock >= :qty;
+
+-- Checkout: commit hold -> sold
+UPDATE livestream_product
+SET hold_stock = hold_stock - :qty, sold_stock = sold_stock + :qty
+WHERE livestream_id = :live AND sku_id = :sku
+  AND hold_stock >= :qty;
+~~~
+
+- Nếu {{code}}affected rows = 0{{/code}} -> **hết hàng hoặc không đủ hold**, trả lỗi 409 (OUT_OF_STOCK).
+- Không bao giờ đọc stock rồi mới quyết định (read-then-write) — đó là nguồn oversell.
+- Cùng một SKU, nhiều giỏ hàng cùng reserve: ai UPDATE trước thắng, sau đó available giảm, người sau thấy available = 0.
+
+### Hold TTL và thu hồi
+- Khi thêm giỏ thành công (atomic reserve OK): tạo {{code}}stock_reservation{{/code}} với {{code}}livestream_id, sku_id, cart_id, expires_at = now() + 5-10 phút{{/code}}, status = ACTIVE.
+- **Job nền** quét {{code}}stock_reservation{{/code}} ACTIVE quá hạn: chạy atomic release (lấy {{code}}livestream_id{{/code}} từ reservation):
+
+~~~sql
+UPDATE livestream_product
+SET hold_stock = hold_stock - :qty
+WHERE livestream_id = :live AND sku_id = :sku
+  AND hold_stock >= :qty;
+UPDATE stock_reservation SET status = 'RELEASED' WHERE id = :id AND status = 'ACTIVE';
+~~~
+
+- Job phải **idempotent** (chạy lại nhiều lần không sao) vì có thể chạy trùng.
+- Khi khách huỷ giỏ hoặc checkout thành công: cũng chạy release/commit tương tự, idempotent theo reservation_id.
+
+### Coupon engine
+- **Rule-based**: mỗi coupon là một rule trong bảng {{code}}coupon{{/code}}, {{code}}conditions{{/code}} JSONB chứa toàn bộ logic.
+- Loại coupon:
+  - {{code}}PERCENT{{/code}}: giảm % đơn (ví dụ 10%, {{code}}max_discount{{/code}} limit).
+  - {{code}}FIXED{{/code}}: giảm số tiền cố định (ví dụ 50.000đ).
+  - {{code}}BUY_X_GET_Y{{/code}}: mua X tặng Y (ví dụ mua 2 tặng 1, {{code}}gift_sku{{/code}}).
+  - {{code}}GIFT{{/code}}: tặng sản phẩm kèm khi đủ điều kiện.
+- **Stackable**: {{code}}conditions.stackable = true/false{{/code}}. Nếu false, chỉ áp dụng coupon priority cao nhất.
+- **Priority**: {{code}}conditions.priority{{/code}} (số càng lớn càng ưu tiên). Áp dụng theo priority desc.
+- **Usage limit**: {{code}}usage_limit{{/code}} tổng, {{code}}used_count{{/code}} tăng atomic khi checkout commit.
+- **Validate tại giỏ** (tạm tính) và **validate lại tại checkout** (chốt thực tế) — vì stock/giá có thể đổi.
+- Validation logic:
+  1. Kiểm tra coupon ACTIVE, trong hạn, used_count < usage_limit.
+  2. Kiểm tra điều kiện: min_order, applicable_skus, user_segment.
+  3. Tính discount theo priority, stackable rule.
+  4. {{code}}BUY_X_GET_Y{{/code}}: kiểm tra qty trong giỏ >= X, **atomic reserve hold cho gift_sku** (tương tự SKU thường), thêm gift_sku vào cart_item (qty = Y, price = 0).
+  5. Trả về {{code}}applied_coupons{{/code}} (danh sách coupon_id, discount_minor, gift_items) để hiển thị.
+
+### WebSocket fan-out 100k connections
+- Mỗi viewer mở WebSocket tới {{code}}/stock/stream?livestream_id=X{{/code}}.
+- **Sharding**: 100k connections chia đều cho N WebSocket server (ví dụ 10 server, mỗi server 10k connections). Sticky session hoặc consistent hashing theo {{code}}livestream_id{{/code}}.
+- **Batch push (throttle)**: stock service emit event -> Kafka topic {{code}}stock.changes{{/code}} (partition theo sku_id). **WebSocket servers consume as consumer group**, mỗi server gom event trong **cửa sổ 500 ms**, gộp delta cho cùng SKU, đẩy một message: {{code}}{sku_id, available, sold, hold, timestamp}{{/code}}.
+- **Delta update**: chỉ gửi SKU có thay đổi, không gửi full snapshot.
+- **Backpressure**: nếu client chậm nhận, server buffer tối đa 100 message rồi drop cũ (client reconnect lấy snapshot).
+- **Reconnect**: client reconnect -> GET {{code}}/livestreams/{id}/products{{/code}} lấy snapshot hiện tại -> subscribe WebSocket tiếp.
+
+### Kiến trúc
+~~~text
+Viewer -> CDN (video HLS/DASH)
+Viewer -> WebSocket Server (sharded) <-- Stock Service (Kafka consumer) <-- Stock DB
+Viewer -> API Gateway -> Cart Service (Redis: cart hash, cart_item hash; async persist to PostgreSQL)
+                    -> Coupon Service (validate, compute)
+                    -> Stock Service (atomic reserve) -> Stock DB (PostgreSQL)
+                    -> Order Service -> Payment Gateway
+                    -> Stock Service (commit hold -> sold) -> Stock DB
+                    -> WebSocket Server (emit stock change) -> Viewer
+~~~
+
+~~~seq
+title: Thêm giỏ, checkout và cập nhật tồn kho realtime
+actors: Viewer | API Gateway | Cart Service | Stock Service | Stock DB | WebSocket Server | Kafka
+Viewer -> API Gateway: POST /carts (sku_id, qty)
+API Gateway -> Cart Service: tạo/cập nhật cart Redis
+Cart Service -> Stock Service: reserve hold (sku_id, qty)
+Stock Service -> Stock DB: UPDATE hold_stock WHERE available >= qty (atomic)
+Stock DB --> Stock Service: OK (affected=1)
+Stock Service -> Kafka: emit stock.changed {sku_id, delta_hold: +qty}
+Stock Service -> Cart Service: reservation_id
+Cart Service --> API Gateway: 200 OK (cart updated)
+API Gateway --> Viewer: giỏ hàng đã cập nhật
+Kafka --> WebSocket Server: consume stock.changed
+WebSocket Server -> WebSocket Server: batch 500ms, gom delta
+WebSocket Server --> Viewer: push {sku_id, available: 95, hold: 5}
+---
+Viewer -> API Gateway: POST /carts/{id}/checkout (idem_key, payment_method)
+API Gateway -> Cart Service: lock cart (Redis SETNX), status = CHECKED_OUT
+Cart Service -> Coupon Service: validate coupons (final)
+Cart Service -> Stock Service: commit hold -> sold (sku_id, qty, reservation_id)
+Stock Service -> Stock DB: UPDATE hold_stock-=qty, sold_stock+=qty WHERE hold_stock>=qty
+Stock DB --> Stock Service: OK
+Stock Service -> Kafka: emit stock.changed {sku_id, delta_sold: +qty, delta_hold: -qty}
+Stock Service -> Order Service: tạo đơn, ghi payment
+Order Service -> Payment Gateway: charge
+Payment Gateway --> Order Service: success
+Order Service -> Cart Service: release lock, status = CHECKED_OUT
+Order Service --> API Gateway: order_id
+API Gateway --> Viewer: đặt hàng thành công
+Kafka --> WebSocket Server: push stock update (available giảm)
+---
+Nếu payment fail:
+Order Service -> Stock Service: release hold (compensating)
+Stock Service -> Stock DB: UPDATE hold_stock-=qty WHERE hold_stock>=qty
+Stock Service -> Kafka: emit stock.changed (available tăng)
+~~~
+
+### Failure modes
+| Sự cố | Ảnh hưởng | Cách xử lý |
+|---|---|---|
+| SKU hot: 10k người cùng reserve 1 SKU | Contention DB row lock | Atomic UPDATE queue tự nhiên; p99 reserve < 100ms; client retry exponential |
+| Stock service down | Không reserve được | Circuit breaker; cached available (max age 1s) cho read; write reject 503, client retry |
+| WebSocket storm: 100k reconnect cùng lúc | CPU/memory exhausted | Exponential backoff reconnect; rate limit accept; pre-warm connection pool |
+| Coupon limited usage race | Dùng vượt usage_limit | Atomic UPDATE coupon SET used_count = used_count + 1 WHERE used_count < usage_limit |
+| Thanh toán fail sau commit hold | Hàng đã bán nhưng không thu tiền | Saga: compensating release hold; alert CSKH xử lý thủ công nếu release fail |
+| Job thu hồi hold chạy trùng | Hoàn hold hai lần | UPDATE có điều kiện status = ACTIVE; idempotent |
+| Viewer xem stock stale (WebSocket lag) | Thêm giỏ nhưng đã hết | Reserve atomic sẽ chặn (available = 0); client nhận 409, UI toast "Vừa hết hàng" |
+| Livestream kết thúc, hàng còn hold | Hàng kẹt không bán được | Job hết livestream: release tất cả hold ACTIVE của livestream đó |
+
+### Giám sát
+- **oversell_count = 0** (bất kỳ lúc nào sold_stock > total_stock -> alert P0).
+- Stock update latency p50/p99 (từ DB commit đến WebSocket push).
+- Reserve latency p50/p99 (atomic UPDATE).
+- Cart -> checkout conversion rate.
+- Coupon validation latency, coupon error rate, usage_limit hit rate.
+- WebSocket connections per server, message queue lag, reconnect rate.
+- Hold expiration rate, release rate, commit rate.
+- Payment success/fail rate, compensating release count.
+
+### Ví dụ đời thực
+Một livestream lớn 100k viewers, SKU "Áo hoodie limited" chỉ 500 cái. Lúc 20:00 KOL nói "mở bán", 10k request reserve cùng lúc. Hệ thống cũ đọc stock Redis rồi trừ DB -> 1.200 đơn cùng thấy "còn hàng" -> oversell 700. Đổi sang **atomic UPDATE WHERE available >= qty** tại DB: 500 UPDATE đầu tiên affected=1, 9.500 UPDATE sau affected=0 -> trả 409. **Oversell = 0**. WebSocket fan-out batch 500ms: 100k viewer thấy available giảm từ 500 -> 0 trong 2 giây, mượt mà không lag. Coupon "GIAM20" usage_limit 1.000: atomic UPDATE used_count WHERE used_count < 1000 đảm bảo không vượt limit. Payment fail 2%: compensating release hold tự động, hàng về available trong < 1 giây.
+
+### Trả lời mẫu khi phỏng vấn
+"Tôi thiết kế ba luồng tách biệt. Luồng đọc (xem stock realtime): 100k viewer qua WebSocket sharded, stock service emit change event -> Kafka -> WebSocket server batch push 500ms delta update, không gửi full snapshot. Luồng ghi giỏ hàng: Cart service Redis, khi thêm sản phẩm gọi Stock service chạy **atomic UPDATE hold_stock WHERE available >= qty** — đây là chốt chặn oversell = 0; tạo reservation TTL 5-10 phút. Luồng checkout: lock cart Redis, validate coupon lại (usage_limit atomic), commit hold -> sold (atomic UPDATE hold_stock-=qty, sold_stock+=qty), tạo đơn, thanh toán. Payment fail -> compensating release hold. Coupon engine rule-based, stackable, priority, validate ở giỏ và lại ở checkout. Giám sát: oversell count = 0, stock update latency, reserve latency, coupon usage atomic."
+
+> Senior tip: trong livestream shopping, **oversell = 0 là ràng buộc cứng**, không phải mục tiêu. Cách duy nhất đảm bảo là **atomic reserve ở DB** — không đọc cache, không đọc rồi ghi, không dùng distributed lock riêng. Một câu {{code}}UPDATE ... WHERE available >= qty{{/code}} xử lý xong contention 10k request cùng lúc, ai UPDATE trước thắng. Và **WebSocket fan-out phải batch** — 100k connection đẩy từng event riêng lẻ sẽ ngập CPU/network; gom 500ms đẩy delta là cân bằng tốt giữa realtime cảm giác và chi phí hạ tầng. Coupon usage limit cũng phải atomic UPDATE, đừng bao giờ {{code}}SELECT used_count{{/code}} rồi {{code}}UPDATE{{/code}} — đó là race condition kinh điển.
+`,
+  followups: [
+    'Nếu một SKU có 10.000 đơn reserve cùng lúc (chỉ 500 hàng), 9.500 đơn bị 409: bạn thiết kế UX và retry thế nào để khách không bực mình?',
+    'Cần hỗ trợ "mua ngay" (skip giỏ hàng, reserve + checkout một request): bạn gộp atomic reserve và commit như thế nào vẫn an toàn?',
+    'Livestream có nhiều seller cùng bán trên một platform (multi-tenant stock): bạn cô lập stock và oversell per seller ra sao?',
+    'Coupon "mua 1 tặng 1" nhưng gift_sku cũng là sản phẩm hot, có stock riêng: bạn reserve gift_sku atomic như thế nào?',
+    'Video latency (HLS) 10-15 giây, mà stock WebSocket realtime < 500ms: khách xem video thấy "còn hàng" nhưng WebSocket báo "hết" -> bạn đồng bộ trải nghiệm ra sao?'
+  ],
+  related: ['design-005', 'design-028', 'design-067']
 }
 ];
