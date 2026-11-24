@@ -4267,5 +4267,609 @@ Nếu ap-southeast-1 unhealthy -> chỉ còn us-east-1 healthy -> chọn us-east
 - Hỗ trợ encryption.
 
 > Senior tip: migrate gp2 -> gp3 để tối ưu cost/perf.`
+},
+{
+  id: 'qz-aws-074', topic: 'aws',
+  q: 'Hệ thống đặt hàng cần xử lý thanh toán sau khi khách hàng đặt: mỗi đơn chỉ được xử lý bởi **một** worker; nếu worker bị lỗi, đơn đó quay lại hàng đợi để worker khác lấy. Dịch vụ AWS phù hợp nhất là gì?',
+  options: [
+    'SQS Standard: mỗi message được giao cho một consumer, ẩn trong khoảng visibility timeout, và quay lại hàng đợi nếu consumer không gọi DeleteMessage kịp thời',
+    'SNS topic: pub/sub fan-out, mỗi message được gửi đến tất cả subscriber',
+    'EventBridge event bus: route sự kiện theo rule đến target như Lambda hoặc SQS',
+    'Kinesis Data Streams: stream dữ liệu, consumer đọc qua shard iterator và có thể replay dữ liệu cũ'
+  ],
+  answer: 0,
+  explain: `**Tóm tắt:** SQS Standard là hàng đợi **competing consumers** — mỗi message chỉ đến một consumer, và nếu không được xoá trong visibility timeout thì message hiện lại để consumer khác lấy. Đúng với yêu cầu "mỗi đơn một worker, worker lỗi thì đơn quay lại".
+
+### Cơ chế SQS
+1. Producer gửi message vào queue.
+2. Consumer nhận message (ReceiveMessage), message bị ẩn trong **visibility timeout** (mặc định 30 giây, tối đa 12 giờ).
+3. Nếu xử lý xong, consumer gọi {{DeleteMessage}}. Nếu hết visibility timeout mà chưa xoá, message trở lại visible và consumer khác có thể nhận.
+4. SQS là **at-least-once**: message có thể được giao nhiều lần, nên consumer phải thiết kế **idempotent** (dùng mã đơn làm khóa chuẩn hóa).
+
+### Vì sao các phương án còn lại sai
+- **SNS**: pub/sub, một message tới nhiều subscriber — không phù hợp khi mỗi đơn chỉ một worker xử lý.
+- **EventBridge**: event bus định tuyến theo rule, không phải hàng đợi worker lấy theo visibility timeout.
+- **Kinesis Data Streams**: stream cho phân tích thời gian thực, consumer tự quản lý vị trí đọc qua shard iterator; thiết kế phức tạp hơn cho trường hợp "mỗi đơn một worker".
+
+> Senior tip: thiết kế consumer idempotent trước, rồi gán visibility timeout dài hơn thời gian xử lý p99 cộng biên. Theo dõi metric {{ApproximateAgeOfOldestMessage}} để phát hiện consumer bị kẹt muộn.`
+},
+{
+  id: 'qz-aws-055', topic: 'aws', multi: true,
+  q: 'Về SQS, SNS, EventBridge và Kinesis Data Streams, phát biểu nào đúng? (Chọn 2)',
+  options: [
+    'SQS Standard đảm bảo đúng thứ tự message và xử lý mỗi message đúng một lần (exactly-once)',
+    'SNS là mô hình pub/sub: một bản tin được gửi đến nhiều subscriber khác nhau (fan-out)',
+    'Kinesis Data Streams chỉ giữ dữ liệu tối đa 24 giờ, không thể kéo dài',
+    'EventBridge Archive có thể lưu sự kiện trong khoảng thời gian tuỳ chọn và replay lại cho target sau này'
+  ],
+  answer: [1, 3],
+  explain: `**Tóm tắt:** SNS phục vụ pub/sub fan-out; EventBridge Archive lưu sự kiện và replay lại cho target sau này. SQS Standard là at-least-once với thứ tự best-effort; Kinesis có thể lưu dữ liệu từ 24 giờ lên tới 365 ngày.
+
+### Bảng so sánh
+| Dịch vụ | Mô hình | Thứ tự | Ghi nhớ |
+|---|---|---|---|
+| SQS Standard | Hàng đợi competing consumers | Best-effort | At-least-once, có thể trùng message |
+| SNS | Pub/sub fan-out | Không cam kết | Một tin → nhiều subscriber |
+| EventBridge | Event bus, rule định tuyến | Không cam kết | Archive + replay sự kiện |
+| Kinesis Data Streams | Stream, shard iterator | Theo shard (partition key) | Lưu 24 giờ–365 ngày, replay được |
+
+### Vì sao các phương án còn lại sai
+- **SQS Standard exactly-once**: sai, SQS Standard là at-least-once (có thể giao lại message) và thứ tự chỉ best-effort. Muốn đúng thứ tự trong mỗi nhóm thì dùng SQS FIFO với {{MessageGroupId}}, đồng thời làm consumer idempotent.
+- **Kinesis chỉ 24 giờ**: 24 giờ là mặc định, có thể cấu hình lưu giữ lên tới 365 ngày.
+
+> Senior tip: chọn Kinesis khi cần lưu sự kiện dài hạn và nhiều consumer replay ở vị trí khác nhau; chọn EventBridge khi cần định tuyến theo rule và lưu trữ ngắn hạn; chọn SNS khi cần fan-out đến nhiều dịch vụ; chọn SQS khi cần hàng đợi công việc cho worker pool.`
+},
+{
+  id: 'qz-aws-056', topic: 'aws',
+  q: 'API đồng bộ viết bằng Java 21 Spring Boot trên Lambda có cold start 4–6 giây. Yêu cầu latency ổn định ngay từ request đầu và chấp nhận chi phí giữ môi trường ấm. Lựa chọn nào phù hợp nhất?',
+  options: [
+    'Bật SnapStart: cold start bị xóa hẳn và miễn phí, vì lý do này luôn ưu tiên hơn Provisioned Concurrency',
+    'Dùng Provisioned Concurrency: giữ sẵn số môi trường Lambda đã khởi tạo, trả tiền liên tục trong thời gian cung cấp, phù hợp latency nghiêm ngặt',
+    'SnapStart áp dụng ngay cho bản $LATEST sau khi bật, không cần publish version hay alias',
+    'Tăng memory của hàm lên mức cao nhất: CPU tăng theo nên cold start Java biến mất hoàn toàn'
+  ],
+  answer: 1,
+  explain: `**Tóm tắt:** Provisioned Concurrency giữ sẵn môi trường đã khởi tạo (init đã chạy), nên request đầu không đợi init — đúng cho latency nghiêm ngặt, nhưng bạn trả tiền cho thời gian cung cấp. SnapStart chỉ làm nhanh phần restore từ snapshot, không xóa hoàn toàn cold start và chỉ áp dụng cho published version/alias.
+
+### So sánh
+| Tính năng | Provisioned Concurrency | SnapStart |
+|---|---|---|
+| Môi trường | Giữ sẵn, đã khởi tạo | Snapshot sau init, restore khi cold start |
+| Chi phí | Trả liên tục khi cung cấp | Không thêm phí (phiên bản đã xuất bản) |
+| Áp dụng | Alias của hàm | Published version / alias, không phải $LATEST |
+| Hiệu quả | Latency ổn định ngay từ đầu | Giảm phần lớn thời gian init |
+
+### Lưu ý SnapStart với Java
+Trạng thái trong snapshot (số ngẫu nhiên, ID duy nhất, kết nối mạng/DB) sẽ dùng chung giữa các môi trường; phải tạo lại sau restore qua runtime hook {{afterRestore}} (CRaC API).
+
+### Vì sao các phương án còn lại sai
+- **SnapStart xóa hẳn cold start và miễn phí**: SnapStart giảm thời gian restore nhưng vẫn có cold start, và chỉ áp dụng published version/alias. "Luôn ưu tiên" cũng sai, tuỳ mức độ chấp nhận latency và chi phí.
+- **SnapStart áp dụng $LATEST ngay**: phải publish version rồi gán alias mới bật SnapStart được.
+- **Tăng memory**: CPU gia tăng theo memory nhưng cold start Java chủ yếu do nạp class, khởi tạo Spring Context và JIT warm-up — không biến mất hoàn toàn.
+
+> Senior tip: nếu latency p99 phải chặt chẽ, dùng Provisioned Concurrency; nếu chỉ muốn giảm cold start phổ thông, hãy kết hợp SnapStart, AppCDS và giảm kích thước dependency. Luôn đo {{Init Duration}} qua log REPORT của Lambda trước khi quyết định.`
+},
+{
+  id: 'qz-aws-057', topic: 'aws',
+  q: 'App Spring Boot ghi đơn hàng vào RDS Primary, sau đó ngay lập tức đọc lại đơn từ Read Replica để hiển thị "đơn hàng của bạn". Khách hàng thỉnh thoảng không thấy đơn vừa tạo. Nguyên nhân và cách xử lý nào đúng?',
+  options: [
+    'Read replica replicate đồng bộ nên luôn có dữ liệu mới nhất sau khi ghi',
+    'Read replica tự động failover khi primary chết nên không cần xử lý gì thêm',
+    'Tăng Multi-AZ standby sẽ loại bỏ replica lag giữa primary và replica',
+    'Replication từ primary sang replica là bất đồng bộ, có replica lag; đọc ngay sau ghi có thể thấy dữ liệu cũ; luồng đọc-your-writes phải chuyển về primary hoặc chờ replica lag về ngưỡng an toàn'
+  ],
+  answer: 3,
+  explain: `**Tóm tắt:** Read replica của RDS replicate **bất đồng bộ**, nên có chênh lệch thời gian (replica lag). Đọc ngay sau khi ghi có thể thấy dữ liệu cũ — đây là vấn đề đọc-của-bạn-ghi (read-your-writes consistency).
+
+### Cơ chế
+1. App ghi vào primary, transaction commit.
+2. Primary gửi log thay đổi sang replica qua replication stream (bất đồng bộ).
+3. Replica áp dụng log, có thể mất vài milliseconds đến vài giây tùy tải.
+4. Nếu app đọc replica trong khoảng đó, kết quả chưa có dữ liệu mới.
+
+### Cách xử lý
+- Luồng "ghi xong rồi đọc ngay" (tra cứu đơn vừa tạo, dashboard cá nhân): gửi về **primary**.
+- Theo dõi metric {{ReplicaLag}} của CloudWatch; khi lag vượt ngưỡng, chuyển đọc về primary hoặc thông báo khách hàng "đơn đang được xử lý".
+- Read replica dùng để scale đọc cho các truy vấn không nhạy cảm với độ mới (báo cáo, phân tích).
+
+### Vì sao các phương án còn lại sai
+- **Replicate đồng bộ**: sai, read replica là bất đồng bộ. (Multi-AZ DB instance là đồng bộ nhưng standby không phục vụ đọc.)
+- **Tự động failover**: với RDS PostgreSQL, replica phải được **promote thủ công** (hoặc qua Aurora có cơ chế failover riêng); replication bất đồng bộ nên có thể mất dữ liệu chưa replicate.
+- **Multi-AZ loại bỏ lag**: Multi-AZ standby không nhận kết nối đọc và không giải quyết lag trên read replica.
+
+> Senior tip: khi thiết kế API "ghi xong xem lại ngay", hãy gửi đọc về primary hoặc dùng session stickiness; đừng để trải nghiệm khách hàng phụ thuộc vào replica lag không kiểm soát.`
+},
+{
+  id: 'qz-aws-058', topic: 'aws',
+  q: 'S3 bucket mới tạo, PUT object thành công. Client ngay lập tức GET object đó. Khẳng định nào đúng về consistency?',
+  options: [
+    'GET luôn thấy đối tượng vừa PUT (strong read-after-write), và điều này cũng áp dụng cho overwrite PUT và DELETE',
+    'S3 chỉ đảm bảo read-after-write cho PUT đối tượng mới; overwrite PUT và DELETE chỉ eventual consistency',
+    'Phải đợi khoảng 60 giây sau PUT mới gọi GET được',
+    'ListObjects ngay sau PUT luôn thấy đối tượng mới ngay lập tức'
+  ],
+  answer: 0,
+  explain: `**Tóm tắt:** Từ cuối năm 2020, S3 cung cấp **strong read-after-write consistency** cho tất cả PUT (bao gồm ghi đè đối tượng hiện có) và DELETE trong mọi region. GET ngay sau PUT sẽ thấy dữ liệu mới. Các thao tác liệt kê (ListObjects) vẫn là eventual consistency.
+
+### Ví dụ
+~~~text
+PUT s3://bucket/invoice-123.pdf   -> thành công
+GET s3://bucket/invoice-123.pdf   -> ngay lập tức thấy nội dung vừa upload
+PUT ghi đè cùng key               -> GET sau đó thấy bản mới (strong consistency)
+~~~
+
+### Vì sao các phương án còn lại sai
+- **Chỉ đối tượng mới**: đã lỗi thời; kể từ 2020 S3 mở rộng strong consistency cho overwrite và DELETE.
+- **Đợi 60 giây**: không cần, strong consistency có hiệu lực ngay.
+- **ListObjects ngay thấy**: liệt kê đối tượng là eventual consistency, có thể chưa thấy đối tượng vừa tạo.
+
+> Senior tip: đừng dùng ListObjects để kiểm tra "đã upload xong"; hãy dùng HEAD Object hoặc sự kiện S3 (bucket notification qua EventBridge/SNS). Với metadata và danh sách, nhất quán cuối cùng vẫn áp dụng, nên thiết kế ứng dụng tương thích.`
+},
+{
+  id: 'qz-aws-059', topic: 'aws', multi: true,
+  q: 'Về các lớp lưu trữ (storage class) của S3, phát biểu nào đúng? (Chọn 2)',
+  options: [
+    'S3 Intelligent-Tiering tự động chuyển đối tượng giữa các tầng truy cập dựa trên lịch sử thực tế, phù hợp khi trước này không biết mô hình truy cập',
+    'S3 Glacier Instant Retrieval không có thời gian lưu trữ tối thiểu',
+    'S3 Glacier Deep Archive phù hợp dữ liệu cần truy cập hàng ngày',
+    'S3 Standard-IA phù hợp dữ liệu ít truy cập nhưng cần lấy nhanh, có thời gian lưu trữ tối thiểu 30 ngày'
+  ],
+  answer: [0, 3],
+  explain: `**Tóm tắt:** Chọn lớp lưu trữ theo tần suất truy cập và kiên nhẫn khi lấy dữ liệu. Intelligent-Tiering tự động di chuyển giữa các tầng, Standard-IA dành cho dữ liệu ít truy cập nhưng lấy nhanh.
+
+### Bảng tham khảo
+| Lớp lưu trữ | Dùng khi | Lưu ý |
+|---|---|---|
+| S3 Standard | Truy cập thường xuyên | Không phí lấy dữ liệu |
+| S3 Standard-IA | Ít truy cập, lấy nhanh | Min 30 ngày lưu trữ, min 128 KB/đối tượng, có phí lấy dữ liệu |
+| S3 Intelligent-Tiering | Không biết mô hình truy cập trước | Tự động chuyển tầng, phí giám sát nhỏ hàng tháng cho mỗi đối tượng |
+| S3 Glacier Instant Retrieval | Lưu trữ lâu, lấy nhanh milliseconds | Min 90 ngày lưu trữ |
+| S3 Glacier Deep Archive | Lưu trữ lâu hiếm khi lấy | Min 180 ngày, lấy trong 12–48 giờ |
+
+### Vì sao các phương án còn lại sai
+- **Glacier Instant Retrieval không có min duration**: sai, minimum storage duration là 90 ngày; bỏ qua sẽ bị tính phí sớm.
+- **Deep Archive truy cập hàng ngày**: sai, Deep Archive dành cho lưu trữ lâu, lấy dữ liệu mất hàng giờ, phí lấy cao.
+
+> Senior tip: dùng S3 Lifecycle Policy để chuyển tự động đối tượng từ Standard sang Standard-IA hoặc Glacier theo độ tuổi, giảm chi phí mà không thay đổi code ứng dụng.`
+},
+{
+  id: 'qz-aws-060', topic: 'aws',
+  q: 'Pod trên EKS cần gọi S3 mà không muốn lưu access key dài hạn bên trong container. Thiết kế nào đúng nhất?',
+  options: [
+    'Gắn IAM role vào node group, Pod tự hưởng quyền của node đó',
+    'Dùng IRSA (IAM Roles for Service Accounts): tạo IAM role tin tưởng OIDC provider của cluster, annotate ServiceAccount, Pod nhận token qua projected volume',
+    'Lưu access key vào ConfigMap và mount vào Pod',
+    'Đặt AWS_ACCESS_KEY_ID và AWS_SECRET_ACCESS_KEY vào biến môi trường của container'
+  ],
+  answer: 1,
+  explain: `**Tóm tắt:** IRSA cho phép Pod assumes một IAM role thông qua OIDC identity provider của cluster EKS, nhận credential tạm thời (thường là 1 giờ) — không cần access key dài hạn.
+
+### Luồng hoạt động IRSA
+1. Liên kết OIDC identity provider với cluster EKS.
+2. Tạo IAM role, trong trust policy đặt principal là OIDC provider của cluster và điều kiện {{sub}} khớp với service account (ví dụ {{system:serviceaccount:default:my-sa}}).
+3. Annotate Kubernetes ServiceAccount với {{eks.amazonaws.com/role-arn: arn:aws:iam::...:role/my-role}}.
+4. Pod dùng ServiceAccount này, kubelet inject token vào projected volume, AWS SDK for Java v2 đọc biến môi trường {{AWS_WEB_IDENTITY_TOKEN_FILE}} và {{AWS_ROLE_ARN}} để lấy credential tạm thời qua STS.
+
+### Vì sao các phương án còn lại sai
+- **IAM role của node group**: quyền dành cho kubelet và node, Pod không nên hưởng toàn quyền node (vi phạm nguyên tắc least privilege).
+- **ConfigMap / biến môi trường access key**: credential dài hạn, dễ lộ qua log, describe pod hoặc image; không tự xoay vòng.
+
+> Senior tip: cùng mô hình OIDC cũng dùng cho CI/CD (ví dụ GitHub Actions) assume role AWS — không cần lưu access key trong repository secrets.`
+},
+{
+  id: 'qz-aws-061', topic: 'aws',
+  q: 'Service trong private subnet gọi S3 và DynamoDB qua NAT Gateway, hóa đơn NAT data processing cao. Thiết kế nào giảm chi phí mà không đổi code ứng dụng?',
+  options: [
+    'Thêm Gateway VPC Endpoint cho S3 và DynamoDB vào route table của private subnet; traffic tới hai dịch vụ này đi thẳng qua endpoint, không qua NAT, và gateway endpoint không tính phí',
+    'Tạo Interface VPC Endpoint (PrivateLink) cho S3 và gán security group',
+    'Chuyển service sang public subnet và gán public IP để bỏ qua NAT',
+    'NAT Gateway chỉ tính phí mỗi giờ nên không cần thay đổi gì'
+  ],
+  answer: 0,
+  explain: `**Tóm tắt:** Gateway VPC Endpoint (chỉ dành cho S3 và DynamoDB) thêm route vào route table, traffic tới hai dịch vụ này đi qua mạng AWS mà không qua NAT Gateway, và endpoint không tính phí sử dụng.
+
+### Cách hoạt động
+- Endpoint gắn với prefix list của S3/DynamoDB; route table có route chuyên biệt hơn {{0.0.0.0/0 -> NAT Gateway}} nên traffic khớp endpoint.
+- Không thay đổi code: SDK vẫn gọi endpoint AWS chung, AWS tự phân routes.
+- Có thể gắn endpoint policy để giới hạn bucket được truy cập.
+
+### Vì sao các phương án còn lại sai
+- **Interface endpoint cho S3**: S3 hỗ trợ cả hai loại, nhưng interface endpoint tính phí theo giờ và GB; gateway endpoint miễn phí và đơn giản hơn cho trường hợp này.
+- **Chuyển sang public subnet**: tăng bề mặt tấn công và phá kiến trúc mạng riêng, không cần thiết.
+- **NAT chỉ tính phí mỗi giờ**: sai, NAT Gateway tính phí **cả theo giờ lẫn theo GB dữ liệu qua**; với hàng chục TB S3 thì chi phí data processing là phần lớn.
+
+> Senior tip: các dịch vụ khác (CloudWatch Logs, ECR, Secrets Manager, KMS…) không có gateway endpoint; dùng interface endpoint (PrivateLink) cho chúng, vẫn thường rẻ hơn NAT khi lưu lượng lớn. Lớp image ECR nằm trên S3 nên cần cả endpoint S3 khi kéo image qua interface endpoint.`
+},
+{
+  id: 'qz-aws-062', topic: 'aws',
+  q: 'Alarm theo metric CPUUtilization > 80%, đánh giá mỗi 5 phút, vào ALARM khi 3 lần liên tiếp vượt ngưỡng. EC2 vừa khởi động mới và alarm vào trạng thái INSUFFICIENT_DATA. Khẳng định nào đúng?',
+  options: [
+    'INSUFFICIENT_DATA được xử lý giống ALARM: alarm sẽ gửi thông báo SNS ngay lập tức',
+    'INSUFFICIENT_DATA nghĩa là không đủ dữ liệu để đánh giá (instance mới khởi động, khoảng trống metric); alarm không thực hiện action cho đến khi vào ALARM, và có thể cấu hình cách xử lý missing data',
+    'CloudWatch Alarm chỉ có hai trạng thái: OK và ALARM',
+    'Giảm số lần đánh giá cần thiết xuống 1 luôn làm alarm chính xác hơn và ít nhầm báo hơn'
+  ],
+  answer: 1,
+  explain: `**Tóm tắt:** CloudWatch Alarm có **ba** trạng thái: OK, ALARM và INSUFFICIENT_DATA. INSUFFICIENT_DATA nghĩa là không đủ dữ liệu trong khoảng đánh giá, alarm không kích hoạt action cho đến khi vào ALARM.
+
+### Ba trạng thái
+| Trạng thái | Ý nghĩa | Hành động alarm |
+|---|---|---|
+| OK | Metric trong ngưỡng cho phép | Không thực hiện |
+| ALARM | Vượt ngưỡng theo quy ước datapoints | Thực hiện action (SNS, Auto Scaling, SSM…) |
+| INSUFFICIENT_DATA | Không đủ dữ liệu để đánh giá | Không thực hiện |
+
+### Cấu hình liên quan
+- **Datapoints to alarm**: ví dụ 3 của 3, hoặc 3 của 5 — số lớn hơn ít nhầm báo hơn nhưng phản hồi chậm hơn.
+- **Missing data treatment**: chọn cách xử lý khoảng trống (không làm gì, coi là breach, coi là không breach, giữ trạng thái trước).
+
+### Vì sao các phương án còn lại sai
+- **INSUFFICIENT_DATA giống ALARM**: chỉ vào ALARM mới gửi thông báo; INSUFFICIENT_DATA không kích hoạt action.
+- **Chỉ hai trạng thái**: thiếu INSUFFICIENT_DATA, hay xảy ra khi instance mới khởi động hoặc metric bị lỗi truyền.
+- **Giảm xuống 1 luôn chính xác hơn**: ngược lại, 1 datapoint làm alarm nhạy hơn, dễ nhầm báo (false positive).
+
+> Senior tip: tránh đặt alarm quá nhạy (1 datapoint, ngưỡng quá sát mức bình thường). Hãy theo dõi số lần alarm phát sinh thực sự cần can thiệp và điều chỉnh ngưỡng, datapoints to alarm và missing data treatment.`
+},
+{
+  id: 'qz-aws-063', topic: 'aws',
+  q: 'Team nhận nhiều thông báo CloudWatch riêng lẻ (CPU cao, bộ nhớ cao, ổ đĩa đầy) cùng lúc cho cùng một sự cố trên EC2. Muốn chỉ gửi một thông báo khi nhiều điều kiện cùng xảy ra. Tính năng nào giải quyết?',
+  options: [
+    'Composite Alarm: kết hợp nhiều alarm bằng AND/OR/NOT, chỉ vào ALARM khi biểu thức đúng, giảm thông báo trùng lặp',
+    'CloudWatch Anomaly Detection: tạo dải băng dự kiến bằng ML và alarm khi metric nằm ngoài băng',
+    'EventBridge rule nhận metric alarm rồi gửi đến SNS',
+    'CloudWatch Logs metric filter trích xuất mẫu tin từ log rồi tính toán cảnh báo'
+  ],
+  answer: 0,
+  explain: `**Tóm tắt:** Composite Alarm của CloudWatch kết hợp nhiều alarm con bằng biểu thức logic (AND/OR/NOT), chỉ vào trạng thái ALARM khi biểu thức đúng. Dùng để gói gọn nhiều dấu hiệu của cùng sự cố thành một thông báo.
+
+### Ví dụ
+~~~text
+CompositeAlarm "EC2 stress" vào ALARM khi:
+  (CPU > 80% AND Memory > 85%) OR DiskUsage > 90%
+~~~
+Khi chỉ CPU cao đơn lẻ, composite alarm không vào ALARM (giảm thông báo rác); khi CPU và memory cùng cao, mới gửi thông báo.
+
+### Vì sao các phương án còn lại sai
+- **Anomaly Detection**: phát hiện sự bất thường dựa trên lịch sử ML, không dùng để kết hợp nhiều alarm thành một.
+- **EventBridge rule**: có thể định tuyến alarm nhưng không thay thế logic kết hợp điều kiện của composite alarm.
+- **Logs metric filter**: tạo metric từ log, không kết hợp các alarm khác.
+
+> Senior tip: composite alarm giúp giảm "alert storm", nhưng hãy thiết kế kỹ biểu thức để không làm mờ đi sự cố thật. Kết hợp với SNS topic và runbook để on-call biết xử lý gì khi thông báo đến.`
+},
+{
+  id: 'qz-aws-064', topic: 'aws',
+  q: 'Hệ thống cần gửi cùng một sự kiện đến nhiều consumer khác nhau (email, SMS, Lambda) và mỗi consumer nhận độc lập. Dịch vụ nào phù hợp?',
+  options: [
+    'SQS: queue FIFO đảm bảo thứ tự và chỉ một consumer nhận mỗi message',
+    'SNS: topic pub/sub fan-out, mỗi subscriber nhận bản sao message',
+    'Kinesis Data Streams: consumer group đọc cùng stream',
+    'EventBridge: rule định tuyến sự kiện theo pattern'
+  ],
+  answer: 1,
+  explain: `**Tóm tắt:** SNS là dịch vụ pub/sub fan-out: publish một message vào topic, mọi subscriber (email, SMS, Lambda, SQS) đều nhận bản sao. Phù hợp khi cùng một sự kiện cần đến nhiều nơi.
+
+### So sánh nhanh
+| Dịch vụ | Mô hình | Khi dùng |
+|---|---|---|
+| SNS | pub/sub fan-out | Thông báo đến nhiều subscriber độc lập |
+| SQS | queue point-to-point | Một consumer xử lý mỗi message; decouple producer/consumer |
+| Kinesis | stream append-only | Dữ liệu lớn, nhiều shard, replay, xử lý real-time |
+| EventBridge | event bus routing | Định tuyến sự kiện theo pattern, tích hợp SaaS/AWS |
+
+### Vì sao các phương án còn lại sai
+- **SQS**: mỗi message chỉ được một consumer xử lý; muốn fan-out phải tạo nhiều queue và subscribe vào SNS (SNS -> SQS).
+- **Kinesis**: có thể có nhiều consumer nhưng thiết kế cho stream dữ liệu lớn, không phải thông báo đơn giản; chi phí và độ phức tạp cao hơn.
+- **EventBridge**: có thể fan-out qua nhiều target nhưng thường dùng để định tuyến theo pattern; SNS đơn giản hơn cho pub/sub thuần.
+
+> Senior tip: kiến trúc phổ biến: SNS topic fan-out đến nhiều SQS queue, mỗi queue có consumer riêng, vừa fan-out vừa buffer và retry độc lập.`
+},
+{
+  id: 'qz-aws-075', topic: 'aws',
+  q: 'Lambda Java xử lý HTTP request với cold start ~3–5 giây do JVM khởi động. Tính năng nào của AWS Lambda giúp giảm cold start cho Java mà không cần giữ instance ấm?',
+  options: [
+    'Provisioned Concurrency: giữ sẵn instance ấm, tính phí theo thời gian',
+    'Lambda SnapStart: snapshot trạng thái JVM sau init và khôi phục nhanh khi cold start',
+    'Graviton2: dùng ARM để tăng hiệu năng CPU',
+    'X-Ray: trace để tìm bottleneck'
+  ],
+  answer: 1,
+  explain: `**Tóm tắt:** Lambda SnapStart tạo snapshot của môi trường thực thi (JVM đã khởi động và init xong) sau giai đoạn init, rồi khôi phục từ snapshot khi có cold start mới. Giảm đáng kể cold start cho Java/C# mà không phải trả phí provisioned concurrency.
+
+### Cơ chế
+- Init phase chạy một lần, JVM warm up xong.
+- SnapStart chụp snapshot (Firecracker microVM) và lưu.
+- Khi có request cold start, khôi phục từ snapshot thay vì init lại từ đầu.
+
+### Vì sao các phương án còn lại sai
+- **Provisioned Concurrency**: giữ instance ấm liên tục, giảm cold start nhưng tính phí theo thời gian giữ; không phải "không cần giữ ấm".
+- **Graviton2**: tăng hiệu năng/giá nhưng không giải quyết cold start JVM.
+- **X-Ray**: công cụ observability, không giảm latency.
+
+> Senior tip: SnapStart yêu cầu code init phải idempotent và tránh side effect trong static initializer; kiểm tra tính tương thích với framework (Spring Cloud Function) và secret/credential được load khi init.`
+},
+{
+  id: 'qz-aws-076', topic: 'aws',
+  q: 'RDS PostgreSQL cần high availability với failover tự động trong cùng region và downtime tối thiểu. Chọn kiến trúc nào?',
+  options: [
+    'Read replica: bản sao chỉ đọc, failover thủ công, dùng cho scale read',
+    'Multi-AZ: standby đồng bộ ở AZ khác, failover tự động khi primary hỏng',
+    'Aurora Serverless: tự scale capacity',
+    'Backup snapshot hàng ngày: khôi phục khi hỏng'
+  ],
+  answer: 1,
+  explain: `**Tóm tắt:** RDS Multi-AZ duy trì một standby đồng bộ ở Availability Zone khác; khi primary hỏng, AWS tự động failover sang standby (thường trong 1–2 phút). Phù hợp yêu cầu high availability.
+
+### So sánh
+| Tính năng | Multi-AZ | Read replica |
+|---|---|---|
+| Mục đích | High availability / failover | Scale read |
+| Đồng bộ | Đồng bộ (synchronous) | Bất đồng bộ (asynchronous) |
+| Failover | Tự động | Thủ công (promote) |
+| Endpoint | Một endpoint, tự chuyển | Endpoint riêng cho replica |
+
+### Vì sao các phương án còn lại sai
+- **Read replica**: bất đồng bộ, có lag; promote thủ công, không tự failover; dùng để scale read, không phải HA.
+- **Aurora Serverless**: tự scale nhưng không phải lựa chọn mặc định cho RDS PostgreSQL HA; chi phí và cold start khác.
+- **Backup snapshot**: khôi phục mất thời gian, không đảm bảo downtime tối thiểu.
+
+> Senior tip: Multi-AZ tăng chi phí (gấp đôi) và write latency nhẹ (đồng bộ); read replica có thể kết hợp để scale read. Kiểm tra connection pooling (HikariCP) và retry logic để ứng dụng chịu được failover.`
+},
+{
+  id: 'qz-aws-077', topic: 'aws',
+  q: 'S3 bucket mới tạo, PUT object thành công. Client ngay lập tức GET object đó. Khẳng định nào đúng về consistency?',
+  options: [
+    'Strong read-after-write consistency: GET ngay sau PUT luôn trả object mới',
+    'Eventual consistency: có thể GET trả 404 trong vài giây đầu',
+    'Strong consistency chỉ áp dụng cho object đã tồn tại trước',
+    'Cần chờ 15 phút để consistency'
+  ],
+  answer: 0,
+  explain: `**Tóm tắt:** S3 cung cấp **strong read-after-write consistency** cho PUT object mới và overwrite: sau khi PUT thành công, mọi GET/HEAD/LIST đều thấy dữ liệu mới ngay lập tức.
+
+### Chi tiết
+- PUT object mới: strong consistency.
+- Overwrite PUT: strong consistency.
+- DELETE: strong consistency.
+- LIST: strong consistency.
+
+### Vì sao các phương án còn lại sai
+- **Eventual consistency**: từng đúng trước đây (trước 2020), nay S3 đã strong consistency; vẫn có thể gặp lag do cache/CDN, không phải storage.
+- **Chỉ áp dụng object đã tồn tại**: ngược lại, áp dụng cho cả mới và overwrite.
+- **Chờ 15 phút**: không có; consistency ngay lập tức.
+
+> Senior tip: strong consistency ở S3 không bảo vệ bạn khỏi cache ở CloudFront/CDN hoặc eventual consistency ở các hệ thống khác (DynamoDB global tables). Luôn kiểm tra lớp cache trước khi quy lỗi cho storage.`
+},
+{
+  id: 'qz-aws-078', topic: 'aws', multi: true,
+  q: 'Chọn 2 storage class của S3 phù hợp cho dữ liệu ít truy cập nhưng cần truy xuất nhanh khi cần, với chi phí thấp hơn Standard (Chọn 2)',
+  options: [
+    'S3 Standard-IA',
+    'S3 One Zone-IA',
+    'S3 Glacier Instant Retrieval',
+    'S3 Glacier Deep Archive',
+    'S3 Intelligent-Tiering'
+  ],
+  answer: [0, 2],
+  explain: `**Tóm tắt:** S3 Standard-IA và S3 Glacier Instant Retrieval đều dành cho dữ liệu ít truy cập nhưng truy xuất nhanh (millisecond). Glacier Deep Archive và Standard-IA? Standard-IA retrieval fee; Glacier Instant Retrieval rẻ hơn cho dữ liệu rất ít truy cập.
+
+### Phân loại
+| Class | Truy xuất | Chi phí lưu trữ | Phù hợp |
+|---|---|---|---|
+| Standard-IA | ms | thấp hơn Standard | ít truy cập, cần nhanh |
+| One Zone-IA | ms | rẻ hơn Standard-IA | dữ liệu có thể tái tạo, 1 AZ |
+| Glacier Instant Retrieval | ms | rất rẻ | archive nhưng truy xuất ngay |
+| Glacier Deep Archive | phút-giờ | rẻ nhất | archive dài hạn |
+| Intelligent-Tiering | tự động | theo tier | truy cập không đoán trước |
+
+### Vì sao các phương án còn lại sai
+- **One Zone-IA**: rẻ nhưng chỉ 1 AZ, mất AZ là mất dữ liệu; không phải lựa chọn an toàn mặc định.
+- **Glacier Deep Archive**: truy xuất chậm, không "nhanh khi cần".
+- **Intelligent-Tiering**: tự động chuyển tier, không phải class tĩnh cho ít truy cập; có phí monitoring.
+
+> Senior tip: cân nhắc retrieval fee và minimum storage duration (30/90/180 ngày) trước khi chọn IA/Glacier; dữ liệu xoay vòng nhanh có thể tốn hơn Standard.`
+},
+{
+  id: 'qz-aws-079', topic: 'aws',
+  q: 'ECS task chạy trên Fargate cần đọc secret từ Secrets Manager và pull image từ ECR. IAM role nào cấp quyền cho container?',
+  options: [
+    'EC2 instance profile gắn vào host',
+    'Task role (taskRoleArn): IAM role được assume bởi ECS agent cho container',
+    'Execution role (executionRoleArn): chỉ dùng để pull image và ghi log',
+    'Lambda execution role'
+  ],
+  answer: 1,
+  explain: `**Tóm tắt:** Task role (taskRoleArn) là IAM role mà container assume để gọi AWS API (Secrets Manager, S3, DynamoDB…). Execution role (executionRoleArn) chỉ cấp quyền cho ECS agent pull image và ghi CloudWatch Logs.
+
+### Phân biệt
+| Role | Ai dùng | Quyền |
+|---|---|---|
+| Task role | Container (app) | Truy cập AWS service theo nghiệp vụ |
+| Execution role | ECS agent | Pull image ECR, ghi log, lấy secret cho injection |
+
+### Vì sao các phương án còn lại sai
+- **EC2 instance profile**: chỉ áp dụng ECS trên EC2, không phải Fargate; Fargate không có host.
+- **Execution role**: không cấp quyền cho app; nếu app dùng execution role sẽ vi phạm least privilege và có thể fail permission.
+- **Lambda execution role**: không liên quan đến ECS.
+
+> Senior tip: nguyên tắc least privilege: task role chỉ có quyền tối thiểu; secret inject qua execution role vào env var hoặc mount, tránh hard-code. Audit bằng CloudTrail.`
+},
+{
+  id: 'qz-aws-080', topic: 'aws',
+  q: 'Pod trên EKS cần truy cập S3 bucket. Best practice để cấp quyền AWS API cho pod mà không dùng long-lived access key?',
+  options: [
+    'Tạo IAM user với access key và lưu trong Kubernetes Secret',
+    'IRSA: IAM Roles for Service Accounts, pod assume role qua OIDC provider của cluster',
+    'Gắn IAM role vào EC2 node và tất cả pod cùng quyền',
+    'Dùng AWS access key trong ConfigMap'
+  ],
+  answer: 1,
+  explain: `**Tóm tắt:** IRSA (IAM Roles for Service Accounts) cho phép pod assume một IAM role thông qua OIDC provider của EKS cluster, cấp quyền theo service account, không cần long-lived access key.
+
+### Cơ chế
+- EKS cluster có OIDC provider.
+- Tạo IAM role với trust policy cho service account (namespace:serviceaccount).
+- Pod dùng service account đó, SDK tự assume role qua web identity token.
+
+### Vì sao các phương án còn lại sai
+- **IAM user access key trong Secret**: long-lived credential, rò rỉ và rotation khó; không best practice.
+- **Role gắn vào node**: tất cả pod trên node cùng quyền, vi phạm least privilege.
+- **Access key trong ConfigMap**: plaintext, dễ rò rỉ.
+
+> Senior tip: IRSA + least privilege + audit CloudTrail; với EKS 1.24+ có thể dùng Pod Identity (EKS Pod Identity) đơn giản hơn IRSA.`
+},
+{
+  id: 'qz-aws-081', topic: 'aws',
+  q: 'EC2 trong private subnet cần gọi API S3 mà không qua internet/NAT. Giải pháp nào rẻ và an toàn nhất?',
+  options: [
+    'NAT Gateway: route traffic ra internet rồi vào S3',
+    'VPC Gateway Endpoint cho S3: route trong VPC, không phí data transfer',
+    'VPC Interface Endpoint (PrivateLink) cho S3',
+    'Public subnet + public IP cho EC2'
+  ],
+  answer: 1,
+  explain: `**Tóm tắt:** VPC Gateway Endpoint cho S3 (và DynamoDB) là route trong VPC, không đi qua internet/NAT, không tính phí data transfer qua endpoint (chỉ phí request S3). Rẻ và an toàn nhất cho S3.
+
+### So sánh
+| Giải pháp | Chi phí | Bảo mật |
+|---|---|---|
+| Gateway Endpoint (S3/DynamoDB) | Không phí data transfer | Traffic trong AWS backbone |
+| Interface Endpoint (PrivateLink) | Phí theo giờ + GB | Dùng cho nhiều service |
+| NAT Gateway | Phí theo giờ + GB | Đi qua internet |
+
+### Vì sao các phương án còn lại sai
+- **NAT Gateway**: tốn phí data transfer, traffic ra internet, không cần thiết cho S3.
+- **Interface Endpoint**: có thể dùng cho S3 nhưng phí cao hơn gateway endpoint; interface endpoint phù hợp service không có gateway endpoint.
+- **Public subnet + public IP**: EC2 lộ ra internet, tăng rủi ro bảo mật.
+
+> Senior tip: gateway endpoint chỉ hỗ trợ S3 và DynamoDB; các service khác dùng interface endpoint (PrivateLink). Kết hợp endpoint policy để giới hạn bucket được truy cập.`
+},
+{
+  id: 'qz-aws-082', topic: 'aws',
+  q: 'Ứng dụng cần xử lý stream sự kiện lớn (hàng triệu event/giờ), nhiều consumer đọc cùng dữ liệu với khả năng replay và thứ tự theo partition. Dịch vụ nào phù hợp?',
+  options: [
+    'SQS Standard: queue không thứ tự, mỗi message một consumer',
+    'Kinesis Data Streams: shard, retention, nhiều consumer group, replay',
+    'SNS: pub/sub fan-out nhưng không lưu trữ',
+    'EventBridge: routing theo pattern, không lưu stream'
+  ],
+  answer: 1,
+  explain: `**Tóm tắt:** Kinesis Data Streams là stream append-only với shard, retention (1–365 ngày), nhiều consumer group đọc song song và khả năng replay. Phù hợp xử lý dữ liệu lớn real-time.
+
+### So sánh
+| Dịch vụ | Lưu trữ | Replay | Thứ tự | Throughput |
+|---|---|---|---|---|
+| Kinesis | Có (retention) | Có | Theo shard/partition key | Rất cao |
+| SQS | Tạm (visibility) | Không | FIFO queue (nếu FIFO) | Cao |
+| SNS | Không | Không | Không đảm bảo | Cao |
+| EventBridge | Không | Không | Không | Trung bình |
+
+### Vì sao các phương án còn lại sai
+- **SQS Standard**: không đảm bảo thứ tự, không replay; FIFO có thứ tự nhưng không scale như stream.
+- **SNS**: fan-out nhưng không lưu trữ, không replay.
+- **EventBridge**: routing theo pattern, không lưu stream; có thể gửi đến Kinesis/SQS.
+
+> Senior tip: chi phí Kinesis tính theo shard-hour và PUT payload; cân nhắc Kinesis Data Streams vs MSK (Kafka) nếu team đã dùng Kafka.`
+},
+{
+  id: 'qz-aws-083', topic: 'aws', multi: true,
+  q: 'Chọn 2 tình huống EventBridge phù hợp hơn SNS (Chọn 2)',
+  options: [
+    'Định tuyến sự kiện theo nội dung (content-based routing) đến nhiều target khác nhau',
+    'Tích hợp sự kiện từ SaaS (Stripe, Zendesk) vào AWS',
+    'Fan-out đơn giản đến email/SMS',
+    'Gửi thông báo push đến thiết bị di động',
+    'Queue buffering với retry tự động'
+  ],
+  answer: [0, 1],
+  explain: `**Tóm tắt:** EventBridge mạnh ở content-based routing (rule theo pattern) và tích hợp SaaS/AWS events; SNS phù hợp fan-out thông báo đơn giản (email, SMS, push).
+
+### Vì sao các phương án còn lại sai
+- **Fan-out email/SMS**: SNS trực tiếp, đơn giản hơn.
+- **Push mobile**: SNS hỗ trợ push notification.
+- **Queue buffering**: SQS, không phải EventBridge.
+
+> Senior tip: EventBridge có thể gửi đến SQS/SNS/Lambda/Step Functions; dùng EventBridge cho orchestration và routing, SNS cho notification, SQS cho buffering.`
+}
+,
+{
+  id: 'qz-aws-065', topic: 'aws',
+  q: 'Hệ thống cần gửi cùng một sự kiện đến nhiều consumer khác nhau (email, SMS, Lambda) và mỗi consumer nhận độc lập. Dịch vụ nào phù hợp?',
+  options: ['SQS: queue FIFO đảm bảo thứ tự và chỉ một consumer nhận mỗi message','SNS: topic pub/sub fan-out, mỗi subscriber nhận bản sao message','Kinesis Data Streams: consumer group đọc cùng stream','EventBridge: rule định tuyến sự kiện theo pattern'],
+  answer: 1,
+  explain: `**Tóm tắt:** SNS là dịch vụ pub/sub fan-out.
+
+> Senior tip: kiến trúc phổ biến: SNS topic fan-out đến nhiều SQS queue.`
+},
+{
+  id: 'qz-aws-066', topic: 'aws',
+  q: 'Lambda Java xử lý HTTP request với cold start ~3–5 giây do JVM khởi động. Tính năng nào của AWS Lambda giúp giảm cold start cho Java mà không cần giữ instance ấm?',
+  options: ['Provisioned Concurrency: giữ sẵn instance ấm, tính phí theo thời gian','Lambda SnapStart: snapshot trạng thái JVM sau init và khôi phục nhanh khi cold start','Graviton2: dùng ARM để tăng hiệu năng CPU','X-Ray: trace để tìm bottleneck'],
+  answer: 1,
+  explain: `**Tóm tắt:** Lambda SnapStart tạo snapshot của môi trường thực thi sau init.
+
+> Senior tip: SnapStart yêu cầu code init phải idempotent.`
+},
+{
+  id: 'qz-aws-067', topic: 'aws',
+  q: 'RDS PostgreSQL cần high availability với failover tự động trong cùng region và downtime tối thiểu. Chọn kiến trúc nào?',
+  options: ['Read replica: bản sao chỉ đọc, failover thủ công','Multi-AZ: standby đồng bộ ở AZ khác, failover tự động','Aurora Serverless: tự scale capacity','Backup snapshot hàng ngày: khôi phục khi hỏng'],
+  answer: 1,
+  explain: `**Tóm tắt:** RDS Multi-AZ duy trì standby đồng bộ ở AZ khác.
+
+> Senior tip: Multi-AZ tăng chi phí gấp đôi.`
+},
+{
+  id: 'qz-aws-068', topic: 'aws',
+  q: 'S3 bucket mới tạo, PUT object thành công. Client ngay lập tức GET object đó. Khẳng định nào đúng về consistency?',
+  options: ['Strong read-after-write consistency: GET ngay sau PUT luôn trả object mới','Eventual consistency: có thể GET trả 404 trong vài giây đầu','Strong consistency chỉ áp dụng cho object đã tồn tại trước','Cần chờ 15 phút để consistency'],
+  answer: 0,
+  explain: `**Tóm tắt:** S3 cung cấp strong read-after-write consistency.
+
+> Senior tip: strong consistency ở S3 không bảo vệ khỏi cache CDN.`
+},
+{
+  id: 'qz-aws-069', topic: 'aws', multi: true,
+  q: 'Chọn 2 storage class của S3 phù hợp cho dữ liệu ít truy cập nhưng cần truy xuất nhanh khi cần, với chi phí thấp hơn Standard (Chọn 2)',
+  options: ['S3 Standard-IA','S3 One Zone-IA','S3 Glacier Instant Retrieval','S3 Glacier Deep Archive','S3 Intelligent-Tiering'],
+  answer: [0, 2],
+  explain: `**Tóm tắt:** Standard-IA và Glacier Instant Retrieval truy xuất ms.
+
+> Senior tip: cân nhắc retrieval fee và minimum storage duration.`
+},
+{
+  id: 'qz-aws-070', topic: 'aws',
+  q: 'ECS task chạy trên Fargate cần đọc secret từ Secrets Manager và pull image từ ECR. IAM role nào cấp quyền cho container?',
+  options: ['EC2 instance profile gắn vào host','Task role (taskRoleArn): IAM role được assume bởi ECS agent cho container','Execution role (executionRoleArn): chỉ dùng để pull image và ghi log','Lambda execution role'],
+  answer: 1,
+  explain: `**Tóm tắt:** Task role là IAM role mà container assume.
+
+> Senior tip: nguyên tắc least privilege.`
+},
+{
+  id: 'qz-aws-071', topic: 'aws',
+  q: 'Pod trên EKS cần truy cập S3 bucket. Best practice để cấp quyền AWS API cho pod mà không dùng long-lived access key?',
+  options: ['Tạo IAM user với access key và lưu trong Kubernetes Secret','IRSA: IAM Roles for Service Accounts','Gắn IAM role vào EC2 node và tất cả pod cùng quyền','Dùng AWS access key trong ConfigMap'],
+  answer: 1,
+  explain: `**Tóm tắt:** IRSA cho phép pod assume IAM role qua OIDC.
+
+> Senior tip: IRSA + least privilege.`
+},
+{
+  id: 'qz-aws-072', topic: 'aws',
+  q: 'EC2 trong private subnet cần gọi API S3 mà không qua internet/NAT. Giải pháp nào rẻ và an toàn nhất?',
+  options: ['NAT Gateway: route traffic ra internet rồi vào S3','VPC Gateway Endpoint cho S3: route trong VPC, không phí data transfer','VPC Interface Endpoint (PrivateLink) cho S3','Public subnet + public IP cho EC2'],
+  answer: 1,
+  explain: `**Tóm tắt:** VPC Gateway Endpoint cho S3 là route trong VPC.
+
+> Senior tip: gateway endpoint chỉ hỗ trợ S3 và DynamoDB.`
+},
+{
+  id: 'qz-aws-073', topic: 'aws',
+  q: 'Ứng dụng cần xử lý stream sự kiện lớn (hàng triệu event/giờ), nhiều consumer đọc cùng dữ liệu với khả năng replay và thứ tự theo partition. Dịch vụ nào phù hợp?',
+  options: ['SQS Standard: queue không thứ tự, mỗi message một consumer','Kinesis Data Streams: shard, retention, nhiều consumer group, replay','SNS: pub/sub fan-out nhưng không lưu trữ','EventBridge: routing theo pattern, không lưu stream'],
+  answer: 1,
+  explain: `**Tóm tắt:** Kinesis Data Streams là stream append-only với shard.
+
+> Senior tip: chi phí Kinesis tính theo shard-hour.`
 }
 );
