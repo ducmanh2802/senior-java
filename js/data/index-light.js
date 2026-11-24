@@ -3092,6 +3092,8 @@ window.DATA_INDEX = {
     {"id":"sd-042","title":"Phát hiện gian lận giao dịch thời gian thực bằng stream processing"},
     {"id":"sd-043","title":"Hệ thống trả góp BNPL (mua ngay trả sau)"},
     {"id":"sd-044","title":"Hệ thống eKYC mở tài khoản online (chụp CCCD + selfie + chip NFC)"},
+    {"id":"sd-045","title":"Hệ thống tích điểm loyalty cho chuỗi bán lẻ 3.000 cửa hàng"},
+    {"id":"sd-046","title":"Hệ thống thu hộ / thanh toán hoá đơn (điện, nước, học phí)"},
   ],
   drills: [
     {"id":"drill-shadow-001","kind":"shadow","en":"I am a backend engineer with eight years of experience building Java services for fintech products."},

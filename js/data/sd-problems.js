@@ -6430,4 +6430,329 @@ Khách Nam chụp CCCD, selfie, không có NFC: OCR đọc "Nguyen Van A", face 
     'Nếu số lượng hồ sơ tăng gấp 10 trong tháng khai trương, bạn scale worker xử lý ảnh và hàng đợi duyệt ra sao?'
   ],
 },
+,
+{
+  id: 'sd-045',
+  title: 'Hệ thống tích điểm loyalty cho chuỗi bán lẻ 3.000 cửa hàng',
+  kind: 'bank',
+  level: 'senior',
+  prompt: `Thiết kế hệ thống tích điểm loyalty cho chuỗi bán lẻ 3.000 cửa hàng. Quy mô: 20 triệu khách hàng thành viên, 50 triệu giao dịch bán hàng/ngày, mỗi giao dịch có thể cộng điểm, đổi quà, điểm hết hạn theo lô (batch expiry), chống gian lận, báo cáo doanh thu điểm. Yêu cầu: cộng/trừ điểm trong dưới 200 ms, không mất điểm, không cộng hai lần, điểm hết hạn tự động theo FIFO theo lô. Bạn có 45 phút.`,
+  phases: [
+    { name: 'Requirements', minutes: 5, guide: `Làm rõ functional: earn points theo hóa đơn, redeem points đổi quà, expire points theo lô (batch), adjust points (khuyến mãi, đền bù), anti-fraud, reporting. Non-functional: TPS, latency, consistency (điểm không mất), audit. Hỏi: điểm có giá trị tiền không? Hết hạn theo FIFO hay LIFO? Có tier (bronze/silver/gold) ảnh hưởng earn rate? Out-of-scope: recommendation engine, marketing campaign.` },
+    { name: 'Estimation', minutes: 5, guide: `50M txn/ngày = 578 TPS trung bình, peak 5.000 TPS. Mỗi txn earn 1 row points_ledger. Storage: 50M x 200 byte = 10 GB/ngày, 3,6 TB/năm. Redis cho balance cache nóng. Kết luận: DB partition theo thời gian + materialized balance, event-driven cho expiry.` },
+    { name: 'API & data model', minutes: 5, guide: `API: POST /loyalty/earn {txnId, customerId, amount, storeId}, POST /loyalty/redeem {customerId, points, rewardId}, GET /loyalty/balance/{customerId}. Bảng points_ledger (id, customer_id, txn_id, type, points, batch_id, expires_at, created_at), points_balance (customer_id, available, held, version), point_batch (id, customer_id, points, remaining, expires_at). Unique (customer_id, txn_id) chống trùng.` },
+    { name: 'High-level design', minutes: 15, guide: `Vẽ: POS -> API -> Loyalty service -> Ledger DB (sharded by customer) + Redis cache. Expiry worker đọc batch hết hạn -> publish Kafka -> balance adjust. Anti-fraud async. Reporting qua CDC -> warehouse. Explain luồng earn/redeem và expiry.` },
+    { name: 'Deep dive', minutes: 15, guide: `Đào sâu: idempotency end-to-end, FIFO expiry theo lô, hold points khi redeem chưa capture, consistency cache, fraud detection (velocity, duplicate txn), failure modes (DB failover, expiry worker crash), monitoring.` }
+  ],
+  rubric: [
+    'Idempotency key từ POS đến ledger, chống cộng hai lần',
+    'Points ledger append-only, balance là materialized',
+    'Expiry theo lô với FIFO và job tự động',
+    'Hold points khi redeem chưa capture, release khi fail',
+    'Anti-fraud: velocity, duplicate txn, anomaly',
+    'Partition theo customer_id và thời gian',
+    'Cache balance với invalidation đúng',
+    'Reporting qua CDC/warehouse, không block earn',
+    'Failure modes và recovery',
+    'Giám sát earn/redeem rate, expiry, fraud alert'
+  ],
+reference: `**Tóm tắt:** Loyalty points là bài toán **kế toán điểm** giống ledger ngân hàng nhưng đơn giản hơn: earn/redeem/expire là ba thao tác, mọi thay đổi ghi vào points_ledger append-only, balance là materialized cache. Expiry theo lô (batch) chạy job định kỳ và điều chỉnh balance. Idempotency key từ POS là bắt buộc vì POS retry rất nhiều.
+
+### Yêu cầu và quy mô
+- 3.000 cửa hàng, 20 triệu khách hàng thành viên, 50 triệu giao dịch bán hàng/ngày.
+- Earn/redeem < 200 ms, không mất điểm, không cộng hai lần.
+- Điểm hết hạn theo lô (batch expiry), FIFO.
+- Anti-fraud và reporting.
+
+### Ước lượng
+- 50M txn/ngày = 578 TPS trung bình, peak 5.000 TPS.
+- Mỗi txn earn 1 row ledger ~200 byte => 10 GB/ngày, 3,6 TB/năm. Partition theo tháng.
+- Redis cache balance cho hot customer (20% khách = 80% traffic).
+- Expiry: job quét batch hết hạn mỗi giờ; volume thấp.
+
+### Mô hình dữ liệu
+~~~sql
+CREATE TABLE points_ledger (
+  id            BIGSERIAL PRIMARY KEY,
+  customer_id   BIGINT NOT NULL,
+  txn_id        VARCHAR(64) NOT NULL,
+  type          VARCHAR(20) NOT NULL CHECK (type IN ('EARN','REDEEM','EXPIRE','ADJUST')),
+  points        BIGINT NOT NULL,
+  batch_id      BIGINT,
+  store_id      BIGINT,
+  created_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
+  UNIQUE (customer_id, txn_id, type)
+);
+CREATE TABLE points_balance (
+  customer_id       BIGINT PRIMARY KEY,
+  available         BIGINT NOT NULL DEFAULT 0,
+  held              BIGINT NOT NULL DEFAULT 0,
+  lifetime_earned   BIGINT NOT NULL DEFAULT 0,
+  lifetime_redeemed BIGINT NOT NULL DEFAULT 0,
+  version           BIGINT NOT NULL DEFAULT 0,
+  updated_at        TIMESTAMPTZ NOT NULL
+);
+CREATE TABLE point_batch (
+  id            BIGSERIAL PRIMARY KEY,
+  customer_id   BIGINT NOT NULL,
+  points        BIGINT NOT NULL,
+  remaining     BIGINT NOT NULL,
+  expires_at    TIMESTAMPTZ NOT NULL,
+  processed_at  TIMESTAMPTZ,
+  created_at    TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX idx_batch_customer_exp ON point_batch (customer_id, expires_at);
+~~~
+- points_ledger append-only; sửa sai bằng ADJUST row.
+- points_balance materialized, cập nhật trong cùng transaction với ledger.
+- point_batch theo dõi từng lô điểm để expire FIFO; {{processed_at}} dùng để idempotent khi re-run job expiry.
+
+### Luồng earn
+1. POS gửi POST /loyalty/earn với txnId (idempotency key).
+2. Loyalty service kiểm tra (customer_id, txn_id, EARN): nếu đã có trả response cũ.
+3. Kiểm tra customer tồn tại và tier.
+4. Tính points = floor(amount * earn_rate) theo tier.
+5. Trong 1 transaction: insert points_ledger EARN, insert point_batch (expires_at = now + TTL tier), update points_balance available += points, lifetime_earned += points.
+6. Trả response với balance mới.
+7. Publish event earn cho reporting/anti-fraud (async).
+
+### Luồng redeem
+1. POST /loyalty/redeem {customerId, points, rewardId}.
+2. Kiểm tra balance.available >= points.
+3. Hold: available -= points, held += points (conditional update WHERE available >= points).
+4. Tạo redeem order PENDING; nếu reward ship thành công thì capture: held -= points, lifetime_redeemed += points, ledger REDEEM; nếu fail thì release: held -= points, available += points.
+5. Expiry của held points: khi expire batch, không trừ held (chỉ trừ available); redeem capture kiểm tra batch còn hạn.
+
+### Expiry theo lô (batch)
+- Job mỗi giờ quét point_batch WHERE expires_at <= now AND remaining > 0 AND processed_at IS NULL ORDER BY expires_at ASC.
+- Với mỗi batch: remaining points expire; ledger EXPIRE row; balance.available -= min(remaining, available) (không cho âm, không đụng held).
+- FIFO: ORDER BY expires_at ASC đảm bảo batch cũ xử lý trước; nếu customer redeem giữ chỗ batch đó thì skip phần held.
+- Idempotent: batch mark processed_at = now() sau khi xử lý; re-run skip batch đã có processed_at.
+- Alert nếu job chậm hoặc expiry volume bất thường.
+
+### Anti-fraud
+- Velocity: earn/redeem count per customer per hour/day; alert nếu vượt ngưỡng.
+- Duplicate txn: unique constraint (customer_id, txn_id, type) chặn POS retry.
+- Anomaly: earn amount bất thường so với lịch sử customer; hold points pending review.
+- Redeem fraud: đổi quà rồi cancel order; hold mechanism ngăn mất điểm.
+- Reporting: dashboard earn/redeem/expired theo cửa hàng/khách.
+
+### Kiến trúc
+~~~text
+POS -> API gateway -> Loyalty service -> Ledger DB (sharded by customer_id)
+                           |                  |
+                           |            Redis (balance cache)
+                           v
+                       Kafka (loyalty-events)
+                           |
+               +------------+------------+
+               |            |            |
+            Expiry worker  Anti-fraud  Reporting worker
+               |            |            |
+            Ledger DB    Alerting    Data warehouse
+~~~
+
+~~~seq
+title: Earn points từ giao dịch bán hàng
+actors: POS | API gateway | Loyalty service | Ledger DB | Redis | Kafka
+POS -> API gateway: POST /loyalty/earn (txnId, customerId, amount)
+API gateway -> Loyalty service: chuyển request
+Loyalty service -> Ledger DB: kiểm tra idempotency + ghi ledger/batch/balance
+Ledger DB --> Loyalty service: OK
+Loyalty service -> Redis: cập nhật cache balance
+Loyalty service -> Kafka: xuất sự kiện earn
+Loyalty service --> API gateway: balance mới
+API gateway --> POS: 200 OK
+~~~
+
+### Failure modes
+| Sự cố | Ảnh hưởng | Cách xử lý |
+|---|---|---|
+| POS retry | Cộng hai lần | Idempotency key unique (customer_id, txn_id, type) |
+| DB failover | Mất earn | Replica lag monitor, retry idempotent |
+| Expiry worker crash | Điểm không expire | Re-run job, batch processed_at để idempotent |
+| Cache stale | Hiển thị balance cũ | TTL ngắn + invalidation CDC |
+| Fraud attack | Mất điểm | Velocity limit, hold, alert |
+
+### Giám sát
+- Earn/redeem TPS, p99 latency, expiry volume, fraud alert count, cache hit rate, DLQ size.
+
+> Senior tip: loyalty points nhìn đơn giản nhưng là bài toán kế toán. Sai lầm lớn nhất là dùng một cột balance và UPDATE trực tiếp — khi có tranh chấp concurrent redeem hai cửa hàng cùng lúc, điểm bị âm. Tôi luôn dùng conditional update WHERE available >= points và ledger append-only, giống hệt ngân hàng nhưng nhẹ hơn.`,
+  followups: [
+    'Nếu khách hàng có 1 triệu điểm và redeem cùng lúc ở hai cửa hàng, hệ thống xử lý thế nào?',
+    'Nếu expiry job chạy chậm 3 giờ, impact và recovery?',
+    'Thiết kế tier (bronze/silver/gold) ảnh hưởng earn rate và expiry TTL ra sao?'
+  ],
+  related: ['design-005']
+},
+{
+  id: 'sd-046',
+  title: 'Hệ thống thu hộ / thanh toán hoá đơn (điện, nước, học phí)',
+  kind: 'bank',
+  level: 'senior',
+  prompt: `Thiết kế hệ thống thu hộ/thanh toán hoá đơn (điện, nước, học phí) cho ngân hàng. Quy mô: 500 nhà cung cấp dịch vụ, 30 triệu khách hàng, 20 triệu giao dịch thu hộ/ngày, peak 3.000 TPS. Phải tra cứu hoá đơn từ nhà cung cấp, gạch nợ (post payment), đối soát cuối ngày, xử lý timeout khi đối tác chậm, không mất tiền, không gạch nợ hai lần. Bạn có 45 phút.`,
+  phases: [
+    { name: 'Requirements', minutes: 5, guide: `Làm rõ functional: tra cứu bill từ provider, thanh toán, gạch nợ (post payment), refund, đối soát cuối ngày, retry khi timeout. Non-functional: TPS, latency, consistency, availability. Hỏi: provider sync hay async? Có bill number unique? Partial payment? Out-of-scope: FX, crypto.` },
+    { name: 'Estimation', minutes: 5, guide: `20M txn/ngày = 231 TPS trung bình, peak 3.000 TPS. Mỗi txn 2-3 call provider (inquiry + payment + confirm). Provider latency 1-5s. Kết luận: async + timeout handling + reconciliation, không đồng bộ trong request.` },
+    { name: 'API & data model', minutes: 5, guide: `API: POST /bills/inquiry {providerId, customerRef}, POST /bills/pay {billId, amount, idempotencyKey}, GET /bills/{id}/status. Bảng bill (id, provider_id, customer_ref, amount, status, provider_ref, created_at), payment (id, bill_id, idem_key unique, amount, status, provider_txn_ref), reconciliation (id, provider_id, date, our_count, provider_count, mismatch).` },
+    { name: 'High-level design', minutes: 15, guide: `Vẽ: Client -> API -> Bill service -> Provider adapter (circuit breaker, timeout) -> Provider. Outbox cho payment event. Webhook receiver nhận kết quả. Reconciliation job cuối ngày. Explain async flow và timeout handling.` },
+    { name: 'Deep dive', minutes: 15, guide: `Đào sâu: idempotency end-to-end, timeout handling (retry với cùng ref, query status), trạng thái treo, reconciliation, failure modes (provider down, partial failure), monitoring.` }
+  ],
+  rubric: [
+    'Idempotency key từ client đến provider, chống gạch nợ hai lần',
+    'State machine bill/payment với trạng thái treo',
+    'Timeout handling: retry với cùng provider ref, không tạo mới',
+    'Reconciliation cuối ngày với sao kê provider',
+    'Provider adapter với circuit breaker và timeout',
+    'Async flow: không gọi provider đồng bộ trong request',
+    'Xử lý partial payment và refund',
+    'Audit trail đầy đủ',
+    'Failure modes và degradation',
+    'Giám sát pending, mismatch, provider health'
+  ],
+  reference: `**Tóm tắt:** Bill payment là bài toán **đối tác chậm và không tin cậy**: provider có thể timeout, trả kết quả bất đồng bộ, và sao kê cuối ngày mới khớp. Ba trụ cột: idempotency key end-to-end, state machine với trạng thái treo PENDING, và reconciliation hằng ngày. Không bao giờ gọi provider đồng bộ trong request vì timeout sẽ làm client retry và gạch nợ hai lần.
+
+### Yêu cầu và quy mô
+- 500 nhà cung cấp, 30 triệu khách hàng, 20 triệu giao dịch thu hộ/ngày, peak 3.000 TPS.
+- Tra cứu bill, thanh toán, gạch nợ, đối soát cuối ngày.
+- Provider trả kết quả bất đồng bộ sau 1-5 giây, có thể timeout.
+- Không mất tiền, không gạch nợ hai lần.
+
+### Ước lượng
+- 20M txn/ngày = 231 TPS trung bình, peak 3.000 TPS.
+- Mỗi txn: 1 inquiry + 1 payment call provider (2 call) = 6.000 call/s peak.
+- Provider latency 1-5s; timeout threshold 10s.
+- Storage: 20M x 500 byte = 10 GB/ngày, 3,6 TB/năm.
+
+### State machine
+~~~text
+INITIATED -> PENDING_PROVIDER -> PAID
+    |              |              |
+    +--> FAILED <--+              +--> REFUNDED
+                    |
+                    +--> PARTIAL_PAID (khi thanh toán một phần)
+~~~
+Mỗi chuyển trạng thái là conditional update WHERE status = 'PENDING_PROVIDER'.
+
+### Mô hình dữ liệu
+~~~sql
+CREATE TABLE bill (
+  id              UUID PRIMARY KEY,
+  provider_id     BIGINT NOT NULL,
+  customer_ref    VARCHAR(64) NOT NULL,
+  amount_minor    BIGINT NOT NULL CHECK (amount_minor > 0),
+  currency        CHAR(3) NOT NULL,
+  status          VARCHAR(20) NOT NULL CHECK (status IN ('OPEN','PARTIAL_PAID','PAID','EXPIRED','CANCELLED')),
+  provider_bill_ref VARCHAR(64),
+  paid_amount_minor BIGINT NOT NULL DEFAULT 0,
+  created_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_at      TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE TABLE payment (
+  id                  UUID PRIMARY KEY,
+  bill_id             UUID NOT NULL,
+  idem_key            VARCHAR(64) NOT NULL,
+  amount_minor        BIGINT NOT NULL CHECK (amount_minor > 0),
+  status              VARCHAR(20) NOT NULL CHECK (status IN ('INITIATED','PENDING_PROVIDER','PAID','FAILED','REFUNDED')),
+  provider_txn_ref    VARCHAR(64),
+  created_at          TIMESTAMPTZ NOT NULL DEFAULT now(),
+  UNIQUE (idem_key)
+);
+CREATE TABLE reconciliation (
+  id                   BIGSERIAL PRIMARY KEY,
+  provider_id          BIGINT NOT NULL,
+  date                 DATE NOT NULL,
+  our_count            INT NOT NULL,
+  provider_count       INT NOT NULL,
+  our_amount_minor     BIGINT NOT NULL,
+  provider_amount_minor BIGINT NOT NULL,
+  mismatch_count       INT NOT NULL DEFAULT 0,
+  mismatch_detail      JSONB,
+  status               VARCHAR(20) NOT NULL,
+  created_at           TIMESTAMPTZ NOT NULL DEFAULT now(),
+  UNIQUE (provider_id, date)
+);
+~~~
+
+### Kiến trúc
+~~~text
+Client -> API gateway -> Bill service -> Provider adapter (circuit breaker)
+                              |                  |
+                              |            Provider network
+                              v
+                        Ledger DB (bill, payment, outbox)
+                              |
+                        Outbox relay -> Kafka
+                              |
+                        Webhook receiver (provider callback)
+                              |
+                        Reconciliation job (daily)
+~~~
+
+~~~seq
+title: Thanh toán hoá đơn qua provider
+actors: Client | API gateway | Bill service | Ledger DB | Provider adapter | Provider | Webhook receiver
+Client -> API gateway: POST /bills/pay (billId, amount, idemKey)
+API gateway -> Bill service: chuyển request
+Bill service -> Ledger DB: ghi INITIATED + outbox (idempotent)
+Ledger DB --> Bill service: OK
+Bill service -> Provider adapter: gửi payment (idempotency_key = payment.id)
+Provider adapter -> Provider: gọi provider API
+Provider --> Webhook receiver: callback kết quả (provider_event_id, provider_txn_ref)
+Webhook receiver -> Ledger DB: cập nhật payment PAID/FAILED, bill status + paid_amount
+Bill service --> API gateway: trả 202 kèm payment id
+API gateway --> Client: 202 Accepted
+~~~
+
+### Luồng thanh toán
+1. Client gửi POST /bills/pay với idempotency key.
+2. Bill service kiểm tra idem_key: mới thì xử lý; đã có trả response cũ.
+3. Inquiry bill từ provider (hoặc dùng bill đã lưu nếu còn hạn).
+4. Ghi payment INITIATED + outbox trong cùng transaction.
+5. Provider adapter gửi payment với idempotency_key = payment.id (idempotent).
+6. Trả 202 kèm payment id; client poll status.
+7. Provider callback (webhook) cập nhật PAID/FAILED; idempotent theo provider_event_id; cập nhật bill.paid_amount và status (PARTIAL_PAID/PAID).
+8. Nếu provider timeout, adapter retry với cùng idempotency_key; không tạo payment mới.
+
+### Xử lý timeout
+- Adapter có timeout 10s; nếu không phản hồi, payment ở PENDING_PROVIDER.
+- Job nền query provider theo idempotency_key để chốt trạng thái.
+- Retry exponential với max N lần; sau đó giữ pending và alert.
+- Không tự reverse khi không rõ; reconciliation cuối ngày sẽ khớp.
+
+### Trạng thái treo và reconciliation
+- Payment PENDING_PROVIDER quá X phút (ví dụ 15) được job quét; query provider; settle/refund/keep pending.
+- Hằng ngày tải sao kê provider, so khớp theo provider_txn_ref: có ở ta không ở provider (treo), có ở provider không ở ta (callback mất), lệch số tiền (alert).
+- Kết quả reconciliation lưu mismatch_detail (JSONB) để truy vết; mismatch > 0 alert ngay.
+
+### Partial payment và refund
+- Một bill có thể thanh toán một phần: tạo payment cho phần đó, bill.paid_amount += amount, status = PARTIAL_PAID (hoặc PAID nếu đủ).
+- Refund: tạo refund payment với ref đến payment gốc; idempotent; ledger reversal; bill.paid_amount -= amount.
+
+### Provider adapter
+- Mỗi provider implement interface chung: inquiry, pay, status, refund.
+- Circuit breaker per provider; timeout per provider (một số provider chậm hơn).
+- Rate limit per provider theo contract.
+- Retry policy configurable per provider.
+
+### Failure modes
+| Sự cố | Ảnh hưởng | Cách xử lý |
+|---|---|---|
+| Provider down | Payment treo | Giữ pending, retry, alert, không reverse |
+| Provider timeout | Client retry | Idempotency key, query status |
+| Duplicate callback | Settle hai lần | Conditional update WHERE status = PENDING_PROVIDER |
+| Provider sao kê lệch | Mismatch | Reconciliation alert, điều tra mismatch_detail |
+| Adapter bug | Gạch nợ sai | Idempotency, audit, rollback |
+
+### Giám sát
+- Pending count theo tuổi, provider success rate, p99 latency, reconciliation mismatch, DLQ size, circuit breaker state.
+
+> Senior tip: với bill payment, tôi không bao giờ tin provider "chắc chắn trả kết quả trong 3 giây". Tôi luôn thiết kế assume provider sẽ timeout và mất callback, và reconciliation cuối ngày là cơ chế an toàn cuối cùng. Một hệ thống bill payment không có reconciliation là một hệ thống sẽ mất tiền mà không biết.`,
+  followups: [
+    'Nếu provider thay đổi từ async sang sync, bạn điều chỉnh kiến trúc thế nào?',
+    'Mất một provider lớn (chiếm 40% traffic), bạn xử lý thế nào?',
+    'Thiết kế partial payment và refund trên ledger ra sao?'
+  ],
+  related: ['design-005']
+}
 ];
