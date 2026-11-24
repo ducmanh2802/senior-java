@@ -6419,7 +6419,7 @@ Vấn đề: đổi secret (DB password) ngay lập tức → instance đang gi�
 2. **Cập nhật secret manager** trỏ sang credential mới (Vault: write KV v2 version mới; AWS SM: PutSecretValue version mới).
 3. **Cho ứng dụng nạp credential mới**:
    - Pattern A (startup import): rolling restart từng instance (health check pass trước khi chuyển traffic).
-   - Pattern B (sidecar file): sidecar ghi file mới → ứng dụng {{@RefreshScope}} reload DataSource (HikariCP {{dataSource.softEvictConnections()}} hoặc recreate bean).
+   - Pattern B (sidecar file): sidecar ghi file mới → ứng dụng {{@RefreshScope}} reload DataSource (HikariCP {{evictConnection()}} từng kết nối hoặc recreate bean).
    - Pattern C (SDK runtime): cache TTL hết hạn → lần sau getSecret() lấy credential mới.
 4. **Xác nhận không còn kết nối dùng credential cũ** (kiểm tra DB {{pg_stat_activity}} hoặc metric pool).
 5. **Thu hồi credential cũ** (Vault: revoke lease; AWS SM: xóa version cũ; RDS: drop user cũ).
@@ -7573,5 +7573,5 @@ Em xem đây là bài toán dung hòa hai nghĩa vụ pháp lý xung đột: aud
     "Audit sạch PII nhưng log ứng dụng hoặc trace vẫn in PII: bạn kiểm soát rò rỉ ngoài audit thế nào?"
   ],
   tags: ["Audit Log", "GDPR", "Crypto-Shredding", "Tokenization", "Pseudonymization", "KMS", "Compliance"]
-},
+}
 );
