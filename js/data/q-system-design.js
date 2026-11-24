@@ -13039,5 +13039,226 @@ Tôi dùng Outbox pattern: trong transaction tạo đơn, insert cả invoice v�
 `,
   follow: ['So sánh Outbox pattern vs Saga pattern.', 'Làm sao xử lý khi thuế thay đổi schema hoá đơn?', 'Thiết kế dead letter queue và alerting cho integration fail.'],
   tags: ['invoice', 'outbox', 'idempotency', 'retry', 'reconciliation', 'tax']
+},
+{
+  id: 'architecture-078',
+  topic: 'architecture',
+  level: 'senior',
+  q: 'Team backend của bạn chỉ có 8 người và đang tranh luận có nên tách monolith thành microservices. Bạn đánh giá theo góc con người và tổ chức (Conway\'s law, cognitive load, on-call) thế nào, và chốt "ngân sách service" cụ thể cho team 8 người ra sao?',
+  a: `**Tóm tắt:** Với team 8 người, mặc định nên là **modular monolith**; microservices chỉ đáng khi có lý do đo được, vì mỗi service là một đơn vị phải **vận hành, trực on-call và gánh cognitive load (tải nhận thức)**. Quy tắc thực dụng: **một service nên tương ứng một squad 2–4 người sở hữu trọn vòng đời** (code, deploy, theo dõi, trực sự cố); 8 người nuôi nổi tối đa 2–3 service, phần còn lại giữ ở mức module trong monolith.
+
+### Cái gì → vì sao cần
+- **Conway\'s law (định luật Conway):** hệ thống phần mềm sẽ phản chiếu cấu trúc giao tiếp của tổ chức. Một team 8 người ngồi cùng phòng, nói chuyện trực tiếp mỗi ngày — cấu trúc giao tiếp là "một mạng dày, ít ranh giới" — nên kiến trúc phù hợp là **một codebase, nhiều module**. Nếu tách 6 service cho 8 người, bạn tạo ra 6 ranh giới cứng qua mạng nhưng **không có 6 team** đứng sau: ownership (ai chịu trách nhiệm) mờ, sửa một tính năng phải nhảy qua 4 service.
+- **Cognitive load (tải nhận thức):** mỗi service thêm một ngôn ngữ, một framework, một pipeline CI/CD, một dashboard, một runbook (sổ tay xử lý sự cố). Một dev phải nhớ quá nhiều thứ → làm chậm và dễ sai. Giống như một đầu bếp phải nấu 6 món ở 6 bếp khác nhau thay vì 6 món trên cùng một bếp.
+- **On-call (trực gác sự cố):** mỗi service là một "pager" (thiết bị/mã báo động) tiềm năng reo lúc 2 giờ sáng. 8 người chia 6 service → mỗi người gánh nhiều hệ, không ai ngủ yên.
+
+### Ngân sách service cho team 8 người
+| Yếu tố | Con số gợi ý | Vì sao |
+|---|---|---|
+| Người tối thiểu sở hữu 1 service (squad) | 2–4 | Dưới 2 là bus factor 1; trên 4 là squad quá đông |
+| Số service 8 người nuôi nổi | 2–3 | Mỗi service cần người trực và người hiểu |
+| Số module trong monolith | 5–8 | Theo bounded context (ranh giới nghiệp vụ) |
+| Số người trong on-call rotation | 4–5 | Xoay 1 tuần/lần, còn dự phòng khi ốm |
+
+### Quy tắc quyết định
+1. Mặc định **modular monolith**, ranh giới kiểm bằng ArchUnit/Spring Modulith (xem architecture-024).
+2. Chỉ tách module thành service khi có **một trong ba** lý do đo được: scale khác biệt rõ (module Search gấp 10 lần phần còn lại), nhịp deploy khác (team cần release độc lập), hoặc yêu cầu cô lập (PCI, dữ liệu nhạy cảm).
+3. Mỗi lần tách phải kèm câu trả lời: **ai on-call, dashboard nào, SLO (mục tiêu mức dịch vụ) nào** — thiếu một trong ba thì chưa tách.
+
+### Dòng quyết định
+~~~seq
+title: Tach service chi khi co squad + so lieu
+actors: Arch | Team | Module
+Arch -> Team: dong y mac dinh modular monolith
+Team -> Module: do scale / nhip deploy / yeu cau co lap
+Module --> Arch: co 1 ly do do duoc + squad 2-4 nguoi
+Arch -> Team: tach service, gan on-call + dashboard + SLO
+note Arch..Team: khong du 3 thu do thi giu module
+~~~
+
+### Bảng trade-off cho team 8 người
+| | Modular monolith | Microservices (6 service) |
+|---|---|---|
+| Người cần để vận hành | 8 (1 team) | ~18–24 (6 squad) |
+| On-call | 1 rotation chung | 6 rotation, thiếu người |
+| Refactor ranh giới | Rẻ (đổi package) | Rất đắt (API + migration) |
+| Deploy độc lập | Không | Có (nhưng cần pipeline x6) |
+| Phù hợp team 8 | Có | Không |
+
+### Pitfall production
+- **Tách theo "cho bằng bạn bằng bè":** công ty khác dùng 50 service nên mình cũng tách — trong khi họ có 500 kỹ sư. Kết quả: 8 người gánh hạ tầng của 50.
+- **Distributed monolith:** tách service nhưng vẫn gọi đồng bộ dây chuyền, deploy phải cùng lúc → tệ hơn monolith vì thêm chi phí mạng mà không có lợi ích.
+- **Không tính chi phí ẩn:** mỗi service thêm ~0,5–1 người công vận hành (theo dõi, nâng cấp, bảo mật). 6 service = 3–6 người chỉ để "giữ đèn".
+- **Bỏ qua giai đoạn giữa:** nhảy thẳng monolith → microservices thay vì dừng ở modular monolith vài tháng để kiểm chứng ranh giới.
+
+### Ví dụ đời thực
+Một startup fintech 8 backend, monolith 120k LOC chạy ổn, 3–4 deploy/tuần. **Triệu chứng:** CTO muốn tách 7 microservice "cho hiện đại"; hai dev giỏi nhất liên tục bị kéo vào việc của mọi service, deadline trễ 2 sprint. **Điều tra:** đo tải — chỉ module {{notification}} có p99 cao gấp 8 lần (do gửi push giờ cao điểm), các module còn lại tải như nhau; team không có ai chuyên trách hạ tầng. **Nguyên nhân gốc:** quyết định tách dựa trên xu hướng, không dựa trên số liệu scale hay năng lực tổ chức (Conway). **Xử lý:** giữ modular monolith, đặt ranh giới bằng Spring Modulith {{verify()}} trong CI; chỉ tách {{notification}} thành service (vì scale khác biệt + cô lập được nhà cung cấp push), 3 dev sở hữu, có dashboard và SLO riêng; 5 module còn lại giữ nguyên. **Kết quả đo được:** sau 1 quý, 1 service thay vì 7, on-call chỉ 1 rotation, chi phí hạ tầng giảm ~30% so với phương án 7 service (ước tính), và notification scale độc lập 10 instance giờ cao điểm mà không ảnh hưởng monolith.
+
+### Trả lời mẫu khi phỏng vấn
+Với team 8 người, em mặc định chọn modular monolith chứ không microservices, vì mỗi service là một đơn vị phải vận hành, trực on-call và gánh tải nhận thức. Em dựa vào định luật Conway: hệ thống phản chiếu cách tổ chức giao tiếp, mà 8 người nói chuyện trực tiếp thì kiến trúc nên ít ranh giới cứng. Quy tắc của em là một service tương ứng một squad 2–4 người sở hữu trọn vòng đời; 8 người nuôi nổi tối đa 2–3 service. Em chỉ tách khi có một trong ba lý do đo được: scale khác biệt, nhịp deploy khác, hoặc yêu cầu cô lập như PCI. Mỗi lần tách phải kèm ai on-call, dashboard nào và SLO nào; thiếu một trong ba thì giữ ở mức module. Em từng thấy một startup 8 người định tách 7 service, nhưng đo ra chỉ module notification có tải gấp 8 lần, nên em giữ monolith modular và chỉ tách notification với 3 dev sở hữu. Kết quả một service thay vì bảy, chi phí giảm khoảng 30 phần trăm và notification vẫn scale độc lập được.
+
+> Senior tip: câu trả lời mạnh không phải "microservices tốt hơn" hay "monolith tốt hơn", mà là "phụ thuộc số liệu scale và số người vận hành". Với team 8 người, hãy nói rõ con số: 2–3 service tối đa, mỗi service một squad 2–4 người, còn lại là module có ranh giới kiểm tự động.`,
+  follow: [
+    'Nếu công ty có 8 người nhưng bắt buộc tách 6 service vì lý do tuân thủ, bạn giảm rủi ro vận hành thế nào?',
+    'Làm sao đo cognitive load của một service để biết team đã quá tải?',
+    'Khi nào modular monolith trở thành nút thắt buộc phải tách, dấu hiệu đo được là gì?'
+  ],
+  tags: ['modular monolith', 'microservices', 'Conway law', 'cognitive load', 'team topology', 'on-call']
+},
+{
+  id: 'architecture-079',
+  topic: 'architecture',
+  level: 'senior',
+  q: 'Bạn tách dần monolith bằng Strangler Fig cho một team 8 người. Làm sao làm cho việc tách "có số liệu": routing facade bằng Java với feature flag và metric, các cổng cắt (cutover gate) đo được, và ngưỡng nào thì tắt hệ cũ?',
+  a: `**Tóm tắt:** Strangler Fig "có số liệu" nghĩa là mỗi bước chuyển request sang hệ mới phải đi qua một **routing facade** bật/tắt bằng **feature flag** và **đo bằng metric** (Micrometer), và việc cutover bị chặn bởi các **cổng đo được** (cutover gate): tỷ lệ shadow diff, tỷ lệ lỗi, độ trễ p99, độ trễ đồng bộ dữ liệu. Không đạt ngưỡng thì không tăng phần trăm; đạt ổn định đủ lâu mới tắt phần legacy. Cách này biến "cảm giác hệ mới ổn" thành "con số trên dashboard".
+
+### Cái gì → vì sao cần
+- **Feature flag (cờ tính năng):** một biến cấu hình bật/tắt một đường code mà không cần deploy lại. Ví dụ {{orders.read.v2 = 5}} nghĩa là 5% request đọc đơn đi hệ mới. Giúp tăng/giảm rủi ro trong vài giây và rollback tức thì.
+- **Routing facade:** một điểm vào duy nhất đứng trước cả hai hệ, quyết định request đi legacy hay hệ mới (xem architecture-025). Đây là nơi đặt flag và đếm metric.
+- **Vì sao cần số liệu:** trực giác "hệ mới chạy êm" hay sai. Cần **bằng chứng định lượng** trước khi chuyển thêm traffic, nếu không cutover mù dễ gây sự cố tiền thật.
+
+### Cổng cắt (cutover gate) đo được
+| Cổng | Metric | Ngưỡng tăng | Ngưỡng tắt legacy |
+|---|---|---|---|
+| Đúng đắn | shadow diff rate | < 0,5% | < 0,1% trong 2 tuần |
+| Ổn định | error rate hệ mới | < 0,1% | < 0,05% |
+| Tốc độ | p99 latency | ≤ legacy + 10% | ≤ legacy |
+| Dữ liệu | sync lag (CDC) | < 2 s | < 500 ms |
+| Phủ sóng | % traffic đã migrate | — | 100% |
+
+### Routing facade bằng Java (đo bằng Micrometer)
+~~~java
+// Facade dat truoc legacy va he thong moi; flag dieu khien % traffic
+class OrderReadFacade {
+    private final OrderLegacy legacy;       // he cu
+    private final OrderNew fresh;           // he moi
+    private final FeatureFlags flags;       // doc flag tu config/DB
+    private final MeterRegistry meters;     // Micrometer: dem metric
+
+    OrderView read(String id) {
+        boolean toNew = flags.percent("orders.read.v2") >= ThreadLocalRandom.current().nextInt(100);
+        OrderView v = toNew ? fresh.read(id) : legacy.read(id);
+        // dem theo nhanh de biet ty le thuc te va loi tung ben
+        meters.counter("orders.read", "target", toNew ? "new" : "legacy").increment();
+        return v;
+    }
+}
+~~~
+
+### Shadow compare (so sánh song song)
+Gọi cả hai hệ trên traffic thật, trả kết quả legacy cho user, log khác biệt:
+~~~java
+OrderView primary = legacy.read(id);          // tra ve cho user
+if (flags.enabled("orders.shadow")) {
+    OrderView shadow = fresh.read(id);        // goi cheo, khong tra cho user
+    if (!primary.equals(shadow)) {
+        meters.counter("orders.shadow.diff").increment(); // do ty le lech
+    }
+}
+return primary;
+~~~
+
+### Quy trình tăng phần trăm
+1. Bật shadow 100% (0% user thấy hệ mới) → đo diff rate.
+2. 1% → 5% → 25% → 50% → 100%, mỗi mức giữ đủ lâu (ví dụ 24–48 giờ) và phải qua mọi cổng.
+3. Đạt 100% ổn định 2 tuần + sync lag thấp → đóng băng ghi legacy, đặt read-only, rồi tắt.
+
+### Pitfall production
+- **Chỉ đo lỗi, quên đo diff:** hệ mới trả 200 nhưng sai số tiền — chỉ shadow diff mới bắt được.
+- **Tăng phần trăm theo cảm tính:** "thấy ổn rồi, lên 100%" mà không qua cổng → sự cố.
+- **Flag lưu trong bộ nhớ, đổi cần restart:** mất khả năng rollback tức thì; nên để flag ở config center/DB đọc động.
+- **Không đo sync lag:** user đọc hệ mới thấy dữ liệu cũ vì CDC trễ, tưởng là bug logic.
+- **Quên frozen ghi legacy:** hai bên cùng ghi, lệch dữ liệu không truy được.
+
+### Ví dụ đời thực
+Monolith đặt hàng, team 8 người, cần tách đọc đơn sang hệ mới tăng dần. **Triệu chứng:** lần cutover trước tăng lên 50% rồi hệ mới trả thiếu đơn (diff 3%) nhưng chỉ phát hiện khi khách khiếu nại. **Điều tra:** không có shadow compare, không có cổng đo, tăng phần trăm bằng tay. **Nguyên nhân gốc:** thiếu routing facade có flag + metric, quyết định cutover bằng cảm giác. **Xử lý:** thêm {{OrderReadFacade}} với flag {{orders.read.v2}}, Micrometer đếm metric {{orders.read}} (gắn nhãn target new/legacy) và {{orders.shadow.diff}}; bật shadow 100% trước; định cổng: diff < 0,5% mới tăng, p99 ≤ legacy + 10%, sync lag < 2 s; tăng 1→5→25→50→100 mỗi mức giữ 24 giờ. **Kết quả đo được:** diff rate ban đầu 2,8% (lỗi phân trang), sửa xong còn 0,12%; sau khi 100% ổn định 2 tuần và sync lag < 500 ms, legacy đặt read-only; không downtime, không khiếu nại; rollback chỉ mất một lần đổi flag.
+
+### Trả lời mẫu khi phỏng vấn
+Em làm cho việc tách monolith có số liệu bằng cách đặt một routing facade trước cả hai hệ, bật tắt bằng feature flag và đo bằng Micrometer. Em định nghĩa các cổng cắt đo được: shadow diff rate phải dưới 0,5 phần trăm mới tăng traffic, p99 hệ mới không được hơn legacy quá 10 phần trăm, và độ trễ đồng bộ dữ liệu CDC dưới 2 giây. Em chạy shadow 100 phần trăm trước, trả kết quả legacy cho user nhưng log mọi khác biệt, rồi tăng dần 1, 5, 25, 50, 100, mỗi mức giữ 24 đến 48 giờ và phải qua mọi cổng. Khi đạt 100 phần trăm ổn định hai tuần, diff dưới 0,1 phần trăm và sync lag dưới 500 mili giây, em mới đóng băng ghi legacy rồi tắt. Em từng gặp lần cutover mù tăng lên 50 phần trăm làm hệ mới trả thiếu đơn với diff 3 phần trăm; sau khi thêm shadow compare và cổng số liệu, diff còn 0,12 phần trăm và rollback chỉ là đổi một flag.
+
+> Senior tip: "có số liệu" nghĩa là bạn viết được ngưỡng trước khi cutover: diff dưới bao nhiêu, p99 hơn bao nhiêu, sync lag dưới bao nhiêu. Nếu không viết ra được các con số này, bạn chưa sẵn sàng tách — bạn chỉ đang hy vọng.`,
+  follow: [
+    'Bạn thiết kế feature flag store để đổi phần trăm trong vài giây và rollback tức thì thế nào?',
+    'Shadow traffic trả kết quả khác nhau — bạn phân loại "chấp nhận được" và "lỗi" ra sao?',
+    'Khi sync lag tăng vọt lúc cutover, bạn dừng ở mức nào và xử lý thế nào?'
+  ],
+  tags: ['strangler fig', 'feature flag', 'Micrometer', 'cutover gate', 'shadow traffic', 'migration']
+},
+{
+  id: 'architecture-080',
+  topic: 'architecture',
+  level: 'lead',
+  q: 'Bạn viết ADR (Architecture Decision Record) cho quyết định kiến trúc lớn, rồi vài tháng sau một "review trigger" kích hoạt buộc phải đảo quyết định. Ở góc lead, bạn quản lý việc đảo quyết định thế nào: viết ADR supersede ra sao, xử lý sunk cost và giữ niềm tin team? Cho ví dụ ADR cụ thể.',
+  a: `**Tóm tắt:** Ở góc lead, ADR không phải văn bản "chốt một lần rồi cất", mà là **nhật ký quyết định sống**: khi một điều kiện đo được (review trigger) xảy ra, bạn viết **ADR mới supersede (thay thế) ADR cũ**, không sửa ADR cũ, và nêu rõ **vì sao dữ liệu đã đổi**. Kỹ năng lead là xử lý **sunk cost (chi phí đã bỏ ra không lấy lại được)** một cách trung thực: thừa nhận quyết định cũ từng đúng với bối cảnh cũ, và đổi hướng dựa trên bằng chứng mới — không vì sĩ diện mà giữ quyết định sai.
+
+### Cái gì → vì sao cần
+- **Review trigger (ngưỡng xem lại):** một điều kiện định lượng ghi ngay trong ADR cũ, ví dụ "xem lại sau 8 tuần nếu p99 > 200 ms hoặc tải module Payment > 5 lần phần còn lại". Nó biến "đảo quyết định" từ thất bại thành **đúng quy trình**.
+- **Sunk cost (chi phí chìm):** tiền/công đã bỏ ra cho quyết định cũ. Lead giỏi tách bạch "đã đầu tư" với "có nên tiếp tục": quá khứ không nên quyết định tương lai.
+- **Vì sao cần ADR supersede:** nếu sửa lén ADR cũ, mất lịch sử và team không hiểu vì sao đổi; nếu không viết gì, 6 tháng sau người mới đề xuất lại phương án cũ.
+
+### Quy trình đảo quyết định (lead)
+1. **Trigger kích hoạt:** metric vượt ngưỡng đã ghi trong ADR cũ → không phải "ai sai" mà là "điều kiện đã đổi".
+2. **Xác nhận bằng dữ liệu:** chạy lại số liệu, loại trừ nhiễu (mùa vụ, một khách lớn).
+3. **Viết ADR mới** trạng thái Proposed, link {{Supersedes: ADR-0007}}, nêu bối cảnh mới và phương án.
+4. **Ghi nhận công sức cũ:** một đoạn "What we learned" — quyết định cũ đúng ở điều kiện X, nay X đổi.
+5. **Disagree and commit:** ai phản đối được ghi "Concern/Response", team vẫn cam kết; đặt review trigger mới.
+6. **Truyền thông:**town hall ngắn + link ADR; không để tin lan truyền kiểu "đổi ý vô cớ".
+
+### Ví dụ ADR supersede (rút gọn)
+~~~text
+# ADR-0021: Tach module Payment thanh service (supersedes ADR-0007)
+
+Status: Accepted (2026-11-20)
+Supersedes: ADR-0007 (giu modular monolith cho team 8 nguoi)
+Deciders: Backend team, SRE
+
+## Context
+- ADR-0007 chot modular monolith voi review trigger:
+  "xem lai neu tai Payment > 5x phan con lai hoac p99 > 200ms".
+- 8 tuan sau: Payment 120 req/s (gap 8x), p99 310ms gay anh huong don hang.
+- Team van 8 nguoi, nhung 3 dev da chuyen sang truc Payment.
+
+## Decision
+Tach Payment thanh service rieng qua Strangler Fig (architecture-079),
+3 dev so huu, co dashboard + SLO. Cac module khac giu monolith.
+
+## Consequences
+Positive: scale doc lap, co lap loi thanh toan.
+Negative: +1 on-call rotation, chi phi van hanh +0,5 nguoi.
+## What we learned
+ADR-0007 dung voi dieu kien 8 nguoi va tai deu; nay tai lech 8x.
+
+## Review trigger moi
+Xem lai sau 1 quy neu on-call > 1 nguoi/quay hoac chi phi > 6%.
+~~~
+
+### Bảng: giữ hay đảo quyết định
+| Tình huống | Hành động lead |
+|---|---|
+| Chưa chạm trigger | Giữ, nhắc lại trigger trong ADR |
+| Chạm trigger, dữ liệu rõ | Viết ADR supersede, đổi hướng |
+| Chạm trigger, dữ liệu nhiễu | Chờ thêm, ghi "monitoring" |
+| Người phản đối mạnh | Ghi Concern/Response, vẫn commit |
+
+### Pitfall production
+- **Sửa lén ADR cũ:** mất lịch sử, team nghi ngờ, tranh luận lại từ đầu.
+- **Giữ quyết định vì sĩ diện/sunk cost:** "đã đầu tư 6 tháng" không phải lý do kỹ thuật; hệ tiếp tục tệ.
+- **Trigger mơ hồ:** "khi thấy chậm thì xem lại" — không đo được nên không bao giờ kích hoạt.
+- **Đảo mà không truyền thông:** team tiếp tục làm theo ADR cũ, hai hệ rẽ nhánh.
+- **Lạm dụng supersede:** đổi ý mỗi quý vì thiếu kỷ luật số liệu → ADR mất giá trị.
+
+### Ví dụ đời thực
+Một SaaS, ADR-0007 chốt modular monolith cho team 8 người, có trigger "xem lại nếu Payment tải > 5 lần phần còn lại". **Triệu chứng:** 8 tuần sau Payment 120 req/s (gấp 8 lần), p99 310 ms kéo chậm cả trang thanh toán; một số dev muốn giữ monolith "vì đã đầu tư", số khác muốn tách. **Điều tra:** xác nhận tải Payment tăng do mở rộng khách, không phải mùa vụ; 3 dev đã thực tế chỉ đụng Payment. **Nguyên nhân gốc:** trigger đã chạm nhưng không ai chịu trách nhiệm ra quyết định → bế tắc. **Xử lý (lead):** viết ADR-0021 supersede ADR-0007, link hai chiều, mục "What we learned" ghi rõ quyết định cũ đúng ở điều kiện cũ; tách Payment qua strangler có cổng số liệu; ghi Concern/Response của người phản đối; đặt trigger mới "on-call > 1 người/quý thì xem lại". **Kết quả đo được:** quyết định chốt trong 4 ngày (thay vì 3 tuần bế tắc), tách Payment không downtime, p99 về 90 ms, 1 rotation on-call thêm được chấp nhận; ADR cũ vẫn đọc được để hiểu lịch sử.
+
+### Trả lời mẫu khi phỏng vấn
+Với em, ADR là nhật ký quyết định sống, không phải văn bản chốt rồi cất. Em luôn ghi review trigger định lượng vào ADR, ví dụ xem lại sau tám tuần nếu tải module Payment vượt năm lần phần còn lại hoặc p99 trên 200 mili giây. Khi trigger chạm, em không coi đó là ai sai mà là điều kiện đã đổi. Em xác nhận dữ liệu để loại nhiễu, rồi viết một ADR mới supersede ADR cũ, không sửa ADR cũ, và thêm mục what we learned giải thích quyết định cũ đúng ở bối cảnh cũ. Em xử lý sunk cost bằng cách tách bạch công sức đã bỏ ra với việc có nên tiếp tục; quá khứ không quyết định tương lai. Người phản đối được ghi concern và response, team vẫn cam kết, và em đặt trigger mới. Em từng gặp team bế tắc ba tuần vì không ai chịu chốt khi trigger chạm; sau khi viết ADR supersede, quyết định chốt trong bốn ngày và tách được module thanh toán không downtime.
+
+> Senior tip: một ADR tốt là ADR **biết trước điều kiện nó sẽ bị thay thế**. Khi viết trigger ngay từ đầu, việc đảo quyết định sau này không còn là "sai lầm" mà là "hệ thống hoạt động đúng". Trong phỏng vấn, kể một lần bạn đổi ý nhờ dữ liệu — đó là dấu hiệu trưởng thành hơn là luôn đúng.`,
+  follow: [
+    'Bạn viết review trigger cho một quyết định khó đảo (type 1) khác gì quyết định dễ đảo (type 2)?',
+    'Làm sao tránh lạm dụng supersede khiến ADR mất giá trị?',
+    'Khi người phản đối vẫn không đồng ý sau dữ liệu, bạn dẫn dắt thế nào để team không rạn nứt?'
+  ],
+  tags: ['ADR', 'supersede', 'decision reversal', 'sunk cost', 'review trigger', 'leadership']
 }
 );
