@@ -6430,7 +6430,6 @@ Khách Nam chụp CCCD, selfie, không có NFC: OCR đọc "Nguyen Van A", face 
     'Nếu số lượng hồ sơ tăng gấp 10 trong tháng khai trương, bạn scale worker xử lý ảnh và hàng đợi duyệt ra sao?'
   ],
 },
-,
 {
   id: 'sd-045',
   title: 'Hệ thống tích điểm loyalty cho chuỗi bán lẻ 3.000 cửa hàng',
@@ -6752,6 +6751,374 @@ API gateway --> Client: 202 Accepted
     'Nếu provider thay đổi từ async sang sync, bạn điều chỉnh kiến trúc thế nào?',
     'Mất một provider lớn (chiếm 40% traffic), bạn xử lý thế nào?',
     'Thiết kế partial payment và refund trên ledger ra sao?'
+  ],
+  related: ['design-005']
+},
+{
+  id: 'sd-047',
+  title: 'Đặt phòng khách sạn đa kênh (website + OTA)',
+  kind: 'bigtech',
+  level: 'senior',
+  prompt: `Thiết kế hệ thống đặt phòng khách sạn bán qua nhiều kênh: website/app của chuỗi và các OTA (Online Travel Agency - đại lý du lịch online như Booking, Agoda, Expedia). Quy mô: 8.000 khách sạn, 2 triệu lượt tìm phòng/ngày, peak 5.000 TPS lúc mở bán phòng lễ Tết, tồn phòng (inventory) phải đồng bộ giữa các kênh gần thời gian thực. Yêu cầu: không được overbooking (bán vượt phòng), giữ phòng tạm (hold) trong lúc khách thanh toán, đẩy tồn phòng và giá (rate) sang các OTA, xử lý huỷ và hoàn tiền. Bạn có 45 phút. Hãy trình bày.`,
+  phases: [
+    { name: 'Requirements', minutes: 5, guide: `Làm rõ functional: tìm phòng trống theo ngày/loại phòng, giữ phòng tạm khi checkout, xác nhận đặt, huỷ và hoàn tiền, đẩy tồn phòng + giá sang OTA, nhận đơn từ OTA. Non-functional: peak TPS, độ trễ tìm kiếm, độ trễ đồng bộ tồn phòng, cấm overbooking tuyệt đối, audit. Hỏi rõ: mỗi khách sạn có bao nhiêu loại phòng, OTA đồng bộ theo kiểu push (ta đẩy) hay pull (OTA kéo) hay webhook, quy tắc hoàn tiền (miễn phí tới khi nào), timezone quanh midnight. Chốt out-of-scope: loyalty phức tạp, PMS nội bộ khách sạn.` },
+    { name: 'Estimation', minutes: 5, guide: `2 triệu lượt tìm/ngày ~ 23 TPS trung bình, peak 5.000 TPS. Mỗi tìm kiếm đọc availability cho N khách sạn x M loại phòng. Giả sử 8.000 khách sạn x 20 loại phòng x 365 ngày = 58 triệu bản ghi rate/năm (mỗi ngày chỉ thay đổi một phần). Hold TTL 15 phút: 5.000 TPS x 900 giây ~ 4,5 triệu hold đồng thời nếu peak kéo dài. OTA sync: 8.000 khách sạn x cập nhật giá nhiều lần/ngày -> hàng triệu event đẩy đi. Kết luận: tách read (tìm kiếm, cache) khỏi write (đặt phòng, hold), và tồn phòng là điểm nóng cần khoá/atomic.` },
+    { name: 'API & data model', minutes: 5, guide: `API: GET /availability?hotelId&checkIn&checkOut&guests, POST /holds (giữ phòng tạm, TTL), POST /bookings (xác nhận), POST /bookings/{id}/cancel. Webhook: POST /ota/bookings nhận đơn từ OTA, POST /ota/ari nhận cập nhật. Bảng hotel, room_type, inventory (hotel_id, room_type_id, date, total, sold), hold (id, inventory_id, qty, expires_at), booking (id, idem_key unique, status, amount). State: HOLD -> CONFIRMED -> CANCELLED/REFUNDED.` },
+    { name: 'High-level design', minutes: 15, guide: `Vẽ: Client/OTA -> API gateway -> Booking service -> Inventory DB (atomic decrement) + Redis cache; Channel manager đẩy ARI (Availability-Rate-Inventory) sang OTA qua queue; OTA webhook -> Booking service. Giải thích vì sao tồn phòng là nguồn sự thật duy nhất trong DB còn Redis chỉ là cache đọc. Nêu mô hình hold có TTL và job thu hồi.` },
+    { name: 'Deep dive', minutes: 15, guide: `Đào sâu: chống overbooking bằng atomic UPDATE ... WHERE available >= qty, hold TTL và reclaim, đồng bộ ARI sang OTA (push + đối soát pull định kỳ), xử lý race khi OTA và website bán cùng lúc, hoàn tiền một phần/toàn phần, idempotency webhook OTA, failure modes (queue tắc, OTA trả 409, DB failover), monitoring (overbook count phải = 0, sync lag).` }
+  ],
+  rubric: [
+    'Làm rõ yêu cầu, con số scale và định nghĩa overbooking = 0',
+    'Tồn phòng là nguồn sự thật trong DB; atomic UPDATE WHERE available >= qty chống bán vượt',
+    'Hold tạm có TTL và job thu hồi khi khách không thanh toán',
+    'Đồng bộ ARI sang OTA: push qua queue + đối soát pull định kỳ để bù message mất',
+    'Idempotency key cho webhook OTA và cho lệnh đặt, chống nhận đơn trùng',
+    'State machine HOLD/CONFIRMED/CANCELLED/REFUNDED rõ ràng',
+    'Xử lý race website vs OTA cùng bán một phòng cuối',
+    'Hoàn tiền một phần/toàn phần, idempotent theo booking',
+    'Failure modes: queue tắc, OTA 409, DB failover, đồng bộ trễ',
+    'Giám sát overbook count, sync lag, hold hết hạn, DLQ; Senior tip'
+  ],
+  reference: `**Tóm tắt:** Đặt phòng đa kênh là bài toán **một nguồn sự thật, nhiều người bán**. Tồn phòng phải là nguồn sự thật duy nhất trong DB và mọi lần bán đều là atomic UPDATE có điều kiện; Redis chỉ để đọc nhanh. OTA là kênh ngoài ta không kiểm soát, nên phải đẩy tồn phòng (push qua queue) và định kỳ đối soát (pull) để bù message mất, còn webhook từ OTA phải idempotent. Overbooking = 0 là ràng buộc cứng, không phải mục tiêu xịn.
+
+### Giải thích thuật ngữ (đọc trước khi đi sâu)
+- **OTA** (Online Travel Agency): đại lý du lịch online bán phòng hộ khách sạn, ví dụ Booking, Agoda.
+- **Inventory / tồn phòng**: số phòng vật lý còn bán được của một loại phòng trong một đêm. Ví dụ "Deluxe, đêm 24/12 còn 5 phòng".
+- **ARI** (Availability - Rate - Inventory): bộ ba dữ liệu đẩy sang OTA gồm còn trống bao nhiêu (availability), giá bao nhiêu (rate), mở hay đóng bán (inventory/open-close).
+- **Hold / giữ phòng tạm**: đặt chỗ ảo một phòng trong 10-15 phút để khách kịp thanh toán, sau đó nhả nếu không trả tiền.
+- **Overbooking**: bán nhiều hơn số phòng thật. Với khách sạn thì đây là sự cố nghiêm trọng (phải chuyển khách sang khách sạn khác, đền bù).
+
+### Yêu cầu và quy mô
+- 8.000 khách sạn, 2 triệu lượt tìm phòng/ngày, peak 5.000 TPS lúc mở bán lễ Tết.
+- Đồng bộ tồn phòng giữa website và nhiều OTA gần thời gian thực.
+- Cấm overbooking tuyệt đối; hold có TTL; hoàn tiền khi huỷ.
+
+### Ước lượng
+- 2 triệu lượt tìm/ngày ~ 23 TPS trung bình, peak 5.000 TPS.
+- Giả sử 8.000 khách sạn x 20 loại phòng x 365 ngày ~ 58 triệu bản ghi rate/năm (không phải mỗi ngày). Cache nóng ở Redis.
+- Hold đồng thời lúc peak: 5.000 TPS x TTL 900 giây ~ 4,5 triệu hold nếu peak kéo dài; cần Redis + TTL.
+- OTA sync: mỗi lần giá/tồn đổi là 1 event; 8.000 khách sạn x nhiều lần/ngày ~ hàng triệu event đẩy/ngày.
+
+### Mô hình dữ liệu
+~~~sql
+CREATE TABLE inventory (
+  hotel_id      BIGINT NOT NULL,
+  room_type_id  BIGINT NOT NULL,
+  stay_date     DATE NOT NULL,
+  total_rooms   INT NOT NULL CHECK (total_rooms >= 0),
+  booked_rooms  INT NOT NULL DEFAULT 0 CHECK (booked_rooms >= 0),
+  PRIMARY KEY (hotel_id, room_type_id, stay_date)
+);
+CREATE TABLE hold (
+  id            UUID PRIMARY KEY,
+  inventory_key VARCHAR(80) NOT NULL,
+  qty           INT NOT NULL CHECK (qty > 0),
+  expires_at    TIMESTAMPTZ NOT NULL,
+  status        VARCHAR(16) NOT NULL DEFAULT 'ACTIVE',
+  created_at    TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE TABLE booking (
+  id          UUID PRIMARY KEY,
+  idem_key    VARCHAR(64) NOT NULL,
+  hotel_id    BIGINT NOT NULL,
+  room_type_id BIGINT NOT NULL,
+  check_in    DATE NOT NULL,
+  check_out   DATE NOT NULL,
+  amount_minor BIGINT NOT NULL,
+  status      VARCHAR(16) NOT NULL,
+  channel     VARCHAR(16) NOT NULL,
+  created_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
+  UNIQUE (idem_key)
+);
+CREATE TABLE outbox (
+  id BIGSERIAL PRIMARY KEY,
+  type VARCHAR(40) NOT NULL,
+  payload JSONB NOT NULL,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  published_at TIMESTAMPTZ
+);
+~~~
+Tồn phòng đếm theo booked_rooms; còn trống = total_rooms - booked_rooms. Hold nằm ở bảng riêng để thu hồi theo TTL.
+
+### State machine
+~~~text
+HOLD --(thanh toán OK)--> CONFIRMED --(huỷ)--> REFUNDED
+ |                            |
+ +--(hết hạn TTL)--> EXPIRED  +--(OTA huỷ)--> REFUNDED
+~~~
+Mỗi chuyển trạng thái là UPDATE có điều kiện WHERE status = trạng thái cũ.
+
+### Kiến trúc
+~~~text
+Khách web/App -> API gateway -> Booking service -> Inventory DB (atomic)
+OTA -----------> OTA webhook --> Booking service -> Inventory DB
+                                   |
+                             outbox relay -> Kafka -> Channel manager -> OTA (ARI push)
+                                   ^
+                           Reconciliation job (pull OTA) --- OTA API
+~~~
+
+~~~seq
+title: Đặt phòng từ website có giữ chỗ tạm
+actors: Khách | API gateway | Booking service | Inventory DB | Channel manager
+Khách -> API gateway: POST /holds (phòng, ngày, qty)
+API gateway -> Booking service: chuyển request
+Booking service -> Inventory DB: UPDATE booked_rooms WHERE con_trong >= qty
+Inventory DB --> Booking service: ghi hold + outbox ARI
+Booking service --> API gateway: trả 200 kèm hold id + TTL
+API gateway --> Khách: hold 15 phút, chờ thanh toán
+Booking service -> Channel manager: đẩy ARI giảm tồn sang OTA (qua outbox)
+~~~
+- tồn phòng chỉ thay đổi qua atomic UPDATE có điều kiện; không đọc-rồi-ghi bằng ứng dụng.
+- outbox ghi cùng transaction với booking để không mất event đẩy OTA.
+
+### Chống overbooking (điểm khó nhất)
+- Mọi lần giữ/bán chạy một câu SQL atomic:
+
+~~~sql
+UPDATE inventory
+SET booked_rooms = booked_rooms + :qty
+WHERE hotel_id = :h AND room_type_id = :r
+  AND stay_date BETWEEN :ci AND :co
+  AND total_rooms - booked_rooms >= :qty;
+~~~
+Nếu số dòng bị ảnh hưởng = 0 thì hết phòng, trả 409, không tạo hold.
+- Với đặt nhiều đêm, kiểm tra từng đêm nằm trong cùng transaction; nếu thiếu một đêm thì rollback toàn bộ.
+- Không dùng read-then-write kiểu SELECT rồi UPDATE trong ứng dụng, vì hai request cùng đọc "còn 1" sẽ cùng ghi -> overbooking.
+
+### Hold tạm và thu hồi
+- Hold có expires_at = now + 15 phút. Khi khách thanh toán, chuyển hold sang booking CONFIRMED.
+- Job nền quét hold ACTIVE quá hạn: UPDATE status = EXPIRED và hoàn booked_rooms (atomic). Phải chạy idempotent vì job có thể chạy trùng.
+- Hold cũng là "reservation" tạm: khi hold còn hiệu lực, phòng đó coi như đã bán với kênh khác.
+
+### Đồng bộ tồn phòng với OTA
+- Mô hình chính: **push ARI** qua queue. Mỗi thay đổi tồn/giá tạo event -> outbox -> Kafka -> Channel manager -> gọi API OTA.
+- Vì queue có thể mất/rớt message, phải có **đối soát pull định kỳ**: Channel manager kéo tồn hiện tại của mình và so với báo cáo OTA, chỗ lệch thì đẩy lại.
+- ARI đẩy theo delta (chỉ cái đổi) để giảm tải, nhưng phải có full snapshot định kỳ (ví dụ mỗi giờ) để tự sửa sai.
+- OTA có thể trả 409/429: Channel manager retry exponential, có circuit breaker và DLQ; event lỗi không được mất.
+
+### Nhận đơn từ OTA (webhook)
+- OTA gọi POST /ota/bookings khi có khách đặt qua kênh của họ.
+- Webhook phải **idempotent** theo (ota_code, ota_booking_id unique); gọi lại cùng id thì trả booking cũ.
+- Một đơn OTA có thể huỷ: OTA gọi /ota/cancel -> booking sang REFUNDED, hoàn tồn.
+- Xử lý đơn OTA cũng đi qua đúng atomic UPDATE để không bán vượt.
+
+### Huỷ và hoàn tiền
+- Huỷ miễn phí tới hạn (ví dụ trước 48h), sau đó tính phí theo chính sách.
+- Hoàn tiền: tạo bản ghi refund idempotent theo booking_id + attempt; trừ theo ledger, không sửa booking gốc.
+- Hoàn một phần: lưu số tiền hoàn lũy kế, không vượt amount gốc.
+
+### Failure modes
+| Sự cố | Ảnh hưởng | Cách xử lý |
+|---|---|---|
+| OTA và web bán cùng phòng cuối | Nguy cơ overbook | Atomic UPDATE có điều kiện, ai UPDATE trước thắng |
+| Queue đẩy ARI tắc | OTA hiển thị tồn cũ | Full snapshot định kỳ + đối soát pull |
+| OTA webhook gọi trùng | Đặt hai lần | Unique (ota_code, ota_booking_id) |
+| Job thu hồi hold chạy trùng | Hoàn tồn hai lần | UPDATE có điều kiện status = ACTIVE |
+| DB failover giữa transaction | Mất hold | Transaction + idempotency, retry an toàn |
+| OTA trả 409/429 | Event kẹt | Retry exponential, DLQ, circuit breaker |
+
+### Giám sát
+- **overbook_count phải luôn = 0** -> alert ngay nếu > 0.
+- sync_lag giữa tồn của ta và OTA (giây), hold hết hạn chưa thu hồi, DLQ size, tỉ lệ 409 từ OTA.
+
+### Ví dụ đời thực
+Một chuỗi mở bán phòng đón Giao thừa. Lúc 0h, 5.000 TPS dồn vào 200 phòng Deluxe. Ban đầu hệ thống đọc tồn ra Redis rồi ghi DB sau -> 30 đơn cùng thấy "còn 1" -> overbooking 12 phòng. Đổi sang atomic UPDATE WHERE available >= qty, số dòng affected quyết định; overbooking về 0. Hold TTL 15 phút giúp 60% người bỏ giỏ được nhả phòng tự động; sync lag với 3 OTA giảm từ 40 giây xuống 3 giây sau khi thêm full snapshot mỗi 5 phút.
+
+### Trả lời mẫu khi phỏng vấn
+Tôi thiết kế tồn phòng là nguồn sự thật duy nhất trong DB, mọi lần bán là một câu UPDATE nguyên tử có điều kiện "còn trống >= số cần", ai cập nhật trước thì thắng, nên không thể overbooking kể cả khi OTA và website bán cùng lúc. Khi khách vào thanh toán, tôi tạo hold 15 phút có TTL; job nền thu hồi các hold hết hạn và hoàn tồn một cách idempotent. Với các OTA, tôi đẩy ARI qua queue bằng outbox pattern, và vì queue có thể mất message nên tôi luôn đối soát pull định kỳ để tự sửa. Webhook từ OTA tôi làm idempotent theo mã đơn của họ. Cuối cùng tôi giám sát overbook count bằng 0 và sync lag; chỉ cần hai chỉ số này xanh là hệ thống đúng đắn.
+
+> Senior tip: với booking, đừng bao giờ cố "đọc cho nhanh rồi ghi sau" — đó chính là nguồn overbooking. Một câu UPDATE có điều kiện chạy chậm hơn vài mili giây nhưng đổi lại bạn có thể chứng minh overbooking = 0. Và hãy coi OTA là đối tác sẽ gửi trùng, gửi trễ, gửi sai: idempotent + đối soát định kỳ là hai lớp an toàn không thể thiếu.`,
+  followups: [
+    'Nếu một OTA chiếm 60% lượng đặt, bạn cô lập ảnh hưởng của nó thế nào để sự cố không lan sang kênh khác?',
+    'Thiết kế hoàn tiền khi huỷ sát giờ (sau 23h đêm trước) với chính sách hoàn một phần ra sao?',
+    'Nếu cần đồng bộ tồn phòng gần thời gian thực hơn nữa, bạn có đánh đổi gì giữa push và pull?',
+    'Mất một AZ chứa Inventory DB, bạn failover và giữ overbooking = 0 thế nào?'
+  ],
+  related: ['design-005']
+},
+{
+  id: 'sd-048',
+  title: 'Quản lý kho và giao hàng chặng cuối (last-mile)',
+  kind: 'bigtech',
+  level: 'lead',
+  prompt: `Thiết kế hệ thống quản lý kho (inventory nhiều kho) và giao hàng chặng cuối (last-mile delivery) cho một sàn thương mại điện tử. Quy mô: 50.000 sản phẩm (SKU), 120 kho trên toàn quốc, 2 triệu đơn/ngày, peak 8.000 đơn/phút. Yêu cầu: giữ hàng khi đặt (reserve) trên tồn nhiều kho, phân tuyến shipper (route planning) theo khu vực, theo dõi trạng thái đơn realtime cho khách, xử lý hoàn hàng và đồng bộ tồn giữa các kho. Bạn có 45 phút. Hãy trình bày.`,
+  phases: [
+    { name: 'Requirements', minutes: 5, guide: `Làm rõ functional: đặt đơn trừ tồn nhiều kho, reserve khi checkout, chọn kho gần nhất còn hàng, gán đơn cho shipper, tối ưu tuyến giao, cập nhật trạng thái realtime (đã lấy/giao/hoàn), đồng bộ tồn giữa kho, xử lý huỷ/hoàn. Non-functional: peak, độ trễ cập nhật trạng thái, không bán vượt tồn, khả dụng. Hỏi: tồn từng kho hay tập trung? Giao một đơn từ nhiều kho (split shipment)? Shipper tự nhận đơn hay hệ thống phân? SLA theo khu vực.` },
+    { name: 'Estimation', minutes: 5, guide: `2 triệu đơn/ngày ~ 23 đơn/s trung bình, peak 8.000 đơn/phút ~ 133 đơn/s (nhưng đỉnh flash sale có thể cao hơn nhiều). Mỗi đơn có vài dòng hàng => vài trăm nghìn dòng tồn update/ngày. Trạng thái đơn realtime: mỗi đơn vài lần đổi trạng thái => vài triệu event đẩy Kafka/ngày. Route planning: gán theo cụm (cluster) shipper theo phường/xã. Kết luận: tồn là điểm nóng, tách reserve/commit, dùng queue cho event trạng thái, route planning là bài toán tối ưu theo lô.` },
+    { name: 'API & data model', minutes: 5, guide: `API: POST /orders (giữ hàng, chọn kho), POST /orders/{id}/cancel, POST /shipments/assign (gán shipper), PATCH /orders/{id}/status. Bảng sku, warehouse, stock (warehouse_id, sku_id, available, reserved), order, order_line, shipment (order_id, shipper_id, status), tracking_event. State order: CREATED -> RESERVED -> ALLOCATED -> PICKED -> SHIPPED -> DELIVERED / CANCELLED / RETURNED.` },
+    { name: 'High-level design', minutes: 15, guide: `Vẽ: Client -> API -> Order service -> Inventory service (reserve atomic) + Allocation (chọn kho) -> DB; Allocation emit event -> Kafka -> Shipment service gán shipper + Route planner; Tracking service nhận GPS/scan cập nhật trạng thái -> đẩy realtime cho khách. Giải thích reserve (2-phase) vs commit, và vì sao route planning chạy theo lô định kỳ chứ không realtime từng đơn.` },
+    { name: 'Deep dive', minutes: 15, guide: `Đào sâu: chống bán vượt tồn nhiều kho bằng atomic reserve, split shipment khi một đơn lấy từ nhiều kho, thuật toán phân tuyến shipper (cluster + TSP xấp xỉ), realtime tracking (WebSocket + fan-out), idempotency event, failure modes (shipper offline, kho sai tồn, đơn kẹt), monitoring (tồn âm, đơn quá hạn giao, tỉ lệ giao thành công).` }
+  ],
+  rubric: [
+    'Làm rõ yêu cầu, con số scale và ràng buộc không bán vượt tồn',
+    'Reserve atomic trên tồn nhiều kho (2-phase: reserve rồi commit), có timeout nhả',
+    'Allocation chọn kho gần nhất còn hàng, hỗ trợ split shipment một đơn nhiều kho',
+    'Phân tuyến shipper theo cụm/lô, giải thích vì sao không realtime từng đơn',
+    'Theo dõi trạng thái realtime bằng event + fan-out (WebSocket/SSE), idempotent',
+    'State machine đơn và shipment đầy đủ, xử lý hoàn hàng',
+    'Đồng bộ tồn giữa các kho, tránh âm tồn',
+    'Failure modes: shipper offline, kho lệch tồn, đơn kẹt, queue tắc',
+    'Giám sát tồn âm, đơn quá hạn, tỉ lệ giao thành công, DLQ',
+    'Senior tip: tồn kho là nguồn sự thật, routing là tối ưu, không đánh đổi đúng đắn lấy nhanh'
+  ],
+  reference: `**Tóm tắt:** Kho và giao hàng chặng cuối tách làm hai bài toán tách biệt: (1) **tồn kho nhiều kho** - bài toán đúng đắn, chống bán vượt, reserve nguyên tử rồi commit; (2) **phân tuyến shipper** - bài toán tối ưu theo lô, không cần realtime từng đơn. Theo dõi trạng thái đơn là bài toán event + fan-out. Nguồn sự thật là tồn trong DB; mọi thứ còn lại (cache, tracking, route) là dẫn xuất.
+
+### Giải thích thuật ngữ (đọc trước khi đi sâu)
+- **SKU** (Stock Keeping Unit): một mã sản phẩm cụ thể. Ví dụ "áo thun đỏ size M" là một SKU.
+- **Inventory nhiều kho**: cùng một SKU nằm ở nhiều kho; tổng tồn là tổng các kho, nhưng mỗi kho có số riêng.
+- **Reserve / giữ hàng**: đặt chỗ ảo một số lượng hàng trong X phút để khách kịp thanh toán, chưa trừ thật.
+- **Last-mile delivery / giao chặng cuối**: chặng giao từ kho/trung tâm tới tay khách, thường bằng shipper (tài xế giao hàng) đi xe máy.
+- **Route planning / phân tuyến**: chia đơn cho từng shipper thành một tuyến đi hợp lý để giảm quãng đường.
+- **Split shipment**: một đơn lấy từ nhiều kho, tách thành nhiều kiện giao riêng.
+
+### Yêu cầu và quy mô
+- 50.000 SKU, 120 kho, 2 triệu đơn/ngày, peak 8.000 đơn/phút.
+- Giữ hàng khi đặt, chọn kho gần nhất còn hàng, phân tuyến shipper, theo dõi realtime.
+- Cấm bán vượt tồn; xử lý huỷ/hoàn; đồng bộ tồn giữa các kho.
+
+### Ước lượng
+- 2 triệu đơn/ngày ~ 23 đơn/s trung bình, peak 8.000 đơn/phút ~ 133 đơn/s, nhưng flash sale có thể x10.
+- Mỗi đơn ~ 3 dòng hàng => ~ 6 triệu dòng tồn thay đổi/ngày.
+- Mỗi đơn ~ 5 lần đổi trạng thái => ~ 10 triệu tracking event/ngày; fan-out cho khách theo dõi.
+- Route planning: 120 kho, mỗi kho hàng trăm shipper; tối ưu theo lô 30-60 giây/lần, không phải mỗi đơn.
+
+### Mô hình dữ liệu
+~~~sql
+CREATE TABLE stock (
+  warehouse_id BIGINT NOT NULL,
+  sku_id       BIGINT NOT NULL,
+  available    INT NOT NULL DEFAULT 0 CHECK (available >= 0),
+  reserved     INT NOT NULL DEFAULT 0 CHECK (reserved >= 0),
+  PRIMARY KEY (warehouse_id, sku_id)
+);
+CREATE TABLE orders (
+  id          UUID PRIMARY KEY,
+  idem_key    VARCHAR(64) NOT NULL,
+  status      VARCHAR(16) NOT NULL,
+  dest_lat    DOUBLE PRECISION,
+  dest_lng    DOUBLE PRECISION,
+  created_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
+  UNIQUE (idem_key)
+);
+CREATE TABLE order_line (
+  id          BIGSERIAL PRIMARY KEY,
+  order_id    UUID NOT NULL,
+  sku_id      BIGINT NOT NULL,
+  qty         INT NOT NULL CHECK (qty > 0),
+  warehouse_id BIGINT,
+  status      VARCHAR(16) NOT NULL DEFAULT 'PENDING'
+);
+CREATE TABLE shipment (
+  id          UUID PRIMARY KEY,
+  order_id    UUID NOT NULL,
+  shipper_id  BIGINT,
+  status      VARCHAR(16) NOT NULL,
+  created_at  TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE TABLE tracking_event (
+  id          BIGSERIAL PRIMARY KEY,
+  order_id    UUID NOT NULL,
+  status      VARCHAR(24) NOT NULL,
+  payload     JSONB,
+  created_at  TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+~~~
+Tồn tách available (còn bán) và reserved (đang giữ); chỉ available được đem bán.
+
+### State machine đơn
+~~~text
+CREATED -> RESERVED -> ALLOCATED -> PICKED -> SHIPPED -> DELIVERED
+              |             |            |          |
+              +--> CANCELLED <----------+          +--> RETURNED
+~~~
+Mỗi chuyển trạng thái là UPDATE có điều kiện; tracking_event là log append-only.
+
+### Kiến trúc
+~~~text
+Client -> API gateway -> Order service -> Inventory (reserve atomic) -> Stock DB
+                                   |
+                             Allocation (chọn kho) -> emit event -> Kafka
+                                                                      |
+                            +-----------------------------------------+
+                            v                                         v
+                   Shipment service (gán shipper)            Tracking service (realtime)
+                            |                                         |
+                     Route planner (theo lô)                  WebSocket/SSE fan-out -> Khách
+~~~
+
+~~~seq
+title: Đặt đơn giữ hàng chọn kho gần nhất
+actors: Khách | API gateway | Order service | Stock DB | Shipment service
+Khách -> API gateway: POST /orders (giỏ hàng)
+API gateway -> Order service: chuyển request
+Order service -> Stock DB: reserve atomic (available -= qty, reserved += qty)
+Stock DB --> Order service: OK theo từng kho gần nhất
+Order service -> Stock DB: ghi order RESERVED + outbox
+Order service -> Shipment service: event đơn đã reserve (qua Kafka)
+Order service --> API gateway: 200 kèm order id
+Shipment service -> Shipment service: allocation + gán shipper theo cụm
+~~~
+
+### Chống bán vượt tồn nhiều kho (2-phase reserve)
+- Bước reserve: với mỗi dòng hàng, chạy atomic UPDATE trên kho được chọn:
+
+~~~sql
+UPDATE stock
+SET available = available - :qty, reserved = reserved + :qty
+WHERE warehouse_id = :w AND sku_id = :s AND available >= :qty;
+~~~
+Nếu affected rows = 0 thì kho đó không đủ, thử kho kế tiếp gần nhất. Hết mọi kho -> trả 409.
+- Allocation: chọn kho còn hàng gần địa chỉ khách nhất (theo khoảng cách, có ngưỡng). Nếu không một kho nào đủ -> split shipment (mỗi dòng một kho).
+- Bước commit: khi thanh toán thành công, reserved -= qty (hàng đã bán thật, available đã trừ từ trước).
+- Bước nhả: nếu huỷ/hết hạn thanh toán, job hoàn available += qty, reserved -= qty, **idempotent** (UPDATE có điều kiện status).
+
+### Phân tuyến shipper (route planning)
+- Đây là bài toán tối ưu xấp xỉ: gom đơn của một cụm (phường/xã/kho) trong cửa sổ 30-60 giây, chia cho shipper theo tải và khoảng cách.
+- Mô hình đơn giản: mỗi shipper nhận một cụm đơn gần nhau; trong cụm, thứ tự ghé là bài toán TSP xấp xỉ (nearest neighbor + 2-opt cho vài chục điểm).
+- Chạy theo **lô định kỳ**, không realtime từng đơn: vì tối ưu cần nhìn cả cụm, và shipper cần một tuyến ổn định chứ không đổi liên tục.
+- Khi shipper offline: đơn chưa gán được giữ trong hàng chờ, lô sau gán lại; đơn gấp có thể đẩy sang shipper khác gần đó.
+
+### Theo dõi trạng thái realtime
+- Shipper/app quét mã tại mỗi mốc (lấy hàng, đang giao, giao xong, giao thất bại) -> ghi tracking_event (append-only) -> đẩy Kafka.
+- Tracking service đọc event, cập nhật trạng thái đơn, fan-out cho khách qua WebSocket/SSE. Mỗi event có event_id idempotent; trùng thì bỏ.
+- Khách chỉ cần trạng thái mới nhất; không cần replay toàn bộ -> cache trạng thái hiện tại ở Redis.
+
+### Huỷ và hoàn hàng
+- Huỷ trước khi commit: nhả reserved (hoàn available), idempotent.
+- Huỷ sau khi giao: tạo yêu cầu hoàn -> RETURNED, shipper lấy hàng về kho, cộng lại tồn khi kho xác nhận nhận.
+- Hoàn một phần: mỗi dòng có status riêng; hoàn từng dòng không ảnh hưởng dòng khác.
+
+### Đồng bộ tồn giữa các kho
+- Tồn mỗi kho là nguồn sự thật của kho đó; không có "tồn tổng" vật lý duy nhất.
+- Khi điều chuyển giữa kho: tạo lệnh transfer, trừ kho nguồn + cộng kho đích trong cùng transaction (hoặc saga nếu khác region), idempotent theo transfer_id.
+- Đối soát định kỳ giữa tồn hệ thống và tồn thực tế (kiểm kê) để bắt lệch.
+
+### Failure modes
+| Sự cố | Ảnh hưởng | Cách xử lý |
+|---|---|---|
+| Hai đơn cùng mua SKU cuối | Nguy cơ âm tồn | Atomic UPDATE có điều kiện available >= qty |
+| Shipper offline | Đơn không ai giao | Giữ hàng chờ, lô sau gán lại, đẩy shipper gần |
+| Kho báo sai tồn | Bán rồi không có hàng | Đối soát kiểm kê, cảnh báo lệch |
+| Tracking event trùng | Trạng thái nhảy lung tung | Idempotent theo event_id, log append-only |
+| Queue tắc | Trạng thái realtime trễ | Giám sát lag, scale consumer, ưu tiên đơn gấp |
+| Đơn kẹt ở SHIPPED | Khách không nhận được | Job quét đơn quá hạn, cờ đỏ cho CSKH |
+
+### Giám sát
+- **tồn âm = 0** (available không bao giờ < 0), tỉ lệ đơn giao thành công, đơn quá hạn giao theo SLA, sync lag event tracking, DLQ size.
+
+### Ví dụ đời thực
+Flash sale 8h sáng, một SKU còn 50 cái ở kho gần nhất và 30 cái ở kho xa. Hệ thống cũ đọc tồn ra cache rồi mới trừ DB -> 90 đơn cùng thấy còn hàng -> âm 60. Đổi sang atomic reserve theo thứ tự kho gần trước, affected rows quyết định; hết gần thì nhảy kho xa, hết tất cả thì 409. Tồn âm về 0. Route planner theo lô 45 giây giảm quãng đường shipper 18% so với gán realtime, và tỉ lệ giao thành công trong ngày tăng từ 91% lên 96%.
+
+### Trả lời mẫu khi phỏng vấn
+Tôi tách bài toán thành ba phần rõ ràng. Thứ nhất, tồn kho nhiều kho là nguồn sự thật trong DB, mỗi lần đặt chạy một câu reserve nguyên tử "available >= số cần", thử lần lượt kho gần nhất, không đủ thì split sang kho khác hoặc trả 409, nên không bao giờ âm tồn. Reserve có TTL, job nhả hàng idempotent khi khách không thanh toán. Thứ hai, phân tuyến shipper là bài toán tối ưu theo lô 30-60 giây, gom đơn theo cụm rồi chia cho tài xế, chứ không tối ưu realtime từng đơn vì như thế tuyến sẽ giật liên tục. Thứ ba, theo dõi trạng thái là event append-only đẩy qua Kafka rồi fan-out WebSocket cho khách, mỗi event idempotent. Tôi giám sát ba chỉ số: tồn âm bằng 0, đơn quá hạn giao, và tỉ lệ giao thành công; đó là nhịp tim của hệ thống.
+
+> Senior tip: trong kho vận, tồn âm là tội lỗi không dung thứ, còn tuyến giao chưa tối ưu chỉ là tốn tiền xăng. Vì vậy tôi luôn ưu tiên đúng đắn của tồn (reserve nguyên tử) trước, rồi mới tối ưu routing sau. Và đừng bao giờ tối ưu route theo từng đơn realtime — gom theo lô vừa rẻ hơn về tính toán vừa cho tuyến ổn định; shipper ghét tuyến đổi liên tục còn hơn đi vòng thêm vài trăm mét.`,
+  followups: [
+    'Nếu một SKU có tồn ở 5 kho, bạn quyết định chia đơn ra sao để cân bằng chi phí giao và tốc độ?',
+    'Mất region chứa vài kho, bạn failover tồn và điều hướng đơn thế nào để không âm tồn?',
+    'Thiết kế lại route planner nếu mỗi đơn có nhiều điểm giao (giao nhiều lần trong ngày)?',
+    'Làm sao phát hiện sớm kho báo sai tồn trước khi khách nhận hàng đã âm?'
   ],
   related: ['design-005']
 }
