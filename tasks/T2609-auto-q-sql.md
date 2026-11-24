@@ -1,0 +1,33 @@
+# T2609 — 3 câu hỏi Senior Java (sql) vào q-sql.js
+
+Status: DONE
+Agent: kilo
+Owns: `js/data/q-sql.js`
+After: T2554
+
+Thêm **3 câu hỏi phỏng vấn mới** (topic: sql) vào `js/data/q-sql.js`. Id nối tiếp id lớn nhất của topic (`node scripts/qtool.js list js/data/q-sql.js`); đọc danh sách để **không trùng ý**.
+
+Chủ đề: window function cho báo cáo (ROW_NUMBER lấy giao dịch mới nhất mỗi tài khoản, SUM OVER số dư luỹ kế), phân trang keyset vs OFFSET có số liệu trên 50 triệu dòng, partition bảng giao dịch theo tháng trong PostgreSQL: lợi ích, cạm bẫy (unique key, query không có điều kiện partition).
+
+Mỗi câu theo AGENTS.md mục 4 và 6: `**Tóm tắt:**` → cơ chế bên trong từng bước và VÌ SAO → code Java ngắn (≤ 30 dòng) có comment hoặc ~~~seq cho luồng nhiều bên → bảng trade-off / khi nào dùng → pitfall production → `### Ví dụ đời thực` có số liệu → `### Trả lời mẫu khi phỏng vấn` (150–220 từ) → `> Senior tip:`; `follow` 2–3 câu. Level: chủ yếu senior, 1 câu lead.
+
+## Luật
+- Đọc AGENTS.md trước (mục 4–6 và mục liên quan bên dưới).
+- **BẮT BUỘC viết tiếng Việt CÓ DẤU đầy đủ** (Tóm tắt, không, nguyên nhân…). Nội dung không dấu sẽ bị trả lại.
+- **Chỉ THÊM** vào file sở hữu (qtool append hoặc chèn trước dòng `);` cuối file); không sửa mục đã có, không sửa file khác. Đếm id trước/sau để chắc không làm mất mục của người khác.
+- Không backtick, không `${` trong nội dung template literal.
+- **Kiến thức phải ĐÚNG**: Java 17/21, Spring Boot 3.x, Hibernate 6, PostgreSQL 15+, HikariCP, Kafka 3.x, AWS hiện hành, JDK tools (jstack, jcmd, JFR, GC log JDK 17+). Không bịa flag, API, metric. Không chắc thì viết ở mức nguyên lý.
+- Người đọc: dev Java ~4 năm, hổng nền tảng, chuẩn bị phỏng vấn Senior: giải thích **từ gốc, từng bước, VÌ SAO**, ví dụ cụ thể, số liệu khớp nhau.
+- Nếu một ý trong chủ đề đã có trong file thì chọn góc khác gần nhất chưa có, ghi vào Notes.
+
+## Nghiệm thu
+`node --check js/data/q-sql.js`; `node scripts/build-light-index.js`; `node scripts/validate.js` → `OK — không có lỗi.` KHÔNG commit.
+Xong: sửa dòng `Status:` đầu file thành `Status: DONE`, Notes ghi id đã thêm.
+
+## Notes
+Đã thêm 3 câu hỏi mới vào js/data/q-sql.js:
+- sql-110: Window function cho báo cáo (ROW_NUMBER lấy giao dịch mới nhất, SUM OVER running balance, LAG khoảng cách giao dịch trước) + giải thích ROWS vs RANGE frame clause
+- sql-111: Phân trang keyset (cursor-based) cho 50 triệu dòng, so sánh với OFFSET, xử lý "nhảy trang 100" trong UI admin
+- sql-112: Partition bảng transaction theo tháng (range partition), unique constraint bắt buộc chứa partition key, query thiếu partition key bị chậm, migration zero-downtime
+Tất cả 3 câu level: senior. Đã chạy `node --check`, `node scripts/build-light-index.js`, `node scripts/validate.js` → OK.
+Reviewed-by: kilo (T2609R)

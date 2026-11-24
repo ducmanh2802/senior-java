@@ -9293,6 +9293,300 @@ Nhà máy thực phẩm 50.000 lot, đồ thị trộn/chia 3 cấp. Khách phà
     'Cách tìm "lowest common ancestor" của hai lot trong cây traceability?',
     'Khi nào nên dùng materialized path (lưu path dạng chuỗi) thay vì recursive CTE truy vấn?'
   ],
-  tags: ['recursive CTE', 'WITH RECURSIVE', 'CONNECT BY', 'traceability', 'lot', 'ancestors', 'descendants', 'cycle detection', 'CYCLE clause', 'lot_mix', 'DAG'],
+tags: ['recursive CTE', 'WITH RECURSIVE', 'CONNECT BY', 'traceability', 'lot', 'ancestors', 'descendants', 'cycle detection', 'CYCLE clause', 'lot_mix', 'DAG'],
+},
+{
+  id: 'sql-110',
+  topic: 'sql',
+  level: 'senior',
+  q: 'Phân trang keyset (cursor-based) cho API danh sách đơn hàng 50 triệu dòng: sort {{ORDER BY created_at DESC, id DESC}} với index {{(created_at, id)}}. Cursor là base64 của {{created_at|id}}. Viết query next page và previous page. Giải thích tại sao keyset ổn định hơn OFFSET khi có INSERT song song, và cách xử lý khi cần "nhảy tới trang 100" trong UI admin.',
+a: `**Tóm tắt:** Keyset pagination dùng điều kiện so sánh tuple {{WHERE (created_at, id) < (:ts, :id)}} thay vì {{OFFSET}}. Next page: {{ORDER BY created_at DESC, id DESC LIMIT 21}} (lấy 21 để biết còn trang sau). Previous page: đảo chiều so sánh và {{ORDER BY}}, reverse ở app. Keyset không ổn định tuyệt đối khi có INSERT song song giữa cursor; muốn "đóng băng" thêm mốc {{anchor_ts}} hoặc dùng snapshot REPEATABLE READ. Với UI cần nhảy trang, dùng OFFSET trên view/materialized view đã cache, hoặc hybrid: keyset cho infinite scroll, OFFSET cho trang đầu/cuối với tổng số đã cache.
+
+### Hiểu nhanh
+OFFSET giống "đếm 200.000 cái bánh rồi lấy 20 cái tiếp theo" – càng sau càng mất công. Keyset giống "nhớ vị trí cái bánh cuối cùng đã lấy, lần sau bắt đầu từ ngay sau nó" – chi phí không đổi theo độ sâu. Cursor chứa đủ cột sort + tie-break PK: thiếu tie-break thì khi created_at trùng (cùng mili-giây) sẽ bỏ sót hoặc lặp dòng.
+
+### Thuật ngữ
+- **Keyset pagination / cursor-based pagination / seek method**: phân trang bằng con trỏ vị trí thay vì đếm offset.
+- **Tuple comparison**: so sánh theo từ điển {{(a, b) < (x, y)}} <=> {{a < x OR (a = x AND b < y)}}.
+- **Tie-breaker**: cột duy nhất (thường là PK) thêm vào ORDER BY để thứ tự thành toàn phần.
+- **Anchor timestamp**: mốc thời gian cố định khi mở phiên đọc, dùng để "đóng băng" kết quả.
+
+### Cơ chế từng bước
+1. **Encode cursor**: base64 của JSON {{"ts": "...", "id": 123}}. Server ký HMAC nếu cursor nhạy cảm.
+2. **Next page**: client gửi cursor trang hiện tại (dòng cuối). Server decode, chạy:
+   ~~~sql
+   SELECT id, created_at, total
+   FROM orders
+   WHERE (created_at, id) < (:cursor_ts, :cursor_id)
+   ORDER BY created_at DESC, id DESC
+   LIMIT 21;   -- 21 để phát hiện còn trang sau
+   ~~~
+   Trả 20 dòng đầu, dòng 21 dùng làm cursor trang sau. Nếu chỉ 20 dòng -> hết trang.
+3. **Previous page**: client gửi cursor trang hiện tại (dòng đầu). Server decode, chạy:
+   ~~~sql
+   SELECT id, created_at, total
+   FROM orders
+   WHERE (created_at, id) > (:cursor_ts, :cursor_id)
+   ORDER BY created_at ASC, id ASC
+   LIMIT 21;
+   ~~~
+   App reverse danh sách để trả về thứ tự DESC.
+4. **Index**: {{CREATE INDEX idx_orders_created_id ON orders (created_at DESC, id DESC);}}. Planner dùng Index Scan (hoặc Backward Index Scan), định vị thẳng vị trí bắt đầu, đọc 21 entry liên tiếp.
+
+### Vì sao cursor phải đủ cột sort + tie-break PK
+Nếu {{created_at}} trùng (cùng mili-giây, batch import), thiếu {{id}} trong cursor thì:
+- Điều kiện {{created_at < :ts}} loại luôn cả nhóm cùng timestamp -> bỏ sót.
+- Dùng {{<=}} không tie-break thì trang sau lặp lại các dòng cùng timestamp.
+Vì vậy cursor **bắt buộc** chứa đúng các cột trong {{ORDER BY}} theo thứ tự, cuối cùng là khóa chính.
+
+### Keyset vs OFFSET khi có INSERT song song
+- OFFSET: dòng mới chèn trước vị trí hiện tại đẩy các dòng xuống -> trang sau bị lặp dòng đã xem; dòng bị xoá làm trang sau nhảy sót.
+- Keyset: điều kiện {{(created_at, id) < cursor}} dựa trên giá trị tuyệt đối của dòng cuối. Dòng mới có created_at **lớn hơn** cursor (nằm trang trước) -> bị loại bởi điều kiện <, không ảnh hưởng trang sau. Dòng mới có created_at **nhỏ hơn** cursor (nằm trang sau) -> xuất hiện ở trang sau, thường chấp nhận được (dữ liệu mới). Dòng bị xoá ở giữa -> trang sau không bị lặp.
+- **Nhược điểm**: keyset không hỗ trợ nhảy ngẫu nhiên tới trang N.
+
+### Xử lý "nhảy tới trang 100" trong UI admin
+1. **Hybrid**: infinite scroll dùng keyset; thanh trang (1, 2, 3... 100) dùng OFFSET trên **materialized view** hoặc **bảng cache** đã pre-aggregate (ví dụ {{order_page_cache(page_num, data_json)}} refresh 5 phút).
+2. **Cached total + ước lượng**: cache {{COUNT(*)}} mỗi phút; trang 100 ≈ offset 100 * page_size. Chấp nhận lệch nhỏ, UI hiển thị "khoảng trang 100".
+3. **Snapshot REPEATABLE READ**: mở transaction đọc, giữ snapshot, dùng OFFSET trong transaction đó. Nhược điểm: giữ snapshot lâu làm bloat, không phù hợp OLTP.
+4. **Anchor timestamp**: khi user mở trang đầu, lưu {{anchor_ts = now()}}. Tất cả query sau thêm {{WHERE created_at <= :anchor_ts}}. Đảm bảo không thấy dữ liệu mới, nhưng user không thấy dữ liệu real-time.
+
+### Code Java: encode/decode cursor
+~~~java
+record Cursor(Instant ts, long id) {}
+
+static String encode(Cursor c) {
+    String json = "{\"ts\":\"" + c.ts() + "\",\"id\":" + c.id() + "}";
+    return Base64.getUrlEncoder().withoutPadding().encodeToString(json.getBytes(StandardCharsets.UTF_8));
+}
+
+static Cursor decode(String raw) {
+    String json = new String(Base64.getUrlDecoder().decode(raw), StandardCharsets.UTF_8);
+    // parse JSON, validate, verify HMAC nếu có
+    return new Cursor(Instant.parse(...), ...);
+}
+~~~
+
+### Trả lời mẫu khi phỏng vấn
+"Tôi dùng keyset pagination thay vì OFFSET vì OFFSET phải sắp xếp và bỏ qua toàn bộ các dòng phía trước, chi phí tăng tuyến tính theo độ sâu trang. Keyset so sánh tuple trên các cột sort, index định vị thẳng vị trí, chi phí gần như không đổi. Cursor phải chứa đủ cột ORDER BY cộng tie-break PK, nếu không khi created_at trùng sẽ lặp hoặc mất dòng. Keyset ổn định hơn OFFSET khi có INSERT: dòng mới lớn hơn cursor không ảnh hưởng trang sau, dòng nhỏ hơn xuất hiện ở trang sau (chấp nhận được). Với UI admin cần nhảy trang, tôi dùng hybrid: keyset cho infinite scroll mobile, OFFSET trên materialized view cho thanh trang admin, hoặc cached total + anchor timestamp. Luôn ký HMAC cursor nếu nó ảnh hưởng bảo mật."
+
+### Ví dụ đời thực
+API danh sách đơn hàng dùng OFFSET với pageSize 20. Khi user kéo tới trang 200, response time tăng từ 80 ms lên 2,4 giây; CPU database tăng do mỗi request sắp xếp 4.000 dòng. Đổi sang keyset với cursor {{(created_at, id)}} và index {{(created_at DESC, id DESC)}}: mọi trang đều 60-90 ms bất kể độ sâu, CPU giảm 60%. Một bug: cursor cũ chỉ chứa created_at, khách có hai đơn cùng mili-giây bị mất một đơn giữa hai trang; thêm id vào cursor và tăng version cursor từ 1 lên 2, vấn đề hết. Với màn hình admin cần "trang 50/200", team tạo materialized view {{order_admin_cache}} refresh 2 phút, OFFSET trên view này chỉ 15 ms, tổng số dòng từ view cache.
+
+> Senior tip: nếu thấy OFFSET với số trang lớn, đó là tín hiệu cần đổi thiết kế. Keyset nhanh gấp nhiều lần ở trang sâu, nhưng đổi lại không nhảy ngẫu nhiên – hãy chọn theo nhu cầu UI. Luôn thêm tie-break PK vào cursor, và encode base64 + HMAC để client không tự chế.
+`,
+  follow: [
+    'Tại sao keyset pagination không hỗ trợ "nhảy tới trang 50" (random access) như OFFSET?',
+    'Cursor encoding base64 có gì rủi ro (tampering, versioning), và cách chống lại?',
+    'Nếu người dùng lọc theo nhiều điều kiện rồi sắp xếp, bạn thiết kế index và cursor ra sao để không phải sort toàn bộ?'
+  ],
+  tags: ['keyset pagination', 'cursor-based', 'composite sort', 'tie-break', 'concurrent insert', 'snapshot isolation', 'REPEATABLE READ']
+},
+{
+  id: 'sql-111',
+  topic: 'sql',
+  level: 'senior',
+  q: 'Partition bảng transaction theo tháng (range partition on created_at) trong PostgreSQL: unique constraint trên (account_id, transaction_code) thế nào, query thiếu điều kiện partition key bị chậm ra sao, và migration từ bảng thường sang partition zero-downtime như thế nào?',
+a: `**Tóm tắt:** Partition range theo tháng biến bảng khổng lồ thành nhiều bảng con; planner **partition pruning** loại partition dựa trên điều kiện hằng trên created_at. Unique index trên bảng partition **bắt buộc chứa partition key** (created_at), nên không đảm bảo unique toàn cục trên (account_id, transaction_code) – cần application-level check hoặc trigger. Query thiếu điều kiện created_at phải quét **tất cả partition**, chậm hơn bảng đơn do chi phí Append. Migration zero-downtime: tạo bảng partition, nạp dữ liệu theo lô, đổi tên trong transaction ngắn với lock_timeout.
+
+### Hiểu nhanh
+Partition giống việc chia một cuốn sổ khổng lồ thành 12 cuốn theo tháng: cần xem tháng 3 thì chỉ mở cuốn tháng 3. Planner tự "partition pruning" – bỏ qua các cuốn không liên quan – khi câu query có điều kiện trên cột partition (created_at). Nhưng unique index trên partitioned table **bắt buộc** chứa cột partition key, nên (account_id, transaction_code) không đủ; cần (account_id, transaction_code, created_at) – cho phép trùng mã nếu khác tháng. Query không lọc tháng phải mở 12 cuốn + chi phí gộp (Merge Append) -> chậm hơn bảng đơn.
+
+### Thuật ngữ
+- **Partition key**: cột dùng để phân chia dữ liệu (created_at).
+- **Partition pruning**: planner loại bỏ partition chắc chắn không chứa dữ liệu thỏa điều kiện.
+- **Local index**: mỗi partition có index riêng; index toàn cục không tồn tại trên bảng partition.
+- **Merge Append**: node gộp kết quả từ nhiều partition đã sort sẵn.
+- **DETACH / ATTACH PARTITION**: tách/gắn partition như thao tác metadata, gần như tức thì.
+- **Zero-downtime migration**: chuyển đổi schema mà ứng dụng không bị ngắt kết nối.
+
+### Unique constraint trên bảng partition
+PostgreSQL yêu cầu **mọi unique index / PK phải chứa partition key**. Lý do: unique index là local cho từng partition; nếu không chứa partition key, hai partition khác nhau có thể cùng chứa giá trị trùng mà index không phát hiện.
+
+~~~sql
+-- SAI: thiếu created_at
+CREATE UNIQUE INDEX uk_txn_acct_code ON transaction (account_id, transaction_code);
+-- ERROR: unique constraint on partitioned table must include all partitioning columns
+
+-- ĐÚNG: chứa partition key
+CREATE UNIQUE INDEX uk_txn_acct_code_created ON transaction (account_id, transaction_code, created_at);
+~~~
+Hệ quả: hai giao dịch cùng account_id, cùng transaction_code nhưng **khác tháng** được coi là khác nhau (vì created_at khác). Nếu nghiệp vụ yêu cầu unique toàn cục tuyệt đối, hai giải pháp:
+1. Application-level: check trùng trước khi insert (SELECT ... FOR UPDATE trên bảng điều khiển).
+2. Trigger: BEFORE INSERT kiểm tra trùng trên tất cả partition (chậm, lock nhiều).
+3. Không partition theo tháng, dùng bảng thường + index unique + archival job.
+
+### Query thiếu điều kiện partition key
+~~~sql
+-- Có pruning: chỉ đọc partition tháng 3
+SELECT * FROM transaction WHERE created_at >= '2026-03-01' AND created_at < '2026-04-01';
+
+-- KHÔNG có pruning: quét TẤT CẢ partition, có Merge Append
+SELECT * FROM transaction WHERE account_id = 42 AND status = 'PENDING';
+~~~
+Plan: {{Merge Append}} gộp kết quả từ 12 partition, mỗi partition Index Scan. Chi phí planning tăng (duyệt 12 partition), chi phí thực thi = tổng 12 lần Index Scan. Nếu mỗi partition 100 triệu dòng, chậm gấp 12 lần so với pruning, và chậm hơn bảng đơn do overhead Append.
+
+Cách khắc phục:
+- Luôn thêm điều kiện created_at vào query (dù là khoảng rộng như 6 tháng).
+- Dùng partial index trên partition: {{CREATE INDEX ON transaction_p2026_03 (account_id) WHERE status = 'PENDING';}}.
+- Nếu query thực sự cần full scan, cân nhắc không partition hoặc dùng BRIN index trên created_at.
+
+### Migration zero-downtime từ bảng thường sang partition
+1. **Tạo bảng partition mới** (không dữ liệu):
+   ~~~sql
+   CREATE TABLE transaction_new (
+     id bigint,
+     account_id bigint,
+     transaction_code text,
+     amount numeric,
+     created_at timestamptz NOT NULL,
+     ...
+   ) PARTITION BY RANGE (created_at);
+   ~~~
+2. **Tạo partition cho các tháng hiện có** (có thể dùng pg_partman tự động):
+   ~~~sql
+   CREATE TABLE transaction_new_p2026_01 PARTITION OF transaction_new
+     FOR VALUES FROM ('2026-01-01') TO ('2026-02-01');
+   -- ... lặp cho các tháng ...
+   ~~~
+3. **Nạp dữ liệu theo lô** (keyset, không OFFSET), mỗi lô một transaction:
+   ~~~sql
+   INSERT INTO transaction_new SELECT * FROM transaction
+   WHERE id > :last_id ORDER BY id LIMIT 50000;
+   ~~~
+   Chạy lặp cho tới khi hết dữ liệu. Theo dõi replication lag, nghỉ 50ms giữa các lô.
+4. **Sync dữ liệu mới** (CDC hoặc trigger ghi đôi, hoặc đọc WAL).
+5. **Cutover** – transaction ngắn, lock_timeout:
+   ~~~sql
+   BEGIN;
+   SET lock_timeout = '3s';
+   ALTER TABLE transaction RENAME TO transaction_old;
+   ALTER TABLE transaction_new RENAME TO transaction;
+   COMMIT;
+   ~~~
+   {{lock_timeout}} giúp DDL fail nhanh thay vì chặn cả hệ thống nếu có transaction dài đang giữ lock.
+6. **Dọn dẹp**: sau khi ổn định, drop transaction_old.
+
+### Bẫy thường gặp
+1. **Quên created_at trong unique index** -> migration báo lỗi lúc tạo index.
+2. **Query không lọc created_at** -> chậm bất ngờ sau partition, debug lâu vì plan khác staging (staging ít partition).
+3. **Tạo index CONCURRENTLY trên bảng partition** -> phải tạo trên từng partition riêng, rồi {{ALTER INDEX ... ATTACH PARTITION}}.
+4. **Quá nhiều partition** (hàng nghìn) -> planning chậm, autovacuum quá tải. Giữ vài trăm partition.
+5. **DEFAULT partition** chứa dòng không khớp bound nào; khi attach partition mới, Postgres quét DEFAULT partition để kiểm tra -> chậm nếu DEFAULT partition lớn. Thêm CHECK constraint khớp bound trước khi attach.
+
+### Trả lời mẫu khi phỏng vấn
+"Tôi partition range theo tháng trên created_at. Planner prune partition khi query có điều kiện trên created_at; query thiếu điều kiện này phải quét toàn bộ partition, chậm hơn bảng đơn do Merge Append. Unique index bắt buộc chứa partition key, nên (account_id, transaction_code) không đủ – phải thêm created_at, cho phép trùng mã nếu khác tháng; unique toàn cục thì cần application check. Migration zero-downtime: tạo bảng partition, nạp dữ liệu theo lô keyset, sync CDC, cutover bằng RENAME trong transaction ngắn có lock_timeout. Tôi cũng dùng pg_partman để tự tạo partition, và theo dõi số partition không vượt vài trăm."
+
+### Ví dụ đời thực
+Bảng transaction 2,4 tỷ dòng, 6,8TB. Query 7 ngày mất 48 giây; DELETE dữ liệu 90 ngày chạy 6 giờ, tạo 900GB WAL. Chuyển sang partition tháng: mỗi partition ~100 triệu dòng. Truy vấn 7 ngày chỉ đọc 1-2 partition -> 1,9 giây. Xoá dữ liệu cũ bằng {{DROP TABLE}} partition -> 200 ms, không WAL. Unique index trên (account_id, code, created_at) cho phép trùng mã giữa tháng; team thêm application-level check unique toàn cục. Migration mất 4 tiếng nạp dữ liệu (song song 4 luồng), cutover 2 giây. Sau partition, autovacuum chạy song song trên các partition, bloat giảm 95%.
+
+> Senior tip: partition không làm query nhanh hơn – nó làm query **đọc ít dữ liệu hơn**. Nếu mọi query đều quét toàn bộ partition, bạn chỉ thêm chi phí planning và unique key bị hạn chế. Luôn đo partition pruning bằng EXPLAIN trước khi quyết định.
+`,
+  follow: [
+    'Vì sao unique index trên bảng partition phải chứa partition key, và hệ quả nghiệp vụ là gì?',
+    'DETACH PARTITION CONCURRENTLY khác DETACH PARTITION ở điểm nào, và khi nào nên dùng?',
+    'Partition theo hash khác range thế nào, và phù hợp với bài toán nào?'
+  ],
+  tags: ['partitioning', 'range partition', 'partition pruning', 'unique constraint', 'DETACH', 'zero-downtime migration', 'pg_partman']
+},
+{
+  id: 'sql-112',
+  topic: 'sql',
+  level: 'senior',
+  q: 'Bảng transaction(account_id, amount, type IN/OUT, created_at): cần báo cáo "giao dịch mới nhất mỗi tài khoản" kèm theo "số dư luỹ kế tính từ đầu" và "khoảng cách đến giao dịch trước đó". Viết query dùng ROW_NUMBER, SUM OVER và LAG. Giải thích frame clause ROWS vs RANGE khi created_at có giá trị trùng nhau.',
+  a: `**Tóm tắt:** Dùng CTE với window function: {{ROW_NUMBER() OVER (PARTITION BY account_id ORDER BY created_at DESC, id DESC)}} để đánh dấu giao dịch mới nhất (rn = 1); {{SUM(delta) OVER (PARTITION BY account_id ORDER BY created_at, id ROWS UNBOUNDED PRECEDING)}} tính running balance; {{LAG(created_at) OVER (PARTITION BY account_id ORDER BY created_at, id)}} lấy timestamp giao dịch trước. Frame {{ROWS}} an toàn khi created_at trùng vì đếm theo vị trí dòng vật lý; {{RANGE}} gom peer rows (cùng timestamp) làm kết quả LAG/SUM không xác định.
+
+### Hiểu nhanh
+Hãy tưởng tượng cuốn sổ giao dịch của một tài khoản: mỗi dòng ghi tiền vào/ra và thời gian. Câu hỏi cần ba thông tin trên **mỗi dòng**: (1) đây có phải giao dịch mới nhất của tài khoản không? (2) tính tới dòng này số dư là bao nhiêu? (3) cách đây bao lâu thì có giao dịch trước đó? {{ROW_NUMBER}} giống việc ghim mác "MỚI NHẤT" lên dòng đầu khi đọc ngược từ dưới lên. {{SUM OVER}} giống việc cộng dồn từng dòng từ đầu sổ. {{LAG}} giống việc nhìn sang dòng ngay trên để lấy giờ.
+
+### Thuật ngữ
+- **Running balance / running total**: tổng cộng dồn từ đầu tới dòng hiện tại.
+- **Delta**: giá trị có dấu (+amount cho IN, -amount cho OUT) để dùng SUM duy nhất.
+- **Frame clause**: xác định "cửa sổ" các dòng mà hàm window được phép nhìn thấy khi tính cho dòng hiện tại.
+- **ROWS**: frame tính theo số dòng vật lý (dòng 1, 2, 3...).
+- **RANGE**: frame tính theo giá trị của ORDER BY (tất cả dòng cùng timestamp là peer).
+- **Peer rows**: các dòng có cùng giá trị ORDER BY với dòng hiện tại.
+
+### Cơ chế từng bước
+1. **Tính delta**: IN = +amount, OUT = -amount. Vì sao: cho phép SUM một cột duy nhất thay vì CASE WHEN lồng nhau.
+2. **Xếp thứ tự**: trong mỗi account_id, sắp theo {{created_at, id}}. Vì sao thêm id: tie-break khi hai giao dịch cùng timestamp, đảm bảo thứ tự toàn phần (total order).
+3. **ROW_NUMBER giảm dần**: {{ORDER BY created_at DESC, id DESC}} -> dòng đầu mỗi partition là giao dịch mới nhất (rn = 1).
+4. **SUM OVER với frame ROWS**: {{SUM(delta) OVER (PARTITION BY account_id ORDER BY created_at, id ROWS UNBOUNDED PRECEDING)}}. Vì sao ROWS: chỉ cộng các dòng đứng trước vật lý, không kéo theo peer rows.
+5. **LAG**: {{LAG(created_at) OVER (PARTITION BY account_id ORDER BY created_at, id)}} lấy timestamp dòng ngay trước. Khoảng cách = {{created_at - prev_ts}}.
+6. **Lọc ở lớp ngoài**: window function chạy sau WHERE, nên lấy rn = 1 ở CTE ngoài.
+
+~~~text
+account 42: created_at = 10:00, 10:00, 10:05
+id         : 100      101      102
+ROWS frame : dòng 1, 2, 3 riêng biệt
+RANGE frame: dòng 1, 2 là peer (cùng 10:00) -> cùng frame
+
+ROW_NUMBER (DESC) cho rn=1 là id=102 (10:05)
+SUM ROWS    : 100->delta1, 101->delta1+delta2, 102->delta1+delta2+delta3
+SUM RANGE   : 100,101 cùng frame -> cùng running sum
+LAG ROWS    : id=101 prev=id=100, id=102 prev=id=101
+LAG RANGE   : id=100,101 cùng peer -> LAG trả về cùng giá trị (dòng đầu partition)
+~~~
+
+### SQL mẫu
+~~~sql
+WITH delta AS (
+    SELECT t.*,
+           CASE WHEN t.type = 'IN'  THEN t.amount
+                WHEN t.type = 'OUT' THEN -t.amount
+           END AS delta
+    FROM transaction t
+),
+numbered AS (
+    SELECT d.*,
+           ROW_NUMBER() OVER (PARTITION BY d.account_id ORDER BY d.created_at DESC, d.id DESC) AS rn_desc,
+           SUM(d.delta) OVER (
+               PARTITION BY d.account_id
+               ORDER BY d.created_at, d.id
+               ROWS UNBOUNDED PRECEDING
+           ) AS running_balance,
+           LAG(d.created_at) OVER (PARTITION BY d.account_id ORDER BY d.created_at, d.id) AS prev_created_at
+    FROM delta d
+)
+SELECT n.account_id,
+       n.id,
+       n.type,
+       n.amount,
+       n.created_at,
+       n.running_balance,
+       n.created_at - n.prev_created_at AS gap_to_prev,
+       CASE WHEN n.rn_desc = 1 THEN true ELSE false END AS is_latest
+FROM numbered n
+WHERE n.rn_desc = 1
+ORDER BY n.account_id;
+~~~
+
+### ROWS vs RANGE – tại sao quan trọng
+- {{ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW}}: frame chứa chính xác các dòng vật lý từ đầu partition đến dòng hiện tại. Dù bao nhiêu dòng cùng timestamp, mỗi dòng có frame riêng -> SUM/LAG đúng từng dòng.
+- {{RANGE BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW}}: frame chứa **tất cả peer rows** (dòng cùng giá trị ORDER BY). Nếu 3 giao dịch cùng {{created_at = '10:00:00'}}, cả 3 cùng nằm trong frame của nhau -> SUM trả cùng giá trị cho 3 dòng, LAG trả cùng timestamp cho 3 dòng (timestamp của dòng đầu tiên trong peer group).
+- Mặc định của PostgreSQL khi có ORDER BY mà không ghi frame là {{RANGE BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW}} => **luôn ghi rõ ROWS** khi cần tính đúng từng dòng.
+
+### Index & hiệu năng
+Index composite: {{(account_id, created_at, id)}}. Window function cần sort theo partition key + order key; index này cho phép index scan tránh sort, và frame ROWS cho phép streaming aggregate.
+
+### Lỗi hay gặp
+1. **Dùng RANGE mặc định cho running balance**. Triệu chứng: các giao dịch cùng giây có cùng running_balance, LAG trả cùng giá trị. Cách tránh: ghi rõ {{ROWS UNBOUNDED PRECEDING}}.
+2. **Thiếu id trong ORDER BY**. Triệu chứng: thứ tự không ổn định giữa các lần chạy, ROW_NUMBER cho rn=1 nhảy giữa các dòng cùng timestamp. Cách tránh: luôn tie-break bằng khóa chính.
+3. **Lọc rn = 1 trong CTE cùng cấp**. Triệu chứng: lỗi "window functions are not allowed in WHERE". Cách tránh: bọc CTE numbered, lọc ở SELECT ngoài.
+4. **SUM chạy trước khi delta được tính**. Triệu chứng: dùng amount thay vì delta, IN/OUT bị cộng đều. Cách tránh: CTE delta trước, mới window function.
+
+### Trả lời mẫu khi phỏng vấn
+"Tôi dùng một CTE delta để đổi dấu IN/OUT, sau đó một CTE numbered chạy ba window function cùng lúc: ROW_NUMBER sắp giảm dần để lấy giao dịch mới nhất, SUM OVER với frame ROWS UNBOUNDED PRECEDING tính running balance từ đầu, LAG lấy timestamp giao dịch trước. Frame ROWS là bắt buộc vì created_at có thể trùng (batch import, đồng hồ hệ thống); RANGE sẽ gom peer rows làm SUM/LAG sai. Index (account_id, created_at, id) giúp tránh sort. Kết quả lọc rn = 1 ở lớp ngoài trả đúng giao dịch mới nhất kèm running balance và khoảng cách đến giao dịch trước."
+
+### Ví dụ đời thực
+Triệu chứng: hệ thống ngân hàng số (PostgreSQL 15, bảng {{transaction}} 120 triệu dòng) có widget "giao dịch gần nhất + số dư hiện tại" cho từng tài khoản. Query cũ dùng subquery correlated để lấy giao dịch mới nhất, rồi SUM OVER riêng cho running balance. Dưới tải cao, query chạy 2-3 giây do sort lặp. Điều tra {{EXPLAIN (ANALYZE, BUFFERS)}} thấy hai window function riêng chạy sort riêng, cộng 2 lần đọc 120 triệu dòng. Gộp ba window function vào một CTE numbered dùng chung {{PARTITION BY account_id ORDER BY created_at, id}}: chỉ sort một lần, Index Scan trên {{(account_id, created_at, id)}}, query còn 45 ms. Cụ thể, phát hiện một tài khoản có 3 giao dịch cùng timestamp (import batch) bị query cũ tính running balance sai (SUM RANGE mặc định gom 3 dòng), sửa sang ROWS thì đúng.
+
+> Senior tip: khi có nhiều window function trên cùng partition + order, **gộp vào một CTE** để sort chia sẻ. Luôn ghi {{ROWS}} cho running total và LAG/LEAD, đừng tin vào mặc định RANGE. Index bắt đầu bằng partition key (account_id) rồi order key (created_at, id) để tránh sort.
+`,
+  follow: [
+    'Tại sao SUM OVER với frame ROWS cho phép streaming aggregate, còn RANGE thì không?',
+    'Nếu cần lấy 3 giao dịch mới nhất thay vì 1, sửa query thế nào?',
+    'LAG và FIRST_VALUE khác nhau thế nào khi frame là ROWS BETWEEN UNBOUNDED PRECEDING AND UNBOUNDED FOLLOWING?'
+  ],
+  tags: ['window function', 'ROW_NUMBER', 'SUM OVER', 'LAG', 'running balance', 'ROWS vs RANGE', 'frame clause']
 },
 );
