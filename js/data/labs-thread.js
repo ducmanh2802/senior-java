@@ -5689,5 +5689,255 @@ log.warn("SMS send failed attempt={} status={} msg={}", attempt, status, e.getMe
     'Đề xuất sửa có đánh đổi: neverBlock=true (chấp nhận mất log), giảm log stack trace/rate-limit, circuit breaker cho SMS, log ra stdout/đĩa local thay vì NFS, metric event bị bỏ.'
   ],
   tags: ['logback', 'async-appender', 'logging', 'blocking-queue', 'jstack', 'nfs', 'circuit-breaker']
+},
+{
+  id: 'lab-thread-028',
+  category: 'thread',
+  title: 'parallelStream gọi HTTP chặn chiếm toàn bộ ForkJoinPool chung: worker RUNNABLE tại Socket.read, health check treo',
+  level: 'senior',
+  scenario: `**Bối cảnh:** **OrderFlow** (Spring Boot 3.2, Java 17) chạy batch hàng đêm xử lý 50 000 đơn hàng. Batch gọi {{orderService.processAll()}} được triển khai như sau:
+
+~~~java
+public void processAll() {
+    orders.parallelStream()
+        .forEach(o -> paymentClient.charge(o)); // gọi HTTP, timeout 30s
+}
+~~~
+
+{{paymentClient.charge()}} dùng {{RestTemplate}} gọi cổng thanh toán đối tác. Lúc 02:03, đối tác bắt đầu chậm, mỗi lệnh HTTP mất 25–30s. Từ 02:04, **toàn bộ service** bị ngầm: health check timeout, API đặt đơn mới chậm, batch kế tiếp cũng kẹt. CPU pod **6%**, heap 45%, DB có 200 connection nhưng chỉ 12 đang dùng.
+
+**Dữ liệu thu thập:** {{jcmd Thread.print}} 3 dump cách nhau 10 giây lúc 02:10, cấu hình {{RestTemplate}}, số liệu Prometheus.`,
+  artifacts: [
+    {
+      name: 'jstack-orderflow-02-10.txt',
+      lang: 'text',
+      content: `2026-10-26 02:10:05
+Full thread dump OpenJDK 64-Bit Server VM (17.0.11+9-LTS-166 mixed mode, sharing):
+
+"ForkJoinPool.commonPool-worker-3" #127 daemon prio=5 os_prio=0 cpu=12450.30ms elapsed=7200.10s tid=0x00007f8b9a123000 nid=0x31a1 runnable  [0x00007f8b3affc000]
+   java.lang.Thread.State: RUNNABLE
+        at java.net.SocketInputStream.socketRead0(java.base@17.0.11/Native Method)
+        at java.net.SocketInputStream.socketRead(java.base@17.0.11/SocketInputStream.java:115)
+        at java.net.SocketInputStream.read(java.base@17.0.11/SocketInputStream.java:168)
+        at java.io.BufferedInputStream.fill(java.base@17.0.11/BufferedInputStream.java:252)
+        at org.apache.http.impl.io.SessionInputBufferImpl.streamRead(SessionInputBufferImpl.java:137)
+        at vn.orderflow.payment.PaymentClient.charge(PaymentClient.java:45)
+        at vn.orderflow.OrderService.lambda$processAll$0(OrderService.java:38)
+        at java.util.concurrent.ForkJoinTask$AdaptedRunnableAction.exec(ForkJoinTask.java:1404)
+        at java.util.concurrent.ForkJoinPool$WorkQueue.runTask(ForkJoinPool.java:1062)
+        at java.util.concurrent.ForkJoinPool.runWorker(ForkJoinPool.java:1802)
+        at java.util.concurrent.ForkJoinWorkerThread.run(ForkJoinWorkerThread.java:187)
+
+"ForkJoinPool.commonPool-worker-7" #131 daemon prio=5 os_prio=0 cpu=11890.20ms elapsed=7200.05s tid=0x00007f8b9a156000 nid=0x31a5 runnable  [0x00007f8b3affc000]
+   java.lang.Thread.State: RUNNABLE
+        at java.net.SocketInputStream.socketRead0(java.base@17.0.11/Native Method)
+        at java.net.SocketInputStream.socketRead(java.base@17.0.11/SocketInputStream.java:115)
+        at java.net.SocketInputStream.read(java.base@17.0.11/SocketInputStream.java:168)
+        at java.io.BufferedInputStream.fill(java.base@17.0.11/BufferedInputStream.java:252)
+        at org.apache.http.impl.io.SessionInputBufferImpl.streamRead(SessionInputBufferImpl.java:137)
+        at vn.orderflow.payment.PaymentClient.charge(PaymentClient.java:45)
+        at vn.orderflow.OrderService.lambda$processAll$0(OrderService.java:38)
+        at java.util.concurrent.ForkJoinPool.runWorker(ForkJoinPool.java:1802)
+        at java.util.concurrent.ForkJoinWorkerThread.run(ForkJoinWorkerThread.java:187)
+
+... (13 worker khác cùng trạng thái RUNNABLE tại Socket.read, toàn bộ common pool bị chiếm)
+
+"http-nio-8080-exec-41" #205 daemon prio=5 os_prio=0 cpu=980.40ms elapsed=7200.15s tid=0x00007f8b9a223000 nid=0x321d waiting on condition  [0x00007f8b372fc000]
+   java.lang.Thread.State: WAITING (parking)
+        at jdk.internal.misc.Unsafe.park(java.base@17.0.11/Native Method)
+        - parking to wait for  <0x00000007c09a1230> (a java.util.concurrent.locks.AbstractQueuedSynchronizer$ConditionObject)
+        at java.util.concurrent.locks.LockSupport.park(java.base@17.0.11/LockSupport.java:194)
+        at java.util.concurrent.locks.AbstractQueuedSynchronizer$ConditionNode.block(java.base@17.0.11/AbstractQueuedSynchronizer.java:259)
+        at java.util.concurrent.ForkJoinPool.managedBlock(java.base@17.0.11/ForkJoinPool.java:3325)
+        at java.util.concurrent.ForkJoinPool.awaitQuiescence(ForkJoinPool.java:2410)
+        at vn.orderflow.health.HealthController.check(HealthController.java:28)`,
+    }
+  ],
+  questions: [
+    'Tại sao việc gọi HTTP chặn bên trong parallelStream làm cả service bị ngầm, không chỉ batch đó?'
+  ],
+  hints: [
+    'parallelStream không tạo thread pool mới — nó dùng chung ForkJoinPool.commonPool của toàn JVM.',
+    'Xem jstack: các thread common pool ở trạng thái RUNNABLE tại Socket.read nghĩa là chúng đang chờ phản hồi HTTP chậm.',
+    'Nếu common pool hết thread, các tác vụ khác dùng chung pool (health check, CompletableFuture.async) sẽ bị chờ trong hàng đợi.'
+  ],
+  answer: `### Nguyên nhân gốc
+
+**{{parallelStream()}}** (và {{CompletableFuture.runAsync/supplyAsync}} mà không chỉ định executor) dùng **ForkJoinPool chung** (common pool), mặc định có số thread bằng số lõi CPU trừ 1. Khi code trong stream chặn thread (gọi HTTP, DB, file I/O), các thread của common pool bị chiếm trọn. Mọi tác vụ khác cũng dùng common pool (health check, batch khác, @Async mặc định) => chờ trong hàng đợi, service bị ngầm toàn bộ.
+
+~~~java
+// Sai: gọi I/O chặn trên common pool
+orders.parallelStream().forEach(o -> paymentClient.charge(o));
+
+// Đúng: dùng executor riêng, giới hạn concurrency
+ExecutorService paymentExecutor = Executors.newFixedThreadPool(8);
+orders.parallelStream()
+    .forEach(o -> paymentExecutor.submit(() -> paymentClient.charge(o)));
+~~~
+
+### Dẫn chứng từ artifact
+
+- {{ForkJoinPool.commonPool-worker-3}} và {{ForkJoinPool.commonPool-worker-7}} (và 13 worker khác) đều RUNNABLE tại {{SocketInputStream.socketRead0}} ← {{PaymentClient.charge}} ← {{OrderService.lambda$processAll$0}} — chúng đang đợi HTTP chậm của đối tác.
+- Thread exec-41 đang WAITING (parking) trên cùng một ConditionObject của common pool, gọi từ {{HealthController.check}} — common pool đã hết thread sẵn sàng.
+- CPU 6%: thread đang đợi I/O, không tính toán. Heap 45%: không phải rác tích luỹ.
+- Số liệu: latency p99 nhảy từ 80ms lên 28s đúng lúc batch chạy; throughput API đặt đơn giảm 90%.
+
+### Cách sửa
+
+**Ngắn hạn:** Dùng executor riêng cho tác vụ I/O chặn, không dùng common pool. Giới hạn concurrency để không bão đối tác.
+
+~~~java
+ExecutorService paymentExecutor = new ThreadPoolExecutor(
+    8, 8, 0L, TimeUnit.MILLISECONDS, new ArrayBlockingQueue<>(32));
+orders.parallelStream()
+    .forEach(o -> paymentExecutor.submit(() -> paymentClient.charge(o)));
+paymentExecutor.shutdown();
+paymentExecutor.awaitTermination(10, TimeUnit.MINUTES);
+~~~
+
+**Dài hạn:** Quy tắc code review: không gọi code chặn (HTTP, DB, file) trên common pool. Mọi tác vụ I/O dài phải có executor riêng hoặc dùng {{CompletableFuture.supplyAsync(task, executor)}} với executor được đặt tên và theo dõi. Thêm timeout cho mọi gọi HTTP và circuit breaker (Resilience4j) cho đối tác.
+
+### Phòng ngừa
+
+- Theo dõi metric {{jvm.threads.states}} và {{tomcat.threads.busy}}; alert khi common pool worker gần hết.
+- Code review: từ chối {{parallelStream}} / {{CompletableFuture.async}} nếu bên trong có gọi I/O chặn.
+- Đặt timeout tất cả {{RestTemplate}}/{{WebClient}} gọi dịch vụ xa.
+- Có dashboard hiển thị "thread đang BLOCKED/WAITING" và luồng gọi để nhanh chóng định vị.
+
+> Senior tip: ForkJoinPool.commonPool là tài nguyên dùng chung toàn JVM. Một tác vụ chặn trên common pool không chỉ ảnh hưởng bản thân mà "lan" sang mọi thành phần khác dùng chung pool (health check, scheduling, @Async khác). Nguyên tắc vàng: common pool chỉ dành cho công việc CPU-bound ngắn; I/O-bound phải có executor riêng. Luôn biết code của bạn chạy trên pool nào — nếu không chắc, hãy in {{Thread.currentThread().getName()}} ở điểm vào tác vụ.`,
+  rubric: [
+    'Xác định đúng: parallelStream dùng ForkJoinPool.commonPool, gọi I/O chặn trên common pool chiếm hết thread, gây lan truyền đến health check và các tác vụ khác.',
+    'Trích dẫn artifact: common pool worker RUNNABLE tại Socket.read, exec thread WAITING parking trên common pool ConditionObject.',
+    'Giải thích số liệu: CPU thấp (6%) vì thread đợi I/O không tính toán, heap bình thường → không phải memory leak.',
+    'Đề xuất sửa có đánh giá: executor riêng, giới hạn concurrency, timeout + circuit breaker, quy tắc code review.'
+  ],
+  tags: ['parallelstream', 'forkjoinpool', 'common-pool', 'blocking-io', 'thread-starvation', 'jstack', 'resttemplate', 'executor']
+},
+{
+  id: 'lab-thread-029',
+  category: 'thread',
+  title: 'Deadlock chuyển tiền 2 chiều: 2 thread BLOCKED chờ lẫn nhau trên monitor tài khoản',
+  level: 'senior',
+  scenario: `**Bối cảnh:** **PayCore** (Java 17, không framework) xử lý chuyển tiền giữa tài khoản. Lúc 14:02, hệ thống ghi 2 giao dịch cùng lúc: GD-100 chuyển 100 000 từ A sang B, GD-101 chuyển 50 000 từ B sang A. Code khóa tài khoản nguồn trước, rồi khóa tài khoản đích:
+
+~~~java
+public void transfer(Account from, Account to, long amount) {
+    synchronized (from) {
+        synchronized (to) {
+            from.debit(amount);
+            to.credit(amount);
+        }
+    }
+}
+~~~
+
+GD-100 chạy trên thread T1 khóa A rồi cố khóa B. GD-101 chạy trên thread T2 khóa B rồi cố khóa A. Kết quả: T1 giữ A chờ B, T2 giữ B chờ A → **deadlock**, hai giao dịch treo vĩnh viễn. Các giao dịch khác liên quan đến A hoặc B cũng bị kéo theo.
+
+**Dữ liệu thu thập:** {{jcmd Thread.print}} lúc 14:05 (đã có phần "Found one Java-level deadlock"), mã nguồn {{AccountService.transfer}}.`,
+  artifacts: [
+    {
+      name: 'jstack-paycore-14-05.txt',
+      lang: 'text',
+      content: `2026-10-26 14:05:12
+Full thread dump OpenJDK 64-Bit Server VM (17.0.11+9-LTS-166 mixed mode, sharing):
+
+"transfer-thread-1" #101 prio=5 os_prio=0 tid=0x00007f8b9a123000 nid=0x41a1 waiting for monitor entry  [0x00007f8b3affc000]
+   java.lang.Thread.State: BLOCKED (on object monitor)
+        at vn.paycore.AccountService.transfer(AccountService.java:15)
+        - waiting to lock  <0x00000007c0aa1110> (a vn.paycore.Account)
+        - locked  <0x00000007c0aa2220> (a vn.paycore.Account)
+        at vn.paycore.GD100.run(GD100.java:12)
+
+"transfer-thread-2" #102 prio=5 os_prio=0 tid=0x00007f8b9a156000 nid=0x41a2 waiting for monitor entry  [0x00007f8b372fc000]
+   java.lang.Thread.State: BLOCKED (on object monitor)
+        at vn.paycore.AccountService.transfer(AccountService.java:15)
+        - waiting to lock  <0x00000007c0aa2220> (a vn.paycore.Account)
+        - locked  <0x00000007c0aa1110> (a vn.paycore.Account)
+        at vn.paycore.GD101.run(GD101.java:12)
+
+Found one Java-level deadlock:
+=============================
+"transfer-thread-1":
+  waiting to lock 0x00000007c0aa1110 (a vn.paycore.Account),
+  which is held by "transfer-thread-2"
+"transfer-thread-2":
+  waiting to lock 0x00000007c0aa2220 (a vn.paycore.Account),
+  which is held by "transfer-thread-1"
+
+Java stack information for the threads listed above:
+===================================================
+"transfer-thread-1":
+        at vn.paycore.AccountService.transfer(AccountService.java:15)
+        at vn.paycore.GD100.run(GD100.java:12)
+"transfer-thread-2":
+        at vn.paycore.AccountService.transfer(AccountService.java:15)
+        at vn.paycore.GD101.run(GD101.java:12)
+
+Found 1 deadlock.`,
+    }
+  ],
+  questions: [
+    'Tại sao 2 giao dịch chuyển tiền chiều ngược lại gây deadlock, và cách sửa theo nguyên tắc nào?'
+  ],
+  hints: [
+    'Deadlock cần 4 điều kiện: bảo toàn tài nguyên, giữ và chờ, không chiếm lại, vòng chờ. Xem thread nào giữ lock nào, thread nào chờ lock nào.',
+    'JVM đã tự phát hiện deadlock trong đoạn "Found one Java-level deadlock" — mỗi thread chờ lock do kia giữ.',
+    'Nguyên nhân cốt lõi là thứ tự khóa không nhất quán: T1 khóa A→B, T2 khóa B→A.'
+  ],
+  answer: `### Nguyên nhân gốc
+
+**Deadlock** xảy ra khi 2 (hoặc nhiều) thread mỗi thread giữ một khóa và chờ khóa mà kia đang giữ, tạo thành vòng chờ không thể thoát. Ở đây:
+
+- T1 (GD-100): {{synchronized(from=A)}} → giữ A, chờ {{synchronized(to=B)}}.
+- T2 (GD-101): {{synchronized(from=B)}} → giữ B, chờ {{synchronized(to=A)}}.
+
+T1 giữ A chờ B, T2 giữ B chờ A → vòng chờ A→B→A, hai thread treo vĩnh viễn. Đây là trường hợp **không có thứ tự khóa nhất quán** (inconsistent lock ordering).
+
+### Dẫn chứng từ artifact
+
+- {{transfer-thread-1}} BLOCKED, đang chờ lock 0x00000007c0aa1110, đã lock 0x00000007c0aa2220 (tài khoản A).
+- {{transfer-thread-2}} BLOCKED, đang chờ lock 0x00000007c0aa2220, đã lock 0x00000007c0aa1110 (tài khoản B).
+- JVM tự phát hiện: {{Found one Java-level deadlock}} và trích lẫn nhau: T1 chờ lock do T2 giữ, T2 chờ lock do T1 giữ.
+- Số liệu: 2 giao dịch treo, throughput chuyển tiền giảm 100% cho cặp tài khoản A/B, các giao dịch liên quan A hoặc B cũng bị chặn.
+
+### Cách sửa
+
+**Quy tắc vàng: luôn khóa theo thứ tự nhất quán (consistent lock ordering).** Sắp xếp tài khoản theo id trước khi khóa, đảm bảo mọi thread khóa theo cùng thứ tự.
+
+~~~java
+public void transfer(Account from, Account to, long amount) {
+    Account first = from.getId() < to.getId() ? from : to;
+    Account second = from.getId() < to.getId() ? to : from;
+    synchronized (first) {
+        synchronized (second) {
+            if (from.getId() == first.getId()) {
+                from.debit(amount);
+                to.credit(amount);
+            } else {
+                to.debit(amount);
+                from.credit(amount);
+            }
+        }
+    }
+}
+~~~
+
+**Cách khác:** Dùng {{ReentrantLock}} với {{tryLock()}} và retry, hoặc khóa tài khoản theo id trong một centralized lock manager. Nhưng thứ tự khóa nhất quán là cách đơn giản nhất và dễ hiểu nhất.
+
+### Phòng ngừa
+
+- Code review: bắt buộc đánh dấu mọi nơi dùng {{synchronized}} lồng nhau, kiểm tra thứ tự khóa.
+- Sử dụng {{ReentrantLock.tryLock(timeout)}} để không chờ vĩnh viễn, sau đó log cảnh báo nếu không khóa được.
+- Tránh gọi phương thức khác có thể khóa thêm bên trong khối {{synchronized}}.
+- Theo dõi jstack định kỳ khi nghi ngờ deadlock; tìm đoạn {{Found one Java-level deadlock}}.
+
+> Senior tip: Deadlock dễ sinh khi code viết "khóa nguồn rồi khóa đích" mà không suy nghĩ đến hướng ngược. Trong production, deadlock thường không tái hiện được trên môi trường dev vì tải thấp, thread chạy nhanh không chồng chéo. Luôn áp dụng thứ tự khóa nhất quán ngay từ thiết kế, và thêm timeout cho mọi khóa để deadlock tự giải thay vì treo vĩnh viễn.`,
+  rubric: [
+    'Xác định đúng deadlock: 2 thread mỗi thread giữ một tài khoản và chờ tài khoản kia, tạo vòng chờ A→B→A.',
+    'Trích dẫn artifact: transfer-thread-1 giữ 0x...2220 chờ 0x...1110, transfer-thread-2 giữ 0x...1110 chờ 0x...2220; JVM báo "Found one Java-level deadlock".',
+    'Nguyên nhân gốc: thứ tự khóa không nhất quán (A→B vs B→A), không phải lỗi JVM.',
+    'Đề xuất sửa đúng: sắp xếp tài khoản theo id trước khi khóa (consistent lock ordering), hoặc dùng tryLock với timeout.'
+  ],
+  tags: ['deadlock', 'synchronized', 'lock-ordering', 'monitor', 'jstack', 'concurrency']
 }
 );
