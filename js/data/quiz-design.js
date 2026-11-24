@@ -2395,6 +2395,306 @@ class Invoice {
 > Senior tip: Không cho phép sửa entity con trực tiếp từ ngoài.`
 },
 {
+  id: 'qz-architecture-041',
+  topic: 'architecture',
+  q: 'Hệ thống đặt vé sự kiện áp dụng CQRS: command ghi (giữ chỗ, thanh toán) và query đọc (xem sơ đồ ghế, lịch sử vé). Khi nào CQRS xứng đáng và trade-off là gì?',
+  options: [
+    'Luôn dùng CQRS vì tách đọc/ghi là best practice',
+    'Chỉ khi domain phức tạp, tải đọc/ghi khác biệt lớn (ví dụ đọc nhiều gấp 100 lần ghi) và chấp nhận eventual consistency giữa command và query; không nên dùng cho CRUD đơn giản',
+    'Chỉ dùng CQRS khi cần event sourcing',
+    'CQRS bắt buộc dùng hai database riêng biệt'
+  ],
+  answer: 1,
+  explain: `**Đáp án đúng: CQRS xứng đáng khi domain phức tạp và tải đọc/ghi lệch nhiều, chấp nhận eventual consistency.**
+ 
+### Vì sao đúng
+- **CQRS** (Command Query Responsibility Segregation) tách model ghi (command) và model đọc (query). Model ghi tập trung validation, business rule, invariant; model đọc tối ưu cho hiển thị (denormalized, pre-computed).
+- **Khi xứng đáng**: domain phong phú (nhiều invariant, business logic), tỷ lệ read/write rất cao (100:1 trở lên), team đủ lớn để bảo trì hai model, chấp nhận dữ liệu đọc chậm vài giây so với ghi (eventual consistency).
+- **Trade-off**: code gấp đôi (hai model, hai repository, sync mechanism), độ phức tạp vận hành tăng (projection lag, schema migration phức tạp), eventual consistency gây bất ngờ cho user (vừa đặt xong mà chưa thấy trong lịch sử).
+- **KHÔNG nên dùng**: CRUD đơn giản, admin panel, domain anémic, team nhỏ, yêu cầu strong consistency giữa đọc và ghi.
+
+### Vì sao các phương án khác sai
+- **Luôn dùng**: over-engineering cho hệ thống đơn giản.
+- **Bắt buộc event sourcing**: CQRS và event sourcing độc lập; có thể CQRS mà không event sourcing (sync projection bằng CDC hoặc dual-write có bù trừ).
+- **Bắt buộc hai DB**: có thể dùng cùng DB, khác schema hoặc khác table; tách DB chỉ cần khi scale độc lập.
+
+> Senior tip: đừng bắt đầu bằng CQRS. Bắt đầu modular monolith, tách read model khi đo được read amplification và pain point thực tế.`
+},
+{
+  id: 'qz-architecture-042',
+  topic: 'architecture',
+  q: 'Team đang cân nhắc Event Sourcing cho service "Kho hàng": lưu mọi thay đổi tồn kho dưới dạng event (StockReceived, StockReserved, StockReleased, StockAdjusted) thay vì chỉ lưu current state. Trade-off chính nào team phải cân nhắc?',
+  options: [
+    'Event Sourcing miễn phí: lưu event thay vì state, query nhanh hơn, không cần migration schema',
+    'Lợi: audit trail hoàn hảo, time-travel debug, rebuild read model bất kỳ lúc nào. Hại: event schema migration phức tạp (upcaster), projection lag, query ad-hoc khó, replay toàn bộ event tốn thời gian khi dữ liệu lớn, team phải học tư duy mới',
+    'Chỉ phù hợp cho hệ thống tài chính, không dùng cho kho hàng',
+    'Event Sourcing tự động giải quyết mọi vấn đề consistency'
+  ],
+  answer: 1,
+  explain: `**Đáp án đúng: lợi audit/time-travel/rebuild; hại schema migration, projection lag, query ad-hoc khó, replay chậm, learning curve.**
+ 
+### Vì sao đúng
+- **Event Sourcing**: lưu chuỗi event thay vì state hiện tại. State = fold(events).
+- **Lợi ích**:
+  - Audit trail: mọi thay đổi có timestamp, actor, lý do (event payload).
+  - Time-travel: xem state tại bất kỳ thời điểm nào (replay tới offset).
+  - Rebuild read model: thêm projection mới (ví dụ báo cáo mới) bằng cách replay từ đầu.
+  - Tách command/query tự nhiên: command append event, query đọc projection.
+- **Chi phí/Trade-off**:
+  - **Event schema evolution**: thêm/xoá field, đổi type cần upcaster (đọc event cũ, phát event mới) — phức tạp và dễ sai.
+  - **Projection lag**: read model cập nhật async, user có thể thấy dữ liệu cũ vài giây.
+  - **Query ad-hoc khó**: không thể {{SELECT * FROM stock WHERE qty > 100}} trực tiếp; phải dùng projection hoặc snapshot.
+  - **Replay time**: 10 triệu event có thể mất giờ để rebuild; cần snapshot định kỳ.
+  - **Learning curve**: team phải tư duy event-first, xử lý idempotency, ordering, compensation.
+
+### Vì sao các phương án khác sai
+- **Miễn phí/query nhanh**: ngược lại, query phức tạp hơn, cần projection.
+- **Chỉ tài chính**: bất kỳ domain nào cần audit trail, temporal query đều hưởng lợi.
+- **Tự động giải quyết consistency**: ES không giải quyết consistency; projection lag tạo eventual consistency.
+
+> Senior tip: bắt đầu bằng "event store" đơn giản (bảng append-only trong PostgreSQL) + CDC để sync projection. Chỉ dùng framework ES (EventStoreDB, Axon) khi đã hiểu rõ pain point. Luôn có snapshot strategy (mỗi 1000 event hoặc mỗi ngày).`
+},
+{
+  id: 'qz-architecture-043',
+  topic: 'architecture',
+  q: 'Saga đặt hàng: bước 1 giữ kho, bước 2 trừ tiền, bước 3 tạo đơn, bước 4 gửi email. Orchestration vs Choreography: chọn cách nào và tại sao?',
+  options: [
+    'Luôn chọn Orchestration vì dễ debug',
+    'Luôn chọn Choreography vì loose coupling',
+    'Orchestration khi quy trình phức tạp, có nhiều điều kiện phân nhánh, cần kiểm soát tập trung, dễ hiểu luồng và bù trừ (compensating transaction); Choreography khi các bước đơn giản, ít phụ thuộc, team tự chủ từng service',
+    'Choreography dùng event, Orchestration dùng REST đồng bộ'
+  ],
+  answer: 2,
+  explain: `**Đáp án đúng: Orchestration cho quy trình phức tạp/cần kiểm soát; Choreography cho quy trình đơn giản/ít phụ thuộc.**
+ 
+### Vì sao đúng
+- **Orchestration**: một orchestrator (state machine) điều phối thứ tự bước, gọi service, xử lý lỗi, chạy compensating transaction.
+  - Ưu: luồng nghiệp vụ tập trung một chỗ, dễ hiểu, dễ debug, dễ thay đổi thứ tự/bước, xử lý timeout/retry tập trung, compensating transaction rõ ràng.
+  - Nhược: orchestrator trở thành "smart pipe", coupling logic điều phối, single point of failure (cần HA).
+  - Phù hợp: quy trình nhiều bước, nhiều điều kiện (if-else), rollback phức tạp, cần audit trail luồng.
+- **Choreography**: các service phát event, service khác nghe và phản ứng. Không có central coordinator.
+  - Ưu: loose coupling, service tự chủ, scale team tốt.
+  - Nhược: luồng nghiệp vụ rải rác (distributed logic), khó debug (phải trace event chain), circular dependency risk, bù trừ transaction khó phối hợp (phải phát event bù).
+  - Phù hợp: quy trình tuyến tính, ít bước, ít điều kiện, team nhiều và muốn tự chủ.
+
+### Vì sao các phương án khác sai
+- **Luôn Orchestration**: tạo bottleneck coupling khi quy trình đơn giản.
+- **Luôn Choreography**: rối khi logic phức tạp, khó bù trừ.
+- **Choreography = event, Orchestration = REST**: sai, Orchestration cũng có thể dùng event (orchestrator phát command event, service reply result event).
+
+> Senior tip: thực tế nhiều hệ thống hybrid: Orchestration ở mức cao (quản lý state machine đơn hàng), Choreography ở mức chi tiết (inventory, payment tự phát event nội bộ). Luôn thiết kế compensating transaction trước khi viết code.`
+},
+{
+  id: 'qz-architecture-044',
+  topic: 'architecture',
+  q: 'Clean Architecture: dependency rule cốt lõi là gì và vi phạm phổ biến nào làm vỡ ranh giới?',
+  options: [
+    'Inner layer không được biết outer layer; vi phạm phổ biến: domain import framework (JPA, Spring) hoặc outer layer quyết định business rule',
+    'Outer layer không được biết inner layer; vi phạm: controller gọi repository',
+    'Tất cả layer đều có thể biết nhau miễn là dùng interface',
+    'Dependency rule chỉ áp dụng cho database'
+  ],
+  answer: 0,
+  explain: `**Đáp án đúng: inner layer không biết outer layer; vi phạm: domain import framework hoặc business rule rò rỉ ra ngoài.**
+ 
+### Vì sao đúng
+- **Dependency Rule** (Robert Martin): source code dependency chỉ được trỏ **về phía trong**. Domain (Entities, Use Cases) không được phụ thuộc vào Framework (Spring, JPA, Kafka), UI, Database. Framework phụ thuộc vào Domain (implement interface do Domain định nghĩa).
+- **Vi phạm phổ biến**:
+  1. Entity có {{@Entity}}, {{@Table}}, {{@Column}} (JPA annotation) → domain phụ thuộc JPA.
+  2. Use Case inject {{JpaRepository}} thay vì interface {{Repository}} do domain định nghĩa.
+  3. Business rule rò rỉ ra Controller/Service (ví dụ validation, tính giá trong controller).
+  4. DTO của framework (Spring {{Page}}, {{Pageable}}) lọt vào Use Case.
+- **Cách giữ ranh giới**: dùng port/adapter pattern, ArchUnit test, code review.
+
+### Vì sao các phương án khác sai
+- **Outer không biết inner**: ngược lại, outer phải biết inner (implement port).
+- **Tất cả biết nhau**: phá vỡ nguyên tắc cốt lõi.
+- **Chỉ áp dụng DB**: áp dụng cho mọi outer layer (UI, framework, external service).
+
+> Senior tip: trong Spring, dùng {{@Repository}} interface ở domain package, implement ở adapter package. Use Case inject interface. Chạy ArchUnit trong CI: {{noClasses().that().resideInAPackage("..domain..").should().dependOnClassesThat().resideInAnyPackage("org.springframework..", "jakarta.persistence..")}}.`
+},
+{
+  id: 'qz-architecture-045',
+  topic: 'architecture',
+  q: 'Modular monolith: team chia module theo bounded context. Làm sao để module A dùng service của module B mà không phá vỡ encapsulation?',
+  options: [
+    'Module A inject bean public của module B trực tiếp',
+    'Module A gọi REST API của module B qua HTTP nội bộ',
+    'Module A phụ thuộc vào interface (port) do module B định nghĩa ở package API; Spring wiring inject implementation của B vào A; module B chỉ expose type ở package gốc, internal package bị hidden',
+    'Gộp hai module thành một'
+  ],
+  answer: 2,
+  explain: `**Đáp án đúng: phụ thuộc vào interface (port) ở package API của module B, Spring inject implementation.**
+ 
+### Vì sao đúng
+- **Modular monolith** (Spring Modulith): mỗi module là một package con trực tiếp của root package. Package gốc của module = **public API** (interface, DTO, event). Các package con bên trong = **internal** (implementation, entity, config).
+- Module A muốn dùng B: A thêm dependency compile-time vào B, nhưng **chỉ dùng type ở package gốc của B** (interface {{PaymentService}}, DTO {{PaymentRequest}}). Spring inject implementation {{PaymentServiceImpl}} (nằm trong internal package của B) vào A.
+- **Encapsulation**: ArchUnit/Spring Modulith {{verify()}} chặn A truy cập internal package của B. B đổi internal thoải mái không lo A bị vỡ.
+- **Giao tiếp**: đồng bộ (gọi method interface) hoặc bất đồng bộ (phát event {{@ApplicationModuleListener}}).
+
+### Vì sao các phương án khác sai
+- **Inject bean public trực tiếp**: nếu bean là implementation class (không phải interface), A phụ thuộc concrete class của B → vỡ encapsulation.
+- **Gọi REST nội bộ**: thêm latency, serialization, error handling, deployment coupling; modular monolith sinh ra để tránh chi phí này.
+- **Gộp module**: mất ranh giới bounded context.
+
+> Senior tip: Spring Modulith quy ước: module = package con cấp 1. Type ở package gốc = API. Test: {{ApplicationModules.of(App.class).verify()}}. Tài liệu module tự sinh: {{ApplicationModules.of(App.class).forEach(m -> m.writeDocumentation(...))}}.`
+},
+{
+  id: 'qz-architecture-046',
+  topic: 'architecture',
+  multi: true,
+  q: 'CQRS: projection (read model) cập nhật như thế nào? Những phát biểu nào đúng? (Chọn 2)',
+  options: [
+    'Dual-write: command handler vừa ghi event/command DB, vừa update read model trong cùng transaction',
+    'CDC (Change Data Capture): Debezium đọc WAL/binlog, phát event, projection consumer cập nhật read model',
+    'Event-driven: command phát domain event, projection listener (transactional hoặc async) cập nhật read model',
+    'Polling: projection định kỳ {{SELECT * FROM write_table WHERE updated_at > last_sync}}',
+    'Read model luôn strong consistency với write model'
+  ],
+  answer: [1, 2],
+  explain: `**Đáp án đúng: CDC (Debezium) và event-driven projection listener.**
+ 
+### Vì sao đúng
+- **CDC (Debezium)**: đọc thay đổi từ transaction log của DB (WAL/binlog), phát event tới Kafka. Projection consumer đọc event và cập nhật read model. Ưu: không xâm nhập code command, đảm bảo mọi thay đổi đều bị bắt (kể cả SQL trực tiếp). Nhược: phụ thuộc schema DB, cần quản lý connector.
+- **Event-driven projection**: command handler phát domain event (Spring {{ApplicationEventPublisher}}, Kafka, outbox table). Projection listener (có thể {{@TransactionalEventListener}} phase {{AFTER_COMMIT}} hoặc Kafka consumer) cập nhật read model. Ưu: event là ngôn ngữ domain, dễ hiểu, kiểm soát được payload. Nhược: cần discipline để luôn phát event, có thể mất event nếu không dùng outbox.
+
+### Vì sao các phương án khác sai
+- **Dual-write trong cùng transaction**: vi phạm single responsibility của command handler, coupling write/read model, nếu read model fail thì command rollback (không mong muốn). Dual-write thường dẫn đến inconsistency khi một phía thành công một phía fail.
+- **Polling**: độ trễ lớn, tốn resource, dễ bỏ sót khi updated_at không cập nhật (bulk update, trigger).
+- **Luôn strong consistency**: CQRS bản chất là eventual consistency giữa command và query. Strong consistency chỉ có khi projection cập nhật đồng bộ trong cùng transaction (rất hiếm, phá vỡ lý do tách CQRS).
+
+> Senior tip: kết hợp outbox pattern (ghi event vào bảng outbox trong cùng transaction command) + CDC hoặc relay phát event ra Kafka → projection consumer idempotent cập nhật read model. Đặt metric projection lag (giây) và alert khi vượt ngưỡng.`
+},
+{
+  id: 'qz-architecture-047',
+  topic: 'architecture',
+  q: 'Team dùng Event Sourcing. Khi replay 5 triệu event để rebuild projection mới, mất 45 phút. Cách giảm thời gian rebuild?',
+  options: [
+    'Chỉ replay event của 30 ngày gần nhất',
+    'Snapshot: định kỳ lưu state của aggregate (mỗi N event hoặc theo thời gian); rebuild load snapshot gần nhất rồi replay phần còn lại',
+    'Chạy replay song song trên nhiều thread không quan tâm thứ tự',
+    'Tăng heap size JVM là đủ'
+  ],
+  answer: 1,
+  explain: `**Đáp án đúng: snapshot state định kỳ, rebuild từ snapshot gần nhất + replay phần còn lại.**
+ 
+### Vì sao đúng
+- **Snapshot** (memento): lưu state của aggregate/event stream tại một offset (ví dụ mỗi 1000 event, hoặc mỗi ngày, hoặc khi aggregate đạt kích thước nhất định).
+- **Rebuild với snapshot**:
+  1. Tìm snapshot mới nhất trước offset cần rebuild.
+  2. Load snapshot vào projection (hoặc aggregate).
+  3. Replay event từ offset snapshot tới cuối.
+- **Ví dụ**: 5 triệu event, snapshot mỗi 100k event → 50 snapshot. Rebuild load snapshot #49 (offset 4.9M) + replay 100k event → từ 45 phút giảm xuống vài giây.
+- **Lưu ý**: snapshot phải versioned (khi event schema đổi, snapshot cũ có thể không load được → cần upcaster cho snapshot hoặc rebuild full).
+
+### Vì sao các phương án khác sai
+- **Chỉ replay 30 ngày**: mất lịch sử, projection sai cho dữ liệu cũ.
+- **Song song không quan tâm thứ tự**: Event Sourcing yêu cầu thứ tự tuyệt đối trong một stream (partition key = aggregate id). Song song chỉ được khi chia theo partition key (mỗi aggregate độc lập).
+- **Tăng heap**: không giải quyết bản chất O(N) replay time.
+
+> Senior tip: dùng snapshotting library (EventStoreDB, Axon) hoặc tự implement: bảng {{snapshot(aggregate_id, offset, state_json, created_at)}}. Xoá snapshot cũ sau khi tạo mới để tiết kiệm dung lượng.`
+},
+{
+  id: 'qz-architecture-048',
+  topic: 'architecture',
+  q: 'Anti-corruption layer (ACL) trong DDD dùng khi nào và làm gì?',
+  options: [
+    'Dùng để validate input từ client trước khi vào domain',
+    'Dùng khi tích hợp với hệ thống ngoài (legacy, third-party) mà model của nó khác model domain của bạn: ACL dịch model ngoài sang model domain, che giấu sự thay đổi của bên ngoài',
+    'Là một design pattern cho caching',
+    'Dùng để mã hoá dữ liệu nhạy cảm'
+  ],
+  answer: 1,
+  explain: `**Đáp án đúng: ACL dịch model hệ thống ngoài sang model domain, che giấu sự thay đổi của bên ngoài.**
+ 
+### Vì sao đúng
+- **Anti-corruption Layer** (Eric Evans): lớp cách ly giữa bounded context của bạn và context bên ngoài (legacy system, third-party API, external service). Bên ngoài có model, thuật ngữ, quy tắc khác; ACL ngăn không cho "corrupt" domain model của bạn.
+- **ACL làm gì**:
+  - Dịch external DTO → internal Value Object/Entity.
+  - Map external error code → domain exception.
+  - Che giấu thay đổi API bên ngoài: bên ngoài đổi field, ACL cập nhật mapping, domain không đổi.
+  - Thường implement bằng Facade/Adapter pattern.
+- **Khi dùng**: tích hợp legacy (không thể sửa), third-party API (không kiểm soát), microservice khác thuộc team khác (bounded context khác).
+
+### Vì sao các phương án khác sai
+- **Validate input client**: đó là validation layer / input sanitization, không phải ACL.
+- **Caching pattern**: ACL không phải caching.
+- **Mã hoá**: đó là encryption/security layer.
+
+> Senior tip: ACL thường là một package/service nhỏ, test kỹ mapping. Không lạm dụng: nếu bạn kiểm soát được cả hai bên, hãy đồng bộ model thay vì thêm ACL.`
+},
+{
+  id: 'qz-architecture-049',
+  topic: 'architecture',
+  multi: true,
+  q: 'Architecture Decision Record (ADR) nên ghi gì và quy trình ra sao? (Chọn 2)',
+  options: [
+    'Chỉ ghi quyết định cuối cùng, không cần ghi phương án bị loại',
+    'Ghi: Title, Status, Context, Decision, Consequences (cả mặt tốt và xấu), Options considered; ADR không sửa, muốn đổi thì viết ADR mới đánh dấu superseded',
+    'ADR lưu trên Confluence/wiki để mọi người dễ sửa',
+    'ADR lưu trong repo (docs/adr/), review qua PR như code',
+    'Mỗi class có một ADR riêng'
+  ],
+  answer: [1, 3],
+  explain: `**Đáp án đúng: ghi đầy đủ Context/Decision/Consequences/Options; ADR bất biến, lưu trong repo, review qua PR.**
+ 
+### Vì sao đúng
+- **Cấu trúc ADR** (Michael Nygard):
+  - **Title**: quyết định gì (ví dụ "Use Kafka for async messaging").
+  - **Status**: Proposed / Accepted / Superseded / Deprecated.
+  - **Context**: bối cảnh, ràng buộc, yêu cầu tại thời điểm quyết định.
+  - **Decision**: quyết định đã chọn.
+  - **Consequences**: hệ quả (cả tích cực và tiêu cực, ví dụ "Kafka không có delay queue, phải tự implement retry").
+  - **Options considered**: các phương án khác đã đánh giá và lý do loại (giúp team sau không phải tái điều tra).
+- **Quy trình**:
+  1. Viết ADR draft, mở PR.
+  2. Team review, thảo luận, chỉnh sửa.
+  3. Merge → ADR accepted, không bao giờ sửa nội dung.
+  4. Muốn đổi quyết định: viết ADR mới, status cũ = Superseded, link tới ADR mới.
+- **Lưu trong repo**: versioned cùng code, review qua PR, không bị mất khi wiki migrage.
+
+### Vì sao các phương án khác sai
+- **Chỉ ghi quyết định**: mất context, team sau không hiểu tại sao chọn cái đó, dễ lặp lại sai lầm.
+- **Lưu wiki ai cũng sửa**: nội dung bị ghi đè, mất lịch sử, lệch với code.
+- **Mỗi class một ADR**: quá lẻ, ADR dành cho quyết định kiến trúc lớn (chọn DB, broker, chia service, pattern), không phải chi tiết implement.
+
+> Senior tip: ADR ngắn (đọc < 5 phút). Chỉ viết cho quyết định "đắt" khi đảo ngược (kiến trúc, công nghệ cốt lõi). Tool: {{adr-tools}}, {{adr-log}}.`
+},
+{
+  id: 'qz-architecture-050',
+  topic: 'architecture',
+  q: 'Architecture Fitness Function: khái niệm này là gì và ví dụ cụ thể?',
+  options: [
+    'Đo performance của hệ thống',
+    'Test tự động kiểm tra đặc tính kiến trúc (dependency rule, coupling, cyclic dependency, naming convention) chạy trong CI; ví dụ: ArchUnit test `noClasses().that().resideInAPackage("..domain..").should().dependOnClassesThat().resideInAnyPackage("..adapter..")`',
+    'Metric business (revenue, conversion)',
+    'Code coverage threshold'
+  ],
+  answer: 1,
+  explain: `**Đáp án đúng: test tự động kiểm tra đặc tính kiến trúc chạy trong CI (ví dụ ArchUnit test dependency rule).**
+ 
+### Vì sao đúng
+- **Architecture Fitness Function** (Neal Ford, Rebecca Parsons, Patrick Kua): bất kỳ cơ chế tự động nào cung cấp feedback khách quan về đặc tính kiến trúc của hệ thống. Chuyển "quy tắc kiến trúc" từ tài liệu thành **test executable**.
+- **Phân loại**:
+  - **Atomic**: một test đơn lẻ (ví dụ: không có cyclic dependency, domain không import Spring).
+  - **Holistic**: bộ test đánh giá toàn hệ (ví dụ: coupling giữa module, technical debt index).
+  - **Temporal**: chạy theo lịch (nightly) hoặc triggered (PR).
+  - **Continual**: chạy trong CI pipeline mọi commit.
+- **Ví dụ thực tế**:
+  - ArchUnit: {{classes().that().resideInAPackage("..domain..").should().onlyDependOnClassesThat().resideInAnyPackage("..domain..", "java..")}}.
+  - Spring Modulith: {{ApplicationModules.of(App.class).verify()}}.
+  - Dependency check: {{dependencyCheck}} plugin chặn thư viện có CVE.
+  - Naming convention: test {{@Service}} không được đặt tên {{*Impl}}, {{@Entity}} không được có {{set*}} public.
+- **Lợi ích**: kiến trúc không "mốc" theo thời gian; vi phạm bị phát hiện sớm tại PR; onboarding dev mới đọc test hiểu quy tắc.
+
+### Vì sao các phương án khác sai
+- **Performance metric**: đó là performance testing, không phải architecture fitness function (dù có thể kết hợp).
+- **Business metric**: đo lường business outcome.
+- **Code coverage**: đo test coverage, không phải architecture.
+
+> Senior tip: bắt đầu bằng 3-5 fitness function quan trọng nhất (dependency rule, cyclic dep, no-logic-in-controller). Chạy trong CI, fail build khi vi phạm. Dùng {{FreezingArchRule}} khi áp lên codebase cũ: ghi nhận vi phạm hiện tại, chỉ chặn vi phạm mới.`
+},
+{
   id: 'qz-design-051',
   topic: 'design',
   q: `Đoạn code sau vi phạm Single Responsibility Principle (SRP - mỗi class chỉ nên có một lý do để thay đổi)?
