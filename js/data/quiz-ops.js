@@ -4871,5 +4871,487 @@ Khi chỉ CPU cao đơn lẻ, composite alarm không vào ALARM (giảm thông b
   explain: `**Tóm tắt:** Kinesis Data Streams là stream append-only với shard.
 
 > Senior tip: chi phí Kinesis tính theo shard-hour.`
+},
+{
+  id: 'qz-devops-114', topic: 'devops',
+  q: 'Dockerfile multi-stage cho Spring Boot dùng layered jar. Thứ tự COPY nào tận dụng cache layer tốt nhất khi chỉ code thay đổi?',
+  options: [
+    'COPY toàn bộ source -> RUN mvn package -> COPY target/app.jar',
+    'COPY pom.xml -> RUN mvn dependency:go-offline -> COPY source -> RUN mvn package',
+    'COPY pom.xml -> COPY src -> RUN mvn package -DskipTests',
+    'COPY target/app.jar trực tiếp vào stage runtime'
+  ],
+  answer: 1,
+  explain: `**Tóm tắt:** Tận dụng cache Docker: COPY pom.xml trước, tải dependency (go-offline) để cache layer dependency, rồi mới COPY source code. Khi source thay đổi, chỉ rebuild layer package, không tải lại dependency.
+  
+### Dockerfile mẫu tối ưu
+~~~dockerfile
+# Build stage
+FROM maven:3.9-eclipse-temurin-21 AS build
+WORKDIR /app
+COPY pom.xml .
+RUN mvn dependency:go-offline -B
+COPY src ./src
+RUN mvn package -DskipTests
+
+# Runtime stage - dùng layered jar
+FROM eclipse-temurin:21-jre
+WORKDIR /app
+COPY --from=build /app/target/app.jar app.jar
+# Spring Boot 2.3+ hỗ trợ layered jar: java -Djarmode=layertools -jar app.jar extract
+# Sau đó COPY từng layer theo thứ tự: dependencies, spring-boot-loader, snapshot-dependencies, application
+ENTRYPOINT ["java","-jar","/app/app.jar"]
+~~~
+
+### Tận dụng layered jar (Spring Boot 2.3+)
+Spring Boot jar có cấu trúc layer. Runtime stage có thể extract và COPY từng layer riêng biệt:
+~~~dockerfile
+FROM build AS extractor
+RUN java -Djarmode=layertools -jar app.jar extract
+
+FROM eclipse-temurin:21-jre
+WORKDIR /app
+COPY --from=extractor dependencies/ ./
+COPY --from=extractor spring-boot-loader/ ./
+COPY --from=extractor snapshot-dependencies/ ./
+COPY --from=extractor application/ ./
+ENTRYPOINT ["java","-cp","/app:/app/lib/*","org.springframework.boot.loader.JarLauncher"]
+~~~
+Layer {{application}} (code của bạn) thay đổi thường xuyên nhất, nên đặt cuối cùng để các layer dependencies/spring-boot-loader được cache lại.
+
+### Vì sao các phương án còn lại sai
+- **COPY toàn bộ source trước**: mỗi lần đổi code invalidates layer mvn package và dependency.
+- **COPY pom.xml -> COPY src -> RUN mvn package**: thiếu dependency:go-offline, mỗi lần build tải lại dependency.
+- **COPY target/app.jar**: cần build jar ngoài Dockerfile, mất tính tái lập và cache layer dependency.
+
+> Senior tip: Kết hợp .dockerignore loại trừ target/, .git/, .m2/ để context nhỏ. Dùng BuildKit (DOCKER_BUILDKIT=1) để cache mount ~/.m2: RUN --mount=type=cache,target=/root/.m2 mvn package.`
+},
+{
+  id: 'qz-devops-115', topic: 'devops', multi: true,
+  q: 'Kubernetes có 3 loại probe: startupProbe, readinessProbe, livenessProbe. Hai phát biểu nào đúng? (Chọn 2)',
+  options: [
+    'startupProbe chạy trước, chỉ dùng cho ứng dụng khởi động chậm; nếu fail thì container bị kill và không thử lại readiness/liveness',
+    'readinessProbe fail: Pod bị gỡ khỏi Service endpoints (không nhận traffic), container KHÔNG bị restart',
+    'livenessProbe fail: container bị restart theo restartPolicy; nên kiểm tra dependency ngoài (DB, Redis) trong liveness',
+    'Nếu không có startupProbe, readinessProbe bắt đầu ngay sau container start, có thể fail khi app chưa sẵn sàng',
+    'startupProbe và livenessProbe trùng nhau: cả hai đều kill container khi fail'
+  ],
+  answer: [1, 3],
+  explain: `**Tóm tắt:** readinessProbe gating traffic (không restart); livenessProbe restart container; startupProbe che chắn cho ứng dụng khởi động chậm (disable liveness/readiness cho đến khi startup pass).
+  
+### Ba probe và vai trò
+| Probe | Mục đích | Fail thì sao? | Khi nào dùng |
+|---|---|---|---|
+| **startupProbe** | Biết app đang khởi động, tạm disable liveness/readiness | Kill container, **không** thử lại | App khởi động > 30-60s (Spring Boot, migration DB) |
+| **readinessProbe** | App sẵn sàng nhận request | Gỡ Pod khỏi **Service endpoints**, KHÔNG restart | Kiểm tra /health, DB connection, cache warm |
+| **livenessProbe** | App bị deadlock/hang, cần restart | **Restart container** (theo restartPolicy) | Chỉ kiểm tra internal state (deadlock, disk full), KHÔNG check dependency ngoài |
+
+### Thứ tự thực thi
+1. Container start
+2. Nếu có startupProbe: chạy startupProbe cho đến khi success hoặc failureThreshold. Trong lúc này liveness/readiness **không chạy**.
+3. startupProbe success -> chạy livenessProbe và readinessProbe song song.
+4. readinessProbe fail -> Pod NotReady -> gỡ khỏi endpoints.
+5. livenessProbe fail -> container restart.
+
+### Ví dụ Spring Boot
+~~~yaml
+startupProbe:
+  httpGet: { path: /actuator/health/liveness, port: 8080 }
+  failureThreshold: 30   # 30 x 10s = 5 phút cho khởi động
+  periodSeconds: 10
+readinessProbe:
+  httpGet: { path: /actuator/health/readiness, port: 8080 }
+  initialDelaySeconds: 5
+  periodSeconds: 10
+livenessProbe:
+  httpGet: { path: /actuator/health/liveness, port: 8080 }
+  initialDelaySeconds: 60  # Chỉ chạy sau khi startup pass
+  periodSeconds: 30
+~~~
+
+### Vì sao các phương án còn lại sai
+- **startupProbe fail thì kill và không thử lại readiness/liveness**: đúng kill, nhưng startupProbe có failureThreshold (thử lại nhiều lần) trước khi kill.
+- **livenessProbe nên check dependency ngoài**: SAI - đây là lỗi phổ biến. DB down -> liveness fail -> restart tất cả Pod -> restart storm. Chỉ check internal health.
+- **startupProbe và livenessProbe trùng nhau**: khác mục đích. startupProbe chỉ chạy lúc khởi động; livenessProbe chạy suốt đời container.
+
+> Senior tip: Luôn dùng startupProbe cho Spring Boot (init 60-120s). Readiness dùng /actuator/health/readiness (có thể include db). Liveness chỉ /actuator/health/liveness (internal).`
+},
+{
+  id: 'qz-devops-116', topic: 'devops',
+  q: 'Pod Java đặt {{requests.cpu: 500m}}, {{limits.cpu: 1000m}}. Trên node 4 vCPU, Pod chạy 2 thread tính toán nặng song song. Hiện tượng nào xảy ra và vì sao?',
+  options: [
+    'Pod dùng đủ 2 vCPU (2000m) vì limit 1000m chỉ là giới hạn mềm',
+    'Pod bị CPU throttling: CFS quota cho 100ms CPU mỗi 100ms period; 2 thread cùng chạy tiêu hết quota trong ~50ms, bị throttled 50ms còn lại',
+    'Pod chỉ dùng 500m CPU vì request là giới hạn cứng',
+    'Kubernetes tự tăng limit lên 2000m khi thấy workload cần'
+  ],
+  answer: 1,
+  explain: `**Tóm tắt:** CPU limit được enforce bằng CFS (Completely Fair Scheduler) quota: limit 1000m = 100ms CPU time mỗi 100ms period. 2 thread chạy song song tiêu 200ms CPU mỗi 100ms thực tế -> hết quota sau 50ms -> bị throttled (đóng băng) 50ms còn lại.
+  
+### Cơ chế CFS quota
+- **cpu.cfs_period_us**: 100000 (100ms, mặc định)
+- **cpu.cfs_quota_us**: limit × period. Limit 1000m (1 vCPU) -> quota = 100000 us = 100ms mỗi period.
+- Nếu process dùng quá quota trong period -> kernel **throttle** (đưa vào cgroup throttle queue) cho đến period tiếp theo.
+
+### Ví dụ 2 thread
+~~~text
+Period 100ms:
+  Thread A: 50ms CPU
+  Thread B: 50ms CPU
+  Tổng: 100ms CPU (hết quota 100ms) -> throttled phần còn lại
+  Thực tế: chỉ kịp chạy 50ms mỗi thread -> hiệu năng giảm 50%
+~~~
+
+### Kiểm tra throttling
+~~~bash
+# Trên node hoặc trong container (nếu có quyền)
+cat /sys/fs/cgroup/cpu/cpu.stat
+# nr_throttled, throttled_time (nanoseconds)
+
+# Hoặc dùng cAdvisor metric
+container_cpu_cfs_throttled_periods_total / container_cpu_cfs_periods_total
+~~~
+Tỉ lệ throttled periods > 5-10% thường gây latency spike rõ rệt.
+
+### Giải pháp
+1. **Bỏ CPU limit** (giữ request): container dùng CPU tự do khi node rảnh, chỉ bị throttle khi node hết CPU (fair sharing theo request).
+2. **Nâng limit** phù hợp peak usage (ví dụ 2000m cho 2 thread).
+3. **JVM**: đặt {{-XX:ActiveProcessorCount=2}} để JVM biết có 2 CPU thực tế dùng cho GC/thread pool, tránh JVM thấy 1 CPU (từ limit) mà chọn SerialGC.
+
+### Vì sao các phương án còn lại sai
+- **Limit là giới hạn mềm**: SAI, CFS quota enforce cứng tại kernel level.
+- **Request là giới hạn cứng**: Request dùng cho scheduler và weight sharing, không enforce cứng.
+- **K8s tự tăng limit**: Không có cơ chế này.
+
+> Senior tip: Nhiều team production bỏ CPU limit cho Java service latency-sensitive, chỉ giữ request để scheduler và HPA hoạt động. Đặt -XX:ActiveProcessorCount theo request hoặc peak thread count. Theo dõi container_cpu_cfs_throttled_seconds_total.`
+},
+{
+  id: 'qz-devops-117', topic: 'devops',
+  q: 'So sánh 3 chiến lược deploy: RollingUpdate, Blue-Green, Canary. Phát biểu nào đúng nhất cho hệ thống thanh toán cần zero-downtime và rollback nhanh khi lỗi?',
+  options: [
+    'RollingUpdate: thay Pod dần, zero-downtime nếu readiness probe đúng; rollback bằng kubectl rollout undo; nhưng phiên bản cũ và mới chạy song song trong lúc update',
+    'Blue-Green: chạy 2 môi trường đầy đủ, chuyển traffic một lần; rollback tức thì bằng cách chuyển lại; tốn gấp đôi tài nguyên lúc chuyển',
+    'Canary: chuyển traffic dần (5% -> 25% -> 100%), quan sát metric; rollback nhanh bằng cách hạ traffic canary về 0; phù hợp nhất cho thanh toán nhạy cảm',
+    'RollingUpdate nhanh hơn Blue-Green và Canary nên luôn ưu tiên dùng'
+  ],
+  answer: 2,
+  explain: `**Tóm tắt:** Canary cho phép kiểm soát rủi ro tốt nhất: chuyển traffic dần, quan sát metric nghiệp vụ (tỷ lệ giao dịch lỗi, latency p99), rollback tức thì bằng cách hạ traffic về 0. Blue-Green rollback nhanh nhưng chuyển 100% traffic là bước lớn. RollingUpdate không kiểm soát traffic granular.
+  
+### So sánh chi tiết
+| Tiêu chí | RollingUpdate | Blue-Green | Canary |
+|---|---|---|---|
+| **Zero-downtime** | Có (nếu readiness OK) | Có | Có |
+| **Rollback speed** | Trung bình (rollout undo) | Nhanh (switch traffic) | Nhanh (hạ traffic canary) |
+| **Risk control** | Thấp (cả hai version chạy song song) | Trung bình (chuyển 100% một lần) | **Cao** (traffic dần, metric gate) |
+| **Tài nguyên** | 1x (maxSurge) | 2x lúc chuyển | 1x + canary replica |
+| **Phù hợp** | Ứng dụng chung, ít rủi ro | Cần rollback tức thì, chấp nhận chi phí | **Hệ thống nhạy cảm (thanh toán, y tế)** |
+
+### Canary pattern thực tế
+~~~yaml
+# Argo Rollouts / Flagger / Istio
+apiVersion: argoproj.io/v1alpha1
+kind: Rollout
+spec:
+  replicas: 10
+  strategy:
+    canary:
+      steps:
+        - setWeight: 5      # 5% traffic
+        - pause: {duration: 10m}
+        - setWeight: 20
+        - pause: {duration: 10m}
+        - setWeight: 50
+        - pause: {duration: 10m}
+        - setWeight: 100
+      canaryMetadata:
+        labels:
+          role: canary
+      stableMetadata:
+        labels:
+          role: stable
+      analysis:
+        templates:
+          - templateName: success-rate
+        args:
+          - name: service-name
+            value: payment-api
+~~~
+Analysis template check error rate, latency p99, business metric (tỷ lệ thanh toán thành công). Nếu vượt ngưỡng -> abort rollout, tự động rollback.
+
+### Vì sao các phương án còn lại sai
+- **RollingUpdate chạy song song 2 version**: đúng nhưng không kiểm soát traffic granular; nếu version mới lỗi, toàn bộ traffic dần bị ảnh hưởng theo tỷ lệ Pod mới.
+- **Blue-Green tốn gấp đôi tài nguyên**: đúng, nhưng ưu điểm là rollback tức thì; vẫn phù hợp nhiều trường hợp.
+- **RollingUpdate luôn ưu tiên**: SAI, chọn chiến lược theo rủi ro và yêu cầu nghiệp vụ.
+
+> Senior tip: Với thanh toán, **idempotency key** trên API là bắt buộc để canary/rollback/retry an toàn. Kết hợp feature flag để tách deploy khỏi release.`
+},
+{
+  id: 'qz-devops-118', topic: 'devops',
+  q: 'Helm chart có values.yaml mặc định, bạn ghi đè bằng {{-f values-prod.yaml}} và {{--set image.tag=v1.2.3}}. Thứ tự ưu tiên merging là gì?',
+  options: [
+    'values.yaml mặc định -> -f files (theo thứ tự) -> --set (cao nhất)',
+    '--set -> -f files -> values.yaml mặc định',
+    '-f files -> values.yaml mặc định -> --set',
+    'values.yaml mặc định -> --set -> -f files'
+  ],
+  answer: 0,
+  explain: `**Tóm tắt:** Helm merge giá trị theo thứ tự: chart defaults (values.yaml trong chart) -> các file -f (theo thứ tự bạn đưa) -> --set (ghi đè cuối cùng, ưu tiên cao nhất).
+  
+### Minh họa
+~~~yaml
+# Chart values.yaml mặc định
+image:
+  repository: myapp
+  tag: "1.0.0"
+replicas: 3
+
+# values-prod.yaml
+replicas: 10
+resources:
+  limits:
+    memory: "2Gi"
+
+# Command
+helm upgrade -i myapp ./chart -f values-prod.yaml --set image.tag=v1.2.3 --set replicas=15
+~~~
+Kết quả merge:
+~~~yaml
+image:
+  repository: myapp
+  tag: "v1.2.3"      # từ --set (cao nhất)
+replicas: 15         # từ --set ghi đè values-prod.yaml
+resources:
+  limits:
+    memory: "2Gi"    # từ values-prod.yaml
+~~~
+
+### Lưu ý quan trọng
+- **--set** parse giá trị theo kiểu: string, int, bool, list (dấu phẩy), map (dấu phẩy, key=value). Phức tạp thì dùng --set-json hoặc --set-file.
+- **Nhiều -f**: merge theo thứ tự, file sau ghi đè file trước.
+- **Chart dependency**: values của sub-chart merge theo cùng quy tắc, prefix bằng tên sub-chart.
+
+### Vì sao các phương án còn lại sai
+- **--set cao nhất nhưng đứng đầu**: --set áp dụng SAU các -f, nên ghi đè chúng.
+- **-f -> defaults -> --set**: defaults luôn thấp nhất.
+- **defaults -> --set -> -f**: -f áp dụng trước --set.
+
+> Senior tip: Dùng values-prod.yaml cho cấu hình tĩnh, --set cho giá trị động (image tag từ CI, secret key). Tránh --set quá nhiều (khó review), hãy dùng values file.`
+},
+{
+  id: 'qz-devops-119', topic: 'devops',
+  q: 'GitHub Actions workflow cache node_modules bằng key {{hashFiles("package-lock.json")}}. Khi package-lock.json thay đổi, cache miss và rebuild. Mục đích thiết kế này là gì?',
+  options: [
+    'Đảm bảo cache chỉ hit khi dependency không đổi, tránh dùng dependency cũ (stale)',
+    'Buộc rebuild mỗi lần để code luôn mới',
+    'Cache key phụ thuộc vào source code thay vì lock file',
+    'Tăng tốc độ workflow bằng cách luôn cache hit'
+  ],
+  answer: 0,
+  explain: `**Tóm tắt:** Key cache dựa trên hash của package-lock.json đảm bảo: dependency không đổi -> cache hit (tận dụng node_modules cũ); dependency đổi -> cache miss -> npm ci cài đặt đúng phiên bản mới. Tránh dùng dependency stale.
+  
+### Cách hoạt động
+~~~yaml
+- uses: actions/cache@v4
+  with:
+    path: ~/.npm
+    key: \${{ runner.os }}-node-\${{ hashFiles('package-lock.json') }}
+    restore-keys: |
+      \${{ runner.os }}-node-
+~~~
+- **Key chính**: hash package-lock.json. Đổi dependency -> lock file đổi -> key mới -> cache miss -> cài mới.
+- **restore-keys**: fallback prefix. Khi key chính miss, Actions thử restore key gần nhất (prefix match). Hữu ích khi lock file đổi nhỏ, vẫn có thể reuse một phần cache.
+
+### npm ci vs npm install
+- **npm ci**: đọc **chỉ** package-lock.json, cài chính xác version đã khóa, fail nếu lock file không khớp package.json. Dùng trong CI.
+- **npm install**: đọc package.json, có thể cập nhật lock file. Dùng local dev.
+
+### Vì sao các phương án còn lại sai
+- **Buộc rebuild mỗi lần**: key hash lock file CHO PHÉP cache hit khi lock file không đổi.
+- **Key phụ thuộc source code**: source code đổi liên tục -> cache luôn miss -> không hiệu quả.
+- **Luôn cache hit**: lock file đổi thì cache miss, đúng như mong đợi.
+
+> Senior tip: Với monorepo, hashFiles cho từng package-lock.json riêng. Dùng restore-keys để fallback partial cache. Cache ~/.npm (npm cache) thường tốt hơn cache node_modules (tránh vấn đề symlink/binary platform).`
+},
+{
+  id: 'qz-devops-120', topic: 'devops', multi: true,
+  q: 'Prometheus metric types: Counter, Gauge, Histogram. Hai phát biểu nào đúng? (Chọn 2)',
+  options: [
+    'Counter: chỉ tăng (hoặc reset khi restart); dùng {{rate()}} tính tốc độ (request/giây, error/giây)',
+    'Gauge: giá trị lên/xuống tùy thời điểm; dùng trực tiếp hoặc {{avg_over_time()}}, ví dụ memory usage, active connections',
+    'Histogram: lưu giá trị đơn lẻ chính xác; dùng {{rate()}} trên histogram_quantile',
+    'Counter phù hợp lưu CPU temperature vì nhiệt độ luôn tăng',
+    'Gauge nên dùng {{increase()}} vì giá trị gauge luôn tăng dần'
+  ],
+  answer: [0, 1],
+  explain: `**Tóm tắt:** Counter = chỉ tăng (reset khi restart), đo "đã xảy ra bao nhiêu", dùng {{rate()}}/{{increase()}}. Gauge = lên/xuống, đo "hiện tại bao nhiêu", dùng trực tiếp. Histogram = bucket đếm, có _sum/_count, dùng {{histogram_quantile}} tính p50/p95/p99.
+  
+### Bảng chọn nhanh
+| Loại | Đặc điểm | Ví dụ | Query phổ biến |
+|---|---|---|---|
+| **Counter** | Chỉ tăng, reset khi restart | {{http_requests_total}}, {{errors_total}}, {{jobs_completed_total}} | {{rate(errors_total[5m])}}, {{increase(requests_total[1h])}} |
+| **Gauge** | Lên/xuống tùy thời điểm | {{jvm_memory_used_bytes}}, {{connections_active}}, {{cpu_temperature_celsius}} | {{jvm_memory_used_bytes}}, {{avg_over_time(connections_active[5m])}} |
+| **Histogram** | Đếm vào bucket, có {{_sum}}, {{_count}} | {{http_request_duration_seconds_bucket}}, {{response_size_bytes_bucket}} | {{histogram_quantile(0.95, rate(http_request_duration_seconds_bucket[5m]))}} |
+| **Summary** | Tính quantile ở client side | gRPC latency | {{quantile_over_time(0.95, summary[5m])}} (cẩn thận aggregate) |
+
+### Ví dụ thực tế
+~~~promql
+# Error rate (Counter)
+rate(http_requests_total{status=~"5.."}[5m]) / rate(http_requests_total[5m])
+
+# Memory usage (Gauge)
+jvm_memory_used_bytes{area="heap"} / jvm_memory_max_bytes{area="heap"}
+
+# p99 latency (Histogram)
+histogram_quantile(0.99, sum(rate(http_request_duration_seconds_bucket[5m])) by (le))
+~~~
+
+### Vì sao các phương án còn lại sai
+- **Histogram lưu giá trị đơn lẻ**: SAI, histogram lưu **bucket counts** (số lượng observation rơi vào mỗi bucket), không lưu giá trị gốc.
+- **Counter cho nhiệt độ CPU**: nhiệt độ lên/xuống -> phải dùng Gauge.
+- **Gauge dùng increase() vì luôn tăng**: SAI, gauge có thể giảm; increase() trên gauge cho kết quả vô nghĩa.
+
+> Senior tip: Alert nên dùng rate(counter) hoặc ratio, không alert trực tiếp trên counter tăng. Histogram bucket boundaries phải phủ SLO (ví dụ SLO 200ms -> bucket: 0.05, 0.1, 0.2, 0.5, 1, 2, 5).`
+},
+{
+  id: 'qz-devops-121', topic: 'devops',
+  q: 'Argo CD Application có {{syncPolicy.automated.prune: true}} và {{selfHeal: true}}. Developer {{kubectl scale deployment/orders --replicas=5}} trên cluster (khác giá trị trong Git là 3). Điều gì xảy ra?',
+  options: [
+    'Argo CD bỏ qua vì developer thao tác trực tiếp trên cluster',
+    'Argo CD detect drift và scale deployment về 3 replicas theo Git (self-heal), prune xóa resource không có trong Git',
+    'Deployment bị xóa vì prune=true',
+    'Argo CD báo lỗi OutOfSync nhưng không tự sửa vì prune chỉ áp dụng khi sync thủ công'
+  ],
+  answer: 1,
+  explain: `**Tóm tắt:** **selfHeal=true** khiến Argo CD tự động apply thay đổi từ Git khi detect drift (cluster khác Git). **prune=true** xóa resource có trong cluster nhưng KHÔNG có trong Git. Developer scale replica -> drift -> Argo CD tự scale về 3 theo Git.
+  
+### Cơ chế
+1. Argo CD so sánh desired state (Git manifest) với actual state (cluster) theo wave.
+2. Phát hiện Deployment orders: Git {{replicas: 3}}, cluster {{replicas: 5}} -> **OutOfSync**.
+3. Với cấu hình sau -> Argo CD tự động apply manifest Git: patch deployment replicas=3.
+~~~yaml
+automated:
+  prune: true
+  selfHeal: true
+~~~
+4. Nếu developer tạo resource thủ công (ConfigMap, Secret không có trong Git) -> prune=true -> Argo CD **xóa** resource đó.
+
+### Cấu hình Argo CD Application
+~~~yaml
+spec:
+  syncPolicy:
+    automated:
+      prune: true        # xóa resource không có trong Git
+      selfHeal: true     # tự apply khi drift
+      allowEmpty: false
+    syncOptions:
+      - CreateNamespace=true
+      - PrunePropagationPolicy=foreground
+      - PruneLast=true
+  ignoreDifferences:     # Tuỳ chọn: bỏ qua field do controller khác quản lý (HPA replicas)
+    - group: apps
+      kind: Deployment
+      jsonPointers: [/spec/replicas]
+~~~
+
+### Lưu ý quan trọng
+- **HPA managing replicas**: Nếu dùng HPA, replica do HPA scale -> Argo CD coi là drift -> self-heal scale về Git -> HPA scale lên -> vòng lặp. Giải pháp: **ignoreDifferences** cho /spec/replicas hoặc bỏ replicas khỏi Git manifest.
+- **prune danger**: Resource tạo thủ công (debug, hotfix) bị xóa. Chỉ bật prune khi GitOps quy trình chặt.
+
+### Vì sao các phương án còn lại sai
+- **Argo CD bỏ qua**: selfHeal=true nghĩa là KHÔNG bỏ qua, tự sửa drift.
+- **Deployment bị xóa**: prune xóa resource KHÔNG CÓ trong Git, Deployment CÓ trong Git nên không bị xóa, chỉ bị patch.
+- **Chỉ báo OutOfSync**: automated.selfHeal=true khiến nó tự sửa, không chỉ báo.
+
+> Senior tip: Với HPA, **bắt buộc** ignoreDifferences /spec/replicas hoặc không khai báo replicas trong Git. Dùng Argo Rollouts cho canary/analysis thay vì Deployment thuần.`
+},
+{
+  id: 'qz-devops-122', topic: 'devops',
+  q: 'Terraform plan báo {{~}} (tilde) trước resource: {{~ aws_instance.web}}. Ý nghĩa là gì?',
+  options: [
+    'Resource sẽ bị destroy và recreate (force new)',
+    'Resource sẽ được update in-place (thuộc tính có thể đổi mà không recreate)',
+    'Resource sẽ bị bỏ qua (no-op)',
+    'Resource sẽ được tạo mới (create)'
+  ],
+  answer: 1,
+  explain: `**Tóm tắt:** Ký hiệu {{~}} (tilde) trong Terraform plan nghĩa là **update in-place**: Terraform sẽ cập nhật thuộc tính của resource hiện có mà không destroy/recreate.
+  
+### Các ký hiệu plan
+| Ký hiệu | Ý nghĩa | Ví dụ |
+|---|---|---|
+| {{+}} | **Create** mới | {{+ aws_instance.web}} |
+| {{-}} | **Destroy** | {{- aws_instance.web}} |
+| {{-/+}} | **Destroy rồi create** (force new) | {{-/+ aws_instance.web}} (thay đổi AMI, subnet...) |
+| {{~}} | **Update in-place** | {{~ aws_instance.web}} (thay đổi tag, user_data, security group...) |
+
+### Khi nào force new ({{-/+}})
+Thuộc tính **immutable** của provider: {{ami}}, {{instance_type}} (đôi khi), {{subnet_id}}, {{availability_zone}}, {{vpc_id}}. Thay đổi các trường này -> Terraform buộc destroy old, create new.
+
+### Ví dụ
+~~~hcl
+resource "aws_instance" "web" {
+  ami           = "ami-12345"      # đổi -> force new
+  instance_type = "t3.micro"       # đổi -> force new (thường)
+  subnet_id     = "subnet-abc"     # đổi -> force new
+  
+  tags = { Name = "web" }          # đổi -> in-place ({{~}})
+  user_data = file("script.sh")    # đổi -> in-place ({{~}})
+  vpc_security_group_ids = ["sg-1"] # đổi -> in-place ({{~}})
+}
+~~~
+
+### Vì sao các phương án còn lại sai
+- **Destroy và recreate**: đó là {{-/+}} (minus-plus), không phải tilde đơn độc.
+- **Bỏ qua**: no-op không có ký hiệu đặc biệt, chỉ không xuất hiện trong plan.
+- **Tạo mới**: {{+}} (plus).
+
+> Senior tip: Luôn review plan kỹ trước apply production. Dùng {{lifecycle}} block để bỏ qua thay đổi tag:
+~~~hcl
+lifecycle {
+  ignore_changes = [tags]
+}
+~~~
+Dùng {{moved}} block khi refactor resource address để tránh destroy/create.`
+},
+{
+  id: 'qz-devops-123', topic: 'devops',
+  q: 'Kubernetes Service loại ClusterIP chọn Pod bằng label selector {{app: orders}}. Pod {{orders-1}} Ready, Pod {{orders-2}} NotReady (readinessProbe fail). EndpointSlice chứa Pod nào?',
+  options: [
+    'Chỉ orders-1 (Ready)',
+    'Cả orders-1 và orders-2',
+    'Chỉ orders-2 (NotReady)',
+    'Không Pod nào vì Service không kiểm tra readiness'
+  ],
+  answer: 0,
+  explain: `**Tóm tắt:** EndpointSlice (và Endpoints) chỉ chứa IP của Pod **Ready** (pass readinessProbe). Pod NotReady bị gỡ khỏi endpoints, không nhận traffic từ Service.
+  
+### Cơ chế
+1. Service controller watch Pod bằng label selector.
+2. Với mỗi Pod khớp label: kiểm tra **PodReady** condition (True = tất cả container Ready, bao gồm readinessProbe pass).
+3. Chỉ Pod Ready -> thêm IP vào EndpointSlice.
+4. kube-proxy / CNI đọc EndpointSlice -> lập rule DNAT/iptables -> traffic chỉ tới Pod Ready.
+
+### Kiểm tra
+~~~bash
+kubectl get endpointslices -l kubernetes.io/service-name=orders
+kubectl get endpoints orders      # legacy, vẫn hoạt động
+kubectl get pods -l app=orders -o wide
+# NAME       READY   STATUS    RESTARTS
+# orders-1   1/1     Running   0        -> có trong endpoints
+# orders-2   0/1     Running   0        -> KHÔNG có trong endpoints
+~~~
+
+### Lưu ý quan trọng
+- **label selector khớp** là điều kiện cần; **Ready** là điều kiện đủ.
+- **readinessProbe fail** -> Pod NotReady -> gỡ khỏi endpoints.
+- **livenessProbe fail** -> restart container, Pod vẫn Ready cho đến khi restart xong (nếu restart nhanh) hoặc NotReady nếu container down.
+- **Không có readinessProbe** -> Pod Ready ngay khi container start (có thể nhận traffic khi app chưa init xong).
+
+### Vì sao các phương án còn lại sai
+- **Cả hai Pod**: NotReady không được thêm vào endpoints.
+- **Chỉ NotReady**: ngược lại, chỉ Ready mới vào.
+- **Service không kiểm tra readiness**: SAI, Service controller dựa vào PodReady condition (được cập nhật bởi kubelet theo readinessProbe).
+
+> Senior tip: Luôn có readinessProbe cho ứng dụng production. Dùng /actuator/health/readiness cho Spring Boot. Nếu Pod start chậm, dùng startupProbe che chắn liveness/readiness lúc khởi động.`
 }
 );
