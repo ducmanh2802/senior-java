@@ -3210,6 +3210,8 @@ window.DATA_INDEX = {
     ["lab-sql-039","sql","Bảng phình to, query chậm dần vì một transaction export mở 6 giờ giữ xmin horizon","senior"],
     ["lab-sql-040","sql","ALTER TABLE giờ cao điểm làm treo API: AccessExclusiveLock giữ mọi query","senior"],
     ["lab-sql-041","sql","Query chậm do OR giữa 2 cột: Seq Scan dù có 2 index","senior"],
+    ["lab-sql-042","sql","Kiểm tra giới hạn giao dịch chậm vì tham số số gửi kiểu sai","senior"],
+    ["lab-sql-043","sql","Hai transaction xác nhận đơn hàng khóa hai bảng theo thứ tự ngược gây deadlock","senior"],
     ["lab-incident-001","incident","Ngân hàng đối tác chậm, cả luồng thanh toán sập và khách bị trừ tiền hai lần","senior"],
     ["lab-incident-002","incident","Flash sale 12:00: retry không backoff biến 2,400 request thành 27,000 request mỗi giây","senior"],
     ["lab-incident-003","incident","Consumer hạch toán đứng hình: lag Kafka 1.6 triệu, rebalance liên tục","senior"],

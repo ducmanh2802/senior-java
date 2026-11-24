@@ -6370,5 +6370,272 @@ Nếu buộc dùng câu OR gốc: đảm bảo statistics mới (ANALYZE), có t
   ],
   tags: ['postgresql', 'index', 'or-condition', 'union-all', 'bitmap-or', 'selectivity'],
 },
+{
+  id: 'lab-sql-042',
+  category: 'sql',
+  title: 'Kiểm tra giới hạn giao dịch chậm vì tham số số gửi kiểu sai',
+  level: 'senior',
+  scenario: `**Bối cảnh.** Ngân hàng số VBank chạy dịch vụ {{limit-service}} (Spring Boot 3.3, Hibernate 6.4, PostgreSQL 15.6 trên RDS, 8 vCPU / 64 GB RAM). Mỗi tài khoản có giới hạn giao dịch ngày lưu trong bảng {{account_limit}}. Cột {{daily_limit}} kiểu {{INTEGER}} lưu số tiền VND đã làm tròn thành số nguyên. Có chỉ mục {{idx_account_limit_daily}} (btree trên {{daily_limit}}). Bảng sau 2 năm có **8.412.607 dòng** (~2,1 GB heap).
+
+**Triệu chứng (14/03/2026, 09:15).** Endpoint {{GET /api/v1/limits/check}} kiểm tra trước khi cho giao dịch đi: câu SQL {{WHERE daily_limit <= :soTien}}. Java nhận {{soTien}} kiểu {{BigDecimal}} (tiền tệ luôn dùng {{BigDecimal}}), Hibernate gửi tham số kiểu {{numeric}}. p95 của endpoint nhảy từ 40 ms lên **3,8 giây**, CPU RDS từ 18% lên 86%. DBA chạy EXPLAIN ANALYZE và thấy **Seq Scan** toàn bảng 8,4 triệu dòng dù chỉ mục đã tồn tại. Một dev hỏi: "sao chỉ mục không dùng được, bảng chưa lớn lắm".
+
+**Việc bạn có.** Ba artifact: EXPLAIN ANALYZE của câu chậm và của câu viết lại đúng kiểu, schema + danh sách chỉ mục, log ứng dụng. Hãy chỉ ra nguyên nhân gốc và cách sửa.`,
+  artifacts: [
+    {
+      name: 'explain-limit-check.txt',
+      lang: 'text',
+      content: `-- 2026-03-14 09:16:02 +07, psql tren RDS vbank-primary (PostgreSQL 15.6)
+vbank=# EXPLAIN (ANALYZE, BUFFERS)
+SELECT account_id, daily_limit FROM account_limit
+WHERE daily_limit <= 5000000;
+                                                                   QUERY PLAN
+-----------------------------------------------------------------------------------------------------------------------------
+ Seq Scan on account_limit  (cost=0.00..147231.56 rows=42063 width=40) (actual time=0.021..3876.412 rows=1 loops=1)
+   Filter: ((daily_limit)::numeric <= 5000000::numeric)
+   Rows Removed by Filter: 8412606
+   Buffers: shared hit=145210 read=118433
+ Planning Time: 0.312 ms
+ Execution Time: 3877.204 ms
+(6 rows)
+
+Time: 3877.520 ms
+
+-- So sang: cung cau, ep kieu tham so ve INTEGER (kieu khop cot):
+vbank=# EXPLAIN (ANALYZE, BUFFERS)
+SELECT account_id, daily_limit FROM account_limit
+WHERE daily_limit <= CAST(5000000 AS INTEGER);
+                                                                   QUERY PLAN
+-----------------------------------------------------------------------------------------------------------------------------
+ Index Scan using idx_account_limit_daily on account_limit  (cost=0.43..8.45 rows=1 width=40) (actual time=0.051..0.312 rows=1 loops=1)
+   Index Cond: (daily_limit <= 5000000)
+   Buffers: shared hit=12 read=2
+ Planning Time: 0.284 ms
+ Execution Time: 0.401 ms
+(6 rows)
+
+Time: 0.871 ms`,
+    },
+    {
+      name: 'schema-account-limit.txt',
+      lang: 'text',
+      content: `-- 2026-03-14 09:17:05 +07
+vbank=# \\d account_limit
+                                         Table "public.account_limit"
+   Column     |           Type           | ...
+--------------+--------------------------+...
+ account_id   | bigint                   | not null
+ daily_limit  | integer                  | not null  -- gioi han giao dien ngay, dong VND
+ currency     | character(3)             | not null | 'VND'::bpchar
+ updated_at   | timestamp with time zone | not null | now()
+ Indexes:
+     "account_limit_pkey" PRIMARY KEY, btree (account_id)
+     "idx_account_limit_daily" btree (daily_limit)
+
+vbank=# SELECT indexrelname, idx_scan FROM pg_stat_user_indexes WHERE relname = 'account_limit';
+     indexrelname     | idx_scan
+----------------------+---------
+ idx_account_limit_daily |   31204
+ account_limit_pkey      | 42110088`,
+    },
+    {
+      name: 'app-limit-check.log',
+      lang: 'text',
+      content: `2026-03-14 09:15:42.118 DEBUG [http-nio-8080-exec-22] o.h.SQL :
+    select al1_0.account_id,al1_0.daily_limit from account_limit al1_0 where al1_0.daily_limit<=?
+2026-03-14 09:15:45.980 INFO  [http-nio-8080-exec-22] c.v.l.LimitController : GET /api/v1/limits/check -> 200 in 3881 ms
+2026-03-14 09:15:46.222 DEBUG [http-nio-8080-exec-7] o.h.SQL :
+    select al1_0.account_id,al1_0.daily_limit from account_limit al1_0 where al1_0.daily_limit<=?
+2026-03-14 09:15:50.114 INFO  [http-nio-8080-exec-7] c.v.l.LimitController : GET /api/v1/limits/check -> 200 in 3894 ms
+-- pattern: moi request kiem tra gioi han mat khoang 3,9 giay, khong co request nao duoi 1 giay`,
+    },
+  ],
+  questions: [
+    'Vì sao chỉ mục idx_account_limit_daily (đã tồn tại) không được dùng cho câu WHERE daily_limit <= :soTien? Chỉ ra bằng dòng nào trong EXPLAIN.',
+    'Sai việc nằm ở layer nào (Hibernate/JDBC gửi tham số, cách viết SQL, hay kiểu dữ liệu cột)?',
+    'Bạn sửa câu truy vấn và xử lý kiểu dữ liệu thế nào để kiểm tra giới hạn về dưới 10 ms? Tại sao không nên đổi cột daily_limit từ INTEGER sang NUMERIC/BIGINT?',
+  ],
+  hints: [
+    'Dòng "Filter: ((daily_limit)::numeric <= ...)" trong EXPLAIN cho thấy cot INTEGER bi ep kieu thanh NUMERIC de so sanh voi tham so numeric, chi muc B-tree tren daily_limit (luu so nguyen) khong khop bieu thuc do.',
+    'PostgreSQL khong tu doi kieu tham so de khop chi muc, ngau lai no ep kieu cot ve kieu cua tham so. Khi cot nam trong ham hoac ep kieu, dieu kien khong con "sargable" (duoc su dung chi muc).',
+    'Sua: gui tham so kieu INTEGER (java.lang.Integer / ps.setInt) hoac viet WHERE daily_limit <= CAST(:soTien AS INTEGER) — ep kieu o ve tham so, khong ep cot. Doi cot sang NUMERIC/BIGINT tac dam toan bo schema va truy van khac, tranh neu khong bat buoc.',
+  ],
+  answer: `**Tóm tắt:** Endpoint kiểm tra giới hạn viết {{WHERE daily_limit <= :soTien}} với cột {{daily_limit}} kiểu {{INTEGER}} nhưng tham số gửi là {{BigDecimal}} (kiểu {{numeric}}). PostgreSQL không đổi kiểu tham số cho khớp chỉ mục, mà **ép kiểu cột {{daily_limit}} về {{numeric}}** (xem dòng {{Filter: ((daily_limit)::numeric <= ...)}} trong EXPLAIN). Khi cột được ép kiểu, chỉ mục B-tree trên {{daily_limit}} không còn dùng được → planner chọn **Seq Scan** quét toàn bảng 8,4 triệu dòng, mỗi lần kiểm tra tốn gần 4 giây CPU. Sửa: gửi tham số đúng kiểu {{INTEGER}} hoặc {{WHERE daily_limit <= CAST(:soTien AS INTEGER)}} (ép kiểu ở vế tham số), không đổi kiểu cột.
+
+### Tự vấn: sargable là gì và tại sao chỉ mục bị bỏ qua
+**Sargable** (viết tắt của Search ARGument Able) là tính chất của điều kiện WHERE cho phép cơ sở dữ liệu dùng chỉ mục: cột nằm ở vế trái, toán tử so sánh ở giữa, hằng số hoặc tham số đã bind ở vế phải. Ví dụ {{daily_limit <= :soTien}} là sargable khi {{:soTien}} có kiểu {{INTEGER}}.
+
+Khi viết {{daily_limit <= :soTien}} với {{:soTien}} kiểu {{numeric}}, PostgreSQL không có toán tử so sánh trực tiếp giữa {{INTEGER}} và {{NUMERIC}}. Nó có hai hướng ép kiểu ngầm: {{INTEGER → NUMERIC}} (an toàn, vì số nguyên ép sang số thập phân không mất dữ liệu) và {{NUMERIC → INTEGER}} (không ép ngầm, vì số thập phân có thể bị cắt bỏ phần thập phân). Vì chỉ một hướng được phép, PostgreSQL chọn ép **cột** {{daily_limit}} sang {{numeric}} rồi so sánh.
+
+Kết quả: câu trở thành {{WHERE (daily_limit)::numeric <= 5000000::numeric}}. Chỉ mục {{idx_account_limit_daily}} lưu giá trị nguyên thô của {{daily_limit}}, không lưu giá trị sau khi ép kiểu. Planner không tìm thấy chỉ mục nào khớp biểu thức {{(daily_limit)::numeric}} → chọn **Seq Scan**.
+
+Ví dụ đời thường: chỉ mục giống mục lục sách theo số trang in trên sách. Nếu bạn hỏi "trang nào có nội dung bằng số sau khi làm tròn", mục lục không giúp vì bạn phải đọc mỗi trang, làm tròn, rồi mới so sánh — giống Seq Scan.
+
+### Nguyên nhân gốc, từng bước
+1. Cột {{daily_limit}} khai báo {{INTEGER}} lưu số nguyên. Code Java nhận số tiền kiểu {{BigDecimal}}, Hibernate gửi tham số {{numeric}}.
+2. PostgreSQL không có toán tử {{INTEGER = NUMERIC}} trực tiếp, chỉ ép kiểu ngầm. Hướng an toàn là {{INTEGER → NUMERIC}}, nên planner ép **cột** {{daily_limit}}.
+3. Chỉ mục lưu giá trị nguyên thô, câu so sánh trên kết quả ép kiểu → chỉ mục không khớp → **Seq Scan**.
+4. Mỗi request kiểm tra giới hạn quét 8,4 triệu dòng để trả về 1 dòng; hàng chục request song phần (retry khi timeout) đốt cạn CPU. CPU 86% là hệ quả của việc quét lãng phí, không phải tải thật.
+
+### Dẫn chứng
+- Artifact 1 (câu chậm): dòng {{Filter: ((daily_limit)::numeric <= 5000000::numeric)}} cho thấy cột bị ép kiểu; {{Seq Scan on account_limit}} xác nhận chỉ mục không dùng; {{Rows Removed by Filter: 8412606}} nghĩa là 8,412,606 dòng bị đọc rồi loại bỏ; {{Buffers: shared hit=145210 read=118433}} (~263 nghìn trang) và {{Execution Time: 3877.204 ms}}.
+- Artifact 1 (câu viết lại): cung bang, cung dieu kien, chi cast tham so ve INTEGER → {{Index Scan using idx_account_limit_daily}}, {{Buffers: shared hit=12 read=2}}, {{Execution Time: 0.401 ms}}. Chenh lech khoang **9.600 lan** chi vi kieu tham so. Chi muc da co san va hoat dong tot — van de khong phai "thieu chi muc".
+- Artifact 2: chi muc {{idx_account_limit_daily}} btree tren {{daily_limit}} (INTEGER) da ton tai, idx_scan = 31.204 lan (cac cau viet dung kieu).
+- Artifact 3: log ung dung moi request kiem tra gioi han mat khoang 3,9 giay.
+
+### Cách sửa ngắn hạn (hôm nay)
+- Sửa code gui tham so dung kieu {{INTEGER}}: {{Integer.valueOf(soTien.intValue())}} hoac {{ps.setInt(...)}}, viet {{WHERE daily_limit <= :soTienInt}}. Chi muc duoc dung ngay.
+- Neu khong sua duoc code ngay: viet {{WHERE daily_limit <= CAST(:soTien AS INTEGER)}} — ep kieu o **ve tham so**, chi mot gia tri, chi muc van duoc dung.
+- Them {{statement_timeout}} cho role kiem tra gioi han (vi du 2 giay) de cau sai kieu khong chiem DB lau khi client da bo.
+
+### Cách sửa dài hạn
+- **Khong doi cot {{daily_limit}} sang {{NUMERIC}}/{{BIGINT}}** neu khong bat buoc: tac dam toan bo schema, moi truy van khac dung cot nay, va migration tren bang 8 tram trieu dong tốn kém. Chi doi khi thiet ke moi yeu xu ly so thap phan thuc su.
+- Chuan hoa kieu du lieu o ran gio ung dung–DB: tien te luon {{BigDecimal}} o Java, nhung neu cot DB la {{INTEGER}} thi gui {{INTEGER}}; tránh gui {{BigDecimal}} vao cot so nguyen.
+- Quy tắc review: trong {{WHERE}} khong de ham hoac ep kieu tren cot da chi muc; PR co truy van moi phai kem {{EXPLAIN (ANALYZE, BUFFERS)}} tren staging co du lieu ti le production.
+
+### Trả lời mẫu khi phỏng vấn
+"Cau kiem tra gioi han viet WHERE daily_limit <= :soTien voi cot daily_limit la INTEGER nhung tham so gui la BigDecimal (numeric). PostgreSQL khong doi kieu tham so, ma ep cot daily_limit ve numeric (xem dong Filter co ::numeric trong EXPLAIN), chi muc B-tree bo qua, plannner chon Seq Scan 8,4 tram tram dong, 3,8 giay. Sua: gui tham so kieu INTEGER hoac CAST tham so ve INTEGER (ep ve tham so), khong doi cot. Ly do khong doi cot sang NUMERIC/BIGINT: tac dam schema va migration tốn kém. Chuong trinh phai viet WHERE de cot o ve trai, tham so o ve phai, kieu tham so phai khop kieu cot."
+
+### Phòng ngừa và monitoring
+- Bật {{pg_stat_statements}} va theo doi {{total_exec_time}} theo queryid; canh bao khi mot truy van tren bang lon chon Seq Scan hoac {{Rows Removed by Filter}} cao so voi dong tra ve.
+- Bật {{auto_explain}} voi {{auto_explain.log_min_duration = 500}}; canh bao khi plan doi tu {{Index Scan}} sang {{Seq Scan}}.
+- Kiem tra kieu tham so khi viet {{PreparedStatement}}: so tien, ma so, ngay thang deu phai dung kieu so voi cot.
+
+> Senior tip: Khi EXPLAIN van Seq Scan da da co chi muc, hay hoi "dieu kien WHERE co ep kieu hoac bao ham cot khong?" — day la nguyen nhan phu nhat sau thong ke cu. Quy tac vang: viet truy de cot luon o ve trai, tham so/hang so o ve phai, kieu tham so phai khop kieu cot. Ep kieu hay de o ve tham so, khong o ve cot.`,
+  rubric: [
+    'Chỉ đúng nguyên nhân gốc: tham số numeric khiến PostgreSQL ép kiểu cột INTEGER về numeric, dòng Filter có ::numeric trong EXPLAIN là bằng chứng, chỉ mục bị bỏ qua → Seq Scan',
+    'Dẫn chứng đúng: so sánh hai EXPLAIN (tham số numeric → Seq Scan 3877 ms, rowsRemoved 8,4 triệu; cast tham số INTEGER → Index Scan 0,4 ms), chỉ ra dòng Filter có ::numeric',
+    'Sửa đúng: gửi tham số kiểu INTEGER hoặc CAST tham số về INTEGER (ép vế tham số), không đổi kiểu cột, giải thích tại sao không đổi cột sang NUMERIC/BIGINT',
+    'Có phân tích tại sao chỉ mục không khớp (chỉ mục lưu giá trị thô, câu so sánh trên kết quả ép kiểu)',
+    'Có monitoring/phòng ngừa: pg_stat_statements, auto_explain, cảnh báo Seq Scan trên bảng lớn, kiểm tra kiểu tham số',
+  ],
+  tags: ['postgresql', 'index', 'implicit-cast', 'seq-scan', 'explain', 'numeric'],
+},
+{
+  id: 'lab-sql-043',
+  category: 'sql',
+  title: 'Hai transaction xác nhận đơn hàng khóa hai bảng theo thứ tự ngược gây deadlock',
+  level: 'senior',
+  scenario: `**Bối cảnh.** Sàn shop QuickCart chạy dịch vụ {{order-service}} (Spring Boot 3.3, Hibernate 6.4, PostgreSQL 15.6 trên RDS, 8 vCPU / 64 GB RAM). Bảng {{orders}} lưu đơn hàng (cột {{id}} khóa chính, cột {{status}}), bảng {{inventory}} lưu tồn kho theo mã sản phẩm (cột {{sku_id}} khóa chính, cột {{quantity}}). Khi xác nhận đơn, code chạy trong một transaction: khóa đơn hàng, rồi khóa tồn kho và trừ số lượng.
+
+**Triệu chứng (20/03/2026, 14:22).** Khoảng 0,4% đơn hàng bị lỗi {{CannotAcquireLockException: ERROR: deadlock detected}} (HTTP 500), tập trung vào hai request xác nhận cùng đơn {{ORD-2026-03-20-88421}} gửi gần như cùng lúc (cách nhau 12 ms, do client retry sau timeout). Cả hai request đều liên quan đến sản phẩm {{IPH-15}} nhưng code xử lý theo hai nhánh khác nhau: nhánh "xác nhận bình thường" khóa đơn trước rồi tồn kho; nhánh "đặt lại tồn kho khi thử lại" khóa tồn kho trước rồi đơn. PostgreSQL log ghi deadlock detected, HikariCP pool không cạn, CPU 15%.
+
+**Việc bạn có.** Ba artifact: log deadlock của PostgreSQL, ảnh pg_stat_activity, log ứng dụng. Hãy tìm nguyên nhân gốc, chứng minh bằng pid/transaction id, rồi đề xuất cách sửa.
+
+**Vì sao đây là lỗi thiết kế, không phải lỗi PostgreSQL:** PostgreSQL phát hiện deadlock và huỷ một transaction để bảo vệ dữ liệu — đó là cơ chế hoạt động đúng. Vấn đề là hai transaction khóa cùng hai tài nguyên theo thứ tự ngược nhau, tạo thành chu kỳ chờ.`,
+  artifacts: [
+    {
+      name: 'postgresql-deadlock.log',
+      lang: 'text',
+      content: `-- 2026-03-20 14:22:15.841 UTC [18421] ERROR: deadlock detected
+2026-03-20 14:22:15.841 UTC [18421] DETAIL: Process 18421 waits for ShareLock on transaction 987654; blocked by process 18422.
+2026-03-20 14:22:15.841 UTC [18421] CONTEXT: while locking tuple (0,14) in relation "inventory"
+2026-03-20 14:22:15.841 UTC [18421] STATEMENT: UPDATE inventory SET quantity = quantity - 1 WHERE sku_id = 'IPH-15'
+2026-03-20 14:22:15.842 UTC [18422] ERROR: deadlock detected
+2026-03-20 14:22:15.842 UTC [18422] DETAIL: Process 18422 waits for ShareLock on transaction 987653; blocked by process 18421.
+2026-03-20 14:22:15.842 UTC [18422] CONTEXT: while locking tuple (0,15) in relation "orders"
+2026-03-20 14:22:15.842 UTC [18422] STATEMENT: UPDATE orders SET status = 'PAYING' WHERE id = 'ORD-2026-03-20-88421'
+-- xid: 18421 = 987653 (T1, da khoa don ORD-88421, dang cho ton kho IPH-15)
+-- xid: 18422 = 987654 (T2, da khoa ton kho IPH-15, dang cho don ORD-88421)
+-- Chu ky cho: T1 khoá don ORD-88421 cho ton kho IPH-15; T2 khoa ton kho IPH-15 cho don ORD-88421.`,
+    },
+    {
+      name: 'pg_stat_activity.txt',
+      lang: 'text',
+      content: ` pid  | usename | state  |         query_start         | wait_event_type | wait_event | xact_start
+------+---------+--------+----------------------------+-----------------+------------+----------------------------
+ 18421 | shopapp | active | 2026-03-20 14:22:15.801+00 | Lock            | transactionid | 2026-03-20 14:22:15.785+00
+ 18422 | shopapp | active | 2026-03-20 14:22:15.803+00 | Lock            | transactionid | 2026-03-20 14:22:15.787+00
+-- xid: 18421 = 987653 (giu don ORD-88421, cho ton kho IPH-15)
+-- xid: 18422 = 987654 (giu ton kho IPH-15, cho don ORD-88421)
+-- Hai phien deu wait_event_type = Lock, wait_event = transactionid: dang cho ShareLock tren transaction cua ben kia.`,
+    },
+    {
+      name: 'app-deadlock.log',
+      lang: 'text',
+      content: `2026-03-20T14:22:15.843Z ERROR [http-nio-8080-exec-14] o.h.engine.jdbc.spi.SqlExceptionHelper - SQL Error: 0, SQLState: 40P01
+2026-03-20T14:22:15.843Z WARN  [http-nio-8080-exec-14] org.springframework.dao.CannotAcquireLockException - deadlock detected
+2026-03-20T14:22:15.843Z INFO  [http-nio-8080-exec-14] c.q.o.OrderService - confirmOrder(orderId=ORD-2026-03-20-88421) FAILED after 56ms
+2026-03-20T14:22:15.844Z INFO  [http-nio-8080-exec-22] c.q.o.OrderService - confirmOrder(orderId=ORD-2026-03-20-88421) OK after 58ms (lan thu lai thanh cong)
+-- pattern: client gui lai don sau timeout, hai transaction chay song song, mot trong hai bi deadlock`,
+    },
+  ],
+  questions: [
+    'Nguyên nhân gốc deadlock là gì? Dẫn chứng từ artifact (pid/transaction id, hai câu đang chờ).',
+    'Vì sao thứ tự khóa lại ngược nhau giữa hai transaction? Giải thích dựa trên hai nhánh code khác nhau.',
+    'Bạn sửa thế nào (ngắn hạn và dài hạn) để loại bỏ deadlock? Giải thích "khóa theo thứ tự cố định" và xử lý transaction bị huỷ.',
+  ],
+  hints: [
+    'Hai transaction khoá cung hai tai nguyen (don ORD-88421 va ton kho IPH-15) nhung thu tu nguoc: T1 khoa don roi ton kho; T2 khoa ton kho roi don.',
+    'Deadlock detector PostgreSQL chay sau deadlock_timeout (1 giay), phat hien chu ky cho va huy mot transaction (SQLState 40P01).',
+    'Moi transaction bi huy phai retry toan bo transaction (bao quanh @Transactional) voi backoff + idempotency key, khong retry rieng cau lenh.',
+  ],
+  answer: `**Tóm tắt:** Hai transaction xac nhan cung don {{ORD-2026-03-20-88421}} va cung san pham {{IPH-15}} khoá hai tai nguyen theo thu tu nguoc nhau: {{T1}} khoa don hang roi ton kho, {{T2}} khoa ton kho roi don hang. PostgreSQL phat hien chu ky cho (wait-for cycle) sau {{deadlock_timeout}} (1 giay) va huy mot transaction voi loi {{SQLState 40P01}}. Day la loi thiet ke: hai transaction khoá cung hai tai nguyen theo thu tu khong nhat quan. Sua: khoa theo thu tu co dinh (luon khoa don hang truoc, roi ton kho — hoac khoa toan he thong theo (bang, id) tang dan), retry toan bo transaction co backoff + idempotency key.
+
+### Tự vấn: deadlock là gì
+**Deadlock** (khóa chết) xay ra khi hai hoac nhieu transaction moi giu mot khoa (tai nguyen) va dang cho khoa cua ben kia, tao thanh chu ky (cycle) trong do thi cho. PostgreSQL chay deadlock detector moi {{deadlock_timeout}} (mac dinh 1 giay); khi phat hien chu ky, no chon mot transaction lam **victim** (nguoi thau), rollback transaction do va tra loi {{SQLState 40P01}} (deadlock_detected). Transaction kia tuc tuc chay tiep.
+
+Row-level lock trong PostgreSQL: cau {{UPDATE ... WHERE id = ...}} lay **exclusive lock** tren dong (tuple), luu trong header tuple ({{xmax}} = transaction id), khong hien trong {{pg_locks}}. Transaction khac muon cap nhat cung dong phai cho **ShareLock** tren transaction id dang giu khoa — dien trong {{pg_locks}} voi {{mode = ShareLock, granted = f}}.
+
+### Nguyên nhân gốc, từng bước
+1. Don {{ORD-2026-03-20-88421}} chua san pham {{IPH-15}}. Client gui lai don (retry) sau timeout -> hai request xac nhan chay song song.
+2. **T1** (pid 18421, xid 987653, nhánh "xác nhận bình thường"): {{UPDATE orders SET status = 'PAYING' WHERE id = 'ORD-2026-03-20-88421'}} → giữ khoá đơn ORD-88421. Sau đó {{UPDATE inventory SET quantity = quantity - 1 WHERE sku_id = 'IPH-15'}} → **cho khoá tồn kho** (được T2 giữ).
+3. **T2** (pid 18422, xid 987654, nhánh "đặt lại tồn kho"): {{UPDATE inventory SET quantity = quantity - 1 WHERE sku_id = 'IPH-15'}} → giữ khoá tồn kho IPH-15. Sau đó {{UPDATE orders SET status = 'PAYING' WHERE id = 'ORD-2026-03-20-88421'}} → **cho khoá đơn** (được T1 giữ).
+4. **Chu kỳ cho**: T1 giữ đơn chờ tồn kho; T2 giữ tồn kho chờ đơn. Khong ben nao nhá khoá → deadlock detector chay luc 14:22:15.841 (sau khoang 1 giay cho), chon T1 lam victim (vi T1 bat dau cho truoc), rollback T1.
+
+### Dẫn chứng
+- Artifact 1 (log server): {{ERROR: deadlock detected}} tai PID 18421, kèm DETAIL hai chuong cua chu ky cho: **Process 18421 waits for ShareLock on transaction 987654; blocked by process 18422** va **Process 18422 waits for ShareLock on transaction 987653; blocked by process 18421**. Dòng {{CONTEXT: while locking tuple ... in relation inventory}} va {{STATEMENT: UPDATE inventory ... WHERE sku_id = 'IPH-15'}} cho T1 dang cho khoa ton kho; T2 log tuong tu cho don.
+- Artifact 2 (pg_stat_activity): PID 18421 (xid 987653) va 18422 (xid 987654) deu {{wait_event_type = Lock}}, {{wait_event = transactionid}} — dang cho ShareLock tren transaction cua ben kia.
+- Artifact 3 (log ung dung): {{CannotAcquireLockException}}, SQLState 40P01, don 88421 FAILED sau 56 ms, lan thu lai OK sau 58 ms (T2 chay tiep sau khi T1 rollback).
+
+### Sơ đồ luồng
+~~~seq
+title: Deadlock hai transaction xac nhan cung don cung luc
+actors: T1 | T2 | orders | inventory | PostgreSQL
+T1 -> orders: khoa don ORD-88421
+T2 -> inventory: khoa ton kho IPH-15
+T1 -> inventory: khoa ton kho IPH-15 -> CHO
+T2 -> orders: khoa don ORD-88421 -> CHO
+note PostgreSQL: deadlock_timeout 1s, phat hien chu ky cho
+PostgreSQL -> T2: huy T2 (victim, 40P01)
+PostgreSQL -> T1: cap khoa ton kho, COMMIT
+~~~
+
+### Cách sửa ngắn hạn (hôm nay)
+1. **Khoá theo thứ tự cố định:** trong transaction xác nhận đơn, **luôn khoá đơn hàng trước, rồi tồn kho** (theo mã đơn/mã sản phẩm tăng dần), bất kể nhánh code nào:
+   ~~~java
+   // Luon khoa don truoc, ton kho sau
+   orderRepo.markPaying(orderId);          // UPDATE orders ... WHERE id = ?
+   inventoryRepo.decrease(skuId, qty);    // UPDATE inventory ... WHERE sku_id = ?
+   ~~~
+   Cả hai nhánh code giờ khoá theo cùng thứ tự → không còn chu kỳ cho → không deadlock.
+2. **Retry toàn bộ transaction:** bắt lỗi {{CannotAcquireLockException}} (Spring map từ SQLState 40P01) hoặc {{40001}} (serialization_failure), retry **toàn bộ transaction** (bọc bên ngoài {{@Transactional}}) 3 lần với exponential backoff + jitter (50 ms, 100 ms, 200 ms). Dùng {{@Retryable}} của Spring Retry trên method confirmOrder.
+3. **Idempotency key:** mỗi API xác nhận đơn phải có khóa lặp lại (ví dụ {{orderId}}) để retry an toàn, không tạo đơn kép khi client gửi lại.
+
+### Cách sửa dài hạn
+- **Helper khoá theo thứ tự toàn hệ thống:** viết {{LockHelper.lockInOrder(List<LockResource> resources)}} sắp xếp theo (tên bảng, id) tăng dần, dùng cho mọi transaction khoá nhiều dòng; cấm dev tự sort theo nghiệp vụ (category, promotion, ASC/DESC).
+- **Khoá ở mức DB:** dùng {{SELECT ... FOR UPDATE}} với {{ORDER BY sku_id}} ngay trong câu query để DB đảm bảo thứ tự, không phụ thuộc code Java.
+- **Rút ngắn transaction:** chỉ khoá và UPDATE trong transaction; đọc đơn, tính toán promotion, validate nằm ngoài transaction.
+- **Giám sát:** bật {{log_lock_waits = on}}, cảnh báo khi {{pg_stat_database.deadlocks}} tăng theo giờ; theo dõi {{pg_stat_activity}} có {{wait_event_type = 'Lock'}} và {{wait_event = 'transactionid'}}; alert khi có phiên chờ khoá > 500 ms.
+- **Unit test concurrency:** mô phỏng 2 luồng xác nhận đơn có SKU chung, khẳng định không deadlock sau khi áp dụng sửa.
+
+### Trả lời mẫu khi phỏng vấn
+"Hai transaction xac nhan cung don va cung san pham khoá hai tai nguyen theo thu tu nguoc: T1 khoa don roi ton kho, T2 khoa ton kho roi don. PostgreSQL phat hien chu ky cho sau 1 giay, huy mot transaction (40P01). Day la loi thiet ke, khong phai loi cu PostgreSQL. Tua sua: (1) khoa theo thu tu co dinh (luon khoa don truoc, ton kho sau) trong tat ca nhanh code; (2) retry toan bo transaction 3 lan voi backoff + jitter; (3) idempotency key de retry khong tao don kep. Dai tien: helper khoa theo thu tu (bang, id) tang dan, SELECT FOR UPDATE ORDER BY o cua DB, thu nghiem dong bo."
+
+### Phòng ngừa và monitoring
+- Bật {{log_lock_waits = on}}, {{deadlock_timeout = 1s}} (mac dinh); canh bao khi {{pg_stat_database.deadlocks}} tang theo gio.
+- Theo doi {{pg_stat_activity}} co {{wait_event_type = 'Lock'}} va {{wait_event = 'transactionid'}}; canh bao khi co phien cho khoá > 500 ms.
+- Unit test dong bo: mo phong 2 luong xac nhan don co SKU chung, khong dinh khong deadlock sau sua.
+- Dashboard: so deadlock/gio, p99 confirmOrder, ty le retry.
+
+> Senior tip: **Thu tu khoa nhat quan la hop doi cua toan he thong**. Mot nhan code sap xep khac (category_name, promotion, ASC/DESC) du tao deadlock hiem gap, khoi tai hien. Quy tac cua toi: **moi transaction cap nhat nhieu dong phai khoa theo thu tu PK tang dan** — viet helper {{LockHelper.lockInOrder(skuIds)}} trung tam, cam dev tu sap xep. Va nho: deadlock khong phai bug cua PostgreSQL, no la co che bao ve du lieu; muc dich la lam cho no **re va tu hoi phuc** (thu tu khoa co dinh + retry + idempotency).`,
+  rubric: [
+    'Chỉ đúng nguyên nhân: hai transaction khoá cung hai tai nguyen (don ORD-88421 va ton kho IPH-15) theo thu tu nguoc, tao chu ky cho',
+    'Dẫn chứng đúng: deadlock log Detail hai chuong chu ky (xid 987653/987654), pg_stat_activity wait_event=transactionid, log ung dung 40P01, T1 lam victim',
+    'Giải thích đúng tại sao thu tu nguoc: hai nhánh code khac nhau (xac nhan binh thuong vs dat lai ton kho)',
+    'Đề xuất sửa đúng: khoa theo thu tu co dinh (don truoc, ton kho sau), retry toan bo transaction backoff+jitter, idempotency key, rut ngan transaction',
+    'Có phòng ngừa: log_lock_waits, canh bao deadlocks, unit test dong bo, idempotency key',
+  ],
+  tags: ['postgresql', 'deadlock', 'lock-ordering', 'inventory', 'order', 'retry'],
+},
 );
 
