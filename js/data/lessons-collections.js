@@ -3306,4 +3306,199 @@ Ta muốn giữ K phần tử lớn nhất đã gặp. Trong nhóm K phần tử
   related: ['collections-001', 'collections-005', 'collections-007'],
   tags: ['LinkedHashMap', 'LRU', 'removeEldestEntry', 'PriorityQueue', 'heap', 'top-k', 'complexity']
 },
+  {
+    id: 'lesson-collections-011',
+    track: 'collections',
+    order: 11,
+    title: 'TreeMap và NavigableMap: tra cứu theo thứ tự và tìm khung giờ trống',
+    level: 'senior',
+    minutes: 25,
+    goals: [
+      'Hiểu TreeMap lưu trữ theo thứ tự key và các thao tác NavigableMap (floorEntry, ceilingEntry, subMap)',
+      'Dùng floorEntry để tra biểu phí theo bậc và tìm khung giờ trống',
+      'Phân biệt HashMap (O(1) trung bình) với TreeMap (O(log n) nhưng có thứ tự) và chọn đúng khi phỏng vấn'
+    ],
+    body: `**Tóm tắt:** TreeMap lưu các entry theo thứ tự key tăng dần trong cây đỏ-đen, nên ngoài tra cứu theo key còn tra cứu theo lân cận: floorEntry (lớn nhất <= key), ceilingEntry (nhỏ nhất >= key), subMap (khoảng). Dùng khi cần dữ liệu có thứ tự hoặc tìm phần tử gần nhất, ví dụ biểu phí theo bậc và lịch trống.
+
+### Thuật ngữ cơ bản
+- **TreeMap**: Map trong Java dùng cây đỏ-đen, key phải Comparable hoặc có Comparator. Mọi thao tác cơ bản (put/get/remove) là O(log n).
+- **NavigableMap**: interface mở rộng SortedMap, thêm các phương thức dò theo thứ tự: lower/floor/ceiling/higher Entry, descendingMap, subMap.
+- **Entry**: một cặp key-value trong Map.
+- **Red-black tree (cây đỏ-đen)**: cây nhị phân tìm kiếm tự cân bằng; đảm bảo chiều cao O(log n) nên thao tác luôn logarit.
+
+### Phần 1: floorEntry tra biểu phí theo bậc
+Biểu phí theo số lượng: 0-100: 5.0, 101-500: 4.0, 501-1000: 3.0, >1000: 2.5. Với TreeMap<Integer, Double> tier, key là ngưỡng dưới inclusive. floorEntry(qty) trả entry có key lớn nhất <= qty.
+
+~~~java
+TreeMap<Integer, Double> tier = new TreeMap<>();
+tier.put(0, 5.0); tier.put(101, 4.0); tier.put(501, 3.0); tier.put(1001, 2.5);
+Map.Entry<Integer, Double> e = tier.floorEntry(qty);
+double price = (e == null) ? 2.5 : e.getValue();
+~~~
+
+### Phần 2: tìm khung giờ trống
+Lịch bận lưu TreeMap<Instant, Instant> (bắt đầu -> kết thúc) sorted by start. Muốn đặt cuộc họp duration D bắt đầu sau now. Duyệt các khoảng trống giữa các sự kiện.
+
+~~~java
+TreeMap<Instant, Instant> busy = new TreeMap<>();
+Instant now = Instant.now();
+Map.Entry<Instant, Instant> prev = busy.floorEntry(now);
+Instant cursor = (prev != null && prev.getValue().isAfter(now)) ? prev.getValue() : now;
+// tailMap(cursor, true): inclusive - bao gồm cuộc họp bắt đầu ngay lúc cursor
+for (Map.Entry<Instant, Instant> e : busy.tailMap(cursor, true).entrySet()) {
+    if (Duration.between(cursor, e.getKey()).toMinutes() >= D) break; // tìm thấy khe trống
+    cursor = e.getValue().isAfter(cursor) ? e.getValue() : cursor;
+}
+// nếu vòng lặp kết thúc không break -> khe trống ở cuối ngày (cursor đến hết ngày)
+~~~
+
+### So sánh HashMap vs TreeMap
+| Tiêu chí | HashMap | TreeMap |
+|---|---|---|
+| Tra cứu key chính xác | O(1) trung bình | O(log n) |
+| Thứ tự key | không | có |
+| floor/ceiling/subMap | không | có |
+| Key null | cho phép (1 null) | không (trừ khi Comparator cho phép) |
+| Bộ nhớ | ít hơn | nhiều (node + màu) |
+
+### Ví dụ đời thực
+Hệ thống tính phí vận chuyển theo trọng lượng dùng TreeMap với key là ngưỡng dưới inclusive (0, 501, 1001...). Khi khách đặt hàng 7.3kg, floorEntry(7) trả key 0 -> mức phí đầu tiên. Khi thêm bậc mới chỉ put thêm, không sửa code. Lịch phòng họp: tìm slot 60 phút trống trong ngày dùng TreeMap các cuộc họp theo start time.
+
+### Lỗi hay gặp
+- Dùng TreeMap khi chỉ cần lookup chính xác -> chậm hơn HashMap không cần thiết.
+- Key không Comparable và không truyền Comparator -> ClassCastException.
+- floorEntry trả null khi key nhỏ hơn mọi key -> NPE nếu không check.
+- subMap mặc định half-open [from, to) -> off-by-one nếu muốn inclusive cả hai đầu (dùng subMap(from, true, to, true)).
+- Mutate key sau khi put (key mutable) -> entry mất vì vị trí cây không còn khớp.
+
+### Trả lời mẫu khi phỏng vấn
+"TreeMap là Map dựa trên cây đỏ-đen, giữ key theo thứ tự tự nhiên hoặc Comparator. Ngoài get/put O(log n), nó cung cấp NavigableMap với floorEntry, ceilingEntry, lowerEntry, higherEntry và subMap, rất hữu dụng cho bài toán tìm phần tử gần nhất như biểu phí theo bậc, lịch trống, hoặc giá trị gần nhất trong time-series. So với HashMap O(1) trung bình nhưng không có thứ tự, tôi chọn TreeMap khi cần dò lân cận hoặc duyệt có thứ tự; nếu chỉ lookup chính xác và không cần thứ tự, HashMap nhanh hơn và tiết kiệm bộ nhớ. Cần chú ý key phải Comparable và floorEntry có thể null."
+
+> Senior tip: Trong production, nếu cần cả lookup O(1) và dò thứ tự, cân nhắc giữ hai cấu trúc (HashMap + TreeMap) hoặc dùng ConcurrentSkipListMap cho đa luồng; TreeMap không thread-safe, với truy cập đồng thời dùng Collections.synchronizedSortedMap hoặc ConcurrentSkipListMap.
+`,
+    exercises: [
+      {
+        title: 'Tra biểu phí theo bậc bằng floorEntry',
+        prompt: 'Viết phương thức priceFor trả về đơn giá theo số lượng dùng TreeMap và floorEntry. Quy tắc: 0-100: 5.0, 101-500: 4.0, 501-1000: 3.0, >1000: 2.5. qty âm trả -1.',
+        starter: 'import java.util.*;\n\nclass Solution {\n    public double priceFor(int qty) {\n        TreeMap<Integer, Double> tier = new TreeMap<>();\n        tier.put(0, 5.0);\n        tier.put(101, 4.0);\n        tier.put(501, 3.0);\n        tier.put(1001, 2.5);\n        // TODO: dùng floorEntry; qty < 0 -> -1\n        throw new UnsupportedOperationException("TODO");\n    }\n}',
+        tests: 'public class Main {\n    public static void main(String[] args) {\n        Solution s = new Solution();\n        int pass = 0, total = 0;\n        total++; if (Math.abs(s.priceFor(0) - 5.0) < 1e-9) { pass++; System.out.println("PASS t1"); } else System.out.println("FAIL t1: " + s.priceFor(0));\n        total++; if (Math.abs(s.priceFor(100) - 5.0) < 1e-9) { pass++; System.out.println("PASS t2"); } else System.out.println("FAIL t2: " + s.priceFor(100));\n        total++; if (Math.abs(s.priceFor(101) - 4.0) < 1e-9) { pass++; System.out.println("PASS t3"); } else System.out.println("FAIL t3: " + s.priceFor(101));\n        total++; if (Math.abs(s.priceFor(500) - 4.0) < 1e-9) { pass++; System.out.println("PASS t4"); } else System.out.println("FAIL t4: " + s.priceFor(500));\n        total++; if (Math.abs(s.priceFor(501) - 3.0) < 1e-9) { pass++; System.out.println("PASS t5"); } else System.out.println("FAIL t5: " + s.priceFor(501));\n        total++; if (Math.abs(s.priceFor(1000) - 3.0) < 1e-9) { pass++; System.out.println("PASS t6"); } else System.out.println("FAIL t6: " + s.priceFor(1000));\n        total++; if (Math.abs(s.priceFor(1001) - 2.5) < 1e-9) { pass++; System.out.println("PASS t7"); } else System.out.println("FAIL t7: " + s.priceFor(1001));\n        total++; if (Math.abs(s.priceFor(9999) - 2.5) < 1e-9) { pass++; System.out.println("PASS t8"); } else System.out.println("FAIL t8: " + s.priceFor(9999));\n        total++; if (Math.abs(s.priceFor(-5) - (-1.0)) < 1e-9) { pass++; System.out.println("PASS t9"); } else System.out.println("FAIL t9: " + s.priceFor(-5));\n        System.out.println("RESULT " + pass + "/" + total);\n    }\n}',
+        reference: 'import java.util.*;\n\nclass Solution {\n    public double priceFor(int qty) {\n        if (qty < 0) return -1.0;\n        TreeMap<Integer, Double> tier = new TreeMap<>();\n        tier.put(0, 5.0);\n        tier.put(101, 4.0);\n        tier.put(501, 3.0);\n        tier.put(1001, 2.5);\n        Map.Entry<Integer, Double> e = tier.floorEntry(qty);\n        return (e == null) ? 2.5 : e.getValue();\n    }\n}',
+        hints: ['floorEntry(key) trả entry có key lớn nhất <= key', 'qty < 0 thì trả -1 trước khi tra map'],
+        explain: 'Dùng TreeMap floorEntry để tìm bậc phù hợp. Starter throw TODO nên không pass; reference pass 100%.'
+      }
+    ],
+    check: [
+      {
+        q: 'TreeMap trong Java dựa trên cấu trúc dữ liệu nào?',
+        options: ['Hash table + linked list/tree', 'Cây đỏ-đen (red-black tree)', 'Skip list', 'Mảng sắp xếp'],
+        answer: 1,
+        explain: 'TreeMap dùng cây đỏ-đen tự cân bằng, đảm bảo O(log n) cho put/get/remove và giữ key theo thứ tự.'
+      },
+      {
+        q: 'floorEntry(50) trên TreeMap có key [0, 100, 500] trả về gì?',
+        options: ['Entry key=100', 'Entry key=0', 'null', 'Entry key=500'],
+        answer: 1,
+        explain: 'floorEntry trả entry có key lớn nhất <= 50, tức key=0. Nếu không có key <= 50 thì trả null.'
+      }
+    ],
+    related: ['collections-001', 'collections-005'],
+    tags: ['TreeMap', 'NavigableMap', 'floorEntry', 'red-black tree', 'ordered map']
+  },
+  {
+    id: 'lesson-collections-012',
+    track: 'collections',
+    order: 12,
+    title: 'Iterator fail-fast và ConcurrentModificationException',
+    level: 'mid',
+    minutes: 20,
+    goals: [
+      'Hiểu cơ chế modCount và fail-fast của Iterator trong HashMap/ArrayList',
+      'Biết cách xóa phần tử đúng: removeIf, iterator.remove',
+      'Phân biệt fail-fast (ném CME) với fail-safe (copy-on-write) và chọn đúng cấu trúc cho đa luồng'
+    ],
+    body: `**Tóm tắt:** Iterator của ArrayList/HashMap là fail-fast: nếu collection bị sửa cấu trúc (thêm/xóa) trong lúc đang duyệt mà không qua chính iterator đó, modCount thay đổi và iterator ném ConcurrentModificationException (CME) ở lần next() tiếp theo. Cách xóa đúng là iterator.remove() hoặc removeIf(...).
+
+### Thuật ngữ cơ bản
+- **Iterator**: đối tượng cho phép duyệt từng phần tử của collection (hasNext/next).
+- **modCount (modification count)**: bộ đếm số lần cấu trúc collection thay đổi (add/remove/clear...). Trong ArrayList là {{protected transient}}, trong HashMap là {{transient}} (package-private).
+- **Fail-fast**: phát hiện lỗi ngay khi có thể, ném exception thay vì cho kết quả sai im lặng.
+- **Fail-safe (snapshot)**: iterator làm việc trên bản sao, không ném CME nhưng thấy dữ liệu cũ (CopyOnWriteArrayList, CopyOnWriteArraySet).
+- **Weakly consistent**: iterator có thể thấy một phần thay đổi xảy ra sau khi tạo, không ném CME (ConcurrentHashMap, ConcurrentSkipListMap).
+- **CME (ConcurrentModificationException)**: exception ném khi phát hiện sửa đổi cấu trúc không qua iterator đang duyệt.
+
+### Cơ chế modCount
+Khi tạo iterator, nó lưu expectedModCount = collection.modCount. Mỗi lần next(), iterator kiểm tra modCount == expectedModCount; nếu khác, ném CME. Khi gọi iterator.remove(), nó tự cập nhật cả modCount và expectedModCount nên không ném. Khi gọi collection.remove(...) trực tiếp trong vòng for-each, modCount tăng nhưng expectedModCount không -> CME ở next() tiếp theo.
+
+~~~java
+List<String> list = new ArrayList<>(Arrays.asList("a","b","c"));
+for (String s : list) {
+    if (s.equals("b")) list.remove(s);
+}
+// -> ConcurrentModificationException
+~~~
+
+### Cách xóa đúng
+1. iterator.remove():
+~~~java
+Iterator<String> it = list.iterator();
+while (it.hasNext()) {
+    if (it.next().equals("b")) it.remove();
+}
+~~~
+2. removeIf (Java 8+, ngắn gọn):
+~~~java
+list.removeIf(s -> s.equals("b"));
+~~~
+removeIf tự quản lý iterator và modCount, an toàn.
+3. Thu thập index cần xóa rồi xóa từ cuối lên đầu (với ArrayList) để index không lệch.
+4. Stream filter tạo list mới: list = list.stream().filter(...).collect(Collectors.toList()).
+
+### Fail-fast vs Fail-safe vs Weakly consistent
+- ArrayList/HashMap/TreeSet: **fail-fast** iterator, ném CME khi phát hiện sửa đổi cấu trúc.
+- CopyOnWriteArrayList/CopyOnWriteArraySet: **fail-safe (snapshot)** iterator, làm việc trên bản sao tại thời điểm tạo, không ném CME, phù hợp đọc nhiều ghi ít.
+- ConcurrentHashMap/ConcurrentSkipListMap: **weakly consistent** iterator, có thể thấy một số thay đổi xảy ra sau khi tạo, không ném CME, phù hợp đa luồng hiệu năng cao.
+
+### Ví dụ đời thực
+Service lọc request theo blacklist IP: mỗi request đến, duyệt danh sách IP bị chặn để log. Nếu **cùng luồng đó** (ví dụ code log viết sai) xóa IP khỏi danh sách trong lúc đang duyệt, fail-fast ném CME -> request lỗi 500. Giải pháp: dùng CopyOnWriteArrayList cho blacklist (đọc nhiều, ghi ít), hoặc snapshot copy trước khi duyệt ({{new ArrayList<>(list)}}), hoặc dùng {{removeIf}} trong cùng một thao tác.
+
+### Lỗi hay gặp
+- Xóa trong for-each enhanced -> CME.
+- Nghĩ removeIf ném CME -> không, removeIf tự xử lý.
+- Dùng fail-safe/weakly consistent collection cho mọi trường hợp -> tốn bộ nhớ (copy) hoặc không thấy cập nhật realtime.
+- ConcurrentModificationException không chỉ do đa luồng: một thread tự sửa trong lúc duyệt cũng ném.
+- modCount trong ArrayList là {{protected transient}}, trong HashMap là {{transient}} (package-private); không nên tự đọc trong code production.
+
+### Trả lời mẫu khi phỏng vấn
+"Iterator của ArrayList và HashMap là fail-fast: nó lưu expectedModCount khi tạo và kiểm tra ở mỗi next(); nếu collection bị sửa cấu trúc không qua iterator, modCount lệch và ném ConcurrentModificationException. Đây là cơ chế phát hiện lỗi sớm, không phải thread-safe thực sự. Để xóa phần tử khi duyệt, dùng iterator.remove() hoặc removeIf (Java 8). Với đa luồng đọc nhiều ghi ít, dùng CopyOnWriteArrayList (fail-safe, snapshot) hoặc ConcurrentHashMap (weakly consistent). Cần phân biệt: CME có thể xảy ra ngay cả trong một thread nếu sửa trong for-each; fail-safe dùng bản sao, weakly consistent có thể thấy một phần thay đổi mới."
+
+> Senior tip: Trong code review, thấy for-each kèm collection.remove bên trong là red flag; thay bằng removeIf hoặc collect vào list mới. Với collection lớn, removeIf hiệu quả hơn vì xóa tại chỗ và tránh cấp phát list mới.
+`,
+    exercises: [
+      {
+        title: 'Xóa phần tử đúng cách bằng removeIf',
+        prompt: 'Viết phương thức removeNegative xóa mọi số âm khỏi list bằng removeIf và trả về số lượng đã xóa.',
+        starter: 'import java.util.*;\n\nclass Solution {\n    public int removeNegative(List<Integer> nums) {\n        // TODO: dùng removeIf, trả số phần tử đã xóa\n        throw new UnsupportedOperationException("TODO");\n    }\n}',
+        tests: 'public class Main {\n    public static void main(String[] args) {\n        Solution s = new Solution();\n        int pass = 0, total = 0;\n        List<Integer> a = new ArrayList<>(Arrays.asList(1, -2, 3, -4, 5));\n        total++; int r = s.removeNegative(a); if (r == 2 && a.equals(Arrays.asList(1,3,5))) { pass++; System.out.println("PASS t1"); } else System.out.println("FAIL t1: r=" + r + " " + a);\n        List<Integer> b = new ArrayList<>(Arrays.asList(-1,-2,-3));\n        total++; r = s.removeNegative(b); if (r == 3 && b.isEmpty()) { pass++; System.out.println("PASS t2"); } else System.out.println("FAIL t2: r=" + r + " " + b);\n        List<Integer> c = new ArrayList<>(Arrays.asList(1,2,3));\n        total++; r = s.removeNegative(c); if (r == 0 && c.equals(Arrays.asList(1,2,3))) { pass++; System.out.println("PASS t3"); } else System.out.println("FAIL t3: r=" + r + " " + c);\n        List<Integer> d = new ArrayList<>();\n        total++; r = s.removeNegative(d); if (r == 0 && d.isEmpty()) { pass++; System.out.println("PASS t4"); } else System.out.println("FAIL t4: r=" + r);\n        System.out.println("RESULT " + pass + "/" + total);\n    }\n}',
+        reference: 'import java.util.*;\n\nclass Solution {\n    public int removeNegative(List<Integer> nums) {\n        int before = nums.size();\n        nums.removeIf(n -> n < 0);\n        return before - nums.size();\n    }\n}',
+        hints: ['removeIf nhận Predicate; đếm số xóa = size trước - size sau'],
+        explain: 'removeIf xóa tại chỗ và tự quản lý modCount, an toàn. Starter throw TODO nên không pass.'
+      }
+    ],
+    check: [
+      {
+        q: 'Khi nào ném ConcurrentModificationException?',
+        options: ['Khi duyệt collection và sửa cấu trúc không qua iterator', 'Khi hai thread cùng đọc', 'Khi iterator hết phần tử', 'Khi collection rỗng'],
+        answer: 0,
+        explain: 'CME ném khi modCount thay đổi không qua chính iterator đang duyệt (kể cả một thread).'
+      },
+      {
+        q: 'Cấu trúc nào có iterator fail-safe (không ném CME)?',
+        options: ['ArrayList', 'HashMap', 'CopyOnWriteArrayList', 'TreeSet'],
+        answer: 2,
+        explain: 'CopyOnWriteArrayList iterator làm việc trên snapshot, không ném CME; phù hợp đọc nhiều ghi ít.'
+      }
+    ],
+    related: ['collections-001', 'collections-003'],
+    tags: ['Iterator', 'ConcurrentModificationException', 'modCount', 'removeIf', 'fail-fast', 'fail-safe']
+  },
 );
