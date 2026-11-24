@@ -13669,4 +13669,208 @@ Thư viện báo cáo nội bộ có hàm xuất dữ liệu ra Excel: ban đầ
   ],
   tags: ['generics', 'wildcard', 'PECS', 'capture of ?', 'invariant', 'raw type', 'API design'],
 },
+{
+  id: 'collections-058',
+  topic: 'collections',
+  level: 'senior',
+  q: 'Đồng nghiệp dùng {{LinkedHashMap}} với {{accessOrder = true}} làm LRU cho một cache dùng chung, nhiều luồng cùng đọc/ghi. Tải thấp chạy đúng, nhưng khi tải cao thỉnh thoảng ném {{ConcurrentModificationException}}, có lúc cache phình vượt giới hạn rồi OOM, có lúc một thread treo. Vì sao, và bạn thiết kế lại một LRU thread-safe trong một JVM thế nào?',
+  a: `**Tóm tắt:** {{LinkedHashMap}} với {{accessOrder = true}} không an toàn đa luồng vì {{get}} cũng **sửa** danh sách liên kết nội bộ (đưa entry vừa truy cập ra cuối), nên "đọc" thực chất là "ghi" — nhiều luồng cùng lúc làm hỏng con trỏ danh sách, gây {{ConcurrentModificationException}}, mất entry (cache phình vượt max) hoặc tạo vòng lặp (treo). Cách sửa: chấp nhận một khoá cho LRU nhỏ; với tải cao dùng cấu trúc phân mảnh theo khoá (striped) hoặc thư viện như Caffeine; đừng bọc {{synchronizedMap}} cho cache đọc nhiều.
+
+### LRU là gì
+- **LRU** (Least Recently Used — ít dùng gần đây nhất): khi cache đầy, bỏ đi phần tử **lâu nhất không được truy cập**. Đây là chính sách evict phổ biến vì dữ liệu vừa dùng nhiều khả năng được dùng lại (tính cục bộ thời gian — temporal locality: cái gì vừa dùng thì sắp dùng lại).
+- **{{LinkedHashMap}}** nối các entry bằng một danh sách liên kết đôi (mỗi entry giữ con trỏ tới phần tử trước và sau). Mặc định theo thứ tự chèn (insertion-order); khi truyền {{accessOrder = true}} ở constructor thì chuyển sang **access-order**: mỗi lần {{get}}/{{put}} (kể cả {{getOrDefault}}) entry đó được **di chuyển ra cuối danh sách**.
+- Vì vậy đầu danh sách luôn là entry "lâu không truy cập nhất" (ứng viên bị evict), cuối danh sách là entry "vừa dùng nhất".
+
+### Cơ chế bên trong và VÌ SAO hỏng đa luồng
+1. Mỗi entry trong LinkedHashMap là một node có con trỏ trước/sau. Khi bật access-order và bạn gọi {{get(k)}}, hàm nội bộ {{afterNodeAccess}} đổi các con trỏ để đưa node về cuối.
+2. Nghĩa là {{get}} **không phải thao tác chỉ đọc**: nó thay đổi cấu trúc danh sách và tăng {{modCount}} (bộ đếm mà iterator fail-fast dùng để phát hiện thay đổi).
+3. Hai luồng cùng gọi {{get}} trên cùng map (không đồng bộ):
+   - Cùng lúc đổi con trỏ trước/sau của cùng một vùng → danh sách hỏng.
+   - Hỏng kiểu **mất node**: một entry không còn nằm trong danh sách, {{removeEldestEntry}} không "thấy" nó nữa → nó không bao giờ bị evict → {{size()}} vượt {{max}} → OOM.
+   - Hỏng kiểu **vòng lặp**: con trỏ trỏ ngược tạo chu trình → {{get}} hoặc vòng duyệt treo (CPU 100%, thread không tiến).
+   - Một luồng đang {{iterator()}} (duyệt {{entrySet}}) thấy {{modCount}} đổi → ném {{ConcurrentModificationException}}.
+4. {{Collections.synchronizedMap(new LinkedHashMap(...))}} không cứu được về hiệu năng: nó khoá mọi method trên **một monitor chung**, nên mọi {{get}} (dù về logic chỉ đọc) phải xếp hàng tuần tự — throughput sụp khi tải cao, và vẫn phải đồng bộ khi duyệt {{entrySet}}.
+
+### Mã ví dụ (lỗi và vì sao)
+~~~java
+// LỖI: cache LRU chia sẻ, nhiều luồng, không đồng bộ
+class Lru<K, V> extends LinkedHashMap<K, V> {
+    private final int max;
+    Lru(int max) { super(16, 0.75f, true); this.max = max; }   // accessOrder = true
+    @Override protected boolean removeEldestEntry(Map.Entry<K, V> e) { return size() > max; }
+}
+// get() đã di chuyển node -> là GHI; hai luồng cùng get -> hỏng danh sách, CME, hoặc vượt max
+~~~
+
+### Thiết kế lại đúng
+| Tình huống | Cách chọn | Vì sao |
+|---|---|---|
+| Cache nhỏ, tải thấp, một luồng | {{synchronizedMap}} hoặc {{synchronized}} quanh get/put | Đơn giản, chấp nhận tuần tự |
+| Đọc nhiều, cần throughput | KHÔNG dùng LRU chính xác từng entry; dùng {{ConcurrentHashMap}} + evict xấp xỉ (CLOCK/sampling) hoặc **Caffeine** | Tránh một khoá chung, chấp nhận xấp xỉ |
+| Cần LRU/TTL/thống kê đúng, tải cao | **Caffeine** ({{maximumSize}}, {{expireAfterWrite}}, {{recordStats}}) | Thread-safe, phân mảnh khoá, W-TinyLFU |
+
+- **Ý tưởng "striped" (phân mảnh theo khoá)**: chia key theo hash thành N dải, mỗi dải một khoá riêng và một LRU con. Nhờ đó hai luồng chạm dải khác nhau không tranh nhau — đây là cách Caffeine và Guava đạt throughput cao.
+- **LRU xấp xỉ**: khi đầy, lấy mẫu ngẫu nhiên vài entry (ví dụ 5), evict entry có "lần truy cập gần nhất" cũ nhất trong mẫu — không cần danh sách toàn cục, gần đúng LRU (thuật toán CLOCK / sampling).
+- **W-TinyLFU** (Caffeine): kết hợp tần suất truy cập (frequency) và độ mới, chống "cache pollution" khi có một lần quét tuần tự (scan) mà LRU thuần dễ bị.
+
+### Pitfall production
+- **Vừa {{iterator()}} vừa {{get}}**: fail-fast, CME — kể cả trong một luồng. Muốn duyệt an toàn phải {{synchronized(map)}} quanh cả vòng lặp.
+- **Đặt I/O hay tính nặng trong callback**: nếu dùng {{computeIfAbsent}} thì callback chậm giữ khoá (lock) lâu, làm nghẽn các thread khác.
+- **Không giới hạn {{maximumSize}}**: cache tự tăng → OOM; luôn đặt trần.
+- **Coi {{synchronizedMap}} là "đã thread-safe"**: nó chỉ an toàn từng method; chuỗi kiểm tra-rồi-cập-nhật (check-then-act) vẫn cần đồng bộ ở ngoài.
+
+### Ví dụ đời thực
+Một service tra cứu cấu hình dùng {{LinkedHashMap}} access-order 10.000 entry làm LRU, không đồng bộ vì "đọc là chính". Dưới 2.000 request/giây, mỗi 10 phút lại có một lần {{ConcurrentModificationException}} trong thread duyệt {{entrySet}}; đồng thời heap tăng đều vì một số entry bị mất khỏi danh sách nên không bị evict. Sau 2 giờ, GC overhead vượt 30%, có lần OOM. Chuyển sang Caffeine ({{maximumSize(10_000)}}, {{expireAfterWrite(Duration.ofMinutes(5))}}, {{recordStats()}}): hết CME, p99 từ 300ms (khi còn bọc synchronizedMap) xuống 4ms, hit rate đo được 97%. Thống kê còn chỉ ra một job đêm quét toàn bộ cấu hình cũ làm sạch cache LRU trước đây — W-TinyLFU giữ được key nóng qua đợt quét đó.
+
+### Trả lời mẫu khi phỏng vấn
+"LinkedHashMap với accessOrder bật nối các entry bằng danh sách liên kết đôi, và mỗi lần get hay put sẽ đưa entry đó ra cuối danh sách, nên đầu danh sách là phần tử lâu không dùng nhất; em override removeEldestEntry để tự evict khi vượt max. Vấn đề là get không chỉ đọc: nó sửa danh sách và tăng modCount, nên hai luồng cùng get trên cùng map sẽ làm hỏng con trỏ, gây ConcurrentModificationException, mất entry làm size vượt max dẫn tới OOM, hoặc tạo vòng lặp làm treo. Bọc synchronizedMap thì đúng nhưng mọi lần đọc thành tuần tự, throughput tụt. Với cache nhỏ em chấp nhận một khoá; với tải cao em dùng cấu trúc phân mảnh theo hash như Caffeine, hoặc LRU xấp xỉ bằng sampling, và luôn đặt maximumSize cùng expire để tránh OOM."
+
+> Senior tip: cache dùng chung trong một JVM thì mặc định dùng Caffeine (thread-safe, có maximumSize, expire, recordStats); chỉ tự viết LRU bằng LinkedHashMap khi cache rất nhỏ và một luồng truy cập — và ngay cả khi đó cũng phải nhớ get là thao tác ghi.`,
+
+follow: [
+  'Vì sao {{get}} trong access-order lại làm tăng {{modCount}} và ảnh hưởng iterator fail-fast?',
+  'Caffeine dùng chính sách gì thay LRU, và W-TinyLFU chống "cache pollution" như thế nào?',
+  'Nếu cache phải nằm trên nhiều instance (phân tán), bạn thiết kế invalidate thế nào?'
+],
+tags: ['LinkedHashMap', 'LRU', 'accessOrder', 'removeEldestEntry', 'Caffeine', 'thread-safe', 'ConcurrentModificationException'],
+refs: [
+  { type: 'doc', title: 'Caffeine — Java caching library (wiki)', url: 'https://github.com/ben-manes/caffeine/wiki' }
+]
+},
+{
+  id: 'collections-059',
+  topic: 'collections',
+  level: 'senior',
+  q: 'Bạn cần đếm top-K sản phẩm bán chạy từ một luồng sự kiện (mỗi sự kiện là một lần mua, hàng triệu sự kiện mỗi giờ). Bạn dùng {{HashMap}} để đếm tần suất và {{PriorityQueue}} để giữ top-K. Hãy giải thích vì sao cần cả hai, hai cái bẫy lớn (số đếm thay đổi theo thời gian, và gộp top-K khi dữ liệu nằm trên nhiều consumer) và cách xử lý đúng?',
+  a: `**Tóm tắt:** {{HashMap}} ánh xạ từ mã sản phẩm tới số lần mua để tích luỹ tần suất, vì bạn không thể giữ toàn bộ hàng triệu sự kiện; {{PriorityQueue}} dạng min-heap kích thước K giữ K sản phẩm có số lần mua lớn nhất với chi phí O(n log K), bộ nhớ O(K). Hai bẫy: (1) số đếm thay đổi theo thời gian nên entry trong heap bị "cũ", phải tính lại heap từ bảng đếm mỗi cửa sổ; (2) khi dữ liệu nằm trên nhiều consumer, phải **cộng dồn số đếm theo mã sản phẩm rồi mới lấy top-K**, không phải lấy top-K cục bộ rồi trộn.
+
+### Vì sao cần cả HashMap lẫn PriorityQueue
+- **{{HashMap}} đếm tần suất**: mỗi sự kiện "mua sản phẩm X" thì {{counts.merge(X, 1L, Long::sum)}}. Chi phí trung bình O(1), dùng bộ nhớ O(số sản phẩm phân biệt) chứ không phải O(số sự kiện). Đây là cách "nén" một luồng vô hạn thành bảng đếm hữu hạn.
+- **{{PriorityQueue}} giữ top-K**: nếu mỗi lần cần top-K mà {{sort}} toàn bộ {{counts.entrySet()}} thì tốn O(P log P) với P = số sản phẩm (có thể 100 nghìn) — tốn cả thời gian lẫn bộ nhớ. Dùng **min-heap** kích thước K: đỉnh heap là phần tử có số đếm **nhỏ nhất trong K phần tử đang giữ**, tức "ngưỡng vào top". Duyệt một lượt:
+  - Heap chưa đủ K → {{offer}} trực tiếp.
+  - Heap đủ K → nếu phần tử mới lớn hơn đỉnh thì {{poll}} đỉnh rồi {{offer}} mới; nhỏ hơn thì bỏ qua.
+  - Tổng O(P log K), bộ nhớ O(K) — rất tốt khi K nhỏ (ví dụ top 100).
+
+### Mã ví dụ
+~~~java
+// 1) Đếm tần suất từ luồng sự kiện
+Map<String, Long> counts = new HashMap<>();
+void onEvent(String productId) { counts.merge(productId, 1L, Long::sum); }
+
+// 2) Lấy top-K, tính lại mỗi cửa sổ (ví dụ mỗi phút)
+List<Map.Entry<String, Long>> topK(Map<String, Long> counts, int k) {
+    PriorityQueue<Map.Entry<String, Long>> min =
+        new PriorityQueue<>(k, Comparator.comparingLong(Map.Entry::getValue));
+    for (var e : counts.entrySet()) {
+        if (min.size() < k) min.offer(e);
+        else if (e.getValue() > min.peek().getValue()) { min.poll(); min.offer(e); }
+    }
+    List<Map.Entry<String, Long>> out = new ArrayList<>(min);
+    out.sort(Map.Entry.<String, Long>comparingByValue().reversed());  // giảm dần
+    return out;
+}
+~~~
+
+### Bẫy 1: số đếm thay đổi theo thời gian
+- Min-heap sắp xếp theo số đếm **tại thời điểm offer**. Nếu bạn giữ heap "sống" qua nhiều cửa sổ và một sản phẩm tăng số đếm, vị trí của nó trong heap không còn đúng → top-K trả về sai.
+- Cách đúng: mỗi cửa sổ (rolling window) **tính lại heap từ {{counts}}**. Với 100 nghìn sản phẩm và K = 100: khoảng 100 nghìn × log2(100) ≈ 700 nghìn phép so sánh mỗi cửa sổ — chỉ vài mili giây.
+- Nếu cần cập nhật liên tục (không theo cửa sổ) mới cần cấu trúc phức tạp hơn, ví dụ cây {{TreeSet}} các cặp (count, id) cập nhật mỗi khi count đổi, nhưng hiếm khi cần.
+
+### Bẫy 2: gộp top-K trên nhiều consumer (đây là lỗi phổ biến)
+- Với dữ liệu **cộng dồn** như số lần mua, **KHÔNG** lấy top-K ở mỗi shard rồi trộn. Lý do: một sản phẩm có thể có số đếm cục bộ nhỏ (rớt khỏi top-K của shard) nhưng cộng dồn cả 8 shard lại vươn lên đầu. Lấy top-K cục bộ đã loại nó từ trước.
+- Cách đúng: mỗi shard gửi **bảng đếm theo mã sản phẩm** (hoặc gửi từng cặp mã–số đếm), coordinator **cộng dồn theo mã** rồi **mới** chạy heap top-K trên tổng.
+- Khi số sản phẩm phân biệt quá lớn để gửi hết: dùng **Count-Min Sketch** (cấu trúc xấp xỉ đếm tần suất, tốn ít bộ nhớ, cho kết quả xấp xỉ có sai số) rồi heap trên đó.
+
+### Bảng trade-off
+| Nhu cầu | Cách làm | Chi phí |
+|---|---|---|
+| Top-K chính xác, P vừa phải | HashMap đếm + min-heap K mỗi cửa sổ | O(P log K) mỗi cửa sổ |
+| P rất lớn, cần ít bộ nhớ | Count-Min Sketch + heap | Xấp xỉ, O(1) mỗi sự kiện |
+| Cần top-K liên tục realtime | TreeSet cặp (count, id) | O(log P) mỗi cập nhật, bộ nhớ O(P) |
+
+### Pitfall production
+- **{{PriorityQueue}} không thread-safe**: nếu nhiều thread tiêu thụ cùng gọi {{topK}}, phải gộp ở một thread duy nhất hoặc đồng bộ. {{offer(null)}} ném NPE.
+- **Key mutable**: {{productId}} nên là {{String}} bất biến; key thay đổi trong HashMap làm mất entry.
+- **HashMap phình**: nếu số sản phẩm phân biệt hàng chục triệu, {{counts}} gây OOM → chia shard theo hash(mã) hoặc dùng Count-Min Sketch.
+- **Rebuild mỗi cửa sổ vs cập nhật tăng dần**: rebuild đơn giản, dễ đúng; cập nhật tăng dần nhanh hơn nhưng dễ sai.
+
+### Ví dụ đời thực
+Một hệ thống thương mại cần "top 100 sản phẩm bán chạy 5 phút" từ 8 consumer Kafka, mỗi giờ khoảng 3 triệu sự kiện. Bản đầu: mỗi consumer tự lấy top 100 cục bộ rồi gửi lên gộp — kết quả thiếu các sản phẩm bán đều (mỗi shard chỉ vài chục đơn) vì chúng rớt top-100 cục bộ. Sửa: mỗi consumer gửi bảng đếm 40 nghìn mã, coordinator cộng dồn thành 300 nghìn mã rồi mới heap lấy top 100. Chi phí gộp tăng khoảng 30ms mỗi cửa sổ, kết quả khớp với truy vấn đối chiếu trên kho dữ liệu (sai lệch 0%). Bản trước đó dùng {{sort}} toàn bộ mỗi lần làm mới mất 1,8 giây và tạo nhiều rác; chuyển sang heap còn 120ms.
+
+### Trả lời mẫu khi phỏng vấn
+"Em tách hai phần: HashMap đếm tần suất vì không giữ được hàng triệu sự kiện, mỗi sự kiện merge cộng một vào mã sản phẩm, bộ nhớ chỉ theo số mã phân biệt. Sau đó dùng PriorityQueue dạng min-heap đúng K phần tử: đỉnh heap là ngưỡng vào top, phần tử mới lớn hơn đỉnh thì thay, nhỏ hơn thì bỏ, chi phí n log K và bộ nhớ O(K), tốt hơn sort toàn bộ. Em luôn nhớ hai bẫy. Thứ nhất, số đếm tăng theo thời gian nên heap cũ sẽ sai, em tính lại heap từ bảng đếm mỗi cửa sổ. Thứ hai, khi dữ liệu nằm trên nhiều consumer, em không lấy top-K cục bộ rồi trộn, vì một sản phẩm có thể rớt top cục bộ nhưng cộng dồn cả cụm lại vươn lên đầu; em cộng dồn số đếm theo mã rồi mới lấy top-K. Nếu số mã quá lớn em dùng Count-Min Sketch cho xấp xỉ."
+
+> Senior tip: với bài toán top-K theo tần suất phân tán, luôn "cộng dồn theo khoá trước, heap sau"; gộp top-K cục bộ chỉ đúng khi điểm số của mỗi phần tử là như nhau trên mọi node, không phải tổng một phần.`,
+
+follow: [
+  'Vì sao gộp top-K cục bộ lại sai với số lần mua, nhưng đúng với điểm số tĩnh của mỗi sản phẩm?',
+  'Count-Min Sketch cho sai số bao nhiêu và vì sao không dùng làm nguồn đúng cho tiền?',
+  '{{PriorityQueue}} và {{TreeSet}} khi nào nên chọn cái nào cho top-K cập nhật liên tục?'
+],
+tags: ['top-K', 'PriorityQueue', 'HashMap', 'min-heap', 'Count-Min Sketch', 'Kafka', 'streaming'],
+refs: [
+  { type: 'doc', title: 'PriorityQueue — Java SE API', url: 'https://docs.oracle.com/en/java/javase/21/docs/api/java.base/java/util/PriorityQueue.html' }
+]
+},
+{
+  id: 'collections-060',
+  topic: 'collections',
+  level: 'lead',
+  q: '(Lead) Bạn review API của một service: một người đề xuất luôn trả {{List.copyOf}}, người khác phản đối "copy mỗi lần gọi tốn kém, dùng {{Collections.unmodifiableList}} cho nhanh", người thứ ba nhớ ra có chỗ trả {{List.of}}. Bạn quyết định thế nào cho từng tình huống, và vì sao?',
+  a: `**Tóm tắt:** Không có một lựa chọn đúng cho mọi nơi — chọn theo ba câu hỏi: (1) cần **bất biến thật** hay chỉ **view chỉ đọc**; (2) dữ liệu có **null** không; (3) chi phí **copy** có đáng không. Nguyên tắc của lead: ở biên service trả cho caller, mặc định trả **bản sao bất biến** ({{List.copyOf}}/{{Set.copyOf}}/{{Map.copyOf}}) để có snapshot ổn định và chặn caller sửa; {{Collections.unmodifiableList}} chỉ dùng nội bộ khi **cố ý** muốn caller thấy cập nhật mới nhất; {{List.of}} khi danh sách cố định, không null, ngắn.
+
+### Ba lựa chọn và ngữ nghĩa chính xác
+- **{{List.of(...)}}**: tạo list **bất biến thật** (không add/remove/set/sort, cấm null), dùng class nội bộ tối ưu theo kích thước. Hợp với: hằng số, cấu hình ngắn, danh sách cố định.
+- **{{List.copyOf(src)}}** (Java 10+): tạo **bản sao bất biến**; nếu {{src}} đã là list bất biến kiểu này thì trả về **chính nó** (rất rẻ). Cấm null. Hợp với: biên API, defensive copy.
+- **{{Collections.unmodifiableList(src)}}**: chỉ là **view** bao {{src}}, **không copy**; {{src}} đổi thì view đổi theo. Cho phép null theo {{src}}. Hợp với: nội bộ, cố ý muốn "sống", list lớn không muốn copy.
+- **{{new ArrayList<>(src)}}**: bản sao **mutable**, cho phép null. Hợp với: cần sửa sau, hoặc dữ liệu có null cần tránh NPE của copyOf.
+
+### Bảng so sánh
+| Tiêu chí | List.of | List.copyOf | unmodifiableList | new ArrayList |
+|---|---|---|---|---|
+| Bất biến thật | Có | Có | Chỉ view (gốc mutable) | Không |
+| Null | Cấm | Cấm | Theo gốc | Cho phép |
+| Bản sao hay view | Bản sao | Bản sao (hoặc chính nó) | View | Bản sao |
+| Chi phí | O(n) khi tạo | O(1) nếu gốc bất biến, else O(n) | O(1) | O(n) |
+
+### Vì sao "copy tốn kém" thường không đáng lo như bạn nghĩ
+- {{copyOf}} của một list đã bất biến là O(1) — không copy gì cả.
+- Với list lớn (100 nghìn phần tử) ở endpoint nóng, copy O(n) mỗi request là thật: khi đó **giữ sẵn một list bất biến trong service state** ({{this.roles = List.copyOf(newRoles)}}, field {{volatile}}) rồi trả thẳng, hoặc **phân trang/stream** thay vì copy toàn bộ.
+- Đừng đoán: đo bằng JMH hoặc JFR trước khi tối ưu.
+
+### Vì sao copy quan trọng ở biên
+- {{unmodifiableList}} là view: nếu service còn giữ {{src}} và sửa (ví dụ reload cấu hình), caller đọc thấy trạng thái nửa vời hoặc rỗng trong khoảnh khắc — nguồn bug khó tái hiện. Trả copy cho caller một **snapshot nhất quán**.
+- Qua HTTP/JSON, caller ở process khác không sửa được list của bạn dù nó mutable; nên "unmodifiable" ở biên mạng ít giá trị. Giá trị thật là chống **caller trong cùng process** giữ tham chiếu và sửa.
+- Null: {{List.of}}/{{copyOf}} ném NPE nếu có một phần tử null — DTO từ DB có field nullable phải lọc null hoặc dùng {{new ArrayList<>}}.
+
+### Guideline cho lead (đưa vào review)
+- Method public của service trả collection: mặc định **copyOf** (bất biến, snapshot).
+- View "sống" (unmodifiableList) chỉ khi: nội bộ, có kiểm soát mutation, caller cần thấy mới nhất, list quá lớn để copy — và phải ghi rõ hợp đồng.
+- DTO/JSON: copyOf; nếu nullable xử lý null trước.
+- **Không bao giờ** trả list nội bộ mutable.
+- List lớn/điểm nóng: đo rồi cân nhắc giữ immutable sẵn và field volatile, hoặc stream/phân trang.
+
+### Pitfall production
+- Trả view "sống" qua service state bị reload → caller thấy list rỗng/nửa vời (xem ví dụ dưới).
+- {{List.of}}/{{copyOf}} gặp phần tử null → NPE lúc tạo, không phải lúc dùng.
+- {{List.of}} implement {{RandomAccess}}, nên truy cập index O(1) (backing là mảng).
+
+### Ví dụ đời thực
+Một service phân quyền trả {{Collections.unmodifiableList(roles)}} cho các module, tin rằng "đã bất biến". Module A giữ list này để kiểm tra quyền; trong khi đó service gốc **xoá và nạp lại** {{roles}} khi cấu hình đổi → trong vài mili giây list rỗng, khoảng 50 request bị 403 ngẫu nhiên mỗi lần reload. Đổi sang tạo list mới rồi thay reference ({{this.roles = List.copyOf(newRoles)}}, field {{volatile}}) → người đọc hoặc thấy list cũ hoặc thấy list mới, không bao giờ thấy trạng thái nửa vời. Sau khi đổi: 0 lỗi 403 do reload trong 3 tháng.
+
+### Trả lời mẫu khi phỏng vấn
+"Em không chọn một kiểu cho mọi nơi. Em hỏi ba câu: cần bất biến thật hay chỉ view chỉ đọc, dữ liệu có null không, và copy có tốn không. Ở biên service trả cho caller, em mặc định List.copyOf vì nó là bản sao bất biến và cho snapshot ổn định; nếu list đã bất biến thì copyOf trả chính nó nên rất rẻ. Collections.unmodifiableList chỉ là view bọc list gốc, gốc đổi thì view đổi theo, nên em chỉ dùng nội bộ khi cố ý muốn caller thấy cập nhật mới nhất, và phải ghi rõ. List.of dùng cho danh sách cố định, không null, ngắn. Với list lớn ở endpoint nóng em giữ sẵn list bất biến trong state rồi trả thẳng, hoặc phân trang, thay vì copy mỗi request. Cuối cùng em không bao giờ trả list nội bộ mutable, và luôn đo trước khi tối ưu copy."
+
+> Senior tip: ở biên API, "immutable copy" (copyOf) là mặc định an toàn; unmodifiableList là công cụ nội bộ cho view sống, không phải giải pháp cho API công khai. Khi list lớn, tối ưu bằng cách giữ snapshot bất biến sẵn, đừng copy mỗi request.`,
+
+follow: [
+  'Vì sao {{List.copyOf}} của một list đã bất biến lại trả về chính nó, và điều đó ảnh hưởng thế nào tới chi phí?',
+  'Trả {{unmodifiableList}} qua service state bị reload có thể gây bug gì, và cách sửa?',
+  'Khi nào copy O(n) mỗi request thực sự là vấn đề, và bạn đo/tối ưu thế nào?'
+],
+tags: ['List.of', 'List.copyOf', 'Collections.unmodifiableList', 'immutable', 'defensive copy', 'API design'],
+refs: [
+  { type: 'doc', title: 'List (Java SE 21 API)', url: 'https://docs.oracle.com/en/java/javase/21/docs/api/java.base/java/util/List.html' }
+]
+},
 );
