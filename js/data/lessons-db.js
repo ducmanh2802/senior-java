@@ -5444,4 +5444,330 @@ Không dùng {{synchronized}}, {{Lock}}, {{Atomic*}}, {{ConcurrentHashMap}} cho 
   related: ['db-018', 'db-016', 'db-017', 'concurrency-030'],
   tags: ['key-value-store', 'BlockingQueue', 'single-threaded', 'actor-model', 'fake-clock', 'atomic', 'CompletableFuture']
 },
+{
+  id: 'lesson-db-020', track: 'db', order: 20,
+  title: 'Write skew và SERIALIZABLE: vì sao REPEATABLE READ chưa đủ',
+  level: 'senior', minutes: 30,
+  goals: [
+    'Mô tả write skew: hai transaction cùng đọc rồi ghi các hàng khác nhau, cùng commit làm vỡ invariant chung',
+    'Phân biệt write skew với lost update và non-repeatable read',
+    'Vì sao snapshot isolation (REPEATABLE READ) không chặn được write skew còn SERIALIZABLE (SSI) thì có',
+    'Chọn cách sửa: SERIALIZABLE + retry, hoặc hiện thực hóa xung đột bằng hàng khóa chung'
+  ],
+  body: `**Tóm tắt:** Write skew là hiện tượng hai transaction cùng đọc một trạng thái, mỗi bên ra quyết định dựa trên trạng thái đó rồi ghi vào những hàng khác nhau, nhưng khi cả hai cùng commit thì một ràng buộc chung (invariant) bị phá vỡ — dù không transaction nào ghi đè dữ liệu của transaction kia. REPEATABLE READ (snapshot isolation) KHÔNG chặn được; phải dùng SERIALIZABLE (PostgreSQL dùng SSI) hoặc "hiện thực hóa xung đột" bằng một hàng khóa chung.
+
+### Trước hết: invariant là gì
+Invariant (bất biến) là điều luôn phải đúng về dữ liệu, nhưng không nằm gọn trong một hàng. Ví dụ: "mỗi ca trực phải có ít nhất một bác sĩ" (liên quan mọi hàng của bảng on_call), hoặc "tổng tiền của một khách không được âm" (liên quan nhiều giao dịch). Nó khác {{CHECK}} constraint trên một cột (như {{balance >= 0}}) vì CHECK chỉ nhìn một hàng; còn invariant kiểu này phải "nhìn" nhiều hàng cùng lúc. Đây chính là chỗ write skew sinh ra.
+
+### Kịch bản kinh điển: hai bác sĩ trực
+Bảng {{on_call(doctor_id, on_call)}} có hai bác sĩ A và B, hiện cả hai đang trực (invariant: ít nhất một người). Cả hai đều muốn tan ca sớm:
+- T1 (A): đọc bảng, thấy A và B đang trực. A nghĩ "còn B trực, mình về được" nên đặt {{on_call = false}} cho A.
+- T2 (B): đọc bảng, cũng thấy A và B đang trực. B nghĩ "còn A trực, mình về được" nên đặt {{on_call = false}} cho B.
+- Cả hai commit. Kết quả: A off, B off, không còn ai trực. Invariant vỡ, mà không hề có ai ghi đè dữ liệu của ai.
+
+~~~text
+T1 (bác sĩ A)                     T2 (bác sĩ B)
+|                                 |
+|-- đọc: A trực, B trực --------->|   snapshot chung: còn 2 người
+|                                 |-- đọc: A trực, B trực
+|   A thấy B trực -> A tắt        |   B thấy A trực -> B tắt
+|-- UPDATE A = off -------------->|
+|-- COMMIT ----------------------->|   A off, còn B
+|                                 |-- UPDATE B = off
+|                                 |-- COMMIT
+|  Kết quả: A off, B off -> 0 người trực (invariant vỡ)
+~~~
+
+### Vì sao đây không phải lost update
+Lost update là hai transaction cùng đọc một giá trị rồi cùng ghi vào **cùng một ô**, người ghi sau đè người ghi trước (ví dụ cùng đọc balance 10, cùng ghi 11). Ở write skew, hai transaction **ghi vào các hàng khác nhau** (A ghi hàng A, B ghi hàng B) nên không có "ghi đè". Database không thấy xung đột ghi nào để chặn: mỗi hàng chỉ có một writer. Đó là lý do write skew khó hơn lost update và cần mức đảm bảo mạnh hơn.
+
+### Vì sao REPEATABLE READ không cứu được
+PostgreSQL REPEATABLE READ là **snapshot isolation**: mỗi transaction đọc từ một ảnh chụp (snapshot) lấy ở câu lệnh đầu, và khi ghi, nó chỉ chặn nếu có transaction khác đã sửa **cùng hàng** đó rồi commit sau snapshot (first-committer-wins). Trong kịch bản trên, A và B sửa hai hàng khác nhau, nên không kích hoạt chặn; cả hai cùng commit. Snapshot isolation bảo đảm đọc nhất quán và chặn lost update, nhưng không "hiểu" invariant liên quan nhiều hàng, nên write skew lọt qua. Muốn chặn, phải suy ra được rằng hai thay đổi này xung đột về mặt logic — điều chỉ SERIALIZABLE làm được.
+
+### SERIALIZABLE (SSI) chặn bằng cách nào
+PostgreSQL SERIALIZABLE dùng **SSI (Serializable Snapshot Isolation)**. Nó ghi lại các phụ thuộc đọc-ghi giữa các transaction: nếu T1 đọc một hàng mà T2 sửa (rw-conflict), SSI ghi nhận "T1 phụ thuộc T2". Khi các phụ thuộc tạo thành một cấu trúc nguy hiểm (dangerous structure: hai cạnh rw-conflict nối tiếp tạo thành chu trình), SSI kết luận không thể sắp thứ tự tuần tự mà vẫn giữ đúng kết quả, và **abort một transaction** với SQLSTATE 40001 (serialization_failure). Ứng dụng phải retry cả transaction. Điểm quan trọng: SSI chỉ abort khi thật sự có cấu trúc nguy hiểm; nó không hy sinh throughput một cách mù quáng như khóa toàn bộ bảng.
+
+### Hiện thực hóa xung đột: một hàng khóa chung
+Nếu không muốn dùng SERIALIZABLE, có thể **materialize the conflict** (hiện thực hóa xung đột): biến invariant thành một hàng dữ liệu thật để mọi transaction phải cùng ghi vào đó.
+- Tạo bảng {{on_call_guard(day date primary key, ...)}} với đúng một hàng cho mỗi ca.
+- Mỗi transaction trước khi tắt phiên phải {{UPDATE on_call_guard SET ... WHERE day = ...}} — thao tác này khóa hàng guard. Hai transaction cùng sửa hàng guard sẽ xung đột: một bên commit trước, bên kia chờ rồi thấy dữ liệu đã đổi.
+- Cách khác: {{pg_advisory_xact_lock(key)}} lấy một khóa ở mức transaction cho ca đó; transaction thứ hai phải chờ và khi vào được thì đọc lại trạng thái mới.
+
+~~~sql
+-- Hiện thực hóa xung đột: mọi transaction cùng khóa một hàng guard cho ca trực
+BEGIN;
+-- Khóa các hàng của ca để không ai khác sửa xen vào
+SELECT count(*) FILTER (WHERE on_call) AS busy FROM on_call WHERE day = :d FOR UPDATE;
+-- Nếu busy - (thay đổi của chính mình) >= 1 thì được tắt, ngược lại hủy
+UPDATE on_call SET on_call = false WHERE doctor_id = :me AND day = :d;
+COMMIT;
+~~~
+
+### Bảng phân biệt ba hiện tượng
+| Hiện tượng | Bản chất | Ai ghi đè ai | Mức chặn (PostgreSQL) |
+|---|---|---|---|
+| Lost update | Cùng đọc rồi cùng ghi một ô | Có, người sau đè người trước | REPEATABLE READ chặn (40001) |
+| Write skew | Cùng đọc, ghi các hàng khác nhau, vỡ invariant chung | Không | Chỉ SERIALIZABLE chặn (40001) |
+| Phantom read | Cùng một điều kiện range, hai lần đọc thấy số hàng khác | Không | REPEATABLE READ chặn |
+
+### Cơ chế từng bước
+1. **Hai transaction cùng bắt đầu và cùng đọc snapshot.** A và B đều thấy "còn 2 người trực".
+2. **Mỗi bên kiểm invariant cục bộ.** A thấy "còn B" nên hợp lệ để tắt; B thấy "còn A" nên hợp lệ để tắt. Cả hai quyết định dựa trên cùng một snapshot.
+3. **Mỗi bên ghi hàng của mình.** A ghi hàng A, B ghi hàng B — không hàng nào bị hai writer.
+4. **Commit.** REPEATABLE READ không thấy xung đột ghi (khác hàng) nên cho cả hai commit, invariant vỡ.
+5. **Với SERIALIZABLE**, SSI đã ghi nhận phụ thuộc đọc-ghi; khi phát hiện cấu trúc nguy hiểm, nó abort một bên. Transaction bị abort retry, lần này đọc trạng thái đã cập nhật và thấy không còn ai, nên không tắt nữa.
+
+Vì sao lại như vậy? Snapshot isolation tối ưu cho đọc và cho xung đột ghi đơn hàng, nhưng invariant nhiều hàng cần một mức đảm bảo mạnh hơn — tuần tự hóa — và SSI đạt điều đó bằng cách phát hiện phụ thuộc thay vì khóa trước.
+
+### Ví dụ đời thực
+Một hệ thống đặt lịch trực 24/7 cho 5 kỹ sư. Một tối, hai kỹ sư A và B cùng bấm "kết thúc ca" gần như đồng thời. API dùng {{REPEATABLE READ}} và câu {{UPDATE on_call SET active = false WHERE user_id = ?}}. Cả hai cùng đọc "đang có 2 người trực", cùng thấy điều kiện "còn người khác" đúng, cùng commit. Hậu quả: 0 người trực suốt 2 giờ sáng, sự cố không ai xử lý. Điều tra: log cho thấy hai transaction start cách nhau 20 ms, cùng đọc snapshot lúc 02:00:01, cùng commit lúc 02:00:01. Sửa: đổi sang {{SERIALIZABLE}} cho thao tác đặt lịch và bọc retry 3 lần với backoff; hoặc thêm hàng guard khóa theo ngày. Sau khi sửa, tình huống tương tự: một transaction bị abort 40001, retry, thấy chỉ còn mình nên không tắt, ca trực vẫn có người. Số lần 40001 tăng nhẹ nhưng không còn sự cố "0 người trực".
+
+### Lỗi hay gặp
+1. **Tưởng REPEATABLE READ chặn mọi anomaly.** Triệu chứng: invariant nhiều hàng vẫn vỡ dù đã nâng isolation. Nguyên nhân: snapshot isolation chỉ chặn ghi đè cùng hàng. Sửa: dùng SERIALIZABLE cho invariant nhiều hàng, hoặc hiện thực hóa xung đột.
+2. **SERIALIZABLE mà không retry.** Triệu chứng: request lỗi 40001 liên tục. Nguyên nhân: SSI abort là cơ chế bình thường, không phải sự cố. Sửa: retry có giới hạn với backoff; phân biệt conflict nghiệp vụ thật với serialization failure.
+3. **Đọc-rồi-kiểm-rồi-ghi mà không khóa guard.** Triệu chứng: hai transaction cùng đọc "còn chỗ", cùng thêm. Nguyên nhân: khoảng giữa đọc và ghi không được bảo vệ. Sửa: guard row, advisory xact lock, hoặc SERIALIZABLE.
+
+> Senior tip: write skew là lý do thật sự khiến "SERIALIZABLE chậm" trở nên đáng giá với nghiệp vụ tiền và lịch trực; hãy đo tỷ lệ 40001 và retry có backoff, đừng hạ isolation chỉ vì thấy vài abort.
+
+### Liên hệ phỏng vấn
+- **"Write skew là gì và khác lost update ra sao?"** → Write skew: hai transaction cùng đọc trạng thái, mỗi bên ghi hàng khác nhau, cùng commit làm vỡ invariant chung; không có ghi đè. Lost update: cùng ghi một ô, người sau đè người trước.
+- **"REPEATABLE READ có chặn write skew không?"** → Không. Snapshot isolation chặn lost update và đọc không nhất quán, nhưng không suy ra được invariant nhiều hàng; cần SERIALIZABLE (SSI) hoặc khóa guard.
+- **"SSI hoạt động thế nào?"** → Ghi phụ thuộc đọc-ghi, phát hiện cấu trúc nguy hiểm (chu trình), abort một transaction với 40001; ứng dụng retry.
+- **"Khi nào dùng SERIALIZABLE thay vì READ COMMITTED?"** → Khi invariant liên quan nhiều hàng và không thể biểu diễn bằng CHECK; chấp nhận retry để đổi lấy đúng đắn.
+`,
+  exercises: [{
+    title: 'Mô phỏng write skew và cách sửa bằng hàng khóa chung',
+    prompt: `Mô phỏng hai transaction trên bảng trực {{on_call}} để thấy write skew. {{naiveBothOff(onCall)}} mô phỏng hai người cùng đọc một snapshot: mỗi người có ít nhất một người khác đang trực (tính theo snapshot) thì tắt phiên; cả hai cùng ghi rồi trả về số người còn trực (0 nghĩa là invariant bị phá). {{guardedBothOff(onCall)}} mô phỏng cách sửa bằng một hàng khóa chung: mỗi người đọc lại trạng thái mới nhất rồi chỉ tắt nếu vẫn còn ít nhất một người; trả về số người còn trực. Mảng {{boolean[]}} biểu diễn từng người có đang trực hay không; không dùng thread, lịch được mô phỏng tuần tự.`,
+    starter: `class WriteSkewSim {
+    // Mô phỏng write skew: mỗi người đọc cùng một snapshot rồi tự tắt phiên; cả hai cùng ghi.
+    // Trả về số người còn trực sau khi cả hai commit (0 = anomaly: không còn ai trực).
+    static int naiveBothOff(boolean[] onCall) {
+        throw new UnsupportedOperationException("TODO");
+    }
+
+    // Mô phỏng cách sửa: hàng khóa chung tuần tự hoá, mỗi người đọc lại trạng thái mới nhất
+    // và chỉ tắt phiên nếu vẫn còn ít nhất một người trực.
+    static int guardedBothOff(boolean[] onCall) {
+        throw new UnsupportedOperationException("TODO");
+    }
+}`,
+    tests: `public class Main {
+ static int p=0,t=0;
+ static void c(String n,Runnable r){t++;try{r.run();p++;System.out.println("PASS "+n);}catch(Throwable e){System.out.println("FAIL "+n+": "+e);}}
+ static void eq(int a,int b){if(a!=b)throw new AssertionError(a+" != "+b);}
+ public static void main(String[]z){
+  c("naive: two on-call both leave, zero remain",()->eq(0,WriteSkewSim.naiveBothOff(new boolean[]{true,true})));
+  c("guarded: two on-call keep one",()->eq(1,WriteSkewSim.guardedBothOff(new boolean[]{true,true})));
+  c("guarded: single doctor cannot be last to leave",()->eq(1,WriteSkewSim.guardedBothOff(new boolean[]{true})));
+  c("naive: three on-call all leave",()->eq(0,WriteSkewSim.naiveBothOff(new boolean[]{true,true,true})));
+  c("guarded: three on-call keep one",()->eq(1,WriteSkewSim.guardedBothOff(new boolean[]{true,true,true})));
+  c("guarded: nobody on call stays zero",()->eq(0,WriteSkewSim.guardedBothOff(new boolean[]{false,false})));
+  System.out.println("RESULT "+p+"/"+t);
+ }
+}`,
+    reference: `class WriteSkewSim {
+    static int naiveBothOff(boolean[] onCall) {
+        int n = onCall.length;
+        boolean[] after = onCall.clone();   // cả hai đọc cùng một snapshot gốc
+        int total = count(onCall);
+        for (int i = 0; i < n; i++) {
+            int others = total - (onCall[i] ? 1 : 0); // số người trực khác, tính trên snapshot
+            if (onCall[i] && others >= 1) after[i] = false; // thấy còn người khác nên tắt
+        }
+        return count(after);
+    }
+
+    static int guardedBothOff(boolean[] onCall) {
+        boolean[] cur = onCall.clone();
+        for (int i = 0; i < cur.length; i++) {
+            if (!cur[i]) continue;
+            int others = count(cur) - 1; // đọc lại trạng thái mới nhất (hàng khóa đã tuần tự hoá)
+            if (others >= 1) cur[i] = false; // chỉ tắt khi vẫn còn ít nhất một người
+        }
+        return count(cur);
+    }
+
+    private static int count(boolean[] a) {
+        int c = 0;
+        for (boolean b : a) if (b) c++;
+        return c;
+    }
+}`,
+    hints: [
+      'naive: mỗi người quyết định dựa trên cùng một snapshot gốc (số người trực khác = tổng - chính mình).',
+      'guarded: cập nhật mảng trực tiếp và đọc lại số người còn trực trước mỗi lần tắt; nếu là người cuối thì giữ nguyên.'
+    ],
+    explain: `Write skew xảy ra vì cả hai transaction ra quyết định trên **cùng một ảnh chụp**, nên không ai thấy thay đổi của người kia trước khi commit. {{guardedBothOff}} mô phỏng cách sửa: một hàng khóa chung (hoặc SERIALIZABLE + retry) buộc các thay đổi đi qua tuần tự, mỗi người đọc lại trạng thái mới nhất và từ chối nếu mình là người cuối. Trong PostgreSQL, SERIALIZABLE (SSI) phát hiện cấu trúc phụ thuộc nguy hiểm và abort một transaction (40001), còn {{SELECT ... FOR UPDATE}} hoặc hàng guard biến invariant thành xung đột ghi thật.`
+  }],
+  check: [
+    {q:'Write skew khác lost update ở điểm nào?',options:['Hai transaction ghi đè cùng một hàng','Hai transaction cùng đọc rồi ghi các hàng khác nhau, cùng commit làm vỡ invariant chung','Đọc dữ liệu chưa commit','Cùng đọc một hàng hai lần thấy khác nhau'],answer:1,explain:'Write skew không có ghi đè; mỗi hàng chỉ một writer nhưng invariant nhiều hàng vẫn vỡ. Lost update là cùng ghi một ô, người sau đè người trước.'},
+    {q:'Mức isolation nào của PostgreSQL chặn được write skew?',options:['READ COMMITTED','REPEATABLE READ','SERIALIZABLE (SSI)','READ UNCOMMITTED'],answer:2,explain:'Snapshot isolation (REPEATABLE READ) không suy ra được invariant nhiều hàng; SERIALIZABLE dùng SSI phát hiện và abort với 40001.'},
+    {q:'Hiện thực hóa xung đột (materialize the conflict) nghĩa là gì?',options:['Tạo thêm index trên cột balance','Đưa invariant về một hàng khóa chung để mọi transaction cùng ghi vào đó, tạo xung đột ghi thật','Tăng connection pool','Thêm CHECK constraint trên một cột'],answer:1,explain:'Guard row hoặc advisory xact lock biến invariant logic thành một điểm xung đột vật lý, giúp snapshot isolation cũng chặn được.'},
+    {q:'Khi gặp SQLSTATE 40001 ở SERIALIZABLE, ứng dụng nên làm gì?',options:['Bỏ qua lỗi','Retry toàn bộ transaction với backoff có giới hạn','Ghi đè dữ liệu','Hạ isolation xuống READ UNCOMMITTED'],answer:1,explain:'40001 là serialization failure bình thường của SSI; retry có giới hạn với backoff, phân biệt với conflict nghiệp vụ thật.'}
+  ],
+  related: ['db-002', 'db-031', 'db-058'],
+  tags: ['write-skew', 'SERIALIZABLE', 'SSI', 'PostgreSQL', 'isolation']
+},
+{
+  id: 'lesson-db-021', track: 'db', order: 21,
+  title: 'HOT update và fillfactor: vì sao UPDATE có khi không phải chạm vào index',
+  level: 'senior', minutes: 30,
+  goals: [
+    'Giải thích UPDATE trong PostgreSQL tạo tuple mới thay vì sửa tại chỗ',
+    'Mô tả điều kiện HOT (heap-only tuple) và vì sao nó không chèn entry vào index',
+    'Phân biệt fillfactor của bảng và của index',
+    'Đọc {{pg_stat_user_tables}} để biết tỷ lệ HOT và tác động của nó tới WAL, bloat'
+  ],
+  body: `**Tóm tắt:** Mỗi bảng trong PostgreSQL là một đống tuple (heap) và mỗi index là một B-tree trỏ tới tuple bằng địa chỉ TID. Khi UPDATE, PostgreSQL tạo tuple mới; nếu tuple mới nằm cùng trang và không đụng cột nào được index, nó thực hiện HOT update — chỉ ghi tuple mới kèm con trỏ tới bản cũ, KHÔNG chèn entry vào bất kỳ index nào. Ngược lại, nếu UPDATE đụng cột được index hoặc trang đã đầy, mọi index phải chèn entry mới (non-HOT), làm tăng WAL, dung lượng và bloat.
+
+### Nhắc lại: heap và TID
+Bảng dữ liệu (heap) lưu mỗi hàng là một tuple (bản ghi) trong các trang 8 KB. Mỗi tuple có địa chỉ vật lý gọi là **TID** = (số trang, offset trong trang). Index B-tree ở lá lưu cặp (giá trị khóa, TID) — nó không lưu cả hàng, chỉ lưu "khóa này nằm ở đâu". Muốn lấy dữ liệu, PostgreSQL dùng TID để đọc tuple trên heap.
+
+### UPDATE tạo tuple mới, không sửa tại chỗ
+PostgreSQL không ghi đè tuple cũ khi UPDATE (để phục vụ MVCC: transaction cũ vẫn phải thấy phiên bản cũ). Nó chèn một tuple mới, đánh dấu tuple cũ là "chết". Nếu mỗi UPDATE đều phải chèn entry mới vào mọi index thì bảng ghi nhiều sẽ phình index rất nhanh. HOT (Heap-Only Tuple: tuple chỉ nằm trong heap) sinh ra để tránh việc đó trong trường hợp phổ biến.
+
+### HOT update hoạt động thế nào
+HOT áp dụng khi cả hai điều kiện đúng:
+1. UPDATE **không** thay đổi bất kỳ cột nào đang được index tham chiếu.
+2. Tuple mới **còn chỗ** trên cùng heap page với tuple cũ (không phải chuyển sang trang khác).
+
+Khi đó PostgreSQL chỉ cần:
+- Ghi tuple mới trên cùng trang.
+- Đặt con trỏ (LP_REDIRECT) từ chỗ của tuple cũ sang tuple mới, tạo một chuỗi HOT (HOT chain).
+- **Không** chèn entry nào vào index. Mọi index vẫn trỏ tới tuple gốc; khi duyệt, PostgreSQL đi theo chuỗi HOT để tìm phiên bản hiện hành (còn visible).
+
+~~~text
+Heap page (HOT):
+[ tuple cũ (xmin=100) ] --redirect--> [ tuple mới (xmin=201) ]
+        ^                                      |
+        |                                      |
+   index trỏ tới đây (TID tuple cũ) ---------+ (đi theo chuỗi để tới bản mới)
+
+Index: KHÔNG có entry mới. Chỉ một entry, vẫn trỏ vào đầu chuỗi.
+~~~
+
+### Khi nào HOT thất bại
+- UPDATE đụng **cột được index** (ví dụ đổi {{email}} khi có index trên email): PostgreSQL buộc non-HOT, chèn entry mới vào **mọi** index của bảng.
+- Trang đã đầy (fillfactor của bảng mặc định 100, không chừa chỗ): tuple mới phải sang trang khác, không tạo được chuỗi HOT trên cùng trang, thành non-HOT.
+- UPDATE làm tuple mới lớn hơn chỗ trống còn lại.
+
+### Fillfactor: chừa chỗ cho HOT và cho index
+Fillfactor là tỷ lệ phần trăm trang được lấp đầy ban đầu.
+- **Fillfactor của bảng** (mặc định 100): giảm xuống 90 để mỗi trang còn 10% chỗ trống, nhiều UPDATE thành HOT hơn, giảm bloat index. Đổi lại bảng to hơn.
+- **Fillfactor của index B-tree** (mặc định 90): chừa chỗ trên leaf page để bớt page split khi chèn khóa mới vào giữa dải.
+Hai fillfactor này khác nhau và phục vụ mục đích khác nhau — đừng lẫn.
+
+### Chi phí khi không HOT
+Khi non-HOT, mỗi index phải:
+- Chèn một entry mới (giá trị khóa mới, TID mới).
+- Đánh dấu entry cũ là trỏ tới tuple đã chết (sẽ được VACUUM dọn).
+Điều này làm WAL tăng, index phình (cần VACUUM hoặc REINDEX), và index-only scan có thể phải đọc heap nhiều hơn. Với bảng ghi dày, tỷ lệ HOT thấp là nguyên nhân phổ biến khiến index to nhanh và truy vấn chậm dần.
+
+### SQL minh họa
+~~~sql
+-- Xem tỷ lệ HOT: n_tup_hot_upd / n_tup_upd càng cao càng tốt
+SELECT relname, n_tup_upd, n_tup_hot_upd,
+       round(100.0 * n_tup_hot_upd / nullif(n_tup_upd, 0), 1) AS hot_pct
+FROM pg_stat_user_tables
+ORDER BY n_tup_upd DESC;
+
+-- Giảm fillfactor của bảng để nhiều UPDATE thành HOT hơn (nên đặt trước khi nạp dữ liệu)
+ALTER TABLE orders SET (fillfactor = 90);
+
+-- EXPLAIN (ANALYZE, BUFFERS) để thấy Heap Fetches khi index-only scan không dùng được
+EXPLAIN (ANALYZE, BUFFERS)
+SELECT id, status FROM orders WHERE id = 42;
+~~~
+
+### Bảng so sánh HOT và non-HOT
+| | HOT update | Non-HOT update |
+|---|---|---|
+| Điều kiện | không đụng cột index và còn chỗ trên trang | đụng cột index hoặc hết chỗ |
+| Entry index mới | 0 | mỗi index một entry |
+| WAL | ít hơn | nhiều hơn |
+| Bloat index | không tăng | tăng |
+| Chuỗi HOT | có, đi theo con trỏ trên trang | không |
+
+### Cơ chế từng bước
+1. **UPDATE chạy.** PostgreSQL tìm tuple cũ qua TID.
+2. **Tính tuple mới.** Kiểm tra có cột nào thuộc index bị đổi không.
+3. **Quyết định HOT hay không.** Nếu không đụng index và trang còn chỗ thì HOT; ngược lại non-HOT.
+4. **HOT: ghi tuple mới cộng redirect, không đụng index.** Non-HOT: ghi tuple mới và chèn entry vào mọi index.
+5. **VACUUM dọn tuple chết và entry cũ.** Chuỗi HOT giúp VACUUM prune nhanh hơn (chỉ cần đi theo chuỗi trên một trang).
+
+Vì sao lại như vậy? HOT đánh đổi: giữ index gọn khi UPDATE không đổi khóa, đổi lại khi đọc phải đi theo chuỗi. Thực tế phần lớn UPDATE chỉ đổi vài cột không index (như {{updated_at}}, {{status}}), nên HOT giúp giảm tải ghi rất nhiều.
+
+### Ví dụ đời thực
+Bảng {{orders}} 50 triệu dòng, 6 index, mỗi ngày 2 triệu UPDATE đổi {{status}} và {{updated_at}}. Ban đầu không có index trên status nên nhiều UPDATE là HOT, index ổn định. Sau một sprint, có người thêm index trên {{status}} và {{updated_at}} để "cho nhanh báo cáo". Tỷ lệ HOT tụt từ khoảng 95% xuống 40%; WAL tăng gấp đôi, dung lượng index phình, truy vấn chậm dần, VACUUM không theo kịp. Điều tra {{pg_stat_user_tables}}: {{n_tup_hot_upd}}/{{n_tup_upd}} giảm mạnh đúng lúc deploy. Sửa: bỏ index không cần thiết trên cột hay bị UPDATE, hoặc chuyển bộ đếm sang bảng riêng; giảm fillfactor bảng xuống 90; thêm job VACUUM đúng nhịp. Sau đó HOT trở lại khoảng 90%, WAL giảm, p99 truy vấn ổn định.
+
+### Lỗi hay gặp
+1. **Đặt index lên cột bị UPDATE liên tục.** Triệu chứng: index phình, WAL cao. Nguyên nhân: mỗi UPDATE thành non-HOT, chèn entry mọi index. Sửa: cân nhắc bỏ index đó, hoặc chỉ index trên cột ít đổi.
+2. **Fillfactor 100 cho bảng ghi nhiều.** Triệu chứng: ít HOT, bloat nhanh. Sửa: giảm fillfactor (ví dụ 90) để chừa chỗ; đo lại tỷ lệ HOT.
+3. **Nghĩ HOT luôn nhanh hơn.** Triệu chứng: đọc phải đi theo chuỗi HOT dài. Sửa: VACUUM prune chuỗi; theo dõi độ dài chuỗi.
+4. **Nhầm fillfactor bảng với fillfactor index.** Hai tham số khác nhau; giảm cái này không ảnh hưởng cái kia.
+
+> Senior tip: theo dõi {{n_tup_hot_upd}}/{{n_tup_upd}} theo thời gian; một cú tụt đột ngột thường trùng với lúc thêm index trên cột hay bị UPDATE.
+
+### Liên hệ phỏng vấn
+- **"HOT update là gì?"** → UPDATE không đụng cột được index và tuple mới còn chỗ trên cùng trang, nên chỉ ghi tuple mới cộng redirect, không chèn entry index.
+- **"Vì sao HOT quan trọng?"** → Tránh phình index và giảm WAL khi UPDATE các cột không index; tỷ lệ HOT cao nghĩa là ghi rẻ.
+- **"Khi nào HOT thất bại?"** → Đụng cột được index, hết chỗ trên trang, hoặc tuple mới lớn hơn chỗ trống.
+- **"Fillfactor ảnh hưởng HOT ra sao?"** → Giảm fillfactor của bảng chừa chỗ cho tuple mới trên cùng trang nên nhiều HOT hơn; fillfactor của index là chuyện khác (chừa chỗ cho page split).
+`,
+  exercises: [{
+    title: 'HOT hay non-HOT: đếm entry index phải ghi',
+    prompt: `Mô phỏng chi phí UPDATE trên heap cộng B-tree index. {{isHot(indexedCols, changedCols, pageHasRoom)}} trả về true khi UPDATE là HOT: không cột nào trong {{changedCols}} nằm trong {{indexedCols}} (cột được index) và {{pageHasRoom}} bằng true (trang còn chỗ). {{indexEntryWrites(indexCount, indexedCols, changedCols, pageHasRoom)}} trả về số entry index phải ghi: 0 nếu HOT, ngược lại bằng {{indexCount}} (mỗi index một entry). {{indexedCols}} và {{changedCols}} là mảng chỉ số cột; không dùng Set.`,
+    starter: `class HotUpdateSim {
+    // HOT khi: UPDATE không đụng cột được index VÀ còn chỗ trên heap page.
+    static boolean isHot(int[] indexedCols, int[] changedCols, boolean pageHasRoom) {
+        throw new UnsupportedOperationException("TODO");
+    }
+
+    // Số entry index phải ghi: HOT = 0; non-HOT = mỗi index một entry.
+    static int indexEntryWrites(int indexCount, int[] indexedCols, int[] changedCols, boolean pageHasRoom) {
+        throw new UnsupportedOperationException("TODO");
+    }
+}`,
+    tests: `public class Main {
+ static int p=0,t=0;
+ static void c(String n,Runnable r){t++;try{r.run();p++;System.out.println("PASS "+n);}catch(Throwable e){System.out.println("FAIL "+n+": "+e);}}
+ static void eq(int a,int b){if(a!=b)throw new AssertionError(a+" != "+b);}
+ static void ok(boolean b){if(!b)throw new AssertionError("expected true");}
+ public static void main(String[]z){
+  int[] idx1={0};
+  c("HOT when non-indexed col and page has room",()->{ok(HotUpdateSim.isHot(idx1,new int[]{1},true));eq(0,HotUpdateSim.indexEntryWrites(3,idx1,new int[]{1},true));});
+  c("non-HOT when indexed col changes",()->{ok(!HotUpdateSim.isHot(idx1,new int[]{0},true));eq(3,HotUpdateSim.indexEntryWrites(3,idx1,new int[]{0},true));});
+  c("forced non-HOT when page is full",()->{ok(!HotUpdateSim.isHot(idx1,new int[]{1},false));eq(3,HotUpdateSim.indexEntryWrites(3,idx1,new int[]{1},false));});
+  c("index entry count scales with index count",()->{eq(0,HotUpdateSim.indexEntryWrites(1,idx1,new int[]{2},true));eq(5,HotUpdateSim.indexEntryWrites(5,idx1,new int[]{0},true));});
+  c("change two cols incl indexed",()->{int[] idx={1,2};eq(4,HotUpdateSim.indexEntryWrites(4,idx,new int[]{1,3},true));});
+  System.out.println("RESULT "+p+"/"+t);
+ }
+}`,
+    reference: `class HotUpdateSim {
+    static boolean isHot(int[] indexedCols, int[] changedCols, boolean pageHasRoom) {
+        for (int c : changedCols)
+            for (int ic : indexedCols)
+                if (c == ic) return false; // đụng cột được index -> buộc non-HOT
+        return pageHasRoom;              // không đụng index: HOT chỉ khi trang còn chỗ
+    }
+
+    static int indexEntryWrites(int indexCount, int[] indexedCols, int[] changedCols, boolean pageHasRoom) {
+        return isHot(indexedCols, changedCols, pageHasRoom) ? 0 : indexCount;
+    }
+}`,
+    hints: [
+      'HOT cần đồng thời: không có cột changed nào trùng cột indexed, và trang còn chỗ.',
+      'Khi HOT, không index nào phải chèn entry, nên số entry ghi bằng 0; khi non-HOT, mỗi index một entry.'
+    ],
+    explain: `HOT chỉ áp dụng khi UPDATE không đụng cột được index và tuple mới còn chỗ trên cùng trang; khi đó PostgreSQL ghi tuple mới cộng con trỏ redirect và **không** chèn entry vào index, giúp giảm WAL và bloat. Nếu đụng cột được index hoặc trang đầy, mọi index phải chèn entry mới (non-HOT). Giảm fillfactor của bảng chừa chỗ trống để nhiều UPDATE thành HOT hơn; đây là lý do thực tế khiến tỷ lệ {{n_tup_hot_upd}}/{{n_tup_upd}} là chỉ số cần theo dõi.`
+  }],
+  check: [
+    {q:'HOT update xảy ra khi nào?',options:['Khi UPDATE đổi khóa chính','Khi UPDATE không đụng cột được index và tuple mới còn chỗ trên cùng heap page','Khi INSERT thêm hàng','Khi DELETE hàng'],answer:1,explain:'HOT cần đồng thời hai điều kiện: không đổi cột được index và tuple mới nằm cùng trang.'},
+    {q:'Vì sao HOT update có lợi?',options:['Không phải ghi entry mới vào mọi index nên giảm WAL và bloat','Làm query nhanh hơn nhờ thêm index','Cho phép đọc dữ liệu chưa commit','Tự động giảm số kết nối'],answer:0,explain:'HOT giữ index gọn, giảm WAL và bloat; đổi lại khi đọc phải đi theo chuỗi HOT.'},
+    {q:'UPDATE đổi một cột có index thì sao?',options:['Vẫn là HOT','Buộc non-HOT: mỗi index phải chèn entry mới, tuple cũ thành dead','PostgreSQL bỏ qua index','PostgreSQL tự động REINDEX'],answer:1,explain:'Đụng cột được index khiến mọi index phải cập nhật, không thể HOT.'},
+    {q:'Fillfactor của bảng ảnh hưởng HOT thế nào?',options:['Không liên quan','Giảm fillfactor chừa chỗ trống trên heap page nên nhiều UPDATE thành HOT hơn','Tăng fillfactor giúp HOT nhiều hơn','Fillfactor chỉ áp dụng cho index'],answer:1,explain:'Fillfactor của bảng (mặc định 100) giảm xuống 90 chừa chỗ cho tuple mới cùng trang; fillfactor của index là tham số khác (chừa chỗ cho page split).'}
+  ],
+  related: ['db-001', 'db-013', 'db-040'],
+  tags: ['HOT-update', 'fillfactor', 'PostgreSQL', 'B-tree', 'VACUUM']
+},
 );

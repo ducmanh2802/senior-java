@@ -2854,6 +2854,8 @@ window.DATA_INDEX = {
     {"id":"lesson-db-017","track":"db","order":17,"title":"Chống cache stampede bằng single-flight: một CompletableFuture cho mỗi key","level":"senior","minutes":40},
     {"id":"lesson-db-018","track":"db","order":18,"title":"Redis bên trong: RAM, single thread, kiểu dữ liệu, TTL, persistence","level":"senior","minutes":40},
     {"id":"lesson-db-019","track":"db","order":19,"title":"Xây mini key-value store: BlockingQueue lệnh, TTL, INCR atomic, test xác định","level":"senior","minutes":45},
+    {"id":"lesson-db-020","track":"db","order":20,"title":"Write skew và SERIALIZABLE: vì sao REPEATABLE READ chưa đủ","level":"senior","minutes":30},
+    {"id":"lesson-db-021","track":"db","order":21,"title":"HOT update và fillfactor: vì sao UPDATE có khi không phải chạm vào index","level":"senior","minutes":30},
     {"id":"lesson-jvm-001","track":"jvm","order":1,"title":"Heap và bốn loại reference: vì sao static Map giữ object mãi mãi","level":"senior","minutes":30},
     {"id":"lesson-jvm-002","track":"jvm","order":2,"title":"GC mark-and-sweep từ con số 0: reachability, tri-color và vì sao cần compact","level":"senior","minutes":35},
     {"id":"lesson-jvm-003","track":"jvm","order":3,"title":"Class loading và static init: thứ tự khởi tạo, holder idiom và bẫy classloader","level":"senior","minutes":30},
