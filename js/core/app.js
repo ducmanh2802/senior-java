@@ -378,21 +378,27 @@
   const MANIFEST = window.DATA_MANIFEST || { groups: {}, routes: {}, prefetch: [], needsFor: () => [] };
   const groupState = {};   // group -> Promise (pending or resolved); dropped again if a file failed
   const groupDone = {};    // group -> true once loaded
-  function loadScript(src) {
+  function loadScript(src, fallback) {
     return new Promise(resolve => {
       const s = document.createElement('script');
       s.src = src;
       s.async = false;
       s.onload = () => resolve(true);
-      s.onerror = () => { console.error('Không tải được ' + src); resolve(false); };
+      s.onerror = () => {
+        if (fallback) { loadScript(fallback).then(resolve); return; }   // CDN data: second jsDelivr host
+        console.error('Không tải được ' + src); resolve(false);
+      };
       (document.body || document.head).appendChild(s);
     });
   }
+  // data files come from jsDelivr when deployed (js/core/data-base.js); '' = same origin (local runs)
+  const dataUrl = f => (window.DATA_BASE || '') + 'js/data/' + f;
+  const dataFallback = f => (window.DATA_BASE_FALLBACK ? window.DATA_BASE_FALLBACK + 'js/data/' + f : null);
   function loadGroup(g) {
     if (groupState[g]) return groupState[g];
     const files = MANIFEST.groups[g];
     if (!files) { console.warn('App.need: unknown data group ' + g); return Promise.resolve(); }
-    groupState[g] = Promise.all(files.map(f => loadScript('js/data/' + f))).then(oks => {
+    groupState[g] = Promise.all(files.map(f => loadScript(dataUrl(f), dataFallback(f)))).then(oks => {
       if (oks.every(Boolean)) groupDone[g] = true; else delete groupState[g];   // retry on next need
       try { window.dispatchEvent(new CustomEvent('datagroupload', { detail: g })); } catch (e) { console.error(e); }
     });

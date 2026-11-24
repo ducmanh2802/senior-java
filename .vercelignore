@@ -7,3 +7,12 @@ docs/
 scripts/
 AGENTS.md
 CHANGELOG.md
+
+# heavy data is served by jsDelivr from the public GitHub repo, pinned to DATA_SHA (js/core/data-base.js, 2026-11-24).
+# Only the files index.html loads directly stay in the deploy.
+js/data/*
+!js/data/topics.js
+!js/data/roadmap.js
+!js/data/path.js
+js/i18n/*
+!js/i18n/manifest.js

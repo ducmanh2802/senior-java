@@ -65,7 +65,7 @@
     const files = window.I18N_FILES || [];
     loading = Promise.all(files.map(name => new Promise(resolve => {
       const s = document.createElement('script');
-      s.src = 'js/i18n/' + name + '.en.js';
+      s.src = (window.DATA_BASE || '') + 'js/i18n/' + name + '.en.js';   // jsDelivr when deployed (js/core/data-base.js)
       s.onload = s.onerror = resolve;          // a missing file must not block the switch
       document.head.appendChild(s);
     })));
