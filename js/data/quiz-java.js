@@ -6823,6 +6823,393 @@ switch (s) { case Circle c -> ...; case Shape s -> ...; }
 > Senior tip: compiler báo lỗi "does not cover all possible input values" chính xác subtype nào bị thiếu — rất hữu ích khi maintain sealed hierarchy.`
 },
 {
+  id: 'qz-modern-051', topic: 'modern',
+  q: `Record {{Point}} có component {{List<String> tags}}. Đoạn code sau in ra gì?
+~~~java
+record Point(int x, int y, List<String> tags) {}
+List<String> ts = new ArrayList<>(List.of("a", "b"));
+Point p = new Point(1, 2, ts);
+ts.add("c");
+System.out.println(p.tags());
+~~~`,
+  options: [
+    `[a, b] vì record tự defensive copy component`,
+    `[a, b, c] vì record chỉ lưu tham chiếu, không copy tự động`,
+    `Lỗi biên dịch: record không cho phép component kiểu List`,
+    `Ném UnsupportedOperationException vì tags() trả về unmodifiableList`
+  ],
+  answer: 1,
+  explain: `**Đáp án đúng: [a, b, c] vì record chỉ lưu tham chiếu, không copy tự động.**
+
+### Vì sao đúng
+Record (Java 16) là **transparent carrier** cho dữ liệu: các component là {{private final}} nhưng **chỉ final ở cấp tham chiếu**. Nếu component là object mutable như {{ArrayList}}, record **không tự defensive copy** — nó chỉ gán tham chiếu. Việc caller sửa list gốc ({{ts.add("c")}}) sẽ làm thay đổi nội dung record vì cùng một object {{ArrayList}} được chia sẻ.
+
+### Cách sửa
+Trong **compact constructor** phải tự copy:
+~~~java
+record Point(int x, int y, List<String> tags) {
+    Point {
+        tags = List.copyOf(tags); // defensive copy, cũng chặn null
+    }
+}
+~~~
+Sau khi copy, list trong record là bản snapshot bất biến ({{List.copyOf}} trả về list không sửa được).
+
+### Vì sao các phương án sai
+- **Record tự defensive copy**: sai, record chỉ gán tham chiếu; immutable là **shallow** (nông).
+- **Lỗi biên dịch**: record cho phép mọi kiểu component, kể cả mutable.
+- **UnsupportedOperationException**: accessor {{tags()}} trả về field thẳng, không bọc unmodifiableList.
+
+> Senior tip: record chỉ bất biến nông. Với component kiểu collection/array, **luôn defensive copy trong compact constructor** ({{List.copyOf}}, {{Arrays.copyOf}}, {{new ArrayList<>(...)}}). Bug thật: cache key là record chứa List, caller sửa list gốc → hashCode/equals của record thay đổi → cache miss hoặc corruption.`
+},
+{
+  id: 'qz-modern-052', topic: 'modern', multi: true,
+  q: `Sealed interface {{Expr}} permits {{Const}}, {{Add}}, {{Mul}}. Switch expression sau có ý nghĩa gì? (Chọn 2)
+~~~java
+sealed interface Expr permits Const, Add, Mul {}
+record Const(int value) implements Expr {}
+record Add(Expr left, Expr right) implements Expr {}
+record Mul(Expr left, Expr right) implements Expr {}
+
+int eval(Expr e) {
+    return switch (e) {
+        case Const c -> c.value();
+        case Add a -> eval(a.left()) + eval(a.right());
+        case Mul m -> eval(m.left()) * eval(m.right());
+    };
+}
+~~~`,
+  options: [
+    `Switch exhaustive nên không cần default; thêm subtype mới vào Expr sẽ làm code này không biên dịch được`,
+    `Switch dùng pattern matching cho record: {{case Const c}} bind component {{value()}} vào biến {{c}}`,
+    `Switch không exhaustive vì thiếu default; thêm subtype mới vẫn biên dịch được`,
+    `Switch dùng {{instanceof}} truyền thống chứ không phải pattern matching`,
+    `Switch dùng deconstruction: {{case Add(Expr l, Expr r)}} tự unpack component`
+  ],
+  answer: [0, 1],
+  explain: `**Đáp án đúng: switch exhaustive không cần default, và dùng pattern matching cho record.**
+
+### Vì sao đúng
+- **Exhaustiveness**: {{Expr}} là sealed interface. Compiler biết tập subtype hữu hạn ({{Const}}, {{Add}}, {{Mul}}). Switch cover hết ba case → **exhaustive**, **không cần default**. Nếu thêm subtype mới (ví dụ {{Div}}) vào {{permits}}, switch này sẽ **báo lỗi biên dịch** "does not cover all possible input values" — đây là lợi ích chính của sealed.
+- **Record pattern**: {{case Const c}} là **record pattern** (Java 21). Nó vừa kiểm tra kiểu, vừa deconstruct component: biến {{c}} trỏ tới record {{Const}}, và {{c.value()}} truy cập component. Tương tự {{case Add a}} bind {{a.left()}}, {{a.right()}}.
+
+### Vì sao các phương án sai
+- **Thiếu default**: sealed type cover hết subtype là exhaustive, default chỉ làm mất compile-time safety.
+- **Instanceof truyền thống**: đây là **pattern matching cho switch** (Java 21), không dùng instanceof riêng lẻ.
+- **Deconstruction syntax {{case Add(Expr l, Expr r)}}**: Java 21 **chưa hỗ trợ** cú pháp deconstruction trực tiếp trong pattern (khác Scala/Kotlin). Phải dùng {{case Add a}} rồi truy cập {{a.left()}}.
+
+> Senior tip: sealed + pattern matching switch = "algebraic data type" nhẹ trong Java. Khi thêm operation mới (ví dụ {{toString}}, {{simplify}}), chỉ cần viết switch mới; compiler bảo đảm không quên subtype nào.`
+},
+{
+  id: 'qz-modern-053', topic: 'modern',
+  q: `Đoạn code sau (Java 21) in ra gì?
+~~~java
+Object obj = List.of(1, 2, 3);
+String result = switch (obj) {
+    case null -> "null";
+    case List<Integer> l when l.size() > 2 -> "list>2:" + l.getFirst();
+    case List<?> l -> "list:" + l.size();
+    default -> "other";
+};
+System.out.println(result);
+~~~`,
+  options: [
+    `list>2:1`,
+    `list:3`,
+    `list>2:3`,
+    `Ném MatchException vì List<Integer> không khớp lúc runtime do erasure`
+  ],
+  answer: 0,
+  explain: `**Đáp án đúng: list>2:1.**
+
+### Vì sao đúng
+Pattern matching cho switch (Java 21) đánh giá case **theo thứ tự** từ trên xuống:
+1. {{case null}}: {{obj}} không null → bỏ qua.
+2. {{case List<Integer> l when l.size() > 2}}: **pattern type** là {{List<Integer>}}. Do **erasure**, lúc runtime kiểu generic bị xoá, switch chỉ kiểm tra {{obj instanceof List}}. Vì {{obj}} là {{List}} và {{size()=3 > 2}} → guard true → case khớp. Biến {{l}} bind vào {{obj}} (ép kiểuunchecked an toàn vì đã kiểm tra instanceof List). {{l.getFirst()}} trả về **1** (phần tử đầu).
+
+### Vì sao các phương án sai
+- **list:3**: case {{List<Integer>...}} đứng trước và guard true nên được chọn; case {{List<?>}} không được thử.
+- **list>2:3**: {{getFirst()}} là phần tử đầu (1), không phải size.
+- **MatchException**: erasure không làm guard fail; switch dùng {{instanceof List}} (raw type) cho pattern type có generic. Chỉ khi guard false cho cả hai List case mới rơi xuống default.
+
+> Senior tip: thứ tự case quan trọng: case cụ thể/guard trước, case chung sau. Với generic pattern, erasure nghĩa là {{List<Integer>}} và {{List<String>}} **không phân biệt được** lúc runtime — chỉ dùng khi logic không phụ thuộc element type.`
+},
+{
+  id: 'qz-modern-054', topic: 'modern',
+  q: `Text block sau cho kết quả gì?
+~~~java
+String sql = """
+    SELECT id, name
+    FROM users
+    WHERE status = 'ACTIVE'
+      AND created_at > '2024-01-01'
+    """;
+System.out.println(sql.length());
+~~~`,
+  options: [
+    `83`,
+    `98`,
+    `102`,
+    `107`
+  ],
+  answer: 0,
+  explain: `**Đáp án đúng: 83.**
+
+### Tính độ dài text block (3 quy tắc)
+1. Dòng mở {{"""}} chỉ chứa khoảng trắng rồi xuống dòng → xuống dòng đó **không** vào chuỗi.
+2. **Incidental indentation**: compiler đo thụt đầu của **mọi dòng nội dung và dòng đóng {{"""}}**, lấy **min**, cắt bỏ bấy nhiêu ký tự ở đầu mỗi dòng. Ở đây mọi dòng đều thụt 4 space → cắt 4 space mỗi dòng.
+3. Mỗi dòng nội dung **giữ dấu xuống dòng** của nó. Dòng đóng {{"""}} trên dòng riêng → ngay trước nó có xuống dòng, và xuống dòng đó **được tính**.
+
+### Đếm từng dòng (sau khi cắt 4 space)
+~~~text
+SELECT id, name           -> 15 ký tự
+newline                   -> 1
+FROM users                -> 10 ký tự
+newline                   -> 1
+WHERE status = 'ACTIVE'   -> 22 ký tự
+newline                   -> 1
+  AND created_at > '2024-01-01'  -> 32 ký tự (cắt 4 space đầu, vẫn còn 2 space trước AND)
+newline                   -> 1
+tổng                      -> 15+1+10+1+22+1+32+1 = 83
+~~~
+
+### Vì sao các phương án sai
+- **98/102**: quên newline cuối hoặc đếm sai indentation.
+- **107**: không cắt incidental indentation.
+
+> Senior tip: dùng {{stripIndent()}} nếu muốn tự loại indentation, {{translateEscapes()}} để xử lý {{\\n}}, {{\\t}}. Luôn dùng {{PreparedStatement}} cho SQL, không nội suy biến vào text block.`
+},
+{
+  id: 'qz-modern-055', topic: 'modern', multi: true,
+  q: `Biến {{var}} có thể dùng ở đâu? (Chọn 3)
+~~~java
+var list = new ArrayList<String>();           // 1
+for (var s : list) { }                        // 2
+try (var in = new FileInputStream("x")) { }  // 3
+var x; x = 1;                                 // 4
+var method = () -> "hi";                      // 5
+~~~`,
+  options: [
+    `Khai báo biến cục bộ có initializer (1, 2, 3)`,
+    `Khai báo không initializer, gán sau (4)`,
+    `Biến điều khiển enhanced for (2)`,
+    `Resource try-with-resources (3)`,
+    `Biến cho lambda expression (5)`,
+    `Field của class, tham số method, kiểu trả về method`
+  ],
+  answer: [0, 2, 3],
+  explain: `**Đáp án đúng: biến cục bộ có initializer, enhanced for, try-with-resources.**
+
+### Vì sao đúng
+{{var}} (Java 10) chỉ dùng cho **biến cục bộ có initializer** (compiler suy kiểu từ vế phải). Các chỗ hợp lệ:
+- {{var list = new ArrayList<String>()}}: initializer là new expression.
+- {{for (var s : list)}}: biến điều khiển enhanced for (Java 10).
+- {{try (var in = ...)}}: resource trong try-with-resources (Java 11).
+
+### Vì sao các phương án sai
+- **Khai báo không initializer (4)**: {{var x; x = 1;}} lỗi "cannot use 'var' on variable without initializer".
+- **Lambda expression (5)**: {{var method = () -> "hi"}} lỗi "lambda expression needs an explicit target-type" (lambda không có kiểu tường minh).
+- **Field, tham số, return type**: {{var}} **không** dùng được ở đây (Java 10 chỉ dành cho local variable).
+
+> Senior tip: {{var}} làm code gọn khi kiểu rõ từ vế phải ({{var map = new HashMap<>()}}). Tránh khi kiểu không rõ ({{var x = getData()}} — reviewer phải tìm định nghĩa getData). Không thay đổi ngữ nghĩa: {{var}} vẫn là static typing, chỉ compiler suy kiểu thay bạn.`
+},
+{
+  id: 'qz-modern-056', topic: 'modern',
+  q: `Đoạn code sau in ra gì?
+~~~java
+List<Integer> nums = List.of(1, 2, 3, 4, 5, 6);
+var result = nums.stream()
+    .collect(Collectors.teeing(
+        Collectors.filtering(n -> n % 2 == 0, Collectors.toList()),
+        Collectors.filtering(n -> n % 2 != 0, Collectors.toList()),
+        (evens, odds) -> Map.of("even", evens, "odd", odds)
+    ));
+System.out.println(result);
+~~~`,
+  options: [
+    `{even=[2, 4, 6], odd=[1, 3, 5]}`,
+    `{{even=[1, 3, 5], odd=[2, 4, 6]}}`,
+    `Lỗi biên dịch: teeing cần 2 collector cùng kiểu`,
+    `{{even=[2, 4], odd=[1, 3, 5]}} vì 6 bị loại`
+  ],
+  answer: 0,
+  explain: `**Đáp án đúng: {even=[2, 4, 6], odd=[1, 3, 5]}.**
+
+### {{Collectors.teeing}} là gì
+{{teeing(downstream1, downstream2, merger)}} (Java 12) cho phép **hai downstream collector** xử lý **cùng một stream** song song, rồi gộp kết quả bằng {{merger}}. Mỗi phần tử stream đi qua **cả hai** downstream.
+
+### Bấm từng bước
+- Downstream 1: {{filtering(n -> n % 2 == 0, toList())}} → giữ số chẵn: [2, 4, 6].
+- Downstream 2: {{filtering(n -> n % 2 != 0, toList())}} → giữ số lẻ: [1, 3, 5].
+- Merger: {{(evens, odds) -> Map.of("even", evens, "odd", odds)}} → 
+~~~text
+{even=[2,4,6], odd=[1,3,5]}
+~~~.
+
+### Vì sao các phương án sai
+- **Đảo even/odd**: predicate chẵn là {{n % 2 == 0}}.
+- **Lỗi biên dịch**: hai downstream có kiểu khác nhau hoàn toàn được ({{List<Integer>}} và {{List<Integer>}} ở đây trùng, nhưng có thể {{toSet()}} + {{counting()}}...).
+- **6 bị loại**: 6 chia hết cho 2 → chẵn.
+
+> Senior tip: {{teeing}} tránh phải stream hai lần hoặc dùng {{collectAndThen}} phức tạp. Downstream thường dùng: {{filtering}}, {{mapping}}, {{groupingBy}}, {{partitioningBy}}, {{counting}}, {{summingInt}}. Merger nên là function thuần (không side effect).`
+},
+{
+  id: 'qz-modern-057', topic: 'modern',
+  q: `Java 16 thêm {{Stream.toList()}} trả về list không sửa được. Code sau in ra gì?
+~~~java
+List<String> a = Stream.of("x", "y").toList();
+List<String> b = Stream.of("x", "y").collect(Collectors.toList());
+List<String> c = Stream.of("x", "y").collect(Collectors.toUnmodifiableList());
+a.add("z");
+b.add("z");
+c.add("z");
+System.out.println(a.size() + " " + b.size() + " " + c.size());
+~~~`,
+  options: [
+    `2 3 3`,
+    `2 3 2`,
+    `3 3 3`,
+    `Ném UnsupportedOperationException ở a.add, b.add, c.add theo thứ tự`
+  ],
+  answer: 1,
+  explain: `**Đáp án đúng: 2 3 2.**
+
+### Ba cách collect, ba hành vi khác nhau
+| Cách | Sửa được? | Cho null? | Ghi chú |
+|---|---|---|---|
+| {{Stream.toList()}} (Java 16) | **Không** (UOE) | **Có** | Trả về list bất biến mới, giống {{List.copyOf}} nhưng cho null. |
+| {{Collectors.toList()}} | **Có** (thực tế {{ArrayList}}) | **Có** | **Không đảm bảo** kiểu trả về; hiện tại là {{ArrayList}}. |
+| {{Collectors.toUnmodifiableList()}} (Java 10) | **Không** (UOE) | **Không** (NPE) | Cấm null, trả về list bất biến. |
+
+### Bấm từng dòng
+- {{a.add("z")}}: {{toList()}} bất biến → **UOE**, size vẫn 2.
+- {{b.add("z")}}: {{toList()}} trả về {{ArrayList}} → **thành công**, size 3.
+- {{c.add("z")}}: {{toUnmodifiableList()}} bất biến → **UOE**, size 2.
+
+### Vì sao các phương án sai
+- **2 3 3**: {{toUnmodifiableList()}} không cho sửa.
+- **3 3 3**: {{toList()}} không phải {{ArrayList}}.
+- **UOE cả ba**: {{Collectors.toList()}} thực tế cho phép add.
+
+> Senior tip: refactor {{collect(Collectors.toList())}} → {{.toList()}} có thể **phá code** nếu downstream gọi {{add}}/{{sort}}/{{removeIf}}. Dùng {{Collectors.toCollection(ArrayList::new)}} khi thật sự cần list sửa được.`
+},
+{
+  id: 'qz-modern-058', topic: 'modern', multi: true,
+  q: `Optional dùng đúng hoặc sai? (Chọn 3)
+~~~java
+Optional<String> opt = Optional.ofNullable(getName()); // có thể null
+
+// 1
+String s1 = opt.orElse(getDefault());             // getDefault() tốn kém
+// 2
+String s2 = opt.orElseGet(() -> getDefault());    // getDefault() tốn kém
+// 3
+opt.ifPresent(name -> System.out.println(name));
+// 4
+String s3 = opt.map(String::trim).orElseThrow();
+// 5
+if (opt.isPresent()) { String s = opt.get(); }
+~~~`,
+  options: [
+    `Dòng 1: getDefault() luôn được gọi dù opt có giá trị (eager)`,
+    `Dòng 2: getDefault() chỉ được gọi khi opt rỗng (lazy)`,
+    `Dòng 3: ifPresent an toàn, không ném exception khi opt rỗng`,
+    `Dòng 4: orElseThrow() ném IllegalStateException khi opt rỗng`,
+    `Dòng 5: an toàn và khuyến nghị thay vì orElseThrow`,
+    `Dòng 5: race condition giữa isPresent và get trong môi trường đa luồng`
+  ],
+  answer: [0, 1, 2],
+  explain: `**Đáp án đúng: 1 eager, 2 lazy, 3 an toàn.**
+
+### Phân biệt orElse vs orElseGet
+- {{orElse(value)}}: **eager** — tham số {{value}} được **đánh giá ngay** trước khi gọi method, dù {{opt}} có giá trị hay không. Dùng cho giá trị rẻ (hằng số, field).
+- {{orElseGet(Supplier)}}: **lazy** — {{Supplier}} chỉ chạy khi {{opt}} **rỗng**. Dùng cho tính toán tốn kém (DB call, JSON parse).
+
+### Các dòng còn lại
+- **3. {{ifPresent}}**: consumer chỉ chạy khi có giá trị; rỗng thì no-op — **an toàn**, không exception.
+- **4. {{map}} + {{orElseThrow}}**: pipeline đúng, nhưng phương án ghi nhầm loại exception — {{orElseThrow()}} ném {{NoSuchElementException}}, không phải {{IllegalStateException}}.
+- **5. {{isPresent}} + {{get()}}**: **anti-pattern**. Trong code đơn luồng chạy được, nhưng **không nguyên tử** — giữa {{isPresent}} và {{get}} state có thể đổi (đa luồng) hoặc logic phức tạp dễ sai. Khuyến nghị: {{opt.map(...).orElse(...)}} hoặc {{orElseThrow()}}.
+
+> Senior tip: Optional thiết kế làm **kiểu trả về**, không làm field entity, tham số method, hay phần tử collection. Tránh {{ifPresent(x -> ...)}} rồi {{else throw}} — viết {{orElseThrow(() -> new BadRequestException("missing"))}} rõ ràng hơn.`
+},
+{
+  id: 'qz-modern-059', topic: 'modern',
+  q: `Service Java 21 dùng virtual thread cho mỗi request HTTP. Mỗi request gọi JDBC (blocking I/O 50 ms) trong khối {{synchronized}}. Máy 8 core, tải 10.000 request/giây. Throughput quan sát chỉ ~160 req/s. Nguyên nhân?
+~~~java
+synchronized void handleRequest(Request req) {
+    Connection c = pool.getConnection();  // HikariCP
+    try (var ps = c.prepareStatement(sql)) {
+        ps.executeQuery();  // blocking ~50ms
+    }
+}
+~~~`,
+  options: [
+    `Virtual thread không hỗ trợ JDBC, phải dùng R2DBC reactive`,
+    `HikariCP giới hạn connection pool 8 nên chỉ 8 request chạy cùng lúc`,
+    `{{synchronized}} quanh blocking I/O làm virtual thread **pin** vào carrier thread (JDK 21-23), chỉ 8 carrier → throughput ~8 * (1000/50) = 160 req/s`,
+    `Virtual thread stack 1 MB nên 10.000 thread hết heap`
+  ],
+  answer: 2,
+  explain: `**Đáp án đúng: pinning do {{synchronized}} trên JDK 21-23.**
+
+### Virtual thread và carrier thread
+Virtual thread chạy trên pool nhỏ **carrier thread** (mặc định = số core = 8). Khi virtual thread gặp blocking I/O (socket, {{Thread.sleep}}, {{Lock}}), nó **unmount** để carrier chạy thread khác. **Ngoại lệ**: JDK 21-23, nếu virtual thread đang giữ **monitor của {{synchronized}}** (hoặc trong native frame) thì nó **không unmount được** → carrier bị **pin** (giữ chặt) suốt 50 ms.
+
+### Tính toán
+8 carrier × (1000 ms / 50 ms) = 160 request/giây — đúng quan sát.
+
+### Sửa
+1. Thay {{synchronized}} bằng {{ReentrantLock}} (không pin).
+2. Lên **JDK 24+** (JEP 491): {{synchronized}} không còn pin trong hầu hết trường hợp.
+3. Phát hiện: JFR event {{jdk.VirtualThreadPinned}} hoặc {{-Djdk.tracePinnedThreads=full}}.
+
+### Vì sao các phương án sai
+- **Không hỗ trợ JDBC**: JDBC blocking I/O chạy tốt trên virtual thread; vấn đề ở lock.
+- **HikariCP 8 connection**: pool size độc lập với carrier count; pinning mới là nút cổ chai.
+- **Stack 1 MB**: virtual thread stack trên heap, chỉ vài KB, 10.000 thread rất nhẹ.
+
+> Senior tip: connection pool vẫn là giới hạn thật. 10.000 virtual thread cùng chờ HikariCP 20 connection thì throughput vẫn bị giới hạn bởi 20 connection. Hãy chỉnh pool và timeout cho phù hợp.`
+},
+{
+  id: 'qz-modern-060', topic: 'modern', multi: true,
+  q: `Virtual thread (Java 21) — phát biểu nào đúng? (Chọn 3)
+~~~java
+// A
+Executors.newVirtualThreadPerTaskExecutor();
+
+// B
+Executors.newFixedThreadPool(100, Thread.ofVirtual().factory());
+
+// C
+Thread.startVirtualThread(() -> { /* I/O */ });
+
+// D
+ThreadLocal<String> tl = new ThreadLocal<>();
+tl.set("data");
+Thread.startVirtualThread(() -> System.out.println(tl.get()));
+~~~`,
+  options: [
+    `A tạo executor không pool: mỗi submit một virtual thread mới, phù hợp I/O-bound`,
+    `B tạo pool 100 virtual thread cố định, tốt cho kiểm soát đồng thời`,
+    `C là cách gọn nhất chạy một virtual thread đơn lẻ (fire-and-forget)`,
+    `D: ThreadLocal hoạt động bình thường trên virtual thread, in ra "data"`,
+    `Virtual thread phù hợp cho CPU-bound (mã hoá, nén) vì nhẹ hơn platform thread`,
+    `Giới hạn đồng thời nên đặt ở Semaphore/connection pool, không phải giới hạn số virtual thread`
+  ],
+  answer: [0, 2, 5],
+  explain: `**Đáp án đúng: A không pool, C fire-and-forget, giới hạn tại tài nguyên.**
+
+### Phân tích từng phương án
+- **A. {{newVirtualThreadPerTaskExecutor()}}**: **đúng**. Trả về {{ExecutorService}} mà **không pool** thread — mỗi {{submit}} tạo một virtual thread mới, chạy xong thì huỷ. Đây là pattern khuyến nghị cho I/O-bound (rất rẻ, không cần reuse thread).
+- **B. {{newFixedThreadPool(100, Thread.ofVirtual().factory())}}**: **sai**. Tạo pool **cố định 100 virtual thread** — vô nghĩa vì virtual thread được thiết kế để **không pool**. Pool giới hạn throughput xuống 100 khi I/O-bound có thể xử lý hàng nghìn.
+- **C. {{Thread.startVirtualThread()}}**: **đúng**. Cách ngắn gọn nhất khởi chạy một virtual thread (fire-and-forget), không cần executor.
+- **D. ThreadLocal in "data"**: **sai**. {{ThreadLocal}} của thread cha **không tự kế thừa** sang virtual thread con. Virtual thread có {{ThreadLocal}} riêng (rỗng ban đầu). {{tl.get()}} trả về {{null}}.
+- **CPU-bound**: **sai**. Virtual thread không thêm CPU core; CPU-bound vẫn bị giới hạn bởi số core. Platform thread pool cỡ bằng số core vẫn tốt hơn.
+- **Giới hạn tại tài nguyên**: **đúng**. Với virtual thread, số thread không còn là giới hạn. Hãy dùng {{Semaphore}}, HikariCP {{maximumPoolSize}}, bulkhead để bảo vệ DB/API đối tác.
+
+> Senior tip: trên JDK 21-23, luôn kiểm tra pinning ({{synchronized}} quanh I/O) bằng JFR {{jdk.VirtualThreadPinned}} trước khi rollout. ThreadLocal nặng trên hàng triệu virtual thread tốn bộ nhớ — JDK 25 có {{ScopedValue}} chính thức làm phương án thay thế.`
+},
+{
   id: 'qz-kotlin-021', topic: 'kotlin',
   q: `Kotlin có toán tử safe call {{?.}} và Elvis {{?:}}. Đoạn sau in ra gì?
 ~~~kotlin
