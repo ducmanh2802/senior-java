@@ -1813,5 +1813,242 @@ Lỗi hay gặp:
   ],
   related: ['concurrency-005', 'concurrency-013', 'concurrency-037'],
   tags: ['CompletableFuture', 'fan-out', 'timeout', 'fallback', 'virtual threads'],
+},
+{
+  id: 'lesson-modern-008',
+  track: 'modern',
+  order: 8,
+  title: 'Result type bằng sealed interface thay cho ném exception',
+  level: 'senior',
+  minutes: 25,
+  goals: [
+    'Mô hình hoá thành công/thất bại bằng sealed interface thay vì ném exception',
+    'Viết map/flatMap/getOrElse cho Result',
+    'Biết khi nào dùng exception, khi nào dùng Result',
+  ],
+  body: `**Tóm tắt:** Thay vì ném exception để biểu đạt lỗi nghiệp vụ có thể dự đoán (sai PIN, số dư không đủ), dùng sealed interface Result<T,E> với Ok(T) và Err(E). Caller buộc phải xử lý cả hai nhánh qua pattern matching; code rõ ràng hơn và tránh chi phí stack trace.
+
+### Vì sao không ném exception
+Exception sinh ra cho lỗi bất thường (I/O, bug). Dùng exception cho luồng nghiệp vụ thường (sai mật khẩu) làm control flow khó đọc, tốn chi phí tạo stack trace và caller dễ quên catch.
+
+### Sealed Result
+~~~java
+sealed interface Result<T, E> permits Ok, Err {}
+record Ok<T, E>(T value) implements Result<T, E> {}
+record Err<T, E>(E error) implements Result<T, E> {}
+~~~
+Mỗi hàm trả về Result thay vì throw. Caller dùng pattern matching:
+~~~java
+switch (r) {
+  case Ok(var v) -> handle(v);
+  case Err(var e) -> handleErr(e);
 }
+~~~
+
+### map/flatMap
+~~~java
+default <U> Result<U, E> map(java.util.function.Function<T, U> f) {
+  return switch (this) {
+    case Ok(var v) -> new Ok<>(f.apply(v));
+    case Err(var e) -> new Err<>(e);
+  };
+}
+~~~
+flatMap cho phép nối nhiều bước có thể fail mà không lồng if.
+
+### Khi nào dùng cái nào
+- Exception: lỗi hệ thống, bug, điều kiện không thể xảy ra trong luồng bình thường.
+- Result: lỗi nghiệp vụ caller phải xử lý (validation, not found, conflict).
+
+### Ví dụ đời thực: chuyển tiền
+Một service chuyển tiền trả Result<Receipt, TransferError>. Caller xử lý Err (số dư không đủ, tài khoản bị khoá) ngay tại chỗ, không catch exception. Log/monitor vẫn dùng exception cho lỗi DB.
+
+### So sánh với Optional
+Optional biểu đạt "có/không có", Result biểu đạt "thành công/thất bại có lý do". Optional không mang lý do lỗi, Result mang E.
+
+### Chi phí và hiệu năng
+Ném exception tạo stack trace tốn kém; Result chỉ tạo object. Với luồng nghiệp vụ thường xuyên fail (sai PIN), Result hiệu quả hơn nhiều.
+
+### Pitfall
+- Lạm dụng Result cho mọi thứ làm code dài dòng.
+- Quên xử lý Err (compiler sealed giúp nhưng vẫn có thể default nuốt).
+- Mất thông tin stack trace khi cần debug: log tại chỗ.
+
+### map/getOrElse chi tiết
+map chỉ áp dụng hàm khi Ok; Err đi qua nguyên vẹn. getOrElse trả fallback khi Err. Có thể thêm flatMap để nối nhiều bước có thể fail mà không lồng if. Ví dụ validate email rồi lưu DB: mỗi bước trả Result, flatMap nối chúng.
+
+### Interview tip mở rộng
+Khi phỏng vấn, nêu rõ trade-off: exception cho bất thường, Result cho nghiệp vụ; sealed giúp compiler kiểm tra exhaustive.
+
+> Senior tip: Result làm API rõ ràng; exception cho bất thường. Kết hợp sealed + pattern matching giúp compiler kiểm tra đủ nhánh.
+
+### Liên hệ phỏng vấn
+Interviewer hỏi: exception vs Result, sealed interface, pattern matching, map/flatMap. Bài tập dưới đây bắt bạn implement Result với map/getOrElse.`,
+  exercises: [
+    {
+      title: 'Result sealed với map và getOrElse',
+      prompt: `Implement sealed interface {{Result<T,E>}} với record {{Ok}}/{{Err}}, method {{map}}, {{getOrElse}}.`,
+      starter: `sealed interface Result<T, E> permits Ok, Err {
+    default <U> Result<U, E> map(java.util.function.Function<T, U> f) { throw new UnsupportedOperationException("TODO"); }
+    default T getOrElse(T fallback) { throw new UnsupportedOperationException("TODO"); }
+}
+record Ok<T, E>(T value) implements Result<T, E> {}
+record Err<T, E>(E error) implements Result<T, E> {}`,
+      tests: `public class Main {
+    static int passed = 0, total = 0;
+    static void check(String name, Runnable r) { total++; try { r.run(); passed++; System.out.println("PASS " + name); } catch (Throwable t) { System.out.println("FAIL " + name + ": " + t); } }
+    static void eq(Object expected, Object actual) { if (!java.util.Objects.equals(expected, actual)) throw new AssertionError("expected " + expected + " got " + actual); }
+    public static void main(String[] args) {
+        Result<Integer,String> ok = new Ok<>(5);
+        Result<Integer,String> err = new Err<>("bad");
+        check("ok map", () -> eq(10, ((Ok<Integer,String>) ok.map(x -> x*2)).value()));
+        check("err map stays err", () -> eq("bad", ((Err<Integer,String>) err.map(x -> x*2)).error()));
+        check("getOrElse ok", () -> eq(5, ok.getOrElse(99)));
+        check("getOrElse err", () -> eq(99, err.getOrElse(99)));
+        System.out.println("RESULT " + passed + "/" + total);
+    }
+}`,
+      reference: `sealed interface Result<T, E> permits Ok, Err {
+    default <U> Result<U, E> map(java.util.function.Function<T, U> f) {
+        if (this instanceof Ok<T, E> o) return new Ok<>(f.apply(o.value()));
+        return new Err<>(((Err<T, E>) this).error());
+    }
+    default T getOrElse(T fallback) {
+        if (this instanceof Ok<T, E> o) return o.value();
+        return fallback;
+    }
+}
+record Ok<T, E>(T value) implements Result<T, E> {}
+record Err<T, E>(E error) implements Result<T, E> {}`,
+      hints: ['Dùng instanceof pattern để rẽ nhánh.'],
+      explain: 'Result mô hình hoá hai nhánh; map chỉ áp dụng khi Ok; getOrElse trả fallback khi Err.',
+    },
+  ],
+  check: [
+    { q: 'Result thường dùng cho loại lỗi nào?', options: ['Lỗi hệ thống', 'Lỗi nghiệp vụ có thể dự đoán', 'Bug', 'I/O'], answer: 1, explain: 'Result cho lỗi nghiệp vụ caller phải xử lý; exception cho bất thường.' },
+    { q: 'flatMap giúp gì?', options: ['Nối nhiều bước có thể fail không lồng if', 'Tăng tốc', 'Tự retry', 'Cache'], answer: 0, explain: 'flatMap nối bước có thể fail.' },
+  ],
+  related: ['modern-003'],
+  tags: ['Result', 'sealed', 'pattern matching'],
+},
+{
+  id: 'lesson-modern-009',
+  track: 'modern',
+  order: 9,
+  title: 'Stream vs vòng for: khi stream chậm hơn và cách đo',
+  level: 'senior',
+  minutes: 20,
+  goals: [
+    'Biết overhead của stream (Spliterator, lambda, boxing)',
+    'Biết trường hợp vòng for nhanh hơn',
+    'Biết cách đo bằng JMH',
+  ],
+  body: `**Tóm tắt:** Stream mang overhead (Spliterator, lambda invocation, boxing primitive). Với dữ liệu nhỏ hoặc thao tác đơn giản, vòng for thường nhanh hơn. Chỉ dùng stream khi rõ ràng; đo bằng JMH.
+
+### Overhead
+- Tạo Spliterator, pipeline object.
+- Lambda invocation (invokedynamic).
+- Boxing primitive (IntStream vs Stream<Integer>).
+
+### Khi for nhanh hơn
+- Vòng lặp nhỏ, đơn giản.
+- Cần break/continue phức tạp.
+- Cần mutable accumulator.
+
+### Khi stream tốt
+- Pipeline nhiều bước, dễ đọc.
+- Parallel khi dữ liệu lớn.
+- Collectors tổng hợp.
+
+### Đo
+Dùng JMH, warm-up, nhiều iteration. Không dùng System.currentTimeMillis.
+
+### Ví dụ đời thực: đếm trong hot path
+Trong service xử lý hàng triệu bản ghi/giây, vòng for với mảng primitive và biến cục bộ thường nhanh hơn stream vì không tạo pipeline. Stream phù hợp cho code nghiệp vụ đọc dễ.
+
+### Boxing và primitive
+Dùng IntStream/LongStream/DoubleStream để tránh boxing. Stream<Integer> box mỗi int thành object, tốn bộ nhớ và GC.
+
+### Parallel stream overhead
+Chia Spliterator, gộp kết quả; chỉ đáng khi dữ liệu lớn và CPU-bound.
+
+### Ví dụ đời thực: báo cáo tổng hợp
+Với 10 triệu dòng log, stream parallel có thể nhanh hơn for nếu tác vụ CPU-bound và nguồn ArrayList. Nhưng với I/O (đọc file), for + buffer thường nhanh và đơn giản hơn.
+
+### JMH snippet
+~~~java
+@Benchmark
+public long streamSum() { return list.stream().mapToLong(x->x).sum(); }
+@Benchmark
+public long forSum() { long s=0; for(int x:list) s+=x; return s; }
+~~~
+Chạy warm-up 5 iteration, đo 5 iteration.
+
+### Kết luận
+Stream mang lại readability; for mang lại performance trong hot path. Chọn theo ngữ cảnh và đo.
+
+### Pitfall thường gặp
+- Dùng stream trong vòng lặp lớn mà không đo.
+- Boxing không cần thiết.
+- Side-effect trong lambda.
+
+### Checklist phỏng vấn
+- Stream overhead là gì?
+- Khi nào for nhanh hơn?
+- JMH đo như thế nào?
+- Primitive stream là gì?
+
+### Ví dụ benchmark chi tiết
+Dùng @State(Scope.Thread), @BenchmarkMode(Mode.AverageTime), @OutputTimeUnit(TimeUnit.NANOSECONDS). Warmup 3 iterations, measurement 5 iterations, forks 2. Tránh dead code bằng cách consume kết quả (Blackhole).
+
+### Kết luận cuối
+Chọn stream khi code rõ ràng; chọn for khi hot path và đo bằng JMH.
+
+Stream không thay thế for hoàn toàn; mỗi công cụ có chỗ đứng.
+
+> Senior tip: mặc định code dễ đọc; đo trước khi tối ưu.
+
+### Liên hệ phỏng vấn
+Interviewer hỏi: stream overhead, boxing, khi nào for nhanh hơn, JMH. Bài tập dưới đây bắt bạn viết hàm tìm phần tử trùng đầu tiên bằng for (early exit).`,
+  exercises: [
+    {
+      title: 'Tìm phần tử trùng đầu tiên bằng for',
+      prompt: `Viết {{FirstDuplicate.firstDuplicate(list)}} trả về phần tử đầu tiên xuất hiện lần thứ hai, hoặc null nếu không có. Dùng vòng for + HashSet, early exit.`,
+      starter: `class FirstDuplicate {
+    static Integer firstDuplicate(java.util.List<Integer> list) {
+        throw new UnsupportedOperationException("TODO");
+    }
+}`,
+      tests: `public class Main {
+    static int passed = 0, total = 0;
+    static void check(String name, Runnable r) { total++; try { r.run(); passed++; System.out.println("PASS " + name); } catch (Throwable t) { System.out.println("FAIL " + name + ": " + t); } }
+    static void eq(Object expected, Object actual) { if (!java.util.Objects.equals(expected, actual)) throw new AssertionError("expected " + expected + " got " + actual); }
+    public static void main(String[] args) {
+        check("has dup", () -> eq(2, FirstDuplicate.firstDuplicate(java.util.List.of(1,2,3,2,4))));
+        check("no dup", () -> eq(null, FirstDuplicate.firstDuplicate(java.util.List.of(1,2,3))));
+        check("empty", () -> eq(null, FirstDuplicate.firstDuplicate(java.util.List.of())));
+        check("first dup earliest", () -> eq(1, FirstDuplicate.firstDuplicate(java.util.List.of(1,2,1,2))));
+        System.out.println("RESULT " + passed + "/" + total);
+    }
+}`,
+      reference: `class FirstDuplicate {
+    static Integer firstDuplicate(java.util.List<Integer> list) {
+        java.util.Set<Integer> seen = new java.util.HashSet<>();
+        for (Integer x : list) {
+            if (!seen.add(x)) return x;
+        }
+        return null;
+    }
+}`,
+      hints: ['HashSet.add trả false nếu đã có.'],
+      explain: 'Early exit: trả ngay khi gặp phần tử trùng; không cần duyệt hết.',
+    },
+  ],
+  check: [
+    { q: 'Khi nào vòng for thường nhanh hơn stream?', options: ['Dữ liệu nhỏ, thao tác đơn giản', 'Dữ liệu rất lớn parallel', 'Nhiều bước pipeline', 'Cần Collectors'], answer: 0, explain: 'Overhead stream lớn so với for nhỏ.' },
+    { q: 'Primitive boxing trong stream xảy ra khi?', options: ['Dùng Stream<Integer>', 'Dùng IntStream', 'Dùng filter', 'Dùng collect'], answer: 0, explain: 'Stream<Integer> box int thành Integer.' },
+  ],
+  related: ['modern-001'],
+  tags: ['Stream', 'performance', 'JMH'],
+},
 );
