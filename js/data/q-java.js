@@ -13873,4 +13873,158 @@ refs: [
   { type: 'doc', title: 'List (Java SE 21 API)', url: 'https://docs.oracle.com/en/java/javase/21/docs/api/java.base/java/util/List.html' }
 ]
 },
+
+{
+  id: 'modern-074',
+  topic: 'modern',
+  level: 'senior',
+  q: 'Record làm {{DTO}} và {{projection}} {{JPA}} trong Spring Boot 3: vì sao không nên dùng record làm {{JPA entity}}, và khi nào dùng {{record projection}}?',
+  a: `**Tóm tắt:** record rất hợp cho {{DTO}}/{{projection}} bất biến, nhưng không hợp cho {{JPA entity}} vì {{Hibernate}} cần {{no-arg constructor}}, {{setter}}/{{proxy}} và {{mutable state}} để {{dirty checking}}.
+
+### Vì sao record không làm entity tốt
+- {{JPA entity}} cần constructor không tham số (hoặc protected) để {{Hibernate}} instantiate qua {{reflection}}; record thì constructor chính là {{canonical constructor}} với mọi field.
+- {{Dirty checking}} dựa vào so sánh state trước/sau update; record bất biến buộc phải tạo object mới → {{Hibernate}} không track được thay đổi field.
+- {{Lazy loading}} {{proxy}} subclass entity; record là {{final}} nên không thể subclass → không {{proxy}} được.
+- {{@GeneratedValue}} gán id sau khi {{persist}}; record field {{final}} không thể gán lại.
+
+### Record projection trong Spring Data JPA
+~~~java
+public record UserSummary(Long id, String email, String fullName) {}
+
+public interface UserRepository extends JpaRepository<User, Long> {
+    List<UserSummary> findProjectedByActiveTrue();
+}
+~~~
+{{Spring Data JPA}} hỗ trợ {{record projection}} (từ 3.0) bằng cách gọi constructor với các cột được chọn; chỉ fetch cột cần → giảm {{I/O}} và memory.
+
+### Trade-off
+| Cách | Ưu | Nhược |
+|---|---|---|
+| {{Record projection}} | bất biến, ít boilerplate, fetch ít cột | chỉ đọc, không update |
+| {{Entity}} + {{DTO}} mapper | track thay đổi, update dễ | boilerplate, fetch full row |
+| {{Interface projection}} | {{proxy}} nhẹ | khó {{serialize}}, method verbose |
+
+### Pitfall production
+- {{Projection}} record có field null nếu cột {{nullable}} → {{NPE}} khi dùng {{downstream}}; validate.
+- {{Record projection}} không thể update → nếu cần sửa, load {{entity}} rồi save.
+- Record {{equals}}/{{hashCode}} dùng mọi field; nếu {{projection}} chứa collection lớn → chi phí.
+
+### Ví dụ đời thực
+Service danh sách user trả 100k dòng: {{entity}} full fetch 50ms + mapping; chuyển sang {{record projection}} chỉ 3 cột → 12ms, memory giảm 4x, {{GC pause}} giảm.
+
+### Trả lời mẫu khi phỏng vấn
+"Em dùng record cho {{DTO}} và read {{projection}} vì bất biến và ít code. Em không dùng record làm {{entity}} vì {{Hibernate}} cần {{no-arg constructor}}, {{mutable state}} để {{dirty check}}, và {{proxy}} subclass cho {{lazy loading}}; record {{final}} và bất biến phá vỡ các yêu cầu này. Với {{projection}}, {{Spring Data JPA}} hỗ trợ {{record constructor projection}}, chỉ fetch cột cần, rất tốt cho {{read-heavy}}. Nếu cần update, em load {{entity}}. Em cẩn thận null field trong {{projection}} và không {{projection}} collection lớn vì {{equals}}/{{hashCode}} tốn."
+
+> Senior tip: ranh giới rõ ràng: {{entity}} = {{mutable}} + track changes; {{DTO}}/{{projection}} = immutable snapshot. Mixing causes subtle bugs.`,
+  follow: [
+    'Hibernate {{dirty checking}} hoạt động thế nào và tại sao cần {{mutable state}}?',
+    '{{Record projection}} có hỗ trợ nested {{projection}} không?',
+    'Khi nào nên dùng {{interface projection}} thay vì {{record}}?'
+  ],
+  tags: ['record', 'DTO', 'JPA', 'projection', 'Hibernate', 'Spring Data']
+},
+{
+  id: 'modern-075',
+  topic: 'modern',
+  level: 'lead',
+  q: '{{Sealed interface}} + {{switch pattern matching}} (Java 21) để xử lý kết quả thanh toán: {{exhaustiveness}} đảm bảo gì và vì sao an toàn?',
+  a: `**Tóm tắt:** {{sealed interface}} giới hạn tập subtype; {{switch pattern matching}} {{compile-time}} kiểm tra đã cover hết subtype, nên thêm case mới bắt buộc cập nhật mọi {{switch}} → không bỏ sót nhánh.
+
+### Cơ chế
+- {{sealed interface}} PaymentResult {{permits}} Success, Declined, Pending, Error.
+- {{switch pattern}}: case Success s -> ..., case Declined d -> ...; compiler biết tập con khép kín.
+- Nếu thêm subtype mới (ví dụ {{Timeout}}), mọi {{switch}} không cover sẽ {{compile error}} → refactor an toàn.
+
+### Code
+~~~java
+public sealed interface PaymentResult permits Success, Declined, Pending, Error {}
+public record Success(String txnId, BigDecimal amount) implements PaymentResult {}
+public record Declined(String reason, int code) implements PaymentResult {}
+public record Pending(String txnId) implements PaymentResult {}
+public record Error(Throwable cause) implements PaymentResult {}
+
+public String handle(PaymentResult r) {
+    return switch (r) {
+        case Success s -> "OK " + s.txnId();
+        case Declined d -> "DECLINED " + d.code();
+        case Pending p -> "PENDING " + p.txnId();
+        case Error e -> "ERROR " + e.cause().getMessage();
+    };
+}
+~~~
+
+### Trade-off
+| Approach | Ưu | Nhược |
+|---|---|---|
+| {{Sealed}} + {{switch}} | {{compile-time}} {{exhaustiveness}}, an toàn refactor | thêm subtype buộc sửa mọi {{switch}} (đúng ý) |
+| {{Enum}} | đơn giản | không mang data phong phú |
+| if-else {{instanceof}} | linh hoạt | dễ bỏ sót, không {{compile check}} |
+
+### Pitfall production
+- Dùng {{default}} trong {{switch}} {{sealed}} → mất {{exhaustiveness check}}; tránh.
+- {{Sealed}} phải {{permits}} đầy đủ; quên {{permits}} → {{compile error}} (tốt).
+- {{Pattern matching}} {{guard when}} có thể che {{exhaustiveness}} nếu không cẩn thận.
+
+### Ví dụ đời thực
+Thêm trạng thái {{Timeout}} cho thanh toán: compiler báo 12 {{switch}} chưa handle → fix hết trước deploy, không có case bị silent skip trên production.
+
+### Trả lời mẫu khi phỏng vấn
+"{{Sealed interface}} khép tập subtype; {{switch pattern matching}} kiểm tra {{exhaustiveness}} tại {{compile time}}. Khi thêm trạng thái mới, mọi {{switch}} phải cập nhật, tránh bỏ sót nhánh. Đây là cách mô hình hoá domain an toàn, thay thế {{enum}} khi cần mang data. Em tránh {{default}} để giữ check. {{Guard when}} dùng cẩn thận vì có thể che {{exhaustiveness}}."
+
+> Senior tip: {{sealed}} + {{pattern matching}} biến 'quên case' từ runtime bug thành {{compile error}} — giá trị lớn nhất khi domain tiến hoá.`,
+  follow: [
+    '{{Exhaustiveness check}} hoạt động thế nào với {{sealed}} và {{record pattern}}?',
+    'Khi nào dùng {{guard when}} trong {{switch pattern}}?',
+    '{{Sealed class}} khác {{enum}} ở điểm nào về extensibility?'
+  ],
+  tags: ['sealed', 'pattern matching', 'switch', 'Java 21', 'domain model', 'exhaustiveness']
+},
+{
+  id: 'modern-076',
+  topic: 'modern',
+  level: 'senior',
+  q: '{{SequencedCollection}} và các API mới Java 21 hữu ích trong code nghiệp vụ: giải quyết vấn đề gì và dùng thế nào?',
+  a: `**Tóm tắt:** {{SequencedCollection}} (Java 21) thêm khái niệm collection có thứ tự đầu-cuối với {{getFirst}}/{{getLast}}/{{reversed}}, giải quyết việc lấy phần tử đầu/cuối và đảo thứ tự từng phải dùng index hoặc {{stream}}.
+
+### Vấn đề trước đây
+- {{List}}: {{get(0)}}, {{get(size()-1)}} → verbose và dễ {{IndexOutOfBounds}}.
+- {{Deque}}: {{getFirst}}/{{getLast}} có nhưng không thống nhất với {{List}}.
+- {{reversed()}} phải {{Collections.reverse}} hoặc {{stream reverse}} → tạo bản sao hoặc mutate.
+
+### API mới
+~~~java
+SequencedCollection<String> seq = new ArrayList<>(List.of("a","b","c"));
+String first = seq.getFirst();
+String last = seq.getLast();
+SequencedCollection<String> rev = seq.reversed();
+~~~
+- {{SequencedSet}}, {{SequencedMap}} cũng có {{firstEntry}}/{{lastEntry}}/{{reversed}}.
+
+### Trade-off
+| Trước Java 21 | Java 21 |
+|---|---|
+| {{get(size()-1)}} | {{getLast()}} |
+| {{Collections.reverse(list)}} mutate | {{reversed()}} {{view}} |
+| {{stream}}.reduce last | {{getLast()}} |
+
+### Pitfall production
+- {{reversed()}} là {{view}} backed bởi collection gốc → sửa gốc thì {{view}} đổi; cần copy nếu muốn {{snapshot}}.
+- {{getFirst}}/{{getLast}} trên collection rỗng ném {{NoSuchElementException}} → check {{isEmpty}}.
+- {{SequencedCollection}} chỉ cho collection có thứ tự; {{Set}} không thứ tự không implement.
+
+### Ví dụ đời thực
+Queue xử lý đơn hàng cần retry đơn cuối: {{getLast()}} + {{removeLast()}} rõ ràng; {{view}} {{reversed()}} để hiển thị lịch sử mới nhất trước mà không copy.
+
+### Trả lời mẫu khi phỏng vấn
+"{{SequencedCollection}} chuẩn hoá thao tác đầu/cuối và đảo thứ tự cho collection có thứ tự. Trước đây verbose và dễ lỗi; nay {{getFirst}}/{{getLast}}/{{reversed}} rõ ràng. {{reversed}} là {{view}} nên cẩn thận mutation; rỗng thì ném exception nên check. Em dùng cho queue, history, pagination. Các API Java 21 khác như {{pattern matching}}, {{record}}, {{virtual thread}} bổ sung cho code nghiệp vụ."
+
+> Senior tip: {{reversed()}} là {{view}}, không phải copy — đây là khác biệt quan trọng khi truyền cho caller.`,
+  follow: [
+    '{{reversed()}} là {{view}} hay bản sao và hệ quả là gì?',
+    '{{SequencedMap}} thêm gì so với {{Map}} thông thường?',
+    'Khi nào {{getLast()}} ném exception và cách tránh?'
+  ],
+  tags: ['SequencedCollection', 'Java 21', 'getFirst', 'getLast', 'reversed']
+}
+
 );
