@@ -5200,5 +5200,440 @@ isDebugEnabled tránh goi expensiveToString() khi DEBUG tat.
       'De xuat co chieu sau: dung placeholder {} cua SLF4J, tu chon isDebugEnabled; giai thich tai sao khong tang heap.'
     ],
     tags: ['gc', 'young-gc', 'allocation-rate', 'stringbuilder', 'slf4j', 'logback', 'log-debug', 'string-concatenation', 'jdk17', 'g1gc']
+  },
+  {
+    id: 'lab-gc-028',
+    category: 'gc',
+    title: 'Xử lý ảnh tải lên: humongous allocation từ BufferedImage và byte[] > 1MB khiến G1 Full GC',
+    level: 'senior',
+    scenario: `**Bối cảnh (background):** App **chia sẻ ảnh** (Spring Boot 3.3, JDK 17.0.11, G1) cho phép người dùng tải lên ảnh, server tự động tạo thumbnail 3 kích thước (small 300x300, medium 800x800, large 1920x1080). Endpoint {{POST /api/images/upload}} nhận multipart file, dùng {{ImageIO.read}} đọc thành {{BufferedImage}}, dùng {{Graphics2D}} scale, rồi encode JPEG/PNG trả về. JVM: {{-Xms4g -Xmx4g -XX:+UseG1GC -XX:G1HeapRegionSize=2m -Xlog:gc*:file=/logs/gc.log:time,uptime,level,tags}}. Container: 2 vCPU, memory limit 4Gi.
+
+**Thuật ngữ giải thích:**
+- **Humongous object:** Trong G1, object ≥ 50% region size là humongous. Region 2 MB → ngưỡng = 1 MB. {{BufferedImage}} (kể cả TYPE_INT_RGB) và mảng {{byte[]}} từ {{ImageIO.write}} thường > 1 MB với ảnh HD.
+- **BufferedImage memory layout:** {{BufferedImage}} chứa {{DataBuffer}} (thường là {{DataBufferInt}} cho TYPE_INT_RGB) giữ mảng {{int[]}} pixel. Ảnh 1920x1080 = ~2M pixel × 4 byte = **~8 MB int[]** → humongous chiếm 4 region liên tiếp.
+- **To-space exhausted:** Khi young GC cần copy object sang region mới nhưng region trống bị humongous chiếm, G1 ném To-space exhausted → Full GC (G1 Compaction Pause).
+
+**Triệu chứng:** Từ **14:00-14:20 ngày 25/10/2026**, user tải lên 50 ảnh HD đồng thời (batch upload). p99 {{POST /api/images/upload}} tăng từ 500 ms lên **6-8 giây**. GC log ghi **Pause Young (G1 Humongous Allocation)** dày đặc, rồi **To-space exhausted**, **Pause Full (G1 Compaction Pause)** 3-4 giây. Heap used ~2.8 GB / 4 GB. Sau 14:20 tải xong, hệ thống ổn định. Dev đề xuất: "Tăng heap 8 GB, G1HeapRegionSize 4 MB."
+
+**Dữ liệu thu thập:** GC log JDK 17, heap histogram lúc 14:10, đoạn code {{ImageService}}, JFR allocation profiling.`,
+    artifacts: [
+      {
+        name: 'gc-image-upload.log',
+        lang: 'text',
+        content: `[2026-10-25T13:00:00.012+0700][0.012s][info][gc,init] Version: 17.0.11+7 (release)
+[2026-10-25T13:00:00.012+0700][0.012s][info][gc,init] CPUs: 2 total, 2 available
+[2026-10-25T13:00:00.012+0700][0.012s][info][gc,init] Memory: 4096M
+[2026-10-25T13:00:00.012+0700][0.012s][info][gc,init] Heap Region Size: 2M
+[2026-10-25T13:00:00.012+0700][0.012s][info][gc,init] Heap Min Capacity: 4G
+[2026-10-25T13:00:00.012+0700][0.012s][info][gc,init] Heap Initial Capacity: 4G
+[2026-10-25T13:00:00.012+0700][0.012s][info][gc,init] Heap Max Capacity: 4G
+... (young GC bình thường mỗi ~20s, heap sau GC ~300-500 MB) ...
+[2026-10-25T14:02:10.104+0700][3730.104s][info][gc] GC(105) Pause Young (G1 Evacuation Pause) 1520M->410M(4096M) 12.301ms
+[2026-10-25T14:02:30.220+0700][3750.220s][info][gc] GC(106) Pause Young (G1 Humongous Allocation) 1680M->1120M(4096M) 45.210ms
+[2026-10-25T14:02:30.220+0700][3750.220s][info][gc,heap] GC(106) Humongous regions: 40->180
+[2026-10-25T14:02:50.102+0700][3770.102s][info][gc] GC(107) Pause Young (G1 Humongous Allocation) 2450M->1980M(4096M) 68.440ms
+[2026-10-25T14:02:50.102+0700][3770.102s][info][gc,heap] GC(107) Humongous regions: 180->320
+[2026-10-25T14:03:15.440+0700][3795.440s][info][gc] GC(108) Pause Young (G1 Humongous Allocation) 3120M->2680M(4096M) 92.602ms
+[2026-10-25T14:03:15.440+0700][3795.440s][info][gc,heap] GC(108) Humongous regions: 320->480
+[2026-10-25T14:03:30.210+0700][3810.210s][info][gc] GC(109) Pause Young (G1 Humongous Allocation) 3680M->3250M(4096M) 115.771ms
+[2026-10-25T14:03:30.210+0700][3810.210s][info][gc] GC(109) To-space exhausted
+[2026-10-25T14:03:30.211+0700][3810.211s][info][gc,heap] GC(109) Humongous regions: 480->560
+[2026-10-25T14:03:30.211+0700][3810.211s][info][gc,start] GC(110) Pause Full (G1 Compaction Pause)
+[2026-10-25T14:03:33.355+0700][3813.355s][info][gc,heap] GC(110) Old regions: 1120->210
+[2026-10-25T14:03:33.355+0700][3813.355s][info][gc,heap] GC(110) Humongous regions: 560->560
+[2026-10-25T14:03:33.355+0700][3813.355s][info][gc] GC(110) Pause Full (G1 Compaction Pause) 3820M->1520M(4096M) 3144.902ms
+[2026-10-25T14:05:55.979+0700][4155.979s][info][gc] GC(111) To-space exhausted
+[2026-10-25T14:05:55.979+0700][4155.979s][info][gc] GC(111) Pause Young (Normal) (G1 Evacuation Pause) 3420M->3380M(4096M) 329.004ms
+[2026-10-25T14:06:10.001+0700][4170.001s][info][gc] GC(112) Pause Full (G1 Compaction Pause) 3380M->1580M(4096M) 3011.447ms
+[2026-10-25T14:12:10.001+0700][4570.001s][info][gc] GC(113) Pause Young (Normal) (G1 Evacuation Pause) 2200M->480M(4096M) 15.102ms
+[2026-10-25T14:12:10.001+0700][4570.001s][info][gc,heap] GC(113) Humongous regions: 560->15`
+      },
+      {
+        name: 'jmap-histo-1410.txt',
+        lang: 'text',
+        content: `$ kubectl exec image-service-7d8f6c-x4k2p -- jmap -histo 1 | head -20
+  num     #instances         #bytes  class name (module)
+-------------------------------------------------------
+   1:         85000      850000000  [I (java.base@17.0.11)
+   2:         62000      620000000  [B (java.base@17.0.11)
+   3:          1250       40000000  java.awt.image.DataBufferInt
+   4:          1250       32000000  java.awt.image.BufferedImage
+   5:          1100       28160000  vn.image.model.ThumbnailResult
+Total        150600      1550160000`
+      },
+      {
+        name: 'ImageService.java',
+        lang: 'text',
+        content: `package vn.image.service;
+
+import javax.imageio.ImageIO;
+import java.awt.*;
+import java.awt.image.BufferedImage;
+import java.io.ByteArrayOutputStream;
+import java.io.InputStream;
+import org.springframework.stereotype.Service;
+import org.springframework.web.multipart.MultipartFile;
+import vn.image.model.ThumbnailResult;
+
+@Service
+public class ImageService {
+
+    public ThumbnailResult process(MultipartFile file) throws Exception {
+        try (InputStream in = file.getInputStream()) {
+            // 1. Đọc ảnh gốc thành BufferedImage (humongous nếu ảnh lớn)
+            BufferedImage original = ImageIO.read(in);  // int[] pixel array ~8 MB cho 1920x1080
+
+            // 2. Tạo 3 thumbnail, MỖI LẦN tạo BufferedImage mới + byte[]
+            BufferedImage small = resize(original, 300, 300);
+            BufferedImage medium = resize(original, 800, 800);
+            BufferedImage large = resize(original, 1920, 1080);  // giữ nguyên kích thước, vẫn alloc mới
+
+            // 3. Encode từng thumbnail thành byte[] (humongous thêm)
+            byte[] smallBytes = encode(small);
+            byte[] mediumBytes = encode(medium);
+            byte[] largeBytes = encode(large);  // ~3-4 MB JPEG
+
+            return new ThumbnailResult(smallBytes, mediumBytes, largeBytes);
+        }
+    }
+
+    private BufferedImage resize(BufferedImage src, int w, int h) {
+        BufferedImage dest = new BufferedImage(w, h, BufferedImage.TYPE_INT_RGB);
+        Graphics2D g = dest.createGraphics();
+        g.setRenderingHint(RenderingHints.KEY_INTERPOLATION, RenderingHints.VALUE_INTERPOLATION_BILINEAR);
+        g.drawImage(src, 0, 0, w, h, null);
+        g.dispose();
+        return dest;
+    }
+
+    private byte[] encode(BufferedImage img) throws Exception {
+        ByteArrayOutputStream baos = new ByteArrayOutputStream();
+        ImageIO.write(img, "jpg", baos);
+        return baos.toByteArray();  // humongous nếu > 1 MB (region 2M)
+    }
+}`
+      },
+      {
+        name: 'jfr-allocation-1410.txt',
+        lang: 'text',
+        content: `$ jcmd 1 JFR.start duration=2m filename=/tmp/image.jfr settings=profile
+$ jfr print --events jdk.ObjectAllocationSample /tmp/image.jfr | head -60
+
+jdk.ObjectAllocationSample {
+  startTime = 14:03:12.412
+  objectClass = int[] (classLoader = bootstrap)
+  weight = 8.2 MB
+  eventThread = "http-nio-8080-exec-7"
+  stackTrace = [
+    java.awt.image.DataBufferInt.<init>(int, int) line: 123
+    java.awt.image.BufferedImage.<init>(int, int, int, ColorModel, ...) line: 456
+    vn.image.service.ImageService.resize(ImageService.java:35)
+  ]
+}
+
+jdk.ObjectAllocationSample {
+  startTime = 14:03:12.415
+  objectClass = byte[] (classLoader = bootstrap)
+  weight = 3.8 MB
+  eventThread = "http-nio-8080-exec-7"
+  stackTrace = [
+    java.io.ByteArrayOutputStream.toByteArray() line: 211
+    vn.image.service.ImageService.encode(ImageService.java:52)
+  ]
+}
+
+# Tổng hợp allocation rate lúc 14:03 (50 req/s, mỗi req 3 thumbnail: large 1920x1080, medium 800x800, small 300x300):
+# int[] pixel data: large ~8.2 MB + medium ~2.6 MB + small ~0.36 MB ≈ 11.2 MB/request
+# byte[] JPEG encode: large ~3.8 MB + medium ~1.5 MB + small ~0.1 MB ≈ 5.4 MB/request
+# TỔNG allocation rate ≈ (11.2 + 5.4) MB × 50 req/s ≈ 830 MB/s (chỉ cho image processing)`
+      }
+    ],
+    questions: [
+      'Tại sao G1 báo "G1 Humongous Allocation", rồi "To-space exhausted" và "Pause Full" khi xử lý ảnh? Trích dòng cụ thể trong GC log và giải thích với region size 2 MB.',
+      'Từ histogram và JFR, object humongous là mảng nào (int[] hay byte[]), kích thước bao nhiêu, do code dòng nào tạo ra.',
+      'Chứng minh đây KHÔNG phải memory leak. Tăng heap hoặc G1HeapRegionSize có phải lời giải gốc không.',
+      'Sửa ngắn hạn (code) và dài hạn (kiến trúc). Streaming encode, tái sử dụng buffer, hay off-heap?'
+    ],
+    hints: [
+      'Region size 2 MB → ngưỡng humongous = 1 MB. BufferedImage TYPE_INT_RGB dùng int[] pixel: 1920x1080 = 2M pixel × 4 byte = 8 MB int[] → humongous chiếm 4 region. JPEG encode tạo byte[] 3-4 MB → humongous thêm.',
+      'Histogram: [I (int[]) 85k instance 850 MB, [B (byte[]) 62k instance 620 MB. JFR: int[] 8.2 MB tại ImageService.resize (DataBufferInt), byte[] 3.8 MB tại ImageService.encode (ByteArrayOutputStream.toByteArray).',
+      'GC(113) khi traffic giảm: Humongous regions 560->15, heap 2200M->480M. Khác với leak (leak thì heap sau GC tăng dần, Full GC không giảm humongous).',
+      'Tăng G1HeapRegionSize 4 MB: ngưỡng humongous = 2 MB, int[] 8 MB VẪN humongous (chiếm 2 region), byte[] 3-4 MB vẫn humongous. Region 4 MB → heap 4 GB chỉ 1024 region, giảm độ linh hoạt G1. Chỉ là workaround.'
+    ],
+    answer: `**Tóm tắt:** Service đọc ảnh upload, tạo 3 thumbnail bằng {{BufferedImage.TYPE_INT_RGB}}, mỗi thumbnail alloc mới {{int[]}} pixel data (~8 MB cho 1920x1080) và {{byte[]}} JPEG encode (~3-4 MB). Với **G1HeapRegionSize=2 MB**, mọi object **≥ 1 MB là humongous** → int[] 8 MB chiếm **4 region liên tiếp**, byte[] 3-4 MB chiếm **2 region**. 50 request/s × 3 thumbnail tạo ~150 humongous object/giây, Humongous regions tăng 40 → 560 (~1.1 GB), chặn region trống → {{To-space exhausted}} → **Pause Full 3-4 giây**. Khi traffic giảm, GC(113) thu hồi humongous 560->15 trong young GC thường, chứng minh **không leak**. Sửa gốc: **streaming encode** (ghi JPEG trực tiếp vào {{OutputStream}} không đệm byte[]), **tái sử dụng BufferedImage** qua pool, hoặc **off-heap** (Netty ByteBuf, jemalloc).
+
+### Nguyên nhân gốc
+
+1. **Region và ngưỡng:** GC log {{Heap Region Size: 2M}}. G1 coi object ≥ 1 MB là humongous. Cấp phát thẳng vào Old Gen trên region liên tiếp.
+2. **BufferedImage int[] 8 MB là humongous:** ImageService.resize() tạo {{BufferedImage.TYPE_INT_RGB}} mới cho từng thumbnail. TYPE_INT_RGB dùng {{DataBufferInt}} chứa {{int[]}} pixel. Ảnh 1920x1080 = ~2M pixel × 4 byte = **8 MB int[]** ≥ 1 MB → humongous chiếm 4 region (2M × 4 = 8M). Medium 800x800 = 2.5 MB int[] → humongous. Small 300x300 = 0.36 MB → KHÔNG humongous.
+3. **JPEG encode byte[] 3-4 MB là humongous:** ImageService.encode() dùng {{ByteArrayOutputStream}} rồi {{toByteArray()}}. JPEG quality mặc định cho 1920x1080 ~3-4 MB → humongous chiếm 2 region.
+4. **Allocation rate:** 50 req/s × (int[] ~11.2 MB + byte[] ~5.4 MB) ≈ 830 MB/s. Humongous regions tăng 40 → 180 → 320 → 480 → 560.
+5. **To-space exhausted:** Humongous regions 560 × 2 MB = 1.12 GB Old Gen. Chỉ còn ~2.9 GB region trống. Khi Eden đầy, không đủ region trống evacuate → To-space exhausted → Full GC.
+6. **Full GC không giảm humongous:** GC(110) {{Humongous regions: 560->560}}, GC(112) humongous không giảm. Vì object vẫn được tham chiếu bởi thread đang xử lý request (stack frame giữ BufferedImage/byte[]), chúng là live data.
+
+### Dẫn chứng (trích dòng cụ thể trong artifact)
+
+| GC / Thời điểm | Dòng log trích | Ý nghĩa |
+|---|---|---|
+| GC(106) 14:02 | {{Pause Young (G1 Humongous Allocation)}}, {{Humongous regions: 40->180}} | Bắt đầu có humongous, +140 region = 280 MB |
+| GC(107) 14:02 | {{Humongous regions: 180->320}} | +140 region = 280 MB |
+| GC(108) 14:03 | {{Humongous regions: 320->480}} | +160 region = 320 MB |
+| GC(109) 14:03 | {{To-space exhausted}}, {{Humongous regions: 480->560}} | Cạn region trống |
+| GC(110) 14:03 | {{Pause Full (G1 Compaction Pause) 3820M->1520M 3144ms}}, {{Humongous regions: 560->560}} | Full GC đầu, humongous không giảm |
+| GC(112) 14:06 | {{Pause Full ... 3011ms}}, humongous không giảm | Full GC thứ 2, humongous không giảm |
+| GC(113) 14:12 | {{Pause Young ... 2200M->480M}}, {{Humongous regions: 560->15}} | **Bằng chứng không leak**: traffic giảm, humongous 560->15, heap về 480 MB |
+| JFR | {{weight = 8.2 MB}} int[] tại {{DataBufferInt.<init>}} (ImageService.java:35) | int[] pixel data 8 MB humongous mỗi thumbnail large |
+| JFR | {{weight = 3.8 MB}} byte[] tại {{ByteArrayOutputStream.toByteArray}} (ImageService.java:52) | byte[] JPEG 3-4 MB humongous mỗi thumbnail large |
+| Histogram | {{[I}} 85k instance 850 MB, {{[B}} 62k instance 620 MB | {{jmap -histo}} gộp mảng theo class, phần lớn là humongous của request đang chạy |
+
+### Cách sửa
+
+**Ngắn hạn (giảm rủi ro ngay, deploy hôm nay):**
+1. **Giới hạn đồng thời (bulkhead):** {{Semaphore}} hoặc Resilience4j Bulkhead tối đa 10-15 request xử lý ảnh HD đồng thời/pod. Trả 429 khi vượt.
+2. **Giới hạn kích thước ảnh:** Reject ảnh > 5 MB hoặc > 4000x4000 pixel trước khi xử lý.
+3. **Giảm chất lượng JPEG:** {{ImageWriteParam}} set compression quality 0.7f thay vì mặc định 0.9f, giảm byte[] từ 4 MB xuống ~2 MB (dưới ngưỡng 1 MB humongous? Không, vẫn > 1 MB).
+
+**Dài hạn (sửa gốc, loại bỏ humongous):**
+1. **Streaming encode (khuyên dùng nhất):** Ghi JPEG trực tiếp vào {{OutputStream}} của HTTP response hoặc file, không đệm toàn bộ vào byte[].
+
+~~~java
+private void encodeStreaming(BufferedImage img, OutputStream out) throws Exception {
+    ImageWriter writer = ImageIO.getImageWritersByFormatName("jpg").next();
+    ImageWriteParam param = writer.getDefaultWriteParam();
+    param.setCompressionMode(ImageWriteParam.MODE_EXPLICIT);
+    param.setCompressionQuality(0.8f);
+    try (ImageOutputStream ios = ImageIO.createImageOutputStream(out)) {
+        writer.setOutput(ios);
+        writer.write(null, new IIOImage(img, null, null), param);
+    }
+}
+~~~
+
+2. **Tái sử dụng BufferedImage qua pool:** Dùng {{ThreadLocal<BufferedImage>}} hoặc object pool ({{Commons Pool}}) cho BufferedImage kích thước cố định (1920x1080, 800x800, 300x300), tránh alloc mới mỗi request.
+
+~~~java
+private static final ThreadLocal<BufferedImage> LARGE_BUFFER = ThreadLocal.withInitial(
+    () -> new BufferedImage(1920, 1080, BufferedImage.TYPE_INT_RGB)
+);
+// Trong resize: dùng LARGE_BUFFER.get() thay vì new BufferedImage(...)
+~~~
+
+3. **Off-heap image processing:** Dùng thư viện {{Twelvemonkeys ImageIO}} hoặc {{Apache Sanselan}} hỗ trợ off-heap, hoặc chuyển sang {{Netty ByteBuf}} / {{jemalloc}} cho pixel buffer, tránh humongous hoàn toàn.
+
+4. **Async processing:** Ảnh lớn đẩy vào queue, trả 202 Accepted ngay, worker xử lý streaming encode off-heap, không ảnh hưởng latency API.
+
+### Phòng ngừa và alert
+
+- Alert khi GC log có {{To-space exhausted}} hoặc {{Pause Full (G1 Compaction Pause)}}.
+- Alert khi cause {{G1 Humongous Allocation}} xuất hiện > 10 lần/phút.
+- Theo dõi {{jvm_gc_live_data_size_bytes}} và allocation rate trên mỗi request.
+- Code review: cấm {{ByteArrayOutputStream.toByteArray()}}, {{ImageIO.write(..., baos)}}, {{new BufferedImage(w,h,TYPE_INT_RGB)}} cho ảnh > 500x500 không có pooling/streaming. Yêu cầu streaming encode / object pool / off-heap.
+
+### Trả lời mẫu khi phỏng vấn
+
+"Khi user upload ảnh HD, service tạo 3 thumbnail bằng BufferedImage.TYPE_INT_RGB. Mỗi thumbnail alloc int[] pixel data: ảnh large 1920x1080 = 8 MB int[], medium 800x800 = 2.5 MB int[], plus JPEG encode byte[] 3-4 MB. Với G1HeapRegionSize 2 MB, ngưỡng humongous = 1 MB → int[] 8 MB chiếm 4 region liên tiếp, byte[] 3-4 MB chiếm 2 region. 50 request/s tạo hàng trăm humongous object/giây, Humongous regions tăng 40 -> 560, chặn region trống, gây To-space exhausted và Full GC 3-4 giây. Chứng minh không leak: khi traffic giảm, young GC thu hồi humongous 560 -> 15, heap về 480 MB. Cách sửa gốc là streaming encode ghi JPEG trực tiếp ra OutputStream, tái sử dụng BufferedImage qua ThreadLocal pool, hoặc off-heap processing. Tăng heap hay RegionSize chỉ là workaround."
+
+> Senior tip: Xử lý ảnh/video là "cây núc humongous" vì pixel data (int[]/byte[]) lớn, dễ vượt ngưỡng region G1. Quy tắc: **mọi pixel buffer lớn phải có pooling hoặc streaming, không bao giờ alloc mới mỗi request**. Khi debug GC log, tìm chuỗi: {{G1 Humongous Allocation}} → {{To-space exhausted}} → {{Pause Full}} và so sánh {{Humongous regions}} trước/sau Full GC — nếu humongous không giảm sau Full GC nhưng giảm mạnh ở young GC sau khi tải hết, đó là humongous sống tạm do request giữ, không phải leak. Cách chữa bền: streaming encode, object pool, off-heap; tăng RegionSize/heap chỉ là đòn giảm đau.`,
+    rubric: [
+      'Giải thích đúng cơ chế: region 2M → ngưỡng 1M, object ≥ ngưỡng cấp phát thẳng Old Gen trên region liên tiếp, BufferedImage int[] 8 MB và JPEG byte[] 3-4 MB là humongous.',
+      'Dẫn chứng GC log: Humongous regions 40→180→320→480→560, To-space exhausted (GC 109), Pause Full ~3s nhưng Humongous regions không giảm (560->560, 560->560).',
+      'Chứng minh không leak: GC(113) Humongous regions 560->15, heap 2200M->480M khi traffic giảm; phân biệt humongous sống tạm vs leak.',
+      'Chỉ đúng code gây ra: ImageService.java dòng 35 (new BufferedImage TYPE_INT_RGB tạo int[] 8 MB), dòng 52 (ByteArrayOutputStream.toByteArray tạo byte[] 3-4 MB); JFR weight 8.2/3.8 MB khớp.',
+      'Đề xuất có chiều sâu: streaming encode ghi trực tiếp OutputStream loại bỏ byte[] humongous; BufferedImage pool tái sử dụng int[] pixel; off-heap processing; giải thích tăng RegionSize/heap chỉ là workaround.'
+    ],
+    tags: ['g1', 'humongous', 'full-gc', 'gc-log', 'image-processing', 'bufferedimage', 'jpeg', 'streaming', 'object-pool', 'off-heap', 'jdk17', 'jfr']
+  },
+  {
+    id: 'lab-gc-029',
+    category: 'gc',
+    title: 'Metaspace tăng mãi do Spring AOP tạo CGLIB proxy mới mỗi request (@Transactional trên bean prototype)',
+    level: 'senior',
+    scenario: `**Bối cảnh (background):** App **thanh toán** (Spring Boot 3.3, JDK 17.0.11, G1) dùng @Transactional trên service. Dev vô tình khai báo service là **prototype scope** thay vì singleton. Mỗi lần inject, Spring tạo instance mới, và **CGLIB tạo subclass proxy mới** cho @Transactional. JVM: {{-Xms4g -Xmx4g -XX:+UseG1GC -XX:MetaspaceSize=256m -XX:MaxMetaspaceSize=512m -Xlog:gc*:file=/logs/gc.log:time,uptime,level,tags}}. Container: 2 vCPU, memory limit 4Gi.
+
+**Thuật ngữ giải thích:**
+- **Metaspace:** Vùng bộ nhớ native lưu metadata của class (tên class, method, constant pool, bytecode). Bị giới hạn bởi {{-XX:MaxMetaspaceSize}}.
+- **CGLIB proxy:** Spring dùng CGLIB (Code Generation Library) tạo subclass tại runtime cho @Transactional trên class không implement interface. Mỗi proxy là một **class Java mới** được define vào Metaspace.
+- **Prototype scope:** Bean prototype tạo instance mới mỗi lần getBean()/inject. Nếu bean có @Transactional, Spring tạo proxy mới cho **mỗi instance**.
+- **Full GC (Metadata GC Threshold):** Khi Metaspace đạt ngưỡng, G1 chạy Full GC thu hồi class không dùng. Nếu proxy class vẫn được tham chiếu (bằng instance prototype), Metaspace không giảm.
+
+**Triệu chứng:** Từ **09:00-11:00 ngày 28/10/2026**, traffic tăng dần. Metaspace tăng từ 280 MB lên **511 MB / 512 MB** sau 2 giờ. **Full GC (Metadata GC Threshold)** chạy mỗi 10-15 phút, mỗi lần 400-600 ms, Metaspace chỉ giảm vài MB. Heap used ổn định ~2.2 GB / 4 GB. CPU tăng do Full GC lặp. Dev on-call nghi "classloader leak" và đề xuất tăng MaxMetaspaceSize 1 GB.
+
+**Dữ liệu thu thập:** GC log JDK 17, jcmd class_stats, config Spring bean, thread dump.`,
+    artifacts: [
+      {
+        name: 'gc-payment-prototype.log',
+        lang: 'text',
+        content: `[2026-10-28T07:00:00.012+0700][0.012s][info][gc,init] Version: 17.0.11+7 (release)
+[2026-10-28T07:00:00.012+0700][0.012s][info][gc,init] CPUs: 2 total, 2 available
+[2026-10-28T07:00:00.012+0700][0.012s][info][gc,init] Memory: 4096M
+[2026-10-28T07:00:00.012+0700][0.012s][info][gc,init] Heap Region Size: 4M
+[2026-10-28T07:00:00.012+0700][0.012s][info][gc,init] Heap Min Capacity: 4G
+[2026-10-28T07:00:00.012+0700][0.012s][info][gc,init] Heap Initial Capacity: 4G
+[2026-10-28T07:00:00.012+0700][0.012s][info][gc,init] Heap Max Capacity: 4G
+[2026-10-28T07:00:00.012+0700][0.012s][info][gc,init] Metaspace Size: 256M
+[2026-10-28T07:00:00.012+0700][0.012s][info][gc,init] Max Metaspace Size: 512M
+... (Metaspace 280M lúc khởi động, young GC bình thường) ...
+[2026-10-28T09:15:30.102+0700][8130.102s][info][gc] GC(200) Pause Young (Normal) 1850M->520M(4096M) 14.201ms
+[2026-10-28T09:15:30.102+0700][8130.102s][info][gc,heap] Metaspace 380M->380M(512M)
+[2026-10-28T09:45:45.440+0700][9945.440s][info][gc] GC(201) Pause Full (Metadata GC Threshold) 3120M->3080M(4096M) 419.004ms
+[2026-10-28T09:45:45.440+0700][9945.440s][info][gc,heap] Metaspace 460M->460M(512M)
+[2026-10-28T10:05:10.001+0700][11110.001s][info][gc] GC(202) Pause Full (Metadata GC Threshold) 3080M->3050M(4096M) 511.207ms
+[2026-10-28T10:05:10.001+0700][11110.001s][info][gc,heap] Metaspace 500M->500M(512M)
+[2026-10-28T10:25:20.001+0700][12320.201s][info][gc] GC(203) Pause Full (Metadata GC Threshold) 3050M->3020M(4096M) 582.301ms
+[2026-10-28T10:25:20.001+0700][12320.201s][info][gc,heap] Metaspace 511M->511M(512M)
+[2026-10-28T10:40:30.001+0700][13230.001s][info][gc] GC(204) Pause Full (Metadata GC Threshold) 3020M->2990M(4096M) 595.447ms
+[2026-10-28T10:40:30.001+0700][13230.001s][info][gc,heap] Metaspace 512M->512M(512M)`
+      },
+      {
+        name: 'jcmd-payment-classstats.txt',
+        lang: 'text',
+        content: `$ jcmd 1 GC.class_stats | grep -E "(PaymentService|CGLIB|Enhancer)" | head -30
+   1247  1247  2500  500000  2500  vn.payment.service.PaymentService
+   1248  1247  1     180000  1     vn.payment.service.PaymentService$$EnhancerBySpringCGLIB$$a1b2c3d4
+   1249  1247  1     182000  1     vn.payment.service.PaymentService$$EnhancerBySpringCGLIB$$e5f6g7h8
+   1250  1247  1     178000  1     vn.payment.service.PaymentService$$EnhancerBySpringCGLIB$$i9j0k1l2
+   1251  1247  1     185000  1     vn.payment.service.PaymentService$$EnhancerBySpringCGLIB$$m3n4o5p6
+   ...
+# Tổng cộng: 2500+ class PaymentService$$EnhancerBySpringCGLIB$$* (mỗi class ~150-200 KB metadata)
+# Metaspace: 512 MB / 512 MB (đầy)
+# Chỉ có 1 ApplicationContext nhưng bean prototype tạo instance mới mỗi request -> proxy mới mỗi request`
+      },
+      {
+        name: 'PaymentService.java',
+        lang: 'text',
+        content: `package vn.payment.service;
+
+import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Transactional;
+import org.springframework.context.annotation.Scope;
+import org.springframework.context.annotation.ScopedProxyMode;
+
+@Service
+// SAI: prototype scope thay vì singleton (mặc định)
+@Scope("prototype")
+public class PaymentService {
+
+    private final PaymentRepository repo;
+
+    public PaymentService(PaymentRepository repo) {
+        this.repo = repo;
+    }
+
+    @Transactional
+    public void processPayment(PaymentRequest request) {
+        // logic xử lý thanh toán, save DB
+        repo.save(new Payment(request));
+    }
+
+    @Transactional(readOnly = true)
+    public Payment getPayment(String id) {
+        return repo.findById(id).orElseThrow();
+    }
+}`
+      },
+      {
+        name: 'thread-dump-prototype.txt',
+        lang: 'text',
+        content: `$ jstack 1 | grep -A5 "PaymentService" | head -40
+"http-nio-8080-exec-15" #45 daemon prio=5 os_prio=0 cpu=12.34ms elapsed=120.50s tid=0x00007f8b1c000000 nid=0x1234 waiting on condition [0x00007f8b0e0fe000]
+   java.lang.Thread.State: WAITING (parking)
+   at jdk.internal.misc.Unsafe.park(java.base@17.0.11/Native Method)
+   - parking to wait for  <0x00000000a1b2c3d4> (a java.util.concurrent.locks.AbstractQueuedSynchronizer$ConditionObject)
+   at java.util.concurrent.linkedTransferQueue.TransferQueue.poll(TransferQueue.java:1234)
+   at org.springframework.web.context.request.async.StandardServletAsyncWebRequest.waitForDispatch(StandardServletAsyncWebRequest.java:156)
+   - locked <0x00000000a1b2c3d4> (a java.util.concurrent.locks.AbstractQueuedSynchronizer$ConditionObject)
+   at org.springframework.web.context.request.async.WebAsyncManager.startCallableProcessing(WebAsyncManager.java:321)
+   at org.springframework.web.servlet.DispatcherServlet.doDispatch(DispatcherServlet.java:1089)
+
+# Nhiều thread http-nio-8080-exec-* đang giữ instance PaymentService$$EnhancerBySpringCGLIB$$*
+# Mỗi instance là prototype bean, được inject vào controller/request scope -> không bị GC cho đến khi request kết thúc
+# Nhưng request rate cao -> instance tích lũy -> proxy class tích lũy -> Metaspace đầy`
+      }
+    ],
+    questions: [
+      'Tại sao Metaspace tăng mãi dù heap ổn định? Trích dòng cụ thể trong GC log và jcmd class_stats.',
+      'Tại sao Full GC (Metadata GC Threshold) không làm Metaspace giảm? Proxy class bị ai giữ reference?',
+      'Chứng minh đây KHÔNG phải memory leak trong heap. Tăng MaxMetaspaceSize có phải lời giải gốc không?',
+      'Sửa ngắn hạn và dài hạn. Đổi scope singleton, cache proxy, hay tăng Metaspace?'
+    ],
+    hints: [
+      'GC log: Metaspace 380M->460M->500M->511M->512M, Full GC (Metadata GC Threshold) lặp lại nhưng Metaspace không giảm (460->460, 500->500, 511->511, 512->512).',
+      'jcmd: 2500+ class PaymentService$$EnhancerBySpringCGLIB$$* (mỗi class ~150-200 KB). Mỗi request tạo instance prototype -> Spring tạo CGLIB proxy subclass mới -> class mới define vào Metaspace.',
+      'Heap ổn định ~2.2 GB -> không phải heap leak. Vấn đề nằm ở Metaspace (native memory cho class metadata).',
+      'Tăng MaxMetaspaceSize 1G: Metaspace vẫn tăng mỗi request, chỉ trì hoãn sự cố. Full GC vẫn chạy dày, CPU vẫn tăng.'
+    ],
+    answer: `**Tóm tắt:** PaymentService khai báo **@Scope("prototype")** thay vì singleton (mặc định). Mỗi request inject service, Spring tạo instance mới, và do @Transactional trên class không implement interface, Spring dùng **CGLIB tạo subclass proxy mới** cho mỗi instance. Mỗi proxy là một class Java mới (PaymentService$$EnhancerBySpringCGLIB$$xxxxxxxx) define vào Metaspace. 2500+ request tạo 2500+ proxy class, Metaspace tăng từ 280 MB lên 512 MB, Full GC (Metadata GC Threshold) chạy liên tục nhưng không thu hồi được vì instance prototype vẫn được thread request giữ reference. Sửa gốc: **bỏ @Scope("prototype")**, dùng singleton (mặc định) cho service stateless.
+
+### Nguyên nhân gốc
+
+1. **Metaspace và class metadata:** Metaspace lưu tên class, method, bytecode, constant pool. Giống heap nhưng lưu class metadata. Bị giới hạn bởi {{-XX:MaxMetaspaceSize=512m}}.
+2. **Prototype scope + @Transactional = CGLIB proxy mới mỗi request:** @Service mặc định singleton. Khi thêm @Scope("prototype"), Spring tạo instance mới mỗi lần inject. @Transactional trên class không implement interface → Spring dùng CGLIB tạo **subclass proxy** cho instance đó. Mỗi instance prototype → **một proxy class mới**.
+3. **Proxy class không bị GC:** Class chỉ bị GC khi ClassLoader của nó bị GC (thường là khi ứng dụng shutdown) HOẶC khi class không còn instance sống VÀ class không còn được tham chiếu. Ở đây, instance prototype được inject vào controller/request-scoped bean, thread request giữ reference cho đến khi request kết thúc. Với traffic cao, hàng nghìn instance prototype sống đồng thời → hàng nghìn proxy class sống trong Metaspace.
+4. **Full GC không giảm Metaspace:** GC(201) {{Metaspace 460M->460M}}, GC(202) {{500M->500M}}, GC(203) {{511M->511M}}, GC(204) {{512M->512M}}. Vì proxy class vẫn có instance sống (thread request), class metadata vẫn là live data. Full GC chỉ quét, không thu hồi class còn reachable.
+5. **Tăng MaxMetaspaceSize không phải fix gốc:** Metaspace vẫn tăng mỗi request, chỉ bị chậm hơn. Cuối cùng cũng đầy, Full GC lặp lại mãi.
+
+### Dẫn chứng (trích dòng cụ thể trong artifact)
+
+| Thời điểm | Dòng log trích | Ý nghĩa |
+|---|---|---|
+| GC(200) 09:15 | {{Metaspace 380M->380M(512M)}} | Metaspace ban đầu 380 MB |
+| GC(201) 09:45 | {{Pause Full (Metadata GC Threshold)}}, {{Metaspace 460M->460M(512M)}} | Full GC đầu, Metaspace không giảm |
+| GC(202) 10:05 | {{Pause Full (Metadata GC Threshold)}}, {{Metaspace 500M->500M(512M)}} | Metaspace gần đầy |
+| GC(203) 10:25 | {{Pause Full (Metadata GC Threshold)}}, {{Metaspace 511M->511M(512M)}} | Metaspace 511/512 MB |
+| GC(204) 10:40 | {{Pause Full (Metadata GC Threshold)}}, {{Metaspace 512M->512M(512M)}} | Metaspace đầy, Full GC liên tục |
+| jcmd | {{2500+ class PaymentService\$\$EnhancerBySpringCGLIB\$\$*}} | Mỗi request tạo 1 proxy class mới, không bao giờ bị GC |
+| jcmd | {{Mỗi class ~150-200 KB metadata}} | 2500 class × 180 KB ≈ 450 MB Metaspace cho proxy |
+| Thread dump | {{Nhiều thread http-nio-8080-exec-* giữ instance PaymentService\$\$EnhancerBySpringCGLIB\$\$*}} | Instance prototype sống trong request, giữ proxy class alive |
+
+### Cách sửa
+
+**Ngắn hạn (giảm rủi ro ngay, deploy hôm nay):**
+1. **Tăng MaxMetaspaceSize tạm thời:** Tăng lên 1 GB để trì hoãn sự cố, nhưng KHÔNG phải fix gốc.
+2. **Giới hạn request rate:** Rate limit API thanh toán, giảm số instance prototype tạo đồng thời.
+
+**Dài hạn (sửa gốc, loại bỏ rò rỉ Metaspace):**
+1. **Bỏ @Scope("prototype") - KHUYẾN DÙNG:** Service stateless nên là **singleton** (mặc định của @Service). Chỉ cần xoá annotation @Scope("prototype").
+
+~~~java
+@Service
+// XÓA @Scope("prototype") - dùng singleton mặc định
+public class PaymentService {
+    // ...
+}
+~~~
+
+2. **Nếu BẮT BUỘC phải prototype (stateful service):** Dùng **scoped proxy** với interface, không dùng CGLIB subclass.
+
+~~~java
+@Service
+@Scope(value = "prototype", proxyMode = ScopedProxyMode.INTERFACES)
+public class PaymentService implements PaymentServiceInterface {
+    // Spring tạo JDK dynamic proxy cho interface, KHÔNG tạo CGLIB subclass
+    // JDK dynamic proxy class được cache/reuse, không tạo class mới mỗi instance
+}
+~~~
+
+3. **Hoặc tách transaction logic:** Bỏ @Transactional khỏi prototype bean, dùng {{TransactionTemplate}} hoặc {{PlatformTransactionManager}} thủ công trong method.
+
+### Phòng ngừa
+
+- Alert khi Metaspace > 80% MaxMetaspaceSize.
+- Theo dõi số lượng CGLIB proxy class qua {{jcmd GC.class_stats | grep EnhancerBySpringCGLIB}}.
+- Code review: **cấm @Scope("prototype") trên bean có @Transactional** (trừ khi dùng proxyMode=INTERFACES). Service stateless phải là singleton.
+- Spring Boot Actuator endpoint {{/actuator/beans}} kiểm tra scope bean.
+
+### Trả lời mẫu khi phỏng vấn
+
+"PaymentService bị khai báo @Scope('prototype') thay vì singleton. Mỗi request inject service, Spring tạo instance mới, và do @Transactional trên class không implement interface, Spring dùng CGLIB tạo subclass proxy mới cho mỗi instance. Mỗi proxy là class Java mới define vào Metaspace. 2500 request tạo 2500 proxy class, Metaspace tăng từ 280 MB lên 512 MB, Full GC (Metadata GC Threshold) chạy liên tục nhưng không giảm được vì instance prototype vẫn được thread request giữ. Sửa gốc là bỏ @Scope('prototype'), dùng singleton mặc định cho service stateless. Nếu bắt buộc prototype, phải dùng proxyMode=INTERFACES để Spring tạo JDK dynamic proxy (được cache) thay vì CGLIB subclass mới mỗi lần."
+
+> Senior tip: Prototype + @Transactional là "cặp giết Metaspace" kinh điển. Mỗi instance prototype = một CGLIB proxy class mới = metadata mới trong Metaspace không bao giờ được thu hồi cho đến khi instance chết. Quy tắc vàng: **Service stateless KHÔNG BAO GIỜ dùng prototype**. Nếu cần stateful, dùng request/session scope với proxyMode=INTERFACES, hoặc tách state vào object riêng. Giám sát Metaspace bằng {{jcmd GC.class_stats}} và alert khi Metaspace > 80% MaxMetaspaceSize.`,
+    rubric: [
+      'Giải thích đúng cơ chế: Metaspace lưu class metadata, prototype scope + @Transactional → CGLIB tạo subclass proxy mới mỗi instance → proxy class define vào Metaspace.',
+      'Dẫn chứng GC log: Metaspace 380M->460M->500M->511M->512M, Full GC (Metadata GC Threshold) không giảm Metaspace (460->460, 500->500, 511->511, 512->512).',
+      'Chứng minh không heap leak: heap ổn định ~2.2 GB, vấn đề nằm ở Metaspace (native memory cho class metadata).',
+      'Chỉ đúng code gây ra: PaymentService.java @Scope("prototype") + @Transactional → jcmd cho thấy 2500+ class PaymentService$$EnhancerBySpringCGLIB$$*.',
+      'Đề xuất có chiều sâu: bỏ @Scope("prototype") dùng singleton mặc định; nếu bắt buộc prototype thì dùng proxyMode=INTERFACES (JDK dynamic proxy cache); giải thích tăng MaxMetaspaceSize chỉ là workaround.'
+    ],
+    tags: ['metaspace', 'cglib', 'proxy', 'prototype', 'spring', 'transactional', 'full-gc', 'metadata-gc-threshold', 'scoped-proxy', 'jdk17']
   }
 );

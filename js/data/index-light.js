@@ -3167,6 +3167,8 @@ window.DATA_INDEX = {
     ["lab-gc-025","gc","Metaspace tăng mãi sau mỗi reload script: GroovyClassLoader mới mỗi lần, cache class không xóa","senior"],
     ["lab-gc-026","gc","Full GC (Ergonomics) 4.2 giây trên heap 24 GB dùng Parallel GC","senior"],
     ["lab-gc-027","gc","Young GC mỗi 300 ms do StringBuilder từ ghép chuỗi trong log.debug","senior"],
+    ["lab-gc-028","gc","Xử lý ảnh tải lên: humongous allocation từ BufferedImage và byte[] > 1MB khiến G1 Full GC","senior"],
+    ["lab-gc-029","gc","Metaspace tăng mãi do Spring AOP tạo CGLIB proxy mới mỗi request (@Transactional trên bean prototype)","senior"],
     ["lab-sql-001","sql","Báo cáo giao dịch trong ngày quét 42 triệu dòng dù đã có index","senior"],
     ["lab-sql-002","sql","Đơn hàng seller console chậm dù optimizer đã dùng index","mid"],
     ["lab-sql-003","sql","Lịch sử giao dịch ví: 101 câu SQL cho một request","senior"],
