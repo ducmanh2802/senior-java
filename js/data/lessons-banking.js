@@ -4627,6 +4627,860 @@ class CobGate {
     ],
     related: ['banking-001', 'banking-012', 'banking-009'],
     tags: ['core banking', 'T24', 'Temenos', 'integration', 'timeout', 'idempotency', 'UNKNOWN', 'COB', 'store-and-forward', 'reconciliation', 'value date', 'booking date'],
-  }
+  },
+  {
+    id: 'lesson-banking-015',
+    track: 'banking',
+    order: 15,
+    title: 'Sổ cái kế toán kép: tài khoản, số dư bình thường, sổ cân đối, báo cáo lãi lỗ và bảng cân đối',
+    level: 'senior',
+    minutes: 45,
+    goals: [
+      'Nêu được nguyên tắc kế toán kép: mỗi giao dịch có ít nhất một dòng Nợ và một dòng Có, tổng Nợ bằng tổng Có',
+      'Phân biệt số dư bình thường (tài sản, chi phí ghi Nợ; nợ, chủ sở hữu, doanh thu ghi Có) và cách tính số dư tài khoản',
+      'Xây dựng sổ cân đối: tổng số dư bên Nợ bằng tổng số dư bên Có, phát hiện lỗi sổ sách',
+      'Tính báo cáo lãi lỗ (doanh thu minus chi phí bang lãi/lỗ thuần) và bảng cân đối (tài sản bang nợ cộng chủ sở hữu)',
+      'Áp dụng quy tắc tài sản không được âm: giao dịch đưa tài sản về âm phải bị từ chối'
+    ],
+    body: `**Tóm tắt:** Kế toán kép (double-entry bookkeeping) là nền tảng của mọi sổ cái ngân hàng. Mỗi giao dịch ảnh hưởng đến ít nhất hai tài khoản: một phía ghi Nợ (debit), một phía ghi Có (credit), và tổng số tiền Nợ phải bằng tổng số tiền Có. Mỗi tài khoản thuộc một trong năm loại: tài sản, nợ, chủ sở hữu, doanh thu, chi phí — và mỗi loại có số dư bình thường (Nợ hoặc Có). Số dư hiện tại của một tài khoản là hiệu giữa tổng ghi Nợ và tổng ghi Có. Sổ cân đối (trial balance) kiểm tra tổng số dư Nợ bằng tổng số dư Có trên toàn bộ sổ cái. Báo cáo lãi lỗ tính doanh thu trừ chi phí. Bảng cân đối kiểm tra tài sản bằng nợ cộng chủ sở hữu. Trong ngân hàng, quy tắc quan trọng nhất là tài sản không được bị âm — giao dịch rút tiền phải kiểm tra số dư trước khi ghi sổ.
 
+### Kế toán kép: Nợ, Có và số dư bình thường
+
+Kế toán kép bắt đầu từ nguyên tắc đơn giản: mọi giao dịch có hai bên, và hai bên phải cân bằng bằng số tiền. Mỗi bút toán ghi vào ít nhất một tài khoản phía Nợ và ít nhất một tài khoản phía Có.
+
+| Loại tài khoản | Số dư bình thường | Ví dụ | Tăng bằng | Giảm bằng |
+|---|---|---|---|---|
+| Tài sản | Nợ | Tiền mặt, tiền gửi tại ngân hàng khác | Nợ | Có |
+| Nợ | Có | Vay ngân hàng, tiền gửi khách hàng | Có | Nợ |
+| Chủ sở hữu | Có | Vốn chủ sở hữu, lãi lũy kết | Có | Nợ |
+| Doanh thu | Có | Lãi nhận, phí dịch vụ | Có | Nợ |
+| Chi phí | Nợ | Lãi trả, phí nhân sự | Nợ | Có |
+
+Ví dụ: khách hàng gửi 10.000.000 VND vào tài khoản tiết kiệm. Từ góc nhìn ngân hàng:
+- Tài khoản "Tiền mặt" (tài sản, số dư bình thường Nợ) được ghi **Nợ** 10 triệu -> tiền mặt tăng.
+- Tài khoản "Tiền gửi khách hàng" (nợ, số dư bình thường Có) được ghi **Có** 10 triệu -> ngân hàng nợ khách hàng 10 triệu.
+
+Tổng Nợ = 10 triệu, tổng Có = 10 triệu, bút toán cân bằng.
+
+Ví dụ: khách hàng rút 5 triệu từ tài khoản tiết kiệm:
+- Tài khoản "Tiền gửi khách hàng" (nợ) được ghi **Nợ** 5 triệu -> nợ giảm.
+- Tài khoản "Tiền mặt" (tài sản) được ghi **Có** 5 triệu -> tiền mặt giảm.
+
+Tổng Nợ = 5 triệu, tổng Có = 5 triệu, bút toán vẫn cân bằng.
+
+### Số dư tài khoản
+
+Số dư hiện tại của một tài khoản là hiệu giữa tổng số đã ghi Nợ và tổng số đã ghi Có:
+- Với tài khoản có số dư bình thường là Nợ (tài sản, chi phí): số dư = tổng Nợ minus tổng Có. Nếu kết quả dương, tài khoản có nợ dư; nếu âm, tài khoản bị credited quá nhiều (lạ với tài sản).
+- Với tài khoản có số dư bình thường là Có (nợ, chủ sở hữu, doanh thu): số dư = tổng Có minus tổng Nợ.
+
+Ví dụ: tài khoản "Tiền mặt" có các bút toán: Nợ 10 triệu, Có 5 triệu. Số dư = 10 minus 5 = 5 triệu (nợ dư, đúng với tài sản).
+
+Quy tắc quan trọng trong ngân hàng: **tài sản không được bị âm**. Nếu một giao dịch rút tiền khiến số dư tài sản về âm, giao dịch phải bị từ chối. Ví dụ: tài khoản tiền mặt hiện 5 triệu, khách yêu cầu rút 8 triệu -> bút toán này sẽ làm tiền mặt về minus 3 triệu -> từ chối.
+
+### Sổ cân đối (Trial Balance)
+
+Sổ cân đối là báo cáo liệt kê số dư của mọi tài khoản, phân thành hai cột: số dư bên Nợ và số dư bên Có. Tổng cột Nợ phải bằng tổng cột Có. Nếu không bằng, sổ có lỗi.
+
+Sổ cân đối không đảm bảo sổ sách đúng 100% (ví dụ: sai nguyên bản, ghi thiếu cả hai phía, ghi vào tài khoản sai) nhưng nó là bước đầu tiên để phát hiện lỗi.
+
+### Báo cáo lãi lỗ (Income Statement)
+
+Báo cáo lãi lỗ tính kết quả kinh doanh trong một kỳ:
+Lãi/lỗ thuần = Tổng doanh thu minus Tổng chi phí.
+
+Doanh thu là tiền ngân hàng thu được (lãi nhận, phí dịch vụ). Chi phí là tiền ngân hàng chi ra (lãi trả, nhân sự, thuê phòng...). Nếu doanh thu lớn hơn chi phí -> lãi thuần; nếu nhỏ hơn -> lỗ thuần.
+
+### Bảng cân đối kế toán (Balance Sheet)
+
+Bảng cân đối kiểm tra phương trình kế toán:
+Tài sản = Nợ + Chủ sở hữu.
+
+Tài sản là những gì ngân hàng nắm (tiền mặt, tiền gửi tại ngân hàng khác, nợ vay ngắn hạn...). Nợ là những gì ngân hàng phải trả (tiền gửi khách hàng, vay ngắn hạn...). Chủ sở hữu là vốn của chủ sở hữu và lãi lũy kết.
+
+Nếu hai bên không bằng, báo cáo có lỗi và phải tra cứu trước khi công bố.
+
+### Ví dụ đời thực
+
+Một chi nhánh ngân hàng có sổ cái với các tài khoản: Tiền mặt (tài sản), Tiền gửi khách hàng (nợ), Lãi nhận (doanh thu), Lãi trả (chi phí), Vốn chủ sở hữu (chủ sở hữu).
+
+Trong một ngày:
+1. Khách A gửi 100 triệu: Tiền mặt Nợ 100 triệu, Tiền gửi khách hàng Có 100 triệu.
+2. Ngân hàng trả lãi cho khách A 5 triệu: Lãi trả Nợ 5 triệu, Tiền gửi khách hàng Có 5 triệu.
+3. Khách B gửi 50 triệu: Tiền mặt Nợ 50 triệu, Tiền gửi khách hàng Có 50 triệu.
+4. Ngân hàng cho vay doanh nghiệp 30 triệu: Tiền gửi tại ngân hàng khác (tài sản) Nợ 30 triệu, Tiền mặt Có 30 triệu.
+
+Số dư cuối ngày:
+- Tiền mặt: 100 + 50 minus 30 = 120 triệu (Nợ dư)
+- Tiền gửi khách hàng: 100 + 5 + 50 = 155 triệu (Có dư)
+- Lãi trả: 5 triệu (Nợ dư)
+- Tiền gửi ngân hàng khác: 30 triệu (Nợ dư)
+
+Sổ cân đối: cột Nợ = 120 + 5 + 30 = 155 triệu, cột Có = 155 triệu. Cân bằng.
+
+Báo cáo lãi lỗ: doanh thu = 0, chi phí (lãi trả) = 5 triệu, lỗ thuần = minus 5 triệu.
+
+Bảng cân đối: tài sản = 120 + 30 = 150 triệu; nợ = 155 triệu; chủ sở hữu = 0. 150 khong bang 155 + 0, lệch 5 triệu do lỗ thuần chưa được kết chuyển vào chủ sở hữu. Sau khi kết chuyển lỗ, chủ sở hữu giảm 5 triệu, bảng cân đối cân bằng.
+
+### Liên hệ phỏng vấn
+
+Khi phỏng vấn về sổ cái ngân hàng, hãy giải thích rõ: (1) mỗi giao dịch phải có ít nhất một dòng Nợ và một dòng Có, tổng hai bên bằng nhau; (2) mỗi loại tài khoản có số dư bình thường khác nhau, và số dư hiện tại tính theo hiệu Nợ/Có phù hợp; (3) tài sản không được bị âm — đây là quy tắc cốt lõi khi xử lý giao dịch rút tiền; (4) sổ cân đối là bước kiểm tra đầu tiên, tổng Nợ phải bằng tổng Có; (5) báo cáo lãi lỗ và bảng cân đối phải liên kết nhau qua kỳ lãi/lỗ được kết chuyển vào chủ sở hữu. Trong hệ thống thật, mọi bút toán phải có mã tham chiếu duy nhất, được ghi vào sổ cái bền vững, và đối soát hàng ngày với hệ thống giao dịch để phát hiện sai sổ sớm.
+
+> Senior tip: Trong production, không bao giờ cho phép giao dịch làm tài khoản tiền mặt hoặc tài sản tương đương về âm. Trước khi ghi bút toán rút tiền, phải kiểm tra số dư khả dụng (tính cả hạn mức và Hold). Nếu lỗi sổ cái xảy ra, việc khôi phục phải dựa trên nhật ký bút toán chi tiết (audit trail) kèm mã tham chiếu duy nhất, không được tự căn chỉnh số dư để "làm cho sổ cân đối bằng nhau" vì đó là vi phạm nghiêm trọng về kiểm toán.
+`,
+    exercises: [
+      {
+        title: 'GeneralLedger: kế toán kép, số dư tài khoản, sổ cân đối, báo cáo lãi lỗ, bảng cân đối',
+        prompt: `Xây dựng GeneralLedger (Java thuần, JDK 17, không class public ngoài Main) hỗ trợ kế toán kép:
+
+- enum AccountType { ASSET, LIABILITY, EQUITY, REVENUE, EXPENSE }
+- class Account { String code; String name; AccountType type; constructor(code, name, type) }
+- class LedgerLine { String accountCode; long debit; long credit; constructor(accountCode, debit, credit) }
+- class JournalEntry { String ref; List<LedgerLine> lines; constructor(ref, lines) }
+- class GeneralLedger co cac method:
+  - boolean isDebitNormal(AccountType type): tra true neu loai co so du binh thuong ben No (ASSET, EXPENSE)
+  - void addAccount(Account a): them tai khoan, khoi tong No/Co bang 0
+  - boolean post(JournalEntry entry): kiem tra tat ca tai khoan ton tai, tong No bang tong Co, tai san khong duoc am. Neu hop le thi ap dung va tra true; nguoc lai tra false va khong thay doi gi.
+  - long balance(String code): tra so du hien tai (dung cong thuc phu hop voi loai tai khoan)
+  - TrialBalance trialBalance(): tra bao cao, tong No bang tong Co
+  - IncomeStatement incomeStatement(): doanh thu minus chi phí bang loi/lai thuan
+  - BalanceSheet balanceSheet(): tai san, no, chu so huu
+
+Lop lop trong GeneralLedger: TrialBalance { long totalDebit, totalCredit; List<String[]> rows }, IncomeStatement { long revenue, expense, netIncome }, BalanceSheet { long assets, liabilities, equity }.
+`,
+        starter: `import java.util.*;
+
+enum AccountType { ASSET, LIABILITY, EQUITY, REVENUE, EXPENSE }
+
+class Account {
+    String code;
+    String name;
+    AccountType type;
+    Account(String code, String name, AccountType type) {
+        this.code = code; this.name = name; this.type = type;
+    }
+}
+
+class LedgerLine {
+    String accountCode;
+    long debit;
+    long credit;
+    LedgerLine(String accountCode, long debit, long credit) {
+        this.accountCode = accountCode; this.debit = debit; this.credit = credit;
+    }
+}
+
+class JournalEntry {
+    String ref;
+    List<LedgerLine> lines;
+    JournalEntry(String ref, List<LedgerLine> lines) {
+        this.ref = ref; this.lines = lines;
+    }
+}
+
+class GeneralLedger {
+    Map<String, Account> accounts = new LinkedHashMap<>();
+    Map<String, Long> debitSum = new HashMap<>();
+    Map<String, Long> creditSum = new HashMap<>();
+
+    boolean isDebitNormal(AccountType type) {
+        throw new UnsupportedOperationException("TODO");
+    }
+
+    void addAccount(Account a) {
+        throw new UnsupportedOperationException("TODO");
+    }
+
+    boolean post(JournalEntry entry) {
+        throw new UnsupportedOperationException("TODO");
+    }
+
+    long balance(String code) {
+        throw new UnsupportedOperationException("TODO");
+    }
+
+    TrialBalance trialBalance() {
+        throw new UnsupportedOperationException("TODO");
+    }
+
+    IncomeStatement incomeStatement() {
+        throw new UnsupportedOperationException("TODO");
+    }
+
+    BalanceSheet balanceSheet() {
+        throw new UnsupportedOperationException("TODO");
+    }
+
+    static class TrialBalance { long totalDebit, totalCredit; List<String[]> rows = new ArrayList<>(); }
+    static class IncomeStatement { long revenue, expense, netIncome; }
+    static class BalanceSheet { long assets, liabilities, equity; }
+}`,
+        tests: `public class Main {
+    static int passed = 0, total = 0;
+    static void check(String name, Object expected, Object actual) {
+        total++;
+        if (java.util.Objects.equals(expected, actual)) { passed++; System.out.println("PASS " + name); }
+        else System.out.println("FAIL " + name + ": expected " + expected + " got " + actual);
+    }
+
+    public static void main(String[] args) {
+        GeneralLedger gl = new GeneralLedger();
+        gl.addAccount(new Account("111", "Tien mat", AccountType.ASSET));
+        gl.addAccount(new Account("411", "Doanh thu", AccountType.REVENUE));
+        gl.addAccount(new Account("211", "No ngan hang", AccountType.LIABILITY));
+        gl.addAccount(new Account("511", "Chi phi", AccountType.EXPENSE));
+        gl.addAccount(new Account("311", "Von chu so huu", AccountType.EQUITY));
+
+        // 1) balance ban dau bang 0
+        check("balance_initial_cash", 0L, gl.balance("111"));
+        check("balance_initial_revenue", 0L, gl.balance("411"));
+
+        // 2) btuo can duoc: tien mat No 1000, doanh thu Co 1000
+        List<LedgerLine> lines1 = new ArrayList<>();
+        lines1.add(new LedgerLine("111", 1000, 0));
+        lines1.add(new LedgerLine("411", 0, 1000));
+        check("post_balanced", true, gl.post(new JournalEntry("E1", lines1)));
+        check("balance_cash_after", 1000L, gl.balance("111"));
+        check("balance_revenue_after", 1000L, gl.balance("411"));
+
+        // 3) btuo khong can duoc bi tu choi
+        List<LedgerLine> lines2 = new ArrayList<>();
+        lines2.add(new LedgerLine("111", 500, 0));
+        lines2.add(new LedgerLine("411", 0, 300));
+        check("post_unbalanced_rejected", false, gl.post(new JournalEntry("E2", lines2)));
+        check("balance_cash_still", 1000L, gl.balance("111"));
+
+        // 4) tai san khong duoc am: rut 2000 khi co 1000 -> bi tu choi
+        List<LedgerLine> lines3 = new ArrayList<>();
+        lines3.add(new LedgerLine("111", 0, 2000));
+        lines3.add(new LedgerLine("511", 2000, 0));
+        check("post_asset_negative_rejected", false, gl.post(new JournalEntry("E3", lines3)));
+        check("balance_cash_still2", 1000L, gl.balance("111"));
+
+        // 5) rut hop le 500: tien mat Co 500, chi phi No 500
+        List<LedgerLine> lines4 = new ArrayList<>();
+        lines4.add(new LedgerLine("111", 0, 500));
+        lines4.add(new LedgerLine("511", 500, 0));
+        check("post_expense", true, gl.post(new JournalEntry("E4", lines4)));
+        check("balance_cash_after_expense", 500L, gl.balance("111"));
+        check("balance_expense", 500L, gl.balance("511"));
+
+        // 6) so can doi: tong No = tong Co
+        GeneralLedger.TrialBalance tb = gl.trialBalance();
+        check("trial_balance_debit_equals_credit", tb.totalDebit, tb.totalCredit);
+
+        // 7) bao cao lai lo: doanh thu 1000, chi phi 500, lai 500
+        GeneralLedger.IncomeStatement is = gl.incomeStatement();
+        check("income_revenue", 1000L, is.revenue);
+        check("income_expense", 500L, is.expense);
+        check("income_net_profit", 500L, is.netIncome);
+
+        System.out.println("RESULT " + passed + "/" + total);
+    }
+}`,
+        reference: `import java.util.*;
+
+enum AccountType { ASSET, LIABILITY, EQUITY, REVENUE, EXPENSE }
+
+class Account {
+    String code;
+    String name;
+    AccountType type;
+    Account(String code, String name, AccountType type) {
+        this.code = code; this.name = name; this.type = type;
+    }
+}
+
+class LedgerLine {
+    String accountCode;
+    long debit;
+    long credit;
+    LedgerLine(String accountCode, long debit, long credit) {
+        this.accountCode = accountCode; this.debit = debit; this.credit = credit;
+    }
+}
+
+class JournalEntry {
+    String ref;
+    List<LedgerLine> lines;
+    JournalEntry(String ref, List<LedgerLine> lines) {
+        this.ref = ref; this.lines = lines;
+    }
+}
+
+class GeneralLedger {
+    Map<String, Account> accounts = new LinkedHashMap<>();
+    Map<String, Long> debitSum = new HashMap<>();
+    Map<String, Long> creditSum = new HashMap<>();
+
+    boolean isDebitNormal(AccountType type) {
+        return type == AccountType.ASSET || type == AccountType.EXPENSE;
+    }
+
+    void addAccount(Account a) {
+        accounts.put(a.code, a);
+        debitSum.putIfAbsent(a.code, 0L);
+        creditSum.putIfAbsent(a.code, 0L);
+    }
+
+    boolean post(JournalEntry entry) {
+        if (entry == null || entry.lines == null || entry.lines.isEmpty()) return false;
+        for (LedgerLine line : entry.lines) {
+            if (!accounts.containsKey(line.accountCode)) return false;
+        }
+        long totalDebit = 0, totalCredit = 0;
+        for (LedgerLine line : entry.lines) {
+            totalDebit += line.debit;
+            totalCredit += line.credit;
+        }
+        if (totalDebit != totalCredit) return false;
+        Map<String, Long> newDebit = new HashMap<>(debitSum);
+        Map<String, Long> newCredit = new HashMap<>(creditSum);
+        for (LedgerLine line : entry.lines) {
+            newDebit.merge(line.accountCode, line.debit, Long::sum);
+            newCredit.merge(line.accountCode, line.credit, Long::sum);
+        }
+        for (Map.Entry<String, Long> e : newDebit.entrySet()) {
+            String code = e.getKey();
+            Account acct = accounts.get(code);
+            if (acct != null && acct.type == AccountType.ASSET) {
+                long bal = e.getValue() - newCredit.getOrDefault(code, 0L);
+                if (bal < 0) return false;
+            }
+        }
+        debitSum = newDebit;
+        creditSum = newCredit;
+        return true;
+    }
+
+    long balance(String code) {
+        Account acct = accounts.get(code);
+        if (acct == null) return 0;
+        long d = debitSum.getOrDefault(code, 0L);
+        long c = creditSum.getOrDefault(code, 0L);
+        if (isDebitNormal(acct.type)) return d - c;
+        return c - d;
+    }
+
+    static class TrialBalance { long totalDebit, totalCredit; List<String[]> rows = new ArrayList<>(); }
+
+    TrialBalance trialBalance() {
+        TrialBalance tb = new TrialBalance();
+        for (Map.Entry<String, Account> e : accounts.entrySet()) {
+            String code = e.getKey();
+            Account acct = e.getValue();
+            long bal = balance(code);
+            if (isDebitNormal(acct.type)) {
+                tb.totalDebit += bal;
+                tb.rows.add(new String[]{code, acct.name, String.valueOf(bal), "0"});
+            } else {
+                tb.totalCredit += bal;
+                tb.rows.add(new String[]{code, acct.name, "0", String.valueOf(bal)});
+            }
+        }
+        return tb;
+    }
+
+    static class IncomeStatement { long revenue, expense, netIncome; }
+
+    IncomeStatement incomeStatement() {
+        IncomeStatement is = new IncomeStatement();
+        for (Map.Entry<String, Account> e : accounts.entrySet()) {
+            Account acct = e.getValue();
+            long bal = balance(e.getKey());
+            if (acct.type == AccountType.REVENUE) is.revenue += bal;
+            else if (acct.type == AccountType.EXPENSE) is.expense += bal;
+        }
+        is.netIncome = is.revenue - is.expense;
+        return is;
+    }
+
+    static class BalanceSheet { long assets, liabilities, equity; }
+
+    BalanceSheet balanceSheet() {
+        BalanceSheet bs = new BalanceSheet();
+        for (Map.Entry<String, Account> e : accounts.entrySet()) {
+            Account acct = e.getValue();
+            long bal = balance(e.getKey());
+            switch (acct.type) {
+                case ASSET: bs.assets += bal; break;
+                case LIABILITY: bs.liabilities += bal; break;
+                case EQUITY: bs.equity += bal; break;
+            }
+        }
+        return bs;
+    }
+}`,
+        hints: [
+          'isDebitNormal tra true cho ASSET va EXPENSE. addAccount khoi tao tong No/Co bang 0.',
+          'post phai kiem tra: tat ca tai khoan ton tai, tong No bang tong Co, va tai san khong duoc am sau khi ap dung. Dung ban sao de kiem tra truoc khi ghi.',
+          'balance tra hieu No-Co cho tai khoan so du No, va Co-No cho tai khoan so du Co.',
+          'TrialBalance sap xep tung tai khoan vao cot No hoac Co theo loai, tong hai phai bang. IncomeStatement lay doanh thu tru chi phi. BalanceSheet tong the loai tai san, no, chu so huu.',
+        ],
+        explain: `Ket qua cua post phai tu chung: neu bthuan khong can duoc (tong No khac tong Co hoac tai san am) thi tra false va bo qua. So du tai khoan tinh theo cong thuc phu hop voi loai: tai sap va chi phi co so du binh thuong ben No (No minus Co), con lai co so du binh thuong ben Co (Co minus No). Sổ cân đối phân loại mỗi tài khoản vào cột Nợ hoặc Có theo số dư bình thường, tổng hai cột phải bằng. Báo cáo lãi lỗ lấy doanh thu trừ chi phí. Bảng cân đối tổng hợp tài sản, nợ, chủ sở hữu.`,
+      },
+    ],
+    check: [
+      {
+        q: 'Trong ke toan kep, mot bút toan hop le phai thoa man dieu kien nao?',
+        options: [
+          'Chi co mot dong No hoac chi co mot dong Co',
+          'Tong so tien ghi No bang tong so tien ghi Co, va co it nhat mot dong No va mot dong Co',
+          'Chi can tong No lon hon tong Co',
+          'Tai khoan phai co ten tieng Viet'
+        ],
+        answer: 1,
+        explain: 'Dung (B): ke toan kep yeu cau tong No bang tong Co va it nhat mot dong o moi phai. Sai (A): phai co ca hai phai. Sai (C): tong No lon hon tong Co la btuan khong can duoc. Sai (D): ten tai khoan khong lien quan den can bang btuan.',
+      },
+      {
+        q: 'Tai khoan loai nao co so du binh thuong ben No (debit normal)?',
+        options: [
+          'No va chu so huu',
+          'Tai san va chi phi',
+          'Doanh thu va chu so huu',
+          'No va doanh thu'
+        ],
+        answer: 1,
+        explain: 'Dung (B): tai san va chi phi co so du binh thuong ben No. No, chu so huu va doanh thu co so du binh thuong ben Co.',
+      },
+      {
+        q: 'Quy tac "tai san khong duoc am" nghia la gi?',
+        options: [
+          'Tai khoan tai san co the co so du am neu khach rut qua han',
+          'Giao dich rut tien phai kiem tra so du truoc khi ghi, neu lam tai san am thi tu choi',
+          'Chi kiem tra so du tai cuoi ngay, khong can kiem tra luc giao dich',
+          'Quy tac chi ap dung cho tai khoan nguoi dung, khong ap dung cho tai khoan ngon ngan hang'
+        ],
+        answer: 1,
+        explain: 'Dung (B): truoc khi ghi bthuan rut tien, phai kiem tra xem so du tai san sau bthuan co am khong; neu am thi tu choi btuan. Sai (A): tai san khong bao giờ duoc am. Sai (C): phai kiem tra luc giao dich de tranh tai san am giua chay. Sai (D): quy tac ap dung tat ca tai khoan tai san.',
+      },
+      {
+        q: 'Bao cao nao kiem tra phuong trinh tai san = no + chu so huu?',
+        options: [
+          'Bao cao lai lo',
+          'So can doi',
+          'Bang can doi ke toan',
+          'Sach nhap kho'
+        ],
+        answer: 2,
+        explain: 'Dung (C): bang can doi ke toan kiem tra tai san = no + chu so huu. Bao cao lai lo tinh loi/lai thuan, so can doi kiem tra tong No bang tong Co.',
+      },
+    ],
+    related: ['banking-001', 'banking-005', 'banking-003'],
+    tags: ['ke toan kep', 'so cai', 'so can doi', 'tai chinh', 'tai san', 'no', 'chu so huu', 'lai lo', 'bang can doi'],
+  },
+  {
+    id: 'lesson-banking-016',
+    track: 'banking',
+    order: 16,
+    title: 'Doi soat nang cao: khop 1-1 chinh xac, sai so cho phep, khop 1-nhieu, va bao cao mat mot ben',
+    level: 'senior',
+    minutes: 40,
+    goals: [
+      'Mo ta cac kieu khop trong doi soat: 1-1 chinh xac, 1-1 voi sai so cho phep (tolerance), 1-nhieu, va giao dich chi co o mot ben',
+      'Xay dựng thuat toan doi soat xac dinh: khop chinh xac truoc, khop voi sai so sau, khop 1-nhieu cuoi cung, danh dau giao dich chua khop',
+      'Xay dựng bao cao doi soat chua danh sach da khop, giao dich thieu o moi ben, va tong ket so tien',
+      'Nhu hieu du lieu cua giao dich de khop hai he thong, va khong tu dong xoa hoac can chinh giao dich chua khop'
+    ],
+    body: `**Tóm tắt:** Đối soát (reconciliation) là quy trình so khớp dữ liệu giữa hai hệ thống để phát hiện sai sót, thiếu hoặc chênh lệch. Trong ngân hàng, đối soát thường diễn ra giữa hệ thống giao dịch (ngân hàng ngoài, mobile banking) và sổ cái core banking, hoặc giữa bản ghi đối tác (statement) của ngân hàng đối tác và sổ sách nội bộ. Đối soát nâng cao không chỉ khớp một-contra-một theo mã tham chiếu, mà còn xử lý trường hợp một giao dịch phía ngân hàng tương ứng với nhiều dòng trong sổ sách (1-nhiều), cho phép sai số nhỏ về số tiền (tolerance), và báo cáo giao dịch chỉ có ở một bên (one-side-only). Kết quả là báo cáo đối soát phân loại: đã khớp, sai số cho phép, chỉ có ở ngân hàng, chỉ có ở sổ sách.
+
+### Vì sao đối soát là bắt buộc
+
+Ngân hàng xử lý hàng triệu giao dịch mỗi ngày. Mỗi giao dịch có thể được ghi vào nhiều hệ thống: app khách hàng, hệ thống thanh toán, core banking, sổ cái kế toán, hệ thống thẻ... Do lỗi mạng, timeout, lỗi lập trình hoặc sự cố phần cứng, cùng một giao dịch có thể:
+- Có ở hệ thống giao dịch nhưng thiếu ở core (giao dịch bị mất)
+- Có ở core nhưng thiếu ở hệ thống giao dịch (giao dịch phantom)
+- Có ở cả hai nhưng số tiền khác (chênh lệch)
+- Có ở cả hai, số tiền bằng, nhưng mã tham chiếu khác (khó khớp)
+
+Nếu không đối soát, sai sót sẽ lũy dần và cuối cùng dẫn đến sai sổ cái, thiếu tiền, hoặc không thể phục hồi giao dịch khi khách khiếu nại. Đối soát là lưới an toàn cuối cùng.
+
+### Các kiểu khớp trong đối soát nâng cao
+
+1. Khớp 1-1 chính xác: giao dịch ở bên A và bên B có cùng mã tham chiếu và cùng số tiền → khớp ngay.
+2. Khớp 1-1 với sai số cho phép (tolerance): cùng mã tham chiếu, số tiền chênh lệch nhỏ (ví dụ dưới 0,5% hoặc dưới một số đồng cố định) → vẫn coi là khớp, ghi chép sai số để điều chỉnh.
+3. Khớp 1-nhiều: một giao dịch ở bên A (ví dụ tổng thu 10 triệu) tương ứng với nhiều dòng ở bên B (ví dụ 10 dòng thu 1 triệu) → tổng các dòng bên B phải bằng số tiền bên A.
+4. Chỉ có ở một bên (one-side-only): giao dịch có ở bên A nhưng không tìm thấy đối ứng ở bên B, hoặc ngược lại → cần điều tra.
+
+Thứ tự ưu tiên: khớp chính xác trước, rồi khớp với sai số cho phép, rồi khớp 1-nhiều, cuối cùng là đánh dấu một bên.
+
+### Xây dựng báo cáo đối soát
+
+Báo cáo đối soát phải chứa:
+- Danh sách các cặp đã khớp (mã bên A, mã bên B, số tiền A, số tiền B, trạng thái)
+- Danh sách giao dịch chỉ có ở bên A (mã, số tiền, tài khoản)
+- Danh sách giao dịch chỉ có ở bên B (mã, số tiền, tài khoản)
+- Tổng kết: tổng số tiền bên A, tổng số tiền bên B, số cặp khớp, số tiền khớp, số giao dịch thiếu ở mỗi bên
+
+Báo cáo này dùng để: (1) điều tra giao dịch thiếu, (2) điều chỉnh sổ sách, (3) báo cáo cho quản lý rủi ro và kiểm toán.
+
+### Ví dụ đời thực
+
+Hệ thống thanh toán thẻ ghi nhận 1.000 giao dịch trong ngày, tổng 500 triệu VND. Sổ cái core banking ghi nhận 998 giao dịch, tổng 498,5 triệu VND. Đối soát phát hiện:
+- 995 giao dịch khớp chính xác (cùng mã tham chiếu, cùng số tiền)
+- 2 giao dịch có sai số nhỏ (chênh lệch 500 và 1.000 VND do phí xử lý chưa ghi đúng) → khớp với tolerance, ghi chép để điều chỉnh
+- 1 giao dịch ở hệ thống thanh toán (3 triệu VND) không có ở core → giao dịch bị mất do lỗi mạng, cần tra cứu và điền vào core
+- 1 giao dịch ở core (1,5 triệu VND) không có ở hệ thống thanh toán → giao dịch fantasma, cần hủy hoặc điều chỉnh
+
+Sau khi xử lý: sổ cái được điều chỉnh, tổng hai bên bằng nhau, và lỗi mạng đã được khắc phục.
+
+### Liên hệ phỏng vấn
+
+Khi trả lời về đối soát, hãy nhấn mạnh: (1) đối soát phải chạy tự động hằng ngày, không chờ khách khiếu nại; (2) mỗi giao dịch phải có mã tham chiếu duy nhất dùng để khớp hai bên; (3) cần hỗ trợ các kiểu khớp khác nhau: 1-1 chính xác, 1-1 sai số cho phép, 1-nhiều, và báo cáo một bên; (4) giao dịch không khớp phải được điều tra, không được tự động xóa hoặc căn chỉnh; (5) báo cáo đối soát phải lưu trữ dài hạn để phục vụ kiểm toán. Trong phỏng vấnSenior, hãy nói về việc thiết kế luồng đối soát chịu lỗi (fault-tolerant), có khả năng chạy lại (idempotent), và có cảnh báo khi lệch vượt ngưỡng cho phép.
+
+> Senior tip: Đối soát không chỉ là so sánh số tổng — phải đối soát cả ở mức từng giao dịch theo mã tham chiếu. Tổng hai bên có thể bằng nhau nhưng che được sai lệch bù trừ (ví dụ: thiếu 1 triệu ở giao dịch A và thừa 1 triệu ở giao dịch B). Ngoài ra, đối soát phải xử lý đúng value date (ngày giá trị): giao dịch trong ngày hôm nay có thể chưa ghi vào core cho đến ngày làm việc tiếp theo, không nên hiểu nhầm là thiếu giao dịch.
+`,
+    exercises: [
+      {
+        title: 'AdvancedReconciler: khop 1-1 chinh xac, sai so cho phep, khop 1-nhieu, bao cao mat mot ben',
+        prompt: `Xây dựng AdvancedReconciler (Java thuần, JDK 17, không class public ngoài Main) đối soát hai danh sách giao dịch:
+
+- class Txn { String id; String account; long amount; constructor(id, account, amount) }
+- class Match { String bankId; String bookId; long bankAmount; long bookAmount; String status; constructor(...) }
+- class Report { List<Match> matches; List<String> unmatchedBank; List<String> unmatchedBook; long totalBank, totalBook, matchedBank, matchedBook }
+- class AdvancedReconciler { Report reconcile(List<Txn> bank, List<Txn> book, double tolerancePercent) }
+
+Thuật toán:
+1. Khop 1-1 chinh xac: cung account, so tien bang nhau -> MATCHED. Moi txn duoc su dung toi da mot lan.
+2. Khop 1-1 voi sai so: cung account, so tien trong tolerance (khong chinh xac) -> TOLERANCE.
+3. Khop 1-nhieu: mot bank txn = tong cac book txn cung account, trong tolerance -> ONE_TO_MANY (thu cap 2 book txn).
+4. Con lai: them vao unmatchedBank hoac unmatchedBook.
+
+Tinh toan tong: totalBank/totalBook la tong tat ca; matchedBank/matchedBook la tong cua cac da khop.
+withinTolerance(a, b, pct): tra true neu |a-b|/max(a,b) * 100 <= pct.
+`,
+        starter: `import java.util.*;
+
+class Txn { String id; String account; long amount; Txn(String id, String account, long amount) { this.id = id; this.account = account; this.amount = amount; } }
+
+class Match { String bankId; String bookId; long bankAmount; long bookAmount; String status; Match(String bankId, String bookId, long bankAmount, long bookAmount, String status) { this.bankId = bankId; this.bookId = bookId; this.bankAmount = bankAmount; this.bookAmount = bookAmount; this.status = status; } }
+
+class Report {
+    List<Match> matches = new ArrayList<>();
+    List<String> unmatchedBank = new ArrayList<>();
+    List<String> unmatchedBook = new ArrayList<>();
+    long totalBank, totalBook, matchedBank, matchedBook;
+}
+
+class AdvancedReconciler {
+    Report reconcile(List<Txn> bank, List<Txn> book, double tolerancePercent) {
+        throw new UnsupportedOperationException("TODO");
+    }
+
+    boolean withinTolerance(long a, long b, double pct) {
+        throw new UnsupportedOperationException("TODO");
+    }
+}`,
+        tests: `public class Main {
+    static int passed = 0, total = 0;
+    static void check(String name, Object expected, Object actual) {
+        total++;
+        if (java.util.Objects.equals(expected, actual)) { passed++; System.out.println("PASS " + name); }
+        else System.out.println("FAIL " + name + ": expected " + expected + " got " + actual);
+    }
+
+    public static void main(String[] args) {
+        List<Txn> bank = new ArrayList<>();
+        bank.add(new Txn("B1", "A", 1000));
+        bank.add(new Txn("B2", "A", 1005));
+        bank.add(new Txn("B3", "A", 3000));
+        bank.add(new Txn("B4", "A", 5000));
+
+        List<Txn> book = new ArrayList<>();
+        book.add(new Txn("O1", "A", 1000));
+        book.add(new Txn("O2", "A", 1000));
+        book.add(new Txn("O3", "A", 1000));
+        book.add(new Txn("O4", "A", 2000));
+        book.add(new Txn("O5", "A", 6000));
+
+        AdvancedReconciler rec = new AdvancedReconciler();
+        Report r = rec.reconcile(bank, book, 2.0);
+
+        // 1) 3 matches: B1-O1 exact, B2-O2 tolerance, B3-O3+O4 one-to-many
+        check("matched_count", 3, r.matches.size());
+
+        // 2) B1 matched O1 exactly
+        boolean foundB1O1 = false;
+        for (Match m : r.matches) {
+            if (m.bankId.equals("B1") && m.bookId.equals("O1") && m.status.equals("MATCHED")) foundB1O1 = true;
+        }
+        check("B1_matched_O1", true, foundB1O1);
+
+        // 3) B2 matched O2 within tolerance (1005 vs 1000, diff 5, 0.5% <= 2%)
+        boolean foundB2O2 = false;
+        for (Match m : r.matches) {
+            if (m.bankId.equals("B2") && m.bookId.equals("O2") && m.status.equals("TOLERANCE")) foundB2O2 = true;
+        }
+        check("B2_matched_O2_tolerance", true, foundB2O2);
+
+        // 4) B3 matched O3+O4 one-to-many (3000 = 1000 + 2000)
+        boolean foundB3 = false;
+        for (Match m : r.matches) {
+            if (m.bankId.equals("B3") && m.status.equals("ONE_TO_MANY")) foundB3 = true;
+        }
+        check("B3_one_to_many", true, foundB3);
+
+        // 5) B4 unmatched
+        check("B4_unmatched", true, r.unmatchedBank.contains("B4"));
+
+        // 6) O5 unmatched
+        check("O5_unmatched", true, r.unmatchedBook.contains("O5"));
+
+        // 7) totals: totalBank = 1000+1005+3000+5000 = 10005, totalBook = 1000+1000+1000+2000+6000 = 11000
+        check("total_bank", 10005L, r.totalBank);
+        check("total_book", 11000L, r.totalBook);
+
+        System.out.println("RESULT " + passed + "/" + total);
+    }
+}`,
+        reference: `import java.util.*;
+
+class Txn { String id; String account; long amount; Txn(String id, String account, long amount) { this.id = id; this.account = account; this.amount = amount; } }
+
+class Match { String bankId; String bookId; long bankAmount; long bookAmount; String status; Match(String bankId, String bookId, long bankAmount, long bookAmount, String status) { this.bankId = bankId; this.bookId = bookId; this.bankAmount = bankAmount; this.bookAmount = bookAmount; this.status = status; } }
+
+class Report {
+    List<Match> matches = new ArrayList<>();
+    List<String> unmatchedBank = new ArrayList<>();
+    List<String> unmatchedBook = new ArrayList<>();
+    long totalBank, totalBook, matchedBank, matchedBook;
+}
+
+class AdvancedReconciler {
+    Report reconcile(List<Txn> bank, List<Txn> book, double tolerancePercent) {
+        Report r = new Report();
+        Set<String> usedBank = new HashSet<>();
+        Set<String> usedBook = new HashSet<>();
+
+        // Pass 1: 1-to-1 exact match (same account, exact amount)
+        for (Txn b : bank) {
+            if (usedBank.contains(b.id)) continue;
+            for (Txn o : book) {
+                if (usedBook.contains(o.id)) continue;
+                if (!b.account.equals(o.account)) continue;
+                if (b.amount == o.amount) {
+                    r.matches.add(new Match(b.id, o.id, b.amount, o.amount, "MATCHED"));
+                    usedBank.add(b.id);
+                    usedBook.add(o.id);
+                    break;
+                }
+            }
+        }
+
+        // Pass 2: 1-to-1 tolerance match (same account, within tolerance, not exact)
+        for (Txn b : bank) {
+            if (usedBank.contains(b.id)) continue;
+            for (Txn o : book) {
+                if (usedBook.contains(o.id)) continue;
+                if (!b.account.equals(o.account)) continue;
+                if (withinTolerance(b.amount, o.amount, tolerancePercent)) {
+                    r.matches.add(new Match(b.id, o.id, b.amount, o.amount, "TOLERANCE"));
+                    usedBank.add(b.id);
+                    usedBook.add(o.id);
+                    break;
+                }
+            }
+        }
+
+        // Pass 3: 1-to-many match (one bank txn = sum of two unused book txns on same account, within tolerance)
+        for (Txn b : bank) {
+            if (usedBank.contains(b.id)) continue;
+            List<Txn> candidates = new ArrayList<>();
+            for (Txn o : book) {
+                if (!usedBook.contains(o.id) && o.account.equals(b.account) && o.amount <= b.amount) {
+                    candidates.add(o);
+                }
+            }
+            boolean matched = false;
+            for (int i = 0; i < candidates.size() && !matched; i++) {
+                for (int j = i + 1; j < candidates.size() && !matched; j++) {
+                    Txn o1 = candidates.get(i);
+                    Txn o2 = candidates.get(j);
+                    long sum = o1.amount + o2.amount;
+                    if (withinTolerance(b.amount, sum, tolerancePercent)) {
+                        r.matches.add(new Match(b.id, o1.id + "+" + o2.id, b.amount, sum, "ONE_TO_MANY"));
+                        usedBank.add(b.id);
+                        usedBook.add(o1.id);
+                        usedBook.add(o2.id);
+                        matched = true;
+                    }
+                }
+            }
+        }
+
+        // Pass 4: unmatched + totals
+        for (Txn b : bank) {
+            r.totalBank += b.amount;
+            if (!usedBank.contains(b.id)) r.unmatchedBank.add(b.id);
+        }
+        for (Txn o : book) {
+            r.totalBook += o.amount;
+            if (!usedBook.contains(o.id)) r.unmatchedBook.add(o.id);
+        }
+        for (Match m : r.matches) {
+            r.matchedBank += m.bankAmount;
+            r.matchedBook += m.bookAmount;
+        }
+
+        return r;
+    }
+
+    boolean withinTolerance(long a, long b, double pct) {
+        if (a == 0 && b == 0) return true;
+        long diff = Math.abs(a - b);
+        long base = Math.max(a, b);
+        return diff * 100.0 / base <= pct;
+    }
+}`,
+        hints: [
+          'Moi txn chi duoc su dung mot lan: dung Set<String> usedBank, usedBook de danh dau.',
+          'Thu tu: khop chinh xac (Pass 1) -> khop voi sai so (Pass 2) -> khop 1-nhieu (Pass 3) -> danh dau chua khop (Pass 4).',
+          'withinTolerance(a,b,pct) = |a-b| / max(a,b) * 100 <= pct. Neu ca hai bang 0 tra true.',
+          'Khop 1-nhieu thu cap 2 book txn: tong hai book txn phai trong tolerance voi bank txn.',
+        ],
+        explain: `Thuat toan chay 4 vong: (1) khop chinh xac cung account va so tien, (2) khop trong sai so cho phep, (3) khop 1-nhieu (mot bank txn bang tong hai book txn), (4) danh dau con lai la chua khop va tinh tong. Moi txn chi duoc su dung mot lan. Ket qua bao cao cac da khop, giao dich thue o moi ben, va tong ket so tien. Trong he thong thuc, giao dich chua khop phai duoc dieu tra, khong tu dong xoa hay can chinh.`,
+      },
+    ],
+    check: [
+      {
+        q: 'Thu tu uu tien trong doi soat nang cao la gi?',
+        options: [
+          'Khop 1-nhieu dau tien, sau do khop chinh xac, cuoi cung la khop voi sai so',
+          'Khop chinh xac truoc, roi khop voi sai so cho phep, roi khop 1-nhieu, cuoi cung danh dau mot ben',
+          'Chi khop chinh xac, khong cho phep sai so',
+          'Danh dau tat ca giao dich la chua khop roi moi kiem tra'
+        ],
+        answer: 1,
+        explain: 'Dung (B): thu tu la khop chinh xac -> khop voi sai so -> khop 1-nhieu -> danh dau mot ben. Sai (A): khop 1-nhieu phuc tap hon, can sau khi khop don gian. Sai (C): khong cho phep sai so se mat nhieu giao dich co sai so nho. Sai (D): danh dau tat la chua khop khong co nghia.',
+      },
+      {
+        q: 'Giao dich chi co o mot ben (one-side-only) can duoc xu ly nhu the nao?',
+        options: [
+          'Tu dong xoa de sap sap sach',
+          'Tu dong them vao ben khong co de can bang',
+          'Dieu tra de tim nguyen nhan, khong tu dong xoa hoac can chinh',
+          'Bo qua vi khong anh huong den tong'
+        ],
+        answer: 2,
+        explain: 'Dung (C): giao dich chi co o mot ben can dieu tra de tim nguyen nhan (loi mang, btuan bi mat, btuan ma). Khong duoc tu dong xoa hoac can chinh vi do lam mat du lieu. Sai (A): xoa mat du lieu. Sai (B): them btuan ao de can bang la vi pham kiem toan. Sai (D): tong co the bang nhau nhung che duoc sai lech bu tru.',
+      },
+      {
+        q: 'Tai sao tong hai ben co the bang nhau nhung van can doi soat tung giao dịch?',
+        options: [
+          'Tong bang nhau nghia la tat ca giao dich deu dung',
+          'Tong bang nhau co the che duoc sai lech bu tru (thieu tai giao dich A va thua tai giao dich B)',
+          'Doi soat tong la du, khong can kiem tra tung giao dịch',
+          'Chu chi can doi soat khi tong khac nhau'
+        ],
+        answer: 1,
+        explain: 'Dung (B): tong bang nhau khong chung nghia tat ca giao dich deu dung; co the co btuan bi mat o ben A va btuan ma o ben B voi so tien bang nhau. Phai doi soat tung giao dịch theo ma tham khoi de phat hien. Sai (A): tong bang nhau khong dam bao chinh xac. Sai (C): can kiem tra tung giao dịch. Sai (D): phai doi soat hang ngay khong chi khi tong lech.',
+      },
+    ],
+    related: ['banking-002', 'banking-005', 'banking-012'],
+    tags: ['doi soat', 'reconciliation', 'khop', 'tolerance', 'mot ben', 'tai chinh', 'so cai']
+  },
+  {
+    id: 'lesson-banking-017',
+    track: 'banking', order: 17,
+    title: 'Sổ cái double-entry: ghi bút toán Nợ/Có, kiểm tra cân bằng và cấm số dư âm',
+    level: 'senior', minutes: 30,
+    goals: ['Hiểu bút toán kép Nợ/Có và vì sao tổng Nợ phải bằng tổng Có', 'Viết code ghi bút toán với kiểm tra cân bằng', 'Chặn số dư âm khi trích tiền'],
+    body: `**Tóm tắt:** Mỗi giao dịch tài chính là một bút toán có ít nhất 2 dòng: tổng tiền bên Nợ (debit) phải bằng tổng tiền bên Có (credit). Sổ cái là append-only; sửa sai bằng bút toán đảo. Code phải kiểm tra cân bằng trước khi lưu và không cho số dư âm.
+
+### Bút toán kép là gì
+Một giao dịch chuyển 100.000đ từ tài khoản A sang B:
+- Dòng 1: A -100.000 (credit, giảm) — tài khoản A bị ghi Có
+- Dòng 2: B +100.000 (debit, tăng) — tài khoản B bị ghi Nợ
+Tổng Nợ = Tổng Có = 100.000. Không có tiền sinh ra hay mất đi.
+
+Trong kế toán kép, Nợ và Có không nghĩa là âm/dương mà là hai phía của một bút toán. Tài khoản loại Tài sản và Chi phí có số dư bình thường ở bên Nợ (tăng bằng Nợ, giảm bằng Có). Tài khoản loại Nợ, Chủ sở hữu, Doanh thu có số dư bình thường ở bên Có (tăng bằng Có, giảm bằng Nợ).
+
+### Vì sao cần cân bằng
+Nếu chỉ ghi 1 dòng, tổng hệ thống lệch — tiền có thể bị sinh ra từ cõi không hoặc biến mất vô cớ. Kiểm tra cân bằng là invariant bắt buộc của sổ cái: mọi bút toán phải thỏa mãn tổng Nợ bằng tổng Có. Nếu lệch, từ chối toàn bộ bút toán, không ghi gì cả.
+
+Ví dụ: một bút toán rút tiền ghi Nợ cho tài khoản tiền mặt nhưng quên ghi Có cho tài khoản nợ khách hàng → tổng Nợ tăng 50 triệu, tổng Có không đổi → sổ cái bị lệch 50 triệu. Nếu không kiểm tra, sai số sẽ lũy dần.
+
+### Không cho số dư âm
+Khi trích tiền từ A, kiểm tra số dư A >= số tiền. Nếu không đủ, từ chối giao dịch ngay trước khi ghi bất kỳ dòng nào. Dùng long (đơn vị đồng) để tránh sai số làm tròn của float/double.
+
+Trong ngân hàng, tài sản không bao giờ được âm — đây là quy tắc cốt lõi. Một tài khoản tiền mặt có 5 triệu, khách rút 8 triệu → bút toán này sẽ làm tiền mặt về âm 3 triệu → từ chối. Quy tắc này áp dụng cho tất cả tài khoản loại tài sản.
+
+### Cơ chế chi tiết
+Mỗi bút toán phải có ít nhất 2 dòng (có thể nhiều hơn, ví dụ một giao dịch chuyển tiền ghi Nợ cho tài khoản đích, Có cho tài khoản nguồn, và Có thêm cho tài khoản phí). Tổng Nợ = Tổng Có. Nếu lệch, từ chối. Số dư âm bị chặn. Dùng long cho tiền.
+
+Sổ cái chỉ ghi thêm (append-only): không bao giờ UPDATE hoặc DELETE dòng đã ghi. Để sửa sai, ghi bút toán đảo (reversal) với mã tham chiếu đến bút toán gốc. Để tránh ghi trùng do retry, dùng mã idempotency (txId) làm khóa duy nhất — ghi lại cùng txId là no-op.
+
+### Ví dụ đời thực
+Ngân hàng xử lý 10 triệu giao dịch/ngày. Một bug ghi 1 dòng cho một giao dịch chuyển khoản → lệch 1 tỷ đồng sau 1 tháng. Kiểm tra cân bằng phát hiện ngay tại thời điểm ghi, từ chối bút toán lỗi, hệ thống không bị lệch sổ.
+
+Kịch bản khác: khách hàng chuyển 100 triệu, hệ thống ghi Nợ cho tài khoản nguồn nhưng timeout trước khi ghi Có cho tài khoản đích. Vì kiểm tra cân bằng, bút toán bị từ chối hoàn toàn, không có dòng Nợ đơn lẻ nào bị lưu.
+
+### Chi tiết thêm
+Kiểm tra cân bằng trước khi commit. Sổ cái append-only. Sửa bằng bút toán đảo. Số dư âm bị chặn ở service. Mọi bút toán phải có mã tham chiếu duy nhất (txId). Hàng ngày đối soát sổ cái với hệ thống giao dịch để phát hiện sai sớm.
+
+Trong hệ thống production, sổ cái thường được phân chia theo module (tiền mặt, chuyển khoản, thẻ, vay...) nhưng tổng số dư toàn hệ thống vẫn phải cân bằng. Mỗi module có thể dùng shard riêng nhưng tổng hợp lại phải đúng phương trình kế toán.
+
+### Trả lời mẫu khi phỏng vấn
+Tôi luôn ghi bút toán kép với kiểm tra cân bằng tổng Nợ = Tổng Có trước khi commit. Sổ cái append-only — không UPDATE/DELETE, sửa bằng bút toán đảo (reversal) gắn txId để idempotent. Số dư âm bị chặn ngay ở tầng service bằng kiểm tra trước khi ghi. Với hệ thống phân tán, dùng saga hoặc two-phase commit để đảm bảo tính nguyên tử cross-shard.
+
+> Senior tip: Luôn kiểm tra cân bằng Nợ/Có trước khi commit; dùng long cho tiền. Không bao giờ cho phép tài sản về âm — đây là vi phạm nghiêm trọng về kiểm toán.`,
+    exercises: [{
+      title: 'Ghi bút toán kép',
+      prompt: 'Viết class Ledger với method post(entries) nhận danh sách {account, amount} (amount dương = debit, âm = credit). Kiểm tra tổng amount == 0. Nếu không, throw. Cập nhật số dư từng tài khoản. Nếu số dư âm, throw.',
+      starter: 'import java.util.*;\nclass Ledger {\n    private final Map<String, Long> balances = new HashMap<>();\n    void post(List<String[]> entries) {\n        throw new UnsupportedOperationException("TODO");\n    }\n    long balance(String account) { return balances.getOrDefault(account, 0L); }\n}',
+      tests: 'public class Main {\n    static int passed=0,total=0;\n    static void check(String name, boolean ok, String d){total++; if(ok){passed++;System.out.println("PASS "+name);}else System.out.println("FAIL "+name+": "+d);}\n    public static void main(String[] args){\n        Ledger l=new Ledger();\n        try{l.post(List.of(new String[]{"A","100"},new String[]{"A","-100"})); check("balanced post", l.balance("A")==0, "balances wrong");}catch(Exception e){check("balanced post", false, e.toString());}\n        try{l.post(List.<String[]>of(new String[]{"A","50"})); check("unbalanced rejected", false, "no throw");}catch(Exception e){check("unbalanced rejected", true, "");}\n        try{l.post(List.of(new String[]{"A","-200"},new String[]{"B","200"})); check("negative balance rejected", false, "no throw");}catch(Exception e){check("negative balance rejected", true, "");}\n        System.out.println("RESULT "+passed+"/"+total);\n    }\n}',
+      reference: 'import java.util.*;\nclass Ledger {\n    private final Map<String, Long> balances = new HashMap<>();\n    void post(List<String[]> entries) {\n        long sum=0; for(String[] e:entries) sum+=Long.parseLong(e[1]);\n        if(sum!=0) throw new IllegalArgumentException("unbalanced");\n        Map<String,Long> delta=new HashMap<>();\n        for(String[] e:entries){ delta.merge(e[0], Long.parseLong(e[1]), Long::sum); }\n        for(Map.Entry<String,Long> en:delta.entrySet()){\n            long nb=balances.getOrDefault(en.getKey(),0L)+en.getValue();\n            if(nb<0) throw new IllegalStateException("negative balance");\n            balances.put(en.getKey(), nb);\n        }\n    }\n    long balance(String account){return balances.getOrDefault(account,0L);}\n}',
+      hints: ['Tính tổng amount, phải = 0', 'Cập nhật số dư, chặn < 0'],
+      explain: 'Kiểm tra cân bằng trước, rồi cập nhật. Dùng long cho tiền.'
+    }],
+    check: [{q:'Tổng Nợ và Có trong một bút toán phải?', options:['Bằng nhau','Khác nhau','Bằng 0','Không quan trọng'], answer:0, explain:'Tổng Nợ = Tổng Có.'},{q:'Khi số dư âm xảy ra thì sao?', options:['Cho phép','Từ chối giao dịch','Tự động vay','Bỏ qua'], answer:1, explain:'Từ chối giao dịch.'}],
+    related: ['banking-005'], tags: ['ledger','double-entry','balance']
+  },
+  {
+    id: 'lesson-banking-018',
+    track: 'banking', order: 18,
+    title: 'Đối soát: so khớp hai danh sách giao dịch theo mã tham chiếu',
+    level: 'senior', minutes: 30,
+    goals: ['Hiểu các loại kết quả đối soát: khớp, lệch số tiền, chỉ có một bên', 'Viết code so khớp hai list theo ref', 'Phân loại và báo cáo'],
+    body: `**Tóm tắt:** Đối soát so sánh giao dịch nội bộ với đối tác theo mã tham chiếu (ref). Kết quả: khớp (matched), lệch số tiền (amount mismatch), chỉ có ở một bên (one-side). Phải xử lý từng dòng, không chỉ tổng.
+
+### Các loại kết quả
+- Matched: cùng ref, cùng số tiền — giao dịch khớp hoàn toàn.
+- AmountMismatch: cùng ref, khác số tiền — cần điều tra vì có thể do lỗi ghi sổ, phí xử lý, hoặc lỗi làm tròn.
+- OnlyInternal: giao dịch có ở hệ thống nội bộ nhưng không có ở đối tác — có thể bị mất do timeout, lỗi mạng, hoặc đối tác chưa xử lý.
+- OnlyPartner: giao dịch có ở đối tác nhưng không có ở hệ thống nội bộ — có thể là giao dịch phantom (bóng ma), cần hủy hoặc điều chỉnh.
+
+### Vì sao cần từng dòng
+Tổng có thể bằng nhau nhưng sai lệch bù trừ. Ví dụ: thiếu 1 triệu ở giao dịch A và thừa 1 triệu ở giao dịch B — tổng hai bên vẫn bằng nhau nhưng cả hai giao dịch đều sai. Chỉ so tổng không phát hiện. Đối soát phải kiểm tra từng dòng theo mã tham chiếu (ref) duy nhất.
+
+### Cơ chế chi tiết
+So khớp theo ref. Phân loại 4 nhóm kết quả. Báo cáo chi tiết từng nhóm. Không tự động sửa — mọi giao dịch không khớp phải được điều tra thủ công hoặc theo quy trình tự động có kiểm soát.
+
+Quy trình đối soát thường chạy theo lô (batch) vào cuối ngày (end-of-day) hoặc hàng giờ (hourly). Đầu vào là hai danh sách giao dịch: từ hệ thống nội bộ và từ file/dịch vụ đối tác. Mỗi giao dịch có mã tham chiếu (ref) duy nhất, số tiền (amount), và tài khoản (account). Thuật toán khớp theo ref: tìm cặp có cùng ref, so sánh amount. Nếu khớp → matched. Nếu ref tồn tại ở cả hai bên nhưng amount khác → amount mismatch. Nếu ref chỉ có ở một bên → one-side.
+
+Trong hệ thống thực, đối soát phải xử lý tolerance (sai số cho phép) cho các trường hợp làm tròn. Ví dụ: giao dịch 1000đ vs 1000.0001đ — cùng số tiền sau làm tròn nhưng khác chút ít do floating point. Tolerance cho phép coi là khớp nếu chênh lệch dưới ngưỡng.
+
+### Ví dụ đời thực
+Đối tác gửi file 10.000 giao dịch. Hệ thống nội bộ có 9.998. 2 giao dịch bị mất do timeout — đối tác ghi nhận nhưng hệ thống nội bộ chưa ghi. Đối soát phát hiện 2 giao dịch only partner, cần tra cứu và điền vào core banking.
+
+Kịch bản khác: đối tác báo 500 triệu, nội bộ báo 499 triệu. Đối soát phát hiện 1 giao dịch lệch 1 triệu — có thể do phí xử lý 1 triệu chưa được ghi đúng. Điều tra và điều chỉnh sổ sách.
+
+### Chi tiết thêm
+Tổng bằng nhau không đảm bảo mọi giao dịch khớp. Cần so từng dòng theo ref. Xử lý tolerance cho làm tròn. Đối soát phải idempotent — chạy lại cùng dữ liệu phải cho kết quả giống nhau. Báo cáo phải lưu trữ để phục vụ kiểm toán (audit trail).
+
+### Trả lời mẫu khi phỏng vấn
+Tôi đối soát theo mã tham chiếu (ref), phân loại 4 nhóm kết quả (matched, amount mismatch, only internal, only partner), báo cáo chi tiết từng nhóm, không tự động sửa. Mọi giao dịch không khớp phải được điều tra. Đối soát chạy tự động hàng ngày, lưu báo cáo dài hạn phục vụ kiểm toán, và có cảnh báo khi tỷ lệ lệch vượt ngưỡng cho phép.
+
+> Senior tip: Luôn đối soát từng giao dịch theo ref, không chỉ tổng. Tổng bằng nhau có thể che sai lệch bù trừ.`,
+    exercises: [{
+      title: 'So khớp giao dịch',
+      prompt: 'Viết method reconcile(internal, partner) trả về counts: matched, mismatch, onlyInternal, onlyPartner. Mỗi giao dịch có {ref, amount}.',
+      starter: 'import java.util.*;\nclass Reconciler {\n    static class Tx { String ref; long amount; Tx(String r,long a){ref=r;amount=a;} }\n    static class Result { int matched, mismatch, onlyInternal, onlyPartner; }\n    Result reconcile(List<Tx> internal, List<Tx> partner) {\n        throw new UnsupportedOperationException("TODO");\n    }\n}',
+      tests: 'public class Main {\n    static int passed=0,total=0;\n    static void check(String name, boolean ok, String d){total++; if(ok){passed++;System.out.println("PASS "+name);}else System.out.println("FAIL "+name+": "+d);}\n    public static void main(String[] args){\n        Reconciler r=new Reconciler();\n        List<Reconciler.Tx> in=List.of(new Reconciler.Tx("R1",100), new Reconciler.Tx("R2",200), new Reconciler.Tx("R3",300));\n        List<Reconciler.Tx> pa=List.of(new Reconciler.Tx("R1",100), new Reconciler.Tx("R2",250), new Reconciler.Tx("R4",400));\n        Reconciler.Result res=r.reconcile(in,pa);\n        check("matched", res.matched==1, "matched="+res.matched);\n        check("mismatch", res.mismatch==1, "mismatch="+res.mismatch);\n        check("onlyInternal", res.onlyInternal==1, "onlyInternal="+res.onlyInternal);\n        check("onlyPartner", res.onlyPartner==1, "onlyPartner="+res.onlyPartner);\n        System.out.println("RESULT "+passed+"/"+total);\n    }\n}',
+      reference: 'import java.util.*;\nclass Reconciler {\n    static class Tx { String ref; long amount; Tx(String r,long a){ref=r;amount=a;} }\n    static class Result { int matched, mismatch, onlyInternal, onlyPartner; }\n    Result reconcile(List<Tx> internal, List<Tx> partner) {\n        Map<String,Long> p=new HashMap<>(); for(Tx t:partner) p.put(t.ref,t.amount);\n        Set<String> seen=new HashSet<>(); Result res=new Result();\n        for(Tx t:internal){ seen.add(t.ref);\n            if(p.containsKey(t.ref)){ if(p.get(t.ref)==t.amount) res.matched++; else res.mismatch++; }\n            else res.onlyInternal++;\n        }\n        for(Tx t:partner){ if(!seen.contains(t.ref)) res.onlyPartner++; }\n        return res;\n    }\n}',
+      hints: ['Dùng Map ref->amount cho partner', 'Duyệt internal, phân loại'],
+      explain: 'So khớp theo ref, 4 nhóm kết quả.'
+    }],
+    check: [{q:'Tổng bằng nhau có đảm bảo mọi giao dịch khớp?', options:['Có','Không, có thể sai lệch bu trù','Chỉ khi ref khớp','Luôn luôn'], answer:1, explain:'Tổng bằng nhau không đảm bảo; cần so từng dòng.'},{q:'Kết quả đối soát nào cần điều tra?', options:['Matched','AmountMismatch','OnlyInternal','Tất cả các loại lệch'], answer:3, explain:'Mọi lệch cần điều tra.'}],
+    related: ['banking-002'], tags: ['reconciliation','match','ref']
+  }
 );
