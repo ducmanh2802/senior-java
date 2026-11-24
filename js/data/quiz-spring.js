@@ -2761,6 +2761,247 @@ Khi một entity đã được cập nhật bởi một transaction khác, JPA p
 },
 
 {
+  id: 'qz-jpa-911',
+  topic: 'jpa',
+  q: `Transaction dùng {{ FlushModeType.COMMIT }}. Bạn load {{ Order }}, gọi {{ setTotalAmount(...) }} để thay đổi, sau đó ngay lập tức chạy {{ em.createQuery(...).getResultList() }} trong cùng transaction. Query có thấy giá trị mới vừa đổi chưa?`,
+  options: [
+    'Có, Hibernate tự động flush trước mỗi query trong mọi flush mode',
+    'Không, vì COMMIT chỉ flush khi commit, không flush tự động trước query',
+    'Hibernate ném exception vì dùng commit mode với query',
+    'Chỉ thấy nếu query là native SQL'
+  ],
+  answer: 1,
+  explain: `**Đáp án đúng: không thấy. FlushModeType.COMMIT chỉ flush khi commit, không tự động flush trước query.**
+
+### Vì sao đúng
+Flush mode quyết định thời điểm Hibernate đẩy các thay đổi trong persistence context xuống DB. Với {{ AUTO }} (mặc định), Hibernate flush trước query nếu query có thể bị ảnh hưởng bởi dữ liệu chưa flush. Với {{ COMMIT }}, Hibernate chờ đến khi commit mới flush, nên query chạy ngay sau khi setter chưa thấy thay đổi mới ở DB (thay đổi chỉ còn trong persistence context của transaction đó).
+
+### Vì sao các phương án còn lại sai
+- **Tự động flush trước mỗi query trong mọi mode**: sai, chỉ đúng với {{ AUTO }}.
+- **Ném exception**: commit mode hoàn toàn hợp lệ, không ném exception.
+- **Chỉ native SQL mới thấy**: sai, native SQL cũng đọc từ DB, chưa flush thì vẫn thấy dữ liệu cũ.
+
+> Senior tip: dùng {{ COMMIT }} khi muốn kiểm soát chặt lúc ghi, nhưng nhớ là query sau khi sửa chưa commit vẫn đọc dữ liệu cũ ở DB. Muốn query nhìn thấy dữ liệu vừa sửa, hãy gọi {{ em.flush() }} tường minh hoặc dùng {{ AUTO }}.`
+},
+
+{
+  id: 'qz-jpa-912',
+  topic: 'jpa',
+  q: `Gọi {{ orderRepo.getReference(1L) }} (hoặc {{ em.getReference }}), sau đó kết thúc transaction. Sau đó code truy cập {{ order.getItems() }}. Điều gì xảy ra?`,
+  options: [
+    'Ném lỗi ngay tại dòng gọi getReference',
+    'Trả về proxy, ném {{ LazyInitializationException }} khi lần đầu truy cập getItems',
+    'Trả về null vì transaction đã kết thúc',
+    'Tự động load dữ liệu từ DB mà không cần transaction'
+  ],
+  answer: 1,
+  explain: `**Đáp án đúng: trả về proxy, lỗi xảy ra ở lần đầu truy cập dữ liệu lazy.**
+
+### Vì sao đúng
+{{ getReference }} không truy vấn DB ngay; nó trả về proxy (lớp con runtime của {{ Order }}) và chỉ nạp dữ liệu khi bạn gọi getter lần đầu. Nếu session/persistence context đã đóng (transaction kết thúc), lần truy cập đầu tiên không thể chạy SQL nữa → ném {{ LazyInitializationException }}. Lỗi không xảy ra ở dòng {{ getReference }}.
+
+### Vì sao các phương án còn lại sai
+- **Lỗi ngay tại getReference**: sai, getReference không truy cập DB.
+- **Trả về null**: getReference luôn trả về proxy không null (nếu id hợp lệ theo kiểu khai báo).
+- **Tự động load**: session đã đóng, không còn EntityManager để chạy SQL.
+
+> Senior tip: cần dữ liệu quan hệ sau khi transaction kết thúc thì hãy nạp trong transaction ({{ JOIN FETCH }}, {{ @EntityGraph }}, hoặc {{ Hibernate.initialize() }}), đừng để controller/view truy cập proxy ngoài session.`
+},
+
+{
+  id: 'qz-jpa-913',
+  topic: 'jpa',
+  q: `Entity {{ Order }} có hai collection to-many {{ items }} và {{ shipments }} (cả hai {{ FetchType.LAZY }}). Bạn viết JPQL với {{ join fetch o.items join fetch o.shipments }}. Điều gì xảy ra?`,
+  options: [
+    'Chạy 1 câu SQL, hiệu quả nhất vì load hết trong một lần',
+    'Hibernate tự động chia thành 2 câu SQL cho 2 collection',
+    'Lỗi SQL ngay khi biên dịch JPQL',
+    'Tích Cartesian: số dòng kết quả nhân lên, dữ liệu thừa, làm chậm phân trang'
+  ],
+  answer: 3,
+  explain: `**Đáp án đúng: tích Cartesian, dữ liệu thừa.**
+
+### Vì sao đúng
+Join fetch một collection to-many nhân số dòng theo kích thước collection đó. Join fetch hai collection cùng lúc nhân thêm lần nữa (mỗi item kết hợp với mỗi shipment). Kết quả: số dòng trả về bằng items nhân shipments, chứa nhiều dữ liệu trùng lặp, tiêu tốn mạng và bộ nhớ; nếu kèm phân trang, LIMIT áp trên dòng đã bị nhân nên lấy thiếu order.
+
+### Vì sao các phương án còn lại sai
+- **1 câu SQL hiệu quả nhất**: câu SQL chỉ có 1, nhưng kết quả bị nhân dòng, không phải "hiệu quả nhất".
+- **Chia thành 2 câu SQL**: Hibernate không tự động chia join fetch collection thành nhiều câu.
+- **Lỗi SQL**: JPQL hoàn toàn hợp lệ, chỉ bị kém hiệu quả.
+
+> Senior tip: chỉ join fetch tối đa 1 collection to-many. Collection thứ hai hãy dùng {{ @BatchSize }} hoặc truy vấn riêng, tránh tích Cartesian.`
+},
+
+{
+  id: 'qz-jpa-914',
+  topic: 'jpa',
+  multi: true,
+  q: `Phân biệt {{ orphanRemoval }} và {{ CascadeType.REMOVE }} trong quan hệ cha-con. Những phát biểu nào đúng? (Chọn 2)`,
+  options: [
+    'orphanRemoval xóa con khi con bị gỡ khỏi danh sách của cha, dù cha vẫn còn tồn tại',
+    'CascadeType.REMOVE xóa con theo khi xóa cha',
+    'orphanRemoval có thể dùng trên quan hệ @ManyToMany',
+    'CascadeType.REMOVE xóa con ngay khi con bị gỡ khỏi danh sách cha'
+  ],
+  answer: [0, 1],
+  explain: `**Đáp án đúng: hai phát biểu đầu.**
+
+### Vì sao đúng
+- {{ orphanRemoval = true }}: con bị đánh dấu "mồ côi" và bị DELETE khi bị gỡ khỏi collection của cha (ví dụ {{ order.getItems().remove(item) }}), ngay cả khi order chưa bị xóa.
+- {{ cascade = CascadeType.REMOVE }}: khi xóa cha (xóa {{ Order }}), Hibernate lan truyền xóa xuống các {{ OrderItem }} con.
+
+### Vì sao các phương án còn lại sai
+- **@ManyToMany**: orphanRemoval chỉ áp cho {{ @OneToOne }} và {{ @OneToMany }}.
+- **Xóa con khi gỡ khỏi danh sách**: đó là hành vi của orphanRemoval, không phải CascadeType.REMOVE.
+
+> Senior tip: dùng orphanRemoval chỉ khi con thực sự không tồn tại riêng lẻ (mối quan hệ composition). Ví dụ OrderItem không có ý nghĩa nếu không thuộc Order. Quan hệ có thể chuyển cha (nhân viên chuyển phòng ban) không nên dùng orphanRemoval, vì "gỡ khỏi phòng cũ" sẽ xóa luôn nhân viên.`
+},
+
+{
+  id: 'qz-jpa-915',
+  topic: 'jpa',
+  q: `Tải {{ Order }} có {{ @Version }} bằng 3, trong transaction không thay đổi gì cả, rồi commit. Giá trị version sau commit là bao nhiêu?`,
+  options: [
+    'Giữ nguyên 3',
+    'Tăng thành 4 mỗi khi commit',
+    'Tăng thành 4 vì Hibernate flush lúc commit',
+    'Ném exception vì version không đổi'
+  ],
+  answer: 0,
+  explain: `**Đáp án đúng: giữ nguyên 3.**
+
+### Vì sao đúng
+Cột {{ @Version }} chỉ tăng khi Hibernate thực hiện câu {{ UPDATE }} cho entity, và chỉ khi entity đó bị dirty (có trường thay đổi so với snapshot). Load rồi commit không sửa gì → không có UPDATE → version không tăng.
+
+### Vì sao các phương án còn lại sai
+- **Tăng mỗi commit**: version không phải tăng theo mỗi lần commit, chỉ tăng khi có ghi thực sự.
+- **Flush lúc commit**: flush vẫn xảy ra, nhưng flush không sinh UPDATE nếu không có thay đổi.
+- **Ném exception**: không có xung đột version, không ném lỗi.
+
+> Senior tip: nếu bắt gặp version tăng khi "không đổi gì", hãy kiểm tra code có vô tình setter (ví dụ ngày cập nhật tự động) hay không.`
+},
+
+{
+  id: 'qz-jpa-916',
+  topic: 'jpa',
+  q: `Hai object {{ Order }} a và b được load từ DB, cùng id = 100 nhưng là hai instance khác nhau. Viết {{ equals }} so sánh theo id. Kết quả {{ a.equals(b) }} là gì?`,
+  options: [
+    'false vì chúng là hai instance khác nhau',
+    'Ném NullPointerException',
+    'true vì chúng đại diện cho cùng một hàng DB (cùng id)',
+    'Chỉ true khi a và b là cùng một instance'
+  ],
+  answer: 2,
+  explain: `**Đáp án đúng: true, vì equals theo id (định danh trong DB).**
+
+### Vì sao đúng
+Trong JPA, định danh của entity là khóa chính (id). Hai instance khác nhau của Java nhưng cùng id = 100 đại diện cho cùng một hàng trong bảng DB, nên theo hợp đồng equals của chúng ta (so sánh id) chúng bằng nhau. {{ a == b }} là false (so sánh tham chiếu Java), nhưng {{ a.equals(b) }} là true.
+
+### Vì sao các phương án còn lại sai
+- **false vì khác instance**: đó là hành vi của {{ == }}, không phải equals theo id.
+- **NPE**: id = 100 không null, không ném NPE.
+- **Chỉ true khi cùng instance**: gộp nhầm định danh Java và định danh DB.
+
+> Senior tip: equals/hashCode của entity nên dựa trên khóa nghiệp vụ bất biến (ví dụ mã SKU), không nên dùng id tự sinh vì id mới null trước khi persist (xem câu qz-jpa-012), và không nên bao gồm collection/quan hệ (tránh lazy load và đệ quy vô hạn).`
+},
+
+{
+  id: 'qz-jpa-917',
+  topic: 'jpa',
+  q: `Trong transaction A, bạn sửa {{ Order }} rồi gọi {{ em.flush() }} nhưng CHƯA commit. Transaction B đọc cùng hàng đó ngay sau đó (môi trường PostgreSQL mặc định READ COMMITTED). B transaction thấy giá trị mới chưa?`,
+  options: [
+    'Thấy ngay vì flush đã đẩy SQL xuống DB',
+    'Không thấy cho đến khi A commit (flush chỉ gửi SQL, chưa kết thúc transaction)',
+    'B bị chặn/khóa cho đến khi A commit',
+    'Chỉ thấy nếu B dùng isolation SERIALIZABLE'
+  ],
+  answer: 1,
+  explain: `**Đáp án đúng: không thấy cho đến khi A commit.**
+
+### Vì sao đúng
+{{ em.flush() }} ép Hibernate đẩy các câu SQL (INSERT/UPDATE/DELETE) persistence context xuống DB ngay, nhưng dữ liệu vẫn nằm trong transaction A chưa commit. Ở mức isolation READ COMMITTED (mặc định PostgreSQL), transaction B chỉ đọc dữ liệu đã commit, nên B vẫn thấy giá trị cũ cho đến khi A commit.
+
+### Vì sao các phương án còn lại sai
+- **Thấy ngay**: flush không bằng commit; dữ liệu chưa commit không nhìn được từ transaction khác ở READ COMMITTED.
+- **Bị chặn/khóa**: READ COMMITTED không khóa đọc vì ghi chưa commit của transaction khác (giám sát bằng MVCC).
+- **SERIALIZABLE**: mức cao hơn không giúp đọc dữ liệu chưa commit của transaction khác.
+
+> Senior tip: flush dùng để kịp sinh ID (IDENTITY) hoặc giữ thứ tự ghi, không dùng để "làm công khai" dữ liệu sớm. Muốn transaction khác thấy, phải commit.`
+},
+
+{
+  id: 'qz-jpa-918',
+  topic: 'jpa',
+  multi: true,
+  q: `Dùng repository method kèm {{ Pageable }} cùng với JPQL {{ join fetch o.items }} (collection to-many). Những phát biểu nào đúng? (Chọn 2)`,
+  options: [
+    'Hibernate áp LIMIT/OFFSET lên các dòng sau khi join (đã bị nhân do Cartesian)',
+    'Một trang có thể nhận ít Order hơn page size vì dòng trùng lặp bị tính vào',
+    '@EntityGraph tự động khắc phục hoàn toàn vấn đề phân trang này',
+    'Join fetch collection là cách tối ưu nhất cho phân trang'
+  ],
+  answer: [0, 1],
+  explain: `**Đáp án đúng: hai phát biểu đầu.**
+
+### Vì sao đúng
+Join fetch collection to-many nhân số dòng (mỗi order có nhiều items → nhiều dòng). JPA/Spring Data áp {{ firstResult }}/{{ maxResults }} lên tập dòng kết quả đã join, không phải trên số entity riêng lẻ. Vậy một trang 20 dòng có thể chỉ chứa 5-6 order duy nhất, kèm dữ liệu trùng lặp.
+
+### Vì sao các phương án còn lại sai
+- **EntityGraph khắc phục hoàn toàn**: sai, EntityGraph fetch collection cũng gây fan-out dòng; nó không magic Away vấn đề phân trang.
+- **Tối ưu nhất cho phân trang**: sai, join fetch collection kèm phân trang là antipattern.
+
+> Senior tip: phân trang + fetch collection to-many hãy tránh. Cách làm an toàn: truy vấn id có phân trang, rồi load chi tiết; hoặc dùng {{ @BatchSize }}; hoặc chỉ join fetch quan hệ to-one.`
+},
+
+{
+  id: 'qz-jpa-919',
+  topic: 'jpa',
+  q: `Entity {{ Product }} có mã SKU (không bao giờ đổi), id tự sinh và collection {{ reviews }}. Cách viết {{ equals }}/{{ hashCode }} an toàn nhất là theo nguyên tắc nào?`,
+  options: [
+    'Dùng Lombok {{ @Data }} trên toàn bộ field',
+    'So sánh theo id tự sinh',
+    'So sánh theo khóa nghiệp vụ bất biến (SKU), không bao gồm collection hay quan hệ',
+    'Dùng {{ getClass().hashCode() }} hằng số cho mọi entity'
+  ],
+  answer: 2,
+  explain: `**Đáp án đúng: so sánh theo khóa nghiệp vụ bất biến (SKU), không bao gồm collection/quan hệ.**
+
+### Vì sao đúng
+Mã SKU là khóa nghiệp vụ, không đổi trong vòng đời entity → hashCode ổn định, object trong HashSet/HashMap không "bị mất". Không bao gồm collection/quan hệ tránh việc gọi getter lazy gây {{ LazyInitializationException }} hoặc chạy SQL ẩn (xem câu qz-jpa-044), và tránh đệ quy vô hạn quan hệ hai chiều.
+
+### Vì sao các phương án còn lại sai
+- **Lombok @Data trên toàn bộ field**: sinh equals/hashCode từ mọi field, gồm quan hệ lazy → có thể ném {{ LazyInitializationException }}, đệ quy vô hạn, và hashCode đổi khi field thay đổi.
+- **Id tự sinh**: id null trước khi persist, sau persist được gán → hashCode thay đổi giữa chừng nếu object đã nằm trong HashSet (xem câu qz-jpa-012).
+- **getClass().hashCode() hằng số**: tránh được hashCode đổi nhưng tất cả entity cùng class rơi cùng bucket, mất hiệu năng O(1) của HashMap/HashSet, chỉ dùng khi thực sự cần.
+
+> Senior tip: entity dùng làm khóa trong HashMap/HashSet là dấu hiệu thiết kế đáng questionable — ưu tiên dùng DTO hoặc khóa nghiệp vụ bất biến, và luôn viết unit test cho equals/hashCode của entity có quan hệ.`
+},
+
+{
+  id: 'qz-jpa-920',
+  topic: 'jpa',
+  q: `Trong 1 transaction, bạn load 1.000 {{ Order }} nhưng chỉ sửa 1 trường của 1 đơn hàng, rồi commit. Hibernate dirty checking duyệt bao nhiêu entity để so sánh với snapshot?`,
+  options: [
+    'Chỉ duyệt entity đã sửa',
+    'Duyệt toàn bộ entity trong persistence context (1.000 entity)',
+    'Không duyệt gì, chỉ ghi entity mới tạo',
+    'Chỉ duyệt entity được tạo trong transaction này'
+  ],
+  answer: 1,
+  explain: `**Đáp án đúng: duyệt toàn bộ 1.000 entity trong persistence context.**
+
+### Vì sao đúng
+Khi flush/commit, Hibernate duyệt mọi entity đang được quản lý (managed), so sánh trạng thái hiện tại với bản snapshot đã lưu khi load. Những entity khác snapshot sẽ được sinh câu {{ UPDATE }}. Việc chỉ sửa 1 trong 1.000 entity không giảm số lượng entity Hibernate phải duyệt.
+
+### Vì sao các phương án còn lại sai
+- **Chỉ duyệt entity đã sửa**: Hibernate không biết trước entity nào bị đổi mà không qua bước duyệt so sánh.
+- **Không duyệt gì**: flush vẫn phải kiểm tra dirty để quyết định sinh SQL gì.
+- **Chỉ duyệt entity mới tạo**: entity mới cũng được theo dõi, nhưng dirty checking áp cho tất cả managed entity.
+
+> Senior tip: đây là lý do {{ @Transactional(readOnly = true) }} giúp giảm CPU/heap khi đọc hàng nghìn entity — Hibernate không tạo snapshot và không duyệt dirty checking (xem câu qz-jpa-905). Load ít entity hơn hoặc dùng DTO projection là cách căn bản hơn.`
+},
+
+{
   id: 'qz-spring-911',
   topic: 'spring',
   q: `Cách tốt nhất để cấu hình chuỗi bộ lọc bảo mật trong Spring Security 6 là gì?`,
@@ -6584,6 +6825,246 @@ MVCC tạo dead tuple khi UPDATE/DELETE. VACUUM dọn dead tuple, đánh dấu k
 - **Rebuild index**: đó là REINDEX, không phải VACUUM.
 
 > Senior tip: Bảng churn cao cần tune autovacuum (scale_factor thấp, cost_limit cao); theo dõi {{last_autovacuum}} và {{n_dead_tup}}.`
+  },
+
+  {
+    id: 'qz-jpa-921',
+    topic: 'jpa',
+    q: `Trong Spring Data JPA, {{ OrderRepository.findById(id) }} trả về entity đã load. Nếu bạn sửa field {{ status }} rồi commit mà không gọi {{ save() }}, điều gì xảy ra?`,
+    options: [
+      'Không có câu SQL nào được sinh; thay đổi bị mất',
+      'Hibernate dirty checking sinh UPDATE khi flush/commit',
+      'Chỉ sinh UPDATE nếu gọi {{ save() }}',
+      'Chỉ sinh UPDATE nếu {{ @Transactional }} có {{ readOnly = false }}'
+    ],
+    answer: 1,
+    explain: `**Đáp án đúng: Hibernate dirty checking sinh UPDATE khi flush/commit.**
+
+### Vì sao đúng
+Entity load trong persistence context được quản lý (managed). Khi transaction commit, Hibernate flush: duyệt managed entity, so snapshot, sinh UPDATE nếu khác. {{ save() }} chỉ cần cho entity mới hoặc detached; với managed entity, save() chỉ merge/no-op.
+
+### Vì sao các phương án còn lại sai
+- **Không có SQL, thay đổi mất**: sai vì managed entity luôn được dirty check.
+- **Chỉ nếu save()**: save() không bắt buộc cho managed entity.
+- **readOnly false**: readOnly=true tắt dirty checking; mặc định readOnly=false nên dirty check chạy.
+
+> Senior tip: đặt {{ @Transactional(readOnly = true) }} cho method chỉ đọc để Hibernate bỏ snapshot và dirty checking, giảm CPU/heap.`
+  },
+
+  {
+    id: 'qz-jpa-922',
+    topic: 'jpa',
+    multi: true,
+    q: `LazyInitializationException xảy ra trong tình huống nào? (Chọn 2)`,
+    options: [
+      'Gọi truy cập collection lazy sau khi Session/EntityManager đã đóng',
+      'Gọi {{ entityManager.find() }} trong transaction',
+      'Truy cập field lazy của entity detached ngoài transaction',
+      'Flush mode AUTO sinh INSERT trước SELECT trong cùng transaction'
+    ],
+    answer: [0, 2],
+    explain: `**Đáp án đúng: gọi lazy sau khi Session đóng; truy cập field lazy của entity detached ngoài transaction.**
+
+### Vì sao đúng
+Lazy proxy/collection chỉ load được khi Session còn mở và entity còn managed. Sau khi transaction kết thúc, Session đóng, entity detached; truy cập lazy ném LazyInitializationException.
+
+### Vì sao các phương án còn lại sai
+- **find() trong transaction**: find() load eagerly entity gốc, không ném.
+- **Flush mode AUTO sinh INSERT trước SELECT**: là hành vi flush, không liên quan lazy.
+
+> Senior tip: giải pháp: fetch join/@EntityGraph, {{ spring.jpa.open-in-view=false }} + DTO projection, hoặc {{ @Transactional }} bao trọn luồng truy cập.`
+  },
+
+  {
+    id: 'qz-jpa-923',
+    topic: 'jpa',
+    q: `Bạn cần load {{ Order }} kèm {{ items }} (OneToMany) cho 100 đơn hàng. Cách nào tránh N+1 và vẫn an toàn paging?`,
+    options: [
+      'Fetch join {{ items }} + {{ Pageable }} trên query',
+      '@EntityGraph(attributePaths = "items") + Pageable',
+      'Fetch join gây duplicate row và không an toàn paging; dùng @EntityGraph hoặc batch size',
+      'Set {{ hibernate.default_batch_fetch_size }} = 1 không ảnh hưởng'
+    ],
+    answer: 2,
+    explain: `**Đáp án đúng: fetch join duplicate row và không an toàn paging; dùng @EntityGraph hoặc batch size.**
+
+### Vì sao đúng
+Fetch join trên collection tạo cartesian product, Hibernate không thể phân trang ở DB (in-memory pagination) và duplicate entity. @EntityGraph hoặc {{ @BatchSize }}/default_batch_fetch_size sinh thêm query theo batch, an toàn với Pageable.
+
+### Vì sao các phương án còn lại sai
+- **Fetch join + Pageable**: Hibernate cảnh báo firstResult/maxResults trên collection fetch join.
+- **@EntityGraph + Pageable**: @EntityGraph trên collection cũng có thể gây in-memory pagination tương tự; batch size an toàn hơn.
+- **batch size = 1**: vẫn N+1, không giải quyết.
+
+> Senior tip: với collection lớn, ưu tiên {{ @BatchSize(size=50) }} hoặc {{ default_batch_fetch_size=50 }}; với cần toàn bộ, fetch join nhưng không paging.`
+  },
+
+  {
+    id: 'qz-jpa-924',
+    topic: 'jpa',
+    q: `Khác biệt giữa {{ orphanRemoval = true }} và {{ cascade = CascadeType.REMOVE }} là gì?`,
+    options: [
+      'orphanRemoval xóa con khi bị gỡ khỏi collection; CascadeType.REMOVE xóa con khi parent bị xóa',
+      'Hai cái giống hệt nhau',
+      'orphanRemoval chỉ áp cho @OneToOne',
+      'CascadeType.REMOVE xóa con khi bị gỡ khỏi collection; orphanRemoval xóa khi parent bị xóa'
+    ],
+    answer: 0,
+    explain: `**Đáp án đúng: orphanRemoval xóa con khi bị gỡ khỏi collection; CascadeType.REMOVE xóa con khi parent bị xóa.**
+
+### Vì sao đúng
+orphanRemoval=true: khi entity con bị remove khỏi collection của parent ({{ parent.getItems().remove(child) }}), Hibernate sinh DELETE cho con. CascadeType.REMOVE: khi parent bị delete, con bị delete theo (cascade delete).
+
+### Vì sao các phương án còn lại sai
+- **Giống hệt**: khác nhau về trigger.
+- **orphanRemoval chỉ OneToOne**: áp dụng cả OneToMany.
+- **Đảo ngược**: sai nghĩa.
+
+> Senior tip: dùng orphanRemoval cho collection con thuộc parent (order items); CascadeType.REMOVE cho quan hệ dependent. Cẩn thận với soft delete và audit.`
+  },
+
+  {
+    id: 'qz-jpa-925',
+    topic: 'jpa',
+    q: `Khi hai transaction cùng update cùng row, Hibernate dùng {{ @Version }} để làm gì?`,
+    options: [
+      'Khóa row ở DB bằng SELECT ... FOR UPDATE',
+      'Kiểm tra version ở WHERE của UPDATE; nếu version cũ thì throw OptimisticLockException',
+      'Tự retry transaction khi conflict',
+      'Version chỉ dùng cho logging'
+    ],
+    answer: 1,
+    explain: `**Đáp án đúng: kiểm tra version ở WHERE của UPDATE; nếu version cũ thì throw OptimisticLockException.**
+
+### Vì sao đúng
+Hibernate sinh {{ UPDATE ... WHERE id=? AND version=? }}. Nếu row đã bị transaction khác update (version tăng), affected rows = 0 → throw OptimisticLockException. Không khóa DB, cho phép concurrency cao.
+
+### Vì sao các phương án còn lại sai
+- **SELECT FOR UPDATE**: đó là pessimistic lock, không phải @Version.
+- **Tự retry**: Hibernate không retry; ứng dụng phải retry.
+- **Chỉ logging**: version là cơ chế kiểm soát đồng thời.
+
+> Senior tip: optimistic lock phù hợp read-heavy; conflict hiếm. Retry ở service layer với idempotency; pessimistic lock cho write-heavy/conflict cao.`
+  },
+
+  {
+    id: 'qz-jpa-926',
+    topic: 'jpa',
+    multi: true,
+    q: `Về equals/hashCode của JPA entity, thực hành tốt là gì? (Chọn 2)`,
+    options: [
+      'Dùng id database (generated) làm equals ngay từ khi new entity',
+      'Dùng business key (natural key) không đổi',
+      'Tránh dùng id generated trước khi persist vì hashCode thay đổi',
+      'Dùng Object identity mặc định luôn an toàn với Hibernate collection'
+    ],
+    answer: [1, 2],
+    explain: `**Đáp án đúng: dùng business key; tránh dùng id generated trước persist vì hashCode thay đổi.**
+
+### Vì sao đúng
+id generated chỉ có sau persist; dùng id làm equals/hashCode khiến entity thay đổi hashCode khi persist → mất trong Set/Map. Business key (email, code) ổn định. Nếu không có business key, override equals/hashCode theo id nhưng chỉ coi equal khi id != null, fallback identity.
+
+### Vì sao các phương án còn lại sai
+- **Dùng id generated ngay**: hashCode thay đổi sau persist.
+- **Object identity mặc định luôn an toàn**: Hibernate dùng Set cho collection; identity có thể gây duplicate khi merge/detach.
+
+> Senior tip: implement equals/hashCode dựa trên business key; nếu không có, dùng pattern: {{ if (id == null) return this == o; }}.`
+  },
+
+  {
+    id: 'qz-jpa-927',
+    topic: 'jpa',
+    q: `FlushMode.COMMIT khác FlushMode.AUTO ở điểm nào?`,
+    options: [
+      'COMMIT chỉ flush khi commit; AUTO flush trước query nếu cần',
+      'AUTO không bao giờ flush',
+      'COMMIT flush trước mọi query',
+      'Hai mode giống nhau'
+    ],
+    answer: 0,
+    explain: `**Đáp án đúng: COMMIT chỉ flush khi commit; AUTO flush trước query nếu cần.**
+
+### Vì sao đúng
+AUTO: trước mỗi query, Hibernate flush các thay đổi pending nếu query có thể đọc chúng. COMMIT: chỉ flush tại commit, không flush trước query → query có thể thấy dữ liệu cũ (stale) trong cùng transaction.
+
+### Vì sao các phương án còn lại sai
+- **AUTO không flush**: sai, AUTO flush khi cần.
+- **COMMIT flush trước query**: sai, đó là AUTO.
+- **Giống nhau**: khác nhau rõ ràng.
+
+> Senior tip: dùng AUTO mặc định; COMMIT khi batch insert lớn và query chỉ đọc dữ liệu trước đó, giảm flush overhead. Cẩn thận stale read.`
+  },
+
+  {
+    id: 'qz-jpa-928',
+    topic: 'jpa',
+    q: `Bạn cần soft delete entity {{ User }}. Cách nào giữ referential integrity và tránh orphan?`,
+    options: [
+      'Dùng @SQLDelete + @Where và không cascade remove',
+      'Dùng CascadeType.REMOVE để xóa vật lý',
+      'Dùng orphanRemoval để xóa con',
+      'Dùng @PreRemove để set deleted=true rồi vẫn để Hibernate delete'
+    ],
+    answer: 0,
+    explain: `**Đáp án đúng: dùng @SQLDelete + @Where và không cascade remove.**
+
+### Vì sao đúng
+@SQLDelete override câu DELETE thành UPDATE deleted=true. @Where (hoặc @Filter) tự thêm điều kiện deleted=false vào query. Không cascade remove để tránh xóa vật lý con.
+
+### Vì sao các phương án còn lại sai
+- **CascadeType.REMOVE**: xóa vật lý, không soft delete.
+- **orphanRemoval**: xóa vật lý con khi gỡ.
+- **@PreRemove**: vẫn để Hibernate sinh DELETE; không override.
+
+> Senior tip: soft delete cần index trên deleted và cân nhắc unique constraint (partial index) để tránh trùng email đã xóa.`
+  },
+
+  {
+    id: 'qz-jpa-929',
+    topic: 'jpa',
+    q: `Trong JPA, {{ entityManager.merge(detachedEntity) }} trả về gì?`,
+    options: [
+      'Cùng instance detachedEntity đã được cập nhật',
+      'Một instance managed mới, detachedEntity không đổi',
+      'null nếu entity không tồn tại',
+      'Luôn ném exception nếu entity detached'
+    ],
+    answer: 1,
+    explain: `**Đáp án đúng: trả về instance managed mới, detachedEntity không đổi.**
+
+### Vì sao đúng
+merge() copy state từ detached entity vào một managed entity (load từ DB hoặc mới tạo) và trả về managed instance. Instance gốc (detached) không được thay đổi.
+
+### Vì sao các phương án còn lại sai
+- **Cùng instance**: merge không biến detached thành managed.
+- **null**: merge trả về managed instance, không null (trừ entity null).
+- **Luôn ném**: merge hợp lệ cho detached entity.
+
+> Senior tip: sau merge, dùng instance trả về, không dùng instance cũ; trong @Transactional thường không cần merge vì entity đã managed.`
+  },
+
+  {
+    id: 'qz-jpa-930',
+    topic: 'jpa',
+    q: `Bạn muốn bulk update 10.000 row. Cách nào hiệu quả và lưu ý gì?`,
+    options: [
+      'Load 10.000 entity rồi save từng cái',
+      'Dùng @Modifying + @Query UPDATE; nhớ clear persistence context hoặc detach',
+      '@Modifying không cần flush/clear; Hibernate tự đồng bộ',
+      'Bulk update tự động trigger lifecycle callback @PreUpdate'
+    ],
+    answer: 1,
+    explain: `**Đáp án đúng: dùng @Modifying + @Query UPDATE; nhớ clear persistence context hoặc detach.**
+
+### Vì sao đúng
+Bulk update sinh một câu UPDATE duy nhất ở DB, không load entity. Nhưng persistence context có thể giữ stale snapshot; cần {{ entityManager.clear() }} hoặc {{ @Modifying(clearAutomatically=true) }} để tránh dữ liệu cũ.
+
+### Vì sao các phương án còn lại sai
+- **Load rồi save từng cái**: N+1 UPDATE, chậm và tốn memory.
+- **Không cần clear**: persistence context stale → dirty overwrite sau đó.
+- **Tự trigger @PreUpdate**: bulk update bypass lifecycle callback và dirty checking.
+
+> Senior tip: bulk update là công cụ mạnh cho batch; cân nhắc event/outbox nếu cần side effect; đo thời gian và lock.`
   },
 
 );
