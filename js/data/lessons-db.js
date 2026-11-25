@@ -5770,4 +5770,333 @@ Bảng {{orders}} 50 triệu dòng, 6 index, mỗi ngày 2 triệu UPDATE đổi
   related: ['db-001', 'db-013', 'db-040'],
   tags: ['HOT-update', 'fillfactor', 'PostgreSQL', 'B-tree', 'VACUUM']
 },
+{
+  id: 'lesson-db-022', track: 'db', order: 22,
+  title: 'Lost update và hai cách chặn: pessimistic lock (FOR UPDATE) và compare-and-set',
+  level: 'senior', minutes: 30,
+  goals: [
+    'Mô tả lịch read-modify-write gây lost update trên một bảng giả',
+    'Mô phỏng pessimistic lock: transaction sau phải chờ rồi đọc giá trị mới nên không mất cập nhật',
+    'Mô phỏng compare-and-set: ghi kèm điều kiện version, conflict thì đọc lại và retry',
+    'Chọn giữa pessimistic lock và optimistic CAS theo contention và side effect'
+  ],
+  body: `**Tóm tắt:** Lost update (mất cập nhật) xảy ra khi hai transaction cùng đọc một giá trị, cùng tính rồi cùng ghi, khiến một trong hai thay đổi biến mất. Có hai cách chặn: pessimistic lock (khóa hàng bằng {{SELECT ... FOR UPDATE}}, transaction sau phải chờ và đọc giá trị mới) và optimistic compare-and-set (ghi kèm điều kiện {{version}}, nếu version đã đổi thì đọc lại rồi retry).
+
+### Transaction và read-modify-write là gì
+Transaction (giao dịch) là một nhóm thao tác đọc/ghi được chạy như một khối "tất cả hoặc không": hoặc mọi thay đổi đều được lưu, hoặc không có gì. Read-modify-write là mẫu code kinh điển: đọc một giá trị, tính giá trị mới trong bộ nhớ, rồi ghi lại. Ví dụ cộng tiền: đọc số dư 100, cộng 1, ghi 101. Vấn đề nằm ở chỗ giữa lúc đọc và lúc ghi, một transaction khác có thể chen vào và cũng đọc/ghi cùng hàng đó.
+
+### Lost update sinh ra thế nào
+Xét hai transaction cùng tăng số dư thêm 1. Lịch chạy (schedule: cách sắp xen kẽ các thao tác theo thời gian) như sau:
+1. T1 đọc số dư = 100.
+2. T2 cũng đọc số dư = 100, vì T1 chưa ghi.
+3. T1 tính 100 + 1 = 101 rồi ghi 101.
+4. T2 tính 100 + 1 = 101 rồi ghi 101, đè lên kết quả của T1.
+
+Kết quả cuối là 101, nhưng đáng lẽ phải là 102: một lần tăng đã biến mất. Đây là lost update. Nó không phải bug của database; ở mức {{READ COMMITTED}} (mặc định của PostgreSQL), mỗi câu lệnh lấy một snapshot mới nên database không tự biết hai phép ghi này xung đột — nó chỉ thấy hai câu UPDATE tuần tự.
+
+~~~text
+T1                              T2
+|-- đọc 100 ------------------->|
+|                               |-- đọc 100
+|-- ghi 101 ------------------->|
+|                               |-- ghi 101 (đè kết quả của T1)
+|  Kết quả 101, mất một lần tăng
+~~~
+
+### Cách 1: pessimistic lock với SELECT ... FOR UPDATE
+Pessimistic lock (khóa bi quan) là kiểu khóa "giành trước": transaction giữ khóa trên hàng từ lúc đọc cho tới lúc commit, transaction khác muốn đọc hoặc ghi hàng đó phải chờ. Trong PostgreSQL, {{SELECT ... FOR UPDATE}} khóa hàng ngay khi đọc:
+
+~~~sql
+BEGIN;
+SELECT balance FROM accounts WHERE id = 42 FOR UPDATE;  -- khóa hàng id=42 tới khi commit
+-- tính toán dựa trên balance vừa đọc
+UPDATE accounts SET balance = 100 WHERE id = 42;          -- vẫn trong cùng transaction
+COMMIT;                                                  -- nhả khóa
+~~~
+
+Cơ chế: khi T1 đang giữ khóa, T2 gọi {{SELECT ... FOR UPDATE}} cùng hàng sẽ bị block (chờ). T1 commit xong thì T2 mới đọc được, và nó đọc giá trị MỚI (101) rồi cộng tiếp. Vì T2 không còn dùng giá trị cũ 100 nữa, không có mất cập nhật. Đổi lại, T2 phải chờ; khi nhiều người tranh cùng một hàng thì throughput giảm, và nếu hai transaction khóa ngược chiều nhau có thể deadlock (xem bài deadlock).
+
+### Cách 2: optimistic compare-and-set với version
+Optimistic locking (khóa lạc quan) không khóa khi đọc. Mỗi hàng có thêm một cột {{version}} (số nguyên tăng dần). Khi ghi, transaction gửi kèm version đã đọc; database chỉ ghi nếu version hiện tại vẫn khớp, ngược lại trả về 0 dòng và transaction phải đọc lại rồi retry (làm lại).
+
+~~~sql
+UPDATE accounts
+SET balance = balance + 1, version = version + 1
+WHERE id = 42 AND version = 5;   -- chỉ ghi nếu version vẫn là 5
+-- nếu số dòng cập nhật = 0: dữ liệu đã đổi, phải đọc lại và tính lại
+~~~
+
+So sánh: T1 đọc (100, v5), T2 cũng đọc (100, v5). T1 ghi với version=5 thành công, version thành 6. T2 ghi với version=5 nhưng version đã là 6 nên điều kiện không khớp, trả 0 dòng; T2 đọc lại (101, v6), tính 102, ghi với version=6 thành công. Không mất cập nhật, và T2 không phải chờ khóa — nhưng phải viết vòng retry.
+
+### Bảng so sánh hai cách
+| | Pessimistic lock (FOR UPDATE) | Optimistic (compare-and-set) |
+|---|---|---|
+| Khi nào khóa | lúc đọc, giữ tới commit | không khóa, chỉ kiểm tra lúc ghi |
+| Khi xung đột | transaction sau chờ | transaction sau retry |
+| Phù hợp | contention cao, ít muốn retry | contention thấp, đọc nhiều |
+| Rủi ro | deadlock, giảm throughput | retry dồn tải, side effect lặp |
+
+### Cơ chế từng bước của bài tập mô phỏng
+Bài tập mô phỏng cả ba lịch trên một bảng giả trong RAM, không dùng thread, để kết quả xác định:
+1. {{withoutLock}}: cả hai đọc cùng initial, mỗi bên cộng delta của mình, A ghi trước rồi B ghi sau — trả về giá trị cuối để thấy lost update.
+2. {{withPessimisticLock}}: A đọc, ghi, rồi mới nhả khóa; B chỉ vào sau đó, đọc lại giá trị mới rồi cộng — không mất.
+3. {{withCompareAndSet}}: A ghi với version 0 thành công; B đọc version 0 (ảnh cũ), ghi trượt, đọc lại version 1 rồi ghi lại — không mất.
+
+### Ví dụ đời thực
+Một hệ thống ví điện tử dùng {{READ COMMITTED}}, code rút tiền kiểu đọc số dư rồi ghi lại giá trị tuyệt đối. Hai request rút cùng lúc: cả hai đọc 100, cả hai ghi 90, kết quả cuối là 90 — một lần rút 10 biến mất, khách được rút "miễn phí". Điều tra log cho thấy hai transaction start cách nhau 15 ms, cùng đọc snapshot lúc đó. Sửa: chuyển sang câu cập nhật nguyên tử {{UPDATE balance = balance - 10 WHERE id = ?}} (database tự tính, không cần đọc trước), hoặc {{SELECT ... FOR UPDATE}}, hoặc thêm version và retry. Sau khi sửa, số dư cuối ngày luôn khớp với tổng giao dịch.
+
+### Lỗi hay gặp trên production
+1. Đọc rồi tính trong Java rồi UPDATE giá trị tuyệt đối — lost update. Sửa bằng UPDATE nguyên tử hoặc version.
+2. Dùng {{FOR UPDATE}} nhưng quên commit/rollback — khóa treo, transaction khác chờ vô hạn. Luôn bọc try/finally hoặc dùng transaction template.
+3. CAS mà không kiểm tra số dòng cập nhật — tưởng thành công dù 0 dòng. Luôn kiểm tra affected rows.
+4. Retry CAS không giới hạn — hệ thống nóng, retry dồn thêm tải; giới hạn 3-5 lần, thêm backoff và jitter, phân biệt conflict nghiệp vụ với conflict tạm thời.
+
+### Pitfall production
+Đừng thực hiện side effect (gửi email, gọi API thanh toán) giữa read và write rồi retry, vì mỗi lần retry sẽ lặp lại side effect; hãy ghi event vào outbox trong cùng transaction và để relay gửi sau commit. Với pessimistic lock, thứ tự khóa phải nhất quán giữa các service để tránh deadlock.
+
+> Senior tip: phần lớn hệ thống OLTP dùng {{READ COMMITTED}} cộng UPDATE nguyên tử; chỉ dùng {{FOR UPDATE}} khi thật sự cần đọc-rồi-quyết-định, và đo contention trước khi chọn optimistic để tránh retry vô ích.
+
+### Liên hệ phỏng vấn
+- **"Lost update là gì và vì sao xảy ra?"** → Hai transaction cùng đọc một giá trị, cùng tính rồi cùng ghi; người ghi sau đè người ghi trước. Ở READ COMMITTED database không tự chặn vì mỗi câu lệnh có snapshot riêng.
+- **"FOR UPDATE và version check khác nhau ra sao?"** → FOR UPDATE khóa bi quan, transaction sau chờ và đọc giá trị mới; version check khóa lạc quan, không chờ nhưng conflict thì phải retry. Chọn theo contention.
+- **"Vì sao UPDATE nguyên tử lại an toàn hơn read-modify-write?"** → Vì database tính biểu thức ngay trong câu lệnh, không có khoảng trống giữa đọc và ghi để transaction khác chen vào.
+- **"Retry optimistic conflict cần lưu ý gì?"** → Đọc lại trạng thái mới, tính lại từ input nghiệp vụ, giới hạn số lần, backoff + jitter, và side effect phải idempotent hoặc dùng outbox.
+`,
+  exercises: [{
+    title: 'Ba lịch: không khóa, pessimistic lock, compare-and-set',
+    prompt: `Cài {{LostUpdateFix}} với ba phương thức static mô phỏng cùng một bảng số dư {{initial}} cho hai transaction A và B cùng cộng delta.
+{{withoutLock(initial, deltaA, deltaB)}}: cả hai đọc initial, mỗi bên cộng delta, A ghi trước rồi B ghi sau (không kiểm tra version). Trả về giá trị cuối.
+{{withPessimisticLock(initial, deltaA, deltaB)}}: A giữ khóa, đọc-ghi xong mới nhả; B đọc lại giá trị mới rồi cộng. Trả về giá trị cuối.
+{{withCompareAndSet(initial, deltaA, deltaB)}}: A ghi với version 0; B đọc version 0 cũ, ghi trượt, đọc lại version mới rồi ghi lại. Trả về giá trị cuối.
+Không dùng thread, không sleep; kết quả phải xác định.`,
+    starter: `class LostUpdateFix {
+    static int withoutLock(int initial, int deltaA, int deltaB) {
+        throw new UnsupportedOperationException("TODO");
+    }
+    static int withPessimisticLock(int initial, int deltaA, int deltaB) {
+        throw new UnsupportedOperationException("TODO");
+    }
+    static int withCompareAndSet(int initial, int deltaA, int deltaB) {
+        throw new UnsupportedOperationException("TODO");
+    }
+}`,
+    tests: `public class Main {
+ static int p=0,t=0;
+ static void c(String n,Runnable r){t++;try{r.run();p++;System.out.println("PASS "+n);}catch(Throwable e){System.out.println("FAIL "+n+": "+e);}}
+ static void eq(int a,int b){if(a!=b)throw new AssertionError(a+" != "+b);}
+ public static void main(String[]z){
+  c("no lock loses one increment",()->eq(11,LostUpdateFix.withoutLock(10,1,1)));
+  c("no lock different deltas",()->eq(17,LostUpdateFix.withoutLock(10,2,7)));
+  c("no lock withdrawal lost",()->eq(10,LostUpdateFix.withoutLock(10,-4,0)));
+  c("pessimistic keeps both",()->eq(12,LostUpdateFix.withPessimisticLock(10,1,1)));
+  c("pessimistic different deltas",()->eq(19,LostUpdateFix.withPessimisticLock(10,2,7)));
+  c("compare-and-set keeps both",()->eq(12,LostUpdateFix.withCompareAndSet(10,1,1)));
+  c("compare-and-set different deltas",()->eq(19,LostUpdateFix.withCompareAndSet(10,2,7)));
+  System.out.println("RESULT "+p+"/"+t);
+ }
+}`,
+    reference: `class LostUpdateFix {
+    static int withoutLock(int initial, int deltaA, int deltaB) {
+        int readA = initial;          // T1 đọc
+        int readB = initial;          // T2 đọc cùng giá trị (T1 chưa ghi)
+        int writeA = readA + deltaA;  // T1 tính rồi ghi
+        int writeB = readB + deltaB;  // T2 tính từ ảnh cũ rồi ghi
+        int stored = writeA;
+        stored = writeB;              // ghi sau đè: mất cập nhật của A
+        return stored;
+    }
+    static int withPessimisticLock(int initial, int deltaA, int deltaB) {
+        int stored = initial;
+        stored = stored + deltaA;     // T1 giữ khóa: đọc-ghi xong mới nhả
+        stored = stored + deltaB;     // T2 vào sau, đọc giá trị MỚI rồi cộng
+        return stored;
+    }
+    static int withCompareAndSet(int initial, int deltaA, int deltaB) {
+        int value = initial;
+        int version = 0;
+        value = value + deltaA;       // T1 ghi với expected=0 -> khớp
+        version = 1;
+        int readValue = initial;      // T2 đọc ảnh cũ (version=0)
+        int expected = 0;
+        if (expected != version) {    // compare-and-set trượt: version đã là 1
+            readValue = value;        // đọc lại trạng thái mới
+            expected = version;
+        }
+        value = readValue + deltaB;   // tính lại rồi ghi với expected=1 -> khớp
+        version++;
+        return value;
+    }
+}`,
+    hints: [
+      'withoutLock: cả hai đọc cùng initial; write cuối cùng thắng nên một delta biến mất.',
+      'withPessimisticLock: cộng dồn deltaA rồi deltaB lên cùng một biến, vì B đọc sau khi A đã ghi.',
+      'withCompareAndSet: mô phỏng version; nếu expected khác version thì đọc lại value mới rồi mới cộng.'
+    ],
+    explain: `Ba phương thức thể hiện ba lịch khác nhau trên cùng dữ liệu. {{withoutLock}} cho kết quả chỉ bằng một trong hai delta cộng initial, vì cả hai ghi dựa trên cùng ảnh chụp. {{withPessimisticLock}} tuần tự hóa: B chờ A xong rồi đọc giá trị mới, nên kết quả là initial cộng cả hai delta. {{withCompareAndSet}} dùng version làm điều kiện ghi: lần ghi của B với version cũ trượt, B đọc lại rồi ghi lại, nên cũng không mất. Trong PostgreSQL thật, FOR UPDATE là khóa bi quan còn version predicate là khóa lạc quan; cả hai đều biến read-modify-write thành thao tác an toàn, khác nhau ở chỗ chờ hay retry.`
+  }],
+  check: [
+    {q:'Lost update xảy ra khi nào?',options:['Hai transaction cùng đọc một giá trị, cùng tính rồi cùng ghi, người sau đè người trước','Đọc dữ liệu chưa commit','Cùng một điều kiện range cho hai tập hàng khác nhau','Hai transaction khóa ngược chiều'],answer:0,explain:'Bản chất là read-modify-write trên cùng một ô; người ghi sau dựa trên ảnh cũ nên ghi đè.'},
+    {q:'SELECT ... FOR UPDATE chặn lost update bằng cách nào?',options:['Tự động tăng isolation lên SERIALIZABLE','Khóa hàng, transaction khác chờ và đọc giá trị mới sau khi commit','Xóa version','Bỏ qua index'],answer:1,explain:'Khóa bi quan giữ hàng tới commit; transaction sau đọc trạng thái mới nên không dùng giá trị cũ.'},
+    {q:'UPDATE với version predicate trả 0 dòng nghĩa là gì?',options:['Đã commit hai lần','Dữ liệu đã đổi hoặc hàng không tồn tại, phải đọc lại và retry','Database mất kết nối','Index bị hỏng'],answer:1,explain:'Điều kiện version không khớp; ứng dụng phải đọc lại trạng thái mới rồi tính lại, không được coi là thành công.'},
+    {q:'Vì sao UPDATE nguyên tử (SET balance = balance + 1) an toàn hơn read-modify-write?',options:['Vì nó luôn nhanh hơn','Vì database tính ngay trong câu lệnh, không có khoảng trống giữa đọc và ghi','Vì nó bỏ qua transaction','Vì nó dùng SERIALIZABLE'],answer:1,explain:'Không có cửa sổ để transaction khác chen vào giữa đọc và ghi, nên không mất cập nhật.'}
+  ],
+  related: ['db-002', 'db-004', 'db-016'],
+  tags: ['lost-update', 'pessimistic-lock', 'FOR UPDATE', 'compare-and-set', 'PostgreSQL']
+},
+{
+  id: 'lesson-db-023', track: 'db', order: 23,
+  title: 'Tìm kiếm khoảng bằng binary search: lower bound, upper bound và so với quét toàn bộ',
+  level: 'mid', minutes: 25,
+  goals: [
+    'Hiểu vì sao mảng đã sắp xếp cho phép tìm biên khoảng bằng binary search',
+    'Cài lowerBound và upperBound và đếm số phép so sánh',
+    'So sánh số bước với quét toàn bộ và liên hệ range scan của index B-tree',
+    'Biết khi nào index không giúp: selectivity cao, cột không có thứ tự'
+  ],
+  body: `**Tóm tắt:** Trên một mảng đã sắp xếp, ta tìm được một khoảng giá trị bằng binary search (tìm kiếm nhị phân): mỗi bước so sánh với phần tử giữa rồi loại bỏ một nửa, nên chỉ tốn khoảng log2(N) phép so sánh để tìm biên dưới và biên trên. Quét toàn bộ (full scan) phải xem lần lượt mọi phần tử, tốn N phép so sánh. Đây chính là lý do index B-tree trên đĩa nhanh hơn seq scan khi truy vấn trả về ít hàng.
+
+### Vì sao mảng có thứ tự thì tìm nhanh
+Binary search (tìm kiếm nhị phân) là thuật toán: cứ nhìn phần tử ở giữa, nếu nó nhỏ hơn giá trị cần tìm thì bỏ nửa bên trái, ngược lại bỏ nửa bên phải. Mỗi bước loại bỏ một nửa số phần tử, nên với N phần tử chỉ cần khoảng log2(N) bước. Với 1024 phần tử, log2(1024) = 10, tức chỉ khoảng 10 phép so sánh — trong khi quét tuần tự có thể phải xem cả 1024. Điều kiện tiên quyết: dữ liệu phải đã sắp xếp theo cùng thứ tự với điều kiện so sánh; nếu chưa sắp, binary search cho kết quả sai.
+
+### Lower bound và upper bound là gì
+Để đếm số phần tử nằm trong một khoảng {{[lo, hi]}}, ta cần hai biên:
+- {{lowerBound(target)}}: chỉ số đầu tiên có giá trị {{>= target}} (vị trí chèn bên trái). Nếu không có phần tử nào thỏa, trả về N.
+- {{upperBound(target)}}: chỉ số đầu tiên có giá trị {{> target}} (vị trí chèn bên phải). Nếu không có, trả về N.
+
+Khi đó số phần tử trong {{[lo, hi]}} bằng {{upperBound(hi) - lowerBound(lo)}}. Ví dụ mảng {{[1, 3, 3, 5, 7]}}: lowerBound(3) = 1, upperBound(3) = 3, nên có 3 - 1 = 2 phần tử bằng 3; lowerBound(4) = 3, upperBound(5) = 4, nên {{[4, 5]}} có 1 phần tử.
+
+~~~java
+// lowerBound: chỉ số đầu tiên >= target, đếm số phép so sánh
+int lowerBound(int[] a, int target) {
+    int lo = 0, hi = a.length;
+    while (lo < hi) {
+        int mid = lo + (hi - lo) / 2;
+        comparisons++;                 // mỗi vòng một phép so sánh
+        if (a[mid] < target) lo = mid + 1;  // nửa trái còn nhỏ, bỏ đi
+        else hi = mid;                      // a[mid] >= target, thử nửa trái
+    }
+    return lo;
+}
+~~~
+
+### Đếm số bước thay vì đo thời gian
+Đo thời gian wall clock (đồng hồ thực) cho mảng nhỏ rất nhiễu: JIT, cache CPU, GC và tải máy làm kết quả dao động. Vì vậy bài tập đếm số phép so sánh — deterministic (xác định, không phụ thuộc thời gian). Với binary search, số phép so sánh tăng theo log2(N); với quét toàn bộ, nó bằng đúng N (hoặc vị trí tìm thấy). Đây là cách so sánh công bằng giữa hai chiến lược.
+
+### Liên hệ với index B-tree của database
+PostgreSQL lưu index B-tree theo trang (page 8 KB), mỗi trang chứa nhiều khóa và con trỏ. Khi truy vấn {{WHERE id BETWEEN lo AND hi}}, database đi từ gốc xuống lá để tìm biên dưới (giống lowerBound), rồi duyệt các lá theo thứ tự khóa tới khi vượt biên trên (giống upperBound). Vì cây cao chỉ 3-4 tầng dù bảng tỷ hàng, chi phí tìm biên rất nhỏ; phần còn lại là đọc các hàng thuộc khoảng. Nếu khoảng trả về quá nhiều hàng (selectivity cao), planner có thể chọn seq scan vì đọc tuần tự rẻ hơn nhiều random I/O. Đó là lý do "index không phải lúc nào cũng nhanh".
+
+### Bảng so sánh
+| | Binary search trên mảng | Quét toàn bộ | Index B-tree (range) |
+|---|---|---|---|
+| Số bước tìm biên | ~log2(N) | ~N | ~chiều cao cây (3-4) |
+| Điều kiện | dữ liệu đã sắp | không cần | khóa có thứ tự |
+| Khi nào thua | khoảng trả nhiều phần tử | luôn | selectivity cao |
+
+### Cơ chế từng bước của bài tập
+1. {{lowerBound}} và {{upperBound}} chạy binary search trên mảng đã sắp, mỗi vòng tăng bộ đếm so sánh.
+2. {{countInRange(lo, hi)}} trả về {{upperBound(hi) - lowerBound(lo)}}.
+3. {{linearCountInRange(lo, hi)}} quét toàn bộ, mỗi phần tử tăng bộ đếm 1.
+4. Test so sánh: với mảng 1024 phần tử, binary search dùng dưới 30 phép so sánh, còn quét toàn bộ dùng đúng 1024.
+
+### Ví dụ đời thực
+Một API tra cứu đơn hàng {{WHERE created_at BETWEEN ? AND ?}} trên bảng 50 triệu dòng có index B-tree trên {{created_at}}. Khi khoảng chỉ vài giờ, index trả về vài trăm dòng, p99 khoảng 8 ms. Khi một báo cáo quét cả quý (trả về 30% bảng), cùng câu lệnh chậm 4 giây vì planner chuyển sang seq scan — đọc tuần tự 30% bảng rẻ hơn nhảy index 15 triệu lần. Sửa: giới hạn khoảng, thêm điều kiện lọc chọn lọc hơn, hoặc dùng index khác; không "ép" index bằng hint.
+
+### Lỗi hay gặp
+1. Gọi binary search trên mảng chưa sắp — kết quả sai âm thầm.
+2. Nhầm lowerBound với upperBound — đếm thiếu hoặc thừa một phần tử ở biên.
+3. Nghĩ index luôn nhanh — selectivity cao thì seq scan rẻ hơn.
+4. Dùng hàm trên cột ({{WHERE lower(email) = ...}}) làm index không dùng được; cần expression index.
+
+> Senior tip: khi tối ưu, hãy đọc {{EXPLAIN (ANALYZE, BUFFERS)}} để xem actual rows so với estimated; sai lệch thống kê và selectivity quyết định plan nhiều hơn việc "có index hay không".
+
+### Liên hệ phỏng vấn
+- **"Binary search cần điều kiện gì?"** → Dữ liệu đã sắp xếp theo đúng thứ tự so sánh; mỗi bước loại một nửa nên tốn log2(N).
+- **"lowerBound và upperBound khác nhau ra sao?"** → lowerBound là chỉ số đầu tiên >= target, upperBound là chỉ số đầu tiên > target; hiệu của chúng cho số phần tử trong khoảng.
+- **"Vì sao index B-tree không luôn nhanh hơn seq scan?"** → Khi truy vấn trả về tỷ lệ lớn bảng, nhiều random heap fetch tốn hơn đọc tuần tự; planner chọn theo cost ước lượng.
+- **"Làm sao biết index có được dùng không?"** → Đọc EXPLAIN (ANALYZE, BUFFERS): xem planner chọn Index Scan, Index Only Scan hay Seq Scan, và so actual rows với estimated.
+`,
+  exercises: [{
+    title: 'RangeSearch: lowerBound, upperBound và đếm bước so với quét',
+    prompt: `Cài {{RangeSearch}} với constructor {{RangeSearch(int[] a)}} nhận mảng đã sắp tăng dần (không sắp lại).
+{{lowerBound(target)}}: trả chỉ số đầu tiên có giá trị >= target, hoặc a.length nếu không có; mỗi vòng binary search tăng {{comparisons}} 1.
+{{upperBound(target)}}: trả chỉ số đầu tiên có giá trị > target, hoặc a.length nếu không có; cũng đếm so sánh.
+{{countInRange(lo, hi)}}: trả số phần tử có lo <= giá trị <= hi, tính bằng {{upperBound(hi) - lowerBound(lo)}} (không reset bộ đếm).
+{{linearCountInRange(lo, hi)}}: quét toàn bộ mảng, mỗi phần tử tăng {{comparisons}} 1, trả số phần tử trong khoảng.
+{{comparisons()}} trả tổng số so sánh; {{resetComparisons()}} đặt về 0. Không dùng Collections.binarySearch.`,
+    starter: `class RangeSearch {
+    private final int[] a;
+    private int comparisons;
+    RangeSearch(int[] a) { this.a = a; }
+    int comparisons() { return comparisons; }
+    void resetComparisons() { comparisons = 0; }
+    int lowerBound(int target) { throw new UnsupportedOperationException("TODO"); }
+    int upperBound(int target) { throw new UnsupportedOperationException("TODO"); }
+    int countInRange(int lo, int hi) { throw new UnsupportedOperationException("TODO"); }
+    int linearCountInRange(int lo, int hi) { throw new UnsupportedOperationException("TODO"); }
+}`,
+    tests: `public class Main {
+ static int p=0,t=0;
+ static void c(String n,Runnable r){t++;try{r.run();p++;System.out.println("PASS "+n);}catch(Throwable e){System.out.println("FAIL "+n+": "+e);}}
+ static void eq(int a,int b){if(a!=b)throw new AssertionError(a+" != "+b);}
+ static void ok(boolean b){if(!b)throw new AssertionError("expected true");}
+ public static void main(String[]z){
+  c("lowerBound basic",()->{RangeSearch r=new RangeSearch(new int[]{1,3,3,5,7});eq(1,r.lowerBound(3));eq(3,r.lowerBound(4));eq(0,r.lowerBound(0));eq(5,r.lowerBound(8));});
+  c("upperBound basic",()->{RangeSearch r=new RangeSearch(new int[]{1,3,3,5,7});eq(3,r.upperBound(3));eq(4,r.upperBound(5));eq(0,r.upperBound(0));eq(5,r.upperBound(7));});
+  c("count in range",()->{RangeSearch r=new RangeSearch(new int[]{1,3,3,5,7});eq(3,r.countInRange(3,5));eq(1,r.countInRange(4,6));eq(5,r.countInRange(0,100));eq(0,r.countInRange(8,9));});
+  c("linear agrees with binary",()->{int[] a={2,4,4,4,8,9,10};RangeSearch r=new RangeSearch(a);eq(r.linearCountInRange(4,8),r.countInRange(4,8));eq(r.linearCountInRange(0,3),r.countInRange(0,3));});
+  c("binary uses few comparisons",()->{int[] a=new int[1024];for(int i=0;i<a.length;i++)a[i]=i;RangeSearch r=new RangeSearch(a);r.resetComparisons();r.countInRange(100,200);ok(r.comparisons()<30);});
+  c("linear scans all",()->{int[] a=new int[1024];for(int i=0;i<a.length;i++)a[i]=i;RangeSearch r=new RangeSearch(a);r.resetComparisons();r.linearCountInRange(100,200);eq(1024,r.comparisons());});
+  System.out.println("RESULT "+p+"/"+t);
+ }
+}`,
+    reference: `class RangeSearch {
+    private final int[] a;
+    private int comparisons;
+    RangeSearch(int[] a) { this.a = a; }
+    int comparisons() { return comparisons; }
+    void resetComparisons() { comparisons = 0; }
+    int lowerBound(int target) {
+        int lo = 0, hi = a.length;
+        while (lo < hi) {
+            int mid = lo + (hi - lo) / 2;
+            comparisons++;
+            if (a[mid] < target) lo = mid + 1; else hi = mid;
+        }
+        return lo;
+    }
+    int upperBound(int target) {
+        int lo = 0, hi = a.length;
+        while (lo < hi) {
+            int mid = lo + (hi - lo) / 2;
+            comparisons++;
+            if (a[mid] <= target) lo = mid + 1; else hi = mid;
+        }
+        return lo;
+    }
+    int countInRange(int lo, int hi) {
+        if (lo > hi) return 0;
+        return upperBound(hi) - lowerBound(lo);
+    }
+    int linearCountInRange(int lo, int hi) {
+        int c = 0;
+        for (int v : a) { comparisons++; if (v >= lo && v <= hi) c++; }
+        return c;
+    }
+}`,
+    hints: [
+      'lowerBound: khi a[mid] < target thì biên dưới là mid+1, ngược lại thu hẹp hi = mid.',
+      'upperBound: khi a[mid] <= target thì biên dưới là mid+1, ngược lại hi = mid.',
+      'countInRange = upperBound(hi) - lowerBound(lo); linearCountInRange tăng comparisons cho từng phần tử.'
+    ],
+    explain: `Binary search duy trì đoạn {{[lo, hi)}} luôn chứa câu trả lời; mỗi vòng chọn mid và loại một nửa, nên số phép so sánh cỡ log2(N). {{lowerBound}} tìm phần tử đầu tiên {{>= target}}, {{upperBound}} tìm phần tử đầu tiên {{> target}}; hiệu của chúng là số phần tử trong {{[lo, hi]}}. {{linearCountInRange}} phải xem mọi phần tử nên tốn đúng N phép so sánh. Đây là mô phỏng đếm bước, không phải I/O thật; trong PostgreSQL, index B-tree tìm biên bằng cách đi từ gốc xuống lá (cỡ 3-4 tầng) rồi duyệt lá theo thứ tự, còn seq scan đọc tuần tự — planner chọn theo selectivity và cost.`
+  }],
+  check: [
+    {q:'Điều kiện tiên quyết của binary search là gì?',options:['Mảng phải rỗng','Dữ liệu đã sắp xếp theo đúng thứ tự so sánh','Mảng phải có số chẵn phần tử','Không được có phần tử trùng'],answer:1,explain:'Binary search loại một nửa dựa trên thứ tự; nếu chưa sắp, kết quả sai.'},
+    {q:'Số phần tử trong [lo, hi] tính bằng gì?',options:['lowerBound(hi) - upperBound(lo)','upperBound(hi) - lowerBound(lo)','lowerBound(lo) + upperBound(hi)','N - lowerBound(lo)'],answer:1,explain:'upperBound(hi) là chỉ số đầu > hi, lowerBound(lo) là chỉ số đầu >= lo; hiệu là số phần tử trong khoảng.'},
+    {q:'Vì sao bài tập đếm phép so sánh thay vì đo thời gian?',options:['Vì phép so sánh luôn chính xác hơn','Vì đo thời gian nhiễu do JIT, cache, GC, tải máy; đếm bước là deterministic','Vì binary search không tốn thời gian','Vì mảng quá nhỏ'],answer:1,explain:'Đo wall clock dao động; đếm số phép so sánh cho kết quả xác định, so sánh công bằng giữa hai chiến lược.'},
+    {q:'Khi nào index B-tree có thể chậm hơn seq scan?',options:['Khi bảng rỗng','Khi truy vấn trả về tỷ lệ lớn bảng (selectivity cao), nhiều random heap fetch','Khi khóa là số nguyên','Khi mảng đã sắp'],answer:1,explain:'Đọc tuần tự rẻ hơn nhiều random I/O; planner chọn seq scan khi actual rows cao.'}
+  ],
+  related: ['db-001', 'db-003', 'db-023'],
+  tags: ['binary-search', 'lower-bound', 'upper-bound', 'B-tree', 'EXPLAIN']
+},
 );
