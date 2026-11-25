@@ -1248,4 +1248,213 @@ Toi luu thoi gian o DB va backend duoi dang UTC dung Instant/timestamptz. API tr
     ],
     tags: ['Webhook', 'HMAC', 'Security', 'Key Rotation', 'Replay Attack', 'Partner Integration'],
   },
+  {
+    id: 'api-088',
+    topic: 'api',
+    level: 'lead',
+    q: 'API ngân hàng trả trường {{amount}} bằng số nguyên VND. Bạn muốn đổi thành {{amountMinor}} tính bằng “xu” (1 VND = 100 xu) để tính chính xác, nhưng có 40 phiên bản app iOS/Android cũ vẫn chạy và không thể ép cập nhật. Thiết kế thay đổi sao cho không làm hỏng client cũ, và khi nào mới tạo phiên bản mới (v2)?',
+    a: `**Tóm tắt:** Đổi ý nghĩa hay đơn vị của một trường response (ví dụ {{amount}} từ VND sang {{amountMinor}} tính bằng “xu” (1 VND = 100 xu)) là breaking change ngầm: schema không đổi nhưng client cũ hiểu sai số. Với 40 phiên bản app mobile không thể ép cập nhật, phải dùng expand-and-contract: thêm trường mới, ghi song song, backfill, trả cả hai, đánh dấu cũ deprecated, đo telemetry theo phiên bản app, mới xoá trường cũ sau brownout/sunset.
+
+### Tại sao “schema không đổi” vẫn phá hỏng client cũ
+- Client parse {{amount}} và hiểu là VND; sau khi đổi thành “xu”, số 500000 hiển thị thành 500.000 VND thay vì 5.000 VND → lỗi giao dịch hiển thị.
+- Không đổi tên hay kiểu nên OpenAPI diff không báo, review bằng mắt dễ bỏ sót.
+- Client cũ không gửi header version mới, server không biết ai đang đọc trường cũ.
+
+### Cơ chế migrate từng bước (expand-and-contract)
+1. **Mở rộng DB**: thêm cột {{amount_minor}} nullable, migration không khóa bảng, không xóa cột {{amount}} cũ.
+2. **Mở rộng ứng dụng**: phiên bản server mới đọc {{amount_minor}} nếu có, ngược lại {{amount}} × 100; khi ghi cập nhật cả hai trong cùng transaction.
+3. **Backfill**: job theo batch chuyển dữ liệu cũ sang {{amount_minor}}, có checkpoint, không transaction khổng lồ.
+4. **Trả cả hai field**: response có {{amount}} (cũ, deprecated) và {{amountMinor}} (mới). Client cũ đọc {{amount}}, client mới đọc {{amountMinor}}.
+5. **Đo telemetry**: log theo header {{X-App-Version}} xem phiên bản nào còn gọi endpoint; đối với field response, server không biết client đọc field nào → cần client gửi telemetry hoặc quy ước sử dụng field qua contract test.
+6. **Deprecation**: đánh dấu {{amount}} deprecated trong OpenAPI và tài liệu, gửi header {{Deprecation}} + {{Sunset}} (RFC 8594/9745).
+7. **Brownout / sunset**: sau thời gian thông báo (ví dụ 6–12 tháng), ngừng trả {{amount}}, rồi xóa cột DB ở migration cuối cùng.
+
+### Code Java (DTO, ≤ 30 dòng)
+~~~java
+public record TransferResponse(
+        String id,
+        @Deprecated Long amount,          // trường cũ: VND, giữ cho client cũ
+        Long amountMinor,                 // trường mới: xu, nguồn sự thật
+        String status) {}
+
+// Controller trả cả hai; client cũ đọc amount, client mới đọc amountMinor
+~~~
+
+### Bảng trade-off: cách xử lý thay đổi trường cũ
+| Cách | Ưu | Nhược | Khi dùng |
+|------|-----|-------|----------|
+| Giữ trường cũ, thêm trường mới (expand-and-contract) | Client cũ không hỏng | DB có hai cột, code phức tạp hơn | Có nhiều phiên bản client không thể cập nhật |
+| Đổi luôn ý nghĩa trường, tạo v2 | Code đơn giản | Client cũ hỏng ngay | Chỉ khi khép kín, có thể ép cập nhật |
+| Header version chọn field trả về | Tính toán chính xác | Client phải set header, proxy có thể mất header | Kiểm soát chặt client |
+
+### Pitfall production
+- Default thay đổi (ví dụ làm tròn, múi giờ) cũng là breaking dù schema không đổi.
+- Trả cả hai field nhưng field mới chưa backfill xong → null, client mới hiểu sai.
+- Client strict-parser (Kotlin/Swift) crash khi thấy field lạ nếu không bật tolerant reader.
+- Không thể biết client đọc field response nào chỉ từ server log → cần telemetry phía client.
+
+### Ví dụ đời thực
+Ngân hàng đổi trường hiển thị số dư từ VND sang “xu” để lưu phân carattere. Triệu chứng: 4 phiên bản app cũ (khoảng 12% lượt đăng ký hằng ngày) hiển thị số dư bị nhân 100 sau deploy. Điều tra: log không thấy lỗi 5xx, chỉ có ticket khách phànán “số dư không đúng”. Xử lý: rollback field, triển khai expand-and-contract, thêm telemetry theo {{X-App-Version}}. Kết quả: sau 8 tuần, tỷ lệ phiên bản cũ đọc trường cũ dưới 1%, mới xoá trường cũ. Thời gian toàn cảnh: 10 tuần.
+
+### Trả lời mẫu khi phỏng vấn (150-220 từ)
+“Khi không thể ép 40 phiên bản app mobile cập nhật, tôi không đổi ý nghĩa trường cũ bất ngờ. Ví dụ đổi số dư từ VND sang xu, tôi dùng expand-and-contract: thêm cột mới, ghi cả hai, backfill theo batch, rồi trả cả hai field trong response, đánh dấu trường cũ deprecated. Đồng thời tôi theo dõi telemetry theo phiên bản app để biết bao lâu vẫn có client đọc trường cũ, gửi header Deprecation/Sunset, và chỉ xoá trường cũ sau khi mức dùng đủ thấp trong khoảng 6–12 tháng. Nếu có thay đổi phá vỡ hợp đồng thực sự (đổi tên, thêm trường bắt buộc), tôi mới tạo v2 và chạy song song v1/v2 trong thời gian chuyển đổi.”
+
+> Senior tip: Thay đổi mặc định (múi giờ, cách làm tròn, đơn vị) là breaking change ngầm hay bị bỏ sót nhất — coi nó như đổi schema.`,
+follow: [
+  'Làm sao biết client cũ còn đọc trường response cũ nếu client không gửi telemetry?',
+  'Nếu 6 team cùng sửa API, ai là người chốt việc xoá trường cũ và theo lịch nào?',
+  'Backfill bảng hàng triệu dòng cần kiểm soát lock và replication lag ra sao?',
+],
+    tags: ['API Versioning', 'Backward Compatibility', 'Expand Contract', 'Mobile', 'Telemetry', 'Deprecation', 'Banking'],
+  },
+  {
+    id: 'api-089',
+    topic: 'api',
+    level: 'senior',
+    q: 'API tạo hàng loạt chuyển khoản (một request có 1.000 lệnh) bị lỗi validation ở 3 lệnh. Thiết kế phản hồi lỗi theo RFC 9457 (Problem Detail, Spring Boot 3) để client xử lý tự động từng lệnh mà không phải gửi lại toàn bộ?',
+    a: `**Tóm tắt:** Một request tạo hàng loạt (ví dụ 1.000 chuyển khoản) có thể thành công một phần: 997 lệnh OK, 3 lệnh bị lỗi. RFC 9457 Problem Detail (media type {{application/problem+json}}, Spring Boot 3 hỗ trợ sẵn class {{ProblemDetail}}) cần được mở rộng để mỗi lệnh lỗi có riêng mã lỗi máy có thể switch theo {{type}}, không parse chuỗi {{detail}}. Client chỉ sửa lại 3 lệnh sai, không gửi lại toàn bộ 1.000.
+
+### Vì sao lỗi cần chuẩn và máy đọc được
+- Nếu mỗi endpoint trả lỗi dạng tuỳ ý (mã số, chuỗi tự do), đối tác phải viết if/else theo {{detail}} — dễ gãy khi đổi câu chữ.
+- {{type}} là URI ổn định định danh loại lỗi; client switch theo {{type}} + {{status}}, {{detail}} chỉ hiển thị cho người dùng.
+- Spring Boot 3: bật {{spring.mvc.problemdetails.enabled=true}} hoặc viết {{@ControllerAdvice}} trả {{ProblemDetail}} nhất quán.
+
+### Thiết kế lỗi phần-batch: 207 Multi-Status hay 422?
+- **207 Multi-Status**: body là danh sách, mỗi item có status và Problem Detail riêng. Phù hợp khi mỗi lệnh độc lập, client muốn biết chính xác thành bại nào.
+- **422 + extension {{errors}}**: mảng lỗi gộp trong một Problem Detail, mỗi lỗi có {{field}}, {{errorCode}}, {{message}}. Phù hợp khi validation thất bại trước khi xử lý.
+- Không dùng 200 kèm field “status”: client dễ bỏ qua và xử lý sai.
+
+### Ví dụ payload 207 (một phần)
+~~~json
+HTTP/1.1 207 Multi-Status
+Content-Type: application/problem+json
+{
+  "type": "about:blank",
+  "title": "Batch processed with partial failures",
+  "status": 207,
+  "items": [
+    {"commandId": "cmd-001", "status": "ACCEPTED"},
+    {"commandId": "cmd-003", "status": "REJECTED",
+     "error": {
+       "type": "https://api.bank.vn/problems/insufficient-funds",
+       "title": "Số dư không đủ",
+       "status": 422,
+       "detail": "Tài khoản cần 5.200.000 VND nhưng còn 5.000.000 VND.",
+       "instance": "/v1/batches/b-1/commands/cmd-003",
+       "errors": [{"field": "amount", "errorCode": "INSUFFICIENT_FUNDS", "retryable": false}]
+     }}
+  ]
+}
+~~~
+
+### Code Java (ControllerAdvice, ≤ 30 dòng)
+~~~java
+@RestControllerAdvice
+class BatchProblemDetailHandler {
+
+    @ExceptionHandler(BatchValidationException.class)
+    ProblemDetail handle(BatchValidationException e) {
+        ProblemDetail p = ProblemDetail.forStatusAndDetail(
+                HttpStatus.UNPROCESSABLE_ENTITY, e.getMessage());
+        p.setType(UriComponentsBuilder.fromUriString("https://api.bank.vn/problems/batch-validation-failed").build().toUri());
+        p.setTitle("Một số lệnh trong batch không hợp lệ");
+        p.setProperty("errors", e.getErrors()); // danh sách {field, errorCode, retryable}
+        return p;
+    }
+}
+~~~
+
+### Bảng trade-off
+| Tiêu chí | 207 Multi-Status | 422 + errors extension |
+|----------|------------------|------------------------|
+| Mỗi lệnh có status riêng | Có | Không (lỗi gộp) |
+| Client phần mềm xử lý dễ | Dễ hơn với REST client hỗ trợ 207 | Dễ với bất kỳ HTTP client nào |
+| Phù hợp | Lệnh độc lập, xử lý riêng lẻ | Validation thất bại trước khi chạy |
+| Rủi ro | Ít client HTTP cũ hiểu 207 | Client dễ bỏ qua mảng errors |
+
+### Pitfall production
+- Không parse {{detail}} để quyết định logic; {{detail}} là văn bản cho người, có thể đổi.
+- {{type}} phải là URI ổn định, có tài liệu kèm, không đổi tuỳ tiện.
+- Extension {{errors}} không được chứa dữ liệu nhạy cảm (số tài khoản đầy đủ, số thẻ).
+- 207 bị một số HTTP client/library cũ không xử lý tự động → cần dokument lại cho đối tác.
+
+### Ví dụ đời thực
+Hệ thống tạo batch 10.000 chuyển lương; 23 lệnh lỗi do số dư không đủ. Trước khi có chuẩn: client nhận 422 chung, không biết lệnh nào lỗi, phải gửi lại cả 10.000 (gây trùng và quá tải core). Sau khi dùng 207 + Problem Detail per-item: client chỉ sửa 23 lệnh, gửi lại, tỷ lệ retry giảm từ 100% batch xuống 0,23% lệnh; thời gian xử lý batch từ 10 phút xuống 2 phút.
+
+### Trả lời mẫu khi phỏng vấn (150-220 từ)
+“Với API batch, tôi trả 207 Multi-Status kèm Problem Detail cho từng lệnh bị lỗi, mỗi lỗi có {{type}} là URI ổn định và extension {{errors}} chứa {{field}}, {{errorCode}}, {{retryable}}. Client switch theo {{type}} để biết lỗi nào có thể retry, lỗi nào cần can thiệp, và chỉ gửi lại các lệnh thất bại thay vì toàn bộ batch. Trong Spring Boot 3 tôi dùng {{ProblemDetail}} và {{@ControllerAdvice}} để ánh xạ validation (422), lỗi nghiệp vụ (409/422) và lỗi upstream (502/503/504) thành cùng dạng. {{detail}} chỉ dành cho hiển thị, không dùng để lập trình logic.”
+
+> Senior tip: Thiết kế taxonomy {{type}} như mã lỗi máy đọc được, có tài liệu kèm; {{detail}} dành cho con người, có thể đổi ngôn ngữ bất cứ lúc nào.`,
+follow: [
+  'Khi nào dùng 422 và khi nào dùng 207 cho lỗi phần-batch?',
+  'Gateway và các service đều trả Problem Detail nhất quán như thế nào, kể cả upstream chết?',
+  'Extension errorCode/retryable/traceId nên nằm trong hợp đồng lỗi và quy ước gì để an toàn?',
+],
+    tags: ['RFC 9457', 'Problem Details', 'Spring Boot 3', 'Error Handling', 'Batch', 'Partial Failure', 'Partner API'],
+    refs: [{ type: 'doc', title: 'RFC 9457: Problem Details for HTTP APIs', url: 'https://www.rfc-editor.org/rfc/rfc9457' }],
+  },
+  {
+    id: 'api-090',
+    topic: 'api',
+    level: 'senior',
+    q: 'Hệ thống của bạn gửi webhook thông báo giao dịch cho đối tác ví điện tử. Sự kiện liên quan cùng tài khoản (tạo → hoàn tiền → tạo lại) đến đối tác lệch thứ tự, và đối tác chạy nhiều worker. Thiết kế thứ tự, chống replay và xử lý sự kiện thiếu sao cho không làm sai trạng thái?',
+    a: `**Tóm tắt:** Webhook gửi theo mô hình at-least-once: sự kiện có thể trùng, đến sai thứ tự, và đối tác chạy nhiều worker. Đối với sự kiện liên quan cùng tài khoản (tạo giao dịch → hoàn tiền → tạo lại), thứ tự sai sẽ làm sai trạng thái (ví dụ hoàn tiền trước khi tạo). Giải pháp: gán sequence number theo partition (tài khoản), đối tác dùng reordering buffer và phát hiện khoảng trống (gap), khi sự kiện thiếu gọi lại API tra trạng thái chuẩn; chống replay bằng delivery ID deduplicate với TTL và job dọn dữ liệu cũ.
+
+### Cơ chế từng bước
+1. **Gửi**: outbox trong DB ghi sự kiện kèm {{deliveryId}} (UUID, cố định qua mọi lần gửi lại) và {{sequence}} tăng theo từng partition (tài khoản). Bảng sự kiện có unique index {{(partnerId, deliveryId)}} để chặn gửi trùng.
+2. **Gửi lại**: retry exponential backoff với jitter, tôn trọng {{Retry-After}}, giữ nguyên {{deliveryId}} và {{sequence}}.
+3. **Đối tác nhận**: xác thực HMAC-SHA256 trên raw body + timestamp (cửa sổ ±5 phút), tra {{deliveryId}} đã xử lý → nếu có thì ACK 2xx không xử lý lại (anti-replay).
+4. **Thứ tự**: đối tác buffer sự kiện theo {{sequence}} mỗi partition; nếu thiếu seq N thì giữ các seq > N trong buffer, gọi API của bạn tra trạng thái tài khoản đến seq N, rồi mới xử lý tiếp. Không xử lý lệnh cũ sau lệnh mới (phát hiện out-of-order).
+5. **Dọn dữ liệu**: lưu {{deliveryId}} đã xử lý có TTL (ví dụ 7 ngày, lớn hơn cửa sổ retry tối đa của đối tác), job định kỳ xóa bản ghi hết hạn để DB không phình.
+
+### Code Java (mã giả đối tác, ≤ 30 dòng)
+~~~java
+record Event(String deliveryId, long sequence, String payload) {}
+
+// Đối tác: deduplicate và reorder theo partition (accountId)
+Map<String, Long> lastSeq = new ConcurrentHashMap<>();   // accountId -> sequence đã xử lý
+Map<String, NavigableMap<Long, String>> buffer = new ConcurrentHashMap<>();
+
+void onEvent(Event e) {
+    if (processed.contains(e.deliveryId())) return;        // anti-replay
+    long expected = lastSeq.getOrDefault(e.accountId(), 0L) + 1;
+    if (e.sequence() == expected) {
+        apply(e); lastSeq.merge(e.accountId(), 1L, Long::sum);
+        drainBuffer(e.accountId());                        // xử lý các sự kiện đang chờ
+    } else if (e.sequence() > expected) {
+        buffer.computeIfAbsent(e.accountId(), k -> new TreeMap<>()).put(e.sequence(), e.payload());
+        fetchStateFromBank(e.accountId(), e.sequence());   // gọi lại API tra trạng thái chuẩn
+    }
+    processed.add(e.deliveryId());                         // có TTL để dọn cũ
+}
+~~~
+
+### Bảng trade-off
+| Tiêu chí | Ordering chặt (sequence + buffer) | Không đảm bảo thứ tự |
+|----------|-----------------------------------|----------------------|
+| Sai trạng thái | Không (xử lý đúng thứ tự) | Có (hoàn tiền trước khi tạo) |
+| Độ trễ | Có chờ khi sự kiện thiếu | Nhanh, nhưng phải idempotent rất chặt |
+| Chi phí đối tác | Buffer, gọi API tra trạng thái | Ít, nhưng xử lý phức tạp hơn |
+| Phù hợp | Tài chính, trạng thái liên tục | Thông báo không liên quan (marketing) |
+
+### Pitfall production
+- Sequence reset sau khi deploy hoặc partition đổi chủ sở hữu → cần cùng không gian số (namespace) ổn định.
+- Khoảng trống vĩnh viễn (sự kiện bị mất hoàn toàn) làm buffer treo vô thời hạn → cần timeout và gọi API tra trạng thái, hoặc báo cảnh báo vận hành.
+- Lưu {{deliveryId}} vĩnh viễn làm DB phình → phải có TTL và job dọn; TTL phải lớn hơn cửa sổ retry tối đa của đối tác.
+- Không tin thứ tự sự kiện; nếu không có sequence, gọi API đối tác để lấy trạng thái chuẩn thay vì dự đoán.
+
+### Ví dụ đời thực
+Đối tác ví điện tử nhận webhook từ ngân hàng: sự kiện tạo giao dịch (seq 100), hoàn tiền (seq 101), tạo lại (seq 102) đến theo thứ tự 100, 102, 101 do hai worker khác nhau. Nếu xử lý ngay: số dư khách bị trừ hai lần hoặc hoàn tiền giao dịch chưa tồn tại. Sau khi áp buffer + gap detection: worker giữ seq 102, gọi API ngân hàng tra trạng thái đến seq 101, sau đó xử lý 101 rồi 102. Kết quả: sai trạng thái giảm từ 0,4% giao dịch xuống 0; thời gian khôi phục sự kiện thiếu từ vài giờ xuống dưới 5 phút.
+
+### Trả lời mẫu khi phỏng vấn (150-220 từ)
+“Tôi thiết kế webhook gửi theo at-least-once: mỗi sự kiện có {{deliveryId}} cố định và {{sequence}} tăng theo partition tài khoản. Đối tác xác thực HMAC, deduplicate theo {{deliveryId}} để chống replay, và dùng reordering buffer để xử lý đúng thứ tự; khi thiếu sự kiện, gọi lại API ngân hàng tra trạng thái chuẩn thay vì đoán. Phía gửi, outbox với unique index chặn gửi trùng, retry exponential backoff, và job dọn bản ghi {{deliveryId}} hết hạn theo TTL để DB không phình. Với dữ liệu tài chính, thứ tự và idempotency là bắt buộc, không phải tùy chọn.”
+
+> Senior tip: Không bao giờ tin thứ tự sự kiện từ webhook; nếu không có sequence, hãy gọi lại API để lấy trạng thái chuẩn trước khi cập nhật.`,
+follow: [
+  'Nếu đối tác không gửi sequence, bạn xử lý out-of-order ra sao?',
+  'Khoảng trống vĩnh viễn (sự kiện mất hoàn toàn) làm buffer treo: giải pháp là gì?',
+  'Lưu delivery ID đã xử lý có TTL bao nhiêu là đủ, và job dọn chạy mỗi bao lâu?',
+],
+    tags: ['Webhook', 'Ordering', 'Replay Protection', 'Idempotency', 'Partner Integration', 'Outbox'],
+  },
 );
