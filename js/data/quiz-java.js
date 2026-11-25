@@ -7432,14 +7432,14 @@ System.out.println(a.size() + " " + b.size() + " " + c.size());
 },
 {
   id: 'qz-modern-058', topic: 'modern', multi: true,
-  q: `Optional dùng đúng hoặc sai? (Chọn 3)
+  q: `Which Optional usages are correct? (Choose 3)
 ~~~java
-Optional<String> opt = Optional.ofNullable(getName()); // có thể null
+Optional<String> opt = Optional.ofNullable(getName()); // may be null
 
 // 1
-String s1 = opt.orElse(getDefault());             // getDefault() tốn kém
+String s1 = opt.orElse(getDefault());             // getDefault() expensive
 // 2
-String s2 = opt.orElseGet(() -> getDefault());    // getDefault() tốn kém
+String s2 = opt.orElseGet(() -> getDefault());    // getDefault() expensive
 // 3
 opt.ifPresent(name -> System.out.println(name));
 // 4
@@ -7448,26 +7448,26 @@ String s3 = opt.map(String::trim).orElseThrow();
 if (opt.isPresent()) { String s = opt.get(); }
 ~~~`,
   options: [
-    `Dòng 1: getDefault() luôn được gọi dù opt có giá trị (eager)`,
-    `Dòng 2: getDefault() chỉ được gọi khi opt rỗng (lazy)`,
-    `Dòng 3: ifPresent an toàn, không ném exception khi opt rỗng`,
-    `Dòng 4: orElseThrow() ném IllegalStateException khi opt rỗng`,
-    `Dòng 5: an toàn và khuyến nghị thay vì orElseThrow`,
-    `Dòng 5: race condition giữa isPresent và get trong môi trường đa luồng`
+    `Line 1: getDefault() always called even if opt has value (eager)`,
+    `Line 2: getDefault() only called when opt is empty (lazy)`,
+    `Line 3: ifPresent safe, no exception when opt empty`,
+    `Line 4: orElseThrow() throws NoSuchElementException when opt empty`,
+    `Line 5: safe and recommended instead of orElseThrow`,
+    `Line 5: race condition between isPresent and get in multi-threaded environment`
   ],
   answer: [0, 1, 2],
-  explain: `**Đáp án đúng: 1 eager, 2 lazy, 3 an toàn.**
+  explain: `**Correct answer: 1 eager, 2 lazy, 3 safe.**
 
-### Phân biệt orElse vs orElseGet
-- {{orElse(value)}}: **eager** — tham số {{value}} được **đánh giá ngay** trước khi gọi method, dù {{opt}} có giá trị hay không. Dùng cho giá trị rẻ (hằng số, field).
-- {{orElseGet(Supplier)}}: **lazy** — {{Supplier}} chỉ chạy khi {{opt}} **rỗng**. Dùng cho tính toán tốn kém (DB call, JSON parse).
+### orElse vs orElseGet
+- {{orElse(value)}}: **eager** — {{value}} evaluated **immediately** before method call, regardless of whether {{opt}} has value. Use for cheap values (constants, fields).
+- {{orElseGet(Supplier)}}: **lazy** — {{Supplier}} only runs when {{opt}} **empty**. Use for expensive computation (DB call, JSON parse).
 
-### Các dòng còn lại
-- **3. {{ifPresent}}**: consumer chỉ chạy khi có giá trị; rỗng thì no-op — **an toàn**, không exception.
-- **4. {{map}} + {{orElseThrow}}**: pipeline đúng, nhưng phương án ghi nhầm loại exception — {{orElseThrow()}} ném {{NoSuchElementException}}, không phải {{IllegalStateException}}.
-- **5. {{isPresent}} + {{get()}}**: **anti-pattern**. Trong code đơn luồng chạy được, nhưng **không nguyên tử** — giữa {{isPresent}} và {{get}} state có thể đổi (đa luồng) hoặc logic phức tạp dễ sai. Khuyến nghị: {{opt.map(...).orElse(...)}} hoặc {{orElseThrow()}}.
+### Remaining lines
+- **3. {{ifPresent}}**: consumer runs only when value present; empty is no-op — **safe**, no exception.
+- **4. {{map}} + {{orElseThrow}}**: correct pipeline, but option 4 had wrong exception type — {{orElseThrow()}} throws {{NoSuchElementException}}, not {{IllegalStateException}}.
+- **5. {{isPresent}} + {{get()}}**: **anti-pattern**. Works in single-threaded code, but **not atomic** — state can change between {{isPresent}} and {{get}} (multi-threaded) or complex logic error-prone. Recommended: {{opt.map(...).orElse(...)}} or {{orElseThrow()}}.
 
-> Senior tip: Optional thiết kế làm **kiểu trả về**, không làm field entity, tham số method, hay phần tử collection. Tránh {{ifPresent(x -> ...)}} rồi {{else throw}} — viết {{orElseThrow(() -> new BadRequestException("missing"))}} rõ ràng hơn.`
+> Senior tip: Optional designed as **return type**, not entity field, method parameter, or collection element. Avoid {{ifPresent(x -> ...)}} then {{else throw}} — write {{orElseThrow(() -> new BadRequestException("missing"))}} instead.`
 },
 {
   id: 'qz-modern-059', topic: 'modern',
@@ -7565,17 +7565,17 @@ fun main() {
   answer: 0,
   explain: `**Đáp án đúng: -1 6.**
 
-### Cơ chế
-- {{s?.length}}: nếu {{s}} là null thì biểu thức toàn bộ trả về null, không ném Ngoại lệ con trỏ null. Nếu không null thì trả về chiều dài chuỗi.
-- {{s?.length ?: -1}}: toán tử Elvis {{?:}} — nếu bên trái null thì lấy giá trị bên phải (-1).
-- Gọi với null → -1; gọi với "Kotlin" → 6. Kiểu trả về là {{Int}} (không phải {{Int?}}) nhờ Elvis.
+### Mechanism
+- {{s?.length}}: if {{s}} is null, the entire expression returns null, no NullPointerException thrown. If not null, returns string length.
+- {{s?.length ?: -1}}: Elvis operator {{?:}} — if left side is null, take right side value (-1).
+- Call with null → -1; call with "Kotlin" → 6. Return type is {{Int}} (not {{Int?}}) thanks to Elvis.
 
-### Vì sao các phương án sai
-- **0 6**: chiều dài của null không được quy ước là 0; safe call trả về null rồi Elvis thay bằng -1.
-- **null 6**: hàm khai báo trả về {{Int}} non-null, không thể in null; Elvis đã thay thế giá trị null.
-- **Lỗi biên dịch vì không gán được null cho Int**: biểu thức {{s?.length}} có kiểu {{Int?}}, nhưng toán tử {{?:}} ép kết quả về {{Int}} non-null, nên hợp lệ.
+### Why other options are wrong
+- **0 6**: null length is not defined as 0; safe call returns null then Elvis replaces with -1.
+- **null 6**: function declares {{Int}} non-null return, cannot print null; Elvis already replaced null value.
+- **Compile error because cannot assign null to Int**: expression {{s?.length}} has type {{Int?}}, but Elvis operator {{?:}} coerces result to non-null {{Int}}, so valid.
 
-> Senior tip: safe call {{?.}} và Elvis {{?:}} thường dùng cùng nhau để cung cấp giá trị mặc định an toàn. Tránh dùng {{!!}} (not-null assertion) vì nó ném Ngoại lệ con trỏ null khi giá trị thực sự null, làm sập ứng dụng.`
+> Senior tip: safe call {{?.}} and Elvis {{?:}} often used together to provide safe default value. Avoid {{!!}} (not-null assertion) because it throws NullPointerException when value is actually null, crashing the app.`
 },
 {
   id: 'qz-kotlin-022', topic: 'kotlin',
@@ -7597,20 +7597,20 @@ fun main() {
     `Lỗi biên dịch vì data class không được gỡ r gói`
   ],
   answer: 1,
-  explain: `**Đáp án đúng: 100 An 500000.0 rồi 100 An.**
+  explain: `**Correct answer: 100 An 500000.0 then 100 An.**
 
-### Cơ chế
-- Data class tự sinh {{component1()}}, {{component2()}}, {{component3()}} tương ứng với các tham số constructor chính.
-- {{val (id, khachHang, soTien) = donHang}} gọi ba hàm thành phần, gán ba biến.
-- Kotlin cho phép gỡ r gói **ít hơn** số thành phần: {{val (a, b) = donHang}} chỉ gọi {{component1()}} và {{component2()}} → {{a = 100}}, {{b = "An"}}.
-- Không được gỡ r gói **nhiều hơn** số thành phần (lỗi biên dịch).
+### Mechanism
+- Data class auto-generates {{component1()}}, {{component2()}}, {{component3()}} corresponding to primary constructor parameters.
+- {{val (id, khachHang, soTien) = donHang}} calls three component functions, assigns three variables.
+- Kotlin allows destructuring **fewer** than number of components: {{val (a, b) = donHang}} only calls {{component1()}} and {{component2()}} → {{a = 100}}, {{b = "An"}}.
+- Cannot destructure **more** than number of components (compile error).
 
-### Vì sao các phương án sai
-- **100 An 500000.0 rồi 100 500000.0**: sai, {{(a, b)}} lấy thành phần thứ nhất và thứ hai (id, khachHang), không bỏ qua khachHang.
-- **100 An 500000.0 rồi lỗi biên dịch vì gỡ r gói phải lấy đủ số thành phần**: sai, Kotlin cho phép lấy ít thành phần hơn.
-- **Lỗi biên dịch vì data class không được gỡ r gói**: sai, gỡ r gói là tính năng tiêu chuẩn của data class.
+### Why other options are wrong
+- **100 An 500000.0 then 100 500000.0**: wrong, {{(a, b)}} takes first and second components (id, khachHang), doesn't skip khachHang.
+- **100 An 500000.0 then compile error because destructuring must take all components**: wrong, Kotlin allows taking fewer components.
+- **Compile error because data class cannot be destructured**: wrong, destructuring is a standard data class feature.
 
-> Senior tip: gỡ r gói dựa trên thứ tự tham số trong constructor chính, không theo tên biến. Nếu sau này thêm hoặc xóa tham số, mọi chỗ gỡ r gói có thể hỏng — hãy cẩn thận khi dùng với data class làm API công khai.`
+> Senior tip: destructuring is based on parameter order in primary constructor, not variable names. If you later add or remove parameters, all destructuring sites may break — be careful when using with data classes as public API.`
 },
 {
   id: 'qz-kotlin-023', topic: 'kotlin',
@@ -7630,19 +7630,19 @@ fun main() {
     `Lỗi biên dịch vì không thể gọi hàm mở trên kiểu nullable`
   ],
   answer: 2,
-  explain: `**Đáp án đúng: [] [XIN CHAO].**
+  explain: `**Correct answer: [] [XIN CHAO].**
 
-### Cơ chế
-- Hàm mở có thể khai báo trên kiểu nullable {{String?}}. Bên trong, {{this}} có kiểu {{String?}}.
-- {{this?.uppercase() ?: ""}}: safe call — nếu {{this}} null thì kết quả là chuỗi rỗng (giá trị mặc định của Elvis), không ném Ngoại lệ con trỏ null.
-- Gọi trên null → {{[]}}; gọi trên "xin chao" → {{[XIN CHAO]}}.
+### Mechanism
+- Extension function can be declared on nullable type {{String?}}. Inside, {{this}} has type {{String?}}.
+- {{this?.uppercase() ?: ""}}: safe call — if {{this}} is null, result is empty string (Elvis default), no NullPointerException thrown.
+- Call on null → {{[]}}; call on "xin chao" → {{[XIN CHAO]}}.
 
-### Vì sao các phương án sai
-- **[null] [XIN CHAO]**: safe call không trả về {{null}} vào chuỗi; Elvis đã thay bằng chuỗi rỗng.
-- **Ném Ngoại lệ con trỏ null khi gọi hoaInHoa trên null**: sai vì hàm mở được gọi như hàm thường, và bên trong dùng {{?.}} xử lý null an toàn. {{!!}} mới ném ngoại lệ khi null.
-- **Lỗi biên dịch vì không thể gọi hàm mở trên kiểu nullable**: sai, Kotlin cho phép và đây là cách phổ biến viết hàm xử lý null.
+### Why other options are wrong
+- **[null] [XIN CHAO]**: safe call doesn't return {{null}} into string; Elvis replaced with empty string.
+- **Throws NullPointerException when calling hoaInHoa on null**: wrong because extension function is called like normal function, and inside uses {{?.}} to handle null safely. {{!!}} would throw exception when null.
+- **Compile error because cannot call extension function on nullable type**: wrong, Kotlin allows this and it's a common pattern for null-handling utilities.
 
-> Senior tip: hàm mở trên kiểu nullable rất hữu ích cho các hàm tiện ích xử lý null tập trung ở một chỗ, giúp nơi gọi code gọn gàng hơn, không cần kiểm tra null trước mỗi lần dùng.`
+> Senior tip: extension functions on nullable types are very useful for utility functions that centralize null handling, making call sites cleaner without needing null checks before each use.`
 },
 {
   id: 'qz-kotlin-024', topic: 'kotlin', multi: true,
@@ -7654,29 +7654,29 @@ fun main() {
     `run không thể truy cập thành viên của đối tượng gốc`
   ],
   answer: [1, 2],
-  explain: `**Đáp án đúng: {{apply}} và {{also}} trả về chính đối tượng nhận; {{let}} và {{run}} trả về giá trị lambda trả; {{also}} thích hợp cho tác vụ phụ.**
+  explain: `**Correct answer: {{apply}} and {{also}} return the receiver object; {{let}} and {{run}} return lambda result; {{also}} suitable for side effects.**
 
-### Cơ chế
-- {{let}} và {{also}}: đối tượng được truyền vào làm tham số {{it}} của lambda.
-  - {{let}} trả về kết quả của lambda.
-  - {{also}} trả về chính đối tượng gốc (dùng cho ghi log, tác vụ phụ).
-- {{apply}} và {{run}}: đối tượng là receiver {{this}} trong lambda.
-  - {{apply}} trả về chính đối tượng (dùng để cấu hình đối tượng).
-  - {{run}} trả về kết quả của lambda (dùng để tính toán và trả giá trị).
-- Bảng tóm tắt:
+### Mechanism
+- {{let}} and {{also}}: object passed as lambda parameter {{it}}.
+  - {{let}} returns lambda result.
+  - {{also}} returns the original object (used for logging, side effects).
+- {{apply}} and {{run}}: object is receiver {{this}} in lambda.
+  - {{apply}} returns the original object (used for object configuration).
+  - {{run}} returns lambda result (used for computation, returning value).
+- Summary table:
 
-| Hàm | Tham chiếu | Trả về | Dùng cho |
+| Function | Reference | Returns | Used for |
 |---|---|---|---|
-| let | it | kết quả lambda | biến đổi, kiểm tra null |
-| apply | this | đối tượng gốc | cấu hình đối tượng |
-| also | it | đối tượng gốc | side effect, log |
-| run | this | kết quả lambda | tính toán, trả giá trị |
+| let | it | lambda result | transform, null check |
+| apply | this | receiver object | configure object |
+| also | it | receiver object | side effect, log |
+| run | this | lambda result | compute, return value |
 
-### Vì sao các phương án sai
-- **{{let}} và {{run}} dùng tham số {{it}}, còn {{apply}} và {{also}} dùng receiver {{this}}**: sai, ngược lại: {{let}}/{{also}} dùng {{it}}, {{apply}}/{{run}} dùng {{this}}.
-- **{{run}} không thể truy cập thành viên của đối tượng gốc**: sai, {{run}} dùng {{this}} nên truy cập thành viên được (trừ khi bị che khuất bởi biến cục bộ cùng tên).
+### Why other options are wrong
+- **{{let}} and {{run}} use parameter {{it}}, while {{apply}} and {{also}} use receiver {{this}}**: wrong, opposite: {{let}}/{{also}} use {{it}}, {{apply}}/{{run}} use {{this}}.
+- **{{run}} cannot access members of original object**: wrong, {{run}} uses {{this}} so can access members (unless shadowed by local variable with same name).
 
-> Senior tip: chọn {{apply}} khi muốn cấu hình rồi trả về đối tượng (ví dụ khởi tạo UI, cấu hình client); chọn {{let}} khi muốn biến đổi giá trị hoặc thực hiện khi không null. Tránh lồng quá nhiều hàm xử lý phạm vi khiến code khó đọc.`
+> Senior tip: choose {{apply}} when you want to configure then return object (e.g., UI initialization, client configuration); choose {{let}} when you want to transform value or execute when not null. Avoid nesting too many scope functions making code hard to read.`
 },
 {
   id: 'qz-kotlin-025', topic: 'kotlin',
@@ -7698,19 +7698,19 @@ fun moTa(r: KetQua): String = when (r) {
     `Biên dịch được; when là biểu thức nên mỗi nhánh phải trả giá trị, và sealed cho compiler biết tất cả kiểu con nên không cần nhánh else`
   ],
   answer: 3,
-  explain: `**Đáp án đúng: Biên dịch được; when là biểu thức nên mỗi nhánh phải trả giá trị, và sealed cho compiler biết tất cả kiểu con nên không cần nhánh else.**
+  explain: `**Correct answer: Compiles fine; when is expression so each branch must return value, and sealed lets compiler know all subtypes so no else branch needed.**
 
-### Cơ chế
-- {{sealed class KetQua}}: compiler biết **tất cả** kiểu con (phải cùng module, cùng package). Ở đây chỉ có {{ThanhCong}} và {{Loi}}.
-- {{when (r)}} dùng làm **biểu thức** trả về {{String}}. Mỗi nhánh trả về {{String}}, và vì đã xử lý đủ mọi kiểu con của sealed nên **không cần else**.
-- Nếu sau này thêm kiểu con mới, mọi {{when}} chưa xử lý sẽ báo lỗi biên dịch — đây là lợi ích lớn của kiểu khép kín.
+### Mechanism
+- {{sealed class KetQua}}: compiler knows **all** subtypes (must be in same module, same package). Here only {{ThanhCong}} and {{Loi}}.
+- {{when (r)}} used as **expression** returning {{String}}. Each branch returns {{String}}, and since all sealed subtypes are covered, **no else needed**.
+- If new subtype added later, all unhandled {{when}} will show compile error — this is the main benefit of sealed types.
 
-### Vì sao các phương án sai
-- **Lỗi biên dịch vì when biểu thức bắt buộc phải có nhánh else**: sai, với kiểu sealed khi đủ nhánh thì không bắt buộc else.
-- **Lỗi biên dịch vì sealed class không thể có đối tượng đơn (object) như Loi**: sai, {{object}} là kiểu con hợp lệ và phổ biến cho trạng thái không mang dữ liệu.
-- **Chỉ biên dịch được khi KetQua là interface thay vì class**: sai, {{sealed class}} và {{sealed interface}} đều được, hành vi khi dùng {{when}} tương tự.
+### Why other options are wrong
+- **Compile error because when expression must have else branch**: wrong, with sealed type when all branches covered, else not required.
+- **Compile error because sealed class cannot have singleton object like Loi**: wrong, {{object}} is valid subtype commonly used for stateless cases.
+- **Only compiles if KetQua is interface instead of class**: wrong, both {{sealed class}} and {{sealed interface}} work, behavior with {{when}} is similar.
 
-> Senior tip: tránh thêm nhánh {{else ->}} "để chắc chắn" khi {{when}} trên kiểu khép kín; nhánh else sẽ tắt cảnh báo của compiler, và kiểu con mới sẽ lặng lẽ rơi vào else mà không ai biết.`
+> Senior tip: avoid adding {{else ->}} branch "just to be safe" when {{when}} on sealed type; else branch disables compiler warning, and new subtype will silently fall into else without anyone knowing.`
 },
 {
   id: 'qz-kotlin-026', topic: 'kotlin',
@@ -7730,19 +7730,19 @@ fun main() = runBlocking {
     `async không cần await, kết quả tự có sẵn sau khi chạy`
   ],
   answer: 1,
-  explain: `**Đáp án đúng: In 42 rồi xong; launch trả về Job không lấy kết quả, async trả về Deferred<Integer> lấy kết quả bằng await().**
+  explain: `**Correct answer: Prints 42 then xong; launch returns Job with no result, async returns Deferred<Integer> get result with await().**
 
-### Cơ chế
-- {{launch}}: chạy lua chéo (fire-and-forget), trả về {{Job}}. Dùng để điều khiển vòng đời (join, cancel), **không lấy giá trị** từ lambda.
-- {{async}}: chạy lua chéo, trả về {{Deferred<T>}}. Gọi {{await()}} để chờ và nhận kết quả {{T}}; nếu coroutine con ném lỗi thì {{await()}} ném lại lỗi đó.
-- Cả hai đều chạy song song trong cùng {{runBlocking}} (structured concurrency). async xong sau 100 ms in 42, launch xong sau 200 ms in xong, nên in theo thứ tự 42 rồi xong.
+### Mechanism
+- {{launch}}: fire-and-forget, returns {{Job}}. Used for lifecycle control (join, cancel), **does not get value** from lambda.
+- {{async}}: fire-and-forget, returns {{Deferred<T>}}. Call {{await()}} to wait and receive result {{T}}; if child coroutine throws, {{await()}} rethrows.
+- Both run concurrently in same {{runBlocking}} (structured concurrency). async finishes at 100ms prints 42, launch finishes at 200ms prints xong, so order is 42 then xong.
 
-### Vì sao các phương án sai
-- **In xong rồi 42**: sai, async xong sớm hơn (100 ms) nên in 42 trước, launch in xong sau (200 ms).
-- **launch và async đều trả về Deferred, gọi await() được cả hai**: sai, {{launch}} trả về {{Job}}, không có {{await()}}.
-- **async không cần await, kết quả tự có sẵn sau khi chạy**: sai, {{async}} chạy bất đồng bộ, kết quả chỉ có khi gọi {{await()}}.
+### Why other options are wrong
+- **Prints xong then 42**: wrong, async finishes earlier (100ms) so prints 42 first, launch prints xong later (200ms).
+- **launch and async both return Deferred, can call await() on both**: wrong, {{launch}} returns {{Job}}, no {{await()}}.
+- **async doesn't need await, result automatically available after running**: wrong, {{async}} runs asynchronously, result only available when {{await()}} called.
 
-> Senior tip: dùng {{launch}} khi chỉ quan tâm đến tác vụ phụ (gửi email, ghi log) và không cần kết quả; dùng {{async}} khi cần lấy giá trị trở lại. Luôn bọc trong {{runBlocking}} hoặc scope có quản lý để lỗi không bị nuốt.`
+> Senior tip: use {{launch}} when only care about side task (send email, log) and don't need result; use {{async}} when need value back. Always wrap in {{runBlocking}} or managed scope so errors don't get swallowed.`
 },
 {
   id: 'qz-kotlin-027', topic: 'kotlin',
@@ -7758,20 +7758,20 @@ fun baoCao(tieuDe: String, ma: Int = 200, thongBao: String = "OK") { ... }
     `{{@JvmOverloads}} làm tham số mặc định trở thành bắt buộc trong Java`
   ],
   answer: 2,
-  explain: `**Đáp án đúng: {{@JvmOverloads}} sinh thêm overload baoCao(String), baoCao(String, int), baoCao(String, int, String) để Java gọi linh hoạt.**
+  explain: `**Correct answer: {{@JvmOverloads}} generates additional overloads baoCao(String), baoCao(String, int), baoCao(String, int, String) so Java can call flexibly.**
 
-### Cơ chế
-- Kotlin cho phép tham số mặc định, nhưng Java không. Nếu không có annotation, code Java gọi hàm Kotlin này phải truyền đủ 3 tham số.
-- {{@JvmOverloads}} cho compiler Kotlin sinh thêm các overload Java, mỗi overload bỏ đi một tham số mặc định từ cuối về đầu.
-- overload đầu tiên là baoCao(String tieuDe), dùng ma = 200 và thongBao = "OK"; overload thứ hai là baoCao(String tieuDe, int ma) dùng thongBao = "OK"; overload ba là baoCao(String tieuDe, int ma, String thongBao) truyền đầy đủ.
-- Annotation này không ảnh hưởng đến cách Kotlin gọi Kotlin (Kotlin vẫn dùng tham số mặc định như bình thường).
+### Mechanism
+- Kotlin allows default parameters, but Java doesn't. Without annotation, Java calling this Kotlin function must pass all 3 parameters.
+- {{@JvmOverloads}} tells Kotlin compiler to generate additional Java overloads, each dropping one default parameter from end to start.
+- First overload: baoCao(String tieuDe), uses ma = 200 and thongBao = "OK"; second: baoCao(String tieuDe, int ma) uses thongBao = "OK"; third: baoCao(String tieuDe, int ma, String thongBao) passes all.
+- Annotation doesn't affect Kotlin calling Kotlin (Kotlin still uses default parameters normally).
 
-### Vì sao các phương án sai
-- **Java phải truyền đủ 3 tham số; {{@JvmOverloads}} không ảnh hưởng đối với Java**: sai, với annotation Java có thể gọi ít tham số hơn.
-- **Java chỉ có thể gọi baoCao(String, int, String), còn {{@JvmOverloads}} chỉ dùng khi Kotlin gọi Java**: sai, với annotation Java có thể gọi ít tham số hơn, và annotation ảnh hưởng code Java gọi Kotlin.
-- **{{@JvmOverloads}} làm tham số mặc định trở thành bắt buộc trong Java**: sai, annotation làm Java gọi được linh hoạt hơn, không bắt buộc gì thêm.
+### Why other options are wrong
+- **Java must pass all 3 parameters; {{@JvmOverloads}} has no effect on Java**: wrong, with annotation Java can call with fewer parameters.
+- **Java can only call baoCao(String, int, String), and {{@JvmOverloads}} only used when Kotlin calls Java**: wrong, with annotation Java can call with fewer parameters, and annotation affects Java calling Kotlin.
+- **{{@JvmOverloads}} makes default parameters required in Java**: wrong, annotation makes Java calling more flexible, doesn't require anything extra.
 
-> Senior tip: khi đưa API Kotlin ra bên Java cũ, hãy viết thử một lớp test bằng Java gọi các hàm công khai; đó là cách sớm nhất phát hiện API không thân thiện với Java (tham số mặc định, tên hàm top-level, checked exception...).`
+> Senior tip: when exposing Kotlin API to legacy Java, write a Java test class calling public functions; fastest way to discover Java-unfriendly API (default parameters, top-level function names, checked exceptions...).`
 },
 {
   id: 'qz-kotlin-028', topic: 'kotlin',
@@ -7789,19 +7789,19 @@ fun kiemTra() {
     `Trả về null an toàn mà không ném ngoại lệ`
   ],
   answer: 0,
-  explain: `**Đáp án đúng: Ném Ngoại lệ con trỏ null vì ten là null khi gọi {{!!}}.**
+  explain: `**Correct answer: Throws NullPointerException because ten is null when {{!!}} called.**
 
-### Cơ chế
-- {{ten!!}} là not-null assertion: ép Kotlin coi {{ten}} là non-null. Nếu {{ten}} thực sự null thì ném Ngoại lệ con trỏ null ngay lập tức.
-- Ở đây {{ten}} chưa gán giá trị (null), nên {{ten!!.length}} ném ngoại lệ và làm sập hàm.
-- {{!!}} không kiểm tra hay xử lý null, nó chỉ bỏ qua kiểm tra an toàn của Kotlin.
+### Mechanism
+- {{ten!!}} is not-null assertion: tells Kotlin to treat {{ten}} as non-null. If {{ten}} is actually null, throws NullPointerException immediately.
+- Here {{ten}} never assigned (null), so {{ten!!.length}} throws exception and crashes function.
+- {{!!}} doesn't check or handle null, it just bypasses Kotlin's safety check.
 
-### Vì sao các phương án sai
-- **In 0 vì ten null thì chiều dài hiểu là 0**: sai, null không có chiều dài; {{!!}} không trả về giá trị mặc định.
-- **Lỗi biên dịch vì không thể dùng {{!!}} với kiểu nullable**: sai, cú pháp {{!!}} được thiết kế riêng cho kiểu nullable, biên dịch được, lỗi là lúc chạy.
-- **Trả về null an toàn mà không ném ngoại lệ**: sai, đó là hành vi của safe call {{?.}} kết hợp Elvis {{?:}}, không phải {{!!}}.
+### Why other options are wrong
+- **Prints 0 because null length understood as 0**: wrong, null has no length; {{!!}} doesn't return default value.
+- **Compile error because cannot use {{!!}} with nullable type**: wrong, {{!!}} syntax designed for nullable type, compiles fine, error is at runtime.
+- **Returns null safely without throwing exception**: wrong, that's behavior of safe call {{?.}} combined with Elvis {{?:}}, not {{!!}}.
 
-> Senior tip: tránh dùng {{!!}} trong code production trừ khi đã chứng minh giá trị không bao giờ null; một {{!!}} sai chỗ là nguyên nhân phổ biến của sự cố sập ứng dụng (crash) trên production. Ưu tiên {{?.}} + {{?:}} hoặc kiểm tra {{if (ten != null)}}.`
+> Senior tip: avoid {{!!}} in production code unless you've proven value is never null; one misplaced {{!!}} is common cause of production crashes. Prefer {{?.}} + {{?:}} or {{if (ten != null)}} check.`
 },
 {
   id: 'qz-kotlin-029', topic: 'kotlin', multi: true,
@@ -7813,22 +7813,22 @@ fun kiemTra() {
     `Data class tự sinh equals, hashCode, toString, componentN và copy`
   ],
   answer: [0, 3],
-  explain: `**Đáp án đúng: Data class phải có ít nhất một tham số trong constructor chính; và tự sinh equals, hashCode, toString, componentN và copy.**
+  explain: `**Correct answer: Data class must have at least one parameter in primary constructor; and auto-generates equals, hashCode, toString, componentN and copy.**
 
-### Cơ chế
-- Data class phải có **ít nhất một tham số** trong constructor chính (không được để trống constructor).
-- Data class **không được** khai báo {{open}}, {{sealed}}, {{inner}} hay {{abstract}}.
-- Từ các thuộc tính {{val}}/{{var}} trong constructor chính, Kotlin tự sinh {{equals()}} / {{hashCode()}} so sánh theo các thuộc tính đó, {{toString()}}, {{component1()}}, {{component2()}}, … để gỡ r gói, và {{copy()}} để tạo bản sao thay đổi một số thuộc tính.
+### Mechanism
+- Data class must have **at least one parameter** in primary constructor (cannot have empty constructor).
+- Data class **cannot** be declared {{open}}, {{sealed}}, {{inner}} or {{abstract}}.
+- From {{val}}/{{var}} properties in primary constructor, Kotlin auto-generates {{equals()}} / {{hashCode()}} comparing those properties, {{toString()}}, {{component1()}}, {{component2()}}, … for destructuring, and {{copy()}} to create copy with some properties changed.
 
-### Vì sao các phương án sai
-- **Data class có thể khai báo open để cho phép kế thừa**: sai, data class final, không được open.
-- **Data class có thể khai báo abstract**: sai, data class không được abstract.
+### Why other options are wrong
+- **Data class can be declared open to allow inheritance**: wrong, data class is final, cannot be open.
+- **Data class can be declared abstract**: wrong, data class cannot be abstract.
 
-> Senior tip: chỉ những thuộc tính {{val}}/{{var}} trong constructor chính mới tham gia {{equals}}/{{hashCode}}. Thuộc tính khai báo trong thân class không ảnh hưởng, và collection mutable bên trong có thể làm {{hashCode}} thay đổi sau khi đưa vào Map/Set — rất nguy hiểm.`
+> Senior tip: only {{val}}/{{var}} properties in primary constructor participate in {{equals}}/{{hashCode}}. Properties declared in class body don't affect, and mutable collection inside can cause {{hashCode}} to change after putting in Map/Set — very dangerous.`
 },
 {
   id: 'qz-kotlin-030', topic: 'kotlin',
-  q: `Hàm khung (suspend function) chỉ được gọi trong ngữ cảnh coroutine. Đoạn sau có vấn đề gì?
+  q: `Suspend function can only be called in coroutine context. What is the problem with the code below?
 ~~~kotlin
 suspend fun layDuLieu(): String {
     delay(100)
@@ -7841,25 +7841,577 @@ fun main() {
 }
 ~~~`,
   options: [
-    `Hàm suspend có thể gọi ở bất kỳ đâu như hàm thường`,
-    `Chỉ coroutine sử dụng launch mới được gọi hàm suspend`,
-    `Hàm suspend phải chạy trên luồng chính (Main thread)`,
-    `Hàm suspend chỉ có thể gọi từ trong coroutine (runBlocking, launch, suspend function khác), không gọi được từ hàm thường như main`
+    `Suspend function can be called anywhere like regular function`,
+    `Only coroutine using launch can call suspend function`,
+    `Suspend function must run on main thread`,
+    `Suspend function can only be called from within coroutine (runBlocking, launch, another suspend function), cannot be called from regular function like main`
   ],
   answer: 3,
-  explain: `**Đáp án đúng: Hàm suspend chỉ có thể gọi từ trong coroutine (runBlocking, launch, suspend function khác), không gọi được từ hàm thường như main.**
+  explain: `**Correct answer: Suspend function can only be called from within coroutine (runBlocking, launch, another suspend function), cannot be called from regular function like main.**
 
-### Cơ chế
-- {{suspend fun}} là hàm có thể "treo" (suspend) tại các điểm như {{delay()}}, rồi tiếp tục sau. Nó chỉ an toàn khi chạy bên trong coroutine.
-- Hàm thông thường (không suspend) như {{main}} ở trên không gọi trực tiếp được {{layDuLieu()}} → lỗi biên dịch.
-- Cách sửa: đổi {{main}} thành {{suspend fun main()}} và chạy trong {{runBlocking}}, hoặc gọi {{layDuLieu()}} bên trong {{runBlocking}} hoặc {{launch}}.
-- Không bắt buộc phải chạy trên luồng chính (Main thread); coroutine có thể chạy trên dispatcher khác (Default, IO…).
+### Mechanism
+- {{suspend fun}} is a function that can "suspend" at points like {{delay()}}, then resume later. It's only safe when running inside a coroutine.
+- Regular (non-suspend) function like {{main}} above cannot directly call {{layDuLieu()}} → compile error.
+- Fix: change {{main}} to {{suspend fun main()}} and run in {{runBlocking}}, or call {{layDuLieu()}} inside {{runBlocking}} or {{launch}}.
+- Not required to run on main thread (Main thread is Android concept); backend can use {{Dispatchers.Default}} or {{Dispatchers.IO}}.
 
-### Vì sao các phương án sai
-- **Hàm suspend có thể gọi ở bất kỳ đâu như hàm thường**: sai, hàm suspend chỉ gọi được trong ngữ cảnh coroutine.
-- **Chỉ coroutine sử dụng launch mới được gọi hàm suspend**: sai, {{runBlocking}}, {{async}}, và hàm suspend khác cũng gọi được.
-- **Hàm suspend phải chạy trên luồng chính (Main thread)**: sai, Main thread là khái niệm Android; backend có thể dùng {{Dispatchers.Default}} hay {{Dispatchers.IO}}.
+### Why other options are wrong
+- **Suspend function can be called anywhere like regular function**: wrong, suspend function can only be called in coroutine context.
+- **Only coroutine using launch can call suspend function**: wrong, {{runBlocking}}, {{async}}, and other suspend functions can also call.
+- **Suspend function must run on main thread**: wrong, Main thread is Android concept; backend can use {{Dispatchers.Default}} or {{Dispatchers.IO}}.
 
-> Senior tip: khi cần gọi hàm suspend từ code không phải coroutine (ví dụ main cũ), hãy dùng {{runBlocking}} để khởi tạo coroutine và chờ kết quả. Tránh {{runBlocking}} bên trong ứng dụng web đã có coroutine vì nó chặn luồng.`
+> Senior tip: when need to call suspend function from non-coroutine code (e.g., legacy main), use {{runBlocking}} to create coroutine and wait for result. Avoid {{runBlocking}} inside web app that already has coroutines because it blocks the thread.`
+},
+{
+  id: 'qz-concurrency-056', topic: 'concurrency',
+  q: `Ứng dụng gọi API A lấy mã đơn hàng ({{CompletableFuture<String>}}), sau đó dùng mã đó gọi API B lấy hóa đơn ({{CompletableFuture<HoaDon>}}). Muốn cuối cùng nhận được {{CompletableFuture<HoaDon>}} chứ không phải {{CompletableFuture<CompletableFuture<HoaDon>>}}, nên dùng phương án nào?`,
+  options: [
+    `{{thenApply(ma -> goiApiB(ma))}} — biến đổi giá trị, nhưng nếu hàm trả về {{CompletableFuture}} thì kết quả sẽ lồng thành {{CompletableFuture<CompletableFuture<HoaDon>>}}`,
+    `{{thenAccept(ma -> goiApiB(ma))}} — tiêu dùng giá trị, không trả về hóa đơn (kiểu {{CompletableFuture<Void>}})`,
+    `{{thenCompose(ma -> goiApiB(ma))}} — giống flatMap: nhận {{CompletableFuture}} từ hàm, gộp phẳng thành một {{CompletableFuture<HoaDon>}} duy nhất`,
+    `{{exceptionally(ex -> fallback)}} — chỉ dùng khi bước trước thất bại, không dùng để nối hai lời gọi API`
+  ],
+  answer: 2,
+  explain: `**Tóm tắt:** Dùng {{thenCompose}} (flatMap) khi bước tiếp theo tự trả về một {{CompletableFuture}}; {{thenApply}} chỉ biến đổi giá trị thường và sẽ làm lồng lớp future nếu hàm trả về future.
+
+### Vì sao đúng
+- {{thenApply}} nhận hàm {{Function<T, U>}}; nếu U là {{CompletableFuture<HoaDon>}} thì kết quả là {{CompletableFuture<CompletableFuture<HoaDon>>}}, bạn phải gọi {{join}} thêm một lần. {{thenCompose}} nhận {{Function<T, CompletableFuture<U>>}} và tự gộp (flatten) → nhận được {{CompletableFuture<HoaDon>}} trực tiếp.
+
+~~~java
+CompletableFuture<String> ma = apiA();
+CompletableFuture<HoaDon> hd = ma.thenCompose(m -> apiB(m)); // không lồng lớp
+~~~
+
+### Vì sao các phương án còn lại sai
+- **thenApply**: nếu apiB trả về future, kết quả lồng lớp → phải {{hd.join().join()}} hoặc phẳng thêm, dễ sai sót.
+- **thenAccept**: trả {{CompletableFuture<Void>}}, không mang hóa đơn về.
+- **exceptionally**: chỉ xử lý lỗi bước trước, không thay đổi cách nối hai cuộc gọi.
+
+> Senior tip: quy nhớ: transformation giá trị thường → {{thenApply}}; transformation trả về future khác → {{thenCompose}} (flatMap). Nếu chỉ muốn chạy hiệu ứng phụ sau khi xong (ghi log, cập nhật UI) → {{thenAccept}}/{{whenComplete}}.`
+},
+{
+  id: 'qz-concurrency-057', topic: 'concurrency',
+  q: `Code sau chạy trên Java 17. Giai đoạn {{supplyAsync}} chạy trên executor riêng {{ex1}}. Giai đoạn {{thenApply(fn)}} không truyền executor. Hàm {{fn}} sẽ chạy trên luồng nào?
+~~~java
+ExecutorService ex1 = Executors.newFixedThreadPool(2);
+CompletableFuture.supplyAsync(() -> layDuLieu(), ex1)
+    .thenApply(x -> x.toUpperCase())
+    .join();
+~~~`,
+  options: [
+    `Trên luồng của {{ex1}} — chính là luồng đã hoàn thành giai đoạn trước (khi không truyền executor, callback chạy trên luồng hoàn thành giai đoạn trước)`,
+    `Luôn trên luồng main (luồng gọi {{join}})`,
+    `Luôn trên {{ForkJoinPool.commonPool()}} (pool chung)`,
+    `{{thenApply}} tự tạo luồng mới cho mỗi callback`
+  ],
+  answer: 0,
+  explain: `**Tóm tắt:** Khi không truyền executor cho {{thenApply}}/{{thenAccept}}/{{runAfterBoth}}..., callback chạy trên **luồng đã hoàn thành giai đoạn trước** (hoặc luồng gọi nếu giai đoạn trước đã hoàn tất khi gán callback). Ở đây là luồng của {{ex1}}, không phải main hay commonPool.
+
+### Vì sao đúng
+CompletableFuture lan truyền việc thực thi: bước trước xong trên luồng T của {{ex1}}, bước kế được lên lịch trên cùng T trừ khi bạn chỉ định executor khác. Còn {{join()}} chỉ chờ kết quả trên luồng gọi, không ép callback chạy trên luồng gọi.
+
+### Vì sao các phương án còn lại sai
+- **main**: main chỉ gọi {{join}} và chờ, callback không nhảy về main.
+- **commonPool**: chỉ dùng khi bạn dùng {{thenApplyAsync}} không executor, hoặc stage gốc chạy trên commonPool khi gọi {{supplyAsync(task)}} không truyền executor.
+- **tự tạo luồng mới**: CompletableFuture không tự tạo thread mới cho mỗi stage.
+
+> Senior tip: nếu callback gọi I/O chặn (DB, HTTP) và stage trước chạy trên commonPool, bạn sẽ chiếm pool chung. Hãy truyền executor riêng: {{thenApply(fn, ioExecutor)}} hoặc dùng virtual-thread executor cho I/O (Java 21+).`
+},
+{
+  id: 'qz-concurrency-058', topic: 'concurrency',
+  q: `Thread công (worker) lặp đọc cờ {{boolean stopped}} để biết khi nào dừng, và nhiều thread tăng bộ đếm {{int requests}} cùng lúc. Cần đảm bảo (1) worker thấy {{stopped = true}} ngay, (2) bộ đếm không bị lost update, (3) ghi nhiều đọc thỉnh thì hiệu quả. Cách nào đúng và tối ưu nhất?`,
+  options: [
+    `{{volatile int requests}} và {{volatile boolean stopped}} — volatile làm cho {{requests++}} trở nên nguyên tử`,
+    `{{AtomicInteger requests}} và {{boolean stopped}} (không volatile) — AtomicInteger xử lý bộ đếm, cờ thường cũng được vì chỉ đọc`,
+    `Tất cả thao tác trên cả hai biến đều trong một khối {{synchronized (lock)}} — đúng chức năng nhưng ghi nhiều thì quá nặng so với cần`,
+    `{{AtomicInteger requests}} và {{volatile boolean stopped}} — tăng nguyên tử qua CAS, cờ volatile đảm bảo mọi thread thấy giá trị mới nhất sau khi ghi`
+  ],
+  answer: 3,
+  explain: `**Tóm tắt:** Dùng {{AtomicInteger}} cho bộ đếm (CAS, nguyên tử, không khóa nặng) và {{volatile}} cho cờ dừng (visibility, mọi thread thấy writes mới nhất). Đây là sự kết hợp phù hợp cho "ghi nhiều, đọc thỉnh thì".
+
+### Vì sao đúng
+- {{AtomicInteger.incrementAndGet()}} dùng thao tác phần cứng CAS (Compare-And-Swap: đọc, tính, ghi nếu giá trị chưa đổi, ngược lại thử lại) → không bị lost update, không cần {{synchronized}}.
+- {{volatile boolean stopped}}: ghi vào biến volatile tạo happens-before với mọi đọc volatile sau đó trên các thread khác, nên worker đọc thấy {{true}} nhanh (trong vòng vài vòng lặp, không cache mãi trên thread local/CPU cache).
+
+~~~java
+class Stats {
+    private final AtomicInteger requests = new AtomicInteger(0);
+    private volatile boolean stopped = false;
+
+    void tang() { requests.incrementAndGet(); } // an toàn đa thread
+    void dung() { stopped = true; }               // worker sẽ thấy
+    boolean daDung() { return stopped; }
+}
+~~~
+
+### Vì sao các phương án còn lại sai
+- **volatile int requests**: {{volatile}} chỉ đảm bảo **visibility** (thấy giá trị mới), không đảm bảo **atomicity** cho {{requests++}} (đọc-cộng-ghi). Hai thread đọc cùng giá trị rồi cùng ghi → lost update.
+- **boolean stopped không volatile**: worker có thể giữ bản sao cũ của {{stopped}} trên cache CPU và không bao giờ thấy {{true}} (vòng lặp dừng mãi).
+- **synchronized tất cả**: đúng về chức năng nhưng khóa nặng, giảm hiệu năng khi nhiều thread tăng bộ đếm liên tục; chỉ cần khóa khi phải cập nhật **nhiều biến cùng nhau làm một đơn vị**.
+
+> Senior tip: biến đếm đọc hiếm, ghi nhiều → {{LongAdder}} (Java 8) thường tốt hơn {{AtomicInteger}} dưới tranh chấp cao. Cờ điều khiển vòng đời (dừng, refresh config) → {{volatile}} đủ, đừng thêm {{synchronized}} không cần.`
+},
+{
+  id: 'qz-concurrency-059', topic: 'concurrency', multi: true,
+  q: `Về deadlock (khóa kinh khốn: mỗi thread giữ một tài nguyên và chờ tài nguyên mà thread khác đang giữ, hai bên đều không tiến tới), những phát biểu nào đúng về nguyên nhân và cách phòng ngừa? (Chọn 2)`,
+  options: [
+    `Dùng {{Thread.stop()}} trên thread đang giữ khóa là cách an toàn để giải phóng khóa và phá deadlock`,
+    `Thread A giữ khóa X chờ khóa Y, đồng thời Thread B giữ khóa Y chờ khóa X → tạo chuỗi chờ tròn (circular wait), có thể dẫn đến deadlock`,
+    `Dùng {{ReentrantLock}} thay vì {{synchronized}} thì code tự động không bao giờ bị deadlock`,
+    `Luôn lấy nhiều khóa theo thứ tự cố định trên mọi thread (ví dụ luôn khóa X trước Y) → phá vỡ điều kiện chờ tròn, phòng ngừa deadlock`
+  ],
+  answer: [1, 3],
+  explain: `**Tóm tắt:** Deadlock cần 4 điều kiện cùng xảy ra: toàn quyền sử dụng tài nguyên, giữ và chờ, không chiếm trước, chờ tròn. Phá bất kỳ điều kiện nào (ví dụ lấy khóa theo thứ tự cố định) sẽ ngăn deadlock. {{Thread.stop()}} không an toàn và {{ReentrantLock}} cũng không tự ngăn deadlock.
+
+### Vì sao đúng
+- **B**: đây là biểu hiện điển hình của điều kiện **chờ tròn** (circular wait): A giữ X chờ Y, B giữ Y chờ X → hai thread chờ vĩnh viễn.
+- **D**: thứ tự khóa cố định (luôn X trước Y) làm không thể hình thành chuỗi chờ tròn → đây là cách phòng ngừa deadlock đơn giản, hiệu quả trên production.
+
+### Vì sao các phương án còn lại sai
+- **Thread.stop()**: đã bị bỏ trực tiếp (deprecated, không an toàn): tháo khóa đột ngột có thể để đối tượng ở trạng thái bất nhất, hỏng dữ liệu. Không dùng trên production.
+- **ReentrantLock**: cũng có deadlock nếu hai thread lấy hai khóa theo thứ tự khác nhau. Nó chỉ thêm tính năng như {{tryLock()}} có timeout, không tự động ngăn deadlock.
+
+> Senior tip: ngoài thứ tự khóa, hãy dùng {{tryLock(timeout)}} để không chờ vĩnh viễn, và giảm thời gian giữ khóa (không gọi I/O chặn bên trong khóa) để giảm độ sâu của chuỗi chờ.`
+},
+{
+  id: 'qz-concurrency-060', topic: 'concurrency',
+  q: `Hai thread cùng gọi {{map.compute("khach-hang-1", (k, v) -> v == null ? 1 : v + 1)}} trên một {{ConcurrentHashMap}} ban đầu chưa có key này. Điều gì chắc chắn xảy ra sau khi cả hai xong?`,
+  options: [
+    `Kết quả cuối cùng là 2, vì {{compute}} trên cùng một key được thực hiện nguyên tử (mỗi bucket được khóa riêng), không bị lost update`,
+    `Có thể bị lost update: cả hai đọc là null rồi cùng ghi 1, nên kết quả cuối là 1`,
+    `{{ConcurrentHashMap}} khóa **toàn bộ** map khi gọi {{compute}}, nên hai thread chạy tuần tự, chậm nhưng đúng`,
+    `Phải bọc {{compute}} trong {{synchronized}} mới đảm bảo không bị race condition trên cùng một key`
+  ],
+  answer: 0,
+  explain: `**Tóm tắt:** {{ConcurrentHashMap.compute}} khóa chỉ bucket/node chứa key đó (khóa mảnh, lock stripping), thao tác remapping chạy trong khi vẫn giữ khóa bucket → hai thread cùng key được tuần tự hóa, kết quả chắc chắn là 2, không cần {{synchronized}} thêm.
+
+### Vì sao đúng
+Gọi đầu tiên: key chưa có → v null → ghi 1. Gọi thứ hai: đọc v = 1 → ghi 2. Vì compute trên cùng key luôn giữ khóa bucket trong suốt thời gian chạy hàm remapping, thread thứ hai không thể "xâm nhập" giữa lúc thread thứ nhất đọc và ghi. Kết quả cuối {{map.get("khach-hang-1")}} == 2.
+
+~~~java
+ConcurrentHashMap<String, Integer> map = new ConcurrentHashMap<>();
+// Thread A và Thread B cùng chạy:
+map.compute("khach-hang-1", (k, v) -> v == null ? 1 : v + 1);
+// Sau cả hai: map.get("khach-hang-1") == 2 (chắc chắn)
+~~~
+
+### Vì sao các phương án còn lại sai
+- **Có thể bị lost update**: lost update xảy ra với get-then-put tách biệt (không nguyên tử), không phải với {{compute}} trên cùng key.
+- **Khóa toàn bộ map**: {{ConcurrentHashMap}} **không** khóa toàn bộ map; nó chỉ khóa bucket chứa key, cho nhiều thread thao tác các key khác song song.
+- **Phải synchronized thêm**: {{compute}} đã nguyên tử trên mỗi key; thêm {{synchronized}} thừa và làm chậm. Chỉ cần khóa ngoài khi bạn phải cập nhật **nhiều key/nhiều biến** làm một đơn vị.
+
+> Senior tip: hàm remapping truyền vào {{compute}} không được gọi các method khác của cùng map (tránh deadlock reentrant) và không nên phụ thuộc vào trạng thái bên ngoài có thể thay đổi. Nếu hàm trả {{null}}, entry sẽ bị xoá (quy ước đặc biệt của {{ConcurrentHashMap}}).`
+},
+{
+  id: 'qz-concurrency-061', topic: 'concurrency', multi: true,
+  q: `Có 10 worker thread xử lý từng mảnh dữ liệu (shard), và luồng chính cần chờ tất cả xong mới tổng hợp kết quả. Ngoài ra, các worker phải cùng đạt một điểm kiểm soát trước khi bắt đầu pha 2, và chỉ cho phép tối đa 5 worker truy xuất CSDL cùng lúc. Những công cụ nào phù hợp? (Chọn 2)`,
+  options: [
+    `{{CountDownLatch(10)}}: luồng chính gọi {{await()}} chờ, mỗi worker gọi {{countDown()}} khi xong, đủ 10 thì luồng chính tiếp tục — phù hợp cho "chờ tất cả worker xong"`,
+    `{{CountDownLatch}} sau khi hết số đếm có thể reset và dùng lại cho đợt worker sau đó`,
+    `{{Semaphore(5)}}: thread thứ 6 gọi {{acquire()}} sẽ ném {{RejectedExecutionException}} ngay lập tức`,
+    `{{CyclicBarrier(10)}}: mỗi worker gọi {{await()}}, đủ 10 người thì toàn bộ cùng vượt qua điểm kiểm soát vào pha 2, và barrier có thể dùng lại được`
+  ],
+  answer: [0, 3],
+  explain: `**Tóm tắt:** Dùng {{CountDownLatch}} để luồng chính chờ N worker hoàn tất (đếm ngược đến 0, không reset), dùng {{CyclicBarrier}} để N party cùng rendez-vous tại điểm kiểm soát (có thể reset và dùng lại), dùng {{Semaphore}} để giới hạn số lượng truy cập tài nguyên cùng lúc (acquire block, không ném exception ngay).
+
+### Vì sao đúng
+- **A**: đúng mô hình "join N worker": main await(), mỗi worker countDown(), đếm về 0 thì main dậy. Đây là công cụ chuẩn cho "chờ tất cả xong mới tổng hợp".
+- **D**: CyclicBarrier(10): 10 worker await() cùng lúc → khi đủ 10, toàn bộ được thả vào pha 2. Barrier có thể reset để dùng cho đợt sau (khác CountDownLatch dùng một lần).
+
+### Vì sao các phương án còn lại sai
+- **CountDownLatch reset**: {{CountDownLatch}} **không reset** được sau khi hết số đếm. Cần dùng lại → chọn {{CyclicBarrier}}.
+- **Semaphore ném exception ngay**: {{Semaphore(5)}} khi hết 5 permits, {{acquire()}} sẽ **block** (chờ) cho đến khi có permit được giải phóng, **không ném exception ngay**. Chỉ {{tryAcquire()}} trả {{false}} ngay khi không có chỗ.
+
+> Senior tip: CountDownLatch = "cổng cong" (đến đếm 0 thì mở, không đóng lại), CyclicBarrier = "điểm rendezvous" (đủ số người thì cùng qua, có thể dùng lại nhiều lần), Semaphore = "giấy phép" hạn số người cùng vào. Chọn theo mục đích, đừng lẫn.`
+},
+{
+  id: 'qz-concurrency-062', topic: 'concurrency',
+  q: `Một endpoint gọi API đối tác chậm khoảng 200 ms và chiếm một luồng trong suốt thời gian chờ. Cần xử lý 1000 request mỗi giây. Theo quy tắc Little's Law (số luồng đồng thời = throughput × thời gian response), pool cần ít nhất bao nhiêu luồng?`,
+  options: [
+    `Số luồng không ảnh hưởng đến throughput, chỉ cần chỉnh hàng đợi lớn là đủ`,
+    `20 luồng (bằng số CPU core) là đủ vì core là giới hạn thực sự`,
+    `1000 luồng (mỗi request một luồng) — an toàn nhất, không có task nào bị chờ`,
+    `1000 × 0,2 giây = 200 luồng đồng thời; nên pool ít nhất 200 luồng (hoặc dùng virtual-thread-per-task cho I/O chặn trên Java 21+)`
+  ],
+  answer: 3,
+  explain: `**Tóm tắt:** Little's Law: concurrency = arrival rate × response time. 1000 request/s × 0,2 s = 200 request đang được xử lý cùng một lúc → cần khoảng 200 luồng (với thread platform) để không tạo hàng chờ không cần thiết. Pool 20 luồng sẽ khiến hàng chờ phình và thời gian chờ tăng phản xạ.
+
+### Vì sao đúng
+Mỗi request chiếm luồng 0,2 giây (chờ I/O). Trong 1 giây có 1000 request → trung bình 1000 × 0,2 = 200 request đang chạy đồng thời. Nếu pool chỉ 20, 180 request còn lại phải xếp hàng, thời gian phản hồi của khách tăng thêm hàng chờ. Pool 200+ (hoặc virtual-thread-per-task, vì virtual thread rất rẻ và unmount khi chặn I/O) xử lý được mức này mà không giới hạn bởi số core.
+
+~~~java
+// I/O chặn, Java 21+: virtual thread không bị giới hạn bởi số core
+ExecutorService ex = Executors.newVirtualThreadPerTaskExecutor();
+// hoặc platform thread pool theo Little's Law
+ExecutorService ex2 = new ThreadPoolExecutor(200, 200, 0, TimeUnit.SECONDS,
+    new ArrayBlockingQueue<>(200), new ThreadPoolExecutor.CallerRunsPolicy());
+~~~
+
+### Vì sao các phương án còn lại sai
+- **Hàng đợi lớn**: hàng đợi lớn không giải quyết gốc nguyên nhân; task xếp hàng lâu → latency tăng, thậm chí OutOfMemoryError nếu hàng không giới hạn.
+- **20 luồng**: chỉ phù hợp tác vụ CPU-bound. I/O chặn không chiếm CPU whole thời gian, cần nhiều luồng hơn để che giấu thời gian chờ.
+- **1000 luồng**: 1000 platform thread tốn tài nguyên (stack, context switch) và không cần thiết; 200 đã đáp ứng mức 1000 req/s. Virtual thread thì có thể tạo 1000 cái rẻ, nhưng không phải "bắt buộc".
+
+> Senior tip: trước khi đặt kích thước pool, hãy đo thời gian trung bình một request chiếm luồng (bao gồm chờ DB/API) và mục tiêu throughput; công thức trên cho con số ban đầu, sau đó điều chỉnh bằng load test và theo dõi kích thước hàng đợi cùng số task bị từ chối.`
+},
+{
+  id: 'qz-concurrency-063', topic: 'concurrency',
+  q: `Nhiều thread cùng chạy đoạn code sau trên biến đếm dùng chung {{AtomicInteger counter}} (ban đầu 0). Có vấn đề gì không?
+~~~java
+if (counter.get() == 0) {
+    counter.incrementAndGet();
+}
+~~~`,
+  options: [
+    `Chỉ lỗi khi có trên 1000 thread cùng lúc, dưới 1000 thread là an toàn`,
+    `Không vấn đề, {{AtomicInteger}} dùng volatile nên cả get() và incrementAndGet() đều nguyên tử cùng lúc`,
+    `Có race condition (kiểm tra sau đó hành động): giữa {{get()}} và {{incrementAndGet()}} thread khác có thể đã tăng counter, nên có thể nhiều thread cùng thấy 0 và cùng tăng → cần lặp {{compareAndSet}} hoặc {{synchronized}} toàn bộ khối`,
+    `{{AtomicInteger}} tự động khóa toàn bộ khối if, nên an toàn`
+  ],
+  answer: 2,
+  explain: `**Tóm tắt:** {{get()}} và {{incrementAndGet()}} mỗi lệnh riêng lẻ là nguyên tử, nhưng **hai lệnh liền nhau không tạo thành một thao tác nguyên tử**. Hai thread cùng đọc 0 rồi cùng tăng → counter chỉ tăng 1 thay vì 2 (lost update trên thao tác hợp hợp). Đây là mẫu "kiểm tra sau đó hành động" (check-then-act / TOCTOU).
+
+### Vì sao đúng
+Ví dụ: counter = 0. Thread A gọi get() = 0, thread B cũng gọi get() = 0, cả hai đều vào if và incrementAndGet() → counter = 1 thay vì 2. Đúng cách: dùng {{compareAndSet}} lặp, hoặc khóa cả khối:
+
+~~~java
+// Cách 1: CAS lặp
+while (true) {
+    int hien = counter.get();
+    if (hien != 0) break;
+    if (counter.compareAndSet(0, 1)) break;
+}
+
+// Cách 2: synchronized nếu khối phức tạp hơn
+synchronized (lock) {
+    if (counter.get() == 0) counter.incrementAndGet();
+}
+~~~
+
+### Vì sao các phương án còn lại sai
+- **volatile/AtomicInteger nguyên tử cùng lúc**: chỉ làm từng lệnh đọc ghi là nguyên tử, không làm hai lệnh liền nhau thành một thao tác nguyên tử.
+- **Chỉ lỗi trên 1000 thread**: race condition không phụ thuộc số lượng thread; 2 thread đủ để xảy ra, chỉ xác suất thay đổi.
+- **Tự động khóa khối if**: {{AtomicInteger}} không khóa khối code ngoài lệnh của riêng nó.
+
+> Senior tip: khi thao tác phải đọc giá trị rồi quyết định ghi dựa trên giá trị đó, hãy ưu tiên các operation nguyên tử của java.util.concurrent.atomic ({{compareAndSet}}, {{getAndUpdate}}, {{accumulateAndGet}}). Nếu logic phức tạp hơn, dùng {{synchronized}} hoặc ReentrantLock kèm kiểm tra lại trạng thái bên trong khóa.`
+},
+{
+  id: 'qz-concurrency-064', topic: 'concurrency', multi: true,
+  q: `Về happens-before (quy tắc JVM đảm bảo ghi của thread này trước được nhìn thấy bởi thread kia sau), những phát biểu nào đúng? (Chọn 2)`,
+  options: [
+    `Việc tăng biến {{volatile int x}} bằng {{x++}} là nguyên tử nhờ volatile`,
+    `Thread A ghi dữ liệu rồi gọi {{unlock()}} trên một monitor, sau đó Thread B gọi {{lock()}} trên cùng monitor → ghi của A happens-before trước đọc của B, nên B chắc chắn thấy dữ liệu mới nhất của A`,
+    `Gọi {{Thread.sleep()}} giữa hai thao tác tạo ra quan hệ happens-before`,
+    `Thread A viết vào biến {{volatile}} rồi Thread B đọc biến đó → mọi ghi của A xảy ra trước volatile write sẽ được B thấy sau volatile read`
+  ],
+  answer: [1, 3],
+  explain: `**Tóm tắt:** happens-before được thiết lập bởi: mở khóa monitor sau khi ghi → khóa cùng monitor sau đó đọc; ghi biến volatile trước → đọc biến volatile sau. volatile chỉ bảo đảm visibility từng lần đọc/ghi, **không** làm {{x++}} trở nên nguyên tử, và {{Thread.sleep()}} không tạo happens-before.
+
+### Vì sao đúng
+- **B**: quy tắc monitor: **unlock happens-before đến mọi lock sau đó trên cùng một monitor**. A ghi rồi unlock, B lock rồi đọc → B thấy tất cả ghi của A trước lúc unlock.
+- **D**: quy tắc volatile: ghi volatile happens-before đọc volatile sau đó trên cùng biến; đồng thời mọi ghi thông thường của A trước volatile write cũng được B thấy sau volatile read (xem như "múi cờ" đồng bộ hóa bộ nhớ CPU).
+
+### Vì sao các phương án còn lại sai
+- **volatile x++ nguyên tử**: {{volatile}} không làm {{x++}} nguyên tử (x++ = đọc, cộng, ghi, có thể bị lost update). Dùng {{AtomicInteger}}.
+- **Thread.sleep tạo happens-before**: {{Thread.sleep()}} chỉ nhường CPU, không tạo quan hệ happens-before giữa các thread.
+
+> Senior tip: publishes một đối tượng an toàn đa thread nhất là ghi tham chiếu vào biến volatile (hoặc khóa cuối cùng trong constructor), sau đó mọi thread đọc biến volatile sẽ thấy toàn bộ trạng thái đối tượng đã được khởi tạo. Đây là nền tảng của khái niệm "safe publication".`
+},
+{
+  id: 'qz-concurrency-065', topic: 'concurrency',
+  q: `Worker loop sau dùng {{Thread.currentThread().isInterrupted()}} để biết khi nào dừng. Nếu công việc bên trong ném {{InterruptedException}} và được bắt nhưng **không gọi lại {{interrupt()}}**, điều gì xảy ra?`,
+  options: [
+    `Bắt {{InterruptedException}} mà không gọi lại {{interrupt()}} làm mất cờ interrupt → vòng lặp có thể không bao giờ dừng vì {{isInterrupted()}} trả về false`,
+    `{{InterruptedException}} được ném có nghĩa là cờ interrupt đang được đặt (set), nên vòng lặp sẽ dừng ngay`,
+    `{{isInterrupted()}} và {{Thread.interrupted()}} hoàn toàn giống nhau, đều đọc cờ mà không xóa`,
+    `Gọi {{interrupt()}} trên một thread sẽ buộc thread đó dừng ngay lập tức, ngay cả khi đang chạy code bình thường`
+  ],
+  answer: 0,
+  explain: `**Tóm tắt:** {{InterruptedException}} **xóa** cờ interrupt của thread. Nếu bắt exception và không gọi {{Thread.currentThread().interrupt()}} để đặt lại cờ, vòng lặp kiểm tra {{isInterrupted()}} sẽ thấy false và tiếp tục chạy — yêu cầu "dừng" bị bỏ qua.
+
+### Vì sao đúng
+Khi một method chặn ({{Thread.sleep}}, {{Object.wait}}, {{BlockingQueue.take}}, v.v.) bị interrupt, nó ném {{InterruptedException}} và **xóa cờ interrupt**. Vậy sau khi catch, việc kiểm tra {{isInterrupted()}} trả về false → loop không biết đã được yêu cầu dừng. Cách đúng:
+
+~~~java
+try {
+    // công việc có thể bị interrupt
+} catch (InterruptedException e) {
+    Thread.currentThread().interrupt(); // đặt lại cờ để các lớp bên ngoài biết
+    throw e; hoặc return / break tuỳ ngữ cảnh
+}
+~~~
+
+### Vì sao các phương án còn lại sai
+- **cờ interrupt đang được đặt**: ném {{InterruptedException}} chính là dấu hiệu cờ **đã bị xóa**, không phải đang đặt.
+- **isInterrupted() và interrupted() giống nhau**: {{Thread.interrupted()}} đọc **và xóa** cờ interrupt; {{isInterrupted()}} chỉ đọc không xóa. Hai method khác nhau.
+- **interrupt() buộc dừng ngay**: {{interrupt()}} chỉ đặt cờ; thread có thể bỏ qua (ví dụ đang chạy vòng lặp tính toán không kiểm tra cờ) hoặc chỉ phản hồi khi đang block trong method chịu interrupt. Nó không "giết" thread ngay lập tức.
+
+> Senior tip: luôn xử lý {{InterruptedException}} có ý nghĩa: đặt lại cờ bằng {{interrupt()}} hoặc lan truyền exception. Không bắt rồi im lặng (swallow), nếu không yêu cầu dừng của caller (shutdown, hủy request) sẽ bị bỏ qua và thread chạy mãi.`
+},
+{
+  id: 'qz-concurrency-066', topic: 'concurrency',
+  q: `Hai thread cùng tăng biến đếm dùng chung {{int counter}} 10.000 lần mỗi thread. Ban đầu {{counter = 0}}. Sau khi cả hai xong, kết quả thường **không** đạt 20.000. Nguyên nhân và cách khắc phục nào đúng?`,
+  options: [
+    `Khai báo {{volatile int counter}} rồi {{counter++}} — volatile đảm bảo mọi thread thấy giá trị mới nhất nên ++ là nguyên tử`,
+    `Dùng {{synchronized}} bao quanh cả đọc và ghi {{counter}} — đảm bảo nguyên tử và visibility, nhưng khóa nặng`,
+    `Dùng {{AtomicInteger}} và {{incrementAndGet()}} — thao tác CAS phần cứng, nguyên tử, không cần khóa nặng (tối ưu cho bộ đếm)`,
+    `Khai báo {{int counter}} không volatile và tăng trực tiếp trên mọi thread — JVM tự động đồng bộ giá trị giữa các CPU core`
+  ],
+  answer: 2,
+  explain: `**Tóm tắt:** {{volatile}} chỉ đảm bảo **visibility** (mọi thread đọc thấy giá trị mới nhất ghi vào biến đó), không đảm bảo **atomicity** cho thao tác đọc-cộng-ghi như {{counter++}}. Hai thread có thể đọc cùng giá trị, cùng cộng 1, cùng ghi lại → lost update, kết quả nhỏ hơn 20.000. {{AtomicInteger.incrementAndGet()}} dùng thao tác phần cứng CAS (Compare-And-Swap: đọc, tính, ghi nếu giá trị chưa đổi, ngược lại thử lại) → nguyên tử, không khóa nặng, phù hợp bộ đếm đọc-ghỉ nhiều ghi nhiều.
+
+### Vì sao đúng
+- {{counter++}} chia làm ba bước: đọc giá trị, cộng 1, ghi lại. Không phải thao tác nguyên tử → race condition.
+- {{volatile int}}: mỗi ghi ghi về bộ nhớ chính, mỗi đọc đọc từ bộ nhớ chính → thấy giá trị mới sau mỗi lần ghi riêng lẻ, nhưng không ngăn hai thread đọc cùng giá trị cũ rồi cùng ghi giá trị mới.
+- {{synchronized}}: đúng chức năng nhưng chi phí khóa cao hơn CAS khi chỉ cần tăng bộ đếm.
+- {{AtomicInteger}}: thao tác nguyên tử tại mức phần cứng, tốt nhất cho trường hợp chỉ tăng bộ đếm.
+
+~~~java
+AtomicInteger counter = new AtomicInteger(0);
+// mỗi thread gọi 10.000 lần:
+counter.incrementAndGet(); // nguyên tử, kết quả chắc chắn 20.000
+~~~
+
+### Vì sao các phương án còn lại sai
+- **A**: {{volatile}} không làm {{++}} nguyên tử (chỉ đảm bảo thấy giá trị mới sau mỗi lần ghi riêng lẻ).
+- **B**: đúng chức năng nhưng khóa nặng, không tối ưu như {{AtomicInteger}} cho đơn giản là tăng bộ đếm.
+- **D**: biến chia sẻ mà không đồng bộ → kết quả không xác định, tuỳ bộ lập lịch thread.
+
+> Senior tip: cần tăng nhiều biến liên quan như một đơn vị (ví dụ đếm request và tổng bytes cùng lúc) thì {{AtomicInteger}} từng biến không đủ — phải dùng {{synchronized}} hoặc khóa để giữ tính nhất quán giữa các biến.`
+},
+{
+  id: 'qz-concurrency-067', topic: 'concurrency',
+  q: `Thread A tạo một đối tượng, ghi các trường, rồi gán tham chiếu vào biến {{volatile}} {{published}}. Thread B đọc {{published}} != null rồi truy cập trường của đối tượng. Theo quy tắc happens-before, B chắc chắn thấy gì?`,
+  options: [
+    `Chỉ thấy tham chiếu không null; các trường trong đối tượng vẫn có thể là giá trị mặc định vì đối tượng được tạo trên thread khác`,
+    `Mọi ghi của Thread A trước khi gán {{volatile}} (kể cả ghi trường đối tượng) đều được Thread B thấy sau khi đọc {{published}} — biến volatile tạo quan hệ happens-before`,
+    `Gọi {{Thread.sleep()}} giữa việc A ghi và B đọc tạo quan hệ happens-before`,
+    `Chỉ dùng {{synchronized}} mới đảm bảo thấy trạng thái mới; {{volatile}} không đủ cho safe publication`
+  ],
+  answer: 1,
+  explain: `**Tóm tắt:** Ghi vào biến volatile happens-before mọi đọc biến volatile sau đó trên cùng biến. Đồng thời, mọi ghi thông thường của Thread A trước volatile write cũng được Thread B thấy sau volatile read. Do đó khi B đọc {{published}} != null, đối tượng đã được khởi tạo đầy đủ và tất cả trường đều có giá trị mới nhất (safe publication).
+
+~~~java
+class Holder { int value; }
+volatile Holder published;
+// Thread A:
+Holder h = new Holder();
+h.value = 42;
+published = h;       // volatile write
+// Thread B:
+Holder h2 = published; // volatile read
+System.out.println(h2.value); // chắc chắn 42
+~~~
+
+### Vì sao đúng
+Quy tắc volatile: ghi volatile happens-before đến đọc volatile sau đó trên cùng biến, đồng thời "kéo theo" mọi ghi thông thường xảy ra trước volatile write. Vì vậy B chắc chắn thấy value = 42, không phải giá trị mặc định 0.
+
+### Vì sao các phương án còn lại sai
+- **A**: vi phạm happens-before volatile; nếu như vậy safe publication không thể dùng volatile.
+- **C**: {{Thread.sleep()}} chỉ nhường CPU, không tạo quan hệ happens-before giữa các thread.
+- **D**: {{volatile}} **đủ** để công bố tham chiếu đối tượng an toàn (sau khi ghi các trường xong); {{synchronized}} cũng làm được nhưng nặng hơn.
+
+> Senior tip: safe publication là nền tảng để đối tượng chia sẻ đa thread không bị thấy "bán thành" (trường chưa ghi, tham chiếu null…). Luôn khởi tạo xong đối tượng mới gán vào biến volatile, hoặc dùng các lớp trong {{java.util.concurrent}} đã tự xử lý.`
+},
+{
+  id: 'qz-concurrency-068', topic: 'concurrency',
+  q: `Ứng dụng thực hiện công việc tính toán nặng (CPU-bound, mã hóa băm, không chặn I/O) trên máy 8 lõi. Kích thước luồng pool phù hợp nhất để đạt throughput cao nhất?`,
+  options: [
+    `8 luồng (gần bằng số lõi CPU, {{Runtime.getRuntime().availableProcessors()}})`,
+    `200 luồng theo quy tắc Little's Law (throughput × thời gian phản hồi)`,
+    `1 luồng, vì CPU chỉ thực hiện một luồng tại một thời điểm`,
+    `1000 luồng, mỗi task một luồng để không có task nào bị chờ`
+  ],
+  answer: 0,
+  explain: `**Tóm tắt:** Công việc CPU-bound chiếm CPU toàn thời gian thực thi. Thêm luồng hơn số lõi không tăng tốc tính toán, chỉ gây chuyển ngữ ngữ cảnh (context switch) và tranh chấp cache, thậm chí chậm hơn. Pool bằng số lõi (ví dụ 8) là tối ưu; quy tắc Little's Law (concurrency = throughput × thời gian response) dùng cho công việc chặn I/O, không phải tính toán thuần CPU.
+
+~~~java
+int cores = Runtime.getRuntime().availableProcessors(); // ví dụ 8
+ExecutorService ex = Executors.newFixedThreadPool(cores); // CPU-bound
+~~~
+
+### Vì sao đúng
+Mỗi lõi CPU thực hiện tốt nhất một luồng tính toán tại một thời điểm. 8 luồng trên 8 lõi saturate CPU mà không gây quá nhiều context switch.
+
+### Vì sao các phương án còn lại sai
+- **B**: Little's Law tính luồng cần cho công việc **chặn I/O** (task chiếm luồng khi chờ DB/HTTP), không áp dụng tính toán thuần CPU.
+- **C**: 1 luồng bỏ lõi còn lại, throughput thấp.
+- **D**: 1000 platform thread tốn bộ nhớ (stack), chuyển ngữ ngữ cảnh đắt, không cần thiết cho CPU-bound.
+
+> Senior tip: trước khi đặt kích thước pool, hãy phân loại task: CPU-bound (tính toán) → pool ≈ số lõi; I/O-bound (chờ DB, HTTP) → pool lớn hơn số lõi (dựa trên Little's Law) hoặc dùng virtual thread cho mỗi task (Java 21+).`
+},
+{
+  id: 'qz-concurrency-069', topic: 'concurrency',
+  q: `Bước gọi API có thể thất bại, bạn muốn trả về giá trị mặc định "fallback" thay để ném exception. Code và phân tích nào đúng?`,
+  options: [
+    `{{exceptionally}} chỉ chạy khi bước trước thành công`,
+    `{{exceptionally}} trả về {{CompletableFuture<Void>}}, không mang giá trị về`,
+    `{{exceptionally}} phải kèm {{thenApply}} mới hoạt động`,
+    `{{exceptionally}} nhận Throwable, trả "fallback" khi bước trước thất bại; {{join()}} nhận "fallback"`
+  ],
+  answer: 3,
+  explain: `**Tóm tắt:** {{exceptionally}} nhận hàm {{Function<Throwable, ? extends T>>}}; chỉ được gọi khi stage trước hoàn thành excepcional. Nó trả về giá trị thay thế, làm stage hoàn thành bình thường (không ném). {{join()}} nhận giá trị thay thế.
+
+### Vì sao đúng
+Stage trước ném exception → {{exceptionally}} được invoke với Throwable đó, hàm trả "fallback" → stage hoàn thành với giá trị "fallback" → {{join()}} trả "fallback".
+
+### Vì sao các phương án còn lại sai
+- **A**: ngược lại, {{exceptionally}} chỉ chạy khi thất bại; khi thành công thì {{thenApply}}/v.v. không bị ngắt bởi exceptionally.
+- **B**: {{exceptionally}} giữ kiểu kết quả {{T}} (trong ví dụ là {{String}}), không phải {{Void}}.
+- **C**: {{exceptionally}} tự hoạt động độc lập, không cần {{thenApply}}.
+
+> Senior tip: nếu muốn kiểm tra cả kết quả thành công và exception cùng lúc (ví dụ ghi log lỗi rồi vẫn trả fallback), dùng {{handle((res, ex) -> ex != null ? "fallback" : res)}}. Nếu chỉ muốn chạy hiệu ứng phụ dù thành công hay thất bại (gửi metric, dọn dẹp), dùng {{whenComplete}}.`
+},
+{
+  id: 'qz-concurrency-070', topic: 'concurrency', multi: true,
+  q: `Về phương án {{compute}} của {{ConcurrentHashMap}} (đối với key có hoặc chưa có), phát biểu nào đúng? (Chọn 2)`,
+  options: [
+    `Hai thread cùng gọi {{compute}} trên cùng một key được tuần tự hóa (khóa bucket chứa key), kết quả chắc chắn không bị lost update`,
+    `Nếu hàm remapping trả về {{null}}, entry cho key đó sẽ bị xoá khỏi bản đồ`,
+    `{{compute}} khóa **toàn bộ** bản đồ trong khi chạy hàm, nên các thread khác không thể đọc key khác`,
+    `Hàm remapping có thể tự do gọi các method khác ({{get}}, {{put}}) của cùng bản đồ mà không lo deadlock`
+  ],
+  answer: [0, 1],
+  explain: `**Tóm tắt:** {{ConcurrentHashMap.compute}} khóa chỉ bucket/node chứa key (khóa mảnh). Hàm remapping chạy trong khi giữ khóa bucket → hai thread cùng key được tuần tự hóa, không lost update. Nếu hàm trả {{null}}, entry được xoá (quy ước đặc biệt). Bản đồ không bị khóa toàn bộ, và gọi method khác của cùng bản đồ bên trong hàm có thể gây chờ khóa chéo (deadlock) nên tránh.
+
+~~~java
+ConcurrentHashMap<String, Integer> map = new ConcurrentHashMap<>();
+// hai thread cùng key "k", ban đầu chưa có:
+map.compute("k", (key, oldValue) -> oldValue == null ? 0 : oldValue + 1);
+// sau cả hai: map.get("k") == 2 (chắc chắn)
+// trả null để xoá:
+map.compute("k", (key, oldValue) -> null); // entry "k" bị xoá
+~~~
+
+### Vì sao đúng
+- **A**: compute trên cùng key giữ khóa bucket trong suốt thời gian chạy hàm remapping, nên thread thứ hai không "xâm nhập" giữa lúc thread thứ nhất đọc và ghi. Kết quả chắc chắn không bị lost update.
+- **B**: Javadoc của {{compute}} quy định hàm trả null ⇒ xóa mapping. Đây là cách xóa entry nguyên tử trên ConcurrentHashMap.
+
+### Vì sao các phương án còn lại sai
+- **C**: {{ConcurrentHashMap}} **không** khóa toàn bộ bản đồ; nhiều thread có thể thao tác các key khác song song.
+- **D**: hàm remapping gọi method khác của cùng bản đồ có thể dẫn đến chờ khóa chéo giữa các bucket (thread A giữ bucket 1 chờ bucket 2, thread B ngược lại) → deadlock. Javadoc khuyên không sửa bản đồ khác bên trong hàm.
+
+> Senior tip: nếu cần cập nhật nhiều key như một đơn vị nguyên tử, {{ConcurrentHashMap}} không đủ — hãy dùng khóa ngoài hoặc cấu trúc khác; {{compute}} chỉ nguyên tử trên mỗi key riêng lẻ.`
+},
+{
+  id: 'qz-concurrency-071', topic: 'concurrency', multi: true,
+  q: `Về deadlock (hai hay nhiều thread chờ vĩnh viễn lẫn nhau), phát biểu nào đúng về nguyên nhân và phòng ngừa? (Chọn 2)`,
+  options: [
+    `Thread A giữ khóa X chờ khóa Y, đồng thời Thread B giữ khóa Y chờ khóa X → chuỗi chờ tròn (circular wait), có thể dẫn đến deadlock`,
+    `Gọi {{Thread.stop()}} trên thread đang giữ khóa là cách an toàn để giải phóng khóa và phá deadlock`,
+    `Luôn lấy nhiều khóa theo thứ tự cố định trên mọi thread (ví dụ luôn khóa X trước Y) → phá vỡ điều kiện chờ tròn, phòng ngừa deadlock hiệu quả`,
+    `Dùng {{ReentrantLock}} thay vì {{synchronized}} thì code tự động không bao giờ bị deadlock`,
+    `Hai thread gọi {{synchronized}} trên cùng một đối tượng theo thứ tự khác nhau chắc chắn deadlock`
+  ],
+  answer: [0, 2],
+  explain: `**Tóm tắt:** Deadlock cần các điều kiện (toàn quyền tài nguyên, giữ và chờ, không chiếm trước, chờ tròn). Phá bất kỳ điều kiện nào — ví dụ thứ tự khóa cố định — sẽ ngăn deadlock. {{Thread.stop()}} không an toàn (bị bỏ trực tiếp), và {{ReentrantLock}} cũng không tự ngăn deadlock (vẫn có thể lấy hai khóa theo thứ tự khác nhau).
+
+### Vì sao đúng
+- **A**: biểu hiện điển hình của điều kiện **chờ tròn**: A giữ X chờ Y, B giữ Y chờ X → hai thread chờ vĩnh viễn.
+- **C**: thứ tự khóa cố định làm không thể hình thành chuỗi chờ tròn → cách phòng ngừa đơn giản, hiệu quả trên production.
+
+### Vì sao các phương án còn lại sai
+- **B**: {{Thread.stop()}} đã bị bỏ trực tiếp (deprecated): tháo khóa đột ngột có thể để đối tượng ở trạng thái bất nhất, hỏng dữ liệu.
+- **D**: {{ReentrantLock}} cũng có deadlock nếu hai thread lấy hai khóa theo thứ tự khác nhau; nó chỉ thêm {{tryLock()}} có timeout, không tự động ngăn deadlock.
+- **E**: cùng một đối tượng có một monitor, chỉ một thread giữ được, thread kia chờ (không deadlock vì không có chuỗi chờ tròn trên hai đối tượng).
+
+> Senior tip: ngoài thứ tự khóa, hãy dùng {{tryLock(timeout)}} để không chờ vĩnh viễn, và giảm thời gian giữ khóa (không gọi I/O chặn bên trong khóa) để giảm rủi ro deadlock.`
+},
+{
+  id: 'qz-concurrency-072', topic: 'concurrency',
+  q: `Virtual thread trên Java 21 chạy đoạn code bên trong khối {{synchronized}} thực hiện I/O chặn (ví dụ gọi API chậm). Điều gì xảy ra với luồng carrier?`,
+  options: [
+    `Virtual thread bị unmount, luồng carrier chạy virtual thread khác trong lúc chờ I/O`,
+    `{{synchronized}} không ảnh hưởng virtual thread, chúng luôn unmount khi chặn I/O`,
+    `Virtual thread bị "pin" (gán bó) vào luồng carrier trong suốt thời gian trong {{synchronized}}; carrier không chạy virtual thread khác được trong khoảng đó → giảm hiệu năng`,
+    `Virtual thread tự động chuyển sang dùng {{ReentrantLock}} khi phát hiện chặn I/O`
+  ],
+  answer: 2,
+  explain: `**Tóm tắt:** Virtual thread được "pin" (gán bó) vào luồng carrier khi thực hiện code trong khối/method {{synchronized}} (hoặc một số native method). Khi pinned, carrier không thể unmount virtual thread để chạy virtual thread khác → nếu virtual thread chặn I/O lâu, carrier bị kẹt, giảm sức mạnh của virtual thread (số lượng virtual thread chạy song song thực tế giảm). Dùng {{ReentrantLock}} hoặc các khóa trong {{java.util.concurrent.locks}} không pin virtual thread.
+
+### Vì sao đúng
+Khóa monitor {{synchronized}} yêu cầu virtual thread ở lại luồng carrier cho đến khi rời khỏi khối; trong khoảng đó carrier bị chiếm giữ. Đây là lý do Project Loom khuyên tránh {{synchronized}} khi xử lý nhiều I/O chặn trên virtual thread.
+
+### Vì sao các phương án còn lại sai
+- **A**: chỉ đúng khi virtual thread chặn trên thao tác **không pin** (ví dụ {{Thread.sleep}}, {{BlockingQueue}} thân thiện với virtual thread). Trong {{synchronized}} thì bị pin.
+- **B**: {{synchronized}} chính là nguyên nhân pin virtual thread.
+- **D**: JVM không tự động chuyển đổi; lập trình viên phải chọn khóa thích hợp.
+
+> Senior tip: với virtual thread xử lý nhiều I/O chặn, hãy tránh giữ {{synchronized}} trong suốt thời gian chặn; ưu tiên {{ReentrantLock}} (không pin) hoặc cấu trúc {{java.util.concurrent}}. Chỉ pin trong khoảng thời gian ngắn, không bao giờ giữ khóa khi gọi HTTP/DB.`
+},
+{
+  id: 'qz-concurrency-073', topic: 'concurrency',
+  q: `Lớp có hai method: {{synchronized static void a()}} và {{synchronized void b()}}. Thread 1 gọi {{a()}}, thread 2 gọi {{b()}} cùng lúc. Hai thread có chặn nhau không?`,
+  options: [
+    `Không chặn: method static khóa đối tượng {{Class}}, method instance khóa {{this}} (instance hiện tại), hai khóa khác nhau`,
+    `Có, vì cả hai đều là synchronized nên dùng cùng một khóa`,
+    `Chỉ chặn khi cả hai gọi trên cùng một instance`,
+    `{{synchronized static}} không tồn tại trong Java`
+  ],
+  answer: 0,
+  explain: `**Tóm tắt:** {{synchronized}} method instance khóa trên bản thân đối tượng {{this}}; {{synchronized static}} method khóa đối tượng {{Class}} của lớp. Hai khóa khác nhau → thread 1 gọi {{a()}} (khóa Class), thread 2 gọi {{b()}} (khóa this) không chặn nhau. Chỉ chặn nếu cả hai cùng static (cùng khóa Class) hoặc cùng instance (cùng khóa this).
+
+### Vì sao đúng
+Hai method sử dụng hai monitor khác nhau (Class object vs this), nên có thể chạy song song mà không chặn lẫn nhau.
+
+### Vì sao các phương án còn lại sai
+- **B**: hai method dùng hai khóa khác nhau (Class vs this).
+- **C**: nếu cùng instance và cả hai instance method thì chặn; nhưng đây là static vs instance → khác khóa, chạy song song.
+- **D**: {{synchronized static}} hoàn toàn hợp lệ.
+
+> Senior tip: nhầm lẫn khóa static và instance là nguyên nhân đằng sau nhiều lỗi "chia sẻ trạng thái static không được bảo vệ đúng" — state static nên dùng khóa trên Class (hoặc lớp wrapper chuyên dụng), không phải khóa this.`
+},
+{
+  id: 'qz-concurrency-074', topic: 'concurrency', multi: true,
+  q: `Về {{ExecutorService}}, phát biểu nào đúng? (Chọn 2)`,
+  options: [
+    `{{execute()}} trả về {{Future}} để caller lấy kết quả`,
+    `{{submit()}} trả về {{Future}}; exception của task ném ra khi gọi {{Future.get()}} (bao trong {{ExecutionException}}); {{execute()}} không trả Future, exception gửi đến {{UncaughtExceptionHandler}}`,
+    `{{shutdown()}} huỷ ngay task đang chạy và không cho thêm task mới`,
+    `{{newSingleThreadExecutor()}} chạy task tuần tự, một lúc chỉ một task`,
+    `FixedThreadPool(4) với 100 task và hàng đợi không giới hạn: 60 task bị từ chối ngay`
+  ],
+  answer: [1, 3],
+  explain: `**Tóm tắt:** {{submit()}} trả về {{Future}} để caller lấy kết quả hoặc bắt exception (bị bao trong {{ExecutionException}}); {{execute()}} không trả về và exception của task gửi đến {{UncaughtExceptionHandler}} của thread. {{newSingleThreadExecutor()}} có một luồng worker, task chạy tuần tự một lúc một cái. {{shutdown()}} không huỷ task đang chạy, chỉ không nhận task mới.
+
+### Vì sao đúng
+- **B**: đây là khác biệt thực tế giữa {{submit}} và {{execute}} về cách báo lỗi.
+- **D**: single-thread executor đảm bảo thứ tự thực thi và không tranh chấp trên trạng thái dùng chung trong task.
+
+### Vì sao các phương án còn lại sai
+- **A**: {{execute()}} trả {{void}}, không có {{Future}}.
+- **C**: {{shutdown()}} chỉ chặn task mới, task đã nộp và đang chạy vẫn được hoàn thành (muốn dừng phải {{shutdownNow()}}).
+- **E**: với hàng đợi không giới hạn (mặc định của FixedThreadPool), 100 task đều được nhận, 60 task đợi trong hàng, không bị từ chối ngay.
+
+> Senior tip: chọn executor theo mục đích: single-thread khi cần thứ tự, fixed pool khi cần giới hạn số luồng đồng thời, cached/virtual-thread-per-task cho task ngắn hạn hoặc I/O chặn.`
+},
+{
+  id: 'qz-concurrency-075', topic: 'concurrency',
+  q: `Dùng {{ExecutorService}} để chạy task ném exception. Sự khác biệt thực tế giữa {{execute(task)}} và {{submit(task)}} về cách báo lỗi là gì?`,
+  options: [
+    `{{execute()}} ném exception ngay trên luồng gọi, còn {{submit()}} swallow exception`,
+    `{{submit()}} trả về {{Future}}; exception của task chỉ ném ra khi gọi {{Future.get()}} (bị bao trong {{ExecutionException}}); {{execute()}} gửi exception đến {{UncaughtExceptionHandler}} của thread`,
+    `Cả hai đều swallow exception, caller không bao giờ biết`,
+    `{{execute()}} an toàn hơn {{submit()}} vì tự bắt exception`
+  ],
+  answer: 1,
+  explain: `**Tóm tắt:** {{execute(task)}} chạy task và nếu ném exception không bắt được, JVM gửi exception đến {{UncaughtExceptionHandler}} của worker thread (thường in stack trace, không lan đến caller). {{submit(task)}} trả về {{Future}}; exception bị bắt và lưu trong Future, chỉ ném ra (bao trong {{ExecutionException}}) khi caller gọi {{future.get()}}.
+
+~~~java
+ExecutorService ex = Executors.newSingleThreadExecutor();
+ex.execute(() -> { throw new RuntimeException("boom"); }); // UncaughtExceptionHandler
+Future<?> f = ex.submit(() -> { throw new RuntimeException("boom"); });
+f.get(); // ném ExecutionException, nguyên nhân là RuntimeException("boom")
+~~~
+
+### Vì sao đúng
+{{submit}} gói task trong một Future, nên exception không làm worker thread chết mà được lưu lại để caller lấy qua {{get()}}. {{execute}} không có cách nào cho caller nhận exception này.
+
+### Vì sao các phương án còn lại sai
+- **A**: {{execute()}} không ném exception ngược lại luồng gọi.
+- **C**: không swallow vĩnh viễn; {{submit}} lưu vào Future, {{execute}} gửi đến UncaughtExceptionHandler.
+- **D**: {{execute()}} không "an toàn hơn", chỉ khác cơ chế báo lỗi và phù hợp khi không cần lấy kết quả.
+
+> Senior tip: nếu dùng {{execute()}} và task ném exception, hãy đảm bảo có UncaughtExceptionHandler hoặc wrapper try/catch bên trong task, không thì lỗi dễ bị bỏ qua trên production.`
 }
 )
