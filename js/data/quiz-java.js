@@ -8842,5 +8842,94 @@ Nguyên nhân Time-to-Safepoint (TTSP) ~890ms là gì?`,
 - 0% không thực tế (có overhead nhỏ).
 
 > Senior tip: bật JFR default 30-60 phút khi sự cố, phân tích offline bằng JMC; không bật liên tục profile.`
+},
+{
+  id: 'qz-core-055', topic: 'core', q: 'Đoạn code sau in ra gì?\n~~~java\npublic class Main {\n  public static void main(String[] args) {\n    Integer a = 100, b = 100;\n    Integer c = 200, d = 200;\n    System.out.println(a == b);\n    System.out.println(c == d);\n  }\n}\n~~~\n(Chọn 1)', options: ['true, true', 'true, false', 'false, true', 'false, false'], answer: 1, explain: `**Tóm tắt:** Integer cache mặc định từ -128 đến 127, nên a==b true (cùng cached object); 200 ngoài cache, mỗi autobox tạo object mới, c==d false.
+
+### Vì sao các phương án còn lại sai
+- true,true: sai vì 200 không cache (trừ khi -XX:AutoBoxCacheMax).
+- false,...: sai vì 100 được cache.
+
+> Senior tip: so sánh Integer luôn dùng equals; == chỉ đúng trong cache range, là bug hay gặp.`
+},
+{
+  id: 'qz-core-056', topic: 'core', multi: true, q: 'Chọn 3 điều đúng về String trong Java. (Chọn 3)', options: ['String immutable, mọi thao tác trả String mới', 'String pool lưu literal ở heap (Java 7+)', '+ giữa String tạo StringBuilder và build String mới', 'substring() luôn copy toàn bộ underlying array'], answer: [0, 1, 2], explain: `**Tóm tắt:** String immutable nên mọi thao tác trả String mới; literal pool ở heap từ Java 7; phép + tạo String mới; substring JDK 7+ chỉ copy đúng range, không share mảng như JDK 6.
+
+### Vì sao phương án còn lại sai
+- substring() luôn copy toàn bộ underlying array: sai. JDK 6 share mảng con (dễ rò rỉ bộ nhớ), JDK 7+ chỉ copy đúng đoạn cần lấy chứ không copy toàn bộ mảng.
+
+> Senior tip: concatenation trong loop dùng StringBuilder; String.concat trong hot path tạo rác.`
+},
+{
+  id: 'qz-core-057', topic: 'core', q: 'Phương thức equals/hashCode contract: nếu a.equals(b) true thì bắt buộc điều gì?', options: ['a.hashCode()==b.hashCode()', 'a.toString()==b.toString()', 'a.compareTo(b)==0', 'a.getClass()==b.getClass()'], answer: 0, explain: `**Tóm tắt:** equals true ⇒ hashCode bằng nhau (ngược lại không bắt buộc). Vi phạm contract làm HashMap/HashSet mất phần tử.
+
+### Vì sao các phương án còn lại sai
+- toString không liên quan contract.
+- compareTo chỉ Comparable, equals có thể khác.
+- getClass không bắt buộc (subclass có thể equals).
+
+> Senior tip: luôn override cả equals và hashCode cùng fields; dùng Objects.equals/hashCode.`
+},
+{
+  id: 'qz-core-058', topic: 'core', q: 'try-with-resources yêu cầu resource phải implement interface nào?', options: ['AutoCloseable (hoặc Closeable)', 'Serializable', 'Comparable', 'Iterable'], answer: 0, explain: `**Tóm tắt:** Resource phải implement AutoCloseable (Closeable extends AutoCloseable). close() được gọi tự động kể cả exception; exception suppressed nếu close ném.
+
+### Vì sao các phương án còn lại sai
+- Serializable/Comparable/Iterable không liên quan close.
+
+> Senior tip: prefer try-with-resources cho stream/connection; tránh leak.`
+},
+{
+  id: 'qz-core-059', topic: 'core', multi: true, q: 'Chọn 3 điều đúng về checked vs unchecked exception. (Chọn 3)', options: ['Checked extends Exception (không phải RuntimeException)', 'Unchecked extends RuntimeException', 'Checked bắt buộc catch/throws', 'Checked luôn là bug lập trình'], answer: [0, 1, 2], explain: `**Tóm tắt:** Checked là Exception con (không phải RuntimeException) và bắt buộc catch/throws; unchecked là RuntimeException (và Error), không bắt buộc xử lý. Checked thường là lỗi môi trường (IO, SQL); unchecked thường là bug logic.
+
+### Vì sao phương án còn lại sai
+- Checked luôn là bug lập trình: sai, checked thường là lỗi bên ngoài (mất kết nối, sai cú pháp SQL) chứ không phải bug.
+
+> Senior tip: không catch Exception chung; không dùng exception điều khiển luồng.`
+},
+{
+  id: 'qz-core-060', topic: 'core', q: 'Java pass-by-value: gọi method với object, method gán param = new Object() ảnh hưởng caller không?', options: ['Có, caller thấy object mới', 'Không, chỉ copy reference; gán param không đổi caller', 'Có nếu param final', 'Phụ thuộc JVM'], answer: 1, explain: `**Tóm tắt:** Java luôn pass-by-value: copy reference. Thay đổi trạng thái object qua reference thì caller thấy; gán param sang object khác không ảnh hưởng caller.
+
+### Vì sao các phương án còn lại sai
+- final không đổi semantics.
+- JVM không phụ thuộc.
+
+> Senior tip: mutable shared object ⇒ race; prefer immutable.`
+},
+{
+  id: 'qz-core-061', topic: 'core', q: 'Generics erasure: tại runtime List<String> và List<Integer> có cùng class?', options: ['Có, cả hai là List (raw type erased)', 'Không, runtime giữ type param', 'Chỉ List<String> là List', 'Phụ thuộc compiler'], answer: 0, explain: `**Tóm tắt:** Type erasure: type param bị xoá lúc runtime; List<String> và List<Integer> đều là List; instanceof List<String> không hợp lệ compile.
+
+### Vì sao các phương án còn lại sai
+- Runtime không giữ type param (trừ reflection getGeneric... trên field/method).
+- Compiler không tạo class riêng.
+
+> Senior tip: bridge method sinh ra để polymorphism; array covariance khác generics invariance.`
+},
+{
+  id: 'qz-core-062', topic: 'core', q: 'PECS: producer extends, consumer super. Khi bạn CHỈ đọc từ collection (producer), wildcard nên là?', options: ['? extends T', '? super T', 'T', '?'], answer: 0, explain: `**Tóm tắt:** Producer (chỉ đọc) dùng ? extends T (covariant read); consumer (chỉ ghi) dùng ? super T (contravariant write).
+
+### Vì sao các phương án còn lại sai
+- ? super T cho write.
+- T không linh hoạt.
+- ? mất type safety.
+
+> Senior tip: Collections.copy(dest, src): dest ? super T, src ? extends T.`
+},
+{
+  id: 'qz-core-063', topic: 'core', q: 'final trên variable/method/class có nghĩa gì?', options: ['Variable: không reassign; method: không override; class: không subclass', 'Variable: immutable object; method: không overload; class: không instantiate', 'Variable: không thay đổi reference và object; method: final luôn static', 'final chỉ áp dụng class'], answer: 0, explain: `**Tóm tắt:** final variable không reassign (object bên trong có thể mutate nếu mutable); final method không override; final class không extends.
+
+### Vì sao các phương án còn lại sai
+- final variable không làm object immutable.
+- overload vẫn được; final không implies static.
+
+> Senior tip: String final class; dùng final cho constants/static helpers.`
+},
+{
+  id: 'qz-core-064', topic: 'core', q: 'static method có thể truy cập instance field trực tiếp không?', options: ['Không, cần instance', 'Có, static có thể đọc mọi field', 'Có nếu field public', 'Phụ thuộc modifier'], answer: 0, explain: `**Tóm tắt:** static thuộc class, không có this; không truy cập instance field/method trực tiếp. Cần tạo instance hoặc truyền vào.
+
+### Vì sao các phương án còn lại sai
+- public không giúp static truy cập instance.
+- Modifier không đổi rule.
+
+> Senior tip: static helper nên pure; tránh static mutable state (global).`
 }
 )
