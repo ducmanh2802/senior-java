@@ -3403,6 +3403,10 @@ window.DATA_INDEX = {
     {"id":"sd-050","title":"Log tập trung cho 200 service (thu thập, lưu nóng/lạnh, tìm kiếm, cảnh báo, chi phí 30 ngày)"},
     {"id":"sd-051","title":"Chấm điểm tín dụng cho vay tiêu dùng (credit scoring)"},
     {"id":"sd-052","title":"Livestream shopping: giỏ hàng + coupon, 100k viewers, chống bán vượt (anti-oversell)"},
+    {"id":"sd-053","title":"BNPL: dòng vốn (funding), quyết toán đối tác và thu hồi nợ quá hạn"},
+    {"id":"sd-054","title":"eKYC liên tục (perpetual KYC) và sàng lọc AML, trừng phạt + quản lý hồ sơ nghi vấn"},
+    {"id":"sd-055","title":"Hệ thống trả góp / BNPL (Buy Now Pay Later)"},
+    {"id":"sd-056","title":"Hệ thống eKYC mở tài khoản online"},
   ],
   drills: [
     {"id":"drill-shadow-001","kind":"shadow","en":"I am a backend engineer with eight years of experience building Java services for fintech products."},

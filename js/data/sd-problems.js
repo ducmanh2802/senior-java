@@ -7898,5 +7898,675 @@ Một livestream lớn 100k viewers, SKU "Áo hoodie limited" chỉ 500 cái. L�
     'Video latency (HLS) 10-15 giây, mà stock WebSocket realtime < 500ms: khách xem video thấy "còn hàng" nhưng WebSocket báo "hết" -> bạn đồng bộ trải nghiệm ra sao?'
   ],
   related: ['design-005', 'design-028', 'design-067']
+},
+{
+  id: 'sd-053',
+  title: 'BNPL: dòng vốn (funding), quyết toán đối tác và thu hồi nợ quá hạn',
+  kind: 'bank',
+  level: 'lead',
+  prompt: `Bạn là kiến trúc sư trưởng cho một công ty BNPL (mua ngay trả sau) đã có sản phẩm duyệt hạn mức và lịch trả nợ chạy ổn (phần đó coi như có sẵn). Bài này tập trung vào **phần tiền phía sau**: (1) **Dòng vốn (funding)** — công ty BNPL ứng tiền cho sàn/merchant ngay khi giao hàng thành công rồi thu lại từ khách theo kỳ, nên phải quản lý hạn mức tín dụng (warehouse credit line) và thanh khoản để không cạn tiền giữa ngày; (2) **Quyết toán cho đối tác bán hàng (merchant settlement)** — tính phí chiết khấu (MDR), trừ đơn hoàn/đổi, trả tiền cho merchant theo lô, đối soát; (3) **Thu hồi nợ quá hạn (collections)** — phân nhóm nợ theo ngày quá hạn (DPD), leo thang nhắc nợ, bán nợ, trích lập dự phòng. Quy mô: 3 triệu khách, 1 triệu đơn/tháng, giá trị đơn trung bình 2,5 triệu VND, tỷ lệ nợ xấu (default) 5%. Bạn có 45 phút. Hãy trình bày.`,
+  phases: [
+    { name: 'Requirements', minutes: 5, guide: `Làm rõ functional: khi đơn BNPL được duyệt và giao thành công, hệ thống ứng tiền cho merchant (trừ MDR), ghi khoản phải thu của khách; quyết toán merchant theo lô (ví dụ T+1 hoặc tuần) kèm file đối soát; thu hồi nợ theo DPD; trích lập dự phòng và báo cáo. Non-functional: không cạn thanh khoản (funding không vượt hạn mức), số tiền không sai, quyết toán idempotent, nợ phân nhóm đúng, latency không gắt (xử lý theo lô). Hỏi: ai cấp warehouse line, lãi vốn bao nhiêu, MDR bao nhiêu, hoàn/đổi xử lý ra sao, bán nợ khi nào, quy định trích lập (IFRS 9). Out-of-scope: duyệt hạn mức realtime, cổng thanh toán thẻ. Chốt: mỗi đơn BNPL tạo đúng một khoản phải thu (receivable), funding là bài toán thanh khoản + kế toán, không phải bài toán latency.` },
+    { name: 'Estimation', minutes: 5, guide: `1 triệu đơn/tháng x 2,5 triệu = 2.500 tỷ VND GMV/tháng. Mỗi đơn trả 4 kỳ trong 4 tháng nên dư nợ (outstanding) trung bình ~ một nửa GMV tháng ~ 1.250 tỷ VND phải có vốn tại mọi thời điểm. MDR 4% -> doanh thu ~100 tỷ/tháng; lãi vốn 8%/năm trên 1.250 tỷ ~ 8,3 tỷ/tháng -> chênh lệch dương. Default 5% -> 50.000 khoản/nợ xấu/tháng cần thu hồi. Quyết toán merchant: 1 triệu đơn x vài KB x 12 ~ vài chục GB/năm. Kết luận: throughput thấp (lô, vài trăm đơn/s khi chạy job), nhưng **thanh khoản và kế toán phải chính xác tuyệt đối**; đây là bài toán dòng tiền + đối soát, không phải high-TPS.` },
+    { name: 'API & data model', minutes: 5, guide: `API: POST /receivables (ghi phải thu khi giao thành công, idempotent theo merchant_order_id), GET /settlements/{batchId}, POST /settlements/{batchId}/pay (giải ngân cho merchant), POST /collections/{id}/pay, GET /funding/position (thanh khoản). Bảng: receivable (khoản phải thu, số kỳ, trạng thái), funding_ledger (sổ vốn: giải ngân, thu hồi, lãi), settlement_batch + settlement_line, refund (hoàn/đổi), dpd_bucket (phân nhóm), collection_case, provision (dự phòng), outbox. Ràng buộc: UNIQUE(merchant_order_id) chống ghi hai receivable; tiền lưu số nguyên; sổ cái append-only.` },
+    { name: 'High-level design', minutes: 15, guide: `Vẽ: OMS sàn -> BNPL core (ghi receivable + funding_ledger) -> Funding service (theo dõi warehouse line, headroom) ; Job quyết toán đọc đơn đã giao, trừ hoàn, tính MDR, sinh settlement_batch -> giải ngân -> file cho merchant. Job thu hồi: phân DPD, leo thang, tạo collection_case, bán nợ. Job kế toán: trích lập ECL, đối soát funding_ledger với sao kê ngân hàng cấp vốn. Nêu vì sao funding phải là sổ cái kép và headroom phải kiểm tra trước khi duyệt chi.` },
+    { name: 'Deep dive', minutes: 15, guide: `Đào sâu: funding headroom (available = limit - utilization, kiểm tra atomic khi giải ngân), warehouse line cạn -> hàng đợi/decline; settlement idempotent (batch + line unique, không trả hai lần), hoàn/đổi -> credit note; DPD buckets (1-30,31-60,61-90,90+), dunning escalation, bán nợ (debt sale) vs tự thu; ECL/provision theo IFRS 9 (stage 1/2/3); failure modes (cạn vốn, quyết toán trùng, job chạy lại, file đối tác sai), monitoring (headroom, DPD distribution, settlement mismatch, provision coverage).` }
+  ],
+  rubric: [
+    'Làm rõ scope phần tiền phía sau (funding, settlement, collections), chốt out-of-scope, nêu scale 1 triệu đơn/tháng, default 5%',
+    'Ước lượng dư nợ ~1.250 tỷ VND, MDR 4%, lãi vốn 8%/năm, default 5% -> 50k khoản xấu/tháng (có phép tính)',
+    'Mô hình receivable + funding_ledger append-only (sổ kép), tiền lưu số nguyên, UNIQUE(merchant_order_id)',
+    'Funding headroom kiểm tra atomic trước khi giải ngân, warehouse line cạn -> decline/hàng đợi, không vượt hạn mức',
+    'Settlement theo lô idempotent (batch + line unique), trừ hoàn/đổi bằng credit note, không trả hai lần',
+    'DPD buckets (1-30/31-60/61-90/90+) và dunning escalation, collection_case, bán nợ vs tự thu',
+    'Trích lập dự phòng ECL theo IFRS 9 (stage 1/2/3), không công phạt hai lần',
+    'Đối soát funding_ledger với sao kê ngân hàng cấp vốn và với file merchant; xử lý lệch',
+    'Failure modes: cạn vốn, quyết toán trùng, job chạy lại, file đối tác sai; outbox thay dual-write',
+    'Giám sát: headroom, phân bố DPD, settlement mismatch, provision coverage, chi phí thu hồi'
+  ],
+  reference: `**Tóm tắt:** BNPL có hai nửa. Nửa trước (duyệt hạn mức, lịch trả nợ) là bài toán realtime; nửa sau — bài này — là bài toán **dòng tiền và kế toán**: công ty BNPL ứng tiền cho merchant ngay khi giao hàng rồi thu lại từ khách theo kỳ, nên phải (1) quản lý **thanh khoản** để không cạn vốn giữa ngày, (2) **quyết toán** cho merchant chính xác và idempotent, (3) **thu hồi nợ** theo ngày quá hạn và trích lập dự phòng. Ba trụ cột: sổ cái vốn append-only với headroom kiểm tra atomic, settlement theo lô idempotent, và pipeline thu hồi theo DPD.
+
+### Giải thích thuật ngữ (đọc trước)
+- **Funding (dòng vốn):** tiền BNPL bỏ ra để ứng cho merchant trước, chờ thu lại từ khách. Nếu không đủ vốn, đơn đã duyệt vẫn không chi được — đây là rủi ro sống còn.
+- **Warehouse credit line (hạn mức tín dụng kho):** một khoản vay lớn từ ngân hàng/quỹ, BNPL dùng làm vốn để ứng; khoản phải thu của khách là tài sản đảm bảo. Có hạn mức (limit) và phần đã dùng (utilization).
+- **Headroom (dư địa):** limit trừ utilization — số tiền còn có thể giải ngân. Phải luôn dương.
+- **MDR (merchant discount rate, phí chiết khấu):** phần trăm BNPL giữ lại khi trả tiền cho merchant. Ví dụ MDR 4%, đơn 2,5 triệu -> BNPL giữ 100.000, trả merchant 2,4 triệu.
+- **Receivable (khoản phải thu):** nợ khách còn phải trả BNPL. Là tài sản trên sổ sách.
+- **Settlement (quyết toán):** gom đơn đã giao, trừ hoàn/đổi, tính MDR, rồi giải ngân cho merchant theo lô.
+- **DPD (days past due, ngày quá hạn):** số ngày một kỳ trả nợ bị trễ. Dùng để phân nhóm rủi ro.
+- **Collections (thu hồi nợ):** chuỗi hành động đòi nợ khi khách trễ: nhắc, gọi, giao đơn vị thu hồi, bán nợ.
+- **ECL / provision (dự phòng tổn thất tín dụng kỳ vọng):** theo chuẩn IFRS 9, trích trước một phần nợ dự kiến không thu được, chia 3 stage theo mức rủi ro.
+- **Debt sale (bán nợ):** bán khoản nợ xấu cho công ty mua nợ theo giá chiết khấu để thu hồi một phần ngay.
+
+### 1. Yêu cầu và quy mô
+- Khi đơn BNPL giao thành công: ghi một khoản phải thu, ứng tiền cho merchant (trừ MDR), ghi sổ vốn.
+- Quyết toán merchant theo lô (T+1 hoặc tuần) kèm file đối soát; xử lý hoàn/đổi bằng credit note.
+- Thu hồi nợ theo DPD; trích lập dự phòng; báo cáo tài chính.
+- Quy mô: 3 triệu khách, 1 triệu đơn/tháng, đơn trung bình 2,5 triệu VND, default 5%.
+
+### 2. Ước lượng (có phép tính)
+| Đại lượng | Phép tính | Kết quả |
+|---|---|---|
+| GMV BNPL/tháng | 1.000.000 x 2,5 triệu | 2.500 tỷ VND |
+| Dư nợ trung bình | 4 kỳ/4 tháng -> ~1/2 GMV | ~1.250 tỷ VND |
+| Doanh thu MDR | 2.500 tỷ x 4% | ~100 tỷ/tháng |
+| Lãi vốn | 1.250 tỷ x 8%/năm / 12 | ~8,3 tỷ/tháng |
+| Khoản xấu/tháng | 1.000.000 x 5% | 50.000 khoản |
+| Dữ liệu receivable | 1.000.000 x 2 KB x 12 | ~24 GB/năm |
+
+Kết luận: throughput thấp (job chạy vài trăm đơn/s), **thanh khoản và kế toán phải đúng tuyệt đối**. Đây là bài toán dòng tiền + đối soát, không phải high-TPS.
+
+### 3. Mô hình dữ liệu
+~~~sql
+CREATE TABLE receivable (
+  id                 UUID PRIMARY KEY,
+  customer_id        BIGINT NOT NULL,
+  merchant_order_id  VARCHAR(64) NOT NULL,
+  merchant_id        BIGINT NOT NULL,
+  principal          BIGINT NOT NULL,          -- tiền gốc, số nguyên (VND)
+  installments       INT NOT NULL,
+  status             VARCHAR(20) NOT NULL,      -- ACTIVE/SETTLED/OVERDUE/WRITTEN_OFF
+  funded_at          TIMESTAMPTZ,
+  created_at         TIMESTAMPTZ NOT NULL DEFAULT now(),
+  UNIQUE (merchant_order_id)
+);
+CREATE TABLE funding_ledger (               -- sổ cái vốn, append-only
+  id           BIGSERIAL PRIMARY KEY,
+  entry_type   VARCHAR(20) NOT NULL,        -- DISBURSE/COLLECT/INTEREST/PROVISION
+  amount       BIGINT NOT NULL,             -- ghi có -> số dư vốn tăng/giảm
+  direction    CHAR(1) NOT NULL CHECK (direction IN ('D','C')),
+  ref_id       UUID,
+  created_at   TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE TABLE funding_position (             -- vị thế thanh khoản, cập nhật atomic
+  id           BIGINT PRIMARY KEY,
+  limit_amount BIGINT NOT NULL,
+  utilized     BIGINT NOT NULL DEFAULT 0
+);
+CREATE TABLE settlement_batch (
+  id           UUID PRIMARY KEY,
+  merchant_id  BIGINT NOT NULL,
+  period_start DATE NOT NULL,
+  period_end   DATE NOT NULL,
+  gross_amount BIGINT NOT NULL,
+  mdr_amount   BIGINT NOT NULL,
+  refund_amount BIGINT NOT NULL,
+  net_amount   BIGINT NOT NULL,
+  status       VARCHAR(20) NOT NULL,        -- OPEN/CLOSED/PAID
+  UNIQUE (merchant_id, period_start, period_end)
+);
+CREATE TABLE settlement_line (
+  id           UUID PRIMARY KEY,
+  batch_id     UUID NOT NULL,
+  receivable_id UUID NOT NULL,
+  amount       BIGINT NOT NULL,
+  UNIQUE (batch_id, receivable_id)
+);
+CREATE TABLE dpd_bucket (                   -- phân nhóm nợ theo ngày quá hạn
+  receivable_id UUID PRIMARY KEY,
+  dpd          INT NOT NULL,                -- 1-30/31-60/61-90/90+
+  bucket       VARCHAR(10) NOT NULL,
+  updated_at   TIMESTAMPTZ NOT NULL
+);
+CREATE TABLE provision (                    -- trích lập ECL
+  id           UUID PRIMARY KEY,
+  receivable_id UUID NOT NULL,
+  stage        SMALLINT NOT NULL,           -- 1/2/3 theo IFRS 9
+  amount       BIGINT NOT NULL,
+  period       DATE NOT NULL,
+  UNIQUE (receivable_id, period)
+);
+CREATE TABLE outbox (
+  id BIGSERIAL PRIMARY KEY, aggregate_id UUID NOT NULL,
+  type VARCHAR(50) NOT NULL, payload JSONB NOT NULL,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now(), published_at TIMESTAMPTZ
+);
+~~~
+- Tiền lưu số nguyên (VND), sổ vốn append-only: sửa sai bằng bút toán đảo, không xoá.
+- UNIQUE(merchant_order_id) chống ghi hai receivable cho một đơn; UNIQUE(merchant_id, period) chống quyết toán hai lần cùng kỳ.
+
+### 4. Funding: không để cạn vốn giữa ngày
+Mỗi lần giải ngân cho merchant là một bút toán DISBURSSE làm tăng utilized. Trước khi duyệt chi, kiểm tra headroom bằng một câu UPDATE atomic:
+~~~sql
+UPDATE funding_position
+   SET utilized = utilized + :amount
+ WHERE id = 1
+   AND utilized + :amount <= limit_amount;
+~~~
+Nếu affected rows = 0 -> headroom không đủ -> đơn chuyển hàng đợi chờ vốn hoặc decline, **không** cho vượt hạn mức (vì vượt là mất khả năng chi trả cho ngân hàng cấp vốn). Khi khách trả một kỳ, bút toán COLLECT làm giảm utilized. Cuối ngày, job đối chiếu funding_ledger với sao kê ngân hàng cấp vốn: số dư sổ phải khớp số dư thực.
+
+### 5. Quyết toán merchant theo lô (idempotent)
+Mỗi tối, job gom receivable ACTIVE/SETTLED trong kỳ của một merchant, trừ refund (credit note), tính MDR, sinh settlement_batch + settlement_line. Giải ngân là một lệnh idempotent: nếu batch đã PAID thì bỏ qua.
+~~~seq
+title: Quyết toán merchant theo lô
+actors: Job quyết toán | CSDL | Funding | Merchant
+Job quyết toán -> CSDL: gom đơn đã giao, trừ hoàn
+CSDL --> Job quyết toán: danh sách receivable
+Job quyết toán -> CSDL: ghi batch + line (unique)
+Job quyết toán -> Funding: giải ngân net_amount
+Funding -> CSDL: ghi funding_ledger DISBURSE
+Funding --> Merchant: chuyển tiền + file đối soát
+~~~
+- Chạy lại job không trả hai lần vì UNIQUE(batch_id, receivable_id) và batch PAID là chốt.
+- Hoàn/đổi: tạo credit note trừ vào batch kỳ sau, không sửa dòng cũ.
+
+### 6. Thu hồi nợ theo DPD
+Mỗi ngày job phân loại receivable quá hạn vào bucket DPD và leo thang:
+| Bucket | Hành động |
+|---|---|
+| 1-30 | Nhắc SMS/app, email; giữ nguyên |
+| 31-60 | Gọi điện, ưu tiên thu; chuyển stage 2 (ECL cao hơn) |
+| 61-90 | Giao đơn vị thu hồi (collections agency) |
+| 90+ | Cân nhắc bán nợ (debt sale) hoặc ghi giảm (write-off), stage 3 |
+- Mỗi lần thu một phần: ghi COLLECT vào funding_ledger, giảm dpd, cập nhật bucket. Công phạt (nếu có) dùng UNIQUE(receivable_id, fee_date) để không công hai lần.
+- Trích lập ECL theo IFRS 9: stage 1 (12 tháng), stage 2 (toàn vòng đời, rủi ro tăng đáng kể), stage 3 (tổn thất). Provision ghi UNIQUE(receivable_id, period) tránh tính hai lần mỗi kỳ.
+
+### 7. Failure modes
+| Sự cố | Ảnh hưởng | Cách xử lý |
+|---|---|---|
+| Headroom cạn giữa ngày | Đơn duyệt không chi được | Hàng đợi chờ vốn, alert, điều phối thêm warehouse line |
+| Quyết toán chạy lại | Trả tiền merchant hai lần | UNIQUE batch/line + batch PAID idempotent |
+| Job thu hồi chạy lại | Công phạt hai lần | UNIQUE(receivable_id, fee_date) |
+| File merchant sai/thiếu | Lệch đối soát | Đối soát theo merchant_order_id, điều tra, credit note |
+| funding_ledger lệch sao kê vốn | Sai số dư, rủi ro pháp lý | Job đối chiếu ngày, alert, chốt bằng bút toán đảo |
+
+### Ví dụ đời thực
+Một tháng GMV 2.500 tỷ, dư nợ 1.250 tỷ, warehouse line 1.300 tỷ -> headroom chỉ 50 tỷ. Ngày 20 (cao điểm), đơn mới ồ ạt, utilized chạm 1.300 tỷ: 2.000 đơn chuyển hàng đợi chờ vốn thay vì vượt hạn mức (vốn sẽ bị ngân hàng cắt). Đêm đó job quyết toán trả merchant 180 tỷ (sau MDR), khách trả nợ 60 tỷ -> headroom phục hồi 240 tỷ, hàng đợi được giải ngân sáng hôm sau. Default 5% = 50.000 khoản: 60% tự trả sau nhắc (1-30), 25% cần gọi (31-60), 10% giao agency (61-90), 5% bán nợ (90+) thu ~30% mệnh giá. Provision stage 3 che đúng phần tổn thất, báo cáo tài chính không bị "vỡ" khi audit.
+
+### Trả lời mẫu khi phỏng vấn
+"Tôi tách BNPL làm hai nửa; nửa sau là dòng tiền và kế toán. Funding: mỗi lần giải ngân là bút toán làm tăng utilized, kiểm tra headroom bằng UPDATE atomic WHERE utilized + amount <= limit, không bao giờ cho vượt hạn mức; cạn vốn thì xếp hàng đợi chứ không vay nóng. Settlement: gom theo lô, trừ hoàn bằng credit note, tính MDR, giải ngân idempotent nhờ UNIQUE(batch, receivable) và trạng thái PAID. Collections: phân DPD 1-30/31-60/61-90/90+, leo thang nhắc-gọi-agency-bán nợ, trích lập ECL theo IFRS 9 ba stage, UNIQUE(receivable_id, fee_date) chống công phạt hai lần. Sổ vốn append-only, đối chiếu hằng ngày với sao kê ngân hàng cấp vốn và file merchant. Metric: headroom, phân bố DPD, settlement mismatch, provision coverage, chi phí thu hồi trên mỗi đồng thu được."
+
+> Senior tip: sai lầm chết người của BNPL là tối ưu duyệt mà quên **thanh khoản**. Một công ty có thể duyệt 100% đơn nhưng cạn vốn lúc 10h sáng và không chi nổi cho merchant — uy tín mất ngay. Hãy coi funding_position là tài sản sống còn: headroom kiểm tra atomic, alert khi xuống dưới 10%, và luôn có đường dự phòng (thêm warehouse line, tạm dừng độ tuổi rủi ro cao). Và đừng bao giờ UPDATE số dư rồi mới kiểm tra — hãy kiểm tra trong chính câu UPDATE có điều kiện.`,
+  followups: [
+    'Nếu warehouse line bị ngân hàng cắt hạn mức đột ngột 30%, bạn bảo vệ thanh khoản và thứ tự ưu tiên chi trả ra sao?',
+    'Một merchant khiếu nại thiếu tiền 50 triệu sau quyết toán: bạn điều tra và bù trừ bằng credit note thế nào mà không sửa sổ cũ?',
+    'Khách trả trước hạn (early payoff): bạn tính lại lãi, mở headroom và cập nhật DPD ra sao?',
+    'Nếu tỷ lệ default tăng từ 5% lên 9% trong một quý, bạn điều chỉnh ECL, MDR và hạn mức cấp vốn thế nào?',
+    'Bán nợ (debt sale) cho bên thứ ba: bạn chọn lô nợ, định giá chiết khấu và hạch toán chênh lệch ra sao?'
+  ],
+  related: ['design-022', 'design-005', 'banking-026', 'design-028']
+},
+{
+  id: 'sd-054',
+  title: 'eKYC liên tục (perpetual KYC) và sàng lọc AML, trừng phạt + quản lý hồ sơ nghi vấn',
+  kind: 'bank',
+  level: 'lead',
+  prompt: `Bạn là kiến trúc sư cho hệ thống tuân thủ (compliance) của ngân hàng số. Phần eKYC lúc mở tài khoản đã có (chụp CCCD, selfie, NFC, duyệt hồ sơ). Bài này tập trung vào **sau khi mở tài khoản**: (1) **Perpetual KYC (pKYC)** — giám sát liên tục thay vì làm lại định kỳ, tự kích hoạt rà soát lại khi có thay đổi (đổi địa chỉ, giấy tờ hết hạn, khách bị đưa vào danh sách theo dõi); (2) **Sàng lọc AML và danh sách trừng phạt** — đối chiếu tên khách với danh sách trừng phạt (OFAC, UN, EU...), người có ảnh hưởng chính trị (PEP), tin xấu (adverse media), cả lúc onboarding và quét lại định kỳ khi danh sách cập nhật; (3) **Quản lý hồ sơ nghi vấn (case management)** — cảnh báo giao dịch bất thường, điều tra, và lập báo cáo giao dịch đáng ngờ (STR/SAR) gửi cơ quan chức năng. Quy mô: 10 triệu khách hiện hữu, 50.000 hồ sơ mới/ngày, danh sách trừng phạt ~50.000 mục cập nhật hằng ngày. Bạn có 45 phút. Hãy trình bày.`,
+  phases: [
+    { name: 'Requirements', minutes: 5, guide: `Làm rõ functional: sàng lọc tên khi onboarding (realtime), quét lại toàn bộ khách khi danh sách cập nhật (batch), pKYC trigger, transaction monitoring sinh cảnh báo, case management (phân loại, điều tra, 4-eyes), lập STR/SAR. Non-functional: không bỏ sót (recall cao) nhưng phải kiểm soát false positive; realtime screening p99 dưới 200ms; quét lại 10 triệu khách trong vài giờ; audit bất biến; PII bảo mật. Hỏi: danh sách nào bắt buộc, ngưỡng fuzzy match, ai duyệt STR, lưu bao lâu. Out-of-scope: eKYC onboarding, core banking. Chốt: AML là bài toán recall + triage, không phải chỉ latency.` },
+    { name: 'Estimation', minutes: 5, guide: `10 triệu khách, danh sách 50.000 mục. So khớp ngây thơ 10 triệu x 50.000 = 5 x 10^11 phép so — quá lớn. Phải blocking (nhóm theo chữ cái đầu/âm đọc) để giảm còn vài trăm cặp/người. Onboarding 50.000/ngày ~ 0,6/s trung bình, peak gấp 3. Realtime screening mỗi hồ sơ: chuẩn hoá tên + tra index -> p99 < 200ms. Quét lại batch 10 triệu: chia shard, chạy vài giờ. Transaction monitoring: vài triệu giao dịch/ngày, rule engine. Kết luận: thách thức là **quét lại quy mô lớn + fuzzy matching chính xác + triage cảnh báo**, không phải throughput đơn.` },
+    { name: 'API & data model', minutes: 5, guide: `API: POST /screen (sàng lọc một tên realtime), POST /rescreen (kích hoạt quét lại), GET /alerts, POST /alerts/{id}/decision, POST /cases/{id}/sar. Bảng: customer, watchlist_entry (mục danh sách, loại SANCTION/PEP/ADVERSE), screening_result (khớp tới đâu, score), alert, case, sar_filing, audit_log (append-only). Tên lưu dạng đã chuẩn hoá (bỏ dấu) + bản gốc; so khớp fuzzy lưu score. UNIQUE để tránh tạo trùng alert cho cùng cặp (customer, watchlist_entry).` },
+    { name: 'High-level design', minutes: 15, guide: `Vẽ: Onboarding -> Screening service (realtime) -> Watchlist index; Scheduler -> Rescreen (batch, shard) -> Screening; Screening -> Alert queue -> Case management (analyst) -> 4-eyes -> STR filing. Transaction monitor -> Alert. Nêu vì sao tách realtime vs batch, vì sao cần blocking, và vì sao alert phải đi qua triage thay vì chặn khách tự động.` },
+    { name: 'Deep dive', minutes: 15, guide: `Đào sâu: chuẩn hoá tên (bỏ dấu tiếng Việt, chuyển tự, viết hoa), fuzzy (Levenshtein/Jaro-Winkler, Soundex/Metaphone), blocking theo âm đầu; ngưỡng score và ma trận recall/precision; cập nhật danh sách (version, rescreen tăng dần, ưu tiên mục mới); transaction monitoring (velocity, structuring/smurfing, cross-border); case management 4-eyes, STR/SAR, SLA; false positive tuning (whitelist, feedback); failure modes (bỏ sót do dấu, alert storm khi list update, case tồn đọng), monitoring (recall test set, precision, alert backlog, STR SLA).` }
+  ],
+  rubric: [
+    'Làm rõ scope pKYC + AML screening + case management, chốt out-of-scope, nêu 10 triệu khách, 50k hồ sơ/ngày, list 50k mục',
+    'Ước lượng 10 triệu x 50.000 = 5 x 10^11, cần blocking để giảm; realtime p99 < 200ms; batch quét lại vài giờ',
+    'Chuẩn hoá tên: bỏ dấu tiếng Việt, chuyển tự/viết hoa; fuzzy Levenshtein/Jaro-Winkler + Soundex/Metaphone; blocking theo âm đầu',
+    'Mô hình watchlist_entry, screening_result (score), alert, case, sar_filing, audit append-only; UNIQUE chống trùng alert',
+    'Tách realtime screening (onboarding) và batch rescreen (list update), có version list và ưu tiên mục mới',
+    'Recall cao nhưng kiểm soát false positive: ngưỡng score, whitelist, feedback loop, ma trận recall/precision',
+    'Transaction monitoring: velocity, structuring/smurfing, cross-border -> alert',
+    'Case management 4-eyes (maker-checker), điều tra, lập STR/SAR đúng SLA, audit bất biến',
+    'Failure modes: bỏ sót do dấu, alert storm khi list update, case tồn đọng; giảm thiểu',
+    'Giám sát: recall trên test set, precision, alert backlog, STR SLA, số lần xem PII'
+  ],
+  reference: `**Tóm tắt:** eKYC lúc mở tài khoản chỉ là một lần; rủi ro thật nằm ở **sau đó**. Bài này gồm ba phần: (1) **Perpetual KYC** — giám sát liên tục và tự rà soát lại khi có tín hiệu thay đổi; (2) **sàng lọc AML/trừng phạt** — đối chiếu tên khách với danh sách trừng phạt, PEP, tin xấu, cả realtime lẫn quét lại khi danh sách cập nhật; (3) **case management** — cảnh báo giao dịch bất thường, điều tra và lập báo cáo đáng ngờ (STR/SAR). Ba quyết định chính: blocking + fuzzy matching để quét 10 triệu khách khả thi, tách realtime vs batch, và triage có 4-eyes để vừa không bỏ sót vừa không làm ngập analyst.
+
+### Giải thích thuật ngữ (đọc trước)
+- **Perpetual KYC (pKYC):** thay vì làm lại KYC mỗi vài năm, hệ thống theo dõi liên tục và chỉ rà soát lại khi có thay đổi (đổi địa chỉ, giấy tờ hết hạn, tên xuất hiện trong danh sách mới).
+- **AML (anti-money laundering, phòng chống rửa tiền):** bộ quy trình phát hiện và ngăn tiền bẩn được đưa qua hệ thống tài chính.
+- **Sanctions / danh sách trừng phạt:** danh sách người/tổ chức bị cấm giao dịch (OFAC của Mỹ, UN, EU...). Giao dịch với họ là vi phạm pháp luật.
+- **PEP (politically exposed person, người có ảnh hưởng chính trị):** người giữ chức vụ công quyền, rủi ro tham nhũng cao hơn, cần giám sát chặt.
+- **Adverse media (tin xấu):** bài báo điều tra tiêu cực về một người/tổ chức.
+- **Fuzzy matching (so khớp mờ):** so tên gần giống chứ không cần giống hệt (ví dụ "Nguyen" vs "Nguyễn"), vì chính tả và dấu khác nhau.
+- **Blocking:** chia dữ liệu thành nhóm nhỏ (ví dụ theo chữ cái đầu) để không phải so mọi tên với mọi mục — giảm từ 5 x 10^11 xuống còn vài trăm phép so mỗi người.
+- **Alert / case:** cảnh báo (một nghi vấn) được nâng thành hồ sơ điều tra (case) để analyst xử lý.
+- **4-eyes / maker-checker:** một người tạo, một người khác duyệt — không ai tự duyệt việc của mình.
+- **STR/SAR (suspicious transaction/activity report):** báo cáo giao dịch/hoạt động đáng ngờ gửi cơ quan chức năng.
+
+### 1. Yêu cầu và quy mô
+- Sàng lọc tên khi onboarding (realtime) và quét lại toàn bộ khi danh sách cập nhật (batch).
+- pKYC: trigger rà soát lại theo sự kiện; không bắt khách làm lại định kỳ nếu không cần.
+- Transaction monitoring sinh cảnh báo; case management điều tra; lập STR/SAR.
+- Quy mô: 10 triệu khách, 50.000 hồ sơ mới/ngày, danh sách ~50.000 mục cập nhật hằng ngày.
+
+### 2. Ước lượng (có phép tính)
+| Đại lượng | Phép tính | Kết quả |
+|---|---|---|
+| So khớp ngây thơ | 10 triệu x 50.000 | 5 x 10^11 (bất khả thi) |
+| Sau blocking (âm đầu) | 10 triệu x ~50 mục/nhóm | ~5 x 10^8 (khả thi theo shard) |
+| Onboarding | 50.000 / 86.400 | ~0,6/s (peak x3 ~ 1,7/s) |
+| Realtime screening | chuẩn hoá + tra index | p99 < 200ms |
+| Rescreen batch | chia 20 shard x 500k | mỗi shard vài phút, tổng vài giờ |
+| Transaction monitor | vài triệu giao dịch/ngày | rule engine, alert nhỏ hơn nhiều |
+
+Kết luận: thách thức là **quét lại quy mô lớn + fuzzy chính xác + triage**, không phải throughput đơn.
+
+### 3. Mô hình dữ liệu
+~~~sql
+CREATE TABLE watchlist_entry (
+  id           BIGINT PRIMARY KEY,
+  list_source  VARCHAR(20) NOT NULL,        -- OFAC/UN/EU/PEP/ADVERSE
+  full_name    VARCHAR(200) NOT NULL,
+  name_norm    VARCHAR(200) NOT NULL,       -- đã bỏ dấu, viết hoa
+  soundex      VARCHAR(20) NOT NULL,        -- khoá blocking theo âm
+  dob          DATE,
+  country      CHAR(2),
+  version      INT NOT NULL,                -- phiên bản danh sách
+  created_at   TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX ix_watch_norm ON watchlist_entry (name_norm);
+CREATE INDEX ix_watch_soundex ON watchlist_entry (soundex);
+CREATE TABLE screening_result (
+  id            UUID PRIMARY KEY,
+  customer_id   BIGINT NOT NULL,
+  watchlist_id  BIGINT,
+  name_norm     VARCHAR(200) NOT NULL,
+  score         REAL NOT NULL,              -- 0..1 mức giống
+  match_type    VARCHAR(20),                -- EXACT/FUZZY/NONE
+  list_version  INT NOT NULL,
+  created_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
+  UNIQUE (customer_id, watchlist_id, list_version)
+);
+CREATE TABLE alert (
+  id            UUID PRIMARY KEY,
+  customer_id   BIGINT NOT NULL,
+  watchlist_id  BIGINT,
+  source        VARCHAR(20) NOT NULL,       -- SCREENING/TXN
+  score         REAL,
+  status        VARCHAR(20) NOT NULL,       -- OPEN/INVESTIGATING/CLOSED/ESCALATED
+  created_at    TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE TABLE case_file (
+  id            UUID PRIMARY KEY,
+  alert_id      UUID NOT NULL,
+  assignee_id   BIGINT,
+  decision      VARCHAR(20),                -- TRUE_MATCH/FALSE_POSITIVE/ESCALATE
+  decided_by    BIGINT,                     -- 4-eyes: người duyệt khác người tạo
+  decided_at    TIMESTAMPTZ,
+  UNIQUE (alert_id)
+);
+CREATE TABLE sar_filing (
+  id            UUID PRIMARY KEY,
+  case_id       UUID NOT NULL,
+  filed_at      TIMESTAMPTZ,
+  regulator_ref VARCHAR(100),
+  UNIQUE (case_id)
+);
+CREATE TABLE audit_log (
+  id BIGSERIAL PRIMARY KEY, actor_id BIGINT NOT NULL,
+  action VARCHAR(50) NOT NULL, entity_id UUID,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+~~~
+- Lưu cả tên gốc và name_norm (đã bỏ dấu); soundex là khoá blocking.
+- UNIQUE(customer_id, watchlist_id, list_version) chống tạo trùng cùng một mục ở cùng phiên bản.
+
+### 4. Chuẩn hoá tên và blocking (chìa khoá để khả thi)
+Trước khi so, chuẩn hoá: **bỏ dấu tiếng Việt** (Nguyễn -> Nguyen), chuyển tự, viết hoa, bỏ khoảng trắng thừa. Sau đó tính **soundex** (mã âm đọc) để blocking: chỉ so tên trong cùng nhóm âm đầu, không so toàn bộ.
+~~~text
+Gốc:        Nguyễn Văn An
+name_norm:  NGUYEN VAN AN
+soundex:    N525
+Watchlist:  NGUYEN VAN A  (soundex N525)  -> cùng nhóm, so fuzzy
+            TRAN THI B    (soundex T650)  -> khác nhóm, bỏ qua
+~~~
+Fuzzy score: Levenshtein (số ký tự phải sửa) hoặc Jaro-Winkler (ưu tiên trùng đầu), kết hợp soundex. Ngưỡng ví dụ: >= 0,92 exact-ish, 0,85-0,92 fuzzy cần người xem, < 0,85 bỏ.
+
+### 5. Realtime vs batch
+- **Realtime (onboarding):** chuẩn hoá tên, tra index theo soundex -> so fuzzy trong nhóm -> p99 < 200ms. Kết quả ghi screening_result; nếu vượt ngưỡng, tạo alert ngay nhưng **không tự chặn** khách (tránh false positive làm mất khách), chuyển vào hàng đợi.
+- **Batch (list update):** khi danh sách có version mới, chạy rescreen tăng dần: ưu tiên mục mới thêm, chia shard 500k khách, mỗi shard vài phút. UNIQUE(customer_id, watchlist_id, list_version) cho phép chạy lại an toàn.
+~~~seq
+title: Sàng lọc và xử lý cảnh báo
+actors: Khách | Screening | Watchlist | Analyst | Giám sát
+Khách -> Screening: tên khi onboarding
+Screening -> Watchlist: tra index theo soundex
+Watchlist --> Screening: nhóm ứng viên
+Screening --> Khách: kết quả (không chặn)
+Screening -> Analyst: tạo alert nếu vượt ngưỡng
+Analyst -> Giám sát: điều tra, 4-eyes duyệt
+Giám sát --> Analyst: quyết định + STR nếu cần
+~~~
+
+### 6. Transaction monitoring và case management
+- Rule: velocity (nhiều giao dịch ngắn), structuring/smurfing (chia nhỏ để né ngưỡng báo cáo), cross-border bất thường -> sinh alert.
+- Alert -> case: analyst phân loại TRUE_MATCH / FALSE_POSITIVE / ESCALATE. 4-eyes: người tạo case khác người duyệt. STR/SAR lập đúng SLA, lưu regulator_ref. Mọi thao tác ghi audit_log bất biến.
+- False positive tuning: whitelist (khách đã xác minh trùng tên nhưng khác người), feedback từ analyst để chỉnh ngưỡng; theo dõi ma trận recall/precision trên một test set gắn nhãn.
+
+### 7. Failure modes
+| Sự cố | Ảnh hưởng | Cách xử lý |
+|---|---|---|
+| Bỏ sót do dấu/chuyển tự | Khách trừng phạt lọt | Chuẩn hoá kỹ, test set đa dạng, soundex + fuzzy |
+| Alert storm khi list update | Ngập analyst | Batch theo version, ưu tiên mục mới, gộp alert trùng |
+| Case tồn đọng | Vi phạm SLA STR | Backlog dashboard, phân ca, auto-escalate |
+| Fuzzy quá rộng | Nhiều false positive | Tinh chỉnh ngưỡng, whitelist, feedback |
+| PII lộ | Rủi ro pháp lý | Mã hoá, RBAC, audit, không log tên đầy đủ |
+
+### Ví dụ đời thực
+Khách "Nguyễn Văn An" onboarding: name_norm NGUYEN VAN AN, soundex N525; danh sách có "NGUYEN VAN A" cùng nhóm, fuzzy 0,93 -> tạo alert (không chặn). Analyst điều tra, thấy khác ngày sinh -> FALSE_POSITIVE, whitelist. Ba tháng sau OFAC thêm mục mới version 7: rescreen 10 triệu khách chia 20 shard chạy 3 giờ, UNIQUE cho phép chạy lại; một khách thật khớp 0,97 -> escalate, 4-eyes duyệt, lập STR trong SLA 24h. Test set recall 98%, precision 31% (phần lớn false positive do tên phổ biến) — chấp nhận được vì bỏ sót là rủi ro pháp lý lớn hơn.
+
+### Trả lời mẫu khi phỏng vấn
+"Tôi thiết kế tuân thủ sau onboarding quanh ba phần. Sàng lọc: chuẩn hoá tên (bỏ dấu, viết hoa) rồi blocking theo soundex để không phải so 10 triệu với 50.000; realtime p99 dưới 200ms, batch rescreen theo version chia shard chạy vài giờ, UNIQUE cho phép chạy lại. Fuzzy dùng Jaro-Winkler/Levenshtein, ngưỡng phân ba mức, recall cao nhưng whitelist và feedback để ghìm false positive. Transaction monitoring (velocity, structuring, cross-border) sinh alert. Alert vào case management có 4-eyes, analyst điều tra, lập STR/SAR đúng SLA, audit bất biến. pKYC kích hoạt rà soát theo sự kiện thay vì làm lại định kỳ. Metric: recall trên test set, precision, alert backlog, STR SLA, số lần xem PII."
+
+> Senior tip: trong AML, **bỏ sót (false negative) là rủi ro pháp lý, còn false positive là chi phí vận hành** — nên luôn nghiêng về recall và đầu tư mạnh vào triage để analyst không sập. Sai lầm phổ biến là so tên thiếu chuẩn hoá: chỉ cần quên bỏ dấu tiếng Việt là "Nguyễn" không khớp "Nguyen", và một khách trừng phạt lọt qua có thể khiến ngân hàng bị phạt nặng. Hãy có một test set gắn nhãn, đo recall/precision mỗi lần đổi ngưỡng, và đừng bao giờ để alert tự động chặn khách — hãy để người quyết định.`,
+  followups: [
+    'Nếu một chính khách VIP (PEP) có tên trùng với mục trừng phạt, bạn xử lý cảnh báo để không làm rò rỉ thông tin ra ngoài?',
+    'Danh sách trừng phạt cập nhật 5 lần/ngày với hàng nghìn mục mới: bạn lên lịch rescreen và chia shard thế nào để không đè transaction realtime?',
+    'Analyst backlog tăng gấp 5 lần sau một đợt list update: bạn tự động hoá triage và phân ưu tiên ra sao?',
+    'Cơ quan chức năng yêu cầu toàn bộ lịch sử sàng lọc của một khách trong 5 năm: bạn trích xuất và chứng minh tính toàn vẹn thế nào?',
+    'Fuzzy matching sinh quá nhiều false positive vì nhiều người trùng tên: bạn bổ sung tín hiệu (DOB, quốc tịch, địa chỉ) vào score ra sao?'
+  ],
+  related: ['banking-008', 'banking-016', 'design-026', 'banking-026']
+},
+{
+  id: 'sd-055',
+  title: 'Hệ thống trả góp / BNPL (Buy Now Pay Later)',
+  kind: 'bank',
+  level: 'senior',
+  prompt: `Bạn là kiến trúc sư cho một nền tảng BNPL tại Việt Nam. Thiết kế hệ thống trả góp: duyệt hạn mức trong 3 giây, lịch trả nợ, nhắc nợ, phạt trễ hạn, đối soát với đối tác bán hàng. Quy mô: 2 triệu khách hàng, 200.000 giao dịch/ngày, peak 50 TPS, partner bán hàng 500 shop, SLA 99,95%, không được cho vay quá hạn mức, không được tính lãi sai. Bạn có 45 phút. Hãy trình bày.`,
+  phases: [
+    { name: 'Requirements', minutes: 5, guide: `Functional: đăng ký BNPL, duyệt hạn mức realtime, mua hàng trả góp, lịch trả nợ (3-6 kỳ), thanh toán kỳ, nhắc nợ, phạt trễ, đối soát với shop. Non-functional: p99 duyệt < 3s, TPS peak, consistency hạn mức (không vượt), audit. Hỏi rõ: scoring model ở đâu, dữ liệu tín dụng có những gì, shop nhận tiền khi nào, xử lý hoàn hàng/trả hàng. Chốt out-of-scope: FX, BNPL quốc tế.` },
+    { name: 'Estimation', minutes: 5, guide: `200.000 giao dịch/ngày ~ 2,3 TPS trung bình, peak 50 TPS. Hạn mức và lịch trả nợ: 2 triệu khách x 1KB ~ 2GB. Lịch sử thanh toán: 200k x 5KB ~ 1GB/ngày, 7 năm retention ~ 2,5TB. Reminder queue: 200k events/ngày. DB chính là bottleneck, cần index theo customer_id và due_date.` },
+    { name: 'API & data model', minutes: 5, guide: `API: POST /bnpl/apply (duyệt), POST /orders (mua trả góp), GET /loans/{id}/schedule, POST /payments. State machine loan: APPROVED -> ACTIVE -> PAID_OFF / DEFAULTED / WRITTEN_OFF. Bảng loan, installment, payment, ledger. Unique constraint idempotency. Lịch trả nợ snapshot tại thời điểm mua để không đổi khi lãi suất thay đổi.` },
+    { name: 'High-level design', minutes: 15, guide: `Vẽ: Client -> API -> BNPL service -> Scoring service (sync < 3s) + Credit DB. Order service -> Loan service -> Installment scheduler. Payment service -> Payment gateway. Reminder worker đọc installment due_date. Reconciliation job hằng ngày với shop. Giải thích vì sao scoring sync trong request nhưng persistence async qua outbox.` },
+    { name: 'Deep dive', minutes: 15, guide: `Đào sâu: hạn mức concurrency (không cho hai đơn cùng vượt hạn mức), lịch trả nợ snapshot + tính lãi, nhắc nợ đa kênh với backoff, phạt trễ và grace period, xử lý hoàn hàng/trả hàng, đối soát shop (match order vs settlement), failure modes (scoring timeout, payment gateway down, duplicate webhook).` }
+  ],
+  rubric: [
+    'Làm rõ yêu cầu và con số scale, chốt out-of-scope',
+    'Duyệt hạn mức realtime < 3s với scoring sync và timeout fallback',
+    'Hạn mức concurrency: conditional update để không vượt hạn mức',
+    'Lịch trả nợ snapshot tại thời điểm mua, tính lãi deterministic',
+    'Idempotency end-to-end cho order và payment',
+    'Nhắc nợ đa kênh với backoff và audit',
+    'Phạt trễ và grace period, state machine rõ ràng',
+    'Đối soát shop hằng ngày với matching và dashboard lệch',
+    'Xử lý hoàn hàng/trả hàng trên ledger',
+    'Giám sát pending, default rate, reconciliation mismatch'
+  ],
+  reference: `**Tóm tắt:** BNPL là bài toán **hạn mức và lịch trả nợ nhất quán**. Ba trụ cột: duyệt realtime dưới 3 giây với scoring sync, hạn mức concurrency bằng conditional update, và lịch trả nợ snapshot tại thời điểm mua để tính lãi deterministic. Không có exactly-once — chỉ at-least-once cộng idempotency.
+
+### Yêu cầu và quy mô
+- 2 triệu khách, 200.000 giao dịch/ngày, peak 50 TPS, 500 shop partner.
+- p99 duyệt hạn mức dưới 3 giây, availability 99,95%.
+- Không vượt hạn mức, không tính lãi sai, audit retention 7 năm.
+
+### Ước lượng
+- 200.000 giao dịch/ngày ~ 2,3 TPS trung bình, peak 50 TPS.
+- Hạn mức + lịch: 2 triệu x 1KB ~ 2GB.
+- Lịch sử thanh toán: 200.000 x 5KB ~ 1GB/ngày; 7 năm ~ 2,5TB, partition theo tháng.
+- Reminder: 200.000 events/ngày, queue Kafka đủ.
+
+### State machine loan
+~~~text
+APPROVED -> ACTIVE -> PAID_OFF
+              |         |
+              +-> DEFAULTED -> WRITTEN_OFF
+              +-> REFUNDED (hoàn hàng)
+~~~
+Mỗi chuyển trạng thái là conditional update WHERE status = 'ACTIVE'.
+
+### Mô hình dữ liệu
+~~~sql
+CREATE TABLE loan (
+  id            UUID PRIMARY KEY,
+  customer_id   BIGINT NOT NULL,
+  shop_id       BIGINT NOT NULL,
+  principal_minor BIGINT NOT NULL,
+  currency      CHAR(3) NOT NULL,
+  status        VARCHAR(20) NOT NULL,
+  approved_at   TIMESTAMPTZ NOT NULL,
+  created_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_at    TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE TABLE installment (
+  id            UUID PRIMARY KEY,
+  loan_id       UUID NOT NULL REFERENCES loan(id),
+  seq           INT NOT NULL,
+  due_date      DATE NOT NULL,
+  principal_minor BIGINT NOT NULL,
+  interest_minor BIGINT NOT NULL,
+  fee_minor     BIGINT NOT NULL DEFAULT 0,
+  status        VARCHAR(20) NOT NULL,
+  paid_at       TIMESTAMPTZ,
+  UNIQUE (loan_id, seq)
+);
+CREATE TABLE payment (
+  id            UUID PRIMARY KEY,
+  loan_id       UUID NOT NULL,
+  idem_key      VARCHAR(64) NOT NULL,
+  amount_minor  BIGINT NOT NULL,
+  status        VARCHAR(20) NOT NULL,
+  gateway_ref   VARCHAR(64),
+  created_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
+  UNIQUE (idem_key)
+);
+CREATE INDEX idx_installment_due ON installment (due_date, status);
+~~~
+Tiền lưu bằng số nguyên đơn vị nhỏ nhất. Lịch trả nợ snapshot tại thời điểm mua: lãi suất và số kỳ cố định, không đổi sau đó.
+
+### Kiến trúc
+~~~text
+Client -> API gateway -> BNPL service -> Scoring service (sync)
+                              |                |
+                              |          Credit DB
+                              v
+                        Loan service -> Installment scheduler
+                              |
+                        Payment service -> Payment gateway
+                              |
+                        Reminder worker <- installment due_date
+                              |
+                        Reconciliation job <- shop settlement
+~~~
+
+~~~seq
+title: Luồng mua hàng trả góp BNPL
+actors: Client | API gateway | BNPL service | Scoring service | Loan service | Installment DB
+Client -> API gateway: POST /orders (idempotency key)
+API gateway -> BNPL service: chuyển request
+BNPL service -> Scoring service: duyệt hạn mức (< 3s)
+Scoring service --> BNPL service: APPROVED / DECLINED
+BNPL service -> Loan service: tạo loan + installment snapshot
+Loan service -> Installment DB: ghi loan + lịch trả nợ
+Installment DB --> Loan service: OK
+Loan service --> BNPL service: loan id
+BNPL service --> API gateway: 201 + loan id
+API gateway --> Client: trả kết quả
+~~~
+
+### Duyệt hạn mức concurrency
+- Khi hai đơn cùng lúc, dùng conditional update: UPDATE credit_limit SET used = used + amount WHERE customer_id = ? AND used + amount <= limit. Nếu 0 row affected -> từ chối.
+- Scoring sync trong request với timeout 2,5s; nếu timeout -> từ chối an toàn (fail closed) và log.
+- Kết quả scoring cache theo customer_id TTL ngắn để tránh gọi lại liên tục.
+
+### Lịch trả nợ và tính lãi
+- Snapshot tại thời điểm mua: số kỳ, lãi suất, ngày bắt đầu. Không đổi sau đó dù chính sách thay đổi.
+- Tính lãi theo công thức cố định (ví dụ flat rate hoặc giảm dần), lưu từng installment với principal/interest/fee.
+- Grace period X ngày trước khi tính phạt; phạt là fixed fee hoặc % overdue.
+
+### Nhắc nợ
+- Worker quét installment có due_date trong N ngày tới, publish event reminder.
+- Đa kênh: push, SMS, email; backoff nếu thất bại.
+- Audit mọi lần nhắc để chứng minh tuân thủ.
+
+### Đối soát shop
+- Hằng ngày tải settlement file từ shop, match theo order_id và amount.
+- Dashboard lệch: shop nhận thiếu/thừa, order không có settlement, settlement không có order.
+- Reconciliation idempotent theo (shop_id, date, batch_id).
+
+### Failure modes
+| Sự cố | Ảnh hưởng | Cách xử lý |
+|---|---|---|
+| Scoring timeout | Từ chối đơn | Fail closed, log, alert |
+| Payment gateway down | Thanh toán treo | Giữ pending, retry, không tự huỷ loan |
+| Duplicate webhook | Ghi hai lần | Idempotency key unique |
+| Shop settlement lệch | Đối soát sai | Dashboard, manual resolve, audit |
+| Hoàn hàng | Loan phải điều chỉnh | Reversal entry, cập nhật installment |
+
+### Giám sát
+- p99 duyệt, approval rate, default rate, reconciliation mismatch, pending payment count, reminder delivery rate.
+
+> Senior tip: sai lầm phổ biến là để hạn mức là một số trong DB bị UPDATE tuỳ tiện — race condition sẽ cho vay quá hạn mức. Hãy dùng conditional update và coi ledger là nguồn sự thật. Và luôn snapshot lịch trả nợ: nếu tính lãi động theo chính sách mới, khách sẽ khiếu nại và pháp lý sẽ rất khó.`,
+  followups: [
+    'Nếu scoring service down 10 phút, bạn xử lý thế nào để không mất doanh số shop?',
+    'Khách trả trễ 3 kỳ liên tiếp: bạn escalate và xử lý thu hồi ra sao?',
+    'Shop yêu cầu nhận tiền ngay khi giao hàng thay vì sau đối soát: bạn điều chỉnh gì?',
+    'Thiết kế API hoàn tiền một phần (partial refund) trên lịch trả nợ ra sao?'
+  ],
+  related: ['design-005', 'banking-010']
+},
+{
+  id: 'sd-056',
+  title: 'Hệ thống eKYC mở tài khoản online',
+  kind: 'bank',
+  level: 'senior',
+  prompt: `Bạn là kiến trúc sư cho ngân hàng số. Thiết kế hệ thống eKYC mở tài khoản online: chụp CCCD + selfie, đọc chip NFC, hàng đợi duyệt thủ công, lưu ảnh an toàn, 50.000 hồ sơ/ngày. Quy mô: peak 20 TPS upload, SLA duyệt tự động < 30s cho 80% hồ sơ, manual review < 24h, lưu trữ ảnh 5 năm, tuân thủ bảo mật thông tin cá nhân. Bạn có 45 phút. Hãy trình bày.`,
+  phases: [
+    { name: 'Requirements', minutes: 5, guide: `Functional: upload ảnh CCCD mặt trước/sau + selfie, đọc chip NFC, OCR + face match + liveness, scoring rủi ro, auto-approve/reject/manual queue, lưu ảnh an toàn, audit. Non-functional: throughput, latency, bảo mật PII, retention, availability. Hỏi rõ: NFC bắt buộc hay tuỳ chọn, manual review SLA, retention pháp lý, region lưu trữ. Chốt out-of-scope: mở tài khoản doanh nghiệp, video KYC.` },
+    { name: 'Estimation', minutes: 5, guide: `50.000 hồ sơ/ngày ~ 0,58 TPS trung bình, peak upload 20 TPS. Ảnh: 3 ảnh x 2MB = 6MB/hồ sơ x 50.000 = 300GB/ngày; 5 năm ~ 550TB. OCR/face match CPU-bound, cần worker pool. Manual queue: 20% x 50.000 = 10.000 hồ sơ/ngày, reviewer ~ 5 phút/hồ sơ -> cần ~ 40 reviewer.` },
+    { name: 'API & data model', minutes: 5, guide: `API: POST /ekyc/sessions, POST /ekyc/sessions/{id}/images, POST /ekyc/sessions/{id}/nfc, GET /ekyc/sessions/{id}/status. State machine: CREATED -> UPLOADED -> PROCESSING -> AUTO_APPROVED / MANUAL_REVIEW / REJECTED. Bảng ekyc_session, image_ref (con trỏ, không lưu bytes trong DB), audit_log. Storage ảnh trong object storage với encryption.` },
+    { name: 'High-level design', minutes: 15, guide: `Vẽ: Client -> API -> Session service -> Object storage (presigned URL). Worker pool: OCR, face match, liveness, NFC verify. Decision engine -> Auto-approve hoặc Manual queue. Reviewer UI. Giải thích vì sao upload trực tiếp vào object storage qua presigned URL để không nghẽn API.` },
+    { name: 'Deep dive', minutes: 15, guide: `Đào sâu: liveness chống spoof (replay attack), NFC chip verify với CA, bảo mật ảnh (encryption at rest, access control, watermark), PII masking trong log, manual review queue priority, retry và idempotency, failure modes (OCR sai, face match false reject, storage down), giám sát (auto-approve rate, manual backlog, false reject rate).` }
+  ],
+  rubric: [
+    'Làm rõ yêu cầu và con số scale, chốt out-of-scope',
+    'Upload qua presigned URL để không nghẽn API',
+    'State machine session rõ ràng với manual review',
+    'OCR + face match + liveness, giải thích từng bước',
+    'NFC chip verify với CA và chống giả mạo',
+    'Lưu ảnh trong object storage mã hoá, DB chỉ lưu con trỏ',
+    'Bảo mật PII: masking, RBAC, audit, retention',
+    'Manual review queue với SLA và priority',
+    'Idempotency và retry cho upload/processing',
+    'Giám sát auto-approve rate, backlog, false reject'
+  ],
+  reference: `**Tóm tắt:** eKYC là bài toán **xử lý ảnh và quyết định rủi ro**. Ba trụ cột: upload qua presigned URL để không nghẽn API, pipeline xử lý bất đồng bộ với state machine rõ ràng, và lưu ảnh mã hoá trong object storage với DB chỉ giữ con trỏ. Không lưu ảnh trong DB.
+
+### Yêu cầu và quy mô
+- 50.000 hồ sơ/ngày, peak upload 20 TPS.
+- Auto-approve < 30s cho 80% hồ sơ; manual review < 24h.
+- Ảnh lưu 5 năm, tuân thủ bảo mật thông tin cá nhân.
+
+### Ước lượng
+- 50.000 x 3 ảnh x 2MB = 300GB/ngày; 5 năm ~ 550TB (có nén và lifecycle).
+- OCR/face match CPU-bound: cần worker pool scale theo queue.
+- Manual queue: 20% x 50.000 = 10.000 hồ sơ/ngày; reviewer ~ 5 phút/hồ sơ -> ~ 40 reviewer full-time.
+
+### State machine session
+~~~text
+CREATED -> UPLOADED -> PROCESSING -> AUTO_APPROVED
+                          |            |
+                          +-> MANUAL_REVIEW -> APPROVED/REJECTED
+                          +-> REJECTED (liveness fail, chip invalid)
+~~~
+Mỗi chuyển trạng thái là conditional update.
+
+### Mô hình dữ liệu
+~~~sql
+CREATE TABLE ekyc_session (
+  id            UUID PRIMARY KEY,
+  customer_id   BIGINT,
+  status        VARCHAR(20) NOT NULL,
+  risk_score    INT,
+  decision      VARCHAR(20),
+  created_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_at    TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE TABLE image_ref (
+  id            UUID PRIMARY KEY,
+  session_id    UUID NOT NULL REFERENCES ekyc_session(id),
+  kind          VARCHAR(20) NOT NULL,   -- CCCD_FRONT, CCCD_BACK, SELFIE
+  storage_key   VARCHAR(255) NOT NULL,
+  checksum      VARCHAR(64) NOT NULL,
+  created_at    TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE TABLE audit_log (
+  id            BIGSERIAL PRIMARY KEY,
+  session_id    UUID NOT NULL,
+  actor         VARCHAR(50) NOT NULL,
+  action        VARCHAR(50) NOT NULL,
+  detail        JSONB,
+  created_at    TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+~~~
+DB chỉ lưu con trỏ (storage_key), không lưu bytes ảnh. Ảnh trong object storage mã hoá at rest.
+
+### Kiến trúc
+~~~text
+Client -> API gateway -> Session service -> Object storage (presigned URL)
+                              |
+                        Processing queue (Kafka)
+                              |
+                        Worker pool: OCR | Face match | Liveness | NFC verify
+                              |
+                        Decision engine -> Auto-approve / Manual queue
+                              |
+                        Reviewer UI
+~~~
+
+~~~seq
+title: Luồng eKYC tự động
+actors: Client | API gateway | Session service | Object storage | Worker pool | Decision engine
+Client -> API gateway: POST /ekyc/sessions
+API gateway -> Session service: tạo session
+Session service -> Object storage: presigned URL
+Session service --> Client: URL upload
+Client -> Object storage: upload ảnh trực tiếp
+Client -> API gateway: POST /sessions/{id}/images (metadata)
+API gateway -> Session service: ghi image_ref
+Session service -> Processing queue: publish event
+Worker pool -> Object storage: đọc ảnh
+Worker pool -> Worker pool: OCR, face match, liveness, NFC
+Worker pool -> Decision engine: kết quả
+Decision engine --> Session service: AUTO_APPROVED / MANUAL_REVIEW / REJECTED
+~~~
+
+### Upload qua presigned URL
+- Client upload trực tiếp vào object storage qua URL có thời hạn, không qua API server.
+- API chỉ nhận metadata (storage_key, checksum) và verify checksum.
+- Giảm tải API và tránh OOM khi upload ảnh lớn.
+
+### Xử lý pipeline
+- Worker pool scale theo queue depth; mỗi bước (OCR, face match, liveness, NFC) là một consumer group.
+- Idempotent theo session_id + step; retry với backoff; DLQ cho lỗi không recoverable.
+- State machine conditional update để tránh race.
+
+### Liveness và chống spoof
+- Liveness: blink, head turn, hoặc challenge-response; chống replay bằng nonce và timestamp.
+- Face match: so embedding selfie với ảnh CCCD; ngưỡng có thể tune, false reject cao thì manual review.
+- NFC: đọc chip CCCD, verify chữ ký với CA; chống thẻ giả.
+
+### Bảo mật ảnh và PII
+- Mã hoá at rest (SSE-KMS), access qua presigned URL thời hạn ngắn.
+- PII masking trong log: không log số CCCD đầy đủ, không log ảnh.
+- RBAC: chỉ reviewer và auditor có quyền xem ảnh; mọi truy cập ghi audit_log.
+- Retention 5 năm rồi xóa tự động (lifecycle policy).
+
+### Manual review queue
+- Priority theo risk_score: high risk trước.
+- SLA 24h; alert khi backlog vượt ngưỡng.
+- Reviewer tools: zoom ảnh, so sánh face match score, xem NFC data, ghi lý do.
+
+### Failure modes
+| Sự cố | Ảnh hưởng | Cách xử lý |
+|---|---|---|
+| OCR sai | Auto-reject sai | Confidence threshold, fallback manual |
+| Face match false reject | Khách bị từ chối oan | Tune ngưỡng, manual review |
+| Object storage down | Upload fail | Retry, presigned URL mới |
+| Worker pool chậm | Auto-approve trễ | Scale worker, alert queue depth |
+| NFC không đọc được | Thiếu dữ liệu | Cho phép upload ảnh thay thế, manual review |
+
+### Giám sát
+- Auto-approve rate, manual backlog, p95 processing time, false reject rate, storage cost, OCR confidence distribution.
+
+> Senior tip: sai lầm phổ biến là lưu ảnh CCCD trong database hoặc log — chỉ cần một log statement in ra base64 ảnh là rủi ro bảo mật nghiêm trọng. Hãy lưu ảnh trong object storage mã hoá, DB chỉ giữ con trỏ, và audit mọi truy cập. Và luôn có manual review queue: auto-approve 100% là cách nhanh nhất để bị gian lận.`,
+  followups: [
+    'Nếu NFC chip bị hỏng trên 30% thiết bị, bạn điều chỉnh luồng thế nào?',
+    'Manual review backlog tăng gấp 3 trong lễ: bạn tự động hoá triage ra sao?',
+    'Cơ quan chức năng yêu cầu trích xuất toàn bộ ảnh của một khách trong 5 năm: bạn xử lý thế nào?',
+    'Thiết kế chống replay attack cho liveness ra sao?'
+  ],
+  related: ['design-005', 'banking-008']
 }
 ];
