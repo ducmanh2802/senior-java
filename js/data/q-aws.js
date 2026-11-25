@@ -6121,4 +6121,455 @@ Một hệ thống Java trên AWS hoá đơn tháng nhảy từ 18.000 lên 23.4
   ],
   tags: ['AWS', 'cost', 'rightsizing', 'Savings Plans', 'NAT', 'CloudWatch Logs', 'S3', 'senior']
 },
+{
+  id: 'aws-090',
+  topic: 'aws',
+  level: 'senior',
+  q: 'Team 6 người, không có SRE chuyên trách, cần chạy API Spring Boot 24/7 trên AWS. So sánh ECS Fargate, EKS và Lambda về chi phí hàng tháng và công sức vận hành, chọn cái nào?',
+  a: `**Tóm tắt:** Với team 6 người không có SRE chuyên trách, ECS Fargate là điểm cân bằng tốt nhất cho API Spring Boot chạy 24/7: không quản node, chi phí dự đoán được, deploy đơn giản. EKS đắt hơn nhiều — ngoài control plane và node, đội phải bỏ công sức nâng cấp cluster, sửa add-on và ingress; chi phí ẩn lớn nhất là con người, không phải hoá đơn AWS. Lambda rẻ khi tải thấp và thất thường, nhưng ở traffic ổn định cao compute Lambda có thể lên hàng nghìn USD/tháng, thêm vào mỗi môi trường Lambda chỉ xử lý một request nên connection pool tới database dễ bùng nổ.
+
+### Hiểu nhanh
+Hãy tưởng tượng team 6 người mở quán ăn giao món ăn (API Spring Boot). **ECS Fargate** giống thuê bếp hiện đại sẵn có: bạn mang món ăn (Docker image) tới, bếp tự hoạt động, không cần sửa chảo nồi. **EKS** giống tự xây nhà bếp theo tiêu chuẩn quốc tế (Kubernetes): mạnh cho chuỗi quán lớn, nhưng cần người chuyên giữ nhà bếp, nếu không máy hỏng là đội mình sửa. **Lambda** giống gọi đầu bếp đến nhà chỉ khi có đơn hàng: không đơn thì không tiền, nhưng mỗi lần đầu bếp đến phải chuẩn bị bếp từ đầu (cold start), và đầu bếp chỉ nấu một món một lúc (một môi trường xử lý một request).
+
+### Thuật ngữ (giải thích từ gốc)
+- **ECS Fargate**: dịch vụ chạy container của AWS, bạn không quản máy chủ, trả tiền theo vCPU và GB RAM mà task sử dụng.
+- **Task**: một bản chạy của container, tương tự pod trong Kubernetes.
+- **EKS**: Kubernetes managed của AWS, AWS quản "bộ não" (control plane), bạn quản node hoặc dùng Fargate node.
+- **Control plane**: thành phần điều khiển Kubernetes (API server, lập lịch container, lưu trạng thái), AWS tính phí khoảng 0,10 USD/giờ cho mỗi cluster EKS.
+- **Lambda**: hàm chạy theo sự kiện, mỗi môi trường chỉ xử lý một request một lúc, trả tiền theo số request × thời gian × bộ nhớ.
+- **Cold start**: lần đầu gọi Lambda phải tạo môi trường mới, khởi động JVM, nên chậm hơn các lần sau.
+- **Concurrency**: số lượng request đang xử lý đồng thời; Lambda mặc định giới hạn khoảng 1.000 môi trường mỗi region.
+
+### Cơ chế từng bước: cùng một API, ba cách chạy
+1. **Đóng gói**: Fargate và EKS nhận Docker image từ ECR; Lambda nhận JAR/zip hoặc container image. Vì sao: cách đóng gói quyết định pipeline CI/CD bạn phải dựng.
+2. **Nơi chạy**: Fargate chạy trên máy AWS quản lý (bạn không nhìn thấy máy); EKS chạy pod trên node (máy EC2 của bạn hoặc Fargate node); Lambda chạy trong microVM ngắn hạn tạo khi có sự kiện. Vì sao: ai giữ máy thì người đó vá OS và trực khi máy hỏng.
+3. **Nhận traffic**: Fargate/EKS đứng sau ALB và lắng nghe cổng liên tục; Lambda chỉ chạy khi có sự kiện từ API Gateway, ALB, SQS. Vì sao: đây là lý do Lambda không tốn tiền khi không có request.
+4. **Scale**: Fargate/EKS cần vài chục giây đến vài phút để bật thêm task và JVM khởi tạo; Lambda tạo môi trường mới trong vài giây nhưng mỗi môi trường chỉ xử lý một request một thời điểm. Vì sao: Lambda scale nhanh nhưng dễ gây "bùng nổ kết nối" tới database.
+5. **Tính tiền**: Fargate/EKS tính theo thời gian task chạy dù không có request; Lambda tính theo request × thời gian × bộ nhớ. Vì sao: tải thấp hoặc thất thường thì Lambda rẻ, tải cao và ổn định thì container thường rẻ hơn.
+
+### Ước lượng chi phí hàng tháng (để so sánh bậc độ lớn, không phải bảng giá chính xác; kiểm tra AWS Pricing Calculator trước khi chốt)
+Giả sử API Spring Boot, traffic 800 request/giây đều cả ngày (khoảng 2 tỷ request/tháng), mỗi request 200 ms, một task 0,5 vCPU/1 GB xử lý khoảng 100 request/giây:
+- **ECS Fargate**: 8-10 task (0,5 vCPU/1 GB) chạy 24/7 + ALB + CloudWatch Logs → khoảng 400-600 USD/tháng compute, cộng ALB khoảng 20-30 USD, NAT và điểm chi phí ẩn khác tùy thiết kế.
+- **EKS**: control plane 0,10 USD/giờ (khoảng 73 USD/tháng) + node group (ví dụ 3 node m6i.large) khoảng 250-350 USD/tháng + add-on (ingress, metrics server) + công sức người vận hành (nâng cấp cluster, sửa add-on, ingress) thường là khoản lớn nhất.
+- **Lambda**: 2 tỷ request × 0,2 giây × 1 GB = 400 triệu GB-giây → khoảng 6.000 USD/tháng chỉ compute Lambda, cộng API Gateway, và phải dùng RDS Proxy để pool connection vì 800 request đồng thời có thể tạo 800 kết nối tới RDS.
+
+Số trên cho thấy: ở traffic ổn định cao, Lambda thành đắt nhất và khó vận hành nhất; Fargate là điểm cân bằng; EKS đắt nhất khi không có nhu cầu thực sự về Kubernetes.
+
+### Bảng so sánh thực dụng cho team 6 người
+| Tiêu chí | ECS Fargate | EKS | Lambda |
+|---|---|---|---|
+| Quản lý node | Không | Bạn quản node (hoặc trả thêm cho EKS Fargate node) | Không |
+| Chi phí control plane | Không có | khoảng 73 USD/tháng + node | Không có |
+| Cold start | Thấp | Thấp | Có, tệ hơn với Java |
+| Scale | Phút | Phút | Giây |
+| Connection pool tới RDS | Task chia sẻ pool, hợp lý | Tương tự Fargate | Mỗi môi trường một pool, dễ bùng nổ |
+| Workload dài hơn 15 phút | Tốt | Tốt | Không (giới hạn 15 phút) |
+| Công sức vận hành | Thấp | Cao (cần người trực K8s) | Trung bình (quản function, alias, version) |
+| Đối với team 6 người không SRE | Phù hợp nhất | Thường quá phức tạp | Chỉ cho tác vụ ngắn event-driven |
+
+### Cách quyết định
+1. API Spring Boot chạy 24/7, traffic ổn định, team không có SRE: ECS Fargate là mặc định.
+2. Công ty đã có nền tảng Kubernetes, nhiều team, cần operator/service mesh: EKS, chỉ khi có người trực cluster.
+3. Tác vụ ngắn (webhook, xử lý ảnh, cron nhỏ) hoặc tải rất thất thường: Lambda. Với Java, bật SnapStart, đo Init Duration trước khi quyết định.
+4. Không bao giờ chọn EKS chỉ vì "công ty lớn đều dùng": chi phí ẩn của Kubernetes là con người, không phải hoá đơn AWS.
+
+### Lỗi hay gặp
+- **Đặt memory task Fargate quá cao theo cảm tính.** Triệu chứng: trả tiền vô ích, vì CPU và memory của task quyết định cả giá lẫn hiệu năng. Cách tránh: theo dõi memory utilization thực tế vài tuần, để heap khoảng 75% memory của task.
+- **Quên rằng mỗi task Fargate mới mở thêm kết nối tới RDS.** Triệu chứng: scale task từ 2 lên 20 làm cạn max_connections, DB từ chối kết nối. Cách tránh: HikariCP pool nhỏ (5-10), dùng RDS Proxy, hoặc hạn chế desired count theo khả năng của DB.
+- **Kéo Docker image và đẩy log qua NAT Gateway.** Triệu chứng: hoá đơn NAT Gateway tăng vọt mỗi lần deploy. Cách tránh: VPC endpoint cho ECR, CloudWatch Logs, Secrets Manager.
+- **Chọn EKS mà team 6 người không có người trực K8s.** Triệu chứng: nửa thời gian đội dành cho nâng cấp cluster, sửa add-on. Cách tránh: Fargate trước, EKS sau khi có nhu cầu thật.
+
+### Trả lời mẫu khi phỏng vấn
+"Với team 6 người không có SRE, tôi chọn ECS Fargate làm mặc định cho API Spring Boot chạy 24/7: không quản node, chi phí compute dự đoán được (task 0,5-1 vCPU chạy liên tục), deploy qua pipeline đơn giản. EKS đắt hơn nhiều: ngoài control plane khoảng 73 USD/tháng và node, đội phải bỏ công sức nâng cấp cluster, sửa ingress, add-on — khoản lớn nhất là con người, không phải hoá đơn AWS. Lambda rẻ khi tải thấp/thất thường, nhưng ở traffic 800 request/giây ổn định, compute Lambda có thể lên hàng nghìn USD/tháng, thêm vào mỗi môi trường Lambda chỉ xử lý một request nên connection pool tới RDS dễ bùng nổ, phải dùng RDS Proxy. Tôi chỉ chọn Lambda cho webhook, xử lý file, cron nhỏ, và luôn đo Init Duration. Kinh nghiệm: không bao giờ chọn EKS chỉ vì xu hướng; hãy tính cả hoá đơn AWS lẫn công sức đội trước khi quyết định."
+
+### Ví dụ đời thực
+Một startup 6 người vận hành API đặt hàng Spring Boot trên EKS với 3 node m6i.large, không có SRE chuyên trách. Triệu chứng: sau 3 tháng, hoá đơn AWS khoảng 1.200 USD/tháng và đội dành 40% thời gian nâng cấp cluster (1.28 → 1.29 → 1.30), sửa Ingress-NGINX, metrics-server lỗi; phát triển tính năng mới bị chậm vì mỗi deploy cần viết YAML Kubernetes. Đội tra Cost Explorer: EKS control plane + node khoảng 400 USD/tháng, phần lớn chi phí ẩn là công sức phát triển. Nguyên gốc: chọn EKS theo xu hướng "công ty lớn dùng K8s" mà không có nhu cầu CRD/operator/service mesh và không có người trực platform. Xử lý: đóng gói 6 service thành Docker image, chạy trên ECS Fargate (task 0,5 vCPU/1 GB, 2-4 task theo traffic), ALB trước từng service, health check readiness, deploy qua GitHub Actions + AWS CLI. Kết quả: hoá đơn compute giảm xuống khoảng 450-600 USD/tháng, deploy từ mấy giờ xuống 15 phút, đội không còn phải nâng cấp cluster, và chỉ dùng Lambda cho webhook thanh toán (tải thất thường, ít request).
+> Senior tip: chi phí ẩn lớn nhất của EKS không phải control plane 73 USD/tháng, mà là thời gian của các bạn phát triển bị kéo ra để sửa cluster. Với team dưới 20 người, hãy để Fargate chạy API thông thường, giữ EKS cho khi thật sự cần Kubernetes.`,
+  follow: [
+    'Vì sao Lambda có thể đắt hơn Fargate ở traffic ổn định cao?',
+    'Khi scale Fargate task, connection pool tới RDS nên đặt bao nhiêu?',
+    'EKS mới đáng chọn ở điều kiện nào cho một team nhỏ?'
+  ],
+  tags: ['ECS', 'Fargate', 'EKS', 'Lambda', 'chi phí', 'vận hành']
+},
+{
+  id: 'aws-091',
+  topic: 'aws',
+  level: 'senior',
+  q: 'Thiết kế bảng giao dịch thanh toán trên DynamoDB: chọn partition key như thế nào để tránh hot partition khi viết hàng nghìn giao dịch mỗi giây, và GSI giúp truy vấn theo merchant hay trạng thái ra sao?',
+  a: `**Tóm tắt:** DynamoDB băm partition key để quyết định giao dịch nằm ở phân vùng vật lý nào; mỗi phân vùng có trần khoảng 1.000 WCU ghi mỗi giây. Nếu nhiều giao dịch rơi vào cùng một phân vùng (ví dụ toàn bộ giao dịch hôm nay dùng cùng một khóa ngày), phân vùng đó bị nóng và bị throttle dù bảng còn sức. Phải chọn khóa phân bố đều (mã giao dịch, orderId), dùng timestamp làm sort key, và thêm GSI khi cần truy vấn theo merchant hoặc trạng thái — nhưng GSI cũng có thể nóng nếu khóa của nó ít giá trị khác nhau, thậm chí gây throttle ngược bảng chính.
+
+### Hiểu nhanh
+DynamoDB giống một bưu điện có hàng nghìn ô thư. **Partition key** giống mã bưu chính: máy tự băm mã đó để quyết định thư vào ô nào. Nếu ai cũng gửi thư đến cùng một mã (ví dụ ngày hôm nay), một ô bị nghẽn trong khi các ô khác trống: đó là **hot partition**. **Sort key** giống sắp xếp thư trong cùng một ô theo giờ, nên lấy "giao dịch của đơn hàng 42 vào tháng 3" rất nhanh. **GSI** giống cuốn danh bạ thứ hai sắp xếp theo tiêu chí khác (mã merchant, trạng thái), được nhân viên sao chép sau mỗi lần có thư mới, nên đôi khi chậm một nhịp.
+
+### Thuật ngữ (giải thích từ gốc)
+- **Partition (vật lý)**: đơn vị lưu trữ và throughput bên trong DynamoDB, khoảng 10 GB, 3.000 RCU đọc và 1.000 WCU ghi mỗi giây.
+- **WCU**: 1 lần ghi một item tối đa 1 KB mỗi giây.
+- **RCU**: 1 lần đọc strongly consistent một item tối đa 4 KB mỗi giây.
+- **Cardinality**: số giá trị khác nhau của một thuộc tính; cardinality cao thì dữ liệu trải đều hơn.
+- **Throttling**: DynamoDB từ chối request (ProvisionedThroughputExceededException) khi vượt giới hạn phân vùng; SDK sẽ retry kèm backoff.
+- **Adaptive capacity**: cơ chế tự dồn sức cho phân vùng nóng và tách phân vùng khi cần, nhưng không cứu được một khóa đơn lẻ có traffic cực lớn.
+- **GSI (Global Secondary Index)**: chỉ mục phụ có khóa phân vùng và khóa sắp xếp riêng, cập nhật bất đồng bộ, có sức riêng.
+- **Idempotency key**: khóa do khách hàng sinh để hệ thống nhận biết yêu cầu lặp và không xử lý hai lần, quan trọng cho thanh toán.
+
+### Cơ chế từng bước: ghi một giao dịch thanh toán
+1. App gọi PutItem với {{pk=TXN#a1b2c3d4}}, {{sk=PAY#2026-05-20T14:05:00Z}}. DynamoDB băm {{pk}} để chọn phân vùng. Vì sao băm: các key gần nhau (TXN#...1, TXN#...2) vẫn rơi vào phân vùng khác nhau, trải đều tải.
+2. Giao dịch được ghi trong phân vùng và sắp theo {{sk}}. Query "giao dịch của đơn hàng X trong khoảng thời gian" chỉ cần đọc một vùng liên tục, không quét bảng.
+3. Nếu giao dịch có thuộc tính là khóa của GSI (ví dụ {{merchantId}}), DynamoDB sao chép **bất đồng bộ** sang GSI và tốn WCU của GSI. Vì sao bất đồng bộ: để ghi vào bảng chính không phải chờ chỉ mục.
+4. Khi phân vùng vượt dung lượng hoặc nóng kéo dài, DynamoDB tự tách phân vùng. Nhưng một giá trị partition key cực nóng vẫn dễ chạm trần phân vùng, vì mọi request của khóa đó dồn về cùng một nơi.
+
+### Thiết kế khóa cho bảng giao dịch
+- **Partition key**: dùng mã giao dịch hoặc orderId (UUID, cardinality cao) — tránh ngày/tháng/trạng thái làm partition key.
+- **Sort key**: dùng timestamp (PAY#2026-05-20T14:05:00Z#txnId) để truy vấn các giao dịch của cùng một đơn hàng theo thời gian.
+- **Nếu buộc dùng merchantId làm partition key** (một merchant lớn có quá nhiều giao dịch): thêm **shard suffix** (merchantId#0 đến merchantId#9), ghi tuần tự vào các phân vùng shard, đọc phải gọi 10 Query rồi gộp (scatter-gather).
+- **GSI**: tạo GSI có pk={{merchantId}}, sk={{timestamp}} để lấy "giao dịch của merchant theo thời gian"; tạo GSI khác có pk={{status}} (PENDING/SUCCESS/FAILED) nếu cần xem giao dịch đang xử lý — nhưng lưu ý GSI key ít giá trị khác nhau (status chỉ có vài giá trị) dễ tạo hot partition trên GSI, thậm chí throttle ngược bảng chính.
+
+### Ước lượng sức và ví dụ số liệu
+Bảng có 10 phân vùng, tải ghi 5.000 WCU/giây cao điểm:
+- Khóa tốt (txnId): ~500 WCU mỗi phân vùng → OK
+- Khóa tệ (ngày = hôm nay): 5.000 WCU dồn 1 phân vùng, trần 1.000 → phần lớn request bị throttle dù bảng còn sức
+- MerchantId shard suffix (merchant#0..merchant#9): ~500 WCU mỗi phân vùng → OK, đổi lại đọc phải gọi 10 Query
+
+~~~text
+Khóa tốt:                      Txn#a1 -> P3, Txn#b2 -> P7, Txn#c3 -> P1  (trải đều)
+Khóa tệ (ngày hôm nay):        Txn#2026-05-20#1 -> P4, Txn#...#2 -> P4  (cùng P4, nóng)
+~~~
+
+### Java: đọc giao dịch của đơn hàng (≤ 30 dòng)
+~~~java
+QueryRequest req = QueryRequest.builder()
+    .tableName("payments")
+    .keyConditionExpression("pk = :pk AND begins_with(sk, :prefix)")
+    .expressionAttributeValues(Map.of(
+        ":pk", AttributeValue.fromS("ORDER#42"),
+        ":prefix", AttributeValue.fromS("PAY#")))
+    .build();
+var result = ddb.query(req);
+result.items().forEach(item -> System.out.println(item.get("sk").s()));
+~~~
+
+### Lỗi hay gặp
+- **Dùng ngày/tháng làm partition key.** Triệu chứng: mọi ghi dồn vào phân vùng của thời điểm hiện tại, bị throttle dù bảng còn WCU. Cách tránh: partition key là mã giao dịch, timestamp làm sort key.
+- **GSI thiếu sức.** Triệu chứng: ghi vào bảng chính bị throttle dù bảng còn WCU, vì GSI bị throttle ngược về bảng chính. Cách tránh: cấp đủ WCU cho GSI (hoặc dùng on-demand), chọn khóa GSI phân bố đều, projection gọn.
+- **Đọc GSI ngay sau khi ghi.** Triệu chứng: vừa tạo giao dịch xong gọi API danh sách lại không thấy. Cách tránh: GSI chỉ hỗ trợ eventually consistent; luồng đọc-sau-ghi đọc từ bảng chính bằng khóa.
+- **Quên idempotency key cho thanh toán.** Triệu chứng: khách gửi lại yêu cầu vì mạng chậm, hệ thống xử lý hai lần và trừ tiền hai lần. Cách tránh: sinh idempotency key ở khách, lưu trong bảng hoặc kiểm tra trước khi ghi.
+
+### Trả lời mẫu khi phỏng vấn
+"DynamoDB băm partition key để quyết định giao dịch nằm ở phân vùng vật lý nào, mỗi phân vùng trần khoảng 1.000 WCU ghi mỗi giây. Với bảng thanh toán, tôi chọn partition key là mã giao dịch (txnId hoặc orderId) vì cardinality cao, timestamp làm sort key để truy vấn theo thời gian trong một đơn hàng. Nếu merchant lớn ghi quá nhiều, tôi thêm shard suffix vào merchantId và đọc scatter-gather. GSI dùng cho truy vấn theo merchant hoặc trạng thái, nhưng lưu ý GSI key ít giá trị khác nhau (ví dụ status) dễ tạo hot partition và thậm chí throttle ngược bảng chính, nên cấp đủ sức và projection gọn. Vì thanh toán không được xử lý hai lần, tôi bắt buộc idempotency key trên mỗi yêu cầu. Kinh nghiệm: thiết kế DynamoDB bắt đầu bằng danh sách truy vấn chính kèm tần suất, không bắt đầu bằng ERD."
+
+### Ví dụ đời thực
+Hệ thống thanh toán của một sàn thương mại điện tử dùng pk = ngày tạo (2026-05-20) để "dễ lấy giao dịch theo ngày". Triệu chứng: vào giờ cao điểm 5.000 giao dịch/giây, một phân vùng chạm trần 1.000 WCU, khách thấy lỗi thanh toán dù bảng tổng thể còn sức. Đội tra CloudWatch: một phân vùng gần 100% consumed capacity, các phân vùng khác gần không dùng. Nguyên gốc: partition key ít giá trị khác nhau, tất cả giao dịch cùng ngày băm về cùng phân vùng — hot partition. Xử lý: đổi pk = txnId (UUID), sk = PAY#timestamp#txnId; nếu cần lấy giao dịch của merchant trong ngày, thêm GSI có pk là merchantId, sk là timestamp, projection gọn (mã giao dịch, số tiền, trạng thái). Kết quả: WCU trải đều, throttling biến mất, và lấy giao dịch của đơn hàng dùng một Query pk = ORDER#42, begins_with(sk, "PAY#") thay vì quét bảng.
+> Senior tip: thiết kế DynamoDB bắt đầu bằng danh sách truy vấn chính kèm tần suất, không bắt đầu bằng ERD. Nếu bạn không liệt kê được 10 truy vấn chính, chưa nên chọn DynamoDB.`,
+  follow: [
+    'Vì sao dùng ngày/tháng làm partition key thường gây hot partition?',
+    'GSI eventual consistency ảnh hưởng gì đến luồng đọc-sau-ghi thanh toán?',
+    'Khi nào nên dùng shard suffix và trade-off khi đọc là gì?'
+  ],
+  tags: ['DynamoDB', 'partition key', 'hot partition', 'GSI', 'thanh toán']
+},
+{
+  id: 'aws-092',
+  topic: 'aws',
+  level: 'lead',
+  q: '(Lead) Hệ thống thanh toán cần chạy active-passive hai vùng: vùng chính xử lý giao dịch, vùng phụ chỉ nhàn khi vùng chính hỏng. Thiết kế RPO/RTO, chi phí vùng phụ và quy trình chuyển giao (failover) ra sao?',
+  a: `**Tóm tắt:** Active-passive nghĩa là chỉ một vùng ghi thanh toán tại một thời điểm, vùng phụ giữ bản sao dữ liệu sẵn sàng (warm standby) và nhận traffic khi vùng chính hỏng. Với thanh toán, RPO gần 0 (không chấp nhận mất giao dịch) nên dùng Aurora Global Database sao chép ở tầng storage, lag thường dưới 1 giây; RTO tính bằng vài phút đến mười phút do phải promote database, scale ứng dụng và chuyển DNS. Chi phí vùng phụ không rẻ: phải trả cho instance standby, lưu trữ sao chép và data transfer liên vùng, dù ít nhận traffic. Vì thanh toán không chấp nhận giao dịch trùng, mọi yêu cầu phải có idempotency key và vùng phụ chỉ được ghi khi đã xác nhận vùng chính đã chết.
+
+### Hiểu nhanh
+Hệ thống thanh toán giống cổng vé của một sân bay lớn. **Vùng chính** là khu check-in đang mở, **vùng phụ** là khu check-in dự phòng đã sắp xếp bàn, máy in sẵn nhưng chỉ mở khi khu chính cháy hoặc mất điện. **RPO** là "chấp nhận mất bao nhiêu vé đã in" — với thanh toán là gần không (mất giao dịch là mất tiền và vi phạm quy định). **RTO** là "bao lâu thì khu dự phòng mở cửa được". Active-passive khác active-active ở chỗ chỉ một khu vực xử lý giao dịch tại một thời điểm, tránh được vấn đề hai vùng cùng trừ tiền một đơn hàng (last-writer-wins không dùng được với tiền).
+
+### Thuật ngữ (giải thích từ gốc)
+- **Active-passive**: một vùng xử lý traffic, vùng khác giữ bản sao và nhận traffic chỉ khi vùng chính hỏng.
+- **Warm standby**: bản thu nhỏ của hệ thống chạy liên tục ở vùng phụ, scale lên khi cần.
+- **RPO (Recovery Point Objective)**: dữ liệu tối đa chấp nhận mất. Ví dụ RPO 1 giây = chấp nhận mất tối đa 1 giây giao dịch cuối.
+- **RTO (Recovery Time Objective)**: thời gian tối đa để dịch vụ chạy lại. Ví dụ RTO 15 phút.
+- **Aurora Global Database**: sao chép storage của Aurora sang vùng khác, lag thường dưới 1 giây, có thể promote vùng phụ thành writer.
+- **Failover**: chuyển vai trò từ vùng chính sang vùng phụ.
+- **Idempotency key**: khóa duy nhất cho mỗi yêu cầu thanh toán, dùng để không trừ tiền hai lần nếu yêu cầu bị gửi lại.
+- **Route 53 health check + failover routing**: Route 53 kiểm tra sức khỏe endpoint và tự chuyển bản ghi DNS sang vùng phụ khi vùng chính lỗi.
+
+### Cơ chế từng bước: failover vùng thanh toán
+1. **Phát hiện**: CloudWatch alarm và Route 53 health check thấy vùng chính lỗi liên tục (ví dụ 3 lần liên tiếp, mỗi lần 30 giây). Không chuyển ngay để tránh failover do lỗi thoáng qua.
+2. **Quyết định**: người trực xác nhận theo runbook, nhiều tổ chức yêu cầu người có thẩm quyền đồng ý vì failover thanh toán có chi phí cao.
+3. **Promote database**: Aurora Global Database chuyển cluster ở vùng phụ thành writer. Nếu vùng chính còn sống thì dùng switchover (không mất dữ liệu); nếu đã chết thì failover, mất phần giao dịch chưa kịp sao chép, thường khoảng 1 giây (RPO thực tế).
+4. **Scale ứng dụng**: tăng số task ECS ở vùng phụ từ mức thu nhỏ (ví dụ 2 task) lên đủ tải (ví dụ 20 task). Phần này tốn vài phút do phải khởi động task và khởi động JVM/Spring context.
+5. **Chuyển traffic**: Route 53 đổi bản ghi API sang vùng phụ; khách nhận được sau khi hết DNS TTL (ví dụ 60 giây).
+6. **Kiểm tra và thông báo**, sau đó lập kế hoạch chuyển ngược (failback) có kiểm soát khi vùng chính khôi phục.
+
+~~~text
+t=0      Vùng chính lỗi
+t=1.5'   Alarm + health check fail 3 lần
+t=5'     Người trực xác nhận, mở runbook
+t=6'     Promote Aurora ở vùng phụ (mất ~1 giây giao dịch cuối = RPO)
+t=9'     ECS scale 2 -> 20 task
+t=10'    Route 53 đổi bản ghi, TTL 60 giây
+t=11'    Traffic về vùng phụ         => RTO thực tế khoảng 11-15 phút
+~~~
+
+### RPO và RTO cho hệ thống thanh toán
+- **RPO**: Aurora Global Database storage replication có lag thường dưới 1 giây, nên RPO gần 0 — chấp nhận được cho thanh toán. Không dùng RDS cross-region read replica cho thanh toán vì lag vài giây đến phút và promote thủ công.
+- **RTO**: phần lớn thời gian là scale ứng dụng và chờ DNS lan truyền, thường 10-20 phút. Để rút RTO, giữ warm standby với số task đủ lớn và TTL DNS thấp (60 giây) trước sự cố.
+- Hai con số này do business ký, kỹ thuật chỉ nói chi phí để đạt.
+
+### Chi phí vùng phụ (không rẻ)
+Vùng phụ dù ít nhận traffic vẫn phải trả:
+- **Aurora storage**: lưu bản sao dữ liệu ở vùng phụ, tính theo GB-tháng.
+- **Instance standby**: ít nhất 1-2 instance Aurora chạy 24/7 để promote nhanh (hoặc dùng serverless v2 với min ACU > 0).
+- **Data transfer liên vùng**: Aurora Global Database sao chép storage liên vùng, tính theo GB (khoảng 0,2 USD/GB, kiểm tra bảng giá hiện hành).
+- **ECS task standby**: 2-4 task Fargate chạy chờ, tính theo vCPU-GB-giờ.
+- **CloudWatch log và alarm**: nhỏ nhưng không thể bỏ qua.
+
+Ước lượng: hệ thống thanh toán trung bình, vùng phụ warm standby có thể tốn 30-50% chi phí so với một vùng đơn, tùy mức sẵn sàng. Đây là đánh đổi: chi phí cao hơn để đổi lấy khả năng phục hồi dưới 15 phút khi mất cả một vùng.
+
+### Lỗi hay gặp
+- **Chỉ có backup, chưa restore thử.** Triệu chứng: đến lúc cần mới biết restore mất 6 giờ thay vì 15 phút. Cách tránh: diễn thực failover hằng quý và đo RTO thật.
+- **DNS TTL dài.** Triệu chứng: vùng phụ đã sẵn sàng nhưng khách vẫn gọi vùng chính thêm hàng chục phút. Cách tránh: đặt TTL thấp (30-60 giây) cho bản ghi failover.
+- **Hai vùng cùng ghi thanh toán (active-active không kiểm soát).** Triệu chứng: giao dịch bị trừ hai lần, dữ liệu trôi lệch, last-writer-wins ghi đè giao dịch kém. Cách tránh: chỉ một vùng ghi tại một thời điểm, vùng phụ chỉ ghi sau khi xác nhận vùng chính đã chết.
+- **Quên idempotency key.** Triệu chứng: khách gửi lại yêu cầu thanh toán do mạng chậm, hệ thống xử lý hai lần và trừ tiền hai lần. Cách tránh: sinh idempotency key ở khách, kiểm tra trước khi ghi, vùng phụ cũng phải theo quy tắc này.
+- **Cấu hình vùng phụ lệch.** Triệu chứng: khi failover mới phát hiện thiếu IAM role, secret, security group, hoặc quota chưa tăng. Cách tránh: dựng vùng phụ hoàn toàn bằng Infrastructure as Code, kiểm tra quota định kỳ.
+
+### Trả lời mẫu khi phỏng vấn
+"Với hệ thống thanh toán, tôi thiết kế active-passive: chỉ vùng chính ghi giao dịch, vùng phụ giữ warm standby (Aurora Global Database + ít nhất một số task ECS chờ) và nhận traffic khi vùng chính hỏng. RPO gần 0 nhờ storage replication của Aurora Global Database (lag thường dưới 1 giây), chấp nhận được cho tiền. RTO tính bằng vài phút đến mười phút: promote database, scale ứng dụng, chuyển Route 53 với TTL 60 giây. Chi phí vùng phụ không nhỏ: trả cho storage sao chép, instance standby, data transfer liên vùng và task chờ, có thể khoảng 30-50% chi phí một vùng — đây là đánh đổi: chi phí cao hơn để đổi lấy khả năng phục hồi dưới 15 phút khi mất cả một vùng. Vì thanh toán không chấp nhận giao dịch trùng, mọi yêu cầu có idempotency key và vùng phụ chỉ ghi sau khi xác nhận vùng chính đã chết. Tôi diễn thực failover hằng quý để biết RTO thật, không chỉ RTO trên giấy."
+
+### Ví dụ đời thực
+Một cổng thanh toán số xử lý khoảng 2.000 giao dịch/giây, dữ liệu trong Aurora PostgreSQL. Ban đầu team chỉ có snapshot RDS mỗi 6 giờ sang vùng phụ (RPO 6 giờ, không đạt yêu cầu quy định dưới 1 phút). Sau sự cố vùng chính mất 2 giờ, team mất thêm 4 giờ để dựng vùng phụ bằng tay (thiếu IAM role, secret, security group). Nguyên gốc: không có warm standby, không diễn thực, cấu hình vùng phụ lệch. Xử lý: dùng Aurora Global Database (RPO dưới 1 giây), giữ 4 task Fargate warm standby ở vùng phụ, Route 53 failover TTL 60 giây, tất cả cấu hình bằng Terraform, idempotency key trên mọi yêu cầu thanh toán. Diễn thực failover hằng quý: RTO thực tế 12 phút (phần lớn là scale task và chờ DNS). Chi phí vùng phụ ước 40% chi phí một vùng, được ban lãnh đạo duyệt vì rủi ro danh tiếng và pháp lý của việc ngừng thanh toán.
+> Senior tip: với thanh toán, RTO thực sự quan trọng nhất không phải thời gian promote database trên console, mà là thời gian từ lúc sự cố đến lúc giao dịch mới được ghi thành công ở vùng phụ — hãy đo con số đó và đưa vào runbook.`,
+  follow: [
+    'Vì sao không dùng active-active cho hệ thống thanh toán hai vùng?',
+    'Aurora Global Database cho RPO bao nhiêu và failover gồm những bước nào?',
+    'Idempotency key trong thanh toán cross-region được thiết kế thế nào?'
+  ],
+  tags: ['multi-region', 'active-passive', 'RPO', 'RTO', 'Aurora Global Database', 'thanh toán', 'lead'],
+  refs: [
+    { type: 'doc', title: 'Amazon Aurora Global Database', url: 'https://aws.amazon.com/rds/aurora/' },
+    { type: 'doc', title: 'AWS Pricing Calculator', url: 'https://calculator.aws/' }
+  ]
+  },
+{
+  id: 'aws-093',
+  topic: 'aws',
+  level: 'senior',
+  q: 'Hệ thống Spring Boot mới của team 6 người gồm API thanh toán chạy 24/7 (tải ổn định) và job đối soát giao dịch chạy 1–2 giờ mỗi đêm. Nên chạy toàn bộ trên ECS Fargate, hay tách job sang Lambda hay EKS? So sánh chi phí thật và gánh nặng vận hành ra sao?',
+  a: `**Tóm tắt:** Với team 6 người không có SRE Kubernetes, mặc định chạy cả API và job trên ECS Fargate. Lambda không chạy được job trên 15 phút một lần, EKS đắt về thời gian con người; chi phí lớn nhất là vận hành, không phải hoá đơn AWS.
+
+### Hiểu nhanh
+Hệ thống giống một siêu thị: **API** là quầy thanh toán mở 24/7, phải luôn có nhân viên sẵn sàng; **job đối soát** là việc kiểm kê cuối ngày, chạy một đến hai giờ rồi thôi. **ECS Fargate** giống thuê nhân viên theo ca: có khách thì phục vụ, ca kết thúc thì nghỉ, bạn không quản nhà cửa. **Lambda** giống gọi nhân viên tạm theo từng cơn: rẻ khi ít việc, nhưng mỗi ca tối đa 15 phút, gọi lại phải huấn luyện từ đầu (cold start). **EKS** giống tự xây hệ thống quản lý siêu thị toàn quốc: mạnh khi có nhiều chi nhánh, nhưng cần chuyên viên dedicated.
+
+### Thuật ngữ (giải thích từ gốc)
+- **ECS Fargate task**: một instance container chạy trên máy AWS quản lý, bạn khai báo CPU, memory, image; không sở hữu hay phải vá OS.
+- **Task definition**: bản khai báo task (image, CPU, memory, biến môi trường, IAM task role).
+- **Lambda 15-minute limit**: một lần gọi Lambda tối đa chạy 15 phút, sau đó bị dừng.
+- **Cold start (Lambda/Java)**: lần gọi đầu phải tạo môi trường, nạp JVM và khởi động Spring context, thường vài giây.
+- **HikariCP**: connection pool chuẩn của Spring Boot, mỗi task giữ một tập kết nối cố định tới database.
+- **max_connections**: số kết nối tối đa PostgreSQL/Aurora cho phép; vượt thì từ chối kết nối mới.
+- **Control plane EKS**: "bộ não" Kubernetes do AWS vận hành, phí khoảng 73 USD/tháng mỗi cluster, vẫn phải quản node, RBAC, ingress.
+
+### Cơ chế từng bước: API 24/7 và job đêm
+1. **API**: Client gọi qua ALB tới task Fargate luôn ấm (2–4 task), giữ connection pool HikariCP ổn định, xử lý request liên tục. Vì sao: traffic ổn định, task chạy 24/7 rẻ hơn và không có cold start.
+2. **Job đêm**: EventBridge kích hoạt một task Fargate chạy 1–2 giờ đối soát giao dịch, xong thì task dừng, không tốn compute khi không chạy. Vì sao: job chỉ cần chạy định kỳ, không cần giữ 24/7.
+3. **Lambda không phù hợp job này**: job 1–2 giờ vượt giới hạn 15 phút một lần gọi; phải chia thành nhiều lần gọi, điều phối phức tạp, và mỗi lần init Java bị cold start.
+4. **Tính tiền**: Fargate tính vCPU-GB-giờ chỉ khi task chạy; Lambda tính số request × thời gian × memory. Tải ổn định 24/7 thì Fargate thường rẻ hơn Lambda chạy liên tục.
+
+### So sánh chi phí và vận hành (ước tính, ap-southeast-1)
+| Mục | ECS Fargate | Lambda | EKS |
+|---|---|---|---|
+| API 24/7, 2 task 0,5 vCPU/1 GB | ~40-60 USD/tháng | Không phù hợp (chạy liên tục đắt) | ~73 USD control plane + node |
+| Job 1–2 giờ/ngày, 1 task 1 vCPU/2 GB | ~5-10 USD/tháng | Phải chia nhiều lần gọi, cold start Java | Node chạy 24/7 dù job hiếm |
+| Vá OS | AWS lo | AWS lo | Bạn lo (hoặc add-on) |
+| Connection pool DB | Ổn định, mỗi task một pool | Mỗi môi trường một pool, dễ cạn max_connections | Ổn định |
+| Người vận hành (team 6) | 1 người biết Docker/IAM | 1 người biết event model | 1–2 người thực sự hiểu K8s |
+
+Cùng workload 12 service như trước: 30 task Fargate khoảng 350–450 USD/tháng. Cùng workload trên EKS cần tối thiểu 3 node m5.large (~450–500 USD) + 73 USD control plane + add-on, cộng người dành 30–50% thời gian duy trì cluster. Với team 6, chi phí con người vượt xa chênh lệch hoá đơn.
+
+### Code: cấu hình HikariCP cho task Fargate (Java, <=30 dòng)
+~~~java
+HikariConfig cfg = new HikariConfig();
+cfg.setJdbcUrl("jdbc:postgresql://paydb.xxx.ap-southeast-1.rds.amazonaws.com:5432/payment");
+cfg.setUsername("app_pay");
+cfg.setPassword("mat_khau_bi_mat");
+cfg.setMaximumPoolSize(15);            // 10 task x 15 = 150 kết nối, kiểm tra với max_connections của Aurora
+cfg.setMinimumIdle(5);
+cfg.setConnectionTimeout(5000);             // 5 giây, HikariCP dùng milliseconds
+cfg.setMaxLifetime(1800000);                 // 30 phút, HikariCP dùng milliseconds
+DataSource ds = new HikariDataSource(cfg);
+~~~
+
+Mỗi task Fargate giữ 15 kết nối; khi scale 10 task là 150 kết nối, phải gói hạn với max_connections của instance Aurora. Không hard-code mật khẩu trong code — lấy từ Secrets Manager qua IAM task role.
+
+### Lỗi hay gặp
+- **Job 1–2 giờ chạy trên một lần gọi Lambda.** Triệu chứng: Lambda dừng giữa chừng sau 15 phút, đối soát chưa xong, lần chạy lại xử lý giao dịch cũ (cần idempotency key để không xử lý hai lần). Cách tránh: đặt job làm một task Fargate, hoặc chia job thành các bước nhỏ hơn nếu phải dùng Lambda.
+- **Connection pool bị rò rỉ khi scale task.** Triệu chứng: 20 task × 50 kết nối = 1000 kết nối, Aurora báo lỗi "too many connections". Cách tránh: giảm MaximumPoolSize xuống (10–15 với task nhỏ), dùng RDS Proxy nếu nhiều client.
+- **Chọn EKS vì "công ty lớn đều dùng".** Triệu chứng: team 6 bỏ nửa thời gian vào nâng cấp cluster, sửa add-on, RBAC. Cách tránh: chỉ chọn EKS khi có người trực platform và có nhu cầu thật (nhiều team, operator, service mesh).
+### Ví dụ đời thực
+Một hệ thống thanh toán của startup 6 người: API xác nhận đơn hàng 24/7 (tăng đến 500 request/giây cao điểm) và job báo cáo tài chính chạy 90 phút mỗi lúc 23h. Ban đầu đặt cả hai lên một cluster EKS với 3 node. Triệu chứng: job đêm làm node hết CPU, API bị chậm theo; người DevOps của team bỏ 40% thời gian sửa ingress, cập nhật K8s, vá CVE; hoá đơn EKS khoảng 520 USD/tháng. Chuyển sang ECS Fargate: API 3 task (0,5 vCPU/1 GB) sau ALB, job 1 task (1 vCPU/2 GB) kích hoạt qua EventBridge, giảm MaximumPoolSize xuống 10 với Aurora. Kết quả: hoá đơn còn khoảng 310 USD/tháng, p99 API dưới 200 ms, job chạy đủ 90 phút không bị cắt, và người DevOps còn thời gian phát triển thay vì chăm cluster. Lần đầu team quên giới hạn max_connections của Aurora (hai task × 50 kết nối bị từ chối) → giảm pool xuống 10, lỗi mất.
+
+### Trả lời mẫu khi phỏng vấn
+"Với team 6 người không có SRE Kubernetes, tôi mặc định chọn ECS Fargate cho cả API và job, vì chi phí lớn nhất của hạ tầng là thời gian con người vận hành, không phải hoá đơn AWS. API thanh toán chạy 24/7 tải ổn định nên được ALB định tuyến tới hai task Fargate luôn ấm, giữ connection pool HikariCP ổn định và không có cold start. Job đối soát chạy 1–2 giờ mỗi đêm kích hoạt qua EventBridge, task bắt đầu chạy xong thì dừng, không tốn compute khi không chạy. Lambda không phù hợp vì một lần gọi tối đa 15 phút, job hai giờ phải chia bước và init Java lan đầu bị cold start. EKS mạnh hơn nhưng cần người trực cluster; với sáu người chi phí con người hơn chênh lệch hoá đơn. Tôi luôn kiểm tra max_connections của Aurora trước khi scale task, và lấy mật khẩu từ Secrets Manager qua IAM task role, không hard-code."
+> Senior tip: đừng so sánh ECS vs EKS vs Lambda chỉ trên bảng giá. Với team nhỏ, hãy tính tiền lương SRE vào bài toán: một cluster EKS tiết kiệm 100 USD compute nhưng tốn 20 giờ công mỗi tháng thì đắt hơn Fargate rất nhiều. Luôn kiểm tra max_connections của database trước khi scale task, và đặt idempotency key cho mọi job có thể chạy lại.`,
+  follow: [
+    'Vì sao job 1–2 giờ không nên chạy trên một lần gọi Lambda?',
+    'Làm sao tính số kết nối HikariCP an toàn khi scale task Fargate?',
+    'Khi nào team 6 người vẫn nên cân nhắc EKS thay vì Fargate?'
+  ],
+  tags: ['ECS', 'Fargate', 'Lambda', 'EKS', 'cost', 'operations', 'team', 'senior']
+},
+{
+  id: 'aws-094',
+  topic: 'aws',
+  level: 'senior',
+  q: 'Bảng sự kiện thanh toán (payment events) trên DynamoDB dùng cho kiểm toán: mỗi sự kiện có merchantId, eventType, eventTime, eventId. Bạn chọn partition key và sort key thế nào để tránh hot partition khi một merchant lớn có hàng triệu sự kiện trong ngày, và GSI đóng vai trò gì?',
+  a: `**Tóm tắt:** Partition key = merchantId, sort key = eventTime#eventId để lấy sự kiện của một merchant theo thời gian. Nếu merchant lớn ghi hàng triệu sự kiện/ngày vào một partition, thêm shard suffix (merchantId#0..9) và đọc scatter-gather. GSI theo eventType phục vụ truy vấn "tất cả sự kiện loại X", nhưng key ít giá trị khác nhau (như PAYMENT_SUCCESS) dễ tạo hot partition riêng và thậm chí throttle ngược bảng chính.
+
+### Hiểu nhanh
+DynamoDB giống một bưu điện: merchantId là mã bưu chính, eventTime là giờ gửi thư. Nếu một bưu điện nhận hai triệu thư cùng một ngày, ô bưu đó bị nghẽn trong khi các ô khác trống: đó là hot partition. Shard suffix như chia một bưu điện lớn thành 10 phòng ban, GSI như cuốn danh bạ thứ hai sắp xếp theo loại thư.
+
+### Thuật ngữ (giải thích từ gốc)
+- **Partition key**: thuộc tính DynamoDB băm (hash) để chọn vùng lưu; cùng giá trị luôn lưu cùng một vùng.
+- **Sort key**: sắp xếp item trong cùng partition key, cho phép query khoảng và lấy nhiều item một lần.
+- **Hot partition**: một vùng nhận quá 1.000 WCU ghi/giây (hoặc 3.000 RCU) → bị throttle dù bảng còn sức.
+- **WCU/RCU**: 1 WCU = ghi 1 item tối đa 1 KB/giây; 1 RCU = đọc 1 item tối đa 4 KB/giây strongly consistent.
+- **GSI**: chỉ mục phụ có khóa và tốc độ truy cập riêng, cập nhật bất đồng bộ, có throughput riêng.
+- **Eventual consistency**: đọc GSI ngay sau khi ghi có thể không thấy dữ liệu mới.
+- **TTL**: xóa tự động item hết hạn, không tính WCU.
+- **DynamoDB Streams**: bắt sự kiện ghi, đẩy sang Lambda/Kinesis/S3 để xử lý sau.
+
+### Cơ chế ghi một sự kiện thanh toán
+1. App gọi PutItem với pk = MERCHANT#42, sk = 2026-05-20T14:05:00Z#evt-111. DynamoDB băm pk chọn vùng.
+2. Item lưu trong vùng và sắp xếp theo sk. Query "sự kiện của merchant 42 ngày 20/05" chỉ đọc vùng liên tục, không quét bảng.
+3. Nếu có GSI trên eventType, DynamoDB sao chép bất đồng bộ sang GSI và tốn WCU của GSI. Vì sao bất đồng bộ: để ghi vào bảng chính không phải chờ chỉ mục.
+4. Merchant lớn (flash sale) ghi 5 triệu sự kiện/ngày dồn cùng một vùng → vùng đó chạm 1.000 WCU, các vùng khác trống → hot partition.
+
+### Thiết kế khóa và chống hot partition
+- **Tốt**: pk = merchantId (cardinality cao), sk = eventTime#eventId.
+- **Merchant khổng lồ**: thêm shard suffix pk = MERCHANT#42#0 .. MERCHANT#42#9 khi ghi, đọc gọi 10 Query (scatter-gather) với LastEvaluatedKey của mỗi shard. Giảm ghi mỗi shard 10 lần, đổi lại đọc phức tạp hơn.
+- **GSI**: pk = eventType, sk = eventTime, projection ít thuộc tính (eventId, amount, status) để giảm chi phí. Dùng để query "tất cả sự kiện PAYMENT_FAILED". Cảnh báo: eventType ít giá trị khác nhau (SUCCESS, FAILED, REFUND), nếu SUCCESS chiếm ưu thế → hot partition trên GSI, thậm chí throttle ngược bảng chính. Cấp đủ WCU cho GSI hoặc dùng on-demand.
+- **TTL**: đặt expiration = 90 ngày để xóa tự động sự kiện cũ, không tính WCU, giảm lưu trữ theo thời gian.
+- **Streams**: bắt sự kiện ghi, đẩy qua Kinesis Data Streams hoặc Lambda sang S3/Redshift báo cáo kiểm toán, không cần quét bảng.
+
+### Code Java: lấy sự kiện của một merchant trong ngày (<=30 dòng)
+~~~java
+QueryRequest req = QueryRequest.builder()
+    .tableName("payment_events")
+    .keyConditionExpression("pk = :pk AND sk BETWEEN :t1 AND :t2")
+    .expressionAttributeValues(Map.of(
+        ":pk", AttributeValue.fromS("MERCHANT#42"),
+        ":t1", AttributeValue.fromS("2026-05-20T00:00:00Z"),
+        ":t2", AttributeValue.fromS("2026-05-20T23:59:59Z")))
+    .build();
+var result = ddb.query(req);
+result.items().forEach(item -> System.out.println(item.get("eventId").s()));
+~~~
+
+Nếu dùng shard suffix, lặp 10 Query (pk = MERCHANT#42#0 … #9) và gộp kết quả theo eventTime giảm dần.
+
+### Lỗi hay gặp
+- **pk = eventTime (ngày)**: tất cả sự kiện cùng ngày dồn cùng một vùng, chạm 1.000 WCU lúc 0 giờ, throttle bảng còn sức. Cách tránh: pk = merchantId, ngày ở sort key.
+- **GSI eventType=PAYMENT_SUCCESS nóng**: ghi vào bảng chính bị throttle vì GSI chạm trần, thậm chí throttle ngược bảng chính. Cách tránh: cấp đủ WCU cho GSI, projection gọn, hoặc thêm shard suffix vào khóa GSI (đọc 10 GSI).
+- **Đọc GSI ngay sau khi ghi**: GSI chỉ hỗ trợ eventual consistency, sự kiện vừa tạo chưa hiện trên danh sách. Cách tránh: đọc từ bảng chính bằng khóa (ConsistentRead nếu cần đọc ngay).
+### Ví dụ đời thực
+Một ví điện tử tổ chức flash sale: merchant A sinh 5 triệu sự kiện ngày 20/05, bảng dùng pk = MERCHANT#A. Triệu chứng: một vùng chạm 1.000 WCU, API kiểm toán báo ProvisionedThroughputExceededException, bảng tổng thể còn sức. Đọc CloudWatch: một vùng 100% consumed, các vùng khác gần không dùng. Nguyên gốc: pk chỉ có một giá trị chung (merchant A), tất cả ghi cùng một vùng — hot partition. Xử lý: đổi pk = MERCHANT#A#0…#9 (shard 10), thêm GSI pk = eventType sk = eventTime projection gọn, bật TTL 90 ngày, bật Streams đẩy sang S3. Kết quả: WCU trải đều (~500 WCU mỗi shard), throttle biến mất, API kiểm toán dưới 200 ms, và chi phí lưu giảm khi sự kiện cũ được xóa tự động.
+
+### Trả lời mẫu khi phỏng vấn
+"Tôi chọn partition key = merchantId và sort key = eventTime#eventId vì truy vấn phổ biến nhất là lấy sự kiện của một merchant theo thời gian; các item cùng merchant lưu cùng một vùng và sắp xếp theo giờ, query khoảng rất nhanh. Nếu một merchant flash sale ghi hàng triệu sự kiện trong ngày, cùng một partition sẽ chạm trần 1.000 WCU và bị throttle, tôi thêm shard suffix (merchantId#0 đến #9) và đọc scatter-gather qua 10 Query. GSI trên eventType phục vụ truy vấn tất cả sự kiện loại X (ví dụ PAYMENT_FAILED), nhưng key ít giá trị khác nhau dễ tạo hot partition trên GSI và thậm chí throttle ngược bảng chính, nên tôi cấp đủ WCU, projection gọn, và theo dõi CloudWatch Contributor Insights. TTL xóa tự động sự kiện qua 90 ngày giảm lưu trữ, Streams đẩy sự kiện sang Kinesis/S3 báo cáo kiểm toán không cần quét bảng. Luận kinh nghiệm: thiết kế DynamoDB bắt đầu bằng danh sách truy vấn chính kèm tần suất, không bắt đầu bằng ERD."
+> Senior tip: luôn viết ra 5 truy vấn quan trọng nhất kèm tần suất trước khi chọn khóa. Merchant khổng lồ là nghiên cứu có bộ: write sharding giảm ghi 10 lần nhưng đọc phải gọi 10 Query, chỉ xét khi viết nhẹ đọc ít. Và hãy bật CloudWatch Contributor Insights trên bảng thanh toán để thấy hot key trước khi user phàn nàn.`,
+  follow: [
+    'Vì sao shard suffix làm đọc phức tạp hơn, và khi nào chấp nhận được?',
+    'GSI theo eventType có thể tạo hot partition ở đâu, khắc phục ra sao?',
+    'TTL xóa sự kiện cũ thật sự không tốn WCU sao, và có gì cần lưu ý?'
+  ],
+  tags: ['DynamoDB', 'partition key', 'sort key', 'hot partition', 'GSI', 'shard suffix', 'TTL', 'Streams', 'senior']
+},
+{
+  id: 'aws-095',
+  topic: 'aws',
+  level: 'lead',
+  q: '(Lead) Hệ thống thanh toán chạy active-passive hai vùng (ap-southeast-1 chính, ap-southeast-3 phụ). Khi vùng chính hỏng, giao dịch đang triển khai (in-flight) xử lý ra sao, RPO/RTO đặt cụ thể bao nhiêu, và quy trình failback có kiểm soát như thế nào?',
+  a: `**Tóm tắt:** Active-passive: chỉ vùng chính ghi giao dịch; vùng phụ Aurora Global Database standby (lag thường dưới 1 giây → RPO gần 0). Giao dịch in-flight khi vùng mất có thể bị mất hoặc bị gửi lại → idempotency key do khách hàng sinh, vùng phụ chỉ ghi sau khi xác nhận vùng chính đã chết (fencing). RTO khoảng 10 phút (promote DB, scale compute, chuyển Route 53). Failback có kiểm soát, không tự động, xác nhận dữ liệu trước khi chuyển ngược. Chi phí vùng phụ 30-50% (warm standby), giảm được bằng pilot light.
+
+### Hiểu nhanh
+Cửa hàng thanh toán có hai chi nhánh: chi nhánh chính mở làm, chi nhánh phụ giữ standby (nhân viên đã danh, máy tính sang sẵn) chỉ mở khi chi nhánh chính hết điện. **Giao dịch đang triển khai (in-flight)** giống một hóa đơn đang in khi mất điện: có thể bị mất hóa đơn, khách có thể thanh toán lại. **Idempotency key** là mã hóa đơn duy nhất, để in lại không bị in hai hóa đơn. **Failback** là về chi nhánh chính khi nó sửa xong, phải kiểm tra xong mới mở lại.
+
+### Thuật ngữ (giải thích từ gốc)
+- **Active-passive**: một vùng chính phục vụ request, vùng phụ giữ bản sao và nhận traffic chỉ khi vùng chính hỏng.
+- **Warm standby**: bản thu nhỏ của hệ thống chạy liên tục ở vùng phụ, scale lên khi cần.
+- **Pilot light**: dữ liệu sẵn sàng, compute gần như tắt, scale khi sự cố (giảm chi phí nhưng RTO dài hơn).
+- **RPO**: dữ liệu tối đa chấp nhận mất, đo bằng thời gian. RPO 5 giây = mất tối đa 5 giây giao dịch cuối.
+- **RTO**: thời gian tối đa để dịch vụ chạy lại. RTO 10 phút.
+- **Aurora Global Database**: sao chép storage từ vùng chính sang vùng phụ, lag thường dưới 1 giây, vùng phụ có thể promotion thành primary.
+- **Promote / switchover / failover**: promotion = nâng cluster phụ thành primary khi chính đã chết (mất ít dữ liệu cuối); switchover = chuyển có kế hoạch, không mất dữ liệu; failover là quá trình chuyển hệ thống.
+- **Fencing**: xác nhận vùng chính đã chết trước khi cho vùng phụ ghi, tránh hai vùng cùng ghi.
+- **Idempotency key**: mã yêu cầu duy nhất, hệ thống chỉ xử lý một lần duy nhất.
+
+### Cơ chế failover (bước và sơ đồ)
+1. **Phát hiện**: CloudWatch alarm và Route 53 health check thấy vùng chính lỗi liên tục (3 lần liên tiếp, mỗi lần 30 giây). Không chuyển ngay để tránh failover do lỗi thoáng qua.
+2. **Quyết định**: người trực xác nhận theo runbook, thanh toán cần người có thẩm quyền đồng ý vì failover có chi phí cao.
+3. **Promote**: nâng cluster vùng phụ thành primary (một lệnh, vài phút); nếu chính còn sống thì switchover (không mất dữ liệu); nếu đã chết thì failover, mất phần giao dịch chưa kịp sao chép, thường khoảng 1 giây (RPO thực tế).
+4. **Scale ứng dụng**: tăng ECS vùng phụ từ 2 lên 20 task. Phần này mất vài phút do khởi động task và JVM/Spring context.
+5. **Chuyển traffic**: Route 53 đổi bản ghi API sang vùng phụ; khách nhận được sau khi hết DNS TTL (ví dụ 60 giây).
+6. **Kiểm tra và thông báo**, sau đó lập kế hoạch failback có kiểm soát khi vùng chính khôi phục.
+
+~~~seq
+title: Failover thanh toán sang vùng phụ
+actors: Client | Route53 | ECS | Aurora
+Client -> Route53: goi API thanh toan
+Route53 -> ECS: forward ve vung chinh
+ECS -> Aurora: ghi giao dich (primary)
+note Aurora..Aurora: vung chinh that
+Route53 -> ECS: health check fail 3 lan, chuyen vung phu
+ECS -> Aurora: promote secondary thanh primary
+note ECS..ECS: scale 2 len 20 task
+Route53 -> Client: tra ve tu vung phu (sau TTL)
+~~~
+
+### Giao dịch đang triển khai và idempotency
+Khi vùng chính hỏng, request đang xử lý có thể bị mất (khách không biết kết quả) hoặc client gửi lại (retry). Với idempotency key (mã duy nhất của khách), vùng phụ kiểm tra đã xử lý chưa: nếu đã, trả kết quả cũ; nếu chưa, ghi với điều kiện attribute_not_exists(idempotencyKey) để không ghi hai lần. Fencing đảm bảo vùng phụ chỉ ghi sau khi xác nhận vùng chính đã chết, tránh hai vùng cùng ghi thanh toán (split-brain) → dữ liệu trôi lệch, trừ tiền hai lần.
+
+### RPO và RTO cụ thể
+- **RPO**: dưới 5 giây (Aurora Global Database lag thường dưới 1 giây), chấp nhận được cho thanh toán. Không dùng RDS cross-region read replica cho thanh toán vì lag vài giây đến phút và promote thủ công.
+- **RTO**: khoảng 10 phút (promote + scale + DNS TTL 60 giây). Giữ warm standby 2–4 task và TTL thấp trước sự cố để rút RTO.
+- Hai con số này do business ký, kỹ thuật chỉ nói chi phí để đạt.
+
+### Code Java: kiểm tra idempotency trước khi ghi (<=30 dòng)
+~~~java
+var key = "IDEMP#" + request.getIdempotencyKey();   // mã duy nhất của khách, sinh ở client
+var get = GetItemRequest.builder().tableName("payments")
+    .key(Map.of("pk", AttributeValue.fromS(key))).build();
+if (ddb.getItem(get).item() != null) {
+    return layKetQuaCu(key);                        // đã xử lý, không xử lý hai lần
+}
+var put = PutItemRequest.builder().tableName("payments")
+    .item(Map.of("pk", AttributeValue.fromS(key), "sk", AttributeValue.fromS(request.getSk()),
+        "amount", AttributeValue.fromN(String.valueOf(request.getAmount()))))
+    .conditionExpression("attribute_not_exists(pk)")  // kiểm tra tính toán, không ghi hai lần
+    .build();
+ddb.putItem(put);
+~~~
+
+### Chi phí vùng phụ (không rẻ)
+Vùng phụ ít nhận traffic vẫn phải trả:
+- **Aurora storage**: lưu bản sao dữ liệu ở vùng phụ, tính theo GB-tháng.
+- **Instance standby**: ít nhất 1–2 instance Aurora chạy 24/7 để promote nhanh (hoặc serverless v2 với min ACU > 0).
+- **Data transfer liên vùng**: Aurora Global Database sao chép storage liên vùng, tính theo GB (khoảng 0,2 USD/GB, kiểm tra bảng giá hiện hành).
+- **ECS task standby**: 2–4 task Fargate chờ, tính theo vCPU-GB-giờ.
+- **Route 53 ARC + health check, CloudWatch**: nhỏ nhưng không thể bỏ qua.
+
+Ước tính: vùng phụ warm standby tăng khoảng 30–50% chi phí so với một vùng đơn. Pilot light (compute gần như tắt) giảm chi phí nhưng RTO dài hơn (khởi động task + JVM). Active-active có thể gần gấp đôi chi phí (chạy song song và xử lý giao dịch đa vùng) và phức tạp hơn nhiều với thanh toán.
+
+### Lỗi hay gặp
+- **Failback tự động**: vùng chính sửa xong đã nhận giao dịch, về chính ngay không kiểm tra → dữ liệu trôi lệch. Cách tránh: failback có kiểm soát, xác nhận dữ liệu, chuyển ngược theo lịch trình.
+- **Quên idempotency key**: khách gửi lại do mạng chậm, hệ thống xử lý hai lần và trừ tiền hai lần. Cách tránh: sinh idempotency key ở client, kiểm tra trước khi ghi, dùng condition_expression.
+- **DNS TTL dài**: vùng phụ đã sẵn sàng nhưng khách vẫn gọi vùng chính thêm hàng chục phút. Cách tránh: đặt TTL thấp (30–60 giây) cho bản ghi failover.
+- **Chưa diễn thực failover**: RTO trên giấy không có giá trị. Cách tránh: diễn thực định kỳ, bấm giờ, ghi lại RPO/RTO thực.
+### Ví dụ đời thực
+Một cổng thanh toán xử lý 2.000 giao dịch/giây, dữ liệu Aurora ap-southeast-1. Cơ quan quản lý yêu cầu RPO dưới 1 phút, RTO dưới 15 phút. Đội dựng Aurora Global Database sang ap-southeast-3, ECS vùng phụ 2 task warm standby, Route 53 ARC TTL 60 giây, tất cả bằng IaC. Diễn thực: kill primary, promote secondary, scale, chuyển Route 53 — mất 7 phút 40 giây, RPO đo được 0,8 giây. Chi phí tăng khoảng 480 USD/tháng (~40%). Ba tháng sau, sự cố mạng thật ở vùng chính: failover trong 7 phút, không mất giao dịch nào quá 1 giây. Failback tuần tự: kiểm tra dữ liệu vùng chính đã đồng bộ, nâng database thành primary lại, scale vùng phụ xuống, trả Route 53.
+
+### Trả lời mẫu khi phỏng vấn
+"Với hệ thống thanh toán, tôi chọn active-passive thay vì active-active vì thanh toán cần nhất quán mạnh và giao dịch không được ghi hai lần, còn active-active buộc tôi giải quyết xung đột đa vùng — quá phức tạp và dễ sai. Tôi dùng Aurora Global Database: primary ap-southeast-1, secondary ap-southeast-3, lag thường dưới 1 giây nên RPO dưới 5 giây, chấp nhận được cho tiền. RTO tôi đặt dưới 10 phút: hạ tầng vùng phụ dựng sẵn bằng IaC, 2–4 task warm standby, khi sự cố chỉ cần promote secondary thành primary, scale compute và chuyển Route 53 ARC (TTL 60 giây). Chi phí vùng phụ tăng khoảng 30–50% so với một vùng, được chấp nhận đổi lấy khả năng phục hồi dưới 15 phút khi mất cả một vùng. Giao dịch đang triển khai xử lý bằng idempotency key (client sinh, kiểm tra trước khi ghi, condition_expression) và vùng phụ chỉ ghi sau khi xác nhận vùng chính đã chết (fencing), tránh trừ tiền hai lần. Failback làm có kiểm soát, không tự động, và tôi diễn thực failover mỗi quý để biết RPO/RTO thực, không chỉ con số trên giấy."
+> Senior tip: với thanh toán, RTO thực sự quan trọng nhất không phải thời gian promote database trên console, mà là thời gian từ sự cố đến lúc giao dịch mới được ghi thành công ở vùng phụ — hãy bấm giờ và đưa vào runbook. Luôn theo dõi Aurora Global Database replication lag bằng CloudWatch: nếu lag tăng, RPO đang bị đe dọa mà chưa ai biết. Và failback phải có kiểm soát, không bao giờ tự động.`,
+  follow: [
+    'Vì sao không failback tự động ngay khi vùng chính sống lại?',
+    'Idempotency key cross-region thiết kế ra sao để không trừ tiền hai lần?',
+    'Pilot light vs warm standby: trade-off chi phí và RTO ra sao?'
+  ],
+  tags: ['multi-region', 'active-passive', 'Aurora Global Database', 'RPO', 'RTO', 'failback', 'idempotency', 'fencing', 'lead']
+},
 )
