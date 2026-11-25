@@ -3229,6 +3229,8 @@ window.DATA_INDEX = {
     ["lab-gc-027","gc","Young GC mỗi 300 ms do StringBuilder từ ghép chuỗi trong log.debug","senior"],
     ["lab-gc-028","gc","Xử lý ảnh tải lên: humongous allocation từ BufferedImage và byte[] > 1MB khiến G1 Full GC","senior"],
     ["lab-gc-029","gc","Metaspace tăng mãi do Spring AOP tạo CGLIB proxy mới mỗi request (@Transactional trên bean prototype)","senior"],
+    ["lab-gc-030","gc","Parallel GC trên heap 24GB: \"Pause Full (Ergonomics)\" 4.2s, p99 5s do adaptive sizing sai","senior"],
+    ["lab-gc-031","gc","log.debug string concatenation: Pause Young 300ms, allocation rate 2.5 GB/s, JFR StringBuilder","senior"],
     ["lab-sql-001","sql","Báo cáo giao dịch trong ngày quét 42 triệu dòng dù đã có index","senior"],
     ["lab-sql-002","sql","Đơn hàng seller console chậm dù optimizer đã dùng index","mid"],
     ["lab-sql-003","sql","Lịch sử giao dịch ví: 101 câu SQL cho một request","senior"],
