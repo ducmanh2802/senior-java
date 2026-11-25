@@ -3168,6 +3168,8 @@ window.DATA_INDEX = {
     ["lab-thread-029","thread","Deadlock chuyển tiền 2 chiều: 2 thread BLOCKED chờ lẫn nhau trên monitor tài khoản","senior"],
     ["lab-thread-030","thread","parallelStream trong thư viện bên thứ ba chèn ForkJoinPool.commonPool do blocking I/O","senior"],
     ["lab-thread-031","thread","synchronized bao phủ DB call gây hàng chục ngàn thread BLOCKED trên cùng monitor","senior"],
+    ["lab-thread-032","thread","@Scheduled(fixedRate=60s) nhưng job mất 90s — TaskScheduler 1 thread làm trễ dần và chặn job khác","senior"],
+    ["lab-thread-033","thread","Log đồng bộ: nhiều http-nio BLOCKED tại OutputStreamAppender cùng lock","senior"],
     ["lab-gc-001","gc","Export đối soát cuối ngày: humongous allocation đẩy G1 vào Full GC","senior"],
     ["lab-gc-002","gc","Heap của ví tăng đều mỗi ngày: hai lần class histogram lộ listener không được gỡ","senior"],
     ["lab-gc-003","gc","OutOfMemoryError: Metaspace sau khi thêm rule khuyến mãi bằng Groovy","senior"],

@@ -6351,5 +6351,182 @@ public class TopupService {
     'Phòng ngừa: code review cấm I/O trong synchronized, static analysis, load test slow downstream, observability lock wait time.'
   ],
   tags: ['synchronized', 'critical-section', 'blocking-io', 'thread-explosion', 'hikaricp', 'thread-starvation', 'lock-contention', 'idempotency', 'optimistic-locking', 'callback', 'banking']
+},
+{
+  id: 'lab-thread-032',
+  category: 'thread',
+  title: '@Scheduled(fixedRate=60s) nhưng job mất 90s — TaskScheduler 1 thread làm trễ dần và chặn job khác',
+  level: 'senior',
+  scenario: `**Bối cảnh:** **PayVN Reconcile** là service Spring Boot 3.4 (Java 21) chạy 3 pod trên Kubernetes. Mỗi pod có một job đối soát giao dịch: {{@Scheduled(fixedRate = 60000)}} gọi {{ReconcileJob.run()}}, trung bình mất **90 giây** để quét và xử lý lô 5 000 giao dịch. Ngoài ra còn một job gửi email thông báo: {{@Scheduled(fixedRate = 300000)}} {{EmailDigestJob.run()}}.
+
+**Triệu chứng:** Từ **02:00 ngày 23/10/2026**, job đối soát bắt đầu trễ: các lần chạy nối tiếp nhau cách ~90s và trễ dần so với đồng hồ. Job gửi email cũng không chạy đúng giờ, bị dồn vào sau job đối soát. Thread dump chỉ thấy một thread {{scheduling-1}} đang bận ở {{ReconcileJob.run}}; không có exception, không có lỗi DB. CPU pod ~15%, PostgreSQL rảnh.
+
+**Dữ liệu thu thập:** Thread dump lúc 02:17 và log JSON của pod.`,
+  artifacts: [
+    {
+      name: 'jstack-scheduling.txt',
+      lang: 'text',
+      content: `2026-10-23 02:17:44
+Full thread dump OpenJDK 64-Bit Server VM (21.0.4+7-LTS-151 mixed mode, sharing):
+
+"scheduling-1" #41 [31201] prio=5 os_prio=0 cpu=14210.55ms elapsed=1842.30s tid=0x00007f4a901a1000 nid=31201 runnable  [0x00007f4a8f7f6000]
+   java.lang.Thread.State: RUNNABLE
+        at vn.pay.reconcile.ReconcileJob.run(ReconcileJob.java:62)
+
+JNI global refs: 42, weak refs: 0`
+    },
+    {
+      name: 'reconcile-pod.log',
+      lang: 'text',
+      content: `{"@timestamp":"2026-10-23T02:00:00.001+07:00","level":"INFO","logger":"vn.pay.reconcile.ReconcileJob","thread":"scheduling-1","message":"reconcile tick start batch=2026-10-23T02:00:00 processed=0"}
+{"@timestamp":"2026-10-23T02:01:30.004+07:00","level":"INFO","logger":"vn.pay.reconcile.ReconcileJob","thread":"scheduling-1","message":"reconcile tick done batch=2026-10-23T02:00:00 processed=5000 elapsed=90003ms"}
+{"@timestamp":"2026-10-23T02:15:00.001+07:00","level":"WARN","logger":"vn.pay.reconcile.EmailDigestJob","thread":"scheduling-1","message":"email digest delayed, last run was 15min ago (expected 5min)"}`
+    }
+  ],
+  questions: [
+    'Vì sao job đối soát chạy mỗi ~90s thay vì mỗi 60s dù cấu hình {{fixedRate=60000}}?',
+    'Job gửi email bị dồn và trễ 15 phút có liên quan không?',
+    'Bạn sửa thế nào để job chạy đúng lịch, không dồn việc, và không chạy trùng khi có nhiều pod?'
+  ],
+  hints: [
+    'Spring mặc định tạo TaskScheduler với **một thread** (pool size = 1). fixedRate lên lịch lần chạy tiếp theo sau khi lần trước **kết thúc** nếu job dài hơn chu kỳ.',
+    'Nhìn log: mỗi tick mất ~90s trong khi chu kỳ 60s → các lần chạy nối tiếp, trễ dần.',
+    'Với nhiều pod, mỗi pod đều có scheduler → job chạy trùng. Cần ShedLock hoặc Quartz với DB lock để chỉ một pod chạy.'
+  ],
+  answer: `**Tóm tắt:** Spring Boot mặc định tạo TaskScheduler với **một thread duy nhất**. Khi job đối soát mất 90s mà fixedRate chỉ 60s, Spring không chạy song song: lần chạy sau xếp hàng chờ, các lần chạy trễ dần; mọi job khác dùng cùng scheduler (email digest) cũng bị chặn. Đây là lỗi cấu hình scheduler, không phải lỗi nghiệp vụ.
+
+### Nguyên nhân gốc
+
+Spring Boot auto-config TaskScheduler với pool size = 1. {{@Scheduled(fixedRate = 60000)}} nghĩa là "cố gắng chạy mỗi 60s", nhưng nếu lần trước chưa xong thì Spring **không** kích hoạt lần sau cho đến khi lần trước kết thúc. Kết quả: chu kỳ thực = max(60s, thời gian job) = 90s, và trễ tích lũy.
+
+### Dẫn chứng
+
+- Thread dump: chỉ có {{scheduling-1}} RUNNABLE tại {{ReconcileJob.run}}; scheduler chỉ có 1 worker.
+- Log: tick đầu 02:00–02:01:30 (90s), tick tiếp 02:01:30–02:03:00 (90s).
+- Log 02:15: {{email digest delayed, last run was 15min ago}} — job khác bị chặn.
+
+### Cách sửa
+
+**1. Tăng pool size scheduler:** spring.task.scheduling.pool.size=4
+
+**2. Chuyển fixedRate → fixedDelay:** @Scheduled(fixedDelay = 60000)
+
+**3. Dùng ShedLock với nhiều pod:** @SchedulerLock(name = "reconcile", lockAtMostFor = "PT2M")
+
+**4. Chia nhỏ lô xử lý.**
+
+### Phòng ngừa
+
+- Bật metric thời gian chạy job; alert khi job chạy > 80% chu kỳ.
+- Review code scheduling; test nhiều pod.
+
+> Senior tip: fixedRate và fixedDelay thường bị nhầm. fixedRate = "mỗi X giây tính từ lúc bắt đầu lần trước"; fixedDelay = "X giây sau khi lần trước kết thúc". Nếu job thường xuyên dài hơn chu kỳ, đó là dấu hiệu job cần chia nhỏ. ShedLock là giải pháp đơn giản nhất — nhớ set lockAtMostFor lớn hơn thời gian job tối đa.`,
+  rubric: [
+    'Chỉ ra TaskScheduler mặc định 1 thread và fixedRate không chạy song song khi job dài hơn chu kỳ.',
+    'Giải thích job email bị dồn/trễ do cùng scheduler một thread.',
+    'Đề xuất tăng pool size, chuyển fixedRate → fixedDelay, dùng ShedLock với nhiều pod, chia nhỏ lô.',
+    'Nêu phòng ngừa: metric thời gian job, review code scheduling, test nhiều pod.'
+  ],
+  tags: ['scheduled', 'taskscheduler', 'fixedRate', 'fixedDelay', 'shedlock', 'concurrency']
+},
+{
+  id: 'lab-thread-033',
+  category: 'thread',
+  title: 'Log đồng bộ: nhiều http-nio BLOCKED tại OutputStreamAppender cùng lock',
+  level: 'senior',
+  scenario: `**Bối cảnh:** **PayVN API** (Spring Boot 3.4, Java 21, Logback) xử lý ~800 req/s. Logger root level INFO, appender ghi ra file qua {{FileAppender}} (không async). Mỗi request log ~12 dòng INFO. CPU pod ~30%, p99 latency 45ms trước sự cố.
+
+**Triệu chứng:** Sau khi bật log chi tiết DEBUG cho package {{vn.pay}}, throughput giảm từ 800 req/s xuống **~120 req/s**, p99 từ 45ms lên **1.2s**, CPU pod chỉ ~25%. Thread dump cho thấy phần lớn http-nio thread {{WAITING (parking)}} tại {{ch.qos.logback.core.OutputStreamAppender.writeBytes}} khi {{ReentrantLock.lock}} chờ cùng một khoá {{streamWriteLock}}.
+
+**Dữ liệu thu thập:** Thread dump lúc sự cố và log JSON.`,
+  artifacts: [
+    {
+      name: 'jstack-logback.txt',
+      lang: 'text',
+      content: `2026-10-23 03:42:11
+Full thread dump OpenJDK 64-Bit Server VM (21.0.4+7-LTS-151 mixed mode, sharing):
+
+"http-nio-8080-exec-12" #73 [41201] prio=5 os_prio=0 cpu=1820.44ms elapsed=1840.10s tid=0x00007f5b901a2000 nid=41201 waiting on condition  [0x00007f5b8f7f6000]
+   java.lang.Thread.State: WAITING (parking)
+        at jdk.internal.misc.Unsafe.park(java.base@21.0.4/Native Method)
+        - parking to wait for  <0x000000076c1a2b30> (a java.util.concurrent.locks.ReentrantLock$NonfairSync)
+        at java.util.concurrent.locks.LockSupport.park(java.base@21.0.4/LockSupport.java:371)
+        at java.util.concurrent.locks.AbstractQueuedSynchronizer.parkAndCheckInterrupt(java.base@21.0.4/AbstractQueuedSynchronizer.java:2264)
+        at java.util.concurrent.locks.AbstractQueuedSynchronizer.acquireQueued(java.base@21.0.4/AbstractQueuedSynchronizer.java:2440)
+        at java.util.concurrent.locks.AbstractQueuedSynchronizer.acquire(java.base@21.0.4/AbstractQueuedSynchronizer.java:2705)
+        at java.util.concurrent.locks.ReentrantLock.lock(ReentrantLock.java:325)
+        at ch.qos.logback.core.OutputStreamAppender.writeBytes(OutputStreamAppender.java:210)
+        at ch.qos.logback.core.OutputStreamAppender.subAppend(OutputStreamAppender.java:228)
+        at ch.qos.logback.core.OutputStreamAppender.append(OutputStreamAppender.java:102)
+        at ch.qos.logback.core.UnsynchronizedAppenderBase.doAppend(UnsynchronizedAppenderBase.java:84)
+
+"http-nio-8080-exec-3" #64 [41180] prio=5 os_prio=0 cpu=1902.11ms elapsed=1841.20s tid=0x00007f5b90194000 nid=41180 runnable  [0x00007f5b8f5f4000]
+   java.lang.Thread.State: RUNNABLE
+        at java.io.FileOutputStream.writeBytes(java.base@21.0.4/Native Method)
+        at java.io.FileOutputStream.write(java.base@21.0.4/FileOutputStream.java:365)
+        at ch.qos.logback.core.OutputStreamAppender.writeByteArrayToOutputStreamWithPossibleFlush(OutputStreamAppender.java:239)
+        at ch.qos.logback.core.OutputStreamAppender.writeBytes(OutputStreamAppender.java:210)
+        - locked <0x000000076c1a2b30> (a java.util.concurrent.locks.ReentrantLock$NonfairSync)
+        at ch.qos.logback.core.OutputStreamAppender.subAppend(OutputStreamAppender.java:228)
+        at ch.qos.logback.core.OutputStreamAppender.append(OutputStreamAppender.java:102)
+        at ch.qos.logback.core.UnsynchronizedAppenderBase.doAppend(UnsynchronizedAppenderBase.java:84)
+
+JNI global refs: 42, weak refs: 0`
+    },
+    {
+      name: 'api-pod.log',
+      lang: 'text',
+      content: `{"@timestamp":"2026-10-23T03:40:00.001+07:00","level":"INFO","logger":"vn.pay.api.PaymentController","thread":"http-nio-8080-exec-3","message":"handle order=OD-10001"}
+{"@timestamp":"2026-10-23T03:40:15.001+07:00","level":"WARN","logger":"vn.pay.api.ops.LatencyReporter","thread":"scheduling-1","message":"p99 latency=1200ms throughput=120rps (baseline 800rps)"}`
+    }
+  ],
+  questions: [
+    'Vì sao throughput giảm từ 800 xuống 120 req/s dù CPU chỉ ~25%?',
+    'Tại sao bật DEBUG cho package vn.pay lại làm tình hình tệ hơn?',
+    'Bạn sửa thế nào để log không còn là nút thắt và vẫn giữ đủ thông tin để điều tra?'
+  ],
+  hints: [
+    'FileAppender (OutputStreamAppender) dùng một khoá {{ReentrantLock}} ({{streamWriteLock}}) duy nhất cho toàn bộ appender; mọi thread log phải chờ khoá đó.',
+    'Thread exec-3 đang RUNNABLE tại {{FileOutputStream.writeBytes}} và giữ khoá <0x000000076c1a2b30> (một {{ReentrantLock$NonfairSync}}); exec-12 {{WAITING (parking)}} chờ cùng khoá.',
+    'Bật DEBUG tăng số dòng log mỗi request → contention lock + syscall I/O tăng mạnh. AsyncAppender đẩy việc ghi file sang thread riêng.'
+  ],
+  answer: `**Tóm tắt:** Logback FileAppender dùng **một khoá {{ReentrantLock}} ({{streamWriteLock}}) duy nhất** cho toàn bộ appender. Khi bật DEBUG, mỗi request sinh nhiều dòng log, mỗi dòng phải lấy khoá và ghi file đồng bộ → các http-nio thread xếp hàng chờ khoá, throughput sụt dù CPU thấp. Sửa gốc là dùng AsyncAppender và giảm log.
+
+### Nguyên nhân gốc
+
+{{OutputStreamAppender.subAppend}} mã hoá event (bước này **ngoài** khoá) rồi gọi {{writeBytes}}; chính {{writeBytes}} mới {{streamWriteLock.lock()}} → ghi bytes xuống {{FileOutputStream}} → {{flush}} → {{unlock()}}. Vì khoá là một {{ReentrantLock}} dùng chung cho cả appender, **chỉ một thread ghi file cùng lúc**. Khi bật DEBUG, số dòng log mỗi request tăng, và mỗi dòng đi qua cùng khoá + syscall write. Kết quả: khoá trở thành nút thắt serial.
+
+CPU thấp vì thread đang chờ khoá ở trạng thái {{WAITING (parking)}} (park trong hàng đợi của {{ReentrantLock}}) không tiêu CPU.
+
+### Dẫn chứng
+
+- Thread dump: {{exec-3}} RUNNABLE tại {{FileOutputStream.writeBytes}} giữ khoá {{<0x000000076c1a2b30>}} ({{ReentrantLock$NonfairSync}}); {{exec-12}} {{WAITING (parking)}} tại {{ReentrantLock.lock}} ← {{writeBytes}} chờ cùng khoá.
+- Log: p99 latency từ 45ms lên 1200ms, throughput từ 800 xuống 120 rps.
+
+### Cách sửa
+
+**1. Dùng AsyncAppender (Logback):** queueSize 1024, worker thread riêng.
+
+**2. Giảm log: tắt DEBUG sau khi điều tra; production root INFO.**
+
+**3. Giảm số dòng log mỗi request: structured logging JSON; MDC; tránh log ở hot path.**
+
+**4. Tối ưu FileAppender: buffer lớn; immediateFlush=false.**
+
+### Phòng ngừa
+
+- Alert theo throughput/p99 và số thread BLOCKED tại appender.
+- Review code: không log DEBUG/INFO trong hot path.
+- Test tải với log level DEBUG trước khi lên production.
+
+> Senior tip: "CPU thấp nhưng throughput sụt" là dấu hiệu contention lock hoặc I/O blocking. Khi thấy http-nio thread {{WAITING (parking)}} tại {{ReentrantLock.lock}} trong appender, đừng nghĩ "tăng thread pool" — tăng thread chỉ tăng contention. Giải pháp là async logging + giảm số dòng log.`,
+  rubric: [
+    'Chỉ ra khoá ReentrantLock (streamWriteLock) duy nhất của OutputStreamAppender (<0x000000076c1a2b30>) và thread giữ khoá cùng các thread WAITING (parking) chờ.',
+    'Giải thích bật DEBUG tăng số dòng log → contention lock + syscall I/O → throughput sụt dù CPU thấp.',
+    'Đề xuất AsyncAppender, giảm log, immediateFlush=false, buffer lớn.',
+    'Nêu phòng ngừa: alert throughput/p99, review log hot path, test tải với DEBUG.'
+  ],
+  tags: ['logging', 'logback', 'async-appender', 'lock-contention', 'performance']
 }
 );
+
