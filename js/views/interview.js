@@ -331,7 +331,7 @@
     get title() { return App.t('interview.title'); },
     render(root) {
       let s = null;               // live session: { config, topics, companyId, transcript, token, startedAt, scores[], done }
-      let mic = null, silence = null, ticker = null, busy = false, showScores = false, handsFree = false, resumeSource = 'local', pendingRetry = false, lastResult = null;
+      let mic = null, silence = null, ticker = null, busy = false, showScores = false, handsFree = false, resumeSource = 'local', lastResult = null;
       const cleanups = [];
 
       // ---------- setup ----------
@@ -375,9 +375,9 @@
         const prev = load();
         const resumable = prev && prev.token && Date.now() - prev.startedAt < SESSION_MS && !prev.done;
         const sess = loadSession();
-const resumableSess = sess && sess.token && Date.now() - (sess.savedAt || sess.startedAt) < SESSION_MS && !sess.done;
+        const resumableSess = sess && sess.token && Date.now() - (sess.savedAt || sess.startedAt) < SESSION_MS && !sess.done;
         resumeSource = resumableSess ? 'session' : 'local';
-const resumableAny = resumable || resumableSess;
+        const resumableAny = resumable || resumableSess;
         const companies = window.COMPANIES || [];
         const chips = (name, opts, cur) => '<div class="chips" data-pref="' + name + '">' + Object.entries(opts).map(([v, l]) =>
           '<button type="button" class="chip' + (String(cur) === v ? ' active' : '') + '" data-v="' + esc(v) + '">' + esc(l) + '</button>').join('') + '</div>';
