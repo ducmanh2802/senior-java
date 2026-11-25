@@ -6234,5 +6234,900 @@ if (log.isDebugEnabled()) {
       'Chỉ đúng code gây ra: TransferService.java line 45, 48, 51, 54, 78 - tất cả dùng concatenation (+) trong log.debug.'
     ],
     tags: ['slf4j', 'logback', 'string-concatenation', 'placeholder', 'isdebugenabled', 'allocation-rate', 'young-gc', 'jfr', 'jdk17', 'g1gc', 'logging', 'performance', 'spotbugs', 'sonarqube']
+  },
+  {
+    id: 'lab-gc-032',
+    category: 'gc',
+    title: 'Humongous allocation Excel export 3MB array: G1 region 4M, humongous -> old gen, Full GC 8s',
+    level: 'senior',
+    scenario: `**Bối cảnh (background):** App **báo cáo tài chính** (Spring Boot 3.2, JDK 17.0.10, G1GC) xuất báo cáo Excel hàng tháng. JVM: {{-Xms12g -Xmx12g -XX:+UseG1GC -XX:MaxGCPauseMillis=200 -XX:G1HeapRegionSize=4m -Xlog:gc*:file=/logs/gc.log:time,uptime,level,tags}}. Container: 8 vCPU, memory limit 16Gi. Heap 12GB, region size 4MB (mặc định cho heap 12GB).
+
+**Thuật ngữ giải thích:**
+- **Humongous object:** Object lớn hơn **50% region size** (với region 4MB → > 2MB). G1 cấp phát humongous object **trực tiếp vào Old Gen** (không qua Eden), đánh dấu **startsHumongous** (đối tượng đầu) và **continuesHumongous** (các region tiếp theo).
+- **Humongous allocation impact:** Humongous object không được dọn trong Young GC, chỉ được dọn trong **Mixed GC** hoặc **Full GC**. Nếu Old Gen đầy humongous object → Mixed GC không dọn kịp → **Full GC stop-the-world**.
+- **Concurrent marking cycle:** G1 chạy concurrent marking khi Old Gen occupancy > **InitiatingHeapOccupancyPercent (IHOP, mặc định 45%)**. Humongous object tăng Old Gen usage nhanh → trigger concurrent marking sớm.
+
+**Triệu chứng:** Tháng 11/2026, job xuất báo cáo Excel chạy lúc 02:00. **Full GC (Allocation Failure) 8.2 giây** xảy ra giữa job. GC log: trước Full GC, Old Gen 9.8 GB / 12 GB, humongous object count 2,450. Heap dump: **byte[] 3.1 MB** (Apache POI SXSSF workbook) là humongous object chính. Sau Full GC Old Gen 2.1 GB. p99 latency API báo cáo tăng từ 200ms lên **12 giây** trong lúc Full GC.
+
+**Dữ liệu thu thập:** GC log JDK 17, heap dump (Eclipse MAT), code xuất Excel (Apache POI SXSSF), JFR recording.`,
+    artifacts: [
+      {
+        name: 'gc-excel-export.log',
+        lang: 'text',
+        content: `[2026-11-15T02:00:00.100+0700][0.100s][info][gc,init] Version: 17.0.10+7 (release)
+[2026-11-15T02:00:00.100+0700][0.100s][info][gc,init] CPUs: 8 total, 8 available
+[2026-11-15T02:00:00.100+0700][0.100s][info][gc,init] Memory: 16384M
+[2026-11-15T02:00:00.100+0700][0.100s][info][gc,init] Heap Min Capacity: 12288M
+[2026-11-15T02:00:00.100+0700][0.100s][info][gc,init] Heap Initial Capacity: 12288M
+[2026-11-15T02:00:00.100+0700][0.100s][info][gc,init] Heap Max Capacity: 12288M
+[2026-11-15T02:00:00.100+0700][0.100s][info][gc,init] G1 Heap Region Size: 4M
+[2026-11-15T02:00:00.100+0700][0.100s][info][gc,init] MaxGCPauseMillis: 200
+[2026-11-15T02:00:00.100+0700][0.100s][info][gc,init] InitiatingHeapOccupancyPercent: 45
+... (young GC bình thường mỗi 5-8s, pause 30-60ms, allocation rate ~300 MB/s) ...
+[2026-11-15T02:15:22.400+0700][922.400s][info][gc] GC(85) Pause Young (G1 Evacuation Pause) 3200M->400M(12288M) 45.201ms
+[2026-11-15T02:15:25.100+0700][925.100s][info][gc] GC(86) Pause Young (G1 Evacuation Pause) 4100M->450M(12288M) 52.101ms
+[2026-11-15T02:15:27.800+0700][927.800s][info][gc] GC(87) Pause Young (G1 Evacuation Pause) 5200M->500M(12288M) 48.301ms
+[2026-11-15T02:15:30.500+0700][930.500s][info][gc] GC(88) Pause Young (G1 Evacuation Pause) 6100M->550M(12288M) 55.201ms
+[2026-11-15T02:15:33.200+0700][933.200s][info][gc] GC(89) Pause Young (G1 Evacuation Pause) 7200M->600M(12288M) 61.102ms
+[2026-11-15T02:15:35.900+0700][935.900s][info][gc] GC(90) Pause Young (G1 Evacuation Pause) 8100M->650M(12288M) 47.201ms
+[2026-11-15T02:15:38.600+0700][938.600s][info][gc] GC(91) Pause Young (G1 Evacuation Pause) 9200M->700M(12288M) 53.301ms
+[2026-11-15T02:15:41.300+0700][941.300s][info][gc] GC(92) Pause Young (G1 Evacuation Pause) 10100M->750M(12288M) 59.101ms
+[2026-11-15T02:15:44.000+0700][944.000s][info][gc] GC(93) Pause Young (G1 Evacuation Pause) 11200M->800M(12288M) 65.201ms
+[2026-11-15T02:15:44.100+0700][944.100s][info][gc,humongous] GC(94) Pause Full (Allocation Failure) 9800M->2100M(12288M) 8210.450ms
+[2026-11-15T02:15:52.310+0700][952.310s][info][gc] GC(95) Pause Young (G1 Evacuation Pause) 2100M->300M(12288M) 42.101ms
+... (sau Full GC young GC bình thường trở lại) ...`
+      },
+      {
+        name: 'heap-dump-excel.hprof (MAT histogram)',
+        lang: 'text',
+        content: `========== MAT Histogram (trước Full GC) ==========
+class name                                    | objects | shallow heap | retained heap
+----------------------------------------------|---------|--------------|--------------
+byte[]                                        | 2,452   | 7,850 MB     | 7,850 MB
+  [2,450 instances ~3.1 MB each = humongous]  |         |              |
+  [2 instances ~1.2 MB each = non-humongous]  |         |              |
+org.apache.poi.xssf.streaming.SXSSFWorkbook   | 1       | 48 B         | 3,150 MB
+org.apache.poi.xssf.streaming.SXSSFSheet      | 50      | 2.4 KB       | 120 MB
+java.util.ArrayList                           | 15,200  | 600 KB       | 85 MB
+java.lang.String                              | 45,000  | 1.1 MB       | 2.8 MB
+... (các object khác) ...                     |         |              |
+
+========== Dominator Tree (SXSSFWorkbook) ==========
+SXSSFWorkbook (3,150 MB retained)
+  -> _sheets: ArrayList[50] (120 MB)
+      -> SXSSFSheet[0] (2.4 MB)
+          -> _randomAccessWindow: byte[3,145,728] (3.1 MB)  <-- HUMONGOUS (> 2MB = 50% region 4MB)
+      -> SXSSFSheet[1] (2.4 MB)
+          -> _randomAccessWindow: byte[3,145,728] (3.1 MB)  <-- HUMONGOUS
+      ... (50 sheets, mỗi sheet 1 humongous byte[] ~3.1 MB)
+Total humongous byte[]: 50 sheets × 3.1 MB = 155 MB retained bởi workbook này
++ 2,400 humongous byte[] từ các lần export trước (chưa được dọn do Mixed GC không kịp) = ~7.4 GB`
+      },
+      {
+        name: 'ExcelExportService.java',
+        lang: 'text',
+        content: `package com.finance.report;
+
+import org.apache.poi.xssf.streaming.SXSSFWorkbook;
+import org.apache.poi.ss.usermodel.*;
+import org.springframework.stereotype.Service;
+import org.springframework.jdbc.core.JdbcTemplate;
+
+import java.io.ByteArrayOutputStream;
+import java.math.BigDecimal;
+import java.time.LocalDate;
+import java.util.List;
+
+@Service
+public class ExcelExportService {
+
+    private final JdbcTemplate jdbc;
+
+    public ExcelExportService(JdbcTemplate jdbc) {
+        this.jdbc = jdbc;
+    }
+
+    public byte[] exportMonthlyReport(LocalDate month) {
+        // VẤN ĐỀ: SXSSFWorkbook với windowSize = 100 (mặc định) giữ 100 row trong memory
+        // Mỗi row ~30KB, 100 row = 3MB → byte[] _randomAccessWindow = 3MB > 2MB (50% region 4MB) = HUMONGOUS
+        try (SXSSFWorkbook wb = new SXSSFWorkbook(100)) {  // windowSize = 100 rows
+            Sheet sheet = wb.createSheet("Report");
+
+            // Header
+            Row header = sheet.createRow(0);
+            header.createCell(0).setCellValue("STT");
+            header.createCell(1).setCellValue("Mã GD");
+            header.createCell(2).setCellValue("Số tiền");
+            header.createCell(3).setCellValue("Ngày");
+
+            // Data: 50,000 rows
+            List<Transaction> txns = jdbc.query(
+                "SELECT id, amount, txn_date FROM transactions WHERE txn_date >= ? AND txn_date < ?",
+                (rs, rowNum) -> new Transaction(rs.getLong("id"), rs.getBigDecimal("amount"), rs.getDate("txn_date").toLocalDate()),
+                month.atStartOfDay(), month.plusMonths(1).atStartOfDay()
+            );
+
+            int rowIdx = 1;
+            for (Transaction txn : txns) {
+                Row row = sheet.createRow(rowIdx++);
+                row.createCell(0).setCellValue(rowIdx - 1);
+                row.createCell(1).setCellValue(txn.getId());
+                row.createCell(2).setCellValue(txn.getAmount().doubleValue());
+                row.createCell(3).setCellValue(txn.getTxnDate().toString());
+            }
+
+            // VẤN ĐỀ: wb.write() tạo byte[] toString ~ workbook size → humongous object thứ 2
+            ByteArrayOutputStream bos = new ByteArrayOutputStream();
+            wb.write(bos);  // Tạo byte[] ~155 MB (toàn bộ workbook) → HUMONGOUS
+            return bos.toByteArray();  // Tạo byte[] copy thứ 2 ~155 MB → HUMONGOUS THỨ 3
+        } catch (Exception e) {
+            throw new RuntimeException("Export failed", e);
+        }
+    }
+
+    record Transaction(Long id, BigDecimal amount, LocalDate txnDate) {}
+}`
+      },
+      {
+        name: 'jfr-humongous.txt',
+        lang: 'text',
+        content: `$ jcmd 1 JFR.start duration=30s filename=/tmp/humongous.jfr
+$ jfr print --events jdk.ObjectAllocationSample /tmp/humongous.jfr | grep -A5 "byte\\[\\]"
+
+jdk.ObjectAllocationSample {
+  startTime = 02:15:40.123
+  objectClass = byte[] (classLoader = bootstrap)
+  weight = 3.1 MB
+  eventThread = "scheduler-1"
+  stackTrace = [
+    java.lang.ByteArrayOutputStream.toByteArray() line: 123
+    com.finance.report.ExcelExportService.exportMonthlyReport(ExcelExportService.java:58)
+  ]
+}
+
+jdk.ObjectAllocationSample {
+  startTime = 02:15:40.124
+  objectClass = byte[] (classLoader = bootstrap)
+  weight = 3.1 MB
+  eventThread = "scheduler-1"
+  stackTrace = [
+    java.lang.ByteArrayOutputStream.write(byte[], int, int) line: 89
+    org.apache.poi.xssf.streaming.SXSSFWorkbook.write(SXSSFWorkbook.java:980)
+    com.finance.report.ExcelExportService.exportMonthlyReport(ExcelExportService.java:57)
+  ]
+}
+
+# Mỗi export tạo 3 humongous byte[]: (1) SXSSFSheet._randomAccessWindow 3.1 MB × 50 sheets, (2) wb.write() output ~155 MB, (3) toByteArray() copy ~155 MB
+# 50 sheets × 3.1 MB = 155 MB retained per export. 48 exports/tháng = 7.4 GB humongous accumulation.`
+      }
+    ],
+    questions: [
+      'Tại sao G1 với region 4MB coi byte[] 3.1 MB là humongous object? Tính ngưỡng humongous cho region size này.',
+      'Giải thích tại sao humongous object được cấp phát trực tiếp vào Old Gen thay vì Eden. Ảnh hưởng gì đến Young GC và Mixed GC?',
+      'Từ GC log: Old Gen 9.8 GB trước Full GC, sau Full GC 2.1 GB. Chứng minh đây không phải memory leak mà là humongous accumulation.',
+      'So sánh 3 giải pháp: (1) Giảm SXSSF windowSize, (2) Streaming write trực tiếp OutputStream không qua ByteArrayOutputStream, (3) Tăng region size thành 8MB hoặc 16MB. Ưu/nhược điểm.',
+      'Tại sao job chạy lúc 02:00 (low traffic) vẫn bị Full GC? Giải thích vai trò của InitiatingHeapOccupancyPercent (IHOP) và concurrent marking cycle.'
+    ],
+    hints: [
+      'Humongous threshold = 50% region size. Region 4MB → threshold = 2MB. byte[] 3.1 MB > 2MB → humongous. byte[] 155 MB >> 2MB → humongous.',
+      'Humongous object alloc trực tiếp Old Gen (startsHumongous + continuesHumongous). Young GC KHÔNG dọn humongous. Mixed GC dọn humongous nhưng cần Old Gen occupancy > IHOP (45% = 5.4GB) để trigger concurrent marking. Humongous tích lũy làm Old Gen đầy nhanh → Full GC trước khi Mixed GC kịp chạy.',
+      'Heap dump: 2,450 humongous byte[] ~3.1 MB = ~7.4 GB. Sau Full GC Old Gen 2.1 GB (chỉ giữ workbook hiện tại). Nếu leak, Old Gen sau Full GC vẫn cao. Full GC dọn hết humongous cũ → không leak.',
+      'Giải pháp 1: windowSize=10 → _randomAccessWindow ~300KB < 2MB → KHÔNG humongous. Nhưng disk spill tăng I/O. Giải pháp 2: wb.write(response.getOutputStream()) streaming, KHÔNG ByteArrayOutputStream → loại bỏ 2 humongous 155 MB. Giải pháp 3: -XX:G1HeapRegionSize=16m → threshold 8MB, 3.1 MB không humongous, nhưng region lớn → heap waste, mixed GC chậm.',
+      'Job 02:00 low traffic nhưng export alloc 50 sheets × 3.1 MB + 155 MB + 155 MB = ~465 MB humongous/lần. 48 lần/tháng = 22 GB allocation. Old Gen 12GB, IHOP 45% = 5.4GB. Humongous fill Old Gen > 5.4GB → trigger concurrent marking. Nhưng concurrent marking chưa kịp xong → Mixed GC không chạy → Full GC.'
+    ],
+    answer: `**Tóm tắt:** App xuất báo cáo Excel dùng Apache POI SXSSFWorkbook(windowSize=100). Mỗi sheet tạo byte[] _randomAccessWindow ~3.1 MB. G1 region 4MB → humongous threshold = 2MB. **3.1 MB > 2MB → humongous object**. Mỗi export 50 sheets = 50 humongous byte[] (155 MB) + wb.write() tạo byte[] 155 MB + toByteArray() copy 155 MB = **3 humongous lớn/lần**. 48 exports/tháng tích lũy ~7.4 GB humongous trong Old Gen. Old Gen 9.8 GB > IHOP 45% (5.4GB) → trigger concurrent marking nhưng Mixed GC không kịp dọn → **Full GC (Allocation Failure) 8.2 giây**. Fix: (1) Giảm windowSize ≤ 10 (300KB < 2MB không humongous), (2) Streaming write trực tiếp OutputStream loại bỏ ByteArrayOutputStream, (3) Tăng region size (trade-off heap waste).
+
+### Nguyên nhân gốc
+
+1. **Humongous threshold calculation:** G1 region size 4MB (mặc định heap 12GB). Humongous object = object > 50% region = **> 2MB**. SXSSFWorkbook với windowSize=100 tạo _randomAccessWindow byte[] ~3.1 MB/sheet → **humongous**.
+2. **Humongous allocation path:** Humongous object **không qua Eden**, cấp phát trực tiếp **Old Gen** (startsHumongous + continuesHumongous). Young GC **không dọn** humongous. Chỉ Mixed GC (sau concurrent marking) hoặc Full GC dọn được.
+3. **Accumulation rate:** Mỗi export: 50 sheets × 3.1 MB = 155 MB (sheet windows) + 155 MB (wb.write output) + 155 MB (toByteArray copy) = **~465 MB humongous/alloc**. 48 lần/tháng = **22 GB allocation humongous**. Old Gen 12GB fill trong vài ngày.
+4. **IHOP & Concurrent marking:** InitiatingHeapOccupancyPercent mặc định 45% = 5.4GB. Humongous làm Old Gen > 5.4GB nhanh → trigger concurrent marking. Nhưng concurrent marking chạy **song song**, mất vài giây đến vài phút. Trong lúc chờ, allocation tiếp tục → Old Gen đầy → **Full GC (Allocation Failure)** stop-the-world 8.2s.
+5. **Không phải leak:** Heap dump 2,450 humongous byte[] ~7.4 GB. Sau Full GC Old Gen 2.1 GB (chỉ workbook hiện tại). Leak thì Old Gen sau Full GC vẫn > 5GB.
+
+### Dẫn chứng (trích dòng cụ thể trong artifact)
+
+| Artifact | Dòng trích | Ý nghĩa |
+|---|---|---|
+| GC log | {{G1 Heap Region Size: 4M}} | Region size 4MB → humongous threshold 2MB |
+| GC log | {{Pause Full (Allocation Failure) 9800M->2100M(12288M) 8210.450ms}} | Full GC 8.2s, Old Gen 9.8GB -> 2.1GB |
+| MAT | {{byte[] | 2,452 | 7,850 MB}} | 2,450 humongous byte[] retained 7.85 GB |
+| MAT | {{_randomAccessWindow: byte[3,145,728] (3.1 MB)}} | Sheet window 3.1 MB > 2MB = humongous |
+| JFR | {{objectClass = byte[], weight = 3.1 MB, stackTrace: ExcelExportService.java:58}} | toByteArray() tạo humongous 3.1 MB |
+| JFR | {{weight = 3.1 MB, stackTrace: SXSSFWorkbook.write}} | wb.write() tạo humongous 3.1 MB |
+| Code | {{new SXSSFWorkbook(100)}} line 22 | windowSize=100 → _randomAccessWindow ~3.1 MB |
+| Code | {{wb.write(bos); return bos.toByteArray();}} line 57-58 | Tạo 2 humongous 155 MB mỗi lần |
+
+### Cách sửa
+
+**Fix 1: Giảm SXSSF windowSize (KHUYẾN DÙNG NHẤT cho SXSSF)**
+
+~~~java
+// TRƯỚC: windowSize=100 → _randomAccessWindow ~3.1 MB > 2MB = humongous
+try (SXSSFWorkbook wb = new SXSSFWorkbook(100)) { ... }
+
+// SAU: windowSize=10 → _randomAccessWindow ~300 KB < 2MB = KHÔNG humongous
+try (SXSSFWorkbook wb = new SXSSFWorkbook(10)) { ... }
+~~~
+
+- **Cơ chế:** windowSize = số row giữ trong memory. Mỗi row ~30KB. windowSize=10 → 300KB < 2MB threshold.
+- **Trade-off:** Row > windowSize bị spill ra disk (temp file). I/O tăng nhưng **loại bỏ hoàn toàn humongous sheet window**.
+- **Kết quả:** 50 sheets × 0 humongous + 155 MB wb.write + 155 MB toByteArray = 2 humongous/lần (thay vì 52). Vẫn cần Fix 2 cho 2 humongous còn lại.
+
+**Fix 2: Streaming write trực tiếp OutputStream (LOẠI BỎ ByteArrayOutputStream)**
+
+~~~java
+// TRƯỚC: Tạo 2 humongous 155 MB (wb.write -> bos, bos.toByteArray())
+ByteArrayOutputStream bos = new ByteArrayOutputStream();
+wb.write(bos);
+return bos.toByteArray();
+
+// SAU: Streaming trực tiếp HttpServletResponse output stream
+public void exportMonthlyReport(LocalDate month, HttpServletResponse response) {
+    response.setContentType("application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");
+    response.setHeader("Content-Disposition", "attachment; filename=report-" + month + ".xlsx");
+    try (SXSSFWorkbook wb = new SXSSFWorkbook(10)) {  // windowSize=10
+        // ... fill data ...
+        wb.write(response.getOutputStream());  // KHÔNG ByteArrayOutputStream, KHÔNG toByteArray()
+    }
+}
+~~~
+
+- **Cơ chế:** wb.write(OutputStream) ghi trực tiếp, không buffer toàn bộ workbook trong memory.
+- **Kết quả:** **0 humongous object** từ workbook output. Chỉ còn sheet window (đã fix bằng windowSize=10).
+- **Lưu ý:** Phải đổi signature method từ {{byte[]}} return thành {{void}} + {{HttpServletResponse}}. Nếu cần return {{byte[]}} cho storage (S3), dùng {{PipedOutputStream}} + thread đọc ghi S3 streaming.
+
+**Fix 3: Tăng G1 Region Size (WORKAROUND, không khuyên dùng làm fix chính)**
+
+~~~bash
+# Thay vì region 4MB mặc định, dùng 16MB
+-XX:G1HeapRegionSize=16m
+~~~
+
+- **Cơ chế:** Region 16MB → humongous threshold = 8MB. byte[] 3.1 MB < 8MB → **không humongous**, đi qua Eden bình thường, Young GC dọn được.
+- **Trade-off:** Region lớn → **heap waste** (internal fragmentation). Mixed GC scan region lớn → pause tăng. Heap 12GB / 16MB = 768 regions (ít hơn 3072 regions của 4MB). Humongous object lớn hơn mới thành humongous.
+- **Khuyên dùng:** Chỉ khi KHÔNG thể sửa code (vendor library). Ưu tiên Fix 1 + 2.
+
+### Phòng ngừa
+
+- **Code review:** Cấm {{new SXSSFWorkbook()}} không có windowSize nhỏ (≤ 10). Cấm {{ByteArrayOutputStream}} cho file > 10MB.
+- **Static analysis:** SpotBugs custom rule detect {{SXSSFWorkbook}} constructor không có argument hoặc windowSize > 50. Detect {{ByteArrayOutputStream.toByteArray()}} trên object lớn.
+- **Test:** Load test export 50k rows, measure GC log: không được có Full GC, Young GC pause < 100ms, humongous count = 0.
+- **Monitoring:** Alert khi GC log có {{humongous}} count > 100 hoặc {{Pause Full (Allocation Failure)}}. Theo dõi {{jvm_g1_humongous_count}} (Micrometer/JMX).
+- **JFR:** Profile allocation định kỳ, tìm {{byte[]}} weight lớn tại {{SXSSFWorkbook}}, {{ByteArrayOutputStream}}.
+
+### Trả lời mẫu khi phỏng vấn
+
+"App xuất Excel dùng POI SXSSFWorkbook(windowSize=100). Mỗi sheet tạo byte[] _randomAccessWindow ~3.1 MB. G1 region 4MB → humongous threshold 2MB. 3.1 MB > 2MB → humongous object. Humongous alloc trực tiếp Old Gen, Young GC không dọn. Mỗi export 50 sheets = 155 MB sheet windows + 155 MB wb.write + 155 MB toByteArray = 465 MB humongous. 48 lần/tháng tích lũy 7.4 GB Old Gen. Old Gen > IHOP 45% (5.4GB) → trigger concurrent marking nhưng Mixed GC không kịp → Full GC 8.2s. Fix: (1) windowSize=10 → sheet window 300KB không humongous, (2) Streaming wb.write(response.getOutputStream()) loại bỏ ByteArrayOutputStream 2 humongous 155 MB, (3) Tăng region size 16MB (workaround, trade-off heap waste). Không leak vì Full GC dọn hết Old Gen 9.8GB -> 2.1GB."
+
+> Senior tip: **Humongous object là "kẻ giết latency thầm lặng" cho batch export/file processing**. Quy tắc: **Object > 50% region size = humongous → Old Gen trực tiếp → Young GC bỏ qua → Mixed GC/Full GC mới dọn**. Với POI SXSSF, **windowSize=100 là default nguy hiểm** (3MB humongous). Luôn set windowSize ≤ 10. **Không bao giờ dùng ByteArrayOutputStream cho file lớn** - streaming OutputStream là chuẩn. Region size 4MB mặc định heap 4-32GB; nếu phải tăng region size để tránh humongous, nghĩa là thiết kế allocation sai. JFR 30s + GC log đủ bắt humongous pattern.`,
+    rubric: [
+      'Giải thích đúng cơ chế: G1 region 4MB → humongous threshold 2MB. SXSSFWorkbook windowSize=100 tạo byte[] 3.1 MB > 2MB = humongous. Humongous alloc Old Gen trực tiếp, Young GC không dọn.',
+      'Dẫn chứng GC log: Region Size 4M, Full GC (Allocation Failure) 8.2s, Old Gen 9.8GB->2.1GB. MAT: 2,450 humongous byte[] 7.85 GB. JFR: byte[] 3.1 MB tại SXSSFWorkbook.write & toByteArray.',
+      'Chứng minh không leak: Full GC dọn Old Gen 9.8GB -> 2.1GB (chỉ workbook hiện tại). Leak thì Old Gen sau Full GC vẫn cao.',
+      'So sánh 3 fix đúng trade-off: (1) windowSize=10 loại bỏ sheet window humongous (disk spill trade-off), (2) Streaming OutputStream loại bỏ 2 humongous 155 MB (best), (3) Region size 16MB workaround (heap waste, mixed GC chậm). Khuyên Fix 1+2.',
+      'Giải thích đúng IHOP: Old Gen > 45% (5.4GB) trigger concurrent marking, nhưng marking chưa xong → Mixed GC không chạy → Full GC.'
+    ],
+    tags: ['g1gc', 'humongous', 'region-size', 'sxssfworkbook', 'poi', 'excel-export', 'bytearrayoutputstream', 'streaming', 'full-gc', 'allocation-failure', 'ihop', 'concurrent-marking', 'mixed-gc', 'jdk17', 'heap-dump', 'mat', 'jfr']
+  },
+  {
+    id: 'lab-gc-033',
+    category: 'gc',
+    title: 'Metaspace OOM Groovy script reload: ClassLoader leak, 1.2M classes loaded, Metaspace 4GB',
+    level: 'senior',
+    scenario: `**Bối cảnh (background):** Hệ thống **rules engine** cho ngân hàng (Spring Boot 3.1, JDK 17.0.9, G1GC) cho phép business config quy tắc nghiệp vụ bằng **Groovy script** reload runtime không restart. JVM: {{-Xms8g -Xmx8g -XX:MaxMetaspaceSize=1g -XX:+UseG1GC -Xlog:gc+metaspace=debug:file=/logs/gc.log:time,uptime,level,tags}}. Container: 8 vCPU, memory limit 10Gi. MaxMetaspaceSize = 1GB.
+
+**Thuật ngữ giải thích:**
+- **Metaspace:** Vùng memory native (off-heap) lưu **class metadata** (Klass, method, field, annotation, constant pool). JDK 8+ thay thế PermGen. Mặc định **unlimited** (bị giới hạn bởi OS/container memory limit). Nên set {{-XX:MaxMetaspaceSize}} để tránh OOM native.
+- **Groovy script compilation:** Mỗi lần reload script, Groovy **compile script thành class mới** (extends {{groovy.lang.Script}}). Class name dạng {{Script1}}, {{Script2}}... hoặc hash-based. ClassLoader nạp class này vào Metaspace.
+- **ClassLoader leak:** Nếu **ClassLoader cũ không bị GC** (vẫn bị reference bởi thread, cache, static field), các class nó load **không bao giờ bị unload** → Metaspace tăng vô hạn. Class chỉ bị unload khi **ClassLoader bị GC** (không còn reference nào).
+
+**Triệu chứng:** Sau 3 tháng chạy, app bị **{{java.lang.OutOfMemoryError: Metaspace}}**. Restart app tạm fix 2-3 ngày. GC log: Metaspace used tăng dần từ 200 MB → **1.2 GB** (vượt MaxMetaspaceSize 1GB → GC cưỡng lại nhưng không dọn được → OOM). {{jcmd 1 VM.class_histogram}} thấy **1,200,000+ class** loaded (bình thường ~15,000). Top class: {{Script1}}, {{Script2}}, ..., {{Script1200000}} (mỗi reload tạo class mới). Heap dump: **{{GroovyClassLoader}}** instance giữ reference bởi **static cache** trong {{RuleEngineService}}.
+
+**Dữ liệu thu thập:** GC log (metaspace debug), jcmd class histogram, heap dump (Eclipse MAT), code Groovy reload, JFR class loading.`,
+    artifacts: [
+      {
+        name: 'gc-metaspace-oom.log',
+        lang: 'text',
+        content: `[2026-11-20T14:30:00.100+0700][0.100s][info][gc,init] Version: 17.0.9+7 (release)
+[2026-11-20T14:30:00.100+0700][0.100s][info][gc,init] CPUs: 8 total, 8 available
+[2026-11-20T14:30:00.100+0700][0.100s][info][gc,init] Memory: 10240M
+[2026-11-20T14:30:00.100+0700][0.100s][info][gc,init] Heap Min Capacity: 8192M
+[2026-11-20T14:30:00.100+0700][0.100s][info][gc,init] Heap Initial Capacity: 8192M
+[2026-11-20T14:30:00.100+0700][0.100s][info][gc,init] Heap Max Capacity: 8192M
+[2026-11-20T14:30:00.100+0700][0.100s][info][gc,init] MaxMetaspaceSize: 1024M
+[2026-11-20T14:30:00.100+0700][0.100s][info][gc,init] CompressedClassSpaceSize: 1073741824
+[2026-11-20T14:30:00.100+0700][0.100s][info][gc,metaspace] Metaspace       used 204800K, capacity 204800K, committed 204800K, reserved 1048576K
+[2026-11-20T14:30:00.100+0700][0.100s][info][gc,metaspace]   class space    used 25600K, capacity 25600K, committed 25600K, reserved 1073741824K
+... (Metaspace tăng dần mỗi reload) ...
+[2026-11-20T14:30:00.100+0700][86400.100s][info][gc,metaspace] Metaspace       used 980000K, capacity 980000K, committed 980000K, reserved 1048576K
+[2026-11-20T14:30:00.100+0700][86400.100s][info][gc,metaspace]   class space    used 850000K, capacity 850000K, committed 850000K, reserved 1073741824K
+[2026-11-20T14:30:00.100+0700][86400.200s][info][gc,metaspace] Metaspace       used 1020000K, capacity 1020000K, committed 1020000K, reserved 1048576K
+[2026-11-20T14:30:00.100+0700][86400.200s][info][gc,metaspace]   class space    used 880000K, capacity 880000K, committed 880000K, reserved 1073741824K
+[2026-11-20T14:30:00.100+0700][86400.300s][error][gc,metaspace] Metaspace OOM: Failed to allocate 1024KB for class metadata
+[2026-11-20T14:30:00.100+0700][86400.300s][error][gc] java.lang.OutOfMemoryError: Metaspace
+`
+      },
+      {
+        name: 'jcmd-class-histogram.txt',
+        lang: 'text',
+        content: `$ jcmd 1 VM.class_histogram | head -30
+
+  num     #instances         #bytes  class name (module)
+-------------------------------------------------------
+   1:       1200000       48000000  Script1 (groovy)
+   2:       1199999       47999960  Script2 (groovy)
+   3:       1199998       47999920  Script3 (groovy)
+   4:       1199997       47999880  Script4 (groovy)
+   ... (1,200,000 entries Script1 -> Script1200000) ...
+   1200001:            50         2000  java.lang.String
+   1200002:            10          400  java.util.ArrayList
+   1200003:            5           200  groovy.lang.GroovyClassLoader
+   1200004:            1           80  com.bank.rules.RuleEngineService
+
+# Total loaded classes: ~1,200,000 (bình thường app Spring Boot ~15,000-20,000)
+# Mỗi Script class ~40 bytes metadata. 1.2M × 40B = 48 MB class metadata chỉ cho Script.
+# Nhưng Metaspace 1GB → overhead Klass, method, constant pool, annotation ~800-900 bytes/class.
+# 1.2M × 900B ≈ 1.08 GB Metaspace. Khớp GC log: Metaspace used 1,020,000K.`
+      },
+      {
+        name: 'heap-dump-metaspace.hprof (MAT dominator)',
+        lang: 'text',
+        content: `========== MAT Dominator Tree (GC Root: System class) ==========
+java.lang.ClassLoader@0x7f8a... (system) 
+  -> com.bank.rules.RuleEngineService.class (static field: scriptCache)
+      -> java.util.concurrent.ConcurrentHashMap@0x7f8b... (scriptCache)
+          -> [key="rule-001", value=GroovyClassLoader@0x7f8c...]
+              -> GroovyClassLoader@0x7f8c... (parent = RuleEngineService.class.getClassLoader())
+                  -> loadedClasses: Vector<Class<?>> (1,200,000 entries)
+                      -> Script1, Script2, ..., Script1200000
+          -> [key="rule-002", value=GroovyClassLoader@0x7f8d...]
+              -> GroovyClassLoader@0x7f8d...
+                  -> loadedClasses: Vector<Class<?>> (1,200,000 entries)
+          ... (50 rule keys, mỗi key 1 GroovyClassLoader instance) ...
+
+========== GC Root Path to Script1 ==========
+Script1 (class)
+  <- loadedClasses (Vector) in GroovyClassLoader@0x7f8c...
+  <- GroovyClassLoader@0x7f8c... (instance)
+  <- value in ConcurrentHashMap@0x7f8b... (scriptCache)
+  <- scriptCache (static field) in RuleEngineService.class
+  <- RuleEngineService.class (system class loader)
+
+**Kết luận:** RuleEngineService.scriptCache (static ConcurrentHashMap) giữ reference đến 50 GroovyClassLoader instance.
+Mỗi GroovyClassLoader giữ Vector<Class<?>> loadedClasses chứa 1.2M Script class.
+ClassLoader KHÔNG bao giờ bị GC → Script class KHÔNG bao giờ bị unload → Metaspace leak.`
+      },
+      {
+        name: 'RuleEngineService.java',
+        lang: 'text',
+        content: `package com.bank.rules;
+
+import groovy.lang.GroovyClassLoader;
+import groovy.lang.Script;
+import org.springframework.stereotype.Service;
+
+import java.util.Map;
+import java.util.concurrent.ConcurrentHashMap;
+
+@Service
+public class RuleEngineService {
+
+    // VẤN ĐỀ 1: Static cache giữ GroovyClassLoader FOREVER
+    private static final Map<String, GroovyClassLoader> scriptCache = new ConcurrentHashMap<>();
+
+    // VẤN ĐỀ 2: Mỗi reload tạo GroovyClassLoader MỚI, không close cái cũ
+    public void reloadRule(String ruleId, String groovyScript) {
+        // Tạo ClassLoader mới mỗi lần reload
+        GroovyClassLoader loader = new GroovyClassLoader(getClass().getClassLoader());
+        
+        // Compile script -> tạo class mới (Script1, Script2...)
+        Class<? extends Script> scriptClass = loader.parseClass(groovyScript, ruleId + ".groovy");
+        
+        // VẤN ĐỀ 3: Put vào cache, ClassLoader cũ không bị remove -> leak
+        scriptCache.put(ruleId, loader);  // ClassLoader cũ mất reference nhưng value mới overwrite
+        // NHƯNG: ClassLoader cũ vẫn còn trong memory vì loadedClasses Vector giữ reference đến class
+        // VÀ: scriptCache là static -> ClassLoader không bao giờ GC
+    }
+
+    public Object executeRule(String ruleId, Map<String, Object> context) {
+        GroovyClassLoader loader = scriptCache.get(ruleId);
+        if (loader == null) {
+            throw new IllegalStateException("Rule not loaded: " + ruleId);
+        }
+        try {
+            Script script = loader.loadClass(loader.getClassCache().keySet().iterator().next().getName()).newInstance();
+            script.setBinding(new groovy.lang.Binding(context));
+            return script.run();
+        } catch (Exception e) {
+            throw new RuntimeException("Rule execution failed", e);
+        }
+    }
+}`
+      },
+      {
+        name: 'jfr-class-loading.txt',
+        lang: 'text',
+        content: `$ jcmd 1 JFR.start duration=60s filename=/tmp/classload.jfr
+$ jfr print --events jdk.ClassLoad /tmp/classload.jfr | tail -20
+
+jdk.ClassLoad {
+  startTime = 14:30:15.123
+  className = Script1200001
+  classLoader = groovy.lang.GroovyClassLoader@0x7f8c...
+  isHidden = false
+}
+
+jdk.ClassLoad {
+  startTime = 14:30:15.124
+  className = Script1200002
+  classLoader = groovy.lang.GroovyClassLoader@0x7f8c...
+  isHidden = false
+}
+
+# Mỗi reload rule tạo ~1000 class mới (script + inner class + closure class)
+# 50 rules × 1000 class = 50,000 class/reload cycle
+# Reload 24 lần/ngày = 1.2M class/ngày → 1.2M class trong GC log khớp
+# ClassLoader không close → class không unload`
+      }
+    ],
+    questions: [
+      'Tại sao Metaspace tăng vô hạn dù đã set -XX:MaxMetaspaceSize=1g? Giải thích cơ chế class unloading: class chỉ unload khi ClassLoader bị GC.',
+      'Từ heap dump: static field {{scriptCache}} trong {{RuleEngineService}} giữ reference đến 50 {{GroovyClassLoader}}. Giải thích tại sao đây là ClassLoader leak pattern điển hình.',
+      'Mỗi reload tạo {{new GroovyClassLoader()}} và put vào cache. ClassLoader cũ bị overwrite trong map nhưng KHÔNG bị GC. Tại sao? (Hint: classCache trong {{GroovyClassLoader}}).',
+      'So sánh 3 giải pháp: (1) Dùng **single shared {{GroovyClassLoader}}** + {{clearCache()}}, (2) **{{GroovyClassLoader.close()}}** (JDK 9+) trước khi tạo mới, (3) **Script caching** compile một lần, reload chỉ swap binding. Ưu/nhược điểm.',
+      'Tại sao {{jcmd VM.class_histogram}} thấy 1.2M class {{Script1}}...{{Script1200000}} nhưng heap chỉ có ~50 {{GroovyClassLoader}} instance? Giải thích quan hệ 1 ClassLoader → nhiều class.'
+    ],
+    hints: [
+      'MaxMetaspaceSize=1g chỉ giới hạn capacity, không tự dọn class. Class chỉ unload khi ClassLoader GC. Leak ClassLoader → class không unload → Metaspace đầy → OOM dù đã set limit.',
+      'scriptCache static ConcurrentHashMap -> GC Root (System class loader) -> RuleEngineService.class -> static scriptCache -> 50 GroovyClassLoader. ClassLoader không bao giờ GC vì static field giữ reference mạnh.',
+      'GroovyClassLoader giữ reference MẠNH đến TẤT CẢ class đã compile trong \`classCache\` (cache nội bộ của loader). Overwrite value trong map KHÔNG xóa classCache của loader cũ. Nếu loader cũ vẫn có reference khác (thread, stack) thì class không unload; nếu không còn reference, loader có thể bị GC và class của nó unload — không deterministic.',
+      'Giải pháp 1: Single shared GroovyClassLoader. loader.clearCache() xóa classCache → class có thể unload khi loader bị GC. Nhưng clearCache() xóa TẤT CẢ rule, không selective. Giải pháp 2: loader.close() (JDK 9+) -> close ClassLoader, xóa cache, giải phóng tài nguyên loader; KHÔNG unload class ngay (class chỉ unload khi loader bị GC). Tạo mới cho rule đó. Giải pháp 3: Compile script 1 lần -> cache Class object. Reload chỉ tạo Binding mới -> không compile lại -> không tạo class mới. Best performance.',
+      '1 {{GroovyClassLoader.loadClass()}} tạo 1 class (Script) + inner class + closure class ≈ 10-20 class/script. 50 rules × 20 class × 1200 reload = 1.2M class. 50 {{GroovyClassLoader}} instance, mỗi instance giữ ~24,000 class trong classCache.'
+    ],
+    answer: `**Tóm tắt:** Rules engine cho phép reload Groovy script runtime. Code tạo {{new GroovyClassLoader()}} mỗi lần reload, put vào {{static ConcurrentHashMap scriptCache}}. **ClassLoader leak**: static cache giữ reference mạnh đến 50 {{GroovyClassLoader}}. Mỗi {{GroovyClassLoader}} giữ class đã compile trong {{classCache}} (cache nội bộ) → giữ reference đến **tất cả class đã load** (1.2M class Script1...Script1200000). Class chỉ unload khi ClassLoader GC → ClassLoader không GC → **class không bao giờ unload** → Metaspace tăng 1.2M class × ~900 bytes = **~1.08 GB** → vượt {{MaxMetaspaceSize=1g}} → **OOM Metaspace**. Fix: (1) Single shared {{GroovyClassLoader}} + {{clearCache()}} selective, (2) {{loader.close()}} (JDK 9+) trước tạo mới, (3) **Compile-once cache Class object** (khuyên dùng) - reload chỉ swap Binding.
+
+### Nguyên nhân gốc
+
+1. **Metaspace & Class Unloading cơ chế:** Metaspace lưu class metadata. Class **chỉ bị unload khi ClassLoader nạp nó bị GC** (không còn reference nào). {{MaxMetaspaceSize}} chỉ giới hạn dung lượng, **KHÔNG trigger unload**. Nếu ClassLoader leak → class leak → Metaspace OOM.
+2. **Static cache ClassLoader leak:** {{RuleEngineService.scriptCache}} là {{static ConcurrentHashMap}}. Static field = **GC Root** (System class loader → RuleEngineService.class → {{static scriptCache}}). 50 {{GroovyClassLoader}} instance trong map → **không bao giờ GC**.
+3. **ClassLoader giữ class đã compile:** Mỗi {{GroovyClassLoader}} giữ các class đã compile trong {{classCache}} (cache nội bộ). Class chỉ unload khi ClassLoader bị GC (không còn reference nào). Overwrite map value **KHÔNG xóa classCache** của loader cũ; nếu loader cũ vẫn được reference khác thì class không unload, nếu không còn reference thì loader có thể bị GC và class của nó unload — không deterministic.
+4. **Class explosion:** Mỗi reload rule: {{loader.parseClass()}} → tạo class Script{N} + inner class + closure class ≈ **20 class/script**. 50 rules × 20 class × reload 24 lần/ngày × 1000 ngày = **2.4M class** (log thấy 1.2M do GC dọn một phần). Mỗi class ~900 bytes Metaspace (Klass, method, constant pool, annotation) → 1.2M × 900B = **1.08 GB**.
+5. **MaxMetaspaceSize không giúp:** Set 1GB chỉ làm OOM sớm hơn. GC log: Metaspace used 1,020,000K → capacity 1,020,000K → reserved 1,048,576K (1GB). Full GC cưỡng lại (Metaspace GC) nhưng **không dọn được class** vì ClassLoader còn sống → OOM.
+
+### Dẫn chứng (trích dòng cụ thể trong artifact)
+
+| Artifact | Dòng trích | Ý nghĩa |
+|---|---|---|
+| GC log | {{MaxMetaspaceSize: 1024M}} | Limit Metaspace 1GB |
+| GC log | {{Metaspace used 1020000K... Metaspace OOM}} | Metaspace đầy 1.02GB → OOM |
+| jcmd histogram | {{1200000 Script1...Script1200000}} | 1.2M Script class loaded |
+| MAT Dominator | {{scriptCache (static field) in RuleEngineService.class}} | Static cache là GC Root giữ ClassLoader |
+| MAT Dominator | {{loadedClasses: Vector<Class<?>> (1,200,000 entries)}} | GroovyClassLoader giữ reference tất cả class || Code | {{private static final Map<String, GroovyClassLoader> scriptCache}} line 12 | Static cache leak pattern |
+| Code | {{GroovyClassLoader loader = new GroovyClassLoader(...)}} line 20 | Tạo ClassLoader mới mỗi reload |
+| Code | {{scriptCache.put(ruleId, loader)}} line 26 | Overwrite không close ClassLoader cũ |
+| JFR | {{className = Script1200001, classLoader = GroovyClassLoader}} | Mỗi reload tạo class mới, cùng ClassLoader |
+
+### Cách sửa
+
+**Fix 1: Single Shared GroovyClassLoader + clearCache() (CẢI TIẾN NHANH)**
+
+~~~java
+// TRƯỚC: Mỗi reload tạo ClassLoader mới, static cache leak
+private static final Map<String, GroovyClassLoader> scriptCache = new ConcurrentHashMap<>();
+public void reloadRule(String ruleId, String groovyScript) {
+    GroovyClassLoader loader = new GroovyClassLoader(getClass().getClassLoader());
+    Class<? extends Script> scriptClass = loader.parseClass(groovyScript, ruleId + ".groovy");
+    scriptCache.put(ruleId, loader);  // LEAK
+}
+
+// SAU: Single shared loader, clearCache() selective
+private static final GroovyClassLoader SHARED_LOADER = new GroovyClassLoader(getClass().getClassLoader());
+private static final Map<String, Class<? extends Script>> scriptClassCache = new ConcurrentHashMap<>();
+
+public void reloadRule(String ruleId, String groovyScript) {
+    // Compile script -> cache Class object (KHÔNG tạo ClassLoader mới)
+    Class<? extends Script> scriptClass = SHARED_LOADER.parseClass(groovyScript, ruleId + ".groovy");
+    scriptClassCache.put(ruleId, scriptClass);
+    
+    // Selective clear: chỉ xóa class của rule này khỏi loadedClasses Vector
+    // Cần reflection hoặc GroovyClassLoader.clearCache() (xóa TẤT CẢ)
+    // Workaround: tạo child ClassLoader cho rule, close() khi reload
+}
+~~~
+
+- **Vấn đề:** {{GroovyClassLoader.clearCache()}} xóa **TẤT CẢ** classCache. Không selective per rule.
+- **Workaround:** Tạo **child ClassLoader per rule**, {{close()}} khi reload rule đó.
+
+**Fix 2: Child ClassLoader per Rule + close() (JDK 11+, KHUYẾN DÙNG)**
+
+~~~java
+// ClassLoader có close() từ JDK 9+ (xóa cache, giải phóng tài nguyên loader; KHÔNG unload class)
+private static final Map<String, GroovyClassLoader> ruleLoaders = new ConcurrentHashMap<>();
+
+public void reloadRule(String ruleId, String groovyScript) {
+    // Close ClassLoader cũ (xóa cache, giải phóng tài nguyên) trước khi tạo mới
+    GroovyClassLoader oldLoader = ruleLoaders.remove(ruleId);
+    if (oldLoader != null) {
+        try {
+            oldLoader.close();  // JDK 9+: close() xóa cache loader, giải phóng tài nguyên; class chỉ unload khi loader bị GC
+        } catch (Exception e) {
+            log.warn("Failed to close old loader for {}", ruleId, e);
+        }
+    }
+    
+    // Tạo child ClassLoader mới (parent = shared parent)
+    GroovyClassLoader newLoader = new GroovyClassLoader(getClass().getClassLoader());
+    newLoader.parseClass(groovyScript, ruleId + ".groovy");
+    ruleLoaders.put(ruleId, newLoader);
+}
+
+public Object executeRule(String ruleId, Map<String, Object> context) {
+    GroovyClassLoader loader = ruleLoaders.get(ruleId);
+    if (loader == null) throw new IllegalStateException("Rule not loaded: " + ruleId);
+    // loadClass từ loader này...
+}
+~~~
+
+- **Cơ chế:** Java **không có API unload class trực tiếp** từ loader đang sống: {{ClassLoader.close()}} (JDK 9+) chỉ giải phóng tài nguyên của loader và xóa cache; class chỉ có thể unload khi **ClassLoader bị GC** (không còn reference nào), không deterministic.
+- **Yêu cầu:** JDK 11+ (Groovy 3.0+ hỗ trợ). ClassLoader phải không còn reference khác (thread, stack).
+- **Lưu ý:** {{executeRule}} không được giữ reference đến {{Script}} instance lâu (thread-local OK, static field KHÔNG).
+
+**Fix 3: Compile-Once Cache Class Object (BEST PERFORMANCE, KHUYẾN DÙNG PRODUCTION)**
+
+~~~java
+// Compile script 1 lần -> cache Class object. Reload chỉ swap Binding.
+private static final Map<String, Class<? extends Script>> scriptClassCache = new ConcurrentHashMap<>();
+private static final GroovyClassLoader SHARED_LOADER = new GroovyClassLoader(getClass().getClassLoader());
+
+public void reloadRule(String ruleId, String groovyScript) {
+    // Chỉ compile LẦN ĐẦU hoặc khi script THAY ĐỔI (check hash)
+    String scriptHash = hash(groovyScript);
+    String cacheKey = ruleId + ":" + scriptHash;
+    
+    scriptClassCache.computeIfAbsent(cacheKey, k -> {
+        return SHARED_LOADER.parseClass(groovyScript, ruleId + ".groovy");
+    });
+    
+    // Cleanup: xóa cache key cũ của rule này (giữ tối đa 2 version)
+    scriptClassCache.entrySet().removeIf(e -> e.getKey().startsWith(ruleId + ":") && !e.getKey().equals(cacheKey));
+}
+
+// Execute: TẠO SCRIPT INSTANCE MỚI TỪ CLASS ĐÃ CACHE (KHÔNG COMPILE LẠI)
+public Object executeRule(String ruleId, Map<String, Object> context) {
+    // Lấy class mới nhất của rule này
+    Class<? extends Script> scriptClass = scriptClassCache.entrySet().stream()
+        .filter(e -> e.getKey().startsWith(ruleId + ":"))
+        .max(Map.Entry.comparingByKey())  // hash mới nhất
+        .map(Map.Entry::getValue)
+        .orElseThrow(() -> new IllegalStateException("Rule not loaded: " + ruleId));
+    
+    try {
+        Script script = scriptClass.getDeclaredConstructor().newInstance();  // Instance mới, KHÔNG COMPILE
+        script.setBinding(new groovy.lang.Binding(context));
+        return script.run();
+    } catch (Exception e) {
+        throw new RuntimeException("Rule execution failed", e);
+    }
+}
+~~~
+
+- **Cơ chế:** **Compile 1 lần** → cache {{Class<? extends Script>>}}. {{executeRule}} tạo **instance mới** từ class đã cache ({{newInstance()}}). **Không tạo class mới** → **0 Metaspace allocation** sau compile đầu.
+- **Reload:** Chỉ compile khi script **thật sự thay đổi** (check hash). Giữ 2 version cho rollback.
+- **Metaspace:** Chỉ tăng khi có script MỚI. 50 rules × 20 class = 1,000 class cố định. **Không leak**.
+- **Performance:** {{newInstance()}} ~100x nhanh hơn {{parseClass()}}. Phù hợp high-throughput rules engine.
+
+### Phòng ngừa
+
+- **Code review:** Cấm {{new GroovyClassLoader()}}/{{new ScriptEngine()}} trong loop/reload. Cấm static cache {{ClassLoader}}/{{ScriptEngine}}.
+- **Static analysis:** SpotBugs rule detect {{GroovyClassLoader}}/{{ScriptEngine}} instance stored in static field. Custom rule detect {{parseClass}}/{{compile}} trong method không cache kết quả.
+- **Test:** Load test reload 1000 lần, verify Metaspace stable (không tăng), {{jcmd VM.class_histogram}} class count không tăng.
+- **Monitoring:** Alert Metaspace used > 80% MaxMetaspaceSize. Theo dõi {{jvm_classes_loaded}} vs {{jvm_classes_unloaded}} (Micrometer). Leak = loaded tăng, unloaded = 0.
+- **JFR:** Profile {{jdk.ClassLoad}}/{{jdk.ClassUnload}}. Leak = ClassLoad nhiều, ClassUnload = 0.
+- **Groovy config:** {{groovy.use.classvalue=true}} (Groovy 3+) dùng ClassValue cache thay vì Vector, hỗ trợ unload tốt hơn.
+
+### Trả lời mẫu khi phỏng vấn
+
+"Rules engine reload Groovy script runtime. Code tạo {{new GroovyClassLoader()}} mỗi reload, put vào {{static ConcurrentHashMap}}. **ClassLoader leak**: static field = GC Root giữ 50 {{GroovyClassLoader}}. Mỗi {{GroovyClassLoader}} giữ class trong {{classCache}} → reference mạnh đến 1.2M class Script1...Script1200000. Class chỉ unload khi ClassLoader GC → ClassLoader không GC → class không unload → Metaspace 1.2M × 900B = 1.08GB > MaxMetaspaceSize 1GB → OOM. Fix: (1) Single shared loader + {{clearCache()}} (không selective), (2) Child ClassLoader per rule + {{close()}} (JDK 9+, KHÔNG unload class ngay), (3) **Compile-once cache Class object** (best) - reload chỉ tạo instance mới từ class cached, 0 Metaspace allocation. Monitoring: {{jvm_classes_loaded}} tăng, {{jvm_classes_unloaded}} = 0 = leak."
+
+> Senior tip: **Dynamic script/class loading = Metaspace leak risk cao nhất**. Quy tắc vàng: **Class chỉ unload khi ClassLoader GC**. Không bao giờ cache ClassLoader/ScriptEngine trong static field. **Compile-once, instance-per-execution** là pattern chuẩn cho rules engine. Groovy {{parseClass()}} tốn Metaspace, {{newInstance()}} không. {{ClassLoader.close()}} (JDK 9+) chỉ giải phóng tài nguyên loader, **KHÔNG unload class**; class chỉ unload khi loader bị GC. JFR {{jdk.ClassLoad}}/{{jdk.ClassUnload}} 1 phút đủ bắt leak: Load nhiều, Unload = 0. Container memory limit + MaxMetaspaceSize KHÔNG tự fix leak - chỉ làm OOM sớm hơn.`,
+    rubric: [
+      'Giải thích đúng cơ chế: Class chỉ unload khi ClassLoader GC. Static cache giữ ClassLoader → ClassLoader không GC → 1.2M Script class không unload → Metaspace 1.08GB > MaxMetaspaceSize 1GB → OOM.',
+      'Dẫn chứng: GC log MaxMetaspaceSize 1GB, Metaspace used 1020000K OOM. jcmd histogram 1.2M Script class. MAT: static scriptCache -> 50 GroovyClassLoader -> loadedClasses Vector 1.2M entries. Code: static cache, new GroovyClassLoader mỗi reload, put không close.',
+      'Giải thích đúng loadedClasses Vector: GroovyClassLoader giữ reference mạnh tất cả class đã load. Overwrite map không clear Vector cũ → ClassLoader cũ vẫn reachable → class không unload.',
+      'So sánh 3 fix đúng trade-off: (1) Shared loader + clearCache() xóa tất cả (không selective), (2) Child loader + close() (JDK 11+, selective unload), (3) Compile-once cache Class (best performance, 0 Metaspace sau compile). Khuyên Fix 3.',
+      'Giải thích 1.2M class nhưng chỉ 50 ClassLoader: Mỗi reload tạo ~20 class/script (Script + inner + closure). 50 rules × 20 class × 1200 reload = 1.2M class. Mỗi ClassLoader loadedClasses chứa ~24,000 class.'
+    ],
+    tags: ['metaspace', 'classloader-leak', 'groovy', 'dynamic-class-loading', 'script-reload', 'groovycloader', 'closeable', 'class-unloading', 'maxmetaspacesize', 'oom', 'static-cache', 'loadedclasses', 'vector', 'jdk11', 'jfr', 'jcmd', 'class-histogram', 'mat', 'compile-once', 'rules-engine']
+  },
+  {
+    id: 'lab-gc-034',
+    category: 'gc',
+    title: 'Batch đóng sổ cuối ngày: OutOfMemoryError GC overhead limit exceeded, JVM bỏ 98% thời gian vào GC',
+    level: 'senior',
+    scenario: `**Bối cảnh (background):** Hệ thống **ngân hàng bán lẻ** (Spring Boot 3.3, JDK 17.0.11, G1) chạy batch đóng sổ cuối ngày mỗi tối 22:00. Job đọc **5 triệu giao dịch** từ PostgreSQL, tính toán số dư, ghi vào bảng tổng hợp. JVM: {{-Xms4g -Xmx4g -XX:+UseG1GC -Xlog:gc*:file=/logs/gc.log:time,uptime,level,tags}}. Container: 4 vCPU, memory limit 6Gi.
+
+**Thuật ngữ giải thích:**
+- **GC overhead limit exceeded:** Bảo vệ của JVM: nếu trong 5 lần GC liên tiếp JVM bỏ hơn **98% thời gian** vào GC nhưng chỉ thu hồi dưới **2% heap**, JVM ném {{java.lang.OutOfMemoryError: GC overhead limit exceeded}}. Mục đích ngăn app kẹt trong vòng lặp GC vô tận khi heap quá nhỏ so với allocation rate.
+- **Allocation rate:** Tốc độ tạo object mới (MB/giây). allocation rate cao → Eden đầy nhanh → young GC dày đặc.
+- **Young GC / Allocation Failure:** G1 dừng ứng dụng để dọn Eden, copy object sống sang Survivor/Old. Nếu hầu hết object là rác, sau mỗi GC heap chỉ giảm vài MB.
+
+**Triệu chứng:** Lúc 22:00–22:15, batch chạy cực chậm, CPU 100% nhưng tiến độ batch không tăng. Log in ra {{java.lang.OutOfMemoryError: GC overhead limit exceeded}}. Heap used ổn định ~3.8 GB / 4 GB, không tăng theo thời gian, không phải memory leak thông thường. Dev on-call nghi leak và đề xuất tăng heap lên 8 GB.
+
+**Dữ liệu thu thập:** GC log JDK 17, heap histogram, JFR allocation profiling.`,
+    artifacts: [
+      {
+        name: 'gc-batch-eod.log',
+        lang: 'text',
+        content: `[2026-10-25T22:00:00.012+0700][0.012s][info][gc,init] Version: 17.0.11+7 (release)
+[2026-10-25T22:00:00.012+0700][0.012s][info][gc,init] CPUs: 4 total, 4 available
+[2026-10-25T22:00:00.012+0700][0.012s][info][gc,init] Memory: 6144M
+[2026-10-25T22:00:00.012+0700][0.012s][info][gc,init] Heap Region Size: 1M
+[2026-10-25T22:00:00.012+0700][0.012s][info][gc,init] Heap Min Capacity: 4G
+[2026-10-25T22:00:00.012+0700][0.012s][info][gc,init] Heap Max Capacity: 4G
+[2026-10-25T22:00:00.100+0700][0.100s][info][gc] GC(0) Pause Young (Allocation Failure) 3200M->3180M(4096M) 0.085ms
+[2026-10-25T22:00:00.200+0700][0.200s][info][gc] GC(1) Pause Young (Allocation Failure) 3200M->3182M(4096M) 0.092ms
+[2026-10-25T22:00:00.300+0700][0.300s][info][gc] GC(2) Pause Young (Allocation Failure) 3200M->3179M(4096M) 0.088ms
+[2026-10-25T22:00:00.400+0700][0.400s][info][gc] GC(3) Pause Young (Allocation Failure) 3200M->3181M(4096M) 0.090ms
+[2026-10-25T22:00:00.500+0700][0.500s][info][gc] GC(4) Pause Young (Allocation Failure) 3200M->3180M(4096M) 0.087ms
+[2026-10-25T22:00:10.100+0700][10.100s][info][gc] GC(145) Pause Young (Allocation Failure) 3200M->3178M(4096M) 0.105ms
+[2026-10-25T22:00:10.200+0700][10.200s][info][gc] GC(146) Pause Young (Allocation Failure) 3200M->3180M(4096M) 0.102ms
+[2026-10-25T22:00:10.300+0700][10.300s][error][gc] java.lang.OutOfMemoryError: GC overhead limit exceeded
+[2026-10-25T22:00:10.300+0700][10.300s][error][gc]  GC overhead limit exceeded: spent 98% time in GC, recovered 1.2% heap`
+      },
+      {
+        name: 'jmap-histo-2205.txt',
+        lang: 'text',
+        content: `$ kubectl exec batch-job-5d9f8c-x2k1 -- jmap -histo 1 | head -15
+ num     #instances         #bytes  class name (module)
+-------------------------------------------------------
+   1:       2500000      200000000  [C (java.base@17.0.11)
+   2:       2500000      100000000  java.lang.String (java.base@17.0.11)
+   3:       1200000       48000000  vn.batch.model.Transaction (java.base@17.0.11)
+   4:        800000       32000000  java.math.BigDecimal (java.base@17.0.11)
+Total       7080000      428000000`
+      },
+      {
+        name: 'BatchReconciliationJob.java',
+        lang: 'text',
+        content: `package vn.batch.job;
+
+import org.springframework.batch.item.ItemReader;
+import org.springframework.stereotype.Component;
+import vn.batch.model.Transaction;
+import java.util.List;
+
+@Component
+public class BatchReconciliationJob {
+
+    private final TransactionRepository repo;
+
+    public void run() {
+        List<Transaction> txns = repo.findAllUnreconciled();  // 5 triệu dòng, đệm TẤT CẢ vào heap
+        for (Transaction tx : txns) {
+            // tạo tạm String, BigDecimal, char[] cho mỗi giao dịch
+            String key = tx.getAccountId() + "|" + tx.getDate();
+            BigDecimal amount = tx.getAmount().multiply(tx.getRate());
+            // ghi DB ...
+        }
+    }`
+      },
+      {
+        name: 'jfr-allocation-top.txt',
+        lang: 'text',
+        content: `JFR Allocation by class (top 5, 22:00-22:10):
+1. char[]: 2400 MB, 2.5M instances, thread batch-main-1
+2. java.lang.String: 1200 MB, 2.5M instances
+3. java.math.BigDecimal: 600 MB, 1.2M instances
+4. [C: 200 MB
+5. vn.batch.model.Transaction: 150 MB
+
+Allocation rate: 42 GB/phut
+Young GC: mỗi 100 ms, pause 80-100 ms, GC CPU 98%`
+      }
+    ],
+    questions: [
+      'Tại sao JVM ném OutOfMemoryError: GC overhead limit exceeded dù heap 4 GB chưa đầy? Giải thích tiêu chí 98% / 2%.',
+      'Từ GC log và JFR, chứng minh object tạm nào, từ đâu, kích thước bao nhiêu.',
+      'Tăng heap lên 8 GB có fix gốc không? Giải thích tại sao hay không.',
+      'Sửa ngắn hạn và dài hạn. Streaming, batch nhỏ hơn, hay tăng heap?'
+    ],
+    hints: [
+      'GC log: Young GC mỗi 100 ms, mỗi lần 3200M->3180M (chỉ thu hồi ~20 MB trong 4 GB), pause 80-100 ms, GC CPU 98%. Heap không giảm đáng kể sau mỗi GC.',
+      'Tiêu chí GC overhead limit exceeded: 5 GC liên tiếp, >98% thời gian GC, <2% heap thu hồi. Ở đây 98% thời gian GC, chỉ thu hồi ~0.6% heap (20MB/3200MB).',
+      'JFR: char[] và String là top allocation từ batch-main-1, do phép cộng chuỗi tạo key và tạo BigDecimal cho mỗi giao dịch.',
+      'Tăng heap 8 GB: Eden lớn hơn, young GC ít lần hơn, nhưng mỗi lần GC dài hơn, allocation rate vẫn 42 GB/phút. Cuối cùng cũng gặp cùng vấn đề nếu không giảm allocation rate.'
+    ],
+    answer: `**Tóm tắt:** Batch đọc 5 triệu giao dịch vào List<Transaction> trong heap, mỗi giao dịch tạo tạm String, BigDecimal, char[] cho phép tính toán. Allocation rate 42 GB/phút làm Eden đầy mỗi 100 ms, young GC mỗi 100 ms nhưng chỉ thu hồi ~20 MB (0.6% heap) vì hầu hết object vừa tạo đã là rác. JVM bỏ 98% CPU vào GC, recover <2% heap qua 5 GC liên tiếp → ném {{OutOfMemoryError: GC overhead limit exceeded}}. Heap used ổn định ~3.8 GB chứng minh **không phải memory leak**, mà là heap quá nhỏ so với allocation rate. Sửa gốc: **streaming/xử lý theo batch nhỏ**, không đệm toàn bộ 5 triệu dòng vào heap; giảm allocation rate (trừ String concat, dùng StringBuilder hoặc primitive); giữ heap 4 GB.
+
+### Nguyên nhân gốc
+
+1. **GC overhead limit exceeded là gì:** JVM theo dõi khoảng 5 lần GC gần nhất. Nếu >98% thời gian bỏ vào GC và thu hồi <2% heap, JVM ném {{OutOfMemoryError: GC overhead limit exceeded}}. Đây là bảo vệ ngăn app kẹt vòng lặp GC, không phải do heap thực sự hết.
+2. **Heap 4 GB quá nhỏ với allocation rate 42 GB/phút:** Batch đệm 5 triệu giao dịch (List<Transaction>) vào heap, mỗi giao dịch tạo tạm String key, BigDecimal amount, char[] cho phép tính. Eden 4 GB đầy mỗi 100 ms → young GC dày đặc.
+3. **Young GC thu hồi rất ít:** Mỗi GC 3200M->3180M, chỉ thu hồi ~20 MB (0.6% heap). Vì object vừa tạo trong vòng lặp đã là rác (không được giữ lâu), young GC dọn Eden nhưng heap không giảm đáng kể.
+4. **GC CPU 98%:** Thread batch-main-1 bỏ hầu hết thời gian chờ GC, không tiến độ business logic. Batch chạy chậm, CPU 100% nhưng không hoàn thành.
+5. **Không phải memory leak:** Heap used ổn định ~3.8 GB, không tăng theo thời gian. Vấn đề là allocation rate quá cao so với heap, không phải object sống lún.
+
+### Dẫn chứng (trích dòng cụ thể trong artifact)
+
+| Artifact | Dòng trích | Ý nghĩa |
+|---|---|---|
+| GC log | {{GC(0) Pause Young (Allocation Failure) 3200M->3180M(4096M) 0.085ms}} | Young GC mỗi 100 ms, chỉ thu hồi 20 MB |
+| GC log | {{java.lang.OutOfMemoryError: GC overhead limit exceeded}} | JVM kích hoạt bảo vệ GC overhead |
+| GC log | {{spent 98% time in GC, recovered 1.2% heap}} | Đủ tiêu chí 98% / 2% |
+| JFR | {{char[]: 2400 MB, 2.5M instances, thread batch-main-1}} | Object tạm lớn nhất từ batch |
+| JFR | {{Allocation rate: 42 GB/phut}} | Cao gấp 10x heap 4 GB mỗi phút |
+| jmap | {{java.lang.String 2.5M instances, 100 MB}} | Phép cộng chuỗi tạo key cho mỗi giao dịch |
+| Code | {{List<Transaction> txns = repo.findAllUnreconciled()}} | Đệm 5 triệu dòng vào heap, gốc rễ allocation cao |
+
+### Cách sửa
+
+**Ngắn hạn (giảm rủi ro ngay, hôm nay):**
+1. **Xử lý theo batch nhỏ (chunked):** Thay vì findAllUnreconciled() đệm 5 triệu dòng, dùng {{Pageable}} hoặc cursor-based pagination, xử lý 10.000–50.000 dòng/lần, flush và clear persistence context giữa các chunk.
+2. **Tăng heap tạm thời 6 GB:** Giảm tần suất young GC, cho batch chạy xong hôm nay. KHÔNG phải fix gốc.
+
+**Dài hạn (sửa gốc, loại bỏ GC overhead):**
+1. **Streaming / xử lý từng dòng:** Dùng {{Stream}} hoặc {{ResultSet}} xử lý từng giao dịch, không đệm toàn bộ vào List. Hoặc dùng Spring Batch {{Chunk-oriented processing}} với itemReader/itemWriter.
+2. **Giảm allocation rate:** Thay phép cộng chuỗi {{accountId + "|" + date}} bằng {{StringBuilder}}; tránh tạo {{BigDecimal}} tạm nếu có thể dùng primitive/long; tái sử dụng object.
+3. **Giữ heap 4 GB:** Với allocation rate giảm, heap 4 GB đủ. Không cần tăngHeap.
+
+### Phòng ngừa
+
+- Alert khi {{OutOfMemoryError: GC overhead limit exceeded}} xuất hiện trong log ứng dụng.
+- Theo dõi allocation rate và GC CPU qua JFR / Prometheus ({{jvm_gc_memory_allocated_bytes_total}}).
+- Alert khi young GC tần suất > 10 lần/giây hoặc GC CPU > 50% liên tục.
+- Code review: cấm đệm toàn bộ kết quả query lớn vào List mà không có phân trang/streaming.
+- Trước khi chạy batch lớn, Ước tính allocation rate và heap cần; heap nên lớn gấp 3–5 lần working set của batch.
+
+> Senior tip: GC overhead limit exceeded là "kẻ giết silencio" của batch: heap không đầy, không phải leak, nhưng JVM bỏ cả đời vào GC nhưng recover gần không gì. Luôn nhìn **allocation rate** so với heap, không chỉ nhìn heap used. Nếu allocation rate > 5–10× heap/phút, young GC sẽ làm chậm app. Fix bằng giảm allocation rate (streaming, batch nhỏ, tránh object tạm), không phải tăng heap vô tận.`,
+    rubric: [
+      'Giải thích đúng tiêu chí GC overhead limit exceeded: >98% thời gian GC và <2% heap thu hồi qua 5 GC liên tiếp, không phải heap hết.',
+      'Dẫn chứng GC log: young GC mỗi 100 ms, 3200M->3180M chỉ thu hồi 20 MB (0.6%), GC CPU 98%, OOM GC overhead.',
+      'Chứng minh không heap leak: heap ổn định ~3.8 GB, không tăng theo thời gian, vấn đề là allocation rate 42 GB/phút cao quá.',
+      'Chỉ đúng gốc rễ: batch đệm 5 triệu giao dịch vào List, tạo tạm String/BigDecimal/char[] cho mỗi dòng, heap 4 GB quá nhỏ.',
+      'Đề xuất có chiều sâu: xử lý chunked/streaming, giảm allocation rate (StringBuilder, ít BigDecimal), giữ heap 4 GB; giải thích tăng heap 8 GB không phải fix gốc.'
+    ],
+    tags: ['gc', 'gc-overhead-limit-exceeded', 'oom', 'allocation-rate', 'young-gc', 'batch', 'streaming', 'jdk17', 'jfr', 'jmap', 'g1gc']
+  },
+  {
+    id: 'lab-gc-035',
+    category: 'gc',
+    title: 'G1 concurrent marking kịp thay allocation rate: Concurrent Mode Failure gây Full GC 3 giây mỗi 15 phút',
+    level: 'senior',
+    scenario: `**Bối cảnh (background):** Hệ thống **thanh toán điện tử** (Spring Boot 3.3, JDK 17.0.11, G1) xử lý 8000 TPS, heap 16 GB. JVM: {{-Xms16g -Xmx16g -XX:+UseG1GC -XX:InitiatingHeapOccupancyPercent=45 -Xlog:gc*:file=/logs/gc.log:time,uptime,level,tags}}. Container: 8 vCPU, memory limit 24Gi.
+
+**Thuật ngữ giải thích:**
+- **Concurrent marking:** G1 đánh dấu object sống trong Old Gen trong các luồng nền (concurrent), không dừng ứng dụng. Để đánh dấu kịp, G1 bắt đầu marking sớm khi old gen đạt {{InitiatingHeapOccupancyPercent}} (mặc định 45%).
+- **Concurrent Mode Failure:** Nếu allocation rate quá cao, old gen đầy trước khi concurrent marking hoàn tất, G1 không thể tiếp tục đánh dấu nền → kích hoạt **Full GC** (stop-the-world) để dọn dẹp. Đây là "concurrent mode failure".
+- **Full GC do concurrent mode failure:** Pause stop-the-world, quét toàn bộ heap 16 GB → pause 2–4 giây, làm p99 API vọt lên.
+
+**Triệu chứng:** Từ 10:00–10:30 ngày 25/10/2026 (giờ cao điểm thanh toán), p99 API thanh toán tăng từ 150 ms lên **3–4 giây**. GC log ghi nhận **Pause Full** dày đặc mỗi 15–20 phút, mỗi lần 2.5–3.5 giây. Heap used ổn định ~10 GB / 16 GB, không tăng theo thời gian, không có OOM. Dev on-call nghi memory leak và đề xuất tăng heap lên 24 GB.
+
+**Dữ liệu thu thập:** GC log JDK 17, JFR GC pause analysis, heap histogram.`,
+    artifacts: [
+      {
+        name: 'gc-payment-16g.log',
+        lang: 'text',
+        content: `[2026-10-25T10:00:00.012+0700][0.012s][info][gc,init] Version: 17.0.11+7 (release)
+[2026-10-25T10:00:00.012+0700][0.012s][info][gc,init] CPUs: 8 total, 8 available
+[2026-10-25T10:00:00.012+0700][0.012s][info][gc,init] Memory: 24576M
+[2026-10-25T10:00:00.012+0700][0.012s][info][gc,init] Heap Region Size: 2M
+[2026-10-25T10:00:00.012+0700][0.012s][info][gc,init] Heap Min Capacity: 16G
+[2026-10-25T10:00:00.012+0700][0.012s][info][gc,init] Heap Max Capacity: 16G
+[2026-10-25T10:00:00.012+0700][0.012s][info][gc,init] Initiating Heap Occupancy Percent: 45
+[2026-10-25T10:02:15.100+0700][135.100s][info][gc] GC(0) Pause Young (Allocation Failure) 2100M->900M(16384M) 0.150ms
+[2026-10-25T10:05:30.200+0700][330.200s][info][gc] GC(1) Pause Young (Normal) 2200M->950M(16384M) 0.140ms
+[2026-10-25T10:05:30.250+0700][330.250s][info][gc] GC(1) Concurrent marking started
+[2026-10-25T10:18:45.400+0700][1125.400s][info][gc] GC(2) Pause Young (Allocation Failure) 3100M->1400M(16384M) 0.160ms
+[2026-10-25T10:18:45.450+0700][1125.450s][info][gc] GC(2) Concurrent marking interrupted by allocation failure
+[2026-10-25T10:18:45.500+0700][1125.500s][info][gc] GC(3) Pause Full (Concurrent Mode Failure) 3100M->1350M(16384M) 2850.210ms
+[2026-10-25T10:35:10.100+0700][2110.100s][info][gc] GC(4) Pause Young (Normal) 3000M->1300M(16384M) 0.155ms
+[2026-10-25T10:35:10.150+0700][2110.150s][info][gc] GC(4) Concurrent marking started
+[2026-10-25T10:48:20.300+0700][2900.300s][info][gc] GC(5) Pause Young (Allocation Failure) 3200M->1450M(16384M) 0.170ms
+[2026-10-25T10:48:20.350+0700][2900.350s][info][gc] GC(5) Concurrent marking interrupted by allocation failure
+[2026-10-25T10:48:20.400+0700][2900.400s][info][gc] GC(6) Pause Full (Concurrent Mode Failure) 3200M->1400M(16384M) 3100.450ms`
+      },
+      {
+        name: 'jfr-gc-pause.txt',
+        lang: 'text',
+        content: `JFR GC pause analysis (10:00-10:50):
+- GC(3) Pause Full (Concurrent Mode Failure): 2850 ms, stop-the-world, toàn bộ thread ứng dụng dừng
+- GC(6) Pause Full (Concurrent Mode Failure): 3100 ms, stop-the-world
+- Young GC: 140-170 ms, không gây vấn đề
+- Concurrent marking: bắt đầu lúc 10:05, 10:35, nhưng bị gián đoạn bởi allocation failure trước khi hoàn tất
+- Old gen trước Full GC: ~3100 MB, sau: ~1350 MB (chỉ thu hồi 1750 MB trong 16 GB)
+
+Allocation rate: 5 GB/phut (8000 TPS, mỗi request tạm object 600 KB)
+Working set old gen: ~10 GB / 16 GB`
+      },
+      {
+        name: 'PaymentService.java',
+        lang: 'text',
+        content: `package vn.payment.service;
+
+import org.springframework.stereotype.Service;
+import vn.payment.model.Transaction;
+import java.util.List;
+
+@Service
+public class PaymentService {
+
+    private final TransactionRepository repo;
+
+    public void process(List<Transaction> batch) {
+        // Mỗi request tạo tạm object lớn (600 KB) cho fraud check, enrichment
+        for (Transaction tx : batch) {
+            FraudResult result = fraudChecker.check(tx);  // tạo object tạm 600 KB
+            enrich(tx, result);
+            repo.save(tx);
+        }
+    }`
+      }
+    ],
+    questions: [
+      'Nguyên nhân gốc của Pause Full 3 giây mỗi 15 phút là gì? Đây có phải memory leak không?',
+      'Tại sao concurrent marking bị gián đoạn? Giải thích liên quan đến InitiatingHeapOccupancyPercent và allocation rate.',
+      'Tăng heap lên 24 GB có fix gốc không? Giải thích.',
+      'Sửa ngắn hạn và dài hạn. Giảm InitiatingHeapOccupancyPercent, giảm allocation rate, hay tăng heap?'
+    ],
+    hints: [
+      'GC log: GC(1) Concurrent marking started lúc 10:05, nhưng GC(2) Concurrent marking interrupted by allocation failure lúc 10:18, rồi GC(3) Pause Full (Concurrent Mode Failure) 2850 ms. Lặp lại ở 10:35 và 10:48.',
+      'InitiatingHeapOccupancyPercent=45: old gen đạt 45% (7.2 GB/16 GB) G1 bắt đầu marking. Nhưng allocation rate 5 GB/phút cao quá, old gen đầy trước khi marking hoàn tất.',
+      'Heap used ổn định ~10 GB, không tăng theo thời gian, không OOM → không phải memory leak. Vấn đề là marking không kịp allocation rate.',
+      'Tăng heap 24 GB: old gen lớn hơn, marking có nhiều thời gian hơn, nhưng allocation rate vẫn 5 GB/phút. Cuối cùng cũng gặp cùng vấn đề nếu marking vẫn không kịp.'
+    ],
+    answer: `**Tóm tắt:** Hệ thống thanh toán 8000 TPS, heap 16 GB, G1 với InitiatingHeapOccupancyPercent=45. Old gen đạt 45% (~7.2 GB) G1 bắt đầu concurrent marking trong luồng nền. Nhưng allocation rate 5 GB/phút quá cao, old gen đầy trước khi marking hoàn tất → G1 gián đoạn marking và kích hoạt Full GC (Concurrent Mode Failure) stop-the-world 2.8–3.1 giây, làm p99 API vọt lên 3–4 giây. Heap used ổn định ~10 GB chứng minh **không phải memory leak**, mà là marking không kịp allocation rate. Sửa gốc: giảm {{InitiatingHeapOccupancyPercent}} (bắt đầu marking sớm hơn), giảm allocation rate (ít object tạm hơn), hoặc dùng ZGC. Không nên chỉ tăng heap.
+
+### Nguyên nhân gốc
+
+1. **Concurrent marking và InitiatingHeapOccupancyPercent:** G1 đánh dấu object sống trong old gen bằng các luồng nền (concurrent) để không dừng ứng dụng. Khi old gen đạt {{InitiatingHeapOccupancyPercent}} (mặc định 45%, ở đây 45% = 7.2 GB/16 GB), G1 bắt đầu marking. Marking cần thời gian tương đối với heap.
+2. **Allocation rate vượt quá tốc độ marking:** Old gen tăng 5 GB/phút (8000 TPS × 600 KB object tạm/request). Marking chạy nền nhưng không kịp với tốc độ old gen tăng. Old gen đạt 100% trước khi marking hoàn tất.
+3. **Concurrent Mode Failure → Full GC:** Khi old gen đầy trong khi marking chưa xong, G1 không thể tiếp tục marking nền → gián đoạn marking → kích hoạt **Full GC** stop-the-world. GC(3) {{Pause Full (Concurrent Mode Failure) ... 2850ms}}, GC(6) {{3100ms}}. Toàn bộ thread ứng dụng dừng 3 giây.
+4. **Heap used ổn định ~10 GB:** Sau Full GC 3100M->1350M, heap về mức ổn định. Không tăng theo thời gian, không OOM → **không phải memory leak**.
+5. **Tăng heap không phải fix gốc:** Tăng heap 24 GB làm old gen lớn hơn, marking có thời gian dài hơn, nhưng allocation rate vẫn 5 GB/phút. Cuối cùng marking vẫn không kịp, Full GC vẫn xảy ra (chỉ ít lần hơn, mỗi lần dài hơn).
+
+### Dẫn chứng (trích dòng cụ thể trong artifact)
+
+| Artifact | Dòng trích | Ý nghĩa |
+|---|---|---|
+| GC log | {{GC(1) Concurrent marking started}} (10:05) | G1 bắt đầu marking nền |
+| GC log | {{GC(2) Concurrent marking interrupted by allocation failure}} (10:18) | Old gen đầy trước khi marking xong |
+| GC log | {{GC(3) Pause Full (Concurrent Mode Failure) ... 2850.210ms}} | Full GC stop-the-world 2.85 giây |
+| GC log | {{GC(4) Concurrent marking started}} (10:35), {{GC(5) ... interrupted}} (10:48) | Lặp lại chuỗi marking → Full GC |
+| JFR | {{Pause Full (Concurrent Mode Failure): 3100 ms, stop-the-world}} | Xác nhận pause 3 giây dừng toàn bộ app |
+| JFR | {{Allocation rate: 5 GB/phut}} | Cao gấp nhiều lần old gen, marking không kịp thay |
+| Config | {{InitiatingHeapOccupancyPercent=45}} | G1 bắt đầu marking khi old gen 45%, có thể quá muộn |
+
+### Cách sửa
+
+**Ngắn hạn (giảm rủi ro ngay, hôm nay):**
+1. **Giảm InitiatingHeapOccupancyPercent:** Giảm từ 45 xuống 30–35, giúp G1 bắt đầu marking sớm hơn, marking có nhiều thời gian hơn trước khi old gen đầy.
+2. **Giới hạn TPS / bulkhead:** Giới hạn số request thanh toán xử lý đồng thời, giảm allocation rate tạm thời.
+
+**Dài hạn (sửa gốc, loại bỏ Concurrent Mode Failure):**
+1. **Giảm allocation rate:** Mỗi request tạo object tạm 600 KB (fraud check, enrichment). Tái sử dụng object, dùng primitive, tránh tạo object lớn tạm. Mục tiêu giảm allocation rate xuống dưới 1–2 GB/phút.
+2. **Dùng ZGC (khuyên dùng nếu latency nhạy cảm):** ZGC không có concurrent marking giống G1, pause thường <1 ms, không phụ thuộc heap size.
+   ~~~java
+   -XX:+UseZGC -Xms16g -Xmx16g
+   ~~~
+3. **Tăng heap nếu workload thực sự cần 16 GB:** Chỉ tăng khi allocation rate đã giảm và heap thực sự không đủ working set.
+
+### Phòng ngừa
+
+- Alert khi GC log có {{Pause Full (Concurrent Mode Failure)}}.
+- Theo dõi old gen occupancy và InitiatingHeapOccupancyPercent; nếu old gen đạt 80–90% trước khi marking hoàn tất, cần giảm ngưỡng hoặc giảm allocation rate.
+- JFR theo dõi {{jdk.GCPause}} và {{jdk.ConcurrentMarking}}; marking bị gián đoạn lặp lại = dấu hiệu Concurrent Mode Failure.
+- Code review: cấm tạo object lớn (>100 KB) tạm trong đường dẫn critical (request/response).
+- Load test với TPS thực tế, quan sát GC log: marking phải hoàn tất trước khi old gen đầy.
+
+> Senior tip: Concurrent Mode Failure là "kẻ giết silencio" của G1 trên heap lớn, allocation rate cao: marking nền không kịp, G1 buộc Full GC 3 giây, p99 vọt lên. Không phải memory leak, heap ổn định. Quy tắc: nếu old gen đầy trước khi marking hoàn tất, hãy **giảm InitiatingHeapOccupancyPercent** (bắt đầu sớm hơn) **hoặc giảm allocation rate**, không phải tăng heap. Nếu latency nhạy cảm và heap lớn, ZGC là lựa chọn bền vững hơn G1.`,
+    rubric: [
+      'Giải thích đúng cơ chế: G1 concurrent marking nền, InitiatingHeapOccupancyPercent=45 kích hoạt marking, allocation rate cao làm old gen đầy trước khi marking xong → Concurrent Mode Failure → Full GC.',
+      'Dẫn chứng GC log: marking started 10:05, interrupted 10:18, Full GC 2850ms; lặp lại 10:35/10:48. JFR pause 3100 ms stop-the-world.',
+      'Chứng minh không heap leak: heap ổn định ~10 GB, không tăng theo thời gian, không OOM; vấn đề là marking không kịp allocation rate 5 GB/phút.',
+      'Chỉ đúng gốc rễ: G1 marking không kịp allocation rate (8000 TPS × 600 KB), InitiatingHeapOccupancyPercent 45 có thể quá muộn.',
+      'Đề xuất có chiều sâu: giảm InitiatingHeapOccupancyPercent (30-35%), giảm allocation rate (ít object tạm), ZGC cho latency nhạy cảm; giải thích tăng heap 24 GB không phải fix gốc.'
+    ],
+    tags: ['gc', 'g1gc', 'concurrent-mode-failure', 'concurrent-marking', 'initiating-heap-occupancy', 'full-gc', 'allocation-rate', 'zgc', 'jdk17', 'jfr', 'payment', 'tps']
   }
-  );
+);
