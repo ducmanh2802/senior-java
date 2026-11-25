@@ -4988,6 +4988,343 @@ Bất biến là nóng: danh sách không được thay thành phần, nhưng n�
 > Senior tip: dùng List.of cho hằng số dữ liệu (cấu hình, danh sách mã trạng thái) để ngăn sửa nhầm và thể hiện ý định "không đụng". Cần list sửa được → new ArrayList<>(List.of(...)); cần snapshot an toàn từ list caller → List.copyOf.`
 },
 {
+  id: 'qz-collections-042', topic: 'collections',
+  q: `Đoạn code sau in ra gì?
+~~~java
+TreeMap<Integer, String> m = new TreeMap<>();
+m.put(10, "a");
+m.put(20, "b");
+m.put(30, "c");
+System.out.println(m.floorKey(25) + " " + m.ceilingKey(25) + " "
+    + m.higherKey(20) + " " + m.lowerKey(20));
+~~~`,
+  options: [
+    `10 20 20 10`,
+    `20 20 30 10`,
+    `20 30 30 10`,
+    `30 30 30 10`
+  ],
+  answer: 2,
+  explain: `**Đáp án đúng: 20 30 30 10.**
+
+### NavigableMap là gì
+{{TreeMap}} (cây đỏ-đen, các phần tử luôn được sắp theo khóa) ngoài các method cơ bản còn implements {{NavigableMap}} — nhóm method "tìm lân cận" rất mạnh: tìm khóa lớn nhất/nhỏ nhất trong một khoảng, hoặc lấy "sàn/trần" quanh một mốc. Đây là thứ hay dùng khi làm lịch, phiên bản, khoảng giá.
+
+### Bấm từng method
+- {{floorKey(25)}}: khóa lớn nhất mà **nhỏ hơn hoặc bằng** 25 → 20.
+- {{ceilingKey(25)}}: khóa nhỏ nhất mà **lớn hơn hoặc bằng** 25 → 30.
+- {{higherKey(20)}}: khóa nhỏ nhất mà **lớn hơn hẳn** 20 (không tính 20) → 30.
+- {{lowerKey(20)}}: khóa lớn nhất mà **nhỏ hơn hẳn** 20 (không tính 20) → 10.
+
+Ghép lại: {{20 30 30 10}}.
+
+### Vì sao các phương án còn lại sai
+- **10 20 20 10**: nhầm floorKey(25) thành 10 và ceilingKey(25) thành 20 — Floor là "sàn" (nhỏ nhất trong các số ≥ mốc... thực ra floor là lớn nhất trong các số ≤ mốc), dễ lẫn với lower.
+- **20 20 30 10**: nhầm ceilingKey(25) = 20 (20 < 25 nên không phải trần) và higherKey(20) = 20 (higher phải lớn hơn hẳn).
+- **30 30 30 10**: nhầm floorKey(25) = 30 (30 > 25 nên không phải sàn).
+
+### Quy tắc nhớ nhanh
+- floor = "≤" (nhỏ hơn hoặc bằng), ceiling = "≥" (lớn hơn hoặc bằng).
+- lower = "<" (nhỏ hơn hẳn), higher = ">" (lớn hơn hẳn).
+- Tất cả trả {{null}} nếu không có khóa thỏa (không ném exception).
+
+> Senior tip: khi cần "đơn hàng gần nhất trước/sau một mốc thời gian", {{floorEntry}}/{{ceilingEntry}} trả cả entry (key + value) và an toàn hơn tự get. Các view {{headMap}}/{{tailMap}}/{{subMap}} mặc định **không bao gồm** mốc (inclusive = false); muốn bao gồm thì dùng overload có tham số boolean.`
+},
+{
+  id: 'qz-collections-043', topic: 'collections',
+  q: `Vì sao {{HashMap}} luôn có capacity là **luỹ thừa của 2** và dùng công thức {{h ^ (h >>> 16)}} trước khi lấy chỉ số bucket?`,
+  options: [
+    `Capacity luỹ thừa 2 nên (n-1) có toàn bit thấp bằng 1, cho phép index = (n-1) & hash (phép AND nhanh) thay cho phép chia lấy dư; spread h ^ (h >>> 16) trộn bit cao xuống bit thấp để giảm va chạm`,
+    `Capacity là số nguyên tố để giảm va chạm, index = hash % capacity`,
+    `Spread h ^ (h >>> 16) làm mất thông tin bit cao nên bucket chỉ phụ thuộc 16 bit thấp, làm tăng va chạm`,
+    `HashMap dùng phép chia lấy dư vì phép AND chỉ hoạt động với capacity lẻ`
+  ],
+  answer: 0,
+  explain: `**Đáp án đúng: capacity luỹ thừa 2 + spread để AND thay chia và trộn bit.**
+
+### Vì sao cần "trộn bit" (spread)
+{{HashMap}} băm khóa bằng {{hashCode()}} rồi cắt một đoạn bit để chọn bucket. Nếu chỉ dùng đúng {{n-1}} bit thấp (với n là capacity), thì hai khóa chỉ khác nhau ở **bit cao** của hash sẽ rơi vào cùng bucket dù bản thân hash khác nhau → va chạm (collision) tăng, hiệu năng giảm. Để khắc phục, HashMap trộn: {{h = key.hashCode(); h = h ^ (h >>> 16);}} — lấy 16 bit cao XOR với 16 bit thấp, đưa thông tin bit cao xuống vùng bit thấp sẽ được dùng. Chi phí một phép XOR + dịch, không đáng kể.
+
+### Vì sao capacity là luỹ thừa 2
+Khi capacity n là luỹ thừa 2 (16, 32, 64…), {{n-1}} có dạng 0…01111 (toàn bit thấp bằng 1). Khi đó {{index = (n-1) & hash}} (phép AND) tương đương {{hash % n}} nhưng **nhanh hơn nhiều** (AND một lệnh máy, không cần phép chia). Đây là lý do HashMap không dùng capacity tùy ý.
+
+### Ví dụ số
+capacity 16 → n-1 = 15 = 0b1111. hash (sau spread) = 0b…0110 → index = 0110 & 1111 = 6. Nếu capacity là 15 (không luỹ thừa 2) thì 14 = 0b1110, phép AND sẽ luôn mất bit thấp nhất → phân bố lệch.
+
+### Vì sao các phương án còn lại sai
+- **Số nguyên tố + %**: đây là cách của một số hash table khác (ví dụ Java 7 HashMap dùng luỹ thừa 2 chứ không nguyên tố); % chậm hơn AND.
+- **Spread làm mất bit cao**: ngược lại, spread **giữ** và trộn thông tin bit cao xuống thấp, giảm va chạm.
+- **AND chỉ chạy với capacity lẻ**: AND chạy với mọi số; chỉ khi capacity là luỹ thừa 2 thì (n-1) mới có toàn bit thấp = 1 nên mới tương đương %.
+
+### Liên hệ treeify
+Khi một bucket quá dài (≥ 8 node và table ≥ 64), HashMap chuyển bucket đó thành cây đỏ-đen để get từ O(n) về O(log n). Spread tốt giúp bucket ngắn, ít khi phải treeify.
+
+> Senior tip: đừng tự viết {{hashCode()}} trả về hằng số (mọi key dồn một bucket) — lúc đó dù có spread, mọi hash đều bằng nhau nên vẫn va chạm toàn bộ. Dùng {{Objects.hash(...)}} hoặc record tự sinh, và nhớ khóa phải bất biến.`
+},
+{
+  id: 'qz-collections-044', topic: 'collections',
+  q: `Đoạn code sau chạy trên Java 17 cho kết quả gì?
+~~~java
+Map<String, Integer> m = new ConcurrentHashMap<>();
+m.computeIfAbsent("a", k -> m.computeIfAbsent("a", x -> 1));
+System.out.println(m);
+~~~`,
+  options: [
+    `In ra {a=1} vì computeIfAbsent lồng nhau được hỗ trợ đầy đủ`,
+    `Ném StackOverflowError do đệ quy vô hạn`,
+    `Chương trình treo vĩnh viễn (deadlock) trên cùng một bin`,
+    `Ném IllegalStateException (Recursive update) vì phát hiện cập nhật đệ quy trong cùng bin`
+  ],
+  answer: 3,
+  explain: `**Đáp án đúng: ném IllegalStateException với thông điệp Recursive update.**
+
+### Cái gì đang xảy ra
+{{ConcurrentHashMap.computeIfAbsent(k, f)}} đảm bảo hàm {{f}} chạy **tối đa một lần** cho mỗi khóa bằng cách giữ **khóa (lock) của bin** chứa khóa {{k}} trong suốt thời gian chạy {{f}}. Trong ví dụ, khi đang giữ khóa bin của "a", hàm lại gọi {{computeIfAbsent("a", …)}} — chính là khóa "a" đang giữ, cùng một bin, nên thread cố giữ thêm một khóa mà nó đang giữ → đệ quy trên cùng một bin.
+
+### Vì sao ném IllegalStateException
+Từ **Java 9**, để tránh treo/đệ quy vô hạn, {{ConcurrentHashMap}} **phát hiện** trường hợp này và ném {{IllegalStateException("Recursive update")}}. (Ở Java 8, hành vi không xác định: có thể deadlock, stack overflow, hoặc chạy nếu khác bin — đây chính là lý do Java 9 thêm kiểm tra.) Thông điệp "Recursive update" nghĩa là "bạn đang cập nhật map lần nữa ngay trong lúc đang cập nhật".
+
+### Vì sao các phương án còn lại sai
+- **In {a=1}**: hàm lồng nhau không được phép khi cùng bin; không có kết quả nào được in ra.
+- **StackOverflowError**: không phải đệ quy Java thuần (mỗi lần gọi không tạo thêm frame vô hạn theo cách đó); cơ chế khóa của CHM chặn trước bằng IllegalStateException.
+- **Treo vĩnh viễn**: Java 9+ đã chặn bằng exception thay vì để treo; treo là hành vi có thể gặp ở Java 8 chứ không phải Java 17.
+
+### Cách làm đúng
+Tính toán giá trị **không** gọi lại chính map đó trong hàm, hoặc tính trước rồi mới put:
+~~~java
+int b = m.computeIfAbsent("b", x -> 1);   // tính "b" trước
+m.computeIfAbsent("a", k -> b);            // rồi mới tới "a"
+~~~
+Với giá trị tốn kém (gọi DB, RPC), dùng {{CompletableFuture}} + {{AsyncLoadingCache}} (Caffeine) để không giữ khóa bin trong lúc I/O.
+
+> Senior tip: hàm truyền vào {{computeIfAbsent}}/{{compute}}/{{merge}} của {{ConcurrentHashMap}} chạy **trong lúc giữ khóa bin** — phải ngắn, không I/O, không gọi lại chính map, không ném checked exception. Đây là lỗi phỏng vấn kinh điển: "computeIfAbsent có an toàn không?" — an toàn khi hàm thuần và ngắn.`
+},
+{
+  id: 'qz-collections-045', topic: 'collections', multi: true,
+  q: `(Chọn 2) Về {{CopyOnWriteArrayList}} (mảng ghi-khi-sao-chép, Java 5), phát biểu nào đúng?`,
+  options: [
+    `iterator là snapshot tại thời điểm tạo: không ném ConcurrentModificationException và không thấy thay đổi xảy ra sau đó`,
+    `mỗi lần add/set/remove đều copy toàn bộ mảng nền (O(n)) nên hợp với workload đọc nhiều, ghi rất ít`,
+    `mọi thao tác get/add đều O(1) và an toàn đa luồng mà không tốn thêm bộ nhớ`,
+    `iterator phản ánh ngay mọi thay đổi của list theo thời gian thực (real-time) như ArrayList`,
+    `vì copy mảng nên không cần bất kỳ khoá nào, nhiều thread ghi cùng lúc vẫn luôn đúng`
+  ],
+  answer: [0, 1],
+  explain: `**Đáp án đúng: iterator là snapshot (không CME) và ghi tốn O(n) do copy mảng.**
+
+### CopyOnWriteArrayList là gì
+Là một {{List}} an toàn đa luồng, nhưng theo chiến lược "đọc thì tự do, ghi thì copy cả mảng": mỗi khi có thay đổi cấu trúc ({{add}}/{{set}}/{{remove}}), nó tạo một **bản sao mới** của mảng nền rồi mới thay con trỏ. Nhờ vậy các thread đang đọc (kể cả đang duyệt bằng iterator) vẫn thấy mảng cũ, không bị ảnh hưởng.
+
+### Vì sao hai phát biểu đúng
+- **Snapshot iterator**: iterator giữ tham chiếu tới mảng tại thời điểm tạo; không có khái niệm {{modCount}} như ArrayList nên **không ném** {{ConcurrentModificationException}}, và cũng **không** thấy phần tử thêm/xoá sau đó. Đây là điểm khác biệt lớn so với fail-fast của ArrayList.
+- **Ghi O(n)**: mỗi lần ghi phải copy toàn bộ mảng (chi phí bộ nhớ tạm gấp đôi). Vì thế nó chỉ hợp khi **đọc rất nhiều, ghi cực ít** — ví dụ danh sách listener/cấu hình nạp một lần rồi đọc liên tục.
+
+### Vì sao các phương án còn lại sai
+- **O(1) không tốn thêm bộ nhớ**: get là O(1) nhưng add/set/remove là O(n) và tốn bộ nhớ bản sao.
+- **Real-time như ArrayList**: ngược lại, iterator là snapshot, không thấy thay đổi.
+- **Không cần khoá, nhiều thread ghi cùng lúc vẫn đúng**: việc ghi vẫn được **serialize bằng một lock** (ReentrantLock) để hai lần copy không đè nhau; "không cần khoá" là sai.
+
+> Senior tip: trong production, nếu cần list an toàn đa luồng đọc/ghi xen kẽ, {{CopyOnWriteArrayList}} thường **tệ** vì mỗi lần ghi copy O(n); cân nhắc {{ConcurrentHashMap}} với key là phần tử, hoặc Caffeine, hoặc {{Collections.synchronizedList}} kèm khóa khi duyệt. CopyOnWrite chỉ thắng khi tỉ lệ đọc/ghi rất cao (như danh sách listener).`
+},
+{
+  id: 'qz-collections-046', topic: 'collections',
+  q: `Đoạn code sau in ra gì?
+~~~java
+PriorityQueue<Integer> pq = new PriorityQueue<>();
+pq.add(3);
+pq.add(1);
+pq.add(2);
+System.out.println(pq.peek() + " " + pq.poll() + " " + pq.poll());
+~~~`,
+  options: [
+    `1 3 2`,
+    `1 1 2`,
+    `3 3 1`,
+    `ném NullPointerException vì PriorityQueue cấm null`
+  ],
+  answer: 1,
+  explain: `**Đáp án đúng: 1 1 2.**
+
+### PriorityQueue là gì
+{{PriorityQueue}} (Java 5) là hàng đợi ưu tiên dựa trên **min-heap** (cây nén trong mảng, gốc luôn là phần tử nhỏ nhất theo thứ tự tự nhiên hoặc Comparator). Nó không sắp toàn bộ phần tử — chỉ đảm bảo phần tử "nhỏ nhất" luôn ở đầu ({{peek}}/{{poll}}).
+
+### Bấm từng dòng
+- Thêm 3, 1, 2. Heap giữ phần tử nhỏ nhất ở gốc.
+- {{peek()}} trả gốc (nhỏ nhất) nhưng **không xoá** → 1.
+- {{poll()}} trả gốc rồi **xoá** và sắp lại heap → 1.
+- {{poll()}} lần nữa → 2.
+Ghép lại: {{1 1 2}}.
+
+### Vì sao các phương án còn lại sai
+- **1 3 2**: tưởng peek rồi poll trả phần tử khác nhau; thực ra cả hai đều thao tác trên gốc (nhỏ nhất), peek không xoá nên poll đầu vẫn là 1.
+- **3 3 1**: tưởng là max-heap (gốc lớn nhất); mặc định PriorityQueue là **min-heap**.
+- **NullPointerException vì cấm null**: đoạn code không thêm null nào; PriorityQueue **thực sự cấm null** ({{add(null)}} ném NPE vì null không so sánh được), nhưng ở đây không có null nên không ném.
+
+### Lưu ý quan trọng
+{{iterator()}} của PriorityQueue duyệt theo thứ tự mảng heap, **không** phải thứ tự sắp xếp. Muốn lấy ra theo thứ tự tăng dần phải {{poll()}} liên tục. Với object, phải truyền {{Comparator}} hoặc để phần tử implements {{Comparable}}.
+
+> Senior tip: PriorityQueue **không thread-safe**; cần đa luồng dùng {{PriorityBlockingQueue}}. Khi top-K với dữ liệu lớn, dùng min-heap kích thước K (giữ K phần tử lớn nhất) — xem bài "top 100 sản phẩm". Nếu hai phần tử "bằng nhau" theo comparator, PriorityQueue không đảm bảo thứ tự ổn định.`
+},
+{
+  id: 'qz-collections-047', topic: 'collections',
+  q: `Đoạn code sau cho kết quả gì?
+~~~java
+Map<String, Integer> src = new HashMap<>();
+src.put("a", null);
+Map<String, Integer> copy = Map.copyOf(src);
+System.out.println(copy);
+~~~`,
+  options: [
+    `In ra {a=null} vì Map.copyOf giữ nguyên null`,
+    `Ném UnsupportedOperationException`,
+    `Ném NullPointerException vì Map.copyOf cấm key và value null`,
+    `In ra {} vì null bị bỏ qua`
+  ],
+  answer: 2,
+  explain: `**Đáp án đúng: ném NullPointerException.**
+
+### Map.copyOf là gì
+{{Map.copyOf(m)}} (Java 10) tạo một **bản copy bất biến** (immutable) của map: không cho sửa cấu trúc, và **không chấp nhận khóa hoặc value null** — nếu có, nó ném {{NullPointerException}} ngay khi tạo. Đây là điểm khác biệt cố ý so với {{Collections.unmodifiableMap}}.
+
+### Vì sao ném NPE
+{{src}} có value null ({{src.put("a", null)}}). Khi {{Map.copyOf}} duyệt để copy, nó kiểm tra từng entry và gặp value null → ném {{NullPointerException}}. Tương tự {{List.copyOf}}/{{Set.copyOf}} cũng cấm null; {{Map.of}}/{{List.of}} cũng vậy. Mục đích: collection bất biến "sạch" không có null để tránh {{contains(null)}} mơ hồ và lỗi unboxing về sau.
+
+### Vì sao các phương án còn lại sai
+- **In {a=null}**: copyOf không giữ null; nó từ chối trước khi tạo xong.
+- **UnsupportedOperationException**: đây là exception khi **sửa** list/map bất biến (add/put), không phải khi tạo từ nguồn có null.
+- **In {}**: không bỏ qua null; ném lỗi chứ không lọc.
+
+### So sánh nhanh
+- {{Collections.unmodifiableMap(src)}}: là **view chỉ đọc**, **chấp nhận null**, và vẫn phản ánh thay đổi của {{src}}.
+- {{Map.copyOf(src)}}: **snapshot bất biến thật**, **cấm null**, tách rời khỏi {{src}}.
+
+> Senior tip: khi migrate từ {{unmodifiableMap}} sang {{Map.copyOf}} để "bất biến thật", hãy grep các chỗ value có thể null — production sẽ nổ NPE. Nếu buộc phải giữ null, dùng {{Collections.unmodifiableMap}} hoặc {{Optional}} thay cho null.`
+},
+{
+  id: 'qz-collections-048', topic: 'collections',
+  q: `Về các bulk operation của {{ConcurrentHashMap}} ({{forEach}}, {{search}}, {{reduce}}, Java 8), phát biểu nào đúng?`,
+  options: [
+    `Chúng duyệt song song khi số phần tử vượt parallelismThreshold, dùng ForkJoinPool.commonPool; search trả phần tử khớp đầu tiên, reduce gộp kết quả, forEach áp dụng action`,
+    `Chúng khoá toàn bộ map trong lúc duyệt để đảm bảo nhất quán`,
+    `Chúng luôn chạy tuần tự trên thread gọi, không bao giờ song song`,
+    `Chúng ném ConcurrentModificationException nếu map bị sửa trong lúc duyệt`
+  ],
+  answer: 0,
+  explain: `**Đáp án đúng: bulk operation duyệt song song theo ngưỡng, không khóa, không CME.**
+
+### Bulk operation là gì
+Từ Java 8, {{ConcurrentHashMap}} có nhóm method "duyệt và xử lý hàng loạt" song song: {{forEach}}, {{search}}, {{reduce}}, {{forEachKey}}, {{searchKeys}}, {{reduceValues}}… Chúng nhận một {{parallelismThreshold}} (ngưỡng song song): nếu số phần tử vượt ngưỡng, việc duyệt được chia cho nhiều thread (dùng {{ForkJoinPool.commonPool}}); nếu dưới ngưỡng thì chạy tuần tự trên thread gọi để tránh overhead.
+
+### Vì sao phát biểu đúng
+- {{search(threshold, f)}} trả về **phần tử đầu tiên** mà hàm {{f}} cho kết quả khác null (thao tác short-circuit, dừng sớm khi tìm thấy).
+- {{reduce(threshold, f, identity)}} gộp tất cả kết quả bằng hàm tích lũy.
+- {{forEach(threshold, f)}} áp dụng action cho mỗi phần tử.
+- Tất cả **không khóa** map và **không ném** {{ConcurrentModificationException}} (iterator của CHM là weakly consistent — nhất quán yếu, thấy được một phần thay đổi nhưng không lỗi).
+
+### Vì sao các phương án còn lại sai
+- **Khóa toàn bộ map**: bulk op không khóa; chính nhờ vậy mới song song. Đổi lại, kết quả là ảnh chụp nhất quán yếu tại một thời điểm, không phải snapshot.
+- **Luôn tuần tự**: chúng chạy song song khi vượt {{parallelismThreshold}} (mặc định thường đặt bằng 1 để luôn song song nếu có, hoặc giá trị lớn hơn để giảm overhead).
+- **Ném CME**: weakly consistent nên không ném; đây là ưu điểm khi duyệt map đang được cập nhật.
+
+> Senior tip: đặt {{parallelismThreshold}} = 1 nếu muốn tận dụng song song tối đa, nhưng nhớ chúng dùng {{commonPool}} — đừng chạy việc nặng/blocking ở đó (sẽ làm nghẽn cả các CompletableFuture khác). Với việc cần snapshot nhất quán, hãy {{Map.copyOf}} trước rồi duyệt bản copy.`
+},
+{
+  id: 'qz-collections-049', topic: 'collections', multi: true,
+  q: `(Chọn 2) Về bộ nhớ và hiệu năng khi chọn {{ArrayList}} so với {{LinkedList}}, phát biểu nào đúng?`,
+  options: [
+    `LinkedList luôn nhanh hơn ArrayList khi chèn phần tử vào giữa danh sách`,
+    `ArrayList.add(index, e) là O(1) vì chỉ ghi vào mảng`,
+    `LinkedList mỗi phần tử là một node riêng (header + prev + next + field) nên tốn bộ nhớ hơn ArrayList (vốn chỉ là mảng reference)`,
+    `ArrayList để phần tử liền nhau trong mảng nên cache-friendly; LinkedList rải rác địa chỉ, duyệt tuần tự hay get(i) đều cache miss nhiều và chậm hơn dù cùng O(n)`,
+    `LinkedList.get(i) là O(1) nhờ con trỏ prev/next`
+  ],
+  answer: [2, 3],
+  explain: `**Đáp án đúng: LinkedList tốn bộ nhớ hơn (mỗi phần tử một node) và ArrayList cache-friendly hơn.**
+
+### Cái gì → vì sao
+- **ArrayList**: phần tử nằm trong một mảng {{Object[]}} **liền kề** trong bộ nhớ. CPU nạp theo **cache line** (thường 64 byte), nên khi duyệt tuần tự, các phần tử kế tiếp thường đã nằm sẵn trong cache → rất nhanh. Nhưng chèn/xoá giữa phải dồn mảng O(n).
+- **LinkedList**: mỗi phần tử là một **node** riêng (đối tượng có header + field + con trỏ prev/next), các node **rải rác** khắp heap. Mỗi bước nhảy sang node kế tiếp là một lần truy cập bộ nhớ mới → **cache miss** nhiều, chậm hơn ArrayList khi duyệt, dù cả hai cùng O(n) về lý thuyết.
+
+### Vì sao hai phát biểu đúng
+- **Bộ nhớ**: mỗi node LinkedList tốn ~24–32 byte (header 12 + 2 con trỏ 8 + field) **cộng** object phần tử; ArrayList chỉ tốn mảng reference (~4–8 byte/phần tử) cộng object. Với 1 triệu phần tử, chênh lệch rất lớn.
+- **Cache**: đây là lý do thực tế ArrayList gần như luôn thắng LinkedList khi duyệt tuần tự, kể cả khi lý thuyết O(n) như nhau.
+
+### Vì sao các phương án còn lại sai
+- **LinkedList luôn nhanh hơn khi chèn giữa**: chèn giữa đã **đến được vị trí** thì O(1) đổi con trỏ, nhưng **tìm** vị trí đó mất O(n); ArrayList chèn giữa O(n) nhưng cache-friendly và thường nhanh hơn ở dữ liệu vừa.
+- **ArrayList.add(index) O(1)**: phải dồn mảng O(n).
+- **LinkedList.get(i) O(1)**: phải duyệt từ đầu (hoặc cuối) tới i → O(n).
+
+> Senior tip: trong 99% trường hợp, chọn {{ArrayList}}; LinkedList chỉ hợp khi thêm/xoá **liên tục ở hai đầu** (làm deque) và **không** truy cập ngẫu nhiên. Khi cần cả hai đầu nhanh, {{ArrayDeque}} thường tốt hơn LinkedList (mảng vòng, cache-friendly, không tạo node).`
+},
+{
+  id: 'qz-collections-050', topic: 'collections',
+  q: `Đoạn code sau in ra gì?
+~~~java
+TreeMap<Integer, String> m = new TreeMap<>();
+m.put(1, "a");
+m.put(2, "b");
+m.put(3, "c");
+Map<Integer, String> head = m.headMap(3);
+head.put(2, "x");
+m.put(4, "d");
+System.out.println(head.size() + " " + m.size());
+~~~`,
+  options: [
+    `2 3`,
+    `2 4`,
+    `3 4`,
+    `ném IllegalArgumentException ngay ở head.put(2, x)`
+  ],
+  answer: 1,
+  explain: `**Đáp án đúng: 2 4.**
+
+### headMap là view, không phải bản copy
+{{headMap(toKey)}} của {{TreeMap}} trả về một **view** (cửa sổ nhìn) chứa các khóa **nhỏ hơn** {{toKey}} (mặc định không bao gồm {{toKey}}). View này **gắn liền** với map gốc: sửa qua view thì map gốc đổi, và ngược lại. {{headMap(3)}} = các khóa < 3 = {1, 2}.
+
+### Bấm từng dòng
+- {{head.put(2, "x")}}: key 2 đã có trong view → ghi đè giá trị, **phản ánh vào map gốc** (entry 2 thành "x"). Hợp lệ vì 2 nằm trong khoảng.
+- {{m.put(4, "d")}}: thêm vào map gốc; 4 nằm ngoài view nên {{head}} không thấy.
+- {{head.size()}} = 2 (vẫn {1,2}); {{m.size()}} = 4 ({1,2,3,4}).
+Ghép lại: {{2 4}}.
+
+### Vì sao các phương án còn lại sai
+- **2 3**: quên rằng {{m.put(4)}} làm map gốc tăng lên 4.
+- **3 4**: tưởng {{headMap(3)}} bao gồm cả khóa 3; mặc định là **không bao gồm** (exclusive).
+- **ném IllegalArgumentException ở head.put(2, x)**: chỉ ném khi **thêm key ngoài khoảng** (ví dụ {{head.put(5, …)}}). Sửa key **trong** khoảng (2) thì hợp lệ.
+
+### Lưu ý
+Nếu muốn bao gồm mốc, dùng {{headMap(3, true)}}. Các view {{subMap}}/{{tailMap}} cũng là view gắn liền; thêm key ngoài khoảng sẽ ném {{IllegalArgumentException}}.
+
+> Senior tip: view của TreeMap rất tiện để lấy "cửa sổ" dữ liệu (ví dụ đơn hàng trong [từ, đến)) mà không copy, nhưng phải cẩn thận: giữ view sống lâu sẽ giữ cả map gốc. Khi cần snapshot độc lập, bọc {{new TreeMap<>(m.headMap(k))}}.`
+},
+{
+  id: 'qz-collections-051', topic: 'collections', multi: true,
+  q: `(Chọn 2) Về {{EnumSet}} và {{EnumMap}} (dành cho khóa/phần tử là hằng enum), phát biểu nào đúng?`,
+  options: [
+    `EnumSet dùng hash table như HashSet nên có thể chứa phần tử của nhiều enum khác nhau`,
+    `EnumSet biểu diễn tập bằng bit vector (mỗi hằng enum một bit) nên rất gọn và thao tác nhanh`,
+    `EnumMap dùng cây đỏ-đen để sắp key theo thứ tự alphabet`,
+    `EnumMap dùng mảng đánh chỉ số theo ordinal của enum key, tra cứu O(1) và chỉ nhận key cùng một enum type`,
+    `EnumSet cho phép thêm null như HashSet`
+  ],
+  answer: [1, 3],
+  explain: `**Đáp án đúng: EnumSet dùng bit vector, EnumMap dùng mảng theo ordinal.**
+
+### Vì sao hai phát biểu đúng
+- **EnumSet (bit vector)**: vì enum có số hằng hữu hạn, mỗi hằng được gán một bit (0/1) trong một số nguyên dài (long) hoặc mảng long. Tập {{EnumSet}} chỉ là các bit bật. Nhờ vậy rất **gọn** (vài byte) và các phép hợp/giao/hiệu chạy bằng bitwise AND/OR/XOR cực nhanh. Duyệt theo thứ tự **ordinal** (thứ tự khai báo enum), không phải alphabet.
+- **EnumMap (mảng theo ordinal)**: dùng một mảng với chỉ số là {{ordinal()}} của key (vị trí khai báo). Tra cứu O(1), không cần băm, và **chỉ nhận key cùng một enum type** (khác type sẽ bị từ chối). Cũng rất gọn vì không có node/bucket.
+
+### Vì sao các phương án còn lại sai
+- **EnumSet dùng hash table, chứa nhiều enum**: sai; EnumSet không dùng hash, và chỉ chứa hằng của **một** enum type (biết trước số phần tử).
+- **EnumMap dùng cây đỏ-đen, sắp alphabet**: sai; EnumMap dùng mảng theo ordinal, thứ tự là thứ tự khai báo enum chứ không phải alphabet.
+- **EnumSet cho phép null**: sai; thêm null ném {{NullPointerException}} (giống EnumMap cấm null key).
+
+### Khi nào dùng
+Khi dữ liệu phân loại theo một tập **hữu hạn, cố định** (mã trạng thái đơn hàng, quyền, loại giao dịch), {{EnumSet}} và {{EnumMap}} nhanh và gọn hơn {{HashSet}}/{{HashMap}} nhiều lần. Đây là lựa chọn mặc định cho tập enum.
+
+> Senior tip: {{EnumSet.of(...)}} và {{EnumSet.range(from, to)}} rất tiện; {{EnumSet.allOf(Status.class)}} lấy tất cả. Đừng dùng {{EnumSet}} khi tập phần tử không phải enum (lúc đó dùng HashSet). EnumMap/EnumSet đều không thread-safe; cần đa luồng thì bọc {{Collections.synchronizedMap}} hoặc dùng bản copy.`
+},
+{
   id: "qz-concurrency-034", topic: "concurrency",
   q: `Đoạn code sau in ra gì (chạy trên Java 17)?
 ~~~java
