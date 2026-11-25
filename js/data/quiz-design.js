@@ -3704,5 +3704,110 @@ Thuật ngữ:
 - **Shard key theo hash của key**: không giải quyết hot key vì cùng key hash về cùng shard.
 - **Tăng TTL lên rất lớn**: có thể stale, không phân tán tải.
 
-> Senior tip: Phát hiện hot key bằng metrics và tự động replicate.` }
-);
+> Senior tip: Phát hiện hot key bằng metrics và tự động replicate.` }, { id: 'qz-banking-038', topic: 'banking', q: 'Trong hệ thống ledger ngân hàng, một giao dịch chuyển tiền bắt buộc phải ghi bao nhiêu bút toán để đảm bảo nguyên tắc double-entry?', options: ['1 bút toán ghi nợ tài khoản nguồn', '2 bút toán: ghi nợ nguồn và ghi có đích', '3 bút toán: nợ nguồn, có đích và phí', '4 bút toán: nợ nguồn, có đích, phí và thuế'], answer: 1, explain: `**Tóm tắt:** Double-entry ledger yêu cầu mỗi giao dịch có ít nhất 2 bút toán cân bằng: ghi nợ (debit) tài khoản nguồn và ghi có (credit) tài khoản đích, tổng nợ = tổng có.
+
+### Vì sao đúng
+- **2 bút toán: ghi nợ nguồn và ghi có đích**: nguyên tắc cân bằng kế toán, tổng debit = total credit.
+
+### Vì sao các phương án khác sai
+- **1 bút toán ghi nợ tài khoản nguồn**: mất cân bằng.
+- **3/4 bút toán**: phí và thuế chỉ là bút toán bổ sung nếu có.
+
+> Senior tip: Luôn kiểm tra invariant tổng debit = total credit trước khi commit.` },
+{ id: 'qz-banking-039', topic: 'banking', multi: true, q: 'Idempotency trong API chuyển tiền đạt được bằng cách nào? (Chọn 2)', options: ['Client gửi Idempotency-Key unique cho mỗi request logic', 'Server lưu key đã xử lý và trả lại kết quả cũ nếu key trùng', 'Retry request với key mới mỗi lần', 'Dùng timestamp làm key'], answer: [0, 1], explain: `**Tóm tắt:** Idempotency đảm bảo retry không tạo duplicate giao dịch: client gửi key unique, server lưu và trả kết quả cũ nếu key đã xử lý.
+
+### Vì sao đúng
+- **Client gửi Idempotency-Key unique cho mỗi request logic**: mỗi nghiệp vụ chuyển tiền có một key duy nhất.
+- **Server lưu key đã xử lý và trả lại kết quả cũ nếu key trùng**: tránh tạo giao dịch trùng khi retry.
+
+### Vì sao các phương án khác sai
+- **Retry với key mới mỗi lần**: phá idempotency, có thể tạo duplicate.
+- **Dùng timestamp làm key**: không unique khi retry nhanh; dễ collision.
+
+> Senior tip: Lưu idempotency key với TTL và trạng thái processing/completed; xử lý concurrent cùng key bằng lock hoặc unique constraint.` },
+{ id: 'qz-banking-040', topic: 'banking', q: 'Đối soát (reconciliation) giữa ledger nội bộ và sao kê ngân hàng thường chạy khi nào và mục đích chính?', options: ['Chạy real-time mỗi giây để chặn giao dịch', 'Chạy theo batch cuối ngày/cut-off để phát hiện chênh lệch và điều chỉnh', 'Chạy khi user báo lỗi', 'Chạy khi deploy hệ thống'], answer: 1, explain: `**Tóm tắt:** Reconciliation thường chạy batch định kỳ (cuối ngày/cut-off) để so khớp ledger nội bộ với sao kê ngân hàng, phát hiện chênh lệch và điều chỉnh.
+
+### Vì sao đúng
+- **Chạy theo batch cuối ngày/cut-off để phát hiện chênh lệch và điều chỉnh**: phù hợp với chu kỳ sao kê ngân hàng.
+
+### Vì sao các phương án khác sai
+- **Real-time mỗi giây để chặn giao dịch**: reconciliation không chặn giao dịch.
+- **Khi user báo lỗi**: quá muộn.
+- **Khi deploy**: không liên quan.
+
+> Senior tip: Theo dõi unmatched items aging; alert nếu item chưa match quá SLA.` },
+{ id: 'qz-banking-041', topic: 'banking', q: 'Giao dịch treo (pending/hold) trên tài khoản thường được xử lý thế nào?', options: ['Luôn trừ tiền vĩnh viễn ngay lập tức', 'Tạo hold tạm thời, giải phóng nếu không settle trong thời gian quy định', 'Bỏ qua không ghi ledger', 'Chỉ ghi log, không ảnh hưởng số dư'], answer: 1, explain: `**Tóm tắt:** Pending/hold tạo reservation tạm thời trên available balance; nếu không settle trong thời gian quy định thì giải phóng hold.
+
+### Vì sao đúng
+- **Tạo hold tạm thời, giải phóng nếu không settle trong thời gian quy định**: bảo vệ tiền khách nhưng không finalize.
+
+### Vì sao các phương án khác sai
+- **Trừ tiền vĩnh viễn ngay lập tức**: sai vì giao dịch có thể bị huỷ.
+- **Bỏ qua không ghi ledger**: mất traceability.
+- **Chỉ ghi log**: không bảo vệ số dư.
+
+> Senior tip: Phân biệt available balance vs ledger balance; hold expiry job phải idempotent.` },
+{ id: 'qz-banking-042', topic: 'banking', q: 'ISO 8583 và ISO 20022 khác nhau cơ bản ở điểm nào?', options: ['ISO 8583 là XML phong phú, ISO 20022 là binary compat', 'ISO 8583 là định dạng message card payment truyền thống (binary/field-based), ISO 20022 là chuẩn XML/JSON phong phú dùng cho payments hiện đại', 'Cả hai đều giống nhau, chỉ khác version', 'ISO 20022 chỉ dùng cho crypto'], answer: 1, explain: `**Tóm tắt:** ISO 8583 là chuẩn message cho card payment truyền thống (field-based/binary); ISO 20022 là chuẩn dữ liệu phong phú (XML/JSON) cho payments hiện đại.
+
+### Vì sao đúng
+- **ISO 8583 field-based/binary, ISO 20022 XML/JSON phong phú**: mô tả đúng bản chất.
+
+### Vì sao các phương án khác sai
+- **ISO 8583 là XML phong phú**: đảo ngược.
+- **Giống nhau**: sai.
+- **ISO 20022 chỉ crypto**: sai.
+
+> Senior tip: Migration ISO 20022 cần mapping field và xử lý data truncation; test interoperability.` },
+{ id: 'qz-banking-043', topic: 'banking', q: 'Theo PCI DSS, dữ liệu thẻ nào KHÔNG được lưu trữ sau khi giao dịch hoàn tất?', options: ['PAN (masked)', 'CVV/CVC (sensitive authentication data)', 'Ngày hết hạn', 'Tên chủ thẻ'], answer: 1, explain: `**Tóm tắt:** PCI DSS cấm lưu trữ sensitive authentication data như CVV/CVC sau khi authorization; PAN phải được mask/truncate.
+
+### Vì sao đúng
+- **CVV/CVC (sensitive authentication data)**: không được lưu sau authorization, dù mã hóa.
+
+### Vì sao các phương án khác sai
+- **PAN (masked)**: có thể lưu nếu masked/truncated và bảo vệ.
+- **Ngày hết hạn**: có thể lưu nếu cần.
+- **Tên chủ thẻ**: có thể lưu.
+
+> Senior tip: Rà soát log, backup, analytics để đảm bảo không lưu CVV ở bất kỳ đâu.` },
+{ id: 'qz-banking-044', topic: 'banking', q: 'Khi tính toán tiền tệ trong Java, nên dùng kiểu dữ liệu nào để tránh lỗi làm tròn?', options: ['float/double', 'int (đơn vị cents)', 'BigDecimal với scale và rounding mode rõ ràng', 'String'], answer: 2, explain: `**Tóm tắt:** BigDecimal với scale và rounding mode rõ ràng là cách an toàn để tính tiền; float/double có lỗi biểu diễn nhị phân.
+
+### Vì sao đúng
+- **BigDecimal với scale và rounding mode rõ ràng**: chính xác, kiểm soát làm tròn.
+
+### Vì sao các phương án khác sai
+- **float/double**: lỗi biểu diễn nhị phân (0.1+0.2).
+- **int cents**: có thể dùng nhưng dễ overflow.
+- **String**: không tính toán được.
+
+> Senior tip: Dùng BigDecimal và đặt scale/rounding mode thống nhất.` },
+{ id: 'qz-banking-045', topic: 'banking', q: 'Giờ cut-off trong xử lý thanh toán batch có ý nghĩa gì?', options: ['Thời điểm hệ thống restart', 'Mốc thời gian: giao dịch sau cut-off được xử lý ở batch tiếp theo', 'Thời gian timeout của API', 'Giờ bảo trì hệ thống'], answer: 1, explain: `**Tóm tắt:** Cut-off là mốc thời gian: giao dịch sau cut-off được xử lý ở batch/chu kỳ tiếp theo, ảnh hưởng settlement date.
+
+### Vì sao đúng
+- **Mốc thời gian: giao dịch sau cut-off được xử lý ở batch tiếp theo**: đúng định nghĩa cut-off.
+
+### Vì sao các phương án khác sai
+- **Restart/timeout/bảo trì**: không liên quan.
+
+> Senior tip: Hiển thị cut-off rõ cho user và cảnh báo khi gần cut-off.` },
+{ id: 'qz-banking-046', topic: 'banking', multi: true, q: 'Khi retry giao dịch thanh toán thất bại, cần đảm bảo những điều gì? (Chọn 2)', options: ['Sử dụng idempotency key để tránh duplicate', 'Retry với backoff và jitter', 'Retry ngay lập tức không giới hạn', 'Bỏ qua lỗi và trả success'], answer: [0, 1], explain: `**Tóm tắt:** Retry an toàn cần idempotency key và backoff+jitter để tránh duplicate và thundering herd.
+
+### Vì sao đúng
+- **Idempotency key**: tránh duplicate giao dịch.
+- **Backoff + jitter**: giảm tải và tránh đồng thời.
+
+### Vì sao các phương án khác sai
+- **Retry ngay không giới hạn**: gây quá tải và duplicate.
+- **Bỏ qua lỗi trả success**: mất tiền/dữ liệu.
+
+> Senior tip: Có max retry và dead-letter queue cho giao dịch không settle.` },
+{ id: 'qz-banking-047', topic: 'banking', q: 'Ledger append-only (chỉ thêm, không sửa/xoá) mang lại lợi ích chính nào?', options: ['Giảm dung lượng lưu trữ', 'Audit trail đầy đủ và khả năng reconstruct trạng thái tại mọi thời điểm', 'Tăng tốc độ ghi', 'Đơn giản hoá schema'], answer: 1, explain: `**Tóm tắt:** Append-only ledger giữ mọi bút toán, cho phép audit đầy đủ và reconstruct balance tại bất kỳ thời điểm nào.
+
+### Vì sao đúng
+- **Audit trail đầy đủ và reconstruct trạng thái tại mọi thời điểm**: cốt lõi append-only.
+
+### Vì sao các phương án khác sai
+- **Giảm dung lượng**: sai, tăng dung lượng.
+- **Tăng tốc ghi**: không phải chính.
+- **Đơn giản schema**: không chính.
+
+> Senior tip: Dùng event sourcing pattern; snapshot định kỳ để query nhanh.` });
