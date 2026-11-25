@@ -7463,12 +7463,12 @@ Khi bạn **thực sự cần** cột từ orders (amount, status...). Khi đó 
     q: 'Trong một {{@Service}} Spring, method {{@Transactional}} {{placeOrder()}} gọi trực tiếp {{this.sendEmail()}} cũng có {{@Transactional}}. Điều gì xảy ra với transaction khi sendEmail() chạy?',
     options: [
       'Spring mở một transaction mới cho sendEmail() vì nó có @Transactional',
-      'sendEmail() tham gia vào transaction hiện có của placeOrder(), không có transaction riêng',
+      'sendEmail() có transaction riêng do kế thừa @Transactional từ placeOrder()',
       'Spring ném exception vì self-invocation không được phép',
-      'sendEmail() chạy không có transaction nào, vì gọi this. bỏ qua proxy'
+      'sendEmail() gọi qua this. bỏ qua proxy, nên @Transactional của nó bị bỏ qua; chạy trong transaction của placeOrder() nếu có, không tạo transaction riêng'
     ],
     answer: 3,
-    explain: `**Đáp án đúng: sendEmail() chạy không có transaction, vì self-invocation bỏ qua proxy.**
+    explain: `**Đáp án đúng: @Transactional của sendEmail() bị bỏ qua do self-invocation bypass proxy; sendEmail() chạy trong transaction của placeOrder() nếu có, không tạo transaction riêng.**
 ### Vì sao đúng
 {{@Transactional}} hoạt động qua proxy AOP bao quanh bean. Khi code gọi {{this.sendEmail()}}, nó gọi trực tiếp method trên object gốc, không đi qua proxy, nên không có interceptor nào can thiệp, không có transaction nào được mở. sendEmail() chạy trong transaction của placeOrder() nếu có, nhưng annotation của nó bị bỏ qua hoàn toàn.
 ### Vì sao các phương án còn lại sai
@@ -7490,7 +7490,7 @@ Khi bạn **thực sự cần** cột từ orders (amount, status...). Khi đó 
     answer: 1,
     explain: `**Đáp án đúng: không, vì proxy-based AOP chỉ intercept method public.**
 ### Vì sao đúng
-Spring mặc định dùng proxy (JDK dynamic proxy hoặc CGLIB). Proxy chỉ override được method public (với CGLIB còn protected/package-private trong một số trường hợp, nhưng private thì không). Method private không thể bị override, nên advice @Transactional không bao giờ chạy. Spring Boot log warning "Methods annotated with @Transactional must be public" (hoặc silently ignore tùy version).
+Spring mặc định dùng proxy (JDK dynamic proxy hoặc CGLIB). Proxy chỉ override được method public (với CGLIB còn protected/package-private trong một số trường hợp, nhưng private thì không). Method private không thể bị override, nên advice @Transactional không bao giờ chạy. Spring silently không áp dụng advice cho method private (không ném lỗi, không mở transaction).
 ### Vì sao các phương án còn lại sai
 - **@Transactional private vẫn áp dụng**: sai, annotation không có tác dụng.
 - **CGLIB xử lý được**: CGLIB cũng không override private method.
