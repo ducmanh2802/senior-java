@@ -7662,4 +7662,267 @@ Best practice: expose chỉ health/info/prometheus qua HTTP; endpoint env, beans
 - **Override bean user**: auto-config không override; user bean thắng.
 > Senior tip: đây là nguyên lý "convention over configuration": mặc định hoạt động, nhưng user luôn có thể override bằng cách định nghĩa bean cùng type. Để biết auto-config nào bật/tắt, chạy với --debug hoặc xem ConditionEvaluationReport.`
   },
+  {
+    id: 'qz-testing-031',
+    topic: 'testing',
+    q: 'Test dùng JUnit 5 @ParameterizedTest với @MethodSource cung cấp 3 tập tham số. Khi một tập thất bại, hành vi của JUnit là gì?',
+    options: [
+      'Dừng toàn bộ test class ngay lập tức',
+      'Chạy tiếp các tập tham số còn lại, báo lỗi từng tập riêng biệt',
+      'Chỉ báo lỗi tập đầu tiên thất bại, bỏ qua các tập sau',
+      'Chạy lại tập thất bại 3 lần trước khi báo lỗi'
+    ],
+    answer: 1,
+    explain: `**Đáp án đúng: chạy tiếp các tập tham số còn lại, báo lỗi từng tập riêng biệt.**
+### Vì sao đúng
+@ParameterizedTest tạo ra **nhiều instance test độc lập** (dynamic test), mỗi instance tương ứng một tập tham số. Khi một instance thất bại, JUnit **không dừng** mà tiếp tục chạy các instance còn lại. Kết quả hiển thị: mỗi tập là một test riêng (ví dụ {{testCase[0]}}, {{testCase[1]}}, {{testCase[2]}}), có pass/fail riêng. Điều này giúp dev thấy ngay tập nào pass, tập nào fail, không bị che khuất bởi lỗi đầu tiên.
+### Vì sao các phương án còn lại sai
+- **Dừng toàn bộ test class**: đó là hành vi của {{@Test}} thường (nếu không cấu hình), nhưng @ParameterizedTest được thiết kế để chạy hết tất cả tham số.
+- **Chỉ báo lỗi tập đầu tiên**: sai, JUnit báo lỗi đầy đủ từng tham số.
+- **Chạy lại 3 lần**: đó là {{@RepeatedTest}} hoặc Retry extension, không phải @ParameterizedTest mặc định.
+> Senior tip: dùng {{@CsvSource}}, {{@ValueSource}}, {{@MethodSource}}, {{@ArgumentsSource}} để cung cấp tham số. @MethodSource linh hoạt nhất: method static trả Stream<Arguments> có thể đọc file, DB, sinh dữ liệu phức tạp. Khi debug, IDE cho phép chạy từng instance riêng lẻ.`
+  },
+  {
+    id: 'qz-testing-032',
+    topic: 'testing',
+    q: 'Test class có @Nested class bên trong. Phát biểu nào đúng về vòng đời @BeforeEach/@AfterEach?',
+    options: [
+      '@BeforeEach của class ngoài chạy trước @BeforeEach của class lồng, @AfterEach chạy theo thứ tự ngược lại',
+      'Mỗi @Nested class có vòng đời hoàn toàn tách biệt, không chia sẻ @BeforeEach/@AfterEach với class ngoài',
+      '@BeforeEach của class lồng chạy trước @BeforeEach của class ngoài',
+      'Chỉ @BeforeAll/@AfterAll của class ngoài được kế thừa, @BeforeEach/@AfterEach thì không'
+    ],
+    answer: 0,
+    explain: `**Đáp án đúng: @BeforeEach class ngoài chạy trước @BeforeEach class lồng; @AfterEach ngược lại.**
+### Vì sao đúng
+JUnit 5 thực thi @Nested class theo cơ chế **cascade lifecycle**:
+- Trước khi chạy test trong @Nested: chạy @BeforeEach của class ngoài -> chạy @BeforeEach của class lồng -> chạy test.
+- Sau test: chạy @AfterEach của class lồng -> chạy @AfterEach của class ngoài.
+- @BeforeAll/@AfterAll: class ngoài chạy trước/sau, class lồng có thể có @BeforeAll/@AfterAll riêng (phải là static hoặc dùng @TestInstance(Lifecycle.PER_CLASS)).
+Điều này cho phép @Nested class tái sử dụng setup của class ngoài (ví dụ: class ngoài khởi tạo Spring context, class lồng thiết lập dữ liệu test cụ thể).
+### Vì sao các phương án còn lại sai
+- **Vòng đời tách biệt**: sai, JUnit thiết kế @Nested để **chia sẻ** lifecycle, không tách biệt.
+- **@BeforeEach lồng chạy trước**: ngược lại, cha luôn chạy trước con.
+- **Chỉ @BeforeAll/@AfterAll được kế thừa**: sai, @BeforeEach/@AfterEach cũng cascade.
+> Senior tip: @Nested giúp nhóm test theo ngữ nghĩa (ví dụ: "khi giỏ hàng rỗng", "khi giỏ hàng có hàng", "khi áp dụng mã giảm giá") trong cùng một class, giảm lặp code setup. Tránh lồng quá sâu (hơn 2 cấp) vì khó đọc.`
+  },
+  {
+    id: 'qz-testing-033',
+    topic: 'testing',
+    q: `Method dưới đây ném IllegalArgumentException khi input null. Cách dùng assertThrows đúng nhất để kiểm tra là gì?
+~~~java
+public void process(String input) {
+    if (input == null) throw new IllegalArgumentException("input required");
+}
+~~~`,
+    options: [
+      'assertThrows(IllegalArgumentException.class, () -> service.process(null));',
+      'assertThrows(IllegalArgumentException.class, service.process(null));',
+      'assertThrows(() -> service.process(null), IllegalArgumentException.class);',
+      'assertThrows(IllegalArgumentException.class, "input required", () -> service.process(null));'
+    ],
+    answer: 0,
+    explain: `**Đáp án đúng: assertThrows(IllegalArgumentException.class, () -> service.process(null));**
+### Vì sao đúng
+assertThrows nhận 2 tham số: **expectedType** (Class<? extends Throwable>) và **executable** (Executable - functional interface có method execute()). Lambda {{() -> service.process(null)}} là một Executable. JUnit thực thi lambda, bắt exception, kiểm tra kiểu. Nếu exception đúng kiểu (hoặc subtype), test pass và trả về exception để có thể assert thêm message.
+### Vì sao các phương án còn lại sai
+- **Thứ tự ngược / thiếu lambda**: assertThrows không nhận exception instance trực tiếp, và executable phải là lambda/method reference, không phải kết quả gọi method (sẽ ném exception ngay trước khi assertThrows chạy).
+- **Tham số thứ 3 là message**: assertThrows không có overload 3 tham số với message như vậy. Muốn kiểm tra message: {{assertEquals("input required", assertThrows(IllegalArgumentException.class, () -> service.process(null)).getMessage());}}
+> Senior tip: dùng assertThrows thay vì try/catch thủ công. Nó ngắn gọn, an toàn (không quên fail khi không ném exception), và trả về exception để kiểm tra message/cause. Đối với exception checked, assertThrows vẫn hoạt động (cần {{@SuppressWarnings("unchecked")}} hoặc ép kiểu).`
+  },
+  {
+    id: 'qz-testing-034',
+    topic: 'testing',
+    multi: true,
+    q: 'Về sự khác biệt giữa when/thenReturn và doReturn/when trong Mockito, phát biểu nào đúng? (Chọn 2)',
+    options: [
+      'when(mock.method()).thenReturn(value) dùng cho stubbing thông thường, type-safe ở compile time',
+      'doReturn(value).when(mock).method() dùng khi method là void, hoặc khi spy gọi method thật gây side effect',
+      'Hai cú pháp hoàn toàn tương đương, dùng cái nào cũng được',
+      'when/thenReturn không hoạt động với final method, doReturn/when thì hoạt động',
+      'doReturn/when an toàn hơn vì không gọi method thật khi stub'
+    ],
+    answer: [0, 1],
+    explain: `**Đáp án đúng: when/thenReturn cho stub thông thường (type-safe); doReturn/when cho void method hoặc spy tránh side effect.**
+### Vì sao đúng
+- **when(mock.method()).thenReturn(value)**: Mockito gọi method thật trên mock (do proxy) để ghi nhận lời gọi, rồi trả về value. Type-safe vì compiler kiểm tra kiểu trả về. **Vấn đề**: nếu mock là **spy** (spy gọi method thật), method thật sẽ chạy — có thể gây side effect (ghi DB, gọi API).
+- **doReturn(value).when(mock).method()**: Không gọi method thật khi stub. Dùng cho: (1) method **void** (when(voidMethod()) không compile), (2) **spy** muốn tránh chạy method thật, (3) stub chồng nhiều lần cùng method.
+### Vì sao các phương án còn lại sai
+- **Hoàn toàn tương đương**: sai, doReturn/when không type-safe (trả Object), và quan trọng hơn là không gọi method thật khi stub.
+- **when/thenReturn không hoạt động với final method**: Mockito 3+ (khi dùng mockito-inline) mock được final method cho cả hai cú pháp.
+- **doReturn/when an toàn hơn vì không gọi method thật**: đúng về mặt tránh side effect, nhưng mất type-safety; không phải "luôn an toàn hơn".
+> Senior tip: mặc định dùng when/thenReturn (ngắn, type-safe). Chỉ chuyển sang doReturn/when khi bắt buộc: void method, spy tránh side effect, hoặc stub nhiều lần liên tiếp.`
+  },
+  {
+    id: 'qz-testing-035',
+    topic: 'testing',
+    q: 'Test cần xác minh mock được gọi **đúng 2 lần** với **bất kỳ đối số nào** trong vòng 500ms. Cách viết verify đúng?',
+    options: [
+      'verify(mock, times(2)).method(any());',
+      'verify(mock, timeout(500).times(2)).method(any());',
+      'verify(mock, atLeast(2)).method(any());',
+      'verify(mock, timeout(500).atLeast(2)).method(any());'
+    ],
+    answer: 1,
+    explain: `**Đáp án đúng: verify(mock, timeout(500).times(2)).method(any());**
+### Vì sao đúng
+Mockito {{VerificationMode}} có thể kết hợp: {{timeout(millis)}} chờ đến khi điều kiện thỏa mãn hoặc hết giờ; {{times(n)}} yêu cầu đúng n lần. Kết hợp {{timeout(500).times(2)}} nghĩa là: **chờ tối đa 500ms để thấy đúng 2 lần gọi**. Nếu sau 500ms mới có 1 lần hoặc 3 lần thì fail. {{any()}} match bất kỳ đối số nào.
+### Vì sao các phương án còn lại sai
+- **times(2) không timeout**: kiểm tra ngay lập tức, không chờ. Nếu code chạy async ({{CompletableFuture}}, {{@Async}}), verify có thể chạy trước khi mock được gọi → fail oan.
+- **atLeast(2)**: cho phép 2, 3, 4... lần; không khớp yêu cầu "đúng 2 lần".
+- **timeout(500).atLeast(2)**: chờ 500ms để thấy **ít nhất** 2 lần, cho phép 3 lần trở lên.
+> Senior tip: với code async, luôn dùng timeout trong verify. Giá trị timeout đủ lớn (500ms–2s) tùy độ trễ hệ thống. Tránh {{verifyNoMoreInteractions()}} trong test async vì nó không chờ.`
+  },
+  {
+    id: 'qz-testing-036',
+    topic: 'testing',
+    q: 'Service gọi {{discountClient.apply(code, order)}} (client interface). Test muốn lấy đối số {{code}} thực tế được truyền vào để assert là "SUMMER20". Cách dùng ArgumentCaptor đúng?',
+    options: [
+      'ArgumentCaptor<String> captor = ArgumentCaptor.forClass(String.class); verify(discountClient).apply(captor.capture(), any()); assertEquals("SUMMER20", captor.getValue());',
+      'ArgumentCaptor<String> captor = ArgumentCaptor.forClass(String.class); when(discountClient.apply(captor.capture(), any())).thenReturn(...);',
+      'ArgumentCaptor<String> captor = ArgumentCaptor.forClass(String.class); verify(discountClient).apply(captor.getValue(), any());',
+      'ArgumentCaptor<String> captor = ArgumentCaptor.forClass(String.class); verify(discountClient).apply(eq("SUMMER20"), any());'
+    ],
+    answer: 0,
+    explain: `**Đáp án đúng: ArgumentCaptor.forClass(String.class); verify(...).apply(captor.capture(), any()); assertEquals(..., captor.getValue());**
+### Vì sao đúng
+ArgumentCaptor dùng để **bắt giá trị đối số** trong verify (không phải trong when). Quy trình:
+1. Tạo captor: {{ArgumentCaptor.forClass(String.class)}}.
+2. Verify với {{captor.capture()}} ở vị trí đối số cần bắt.
+3. Sau verify, đọc giá trị qua {{captor.getValue()}} (lần gọi cuối) hoặc {{captor.getAllValues()}} (danh sách tất cả lần gọi).
+### Vì sao các phương án còn lại sai
+- **Dùng trong when**: captor chỉ hoạt động trong verify; dùng trong when sẽ không bắt được giá trị thực tế.
+- **captor.getValue() bên trong verify**: getValue() chỉ có giá trị **sau** khi verify xong; đặt trong verify là sai trình tự.
+- **eq("SUMMER20")**: chỉ kiểm tra giá trị mong đợi, không **lấy** giá trị thực để assert thêm (ví dụ kiểm tra length, pattern, hoặc so sánh phức tạp).
+> Senior tip: với nhiều lần gọi, dùng {{captor.getAllValues()}} trả List theo thứ tự. Nếu cần bắt nhiều đối số cùng lúc, tạo nhiều captor khác nhau. ArgumentCaptor chỉ dùng cho verification, không thay thế được eq()/any() trong stubbing.`
+  },
+  {
+    id: 'qz-testing-037',
+    topic: 'testing',
+    q: 'Cần mock method static {{IdGenerator.next()}} (trả về String) để test unit một service. Mockito 5+ cung cấp cách nào?',
+    options: [
+      'Mockito.mockStatic(IdGenerator.class) trả về MockedStatic, dùng try-with-resources, khi nào thoát block thì tự unmock',
+      'PowerMockito.mockStatic(IdGenerator.class) (cần PowerMock runner)',
+      'Mockito.when(IdGenerator.next()).thenReturn("TEST") trực tiếp',
+      'Không thể mock static method, phải refactor code để inject dependency'
+    ],
+    answer: 0,
+    explain: `**Đáp án đúng: Mockito.mockStatic(IdGenerator.class) trong try-with-resources.**
+### Vì sao đúng
+Từ Mockito 3.4+ (ổn định từ 5+), {{Mockito.mockStatic(Class)}} trả về {{MockedStatic<T>}} implements AutoCloseable. Dùng try-with-resources đảm bảo static mock được **tự động unmock** khi thoát block (dù pass hay fail), tránh rò rỉ mock sang test khác.
+~~~java
+try (MockedStatic<IdGenerator> mocked = Mockito.mockStatic(IdGenerator.class)) {
+    mocked.when(IdGenerator::next).thenReturn("TEST-ID");
+    // test service dùng IdGenerator.next()
+}
+// mocked tự đóng, static method trở về thật
+~~~
+### Vì sao các phương án còn lại sai
+- **PowerMock**: cũ, phức tạp, không tương thích tốt với JUnit 5, không cần thiết nữa vì Mockito bản mới đã hỗ trợ.
+- **when(IdGenerator.next()) trực tiếp**: không compile vì IdGenerator.next() là static method, không phải mock instance.
+- **Không thể mock static**: sai từ Mockito 3.4+, tuy nhiên **khuyến nghị** refactor để inject {{IdGenerator}} (interface) thay vì dùng static — dễ test hơn, không phụ thuộc Mockito inline.
+> Senior tip: static mock dùng {{mockito-inline}} dependency. Chỉ mock static khi không thể refactor (thư viện thứ 3, legacy code). Ưu tiên thiết kế cho test: inject dependency thay vì static method.`
+  },
+  {
+    id: 'qz-testing-038',
+    topic: 'testing',
+    q: 'Test tích hợp dùng Testcontainers với PostgreSQL. Cách khởi động container trong @SpringBootTest đúng nhất?',
+    options: [
+      'Khởi động container thủ công trong @BeforeAll static, dừng trong @AfterAll',
+      'Dùng @Testcontainers trên class test, field static PostgreSQLContainer với @Container annotation',
+      'Cấu hình spring.datasource.url trỏ tới localhost:5432, giả định DB đã chạy',
+      'Dùng @DynamicPropertySource đăng ký property, nhưng không dùng @Container'
+    ],
+    answer: 1,
+    explain: `**Đáp án đúng: @Testcontainers trên class + field static @Container PostgreSQLContainer.**
+### Vì sao đúng
+Testcontainers JUnit 5 extension ({{@Testcontainers}}) quản lý vòng đời container tự động:
+- {{@Container}} trên field static: container khởi động **một lần** trước tất cả test (static field), dừng sau khi class test xong. Tái sử dụng container giữa các test nhanh hơn khởi động lại mỗi test.
+- {{@Testcontainers}} + {{@Container}} chỉ quản lý vòng đời container. Để Spring Boot dùng CSDL của container, vẫn phải ánh xạ thuộc tính: dùng {{@DynamicPropertySource}} (Spring Boot < 3.1) hoặc {{@ServiceConnection}} (Spring Boot 3.1+) gán {{spring.datasource.url/username/password}} từ container.
+~~~java
+@Testcontainers
+@SpringBootTest
+class OrderRepositoryTest {
+    @Container
+    static PostgreSQLContainer<?> pg = new PostgreSQLContainer<>("postgres:16")
+        .withDatabaseName("test")
+        .withUsername("test")
+        .withPassword("test");
+    @DynamicPropertySource
+    static void props(DynamicPropertyRegistry r) {
+        r.add("spring.datasource.url", pg::getJdbcUrl);
+        r.add("spring.datasource.username", pg::getUsername);
+        r.add("spring.datasource.password", pg::getPassword);
+    }
+}
+~~~
+### Vì sao các phương án còn lại sai
+- **Khởi động thủ công @BeforeAll**: mất tự động dọn dẹp, dễ rò rỉ container khi test fail, không có dynamic property override.
+- **Giả định localhost DB**: không cách ly (isolation), test phụ thuộc môi trường, chạy song song bị xung đột.
+- **@DynamicPropertySource mà không @Container**: container không được quản lý vòng đời, không tự start/stop.
+> Senior tip: dùng {{postgres:16-alpine}} image nhẹ hơn. Với nhiều test class, cân nhắc shared container (Testcontainers Singleton) hoặc Testcontainers Cloud. Luôn đặt {{@Testcontainers}} trên class, không phải method.`
+  },
+  {
+    id: 'qz-testing-039',
+    topic: 'testing',
+    q: 'Test slice @DataJpaTest kết hợp Testcontainers PostgreSQL. Cách cấu hình đúng để thay thế H2 mặc định?',
+    options: [
+      'Chỉ cần @DataJpaTest + @Testcontainers + @Container PostgreSQLContainer, Spring Boot tự dùng container thay H2',
+      'Phải loại trừ H2 auto-config bằng @AutoConfigureTestDatabase(replace = Replace.NONE) và cung cấp DataSource trỏ tới container',
+      '@DataJpaTest không tương thích Testcontainers, phải dùng @SpringBootTest',
+      'Cấu hình spring.datasource.url trong application-test.yml trỏ tới localhost:5432'
+    ],
+    answer: 1,
+    explain: `**Đáp án đúng: @AutoConfigureTestDatabase(replace = Replace.NONE) + DataSource từ container.**
+### Vì sao đúng
+{{@DataJpaTest}} mặc định tự cấu hình **H2 in-memory** (thay thế DataSource thật) để test nhanh. Khi dùng Testcontainers PostgreSQL, bạn **không muốn H2** mà muốn DB thật. Cách làm:
+1. {{@AutoConfigureTestDatabase(replace = Replace.NONE)}}: báo Spring Boot **đừng** thay thế DataSource bằng H2.
+2. Cung cấp DataSource trỏ tới container: dùng {{@DynamicPropertySource}} static method set {{spring.datasource.url/username/password}} từ {{PostgreSQLContainer}}.
+~~~java
+@DataJpaTest
+@Testcontainers
+@AutoConfigureTestDatabase(replace = Replace.NONE)
+class OrderRepositoryTest {
+    @Container
+    static PostgreSQLContainer<?> pg = new PostgreSQLContainer<>("postgres:16");
+    @DynamicPropertySource
+    static void props(DynamicPropertyRegistry r) {
+        r.add("spring.datasource.url", pg::getJdbcUrl);
+        r.add("spring.datasource.username", pg::getUsername);
+        r.add("spring.datasource.password", pg::getPassword);
+    }
+}
+~~~
+### Vì sao các phương án còn lại sai
+- **Spring Boot tự dùng container**: sai, @DataJpaTest có logic cứng thay H2, không tự phát hiện Testcontainers.
+- **Không tương thích**: sai, kết hợp được, chỉ cần tắt H2 replacement.
+- **application-test.yml localhost**: mất isolation, không tự động quản lý container.
+> Senior tip: {{@DataJpaTest}} + Testcontainers cho test repository nhanh hơn {{@SpringBootTest}} (chỉ nạp JPA slice). Nên dùng {{Replace.NONE}} + {{DynamicPropertySource}}. {{Flyway/Liquibase}} migration sẽ chạy tự động trên container.`
+  },
+  {
+    id: 'qz-testing-040',
+    topic: 'testing',
+    multi: true,
+    q: 'Về Test Pyramid (kim tự tháp test) và độ bao phủ mã (code coverage) trong dự án Java Spring Boot thực tế, phát biểu nào đúng? (Chọn 2)',
+    options: [
+      'Unit test (không Spring context) nên chiếm tỷ trọng lớn nhất: chạy nhanh, cách ly tốt, dễ debug',
+      'Mục tiêu coverage 100% là bắt buộc cho production-ready',
+      'Integration test (@SpringBootTest) nên ít hơn unit test, tập trung vào happy path và luồng cross-cutting',
+      'Test slice (@WebMvcTest, @DataJpaTest) thuộc tầng integration test và nên chạy sau unit test trong CI',
+      'Mutation testing thay thế hoàn toàn code coverage vì nó đo lường chất lượng assertion'
+    ],
+    answer: [0, 2],
+    explain: `**Đáp án đúng: unit test chiếm đa số; integration test ít hơn, tập trung happy path/cross-cutting.**
+### Vì sao đúng
+**Test Pyramid** (Mike Cohn) áp dụng cho Spring Boot:
+- **Đáy (lớn nhất): Unit test** — không Spring context, test logic nghiệp vụ thuần (service, domain, util). Chạy < 1ms/test, có hàng nghìn test, chạy toàn bộ trong vài giây. Dễ debug, không flaky.
+- **Giữa: Test slice** — {{@WebMvcTest}}, {{@DataJpaTest}}, {{@JsonTest}}... nạp một phần context. Chạy vài chục ms/test. Test mapping, validation, query, serialization.
+- **Đỉnh (nhỏ nhất): Integration test** — {{@SpringBootTest}}, Testcontainers. Nạp toàn bộ context, khởi động DB, broker. Chạy vài giây/test. Chỉ viết cho happy path chính, luồng end-to-end, cấu hình cross-cutting (security, transaction, async).
+**Coverage**: 100% **không** bắt buộc và thường **không thực tế** (code generated, DTO, config, exception handler...). Mục tiêu thực dụng: 70–85% trên logic nghiệp vụ quan trọng, 0% trên DTO/config. Coverage cao nhưng assertion yếu = Coverage Theatre.
+### Vì sao các phương án còn lại sai
+- **100% bắt buộc**: sai, leads to coverage theatre, lãng phí effort, không đảm bảo chất lượng.
+- **Test slice là integration test**: đúng phân loại rộng, nhưng trong pyramid chúng ở **giữa**, không phải đỉnh. Chạy song song với unit test trong CI (không nhất thiết "sau").
+- **Mutation testing thay thế coverage**: mutation testing ({{Pitest}}) **bổ sung** coverage, đo lường assertion quality (kill mutant), không thay thế. Chạy chậm, dùng cho module quan trọng.
+> Senior tip: CI pipeline: unit test (mọi PR) -> test slice (mỗi PR) -> integration test (nightly/main branch). Dùng {{JaCoCo}} + {{Pitest}} trên module core. Không gán KPI coverage 100% cho dev.`
+  },
 );
