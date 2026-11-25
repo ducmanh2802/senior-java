@@ -94,6 +94,7 @@
   // ---------- behaviour (one delegated listener for every answer on the page) ----------
   if (typeof document === 'undefined' || !document.addEventListener) return;
   let speaking = null;   // button currently reading
+  let lastWrap = null;   // answer the reader used last: ← → drive this one when several are in step mode
   function stopSpeech() {
     if (tts()) window.speechSynthesis.cancel();
     if (speaking) { speaking.textContent = '🔊'; speaking.setAttribute('aria-label', t('read')); speaking = null; }
@@ -113,8 +114,20 @@
     speaking = btn; btn.textContent = '⏹'; btn.setAttribute('aria-label', t('stop'));
     window.speechSynthesis.speak(u);
   }
+  // After Tiếp/Trước the new part replaces the old one in place: when the reader had scrolled down a long part,
+  // the new part starts above the screen, so bring its top back under the sticky top bar.
+  function reveal(sec) {
+    if (!sec || !sec.getBoundingClientRect) return;
+    const bar = document.querySelector('.topbar');
+    const off = (bar ? Math.max(0, bar.getBoundingClientRect().bottom) : 0) + 12;
+    const top = sec.getBoundingClientRect().top;
+    if (top >= off) return;
+    const reduce = window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+    window.scrollBy({ top: top - off, behavior: reduce ? 'auto' : 'smooth' });
+  }
   function show(wrap, i) {
     const secs = wrap.querySelectorAll('[data-ans-sec]'), n = secs.length;
+    if (!n) return;
     i = Math.max(0, Math.min(n - 1, i));
     wrap.dataset.step = String(i);
     secs.forEach((s, j) => { s.hidden = j !== i; if (j === i) s.open = true; });
@@ -125,8 +138,10 @@
     if (next) next.disabled = i === n - 1;
     const recall = wrap.querySelector('.ans-recall');
     if (recall) recall.hidden = i !== n - 1;
+    reveal(secs[i]);
   }
   function setStepMode(wrap, on) {
+    if (on) lastWrap = wrap;
     wrap.classList.toggle('is-step', on);
     const btn = wrap.querySelector('[data-ans-mode]');
     if (btn) btn.textContent = on ? t('all') : t('step');
@@ -144,6 +159,7 @@
     if (!tgt || !tgt.closest) return;
     const wrap = tgt.closest('[data-ans]');
     if (!wrap) return;
+    lastWrap = wrap;
     const read = tgt.closest('[data-ans-read]');
     if (read) { e.preventDefault(); e.stopPropagation(); speak(read); return; }   // inside <summary>: do not fold
     if (tgt.closest('[data-ans-mode]')) { setStepMode(wrap, !wrap.classList.contains('is-step')); return; }
@@ -158,12 +174,22 @@
     }
   });
   // ← → move between steps of the answer that is in step mode and on screen (ignored while typing)
+  const shown = el => !!el && el.isConnected && el.getClientRects().length > 0;   // not display:none / detached
+  function stepTarget() {
+    if (lastWrap && lastWrap.classList.contains('is-step') && shown(lastWrap)) return lastWrap;
+    const all = document.querySelectorAll('.ans.is-step');
+    for (let i = 0; i < all.length; i++) if (shown(all[i])) return all[i];
+    return null;
+  }
   document.addEventListener('keydown', e => {
     if (e.key !== 'ArrowRight' && e.key !== 'ArrowLeft') return;
+    if (e.ctrlKey || e.metaKey || e.altKey || e.shiftKey) return;   // Alt+← is browser Back
     const el = e.target;
     if (el && (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA' || el.tagName === 'SELECT' || el.isContentEditable)) return;
-    const wrap = document.querySelector('.ans.is-step');
+    const wrap = stepTarget();
     if (!wrap) return;
+    const modal = document.querySelector('dialog[open]');   // e.g. glossary modal over the answer: leave its keys alone
+    if (modal && !modal.contains(wrap)) return;
     e.preventDefault();
     e.stopImmediatePropagation();
     show(wrap, Number(wrap.dataset.step || 0) + (e.key === 'ArrowRight' ? 1 : -1));

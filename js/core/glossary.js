@@ -15,6 +15,8 @@
   let index = null;          // { re, map }
   let observer = null;
   let timer = 0;
+  let io = null;             // IntersectionObserver: a block is linked when it comes near the viewport
+  const watched = new Set(); // blocks handed to io and not linked yet
   let dlg = null;
   let currentId = null;      // entry shown in the modal
   let stack = [];            // history for the ← back button
@@ -109,10 +111,35 @@
     block.setAttribute('data-gl', '1');
   }
 
+  // Linking walks every text node with a regex of all aliases, so do it only for blocks the reader can see:
+  // a long page (path: 500+ blocks, most inside closed <details>) used to link everything up front in one long task.
+  // Hidden blocks (closed <details>, [hidden] steps) do not intersect until they are shown.
+  function onIntersect(list) {
+    list.forEach(en => {
+      if (!en.isIntersecting) return;
+      const b = en.target;
+      io.unobserve(b);
+      watched.delete(b);
+      if (b.isConnected && !b.hasAttribute('data-gl')) linkBlock(b, {});
+    });
+  }
+
+  function linkSoon(block) {
+    if (watched.has(block)) return;
+    if (!io) {
+      if (typeof IntersectionObserver !== 'function') { linkBlock(block, {}); return; }   // old engines: link now
+      io = new IntersectionObserver(onIntersect, { rootMargin: '400px 0px' });
+    }
+    watched.add(block);
+    io.observe(block);
+  }
+
   function scanAll() {
     if (!ensureIndex()) return;
+    // blocks removed by a re-render before they were ever shown: stop observing them (no leak across routes)
+    watched.forEach(b => { if (!b.isConnected) { io.unobserve(b); watched.delete(b); } });
     const blocks = document.querySelectorAll('.md:not([data-gl])');
-    for (let i = 0; i < blocks.length; i++) linkBlock(blocks[i], {});
+    for (let i = 0; i < blocks.length; i++) linkSoon(blocks[i]);
   }
 
   function schedule() {
@@ -232,10 +259,17 @@
     }
   }
 
+  function isOpen() { return !!dlg && (dlg.open || dlg.hasAttribute('open')); }
+
   function close() {
-    if (dlg && dlg.open && typeof dlg.close === 'function') dlg.close();
-    else restoreFocus();
+    if (dlg && dlg.open && typeof dlg.close === 'function') { dlg.close(); return; }   // 'close' event restores focus
+    if (dlg) { dlg.removeAttribute('open'); dlg.classList.remove('gl-fallback'); }     // no <dialog> support
+    restoreFocus();
   }
+
+  // a link inside the modal ("Mở trong ngân hàng câu hỏi") or Back/Forward changes the page: do not leave the
+  // modal covering the new route
+  window.addEventListener('hashchange', () => { if (isOpen()) close(); });
 
   document.addEventListener('click', e => {
     const t = e.target && e.target.closest ? e.target.closest('.gl-term') : null;

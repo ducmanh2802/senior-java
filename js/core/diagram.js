@@ -108,15 +108,30 @@
   function onStepClick(e) {
     const b = e.target.closest && e.target.closest('[data-sq]');
     if (!b) return;
-    const fig = b.closest('.diagram'), steps = fig.querySelectorAll('.sq-step'), n = steps.length;
+    const fig = b.closest('.diagram');
+    if (!fig) return;
+    const steps = fig.querySelectorAll('.sq-step'), n = steps.length;
+    if (!n) return;
     let at = Number(fig.dataset.at);
+    if (isNaN(at)) at = -1;
     if (b.dataset.sq === 'next') at = at < 0 ? 0 : Math.min(at + 1, n - 1);
     else if (b.dataset.sq === 'prev') at = at < 0 ? n - 1 : Math.max(at - 1, 0);
     else at = -1;
     fig.dataset.at = at;
     steps.forEach((g, i) => { g.classList.toggle('sq-dim', at >= 0 && i > at); g.classList.toggle('sq-cur', i === at); });
-    fig.querySelector('[data-sq="next"]').textContent = at < 0 ? '▶ Đi từng bước' : '▶';
-    fig.querySelector('.diagram-now').textContent = at < 0 ? '' : 'Bước ' + (at + 1) + '/' + n + ': ' + steps[at].getAttribute('data-label');
+    const nextBtn = fig.querySelector('[data-sq="next"]'), now = fig.querySelector('.diagram-now');
+    if (nextBtn) nextBtn.textContent = at < 0 ? '▶ Đi từng bước' : '▶';
+    if (now) now.textContent = at < 0 ? '' : 'Bước ' + (at + 1) + '/' + n + ': ' + steps[at].getAttribute('data-label');
+    if (at >= 0) follow(fig, steps[at]);
+  }
+  // wide diagrams scroll sideways (phones): keep the current step inside the visible part of the scroller
+  function follow(fig, step) {
+    const sc = fig.querySelector('.diagram-scroll');
+    if (!sc || sc.scrollWidth <= sc.clientWidth || !step.getBoundingClientRect) return;
+    const r = step.getBoundingClientRect(), s = sc.getBoundingClientRect();
+    if (r.left >= s.left && r.right <= s.right) return;
+    const reduce = typeof window !== 'undefined' && window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+    sc.scrollBy({ left: (r.left + r.right - s.left - s.right) / 2, behavior: reduce ? 'auto' : 'smooth' });
   }
   if (typeof document !== 'undefined' && document.addEventListener) document.addEventListener('click', onStepClick);
 

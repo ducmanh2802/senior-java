@@ -29,20 +29,30 @@
   };
 
   // ---------- storage ----------
+  const isObj = v => !!v && typeof v === 'object' && !Array.isArray(v);
+  // defaults for missing keys + the right container types, so views never crash on old/odd saved data
+  function normalize(raw) {
+    const d = Object.assign(DEFAULT_DATA(), isObj(raw) ? raw : {});
+    ['progress', 'bookmarks', 'daily'].forEach(k => { if (!isObj(d[k])) d[k] = {}; });
+    ['quizHistory', 'mockHistory', 'aiFlags', 'stories', 'interviewLog', 'jobs'].forEach(k => { if (!Array.isArray(d[k])) d[k] = []; });
+    if (!isObj(d.roadmap)) d.roadmap = { start: null, done: {} };
+    else if (!isObj(d.roadmap.done)) d.roadmap.done = {};
+    return d;
+  }
   function loadData() {
     try {
-      const raw = JSON.parse(localStorage.getItem(STORE_KEY));
-      const d = Object.assign(DEFAULT_DATA(), raw || {});
-      if (!Array.isArray(d.aiFlags)) d.aiFlags = [];
-      if (!Array.isArray(d.stories)) d.stories = [];
-      if (!Array.isArray(d.interviewLog)) d.interviewLog = [];
-      if (!Array.isArray(d.jobs)) d.jobs = [];
-      return d;
+      return normalize(JSON.parse(localStorage.getItem(STORE_KEY)));
     } catch (e) {
       return DEFAULT_DATA();
     }
   }
   let data = loadData();
+  // add n to today's counter without writing storage (callers save once)
+  function bump(kind, n) {
+    const k = dayKey(Date.now());
+    const d = data.daily[k] || (data.daily[k] = {});
+    d[kind] = (d[kind] || 0) + (n == null ? 1 : n);
+  }
 
   const store = {
     get data() { return data; },
@@ -63,9 +73,9 @@
       p.s = s; p.t = Date.now(); p.n += 1;
       p.due = startOfDay(Date.now()) + p.iv * DAY;
       data.progress[id] = p;
-      store.log('review');
-      if (s === 'known') store.log('known');
-      store.save();
+      bump('review');
+      if (s === 'known') bump('known');
+      store.save();   // one write (and one cloud-sync schedule) instead of three
     },
     /** Next review timestamp (start of day) or null if never assessed. */
     getDue(id) { return data.progress[id] ? data.progress[id].due || null : null; },
@@ -73,9 +83,7 @@
     isDue(id) { const d = store.getDue(id); return d != null && d <= startOfDay(Date.now()); },
     /** Daily activity log; kinds: review, known, quiz, mock, algo, minutes. */
     log(kind, n) {
-      const k = dayKey(Date.now());
-      const d = data.daily[k] || (data.daily[k] = {});
-      d[kind] = (d[kind] || 0) + (n == null ? 1 : n);
+      bump(kind, n);
       store.save();
     },
     day(key) { return data.daily[key || dayKey(Date.now())] || {}; },
@@ -94,7 +102,7 @@
     },
     addQuizResult(r) { data.quizHistory.unshift(Object.assign({ at: Date.now() }, r)); data.quizHistory.length = Math.min(data.quizHistory.length, 50); store.log('quiz'); },
     addMockResult(r) { data.mockHistory.unshift(Object.assign({ at: Date.now() }, r)); data.mockHistory.length = Math.min(data.mockHistory.length, 50); store.log('mock'); },
-    replace(next) { data = Object.assign(DEFAULT_DATA(), next); store.save(); },
+    replace(next) { data = normalize(next); store.save(); },
     reset() { data = DEFAULT_DATA(); store.save(); },
   };
 
@@ -182,10 +190,23 @@
   /** Questions + algo problems due for spaced-repetition review today, most overdue first.
    *  Full objects when the groups are loaded, light objects (id, topic…) otherwise — callers needing text await the group. */
   function dueItems() {
-    const all = lite('questions').concat(lite('algos'));
-    return all.filter(x => store.isDue(x.id)).sort((a, b) => store.getDue(a.id) - store.getDue(b.id));
+    const today = startOfDay(Date.now()), prog = data.progress;
+    const dueOf = x => { const p = prog[x.id]; return p && p.due ? p.due : null; };   // same rule as store.getDue
+    const out = [];
+    [lite('questions'), lite('algos')].forEach(list => list.forEach(x => { const d = dueOf(x); if (d != null && d <= today) out.push(x); }));
+    return out.sort((a, b) => dueOf(a) - dueOf(b));
   }
-  function topic(id) { return topics().find(t => t.id === id) || { id, name: id, icon: '•' }; }
+  // id -> topic map, rebuilt only when window.TOPICS changes (views call App.topic() inside list loops)
+  let topicMap = null, topicSrc = null, topicLen = -1;
+  function topic(id) {
+    const list = topics();
+    if (list !== topicSrc || list.length !== topicLen) {
+      topicMap = Object.create(null);
+      list.forEach(t => { if (t && !(t.id in topicMap)) topicMap[t.id] = t; });
+      topicSrc = list; topicLen = list.length;
+    }
+    return topicMap[id] || { id, name: id, icon: '•' };
+  }
 
   /** Filter questions. All fields optional; 'all' or empty means no filter. */
   function filterQuestions(f) {
@@ -227,8 +248,17 @@
     return () => document.removeEventListener('keydown', fn);
   }
 
+  // one Intl formatter per language (toLocaleString with options builds a new one on every call: slow in long lists)
+  const dateFmt = {};
   function fmtDate(ts) {
-    return new Date(ts).toLocaleString(App.lang === 'en' ? 'en-US' : 'vi-VN', { day: '2-digit', month: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit' });
+    const loc = App.lang === 'en' ? 'en-US' : 'vi-VN';
+    if (!dateFmt[loc]) {
+      const opts = { day: '2-digit', month: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit' };
+      try { dateFmt[loc] = new Intl.DateTimeFormat(loc, opts); }
+      catch (e) { dateFmt[loc] = { format: d => d.toLocaleString(loc, opts) }; }
+    }
+    const d = new Date(ts);
+    return isNaN(d.getTime()) ? String(d) : dateFmt[loc].format(d);   // format() throws on Invalid Date
   }
 
   // ---------- light markup renderer (see AGENTS.md "Markup") ----------
@@ -339,8 +369,12 @@
       'app.footer.privacy': 'Quyền riêng tư',
       'app.footer.terms': 'Điều khoản',
       'app.footer.about': 'Giới thiệu',
-      'app.noView': 'Chưa có view nào được đăng ký.',
       'app.error.render': 'Lỗi khi hiển thị',
+      'app.error.load': 'Không tải được trang này',
+      'app.error.loadHint': 'Mạng chập chờn hoặc mất kết nối nên mã của trang chưa tải xong. Kiểm tra kết nối rồi bấm Thử lại.',
+      'app.error.data': 'Một phần dữ liệu chưa tải được nên trang này có thể thiếu nội dung.',
+      'app.retry': 'Thử lại',
+      'app.home': 'Về trang Tổng quan',
       'app.settings.ai': 'Cài đặt AI',
       'app.settings.theme': 'Đổi giao diện sáng/tối',
       'app.settings.lang': 'Switch to English',
@@ -361,8 +395,12 @@
       'app.footer.privacy': 'Privacy',
       'app.footer.terms': 'Terms',
       'app.footer.about': 'About',
-      'app.noView': 'No view registered.',
       'app.error.render': 'Render error',
+      'app.error.load': 'This page could not be loaded',
+      'app.error.loadHint': 'The network dropped before the page code finished loading. Check your connection, then retry.',
+      'app.error.data': 'Some data did not load, so this page may be incomplete.',
+      'app.retry': 'Retry',
+      'app.home': 'Back to dashboard',
       'app.settings.ai': 'AI settings',
       'app.settings.theme': 'Toggle light/dark theme',
       'app.settings.lang': 'Chuyển sang tiếng Việt',
@@ -378,6 +416,7 @@
   const MANIFEST = window.DATA_MANIFEST || { groups: {}, routes: {}, prefetch: [], needsFor: () => [] };
   const groupState = {};   // group -> Promise (pending or resolved); dropped again if a file failed
   const groupDone = {};    // group -> true once loaded
+  const fileState = {};    // data file -> Promise<ok>; dropped again if it failed (retried by the next need)
   function loadScript(src, fallback) {
     return new Promise(resolve => {
       const s = document.createElement('script');
@@ -394,11 +433,20 @@
   // data files come from jsDelivr when deployed (js/core/data-base.js); '' = same origin (local runs)
   const dataUrl = f => (window.DATA_BASE || '') + 'js/data/' + f;
   const dataFallback = f => (window.DATA_BASE_FALLBACK ? window.DATA_BASE_FALLBACK + 'js/data/' + f : null);
+  // Each data file runs at most once: data files push into shared arrays (window.QUESTIONS…), and a file can sit in
+  // two groups (q-sql.js is in 'questions' and 'q:q-sql.js'), so running it again would duplicate every item.
+  // A retry after a partial failure also re-requests only the files that failed.
+  function loadDataFile(f) {
+    if (!fileState[f]) {
+      fileState[f] = loadScript(dataUrl(f), dataFallback(f)).then(ok => { if (!ok) delete fileState[f]; return ok; });
+    }
+    return fileState[f];
+  }
   function loadGroup(g) {
     if (groupState[g]) return groupState[g];
     const files = MANIFEST.groups[g];
     if (!files) { console.warn('App.need: unknown data group ' + g); return Promise.resolve(); }
-    groupState[g] = Promise.all(files.map(f => loadScript(dataUrl(f), dataFallback(f)))).then(oks => {
+    groupState[g] = Promise.all(files.map(loadDataFile)).then(oks => {
       if (oks.every(Boolean)) groupDone[g] = true; else delete groupState[g];   // retry on next need
       try { window.dispatchEvent(new CustomEvent('datagroupload', { detail: g })); } catch (e) { console.error(e); }
     });
@@ -422,10 +470,13 @@
       document.head.appendChild(l);
     });
   }
+  const cssState = {};
   function loadView(name) {
-    if (views[name] || VIEW_NAMES.indexOf(name) < 0) return Promise.resolve();
+    if (hasView(name) || VIEW_NAMES.indexOf(name) < 0) return Promise.resolve();
     if (!viewState[name]) {
-      viewState[name] = Promise.all([loadCss('css/views/' + name + '.css'), loadScript('js/views/' + name + '.js')])
+      // the stylesheet is kept once it loaded, so a retry after a failed script does not add a second <link>
+      const css = cssState[name] || (cssState[name] = loadCss('css/views/' + name + '.css').then(ok => { if (!ok) delete cssState[name]; return ok; }));
+      viewState[name] = Promise.all([css, loadScript('js/views/' + name + '.js')])
         .then(oks => { if (!oks[1]) delete viewState[name]; });   // script failed → retry on next visit
     }
     return viewState[name];
@@ -441,12 +492,17 @@
   }
 
   let prefetchStarted = false;
+  // Data Saver / 2G: prefetch only the small view files; data groups then load when a route needs them
+  function saveData() {
+    const c = typeof navigator !== 'undefined' && navigator.connection;
+    return !!(c && (c.saveData || /(^|-)2g$/.test(c.effectiveType || '')));
+  }
   function prefetchAll() {
     if (prefetchStarted) return;
     prefetchStarted = true;
     const idle = window.requestIdleCallback ? fn => window.requestIdleCallback(fn, { timeout: 3000 }) : fn => setTimeout(fn, 1200);
-    const queue = (MANIFEST.prefetch || Object.keys(MANIFEST.groups)).filter(g => MANIFEST.groups[g]);
-    Object.keys(MANIFEST.groups).forEach(g => { if (queue.indexOf(g) < 0) queue.push(g); });
+    const queue = saveData() ? [] : (MANIFEST.prefetch || Object.keys(MANIFEST.groups)).filter(g => MANIFEST.groups[g]);
+    if (queue.length) Object.keys(MANIFEST.groups).forEach(g => { if (queue.indexOf(g) < 0) queue.push(g); });
     // likely next views first (small), then data; one item per idle slot, so a navigation in between is not
     // stuck behind the whole bank
     const items = (MANIFEST.prefetchViews || []).map(v => () => loadView(v)).concat(queue.map(g => () => loadGroup(g)));
@@ -459,33 +515,49 @@
   let cleanup = null;
   let routeSeq = 0;
 
+  let renderedHash = null;   // hash of the last finished render (same hash again = refresh: keep the scroll position)
+
   function registerView(name, def) { views[name] = def; }
+  // own keys only: '#/constructor' or '#/__proto__' must not resolve to Object.prototype members
+  function hasView(name) { return Object.prototype.hasOwnProperty.call(views, name); }
 
   function navigate(hash) { location.hash = hash; }
 
+  // a malformed escape ('#/bank/%E0%A4') must not throw out of the router and leave a blank page
+  const safeDecode = s => { try { return decodeURIComponent(s); } catch (e) { return s; } };
   function routeParts() {
-    return location.hash.replace(/^#\/?/, '').split('/').filter(Boolean).map(decodeURIComponent);
+    return location.hash.replace(/^#\/?/, '').split('/').filter(Boolean).map(safeDecode);
   }
 
   function route() {
+    const root = document.getElementById('main');
+    if (!root) return;                       // hashchange before the shell is parsed: DOMContentLoaded routes
     const parts = routeParts();
-    const name = views[parts[0]] || VIEW_NAMES.indexOf(parts[0]) >= 0 ? parts[0] : 'dashboard';
+    const name = hasView(parts[0]) || VIEW_NAMES.indexOf(parts[0]) >= 0 ? parts[0] : 'dashboard';
     const seq = ++routeSeq;
+    const hash = location.hash;
+    const keepY = hash === renderedHash ? (window.scrollY || 0) : 0;   // re-render (language, sync, view refresh)
+    renderedHash = null;
     if (cleanup) { try { cleanup(); } catch (e) { console.error(e); } cleanup = null; }
-    document.querySelectorAll('.nav a').forEach(a => a.classList.toggle('active', a.dataset.route === name));
+    document.querySelectorAll('.nav a').forEach(a => {
+      const on = a.dataset.route === name;
+      a.classList.toggle('active', on);
+      if (on) a.setAttribute('aria-current', 'page'); else a.removeAttribute('aria-current');
+    });
     document.querySelectorAll('.nav-group[open]').forEach(d => d.removeAttribute('open'));
     updateSection(name);
-    const root = document.getElementById('main');
     root.innerHTML = '';
     root.className = 'container view-' + name;
     const groups = MANIFEST.needsFor(name, parts[1]);
+    const known = groups.filter(g => MANIFEST.groups[g]);   // an unknown group (warned by need) can never be "loaded"
     const show = () => {
-      const view = views[name];
-      if (!view) { root.innerHTML = '<p class="muted">' + App.t('app.noView') + '</p>'; return; }
-      renderView(view, root, parts);
+      if (!hasView(name)) { renderLoadError(root, name); return; }   // view script failed (offline, blocked)
+      renderView(views[name], root, parts, keepY);
+      renderedHash = hash;
+      setNotice(!hasData(known));          // some data file failed: the view renders with what it has
       prefetchAll();
     };
-    if (views[name] && hasData(groups)) { show(); return; }
+    if (hasView(name) && hasData(known)) { show(); return; }
     root.innerHTML = '<div class="route-loading muted" role="status" aria-live="polite">' +
       (App.lang === 'en' ? 'Loading…' : 'Đang tải dữ liệu…') + '</div>';
     Promise.all([loadView(name), need(groups)]).then(() => {
@@ -493,6 +565,32 @@
       root.innerHTML = '';
       show();
     });
+  }
+
+  // ---------- load errors: blocking card when the view itself is missing, slim notice when only data failed ----------
+  function renderLoadError(root, name) {
+    setNotice(false);
+    root.innerHTML = '<div class="card route-error" role="alert"><h2>⚠️ ' + esc(App.t('app.error.load')) + '</h2>' +
+      '<p class="muted">' + esc(App.t('app.error.loadHint')) + '</p>' +
+      '<div class="row"><button type="button" class="btn primary" data-route-retry>↻ ' + esc(App.t('app.retry')) + '</button>' +
+      (name !== 'dashboard' ? '<a class="btn" href="#/">' + esc(App.t('app.home')) + '</a>' : '') +
+      '</div></div>';
+  }
+  function setNotice(on) {
+    let el = document.getElementById('routeNotice');
+    if (!on) { if (el) el.remove(); return; }
+    const main = document.getElementById('main');
+    if (el || !main || !main.parentNode) return;
+    el = document.createElement('div');
+    el.id = 'routeNotice';
+    el.className = 'container route-notice';
+    el.style.paddingBottom = '0';
+    el.setAttribute('role', 'alert');
+    el.innerHTML = '<div class="card row"><span>⚠️ ' + esc(App.t('app.error.data')) + '</span>' +
+      '<button type="button" class="btn sm" data-route-retry>↻ ' + esc(App.t('app.retry')) + '</button></div>';
+    // above the breadcrumb strip, so the `.secbar + main` spacing rule in base.css still applies
+    const bar = document.getElementById('secbar');
+    main.parentNode.insertBefore(el, bar && bar.parentNode === main.parentNode ? bar : main);
   }
 
   // Section of the current route = its nav group (index.html). Sets body[data-group] (per-group colour palette in
@@ -514,7 +612,10 @@
     bar.hidden = false;
   }
 
-  function renderView(view, root, parts) {
+  function renderView(view, root, parts, keepY) {
+    // default title first; a view that sets document.title itself during render (legal) keeps its own
+    const fallback = view.title ? view.title + ' · Senior Java Prep' : 'Senior Java Prep';
+    document.title = fallback;
     try {
       const c = view.render(root, parts.slice(1));
       if (typeof c === 'function') cleanup = c;
@@ -522,8 +623,7 @@
       console.error(e);
       root.innerHTML = '<div class="card"><h2>' + App.t('app.error.render') + '</h2><pre class="code"><code>' + esc(e.stack || e) + '</code></pre></div>';
     }
-    if (view.title) document.title = view.title + ' · Senior Java Prep';
-    window.scrollTo(0, 0);
+    window.scrollTo(0, keepY || 0);
   }
 
   // ---------- theme + footer ----------
@@ -539,6 +639,10 @@
     document.querySelectorAll('.nav-group').forEach(d => d.addEventListener('toggle', () => {
       if (d.open) groups().forEach(o => { if (o !== d) o.removeAttribute('open'); });
     }));
+    // "Thử lại" on the load-error card / data notice: failed files were dropped from the cache, so this re-requests them
+    document.addEventListener('click', e => {
+      if (e.target && e.target.closest && e.target.closest('[data-route-retry]')) { e.preventDefault(); route(); }
+    });
     applyTheme();
     const btn = document.getElementById('themeToggle');
     if (btn) btn.addEventListener('click', () => {
@@ -551,8 +655,10 @@
       const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
       const a = document.createElement('a');
       a.href = URL.createObjectURL(blob);
-      a.download = 'senior-java-prep-progress.json';
+      a.download = 'senior-java-prep-progress-' + dayKey(Date.now()) + '.json';   // dated: exports do not overwrite each other
+      document.body.appendChild(a);   // a detached <a> does not download in every browser
       a.click();
+      a.remove();
       setTimeout(() => URL.revokeObjectURL(a.href), 1000);
       alert(App.t('app.toast.exported'));
     });
@@ -562,7 +668,10 @@
       imp.addEventListener('click', () => file.click());
       file.addEventListener('change', async () => {
         try {
-          store.replace(JSON.parse(await file.files[0].text()));
+          const next = JSON.parse(await file.files[0].text());
+          // any other JSON (array, null, a different app's file) would silently wipe the progress
+          if (!isObj(next) || !isObj(next.progress)) throw new Error('not a progress export');
+          store.replace(next);
           applyTheme(); route();
           alert(App.t('app.toast.imported'));
         } catch (e) { alert(App.t('app.alert.importError')); }
