@@ -61,6 +61,8 @@
 .view-aws .aws-svc { align-items: center; margin: 8px 0; gap: 6px; }
 .view-aws .aws-refs { margin: 0; padding-left: 20px; overflow-wrap: anywhere; }
 .view-aws .aws-nav { gap: 8px; margin-top: 8px; }
+.view-aws .aws-q-progress { margin: 0 0 12px; height: 8px; }
+.view-aws .aws-q-progress > i { transition: width .2s ease; }
 
 /* thi thử */
 .view-aws .aws-resume { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; border-left: 4px solid var(--warn); }

@@ -223,7 +223,7 @@
   }
 
   // ---------- module state (survives tab switches) ----------
-  let rootEl = null, tab = 'overview', timer = null;
+  let rootEl = null, tab = 'overview', timer = null, curParams = [];
   const openWeeks = new Set();
   const P = { exam: 'sap-c02', domain: 'all', mode: 'all', week: null, queue: [], idx: 0, sel: [], checked: false, c: 0, t: 0 };
   let M = null;           // mock đang làm: { exam, ids, sel, flag, idx, startedAt, endAt }
@@ -448,8 +448,10 @@
       const empty = !pool(P.exam, practiceDomains()).length;
       return filters + '<p class="empty">' + (empty ? '⏳ ' + t('emptyPool') : t('emptyFilter')) + '</p>';
     }
+    const pct = Math.round((P.idx + (P.checked ? 1 : 0)) / Math.max(1, P.queue.length) * 100);
     return filters + '<section class="card aws-q">' +
       '<p class="small muted">' + esc(t('queue', { i: P.idx + 1, n: P.queue.length, c: P.c, t: P.t })) + '</p>' +
+      '<div class="progress aws-q-progress" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="' + pct + '" aria-label="' + esc(t('progress', { i: P.idx + 1, n: P.queue.length, d: P.c })) + '"><i class="accent" style="width:' + pct + '%"></i></div>' +
       '<div lang="en">' + qHead(q) + '<div class="md aws-q-text">' + App.md(q.q) + '</div>' + optionsHtml(q, P.sel, P.checked) + '</div>' +
       (P.checked ? explainHtml(q, P.sel) : '') +
       '<div class="row aws-nav">' +
@@ -600,7 +602,7 @@
     if (tab === 'plan') body = planHtml();
     else if (tab === 'practice') body = practiceHtml();
     else if (tab === 'mock') { loadMock(); body = M ? mockHtml() : R ? resultHtml() : mockSetupHtml(); }
-    else if (tab === 'labs') body = params && params[1] ? labDetailHtml(params[1]) : labsListHtml();
+    else if (tab === 'labs') body = curParams && curParams[1] ? labDetailHtml(curParams[1]) : labsListHtml();
     else body = overviewHtml();
     rootEl.innerHTML = '<div class="page-head"><div><h1>' + t('heading') + '</h1><p>' + t('sub') + '</p></div></div>' + tabsHtml() + body;
   }
@@ -684,6 +686,7 @@
     get title() { return App.t('aws.title'); },
     render(root, params) {
       rootEl = root;
+      curParams = params || [];
       tab = TABS.indexOf(params && params[0]) > 0 ? params[0] : 'overview';
       S();
       if (tab === 'practice' && !P.queue.length) buildQueue();
