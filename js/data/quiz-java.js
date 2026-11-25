@@ -8931,5 +8931,275 @@ Nguyên nhân Time-to-Safepoint (TTSP) ~890ms là gì?`,
 - Modifier không đổi rule.
 
 > Senior tip: static helper nên pure; tránh static mutable state (global).`
+},
+{
+  id: 'qz-kotlin-031', topic: 'kotlin',
+  q: `Dịch vụ Java có method {{String layTen()}} (có thể trả null). Code Kotlin sau xảy ra gì?
+~~~kotlin
+val ten: String = dichVu.layTen()
+println("Dai ten: " + ten.length)
+~~~`,
+  options: [
+    `Lỗi biên dịch vì Kotlin không gán được kiểu platform (String!) vào String không null`,
+    `Biên dịch được, nhưng nếu Java trả null thì ném NullPointerException khi truy cập ten.length (Kotlin không ép kiểm tra null cho kiểu platform)`,
+    `Kotlin hiểu ten là String? nên safely xử lý null, không bao giờ ném Ngoại lệ con trỏ null`,
+    `Ném Ngoại lệ con trỏ null ngay tại dòng gán vì Java trả null`
+  ],
+  answer: 1,
+  explain: `**Đáp án đúng: Biên dịch được, nhưng nếu Java trả null thì ném NullPointerException khi truy cập ten.length.**
+
+### Cơ chế kiểu platform
+Khi Kotlin gọi code Java, Kotlin không biết tham số hay giá trị trả về của Java có thể null hay không. Kotlin gọi kiểu này là **kiểu platform (platform type)**, ký hiệu là {{String!}} (không phải {{String}} và không phải {{String?}}). Kotlin tin tưởng lập trình viên: bạn có thể gán kiểu platform vào biến {{String}} (không null) hoặc {{String?}} (có null) mà không báo lỗi biên dịch.
+
+Trong ví dụ: {{dichVu.layTen()}} có kiểu platform {{String!}}. Gán cho {{val ten: String}} biên dịch được. Nhưng nếu Java thực sự trả null, thì {{ten}} là null và truy cập {{ten.length}} ném **NullPointerException** ngay tại đó. Kotlin không chèn kiểm tra null vì kiểu platform bỏ qua kiểm tra an toàn null.
+
+### Tại sao các phương án sai
+- **Lỗi biên dịch vì Kotlin không gán được kiểu platform vào String không null**: sai, Kotlin cho phép gán, chỉ không đảm bảo an toàn.
+- **Kotlin hiểu ten là String?**: sai, khi bạn khai báo rõ {{String}} thì Kotlin dùng kiểu đó, không tự nâng thành {{String?}}.
+- **Ném ngay tại dòng gán**: sai, lỗi xảy ra khi truy cập thành phần của null, không phải khi gán tham chiếu null vào biến.
+
+> Senior tip: khi gọi Java từ Kotlin, hãy ép kiểu platform ngay lập tức bằng safe call và Elvis, ví dụ {{val ten: String = dichVu.layTen() ?: ""}} hoặc {{val ten: String? = dichVu.layTen()}}, để không để null trôi vào sâu trong logic nghiệp vụ và gây crash khó truy vết.`
+},
+{
+  id: 'qz-kotlin-032', topic: 'kotlin',
+  q: `Data class chứa danh sách có thể thay đổi. Dùng {{copy()}} sao chép có vấn đề gì?
+~~~kotlin
+data class DonHang(val id: Long, val danhSach: MutableList<String>)
+fun main() {
+    val a = DonHang(1L, mutableListOf("a"))
+    val b = a.copy(id = 2L)
+    b.danhSach.add("b")
+    println(a.danhSach)
+}
+~~~`,
+  options: [
+    `In ["a"], vì copy() tạo danh sách mới độc lập`,
+    `In ["a", "b"], vì copy() chỉ sao chép tham chiếu đến cùng một danh sách (shallow copy)`,
+    `Lỗi biên dịch vì data class không được chứa MutableList`,
+    `In ["b"], vì danh sách gốc bị thay đổi theo`
+  ],
+  answer: 1,
+  explain: `**Đáp án đúng: In ["a", "b"], vì copy() chỉ sao chép tham chiếu đến cùng một danh sách (shallow copy).**
+
+### Cơ chế copy() của data class
+Data class tự sinh method {{copy()}} tạo một đối tượng mới, gán lại các thuộc tính bạn chỉ định và **giữ nguyên tham chiếu** cho các thuộc tính không được nêu. Trong ví dụ, {{a.copy(id = 2L)}} tạo {{b}} là đối tượng mới nhưng {{b.danhSach}} trỏ đến **cùng đối tượng MutableList** với {{a.danhSach}}. Do đó {{b.danhSach.add("b")}} cũng làm danh sách của {{a}} thay đổi, và in ra {{["a", "b"]}}.
+
+Đây là sao chép **thallow (shallow)**: đối tượng mới, nhưng các thành phần bên trong (đặc biệt là collection có thể thay đổi) vẫn chia sẻ tham chiếu.
+
+### Tại sao các phương án sai
+- **In ["a"], vì copy() tạo danh sách mới độc lập**: sai, {{copy()}} không sao chép sâu danh sách.
+- **Lỗi biên dịch vì data class không được chứa MutableList**: sai, data class có thể chứa bất kỳ kiểu nào, kể cả mutable collection.
+- **In ["b"]**: sai, danh sách gốc không bị "thay thế", chỉ có nội dung được thêm phần tử.
+
+> Senior tip: data class chứa mutable collection rất nguy hiểm khi dùng trong Set/Map hoặc sao chép, vì {{hashCode}} có thể thay đổi sau khi đã đặt vào cấu trúc băm. Nên dùng {{List}} (immutable) trong data class, hoặc khi cần copy thì tự tạo danh sách mới: {{copy(danhSach = danhSach.toMutableList())}}.`
+},
+{
+  id: 'qz-kotlin-033', topic: 'kotlin',
+  q: `Kotlin giải quyết hàm mở (extension function) theo kiểu nào, và thành viên của lớp có ưu tiên hơn hàm mở không?
+~~~kotlin
+open class NhanVien {
+    fun hienThi() = "thanh vien"
+}
+fun NhanVien.hienThi() = "ham mo"
+fun main() {
+    val nv: NhanVien = NhanVien()
+    println(nv.hienThi())
+}
+~~~`,
+  options: [
+    `In "ham mo", vì hàm mở được ưu tiên hơn thành viên`,
+    `In "thanh vien", vì thành viên lớp luôn ưu tiên hơn hàm mở có cùng tên`,
+    `Lỗi biên dịch vì không được khai báo hàm mở trùng tên với thành viên`,
+    `In "thanh vien" cho đối tượng NhanVien, nhưng "ham mo" cho đối tượng con lớp kế thừa`
+  ],
+  answer: 1,
+  explain: `**Đáp án đúng: In "thanh vien", vì thành viên lớp luôn ưu tiên hơn hàm mở có cùng tên.**
+
+### Quy tắc giải quyết tên
+Kotlin xác định hàm mở (extension function) **thường.static (dựa trên kiểu khai báo của biến), không phải kiểu thực tế của đối tượng tại runtime**. Khi có cùng tên:
+1. Thành viên của lớp (member function) **luôn thắng** hàm mở.
+2. Nếu không có thành viên phù hợp, mới tìm hàm mở dựa trên kiểu khai báo của biến.
+
+Trong ví dụ, {{nv}} có kiểu khai báo {{NhanVien}}. Lớp {{NhanVien}} có thành viên {{hienThi()}} nên gọi thành viên, in **"thanh vien"**. Hàm mở {{fun NhanVien.hienThi()}} bị che khuất.
+
+### Tại sao các phương án sai
+- **In "ham mo", vì hàm mở được ưu tiên hơn thành viên**: sai, ngược lại: thành viên ưu tiên hơn.
+- **Lỗi biên dịch vì không được khai báo hàm mở trùng tên**: sai, Kotlin cho phép, chỉ thành viên thắng.
+- **In "thanh vien" cho NhanVien nhưng "ham mo" cho đối tượng con**: sai, hàm mở được giải quyết theo kiểu khai báo (ở đây {{NhanVien}}), không đổi theo đối tượng con; và thành viên vẫn thắng nếu có.
+
+> Senior tip: tránh khai báo hàm mở có cùng tên với thành viên, vì code sẽ khó đọc và dễ hiểu nhầm. Hàm mở thích hợp dùng để thêm chức năng cho kiểu bạn không sở hữu (ví dụ JDK, thư viện thứ ba), không để "ghi đè" thành viên.`
+},
+{
+  id: 'qz-kotlin-034', topic: 'kotlin', multi: true,
+  q: `Về nhóm hàm phạm vi (scope function) let, apply, also, run, nhận định nào sau đây đúng? (Chọn 2)`,
+  options: [
+    `apply và run dùng đối tượng làm receiver (this), còn let và also dùng đối tượng làm tham số lambda (it)`,
+    `apply và also trả về chính đối tượng ban đầu (receiver), còn let và run trả về giá trị lambda trả về`,
+    `also không thích hợp để ghi log vì nó trả về kết quả lambda (không phải đối tượng)`,
+    `Khi lồng let trong apply, từ khóa this luôn trỏ đến đối tượng ngoài cùng không bị che khuất`
+  ],
+  answer: [0, 1],
+  explain: `**Đáp án đúng: apply/run dùng receiver (this), let/also dùng tham số (it); và apply/also trả về receiver, let/run trả về kết quả lambda.**
+
+### Bảng tra cứu scope function
+| Hàm | Cách tham chiếu | Trả về | Dùng cho |
+|---|---|---|---|
+| let | it (tham số) | kết quả lambda | biến đổi giá trị, xử lý khi không null |
+| apply | this (receiver) | chính đối tượng | cấu hình đối tượng |
+| also | it (tham số) | chính đối tượng | tác vụ phụ, ghi log |
+| run | this (receiver) | kết quả lambda | tính toán, trả giá trị |
+
+Vì vậy: {{apply}} và {{run}} dùng {{this}} để truy cập thành viên; {{let}} và {{also}} dùng {{it}}. {{apply}} và {{also}} trả về đối tượng ban đầu (dùng tiếp được), còn {{let}} và {{run}} trả về cái lambda tính ra.
+
+### Tại sao các phương án sai
+- **also không thích hợp để ghi log vì nó trả về kết quả lambda**: sai, {{also}} trả về chính đối tượng (receiver) và dùng {{it}}, rất thích hợp cho tác vụ phụ như ghi log.
+- **Khi lồng let trong apply, this luôn trỏ đối tượng ngoài cùng**: sai. Khi lồng scope function, {{this}} bên trong là đối tượng của scope **gần nhất** (che khuất this của scope ngoài), còn {{it}} của scope ngoài vẫn truy cập được nếu đặt tên khác.
+
+> Senior tip: chọn {{apply}} khi muốn cấu hình rồi trả đối tượng (ví dụ khởi tạo view, cấu hình client); chọn {{let}} khi muốn biến đổi giá trị hoặc thực hiện khi không null. Tránh lồng quá nhiều scope function khiến code khó đọc.`
+},
+{
+  id: 'qz-kotlin-035', topic: 'kotlin',
+  q: `Dùng sealed class với when biểu thức không cần nhánh else khi đã xử lý đủ mọi subtype. Điều gì xảy ra sau này khi nhóm thêm một subtype mới vào sealed class?`,
+  options: [
+    `Không ảnh hưởng, khi chạy nếu subtype mới không khớp nào thì nhánh else (nếu có) sẽ nhận`,
+    `Biên dịch vẫn thành công vì when trên sealed không bắt buộc xử lý mọi subtype`,
+    `Các when biểu thức chưa xử lý subtype mới sẽ **lỗi biên dịch**, buộc lập trình viên bổ sung xử lý cho subtype mới`,
+    `Chỉ classes trong cùng file mới bị lỗi, các module khác vẫn chạy bình thường`
+  ],
+  answer: 2,
+  explain: `**Đáp án đúng: Các when biểu thức chưa xử lý subtype mới sẽ lỗi biên dịch, buộc lập trình viên bổ sung xử lý cho subtype mới.**
+
+### Cơ chế sealed class và when
+{{sealed class}} giới hạn tất cả subclass phải nằm trong **cùng module và cùng package** với lớp kín. Compiler nên biết **hết** các subtype có thể có. Khi dùng {{when}} làm **biểu thức** và đã có nhánh cho mọi subtype, compiler cho phép **bỏ nhánh else**.
+
+Khi nhóm thêm subtype mới (ví dụ {{ChoPhep}} vào {{sealed class KetQua}}), mọi {{when}} trên {{KetQua}} ở mọi nơi trong module mà **chưa có nhánh cho ChoPhep** và **không có else** sẽ bị báo lỗi "when must be exhaustive". Điều này giúp bắt lỗi ngay lúc biên dịch, không để subtype mới trôi qua runtime.
+
+### Tại sao các phương án sai
+- **Không ảnh hưởng, else sẽ nhận**: chỉ đúng nếu bạn cố ý viết else. Nhưng best practice với sealed là **không viết else**, để compiler bảo vệ khi thêm subtype.
+- **Biên dịch thành công vì when trên sealed không bắt buộc xử lý mọi subtype**: sai, nếu when là biểu thức và không có else thì compiler bắt buộc xử lý mọi subtype.
+- **Chỉ classes trong cùng file bị lỗi**: sai, ràng buộc là cùng module, không chỉ cùng file; tất cả when trên kiểu kín trong module đều phải cập nhật.
+
+> Senior tip: tránh viết nhánh {{else ->}} "để chắc chắn" khi when trên sealed type, vì else sẽ làm subtype mới bị nuốt vào nhánh mặc định mà không ai nhận ra, mất đi lợi ích lớn nhất của sealed class là bảo vệ biên dịch.`
+},
+{
+  id: 'qz-kotlin-036', topic: 'kotlin',
+  q: `Coroutine có Structured Concurrency: con coroutine thất bại trong coroutineScope sẽ ảnh hưởng thế nào đến các con khác?`,
+  options: [
+    `Các con khác tiếp tục chạy bình thường, chỉ con thất bại bị dừng`,
+    `coroutineScope hủy tất cả các con còn lại và ném exception của con đầu tiên thất bại ra ngoài (các con bị hủy, không chờ chạy hết)`,
+    `coroutineScope chờ tất cả con chạy xong rồi mới ném exception`,
+    `Con coroutine không thể thất bại trong coroutineScope, Kotlin tự bắt lại`
+  ],
+  answer: 1,
+  explain: `**Đáp án đúng: coroutineScope hủy tất cả các con còn lại và ném exception của con đầu tiên thất bại ra ngoài.**
+
+### Structured Concurrency trong coroutineScope
+{{coroutineScope}} là hàm treo (suspend) tạo một scope con. Mọi coroutine con lanç bằng {{launch}} hay {{async}} trong {{coroutineScope}} được **quản lý chung**:
+- Nếu một con ném exception, {{coroutineScope}} **hủy (cancel)** các con còn lại đang chạy.
+- Scope ném exception của con đầu tiên thất bại ra ngoài, không chờ các con khác chạy xong.
+- Nếu tất cả con thành công, scope trả về và tiếp tục.
+
+Ví dụ: có 2 con, con A thất bại sau 1 giây, con B đang chạy 10 giây → A thất bại → B bị hủy ngay → coroutineScope ném exception của A. Tổng thời gian chỉ khoảng 1 giây, không phải 10 giây.
+
+### Tại sao các phương án sai
+- **Các con khác tiếp tục chạy bình thường**: đúng với {{supervisorScope}} (mỗi con độc lập), không phải {{coroutineScope}}.
+- **coroutineScope chờ tất cả con chạy xong rồi mới ném exception**: sai, nó hủy ngay khi có lỗi, không chờ.
+- **Con coroutine không thể thất bại**: sai, suspend function có thể ném exception và structured concurrency sẽ truyền lên cha.
+
+> Senior tip: dùng {{coroutineScope}} khi các con phụ thuộc lẫn nhau (mất một con là toàn bộ thất bại); dùng {{supervisorScope}} khi các con độc lập (một con thất bại không nên hủy các con khác). Luôn xử lý exception ở cấp độ thích hợp để không để coroutine bị hủy im lặng.`
+},
+{
+  id: 'qz-kotlin-037', topic: 'kotlin', multi: true,
+  q: `Về launch và async trong coroutine, phát biểu nào đúng? (Chọn 2)`,
+  options: [
+    `launch dùng khi không cần kết quả, trả về Job dùng để hủy hoặc join sau đó`,
+    `async trả về Deferred<T>, gọi await() để nhận giá trị; nếu con coroutine thất bại thì await() ném lại exception`,
+    `join() trên Job không ném exception dù con coroutine đã thất bại`,
+    `Coroutine luôn chạy độc lập, con coroutine thất bại không ảnh hưởng đến coroutine cha`
+  ],
+  answer: [0, 1],
+  explain: `**Đáp án đúng: launch dùng khi không cần kết quả (trả về Job); async trả về Deferred<T>, lấy giá trị bằng await() và ném exception nếu con thất bại.**
+
+### launch vs async
+- {{launch}}: "chạy và quên", trả về {{Job}}. Dùng khi chỉ quan tâm tác vụ phụ (gửi mail, ghi log) và không cần kết quả. Có thể gọi {{job.join()}} để chờ xong; join() sẽ **ném lại exception** nếu coroutine con thất bại.
+- {{async}}: cũng chạy ngang hàng, trả về {{Deferred<T>}}. Gọi {{await()}} để chờ và nhận kết quả kiểu {{T}}; nếu coroutine con ném exception, {{await()}} sẽ ném lại exception đó.
+
+### Tại sao các phương án sai
+- **join() trên Job không ném exception dù con coroutine đã thất bại**: sai, {{join()}} sẽ ném exception của con nếu con thất bại (trong structured concurrency).
+- **Coroutine luôn chạy độc lập, con thất bại không ảnh hưởng đến cha**: sai, trong scope có cha-con, thất bại của con có thể hủy cha và các anh em (trong coroutineScope).
+
+> Senior tip: dùng {{launch}} khi chỉ cần tác vụ bên hiệu ứng và không cần kết quả; dùng {{async}} khi cần lấy giá trị trở lại. Luôn bao coroutine trong một scope quản lý (runBlocking, coroutineScope, ViewModel scope…) để lỗi không bị nuốt và coroutine không rò rỉ chạy mãi.`
+},
+{
+  id: 'qz-kotlin-038', topic: 'kotlin',
+  q: `Kotlin class có companion object chứa method {{fun inThongTin()}}. Muốn code Java cũ gọi được trực tiếp là {{TenClass.inThongTin()}} (không phải {{TenClass.Companion.inThongTin()}}), phải dùng annotation gì trên method?`,
+  options: [
+    `@JvmStatic`,
+    `@JvmOverloads`,
+    `@JvmName`,
+    `@JvmField`
+  ],
+  answer: 0,
+  explain: `**Đáp án đúng: @JvmStatic.**
+
+### Cơ chế gọi Kotlin từ Java
+Trong Kotlin, method nằm trong {{companion object}} không phải là static method của class từ góc nhìn Java. Mặc định, Java phải gọi qua {{TenClass.Companion.inThongTin()}}.
+
+Gắn {{@JvmStatic}} lên method trong companion object (hoặc trên method của class cấp cao nhất trong file) cho phép Kotlin sinh ra **thêm method static** trên class {{TenClass}}, để Java gọi tự nhiên là {{TenClass.inThongTin()}}. Method vẫn có thể gọi từ Kotlin bình thường.
+
+### Tại sao các phương án sai
+- **@JvmOverloads**: sinh thêm overload cho method có tham số mặc định, giúp Java gọi với ít tham số hơn; không liên quan static.
+- **@JvmName**: đổi tên method/class khi nhìn từ Java, không làm method thành static.
+- **@JvmField**: làm property trong companion object thành trường public static, chỉ áp dụng cho property không phải method.
+
+> Senior tip: khi đưa API Kotlin cho đội Java dùng, viết một class Java test gọi các method public; cách nhanh nhất để phát hiện API không thân thiện với Java (tham số mặc định, tên hàm cấp cao nhất, checked exception, property boolean…).`
+},
+{
+  id: 'qz-kotlin-039', topic: 'kotlin', multi: true,
+  q: `Kotlin gọi qua lại với Java, về hàm cấp cao nhất và kiểu platform, phát biểu nào đúng? (Chọn 2)`,
+  options: [
+    `Hàm cấp cao nhất (top-level) trong file {{DonHang.kt}} sinh ra class {{DonHangKt}} với method static, Java gọi được bằng {{DonHangKt.tenHam()}}`,
+    `Kiểu platform (ví dụ {{String!}}) từ Java được Kotlin coi là bắt buộc không null, nên ép phải kiểm tra null trước khi dùng`,
+    `@JvmField trên property trong companion object làm trường trở thành public static, Java truy cập trực tiếp không qua getter`,
+    `Biến {{lateinit var}} có thể đọc trước khi gán mà không xảy ra lỗi gì`
+  ],
+  answer: [0, 2],
+  explain: `**Đáp án đúng: hàm cấp cao nhất sinh class TenFileKt với method static; và @JvmField làm property thành public static field.**
+
+### Cơ chế
+- Hàm cấp cao nhất trong file Kotlin không thuộc class nào. Kotlin sinh một class trung gian tên là {{TenFileKt}} (ví dụ {{DonHangKt}}), chứa method static. Java gọi {{DonHangKt.tenHam()}}. Có thể đổi tên class bằng {{@JvmName}}.
+- {{@JvmField}} trên property (thường trong companion object) cho phép Java truy cập như trường public static, không qua method getter.
+- Kiểu platform {{String!}} từ Java **không được Kotlin ép phải kiểm tra null**: lập trình viên tự quyết định gán vào {{String}} hay {{String?}}. Nếu gán vào {{String}} mà Java trả null thì crash NullPointerException khi dùng.
+- {{lateinit var}} đọc trước khi gán ném **UninitializedPropertyAccessException**, không phải đọc được bình thường.
+
+### Tại sao các phương án sai
+- **Kiểu platform coi là bắt buộc không null**: sai, kiểu platform bỏ qua kiểm tra null, lập trình viên tự chịu trách nhiệm.
+- **lateinit đọc trước khi gán không lỗi**: sai, ném Ngoại lệ truy cập thuộc tính chưa khởi tạo; kiểm tra bằng {{::ten.isInitialized}} trước khi đọc.
+
+> Senior tip: khi dùng lateinit, luôn kiểm tra {{::bien.isInitialized}} trước khi đọc, hoặc gán giá trị sớm trong constructor/khởi tạo, để tránh crash runtime. Với kiểu platform từ Java, ưu tiên gán vào kiểu có thể null (String?) và xử lý null rõ ràng ngay tại ranh giới gọi Java.`
+},
+{
+  id: 'qz-kotlin-040', topic: 'kotlin',
+  q: `Khai báo {{lateinit var ten: String}} trong class nhưng chưa gán giá trị, rồi đọc {{ten}} sẽ xảy ra gì?`,
+  options: [
+    `Trả về null an toàn`,
+    `Ném UninitializedPropertyAccessException vì biến chưa được khởi tạo`,
+    `Trả về chuỗi rỗng ""`,
+    `Lỗi biên dịch vì lateinit phải gán giá trị ngay khi khai báo`
+  ],
+  answer: 1,
+  explain: `**Đáp án đúng: Ném UninitializedPropertyAccessException vì biến chưa được khởi tạo.**
+
+### Cơ chế lateinit
+{{lateinit var}} cho phép khai báo biến không null mà **không gán giá trị ngay**, thường dùng khi giá trị được gán sau (ví dụ dependency injection, ViewBinding, Test). Compiler không bắt gán ngay. Nhưng nếu đọc biến trước khi gán, Kotlin ném **UninitializedPropertyAccessException** với thông báo "lateinit property ten has not been initialized".
+
+Trước khi đọc, hãy kiểm tra {{::ten.isInitialized}} (trả về true/false) để tránh crash.
+
+### Tại sao các phương án sai
+- **Trả về null an toàn**: sai, {{ten}} khai báo là {{String}} (không null), không thể trả null.
+- **Trả về chuỗi rỗng ""**: sai, Kotlin không tự gán giá trị mặc định.
+- **Lỗi biên dịch vì lateinit phải gán ngay**: sai,lateinit chính là cho phép không gán ngay, lỗi chỉ xảy ra khi đọc trước khi gán (runtime).
+
+> Senior tip: dùng {{lateinit}} khi thực sự không thể gán ngay nhưng chắc chắn sẽ gán trước khi đọc. Nếu không chắc, dùng kiểu có thể null {{var ten: String? = null}} hoặc {{by lazy}} để an toàn hơn.`
 }
 )
