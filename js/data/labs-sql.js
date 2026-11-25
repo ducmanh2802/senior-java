@@ -6637,5 +6637,876 @@ PostgreSQL -> T1: cap khoa ton kho, COMMIT
   ],
   tags: ['postgresql', 'deadlock', 'lock-ordering', 'inventory', 'order', 'retry'],
 },
+  {
+    id: 'lab-sql-044',
+    category: 'sql',
+    title: 'Báo cáo doanh thu chậm dần từng tuần: statistics cũ vì autovacuum_analyze_scale_factor quá cao',
+    level: 'senior',
+    scenario: `**Bối cảnh.** Công ty bán lẻ **VinaRetail** chạy {{report-service}} (Spring Boot 3.3, JdbcTemplate) trên PostgreSQL **15.6** (RDS, 8 vCPU / 64 GB RAM). Bảng {{revenue_fact}} giữ doanh thu từng hoá đơn bán lẻ: sau 3 năm đã có **29.812.044 dòng** (~7,8 GB heap). Bảng danh mục {{branch}} chỉ có **850 dòng** (một dòng cho mỗi chi nhánh), chỉ có primary key trên {{id}}, không có index nào khác.
+
+Mỗi tuần, job ETL nạp thêm khoảng **1,2 triệu dòng** mới (tức ~4% bảng) vào {{revenue_fact}}. Ngay sau đó, màn hình "Doanh thu theo chi nhánh" chạy câu:
+
+~~~sql
+SELECT b.branch_name, sum(f.amount) AS total
+FROM revenue_fact f
+JOIN branch b ON b.id = f.branch_id
+WHERE f.region_code = 'R2'
+  AND f.sale_date >= '2026-11-01' AND f.sale_date < '2026-11-08'
+GROUP BY b.branch_name;
+~~~
+
+**Triệu chứng (11/11/2026).** Báo cáo tuần này chạy **14,2 giây**, CPU RDS 100% một core. Điều lạ là **cứ mỗi tuần lại chậm hơn**: 6 tuần trước cùng câu chỉ mất 1,1 giây, tuần trước 6 giây, tuần này 14 giây — không ai đổi code, không ai đổi index. Một bạn đề xuất "tăng {{work_mem}}", một bạn khác đề xuất "thêm {{pg_hint_plan}} ép Hash Join".
+
+**Việc bạn có.** Ba artifact: log {{auto_explain}} của lần chạy chậm, snapshot thống kê lúc 09:20, và EXPLAIN sau khi DBA chạy {{ANALYZE}} thủ công. Hãy tìm nguyên nhân gốc, giải thích vì sao "chạy lại thì nhanh", và đề xuất cách sửa để tuần nào cũng ổn định.`,
+    artifacts: [
+      {
+        name: 'auto-explain-0914.log',
+        lang: 'text',
+        content: `2026-11-11 09:14:02.118 +07 [66210] report@vinaretail LOG:  duration: 14218.442 ms  plan:
+  Query Text: SELECT b.branch_name, sum(f.amount) FROM revenue_fact f JOIN branch b ON b.id = f.branch_id WHERE f.region_code = $1 AND f.sale_date >= $2 AND f.sale_date < $3 GROUP BY b.branch_name
+  Query Parameters: $1 = 'R2', $2 = '2026-11-01', $3 = '2026-11-08'
+  GroupAggregate  (cost=1180422.75..1180422.79 rows=38 width=24) (actual time=14205.118..14205.140 rows=38 loops=1)
+    Group Key: b.branch_name
+    ->  Nested Loop  (cost=0.57..1179980.10 rows=120 width=20) (actual time=0.412..14188.772 rows=1800000 loops=1)
+          Buffers: shared hit=14523117 read=20114
+          ->  Index Scan using idx_revenue_fact_region_date on revenue_fact f  (cost=0.57..412.30 rows=120 width=20) (actual time=0.211..912.441 rows=1800000 loops=1)
+                Index Cond: ((region_code = $1) AND (sale_date >= $2) AND (sale_date < $3))
+                Buffers: shared hit=2561180 read=18820
+          ->  Seq Scan on branch b  (cost=0.00..2.10 rows=850 width=24) (actual time=0.001..0.003 rows=850 loops=1800000)
+                Filter: (b.id = f.branch_id)
+                Rows Removed by Join Filter: 1527350000
+                Buffers: shared hit=11961937 read=1294
+  Planning Time: 0.622 ms
+  Execution Time: 14218.442 ms`,
+      },
+      {
+        name: 'stats-snapshot-0920.txt',
+        lang: 'text',
+        content: `-- 2026-11-11 09:20:41 +07, RDS vinaretail-primary (PostgreSQL 15.6)
+vinaretail=# SELECT relname, n_live_tup, n_mod_since_analyze, last_analyze, last_autoanalyze
+            FROM pg_stat_user_tables WHERE relname = 'revenue_fact';
+   relname    | n_live_tup | n_mod_since_analyze |       last_analyze       |     last_autoanalyze
+--------------+------------+---------------------+--------------------------+--------------------------
+ revenue_fact |   29812044 |             1203881 |                          | 2026-09-30 02:11:07+07
+-- 6 tuần rồi KHÔNG analyze: batch mỗi tuần ghi ~1,2 triệu dòng nhưng chưa vượt ngưỡng tự analyze
+
+vinaretail=# SHOW autovacuum_analyze_scale_factor;
+ autovacuum_analyze_scale_factor
+---------------------------------
+ 0.1
+vinaretail=# SHOW autovacuum_analyze_threshold;
+ autovacuum_analyze_threshold
+------------------------------
+ 50
+-- Ngưỡng tự analyze = 50 + 0.1 * 29.812.044 = 2.981.254 thay đổi.
+-- Mỗi tuần chỉ 1.203.881 dòng (4%) < 2.981.254, nên autoanalyze KHÔNG bao giờ chạy.
+
+vinaretail=# SHOW default_statistics_target;
+ default_statistics_target
+---------------------------
+ 100
+
+vinaretail=# SELECT attname, n_distinct, most_common_vals, most_common_freqs
+            FROM pg_stats WHERE tablename = 'revenue_fact' AND attname = 'region_code';
+ attname     | n_distinct |        most_common_vals         |      most_common_freqs
+-------------+------------+---------------------------------+---------------------------
+ region_code |         12 | {R1,R2,R3,R4,R5,R6,R7,R8,R9,R10} | {0.21,0.06,0.05,0.04,0.03,0.02,0.02,0.02,0.02,0.01}
+-- Khi statistics còn mới, R2 freq 0.06 * 29,8 triệu ≈ 1,79 triệu dòng (đúng thực tế).
+-- Nhưng statistics hiện tại đã 6 tuần tuổi, batch mới nằm ngoài histogram của sale_date.
+
+vinaretail=# SELECT indexdef FROM pg_indexes WHERE tablename = 'branch';
+                 indexdef
+------------------------------------------
+ CREATE UNIQUE INDEX branch_pkey ON public.branch USING btree (id)
+-- branch KHÔNG có index trên (branch_name) và KHÔNG có index trên region_code của fact`,
+      },
+      {
+        name: 'explain-after-analyze-0930.txt',
+        lang: 'text',
+        content: `-- 2026-11-11 09:30:12 +07, DBA chạy tay: ANALYZE revenue_fact;  (mất 5,1 giây)
+vinaretail=# EXPLAIN (ANALYZE, BUFFERS)
+SELECT b.branch_name, sum(f.amount) AS total
+FROM revenue_fact f
+JOIN branch b ON b.id = f.branch_id
+WHERE f.region_code = 'R2'
+  AND f.sale_date >= '2026-11-01' AND f.sale_date < '2026-11-08'
+GROUP BY b.branch_name;
+                                                   QUERY PLAN
+---------------------------------------------------------------------------------------------------------------
+ GroupAggregate  (cost=2210.44..2210.48 rows=38 width=24) (actual time=1182.9..1182.9 rows=38 loops=1)
+   Group Key: b.branch_name
+   ->  Hash Join  (cost=1.62..2168.10 rows=1800000 width=20) (actual time=0.412..980.221 rows=1800000 loops=1)
+         Hash Cond: (b.id = f.branch_id)
+         Buffers: shared hit=2561180
+         ->  Seq Scan on branch b  (cost=0.00..2.10 rows=850 width=24) (actual time=0.003..0.012 rows=850 loops=1)
+               Buffers: shared hit=3
+         ->  Hash  (cost=1.20..1.20 rows=1800000 width=20) (actual time=1.102..1.102 rows=1800000 loops=1)
+               Buckets: 65536  Batches: 1  Memory Usage: 9437kB
+               ->  Index Scan using idx_revenue_fact_region_date on revenue_fact f  (cost=0.57..412.30 rows=1800000 width=20) (actual time=0.211..902.114 rows=1800000 loops=1)
+                     Index Cond: ((region_code = 'R2') AND (sale_date >= '2026-11-01') AND (sale_date < '2026-11-08'))
+                     Buffers: shared hit=2561162
+ Planning Time: 0.588 ms
+ Execution Time: 1187.221 ms
+-- rows ước lượng 1.800.000 KHỚP thực tế; Nested Loop (loops 1,8 triệu) đã đổi sang Hash Join (loops=1).`,
+      },
+    ],
+    questions: [
+      'Vì sao cùng một câu báo cáo, cùng dữ liệu, nhưng mỗi tuần lại chậm hơn? Chỉ ra con số ước lượng sai trong plan và giải thích nó đến từ đâu dựa vào snapshot thống kê.',
+      'Vì sao chạy lại lúc 09:30 (sau ANALYZE) chỉ còn 1,2 giây? Vì sao autovacuum đang bật mà 6 tuần liền không tự analyze bảng này?',
+      'Bạn sửa thế nào để tuần nào cũng ổn định? Đánh giá hai đề xuất tăng work_mem và pg_hint_plan ép Hash Join.',
+    ],
+    hints: [
+      'So sánh rows=120 (ước lượng) với rows=1800000 (thực tế) ở node Index Scan on revenue_fact, rồi nhìn loops=1800000 ở Seq Scan on branch.',
+      'Trong snapshot: last_autoanalyze = 30/09, n_mod_since_analyze = 1.203.881. Tính ngưỡng autoanalyze = 50 + 0.1 * 29.812.044 ≈ 2,98 triệu: mỗi tuần chỉ 4% thay đổi nên không bao giờ chạm ngưỡng.',
+      'ANALYZE cập nhật lại MCV và histogram: region R2 freq 0.06 → 1,79 triệu dòng, planner thấy hết Nested Loop và chọn Hash Join. Sửa gốc là giảm autovacuum_analyze_scale_factor cho bảng lớn và/hoặc ANALYZE tường minh sau ETL.',
+    ],
+    answer: `**Tóm tắt:** Bảng {{revenue_fact}} có 29,8 triệu dòng nhưng {{autovacuum_analyze_scale_factor = 0.1}} khiến ngưỡng tự analyze là 50 + 0,1 × 29.812.044 ≈ **2,98 triệu** thay đổi. Mỗi tuần ETL chỉ nạp ~1,2 triệu dòng (4%), **không bao giờ chạm ngưỡng**, nên statistics đứng yên từ 30/09 suốt 6 tuần. Câu báo cáo chạy trên statistics cũ: planner ước lượng {{region_code = 'R2'}} chỉ **120 dòng** (thực tế **1.800.000**) nên chọn **Nested Loop**, quét bảng {{branch}} 850 dòng ở vòng trong **1,8 triệu lần** (1,53 tỉ phép so sánh) → 14,2 giây. Chạy {{ANALYZE}} thủ công cập nhật MCV (R2 ≈ 6% → 1,79 triệu), planner đổi sang **Hash Join** (loops=1) → 1,2 giây. Sửa gốc: {{ALTER TABLE revenue_fact SET (autovacuum_analyze_scale_factor = 0.02, autovacuum_analyze_threshold = 10000)}} cộng {{ANALYZE}} tường minh cuối ETL; tăng {{default_statistics_target}} cho cột lọc nếu cần. Tăng {{work_mem}} và {{pg_hint_plan}} đều không giải quyết gốc.
+
+### Kiến thức nền: planner "đoán" số dòng thế nào
+PostgreSQL dùng **cost-based optimizer**: với mỗi plan (Nested Loop, Hash Join, Merge Join) nó ước lượng chi phí dựa trên **số dòng dự kiến** của từng bước, rồi chọn plan rẻ nhất. Số dòng dự kiến lấy từ bảng thống kê {{pg_statistic}} (xem qua {{pg_stats}}) do {{ANALYZE}} tạo bằng cách **lấy mẫu** 300 × {{default_statistics_target}} = 30.000 dòng.
+
+Ví dụ đời thường: bạn nhớ "tuần trước nhà 4 người ăn" nên mua 1 kg thịt. Hôm nay có 30 khách mà bạn không cập nhật, bạn vẫn mua 1 kg — plan cũng vậy: đúng với dữ liệu cũ, thảm hoạ với dữ liệu mới.
+
+Các thống kê chính:
+| Thống kê | Ý nghĩa | Dùng khi |
+|---|---|---|
+| {{reltuples}} | tổng số dòng ước lượng | mọi ước lượng |
+| {{most_common_vals/freqs}} (MCV) | giá trị phổ biến và tần suất | điều kiện {{=}} |
+| {{histogram_bounds}} | phân bố các giá trị còn lại | {{<}}, {{>}}, BETWEEN |
+| {{n_distinct}} | số giá trị khác nhau | {{=}} với giá trị hiếm, GROUP BY |
+
+### Vì sao autovacuum không tự analyze (điểm mấu chốt)
+Ngưỡng autoanalyze của một bảng = {{autovacuum_analyze_threshold + autovacuum_analyze_scale_factor × reltuples}}. Với mặc định {{scale_factor = 0.1}} và bảng 29,8 triệu dòng, ngưỡng là **2,98 triệu**. Batch tuần chỉ 1,2 triệu (4%) nên **không bao giờ chạm**. Càng nhiều tuần trôi qua, dữ liệu mới (batch_id mới, sale_date mới) càng nằm ngoài histogram cũ, ước lượng càng lệch — đó là lý do "mỗi tuần chậm hơn" chứ không phải một sự cố đơn lẻ.
+
+### Nguyên nhân gốc, từng bước
+1. **30/09 02:11** autoanalyze chạy lần cuối (khi đó bảng còn nhỏ hơn và vừa vượt ngưỡng). Sau đó 6 tuần, mỗi tuần +1,2 triệu dòng nhưng < 2,98 triệu → autoanalyze không chạy.
+2. **11/11 09:14** báo cáo chạy. Statistics vẫn của 30/09: MCV của {{region_code}} có R2 freq 0.06, nhưng histogram của {{sale_date}} dừng ở tuần cũ, và batch mới nằm ngoài. Planner nhân selectivity, kẹp ước lượng về **rows=120**.
+3. Với "120 dòng" ở vòng ngoài, **Nested Loop** là rẻ nhất: quét {{branch}} (850 dòng) một lần cho mỗi dòng fact. Chi phí ước lượng chỉ 1.179.980.
+4. Thực tế vòng ngoài trả **1.800.000** dòng, nên Seq Scan {{branch}} chạy **1.800.000 lần**: 1.800.000 × 849 = **1.527.350.000** dòng bị Join Filter loại. Toàn bộ từ RAM ({{Buffers: shared hit=14523117}}) nên là bài toán CPU, không phải I/O (khớp CPU 100% một core).
+5. **09:30** DBA chạy {{ANALYZE revenue_fact}} (5,1 giây). Statistics mới: R2 ≈ 1,79 triệu. Planner chọn **Hash Join**: đọc {{branch}} 1 lần, dựng hash 9,4 MB, mỗi dòng fact tra hash O(1). 1,2 giây.
+
+~~~text
+Nested Loop (statistics cũ)                Hash Join (statistics mới)
+for f in revenue_fact(1.800.000 dòng):     h = hash(branch)      -- 1 lần, 850 dòng
+   for b in branch(850 dòng):              for f in revenue_fact(1.800.000 dòng):
+      if match: emit                          b = h.get(f.branch_id)
+=> 1,53 tỉ phép so sánh, 14,2 s            => 1,8 triệu tra hash, 1,2 s
+~~~
+
+### Dẫn chứng
+- Log 09:14: **"Nested Loop ... rows=120 ... (actual ... rows=1800000 loops=1)"** — ước lượng 120, thực tế 1,8 triệu (lệch 15.000 lần).
+- **"Seq Scan on branch b ... loops=1800000"** và **"Rows Removed by Join Filter: 1527350000"** — bảng danh mục bị quét lại 1,8 triệu lần.
+- Snapshot: {{last_autoanalyze = 2026-09-30}}, {{n_mod_since_analyze = 1203881}}, {{autovacuum_analyze_scale_factor = 0.1}}, {{autovacuum_analyze_threshold = 50}} → ngưỡng 2.981.254 > 1.203.881.
+- Plan 09:30: **Hash Join**, Seq Scan branch **loops=1**, Execution Time **1187 ms**; rows ước lượng 1.800.000 khớp thực tế.
+
+### Cách sửa
+**Ngắn hạn (hôm nay):**
+- Thêm {{ANALYZE revenue_fact;}} vào **cuối ETL**, trước khi báo cho {{report-service}} chạy. ANALYZE chỉ lấy mẫu 30.000 dòng (~5 giây), rẻ hơn nhiều so với 14 giây rủi ro.
+- Đặt {{statement_timeout}} cho role báo cáo (ví dụ 60 giây) để plan xấu không chiếm DB.
+
+**Dài hạn:**
+- Giảm ngưỡng autoanalyze cho bảng lớn: {{ALTER TABLE revenue_fact SET (autovacuum_analyze_scale_factor = 0.02, autovacuum_analyze_threshold = 10000);}} → ngưỡng còn 10.000 + 0,02 × 29,8 triệu ≈ 606.000, batch 1,2 triệu sẽ vượt.
+- Nếu cột lọc có nhiều giá trị và cần độ chính xác cao: {{ALTER TABLE revenue_fact ALTER COLUMN region_code SET STATISTICS 500;}} rồi {{ANALYZE}}.
+- Cân nhắc extended statistics nếu {{region_code}} và {{sale_date}} tương quan: {{CREATE STATISTICS ... (dependencies)}}.
+- Tách bảng staging/partition theo tuần: ANALYZE partition nhỏ sau khi nạp, không phụ thuộc autoanalyze bảng cha.
+
+**Về hai đề xuất:**
+- **Tăng work_mem:** vô ích. Plan xấu không do thiếu bộ nhớ (Hash chỉ cần 9,4 MB). Vấn đề là ước lượng sai.
+- **pg_hint_plan ép Hash Join:** chữa triệu chứng, khoá cứng plan; khi batch nhỏ, Hash Join có thể lại kém. Sửa gốc (statistics đúng) tốt hơn.
+
+### Phòng ngừa và monitoring
+- Bật {{auto_explain}} ({{log_analyze = on}}) và soi **tỉ lệ rows thực tế / rows ước lượng > 10 lần** ở mọi node.
+- Alert khi {{n_mod_since_analyze / reltuples}} vượt ngưỡng autoanalyze mà {{last_autoanalyze}} cũ hơn 2 tuần.
+- Dashboard theo dõi {{last_analyze}}, {{last_autoanalyze}}, {{n_mod_since_analyze}} cho các bảng lớn.
+
+### Lỗi hay gặp
+- Nghĩ "đã bật autovacuum thì statistics luôn mới": với bảng lớn, {{scale_factor = 0.1}} khiến autoanalyze hiếm khi chạy.
+- Chạy lại thấy nhanh rồi kết luận "do DB lúc đó bận": thực ra plan đã khác. Luôn so plan, không so thời gian.
+- Tạo {{CREATE STATISTICS}} nhưng quên {{ANALYZE}} nên không có tác dụng.
+
+### Trả lời mẫu khi phỏng vấn
+"Plan là Nested Loop với ước lượng 120 dòng nhưng thực tế 1,8 triệu, nên bảng branch bị quét 1,8 triệu lần, 1,53 tỉ phép so sánh, 14 giây. Statistics đứng yên 6 tuần vì autovacuum_analyze_scale_factor = 0.1 trên bảng 29,8 triệu dòng đặt ngưỡng autoanalyze ở 2,98 triệu thay đổi, trong khi mỗi tuần ETL chỉ nạp 1,2 triệu. Tôi chạy ANALYZE thủ công thì planner đổi sang Hash Join, còn 1,2 giây, và xác nhận bằng rows ước lượng khớp thực tế. Sửa gốc: giảm scale_factor cho bảng lớn (0.02) cộng ANALYZE tường minh cuối ETL, tăng statistics target cho cột lọc, theo dõi tỉ lệ rows thực tế/ước lượng bằng auto_explain. Tăng work_mem hay ép hint không giải quyết gốc."
+
+> Senior tip: Mẫu "báo cáo chậm dần từng tuần, chạy lại thì nhanh" gần như luôn là **statistics cũ cộng ngưỡng autoanalyze quá cao cho bảng lớn**. Quy tắc của tôi: mọi bảng lớn (hàng chục triệu dòng) phải đặt {{autovacuum_analyze_scale_factor}} riêng (0.01–0.02) và mọi bước nạp dữ liệu lớn phải kết thúc bằng {{ANALYZE}} tường minh. Khi đọc EXPLAIN ANALYZE, việc đầu tiên không phải tìm Seq Scan mà là tìm node có **rows ước lượng lệch thực tế nhiều bậc** — gần như mọi plan tệ bắt nguồn từ đó.`,
+    rubric: [
+      'Chỉ ra ước lượng rows=120 so với thực tế 1.800.000 khiến planner chọn Nested Loop, vòng trong Seq Scan branch chạy 1.800.000 lần (Rows Removed by Join Filter 1,53 tỉ)',
+      'Giải thích đúng vì sao autovacuum không tự analyze: ngưỡng 50 + 0.1 × 29.812.044 ≈ 2,98 triệu, batch tuần 1,2 triệu (4%) không chạm, last_autoanalyze 30/09',
+      'Giải thích vì sao chạy lại nhanh (ANALYZE → statistics mới → Hash Join, rows khớp) và vì sao mỗi tuần chậm dần (dữ liệu mới ngày càng lệch histogram cũ)',
+      'Đề xuất sửa đúng: ANALYZE tường minh cuối ETL, giảm autovacuum_analyze_scale_factor theo bảng, tăng statistics target, extended statistics, statement_timeout',
+      'Phản biện đúng work_mem và pg_hint_plan; nêu monitoring auto_explain và tỉ lệ estimate vs actual, last_analyze',
+    ],
+    tags: ['postgresql', 'explain', 'statistics', 'analyze', 'autovacuum', 'nested-loop'],
+  },
+  {
+    id: 'lab-sql-045',
+    category: 'sql',
+    title: 'Index-only scan chậm dần 8 ms lên 894 ms: transaction mở 6 giờ chặn vacuum cập nhật visibility map',
+    level: 'senior',
+    scenario: `**Bối cảnh.** Hệ thống hoá đơn điện tử **EInvoice VN** chạy {{report-service}} (Spring Boot 3.3, Hibernate 6.4, PostgreSQL **15.6** trên RDS, 8 vCPU / 64 GB RAM). Bảng {{invoice}} có **45.120.033 dòng** (~11 GB heap) và index {{idx_invoice_customer_status}} btree trên {{(customer_id, status)}}.
+
+Màn hình "Tổng hợp hoá đơn theo trạng thái của một khách hàng" chạy câu index-only scan:
+
+~~~sql
+SELECT status, count(*) FROM invoice WHERE customer_id = $1 GROUP BY status;
+~~~
+
+Khách hàng lớn {{C-88213}} có **1.780.000** hoá đơn. Câu này trước đây chạy **8 ms** với {{Heap Fetches: 0}} (chỉ đọc index, không phải chạm heap). Ngoài ra, mỗi đêm có một job xuất hoá đơn {{InvoiceExportService}} bọc {{@Transactional}} quanh cả luồng stream kết quả ra client.
+
+**Triệu chứng (11/11/2026).** Trong 2 tuần, p95 của câu tổng hợp leo từ **8 ms** lên **894 ms**, dung lượng đĩa tăng ~400 MB/ngày dù traffic không đổi, {{n_dead_tup}} tăng liên tục. EXPLAIN cho thấy cùng index, cùng câu, nhưng {{Heap Fetches}} nhảy từ 0 lên **1.780.000**. {{pg_stat_activity}} có một phiên {{idle in transaction}} đã mở **6 giờ**. DBA nghi "thiếu index" nhưng index đã có sẵn.
+
+**Việc bạn có.** Ba artifact: EXPLAIN ANALYZE hiện tại (kèm baseline 2 tuần trước), snapshot {{pg_stat_activity}} + {{pg_stat_user_tables}} + log vacuum, và log ứng dụng. Hãy chỉ ra vì sao index-only scan chậm dần, vì sao autovacuum chạy mà không dọn được dead tuple, và đề xuất cách xử lý.`,
+    artifacts: [
+      {
+        name: 'explain-index-only-0814.txt',
+        lang: 'text',
+        content: `-- 2026-11-11 08:14:12 +07, psql tren RDS einvoice-primary (PostgreSQL 15.6)
+einvoice=# EXPLAIN (ANALYZE, BUFFERS)
+SELECT status, count(*) FROM invoice WHERE customer_id = 'C-88213' GROUP BY status;
+                                                              QUERY PLAN
+---------------------------------------------------------------------------------------------------------------------------------------
+ GroupAggregate  (cost=1842310.57..1842310.61 rows=3 width=17) (actual time=891.204..891.220 rows=3 loops=1)
+   Group Key: status
+   ->  Index Only Scan using idx_invoice_customer_status on invoice  (cost=0.57..1842305.10 rows=1780000 width=17) (actual time=8.204..889.771 rows=1780000 loops=1)
+         Index Cond: (customer_id = 'C-88213'::text)
+         Heap Fetches: 1780000
+         Buffers: shared hit=1240118 read=540233
+ Planning Time: 0.312 ms
+ Execution Time: 894.712 ms
+ (7 rows)
+
+-- BASELINE 2 tuần trước (25/10), CÙNG câu, CÙNG index:
+--   Index Only Scan using idx_invoice_customer_status on invoice ... (actual ... rows=1780000 loops=1)
+--         Heap Fetches: 0
+--         Buffers: shared hit=1780000 read=0
+--   Execution Time: 8.103 ms
+-- Chênh lệch: 8 ms -> 894 ms (~110 lần), Heap Fetches 0 -> 1.780.000.`,
+      },
+      {
+        name: 'pg-activity-and-vacuum.txt',
+        lang: 'text',
+        content: `-- 2026-11-11 08:14:40 +07, RDS einvoice-primary
+einvoice=# SELECT pid, state, wait_event_type, wait_event,
+        now() - xact_start AS xact_age, now() - state_change AS idle_for,
+        left(query, 58) AS query
+FROM pg_stat_activity
+WHERE datname = 'einvoice' AND state = 'idle in transaction';
+  pid  |        state        | wait_event_type | wait_event |  xact_age  |  idle_for  |                           query
+-------+---------------------+-----------------+------------+------------+------------+--------------------------------------------------------------
+ 20573 | idle in transaction | Client          | ClientRead | 06:00:12   | 05:59:48   | COPY (SELECT ... FROM invoice WHERE customer_id = $1) TO STDOUT
+-- 20573 mở transaction lúc 02:14, đã 6 giờ, im lặng 5h59 (đang stream kết quả cho client đọc chậm)
+-- Giữ xmin = 812344031, chặn vacuum dọn dead tuple VÀ chặn cập nhật visibility map.
+
+einvoice=# SELECT relname, n_live_tup, n_dead_tup, last_autovacuum
+FROM pg_stat_user_tables WHERE relname = 'invoice';
+ relname | n_live_tup | n_dead_tup |     last_autovacuum
+---------+------------+------------+--------------------------
+ invoice |   45120033 |    6200114 | 2026-11-11 06:40:11+07
+-- autovacuum CHẠY lúc 06:40 nhưng không xoá được dead tuple vì xmin của 20573 còn giữ.
+
+-- log server (log_autovacuum_min_duration = 0):
+-- 2026-11-11 06:40:55 +07 [9012] LOG:  automatic vacuum of table "einvoice.public.invoice":
+--   index scans: 1
+--   pages: 0 removed, 1842310 remain, 0 skipped due to pins, 1842310 skipped due to freezing
+--   tuples: 6200114 removed? NO -> found 0 removable, 6200114 nonremovable tuples in 1842310 pages
+--   oldest xmin = 812344031 (held by pid 20573), oldest relfrozenxid = 754120000
+--   statement: VACUUM (ANALYZE) invoice
+-- Ghi chú: "0 removable, 6200114 nonremovable" = dead tuple vẫn bị xmin của 20573 giữ.
+
+einvoice=# SHOW idle_in_transaction_session_timeout;
+ idle_in_transaction_session_timeout
+-------------------------------------
+ 0
+-- 0 = PostgreSQL KHÔNG BAO GIỜ tự kết thúc phiên idle in transaction.`,
+      },
+      {
+        name: 'app-export-and-leak.log',
+        lang: 'text',
+        content: `2026-11-11 02:13:58.220 INFO  [http-nio-8080-exec-9]  c.v.e.InvoiceExportService : export start customer=C-88213 format=csv
+2026-11-11 02:14:00.118 DEBUG [http-nio-8080-exec-9]  o.h.SQL   : select i1_0.status, count(*) from invoice i1_0 where i1_0.customer_id=? group by i1_0.status
+2026-11-11 02:14:00.140 INFO  [http-nio-8080-exec-9]  c.v.e.InvoiceExportService : @Transactional EXPORT begin, streaming rows to client (client doc cham)
+2026-11-11 02:14:01.902 INFO  [http-nio-8080-exec-9]  c.v.e.InvoiceExportService : streamed 120000 rows (rate ~2000 rows/s, client throttle)
+... (không có dòng COMMIT nào; connection vẫn bị giữ, không trả về Hikari pool)
+2026-11-11 08:13:59.771 WARN  [http-nio-8080-exec-9]  c.z.h.pool.HikariPool    : HikariPool-1 - Connection is not available, request timed out after 30000ms (total=30, active=30, idle=0, waiting=41)
+2026-11-11 08:14:02.004 ERROR [http-nio-8080-exec-9]  c.v.e.InvoiceExportService : export failed customer=C-88213 : could not open JPA transaction for nested exception
+-- @Transactional bao ca luong export/stream ra client; client doc cham nen transaction mo 6 gio.
+-- idle_in_transaction_session_timeout = 0 nen DB khong tu don; HikariCP khong co leakDetectionThreshold.`,
+      },
+    ],
+    questions: [
+      'Vì sao cùng câu index-only scan, cùng index, nhưng chậm dần từ 8 ms lên 894 ms? Dòng "Heap Fetches" trong EXPLAIN nói lên điều gì về visibility map?',
+      'Vì sao autovacuum chạy lúc 06:40 mà không xoá được dead tuple, và điều đó liên quan thế nào tới index-only scan và "transaction mở 6 giờ"?',
+      'Bạn xử lý ngay lúc 08:15 ra sao, và sửa lâu dài thế nào (idle_in_transaction_session_timeout, sửa code giữ transaction, VACUUM/REINDEX CONCURRENTLY, HikariCP leak detection)?',
+    ],
+    hints: [
+      'So sánh Heap Fetches: 0 (baseline 25/10) với 1.780.000 (hiện tại): index-only scan mất khả năng "chỉ đọc index", mỗi dòng phải đọc thêm heap.',
+      'Tìm pid 20573 idle in transaction 6 giờ: nó giữ xmin = 812344031, nên dead tuple không thể xoá VÀ visibility map không thể đánh dấu page all-visible.',
+      'Log vacuum "found 0 removable, 6200114 nonremovable tuples" + oldest xmin do pid 20573 giữ; idle_in_transaction_session_timeout = 0 nên không tự dọn.',
+    ],
+    answer: `**Tóm tắt:** Một phiên {{idle in transaction}} mở **6 giờ** (transaction {{@Transactional}} bọc cả luồng export/stream ra client) đang giữ {{xmin = 812344031}}. Vì xmin này chưa được giải phóng, autovacuum **không xoá được dead tuple** ({{6.200.114 nonremovable}}) và **không cập nhật được visibility map** (không page nào được đánh dấu all-visible). Hệ quả: index-only scan mất khả năng "chỉ đọc index" — mỗi dòng phải đọc thêm heap ({{Heap Fetches: 1.780.000}} thay vì 0) → câu tổng hợp từ **8 ms lên 894 ms**, {{n_dead_tup}} tăng, bảng phình ~400 MB/ngày. Sửa ngay: {{pg_terminate_backend(20573)}} để nhả xmin, rồi {{VACUUM}} (hoặc để autovacuum chạy) cập nhật visibility map; đặt {{idle_in_transaction_session_timeout}}. Dài hạn: sửa code không giữ transaction khi stream/gọi I/O, thêm HikariCP {{leakDetectionThreshold}}, {{REINDEX CONCURRENTLY}} nếu index bloat.
+
+### Kiến thức nền: index-only scan và visibility map
+**Index-only scan** là chế độ đọc chỉ dùng index, **không chạm bảng (heap)** — nhanh hơn nhiều. Nhưng PostgreSQL chỉ dám bỏ qua heap khi **visibility map (VM)** của trang đó đã được đánh dấu **all-visible**, tức mọi dòng trên trang đều hiển thị với mọi transaction. VM chỉ được cập nhật bởi {{VACUUM}}/{{autovacuum}} (và một phần bởi DDL).
+
+Khi VM chưa all-visible, index-only scan vẫn phải **đọc heap để kiểm tra visibility** cho từng dòng: đó là **"Heap Fetches"**. Số Heap Fetches = số dòng phải quay lại đọc heap. Nếu bằng 0, câu chạy hoàn toàn trên index; nếu bằng số dòng, nó đã thoái hoá thành index scan cộng đọc heap ngầm.
+
+### Vì sao transaction mở lâu chặn cả vacuum lẫn VM
+PostgreSQL không xoá dead tuple nào **còn có thể cần cho snapshot của một transaction đang chạy**. Ranh giới cũ nhất mà vacuum phải giữ gọi là **xmin horizon** ({{oldest xmin}}). Một phiên {{idle in transaction}} giữ {{xmin}} của nó suốt thời gian treo, nên:
+1. Mọi dead tuple sinh ra sau {{xmin}} đó **không thể xoá** (chúng vẫn "cần" cho snapshot của phiên treo).
+2. VM không thể đánh dấu page all-visible (vì chưa chắc mọi transaction đều thấy các dòng mới), nên index-only scan phải đọc heap.
+
+### Nguyên nhân gốc, từng bước
+1. **02:14** {{InvoiceExportService}} mở {{@Transactional}} bao quanh cả việc stream 1,78 triệu dòng ra client. Client đọc chậm (~2.000 dòng/giây) nên transaction mở **6 giờ**, không COMMIT.
+2. Trong 6 giờ đó, các transaction khác vẫn INSERT/UPDATE {{invoice}} → sinh dead tuple. Nhưng {{oldest xmin}} bị ghim ở 812344031 (của pid 20573).
+3. **06:40** autovacuum chạy, nhưng log ghi **"found 0 removable, 6200114 nonremovable tuples"** — không xoá được dòng nào, và VM không cập nhật.
+4. Index-only scan của câu tổng hợp: vì VM không all-visible, mỗi dòng trong 1,78 triệu phải đọc heap → **Heap Fetches: 1.780.000**, {{Buffers: shared hit=1240118 read=540233}}, 894 ms.
+5. {{idle_in_transaction_session_timeout = 0}} nên PostgreSQL không tự dọn; connection Hikari bị giữ, pool cạn, request khác timeout.
+
+### Dẫn chứng
+- EXPLAIN: **"Index Only Scan ... Heap Fetches: 1780000"**, baseline 2 tuần trước **"Heap Fetches: 0"**, **"Execution Time: 894.712 ms"** so với 8 ms.
+- {{pg_stat_activity}}: pid 20573 {{idle in transaction}}, {{xact_age = 06:00:12}}, {{idle_for = 05:59:48}}, {{wait_event = ClientRead}}.
+- {{pg_stat_user_tables}}: {{n_dead_tup = 6200114}}, {{last_autovacuum = 06:40}}. Log vacuum: **"found 0 removable, 6200114 nonremovable tuples"**, **"oldest xmin = 812344031 (held by pid 20573)"**.
+- {{idle_in_transaction_session_timeout = 0}}; log ứng dụng: {{@Transactional}} bọc stream, không có COMMIT, Hikari timeout.
+
+### Cách sửa
+**Ngắn hạn (08:15):**
+- {{SELECT pg_terminate_backend(20573);}} — kết thúc phiên treo, nhả xmin. Sau đó chạy {{VACUUM (ANALYZE) invoice;}} (ngoài giờ cao điểm nếu có thể) để cập nhật VM; index-only scan trở lại {{Heap Fetches: 0}}.
+- Nếu index đã bloat nặng: {{REINDEX INDEX CONCURRENTLY idx_invoice_customer_status;}} (không khoá ghi).
+- Đặt {{idle_in_transaction_session_timeout = '60s'}} (đổi DB parameter group của RDS, tham số dynamic) hoặc {{ALTER ROLE report_svc SET idle_in_transaction_session_timeout = '60s'}} cho connection mới.
+
+**Dài hạn:**
+- **Không giữ transaction khi stream/gọi I/O.** Mô hình đúng: transaction ngắn chỉ đọc dữ liệu cần xuất (hoặc đọc theo lô keyset), rồi **ngoài transaction** mới stream/ghi file/gọi mạng. Nếu cần nhất quán, dùng {{REPEATABLE READ}} với snapshot ngắn hoặc export theo batch có {{WHERE id > :lastId ORDER BY id LIMIT N}}.
+- Bật HikariCP {{leakDetectionThreshold}} (ví dụ 60 giây) để log stack của connection giữ quá lâu.
+- Đặt {{statement_timeout}} và {{idle_in_transaction_session_timeout}} cho role ứng dụng; không để mặc định 0.
+- Giám sát {{oldest xmin}}, {{n_dead_tup}}, số phiên {{idle in transaction}}, và tỉ lệ {{Heap Fetches}} của các câu index-only.
+
+### Phòng ngừa và monitoring
+- Alert khi {{pg_stat_activity}} có {{state = 'idle in transaction'}} quá 60 giây, hoặc {{now() - xact_start}} > 5 phút.
+- Alert khi {{n_dead_tup / n_live_tup}} > 20%, hoặc {{oldest xmin}} tiến gần {{autovacuum_freeze_max_age}}.
+- Theo dõi {{Heap Fetches}} của các câu index-only quan trọng (qua {{pg_stat_statements}} hoặc auto_explain): tăng dần là dấu hiệu VM không được cập nhật.
+- Quy tắc review: {{@Transactional}} không được bọc stream, gọi HTTP, ghi file hay gửi message.
+
+### Lỗi hay gặp
+- Nghĩ "index-only scan luôn nhanh": nó chỉ nhanh khi VM all-visible; một transaction treo đủ để phá điều đó.
+- Thấy autovacuum chạy mà tưởng đã dọn: log {{nonremovable tuples}} mới cho biết nó bị xmin chặn.
+- {{pg_terminate_backend}} rồi không {{VACUUM}}: VM chưa cập nhật ngay, cần một lượt vacuum.
+- Chỉ đặt {{idle_in_transaction_session_timeout}} ở instance mà quên {{ALTER ROLE}}: connection cũ vẫn giữ giá trị cũ cho tới khi recycle.
+
+### Trả lời mẫu khi phỏng vấn
+"Index-only scan chậm dần vì visibility map không được cập nhật. Một phiên idle in transaction mở 6 giờ — do @Transactional bọc cả luồng stream export — giữ xmin 812344031, nên autovacuum không xoá được 6,2 triệu dead tuple và không đánh dấu page all-visible. Vì VM không all-visible, index-only scan phải đọc heap 1,78 triệu lần: Heap Fetches từ 0 lên 1.780.000, 8 ms thành 894 ms. Tôi terminate phiên treo, chạy VACUUM để cập nhật VM, đặt idle_in_transaction_session_timeout, và sửa code để không giữ transaction khi stream ra client; thêm HikariCP leakDetectionThreshold và REINDEX CONCURRENTLY nếu index bloat."
+
+> Senior tip: **"Heap Fetches" tăng dần trên một câu index-only scan là dấu hiệu kinh điển của visibility map bị bỏ đói**, mà thủ phạm thường là một {{idle in transaction}} bị lãng quên. Quy tắc của tôi: {{idle_in_transaction_session_timeout}} là setting đáng bật nhất trên PostgreSQL, và {{@Transactional}} tuyệt đối không được bọc stream/gọi mạng. Một connection leak 6 giờ không chỉ làm chậm một câu — nó âm thầm phá index-only scan của cả hệ thống và làm bảng phình mỗi ngày.`,
+    rubric: [
+      'Chỉ đúng cơ chế: index-only scan chậm dần vì visibility map không all-visible nên Heap Fetches tăng 0 → 1.780.000 (8 ms → 894 ms)',
+      'Giải thích đúng vì sao autovacuum không dọn được: phiên idle in transaction 6 giờ giữ xmin 812344031, log vacuum 0 removable / 6.200.114 nonremovable, idle_in_transaction_session_timeout = 0',
+      'Dẫn chứng đúng số liệu: Heap Fetches, n_dead_tup 6,2 triệu, xact_age 6 giờ, oldest xmin, @Transactional bọc stream, Hikari timeout',
+      'Đề xuất sửa đúng: pg_terminate_backend + VACUUM cập nhật VM, idle_in_transaction_session_timeout, sửa code không giữ transaction khi I/O, REINDEX CONCURRENTLY, HikariCP leakDetectionThreshold',
+      'Có monitoring/phòng ngừa: alert idle in transaction/xact_age, n_dead_tup ratio, oldest xmin, theo dõi Heap Fetches, quy tắc review @Transactional không bọc I/O',
+    ],
+    tags: ['postgresql', 'vacuum', 'bloat', 'idle-in-transaction', 'visibility-map', 'index-only-scan'],
+  },
+  {
+    id: 'lab-sql-046',
+    category: 'sql',
+    title: 'Phân trang OFFSET lớn chậm: quét trăm nghìn dòng rồi bỏ qua',
+    level: 'senior',
+    scenario: `**Bối cảnh.** Dịch vụ {{order-history}} (Spring Boot 3.3, Hibernate 6.4, PostgreSQL 15.6 trên RDS, 8 vCPU / 64 GB RAM) cung cấp endpoint {{GET /api/v1/orders?page=&size=}} để khách hàng xem lịch sử đơn hàng. Bảng {{orders}} có **50.000.000 dòng** (~11 GB heap). Index hiện có: {{idx_orders_customer_created}} (btree trên {{customer_id, created_at DESC}}).
+
+**Triệu chứng (14/03/2026).** Trang đầu tiên (page=1, size=50) chạy khoảng **40 ms**. Nhưng khách hàng vào trang 10.000 (page=10000, size=50, tức OFFSET 499.950) thì p95 nhảy lên **8,2 giây**, CPU RDS từ 15% lên 78% trên một core. DBA chạy EXPLAIN ANALYZE và thấy planner dùng **Index Scan Backward** nhưng node **Offset** loại bỏ 499.950 dòng trước khi trả 50 dòng.
+
+**Điều đã thử.** Tăng {{work_mem}}, tạo index composite (customer_id, created_at DESC), thêm {{LIMIT}} — không giảm. Một bạn đề xuất "tăng {{max_parallel_workers}}".
+
+**Việc bạn có.** Hai artifact: EXPLAIN ANALYZE của câu OFFSET và EXPLAIN ANALYZE của câu viết lại theo kiểu keyset pagination. Hãy chỉ ra vì sao OFFSET lớn cùng chậm, và viết lại query để trang 10.000 chạy dưới 50 ms.`,
+    artifacts: [
+      {
+        name: 'explain-offset-page10000.txt',
+        lang: 'text',
+        content: `-- 2026-03-14 10:05:12 +07, RDS order-history-primary (PostgreSQL 15.6)
+orderdb=# EXPLAIN (ANALYZE, BUFFERS)
+SELECT o.id, o.customer_id, o.total_amount, o.created_at, o.status
+FROM orders o
+WHERE o.customer_id = 'c7e3a1f2-8b4d-4f1a-9c6e-2d5b8a3f0e71'::uuid
+ORDER BY o.created_at DESC
+LIMIT 50 OFFSET 499950;
+                                                           QUERY PLAN
+------------------------------------------------------------------------------------------------------------------------------
+ Limit  (cost=1.43..24465.75 rows=50 width=72) (actual time=8123.456..8123.462 rows=50 loops=1)
+   Buffers: shared hit=189432 read=1442
+   ->  Offset  (cost=0.57..24415.75 rows=50 width=72) (actual time=0.018..8122.198 rows=500050 loops=1)
+         ->  Index Scan Backward using idx_orders_customer_created on orders o  (cost=0.57..14408.75 rows=250000 width=72) (actual time=0.041..6204.321 rows=250000 loops=1)
+               Index Cond: (customer_id = 'c7e3a1f2-...'::uuid)
+               Buffers: shared hit=62501 read=1442
+ Planning Time: 0.284 ms
+ Execution Time: 8123.781 ms`,
+      },
+      {
+        name: 'explain-keyset-page10000.txt',
+        lang: 'text',
+        content: `-- 2026-03-14 10:08:34 +07, sau khi sửa thành keyset pagination
+orderdb=# EXPLAIN (ANALYZE, BUFFERS)
+SELECT o.id, o.customer_id, o.total_amount, o.created_at, o.status
+FROM orders o
+WHERE o.customer_id = 'c7e3a1f2-8b4d-4f1a-9c6e-2d5b8a3f0e71'::uuid
+  AND o.created_at < '2026-02-15 03:22:10.123456+07'::timestamptz
+ORDER BY o.created_at DESC
+LIMIT 50;
+                                                           QUERY PLAN
+------------------------------------------------------------------------------------------------------------------------------
+ Limit  (cost=0.43..6.18 rows=50 width=72) (actual time=0.032..0.048 rows=50 loops=1)
+   Buffers: shared hit=4 read=0
+   ->  Index Scan Backward using idx_orders_customer_created on orders o  (cost=0.43..6.18 rows=50 width=72) (actual time=0.031..0.047 rows=50 loops=1)
+         Index Cond: ((customer_id = 'c7e3a1f2-...'::uuid) AND (created_at < '2026-02-15 03:22:10.123456+07'::timestamptz))
+         Buffers: shared hit=4 read=0
+ Planning Time: 0.284 ms
+ Execution Time: 0.412 ms`,
+      },
+      {
+        name: 'schema-orders.txt',
+        lang: 'text',
+        content: `-- 2026-03-14 10:10:00 +07
+orderdb=# \\d orders
+                       Table "public.orders"
+   Column     |           Type           | Collation | Nullable | Default
+--------------+--------------------------+-----------+----------+---------
+ id           | uuid                     |           | not null |
+ customer_id  | uuid                     |           | not null |
+ total_amount | numeric(12,2)            |           | not null |
+ status       | character varying(16)    |           | not null |
+ created_at   | timestamp with time zone |           | not null | now()
+ updated_at   | timestamp with time zone |           | not null | now()
+Indexes:
+    "orders_pkey" PRIMARY KEY, btree (id)
+    "idx_orders_customer_created" btree (customer_id, created_at DESC)
+
+orderdb=# SELECT count(*) FROM orders;
+  count
+--------
+ 50000000`,
+      },
+    ],
+    questions: [
+      'Vì sao câu truy vấn với OFFSET 499.950 chạy 8 giây dù có index (customer_id, created_at DESC)? Chỉ ra bằng node nào trong plan.',
+      'Vì sao OFFSET càng lớn càng chậm, trong khi trang đầu tiên chỉ 40 ms? Giải thích chi phí của planner và chi phí thực tế.',
+      'Hãy viết lại query bằng keyset pagination (cursor trên created_at) và giải thích vì sao cách này không phụ thuộc vào số trang đã qua.',
+    ],
+    hints: [
+      'Node Offset trong plan có actual time 8122 ms và rows=500050: PostgreSQL phải quét 500.050 dòng qua index rồi BỎ QUA 499.950 dòng trước khi trả 50 dòng cuối cùng.',
+      'OFFSET không giảm số dòng DB phải đọc — nó chỉ bỏ qua sau khi đã đọc. Chi phí thực tế tăng tuyến tính theo offset, không theo size.',
+      'Keyset pagination: WHERE created_at < :lastCreatedAt AND customer_id = :c ORDER BY created_at DESC LIMIT 50. Index (customer_id, created_at DESC) tiếp tục được dùng, chỉ đọc 50 dòng mỗi lần.',
+    ],
+    answer: `**Tóm tắt:** Câu truy vấn {{SELECT ... ORDER BY created_at DESC LIMIT 50 OFFSET 499950}} dùng index đúng nhưng node **Offset** phải quét 500.050 dòng qua index rồi loại bỏ 499.950 dòng trước khi trả 50 dòng cuối → execution time 8,1 giây. OFFSET không làm giảm số dòng PostgreSQL phải đọc, nó chỉ loại bỏ sau khi đọc. Sửa bằng **keyset pagination**: {{WHERE customer_id = :c AND created_at < :lastCreatedAt ORDER BY created_at DESC LIMIT 50}} → chỉ đọc 50 dòng, execution time 0,4 ms (nhanh khoảng 20.000 lần).
+
+### Kiến thức nền: OFFSET làm gì và không làm gì
+{{LIMIT n OFFSET m}} nghĩa là "đọc kết quả, bỏ qua m dòng đầu, trả n dòng tiếp theo". Điểm mấu chốt: **PostgreSQL vẫn phải sinh ra m + n dòng** rồi mới loại bỏ m dòng. OFFSET không phải "nhảy tới vị trí m" — nó là "đọc và đếm".
+
+Với câu dùng index {{(customer_id, created_at DESC)}}, planner có thể đọc tuần tự theo đúng thứ tự, nhưng vẫn phải duyệt qua từng entry của khách hàng đó cho tới khi đủ OFFSET. Khách hàng càng nhiều đơn, trang càng sâu thì càng chậm.
+
+### Nguyên nhân gốc, từng bước
+1. Câu gốc có {{LIMIT 50 OFFSET 499950}}. Planner dùng {{Index Scan Backward}} trên {{idx_orders_customer_created}} vì có {{customer_id = ?}} và sắp xếp {{created_at DESC}} — index khớp cả lọc lẫn sắp xếp.
+2. Tuy nhiên PostgreSQL phải **quét từ đầu** index (từ created_at mới nhất) và đếm từng dòng đến khi đạt OFFSET. Node Offset trong plan có actual time 8122 ms, rows=500050 nghĩa là đọc 500.050 dòng.
+3. 500.050 dòng được đọc từ index + heap (buffers 189.432 hit, 1.442 read), rồi **499.950 dòng bị loại bỏ** (Offset), chỉ còn 50 dòng trả về. Chi phí đọc I/O và CPU tăng tuyến tính theo offset.
+4. Trang đầu tiên (OFFSET 0) chỉ đọc 50 dòng → 40 ms. Trang 10.000 phải đọc qua 500.000 dòng trước → 8 giây. Đây là chi phí thực tế của OFFSET lớn, không phải do thiếu index.
+
+### Dẫn chứng
+- Artifact 1: node **Offset (actual time=0.018..8122.198 rows=500050 loops=1)** — đọc 500.050 dòng, bỏ qua 499.950, trả 50; **Execution Time: 8123.781 ms**; **Buffers: shared hit=189432 read=1442**.
+- Artifact 1: node **Index Scan Backward ... (actual time=0.041..6204.321 rows=250000 loops=1)** — đọc 250.000 dòng của khách hàng này (selectivity cao), không phải chỉ đọc 50.
+- Artifact 2: câu viết lại keyset có **Execution Time: 0.412 ms**, chỉ đọc **Buffers: shared hit=4 read=0**, dùng cùng index mà không cần Offset.
+- Artifact 3: bảng 50.000.000 dòng, index {{(customer_id, created_at DESC)}} đã tồn tại và được dùng đúng.
+
+### Cách sửa ngắn hạn (hôm nay)
+- Viết lại câu truy vấn thành keyset pagination:
+~~~sql
+SELECT o.id, o.customer_id, o.total_amount, o.created_at, o.status
+FROM orders o
+WHERE o.customer_id = :customerId
+  AND o.created_at < :lastCreatedAt
+ORDER BY o.created_at DESC
+LIMIT 50;
+~~~
+- Ứng dụng lưu {{created_at}} của dòng cuối cùng trong trang hiện tại, gửi làm {{:lastCreatedAt}} cho trang tiếp theo. Không cần tham số {{page}}/{{OFFSET}}.
+- Nếu vẫn cần biết tổng số trang (hiếm cần trong thực tế), dùng bảng đếm riêng hoặc approximate count, không dùng {{COUNT(*)}} trên 50 triệu dòng mỗi request.
+
+### Cách sửa dài hạn
+- **Không dùng OFFSET lớn** cho phân trang nào có dữ liệu tăng liên tục (đơn hàng, log, bài viết). Keyset pagination là pattern chuẩn.
+- Nếu nghiệp vụ bắt buộc phải có "trang 10.000" (ví dụ admin duyệt đơn cũ), cân nhắc **partition theo tháng** trên {{created_at}}: truy vấn chỉ quét partition của tháng cần, OFFSET nhỏ hơn nhiều.
+- **Covering index (INCLUDE)** nếu cần lấy thêm cột không trong index: {{CREATE INDEX ... ON orders (customer_id, created_at DESC) INCLUDE (total_amount, status)}} để tránh heap fetch, nhưng không cập nhật chi phí OFFSET.
+- Theo dõi {{pg_stat_statements}}: cảnh báo khi câu truy vấn có {{rows}} lớn nhưng {{rows_returned}} nhỏ (tỉ lệ > 100:1) — dấu hiệu OFFSET/lọc lặp phí.
+
+### Phòng ngừa và monitoring
+- Quy tắc review: phân trang trên bảng lớn phải dùng keyset ({{WHERE cot < :cursor ORDER BY cot LIMIT n}}), cấm {{OFFSET > 10.000}} trừ khi có bằng chứng hiệu năng.
+- Cảnh báo {{pg_stat_statements}}: {{total_exec_time}} cao với {{rows}} lớn và {{rows_returned}} nhỏ.
+- Test hiệu năng trên dữ liệu production-like (50 triệu dòng) mọi accept PR.
+
+### Trả lời mẫu khi phỏng vấn
+"Câu truy vấn ORDER BY created_at DESC LIMIT 50 OFFSET 499.950 chạy 8 giây vì PostgreSQL dùng index nhưng node Offset phải quét 500.050 dòng rồi bỏ qua 499.950 dòng trước khi trả 50 dòng cuối. OFFSET không giảm số dòng đọc, chi phí tăng tuyến tính theo offset. Tôi viết lại bằng keyset pagination: WHERE customer_id = :c AND created_at < :lastCreatedAt ORDER BY created_at DESC LIMIT 50 — chỉ đọc 50 dòng, từ 8.123 ms xuống 0,4 ms. Không dùng OFFSET lớn trên bảng dữ liệu tăng liên tục; nếu bắt buộc phải có trang sau thì partition theo tháng."
+
+> Senior tip: OFFSET lớn là "kẻ giết hiệu năng" tham lam — trang đầu chạy nhanh, trang sau chậm dần, team chỉ phát hiện khi khách hàng vào trang sau. Quy tắc vàng: **phân trang trên bảng lớn phải dùng keyset pagination (cursor), không dùng OFFSET**. Nếu quản trị viên insists xem "trang 10.000", hãy hỏi thực sự cần gì — thường là cần tìm kiếm/lọc, không phải xem tuần tự trăm nghìn trang.`,
+    rubric: [
+      'Chỉ đúng nguyên nhân: node Offset đọc 500.050 dòng rồi bỏ qua 499.950, trả 50; chi phí tăng tuyến tính theo offset, không phải do thiếu index',
+      'Dẫn chứng đúng: artifact 1 Offset actual time 8122 ms rows=500050, execution time 8123 ms; artifact 2 keyset 0,4 ms, buffers 4 trang; cùng index được dùng',
+      'Đề xuất sửa đúng: keyset pagination WHERE created_at < :cursor ORDER BY created_at DESC LIMIT 50, giải thích tại sao không phụ thuộc số trang đã qua',
+      'Có phân biệt OFFSET (đọc rồi bỏ qua) vs keyset (đi trực tiếp đến vị trí cursor qua điều kiện index)',
+      'Có monitoring/phòng ngừa: pg_stat_statements tỉ lệ rows/rows_returned, quy tắc review cấm OFFSET lớn, partition nếu bắt buộc trang sau',
+    ],
+    tags: ['postgresql', 'pagination', 'offset', 'keyset', 'explain', 'index-scan'],
+  },
+  {
+    id: 'lab-sql-047',
+    category: 'sql',
+    title: 'Xoá khách hàng chậm vì thiếu chỉ mục khoá ngoại trên bảng đơn hàng',
+    level: 'senior',
+    scenario: `**Bối cảnh.** Hệ thống {{crm}} (Spring Boot 3.3, Hibernate 6.4, PostgreSQL 15.6 trên RDS, 8 vCPU / 64 GB RAM). Bảng {{customers}} lưu 2.000.000 khách hàng, bảng {{orders}} lưu **30.000.000 đơn hàng** (~7 GB heap). Cột {{orders.customer_id}} là khoá ngoại tham chiếu {{customers.id}}, nhưng **không có chỉ mục** trên {{orders.customer_id}}.
+
+**Triệu chứng (14/03/2026, 14:30).** Admin xoá khách hàng nghiệp vụ: {{DELETE FROM customers WHERE id = 'cust-98765'}}. Câu chạy **45 giây**, timeout gateway. Trong lúc đó, mọi câu INSERT/UPDATE trên {{orders}} cũng chậm, pg_stat_activity đầy các viễn cảnh chờ lock. DBA chạy EXPLAIN ANALYZE thấy DELETE trên {{customers}} phải **Seq Scan toàn bảng {{orders}}** (30 triệu dòng) để kiểm tra ràng khoá ngoại.
+
+**Điều đã thử.** Tăng {{max_connections}}, restart {{orders-service}} — không giảm. Một bạn đề xuất "xoá con không transaction".
+
+**Việc bạn có.** Ba artifact: EXPLAIN ANALYZE của DELETE khách hàng, chuẩn pg_locks, và schema hai bảng. Hãy chỉ ra vì sao xoá 1 dòng cha làm quét 30 triệu dòng con, và đề xuất cách sửa.`,
+    artifacts: [
+      {
+        name: 'explain-delete-customer.txt',
+        lang: 'text',
+        content: `-- 2026-03-14 14:30:12 +07, RDS crm-primary (PostgreSQL 15.6)
+crmdb=# EXPLAIN (ANALYZE, BUFFERS)
+DELETE FROM customers WHERE id = 'cust-98765';
+                                                              QUERY PLAN
+-----------------------------------------------------------------------------------------------------------------------------
+ Delete on customers  (cost=0.43..8.45 rows=1 width=16) (actual time=44987.123..44987.129 rows=1 loops=1)
+   Buffers: shared hit=1875021 read=2144
+   ->  Index Scan using customers_pkey on customers  (cost=0.43..8.45 rows=1 width=16) (actual time=0.021..0.045 rows=1 loops=1)
+         Index Cond: (id = 'cust-98765')
+   SubPlan 1
+     ->  Seq Scan on orders  (cost=0.00..789123.45 rows=3 width=8) (actual time=0.012..44985.567 rows=12 loops=1)
+           Filter: (customer_id = 'cust-98765')
+           Rows Removed by Filter: 29999988
+ Planning Time: 0.284 ms
+ Execution Time: 44987.401 ms`,
+      },
+{
+        name: 'pg-locks-delete.txt',
+        lang: 'text',
+        content: `-- 2026-03-14 14:30:15 +07, trong luc DELETE khach hang dang chay
+crmdb=# SELECT pid, state, wait_event_type, wait_event, now() - xact_start AS xact_age, left(query, 60) AS query
+FROM pg_stat_activity
+WHERE wait_event_type = 'Lock';
+  pid  | state  | wait_event_type | wait_event |   xact_age   |                     query
+-------+--------+-----------------+------------+--------------+--------------------------------------------------
+  31105 | active | Lock            | relation   | 00:00:45     | DELETE FROM customers WHERE id = 'cust-98765'
+  31106 | active | Lock            | relation   | 00:00:12     | INSERT INTO orders (customer_id, total_amount) VALUES ($1, $2)
+  31107 | active | Lock            | relation   | 00:00:08     | UPDATE orders SET status = $1 WHERE id = $2
+  31108 | active | Lock            | relation   | 00:00:05     | INSERT INTO orders (customer_id, total_amount) VALUES ($1, $2)
+
+crmdb=# SELECT l.pid, l.locktype, l.relation::regclass AS relation, l.mode, l.granted
+FROM pg_locks l
+WHERE l.relation = 'orders'::regclass OR l.relation = 'customers'::regclass
+ORDER BY l.pid, l.granted, l.locktype;
+  pid  | locktype |   relation   |          mode          | granted
+-------+----------+--------------+------------------------+---------
+  31105 | relation | customers    | RowExclusiveLock       | t
+  31105 | relation | orders       | RowShareLock           | t
+  31106 | relation | orders       | RowExclusiveLock       | f
+  31107 | relation | orders       | RowExclusiveLock       | f
+  31108 | relation | orders       | RowExclusiveLock       | f
+-- Ghi chu: DELETE (pid 31105) giu RowShareLock tren orders de kiem tra FK (trigger RI chay SELECT ... FOR SHARE);
+-- cac INSERT/UPDATE moi vao orders can RowExclusiveLock. RowShareLock VA RowExclusiveLock TU THONG voi nhau,
+-- NHUNG do Seq Scan khong co index, FK check chay 45 giay giu RowShareLock.
+-- Khi co index, FK check la Index Scan (vai micro giay), RowShareLock chi giu rat ngan -> khong bi blocking.`,
+      },
+      {
+        name: 'schema-customers-orders.txt',
+        lang: 'text',
+        content: `-- 2026-03-14 14:35:00 +07
+crmdb=# \\d customers
+                       Table "public.customers"
+   Column |           Type           | Collation | Nullable | Default
+---------+--------------------------+-----------+----------+---------
+ id      | uuid                     |           | not null |
+ name    | character varying(100)   |           | not null |
+ email   | character varying(200)   |           | not null |
+Indexes:
+    "customers_pkey" PRIMARY KEY, btree (id)
+
+crmdb=# \\d orders
+                       Table "public.orders"
+    Column    |           Type           | Collation | Nullable | Default
+-------------+--------------------------+-----------+----------+---------
+ id          | uuid                     |           | not null |
+ customer_id | uuid                     |           | not null |
+ total_amount| numeric(12,2)            |           | not null |
+ status      | character varying(16)    |           | not null |
+ created_at  | timestamp with time zone |           | not null | now()
+Foreign-key constraints:
+    "orders_customer_id_fkey" FOREIGN KEY (customer_id) REFERENCES customers(id)
+Indexes:
+    "orders_pkey" PRIMARY KEY, btree (id)
+-- KHONG co index tren orders(customer_id) --`,
+      },
+    ],
+    questions: [
+      'Vì sao xoá 1 dòng trong {{customers}} lại phải Seq Scan toàn bảng {{orders}} 30 triệu dòng? Chỉ ra bằng node nào trong plan.',
+      'Vì sao các câu INSERT/UPDATE trên {{orders}} cũng chậm khi DELETE khách hàng đang chạy? Giải thích bằng chuẩn pg_locks.',
+      'Bạn sửa thế nào để xoá khách hàng dưới 100 ms và không chặn ghi đơn hàng? Giải thích tại sao CREATE INDEX CONCURRENTLY là bước đầu tiên.',
+    ],
+    hints: [
+      'Node SubPlan 1 -> Seq Scan on orders (actual time=0.012..44985.567 rows=12) là PostgreSQL kiểm tra ràng khoá ngoại: quét toàn bảng orders tìm dòng nào có customer_id = cust-98765.',
+      'DELETE giữ RowShareLock trên orders trong toàn thời gian kiểm tra FK (trigger RI chạy SELECT ... FOR SHARE); RowShareLock TU THONG với RowExclusiveLock (INSERT/UPDATE). Nhưng do Seq Scan 30 triệu dòng mất 45 giây, RowShareLock được giữ lâu → các INSERT/UPDATE vẫn phải chờ do tranh chấp I/O và lock queue.',
+      'Thêm chỉ mục CONCURRENTLY trên orders(customer_id): PostgreSQL dùng index để kiểm tra FK, Index Scan chỉ mất vài micro giây, RowShareLock chỉ giữ trong thời gian cực ngắn → không chặn ghi đơn hàng. CONCURRENTLY không khoá bảng.',
+    ],
+    answer: `**Tóm tắt:** Câu {{DELETE FROM customers WHERE id = ?}} phải kiểm tra ràng khoá ngoại {{orders_customer_id_fkey}}: xem có đơn hàng nào tham chiếu khách hàng này không. Vì cột {{orders.customer_id}} **không có chỉ mục**, PostgreSQL phải **Seq Scan toàn bảng orders** (30 triệu dòng) để tìm dòng có {{customer_id = 'cust-98765'}}. DELETE trigger RI chay {{SELECT ... FOR SHARE}} trên orders, giu **RowShareLock** suot 45 giay kiem tra FK. RowShareLock TU THONG voi RowExclusiveLock (INSERT/UPDATE), nhung do Seq Scan lau, lock queue va I/O contention van gay cho. Sua: tao {{CREATE INDEX CONCURRENTLY idx_orders_customer ON orders(customer_id)}} -> PostgreSQL dung index kiem tra FK, xoa duoi 100 ms, RowShareLock chi giu micro giay, khong chan ghi don hang.
+
+### Kiến thức nền: ràng khoá ngoại và chi phí kiểm tra
+Khi bạn xoá (hoặc cập nhật khoá) một dòng ở bảng cha, PostgreSQL phải bảo đảm **không còn dòng nào ở bảng con tham chiếu tới nó** (ràng {{ON DELETE RESTRICT}} mặc định). Để kiểm tra, nó cần tìm trong bảng con mọi dòng có {{customer_id}} = giá trị vừa xoá.
+
+Nếu cột khoá ngoại ở bảng con **có index**, việc tìm kiếm là {{Index Scan}} (vài micro giây). Nếu **không có index**, PostgreSQL buộc phải **Seq Scan toàn bảng con** — với 30 triệu dòng là 45 giây. Đây là lý do "xoá 1 dòng cha" lại thành "quét 30 triệu dòng con".
+
+### Nguyên nhân gốc, từng bước
+1. Cột {{orders.customer_id}} là khoá ngoại tham chiếu {{customers.id}}. Khi xoá một dòng trong {{customers}}, PostgreSQL phải xác minh không còn dòng nào trong {{orders}} tham chiếu đến khách hàng đó.
+2. Vì không có chỉ mục trên {{orders.customer_id}}, PostgreSQL không thể tra nhanh → phải **Seq Scan toàn bảng orders** (30 triệu dòng) cho mỗi xoá khách hàng. Node SubPlan 1 trong plan xác nhận: Seq Scan, actual time 44.985 giây, rows removed 29.999.988.
+3. Trigger RI (Referential Integrity) chay {{SELECT 1 FROM orders WHERE customer_id = $1 FOR SHARE}} de kiem tra FK. Cau nay lay **RowShareLock** tren bang orders. RowShareLock TU THONG voi RowExclusiveLock (INSERT/UPDATE), KHONG phai AccessShareLock.
+3. Tuy nhiên, do Seq Scan 30 triệu dòng mất 45 giây, RowShareLock được giữ trong suốt thời gian đó. Dù RowShareLock TU THONG với RowExclusiveLock, việc giữ lock lâu + I/O contention + lock queue khiến các INSERT/UPDATE vẫn bị chờ (wait_event = relation).
+4. Kết quả: xoá 1 dòng khách hàng làm chậm toàn bộ ghi đơn hàng, pg_stat_activity đầy các viễn cảnh chờ lock, gateway timeout.
+
+### Dẫn chứng
+- Artifact 1: node **SubPlan 1 -> Seq Scan on orders (actual time=0.012..44985.567 rows=12 loops=1)** — quét 30 triệu dòng, tìm 12 đơn hàng của khách hàng, bỏ qua 29.999.988; **Execution Time: 44987.401 ms**.
+- Artifact 1: DELETE trên customers dùng Index Scan (0,045 ms) — nhanh, chậm thực sự là bước kiểm tra FK trên orders.
+- Artifact 2: pid 31105 (DELETE) giữ **RowShareLock** trên orders (granted = t); pid 31106/31107/31108 (INSERT/UPDATE orders) cần RowExclusiveLock (granted = f) → đang chờ. RowShareLock TU THONG với RowExclusiveLock, nhưng lock queue + I/O contention do Seq Scan lâu vẫn gây chờ.
+- Artifact 3: ràng hoà {{orders_customer_id_fkey}} tồn tại, nhưng **không có chỉ mục** trên {{orders.customer_id}} (chỉ có orders_pkey trên id).
+
+### Cách sửa ngắn hạn (hôm nay)
+- {{CREATE INDEX CONCURRENTLY idx_orders_customer ON orders(customer_id);}} — tạo chỉ mục không khoá bảng, có thể chạy trong giờ cao điểm. Sau khi tạo, PostgreSQL dùng index để kiểm tra FK, xoá khách hàng xuống dưới 100 ms, RowShareLock chỉ giữ micro giây, không chặn ghi đơn hàng.
+- Nếu cần xoá ngay và chỉ mục chưa xong: xoá khách hàng ngoài giờ cao điểm, hoặc xoá đơn hàng của khách hàng trước rồi mới xoá khách hàng (2 câu DELETE riêng, trong một transaction).
+- Huỷ DELETE đang treo: {{SELECT pg_terminate_backend(31105);}} để giải phóng RowShareLock, các INSERT/UPDATE orders hồi phục ngay.
+
+### Cách sửa dài hạn
+- **Luôn tạo chỉ mục cho cột khoá ngoại:** mọi cột FK tham chiếu bảng cha lớn nên có chỉ mục, để xoá/cập nhật cha không phải seq scan con. Quy tắc này áp dụng cho tất cả CSDL quan hệ.
+- Nếu xoá khách hàng thường xuyên: cân nhắc xoá đơn hàng của khách hàng trong batch nhỏ (ví dụ 1.000 đơn/lần) rồi xoá khách hàng, giữ transaction ngắn.
+- Xem xét {{ON DELETE CASCADE}} nếu nghiệp vụ cho phép xoá cùng lúc đơn hàng của khách hàng — nhưng cần cẩn trọng vì xoá hàng loạt 30 triệu dòng trong một transaction sẽ bloat WAL và giữ lock dài.
+- Theo dõi {{pg_stat_user_indexes}}: nếu {{idx_scan = 0}} trên cột FK, chỉ mục có thể không cần — nhưng với xoá cha, chỉ mục FK là bắt buộc cho hiệu năng.
+
+### Phòng ngừa và monitoring
+- Quy tắc review: mọi khoá ngoại mới phải kèm chỉ mục trên cột con, trừ khi chứng minh không cần (ví dụ cha rất nhỏ, không xoá cha).
+- Cảnh báo {{pg_stat_activity}} có viễn cảnh chờ lock (> 500 ms) trên bảng Orders; alert khi {{wait_event_type = 'Lock'}}.
+- Test migration trên dữ liệu production-like: xoá khách hàng có nhiều đơn hàng nhất, đo thời gian trước và sau khi thêm chỉ mục FK.
+
+### Trả lời mẫu khi phỏng vấn
+"Xoá một khách hàng trong bảng customers chạy 45 giây vì PostgreSQL phải kiểm tra ràng khoá ngoại trên bảng orders 30 triệu dòng, nhưng cột customer_id trong orders không có chỉ mục nên phải Seq Scan toàn bảng. Trigger RI chạy SELECT FOR SHARE, giữ RowShareLock trong 45 giây. Dù RowShareLock TU THONG với RowExclusiveLock, việc giữ lock lâu + I/O contention vẫn gây chờ. Sửa: tạo CREATE INDEX CONCURRENTLY trên orders(customer_id) → PostgreSQL dùng index kiểm tra FK, xoá dưới 100 ms, RowShareLock chỉ giữ micro giây, không chặn ghi đơn hàng. Luôn tạo chỉ mục cho cột khoá ngoại tham chiếu bảng lớn."
+
+> Senior tip: Khoá ngoại không tự động đi kèm chỉ mục ở phía bảng con. Nhiều dev nghĩ FK đã có index — sai. Vì sao xoá/cập nhật dòng trong bảng cha lớn có thể kết thúc bằng Seq Scan toàn bảng con, làm treo hệ thống. Quy tắc vàng: **mọi FK tham chiếu bảng lớn phải có index ở bảng con**, và xoá cha nên kiểm tra EXPLAIN trước khi deploy. Lưu ý: FK check dùng {{SELECT ... FOR SHARE}} lay **RowShareLock** (khong phai AccessShareLock), RowShareLock TU THONG voi RowExclusiveLock — van de chi xuat hien khi Seq Scan lau giu lock lau.`,
+    rubric: [
+      'Chỉ đúng nguyên nhân: xoá cha phải kiểm tra FK, không có chỉ mục trên cột con → Seq Scan toàn bảng con (30 triệu dòng), node SubPlan 1 là bằng chứng',
+      'Dẫn chứng đúng: artifact 1 Seq Scan orders 44.985 giây rows removed 29.999.988; artifact 2 DELETE giữ RowShareLock orders, INSERT/UPDATE orders cần RowExclusiveLock bị chờ do lock queue + I/O contention từ Seq Scan lâu; artifact 3 không có index trên orders.customer_id',
+      'Đề xuất sửa đúng: CREATE INDEX CONCURRENTLY idx_orders_customer ON orders(customer_id), xoá khoảng dưới 100 ms, không chặn ghi đơn hàng; huỷ DELETE đang treo nếu cần',
+      'Có giải thích đúng: FK check dùng SELECT FOR SHARE lấy RowShareLock (TU THONG với RowExclusiveLock), vấn đề chỉ do Seq Scan lâu giữ lock lâu + I/O contention, không phải lock conflict trực tiếp',
+      'Có monitoring/phòng ngừa: quy tắc luôn có index cho FK, cảnh báo chờ lock, test xoá cha trên dữ liệu production-like',
+    ],
+    tags: ['postgresql', 'foreign-key', 'index', 'delete', 'lock', 'access-share-lock'],
+  },
+  {
+    id: 'lab-sql-048',
+    category: 'sql',
+    title: 'Báo cáo trên read replica hiển thị dữ liệu cũ do replication lag',
+    level: 'senior',
+    scenario: `**Bối cảnh.** Hệ thống {{order-service}} (Spring Boot 3.3, Hibernate 6.4, PostgreSQL 15.6 trên RDS) chạy một instance ghi (primary) và một read replica riêng cho dashboard báo cáo doanh thu. Ứng dụng ghi đơn hàng vào primary, dashboard đọc từ replica. Mặc định {{synchronous_commit = off}}: commit xong trên primary là trả kết quả cho ứng dụng, replica nộp nhận WAL và áp dụng dữ liệu khác một khoảng thời gian. Có replication slot {{order_replica_slot}} để giữ WAL cho replica.
+
+**Triệu chứng (14/03/2026, 14:10–14:20).** Nhân viên bán hàng cập nhật đơn {{ORD-2026-03-14-88421}} từ {{PENDING}} sang {{SHIPPED}} trên primary, rồi refresh dashboard báo cáo. Dashboard vẫn hiển thị {{PENDING}} trong 35 giây mới chuyển sang {{SHIPPED}}. Khách hàng phàn nàn "đơn đã giao nhưng hệ thống vẫn hiện đang giao". CPU primary 30%, replica 20% — không phải quá tải, là vấn đề độ trễ sao chép (replication lag).
+
+**Việc bạn có.** Ba artifact: pg_stat_replication trên primary, pg_stat_wal_receiver trên replica, và log ứng dụng ghi status đơn. Hãy chỉ ra nguyên nhân gốc, dẫn chứng bằng số liệu artifact, và đề xuất cách sửa để đọc luôn dữ liệu mới ngay sau khi ghi.`,
+    artifacts: [
+      {
+        name: 'pg-stat-replication-primary.txt',
+        lang: 'text',
+        content: `-- 2026-03-14 14:15:02 +07, primary order-primary (PostgreSQL 15.6)
+orderdb=# SELECT pid, usename, application_name, client_addr, state, sync_state,
+               sent_lsn, write_lsn, flush_lsn, replay_lsn,
+               write_lag, flush_lag, replay_lag
+FROM pg_stat_replication;
+  pid  | usename  | application_name |  client_addr  | state   | sync_state |  sent_lsn  |  write_lsn  |  flush_lsn  |  replay_lsn  | write_lag | flush_lag | replay_lag
+-------+----------+------------------+---------------+---------+------------+------------+-------------+-------------+--------------+-----------+-----------+------------
+  22110 | repuser  | order_replica    | 10.0.5.22     | streaming | async      | 0/1D9F00   | 0/1D8E00    | 0/1D8C00    | 0/1D8A00     |           |           | 00:00:35
+-- sync_state = async (synchronous_commit = off), replay_lag = 35 giay: replica da nhan WAL den 0/1D8A00 nhung chua ap duoc, con primary da tien den 0/1D9F00.`,
+      },
+      {
+        name: 'pg-stat-wal-receiver-replica.txt',
+        lang: 'text',
+        content: `-- 2026-03-14 14:15:02 +07, replica order-replica (PostgreSQL 15.6)
+orderdb=# SELECT status, receiver_status, received_lsn, flushed_lsn,
+               last_msg_send_time, last_msg_receipt_time, latest_end_lsn,
+               latest_end_time, slot_name, sender_host, sender_port
+FROM pg_stat_wal_receiver;
+          status           |   receiver_status   |  received_lsn  |  flushed_lsn  |        last_msg_send_time        |     last_msg_receipt_time      |  latest_end_lsn  |         latest_end_time          |  slot_name   | sender_host | sender_port
+---------------------------+---------------------+----------------+---------------+----------------------------------+--------------------------------+------------------+----------------------------------+--------------+-------------+-------------
+ streaming                 | receive             | 0/1D8A00       | 0/1D8A00      | 2026-03-14 14:14:27.123+07       | 2026-03-14 14:14:27.125+07     | 0/1D9F00       | 2026-03-14 14:14:27.000+07       | order_replica_slot | 10.0.5.10   | 5432
+-- received_lsn = flushed_lsn = 0/1D8A00, latest_end_lsn = 0/1D9F00: WAL da duoc gui den nhung chua ap dung het, chenh lech 35 giay so voi thoi gian primary ghi.`,
+      },
+      {
+        name: 'app-order-status-log.txt',
+        lang: 'text',
+        content: `2026-03-14T14:14:27.001Z INFO  [http-nio-8080-exec-11] c.o.o.OrderService - updateOrderStatus(orderId=ORD-2026-03-14-88421, status=SHIPPED) OK in 45ms (ghi primary)
+2026-03-14T14:14:28.102Z INFO  [http-nio-8080-exec-22] c.o.r.ReportController - GET /api/v1/reports/revenue?orderId=ORD-2026-03-14-88421 -> 200 status=PENDING (doc replica, 1 giay sau ghi)
+2026-03-14T14:15:02.511Z INFO  [http-nio-8080-exec-33] c.o.r.ReportController - GET /api/v1/reports/revenue?orderId=ORD-2026-03-14-88421 -> 200 status=SHIPPED (doc replica, 35 giay sau ghi)
+-- pattern: doc ngay sau ghi lay du lieu cu, phai dam doi 35 giay moi moi.`,
+      },
+    ],
+    questions: [
+      'Vì sao dashboard trên replica hiển thị status cũ 35 giây sau khi primary đã commit? Chỉ ra bằng dòng nào trong artifact.',
+      'sync_state = async có ý nghĩa gì, và tại sao synchronous_commit = off là gốc rễ của vấn đề đọc-dữ-liệu-cứ?',
+      'Bạn sửa thế nào để đọc luôn dữ liệu mới ngay sau khi ghi (read-after-write consistency)? Nêu cả cách ngắn hạn và dài hạn, kèm trade-off.',
+    ],
+    hints: [
+      'replay_lag = 00:00:35 trong pg_stat_replication và received_lsn < latest_end_lsn trong pg_stat_wal_reducer cho thấy WAL chưa được áp dụng hết trên replica.',
+      'Với synchronous_commit = off, primary trả kết quả ngay khi ghi WAL local xong, không chờ replica nhận hoặc áp dụng -> gap thời gian giữa ghi và đọc.',
+      'Sửa ngắn hạn: ghi xong trên primary thì đọc lại từ primary (sticky session / read-after-write routing) trong vài giây, hoặc thiết lập synchronous_commit = remote_apply cho giao dịch quan trọng. Dài hạn: giám sát replay_lag, cảnh báo > 5 giây, điều hướng đọc dựa trên lag.',
+    ],
+    answer: `**Tóm tắt:** Dashboard đọc từ replica nhưng replica bị chậm 35 giây so với primary (replay_lag = 35s). Gốc rễ là {{synchronous_commit = off}}: primary commit xong (ghi WAL local) là trả kết quả, không chờ replica nhận hoặc áp dụng WAL, do đó đọc ngay sau ghi vẫn lấy dữ liệu cũ. Sửa: read-after-write routing (đọc primary trong vài giây sau ghi) hoặc {{synchronous_commit = remote_apply}} cho giao dịch quan trọng, kèm giám sát replay_lag cảnh báo > 5 giây.
+
+### Tự vấn: replication lag là gì
+PostgreSQL sao chép dữ liệu qua WAL (Write-Ahead Log). Primary ghi WAL, gửi đến replica qua walsender. replica nhận (received_lsn), ghi vào đĩa (flushed_lsn), rồi áp dụng vào bảng dữ liệu (replay_lsn). **Replication lag** là khoảng thời gian giữa lúc primary commit và lúc replica áp dụng xong (replay_lsn kịp latest_end_lsn). Mặc định {{synchronous_commit = off}} (local): primary trả kết quả khi WAL đã ghi xong local, không chờ replica -> luôn có khoảng trống đọc-cũ.
+
+Ví dụ đời thường: như một chi nhánh nhận bản sao báo cáo từ trụ sở qua bưu điện. Trụ sở ký aprob (commit) xong thông báo nhân viên, nhưng bản sao tại chi nhánh đến 35 giây sau. Khách đến chi nhánh trong khoảng đó vẫn thấy báo cáo cũ.
+
+### Nguyên nhân gốc, từng bước
+1. Giao dịch cập nhật đơn ORDER-88421 từ PENDING sang SHIPPED trên primary với {{synchronous_commit = off}}.
+2. Primary ghi WAL local, commit xong, trả OK cho ứng dụng trong 45 ms.
+3. WAL được gửi đến replica (received_lsn tiến lên), nhưng replica chưa áp dụng hết (replay_lsn đứng lại 0/1D8A00).
+4. Dashboard đọc replica 1 giây sau -> lấy trạng thái PENDING (dữ liệu chưa được replicate).
+5. Sau 35 giây replica áp dụng xong -> đọc lại mới thấy SHIPPED.
+6. CPU không cao vì không phải quá tải, chỉ là độ trễ sinh ra từ chế độ sao chép bất đồng bộ.
+
+### Dẫn chứng
+- Artifact 1 (pg_stat_replication): {{sync_state = async}}, {{replay_lag = 00:00:35}}, sent_lsn 0/1D9F00 nhưng replay_lsn 0/1D8A00 (chưa áp dụng hết).
+- Artifact 2 (pg_stat_wal_receiver): {{received_lsn = flushed_lsn = 0/1D8A00}}, nhưng {{latest_end_lsn = 0/1D9F00}} — WAL đã nhận nhưng chưa áp dụng hết, chênh lệch tương đương 35 giây.
+- Artifact 3 (log ứng dụng): đọc 1 giây sau ghi trả PENDING, đọc 35 giây sau mới trả SHIPPED — xác nhận gap 35 giây khớp với replay_lag.
+
+### Cách sửa ngắn hạn (hôm nay)
+- **Read-after-write routing:** sau khi ghi đơn trên primary, đọc lại từ primary trong cửa sổ vài giây (ví dụ 30 giây), sau đó mới chuyển về replica. Dùng sticky session theo orderId hoặc thread-local flag {{justWrote}}.
+- **{{synchronous_commit = remote_apply}}** cho giao dịch quan trọng (cập nhật đơn hàng): primary chờ replica xác nhận đã áp dụng WAL trước khi trả kết quả. Trade-off: ghi chậm hơn (đợi khứ hồi mạng tới replica), áp dụng chỉ cho các giao dịch cần đọc-ngay-sau-ghi, không phải tất cả.
+
+### Cách sửa dài hạn
+- Giám sát {{replay_lag}} từ {{pg_stat_replication}}; cảnh báo khi > 5 giây, critical > 30 giây.
+- Điều hướng đọc dựa trên lag: nếu replica lag quá ngưỡng, tự động chuyển đọc về primary (đảm bảo nhất quát, hy sinh tải replica).
+- Xem xét {{synchronous_standby_names}} nếu cần đảm bảo tối thiểu một replica đồng bộ trước khi commit (cộng đồng cao nhất, chi phí ghi cao nhất).
+- Thiết kế ứng dụng coi dữ liệu trên replica là "cuối cùng nhất quán" (eventually consistent), không đọc ngay sau ghi trừ khi dùng routing trên.
+
+### Trả lời mẫu khi phỏng vấn
+"Dashboard đọc từ read replica nhưng replica bị chậm 35 giây so với primary (replay_lag). Gốc là synchronous_commit = off: primary commit xong là trả kết quả, không chờ replica áp dụng WAL, nên đọc ngay sau ghi vẫn lấy dữ liệu cũ. Dẫn chứng: pg_stat_replication cho sync_state=async, replay_lag=35s; pg_stat_wal_receiver cho received_lsn < latest_end_lsn; log ứng dụng đọc 1 giây sau ghi trả PENDING, 35 giây sau mới SHIPPED. Sửa: read-after-write routing (đọc primary sau khi ghi) hoặc synchronous_commit=remote_apply cho giao dịch quan trọng, kèm giám sát replay_lag và cảnh báo. Trade-off là ghi chậm hơn do đợi replica."
+`,
+    rubric: [
+      'Chỉ đúng nguyên nhân: replication lag (replay_lag = 35s) do synchronous_commit = off, primary không chờ replica áp dụng WAL',
+      'Dẫn chứng đúng: artifact 1 sync_state=async + replay_lag 35s, artifact 2 received_lsn < latest_end_lsn, artifact 3 đọc-sau-ghi lấy dữ liệu cũ',
+      'Đề xuất sửa đúng: read-after-write routing hoặc synchronous_commit=remote_apply, giải thích trade-off ghi chậm hơn, có giám sát replay_lag',
+      'Có phân biệt replica là eventually consistent, không đọc ngay sau ghi trừ khi routing',
+      'Có monitoring/cảnh báo replay_lag > 5 giây, điều hướng đọc theo lag',
+    ],
+    tags: ['postgresql', 'replication', 'read-replica', 'replication-lag', 'synchronous-commit', 'read-after-write'],
+  },
+  {
+    id: 'lab-sql-049',
+    category: 'sql',
+    title: 'Chậm ghi do quá nhiều chỉ mục chưa dùng (index bloat/unused index)',
+    level: 'senior',
+    scenario: `**Bối cảnh.** Hệ thống {{event-service}} (Spring Boot 3.3, Hibernate 6.4, PostgreSQL 15.6 trên RDS, 8 vCPU / 64 GB RAM) ghi sự kiện người dùng vào bảng {{user_events}}. Bảng sau 18 tháng có **120.000.000 dòng** (~28 GB heap). Có 14 chỉ mục trên bảng, bao gồm nhiều chỉ mục được tạo cho các báo cáo ad-hoc đã không dùng nữa. Endpoint {{POST /api/v1/events}} ghi ~5.000 sự kiện/giây. p95 của INSERT nhảy từ 8 ms lên **220 ms**, CPU RDS từ 25% lên 78%, WAL tăng nhanh. DBA nghi ngờ "đĩa chậm" nhưng iostat bình thường.
+
+**Triệu chứng (20/03/2026, 09:00–11:00).** INSERT chậm đều đều, không có spike. VACUUM chạy liên tục. pg_stat_user_indexes chỉ ra 6 chỉ mục có {{idx_scan = 0}} (không bao giờ được dùng), nhưng vẫn được bảo trì trên mỗi INSERT/UPDATE/DELETE. Hay tìm nguyên nhân gốc và cách giảm tải ghi mà không ảnh hưởng truy vấn đọc đang dùng.
+
+**Việc bạn có.** Ba artifact: pg_stat_user_indexes, pg_stat_user_tables, và EXPLAIN ANALYZE của một truy vấn đọc quan trọng. Hãy chỉ ra chỉ mục nào không cần và cách dọn dẹp an toàn.`,
+    artifacts: [
+      {
+        name: 'pg-stat-user-indexes.txt',
+        lang: 'text',
+        content: `-- 2026-03-20 09:10:00 +07, RDS event-primary (PostgreSQL 15.6)
+eventdb=# SELECT relname, indexrelname, idx_scan, idx_tup_read, idx_tup_fetch, pg_size_pretty(pg_relation_size(indexrelid)) AS size
+FROM pg_stat_user_indexes WHERE relname = 'user_events' ORDER BY idx_scan;
+   relname   |     indexrelname     | idx_scan | idx_tup_read | idx_tup_fetch |   size
+-------------+----------------------+----------+--------------+---------------+----------
+ user_events | user_events_pkey     | 45200000 |   45200000   |    45200000   | 2800 MB
+ user_events | idx_user_events_user | 32100000 |   32100000   |    32100000   | 3100 MB
+ user_events | idx_user_events_ts   |  8500000 |    8500000   |     8500000   | 2900 MB
+ user_events | idx_user_events_type |   120000 |     120000   |     120000    | 2200 MB
+ user_events | idx_user_events_city |        0 |            0 |             0 | 2500 MB
+ user_events | idx_user_events_dev  |        0 |            0 |             0 | 2100 MB
+ user_events | idx_user_events_camp |        0 |            0 |             0 | 1900 MB
+ user_events | idx_user_events_platform | 0  |            0 |             0 | 2300 MB
+ user_events | idx_user_events_lang |        0 |            0 |             0 | 1800 MB
+ user_events | idx_user_events_ver  |        0 |            0 |             0 | 1700 MB
+-- 6 chi muc co idx_scan = 0 (city, dev, camp, platform, lang, ver), tong khoang 12.3 GB, khong bao giờ duoc su dung nhung duoc bao tri tren moi ghi.`,
+      },
+      {
+        name: 'pg-stat-user-tables.txt',
+        lang: 'text',
+        content: `-- 2026-03-20 09:12:00 +07
+eventdb=# SELECT relname, n_tup_ins, n_tup_upd, n_tup_del, n_dead_tup, last_vacuum, last_autovacuum
+FROM pg_stat_user_tables WHERE relname = 'user_events';
+   relname    |  n_tup_ins  |  n_tup_upd  | n_tup_del | n_dead_tup |       last_vacuum       |    last_autovacuum
+-------------+-------------+-------------+-----------+------------+-------------------------+----------------------
+ user_events | 72000000000 |      450000 |      3000 |    2400000 | 2026-03-20 08:55:00+07 | 2026-03-20 08:58:00+07
+-- 72 nghìn tr억 tuple da duoc insert, n_dead_tup 2,4 trieu, autovacuum chay lien tuc de xu ly dead tuple tu cac cap nhat xoa. Mỗi INSERT phai cap nhat 14 chi muc.`,
+      },
+      {
+        name: 'explain-read-query.txt',
+        lang: 'text',
+        content: `-- 2026-03-20 09:15:00 +07, truy vấn đọc báo cáo sự kiện theo user
+eventdb=# EXPLAIN (ANALYZE, BUFFERS)
+SELECT count(*) FROM user_events WHERE user_id = 'u-98765' AND event_ts >= '2026-03-01';
+                                                              QUERY PLAN
+-----------------------------------------------------------------------------------------------------------------------------
+ Aggregate  (cost=458.72..458.73 rows=1 width=8) (actual time=3.456..3.457 rows=1 loops=1)
+   ->  Index Scan using idx_user_events_user on user_events  (cost=0.43..458.72 rows=15 width=8) (actual time=0.121..3.452 rows=15 loops=1)
+         Index Cond: ((user_id = 'u-98765'::uuid) AND (event_ts >= '2026-03-01'::date))
+         Buffers: shared hit=12 read=0
+-- Truy vấn đọc quan trọng chỉ dùng 2 chi muc: user_events_pkey và idx_user_events_user (hoặc composite), các chi muc idx_scan=0 không tham gia.`,
+      },
+    ],
+    questions: [
+      'Vì sao INSERT chậm (220 ms) dù iostat bình thường và không có spike? Liên hệ với số lượng chỉ mục.',
+      'Chỉ mục nào nên bỏ (idx_scan = 0) và chỉ mục nào cần giữ? Giải thích bằng artifact.',
+      'Bạn dọn dẹp thế nào an toàn mà không làm gián đoạn dịch vụ? Giải thích CONCURRENTLY và kiểm tra sau khi xóa.',
+    ],
+    hints: [
+      'Mỗi INSERT/UPDATE/DELETE phải bảo trì tất cả 14 chỉ mục (ghi thêm vào mỗi cây B-tree), nên 6 chỉ mục chưa dùng vẫn tốn I/O và WAL mà không mang lại lợi ích đọc.',
+      'idx_scan = 0 trong pg_stat_user_indexes nghĩa là chỉ mục chưa bao giờ được sử dụng — dấu hiệu rõ ràng cần xem xét xóa.',
+      'Dùng DROP INDEX CONCURRENTLY để không khoá bảng, sau đó theo dõi idx_scan của các chỉ mục còn lại trong 1-2 tuần trước khi quyết định xóa vĩnh viễn.',
+    ],
+    answer: `**Tóm tắt:** Bảng {{user_events}} có 14 chỉ mục, trong đó 6 chỉ mục {{idx_scan = 0}} (không bao giờ dùng) tổng cộng khoảng 12.3 GB. Mỗi INSERT phải bảo trì cả 14 cây B-tree, khiến ghi chậm từ 8 ms lên 220 ms, CPU 78%, WAL tăng nhanh. Sửa: xóa các chỉ mục chưa dùng bằng {{DROP INDEX CONCURRENTLY}} (không khoá bảng), giữ chỉ mục phục vụ truy vấn đọc thực tế (pkey, idx_user_events_user...), sau đó theo dõi idx_scan trong 1-2 tuần.
+
+### Tự vấn: chi phí của chỉ mục
+Chỉ mục làm đọc nhanh nhưng làm ghi chậm. Mỗi lần INSERT/UPDATE/DELETE, PostgreSQL phải cập nhật mọi chỉ mục liên quan đến cột bị thay đổi: thêm/xóa mục trong mỗi cây B-tree, ghi WAL cho mỗi chỉ mục. Có 14 chỉ mục nghĩa là 1 lần ghi dữ liệu kèm 14 lần ghi chỉ mục. Các chỉ mục chưa dùng (idx_scan = 0) chỉ gây tổn hao ghi mà không mang lại lợi ích đọc. Ngoài ra, chỉ mục chưa dùng làm VACUUM làm việc nhiều hơn (phải quét chỉ mục để dọn entry tử) và Tối ưu hóa bỏ qua.
+
+Ví dụ đời thường: như một quyển sách có 14 mục lục khác nhau (theo tác giả, theo chủ đề, theo năm, theo màu bìa...). Mỗi lần thêm sách mới vào kho, bạn phải cập nhật tất cả 14 mục lục. Nếu 6 mục lục không ai tra cứu, bạn vẫn phải cập nhật chúng mỗi lần thêm sách — công nhân bị làm nặng để không có ích lợi.
+
+### Nguyên nhân gốc, từng bước
+1. Bảng user_events 120 triệu dòng, 14 chỉ mục (một số từ báo cáo ad-hoc đã ngừng dùng).
+2. Mỗi INSERT ~5.000 sự kiện/giây phải cập nhật 14 cây B-tree -> I/O và WAL lên cao.
+3. 6 chỉ mục có idx_scan = 0 không bao giờ phục vụ truy vấn, nhưng vẫn được bảo trì trên mỗi ghi -> lãng phí ~12.3 GB chỉ mục.
+4. CPU 78% là chi phí bảo trì chỉ mục, không phải I/O đĩa (iostat bình thường). Autovacuum chạy liên tục do dead tuple từ cập nhật/xóa.
+5. p95 INSERT nhảy từ 8 ms lên 220 ms do mỗi ghi phải xử lý thêm 14 chỉ mục.
+
+### Dẫn chứng
+- Artifact 1 (pg_stat_user_indexes): 6 chỉ mục có {{idx_scan = 0}} (city, dev, camp, platform, lang, ver), tổng kích thước ~12.3 GB, chưa bao giờ được dùng. Các chỉ mục còn lại có idx_scan cao.
+- Artifact 2 (pg_stat_user_tables): n_tup_ins 72 tỷ, n_dead_tup 2,4 triệu, autovacuum chạy liên tục — mức độ ghi lớn, chỉ mục được bảo trì liên tục.
+- Artifact 3 (EXPLAIN): truy vấn đọc quan trọng chỉ dùng {{idx_user_events_user}} (Index Scan, 3.4 ms), các chỉ mục idx_scan=0 không tham gia.
+
+### Cách sửa ngắn hạn (hôm nay)
+- Xóa 6 chỉ mục chưa dùng bằng {{DROP INDEX CONCURRENTLY}}: idx_user_events_city, idx_user_events_dev, idx_user_events_camp, idx_user_events_platform, idx_user_events_lang, idx_user_events_ver. CONCURRENTLY không khoá bảng, có thể chạy trong giờ cao điểm (mãi lâu hơn nhưng an toàn).
+- Sau khi xóa, theo dõi p95 INSERT và CPU trong 24-48 giờ. Mong đợi giảm đáng kể.
+- Nếu không chắc chắn, có thể {{REINDEX CONCURRENTLY}} hoặc đánh dấu chỉ mục INVALID trước khi xóa hoàn toàn (không khuyên dùng cho production, dùng DROP CONCURRENTLY trực tiếp).
+
+### Cách sửa dài hạn
+- Quy tắc review: chỉ tạo chỉ mục khi có truy vấn thực tế cần, kèm EXPLAIN để chứng minh chỉ mục được dùng.
+- Theo định kỳ (ví dụ quý) pg_stat_user_indexes: tìm chỉ mục {{idx_scan = 0}} trong 2-4 tuần và xem xét xóa.
+- Cân nhắc chỉ mục composite thay vì nhiều chỉ mục đơn lẻ nếu truy vấn thường lọc theo cùng bộ cột.
+- Giám sát pg_stat_user_tables (n_tup_ins/upd/del) và WAL generation rate để phát hiện sớm chi phí ghi do chỉ mục.
+- Nếu cần chỉ mục cho báo cáo ad-hoc, cân nhắc bảng tóm tắt (summary table) hoặc cơ sở dữ liệu phân tích riêng, không thêm chỉ mục trực tiếp vào bảng ghi dữ liệu.
+
+### Trả lời mẫu khi phỏng vấn
+"Bảng user_events 120 triệu dòng có 14 chỉ mục, trong đó 6 chỉ mục chưa bao giờ được dùng (idx_scan=0) tính khoảng 12,3 GB. Mỗi INSERT phải bảo trì cả 14 cây B-tree nên ghi chậm từ 8 ms lên 220 ms, CPU 78%, WAL tăng nhanh. Dẫn chứng: pg_stat_user_indexes cho 6 chỉ mục idx_scan=0, truy vấn đọc quan trọng chỉ dùng idx_user_events_user. Sửa: DROP INDEX CONCURRENTLY các chỉ mục không dùng (không khoá bảng), giữ chỉ mục phục vụ đọc thực tế, theo dõi p95 INSERT sau xóa. Dài hạn: quy tắc review chỉ tạo chỉ mục khi có truy vấn cần, định kỳ dọn chỉ mục idx_scan=0, cân nhắc bảng tóm tắt cho báo cáo ad-hoc."
+`,
+    rubric: [
+      'Chỉ đúng nguyên nhân: quá nhiều chỉ mục (14) làm mỗi INSERT phải bảo trì 14 cây B-tree, 6 chỉ mục idx_scan=0 lãng phí ~12.3 GB',
+      'Dẫn chứng đúng: artifact 1 6 chỉ mục idx_scan=0, artifact 2 n_tup_ins lớn + autovacuum liên tục, artifact 3 truy vấn đọc chỉ dùng một số chỉ mục',
+      'Đề xuất sửa đúng: DROP INDEX CONCURRENTLY các chỉ mục chưa dùng (không khoá bảng), giữ chỉ mục phục vụ đọc, theo dõi p95 INSERT sau xóa',
+      'Có giải thích chi phí chỉ mục đối với ghi (I/O, WAL, VACUUM) và trade-off đọc-nhanh-ghi-chậm',
+      'Có monitoring/dài hạn: định kỳ kiểm tra idx_scan=0, quy tắc review, bảng tóm tắt cho báo cáo ad-hoc',
+    ],
+    tags: ['postgresql', 'index', 'unused-index', 'insert-performance', 'wal', 'drop-index-concurrently'],
+  },
 );
 
