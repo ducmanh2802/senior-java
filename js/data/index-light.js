@@ -3463,6 +3463,8 @@ window.DATA_INDEX = {
     {"id":"sd-056","title":"Hệ thống eKYC mở tài khoản online"},
     {"id":"sd-057","title":"Đặt phòng khách sạn nhiều kênh (website + OTA)"},
     {"id":"sd-058","title":"Quản lý kho và giao hàng chặng cuối"},
+    {"id":"sd-059","title":"Chấm công cho 20.000 công nhân nhà máy"},
+    {"id":"sd-060","title":"QR thanh toán cho merchant (VietQR)"},
   ],
   drills: [
     {"id":"drill-shadow-001","kind":"shadow","en":"I am a backend engineer with eight years of experience building Java services for fintech products."},
