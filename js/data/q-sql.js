@@ -9589,4 +9589,175 @@ Triệu chứng: hệ thống ngân hàng số (PostgreSQL 15, bảng {{transact
   ],
   tags: ['window function', 'ROW_NUMBER', 'SUM OVER', 'LAG', 'running balance', 'ROWS vs RANGE', 'frame clause']
 },
+{
+  id: 'sql-119',
+  topic: 'sql',
+  level: 'senior',
+  q: 'Bạn cần báo cáo "giao dịch mới nhất của mỗi tài khoản" và "số dư luỹ kế theo thời gian" trong cùng một truy vấn. Dùng window function nào, và vì sao không dùng GROUP BY hay subquery?',
+  a: `**Tóm tắt:** Dùng ROW_NUMBER() OVER (PARTITION BY account_id ORDER BY created_at DESC) để lấy giao dịch mới nhất mỗi tài khoản, và SUM(amount) OVER (PARTITION BY account_id ORDER BY created_at) để tính số dư luỹ kế. Window function giữ nguyên từng dòng gốc, aggregate theo cửa sổ; GROUP BY gộp dòng làm mất chi tiết.
+
+### 1. ROW_NUMBER lấy giao dịch mới nhất mỗi tài khoản
+
+~~~sql
+WITH ranked AS (
+  SELECT t.*,
+    ROW_NUMBER() OVER (PARTITION BY account_id ORDER BY created_at DESC, id DESC) AS rn
+  FROM transactions t
+  WHERE created_at >= '2026-01-01'
+)
+SELECT * FROM ranked WHERE rn = 1;
+~~~
+
+Giải thích: PARTITION BY account_id chia các dòng thành nhóm theo tài khoản; ORDER BY created_at DESC sắp xếp trong nhóm; ROW_NUMBER gán số 1 cho dòng mới nhất. Tie-break bằng id DESC để deterministic. Vì giữ nguyên dòng gốc, có thể lấy toàn bộ cột.
+
+So sánh với GROUP BY: GROUP BY chỉ trả một dòng tổng hợp mỗi nhóm, không thể lấy "dòng mới nhất" mà không dùng aggregate trick. Subquery correlated (SELECT ... WHERE created_at = (SELECT MAX...)) chậm và dễ sai khi có nhiều dòng cùng timestamp.
+
+### 2. SUM OVER số dư luỹ kế
+
+~~~sql
+SELECT account_id, created_at, amount,
+  SUM(amount) OVER (PARTITION BY account_id ORDER BY created_at
+                    ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) AS running_balance
+FROM transactions
+ORDER BY account_id, created_at;
+~~~
+
+ROWS vs RANGE: ROWS đếm theo số dòng vật lý; RANGE đếm theo giá trị ORDER BY. Với timestamp trùng, RANGE gộp tất cả dòng cùng timestamp vào cùng cửa sổ -> running balance sai. Luôn dùng ROWS để deterministic.
+
+### 3. Performance và index
+
+Index (account_id, created_at) giúp Sort node nhanh; planner có thể dùng WindowAgg. Trên 50 triệu dòng, partition theo tháng để prune. Materialize: window function cần sort toàn bộ partition -> memory work_mem; tăng work_mem hoặc dùng disk.
+
+### Ví dụ đời thực
+
+Báo cáo số dư tài khoản ví điện tử 50 triệu giao dịch. Query ROW_NUMBER + SUM OVER trên bảng đơn 18 giây. Thêm index (account_id, created_at), partition theo tháng, work_mem 256MB -> 2.1 giây. Pitfall: dev dùng RANGE thay ROWS -> số dư luỹ kế sai khi nhiều giao dịch cùng giây; sửa ROWS -> đúng.
+
+### Trả lời mẫu khi phỏng vấn
+
+"Tôi dùng ROW_NUMBER OVER PARTITION BY account_id ORDER BY created_at DESC để lấy giao dịch mới nhất, và SUM(amount) OVER PARTITION BY account_id ORDER BY created_at ROWS UNBOUNDED PRECEDING để số dư luỹ kế. Window function giữ dòng gốc, aggregate theo cửa sổ; GROUP BY gộp mất chi tiết. Luôn dùng ROWS thay RANGE để tránh gộp timestamp trùng. Cần index (account_id, created_at) và partition để prune; tăng work_mem cho sort."
+
+  `,
+
+  follow: [
+    'LATERAL JOIN vs ROW_NUMBER: khi nào cái nào nhanh hơn, và tại sao?',
+    'RANGE vs ROWS trong window frame: ví dụ timestamp trùng cho kết quả khác nhau như thế nào?',
+    'Tối ưu window function trên 100 triệu dòng: partition, index, work_mem, materialize?'
+  ],
+  tags: ['window function', 'ROW_NUMBER', 'SUM OVER', 'running balance', 'ROWS vs RANGE', 'PostgreSQL', 'reporting']
+},
+{
+  id: 'sql-120',
+  topic: 'sql',
+  level: 'senior',
+  q: 'Phân trang danh sách giao dịch 50 triệu dòng: so sánh OFFSET/LIMIT và keyset pagination (seek method) về hiệu năng và correctness, khi nào chọn cái nào?',
+  a: `**Tóm tắt:** OFFSET/LIMIT đơn giản nhưng O(offset) — trang 1000 cost như quét 1000 trang. Keyset pagination dùng WHERE (created_at, id) > (last_created_at, last_id) ORDER BY ... LIMIT n, O(log n) với index, nhưng không nhảy trang tuỳ ý. Chọn keyset cho feed vô hạn; OFFSET cho UI có số trang nhỏ.
+
+### 1. OFFSET/LIMIT và vấn đề performance
+
+~~~sql
+SELECT * FROM transactions ORDER BY created_at DESC, id DESC
+LIMIT 20 OFFSET 19980;  -- trang 1000
+~~~
+
+Planner phải scan và sort 20000 dòng rồi bỏ 19980. Cost tăng tuyến tính với offset. Trên 50 triệu dòng, trang 1000 ~ 3-5 giây. Ngoài ra nếu dữ liệu thay đổi giữa các trang, OFFSET bị skip/duplicate (phantom rows).
+
+### 2. Keyset pagination (seek method)
+
+~~~sql
+-- Trang đầu
+SELECT * FROM transactions ORDER BY created_at DESC, id DESC LIMIT 20;
+
+-- Trang tiếp: dùng giá trị cuối trang trước
+SELECT * FROM transactions
+WHERE (created_at, id) < (:last_created_at, :last_id)
+ORDER BY created_at DESC, id DESC
+LIMIT 20;
+~~~
+
+Index (created_at DESC, id DESC) -> Index Only Scan, O(log n + 20). Không phụ thuộc số trang. Deterministic: tie-break bằng id duy nhất.
+
+### 3. So sánh
+
+| Tiêu chí | OFFSET/LIMIT | Keyset |
+|---|---|---|
+| Cost | O(offset + limit) | O(log n + limit) |
+| Nhảy trang tuỳ ý | Có | Không (chỉ next/prev) |
+| Tổng số trang / count | Dễ | Cần COUNT riêng (cost cao) |
+| Ổn định khi insert/delete | Skip/duplicate | Ổn định (nếu key monotonic) |
+| Index cần | (ORDER BY cols) | (ORDER BY cols) |
+
+### 4. Khi nào dùng cái nào
+
+- Feed vô hạn, scroll vô tận, API mobile -> keyset.
+- Admin UI có số trang nhỏ (< 100) và cần count -> OFFSET chấp nhận được.
+- Nếu cần cả hai: hybrid — keyset cho navigation, COUNT(*) OVER() trong cùng query trả tổng (vẫn cost count).
+
+### Ví dụ đời thực
+
+API lịch sử giao dịch ví điện tử. OFFSET trang 500 (10k rows) 4.2 giây, timeout. Chuyển keyset: WHERE (created_at,id) < ... -> 12 ms mọi trang. Mobile app scroll mượt. Pitfall: dev lưu last_id nhưng không lưu last_created_at -> skip dòng cùng timestamp; sửa composite key.
+
+### Trả lời mẫu khi phỏng vấn
+
+"OFFSET cost tuyến tính với offset, trang sâu chậm và không ổn định khi dữ liệu thay đổi. Keyset dùng WHERE (created_at, id) < (last values) với index composite -> O(log n), ổn định, nhưng không nhảy trang tuỳ ý và không cho tổng số trang. Chọn keyset cho feed lớn; OFFSET cho UI nhỏ cần count. Luôn tie-break bằng PK duy nhất."
+
+  `,
+
+  follow: [
+    'Cursor-based pagination trong GraphQL/REST: thiết kế cursor opaque và xử lý sort tuỳ chọn thế nào?',
+    'COUNT(*) trên 50 triệu dòng cost bao nhiêu và cách cache/estimate count?',
+    'Keyset với ORDER BY tuỳ chọn (amount, status): index nào cần và trade-off?'
+  ],
+  tags: ['pagination', 'keyset', 'offset', 'seek method', 'cursor', 'PostgreSQL', 'performance']
+},
+{
+  id: 'sql-121',
+  topic: 'sql',
+  level: 'lead',
+  q: 'Thiết kế partition theo tháng cho bảng transactions 2 tỷ dòng: lợi ích quản lý, cạm bẫy unique key và query thiếu điều kiện partition, cùng migration zero-downtime.',
+  a: `**Tóm tắt:** Partition RANGE theo created_at giúp archive zero-downtime, vacuum/index nhẹ, retention tức thì. Cạm bẫy: unique index bắt buộc chứa partition key -> unique chỉ trong tháng; query thiếu created_at bị Merge Append quét hết partition. Migration: tạo bảng partition, backfill lô, swap rename.
+
+### 1. Lợi ích quản lý
+
+~~~sql
+CREATE TABLE transactions (id bigserial, account_id bigint, amount numeric, created_at timestamptz, PRIMARY KEY (id, created_at))
+PARTITION BY RANGE (created_at);
+~~~
+
+- Archive: DETACH PARTITION CONCURRENTLY tách partition cũ ra bảng, không khóa đọc/ghi.
+- Vacuum/index: partition active nhỏ, nhanh; partition cũ read-only không vacuum.
+- Retention: DROP partition metadata-only tức thì.
+
+### 2. Unique constraint
+
+Mọi unique index phải chứa partition key. UNIQUE (account_id, ref_code) -> lỗi; phải UNIQUE (account_id, ref_code, created_at) -> unique chỉ trong tháng. Unique toàn cục cần app check hoặc trigger.
+
+### 3. Query thiếu điều kiện partition
+
+Thiếu created_at -> Merge Append quét mọi partition. Giải pháp: tạo index trên từng partition (local index) để mỗi partition tự dùng index riêng khi quét; PostgreSQL KHÔNG hỗ trợ global index (index dùng chung xuyên nhiều partition) trên bảng partition, nên muốn tra cứu nhanh cả khi thiếu created_at thì phải dựa vào local index từng partition hoặc bảng tra cứu riêng. PK phải chứa partition key.
+
+### 4. Migration zero-downtime
+
+Tạo bảng partition, backfill theo lô keyset, trigger sync, swap rename, drop bảng cũ. DETACH CONCURRENTLY dùng khi tách partition đã partition, không dùng khi migrate từ bảng đơn.
+
+### Pitfall
+
+FK chặn DETACH CONCURRENTLY; ép kiểu created_at phá pruning; PK phải chứa partition key; >100 partition làm planner chậm.
+
+### Ví dụ đời thực
+
+Ví điện tử 2 tỷ giao dịch. Query account_id thiếu created_at 12 giây Merge Append 24 partition. Index local -> 180 ms. Dev viết WHERE created_at::date = CURRENT_DATE -> quét 24 partition, CPU 100%. Sửa range literal -> 40 ms.
+
+### Trả lời mẫu khi phỏng vấn
+
+"Partition theo tháng trên created_at. Lợi ích: archive zero-downtime, vacuum/index nhẹ, retention tức thì. Cạm bẫy: unique index bắt buộc chứa partition key -> unique chỉ trong tháng; unique toàn cục cần app check. Query thiếu created_at bị Merge Append -> dựa vào local index từng partition (PostgreSQL không có global index). Migration: tạo bảng partition, backfill lô, swap rename. Pitfall: FK chặn CONCURRENTLY, ép kiểu phá pruning, PK chứa partition key."
+
+  `,
+
+  follow: [
+    'DETACH PARTITION CONCURRENTLY với foreign key: quy trình an toàn?',
+    'Global index vs index local: trade-off ghi/đọc?',
+    'pg_partman tự tạo partition: rủi ro và giám sát?'
+  ],
+  tags: ['partitioning', 'monthly partition', 'DETACH PARTITION CONCURRENTLY', 'unique index', 'Merge Append', 'partition pruning', 'migration']
+},
 );
