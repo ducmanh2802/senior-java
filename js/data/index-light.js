@@ -3066,6 +3066,8 @@ window.DATA_INDEX = {
     {"id":"lesson-api-014","track":"api","order":14,"title":"Phân trang cursor (keyset pagination)","level":"senior","minutes":30},
     {"id":"lesson-api-015","track":"api","order":15,"title":"Rate limiting token bucket: tự cài với Clock giả, nhiều client độc lập","level":"senior","minutes":40},
     {"id":"lesson-api-016","track":"api","order":16,"title":"Phân trang cursor (keyset pagination): mã hoá Base64, ổn định khi chèn bản ghi mới","level":"senior","minutes":35},
+    {"id":"lesson-api-017","track":"api","order":17,"title":"Giới hạn tốc độ theo gói dịch vụ: token bucket cho từng khách hàng","level":"senior","minutes":40},
+    {"id":"lesson-api-018","track":"api","order":18,"title":"Phân trang hai chiều: next và prev cursor, ổn định khi chèn bản ghi mới","level":"senior","minutes":35},
     {"id":"lesson-devops-001","track":"devops","order":1,"title":"JVM trong container: MaxRAMPercentage, CPU limit và sizing heap/thread pool","level":"mid","minutes":30},
     {"id":"lesson-devops-002","track":"devops","order":2,"title":"Liveness, readiness, startup probe và state machine graceful shutdown","level":"mid","minutes":30},
     {"id":"lesson-devops-003","track":"devops","order":3,"title":"Rolling, blue-green, canary: hash ổn định chia traffic và tự rollback theo error rate","level":"senior","minutes":35},
