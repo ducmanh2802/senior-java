@@ -12938,6 +12938,237 @@ Leadership wanted a partner integration in six weeks. The design stored API cred
   ],
   tags: ['security', 'compliance', 'pushback', 'pci-dss', 'leadership', 'risk-management'],
   lang: 'en'
-}
+},
+{
+  id: 'english-251',
+  topic: 'english',
+  level: 'senior',
+  q: 'Tell me about a time a HashMap caused a problem in production. What happened, and how did you fix it?',
+  a: `**Tóm tắt:** Kể theo STAR: dùng HashMap làm cache không giới hạn kích thước → tăng không kiểm soát dưới tải cao → heap đầy, Full GC, p99 tăng, timeout → bạn tìm nguyên nhân bằng heap dump → khởi động lại dịch vụ để khôi phục → thay bằng cache có giới hạn và eviction → thêm metric và alert. Nêu số liệu (số entry, dung lượng heap, p99 trước/sau) và kết luận không OOM lại sau khi sửa.
 
+### Sample answer
+Last year our order-tracking service used a plain HashMap as an in-memory cache for partner order details. The cache had no size limit, so under a traffic spike it kept growing: at peak it held about two million entries and consumed roughly four gigabytes of heap. The JVM spent most of its time in garbage collection, and p99 latency jumped from fifty milliseconds to more than five seconds. Users saw timeouts.
+
+I was the incident lead. First I confirmed the heap was full of HashMap entries using a heap dump. I restarted the service to restore traffic, then replaced the HashMap with a bounded cache: a LinkedHashMap capped at fifty thousand entries that evicts the oldest entry when full. I also added a cache-size metric and an alert at eighty percent of the cap.
+
+After the deploy, cache size stayed around fifty thousand entries, garbage collection dropped below five percent of CPU, and p99 returned to fifty milliseconds. We have not had a cache-related out-of-memory since.
+
+### Useful phrases
+- **in-memory cache**: cache trong bộ nhớ RAM
+- **no size limit**: không giới hạn kích thước
+- **heap dump**: ảnh chụp heap để phân tích object chiếm bộ nhớ
+- **bounded cache**: cache có giới hạn kích thước
+- **evicts the oldest entry**: loại bỏ bản ghi cũ nhất khi đầy
+- **out-of-memory**: hết bộ nhớ (OOM)
+- **garbage collection dropped below five percent of CPU**: thời gian garbage collection giảm dưới năm phần trăm CPU
+
+### Lỗi người Việt hay mắc
+- **Nói "HashMap đầy" mà không có số liệu**: phải nêu "two million entries, four gigabytes of heap".
+- **Chỉ nói "restart service" là xong**: khởi động lại chỉ cầm máu tạm thời, phải sửa gốc bằng cache có giới hạn và monitoring.
+- **Thiếu hành động phòng ngừa**: sau sự cố phải có metric, alert và kết quả "we have not had ... since".
+- **Lẫn "I" và "we"**: "I confirmed the heap dump" là công việc của bạn, "we deployed" là công việc của team.
+- **Phát âm "eviction"**: /ɪˈvɪʃn/, nhấn âm tiết hai, không phải "e-vi-ction".
+
+### Ví dụ đời thực
+Dự án thực tế: dịch vụ theo dõi đơn hàng, khoảng một triệu đơn hàng mỗi ngày. HashMap cache chi tiết đơn hàng không giới hạn kích thước → lúc cao điểm hai triệu entry, bốn gigabyte heap, Full GC liên tục, p99 năm giây. Heap dump cho thấy chín mươi phần trăm heap là entry HashMap. Sửa: giới hạn năm mươi nghìn entry với eviction entry cũ nhất, alert khi cache vượt bốn mươi nghìn. Kết quả: p99 về năm mươi miligiây, Full GC biến mất, không OOM nữa trong sáu tháng.
+
+### Sample answer (spoken, 60-90 seconds)
+Last year our order-tracking service used a plain HashMap as an in-memory cache with no size limit. During a traffic spike it grew to about two million entries and used roughly four gigabytes of heap. The JVM spent most of its time in garbage collection, and p99 latency jumped from fifty milliseconds to more than five seconds. Users saw timeouts.
+
+I confirmed the problem with a heap dump, restarted the service to restore traffic, then replaced the HashMap with a bounded cache of fifty thousand entries that evicts the oldest entry when full. I added a cache-size metric and an alert. After the deploy, garbage collection dropped below five percent of CPU and p99 returned to fifty milliseconds. We have not had a cache-related out-of-memory since.
+
+### Useful phrases
+- **out-of-memory**: hết bộ nhớ RAM (OOM)
+- **bounded cache**: cache có giới hạn kích thước
+- **evicts the oldest entry**: loại bỏ bản ghi cũ nhất khi đầy
+- **garbage collection dropped below five percent of CPU**: thời gian GC giảm dưới năm phần trăm CPU
+- **cache-related out-of-memory**: sự cố hết bộ nhớ do cache
+
+> Senior tip: HashMap không tự đoạn bài — nếu bạn dùng nó làm cache mà không giới hạn kích thước, dưới tải cao nó sẽ làm đầy heap và gây Full GC hoặc out-of-memory. Luôn trả lời theo STAR và kèm con số (số entry, kích thước heap, p99 trước/sau). Phân biệt rõ: restart là "cầm máu", bounded cache plus monitoring mới là "chữa bệnh". Nếu được hỏi thêm, hãy nhắc LinkedHashMap với access-order hoặc thư viện như Caffeine có expiration và size-based eviction.
+`,
+  follow: [
+    'Why not just use ConcurrentHashMap instead of a bounded cache?',
+    'How did you decide the cap of fifty thousand entries?',
+    'What would you do if the cache hit rate dropped after adding the limit?'
+  ],
+  tags: ['hashmap', 'production', 'oom', 'cache', 'star'],
+  lang: 'en'
+},
+{
+  id: 'english-252',
+  topic: 'english',
+  level: 'senior',
+  q: 'Describe your current system architecture to another backend engineer in two minutes.',
+  a: `**Tóm tắt:** Nói cho kỹ sư khác hiểu: thành phần chính, luồng request, công nghệ chọn và lý do chọn, trade-off, phần bạn sở hữu. Có 2-3 con số (QPS, p99, số service). Tránh liệt kê công nghệ mà không giải thích.
+
+### Sample answer
+Sure. Our platform is a payment gateway written mostly in Java 17 and Spring Boot 3. A merchant calls our API to charge a card. The API gateway terminates TLS, applies rate limits per merchant, and forwards the request to the payment API. The payment API validates the request, writes a payment record with status PENDING into PostgreSQL, and publishes an event to Kafka.
+
+Downstream, orchestration workers consume the event and call acquirer adapters. Each adapter handles one payment network and has its own retry and circuit-breaker policy via Resilience4j. The result is written back to PostgreSQL, and a second event drives webhooks and reconciliation.
+
+PostgreSQL is the source of truth for payment state. Redis holds idempotency keys for twenty-four hours. We run about four hundred requests per second at peak, p99 of the synchronous path is around 180 milliseconds, and the system is on EKS across two availability zones.
+
+I own the orchestration layer. My key design decision was making every state transition idempotent and append-only, because with money you cannot rely on exactly-once delivery. Today's main pain point is webhook retry storms after an outage, which we are fixing with per-merchant backpressure.
+
+### Useful phrases
+- **terminates TLS**: xử lý kết thúc kết nối mã hóa TLS
+- **rate limits per merchant**: giới hạn yêu cầu theo từng merchant
+- **acquirer adapter**: bộ kết nối với đơn vị thu thẻ
+- **circuit-breaker policy**: chính sách mạch ngắt
+- **source of truth**: nguồn dữ liệu chuẩn
+- **idempotency keys**: khóa idempotency để tránh xử lý trùng
+- **append-only**: chỉ ghi thêm, không sửa hoặc xóa bản ghi cũ
+- **webhook retry storm**: bão retry webhook
+- **per-merchant backpressure**: điều khiển tải theo từng merchant
+
+### Lỗi người Việt hay mắc
+- **Nói danh sách công nghệ không có lý do**: "We use Kafka, Redis, PostgreSQL, EKS" nghe như đọc CV. Hãy nói tại sao chọn mỗi cái.
+- **Thiếu vai trò của bạn**: interview không biết phần nào bạn trực tiếp chịu trách nhiệm. Nêu "I own ..." rõ ràng.
+- **Thiếu con số**: "không ít giao dịch" quá mơ hồ. Nêu "four hundred requests per second", "180 milliseconds".
+- **Dùng thì hiện tại cho hệ thống đang chạy**: đúng là "runs", "we run"; dùng quá khứ chỉ cho dự án đã kết thúc.
+- **Phát âm "orchestration"**: /ˈɔːrkɪstreɪʃn/, nhấn "ORK", không phải "or-ches-trá-tion".
+
+### Ví dụ đời thực
+Dự án thực tế: cổng thanh toán, 400 yêu cầu mỗi giây lúc cao điểm, p99 180 miligiây luồng đồng bộ. PostgreSQL lưu trạng thái đơn thanh toán (PENDING, SUCCESS, FAILED). Redis lưu khóa idempotency 24 giờ. EKS chạy trên hai availability zone. Nhóm tôi sở hữu tầng orchestration, xử lý gọi các acquirer qua Kafka. Vấn đề hiện tại là retry webhook gây bão sau sự cố, đang sửa bằng backpressure theo merchant.
+
+### Sample answer (spoken, 60-90 seconds)
+Our platform is a Java 17 and Spring Boot 3 payment gateway. When a merchant charges a card, the API gateway terminates TLS, applies per-merchant rate limits, and forwards to the payment API. The API validates the request, writes a PENDING payment record to PostgreSQL, and publishes an event to Kafka.
+
+Orchestration workers consume the event and call acquirer adapters, each with its own retry and circuit-breaker policy via Resilience4j. Results go back to PostgreSQL, and a second event drives webhooks and reconciliation. PostgreSQL is our source of truth, Redis holds idempotency keys for twenty-four hours, and we run about four hundred requests per second at peak with a p99 of 180 milliseconds on EKS across two availability zones.
+
+I own the orchestration layer. I made state transitions idempotent and append-only because money cannot rely on exactly-once delivery. Our current pain point is webhook retry storms after outages, which we are fixing with per-merchant backpressure.
+
+### Useful phrases
+- **I own the orchestration layer**: tôi sở hữu tầng điều phối
+- **state transitions idempotent and append-only**: chuyển trạng thái idempotent và chỉ ghi thêm
+- **exactly-once delivery**: giao dịch chính xác một lần
+- **webhook retry storms**: bão retry webhook
+- **per-merchant backpressure**: điều khiển tải theo từng merchant
+
+> Senior tip: Kỹ sư muốn nghe luồng request, công nghệ chọn và lý do chọn, không chỉ danh sách. Nêu vai trò bạn sở hữu và một quyết định kiến trúc bạn trực tiếp chịu trách nhiệm. Giữ câu trong hai phút: người nghe sẽ hỏi sâu phần họ quan tâm. Phát âm "availability" /əˌveɪləˈbɪləti/, "orchestration" /ˈɔːrkɪstreɪʃn/.
+`,
+  follow: [
+    'Why did you use Kafka between the API and the orchestration workers?',
+    'How do you keep the database and Kafka consistent if the broker is briefly down?',
+    'If traffic grew ten times, which component would break first?'
+  ],
+  tags: ['architecture', 'system-design', 'payment', 'speaking'],
+  lang: 'en'
+},
+{
+  id: 'english-253',
+  topic: 'english',
+  level: 'senior',
+  q: 'A deployment you released broke production. Walk me through how you decided between rollback and fix-forward, and what you changed afterwards.',
+  a: `**Tóm tắt:** Cấu trúc: sự cố sau deploy → ảnh hưởng → lựa chọn rollback hay fix-forward dựa trên rủi ro dữ liệu và thời gian → kết quả → hành động phòng ngừa (postmortem, alert, check trong pipeline). Không đổ lỗi người khác.
+
+### Sample answer
+Last month we deployed a new routing rule for partner payments. Within ten minutes, the failure rate jumped from under one percent to about twelve percent, and roughly eight thousand payments failed in half an hour. I was the incident lead.
+
+My first priority was stopping the bleeding. The deploy had gone out five minutes before the errors started, and there were no database schema changes, so rolling back the application version was fast and safe — about four minutes. I chose rollback over fix-forward because a fix would require a new code change, review, and another deploy, which would take at least thirty minutes and might introduce a second bug while payments were still failing. Rollback restored normal traffic quickly.
+
+After the incident, I led the postmortem. The root cause was a routing rule that matched an empty currency field, sending payments to a disabled acquirer. We added a validation test for every routing rule before it can be deployed, and a canary step that sends one percent of traffic for ten minutes before full rollout. I also added an alert on failure rate above two percent for five minutes.
+
+We have not had a deploy-related incident since. The key lesson: when payments are failing every minute, roll back first and investigate after — do not try to debug forward while losing money.
+
+### Useful phrases
+- **stopping the bleeding**: giảm thiệt hại ngay
+- **failure rate**: tỉ lệ thất bại
+- **roll back over fix-forward**: quay lại phiên bản cũ thay vì sửa ngay
+- **introduce a second bug**: gây ra lỗi thứ hai
+- **routing rule**: quy định định tuyến
+- **disabled acquirer**: đơn vị thu thẻ đã bị vô hiệu hóa
+- **canary step**: bước canary, gửi một phần trăm traffic trước
+- **deploy-related incident**: sự cố liên quan đến việc triển khai
+
+### Lỗi người Việt hay mắc
+- **Nói "we rolled back" không nêu vai trò của bạn**: dùng "I chose rollback", "I led the postmortem".
+- **Thiếu lý do chọn rollback**: phải so sánh rủi ro của cả hai lựa chọn (rollback bốn phút vs fix-forward ít nhất ba mươi phút và có thể gây lỗi thêm).
+- **Không nêu hành động phòng ngừa**: sau sự cố phải có validation test, bước canary, alert.
+- **Dùng thì hiện tại cho sự cố đã qua**: "errors jump" không đúng, phải "the failure rate jumped".
+- **Phát âm "canary"**: /kəˈnɛri/, nhấn âm tiết hai, không phải "ca-na-ry".
+
+### Ví dụ đời thực
+Dự án thực tế: quy định định tuyến mới cho thanh toán đối tác. 10 phút sau khi deploy, tỉ lệ thất bại từ dưới một phần trăm lên 12 phần trăm, khoảng 8.000 thanh toán thất bại trong 30 phút. Tôi là incident lead. Rollback phiên bản ứng dụng trong bốn phút, phục hồi bình thường. Sau đó postmortem: quy định khớp trường tiền tệ trống, gửi thanh toán về acquirer bị tắt. Thêm validation test cho mỗi quy định trước khi deploy, bước canary gửi một phần trăm traffic trong 10 phút, alert khi tỉ lệ thất bại vượt hai phần trăm trong 5 phút. Không có sự cố do deploy nào kể đó.
+
+### Sample answer (spoken, 60-90 seconds)
+Last month we deployed a new routing rule for partner payments. Within ten minutes, the failure rate jumped from under one percent to about twelve percent, and roughly eight thousand payments failed in half an hour. I was the incident lead.
+
+I chose to roll back the application version rather than fix forward, because a fix would need a new change, review, and another deploy — at least thirty minutes while payments kept failing. Rollback took about four minutes and restored normal traffic.
+
+Afterward I led the postmortem. The root cause was a routing rule that matched an empty currency field and sent payments to a disabled acquirer. We added a validation test for every routing rule, a canary step that sends one percent of traffic for ten minutes before full rollout, and an alert on failure rate above two percent for five minutes. We have not had a deploy-related incident since.
+
+### Useful phrases
+- **roll back the application version**: quay lại phiên bản cũ của ứng dụng
+- **fix forward**: sửa ngay và triển khai lại
+- **restored normal traffic**: phục hồi lưu lượng bình thường
+- **deploy-related incident**: sự cố liên quan đến việc triển khai
+- **failure rate above two percent**: tỉ lệ thất bại vượt hai phần trăm
+
+> Senior tip: Khi tiền bị mất mỗi phút, rollback trước, điều tra sau. Trả lời phải nêu rõ rủi ro của cả hai lựa chọn (rollback nhanh nhưng mất tính năng mới; fix-forward chậm hơn và có thể gây lỗi thứ hai) và hành động phòng ngừa cụ thể sau sự cố (validation test, canary rollout, alert). Đừng đổ lỗi cho người deploy — hãy nói về quy trình cho phép lỗi lặn qua.
+`,
+  follow: [
+    'What would you do if the rollback itself had failed?',
+    'How do you decide what percentage of traffic to send to a canary?',
+    'Who did you update during the incident, and how often?'
+  ],
+  tags: ['deployment', 'rollback', 'incident', 'postmortem', 'star'],
+  lang: 'en'
+},
+{
+  id: 'english-254',
+  topic: 'english',
+  level: 'lead',
+  q: 'Tell me about a time you fixed a performance problem caused by N+1 queries in a Java service. What did you change, and what was the result?',
+  a: `**Tóm tắt:** N+1 query là code gọi một truy vấn để lấy danh sách, rồi gọi thêm một truy vấn cho mỗi mục (một trăm đơn hàng → một trăm truy vấn chi tiết). Sửa bằng JOIN FETCH hoặc @EntityGraph để nạp trong một truy vấn, đo trước/sau, và cấp lead thêm quy tắc review để không tái diễn.
+
+### Sample answer
+Last year our order history API was slow for customers with many orders. The endpoint loaded a list of orders, then for each order it queried the order items separately. With one hundred orders, that meant one hundred extra queries, and p99 latency reached about two point five seconds.
+
+I reproduced it locally with the PostgreSQL slow query log and saw the same item query repeating for every order. I fixed it by changing the repository to use JOIN FETCH so orders and items load in a single query, and I added @EntityGraph on the aggregate root. I also added a test that counts queries per request and fails the build if it exceeds ten.
+
+The result: p99 dropped from two point five seconds to about three hundred milliseconds, and database CPU on the primary node fell from sixty percent to twenty percent. Because this was a lead-level change, I also wrote a short design note and presented it at the team's architecture review. We agreed on a rule: every new repository method that loads a collection must show its query plan in the pull request, and we added query counting to our integration tests.
+
+### Useful phrases
+- **N+1 query problem**: vấn đề truy vấn N+1 (một truy vấn chính, rồi N truy vấn con)
+- **JOIN FETCH**: nạp liên kết trong cùng một truy vấn SQL
+- **@EntityGraph**: chú thích JPA để nạp các thực thể liên quan theo biểu đồ
+- **query plan**: kế hoạch truy vấn (PostgreSQL EXPLAIN)
+- **pull request**: yêu cầu kéo, đề xuất code để review
+- **query counting**: đếm số truy vấn mỗi yêu cầu
+- **aggregate root**: gốc tổng thể, đối tượng chính trong Aggregate
+
+### Lỗi người Việt hay mắc
+- **Chỉ nói "thêm index" mà không tìm nguyên nhân**: N+1 là do code gọi nhiều truy vấn, không phải do thiếu index.
+- **Thiếu số liệu trước/sau**: phải nói "p99 từ hai điểm năm giây xuống ba trăm miligiây", "CPU database từ sáu mươi phần trăm xuống hai mươi phần trăm".
+- **Không nói phần vai trò của bạn**: dùng "I changed the repository", "I added the test".
+- **Dùng thì hiện tại cho việc đã xong**: "I fix" không đúng, phải "I fixed".
+- **Phát âm "repository"**: /rɪˈpɒzɪtri/, nhấn âm tiết hai, không phải "re-po-si-to-ry".
+
+### Ví dụ đời thực
+Dự án thực tế: API lịch sử đơn hàng, khách hàng có nhiều đơn bị chậm. Code tải danh sách đơn, rồi truy vấn riêng chi tiết mỗi đơn → 100 đơn = 100 truy vấn thêm, p99 2,5 giây. Slow query log PostgreSQL cho thấy truy vấn lặp lại. Sửa: JOIN FETCH và @EntityGraph tải đơn và chi tiết trong một truy vấn. Thêm test đếm truy vấn, thất bại bản build nếu quá 10 truy vấn. Kết quả: p99 300 miligiây, CPU database chính từ 60% xuống 20%. Quy tắc mới: mọi repository method tải collection phải có query plan trong pull request.
+
+### Sample answer (spoken, 60-90 seconds)
+Last year our order history API was slow for customers with many orders. The endpoint loaded a list of orders, then queried the order items separately for each order. With one hundred orders, that meant one hundred extra queries, and p99 latency reached about two point five seconds.
+
+I reproduced it with the PostgreSQL slow query log and saw the same item query repeating for every order. I fixed it by using JOIN FETCH so orders and items load in a single query, and I added a test that counts queries per request and fails the build if it exceeds ten.
+
+The result was p99 dropping from two point five seconds to about three hundred milliseconds, and database CPU falling from sixty percent to twenty percent. As the lead on this change, I also introduced a team rule: every new repository method that loads a collection must show its query plan in the pull request.
+
+### Useful phrases
+- **p99 dropping from two point five seconds to about three hundred milliseconds**: độ trễ p99 giảm từ hai điểm năm giây xuống khoảng ba trăm miligiây
+- **database CPU falling from sixty percent to twenty percent**: CPU database giảm từ sáu mươi phần trăm xuống hai mươi phần trăm
+- **query plan in the pull request**: kế hoạch truy vấn trong yêu cầu kéo
+- **every new repository method**: mọi phương thức repository mới
+
+> Senior tip: N+1 không sửa bằng index — sửa bằng cách nạp dữ liệu liên quan trong một truy vấn (JOIN FETCH, @EntityGraph, hoặc batch fetch size). Cấp lead, bạn không chỉ sửa code: phải đưa ra quy tắc cho đội (query plan trong pull request, đếm truy vấn trong test integration) để lỗi không tái diễn. Luôn có số liệu trước/sau.
+`,
+  follow: [
+    'How do you detect N+1 queries before they reach production?',
+    'What is the trade-off of JOIN FETCH when you only need a few columns?',
+    'How would you handle a very large collection where JOIN FETCH returns too many rows?'
+  ],
+  tags: ['n+1', 'jpa', 'hibernate', 'performance', 'leadership'],
+  lang: 'en'
+}
 );
