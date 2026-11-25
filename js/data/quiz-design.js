@@ -1922,7 +1922,7 @@ id: 'qz-design-048',
     'Nếu search index lệch, cần job đối chiếu (reconciliation: so sánh và sửa dữ liệu lệch) định kỳ để phát hiện và bù lại, thay vì mặc kệ'
   ],
   answer: [0, 3],
-  explain: '**Tóm tắt:** PostgreSQL là nguồn sự thật; ghi vào DB trước, rồi đồng bộ sang search index qua CDC hoặc outbox; có job đối định kỳ để sửa lệch.\n\n### Giải thích từng bước\n\n- **Vì sao DB là nguồn sự thật?** Tìm kiếm chỉ là một cách nhìn khác của cùng dữ liệu; nếu DB ghi được mà search không có, dữ liệu vẫn còn. Ngược lại thì mất.\n- **Outbox pattern là gì?** Trong cùng transaction ghi dữ liệu, ghi thêm một bản ghi vào bảng {{outbox}}. Một worker đọc bảng outbox và đẩy sang Elasticsearch. Nhờ cùng transaction, không có trạng thái "DB đã ghi nhưng quên đẩy".\n- **CDC:** đọc WAL của PostgreSQL để đẩy thay đổi sang search index; trễ thấp, không cần bảng outbox.\n- **Đối (reconciliation):** job định kỳ so sánh DB với search index, phát hiện và sửa tài liệu lệch/thiếu.\n- **Reindex toàn bộ:** cần khi schema index thay đổi hoặc nghi ngờ lệch nhiều; nên chạy nền, không xoá index cũ ngay (dùng alias).\n\n### Vì sao ba phương án còn lại sai\n- **Ghi ES trước rồi DB sau**: nếu DB ghi thất bại, search có dữ liệu ma, user đặt hàng không được.\n- **Job đêm xoá và import lại**: 24 giờ dữ liệu cũ, và import toàn bộ tốn tài nguyên; không phù hợp dữ liệu biến động.\n- **Không đối**: lệch tích tụ, user không tìm thấy sản phẩm vừa tạo.\n\n### Ví dụ đời thực\n- Triệu chứng: sản phẩm mới tạo không xuất hiện khi tìm kiếm trong 30 phút.\n- Điều tra: đồng bộ bằng cron 30 phút.\n- Xử lý: outbox + worker đẩy real-time, job đối mỗi giờ, reindex qua alias khi cần.\n- Kết quả: độ trễ đồng bộ xuống dưới 5 giây.\n\n### Trả lời mẫu khi phỏng vấn\nEm giữ PostgreSQL là nguồn sự thật, đồng bộ sang search index qua outbox hoặc CDC trong cùng transaction. Em có job đối định kỳ để sửa lệch, và reindex qua alias khi thay đổi schema. Em không bao giờ ghi search trước rồi mới ghi DB.\n\n> Senior tip: Alias (ase) cho phép reindex không downtime: tạo index mới, import, trỏ alias sang index mới, xoá index cũ.'
+  explain: '**Tóm tắt:** PostgreSQL là nguồn sự thật; ghi vào DB trước, rồi đồng bộ sang search index qua CDC hoặc outbox; có job đối định kỳ để sửa lệch.\n\n### Giải thích từng bước\n\n- **Vì sao DB là nguồn sự thật?** Tìm kiếm chỉ là một cách nhìn khác của cùng dữ liệu; nếu DB ghi được mà search không có, dữ liệu vẫn còn. Ngược lại thì mất.\n- **Outbox pattern là gì?** Trong cùng transaction ghi dữ liệu, ghi thêm một bản ghi vào bảng {{outbox}}. Một worker đọc bảng outbox và đẩy sang Elasticsearch. Nhờ cùng transaction, không có trạng thái "DB đã ghi nhưng quên đẩy".\n- **CDC:** đọc WAL của PostgreSQL để đẩy thay đổi sang search index; trễ thấp, không cần bảng outbox.\n- **Đối (reconciliation):** job định kỳ so sánh DB với search index, phát hiện và sửa tài liệu lệch/thiếu.\n- **Reindex toàn bộ:** cần khi schema index thay đổi hoặc nghi ngờ lệch nhiều; nên chạy nền, không xoá index cũ ngay (dùng alias).\n\n### Vì sao ba phương án còn lại sai\n- **Ghi ES trước rồi DB sau**: nếu DB ghi thất bại, search có dữ liệu ma, user đặt hàng không được.\n- **Job đêm xoá và import lại**: 24 giờ dữ liệu cũ, và import toàn bộ tốn tài nguyên; không phù hợp dữ liệu biến động.\n- **Không đối**: lệch tích tụ, user không tìm thấy sản phẩm vừa tạo.\n\n### Ví dụ đời thực\n- Triệu chứng: sản phẩm mới tạo không xuất hiện khi tìm kiếm trong 30 phút.\n- Điều tra: đồng bộ bằng cron 30 phút.\n- Xử lý: outbox + worker đẩy real-time, job đối mỗi giờ, reindex qua alias khi cần.\n- Kết quả: độ trễ đồng bộ xuống dưới 5 giây.\n\n### Trả lời mẫu khi phỏng vấn\nEm giữ PostgreSQL là nguồn sự thật, đồng bộ sang search index qua outbox hoặc CDC trong cùng transaction. Em có job đối định kỳ để sửa lệch, và reindex qua alias khi thay đổi schema. Em không bao giờ ghi search trước rồi mới ghi DB.\n\n> Senior tip: Alias cho phép reindex không downtime: tạo index mới, import, trỏ alias sang index mới, xoá index cũ.'
 },
 {
   id: 'qz-design-050',
@@ -3593,4 +3593,116 @@ Thuật ngữ:
 
 > Senior tip: Rà soát toàn bộ chuỗi: log ứng dụng, APM/tracing, message queue, error tracker và bản sao lưu. Nhiều sự cố lộ thẻ đến từ hệ thống quan sát (observability) hoặc dump lỗi, không chỉ từ cơ sở dữ liệu chính.`
 }
+,
+{ id: 'qz-design-091', topic: 'design', q: 'Hệ thống có 10.000 người dùng đồng thời, mỗi người gửi 1 request/giây. Ước lượng QPS và dung lượng lưu trữ log trong 1 ngày nếu mỗi request log 2 bytes?', options: ['QPS = 10.000, log = 1,7 GB/ngày', 'QPS = 1.000, log = 170 MB/ngày', 'QPS = 100.000, log = 17 GB/ngày', 'QPS = 10.000, log = 170 GB/ngày'], answer: 0, explain: `**Tóm tắt:** QPS = số người dùng đồng thời × request/người/giây = 10.000; log/ngày = 10.000 × 2 bytes × 86.400 giây ≈ 1,7 GB.
+
+### Vì sao đúng
+- QPS (Queries Per Second): 10.000 × 1 = 10.000.
+- Log/ngày: 10.000 req/s × 2 bytes = 20 KB/s; × 86.400 s = 1.728.000 KB ≈ 1,7 GB.
+
+### Vì sao các phương án khác sai
+- **QPS = 1.000**: quên hệ số 10; thường do nhầm 10.000 người dùng thành 1.000.
+- **QPS = 100.000**: nhân thêm 10 lần, nhầm mỗi người gửi 10 request/giây.
+- **Log = 170 GB**: sai đơn vị, tính 2 bytes thành 200 bytes hoặc nhân thêm 100.
+
+> Senior tip: Luôn ghi rõ giả định (DAU, peak factor, payload size) trước khi tính; phỏng vấn đánh giá quá trình hơn kết quả.` },
+{ id: 'qz-design-092', topic: 'design', multi: true, q: 'Cache-aside (lazy loading) phù hợp khi nào? (Chọn 2)', options: ['Dữ liệu đọc nhiều, ít thay đổi', 'Dữ liệu cần nhất quán nghiêm ngặt tức thời', 'Cache warm-up không cần thiết', 'Dữ liệu ghi nhiều, cần đồng bộ cache ngay'], answer: [0, 2], explain: `**Tóm tắt:** Cache-aside đọc từ cache, miss thì đọc DB rồi ghi cache; phù hợp dữ liệu đọc nhiều và chấp nhận cache miss đầu tiên.
+
+### Vì sao đúng
+- **Dữ liệu đọc nhiều, ít thay đổi**: cache hit cao, giảm tải DB.
+- **Cache warm-up không cần thiết**: cache tự đầy dần theo truy cập (lazy).
+
+### Vì sao các phương án khác sai
+- **Dữ liệu cần nhất quán nghiêm ngặt tức thời**: cache-aside có thể stale; cần invalidation phức tạp.
+- **Dữ liệu ghi nhiều, cần đồng bộ cache ngay**: nên dùng write-through/write-behind thay vì cache-aside.
+
+> Senior tip: Cache-aside đơn giản nhưng dễ stale; luôn có TTL và chiến lược invalidation rõ ràng.` },
+{ id: 'qz-design-093', topic: 'design', q: 'Consistent hashing giải quyết vấn đề gì khi thêm/bớt node cache?', options: ['Phân phối đều key theo hash modulo N', 'Chỉ remap một phần nhỏ key khi topology thay đổi', 'Đảm bảo không có key nào bị mất', 'Tăng tốc độ hash function'], answer: 1, explain: `**Tóm tắt:** Consistent hashing đặt node trên vòng tròn hash; khi thêm/bớt node chỉ remap các key thuộc cung lân cận, không phải toàn bộ.
+
+### Vì sao đúng
+- Mỗi node quản lý một cung trên vòng; thay đổi node chỉ ảnh hưởng key trong cung đó → remap tối thiểu, cache hit rate ổn định.
+
+### Vì sao các phương án khác sai
+- **Phân phối đều key theo hash modulo N**: đó là hash modulo truyền thống, thêm node làm remap gần như toàn bộ.
+- **Đảm bảo không có key nào bị mất**: consistent hashing không đảm bảo không mất; cần replication.
+- **Tăng tốc độ hash function**: không liên quan; hash function vẫn như cũ.
+
+> Senior tip: Dùng virtual node để cân bằng tải khi node có công suất khác nhau.` },
+{ id: 'qz-design-094', topic: 'design', q: 'Sharding theo key (range sharding) có rủi ro gì phổ biến?', options: ['Hot spot khi key phân bố lệch', 'Không thể join giữa shard', 'Tốn bộ nhớ metadata', 'Không hỗ trợ transaction'], answer: 0, explain: `**Tóm tắt:** Range sharding chia key theo khoảng; nếu dữ liệu phân bố lệch (hot key) một shard bị quá tải.
+
+### Vì sao đúng
+- Hot spot: ví dụ user id tăng dần hoặc celebrity account tập trung traffic vào một shard.
+
+### Vì sao các phương án khác sai
+- **Không thể join giữa shard**: đúng là khó nhưng không phải rủi ro phổ biến nhất của range sharding.
+- **Tốn bộ nhớ metadata**: không phải vấn đề chính.
+- **Không hỗ trợ transaction**: một số DB hỗ trợ distributed transaction.
+
+> Senior tip: Hash sharding giảm hot spot nhưng làm range query khó; chọn theo pattern truy vấn.` },
+{ id: 'qz-design-095', topic: 'design', q: 'Replication đồng bộ (synchronous) so với bất đồng bộ (asynchronous) khác nhau chiefly ở?', options: ['Độ trễ ghi và đảm bảo nhất quán', 'Kích thước dữ liệu', 'Số lượng replica', 'Giao thức mạng'], answer: 0, explain: `**Tóm tắt:** Sync chờ replica xác nhận trước khi trả về client (chậm hơn nhưng nhất quán); async trả về ngay (nhanh hơn nhưng có thể mất dữ liệu nếu primary chết).
+
+### Vì sao đúng
+- Sync: độ trễ ghi cao hơn, RPO ≈ 0. Async: độ trễ thấp, RPO > 0.
+
+### Vì sao các phương án khác sai
+- **Kích thước dữ liệu**: không phải yếu tố phân biệt.
+- **Số lượng replica**: cả hai đều có thể nhiều replica.
+- **Giao thức mạng**: cả hai đều dùng TCP.
+
+> Senior tip: Production thường dùng semi-sync để cân bằng giữa độ trễ và an toàn.` },
+{ id: 'qz-design-096', topic: 'design', multi: true, q: 'Trong CAP theorem, khi partition xảy ra, hệ thống phải chọn? (Chọn 2)', options: ['Nhất quán (Consistency)', 'Khả dụng (Availability)', 'Phân vùng (Partition tolerance) - bắt buộc', 'Hiệu năng (Performance)'], answer: [0, 1], explain: `**Tóm tắt:** Partition tolerance là bắt buộc trong hệ thống phân tán; khi partition xảy ra phải chọn giữa Consistency và Availability.
+
+### Vì sao đúng
+- **Nhất quán**: trả về dữ liệu mới nhất hoặc lỗi.
+- **Khả dụng**: luôn trả về, có thể stale.
+
+### Vì sao các phương án khác sai
+- **Phân vùng - bắt buộc**: partition tolerance không phải lựa chọn, nó là điều kiện.
+- **Hiệu năng**: không phải phần của CAP.
+
+> Senior tip: PACELC bổ sung: khi không partition, trade-off giữa latency và consistency.` },
+{ id: 'qz-design-097', topic: 'design', q: 'Idempotency trong API thanh toán đạt được bằng cách nào?', options: ['Dùng idempotency key do client gửi, server lưu kết quả theo key', 'Dùng transaction ACID', 'Dùng retry với exponential backoff', 'Dùng distributed lock'], answer: 0, explain: `**Tóm tắt:** Client gửi idempotency key; server thực hiện một lần và lưu kết quả; request lặp lại trả về kết quả cũ.
+
+### Vì sao đúng
+- Idempotency key đảm bảo retry không tạo duplicate charge.
+
+### Vì sao các phương án khác sai
+- **Transaction ACID**: đảm bảo atomicity nhưng không ngăn duplicate request.
+- **Retry với exponential backoff**: retry không idempotent sẽ duplicate.
+- **Distributed lock**: có thể ngăn race nhưng không lưu kết quả để trả lại.
+
+> Senior tip: Lưu key + response hash với TTL; xử lý concurrent request cùng key bằng lock.` },
+{ id: 'qz-design-098', topic: 'design', q: 'Queue (message queue) khác stream (event log) chủ yếu ở?', options: ['Queue xoá message sau khi consume; stream giữ log và cho replay', 'Queue nhanh hơn stream', 'Stream không hỗ trợ consumer group', 'Queue chỉ dùng cho sync'], answer: 0, explain: `**Tóm tắt:** Queue (RabbitMQ) xoá message sau acknowledge; stream (Kafka) giữ log bất biến cho replay và nhiều consumer group.
+
+### Vì sao đúng
+- Stream giữ offset, cho replay và xử lý lại; queue truyền thống xoá sau consume.
+
+### Vì sao các phương án khác sai
+- **Queue nhanh hơn stream**: không đúng tuyệt đối; phụ thuộc use case.
+- **Stream không hỗ trợ consumer group**: Kafka có consumer group.
+- **Queue chỉ dùng cho sync**: queue thường dùng async.
+
+> Senior tip: Chọn queue cho task work; stream cho event sourcing và analytics.` },
+{ id: 'qz-design-099', topic: 'design', q: 'CDN giúp giảm latency chủ yếu bằng cách nào?', options: ['Cache nội dung tĩnh tại edge gần người dùng', 'Tăng băng thông server gốc', 'Nén dữ liệu', 'Mã hóa TLS'], answer: 0, explain: `**Tóm tắt:** CDN đặt bản sao nội dung tĩnh tại các điểm edge gần người dùng, giảm RTT.
+
+### Vì sao đúng
+- Edge cache giảm khoảng cách vật lý, giảm latency và tải origin.
+
+### Vì sao các phương án khác sai
+- **Tăng băng thông server gốc**: không phải cơ chế chính.
+- **Nén dữ liệu**: có thể nhưng không phải cốt lõi của CDN.
+- **Mã hóa TLS**: bảo mật, không giảm latency.
+
+> Senior tip: Cache-control headers và invalidation chiến lược quyết định hiệu quả CDN.` },
+{ id: 'qz-design-100', topic: 'design', multi: true, q: 'Hot key problem trong cache/DB thường xử lý bằng? (Chọn 2)', options: ['Local cache + TTL ngắn', 'Shard key theo hash của key', 'Replicate hot key trên nhiều node', 'Tăng TTL lên rất lớn'], answer: [0, 2], explain: `**Tóm tắt:** Hot key tập trung traffic; xử lý bằng local cache và replicate hot key trên nhiều node.
+
+### Vì sao đúng
+- **Local cache + TTL ngắn**: giảm tải remote cache/DB.
+- **Replicate hot key trên nhiều node**: phân tán tải.
+
+### Vì sao các phương án khác sai
+- **Shard key theo hash của key**: không giải quyết hot key vì cùng key hash về cùng shard.
+- **Tăng TTL lên rất lớn**: có thể stale, không phân tán tải.
+
+> Senior tip: Phát hiện hot key bằng metrics và tự động replicate.` }
 );
