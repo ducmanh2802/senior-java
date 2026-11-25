@@ -10258,4 +10258,784 @@ Junior 8 tháng kinh nghiệm được giao module thanh toán VNPAY/MoMo. Vấn
   ],
   tags: ['mentoring', 'leadership', 'onboarding', 'STAR', 'core']
 },
+{
+  id: 'testing-073',
+  topic: 'testing',
+  level: 'senior',
+  q: 'Testcontainers trong CI runner không có Docker: service của bạn cần PostgreSQL + Kafka để test tích hợp, nhưng runner CI không cài Docker sẵn. Bạn chạy test tích hợp trên database và message broker thật như thế nào, quản lý thời gian khởi động, và có nên bật reuse container trên CI không?',
+  a: `**Tóm tắt:** Testcontainers cần Docker để khởi động container trong test, nhưng nhiều runner CI (GitHub Actions self-hosted, runner nội bộ) không cài Docker sẵn. Khi service cần PostgreSQL + Kafka để test tích hợp, bạn có hai lựa chọn chính: GitHub Actions service containers (Postgres và Kafka chạy như sidecar cùng pod với job) hoặc remote Docker (Testcontainers kết nối tới Docker host từ xa). Thời gian khởi động container (Postgres 5–10 giây, Kafka 10–20 giây) phải tính vào budget CI, và reuse container chỉ bật ở máy dev, tắt trên CI để mỗi job bắt đầu từ môi trường sạch.
+
+### Service containers vs Testcontainers trong CI không có Docker
+- Service containers: GitHub Actions khởi động Postgres + Kafka làm sidecar, ứng dụng kết nối qua localhost và cổng do Actions cấp. Không cần Docker-in-Docker, nhanh hơn vì không kéo image qua Testcontainers. Nhưng cấu hình cứng trong YAML, khó tái dùng local.
+- Testcontainers với remote Docker: viết test Java như bình thường, Testcontainers kết nối Docker host từ xa. Giữ code test nhất quán giữa local và CI, nhưng cần runner có Docker hoặc Docker host từ xa, và thời gian kéo image/khởi động container vẫn tồn tại.
+
+Ví dụ Testcontainers với reuse tắt trên CI:
+
+~~~java
+@Testcontainers
+class OrderIntegrationTest {
+    @Container
+    static PostgreSQLContainer<?> postgres =
+        new PostgreSQLContainer<>("postgres:15-alpine")
+            .withDatabaseName("orders")
+            .withUsername("app")
+            .withPassword("app")
+            .withReuse(false);
+
+    @Container
+    static KafkaContainer kafka =
+        new KafkaContainer(DockerImageName.parse("confluentinc/cp-kafka:7.5.0"))
+            .withReuse(false)
+            .withStartupTimeout(Duration.ofMinutes(3));
+
+    @DynamicPropertySource
+    static void props(DynamicPropertyRegistry registry) {
+        registry.add("spring.datasource.url", postgres::getJdbcUrl);
+        registry.add("spring.kafka.bootstrap-servers", kafka::getBootstrapServers);
+    }
+}
+~~~
+
+- withReuse(false) tắt việc giữ container sống giữa các lần chạy mvn test; trên CI mỗi job môi trường sạch, tránh trạng thái cũ làm test pass giả.
+- withStartupTimeout gia hạn chờ Kafka KRaft (10–20 giây) vì phải chọn leader và tạo partition nội bộ.
+- Nếu dùng service containers, ứng dụng kết nối Postgres/Kafka qua localhost và cổng do CI cấp, không qua getJdbcUrl/getBootstrapServers của Testcontainers.
+
+### Quản lý thời gian khởi động trong CI
+Mỗi lần mvn test nếu không dùng container cũ thì phải kéo và khởi động container, tốn vài đến mười giây. Bảng ước lượng:
+
+| Container | Thời gian khởi động ước lượng | Điều cần chờ |
+|---|---|---|
+| PostgreSQL 15 | 5–10 giây | Cổng 5432 và log database system is ready |
+| Kafka KRaft 3.x | 10–20 giây | Cổng 9092 và log broker sẵn sàng |
+
+Cách giảm thời gian:
+1. Pull image trước (docker pull postgres:15-alpine, confluentinc/cp-kafka:7.5.0) ở đầu job để tận dụng cache layer.
+2. Dùng tag cố định (không phải latest) để Docker dùng layer cache.
+3. Singleton container (static) dùng chung toàn bộ suite, khởi động một lần.
+4. Chỉ khởi động container cần thiết (test đọc repository chỉ cần Postgres; test event-driven mới thêm Kafka).
+
+### Có nên bật reuse trên CI?
+Không. Biến testcontainers.reuse.enable=true giữ container sống giữa các lần chạy mvn test trên máy dev, làm test tiếp theo nhanh. Nhưng trên CI mỗi job môi trường sạch, reuse tắt là mặc định an toàn: tránh dữ liệu test cũ và topic Kafka đã dùng offset làm test pass giả hoặc fail ngẫu nhiên.
+
+### Bẫy hay gặp
+- Kafka chưa sẵn sàng khi test gửi message: message bị reject ⇒ flaky. Dùng waitingFor chờ cổng/log broker sẵn sàng trước khi gửi.
+- Consumer group id trùng giữa các test: offset bị chia sẻ ⇒ message của test này bị consumer của test kia lấy ⇒ fail lung tung. Mỗi test dùng group id duy nhất (UUID).
+- Container không dừng khi test fail: rò rỉ container, đầy disk. Testcontainers dùng sidecar Ryuk để dọn; nếu tắt Ryuk phải dọn bằng tay.
+- Cổng bị chiếm: cứng cổng 5432/9092 khi chạy nhiều suite song song. Luôn để Testcontainers/service container tự cổng động.
+
+### Ví dụ đời thực
+Hệ thống đặt hàng (Spring Boot 3.2, PostgreSQL 15, Kafka 3.6 KRaft) có bộ test tích hợp 120 case cần cả hai container. Triệu chứng: trên CI khoảng 30% test Kafka fail ngẫu nhiên, CI mất 14 phút. Điều tra: Kafka container khởi động chậm hơn Postgres (18 giây vs 6 giây), test gửi message ngay sau @BeforeEach trước khi broker sẵn sàng ⇒ message bị reject. Cách xử lý: (1) dùng waitingFor chờ cổng/log broker Kafka sẵn sàng, (2) khai báo cả hai container là static singleton dùng chung suite, (3) mỗi test dùng topic và consumer group id duy nhất (UUID), (4) trên CI tắt testcontainers.reuse.enable=true, ở máy dev bật. Kết quả đo được: CI giảm từ 14 phút xuống 5 phút 30 giây, tỉ lệ fail ngẫu nhiên 0% trong sáu tuần, thời gian chạy test local từ 2 phút xuống 40 giây nhờ reuse.
+
+### Trả lời mẫu khi phỏng vấn
+Testcontainers cần Docker để khởi động container trong test, nhưng nhiều runner CI không cài Docker sẵn. Khi service cần PostgreSQL + Kafka, tôi dùng GitHub Actions service containers (Postgres và Kafka chạy làm sidecar cùng job) hoặc remote Docker, để test chạy trên database và broker thật. Thời gian khởi động ước lượng: Postgres 5–10 giây, Kafka 10–20 giây; tôi giảm bằng pull image trước, dùng tag cố định, và singleton container. Trên CI tôi tắt reuse để mỗi job bắt đầu từ môi trường sạch, chỉ bật reuse ở máy dev. Mỗi test dùng topic và group id duy nhất để dữ liệu không nhiễm nhau. Kết quả thực tế: CI giảm từ 14 phút xuống 5 phút 30 giây và fail ngẫu nhiên về 0%.
+
+> Senior tip: reuse là một người bạn ở máy dev nhưng là kẻ thù trên CI. Nếu một test chỉ pass khi chạy lần thứ hai do container cũ còn dữ liệu, đó là dấu hiệu test không độc lập — hãy sửa test, không bật reuse để che.`,
+
+  follow: [
+    'Khi nào bạn chọn GitHub Actions service containers thay vì Testcontainers với Docker-in-Docker?',
+    'Với Kafka, bạn chọn consumer group id như thế nào trong test để không bị nhiễm offset giữa các test?',
+    'Nếu CI runner không có Docker, bạn chạy test tích hợp trên PostgreSQL và Kafka thật bằng cách nào?'
+  ],
+  tags: ['Testcontainers', 'PostgreSQL', 'Kafka', 'CI', 'integration-test'],
+},
+{
+  id: 'testing-074',
+  topic: 'testing',
+  level: 'senior',
+  q: 'Bạn nói slice test (@WebMvcTest, @DataJpaTest) nhanh và đủ cho hầu hết trường hợp. Nhưng trong Spring Boot, khi nào thực sự BẮT BUỘC phải dùng @SpringBootTest (full context) thay vì slice test, và slice test bỏ sót gì?',
+  a: `**Tóm tắt:** Slice test (@WebMvcTest, @DataJpaTest) nạp một phần ApplicationContext nên nhanh, nhưng không nạp đủ cơ chế hạ tầng. Những thứ như SecurityFilterChain (filter JWT, CORS tùy chỉnh), AOP aspect (@Transactional, @Retryable), và sự kiện @Async chỉ hoạt động đúng trong full context. Nếu chỉ dùng slice, các vấn đề ở tầng infra này sẽ lọt qua test và hiện ra production.
+
+### Slice test nạp gì, bỏ qua gì
+| Slice | Nạp | Không nạp |
+|---|---|---|
+| @WebMvcTest | tầng web, controller, filter security cơ bản | service thực sự (bị mock), repository thực sự, AOP aspect của service, scheduler, filter tùy chỉnh |
+| @DataJpaTest | JPA, repository, database nhúng | controller, filter security, logic service, cache, AOP aspect |
+| @SpringBootTest | toàn bộ ApplicationContext: mọi bean, filter, AOP, scheduler, cache | (chậm nhất) |
+
+### Ba infra cần BẮT BUỘC @SpringBootTest
+1. Security filter chain thật: @WebMvcTest nạp Spring Security cơ bản, nhưng filter tùy chỉnh (JWT authentication filter, CORS filter) của bạn có thể không được nạp đúng hoặc không tương tác với bean thực tế. Với full context, bạn kiểm tra filter chain thật, mã 401/403, và việc token được parse.
+2. AOP aspect (@Transactional, @Retryable): Spring AOP dùng JDK dynamic proxy hay CGLIB. Trong slice test, bean service thường bị mock (@MockitoBean) nên aspect @Transactional, @Retryable, @Cacheable không được áp dụng vào bean thật. Nếu logic phụ thuộc transaction propagation hay retry, chỉ full context kiểm chứng được.
+3. Sự kiện @Async: @Async chạy ở thread riêng của task executor; slice test thường không nạp executor thật hoặc service swallow sự kiện. Full context kiểm chứng listener nhận sự kiện.
+
+Ví dụ service và listener chỉ chạy đúng trong full context:
+
+~~~java
+@Service
+public class OrderService {
+    @Autowired OrderRepository repo;
+    @Autowired ApplicationEventPublisher publisher;
+
+    @Transactional
+    public Order place(OrderCommand cmd) {
+        var order = repo.save(cmd.toOrder());
+        publisher.publishEvent(new OrderPlacedEvent(order.getId()));
+        return order;
+    }
+}
+
+@Component
+public class OrderListener {
+    @EventListener
+    @Async
+    public void handle(OrderPlacedEvent event) {
+        // xử lý ở thread khác, chỉ chạy trong full context có executor
+    }
+}
+~~~
+
+Test full context kiểm chứng transaction rollback:
+
+~~~java
+@SpringBootTest
+@AutoConfigureMockMvc
+class OrderFullContextTest {
+    @Autowired OrderService service;
+    @Autowired OrderRepository repo;
+
+    @Test void place_invalid_rolls_back() {
+        assertThatThrownBy(() -> service.place(Command.of(null)))
+            .isInstanceOf(IllegalArgumentException.class);
+        assertThat(repo.count()).isZero();
+    }
+}
+~~~
+
+### Tại sao slice test không phát hiện
+- @WebMvcTest mock service ⇒ không chạy code thực của service ⇒ @Transactional aspect, event publish, retry không bao giờ chạy.
+- Service bị thay bằng mock ⇒ aspect của Spring áp vào proxy, không vào mock ⇒ test im lặng xanh.
+- @DataJpaTest dùng database nhúng (H2) ⇒ constraint, trigger, kiểu dữ liệu khác Postgres ⇒ lỗi chỉ lộ production.
+
+### Bảng trade-off khi nào dùng cái nào
+| Tình huống | Dùng slice | Dùng @SpringBootTest | Vì sao |
+|---|---|---|---|
+| Kiểm tra controller, validation, JSON mapping | ✅ @WebMvcTest | — | Nhanh, service mock |
+| Kiểm tra repository, JPQL, constraint | ✅ @DataJpaTest + Testcontainers Postgres | — | Nhanh, DB thật |
+| Kiểm tra filter/JWT thực tế, security chain | — | ✅ | Chỉ full context nạp filter thật |
+| Kiểm tra @Transactional, @Retryable, aspect | — | ✅ | Aspect áp vào bean thật |
+| Kiểm tra @Async, event listener, scheduler | — | ✅ | Cần executor và context thật |
+| Luồng khói end-to-end thanh toán | 1–2 test | ✅ | Wiring thực tế |
+
+### Bẫy hay gặp
+- Dùng @WebMvcTest cho mọi thứ rồi khẳng định "bảo mật đã test": slice mock service, không kiểm tra filter chain thật ⇒ lỗi phân quyền lọt qua.
+- Giả sử @Transactional rollback được test trong slice: service bị mock ⇒ aspect không áp ⇒ rollback không được kiểm chứng ⇒ lỗi dữ liệu rác sau khi lỗi chỉ lộ production.
+- Test @Async bằng slice, assert ngay sau khi gọi: listener chạy thread khác, assert trước khi xử lý ⇒ flaky. Dùng full context + await().
+- Dùng H2 trong @DataJpaTest cho constraint Postgres-specific: dialect khác ⇒ test xanh, production lỗi.
+
+### Ví dụ đời thực
+Hệ thống thanh toán (Spring Boot 3.1, PostgreSQL 15) có endpoint tạo đơn. Team viết 200 test @WebMvcTest mock OrderService, tất cả xanh. Sau deploy, đơn bị lỗi nhưng vẫn được ghi vào database (không rollback) vì @Transactional ở service không áp dụng đúng khi exception xảy ra bên trong listener, và không ai test full context. Điều tra: tôi viết một test @SpringBootTest gọi service.place với dữ liệu làm throw, assert repo.count() không tăng và transaction đã rollback. Test đỏ ngay, cho thấy aspect @Transactional cần cấu hình rollbackFor đúng. Cùng lúc, listener @EventListener @Async không nhận sự kiện vì slice test không nạp task executor. Cách xử lý: bổ sung 3 test @SpringBootTest cho transaction rollback, sự kiện async, và filter JWT; giữ 197 test @WebMvcTest/@DataJpaTest cho phần còn lại. Kết quả: lỗi đơn lỗi vẫn được ghi không tái hiện lại; bộ test full context chỉ 3 test nhưng bắt được lỗi mà 200 test slice bỏ sót; thời gian thêm chỉ khoảng 15 giây mỗi lần chạy.
+
+### Trả lời mẫu khi phỏng vấn
+Slice test (@WebMvcTest, @DataJpaTest) nhanh và đủ cho controller, validation, repository, nhưng chỉ nạp một phần ApplicationContext nên không kiểm chứng được cơ chế hạ tầng thật. Tôi dùng @SpringBootTest khi cần kiểm tra Security filter chain thật (filter JWT/CORS), AOP aspect (@Transactional/@Retryable), và sự kiện @Async — những thứ slice test bỏ sót vì service bị mock hoặc context không đủ. Ví dụ thực tế: 200 test @WebMvcTest mock service tất cả xanh, nhưng sau deploy đơn lỗi vẫn bị ghi vì transaction rollback không hoạt động. Tôi bổ sung 3 test @SpringBootTest cho rollback, sự kiện async, và filter JWT, bắt được lỗi mà 200 test slice bỏ sót, với chi phí thêm khoảng 15 giây mỗi lần chạy. Nguyên tắc: slice cho nghiệp vụ, full context cho infra và wiring, chỉ một vài test khói.
+
+> Senior tip: hãy để full context test ở lượng nhỏ (1–3 test khói cho luồng quan trọng) chứ không phải toàn bộ suite. Mỗi test @SpringBootTest tốn 10–30 giây, nên 200 test full context sẽ giết CI, còn 3 test full context cộng 200 test slice thì cả nhanh vừa đáng tin.`,
+
+  follow: [
+    '@DataJpaTest mặc định dùng database nhúng (H2); khi nào bạn buộc nó chạy trên Postgres thật qua Testcontainers?',
+    'Bạn kiểm tra @Transactional rollback thế nào mà không làm test phụ thuộc dữ liệu cũ?',
+    'Với sự kiện @Async, bạn assert listener đã chạy sao cho không flaky?'
+  ],
+  tags: ['SpringBootTest', 'WebMvcTest', 'DataJpaTest', 'AOP', 'integration-test'],
+},
+{
+  id: 'testing-075',
+  topic: 'testing',
+  level: 'senior',
+  q: 'Hai team phát triển service riêng (ví dụ order-service và payment-service) giao tiếp qua Kafka thay vì HTTP REST. Contract test cho sự kiện Kafka (event contract) hoạt động thế nào, và hai team hợp tác như thế nào để breaking change trên topic (đổi kiểu trường, xoá trường) bị chặn ở CI?',
+  a: `**Tóm tắt:** Contract test kiểm tra hợp đồng API giữa hai service mà không cần triển khai cả hai. Với giao tiếp qua Kafka, hợp đồng là event contract: tên topic, schema của message (các trường, kiểu dữ liệu), và consumer group id. Nhà cung cấp (producer) đăng ký schema lên Schema Registry, phía tiêu thụ (consumer) kiểm tra message dựa theo schema. Breaking change trên topic (đổi kiểu trường, xoá trường cần thiết) bị chặn ở CI trước khi producer deploy.
+
+### Event contract trong Kafka
+| Thành phần | Ý nghĩa |
+|---|---|
+| Tên topic | Địa chỉ message, ví dụ order.created, payment.completed |
+| Schema | Cấu trúc message (trường, kiểu dữ liệu, bắt buộc/tùy chọn) |
+| Consumer group id | Nhóm consumer cùng xử lý message, offset được chia sẻ trong nhóm |
+| Schema Registry | Lưu và version schema, kiểm tra tương thích trước khi producer ghi message |
+
+### Hợp tác hai team
+- Producer sở hữu topic và schema, consumer phản hồi qua pull request/comment nếu schema chưa đáp ứng nhu cầu.
+- Schema version kèm producer version. Consumer khai báo schema version muốn dùng.
+- Breaking change trên topic (xoá trường, đổi kiểu từ số sang chuỗi) ⇒ consumer deserialize thất bại ⇒ phát hiện ở CI trước khi deploy.
+- Producer nên làm backward compatible (thêm trường mới có default, không xoá trường cũ) trước khi consumer nâng schema version.
+
+### Kiểm tra event contract
+Producer viết test gửi message vào topic thật (Testcontainers Kafka) và assert schema khớp. Consumer dùng schema từ Schema Registry để deserialize message test, assert có đọc được tất cả trường cần thiết. CI của producer chạy verify schema; nếu producer ghi message lệch schema, build đỏ và chặn merge.
+
+### Bẫy hay gặp
+- Contract test không thay thế integration test: kiểm tra cấu trúc message, không kiểm tra ngữ nghĩa nghiệp vụ (ví dụ amount âm vẫn khớp schema nhưng sai nghiệp vụ).
+- Chỉ test happy path: event contract cần mô tả cả trường hợp lỗi và message bản quyền (dead-letter topic).
+- Consumer dùng schema cũ: consumer phải cập nhật schema version khi producer release, không thì test consumer chạy trên schema cũ và không phát hiện breaking change.
+- Consumer group id trùng: hai consumer dùng cùng group id ⇒ offset bị chia sẻ ⇒ message bị một consumer lấy ⇒ test flaky. Mỗi test dùng group id duy nhất.
+
+### Ví dụ đời thực
+Hai service order-service (producer) và payment-service (consumer) giao tiếp qua topic order.created. Triệu chứng: sau khi order-service deploy thay đổi trường amount từ số sang chuỗi trong message Kafka, payment-service bắt đầu ném lỗi deserialize và message vùi vào dead-letter topic. Cả hai service test xanh riêng lẻ vì không kiểm tra event contract với nhau. Điều tra: producer đã đổi schema mới nhưng payment-service chưa cập nhật schema version ⇒ payment đọc trường cũ ⇒ deserialize null ⇒ lỗi. Cách xử lý: (1) order-service đăng ký schema cho topic order.created lên Schema Registry, viết test verify schema; (2) payment-service test deserialize message dùng schema từ Schema Registry; (3) CI của producer chạy verify schema, build đỏ nếu schema lệch; (4) producer thay đổi backward compatible (thêm trường mới có default, không xoá trường cũ) và thông báo consumer trước khi nâng schema version. Kết quả: trong tháng đầu, Schema Registry chặn 2 breaking change trên topic (đổi kiểu amount từ số sang chuỗi, xoá trường status), và không còn sự kiện Kafka bị deserialize lỗi sau deploy.
+
+### Trả lời mẫu khi phỏng vấn
+Khi hai team phát triển service riêng giao tiếp qua Kafka, tôi dùng event contract: nhà cung cấp đăng ký schema (tên topic, cấu trúc message) lên Schema Registry, phía tiêu thụ kiểm tra message dựa theo schema. CI của producer chạy verify schema: nếu producer ghi message lệch schema, build đỏ và chặn merge. Hai team hợp tác qua Schema Registry và version schema; producer thay đổi backward compatible và thông báo consumer trước khi nâng schema version. Ví dụ thực tế: order-service đổi trường amount từ số sang chuỗi khiến payment-service deserialize lỗi. Tôi đăng ký schema, payment-service test deserialize theo schema, Schema Registry chặn 2 breaking change trên topic trong tháng đầu. Trade-off là phải quản lý schema và version, nhưng bắt được lỗi thay đổi sự kiện ở CI chứ không đợi deploy production.
+
+> Senior tip: event contract có giá trị nhất khi chạy trong CI của cả hai bên và failure thật chặn deploy. Nếu chỉ tồn tại trên giấy, đó là tài liệu đẹp — hãy chứng minh bằng cách cố tình đổi schema một lần và xem build đỏ thế nào.`,
+
+  follow: [
+    'Bạn xử lý thế nào khi consumer cần producer thêm trường vào sự kiện ngay nhưng producer sprint đã kín?',
+    'Với Kafka, bạn versie schema như thế nào và consumer biết khi nào phải nâng schema version?',
+    'Bạn dùng consumer group id như thế nào trong test để không bị nhiễm offset giữa các test?'
+  ],
+  tags: ['contract-testing', 'Kafka', 'Schema-Registry', 'event-contract', 'microservices'],
+},
+{
+  id: 'testing-076',
+  topic: 'testing',
+  level: 'lead',
+  q: 'Bộ test của bạn chạy song song nhiều lớp test, đôi khi fail khoảng 1 lần/30 chạy mà không đổi code. Bạn phát hiện flaky do thứ tự chạy và trạng thái chia sẻ giữa các lớp test ra sao, và sửa sao cho mỗi test độc lập, chạy lại cho ra cùng kết quả?',
+  a: `**Tóm tắt:** Test flaky do thứ tự chạy và trạng thái chia sẻ xảy ra khi test A để lại trạng thái (dữ liệu, biến static, consumer group id) mà test B phụ thuộc vào. Khi chạy song song nhiều lớp test (JUnit parallel execution), các test ghi vào cùng database, cùng Kafka topic, cùng consumer group id ⇒ fail ngẫu nhiên. Sửa bằng cách mỗi test tự tạo dữ liệu độc lập, không dùng biến static/trạng thái chung, và dùng transaction rollback hoặc dọn dẹp sau mỗi test.
+
+### Flaky do chạy song song các lớp test
+- Test A tạo đơn hàng với mã cố định OD-1 và consumer group id order-group trong database/Kafka dùng chung.
+- Test B chạy song song đọc đơn OD-1 hoặc dùng group id order-group ⇒ offset bị chia sẻ, message của test này bị consumer của test kia lấy ⇒ fail lung tung.
+- Nguyên nhân: trạng thái chia sẻ (database chung, Kafka topic/group id, biến static), không phải logic sai.
+
+### Phát hiện bằng JUnit parallel execution + randomized order
+Chạy nhiều lớp test song song và xáo trộn thứ tự test trong mỗi lớp:
+
+~~~java
+@MethodOrderer(MethodOrderer.Random.class)
+class OrderRepositoryTest {
+    @Test void a_creates_order_with_fixed_code() {
+        repo.save(Order.of("OD-1", 100L));
+    }
+
+    @Test void b_reads_order_code_OD1() {
+        assertThat(repo.findById("OD-1")).isPresent();
+    }
+}
+~~~
+- Chạy 5–10 lần: nếu test chỉ đỏ ở một số thứ tự hoặc khi chạy song song ⇒ có dependency thứ tự/trạng thái.
+- Để tái hiện ổn định, dùng @Order tạm thời gán thứ tự, chạy lại nhiều lần.
+
+### Sửa: mỗi test độc lập
+1. Mỗi test tự tạo dữ liệu (ID duy nhất bằng UUID, timestamp), không dùng mã cứng chung.
+2. Không dùng biến static, static state, ThreadLocal chia sẻ giữa các test.
+3. Mỗi test dùng Kafka consumer group id duy nhất (UUID), topic duy nhất, để offset không bị chia sẻ.
+4. Thay @DirtiesContext (xoá context ⇒ chậm) bằng transaction rollback (@Transactional trên test), truncate sau mỗi test, hoặc dùng Testcontainers container dùng chung nhưng tách schema/table mỗi test.
+5. Dọn tài nguyên ngoài (file, Kafka topic, Redis key) trong @AfterEach.
+
+Ví dụ đã sửa:
+
+~~~java
+@MethodOrderer(MethodOrderer.Random.class)
+class OrderRepositoryTest {
+    @Test void creates_order_with_unique_code() {
+        String code = "OD-" + UUID.randomUUID();
+        repo.save(Order.of(code, 100L));
+        assertThat(repo.findById(code)).isPresent();
+    }
+
+    @Test void reads_order_it_created_itself() {
+        String code = "OD-" + UUID.randomUUID();
+        repo.save(Order.of(code, 200L));
+        assertThat(repo.findById(code).get().getAmount()).isEqualTo(200L);
+    }
+}
+~~~
+
+### Quy trình xử lý flaky (lead)
+1. Đo: theo dõi tỉ lệ flaky theo từng test id trong CI.
+2. Tái hiện: chạy test fail 10–20 lần, bật parallel + random order, nếu đỏ thì xác nhận thứ tự/trạng thái.
+3. Cô lập: gắn nhãn flaky, chạy job riêng, không chặn merge; có ticket và chủ nhiệm.
+4. Sửa tận gốc: làm test độc lập theo 5 nguyên tắc trên.
+5. Hạn chót: 7 ngày để sửa; quá hạn xoá test quarantine và viết lại ở tầng thấp hơn, ổn định hơn.
+
+### Bẫy hay gặp
+- Dùng @TestMethodOrder/@Order để ép thứ tự: che giấu dependency, không sửa root cause. Chỉ dùng tạm để tái hiện.
+- @DirtiesContext trên mỗi test: khởi động lại Spring context ⇒ suite chậm gấp nhiều lần. Thay bằng rollback/truncate.
+- Test chia sẻ file/Redis/Kafka topic/group id: dùng tên duy nhất mỗi test (UUID).
+- Chạy lại test fail mà không sửa (retry): che triệu chứng, mất tín hiệu cảnh báo. Nếu phải retry do hạ tầng, tách sang job riêng và cảnh báo khi tỉ lệ retry tăng.
+
+### Ví dụ đời thực
+Bộ test integration 600 case của hệ thống đặt hàng, chạy song song nhiều lớp test, khoảng 1/5 lần chạy CI có test fail ngẫu nhiên. Điều tra: tôi bật parallel execution + random order và thấy test OrderStatusTest chỉ fail khi chạy cùng lúc hoặc sau OrderCreateTest — vì OrderCreateTest tạo đơn mã OD-100 cố định và dùng consumer group id order-group, OrderStatusTest đọc đơn đó và dùng cùng group id ⇒ offset bị chia sẻ. Nguyên nhân: dữ liệu cố định và group id chia sẻ. Cách xử lý: (1) mỗi test sinh mã đơn bằng UUID, (2) mỗi test dùng consumer group id duy nhất (UUID), (3) thay @DirtiesContext bằng @Transactional rollback sau mỗi test, (4) dọn Kafka topic và Redis key trong @AfterEach với tên duy nhất. Kết quả: thời gian suite từ 18 phút xuống 7 phút (bỏ @DirtiesContext), tỉ lệ fail ngẫu nhiên dưới 1%, và mọi test fail đều tái hiện được ở máy local.
+
+### Trả lời mẫu khi phỏng vấn
+Flaky test do thứ tự chạy và trạng thái chia sẻ xảy ra khi test A để lại trạng thái (dữ liệu, biến static, Kafka consumer group id) mà test B phụ thuộc. Khi chạy song song nhiều lớp test, các test ghi vào cùng database, cùng topic, cùng group id ⇒ fail ngẫu nhiên. Tôi phát hiện bằng JUnit parallel execution + randomized order (@MethodOrderer(MethodOrderer.Random.class)): nếu test chỉ fail ở một số thứ tự hoặc khi chạy song song, đã tìm được dependency. Sửa tận gốc bằng cách mỗi test tự tạo dữ liệu có ID duy nhất (UUID), dùng consumer group id duy nhất, không dùng biến static/trạng thái chung, thay @DirtiesContext bằng rollback transaction hoặc truncate sau mỗi test, và dọn tài nguyên ngoài trong @AfterEach. Ví dụ thực tế: bộ 600 test có 1/5 lần fail ngẫu nhiên; sau khi sửa, suite từ 18 phút xuống 7 phút, tỉ lệ fail dưới 1%, và mọi test fail đều tái hiện được local. Tránh dùng retry để che flaky vì đó làm mất tín hiệu cảnh báo.
+
+> Senior tip: test flaky là nợ kỹ thuật của cả team. Nếu một test fail khoảng 1/20 lần, đừng chạy lại cho đến khi xáng — hãy tìm tầng không xác định (thứ tự, dữ liệu dùng chung, group id) và sửa. Nguyên tắc: cùng một commit phải cho cùng một kết quả.`,
+
+follow: [
+    'Bạn cấu hình CI chạy nhiều lớp test song song hay chỉ chạy song song khi nghi ngờ flaky?',
+    'Làm sao bạn phân biệt flaky do thứ tự/trạng thái với flaky do thời gian (sleep/Clock)?',
+    'Khi nào bạn chấp nhận xoá một test flaky thay vì sửa?'
+  ],
+  tags: ['flaky-test', 'test-order', 'parallel-test', 'JUnit', 'determinism', 'leadership'],
+},
+{
+  id: 'testing-077',
+  topic: 'testing',
+  level: 'senior',
+  q: 'Testcontainers cho Kafka (KRaft mode) trong CI: bạn quản lý thời gian khởi động broker, isolation giữa các test (topic, consumer group), và schema registry integration như thế nào? Có nên bật reuse container trên CI, và khi nào Testcontainers Kafka chậm hơn service containers?',
+  a: `**Tóm tắt:** Kafka KRaft mode trong Testcontainers khởi động chậm hơn PostgreSQL (10–20 giây vs 5–10 giây) vì phải bầu leader, tạo partition nội bộ. CI nhanh cần: **singleton broker dùng chung toàn bộ suite**, **topic và consumer group id duy nhất mỗi test (UUID)**, **chờ broker sẵn sàng bằng waitingFor** thay vì sleep, và **tắt reuse trên CI**. Schema Registry chạy container riêng, producer test verify schema, consumer test deserialize theo schema.
+
+### Kafka KRaft trong Testcontainers — khác biệt với ZooKeeper cũ
+- KRaft (Kafka 3.3+) không cần ZooKeeper, broker tự quản lý metadata ⇒ container nhẹ hơn nhưng **khởi động lâu hơn** vì qua giai đoạn controller election.
+- {{KafkaContainer}} của Testcontainers mặc định dùng image Confluent {{cp-kafka}} với KRaft; config qua env {{KAFKA_PROCESS_ROLES=broker,controller}}.
+- Broker KRaft **không sẵn sàng ngay khi cổng 9092 mở** — phải chờ log {{Kafka version}} hoặc {{broker started}} mới an toàn.
+
+### Cấu hình singleton broker + isolation từng test
+~~~java
+@Testcontainers
+class OrderKafkaIntegrationTest {
+    @Container
+    static KafkaContainer kafka =
+        new KafkaContainer(DockerImageName.parse("confluentinc/cp-kafka:7.6.0"))
+            .withReuse(false)                          // CI: môi trường sạch
+            .withStartupTimeout(Duration.ofMinutes(3))
+            .waitingFor(Wait.forLogMessage(".*broker started.*\\n", 1)); // chờ broker thật sự ready
+
+    @Container
+    static GenericContainer<?> schemaRegistry =
+        new GenericContainer<>("confluentinc/cp-schema-registry:7.6.0")
+            .withExposedPorts(8081)
+            .withEnv("SCHEMA_REGISTRY_KAFKASTORE_BOOTSTRAP_SERVERS", "PLAINTEXT://kafka:9092")
+            .withEnv("SCHEMA_REGISTRY_HOST_NAME", "schema-registry")
+            .waitingFor(Wait.forHttp("/subjects").forStatusCode(200));
+
+    @DynamicPropertySource
+    static void props(DynamicPropertyRegistry registry) {
+        registry.add("spring.kafka.bootstrap-servers", kafka::getBootstrapServers);
+        registry.add("spring.kafka.properties.schema.registry.url",
+            () -> "http://" + schemaRegistry.getHost() + ":" + schemaRegistry.getFirstMappedPort());
+    }
+
+    @Test void producer_verify_schema() {
+        String topic = "order.created-" + UUID.randomUUID(); // topic duy nhất
+        // send Avro message, assert schema registry verified
+    }
+
+    @Test void consumer_deserialize_with_schema() {
+        String groupId = "test-" + UUID.randomUUID(); // group id duy nhất
+        // consume, deserialize, assert fields
+    }
+}
+~~~
+- {{waitingFor(Wait.forLogMessage(...))}} chờ broker KRaft sẵn sàng thật, tránh flaky do gửi message quá sớm.
+- Topic và consumer group id **sinh UUID mỗi test** ⇒ offset không bị chia sẻ, test chạy song song không nhiễu.
+- Schema Registry container riêng, {{waitingFor(Wait.forHttp(...))}} chờ REST endpoint 200.
+
+### CI: Testcontainers vs Service Containers
+| | Testcontainers (Docker-in-Docker / remote Docker) | GitHub Actions Service Containers |
+|---|---|---|
+| Cần Docker trên runner | Có (DinD hoặc remote) | Không, Actions quản lý sidecar |
+| Code test nhất quán local/CI | ✅ | ❌ (local vẫn cần Testcontainers) |
+| Thời gian kéo image | Lần đầu kéo, sau dùng cache | Actions pull song song lúc start job |
+| Kafka KRaft startup | 10–20 giây (chờ election) | Tương tự, nhưng sidecar start sớm hơn job |
+| Reuse container | Chỉ bật local, tắt CI | Không áp dụng (sidecar chết sau job) |
+
+Nếu runner có Docker: **Testcontainers ưu tiên** vì code test một lần chạy khắp nơi. Nếu runner **không có Docker** (GitHub Actions hosted, một số self-hosted cấm DinD): **service containers** là lựa chọn duy nhất — cấu hình Kafka + Schema Registry trong YAML, app kết nối qua {{localhost:port}}.
+
+### Bẫy hay gặp
+- **Gửi message ngay sau @BeforeEach** mà broker chưa election xong ⇒ {{LEADER_NOT_AVAILABLE}}. Dùng {{waitingFor}} log {{broker started}} hoặc {{KafkaAdmin}} check {{describeCluster()}}.
+- **Consumer group id trùng** giữa các test chạy song song ⇒ rebalance liên tục, offset chia sẻ ⇒ message mất. Mỗi test {{group.id = "test-" + UUID.randomUUID()}}.
+- **Topic trùng** ⇒ message test A bị consumer test B đọc. Mỗi test dùng topic duy nhất như {{order.created-<uuid duy nhất>}}.
+- **Reuse bật trên CI** ⇒ topic, offset, schema version cũ còn sót ⇒ test pass giả. Luôn {{.withReuse(false)}} trên CI.
+- **Schema Registry chưa sẵn sàng** khi producer gửi ⇒ serialize fail. Chờ HTTP {{/subjects}} trả 200.
+
+### Ví dụ đời thực
+Hệ thống đặt hàng (Spring Boot 3.2, Kafka 3.6 KRaft, Schema Registry) có 120 test tích hợp. Triệu chứng: CI mất 14 phút, 30% test Kafka fail ngẫu nhiên ({{LEADER_NOT_AVAILABLE}}, {{UNKNOWN_TOPIC_OR_PARTITION}}). Điều tra: broker KRaft khởi động 18 giây, test gửi message sau 5 giây; consumer group id cứng {{order-group}} chia sẻ offset. Cách xử lý: (1) {{waitingFor}} chờ log {{broker started}}, (2) singleton broker static, (3) topic và group id UUID mỗi test, (4) Schema Registry container riêng chờ HTTP 200, (5) CI tắt reuse, local bật reuse. Kết quả: CI 5 phút 30 giây, fail ngẫu nhiên 0% trong 6 tuần, local từ 2 phút xuống 40 giây nhờ reuse.
+
+### Trả lời mẫu khi phỏng vấn
+Testcontainers Kafka KRaft trong CI: broker khởi động 10–20 giây do election, tôi dùng singleton static dùng chung suite, chờ broker sẵn sàng bằng {{waitingFor}} log {{broker started}}, mỗi test topic và consumer group id UUID để isolation. Schema Registry container riêng chờ HTTP 200. CI tắt reuse ({{.withReuse(false)}}) để môi trường sạch, local bật reuse cho nhanh. Runner có Docker dùng Testcontainers (code test nhất quán), không có Docker dùng service containers. Ví dụ thực tế: 120 test Kafka, CI 14 phút fail 30%; sau fix waitingFor, UUID topic/group, CI 5 phút 30 giây, 0% flaky.
+
+> Senior tip: Kafka KRaft **không sẵn sàng khi cổng mở** — phải chờ log {{broker started}} hoặc {{describeCluster()}} thành công. Dòng {{waitingFor(Wait.forLogMessage(".*broker started.*\\n", 1))}} trong Testcontainers loại bỏ hầu hết flaky do gửi message quá sớm.
+`,
+  follow: [
+    'Bạn test multi-broker Kafka cluster trong Testcontainers như thế nào (replication factor, partition leadership)?',
+    'Với Schema Registry, bạn verify backward/forward compatibility trong test như thế nào?',
+    'Khi nào bạn chọn service containers thay vì Testcontainers cho Kafka trên GitHub Actions?'
+  ],
+  tags: ['Testcontainers', 'Kafka', 'KRaft', 'Schema-Registry', 'CI', 'integration-test'],
+},
+{
+  id: 'testing-078',
+  topic: 'testing',
+  level: 'senior',
+  q: 'Bạn nói @WebMvcTest/@DataJpaTest đủ cho hầu hết test. Nhưng trong Spring Boot 3, khi nào slice test BỎ SÓT lỗi production mà CHỈ @SpringBootTest mới bắt được? Cụ thể: Security filter chain tùy chỉnh (JWT), AOP aspect (@Transactional, @Retryable), @Async event listener, và transaction propagation — slice test mock service nên aspect không áp dụng.',
+  a: `**Tóm tắt:** Slice test (@WebMvcTest, @DataJpaTest) nạp một phần ApplicationContext nên nhanh (1–4 giây), nhưng **không nạp đủ cơ chế hạ tầng**. Những thứ như **SecurityFilterChain tùy chỉnh (JWT filter, CORS filter)**, **AOP aspect (@Transactional, @Retryable, @Cacheable)**, **@Async event listener**, **transaction propagation** chỉ hoạt động đúng trong full context. Nếu chỉ dùng slice, các lỗi ở tầng infra này lọt qua test và hiện ra production.
+
+### Slice test nạp gì, bỏ qua gì — bảng chi tiết
+| Slice | Nạp | Không nạp (gây lỗi production) |
+|---|---|---|
+| @WebMvcTest | tầng web, controller, Spring Security cơ bản | Service thực (mock), repository thực, **JWT filter tùy chỉnh**, **AOP aspect của service**, **@Async listener**, scheduler, filter custom |
+| @DataJpaTest | JPA, repository, DB nhúng (H2 mặc định) | Controller, **Security filter chain**, logic service, cache, **AOP aspect**, **transaction propagation thực** |
+| @SpringBootTest | Toàn bộ ApplicationContext: mọi bean, filter, AOP, scheduler, cache | (chậm nhất: 10–30 giây) |
+
+### Ba infra BẮT BUỘC @SpringBootTest — ví dụ production bug
+1. **Security filter chain thật (JWT, CORS)**: @WebMvcTest nạp Spring Security cơ bản, nhưng filter tùy chỉnh (JWT authentication filter parse token, CORS filter) của bạn có thể **không được nạp** hoặc **không tương tác với bean thực tế**. Chỉ full context kiểm tra filter chain thật, mã 401/403, token parse đúng.
+2. **AOP aspect (@Transactional, @Retryable, @Cacheable)**: Spring AOP dùng JDK dynamic proxy/CGLIB. Trong slice test, bean service thường bị mock ({{@MockitoBean}}) ⇒ aspect **không được áp vào mock**. Logic phụ thuộc transaction propagation (REQUIRES_NEW, NESTED), retry, cache chỉ full context kiểm chứng.
+3. **@Async event listener & transaction propagation**: @Async chạy thread riêng của task executor; slice test thường không nạp executor thật hoặc service swallow event. Full context kiểm chứng listener nhận event, và rollback transaction khi listener ném exception.
+
+### Ví dụ: @Transactional rollback chỉ bắt được ở full context
+~~~java
+@Service
+public class OrderService {
+    @Autowired OrderRepository repo;
+    @Autowired ApplicationEventPublisher publisher;
+
+    @Transactional
+    public Order place(OrderCommand cmd) {
+        var order = repo.save(cmd.toOrder());
+        publisher.publishEvent(new OrderPlacedEvent(order.getId()));
+        return order;
+    }
+}
+
+@Component
+public class OrderListener {
+    @EventListener
+    @Async
+    public void handle(OrderPlacedEvent event) {
+        // xử lý ở thread khác, chỉ chạy trong full context có executor
+    }
+}
+~~~
+
+Test full context kiểm chứng transaction rollback + event listener:
+~~~java
+@SpringBootTest
+@AutoConfigureMockMvc
+class OrderFullContextTest {
+    @Autowired OrderService service;
+    @Autowired OrderRepository repo;
+
+    @Test void place_invalid_rolls_back_and_no_event() {
+        assertThatThrownBy(() -> service.place(Command.of(null)))
+            .isInstanceOf(IllegalArgumentException.class);
+        assertThat(repo.count()).isZero();           // rollback
+        // verify listener không được gọi vì transaction rollback
+    }
+}
+~~~
+
+### Tại sao slice test không phát hiện — root cause
+- @WebMvcTest **mock service** ⇒ không chạy code thực của service ⇒ @Transactional aspect, event publish, retry **không bao giờ chạy**.
+- Service bị thay bằng mock ⇒ aspect của Spring áp vào proxy, **không vào mock** ⇒ test im lặng xanh.
+- @DataJpaTest dùng DB nhúng (H2) ⇒ constraint, trigger, kiểu dữ liệu khác Postgres ⇒ lỗi chỉ lộ production.
+- @Async listener chạy thread khác, assert ngay sau khi gọi ⇒ listener chưa kịp chạy ⇒ flaky. Cần full context + {{await()}}.
+
+### Bảng trade-off: khi nào DÙNG slice, khi nào BẮT BUỘC full context
+| Tình huống | Dùng slice | Dùng @SpringBootTest | Vì sao |
+|---|---|---|---|
+| Kiểm tra controller, validation, JSON mapping | ✅ @WebMvcTest | — | Nhanh, service mock |
+| Kiểm tra repository, JPQL, constraint | ✅ @DataJpaTest + Testcontainers PG | — | Nhanh, DB thật |
+| Kiểm tra JWT filter, CORS filter, security chain | — | ✅ | Chỉ full context nạp filter thật |
+| Kiểm tra @Transactional, @Retryable, @Cacheable | — | ✅ | Aspect áp vào bean thật |
+| Kiểm tra @Async listener, scheduler, propagation | — | ✅ | Cần executor, context thật |
+| Luồng khói end-to-end thanh toán | 1–2 test | ✅ | Wiring thực tế |
+
+### Bẫy hay gặp
+- Dùng @WebMvcTest cho mọi thứ, khẳng định "bảo mật đã test": slice mock service, **không kiểm tra filter chain thật** ⇒ lỗi phân quyền lọt qua.
+- Giả sử @Transactional rollback được test trong slice: service mock ⇒ aspect không áp ⇒ rollback không kiểm chứng ⇒ lỗi dữ liệu rác sau exception chỉ lộ production.
+- Test @Async bằng slice, assert ngay: listener thread khác, assert trước khi xử lý ⇒ flaky. Dùng full context + {{await()}}.
+- Dùng H2 trong @DataJpaTest cho constraint Postgres-specific: dialect khác ⇒ test xanh, production lỗi.
+
+### Ví dụ đời thực
+Hệ thống thanh toán (Spring Boot 3.1, PostgreSQL 15) có endpoint tạo đơn. Team viết 200 test @WebMvcTest mock OrderService, tất cả xanh. Sau deploy, đơn lỗi nhưng vẫn được ghi vào database (không rollback) vì @Transactional ở service không áp dụng đúng khi exception xảy ra bên trong listener, và không ai test full context. Điều tra: tôi viết một test @SpringBootTest gọi service.place với dữ liệu làm throw, assert repo.count() không tăng và transaction đã rollback. Test đỏ ngay, cho thấy aspect @Transactional cần cấu hình {{rollbackFor}} đúng. Cùng lúc, listener @EventListener @Async không nhận sự kiện vì slice test không nạp task executor. Cách xử lý: bổ sung **3 test @SpringBootTest** cho transaction rollback, sự kiện async, và filter JWT; giữ 197 test @WebMvcTest/@DataJpaTest cho phần còn lại. Kết quả: lỗi đơn lỗi vẫn được ghi không tái hiện lại; bộ test full context chỉ 3 test nhưng bắt được lỗi mà 200 test slice bỏ sót; thời gian thêm chỉ khoảng 15 giây mỗi lần chạy.
+
+### Trả lời mẫu khi phỏng vấn
+Slice test (@WebMvcTest, @DataJpaTest) nhanh và đủ cho controller, validation, repository, nhưng chỉ nạp một phần ApplicationContext nên không kiểm chứng được cơ chế hạ tầng thật. Tôi dùng @SpringBootTest khi cần kiểm tra Security filter chain thật (JWT/CORS filter), AOP aspect (@Transactional/@Retryable/@Cacheable), và @Async event listener — những thứ slice test bỏ sót vì service bị mock hoặc context không đủ. Ví dụ thực tế: 200 test @WebMvcTest mock service tất cả xanh, nhưng sau deploy đơn lỗi vẫn bị ghi vì transaction rollback không hoạt động. Tôi bổ sung 3 test @SpringBootTest cho rollback, sự kiện async, và filter JWT, bắt được lỗi mà 200 test slice bỏ sót, với chi phí thêm chỉ 15 giây mỗi lần chạy. Nguyên tắc: slice cho nghiệp vụ, full context cho infra và wiring, chỉ một vài test khói.
+
+> Senior tip: Hãy giữ full context test ở lượng nhỏ (1–3 test khói cho luồng quan trọng) chứ không phải toàn bộ suite. Mỗi test @SpringBootTest tốn 10–30 giây, nên 200 test full context sẽ giết CI, còn 3 test full context cộng 200 test slice thì cả nhanh vừa đáng tin.
+`,
+  follow: [
+    '@DataJpaTest mặc định dùng H2; khi nào bạn buộc nó chạy trên Postgres thật qua Testcontainers?',
+    'Bạn kiểm tra @Transactional rollback thế nào mà không làm test phụ thuộc dữ liệu cũ?',
+    'Với @Async listener, bạn assert listener đã chạy sao cho không flaky?'
+  ],
+  tags: ['SpringBootTest', 'WebMvcTest', 'DataJpaTest', 'AOP', 'Security', 'Async', 'integration-test'],
+},
+{
+  id: 'testing-079',
+  topic: 'testing',
+  level: 'senior',
+  q: 'Hai team phát triển service riêng giao tiếp bằng Kafka event (không phải HTTP). Contract testing cho event-driven (event contract) hoạt động thế nào: Schema Registry, Avro/Protobuf, backward/forward compatibility, và consumer-driven vs provider-driven? Breaking change trên topic (đổi kiểu trường, xoá trường) bị chặn ở CI như thế nào?',
+  a: `**Tóm tắt:** Contract testing cho Kafka event-driven dùng **Schema Registry** làm trung tâm: producer đăng ký schema (Avro/Protobuf) cho topic, consumer lấy schema để deserialize. **Compatibility check** (BACKWARD, FORWARD, FULL, NONE) chạy trong CI của producer: nếu producer ghi message lệch compatibility rule, build đỏ và chặn merge. Hai team hợp tác qua **schema version** và **subject naming strategy** (TopicNameStrategy mặc định).
+
+### Event contract trong Kafka — thành phần cốt lõi
+| Thành phần | Ý nghĩa |
+|---|---|
+| Tên topic | Địa chỉ message, ví dụ {{order.created}}, {{payment.completed}} |
+| Schema (Avro/Protobuf) | Cấu trúc message: trường, kiểu dữ liệu, bắt buộc/tùy chọn, default |
+| Subject | Khóa trong Schema Registry, mặc định {{<topic>-value}} hoặc {{<topic>-key}} |
+| Compatibility rule | BACKWARD (mặc định): consumer mới đọc được data cũ; FORWARD: consumer cũ đọc được data mới |
+| Schema Registry | Lưu version schema, kiểm tra compatibility trước khi producer register schema mới |
+
+### Consumer-driven vs Provider-driven cho event
+| | Consumer-driven (Pact-style) | Provider-driven (Schema Registry native) |
+|---|---|---|
+| Ai định nghĩa contract | Consumer viết expectation (field cần thiết) | Provider đăng ký schema cam kết cung cấp |
+| Tooling | Pact + Pact Broker (hỗ trợ message pact) | Schema Registry (Confluent/Apicurio) + Maven/Gradle plugin |
+| Verify | Consumer publish pact, provider verify | Producer register schema, Registry kiểm tra compatibility |
+| Ưu điểm | Consumer chủ động, rõ field nào thực sự dùng | Tích hợp sẵn Kafka, verify tự động khi register schema |
+| Nhược điểm | Cần chạy stub server, phức tạp hơn | Ít kiểm soát semantic (chỉ kiểm tra schema, không kiểm tra business rule) |
+
+### Compatibility rules — khi nào dùng cái nào
+- **BACKWARD (mặc định, khuyến nghị)**: Schema mới đọc được data cũ. Producer deploy trước, consumer deploy sau. **Thêm field có default** = OK. **Xoá field** = OK (nếu consumer không dùng). **Đổi kiểu** = FAIL (số → chuỗi).
+- **FORWARD**: Schema cũ đọc được data mới. Consumer deploy trước, producer deploy sau. **Xoá field** = OK. **Thêm field bắt buộc không default** = FAIL.
+- **FULL**: Cả BACKWARD và FORWARD. An toàn nhất nhưng chặt chẽ.
+- **NONE**: Không kiểm tra — **không bao giờ dùng production**.
+
+### CI pipeline chặn breaking change
+1. Producer code thay đổi schema (Avro {{.avsc}} hoặc Protobuf {{.proto}}).
+2. CI chạy plugin (confluent-schema-registry-maven-plugin / gradle plugin) **register schema với compatibility check**.
+3. Nếu vi phạm rule (ví dụ đổi {{amount}} từ {{long}} sang {{string}} dưới BACKWARD) ⇒ **build đỏ, chặn merge**.
+4. Producer phải sửa: thêm field mới có default, hoặc tạo topic mới, hoặc thương lượng consumer nâng version trước.
+5. Consumer CI: pull schema mới nhất từ Registry, generate code (Avro/Protobuf), compile — nếu generate fail ⇒ consumer biết sớm.
+
+### Ví dụ producer test verify schema
+~~~java
+@Testcontainers
+class OrderEventContractTest {
+    @Container static KafkaContainer kafka = new KafkaContainer(...).withReuse(false);
+    @Container static SchemaRegistryContainer registry = new SchemaRegistryContainer(...);
+
+    @Test void producer_message_matches_registered_schema() {
+        String topic = "order.created";
+        var producer = new KafkaAvroProducer(kafka.getBootstrapServers(), registry.getUrl());
+        var event = OrderCreated.newBuilder().setOrderId("OD-1").setAmount(500_000L).build();
+        producer.send(topic, event);  // serialize theo schema đã register
+
+        // verify: deserialize bằng schema Registry, assert field đúng
+        var consumer = new KafkaAvroConsumer(kafka.getBootstrapServers(), registry.getUrl(), "test-group");
+        var received = consumer.consume(topic, Duration.ofSeconds(5));
+        assertThat(received.getAmount()).isEqualTo(500_000L);
+    }
+}
+~~~
+
+### Bẫy hay gặp
+- **Contract test không thay thế integration test**: chỉ kiểm tra cấu trúc message (schema), **không kiểm tra ngữ nghĩa nghiệp vụ** (ví dụ {{amount}} âm vẫn khớp schema nhưng sai business).
+- **Chỉ test happy path**: event contract cần mô tả cả **dead-letter topic**, **tombstone message (key null)**, **schema evolution qua nhiều version**.
+- **Consumer dùng schema cũ**: consumer phải cập nhật schema version khi producer release, không thì test consumer chạy trên schema cũ và **không phát hiện breaking change**.
+- **Subject naming strategy sai**: mặc định {{TopicNameStrategy}} ({{<topic>-value}}). Nếu một topic dùng cho nhiều loại event (multi-type), phải dùng {{RecordNameStrategy}} hoặc {{TopicRecordNameStrategy}}.
+- **Default value thiếu khi thêm field**: dưới BACKWARD, thêm field **bắt buộc có default**, không thì consumer cũ deserialize fail.
+
+### Ví dụ đời thực
+Hai service order-service (producer) và payment-service (consumer) giao tiếp qua topic {{order.created}}. Triệu chứng: sau khi order-service deploy thay đổi trường {{amount}} từ {{long}} sang {{string}} trong message Avro, payment-service bắt đầu ném lỗi deserialize và message vùi vào dead-letter topic. Cả hai service test xanh riêng lẻ vì không kiểm tra event contract với nhau. Điều tra: producer đã đổi schema mới (vi phạm BACKWARD compatibility) nhưng payment-service chưa cập nhật schema version ⇒ consumer đọc trường cũ ⇒ deserialize null ⇒ lỗi. Cách xử lý: (1) order-service đăng ký schema Avro cho topic {{order.created}} lên Schema Registry, CI chạy compatibility check; (2) payment-service test deserialize message dùng schema từ Registry; (3) CI producer chạy {{mvn schema-registry:register}}, build đỏ nếu vi phạm BACKWARD; (4) producer thay đổi backward compatible (thêm field mới có default, không xoá trường cũ) và thông báo consumer trước khi nâng schema version. Kết quả: trong tháng đầu, Schema Registry chặn **2 breaking change** trên topic (đổi kiểu {{amount}} từ số sang chuỗi, xoá trường {{status}} bắt buộc), và không còn sự kiện Kafka bị deserialize lỗi sau deploy.
+
+### Trả lời mẫu khi phỏng vấn
+Khi hai team giao tiếp bằng Kafka event, tôi dùng event contract với Schema Registry: producer đăng ký schema Avro/Protobuf cho topic, CI chạy compatibility check (BACKWARD mặc định). Nếu producer đổi kiểu trường hoặc xoá trường bắt buộc, build đỏ chặn merge ngay. Consumer CI pull schema mới, generate code, compile fail sớm nếu không tương thích. Ví dụ thực tế: order-service đổi {{amount}} từ long sang string, payment-service deserialize lỗi. Tôi setup Schema Registry, CI check BACKWARD, chặn 2 breaking change trong tháng đầu. Trade-off: phải quản lý schema version, subject naming strategy, và default value cho field mới — nhưng đổi lấy bắt được lỗi thay đổi sự kiện ở CI chứ không đợi deploy production.
+
+> Senior tip: Event contract có giá trị nhất khi chạy trong CI của **cả hai bên** và failure thật chặn deploy. Hãy chứng minh bằng cách cố tình đổi schema (số → chuỗi) một lần và xem build đỏ thế nào. BACKWARD compatibility + default value cho field mới = quy tắc vàng cho evolution an toàn.`,
+
+  follow: [
+    'Bạn xử lý thế nào khi consumer cần producer thêm trường vào sự kiện ngay nhưng producer sprint đã kín?',
+    'Với Kafka, bạn version schema như thế nào và consumer biết khi nào phải nâng schema version?',
+    'Bạn dùng consumer group id như thế nào trong test để không bị nhiễm offset giữa các test?'
+  ],
+  tags: ['contract-testing', 'Kafka', 'Schema-Registry', 'Avro', 'Protobuf', 'event-driven', 'microservices'],
+},
+{
+  id: 'testing-080',
+  topic: 'testing',
+  level: 'lead',
+  q: 'Làm lead, bạn xây dựng quy trình loại bỏ flaky test ở quy mô team 15 dev, 3000 test: automated detection (CI dashboard), quarantine pipeline với ticket + owner + deadline 7 ngày, metrics (flaky rate, change failure rate), và culture (cấm retry che flaky, reward fixing root cause). Bạn triển khai từng bước như thế nào và đo hiệu quả bằng chỉ số nào?',
+  a: `**Tóm tắt:** Flaky test là **nợ kỹ thuật của cả team**, không phải lỗi một người. Ở quy mô 15 dev, 3000 test, việc sửa từng con flaky theo kiểu "ai thấy sửa nấy" không scale. Cần **hệ thống**: automated detection trên CI dashboard, **quarantine pipeline** bắt buộc ticket + owner + deadline 7 ngày, metrics theo dõi (flaky rate, change failure rate, MTTR), và **văn hóa cấm retry che triệu chứng**. Mục tiêu: flaky rate < 1%, change failure rate giảm, team tin vào pipeline.
+
+### Bước 1: Automated detection — CI dashboard
+- CI (GitHub Actions, GitLab, Jenkins) xuất báo cáo test JUnit XML. Dùng script/parser thu thập: {{test_id}}, {{class}}, {{status}}, {{duration}}, {{commit}}, {{branch}}, {{timestamp}}.
+- Tính **flaky score** cho mỗi test: số lần fail / tổng runs trong 30 ngày trên {{main}}. Test flaky score > 1% ⇒ vào danh sách nghi ngờ.
+- Dashboard hiển thị: top 20 test flaky nhất, trend 30 ngày, phân bố theo module.
+- Ví dụ query SQL cho dashboard (dữ liệu từ CI API):
+~~~sql
+SELECT test_class, test_name, 
+       COUNT(*) FILTER (WHERE status = 'FAILED') * 1.0 / COUNT(*) AS flaky_rate,
+       COUNT(*) AS total_runs
+FROM test_runs
+WHERE branch = 'main' AND timestamp > now() - interval '30 days'
+GROUP BY test_class, test_name
+HAVING COUNT(*) > 50
+ORDER BY flaky_rate DESC
+LIMIT 20;
+~~~
+
+### Bước 2: Quarantine pipeline — quy trình bắt buộc
+Khi test vào danh sách flaky (score > 1% hoặc fail ngẫu nhiên được report):
+1. **Gắn nhãn {{@Tag("flaky")}}** (JUnit 5) hoặc category tùy framework.
+2. **Chuyển sang job quarantine**: chạy riêng, **không chặn merge** của job chính.
+3. **Bắt buộc tạo ticket** (Jira/GitHub Issue) với: {{test_id}}, {{flaky_rate}}, {{root_cause_hypothesis}}, {{owner}}, {{deadline = today + 7 days}}.
+4. **Owner chịu trách nhiệm** fix trong 7 ngày. Quá hạn ⇒ test bị **xoá khỏi suite** và viết lại ở tầng thấp hơn (unit/slice thay vì integration/E2E).
+5. Job quarantine báo cáo kết quả: pass rate, số lần chạy, có fix không.
+
+### Bước 3: Metrics theo dõi — 4 chỉ số cốt lõi
+| Chỉ số | Mục tiêu | Tần suất đo |
+|---|---|---|
+| **Flaky rate** (test fail ngẫu nhiên / tổng test runs) | < 1% | Mỗi commit, báo cáo hàng ngày |
+| **Change failure rate** (DORA) — deploy gây incident / tổng deploy | < 5% | Tuần |
+| **Quarantine resolution time** — trung bình ngày fix một test flaky | < 5 ngày | Tuần |
+| **Test suite reliability** — % pipeline xanh không cần retry | > 95% | Mỗi commit |
+
+Dashboard hiển thị trend 4 chỉ số này. Nếu flaky rate tăng sau một sprint ⇒ review quy trình, không chỉ sửa test đơn lẻ.
+
+### Bước 4: Văn hóa — cấm retry, reward root cause fix
+- **Cấm**: {{@Retry}} (TestNG), {{surefire.rerunFailingTestsCount}}, script "chạy lại cho xanh". Retry chỉ che triệu chứng, mất tín hiệu cảnh báo.
+- **Cho phép**: Retry **riêng job infrastructure** (network blip, runner OOM) — tách job, cảnh báo khi retry rate tăng.
+- **Reward**: Khen công khai / bonus nhỏ cho dev fix root cause của test flaky top 5. Root cause fix = test không còn flaky 30 ngày liên tiếp.
+- **Blameless postmortem** cho test flaky: tập trung vào "hệ thống cho phép flaky này tồn tại bao lâu", không phải "ai viết test này".
+
+### Triển khai từng giai đoạn (rollout plan)
+| Tuần | Hoạt động | KPI |
+|---|---|---|
+| 1 | Bật CI dashboard, thu thập baseline flaky rate | Biết top 50 test flaky |
+| 2 | Triển khai quarantine pipeline, gắn nhãn test flaky hiện có | 100% test flaky đã quarantine |
+| 3 | Bắt đầu fix top 10 test flaky (cao nhất impact) | Flaky rate giảm 30% |
+| 4 | Mở rộng fix, đo change failure rate | Change failure rate giảm |
+| 5–8 | Văn hóa cấm retry, reward root cause | Flaky rate < 1%, reliability > 95% |
+
+### Bẫy hay gặp
+- **Quarantine không có deadline** ⇒ biến thành bãi rác. Luôn gắn ticket + deadline 7 ngày + owner.
+- **Chỉ đo flaky rate** mà không đo change failure rate ⇒ team fix flaky dễ nhưng không cải thiện chất lượng deploy.
+- **Dev tự ý xoá test flaky** thay vì fix ⇒ mất coverage. Quy tắc: xoá chỉ khi quá hạn 7 ngày VÀ đã viết lại ở tầng thấp hơn.
+- **Retry infrastructure che flaky logic** ⇒ tách job retry network/runner, alert khi retry rate > 5%.
+- **Không có baseline** ⇒ không biết đã cải thiện hay chưa. Tuần 1 phải đo baseline trước khi can thiệp.
+
+### Ví dụ đời thực
+Team 15 dev, 3000 test (unit 2000, integration 800, E2E 200). CI 18 phút, flaky rate 12% (360 test fail ngẫu nhiên/ngày trên main). Change failure rate 14%. Triệu chứng: team gộp PR để "đỡ chờ CI", 3 lần build đỏ bị bỏ qua trong 2 tháng vì "do môi trường". Triển khai: (1) baseline dashboard: top flaky là {{OrderServiceIT}} (email cố định, unique constraint), {{PaymentKafkaIT}} (consumer group id trùng), {{ReportE2E}} (sleep chờ async). (2) Quarantine pipeline: gắn {{@Tag("flaky")}}, job riêng, ticket Jira bắt buộc owner + deadline 7 ngày. (3) Fix top 10: UUID email/group id, {{Awaitility}} thay sleep, {{@Transactional}} rollback thay {{@DirtiesContext}}. (4) Cấm retry, reward root cause fix. Kết quả sau 8 tuần: flaky rate 12% → 0.8%, CI 18 phút → 7 phút (bỏ {{@DirtiesContext}}, bật parallel), change failure rate 14% → 6%, pipeline reliability 70% → 96%. Team ngừng gộp PR, tin vào CI.
+
+### Trả lời mẫu khi phỏng vấn
+Làm lead, tôi xây dựng hệ thống loại flaky test: automated detection trên CI dashboard tính flaky score 30 ngày, quarantine pipeline bắt buộc ticket + owner + deadline 7 ngày (quá hạn xoá test và viết lại tầng thấp hơn), metrics 4 chỉ số (flaky rate < 1%, change failure rate, quarantine resolution time, suite reliability), văn hóa cấm retry che triệu chứng, reward root cause fix. Triển khai 8 tuần: baseline → quarantine → fix top 10 → culture. Ví dụ thực tế: team 15 dev, 3000 test, flaky 12%, CI 18 phút. Sau 8 tuần: flaky 0.8%, CI 7 phút, change failure rate 14% → 6%, reliability 96%. Nguyên tắc: flaky là nợ của cả team, không phải lỗi một người; hệ thống quan trọng hơn cá nhân.
+
+> Senior tip: Đừng cố sửa hết 300 test flaky cùng lúc. Hãy fix **top 10 test flaky có impact cao nhất** (chạy nhiều, fail nhiều, chặn pipeline lâu). 80/20 rule: 10% test flaky gây ra 80% nỗi đau pipeline. Fix xong top 10, flaky rate thường giảm 50% ngay.
+`,
+  follow: [
+    'Bạn phân biệt flaky do hạ tầng (runner, network) và flaky do code test như thế nào trong dashboard?',
+    'Khi team phản đối "quarantine làm mất độ tin cậy", bạn thuyết phục thế nào?',
+    'Bạn có tự động hóa việc gắn nhãn flaky và chuyển job quarantine không?'
+  ],
+  tags: ['flaky-test', 'leadership', 'CI/CD', 'process', 'metrics', 'quarantine', 'team-process'],
+},
+{
+  id: 'testing-081',
+  topic: 'testing',
+  level: 'senior',
+  q: 'Testcontainers khởi động container mỗi test class làm CI chậm. Cách tái sử dụng container giữa các module và giữa các lần chạy local thế nào, và rủi ro là gì?',
+  a: `**Tóm tắt:** Dùng **singleton container** (một static instance dùng chung) và **reuse** (giữ container sống giữa các lần chạy) để giảm thời gian khởi động. Rủi ro: state bẩn giữa test và rò rỉ container nếu không dọn đúng.
+
+### Singleton container
+- Khai báo {{static PostgreSQLContainer}} và khởi tạo một lần cho toàn suite, các test class dùng chung.
+- Spring Boot 3.1+ {{@ServiceConnection}} tự nối datasource.
+
+### Reuse
+- Bật {{testcontainers.reuse.enable=true}} trong ~/.testcontainers.properties ở máy dev.
+- Container sống qua nhiều lần chạy test, tiết kiệm 3-5 giây/lần.
+
+### Rủi ro
+- State bẩn: dữ liệu test trước ảnh hưởng test sau. Khắc phục bằng {{@Transactional}} rollback hoặc {{@Sql}} cleanup.
+- Container không dừng khi test fail ⇒ rò rỉ. Testcontainers dùng Ryuk để dọn, nhưng nếu tắt Ryuk phải dọn tay.
+- Trên CI không nên bật reuse để môi trường sạch.
+
+### Ví dụ đời thực
+Team 12 dev, 400 integration test dùng Testcontainers. Trước: mỗi class khởi động container riêng, CI 22 phút. Sau: singleton container + reuse local, CI 9 phút. Flaky do state bẩn giảm bằng rollback.
+
+### Trả lời mẫu khi phỏng vấn
+Tôi dùng singleton container và reuse để giảm thời gian khởi động, nhưng luôn rollback transaction hoặc cleanup dữ liệu để tránh state bẩn. Trên CI tôi để môi trường sạch, không bật reuse.
+
+> Senior tip: Đo thời gian khởi động container trước khi tối ưu; thường singleton + reuse giảm 60-70% thời gian CI.
+`,
+  follow: [
+    'Bạn xử lý state bẩn giữa test như thế nào?',
+    'Khi nào không nên dùng reuse?',
+    'Bạn giám sát rò rỉ container thế nào?',
+  ],
+  tags: ['Testcontainers', 'reuse', 'singleton', 'CI', 'performance'],
+},
+{
+  id: 'testing-082',
+  topic: 'testing',
+  level: 'senior',
+  q: '@DataJpaTest có rollback transaction mặc định, nhưng đôi khi test vẫn thấy dữ liệu cũ. Vì sao và cách xử lý?',
+  a: `**Tóm tắt:** @DataJpaTest rollback sau mỗi test, nhưng dữ liệu có thể còn do flush timing, @Sql, hoặc test dùng cùng transaction. Xử lý bằng cleanup rõ ràng và kiểm soát transaction.
+
+### Cơ chế
+- @DataJpaTest bọc mỗi test trong transaction và rollback ở cuối.
+- Nếu test gọi code @Transactional(REQUIRES_NEW), transaction đó commit riêng và không rollback.
+- @Sql(executionPhase=AFTER_TEST_METHOD) chạy cleanup.
+
+### Pitfall
+- Test phụ thuộc thứ tự chạy do shared data.
+- Flush chưa xảy ra, query không thấy dữ liệu.
+
+### Ví dụ đời thực
+Team thấy test pass riêng lẻ nhưng fail khi chạy cùng suite do REQUIRES_NEW commit dữ liệu. Fix bằng cleanup @Sql và test độc lập.
+
+### Trả lời mẫu khi phỏng vấn
+Tôi luôn đảm bảo test độc lập: rollback mặc định, cleanup bằng @Sql, và tránh REQUIRES_NEW trong test path. Nếu cần dữ liệu chung, dùng @Sql(BEFORE_TEST_METHOD) và cleanup sau.
+
+> Senior tip: Test flaky do ordering thường do shared state; fix bằng isolation, không bằng retry.
+`,
+  follow: [
+    'Bạn test code dùng REQUIRES_NEW thế nào?',
+    'Khi nào dùng @DirtiesContext?',
+    'Bạn kiểm soát test order thế nào?',
+  ],
+  tags: ['DataJpaTest', 'transaction', 'rollback', 'isolation'],
+},
+{
+  id: 'testing-083',
+  topic: 'testing',
+  level: 'senior',
+  q: 'Contract test với Pact: làm sao tích hợp vào CI để chặn deploy khi provider thay đổi API làm consumer hỏng?',
+  a: `**Tóm tắt:** Dùng Pact Broker + can-i-deploy trong pipeline. Consumer publish pact, provider verify, can-i-deploy kiểm tra compatibility trước khi deploy.
+
+### Luồng
+1. Consumer test sinh pact → publish lên broker.
+2. Provider test verify pact → publish verification.
+3. can-i-deploy kiểm tra consumer/provider versions tương thích.
+
+### Pitfall
+- Không version pact theo commit ⇒ deploy sai.
+- Broker không có webhook ⇒ verify chậm.
+
+### Ví dụ đời thực
+Team deploy consumer mới nhưng provider chưa verify ⇒ can-i-deploy fail, chặn deploy. Fix bằng webhook trigger provider verify tự động.
+
+### Trả lời mẫu khi phỏng vấn
+Tôi tích hợp Pact Broker và can-i-deploy vào pipeline, đảm bảo mọi deploy đều kiểm tra compatibility. Webhook trigger verify ngay khi pact mới.
+
+> Senior tip: can-i-deploy là cổng an toàn; không có nó contract test chỉ là tài liệu.
+`,
+  follow: [
+    'Bạn xử lý breaking change thế nào?',
+    'Khi nào dùng Spring Cloud Contract thay Pact?',
+    'Bạn quản lý versions pact thế nào?',
+  ],
+  tags: ['Pact', 'contract-test', 'CI', 'can-i-deploy'],
+},
+{
+  id: 'testing-084',
+  topic: 'testing',
+  level: 'lead',
+  q: 'Flaky test do thời gian và thứ tự chạy: cách tìm nguyên nhân và sửa triệt để trong pipeline lớn?',
+  a: `**Tóm tắt:** Flaky do time/order thường do clock thực, shared state, hoặc test order. Tìm bằng dashboard + retry isolation, sửa bằng clock injection và test isolation.
+
+### Nguyên nhân
+- Dùng System.currentTimeMillis() trong code ⇒ test phụ thuộc thời gian.
+- Shared DB state ⇒ test order ảnh hưởng.
+- Thread scheduling ⇒ race condition.
+
+### Cách sửa
+- Inject Clock/Instant thay vì thời gian thực.
+- Mỗi test tự tạo dữ liệu và cleanup.
+- Dùng Awaitility thay sleep.
+
+### Ví dụ đời thực
+Pipeline 3000 test, flaky 12%. Top flaky: OrderServiceIT dùng email cố định, PaymentKafkaIT consumer group trùng. Fix bằng UUID, clock injection, Awaitility. Flaky giảm 0.8%.
+
+### Trả lời mẫu khi phỏng vấn
+Tôi xây dashboard flaky, quarantine với ticket+deadline, fix top 10 root cause, cấm retry. Clock injection và isolation là hai vũ khí chính.
+
+> Senior tip: Flaky là nợ team; fix root cause, không che bằng retry.
+`,
+  follow: [
+    'Bạn phân biệt flaky infra vs code thế nào?',
+    'Khi nào quarantine test?',
+    'Bạn đo flaky rate thế nào?',
+  ],
+  tags: ['flaky-test', 'time', 'ordering', 'CI', 'leadership'],
+}
 );
