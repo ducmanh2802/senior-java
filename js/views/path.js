@@ -96,8 +96,20 @@
   const trackData = () => (track === 'platform' ? window.PATH_PLATFORM : window.PATH) || [];
 
   const stages = () => trackData().slice().sort((a, b) => (a.order || 0) - (b.order || 0));
-  const lessonById = id => App.lessons().find(l => l.id === id) || null;
-  const questionById = id => App.lite('questions').find(q => q.id === id) || null;
+  // App.lessons() re-sorts the full array on every call, so build an id→object map once per data
+  // change and reuse it: the stage list does hundreds of lookups per render.
+  let _lessonMap = null, _lessonSrc = null;
+  const lessonById = id => {
+    const src = window.LESSONS;
+    if (src !== _lessonSrc) { _lessonMap = new Map((src || []).map(l => [l.id, l])); _lessonSrc = src; }
+    return _lessonMap.get(id) || null;
+  };
+  let _qMap = null, _qSrc = null;
+  const questionById = id => {
+    const src = App.lite('questions');
+    if (src !== _qSrc) { _qMap = new Map(src.map(q => [q.id, q])); _qSrc = src; }
+    return _qMap.get(id) || null;
+  };
   const isKnown = id => App.store.getStatus(id) === 'known';
 
   /** Per-stage counters + done flag (all lessons known, >= 70% of key questions known). */

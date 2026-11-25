@@ -216,6 +216,22 @@
   const dayNumber = () => Math.floor(App.startOfDay(Date.now()) / DAY);
   const isWeekend = () => { const d = new Date().getDay(); return d === 0 || d === 6; };
 
+  // Per-render memo of the two full-bank scans. One dashboard paint reads App.stats()/App.dueItems()
+  // many times (hero, metrics, sections, weekly report, today's plan); the store cannot change during a
+  // synchronous render, so compute each result once and drop the memo on every user mutation / re-render.
+  let _statsMemo = null, _dueMemo = null;
+  function invalidateMemo() { _statsMemo = null; _dueMemo = null; }
+  function stats(topicId) {
+    if (!_statsMemo) _statsMemo = Object.create(null);
+    const k = topicId || '*';
+    if (!(k in _statsMemo)) _statsMemo[k] = App.stats(topicId);
+    return _statsMemo[k];
+  }
+  function dueItems() {
+    if (_dueMemo == null) _dueMemo = App.dueItems();
+    return _dueMemo;
+  }
+
   // ---------- roadmap helpers ----------
   function allWeeks() {
     const rm = window.ROADMAP;
@@ -250,7 +266,7 @@
   function pickAlgo() {
     const algos = App.lite('algos');
     if (!algos.length) return null;
-    const due = App.dueItems().filter(x => String(x.id).indexOf('algo-') === 0);
+    const due = dueItems().filter(x => String(x.id).indexOf('algo-') === 0);
     if (due.length) { const a = algos.find(x => x.id === due[0].id); if (a) return a; }
     let pool = algos.filter(a => !App.store.getStatus(a.id));
     if (!pool.length) pool = algos.filter(a => App.store.getStatus(a.id) !== 'known');
@@ -313,7 +329,7 @@
 
   function buildPlan() {
     const items = [];
-    const dueQ = App.dueItems().filter(x => String(x.id).indexOf('algo-') !== 0).slice(0, 10);
+    const dueQ = dueItems().filter(x => String(x.id).indexOf('algo-') !== 0).slice(0, 10);
     if (dueQ.length) items.push({ kind: 'review', ids: dueQ.map(x => x.id), minutes: 15 });
     const core = pickCoreNew(corePerDay());
     if (core.length) items.push({ kind: 'core', ids: core.map(q => q.id), minutes: core.length * 10 });
@@ -408,7 +424,7 @@
     const companies = App.lite('companies');
     const company = companies.find(c => c.name === plan.company) || companies.find(c => c.id === plan.company);
     const focus = company && Array.isArray(company.focus) && company.focus.length ? company.focus : App.topics().map(t => t.id);
-    const left = focus.reduce((n, id) => { const s = App.stats(id); return n + Math.max(0, s.total - s.known); }, 0);
+    const left = focus.reduce((n, id) => { const s = stats(id); return n + Math.max(0, s.total - s.known); }, 0);
     return { plan, days, perDay: days > 0 ? Math.ceil(left / days) : 0 };
   }
 
@@ -654,7 +670,7 @@
   }
 
   function sectionsHtml() {
-    const st = App.stats(), due = App.dueItems().length, lesson = nextLesson(), algo = pickAlgo();
+    const st = stats(), due = dueItems().length, lesson = nextLesson(), algo = pickAlgo();
     const weekAgo = Date.now() - 7 * DAY;
     const quizzes = (App.store.data.quizHistory || []).filter(r => r && r.at >= weekAgo).length;
     const mocks = (App.store.data.mockHistory || []).length;
@@ -686,7 +702,7 @@
       const lv = n === 0 ? 0 : n < 5 ? 1 : n < 15 ? 2 : 3;
       cells.push('<i class="db-day l' + lv + (i === 0 ? ' now' : '') + '" title="' + App.esc(tr('dayAria', { day: key, n })) + '" aria-label="' + App.esc(tr('dayAria', { day: key, n })) + '"></i>');
     }
-    const weak = App.topics().map(t => ({ t, s: App.stats(t.id) })).filter(x => x.s.total && (x.s.known || x.s.review || x.s.unknown))
+    const weak = App.topics().map(t => ({ t, s: stats(t.id) })).filter(x => x.s.total && (x.s.known || x.s.review || x.s.unknown))
       .sort((a, b) => a.s.known / a.s.total - b.s.known / b.s.total).slice(0, 3);
     return '<section class="db-bottom">' +
       '<div class="card db-week"><h3>' + tr('weekTitle') + '</h3><div class="db-days">' + cells.join('') + '</div></div>' +
@@ -731,7 +747,7 @@
       if (r && r.at >= weekAgo && typeof r.avg === 'number' && r.avg < 3) (r.topics || []).forEach(t => { lowMock[t] = 1; });
     });
     const weak = App.topics().map(t => {
-      const s = App.stats(t.id), seen = s.known + s.review + s.unknown, bad = s.review + s.unknown;
+      const s = stats(t.id), seen = s.known + s.review + s.unknown, bad = s.review + s.unknown;
       return { t, seen, bad, score: (seen ? bad / seen : 0) + (lowMock[t.id] ? 0.25 : 0) };
     }).filter(x => (x.seen >= 3 && x.bad > 0) || lowMock[x.t.id])
       .sort((a, b) => b.score - a.score || b.bad - a.bad).slice(0, 3);
@@ -749,25 +765,6 @@
           (lowMock[x.t.id] ? (x.seen ? ' · ' : '') + tr('wkMockWeak') : '') + '</span>' +
           '<a class="btn sm" href="#/flash/' + encodeURIComponent(x.t.id) + '">' + tr('wkStudy') + '</a></li>').join('') + '</ul>' : '') +
     '</div>';
-  }
-
-  /** Quick-practice tiles — lối vào nhanh các chế độ luyện tập. */
-  function quickHtml() {
-    const due = App.dueItems().filter(x => String(x.id).indexOf('algo-') !== 0).length;
-    const hasAlgo = App.lite('algos').length > 0;
-    const hasSd = App.lite('sd').length > 0;
-    const tiles = [
-      { hot: due > 0, ico: '🔁', title: tr('qDue'), sub: due ? tr('qDueSub', { n: due }) : tr('qDueNone'), href: due ? '#/flash/due' : '#/flash' },
-      { hot: true, ico: '🎤', title: tr('qInterview'), sub: tr('qInterviewSub'), href: '#/interview' },
-      { hot: false, ico: '🧩', title: tr('qSdlc'), sub: hasSd ? tr('qSdlcSub') : tr('qSdlcSub'), href: hasSd ? '#/sdlc' : '#/sdlc' },
-      { hot: false, ico: '🗺️', title: tr('qRoadmap'), sub: tr('qRoadmapSub', { n: weekNumber(), total: allWeeks().length || 1 }), href: '#/roadmap' },
-    ];
-    return '<section class="db-quick" aria-label="' + App.esc(tr('quickTitle')) + '">' +
-      tiles.map(t => '<a class="db-tile' + (t.hot ? ' hot' : '') + '" href="' + App.esc(t.href) + '">' +
-        '<span class="db-tile-ico" aria-hidden="true">' + t.ico + '</span>' +
-        '<span class="db-tile-title">' + App.esc(t.title) + '</span>' +
-        '<span class="db-tile-sub db-dim small">' + App.esc(t.sub) + '</span>' +
-      '</a>').join('') + '</section>';
   }
 
   // ---------- JD focus mode (T2488) ----------
@@ -822,7 +819,7 @@
     const topic0 = topics[0];
     const dayKey = App.dayKey(Date.now());
     const done = (App.store.data.focusDone && App.store.data.focusDone[dayKey]) || {};
-    const due = App.dueItems().filter(x => String(x.id).indexOf('algo-') !== 0).slice(0, 10);
+    const due = dueItems().filter(x => String(x.id).indexOf('algo-') !== 0).slice(0, 10);
     const task1Href = due.length ? '#/flash/due' : (topic0 ? '#/flash/' + encodeURIComponent(topic0) : '#/flash');
     const task1Label = due.length ? 'Ôn 10 câu đến hạn' : 'Học 5 câu mới';
     // lesson first not done in topic0
@@ -866,10 +863,15 @@
       const paint = () => {
         let body;
         try {
-          const st = App.stats();
+          const st = stats();
           const dOpen = (id) => localStorage.getItem('dash.open.' + id) === 'true';
-          const details = (id, title, content) => '<details class="dash-more" data-id="' + id + '" ' + (dOpen(id) ? 'open' : '') + '>' +
-              '<summary>' + App.esc(title) + '</summary><div data-lazy-content>' + (dOpen(id) ? content : '') + '</div></details>';
+          // Only build a panel's content when it is actually open: weekHtml/sectionsHtml/bottomHtml
+          // each scan the whole bank, so computing them for closed <details> wasted the first paint.
+          const details = (id, title) => {
+            const open = dOpen(id);
+            return '<details class="dash-more" data-id="' + id + '" ' + (open ? 'open' : '') + '>' +
+                '<summary>' + App.esc(title) + '</summary><div data-lazy-content>' + (open ? getDetails(id) : '') + '</div></details>';
+          };
           
           body = '<section class="db-focusbar">' +
             '<button type="button" class="btn sm" data-focus-toggle>' + (focusModeOn() ? 'Chỉ hiện việc hôm nay: BẬT' : 'Chỉ hiện việc hôm nay: TẮT') + ' <kbd>f</kbd></button>' +
@@ -880,10 +882,10 @@
             jobCardHtml() +
             missionHtml(pomo) +
             coreHtml() +
-            details('week', tr('more.week'), weekHtml()) +
-            details('plan', tr('more.plan'), careerHtml(editingCareer)) +
-            details('topics', tr('more.topics'), sectionsHtml()) +
-            details('history', tr('more.history'), bottomHtml())));
+            details('week', tr('more.week')) +
+            details('plan', tr('more.plan')) +
+            details('topics', tr('more.topics')) +
+            details('history', tr('more.history'))));
           
           loadErr = null;
         } catch (e) {
@@ -913,7 +915,7 @@
       };
       const refreshHero = () => {
         const hero = root.querySelector('.db-hero');
-        if (hero) hero.outerHTML = heroHtml(App.stats(), editing);
+        if (hero) hero.outerHTML = heroHtml(stats(), editing);
       };
       paint();
 

@@ -51,8 +51,8 @@
 
 /* mission */
 .view-dashboard .db-mission { padding: 16px 18px; }
-.view-dashboard .db-mission-head { display: flex; justify-content: space-between; align-items: center; gap: 10px; }
-.view-dashboard .db-pomo { display: flex; align-items: center; gap: 4px; }
+.view-dashboard .db-mission-head { display: flex; justify-content: space-between; align-items: center; gap: 10px; flex-wrap: wrap; }
+.view-dashboard .db-pomo { display: flex; align-items: center; gap: 4px; flex-wrap: wrap; }
 .view-dashboard .db-pomo-time { font-family: var(--mono); font-weight: 600; font-variant-numeric: tabular-nums; padding: 2px 8px; border-radius: 6px; background: var(--surface-2); }
 .view-dashboard .db-mission-bar { margin: 10px 0 4px; height: 4px; }
 .view-dashboard .db-tasks { list-style: none; margin: 6px 0 0; padding: 0; display: flex; flex-direction: column; gap: 4px; }
