@@ -3291,6 +3291,8 @@ window.DATA_INDEX = {
     ["lab-sql-047","sql","Xoá khách hàng chậm vì thiếu chỉ mục khoá ngoại trên bảng đơn hàng","senior"],
     ["lab-sql-048","sql","Báo cáo trên read replica hiển thị dữ liệu cũ do replication lag","senior"],
     ["lab-sql-049","sql","Chậm ghi do quá nhiều chỉ mục chưa dùng (index bloat/unused index)","senior"],
+    ["lab-sql-050","sql","ALTER TABLE ADD CONSTRAINT CHECK VALIDATE khóa bảng 12 phút: full table scan với AccessExclusiveLock","senior"],
+    ["lab-sql-051","sql","OR điều kiện trên bảng phân vùng: partition pruning thất bại, quét 12 partition","senior"],
     ["lab-incident-001","incident","Ngân hàng đối tác chậm, cả luồng thanh toán sập và khách bị trừ tiền hai lần","senior"],
     ["lab-incident-002","incident","Flash sale 12:00: retry không backoff biến 2,400 request thành 27,000 request mỗi giây","senior"],
     ["lab-incident-003","incident","Consumer hạch toán đứng hình: lag Kafka 1.6 triệu, rebalance liên tục","senior"],

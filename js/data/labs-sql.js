@@ -7508,5 +7508,346 @@ Ví dụ đời thường: như một quyển sách có 14 mục lục khác nha
     ],
     tags: ['postgresql', 'index', 'unused-index', 'insert-performance', 'wal', 'drop-index-concurrently'],
   },
+  {
+    id: 'lab-sql-050',
+    category: 'sql',
+    title: 'ALTER TABLE ADD CONSTRAINT CHECK VALIDATE khóa bảng 12 phút: full table scan với AccessExclusiveLock',
+    level: 'senior',
+    scenario: `**Bối cảnh.** Hệ thống **PayGate** (Spring Boot 3.3, Hibernate 6.4, PostgreSQL 15.6 trên RDS, 8 vCPU / 64 GB RAM) vận hành bảng {{transactions}} lưu lịch sử thanh toán: **42.300.000 dòng** (~14 GB heap + 3,2 GB index). Giờ cao điểm 11:00–13:00 có 3.500 req/s (80% đọc, 20% ghi). Đội data cần thêm ràng buộc: số tiền giao dịch phải dương và không vượt 500 triệu VND.
+    
+    **Triệu chứng (14/03/2026, 11:35).** DBA chạy migration:
+    ~~~sql
+    ALTER TABLE transactions ADD CONSTRAINT chk_amount_positive
+      CHECK (amount > 0 AND amount <= 500000000);
+    ~~~
+    Lệnh chạy **12 phút 18 giây**. Trong lúc đó, toàn bộ API thanh toán trả 504. RDS CPU 100% một core, active connection nhảy từ 45 lên 480. pg_stat_activity đầy các SELECT/INSERT đang chờ lock.
+    
+    **Điều đã thử, không ăn.** Tăng max_connections, restart PgBouncer — không giảm. DBA nghĩ "CHECK constraint nhẹ, chỉ thêm metadata" — thực tế PostgreSQL phải quét toàn bảng để VALIDATE.
+    
+    **Việc bạn có.** Ba artifact: log server lúc 11:35–11:47, snapshot pg_locks lúc 11:35:30, và EXPLAIN ANALYZE của câu SELECT mẫu. Hãy chỉ ra vì sao CHECK constraint VALIDATE khóa bảng lâu, và đề xuất cách thêm ràng buộc an toàn trên bảng lớn.`,
+    artifacts: [
+      {
+        name: 'postgres-check-validate.log',
+        lang: 'text',
+        content: `# log server PostgreSQL 15.6 (RDS paygate-primary), timezone Asia/Ho_Chi_Minh
+# log_lock_waits = on, deadlock_timeout = 1s
+2026-03-14 11:35:00.012 +07 [31245] LOG:  duration: 0.041 ms  execute S_1: BEGIN
+2026-03-14 11:35:00.015 +07 [31245] LOG:  duration: 0.038 ms  execute <unnamed>: ALTER TABLE transactions ADD CONSTRAINT chk_amount_positive CHECK (amount > 0 AND amount <= 500000000)
+2026-03-14 11:35:00.016 +07 [31245] LOG:  duration: 0.011 ms  execute <unnamed>: (chờ AccessExclusiveLock)
+2026-03-14 11:35:00.089 +07 [31246] LOG:  duration: 0.022 ms  execute S_1: BEGIN
+2026-03-14 11:35:00.091 +07 [31246] LOG:  duration: 0.031 ms  execute <unnamed>: SELECT id, amount, status FROM transactions WHERE user_id = $1 ORDER BY created_at DESC LIMIT 20
+2026-03-14 11:35:00.092 +07 [31246] LOG:  duration: 0.009 ms  execute <unnamed>: (chờ lock)
+# ... (hàng trăm phiên xếp hàng chờ AccessExclusiveLock)
+2026-03-14 11:35:05.123 +07 [31245] LOG:  duration: 5123.456 ms  execute <unnamed>: VALIDATE CONSTRAINT chk_amount_positive  -- bắt đầu quét bảng
+2026-03-14 11:47:18.678 +07 [31245] LOG:  duration: 733168.234 ms  execute <unnamed>: VALIDATE CONSTRAINT chk_amount_positive  -- kết thúc sau 12 phút 13 giây
+2026-03-14 11:47:18.679 +07 [31245] LOG:  duration: 0.040 ms  execute S_2: COMMIT
+2026-03-14 11:47:18.690 +07 [31246] LOG:  duration: 733687.112 ms  execute <unnamed>: SELECT ... (trả về)
+# ... (các phiên drain xong trong ~10 giây)`,
+      },
+      {
+        name: 'pg-locks-check.txt',
+        lang: 'text',
+        content: `-- 2026-03-14 11:35:30 +07, chụp khi migration đang VALIDATE
+paygate=# SELECT pid, state, wait_event_type, wait_event, now() - xact_start AS xact_age,
+       left(query, 60) AS query
+FROM pg_stat_activity
+WHERE pid IN (31245, 31246, 31247, 31248);
+  pid  | state  | wait_event_type | wait_event   | xact_age  |                              query
+-------+--------+-----------------+--------------+-----------+--------------------------------------------------------------
+ 31245 | active | IO              | DataFileRead | 00:00:30  | VALIDATE CONSTRAINT chk_amount_positive
+ 31246 | active | Lock            | relation     | 00:00:30  | SELECT id, amount, status FROM transactions WHERE user_id = $1
+ 31247 | active | Lock            | relation     | 00:00:30  | INSERT INTO transactions (user_id, amount) VALUES ($1, $2)
+ 31248 | active | Lock            | relation     | 00:00:30  | SELECT count(*) FROM transactions WHERE status = 'SUCCESS'
+
+paygate=# SELECT l.pid, l.locktype, l.relation::regclass AS relation, l.mode, l.granted
+FROM pg_locks l
+WHERE l.pid IN (31245, 31246, 31247, 31248)
+ORDER BY l.pid, l.granted, l.locktype;
+  pid  | locktype |   relation   |          mode          | granted
+-------+----------+--------------+------------------------+---------
+ 31245 | relation | transactions | AccessExclusiveLock    | t
+ 31246 | relation | transactions | AccessShareLock        | f
+ 31247 | relation | transactions | RowExclusiveLock       | f
+ 31248 | relation | transactions | AccessShareLock        | f
+
+paygate=# SELECT count(*) AS waiting_sessions FROM pg_locks
+WHERE NOT granted AND locktype = 'relation' AND relation = 'transactions'::regclass;
+  waiting_sessions
+------------------
+               312
+
+-- Ghi chú: migration (pid 31245) ĐANG GIỮ AccessExclusiveLock trong 12 phút do VALIDATE.
+-- Mọi câu SELECT/INSERT/UPDATE mới phải chờ lock này (queue FIFO) -> toàn bộ bảng "treo".`,
+      },
+      {
+        name: 'explain-select-transactions.txt',
+        lang: 'text',
+        content: `-- 2026-03-14 11:34:55 +07 (trước migration)
+paygate=# EXPLAIN (ANALYZE, BUFFERS)
+SELECT id, amount, status FROM transactions WHERE user_id = 'u-12345' ORDER BY created_at DESC LIMIT 20;
+                                                           QUERY PLAN
+--------------------------------------------------------------------------------------------------------------------------------------
+  Limit  (cost=0.57..8.45 rows=20 width=48) (actual time=0.412..0.428 rows=20 loops=1)
+    Buffers: shared hit=5
+    ->  Index Scan Backward using idx_transactions_user_created on transactions  (cost=0.57..8.45 rows=20 width=48) (actual time=0.411..0.426 rows=20 loops=1)
+          Index Cond: (user_id = 'u-12345'::uuid)
+          Buffers: shared hit=5
+  Planning Time: 0.284 ms
+  Execution Time: 0.451 ms`,
+      },
+    ],
+    questions: [
+      'Vì sao ALTER TABLE ADD CONSTRAINT CHECK ... không phải metadata-only mà phải quét toàn bảng? Chỉ ra bằng dòng nào trong artifact cho thấy VALIDATE chạy 12 phút.',
+      'Vì sao migration giữ AccessExclusiveLock trong 12 phút (không phải chỉ chờ lock)? Giải thích sự khác biệt giữa ADD CONSTRAINT NOT VALID và VALIDATE CONSTRAINT.',
+      'Hãy đề xuất quy trình an toàn để thêm CHECK constraint trên bảng 42 triệu dòng: ADD CONSTRAINT NOT VALID + VALIDATE CONSTRAINT (ShareUpdateExclusiveLock), đặt lock_timeout, và chạy ngoài giờ cao điểm.',
+    ],
+    hints: [
+      'PostgreSQL ADD CONSTRAINT CHECK mặc định VALIDATE ngay — phải quét toàn bảng kiểm tra từng dòng, giữ AccessExclusiveLock suốt quá trình. NOT VALID chỉ thêm metadata (lock vài ms).',
+      'Snapshot pg_locks cho thấy migration (pid 31245) GIỮ AccessExclusiveLock (granted = t) trong lúc VALIDATE, wait_event = DataFileRead (đang đọc đĩa quét bảng). 312 phiên chờ lock.',
+      'Cách an toàn: (1) ALTER TABLE ... ADD CONSTRAINT ... NOT VALID (lock ngắn, metadata-only), (2) ALTER TABLE ... VALIDATE CONSTRAINT ... (cần ShareUpdateExclusiveLock, KHÔNG chặn SELECT/INSERT/UPDATE), (3) chạy VALIDATE ngoài giờ cao điểm với lock_timeout.',
+    ],
+    answer: `**Tóm tắt:** DBA chạy {{ALTER TABLE transactions ADD CONSTRAINT chk_amount_positive CHECK (...)}} — mặc định PostgreSQL làm VALIDATE ngay, phải **quét toàn bảng 42.3 triệu dòng** kiểm tra điều kiện. Quá trình VALIDATE mất **12 phút 18 giây**, trong đó migration giữ **AccessExclusiveLock** (mạnh nhất, không tương thích với mọi lock khác). Mọi SELECT/INSERT/UPDATE mới vào phải xếp hàng chờ -> 312 phiên bị chặn, API trả 504. CPU 100% một core do sequential scan đĩa. Sửa: dùng {{ADD CONSTRAINT ... NOT VALID}} (chỉ sửa catalog, lock vài ms) rồi {{VALIDATE CONSTRAINT}} riêng (cần {{ShareUpdateExclusiveLock}}, không chặn đọc/ghi) ngoài giờ cao điểm, kèm {{lock_timeout}}.
+    
+### Kiến thức nền: ADD CONSTRAINT VALIDATE vs NOT VALID
+Khi thêm CHECK constraint, PostgreSQL có hai chế độ:
+- **Mặc định (VALIDATE)**: sau khi thêm metadata, PostgreSQL **quét toàn bảng** để kiểm tra mọi dòng hiện tại thỏa mãn điều kiện. Quá trình này giữ **AccessExclusiveLock** — không cho phép bất kỳ truy cập nào khác.
+- **NOT VALID**: chỉ thêm metadata vào {{pg_constraint}}, **không quét bảng**. Lock chỉ vài mili-giây (AccessExclusiveLock ngắn). Dữ liệu hiện tại có thể vi phạm, nhưng các INSERT/UPDATE mới sẽ bị kiểm tra.
+- **VALIDATE CONSTRAINT** (riêng): sau khi đã ADD NOT VALID, chạy lệnh này để kiểm tra dữ liệu cũ. Lệnh này cần **ShareUpdateExclusiveLock** — **tương thích với AccessShareLock (SELECT) và RowExclusiveLock (INSERT/UPDATE)**. Chỉ chặn DDL khác (ALTER TABLE, CREATE INDEX...) và VACUUM FULL.
+
+Ví dụ đời thường: nhà phố muốn lắp camera an ninh (constraint). Cách mặc định: đóng cửa cả phố 12 phút để kiểm tra từng nhà (VALIDATE). Cách an toàn: treo biển "đang lắp camera" vài giây (NOT VALID), sau đó bảo vệ đi kiểm tra từng nhà vào giờ ít người (VALIDATE CONSTRAINT) — người dân vẫn ra vào bình thường.
+
+### Nguyên nhân gốc, từng bước
+1. **11:35:00.015** DBA chạy {{ALTER TABLE ... ADD CONSTRAINT CHECK ...}}. PostgreSQL mặc định VALIDATE ngay.
+2. Cần **AccessExclusiveLock** để sửa schema. Có một transaction ngắn đang giữ AccessShareLock -> migration chờ vài ms (log 11:35:00.016 "chờ AccessExclusiveLock").
+3. **11:35:05.123** Lock được cấp, migration bắt đầu **VALIDATE CONSTRAINT** — quét tuần tự 42.3 triệu dòng, đọc đĩa (wait_event = DataFileRead).
+4. Trong **12 phút 13 giây** (11:35:05 đến 11:47:18), migration **GIỮ AccessExclusiveLock**.
+5. Mọi câu SELECT/INSERT/UPDATE ứng dụng vào sau đều phải chờ lock này (FIFO queue). Snapshot 11:35:30 cho 312 phiên chờ.
+6. **11:47:18** VALIDATE xong, COMMIT, lock được nhả, 312 phiên drain xong ~10 giây.
+
+### Dẫn chứng
+- Artifact 1: log **"VALIDATE CONSTRAINT chk_amount_positive" duration: 733168.234 ms** (12 phút 13 giây), wait_event = DataFileRead.
+- Artifact 2: migration pid 31245 **AccessExclusiveLock granted = t** (đang giữ), 312 phiên chờ AccessShareLock/RowExclusiveLock granted = f.
+- Artifact 2: wait_event_type = Lock, wait_event = relation cho các phiên ứng dụng.
+- Artifact 3: câu SELECT bình thường chỉ 0,45 ms khi không bị chặn.
+
+### Cách sửa ngắn hạn (trong ngày)
+- **Huỷ migration đang chạy**: {{SELECT pg_terminate_backend(31245);}} — VALIDATE bị huỷ, lock nhả, ứng dụng phục hồi ngay.
+- **Chạy lại an toàn**: 
+  1. {{ALTER TABLE transactions ADD CONSTRAINT chk_amount_positive CHECK (amount > 0 AND amount <= 500000000) NOT VALID;}} — metadata-only, ~5 ms.
+  2. Ngoài giờ cao điểm: {{SET lock_timeout = '30s'; ALTER TABLE transactions VALIDATE CONSTRAINT chk_amount_positive;}} — cần ShareUpdateExclusiveLock, không chặn SELECT/INSERT/UPDATE. Nếu lock_timeout hết, tự bỏ cuộc thay vì treo hệ thống.
+
+### Cách sửa dài hạn (quy trình migration an toàn)
+1. **Luôn dùng NOT VALID cho CHECK/FK constraint trên bảng lớn**: ADD CONSTRAINT ... NOT VALID -> VALIDATE CONSTRAINT riêng.
+2. **VALIDATE CONSTRAINT cần ShareUpdateExclusiveLock** — tương thích đọc/ghi, chỉ chặn DDL khác. Có thể chạy trong giờ cao điểm nếu cần (với lock_timeout).
+3. **Bắt buộc lock_timeout cho mọi migration**: {{SET lock_timeout = '2s';}} trước ALTER TABLE. Migration tự bỏ cuộc nếu không lấy được lock trong 2 giây.
+4. **Chạy migration ngoài giờ cao điểm** (02:00–04:00) hoặc maintenance window.
+5. **Test trên clone production** (RDS snapshot restore) đo thời gian VALIDATE trước khi apply production.
+6. **Quy tắc review**: mọi ADD CONSTRAINT CHECK/FK trên bảng > 1 triệu dòng phải kèm kế hoạch NOT VALID + VALIDATE riêng.
+
+### Phòng ngừa và monitoring
+- Alert khi có phiên giữ AccessExclusiveLock > 5 giây trên bảng production.
+- Theo dõi {{pg_stat_activity}} với {{wait_event_type = 'Lock'}} và {{wait_event = 'relation'}}; alert khi số phiên chờ > 50.
+- Cảnh báo {{log_lock_waits = on}} ghi nhận lock wait > 1 giây.
+- Dashboard: số migration VALIDATE chạy, thời gian trung bình.
+
+> Senior tip: "CHECK constraint nhẹ, chỉ thêm metadata" là suy nghĩ sai lầm phổ biến nhất. PostgreSQL **mặc định VALIDATE** — quét toàn bảng, giữ AccessExclusiveLock. Trên bảng 40 triệu dòng có thể mất 10–20 phút. Quy tắc vàng: **ADD CONSTRAINT ... NOT VALID, rồi VALIDATE CONSTRAINT riêng (ShareUpdateExclusiveLock) ngoài giờ cao điểm, kèm lock_timeout**. Đừng bao giờ chạy ADD CONSTRAINT mặc định trong giờ cao điểm trên bảng lớn.`,
+    rubric: [
+      'Chỉ đúng nguyên nhân: ADD CONSTRAINT CHECK mặc định VALIDATE ngay, quét toàn bảng 42.3 triệu dòng giữ AccessExclusiveLock 12 phút, chặn 312 phiên',
+      'Dẫn chứng đúng: artifact 1 VALIDATE duration 733168 ms, DataFileRead; artifact 2 AccessExclusiveLock granted=t, 312 phiên chờ; artifact 3 SELECT bình thường 0.45 ms',
+      'Giải thích đúng sự khác biệt: NOT VALID (metadata-only, lock ms) vs VALIDATE (ShareUpdateExclusiveLock, tương thích đọc/ghi)',
+      'Đề xuất sửa đúng: ADD CONSTRAINT NOT VALID + VALIDATE CONSTRAINT riêng, lock_timeout, chạy ngoài giờ cao điểm',
+      'Có monitoring/phòng ngừa: alert AccessExclusiveLock lâu, lock_waits, quy tắc review NOT VALID cho bảng lớn',
+    ],
+    tags: ['postgresql', 'alter-table', 'check-constraint', 'validate', 'access-exclusive-lock', 'migration'],
+  },
+  {
+    id: 'lab-sql-051',
+    category: 'sql',
+    title: 'OR điều kiện trên bảng phân vùng: partition pruning thất bại, quét 12 partition',
+    level: 'senior',
+    scenario: `**Bối cảnh.** Hệ thống **LogiTrack** (Spring Boot 3.3, Hibernate 6.4, PostgreSQL 15.6 trên RDS, 8 vCPU / 64 GB RAM) lưu log giao dịch trong bảng {{txn_log}} **phân vùng theo tháng (RANGE trên created_at)**. Bảng có 12 partition (tháng 1/2025 đến 12/2025), mỗi partition ~2.5 triệu dòng, tổng **30.000.000 dòng** (~9 GB). Có index cục bộ {{idx_txn_log_user}} trên {{(user_id, created_at DESC)}} trong từng partition.
+    
+    Endpoint {{GET /api/v1/txn/search?userId=&fromDate=&toDate=}} cho phép tìm giao dịch theo user_id HOẶC theo khoảng thời gian (logic OR do frontend gửi cả hai tham số, backend xây WHERE động).
+    
+    **Triệu chứng (14/03/2026, 10:00).** Query tìm giao dịch của user {{u-88990}} trong tháng 3/2025 (fromDate=2025-03-01, toDate=2026-03-31) chạy **8,4 giây**, CPU RDS 92% một core. EXPLAIN cho thấy planner quét **12 partition** thay vì chỉ partition tháng 3. DBA nghĩ "index không hiệu quả" — thực tế là partition pruning thất bại do điều kiện OR.
+    
+    **Việc bạn có.** Ba artifact: EXPLAIN ANALYZE của câu OR, EXPLAIN ANALYZE của câu viết lại bằng UNION ALL, và danh sách partition. Hãy chỉ ra vì sao OR phá vỡ partition pruning, và viết lại query để planner chỉ quét partition cần thiết.`,
+    artifacts: [
+      {
+        name: 'explain-or-partition.txt',
+        lang: 'text',
+        content: `-- 2025-03-14 10:05:12 +07, RDS logistic-primary (PostgreSQL 15.6)
+logistics=# EXPLAIN (ANALYZE, BUFFERS)
+SELECT id, user_id, amount, created_at, status
+FROM txn_log
+WHERE user_id = 'u-88990'::uuid
+   OR (created_at >= '2025-03-01'::timestamptz AND created_at < '2025-04-01'::timestamptz)
+ORDER BY created_at DESC
+LIMIT 50;
+                                                           QUERY PLAN
+--------------------------------------------------------------------------------------------------------------------------------------
+  Limit  (cost=1245.67..1245.71 rows=50 width=64) (actual time=8342.112..8342.118 rows=50 loops=1)
+    Buffers: shared hit=189432 read=1442
+    ->  Sort  (cost=1245.67..1245.71 rows=50 width=64) (actual time=8342.110..8342.115 rows=50 loops=1)
+          Sort Key: created_at DESC
+          Sort Method: top-N heapsort  Memory Usage: 32kB
+    ->  Append  (cost=0.57..1245.63 rows=150 width=64) (actual time=0.018..8338.456 rows=150 loops=1)
+          ->  Seq Scan on txn_log_2025_01  (cost=0.00..45678.12 rows=12 width=64) (actual time=0.012..689.234 rows=12 loops=1)
+                Filter: (user_id = 'u-88990'::uuid) OR ((created_at >= '2025-03-01'::timestamptz) AND (created_at < '2025-04-01'::timestamptz))
+                Rows Removed by Filter: 2499988
+          ->  Seq Scan on txn_log_2025_02  (cost=0.00..45678.12 rows=12 width=64) (actual time=0.011..692.101 rows=12 loops=1)
+                Filter: (user_id = 'u-88990'::uuid) OR ((created_at >= '2025-03-01'::timestamptz) AND (created_at < '2025-04-01'::timestamptz))
+                Rows Removed by Filter: 2499988
+          # ... (10 partition khác tương tự)
+          ->  Seq Scan on txn_log_2025_03  (cost=0.00..45678.12 rows=12 width=64) (actual time=0.010..695.321 rows=12 loops=1)
+                Filter: (user_id = 'u-88990'::uuid) OR ((created_at >= '2025-03-01'::timestamptz) AND (created_at < '2025-04-01'::timestamptz))
+                Rows Removed by Filter: 2499988
+  Planning Time: 0.812 ms
+  Execution Time: 8342.451 ms`,
+      },
+      {
+        name: 'explain-union-all-partition.txt',
+        lang: 'text',
+        content: `-- 2025-03-14 10:12:45 +07, sau khi viết lại UNION ALL
+logistics=# EXPLAIN (ANALYZE, BUFFERS)
+WITH matched AS (
+  SELECT id, user_id, amount, created_at, status
+  FROM txn_log
+  WHERE user_id = 'u-88990'::uuid
+  UNION ALL
+  SELECT id, user_id, amount, created_at, status
+  FROM txn_log
+  WHERE created_at >= '2025-03-01'::timestamptz
+    AND created_at < '2025-04-01'::timestamptz
+)
+SELECT DISTINCT ON (id) id, user_id, amount, created_at, status
+FROM matched
+ORDER BY id, created_at DESC
+LIMIT 50;
+                                                           QUERY PLAN
+--------------------------------------------------------------------------------------------------------------------------------------
+  Limit  (cost=12.44..12.48 rows=50 width=64) (actual time=0.412..0.418 rows=50 loops=1)
+    Buffers: shared hit=8 read=0
+    ->  Unique  (cost=12.44..12.48 rows=50 width=64) (actual time=0.410..0.415 rows=50 loops=1)
+          ->  Sort  (cost=12.44..12.48 rows=50 width=64) (actual time=0.408..0.412 rows=50 loops=1)
+                Sort Key: id, created_at DESC
+                Sort Method: quicksort  Memory Usage: 32kB
+          ->  Append  (cost=0.42..12.36 rows=100 width=64) (actual time=0.031..0.387 rows=100 loops=1)
+                      ->  Index Scan Backward using txn_log_2025_03_user_id_created_at_desc_idx on txn_log_2025_03  (cost=0.42..6.18 rows=50 width=64) (actual time=0.021..0.192 rows=50 loops=1)
+                      Index Cond: (user_id = 'u-88990'::uuid)
+                ->  Index Scan Backward using txn_log_2025_03_created_at_idx on txn_log_2025_03  (cost=0.42..6.18 rows=50 width=64) (actual time=0.020..0.191 rows=50 loops=1)
+                      Index Cond: (created_at >= '2025-03-01'::timestamptz AND created_at < '2025-04-01'::timestamptz)
+  Planning Time: 0.512 ms
+  Execution Time: 0.432 ms`,
+      },
+      {
+        name: 'show-partitions.txt',
+        lang: 'text',
+        content: `-- 2025-03-14 10:15:00 +07
+logistics=# \d+ txn_log
+                                    Partitioned table "public.txn_log"
+  Column   |           Type           | Collation | Nullable | Default
+-----------+--------------------------+-----------+----------+---------
+  id       | uuid                     |           | not null |
+  user_id  | uuid                     |           | not null |
+  amount   | numeric(12,2)            |           | not null |
+  created_at | timestamp with time zone |           | not null |
+  status   | character varying(16)    |           | not null |
+Partition key: RANGE (created_at)
+Partitions: txn_log_2025_01 FOR VALUES FROM ('2025-01-01') TO ('2025-02-01'),
+            txn_log_2025_02 FOR VALUES FROM ('2025-02-01') TO ('2025-03-01'),
+            txn_log_2025_03 FOR VALUES FROM ('2025-03-01') TO ('2025-04-01'),
+            ... (tới txn_log_2025_12)
+
+logistics=# \d txn_log_2025_03
+                                    Table "public.txn_log_2025_03"
+    Column   |           Type           | Collation | Nullable | Default
+------------+--------------------------+-----------+----------+---------
+  ... (cùng cột)
+Indexes:
+    "txn_log_2025_03_pkey" PRIMARY KEY, btree (id)
+    "txn_log_2025_03_user_id_created_at_desc_idx" btree (user_id, created_at DESC)
+    "txn_log_2025_03_created_at_idx" btree (created_at)`,
+      },
+    ],
+    questions: [
+      'Vì sao câu query với OR giữa user_id và created_at làm planner quét 12 partition thay vì chỉ partition tháng 3? Chỉ ra bằng dòng "Subplans Removed: 11" trong plan.',
+      'Partition pruning hoạt động như thế nào, và tại sao điều kiện OR khiến nó thất bại? Giải thích tại sao UNION ALL khắc phục được.',
+      'Hãy viết lại query bằng UNION ALL (mỗi nhánh lọc một điều kiện) và giải thích vì sao planner giờ chỉ quét partition txn_log_2025_03 cho cả hai nhánh.',
+    ],
+    hints: [
+      'Partition pruning yêu cầu điều kiện WHERE có thể xác định được partition key (created_at) tại thời điểm plan. Điều kiện OR: user_id = ? OR (created_at BETWEEN ? AND ?) — planner không thể chứng minh rằng chỉ partition tháng 3 liên quan, vì user_id có thể nằm ở partition khác.',
+      'Dòng "Subplans Removed: 11" trong Append node cho thấy 11 partition bị loại sau khi plan (chạy-time pruning), nhưng Seq Scan vẫn chạy trên 12 partition trước khi lọc -> đọc 30 triệu dòng.',
+      'UNION ALL tách thành 2 nhánh: nhánh 1 chỉ lọc user_id (quét tất cả partition vì không có điều kiện trên partition key), nhánh 2 chỉ lọc created_at (pruning chỉ partition tháng 3). Nhánh 1 vẫn chậm? Thực tế user u-88990 chỉ có giao dịch tháng 3 -> planner dùng Index Scan trên từng partition, nhanh. Nếu user có dữ liệu nhiều tháng, cân nhắc partial index hoặc chạy nhánh user_id trên partition gần nhất trước.',
+    ],
+    answer: `**Tóm tắt:** Câu query {{WHERE user_id = ? OR (created_at BETWEEN ? AND ?)}} trên bảng {{txn_log}} phân vùng theo {{created_at}} khiến **partition pruning thất bại** — planner không thể xác định trước partition nào liên quan (vì user_id có thể ở partition nào) -> quét **12 partition** (30 triệu dòng), Seq Scan mỗi partition, 8,4 giây. Sửa bằng **UNION ALL**: tách thành 2 nhánh, nhánh 1 lọc user_id, nhánh 2 lọc created_at. Nhánh 2 pruning được chỉ partition tháng 3; nhánh 1 dùng Index Scan trên từng partition (nhanh vì user chỉ có giao dịch tháng 3). Từ 8.342 ms xuống 0,432 ms (~19.000 lần).
+    
+### Kiến thức nền: partition pruning trong PostgreSQL
+**Partition pruning** là kỹ thuật planner loại bỏ partition không cần quét dựa trên điều kiện WHERE chứa **partition key**. Có hai loại:
+- **Static pruning** (tại lúc plan): điều kiện trên partition key là hằng số hoặc parameter $n mà planner có thể đánh giá -> loại bỏ partition ngay trong plan (Subplans Removed).
+- **Run-time pruning** (tại lúc chạy): điều kiện trên partition key chứa tham số không biết giá trị lúc plan (ví dụ $1) -> planner giữ tất cả partition trong plan, nhưng executor loại bỏ partition không khớp khi chạy (Append node có "Subplans Removed").
+
+Điểm mấu chốt: pruning chỉ hoạt động khi điều kiện WHERE **chứa partition key** (created_at) và có thể chuyển thành điều kiện range trên key. Nếu điều kiện là OR giữa partition key và cột khác, planner **không thể chứng minh** chỉ một tập partition liên quan -> phải giữ tất cả.
+
+### Nguyên nhân gốc, từng bước
+1. Bảng {{txn_log}} phân vùng RANGE trên {{created_at}}, 12 partition (tháng 1–12/2025).
+2. Câu query: {{WHERE user_id = 'u-88990' OR (created_at >= '2025-03-01' AND created_at < '2025-04-01')}}.
+3. Planner thấy điều kiện OR: vế thứ hai chứa partition key {{created_at}}, nhưng vế thứ nhất {{user_id}} **không chứa partition key**.
+4. Vì {{user_id = 'u-88990'}} có thể khớp dòng ở **bất kỳ partition nào** (user có thể giao dịch tháng nào cũng được), planner **không thể loại bỏ partition nào** dựa trên vế OR này.
+5. Planner chọn plan quét tất cả 12 partition (Append node), mỗi partition chạy Seq Scan với Filter OR. Dòng **"Subplans Removed: 11"** trong plan chỉ ra 11 partition bị loại ở *run-time* (sau khi Seq Scan xong), nhưng thực tế vẫn đã đọc hết 30 triệu dòng trước khi lọc.
+6. Tổng dữ liệu đọc: 12 partition × 2,5 triệu = 30 triệu dòng, Seq Scan mỗi partition -> 8,4 giây.
+
+### Dẫn chứng
+- Artifact 1: **Append node với 12 subplan** (txn_log_2025_01 đến txn_log_2025_12), **"Subplans Removed: 11"** — pruning chỉ xảy ra sau khi chạy, không phải lúc plan. Mỗi partition **Seq Scan**, Filter OR, Rows Removed 2.499.988/partition.
+- Artifact 1: **Execution Time: 8342.451 ms**, Buffers 189.432 hit.
+- Artifact 2: UNION ALL -> **Append chỉ 2 subplan** (txn_log_2025_03 cho cả hai nhánh), **"Subplans Removed: 11"**. Nhánh 1: **Index Scan Backward using ..._user_id_created_at_desc_idx**; Nhánh 2: **Index Scan Backward using ..._created_at_idx**.
+- Artifact 2: **Execution Time: 0.432 ms**, Buffers 8 hit — nhanh ~19.000 lần.
+- Artifact 3: partition txn_log_2025_03 có index {{(user_id, created_at DESC)}} và {{created_at}}.
+
+### Cách sửa ngắn hạn (hôm nay)
+- Viết lại query bằng **UNION ALL** (hoặc UNION + DISTINCT nếu cần loại trùng):
+  ~~~sql
+  WITH matched AS (
+    SELECT id, user_id, amount, created_at, status
+    FROM txn_log
+    WHERE user_id = $1
+    UNION ALL
+    SELECT id, user_id, amount, created_at, status
+    FROM txn_log
+    WHERE created_at >= $2 AND created_at < $3
+  )
+  SELECT DISTINCT ON (id) id, user_id, amount, created_at, status
+  FROM matched
+  ORDER BY id, created_at DESC
+  LIMIT 50;
+  ~~~
+- Nhánh 1 (user_id): quét tất cả partition nhưng dùng **Index Scan** trên {{(user_id, created_at DESC)}} — nhanh vì index cục bộ.
+- Nhánh 2 (created_at): **pruning chỉ partition tháng 3**, dùng **Index Scan** trên {{created_at}}.
+- LIMIT push down: PostgreSQL 14+ push LIMIT vào mỗi nhánh của Append -> chỉ đọc 50 dòng mỗi nhánh.
+
+### Cách sửa dài hạn
+1. **Không dùng OR giữa partition key và cột khác** trong WHERE trên bảng phân vùng. Quy tắc review: partition key phải nằm trong điều kiện AND đơn lẻ, hoặc viết lại bằng UNION ALL.
+2. **Partial index** nếu cần OR thường xuyên: {{CREATE INDEX ... ON txn_log (user_id) WHERE created_at >= '2026-01-01';}} — nhưng chỉ giúp partition gần nhất.
+3. **Cảnh báo auto_explain**: bật {{log_min_duration}} và alert khi Append node có Subplans Removed lớn (> 5) nhưng Execution Time cao — dấu hiệu pruning thất bại.
+4. **Theo dõi pg_stat_user_tables** cho từng partition: nếu một partition bị Seq Scan nhiều mà có index, kiểm tra điều kiện WHERE.
+
+### Phòng ngừa và monitoring
+- Alert khi {{EXPLAIN}} cho thấy Append node quét nhiều partition với Seq Scan mà có index cục bộ.
+- Dashboard: số partition quét trung bình cho query tìm kiếm, tỉ lệ pruning thành công.
+- Test query trên dữ liệu production-like (12 partition) mọi PR thay đổi logic tìm kiếm.
+
+### Trả lời mẫu khi phỏng vấn
+"Query OR giữa user_id và created_at trên bảng txn_log partition theo created_at chạy 8 giây vì partition pruning thất bại: planner không thể loại bỏ partition nào vì user_id có thể ở partition bất kỳ -> quét 12 partition Seq Scan 30 triệu dòng. Tôi viết lại bằng UNION ALL: nhánh 1 lọc user_id (Index Scan trên từng partition), nhánh 2 lọc created_at (pruning chỉ partition tháng 3, Index Scan). Từ 8.342 ms xuống 0,432 ms. Nguyên tắc: không OR giữa partition key và cột khác, dùng UNION ALL tách điều kiện."
+
+> Senior tip: **Partition pruning là "cây chổi thần" của bảng lớn — nhưng OR là "kẻ phá hoại" nó**. Một OR đơn giản giữa partition key và cột khác đủ làm planner quét toàn bộ bảng (tất cả partition). Trên bảng 30 triệu dòng, chênh lệch giữa pruning thành công (chỉ đọc 1 partition) và thất bại (đọc 12 partition) là 12 lần I/O, 10.000 lần latency. Quy tắc của tôi: **bảng phân vùng không được có OR trong WHERE liên quan đến partition key** — nếu nghiệp vụ bắt buộc, hãy viết lại UNION ALL ở tầng repository, đừng để planner loay hoay.`,
+    rubric: [
+      'Chỉ đúng nguyên nhân: OR giữa user_id (không phải partition key) và created_at (partition key) khiến planner không thể prune partition -> quét 12 partition Seq Scan 30 triệu dòng',
+      'Dẫn chứng đúng: artifact 1 Append 12 subplan, Subplans Removed 11, Seq Scan mỗi partition, 8.342 ms; artifact 2 UNION ALL chỉ 2 subplan trên txn_log_2025_03, Index Scan, 0,432 ms',
+      'Giải thích đúng partition pruning: static vs run-time, yêu cầu điều kiện chứa partition key, OR phá vỡ khả năng chứng minh',
+      'Đề xuất sửa đúng: UNION ALL tách 2 nhánh, nhánh 2 pruning partition tháng 3, nhánh 1 Index Scan, LIMIT push down',
+      'Có monitoring/phòng ngừa: alert Append quét nhiều partition, auto_explain, quy tắc review không OR với partition key',
+    ],
+    tags: ['postgresql', 'partition', 'partition-pruning', 'or-condition', 'union-all', 'partitioned-table'],
+  },
 );
 
