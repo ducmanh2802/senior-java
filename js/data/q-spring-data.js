@@ -17729,6 +17729,204 @@ Cùng hệ thống, team lầm bước bật 2LC cho entity {{Account}} (số d�
   tags: ['second-level cache', 'CacheConcurrencyStrategy', 'READ_ONLY', 'READ_WRITE', 'distributed cache', 'stale data', 'bulk insert']
 },
 {
+  id: 'jpa-090',
+  topic: 'jpa',
+  level: 'lead',
+  q: 'Nhập 1 triệu bản ghi vào PostgreSQL bằng Hibernate 6 mỗi đêm: chọn persist + flush/clear hay JdbcTemplate/JdbcClient batchUpdate, và làm sao biết batching thật sự đang chạy?',
+  a: `**Tóm tắt:** Với 1 triệu dòng, mục tiêu là giảm số lần gọi DB (round-trip) và không để persistence context phình to. Hibernate batch (persist + flush/clear) đơn giản và giữ lifecycle của entity, còn JdbcTemplate/JdbcClient batchUpdate bỏ qua Hibernate hoàn toàn, nhanh hơn nhưng bạn tự viết SQL và tự mapping.
+
+### Cơ chế bên trong
+Hibernate gom nhiều câu INSERT cùng loại vào một executeBatch() duy nhất, nhưng chỉ khi (1) id được biết trước khi insert, (2) nhiều insert cùng kiểu đứng liền nhau, (3) không có query JPQL khác chen giữa gây flush sớm. Với GenerationType.IDENTITY, database mới sinh id sau khi insert ⇒ Hibernate phải chạy từng INSERT để lấy id ⇒ batching bị tắt. Dùng SEQUENCE với allocationSize (pooled optimizer) để id được gán trước, và increment của sequence trong DB phải khớp allocationSize, nếu không ID sẽ trùng hoặc nhảy cóc.
+
+### Cấu hình và code Hibernate batch
+~~~yaml
+spring:
+  jpa:
+    properties:
+      hibernate:
+        jdbc:
+          batch_size: 100
+          batch_versioned_data: true
+        order_inserts: true
+        order_updates: true
+  datasource:
+    url: jdbc:postgresql://db:5432/app?reWriteBatchedInserts=true
+~~~
+
+~~~java
+@Id
+@GeneratedValue(strategy = GenerationType.SEQUENCE, generator = "tx_seq")
+@SequenceGenerator(name = "tx_seq", sequenceName = "tx_id_seq", allocationSize = 100)
+private Long id;
+
+@Transactional
+public void importTransactions(List<TxRow> rows) {
+    int chunk = 500;
+    for (int i = 0; i < rows.size(); i += chunk) {
+        List<TxRow> part = rows.subList(i, Math.min(i + chunk, rows.size()));
+        for (TxRow r : part) em.persist(mapper.toEntity(r));
+        em.flush();   // đẩy batch xuống DB
+        em.clear();   // giải phóng persistence context (snapshot + dirty check)
+    }
+}
+~~~
+
+### Kiểm chứng batching thật sự chạy
+Bật hibernate.generate_statistics=true hoặc dùng datasource-proxy: số batch phải xấp xỉ số dòng chia batch_size (1 triệu / 100 = 10.000 batch). Nếu số statement gần 1 triệu thì batching không hoạt động (thường do IDENTITY hoặc flush sớm do query chen giữa vòng lặp).
+
+### JdbcTemplate/JdbcClient batchUpdate (bỏ qua Hibernate)
+~~~java
+jdbcTemplate.batchUpdate(
+    "insert into tx_history(tx_id, amount, created_at) values (?, ?, ?)",
+    rows, 1000, (ps, r) -> {
+        ps.setLong(1, r.txId());
+        ps.setBigDecimal(2, r.amount());
+        ps.setTimestamp(3, r.createdAt());
+    });
+~~~
+Không có persistence context, không dirty check, không cascade ⇒ memory ổn định và nhanh nhất, nhưng bạn tự quản lý mapping, id và validation.
+
+### Bảng so sánh
+| Tiêu chí | Hibernate batch | JdbcTemplate/JdbcClient batch |
+|---|---|---|
+| Throughput với 1 triệu dòng | Trung bình cao | Rất cao |
+| Bộ nhớ | Phụ thuộc flush/clear | Rất thấp (stream từng dòng) |
+| Callback vòng đời | Có (@PrePersist...) | Không |
+| Quản lý id và mapping | Hibernate | Bạn tự viết |
+| Dùng khi | Cần entity, quan hệ, callback | Chỉ ghi thuần, tối ưu tốc độ |
+
+### Pitfall production
+- Gọi query JPQL trong vòng lặp insert gây auto-flush trước query ⇒ flush sớm, phá batch. Tránh đọc DB giữa vòng lặp.
+- Transaction quá dài (1 triệu dòng trong 1 transaction) làm undo log/WAL phình to, chặn vacuum và commit lâu. Chia transaction ngắn (ví dụ commit mỗi 50.000 dòng).
+- IDENTITY ở bất kỳ entity nào trong chuỗi liên kết đều làm mất batching. Kiểm tra lại mọi @GeneratedValue.
+- batch_size quá lớn giữ nhiều statement trong bộ nhớ; 50-500 là điểm khởi đầu, hãy tăng dần và đo.
+
+### Ví dụ đời thực
+Job nhập 1 triệu dòng lịch sử giao dịch từ CSV mỗi cuối tháng. Lần đầu dùng repository.save() trong vòng lặp, entity dùng IDENTITY, không flush/clear: job mất hơn 40 phút, heap đẩy tới gần 1 GB, GC liên tục, p95 API giao dịch tăng gấp 3. Điều tra qua hibernate.generate_statistics thấy gần 1 triệu INSERT riêng lẻ, batch size thực tế bằng 1. Sửa: đổi sang SEQUENCE allocationSize 100 (tạo sequence INCREMENT BY 100), bật batch_size 100, order_inserts, reWriteBatchedInserts, flush/clear mỗi 500 dòng, commit mỗi 50.000 dòng. Kết quả: job còn khoảng 3 phút, heap ổn định dưới 512 MB, số statement giảm từ 1 triệu xuống khoảng 10.000 batch, latency API không bị ảnh hưởng.
+
+### Trả lời mẫu khi phỏng vấn
+Khi nhập 1 triệu dòng, tôi tối ưu hai trục: giảm round-trip và giữ persistence context nhỏ. Tôi bật hibernate.jdbc.batch_size khoảng 100, order_inserts và order_updates, và dùng SEQUENCE với pooled optimizer (allocationSize 100) vì IDENTITY buộc Hibernate lấy id sau mỗi insert, làm tắt batching. Với JPA, tôi persist theo lô rồi flush + clear để giải phóng bộ nhớ; với dữ liệu thuần ghi mà không cần đọc lại, JdbcTemplate hay JdbcClient batchUpdate nhanh hơn và nhẹ hơn. Tôi kiểm chứng bằng hibernate.generate_statistics hoặc datasource-proxy: số batch phải gần số dòng chia batch_size. Mỗi câu INSERT riêng lẻ là một round-trip; 1 triệu dòng với độ trễ mạng 0,5 ms đã tốn 50 giây chỉ chờ mạng, còn batching gom 100 câu vào một lần gọi executeBatch. Tôi cũng chia transaction ngắn (ví dụ commit mỗi 50.000 dòng) để undo log và WAL không phình to, tránh chặn vacuum và làm chậm commit. Tránh gọi query trong vòng lặp vì gây auto-flush sớm.
+
+> Senior tip: đừng tin cấu hình, hãy đo. Bật hibernate.generate_statistics trong test và assert số batch. Lỗi hay gặp nhất là batch "đã bật" nhưng vẫn một statement cho mỗi entity vì IDENTITY, hoặc vì code gọi query giữa vòng lặp khiến Hibernate flush sớm.`,
+  follow: [
+    'Vì sao IDENTITY làm tắt JDBC batching và SEQUENCE + pooled optimizer giải quyết thế nào?',
+    'Làm sao biết Hibernate batching thật sự đang chạy thay vì chỉ là cấu hình?',
+    'Tại sao cần flush và clear định kỳ khi import hàng triệu dòng?'
+  ],
+  tags: ['core', 'jpa', 'batch insert', 'hibernate', 'IDENTITY', 'SEQUENCE', 'pooled optimizer', 'flush clear']
+},
+{
+  id: 'jpa-091',
+  topic: 'jpa',
+  level: 'senior',
+  q: 'Màn hình danh sách đơn hàng entity có 50 cột nhưng chỉ hiển thị 5 cột: chọn trả DTO hay entity, và khi nào entity vẫn là lựa chọn tốt hơn?',
+  a: `**Tóm tắt:** Đối với màn hình chỉ đọc và hiển thị ít cột, trả DTO (projection) giảm lượng dữ liệu truyền qua mạng, giảm heap và tránh N+1, còn entity phù hợp khi cần sửa dữ liệu hoặc truy cập quan hệ lazy sau này.
+
+### Cơ chế bên trong
+Entity được Hibernate nạp đầy đủ mọi cột vào persistence context, giữ bản snapshot để dirty checking, và có thể kích hoạt lazy loading khi serialize sang JSON. DTO projection qua SELECT new hoặc @Query chỉ lấy đúng các cột cần, Hibernate không tạo entity được quản lý, không dirty-check, không có lazy. Interface projection trong Spring Data có hai dạng: derived query (findBy...) vẫn load toàn bộ entity rồi map trong bộ nhớ, còn kèm @Query SELECT ít cột thì mới giảm I/O cơ sở dữ liệu.
+
+### Ví dụ projection
+~~~java
+public record OrderRow(Long id, String code, String status, LocalDateTime createdAt, BigDecimal totalAmount) {}
+
+@Query("select new com.acme.OrderRow(o.id, o.code, o.status, o.createdAt, o.totalAmount) from Order o where o.status = ?1")
+Page<OrderRow> findByStatus(String status, Pageable pageable);
+~~~
+Entity có 50 cột (bao gồm cột nặng như ghi chú JSONB và collection sản phẩm lazy), DTO chỉ 5 cột ⇒ mỗi dòng giảm từ vài KB xuống vài trăm byte.
+
+### Khi nào dùng cái nào
+| Tình huống | Nên dùng | Lý do |
+|---|---|---|
+| Xem danh sách, chỉ đọc, ít cột | DTO projection | ít I/O, ít heap, không N+1 |
+| Sửa dữ liệu sau khi xem | Entity | dirty checking tự động, đơn giản |
+| Cần quan hệ lazy (items, customer) | Entity hoặc @EntityGraph | DTO không quản lý quan hệ |
+| Báo cáo tổng hợp nhiều cột tính toán | DTO hoặc native query | không kéo toàn bộ entity |
+
+### Phân trang: Page vs Slice
+Page chạy thêm câu SELECT count(*) để biết tổng số trang ⇒ thêm một query mỗi lần. Slice chỉ hỏi có trang tiếp theo không ⇒ tiết kiệm một câu count, thích hợp cho danh sách cuộn vô hạn (infinite scroll).
+
+### Pitfall production
+- DTO projection kèm phân trang vẫn chạy query đếm nếu dùng Page ⇒ tính vào tài nguyên DB.
+- Open projection (@Value với SpEL) giữ tham chiếu entity gốc ⇒ truy cập quan hệ lazy gây LazyInitializationException hoặc N+1. Ưu tiên closed projection.
+- Trả entity thẳng ra controller ⇒ Jackson kích hoạt lazy getter, serialize toàn bộ quan hệ, dễ rò rỉ trường nhạy cảm.
+- Constructor projection (SELECT new) với record/DTO: constructor phải public và tham số khớp thứ tự trong SELECT.
+
+### Ví dụ đời thực
+API danh sách đơn hàng trả entity Order (50 cột, kèm collection items lazy) cho 50 đơn/trang. Mỗi request kéo khoảng 1,2 MB JSON, persistence context giữ 50 entity cùng snapshot, p95 khoảng 420 ms. Đổi sang DTO OrderRow 5 cột qua SELECT new: mỗi request khoảng 80 KB JSON, không còn entity-managed, số query từ 51 (1 danh sách + 50 items do lazy trong Jackson) xuống 1, p95 giảm còn 60 ms, heap mỗi request giảm hơn 80%. Khi equipe cần sửa đơn hàng từ màn hình chi tiết, họ dùng entity trong transaction riêng ⇒ mỗi màn hình dùng công cụ phù hợp, không dùng entity ở nơi chỉ đọc.
+
+### Trả lời mẫu khi phỏng vấn
+Màn hình danh sách chỉ đọc và hiển thị ít cột, tôi trả DTO thay vì entity: qua SELECT new hoặc @Query, Hibernate chỉ SELECT đúng cột cần, không tạo entity-managed, không dirty-check, không có lazy loading, nên giảm cả I/O cơ sở dữ liệu và bộ nhớ. Nếu cần chỉnh sửa dữ liệu hoặc truy cập quan hệ lazy, tôi giữ entity trong transaction. Tôi cũng ưu tiên closed projection (@Value SpEL có thể kích hoạt lazy qua entity gốc) và chọn Slice thay Page khi danh sách cuộn vô hạn để bớt câu count. Phân trang thì dùng Slice cho cuộn vô hạn để tránh câu count thêm, còn Page khi người dùng cần biết tổng số trang. Tránh trả entity thẳng ra controller để Jackson không kích hoạt lazy getter và rò rỉ dữ liệu. Mỗi màn hình dùng công cụ phù hợp: đọc dùng DTO, ghi dùng entity. Thực tế, đổi từ entity 50 cột sang DTO 5 cột giúp API danh sách đơn hàng giảm từ 420 ms xuống 60 ms và heap mỗi request giảm hơn 80%.
+
+> Senior tip: hãy theo nguyên tắc "đọc dùng DTO, ghi dùng entity". Màn hình danh sách chỉ cần vài cột thì không lý do gì kéo cả bảng; ngược lại, màn hình chi tiết cần sửa thì entity với dirty checking ngắn gọn hơn nhiều. Luôn đo số query và heap trước khi khẳng định projection giúp ích.`,
+  follow: [
+    'Vì sao derived query kèm interface projection vẫn load toàn bộ entity?',
+    'Page và Slice khác nhau ở chỗ nào, chọn cái nào cho danh sách cuộn vô hạn?',
+    'Tại sao không nên trả entity JPA thẳng ra controller để Jackson serialize?'
+  ],
+  tags: ['core', 'jpa', 'projection', 'DTO', 'entity', 'Page', 'Slice', 'N+1']
+},
+{
+  id: 'jpa-092',
+  topic: 'jpa',
+  level: 'senior',
+  q: 'Bạn được hỏi xem có nên bật second-level cache của Hibernate cho hệ thống hay không. Bạn quyết định dựa trên những yếu tố, và trường hợp nào tuyệt đối không nên bật?',
+  a: `**Tóm tắt:** Second-level cache (L2) là cache dùng chung giữa các persistence context, phù hợp dữ liệu đọc nhiều, ghi ít, chấp nhận dữ liệu cũ vài phút. Tuyệt đối không bật cho dữ liệu ghi thường xuyên, dữ liệu bị hệ thống khác ghi vào cùng DB, hoặc yêu cầu chính xác tức thời như số dư tài chính.
+
+### Cơ chế bên trong
+L1 (persistence context) chỉ tồn tại trong một session/transaction. L2 nằm ngoài session, dùng chung mọi session của SessionFactory, và có thể chia sẻ nhiều instance qua distributed cache. Load entity theo ID: kiểm tra L1 → L2 → DB, rồi lưu vào cả hai. Khi entity được sửa qua Hibernate, Hibernate invalidate entry liên quan trong L2. Hibernate không biết khi DB bị sửa bởi ứng dụng khác, script SQL, hoặc ETL ⇒ cache bị stale cho tới khi cache provider hết TTL hoặc invalidate.
+
+### Quyết định bật hay tắt
+| Yếu tố | Bật L2 | Không bật |
+|---|---|---|
+| Đọc nhiều, ghi ít | Có | — |
+| Chấp nhận dữ liệu cũ vài phút | Có | — |
+| Ghi thường xuyên | — | Cache invalidate liên tục, trở thành bottleneck |
+| DB bị hệ thống khác ghi (ETL, service khác) | — | Hibernate không thấy, cache stale |
+| Yêu cầu chính xác tức thời (số dư, ví) | — | Sai vài đồng là lỗi nghiêm trọng |
+| Nhiều instance, cache local không phân tán | — | Mỗi instance cache riêng ⇒ dữ liệu không đồng nhất |
+
+### Cấu hình và ví dụ
+~~~yaml
+spring:
+  jpa:
+    properties:
+      hibernate.cache.use_second_level_cache: true
+      hibernate.cache.region.factory_class: jcache
+~~~
+
+~~~java
+@Entity
+@Cache(usage = CacheConcurrencyStrategy.READ_ONLY, region = "currency")
+@Table(name = "currency")
+public class Currency {
+    @Id private String code;
+    private String name;
+    private BigDecimal rate;
+}
+~~~
+READ_ONLY cho dữ liệu không đổi (mã tiền tệ, mã quốc gia); READ_WRITE cho dữ liệu đọc nhiều sửa vừa phải (invalidate khi ghi); NONSTRICT_READ_WRITE chấp nhận đọc dữ liệu cũ khoảnh khắc (dùng TTL); TRANSACTIONAL cho môi trường JTA.
+
+### Pitfall production
+- L2 mặc định là local cache (mỗi instance một cache). Hai instance ghi cùng dữ liệu sẽ thấy cache không đồng nhất ⇒ cần distributed cache (Hazelcast, Infinispan) nếu dùng trên nhiều instance.
+- Bulk insert 1 triệu dòng invalidates cache liên tục ⇒ 2LC trở thành bottleneck, tắt 2LC cho entity chỉ dùng trong bulk load.
+- Cache provider cấu hình TTL quá dài hoặc không invalidate khi DB thay đổi bên ngoài ⇒ đọc dữ liệu cũ.
+- Cache collection lớn tốn RAM và invalidate phức tạp.
+
+### Ví dụ đời thực
+Hệ thống thanh toán hiển thị 150 loại tiền tệ, đọc 5.000 lần/giây, tỷ giá cập nhật một lần ngày. Bật L2 với READ_ONLY cho entity Currency ⇒ hit ratio 99.8%, tải DB từ bảng currency giảm gần về 0. Cùng hệ thống, team lầm bước bật L2 cho entity Account (số dư) với READ_WRITE. Khách hàng A rút 1 triệu đồng và commit, nhưng cache số dư của khách A trên instance B chưa invalidate kịp ⇒ khách B thấy số dư cũ và được phép rút nữa. Sửa: tắt L2 cho Account, đọc số dư trực tiếp từ DB với PESSIMISTIC_WRITE khi cần chính xác tuyệt đối.
+
+### Trả lời mẫu khi phỏng vấn
+Tôi quyết định bật second-level cache dựa trên bốn câu hỏi: dữ liệu được đọc bao nhiêu lần/giây, thay đổi bao nhiêu lần/giây, sai vài phút có hậu quả gì, và ai khác có thể ghi vào cùng bảng. L2 phù hợp dữ liệu đọc nhiều, ghi ít, chấp nhận dữ liệu cũ vài phút, ví dụ mã tiền tệ hoặc danh mục sản phẩm (READ_ONLY, hit ratio có thể đạt 99%). Tuyệt đối không bật cho số dư tài khoản, ví điện tử, hoặc dữ liệu ghi thường xuyên: invalidate liên tục làm cache trở thành bottleneck, và sai dữ liệu là lỗi nghiêm trọng. Nếu DB bị ghi bởi hệ thống khác (ETL, service khác), Hibernate không biết ⇒ cache stale, hãy cấu hình TTL ngắn ở cache provider hoặc dùng Spring Cache thay vì L2. Chạy nhiều instance với local cache làm dữ liệu không đồng nhất ⇒ cần distributed cache. Bulk insert lớn invalidates cache liên tục ⇒ tắt L2 cho entity đó trong lúc nạp.
+
+> Senior tip: trước khi bật L2, trả lời được ba câu: dữ liệu được đọc bao nhiêu lần/giây, thay đổi bao nhiêu lần/giây, và nếu dữ liệu sai vài phút hậu quả gì. Nếu câu trả lời là đọc ít, ghi nhiều, hoặc sai là mất tiền, hãy bỏ qua L2. Tôi thường bắt đầu với READ_ONLY cho dữ liệu tham chiếu và theo dõi cache hit ratio như một metric quan trọng.`,
+  follow: [
+    'Vì sao second-level cache không phù hợp với số dư tài khoản hoặc ví điện tử?',
+    'Hai instance Spring Boot dùng cùng database mà L2 là local cache sẽ ra sao?',
+    'Bulk insert 1 triệu dòng ảnh hưởng thế nào đến second-level cache, và bạn xử lý ra sao?'
+  ],
+  tags: ['core', 'jpa', 'second-level cache', 'CacheConcurrencyStrategy', 'READ_ONLY', 'READ_WRITE', 'distributed cache', 'stale data']
+},
+{
   id: 'spring-105',
   topic: 'spring',
   level: 'lead',
