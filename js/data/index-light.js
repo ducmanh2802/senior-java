@@ -2989,6 +2989,8 @@ window.DATA_INDEX = {
     {"id":"lesson-testing-012","track":"testing","order":12,"title":"Test tích hợp đúng cách cho Spring Boot 3: test pyramid, slice test, Testcontainers và dọn dữ liệu","level":"senior","minutes":40},
     {"id":"lesson-testing-013","track":"testing","order":13,"title":"Test double: stub vs mock vs fake vs spy — viết fake repository và đếm lời gọi","level":"mid","minutes":30},
     {"id":"lesson-testing-014","track":"testing","order":14,"title":"Test code phụ thuộc thời gian bằng Clock cố định — tính phí trễ hạn theo ngày","level":"senior","minutes":25},
+    {"id":"lesson-testing-015","track":"testing","order":15,"title":"Test double cho code bất đồng bộ: fake executor, stub future, mock callback","level":"senior","minutes":35},
+    {"id":"lesson-testing-016","track":"testing","order":16,"title":"Test scheduled job và retry backoff bằng MutableClock: advance thời gian trong test","level":"senior","minutes":30},
     {"id":"lesson-api-001","track":"api","order":1,"title":"HTTP từ bên trong: method an toàn, status code và header","level":"mid","minutes":25},
     {"id":"lesson-api-002","track":"api","order":2,"title":"Thiết kế REST resource, validation và lỗi chuẩn Problem Details","level":"mid","minutes":30},
     {"id":"lesson-api-003","track":"api","order":3,"title":"Idempotency key cho POST: chống trừ tiền hai lần","level":"senior","minutes":35},

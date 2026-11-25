@@ -5351,4 +5351,912 @@ Trong Spring Boot, hãy khai báo {{Clock}} là bean và inject; đừng gọi {
   related: ['testing-005', 'testing-010'],
   tags: ['Clock', 'time', 'flaky test', 'Instant', 'timezone', 'late fee'],
 },
+{
+  id: 'lesson-testing-015',
+  track: 'testing',
+  order: 15,
+  title: 'Test double cho code bất đồng bộ: fake executor, stub future, mock callback',
+  level: 'senior',
+  minutes: 35,
+  goals: [
+    'Hiểu tại sao test code async (CompletableFuture, ExecutorService, callback) lại khó và flaky khi dùng sleep/latch',
+    'Viết fake Executor chạy task ngay lập tức (inline) để test deterministic, không cần chờ',
+    'Dùng stub CompletableFuture cho dependency async, mock callback để verify interaction',
+  ],
+  body: `**Tóm tắt:** Code bất đồng bộ (async) dùng CompletableFuture, ExecutorService, hay callback thường khiến test phải dùng Thread.sleep, CountDownLatch, hoặc Awaitility — dẫn đến test chậm, flaky, và khó kiểm tra các kịch báo lỗi/timeout. Giải pháp là tiêm Executor (hoặc ScheduledExecutorService) vào service, trong test dùng fake executor chạy task ngay trên thread hiện tại (inline), stub future cho dependency, và mock callback để verify đúng tham số. Cách này biến test async thành test sync, chạy trong vài mili giây, kiểm soát được mọi luồng.
+  
+### Vì sao test code async khó
+Một service điển hình gọi API bên ngoài rồi xử lý kết quả:
+  
+~~~java
+class OrderService {
+    private final HttpClient http;
+    private final ExecutorService executor;
+  
+    OrderService(HttpClient http, ExecutorService executor) {
+        this.http = http;
+        this.executor = executor;
+    }
+  
+    CompletableFuture<Order> fetchOrderAsync(String id) {
+        return CompletableFuture.supplyAsync(() -> http.getOrder(id), executor)
+                .thenApply(this::enrich)
+                .exceptionally(ex -> fallbackOrder(id));
+    }
+}
+~~~
+  
+Test thường làm một trong ba cách sai:
+1. **Thread.sleep(1000)** — chậm, flaky (CI tải cao thread chậm hơn), không bao giờ biết chờ bao lâu là đủ.
+2. **CountDownLatch/Awaitility** — phức tạp, vẫn phải chờ thật, khó test exception path.
+3. **Chạy thật executor** — test phụ thuộc thread pool, thứ tự chạy không deterministic, race condition khi assert.
+
+Cốt lõi: **Executor là dependency** như Clock, Database, HTTP client. Tiêm nó vào, test thay bằng fake chạy ngay.
+
+### Fake Executor: chạy task ngay lập tức (inline executor)
+Thay vì submit vào thread pool, fake executor thực thi Runnable/Callable ngay trong thread gọi:
+  
+~~~java
+class InlineExecutor implements Executor {
+    @Override public void execute(Runnable command) {
+        command.run();   // chạy ngay, không tạo thread mới
+    }
+}
+~~~
+  
+Với CompletableFuture.supplyAsync, cần ExecutorService. Có thể tự viết wrapper delegate tới InlineExecutor (gọi command.run() trực tiếp trong delegate). Khi test dùng fake này, **toàn bộ chuỗi async chạy tuần tự trong một thread** — deterministic, không race, exception ném ra ngay cho test bắt.
+
+Lưu ý: fake executor **không mô phỏng được** hành vi song song thực sự (race, deadlock, thread safety). Những bug đó phải bắt bằng integration test (Testcontainers, stress test) hoặc code review. Fake executor chỉ để test *logic nghiệp vụ* trong callback/thenApply/handle.
+
+### Stub CompletableFuture cho dependency async
+Khi service phụ thuộc một client async (HTTP, gRPC, Kafka producer), test không nên khởi động server thật. Thay vào đó, **stub future** trả về kết quả định trước:
+  
+~~~java
+CompletableFuture<Order> stubSuccess(Order order) {
+    return CompletableFuture.completedFuture(order);
+}
+  
+CompletableFuture<Order> stubFailure(Throwable ex) {
+    CompletableFuture<Order> f = new CompletableFuture<>();
+    f.completeExceptionally(ex);
+    return f;
+}
+~~~
+  
+Service nhận future này, chain thenApply/handle — logic xử lý thành công/thất bại được test mà không cần network.
+
+### Mock callback để verify interaction
+Khi service dùng callback (Consumer, BiConsumer, interface tự định nghĩa) thay vì trả future, hãy dùng **mock callback** (spy viết tay) để ghi lại lời gọi:
+  
+~~~java
+class RecordingCallback<T> implements Consumer<T> {
+    private final List<T> calls = new ArrayList<>();
+    private final List<Throwable> errors = new ArrayList<>();
+  
+    @Override public void accept(T t) { calls.add(t); }
+    void onError(Throwable t) { errors.add(t); }
+  
+    List<T> calls() { return calls; }
+    List<Throwable> errors() { return errors; }
+}
+~~~
+  
+Test verify: callback được gọi đúng một lần, với đúng tham số, hoặc onError được gọi khi future thất bại.
+
+### Kịch bản test đầy đủ
+Với fake executor + stub future + mock callback, một test có thể cover:
+- **Happy path**: stub future thành công → verify callback nhận kết quả đúng, enrichment đúng.
+- **Error path**: stub future thất bại → verify fallback logic, callback không được gọi / onError được gọi.
+- **Timeout path**: (nếu service có timeout) fake executor không mô phỏng được timeout thật; dùng integration test cho phần này.
+- **Cancellation**: stub future chưa hoàn thành, service cancel → verify cleanup.
+
+### Bẫy production hay gặp
+- **Quên tiêm executor vào ScheduledExecutorService** cho scheduled job: test không thể advance time. Hãy tiêm cả ScheduledExecutorService, test dùng fake cho phép advance (xem bài 016).
+- **Dùng ForkJoinPool.commonPool()** ngầm trong CompletableFuture (không truyền executor): test không thể thay fake. Luôn truyền executor tường minh.
+- **Fake executor che bug thread-safety**: service dùng shared state không thread-safe, fake chạy tuần tự nên test pass, production multi-thread thì crash. Code review và integration test bắt buộc.
+- **Stub future phải completeExceptionally(Throwable)**: nếu stub lỡ trả future chưa complete thì handle/whenComplete chưa kích hoạt, còn completeExceptionally(null) ném NPE ngay khi stub. Test phải cover cả success và failure.
+- **Callback giữ reference lớn**: mock callback lưu toàn bộ object lớn làm test OOM. Chỉ lưu field cần verify, hoặc dùng weak reference.
+
+> Senior tip: quy ước team: **mọi class dùng CompletableFuture.supplyAsync phải nhận Executor/ExecutorService qua constructor**. Cấm dùng commonPool. Review grep "supplyAsync(" không có executor là đỏ. Test async sau đó chỉ là test sync với fake executor — nhanh, deterministic, dễ debug.
+
+### Ví dụ đời thực: payment service async timeout production
+Một PaymentService gọi ngân hàng async với CompletableFuture, timeout 5 giây. Test dùng Awaitility chờ 6 giây — CI đôi khi pass đôi khi fail vì GC pause. Team đổi: tiêm ExecutorService, test dùng InlineExecutor, stub future trả về future đã completeExceptionally(new TimeoutException()) để mô phỏng timeout. Test chạy 50ms, cover được cả happy path, error path, timeout path. Bug "timeout không rollback transaction" bị bắt ngay ở unit test thay vì chờ production.
+
+### Trả lời mẫu khi phỏng vấn
+"Khi hỏi 'test async code thế nào?', tôi nói: đầu tiên nhận ra Executor là dependency ẩn. Tiêm ExecutorService vào service, production dùng thread pool, test dùng InlineExecutor (chạy task ngay trên thread gọi). Dependency async (HTTP client, Kafka) thì stub CompletableFuture: completedFuture cho success, completeExceptionally cho error. Callback thì dùng mock callback ghi lại lời gọi. Cách này biến test async thành sync, chạy vài mili giây, không flaky. Bug thread-safety (race, shared state) thì fake executor không bắt được — cần integration test hoặc stress test riêng."
+
+### Liên hệ phỏng vấn
+Interviewer hỏi: "Service của bạn dùng CompletableFuture gọi API bên ngoài, test thế nào?", "Tại sao không dùng Thread.sleep trong test async?", "Executor là dependency như thế nào?". Trả lời: tiêm Executor, test dùng InlineExecutor, stub future, mock callback. Giải thích sleep làm test chậm/flaky, không kiểm soát được timing. Nêu rõ fake executor không bắt được race condition — cần integration test cho đó.
+`,
+  exercises: [
+    {
+      title: 'Fake executor, stub future, mock callback cho AsyncOrderService',
+      prompt: `Cho sẵn interface {{HttpClient}}, {{Order}}, {{OrderCallback}}, class {{AsyncOrderService}}. Hãy hoàn thiện:
+  
+1. {{InlineExecutor}} implements {{Executor}}: {{execute}} chạy command ngay lập tức.
+2. {{StubHttpClient}}: cho phép cấu hình future thành công hoặc thất bại cho mỗi orderId. {{getOrderAsync}} trả future đã cấu hình, mặc định trả future failed "not configured".
+3. {{RecordingCallback}} implements {{OrderCallback}}: ghi lại {{onSuccess}} và {{onError}} calls; cung cấp {{successes()}} và {{errors()}} trả bản sao list.
+4. {{AsyncOrderService.fetchAndProcess}}: dùng {{executor}} để chạy async, chain {{thenApply}} enrich, {{handle}} error -> fallback, cuối gọi callback.
+  
+Test sẽ dùng fake executor để chạy deterministic, stub future cho success/failure, mock callback verify interaction.`,
+      starter: `import java.util.*;
+import java.util.concurrent.*;
+import java.util.function.*;
+  
+interface HttpClient {
+    CompletableFuture<Order> getOrderAsync(String orderId);
+}
+  
+record Order(String id, String customer, long amount) {}
+  
+interface OrderCallback {
+    void onSuccess(Order order);
+    void onError(String orderId, Throwable error);
+}
+  
+class InlineExecutor implements Executor {
+    @Override public void execute(Runnable command) {
+        throw new UnsupportedOperationException("TODO");
+    }
+}
+  
+class StubHttpClient implements HttpClient {
+    private final Map<String, CompletableFuture<Order>> successCases = new HashMap<>();
+    private final Map<String, Throwable> failureCases = new HashMap<>();
+  
+    StubHttpClient success(String orderId, Order order) {
+        successCases.put(orderId, CompletableFuture.completedFuture(order));
+        return this;
+    }
+  
+    StubHttpClient failure(String orderId, Throwable error) {
+        failureCases.put(orderId, error);
+        return this;
+    }
+  
+    @Override public CompletableFuture<Order> getOrderAsync(String orderId) {
+        throw new UnsupportedOperationException("TODO");
+    }
+}
+  
+class RecordingCallback implements OrderCallback {
+    private final List<Order> successes = new ArrayList<>();
+    private final List<CallbackError> errors = new ArrayList<>();
+  
+    record CallbackError(String orderId, Throwable error) {}
+  
+    @Override public void onSuccess(Order order) {
+        throw new UnsupportedOperationException("TODO");
+    }
+  
+    @Override public void onError(String orderId, Throwable error) {
+        throw new UnsupportedOperationException("TODO");
+    }
+  
+    List<Order> successes() { throw new UnsupportedOperationException("TODO"); }
+    List<CallbackError> errors() { throw new UnsupportedOperationException("TODO"); }
+}
+  
+class AsyncOrderService {
+    private final HttpClient http;
+    private final Executor executor;
+
+    AsyncOrderService(HttpClient http, Executor executor) {
+        this.http = http;
+        this.executor = executor;
+    }
+
+    void fetchAndProcess(String orderId, OrderCallback callback) {
+        throw new UnsupportedOperationException("TODO");
+    }
+  
+    private Order enrich(Order order) {
+        return new Order(order.id(), order.customer() + " (enriched)", order.amount() * 2);
+    }
+  
+    private Order fallback(String orderId) {
+        return new Order(orderId, "fallback", 0);
+    }
+}`,
+      tests: `import java.util.*;
+import java.util.concurrent.*;
+import java.util.function.*;
+  
+public class Main {
+    static int passed = 0, total = 0;
+    static void check(String name, Runnable r) {
+        total++;
+        try { r.run(); passed++; System.out.println("PASS " + name); }
+        catch (Throwable t) { System.out.println("FAIL " + name + ": " + t); }
+    }
+    static void eq(Object expected, Object actual) {
+        if (!Objects.equals(expected, actual)) throw new AssertionError("expected " + expected + " got " + actual);
+    }
+  
+    public static void main(String[] args) {
+        check("inline executor runs task immediately on calling thread", () -> {
+            InlineExecutor exec = new InlineExecutor();
+            List<String> order = new ArrayList<>();
+            exec.execute(() -> order.add("running"));
+            eq(List.of("running"), order);
+        });
+  
+        check("stub http client returns configured success future", () -> {
+            Order order = new Order("O1", "An", 1000);
+            StubHttpClient http = new StubHttpClient().success("O1", order);
+            CompletableFuture<Order> f = http.getOrderAsync("O1");
+            eq(true, f.isDone());
+            eq(order, f.join());
+        });
+  
+        check("stub http client returns configured failure future", () -> {
+            StubHttpClient http = new StubHttpClient().failure("O2", new RuntimeException("network down"));
+            CompletableFuture<Order> f = http.getOrderAsync("O2");
+            eq(true, f.isCompletedExceptionally());
+            try { f.join(); throw new AssertionError("should throw"); }
+            catch (CompletionException e) { eq("network down", e.getCause().getMessage()); }
+        });
+  
+        check("recording callback records success and error separately", () -> {
+            RecordingCallback cb = new RecordingCallback();
+            Order o1 = new Order("O1", "A", 100);
+            cb.onSuccess(o1);
+            cb.onError("O2", new IllegalStateException("fail"));
+            eq(List.of(o1), cb.successes());
+            eq(1, cb.errors().size());
+            eq("O2", cb.errors().get(0).orderId());
+            // verify returned lists are copies
+            cb.successes().clear();
+            eq(1, cb.successes().size());
+        });
+  
+        check("async service happy path: enrich and call onSuccess", () -> {
+            InlineExecutor exec = new InlineExecutor();
+            Order raw = new Order("O1", "An", 1000);
+            StubHttpClient http = new StubHttpClient().success("O1", raw);
+            RecordingCallback cb = new RecordingCallback();
+            AsyncOrderService svc = new AsyncOrderService(http, exec);
+            svc.fetchAndProcess("O1", cb);
+            // with inline executor, everything runs synchronously
+            eq(1, cb.successes().size());
+            Order enriched = cb.successes().get(0);
+            eq("O1", enriched.id());
+            eq("An (enriched)", enriched.customer());
+            eq(2000L, enriched.amount());
+            eq(0, cb.errors().size());
+        });
+  
+        check("async service error path: fallback and call onError", () -> {
+            InlineExecutor exec = new InlineExecutor();
+            StubHttpClient http = new StubHttpClient().failure("O2", new RuntimeException("timeout"));
+            RecordingCallback cb = new RecordingCallback();
+            AsyncOrderService svc = new AsyncOrderService(http, exec);
+            svc.fetchAndProcess("O2", cb);
+            eq(1, cb.errors().size());
+            eq("O2", cb.errors().get(0).orderId());
+            eq("timeout", cb.errors().get(0).error().getMessage());
+            // fallback should NOT call onSuccess
+            eq(0, cb.successes().size());
+        });
+  
+        check("async service unknown orderId uses default failed future", () -> {
+            InlineExecutor exec = new InlineExecutor();
+            StubHttpClient http = new StubHttpClient(); // no config
+            RecordingCallback cb = new RecordingCallback();
+            AsyncOrderService svc = new AsyncOrderService(http, exec);
+            svc.fetchAndProcess("O99", cb);
+            eq(1, cb.errors().size());
+            eq("O99", cb.errors().get(0).orderId());
+        });
+  
+        System.out.println("RESULT " + passed + "/" + total);
+    }
+}`,
+      reference: `import java.util.*;
+import java.util.concurrent.*;
+import java.util.function.*;
+  
+interface HttpClient {
+    CompletableFuture<Order> getOrderAsync(String orderId);
+}
+  
+record Order(String id, String customer, long amount) {}
+  
+interface OrderCallback {
+    void onSuccess(Order order);
+    void onError(String orderId, Throwable error);
+}
+  
+class InlineExecutor implements Executor {
+    @Override public void execute(Runnable command) {
+        command.run();
+    }
+}
+  
+class StubHttpClient implements HttpClient {
+    private final Map<String, CompletableFuture<Order>> successCases = new HashMap<>();
+    private final Map<String, Throwable> failureCases = new HashMap<>();
+  
+    StubHttpClient success(String orderId, Order order) {
+        successCases.put(orderId, CompletableFuture.completedFuture(order));
+        return this;
+    }
+  
+    StubHttpClient failure(String orderId, Throwable error) {
+        failureCases.put(orderId, error);
+        return this;
+    }
+  
+    @Override public CompletableFuture<Order> getOrderAsync(String orderId) {
+        if (successCases.containsKey(orderId)) return successCases.get(orderId);
+        if (failureCases.containsKey(orderId)) {
+            CompletableFuture<Order> f = new CompletableFuture<>();
+            f.completeExceptionally(failureCases.get(orderId));
+            return f;
+        }
+        CompletableFuture<Order> f = new CompletableFuture<>();
+        f.completeExceptionally(new IllegalStateException("not configured: " + orderId));
+        return f;
+    }
+}
+  
+class RecordingCallback implements OrderCallback {
+    private final List<Order> successes = new ArrayList<>();
+    private final List<CallbackError> errors = new ArrayList<>();
+  
+    record CallbackError(String orderId, Throwable error) {}
+  
+    @Override public void onSuccess(Order order) {
+        successes.add(order);
+    }
+  
+    @Override public void onError(String orderId, Throwable error) {
+        errors.add(new CallbackError(orderId, error));
+    }
+  
+    List<Order> successes() { return new ArrayList<>(successes); }
+    List<CallbackError> errors() { return new ArrayList<>(errors); }
+}
+  
+class AsyncOrderService {
+    private final HttpClient http;
+    private final Executor executor;
+
+    AsyncOrderService(HttpClient http, Executor executor) {
+        this.http = http;
+        this.executor = executor;
+    }
+
+    void fetchAndProcess(String orderId, OrderCallback callback) {
+        http.getOrderAsync(orderId)
+            .thenApplyAsync(this::enrich, executor)
+            .handleAsync((order, ex) -> {
+                Throwable real = ex == null ? null
+                        : (ex instanceof CompletionException ? ex.getCause() : ex);
+                if (real != null) {
+                    callback.onError(orderId, real);
+                    return fallback(orderId);
+                }
+                callback.onSuccess(order);
+                return order;
+            }, executor);
+    }
+  
+    private Order enrich(Order order) {
+        return new Order(order.id(), order.customer() + " (enriched)", order.amount() * 2);
+    }
+  
+    private Order fallback(String orderId) {
+        return new Order(orderId, "fallback", 0);
+    }
+}`,
+      hints: [
+        'InlineExecutor: {{execute}} chỉ cần {{command.run()}}.',
+        'StubHttpClient: {{getOrderAsync}} kiểm tra successCases trước, rồi failureCases, cuối trả future failed mặc định. Dùng {{CompletableFuture.completedFuture}} cho success, {{new CompletableFuture<>().completeExceptionally}} cho failure.',
+        'RecordingCallback: {{onSuccess}} add vào {{successes}}, {{onError}} add {{CallbackError}} vào {{errors}}. Getter trả {{new ArrayList<>(...))}} để bảo vệ state.',
+        'AsyncOrderService: dùng {{thenApplyAsync(enrich, executor)}} để enrich chạy trên executor, rồi {{handleAsync}} để xử lý cả success lẫn error. Trong handle: nếu ex != null -> callback.onError + return fallback; ngược lại callback.onSuccess + return order.',
+      ],
+      explain: `Bài tập này minh hoạ cách **biến test async thành sync** bằng ba kỹ thuật:
+  
+1. **Fake Executor (InlineExecutor)**: chạy task ngay lập tức. {{CompletableFuture.thenApplyAsync}} với executor này sẽ thực thi callback ngay trong thread hiện tại, khiến toàn bộ chain chạy tuần tự — deterministic, exception ném ra ngay, không cần latch/sleep.
+2. **Stub Future**: {{StubHttpClient}} trả về {{CompletableFuture.completedFuture}} (success) hoặc future {{completeExceptionally}} (error). Service chain {{handleAsync}} xử lý cả hai nhánh, logic fallback được test mà không cần network.
+3. **Mock Callback (RecordingCallback)**: ghi lại {{onSuccess}} và {{onError}} riêng biệt. Test verify interaction: success path gọi onSuccess đúng enriched order, error path gọi onError đúng orderId + error, fallback không gọi onSuccess.
+  
+Lưu ý quan trọng: **fake executor KHÔNG mô phỏng được race condition, thread safety, hay deadlock**. Nếu service dùng shared mutable state, fake executor sẽ che bug đó. Luôn kết hợp: unit test với fake executor cho logic nghiệp vụ + integration test (Testcontainers, stress test) cho thread safety.
+  
+Lỗi hay gặp:
+- Quên truyền executor vào {{thenApplyAsync}}/{{handleAsync}} -> dùng commonPool, test không deterministic.
+- Stub future không {{completeExceptionally}} đúng -> {{handle}} không bắt được error.
+- Callback trả list nội bộ -> test vô tình clear làm mất dữ liệu verify.
+- Service không handle exception trong callback -> exception bị nuốt, test pass giả.`,
+    },
+  ],
+  check: [
+    {
+      q: 'Tại sao dùng {{InlineExecutor}} trong test async thay vì thread pool thật?',
+      options: [
+        'Vì thread pool thật không hỗ trợ CompletableFuture',
+        'Vì InlineExecutor chạy task ngay lập tức, biến test async thành sync — deterministic, nhanh, exception ném ra ngay',
+        'Vì InlineExecutor mô phỏng được race condition tốt hơn',
+        'Vì CompletableFuture bắt buộc dùng InlineExecutor',
+      ],
+      answer: 1,
+      explain: 'InlineExecutor.execute(command) gọi command.run() ngay trên thread gọi. Với thenApplyAsync/handleAsync dùng executor này, toàn bộ chain chạy tuần tự trong một thread — deterministic, chạy trong vài mili giây, exception không bị nuốt. Thread pool thật thì test phụ thuộc scheduling, race, và phải chờ (sleep/latch). (C) sai vì inline executor KHÔNG mô phỏng được race — đó là giới hạn của nó.',
+    },
+    {
+      q: 'Stub CompletableFuture cho error path cần làm gì?',
+      options: [
+        'Trả về null',
+        'Tạo new CompletableFuture<>() và gọi completeExceptionally(throwable)',
+        'Gọi complete(null)',
+        'Ném exception ngay trong method stub',
+      ],
+      answer: 1,
+      explain: 'CompletableFuture xử lý error qua completeExceptionally. Trả null hoặc complete(null) được coi là success với giá trị null. Ném exception trong method stub làm test fail trước khi service kịp chain handleAsync. Chỉ completeExceptionally mới làm future.isCompletedExceptionally() = true và trigger handle/whenComplete.',
+    },
+    {
+      q: 'Fake executor KHÔNG bắt được loại bug nào?',
+      options: [
+        'Logic enrichment sai',
+        'Fallback không được gọi khi error',
+        'Race condition trên shared mutable state',
+        'Callback onError nhận sai tham số',
+      ],
+      answer: 2,
+      explain: 'Fake executor chạy task tuần tự trên một thread, nên mọi truy cập shared state đều tuần tự — race condition không xảy ra. Bug thread-safety (race, visibility, deadlock) chỉ lộ ra khi chạy thật multi-thread. Unit test với fake executor test logic nghiệp vụ; integration/stress test test thread safety.',
+    },
+  ],
+  related: ['testing-001', 'testing-008', 'testing-016'],
+  tags: ['test double', 'async', 'CompletableFuture', 'Executor', 'fake', 'stub', 'callback', 'inline executor'],
+},
+{
+  id: 'lesson-testing-016',
+  track: 'testing',
+  order: 16,
+  title: 'Test scheduled job và retry backoff bằng MutableClock: advance thời gian trong test',
+  level: 'senior',
+  minutes: 30,
+  goals: [
+    'Hiểu tại sao scheduled job (cron, @Scheduled) và retry backoff (exponential backoff) khó test khi phụ thuộc thời gian thật',
+    'Viết MutableClock cho phép test advance thời gian tùy ý (giây, phút, giờ, ngày) trong một test',
+    'Test scheduled cleanup job: seed data, advance clock, verify job dọn đúng batch',
+    'Test retry backoff: advance clock theo cấp số nhân, verify retry đúng số lần và đúng delay',
+  ],
+  body: `**Tóm tắt:** Scheduled job (dọn token hết hạn, gửi báo cáo hàng ngày, sync dữ liệu) và retry logic với exponential backoff đều phụ thuộc thời gian: "chạy mỗi 1 giờ", "thử lại sau 1s, 2s, 4s, 8s". Test dùng Thread.sleep sẽ chậm (phải chờ thật), flaky (CI tải cao), và không thể kiểm tra chính xác mốc. Giải pháp: tiêm Clock vào scheduler/retry service, test dùng MutableClock (kế thừa java.time.Clock, giữ AtomicReference<Instant>) để advance thời gian tức thì — test toàn bộ vòng đời job trong mili giây.
+  
+### Vấn đề: scheduled job và retry backoff
+Hai pattern phổ biến dùng thời gian:
+  
+1. **Scheduled job**: chạy định kỳ (cron, fixedDelay, fixedRate). Ví dụ: dọn token hết hạn mỗi giờ, gửi báo cáo 0h hàng ngày.
+2. **Retry với backoff**: gọi service bên ngoài, nếu thất bại thì chờ 1s, 2s, 4s, 8s... (exponential backoff) rồi thử lại, tối đa N lần.
+  
+Cả hai đều đọc "bây giờ" để quyết định: *có nên chạy job không?*, *đã đến lúc retry chưa?*. Nếu đọc {{Instant.now()}} hoặc {{System.currentTimeMillis()}} trực tiếp, test buộc phải chờ thật.
+  
+### MutableClock:_clock có thể advance
+{{java.time.Clock}} là abstract class, có thể extend để tự điều khiển thời gian:
+  
+~~~java
+class MutableClock extends Clock {
+    private final AtomicReference<Instant> instant;
+    private final ZoneId zone;
+  
+    MutableClock(Instant start, ZoneId zone) {
+        this.instant = new AtomicReference<>(start);
+        this.zone = zone;
+    }
+  
+    @Override public ZoneId getZone() { return zone; }
+    @Override public Instant instant() { return instant.get(); }
+    @Override public Clock withZone(ZoneId zone) { return new MutableClock(instant.get(), zone); }
+  
+    void advance(Duration d) { instant.updateAndGet(i -> i.plus(d)); }
+    void setInstant(Instant i) { instant.set(i); }
+}
+~~~
+  
+Production dùng {{Clock.systemUTC()}}; test tạo {{MutableClock}} rồi gọi {{advance()}} để nhảy thời gian. Vì dùng {{AtomicReference}}, an toàn nếu scheduler chạy trên thread riêng (test vẫn advance từ main thread).
+
+### Test scheduled cleanup job
+Service dọn token hết hạn:
+  
+~~~java
+class TokenCleanupJob {
+    private final TokenRepository repo;
+    private final Clock clock;
+  
+    TokenCleanupJob(TokenRepository repo, Clock clock) { this.repo = repo; this.clock = clock; }
+  
+    int cleanup() {
+        return repo.deleteExpiredBefore(clock.instant());
+    }
+}
+~~~
+  
+Test:
+1. Seed repo: token A (expired hôm qua), B (còn hạn 5 ngày), C (còn hạn 30 ngày).
+2. MutableClock start tại hôm nay 00:00.
+3. Gọi cleanup() -> deleted = 1 (chỉ A).
+4. clock.advance(10 days) -> now = ngày 10.
+5. Gọi cleanup() -> deleted = 1 (B hết hạn ngày 5, C vẫn còn).
+6. Verify C vẫn tồn tại.
+  
+Toàn bộ vòng đời job test trong vài mili giây, không sleep.
+
+### Test retry exponential backoff
+Retry service:
+  
+~~~java
+class RetryService {
+    private final RemoteClient client;
+    private final Clock clock;
+    private final int maxRetries;
+  
+    RetryService(RemoteClient client, Clock clock, int maxRetries) { ... }
+  
+    String callWithRetry(String input) {
+        int attempt = 0;
+        while (true) {
+            try { return client.call(input); }
+            catch (RemoteException ex) {
+                if (++attempt >= maxRetries) throw ex;
+                long delay = (1L << (attempt - 1)) * 1000; // 1s, 2s, 4s, 8s...
+                Instant nextRetry = clock.instant().plusMillis(delay);
+                // busy-wait hoặc sleep cho đến nextRetry (giản lược)
+                while (clock.instant().isBefore(nextRetry)) { /* spin */ }
+            }
+        }
+    }
+}
+~~~
+  
+Test với MutableClock:
+1. Stub client fail 3 lần, lần 4 success.
+2. clock.advance(1s) -> verify retry 1.
+3. clock.advance(2s) -> verify retry 2.
+4. clock.advance(4s) -> verify retry 3.
+4. clock.advance(8s) -> verify retry 4 success.
+Test kiểm soát được chính xác delay giữa các lần retry, không sleep 15 giây.
+
+### Kết hợp với ScheduledExecutorService
+Nếu dùng Spring {{@Scheduled}} hoặc {{ScheduledExecutorService}}, hãy tiêm cả ScheduledExecutorService. Test dùng fake scheduler cho phép trigger job thủ công:
+  
+~~~java
+abstract class ManualScheduler implements ScheduledExecutorService {
+    private final List<Runnable> tasks = new ArrayList<>();
+    private final Clock clock;
+  
+    ManualScheduler(Clock clock) { this.clock = clock; }
+  
+    @Override public ScheduledFuture<?> scheduleAtFixedRate(Runnable command, long initialDelay, long period, TimeUnit unit) {
+        tasks.add(command);
+        return new DummyFuture();
+    }
+  
+    void triggerAll() { tasks.forEach(Runnable::run); }
+}
+~~~
+  
+Test: setup job, clock.advance, scheduler.triggerAll(), verify job chạy với thời gian mới.
+
+### Bẫy production hay gặp
+- **MutableClock dùng chung giữa test**: test A advance 10 ngày, test B thấy clock đã 10 ngày -> flaky. Mỗi test tự tạo instance mới.
+- **Quên tiêm Clock vào helper/internal class**: scheduled job có clock nhưng helper tính nextRunTime dùng {{Instant.now()}}. Test pass (helper không chạy), production sai. Grep {{\.now\(\)}} trong domain code.
+- **Retry spin-wait tiêu tốn CPU**: production không nên busy-wait; dùng {{ScheduledExecutorService.schedule}} hoặc {{Thread.sleep}} với interrupt handling. Test vẫn dùng MutableClock để verify logic tính delay.
+- **Scheduled job chạy song song với test**: nếu job chạy trên thread pool thật, test advance clock có thể race với job đang chạy. Dùng fake scheduler (trigger thủ công) hoặc {{@Transactional}} isolation.
+- **Timezone trong scheduled job**: job "chạy 0h hàng ngày" theo múi giờ nào? Server UTC, user Việt Nam. Dùng ZonedDateTime với ZoneId cố định + Clock injection.
+
+> Senior tip: hãy viết **ArchUnit rule** cấm {{Thread.sleep}}, {{ScheduledExecutorService.scheduleAtFixedRate}} trực tiếp trong domain code, bắt buộc tiêm Clock và Scheduler. Khi review PR, grep "sleep\|scheduleAtFixedRate\|@Scheduled" là thấy ngay vi phạm. Một team trưởng giỏi coi scheduled job test được bằng MutableClock là tiêu chí "senior" — nó tách được logic business khỏi framework scheduling.
+
+### Ví dụ đời thực: cleanup job không chạy do DST
+Một job dọn session hết hạn chạy 02:00 hàng ngày (cron "0 2 * * *"). Ngày 29/3 (chuyển DST tại châu Âu), đồng hồ nhảy từ 02:00 sang 03:00 — 02:00 không tồn tại. Spring cron (dựa trên system timezone) bỏ qua lần chạy đó. Session hết hạn tích lũy 24h, DB đầy, service down. Team fix: đổi sang tiêm Clock + ZoneId, test dùng MutableClock advance qua ngày DST gap, verify job vẫn chạy (logic tính nextRun dùng ZonedDateTime.ofInstant(clock.instant(), zone) tự handle gap). Bug không tái diễn.
+
+### Trả lời mẫu khi phỏng vấn
+"Khi hỏi 'test scheduled job/retry backoff thế nào?', tôi nói: tiêm Clock vào job/retry service. Test dùng MutableClock (extend java.time.Clock, AtomicReference<Instant>, có advance(Duration)). Scheduled job: seed data, advance clock theo chu kỳ (1h, 1 ngày), gọi job thủ công (fake scheduler), verify dọn đúng batch. Retry backoff: stub client fail N-1 lần, advance clock theo exponential delay (1s, 2s, 4s...), verify retry đúng số lần và delay. Cách này test toàn bộ vòng đời trong mili giây, không sleep, deterministic. Lưu ý: MutableClock không thay thế integration test cho thread-safety và framework scheduling."
+
+### Liên hệ phỏng vấn
+Interviewer hỏi: "Hệ thống có job dọn dẹp chạy 0h hàng ngày, test thế nào?", "Retry exponential backoff 1s-2s-4s-8s, test không sleep thế nào?", "DST làm scheduled job bị bỏ qua, xử lý ra sao?". Trả lời: tiêm Clock + MutableClock.advance, fake scheduler trigger thủ công, test advance qua DST gap verify job vẫn chạy. Nêu rõ không dùng Thread.sleep, không phụ thuộc framework scheduler trong unit test.
+`,
+  exercises: [
+    {
+      title: 'MutableClock, TokenCleanupJob, RetryService với exponential backoff',
+      prompt: `Cho sẵn interface {{TokenRepository}}, {{RemoteClient}}, class {{MutableClock}} (đã có sẵn advance/setInstant). Hãy hoàn thiện:
+  
+1. {{TokenCleanupJob}}: nhận {{TokenRepository}} và {{Clock}}. {{cleanup()}} gọi {{repo.deleteExpiredBefore(clock.instant())}}.
+2. {{RetryService}}: nhận {{RemoteClient}}, {{Clock}}, {{maxRetries}}. {{callWithRetry(input)}}:
+   - Gọi {{client.call(input)}}, nếu success trả kết quả.
+   - Nếu {{RemoteException}}, tính delay = {{(1L << (attempt - 1)) * 1000}} ms (attempt 1->1s, 2->2s, 3->4s...).
+   - Dùng busy-wait trên {{clock}} (xem code block dưới).
+   - Tăng attempt, nếu vượt maxRetries ném exception cuối.
+  
+~~~java
+Instant deadline = clock.instant().plusMillis(delay);
+while (clock.instant().isBefore(deadline)) { /* spin */ }
+~~~
+  
+Test dùng MutableClock advance thời gian verify job dọn đúng batch và retry đúng delay.`,
+      starter: `import java.time.*;
+import java.util.*;
+import java.util.concurrent.atomic.*;
+  
+interface TokenRepository {
+    int deleteExpiredBefore(Instant cutoff);
+}
+  
+interface RemoteClient {
+    String call(String input) throws RemoteException;
+}
+  
+class RemoteException extends RuntimeException {
+    RemoteException(String msg) { super(msg); }
+}
+  
+class MutableClock extends Clock {
+    private final AtomicReference<Instant> instant;
+    private final ZoneId zone;
+  
+    MutableClock(Instant start, ZoneId zone) { this.instant = new AtomicReference<>(start); this.zone = zone; }
+    @Override public ZoneId getZone() { return zone; }
+    @Override public Instant instant() { return instant.get(); }
+    @Override public Clock withZone(ZoneId zone) { return new MutableClock(instant.get(), zone); }
+    void advance(Duration d) { instant.updateAndGet(i -> i.plus(d)); }
+    void setInstant(Instant i) { instant.set(i); }
+}
+  
+class TokenCleanupJob {
+    private final TokenRepository repo;
+    private final Clock clock;
+  
+    TokenCleanupJob(TokenRepository repo, Clock clock) { this.repo = repo; this.clock = clock; }
+  
+    int cleanup() { throw new UnsupportedOperationException("TODO"); }
+}
+  
+class RetryService {
+    private final RemoteClient client;
+    private final Clock clock;
+    private final int maxRetries;
+  
+    RetryService(RemoteClient client, Clock clock, int maxRetries) {
+        this.client = client; this.clock = clock; this.maxRetries = maxRetries;
+    }
+  
+    String callWithRetry(String input) { throw new UnsupportedOperationException("TODO"); }
+}`,
+      tests: `import java.time.*;
+import java.util.*;
+import java.util.concurrent.atomic.*;
+  
+public class Main {
+    static int passed = 0, total = 0;
+    static void check(String name, Runnable r) {
+        total++;
+        try { r.run(); passed++; System.out.println("PASS " + name); }
+        catch (Throwable t) { System.out.println("FAIL " + name + ": " + t); }
+    }
+    static void eq(Object expected, Object actual) {
+        if (!Objects.equals(expected, actual)) throw new AssertionError("expected " + expected + " got " + actual);
+    }
+    static final Instant BASE = Instant.parse("2026-03-01T00:00:00Z");
+  
+    public static void main(String[] args) {
+        check("token cleanup job deletes expired tokens in batches as clock advances", () -> {
+            MutableClock clock = new MutableClock(BASE, ZoneOffset.UTC);
+            TokenRepository repo = new TokenRepository() {
+                private final Map<String, Instant> tokens = new HashMap<>();
+                { tokens.put("A", BASE.minus(Duration.ofDays(1)));   // expired yesterday
+                  tokens.put("B", BASE.plus(Duration.ofDays(5)));    // expires day 5
+                  tokens.put("C", BASE.plus(Duration.ofDays(30))); } // expires day 30
+                @Override public int deleteExpiredBefore(Instant cutoff) {
+                    int before = tokens.size();
+                    tokens.entrySet().removeIf(e -> e.getValue().isBefore(cutoff));
+                    return before - tokens.size();
+                }
+            };
+            TokenCleanupJob job = new TokenCleanupJob(repo, clock);
+            eq(1, job.cleanup()); // day 0: A deleted
+
+            clock.advance(Duration.ofDays(10)); // advance to day 10
+            eq(1, job.cleanup()); // day 10: B deleted (expired day 5), C remains
+            eq(0, job.cleanup()); // still day 10: nothing left to delete
+
+            clock.advance(Duration.ofDays(30)); // advance to day 40
+            eq(1, job.cleanup()); // day 40: C deleted (expired day 30)
+            eq(0, job.cleanup()); // all tokens deleted
+        });
+  
+        check("retry service with exponential backoff advances clock correctly", () -> {
+            MutableClock clock = new MutableClock(BASE, ZoneOffset.UTC);
+            List<String> attempts = new ArrayList<>();
+            RemoteClient client = input -> {
+                attempts.add(input + "-" + attempts.size());
+                if (attempts.size() <= 3) throw new RemoteException("fail " + attempts.size());
+                return "success";
+            };
+            RetryService svc = new RetryService(client, clock, 5);
+
+            final AtomicReference<String> resultRef = new AtomicReference<>();
+            final AtomicReference<Throwable> errorRef = new AtomicReference<>();
+            Thread t = new Thread(() -> {
+                try { resultRef.set(svc.callWithRetry("test")); }
+                catch (Throwable e) { errorRef.set(e); }
+            });
+            t.start();
+            long stop = System.currentTimeMillis() + 10000;
+            while (t.isAlive() && System.currentTimeMillis() < stop) {
+                clock.advance(Duration.ofMillis(100));
+                try { Thread.sleep(10); } catch (InterruptedException e) { Thread.currentThread().interrupt(); break; }
+            }
+            try { t.join(5000); } catch (InterruptedException e) { Thread.currentThread().interrupt(); }
+            if (errorRef.get() != null) throw new RuntimeException(errorRef.get());
+            eq("success", resultRef.get());
+            eq(4, attempts.size()); // 3 fails + 1 success
+        });
+  
+        check("retry service throws after maxRetries exhausted", () -> {
+            MutableClock clock = new MutableClock(BASE, ZoneOffset.UTC);
+            RemoteClient client = input -> { throw new RemoteException("always fail"); };
+            RetryService svc = new RetryService(client, clock, 3);
+
+            final AtomicReference<Throwable> errorRef = new AtomicReference<>();
+            Thread t = new Thread(() -> {
+                try { svc.callWithRetry("test"); }
+                catch (Throwable e) { errorRef.set(e); }
+            });
+            t.start();
+            long stop = System.currentTimeMillis() + 10000;
+            while (t.isAlive() && System.currentTimeMillis() < stop) {
+                clock.advance(Duration.ofMillis(100));
+                try { Thread.sleep(10); } catch (InterruptedException e) { Thread.currentThread().interrupt(); break; }
+            }
+            try { t.join(5000); } catch (InterruptedException e) { Thread.currentThread().interrupt(); }
+            Throwable err = errorRef.get();
+            if (err == null) throw new AssertionError("should throw");
+            eq("always fail", err.getMessage());
+        });
+  
+        check("retry service success on first attempt does not advance clock", () -> {
+            MutableClock clock = new MutableClock(BASE, ZoneOffset.UTC);
+            RemoteClient client = input -> "ok";
+            RetryService svc = new RetryService(client, clock, 3);
+            eq("ok", svc.callWithRetry("test"));
+            eq(BASE, clock.instant()); // clock not advanced
+        });
+  
+        System.out.println("RESULT " + passed + "/" + total);
+    }
+}`,
+      reference: `import java.time.*;
+import java.util.*;
+import java.util.concurrent.atomic.*;
+  
+interface TokenRepository {
+    int deleteExpiredBefore(Instant cutoff);
+}
+  
+interface RemoteClient {
+    String call(String input) throws RemoteException;
+}
+  
+class RemoteException extends RuntimeException {
+    RemoteException(String msg) { super(msg); }
+}
+  
+class MutableClock extends Clock {
+    private final AtomicReference<Instant> instant;
+    private final ZoneId zone;
+  
+    MutableClock(Instant start, ZoneId zone) { this.instant = new AtomicReference<>(start); this.zone = zone; }
+    @Override public ZoneId getZone() { return zone; }
+    @Override public Instant instant() { return instant.get(); }
+    @Override public Clock withZone(ZoneId zone) { return new MutableClock(instant.get(), zone); }
+    void advance(Duration d) { instant.updateAndGet(i -> i.plus(d)); }
+    void setInstant(Instant i) { instant.set(i); }
+}
+  
+class TokenCleanupJob {
+    private final TokenRepository repo;
+    private final Clock clock;
+  
+    TokenCleanupJob(TokenRepository repo, Clock clock) { this.repo = repo; this.clock = clock; }
+  
+    int cleanup() { return repo.deleteExpiredBefore(clock.instant()); }
+}
+  
+class RetryService {
+    private final RemoteClient client;
+    private final Clock clock;
+    private final int maxRetries;
+  
+    RetryService(RemoteClient client, Clock clock, int maxRetries) {
+        this.client = client; this.clock = clock; this.maxRetries = maxRetries;
+    }
+  
+    String callWithRetry(String input) {
+        int attempt = 0;
+        while (true) {
+            try { return client.call(input); }
+            catch (RemoteException ex) {
+                if (++attempt >= maxRetries) throw ex;
+                long delay = (1L << (attempt - 1)) * 1000; // 1s, 2s, 4s...
+                Instant deadline = clock.instant().plusMillis(delay);
+                while (clock.instant().isBefore(deadline)) { /* busy-wait on mutable clock */ }
+            }
+        }
+    }
+}`,
+      hints: [
+        'TokenCleanupJob.cleanup(): một dòng {{return repo.deleteExpiredBefore(clock.instant());}}.',
+        'RetryService: vòng lặp {{while (true)}}, try {{client.call}}, catch {{RemoteException}}. Tăng attempt, kiểm tra {{attempt >= maxRetries}}. Delay = {{(1L << (attempt - 1)) * 1000}} (1, 2, 4, 8...). Busy-wait: {{Instant deadline = clock.instant().plusMillis(delay); while (clock.instant().isBefore(deadline)) ; /* spin */}}',
+        'Test TokenCleanupJob: seed data, gọi cleanup tại BASE (xóa A), advance 10 ngày, gọi cleanup (xóa B), advance 30 ngày, gọi cleanup (xóa C).',
+        'Test RetryService: stub client fail 3 lần rồi success. Test verify attempt count. Vì service busy-wait trên clock, test KHÔNG cần advance clock thủ công — service tự busy-wait cho đến khi clock.instant() >= deadline. Nhưng clock chỉ advance khi test gọi clock.advance(). Vì vậy test cần cấu trúc: service chạy trên thread riêng, test advance clock từ main thread. Để đơn giản, bài này chỉ kiểm tra logic compile và run; test toàn diện cần thread riêng.',
+      ],
+      explain: `Bài tập này áp dụng **MutableClock** vào hai pattern thực tế:
+  
+**1. Scheduled cleanup job**: Job dọn token hết hạn chạy định kỳ. Thay vì chờ 1 giờ / 1 ngày, test seed data, gọi cleanup, advance clock 10 ngày, gọi cleanup, verify batch đúng. Toàn bộ vòng đời test trong mili giây.
+  
+**2. Retry exponential backoff**: Service gọi remote, fail thì retry sau 1s, 2s, 4s, 8s... Test dùng MutableClock để busy-wait trên clock thay vì Thread.sleep. Service đọc {{clock.instant()}} để tính deadline, loop cho đến khi clock advance đủ. Test có thể advance clock từ thread khác để mô phỏng thời gian trôi.
+  
+**Điểm quan trọng**: {{MutableClock}} dùng {{AtomicReference}} nên an toàn khi service busy-wait trên thread này, test advance trên thread khác. Đây là pattern thay thế {{Thread.sleep}} trong test — cho phép kiểm soát chính xác timing.
+  
+**Lưu ý về test retry**: Vì service busy-wait (spin) trên {{clock.instant()}}, test cần chạy service trên thread riêng và advance clock từ main thread. Đơn giản hóa: test ở đây chỉ verify logic compile và run; test integration đầy đủ sẽ dùng ExecutorService cho service thread.
+  
+**Lỗi hay gặp**:
+- Quên tiêm Clock vào helper tính nextRunTime -> production dùng Instant.now().
+- MutableClock shared giữa test -> flaky. Mỗi test tạo instance mới.
+- Retry delay tính sai: attempt 0 -> 1s (1<<0), attempt 1 -> 2s (1<<1)... công thức {{(1L << (attempt - 1)) * 1000}} cho attempt tính từ 1.
+- Busy-wait không có timeout -> nếu clock không advance, test treo. Production nên dùng ScheduledExecutorService.schedule thay vì spin-wait.
+- Timezone: job "0h hàng ngày" theo múi giờ nào? Dùng ZonedDateTime + ZoneId cố định + Clock injection.
+  
+**Senior tip**: trong codebase thật, hãy tách **Scheduler** (trigger job) ra khỏi **Job logic** (dọn dữ liệu). Job logic nhận Clock, test dùng MutableClock. Scheduler (Spring @Scheduled, Quartz) chỉ trigger, không chứa logic. Integration test verify scheduler trigger đúng mốc; unit test verify job logic đúng với mọi mốc clock.`,
+    },
+  ],
+  check: [
+    {
+      q: 'MutableClock dùng AtomicReference<Instant> thay vì biến thường có tác dụng gì?',
+      options: [
+        'Làm clock chạy nhanh hơn',
+        'An toàn khi service busy-wait trên thread này, test advance từ thread khác (thread-safe)',
+        'Cho phép clock tự động advance theo thời gian thật',
+        'Giảm memory footprint',
+      ],
+      answer: 1,
+      explain: 'MutableClock thường dùng trong test đa luồng: service busy-wait (spin) đọc clock.instant() trên thread worker, test gọi advance() từ main thread. AtomicReference đảm bảo visibility và atomicity giữa hai thread. Biến thường (non-volatile) có thể bị cache gây test treo hoặc đọc giá trị cũ.',
+    },
+    {
+      q: 'Exponential backoff delay sequence (ms) cho attempt 1, 2, 3, 4 là gì?',
+      options: [
+        '1000, 2000, 3000, 4000',
+        '1000, 2000, 4000, 8000',
+        '1000, 1000, 2000, 3000',
+        '2000, 4000, 8000, 16000',
+      ],
+      answer: 1,
+      explain: 'Exponential backoff thường là 2^(attempt-1) * baseDelay. Với baseDelay=1000ms: attempt 1 -> 1s, attempt 2 -> 2s, attempt 3 -> 4s, attempt 4 -> 8s. (A) là linear backoff. (C) là Fibonacci-ish. (D) bỏ sót attempt 1.',
+    },
+    {
+      q: 'Tại sao scheduled job production không nên dùng busy-wait (spin) trên clock để chờ next run?',
+      options: [
+        'Vì busy-wait tiêu tốn CPU 100% khi chờ, production nên dùng ScheduledExecutorService.schedule hoặc Thread.sleep có interrupt handling',
+        'Vì Clock không hỗ trợ busy-wait',
+        'Vì busy-wait không chính xác',
+        'Vì MutableClock chỉ dùng trong test',
+      ],
+      answer: 0,
+      explain: 'Spin-wait (while clock.instant().isBefore(deadline) {}) chiếm dụng CPU liên tục. Production nên dùng ScheduledExecutorService.schedule(task, delay, unit) hoặc Thread.sleep (có handle InterruptedException) để nhường CPU. MutableClock + busy-wait chỉ dùng trong test để mô phỏng thời gian trôi tức thì.',
+    },
+    {
+      q: 'Job dọn session chạy 02:00 hàng ngày bị bỏ qua ngày chuyển DST (giờ nhảy từ 02:00 sang 03:00). Giải pháp đúng?',
+      options: [
+        'Đổi cron chạy 03:00',
+        'Dùng ZonedDateTime với ZoneId cố định + Clock injection, tính nextRun tự handle DST gap',
+        'Tắt DST trên server',
+        'Chạy job thủ công ngày đó',
+      ],
+      answer: 1,
+      explain: 'Khi dùng ZonedDateTime.ofInstant(clock.instant(), zone), JDK tự điều chỉnh gap/overlap DST. Ví dụ 02:30 không tồn tại -> adjust sang 03:30. Job logic tính nextRun dựa trên ZonedDateTime sẽ tự handle. Cron expression của Spring/@Scheduled thường dùng system timezone và có thể bỏ qua gap; cách chắc chắn là tự điều khiển bằng Clock + ZoneId.',
+    },
+  ],
+  related: ['testing-002', 'testing-009', 'testing-015'],
+  tags: ['Clock', 'MutableClock', 'scheduled job', 'retry', 'exponential backoff', 'DST', 'advance time', 'time testing'],
+},
 );
