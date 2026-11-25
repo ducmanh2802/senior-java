@@ -3020,6 +3020,8 @@ window.DATA_INDEX = {
     {"id":"lesson-security-014","track":"security","order":14,"title":"IDOR và kiểm soát truy cập tại Service Layer","level":"senior","minutes":40},
     {"id":"lesson-security-015","track":"security","order":15,"title":"JWT từ bên trong: ký và kiểm tra HMAC-SHA256","level":"senior","minutes":30},
     {"id":"lesson-security-016","track":"security","order":16,"title":"Lưu mật khẩu đúng cách: PBKDF2 và so sánh hằng thời gian","level":"senior","minutes":30},
+    {"id":"lesson-security-017","track":"security","order":17,"title":"Refresh token rotation: xoay vòng, phát hiện tái sử dụng và thu hồi khi token bị đánh cắp","level":"senior","minutes":35},
+    {"id":"lesson-security-018","track":"security","order":18,"title":"Pepper + PBKDF2: vì sao hash trong DB vẫn bị dò nếu thiếu một bí mật nằm ngoài DB","level":"senior","minutes":30},
     {"id":"lesson-testing-001","track":"testing","order":1,"title":"Test double: fake, stub và mock — chọn cái nào thay vì mock mọi thứ","level":"mid","minutes":25},
     {"id":"lesson-testing-002","track":"testing","order":2,"title":"Clock injection: test code phụ thuộc thời gian mà không ngủ và không flaky","level":"senior","minutes":20},
     {"id":"lesson-testing-003","track":"testing","order":3,"title":"Property-based testing mini: sinh input bằng seed cố định để tìm bug merge/sort","level":"senior","minutes":30},

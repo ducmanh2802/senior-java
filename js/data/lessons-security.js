@@ -5390,4 +5390,750 @@ Interviewer hay hỏi tiếp: vì sao salt, vì sao timing attack, bcrypt vs PBK
   related: ['security-002'],
   tags: ['password', 'PBKDF2', 'salt', 'timing attack'],
   },
+{
+  id: 'lesson-security-017',
+  track: 'security',
+  order: 17,
+  title: 'Refresh token rotation: xoay vòng, phát hiện tái sử dụng và thu hồi khi token bị đánh cắp',
+  level: 'senior',
+  minutes: 35,
+  goals: [
+    'Giải thích được vì sao access token sống ngắn còn refresh token sống dài, và vì sao refresh token phải được xoay vòng (rotation) sau mỗi lần dùng',
+    'Tự ký và kiểm tra token bằng {{javax.crypto.Mac}} với {{HmacSHA256}}, kiểm {{exp}} và cố định {{alg}} = HS256 để từ chối {{alg:none}} và alg confusion',
+    'Triển khai phát hiện tái sử dụng (reuse detection): dùng lại một refresh token đã xoay thì thu hồi cả chuỗi, và thu hồi được khi đăng xuất',
+  ],
+  body: `**Tóm tắt:** Access token là tấm vé ngắn hạn (5–15 phút) để gọi API; refresh token là tấm vé dài hạn (vài ngày) chỉ dùng để đổi lấy access token mới. Vì refresh token sống lâu và đi lại nhiều lần trên mạng, nó là mục tiêu béo bở của kẻ trộm, nên mỗi lần dùng ta **xoay vòng** (cấp cái mới, huỷ cái cũ) và **phát hiện tái sử dụng**: nếu một refresh token đã xoay bị dùng lại, ta coi như nó đã bị đánh cắp và **thu hồi cả chuỗi**. Bài tập tự viết một {{RefreshTokenService}} bằng Java thuần để thấy từng bước.
+
+### Access token và refresh token: hai loại vé khác nhau
+Hãy hình dung khách sạn: access token là **thẻ phòng dùng một lần rồi tự hết hạn sau một đêm** — có bị mất cũng chỉ mở được phòng trong thời gian ngắn. Refresh token là **thẻ thành viên ở quầy lễ tân**: sống lâu, nhưng chỉ dùng để **đổi lấy thẻ phòng mới**, không mở phòng trực tiếp.
+
+- **Access token**: gửi kèm mỗi request API (header {{Authorization: Bearer}}), TTL ngắn (5–15 phút). Sống ngắn để nếu rò rỉ thì cửa sổ lạm dụng hẹp.
+- **Refresh token**: chỉ gửi tới endpoint {{/token}} để đổi lấy access token mới, TTL dài (vài giờ tới vài ngày). Vì nó xuất hiện ít lần hơn và chỉ qua một kênh, ta có thể **ghi log mỗi lần dùng** và phát hiện bất thường.
+
+Cả hai đều có thể là JWT (chuỗi {{header.payload.signature}} tự chứa) hoặc opaque (chuỗi ngẫu nhiên tra tại server). Bài này dùng JWT ký bằng HMAC-SHA256 để bạn thấy cơ chế ký và kiểm tra bằng chính mã của mình.
+
+### Vì sao phải xoay vòng refresh token
+Nếu refresh token **không** xoay vòng (dùng mãi một cái cho tới khi hết hạn), thì khoảnh khắc kẻ trộm chụp được nó, hắn dùng được đến hết hạn — mà hạn lại dài. Xoay vòng (rotation) nghĩa là: mỗi lần client mang refresh token tới {{/token}}, server cấp một refresh token **mới** và **huỷ cái cũ**. Lợi ích:
+
+- Cửa sổ sống của mỗi token ngắn (bằng đúng một lần dùng), nên token bị chụp cũng nhanh chóng chết.
+- Server **biết** những token nào còn hiệu lực (cái mới nhất theo mỗi người dùng), nên phát hiện được khi một token cũ xuất hiện lại.
+
+### Ký và kiểm tra bằng HMAC-SHA256
+HMAC (Hash-based Message Authentication Code) là hàm băm có khoá: chỉ ai giữ **secret** mới ký được chữ ký hợp lệ. {{javax.crypto.Mac}} là API JDK để làm HMAC. Bên kiểm tra tính lại HMAC trên đúng đoạn {{header.payload}} rồi so với chữ ký nhận được.
+
+~~~java
+Mac mac = Mac.getInstance("HmacSHA256");
+mac.init(new SecretKeySpec(secret.getBytes(StandardCharsets.UTF_8), "HmacSHA256"));
+byte[] sig = mac.doFinal(signingInput.getBytes(StandardCharsets.UTF_8));   // signingInput = header.payload
+String signature = Base64.getUrlEncoder().withoutPadding().encodeToString(sig);
+~~~
+
+Thứ tự kiểm tra **bắt buộc** khi verify, vì đọc claim trước khi xác thực là tin dữ liệu chưa kiểm chứng:
+
+0. Thuật toán do **bên verify cố định** (ở đây HS256), không đọc {{alg}} từ token để chọn. Token có header {{alg}} khác HS256 (ví dụ {{none}}) thì từ chối ngay — đây là cách chặn {{alg:none}} và alg confusion (đổi sang HS256 rồi ký bằng public key).
+1. Tách token thành đúng 3 phần với 2 dấu chấm; khác là rác.
+2. Tính lại HMAC trên {{header.payload}} và so bằng {{MessageDigest.isEqual}} (hằng thời gian).
+3. Decode payload, kiểm {{exp}}: chỉ nhận khi {{now < exp}} (RFC 7519: bằng {{exp}} là đã hết hạn).
+4. Kiểm tra {{jti}} (token id) có phải là token **đang hiệu lực** của người dùng đó không.
+
+### Phát hiện tái sử dụng và thu hồi cả chuỗi
+Mỗi refresh token mang một {{jti}} (JWT ID) ngẫu nhiên, duy nhất. Server giữ **một** {{jti}} đang hiệu lực cho mỗi người dùng (bản mới nhất). Khi client mang token tới:
+
+- {{jti}} đúng bằng bản đang hiệu lực → hợp lệ: xoay vòng (huỷ {{jti}} cũ, cấp token mới, cập nhật bản hiệu lực).
+- {{jti}} **không** còn là bản hiệu lực (đã bị xoay trước đó) → đây là **tái sử dụng**: có kẻ đang dùng lại token cũ. Server phản ứng bằng cách **thu hồi cả chuỗi** (đưa {{jti}} hiện tại vào danh sách thu hồi, xoá bản hiệu lực) và từ chối. Người dùng phải đăng nhập lại.
+- Không có bản hiệu lực nào (đã đăng xuất) → từ chối.
+
+Vì sao coi tái sử dụng là dấu hiệu bị trộm? Vì client thật luôn dùng token **mới nhất** nhận được; nếu một token cũ xuất hiện, chỉ có thể là kẻ trộm đã chụp nó trước đó và giờ mới dùng (hoặc client bị nhân đôi). Đây là khuyến nghị của OAuth 2.0 Security Best Current Practice.
+
+### Thu hồi khi đăng xuất
+JWT tự chứa không có trạng thái, nên "đăng xuất" không thể chỉ là xoá cookie ở trình duyệt — ai đã chụp token vẫn dùng được. Với refresh token, server giữ danh sách {{jti}} đã thu hồi (denylist) và xoá bản hiệu lực của người dùng; từ đó token cũ không còn verify được nữa. Muốn "đăng xuất khỏi mọi thiết bị" thì thu hồi bản hiệu lực hiện tại của người dùng đó.
+
+### Bẫy production
+- **Không xoay vòng, refresh token sống hàng tháng**: trộm được là dùng cả tháng. Phải rotation + TTL ngắn cho từng token.
+- **Xoay vòng nhưng không phát hiện tái sử dụng**: token cũ bị dùng lại vẫn hợp lệ, mất tác dụng. Phải thu hồi cả chuỗi khi thấy token cũ.
+- **Tin {{alg}} từ header**: kẻ tấn công đổi sang {{none}} hoặc dùng public key làm secret HMAC. Bên verify phải cố định thuật toán.
+- **Không kiểm {{exp}}** hoặc lệch giờ giữa các máy: token hết hạn vẫn qua, hoặc token hợp lệ bị từ chối. Cho phép sai lệch vài chục giây (clock skew) và đồng bộ NTP.
+- **So chữ ký bằng {{equals}}**: rò rỉ thời gian. Dùng {{MessageDigest.isEqual}}.
+- **Refresh token không được bảo vệ khi lưu**: SPA để trong {{localStorage}} thì một XSS là mất token; cân nhắc cookie {{HttpOnly}} {{SameSite}} hoặc mô hình BFF.
+
+### Liên hệ phỏng vấn
+Interviewer hay hỏi: "access token và refresh token khác nhau thế nào, vì sao cần cả hai?", "refresh token rotation là gì, reuse detection chặn tấn công nào?", "JWT thu hồi tức thời làm sao?", "vì sao không tin {{alg}} trong header?". Làm xong bài tập dưới đây — tự ký bằng {{javax.crypto.Mac}}, tự viết {{rotate}} có kiểm {{exp}}, {{alg}} và phát hiện tái sử dụng — là bạn trả lời được cả bốn câu bằng chính mã của mình.`,
+  exercises: [
+    {
+      title: 'Viết RefreshTokenService: ký HS256, xoay vòng và phát hiện tái sử dụng',
+      prompt: `Hoàn thiện {{RefreshTokenService}} — dịch vụ cấp và xoay vòng refresh token ký bằng HS256, chỉ dùng JDK 17, thời gian do test truyền vào (không đọc đồng hồ thật).
+
+- {{RefreshTokenService(secret, ttlSeconds)}}: {{ttlSeconds < 1}} hoặc secret rỗng thì ném {{IllegalArgumentException}}.
+- {{issue(subject, nowSeconds)}}: sinh {{jti}} ngẫu nhiên (16 byte {{SecureRandom}}, Base64URL không padding), tạo token với header cố định {{alg}} = HS256 và payload JSON {{sub}}, {{exp}} = {{nowSeconds + ttlSeconds}}, {{jti}}; đặt {{jti}} này là bản hiệu lực của {{subject}}; trả về token.
+- {{rotate(token, nowSeconds)}}: trả về {{Optional}} token mới, rỗng nếu token sai. Trình tự: (1) {{parse}} token — sai cấu trúc, sai chữ ký, hoặc header {{alg}} khác HS256 thì rỗng; (2) {{nowSeconds >= exp}} thì rỗng (hết hạn); (3) nếu {{subject}} không có bản hiệu lực → rỗng; (4) nếu {{jti}} khác bản hiệu lực → **tái sử dụng**: thu hồi cả chuỗi (đưa bản hiệu lực vào danh sách thu hồi, xoá bản hiệu lực) rồi rỗng; (5) còn lại thì xoay vòng: đưa {{jti}} cũ vào danh sách thu hồi, cấp token mới, cập nhật bản hiệu lực, trả token mới.
+- {{isActive(token, nowSeconds)}}: true đúng khi {{parse}} thành công, {{now < exp}}, {{jti}} là bản hiệu lực và không nằm trong danh sách thu hồi.
+- {{revoke(token, nowSeconds)}}: nếu {{parse}} thành công (chỉ cần chữ ký và {{alg}} đúng, token hết hạn vẫn thu hồi được) thì thu hồi bản hiệu lực của {{subject}} (đăng xuất).
+
+Chỉ dùng JDK 17, không thư viện ngoài.`,
+      starter: `import java.util.Optional;
+
+final class RefreshTokenService {
+    RefreshTokenService(String secret, long ttlSeconds) {
+        throw new UnsupportedOperationException("TODO");
+    }
+
+    String issue(String subject, long nowSeconds) {
+        throw new UnsupportedOperationException("TODO");
+    }
+
+    Optional<String> rotate(String token, long nowSeconds) {
+        throw new UnsupportedOperationException("TODO");
+    }
+
+    boolean isActive(String token, long nowSeconds) {
+        throw new UnsupportedOperationException("TODO");
+    }
+
+    void revoke(String token, long nowSeconds) {
+        throw new UnsupportedOperationException("TODO");
+    }
+}`,
+      tests: `import java.nio.charset.StandardCharsets;
+import java.util.Base64;
+
+public class Main {
+    static final char Q = '"';
+    static int passed = 0, total = 0;
+    static void check(String name, Runnable r) {
+        total++;
+        try { r.run(); passed++; System.out.println("PASS " + name); }
+        catch (Throwable t) { System.out.println("FAIL " + name + ": " + t); }
+    }
+    static void eq(Object expected, Object actual) {
+        if (!Objects.equals(expected, actual)) throw new AssertionError("expected " + expected + " got " + actual);
+    }
+    static String b64(String s) {
+        return Base64.getUrlEncoder().withoutPadding().encodeToString(s.getBytes(StandardCharsets.UTF_8));
+    }
+    public static void main(String[] args) {
+        check("issue produces a three-part HS256 token", () -> {
+            RefreshTokenService svc = new RefreshTokenService("k", 100);
+            String t = svc.issue("user-42", 1000);
+            int p1 = t.indexOf('.');
+            int p2 = t.indexOf('.', p1 + 1);
+            if (p1 <= 0 || p2 <= p1 + 1) throw new AssertionError("phai co 3 phan: " + t);
+            if (t.indexOf('.', p2 + 1) >= 0) throw new AssertionError("qua 2 dau cham");
+            String header = new String(Base64.getUrlDecoder().decode(t.substring(0, p1)), StandardCharsets.UTF_8);
+            if (!header.contains("HS256")) throw new AssertionError("header phai HS256: " + header);
+            if (t.indexOf('+') >= 0 || t.indexOf('/') >= 0 || t.indexOf('=') >= 0) throw new AssertionError("co ky tu base64 thuong");
+        });
+        check("rotate returns a new token and the old one is no longer active", () -> {
+            RefreshTokenService svc = new RefreshTokenService("k", 100);
+            String a = svc.issue("u", 1000);
+            String b = svc.rotate(a, 1050).orElseThrow();
+            if (b.equals(a)) throw new AssertionError("token moi phai khac token cu");
+            if (!svc.isActive(b, 1050)) throw new AssertionError("token moi phai active");
+            if (svc.isActive(a, 1050)) throw new AssertionError("token cu da xoay phai inactive");
+        });
+        check("reusing a rotated token revokes the whole chain", () -> {
+            RefreshTokenService svc = new RefreshTokenService("k", 100);
+            String a = svc.issue("u", 1000);
+            String b = svc.rotate(a, 1050).orElseThrow();
+            if (svc.rotate(a, 1050).isPresent()) throw new AssertionError("dung lai token cu phai bi tu choi");
+            if (svc.isActive(b, 1050)) throw new AssertionError("ca chuoi phai bi thu hoi");
+            if (svc.rotate(b, 1050).isPresent()) throw new AssertionError("token moi cung phai chet theo chuoi");
+        });
+        check("expired token cannot be rotated", () -> {
+            RefreshTokenService svc = new RefreshTokenService("k", 100);
+            String a = svc.issue("u", 1000);           // exp = 1100
+            if (svc.rotate(a, 1100).isPresent()) throw new AssertionError("now == exp phai het han");
+            if (!svc.rotate(a, 1099).isPresent()) throw new AssertionError("con han ma khong xoay duoc");
+        });
+        check("tampered payload breaks the signature", () -> {
+            RefreshTokenService svc = new RefreshTokenService("k", 100);
+            String a = svc.issue("u", 1000);
+            int p1 = a.indexOf('.');
+            String forged = a.substring(0, p1 + 1) + "A" + a.substring(p1 + 2);
+            if (svc.rotate(forged, 1050).isPresent()) throw new AssertionError("payload bi sua ma van qua");
+            if (svc.isActive(forged, 1050)) throw new AssertionError("payload bi sua ma active");
+        });
+        check("alg none and wrong alg are rejected", () -> {
+            RefreshTokenService svc = new RefreshTokenService("k", 100);
+            String header = b64("{" + Q + "alg" + Q + ":" + Q + "none" + Q + "," + Q + "typ" + Q + ":" + Q + "JWT" + Q + "}");
+            String payload = b64("{" + Q + "sub" + Q + ":" + Q + "u" + Q + "," + Q + "exp" + Q + ":9999," + Q + "jti" + Q + ":" + Q + "x" + Q + "}");
+            String none = header + "." + payload + ".";
+            if (svc.rotate(none, 1000).isPresent()) throw new AssertionError("alg none phai bi tu choi");
+            if (svc.isActive(none, 1000)) throw new AssertionError("alg none phai inactive");
+        });
+        check("malformed tokens are rejected without exception", () -> {
+            RefreshTokenService svc = new RefreshTokenService("k", 100);
+            if (svc.rotate(null, 0).isPresent()) throw new AssertionError("null phai rong");
+            if (svc.rotate("", 0).isPresent()) throw new AssertionError("empty phai rong");
+            if (svc.rotate("onlyonesegment", 0).isPresent()) throw new AssertionError("1 phan phai rong");
+            if (svc.rotate("a.b", 0).isPresent()) throw new AssertionError("2 phan phai rong");
+            if (svc.rotate("a.b.c.d", 0).isPresent()) throw new AssertionError("4 phan phai rong");
+            if (svc.rotate("..", 0).isPresent()) throw new AssertionError("phan rong phai rong");
+            if (svc.rotate("a.b.!!!", 0).isPresent()) throw new AssertionError("base64 rac phai rong");
+            if (svc.isActive("rac", 0)) throw new AssertionError("rac phai inactive");
+        });
+        check("revoke logs out the active token", () -> {
+            RefreshTokenService svc = new RefreshTokenService("k", 100);
+            String a = svc.issue("u", 1000);
+            svc.revoke(a, 1000);
+            if (svc.isActive(a, 1000)) throw new AssertionError("sau revoke phai inactive");
+            if (svc.rotate(a, 1050).isPresent()) throw new AssertionError("sau revoke khong xoay duoc");
+        });
+        check("invalid construction is rejected", () -> {
+            try { new RefreshTokenService("k", 0); }
+            catch (IllegalArgumentException e) { return; }
+            throw new AssertionError("ttl 0 phai nem IllegalArgumentException");
+        });
+        System.out.println("RESULT " + passed + "/" + total);
+    }
+}`,
+      reference: `import java.nio.charset.StandardCharsets;
+import java.security.GeneralSecurityException;
+import java.security.MessageDigest;
+import java.security.SecureRandom;
+import java.util.Base64;
+import java.util.HashMap;
+import java.util.HashSet;
+import java.util.Map;
+import java.util.Optional;
+import java.util.Set;
+import javax.crypto.Mac;
+import javax.crypto.spec.SecretKeySpec;
+
+final class RefreshTokenService {
+    private static final char Q = '"';
+
+    private final byte[] secret;
+    private final long ttlSeconds;
+    private final SecureRandom random = new SecureRandom();
+    private final Map<String, String> currentBySubject = new HashMap<>();   // subject -> jti dang hieu luc
+    private final Set<String> revokedJti = new HashSet<>();                  // jti da xoay hoac thu hoi
+
+    RefreshTokenService(String secret, long ttlSeconds) {
+        if (secret == null || secret.isEmpty()) throw new IllegalArgumentException("secret rong");
+        if (ttlSeconds < 1) throw new IllegalArgumentException("ttl phai >= 1");
+        this.secret = secret.getBytes(StandardCharsets.UTF_8);
+        this.ttlSeconds = ttlSeconds;
+    }
+
+    String issue(String subject, long nowSeconds) {
+        if (subject == null) throw new IllegalArgumentException("subject null");
+        String jti = randomToken();
+        String token = sign(subject, nowSeconds + ttlSeconds, jti);
+        currentBySubject.put(subject, jti);          // jti moi la ban hieu luc
+        return token;
+    }
+
+    Optional<String> rotate(String token, long nowSeconds) {
+        Parsed p = parse(token);                      // null neu sai cau truc / chu ky / alg
+        if (p == null) return Optional.empty();
+        if (nowSeconds >= p.exp) return Optional.empty();            // het han: khong xoay
+        String current = currentBySubject.get(p.subject);
+        if (current == null) return Optional.empty();               // phien da bi thu hoi
+        if (!current.equals(p.jti)) {
+            revokedJti.add(current);                  // tai su dung: thu hoi ca chuoi
+            currentBySubject.remove(p.subject);
+            return Optional.empty();
+        }
+        revokedJti.add(p.jti);                        // jti cu khong dung lai duoc
+        String fresh = sign(p.subject, nowSeconds + ttlSeconds, randomToken());
+        currentBySubject.put(p.subject, extractJti(fresh));
+        return Optional.of(fresh);
+    }
+
+    boolean isActive(String token, long nowSeconds) {
+        Parsed p = parse(token);
+        if (p == null) return false;
+        if (nowSeconds >= p.exp) return false;
+        String current = currentBySubject.get(p.subject);
+        return current != null && current.equals(p.jti) && !revokedJti.contains(p.jti);
+    }
+
+    void revoke(String token, long nowSeconds) {
+        Parsed p = parse(token);                      // chi can chu ky / alg dung; het han van thu hoi duoc
+        if (p == null) return;
+        String current = currentBySubject.get(p.subject);
+        if (current != null) {
+            revokedJti.add(current);
+            currentBySubject.remove(p.subject);
+        }
+    }
+
+    private String sign(String subject, long exp, String jti) {
+        String header = encode("{" + Q + "alg" + Q + ":" + Q + "HS256" + Q + "," + Q + "typ" + Q + ":" + Q + "JWT" + Q + "}");
+        String payload = encode("{" + Q + "sub" + Q + ":" + Q + subject + Q + "," + Q + "exp" + Q + ":" + exp
+                + "," + Q + "jti" + Q + ":" + Q + jti + Q + "}");
+        String input = header + "." + payload;        // chi doan nay duoc ky
+        return input + "." + encode(hmac(input));
+    }
+
+    private Parsed parse(String token) {
+        if (token == null) return null;
+        int p1 = token.indexOf('.');
+        int p2 = p1 <= 0 ? -1 : token.indexOf('.', p1 + 1);
+        if (p2 <= p1 + 1 || token.indexOf('.', p2 + 1) >= 0) return null;   // dung 3 phan
+        byte[] headerBytes = decode(token.substring(0, p1));
+        byte[] given = decode(token.substring(p2 + 1));
+        if (headerBytes == null || given == null) return null;
+        String header = new String(headerBytes, StandardCharsets.UTF_8);
+        if (!header.contains(Q + "alg" + Q + ":" + Q + "HS256" + Q)) return null;   // alg co dinh
+        if (!MessageDigest.isEqual(hmac(token.substring(0, p2)), given)) return null;
+        byte[] payloadBytes = decode(token.substring(p1 + 1, p2));
+        if (payloadBytes == null) return null;
+        String payload = new String(payloadBytes, StandardCharsets.UTF_8);
+        String subject = strClaim(payload, "sub");
+        String jti = strClaim(payload, "jti");
+        long exp = numClaim(payload, "exp");
+        if (subject == null || jti == null || exp < 0) return null;
+        return new Parsed(subject, exp, jti);
+    }
+
+    private String extractJti(String token) {
+        int p1 = token.indexOf('.');
+        int p2 = token.indexOf('.', p1 + 1);
+        byte[] payloadBytes = decode(token.substring(p1 + 1, p2));
+        return strClaim(new String(payloadBytes, StandardCharsets.UTF_8), "jti");
+    }
+
+    private static String strClaim(String payload, String name) {
+        String key = Q + name + Q + ":";
+        int i = payload.indexOf(key);
+        if (i < 0) return null;
+        int start = i + key.length() + 1;             // bo dau " mo cua gia tri
+        int end = payload.indexOf(Q, start);
+        return end < 0 ? null : payload.substring(start, end);
+    }
+
+    private static long numClaim(String payload, String name) {
+        String key = Q + name + Q + ":";
+        int i = payload.indexOf(key);
+        if (i < 0) return -1;
+        int start = i + key.length();
+        int end = start;
+        while (end < payload.length() && Character.isDigit(payload.charAt(end))) end++;
+        if (end == start) return -1;
+        try { return Long.parseLong(payload.substring(start, end)); }
+        catch (NumberFormatException e) { return -1; }
+    }
+
+    private String randomToken() {
+        byte[] b = new byte[16];
+        random.nextBytes(b);
+        return Base64.getUrlEncoder().withoutPadding().encodeToString(b);
+    }
+
+    private static String encode(String s) {
+        return Base64.getUrlEncoder().withoutPadding().encodeToString(s.getBytes(StandardCharsets.UTF_8));
+    }
+
+    private static String encode(byte[] bytes) {
+        return Base64.getUrlEncoder().withoutPadding().encodeToString(bytes);
+    }
+
+    private static byte[] decode(String s) {
+        try { return Base64.getUrlDecoder().decode(s); }
+        catch (IllegalArgumentException e) { return null; }
+    }
+
+    private byte[] hmac(String data) {
+        try {
+            Mac mac = Mac.getInstance("HmacSHA256");
+            mac.init(new SecretKeySpec(secret, "HmacSHA256"));
+            return mac.doFinal(data.getBytes(StandardCharsets.UTF_8));
+        } catch (GeneralSecurityException e) {
+            throw new IllegalStateException(e);
+        }
+    }
+
+    record Parsed(String subject, long exp, String jti) {}
+}`,
+      hints: [
+        'Chỉ ký đoạn {{header.payload}} (trước dấu chấm thứ hai); dùng {{Base64.getUrlEncoder().withoutPadding()}} và tách bằng {{indexOf}} để chắc chắn đúng 3 phần.',
+        'Trong {{parse}}, kiểm header chứa {{alg}} = HS256 **trước** khi so chữ ký; so chữ ký bằng {{MessageDigest.isEqual}} trên mảng byte đã decode.',
+        '{{rotate}}: nếu {{jti}} khác bản hiệu lực thì đó là tái sử dụng — đưa bản hiệu lực vào {{revokedJti}}, xoá bản hiệu lực rồi trả rỗng; nếu không thì xoay vòng bình thường.',
+        'Một chỗ duy nhất định nghĩa "hết hạn" ({{nowSeconds >= exp}}); {{revoke}} chỉ cần chữ ký đúng, không cần token còn hạn.',
+      ],
+      explain: `Điểm then chốt là **rotation + reuse detection** nằm trong {{rotate}}. Nếu chỉ xoay vòng mà không phát hiện tái sử dụng, token cũ bị dùng lại vẫn qua — mất hết ý nghĩa. Khi {{jti}} khác bản hiệu lực, ta coi là bị trộm và thu hồi cả chuỗi; client thật luôn dùng token mới nhất nên không bao giờ rơi vào nhánh này.
+
+Thứ tự verify quyết định an toàn: kiểm {{alg}} và chữ ký **trước**, rồi mới đọc {{exp}} và {{jti}}. Đọc claim trước khi xác thực là tin dữ liệu chưa kiểm chứng. {{alg}} phải do bên verify cố định (HS256): nếu tin header, kẻ tấn công đổi sang {{none}} (bỏ chữ ký) hoặc alg confusion (đổi sang HS256 rồi ký bằng public key).
+
+Bẫy hay gặp: dùng {{String.equals}} để so chữ ký (timing channel) — phải decode sang byte rồi {{MessageDigest.isEqual}}; sai ranh giới hết hạn (RFC 7519 yêu cầu {{now < exp}}, viết {{now <= exp}} là sai); và {{revoke}} không xoá bản hiệu lực khỏi map nên token vẫn active sau khi đăng xuất. Bài dùng {{jti}} ngẫu nhiên 16 byte; production nên dùng opaque token + Redis để thu hồi tức thời, hoặc giữ JWT nhưng thêm denylist có TTL.`,
+    },
+  ],
+  check: [
+    {
+      q: 'Vì sao refresh token phải được xoay vòng (rotation) sau mỗi lần dùng?',
+      options: [
+        'Để token ngắn hơn về độ dài chuỗi',
+        'Để mỗi token chỉ sống đúng một lần dùng; token bị chụp cũng nhanh chết, và server phát hiện được khi token cũ bị dùng lại (reuse detection)',
+        'Vì JWT bắt buộc phải đổi sau mỗi request',
+        'Để không cần kiểm tra chữ ký nữa',
+      ],
+      answer: 1,
+      explain: `Nếu không xoay vòng, refresh token sống tới hết hạn (có thể hàng tháng) và kẻ trộm dùng được suốt thời gian đó. Xoay vòng làm cửa sổ sống của mỗi token bằng một lần dùng, đồng thời server biết token mới nhất là bản hiệu lực nên token cũ xuất hiện lại là dấu hiệu bị trộm. JWT không bắt buộc đổi mỗi request, và xoay vòng không thay thế việc kiểm chữ ký — chữ ký vẫn phải kiểm mỗi lần.`,
+    },
+    {
+      q: 'Một refresh token đã xoay (đã bị thay bằng token mới) bỗng được gửi lại tới {{/token}}. Server nên làm gì?',
+      options: [
+        'Cấp thêm một token mới vì token vẫn đúng chữ ký',
+        'Coi là tái sử dụng (reuse): thu hồi cả chuỗi token của người dùng đó và từ chối, buộc đăng nhập lại',
+        'Bỏ qua, coi như request lỗi mạng',
+        'Chỉ ghi log rồi vẫn cho qua',
+      ],
+      answer: 1,
+      explain: `Client thật luôn dùng token mới nhất, nên token cũ xuất hiện lại nghĩa là có kẻ đang dùng lại token đã chụp (hoặc client bị nhân đôi). Phản ứng đúng là thu hồi cả chuỗi để chặn kẻ trộm, dù điều đó buộc người dùng thật đăng nhập lại. Cấp token mới là đúng ý đồ kẻ tấn công; bỏ qua hay chỉ ghi log khiến cửa sổ lạm dụng vẫn mở.`,
+    },
+    {
+      q: 'Khi verify refresh token, vì sao không được đọc {{alg}} từ header để chọn thuật toán?',
+      options: [
+        'Vì header luôn sai',
+        'Vì tin {{alg}} mở ra alg:none (bỏ chữ ký) và alg confusion (đổi sang HS256 rồi ký bằng public key); thuật toán phải do bên verify cố định',
+        'Vì JWT không có header',
+        'Vì đọc header làm chậm hệ thống',
+      ],
+      answer: 1,
+      explain: `Header do người gửi token kiểm soát, nên tin nó là tin dữ liệu chưa xác thực. Kẻ tấn công đổi {{alg}} sang {{none}} để bỏ chữ ký, hoặc với server dùng RS256 thì đổi sang HS256 và tự ký HMAC bằng public key (vốn công khai). Bên verify phải cố định thuật toán (ở đây HS256) và từ chối mọi alg khác. Header không sai và JWT luôn có header; đọc header không phải vấn đề tốc độ.`,
+    },
+  ],
+  related: ['security-003', 'security-017', 'security-034'],
+  tags: ['JWT', 'refresh token', 'rotation', 'reuse detection', 'HMAC'],
+},
+{
+  id: 'lesson-security-018',
+  track: 'security',
+  order: 18,
+  title: 'Pepper + PBKDF2: vì sao hash trong DB vẫn bị dò nếu thiếu một bí mật nằm ngoài DB',
+  level: 'senior',
+  minutes: 30,
+  goals: [
+    'Giải thích được salt (lưu cùng DB) khác pepper (bí mật nằm ngoài DB) và vì sao pepper chặn được tấn công khi chỉ cơ sở dữ liệu bị lộ',
+    'Dùng {{javax.crypto.Mac}} ({{HmacSHA256}}) để trộn pepper vào mật khẩu trước khi {{PBKDF2WithHmacSHA256}} với salt riêng từng người dùng',
+    'So sánh hằng thời gian bằng {{MessageDigest.isEqual}} và nêu được cách xoay vòng pepper cùng bẫy production (env leak, rehash khi đăng nhập)',
+  ],
+  body: `**Tóm tắt:** Salt là chuỗi ngẫu nhiên **lưu cùng** hash trong DB; nó chặn rainbow table và tấn công hàng loạt, nhưng **không** chặn được kẻ đã có cả DB (họ có salt + hash và dò offline). Pepper là một **bí mật chung nằm ngoài DB** (biến môi trường, AWS Secrets Manager, KMS, HSM), trộn vào mật khẩu trước khi băm: khi chỉ DB bị lộ mà không có pepper, kẻ tấn công không thể tính ra hash để dò. Bài tập tự viết {{PepperedPasswordHasher}} bằng Java thuần.
+
+### Salt và pepper khác nhau ở đâu
+- **Salt**: ngẫu nhiên **riêng từng người dùng**, **không bí mật**, lưu ngay cạnh hash trong cùng bản ghi. Nhờ salt, hai người cùng mật khẩu "123456" cho hai hash khác nhau, và attacker không dùng được một bảng tra ngược cho mọi người.
+- **Pepper**: một **chuỗi bí mật dùng chung cho cả hệ thống**, **không lưu trong DB**, mà nằm ở nơi attacker không chạm tới khi chỉ có DB (env, Secrets Manager, KMS/HSM). Pepper giống "gia vị bí mật" của nhà hàng: công thức nấu (thuật toán) ai cũng biết, nhưng thiếu gói gia vị đó thì không ai nấu lại đúng món.
+
+Vì pepper **không** nằm trong DB, nó không thể "lưu cùng hash" như salt; nó được nạp lúc khởi động từ nguồn bí mật và trộn vào **mọi** mật khẩu.
+
+### Vì sao chỉ DB lộ thì pepper cứu được
+Kịch bản: kẻ tấn công dump được bảng {{users}} (có salt và hash) qua SQL injection hoặc ổ cứng bị đánh cắp, nhưng **không** xâm nhập được máy chủ ứng dụng nên không có pepper. Với salt đơn thuần, họ có đủ mọi thứ để dò offline: salt + hash + thuật toán công khai. Với pepper, họ còn thiếu **đầu vào** của hàm băm: peppered = HMAC(pepper, password). Không có pepper thì không tính được peppered, và mọi phép thử đều sai — dò offline bất khả thi.
+
+Đổi lại, pepper **không** giúp gì nếu kẻ tấn công lấy được cả pepper (rò biến môi trường, log, source code, hoặc đọc được process env). Vì vậy pepper là **lòng phòng thêm** (defense in depth), không phải thay thế cho hash chậm + salt.
+
+### Trộn pepper bằng HMAC-SHA256 rồi PBKDF2
+Một cách phổ biến: dùng pepper làm **khoá** của HMAC-SHA256 trên mật khẩu, lấy kết quả (chuỗi hex) làm "mật khẩu đã trộn", rồi mới đưa qua PBKDF2 với salt riêng từng người dùng:
+
+~~~java
+// pepper la byte[] nap tu env/KMS; KHONG nam trong DB
+Mac mac = Mac.getInstance("HmacSHA256");
+mac.init(new SecretKeySpec(pepper, "HmacSHA256"));
+String pepperedHex = HexFormat.of().formatHex(mac.doFinal(password.getBytes(StandardCharsets.UTF_8)));
+
+PBEKeySpec spec = new PBEKeySpec(pepperedHex.toCharArray(), salt, ITERATIONS, 256);
+SecretKeyFactory kf = SecretKeyFactory.getInstance("PBKDF2WithHmacSHA256");
+byte[] hash = kf.generateSecret(spec).getEncoded();
+spec.clearPassword();
+~~~
+
+Vì sao trộn pepper **trước** rồi mới PBKDF2? Vì PBKDF2 cần một đầu vào; pepper biến đầu vào đó thành thứ chỉ tính được khi có bí mật. Tính pepper **sau** PBKDF2 (HMAC trên hash) cũng là một dạng "peppering", nhưng trộn trước là quy ước phổ biến và giúp peppered là đầu vào duy nhất mà PBKDF2 tiêu thụ.
+
+Định dạng lưu vẫn như bài trước: {{pbkdf2$ITERATIONS$saltHex$hashHex}} — lưu cả thuật toán và số vòng, để sau này nâng chi phí mà hash cũ vẫn verify được (verify phải đọc số vòng **từ chuỗi đã lưu**).
+
+### So sánh hằng thời gian
+Sau khi tính lại hash, so với hash đã lưu bằng {{MessageDigest.isEqual}} (duyệt hết mảng, không thoát sớm), **không** dùng {{String.equals}} trên chuỗi hex (thoát ở ký tự khác đầu tiên → rò rỉ thời gian). Đặt hash đã lưu làm tham số thứ nhất vì thời gian của {{isEqual}} phụ thuộc độ dài tham số này.
+
+### Xoay vòng pepper và nâng cấp hash khi đăng nhập
+Pepper cũng cần xoay vòng (ví dụ nghi ngờ rò rỉ). Cách làm không downtime: khi verify, thử pepper hiện tại; nếu không khớp, thử pepper cũ (giữ 1–2 phiên bản trước trong cấu hình). Khi người dùng đăng nhập thành công bằng pepper cũ, bạn đang có mật khẩu gốc trong tay → **hash lại bằng pepper mới và ghi đè**. Đây là "rehash on login": nâng cấp dần toàn bộ hash mà không bắt người dùng đổi mật khẩu. Nếu pepper bị lộ hoàn toàn, cách triệt để là buộc đổi mật khẩu (vì peppered của mọi user đã lộ).
+
+### Bẫy production
+- **Pepper lọt vào env/log/source**: biến môi trường đọc được qua {{/proc}}, crash dump, hoặc log khởi động; secret trong Git là thảm hoạ. Dùng Secrets Manager/KMS, không commit, không log.
+- **Coi pepper là thay thế cho hash chậm**: vẫn phải dùng PBKDF2/bcrypt/Argon2 với chi phí đủ cao và salt riêng.
+- **Không có đường xoay vòng pepper**: đổi pepper mà không giữ bản cũ thì mọi người dùng không đăng nhập được. Phải verify thử pepper cũ và rehash khi đăng nhập.
+- **Một pepper chung, không version**: không biết bản ghi nào dùng pepper nào. Nên kèm version pepper trong chuỗi lưu (ví dụ {{pbkdf2$...$v2$...}}) hoặc map riêng.
+- **So sánh bằng {{equals}}**: timing channel; luôn {{MessageDigest.isEqual}}.
+
+### Liên hệ phỏng vấn
+Interviewer hay hỏi: "salt và pepper khác nhau thế nào?", "DB bị lộ mà không lộ pepper thì attacker dò được không?", "xoay vòng pepper ra sao mà không downtime?", "PBKDF2 so với bcrypt/Argon2?". Làm xong bài tập dưới đây — tự trộn pepper bằng {{javax.crypto.Mac}}, PBKDF2 với salt, so bằng {{MessageDigest.isEqual}} — là bạn trả lời được cả bốn câu bằng chính mã của mình.`,
+  exercises: [
+    {
+      title: 'Viết PepperedPasswordHasher: pepper bằng HMAC-SHA256, PBKDF2 và verify hằng thời gian',
+      prompt: `Hoàn thiện {{PepperedPasswordHasher}} (chỉ dùng JDK 17). Pepper là bí mật của server, truyền vào constructor; salt sinh mới cho mỗi lần {{create}}.
+
+- {{PepperedPasswordHasher(pepper)}}: pepper null hoặc rỗng thì ném {{IllegalArgumentException}}.
+- {{hash(password, salt)}}: trả về **hex viết thường** (64 ký tự) của PBKDF2WithHmacSHA256 với {{ITERATIONS}} vòng và {{KEY_BITS}} bit, đầu vào là **peppered** = hex của HMAC-SHA256(pepper, password). Đây là hàm tất định (cùng input luôn cùng output) để test đối chiếu.
+- {{create(password)}}: sinh salt 16 byte bằng {{SecureRandom}}, trả về chuỗi {{pbkdf2$ITERATIONS$saltHex$hashHex}} (hex viết thường bằng {{HexFormat}}).
+- {{verify(password, stored)}}: tách 4 phần, kiểm phần đầu là {{pbkdf2}}, **đọc số vòng từ phần thứ hai** (trong khoảng 1..10.000.000), tính lại hash từ peppered của password, salt và số vòng đó, so bằng {{MessageDigest.isEqual}}. Trả **false** (không ném exception) khi null, sai định dạng, số vòng/hex không hợp lệ hoặc mật khẩu sai.
+
+Chỉ dùng JDK 17, không thư viện ngoài.`,
+      starter: `import java.nio.charset.StandardCharsets;
+import java.security.MessageDigest;
+import java.security.SecureRandom;
+import java.util.HexFormat;
+import javax.crypto.Mac;
+import javax.crypto.SecretKeyFactory;
+import javax.crypto.spec.PBEKeySpec;
+import javax.crypto.spec.SecretKeySpec;
+
+final class PepperedPasswordHasher {
+    static final int ITERATIONS = 6000;
+    static final int SALT_BYTES = 16;
+    static final int KEY_BITS = 256;
+
+    private final byte[] pepper;
+
+    PepperedPasswordHasher(String pepper) {
+        this.pepper = pepper.getBytes(StandardCharsets.UTF_8);
+    }
+
+    String create(String password) {
+        throw new UnsupportedOperationException("TODO");
+    }
+
+    String hash(String password, byte[] salt) {
+        throw new UnsupportedOperationException("TODO");
+    }
+
+    boolean verify(String password, String stored) {
+        throw new UnsupportedOperationException("TODO");
+    }
+}`,
+      tests: `import java.nio.charset.StandardCharsets;
+import java.util.Arrays;
+import java.util.HexFormat;
+import java.util.Objects;
+import javax.crypto.Mac;
+import javax.crypto.SecretKeyFactory;
+import javax.crypto.spec.PBEKeySpec;
+import javax.crypto.spec.SecretKeySpec;
+
+public class Main {
+    static int passed = 0, total = 0;
+    static void check(String name, Runnable r) {
+        total++;
+        try { r.run(); passed++; System.out.println("PASS " + name); }
+        catch (Throwable t) { System.out.println("FAIL " + name + ": " + t); }
+    }
+    static void eq(Object expected, Object actual) {
+        if (!Objects.equals(expected, actual)) throw new AssertionError("expected " + expected + " got " + actual);
+    }
+    // lap lai dung cong thuc: peppered = HMAC(pepper, password) hex, roi PBKDF2 tren do
+    static String jdkHash(String pepper, String pw, byte[] salt, int iterations) {
+        try {
+            Mac mac = Mac.getInstance("HmacSHA256");
+            mac.init(new SecretKeySpec(pepper.getBytes(StandardCharsets.UTF_8), "HmacSHA256"));
+            String peppered = HexFormat.of().formatHex(mac.doFinal(pw.getBytes(StandardCharsets.UTF_8)));
+            PBEKeySpec spec = new PBEKeySpec(peppered.toCharArray(), salt, iterations, 256);
+            return HexFormat.of().formatHex(SecretKeyFactory.getInstance("PBKDF2WithHmacSHA256").generateSecret(spec).getEncoded());
+        } catch (Exception e) { throw new IllegalStateException(e); }
+    }
+    static String[] parts(String stored) {
+        int a = stored.indexOf('$');
+        int b = a < 0 ? -1 : stored.indexOf('$', a + 1);
+        int c = b < 0 ? -1 : stored.indexOf('$', b + 1);
+        if (a < 0 || b < 0 || c < 0) throw new AssertionError("sai dinh dang: " + stored);
+        return new String[] { stored.substring(0, a), stored.substring(a + 1, b), stored.substring(b + 1, c), stored.substring(c + 1) };
+    }
+    public static void main(String[] args) {
+        check("create follows pbkdf2 iters salt hash format", () -> {
+            PepperedPasswordHasher h = new PepperedPasswordHasher("pepper-A");
+            String[] p = parts(h.create("S3cret!"));
+            eq("pbkdf2", p[0]);
+            eq(String.valueOf(PepperedPasswordHasher.ITERATIONS), p[1]);
+            eq(32, p[2].length());
+            eq(64, p[3].length());
+            if (!p[2].matches("[0-9a-f]+") || !p[3].matches("[0-9a-f]+")) throw new AssertionError("hex phai viet thuong");
+        });
+        check("verify accepts the right password and rejects wrong ones", () -> {
+            PepperedPasswordHasher h = new PepperedPasswordHasher("pepper-A");
+            String stored = h.create("correct horse battery staple");
+            if (!h.verify("correct horse battery staple", stored)) throw new AssertionError("mat khau dung ma verify false");
+            if (h.verify("correct horse battery stapla", stored)) throw new AssertionError("sai cung do dai ma verify true");
+            if (h.verify("abc", stored)) throw new AssertionError("khac do dai ma verify true");
+        });
+        check("salt changes the hash and hash is deterministic", () -> {
+            PepperedPasswordHasher h = new PepperedPasswordHasher("pepper-A");
+            byte[] s1 = new byte[16];
+            byte[] s2 = new byte[16];
+            Arrays.fill(s1, (byte) 1);
+            Arrays.fill(s2, (byte) 2);
+            String h1 = h.hash("pw", s1);
+            String h2 = h.hash("pw", s2);
+            if (h1.equals(h2)) throw new AssertionError("khac salt phai khac hash");
+            eq(64, h1.length());
+            eq(h1, h.hash("pw", s1));
+        });
+        check("hash equals PBKDF2 over the peppered password from the JDK", () -> {
+            PepperedPasswordHasher h = new PepperedPasswordHasher("pepper-A");
+            byte[] salt = new byte[16];
+            for (int i = 0; i < salt.length; i++) salt[i] = (byte) i;
+            eq(jdkHash("pepper-A", "Mat-khau-123", salt, PepperedPasswordHasher.ITERATIONS), h.hash("Mat-khau-123", salt));
+        });
+        check("verify uses the iteration count stored in the string", () -> {
+            PepperedPasswordHasher h = new PepperedPasswordHasher("pepper-A");
+            byte[] salt = new byte[16];
+            Arrays.fill(salt, (byte) 7);
+            String saltHex = HexFormat.of().formatHex(salt);
+            String old = "pbkdf2$1000$" + saltHex + "$" + jdkHash("pepper-A", "pw-cu", salt, 1000);
+            if (!h.verify("pw-cu", old)) throw new AssertionError("hash cu 1000 vong phai verify duoc");
+            String[] p = parts(old);
+            if (h.verify("pw-cu", p[0] + "$999$" + p[2] + "$" + p[3])) throw new AssertionError("sua so vong ma verify true");
+            if (h.verify("pw-cu", p[0] + "$0$" + p[2] + "$" + p[3])) throw new AssertionError("0 vong ma verify true");
+            if (h.verify("pw-cu", p[0] + "$abc$" + p[2] + "$" + p[3])) throw new AssertionError("so vong rac ma verify true");
+            if (h.verify("pw-cu", p[0] + "$99999999$" + p[2] + "$" + p[3])) throw new AssertionError("so vong qua lon ma verify true");
+            if (h.verify("pw-cu", "sha1$1000$" + p[2] + "$" + p[3])) throw new AssertionError("sai thuat toan ma verify true");
+        });
+        check("verify fails cleanly on malformed storage", () -> {
+            PepperedPasswordHasher h = new PepperedPasswordHasher("pepper-A");
+            if (h.verify("x", "khong-phai-dinh-dang")) throw new AssertionError("chuoi rac ma verify true");
+            if (h.verify("x", "pbkdf2$6000$zz$yy")) throw new AssertionError("hex rac ma verify true");
+            if (h.verify("x", "pbkdf2$6000$aa")) throw new AssertionError("thieu phan ma verify true");
+            if (h.verify("x", null)) throw new AssertionError("null ma verify true");
+        });
+        check("a different pepper cannot verify", () -> {
+            PepperedPasswordHasher a = new PepperedPasswordHasher("pepper-A");
+            PepperedPasswordHasher b = new PepperedPasswordHasher("pepper-B");
+            String stored = a.create("pw123456");
+            if (!a.verify("pw123456", stored)) throw new AssertionError("dung pepper ma verify false");
+            if (b.verify("pw123456", stored)) throw new AssertionError("sai pepper ma verify true");
+        });
+        check("tampered hash is rejected", () -> {
+            PepperedPasswordHasher h = new PepperedPasswordHasher("pepper-A");
+            String stored = h.create("pw123456");
+            String[] p = parts(stored);
+            char last = p[3].charAt(63);
+            char other = last == '0' ? '1' : '0';
+            String tampered = p[0] + "$" + p[1] + "$" + p[2] + "$" + p[3].substring(0, 63) + other;
+            if (h.verify("pw123456", tampered)) throw new AssertionError("hash bi sua ma verify true");
+        });
+        System.out.println("RESULT " + passed + "/" + total);
+    }
+}`,
+      reference: `import java.nio.charset.StandardCharsets;
+import java.security.GeneralSecurityException;
+import java.security.MessageDigest;
+import java.security.SecureRandom;
+import java.util.HexFormat;
+import javax.crypto.Mac;
+import javax.crypto.SecretKeyFactory;
+import javax.crypto.spec.PBEKeySpec;
+import javax.crypto.spec.SecretKeySpec;
+
+final class PepperedPasswordHasher {
+    static final int ITERATIONS = 6000;
+    static final int SALT_BYTES = 16;
+    static final int KEY_BITS = 256;
+    private static final int MAX_ITERATIONS = 10_000_000;
+
+    private final byte[] pepper;                 // bi mat cua server, KHONG nam trong DB
+
+    PepperedPasswordHasher(String pepper) {
+        if (pepper == null || pepper.isEmpty()) throw new IllegalArgumentException("pepper rong");
+        this.pepper = pepper.getBytes(StandardCharsets.UTF_8);
+    }
+
+    String create(String password) {
+        byte[] salt = new byte[SALT_BYTES];
+        new SecureRandom().nextBytes(salt);      // muoi rieng cho moi user
+        return "pbkdf2$" + ITERATIONS + "$" + HexFormat.of().formatHex(salt) + "$" + hash(password, salt);
+    }
+
+    String hash(String password, byte[] salt) {
+        return hash(password, salt, ITERATIONS);
+    }
+
+    private String hash(String password, byte[] salt, int iterations) {
+        PBEKeySpec spec = new PBEKeySpec(pepperedHex(password).toCharArray(), salt, iterations, KEY_BITS);
+        try {
+            return HexFormat.of().formatHex(
+                    SecretKeyFactory.getInstance("PBKDF2WithHmacSHA256").generateSecret(spec).getEncoded());
+        } catch (GeneralSecurityException e) {
+            throw new IllegalStateException("PBKDF2WithHmacSHA256 khong co trong JVM nay", e);
+        } finally {
+            spec.clearPassword();
+        }
+    }
+
+    private String pepperedHex(String password) {
+        try {
+            Mac mac = Mac.getInstance("HmacSHA256");                 // pepper lam khoa HMAC
+            mac.init(new SecretKeySpec(pepper, "HmacSHA256"));
+            return HexFormat.of().formatHex(mac.doFinal(password.getBytes(StandardCharsets.UTF_8)));
+        } catch (GeneralSecurityException e) {
+            throw new IllegalStateException(e);
+        }
+    }
+
+    boolean verify(String password, String stored) {
+        if (password == null || stored == null) return false;
+        int a = stored.indexOf('$');
+        int b = a < 0 ? -1 : stored.indexOf('$', a + 1);
+        int c = b < 0 ? -1 : stored.indexOf('$', b + 1);
+        if (a < 0 || b < 0 || c < 0 || stored.indexOf('$', c + 1) >= 0) return false;   // dung 4 phan
+        if (!"pbkdf2".equals(stored.substring(0, a))) return false;
+        try {
+            int iterations = Integer.parseInt(stored.substring(a + 1, b));              // so vong DA LUU
+            if (iterations < 1 || iterations > MAX_ITERATIONS) return false;
+            byte[] salt = HexFormat.of().parseHex(stored.substring(b + 1, c));
+            byte[] expected = HexFormat.of().parseHex(stored.substring(c + 1));
+            if (salt.length == 0 || expected.length == 0) return false;
+            byte[] actual = HexFormat.of().parseHex(hash(password, salt, iterations));
+            return MessageDigest.isEqual(expected, actual);                             // constant-time
+        } catch (IllegalArgumentException e) {                                          // gom ca NumberFormatException
+            return false;
+        }
+    }
+}`,
+      hints: [
+        'Peppered = {{HexFormat.of().formatHex(HMAC(pepper, password))}}; đưa chuỗi hex đó vào {{PBEKeySpec}} (dùng {{toCharArray()}}), không đưa mật khẩu gốc.',
+        'Sinh salt bằng {{new SecureRandom().nextBytes(salt)}}; cắt chuỗi lưu bằng {{indexOf}} chứ đừng {{split("$")}} (ký tự $ là regex).',
+        'Số vòng đọc bằng {{Integer.parseInt}} từ phần thứ hai; {{NumberFormatException}} là lớp con của {{IllegalArgumentException}} nên một {{catch (IllegalArgumentException e)}} bắt cả lỗi số lẫn hex.',
+        'So hash bằng {{MessageDigest.isEqual(expected, actual)}} trên byte đã parse; mọi đường lỗi đều trả false, không ném exception.',
+      ],
+      explain: `Điểm cốt lõi là **pepper nằm ngoài DB**: salt chống rainbow table và tấn công hàng loạt, nhưng kẻ đã có cả DB vẫn dò offline được; pepper thêm một bí mật mà kẻ đó không có, nên họ không tính nổi đầu vào của PBKDF2. Đổi lại, nếu pepper rò (env, log, source) thì pepper mất tác dụng — vì vậy nó là lớp phòng thủ thêm, không thay hash chậm + salt.
+
+Bẫy hay gặp: (1) trộn pepper **sau** khi đã lưu hash mà không có đường verify lại; (2) đổi pepper mà không giữ bản cũ → mọi user không đăng nhập được; phải verify thử pepper cũ và rehash khi đăng nhập (rehash on login); (3) dùng {{split("$")}} — {{$}} là ký tự neo cuối chuỗi trong regex nên chuỗi không bị cắt, phải dùng {{indexOf}} hoặc {{split("\\\\$")}}; (4) so bằng {{equals}} thay vì {{MessageDigest.isEqual}} (timing channel); (5) verify bằng hằng số {{ITERATIONS}} thay vì số vòng đã lưu → nâng chi phí là user cũ không vào được.
+
+Bài dùng {{ITERATIONS = 6000}} để test chạy nhanh; production theo khuyến nghị hiện hành của OWASP cho PBKDF2-HMAC-SHA256 (hàng trăm nghìn vòng, khoảng 600.000) và cân nhắc Argon2id nếu attacker có GPU. Pepper nên lấy từ Secrets Manager/KMS và có version để xoay vòng.`,
+    },
+  ],
+  check: [
+    {
+      q: 'Salt và pepper khác nhau ở điểm nào?',
+      options: [
+        'Salt bí mật, pepper công khai',
+        'Salt lưu cùng hash trong DB và không bí mật; pepper là bí mật chung nằm ngoài DB (env/KMS), không lưu cùng hash',
+        'Chúng giống hệt nhau, chỉ khác tên gọi',
+        'Pepper dùng cho MD5, salt dùng cho SHA-256',
+      ],
+      answer: 1,
+      explain: `Salt là ngẫu nhiên riêng từng user, **không** bí mật, lưu ngay cạnh hash; nó chặn rainbow table và tấn công hàng loạt. Pepper là bí mật **chung** cho cả hệ thống, **không** nằm trong DB, nạp từ env/Secrets Manager/KMS. Vì pepper không ở trong DB nên không thể lưu cùng hash như salt. Hai khái niệm bổ sung nhau chứ không thay thế; và pepper không gắn riêng với MD5.`,
+    },
+    {
+      q: 'Kẻ tấn công dump được bảng {{users}} (có salt + hash) nhưng không có pepper. Họ có dò được mật khẩu offline không?',
+      options: [
+        'Có, vì đã có đủ salt và hash',
+        'Không (thực tế bất khả thi): thiếu pepper nên không tính được peppered — đầu vào của PBKDF2 — nên mọi phép thử đều sai',
+        'Có, nếu dùng SHA-256 thay vì PBKDF2',
+        'Không, vì salt đã đủ chặn mọi tấn công',
+      ],
+      answer: 1,
+      explain: `Với salt đơn thuần, có DB là attacker có đủ salt + hash + thuật toán công khai để dò offline. Pepper thêm một bí mật ngoài DB: peppered = HMAC(pepper, password) là đầu vào của PBKDF2, không có pepper thì không tính được, nên dò offline bất khả thi. Đây chính là giá trị của pepper khi chỉ DB lộ. Salt một mình không chặn được tấn công offline khi attacker đã có cả hash.`,
+    },
+    {
+      q: 'Đổi pepper mà không giữ phiên bản cũ thì chuyện gì xảy ra, và cách làm đúng?',
+      options: [
+        'Không sao, pepper mới tự động áp dụng cho hash cũ',
+        'Mọi hash cũ không verify được → không ai đăng nhập được; cách đúng là verify thử pepper cũ và rehash bằng pepper mới khi người dùng đăng nhập thành công',
+        'Phải xoá toàn bộ user và tạo lại',
+        'Phải lưu pepper trong DB để verify',
+      ],
+      answer: 1,
+      explain: `Hash cũ được tạo bằng pepper cũ; đổi pepper mà không giữ bản cũ thì không tính lại được hash để so, nên verify thất bại cho toàn bộ user. Cách làm không downtime là giữ 1–2 pepper cũ trong cấu hình, verify thử bản mới rồi bản cũ, và khi đăng nhập thành công bằng bản cũ (lúc này có mật khẩu gốc) thì hash lại bằng pepper mới và ghi đè — rehash on login. Lưu pepper trong DB là sai mục đích (mất lý do tồn tại của pepper).`,
+    },
+  ],
+  related: ['security-029', 'security-036', 'security-070'],
+  tags: ['password', 'pepper', 'PBKDF2', 'HMAC', 'timing attack'],
+},
 );
