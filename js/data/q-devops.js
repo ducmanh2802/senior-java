@@ -19013,5 +19013,151 @@ Tách config non-secret vào ConfigMap commit git được, secret vào Vault ho
     ],
     tags: ['Kubernetes', 'ConfigMap', 'Secret', 'Vault', 'Kustomize', 'Helm', 'External Secrets', 'GitOps']
   }
+,
+{
+  id: 'devops-210',
+  topic: 'devops',
+  level: 'senior',
+  q: 'CI monorepo Java đã cache Maven/Gradle và chỉ build module đổi nhưng vẫn mất 12 phút vì test integration chạy tuần tự trên một runner. Làm sao giảm xuống dưới 5 phút bằng test sharding và remote cache?',
+  a: `**Tóm tắt:** Chia test suite thành nhiều shard chạy song song trên nhiều runner, dùng Gradle build cache remote để các shard chia sẻ kết quả biên dịch, và chỉ chạy test của module thay đổi. Kết quả: từ 12 phút xuống dưới 5 phút với 4 shard.
+
+### Hiểu nhanh
+Test integration thường chậm vì phụ thuộc DB/Redis/Kafka và chạy tuần tự. Sharding chia danh sách test class thành N nhóm chạy đồng thời trên N runner. Remote cache tránh mỗi shard compile lại cùng dependency. Kết hợp changed detection chỉ chạy test module bị ảnh hưởng.
+
+### Thuật ngữ
+- **Test sharding**: chia bộ test thành nhiều nhóm (shard) chạy song song trên nhiều máy.
+- **Remote cache**: cache build/test kết quả chia sẻ giữa các runner (Gradle Build Cache, Bazel remote cache).
+- **Test impact analysis**: chỉ chạy test bị ảnh hưởng bởi code thay đổi.
+
+### Vì sao không chỉ tăng CPU runner
+Tăng CPU không giúp khi bottleneck là I/O (DB, network) và test tuần tự. Cần parallelism thực sự across runner, không chỉ within JVM.
+
+### Ví dụ
+~~~bash
+# 4 test worker song song trên 1 runner
+./gradlew test --max-workers=4
+# Hoặc chia module
+./gradlew :module-a:test :module-b:test :module-c:test :module-d:test
+~~~
+
+### Từng quyết định
+| Quyết định | Lý do |
+|---|---|
+| 4 shard runner | Giảm thời gian test 4x |
+| Remote cache Gradle | Tránh compile lại |
+| Testcontainers reuse DB | Giảm startup DB mỗi shard |
+| Changed detection | Chỉ test module ảnh hưởng |
+
+### Ví dụ đời thực
+Triệu chứng: CI 12 phút, test integration 8 phút. Xử lý: sharding 4 runner + remote cache + Testcontainers reuse. Kết quả: 4.5 phút, cache hit 85%.
+
+### Trả lời mẫu khi phỏng vấn
+Để giảm CI integration test từ 12 phút xuống dưới 5 phút, tôi dùng test sharding chạy 4 runner song song, remote Gradle build cache để chia sẻ kết quả compile, và Testcontainers reuse container DB để tránh startup lại. Kết hợp changed detection chỉ chạy test module bị ảnh hưởng. Pitfall là flaky test do shared DB state giữa shard, giải quyết bằng DB schema riêng per shard. Kết quả đo được: 4.5 phút, cache hit 85%.
+
+> Senior tip: Đo cache hit ratio trước và sau; nếu < 70% thì remote cache chưa hiệu quả. Luôn isolate DB state per shard để tránh flaky test.
+`,
+  follow: [
+    'Testcontainers reuse container giữa shard thế nào để tránh port conflict?',
+    'Cách xử lý flaky test trong CI sharding?'
+  ],
+  tags: ['CI', 'Test sharding', 'Gradle', 'Remote cache', 'Testcontainers']
+},
+{
+  id: 'devops-211',
+  topic: 'devops',
+  level: 'senior',
+  q: 'Container image Java production cần reproducible build, SBOM và chữ ký để verify supply chain. Bạn thiết kế pipeline build image như thế nào?',
+  a: `**Tóm tắt:** Build image với BuildKit reproducible (SOURCE_DATE_EPOCH), sinh SBOM bằng Syft, ký image bằng Cosign, và verify chữ ký + SBOM tại deploy. Kết quả: supply chain auditable, rollback có thể verify integrity.
+
+### Hiểu nhanh
+Reproducible build đảm bảo cùng source cho cùng image digest. SBOM liệt kê mọi component. Cosign ký digest image để verify tại deploy. Admission controller (Kyverno/OPA) enforce verify chữ ký trước khi Pod start.
+
+### Thuật ngữ
+- **Reproducible build**: build cho cùng digest khi input giống nhau.
+- **SBOM**: danh sách component và version trong image.
+- **Cosign**: ký và verify container image bằng keyless OIDC.
+- **Admission controller**: kiểm tra policy trước khi Pod được tạo.
+
+### Vì sao không chỉ scan CVE
+CVE scan chỉ phát hiện lỗ hổng đã biết; supply chain attack (dependency compromise) cần verify provenance và signature. SBOM + cosign cung cấp audit trail.
+
+### Ví dụ
+~~~bash
+# Build reproducible + SBOM + sign
+docker buildx build --provenance=true -t registry/img:v1 .
+syft registry/img:v1 -o spdx-json > sbom.json
+cosign sign --yes registry/img@sha256:...
+~~~
+
+### Từng quyết định
+| Quyết định | Lý do |
+|---|---|
+| BuildKit reproducible | Cùng source = cùng digest |
+| Syft SBOM | Audit component |
+| Cosign keyless | Không quản lý key |
+| Kyverno verify | Enforce tại deploy |
+
+### Ví dụ đời thực
+Triệu chứng: dependency compromise không phát hiện. Xử lý: SBOM + cosign + admission verify. Kết quả: deploy bị block nếu unsigned, audit trail đầy đủ.
+
+### Trả lời mẫu khi phỏng vấn
+Để đảm bảo supply chain, tôi build image reproducible với BuildKit, sinh SBOM bằng Syft, ký digest bằng Cosign keyless OIDC, và enforce verify chữ ký qua Kyverno admission controller trước khi Pod start. Pitfall là SBOM không được cập nhật khi rebuild; giải quyết bằng sinh SBOM trong CI mỗi build. Kết quả: deploy bị block nếu image chưa ký, audit trail đầy đủ cho compliance.
+
+> Senior tip: **Unsigned image = không deploy.** Enforce verify chữ ký tại admission controller, không chỉ CI. Và lưu SBOM kèm release artifact để audit sau này.
+`,
+  follow: [
+    'Cosign keyless vs key-based: trade-off và khi nào dùng cái nào?',
+    'Kyverno vs OPA Gatekeeper: chọn cái nào cho K8s policy?'
+  ],
+  tags: ['Supply chain', 'SBOM', 'Cosign', 'Reproducible build', 'Kyverno']
+},
+{
+  id: 'devops-212',
+  topic: 'devops',
+  level: 'lead',
+  q: 'Team có 180 alert rule cho 30 microservice, phần lớn kêu vì CPU/heap/5xx threshold cố định, gây alert fatigue. Bạn thiết kế lại alert theo burn rate và SLO để giảm noise và cải thiện MTTR?',
+  a: `**Tóm tắt:** Thay threshold cố định bằng multi-window multi-burn-rate alert theo SLO: fast burn (5 phút) cho sự cố lớn, slow burn (1 giờ) cho suy giảm dần. Giảm alert 70%, MTTR cải thiện vì team chỉ nhận alert có ý nghĩa.
+
+### Hiểu nhanh
+Burn rate = tỷ lệ lỗi hiện tại / tỷ lệ lỗi cho phép theo SLO. Multi-window multi-burn-rate dùng 2 cửa sổ: ngắn (5m) detect sự cố nhanh, dài (1h) detect suy giảm. Alert chỉ fire khi cả hai cửa sổ vượt ngưỡng.
+
+### Thuật ngữ
+- **Burn rate**: tốc độ tiêu hao error budget so với SLO.
+- **Multi-window**: dùng nhiều cửa sổ thời gian để giảm false positive.
+- **Error budget**: lượng lỗi cho phép trong SLO (ví dụ 0.1% cho 99.9%).
+- **Alert fatigue**: team kiệt sức do alert vô nghĩa.
+
+### Vì sao không chỉ đặt threshold CPU > 80%
+Threshold cố định không liên quan đến user impact. CPU cao nhưng latency OK thì không cần alert. Burn rate liên kết trực tiếp đến SLO/user experience.
+
+### Ví dụ
+~~~text
+# Fast burn: 5m window, burn rate > 14.4 (consume 2% budget in 1h)
+# Slow burn: 1h window, burn rate > 6 (consume 5% budget in 6h)
+# Alert fire khi BOTH windows vượt ngưỡng
+~~~
+
+### Từng quyết định
+| Quyết định | Lý do |
+|---|---|
+| Multi-window | Giảm false positive |
+| Burn rate theo SLO | Liên kết user impact |
+| Silence cho deploy | Tránh noise khi deploy |
+| Runbook kèm alert | Triage nhanh |
+
+### Ví dụ đời thực
+Triệu chứng: 180 alert, team bỏ qua. Xử lý: burn-rate SLO alert. Kết quả: 54 alert, MTTR 2h → 30 phút.
+
+### Trả lời mẫu khi phỏng vấn
+Để giảm alert fatigue, tôi thiết kế multi-window multi-burn-rate alert theo SLO: fast burn 5 phút detect sự cố lớn, slow burn 1 giờ detect suy giảm dần, alert chỉ fire khi cả hai vượt ngưỡng. Thay threshold CPU/heap cố định bằng burn rate liên kết đến user impact. Kết hợp silence cho deploy và runbook kèm mỗi alert. Pitfall là SLO không được định nghĩa rõ; giải quyết bằng workshop với product owner để set SLO thực tế. Kết quả: 180 → 54 alert, MTTR 2h → 30 phút.
+
+> Senior tip: **Alert phải liên kết đến user impact.** CPU cao không phải sự cố nếu latency OK. Luôn có runbook và owner cho mỗi alert; review alert hàng quý để loại bỏ noise.
+`,
+  follow: [
+    'Cách set SLO cho service mới chưa có baseline?',
+    'Khi nào dùng symptom-based alert vs cause-based alert?'
+  ],
+  tags: ['SRE', 'Burn rate', 'SLO', 'Alert fatigue', 'Monitoring']
+}
 );
 
