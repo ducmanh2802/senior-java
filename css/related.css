@@ -41,6 +41,16 @@
 .rq-item[open] .rq-sum::after {
   transform: rotate(180deg);
 }
+/* .rq-item clips its overflow, so the global outside focus ring would be cut off: draw it inside */
+.rq-sum:focus-visible {
+  outline-offset: -2px;
+  border-radius: var(--radius-sm);
+}
+@media (hover: hover) {
+  .rq-sum:hover {
+    background: color-mix(in srgb, var(--accent-soft) 55%, transparent);
+  }
+}
 .rq-q {
   flex: 1;
   min-width: 0;
@@ -50,9 +60,7 @@
 .rq-q p {
   margin: 0;
 }
-.rq-level {
-  flex: none;
-}
+.rq-level,
 .rq-status {
   flex: none;
 }
@@ -62,13 +70,13 @@
 }
 .rq-h {
   margin: 12px 0 6px;
-  font-size: .78rem;
+  font-size: var(--fs-xs);
   text-transform: uppercase;
   letter-spacing: .04em;
   color: var(--muted);
 }
 .rq-a {
-  font-size: .94rem;
+  font-size: var(--fs-md);
 }
 .rq-follow {
   margin: 0;
@@ -76,10 +84,9 @@
 }
 .rq-follow li {
   margin: 4px 0;
-  font-size: .92rem;
+  font-size: var(--fs-md);
 }
 .rq-actions {
-  flex-wrap: wrap;
   gap: 6px;
   margin-top: 12px;
 }
