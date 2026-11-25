@@ -13478,5 +13478,221 @@ Tôi version API thuế qua URL v1/v2, lưu tax_version trên mỗi invoice. Ada
 `,
   follow: ['Làm sao xử lý khi cơ quan thuế downtime kéo dài trong migration?', 'So sánh API versioning qua URL vs header vs content negotiation.', 'Thiết kế backward compatibility cho webhook callback từ thuế?'],
   tags: ['invoice', 'migration', 'versioning', 'adapter', 'feature-flag', 'backward-compat']
+},
+{
+  id: 'architecture-081',
+  topic: 'architecture',
+  level: 'senior',
+  q: 'Team backend 8 người đã tách thành 6 microservice, nhưng mỗi tuần đều có incident do cấu hình sai, on-call sáu vòng, và tài liệu vận hành chồng chéo. Bạn đánh giá và chạy việc thu gom về modular monolith thế nào, và khi nào KHÔNG nên thu gom?',
+  a: `**Tóm tắt:** Nếu tám người phải vận hành sáu microservice và liên tục xử lý incident do cấu hình sai, vấn đề không phải microservice xấu, mà là **tách quá nhiều service so với số người**. Đừng vội gộp lại: hãy kiểm tra cái gì thực sự cần chạy độc lập, rồi gộp từng đôi service cùng domain, giữ lại hai đến ba service chỉ khi có lý do đo được.
+
+### Cái gì → vì sao cần
+- **Microservice sprawl (lan rộng dịch vụ vi):** quá nhiều service nhỏ, mỗi service thêm pipeline CI/CD, dashboard, runbook (sổ tay xử lý sự cố), bản release riêng. Tám người chia sẻ sáu service ⇒ mỗi service thiếu chủ sở hữu rõ, sửa tính năng phải nhảy qua nhiều repository.
+- **Cognitive load (tải nhận thức):** lập trình viên phải nhớ sáu endpoint, sáu cách cấu hình, sáu nhật ký log. Giống như một đầu bếp phải chạy sáu bếp ở sáu khu vực thay vì nấu sáu món trên một bếp.
+- **On-call (trực sự cố):** mỗi service là nguồn báo động tiềm năng lúc hai giờ sáng. Sáu service sáu vòng trực, tám người không ai ngủ ngon.
+- **Conway's law (định luật Conway):** kiến trúc phản chiếu cách tổ chức giao tiếp. Tám người ngồi cùng phòng, nói chuyện trực tiếp mỗi ngày ⇒ cấu trúc giao tiếp dày đặc, ít ranh giới ⇒ kiến trúc phù hợp là một codebase, nhiều module, không phải sáu ranh giới qua mạng mà không có sáu team đứng sau.
+
+### Khi nào KHÔNG nên thu gom
+- Một module có tải khác biệt gấp năm đến mười lần so với phần còn lại (ví dụ notification ghi push vào giờ cao điểm).
+- Cần deploy độc lập (nhóm A phát hành hằng ngày, nhóm B phát hành một tháng một lần).
+- Yêu cầu cô lập dữ liệu (PCI, dữ liệu nhạy cảm, quy định riêng của một khách lớn).
+- Hai module liên tục sửa chung một vùng code ⇒ ranh giới chưa đúng, hãy đặt lại ranh giới trước khi gộp.
+
+### Quy trình thu gom an toàn (từng bước)
+1. **Kiểm tồn kho:** liệt kê sáu service, requests/giây, incident/tháng, ai trực, database riêng hay chung.
+2. **Đặt lại ranh giới domain:** gộp service cùng bounded context (ví dụ order + order-history), tách service có logic khác hẳn (payment, notification).
+3. **Gộp từng đôi:** mỗi lần gộp hai service thành một module trong monolith, chạy thử hai tuần, sau đó gộp tiếp. Không gộp sáu service cùng lúc.
+4. **Hợp đồng người dùng (consumer-driven contract):** trước khi gộp, gọi các service cũ qua adapter trong monolith hoặc giữ endpoint cũ để khách khác không hỏng.
+5. **Cutover:** deploy monolith mới, chuyển traffic dần qua feature flag, giữ service cũ read-only hai tuần rồi tắt.
+6. **Cơ sở dữ liệu:** nếu hai service dùng database riêng, hãy quyết định dùng chung schema với schema riêng trong cùng database, hoặc tách schema — không để hai service cùng ghi một bảng mà không ranh giới.
+
+### Java: kiểm tra ranh giới module bằng ArchUnit
+~~~java
+import static com.tngtech.archunit.lang.syntax.ArchRuleDefinition.noClasses;
+import org.junit.jupiter.api.Test;
+
+class ModularMonolithArchTest {
+    @Test
+    void billingKhongTruyCapInternalCuaNotification() {
+        noClasses()
+            .that().resideInAPackage("..billing..")
+            .should().accessClassesThat()
+            .resideInAPackage("..notification.internal..")
+            .because("Module không được đụng phần nội bộ của module khác");
+    }
+}
+~~~
+
+### Bảng trade-off cho team 8 người
+| | Sáu microservice | Modular monolith (2–3 service) |
+|---|---|---|
+| Vòng trực on-call | Sáu vòng | Một–hai vòng |
+| Deploy | Sáu pipeline độc lập | Một pipeline, module tách dễ |
+| Xử lý sự cố | Lập trình viên nhảy qua nhiều service | Lập trình viên nắm rõ một domain |
+| Chi phí vận hành | Khoảng 0,5–1 người trên mỗi service | Ít hơn nhiều |
+| Scale độc lập | Có | Chỉ cho service đã tách |
+| Phù hợp với tám người | Không | Có |
+
+### Pitfall production
+- Gộp sáu service cùng một lúc: một commit làm sập toàn bộ, rollback rất khó.
+- Gộp nhưng vẫn gọi đồng bộ dây chuỗi giữa các module: distributed monolith ngược, tệ hơn microservice vì thêm chi phí mạng mà không có lợi ích độc lập.
+- Hai service gộp dùng chung database nhưng ghi cùng một bảng mà không ranh giới: tranh chấp khoá, deadlock.
+- Bỏ luôn service cũ trước khi khách khác migrate xong: hỏng tích hợp bên ngoài.
+- Quên xóa code service cũ: code chết tích lũy, lập trình viên mới không biết phần nào còn dùng.
+
+### Ví dụ đời thực
+Một công ty logistique, tám backend, đã tách sáu microservice (order, tracking, notification, billing, user, report). **Triệu chứng:** mỗi tuần ba đến bốn sự cố do cấu hình sai (sai biến môi trường của một service), trực on-call sáu vòng, mỗi lập trình viên trực trung bình hai tuần một tháng, deadline bị trễ. **Điều tra:** chỉ service notification và report có tải gấp sáu lần phần còn lại và cần scale độc lập; bốn service còn lại tải nhẹ, nhịp deploy giống nhau. **Nguyên nhân gốc:** tách theo "mẫu sách microservice" thay theo số người và số liệu thực. **Xử lý:** giữ order, tracking, billing, user thành bốn module trong monolith, ranh giới kiểm bằng ArchUnit trong CI; tách notification và report thành hai service (tải khác biệt, độc lập), ba đến bốn lập trình viên sở hữu hai service. **Kết quả đo được:** trực on-call giảm từ sáu vòng về hai vòng, sự cố cấu hình giảm khoảng 70 phần trăm, deploy trung bình một lần mỗi ngày thay vì sáu pipeline phát sinh lỗi lẻ, chi phí hạ tầng giảm khoảng 40 phần trăm (ước tính).
+
+### Trả lời mẫu khi phỏng vấn
+Khi team tám người vận hành sáu microservice và liên tục xảy ra incident, em không vội kết luận microservice sai. Em bắt đầu bằng kiểm tồn kho: số request, sự cố, ai trực, database chung hay riêng. Nguyên tắc của em là microservice chỉ đáng khi có lý do đo được: tải khác biệt, nhịp deploy khác, hoặc yêu cầu cô lập dữ liệu; phần còn lại nên ở mức module trong monolith. Em đặt ranh giới bằng bounded context, gộp từng đôi service cùng domain, và dùng ArchUnit trong CI để kiểm ranh giới không được truy cập phần nội bộ của module khác. Cutover chạy qua feature flag: deploy monolith mới, chuyển traffic dần, giữ service cũ read-only hai tuần rồi tắt. Khi nào KHÔNG gộp: khi một module tải gấp năm đến mười lần, cần deploy độc lập, hoặc có yêu cầu PCI cô lập dữ liệu. Em từng thấy team tám người giảm sáu service xuống hai service, trực từ sáu vòng về hai vòng, sự cố cấu hình giảm khoảng 70 phần trăm, và chi phí hạ xuống khoảng 40 phần trăm so với ước tính ban đầu.
+> Senior tip: thu gom microservice không phải lùi lại monolith lỗi thời, mà là chọn kiến trúc đúng nhân lực. Số đâu ra trước: tám người nên sở hữu tối đa hai đến ba service, phần còn lại là module có ranh giới kiểm tự động. Nếu sau khi gộp mà sự cố không giảm, ranh giới domain của bạn còn sai — hãy sửa ranh giới, không phải chạy lại microservice.`,
+  follow: [
+    'Bạn quyết định gộp hai service hay để riêng dựa trên số liệu nào?',
+    'Sau khi gộp, hai module dùng chung database nhưng không muốn đụng chung bảng — bạn thiết kế schema thế nào?',
+    'Khách khác đang gọi API của service cũ, bạn chuyển họ qua monolith mới mà không hỏng tích hợp ra sao?'
+  ],
+  tags: ['microservices', 'modular monolith', 'consolidation', 'on-call', 'ArchUnit', 'team topology'],
+  refs: [
+    { type: 'doc', title: 'Spring Modulith', url: 'https://spring.io/projects/spring-modulith' },
+    { type: 'doc', title: 'ArchUnit', url: 'https://www.archunit.org' }
+  ]
+},
+{
+  id: 'architecture-082',
+  topic: 'architecture',
+  level: 'senior',
+  q: 'Bạn tách dần monolith bằng Strangler Fig cho module đơn hàng, nhưng phần khó không phải đọc — là ghi: đơn hàng mới ghi vào cả hai hệ, dữ liệu cũ phải đồng bộ, và nhịp cutover ghi phải kèm freeze. Bạn thiết kế dual-write, outbox và cổng cutover cho path ghi thế nào?',
+  a: `**Tóm tắt:** Cutover path đọc dễ (routing facade + feature flag), nhưng path ghi khó hơn: đơn hàng mới phải ghi vào hệ cũ và hệ mới, dữ liệu lịch sử phải đồng bộ, và khi chuyển ghi hoàn toàn phải có **freeze window** (khung đóng băng) để không ghi vào hai chỗ khác nhau. Thiết kế đúng dùng **outbox pattern** (ghi đơn và event cùng transaction), **CDC** (Change Data Capture) đồng bộ dữ liệu, và các cổng cutover đo được mới tăng phần trăm ghi.
+
+### Cái gì → vì sao cần
+- **Dual-write (ghi hai chỗ):** ghi đơn vào database legacy và gửi event sang hệ mới. Nguy cơ: hai thao tác không cùng transaction ⇒ một thành công một thất bại ⇒ dữ liệu lệch.
+- **Outbox pattern:** bảng outbox trong cùng database với đơn hàng. Ghi đơn và ghi event outbox trong **một transaction ACID**. Một relay đọc outbox và gửi hệ mới. Nếu relay lỗi, event vẫn nằm trong database, không mất.
+- **CDC (Change Data Capture):** công cụ đọc log của database (ví dụ Debezium cho PostgreSQL) và sinh event thay đổi, gửi Kafka. Dùng để đồng bộ dữ liệu lịch sử từ hệ cũ sang hệ mới mà không đọc toàn bộ bảng.
+- **Freeze window (khung đóng băng):** khi cutover ghi, tắt ghi vào hệ cũ, toàn bộ ghi đi hệ mới. Cần cửa sổ ngắn và có kế hoạch rollback nếu hệ mới lỗi.
+
+### Cổng cutover cho path ghi
+| Cổng | Metric | Ngưỡng tăng | Ngưỡng hoàn toàn cắt legacy |
+|---|---|---|---|
+| Khớp dữ liệu | dual-write mismatch rate | Dưới 0,1 phần trăm | Không còn sai lệch trong 48 giờ |
+| Outbox | outbox lag (số event chưa gửi) | Dưới 1 giây | Bằng không trước khi freeze |
+| Tốc độ | p99 latency ghi đơn | Không chậm hơn legacy quá 10 phần trăm | Không chậm hơn legacy |
+| Lỗi | error rate ghi | Dưới 0,1 phần trăm | Dưới 0,05 phần trăm |
+| Đóng băng | thời gian freeze | — | Ít nhất 15 phút, có rollback |
+
+### Java: ghi đơn và outbox cùng transaction
+~~~java
+public Order placeOrder(OrderRequest req) {
+    Order order = orderRepository.save(req.toOrder()); // ghi đơn
+    OutboxEvent event = new OutboxEvent("ORDER_CREATED", order.id(), req.payload());
+    outboxRepository.save(event); // ghi event cùng transaction
+    return order; // commit một lần: đơn và event cùng thành công hoặc cùng thất bại
+}
+~~~
+
+### Quy trình cutover ghi
+1. Chạy dual-write: hệ mới ghi vào outbox, hệ cũ vẫn là nguồn chính đọc.
+2. Chạy CDC backfill: đồng bộ dữ liệu đơn hàng cũ từ hệ legacy sang hệ mới, đo sync lag.
+3. Bật hệ mới đọc, hệ legacy vẫn ghi (strangler đọc mới, ghi cũ).
+4. Khi outbox lag xấp xỉ không và mismatch dưới 0,1 phần trăm: chuyển ghi sang hệ mới, đặt hệ legacy read-only (freeze ghi legacy).
+5. Ghi legacy read-only 24–48 giờ, không có sự cố ⇒ tắt hệ legacy.
+
+### Pitfall production
+- Dual-write mà không có outbox/transaction ⇒ đơn thành công nhưng event không gửi ⇒ hệ mới thiếu đơn.
+- Quên freeze ghi legacy: hai hệ cùng ghi ⇒ lệch dữ liệu không truy vết được.
+- Outbox consumer ngừng hoạt động lâu ⇒ lag tăng, cutover bị chặn, không được ép tăng phần trăm ghi.
+- CDC backfill đọc toàn bộ bảng lớn ⇒ làm chậm database production; phải chạy batch nhỏ với giới hạn tốc độ.
+- Rollback sau freeze: nếu tắt legacy rồi hệ mới lỗi, mở lại legacy cần đồng bộ lại dữ liệu bị bỏ qua trong cửa sổ freeze ⇒ nên freeze ngắn và có kế hoạch rollback rõ.
+
+### Ví dụ đời thực
+Một nền tảng bán hàng, tám người team, tách module đơn hàng qua Strangler Fig. **Triệu chứng:** lần cutover trước, sau khi chuyển ghi sang hệ mới, mười hai đơn trong hai mươi phút không xuất hiện ở hệ mới (mismatch 3 phần trăm) vì lập trình viên dual-write bằng hai lệnh riêng biệt, không dùng transaction. **Điều tra:** nhật ký cho thấy lệnh INSERT đơn thành công nhưng lệnh INSERT outbox bị lỗi kết nối, lập trình viên chưa bắt lỗi ⇒ event mất. **Nguyên nhân gốc:** dual-write không nguyên tử, không có bảng outbox trong cùng database transaction. **Xử lý:** thêm bảng outbox, ghi đơn và event cùng transaction, relay đọc outbox và gửi hệ mới; CDC backfill dữ liệu cũ từng batch một nghìn đơn với giới hạn tốc độ; cổng cutover: mismatch dưới 0,1 phần trăm, outbox lag dưới 1 giây trước khi freeze. **Kết quả đo được:** sau khi áp dụng, cutover lần sau không còn đơn bị thiếu, freeze ghi legacy mười lăm phút, không downtime, trăm phần trăm đơn trong cửa sổ freeze được ghi vào hệ mới.
+
+### Trả lời mẫu khi phỏng vấn
+Cutover path đọc dùng routing facade với feature flag, nhưng path ghi phức tạp hơn vì đơn mới ghi vào cả hai hệ và dữ liệu cũ phải đồng bộ. Em thiết kế outbox pattern: mỗi lần lưu đơn, em cũng lưu event vào bảng outbox trong cùng transaction ACID, nên đơn và event cùng thành công hoặc cùng thất bại. Một relay đọc outbox và gửi hệ mới; nếu relay lỗi, event vẫn nằm trong database, không mất. Dữ liệu lịch sử em đồng bộ bằng CDC, ví dụ Debezium đọc log PostgreSQL, chạy batch nhỏ để không chống database. Trước khi cutover ghi, em thiết lập các cổng: dual-write mismatch dưới 0,1 phần trăm, outbox lag dưới 1 giây, p99 ghi không chậm hơn hệ cũ quá 10 phần trăm. Khi đủ điều kiện, em chuyển ghi sang hệ mới, đặt hệ legacy read-only trong freeze window ngắn (mười lăm đến ba mươi phút), có kế hoạch rollback nếu hệ mới lỗi. Pitfall lớn nhất là dual-write hai lệnh riêng biệt không nguyên tử ⇒ đơn thành công nhưng event mất.
+> Senior tip: freeze window phải ngắn và có kế hoạch rollback rõ trước khi bắt đầu. Nếu rollback sau freeze phải nhập lại hàng chục đơn thủ công, bạn chưa sẵn sàng cutover. Luôn giữ legacy read-only ít nhất hai mươi bốn giờ để phát hiện sự cố muộn.`,
+  follow: [
+    'Bạn xử lý outbox consumer ngừng hoạt động kéo dài, lag tăng như thế nào trước khi tiếp tục cutover?',
+    'CDC backfill bảng hàng triệu hàng không muốn chống database production — bạn làm như thế nào?',
+    'Sau khi freeze ghi legacy, hệ mới lỗi trong cửa sổ freeze, bạn rollback về legacy mà không mất đơn nào trong khi freeze ra sao?'
+  ],
+  tags: ['strangler fig', 'dual-write', 'outbox', 'CDC', 'cutover gate', 'transaction'],
+  refs: [
+    { type: 'doc', title: 'Transactional Outbox pattern', url: 'https://microservices.io/patterns/data/transactional-outbox.html' },
+    { type: 'doc', title: 'Debezium CDC documentation', url: 'https://debezium.io/documentation/reference/stable/' }
+  ]
+},
+{
+  id: 'architecture-083',
+  topic: 'architecture',
+  level: 'lead',
+  q: 'Làm sao đưa ADR (Architecture Decision Record) từ "văn bản tùy ý mỗi người viết một kiểu" thành quy trình của team 8 người: template gì, ai viết, khi nào bắt buộc, lưu ở đâu, và ví dụ ADR quyết định "build vs buy" một component (ví dụ search engine hoặc email provider)?',
+  a: `**Tóm tắt:** ADR không phải tài liệu thiết kế nặng nề, mà là ghi lại **một quyết định kiến trúc, tại sao chọn, và các hậu quả** để sáu tháng sau người mới đọc được. Ở team tám người, quy trình nhẹ là template cố định (Status, Context, Decision, Consequences, Review trigger), người tham gia quyết định viết, lưu trong repo bên cạnh code, và chỉ bắt buộc viết cho quyết định lớn (thay đổi cơ sở dữ liệu, chọn vendor, tách service, thay đổi luồng dữ liệu chính).
+
+### Cái gì → vì sao cần
+- **Template ADR nhẹ:** Status (Proposed, Accepted, Superseded), Context (bối cảnh, lựa chọn, ràng buộc), Decision (chọn gì, lý do), Consequences (tích cực, tiêu cực, trade-off), Review trigger (ngưỡng xem lại sau bao lâu hoặc khi số liệu nào).
+- **Ai viết:** người đề xuất quyết định viết bản thảo, team lead hoặc kiến trúc sư review, tất cả lập trình viên trong team đồng ý (disagree and commit).
+- **Lưu ở đâu:** thư mục docs/adr trong repo theo định dạng markdown, cùng nhánh với code ⇒ phiên bản cùng code, review qua PR như code bình thường.
+- **Khi nào bắt buộc:** thay đổi database/message broker/cache, chọn mua hay tự xây component, tách module thành service, thay đổi quy ước API công khai. Quyết định nhỏ (thư viện log, tên package) không cần ADR.
+- **Supersede (thay thế):** khi điều kiện đổi, viết ADR mới với trường Supersedes, không sửa ADR cũ (xem architecture-080).
+
+### Quy trình quyết định của team tám người
+1. Lập trình viên viết ADR thảo (Status: Proposed), nêu hai đến ba phương án và trade-off.
+2. Team thảo luận ba mươi đến sáu mươi phút, ghi Concern/Response vào ADR.
+3. Lead chốt Accepted hoặc từ chối; đặt Review trigger (ví dụ "xem lại sau tám tuần nếu p99 trên 200 mili giây").
+4. Merge vào docs/adr qua PR; người mới onboard đọc ADR gần đây để hiểu lý do kiến trúc.
+
+### Ví dụ ADR: build vs buy search engine
+~~~text
+# ADR-0031: Mua dịch vụ search thay vì tự xây Elasticsearch
+
+Status: Accepted (2026-10-05)
+Deciders: Backend team, Lead, Engineering Manager
+
+## Context
+- Sản phẩm cần tìm kiếm sản phẩm full-text, bộ lọc giá/danh mục, gợi ý sửa chính tả.
+- Hiện dùng LIKE %…% trên PostgreSQL, chậm khi bảng order lớn.
+- Tuỳ chọn: (a) tự xây Elasticsearch trên 3 node, (b) mua dịch vụ search quản lý (AWS OpenSearch hoặc nhà cung cấp khác).
+
+## Decision
+Mua dịch vụ search quản lý, bắt đầu với gói developer, scale lên production sau 3 tháng. Không tự vận hành Elasticsearch.
+
+## Consequences
+Du(+): không cần dev vận hành cluster, sao lưu và upgrade do nhà cung cấp, p99 tìm kiếm dưới 200 mili giây đúng cam kết SLA.
+Trừ(-): chi phí license cao hơn khi dữ liệu lớn, bị vendor lock-in, dữ liệu tìm kiếm nằm ngoài kiểm soát trực tiếp.
+Review trigger: xem lại sau 6 tháng nếu chi phí dịch vụ trên 2000 USD/tháng hoặc dữ liệu tìm kiếm trên 500 GB.
+~~~
+
+### Bảng: cần ADR hay không
+| Quyết định | Cần ADR? | Lý do |
+|---|---|---|
+| Thay đổi cơ sở dữ liệu chính | Có | ảnh hưởng toàn hệ thống, khó hoàn tác |
+| Mua hay tự xây component | Có | chi phí dài hạn và vendor lock-in |
+| Tách module thành service | Có | thay đổi vận hành và on-call |
+| Thay thư viện log | Không | thay đổi cục bộ, dễ rollback |
+| Đổi tên package | Không | không ảnh hưởng kiến trúc |
+
+### Pitfall production
+- Viết ADR sau khi quyết định đã làm ⇒ trở thành "chữ ký vành đai", không có giá trị học hỏi.
+- Không có owner ⇒ ADR bị bỏ quên, sáu tháng sau không ai biết liệu quyết định còn đúng không.
+- Thiếu Review trigger ⇒ ADR trở thành tài liệu tĩnh, không bao giờ được xem lại khi điều kiện đổi.
+- ADR kho báu: viết mười ADR cho những quyết định nhỏ ⇒ team bỏ qua cả ADR quan trọng.
+- Sửa lén ADR đã Accepted ⇒ mất lịch sử, team mới hiểu sai lý do ban đầu.
+
+### Ví dụ đời thực
+Một công ty SaaS cần tính năng tìm kiếm nhân sự cho năm mươi nghìn hồ sơ. Hai lập trình viên thảo luận: tự dựng Elasticsearch (ba node, hai lập trình viên cần bốn tuần để triển khai và vận hành) hay mua dịch vụ quản lý (gói starter ba trăm USD/tháng). **Triệu chứng nếu tự dựng:** sau ba tuần, cluster Elasticsearch xảy ra split-brain vì cấu hình discovery chưa đúng, tìm kiếm treo ba mươi giây, hai lập trình viên phải trực thêm để sửa. **Điều tra:** team chưa có ai vận hành Elasticsearch trước đây, không có runbook, backup chưa kiểm tra. **Nguyên nhân gốc:** đánh giá thấp chi phí vận hành của tự dựng. **Xử lý:** viết ADR-0031 chọn dịch vụ quản lý, Review trigger sau sáu tháng nếu chi phí trên hai nghìn USD/tháng. Sau sáu tháng, chi phí thực một nghìn một trăm USD/tháng, p99 tìm kiếm một trăm năm mươi mili giây, không incident ⇒ quyết định giữ. Tiết kiệm khoảng hai lập trình viên-tháng so với tự xây.
+
+**Kết quả:** không cluster để vận hành, tìm kiếm ổn định từ ngày đầu, team tập trung vào sản phẩm thay vì vận hành search.
+
+### Trả lời mẫu khi phỏng vấn
+ADR với em là ghi lại quyết định kiến trúc, tại sao chọn, và hậu quả — không phải tài liệu nặng. Quy trình team tám người: template nhẹ bao gồm Status, Context, Decision, Consequences và Review trigger; người đề xuất viết thảo, team thảo luận ba mươi đến sáu mươi phút, lead chốt, merge qua PR vào docs/adr trong repo. Chỉ bắt buộc ADR cho quyết định lớn: thay đổi database, chọn mua hay tự xây, tách service, thay đổi API công khai. Quyết định nhỏ như thư viện log không cần. Mỗi ADR có Review trigger, ví dụ xem lại sau sáu tháng nếu chi phí dịch vụ tìm kiếm trên hai nghìn USD/tháng. Khi điều kiện đổi, em viết ADR mới với trường Supersedes, không sửa ADR cũ, và ghi mục What we learned. Em từng thấy team chọn tự xây Elasticsearch nhưng không ai vận hành, cluster split-brain và tìm kiếm treo; sau khi viết ADR chọn dịch vụ quản lý, chi phí một nghìn một trăm USD/tháng, p99 tìm kiếm một trăm năm mươi mili giây, không incident. Trade-off là vendor lock-in, chấp nhận được với quy mô hiện tại.
+> Senior tip: ADR giá trị nhất là ADR đọc được sáu tháng sau và biết trước điều kiện nó sẽ bị thay thế. Nếu team không đọc ADR, hãy giảm số lượng ADR và chỉ viết cho những quyết định thực sự quan trọng — năm ADR tốt hơn năm mươi ADR không ai mở.`,
+  follow: [
+    'Bạn viết ADR cho quyết định đã làm rồi hay chỉ cho quyết định sắp làm?',
+    'Hai lập trình viên trong team không đồng ý với ADR, bạn dẫn dắt chốt quyết định mà không để ai cảm thấy bị bỏ qua ra sao?',
+    'ADR đã Accepted nhưng sáu tháng sau số liệu nói quyết định sai, bạn xử lý thế nào?'
+  ],
+  tags: ['ADR', 'build vs buy', 'architecture governance', 'decision record', 'leadership', 'review trigger'],
+  refs: [
+    { type: 'doc', title: 'Architecture Decision Records', url: 'https://adr.github.io/' }
+  ]
 }
 );
