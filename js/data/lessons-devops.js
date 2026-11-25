@@ -6266,4 +6266,738 @@ Lỗi hay gặp: quên giữ {{liveness}} khi shutdown; cho {{submit}} chạy c�
   related: ['devops-002', 'devops-004', 'devops-016'],
   tags: ['Kubernetes', 'liveness', 'readiness', 'startup probe', 'graceful shutdown', 'Spring Boot Actuator', 'preStop'],
 },
+{
+  id: 'lesson-devops-023',
+  track: 'devops',
+  order: 23,
+  title: 'Graceful shutdown: tín hiệu dừng, drain request và đóng pool trong timeout',
+  level: 'senior',
+  minutes: 45,
+  goals: [
+    'Vẽ được dòng thời gian tắt một Pod trên Kubernetes: Terminating → preStop → SIGTERM → Spring đóng context → SIGKILL, và biết grace period tính từ khi Pod bị đánh dấu xoá (đã kể cả preStop)',
+    'Viết được mã ngừng nhận request mới, chờ request đang chạy hoàn tất trong thời gian hạn chót, hết hạn thì huỷ cưỡng bức và báo cáo số request bị cắt',
+    'Viết được mã đóng connection pool: ngừng cho mượn kết nối mới, đợi kết nối đang mượn trả về (có hạn), force-close phần dư, tránh để request đang chạy gặp lỗi "pool đã đóng"',
+    'Nhận ra bẫy production: ENTRYPOINT dạng shell nuốt SIGTERM, thiếu preStop gây 502, request dài hơn timeout, thread pool riêng không bật chờ task khi shutdown'
+  ],
+  body: `### Graceful shutdown là "thay ca có tiếng"
+Graceful shutdown là quy trình tắt theo thứ tự: ngừng nhận việc mới → chờ việc đang chạy xong → đóng tài nguyên → process thoát. Nó khác hẳn với "kill ngay" (SIGKILL): request giữa chừng bị cắt, kết nối DB bị rơi, message Kafka chưa commit offset sẽ bị consumer khác xử lý lại (không mất, nhưng trùng — nên consumer phải idempotent).
+
+### Dòng thời gian tắt một Pod (có số)
+~~~text
+t=0s    Pod chuyển Terminating (rolling update / scale down / kubectl delete)
+        ├─ song song A: EndpointSlice gỡ Pod; kube-proxy, Ingress, ALB cập nhật mất 1-5s
+        │               (trong khoảng này request MỚI vẫn có thể tới Pod)
+        └─ song song B: kubelet chạy preStop (ví dụ sleep 10)
+t=10s   preStop xong → kubelet gửi SIGTERM cho PID 1 của container
+        JVM shutdown hook chạy → Spring đóng ApplicationContext:
+          1. readiness = REFUSING_TRAFFIC (Pod ngừng vào danh sách nhận traffic)
+          2. web server ngừng nhận kết nối mới, chờ request đang chạy  (≤ timeout-per-shutdown-phase)
+          3. các SmartLifecycle khác dừng: Kafka listener, scheduler…
+          4. destroy bean: executor chờ task, HikariCP đóng connection pool
+t≈25s   JVM thoát (exit code 143 = 128 + 15, thoát do SIGTERM) → Pod biến mất
+t=60s   hết terminationGracePeriodSeconds: còn sống thì SIGKILL (exit 137)
+~~~
+
+**Điểm then chốt**: đồng hồ grace period bắt đầu **từ t=0**, tức **đã kể cả thời gian preStop**. Ví dụ sai hay gặp: grace 30s + preStop 10s + Spring timeout-per-shutdown-phase 30s → tổng khả dĩ 40s > 30s → request dài nhất bị SIGKILL cắt ngang.
+
+### Ba tầng phải phối hợp
+| Tầng | Nhiệm vụ | Cấu hình chính |
+|---|---|---|
+| Kubernetes | gỡ Pod khỏi Service, chạy preStop, gửi SIGTERM, hạn chót SIGKILL | preStop, terminationGracePeriodSeconds |
+| Container (PID 1) | chuyển SIGTERM tới JVM | ENTRYPOINT dạng exec, không phải shell |
+| Spring Boot / JVM | ngừng nhận việc mới, chờ việc đang chạy, đóng tài nguyên theo thứ tự | server.shutdown=graceful, spring.lifecycle.timeout-per-shutdown-phase, task.execution.shutdown.await-termination |
+
+**ENTRYPOINT dạng shell** ({{ENTRYPOINT sh -c "java -jar app.jar"}}) khiến {{/bin/sh}} là PID 1; shell không chuyển SIGTERM cho tiến trình Java con → log không có dòng "Commencing graceful shutdown", Pod luôn chờ hết grace rồi bị SIGKILL (exit 137). Sửa bằng exec form {{ENTRYPOINT ["java", "-jar", "app.jar"]}}, hoặc {{exec java …}} trong script, hoặc dùng init nhỏ như tini.
+
+### Trong JVM: Spring đóng context theo thứ tự
+1. SIGTERM → shutdown hook → {{context.close()}}.
+2. Readiness chuyển {{REFUSING_TRAFFIC}} **trước** khi dừng bean → {{/actuator/health/readiness}} trả 503.
+3. Dừng các bean SmartLifecycle theo phase (phase cao dừng trước). Web server là một phase: Tomcat/Jetty ngừng nhận kết nối mới và chờ request đang chạy. Mỗi phase chờ tối đa {{timeout-per-shutdown-phase}}; quá hạn Spring ghi log và **đi tiếp**, không chờ mãi.
+4. Destroy singleton bean: {{@PreDestroy}}, {{DisposableBean}}. {{ThreadPoolTaskExecutor}} mặc định **không chờ** ({{shutdownNow()}} — task đang chạy bị interrupt, task trong hàng đợi bị bỏ). Muốn chờ phải bật {{await-termination}} (tương ứng {{setWaitForTasksToCompleteOnShutdown(true)}} + {{setAwaitTerminationSeconds}}). HikariCP đóng pool sau; task vẫn chạy sẽ gặp lỗi "HikariDataSource has been closed".
+5. Mọi thread non-daemon kết thúc → JVM thoát.
+
+### Mẫu drain chuẩn cho ExecutorService (phần lõi bạn tự viết khi quản lý pool riêng)
+
+~~~java
+pool.shutdown();                                     // không nhận task mới; task trong hàng đợi VẪN chạy
+if (!pool.awaitTermination(20, TimeUnit.SECONDS)) {  // chờ có hạn, không bao giờ chờ vô hạn
+    List<Runnable> dropped = pool.shutdownNow();     // lấy task chưa chạy ra + interrupt task đang chạy
+    log.warn("Shutdown timeout, dropped {} task", dropped.size());
+    pool.awaitTermination(5, TimeUnit.SECONDS);      // cho task bị interrupt thời gian dọn dẹp
+}
+~~~
+
+- {{shutdown()}}: từ chối task mới, task trong hàng đợi **vẫn chạy**, không chặn.
+- {{awaitTermination(t)}}: chặn thread gọi, tối đa t, trả true nếu xong hết.
+- {{shutdownNow()}}: từ chối task mới, lấy task trong hàng đợi ra (trả {{List<Runnable>}}), **interrupt** task đang chạy. Không chặn.
+
+Interrupt là **hợp tác**: task đang chặn {{socket.read()}} không timeout sẽ không phản ứng. Mọi lời gọi mạng phải có timeout, và bắt {{InterruptedException}} phải khôi phục cờ ({{Thread.currentThread().interrupt()}}), không được nuốt.
+
+### Đóng connection pool sau khi drain xong
+HikariCP {{pool.close()}}: ngừng cho mượn kết nối mới, đợi kết nối đang mượn trả về (có hạn), force-close phần dư. Thứ tự quan trọng: **drain request xong rồi mới đóng pool** — nếu đóng pool trước, request đang chạy gặp lỗi "HikariDataSource has been closed" ngay giữa chừng. Pool phải mở trước khi server nhận request (startup), và đóng là bước cuối cùng trong shutdown.
+
+### Bẫy production hay gặp
+- Không có {{preStop}}: Pod nhận SIGTERM và đóng ngay trong khi load balancer chưa kịp gỡ Pod → request trên đường tới bị connection refused / 502. Thêm {{preStop}} sleep vài giây (hoặc {{preStop.sleep}} từ Kubernetes 1.30).
+- Request dài hơn timeout (export báo cáo 2 phút): luôn bị cắt khi deploy. Chuyển sang job bất đồng bộ, client poll kết quả.
+- Shutdown hook tự viết gọi {{System.exit()}}: trong lúc chạy shutdown hook, {{System.exit}} chặn vĩnh viễn → treo đến SIGKILL.
+- Kết nối sống lâu (WebSocket, gRPC stream): server ngừng nhận kết nối **mới** nhưng kết nối cũ còn mở. Chủ động gửi tín hiệu đóng (close frame, gRPC GOAWAY) để client kết nối lại Pod khác.
+
+### Ví dụ đời thực
+Deployment 10 Pod, terminationGracePeriodSeconds 60, preStop 10s, 3 phase Spring mỗi phase 20s, đóng pool 5s, dự phòng 5s: 10 + 60 = 70s > 60s → hơi chật; cấu hình an toàn là grace 90s. p99.9 thời gian xử lý request (ví dụ 40s cho một số endpoint "đuôi dài") là căn cứ để chọn {{timeout-per-shutdown-phase}} (cộng thêm 50%), rồi tính ngược ra grace period.
+
+### Liên hệ phỏng vấn
+Câu hay: "Bật server.shutdown=graceful rồi mà mỗi deploy vẫn có Pod bị SIGKILL (exit 137) và mất request, bạn điều tra thế nào?" Đủ bộ: (1) SIGTERM có tới JVM không (ENTRYPOINT exec, log "Commencing graceful shutdown", exit 143 hay 137); (2) preStop có cho load balancer kịp gỡ Pod không; (3) phép cộng grace ≥ preStop + tổng timeout các phase + đóng pool + dự phòng; (4) executor và consumer riêng có drain với timeout, đếm số task bị huỷ; (5) rolling update maxUnavailable=0 + readiness thật + minReadySeconds.
+
+> Senior tip: Ghi log và làm metric ba con số cho mỗi lần shutdown: thời điểm nhận SIGTERM, thời gian drain thực tế và số request bị huỷ. Lấy p99.9 thời gian xử lý request làm căn cứ cho {{timeout-per-shutdown-phase}}, rồi mới tính ngược grace period. Đội nào làm vậy thường phát hiện "đuôi dài" — vài endpoint chạy 40 giây — mà không ai biết trước.`,
+  exercises: [
+    {
+      title: 'GracefulServer: ngừng nhận request, drain có hạn, đóng pool và đếm việc bị huỷ',
+      prompt: `Mô phỏng một server nhận request trên worker thread pool, mỗi request cần mượn **một kết nối** từ connection pool cố định. Hoàn thiện {{GracefulServer}}:
+
+- {{GracefulServer(int workers, int maxConnections)}}: tạo pool {{workers}} luồng (đã đánh daemon) và {{maxConnections}} kết nối sẵn sẵn ("conn-1", "conn-2", …).
+- {{boolean submit(Runnable request)}}: nếu server đang tắt ({{accepting}} là false) **hoặc** hết kết nối → trả **false**, không chạy request. Ngược lại mượn một kết nối, gửi pool một wrapper: tăng {{running}} và {{borrowed}} khi bắt đầu, chạy request, thành công thì tăng {{completed}}, **luôn** trong {{finally}} giảm {{running}}, giảm {{borrowed}} và trả kết nối về pool. Request ném {{RuntimeException}} không được làm chết worker. Trả **true**. Nếu pool đã đóng ({{RejectedExecutionException}}) thì trả false.
+- {{boolean isAccepting()}}, {{int completed()}}, {{int connectionsAvailable()}}, {{int connectionsInUse()}}.
+- {{void beginShutdown()}}: bước 1 khi nhận tín hiệu dừng — ngừng nhận request mới ({{isAccepting()}} trả false) và gọi {{pool.shutdown()}}. **Không được chặn** và **không được huỷ** request đang chạy hay đang xếp hàng.
+- {{int awaitDrain(long timeoutMs)}} throws InterruptedException: bước 2 — chờ tối đa {{timeoutMs}} cho mọi request đã nhận (đang chạy và đang xếp hàng) xong. Xong kịp trả **0**. Hết hạn thì huỷ cưỡng bức: đọc {{running}} **trước** khi gọi {{pool.shutdownNow()}}; trả **số request bị huỷ** = số đang chạy + số chưa bắt đầu.
+- {{int closeConnections()}}: force-close các kết nối còn đang mượn ({{borrowed}}), trả số kết nối đã huỷ. Gọi sau {{awaitDrain}}.
+- {{int shutdown(long timeoutMs)}} throws InterruptedException: {{beginShutdown()}} rồi {{awaitDrain(timeoutMs)}} rồi {{closeConnections()}}, trả tổng số request/kết nối bị huỷ.
+
+Gợi ý thứ tự: đọc số request đang chạy **trước** khi interrupt, vì request bị interrupt sẽ thoát và giảm bộ đếm.`,
+      starter: `class GracefulServer {
+    private final ExecutorService pool;
+    private final ArrayBlockingQueue<String> connections;
+    private final AtomicInteger running = new AtomicInteger();
+    private final AtomicInteger completed = new AtomicInteger();
+    private final AtomicInteger borrowed = new AtomicInteger();
+    private volatile boolean accepting = true;
+
+    GracefulServer(int workers, int maxConnections) {
+        throw new UnsupportedOperationException("TODO");
+    }
+
+    boolean submit(Runnable request) {
+        throw new UnsupportedOperationException("TODO");
+    }
+
+    boolean isAccepting() { return accepting; }
+
+    int completed() { return completed.get(); }
+
+    int connectionsAvailable() { return connections.size(); }
+
+    int connectionsInUse() { return borrowed.get(); }
+
+    /** Bước 1 khi nhận tín hiệu dừng: ngừng nhận request mới, không chặn, không huỷ đang chạy. */
+    void beginShutdown() {
+        throw new UnsupportedOperationException("TODO");
+    }
+
+    /** Bước 2: chờ có hạn; hết hạn thì huỷ cưỡng bức và trả số request bị huỷ. */
+    int awaitDrain(long timeoutMs) throws InterruptedException {
+        throw new UnsupportedOperationException("TODO");
+    }
+
+    /** Đóng pool: force-close các kết nối còn đang mượn, trả số kết nối đã huỷ. */
+    int closeConnections() {
+        throw new UnsupportedOperationException("TODO");
+    }
+
+    int shutdown(long timeoutMs) throws InterruptedException {
+        throw new UnsupportedOperationException("TODO");
+    }
+}`,
+      tests: `public class Main {
+    static int passed = 0, total = 0;
+    interface Case { void run() throws Exception; }
+    static void check(String name, Case c) {
+        total++;
+        try { c.run(); passed++; System.out.println("PASS " + name); }
+        catch (Throwable t) { System.out.println("FAIL " + name + ": " + t); }
+    }
+    static void eq(Object expected, Object actual) {
+        if (!Objects.equals(expected, actual)) throw new AssertionError("expected " + expected + " got " + actual);
+    }
+    // request chặn cho đến khi release mở; bị interrupt thì ghi nhận và giữ cờ interrupt
+    static Runnable blocking(CountDownLatch started, CountDownLatch release, CountDownLatch interrupted) {
+        return () -> {
+            started.countDown();
+            try {
+                if (!release.await(10, TimeUnit.SECONDS)) throw new IllegalStateException("release timeout");
+            } catch (InterruptedException e) {
+                interrupted.countDown();
+                Thread.currentThread().interrupt();
+            }
+        };
+    }
+    // request chặn mãi và lách tránh interrupt: dùng để kiểm tra force-close kết nối còn mượn
+    static Runnable stuck(CountDownLatch started) {
+        return () -> {
+            started.countDown();
+            while (true) {
+                try { new CountDownLatch(1).await(1, TimeUnit.DAYS); }
+                catch (InterruptedException ignored) { /* cố tình bỏ qua, giữ kết nối */ }
+            }
+        };
+    }
+    public static void main(String[] args) {
+        check("drain ok: mọi request chạy xong, 0 bị huỷ, kết nối được trả", () -> {
+            GracefulServer s = new GracefulServer(2, 10);
+            CountDownLatch done = new CountDownLatch(6);
+            for (int i = 0; i < 6; i++) eq(true, s.submit(done::countDown));
+            eq(0, s.shutdown(5_000));
+            eq(0L, done.getCount());
+            eq(6, s.completed());
+            eq(10, s.connectionsAvailable());
+        });
+        check("sau beginShutdown: submit mới bị từ chối, không bao giờ chạy", () -> {
+            GracefulServer s = new GracefulServer(1, 5);
+            AtomicInteger ran = new AtomicInteger();
+            s.beginShutdown();
+            eq(false, s.isAccepting());
+            eq(false, s.submit(ran::incrementAndGet));
+            eq(0, s.awaitDrain(2_000));
+            eq(0, ran.get());
+        });
+        check("request đang chạy được hoàn thành, không bị interrupt", () -> {
+            GracefulServer s = new GracefulServer(1, 5);
+            CountDownLatch started = new CountDownLatch(1), release = new CountDownLatch(1), intr = new CountDownLatch(1);
+            eq(true, s.submit(blocking(started, release, intr)));
+            eq(true, started.await(5, TimeUnit.SECONDS));
+            s.beginShutdown();                       // phải trả về ngay
+            eq(false, s.submit(() -> { }));
+            release.countDown();
+            eq(0, s.awaitDrain(5_000));
+            eq(1, s.completed());
+            eq(1L, intr.getCount());                 // không bị interrupt
+            eq(5, s.connectionsAvailable());
+        });
+        check("request đã xếp hàng vẫn chạy (shutdown không phải shutdownNow)", () -> {
+            GracefulServer s = new GracefulServer(1, 5);
+            CountDownLatch started = new CountDownLatch(1), release = new CountDownLatch(1), intr = new CountDownLatch(1);
+            AtomicInteger queuedRan = new AtomicInteger();
+            eq(true, s.submit(blocking(started, release, intr)));
+            eq(true, started.await(5, TimeUnit.SECONDS));
+            for (int i = 0; i < 3; i++) eq(true, s.submit(queuedRan::incrementAndGet));
+            s.beginShutdown();
+            release.countDown();
+            eq(0, s.awaitDrain(5_000));
+            eq(3, queuedRan.get());
+            eq(4, s.completed());
+        });
+        check("hết thời gian: huỷ đang chạy + chưa bắt đầu, trả số lượng", () -> {
+            GracefulServer s = new GracefulServer(2, 10);
+            CountDownLatch started = new CountDownLatch(2), never = new CountDownLatch(1), intr = new CountDownLatch(2);
+            AtomicInteger queuedRan = new AtomicInteger();
+            eq(true, s.submit(blocking(started, never, intr)));
+            eq(true, s.submit(blocking(started, never, intr)));
+            eq(true, started.await(5, TimeUnit.SECONDS));   // cả 2 worker đang bận
+            for (int i = 0; i < 3; i++) eq(true, s.submit(queuedRan::incrementAndGet));
+            s.beginShutdown();
+            eq(5, s.awaitDrain(300));                       // 2 đang chạy + 3 chưa bắt đầu
+            eq(true, intr.await(5, TimeUnit.SECONDS));      // 2 request đang chạy nhận interrupt
+            eq(0, queuedRan.get());                         // 3 request trong queue không bao giờ chạy
+        });
+        check("lỗi của request không làm chết worker", () -> {
+            GracefulServer s = new GracefulServer(1, 5);
+            CountDownLatch done = new CountDownLatch(1);
+            eq(true, s.submit(() -> { throw new IllegalStateException("boom"); }));
+            eq(true, s.submit(done::countDown));
+            eq(0, s.shutdown(5_000));
+            eq(0L, done.getCount());
+            eq(1, s.completed());
+        });
+        check("hết kết nối: submit bị từ chối ngay khi cạn kết nối", () -> {
+            GracefulServer s = new GracefulServer(4, 1);
+            CountDownLatch started = new CountDownLatch(1), release = new CountDownLatch(1);
+            eq(true, s.submit(blocking(started, release, new CountDownLatch(1))));
+            eq(true, started.await(5, TimeUnit.SECONDS));    // request 1 nắm duy nhất kết nối
+            eq(false, s.submit(() -> { }));                   // hết kết nối: từ chối ngay, worker rảnh cũng không giúp
+            release.countDown();
+            // đợi worker trả kết nối về pool trước khi submit tiếp
+            while (s.connectionsAvailable() < 1) Thread.yield();
+            eq(true, s.submit(() -> { }));                    // kết nối lại trống
+            eq(0, s.shutdown(5_000));
+        });
+        check("shutdown hai lần an toàn", () -> {
+            GracefulServer s = new GracefulServer(1, 5);
+            eq(true, s.submit(() -> { }));
+            eq(0, s.shutdown(5_000));
+            eq(0, s.shutdown(100));
+            eq(false, s.submit(() -> { }));
+        });
+        check("force-close kết nối còn đang mượn khi hết thời gian", () -> {
+            GracefulServer s = new GracefulServer(2, 2);
+            CountDownLatch started = new CountDownLatch(1);
+            eq(true, s.submit(stuck(started)));
+            eq(true, started.await(5, TimeUnit.SECONDS));   // worker 1 nắm kết nối 1, chặn mãi
+            eq(1, s.connectionsInUse());
+            eq(1, s.connectionsAvailable());                 // còn 1 kết nối rảnh
+            s.beginShutdown();
+            eq(1, s.awaitDrain(200));                        // 1 request đang chạy, không chịu thôi
+            eq(1, s.closeConnections());                     // force-close kết nối còn mượn
+        });
+        System.out.println("RESULT " + passed + "/" + total);
+    }
+}`,
+      reference: `class GracefulServer {
+    private final ExecutorService pool;
+    private final ArrayBlockingQueue<String> connections;
+    private final AtomicInteger running = new AtomicInteger();
+    private final AtomicInteger completed = new AtomicInteger();
+    private final AtomicInteger borrowed = new AtomicInteger();
+    private volatile boolean accepting = true;
+
+    GracefulServer(int workers, int maxConnections) {
+        this.pool = Executors.newFixedThreadPool(workers, r -> {
+            Thread t = new Thread(r, "request-worker");
+            t.setDaemon(true);
+            return t;
+        });
+        this.connections = new ArrayBlockingQueue<>(maxConnections);
+        for (int i = 1; i <= maxConnections; i++) connections.add("conn-" + i);
+    }
+
+    boolean submit(Runnable request) {
+        if (!accepting) return false;
+        String conn = connections.poll();
+        if (conn == null) return false;                       // hết kết nối: từ chối ngay
+        try {
+            pool.execute(() -> {
+                running.incrementAndGet();
+                borrowed.incrementAndGet();
+                try {
+                    request.run();
+                    completed.incrementAndGet();
+                } catch (RuntimeException ignored) {
+                    // code thật: log lỗi; không để exception làm chết worker
+                } finally {
+                    running.decrementAndGet();
+                    borrowed.decrementAndGet();
+                    connections.offer(conn);
+                }
+            });
+            return true;
+        } catch (RejectedExecutionException e) {
+            connections.offer(conn);
+            return false;
+        }
+    }
+
+    boolean isAccepting() { return accepting; }
+
+    int completed() { return completed.get(); }
+
+    int connectionsAvailable() { return connections.size(); }
+
+    int connectionsInUse() { return borrowed.get(); }
+
+    void beginShutdown() {
+        accepting = false;
+        pool.shutdown();                                      // không chặn; hàng đợi VẪN chạy
+    }
+
+    int awaitDrain(long timeoutMs) throws InterruptedException {
+        if (pool.awaitTermination(timeoutMs, TimeUnit.MILLISECONDS)) return 0;
+        int inFlight = running.get();                         // đọc TRƯỚC khi interrupt
+        List<Runnable> neverStarted = pool.shutdownNow();     // interrupt đang chạy + lấy hàng đợi
+        return inFlight + neverStarted.size();
+    }
+
+    int closeConnections() {
+        return borrowed.getAndSet(0);                         // force-close dư
+    }
+
+    int shutdown(long timeoutMs) throws InterruptedException {
+        beginShutdown();
+        return awaitDrain(timeoutMs) + closeConnections();
+    }
+}`,
+      hints: [
+        'Trong {{submit}}, kiểm tra {{accepting}} trước, rồi {{connections.poll()}} lấy một kết nối; trả null nghĩa là hết kết nối → từ chối ngay.',
+        'Wrapper chạy request phải tăng/giảm {{running}} và {{borrowed}} trong {{finally}}, bắt {{RuntimeException}} để không làm chết worker, và bắt {{RejectedExecutionException}} từ {{pool.execute}}.',
+        '{{beginShutdown()}} chỉ đặt {{accepting = false}} và gọi {{pool.shutdown()}} — hàm này không chặn và hàng đợi vẫn được chạy. Đừng gọi {{shutdownNow()}} ở bước 1.',
+        '{{awaitDrain}}: {{awaitTermination}} trả true thì trả 0. Ngược lại đọc {{running.get()}} rồi mới gọi {{shutdownNow()}}; kết quả = đang chạy + kích thước danh sách trả về.',
+        '{{closeConnections()}} lấy và xóa bộ đếm {{borrowed}} — đó chính là số kết nối force-close sau khi drain.',
+      ],
+      explain: `**Ý tưởng**: tách shutdown thành hai bước giống Spring và Kubernetes. {{beginShutdown()}} là lúc nhận tín hiệu dừng: ngừng nhận việc mới nhưng **không đụng** vào việc đã nhận. {{awaitDrain()}} là thời gian chờ có hạn; hết hạn thì huỷ cưỡng bức để JVM thoát kịp trước SIGKILL, và **báo cáo** số việc bị huỷ để làm metric. Mỗi request nắm một kết nối từ pool, nên việc từ chối khi hết kết nối ("backpressure tại cửa vào") tránh chồng'effet lên worker khi pool cạn.
+
+**Các điểm tinh tế:**
+- Đọc {{running}} **trước** {{shutdownNow()}}: sau khi bị interrupt, request thoát nhanh và giảm bộ đếm trong {{finally}}; đọc sau có thể sai lệch do race.
+- {{shutdown()}} (không phải {{shutdownNow()}}) ở bước 1 giữ nguyên request đã xếp hàng — test "request đã xếp hàng vẫn chạy" kiểm tra đúng điều này.
+- {{closeConnections()}} force-close các kết nối vẫn đang mượn sau khi drain (ví dụ request bỏ qua interrupt), trả số đã huỷ; kết nối nhàn trong hàng đợi chỉ bị bỏ qua.
+
+Lỗi hay gặp:
+- Chỉ đặt {{accepting = false}} quên {{pool.shutdown()}}: {{awaitTermination}} không bao giờ trả true, mọi shutdown đều chờ hết timeout.
+- {{awaitTermination}} không có hạn: request treo giữ process đến SIGKILL.
+- Không bắt {{RuntimeException}} trong wrapper: exception làm chết worker thread (pool tạo thread mới, nhưng bộ đếm vẫn đúng nhờ {{finally}}).
+- Đóng pool **trước** khi drain xong: request đang chạy gặp "HikariDataSource has been closed" giữa chừng.
+
+> Senior tip: p99.9 thời gian xử lý request là căn cứ cho {{timeout-per-shutdown-phase}} (cộng 50%), rồi mới tính ngược grace period. Có con số này mới biết cần grace 60s hay 300s.`
+    },
+  ],
+  check: [
+    {
+      q: 'Pod nhận SIGTERM lúc t=10s, terminationGracePeriodSeconds là 60s, preStop đã chạy 10s trước SIGTERM. Request đang chạy mất 55s sau SIGTERM. Điều gì xảy ra?',
+      options: ['Request xong bình thường vì Spring chờ 55s < 60s', 'Request bị SIGKILL cắt ngang vì grace period tính từ t=0, đã trừ 10s preStop', 'Kubernetes tự gia hạn grace period theo thời gian xử lý request', 'preStop không được tính vào grace period nên còn đầy 60s sau SIGTERM'],
+      answer: 1,
+      explain: `Grace period 60s bắt đầu khi Pod chuyển Terminating (t=0), preStop đã dùng 10s, nên sau SIGTERM chỉ còn khoảng 50s — không đủ cho request 55s, SIGKILL đến trước (exit 137). Kubernetes không biết và không gia hạn theo app; ngoại lệ duy nhất là thêm một lần 2s khi preStop còn chạy lúc hết hạn. preStop được tính trong grace period, không được tính riêng sau.`
+    },
+    {
+      q: 'Khác biệt giữa {{shutdown()}} và {{shutdownNow()}} của {{ExecutorService}} khi drain request là gì?',
+      options: ['shutdown() chặn đến khi mọi task xong; shutdownNow() không chặn', 'shutdown() từ chối task mới nhưng vẫn chạy task trong hàng đợi; shutdownNow() lấy task trong hàng đợi ra và interrupt task đang chạy', 'shutdown() huỷ task trong hàng đợi; shutdownNow() kill thread ngay lập tức', 'Hai hàm giống nhau, shutdownNow() chỉ nhanh hơn'],
+      answer: 1,
+      explain: `{{shutdown()}} chỉ đóng cửa nhận việc mới; việc đã xếp hàng vẫn chạy. {{shutdownNow()}} trả về danh sách {{Runnable}} chưa chạy và gửi interrupt cho thread đang chạy. Cả hai không chặn — muốn chờ phải gọi {{awaitTermination()}}. Interrupt là hợp tác, không kill thread, nên task phải tự kiểm tra cờ hoặc đang chặn ở hàm phản ứng với interrupt.`
+    },
+    {
+      q: 'Vì sao phải drain request xong rồi mới đóng connection pool (HikariCP)?',
+      options: ['Để pool đóng nhanh hơn', 'Tránh request đang chạy gặp "HikariDataSource has been closed" giữa chừng; pool phải mở trước khi nhận request và đóng là bước cuối cùng', 'Vì HikariCP không cho phép đóng pool khi có kết nối đang mượn', 'Không có yêu cầu thứ tự, hai cách đều được'],
+      answer: 1,
+      explain: `Nếu đóng pool trước, thread đang xử lý request lấy kết nối từ pool đã đóng sẽ ném lỗi và request thất bại ngay giữa chừng. Thứ tự đúng: ngừng nhận mới → chờ request đang chạy xong (có hạn) → đóng pool. HikariCP vẫn cho phép close() khi có kết nối đang mượn, nhưng tác vụ còn dùng sẽ bị lỗi.`
+    }
+  ],
+  related: ['devops-002', 'devops-017'],
+  tags: ['Graceful shutdown', 'Kubernetes', 'SIGTERM', 'preStop', 'ExecutorService', 'Connection pool', 'HikariCP'],
+},
+{
+  id: 'lesson-devops-024',
+  track: 'devops',
+  order: 24,
+  title: 'Readiness vs liveness: DB chậm thì chỉ được gỡ traffic, không được restart Pod',
+  level: 'senior',
+  minutes: 40,
+  goals: [
+    'Phân biệt rõ ba probe: liveness (process còn sống, fail → restart), readiness (đã sẵn sàng nhận request, fail → gỡ khỏi Service, không restart), startup (boot xong chưa, fail quá ngưỡng → restart; trong lúc startup liveness/readiness chưa đánh giá)',
+    'Giải thích được vì sao liveness KHÔNG được kiểm tra cơ sở dữ liệu: DB chậm gây restart toàn bộ Pod, dồn thêm tải lên DB, biến sự cố nhỏ thành sập hệ thống',
+    'Viết được mã mô phỏng hai controller probe: liveness chỉ nhìn trạng thái process, readiness nhìn thêm DB (ping ngắn hạn); thấy được DB chậm chỉ làm readiness fail, liveness vẫn pass và không restart',
+    'Cấu hình health group của Spring Boot Actuator đúng: liveness chỉ livenessState, readiness có thể thêm db, tách biệt để sự cố DB không gây restart dây chuyền'
+  ],
+  body: `### Ba probe, ba câu hỏi khác nhau
+Kubernetes điều khiển container hoàn toàn qua các **probe**. Trộn lẫn chúng là lỗi deploy hay gặp nhất:
+
+| Probe | Câu hỏi | Fail thì sao |
+|---|---|---|
+| **Liveness** | Process còn **sống** không? | K8s **restart** container |
+| **Readiness** | Pod có **nhận request mới** không? | Pod bị gỡ khỏi EndpointSlice/Endpoints, **không restart** |
+| **Startup** | App đã **boot xong** chưa? | Hết ngưỡng thì restart; trong lúc startup, liveness/readiness **chưa được đánh giá** |
+
+### Tại sao liveness KHÔNG được kiểm tra DB
+Liveness đánh câu hỏi "process còn sống hay không". Nếu liveness include kiểm tra DB:
+
+- DB chậm 30 giây (ví dụ query thiếu index khóa bảng, vacuum, failover): liveness của **mọi** Pod fail đồng thời → K8s restart toàn bộ container → mỗi Pod mới khởi động mở connection pool mới → dồn thêm tải vào DB đã yếu → sự cố nhỏ thành sập hệ thống (cascading failure).
+- Con số: 50 Pod restart cùng nhau, mỗi Pod mở 20 kết nối HikariCP = 1.000 kết nối mới bombardment vào DB trong vài giây.
+
+Readiness là "cái cờ ngừng nhận khách": DB chậm → readiness fail → Pod bị gỡ khỏi danh sách endpoints → K8s và Ingress ngừng gửi traffic mới, nhưng **không restart**. Pod vẫn phục vụ xong request đang nhận (drain). DB lại khỏe → readiness tự quay về true, không cần restart Pod nào.
+
+Quy tắc: **liveness chỉ nhìn trạng thái process** ({{livenessState}}: CORRECT/BROKEN); **readiness có thể nhìn DB** ({{readinessState}} + kết nối DB), nhưng phải chấp nhận trade-off: DB chết làm **mọi** Pod not ready → Service hết endpoint → client nhận lỗi kết nối. Nhiều team chỉ để {{readinessState}} và xử lý lỗi DB bằng circuit breaker trong code.
+
+### Mô phỏng bằng mã: ProbeController
+~~~java
+class ProbeController {
+    enum LivenessState { CORRECT, BROKEN }
+    enum ReadinessState { ACCEPTING_TRAFFIC, REFUSING_TRAFFIC }
+
+    private final boolean livenessIncludesDb;   // cờ gây hại: liveness cũng đọc DB
+    private final AtomicReference<LivenessState> liveness = new AtomicReference<>(LivenessState.CORRECT);
+    private final AtomicReference<ReadinessState> readiness = new AtomicReference<>(ReadinessState.ACCEPTING_TRAFFIC);
+    private final AtomicInteger livenessChecks = new AtomicInteger();
+    private final AtomicInteger readinessChecks = new AtomicInteger();
+    private final AtomicInteger restarts = new AtomicInteger();   // số lần K8s restart do liveness fail (mô phỏng)
+    private volatile boolean dbSlow = false;
+
+    ProbeController() { this(false); }
+    ProbeController(boolean livenessIncludesDb) { this.livenessIncludesDb = livenessIncludesDb; }
+
+    /** Liveness: CHỈ xem process còn sống, KHÔNG đụng DB (trừ khi cấu hình sai). */
+    boolean liveness() {
+        livenessChecks.incrementAndGet();
+        boolean alive = liveness.get() == LivenessState.CORRECT && (!livenessIncludesDb || !dbSlow);
+        if (!alive) liveness.set(LivenessState.BROKEN);
+        return alive;
+    }
+
+    /** Readiness: xem process và DB (ping ngắn hạn). DB chậm → REFUSING_TRAFFIC, KHÔNG restart. */
+    boolean readiness() {
+        readinessChecks.incrementAndGet();
+        boolean ok = readiness.get() == ReadinessState.ACCEPTING_TRAFFIC && !dbSlow;
+        if (!ok) readiness.set(ReadinessState.REFUSING_TRAFFIC);
+        return ok;
+    }
+
+    void setDbSlow(boolean slow) { dbSlow = slow; if (!slow) readiness.set(ReadinessState.ACCEPTING_TRAFFIC); }
+
+    /** Lỗi nghiêm trọng (deadlock…): process không tự hồi phục. */
+    void markFatal() {
+        liveness.set(LivenessState.BROKEN);
+        readiness.set(ReadinessState.REFUSING_TRAFFIC);
+    }
+
+    /** Mô phỏng K8s restart khi liveness fail: process mới, trạng thái sạch. */
+    void simulateRestart() {
+        if (liveness.get() == LivenessState.BROKEN) {
+            restarts.incrementAndGet();
+            liveness.set(LivenessState.CORRECT);
+            readiness.set(ReadinessState.ACCEPTING_TRAFFIC);
+        }
+    }
+
+    int restarts() { return restarts.get(); }
+    int livenessChecks() { return livenessChecks.get(); }
+    int readinessChecks() { return readinessChecks.get(); }
+    boolean isLivenessBroken() { return liveness.get() == LivenessState.BROKEN; }
+    boolean isReady() { return readiness.get() == ReadinessState.ACCEPTING_TRAFFIC; }
+}
+~~~
+
+Cờ {{livenessIncludesDb}} là cấu hình sai chúng ta tránh: bật nó thì DB chậm cũng khiến liveness fail, chính xác mô tả sự cố "liveness kiểm tra DB".
+
+### Startup probe: dành cho app boot chậm
+Spring Boot 3 (Hibernate validate, nạp cache, Kafka consumer) boot 60–90 giây. Liveness mặc định periodSeconds 10 × failureThreshold 3 = 30 giây → restart trước khi boot xong → CrashLoopBackOff dù code không sai. Startup probe với failureThreshold lớn (ví dụ 30 × 10s = 300s) cho app thời gian boot; **trong lúc startup, liveness chưa được đánh giá**. Boot xong thì startup probe ngừng, hai probe còn lại đảm nhận.
+
+### Cấu hình Spring Boot Actuator tách nhóm health
+~~~yaml
+management:
+  endpoint:
+    health:
+      probes:
+        enabled: true          // thêm /health/liveness và /health/readiness
+      group:
+        liveness:
+          include: livenessState      // liveness CHỈ nhìn process
+        readiness:
+          include: readinessState, db // readiness có thể nhìn DB
+~~~
+
+{{livenessState}} và {{readinessState}} là health indicator có sẵn của Spring Boot, phản ánh trạng thái {{LivenessState}} (CORRECT/BROKEN) và {{ReadinessState}} (ACCEPTING_TRAFFIC/REFUSING_TRAFFIC) mà app quản lý qua {{ApplicationAvailability}}. Chạy trong Kubernetes, nhóm probes bật tự động; chạy ngoài K8s cần {{management.endpoint.health.probes.enabled=true}}.
+
+### Ví dụ đời thực
+Sự cố: DB chính chậm 30 giây vì query thiếu index trong giờ cao điểm.
+
+- **Sai** (liveness include DB): 50 Pod ứng dụng liveness fail cùng lúc → K8s restart cả cụm → mỗi Pod mới boot mở pool kết nối → DB thêm gấp, hồi phục chậm hơn. Khách thấy lỗi 5xx trên toàn hệ thống.
+- **Đúng** (liveness chỉ process, readiness nhìn DB): readiness fail → 50 Pod bị gỡ khỏi Endpoints, K8s **không restart**. Traffic chuyển sang các Pod còn khỏe. DB lại khỏe → readiness tự quay true, Pod nhận traffic trở lại. Không có restart dây chuyền, không có connection storm.
+
+### Liên hệ phỏng vấn
+Câu hay: "Service Spring Boot khởi động 90 giây, phụ thuộc PostgreSQL và Kafka. Thiết kế liveness, readiness, startup probe thế nào? Vì sao không trỏ cả ba vào /actuator/health?" Đáp án: startup probe với failureThreshold lớn cho thời gian boot (trong lúc đó liveness chưa đánh giá); liveness chỉ {{livenessState}} (process còn sống, deadlock thì restart); readiness có {{readinessState}} và có thể thêm db (gỡ traffic khi DB chậm, không restart); cùng với {{server.shutdown=graceful}} + {{preStop}} sleep cho rolling update không rớt request. {{/actuator/health}} mặc định include mọi indicator (DB, disk, downstream) → trỏ cả ba vào đó là nguyên nhân kinh điển của sự cố DB làm restart toàn bộ app.
+
+> Senior tip: Luôn có dashboard hiển thị số Pod qua readiness probe (không chỉ tổng số Pod) và số restart do liveness. Nếu restart tăng cùng lúc với latency DB cao, bạn đã được thấy mẫu hình "liveness kiểm tra DB" — sửa ngay bằng cách tách health group như trên.`,
+  exercises: [
+    {
+      title: 'ProbeController: liveness chỉ nhìn process, readiness nhìn thêm DB, DB chậm không gây restart',
+      prompt: `Hoàn thiện {{ProbeController}} mô phỏng hai probe của một Pod:
+
+- {{ProbeController()}}: liveness KHÔNG kiểm tra DB (mặc định, đúng).
+- {{ProbeController(boolean livenessIncludesDb)}}: nếu true thì liveness cũng fail khi DB chậm (cấu hình sai, dùng để so sánh).
+- {{boolean liveness()}}: CHỈ xem process còn sống (trừ khi {{livenessIncludesDb}}). Lỗi nghiêm trọng → state BROKEN. Trả true khi CORRECT.
+- {{boolean readiness()}}: xem process **và** DB (ping ngắn hạn). DB chậm → REFUSING_TRAFFIC, trả false; DB lại khỏe → tự về ACCEPTING_TRAFFIC.
+- {{void setDbSlow(boolean slow)}}: mô phỏng DB chậm/khoẻ.
+- {{void markFatal()}}: lỗi nghiêm trọng (deadlock…), process không tự hồi phục.
+- {{void simulateRestart()}}: mô phỏng K8s restart khi liveness fail — tăng số restart, đặt lại trạng thái sạch.
+- {{int restarts()}}, {{int livenessChecks()}}, {{int readinessChecks()}}.
+
+Lưu ý: {{livenessIncludesDb}} là cờ gây hại — bật nó thì DB chậm cũng khiến liveness fail, chính là cấu hình sai bài này muốn bạn nhận ra.`,
+      starter: `class ProbeController {
+    enum LivenessState { CORRECT, BROKEN }
+    enum ReadinessState { ACCEPTING_TRAFFIC, REFUSING_TRAFFIC }
+
+    private final boolean livenessIncludesDb;
+    private final AtomicReference<LivenessState> liveness = new AtomicReference<>(LivenessState.CORRECT);
+    private final AtomicReference<ReadinessState> readiness = new AtomicReference<>(ReadinessState.ACCEPTING_TRAFFIC);
+    private final AtomicInteger livenessChecks = new AtomicInteger();
+    private final AtomicInteger readinessChecks = new AtomicInteger();
+    private final AtomicInteger restarts = new AtomicInteger();
+    private volatile boolean dbSlow = false;
+
+    ProbeController() {
+        throw new UnsupportedOperationException("TODO");
+    }
+
+    ProbeController(boolean livenessIncludesDb) {
+        throw new UnsupportedOperationException("TODO");
+    }
+
+    boolean liveness() {
+        throw new UnsupportedOperationException("TODO");
+    }
+
+    boolean readiness() {
+        throw new UnsupportedOperationException("TODO");
+    }
+
+    void setDbSlow(boolean slow) {
+        throw new UnsupportedOperationException("TODO");
+    }
+
+    void markFatal() {
+        throw new UnsupportedOperationException("TODO");
+    }
+
+    void simulateRestart() {
+        throw new UnsupportedOperationException("TODO");
+    }
+
+    int restarts() { return restarts.get(); }
+    int livenessChecks() { return livenessChecks.get(); }
+    int readinessChecks() { return readinessChecks.get(); }
+    boolean isLivenessBroken() { return liveness.get() == LivenessState.BROKEN; }
+    boolean isReady() { return readiness.get() == ReadinessState.ACCEPTING_TRAFFIC; }
+}`,
+      tests: `public class Main {
+    static int passed = 0, total = 0;
+    static void check(String name, Runnable r) {
+        total++;
+        try { r.run(); passed++; System.out.println("PASS " + name); }
+        catch (Throwable t) { System.out.println("FAIL " + name + ": " + t); }
+    }
+    static void eq(Object expected, Object actual) {
+        if (!Objects.equals(expected, actual)) throw new AssertionError("expected " + expected + " got " + actual);
+    }
+    public static void main(String[] args) {
+        check("mới khởi động: cả hai probe pass, chưa restart", () -> {
+            ProbeController p = new ProbeController();
+            eq(true, p.liveness());
+            eq(true, p.readiness());
+            eq(0, p.restarts());
+        });
+        check("DB chậm: readiness fail, liveness vẫn pass, không restart", () -> {
+            ProbeController p = new ProbeController();
+            p.setDbSlow(true);
+            eq(false, p.readiness());
+            eq(true, p.liveness());
+            eq(0, p.restarts());
+            eq(1, p.readinessChecks());
+        });
+        check("DB trở lại khỏe: readiness tự hồi phục, không cần restart", () -> {
+            ProbeController p = new ProbeController();
+            p.setDbSlow(true);
+            p.setDbSlow(false);
+            eq(true, p.readiness());
+            eq(true, p.liveness());
+            eq(0, p.restarts());
+        });
+        check("sai lầm: liveness cũng kiểm tra DB → DB chậm gây restart liên tiếp", () -> {
+            ProbeController sai = new ProbeController(true);
+            ProbeController dung = new ProbeController();
+            sai.setDbSlow(true);
+            dung.setDbSlow(true);
+            for (int i = 0; i < 3; i++) {
+                if (!sai.liveness()) sai.simulateRestart();
+                if (!dung.liveness()) dung.simulateRestart();
+            }
+            eq(3, sai.restarts());
+            eq(0, dung.restarts());
+            eq(false, sai.readiness());
+        });
+        check("lỗi nghiêm trọng (deadlock): liveness fail → restart, readiness fail; restart làm sạch", () -> {
+            ProbeController p = new ProbeController();
+            p.markFatal();
+            eq(false, p.liveness());
+            eq(false, p.readiness());
+            p.simulateRestart();
+            eq(1, p.restarts());
+            eq(true, p.liveness());
+            eq(true, p.readiness());
+        });
+        System.out.println("RESULT " + passed + "/" + total);
+    }
+}`,
+      reference: `class ProbeController {
+    enum LivenessState { CORRECT, BROKEN }
+    enum ReadinessState { ACCEPTING_TRAFFIC, REFUSING_TRAFFIC }
+
+    private final boolean livenessIncludesDb;
+    private final AtomicReference<LivenessState> liveness = new AtomicReference<>(LivenessState.CORRECT);
+    private final AtomicReference<ReadinessState> readiness = new AtomicReference<>(ReadinessState.ACCEPTING_TRAFFIC);
+    private final AtomicInteger livenessChecks = new AtomicInteger();
+    private final AtomicInteger readinessChecks = new AtomicInteger();
+    private final AtomicInteger restarts = new AtomicInteger();
+    private volatile boolean dbSlow = false;
+
+    ProbeController() {
+        this(false);
+    }
+
+    ProbeController(boolean livenessIncludesDb) {
+        this.livenessIncludesDb = livenessIncludesDb;
+    }
+
+    boolean liveness() {
+        livenessChecks.incrementAndGet();
+        boolean alive = liveness.get() == LivenessState.CORRECT && (!livenessIncludesDb || !dbSlow);
+        if (!alive) liveness.set(LivenessState.BROKEN);
+        return alive;
+    }
+
+    boolean readiness() {
+        readinessChecks.incrementAndGet();
+        boolean ok = readiness.get() == ReadinessState.ACCEPTING_TRAFFIC && !dbSlow;
+        if (!ok) readiness.set(ReadinessState.REFUSING_TRAFFIC);
+        return ok;
+    }
+
+    void setDbSlow(boolean slow) {
+        dbSlow = slow;
+        if (!slow) readiness.set(ReadinessState.ACCEPTING_TRAFFIC);
+    }
+
+    void markFatal() {
+        liveness.set(LivenessState.BROKEN);
+        readiness.set(ReadinessState.REFUSING_TRAFFIC);
+    }
+
+    void simulateRestart() {
+        if (liveness.get() == LivenessState.BROKEN) {
+            restarts.incrementAndGet();
+            liveness.set(LivenessState.CORRECT);
+            readiness.set(ReadinessState.ACCEPTING_TRAFFIC);
+        }
+    }
+
+    int restarts() { return restarts.get(); }
+    int livenessChecks() { return livenessChecks.get(); }
+    int readinessChecks() { return readinessChecks.get(); }
+    boolean isLivenessBroken() { return liveness.get() == LivenessState.BROKEN; }
+    boolean isReady() { return readiness.get() == ReadinessState.ACCEPTING_TRAFFIC; }
+}`,
+      hints: [
+        'Liveness chỉ phụ thuộc vào trạng thái process và cờ {{livenessIncludesDb}}; nó **không đọc {{dbSlow}}** trừ khi cấu hình sai.',
+        'Readiness fail khi {{dbSlow}} là true; khi DB lại khỏe, set lại ACCEPTING_TRAFFIC để pod tự hồi phục mà không cần restart.',
+        '{{simulateRestart()}} chỉ tăng {{restarts}} và đặt lại trạng thái khi liveness đang BROKEN — mô phỏng process mới sau khi K8s restart container.',
+      ],
+      explain: `**Ý tưởng**: hai probe phục vụ mục đích khác nhau. Liveness là "cái cục cần sửa chữa hoặc ném đi" — process chết hoặc không phản hồi (deadlock) thì K8s restart container. Readiness là "cái cờ ngừng đón khách" — DB chậm thì Pod giữ process nhưng ngừng vào danh sách nhận traffic mới, request đang chạy vẫn xong, và Pod tự quay lại khi DB khỏe.
+
+**Các điểm tinh tế:**
+- {{liveness()}} set BROKEN khi fail, nên {{simulateRestart()}} biết được cần mô phỏng restart; sau restart trạng thái sạch (CORRECT/ACCEPTING_TRAFFIC).
+- {{readiness()}} không bao giờ đặt BROKEN cho liveness — DB chậm **không** làm restart, đúng nguyên tắc bài này.
+- Cờ {{livenessIncludesDb}} mô tả cấu hình sai hay gặp: liveness đọc DB → DB chậm làm restart cả cụm.
+
+Lỗi hay gặp:
+- Trỏ cả liveness và readiness vào {{/actuator/health}} mặc định (include DB): DB chậm là restart dây chuyền.
+- Làm readiness=true trong khi đang drain: request mới vẫn vồn vào Pod sắp chết → 502.
+- Quên startup probe cho app boot 90s: liveness mặc định restart sau 30s, trước khi boot xong.
+
+> Senior tip: Dashboard nên hiển thị số Pod qua readiness probe (không chỉ tổng số Pod) và số restart do liveness. Restart tăng cùng lúc với latency DB cao là dấu hiệu "liveness kiểm tra DB" — sửa bằng cách tách health group như ví dụ YAML ở trên.`
+    },
+  ],
+  check: [
+    {
+      q: 'DB chậm 30 giây, cả liveness và readiness trỏ vào {{/actuator/health}} (bao gồm kiểm tra DB). Điều gì xảy ra?',
+      options: ['Chỉ một Pod bị not ready', 'Toàn bộ Pod bị restart đồng thời vì liveness fail, dồn thêm tải lên DB', 'Không ảnh hưởng vì health chỉ cảnh báo', 'Chỉ readiness fail, liveness tự động bỏ qua DB'],
+      answer: 1,
+      explain: `Health đầy đủ include DB → DB chậm làm liveness fail → K8s **restart** container (không chỉ gỡ khỏi Endpoints) → toàn bộ Pod restart đồng thời, mỗi Pod mới mở kết nối mới dồn tải vào DB đã yếu. Readiness fail chỉ gỡ Pod khỏi danh sách nhận traffic là đủ; liveness phải chỉ nhìn {{livenessState}}. Health indicator không tự bỏ qua DB.`
+    },
+    {
+      q: 'App boot 90 giây, liveness mặc định (periodSeconds 10, failureThreshold 3). Cấu hình đúng là gì?',
+      options: ['Bỏ liveness, chỉ để readiness', 'Startup probe với failureThreshold đủ lớn (ví dụ 30 × 10s = 300s); trong lúc startup liveness chưa đánh giá', 'Giảm failureThreshold xuống 1 để phát hiện sớm', 'Không cần probe, K8s tự đợi ứng dụng boot'],
+      answer: 1,
+      explain: `Liveness mặc định restart sau 30s, trước khi app boot xong 90s → CrashLoopBackOff lặp lại. Startup probe kéo dài thời gian "đang được phép chưa sẵn sàng": tới khi startup pass, liveness chưa bị tính failure. "Chỉ readiness" tránh restart lúc boot nhưng thiếu liveness sau này (process treo không bao giờ restart). "Không cần probe" đưa traffic vào app chưa boot xong.`
+    },
+    {
+      q: 'Trong rolling update, readiness probe fail khi Pod nhận SIGTERM có ích lợi gì?',
+      options: ['Không ích lợi, chỉ làm Pod chậm tắt hơn', 'Ngừng gửi request mới tới Pod đang tắt (gỡ khỏi Endpoints) trong khi request đang chạy vẫn hoàn tất — không rớt request', 'Buộc K8s restart Pod ngay lập tức', 'Tự động scale thêm Pod để bù mất'],
+      answer: 1,
+      explain: `Readiness false ngay từ lúc nhận SIGTERM: load balancer/Ingress ngừng gửi request MỚI tới Pod, nhưng Pod vẫn xử lý xong request ĐANG CHẠY (drain). Đó là graceful shutdown đúng. Trả readiness=true trong lúc tắt thì request mới vẫn vồn vào Pod sắp chết → 502. Readiness fail không restart Pod (đó là công việc của liveness).`
+    }
+  ],
+  related: ['devops-016', 'devops-002'],
+  tags: ['Kubernetes', 'liveness', 'readiness', 'startup probe', 'DB', 'Spring Boot Actuator', 'Health group'],
+},
 );
