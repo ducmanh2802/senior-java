@@ -12697,6 +12697,247 @@ What I learned is to always look at the execution plan before adding hardware, a
   ],
   tags: ['sql', 'performance', 'postgresql', 'indexing'],
   lang: 'en'
+},
+{
+  id: 'english-247',
+  topic: 'english',
+  level: 'lead',
+  q: 'Walk me through a production incident where you led a cross-team response. How did you coordinate, and what was the outcome?',
+a: `**Tóm tắt:** Incident cross-team cần **leadership**: thiết lập incident bridge, phân chia vai trò (commander, communicator, investigator), theo dõi timeline, và điều phối fix. Kể theo timeline: alert → triage → mitigation → root cause → follow-up. Nêu con số: MTTR, số team tham gia, quyết định khó (rollback vs hotfix).
+
+### Sample answer
+It was a Saturday morning when our payment gateway started returning 500 errors for cross-border transactions. The impact: about 35 percent of international payments failed, affecting merchants in three countries. I was the incident commander for the platform team.
+
+**Triage (0–10 min):** I opened the incident bridge, assigned a communicator to post updates every five minutes in the shared channel, and asked each team (payments, fraud, infra) to report their service health. The payments API showed elevated latency; the fraud service was healthy; infra saw no cluster issues.
+
+**Mitigation (10–35 min):** We found that a new routing rule deployed Friday evening sent high-risk transactions to a fraud provider that had silently degraded — their p99 went from 200 ms to 8 seconds. The payments team wanted to roll back the config, but the fraud team said the provider would recover soon. I made the call: disable the new rule via feature flag immediately. Error rate dropped to normal within three minutes.
+
+**Root cause (35–90 min):** The Friday deploy skipped the canary step because the author thought it was a safe config change. The rule matched an empty currency field for some legacy merchants, routing them to the wrong provider. We added a validation test for empty fields and enforced canary for all config changes via CI gate.
+
+**Follow-up:** We ran a blameless postmortem with all three teams. Action items: (1) feature flag guard for config rules, (2) canary enforcement in CI, (3) shared runbook for routing incidents. MTTR improved from 35 minutes to under 10 minutes in the next similar incident.
+
+### Useful phrases
+- **incident commander**: người chỉ huy sự cố
+- **incident bridge**: cầu nối sự cố (cuộc gọi/voice channel chung)
+- **assigned a communicator**: giao vai trò liên lạc
+- **made the call**: đưa ra quyết định
+- **feature flag**: cờ tính năng
+- **canary step**: bước triển khai canary (1% traffic trước)
+- **blameless postmortem**: postmortem không đổ lỗi cá nhân
+- **MTTR (mean time to recovery)**: thời gian trung bình để phục hồi
+
+### Lỗi người Việt hay mắc
+- **Dùng "we" cho mọi thứ**: "We fixed it" → interviewer không biết bạn làm gì. Dùng "I assigned", "I made the call", "I coordinated".
+- **Thiếu timeline cụ thể**: "After a while we found..." → phải nói "At minute 12 we saw...", "By minute 35...".
+- **Không nhắc communication**: lead incident mà không nói vai trò communicator, update cadence → mất điểm lớn.
+- **Phát âm "canary"**: /kəˈnɛri/ (nhấn âm hai), không phải "ca-na-ri".
+
+### Ví dụ đời thực
+Sự cố thực tế: Config routing mới deploy thứ 6 tối, bỏ qua canary. Thứ 7 sáng 35% thanh toán quốc tế lỗi. Lead: mở bridge, gán communicator 5p/update, tắt rule bằng feature flag ở phút 35. Root cause: rule match trường currency rỗng. Fix: validation test + CI gate canary. MTTR từ 35p xuống <10p lần sau.
+
+### Sample answer (spoken, 60-90 seconds)
+Last month we had a cross-border payment outage on a Saturday. Thirty-five percent of international transactions failed. As incident commander, I opened the bridge, assigned a communicator for five-minute updates, and coordinated three teams: payments, fraud, and infra. Within ten minutes we traced it to a config rule deployed Friday that routed high-risk payments to a degraded fraud provider. I decided to disable the rule via feature flag — error rate normalized in three minutes. Root cause: the deploy skipped canary because it looked like a safe config change. We added validation for empty fields and enforced canary in CI. In the postmortem we agreed on a shared runbook and feature flag guard. Next similar incident we recovered in under ten minutes.
+
+### Useful phrases
+- **I was the incident commander**: tôi là người chỉ huy sự cố
+- **opened the incident bridge**: mở cầu nối sự cố
+- **assigned a communicator**: giao vai trò liên lạc
+- **made the call to disable**: quyết định tắt
+- **skipped the canary step**: bỏ qua bước canary
+- **enforced canary in CI**: bắt buộc canary trong CI
+- **blameless postmortem**: postmortem không đổ lỗi
+
+> Senior tip: Lead incident không phải fix code — phải **quản lý sự việc**. Ba việc bắt buộc: (1) mở bridge + gán communicator, (2) update cadence 5 phút, (3) quyết định mitigation nhanh (rollback/feature flag) thay vì tranh luận. Luôn có **shared runbook** cho incident type phổ biến. Nếu không có runbook, hãy viết trong postmortem.
+`,
+  follow: [
+    'How do you handle a team that disagrees with your mitigation decision during the incident?',
+    'What metrics do you track to know the incident is truly resolved?',
+    'How do you prevent the "safe config change" trap in the future?'
+  ],
+  tags: ['incident', 'leadership', 'cross-team', 'communication', 'mttr'],
+  lang: 'en'
+},
+{
+  id: 'english-248',
+  topic: 'english',
+  level: 'senior',
+  q: 'How would you explain eventual consistency to a product manager using a feature you are building, like a loyalty points balance?',
+a: `**Tóm tắt:** Giải thích eventual consistency qua **tính năng cụ thể** (loyalty points) thay vì lý thuyết. Dùng ví dụ đời thường, nêu trade-off: trải nghiệm người dùng vs độ tin cậy, và chỉ ra **phân nào dùng strong consistency, phân nào chấp nhận eventual**.
+
+### Sample answer
+Imagine a customer earns 500 points from a purchase. They immediately open the app to check their balance. With **strong consistency**, they see 500 points instantly — but the write must wait for all database replicas to confirm, adding 50–100 ms latency and risking unavailability if one replica is down. With **eventual consistency**, the write returns fast, and the balance updates within a second or two. Most customers won't notice the brief delay, and the system stays fast and available.
+
+Here is how I would explain it to a PM:
+
+"For the loyalty points balance on the home screen, I recommend eventual consistency. When a user earns points, the balance might be one or two seconds behind. That is acceptable because a customer checking their points a moment after purchase will still see the correct total within seconds. The benefit is that the earn API stays under 100 ms even during traffic spikes, and we don't risk downtime if a replica has issues.
+
+However, for **redeeming points** — when the customer spends points to buy something — we need **strong consistency**. We cannot let a customer spend points they don't actually have, even for a second. So the redeem path reads from the primary database with a pessimistic lock, ensuring the balance is exact at that moment.
+
+The trade-off: we accept a brief stale read on the display side, but we guarantee correctness on the spend side. We monitor the replication lag and alert if it exceeds five seconds. Does that approach work for the user experience you have in mind?"
+
+### Useful phrases
+- **loyalty points balance**: số dũ điểm thưởng
+- **stale read**: đọc dữ liệu cũ (chưa cập nhật)
+- **replication lag**: độ trễ sao chép dữ liệu
+- **pessimistic lock**: khóa bi quan (giữ lock khi đọc)
+- **primary database**: cơ sở dữ liệu chính (chịu trách nhiệm ghi)
+- **replica**: bản sao (chịu trách nhiệm đọc)
+- **traffic spikes**: đỉnh tải đột ngột
+- **monitor the replication lag**: theo dõi độ trễ sao chép
+
+### Lỗi người Việt hay mắc
+- **Dùng thuật ngữ "CAP theorem", "partition", "linearizability"**: PM không hiểu. Hãy nói "khi một database replica chậm", "độ trễ một hai giây".
+- **Không phân biệt rõ read path vs write path**: display balance (read) vs redeem (write) có yêu cầu khác nhau.
+- **Nói "eventual consistency is fine" cho mọi thứ**: phải chỉ ra phần nào KHÔNG được dùng (redeem, payment, inventory).
+- **Thiếu số liệu monitoring**: "alert if lag > 5s" mới là cam kết thực tế.
+
+### Ví dụ đời thực
+Dự án thực tế: Hệ thống loyalty 2 triệu user. Display balance dùng Redis cache (eventual, lag < 2s). Redeem dùng PostgreSQL primary + SELECT FOR UPDATE (strong). Một lần Redis lag 30s do network, user thấy điểm cũ nhưng không thể redeem sai vì redeem đọc primary. Monitoring alert lag > 5s đã kích hoạt, team scale Redis replica.
+
+### Sample answer (spoken, 60-90 seconds)
+For the loyalty points feature, I would use eventual consistency for the balance display but strong consistency for redeeming points. Here is why: when a customer earns points, showing the balance one or two seconds late is fine — they will see the correct number within moments. That lets the earn API stay under 100 ms even during flash sales. But when they spend points, we must be exact. We read from the primary database with a pessimistic lock so they never overspend. The trade-off is a brief stale read on the home screen in exchange for speed and availability. We monitor replication lag and alert if it exceeds five seconds. Does that match the experience you want?
+
+### Useful phrases
+- **I recommend eventual consistency for...**: tôi đề xuất eventual consistency cho...
+- **a brief stale read**: một lần đọc dữ liệu cũ ngắn
+- **in exchange for speed and availability**: để đổi lấy tốc độ và khả dụng
+- **we monitor replication lag**: chúng tôi theo dõi độ trễ sao chép
+- **alert if it exceeds five seconds**: cảnh báo nếu vượt quá năm giây
+
+> Senior tip: Luôn chia **read path** (hiển thị) và **write path** (redeem/payment). PM dễ hiểu khi bạn nói: "Trang chủ cho xem điểm, chậm 1-2s không sao; nút đổi quà thì phải chính xác tuyệt đối." Cũng đừng quên **observability**: "We alert if replication lag > 5s" — đó là dấu hiệu bạn vận hành thực tế, không chỉ nói lý thuyết.
+`,
+  follow: [
+    'What happens if the replication lag spikes to 30 seconds during a flash sale?',
+    'How do you handle a customer who complains their balance looks wrong right after earning points?',
+    'Would you use the same approach for a wallet balance instead of loyalty points?'
+  ],
+  tags: ['eventual-consistency', 'product-manager', 'loyalty', 'read-write-split', 'communication'],
+  lang: 'en'
+},
+{
+  id: 'english-249',
+  topic: 'english',
+  level: 'senior',
+  q: 'How do you estimate a migration project when the legacy data quality is unknown?',
+a: `**Tóm tắt:** Migration data quality không biết → **không đoán ngày**. Quy trình: (1) discovery timebox (1-2 tuần) lấy sample, profile data, đo error rate, (2) chia migration thành slices nhỏ, (3) estimate từng slice dưới dạng range, (4) trình bày 3 options cho stakeholder, (5) checkpoint tuần đầu xác nhận/điều chỉnh.
+
+### Sample answer
+When the legacy data quality is unknown, I do not give a single date. Instead, I run a **timeboxed discovery** first — usually one to two weeks — to profile the data and measure the real problems.
+
+In the discovery sprint, I pull a statistically significant sample (say, 10,000 records from each major table) and run automated checks: null rates on required fields, format violations, duplicate keys, referential integrity breaks, and encoding issues. I also measure the data volume and growth rate. This gives me an error profile: for example, "12 percent of orders have missing customer_id, 3 percent have invalid currency codes, and the total volume is 50 million rows."
+
+With that data, I break the migration into shippable slices: (1) clean extract + load for the 85 percent clean records, (2) transformation rules for the dirty 15 percent, (3) validation and reconciliation reports, (4) cutover rehearsal and switch. I estimate each slice as a range — for example, slice one: three to five days, slice two: five to eight days depending on rule complexity.
+
+Then I present three options to the stakeholder:
+- Option A: Fix all known issues upfront, then migrate. Timeline: three to four weeks. Risk: scope creep in cleaning.
+- Option B: Migrate clean data first, handle exceptions in a parallel cleanup stream. Timeline: two to three weeks to first value, but longer tail.
+- Option C: Big bang with extended validation window. Timeline: two weeks but higher rollback risk.
+
+We agree on weekly checkpoints. After the discovery, I confirm the estimate in writing. If new issues appear, we renegotiate scope or timeline at the checkpoint — never silently absorb the delay.
+
+### Useful phrases
+- **timeboxed discovery**: khám phá có giới hạn thời gian
+- **data profiling**: phân tích hồ sơ dữ liệu
+- **error profile**: hồ sơ lỗi (null rate, duplicate, invalid format...)
+- **referential integrity**: toàn vẹn tham chiếu (foreign key)
+- **shippable slices**: các miếng có thể giao hàng riêng lẻ
+- **dirty data**: dữ liệu bẩn (lỗi format, thiếu, trùng)
+- **cleanup stream**: luồng dọn dẹp song song
+- **cutover rehearsal**: diễn tập chuyển đổi
+- **scope creep**: bloat phạm vi
+- **renegotiate at checkpoint**: đàm phán lại tại điểm kiểm tra
+
+### Lỗi người Việt hay mắc
+- **Nói "tôi estimate 3 tuần" mà chưa profile data**: đó là đoán, không phải estimate.
+- **Không chia slices**: estimate cả dự án như một khối → sai lệch lớn.
+- **Chỉ đưa một con số**: phải đưa **range** và **3 options**.
+- **Quên validation/reconciliation**: migration không có validation = không biết có mất data không.
+- **Thiếu cutover plan**: không có kế hoạch rollback nếu migration sai.
+
+### Ví dụ đời thực
+Migration đơn hàng từ hệ thống cũ (Oracle, 10 năm data) sang PostgreSQL. Discovery 1 tuần: sample 50k records → 8% thiếu customer_id, 5% currency sai, 2% duplicate order_id. Chia 4 slices: (1) clean 85% load 3-5 ngày, (2) transform dirty 15% 5-8 ngày, (3) validation report 2-3 ngày, (4) cutover rehearsal 2 ngày. Trình bày 3 options, stakeholder chọn B. Tuần 1 checkpoint: phát hiện thêm 3% encoding lỗi tiếng Việt → gia hạn slice 2 thêm 2 ngày, scope không đổi.
+
+### Sample answer (spoken, 60-90 seconds)
+When data quality is unknown, I don't guess a date. I run a one-week discovery to profile a sample — check null rates, duplicates, invalid formats, referential integrity. That gives me an error profile like "12 percent missing customer_id, 3 percent bad currency." Then I slice the migration: clean load, dirty transform, validation, cutover rehearsal. I estimate each slice as a range and present three options: fix everything upfront, migrate clean first with parallel cleanup, or big bang with rehearsal. We pick one, set weekly checkpoints, and renegotiate if new issues appear. The key is transparency — the stakeholder always knows the trade-offs.
+
+### Useful phrases
+- **I run a timeboxed discovery first**: tôi chạy khám phá có giới hạn thời gian trước
+- **error profile**: hồ sơ lỗi
+- **shippable slices**: các phần có thể giao riêng
+- **present three options**: trình bày ba phương án
+- **weekly checkpoints**: điểm kiểm tra hàng tuần
+- **renegotiate scope or timeline**: đàm phán lại phạm vi hoặc thời gian
+
+> Senior tip: Migration project thất bại thường do **bỏ qua discovery** hoặc **không có validation step**. Luôn nói: "I need one week to profile the data before I commit to a date." Đó là câu trả lời senior. Cũng chuẩn bị sẵn **reconciliation query** (count, sum, checksum) để so sánh source vs target sau mỗi slice.
+`,
+  follow: [
+    'What if the discovery reveals 30 percent of data is unusable?',
+    'How do you validate the migration without a full comparison of 50 million rows?',
+    'What do you include in the cutover rehearsal?'
+  ],
+  tags: ['estimation', 'migration', 'data-quality', 'discovery', 'stakeholder'],
+  lang: 'en'
+},
+{
+  id: 'english-250',
+  topic: 'english',
+  level: 'lead',
+  q: 'Describe a time you pushed back on a deadline because it would compromise security or compliance. How did you handle it?',
+a: `**Tóm tắt:** Push back vì **security/compliance** khác push back vì effort: rủi ro là legal, reputational, financial. Cấu trúc: deadline là gì → yêu cầu security bị bỏ qua → bạn raise concern bằng dữ liệu (threat model, regulation) → 3 options có risk assessment → kết quả. Giọng điệu: bảo vệ công ty, không chống đối.
+
+### Sample answer
+Last year leadership committed to launching a new partner integration in six weeks to meet a contract date. The scope included storing partner API credentials in our database for automated reconciliation. The proposed design stored the credentials in plain text in a config table to save time — encryption would add an estimated one week for key management integration.
+
+I raised the concern in the design review: storing plain-text secrets violates our PCI-DSS scope and creates a credential leakage risk if the database is ever exposed. I presented a quick threat model: (1) insider access to config table, (2) backup file leak, (3) SQL injection dumping the table. Each path leads to full partner credential compromise.
+
+I offered three options:
+- Option 1: Accept the one-week delay, integrate HashiCorp Vault for secret management, store only token references in the DB. Risk: timeline slip.
+- Option 2: Encrypt credentials at application level with a rotating key stored in AWS KMS, minimal code change. Risk: two-day delay, key rotation operational burden.
+- Option 3: Launch with plain text but sign a risk acceptance form, remediate in sprint 2. Risk: audit finding, potential contract penalty if partner audits us.
+
+Leadership chose Option 2. We delivered in six weeks and two days (two days over the original six, not one week), and the KMS integration became the standard for all future secrets. The audit three months later passed with zero findings on credential storage.
+
+### Useful phrases
+- **PCI-DSS scope**: phạm vi tuân thủ PCI-DSS (tiêu chuẩn bảo mật thẻ thanh toán)
+- **credential leakage**: rò rỉ thông tin đăng nhập
+- **threat model**: mô hình đe dọa
+- **insider access**: truy cập từ nội bộ
+- **risk acceptance form**: biểu mẫu chấp nhận rủi ro
+- **audit finding**: kết quả kiểm toán (thường là vi phạm)
+- **remediate in sprint 2**: khắc phục ở sprint sau
+- **zero findings**: không phát hiện vi phạm
+
+### Lỗi người Việt hay mắc
+- **Nói "I refused" hoặc "I said no"**: nghe đối đầu. Dùng "I raised a concern", "I proposed alternatives", "We agreed on...".
+- **Chỉ nói "security risk" chung chung**: phải nêu **threat model cụ thể** (insider, backup leak, SQLi).
+- **Không đưa options**: chỉ báo vấn đề không đưa giải pháp → nghe như chối từ.
+- **Quên business impact**: phải nói "audit finding", "contract penalty", "reputational damage" — ngôn ngữ của leadership.
+- **Thiếu kết quả đo được**: "passed audit with zero findings" mới là bằng chứng.
+
+### Ví dụ đời thực
+Dự án thực tế: Partner integration 6 tuần, yêu cầu lưu API credentials. Thiết kế ban đầu: plain text trong config table. Lead raise: vi phạm PCI-DSS, threat model 3 đường tấn công. 3 options: (1) Vault +1 tuần, (2) App-level encryption KMS +2 ngày, (3) Risk acceptance form. Chọn option 2, giao 6 tuần 2 ngày, audit sau 3 tháng zero findings. KMS thành standard cho toàn công ty.
+
+### Sample answer (spoken, 60-90 seconds)
+Leadership wanted a partner integration in six weeks. The design stored API credentials in plain text to save time. I raised a concern: that violates PCI-DSS and creates credential leakage risk — insider access, backup leaks, or SQL injection could expose all partner keys. I modeled three threats and proposed three options: (1) integrate Vault, one week delay; (2) app-level encryption with AWS KMS, two-day delay; (3) launch plain text with risk acceptance, remediate later. We chose option two, delivered in eight weeks, and the KMS pattern became our standard. The audit three months later passed with zero findings on secrets.
+
+### Useful phrases
+- **I raised a concern about...**: tôi nêu lo ngại về...
+- **violates our PCI-DSS scope**: vi phạm phạm vi PCI-DSS của chúng tôi
+- **credential leakage risk**: rủi ro rò rỉ credential
+- **I presented a threat model**: tôi trình bày mô hình đe dọa
+- **We agreed on option two**: chúng tôi đồng ý phương án hai
+- **became our standard**: trở thành tiêu chuẩn của chúng tôi
+- **passed audit with zero findings**: vượt qua audit không có finding
+
+> Senior tip: Push back security/compliance **không phải chống đối** — là **bảo vệ công ty**. Luôn nói ngôn ngữ business: "audit finding", "contract penalty", "reputational risk". Ba option bắt buộc: (1) làm đúng chuẩn + delay, (2) compromise có kiểm soát + delay nhỏ, (3) risk acceptance có deadline remediation. Không bao giờ để option 3 không có deadline.
+`,
+  follow: [
+    'What would you do if leadership insisted on option three without a remediation deadline?',
+    'How do you explain the KMS operational burden to a non-technical stakeholder?',
+    'Have you ever had a security pushback rejected? What happened?'
+  ],
+  tags: ['security', 'compliance', 'pushback', 'pci-dss', 'leadership', 'risk-management'],
+  lang: 'en'
 }
 
 );
