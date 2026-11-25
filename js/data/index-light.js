@@ -3456,6 +3456,8 @@ window.DATA_INDEX = {
     {"id":"sd-054","title":"eKYC liên tục (perpetual KYC) và sàng lọc AML, trừng phạt + quản lý hồ sơ nghi vấn"},
     {"id":"sd-055","title":"Hệ thống trả góp / BNPL (Buy Now Pay Later)"},
     {"id":"sd-056","title":"Hệ thống eKYC mở tài khoản online"},
+    {"id":"sd-057","title":"Đặt phòng khách sạn nhiều kênh (website + OTA)"},
+    {"id":"sd-058","title":"Quản lý kho và giao hàng chặng cuối"},
   ],
   drills: [
     {"id":"drill-shadow-001","kind":"shadow","en":"I am a backend engineer with eight years of experience building Java services for fintech products."},

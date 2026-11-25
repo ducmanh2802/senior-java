@@ -8568,5 +8568,301 @@ Decision engine --> Session service: AUTO_APPROVED / MANUAL_REVIEW / REJECTED
     'Thiết kế chống replay attack cho liveness ra sao?'
   ],
   related: ['design-005', 'banking-008']
+},
+{
+  id: 'sd-057',
+  title: 'Đặt phòng khách sạn nhiều kênh (website + OTA)',
+  kind: 'bigtech',
+  level: 'senior',
+  prompt: `Bạn là kiến trúc sư cho một chuỗi khách sạn 300 khách sạn, trung bình 150 phòng mỗi khách sạn. Khách đặt phòng qua hai kênh: trang web của khách sạn và các OTA (Online Travel Agency, trung tâm đặt chỗ trực tuyến như Booking.com, Agoda, Expedia). Yêu cầu: không overbooking (không bán phòng quá số có), giữ phòng tạm 15 phút chờ khách thanh toán, tồn phòng phải đồng bộ với mỗi OTA dưới 5 giây sau khi có thay đổi, và hỗ trợ huỷ đơn + hoàn tiền. Peak 1.000 đặt phòng/giây. Bạn có 45 phút. Hãy trình bày.`,
+  phases: [
+    { name: 'Requirements', minutes: 5, guide: `Functional: đặt qua website khách sạn và qua OTA; giữ phòng 15 phút; tồn phòng đồng bộ OTA dưới 5 giây; huỷ đơn, hoàn tiền; tra cứu trạng thái đơn. Non-functional: peak 1.000 đặt/giây, không overbooking, availability 99,9%, p95 xác nhận đặt dưới 2 giây. Hỏi rõ: OTA đẩy hay kéo tồn phòng, thời gian giữ phòng có cố định không, có cho đặt nhiều phòng một lần không. Out-of-scope: thanh toán chi tiết, điểm thưởng, khách sạn doanh nghiệp.` },
+    { name: 'Estimation', minutes: 5, guide: `300 khách sạn x 150 phòng x 2 loại phòng = 90.000 dòng tồn phòng mỗi ngày. Booking window 365 ngày => 90.000 x 365 ~ 32,8 triệu dòng trong năm; chỉ giữ 1-2 năm, partition theo tháng. Peak 1.000 đặt/giây x 2-3 lệnh ghi (kiểm tra tồn, giảm tồn, tạo đơn) ~ 2.000-3.000 lệnh/giây; Redis cho tồn nóng, Postgres làm nguồn sự thật (bảng dữ liệu được coi là chính xác nhất khi có tranh chấp). Tồn phòng thay đổi 1.000 x 86.400 = 86 triệu lần/ngày; shard theo hotel_id để chia tải. 5 kênh OTA, mỗi kênh cập nhật tồn mỗi 5 giây hoặc ngay khi có đặt mới.` },
+    { name: 'API & data model', minutes: 5, guide: `API: POST /bookings {hotelId, checkIn, checkOut, roomType, channel, idempotencyKey} -> {bookingId, holdExpiresAt}; POST /bookings/{id}/pay; POST /bookings/{id}/cancel; GET /bookings/{id}/status. Bảng booking (id, hotel_id, room_type, check_in, check_out, channel, external_ref mã đơn từ OTA, status HOLD/CONFIRMED/CANCELLED/PENDING_OTA, idempotency_key, hold_until, created_at). Bảng inventory (hotel_id, room_type, booking_date, total_rooms, sold_count, held_count, version) với CHECK sold_count + held_count <= total_rooms. available = total_rooms - sold_count - held_count. Unique index trên idempotency_key (mã idempotency: mã duy nhất gắn mỗi yêu cầu, gọi lại nhiều lần với cùng mã chỉ xử lý một lần, giống như nhấn nút gọi thang máy nhiều lần thang máy vẫn chỉ đi một chuyến).` },
+    { name: 'High-level design', minutes: 15, guide: `Vẽ: Khách hàng -> Website API / extranet OTA -> Booking service -> Inventory service (Redis nóng + Postgres bền); Channel manager adapter (phần mềm cập nhật tồn lên nhiều OTA cùng lúc) <-> API của mỗi OTA. Luồng đặt: kiểm tra idempotency key (trùng => trả đơn cũ), kiểm tra tồn phòng bằng UPDATE có điều kiện, tạo booking HOLD, giảm available, trả hold id. Thanh toán: HOLD -> CONFIRMED, held_count giảm, sold_count tăng. Huỷ: hoàn held_count/sold_count. Nêu vì sao không gọi OTA đồng bộ khi đặt (OTA có thể chậm 5 giây trở lên, làm khách đợi).` },
+    { name: 'Deep dive', minutes: 15, guide: `Đào sâu: chống overbooking bằng một câu UPDATE có điều kiện, không phải SELECT rồi INSERT ở hai bước; giữ phòng tạm bằng hold_until và lazy expiry worker (giải phóng phòng khi kiểm tra, không cần cron chạy mỗi giây); đồng bộ tồn OTA qua channel manager hoặc Kafka (hệ thống truyền tin sự kiện đáng tin cậy, nhiều thành phần đọc cùng); idempotency với OTA qua external_ref duy nhất; huỷ đơn và hoàn tiền idempotent; failure modes (OTA chậm, tồn lệch, race hai khách cùng đặt phòng cuối cùng); giám sát overbooking, hold quá hạn, lag OTA.` }
+  ],
+  rubric: [
+    'Làm rõ yêu cầu và con số scale, chốt out-of-scope',
+    'Tồn phòng là nguồn sự thật ở trung tâm (Redis nóng + Postgres bền)',
+    'Mỗi lệnh đặt là UPDATE có điều kiện để chặn overbooking',
+    'Giữ phòng tạm 15 phút bằng hold_until, hết hạn lazy worker',
+    'Đồng bộ tồn phòng với mỗi OTA dưới 5 giây qua channel manager',
+    'Idempotency key từ khách/OTA, không tạo đơn trùng khi gửi lại',
+    'external_ref duy nhất theo (channel, external_ref) cho OTA',
+    'Huỷ đơn, hoàn held_count/sold_count, hoàn tiền idempotent',
+    'Race condition check-then-act và cách khắc phục',
+    'Giám sát: số phòng overbooking (mục tiêu 0), lag OTA, tỷ lệ huỷ'
+  ],
+  reference: `**Tóm tắt:** Đặt phòng nhiều kênh là bài toán **không được bán quá số phòng có** trong khi tồn phòng phải đồng bộ nhanh với các OTA. Ba trụ cột: tồn phòng là nguồn sự thật ở trung tâm (Redis nóng + Postgres bền), mỗi lệnh đặt là một câu UPDATE có điều kiện để chặn overbooking, và giữ phòng tạm bằng hold_until để phòng tự về pool nếu khách không thanh toán.
+
+### Yêu cầu và quy mô
+- 300 khách sạn x 150 phòng x 2 loại phòng = 90.000 dòng tồn phòng mỗi ngày.
+- Đặt qua website khách sạn và 5 kênh OTA (Booking.com, Agoda, Expedia…).
+- Peak 1.000 đặt phòng/giây, xác nhận đặt dưới 2 giây, tồn phòng cập nhật với OTA dưới 5 giây.
+- Không overbooking: overbooking là tình trạng nhận nhiều đặt phòng hơn số phòng thực tế, dẫn đến khách đến mà không có phòng.
+- Giữ phòng tạm 15 phút; huỷ đơn và hoàn tiền.
+
+### Ước lượng (có phép tính)
+- 90.000 dòng tồn/ngày x 365 ngày ~ 32,8 triệu dòng trong năm; chỉ giữ 1-2 năm, partition theo tháng để truy vấn nhanh.
+- 1.000 đặt/giây x 2-3 lệnh ghi ~ 2.000-3.000 lệnh ghi/giây. Redis cho tồn nóng (dữ liệu truy cập nhiều, lưu trong RAM để nhanh), Postgres làm nguồn sự thật.
+- Tồn phòng thay đổi 1.000 x 86.400 = 86 triệu lần/ngày; shard theo hotel_id (chia dữ liệu theo mã khách sạn) để chia tải.
+- 5 kênh OTA, mỗi kênh cập nhật tồn mỗi 5 giây hoặc ngay khi có đặt mới.
+
+### Mô hình dữ liệu
+~~~sql
+CREATE TABLE booking (
+  id              UUID PRIMARY KEY,
+  hotel_id        BIGINT NOT NULL,
+  room_type       VARCHAR(30) NOT NULL,
+  check_in        DATE NOT NULL,
+  check_out       DATE NOT NULL,
+  channel         VARCHAR(20) NOT NULL,
+  external_ref    VARCHAR(64),          -- mã đơn từ OTA
+  status          VARCHAR(20) NOT NULL, -- HOLD, CONFIRMED, CANCELLED, PENDING_OTA
+  idempotency_key VARCHAR(64) NOT NULL,
+  hold_until      TIMESTAMPTZ,
+  created_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
+  UNIQUE (idempotency_key)
+);
+CREATE TABLE inventory (
+  hotel_id     BIGINT NOT NULL,
+  room_type    VARCHAR(30) NOT NULL,
+  booking_date DATE NOT NULL,
+  total_rooms  INT NOT NULL,
+  sold_count   INT NOT NULL DEFAULT 0,
+  held_count   INT NOT NULL DEFAULT 0,
+  version      BIGINT NOT NULL DEFAULT 0,
+  PRIMARY KEY (hotel_id, room_type, booking_date),
+  CHECK (sold_count + held_count <= total_rooms)
+);
+~~~
+- available = total_rooms - sold_count - held_count. held_count là phòng đang được giữ tạm chờ thanh toán.
+
+### API chính
+~~~text
+POST /bookings {hotelId, checkIn, checkOut, roomType, channel, idempotencyKey} -> {bookingId, holdExpiresAt}
+POST /bookings/{id}/pay -> {status: CONFIRMED}
+POST /bookings/{id}/cancel -> {status: CANCELLED}
+GET /bookings/{id}/status
+~~~
+- Idempotency key: mã duy nhất sinh bởi khách hoặc OTA cho mỗi lần đặt; gọi lại nhiều lần với cùng mã chỉ trả về đơn cũ, không tạo đơn mới. Giống như bạn nhấn nút gọi thang máy nhiều lần, thang máy vẫn chỉ đi một chuyến.
+
+### Luồng đặt phòng qua website
+~~~seq
+title: Đặt phòng qua website
+actors: Khách hàng | Website API | Inventory service | Postgres
+Khách hàng -> Website API: đặt phòng + mã idempotency
+Website API -> Inventory service: kiểm tra và giảm tồn phòng
+Inventory service -> Postgres: UPDATE tồn phòng có điều kiện
+Postgres --> Inventory service: OK (1 dòng) hoặc hết phòng
+Inventory service --> Website API: trả booking tạm + giờ hết hạn
+Website API --> Khách hàng: xác nhận tạm
+~~~
+
+### Chống overbooking (trái tim của bài)
+Hai khách cùng đặt phòng cuối cùng cùng lúc. Nếu kiểm tra "phòng trống?" bằng SELECT rồi mới INSERT ở hai bước riêng, hai người đều thấy trống và đều đặt => overbooking. Đây gọi là race condition (tranh chấp: hai thao tác cùng sửa cùng một dữ liệu, kết quả phụ thuộc vào ai chạy trước). Cách đúng là một câu UPDATE có điều kiện:
+
+~~~sql
+UPDATE inventory
+SET held_count = held_count + 1, version = version + 1
+WHERE hotel_id = :h AND room_type = :t AND booking_date = :d
+  AND sold_count + held_count < total_rooms;
+-- kiểm tra số dòng bị ảnh hưởng: 1 = giữ thành công, 0 = hết phòng
+~~~
+- Postgres khoá dòng tồn phòng khi UPDATE. Khách đến sau phải đợi khoá, sau đó điều kiện được kiểm tra lại trên dữ liệu mới, thấy sold + held = total nên không cập nhật => 0 dòng => báo hết phòng. Không cần distributed lock (khoá phân tán, khó triển khai và dễ lỗi).
+- Khi khách thanh toán: chuyển HOLD -> CONFIRMED, giảm held_count, tăng sold_count, cả hai trong cùng transaction.
+
+### Giữ phòng tạm và hết hạn
+- hold_until = now() + 15 phút. Nếu khách không thanh toán trong 15 phút, phòng phải về pool để người khác đặt.
+- Cách làm: không cần cron chạy mỗi giây (cron là công việc định kỳ, dễ bỏ sót và chậm). Một worker quét booking HOLD có hold_until < now() mỗi 30 giây, chuyển sang CANCELLED và hoàn held_count. Đây gọi là lazy expiry (hết hạn lười): phòng chỉ được giải phóng khi ai đó kiểm tra, chứ không phải đúng giây.
+- Race: thanh toán đến đúng lúc worker vừa đánh HOLD hết hạn. Câu UPDATE xác nhận thanh toán có điều kiện status = 'HOLD'; nếu 0 dòng thì phòng đã về pool, hệ thống hoàn tiền hoặc kiểm tra lại phòng còn trống không.
+
+### Đồng bộ tồn phòng với OTA
+- OTA (Online Travel Agency) là trung tâm đặt chỗ trực tuyến như Booking.com, Agoda, Expedia. Mỗi OTA hiển thị tồn phòng riêng trên trang của họ; nếu tồn trên OTA còn nhiều nhưng khách sạn đã hết, khách đặt qua OTA gây overbooking kênh.
+- Thiết kế: Booking service là nguồn sự thật. Khi có đặt hoặc huỷ qua website, gọi channel manager (trình quản lý kênh, phần mềm cập nhật tồn lên nhiều OTA cùng lúc) để đẩy tồn mới lên mỗi OTA ngay hoặc qua Kafka (hệ thống truyền tin sự kiện đáng tin cậy, nhiều thành phần có thể đọc cùng) -> worker -> API của OTA.
+- Mỗi OTA xác nhận đặt với mã external_ref; lưu unique theo (channel, external_ref) để OTA gửi lại đơn vừa đặt không tạo đơn thứ hai.
+- Nếu OTA không phản hồi dưới 5 giây: đơn ở PENDING_OTA, job tra cứu lại theo external_ref; nếu OTA nói thành công thì CONFIRMED, nếu thất bại thì CANCELLED và hoàn tồn.
+
+### Huỷ đơn và hoàn tiền
+- Khách huỷ trong 15 phút giữ tạm: hoàn held_count. Sau khi xác nhận: hoàn sold_count, booking = CANCELLED.
+- Hoàn tiền qua cổng thanh toán idempotent theo booking id: gọi lại nhiều lần chỉ hoàn một lần.
+- Nếu hoàn tiền thành công nhưng đánh CANCELLED lỗi, job đối soát hằng ngày so sánh đơn thanh toán và đơn khách sạn để sửa chênh lệch. Đối soát là so sánh hai bản ghi dữ liệu để tìm sự khác biệt, giống như kiểm kê sổ sách với tiền thực.
+
+### Lỗi hay gặp
+| Lỗi | Nguyên nhân | Cách khắc phục |
+|---|---|---|
+| Kiểm tra phòng trống bằng SELECT rồi mới đặt | Hai khách cùng thấy trống, cùng đặt (race condition) | Dùng một câu UPDATE có điều kiện, kiểm tra số dòng |
+| OTA xác nhận chậm | Đơn treo PENDING, phòng bị giữ mãi | PENDING_OTA + tra cứu theo external_ref, hết hạn tự huỷ |
+| OTA gửi lại đơn vừa đặt | Không có idempotency key | Unique (channel, external_ref), trả đơn cũ |
+| Hết 15 phút nhưng phòng không về pool | Chỉ có cron, cron bỏ lượt hoặc chậm | Lazy expiry worker quét hold_until, không phụ thuộc cron chính xác |
+| Thanh toán đến sau khi phòng hết hạn | Race giữa thanh toán và worker hết hạn | UPDATE có điều kiện status = HOLD, 0 dòng => hoàn tiền hoặc kiểm tra lại |
+
+### Giám sát
+- Số phòng overbooking (mục tiêu bằng 0), đơn HOLD quá hạn, lag đồng bộ OTA (thời gian chênh lệch tồn giữa hệ thống và OTA), tỷ lệ huỷ, p95 xác nhận đặt.
+
+### Trả lời mẫu khi phỏng vấn
+"Tôi làm tồn phòng thành nguồn sự thật ở trung tâm: Redis cho tồn nóng, Postgres lưu bền. Mỗi lần đặt là một câu UPDATE có điều kiện kiểm tra sold_count + held_count < total_rooms, vì hai câu SELECT rồi INSERT sẽ để hai khách cùng đặt phòng cuối cùng. Giữ phòng tạm 15 phút bằng hold_until, worker quét hết hạn lazy để phòng về pool, không cần cron chạy liên tục. Tồn phòng đẩy lên mỗi OTA qua channel manager ngay khi có đặt, mã external_ref duy nhất để OTA gửi lại không tạo đơn trùng. Huỷ đơn hoàn tồn và hoàn tiền idempotent, có job đối soát hằng ngày để bắt chênh lệch."
+
+> Senior tip: interviewer hay hỏi "OTA báo hết phòng nhưng website còn phòng, bạn làm gì". Câu trả lời tốt là tồn phòng là một con số duy nhất ở trung tâm; OTA chỉ là cách hiển thị, tất cả đặt dù từ kênh nào đều phải qua cùng câu UPDATE có điều kiện. Nếu một OTA phản hồi chậm, đừng để đơn treo mãi — đặt PENDING_OTA, tra cứu lại, và luôn có manual override cho các kết quả đặc biệt.`,
+  followups: [
+    'Nếu 5 kênh OTA cùng cập nhật tồn vào một thời điểm, hot key hotel_id nào nhất và bạn chia tải ra sao?',
+    'Khách đặt qua OTA nhưng OTA xác nhận sau 20 phút, trong lúc đó website đã bán hết phòng: bạn xử lý thế nào?',
+    'Thêm yêu cầu "không cho đặt cùng một phòng cho hai khách sạn liên kết" (khách sạn đại lý), bạn mở rộng mô hình tồn ra sao?',
+    'Làm sao đối soát tồn phòng với báo cáo cuối ngày của mỗi OTA khi số liệu không khớp?'
+  ]
+},
+{
+  id: 'sd-058',
+  title: 'Quản lý kho và giao hàng chặng cuối',
+  kind: 'bigtech',
+  level: 'senior',
+  prompt: `Bạn thiết kế hệ thống quản lý kho và giao hàng chặng cuối cho sàn thương mại điện tử: 50 kho phương, 200.000 SKU bán chạy (SKU là mã định danh duy nhất của một mặt hàng), peak 5.000 đơn/giây. Yêu cầu: tồn kho theo từng kho, giữ hàng khi khách đặt, phân tuyến shipper (người giao hàng lấy hàng từ kho và giao đến khách) theo vùng, và theo dõi trạng thái đơn realtime (khách và shipper xem trạng thái cập nhật ngay). Không bán vượt kho, đơn không thanh toán sau 2 giờ giải phóng hàng, shipper cập nhật trạng thái trên app. Bạn có 45 phút. Hãy trình bày.`,
+  phases: [
+    { name: 'Requirements', minutes: 5, guide: `Functional: đặt hàng nhiều SKU, kiểm tra tồn theo kho, giữ hàng 2 giờ, phân phối đơn cho shipper, cập nhật trạng thái (PENDING, RESERVED, PICKING, READY, OUT_FOR_DELIVERY, DELIVERED, CANCELLED, RETURNED), khách xem theo mã đơn. Non-functional: peak 5.000 đơn/giây, không oversell (không bán vượt số hàng có), trạng thái cập nhật dưới 5 giây, availability 99,9%. Hỏi rõ: một đơn nhiều SKU có tách đơn giao từ nhiều kho không (split shipment), shipper tự chọn đơn hay hệ thống gán, vùng giao hàng chia thế nào. Out-of-scope: thanh toán, vận chuyển hàng giữa các kho (có thể nhắc), kho thuôn kho bãi lớn.` },
+    { name: 'Estimation', minutes: 5, guide: `50 kho x trung bình 5.000 SKU lưu = 250.000 dòng tồn kho; catalog 200.000 SKU. Peak 5.000 đơn/giây x trung bình 2 SKU = 10.000 lệnh kiểm tra/giữ kho/giây. Mỗi đơn trung bình 6 lần thay đổi trạng thái => vài trăm nghìn sự kiện trạng thái/giây peak. Lưu sự kiện trạng thái partition theo ngày, giữ 3 tháng, cũ hơn sang object storage (lưu trữ đối tượng, dịch vụ lưu trữ file trên đám mây như S3).` },
+    { name: 'API & data model', minutes: 5, guide: `API: POST /orders {items [{sku, qty}], customerId, deliveryAddress} -> orderId; POST /orders/{id}/cancel; POST /shipments/{id}/status {status}; GET /orders/{id}/status; GET /inventory?sku=&lat=&lng=. Bảng orders (id, customer_id, status, total_amount, created_at, updated_at), order_items (id, order_id, sku, qty, warehouse_id), inventory (warehouse_id, sku, qty_on_hand, qty_reserved, version) với CHECK qty_reserved <= qty_on_hand, available = qty_on_hand - qty_reserved, shipment (id, order_id, shipper_id, status, updated_at).` },
+    { name: 'High-level design', minutes: 15, guide: `Vẽ: Khách hàng app --đặt hàng--> Order service --kiểm tra/giữ hàng--> Inventory service (kho); Routing service --chọn kho gần nhất có hàng, tách đơn nếu một kho không đủ--> Dispatch service --gán shipper trong vùng--> Shipper app --cập nhật trạng thái--> Notification --khách xem realtime. Order service tạo đơn PENDING, gọi Inventory reserve. Đủ hết ở một kho => giao từ một kho. Không đủ => split shipment (chia đơn thành nhiều phần giao từ nhiều kho, khách nhận nhiều gói) hoặc chuyển hàng giữa kho (tốn thêm 1-2 ngày) hoặc từ chối đơn. Thành công thanh toán => RESERVED. Dispatch gán shipper đang online trong vùng, shipper có 60 giây nhận hoặc từ chối, thì gán shipper khác. Shipper cập nhật trạng thái trên app (ĐANG_LẤY HÀNG, ĐANG_GIAO, ĐÃ_GIAO); sự kiện qua Kafka (hệ thống hàng đợi tin nhắn đáng tin cậy, nhiều dịch vụ đọc cùng, giống bưu điện chuyên chở thư giữa các phòng ban) -> Notification service đẩy cho khách qua WebSocket hoặc polling ngắn (khách hỏi lại server mỗi vài giây). Huỷ > 2 giờ chưa thanh toán: release qty_reserved về qty_on_hand, đơn = CANCELLED.` },
+    { name: 'Deep dive', minutes: 15, guide: `Đào sâu: giữ hàng khi đặt bằng UPDATE có điều kiện trên inventory, nhiều SKU trong cùng transaction, bất kỳ SKU nào hết => rollback toàn bộ đơn; race condition hai đơn cùng reserve 2 chiếc cuối cùng; không đủ một kho: split shipment, chuyển hàng, từ chối; phân tuyến shipper theo zona và ưu tiên shipper ít đơn nhất, reassignment khi shipper không nhận hoặc mất kết nối; trạng thái realtime qua sự kiện Kafka + WebSocket/polling ngắn; giải phóng hàng không thanh toán sau 2 giờ (worker quét hoặc TTL), hoàn tiền idempotent; failure modes (oversell, shipper mất kết nối giữa chừng, trạng thái chậm cập nhật); reconcile hàng tuần hệ thống vs kho thực tế (cycle count, kiểm kê định kỳ); giám sát oversell, thời gian gán shipper, độ trễ trạng thái.` }
+  ],
+  rubric: [
+    'Làm rõ yêu cầu và con số scale, chốt out-of-scope',
+    'Tồn kho theo từng kho: qty_on_hand, qty_reserved, available',
+    'Giữ hàng khi đặt bằng UPDATE có điều kiện, không oversell',
+    'Nhiều SKU trong một đơn: cùng transaction, hết một SKU => rollback toàn bộ',
+    'Không đủ một kho: split shipment, chuyển hàng giữa kho, từ chối đơn',
+    'Phân tuyến shipper theo zona, shipper đang online, reassignment nếu không nhận',
+    'Trạng thái đơn realtime: sự kiện Kafka + WebSocket/polling ngắn',
+    'Đơn không thanh toán sau 2 giờ giải phóng hàng, hoàn tiền idempotent',
+    'Shipper cập nhật trạng thái trên app, khách theo dõi đơn',
+    'Cycle count reconcile hệ thống với kho thực tế, giám sát oversell và độ trễ trạng thái'
+  ],
+  reference: `**Tóm tắt:** Quản lý kho và giao hàng chặng cuối là bài toán **giữ hàng đúng số, giao đúng người, cập nhật trạng thái ngay**. Ba trụ cột: tồn kho là nguồn sự thật theo từng kho (qty_on_hand - qty_reserved = available), mỗi lần đặt là một UPDATE có điều kiện để không bán vượt kho, và trạng thái đơn được đẩy realtime qua sự kiện + WebSocket/polling để khách và shipper luôn biết đơn đang ở đâu.
+
+### Yêu cầu và quy mô
+- 50 kho phương, trung bình 5.000 SKU/kho = 250.000 dòng tồn kho; catalog 200.000 SKU (SKU là mã định danh duy nhất của một mặt hàng).
+- Peak 5.000 đơn/giây x trung bình 2 SKU = 10.000 lệnh kiểm tra/giữ kho/giây.
+- Không oversell: oversell là bán nhiều hơn số hàng thực tế trong kho.
+- Giữ hàng 2 giờ chờ thanh toán; sau đó giải phóng hàng.
+- Shipper cập nhật trạng thái trên app; khách xem trạng thái đơn realtime.
+
+### Ước lượng (có phép tính)
+- 250.000 dòng tồn kho, mỗi dòng nhỏ (kho, SKU, số lượng) => vừa RAM của một vài node Redis/Postgres.
+- 10.000 lệnh kho/giây peak; Redis cho tồn nóng, Postgres làm nguồn sự thật.
+- Mỗi đơn trung bình 6 lần thay đổi trạng thái => vài trăm nghìn sự kiện/giây peak; lưu sự kiện partition theo ngày, giữ 3 tháng, cũ hơn sang object storage (dịch vụ lưu trữ đối tượng trên đám mây, ví dụ S3).
+
+### Mô hình dữ liệu
+~~~sql
+CREATE TABLE orders (
+  id            UUID PRIMARY KEY,
+  customer_id   BIGINT NOT NULL,
+  status        VARCHAR(20) NOT NULL, -- PENDING, RESERVED, PICKING, READY, OUT_FOR_DELIVERY, DELIVERED, CANCELLED, RETURNED
+  total_amount  BIGINT NOT NULL,
+  created_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_at    TIMESTAMPTZ NOT NULL
+);
+CREATE TABLE order_items (
+  id            BIGSERIAL PRIMARY KEY,
+  order_id      UUID NOT NULL REFERENCES orders(id),
+  sku           VARCHAR(40) NOT NULL,
+  qty           INT NOT NULL,
+  warehouse_id  BIGINT NOT NULL
+);
+CREATE TABLE inventory (
+  warehouse_id  BIGINT NOT NULL,
+  sku           VARCHAR(40) NOT NULL,
+  qty_on_hand   INT NOT NULL DEFAULT 0,
+  qty_reserved  INT NOT NULL DEFAULT 0,
+  version       BIGINT NOT NULL DEFAULT 0,
+  PRIMARY KEY (warehouse_id, sku),
+  CHECK (qty_reserved <= qty_on_hand)
+);
+CREATE TABLE shipment (
+  id            UUID PRIMARY KEY,
+  order_id      UUID NOT NULL,
+  shipper_id    BIGINT,
+  status        VARCHAR(20) NOT NULL,
+  updated_at    TIMESTAMPTZ NOT NULL
+);
+~~~
+- available = qty_on_hand - qty_reserved là số hàng thực sự có thể bán.
+
+### API chính
+~~~text
+POST /orders {items [{sku, qty}], customerId, deliveryAddress} -> orderId
+POST /orders/{id}/cancel
+POST /shipments/{id}/status {status}
+GET /orders/{id}/status
+GET /inventory?sku=&lat=&lng=
+~~~
+
+### Luồng đặt hàng và giao hàng
+~~~seq
+title: Đặt hàng và giao hàng chặng cuối
+actors: Khách hàng | Order service | Inventory service | Dispatch service | Shipper app | Notification
+Khách hàng -> Order service: đặt hàng nhiều SKU
+Order service -> Inventory service: giữ hàng cho mỗi SKU
+Inventory service -> Order service: OK hoặc hết hàng
+Order service -> Dispatch service: gán shipper trong vùng
+Dispatch service -> Shipper app: đơn mới, nhận trong 60 giây
+Shipper app -> Notification: trạng thái ĐANG_GIAO / ĐÃ_GIAO
+Notification --> Khách hàng: đẩy trạng thái đơn
+~~~
+
+### Giữ hàng khi đặt (chống oversell)
+Hai đơn cùng đặt 2 chiếc hàng cuối cùng của một SKU trong một kho. Nếu kiểm tra tồn bằng SELECT rồi mới INSERT, hai đơn đều được giữ => oversell. Cách đúng là một câu UPDATE có điều kiện:
+
+~~~sql
+UPDATE inventory
+SET qty_reserved = qty_reserved + :qty, version = version + 1
+WHERE warehouse_id = :w AND sku = :s
+  AND qty_on_hand - qty_reserved >= :qty;
+-- kiểm tra số dòng bị ảnh hưởng: 1 = giữ thành công, 0 = không đủ hàng
+~~~
+- Nhiều SKU trong một đơn: tất cả chạy trong cùng transaction. Bất kỳ SKU nào hết hàng => rollback toàn bộ đơn, không giữ nửa đơn (không để khách chờ một phần mãi mãi).
+- Race condition (tranh chấp: hai thao tác cùng sửa cùng một dữ liệu, kết quả phụ thuộc vào ai chạy trước) được xử lý bởi Postgres khoá dòng kho khi UPDATE.
+
+### Không đủ hàng ở một kho
+- Split shipment: chia đơn thành nhiều phần, giao từ các kho khác nhau, khách nhận nhiều gói.
+- Chuyển hàng giữa kho: kho A gửi sang kho B, tốn thêm 1-2 ngày, chỉ dùng khi khách đồng ý chờ.
+- Từ chối đơn: nếu không có kho nào đủ và khách không muốn chờ.
+
+### Phân tuyến shipper
+- Shipper báo zona làm việc và trạng thái online trên app. Hệ thống gán đơn theo zona gần kho hoặc địa chỉ khách, ưu tiên shipper ít đơn nhất để công bằng.
+- Shipper có 60 giây nhận hoặc từ chối đơn. Nếu không nhận, mất kết nối hoặc nghỉ giữa chừng, hệ thống tự động gán shipper khác (reassignment) và đơn quay về trạng thái READY để gán lại.
+- Không gán hai shipper cho cùng một đơn: trạng thái shipment chỉ chuyển bằng UPDATE có điều kiện, giống như giữ hàng.
+
+### Trạng thái đơn realtime
+- Mỗi thay đổi trạng thái đơn/giao hàng ghi thành sự kiện. Kafka (hệ thống hàng đợi tin nhắn đáng tin cậy, nhiều dịch vụ có thể đọc cùng một tin) chuyển sự kiện đến Notification service.
+- Khách xem trạng thái qua WebSocket (kết nối duy trì, server đẩy ngay khi có thay đổi) hoặc polling ngắn (khách hỏi lại server mỗi vài giây, đơn giản hơn nhưng tốn hơn).
+- Shipper cập nhật ĐANG_LẤY HÀNG, ĐANG_GIAO, ĐÃ_GIAO trên app; khách nhận thông báo ngay.
+
+### Đơn không thanh toán sau 2 giờ
+- Đơn PENDING quá 2 giờ: worker quét (hoặc TTL trong Redis, thời gian sống hạn chế của dữ liệu) giải phóng qty_reserved về qty_on_hand, đánh đơn CANCELLED.
+- Hoàn tiền qua cổng thanh toán idempotent theo order id: gọi lại nhiều lần chỉ hoàn một lần.
+- Nếu hoàn tiền thành công nhưng đánh CANCELLED lỗi, job đối soát hằng ngày sửa chênh lệch.
+
+### Lỗi hay gặp
+| Lỗi | Nguyên nhân | Cách khắc phục |
+|---|---|---|
+| Kiểm tra tồn rồi mới đặt ở hai bước riêng | Hai đơn cùng thấy đủ hàng, cùng đặt (oversell) | Một câu UPDATE có điều kiện, kiểm tra số dòng |
+| Shipper nhận đơn rồi mất kết nối | Đơn kẹt ĐANG_GIAO, không ai giao | Reassignment sau thời gian chờ, đơn quay READY |
+| Trạng thái đơn chậm cập nhật | Khách không biết đơn ở đâu, khiếu nại | Sự kiện Kafka + WebSocket hoặc polling ngắn |
+| Hàng giữ quá 2 giờ không về kho | Chỉ có cron, cron bỏ lượt | Worker quét hoặc TTL, không phụ thuộc cron chính xác |
+| Số hệ thống khác số kệ thực tế | Giai thao tác nhập kho/sửa hỏng | Cycle count hàng tuần, reconcile hệ thống vs kho thực tế |
+
+### Giám sát
+- Số đơn oversell (mục tiêu bằng 0), thời gian gán shipper, độ trễ cập nhật trạng thái, hàng reserved quá 2 giờ, tỷ lệ shipper nhận đơn.
+
+### Trả lời mẫu khi phỏng vấn
+"Tôi làm tồn kho thành nguồn sự thật theo từng kho: available = qty_on_hand - qty_reserved. Mỗi lần đặt là một câu UPDATE có điều kiện kiểm tra tồn đủ, nhiều SKU trong cùng transaction, hết một SKU thì rollback toàn bộ đơn để không oversell. Routing chọn kho gần nhất có hàng, không đủ thì split shipment hoặc chuyển hàng. Dispatch gán shipper trong zona online, 60 giây nhận không thì gán shipper khác. Mỗi thay đổi trạng thái là sự kiện qua Kafka, khách xem qua WebSocket hoặc polling ngắn. Đơn không thanh toán sau 2 giờ được worker giải phóng hàng và hoàn tiền idempotent. Có cycle count hàng tuần để reconcile hệ thống với kho thực tế."
+
+> Senior tip: interviewer hay hỏi "hai shipper cùng nhận một đơn, bạn khóa như thế nào". Câu trả lời tốt là trạng thái shipment chỉ chuyển qua UPDATE có điều kiện trên status và shipper_id, chính xác như giữ phòng khách sạn; không cần khoá phân tán. Và hãy nhớ: giao hàng chàng cuối là phần tốn nhất chi phí vận chuyển, nên phân tuyến shipper tốt (ít km, ít đơn mỗi người) là điểm khác biệt thực tế của hệ thống.`,
+  followups: [
+    'Một đơn 10 SKU phân tán ở 10 kho khác nhau: bạn tách đơn hay khách chọn nhận một lần, và chi phí ship tính thế nào?',
+    'Shipper đang giao mà khách không ở nhà: đơn chuyển trạng thái thế nào và shipper được đền bù như thế nào?',
+    'Kho A hết hàng nhưng kho B có, chuyển hàng giữa kho tốn 2 ngày: bạn thông báo khách lúc nào và cho chọn gì?',
+    'Làm sao reconcile hàng tồn trong hệ thống với số hàng thực tế trên kệ mỗi tuần mà không làm gián đoạn bán hàng?'
+  ]
 }
 ];
