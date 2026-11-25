@@ -2832,6 +2832,8 @@ window.DATA_INDEX = {
     {"id":"lesson-collections-010","track":"collections","order":10,"title":"LinkedHashMap LRU cache và PriorityQueue min-heap cho Top-K","level":"senior","minutes":30},
     {"id":"lesson-collections-011","track":"collections","order":11,"title":"TreeMap và NavigableMap: tra cứu theo thứ tự và tìm khung giờ trống","level":"senior","minutes":25},
     {"id":"lesson-collections-012","track":"collections","order":12,"title":"Iterator fail-fast và ConcurrentModificationException","level":"mid","minutes":20},
+    {"id":"lesson-collections-013","track":"collections","order":13,"title":"TreeMap nâng cao: range query, Comparator tuỳ biến và ConcurrentSkipListMap","level":"senior","minutes":25},
+    {"id":"lesson-collections-014","track":"collections","order":14,"title":"Fail-fast sâu hơn: modCount, CME đa luồng và iterator an toàn","level":"senior","minutes":20},
     {"id":"lesson-core-001","track":"core","order":1,"title":"Exception: ranh giới lỗi, tài nguyên và suppressed exception","level":"mid","minutes":25},
     {"id":"lesson-core-002","track":"core","order":2,"title":"Generics và PECS: variance an toàn ở compile time","level":"mid","minutes":25},
     {"id":"lesson-core-003","track":"core","order":3,"title":"Immutable object và defensive copy","level":"senior","minutes":25},

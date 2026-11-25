@@ -3501,4 +3501,172 @@ Service lọc request theo blacklist IP: mỗi request đến, duyệt danh sác
     related: ['collections-001', 'collections-003'],
     tags: ['Iterator', 'ConcurrentModificationException', 'modCount', 'removeIf', 'fail-fast', 'fail-safe']
   },
+  {
+    id: 'lesson-collections-013',
+    track: 'collections',
+    order: 13,
+    title: 'TreeMap nâng cao: range query, Comparator tuỳ biến và ConcurrentSkipListMap',
+    level: 'senior',
+    minutes: 25,
+    goals: [
+      'Dùng subMap/headMap/tailMap để truy vấn khoảng và đếm phần tử trong range',
+      'Tạo TreeMap với Comparator tuỳ biến (ví dụ key là object) và hiểu descendingMap/reverseOrder',
+      'Chọn giữa TreeMap và ConcurrentSkipListMap cho bài toán đa luồng cần thứ tự'
+    ],
+    body: `**Tóm tắt:** Ngoài floorEntry, TreeMap còn có subMap/headMap/tailMap trả về view theo khoảng key, và descendingMap để duyệt ngược. Với đa luồng cần thứ tự, dùng ConcurrentSkipListMap (lock-free skip list) thay vì TreeMap (không thread-safe).
+
+### Thuật ngữ cơ bản
+- **subMap(from, to)**: view các entry có key trong [from, to) (half-open mặc định).
+- **headMap(to)**: các entry có key < to.
+- **tailMap(from)**: các entry có key >= from.
+- **descendingMap()**: view thứ tự ngược lại.
+- **Comparator**: đối tượng so sánh key; nếu key không Comparable thì bắt buộc truyền Comparator vào constructor TreeMap.
+- **ConcurrentSkipListMap**: Map có thứ tự, thread-safe, dựa trên skip list; O(log n) cho get/put/remove.
+
+### Range query với subMap
+Đếm số đơn hàng có giá trong [100, 500) dùng subMap(from, true, to, false).size() hoặc duyệt.
+
+~~~java
+TreeMap<Integer, Integer> priceCount = new TreeMap<>();
+// priceCount: price -> count
+SortedMap<Integer, Integer> range = priceCount.subMap(100, true, 500, false);
+int total = 0;
+for (int c : range.values()) total += c;
+~~~
+
+### Comparator tuỳ biến
+Key là object (ví dụ Product với name + price) không Comparable. Truyền Comparator:
+
+~~~java
+TreeMap<Product, Integer> byPrice = new TreeMap<>(Comparator.comparingInt(Product::price));
+~~~
+
+### descendingMap và reverseOrder
+TreeMap<Integer,String> m = new TreeMap<>();
+m.put(1,"a"); m.put(3,"c");
+NavigableMap<Integer,String> desc = m.descendingMap(); // 3->c, 1->a
+// desc là view, sửa desc thì sửa m.
+
+### ConcurrentSkipListMap
+Khi nhiều thread đọc/ghi Map có thứ tự, TreeMap cần synchronized SortedMap (khóa toàn collection) chậm. ConcurrentSkipListMap dùng skip list lock-free, iterator weakly consistent (không ném CME), phù hợp cache theo thời gian với nhiều reader.
+
+### Ví dụ đời thực
+Báo cáo doanh thu theo khoảng giá: lưu TreeMap<priceBand, count>, dùng subMap để lấy tổng trong [100,500) trong O(log n + k). Cache session theo expiry: ConcurrentSkipListMap<Instant, Session> để evict các session hết hạn bằng headMap(now).clear().
+
+### Lỗi hay gặp
+- subMap mặc định [from, to) -> off-by-one; dùng subMap(from, true, to, true) nếu muốn inclusive cả hai.
+- Sửa view subMap/descendingMap thì sửa map gốc (và ngược lại) -> bất ngờ.
+- Key mutable sau khi put -> entry mất vì vị trí cây không khớp.
+- Dùng TreeMap trong đa luồng không đồng bộ -> race, NPE, cây hỏng.
+- ConcurrentSkipListMap không cho null key.
+
+### Trả lời mẫu khi phỏng vấn
+"TreeMap ngoài floor/ceiling còn có subMap/headMap/tailMap cho range query O(log n + k) và descendingMap cho duyệt ngược. Khi key không Comparable, truyền Comparator. Với đa luồng cần thứ tự, tôi chọn ConcurrentSkipListMap: lock-free, iterator weakly consistent, phù hợp cache theo thời gian; TreeMap thì phải bọc synchronized và iterator fail-fast."
+
+> Senior tip: Nếu chỉ cần range count thường xuyên, cân nhắc Fenwick tree / segment tree cho O(log n) count; TreeMap.subMap().size() là O(k) để duyệt, không O(1).
+`,
+    exercises: [
+      {
+        title: 'Đếm số entry trong khoảng giá dùng subMap',
+        prompt: 'Viết phương thức countInRange nhận TreeMap<Integer,Integer> (price -> count) và hai đầu from,to (inclusive cả hai) trả về tổng count các price trong [from,to].',
+        starter: 'import java.util.*;\n\nclass Solution {\n    public int countInRange(TreeMap<Integer,Integer> m, int from, int to) {\n        // TODO: dùng subMap(from, true, to, true)\n        throw new UnsupportedOperationException("TODO");\n    }\n}',
+        tests: 'public class Main {\n    public static void main(String[] args) {\n        Solution s = new Solution();\n        TreeMap<Integer,Integer> m = new TreeMap<>();\n        m.put(50,2); m.put(100,3); m.put(250,1); m.put(500,4); m.put(600,2);\n        int pass=0,total=0;\n        total++; if (s.countInRange(m,100,500)==8) { pass++; System.out.println("PASS t1"); } else System.out.println("FAIL t1: "+s.countInRange(m,100,500));\n        total++; if (s.countInRange(m,0,49)==0) { pass++; System.out.println("PASS t2"); } else System.out.println("FAIL t2: "+s.countInRange(m,0,49));\n        total++; if (s.countInRange(m,600,600)==2) { pass++; System.out.println("PASS t3"); } else System.out.println("FAIL t3: "+s.countInRange(m,600,600));\n        total++; if (s.countInRange(m,700,900)==0) { pass++; System.out.println("PASS t4"); } else System.out.println("FAIL t4: "+s.countInRange(m,700,900));\n        System.out.println("RESULT "+pass+"/"+total);\n    }\n}',
+        reference: 'import java.util.*;\n\nclass Solution {\n    public int countInRange(TreeMap<Integer,Integer> m, int from, int to) {\n        SortedMap<Integer,Integer> r = m.subMap(from, true, to, true);\n        int total = 0;\n        for (int c : r.values()) total += c;\n        return total;\n    }\n}',
+        hints: ['subMap(from, true, to, true) inclusive cả hai đầu', 'duyệt values() để cộng'],
+        explain: 'Dùng subMap inclusive cả hai đầu rồi cộng values. Starter throw TODO nên không pass; reference pass 100%.'
+      }
+    ],
+    check: [
+      {
+        q: 'subMap(from, to) mặc định inclusive đầu nào?',
+        options: ['[from, to] cả hai', '[from, to) from inclusive, to exclusive', '(from, to] from exclusive, to inclusive', '(from, to) cả hai exclusive'],
+        answer: 1,
+        explain: 'subMap(from,to) mặc định half-open [from,to). Dùng subMap(from,true,to,true) để inclusive cả hai.'
+      },
+      {
+        q: 'Cấu trúc nào thread-safe, có thứ tự, iterator weakly consistent?',
+        options: ['TreeMap', 'HashMap', 'ConcurrentSkipListMap', 'LinkedHashMap'],
+        answer: 2,
+        explain: 'ConcurrentSkipListMap là Map có thứ tự, thread-safe, dựa trên skip list, iterator weakly consistent.'
+      }
+    ],
+    related: ['collections-005', 'collections-007'],
+    tags: ['TreeMap', 'subMap', 'Comparator', 'ConcurrentSkipListMap', 'range query']
+  },
+  {
+    id: 'lesson-collections-014',
+    track: 'collections',
+    order: 14,
+    title: 'Fail-fast sâu hơn: modCount, CME đa luồng và iterator an toàn',
+    level: 'senior',
+    minutes: 20,
+    goals: [
+      'Hiểu modCount và expectedModCount hoạt động thế nào trong ArrayList/HashMap',
+      'Nhận biết CME không chỉ do đa luồng mà còn do sửa trong lúc duyệt',
+      'Chọn iterator an toàn: snapshot copy, removeIf, ConcurrentHashMap/weakly consistent'
+    ],
+    body: `**Tóm tắt:** Fail-fast iterator lưu expectedModCount khi tạo; mỗi next() so sánh với modCount. Nếu khác (do add/remove/clear) thì ném CME. CME xảy ra cả trong một thread nếu sửa collection trong lúc duyệt. Cách an toàn: snapshot copy, removeIf, hoặc collection weakly consistent.
+
+### Thuật ngữ cơ bản
+- **modCount**: bộ đếm sửa đổi cấu trúc trong AbstractList/HashMap.
+- **expectedModCount**: giá trị modCount mà iterator kỳ vọng; lưu lúc tạo iterator.
+- **checkForComodification()**: phương thức iterator kiểm tra modCount == expectedModCount.
+- **Snapshot**: bản sao collection tại một thời điểm, duyệt trên snapshot không bị CME.
+- **Weakly consistent iterator**: có thể thấy một phần thay đổi sau khi tạo, không ném CME (ConcurrentHashMap).
+
+### Cơ chế chi tiết
+Khi gọi list.iterator(), iterator.expectedModCount = list.modCount. Mỗi next() gọi checkForComodification(): nếu modCount != expectedModCount throw new ConcurrentModificationException. Khi gọi it.remove(), iterator tự giảm modCount? Thực ra it.remove() gọi list.remove và đồng bộ expectedModCount = modCount. Khi gọi list.add/remove trực tiếp, modCount tăng nhưng expectedModCount không -> CME ở next() sau.
+
+### CME trong đa luồng
+Hai thread cùng sửa ArrayList: thread A đang duyệt, thread B add -> modCount thay đổi -> thread A next() ném CME. Nhưng CME là best-effort, không đảm bảo luôn ném; có thể thấy dữ liệu sai im lặng. Vì vậy không dùng CME để đồng bộ; dùng collection thread-safe.
+
+### Pattern an toàn
+1. Snapshot copy: for (X x : new ArrayList<>(list)) { ... } duyệt trên bản sao; sửa list gốc không ảnh hưởng.
+2. removeIf: list.removeIf(pred) tự quản lý iterator.
+3. Thu thập rồi xóa từ cuối lên đầu: indices sort desc, remove.
+4. Dùng collection weakly consistent cho đa luồng: ConcurrentHashMap, ConcurrentSkipListMap, CopyOnWriteArrayList (đọc nhiều ghi ít).
+
+### Ví dụ đời thực
+Job scheduler duyệt danh sách job đang chạy để cancel theo điều kiện; nếu job tự remove chính nó khỏi danh sách trong lúc duyệt, CME. Fix: snapshot copy trước khi duyệt, hoặc dùng CopyOnWriteArrayList (job list nhỏ, cancel ít).
+
+### Lỗi hay gặp
+- Nghĩ CME chỉ do đa luồng -> thực ra một thread tự sửa cũng ném.
+- Bắt CME và retry -> không xử lý gốc; nên dùng collection phù hợp.
+- Dùng CopyOnWriteArrayList cho ghi nhiều -> tốn bộ nhớ copy mỗi write.
+- ConcurrentHashMap iterator không phản ánh chính xác size() trong đa luồng (weakly consistent) -> không dùng size() để điều kiện dừng chính xác.
+
+### Trả lời mẫu khi phỏng vấn
+"Fail-fast iterator lưu expectedModCount và checkForComodification mỗi next(). CME ném khi modCount thay đổi do add/remove/clear không qua chính iterator. Xảy ra cả trong một thread. Cách an toàn: snapshot copy, removeIf, hoặc collection weakly consistent (ConcurrentHashMap/CopyOnWriteArrayList) cho đa luồng. CME là best-effort, không thay thế đồng bộ."
+
+> Senior tip: Trong production, log CME kèm stack trace để tìm chỗ sửa collection trong lúc duyệt; fix bằng removeIf hoặc snapshot, đừng chỉ catch.
+`,
+    exercises: [
+      {
+        title: 'Xóa an toàn trong lúc duyệt',
+        prompt: 'Viết phương thức removeNegatives nhận List<Integer> và xóa các số âm, trả về list đã sửa. Dùng removeIf.',
+        starter: 'import java.util.*;\n\nclass Solution {\n    public List<Integer> removeNegatives(List<Integer> list) {\n        // TODO: dùng removeIf\n        throw new UnsupportedOperationException("TODO");\n    }\n}',
+        tests: 'public class Main {\n    public static void main(String[] args) {\n        Solution s = new Solution();\n        int pass=0,total=0;\n        List<Integer> a = new ArrayList<>(Arrays.asList(1,-2,3,-4,0));\n        List<Integer> r = s.removeNegatives(a);\n        total++; if (r.equals(Arrays.asList(1,3,0))) { pass++; System.out.println("PASS t1"); } else System.out.println("FAIL t1: "+r);\n        total++; if (a.equals(Arrays.asList(1,3,0))) { pass++; System.out.println("PASS t2"); } else System.out.println("FAIL t2: "+a);\n        List<Integer> b = new ArrayList<>();\n        total++; if (s.removeNegatives(b).isEmpty()) { pass++; System.out.println("PASS t3"); } else System.out.println("FAIL t3");\n        List<Integer> c = new ArrayList<>(Arrays.asList(-1,-2));\n        total++; if (s.removeNegatives(c).isEmpty()) { pass++; System.out.println("PASS t4"); } else System.out.println("FAIL t4");\n        System.out.println("RESULT "+pass+"/"+total);\n    }\n}',
+        reference: 'import java.util.*;\n\nclass Solution {\n    public List<Integer> removeNegatives(List<Integer> list) {\n        list.removeIf(x -> x < 0);\n        return list;\n    }\n}',
+        hints: ['removeIf nhận Predicate', 'xóa tại chỗ và trả về cùng list'],
+        explain: 'removeIf tự quản lý iterator và modCount, an toàn. Starter throw TODO nên không pass; reference pass 100%.'
+      }
+    ],
+    check: [
+      {
+        q: 'CME có thể xảy ra trong trường hợp nào?',
+        options: ['Chỉ khi hai thread cùng sửa', 'Khi một thread sửa collection trong lúc đang duyệt nó', 'Khi collection rỗng', 'Khi iterator hết phần tử'],
+        answer: 1,
+        explain: 'CME xảy ra khi modCount thay đổi không qua chính iterator đang duyệt, kể cả một thread.'
+      },
+      {
+        q: 'Iterator của ConcurrentHashMap là loại nào?',
+        options: ['Fail-fast', 'Fail-safe (snapshot)', 'Weakly consistent', 'Blocking'],
+        answer: 2,
+        explain: 'ConcurrentHashMap iterator là weakly consistent: có thể thấy một phần thay đổi sau khi tạo, không ném CME.'
+      }
+    ],
+    related: ['collections-001', 'collections-003'],
+    tags: ['fail-fast', 'modCount', 'CME', 'removeIf', 'ConcurrentHashMap', 'snapshot']
+  },
 );
+
