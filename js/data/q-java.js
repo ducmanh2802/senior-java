@@ -14025,6 +14025,169 @@ Queue xử lý đơn hàng cần retry đơn cuối: {{getLast()}} + {{removeLas
     'Khi nào {{getLast()}} ném exception và cách tránh?'
   ],
   tags: ['SequencedCollection', 'Java 21', 'getFirst', 'getLast', 'reversed']
+},
+{
+  id: 'core-083',
+  topic: 'core',
+  level: 'senior',
+  q: 'G1 GC string deduplication (XX:+UseStringDeduplication) là gì, hoạt động thế nào, khi nào bật, và khác gì compact strings (Latin-1/UTF-16) trong Java 9+? Trade-off CPU và bộ nhớ ra sao?',
+  a: `**Tóm tắt:** G1 string deduplication là tính năng GC tự động hợp nhất các đối tượng String có cùng nội dung (char[]/byte[]) để giảm bộ nhớ heap, bật bằng -XX:+UseStringDeduplication với G1. Khác compact strings (Java 9+) là compact strings chọn encoding Latin-1 cho chuỗi chỉ ASCII để tiết kiệm bộ nhớ khi tạo, còn deduplication là GC dọn chuỗi trùng lặp ở runtime. Bật khi ứng dụng có nhiều chuỗi lặp lại và bộ nhớ heap lớn; chi phí CPU thêm trong GC cycle.
+
+### Cơ chế hoạt động
+- Compact strings (Java 9+): String lưu byte[] thay vì char[]; nếu chuỗi chỉ chứa ký tự Latin-1 dùng 1 byte/char, nếu có ký tự ngoài Latin-1 dùng UTF-16 (2 byte/char). Quyết định tại thời điểm tạo chuỗi, không GC.
+- String deduplication (G1): trong quá trình GC, G1 tìm các đối tượng String có cùng nội dung, hợp nhất mảng byte/char của chúng thành một, các String khác trỏ cùng mảng. Chỉ chạy với G1 GC.
+- Điều kiện: chuỗi phải survive young GC (đã promote sang old generation) và cùng nội dung; G1 kiểm tra hash code và nội dung trước khi hợp nhất.
+- Bật: -XX:+UseG1GC -XX:+UseStringDeduplication. Có thể cấu hình thời gian tối thiểu (-XX:StringDeduplicationAgeThreshold, mặc định 3).
+- Trade-off: giảm bộ nhớ heap (thường 10-25% cho ứng dụng nhiều chuỗi), nhưng tăng CPU trong GC cycle và latency pause.
+
+### Mã ví dụ (dưới 30 dòng)
+~~~java
+// JVM args: -XX:+UseG1GC -XX:+UseStringDeduplication -XX:StringDeduplicationAgeThreshold=3
+public class DedupDemo {
+    public static void main(String[] args) {
+        // Tạo nhiều chuỗi trùng lặp (ví dụ request id lặp lại)
+        java.util.List<String> list = new java.util.ArrayList<>();
+        for (int i = 0; i < 1_000_000; i++) {
+            list.add("request-" + (i % 1000)); // chỉ 1000 chuỗi khác nhau, lặp lại
+        }
+        System.out.println("size=" + list.size());
+        // Sau vài GC cycle, G1 sẽ dedup các chuỗi trùng lặp
+    }
+}
+~~~
+
+### Ví dụ thực sự
+Dịch vụ xử lý log hàng triệu dòng, mỗi dòng có request id lặp lại. Trước khi bật deduplication, heap tăng nhanh do hàng triệu đối tượng String và char[]/byte[]. Bật -XX:+UseStringDeduplication, sau vài GC cycle bộ nhớ heap giảm đáng kể (đo bằng jcmd GC.class_histogram hoặc JFR), throughput GC cải thiện. Chi phí: GC pause tăng nhẹ (vài ms) do kiểm tra nội dung chuỗi; nếu latency p99 quan trọng, đo trước khi bật. Compact strings đã tiết kiệm bộ nhớ cho chuỗi ASCII; deduplication bổ sung cho chuỗi trùng lặp bất kể encoding.
+
+### Trả lời mẫu khi phỏng vấn
+"Compact strings (Java 9+) chọn encoding Latin-1 cho chuỗi ASCII để tiết kiệm bộ nhớ khi tạo, không phụ thuộc GC. G1 string deduplication là tính năng GC tự động hợp nhất các String có cùng nội dung ở runtime, bật bằng -XX:+UseStringDeduplication với G1. Em bật khi ứng dụng có nhiều chuỗi lặp lại và heap lớn; đo bộ nhớ bằng jcmd/JFR trước và sau. Chi phí là CPU thêm trong GC cycle và pause tăng nhẹ, nên nếu p99 quan trọng cần đo. Không dùng intern() tay cho mọi chuỗi; deduplication là giải pháp tự động và an toàn hơn."
+
+> Senior tip: deduplication chỉ chạy với G1 và chỉ cho chuỗi đã survive young GC (age threshold). Nếu dùng ZGC/Shenandoah, không có tính năng này; cân nhắc intern() có chọn lọc cho chuỗi lặp lại nhiều và ngắn, hoặc dùng StringTable sizing (-XX:StringTableSize).`,
+  follow: [
+    'Compact strings (Java 9+) khác string deduplication (G1) ở đâu?',
+    'Khi nào nên dùng intern() thay vì bật deduplication?',
+    'Cách đo hiệu quả deduplication bằng jcmd hoặc JFR?'
+  ],
+  tags: ['String', 'G1', 'deduplication', 'compact strings', 'JVM', 'GC'],
+  refs: [
+    { type: 'doc', title: 'G1 String Deduplication', url: 'https://docs.oracle.com/en/java/javase/21/gctuning/garbage-first-g1-garbage-collector.html' }
+  ]
+},
+{
+  id: 'core-084',
+  topic: 'core',
+  level: 'senior',
+  q: 'Exception translation ở các tầng (DAO → service → controller): vì sao cần dịch ngoại lệ, cách giữ nguyên nhân gốc (cause) và stack trace, và xử lý retry/idempotency khi dịch ngoại lệ ra ngoài API?',
+  a: `**Tóm tắt:** Exception translation là chuyển ngoại lệ thấp cấp (SQLException, IOException) thành ngoại lệ nghiệp vụ (DichVuException, TaiKhoanKhongTonTaiException) ở boundary giữa các tầng, để controller không phụ thuộc chi tiết cơ sở dữ liệu và trả HTTP status chuẩn. Luôn gán nguyên nhân gốc vào cause để giữ stack trace đầy đủ. Ở controller, ánh xạ ngoại lệ sang HTTP status và quyết định retry (5xx retry, 4xx không retry) và idempotency (không retry thanh toán nếu không có key idempotency).
+
+### Cơ chế hoạt động
+- DAO tầng: bắt SQLException/IOException, wrap vào DataAccessException hoặc custom repository exception, gán cause.
+- Service tầng: bắt repository exception, wrap vào business exception (TaiKhoanKhongTonTaiException, QuaHanException), thêm thông tin nghiệp vụ (mã tài khoản, mã đơn).
+- Controller tầng: bắt business exception, ánh xạ sang HTTP status (404, 400, 409, 502), trả ErrorResponse chuẩn.
+- Giữ cause: throw new XxxException(msg, e) để stack trace gồm cả cấp thấp và cấp cao; không dùng e.getMessage() làm message mới và bỏ e.
+- Retry: 5xx (timeout, connection) có thể retry với backoff; 4xx (validation, not found) không retry. Idempotency: thanh toán/chuyển tiền chỉ retry nếu có idempotency key; không thì không retry để tránh duplicate.
+- Suppression: nếu catch nhiều ngoại lệ, dùng try-with-resources để tự đóng resource và thêm suppressed exception.
+
+### Mã ví dụ (dưới 30 dòng)
+~~~java
+// DAO
+public TaiKhoan timTaiKhoan(String id) {
+    try {
+        return jdbc.queryForObject("SELECT * FROM tk WHERE id=?", mapper, id);
+    } catch (EmptyResultDataAccessException e) {
+        throw new TaiKhoanKhongTonTaiException("Tài khoản " + id + " không tồn tại", e);
+    } catch (DataAccessException e) {
+        throw new KhoDuLieuException("Lỗi DB khi đọc tài khoản " + id, e);
+    }
 }
 
+// Service
+public void chuyenTien(String nguon, String dich, long soTien) {
+    try {
+        TaiKhoan tk = dao.timTaiKhoan(nguon);
+        // ... nghiệp vụ
+    } catch (TaiKhoanKhongTonTaiException e) {
+        throw e; // giữ nguyên
+    } catch (KhoDuLieuException e) {
+        throw new DichVuException("Chuyển tiền thất bại", e);
+    }
+}
+
+// Controller
+@ExceptionHandler(DichVuException.class)
+public ResponseEntity<ErrorResponse> handle(DichVuException e) {
+    return ResponseEntity.status(502).body(new ErrorResponse(e.getMessage()));
+}
+~~~
+
+### Ví dụ thực sự
+Dịch vụ thanh toán gọi DB và API đối tác. Nếu SQLException bị đẩy thẳng lên controller, controller phải biết SQL error code, coupling cao và khó test. Dịch ngoại lệ: DAO catch SQLException → DataAccessException; service catch DataAccessException → DichVuException với mã đơn; controller catch DichVuException → HTTP 502. Khi client nhận 502, retry với idempotency key để tránh duplicate thanh toán. Nếu không có idempotency key, không retry, trả lỗi cho người dùng. Log đầy đủ cause ở service để debug.
+
+### Trả lời mẫu khi phỏng vấn
+"Exception translation chuyển ngoại lệ thấp cấp thành ngoại lệ nghiệp vụ ở boundary giữa các tầng, để controller không phụ thuộc chi tiết DB/API và trả HTTP status chuẩn. Em luôn gán nguyên nhân gốc vào cause để giữ stack trace đầy đủ; không bao giờ bỏ cause. Ở controller, ánh xạ sang HTTP status và quyết định retry: 5xx retry với backoff, 4xx không retry. Với thanh toán/chuyển tiền, chỉ retry nếu có idempotency key để tránh duplicate. Em không catch Exception chung; chỉ catch các ngoại lệ biết và wrap có mục đích."
+
+> Senior tip: không dịch ngoại lệ quá nhiều tầng (mỗi tầng wrap một lần) vì làm stack trace dài và mất loại gốc. Chỉ wrap ở boundary (DAO→service, service→controller) và giữ cause. Dùng try-with-resources cho resource (Connection, InputStream) để tự đóng và thêm suppressed exception, không leak connection.`,
+  follow: [
+    'Vì sao không nên catch Exception chung ở DAO?',
+    'Idempotency key giúp retry an toàn như thế nào?',
+    'try-with-resources thêm suppressed exception như thế nào?'
+  ],
+  tags: ['exception', 'translation', 'cause', 'retry', 'idempotency', 'service'],
+  refs: [
+    { type: 'doc', title: 'Exceptions JavaDoc', url: 'https://docs.oracle.com/en/java/javase/21/docs/api/java.base/java/lang/Exception.html' }
+  ]
+},
+{
+  id: 'core-085',
+  topic: 'core',
+  level: 'lead',
+  q: '(Lead) Generic wildcard PECS: Producer Extends, Consumer Super. Khi nào dùng ? extends và ? super trong API collection/generic, ví dụ copy từ List sang List, và lỗi hay gặp với List<Object> và wildcard capture?',
+  a: `**Tóm tắt:** PECS (Producer Extends, Consumer Super) là nguyên tắc chọn wildcard: nếu generic type chỉ để đọc (producer) dùng ? extends T; nếu chỉ để ghi (consumer) dùng ? super T; nếu cả đọc và ghi thì không dùng wildcard (dùng T). Ví dụ copy(List<? extends T> src, List<? super T> dest): src là producer, dest là consumer. Lỗi hay gặp: List<Object> không phải supertype của List<String> (invariance), wildcard capture khi gọi method cần type cụ thể, và không thể add vào List<? extends T> (trừ null).
+
+### Cơ chế hoạt động
+- Invariance: List<String> không phải subtype của List<Object>; generics không covariant. Vì vậy method nhận List<Object> không nhận được List<String>.
+- Covariance (? extends T): List<? extends Number> có thể là List<Integer> hoặc List<Double>; chỉ đọc được Number, không add (vì không biết type thực).
+- Contravariance (? super T): List<? super Integer> có thể là List<Integer> hoặc List<Number> hoặc List<Object>; có thể add Integer, đọc được Object.
+- PECS: producer (nguồn dữ liệu) extends, consumer (đích dữ liệu) super. copy(src, dest): src extends T (đọc T), dest super T (ghi T).
+- Wildcard capture: compiler không biết type thực của ?; nếu cần gọi method generic với type cụ thể, dùng helper method capture wildcard.
+
+### Mã ví dụ (dưới 30 dòng)
+~~~java
+import java.util.*;
+
+public class PecsDemo {
+    // src là producer (đọc T), dest là consumer (ghi T)
+    public static <T> void copy(List<? extends T> src, List<? super T> dest) {
+        for (T item : src) {
+            dest.add(item);
+        }
+    }
+
+    public static void main(String[] args) {
+        List<Integer> src = List.of(1, 2, 3);
+        List<Number> dest = new ArrayList<>();
+        copy(src, dest); // OK: src extends Number, dest super Integer
+        System.out.println(dest);
+    }
+}
+~~~
+
+### Ví dụ thực sự
+API thư viện collection: Collections.copy(List<? super T> dest, List<? extends T> src) tuân theo PECS. Nếu thiết kế API nhận List<Object> để "linh hoạt", caller không thể truyền List<String>, phải copy sang List<Object> thủ công. Nếu dùng ? extends Object, có thể đọc nhưng không add. Lỗi wildcard capture: method generic foo(List<?> list) không thể gọi list.add(x) vì compiler không biết type; giải pháp là helper method generic <T> fooHelper(List<T> list).
+
+### Trả lời mẫu khi phỏng vấn
+"PECS: Producer Extends, Consumer Super. Nếu generic type chỉ để đọc (producer) dùng ? extends T; nếu chỉ để ghi (consumer) dùng ? super T; nếu cả đọc và ghi thì dùng T không wildcard. Ví dụ copy(src, dest): src extends T (đọc T), dest super T (ghi T). Lỗi hay gặp: List<Object> không phải supertype của List<String> (invariance), nên API nhận List<Object> không nhận List<String>. Không thể add vào List<? extends T> trừ null. Wildcard capture cần helper method generic. Em áp dụng PECS khi thiết kế API collection/stream để tối đa tính linh hoạt và an toàn type."
+
+> Senior tip: không lạm dụng wildcard; nếu type được dùng cả đọc và ghi, dùng T concrete. Wildcard capture helper method là pattern chuẩn khi cần thao tác với ? (ví dụ reverse(List<?>)). Stream API dùng ? extends T cho source và ? super T cho collector, tuân theo PECS.`,
+  follow: [
+    'Vì sao List<Object> không phải supertype của List<String>?',
+    'Khi nào không nên dùng wildcard (dùng T concrete)?',
+    'Wildcard capture là gì, và giải quyết bằng helper method như thế nào?'
+  ],
+  tags: ['generics', 'PECS', 'wildcard', 'covariance', 'contravariance', 'collections'],
+  refs: [
+    { type: 'doc', title: 'Generics Wildcards', url: 'https://docs.oracle.com/javase/tutorial/java/generics/wildcards.html' }
+  ]
+}
 );
+
