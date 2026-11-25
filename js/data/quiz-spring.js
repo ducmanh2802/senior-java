@@ -7067,4 +7067,395 @@ Bulk update sinh một câu UPDATE duy nhất ở DB, không load entity. Nhưng
 > Senior tip: bulk update là công cụ mạnh cho batch; cân nhắc event/outbox nếu cần side effect; đo thời gian và lock.`
   },
 
+  {
+    id: 'qz-sql-057',
+    topic: 'sql',
+    q: `Bảng {{orders}} có cột {{customer_id}} và {{amount}}. Câu lệnh sau chạy trên PostgreSQL:
+~~~sql
+SELECT customer_id, SUM(amount) AS total
+FROM orders
+GROUP BY customer_id
+HAVING SUM(amount) > 1000 AND COUNT(*) >= 3;
+~~~
+Câu nào mô tả ĐÚNG kết quả?`,
+    options: [
+      'Lọc những dòng có amount > 1000 trước khi gom nhóm',
+      'HAVING được thực thi trước GROUP BY nên lọc dòng rồi mới gom',
+      'Chỉ trả về các customer có tổng amount > 1000 VÀ số đơn >= 3',
+      'WHERE và HAVING dùng thay thế cho nhau, kết quả như nhau'
+    ],
+    answer: 2,
+    explain: `**Đáp án đúng: chỉ trả về các customer có tổng amount > 1000 VÀ số đơn >= 3.**
+
+### Vì sao đúng
+Thứ tự xử lý logic của một câu SELECT có GROUP BY là:
+1. FROM (đọc bảng, JOIN nếu có).
+2. WHERE (lọc **từng dòng** trước khi gom — không dùng được hàm tổng hợp như SUM).
+3. GROUP BY (gom các dòng thành nhóm theo customer_id).
+4. HAVING (lọc **từng nhóm** sau khi đã tính SUM, COUNT — dùng được hàm tổng hợp).
+5. SELECT (chọn cột hiển thị).
+6. ORDER BY, LIMIT.
+
+Ở đây HAVING nhận điều kiện trên kết quả tổng hợp: {{SUM(amount) > 1000}} (tổng tiền nhóm) và {{COUNT(*) >= 3}} (số đơn trong nhóm). Chỉ nhóm thỏa **cả hai** mới xuất hiện.
+
+### Vì sao các phương án còn lại sai
+- **Lọc amount > 1000 trước khi gom**: đó là việc của WHERE trên dòng lẻ, không phải HAVING. HAVING chạy sau khi đã gom nhóm.
+- **HAVING trước GROUP BY**: ngược thứ tự logic. HAVING cần nhóm đã tồn tại mới lọc được.
+- **WHERE thay thế HAVING**: WHERE không thấy được SUM/COUNT của nhóm (vì chạy trước GROUP BY). Muốn lọc theo tổng phải dùng HAVING; muốn lọc theo dòng lẻ mới dùng WHERE.
+
+### Ví dụ số liệu
+~~~text
+orders: (1, 600), (1, 500), (1, 200), (2, 2000), (3, 100), (3, 100)
+Sau GROUP BY:  cust1 = 1300 (3 đơn), cust2 = 2000 (1 đơn), cust3 = 200 (2 đơn)
+HAVING total>1000 AND count>=3:  chỉ cust1 (1300, 3 đơn) được giữ.
+~~~
+
+> Senior tip: nếu điều kiện lọc trên cột thường (không tổng hợp) đi kèm, hãy đặt ở WHERE để giảm số dòng phải gom; chỉ để HAVING cho điều kiện tổng hợp. PostgreSQL vẫn tối ưu, nhưng tách đúng giúp đọc ý định rõ ràng.`
+  },
+
+  {
+    id: 'qz-sql-058',
+    topic: 'sql',
+    multi: true,
+    q: `Về window function (hàm cửa sổ) trên PostgreSQL, phát biểu nào ĐÚNG? (Chọn 2)`,
+    options: [
+      'ROW_NUMBER() đánh số liên tục 1,2,3 kể cả khi có giá trị bằng nhau; RANK() để lại lỗ khi có "tie" (1,1,3); DENSE_RANK() không để lại lỗ (1,1,2)',
+      'Window function làm thay đổi số dòng trả về (gộp nhóm) giống hệt GROUP BY',
+      'Mọi window function bắt buộc phải có ORDER BY bên trong OVER()',
+      'SUM(amount) OVER (PARTITION BY customer_id) tính tổng theo từng khách nhưng vẫn giữ nguyên mọi dòng chi tiết'
+    ],
+    answer: [0, 3],
+    explain: `**Đáp án đúng: 0 và 3.**
+
+### Vì sao 0 đúng
+Ba hàm xếp hạng xử lý "hạng bằng nhau" (tie) khác nhau, giả sử điểm số là 90, 90, 80:
+- {{ROW_NUMBER()}}: 1, 2, 3 — luôn tăng liên tục, không quan tâm tie. Dùng khi cần đánh số dòng duy nhất.
+- {{RANK()}}: 1, 1, 3 — hai người cùng hạng 1, người kế tiếp nhảy lên 3 (bỏ trống 2). Dùng khi "cùng điểm thì cùng hạng, hạng sau tính cả người phía trên".
+- {{DENSE_RANK()}}: 1, 1, 2 — cùng hạng 1, hạng kế tiếp là 2 (không bỏ trống). Dùng khi muốn đếm số mức điểm khác nhau.
+
+### Vì sao 3 đúng
+Window function tính trên một "cửa sổ" các dòng liên quan nhưng **không gộp** chúng lại. {{SUM(amount) OVER (PARTITION BY customer_id)}} trả về bảng gốc đủ số dòng, chỉ thêm một cột tổng riêng cho từng khách. Đây là điểm khác biệt cốt lõi so với GROUP BY (vốn làm mất dòng chi tiết).
+
+### Vì sao 1 và 2 sai
+- **1 (giống GROUP BY)**: sai. GROUP BY rút gọn nhiều dòng thành một; window function giữ nguyên số dòng.
+- **2 (bắt buộc ORDER BY)**: sai. ORDER BY trong OVER() là **tùy chọn**. Không có ORDER BY thì cửa sổ là toàn bộ partition (ví dụ SUM toàn nhóm). ORDER BY chỉ cần khi muốn tính tích lũy (running total) hoặc xếp hạng.
+
+### Ví dụ
+~~~sql
+SELECT name, score,
+       ROW_NUMBER() OVER (ORDER BY score DESC) AS rn,
+       RANK()       OVER (ORDER BY score DESC) AS rk,
+       DENSE_RANK() OVER (ORDER BY score DESC) AS dr
+FROM players;
+-- score 90,90,80  ->  rn: 1,2,3   rk: 1,1,3   dr: 1,1,2
+~~~
+
+> Senior tip: trong phỏng vấn, "lấy top N mỗi nhóm" là kinh điển: dùng ROW_NUMBER() OVER (PARTITION BY dept ORDER BY salary DESC) rồi lọc rn <= N ở CTE ngoài (không lọc trực tiếp trong WHERE cùng cấp được).`
+  },
+
+  {
+    id: 'qz-sql-059',
+    topic: 'sql',
+    q: `Cần tìm các user CÓ ít nhất một order. Bảng {{users}} 5 triệu dòng, {{orders}} 50 triệu dòng, cột {{orders.user_id}} đã có index. Điều kiện nào hiệu quả và an toàn với NULL nhất?`,
+    options: [
+      'WHERE u.id IN (SELECT user_id FROM orders) — luôn là cách nhanh nhất',
+      'WHERE EXISTS (SELECT 1 FROM orders o WHERE o.user_id = u.id) — dừng ngay khi thấy dòng đầu tiên, không bị NULL làm hỏng',
+      'JOIN orders rồi SELECT DISTINCT u.* — luôn tối ưu nhất',
+      'WHERE u.id NOT IN (SELECT user_id FROM orders)'
+    ],
+    answer: 1,
+    explain: `**Đáp án đúng: EXISTS — dừng ngay khi thấy dòng đầu tiên, không bị NULL làm hỏng.**
+
+### Vì sao đúng
+EXISTS chạy **correlated subquery** (truy vấn con gắn với từng dòng ngoài): với mỗi user, nó kiểm tra "có tồn tại order nào của user này không". Ngay khi tìm thấy **một** dòng khớp, EXISTS trả true và **dừng**, không quét hết. Bản chất EXISTS chỉ quan tâm "có/không", nên:
+- Không cần đọc toàn bộ tập kết quả con.
+- Không bị ảnh hưởng bởi NULL trong danh sách (khác với NOT IN).
+
+### Vì sao các phương án còn lại sai
+- **IN (SELECT ...)**: về kết quả thường đúng, nhưng IN phải so với **toàn bộ** tập giá trị con (thực tế planner có thể tối ưu thành semi-join, nhưng EXISTS an toàn và rõ ý định hơn). Câu "luôn nhanh nhất" là khẳng định quá chắc.
+- **JOIN + DISTINCT**: nếu một user có nhiều order, JOIN sẽ **nhân đôi** dòng user; phải DISTINCT để gộp lại → tốn thêm bước sắp xếp/gộp. Không tối ưu cho câu chỉ cần "có/không".
+- **NOT IN**: đây là câu tìm user **chưa** có order, ngược yêu cầu; hơn nữa NOT IN rất dễ sai khi có NULL (xem câu qz-sql-060).
+
+### Ví dụ
+~~~sql
+SELECT u.id, u.name
+FROM users u
+WHERE EXISTS (
+  SELECT 1 FROM orders o WHERE o.user_id = u.id
+);
+~~~
+
+> Senior tip: EXISTS vs IN vs JOIN thường cho cùng kết quả và planner hiện đại tự tối ưu; nhưng EXISTS thắng rõ khi chỉ cần kiểm tra tồn tại và khi dữ liệu con có thể chứa NULL. Khi cần lấy thêm cột từ bảng con thì mới JOIN.`
+  },
+
+  {
+    id: 'qz-sql-060',
+    topic: 'sql',
+    q: `Bảng {{orders}} có cột {{user_id}} (nullable), trong đó có vài dòng {{user_id}} là NULL. Cần tìm user CHƯA có order, ai đó viết:
+~~~sql
+SELECT id FROM users
+WHERE id NOT IN (SELECT user_id FROM orders);
+~~~
+Điều gì xảy ra?`,
+    options: [
+      'Trả về tập rỗng — vì có NULL trong danh sách khiến mọi phép NOT IN thành UNKNOWN',
+      'Trả về đúng các user chưa có order',
+      'Báo lỗi cú pháp vì trộn NULL với NOT IN',
+      'Trả về tất cả user có order'
+    ],
+    answer: 0,
+    explain: `**Đáp án đúng: trả về tập rỗng — vì có NULL trong danh sách khiến mọi phép NOT IN thành UNKNOWN.**
+
+### Vì sao đúng
+NOT IN được viết lại về mặt logic thành chuỗi AND các phép "khác":
+{{id NOT IN (a, b, NULL)}} nghĩa là {{id <> a AND id <> b AND id <> NULL}}.
+Mà {{id <> NULL}} luôn cho **UNKNOWN** (không phải true). Trong SQL, một điều kiện chỉ giữ dòng khi nó là **TRUE**; UNKNOWN bị loại. Vì có ít nhất một số hạng UNKNOWN trong chuỗi AND, **toàn bộ** biểu thức không bao giờ TRUE → không dòng nào được giữ → kết quả rỗng.
+
+Đây là bẫy NULL kinh điển: chỉ cần **một** NULL trong tập con là câu NOT IN "chết".
+
+### Vì sao các phương án còn lại sai
+- **Đúng các user chưa có order**: đó là điều người viết mong đợi, nhưng NULL phá hỏng.
+- **Báo lỗi cú pháp**: cú pháp hoàn toàn hợp lệ; đây là lỗi **ngữ nghĩa**, không phải cú pháp.
+- **Trả về user có order**: logic ngược, và vẫn rỗng vì lý do NULL.
+
+### Cách sửa đúng
+Dùng NOT EXISTS (an toàn với NULL):
+~~~sql
+SELECT id FROM users u
+WHERE NOT EXISTS (
+  SELECT 1 FROM orders o WHERE o.user_id = u.id
+);
+~~~
+Hoặc thêm bộ lọc NULL vào tập con: {{WHERE id NOT IN (SELECT user_id FROM orders WHERE user_id IS NOT NULL)}}.
+
+> Senior tip: quy tắc an toàn — "NOT IN" + cột nullable = báo động đỏ. Mặc định dùng NOT EXISTS cho mọi bài toán "chưa có / không thuộc về".`
+  },
+
+  {
+    id: 'qz-sql-061',
+    topic: 'sql',
+    q: `Bảng {{events}} có index composite {{CREATE INDEX ON events (tenant_id, status, created_at)}}. Truy vấn:
+~~~sql
+SELECT * FROM events
+WHERE tenant_id = 7 AND status = 'PAID'
+ORDER BY created_at DESC;
+~~~
+Vì sao index này phù hợp?`,
+    options: [
+      'Vì created_at đứng đầu index nên lọc theo ngày rất nhanh',
+      'Vì index luôn dùng đủ mọi cột bất kể thứ tự khai báo',
+      'Truy vấn không dùng được index vì thiếu điều kiện trên created_at',
+      'Hai cột so sánh bằng (tenant_id, status) đứng đầu để định vị nhóm, rồi created_at đã sắp sẵn theo DESC nên tránh được bước Sort'
+    ],
+    answer: 3,
+    explain: `**Đáp án đúng: hai cột equality đứng đầu định vị nhóm, created_at sắp sẵn theo DESC nên tránh Sort.**
+
+### Vì sao đúng
+Index composite hoạt động theo **leftmost prefix** (tiền tố trái): các cột đầu phải khớp điều kiện "bằng" trước, rồi mới đến cột dùng cho khoảng/sắp xếp. Ở đây:
+1. {{tenant_id = 7}} (bằng) → cột 1.
+2. {{status = 'PAID'}} (bằng) → cột 2.
+3. {{created_at}} (ORDER BY DESC) → cột 3.
+
+PostgreSQL nhảy thẳng tới đúng nhóm (tenant_id=7, status='PAID'), và trong nhóm đó các entry đã được sắp theo created_at. Vì index lưu thứ tự này, planner đọc theo chiều DESC (Index Scan Backward) và **không cần Sort** — rất quan trọng khi có LIMIT hoặc khi muốn tránh tràn work_mem.
+
+### Vì sao các phương án còn lại sai
+- **created_at đứng đầu**: sai thứ tự — created_at là cột 3, không đứng đầu.
+- **Index luôn dùng đủ mọi cột bất kể thứ tự**: sai; thứ tự cột quyết định (leftmost prefix). Đảo (created_at, status, tenant_id) sẽ kém cho truy vấn này.
+- **Không dùng được index vì thiếu created_at**: sai; điều kiện bằng trên hai cột đầu vẫn dùng được index, và ORDER BY created_at còn được index "cho không" thứ tự.
+
+### Ví dụ minh hoạ
+~~~text
+Index (tenant_id, status, created_at) sắp như:
+(7,'PAID', 2024-01-01), (7,'PAID', 2024-02-01), (7,'PENDING', ...), (8,'PAID', ...)
+Truy vấn nhảy tới (7,'PAID') rồi đọc giảm dần created_at -> không Sort.
+~~~
+
+> Senior tip: nguyên tắc thiết kế index cho "lọc + sắp xếp": cột equality trước, cột ORDER BY sau cùng, và chiều index khớp chiều ORDER BY. Kiểm chứng bằng EXPLAIN (ANALYZE, BUFFERS): không thấy node Sort kèm Limit nhỏ là đạt.`
+  },
+
+  {
+    id: 'qz-sql-062',
+    topic: 'sql',
+    multi: true,
+    q: `Đọc kết quả EXPLAIN ANALYZE trên PostgreSQL, phát biểu nào ĐÚNG? (Chọn 2)`,
+    options: [
+      'Seq Scan luôn chậm hơn Index Scan trong mọi trường hợp',
+      'Bitmap Heap Scan đọc các trang dữ liệu theo thứ tự vật lý sau khi Bitmap Index Scan đã thu thập bit, hiệu quả khi phải lấy nhiều dòng rải rác',
+      'Planner chọn Seq Scan khi bảng nhỏ hoặc truy vấn phải trả về phần lớn bảng, vì đọc tuần tự rẻ hơn I/O ngẫu nhiên',
+      'Index Scan không bao giờ phải đọc bảng (heap), chỉ đọc trong index là đủ'
+    ],
+    answer: [1, 2],
+    explain: `**Đáp án đúng: 1 và 2.**
+
+### Vì sao 1 đúng
+Bitmap Index Scan quét index, bật bit cho các dòng khớp, rồi Bitmap Heap Scan đọc các trang dữ liệu (heap) **theo thứ tự trang vật lý** (đã sắp bit theo trang). Khi truy vấn khớp **nhiều dòng rải rác khắp bảng**, đọc tuần tự theo trang rẻ hơn nhiều so với Index Scan nhảy random từng dòng. Đây là "vùng ngọt" của Bitmap: độ chọn lọc trung bình (không quá ít, không quá nhiều).
+
+### Vì sao 2 đúng
+Đọc tuần tự (sequential) rẻ hơn đọc ngẫu nhiên (random) trên đĩa/SSD. Khi bảng nhỏ (nằm gọn vài trang) hoặc truy vấn trả về **phần lớn** bảng, dùng index rồi nhảy random từng dòng còn tốn hơn là quét tuần tự toàn bảng. Planner dựa vào statistics để ước lượng và chọn Seq Scan — đó là lựa chọn **đúng**, không phải "chậm".
+
+### Vì sao 0 và 3 sai
+- **0 (Seq Scan luôn chậm hơn)**: sai. Với bảng nhỏ/trả nhiều dòng, Seq Scan nhanh hơn Index Scan.
+- **3 (Index Scan không cần đọc heap)**: sai. Index chỉ chứa khóa + con trỏ; để lấy các cột không nằm trong index, phải đọc heap. (Chỉ "index-only scan" mới tránh đọc heap, và chỉ khi mọi cột cần đều có trong index + visibility map đủ.)
+
+### Ba loại quét hay gặp
+~~~text
+Seq Scan        : đọc toàn bộ bảng tuần tự.
+Index Scan      : nhảy index -> đọc từng dòng heap (random), tốt khi khớp ít dòng.
+Bitmap Heap Scan: gom bit từ index -> đọc heap theo trang, tốt khi khớp nhiều dòng rải rác.
+~~~
+
+> Senior tip: đừng "sửa" Seq Scan bằng mọi giá. Hãy nhìn rows ước lượng vs rows thực, và Buffers (shared read/hit). Seq Scan trên bảng nhỏ là bình thường; VẤN ĐỀ là khi Seq Scan xuất hiện trên bảng lớn mà đáng lẽ phải lọc bớt.`
+  },
+
+  {
+    id: 'qz-sql-063',
+    topic: 'sql',
+    q: `Trên PostgreSQL, câu upsert:
+~~~sql
+INSERT INTO users (email, name) VALUES ('a@x.com', 'Lan')
+ON CONFLICT (email) DO UPDATE SET name = EXCLUDED.name;
+~~~
+{{EXCLUDED}} ở đây là gì?`,
+    options: [
+      'Bảng đích users sau khi đã cập nhật xong',
+      'Dòng cũ bị thay thế do xung đột email',
+      'Dòng "được đề xuất chèn" (proposed row) — chính là các giá trị mới muốn insert, dùng để lấy name mới gán vào',
+      'Một CTE tạm do PostgreSQL tự tạo'
+    ],
+    answer: 2,
+    explain: `**Đáp án đúng: EXCLUDED là dòng được đề xuất chèn (proposed row) — các giá trị mới muốn insert.**
+
+### Vì sao đúng
+Khi INSERT vi phạm UNIQUE (email đã tồn tại), thay vì báo lỗi, {{ON CONFLICT (email) DO UPDATE}} chuyển sang cập nhật. {{EXCLUDED}} là "bảng đặc biệt" chứa **dòng mà lệnh INSERT định thêm** (phiên bản ứng viên, chưa được chèn). Vì dòng đó chưa nằm trong bảng, PostgreSQL đặt nó vào EXCLUDED để bạn tham chiếu. {{SET name = EXCLUDED.name}} nghĩa là: lấy name từ giá trị mới (đề xuất) gán vào cột name của dòng đã có.
+
+### Vì sao các phương án còn lại sai
+- **Bảng đích sau cập nhật**: EXCLUDED là dòng đề xuất, không phải bảng đích; bảng đích là {{users}} (viết trực tiếp, không có tiền tố).
+- **Dòng cũ bị thay thế**: dòng cũ chính là hàng đang có trong users; nó không nằm trong EXCLUDED. Muốn giữ giá trị cũ thì dùng {{name = users.name}} (không đổi).
+- **CTE tạm**: EXCLUDED là pseudo-table dựng sẵn của upsert, không phải CTE do người dùng viết.
+
+### Ví dụ
+~~~sql
+-- Lần 1: chèn Lan. Lần 2: email trùng -> cập nhật name = 'Lan Mới' (từ EXCLUDED)
+INSERT INTO users (email, name) VALUES ('a@x.com', 'Lan Mới')
+ON CONFLICT (email) DO UPDATE SET name = EXCLUDED.name;
+-- Muốn KHÔNG làm gì khi trùng: DO NOTHING
+~~~
+
+> Senior tip: ON CONFLICT cần một "conflict target" (UNIQUE/EXCLUDE constraint) — ở đây là (email). Nếu không khai báo target mà chỉ DO NOTHING thì áp dụng cho mọi xung đột; còn DO UPDATE bắt buộc có target. Đây là công cụ chuẩn để "insert-hoặc-update" an toàn, tránh race condition của check-then-insert.`
+  },
+
+  {
+    id: 'qz-sql-064',
+    topic: 'sql',
+    q: `Bảng {{users}} có 100 dòng, trong đó 20 user CHƯA có order; 80 user còn lại mỗi người đúng 1 order. Chạy:
+~~~sql
+SELECT COUNT(*), COUNT(o.id)
+FROM users u
+LEFT JOIN orders o ON o.user_id = u.id;
+~~~
+Kết quả là gì?`,
+    options: [
+      '100, 100',
+      '100, 80',
+      '80, 80',
+      '120, 100'
+    ],
+    answer: 1,
+    explain: `**Đáp án đúng: 100, 80.**
+
+### Vì sao đúng
+LEFT JOIN giữ **mọi** dòng bảng trái (users), kể cả user không có order. Với 20 user chưa có order, phần bảng phải (orders) điền NULL vào mọi cột, nhưng **dòng user vẫn tồn tại**. Vậy tổng số dòng kết quả = 100 (80 user có order + 20 user "NULL order").
+- {{COUNT(*)}} đếm mọi dòng, kể cả dòng có o.id = NULL → 100.
+- {{COUNT(o.id)}} bỏ qua NULL → chỉ đếm 80 dòng thực sự có order.
+
+### Vì sao các phương án còn lại sai
+- **100, 100**: nhầm COUNT(o.id) cũng đếm dòng NULL; thực tế COUNT(cột) bỏ qua NULL.
+- **80, 80**: nhầm LEFT JOIN thành INNER JOIN (bỏ user không order); LEFT JOIN không bỏ dòng trái.
+- **120, 100**: không có cơ chế nào tạo thêm 20 dòng; mỗi user nhiều nhất 1 order ở đề.
+
+### Quy tắc nhớ
+~~~text
+COUNT(*)        = số dòng (kể cả NULL).
+COUNT(cột)      = số dòng có cột KHÁC NULL.
+SUM(cột)        = bỏ qua NULL; nếu mọi giá trị NULL -> NULL (không phải 0).
+~~~
+
+> Senior tip: khi đếm "số user có order", dùng COUNT(o.id) trên LEFT JOIN; khi đếm "tổng số user", dùng COUNT(*) hoặc COUNT(u.id). Phân biệt rõ hai con số này tránh báo cáo sai tỉ lệ.`
+  },
+
+  {
+    id: 'qz-sql-065',
+    topic: 'sql',
+    multi: true,
+    q: `So sánh GROUP BY và window function, phát biểu nào ĐÚNG? (Chọn 2)`,
+    options: [
+      'GROUP BY gộp nhiều dòng thành một dòng mỗi nhóm; window function giữ nguyên số dòng và chỉ BỔ SUNG cột tính toán',
+      'Window function bắt buộc phải đi kèm GROUP BY mới chạy được',
+      'Trong cùng một SELECT có thể tính nhiều mức tổng khác nhau: SUM(x) OVER () và SUM(x) OVER (PARTITION BY y)',
+      'Window function không dùng được ORDER BY bên trong OVER()'
+    ],
+    answer: [0, 2],
+    explain: `**Đáp án đúng: 0 và 2.**
+
+### Vì sao 0 đúng
+Đây là khác biệt nền tảng:
+- {{GROUP BY y}} làm **mất** các dòng chi tiết, mỗi nhóm còn 1 dòng tổng hợp. Bạn không còn thấy từng đơn hàng, chỉ thấy tổng theo nhóm.
+- {{SUM(x) OVER (PARTITION BY y)}} **giữ** toàn bộ dòng, thêm một cột tổng theo nhóm bên cạnh. Vừa thấy chi tiết vừa thấy tổng — rất tiện cho báo cáo "tỉ lệ từng dòng trên tổng nhóm".
+
+### Vì sao 2 đúng
+Mỗi cửa sổ (OVER) độc lập, nên một câu SELECT có thể có nhiều mức tổng:
+- {{SUM(x) OVER ()}}: tổng toàn bộ bảng (không partition).
+- {{SUM(x) OVER (PARTITION BY y)}}: tổng theo từng y.
+- {{SUM(x) OVER (ORDER BY t ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW)}}: tổng tích lũy theo thời gian.
+Dùng chung một câu, cùng mức chi tiết dòng.
+
+### Vì sao 1 và 3 sai
+- **1 (window bắt buộc GROUP BY)**: sai. Window function độc lập, không cần GROUP BY; chạy trực tiếp trên bảng.
+- **3 (không dùng ORDER BY trong OVER)**: sai. ORDER BY trong OVER là hợp lệ và cần cho xếp hạng/tổng tích lũy.
+
+### Ví dụ
+~~~sql
+SELECT dept, name, salary,
+       SUM(salary) OVER (PARTITION BY dept) AS dept_total,
+       SUM(salary) OVER ()                  AS company_total,
+       name || ' = ' || ROUND(100.0*salary/SUM(salary) OVER (PARTITION BY dept),1) || '%' AS pct
+FROM emp;
+-- Mỗi dòng giữ nguyên, thêm tổng nhóm, tổng công ty, và % trong nhóm.
+~~~
+
+> Senior tip: "tính % của từng dòng trên tổng nhóm" mà không làm xẹp bảng là use-case số 1 của window function. Nếu thấy mình định làm GROUP BY rồi JOIN ngược lại bảng gốc để lấy chi tiết, hãy nghĩ tới window function — gọn và nhanh hơn.`
+  },
+
+  {
+    id: 'qz-sql-066',
+    topic: 'sql',
+    q: `Mỗi user có thể có NHIỀU order. Bạn chỉ cần danh sách user (id, name), không cần thông tin order. Nếu viết {{FROM users u JOIN orders o ON o.user_id = u.id}}, điều gì xảy ra và tránh thế nào?`,
+    options: [
+      'JOIN làm nhân đôi dòng user (mỗi order một bản); nên dùng EXISTS thay vì JOIN khi chỉ cần kiểm tra tồn tại',
+      'JOIN luôn trả đúng một dòng mỗi user, không cần lo',
+      'Dùng LEFT JOIN rồi LIMIT 1 là cách chuẩn',
+      'Thêm GROUP BY nhưng vẫn bị nhân đôi dòng'
+    ],
+    answer: 0,
+    explain: `**Đáp án đúng: JOIN làm nhân đôi dòng user; dùng EXISTS khi chỉ cần kiểm tra tồn tại.**
+
+### Vì sao đúng
+Một user có 3 order thì JOIN tạo 3 dòng giống hệt phần user (chỉ khác cột order). Kết quả bị **nhân bản** theo số order — sai số lượng và tốn I/O vô ích. Vì bạn không cần cột nào của orders, cách gọn và đúng là EXISTS: nó chỉ trả true/false cho mỗi user, không tạo dòng thừa, và dừng sớm khi thấy order đầu tiên.
+~~~sql
+SELECT u.id, u.name
+FROM users u
+WHERE EXISTS (SELECT 1 FROM orders o WHERE o.user_id = u.id);
+~~~
+
+### Vì sao các phương án còn lại sai
+- **JOIN luôn 1 dòng/user**: sai; số dòng = tổng số order của các user khớp.
+- **LEFT JOIN + LIMIT 1**: LIMIT 1 cắt **toàn cục** (chỉ 1 user), không phải "1 order mỗi user"; sai hẳn mục đích.
+- **GROUP BY vẫn nhân đôi**: GROUP BY gộp được, nhưng phải gộp theo u.id, u.name và viết lằng nhằng hơn EXISTS; khẳng định "vẫn nhân đôi" là sai (nó gộp lại), nhưng đây không phải lựa chọn tốt nhất.
+
+### Khi nào JOIN mới đúng
+Khi bạn **thực sự cần** cột từ orders (amount, status...). Khi đó chấp nhận nhân dòng, hoặc dùng window/aggregate có chủ đích.
+
+> Senior tip: "chỉ kiểm tra tồn tại" → EXISTS; "cần dữ liệu bảng con" → JOIN; "cần tổng hợp bảng con" → EXISTS/IN với aggregate hoặc CTE. Chọn đúng công cụ tránh cả nhân dòng lẫn quét thừa.`
+  },
+
 );
