@@ -5789,6 +5789,220 @@ retrieve rộng (top-50) → rerank → top-5 → LLM.
 - Xóa trùng: dedup riêng.
 - Tăng temperature: không liên quan.
 
-> Senior tip: Rerank là bước "đắt nhưng đáng": tăng precision rõ rệt, đặc biệt với câu hỏi phức tạp; đo latency và đặt timeout để không block request.` }
+> Senior tip: Rerank là bước "đắt nhưng đáng": tăng precision rõ rệt, đặc biệt với câu hỏi phức tạp; đo latency và đặt timeout để không block request.` },
+{
+  id: 'qz-devops-134', topic: 'devops',
+  q: 'Dockerfile Spring Boot dùng {{COPY target/*.jar app.jar}} và image nặng. Cách tận dụng layered jar của Spring Boot để cache dependency tốt nhất là gì?',
+  options: [
+    'Dùng {{mvn spring-boot:build-image}} rồi push luôn',
+    'Chạy {{java -Djarmode=layertools -jar app.jar extract}} để tách jar thành các thư mục layer, rồi COPY từng layer theo thứ tự ít thay đổi đến nhiều thay đổi',
+    'Giải nén jar bằng {{unzip}} và COPY cả thư mục classes',
+    'Tắt cache Docker bằng {{--no-cache}} để image luôn sạch'
+  ],
+  answer: 1,
+  explain: `**Tóm tắt:** Spring Boot jar có thể tách thành các **layer** (dependencies, spring-boot-loader, snapshot-dependencies, application). COPY layer ít thay đổi trước để Docker cache được tái sử dụng giữa các build.
 
+~~~dockerfile
+FROM eclipse-temurin:21-jre AS extract
+COPY target/app.jar app.jar
+RUN java -Djarmode=layertools -jar app.jar extract
+
+FROM eclipse-temurin:21-jre
+COPY --from=extract dependencies/ ./
+COPY --from=extract spring-boot-loader/ ./
+COPY --from=extract snapshot-dependencies/ ./
+COPY --from=extract application/ ./
+ENTRYPOINT ["java", "org.springframework.boot.loader.launch.JarLauncher"]
+~~~
+
+### Vì sao các phương án còn lại sai
+- **build-image**: Cloud Native Buildpacks cũng tối ưu layer, nhưng câu hỏi về Dockerfile multi-stage và layered jar; build-image là cách khác, không phải tận dụng layertools.
+- **unzip rồi COPY classes**: mất metadata layer, cache kém hơn và dễ sai.
+- **--no-cache**: tắt cache làm build chậm hơn, không liên quan tối ưu.
+
+> Senior tip: thứ tự COPY layer quan trọng: dependencies ít thay đổi nhất đặt trước, application (code) đặt cuối. Một thay đổi code nhỏ sẽ không làm invalidate layer dependency.`
+},
+{
+  id: 'qz-devops-135', topic: 'devops',
+  q: 'Kubernetes Deployment có liveness probe với {{initialDelaySeconds: 10}}, {{periodSeconds: 5}}, {{failureThreshold: 3}}. App khởi động mất 40 giây. Điều gì xảy ra và cách sửa đúng?',
+  options: [
+    'Pod bị restart sau 25 giây vì liveness fail 3 lần',
+    'Liveness không chạy trong 10 giây đầu, sau đó fail liên tục và Pod bị restart; nên dùng startupProbe cho giai đoạn khởi động chậm',
+    'Kubelet bỏ qua liveness vì readiness chưa pass',
+    'Container bị OOMKilled do probe tốn CPU'
+  ],
+  answer: 1,
+  explain: `**Tóm tắt:** liveness bắt đầu sau 10 giây và fail liên tục vì app chưa sẵn sàng; sau 3 lần fail (probe tại 10s, 15s, 20s → restart khoảng 20 giây) kubelet restart container → vòng lặp khởi động. Giải pháp chuẩn là **startupProbe**: cho phép thời gian khởi động dài, và liveness/readiness chỉ bắt đầu sau khi startupProbe pass.
+
+~~~yaml
+startupProbe:
+  httpGet: { path: /actuator/health/liveness, port: 8081 }
+  failureThreshold: 30
+  periodSeconds: 10
+livenessProbe:
+  httpGet: { path: /actuator/health/liveness, port: 8081 }
+  periodSeconds: 10
+  failureThreshold: 3
+~~~
+
+### Vì sao các phương án còn lại sai
+- **Restart sau 25 giây**: con số gần đúng nhưng kết luận thiếu: vấn đề là liveness không nên đánh giá trong lúc khởi động.
+- **Kubelet bỏ qua liveness vì readiness**: readiness không gating liveness.
+- **OOMKilled**: probe HTTP không gây OOM.
+
+> Senior tip: tách rõ 3 probe: startup (chỉ lúc khởi động), liveness (process có hỏng không), readiness (có nhận traffic không). Đừng dùng một probe cho cả ba.`
+},
+{
+  id: 'qz-devops-136', topic: 'devops', multi: true,
+  q: 'Hai chiến lược deploy nào sau đây hỗ trợ rollback tức thì (zero-downtime rollback) và tách biệt rõ ràng giữa "deploy" (đưa code lên) và "release" (đưa traffic tới)? (Chọn 2)',
+  options: [
+    'Rolling update',
+    'Blue-green deployment',
+    'Canary deployment',
+    'Recreate (xoá Pod cũ rồi tạo Pod mới)'
+  ],
+  answer: [1, 2],
+  explain: `**Tóm tắt:** blue-green và canary tách "deploy" khỏi "release": code được triển khai lên môi trường/phiên bản mới nhưng traffic chưa chuyển; rollback chỉ là chuyển traffic về, không cần redeploy.
+
+### So sánh
+- **Rolling update**: deploy và release xảy ra đồng thời từng Pod; rollback phải rollout lại image cũ (chậm hơn).
+- **Blue-green**: hai môi trường song song, chuyển traffic tức thì, rollback chỉ cần chuyển lại.
+- **Canary**: chuyển một phần traffic, quan sát metric, rồi tăng dần; rollback bằng cách chuyển traffic về 0%.
+- **Recreate**: downtime rõ ràng.
+
+### Vì sao các phương án còn lại sai
+- **Rolling update**: không tách deploy/release rõ ràng và rollback không tức thì.
+- **Recreate**: có downtime, không zero-downtime.
+
+> Senior tip: blue-green tốn gấp đôi tài nguyên; canary phức tạp hơn nhưng tiết kiệm tài nguyên và cho phép quan sát metric trước khi release toàn bộ.`
+},
+{
+  id: 'qz-devops-137', topic: 'devops',
+  q: 'Helm chart có {{values.yaml}} với {{replicaCount: 2}}. Khi cài vào prod, bạn muốn 5 replica mà không sửa file trong chart. Lệnh nào đúng?',
+  options: [
+    '{{helm install myapp ./chart --set replicaCount=5}}',
+    '{{helm install myapp ./chart -f values-prod.yaml}} với values-prod.yaml chứa replicaCount: 5',
+    'Cả hai đều đúng',
+    '{{helm install myapp ./chart --reuse-values}}'
+  ],
+  answer: 2,
+  explain: `**Tóm tắt:** Helm cho phép ghi đè values bằng {{--set}} (nhanh, cho một giá trị) hoặc {{--values}}/{{-f}} (file, cho nhiều giá trị). Cả hai đều hợp lệ; chọn theo tình huống.
+
+### Vì sao các phương án còn lại sai
+- **--reuse-values**: dùng khi upgrade để giữ values đã set trước, không phải lúc install đầu tiên.
+- **Chỉ một trong hai**: sai, cả hai đều đúng.
+
+> Senior tip: với nhiều môi trường, dùng file values riêng (values-dev.yaml, values-prod.yaml) và CI truyền {{--values}}; tránh {{--set}} rải rác trong script vì khó audit và dễ lệch.`
+},
+{
+  id: 'qz-devops-138', topic: 'devops',
+  q: 'GitHub Actions pipeline build Maven mất 8 phút vì tải dependency mỗi lần. Cách cache đúng và hiệu quả nhất là gì?',
+  options: [
+    '{{actions/cache@v4}} với key dựa trên hash của pom.xml, cache ~/.m2/repository',
+    '{{actions/setup-java@v4}} với {{cache: maven}}',
+    'Commit thư mục .m2 vào repo',
+    'Chạy {{mvn -o}} (offline) để không tải gì'
+  ],
+  answer: 1,
+  explain: `**Tóm tắt:** {{actions/setup-java}} tích hợp cache Maven/Gradle sẵn, tự quản lý key theo lockfile/pom và restore/save đúng. Dùng action chuyên dụng ít sai hơn tự viết cache.
+
+### Vì sao các phương án còn lại sai
+- **actions/cache tự viết**: đúng về nguyên lý nhưng dễ sai key (quên hash lockfile → cache cũ) và phải tự xử lý restore-keys.
+- **Commit .m2**: repo phình to, chứa binary, không nên.
+- **mvn -o**: chỉ chạy được nếu dependency đã có; không giải quyết tải lần đầu và dễ fail khi thêm dependency mới.
+
+> Senior tip: cache key phải bao gồm cả file lock (pom.xml hoặc gradle.lockfile); nếu chỉ hash pom thì thay đổi version dependency không invalidate cache và build dùng jar cũ.`
+},
+{
+  id: 'qz-devops-139', topic: 'devops',
+  q: 'Prometheus scrape một service. Metric {{http_requests_total}} tăng liên tục và không bao giờ giảm. Loại metric nào đây và khi nào dùng?',
+  options: [
+    'Gauge: dùng cho giá trị có thể tăng/giảm như memory usage',
+    'Counter: dùng cho giá trị chỉ tăng (hoặc reset về 0 khi restart), phù hợp số request, số lỗi',
+    'Histogram: dùng để đo phân bố thời gian phản hồi',
+    'Summary: dùng để tính quantile phía client'
+  ],
+  answer: 1,
+  explain: `**Tóm tắt:** **Counter** chỉ tăng (hoặc reset 0 khi process restart). Dùng cho số sự kiện tích luỹ: request, lỗi, byte gửi. Rate/số liệu mỗi giây lấy bằng {{rate()}} hoặc {{increase()}}.
+
+### Vì sao các phương án còn lại sai
+- **Gauge**: giá trị có thể lên/xuống (memory, số connection đang mở, queue depth).
+- **Histogram**: đo phân bố (latency, kích thước request) với bucket; dùng {{histogram_quantile()}}.
+- **Summary**: cũng đo phân bố nhưng tính quantile ở client, khó aggregate.
+
+> Senior tip: tên metric nên kết thúc bằng {{_total}} cho counter; Prometheus convention. Đừng dùng counter cho giá trị có thể giảm — sẽ bị rate() âm hoặc sai.`
+},
+{
+  id: 'qz-devops-140', topic: 'devops',
+  q: 'Service Java expose metric {{jvm_memory_used_bytes}} với label area="heap". Muốn biết % heap đang dùng so với max, biểu thức PromQL nào đúng?',
+  options: [
+    '{{jvm_memory_used_bytes{area="heap"} / jvm_memory_max_bytes{area="heap"}}}',
+    '{{jvm_memory_used_bytes{area="heap"} * 100}}',
+    '{{rate(jvm_memory_used_bytes{area="heap"}[5m])}}',
+    '{{increase(jvm_memory_used_bytes{area="heap"}[5m])}}'
+  ],
+  answer: 0,
+  explain: `**Tóm tắt:** chia used cho max cho ra tỉ lệ. Dùng {{* 100}} nếu muốn phần trăm. rate/increase chỉ áp dụng cho counter, không dùng cho gauge.
+
+### Vì sao các phương án còn lại sai
+- **Nhân 100 không chia**: không có ý nghĩa.
+- **rate/increase**: heap là gauge, rate sẽ cho kết quả sai hoặc 0.
+
+> Senior tip: alert nên dựa trên tỉ lệ heap/max (gauge) kết hợp trend; nếu chỉ alert khi used > ngưỡng tuyệt đối thì dễ bỏ sót khi max thay đổi (đổi limit).`
+},
+{
+  id: 'qz-devops-141', topic: 'devops',
+  q: 'Histogram metric {{http_request_duration_seconds_bucket}} có các bucket. Để tính p99 latency trong 5 phút, biểu thức nào đúng?',
+  options: [
+    '{{histogram_quantile(0.99, rate(http_request_duration_seconds_bucket[5m]))}}',
+    '{{quantile(0.99, http_request_duration_seconds_bucket)}}',
+    '{{avg(http_request_duration_seconds_bucket)}}',
+    '{{max(http_request_duration_seconds_bucket)}}'
+  ],
+  answer: 0,
+  explain: `**Tóm tắt:** {{histogram_quantile(φ, rate(..._bucket[range]))}} là cách chuẩn tính quantile từ histogram. rate() trên bucket cho tốc độ tăng từng bucket, sau đó nội suy.
+
+### Vì sao các phương án còn lại sai
+- **quantile()**: hàm này cho gauge/summary, không cho histogram bucket.
+- **avg/max trên bucket**: bucket là số luỹ kế, avg/max không cho latency.
+
+> Senior tip: chọn bucket boundaries phù hợp SLO (ví dụ 0.05,0.1,0.25,0.5,1,2.5,5,10s). Bucket quá thô sẽ làm quantile không chính xác; bucket quá nhiều tăng cardinality.`
+},
+{
+  id: 'qz-devops-142', topic: 'devops', multi: true,
+  q: 'Hai tình huống nào sau đây là ví dụ tốt để dùng Gauge thay vì Counter? (Chọn 2)',
+  options: [
+    'Số request đang xử lý (in-flight requests)',
+    'Tổng số request đã phục vụ',
+    'Số connection đang mở trong connection pool',
+    'Số byte đã gửi đi'
+  ],
+  answer: [0, 2],
+  explain: `**Tóm tắt:** Gauge cho giá trị có thể tăng và giảm: in-flight requests, số connection đang mở, queue depth, memory usage. Counter cho tổng luỹ kế.
+
+### Vì sao các phương án còn lại sai
+- **Tổng số request đã phục vụ**: counter.
+- **Số byte đã gửi**: counter.
+
+> Senior tip: Gauge có thể bị "mất" khi scrape miss; nếu cần chính xác tuyệt đối cho số liệu tài chính, cân nhắc counter + gauge kết hợp hoặc push gateway.`
+},
+{
+  id: 'qz-devops-143', topic: 'devops',
+  q: 'Prometheus scrape interval là 15 giây. Một job chạy 2 giây rồi kết thúc giữa hai lần scrape. Điều gì xảy ra với metric của job đó?',
+  options: [
+    'Metric được lưu với timestamp của job',
+    'Job đó không được scrape nên metric của nó bị mất; cần dùng Pushgateway cho job ngắn',
+    'Prometheus tự động tăng scrape interval để bắt được',
+    'Metric được lưu với giá trị 0'
+  ],
+  answer: 1,
+  explain: `**Tóm tắt:** Prometheus là pull-based: chỉ lưu những gì nó scrape được tại thời điểm scrape. Job ngắn hơn scrape interval có thể bị bỏ lỡ hoàn toàn. Dùng Pushgateway cho batch/short-lived jobs.
+
+### Vì sao các phương án còn lại sai
+- **Timestamp của job**: Prometheus dùng timestamp scrape, không phải timestamp job.
+- **Tự tăng interval**: không.
+- **Giá trị 0**: không, nếu không scrape thì không có sample.
+
+> Senior tip: Pushgateway là giải pháp cho job ngắn nhưng phải cẩn thận: metric cũ không tự hết hạn, cần xoá sau khi job xong (push với grouping key và delete). Với Kubernetes, dùng CronJob + Prometheus scraping endpoint hoặc textfile collector của node_exporter.`
+}
 );
