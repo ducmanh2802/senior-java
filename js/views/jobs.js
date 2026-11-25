@@ -90,6 +90,28 @@
       'jobs.followedFrom': 'Lưu từ bản tin',
       'jobs.followedManual': 'Tự nhập',
       'jobs.notesCol': 'Ghi chú',
+      'jobs.prepPageTitle': 'Ôn cho việc này',
+      'jobs.prepNotFound': 'Không tìm thấy việc đã lưu.',
+      'jobs.prepBack': '← Về danh sách việc',
+      'jobs.prepWeight': 'quan trọng {n}/3',
+      'jobs.prepDay': 'Ngày {n}',
+      'jobs.prepMockDay': 'Phỏng vấn thử',
+      'jobs.prepDoneDay': 'Đã xong',
+      'jobs.prepQuiz': 'Quiz',
+      'jobs.prepFlash': 'Flashcard',
+      'jobs.prepNoQuestions': 'Chưa có câu hỏi cho phần này.',
+      'jobs.prepToday': 'Hôm nay',
+      'jobs.prepProgress': 'Tiến độ ôn',
+      'jobs.prepProgressBadge': '{known}/{total} câu đã thuộc',
+      'jobs.prepTopics': 'Chủ đề trọng tâm',
+      'jobs.prepPlan': 'Kế hoạch ôn theo ngày',
+      'jobs.prepDays': 'Số ngày',
+      'jobs.prepKnowledge': 'Câu hỏi cần ôn',
+      'jobs.prepShowAnswer': 'Xem đáp án',
+      'jobs.prepHideAnswer': 'Ẩn đáp án',
+      'jobs.prepLikely': 'Câu hỏi nhiều khả năng bị hỏi',
+      'jobs.prepTips2': 'Chuẩn bị',
+      'jobs.prepSuggestAnalyse': '🤖 Phân tích JD để có kế hoạch sát hơn',
     },
     en: {
       'jobs.viewTitle': 'Jobs',
@@ -178,6 +200,28 @@
       'jobs.followedFrom': 'Saved from digest',
       'jobs.followedManual': 'Added manually',
       'jobs.notesCol': 'Notes',
+      'jobs.prepPageTitle': 'Revise for this job',
+      'jobs.prepNotFound': 'Saved job not found.',
+      'jobs.prepBack': '← Back to jobs',
+      'jobs.prepWeight': 'importance {n}/3',
+      'jobs.prepDay': 'Day {n}',
+      'jobs.prepMockDay': 'Mock interview',
+      'jobs.prepDoneDay': 'Done',
+      'jobs.prepQuiz': 'Quiz',
+      'jobs.prepFlash': 'Flashcards',
+      'jobs.prepNoQuestions': 'No questions for this part yet.',
+      'jobs.prepToday': 'Today',
+      'jobs.prepProgress': 'Revision progress',
+      'jobs.prepProgressBadge': '{known}/{total} questions known',
+      'jobs.prepTopics': 'Focus topics',
+      'jobs.prepPlan': 'Day-by-day revision plan',
+      'jobs.prepDays': 'Days',
+      'jobs.prepKnowledge': 'Questions to revise',
+      'jobs.prepShowAnswer': 'Show answer',
+      'jobs.prepHideAnswer': 'Hide answer',
+      'jobs.prepLikely': 'Likely interview questions',
+      'jobs.prepTips2': 'Preparation',
+      'jobs.prepSuggestAnalyse': '🤖 Analyse the JD for a sharper plan',
     },
   });
 
@@ -722,6 +766,69 @@
     if (job) App.navigate('#/jobs/prep/' + job.id);
   }
 
+  /** Topic trọng tâm của việc: ưu tiên must_have của AI (kèm weight), nếu chưa phân tích thì lấy topics từ bản tin. */
+  function planTopics(j) {
+    const seen = {}, out = [];
+    const add = (t, w) => {
+      if (!t || seen[t]) return;
+      seen[t] = 1;
+      out.push({ id: t, weight: Math.max(1, Math.min(3, Number(w) || 1)) });
+    };
+    const a = j.analysis;
+    if (a && Array.isArray(a.must_have)) a.must_have.forEach(m => add(m && m.topic, m && m.weight));
+    if (!out.length) arr(j.topics).forEach(t => add(t, 1));
+    return out;
+  }
+
+  /** Rút gọn đáp án thành đoạn tóm tắt ngắn (ưu tiên mục **Tóm tắt:**). */
+  function summaryOf(q) {
+    const a = String((q && q.a) || '');
+    const m = /\*\*Tóm tắt:\*\*\s*([\s\S]*?)(?:\n###|\n\n|$)/.exec(a);
+    let text = m ? m[1] : a.replace(/###[^\n]*/g, '').replace(/~~~[\s\S]*?~~~/g, '');
+    text = text.replace(/\{\{([\s\S]*?)\}\}/g, '$1').replace(/\*\*([^*]+)\*\*/g, '$1').replace(/\s+/g, ' ').trim();
+    if (text.length > 240) text = text.slice(0, 240) + '…';
+    return text || (q && q.q) || '';
+  }
+
+  /** Kế hoạch ôn chia theo ngày + tiến độ (số câu đã thuộc trên tổng số câu của các topic trọng tâm). */
+  function buildPlan(j) {
+    const topics = planTopics(j);
+    const level = (j.analysis && j.analysis.level) || j.level || 'senior';
+    const days = Math.max(3, Math.min(30, Number(j.prepDays) || 14));
+    const byTopic = {};
+    topics.forEach(t => {
+      let qs = [];
+      try { qs = App.filterQuestions({ topic: t.id }) || []; } catch (e) { qs = []; }
+      byTopic[t.id] = qs;
+    });
+    // Chia topic đều cho các ngày học (ngày cuối để dành phỏng vấn thử).
+    const studyDays = Math.max(1, days - 1);
+    const plan = [];
+    for (let i = 0; i < studyDays; i++) {
+      const dayTopics = topics.filter((t, ti) => ti % studyDays === i);
+      const questions = [];
+      dayTopics.forEach(t => (byTopic[t.id] || []).slice(0, 4).forEach(q => questions.push({ id: q.id, q: q.q })));
+      plan.push({ day: i + 1, topics: dayTopics.map(t => ({ id: t.id })), questions: questions });
+    }
+    plan.push({ day: days, mock: true, topics: [], questions: [] });
+    return { days: days, level: level, topics: topics, plan: plan };
+  }
+
+  /** Tiến độ ôn: đếm câu đã thuộc / tổng số câu trong các topic trọng tâm. */
+  function prepProgress(j) {
+    const topics = planTopics(j);
+    if (!topics.length) return { known: 0, total: 0 };
+    const seen = {}, qs = [];
+    topics.forEach(t => {
+      let list = [];
+      try { list = App.filterQuestions({ topic: t.id }) || []; } catch (e) { list = []; }
+      list.forEach(q => { if (!seen[q.id]) { seen[q.id] = 1; qs.push(q); } });
+    });
+    let known = 0;
+    qs.forEach(q => { if (App.store.getStatus(q.id) === 'known') known++; });
+    return { known: known, total: qs.length };
+  }
+
   function renderPrep(jobId) {
     const j = findJob(jobId);
     if (!j) {
@@ -739,7 +846,6 @@
       return '<a class="chip" href="#/bank/' + esc(t.id) + '">' + esc(tp.icon || '') + ' ' + esc(tp.name || t.id) +
         ' <span class="badge">' + esc(tr('prepWeight', { n: t.weight })) + '</span></a>';
     }).join('');
-    const todayIdx = 1; // day 1 highlighted as today in plan view
     const doneMap = j.prepDone || {};
     const planHtml = info.plan.map((d, idx) => {
       const done = !!doneMap[idx];
