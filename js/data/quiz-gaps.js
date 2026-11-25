@@ -3088,6 +3088,864 @@ Format: minute hour day-of-month month day-of-week. "0 2 * * 1-5" = phút 0, gi�
 - **SSR portal**: không phải mục đích.
 
 > Senior tip: modal/toast/notification dùng Teleport to="body"; kết hợp Transition để animation; chú ý accessibility (focus trap).`
+},
+{
+  id: 'qz-frontend-043',
+  topic: 'frontend',
+  q: `Trong Vue 3 Composition API, một {{reactive}} object:
+~~~js
+const state = reactive({ count: 0, nested: { value: 1 } })
+~~~
+Code sau destructuring:
+~~~js
+const { count, nested } = state
+~~~
+Khi gán {{count++}} hay {{nested.value++}}, điều nào xảy ra?`,
+  options: [
+    'Cả hai đều cập nhật reactive và template re-render.',
+    '{{count++}} mất reactivity (template không cập nhật), {{nested.value++}} vẫn reactive.',
+    '{{nested.value++}} mất reactivity, {{count++}} vẫn reactive.',
+    'Cả hai đều mất reactivity vì destructuring phá vỡ proxy.'
+  ],
+  answer: 1,
+  explain: `**Đáp án đúng: {{count++}} mất reactivity, {{nested.value++}} vẫn reactive.**
+
+### Cơ chế
+{{reactive}} trả về một **Proxy** bao bọc object gốc. Khi destructuring:
+~~~js
+const { count, nested } = state
+~~~
+JavaScript lấy **giá trị thô** của các property:
+- {{count}} là số nguyên (primitive) → giá trị thô là {{0}}, không còn liên kết với proxy. {{count++}} chỉ thay biến cục bộ.
+- {{nested}} là object → giá trị thô là **cùng một object** bên trong proxy (Proxy không clone object lồng). {{nested.value++}} sửa property trên object gốc bên trong proxy → reactive vẫn hoạt động.
+
+### Cách giữ reactivity khi destructuring
+Dùng {{toRefs(state)}}: trả về object các property đều là {{ref}}, giữ liên kết:
+~~~js
+const { count, nested } = toRefs(state)
+count.value++      // reactive
+nested.value.value++ // reactive (nested là ref trỏ đến object)
+~~~
+
+### Vì sao các phương án còn lại sai
+- **Cả hai reactive**: primitive destructured mất liên kết proxy.
+- **nested mất reactivity**: object lồng không bị copy, vẫn chung tham chiếu.
+- **Cả hai mất**: nested vẫn reactive.
+
+> Senior tip: destructuring reactive object là bẫy thường gặp. Luôn dùng {{toRefs}} khi cần tách property ra dùng riêng; hoặc dùng {{ref}} cho primitive, {{reactive}} cho object phức tạp và không destructuring.`
+},
+{
+  id: 'qz-frontend-044',
+  topic: 'frontend',
+  q: `Vue 3: ref array:
+~~~js
+const items = ref([{id: 1}, {id: 2}])
+~~~
+Hai cách push phần tử mới:
+~~~js
+// Cách A
+items.value.push({id: 3})
+// Cách B
+items.value = [...items.value, {id: 3}]
+~~~
+Đâu là nhận định đúng?`,
+  options: [
+    'Cả hai đều reactive và trigger re-render giống nhau.',
+    'Cách A reactive (proxy array bắt push), cách B cũng reactive (gán mảng mới), nhưng cách B tạo mảng mới tốn bộ nhớ hơn.',
+    'Cách A không reactive vì push không đi qua setter; chỉ cách B reactive.',
+    'Cách B không reactive vì spread operator phá vỡ proxy.'
+  ],
+  answer: 1,
+  explain: `**Đáp án đúng: cả hai đều reactive, cách A mutate mảng cũ, cách B gán mảng mới.**
+
+### Cơ chế
+{{ref}} bọc giá trị trong object có {{.value}}. Khi {{items.value}} là mảng, Vue gán một **proxy array** (từ {{reactive}}) cho {{.value}}.
+- **Cách A**: {{items.value.push(...)}} gọi method trên proxy array. Proxy array nắm bắt mutation method (push, pop, splice, sort...) và trigger dependency tracking → re-render.
+- **Cách B**: {{items.value = [...]}} gán giá trị mới cho {{.value}}. Setter của ref phát hiện thay đổi tham chiếu → trigger re-render.
+
+### Khác biệt thực tế
+- Cách A mutate in-place: giữ tham chiếu mảng cũ, component con nhận prop mảng đó **không thấy prop thay đổi** (vẫn cùng tham chiếu), có thể bỏ qua update nếu dùng {{shallowRef}} hoặc {{shallowReactive}}.
+- Cách B tạo mảng mới: tham chiếu đổi, prop thay đổi, component con luôn re-render.
+
+### Vì sao các phương án còn lại sai
+- **Giống hệt**: khác biệt về tham chiếu và hành vi component con.
+- **Cách A không reactive**: proxy array bắt được push.
+- **Cách B phá vỡ proxy**: gán {{.value}} là cách chuẩn thay đổi ref.
+
+> Senior tip: với list lớn hay component con pure, dùng cách B (immutable) cho predictable. Với list nhỏ, cách A tiện và hiệu năng tương đương. Tránh mix lẫn hai cách trong cùng một component gây rối.`
+},
+{
+  id: 'qz-frontend-045',
+  topic: 'frontend',
+  multi: true,
+  q: 'Vue 3: computed so với watch. Những phát biểu nào **đúng**? (Chọn 2)',
+  options: [
+    'computed cache kết quả dựa trên dependency; chỉ tính lại khi dependency thay đổi. watch chạy callback mỗi lần source thay đổi.',
+    'computed phù hợp cho side effect (gọi API, log, mutation); watch phù hợp cho derived state hiển thị.',
+    'computed getter không nên có side effect; watch callback dùng cho side effect.',
+    'watch có tùy chọn {{deep: true}} để theo dõi lồng sâu object/array; computed không có khái niệm deep.',
+    'computed hỗ trợ {{flush: "post"}} như watch để chạy sau DOM update.'
+  ],
+  answer: [0, 2],
+  explain: `**Đáp án đúng: computed cache theo dependency; computed getter không nên có side effect, watch dùng cho side effect.**
+
+### Vì sao đúng
+- **computed**: thiết kế cho **derived state** (giá trị tính từ state khác). Vue theo dõi dependency trong getter, cache kết quả. Dependency không đổi → trả cache, không chạy getter. Getter nên **pure** (không mutation, không async, không DOM).
+- **watch**: thiết kế cho **side effect** (gọi API, log, analytics, mutation state khác). Chạy callback khi source thay đổi, không cache.
+- **deep**: watch có {{deep: true}} để đệ quy theo dõi property lồng trong object/array. Computed tự động theo dõi mọi reactive được đọc trong getter (giống {{deep}} ngầm), nên không cần tùy chọn riêng.
+
+### Vì sao các phương án còn lại sai
+- **computed cho side effect**: vi phạm pure function, gây bug khó debug (cache khiến side effect không chạy khi dependency không đổi).
+- **watch cho derived state**: chạy lặp callback khi không cần, không cache, code dài hơn.
+- **computed flush post**: {{flush}} là tùy chọn của {{watchEffect}}/{{watch}}, computed luôn đồng bộ và chạy trước render.
+
+> Senior tip: quy tắc ngón tay: "cần giá trị để hiển thị → computed; cần làm gì đó khi state đổi → watch". Nếu watch chỉ để gán state khác → hãy đổi sang computed.`
+},
+{
+  id: 'qz-frontend-046',
+  topic: 'frontend',
+  q: `Vue 3: watch với deep:
+~~~js
+watch(source, callback, { deep: true })
+~~~
+với source:
+~~~js
+const source = reactive({ a: { b: 1 } })
+~~~
+Callback nhận {{(newVal, oldVal)}}. Khi gán {{source.a.b = 2}}, {{oldVal}} là gì?`,
+  options: [
+    '{{{ a: { b: 1 } }}} (giá trị cũ trước khi mutate)',
+    '{{{ a: { b: 2 } }}} (cùng tham chiếu với newVal, đã bị mutate)',
+    '{{undefined}} (deep watch không cung cấp oldVal)',
+    'Lỗi: deep watch chỉ hoạt động với ref, không reactive object.'
+  ],
+  answer: 1,
+  explain: `**Đáp án đúng: {{oldVal}} cùng tham chiếu với {{newVal}} (đã bị mutate).**
+
+### Cơ chế
+{{deep: true}} khiến watch đệ quy traverse object/array và đăng ký dependency trên từng property. Khi mutation xảy ra ({{source.a.b = 2}}), proxy phát hiện thay đổi và gọi callback. Tuy nhiên **mutation in-place** nghĩa là object gốc bị sửa đổi; {{oldVal}} và {{newVal}} trỏ đến **cùng một object** (proxy đã mutate).
+
+~~~js
+watch(state, (newVal, oldVal) => {
+  console.log(newVal === oldVal) // true với deep + mutation
+}, { deep: true })
+~~~
+
+### Để có oldVal thực sự khác
+Phải **thay thế object** (immutable) thay vì mutate:
+~~~js
+state.a = { ...state.a, b: 2 } // newVal !== oldVal
+~~~
+
+### Vì sao các phương án còn lại sai
+- **Giá trị cũ**: deep watch không clone object trước khi mutate.
+- **undefined**: deep watch vẫn cung cấp oldVal, chỉ là tham chiếu trùng.
+- **Chỉ ref**: deep hoạt động với cả ref và reactive object.
+
+> Senior tip: khi cần so sánh trước/sau trong deep watch, hãy clone object ({{JSON.parse(JSON.stringify(oldVal))}} hoặc {{lodash.cloneDeep}}) ngay đầu callback, hoặc ép team dùng immutable update.`
+},
+{
+  id: 'qz-frontend-047',
+  topic: 'frontend',
+  q: `Vue 3: component cha render danh sách component con bằng {{v-for}}. Cú pháp:
+~~~html
+<Child v-for="item in items" :key="item.id" :item="item" />
+~~~
+Đúng không? Vì sao?`,
+  options: [
+    'Đúng, key trên component con được Vue dùng để diff.',
+    'Sai, key phải đặt trên element bao ngoài component, không phải trên component tự thân.',
+    'Sai, component không hỗ trợ key, chỉ element HTML mới có key.',
+    'Đúng nhưng key phải là string, không được là number.'
+  ],
+  answer: 0,
+  explain: `**Đáp án đúng: đúng, key trên component con được Vue dùng để diff.**
+
+### Cơ chế
+Khi {{v-for}} render component, Vue tạo **vnode** cho component. Key đặt trên component ({{<Child :key="item.id" />}}) gắn vào vnode đó. Vue diff danh sách vnode theo key, quyết định mount/unmount/move instance component. Đây là cách chuẩn và khuyến nghị.
+
+### Bẫy thường gặp
+Nếu bọc component bằng element rác:
+~~~html
+<div v-for="item in items" :key="item.id">
+  <Child :item="item" />
+</div>
+~~~
+Key nằm trên {{div}}, Vue diff {{div}} chứ không diff instance {{Child}}. Nếu reorder, {{div}} move nhưng instance {{Child}} **không** move → state component con (input, scroll) bị lộn ngược. Luôn đặt key **trực tiếp trên component** khi v-for component.
+
+### Vì sao các phương án còn lại sai
+- **Key trên wrapper**: gây bug state component con như mô tả.
+- **Component không hỗ trợ key**: component hoàn toàn hỗ trợ key, đây là feature cốt lõi.
+- **Key phải string**: key chấp nhận number, string, symbol; Vue tự stringify.
+
+> Senior tip: với component có state nội bộ (input, animation, scroll), key trên component là bắt buộc. Key trên wrapper chỉ dùng khi component stateless (chỉ hiển thị).`
+},
+{
+  id: 'qz-frontend-048',
+  topic: 'frontend',
+  q: 'Vue 3: component dùng {{onBeforeUnmount}} để {{clearInterval(timer)}}. Component bị unmount khi người dùng điều hướng route (Vue Router). {{onBeforeUnmount}} chạy trước hay sau khi router bắt đầu transition?',
+  options: [
+    'Chạy **trước** router transition (trước khi component mới mount).',
+    'Chạy **sau** router transition (sau khi component mới mount).',
+    'Chạy song song với transition, thứ tự không xác định.',
+    'Không chạy nếu dùng keep-alive.'
+  ],
+  answer: 0,
+  explain: `**Đáp án đúng: chạy trước router transition.**
+
+### Trình tự lifecycle khi navigate (không keep-alive)
+1. Component cũ: {{onBeforeUnmount}} → {{onUnmounted}} (component destroyed, DOM removed).
+2. Router transition (nếu có).
+3. Component mới: {{onBeforeMount}} → {{onMounted}}.
+
+{{onBeforeUnmount}} là hook **sync** chạy ngay khi Vue quyết định unmount component, **trước** khi router bắt đầu animation transition. Điều này đảm bảo cleanup (clearInterval, removeEventListener, abort fetch) xong trước khi component mới mount, tránh race condition hoặc memory leak.
+
+### keep-alive
+Với {{<KeepAlive>}}, component không unmount mà **deactivate**. Hook chạy là {{onDeactivated}} (thay vì onBeforeUnmount/onUnmounted), và component cũ vẫn giữ trong memory. {{onActivated}} chạy khi component được activate lại.
+
+### Vì sao các phương án còn lại sai
+- **Sau transition**: cleanup muộn có thể gây leak khi component mới đã mount.
+- **Song song**: Vue lifecycle là sync, thứ tự xác định.
+- **Không chạy nếu keep-alive**: đúng là không chạy onBeforeUnmount, nhưng chạy onDeactivated; câu hỏi không nói keep-alive.
+
+> Senior tip: luôn cleanup trong onBeforeUnmount (hoặc onUnmounted). Nếu dùng keep-alive, thêm onDeactivated để pause timer/websocket, onActivated để resume.`
+},
+{
+  id: 'qz-frontend-049',
+  topic: 'frontend',
+  multi: true,
+  q: `Vue 3 + Axios: interceptor refresh token. Refresh token endpoint trả về **access token mới** VÀ **refresh token mới** (rotation). Hai yêu cầu cùng lúc nhận 401. Cách xử lý nào **đúng** để tránh race condition và invalidate token? (Chọn 2)`,
+  options: [
+    'Dùng biến {{isRefreshing}} + queue promise: request đầu refresh, các request sau push callback vào queue chờ token mới, rồi retry tất cả.',
+    'Mỗi request tự gọi refresh endpoint riêng; server chịu trách nhiệm handle rotation.',
+    'Khi refresh thành công, cập nhật access token VÀ refresh token mới vào storage/cookie trước khi retry queue.',
+    'Chỉ cập nhật access token, giữ refresh token cũ vì rotation là optional.',
+    'Dùng AbortController hủy request cũ thay vì retry sau refresh.'
+  ],
+  answer: [0, 2],
+  explain: `**Đáp án đúng: queue với isRefreshing; cập nhật cả access token và refresh token mới trước khi retry.**
+
+### Vấn đề rotation
+Server trả refresh token mới mỗi lần → refresh token cũ **bị invalidate ngay**. Nếu 2 request cùng 401:
+- Request A gọi refresh, nhận token mới (access + refresh).
+- Request B cũng gọi refresh **dùng refresh token cũ** (vẫn chưa cập nhật) → server trả 401 invalid refresh → user bị đăng xuất.
+
+### Pattern chuẩn
+~~~js
+let isRefreshing = false
+let queue = []
+
+axios.interceptors.response.use(res => res, async err => {
+  if (err.response?.status === 401 && !err.config._retry) {
+    err.config._retry = true
+    if (!isRefreshing) {
+      isRefreshing = true
+      try {
+        const { access, refresh } = await refreshApi()
+        updateTokens(access, refresh)  // CẬP NHẬT CẢ HAI
+        queue.forEach(cb => cb(access))
+        return axios(err.config)
+      } finally {
+        isRefreshing = false
+        queue = []
+      }
+    }
+    return new Promise(resolve => queue.push(access => {
+      err.config.headers.Authorization = \`Bearer \${access}\`
+      resolve(axios(err.config))
+    }))
+  }
+  return Promise.reject(err)
+})
+~~~
+
+### Vì sao các phương án còn lại sai
+- **Mỗi request tự refresh**: race condition, request sau dùng refresh token cũ đã invalidate.
+- **Chỉ cập nhật access token**: refresh token cũ còn trong storage → request sau refresh lại dùng token cũ → invalidate.
+- **AbortController hủy request**: hủy request gốc làm mất thao tác người dùng; phải retry để UX tốt.
+
+> Senior tip: lưu refresh token trong HttpOnly cookie (không đọc được bằng JS) → CSRF safe, XSS safe. Interceptor chỉ cần gọi refresh endpoint (cookie tự gửi), server set cookie mới. Client không cần quản lý refresh token.`
+},
+{
+  id: 'qz-frontend-050',
+  topic: 'frontend',
+  q: `Vue 3 (https://app.example.com) gọi API Spring Boot (https://api.example.com) với cookie HttpOnly (credential). CORS preflight OPTIONS trả về header {{Access-Control-Allow-Origin: *}} và {{Access-Control-Allow-Credentials: true}}. Trình duyệt chặn request. Nguyên nhân?`,
+  options: [
+    'Wildcard {{*}} không được dùng cùng {{Access-Control-Allow-Credentials: true}}; phải trả về origin cụ thể (https://app.example.com).',
+    'Spring Boot không hỗ trợ CORS với cookie; phải dùng header Authorization.',
+    'Preflight không cần Allow-Credentials; chỉ request thật mới cần.',
+    'Domain khác (app vs api) không cho phép cookie cross-site; phải cùng domain.'
+  ],
+  answer: 0,
+  explain: `**Đáp án đúng: wildcard * không tương thích với Allow-Credentials: true; phải echo origin cụ thể.**
+
+### Quy tắc CORS + Credentials
+Khi request có {{credentials: 'include'}} (gửi cookie), trình duyệt yêu cầu response preflight **không được** dùng wildcard {{Access-Control-Allow-Origin: *}}. Thay vào đó, server phải **echo chính xác origin** từ request:
+~~~http
+Access-Control-Allow-Origin: https://app.example.com
+Access-Control-Allow-Credentials: true
+Access-Control-Allow-Methods: GET,POST,OPTIONS
+Access-Control-Allow-Headers: Content-Type,Authorization
+~~~
+
+### Cấu hình Spring Boot đúng
+~~~java
+@Bean
+CorsConfigurationSource corsConfigurationSource() {
+  CorsConfiguration config = new CorsConfiguration();
+  config.setAllowedOrigins(List.of("https://app.example.com")); // KHÔNG dùng *
+  config.setAllowedMethods(List.of("GET","POST","PUT","DELETE","OPTIONS"));
+  config.setAllowedHeaders(List.of("*"));
+  config.setAllowCredentials(true); // quan trọng
+  config.setMaxAge(3600L);
+  UrlBasedCorsConfigurationSource source = new UrlBasedCorsConfigurationSource();
+  source.registerCorsConfiguration("/**", config);
+  return source;
+}
+~~~
+
+### Vì sao các phương án còn lại sai
+- **Spring Boot không hỗ trợ**: hỗ trợ đầy đủ, chỉ config đúng.
+- **Preflight không cần**: preflight cũng cần header này để browser cho phép request thật.
+- **Phải cùng domain**: cross-site cookie cho phép nếu SameSite=None; Secure; và CORS config đúng.
+
+> Senior tip: production luôn set AllowedOrigins tường minh (danh sách domain frontend). Dùng {{CorsFilter}} hoặc {{WebMvcConfigurer}} + {{http.cors()}} trong SecurityFilterChain; đặt CORS filter trước security để OPTIONS không bị chặn bởi authentication.`
+},
+{
+  id: 'qz-frontend-051',
+  topic: 'frontend',
+  q: `SPA Vue 3 (history mode) deploy cùng Spring Boot. Route con {{/dashboard/settings}} refresh trả 404. Server đã cấu hình fallback {{/** -> index.html}} nhưng API {{/api/**}} cũng bị forward về index.html thay vì trả 404 JSON. Cách sửa?`,
+  options: [
+    'Sắp xếp mapping: ưu tiên {{/api/**}} (controller/API) và static resources TRƯỚC fallback {{/**}}. Fallback chỉ bắt route không khớp API/static.',
+    'Tắt fallback, dùng hash mode (#/) cho SPA.',
+    'Thêm @ExceptionHandler cho 404 trả JSON, fallback vẫn giữ nguyên.',
+    'Cấu hình Vue Router {{scrollBehavior}} để tránh refresh.'
+  ],
+  answer: 0,
+  explain: `**Đáp án đúng: ưu tiên mapping API/static trước fallback.**
+
+### Cơ chế Spring MVC handler mapping
+Spring duyệt handler mapping theo thứ tự ưu tiên (cụ thể trước chung). Fallback {{/**}} là catch-all, khớp mọi path. Nếu mapping fallback được đặt trước và ưu tiên hơn các mapping API/static, request {{/api/users}} có thể bị chặn và forward về index.html thay vì trả JSON.
+
+### Thứ tự đúng
+1. {{/api/**}} → API controller (RestController)
+2. Static resources ({{/assets/**, /favicon.ico, /manifest.json}})
+3. Fallback {{/**}} → forward {{index.html}} (SPA entry)
+
+### Cấu hình WebMvcConfigurer
+~~~java
+@Configuration
+class WebConfig implements WebMvcConfigurer {
+  @Override
+  public void addViewControllers(ViewControllerRegistry registry) {
+    // 1. API đã được handle bởi @RestController (không cần config ở đây)
+  }
+
+  @Override
+  public void addResourceHandlers(ResourceHandlerRegistry registry) {
+    // 2. Static resources
+    registry.addResourceHandler("/assets/**")
+      .addResourceLocations("classpath:/static/assets/")
+      .setCacheControl(CacheControl.maxAge(365, ChronoUnit.DAYS));
+  }
+
+  @Override
+  public void addViewControllers(ViewControllerRegistry registry) {
+    // 3. SPA fallback - khớp các route còn lại, sau API và static resources
+    registry.addViewController("/**").setViewName("forward:/index.html");
+  }
+}
+~~~
+
+### Vì sao các phương án còn lại sai
+- **Hash mode**: tránh vấn đề nhưng URL xấu, SEO kém, không phải fix root cause.
+- **@ExceptionHandler 404**: fallback forward index.html **trước** khi DispatcherServlet ném 404, nên ExceptionHandler không chạy.
+- **scrollBehavior**: chỉ quản lý scroll, không liên quan server routing.
+
+> Senior tip: luôn test {{/api/health}} trả JSON 200 sau khi config fallback. Dùng {{Ordered.LOWEST_PRECEDENCE}} cho fallback view controller. Với Spring Boot 3, {{WebMvcConfigurer}} vẫn hoạt động; hoặc dùng controller {{@RequestMapping("/**")}} với {{@Order(Ordered.LOWEST_PRECEDENCE)}}.`
+},
+{
+  id: 'qz-frontend-052',
+  topic: 'frontend',
+  multi: true,
+  q: `Vue 3: component dùng {{<Suspense>}} bao component async (defineAsyncComponent). Khi component async đang load, fallback slot {{#fallback}} hiển thị. Hai phát biểu nào **đúng**? (Chọn 2)`,
+  options: [
+    '<Suspense> cho phép hiển thị fallback (loading skeleton) trong khi chờ async component resolve, tránh layout shift.',
+    'Suspense chỉ hoạt động với SSR, client-side rendering không hỗ trợ.',
+    'Nếu async component ném error, <Suspense> không bắt được; cần error boundary riêng (onErrorCaptured).',
+    '<Suspense> có thể lồng nhau; Suspense cha chờ tất cả Suspense con resolve mới hiển thị nội dung.',
+    'Fallback slot bắt buộc phải là component có tên, không dùng template v-slot:fallback.'
+  ],
+  answer: [0, 3],
+  explain: `**Đáp án đúng: Suspense hiển thị fallback khi chờ async component; Suspense có thể lồng nhau (cha chờ con).**
+
+### Cơ chế
+{{<Suspense>}} là built-in component (Vue 3.3+ stable). Nó bọc component async ({{defineAsyncComponent}} hoặc {{import()}}):
+~~~html
+<Suspense>
+  <template #default>
+    <AsyncDashboard />
+  </template>
+  <template #fallback>
+    <DashboardSkeleton />  <!-- hiển thị ngay lập tức -->
+  </template>
+</Suspense>
+~~~
+- Khi {{AsyncDashboard}} đang load (promise pending), slot {{#fallback}} render.
+- Khi promise resolve, slot {{#default}} thay thế fallback (có transition mượt nếu dùng {{<Transition>}}).
+- **Lồng nhau**: Suspense cha chờ **tất cả** Suspense con (trong tree) resolve mới switch sang default. Cho phép loading hierarchy.
+
+### Error handling
+Suspense **không bắt error** của async component. Error ném ra truyền ra ngoài (bubble up) → bắt bởi {{onErrorCaptured}} của ancestor hoặc {{app.config.errorHandler}}. Cần error boundary riêng.
+
+### Vì sao các phương án còn lại sai
+- **Chỉ SSR**: Suspense hoạt động cả CSR (client) và SSR.
+- **Bắt error**: Suspense không bắt error; cần onErrorCaptured.
+- **Fallback slot tên**: dùng {{<template #fallback>}} hoặc {{v-slot:fallback}} đều được.
+
+> Senior tip: kết hợp Suspense + defineAsyncComponent({ loader, loadingComponent, errorComponent, delay, timeout }) cho UX tốt: delay tránh nháy, timeout fallback error component. Suspense lồng nhau cho phép layout shell load trước, widget con load sau.`
+}
+,
+{
+  id: 'qz-frontend-053',
+  topic: 'frontend',
+  q: `Vue 3: một component dùng {{shallowRef}} cho object lớn:
+~~~js
+const state = shallowRef({ items: [...Array(10000)].map((_, i) => ({ id: i, name: \`Item \${i}\` })) })
+~~~
+Khi gán code sau, template có re-render không?
+~~~js
+state.value.items.push({ id: 10000, name: 'New' })
+~~~`,
+  options: [
+    'Có, shallowRef theo dõi mutation bên trong object.',
+    'Không, shallowRef chỉ theo dõi thay đổi tham chiếu .value, không theo dõi mutation lồng sâu.',
+    'Có, vì push làm thay đổi độ dài mảng.',
+    'Không, trừ khi dùng state.value = [...state.value.items, { id: 10000, name: \`New\` }]'
+  ],
+  answer: 1,
+  explain: `**Đáp án đúng: shallowRef chỉ theo dõi thay đổi tham chiếu .value, không theo dõi mutation lồng sâu.**
+
+### Cơ chế
+{{shallowRef}} tạo một ref mà **value không được bọc bằng reactive proxy**. Nó chỉ trigger re-render khi **gán mới cho .value** (thay đổi tham chiếu). Mutation bên trong object/array (push, splice, gán property lồng) **không** trigger.
+
+~~~js
+const state = shallowRef({ count: 0 })
+state.value.count++           // KHÔNG re-render
+state.value = { count: 1 }    // CÓ re-render
+~~~
+
+### Khi nào dùng shallowRef
+- Object/array rất lớn (10k+ items) mà chỉ thay thế toàn bộ (replace), không mutate lẻ tẻ.
+- Performance: tránh overhead proxy lồng sâu.
+- Kết hợp với {{triggerRef(state)}} khi buộc re-render sau mutation.
+
+### Vì sao các phương án còn lại sai
+- **Theo dõi mutation lồng sâu**: đó là {{ref}} (bọc reactive proxy), không phải shallowRef.
+- **Push làm thay đổi độ dài**: shallowRef không quan tâm nội dung, chỉ quan tâm tham chiếu.
+- **Spread operator**: cách đó đúng (tạo mảng mới, gán .value), nhưng câu hỏi hỏi về push.
+
+> Senior tip: profile trước khi dùng shallowRef; với list < 1k items, ref thường đủ nhanh. Dùng triggerRef() như escape hatch khi cần.`
+},
+{
+  id: 'qz-frontend-054',
+  topic: 'frontend',
+  multi: true,
+  q: `Vue 3.3+: {{defineProps}} với destructuring mặc định. Code sau:
+~~~js
+// Child.vue
+const { title, count = 10 } = defineProps({
+  title: String,
+  count: { type: Number, default: 10 }
+})
+~~~
+Hai phát biểu nào **đúng**? (Chọn 2)`,
+  options: [
+    'Destructuring tự tạo ref cho từng prop, giữ reactivity: title.value, count.value.',
+    'Props destructured MẤT reactivity nếu dùng trực tiếp (title, count), phải dùng toRefs.',
+    'Default value chỉ dùng khi prop không được truyền hoặc truyền undefined; truyền null vẫn dùng null.',
+    'defineProps không cần import, là compiler macro; type inference hoạt động với TypeScript.',
+    'count = 10 trong destructuring ghi đè default trong defineProps, gây xung đột.'
+  ],
+  answer: [2, 3],
+  explain: `**Đáp án đúng: default value chỉ dùng khi prop không truyền hoặc undefined; defineProps là compiler macro có type inference.**
+
+### Giải thích
+- **Reactivity**: Vue 3.3+ compile-time transform destructured props thành **ref** tự động. {{title}} và {{count}} trong template/script **đã reactive**, không cần .value. Viết {{title}} là đủ, {{title.value}} cũng được nhưng thừa.
+- **Default value**: Vue chỉ áp dụng default khi prop **absent** hoặc **undefined**. Truyền {{:count="null"}} → prop nhận null, không fallback về 10.
+- **Compiler macro**: {{defineProps}}, {{defineEmits}}, {{defineExpose}}, {{defineModel}}, {{defineSlots}} là macro, không import, biến mất ở build.
+- **TypeScript**: type inference từ runtime declaration hoạt động; cũng có thể dùng type-based:
+~~~ts
+defineProps<{ title: string; count?: number }>()
+~~~
+
+### Vì sao các phương án còn lại sai
+- **Tự tạo ref cho từng prop**: không có .value khi destructured; Vue transform để dùng trực tiếp.
+- **Mất reactivity**: sai; reactivity được giữ nhờ compile-time transform.
+- **count = 10 xung đột**: destructuring default là fallback cho compile-time transform, khớp với runtime default; không xung đột.
+
+> Senior tip: luôn khai báo default trong defineProps (runtime) để props validation hoạt động; destructuring default chỉ để IDE/TS hiểu. Truyền null có ý nghĩa khác undefined (explicit null vs missing).`
+},
+{
+  id: 'qz-frontend-055',
+  topic: 'frontend',
+  q: `Vue 3: component cha render list con bằng v-for. Mỗi con dùng {{onMounted}} fetch data riêng. Khi user filter list (một vài con unmount), request đang pending của con đó vẫn resolve và gọi setState. Hậu quả?`,
+  options: [
+    'Request bị hủy tự động khi component unmount.',
+    'Component con đã unmount, cập nhật state bị bỏ qua (không re-render), nhưng request vẫn tốn bandwidth.',
+    'Vue tự abort fetch khi unmount, không có warning.',
+    'Request resolve bình thường vì component chưa thực sự hủy cho đến khi GC chạy.'
+  ],
+  answer: 1,
+  explain: `**Đáp án đúng: cập nhật state trên component đã unmount bị bỏ qua (không re-render), request vẫn tốn bandwidth.**
+
+### Cơ chế
+Vue **không tự hủy** fetch/XMLHttpRequest/axios khi component unmount. onUnmounted chỉ chạy cleanup do dev viết. Nếu fetch đang pending:
+1. Component unmount → onUnmounted chạy (nếu có AbortController thì abort).
+2. Nếu KHÔNG abort → request tiếp tục đến server, nhận response.
+3. Callback .then() chạy, gán state → component đã unmount, watcher đã bị tear down nên cập nhật bị bỏ qua (không re-render).
+
+### Cách sửa chuẩn (AbortController)
+~~~js
+onMounted(() => {
+  const controller = new AbortController()
+  fetch('/api/data', { signal: controller.signal }).then(...)
+  onUnmounted(() => controller.abort())
+})
+~~~
+
+### Vì sao các phương án còn lại sai
+- **Tự hủy**: Vue không quản lý fetch lifecycle.
+- **Vue tự abort fetch**: không có cơ chế này.
+- **GC chạy mới hủy**: component unmount là sự kiện Vue, không liên quan JS GC.
+
+> Senior tip: mọi async task trong onMounted (fetch, setTimeout, WebSocket, EventSource) phải có cleanup trong onUnmounted dùng AbortController / clearTimeout / close(). Dùng composable useFetch tự xử lý abort.`
+},
+{
+  id: 'qz-frontend-056',
+  topic: 'frontend',
+  q: `Vue 3: {{watchEffect}} có tùy chọn {{flush: 'post'}} (mặc định). Khi nào callback chạy so với DOM update?`,
+  options: [
+    'Chạy **trước** DOM update (sync), phù hợp đọc layout trước khi vẽ.',
+    'Chạy **sau** DOM update (next tick), phù hợp đo layout, focus, scroll.',
+    'Chạy **trước** render, sau khi reactive dependency đổi.',
+    'Chạy **ngay lập tức** khi dependency thay đổi, không chờ nextTick.'
+  ],
+  answer: 1,
+  explain: `**Đáp án đúng: chạy sau DOM update (next tick), phù hợp đo layout, focus, scroll.**
+
+### flush options
+| flush | Thời điểm chạy | Dùng cho |
+|-------|----------------|----------|
+| {{'pre'}} (mặc định watch) | Trước DOM update, sau khi dependency đổi | Cập nhật state khác, tính toán |
+| {{'post'}} (mặc định watchEffect) | **Sau DOM update**, trong nextTick | **Đo layout (getBoundingClientRect), focus, scroll, animation** |
+| {{'sync'}} | Ngay lập tức khi dependency đổi (trước render) | Debug, external sync (không khuyến nghị) |
+
+~~~js
+watchEffect(() => {
+  // chạy sau DOM update, có thể đo element
+  const h = el.value.getBoundingClientRect().height
+}, { flush: 'post' })
+
+watch(source, callback, { flush: 'post' }) // watch cũng hỗ trợ flush
+~~~
+
+### Vì sao các phương án còn lại sai
+- **Trước DOM update**: đó là {{flush: 'pre'}}.
+- **Trước render, sau dependency đổi**: giống pre nhưng không chính xác.
+- **Ngay lập tức**: đó là {{flush: 'sync'}}.
+
+> Senior tip: cần đo kích thước element sau render → flush: 'post'. Cần cập nhật state khác dựa trên dependency → flush: 'pre' (mặc định watch). watchEffect mặc định post vì thường dùng cho side effect DOM.`
+},
+{
+  id: 'qz-frontend-057',
+  topic: 'frontend',
+  q: `Axios interceptor refresh token: server trả 401 cho **refresh token endpoint** (refresh token hết hạn/bị thu hồi). Cách xử lý đúng phía client?`,
+  options: [
+    'Retry refresh token lần 2 với exponential backoff.',
+    'Xóa mọi token, redirect về trang login, clear queue các request đang chờ.',
+    'Bỏ qua lỗi, dùng access token cũ tiếp.',
+    'Gọi lại login API tự động với credential lưu sẵn (silent login).'
+  ],
+  answer: 1,
+  explain: `**Đáp án đúng: xóa token, redirect login, clear queue.**
+
+### Vì sao
+Refresh token endpoint trả 401 nghĩa là **refresh token không còn hợp lệ** (hết hạn, rotation thất bại, bị thu hồi, logout từ device khác). Access token cũ cũng vô hiệu vì đã hết hạn (đó là lý do refresh). Không thể recover tự động.
+
+### Quy trình chuẩn
+~~~js
+axios.interceptors.response.use(res => res, async err => {
+  if (err.response?.status === 401 && !err.config._retry) {
+    err.config._retry = true
+    if (!isRefreshing) {
+      isRefreshing = true
+      try {
+        const { access, refresh } = await refreshApi()
+        updateTokens(access, refresh)
+        queue.forEach(cb => cb(access))
+        return axios(err.config)
+      } catch (e) {
+        // REFRESH THẤT BẠI (401, 403, network error...)
+        clearTokens()
+        queue.forEach(cb => cb(null)) // hoặc reject
+        queue = []
+        router.push('/login') // hoặc window.location.href = '/login'
+        return Promise.reject(e)
+      } finally {
+        isRefreshing = false
+      }
+    }
+    // ... queue logic
+  }
+  return Promise.reject(err)
+})
+~~~
+
+### Vì sao các phương án còn lại sai
+- **Retry refresh**: refresh token 401 là deterministic fail, retry không giúp.
+- **Dùng access token cũ**: đã hết hạn, server sẽ trả 401 mãi.
+- **Silent login**: cần credential (password/biometric), không có sẵn an toàn.
+
+> Senior tip: refresh token nên lưu HttpOnly cookie; khi refresh fail, server clear cookie. Client chỉ cần redirect login. Nếu dùng localStorage, phải clear cả access + refresh token thủ công.`
+},
+{
+  id: 'qz-frontend-058',
+  topic: 'frontend',
+  multi: true,
+  q: `Spring Boot 3 + Spring Security 6: cấu hình CORS cho phép frontend (https://app.example.com) gửi cookie HttpOnly. Hai cấu hình nào **bắt buộc**? (Chọn 2)`,
+  options: [
+    'CorsConfiguration.setAllowedOrigins(List.of("https://app.example.com")) — KHÔNG dùng *.',
+    'CorsConfiguration.setAllowCredentials(true).',
+    'CorsConfiguration.setAllowedMethods(List.of("*")) — cho phép mọi method.',
+    'SecurityFilterChain: http.csrf().disable() — tắt CSRF để cookie hoạt động.',
+    'CorsFilter @Order(Ordered.HIGHEST_PRECEDENCE) — chạy trước Security filter.'
+  ],
+  answer: [0, 1],
+  explain: `**Đáp án đúng: allowedOrigins cụ thể (không *) + allowCredentials(true).**
+
+### CORS + Credentials bắt buộc
+Khi frontend gửi {{credentials: 'include'}} (cookie HttpOnly):
+1. **AllowedOrigins KHÔNG được là ***: trình duyệt từ chối wildcard khi credentials=true. Phải echo origin chính xác.
+2. **AllowCredentials = true**: server phải trả header {{Access-Control-Allow-Credentials: true}}.
+
+~~~java
+@Bean
+CorsConfigurationSource corsConfigurationSource() {
+  CorsConfiguration config = new CorsConfiguration();
+  config.setAllowedOrigins(List.of("https://app.example.com")); // bắt buộc cụ thể
+  config.setAllowedMethods(List.of("GET","POST","PUT","DELETE","OPTIONS"));
+  config.setAllowedHeaders(List.of("Authorization","Content-Type"));
+  config.setAllowCredentials(true); // bắt buộc
+  config.setMaxAge(3600L);
+  UrlBasedCorsConfigurationSource source = new UrlBasedCorsConfigurationSource();
+  source.registerCorsConfiguration("/**", config);
+  return source;
+}
+~~~
+
+### Vì sao các phương án còn lại sai
+- **AllowedMethods ***: được phép nhưng không bắt buộc; nên liệt kê tường minh.
+- **CSRF disable**: KHÔNG tắt CSRF. Cookie + CSRF token (hoặc SameSite=Strict/Lax) mới an toàn. Tắt CSRF khi dùng cookie là lỗ hổng.
+- **CorsFilter order**: Spring Boot tự register CorsFilter ở vị trí đúng (trước Security) khi có CorsConfigurationSource bean. Không cần custom order.
+
+> Senior tip: luôn bật {{cookie.setSecure(true); cookie.setHttpOnly(true); cookie.setSameSite("None")}} cho cross-site cookie. CORS config phải khớp chính xác origin frontend (kể cả port dev).`
+},
+{
+  id: 'qz-frontend-059',
+  topic: 'frontend',
+  q: `SPA Vue 3 (history mode) deploy cùng Spring Boot trong file JAR. Static assets (JS/CSS) có hash trong tên ({{app.abc123.js}}). Cấu hình cache header nào **tốt nhất** cho production?`,
+  options: [
+    'Tất cả static resource: {{Cache-Control: max-age=31536000, immutable}} (1 năm).',
+    'index.html: {{Cache-Control: no-cache, must-revalidate}}; assets có hash: {{max-age=31536000, immutable}}.',
+    'Tất cả: {{Cache-Control: no-store}} để luôn tải mới.',
+    'index.html: {{max-age=3600}}; assets: {{max-age=86400}}.'
+  ],
+  answer: 1,
+  explain: `**Đáp án đúng: index.html no-cache/must-revalidate; assets có hash immutable 1 năm.**
+
+### Chiến lược cache
+- **Assets có hash** ({{app.abc123.js}}, {{chunk.xyz.css}}): nội dung không bao giờ đổi (hash thay khi build mới). Cache lâu dài an toàn: {{Cache-Control: max-age=31536000, immutable}}. {{immutable}} báo browser không cần revalidate ngay cả khi user refresh.
+- **index.html**: **không có hash**, nội dung thay đổi mỗi deploy. Phải {{no-cache, must-revalidate}} (hoặc {{max-age=0, must-revalidate}}) để browser **luôn kiểm tra server** (conditional request ETag/Last-Modified) trước khi dùng cache. Không dùng {{no-store}} (không cache gì, tải lại mỗi lần).
+
+### Spring Boot cấu hình
+~~~java
+registry.addResourceHandler("/assets/**")
+  .addResourceLocations("classpath:/static/assets/")
+  .setCacheControl(CacheControl.maxAge(365, ChronoUnit.DAYS).cachePublic().immutable()); // assets
+
+registry.addResourceHandler("/index.html")
+  .addResourceLocations("classpath:/static/")
+  .setCacheControl(CacheControl.noCache().mustRevalidate()); // index.html
+~~~
+
+### Vì sao các phương án còn lại sai
+- **Tất cả 1 năm**: index.html cached → user thấy version cũ sau deploy.
+- **Tất cả no-store**: assets tải lại mỗi lần, chậm, tốn bandwidth.
+- **index.html 1h**: trong 1h user thấy version cũ; no-cache an toàn hơn.
+
+> Senior tip: bật ETag/Last-Modified cho index.html (Spring Boot mặc định bật). Với CloudFront/CDN, set behavior: index.html TTL=0, assets TTL=1y.`
+},
+{
+  id: 'qz-frontend-060',
+  topic: 'frontend',
+  q: `Vue 3.4+: {{defineModel}} cho two-way binding component. Component con:
+~~~js
+// Child.vue
+const model = defineModel()
+~~~
+Cha dùng {{<Child v-model="value" />}}. Khi con gán {{model.value = 'new'}}, cha nhận giá trị như thế nào?`,
+  options: [
+    'Cha phải dùng @update:modelValue="value = $event" để nhận.',
+    'Tự động: value của cha cập nhật (reactive), không cần event listener.',
+    'Chỉ cập nhật nếu cha dùng v-model:foo và con defineModel("foo").',
+    'Không cập nhật; defineModel chỉ đọc, phải dùng emit.'
+  ],
+  answer: 1,
+  explain: `**Đáp án đúng: tự động, value của cha cập nhật reactive, không cần event listener.**
+
+### defineModel (Vue 3.4+)
+{{defineModel()}} là compiler macro tạo **two-way binding** tự động:
+- Trả về **ref** đồng bộ với v-model của cha.
+- Gán {{model.value = x}} → cha {{value}} cập nhật ngay (qua emit 'update:modelValue' tự động).
+- Không cần {{emit('update:modelValue', x)}} thủ công.
+
+~~~js
+// Child.vue
+const model = defineModel() // default: modelValue
+model.value = 'new' // tự emit update:modelValue
+~~~
+~~~html
+<!-- Parent.vue -->
+<Child v-model="value" /> <!-- value tự cập nhật -->
+~~~
+
+### Named v-model
+~~~js
+// Child.vue
+const title = defineModel('title')
+const count = defineModel('count')
+~~~
+~~~html
+<!-- Parent.vue -->
+<Child v-model:title="t" v-model:count="c" />
+~~~
+
+### Vì sao các phương án còn lại sai
+- **Cần @update:modelValue**: defineModel tự handle; viết thêm sẽ double emit.
+- **Chỉ cập nhật nếu named**: default modelValue cũng tự động.
+- **Chỉ đọc**: defineModel tạo writable ref.
+
+> Senior tip: defineModel thay thế pattern props + emit cho v-model. Hỗ trợ modifier ({{.trim}}, {{.number}}) qua defineModel({ get, set }). Migrate từ props/emit sang defineModel cho code gọn hơn.`
+},
+{
+  id: 'qz-frontend-061',
+  topic: 'frontend',
+  multi: true,
+  q: `Vue 3: {{effectScope}} dùng để làm gì? Hai phát biểu đúng: (Chọn 2)`,
+  options: [
+    'Tạo scope reactivity thủ công: thu gom computed/watch/effect trong scope, hủy tất cả một lần bằng scope.stop().',
+    'Thay thế onMounted/onUnmounted để quản lý lifecycle component.',
+    'Cho phép tạo reactive effect **ngoài component** (composable, store, script setup top-level) và dọn dẹp tập trung.',
+    'Bắt buộc dùng khi có watchEffect trong composable dùng shared state.',
+    'Tăng hiệu năng render bằng cách batch cập nhật state.'
+  ],
+  answer: [0, 2],
+  explain: `**Đáp án đúng: tạo scope reactivity thủ công để hủy gom; cho phép reactive effect ngoài component.**
+
+### effectScope
+{{effectScope()}} tạo một **scope reactivity** độc lập với component lifecycle. Mọi {{computed}}, {{watch}}, {{watchEffect}} tạo bên trong scope sẽ bị **hủy cùng lúc** khi {{scope.stop()}}.
+
+~~~js
+// Composable dùng effectScope
+export function useMouseTracker() {
+  const scope = effectScope()
+  const pos = reactive({ x: 0, y: 0 })
+  
+  scope.run(() => {
+    watchEffect(() => {
+      // track mouse, cập nhật pos
+    })
+  })
+  
+  return { pos, stop: () => scope.stop() }
 }
 
+// Component
+const { pos, stop } = useMouseTracker()
+onUnmounted(stop) // dọn dẹp gọn
+~~~
+
+### Vì sao các phương án còn lại sai
+- **Thay thế onMounted/onUnmounted**: không; effectScope bổ sung, dùng trong composable/store, component vẫn dùng lifecycle hook.
+- **Bắt buộc với watchEffect trong composable**: không bắt buộc; composable đơn giản có thể dùng watchEffect trực tiếp (tự gắn vào component hiện tại). effectScope cần khi composable **không chạy trong setup component** (store, top-level, async callback).
+- **Tăng hiệu năng render**: không liên quan; effectScope quản lý cleanup, không batch update.
+
+> Senior tip: Pinia store dùng effectScope nội bộ. Viết composable reusable (dùng ở component, store, vanilla JS) → bọc watchEffect trong effectScope để caller tự stop.`
+},
+{
+  id: 'qz-frontend-062',
+  topic: 'frontend',
+  q: `SPA Vue 3 + Spring Boot: production build ra {{index.html}} và assets. Nginx reverse proxy trước Spring Boot. Cấu hình Nginx **tốt nhất** cho SPA fallback + API proxy + static cache?`,
+  options: [
+    'location / { try_files $uri $uri/ /index.html; } location /api { proxy_pass http://spring:8080; }',
+    'location / { try_files $uri $uri/ @fallback; } location @fallback { rewrite ^ /index.html last; } location /api { proxy_pass http://spring:8080; } location /assets { expires 1y; add_header Cache-Control "public, immutable"; }',
+    'location / { proxy_pass http://spring:8080; } (Spring Boot lo fallback + static).',
+    'location / { root /var/www; try_files $uri /index.html; } location /api { proxy_pass http://spring:8080; }'
+  ],
+  answer: 1,
+  explain: `**Đáp án đúng: Nginx phục vụ static assets (cache 1y immutable), proxy /api về Spring, fallback /index.html cho SPA route.**
+
+### Tách trách nhiệm (Best Practice)
+1. **Nginx serve static assets**: nhanh hơn, offload Spring Boot, cache header tối ưu.
+   - Code block bên dưới
+2. **Nginx proxy /api**: Spring Boot chỉ lo API.
+   - Code block bên dưới
+3. **Nginx SPA fallback**: route không khớp asset/api → {{index.html}}.
+   - Code block bên dưới
+
+### Cấu hình Nginx hoàn chỉnh
+~~~nginx
+server {
+  listen 80;
+  root /var/www/html;  # build output (index.html + assets/)
+  
+  # 1. Static assets - cache 1 năm immutable
+  location /assets/ {
+    expires 1y;
+    add_header Cache-Control "public, immutable";
+    try_files $uri =404;
+  }
+  
+  # 2. API proxy to Spring Boot
+  location /api/ {
+    proxy_pass http://spring:8080;
+    proxy_set_header Host $host;
+    proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+    proxy_set_header X-Forwarded-Proto $scheme;
+  }
+  
+  # 3. SPA fallback (history mode)
+  location / {
+    try_files $uri $uri/ @fallback;
+  }
+  location @fallback {
+    rewrite ^ /index.html last;
+  }
+  
+  # 4. index.html - no cache
+  location = /index.html {
+    add_header Cache-Control "no-cache, must-revalidate";
+  }
+}
+~~~
+
+### Vì sao các phương án còn lại sai
+- **try_files $uri $uri/ /index.html**: hoạt động nhưng không tách cache header cho assets/index.html; rewrite @fallback sạch hơn.
+- **Proxy tất cả về Spring**: Spring phải serve static + fallback + API → chậm, phức tạp, cache header khó tinh chỉnh.
+- **root /var/www try_files $uri /index.html**: thiếu proxy /api, thiếu cache header assets.
+
+> Senior tip: luôn serve static bằng Nginx/CDN. Spring Boot chỉ chạy API. Fallback ở Nginx tránh round-trip Spring cho route SPA.`
+}
+ 
 );
