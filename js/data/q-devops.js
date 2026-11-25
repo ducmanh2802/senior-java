@@ -17587,6 +17587,1431 @@ sum(rate(http_requests_total[1m]))
   'Cảnh báo latency p99 cao nhưng error rate bình thường. Bạn nghi ngờ điểm nghẽn ở đâu?'
 ],
 tags: ['SRE', 'Monitoring', 'Alert', 'Golden signals', 'SLO']
+  },
+  {
+    id: 'devops-201',
+    topic: 'devops',
+    level: 'senior',
+    q: 'Service thanh toán Spring Boot chạy trên Kubernetes (6 replica, consume Kafka, kết nối PostgreSQL via HikariCP). Mỗi lần rolling update bạn vẫn thấy: (1) request đang xử lý bị đứt (connection reset), (2) Pod mới mất 90 giây mới Ready do Flyway migrate, (3) Kafka consumer group rebalance làm lag tăng vọt. Bạn thiết kế liveness/readiness/startup probe, preStop hook, PodDisruptionBudget, maxSurge/maxUnavailable như thế nào để rolling update thực sự zero-downtime?',
+    a: `**Tóm tắt:** Rolling update zero-downtime cần phối hợp 4 cơ chế: (1) **startupProbe** cho phép Pod đủ thời gian chạy Flyway migrate (thường 60–180s) trước khi readiness/liveness bắt đầu kiểm tra, (2) **readinessProbe** chỉ trả OK khi app đã warm-up xong (JIT, pool, Kafka consumer join), gắn vào Service selector để traffic chỉ đi vào Pod ready, (3) **preStop hook + server.shutdown=graceful + terminationGracePeriodSeconds** cho Pod cũ hoàn tất request đang xử lý, flush Kafka offset, đóng HikariCP/DB connection trước SIGTERM, (4) **PodDisruptionBudget (minAvailable) + maxSurge/maxUnavailable** cân bằng số Pod đồng thời chạy để không giảm capacity dưới ngưỡng SLO. Thiếu một trong bốn là rolling update vẫn gây lỗi 5xx hoặc lag Kafka.
+
+### Hiểu nhanh
+Hãy coi rolling update như ca trực đổi ca tại quầy ngân hàng: **startupProbe** là ca mới đến sớm mở máy, đăng nhập hệ thống, nạp tiền (Flyway migrate) — chưa xong không cho khách vào. **readinessProbe** là báo "tôi sẵn sàng phục vụ" — mới khi báo xong thì khách được dẫn vào. **preStop** là ca cũ kết ca: hoàn tất giao dịch đang làm, khớp sổ, giao ca — mới thì khách đang giao dịch bị ngắt. **PDB + maxSurge** là quy định: lúc nào cũng phải có ít nhất N quầy mở, và cho phép mở thêm M quầy tạm để ca mới kịp chuẩn bị trước khi ca cũ đi.
+
+### Thuật ngữ
+- **startupProbe**: kiểm tra khởi động, chỉ chạy 1 lần khi Pod start; failureThreshold × periodSeconds = thời gian tối đa cho phép khởi động (mặc định 30s, cần tăng cho app có migration). Nếu fail → Pod restart.
+- **readinessProbe**: kiểm tra sẵn sàng phục vụ traffic; fail → Pod bị gỡ khỏi Service endpoints (không nhận request mới) nhưng không restart.
+- **livenessProbe**: kiểm tra treo/đệt; fail → Pod bị kill và restart.
+- **preStop hook**: lệnh chạy trong container *trước* SIGTERM, dùng để delay shutdown hoặc dọn dẹp; chạy song song với terminationGracePeriodSeconds (mặc định 30s).
+- **terminationGracePeriodSeconds**: thời gian chờ sau SIGTERM trước khi SIGKILL; phải ≥ thời gian preStop + graceful shutdown.
+- **server.shutdown=graceful** (Spring Boot 2.3+): Tomcat/Undertow/Jetty ngừng nhận request mới, chờ request đang xử lý xong (max timeout cấu hình), rồi mới shutdown context.
+- **PodDisruptionBudget (PDB)**: yêu cầu số Pod available tối thiểu (minAvailable hoặc maxUnavailable) khi eviction chủ động (drain, rolling update).
+- **maxSurge / maxUnavailable** (Deployment strategy): maxSurge = số Pod *thêm* được tạo vượt replica count; maxUnavailable = số Pod *được phép* unavailable cùng lúc. Cặp này quyết định tốc độ và capacity trong rolling update.
+
+### Cấu hình thực tế (production numbers)
+~~~yaml
+# Deployment
+spec:
+  replicas: 6
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 2          # Cho phép 8 Pod cùng lúc (6 + 2) -> capacity 133% trong lúc update
+      maxUnavailable: 0    # Không cho Pod nào unavailable (bị gỡ khỏi endpoints) -> zero gap
+  template:
+    spec:
+      terminationGracePeriodSeconds: 90  # ≥ preStop sleep + graceful shutdown timeout
+      containers:
+      - name: app
+        lifecycle:
+          preStop:
+            exec:
+              command: ["/bin/sh","-c","sleep 15"]  # Delay 15s: cho Service endpoints propagate removal trước khi app shutdown
+        env:
+        - name: SERVER_SHUTDOWN
+          value: "graceful"
+        - name: GRACEFUL_SHUTDOWN_TIMEOUT
+          value: "60s"        # Spring Boot: server.shutdown=graceful + spring.lifecycle.timeout-per-shutdown-phase=60s
+        readinessProbe:
+          httpGet:
+            path: /actuator/health/readiness
+            port: 8080
+          initialDelaySeconds: 10
+          periodSeconds: 5
+          failureThreshold: 3
+          successThreshold: 1
+        startupProbe:
+          httpGet:
+            path: /actuator/health/liveness
+            port: 8080
+          failureThreshold: 30   # 30 × 10s = 300s cho Flyway migrate + warm-up
+          periodSeconds: 10
+        livenessProbe:
+          httpGet:
+            path: /actuator/health/liveness
+            port: 8080
+          initialDelaySeconds: 120
+          periodSeconds: 30
+          failureThreshold: 3
+---
+# PodDisruptionBudget
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: payment-api-pdb
+spec:
+  minAvailable: 5   # Luôn ít nhất 5/6 replica available (83%) -> chịu đựng được 1 Pod down
+  selector:
+    matchLabels:
+      app: payment-api
+~~~
+
+### Vì sao các cấu hình trên hoạt động (cơ chế bên trong)
+1. **startupProbe failureThreshold=30, periodSeconds=10** → 300s window cho Flyway. Trong lúc này liveness/readiness **không chạy**. Nếu Flyway migration mất 90s, Pod không bị restart.
+2. **readinessProbe** trỏ vào {{/actuator/health/readiness}} — Spring Boot Actuator chỉ trả UP khi: DB connection pool ready, Kafka consumer joined group, cache warm-up xong. Nếu probe fail, kube-proxy gỡ Pod khỏi iptables/IPVS endpoints → **không traffic mới vào Pod đang warm-up**.
+3. **preStop sleep 15s** → khi Deployment quyết định terminate Pod cũ, nó: (a) gỡ Pod khỏi Service endpoints (readiness fail do probe vẫn chạy), (b) chạy preStop hook, (c) đợi 15s → lúc này endpoints đã propagate đến tất cả kube-proxy (thường 5–10s), traffic mới **không** đi vào Pod cũ, (d) gửi SIGTERM → Spring Boot {{server.shutdown=graceful}} chờ request trong-flight xong (timeout 60s), flush Kafka offset (commitSync), đóng HikariCP.
+4. **maxSurge=2, maxUnavailable=0** → Deployment tạo 2 Pod mới *trước* khi terminate Pod cũ. Với 6 replica, lúc peak có 8 Pod chạy. PDB {{minAvailable=5}} đảm bảo kể cả khi node bị drain hoặc rolling update, luôn có ≥5 Pod ready phục vụ traffic (83% capacity). Nếu cluster autoscaler không kịp scale node, PDB sẽ block eviction → rolling update chậm hơn nhưng **không bao giờ giảm dưới 5 Pod**.
+
+### Bảng trade-off
+| Cấu hình | Giá trị đề xuất | Trade-off |
+|---|---|---|
+| maxSurge | 25–50% replica (2/6) | Tăng tạm capacity nhưng tốn node resource; cần cluster autoscaler |
+| maxUnavailable | 0 (zero-downtime) | Rolling update chậm hơn (phải tạo Pod mới xong mới xóa cũ) |
+| minAvailable (PDB) | 70–85% replica (5/6) | Bảo vệ capacity; quá cao có thể block node maintenance |
+| terminationGracePeriodSeconds | preStop sleep + graceful timeout + buffer (15+60+15=90) | Quá ngắn → SIGKILL cắt request; quá dài → rollback chậm |
+| startupProbe window | 2–3× Flyway time (Flyway 90s → 180–300s) | Quá ngắn → Pod restart giữa chừng migration; quá dài → detect crash chậm |
+
+### Lỗi hay gặp (production pitfalls)
+1. **Không có startupProbe, chỉ dùng initialDelaySeconds trên liveness**: Flyway 90s > initialDelaySeconds (thường 60s) → liveness fail → Pod restart loop, migration không bao giờ xong.
+2. **preStop chỉ sleep, không bật {{server.shutdown=graceful}}**: Spring Boot nhận SIGTERM → shutdown context ngay → request trong-flight bị đứt (connection reset), Kafka offset chưa commit → rebalance duplicate processing.
+3. **maxUnavailable > 0 + không có PDB**: Rolling update terminate Pod cũ trước khi Pod mới Ready → lúc nào cũng có lúc capacity < replica count → error rate spike.
+4. **readinessProbe chỉ kiểm tra HTTP 200 /actuator/health (liveness)**: Actuator liveness chỉ báo "JVM sống", không báo "DB pool ready / Kafka consumer joined" → traffic vào Pod chưa sẵn sàng → 5xx.
+5. **Không set terminationGracePeriodSeconds đủ dài**: preStop 15s + graceful 60s = 75s, nhưng gracePeriod mặc định 30s → SIGKILL giết process giữa chừng graceful shutdown.
+
+### Ví dụ đời thực
+- **Triệu chứng:** Payment API 6 replica, mỗi deploy rolling update: error rate 5xx tăng 2–3% trong 2–3 phút, Kafka consumer lag tăng từ 0 lên 50.000 message, một vài giao dịch báo "connection reset" từ client.
+- **Điều tra:** Rolling update strategy mặc định {{maxSurge=1, maxUnavailable=1}}. Pod mới startup: Flyway migrate 85s, livenessProbe initialDelaySeconds=60 → liveness fail tại giây 60, Pod restart, migration chạy lại từ đầu (Flyway lock) → loop 3 lần mới xong. Pod cũ terminate: không có preStop, SIGTERM → Spring Boot shutdown ngay, HikariCP đóng connection đột ngột → request trong-flight bị RST. Kafka consumer không commit offset → rebalance sau 30s (session.timeout.ms), lag tích lũy.
+- **Nguyên nhân gốc:** (1) Thiếu startupProbe cho Flyway, (2) Không bật graceful shutdown, (3) Không có preStop delay cho endpoints propagate, (4) maxUnavailable=1 làm capacity giảm lúc terminal.
+- **Cách xử lý:** Thêm startupProbe (300s window), bật {{server.shutdown=graceful}} + {{spring.lifecycle.timeout-per-shutdown-phase=60s}}, preStop sleep 15s, maxSurge=2 maxUnavailable=0, PDB minAvailable=5, terminationGracePeriodSeconds=90.
+- **Kết quả đo được:** Sau áp dụng, 20 lần deploy liên tiếp: **0 request 5xx do rolling update**, Kafka lag tối đa 200 message (chỉ do rebalance bình thường), deploy time 6 replica mất ~4 phút (chậm hơn 30% do maxUnavailable=0 nhưng an toàn), MTTR sự cố deploy = 0.
+
+### Trả lời phỏng vấn
+Em thiết kế zero-downtime rolling update bằng 4 mỏ neo: startupProbe cho Flyway migrate (300s window, liveness/readiness không chạy trong lúc này), readinessProbe kiểm tra thực tế (DB pool, Kafka consumer joined, cache warm) để gating traffic, preStop hook sleep 15s + {{server.shutdown=graceful}} timeout 60s để Pod cũ hoàn tất request trong-flight và commit Kafka offset trước khi chết, và Deployment maxSurge=2 maxUnavailable=0 kết hợp PDB minAvailable=5 để luôn giữ ≥83% capacity. Thiếu một trong bốn là rolling update vẫn gây lỗi: không có startupProbe → liveness kill Pod giữa chừng migrate; không graceful shutdown → request đứt; không preStop delay → traffic vẫn vào Pod đang tắt; không PDB/maxUnavailable=0 → capacity giảm dưới SLO. Em cũng đo lường: deployment time, error rate, Kafka lag, và confirm zero 5xx trong 20 deploy liên tiếp.
+
+> Senior tip: Rolling update zero-downtime không chỉ là cấu hình YAML — là **hợp đồng giữa app và platform**. App phải implement graceful shutdown (commit offset, flush buffer, đóng pool), platform phải cung cấp PDB, probe, grace period. Hãy test thực tế: {{kubectl rollout restart}} rồi đo error rate, lag, latency p99 trong lúc rolling. Nếu team không đo, config đẹp cũng vô nghĩa.
+
+`,
+    follow: [
+      'Làm sao xử lý Flyway migration thất bại giữa chừng (lock không release) khi rolling update?',
+      'Khi dùng Istio/Envoy sidecar, preStop hook cần điều chỉnh gì so với kube-proxy thuần?',
+      'PDB minAvailable=5 với 6 replica: nếu node bị drain và cluster autoscaler không kịp scale, rolling update sẽ block ở đâu và bao lâu?'
+    ],
+    tags: ['Kubernetes', 'RollingUpdate', 'PodDisruptionBudget', 'graceful shutdown', 'preStop', 'startupProbe', 'Spring Boot']
+  },
+  {
+    id: 'devops-202',
+    topic: 'devops',
+    level: 'lead',
+    q: 'Team dùng Argo Rollouts (hoặc Flagger) canary cho payment API: 5% → 25% → 50% → 100%, mỗi bước 10 phút. Hiện tại auto-rollback chỉ dựa trên error rate > 1%. Bạn thiết kế cơ chế phân tích canary dựa trên **SLO burn-rate** (error budget consumption), kết hợp **business metrics** (payment success rate, p99 latency), **statistical significance** (minimum sample size), và **multi-window burn-rate alerting** để rollback tự động chính xác, không flapping, không bỏ sót regression nhẹ?',
+    a: `**Tóm tắt:** Canary auto-rollback production-grade không chỉ ngưỡng error rate > 1%. Cần: (1) **SLO-based burn-rate**: tính error budget consumption rate từ multi-window (1m, 5m, 15m, 1h) — burn rate > 14.4× (1h window) hoặc > 6× (5m window) mới trigger. (2) **Business SLI**: payment success rate < 99.9% (SLO 99.95%), p99 latency > 500ms (SLO 300ms). (3) **Statistical significance**: yêu cầu minimum sample size (ví dụ 1000 requests) trước khi quyết định, tránh rollback sai do noise. (4) **AnalysisTemplate** (Argo Rollouts) hoặc **MetricTemplate** (Flagger) với weighted scoring: error budget burn (50%), latency SLO (20%), business success rate (20%), resource saturation (10%). (5) **Cooldown & confirmation**: cần 2 window liên tiếp vượt ngưỡng + manual approval gate cho SEV1. Rollback chỉ khi composite score > threshold VÀ statistical power đủ.
+
+### Hiểu nhanh
+Hãy coi canary như bác sĩ thử thuốc mới trên 5% bệnh nhân. **Error rate > 1%** giống "có bệnh nhân khỏe không" — thô sơ, bỏ sót tác dụng phụ nhẹ (latency tăng 20%, success rate giảm 0.1%) và flapping do noise (5 request, 1 lỗi = 20%). **SLO burn-rate** giống "theo dõi ngân sách an toàn": SLO 99.95% = error budget 0.05% = 21.6 phút downtime/tháng (tháng 30 ngày). Nếu 5m tiêu hao 10% budget → burn rate 6× → cần can thiệp. **Statistical significance** giống "cần đủ số lượng bệnh nhân mới kết luận": 5 request không đủ, cần ≥1000. **Multi-window** giống "xem cả ngắn hạn và dài hạn": spike 1 phút có thể là GC pause, nhưng 15 phút liên tục thì chắc chắn regression.
+
+### Thuật ngữ
+- **SLO (Service Level Objective)**: mục tiêu chất lượng nội bộ (ví dụ: availability 99.95%, p99 latency < 300ms).
+- **SLI (Service Level Indicator)**: chỉ số đo lường (success rate, latency quantile).
+- **Error budget**: 100% - SLO. Availability 99.95% → error budget 0.05% ≈ 21.6 phút/tháng (tháng 30 ngày).
+- **Burn rate**: tốc độ tiêu hao error budget. Burn rate = (error rate observed) / (error rate SLO). SLO 99.95% → error rate SLO = 0.05%. Nếu error rate thực tế 0.3% → burn rate = 0.3/0.05 = 6×.
+- **Multi-window burn-rate**: theo dõi burn rate trên nhiều cửa sổ (1m, 5m, 15m, 1h) để phân biệt spike và trend.
+- **Statistical significance / Minimum sample size**: số request tối thiểu để kết luận có ý nghĩa thống kê (rule of thumb: ≥ 1000 request hoặc ≥ 30 conversion cho binary metric).
+- **AnalysisTemplate (Argo Rollouts) / MetricTemplate (Flagger)**: định nghĩa cách phân tích canary: metric nào, ngưỡng nào, weight, logic pass/fail.
+- **Composite score**: điểm tổng hợp nhiều metric có trọng số, thay vì pass/fail nhị phân từng metric.
+
+### Argo Rollouts AnalysisTemplate (production-ready)
+~~~yaml
+apiVersion: argoproj.io/v1alpha1
+kind: AnalysisTemplate
+metadata:
+  name: payment-canary-analysis
+spec:
+  args:
+  - name: service-name
+    value: payment-api
+  - name: namespace
+    value: production
+  metrics:
+  # 1. Error budget burn-rate (multi-window) — weight 50%
+  - name: error-budget-burn-rate
+    interval: 1m
+    count: 10   # 10 phút = 10 window
+    successCondition: |
+      result[0] <= 6 || result[1] <= 14.4
+    failureCondition: |
+      result[0] > 6 || result[1] > 14.4
+    provider:
+      prometheus:
+        address: http://prometheus.monitoring.svc:9090
+        query: |
+          # Multi-window burn rate cho availability SLO 99.95% (error budget 0.05%)
+          # result[0] = 5m window burn rate, result[1] = 1h window burn rate
+          (
+            sum(rate(http_requests_total{job="{{args.service-name}}",namespace="{{args.namespace}}",status=~"5.."}[5m]))
+            /
+            sum(rate(http_requests_total{job="{{args.service-name}}",namespace="{{args.namespace}}"}[5m]))
+          ) / 0.0005,
+          (
+            sum(rate(http_requests_total{job="{{args.service-name}}",namespace="{{args.namespace}}",status=~"5.."}[1h]))
+            /
+            sum(rate(http_requests_total{job="{{args.service-name}}",namespace="{{args.namespace}}"}[1h]))
+          ) / 0.0005
+
+  # 2. Payment business success rate — weight 20%
+  - name: payment-success-rate
+    interval: 1m
+    count: 10
+    successCondition: result[0] >= 0.999
+    failureCondition: result[0] < 0.999
+    provider:
+      prometheus:
+        address: http://prometheus.monitoring.svc:9090
+        query: |
+          sum(rate(payment_success_total{job="{{args.service-name}}",namespace="{{args.namespace}}"}[5m]))
+          /
+          sum(rate(payment_attempt_total{job="{{args.service-name}}",namespace="{{args.namespace}}"}[5m]))
+
+  # 3. Latency p99 SLO — weight 20%
+  - name: latency-p99
+    interval: 1m
+    count: 10
+    successCondition: result[0] <= 0.3
+    failureCondition: result[0] > 0.3
+    provider:
+      prometheus:
+        address: http://prometheus.monitoring.svc:9090
+        query: |
+          histogram_quantile(0.99,
+            sum(rate(http_request_duration_seconds_bucket{job="{{args.service-name}}",namespace="{{args.namespace}}"}[5m])) by (le)
+          )
+
+  # 4. Statistical significance gate — weight 10% (bonus)
+  - name: sample-size-gate
+    interval: 1m
+    count: 10
+    successCondition: result[0] >= 1000
+    failureCondition: result[0] < 1000
+    provider:
+      prometheus:
+        address: http://prometheus.monitoring.svc:9090
+        query: |
+          sum(rate(http_requests_total{job="{{args.service-name}}",namespace="{{args.namespace}}"}[5m])) * 300
+          # 5m rate * 300s = approximate requests in 5m window
+
+  # 5. Resource saturation (CPU/memory) — weight 10%
+  - name: resource-saturation
+    interval: 1m
+    count: 10
+    successCondition: result[0] < 0.8 && result[1] < 0.85
+    failureCondition: result[0] >= 0.8 || result[1] >= 0.85
+    provider:
+      prometheus:
+        address: http://prometheus.monitoring.svc:9090
+        query: |
+          max(container_cpu_usage_seconds_total{job="{{args.service-name}}",namespace="{{args.namespace}}"}) / max(container_spec_cpu_quota{job="{{args.service-name}}",namespace="{{args.namespace}}"}) / 100000,
+          max(container_memory_working_set_bytes{job="{{args.service-name}}",namespace="{{args.namespace}}"}) / max(container_spec_memory_limit_bytes{job="{{args.service-name}}",namespace="{{args.namespace}}"})
+
+# Rollout sử dụng AnalysisTemplate
+---
+apiVersion: argoproj.io/v1alpha1
+kind: Rollout
+metadata:
+  name: payment-api
+spec:
+  replicas: 6
+  strategy:
+    canary:
+      canaryMetadata:
+        labels:
+          rollout: canary
+      stableMetadata:
+        labels:
+          rollout: stable
+      steps:
+      - setWeight: 5
+      - analysis:
+          templates:
+          - templateName: payment-canary-analysis
+          args:
+          - name: service-name
+            value: payment-api
+          startingStep: 1
+      - setWeight: 25
+      - analysis:
+          templates:
+          - templateName: payment-canary-analysis
+      - setWeight: 50
+      - analysis:
+          templates:
+          - templateName: payment-canary-analysis
+      - setWeight: 100
+      analysis:
+        templates:
+        - templateName: payment-canary-analysis
+      # Anti-flapping: require 2 consecutive failed analyses before rollback
+      failureLimit: 2
+      # Manual approval gate for production
+      - pause: {duration: 5m}  # hoặc pause: {} để chờ manual promote
+~~~
+
+### Cơ chế burn-rate multi-window (Google SRE workbook)
+| Window | Ngưỡng burn rate | Ý nghĩa | Hành động |
+|---|---|---|---|
+| 1m | > 6× | Spike rất mạnh, có thể false positive | Chỉ cảnh báo, không rollback |
+| 5m | > 6× | Trend ngắn hạn đáng lo | Cảnh báo + chuẩn bị rollback |
+| 15m | > 3× | Trend trung hạn | Rolling update pause, investigation |
+| 1h | > 14.4× (hoặc > 2× nếu SLO chặt) | Tiêu hao budget nhanh, chắc chắn regression | **Auto-rollback** (kèm sample size gate) |
+
+Công thức: {{burn_rate = (error_rate_observed / error_rate_SLO)}}. SLO 99.95% → error_rate_SLO = 0.0005.
+
+### Statistical significance (tránh flapping)
+- **Minimum sample size**: với error rate thấp (0.05%), cần request volume lớn. Rule of thumb: n ≥ (Z² × p × (1-p)) / E². Với 95% confidence (Z=1.96), p=0.0005, margin error E=0.0005 → n ≈ 7.600 request. Thực tế dùng **≥ 1000 request** làm gate tối thiểu (sample-size-gate metric).
+- **Sequential testing**: Argo Rollouts count: 10 (10 window 1m) = 10 điểm dữ liệu. Chỉ rollback khi **2 window liên tiếp fail** (failureLimit: 2) + sample size đủ.
+- **Bayesian approach** (nâng cao): Flagger hỗ trợ Bayesian analysis so sánh canary vs baseline posterior probability.
+
+### Composite scoring (tránh ngưỡng cứng từng metric)
+Thay vì từng metric pass/fail riêng, tính điểm tổng hợp:
+~~~text
+Score = 0.50 × (1 - min(burn_rate_5m/6, 1))           # Error budget burn (50%)
+      + 0.20 × (success_rate / 0.999)                  # Business success (20%)
+      + 0.20 × min(0.3 / latency_p99, 1)               # Latency SLO (20%)
+      + 0.10 × (1 - max(cpu_sat, mem_sat))             # Resource (10%)
+
+Pass nếu Score ≥ 0.85 VÀ sample_size ≥ 1000 VÀ không window nào burn_rate_1h > 14.4
+~~~
+Argo Rollouts không có composite scoring built-in → dùng **Kayenta** (Netflix) hoặc **custom AnalysisRun** với script, hoặc Flagger với metricTemplate weight.
+
+### Lỗi hay gặp
+1. **Chỉ dùng error rate > 1%**: bỏ sót regression latency (+50ms) hoặc success rate -0.05% — cả hai đều tiêu hao error budget mà không trigger rollback.
+2. **Không có sample size gate**: 5% traffic = ~50 req/min. 1 lỗi = 2% error rate → rollback sai (flapping). Cần ≥ 1000 req (20 phút ở 5% traffic).
+3. **Single window burn-rate**: spike 1 phút do GC pause trigger rollback → flapping. Multi-window (5m, 15m, 1h) phân biệt spike vs trend.
+4. **Không có cooldown/failureLimit**: analysis fail 1 lần → rollback ngay → canary không bao giờ promote. Cần failureLimit: 2 hoặc consecutiveFailures.
+5. **Không phân biệt canary vs baseline traffic**: metric phải filter theo label rollout: canary vs rollout: stable, không đo toàn bộ service.
+
+### Ví dụ đời thực
+- **Triệu chứng:** Canary 5% payment API v2.3.0: error rate 0.8% (< 1% threshold), p99 latency 420ms (SLO 300ms), payment success rate 99.87% (SLO 99.95%). Auto-rollback cũ (error rate > 1%) **không trigger**. 10 phút sau promote 25%: success rate 99.82%, p99 580ms, error rate 1.2% → rollback trigger nhưng đã ảnh hưởng 25% traffic (~15.000 giao dịch).
+- **Điều tra:** Canary v2.3.0 thêm synchronous call tới fraud-check service mới, thêm 120ms latency trung bình. Error rate thấp vì fraud-check trả 200 nhưng chậm. Business metric (success rate) giảm do timeout client (client timeout 500ms).
+- **Nguyên nhân gốc:** Canary analysis chỉ xem error rate, bỏ qua latency SLO và business success rate. Không có sample size gate (5% traffic = 60 req/min, 10 phút = 600 req < 1000). Không multi-window burn-rate.
+- **Cách xử lý:** Deploy AnalysisTemplate mới với 4 metric + sample-size-gate + multi-window burn-rate. Thêm Kayenta cho composite scoring. Cấu hình failureLimit=2, pause 5m manual approval trước promote 25%.
+- **Kết quả đo được:** Canary v2.3.1 (fix fraud-check async): 5% step pass (score 0.92, sample 1200, burn_rate_5m=1.2×, burn_rate_1h=0.8×). Promote 25% → pass. Promote 100% hoàn tất 40 phút, **0 rollback sai, 0 regression bỏ sót**. Lead time deploy giảm từ 2h (manual) xuống 45 phút (auto với gate).
+
+### Trả lời phỏng vấn (góc Lead)
+Em thiết kế canary auto-rollback dựa trên **SLO burn-rate multi-window** thay vì ngưỡng error rate cứng: tính burn rate trên 4 cửa sổ (1m, 5m, 15m, 1h) với ngưỡng Google SRE workbook (5m > 6×, 1h > 14.4×). Kết hợp 3 SLI: availability (5xx), latency p99, và **business success rate** (payment success) — metric nào vi phạm SLO cũng tiêu hao error budget. Thêm **statistical significance gate** (minimum 1000 requests / 5m window) để tránh flapping ở low traffic. Dùng **composite scoring** (weighted: burn-rate 50%, business success 20%, latency 20%, resource 10%) thay vì pass/fail nhị phân, deploy qua Argo Rollouts AnalysisTemplate + failureLimit: 2 + manual approval gate cho production. Kết quả: canary v2.3.1 pass 5%→25%→50%→100% trong 40 phút, 0 rollback sai, 0 regression bỏ sót, lead time giảm 75% so với manual.
+
+> Senior tip: Canary auto-rollback chỉ an toàn khi **SLI/SLO đã được định nghĩa và đo được**. Nếu team chưa có SLO, hãy bắt đầu bằng: (1) định nghĩa SLO cho service quan trọng, (2) instrument SLI (success rate, latency histogram, business metric), (3) dashboard error budget burn-rate. Không có SLO thì không có burn-rate, không có burn-rate thì canary chỉ đoán mò. Hãy yêu cầu product/owner đồng ý SLO trước khi xây canary automation.
+
+`,
+    follow: [
+      'Làm sao xử lý canary khi traffic thấp (ban đêm) mà không đủ sample size cho statistical significance?',
+      'Flagger vs Argo Rollouts vs Kayenta: khi nào chọn cái nào cho canary analysis phức tạp?',
+      'Burn-rate multi-window với SLO 99.95% (error budget 0.05%) rất nhạy cảm. Làm sao cân bằng giữa sensitivity (phát hiện sớm) và specificity (không false positive)?'
+    ],
+    tags: ['Argo Rollouts', 'Flagger', 'Canary', 'SLO', 'burn-rate', 'error budget', 'statistical significance', 'auto-rollback', 'observability']
+  },
+  {
+    id: 'devops-203',
+    topic: 'devops',
+    level: 'senior',
+    q: 'Công ty 30 service Spring Boot chạy 4 môi trường (DEV, SIT, UAT, PROD) trên Kubernetes. Hiện dùng ConfigMap/Secret plaintext trong Git repo (GitOps Argo CD). CISO yêu cầu: (1) không secret trong Git, (2) secret rotation tự động không restart app, (3) ngăn chặn secret leak qua log/heap dump/monitoring, (4) audit trail ai truy cập secret khi nào. Bạn thiết kế kiến trúc dùng **External Secrets Operator + AWS Secrets Manager (hoặc HashiCorp Vault)** kết hợp **ConfigMap reload via checksum annotation**, **Spring Cloud Config / @ConfigurationProperties refresh**, và **secret masking** như thế nào?',
+    a: `**Tóm tắt:** Kiến trúc zero-secret-in-Git: **External Secrets Operator (ESO)** đồng bộ secret từ **AWS Secrets Manager / Vault** vào Kubernetes Secret (không bao giờ lưu secret trong Git). **ClusterSecretStore** xác thực bằng IAM role (IRSA) / Vault AppRole. **ExternalSecret** mapping tạo K8s Secret cho từng namespace/env. **ConfigMap reload** dùng checksum/config annotation + kubectl rollout restart tự động qua reloader hoặc wave controller. **Secret rotation**: ESO refreshInterval + Secret rotation Lambda/Vault rotation → K8s Secret update → reloader detect checksum thay đổi → rolling restart Pod (hoặc Spring Cloud Config @RefreshScope reload không restart cho config non-secret). **Leak prevention**: log masking (Logback pattern), heap dump sanitization (JVM -XX:+HeapDumpOnOutOfMemoryError + script scrub), metrics redaction (Prometheus relabel), audit qua CloudTrail / Vault audit device.
+
+### Hiểu nhanh
+Hãy coi secret như chìa khóa két sắt. **GitOps repo** là bản vẽ thiết kế nhà — không được dán chìa khóa lên bản vẽ. **AWS Secrets Manager / Vault** là phòng két tập trung, ai vào đều được ghi nhận (audit). **External Secrets Operator** là người bảo vệ: định kỳ vào phòng két, lấy chìa khóa mới, đưa vào túi áo (K8s Secret) của từng service. **ConfigMap reload** là khi đổi mã số két, người bảo vệ báo cho chủ nhà (app) biết: "mã mới đây, hãy cập nhật". **Leak prevention** là asegurar chìa khóa không rơi ra ngoài: log không in mã, heap dump không chứa mã, metrics không lộ mã. **Audit trail** là sổ ghi chép: ai, lúc nào, lấy chìa khóa nào.
+
+### Thuật ngữ
+- **External Secrets Operator (ESO)**: controller Kubernetes đồng bộ secret từ external store (AWS Secrets Manager, Vault, Azure Key Vault, GCP Secret Manager, 1Password...) vào K8s Secret.
+- **ClusterSecretStore**: cluster-scoped resource định nghĩa cách kết nối đến external store (auth, endpoint). Dùng cho nhiều namespace.
+- **ExternalSecret**: namespaced resource khai báo secret nào từ store mapping vào K8s Secret nào, refresh interval.
+- **IRSA (IAM Roles for Service Accounts)**: gán IAM role cho Kubernetes ServiceAccount, Pod dùng role đó truy cập AWS API (Secrets Manager) — không cần access key trong Pod.
+- **Vault AppRole**: auth method cho machine/app: role_id (public) + secret_id (private, rotate được).
+- **ConfigMap reload / checksum annotation**: annotation checksum/config: <hash> trên Deployment; khi ConfigMap đổi, hash thay đổi → Deployment rolling restart (hoặc wave controller/reloader trigger).
+- **Spring Cloud Config / @RefreshScope / @ConfigurationProperties**: reload config runtime không restart JVM (cho properties non-secret). Secret rotation vẫn cần restart hoặc @RefreshScope trên bean DataSource.
+- **Log masking / Secret redaction**: thay thế pattern secret (password=, token=, key=) bằng *** trong log output.
+- **Heap dump sanitization**: script xử lý file {{.hprof}} trước khi ship đi phân tích, xoá/che các field chứa secret.
+
+### Kiến trúc end-to-end
+~~~text
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                         EXTERNAL SECRET STORE                               │
+│  ┌─────────────────────┐         ┌─────────────────────┐                  │
+│  │ AWS Secrets Manager │         │   HashiCorp Vault   │  (chọn 1 hoặc cả 2)│
+│  │  - Auto rotation    │         │  - Dynamic secrets  │                  │
+│  │  - IAM policies     │         │  - AppRole auth     │                  │
+│  │  - CloudTrail audit │         │  - Audit device     │                  │
+│  └──────────┬──────────┘         └──────────┬──────────┘                  │
+└─────────────┼────────────────────────────────┼────────────────────────────┘
+              │                                │
+              ▼                                ▼
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                    EXTERNAL SECRETS OPERATOR (ESO)                          │
+│  ┌─────────────────────────────────────────────────────────────────────┐   │
+│  │ ClusterSecretStore (cluster-scoped)                                 │   │
+│  │   provider: aws:                                                    │   │
+│  │     service: SecretsManager                                         │   │
+│  │     region: ap-southeast-1                                          │   │
+│  │     auth:                                                           │   │
+│  │       jwt:                                                          │   │
+│  │         serviceAccountRef:                                          │   │
+│  │           name: eso-sa                                              │   │
+│  │           namespace: external-secrets                               │   │
+│  └─────────────────────────────────────────────────────────────────────┘   │
+│                                    │                                        │
+│                                    ▼                                        │
+│  ┌─────────────────────────────────────────────────────────────────────┐   │
+│  │ ExternalSecret (per namespace/env)                                  │   │
+│  │   refreshInterval: 1h                                               │   │
+│  │   secretStoreRef:                                                   │   │
+│  │     kind: ClusterSecretStore                                        │   │
+│  │     name: aws-secrets-manager                                       │   │
+│  │   target:                                                           │   │
+│  │     name: payment-api-secrets                                       │   │
+│  │     creationPolicy: Owner                                           │   │
+│  │   data:                                                             │   │
+│  │   - secretKey: db-password                                          │   │
+│  │     remoteRef:                                                      │   │
+│  │       key: prod/payment/db-password                                 │   │
+│  │       version: "AWSCURRENT"                                         │   │
+│  │   - secretKey: kafka-sasl-password                                  │   │
+│  │     remoteRef:                                                      │   │
+│  │       key: prod/payment/kafka-sasl                                  │   │
+│  └─────────────────────────────────────────────────────────────────────┘   │
+└────────────────────────────┬──────────────────────────────────────────────┘
+                             │ Creates/Updates K8s Secret
+                             ▼
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                     KUBERNETES CLUSTER (per namespace)                      │
+│  ┌─────────────────────┐  ┌─────────────────────┐  ┌─────────────────────┐ │
+│  │ K8s Secret          │  │ ConfigMap           │  │ Deployment          │ │
+│  │ payment-api-secrets │  │ payment-api-config  │  │ payment-api         │ │
+│  │ (from ESO)          │  │ (GitOps - plaintext)│  │                     │ │
+│  │                     │  │                     │  │ envFrom:            │ │
+│  │ stringData:         │  │ data:               │  │ - secretRef:        │ │
+│  │   db-password: ***  │  │   app.properties    │  │     name: ...       │ │
+│  │   kafka-sasl: ***   │  │   log.level: INFO   │  │ - configMapRef:     │ │
+│  │                     │  │                     │  │     name: ...       │ │
+│  └─────────────────────┘  └──────────┬──────────┘  └──────────┬──────────┘ │
+│                                      │                        │            │
+│                                      ▼                        ▼            │
+│  ┌─────────────────────────────────────────────────────────────────────┐   │
+│  │ Reloader / Wave Controller                                          │   │
+│  │   - Watch ConfigMap/Secret                                          │   │
+│  │   - On change: patch Deployment annotation                          │   │
+│  │     checksum/config: <sha256>                                       │   │
+│  │   - Deployment rolling restart (zero-downtime via maxSurge)         │   │
+│  └─────────────────────────────────────────────────────────────────────┘   │
+└─────────────────────────────────────────────────────────────────────────────┘
+                             │
+              ┌──────────────┴──────────────┐
+              ▼                             ▼
+    ┌─────────────────────┐       ┌─────────────────────┐
+    │ Spring Boot App     │       │ Audit & Leak        │
+    │ @Value / @Config    │       │ Prevention          │
+    │ @RefreshScope       │       │                     │
+    └─────────────────────┘       └─────────────────────┘
+~~~
+
+### Chi tiết triển khai
+
+#### 1. ClusterSecretStore (AWS Secrets Manager + IRSA)
+~~~yaml
+apiVersion: external-secrets.io/v1
+kind: ClusterSecretStore
+metadata:
+  name: aws-secrets-manager
+spec:
+  provider:
+    aws:
+      service: SecretsManager
+      region: ap-southeast-1
+      auth:
+        jwt:
+          serviceAccountRef:
+            name: eso-sa
+            namespace: external-secrets
+~~~
+ServiceAccount eso-sa gắn IAM role arn:aws:iam::123456789:role/ESO-SecretsManager-Reader với policy secretsmanager:GetSecretValue, secretsmanager:DescribeSecret trên arn:aws:secretsmanager:ap-southeast-1:123456789:secret:prod/*.
+
+#### 2. ExternalSecret per environment (production namespace)
+~~~yaml
+apiVersion: external-secrets.io/v1
+kind: ExternalSecret
+metadata:
+  name: payment-api-secrets
+  namespace: production
+spec:
+  refreshInterval: 1h
+  secretStoreRef:
+    kind: ClusterSecretStore
+    name: aws-secrets-manager
+  target:
+    name: payment-api-secrets
+    creationPolicy: Owner
+    template:
+      engineVersion: v2
+      metadata:
+        annotations:
+          # Trigger reloader khi secret đổi
+          reloader.stakater.com/auto: "true"
+      data:
+        # Mapping key trong AWS Secret -> key trong K8s Secret
+        DB_PASSWORD: "{{ .db_password }}"
+        KAFKA_SASL_PASSWORD: "{{ .kafka_sasl_password }}"
+        API_PARTNER_KEY: "{{ .api_partner_key }}"
+  dataFrom:
+  - extract:
+      key: prod/payment/api-secrets  # AWS Secret name (JSON)
+~~~
+AWS Secret prod/payment/api-secrets lưu JSON: {"db_password":"...","kafka_sasl_password":"...","api_partner_key":"..."}. ESO extract từng field.
+
+#### 3. ConfigMap (GitOps) + checksum annotation + Reloader
+~~~yaml
+# ConfigMap (stored in Git, Argo CD sync)
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: payment-api-config
+  namespace: production
+data:
+  application.yaml: |
+    spring:
+      datasource:
+        hikari:
+          maximum-pool-size: 20
+      kafka:
+        consumer:
+          group-id: payment-api
+    app:
+      partner:
+        timeout-ms: 5000
+    logging:
+      level:
+        com.bank.payment: DEBUG
+---
+# Deployment (Argo CD manages)
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: payment-api
+  namespace: production
+  annotations:
+    reloader.stakater.com/auto: "true"
+spec:
+  template:
+    spec:
+      containers:
+      - name: app
+        envFrom:
+        - secretRef:
+            name: payment-api-secrets
+        - configMapRef:
+            name: payment-api-config
+        # Spring Cloud Config cho reload không restart (non-secret)
+        env:
+        - name: SPRING_CLOUD_CONFIG_ENABLED
+          value: "true"
+        - name: SPRING_CONFIG_IMPORT
+          value: "configmap:payment-api-config"
+~~~
+**Reloader** (stakater/reloader) hoặc **Wave** (Argo CD) watch ConfigMap/Secret → patch Deployment annotation checksum/config → rolling restart.
+
+#### 4. Spring Boot reload config không restart (non-secret)
+~~~java
+@Configuration
+@ConfigurationProperties(prefix = "app.partner")
+@RefreshScope  // Cho phép reload runtime
+@Data
+public class PartnerConfig {
+    private int timeoutMs;
+    private String endpoint;
+    private boolean enableRetry;
+}
+
+@RestController
+@RequiredArgsConstructor
+public class ConfigController {
+    private final PartnerConfig config;
+
+    @GetMapping("/config/partner")
+    public PartnerConfig getConfig() {
+        return config;  // Luôn trả giá trị mới nhất sau @RefreshScope refresh
+    }
+}
+
+// Actuator endpoint: POST /actuator/refresh → reload @RefreshScope beans
+// Hoặc Spring Cloud Config Server push via webhook
+~~~
+**Lưu ý**: Secret (DB password, Kafka SASL) **không** reload được qua @RefreshScope vì DataSource/Kafka consumer cần restart để tạo connection mới. Chỉ config non-secret (timeout, endpoint, feature flag) reload không restart.
+
+#### 5. Secret rotation flow (automatic, zero-downtime)
+~~~text
+1. AWS Secrets Manager rotation schedule (30 ngày) → Lambda rotation function
+   - Tạo password mới, cập nhật Secret version AWSPENDING
+   - Test kết nối DB với password mới
+   - Promote AWSPENDING → AWSCURRENT, version cũ → AWSPREVIOUS
+
+2. ESO refreshInterval: 1h (hoặc webhook EventBridge → SNS → ESO webhook trigger ngay)
+   - ESO detect version mới → update K8s Secret payment-api-secrets
+
+3. Reloader detect Secret change → patch Deployment annotation checksum/config
+   - Deployment rolling restart (maxSurge=2, maxUnavailable=0, PDB minAvailable=5)
+
+4. Pod mới start → đọc Secret mới từ env → kết nối DB thành công
+   - Pod cũ graceful shutdown (server.shutdown=graceful, preStop 15s)
+
+5. Kết quả: rotation hoàn tất trong 5-10 phút, 0 downtime, 0 manual step
+~~~
+
+#### 6. Leak prevention (log, heap dump, metrics, audit)
+
+**Log masking (Logback)**
+~~~xml
+<configuration>
+  <appender name="CONSOLE" class="ch.qos.logback.core.ConsoleAppender">
+    <encoder class="com.bank.logging.MaskingEncoder">
+      <pattern>%d{ISO8601} [%thread] %-5level %logger{36} - %msg%n</pattern>
+      <patterns>
+        <pattern>password\s*[=:]\s*\S+</pattern>
+        <pattern>token\s*[=:]\s*\S+</pattern>
+        <pattern>secret\s*[=:]\s*\S+</pattern>
+        <pattern>key\s*[=:]\s*\S+</pattern>
+        <pattern>authorization\s*[=:]\s*\S+</pattern>
+        <pattern>jdbc:.*://.*:.*@</pattern>
+      </patterns>
+      <replacement>***MASKED***</replacement>
+    </encoder>
+  </appender>
+</configuration>
+~~~
+
+**Heap dump sanitization (script chạy trước khi ship .hprof)**
+~~~bash
+#!/usr/bin/env bash
+# sanitize-heapdump.sh - xoá/che secret trong heap dump trước khi gửi team phân tích
+# Cảnh báo: xử lý .hprof phức tạp, nên dùng Eclipse MAT GUI hoặc script Python với thư viện jhprof
+# Dưới đây là ví dụ minh họa quy trình, không phải script production-ready
+
+INPUT=$1
+OUTPUT=\${INPUT%.hprof}-sanitized.hprof
+
+# Cách khuyến nghị: dùng Eclipse MAT headless với OQL để xuất dominator tree đã lọc
+# /opt/mat/MemoryAnalyzer -consolelog -application org.eclipse.mat.api.parse \
+#   $INPUT \
+#   -query "SELECT * FROM dominator_tree WHERE NOT (class.name MATCHES '.*[Pp]assword.*|.*[Ss]ecret.*|.*[Tt]oken.*|.*[Aa]pi[Kk]ey.*')" \
+#   -format hprof \
+#   $OUTPUT
+
+# Thực tế: dùng Python script với thư viện jhprof (pip install jhprof) để parse và xoá object nhạy cảm
+# python3 sanitize_hprof.py $INPUT $OUTPUT
+
+echo "Sanitized heap dump requires specialized tooling (Eclipse MAT, jhprof). Xem runbook chi tiết."
+echo "Output placeholder: $OUTPUT"
+~~~
+
+**Prometheus metrics redaction (relabel_configs)**
+~~~yaml
+# prometheus.yml
+scrape_configs:
+- job_name: 'spring-boot-apps'
+  kubernetes_sd_configs:
+  - role: pod
+  relabel_configs:
+  # Loại bỏ label chứa secret
+  - source_labels: [__meta_kubernetes_pod_label_env]
+    regex: '.*(password|secret|token|key).*'
+    action: labeldrop
+  # Mask value trong metric (nếu có)
+  - source_labels: [__name__]
+    regex: '.*_credentials_.*'
+    action: drop
+~~~
+
+**Audit trail**
+- **AWS Secrets Manager**: CloudTrail log mọi GetSecretValue, DescribeSecret, PutSecretValue, RotateSecret. Query Athena: SELECT useridentity.arn, eventname, requestparameters.secretid, eventtime FROM cloudtrail_logs WHERE eventsource='secretsmanager.amazonaws.com'.
+- **HashiCorp Vault**: Audit device (file/syslog) log mọi request: path, operation, client_token_accessor, time. Enable: vault audit enable file file_path=/var/log/vault_audit.log.
+- **ESO**: Log level debug ghi lại ExternalSecret sync status, nhưng không log secret value. Kết hợp CloudTrail/Vault audit để biết ai (IAM role / Vault token) truy cập secret khi nào.
+
+### Bảng so sánh các phương pháp quản lý secret
+| Phương pháp | Secret trong Git | Rotation tự động | Reload không restart | Audit trail | Leak prevention | Phức tạp |
+|---|---|---|---|---|---|---|
+| ConfigMap/Secret plaintext GitOps | **CÓ** (rủi ro) | Manual | Có (reloader) | Git history | Yếu | Thấp |
+| Sealed Secrets (Bitnami) | Encrypted (có thể commit) | Manual (re-seal) | Có (reloader) | Git history | TB | Trung bình |
+| SOPS + age/GPG | Encrypted (có thể commit) | Manual | Có (reloader) | Git history | TB | Trung bình |
+| **External Secrets Operator + AWS SM/Vault** | **KHÔNG** | **Tự động (Lambda/Vault)** | **Có (reloader/@RefreshScope)** | **CloudTrail/Vault audit** | **Mạnh (masking, sanitization)** | **Cao** |
+| Vault Agent Injector (sidecar) | Không | Tự động (Vault) | Có (file watch) | Vault audit | Mạnh | Rất cao |
+
+### Lỗi hay gặp
+1. **ESO refreshInterval quá lâu (24h)**: secret rotation xong nhưng app đợi 24h mới thấy secret mới → connection fail cho đến lúc sync. Fix: refreshInterval: 1h + EventBridge webhook trigger ngay khi rotation xong.
+2. **Không có reloader / wave controller**: Secret đổi nhưng Deployment không restart → Pod cũ vẫn dùng secret cũ → connection fail sau rotation. Fix: cài stakater/reloader hoặc bật Argo CD Wave (argocd.argoproj.io/wave).
+3. **Spring Boot @RefreshScope trên DataSource**: không hoạt động (HikariCP không recreate pool). Fix: secret rotation **bắt buộc rolling restart** Pod; chỉ config non-secret mới @RefreshScope.
+4. **Log masking không đầy đủ**: quên mask Authorization: Bearer <token> header, JDBC URL chứa password. Fix: pattern bao quát password|secret|token|key|credential|authorization|jdbc:.*://.*:.*@.
+5. **Heap dump chứa secret gửi vendor**: violation compliance. Fix: script sanitize bắt buộc trong runbook incident trước khi share {{.hprof}}.
+6. **IRSA / AppRole permission quá rộng**: ESO role có quyền secretsmanager:* trên tất cả secret. Fix: policy restrict arn:aws:secretsmanager:region:account:secret:prod/payment/* và prod/shared/*.
+
+### Ví dụ đời thực
+- **Triệu chứng:** Audit phát hiện 3 secret production (DB password, Kafka SASL, API partner key) trong Git history (commit 6 tháng trước). CISO yêu cầu khắc phục trong 2 tuần. Team đang rotate secret thủ công qua script, mất 30 phút/service, thường quên restart Pod → incident.
+- **Điều tra:** 30 service × 4 env = 120 secret. GitOps repo public internal (mọi dev đọc được). Không có audit trail ai xem secret. Log từng khi exception in ra jdbc:postgresql://host:5432/db?user=xxx&password=yyy. Heap dump gửi vendor chứa password. Metrics hikaricp_connections_creation không leak nhưng label poolName chứa env name.
+- **Nguyên nhân gốc:** (1) Dùng ConfigMap/Secret plaintext trong Git, (2) Không có external secret store, (3) Không có rotation automation, (4) Không có leak prevention layer.
+- **Cách xử lý:** Triển khai ESO + AWS Secrets Manager (IRSA). Tạo ClusterSecretStore, 120 ExternalSecret (tự động gen từ script). Cài reloader. Thêm Logback masking encoder. Viết sanitize-heapdump.sh. Cấu hình Prometheus relabel drop. Bật CloudTrail Data Event cho Secrets Manager. Chạy rotation Lambda 30 ngày.
+- **Kết quả đo được:** Sau 2 tuần: **0 secret trong Git** (trừ sealed secret cho non-prod), **rotation tự động 100%** (30 service × 4 env, 0 manual), **0 incident do secret rotation**, **log/heap dump/metrics clean** (pen test xác nhận), **audit trail đầy đủ** (CloudTrail query < 1 giây trả ai truy cập secret nào lúc nào). Thời gian on-board secret mới: từ 30 phút → 5 phút (tạo AWS Secret + ExternalSecret apply).
+
+### Trả lời phỏng vấn
+Em thiết kế zero-secret-in-Git bằng External Secrets Operator kết hợp AWS Secrets Manager (hoặc Vault): ClusterSecretStore dùng IRSA authenticate, ExternalSecret per namespace mapping secret từ store vào K8s Secret, refreshInterval 1h + EventBridge webhook trigger ngay khi rotation. ConfigMap plaintext cho non-secret config, reload bằng reloader/watch checksum annotation rolling restart. Secret rotation: AWS SM rotation Lambda → ESO sync → reloader trigger rolling restart (maxSurge/PDB zero-downtime). Non-secret config reload không restart qua Spring Cloud Config @RefreshScope. Leak prevention: Logback masking encoder (pattern password/token/key), heap dump sanitize script (MAT filter), Prometheus relabel drop label/value nhạy cảm, audit trail qua CloudTrail (AWS) hoặc Vault audit device. Kết quả 30 service 4 env: 0 secret trong Git, rotation tự động 100%, 0 downtime, audit query < 1s.
+
+> Senior tip: **Secret management không chỉ là "lưu ở đâu" — là toàn bộ vòng đời: tạo, phân phối, rotate, revoke, audit, prevent leak.** Hãy bắt đầu bằng threat model: ai là adversary (insider dev, compromised CI, vendor nhận heap dump, attacker truy cập Git)? Mỗi adversary cần một lớp phòng thủ: Git → sealed/eso, CI → OIDC token, vendor → sanitize heap dump, attacker → IRSA least privilege + audit trail. Đừng tin "bảo mật bằng obscurity" (mã hóa trong Git vẫn là secret trong Git — ai có key decrypt vẫn đọc được). External Secrets Operator + cloud provider secret store là chuẩn de facto hiện nay.
+
+`,
+    follow: [
+      'Khi dùng HashiCorp Vault thay vì AWS Secrets Manager, ExternalSecret config khác gì (auth, dynamic secret, lease TTL)?',
+      'Làm sao xử lý secret rotation cho service đang consume Kafka (SASL SCRAM) — password đổi thì consumer rebalance như thế nào?',
+      'External Secrets Operator có single point of failure không? HA mode như thế nào, và nếu ESO down thì secret đã sync trong K8s Secret còn dùng được không?'
+    ],
+    tags: ['External Secrets Operator', 'AWS Secrets Manager', 'HashiCorp Vault', 'GitOps', 'secret rotation', 'ConfigMap reload', 'leak prevention', 'audit trail', 'IRSA', 'Spring Boot']
+  },
+  {
+    id: 'devops-204',
+    topic: 'devops',
+    level: 'senior',
+    q: 'Service Spring Boot khởi động 90 giây (Flyway migration, classpath scanning, JIT warm-up). Rolling update maxSurge=1, maxUnavailable=0, startupProbe period=5s failureThreshold=30. Sau khi deploy, monitoring ghi nhận p99 tăng vọt 5 phút trong khi startup probe vẫn xanh. Bạn giải thích vì sao startup probe không ngăn chặn request vào Pod chưa sẵn sàng, và cấu hình probe + readiness + preStop thế nào để thực sự zero-downtime?',
+    a: `**Tóm tắt:** startupProbe chỉ gating liveness/readiness — nó **không** ngăn Pod nhận traffic. Kubernetes tạo Pod, chạy startupProbe; khi startup pass, Pod chuyển sang chạy readinessProbe. Nếu readiness probe báo xanh (ví dụ chỉ check HTTP 200) **trước** khi warm-up xong, Pod vào EndpointSlice và nhận request khi JIT còn lạnh, p99 vọt. Cách đúng: startupProbe check liveness endpoint, readinessProbe check readiness endpoint KÈM custom warmup indicator, preStop sleep để chờ endpoint gỡ, graceful shutdown chờ in-flight, terminationGracePeriodSeconds > preStop + shutdown timeout.,
+
+### Hiểu nhanh
+Hãy tưởng startup probe giống "bảo vệ cổng" chỉ kiểm tra "nhân viên đã đến nơi làm chưa", còn readiness probe giống "trưởng ca" hỏi "sẵn sàng phục vụ khách chưa?". Nếu trưởng ca chỉ nhìn thấy nhân viên ngồi xuống là cho phục vụ, mà nhân viên vẫn đang bật máy, cài phần mềm (JIT warm-up), thì khách đầu tiên sẽ chờ rất lâu. Trên Kubernetes: startupProbe pass → Pod chuyển trạng thái Running, readinessProbe bắt đầu chạy. Nếu readinessProbe chỉ {{httpGet /actuator/health}} trả 200 ngay khi web server up, Pod ngay lập tức được thêm vào EndpointSlice. Request rơi vào Pod lúc này gặp cold JVM: class loading, JIT interpreter, connection pool lazy init — p99 vọt 5-10 phút.
+
+### Thuật ngữ
+- **startupProbe**: probe chạy **trước** liveness/readiness; chỉ khi pass mới cho chạy hai probe kia. Dùng cho app khởi động chậm.
+- **readinessProbe**: fail = gỡ khỏi EndpointSlice (không nhận traffic), **không** restart Pod.
+- **livenessProbe**: fail = restart Pod.
+- **JIT warm-up**: giai đoạn JVM chạy bytecode ở interpreter (C1) rồi mới tối ưu bằng C2 compiler; vài trăm request đầu latency cao, CPU pattern khác hẳn steady state.
+- **EndpointSlice**: danh sách IP:port Pod **Ready** của Service; kube-proxy/Ingress route traffic dựa trên này.
+- **preStop hook**: lệnh chạy **trước** SIGTERM, dùng để sleep cho endpoint kịp gỡ.
+- **terminationGracePeriodSeconds**: tổng thời gian từ lúc Pod Terminating đến SIGKILL (mặc định 30s).
+
+### Cơ chế luồng request vào Pod mới
+~~~text
+t=0        Pod created, startupProbe bắt đầu (period 5s)
+t=0..90s   App boot: Flyway, classpath scan, bean init, web server up
+t=90s      startupProbe pass (httpGet /actuator/health/liveness)
+t=90s      readinessProbe BẮT ĐẦU chạy (period 5s)
+t=90s      readinessProbe check /actuator/health/readiness → 200 OK (chỉ check web server up)
+t=90s      Pod Ready → thêm vào EndpointSlice → NHẬN TRAFFIC NGAY
+t=90s..    Request đầu tiên: class loading, JIT interpreter, HikariCP lazy getConnection
+t=90s..300s p99 vọt do cold JVM, connection pool warm-up
+t=300s     JIT C2 compile xong, pool ổn định, p99 về bình thường
+~~~
+
+### Cấu hình đúng cho zero-downtime
+~~~yaml
+# Deployment spec
+spec:
+  replicas: 4
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 0
+  minReadySeconds: 30          # Pod phải Ready liên tục 30s mới tính available
+  template:
+    spec:
+      terminationGracePeriodSeconds: 90
+      containers:
+        - name: app
+          lifecycle:
+            preStop:
+              httpGet:           # image distroless không có shell → dùng httpGet
+                path: /internal/drain
+                port: 8081
+          readinessProbe:
+            httpGet:
+              path: /actuator/health/readiness
+              port: 8081
+            periodSeconds: 5
+            failureThreshold: 3
+          startupProbe:
+            httpGet:
+              path: /actuator/health/liveness
+              port: 8081
+            periodSeconds: 5
+            failureThreshold: 30   # 150s cho boot 90s + buffer
+          livenessProbe:
+            httpGet:
+              path: /actuator/health/liveness
+              port: 8081
+            periodSeconds: 10
+            failureThreshold: 3
+~~~
+
+~~~yaml
+# Spring Boot Actuator health groups
+management:
+  endpoint:
+    health:
+      probes:
+        enabled: true
+      group:
+        readiness:
+          include: readinessState,db,customWarmup
+          show-details: always
+        liveness:
+          include: livenessState
+  endpoints:
+    web:
+      exposure:
+        include: health,info,prometheus
+  server:
+    port: 8081
+~~~
+
+~~~java
+// Custom warmup indicator: chỉ UP khi JIT warm-up xong
+@Component
+class WarmupHealthIndicator implements HealthIndicator {
+    private final AtomicBoolean warmedUp = new AtomicBoolean(false);
+    private final MeterRegistry registry;
+
+    @EventListener(ApplicationReadyEvent.class)
+    void warmup() {
+        // Gọi nội bộ 500 request dummy để nung JIT
+        IntStream.range(0, 500).parallel().forEach(i -> dummyService.call());
+        warmedUp.set(true);
+    }
+
+    @Override
+    public Health health() {
+        return warmedUp.get() ? Health.up().build() : Health.down().withDetail("reason", "JIT warming").build();
+    }
+}
+~~~
+
+### Từng quyết định và lý do
+| Quyết định | Lý do |
+|---|---|
+| startupProbe check {{/actuator/health/liveness}} | Chỉ check process sống, không check dependency; cho phép 150s boot |
+| readinessProbe include {{customWarmup}} | Chỉ báo Ready khi JIT warm-up xong (custom indicator) |
+| minReadySeconds: 30 | Pod phải Ready ổn định 30s mới vào EndpointSlice, tránh flapping |
+| preStop httpGet {{/internal/drain}} | Sleep 10-15s, set readinessState=REFUSING_TRAFFIC, chờ endpoint gỡ |
+| terminationGracePeriodSeconds: 90 | > preStop(15) + Spring shutdown(30) + buffer(15); tránh SIGKILL |
+| server.shutdown=graceful + timeout-per-shutdown-phase=30s | Chờ in-flight request hoàn tất trước khi đóng context |
+
+### Câu trả lời sai phổ biến
+- "startupProbe pass là Pod sẵn sàng nhận traffic": **sai**, startupProbe chỉ gating liveness/readiness; traffic chỉ vào sau readiness pass.
+- "readinessProbe check HTTP 200 là đủ": **sai**, web server up ≠ JIT warm ≠ pool ready ≠ cache nung.
+- "maxUnavailable=0 đã zero-downtime": **sai**, nếu readiness báo xanh sớm, Pod mới nhận traffic khi chưa sẵn sàng, Pod cũ vẫn bị gỡ → request rơi vào Pod lạnh.
+
+### Lỗi hay gặp
+1. **Readiness probe không có custom warmup**: Pod vào EndpointSlice ngay khi web server up, request đầu chạm cold JVM → p99 vọt 5-10 phút. Fix: thêm HealthIndicator check JIT warmup.
+2. **preStop dùng {{exec sleep}} trên image distroless**: không có shell, hook fail, mất tác dụng chờ endpoint gỡ. Fix: dùng {{httpGet}} hoặc Kubernetes sleep action (1.30+).
+3. **terminationGracePeriodSeconds mặc định 30s**: preStop 10s + Spring shutdown 30s = 40s > 30s → Pod bị SIGKILL giữa chừng shutdown. Fix: set ≥ 60-90s.
+4. **Không có minReadySeconds**: Pod Ready → ngay vào EndpointSlice → flapping nếu readiness probe noise. Fix: set 10-30s.
+
+### Trả lời miệng 1 phút
+"startupProbe chỉ là 'cửa ải' cho liveness/readiness, nó không gating traffic. Khi startup pass, readiness probe bắt đầu chạy — nếu readiness chỉ check HTTP 200 thì Pod ngay lập tức vào EndpointSlice và nhận traffic, dù JVM còn cold (class loading, JIT interpreter, pool lazy init). Tôi cấu hình: startupProbe check liveness endpoint (failureThreshold 30 cho 150s), readinessProbe check readiness endpoint **kèm custom warmup indicator** (chỉ UP khi JIT nung xong 500 request dummy), minReadySeconds 30s, preStop httpGet sleep 15s set REFUSING_TRAFFIC, graceful shutdown 30s, terminationGracePeriodSeconds 90s. Kết quả: rolling update 4 replica, maxSurge 1, p99 không vọt, 0 lỗi 5xx."
+
+### Ví dụ đời thực
+Triệu chứng: service thanh toán Spring Boot boot 90s, rolling update maxSurge=1 maxUnavailable=0. Mỗi lần deploy, p99 từ 80ms vọt lên 2.5s trong 5 phút đầu, sau đó tự hồi phục. Startup probe xanh, readiness probe xanh, không pod nào restart.
+
+Điều tra: {{/actuator/health/readiness}} chỉ check {{readinessState}} + {{db}} → trả UP ngay lúc web server start. Request đầu vào Pod mới gặp: class loading 200ms/request, JIT interpreter 500ms/request, HikariCP getConnection 100ms. 500 request đầu p99 > 2s. Metrics {{jvm_compilation_total}} cho thấy C2 compilation chạy mạnh 3-4 phút đầu.
+
+Nguyên nhân gốc: readiness probe thiếu warmup check; Pod nhận traffic khi JVM chưa tối ưu.
+
+Cách xử lý: thêm {{WarmupHealthIndicator}} chạy 500 request dummy song song tại {{ApplicationReadyEvent}}, chỉ set UP khi xong. {{readinessProbe}} include {{customWarmup}}. {{minReadySeconds: 30}}. {{preStop}} httpGet {{/internal/drain}} sleep 15s. {{terminationGracePeriodSeconds: 90}}.
+
+Kết quả đo được: deploy 10 lần liên tiếp, p99 ổn định 85-95ms, 0 spike, 0 lỗi 5xx. JIT warm-up hoàn tất **trước** Pod nhận traffic đầu tiên.
+
+> Senior tip: Đừng tin "startup probe pass = sẵn sàng". Luôn đo p99 theo thời gian thực trong lúc rolling update trên staging (chạy k6 liên tục). Nếu p99 vọt trong 5-10 phút đầu là readiness probe đang báo xanh sớm. Custom warmup indicator chạy request dummy song song (parallel) nung JIT trong 10-20 giây thay vì chờ traffic thật nung vài phút.`,
+    follow: [
+      'Readiness probe nên check gì ngoài HTTP 200 để đảm bảo JIT warm-up đã xong?',
+      'Làm sao đo được thời điểm JIT warm-up hoàn tất trong Pod?',
+      'Startup probe failureThreshold=30 với period=5s = 150s. Pod boot 90s nhưng Flyway đôi khi 120s. Bạn xử lý sao?'
+    ],
+    tags: ['Kubernetes', 'startupProbe', 'readinessProbe', 'JIT warm-up', 'zero-downtime']
+  },
+  {
+    id: 'devops-205',
+    topic: 'devops',
+    level: 'lead',
+    q: 'Bạn triển khai canary cho service thanh toán bằng Argo Rollouts: 5% → 25% → 100%, analysisTemplate dùng Prometheus query error rate < 0.1% và p99 < 200ms. Step 5% chạy 10 phút pass, step 25% fail vì p99 250ms. Bạn giải thích vì sao canary 5% pass mà 25% fail (statistical significance, noisy neighbor, DB connection pool), và thiết kế analysisTemplate + rollback automation thế nào để an toàn?',
+    a: `**Tóm tắt:** Canary 5% pass vì sample size quá nhỏ (ví dụ 100 RPS * 5% = 5 RPS canary → 3000 request/10 phút, p99 chỉ cần 30 request chậm là trượt ngưỡng, variance cực lớn). Tăng lên 25% (25 RPS canary) sample đủ lớn mới bộc lộ p99 thực. Nguyên nhân fail thường là: (1) DB connection pool chia sẻ — canary và baseline cùng tranh pool, baseline full thì canary chờ; (2) noisy neighbor: canary Pod lên node đang chạy batch job; (3) JIT warm-up: canary Pod mới cold start làm p99 vọt. Thiết kế: analysisTemplate có step duration đủ lớn (tối thiểu 15-30 phút), metric có burn rate error budget, require minimum sample count, rollback tự động khi analysis fail, canary Pod có topology spread riêng và resource limit riêng.
+### Hiểu nhanh
+Canary giống "cho 5 người nếm món mới, nếu không ai ngộ độc thì mở rộng ra 25 người". Nhưng 5 người là **sample size quá nhỏ** để kết luận an toàn: 5 người ăn, 1 người bị đau bụng nhẹ (p99) → tỷ lệ 20% nhưng có thể chỉ may rủi. 25 người ăn, 5 người đau bụng → 20% thật sự. Trên Kubernetes: traffic 100 RPS, canary 5% = 5 RPS. 10 phút = 3000 request. p99 = request chậm thứ 30. Chỉ cần 30 request chậm do cold start/GC là p99 vọt — noise chiếm 100% tín hiệu. Tăng canary 25% = 25 RPS, 15000 request/10 phút, p99 = request chậm thứ 150 → tín hiệu thực bộc lộ.
+
+### Thuật ngữ
+- **Canary**: triển khai phiên bản mới cho một phần nhỏ traffic, so sánh metric với baseline (phiên bản cũ).
+- **AnalysisTemplate (Argo Rollouts)**: định nghĩa cách phân tích metric (Prometheus, Datadog, Kayenta...) để tự quyết định continue/pause/abort.
+- **Baseline**: nhóm Pod phiên bản cũ chạy cùng lúc với canary, dùng để so sánh công bằng (cùng thời điểm, cùng điều kiện).
+- **Statistical significance**: mẫu số đủ lớn để kết luận không phải do may rủi.
+- **Error budget burn rate**: tốc độ tiêu hao ngân sách lỗi (SLO); burn rate > 1 = đang vượt ngưỡng cho phép.
+- **Noisy neighbor**: Pod khác trên cùng node tranh chấp CPU/disk/network làm metric canary lệch.
+- **Thundering herd**: nhiều Pod canary scale cùng lúc gây spike tài nguyên (DB pool, Vault rate limit).
+
+### Vì sao 5% pass mà 25% fail
+| Yếu tố | 5% Canary (5 RPS) | 25% Canary (25 RPS) |
+|---|---|---|
+| Request/10phút | 3.000 | 15.000 |
+| p99 position | request #30 | request #150 |
+| Cold start impact | 50 request đầu chiếm 1.6% → noise lớn | 50 request đầu chiếm 0.3% → noise nhỏ |
+| GC spike | 1 GC pause = 1/3000 = 0.03% | 1 GC pause = 1/15000 = 0.007% |
+| DB pool contention |ít request, ít tranh pool |nhiều request, tranh pool rõ rệt |
+
+**Kết luận**: 5% sample size không đủ ý nghĩa thống kê cho p99/error rate. Step duration 10 phút quá ngắn cho traffic thấp.
+
+### Nguyên nhân fail ở 25%
+1. **DB connection pool contention**: Baseline 75% traffic dùng HikariCP pool 20 connections. Canary 25% cũng dùng chung pool (cùng user DB). Tổng concurrent > 20 → canary request chờ pool → p99 vọt.
+2. **Noisy neighbor**: Canary Pod được schedule lên node đang chạy batch job (CPU limit cao, cgroup throttling) → latency tăng.
+3. **JIT warm-up**: Canary Pod mới cold start, 500 request đầu p99 cao, baseline Pod đã warm → so sánh không công bằng.
+4. **Cache miss**: Canary Pod cache rỗng, baseline cache nóng → cache miss rate cao → latency tăng.
+
+### Thiết kế analysisTemplate an toàn
+~~~yaml
+apiVersion: argoproj.io/v1alpha1
+kind: AnalysisTemplate
+metadata:
+  name: payment-canary-analysis
+spec:
+  args:
+    - name: service-name
+    - name: namespace
+  metrics:
+    - name: error-rate
+      interval: 1m
+      successCondition: result[0] < 0.001    # error rate < 0.1%
+      failureLimit: 3                        # cho phép 3 lần fail liên tiếp rồi abort
+      provider:
+        prometheus:
+          address: http://prometheus.monitoring.svc:9090
+          query: |
+            sum(rate(http_server_requests_seconds_count{job="{{args.service-name}}",namespace="{{args.namespace}}",status=~"5.."}[5m]))
+            /
+            sum(rate(http_server_requests_seconds_count{job="{{args.service-name}}",namespace="{{args.namespace}}"}[5m]))
+    - name: p99-latency
+      interval: 2m
+      successCondition: result[0] < 0.2      # p99 < 200ms
+      failureLimit: 3
+      provider:
+        prometheus:
+          address: http://prometheus.monitoring.svc:9090
+          query: |
+            histogram_quantile(0.99,
+              sum by (le) (rate(http_server_requests_seconds_bucket{job="{{args.service-name}}",namespace="{{args.namespace}}"}[5m])))
+    - name: min-sample-count
+      interval: 5m
+      successCondition: result[0] >= 10000   # tối thiểu 10k request trong window
+      provider:
+        prometheus:
+          query: |
+            sum(increase(http_server_requests_seconds_count{job="{{args.service-name}}",namespace="{{args.namespace}}"}[5m]))
+    - name: error-budget-burn-rate
+      interval: 5m
+      successCondition: result[0] < 2        # burn rate < 2x (SLO 99.9% trong 30 ngày)
+      provider:
+        prometheus:
+          address: http://prometheus.monitoring.svc:9090
+          query: |
+            sum(rate(http_requests_seconds_count{job="{{args.service-name}}",namespace="{{args.namespace}}",status=~"5.."}[5m]))
+            /
+            sum(rate(http_requests_seconds_count{job="{{args.service-name}}",namespace="{{args.namespace}}"}[5m]))
+            / 0.001
+~~~
+
+### Rollout manifest với canary an toàn
+~~~yaml
+apiVersion: argoproj.io/v1alpha1
+kind: Rollout
+metadata:
+  name: payment-api
+spec:
+  replicas: 10
+  strategy:
+    canary:
+      canaryMetadata:
+        labels:
+          role: canary
+      stableMetadata:
+        labels:
+          role: stable
+      steps:
+        - setWeight: 5
+        - pause: {duration: 20m}           # đủ sample: 100 RPS * 5% * 20p = 60k request
+        - analysis:
+            templates:
+              - templateName: payment-canary-analysis
+            args:
+              - name: service-name
+                value: payment-api
+              - name: namespace
+                value: production
+        - setWeight: 25
+        - pause: {duration: 30m}           # 100 RPS * 25% * 30p = 450k request
+        - analysis:
+            templates:
+              - templateName: payment-canary-analysis
+        - setWeight: 50
+        - pause: {duration: 20m}
+        - analysis:
+            templates:
+              - templateName: payment-canary-analysis
+        - setWeight: 100
+      canaryMetadata:
+        annotations:
+          # Cô lập resource cho canary
+          scheduler.alpha.kubernetes.io/prefer-nodes: "spot=false"
+      stableMetadata: {}
+      trafficRouting:
+        istio:
+          virtualService:
+            name: payment-api
+  selector:
+    matchLabels:
+      app: payment-api
+  template:
+    metadata:
+      labels:
+        app: payment-api
+    spec:
+      topologySpreadConstraints:
+        - maxSkew: 1
+          topologyKey: topology.kubernetes.io/zone
+          whenUnsatisfiable: DoNotSchedule
+          labelSelector:
+            matchLabels:
+              app: payment-api
+      containers:
+        - name: app
+          resources:
+            requests:
+              memory: "2Gi"
+              cpu: "1"
+            limits:
+              memory: "2Gi"
+          env:
+            - name: JAVA_TOOL_OPTIONS
+              value: "-XX:MaxRAMPercentage=70 -XX:ActiveProcessorCount=2"
+~~~
+
+### Cơ chế rollback tự động
+- {{failureLimit: 3}} trong metric: nếu metric fail 3 lần liên tiếp (mỗi lần cách {{interval}}), AnalysisRun trạng thái {{Failed}} → Rollout tự động {{Abort}} → traffic về 100% stable.
+- {{pause}} step: Argo Rollouts dừng tại step, chờ analysis pass. Nếu analysis fail → rollback ngay.
+- {{analysis.runImmediately: false}} (mặc định): chỉ chạy khi step {{analysis}} được đạt tới.
+- Rollback = {{setWeight: 0}} cho canary, scale down canary Pod, traffic 100% về stable.
+
+### Câu trả lời sai phổ biến
+- "5% traffic là đủ để test canary": **sai** cho p99/error rate ở traffic thấp; cần minimum sample count.
+- "So sánh canary với baseline hôm qua": **sai**, baseline phải chạy **cùng thời điểm** (cùng traffic pattern, cùng DB load, cùng GC pattern).
+- "Rollback thủ công khi thấy lỗi": **chậm**, cần automation qua {{failureLimit: 3}} + {{abort}}.
+
+### Lỗi hay gặp
+1. **Không có {{min-sample-count}} metric**: 5% canary 10 phút pass nhờ may rủi. Fix: thêm metric yêu cầu ≥ 10k request/window.
+2. **Canary và baseline dùng chung DB pool user**: pool contention làm p99 canary cao giả. Fix: canary dùng DB user riêng với pool nhỏ, hoặc PGbouncer chia pool.
+3. **Step duration quá ngắn**: 10 phút không đủ cho JIT warm-up + GC cycle + traffic pattern. Fix: 5% step ≥ 20 phút, 25% step ≥ 30 phút.
+4. **Không topology spread cho canary**: canary Pod rơi node noisy neighbor. Fix: {{topologySpreadConstraints}} zone/node, priority class.
+
+### Trả lời miệng 1 phút
+"Canary 5% pass mà 25% fail là vấn đề **statistical significance**: 5 RPS * 10 phút = 3000 request, p99 là request #30 — noise cold start/GC chiếm 100% tín hiệu. Tăng 25% = 25 RPS, 15000 request, p99 = request #150, nhiễu chỉ 0.3%. Nguyên nhân fail thực: (1) DB pool contention (canary + baseline chung user), (2) noisy neighbor (canary Pod lên node batch), (3) JIT cold start. Tôi thiết kế analysisTemplate: error rate < 0.1%, p99 < 200ms, **min sample count 10k request**, error budget burn rate < 2x. Step duration: 5% pause 20 phút, 25% pause 30 phút. Canary Pod có topology spread zone/node riêng, resource limit riêng, DB user riêng. Rollback tự động qua {{failureLimit: 3}} trên metric. Kết quả: canary 5% pass thực sự, 25% pass, 100% an toàn."
+
+### Ví dụ đời thực
+Triệu chứng: team payment canary 5% → 25% → 100% bằng Argo Rollouts. Step 5% chạy 10 phút pass (error rate 0.05%, p99 180ms). Step 25% fail tại phút thứ 8 (p99 250ms, error rate 0.12%). Rollback thủ công mất 15 phút.
+
+Điều tra: Traffic 120 RPS. Canary 5% = 6 RPS → 7200 request/20 phút. p99 position = request #72. 50 request cold start đầu chiếm 0.7% → noise. Canary 25% = 30 RPS → 36000 request/20 phút. p99 = request #360. Cold start noise 0.14%. DB pool: baseline 9 pods * 20 conn = 180, canary 3 pods * 20 conn = 60, tổng 240 > PostgreSQL {{max_connections}} 200 (sau khi trừ system) → canary request chờ pool 200-500ms.
+
+Nguyên nhân gốc: (1) Step 5% duration quá ngắn, thiếu min sample count. (2) Canary và baseline chung DB pool user, tổng connection vượt limit. (3) Không topology spread cho canary.
+
+Cách xử lý: AnalysisTemplate thêm {{min-sample-count ≥ 10000}}. Step 5% pause 20m, 25% pause 30m. Tạo DB user {{payment_canary}} pool 10 connection, user {{payment_stable}} pool 20. Canary Pod {{topologySpreadConstraints}} zone/node {{DoNotSchedule}}. {{failureLimit: 3}} auto abort.
+
+Kết quả đo được: Canary 5% pass 20m (sample 14k request), 25% pass 30m (sample 54k request), 100% pass. 0 rollback tự động. p99 ổn định 90-110ms suốt quá trình.
+
+> Senior tip: Luôn yêu cầu **minimum sample count** trong analysisTemplate. Không có nó, canary 5% là "bài thi may rủi" chứ không phải test. Tôi còn thêm {{error budget burn rate}} thay vì chỉ error rate: burn rate tính theo SLO (ví dụ 99.9% uptime/30 ngày) cho phép team biết "còn bao nhiêu ngân sách lỗi" thay vì ngưỡng cứng. Với payment, SLO p99 < 200ms, availability 99.9% → burn rate > 2x trong 15 phút = abort ngay.
+
+`,
+    follow: [
+      'Tính toán sample size tối thiểu để p99 có ý nghĩa thống kê ở confidence 95%?',
+      'Làm sao cô lập DB connection pool cho canary và baseline?',
+      'AnalysisTemplate nên dùng metric nào: error rate hay error budget burn rate? Vì sao?'
+    ],
+    tags: ['Argo Rollouts', 'canary', 'statistical significance', 'p99', 'error budget', 'rollback automation']
+  },
+  {
+    id: 'devops-206',
+    topic: 'devops',
+    level: 'senior',
+    q: 'Service Java cần kết nối PostgreSQL. Thay vì password tĩnh trong Secret, bạn dùng HashiCorp Vault dynamic database credentials: Vault tạo user tạm TTL 1h cho mỗi Pod, Spring Cloud Vault inject credential. Pod restart lấy credential mới, nhưng HPA scale-out 10 Pod cùng lúc khiến Vault rate-limit và DB quá tải tạo user. Bạn thiết kế cached credential, lease renewal, và connection pool sizing thế nào để vừa an toàn vừa không sập khi scale?',
+    a: `**Tóm tắt:** Dynamic secret rất an toàn nhưng **không miễn phí**: mỗi credential là một lệnh {{CREATE ROLE}} trên PostgreSQL, tốn CPU/lock, và Vault có rate-limit. Service 10 replica cùng restart → 10 {{CREATE ROLE}} đồng thời + 10 connection pool mới → DB cạn connection. Giải pháp: (1) Vault {{lease}} TTL đủ dài (4-8h) + Spring Cloud Vault {{cache}} credential in-memory (không đọc Vault mỗi request); (2) HikariCP {{maximumPoolSize}} tính theo max replica: {{maxPool = maxReplica * poolPerPod}} nhỏ hơn {{max_connections}} của DB; (3) Pod dùng {{preStop}} hook {{revoke-self}} credential khi tắt; (4) Argo Rollouts {{step pause}} + {{canary}} scale chậm để tránh thundering herd; (5) {{Vault Agent sidecar}} hoặc {{CSI driver}} renew lease nền, app không lo expired credential.
+
+### Hiểu nhanh
+Dynamic credential giống "mỗi nhân viên lấy chìa khóa tạm tại quầy, dùng 1 giờ rồi trả". An toàn: chìa khóa lộ cũng hết hạn nhanh, audit trail rõ ai lấy khi nào. Nhưng: 10 nhân viên cùng về ca → 10 người cùng chờ quầy (Vault rate-limit), quản lý phải tạo 10 chìa khóa (DB {{CREATE ROLE}} tốn lock), 10 người cùng mở 20 cửa (connection pool) → quán quá chỗ. Giải pháp: chìa khóa tạm **dài hạn hơn** (4-8h), nhân viên **giữ chìa khóa trong người** (cache in-memory, không về quầy mỗi lần mở cửa), giới hạn **số cửa mỗi người** (pool size), và **về ca từ từ** (canary scale) chứ không 10 người cùng lúc.
+
+### Thuật ngữ
+- **Dynamic database credentials**: Vault sinh user/password tạm cho mỗi client, TTL cấu hình (ví dụ 1h), tự revoke khi hết hạn.
+- **Lease**: hợp đồng thuê credential từ Vault, có {{lease_id}}, {{lease_duration}}, {{renewable}}. Client phải renew trước khi hết hạn.
+- **Spring Cloud Vault**: thư viện Spring tích hợp Vault, hỗ trợ {{VaultTemplate}}, {{VaultPropertySource}}, {{VaultDatabaseSecretBackendConfiguration}}.
+- **Vault Agent sidecar**: container sidecar chạy cùng Pod, authenticate Vault, renew token/lease, ghi credential ra file shared volume ({{/vault/secrets/}}).
+- **CSI Secrets Store Driver**: CSI driver mount secret từ Vault/AWS SM/GCP SM thành volume, Pod đọc file như thường, driver tự renew.
+- **Thundering herd**: nhiều instance cùng khởi động cùng lúc gây spike tải lên dependency (Vault, DB, Kafka).
+- **HikariCP maximumPoolSize**: số connection tối đa pool giữ; mỗi connection = một session PostgreSQL.
+
+### Kiến trúc cache + renewal
+~~~text
+Pod Startup
+    │
+    ▼
+Spring Cloud Vault / Vault Agent
+    │  (1) Authenticate với Vault (K8s auth: JWT SA token)
+    │  (2) Request dynamic cred: POST {{/v1/database/creds/payment-role}}
+    │      → Vault: CREATE ROLE "{{v-token-xxx}}" VALID UNTIL 'now + 4h'
+    │      → Return: username, password, lease_id, lease_duration=4h
+    ▼
+Cache in-memory (Spring Cloud Vault: {{vault.database.credential.cache=true}})
+    │
+    ▼
+HikariCP tạo pool với credential đã cache
+    │
+    ├── Background: Vault Agent / CSI driver renew lease (TTL 4h, renew tại 70%)
+    ├── preStop hook: POST {{/v1/sys/leases/revoke/{lease_id}}} (revoke-self)
+    ▼
+Pod Shutdown: connection pool close gracefully
+~~~
+
+### Cấu hình Spring Cloud Vault cache
+~~~yaml
+spring:
+  cloud:
+    vault:
+      authentication: KUBERNETES
+      kubernetes:
+        role: payment-role
+      database:
+        backend: database
+        role: payment-role
+        # Cache credential in-memory, không gọi Vault mỗi lần getConnection
+        credential:
+          cache: true
+          cache-ttl: 3600000      # 1h (ms) - cache TTL ≤ lease TTL
+      # Generic secret (API key, Kafka SASL) cũng cache
+      generic:
+        enabled: true
+        backend: secret
+        default-context: application
+        profile-separator: '_'
+      # Config property source reload
+      config:
+        enabled: true
+        lifecycle: refresh          # @RefreshScope cho non-secret config
+~~~
+
+### Vault role cho PostgreSQL (TTL 4h)
+~~~bash
+# Tạo role trên Vault
+vault write database/roles/payment-role \
+    db_name=postgresql \
+    creation_statements="CREATE ROLE \"{{name}}\" WITH LOGIN PASSWORD '{{password}}' VALID UNTIL '{{expiration}}'; GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA public TO \"{{name}}\";" \
+    revocation_statements="REVOKE ALL PRIVILEGES ON ALL TABLES IN SCHEMA public FROM \"{{name}}\"; DROP ROLE IF EXISTS \"{{name}}\";" \
+    default_ttl="4h" \
+    max_ttl="8h"
+~~~
+
+### HikariCP pool sizing cho max replica
+~~~yaml
+# Tính toán: maxReplica (HPA) = 20, poolPerPod = 10 → total = 200
+# PostgreSQL max_connections = 300 (system reserved ~50) → available 250
+# Để an toàn: poolPerPod = 8, maxReplica = 20 → 160 connections
+# Baseline: replicas = 8 → 64 connections
+# Canary: thêm 5 pods → 40 connections
+# Headroom cho emergency scale: 50 connections
+
+spring:
+  datasource:
+    hikari:
+      maximum-pool-size: 8          # poolPerPod
+      minimum-idle: 4
+      connection-timeout: 30000
+      idle-timeout: 300000
+      max-lifetime: 600000
+pool-name: PaymentPool
+       # Đặt auto-commit false cho transaction management (Spring quản lý transaction)
+       auto-commit: false
+~~~
+
+### preStop hook revoke-self credential
+~~~yaml
+lifecycle:
+  preStop:
+    httpGet:
+      path: {{/internal/vault-revoke}}
+      port: 8081
+      # Hoặc exec nếu image có curl:
+      # command: ["sh", "-c", "curl -X POST -H \"X-Vault-Token: $(cat /var/run/secrets/vault/token)\" $VAULT_ADDR/v1/sys/leases/revoke/$(cat /vault/lease_id)"]
+~~~
+
+~~~java
+@RestController
+class VaultRevokeEndpoint {
+    @Autowired VaultTemplate vaultTemplate;
+
+    @PostMapping({{/internal/vault-revoke}})
+    public ResponseEntity<Void> revoke() {
+        String leaseId = System.getenv("VAULT_LEASE_ID"); // từ Vault Agent/CSI volume
+        if (leaseId != null) {
+            vaultTemplate.opsForSys().revokeLease(leaseId);
+        }
+        return ResponseEntity.ok().build();
+    }
+}
+~~~
+
+### Argo Rollouts scale chậm tránh thundering herd
+~~~yaml
+spec:
+  strategy:
+    canary:
+      steps:
+        - setWeight: 10
+        - pause: {duration: 15m}      # scale từ 8 → 10 pods (canary 2 pods)
+        - analysis:
+            templates:
+              - templateName: payment-canary-analysis
+        - setWeight: 30
+        - pause: {duration: 20m}      # scale 10 → 14 pods
+        - analysis:
+            templates:
+              - templateName: payment-canary-analysis
+        - setWeight: 100
+  replicas: 20
+~~~
+
+### Vault Agent sidecar vs CSI Driver
+| Tiêu chí | Vault Agent Sidecar | CSI Secrets Store Driver |
+|---|---|---|
+| Cách hoạt động | Sidecar container auth + renew, ghi file {{/vault/secrets/}} | CSI driver mount volume, kubelet quản lý, driver renew |
+| Credential format | File text/JSON, app đọc file hoặc env | File mount, app đọc file |
+| Lease renewal | Sidecar tự renew (cấu hình {{auto_auth}}) | Driver tự renew (cấu hình {{syncPeriod}}) |
+| Pod overhead | +1 container mỗi Pod | Không container thêm (driver DaemonSet trên node) |
+| Hỗ trợ dynamic secret | Tốt (built-in database backend) | Tốt (provider {{vault}}) |
+| Phức tạp vận hành | Sidecar log, resource limit, health check | Cần cài CSI driver, provider, {{SecretProviderClass}} |
+| Phù hợp | Team tự quản lý sidecar pattern | Cluster platform team quản lý CSI cho tất cả team |
+
+### Câu trả lời sai phổ biến
+- "Spring Cloud Vault {{cache}} = không cần renew lease": **sai**, cache chỉ tránh gọi Vault mỗi request; lease vẫn hết hạn → credential bị revoke ở DB. Cần renew lease (Vault Agent/CSI).
+- "TTL 1h là an toàn nhất": **sai** cho scale-out; TTL ngắn = renew thường = rate-limit Vault. TTL 4-8h + renew ở 70% an toàn hơn.
+- "HPA scale-out 20 pods cùng lúc OK nếu DB max_connections 500": **sai**, thundering herd tạo {{CREATE ROLE}} storm + connection storm → DB CPU 100%, lock contention.
+
+### Lỗi hay gặp
+1. **Không revoke credential khi Pod tắt**: lease TTL 4h, Pod tắt sớm → user PostgreSQL tồn tại vô nghĩa → {{pg_roles}} phình, {{max_connections}} lãng phí. Fix: preStop hook revoke-self.
+2. **Spring Cloud Vault {{cache-ttl}} > {{lease_duration}}**: cache trả credential đã revoke → connection fail. Fix: {{cache-ttl}} ≤ 80% {{lease_duration}}.
+3. **Vault Agent sidecar không renew token K8s**: token SA TTL 24h, sidecar không auto-renew → sau 24h sidecar hết token → không renew lease. Fix: {{auto_auth}} method {{kubernetes}} với {{reauth}} hoặc dùng CSI driver (kubelet quản lý token).
+4. **HPA scale-out không có {{scaleUp}} stabilization**: 10 pods cùng lên → thundering herd. Fix: {{behavior.scaleUp.policies}} giới hạn 2 pods/30s.
+
+### Trả lời miệng 1 phút
+"Dynamic credential từ Vault rất an toàn nhưng mỗi credential là một {{CREATE ROLE}} trên PostgreSQL. HPA scale-out 10 pods cùng lúc = 10 {{CREATE ROLE}} storm + 10 pool mới → DB quá tải. Tôi thiết kế: (1) Vault role TTL 4-8h (không 1h), Spring Cloud Vault cache credential in-memory ({{credential.cache=true}}), giảm gọi Vault. (2) HikariCP {{maximumPoolSize=8}} tính theo {{maxReplica * poolPerPod < max_connections}}. (3) Vault Agent sidecar hoặc CSI driver renew lease nền tại 70% TTL, app không lo expired. (4) preStop hook revoke-self credential ngay khi Pod tắt, trả user cho DB. (5) Argo Rollouts canary scale chậm: step 10% pause 15m, 30% pause 20m, tránh thundering herd. Kết quả: scale 8→20 pods trong 1 tiếng, 0 Vault rate-limit, 0 DB connection storm, credential luôn fresh, audit trail đầy đủ."
+
+### Ví dụ đời thực
+Triệu chứng: service thanh toán dùng Vault dynamic credential TTL 1h. Black Friday HPA scale 8 → 20 pods trong 5 phút. Vault lograte limit 429, PostgreSQL {{CREATE ROLE}} queue 50, connection storm làm CPU DB 100%, 200 request timeout/s.
+
+Điều tra: Mỗi Pod start → Spring Cloud Vault request dynamic cred → Vault tạo role PostgreSQL. 12 Pod cùng lúc → 12 {{CREATE ROLE}} song song → PostgreSQL lock {{pg_authid}} contention. Mỗi Pod HikariCP pool 10 → 120 connection mới trong 30s → PostgreSQL {{max_connections}} chạm trần. Vault audit log: 429 rate limit sau 10 request/giây.
+
+Nguyên nhân gốc: TTL 1h quá ngắn, không cache, HPA scale quá nhanh, không revoke-self, pool size không tính theo max replica.
+
+Cách xử lý: (1) Vault role {{default_ttl=4h}}, {{max_ttl=8h}}. (2) Spring Cloud Vault {{credential.cache=true}}, {{cache-ttl=3h}}. (3) HikariCP {{maximumPoolSize=8}} (maxReplica 20 * 8 = 160 < 250 available). (4) CSI driver mount credential, auto renew lease. (5) preStop hook revoke-self. (6) Argo Rollouts canary steps scale chậm.
+
+Kết quả đo được: Scale 8→20 pods trong 45 phút (canary), 0 Vault 429, 0 DB connection error, {{pg_roles}} count ổn định ~25 (revoke-self hoạt động), p99 thanh toán ổn định 95ms.
+
+> Senior tip: **Dynamic secret không phải "cài xong là xong"**. Phải đo: (1) Vault request rate khi scale, (2) DB {{CREATE ROLE}} latency, (3) connection pool usage vs max_connections. Tôi luôn đặt alert: Vault {{sys/leases/lookup}} rate > 10/s, PostgreSQL {{locks}} wait > 100ms, HikariCP {{pool usage}} > 80%. Và quy tắc vàng: **credential TTL ≥ 4h, renew tại 70%, cache in-memory, revoke-self khi tắt, scale chậm qua canary**.`
+    ,
+    follow: [
+      'Vault dynamic secret TTL 1h vs HikariCP connection lifetime: khi lease hết hạn nhưng connection pool vẫn giữ connection cũ thì sao?',
+      'Làm sao xử lý credential revoke khi Pod bị SIGKILL (không kịp chạy preStop)?',
+      'CSI driver vs Vault Agent sidecar: cái nào phù hợp hơn cho 30 service trên cluster dùng chung?'
+    ],
+    tags: ['HashiCorp Vault', 'dynamic secrets', 'Spring Cloud Vault', 'HikariCP', 'lease renewal', 'scale-out', 'thundering herd']
+  },
+  {
+    id: 'devops-207',
+    topic: 'devops',
+    level: 'senior',
+    q: 'Bạn deploy service Java trên Kubernetes và muốn rollout không downtime: readinessProbe, livenessProbe và startupProbe khác nhau thế nào, và graceful shutdown cần cấu hình gì?',
+    a: `**Tóm tắt:** readinessProbe quyết định Pod có nhận traffic không; livenessProbe quyết định Pod có bị restart không; startupProbe bảo vệ app khởi động chậm khỏi bị liveness kill sớm. Graceful shutdown = Spring Boot tắt thread pool theo thứ tự, preStop sleep để LB drain connection, terminationGracePeriodSeconds đủ lớn.
+
+### 1. Ba probe, ba vai trò khác nhau
+
+- **startupProbe**: chỉ chạy lúc Pod mới start, thành công thì tắt và giao cho liveness/readiness. Dùng cho app Java cold start chậm (Spring Boot mất 30–60s). Nếu không có, livenessProbe có thể kill Pod trước khi app kịp start.
+- **readinessProbe**: chạy liên tục. Fail → Pod bị remove khỏi Service endpoints → không nhận traffic mới, nhưng **không** bị restart. Dùng để biểu thị "đang warm up / đang drain".
+- **livenessProbe**: fail liên tục → kubelet restart container. Chỉ nên kiểm tra process có sống không (HTTP /actuator/health/liveness), **không** kiểm tra DB/Redis (nếu DB down thì restart vô ích, chỉ gây storm).
+
+### 2. Graceful shutdown trên Spring Boot 3
+
+Bật {{server.shutdown=graceful}} và {{spring.lifecycle.timeout-per-shutdown-phase=30s}}. Khi SIGTERM:
+1. Spring ngừng nhận request mới (Tomcat stop accepting).
+2. Chờ request đang xử lý xong (tối đa 30s).
+3. Đóng DataSource, Kafka consumer, thread pool theo thứ tự.
+
+### 3. preStop hook và drain
+
+Kubernetes gửi SIGTERM và đồng thời remove Pod khỏi endpoints, nhưng có race: LB vẫn có thể route request vào Pod đang tắt. preStop sleep 5–10s cho LB cập nhật endpoints trước khi SIGTERM. terminationGracePeriodSeconds phải ≥ preStop + shutdown timeout. Với image distroless không có shell, dùng httpGet thay vì exec.
+
+~~~yaml
+lifecycle:
+  preStop:
+    httpGet:
+      path: /internal/drain
+      port: 8081
+terminationGracePeriodSeconds: 45
+~~~
+
+### 4. Pitfall production
+
+- livenessProbe gọi /actuator/health (bao gồm DB) → DB chậm → Pod bị restart liên tục → outage.
+- readinessProbe quá nhạy → Pod flapping → traffic không ổn định.
+- Quên preStop → request bị reset khi rollout → 5xx spike.
+- terminationGracePeriodSeconds nhỏ hơn shutdown timeout → Pod bị SIGKILL giữa chừng → request mất.
+
+### Ví dụ đời thực
+
+Service thanh toán 8 Pod, rollout rolling update. Trước khi fix: mỗi rollout có ~2% request 502 trong 20s do LB chưa drain. Sau khi thêm preStop sleep 10s + graceful shutdown 30s + readinessProbe /actuator/health/readiness: rollout 8 Pod trong 90s, 0 request 502, p99 không đổi.
+
+### Trả lời mẫu khi phỏng vấn
+
+readinessProbe quyết định Pod có nhận traffic không, livenessProbe quyết định Pod có bị restart không, startupProbe bảo vệ app khởi động chậm khỏi bị liveness kill sớm. Tôi tách health endpoint: /actuator/health/liveness chỉ kiểm tra process sống, /actuator/health/readiness kiểm tra DB và Kafka. liveness không bao giờ kiểm tra dependency, vì nếu DB down thì restart Pod không giúp gì mà còn gây storm. Graceful shutdown bật server.shutdown=graceful với timeout 30s, Spring ngừng nhận request mới rồi chờ request đang xử lý xong. preStop hook sleep 10s để load balancer cập nhật endpoints trước SIGTERM, vì có race giữa remove endpoint và SIGTERM. terminationGracePeriodSeconds đặt 45s, lớn hơn preStop cộng shutdown timeout. Pitfall lớn nhất là livenessProbe gọi health tổng hợp bao gồm DB, DB chậm làm Pod restart liên tục gây outage. Sau khi fix rollout service thanh toán 8 Pod trong 90s với 0 request 502.
+
+> Senior tip: **Probe là contract với kubelet, không phải test sức khỏe hệ thống.** liveness chỉ "process có sống không", readiness mới "sẵn sàng nhận traffic". Tôi luôn tách 2 endpoint và alert khi restart count > 0 trong 5 phút.`
+    ,
+    follow: [
+      'HPA scale down đột ngột: Pod bị SIGTERM trong khi đang xử lý request dài → xử lý thế nào?',
+      'startupProbe vs initialDelaySeconds: cái nào tốt hơn cho Spring Boot và tại sao?',
+      'Khi nào dùng PodDisruptionBudget và ảnh hưởng đến rollout?'
+    ],
+    tags: ['Kubernetes', 'probes', 'graceful shutdown', 'Spring Boot', 'preStop', 'rollout']
+  },
+  {
+    id: 'devops-208',
+    topic: 'devops',
+    level: 'senior',
+    q: 'Bạn rollout canary trên Kubernetes và muốn tự động rollback khi SLO vi phạm: thiết kế metrics gate và rollback tự động như thế nào?',
+    a: `**Tóm tắt:** Canary chia traffic nhỏ (5–10%) sang version mới, so sánh metric với baseline trong cửa sổ thời gian, nếu error rate hoặc latency vượt ngưỡng thì tự rollback. Dùng Argo Rollouts hoặc Flagger với AnalysisTemplate query Prometheus.
+
+### 1. Canary là gì
+
+Canary = deploy version mới cho một phần nhỏ traffic (5–10%), quan sát metric, nếu tốt thì tăng dần lên 100%, nếu xấu thì rollback. Khác blue/green: blue/green chuyển toàn bộ traffic cùng lúc, canary tăng dần.
+
+### 2. Metrics gate
+
+So sánh canary vs baseline (stable) trên các metric:
+- Error rate: canary error rate ≤ baseline + 0.5% (hoặc ≤ 1% tuyệt đối).
+- Latency p99: canary ≤ baseline + 20%.
+- Saturation: CPU/memory không vượt 80%.
+
+Cửa sổ: thường 5–10 phút mỗi step, cần ≥ 1000 request để có ý nghĩa thống kê.
+
+### 3. Argo Rollouts AnalysisTemplate
+
+~~~yaml
+apiVersion: argoproj.io/v1alpha1
+kind: AnalysisTemplate
+metadata:
+  name: success-rate
+spec:
+  metrics:
+  - name: success-rate
+    interval: 1m
+    successCondition: result[0] >= 0.99
+    failureLimit: 3
+    provider:
+      prometheus:
+        address: http://prometheus:9090
+        query: |
+          sum(rate(http_requests_total{app="payment",rollout="canary",status!~"5.."}[5m]))
+          /
+          sum(rate(http_requests_total{app="payment",rollout="canary"}[5m]))
+~~~
+Lưu ý: Argo Rollouts không tự động thêm label {{rollout}}. Cần cấu hình {{canaryMetadata.labels.rollout: canary}} và {{stableMetadata.labels.rollout: stable}} trong Rollout spec để Prometheus phân biệt được canary vs baseline.
+
+Rollout steps: 5% → 10 phút → 25% → 10 phút → 50% → 10 phút → 100%. Mỗi step chạy AnalysisTemplate; fail 3 lần liên tiếp → rollback tự động.
+
+### 4. Pitfall production
+
+- Sample size quá nhỏ → false positive/negative. Cần gate tối thiểu 1000 request.
+- So sánh canary với chính nó thay vì baseline → không phát hiện regression.
+- Metric query sai label → đo nhầm version.
+- Rollback không revert DB migration → schema mismatch.
+- Canary traffic không representative (chỉ internal user) → miss bug production.
+
+### Ví dụ đời thực
+
+Service catalog rollout canary 5%. Sau 3 phút error rate canary 4.2% vs baseline 0.3% (N+1 query mới). AnalysisTemplate fail 3 lần → Argo Rollouts tự rollback về stable trong 90s. Không có user bị ảnh hưởng vì chỉ 5% traffic. Root cause: query mới thiếu index, fix và rollout lại sau.
+
+### Trả lời mẫu khi phỏng vấn
+
+Canary deploy version mới cho 5–10% traffic, quan sát metric, nếu tốt tăng dần lên 100%, nếu xấu rollback. Tôi dùng Argo Rollouts với AnalysisTemplate query Prometheus: error rate canary phải ≥ 99%, latency p99 không vượt baseline 20%. Steps thường 5%, 25%, 50%, 100%, mỗi step 10 phút. Cần tối thiểu 1000 request để có ý nghĩa thống kê, tránh false positive. FailureLimit 3 nghĩa fail 3 lần liên tiếp mới rollback, tránh flapping do metric tạm thời. Pitfall lớn là so sánh canary với chính nó thay vì baseline, hoặc query sai label đo nhầm version. DB migration phải backward compatible để rollback an toàn. Sau khi fix service catalog rollout canary 5% phát hiện error rate 4.2% vs baseline 0.3% do N+1 query, auto rollback trong 90s, không user bị ảnh hưởng.
+
+> Senior tip: **Canary không thay thế test, nó là safety net.** Tôi luôn đặt gate tối thiểu 1000 request và so sánh với baseline cùng cửa sổ thời gian. Và quy tắc vàng: DB migration phải backward compatible trước khi rollout canary.`
+    ,
+    follow: [
+      'Blue/green vs canary: khi nào chọn cái nào cho service có state?',
+      'Làm sao xử lý DB migration không backward compatible khi canary rollback?',
+      'Flagger vs Argo Rollouts: khác nhau ở đâu và chọn cái nào?'
+    ],
+    tags: ['canary', 'Argo Rollouts', 'Flagger', 'Prometheus', 'SLO', 'auto-rollback', 'Kubernetes']
+  },
+  {
+    id: 'devops-209',
+    topic: 'devops',
+    level: 'lead',
+    q: 'Quản lý cấu hình cho nhiều môi trường (dev/staging/prod) trên Kubernetes mà không lộ secret: thiết kế thế nào?',
+    a: `**Tóm tắt:** Tách config (non-secret) vào ConfigMap và secret vào Secret/Vault, dùng Kustomize overlay hoặc Helm values per env, secret không commit git, inject qua CSI driver hoặc External Secrets Operator, app đọc qua env hoặc mounted file, rotation tự động.
+
+### 1. Phân loại
+
+- **Config (non-secret)**: URL, feature flag, timeout, log level → ConfigMap, commit git được.
+- **Secret**: password, API key, token → Kubernetes Secret hoặc Vault, **không** commit git.
+
+### 2. Công cụ quản lý
+
+- **Kustomize**: base + overlay per env, patch ConfigMap/Secret. Phù hợp khi ít service.
+- **Helm**: values.yaml per env, template. Phù hợp khi nhiều service, cần package.
+- **External Secrets Operator (ESO)**: sync secret từ Vault/AWS Secrets Manager vào K8s Secret. App không biết Vault.
+- **CSI Secret Store driver**: mount secret trực tiếp từ Vault vào Pod filesystem, không tạo K8s Secret (an toàn hơn).
+
+### 3. Secret injection pattern
+
+App Spring Boot đọc qua env var hoặc mounted file. Với Vault dynamic secret, dùng Spring Cloud Vault hoặc CSI driver. Rotation: Vault renew lease, CSI driver cập nhật file, app reload config (Spring Cloud Bus hoặc restart).
+
+### 4. Pitfall production
+
+- Secret commit vào git history → leak vĩnh viễn (phải rotate ngay).
+- Dùng cùng secret cho mọi env → prod leak khi dev bị compromise.
+- Secret trong ConfigMap → visible cho mọi Pod có quyền read ConfigMap.
+- Không rotation → credential cũ tồn tại mãi.
+- Hardcode secret trong Docker image → leak khi image public.
+
+### 5. Best practice
+
+- Secret per env, không share.
+- Rotation tự động (Vault TTL + renew).
+- Audit log access secret.
+- RBAC: chỉ service account của service đó đọc secret của nó.
+- Sealed Secrets hoặc SOPS để encrypt secret trong git nếu cần GitOps.
+
+### Ví dụ đời thực
+
+Hệ thống 12 service, 3 env. Ban đầu secret hardcode trong Helm values commit git → leak khi repo public. Sau khi migrate: secret lưu Vault, ESO sync vào K8s Secret per env, RBAC per service account, rotation 24h, audit log. Kết quả: 0 secret trong git, leak detection alert trong 5 phút, rotation tự động không downtime.
+
+### Trả lời mẫu khi phỏng vấn
+
+Tách config non-secret vào ConfigMap commit git được, secret vào Vault hoặc AWS Secrets Manager không commit. Dùng Kustomize overlay hoặc Helm values per env. Secret inject vào Pod qua External Secrets Operator hoặc CSI Secret Store driver, app Spring Boot đọc qua env var hoặc mounted file. Secret per env, không share giữa dev và prod. Rotation tự động qua Vault TTL và renew. RBAC đảm bảo chỉ service account của service đó đọc secret của nó. Audit log mọi access. Pitfall lớn nhất là secret commit vào git history gây leak vĩnh viễn phải rotate ngay, và dùng cùng secret cho mọi env. Sau khi migrate hệ thống 12 service, 0 secret trong git, leak detection alert trong 5 phút, rotation tự động không downtime.
+
+> Senior tip: **Secret trong git là bug, không phải config.** Tôi luôn chạy gitleaks trong CI và block commit chứa secret. Và quy tắc vàng: secret per env, rotation tự động, RBAC per service, audit log. Nếu phải commit secret thì dùng SOPS encrypt trước.`
+    ,
+    follow: [
+      'External Secrets Operator vs CSI Secret Store driver: chọn cái nào và trade-off?',
+      'Làm sao rotate secret không downtime khi app cache credential in-memory?',
+      'Sealed Secrets vs SOPS: cái nào phù hợp cho GitOps với ArgoCD?'
+    ],
+    tags: ['Kubernetes', 'ConfigMap', 'Secret', 'Vault', 'Kustomize', 'Helm', 'External Secrets', 'GitOps']
   }
 );
 
