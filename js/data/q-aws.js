@@ -5872,4 +5872,253 @@ Một cổng thanh toán thẻ chạy Aurora PostgreSQL một region ở ap-sout
   ],
   tags: ['multi-region', 'active-passive', 'Aurora', 'Global Database', 'RPO', 'RTO', 'failover', 'payment', 'lead']
 },
+{
+  id: 'aws-087',
+  topic: 'aws',
+  level: 'senior',
+  q: 'Thiết kế VPC cho hệ thống ngân hàng: subnet riêng cho web, app, database, NAT Gateway, và VPC endpoint cho S3/Secrets Manager — bạn chia subnet ra sao, traffic đi đâu, và ứng dụng Java lấy secret thế nào không hard-code?',
+  a: `**Tóm tắt:** Hệ thống ngân hàng cần tách tầng nghiêm ngặt: web ở public subnet (qua ALB), app ở private subnet, database ở isolated subnet không có đường ra Internet. Tất cả lời gọi AWS (S3, Secrets Manager, KMS) đi qua VPC endpoint trong mạng AWS, không qua NAT Gateway và không ra Internet. Ứng dụng Java dùng IAM role + AWS SDK để lấy secret từ Secrets Manager qua interface endpoint, không bao giờ nhúng credentials trong code.
+
+### Thuật ngữ (giải thích từ gốc)
+- **VPC (Virtual Private Cloud)**: mạng riêng ảo của bạn trên AWS, giống một khu chung cư có tường rào, chỉ người được phép mới vào.
+- **Subnet (mạng con)**: phân vùng nhỏ trong VPC, mỗi subnet nằm trong một Availability Zone (AZ).
+- **Public subnet**: subnet có route ra Internet Gateway, máy ở đây có thể được truy cập từ Internet.
+- **Private subnet**: subnet không có route ra Internet Gateway, máy ở đây không thể bị gọi trực tiếp từ Internet.
+- **Isolated subnet**: subnet không có route ra Internet và không có NAT, hoàn toàn kín, chỉ kết nối nội bộ VPC.
+- **NAT Gateway**: cho máy ở private subnet ra Internet (ví dụ tải bản vá OS), chặn kết nối từ Internet vào máy.
+- **Internet Gateway (IGW)**: cửa hai chiều giữa VPC và Internet.
+- **VPC endpoint**: lối đi nội bộ trong mạng AWS tới dịch vụ AWS (S3, Secrets Manager…), traffic không ra Internet và không tốn phí NAT.
+- **Gateway endpoint**: endpoint miễn phí cho S3 và DynamoDB, thêm route vào route table.
+- **Interface endpoint (PrivateLink)**: tạo card mạng ảo (ENI) trong subnet, có phí theo giờ + GB, dùng cho Secrets Manager, KMS, ECR, CloudWatch Logs.
+- **Security Group**: tường lửa stateful gắn vào mỗi tài nguyên, nhớ kết nối đã cho vào thì tự cho phản hồi về.
+- **IAM role**: danh tính tạm thời, ứng dụng lấy credential có hạn qua AWS SDK, không cần access key lâu dài.
+- **VPC Flow Logs**: ghi log mọi gói tin đi vào/ra ENI, dùng để kiểm tra và điều tra sự cố bảo mật.
+
+### Cơ chế từng bước: traffic của hệ thống ngân hàng
+1. **Người dùng truy cập ứng dụng**: qua Internet Gateway → ALB ở public subnet → ALB chuyển request đến app ở private subnet qua Security Group (chỉ cho ALB gọi cổng 8080 của app). Vì sao: app không hiển thị trực tiếp ra Internet.
+2. **App gọi S3 (lưu giấy tờ khách hàng)**: route table của private subnet có route prefix list S3 → gateway endpoint. Traffic đi mạng AWS nội bộ, **không qua NAT**, không tốn phí NAT và không ra Internet. Vì sao: S3 là dịch vụ AWS, không cần đường ra Internet.
+3. **App lấy secret database từ Secrets Manager**: route table có route endpoints Secrets Manager → interface endpoint (private DNS bật). AWS SDK dùng IAM role của task (task role) để xác thực qua Signature V4, nhận secret, không hard-code. Vì sao: secret không bao giờ nằm trong image, environment variable hay code.
+4. **Database tier (isolated subnet)**: không có NAT, không có IGW, chỉ có route local và VPC endpoint nếu cần (ví dụ gọi S3 để backup). App gọi database qua Security Group tham chiếu (SG database cho phép SG app truy cập cổng 5432). Vì sao: database ngân hàng không được phép ra Internet, giảm bề mặt tấn công.
+5. **Gọi hệ thống đối tác/mainframe on-prem**: qua Transit Gateway hoặc AWS Direct Connect/VPC peering, route table trỏ đến Transit Gateway. Vì sao: kết nối riêng, không qua Internet công cộng.
+
+Bảng subnet tham khảo:
+| Tầng | Subnet | Có IGW | Có NAT | VPC endpoint | Dùng khi |
+|---|---|---|---|---|---|
+| Web/ALB | public | Có | Không | Không | Chỉ ALB, không app hay DB |
+| App | private | Không | Có (chỉ patch OS) | S3, Secrets Manager, KMS | Chạy Spring Boot, gọi AWS dịch vụ |
+| Database | isolated | Không | Không | Không (hoặc S3 endpoint để backup) | Chỉ app gọi được, không ra Internet |
+
+~~~text
+Internet                   VPC ngân hàng (3 AZ)
+   |                       +------------------ public subnet -------------------+
+   |                      | ALB (SG web)        NAT Gateway (patch OS)        |
+   |                      +------------------+----------------------------------+
+   |                                 |
+   |                          +------v------+      +---------------------+
+   |                          | private app |----->| isolated database   |
+   |                          | Spring Boot |      | PostgreSQL (kín)    |
+   |                          | (SG app)    |      | (SG db, ref SG app) |
+   |                          +------+------+      +---------------------+
+   |                               |                      |
+   |                      [route table: pl-S3 -> vpce] [route: local only]
+   |                               |                      |
+   |                          VPC endpoint: S3 (gateway), Secrets Manager/KMS (interface, private DNS)
+~~~
+
+### Bảo mật và tuân thủ
+- **Security Group tham chiếu Security Group**: SG database chỉ cho phép ingress cổng 5432 từ SG của app (không phải CIDR 0.0.0.0/0). Nếu app scale sang subnet/IP khác, quy tắc vẫn hoạt động vì tham chiếu theo SG.
+- **NACL để mặc định allow**, kiểm soát chính bằng Security Group. NACL stateless: nếu mở inbound 443 thì cũng phải mở outbound ephemeral port 1024-65535 cho phản hồi.
+- **VPC Flow Logs**: bật gửi đến CloudWatch Logs/S3, lưu ít nhất 6 tháng cho tuân thủ ngân hàng, giúp bạn biết chính xác ai gọi ai, từ IP nào, cổng nào.
+- **Private DNS** bật trên interface endpoint để SDK dùng tên miền chuẩn (secretsmanager.ap-southeast-1.amazonaws.com) mà không đổi code.
+- **Endpoint policy**: siết chặt, chỉ cho phép truy cập tài nguyên của công ty (ví dụ chỉ Secret có tag team=banking, chỉ bucket S3 của ngân hàng).
+
+### Lỗi hay gặp
+- **Đặt database ở public subnet hoặc cho 0.0.0.0/0 vào cổng 5432.** Triệu chứng: database bị quét và tấn công từ Internet ngay lập tức. Cách tránh: database ở isolated subnet, SG chỉ tham chiếu SG app.
+- **App gọi S3 qua NAT Gateway.** Triệu chứng: hoá đơn NAT Gateway tăng hàng nghìn USD mỗi tháng khi backup/log nhiều GB. Cách tránh: thêm S3 gateway endpoint vào route table của private subnet.
+- **Hard-code secret trong application.properties hoặc env biến container.** Triệu chứng: secret rò rỉ qua Git/image, bot quét lấy trong vài phút. Cách tránh: Secrets Manager + IAM task role, SDK lấy secret khi khởi động hoặc dùng secret rotation.
+- **Quên bật private DNS cho interface endpoint.** Triệu chứng: SDK không resolve được tên dịch vụ hoặc traffic đi ra Internet. Cách tránh: bật enableDnsSupport và enableDnsHostnames của VPC, bật private DNS trên endpoint.
+- **Một NAT Gateway dùng chung cho nhiều AZ.** Triệu chứng: AZ chứa NAT gặp sự cố là toàn hệ mất khả năng ra Internet (ví dụ không tải được bản vá). Cách tránh: mỗi AZ một NAT, route table private của AZ nào trỏ NAT của AZ đó.
+
+### Ví dụ đời thực
+Một hệ thống core banking mới xây trên AWS: team ban đầu đặt database RDS ở public subnet để "dễ quản lý", app gọi S3 và Secrets Manager qua NAT Gateway, và hard-code mật khẩu database trong env biến. Triệu chứng: sau 2 tháng, hoá đơn NAT Gateway tăng 3.100 USD/tháng (backup database 500 GB/tháng qua NAT), và kiểm tra bảo mật phát hiện database có thể truy cập từ Internet. Đội tra VPC Flow Logs: thấy gói tin từ IP lạ nối tới cổng 5432, và NatGatewayBytesProcessed tăng đều mỗi ngày. Nguyên gốc: thiếu tier isolation, traffic AWS dịch vụ đi qua NAT, và credential lâu dài trong env. Xử lý: chuyển database sang isolated subnet (chỉ SG app gọi được), thêm S3 gateway endpoint và Secrets Manager/KMS interface endpoint vào route table private, app dùng task role + AWS SDK lấy secret từ Secrets Manager (rotation 30 ngày), bật VPC Flow Logs. Kết quả: chi phí NAT giảm từ 3.100 xuống 400 USD/tháng, database không còn nhìn thấy từ Internet, và secret không nằm trong env hay image nữa.
+
+### Trả lời mẫu khi phỏng vấn
+"Với hệ thống ngân hàng, tôi chia VPC thành ba tầng: public subnet chỉ dành cho ALB, private subnet chạy Spring Boot với NAT Gateway chỉ để tải bản vá OS, và isolated subnet cho database không có đường ra Internet. Tất cả lời gọi S3, Secrets Manager và KMS đi qua VPC endpoint trong mạng AWS, không qua NAT và không ra Internet: S3 dùng gateway endpoint miễn phí, Secrets Manager và KMS dùng interface endpoint bật private DNS. Ứng dụng Java dùng IAM task role để AWS SDK lấy secret từ Secrets Manager, không hard-code và không lưu trong env biến. Bảo mật tôi dồn vào Security Group tham chiếu nhau, ví dụ SG database chỉ mở cổng 5432 cho SG của app, và bật VPC Flow Logs để kiểm tra. Nếu cần gọi hệ thống đối tác hoặc mainframe on-prem, tôi dùng Transit Gateway hoặc Direct Connect thay vì Internet công cộng. Kinh nghiệm của tôi là database ngân hàng không bao giờ được đặt ở public subnet, và traffic tới dịch vụ AWS nhất định phải qua endpoint để cả giảm chi phí lẫn tăng bảo mật."
+
+> Senior tip: hãy vẽ route table trước khi vẽ diagram. Phần lớn sự cố "không gọi được S3/Secrets Manager" là thiếu endpoint hoặc route, không phải do code. VPC Flow Logs là bằng chứng đầu tiên bạn nên tra khi bảo mật hỏi traffic đi đâu.`,
+  follow: [
+    'Vì sao database ngân hàng không nên đặt ở public subnet dù quản lý dễ hơn?',
+    'Interface endpoint và gateway endpoint khác nhau ở điểm nào, khi nào chọn cái nào?',
+    'Làm sao ứng dụng Java lấy secret từ Secrets Manager mà không hard-code credential?'
+  ],
+  tags: ['VPC', 'subnet', 'NAT', 'VPC endpoint', 'Secrets Manager', 'Security Group', 'ngân hàng']
+},
+{
+  id: 'aws-088',
+  topic: 'aws',
+  level: 'lead',
+  q: 'RDS PostgreSQL Multi-AZ, Read Replica và Aurora failover mất bao lâu, và ứng dụng Spring Boot cần cấu hình gì (DNS TTL, HikariCP, retry) để hồi phục nhanh sau failover?',
+  a: `**Tóm tắt:** Multi-AZ failover mất 60-120 giây (DNS đổi + kết nối cũ bị đứt); Read Replica không failover tự động, bạn phải promote thủ công và sửa connection string; Aurora failover thường vài giây nhờ storage phân tán (quorum 4/6) nhưng ứng dụng vẫn cần xử lý connection cũ mất. Phía Java bạn phải đặt JVM DNS TTL thấp, cấu hình HikariCP phát hiện kết nối chết nhanh, và retry idempotent giao dịch — không thì DB khôi phục xong mà ứng dụng vẫn lỗi vài phút.
+
+### Thuật ngữ (giải thích từ gốc)
+- **Multi-AZ**: bản standby đồng bộ ở AZ khác, nhận mọi dữ liệu ghi, tự lên thay khi primary hỏng. Standby (DB instance) không nhận truy vấn đọc.
+- **Read Replica**: bản sao chỉ đọc, nhận dữ liệu bất đồng bộ từ primary, có độ trễ (replica lag). Dùng để chia tải đọc, không dùng cho HA tự động (bạn phải promote thủ công khi primary chết).
+- **Aurora**: engine tương thích PostgreSQL/MySQL, lưu dữ liệu trên storage phân tán (6 bản trên 3 AZ), ghi cần 4/6 xác nhận. Failover promote reader thành writer rất nhanh, thường vài giây.
+- **Failover**: chuyển dịch vụ sang bản dự phòng khi bản chính chết.
+- **Switchover**: chuyển vai trò có kế hoạch khi primary vẫn sống, không mất dữ liệu.
+- **Cluster endpoint**: tên DNS luôn trỏ tới writer hiện tại của Aurora cluster.
+- **Instance endpoint**: tên DNS cố định của một instance cụ thể.
+- **DNS TTL**: thời gian client và resolver được phép cache kết quả phân giải tên miền.
+- **JVM DNS cache**: JVM nhớ địa chỉ IP của tên miền theo networkaddress.cache.ttl.
+- **HikariCP**: connection pool phổ biến cho Spring Boot, giữ sẵn kết nối tới database.
+- **Replica lag**: khoảng trễ giữa lúc ghi ở primary và lúc replica nhìn thấy dữ liệu đó.
+- **Transaction không idempotent**: giao dịch chạy lại sẽ tạo kết quả khác (ví dụ trừ tiền hai lần), không được retry vô điều kiện.
+
+### Cơ chế failover từng bước
+**RDS PostgreSQL Multi-AZ:**
+1. Primary hỏng (máy/AZ). RDS phát hiện, promote standby thành primary.
+2. RDS đổi bản ghi DNS endpoint trỏ tới instance mới (CNAME, TTL thấp khoảng 5 giây). Thời gian thực tế thường 60-120 giây.
+3. Mọi kết nối TCP cũ tới primary cũ bị đứt; ứng dụng nhận SQLException "connection reset" hoặc "connection is closed".
+4. Client mới phải resolve DNS lại; nếu JVM cache DNS lâu, client vẫn connects tới IP cũ (đã chết).
+
+**Read Replica:**
+1. Replica nhận dữ liệu bất đồng bộ, có lag vài milliseconds đến vài phút khi tải cao.
+2. Primary chết: replica **không tự động trở thành primary**. Bạn phải promote thủ công (lệnh hoặc console), rồi ứng dụng phải kết nối tới instance mới (đổi connection string hoặc dùng endpoint khác).
+3. Dữ liệu ghi cuối cùng có thể bị mất (không kịp replicate), RPO > 0.
+
+**Aurora PostgreSQL:**
+1. Writer hỏng, storage phân tán đã giữ 6 bản dữ liệu trên 3 AZ.
+2. Aurora promote một reader thành writer, thường trong vài giây (không cần copy data vì dùng chung storage).
+3. Cluster endpoint DNS cập nhật trỏ tới writer mới. Kết nối TCP cũ tới writer cũ bị đứt.
+
+### Phía ứng dụng Java phải làm gì (không thì DB lên xong app vẫn lỗi)
+1. **JVM DNS TTL ngắn**: đặt {{networkaddress.cache.ttl}} = 5-30 giây khi khởi động (trước lần resolve đầu tiên), để ứng dụng resolve lại IP mới sau failover. Mặc định có thể cache mãi mãi (nếu có SecurityManager) hoặc khoảng 30 giây.
+2. **HikariCP phát hiện kết nối chết nhanh**:
+   - {{connection-timeout}} 3 giây: mở kết nối mới fail nhanh thay vì treo 30 giây mặc định.
+   - {{socketTimeout}} (JDBC driver) vài giây: query không treo vô hạn trên TCP chết (half-open).
+   - {{keepalive-time}} 30 giây và validation query {{SELECT 1}}: pool phát hiện và loại kết nối chết.
+   - {{max-lifetime}} ngắn hơn thời gian ngắt kết nối idle của PostgreSQL (ví dụ 20 phút), để kết nối được làm mới định kỳ.
+3. **Không dùng instance endpoint cứng cho ghi**: ghi qua cluster endpoint (Aurora) hay endpoint được RDS Proxy quản lý, sau failover DNS trỏ sang writer mới.
+4. **Retry idempotent**: giao dịch đang chạy khi failover sẽ thất bại. Chỉ retry giao dịch có thể chạy lại an toàn (idempotent) hoặc thiết kế lại từ đầu, kèm backoff và giới hạn 1-2 lần. Giao dịch chuyển tiền lỗi lúc commit có thể trạng thái không rõ — kiểm tra bằng idempotency key trước khi retry.
+5. **RDS Proxy** (tuỳ chọn): giữ kết nối phía client, tự chuyển hướng sau failover, giảm lỗi của ứng dụng, đặc biệt hữu ích với Lambda (nhiều connection ngắn); trade-off là thêm chi phí và một hop, và pinning khi dùng prepared statement/session state làm giảm hiệu quả.
+
+~~~text
+Thời gian ứng dụng không thể ghi (minh hoạ, đo từ phía app):
+RDS Multi-AZ, cấu hình mặc định (DNS cache lâu, không keepalive): 2-5 phút
+RDS Multi-AZ, DNS TTL 5s + HikariCP keepalive + connection-timeout 3s: ~60-90 giây
+Aurora, cluster endpoint + retry idempotent: thường dưới 1 phút
+~~~
+
+### Khi nào chọn cái nào
+| Tùy chọn | Failover | Dùng đọc được standby/replica? | Phù hợp khi |
+|---|---|---|---|
+| RDS PostgreSQL Multi-AZ | Tự động, 60-120s | Không (standby chỉ nhận khi failover) | Cần HA đơn giản, dữ liệu quan hệ, đội quen PostgreSQL |
+| Read Replica | Không tự động (promote thủ công) | Có, nhưng có lag | Scale đọc báo cáo, không cần failover tự động |
+| Aurora PostgreSQL | Tự động, vài giây | Có (tối đa 15 reader, lag thấp) | Cần HA cao, đọc nhiều, failover nhanh, tương thích PostgreSQL |
+
+### Lỗi hay gặp
+- **Ghi trực tiếp qua instance endpoint cứng.** Triệu chứng: sau failover ứng dụng vẫn kết nối tới instance cũ, nay đã thành reader (hoặc đã chết), mọi lệnh ghi lỗi. Cách tránh: ghi qua cluster endpoint hoặc qua wrapper/proxy.
+- **Chỉ test failover trên giấy.** Triệu chứng: sự cố thật kéo dài gấp nhiều lần dự kiến vì ứng dụng không xử lý connection chết. Cách tránh: diễn tập failover thực tế trên staging dưới tải và đo thời gian không ghi được từ ứng dụng.
+- **Retry giao dịch không idempotent.** Triệu chứng: lỗi lúc commit, chạy lại làm trừ tiền hai lần. Cách tránh: chỉ retry sau khi xác nhận giao dịch cũ đã thất bại, dùng idempotency key.
+- **JVM cache DNS mãi mãi.** Triệu chứng: sau failover DNS đã đổi nhưng ứng dụng vẫn connects IP cũ trong nhiều giờ. Cách tránh: đặt networkaddress.cache.ttl thấp lúc khởi động.
+
+### Ví dụ đời thực
+Một hệ thống thanh toán dùng Spring Boot + HikariCP kết nối RDS PostgreSQL Multi-AZ. Đội chủ động failover để test: database chuyển sang standby trong 70 giây, nhưng ứng dụng tiếp tục báo lỗi "connection reset" và "read-only transaction" trong 4 phút. Điều tra: JVM cache DNS (SecurityManager cũ đặt TTL vô hạn trong image), HikariCP giữ 15 kết nối tới primary cũ không có keepalive nên không phát hiện chết, và connectTimeout mặc định 30 giây khiến mỗi kết nối mới treo lâu. Nguyên gốc: chỉ quan tâm thời gian failover của database, quên rằng ứng dụng Java có ba lớp làm chậm (DNS cache, pool giữ kết nối chết, TCP timeout hệ điều hành). Xử lý: đặt networkaddress.cache.ttl = 5 giây, HikariCP connection-timeout 3000 ms, socketTimeout 5000 ms, keepalive-time 30000 ms, max-lifetime 1200000 ms, và thêm retry idempotent 2 lần với backoff 200-500 ms cho lỗi kết nối. Kết quả: lần failover sau, thời gian ứng dụng không thể ghi xuống còn khoảng 75 giây, và không còn timeout treo 30 giây.
+
+### Trả lời mẫu khi phỏng vấn
+"Multi-AZ PostgreSQL failover mất khoảng 60-120 giây do DNS đổi và kết nối cũ bị đứt; Read Replica không failover tự động, bạn phải promote thủ công và đổi connection string; Aurora thường failover trong vài giây vì storage dùng chung và quorum 4/6. Dù database khôi phục nhanh, ứng dụng Java có thể vẫn lỗi vài phút nếu không xử lý ba thứ: JVM cache địa chỉ IP cũ (đặt networkaddress.cache.ttl thấp), HikariCP giữ kết nối chết (bật keepalive, connection-timeout ngắn, socketTimeout) và giao dịch đang chạy bị mất (cần retry idempotent). Tôi ghi qua cluster endpoint chứ không phải instance endpoint cứng, và cân nhắc RDS Proxy nếu có nhiều client ngắn lượt. Mục tiêu tôi đo là thời gian không thể ghi từ góc nhìn ứng dụng, không chỉ thời gian failover trên console, và tôi luôn diễn tập failover định kỳ để có số liệu thật."
+
+> Senior tip: thời gian failover trên console không quan trọng bằng thời gian ứng dụng không ghi được. Với cấu hình mặc định con số này hay là vài phút; chỉ cần DNS TTL thấp, HikariCP keepalive + connection-timeout ngắn, và retry idempotent là phần lớn request sống sót qua failover.`,
+  follow: [
+    'Vì sao không nên ghi trực tiếp qua instance endpoint cứng sau failover?',
+    'Read replica có thể thay thế Multi-AZ cho mục đích HA không, và tại sao?',
+    'Làm sao biết một giao dịch có thể retry an toàn sau khi failover?'
+  ],
+  tags: ['RDS', 'PostgreSQL', 'Aurora', 'Multi-AZ', 'Read Replica', 'failover', 'HikariCP', 'DNS', 'lead']
+},
+{
+  id: 'aws-089',
+  topic: 'aws',
+  level: 'senior',
+  q: 'Hoá đơn AWS tăng bất thường và bạn được giao cắt 30% trong 8 tuần mà không làm gián đoạn dịch vụ. Bạn tìm chi phí từ đâu, những khoản ẩn nào thường là nguyên nhân, và lập kế hoạch thế nào?',
+  a: `**Tóm tắt:** Cắt chi phí AWS bắt đầu từ đo lường, không từ mua Savings Plans. Dùng Cost Explorer, CUR và VPC Flow Logs để tìm top khoản chi phí và khoản ẩn (NAT Gateway xử lý dữ liệu, data transfer cross-AZ, CloudWatch Logs, volume/EIP/snapshot không dùng, S3 Standard cho dữ liệu lạnh, môi trường dev chạy 24/7). Lập kế hoạch 8 tuần: đo lường → dọn tài khoản không dùng → rightsizing → kiến trúc (endpoint, Graviton, storage class) → cam kết Savings Plans cho phần nền ổn định. Mỗi bước có số liệu trước/sau.
+
+### Thuật ngữ (giải thích từ gốc)
+- **Cost Explorer**: dịch vụ AWS xem và phân tích hoá đơn theo dịch vụ, tài khoản, tag và thời gian.
+- **CUR (Cost and Usage Report)**: báo cáo chi phí chi tiết nhất, đẩy vào S3, truy vấn bằng Athena nếu cần phân tích sâu.
+- **Cost allocation tag**: nhãn (team, env, service, cost-center) gắn vào tài nguyên để chia chi phí cho từng nhóm chịu trách nhiệm.
+- **AWS Budgets**: đặt ngưỡng chi phí và gửi cảnh báo khi vượt hoặc dự kiến vượt.
+- **Compute Optimizer**: dịch vụ miễn phí phân tích metric CloudWatch và đề xuất kích thước EC2, EBS, Lambda, ECS phù hợp.
+- **NAT Gateway phí xử lý**: tính theo giờ chạy cộng mỗi GB dữ liệu đi qua, kể cả gọi S3 nếu không có endpoint.
+- **Data transfer cross-AZ**: phí mỗi GB dữ liệu đi giữa hai AZ, tính cả hai chiều.
+- **S3 storage class**: lớp lưu trữ khác nhau (Standard, IA, Glacier…) theo tần suất đọc; dữ liệu lạnh ở Standard tốn tiền vô ích.
+- **Unattached resource**: tài nguyên không gắn với gì (volume EBS không attach, Elastic IP không dùng, snapshot cũ) vẫn tính phí.
+- **Right-sizing**: thay đổi kích thước tài nguyên khớp với mức sử dụng thực tế.
+- **Savings Plans**: cam kết chi tiền mỗi giờ trong 1-3 năm để được giảm giá compute (20-60%).
+
+### Cơ chế từng bước: một vòng cắt chi phí 8 tuần
+**Tuần 1 — Đo lường và gán trách nhiệm**
+- Bật Cost Explorer, xem theo service và tag; nếu thiếu tag thì không ai chịu trách nhiệm chi phí.
+- Xuất CUR ra S3, dùng Athena truy vấn chi tiết khi cần.
+- Bật AWS Budgets với cảnh báo theo ngưỡng thực tế (ví dụ 80%, 100%, 120% so với tháng trước).
+- Lập bảng chi phí 3 tháng gần nhất, tìm top 5 khoản lớn nhất và top 5 khoản tăng nhanh nhất.
+
+**Tuần 2 — Dọn tài nguyên không dùng**
+- Xóa volume EBS không attach, Elastic IP không gắn, Load Balancer không có target, snapshot cũ hơn N ngày.
+- Tìm EC2/RDS/ElastiCache idle (CPU dưới 5% liên tục 14 ngày) và tắt hoặc giảm size.
+
+**Tuần 3-4 — Right-sizing và kiến trúc nhanh thắng**
+- Theo Compute Optimizer, giảm size instance từng bước, theo dõi p99 latency (không cắt theo trung bình vì trung bình che giờ cao điểm).
+- Thêm S3 gateway endpoint và interface endpoint (ECR, CloudWatch Logs, Secrets Manager) để traffic AWS dịch vụ không qua NAT Gateway.
+- Chuyển S3 dữ liệu ít đọc sang Intelligent-Tiering/Glacier, bật lifecycle xoá multipart upload dở dang.
+
+**Tuần 5-6 — Kiến trúc dài hạn**
+- Chuyển workload Java sang Graviton (arm64) nếu thư viện hỗ trợ, thường rẻ hơn và nhanh hơn x86 cùng cấp.
+- Bật Auto Scaling theo metric thực, tắt dev/staging ngoài giờ hành chính (scheduled scaling về 0).
+- Dùng Spot cho batch, CI runner, môi trường dev.
+
+**Tuần 7-8 — Cam kết và ngăn tái phát**
+- Chỉ sau khi right-sizing xong và workload ổn định, mua Compute Savings Plans 1 năm cho phần nền chắc chắn dùng (tránh All Upfront nếu chưa chắc).
+- Bắt buộc tag trên mọi tài nguyên mới, policy từ chối tạo tài nguyên không tag.
+- Review top 5 khoản chi tăng mỗi tháng, không để chi phí lẩn khuất trở lại.
+
+### Các khoản chi phí ẩn hay bị bỏ qua
+| Khoản | Triệu chứng | Cách cắt |
+|---|---|---|
+| NAT Gateway xử lý dữ liệu | NatGatewayBytesProcessed lớn, bill NAT tăng sau mỗi deploy/backup | S3/DynamoDB gateway endpoint, ECR/CloudWatch/Secrets Manager interface endpoint |
+| Data transfer cross-AZ | App và database ở AZ khác, traffic chéo AZ tính phí | Đặt app và DB cùng AZ khi có thể, vẫn đảm bảo HA qua nhiều AZ |
+| CloudWatch Logs | Log debug nhiều, lưu indefinitely | Đặt retention, lọc log debug, gửi log quan trọng sang S3 |
+| Volume/EIP/snapshot không dùng | Hoá đơn EBS/EIP không giảm dù scale down instance | Xóa định kỳ, snapshot lifecycle |
+| S3 Standard cho dữ liệu lạnh | Dữ liệu months-old vẫn ở Standard | Lifecycle chuyển IA/Glacier |
+| Môi trường dev 24/7 | Instance lớn chạy cả weekend | Scheduled scaling về 0 ngoài giờ |
+
+### Ví dụ code: kiểm tra tần suất đọc S3 để chọn storage class (rút gọn)
+~~~java
+// Liệt kê object theo prefix và xem LastModified để quyết định chuyển IA/Glacier
+S3Client s3 = S3Client.create();
+ListObjectsV2Request req = ListObjectsV2Request.builder()
+    .bucket("banking-archive")
+    .prefix("logs/2024/")
+    .build();
+var resp = s3.listObjectsV2(req);
+resp.contents().forEach(obj -> {
+    long ngay = java.time.Duration.between(obj.lastModified(), java.time.Instant.now()).toDays();
+    System.out.println(obj.key() + " " + ngay + " ngay");
+});
+~~~
+
+### Ví dụ đời thực
+Một hệ thống Java trên AWS hoá đơn tháng nhảy từ 18.000 lên 23.400 USD. Đội tra Cost Explorer theo tag env=prod thấy dòng NATGateway tăng 2.900 USD, CloudWatchLogs tăng 600 USD, và có 1.200 USD là EBS volume không attach + Elastic IP không dùng. VPC Flow Logs cho thấy các pod trong private subnet pull image Docker từ ECR và ship log lên CloudWatch Logs qua NAT Gateway, mỗi GB tốn phí xử lý NAT. Nguyên gốc: thiếu VPC endpoint cho dịch vụ AWS, log debug không giới hạn, và tài nguyên dở dang không được dọn. Xử lý: thêm gateway endpoint S3 và interface endpoint ECR/CloudWatch Logs/Secrets Manager, đặt CloudWatch Logs retention 30 ngày và lọc log debug, xóa volume/EIP không dùng, chuyển S3 dữ liệu lạnh sang Glacier. Kết quả sau 8 tuần: hoá đơn về 16.100 USD (giảm ~31%), SLO không thay đổi, và team bổ quy tắc review chi phí hàng tuần.
+
+### Trả lời mẫu khi phỏng vấn
+"Tôi cắt chi phí AWS theo thứ tự đo lường trước, hành động sau, không bao giờ bắt đầu bằng mua Savings Plans. Tuần đầu tôi bật Cost Explorer, CUR và Budgets, gán tag bắt buộc để biết mỗi team chi tiêu bao nhiêu, rồi tìm top 5 khoản lớn và tăng nhanh nhất. Các khoản ẩn tôi thường thấy là NAT Gateway xử lý dữ liệu (gọi S3, pull ECR, ship log qua NAT), data transfer cross-AZ, CloudWatch Logs lưu debug vô hạn, volume/EIP/snapshot không dùng, và S3 Standard cho dữ liệu lạnh. Tôi xử lý theo kế hoạch 8 tuần: dọn tài nguyên không dùng, right-sizing theo Compute Optimizer và p99 (không theo trung bình), thêm VPC endpoint để traffic AWS dịch vụ không qua NAT, chuyển storage class, dùng Graviton và Spot cho workload phù hợp, tắt dev ngoài giờ; chỉ sau workload ổn định mới mua Savings Plans cho phần nền. Mỗi bước đều có số liệu trước/sau, và tôi đặt budget cảnh báo để chi phí không lẩn khuất trở lại."
+
+> Senior tip: mua Savings Plans trước khi right-sizing là sai lầm kinh điển — bạn cam kết trả tiền cho tài nguyên oversized. Luôn đo lường, dọn và right-sizing dứt khoát trước, rồi mới cam kết. Một buổi review 1 giờ mỗi tháng nhìn top 5 khoản tăng chi phí hiệu quả hơn mọi công cụ đắt tiền.`,
+  follow: [
+    'Vì sao không nên cắt instance theo CPU trung bình?',
+    'Khi nào Savings Plans không đáng mua?',
+    'Làm sao bắt buộc mọi team gán tag chi phí trên tài nguyên AWS?'
+  ],
+  tags: ['AWS', 'cost', 'rightsizing', 'Savings Plans', 'NAT', 'CloudWatch Logs', 'S3', 'senior']
+},
 )
