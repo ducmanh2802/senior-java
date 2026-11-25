@@ -8414,4 +8414,433 @@ f.get(); // ném ExecutionException, nguyên nhân là RuntimeException("boom")
 
 > Senior tip: nếu dùng {{execute()}} và task ném exception, hãy đảm bảo có UncaughtExceptionHandler hoặc wrapper try/catch bên trong task, không thì lỗi dễ bị bỏ qua trên production.`
 }
+,
+{
+  id: 'qz-jvm-068', topic: 'jvm',
+  q: `Service dùng {{ByteBuffer.allocateDirect(100_000_000)}} cho 100 MB direct buffer. Sau một thời gian, log báo {{java.lang.OutOfMemoryError: Direct buffer memory}} mặc dù heap còn trống 2 GB. Nguyên nhân và cách xử lý đúng?`,
+  options: [
+    'Direct buffer cấp phát ngoài heap (native memory), không bị quản lý bởi GC; cần đặt {{-XX:MaxDirectMemorySize}} để giới hạn và dùng cleaner/try-with-resources để giải phóng sớm',
+    'Direct buffer vẫn nằm trên heap, lỗi do heap quá nhỏ; tăng {{-Xmx}} là hết',
+    '{{allocateDirect}} tự giải phóng khi object bị GC, không cần lo; lỗi do bug JDK',
+    'Chuyển sang {{ByteBuffer.allocate}} (heap buffer) thì không bao giờ OOM'
+  ],
+  answer: 0,
+  explain: `**Tóm tắt:** {{ByteBuffer.allocateDirect}} cấp phát bộ nhớ **ngoài heap** (native memory, thường qua {{malloc}}/{{mmap}}), không thuộc vùng GC quản lý. Khi total direct memory vượt quá limit (mặc định = {{MaxDirectMemorySize}} = heap size nếu không đặt, hoặc 64MB trên một số JDK cũ), JVM ném {{OutOfMemoryError: Direct buffer memory}} dù heap còn trống.
+
+### Thuật ngữ
+- **Direct buffer**: {{ByteBuffer}} không sao chép qua heap khi I/O (Zero-copy), hiệu năng cao cho Netty, NIO. Nhưng tốn native memory.
+- **Cleaner/Reference**: direct buffer được gắn {{Cleaner}} (PhantomReference) để dọn native memory khi buffer bị GC. Nhưng GC chỉ chạy khi heap áp lực → direct buffer có thể sống lâu, tích lũy.
+
+### Cách xử lý
+1. Đặt {{-XX:MaxDirectMemorySize=512m}} (hoặc giá trị phù hợp limit container) để fail-fast và dễ quan sát.
+2. Giải phóng chủ động: {{((DirectBuffer) buf).cleaner().clean()}} (JDK 9+) hoặc dùng try-with-resources với wrapper tự clean.
+3. Theo dõi qua {{BufferPoolMXBean}} ("direct") hoặc NMT ({{-XX:NativeMemoryTracking=summary}}).
+
+### Vì sao các phương án còn lại sai
+- **Tăng Xmx**: heap và direct memory tách biệt; tăng heap không giải phóng direct memory, thậm chí giảm headroom cho native.
+- **Tự giải phóng**: Cleaner chỉ chạy khi GC, nếu allocation rate cao mà GC không kịp thì OOM trước khi dọn.
+- **Heap buffer không bao giờ OOM**: {{allocate}} vẫn dùng heap, heap đầy vẫn {{OutOfMemoryError: Java heap space}}.
+
+> Senior tip: Netty {{PooledByteBufAllocator}} quản lý direct buffer pool, giảm allocation và leak. Luôn đặt {{MaxDirectMemorySize}} và alert khi usage > 80%. Leak direct buffer là nguyên nhân hàng đầu gây OOMKilled mà không có heap dump.`
+}
+,
+{
+  id: 'qz-jvm-069', topic: 'jvm',
+  q: `Thread dump ({{jstack <pid>}}) của service bị treo cho thấy 50 thread {{http-nio-8080-exec-*}} đều ở trạng thái {{BLOCKED}}, chờ monitor của cùng một object {{java.util.HashMap}} (không phải ConcurrentHashMap). Dòng nào trong dump là manh mối quan trọng nhất để tìm nguyên nhân gốc?`,
+  options: [
+    'Dòng {{"http-nio-8080-exec-1" #25 daemon prio=5 ... waiting for monitor entry [0x...]}} — thread đầu tiên trong danh sách',
+    'Dòng {{- locked <0x...> (a java.util.HashMap)}} ở thread nào đang **RUNNABLE** và giữ lock đó — chỉ ra ai đang làm việc trong map',
+    'Dòng {{java.lang.Thread.State: BLOCKED (on object monitor)}} lặp lại 50 lần — xác nhận deadlock',
+    'Dòng {{at java.util.HashMap.get(HashMap.java:557)}} — stack trace cho thấy HashMap không thread-safe'
+  ],
+  answer: 1,
+  explain: `**Tóm tắt:** Khi nhiều thread {{BLOCKED}} chờ cùng một monitor, thread **đang giữ lock** (thường ở trạng thái {{RUNNABLE}} với dòng {{- locked <address> (a java.util.HashMap)}}) là thủ phạm. Cần xem stack trace của thread đó để biết code nào đang đọc/ghi HashMap quá lâu (ví dụ {{get}} trên map lớn, {{resize}} khi put đồng thời).
+
+### Cách đọc thread dump (jstack)
+Mỗi thread block có dạng:
+~~~text
+"http-nio-8080-exec-10" #34 daemon prio=5 os_prio=0 tid=0x... nid=0x... waiting for monitor entry [0x...]
+   java.lang.Thread.State: BLOCKED (on object monitor)
+   at java.util.HashMap.get(HashMap.java:557)
+   - waiting to lock <0x0000000abcdef> (a java.util.HashMap)
+~~~
+Thread giữ lock sẽ có:
+~~~text
+"http-nio-8080-exec-1" #25 daemon prio=5 os_prio=0 tid=0x... nid=0x... runnable [0x...]
+   java.lang.Thread.State: RUNNABLE
+   at java.util.HashMap.putVal(HashMap.java:630)
+   - locked <0x0000000abcdef> (a java.util.HashMap)
+~~~
+
+### Vì sao các phương án còn lại sai
+- **Thread đầu tiên trong danh sách**: thứ tự in không có ý nghĩa ưu tiên; thread giữ lock có thể nằm ở giữa/cuối dump.
+- **BLOCKED lặp lại 50 lần**: chỉ là biểu hiện, không chỉ ra nguyên nhân. Không phải deadlock (deadlock cần vòng tròn chờ nhau, jstack sẽ ghi "Found one Java-level deadlock").
+- **Stack trace HashMap.get**: chỉ cho thấy nơi bị chặn, không cho thấy ai đang giữ lock và làm gì.
+
+> Senior tip: thay HashMap bằng {{ConcurrentHashMap}} (không lock toàn bộ map) hoặc {{Collections.synchronizedMap}} (vẫn lock toàn bộ nhưng an toàn hơn HashMap đơn luồng). Nếu phải dùng HashMap, đừng share giữa thread. Dùng {{jstack -l <pid>}} để in cả lock info.`
+}
+,
+{
+  id: 'qz-jvm-070', topic: 'jvm', multi: true,
+  q: `Bạn cần điều tra memory leak nghi ngờ. Những tổ hợp công cụ/vào lúc nào dùng là **hợp lý**? (Chọn 2)`,
+  options: [
+    '{{jcmd <pid> GC.class_histogram}} ngay khi service đang chạy bình thường: xem top class theo instance count/size, phát hiện class tăng bất thường',
+    '{{jmap -histo:live <pid>}} trên production load cao: ép Full GC rồi in histogram, an toàn và nhanh',
+    'Heap dump ({{jcmd <pid> GC.heap_dump /path/dump.hprof}}) khi nghi leak, rồi phân tích bằng Eclipse MAT offline',
+    '{{jstat -gcutil <pid> 1000}} liên tục 1 giờ để tìm leak: nếu old gen dùng tăng dần là leak',
+    '{{jfr start name=leak settings=profile duration=60s}} trên production: overhead cao, chỉ dùng khi đã reproducer local'
+  ],
+  answer: [0, 2],
+  explain: `**Tóm tắt:** Dùng **histogram nhẹ** ({{jcmd GC.class_histogram}}) để screening nhanh, sau đó **heap dump + MAT** để phân tích sâu. Tránh ép Full GC trên production ({{histo:live}}) và tránh JFR profile kéo dài trên production.
+
+### Công cụ và lúc dùng
+| Công cụ | Overhead | Dùng khi nào |
+|---|---|---|
+| {{jcmd GC.class_histogram}} | Rất thấp (không GC) | Screening hàng ngày/incident: top class, instance count, shallow size |
+| {{jmap -histo}} | Thấp | Tương tự histogram; {{-histo:live}} ép Full GC — **không dùng production load cao** |
+| {{jcmd GC.heap_dump}} | Cao (GC + ghi disk) | Khi đã nghi ngờ leak cụ thể; phân tích offline bằng MAT (dominator tree, path to GC roots) |
+| {{jstat -gcutil}} | Rất thấp | Theo dõi xu hướng heap/GC theo thời gian; **không chỉ ra class nào leak** |
+| JFR ({{profile}} settings) | Trung bình-cao | Reproduce local/staging; **không chạy profile production** (dùng {{default}} settings nếu cần) |
+
+### Vì sao các phương án còn lại sai
+- **histo:live trên production load cao**: ép Full GC stop-the-world, có thể gây latency spike hoặc treo service. Chỉ dùng khi đã xác nhận an toàn.
+- **jstat tìm leak**: chỉ thấy heap dùng tăng; không biết object nào, ai giữ. Cần histogram/dump.
+- **JFR profile production**: {{settings=profile}} bật nhiều event (allocation, lock, GC chi tiết) → overhead 5-15%+, rủi ro làm chậm production. Chỉ dùng {{default}} (overhead ~1%) nếu bắt buộc.
+
+> Senior tip: quy trình chuẩn: 1) {{jcmd GC.class_histogram}} 2 lần cách nhau 30 phút so sánh delta → class nào tăng đều là nghi phạm. 2) Heap dump production (đảm bảo disk đủ). 3) MAT: Leak Suspects → Dominator Tree → Path to GC Roots. 4) Fix code (clear cache, remove listener, bound collection).`
+}
+,
+{
+  id: 'qz-jvm-071', topic: 'jvm',
+  q: `Service Java 17 chạy trong Kubernetes (limit 4GB RAM). Bạn thấy {{kubectl top pod}} báo memory 3.8GB, nhưng heap used trong Grafana (Micrometer/JMX) chỉ 1.2GB. Phần chênh 2.6GB này chứa gì, và công cụ nào xem chi tiết nhất?`,
+  options: [
+    'Chỉ chứa Metaspace; xem bằng {{jcmd <pid> VM.metaspace}}',
+    'Chỉ chứa thread stack; xem bằng {{jstack}} đếm số thread',
+    'Chứa **native memory**: Metaspace, thread stack, Code Cache, Direct Buffer, GC structures, JNI/malloc. Xem chi tiết nhất bằng **Native Memory Tracking** ({{-XX:NativeMemoryTracking=summary}} + {{jcmd <pid> VM.native_memory summary.diff}})',
+    'Là lỗi đo lường của Kubernetes; JVM không bao giờ dùng nhiều hơn heap + 200MB'
+  ],
+  answer: 2,
+  explain: `**Tóm tắt:** RSS (Resident Set Size — bộ nhớ thực tế process chiếm) = Heap + **Native Memory**. Native memory gồm Metaspace, Thread Stacks (~1MB/thread), Code Cache (JIT), Direct Buffer (NIO/Netty), GC internal structures (G1 remembered set, card table), JNI allocations, malloc của thư viện native. Chênh 2.6GB là bình thường.
+
+### Native Memory Tracking (NMT) — công cụ xem chi tiết nhất
+1. Bật: {{-XX:NativeMemoryTracking=summary}} (overhead ~5-10%).
+2. Baseline: {{jcmd <pid> VM.native_memory baseline}}.
+3. Sau một thời gian: {{jcmd <pid> VM.native_memory summary.diff}} — chỉ ra hạng mục nào **tăng**.
+
+~~~text
+Native Memory Tracking:
+Total: reserved=3800MB, committed=2600MB
+- Java Heap (reserved=2048MB, committed=2048MB)
+- Class (reserved=1050MB, committed=80MB)        <- Metaspace
+- Thread (reserved=120MB, committed=40MB)         <- Stack
+- Code (reserved=250MB, committed=80MB)           <- JIT Code Cache
+- GC (reserved=120MB, committed=60MB)             <- G1 remembered set...
+- Internal (reserved=50MB, committed=30MB)
+- Other (reserved=100MB, committed=80MB)          <- Direct buffer, JNI, malloc...
+~~~
+
+### Vì sao các phương án còn lại sai
+- **Chỉ Metaspace/Thread**: native memory có nhiều hạng mục, không chỉ một thứ.
+- **Lỗi đo Kubernetes**: {{kubectl top}} đọc cgroup memory.usage_in_bytes (RSS), chính xác. Chênh lệch là native memory thật.
+
+> Senior tip: NMT không thấy memory do thư viện native tự malloc (ví dụ Netty pool, RocksDB). Khi NMT không giải thích được, dùng {{jemalloc}}/{{async-profiler native}} hoặc {{perf}}. Đặt {{-XX:MaxDirectMemorySize}}, {{-XX:MaxMetaspaceSize}}, {{-Xss}} để giới hạn từng hạng mục.`
+}
+,
+{
+  id: 'qz-jvm-072', topic: 'jvm',
+  q: `Log startup của service Java 17 trong container 2GB RAM:
+~~~
+-XX:InitialRAMPercentage=50 -XX:MaxRAMPercentage=75 -XX:MinRAMPercentage=50
+-XX:MaxMetaspaceSize=256m -XX:MaxDirectMemorySize=512m -Xss1m
+~~~
+Container bị OOMKilled (exit 137) sau 2 giờ chạy. Heap dump không có. Đâu là cấu hình **nguy hiểm nhất** và nên sửa thế nào?`,
+  options: [
+    '{{MaxRAMPercentage=75}}: heap max ~1.5GB, cộng Metaspace 256MB + Direct 512MB + Thread stack (200 thread * 1MB = 200MB) + Code Cache + GC ~2.5GB > 2GB limit. Giảm MaxRAMPercentage xuống 60-65%',
+    '{{InitialRAMPercentage=50}}: heap khởi tạo 1GB quá lớn, gây OOM lúc startup',
+    '{{MaxMetaspaceSize=256m}} quá nhỏ, gây Metaspace OOM trước heap',
+    '{{-Xss1m}} quá lớn, nên giảm xuống 256k'
+  ],
+  answer: 0,
+  explain: `**Tóm tắt:** Tổng bộ nhớ process (RSS) vượt limit container → kernel OOM Killer giết process (exit 137). {{MaxRAMPercentage=75}} cho heap ~1.5GB (75% * 2GB). Cộng các non-heap: Metaspace 256MB + Direct 512MB + Thread stacks (~200MB) + Code Cache (~240MB) + GC structures (~100MB) ≈ 2.6-2.8GB > limit 2GB.
+
+### Tính toán headroom (dự trữ)
+Container limit = 2048MB
+- Heap (MaxRAMPercentage=75%): ~1536MB
+- Metaspace (max): 256MB
+- Direct buffer (max): 512MB
+- Thread stack: 200 threads * 1MB = 200MB
+- Code Cache (mặc định ~240MB)
+- GC/Internal/Other: ~100-200MB
+**Tổng ước lượng: ~2800MB** > 2048MB limit.
+
+### Sửa
+- Giảm {{MaxRAMPercentage=60..65}} (heap ~1.2-1.3GB).
+- Giảm {{MaxDirectMemorySize=256m}} nếu không dùng nhiều NIO.
+- Giảm {{-Xss=512k}} hoặc {{256k}} (đủ cho Spring Boot web).
+- Đặt {{-XX:MaxMetaspaceSize=128m}} đủ dùng.
+- Bật NMT tạm để đo thực tế.
+
+### Vì sao các phương án còn lại sai
+- **InitialRAMPercentage**: chỉ ảnh hưởng heap khởi tạo, không gây OOM sau 2 giờ.
+- **MaxMetaspaceSize 256MB**: không nhỏ; Spring Boot 3 thường dùng 80-150MB. Giảm thêm được nhưng không phải nguyên nhân chính.
+- **-Xss 1MB**: mặc định thường 1MB (Linux x64); giảm giúp nhưng tác động nhỏ hơn heap/direct.
+
+> Senior tip: công thức an toàn: **heap ≤ 60-70% limit**. Luôn đặt {{MaxRAMPercentage}} thay vì {{-Xmx}} cố định. Test load thật, đo RSS bằng {{kubectl top}} so với limit. Alert khi RSS > 85% limit.`
+}
+,
+{
+  id: 'qz-jvm-073', topic: 'jvm', multi: true,
+  q: `Về vùng nhớ **Stack** trong JVM, những phát biểu nào **đúng**? (Chọn 2)`,
+  options: [
+    'Mỗi thread có một stack riêng, lưu frame của method đang thực thi (local variable, operand stack, return address)',
+    'Stack nằm trên heap, được GC quản lý như object khác',
+    'Kích thước stack mỗi thread do {{-Xss}} điều khiển; stack quá sâu (đệ quy) gây {{StackOverflowError}}, stack quá lớn (nhiều thread) gây {{OutOfMemoryError: unable to create native thread}}',
+    'Object được cấp phát trên stack (stack allocation) là mặc định của JVM cho mọi object cục bộ',
+    'Stack frame của method cha bị xóa ngay khi gọi method con'
+  ],
+  answer: [0, 2],
+  explain: `**Tóm tắt:** Stack là bộ nhớ **per-thread**, lưu frame cho mỗi lời gọi method (biến cục bộ, operand stack, địa chỉ trả về). {{-Xss}} đặt kích thước. Đệ quy sâu → StackOverflowError. Nhiều thread + stack lớn → cạn native memory → unable to create native thread.
+
+### Chi tiết
+- **Stack frame**: mỗi method call tạo một frame. Frame chứa: Local Variable Array (biến cục bộ, tham số), Operand Stack (tính toán trung gian), Frame Data (return address, exception table...).
+- **Không trên heap**: Stack là native memory (cấp phát bằng mmap/malloc), **không** được GC quét. Thread chết thì stack giải phóng.
+- **Escape Analysis & Scalar Replacement**: JIT (C2) có thể **phân rã object không thoát ra khỏi method** thành các biến cục bộ trong frame (giống "cấp phát trên stack" về mặt hiệu quả), nhưng object vẫn là khái niệm heap; không có "stack allocation" mặc định cho mọi object.
+- **Frame cha**: method cha **giữ frame** cho đến khi method con return. Không bị xóa khi gọi con.
+
+### Vì sao các phương án còn lại sai
+- **Stack trên heap**: sai, stack là native memory riêng mỗi thread.
+- **Object mặc định cấp phát trên stack**: sai, mặc định object trên heap; chỉ escape analysis mới tối ưu một số case đặc biệt.
+- **Frame cha bị xóa khi gọi con**: sai, frame cha nằm yên chờ con return.
+
+> Senior tip: {{-Xss}} mặc định ~1MB (Linux x64). Với hàng nghìn thread (ví dụ virtual thread không dùng stack lớn), 1MB * 5000 = 5GB native memory. Spring Boot 3.2+ virtual thread stack size nhỏ hơn (có thể cấu hình). Giảm {{-Xss=512k}}/{{256k}} nếu nhiều thread platform, nhưng test kỹ StackOverflowError.`
+}
+,
+{
+  id: 'qz-jvm-074', topic: 'jvm',
+  q: `GC log (JDK 17, G1, heap 8GB) cho thấy chuỗi sau:
+~~~text
+[100.123s] GC(45) Pause Young (Normal) 2048M->1800M(8192M) 25ms
+[101.456s] GC(46) Pause Young (Normal) 2100M->1950M(8192M) 30ms
+[102.789s] GC(47) Pause Mixed (Normal) 3500M->2800M(8192M) 85ms
+[103.200s] GC(48) Pause Mixed (Normal) 4200M->3600M(8192M) 120ms
+[104.500s] GC(49) Pause Full (G1 Compaction Pause) 7800M->7200M(8192M) 3450ms
+~~~
+Đoạn log cho thấy điều gì, và hành động ưu tiên nhất?`,
+  options: [
+    'Young GC thu hồi tốt; Mixed GC tăng dần pause; Full GC 3.45s cho thấy live set gần chạm max heap (7.2GB/8GB) — **nghi memory leak hoặc heap quá nhỏ**, cần histogram/heap dump ngay',
+    'Mixed GC pause 85-120ms là bình thường; Full GC 3.45s do G1 compact region, không quan trọng',
+    'Heap 8GB quá lớn cho G1; nên giảm heap xuống 4GB để pause ngắn hơn',
+    'Young GC 25-30ms quá lâu; chuyển sang ZGC ngay'
+  ],
+  answer: 0,
+  explain: `**Tóm tắt:** Young GC chỉ thu hồi vài trăm MB (live data trong young gen nhiều). Mixed GC thu hồi thêm old gen nhưng pause tăng (85→120ms) và heap sau GC vẫn tăng (2.8G→3.6G). Full GC 3.45s (stop-the-world) với heap sau 7.2GB/8GB cho thấy **live set chiếm gần 90% heap** — đây là dấu hiệu **memory leak** (object tích lũy) hoặc heap thực sự không đủ.
+
+### Đọc hiểu từng dòng
+- Young: 2048M->1800M: chỉ giảm 248M, phần lớn object trẻ còn sống (promotion nhanh sang old).
+- Mixed: 3500M->2800M (giảm 700M) rồi 4200M->3600M (giảm 600M): G1 đang gom rác cả old gen (mixed), nhưng lượng object sống vẫn tăng theo thời gian.
+- Full: 7800M->7200M: sau Full GC vẫn còn 7.2GB sống. G1 Full GC (đã chạy đa luồng từ JDK 10, JEP 307) vẫn chậm và tốn kém, chỉ xảy ra khi evacuation thất bại. Đây là **cảnh báo đỏ**.
+
+### Hành động ưu tiên
+1. {{jcmd <pid> GC.class_histogram}} 2 lần cách 10 phút → class nào tăng đều?
+2. Heap dump → MAT: Dominator tree (retained size), Path to GC Roots.
+3. Nghi leak phổ biến: cache không bound, listener không gỡ, ThreadLocal, static collection.
+
+### Vì sao các phương án còn lại sai
+- **Mixed GC bình thường**: pause tăng và heap sau GC tăng liên tục **không** bình thường.
+- **Giảm heap**: làm live set chạm max nhanh hơn, Full GC dày hơn, OOM sớm hơn.
+- **Chuyển ZGC ngay**: cần xác định leak trước; ZGC cũng cần headroom, leak vẫn làm heap đầy.
+
+> Senior tip: theo dõi **"đường đáy răng cưa" (heap sau GC theo thời gian)**. Đường đáy dốc lên = leak. Đường đáy phẳng nhưng cao = cần thêm heap hoặc giảm dữ liệu. Bật {{-XX:+HeapDumpOnOutOfMemoryError}} và volume đủ lớn.`
+}
+,
+{
+  id: 'qz-jvm-075', topic: 'jvm',
+  q: `Team bật {{-XX:+UnlockDiagnosticVMOptions -XX:+LogCompilation}} để xem JIT inlining log. Log cho thấy method {{PaymentService.charge()}} **không được inline** với lý do "too big" (bytecode > {{InlineLargeMethodThreshold}} mặc định 350 bytecode). Cách nào **không** giúp method này được inline?`,
+  options: [
+    'Tăng {{-XX:InlineLargeMethodThreshold=100}} (hoặc {{-XX:MaxInlineSize}} cho method nhỏ)',
+    'Tách logic phức tạp trong charge() thành các method nhỏ riêng (extract method), để từng method nhỏ hơn ngưỡng',
+    'Đánh dấu method {{@DontInline}} để ép JIT không inline (để debug), sau đó bỏ annotation',
+    'Bật {{-XX:+TieredCompilation}} (mặc định bật) để C1 compile nhanh, C2 tối ưu sâu sau profiling'
+  ],
+  answer: 2,
+  explain: `**Tóm tắt:** {{@DontInline}} là annotation **ngăn** JIT inline method (dùng để debug/giữ stack trace rõ), không giúp inline. Ba cách còn lại đều có thể giúp: tăng ngưỡng, tách method nhỏ, tiered compilation cho C2 tối ưu sau profiling.
+
+### Các ngưỡng inline chính (JDK 17)
+- {{MaxInlineSize}} (mặc định 35 bytecode): method ≤ ngưỡng này **luôn** được inline (nếu không recursive).
+- {{InlineLargeMethodThreshold}} (mặc định 350 bytecode cho server compiler C2): method lớn hơn MaxInlineSize nhưng ≤ ngưỡng này **có thể** inline nếu hot đủ.
+- {{FreqInlineSize}} (mặc định 325 bytecode): method hot (profile count cao) có thể inline đến ngưỡng này.
+
+### Cách giúp inline
+1. **Tăng ngưỡng**: {{-XX:MaxInlineSize=70 -XX:InlineLargeMethodThreshold=500}} (cẩn thận: inline quá nhiều làm code cache phình, compile chậm).
+2. **Refactor**: tách method lớn thành các method nhỏ (< 35 bytecode) → tự inline.
+3. **Tiered Compilation** (mặc định bật): C1 compile nhanh có profiling, C2 dùng profile để inline quyết định tốt hơn.
+
+### Vì sao @DontInline sai
+{{@DontInline}} (trong {{jdk.internal.vm.annotation}}) báo JIT **không** inline method này. Dùng khi muốn giữ stack trace đầy đủ (debug/profiling) hoặc ngăn inline gây deoptimization. Ngược với mục tiêu "giúp inline".
+
+> Senior tip: đừng tune ngưỡng inline sớm. Đầu tiên profile (async-profiler/JFR) xem method có thực sự hot không. Inline nhiều làm code cache đầy → {{CodeCache full}} → JIT dừng compile → performance giảm. Xem log: {{-XX:+PrintInlining}} (diagnostic).`
+}
+,
+{
+id: 'qz-jvm-076', topic: 'jvm',
+  q: `Safepoint log ({{-Xlog:safepoint}}) của service p99 50ms cho thấy:
+~~~text
+Safepoint "no vm operation", Time since last: 1234567890 ns, Reaching safepoint: 890123456 ns, Cleanup: 12345 ns, At safepoint: 56789 ns, Total: 890202345 ns
+~~~
+Thread dump lúc đó cho thấy một thread {{http-nio-8080-exec-5}} ở trạng thái {{RUNNABLE}} với stack:
+~~~
+java.lang.Thread.State: RUNNABLE
+    at java.util.Arrays.copyOf(byte[][], int)
+    at java.io.ByteArrayOutputStream.toByteArray(ByteArrayOutputStream.java:207)
+    at com.app.ReportService.generate(ReportService.java:45)
+~~~
+Nguyên nhân Time-to-Safepoint (TTSP) ~890ms là gì?`,
+  options: [
+    'Thread đang chạy {{ByteArrayOutputStream.toByteArray}} (copy mảng lớn) trong code đã JIT compile, loop không có safepoint poll khiến JVM chờ thread này tới safepoint',
+    'GC đang chạy Full GC song song, chặn tất cả thread',
+    'Thread đang block trên I/O mạng, safepoint không thể đánh thức',
+    'JVM bị deadlock trên class loading, safepoint chờ lock'
+  ],
+  answer: 0,
+  explain: `**Tóm tắt:** {{Reaching safepoint: 890ms}} nghĩa là JVM mất ~890ms để **mọi thread dừng tại safepoint**. Thread {{http-nio-8080-exec-5}} đang chạy {{Arrays.copyOf}} (copy mảng byte lớn) trong method đã được JIT compile. Code JIT của loop copy mảng **không có safepoint poll** (điểm kiểm tra dừng), nên thread không tự dừng được cho đến khi copy xong.
+
+### Safepoint & TTSP (Time-to-Safepoint)
+- Để làm STW (GC, deopt, bias lock revoke...), JVM yêu cầu **mọi thread Java** tới safepoint.
+- Thread ở interpreter/C1: thường xuyên poll (backward branch, method return).
+- Thread ở C2 (tối ưu): loop nóng (counted loop, copyOf, fill, sort...) có thể **bỏ poll** để chạy nhanh → thread không check safepoint trong vài trăm ms.
+- Kết quả: các thread khác đã dừng và chờ, thread này vẫn chạy → toàn bộ ứng dụng "khựng" (TTSP lớn).
+
+### Vì sao các phương án còn lại sai
+- **Full GC song song**: log ghi "no vm operation" (không có VM operation), và Full GC thường ghi rõ "G1CollectForAllocation" hoặc "G1Full".
+- **Block trên I/O**: thread I/O block thường ở trạng thái {{BLOCKED}}/{{WAITING}} (parking), đã ở safepoint hoặc có thể interrupt. RUNNABLE đang copy mảng là CPU-bound.
+- **Deadlock class loading**: class loading gây BLOCKED trên lock, không RUNNABLE copy mảng.
+
+> Senior tip: JDK 17+ có **Loop Strip Mining** ({{-XX:+LoopStripMining}}, mặc định bật) chèn poll vào loop dài, giảm TTSP. Nếu vẫn gặp: {{-XX:+UseCountedLoopSafepoints}} (thử nghiệm), hoặc tránh copy mảng quá lớn (chunk nhỏ). Dùng async-profiler chế độ {{ttsp}} hoặc JFR event {{jdk.SafepointBegin}} để tìm code gây chậm.`
+}
+,
+{
+  id: 'qz-jvm-077', topic: 'jvm', multi: true,
+  q: `Cần theo dõi production Java 17: allocation rate, GC pause, CPU hot method, lock contention. Những tổ hợp công cụ/vào lúc nào **hợp lý**? (Chọn 3)`,
+  options: [
+    '{{jstat -gcutil <pid> 5s}} liên tục: allocation rate, GC count/pause, heap usage — overhead gần 0, dùng mọi lúc',
+    'JFR {{default}} settings ({{jfr start name=prod settings=default duration=30m}}): allocation, GC, lock, CPU sample — overhead ~1%, an toàn production, xem bằng JMC/JFR CLI',
+    'async-profiler {{-e cpu -e alloc -e lock -d 60 -f profile.html <pid>}}: sampling CPU/alloc/lock — overhead ~2-5%, **chỉ dùng staging/reproduce**, không production liên tục',
+    '{{jcmd <pid> VM.native_memory summary}} mỗi phút: allocation rate chi tiết cho direct buffer',
+    'Micrometer + Prometheus + Grafana: export JVM metrics (heap, GC, thread, class, CPU) — overhead thấp, dùng **luôn luôn** trên production'
+  ],
+  answer: [0, 1, 4],
+  explain: `**Tóm tắt:** Production cần **luôn bật** metrics nhẹ (Micrometer/JMX + Prometheus) và **jstat** cho GC realtime. JFR {{default}} an toàn production (overhead ~1%). async-profiler profile chi tiết chỉ dùng staging/reproduce (overhead cao, file lớn). NMT không cho allocation rate.
+
+### Bảng tóm tắt công cụ production
+| Công cụ | Overhead | Dùng production? | Cho phép xem |
+|---|---|---|---|
+| Micrometer/JMX + Prometheus | Rất thấp (~0.1%) | **Luôn bật** | Heap, GC pause, thread, class, CPU, custom |
+| {{jstat -gcutil}} | Gần 0 | **Luôn bật** (cron 5-10s) | GC count/time, heap usage, capacity |
+| JFR {{default}} | ~1% | **An toàn** (30-60 phút/lần) | Allocation site, GC, lock, CPU sample, exception |
+| JFR {{profile}} | 5-15%+ | **Không** (chỉ staging) | Chi tiết đầy đủ |
+| async-profiler | 2-5% | **Không production liên tục** | Flame graph CPU/alloc/lock, wall-clock |
+| NMT ({{summary}}) | 5-10% | Tạm thời khi điều tra native leak | Native memory breakdown |
+
+### Vì sao các phương án còn lại sai
+- **NMT mỗi phút**: NMT không đo allocation rate (đó là JFR/jstat). Overhead 5-10% quá cao để bật liên tục.
+- **async-profiler production liên tục**: overhead 2-5%, ghi file HTML lớn, dễ làm chậm/đổ disk production. Dùng reproduce local/staging.
+
+> Senior tip: chiến lược thực tế: 1) Luôn bật Micrometer + Prometheus + Grafana (alert p99 GC pause, heap usage, thread count). 2) Cron {{jstat -gcutil}} 10s log ra file. 3) Sự cố: bật JFR default 30 phút lấy file, phân tích offline. 4) Reproduce local: async-profiler full profile. 5) Native leak: bật NMT tạm, diff baseline.`
+}
+,
+{
+  id: 'qz-jvm-058', topic: 'jvm', q: 'Trong JVM, vùng nhớ nào chứa object instance, vùng nào chứa metadata class, và thread nào có stack riêng?', options: ['Heap chứa object; Metaspace chứa metadata class; mỗi thread có stack riêng', 'Stack chứa object; Heap chứa metadata; Metaspace dùng chung thread', 'Metaspace chứa object; Heap chứa metadata; Direct memory là stack', 'Heap chứa metadata; Stack chứa object; Direct memory chứa class'], answer: 0, explain: `**Tóm tắt:** Heap chứa instance object; Metaspace (từ Java 8 thay PermGen) chứa metadata class; mỗi thread có JVM stack riêng cho frame method. Direct memory là bộ nhớ native ngoài heap, dùng cho NIO ByteBuffer.
+
+### Vì sao các phương án còn lại sai
+- Stack không chứa object instance (chỉ chứa reference và primitive local).
+- Metaspace không chứa object instance.
+- Direct memory không phải stack.
+
+> Senior tip: leak Metaspace thường do classloader không unload (hot deploy, proxy); leak direct memory do ByteBuffer.allocateDirect không release.`
+},
+{
+  id: 'qz-jvm-059', topic: 'jvm', multi: true, q: 'Chọn 2 phát biểu đúng về G1 GC và ZGC (JDK 17+). (Chọn 2)', options: ['G1 mặc định từ JDK 9, pause STW nhưng có thể tune target pause', 'ZGC pause < 10ms và concurrent, phù hợp latency-sensitive', 'ZGC throughput luôn cao hơn G1', 'G1 không có generational', 'ZGC hỗ trợ compressed oops (compressed references) như Shenandoah'], answer: [0, 1], explain: `**Tóm tắt:** G1 là default từ JDK 9, STW pause có thể tune qua MaxGCPauseMillis. ZGC pause rất thấp (<10ms), concurrent, phù hợp low-latency. ZGC throughput thường thấp hơn G1; G1 có generational; ZGC dùng colored pointers 64-bit nên **không** hỗ trợ compressed oops (Shenandoah thì có).
+
+### Vì sao các phương án còn lại sai
+- ZGC throughput không luôn cao hơn G1 (thường thấp hơn).
+- G1 có generational (young/old).
+- ZGC **không** hỗ trợ compressed oops (vì cần 64-bit colored pointers), nên phát biểu "ZGC hỗ trợ compressed oops" là sai; heap < 32GB vẫn phải dùng reference 64-bit, tốn bộ nhớ hơn Shenandoah.
+
+> Senior tip: chọn GC theo SLA: throughput → G1/Parallel; latency p99 → ZGC; memory footprint → Serial/Shenandoah.`
+},
+{
+  id: 'qz-jvm-060', topic: 'jvm', q: 'Đọc GC log JDK 17 (G1): dòng "Pause Young (Normal) (G1 Evacuation Pause) 12M->8M(256M) 5.234ms" cho biết gì?', options: ['Heap trước GC 12MB, sau 8MB, capacity 256MB, pause 5.2ms', 'Heap leak 4MB', 'GC chạy 5 giây', 'Capacity là 12MB'], answer: 0, explain: `**Tóm tắt:** Format "X->Y(Z)" = heap used trước -> sau (capacity). Pause time là thời gian STW. 12M->8M(256M) 5.234ms = trước 12MB, sau 8MB, capacity 256MB, pause 5.2ms.
+
+### Vì sao các phương án còn lại sai
+- 4MB reclaimed không phải leak.
+- 5.234ms không phải 5 giây.
+- Capacity 256MB không phải 12MB.
+
+> Senior tip: bật -Xlog:gc*:file=gc.log:time,uptime,level,tags với rotation; phân tích bằng GCViewer/VisualVM.`
+},
+{
+  id: 'qz-jvm-061', topic: 'jvm', q: 'Khi ứng dụng treo, lệnh nào đầu tiên nên chạy để lấy thread dump (JDK 17+)?', options: ['jcmd <pid> Thread.print', 'jmap -histo <pid>', 'jstack <pid> (deprecated? no)', 'jfr print'], answer: 0, explain: `**Tóm tắt:** JDK 9+ khuyến nghị dùng jcmd; jcmd <pid> Thread.print lấy thread dump. jstack vẫn hoạt động nhưng jcmd là unified tool. jmap dùng heap dump/histogram. JFR dùng profile.
+
+### Vì sao các phương án còn lại sai
+- jmap -histo cho object histogram, không thread dump.
+- jstack được nhưng jcmd là chuẩn mới.
+- jfr print đọc file JFR, không live thread dump.
+
+> Senior tip: jcmd <pid> help liệt kê lệnh; Thread.print > file; kết hợp jcmd GC.heap_dump cho heap.`
+},
+{
+  id: 'qz-jvm-062', topic: 'jvm', multi: true, q: 'Chọn 2 loại OutOfMemoryError phổ biến và nguyên nhân thường gặp. (Chọn 2)', options: ['Java heap space: object không GC được/leak', 'Metaspace: class metadata quá nhiều (hot deploy/proxy)', 'StackOverflowError: recursion sâu', 'OutOfMemoryError: Direct buffer memory', 'GC overhead limit exceeded'], answer: [0, 1], explain: `**Tóm tắt:** Java heap space do leak/object retention; Metaspace do class metadata (proxy, hot deploy). Các loại khác cũng là OOM nhưng câu hỏi chọn 2 phổ biến nhất cho production service.
+
+### Vì sao các phương án còn lại sai
+- StackOverflowError không phải OOM (khác exception).
+- Direct buffer memory và GC overhead cũng là OOM nhưng không phải 2 phổ biến nhất trong ngữ cảnh.
+
+> Senior tip: mỗi OOM có fix khác nhau; heap dump + MAT tìm dominator; Metaspace leak dùng -XX:+TraceClassLoading/Unloading.`
+},
+{
+  id: 'qz-jvm-063', topic: 'jvm', q: 'Trong container (Docker/K8s), flag nào giúp JVM tự tính heap theo container memory limit?', options: ['-XX:MaxRAMPercentage=75.0', '-Xmx512m cố định', '-XX:+UseContainerSupport (default JDK 10+)', 'cả A và C'], answer: 3, explain: `**Tóm tắt:** JDK 10+ UseContainerSupport mặc định; MaxRAMPercentage đặt % RAM container cho heap (thường 75%). Kết hợp cả hai: JVM đọc container limit và dùng 75% cho heap, phần còn lại cho off-heap/metaspaces/thread stack.
+
+### Vì sao các phương án còn lại sai
+- Chỉ -Xmx cố định không thích ứng limit.
+- Chỉ MaxRAMPercentage nếu không container support không tự động đọc cgroup (nhưng JDK hiện đại có).
+- Cả A và C đúng.
+
+> Senior tip: set MaxRAMPercentage=75 và để JVM tự tính; tránh -Xmx cứng trong K8s để autoscale memory.`
+},
+{
+  id: 'qz-jvm-064', topic: 'jvm', q: 'JIT warm-up là gì và vì sao latency p99 cao ở phút đầu production?', options: ['JVM biên dịch bytecode sang native dần qua C1/C2; chưa warm-up thì interpret chậm', 'GC chưa chạy', 'Class chưa load xong', 'Thread pool chưa tạo'], answer: 0, explain: `**Tóm tắt:** JVM bắt đầu interpret bytecode; sau ngưỡng (tiered compilation C1→C2) compile hot method sang native. Phút đầu chưa compile → chậm. Giải pháp: warm-up traffic, AOT (GraalVM native image), hoặc -XX:+TieredCompilation với profile.
+
+### Vì sao các phương án còn lại sai
+- GC chạy từ đầu.
+- Class loading nhanh.
+- Thread pool tạo ngay startup.
+
+> Senior tip: đo latency theo thời gian; warm-up bằng synthetic load trước khi mở traffic; cân nhắc GraalVM native image cho cold start.`
+},
+{
+  id: 'qz-jvm-065', topic: 'jvm', q: 'Class loading trong JVM trải qua các bước nào (đúng thứ tự)?', options: ['Loading → Linking (verify/prepare/resolve) → Initialization', 'Initialization → Loading → Linking', 'Linking → Loading → Initialization', 'Loading → Initialization → Linking'], answer: 0, explain: `**Tóm tắt:** Classloader loading class file → linking (verify bytecode, prepare static, resolve symbolic refs) → initialization (chạy static initializer <clinit>). Thứ tự cố định.
+
+### Vì sao các phương án còn lại sai
+- Các thứ tự khác vi phạm spec.
+
+> Senior tip: static init chạy khi class init; deadlock có thể xảy ra nếu static init lock classloader; tránh logic nặng trong static block.`
+},
+{
+  id: 'qz-jvm-066', topic: 'jvm', multi: true, q: 'Chọn 2 cách an toàn để dump heap production. (Chọn 2)', options: ['jcmd <pid> GC.heap_dump filename.hprof', 'jmap -dump:format=b,file=... <pid> (có thể pause)', 'kill -3 <pid> (thread dump, không heap)', ' kill -9 <pid>'], answer: [0, 1], explain: `**Tóm tắt:** jcmd GC.heap_dump và jmap -dump đều tạo heap dump; jcmd preferred, jmap có thể pause app. kill -3 thread dump; kill -9 kill process.
+
+### Vì sao các phương án còn lại sai
+- kill -3 chỉ thread dump.
+- kill -9 không dump.
+
+> Senior tip: heap dump lớn, dump vào disk đủ chỗ; dùng -XX:+HeapDumpOnOutOfMemoryError để tự dump khi OOM.`
+},
+{
+  id: 'qz-jvm-067', topic: 'jvm', q: 'JFR (Java Flight Recorder) mặc định overhead khoảng bao nhiêu và có an toàn production không?', options: ['~1% overhead, an toàn production (default setting)', '~50% overhead, không production', '0% overhead', '~10% overhead chỉ staging'], answer: 0, explain: `**Tóm tắt:** JFR default setting overhead ~1%, an toàn production; profile setting overhead cao hơn (5-15%), dùng staging. JFR ghi event allocation, GC, lock, CPU sample.
+
+### Vì sao các phương án còn lại sai
+- 50%/10% là profile/advanced.
+- 0% không thực tế (có overhead nhỏ).
+
+> Senior tip: bật JFR default 30-60 phút khi sự cố, phân tích offline bằng JMC; không bật liên tục profile.`
+}
 )
