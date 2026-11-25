@@ -1480,7 +1480,7 @@ class EventBus {
       explain: `Mức sau GC chính là live set; nếu nó tăng mãi thì có object còn reachable mà không được thả. Đỉnh 90% trước GC là bình thường: GC chạy khi vùng đầy. Răng cưa là hình dạng của mọi ứng dụng khoẻ. Minor GC dày chỉ cho biết allocation rate cao, chưa phải leak.`,
     },
   ],
-  related: ['jvm-005', 'jvm-013', 'jvm-004', 'jvm-032'],
+  related: ['jvm-005', 'jvm-013', 'jvm-014'],
   tags: ['memory leak', 'heap dump', 'MAT', 'dominator tree', 'LRU', 'listener', 'ThreadLocal'],
 },
 {
@@ -3976,5 +3976,1036 @@ Trên production thật, hãy đặt maximumSize ngay từ đầu thay để cac
   related: ['jvm-004'],
   tags: ['memory leak', 'cache', 'LRU', 'OOM'],
 },
+{
+  id: 'lesson-jvm-013',
+  track: 'jvm',
+  order: 13,
+  title: 'Phân tích chuỗi thread dump: tìm chuỗi giữ-chờ và lock nóng qua nhiều lần chụp',
+  level: 'senior',
+  minutes: 40,
+  goals: [
+    'Lấy được thread dump bằng {{jstack}} hoặc {{jcmd}}, và biết dump chụp gì, không chụp gì',
+    'Phân biệt {{RUNNABLE}}, {{BLOCKED}}, {{WAITING}}, {{TIMED_WAITING}} và đọc đúng {{- locked}}, {{- waiting to lock}}, {{- parking to wait for}}',
+    'Dựng đồ thị giữ-chờ từ một dump, tìm chu kỳ deadlock và đếm lock bị chờ nhiều nhất',
+    'Dùng hai ba dump cách nhau vài giây để xác nhận luồng nào treo thực sự, và xem luồng đang giữ khoá đang làm gì',
+    'Nêu ranh giới: JVM chỉ phát hiện deadlock nội bộ (monitor, ReentrantLock), không thấy khoá database hay khoá phân tán'
+  ],
+  body: `**Tóm tắt:** Thread dump là ảnh chụp trạng thái của mọi thread trong JVM tại một thời điểm. Khi hệ thống treo nhưng CPU thấp, dump là công cụ đầu tiên bạn phải xem. Bài này dạy cách đọc từng dòng dump, dựng đồ thị "luồng A giữ khoá L1 và đang chờ L2", tìm chu kỳ deadlock, đếm lock bị chờ nhiều nhất, và quan trọng hơn: dùng hai ba dump cách nhau vài giây để xác nhận luồng nào treo thực sự, cùng xem luồng đang giữ khoá đang làm gì (ví dụ gọi database chậm) thay vì kết luận sai là deadlock. JVM chỉ tự phát hiện deadlock của chính nó (monitor và ReentrantLock); khoá hàng đợi database, khoá Redis hay ZooKeeper không hề xuất hiện trong dump.
 
+### 1) Lấy thread dump, đúng lúc và đúng cách
+
+Thread dump chụp toàn bộ thread tại một safepoint (điểm JVM cho phép quét stack an toàn), nên gây pause ngắn (vài ms tới vài chục ms). Lấy bằng:
+
+- {{jstack <pid> > dump.txt}} — dump của PID ra file.
+- {{jcmd <pid> Thread.print > dump.txt}} — khuyến nghị; còn hoạt động khi {{jstack}} báo "Unable to open socket file".
+- {{kill -3 <pid>}} — JVM tự in dump ra stdout của process (log của ứng dụng), không ra file.
+- Trong container: {{kubectl exec pod -- jcmd 1 Thread.print}} (PID của ứng dụng thường là 1).
+
+Ba lưu ý thực chiến:
+- {{jstack}} phải chạy dưới cùng user với process Java, nếu không báo lỗi mở socket file.
+- Dump là ảnh chụp, không phải đoạn video: hãy lấy **hai ba dump cách nhau 5-10 giây**. Nhất dump chỉ cho biết ai đang ở đâu; hai dump mới cho biết ai **đứng yên**.
+- Đừng lấy dump lặp lại trong vòng lặp ngắn: mỗi dump dừng ứng dụng một lúc.
+
+### 2) Giải phẫu một entry trong dump
+
+~~~text
+"http-nio-8080-exec-12" #45 daemon prio=5 os_prio=0 cpu=125.00ms elapsed=3612.44s tid=0x... nid=0x1a2c waiting for lock condition [0x...]
+   java.lang.Thread.State: BLOCKED (on object monitor)
+        at demo.Transfer.move(Transfer.java:57)
+        - waiting to lock <0x000000076abba128> (a demo.Account)
+        - locked <0x000000076abba1f0> (a demo.Account)
+
+Locked ownable synchronizers:
+        - <0x000000076abba3c0> (a java.util.concurrent.locks.ReentrantLock$NonfairSync)
+~~~
+
+| Trường | Nghĩa |
+|---|---|
+| tên trong nháy kép | tên thread do framework đặt ({{http-nio-...}} Tomcat, {{pool-1-thread-3}} ExecutorService) |
+| {{java.lang.Thread.State: BLOCKED}} | trạng thái chuẩn, chính là thứ để tin |
+| {{- locked <0xA>}} | thread này **đang giữ** monitor của object A |
+| {{- waiting to lock <0xA>}} | muốn vào {{synchronized}} trên A nhưng A bị người khác giữ → đây là **người chờ khoá** |
+| {{- waiting on <0xA>}} | đã gọi {{wait()}}, đã **nhả** monitor, đang chờ {{notify()}} — không giữ và không chờ khoá; **bỏ qua** khi đếm chờ khoá |
+| {{- parking to wait for <0xA>}} | đang {{LockSupport.park}} trên A: ReentrantLock, Semaphore hoặc Condition |
+| {{Locked ownable synchronizers}} | ReentrantLock mà thread đang **giữ**; monitor không xuất hiện ở mục này |
+
+> **Monitor** là chìa khoá nội tại của mọi object Java. {{synchronized (acc)}} nghĩa là cầm chìa của {{acc}}, làm việc xong trả chìa; mỗi chìa chỉ một người cầm, ai đến sau phải xếp hàng. **ReentrantLock** là phiên bản chìa khoá của thư viện {{java.util.concurrent.locks}}, có thêm timeout và công bằng.
+
+### 3) Bốn trạng thái và bẫy lớn nhất: RUNNABLE
+
+| State | Nghĩa | Nghi ngờ gì |
+|---|---|---|
+| {{RUNNABLE}} | đang chạy **hoặc** đang chặn ở tầng hệ điều hành | nhiều thread RUNNABLE trong {{socketRead0}} hay {{jdbc}} với CPU thấp = chờ downstream (database, API khác), không phải het CPU |
+| {{BLOCKED}} | muốn vào {{synchronized}} nhưng monitor bị người khác giữ | khoá nóng; xem ai đang giữ địa chỉ khoá đó |
+| {{WAITING}} | chờ vô hạn: {{wait()}}, {{join()}}, {{park()}}, {{Future.get()}} | phải có ai đánh thức; không ai đánh thức = kẹt vĩnh viễn |
+| {{TIMED_WAITING}} | chờ có hạn: {{sleep(t)}}, {{wait(t)}}, {{parkNanos}}, {{tryLock(t)}} | nhiều {{tryLock}} timeout = hệ thống tự bảo vệ |
+
+{{NEW}} và {{TERMINATED}} hiếm khi xuất hiện trong dump. **Bẫy**: RUNNABLE không có nghĩa là đang ngốn CPU. JVM không có trạng thái "đang chờ socket", nên thread block trong đọc socket vẫn là RUNNABLE. API chậm với CPU 30% thường do cả pool đang chờ dịch vụ phía sau, chứ không phải het CPU.
+
+### 4) Deadlock là một chu kỳ giữ-chờ
+
+Xây dựng đồ thị: nút là thread, cạnh từ thread T đến thread O khi T đang chờ khoá L và O đang giữ L. Mỗi thread chỉ chờ tối đa một khoá nên mỗi nút có một cạnh đi ra — tìm chu kỳ bằng cách đi theo cạnh và xem có quay về nút cũ không.
+
+~~~text
+"transfer-1": BLOCKED
+   - waiting to lock <0x...128>   (do transfer-2 đang giữ)
+   - locked <0x...1f0>
+"transfer-2": BLOCKED
+   - waiting to lock <0x...1f0>   (do transfer-1 đang giữ)
+   - locked <0x...128>
+~~~
+
+Chu kỳ: transfer-1 → khoá 128 → transfer-2 → khoá 1f0 → transfer-1. JVM tự phát hiện kiểu này và in ở cuối dump:
+
+~~~text
+Found one Java-level deadlock:
+"transfer-1": waiting to lock monitor ... which is held by "transfer-2"
+"transfer-2": waiting to lock monitor ... which is held by "transfer-1"
+~~~
+
+**Ranh giới phải nêu trong phỏng vấn**: JVM chỉ thấy khoá của chính nó (monitor và ownable synchronizer). Nó không thấy deadlock **hàng đợi dòng database** (MySQL tự phát hiện và ném lỗi 1213), **khoá phân tán** trên Redis/ZooKeeper, hay **deadlock logic** (thread chờ một thông điệp sẽ không bao giờ đến). Những trường hợp đó dump chỉ cho thấy triệu chứng: pool cạn thread, mọi thread {{WAITING}}, hoặc {{RUNNABLE}} trong {{socketRead}}.
+
+### 5) Phân tích qua chuỗi dump (hai ba lần chụp)
+
+Một dump không cho biết hướng đi. Hai dump cách nhau 5-10 giây mới trả lời "thread này có tiến không":
+
+- Stack giống hệt qua mọi dump, {{cpu}} không tăng → thread **treo thực sự** (deadlock hoặc giữ khoá lâu).
+- Stack vẫn nhảy frame, {{cpu}} tăng → đang chậm chứ không chết.
+
+Đếm trạng thái: {{grep "java.lang.Thread.State" dump.txt | sort | uniq -c | sort -rn}}. 200 thread {{BLOCKED}} là chuyện khác 200 thread {{WAITING}}.
+
+### 6) Lock nóng và người giữ khoá đang làm gì
+
+Đếm số thread đang chờ mỗi địa chỉ khoá (dòng {{- waiting to lock}} / {{- parking to wait for}}). Khoá có nhiều waiter nhất là điểm nghẽn. Quan trọng: đọc entry của **người giữ khoá** (dòng {{- locked}} hoặc mục {{Locked ownable synchronizers}}):
+
+- Nếu người giữ khoá đang {{RUNNABLE}} trong {{socketRead0}} hoặc gọi JDBC trong khi giữ {{synchronized}} → đó là **giữ khoá xuyên I/O**: 200 thread xếp hàng BLOCKED vì một thread đang chờ database 5 giây. Khởi động lại server không giúp; phải thu nhỏ phạm vi {{synchronized}} hoặc tách gọi I/O ra ngoài khoá.
+- Nếu người giữ khoá cũng đang {{BLOCKED}} chờ khoá khác → có thể là đoạn của một chu kỳ deadlock.
+
+### 7) Ví dụ đời thực
+
+Dịch vụ thanh toán peak 30.000 request/giây, heap 8 GB G1GC. Một sáng, API chậm, CPU 30%, p99 nhảy từ 100 ms lên 4 giây. Thread dump: 180 thread Tomcat {{BLOCKED}} trên cùng một monitor {{<0x...128>}} của {{OrderService.lock}}; người giữ khoá là thread {{http-nio-8080-exec-7}} đang {{RUNNABLE}} trong {{java.net.SocketInputStream.socketRead0}} — gọi stored procedure database mất 5 giây trong khối {{synchronized}}. Nhìn qua hai dump cách nhau 10 giây: stack của 180 thread không đổi → treo thực sự. Sửa: thu nhỏ khối {{synchronized}} chỉ surrounds thao tác in-memory, tách gọi database ra ngoài khoá, và thêm timeout cho lệnh SQL. Kết quả: p99 về 90 ms, không còn thread BLOCKED, CPU về 8%.
+
+### 8) Lỗi hay gặp
+
+- Nhầm **contention** (nhiều thread chờ cùng một khoá, hệ vẫn chạy chậm) với **deadlock** (chu kỳ treo mãi) và khởi động lại server vô ích.
+- Chỉ nhìn phần {{Found one Java-level deadlock}}, bỏ qua phần đếm lock contention.
+- Không lấy dump đúng lúc đang xảy ra sự cố; dump sau khi khôi phục đã mất bằng chứng.
+
+### Liên hệ phỏng vấn
+Khi hệ thống có dấu hiệu treo, tôi lấy thread dump ngay lúc đang xảy ra bằng {{jcmd <pid> Thread.print}} (hoặc {{jstack <pid>}}). Đầu tiên quét tìm dòng {{Found one Java-level deadlock}}; nếu có, JVM đã chỉ ra thread và khoá id, tôi phá chu kỳ — thường sắp xếp thứ tự lấy khoá hoặc thu nhỏ phạm vi {{synchronized}}. Nếu không có deadlock, tôi nhóm theo id khoá, đếm số thread {{BLOCKED}} chờ cùng một monitor: khoá nhiều {{BLOCKED}} nhất là điểm nghẽn. Tôi lấy hai ba dump cách nhau 5-10 giây; stack không đổi qua mọi dump = thread treo thực sự, stack đổi = chỉ chờ tạm thời. Cuối cùng xem thread đang giữ khoá đó gọi SQL hay API gì, rồi xử lý truy vấn chậm hoặc dùng collection đồng thời. Khoá database hay khoá phân tán không hiện ra trong dump — bằng chứng cho những trường hợp đó phải lấy từ log driver, metrics pool, hoặc JFR.
+`,
+  exercises: [
+    {
+      title: 'ThreadDumpChainAnalyzer: stack không đổi giữa hai dump, đồ thị giữ-chờ, lock nóng cùng owner',
+      prompt: `Viết class {{ThreadDumpChainAnalyzer}} đọc thread dump dạng text (kiểu JDK 17) và trả về ba kết quả. Chỉ dùng chuỗi ({{startsWith}}, {{indexOf}}, {{substring}}), không cần regex.
+
+**Cấu trúc text.** Mỗi thread bắt đầu bằng một dòng **không thụt lề** mà ký tự đầu là dấu nháy kép; tên thread là chuỗi giữa hai dấu nháy đầu tiên. Các dòng thuộc entry của thread đó cho tới khi gặp dòng header mới (ký tự đầu là dấu nháy kép ở cột 0) hoặc hết file. Bỏ qua dòng đầu file (kiểu {{Full thread dump ...}}) và dòng trống.
+
+**Quan hệ giữ và chờ.** Trong entry của thread hiện hành:
+- **Giữ khoá**: dòng bắt đầu (sau khi {{trim}}) bằng {{- locked <}} hoặc {{- <0x}} (khoá trong mục {{Locked ownable synchronizers}}). Lấy địa chỉ giữa {{<}} và {{>}}.
+- **Chờ khoá**: dòng chứa {{- waiting to lock}} hoặc {{- parking to wait for}}, lấy địa chỉ lock ngay sau. Mỗi thread chỉ ghi lại khoá chờ **đầu tiên**.
+- Dòng {{- waiting on <0xA>}} (kết quả của {{wait()}}) **không** giữ và **không** chờ khoá: bỏ qua hoàn toàn.
+
+**Ba hàm cần viết.**
+
+1. {{stuckThreads(dump1, dump2)}} → {{List<String>}} tên thread có mặt trong **cả hai** dump và toàn bộ nội dung entry (trừ tên thread) giống hùng nhau giữa hai lần chụp, sắp xếp tăng dần theo tên. Thread chỉ có trong một dump thì không tính.
+
+2. {{holdAndWait(dump)}} → {{Map<String, String>}}: tên thread → địa chỉ khoá mà nó đang chờ, nhưng **chỉ** với thread đang giữ ít nhất một khoá. Sắp xếp tăng dần theo tên thread.
+
+3. {{topContendedLockWithOwner(dump, k)}} → {{List<String>}}: mỗi phần tử có dạng {{<địa chỉ> waiters=<n> owner=<tên hoặc -> ownerTop=<frame hoặc ->}}, ví dụ {{<0x000000076abba100> waiters=2 owner=worker-2 ownerTop=at demo.Worker.run(Worker.java:5)}}. Sắp xếp theo số waiter giảm dần; nếu bằng nhau thì địa chỉ tăng dần (so sánh chuỗi). Cắt {{k}} phần tử đầu. Chỉ khoá có ít nhất một waiter mới xuất hiện. {{k < 0}} ném {{IllegalArgumentException}}; {{k = 0}} trả danh sách rỗng. Nếu {{k}} lớn hơn số khoá thì trả hết.
+   - {{owner}}: thread đầu tiên được tìm thấy giữ khoá đó (dòng {{- locked}} hoặc {{- <0x}}), nếu không có thì {{-}}.
+   - {{ownerTop}}: frame {{at ...}} đầu tiên trong entry của người giữ khoá (lúc người giữ đang làm gì), nếu không có thì {{-}}.
+
+Chú ý: địa chỉ lock giữ nguyên prefix {{0x}}.`,
+      starter: `class ThreadDumpChainAnalyzer {
+    static List<String> stuckThreads(String dump1, String dump2) {
+        throw new UnsupportedOperationException("TODO");
+    }
+
+    static Map<String, String> holdAndWait(String dump) {
+        throw new UnsupportedOperationException("TODO");
+    }
+
+    static List<String> topContendedLockWithOwner(String dump, int k) {
+        throw new UnsupportedOperationException("TODO");
+    }
+}`,
+      tests: `public class Main {
+    static int passed = 0, total = 0;
+    static void check(String name, Runnable r) {
+        total++;
+        try { r.run(); passed++; System.out.println("PASS " + name); }
+        catch (Throwable t) { System.out.println("FAIL " + name + ": " + t); }
+    }
+    static void eq(Object expected, Object actual) {
+        if (!Objects.equals(expected, actual)) throw new AssertionError("expected " + expected + " got " + actual);
+    }
+    static void expect(Class<? extends Throwable> type, Runnable r) {
+        try { r.run(); } catch (Throwable t) { if (type.isInstance(t)) return; throw new AssertionError("expected " + type.getSimpleName() + " got " + t); }
+        throw new AssertionError("expected " + type.getSimpleName() + " but nothing thrown");
+    }
+    static String entry(String name, String state, String... lines) {
+        StringBuilder sb = new StringBuilder();
+        sb.append('"').append(name).append("\\" #1 prio=5 os_prio=0 cpu=10.00ms elapsed=100.00s tid=0x1 nid=0x1 waiting on condition [0x2]\\n");
+        if (state != null) sb.append("   java.lang.Thread.State: ").append(state).append("\\n");
+        for (String line : lines) sb.append(line).append("\\n");
+        return sb.toString();
+    }
+    static final String LOCK_A = "<0x000000076abba100>";
+    static final String LOCK_B = "<0x000000076abba200>";
+    static final String LOCK_C = "<0x000000076abba300>";
+    static String holds(String addr) { return "\t- locked " + addr + " (a demo.Lock)"; }
+    static String waits(String addr) { return "\t- waiting to lock " + addr + " (a demo.Lock)"; }
+    static String parks(String addr) { return "\t- parking to wait for " + addr + " (a demo.Lock)"; }
+    static String waitsOn(String addr) { return "\t- waiting on " + addr + " (a java.lang.Object)"; }
+    static final String DUMP1 = dump(
+        entry("main", "RUNNABLE", "\tat demo.App.main(App.java:12)"),
+        entry("worker-1", "BLOCKED (on object monitor)", "\tat demo.Worker.run(Worker.java:5)", waits(LOCK_A), holds(LOCK_B)),
+        entry("worker-2", "BLOCKED (on object monitor)", "\tat demo.Worker.run(Worker.java:5)", waits(LOCK_B), holds(LOCK_A))
+    );
+    static final String DUMP2 = dump(
+        entry("main", "RUNNABLE", "\tat demo.App.main(App.java:13)"),
+        entry("worker-1", "BLOCKED (on object monitor)", "\tat demo.Worker.run(Worker.java:5)", waits(LOCK_A), holds(LOCK_B)),
+        entry("worker-2", "BLOCKED (on object monitor)", "\tat demo.Worker.run(Worker.java:5)", waits(LOCK_B), holds(LOCK_A)),
+        entry("worker-4", "RUNNABLE", "\tat demo.Newbie.run(Newbie.java:1)")
+    );
+    static String dump(String... entries) {
+        StringBuilder sb = new StringBuilder();
+        sb.append("Full thread dump OpenJDK 64-Bit Server VM (17.0.9+9 mixed mode, sharing)\\n\\n");
+        for (String e : entries) sb.append(e).append("\\n");
+        return sb.toString();
+    }
+    public static void main(String[] args) {
+        check("stuckThreads: hai thread entry không đổi giữa hai dump", () -> {
+            eq(List.of("worker-1", "worker-2"), ThreadDumpChainAnalyzer.stuckThreads(DUMP1, DUMP2));
+        });
+        check("stuckThreads: stack đổi thì không regarded stuck", () -> {
+            List<String> stuck = ThreadDumpChainAnalyzer.stuckThreads(DUMP1, DUMP2);
+            if (stuck.contains("main")) throw new AssertionError("main không được danh sách stuck");
+        });
+        check("stuckThreads: thread chỉ có trong một dump không tính", () -> {
+            List<String> stuck = ThreadDumpChainAnalyzer.stuckThreads(DUMP1, DUMP2);
+            if (stuck.contains("worker-4")) throw new AssertionError("worker-4 không được danh sách stuck");
+        });
+        check("holdAndWait: chỉ thread giữ và chờ", () -> {
+            Map<String, String> m = ThreadDumpChainAnalyzer.holdAndWait(DUMP1);
+            eq(2, m.size());
+            eq(LOCK_A, m.get("worker-1"));
+            eq(LOCK_B, m.get("worker-2"));
+        });
+        check("holdAndWait: thread chỉ chờ không giữ thì bỏ qua", () -> {
+            Map<String, String> m = ThreadDumpChainAnalyzer.holdAndWait(DUMP1);
+            if (m.containsKey("worker-3")) throw new AssertionError("worker-3 không giữ khoá, không được liệt kê");
+        });
+        check("topContendedLockWithOwner: waiter nhiều hơn đứng đầu", () -> {
+            List<String> r = ThreadDumpChainAnalyzer.topContendedLockWithOwner(DUMP1, 2);
+            eq(2, r.size());
+            eq(LOCK_A + " waiters=1 owner=worker-2 ownerTop=at demo.Worker.run(Worker.java:5)", r.get(0));
+            eq(LOCK_B + " waiters=1 owner=worker-1 ownerTop=at demo.Worker.run(Worker.java:5)", r.get(1));
+        });
+        check("topContendedLockWithOwner: thêm waiter cho một khoá", () -> {
+            String d3 = dump(
+                entry("main", "RUNNABLE"),
+                entry("worker-1", "BLOCKED (on object monitor)", waits(LOCK_A), holds(LOCK_B), "\tat demo.Worker.run(Worker.java:5)"),
+                entry("worker-2", "BLOCKED (on object monitor)", waits(LOCK_B), holds(LOCK_A), "\tat demo.Worker.run(Worker.java:5)"),
+                entry("worker-3", "WAITING (parking)", waits(LOCK_A))
+            );
+            List<String> r = ThreadDumpChainAnalyzer.topContendedLockWithOwner(d3, 2);
+            eq(LOCK_A + " waiters=2 owner=worker-2 ownerTop=at demo.Worker.run(Worker.java:5)", r.get(0));
+            eq(LOCK_B + " waiters=1 owner=worker-1 ownerTop=at demo.Worker.run(Worker.java:5)", r.get(1));
+        });
+        check("topContendedLockWithOwner: k<0 ném lỗi, k=0 rỗng, k lớn trả hết", () -> {
+            expect(IllegalArgumentException.class, () -> ThreadDumpChainAnalyzer.topContendedLockWithOwner(DUMP1, -1));
+            eq(List.of(), ThreadDumpChainAnalyzer.topContendedLockWithOwner(DUMP1, 0));
+            eq(2, ThreadDumpChainAnalyzer.topContendedLockWithOwner(DUMP1, 99).size());
+        });
+        check("waiting on không tính là chờ khoá", () -> {
+            String d4 = dump(
+                entry("main", "RUNNABLE"),
+                entry("listener", "WAITING (on object monitor)", waitsOn(LOCK_A))
+            );
+            Map<String, String> m = ThreadDumpChainAnalyzer.holdAndWait(d4);
+            if (!m.isEmpty()) throw new AssertionError("waiting on không được tính chờ khoá: " + m);
+            List<String> r = ThreadDumpChainAnalyzer.topContendedLockWithOwner(d4, 5);
+            if (!r.isEmpty()) throw new AssertionError("không có waiter hợp lệ: " + r);
+        });
+        System.out.println("RESULT " + passed + "/" + total);
+    }
+}`,
+      reference: `class ThreadDumpChainAnalyzer {
+    static final class Entry {
+        String name;
+        final List<String> lines = new ArrayList<>();
+        String waits;
+        final List<String> holds = new ArrayList<>();
+        final List<String> frames = new ArrayList<>();
+    }
+
+    static List<String> stuckThreads(String dump1, String dump2) {
+        Map<String, String> sig1 = signatures(dump1);
+        Map<String, String> sig2 = signatures(dump2);
+        List<String> stuck = new ArrayList<>();
+        for (Map.Entry<String, String> e : sig1.entrySet()) {
+            String s2 = sig2.get(e.getKey());
+            if (s2 != null && s2.equals(e.getValue())) stuck.add(e.getKey());
+        }
+        Collections.sort(stuck);
+        return stuck;
+    }
+
+    static Map<String, String> holdAndWait(String dump) {
+        Map<String, String> out = new TreeMap<>();
+        for (Entry e : parseEntries(dump)) {
+            if (!e.holds.isEmpty() && e.waits != null) out.put(e.name, "<" + e.waits + ">");
+        }
+        return out;
+    }
+
+    static List<String> topContendedLockWithOwner(String dump, int k) {
+        if (k < 0) throw new IllegalArgumentException("k phai >= 0: " + k);
+        Map<String, Integer> waiters = new HashMap<>();
+        Map<String, String> owner = new HashMap<>();
+        Map<String, String> threadTop = new HashMap<>();
+        for (Entry e : parseEntries(dump)) {
+            if (e.name != null && !threadTop.containsKey(e.name) && !e.frames.isEmpty()) {
+                threadTop.put(e.name, e.frames.get(0));
+            }
+            for (String held : e.holds) {
+                if (!owner.containsKey(held)) owner.put(held, e.name);
+            }
+            if (e.waits != null) waiters.merge(e.waits, 1, Integer::sum);
+        }
+        List<String> locks = new ArrayList<>(waiters.keySet());
+        locks.sort((a, b) -> {
+            int cmp = Integer.compare(waiters.get(b), waiters.get(a));
+            return cmp != 0 ? cmp : a.compareTo(b);
+        });
+        List<String> out = new ArrayList<>();
+        int n = Math.min(k, locks.size());
+        for (int i = 0; i < n; i++) {
+            String lock = locks.get(i);
+            String own = owner.get(lock);
+            String top = own == null ? null : threadTop.get(own);
+            out.add("<" + lock + "> waiters=" + waiters.get(lock) + " owner=" + (own == null ? "-" : own)
+                    + " ownerTop=" + (top == null ? "-" : top));
+        }
+        return out;
+    }
+
+    private static Map<String, String> signatures(String dump) {
+        Map<String, String> out = new HashMap<>();
+        for (Entry e : parseEntries(dump)) {
+            out.put(e.name, String.join("\\n", e.lines));
+        }
+        return out;
+    }
+
+    private static List<Entry> parseEntries(String dump) {
+        List<Entry> out = new ArrayList<>();
+        if (dump == null) return out;
+        Entry cur = null;
+        for (String raw : dump.split("\\n")) {
+            String line = raw.replace("\\r", "");
+            if (line.length() > 0 && line.charAt(0) == '"') {
+                int end = line.indexOf('"', 1);
+                if (end > 1) {
+                    cur = new Entry();
+                    cur.name = line.substring(1, end);
+                    out.add(cur);
+                }
+                continue;
+            }
+            if (cur == null) continue;
+            String t = line.trim();
+            if (t.isEmpty()) continue;
+            cur.lines.add(t);
+            if (t.startsWith("at ")) cur.frames.add(t);
+            String held = heldLock(t);
+            if (held != null) cur.holds.add(held);
+            String waited = waitedLock(t);
+            if (waited != null && cur.waits == null) cur.waits = waited;
+        }
+        return out;
+    }
+
+    private static String heldLock(String t) {
+        if (t.startsWith("- locked <") || t.startsWith("- <0x")) return address(t);
+        return null;
+    }
+
+    private static String waitedLock(String t) {
+        if (t.indexOf("- waiting to lock <") >= 0) return address(t);
+        if (t.indexOf("- parking to wait for <") >= 0) return address(t);
+        return null;
+    }
+
+    private static String address(String t) {
+        int o = t.indexOf('<');
+        if (o < 0) return null;
+        int c = t.indexOf('>', o);
+        if (c < 0) return null;
+        return t.substring(o + 1, c);
+    }
+}`,
+      hints: [
+        'Tách dump thành dòng bằng {{split("\\n")}}, bỏ {{\r}}; giữ biến entry hiện hành, dòng bắt đầu bằng dấu nháy kép ở cột 0 mở entry mới.',
+        'Trích địa chỉ khoá giữa ký tự {{<}} và {{>}} đầu tiên sau dấu hiệu; dòng {{- waiting on}} bị bỏ qua vì đó là {{wait()}}, đã nhả khoá.',
+        '{{stuckThreads}}: ký hiệu entry là các dòng sau tên thread nối lại; thread stuck nếu tên trùng khớp và ký hiệu trùng nhau trong cả hai dump.',
+        '{{topContendedLockWithOwner}}: comparator trả về so sánh waiter giảm dần trước, địa chỉ tăng dần làm tie-break; dùng {{Math.min(k, size)}} để cắt an toàn.'
+      ],
+      explain: `Bài này mô phỏng ba câu hỏi bạn đặt khi đọc dump trên production: (1) thread nào treo thực sự giữa hai lần chụp, (2) thread nào đang đồng thời giữ khoá và chờ khoá — vị trí nguy hiểm nhất trong chu kỳ deadlock, (3) khoá nào là điểm nghẽn và ai đang giữ nó, giữ rồi đang làm gì (gọi database? chờ socket?).
+
+Ba điểm dễ sai:
+- Nhầm {{- waiting on <0xA>}} với {{- waiting to lock <0xA>}}. Dòng đầu là {{wait()}}: thread đã nhả monitor, không phải người chờ khoá. Tính nó vào contention sẽ báo oan khoá không ai chờ.
+- Quên khoá kiểu ReentrantLock nằm ở mục {{Locked ownable synchronizers}} dưới dạng {{- <0x...>}}, không phải dòng {{- locked}}. Quên nó thì chỉ bắt deadlock {{synchronized}}.
+- Không sắp xếp rõ ràng: kết quả phải ổn định (tên thread tăng dần, waiter giảm dần, địa chỉ tăng dần làm tie-break).
+
+Sau khi có kết quả, bước quyết định vẫn là đọc entry của người giữ khoá: nếu nó đang {{RUNNABLE}} trong {{socketRead0}} hoặc {{jdbc}} khi giữ {{synchronized}}, vấn đề là giữ khoá xuyên I/O, restart server không giúp gì. Khoá database, khoá Redis hay hàng đợi phân tán không hiện ra trong dump — bằng chứng cho những trường hợp đó phải lấy từ log driver database, metrics pool, hoặc JFR.`,
+    },
+  ],
+  check: [
+    {
+      q: 'Thread dùng {{synchronized}} nhưng stack frame trên cùng là {{java.net.SocketInputStream.socketRead0}}, trạng thái {{RUNNABLE}}. Nghĩa là gì?',
+      options: [
+        'Thread đang ngốn CPU toàn lực',
+        'Thread đang chờ dữ liệu từ socket: JVM gộp cả chạy và chặn I/O vào RUNNABLE',
+        'Thread bị deadlock và cần restart ngay',
+        'Thread đã kết thúc, chờ garbage collector thu hồi'
+      ],
+      answer: 1,
+      explain: '{{java.lang.Thread}} không có trạng thái "đang chờ socket", nên mọi thread block trong đọc/ghi socket vẫn là {{RUNNABLE}}. CPU thấp với nhiều thread {{RUNNABLE}} trong {{socketRead0}} có nghĩa là chờ downstream (database, API khác), không phải het CPU. Muốn biết có thực sự chạy không, so sánh {{cpu=}} giữa hai dump hoặc dùng {{top -H -p}}. Deadlock thì hai thread đứng chết trong chu kỳ giữ-chờ và JVM in {{Found one Java-level deadlock}}, không phải chỉ một thread RUNNABLE trong socketRead.'
+    },
+    {
+      q: 'Dòng {{- waiting on <0x000000076abba5e0> (a java.lang.Object)}} trong stack entry có nghĩa là gì?',
+      options: [
+        'Muốn vào {{synchronized}} nhưng chưa lấy được monitor',
+        'Đang chờ một {{ReentrantLock}}, có thể tạo deadlock',
+        'Đã gọi {{wait()}}: đã nhả monitor và đang chờ {{notify()}}, không giữ cũng không chờ khoá',
+        'Vừa mở kết nối socket đang bắt tay TCP'
+      ],
+      answer: 2,
+      explain: '{{obj.wait()}} trả monitor cho người khác rồi ngủ trên hàng chờ của chính object đó, nên thread ở {{WAITING (on object monitor)}}: không giữ monitor, cũng không chờ vào khoá. Hai dòng cần phân biệt: {{- waiting to lock <0xA>}} = chưa vào được {{synchronized}} (người chờ khoá); {{- waiting on <0xA>}} = đang chờ được đánh thức. Nhầm hai dòng là lỗi kinh điển khi đếm lock contention.'
+    },
+    {
+      q: 'Khi JVM in {{Found one Java-level deadlock}}, điều nào là ĐÚNG?',
+      options: [
+        'JVM phát hiện mọi loại deadlock, bao gồm khoá hàng đợi database và khoá Redis',
+        'Chỉ deadlock nội bộ JVM (monitor và ownable synchronizer như {{ReentrantLock}})',
+        'Phải khởi động lại server ngay lập tức, không cách nào khắc phục code',
+        'Deadlock chỉ xảy ra khi CPU đạt 100%'
+      ],
+      answer: 1,
+      explain: 'JVM chỉ dựng đồ thị chờ cho khoá của chính nó: monitor và {{Locked ownable synchronizers}}. Khoá hàng đợi database (MySQL InnoDB tự ném lỗi 1213), khoá phân tán Redis/ZooKeeper, hoặc deadlock logic không xuất hiện trong dump. Deadlock không đòi hỏi CPU 100%: hai thread có thể đứng chết trong khi CPU thấp. Khắc phục là sửa code (thứ tự lấy khoá, timeout, thu nhỏ phạm vi {{synchronized}}), không phải chỉ restart server.'
+    },
+  ],
+  related: ['jvm-011', 'concurrency-006'],
+  tags: ['thread dump', 'jstack', 'jcmd', 'deadlock', 'lock contention', 'BLOCKED', 'WAITING', 'monitor'],
+},
+{
+  id: 'lesson-jvm-014',
+  track: 'jvm',
+  order: 14,
+  title: 'Cache static không giới hạn: đo kích thước retained và sửa bằng LRU có giới hạn byte',
+  level: 'senior',
+  minutes: 35,
+  goals: [
+    'Giải thích được vì sao static Map dùng làm cache không giới hạn gây OOM: trường static là GC root, mọi entry trong map vẫn reachable',
+    'Hiểu garbage collector chỉ thu hồi object không còn đường đi từ GC root, nên giữ tham chiếu không cần thiết chính là rò rỉ bộ nhớ trong Java',
+    'Đo kích thước cache (số entry và kích thước ước tính theo byte) và gắn metric hit/miss, cảnh báo khi kích thước tăng không ngừng',
+    'Viết cache có giới hạn kích thước byte với chính sách đuổi LRU, theo dõi số lần eviction, hit và miss',
+    'Biết khi nào nên dùng Caffeine thay vì tự viết và sao WeakReference không phải silver bullet'
+  ],
+  body: `**Tóm tắt:** Rò rỉ bộ nhớ trong Java hiếm khi là "quên free" như C; nó là giữ tham chiếu không cần thiết nên garbage collector không thu hồi được. Biểu hiện kinh điển là một {{static Map}} dùng làm cache: mỗi key mới (mã đơn hàng, chuỗi query kèm timestamp) tạo một entry mới, entry chưa bao giờ bị xóa, heap tăng đều, full GC chạy liên tục, rồi {{java.lang.OutOfMemoryError: Java heap space}}. Bài này dạy bạn phân biệt heap và stack ở mức nhẹ, đọc dấu hiệu leak từ đường heap sau GC, đo kích thước cache bằng số entry lẫn kích thước ước tính theo byte, rồi sửa bằng cache có giới hạn kích thước và chính sách đuổi LRU, kèm theo dõi hit/miss.
+
+### 1) Rò rỉ bộ nhớ trong Java là gì
+
+Trong C, rò rỉ là vùng nhớ {{malloc}} mà không ai {{free}}: không còn con trỏ nào trỏ tới, nhưng bộ nhớ vẫn bị chiếm. Java khác: garbage collector tự tìm và giải phóng mọi object **không còn đường đi từ GC root** (biến local trên stack của thread đang chạy, trường {{static}}, tham chiếu JNI, monitor đang được giữ...). Một object còn ít nhất một đường đi từ root thì JVM bắt buộc giữ, dù chương trình đã không bao giờ dùng lại nó.
+
+Đó chính là rò rỉ bộ nhớ Java-style: object **vẫn reachable**, GC phải giữ, nhưng nghiệp vụ đã xong. Ví dụ:
+
+~~~text
+GC root: static field OrderCache.MAP
+   └── HashMap                     shallow 48 byte, retained 1,6 GB
+          └── Node[] table        4 triệu ô
+                ├── Node → Order#1 → OrderLine[] → Product ...
+                ├── Node → Order#2 → ...
+                └── ... hai triệu node, không ai đọc lại
+~~~
+
+Hai triệu đơn hàng đã xử lý xong từ tuần trước vẫn sống vì trường {{static}} là **GC root** sống suốt đời ứng dụng.
+
+### 2) Dấu hiệu leak trên đường heap
+
+Bình thường, đường heap sau mỗi lần GC (còn gọi live set) dao động quanh một mức. Bị leak: live set tăng bậc thang qua nhiều ngày, GC chạy dày hơn, CPU dành cho GC tăng, p99 tăng, cuối cùng là OOM heap space. Một cache lớn **hợp lệ** cũng làm live set cao, nhưng nó sẽ **đi ngang** khi cache đầy; leak thì không bao giờ đi ngang.
+
+Xác nhận leak: xem GC log, hoặc so sánh {{jcmd <pid> GC.class_histogram}} ở hai thời điểm cách nhau 30 phút. Lớp nào có số instance tăng tuyến tính ({{HashMap$Node}}, {{byte[]}}, object nghiệp vụ) là nghi phạm. Lấy heap dump bằng {{jcmd <pid> GC.heap_dump /dumps/app.hprof}} và mở trong Eclipse MAT: nhìn **dominator tree** theo **retained size** (tổng bộ nhớ giải phóng nếu object đó biến mất), rồi **path to GC roots** để biết chính xác trường field nào giữ object sống.
+
+### 3) Cache static không giới hạn — trường hợp kinh điển
+
+Một service đặt hàng dùng {{ConcurrentHashMap<String, OrderDto>>> orderCache}} để đọc nhanh. Key là mã đơn cộng timestamp yêu cầu, nên mỗi request là một key mới, cardinality vô hạn. Chỉ có {{put}}, không có giới hạn kích thước hay thời gian sống. Heap tăng đều, full GC mỗi 3 phút, sau ba ngày pod bị OOMKilled.
+
+Sửa sai thường thấy: hy vọng garbage collector thu hồi, hoặc gói value trong {{WeakReference}}. Không: static field vẫn giữ key mạnh, entry không bao giờ mất. Weak reference chỉ hợp với canonical map, không dùng làm cache chính vì dữ liệu biến mất bất ngờ và hit rate không ổn định.
+
+### 4) Đo kích thước cache trước khi sửa
+
+Số entry alone là chưa đủ: một entry chứa {{String}} ngắn chỉ vài trăm byte, một entry chứa danh sách đơn hàng thì vài megabyte. Nên theo dõi cùng lúc:
+- số entry hiện tại;
+- kích thước ước tính theo byte (trong bài tập dưới, mỗi lần {{put}} bạn truyền trọng lượng byte của entry);
+- số lần hit, miss, và số lần evict (đuổi entry);
+- gắn alert khi kích thước tăng không ngừng theo thời gian — đó là dấu hiệu leak sớm nhất.
+
+### 5) Sửa: giới hạn kích thước byte + đuổi LRU
+
+Thay map thuần bằng cache có **maximum size (byte)**. Mỗi entry có trọng lượng (kích thước ước tính key + value). Khi tổng byte vượt giới hạn, đuổi entry **ít được dùng gần đây nhất** (LRU) một cách lặp cho tới khi tổng byte dưới giới hạn, đồng thời đếm số lần đuổi. {{get}} vào entry tồn tại làm entry đó trở thành mới dùng nhất. Như vậy live set của cache đi ngang ở mức giới hạn, không bao giờ tràn heap.
+
+Code sản xuất nên dùng Caffeine ({{maximumWeight}}, {{expireAfterWrite}}, thống kê hit/miss) thay vì tự viết; tự viết giúp bạn hiểu cơ chế, Caffeine giúp bạn vận hành an toàn với gần-tránh-evict và không khóa toàn bộ cache khi đuổi entry.
+
+### Ví dụ đời thực
+
+Hệ thống đặt hàng trực tuyến peak 30.000 request/giây, heap 8 GB. Cache orderId + timestamp không giới hạn: heap từ 2 GB lên 7,2 GB trong ba ngày, full GC mỗi 3 phút, mỗi lần 20 giây, pod OOMKilled. Heap dump MAT: {{ConcurrentHashMap$Node}} retained 5,4 GB, đường đi từ GC root qua {{OrderService.cache}}. Sửa: thay bằng Caffeine {{maximumWeight = 500_000_000}} byte (khoảng 500 MB), {{expireAfterWrite = 10 phút}}, bật {{recordStats()}}. Kết quả: heap ổn định 1,4 GB, full GC biến mất, p99 từ 450 ms xuống 80 ms, hit rate 92 %.
+
+### Trả lời mẫu khi phỏng vấn
+
+"Rò rỉ bộ nhớ Java là object vẫn có đường đi từ GC root nên garbage collector phải giữ, dù code không dùng lại — ví dụ static Map làm cache không giới hạn: mỗi key mới sống mãi, heap tăng đều, full GC liên tục, rồi OutOfMemoryError. Tôi xác nhận bằng đường live set sau GC tăng bậc thang, histogram lớp tăng tuyến tính, rồi heap dump trong MAT nhìn dominator tree theo retained size và path to GC roots. Cách sửa là giới hạn cache theo số entry hoặc theo byte, đuổi theo LRU, thêm TTL; trên production tôi dùng Caffeine với maximumWeight và expireAfterWrite, kèm metric kích thước cache và alert khi tăng không ngừng. WeakReference không phải giải pháp vì dữ liệu biến mất bất ngờ."
+`,
+  exercises: [
+    {
+      title: 'BoundedSizeCache: giới hạn cache theo byte, evict LRU, theo dõi hit/miss',
+      prompt: `Viết class {{BoundedSizeCache<K, V>}} giữ cache dưới một giới hạn kích thước (byte).
+
+Yêu cầu:
+- Constructor {{BoundedSizeCache(long maxBytes)}}: nếu {{maxBytes <= 0}} thì ném {{IllegalArgumentException}}.
+- {{V put(K key, V value, long weightBytes)}}: thêm hoặc cập nhật entry. Nếu {{weightBytes < 0}} thì ném {{IllegalArgumentException}}. Nếu key đã có, trừ trọng lượng cũ khỏi tổng rồi cộng trọng lượng mới. Sau khi thêm, nếu tổng byte vượt {{maxBytes}} thì đuổi entry **ít được dùng gần đây nhất** (LRU), một cách lặp cho tới khi tổng byte dưới giới hạn, và tăng bộ đếm {{evictions}}. Trả về giá trị cũ của key (null nếu chưa có).
+- {{V get(K key)}}: hit thì entry trở thành **mới dùng nhất**, tăng {{hits}}, trả về giá trị; miss thì tăng {{misses}}, trả về null.
+- {{long sizeBytes()}}, {{int entryCount()}}, {{long hits()}}, {{long misses()}}, {{long evictions()}}.
+- {{List<K> keysEldestFirst()}}: danh sách key từ ít dùng gần nhất (sắp bị đuổi) đến mới dùng nhất; gọi nhiều lần **không được thay đổi thứ tự** cache.
+
+Gợi ý cơ chế: {{new LinkedHashMap<>(16, 0.75f, true)}} (tham số thứ ba là access-order) cộng một map lưu trọng lượng của mỗi key và một biến {{long totalBytes}}.`,
+      starter: `class BoundedSizeCache<K, V> {
+    private final long maxBytes;
+    private final LinkedHashMap<K, V> map;
+    private final Map<K, Long> weights;
+    private long totalBytes;
+    private long hits;
+    private long misses;
+    private long evictions;
+
+    BoundedSizeCache(long maxBytes) {
+        // TODO: kiểm tra maxBytes > 0, tạo LinkedHashMap access-order, khởi tạo bộ đếm
+        throw new UnsupportedOperationException("TODO");
+    }
+
+    V put(K key, V value, long weightBytes) {
+        throw new UnsupportedOperationException("TODO");
+    }
+
+    V get(K key) {
+        throw new UnsupportedOperationException("TODO");
+    }
+
+    long sizeBytes() {
+        throw new UnsupportedOperationException("TODO");
+    }
+
+    int entryCount() {
+        throw new UnsupportedOperationException("TODO");
+    }
+
+    long hits() {
+        throw new UnsupportedOperationException("TODO");
+    }
+
+    long misses() {
+        throw new UnsupportedOperationException("TODO");
+    }
+
+    long evictions() {
+        throw new UnsupportedOperationException("TODO");
+    }
+
+    List<K> keysEldestFirst() {
+        throw new UnsupportedOperationException("TODO");
+    }
+}`,
+      tests: `public class Main {
+    static int passed = 0, total = 0;
+    static void check(String name, Runnable r) {
+        total++;
+        try { r.run(); passed++; System.out.println("PASS " + name); }
+        catch (Throwable t) { System.out.println("FAIL " + name + ": " + t); }
+    }
+    static void eq(Object expected, Object actual) {
+        if (!Objects.equals(expected, actual)) throw new AssertionError("expected " + expected + " got " + actual);
+    }
+    static void expect(Class<? extends Throwable> type, Runnable r) {
+        try { r.run(); } catch (Throwable t) { if (type.isInstance(t)) return; throw new AssertionError("expected " + type.getSimpleName() + " got " + t); }
+        throw new AssertionError("expected " + type.getSimpleName() + " but nothing thrown");
+    }
+    public static void main(String[] args) {
+        check("vượt giới hạn byte thì đuổi entry cũ nhất", () -> {
+            BoundedSizeCache<String, Integer> c = new BoundedSizeCache<>(100);
+            eq(null, c.put("a", 1, 60));
+            eq(null, c.put("b", 2, 60));
+            eq(60L, c.sizeBytes());
+            eq(1, c.entryCount());
+            eq(1L, c.evictions());
+            eq(null, c.get("a"));
+            eq(2, c.get("b"));
+            eq(List.of("b"), c.keysEldestFirst());
+        });
+        check("get làm mới thứ tự (LRU chứ không phải FIFO)", () -> {
+            BoundedSizeCache<String, Integer> c = new BoundedSizeCache<>(100);
+            c.put("a", 1, 40);
+            c.put("b", 2, 40);
+            c.put("c", 3, 40);
+            eq(2, c.get("b"));
+            eq(null, c.put("d", 4, 40));
+            eq(2, c.get("b"));
+            eq(null, c.get("c"));
+            eq(4, c.get("d"));
+            eq(List.of("b", "d"), c.keysEldestFirst());
+            eq(2L, c.evictions());
+        });
+        check("cap nhat key da co: doi trong luong, khong duoi ai", () -> {
+            BoundedSizeCache<String, Integer> c = new BoundedSizeCache<>(100);
+            eq(null, c.put("a", 1, 100));
+            eq(1, c.put("a", 9, 100));
+            eq(100L, c.sizeBytes());
+            eq(1, c.entryCount());
+            eq(0L, c.evictions());
+            eq(9, c.get("a"));
+        });
+        check("tham so khong hop le nem IllegalArgumentException", () -> {
+            expect(IllegalArgumentException.class, () -> new BoundedSizeCache<String, String>(0));
+            expect(IllegalArgumentException.class, () -> new BoundedSizeCache<String, String>(-5));
+            BoundedSizeCache<String, String> c = new BoundedSizeCache<>(100);
+            expect(IllegalArgumentException.class, () -> c.put("a", "x", -1));
+        });
+        check("bo dem ban dau va get key khong co", () -> {
+            BoundedSizeCache<String, String> c = new BoundedSizeCache<>(1000);
+            eq(0L, c.sizeBytes());
+            eq(0, c.entryCount());
+            eq(0L, c.hits());
+            eq(0L, c.misses());
+            eq(0L, c.evictions());
+            eq(null, c.get("missing"));
+            eq(0L, c.hits());
+            eq(1L, c.misses());
+        });
+        check("keysEldestFirst khong lam doi thu tu", () -> {
+            BoundedSizeCache<String, Integer> c = new BoundedSizeCache<>(100);
+            c.put("x", 1, 60);
+            c.put("y", 2, 60);
+            c.keysEldestFirst();
+            c.keysEldestFirst();
+            c.put("z", 3, 60);
+            eq(List.of("z"), c.keysEldestFirst());
+        });
+        System.out.println("RESULT " + passed + "/" + total);
+    }
+}`,
+      reference: `class BoundedSizeCache<K, V> {
+    private final long maxBytes;
+    private final LinkedHashMap<K, V> map;
+    private final Map<K, Long> weights = new HashMap<>();
+    private long totalBytes;
+    private long hits;
+    private long misses;
+    private long evictions;
+
+    BoundedSizeCache(long maxBytes) {
+        if (maxBytes <= 0) throw new IllegalArgumentException("maxBytes phai > 0: " + maxBytes);
+        this.maxBytes = maxBytes;
+        this.map = new LinkedHashMap<>(16, 0.75f, true);
+    }
+
+    V put(K key, V value, long weightBytes) {
+        if (weightBytes < 0) throw new IllegalArgumentException("weight phai >= 0: " + weightBytes);
+        Long oldWeight = weights.put(key, weightBytes);
+        V oldValue = map.put(key, value);
+        if (oldValue != null) {
+            totalBytes -= oldWeight;
+        }
+        totalBytes += weightBytes;
+        while (totalBytes > maxBytes && !map.isEmpty()) {
+            Iterator<Map.Entry<K, V>> it = map.entrySet().iterator();
+            Map.Entry<K, V> eldest = it.next();
+            it.remove();
+            Long w = weights.remove(eldest.getKey());
+            totalBytes -= (w == null ? 0 : w);
+            evictions++;
+        }
+        return oldValue;
+    }
+
+    V get(K key) {
+        V value = map.get(key);
+        if (value == null) {
+            misses++;
+            return null;
+        }
+        hits++;
+        return value;
+    }
+
+    long sizeBytes() {
+        return totalBytes;
+    }
+
+    int entryCount() {
+        return map.size();
+    }
+
+    long hits() {
+        return hits;
+    }
+
+    long misses() {
+        return misses;
+    }
+
+    long evictions() {
+        return evictions;
+    }
+
+    List<K> keysEldestFirst() {
+        return new ArrayList<>(map.keySet());
+    }
+}`,
+      hints: [
+        '{{LinkedHashMap}} access-order=true: {{get}}/{{put}} đưa entry vào cuối, entry đầu là ít dùng gần nhất.',
+        'Cập nhật key đã có phải trừ trọng lượng cũ khỏi {{totalBytes}} trước khi cộng trọng lượng mới.',
+        'Vòng {{while}} đuổi entry đầu (iterator + remove) cho tới khi {{totalBytes}} dưới giới hạn.',
+        '{{keysEldestFirst}} trả {{new ArrayList<>(map.keySet())}}: duyệt keySet không tính là access, không đổi thứ tự LRU.'
+      ],
+      explain: `Bài này bắt bạn viết đúng cache có giới hạn kích thước byte — kỹ thuật chặn rò rỉ bộ nhớ từ cache: live set đi ngang ở mức giới hạn thay vì tăng mãn mãn.
+
+Ba điểm dễ sai:
+- Quên trừ trọng lượng cũ khi cập nhật key đã có: tổng byte sẽ mãi tăng, eviction chạy sai.
+- Chỉ đuổi một entry mỗi lần {{put}}: một entry quá lớn có thể khiến tổng byte vẫn vượt giới hạn, phải lặp cho tới khi dưới giới hạn.
+- Duyệt {{map}} bằng {{get}} trong {{keysEldestFirst}}: mỗi {{get}} di chuyển entry về cuối, đổi thứ tự LRU và làm sai kết quả. Dùng {{new ArrayList<>(map.keySet())}}.
+
+Trên production hãy dùng Caffeine ({{maximumWeight}}, {{expireAfterWrite}}, {{recordStats()}}) thay vì tự viết; tự viết giúp bạn hiểu cơ chế LRU, Caffeine giúp vận hành an toàn với gần-tránh-evict và không khóa toàn bộ cache khi đuổi. Gắn metric kích thước cache và alert khi tăng không ngừng theo thời gian — đó là dấu hiệu leak sớm nhất. WeakReference không phải đáp án cache chính: dữ liệu biến mất bất ngờ khi GC, hit rate không ổn định.`,
+    },
+  ],
+  check: [
+    {
+      q: 'Vì sao một {{static Map}} dùng làm cache không giới hạn gây {{OutOfMemoryError: Java heap space}}?',
+      options: [
+        'Vì garbage collector không chạy',
+        'Vì trường {{static}} là GC root, nên mọi entry trong map vẫn reachable',
+        'Vì HashMap tự động tạo entry mới',
+        'Vì key là kiểu String'
+      ],
+      answer: 1,
+      explain: 'Trường {{static}} của class còn sống là GC root: map reachable → key/value reachable → object không bị thu hồi dù nghiệp vụ đã xong. Garbage collector vẫn chạy như bình thường; HashMap không tự tạo entry; và key kiểu String không liên quan — bất kỳ key nào cũng bị giữ nếu map còn static.'
+    },
+    {
+      q: 'Chính sách LRU đuổi entry nào khi cache vượt giới hạn?',
+      options: [
+        'Entry mới được thêm nhất',
+        'Entry ít được dùng gần đây nhất',
+        'Entry lớn nhất theo byte',
+        'Entry ngẫu nhiên'
+      ],
+      answer: 1,
+      explain: 'LRU (Least Recently Used) luôn đuổi entry đã lâu nhất không được truy cập. Với {{LinkedHashMap}} access-order=true, mỗi {{get}}/{{put}} đưa entry về cuối, nên entry đầu danh sách chính là mục tiêu đuổi. Không phải entry lớn nhất (cách đó cần theo dõi trọng lượng mỗi entry), cũng không phải ngẫu nhiên.'
+    },
+    {
+      q: 'Sau khi thay map cache không giới hạn bằng cache có giới hạn byte + TTL, đường live set sau GC sẽ thế nào?',
+      options: [
+        'Tăng mãi không bao giờ dừng',
+        'Đi ngang ở mức gần giới hạn cache',
+        'Giảm về không sau mỗi full GC',
+        'Biến thành 0 sau khi restart'
+      ],
+      answer: 1,
+      explain: 'Cache có giới hạn byte (maximumWeight) và TTL giữ số lượng entry dưới trần, nên live set sau GC đi ngang ở mức gần giới hạn thay vì tăng bậc thang. Tăng mãi là dấu hiệu leak; giảm về không sau full GC không xảy ra vì cache còn đang dùng những entry sống; restart chỉ dời lỗi, không xử lý nguyên nhân.'
+    },
+    {
+      q: 'Tại sao không nên dùng {{WeakReference}} làm cache chính trên production?',
+      options: [
+        'Vì garbage collector không thu hồi weak reference',
+        'Vì dữ liệu có thể biến mất bất ngờ khi GC và hit rate không ổn định',
+        'Vì weak reference giữ object mãi mãi',
+        'Vì chỉ dùng được cho key kiểu String'
+      ],
+      answer: 1,
+      explain: 'Weak reference bị GC thu hồi ở lần quét vùng chứa object nếu chỉ còn weak ref, nên dữ liệu trong cache có thể biến mất bất ngờ và hit rate không ổn định — không dùng làm cache chính. Weak reference không giữ object mãi (ngược lại) và không giới hạn chỉ cho key String. Nó hợp với canonical map, còn cache production nên có giới hạn kích thước + TTL tường minh (Caffeine).'
+    },
+  ],
+  related: ['jvm-004', 'jvm-005'],
+  tags: ['memory leak', 'cache', 'LRU', 'OOM', 'Caffeine', 'retained size', 'GC root'],
+},
+{
+  id: 'lesson-jvm-015',
+  track: 'jvm',
+  order: 15,
+  title: 'Thread pool saturation: doc dump va metric de nhan ra pool can kiet',
+  level: 'senior',
+  minutes: 30,
+  goals: [
+    'Giai thich vi sao thread pool can kiet lam request xep hang hoac bi reject',
+    'Doc thread dump de dem thread theo trang thai trong tung pool',
+    'Phan biet pool can kiet voi downstream cham va voi deadlock',
+    'Thiet ke nguong canh bao va cach xu ly: timeout, bulkhead, tang pool hop ly'
+  ],
+  body: `**Tom tat:** Thread pool can kiet xay ra khi moi thread trong pool deu dang ban va queue day, nen request moi bi reject hoac cho qua timeout. Day la loi production pho bien khi downstream cham. Thread dump cho thay phan lon thread o cung mot cho (cho database/API) va pool khong con thread ranh.
+
+### 1) Co che pool
+ExecutorService giu mot tap thread co dinh. Khi submit task, neu het thread ranh thi task vao queue. Khi queue day, reject. So thread toi da = maximumPoolSize. Neu task giu thread lau (cho I/O), pool can kiet nhanh.
+
+### 2) Dau hieu
+- Metric: activeThreads == poolSize, queueSize tang, rejectedCount tang.
+- Thread dump: nhieu thread cung trang thai WAITING/BLOCKED tai cung method (socketRead0, jdbc).
+- CPU thap, latency cao.
+
+### 3) Phan biet
+- Downstream cham: thread cho I/O, CPU thap, khong deadlock.
+- Deadlock: chu ky giu-cho, CPU thap.
+- Pool can kiet: queue day, reject, khong chu ky.
+
+### 4) Xu ly
+- Dat timeout cho downstream.
+- Bulkhead: tach pool cho cac downstream khac nhau.
+- Circuit breaker khi downstream fail.
+- Tang pool can than: them thread tang context switch va memory.
+
+### Lien he phong van
+Interviewer hoi: lam sao biet pool can kiet? Tra loi: metric active==max + queue day + dump cung cho; xu ly timeout/bulkhead.
+
+### 5) Vi du so lieu
+Pool size 20, queue 100, active 20, queue 100, rejected 5/phut. CPU 15%, latency p99 2s. Dump: 20 thread tai socketRead0.
+
+### Lien he phong van 2
+Interviewer hoi them: khi nao tang pool? Tra loi: khi CPU thap va downstream cham, tang pool chi tam thoi; can timeout va bulkhead.
+
+### 6) Them mot vi du so lieu thuc te
+He thong don hang co pool 50 thread, queue 200. Gio cao diem: active 50, queue 200, rejected 30/s. CPU 20%, latency p99 5s. Thread dump: 50 thread dang o ~~~text
+java.net.SocketInputStream.socketRead0
+~~~ va ~~~text
+oracle.jdbc.driver.T4CPreparedStatement.execute
+~~~. Khong co deadlock. Nguyen nhan: database cham (full table scan). Xu ly: them index, dat timeout query 2s, tang pool toi 100 tam thoi, su dung bulkhead tach pool doc/ghi.
+
+### 7) Bien phap phong ngua
+- Metric: theo doi {{threadpool.active}}, {{threadpool.queue.size}}, {{threadpool.rejected}} tren Prometheus/Grafana.
+- Alert khi {{active == max}} va {{queue > 0.8 * maxQueue}} trong 1 phut.
+- Circuit breaker: khi downstream loi > 50% trong 10s, mo circuit, fallback luon tra ve loi nhanh khong tiep tuc cho.
+- Load test truoc khi deploy: kiem tra latency va rejection rate o tai trong 30 phut.
+
+### Lien he phong van 3
+Interviewer hoi: neu tang pool thi rat? Tra loi: tang pool giam reject nhung tang context switch, memory, va co the lam cham database nua. Can ket hop timeout va circuit breaker.`,
+  exercises: [
+    {
+      title: 'Dem thread theo trang thai trong pool',
+      prompt: 'Viet ham countStates(lines) tra ve Map<String,Integer> dem so thread co trang thai BLOCKED/WAITING/RUNNABLE trong dump (dong chua "java.lang.Thread.State: X").',
+      starter: 'import java.util.*;\nclass Analyzer {\n    static Map<String,Integer> countStates(List<String> lines) {\n        throw new UnsupportedOperationException("TODO");\n    }\n}',
+      tests: 'public class Main {\n    static int passed=0,total=0;\n    static void check(String n, boolean ok, String d){total++; if(ok){passed++;System.out.println("PASS "+n);}else System.out.println("FAIL "+n+": "+d);}\n    public static void main(String[] args){\n        List<String> ls=List.of("java.lang.Thread.State: BLOCKED (on object monitor)","x","java.lang.Thread.State: WAITING (on condition)","java.lang.Thread.State: RUNNABLE");\n        Map<String,Integer> m=Analyzer.countStates(ls);\n        check("blocked count", Integer.valueOf(1).equals(m.get("BLOCKED")), "got "+m);\n        check("waiting count", Integer.valueOf(1).equals(m.get("WAITING")), "got "+m);\n        check("runnable count", Integer.valueOf(1).equals(m.get("RUNNABLE")), "got "+m);\n        System.out.println("RESULT "+passed+"/"+total);\n    }\n}',
+      reference: 'import java.util.*;\nclass Analyzer {\n    static Map<String,Integer> countStates(List<String> lines) {\n        Map<String,Integer> m=new HashMap<>();\n        for(String l:lines){\n            if(l.contains("java.lang.Thread.State:")){\n                String[] parts=l.split(":");\n                String st=parts[1].trim().split(" ")[0];\n                m.put(st,m.getOrDefault(st,0)+1);\n            }\n        }\n        return m;\n    }\n}',
+      hints: ['Tim dong chua "java.lang.Thread.State:".', 'Lay token dau sau dau hai cham.'],
+      explain: 'Dem trang thai thread giup nhan ra pool can kiet: neu phan lon BLOCKED/WAITING cung mot cho, downstream cham.'
+    }
+  ],
+  check: [
+    { q: 'Thread pool can kiet thuong co CPU the nao?', options: ['Cao 100%', 'Thap', 'Khong doi', 'Ngau nhien'], answer: 1, explain: 'Pool can kiet thuong do cho I/O nen CPU thap.' },
+    { q: 'Metric nao bao pool can kiet?', options: ['active < max', 'active == max va queue day', 'CPU 100%', 'GC pause cao'], answer: 1, explain: 'active == max va queue day la dau hieu.' }
+  ],
+  related: ['jvm-004'],
+  tags: ['thread pool', 'saturation', 'dump', 'metric']
+},
+{
+  id: 'lesson-jvm-016',
+  track: 'jvm',
+  order: 16,
+  title: 'Heap dump va retained size: tim GC root giu object',
+  level: 'senior',
+  minutes: 35,
+  goals: [
+    'Hieu shallow size va retained size',
+    'Biet GC root la gi va vi sao object van song',
+    'Dung dominator tree de tim thu pham leak',
+    'So sanh hai heap dump de thay tang truong'
+  ],
+  body: `**Tom tat:** Heap dump la anh chup toan bo object trong heap. De tim leak, ban xem retained size (kich thuoc object + moi object chi no giu) va GC root (duong di tu root toi object). Dominator tree giup tim object giu nhieu bo nho nhat.
+
+### 1) Shallow vs retained
+- Shallow size: kich thuoc chinh object.
+- Retained size: shallow + moi object ma chi object nay giu (dominated). Neu giai phong object, retained size la luong bo nho duoc tra lai.
+
+### 2) GC root
+GC root la diem xuat phat cua do thi reachability: static field, thread stack local, JNI reference, monitor. Object reachable tu root thi song. Leak thuong do root giu reference khong can thiet (static Map, ThreadLocal).
+
+### 3) Dominator tree
+Dominator tree to chuc object theo "ai giu ai": node A dominates B neu moi duong tu root den B deu qua A. Object co retained size lon o goc dominator tree la thu pham.
+
+### 4) So sanh hai dump
+Lay dump truoc va sau tai, so sanh histogram theo class: class nao tang dot bien la nghi pham. Ket hop voi GC root de xac nhan.
+
+### Lien he phong van
+Interviewer hoi: retained size la gi? Tra loi: luong bo nho bi giu boi object va khong the thu hoi neu object con song.
+
+### 5) Vi du so lieu
+Object A shallow 10, B 5, C 3; retained A = 18. Neu A bi giai phong, 18 don vi bo nho duoc tra lai.
+
+### Lien he phong van 2
+Interviewer hoi them: khac biet shallow va retained? Tra loi: shallow la kich thuoc chinh, retained la tong giu.
+
+### 6) Quy trinh thuc te: lay heap dump va phan tich
+1. Lay dump: ~~~bash
+jcmd <pid> GC.heap_dump /tmp/heap.hprof
+~~~ (can chay cung user). Hoac ~~~bash
+jmap -dump:live,format=b,file=/tmp/heap.hprof <pid>
+~~~.
+2. Mo bang Memory Analyzer Tool (MAT) hoac VisualVM.
+3. Chay {{Histogram}} -> tim class co so instance tang dot bien.
+4. Chon instance -> {{Merge Shortest Paths to GC Roots}} -> {{exclude weak/soft/phantom}} -> tim dominator.
+5. Xac dinh static field / ThreadLocal / cache map giu reference.
+
+### 7) Vi du so lieu thuc te
+He thong co 2GB heap. Sau 1 tien trang: {{java.lang.String}} 1.2GB (50%), {{com.example.OrderCache$Entry}} 300MB (15%). MAT retained size cua {{OrderCache}} static field = 300MB. Cache khong gioi han them entry moi request, khong evict. Sua: chuyen sang Caffeine {{maximumWeight(200_000_000)}}, {{expireAfterWrite(10, MINUTES)}}.
+
+### 8) So sanh hai dump
+Lay dump 1 (truc tiep sau khoi dong) va dump 2 (sau 1 tien). So sanh {{Histogram}}: class {{OrderCache$Entry}} tang tu 1,000 -> 50,000 instance. Retained size tang tu 6MB -> 300MB. Xac nhan leak o cache static.
+
+### Lien he phong van 3
+Interviewer hoi: retained size tinh the nao? Tra loi: shallow + tat ca object chi no giu (dominated). Neu object A giu B, B giu C, va khong co ai giu B/C nua, retained A = shallow A + retained B.`,
+  exercises: [
+    {
+      title: 'Tinh retained size trong do thi object',
+      prompt: 'Cho do thi object: Map<String,List<String>> children. Tinh retained size cua node root = shallow[root] + sum retained cua cac node chi root giu (node khong co predecessor khac). Giả su DAG don gian: retained(node)=shallow(node)+sum retained(child) neu node la dominator duy nhat.',
+      starter: 'import java.util.*;\nclass HeapAnalyzer {\n    static int retained(Map<String,Integer> shallow, Map<String,List<String>> children) {\n        throw new UnsupportedOperationException("TODO");\n    }\n}',
+      tests: 'public class Main {\n    static int passed=0,total=0;\n    static void check(String n, boolean ok, String d){total++; if(ok){passed++;System.out.println("PASS "+n);}else System.out.println("FAIL "+n+": "+d);}\n    public static void main(String[] args){\n        Map<String,Integer> sh=new HashMap<>(); sh.put("A",10); sh.put("B",5); sh.put("C",3);\n        Map<String,List<String>> ch=new HashMap<>(); ch.put("A",List.of("B","C")); ch.put("B",List.of()); ch.put("C",List.of());\n        check("retained A", HeapAnalyzer.retained(sh,ch)==18, "got "+HeapAnalyzer.retained(sh,ch));\n        // test 2: single node\n        Map<String,Integer> sh2=new HashMap<>(); sh2.put("X",7);\n        Map<String,List<String>> ch2=new HashMap<>(); ch2.put("X",List.of());\n        check("retained single", HeapAnalyzer.retained(sh2,ch2)==7, "got "+HeapAnalyzer.retained(sh2,ch2));\n        // test 3: chain A->B->C\n        Map<String,Integer> sh3=new HashMap<>(); sh3.put("A",1); sh3.put("B",2); sh3.put("C",3);\n        Map<String,List<String>> ch3=new HashMap<>(); ch3.put("A",List.of("B")); ch3.put("B",List.of("C")); ch3.put("C",List.of());\n        check("retained chain", HeapAnalyzer.retained(sh3,ch3)==6, "got "+HeapAnalyzer.retained(sh3,ch3));\n        System.out.println("RESULT "+passed+"/"+total);\n    }\n}',
+      reference: 'import java.util.*;\nclass HeapAnalyzer {\n    static int retained(Map<String,Integer> shallow, Map<String,List<String>> children) {\n        // tim root: node khong xuat hien trong children cua bat ky node nao\n        Set<String> allChildren = new HashSet<>();\n        for (List<String> list : children.values()) allChildren.addAll(list);\n        String root = null;\n        for (String k : shallow.keySet()) if (!allChildren.contains(k)) { root = k; break; }\n        if (root == null) root = shallow.keySet().iterator().next();\n        Map<String,Integer> memo = new HashMap<>();\n        return dfs(root, shallow, children, memo);\n    }\n    static int dfs(String n, Map<String,Integer> sh, Map<String,List<String>> ch, Map<String,Integer> memo){\n        if (memo.containsKey(n)) return memo.get(n);\n        int r = sh.getOrDefault(n, 0);\n        for (String c : ch.getOrDefault(n, List.of())) r += dfs(c, sh, ch, memo);\n        memo.put(n, r);\n        return r;\n    }\n}',
+      hints: ['Duyet post-order, cong shallow + children retained.'],
+      explain: 'Retained size giup xac dinh object giu nhieu bo nho nhat; trong thuc te dung tool (MAT) de tinh dominator.'
+    }
+  ],
+  check: [
+    { q: 'Retained size cua object la gi?', options: ['Kich thuoc chinh object', 'Kich thuoc object + moi object chi no giu', 'Kich thuoc heap', 'Kich thuoc stack'], answer: 1, explain: 'Retained size = shallow + dominated objects.' },
+    { q: 'GC root la gi?', options: ['Object lon nhat', 'Diem xuat phat reachability', 'Thread pool', 'Classloader'], answer: 1, explain: 'GC root la diem xuat phat cua do thi reachability.' }
+  ],
+  related: ['jvm-005'],
+  tags: ['heap dump', 'retained size', 'GC root', 'dominator']
+},
+{
+  id: 'lesson-jvm-017',
+  track: 'jvm', order: 17,
+  title: 'So sánh nhiều thread dump: phát hiện deadlock ngắt quãng và lock ordering',
+  level: 'senior',
+  minutes: 35,
+  goals: ['Hiểu vì sao một deadlock chỉ xuất hiện ngắt quãng', 'Biết cách lấy và so sánh 3 dump liên tiếp', 'Nhận ra lock ordering sai qua stack trace', 'Phân biệt deadlock thật với livelock'],
+  body: `**Tóm tắt:** Deadlock không phải lúc nào JVM cũng in "Found one Java-level deadlock" nếu chu trình khóa xuất hiện rồi biến mất giữa hai lần chụp. Lấy 3 dump cách 5 giây, so sánh stack và lock id để bắt chu kỳ lock ordering sai.
+
+### 1) Deadlock ngắt quãng là gì
+Deadlock là hai (hoặc nhiều) thread mỗi thread giữ một lock và chờ lock của thread khác, tạo chu kỳ. JVM chỉ phát hiện và in dòng "Found one Java-level deadlock" khi tại đúng thời điểm chụp dump chu kỳ đó còn tồn tại. Nếu transaction giữ lock ngắn, chu kỳ chỉ tồn tại vài ms, dump có thể chụp đúng lúc không có chu kỳ → không thấy deadlock trong dump, nhưng ứng dụng vẫn treo ngẫu nhiên.
+
+### 2) Vì sao cần nhiều dump
+Một dump là ảnh chụp 1 ms. Để phân biệt:
+- Treo thực sự (deadlock/livelock): stack giống hệt qua 3 dump liên tiếp.
+- Chờ tạm thời (query chậm): stack thay đổi, thread tiến triển.
+- Deadlock ngắt quãng: dump 1 có thread A waiting to lock L2 (giữ L1), dump 2 không có, dump 3 lại có → chu kỳ xuất hiện rồi biến mất.
+
+### 3) Lock ordering
+Khi cần nhiều lock, luôn acquire theo thứ tự cố định (ví dụ theo hash của lock id). Nếu code chỗ này lock L1 rồi L2, chỗ kia lock L2 rồi L1 → deadlock ngẫu nhiên. Sửa: sắp xếp lock theo id cố định trước khi lock.
+
+### 4) Livelock vs deadlock
+Deadlock: thread đứng yên mãi. Livelock: thread liên tục retry nhưng không tiến (CPU cao, không deadlock section). Dump cho thấy thread RUNNABLE với stack retry.
+
+### 5) Ví dụ đời thực
+Dịch vụ chuyển tiền: 2% giao dịch treo ngẫu nhiên, không có deadlock section. 3 dump cho thấy Thread-1 locked <0x111> waiting <0x222>, Thread-2 locked <0x222> waiting <0x111> ở dump 1 và 3 nhưng không ở dump 2. Nguyên nhân: lock theo thứ tự account id không nhất quán. Sửa lock ordering → hết treo.
+
+### 6) Trả lời mẫu khi phỏng vấn
+Khi ứng dụng treo ngẫu nhiên và dump không có deadlock section, tôi lấy 3 dump liên tiếp cách 5 giây. Nếu stack giống hệt qua mọi dump = treo thực sự. Nếu chỉ xuất hiện ở một số dump = deadlock ngắt quãng do lock ordering sai. Tôi nhóm thread theo "locked"/"waiting to lock", tìm chu kỳ theo tay, rồi sửa bằng lock ordering cố định và giảm phạm vi synchronized. Nếu thread RUNNABLE liên tục retry mà không tiến = livelock, xử lý bằng backoff.
+
+### 7) Lỗi hay gặp
+- Chỉ lấy 1 dump rồi kết luận không deadlock.
+- Nhầm livelock với deadlock.
+- Không so sánh lock id giữa các dump.
+
+### 8) Phòng ngừa
+- Lock ordering cố định, tránh nested lock.
+- Thêm timeout cho lock (tryLock với timeout).
+- Monitor số thread BLOCKED và retry count.
+
+> Senior tip: 3 dump cách 5 giây là tối thiểu để bắt deadlock ngắt quãng; so sánh lock id giữa các dump thay vì chỉ đọc deadlock section.`,
+  exercises: [
+    {
+      title: 'Phát hiện chu kỳ lock từ danh sách locked/waiting',
+      prompt: 'Cho danh sách các thread: mỗi thread có held lock và waited lock. Viết hàm hasCycle trả về true nếu có chu kỳ (deadlock).',
+      starter: 'import java.util.*;\nclass LockCycle {\n    static boolean hasCycle(Map<String,String> held, Map<String,String> waited) {\n        throw new UnsupportedOperationException("TODO");\n    }\n}',
+      tests: 'public class Main {\n    static int passed=0,total=0;\n    static void check(String n, boolean ok, String d){total++; if(ok){passed++;System.out.println("PASS "+n);}else System.out.println("FAIL "+n+": "+d);}\n    public static void main(String[] args){\n        // cycle A->B->A\n        Map<String,String> h=new HashMap<>(); h.put("T1","L1"); h.put("T2","L2");\n        Map<String,String> w=new HashMap<>(); w.put("T1","L2"); w.put("T2","L1");\n        check("cycle", LockCycle.hasCycle(h,w), "expected true");\n        // no cycle\n        Map<String,String> h2=new HashMap<>(); h2.put("T1","L1");\n        Map<String,String> w2=new HashMap<>(); w2.put("T1","L2");\n        check("no-cycle", !LockCycle.hasCycle(h2,w2), "expected false");\n        // self deadlock\n        Map<String,String> h3=new HashMap<>(); h3.put("T1","L1");\n        Map<String,String> w3=new HashMap<>(); w3.put("T1","L1");\n        check("self", LockCycle.hasCycle(h3,w3), "expected true");\n        System.out.println("RESULT "+passed+"/"+total);\n    }\n}',
+      reference: 'import java.util.*;\nclass LockCycle {\n    static boolean hasCycle(Map<String,String> held, Map<String,String> waited) {\n        // map lock -> thread holding it\n        Map<String,String> lockHolder = new HashMap<>();\n        for (Map.Entry<String,String> e : held.entrySet()) lockHolder.put(e.getValue(), e.getKey());\n        for (String t : waited.keySet()) {\n            String cur = t;\n            Set<String> seen = new HashSet<>();\n            while (true) {\n                String wl = waited.get(cur);\n                if (wl == null) break;\n                String holder = lockHolder.get(wl);\n                if (holder == null) break;\n                if (seen.contains(holder)) return true;\n                seen.add(holder);\n                cur = holder;\n                if (cur.equals(t)) return true;\n            }\n        }\n        return false;\n    }\n}',
+      hints: ['Xây map lock->thread holder, rồi đi theo waited chain.'],
+      explain: 'Phát hiện chu kỳ trong đồ thị chờ: thread T1 giữ L1 chờ L2, thread giữ L2 chờ L1 → deadlock.'
+    }
+  ],
+  check: [
+    { q: 'Deadlock ngắt quãng xuất hiện trong dump thế nào?', options: ['Luôn có deadlock section', 'Chỉ ở một số dump, không phải tất cả', 'CPU 100%', 'OOM'], answer: 1, explain: 'Chu kỳ chỉ tồn tại vài ms, dump có thể chụp lúc không có.' },
+    { q: 'Livelock khác deadlock ở điểm nào?', options: ['Thread đứng yên', 'Thread RUNNABLE retry liên tục không tiến', 'OOM', 'StackOverflow'], answer: 1, explain: 'Livelock: CPU cao, không deadlock section.' }
+  ],
+  related: ['jvm-003', 'jvm-007'],
+  tags: ['thread dump', 'deadlock', 'lock ordering', 'livelock']
+},
+{
+  id: 'lesson-jvm-018',
+  track: 'jvm', order: 18,
+  title: 'Memory leak qua ThreadLocal và listener không unregister trong web app',
+  level: 'senior',
+  minutes: 35,
+  goals: ['Hiểu vì sao ThreadLocal trong thread pool gây leak', 'Biến listener/event handler thành nguồn leak', 'Biết cách phòng ngừa: remove() và unregister', 'Đo retained size để xác nhận'],
+  body: `**Tóm tắt:** Trong web app, thread pool tái sử dụng thread. Nếu dùng ThreadLocal mà không remove(), giá trị gắn với thread sống mãi → leak. Listener/event handler không unregister cũng giữ tham chiếu. Sửa bằng try/finally remove() và unregister trong destroy.
+
+### 1) ThreadLocal trong thread pool
+ThreadLocal gắn giá trị vào Thread object. Thread pool tái sử dụng cùng thread cho request sau, nên nếu không remove() sau request, giá trị cũ (thường chứa user context, connection) vẫn còn → leak và rò rỉ dữ liệu giữa request.
+
+### 2) Listener không unregister
+Đăng ký listener vào event bus / observable nhưng không unregister khi component destroy → listener giữ tham chiếu tới object lớn → object không GC được. Trong web app: servlet filter, HttpSessionListener, application context listener.
+
+### 3) Classloader leak khi redeploy
+Web app redeploy: classloader cũ bị giữ bởi thread (ThreadLocal, timer, thread pool không shutdown) → metaspace tăng mỗi redeploy → OutOfMemoryError: Metaspace.
+
+### 4) Phát hiện
+Heap dump: tìm GC root là ThreadLocalMap / Thread, retained size lớn. Metric: heap tăng sau mỗi redeploy, metaspace tăng.
+
+### 5) Ví dụ đời thực
+Ứng dụng Spring Boot dùng ThreadLocal để lưu userId cho logging. Sau 10.000 request, heap tăng 200 MB. Nguyên nhân: filter không gọi ThreadLocal.remove() trong finally. Sửa: try/finally remove(). Heap ổn định.
+
+### 6) Trả lời mẫu khi phỏng vấn
+Trong web app chạy trên thread pool, ThreadLocal là nguồn leak phổ biến: thread không bị GC nên giá trị gắn với nó sống mãi nếu không remove(). Tôi luôn bọc trong try/finally remove(). Listener và observer phải unregister trong destroy/lifecycle callback. Khi redeploy, thread pool và timer phải shutdown để tránh classloader leak → Metaspace OOM. Để xác nhận, lấy heap dump và xem retained size của ThreadLocalMap và GC root.
+
+### 7) Lỗi hay gặp
+- Quên remove() trong finally.
+- Đăng ký listener nhiều lần → leak nhân lên.
+- Không shutdown executor khi context destroy.
+
+### 8) Phòng ngừa
+- try/finally remove() cho mọi ThreadLocal.
+- Unregister listener trong @PreDestroy / destroy().
+- Shutdown executor và timer trong context destroyed.
+- Monitor metaspace và heap sau redeploy.
+- Dùng InheritableThreadLocal cẩn thận: giá trị truyền sang thread con, dễ rò rỉ nếu không remove.
+- Tránh lưu object lớn trong ThreadLocal (connection, user session lớn).
+
+### Liên hệ phỏng vấn
+Interviewer hay hỏi: vì sao ThreadLocal leak trong thread pool, cách detect qua heap dump, và classloader leak khi redeploy. Trả lời: thread không bị GC nên giá trị sống mãi; remove() trong finally; shutdown executor; monitor metaspace.
+
+> Senior tip: ThreadLocal.remove() trong finally là quy tắc bắt buộc trong mọi filter/servlet; leak ThreadLocal trong thread pool vừa rò rỉ bộ nhớ vừa rò rỉ dữ liệu giữa request.`,
+  exercises: [
+    {
+      title: 'Quản lý ThreadLocal an toàn',
+      prompt: 'Viết UserContext với set/get/clear dùng ThreadLocal, đảm bảo clear() gọi remove().',
+      starter: 'public class UserContext {\n    private static final ThreadLocal<String> ctx = new ThreadLocal<>();\n    public static void set(String u) { throw new UnsupportedOperationException("TODO"); }\n    public static String get() { throw new UnsupportedOperationException("TODO"); }\n    public static void clear() { throw new UnsupportedOperationException("TODO"); }\n}',
+      tests: 'public class Main {\n    public static void main(String[] args) {\n        UserContext.set("alice");\n        if ("alice".equals(UserContext.get())) System.out.println("PASS setget"); else System.out.println("FAIL setget");\n        UserContext.clear();\n        if (UserContext.get() == null) System.out.println("PASS clear"); else System.out.println("FAIL clear");\n        // simulate reuse\n        UserContext.set("bob");\n        if ("bob".equals(UserContext.get())) System.out.println("PASS reuse"); else System.out.println("FAIL reuse");\n        UserContext.clear();\n        System.out.println("RESULT 3/3");\n    }\n}',
+      reference: 'public class UserContext {\n    private static final ThreadLocal<String> ctx = new ThreadLocal<>();\n    public static void set(String u) { ctx.set(u); }\n    public static String get() { return ctx.get(); }\n    public static void clear() { ctx.remove(); }\n}',
+      hints: ['ThreadLocal.remove() thay vì set(null).'],
+      explain: 'remove() xóa entry khỏi ThreadLocalMap, tránh leak; set(null) vẫn giữ entry.'
+    }
+  ],
+  check: [
+    { q: 'Vì sao ThreadLocal trong thread pool gây leak?', options: ['Thread bị GC', 'Thread sống mãi và giữ giá trị', 'HashMap chậm', 'GC không chạy'], answer: 1, explain: 'Thread pool tái sử dụng thread, giá trị không remove thì sống mãi.' },
+    { q: 'Cách đúng để xóa ThreadLocal?', options: ['set(null)', 'remove()', 'Thread.interrupt()', 'System.gc()'], answer: 1, explain: 'remove() xóa entry khỏi map.' }
+  ],
+  related: ['jvm-004', 'jvm-016'],
+  tags: ['ThreadLocal', 'memory leak', 'listener', 'classloader', 'web']
+},
 );
