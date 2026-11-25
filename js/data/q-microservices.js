@@ -10911,6 +10911,241 @@ Distributed tracing cho tôi cái nhìn end-to-end của một request đi qua n
     'Bạn liên kết trace với log và metric (three pillars) như thế nào để khoan từ alert xuống nguyên nhân gốc?'
   ],
   tags: ['distributed tracing', 'opentelemetry', 'micrometer tracing', 'spring boot 3', 'Kafka', 'core']
+},
+{
+  id: 'microservices-129',
+  topic: 'microservices',
+  level: 'senior',
+  q: 'App mobile ngân hàng cần offline-first, delta sync khi mở app, và không thể ép user cập nhật (app store review 2 tuần). Web thì deploy liên tục. BFF-mobile và BFF-web khác nhau thế nào ở authentication (PKCE vs session), feature flag, caching, real-time (push vs SSE), và chiến lược versioning khi mobile cũ vẫn gọi API?',
+  a: `**Tóm tắt:** BFF-mobile và BFF-web không chỉ khác payload mà khác **vòng đời triển khai** và **ràng buộc client**. Mobile: OAuth2 PKCE + refresh token, feature flag nhúng trong binary (remote config), cache cục bộ SQLite cho offline-first, delta sync qua {{If-None-Match}}/{{ETag}}, push notification (FCM/APNs) cho real-time, versioning bắt buộc backward compatible vì không ép cập nhật. Web: session cookie hoặc JWT trong memory, feature flag từ CDN/config server, cache HTTP/Redis, SSE/WebSocket cho real-time, versioning có thể breaking vì deploy cùng lúc. Gateway dùng chung auth/rate-limit, nhưng BFF tách biệt hoàn toàn.
+
+### Cơ chế từng bước
+
+1. **Authentication**: Mobile dùng **OAuth2 Authorization Code Flow with PKCE** (Proof Key for Code Exchange) — không lưu client secret trong app, trao đổi code lấy access/refresh token, access token ngắn (15 phút), refresh token dài (30 ngày) xoay vòng. Web dùng **session cookie HttpOnly SameSite=Strict** hoặc JWT trong memory (không localStorage vì XSS). Gateway validate JWT/session một lần, chuyển identity header cho BFF.
+
+2. **Feature flag & remote config**: Mobile nhúng **remote config** (Firebase Remote Config, LaunchDarkly mobile SDK) — flag tải khi khởi động app, cache 12–24h, không thay đổi được khi app đang chạy. Web tải flag từ config server/CDN mỗi request hoặc qua SSE — thay đổi tức thì. Triển khai tính năng mới: mobile gated bằng flag, web bật/tắt theo %.
+
+3. **Caching & offline-first**: BFF-mobile trả header {{Cache-Control: private, max-age=0, must-revalidate}} kèm {{ETag}}/{{Last-Modified}}. App lưu response vào **SQLite/Room** kèm timestamp. Mở app offline → đọc cache, hiển thị "dữ liệu cũ". Online → gửi {{If-None-Match: <ETag>}}; BFF trả {{304 Not Modified}} (payload 0 byte) hoặc dữ liệu mới. Delta sync: payload chỉ chứa thay đổi (patch JSON) thay vì toàn bộ object.
+
+4. **Real-time**: Mobile dùng **push notification** (FCM/APNs) cho sự kiện quan trọng (giao dịch, OTP, khuyến mãi) — không cần kết nối mở, tiết kiệm pin. App foreground có thể dùng WebSocket cho chat/hỗ trợ. Web dùng **SSE (Server-Sent Events)** hoặc WebSocket — kết nối HTTP/2 keep-alive, tự reconnect, phù hợp dashboard real-time.
+
+5. **API Versioning**: Mobile **không bao giờ breaking change**. Thêm field mới ({{v2_field}}), không đổi ý nghĩa field cũ, enum mới thêm field riêng ({{status_v2}}), deprecate field cũ qua header {{Deprecation}} + {{Sunset}} (RFC 8594). Web có thể breaking change cùng deploy frontend. BFF-mobile giữ các version cũ chạy song song (ví dụ {{/api/v1/mobile/*}} và {{/api/v2/mobile/*}}), gateway route theo header {{X-App-Version}}.
+
+### Bảng so sánh
+
+| Tiêu chí | BFF-mobile | BFF-web |
+|---|---|---|
+| Auth | OAuth2 PKCE + refresh token rotation | Session cookie / JWT in memory |
+| Feature flag | Remote config (cache 12-24h) | Config server / CDN (tức thì) |
+| Cache | SQLite local + ETag/If-None-Match | HTTP cache / Redis |
+| Offline-first | Có (đọc cache, delta sync) | Không |
+| Real-time | Push (FCM/APNs) + WebSocket foreground | SSE / WebSocket |
+| Versioning | Chỉ additive, backward compatible | Có thể breaking change |
+| Deploy | Phụ thuộc app store review (2 tuần) | CI/CD liên tục |
+| Payload | Gọn, field cần thiết, patch JSON | Đầy đủ, object lớn |
+
+### Code: Delta sync với ETag
+
+~~~java
+@GetMapping("/api/v1/mobile/accounts/{id}")
+public ResponseEntity<AccountDto> getAccount(
+        @PathVariable String id,
+        @RequestHeader(value = "If-None-Match", required = false) String etag) {
+    Account account = accountService.findById(id);
+    String currentEtag = "\"" + account.getVersion() + "\"";
+    if (currentEtag.equals(etag)) {
+        return ResponseEntity.status(HttpStatus.NOT_MODIFIED).build(); // 304, payload = 0
+    }
+    AccountDto dto = AccountDto.from(account);
+    return ResponseEntity.ok()
+            .eTag(currentEtag)
+            .header("Cache-Control", "private, max-age=0, must-revalidate")
+            .body(dto);
+}
+~~~
+
+### Pitfall thực tế trên production
+
+- **Lưu refresh token trong SharedPreferences/Keychain không mã hoá** → malware lấy được, dùng refresh token lấy access token mới. Cách tránh: encrypt keystore/Keychain, xoay refresh token (rotate) mỗi lần dùng, thu hồi token cũ.
+- **Delta sync trả patch JSON nhưng app không merge đúng** → dữ liệu local lệch. Cách tránh: dùng thư viện JSON Patch (RFC 6902) hoặc thiết kế payload chỉ {{upsert}} field thay đổi, app replace toàn bộ object nếu không chắc.
+- **Push notification không có payload dữ liệu (data-only)** → app mở rồi mới fetch API, làm chậm trải nghiệm. Cách tránh: gửi data message kèm payload nhỏ (transaction id, amount), app hiển thị ngay từ notification.
+- **Feature flag mobile không có fallback khi remote config lỗi** → app bị treo tại màn hình splash. Cách tránh: ship default flag trong binary, remote config chỉ override.
+- **Gateway route theo path {{/api/mobile/*}} nhưng mobile cũ gọi {{/api/v1/*}}** → 404. Cách tránh: gateway rewrite path hoặc giữ legacy route vĩnh viễn.
+
+### Ví dụ đời thực
+
+Ngân hàng số 2 triệu user mobile, 500k user web. Mobile dùng PKCE, refresh token xoay 30 ngày, remote config Firebase. Web dùng session cookie, Spring Cloud Config. Tính năng "khuyến mãi cá nhân": mobile gated bằng remote config {{promo_personalized_v2}} (default false), web bật 10% user qua config server. Delta sync: mobile gửi {{If-None-Match}} cho danh sách tài khoản, 85% request trả {{304}} (payload 0 byte), tiết kiệm 60% bandwidth. Push notification data message kèm {{transaction_id}}, app hiển thị toast ngay, không gọi API. App store review 10 ngày: version 4.2.0 thêm field {{promo_v2}}, version 4.1.0 vẫn chạy vì BFF-mobile trả thêm field không phá vỡ contract. Kết quả: p95 mobile home load 400 ms (từ cache), 304 rate 85%, không sự cố breaking change 12 tháng.
+
+### Trả lời mẫu khi phỏng vấn
+
+Mobile và web khác bản chất ở chỗ mobile không ép được user cập nhật, app store review mất 2 tuần, và thiết bị có thể offline. Tôi thiết kế BFF-mobile với OAuth2 PKCE, refresh token rotation, remote config cho feature flag, SQLite local cache + ETag delta sync, push notification cho real-time, và versioning chỉ additive. BFF-web dùng session cookie, config server, SSE, có thể breaking change. Gateway chung xử lý auth/rate-limit, route theo {{X-App-Version}} sang BFF-mobile version phù hợp. Payload mobile gọn, patch JSON; web đầy đủ. Trade-off: BFF-mobile phức tạp hơn (offline, delta, versioning) nhưng đổi lại trải nghiệm mượt, không crash khi app cũ gọi API mới. Kinh nghiệm: breaking change mobile là tử huyệt — luôn thêm field, không sửa field cũ, và test với 3 version app cũ nhất còn sống.
+
+> Senior tip: Đừng coi mobile client như web client có thể deploy liên tục. Một breaking change mobile nghĩa là 2 tuần app store review + user không cập nhật ngay = việc bạn phải support API cũ **ít nhất 3–6 tháng**. Hãy đưa versioning vào contract từ ngày đầu.
+
+`,
+  follow: [
+    'Refresh token rotation: khi user đăng nhập thiết bị mới, thiết bị cũ bị logout như thế nào?',
+    'Delta sync với ETag: nếu server không hỗ trợ ETag, bạn fallback ra sao?',
+    'Push notification data message có giới hạn kích thước (FCM 4KB), bạn xử lý payload lớn thế nào?'
+  ],
+  tags: ['BFF', 'mobile', 'offline-first', 'delta sync', 'PKCE', 'push notification', 'versioning']
+},
+{
+  id: 'microservices-130',
+  topic: 'microservices',
+  level: 'lead',
+  q: 'Hệ thống 15 service Java trên Kubernetes, chi phí cloud tăng 30% quý trước. Team đề xuất Istio để mTLS và traffic shifting. Bạn phân tích chi phí thực (sidecar RAM/CPU, eBPF sidecar-less), so sánh Istio/Linkerd/Cilium, và quyết định dùng hay không dùng mesh dựa trên số liệu nào?',
+  a: `**Tóm tắt:** Service mesh không miễn phí. Istio (Envoy sidecar) tốn **150–300 MB RAM + 0,1–0,3 vCPU mỗi pod** cho sidecar, cộng control plane (istiod 1–2 GB RAM). Với 15 service × 6 pod = 90 pod, thêm **~15–25 GB RAM cluster** chỉ cho proxy. Cilium eBPF sidecar-less giảm 70% overhead (chạy trong kernel, không sidecar) nhưng yêu cầu kernel ≥ 5.10 và node access. Linkerd (Rust proxy) nhẹ hơn Istio (~50 MB RAM/pod) nhưng ít feature traffic shifting. Quyết định dựa trên: **chi phí sidecar so với saving từ mTLS tự động, canary an toàn, debug time**. Nếu team chưa có canary phức tạp, không yêu cầu zero-trust nội bộ bắt buộc, Resilience4j + NetworkPolicy + cert-manager tự động hóa TLS là rẻ hơn và đơn giản hơn.
+
+### Chi phí thực tế (số liệu production)
+
+| Thành phần | Istio (Envoy) | Linkerd (Linkerd2-proxy) | Cilium (eBPF, sidecar-less) |
+|---|---|---|---|
+| RAM/pod (sidecar) | 150–300 MB | 40–80 MB | 0 (chạy trong kernel, ~10 MB agent) |
+| CPU/pod (idle) | 0,05–0,1 vCPU | 0,02–0,05 vCPU | ~0 (kernel, khó đo per-pod) |
+| Control plane | istiod 1–2 GB HA | control plane 200–500 MB | Cilium operator + agent ~500 MB |
+| Latency thêm/hop | 1–3 ms | 0,5–1 ms | <0,5 ms (kernel) |
+| Kernel yêu cầu | Không | Không | ≥ 5.10, bpf syscall, privileged |
+| Traffic shifting | Đầy đủ (header, weight, mirror) | Cơ bản (weight, header) | Hạn chế (cần Envoy sidecar cho L7) |
+| mTLS | SPIFFE/SPIRE, tự động rotate | SPIFFE, tự động | WireGuard / IPsec (L3) hoặc Envoy (L7) |
+| Phù hợp | Nhiều team, đa ngôn ngữ, canary phức tạp | Team nhỏ, chỉ Java/Go, đơn giản | Chi phí nhạy cảm, kernel mới, muốn L3/L4 zero-trust |
+
+### Cơ chế sidecar vs sidecar-less
+
+**Istio/Linkerd (sidecar)**: Mỗi pod thêm container proxy. Traffic vào/ra pod bị iptables/eBPF redirect sang proxy. Proxy terminate mTLS, áp policy, retry, emit metric. Ưu: L7 policy đầy đủ (header, path, JWT), traffic shifting tinh vi. Nhược: RAM/CPU gấp 2–3 lần app Java nhỏ.
+
+**Cilium (sidecar-less eBPF)**: Chương trình eBPF gắn vào kernel socket layer, intercept syscall {{connect}}/{{accept}}, thực hiện mTLS (IPsec hoặc TLS offload), áp policy L3/L4 (IP, port, labels). Không container proxy thêm. Ưu: Overhead gần 0, scale tốt. Nhược: Chỉ L3/L4 (IP/port), L7 (HTTP header, JWT) cần Envoy sidecar riêng; debug eBPF khó hơn (bpftrace, cilium-cli); kernel panic risk nếu eBPF verifier lỗi.
+
+### Khi nào KHÔNG nên dùng mesh
+
+1. **Chi phí sidecar > 10% chi phí cluster** mà không có canary/mTLS requirement bắt buộc.
+2. **Team không có SRE/platform engineer** vận hành control plane, debug proxy config, upgrade istiod.
+3. **Chỉ 1 ngôn ngữ (Java), < 20 service**, retry/timeout/circuit breaker đã tốt trong Resilience4j.
+4. **Workload batch/cron** không cần mTLS liên tục — sidecar chạy 24/7 tốn tiền.
+5. **Kernel cũ (< 5.10)** hoặc cloud không cho privileged eBPF (EKS Fargate, GKE Autopilot hạn chế).
+
+### Quy trình đánh giá (decision framework)
+
+1. **Đo baseline**: p99 latency, CPU/RAM/pod, chi phí cluster/tháng, số incident mTLS/retry/canary quý.
+2. **PoC 1 namespace (3–5 service)**: bật Istio PERMISSIVE 2 tuần, đo overhead thực tế (RAM, CPU, p99 thêm), thử canary 5% traffic shifting.
+3. **Tính ROI**: (chi phí sidecar + ops time) vs (giảm incident debug time + giá trị canary an toàn + tuân thủ mTLS).
+4. **So sánh thay thế**: cert-manager + {{cert-manager.io/issuer}} cho mTLS tự động + Resilience4j retry/timeout + NetworkPolicy + Argo Rollouts canary — chi phí gần 0 overhead.
+5. **Quyết định**: Nếu ROI < 1.5 hoặc team không sẵn sàng ops → không mesh. Nếu mesh → chọn Istio (feature đầy đủ) hoặc Linkerd (nhẹ) hoặc Cilium (chi phí thấp, kernel mới).
+
+### Ví dụ đời thực
+
+Fintech 15 service Java, EKS m6i.xlarge (4 vCPU, 16 GB) × 12 node, chi phí $4.200/tháng. Baseline: p99 420 ms, CPU pod trung bình 0,8 vCPU. PoC Istio namespace thanh toán (5 service, 20 pod): sidecar Envoy thêm 220 MB RAM/pod, CPU idle 0,12 vCPU, p99 tăng 18 ms (+4,3%), istiod HA 2 replica tốn 1,5 GB RAM. Chi phí ước tính toàn cluster: +18 GB RAM = cần +2 node m6i.xlarge = +$700/tháng. Argo Rollouts + cert-manager + Resilience4j cho cùng canary/mTLS: overhead ~0, chi phí $0 thêm. ROI mesh = $700 / (giá trị canary an toàn + mTLS tự động) ≈ 0,8 → **không cài mesh**. Team dùng cert-manager tự động cấp cert mTLS 90 ngày, Resilience4j retry/timeout, NetworkPolicy deny-all + allowlist, Argo Rollouts canary weight. 6 tháng sau: 0 incident mTLS, canary 5%→100% an toàn, chi phí cluster không tăng.
+
+### Trả lời mẫu khi phỏng vấn
+
+Tôi không cài mesh vì "có vẻ hiện đại". Tôi đo overhead thực: Istio Envoy sidecar tốn 150–300 MB RAM + 0,1–0,3 vCPU/pod, control plane 1–2 GB. Với 90 pod, thêm ~20 GB RAM cluster = +2 node = +$700/tháng. Linkerd nhẹ hơn (~50 MB) nhưng ít traffic shifting. Cilium eBPF sidecar-less gần 0 overhead nhưng chỉ L3/L4, cần kernel ≥ 5.10. Tôi so sánh với thay thế: cert-manager tự động mTLS + Resilience4j + NetworkPolicy + Argo Rollouts — overhead ~0, cùng đạt mTLS và canary. Quyết định dựa trên ROI: (chi phí sidecar + ops) vs (giảm debug time + canary an toàn + tuân thủ). Nếu team < 20 service, một ngôn ngữ, chưa có canary phức tạp → không mesh. Kinh nghiệm: PoC 1 namespace 2 tuần, đo số liệu thật, không tin slide vendor.
+
+> Senior tip: Mesh xứng đáng khi **chi phí không mesh** (incident mTLS tay, canary thủ công gây downtime, debug distributed tracing khó) **vượt chi phí mesh**. Hãy viết ra con số: incident/tháng, giờ debug, downtime cost — so với $ sidecar/tháng. Không con số thì đừng cài.
+
+`,
+  follow: [
+    'Cilium eBPF sidecar-less: L7 policy (HTTP header, JWT) làm sao nếu không có Envoy sidecar?',
+    'Istio ambient mesh (sidecar-less mới) khác Cilium eBPF ra sao, và đã production-ready chưa?',
+    'Khi đã có mesh, team dev vẫn phải code retry/timeout trong Resilience4j không, hay để mesh lo hết?'
+  ],
+  tags: ['Istio', 'Linkerd', 'Cilium', 'service mesh', 'eBPF', 'sidecar-less', 'cost analysis', 'mTLS', 'canary']
+},
+{
+  id: 'microservices-131',
+  topic: 'microservices',
+  level: 'senior',
+  q: 'Hệ thống Spring Boot 3.2+ dùng virtual thread, CompletableFuture, và Reactor WebFlux. Bạn thiết lập OpenTelemetry Java agent + Micrometer Tracing sao cho trace context không bị đứt qua mọi biên bất đồng bộ (virtual thread, @Async, CompletableFuture, Reactor, Kafka), và dùng exemplars để liên kết metric với trace?',
+  a: `**Tóm tắt:** Spring Boot 3.2+ Micrometer Tracing + OpenTelemetry Java agent tự instrument WebMVC, WebClient, Kafka, @Async, CompletableFuture, Reactor — nhưng **trace context propagation** qua virtual thread, custom executor, và reactive chain cần cấu hình đúng. Quan trọng: **OpenTelemetry Java agent** (tự động) vs **Micrometer Tracing bridge** (manual) — agent xử lý context propagation cho virtual thread, {{ExecutorService}}, {{CompletableFuture}}, Reactor {{contextWrite}} tự động; bridge cần config {{ObservationRegistry}} + {{ContextPropagatingExecutor}}. Exemplars (tính năng của Micrometer + Prometheus/OTLP) gắn {{traceId}}/{{spanId}} vào các điểm dữ liệu của metric dạng histogram/timer, cho phép nhảy từ dashboard metric (p99 > 500ms) đến trace chậm.
+
+### Cơ chế từng bước
+
+1. **OpenTelemetry Java agent (khuyên dùng cho production)**: {{-javaagent:opentelemetry-javaagent.jar}} + biến môi trường {{OTEL_JAVAAGENT_ENABLED=true}}, {{OTEL_PROPAGATORS=tracecontext,baggage}}, {{OTEL_INSTRUMENTATION_SPRING_WEB_ENABLED=true}}, {{OTEL_INSTRUMENTATION_KAFKA_ENABLED=true}}. Agent tự wrap {{ExecutorService}}, {{ForkJoinPool}} (virtual thread), {{CompletableFuture}}, Reactor {{Scheduler}} để propagate {{Context}} (chứa {{Span}}, {{Baggage}}) mà không cần code.
+
+2. **Virtual thread (JDK 21)**: {{Executors.newVirtualThreadPerTaskExecutor()}} — mỗi task là virtual thread. OTel agent dùng {{ThreadLocal}} + {{Thread.Builder.OfVirtual}} hook để copy {{Context}} khi virtual thread start. Nếu dùng Micrometer bridge **không có agent**, phải config {{ContextPropagatingExecutor}} wrap executor.
+
+3. **@Async + custom executor**: Spring {{@EnableAsync}} + {{TaskExecutor}} — phải wrap bằng {{ContextPropagatingTaskExecutor}} (Micrometer) hoặc dùng OTel agent tự động. Nếu executor không wrap, {{Context.current()}} trả empty → span mới không có parent → trace đứt.
+
+4. **CompletableFuture**: {{CompletableFuture.supplyAsync(() -> ..., executor)}} — executor phải propagate context. OTel agent tự wrap {{ForkJoinPool.commonPool()}} và custom executor nếu detect. Micrometer bridge: dùng {{ContextPropagatingExecutor}} hoặc {{Observation.createNotStarted().wrap(Callable)}}.
+
+5. **Reactor WebFlux**: {{Mono.deferContextual(ctx -> ...).contextWrite(Context.of(Span.class, span))}} — OTel agent tự instrument {{WebFlux}} operator, propagate context qua {{Subscriber.onSubscribe}}/{{onNext}}. Micrometer bridge: {{ObservationFilter}} + {{ReactorObservationDocumentation}}.
+
+6. **Kafka**: {{KafkaTemplate}} + {{ObservationRegistry}} — producer ghi {{traceparent}} vào record header, consumer đọc header tạo child span. OTel agent instrument {{KafkaProducer}}/{{KafkaConsumer}} interceptors tự động.
+
+7. **Exemplars (metric → trace)**: Khi có Micrometer Tracing, Spring Boot tự đăng ký {{SpanContext}} (nguồn {{traceId}}/{{spanId}}) cho registry, nên {{Timer}}/{{DistributionSummary}} dạng histogram tự gắn exemplar — không cần {{MeterFilter}} thủ công. Prometheus {{exemplar}} storage (Thanos, Cortex, Mimir, VictoriaMetrics) cho phép query metric kèm {{trace_id}}. Grafana: click exemplar → mở trace trong Tempo/Jaeger.
+
+### Code: Cấu hình Micrometer + OTel agent + Exemplars
+
+~~~java
+// application.yml (Spring Boot 3.2+)
+management:
+  tracing:
+    sampling:
+      probability: 0.1        # 10% head-based
+    exemplars:
+      include: sampled-traces  # chỉ trace đã sample mới làm exemplar (mặc định)
+  otlp:
+    tracing:
+      endpoint: http://collector:4318/v1/traces  # OTLP over HTTP
+  metrics:
+    distribution:
+      percentiles-histogram:
+        http.server.requests: true  # phải bật histogram thì metric mới gắn được exemplar
+// Không cần MeterFilter: khi có Micrometer Tracing, Spring Boot tự đăng ký
+// SpanContext (nguồn traceId/spanId) cho registry Prometheus/OTLP, nên exemplar
+// được gắn tự động vào các metric dạng histogram/timer.
+~~~
+
+~~~bash
+# Chạy với OTel Java agent (khuyên dùng)
+java {{-javaagent:opentelemetry-javaagent.jar}} \
+  {{-Dotel.service.name=order-service}} \
+  {{-Dotel.exporter.otlp.endpoint=http://collector:4317}} \
+  {{-Dotel.propagators=tracecontext,baggage}} \
+  {{-Dotel.instrumentation.spring-web.enabled=true}} \
+  {{-Dotel.instrumentation.kafka.enabled=true}} \
+  {{-Dotel.instrumentation.executor.enabled=true}} \
+  {{-Dotel.instrumentation.r2dbc.enabled=true}} \
+  -jar app.jar
+~~~
+
+### Sơ đồ propagation qua các biên async
+
+~~~seq
+title: Trace context propagation Spring Boot 3.2+
+actors: Client | MVC | VirtualThread | CompletableFuture | Reactor | Kafka
+Client -> MVC: HTTP traceparent
+MVC -> VirtualThread: @Async (ContextPropagatingExecutor)
+VirtualThread -> CompletableFuture: supplyAsync (wrapped executor)
+CompletableFuture -> Reactor: Mono.fromFuture (contextWrite)
+Reactor -> Kafka: KafkaTemplate.send (trace header)
+~~~
+
+### Pitfall thực tế trên production
+
+- **OTel agent + Micrometer bridge cùng bật** → double instrumentation, span trùng, metric sai. Chỉ dùng **một trong hai**: agent (khuyên) HOẶC bridge + manual config.
+- **Virtual thread không propagate context** khi dùng {{Executors.newVirtualThreadPerTaskExecutor()}} không có agent, hoặc executor custom không wrap. Triệu chứng: span mới root, mất cha. Fix: bật {{-Dotel.instrumentation.executor.enabled=true}} (agent) hoặc wrap executor bằng {{ContextPropagatingExecutor}}.
+- **Reactor {{contextWrite}} quên** khi tự tạo {{Mono}}/{{Flux}} không qua WebFlux chain. Fix: luôn {{.contextWrite(Context.of(Span.class, Span.current()))}} ở biên async.
+- **Exemplars không hiện trong Grafana** vì Prometheus không lưu exemplar mặc định. Cần Thanos/Cortex/Mimir/VictoriaMetrics + {{exemplar}} storage bật, và bật histogram cho metric ({{percentiles-histogram}}) để có chỗ gắn exemplar.
+- **Baggage propagation** (custom key-value) làm context phình nếu không giới hạn. Chỉ định {{OTEL_BAGGAGE_MAX_LENGTH}} và filter key nhạy cảm.
+- **Kafka consumer group khác nhau** đọc cùng topic → mỗi group tạo trace riêng. Correlation cần {{traceId}} trong payload hoặc log.
+
+### Ví dụ đời thực
+
+E-commerce 12 service Spring Boot 3.2, JDK 21 virtual thread, WebFlux cho catalog, Kafka cho order/payment. Baseline: p99 checkout 620 ms, 40% request qua 5 hop async. Bật OTel Java agent + exemplars (VictoriaMetrics + Tempo). Một deploy p99 nhảy 1,2 giây: dashboard exemplars cho thấy {{checkout.duration}} p99 có exemplar {{trace_id=abc123}}; click mở Tempo thấy span {{payment.charge}} chiếm 850 ms do Hikari pool cạn (acquire 800 ms). Tăng pool 20→50, đặt {{connectionTimeout=200ms}}, p99 về 580 ms. Thời gian root-cause từ 30 phút (grep log) xuống 3 phút (exemplar → trace → span). Chi phí: agent thêm ~20 MB RAM, 2% CPU; exemplars sampling 1/100 trace.
+
+### Trả lời mẫu khi phỏng vấn
+
+Spring Boot 3.2+ tôi dùng **OpenTelemetry Java agent** thay vì manual Micrometer bridge, vì agent tự instrument virtual thread, {{@Async}}, {{CompletableFuture}}, Reactor, Kafka, JDBC, R2DBC — propagate {{Context}} (span, baggage) qua mọi biên async mà không cần code wrapper. Cấu hình: {{-javaagent:opentelemetry-javaagent.jar}} + {{OTEL_INSTRUMENTATION_EXECUTOR_ENABLED=true}} cho virtual thread/executor, {{OTEL_PROPAGATORS=tracecontext,baggage}}. Exemplars bật histogram ({{percentiles-histogram}}) và {{management.tracing.exemplars.include=sampled-traces}} (mặc định), VictoriaMetrics/Tempo lưu exemplar, Grafana click metric → trace. Pitfall: agent + bridge cùng bật gây double instrumentation; virtual thread không propagate nếu thiếu executor instrumentation; Reactor tự tạo Mono quên {{contextWrite}}. Kinh nghiệm: exemplar là cầu nối "three pillars" — từ alert metric (p99 cao) click exemplar ra trace chậm, không cần đoán hop nào.
+
+> Senior tip: Đừng manual wrap executor/{{@Async}}/{{CompletableFuture}} nữa — OTel Java agent làm tự động và đúng hơn. Chỉ dùng Micrometer bridge khi **không thể** dùng agent (ví dụ native image GraalVM, hoặc policy cấm javaagent). Exemplars là feature "giết gà lấy trứng" cho observability: metric báo vấn đề, trace cho nguyên nhân, log cho chi tiết — ba cái một chỗ.
+
+`,
+  follow: [
+    'OTel Java agent không dùng được (GraalVM native image), bạn cấu hình Micrometer bridge propagation cho virtual thread ra sao?',
+    'Exemplars chỉ gắn cho trace đã sample ({{sampled-traces}}) khác {{all}} ra sao, và khi nào nên đổi?',
+    'Baggage propagation: bạn truyền key nào (tenant, user-tier) và giới hạn size ra sao để không phình context?'
+  ],
+  tags: ['opentelemetry', 'micrometer tracing', 'spring boot 3', 'virtual thread', 'CompletableFuture', 'Reactor', 'exemplars', 'java agent']
 }
 );
 
