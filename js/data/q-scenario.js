@@ -11583,4 +11583,339 @@ Hệ thống thanh toán gửi webhook thanh toán thành công cho đối tác 
   ],
   tags: ['webhook', 'idempotency', 'retry', 'deduplication', 'event-driven']
 }
+  ,
+  {
+    id: 'scenario-188',
+    topic: 'scenario',
+    level: 'senior',
+    q: 'Một service Spring Boot gọi method @Transactional từ cùng class (self-invocation), dẫn đến transaction không được mở. Bạn giải thích cơ chế proxy-based AOP của Spring, tại sao self-invocation bỏ qua proxy, và các cách khắc phục bao gồm: tách class, AspectJ compile-time weaving, @Transactional trên interface.',
+    a: `**Tóm tắt:** Spring AOP dùng proxy (JDK dynamic proxy hoặc CGLIB) chặn lời gọi từ **bên ngoài** bean. Khi code trong cùng instance gọi method khác ({{this.otherMethod()}}), lời gọi không đi qua proxy → {{@Transactional}} bị bỏ qua, transaction không mở, dẫn đến lỗi {{TransactionRequiredException}} hoặc dữ liệu không commit. Cách khắc phục: (1) tách method ra class riêng và inject, (2) dùng AspectJ compile-time weaving (LTW) thay proxy, (3) khai báo {{@Transactional}} trên interface và inject bằng interface type (chỉ hoạt động với JDK dynamic proxy).
+
+### Cơ chế proxy-based AOP
+Spring tạo proxy bao quanh bean target. Lời gọi từ client → proxy → interceptor ({{TransactionInterceptor}}) → target method. Proxy chỉ chặn khi lời gọi đến từ **reference của proxy**. {{this}} trong class trỏ đến target instance gốc, không phải proxy.
+~~~java
+@Service
+public class OrderService {
+    @Autowired private OrderService self; // inject proxy của chính mình (self-injection) — cách hack, KHÔNG khuyến nghị cho code mới
+
+    @Transactional
+    public void create(Order o) { ... }
+
+    public void process(Order o) {
+        // SAI: this.create(o) — không qua proxy, transaction không mở
+        // this.create(o);
+
+        // WORKAROUND (hack): self.create(o) — qua proxy nhờ self-injection
+        // self.create(o);
+
+        // ĐÚNG: tách ra class khác (OrderCreator) và inject
+        // orderCreator.create(o);
+    }
+}
+~~~
+
+### Bảng cách khắc phục
+| Cách | Ưu | Nhược | Khi dùng |
+|---|---|---|---|
+| Tách class riêng (OrderCreator) | Rõ ràng, tuân thủ SRP, dễ test | Tăng số class | Mặc định, khuyến nghị nhất |
+| Self-injection ({{@Autowired self}}) | Nhanh, ít thay đổi | Hack, vi phạm DI nguyên tắc, circular reference nếu constructor | Chỉ hotfix gấp, legacy code |
+| AspectJ LTW (compile-time weaving) | Chặn cả self-invocation, không cần proxy | Cần cấu hình build (maven/gradle), chậm khởi động | Yêu cầu transaction trên private method hoặc final class |
+| @Transactional trên interface + inject interface | JDK dynamic proxy chặn được self-invocation | Chỉ hoạt động với interface, final method không được, CGLIB không áp dụng | Code cũ dùng interface nhiều, không muốn đổi sang AspectJ |
+
+### Pitfall thực tế
+- {{final}} method trên class dùng CGLIB proxy: proxy không override được → transaction không áp dụng. Cần bỏ {{final}} hoặc dùng interface proxy.
+- Private method: proxy không thể chặn → {{@Transactional}} vô dụng. Dùng AspectJ hoặc tách class.
+- Circular reference khi self-injection qua constructor: dùng setter/field injection hoặc {{@Lazy}}.
+- {{@Transactional(readOnly = true)}} trên self-invocation: không mở transaction nào (chạy auto-commit), readOnly vô hiệu. SELECT thấy dữ liệu theo isolation level mặc định của DB (thường là READ_COMMITTED), không phải "stale" theo nghĩa repeatable read.
+
+### Ví dụ đời thực
+Team phát hiện đơn hàng bị lưu mà không commit: method {{process()}} gọi {{save()}} trong cùng class, {{save()}} có {{@Transactional}} nhưng không mở transaction. Log không báo lỗi (vì không có exception), nhưng dữ liệu không xuất hiện trong DB. Sửa bằng tách {{OrderRepositoryService}} riêng, inject vào {{OrderService}}. Sau đó thêm test integration kiểm tra {{@Transactional}} thực sự mở transaction bằng {{TransactionSynchronizationManager.isActualTransactionActive()}}.
+
+### Trả lời mẫu khi phỏng vấn
+"Spring AOP dùng proxy chặn lời gọi từ bên ngoài bean. Khi method A gọi method B trong cùng instance ({{this.methodB()}}), lời gọi không đi qua proxy nên {{@Transactional}} trên method B bị bỏ qua, transaction không mở. Tôi giải quyết bằng cách tách method ra class riêng (OrderCreator) và inject — cách này tuân thủ Single Responsibility Principle và dễ test. Các cách khác: self-injection (hack, chỉ dùng hotfix), AspectJ LTW (chặn cả self-invocation nhưng cần config build), hoặc khai báo @Transactional trên interface (chỉ hoạt động với JDK dynamic proxy). Trong production tôi từng gặp lỗi dữ liệu không commit mà không có exception, do dev quên self-invocation. Bây giờ tôi luôn review code tìm {{this.xxx()}} trên method có @Transactional và yêu cầu tách class."
+
+> Senior tip: thêm rule ArchUnit phát hiện self-invocation trên method @Transactional (ví dụ: {{ArchRuleDefinition.methodCalls().whereTargetIsAnnotatedWith(Transactional.class).should().onlyBeCalledFromOutsideTheClass()}}). Cách này bắt lỗi tại compile time thay vì runtime. Lưu ý: rule này sẽ flag cả việc gọi từ method @Transactional khác trong cùng class — cần tinh chỉnh tuỳ project.
+
+`,
+    follow: [
+      'AspectJ LTW khác Spring proxy-based AOP ở điểm nào, và overhead build là bao nhiêu?',
+      'Tại sao @Transactional trên private method không hoạt động với proxy, và AspectJ có giải quyết được không?',
+      '@Transactional trên interface chỉ hoạt động với JDK dynamic proxy — CGLIB thì sao?'
+    ],
+    tags: ['spring', 'transactional', 'aop', 'self-invocation', 'proxy', 'aspectj']
+  }
+  ,
+  {
+    id: 'scenario-189',
+    topic: 'scenario',
+    level: 'senior',
+    q: 'Hệ thống dùng Redis cache cho danh mục sản phẩm. Một key hot (sản phẩm bán chạy) hết TTL đúng giờ cao điểm, hàng nghìn request cùng miss và đánh vào PostgreSQL cùng lúc (cache stampede / thundering herd). DB CPU nhảy 100%, p99 API từ 50ms lên 5s. Bạn giải thích hiện tượng, các kỹ thuật chống stampede: single-flight (request coalescing), probabilistic early expiration (jitter TTL), stale-while-revalidate, mutex distributed lock, và làm sao chọn kỹ thuật phù hợp.',
+    a: `**Tóm tắt:** Cache stampede xảy ra khi key hot hết TTL, hàng nghìn request cùng miss → đồng loạt truy vấn DB, làm DB quá tải. Bản chất là **thiếu cơ chế điều phối**: chỉ một request nên truy xuất dữ liệu gốc, các request khác chờ kết quả. Kỹ thuật: (1) **Single-flight / request coalescing**: trong một JVM, dùng {{ConcurrentHashMap<key, CompletableFuture>}} gom request cùng key. (2) **Jitter TTL**: thêm random ±10-20% vào TTL để key không hết hạn cùng lúc. (3) **Stale-while-revalidate**: trả dữ liệu cũ (stale) ngay, refresh ngầm. (4) **Distributed mutex lock**: Redis {{SET key:lock NX EX 10s}} chỉ cho một instance rebuild cache. (5) **Cache warming**: nạp trước key hot trước giờ cao điểm.
+
+### Single-flight (request coalescing) — hiệu quả nhất cho single-JVM
+~~~java
+public class CacheWithCoalescing {
+    private final ConcurrentHashMap<String, CompletableFuture<Product>> inflight = new ConcurrentHashMap<>();
+    private final RedisTemplate<String, Product> redis;
+    private final ProductRepository repo;
+    private final ExecutorService executor;
+
+    public Product get(String key) {
+        // 1. Thử đọc cache nhanh
+        Product cached = redis.opsForValue().get(key);
+        if (cached != null) return cached;
+
+        // 2. Single-flight: chỉ một thread tạo CompletableFuture, các thread khác chờ
+        CompletableFuture<Product> future = inflight.computeIfAbsent(key, k ->
+            CompletableFuture.supplyAsync(() -> {
+                try {
+                    Product p = repo.findById(k).orElse(null);
+                    if (p != null) redis.opsForValue().set(k, p, ttlWithJitter());
+                    return p;
+                } finally {
+                    inflight.remove(k); // xóa entry sau khi xong (thread-safe nhờ computeIfAbsent semantics)
+                }
+            }, executor)
+        );
+
+        try {
+            return future.get(5, TimeUnit.SECONDS); // timeout tránh chờ vô hạn
+        } catch (Exception e) {
+            inflight.remove(key); // cleanup nếu exception
+            throw new RuntimeException("Cache rebuild failed", e);
+        }
+    }
+}
+~~~
+Giải thích: 10.000 request cùng key chỉ tạo **một** {{CompletableFuture}}; 9.999 request còn lại {{future.get()}} chờ và nhận cùng kết quả. Cần timeout để không bị treo khi DB die. Lưu ý: {{inflight.remove(k)}} trong finally đủ an toàn vì chỉ thread tạo future mới chạy vào finally; các thread chờ không chạy finally.
+
+### Jitter TTL — chống nhiều key hết hạn cùng lúc
+~~~java
+Duration ttlWithJitter() {
+    long baseSeconds = 300;
+    // nextLong(origin, bound): origin inclusive, bound exclusive → dùng (-60, 61) cho [-60, 60]
+    long jitter = ThreadLocalRandom.current().nextLong(-60, 61); // ±20% (đúng ±60s)
+    return Duration.ofSeconds(baseSeconds + jitter);
+}
+~~~
+Không giải quyết miss đầu tiên của key hot, nhưng ngăn chặn **cache avalanche** (nhiều key hết hạn đồng loạt).
+
+### Stale-while-revalidate — chấp nhận dữ liệu cũ vài giây
+~~~java
+public Product getStaleWhileRevalidate(String key) {
+    Product cached = redis.opsForValue().get(key);
+    if (cached != null) {
+        // Trigger refresh ngầm nếu dữ liệu sắp hết hạn (soft TTL)
+        // getExpire: -2 = key không tồn tại, -1 = không set TTL, >0 = TTL còn lại (giây)
+        Long ttl = redis.getExpire(key);
+        if (ttl != null && ttl > 0 && ttl < 60) executor.submit(() -> rebuild(key));
+        return cached;
+    }
+    return rebuild(key); // miss: rebuild ngay
+}
+~~~
+Client luôn nhận dữ liệu ngay (từ cache), DB chỉ nhận **một** request refresh. Cần cơ chế invalidate riêng khi dữ liệu thay đổi thật (pub/sub hoặc TTL ngắn).
+
+### Distributed mutex lock — nhiều instance ứng dụng
+Khi có nhiều pod, single-flight chỉ hoạt động trong một JVM. Cần lock phân tán:
+~~~java
+public Product getWithDistributedLock(String key) {
+    String lockKey = "lock:cache:" + key;
+    String lockValue = UUID.randomUUID().toString();
+    boolean acquired = redis.opsForValue().setIfAbsent(lockKey, lockValue, Duration.ofSeconds(10));
+    if (acquired) {
+        try {
+            return rebuildAndCache(key);
+        } finally {
+            // Chỉ giải phóng lock của mình (Lua script tránh xóa lock của người khác)
+            String script = "if redis.call('get', KEYS[1]) == ARGV[1] then return redis.call('del', KEYS[1]) else return 0 end";
+            redis.execute(script, List.of(lockKey), List.of(lockValue));
+        }
+    } else {
+        // Thử đọc cache lại sau khi chờ lock holder rebuild (waitAndRead cần implement: sleep ngắn + retry get cache)
+        return waitAndRead(key); // placeholder: sleep 50ms -> get cache -> retry vài lần
+    }
+}
+~~~
+
+### Bảng so sánh chọn kỹ thuật
+| Kỹ thuật | Phạm vi hiệu quả | Độ phức tạp | Trade-off |
+|---|---|---|---|
+| Single-flight (in-JVM) | Một JVM, key trùng cao | Thấp | Không giúp đa instance |
+| Jitter TTL | Toàn hệ thống, nhiều key | Rất thấp | Không ngăn stampede key đơn lẻ |
+| Stale-while-revalidate | Đa instance, read-heavy | Trung bình | Trả dữ liệu cũ (eventual consistency) |
+| Distributed mutex | Đa instance, write-heavy | Cao | Overhead Redis, cần xử lý lock expiry |
+| Cache warming | Dự đoán được traffic | Thấp | Cần biết trước key hot |
+
+### Pitfall production
+- Single-flight không có timeout → thread chờ vô hạn khi DB die, cạn thread pool.
+- Mutex lock không có TTL → lock treo vĩnh viễn khi holder crash.
+- Giải phóng mutex lock sai (xóa lock của holder khác) → race condition.
+- Stale-while-revalidate không invalidate khi dữ liệu thay đổi thật → serve stale data quá lâu.
+- Cache warming nạp quá nhiều key → OOM hoặc làm chậm startup.
+
+### Ví dụ đời thực
+Hệ thống bán hàng 6 pod, key {{product:12345}} (iPhone 15) nhận 4.000 req/s. TTL 300s hết lúc 19:00 đúng giờ flash sale. 4.000 req/s cùng miss → PostgreSQL CPU 100%, p99 5s. Khắc phục: (1) Single-flight trong pod giảm request đến DB từ 4.000/s xuống ~1/s **mỗi pod** (tổng ~6 req/s cho 6 pod). (2) Jitter TTL ±60s. (3) Cache warming nạp top 500 key trước 19:00 (TTL đè lên 600s). Kết quả: DB CPU 35%, p99 80ms, 0 lỗi 5xx.
+
+### Trả lời mẫu khi phỏng vấn
+"Cache stampede là khi key hot hết TTL, hàng nghìn request cùng miss và đánh DB cùng lúc. Tôi xử lý theo lớp: single-flight trong JVM dùng {{ConcurrentHashMap<key, CompletableFuture>}} gom request, chỉ một thread query DB, các thread khác chờ {{future.get()}}. Jitter TTL ±20% ngăn nhiều key hết hạn đồng loạt (cache avalanche). Stale-while-revalidate trả dữ liệu cũ ngay, refresh ngầm. Đa instance thì dùng Redis mutex lock {{SET NX EX}} với Lua script giải phóng an toàn, kèm fencing token. Cache warming nạp key hot trước giờ cao điểm. Quan trọng: luôn có timeout cho {{future.get()}} và lock TTL để không treo khi DB die."
+
+> Senior tip: đo QPS của key hot trước mỗi deploy lớn. Một key 4.000 req/s đủ làm sập DB khi cache mất. Single-flight + jitter TTL + stale-while-revalidate là combo "bảo hiểm 3 lớp" rẻ và hiệu quả.
+
+`,
+    follow: [
+      'Single-flight hoạt động thế nào khi có nhiều instance (pod)?',
+      'Làm sao xử lý lock expiry (holder crash giữa chừng) trong distributed mutex?',
+      'Stale-while-revalidate ảnh hưởng gì tới tính đúng đắn của dữ liệu?'
+    ],
+    tags: ['cache', 'thundering-herd', 'redis', 'stampede', 'single-flight', 'mutex']
+  }
+  ,
+{
+    id: 'scenario-190',
+    topic: 'scenario',
+    level: 'lead',
+    q: 'Hệ thống microservices dùng Saga pattern cho quy trình đặt hàng (Order → Payment → Inventory → Shipping). Service Payment thất bại (ví dụ: thẻ hết hạn, gateway timeout) SAU KHI Inventory đã reserve kho thành công. Bạn thiết kế compensation transaction (hoàn kho, huỷ đơn), xử lý partial failure, idempotency, và cách monitor saga state để phát hiện saga bị kẹt (stuck) hoặc compensation thất bại.',
+    a: `**Tóm tắt:** Saga là chuỗi local transaction, mỗi bước có compensation transaction ngược lại. Khi bước sau thất bại, chạy compensation theo thứ tự ngược (reverse order) để rollback trạng thái. Yêu cầu cốt lõi: {{idempotency key}} cho mọi bước, saga state machine persisted (database hoặc event store), timeout/retry cho compensation, và monitoring dashboard theo dõi saga state ({{RUNNING}}, {{COMPENSATING}}, {{COMPLETED}}, {{FAILED}}, {{STUCK}}).
+
+### Saga choreography vs orchestration
+| Kiểu | Mô tả | Ưu | Nhược |
+|---|---|---|---|
+| **Choreography** | Event-driven, service tự phát event, service khác listen | Đơn giản, loose coupling | Khó theo dõi, cyclic dependency risk, debugging khó |
+| **Orchestration** | Saga orchestrator (state machine) điều phối, gọi service qua command | Dễ hiểu flow, tập trung logic compensation, retry/timeout tập trung | Orchestrator trở thành single point of failure (cần HA), coupling logic |
+
+Khuyến nghị: **Orchestration** cho quy trình tiền tệ/hàng hóa phức tạp (đặt hàng, thanh toán, kho, vận đơn).
+
+### Saga state machine (persisted)
+~~~java
+public enum SagaState {
+    STARTED,
+    ORDER_CREATED,
+    PAYMENT_RESERVED,
+    INVENTORY_RESERVED,
+    SHIPPING_QUEUED,
+    COMPLETED,
+    COMPENSATING,
+    COMPENSATED,
+    FAILED,
+    STUCK
+}
+
+@Entity
+public class OrderSaga {
+    @Id String sagaId;           // UUID
+    @Enumerated SagaState state;
+    String orderId;
+    String paymentId;
+    String inventoryReservationId;
+    String shippingId;
+    String compensationStep;     // bước đang compensate (để resume sau crash)
+    int retryCount;
+    Instant createdAt, updatedAt;
+    String payloadJson;          // snapshot dữ liệu cần cho compensation
+}
+~~~
+
+### Compensation transaction thiết kế
+Mỗi bước phải có **compensation idempotent**. Ví dụ flow: Order.create → Payment.reserve → Inventory.reserve → Shipping.queue. Nếu Payment.reserve thất bại SAU khi Inventory.reserve thành công (do Payment service gọi async hoặc bước Payment có 2 phase: reserve + charge), compensation chạy ngược: Inventory.release → Order.cancel.
+~~~java
+// Orchestrator pseudocode
+public void execute(OrderSaga saga) {
+    try {
+        // 1. Create Order
+        saga.setState(ORDER_CREATED);
+        orderId = orderService.create(saga.getPayload());
+        saga.setOrderId(orderId); saga.save();
+
+        // 2. Reserve Payment
+        saga.setState(PAYMENT_RESERVED);
+        paymentId = paymentService.reserve(orderId, amount);
+        saga.setPaymentId(paymentId); saga.save();
+
+        // 3. Reserve Inventory
+        saga.setState(INVENTORY_RESERVED);
+        invId = inventoryService.reserve(orderItems);
+        saga.setInventoryReservationId(invId); saga.save();
+
+        // 4. Queue Shipping
+        saga.setState(SHIPPING_QUEUED);
+        shippingId = shippingService.queue(orderId);
+        saga.setShippingId(shippingId); saga.save();
+
+        saga.setState(COMPLETED);
+    } catch (Exception e) {
+        compensate(saga); // chạy compensation ngược lại
+    }
+}
+
+private void compensate(OrderSaga saga) {
+    saga.setState(COMPENSATING);
+    saga.setCompensationStep(currentStep);
+    saga.save();
+
+    // Reverse order: Shipping → Inventory → Payment → Order
+    // Chỉ compensate các bước đã thành công (id != null)
+    if (saga.getShippingId() != null) {
+        shippingService.cancel(saga.getShippingId()); // idempotent
+        saga.setShippingId(null); saga.save();
+    }
+    if (saga.getInventoryReservationId() != null) {
+        inventoryService.release(saga.getInventoryReservationId()); // idempotent
+        saga.setInventoryReservationId(null); saga.save();
+    }
+    if (saga.getPaymentId() != null) {
+        paymentService.refund(saga.getPaymentId()); // idempotent (nếu đã charge) hoặc void (nếu chỉ reserve)
+        saga.setPaymentId(null); saga.save();
+    }
+    if (saga.getOrderId() != null) {
+        orderService.cancel(saga.getOrderId()); // idempotent
+        saga.setOrderId(null); saga.save();
+    }
+    saga.setState(COMPENSATED);
+}
+~~~
+
+### Idempotency key — bắt buộc cho mọi bước
+- Mọi service command nhận {{idempotencyKey}} (UUID do orchestrator sinh cho mỗi bước).
+- Service lưu {{processed_commands(idempotency_key PK, result_json)}}; trùng key → trả kết quả cũ, không xử lý lại.
+- Compensation cũng cần idempotency key riêng (ví dụ):
+~~~text
+compensate:{sagaId}:inventory
+~~~
+
+### Retry & timeout compensation
+- Compensation thất bại (network, downstream down) → retry với **exponential backoff + jitter**, max 5 lần.
+- Sau max retry vẫn fail → saga state = {{STUCK}}, alert on-call, cần can thiệp thủ công.
+- **Timeout compensation**: mỗi bước compensation có deadline (ví dụ 5 phút), vượt deadline → {{STUCK}}.
+
+### Monitoring & Alerting (quan trọng cho Lead)
+Dashboard saga state:
+- {{STUCK}} > 0: alert ngay (PagerDuty/Slack). Saga bị kẹt có thể gây kho bị khóa, tiền bị giữ.
+- {{COMPENSATING}} > 5 phút: warning, compensation đang chạy lâu.
+- {{RUNNING}} > 30 phút: warning, saga có thể deadlock hoặc downstream chậm.
+- Metrics: {{saga_started_total}}, {{saga_completed_total}}, {{saga_compensated_total}}, {{saga_stuck_total}}, {{saga_duration_seconds}} histogram.
+
+### Pitfall production
+- Không persist saga state trước khi gọi service → crash giữa chừng mất context, không biết đã thực hiện bước nào.
+- Compensation không idempotent → retry gây hoàn tiền 2 lần, hoàn kho 2 lần.
+- Thiếu timeout compensation → saga {{COMPENSATING}} vĩnh viễn, không ai biết.
+- Circular dependency: Order gọi Payment, Payment gọi Order → deadlock. Orchestration tránh được.
+- Eventual consistency: đừng query DB ngay sau command để kiểm tra kết quả; dùng saga state hoặc event.
+
+### Ví dụ đời thực
+Hệ thống điện tử: Order → Payment.reserve → Inventory.reserve → Payment.charge (async, thất bại do thẻ hết hạn). Orchestrator chạy compensation: {{inventory.release()}} → {{order.cancel()}}. Payment.charge chưa thành công nên không có refund; Payment.reserve đã void tự động khi charge fail. Inventory release idempotent nhờ {{idempotencyKey}}. Saga state persisted PostgreSQL. Monitoring phát hiện 3 saga {{STUCK}} do Payment service down 10 phút; on-call restart Payment, saga resume compensation tự động. Không có đơn hàng bị kẹt kho hay tiền bị giữ sai.
+
+### Trả lời mẫu khi phỏng vấn
+"Saga pattern chia quy trình dài thành các local transaction, mỗi bước có compensation ngược lại. Tôi dùng **orchestration** (state machine tập trung) thay choreography để dễ kiểm soát compensation, retry, timeout. Saga state persisted DB với các trạng thái: STARTED, các bước DONE, COMPLETED, COMPENSATING, COMPENSATED, FAILED, STUCK. Mọi bước command và compensation đều bắt buộc {{idempotency key}}. Compensation chạy reverse order, retry exponential backoff, max 5 lần, timeout 5 phút/bước. Monitoring dashboard theo dõi {{STUCK}} và {{COMPENSATING}} > ngưỡng để alert on-call. Khi Payment.charge fail sau Inventory.reserve, orchestrator tự chạy {{inventory.release()}} → {{order.cancel()}}, tất cả idempotent, saga state cập nhật từng bước để có thể resume sau crash."
+
+> Senior tip: saga state machine là **system of record** cho quy trình phân tán. Đừng chỉ log — phải persist state trước và sau mỗi bước. Một saga {{STUCK}} 1 tiếng có thể khóa hàng nghìn sản phẩm trong kho hoặc giữ tiền khách hàng. Alert {{STUCK}} là P1.
+
+`,
+    follow: [
+      'Saga orchestration vs choreography: khi nào chọn cái nào?',
+      'Làm sao resume saga sau khi orchestrator crash giữa chừng compensation?',
+      'Distributed saga với 10+ bước: làm sao tránh compensation chain quá dài?'
+    ],
+    tags: ['saga', 'microservices', 'compensation', 'orchestration', 'idempotency', 'distributed-transaction']
+  }
 );
