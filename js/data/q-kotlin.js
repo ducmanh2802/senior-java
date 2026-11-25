@@ -2127,4 +2127,108 @@ Entity Order data class có id: Long? (null trước persist). Service thêm Ord
   follow: ['Persistable với isNew giải quyết vấn đề gì?', 'equals theo id có vấn đề gì khi id null?', 'Làm sao tránh LazyInitializationException trong toString của entity?'],
   tags: ['data class', 'JPA', 'Hibernate', 'equals', 'hashCode', 'entity']
 }
+,
+{
+  id: 'kotlin-042',
+  topic: 'kotlin',
+  level: 'senior',
+  q: 'Trong production, Java SDK trả về platform type và NPE nổ sâu trong Kotlin sau vài tầng. Bạn thiết kế ranh giới null-safety thế nào để lỗi nổ đúng chỗ và có thể truy vết?',
+  a: `**Tóm tắt:** Platform type {{T!}} không bắt kiểm tra null; để NPE không đi sâu, tôi chuẩn hoá nullability ở biên bằng annotation (JSpecify {{@NullMarked}}) hoặc adapter Kotlin, gán ngay vào biến kiểu tường minh để compiler chèn check tại biên, và viết test contract cho SDK trả null.
+
+### Vì sao NPE đi sâu
+Java method không annotation trả {{String!}}. Nếu tôi viết {{val name = javaObj.getName()}} (suy luận kiểu), biến thành platform type, truyền qua 3 service, NPE nổ ở service thứ 3 với stack trace không chỉ rõ nguồn. Nếu gán {{val name: String = javaObj.getName()}}, compiler chèn {{Intrinsics.checkNotNullExpressionValue}} ngay tại dòng gán → NPE nổ tại biên với tên biểu thức.
+
+### Thiết kế ranh giới
+1. **Annotation phía Java**: thêm {{@NullMarked}} ở package (JSpecify) hoặc {{@Nullable}}/{{@NonNull}} method-level; Kotlin đọc chúng thành {{T?}}/{{T}}. Với SDK bên thứ ba không sửa được, bọc bằng adapter.
+2. **Adapter Kotlin mỏng**: mọi gọi Java đi qua adapter khai báo kiểu rõ ràng; phần còn lại của code chỉ dùng adapter. Ví dụ {{fun JavaClient.fetchUser(id): User?}}.
+3. **Kiểm tra đầu vào**: nếu SDK có thể trả null nhưng contract business yêu cầu non-null, ném {{IllegalArgumentException}} với message chứa id request, không để null đi tiếp.
+4. **Logging**: log context (request id, method) nhưng không log dữ liệu nhạy cảm; dùng MDC để truy vết.
+5. **Test contract**: viết test gọi SDK với input gây null (mock) để xác nhận adapter xử lý đúng; test integration với SDK thật nếu có.
+
+### Bảng trade-off
+| Cách | Ưu | Nhược |
+|---|---|---|
+| Annotation package | rõ ràng, compiler hỗ trợ | cần sửa Java code |
+| Adapter Kotlin | không sửa SDK | thêm tầng, phải maintain |
+| Runtime check | linh hoạt | lỗi runtime, không compile-time |
+
+### Ví dụ đời thực
+Service gọi Java SDK {{LegacyClient.getCustomer(id)}} trả platform type. Trước: NPE nổ trong BillingService sau 2 tầng, mất 2 giờ debug. Sau: adapter {{fun customer(id): Customer?}} gán vào {{Customer?}}, service xử lý null → trả 404 rõ ràng. Test mock SDK trả null → verify 404. Thời gian debug giảm từ giờ xuống phút.
+
+### Trả lời mẫu khi phỏng vấn
+"Platform type không bắt kiểm tra null, nên NPE có thể đi sâu nhiều tầng. Tôi chuẩn hoá nullability ở biên: thêm annotation JSpecify hoặc bọc SDK bằng adapter Kotlin khai báo kiểu rõ ràng, gán ngay vào biến kiểu tường minh để compiler chèn check tại biên. Nếu SDK trả null ngoài contract, ném exception rõ context. Viết test contract cho trường hợp null. Cách này làm NPE nổ đúng chỗ ranh giới, dễ truy vết và không làm code Kotlin bị ô nhiễm bởi null không rõ nguồn."
+
+> Senior tip: đặt rule review rằng platform type không được đi qua nhiều tầng; chuyển thành {{T?}} ở adapter, log context có định danh request nhưng không log dữ liệu nhạy cảm.`,
+  follow: ['JSpecify @NullMarked khác JetBrains annotation thế nào?', 'Làm sao test contract cho SDK trả null?', 'Adapter pattern có overhead gì không?'],
+  tags: ['null safety', 'platform types', 'Java interop', 'adapter', 'JSpecify']
+}
+,
+{
+  id: 'kotlin-043',
+  topic: 'kotlin',
+  level: 'lead',
+  q: 'Trong Spring Boot 3, bạn chọn coroutine Kotlin hay virtual thread Java cho service có nhiều I/O blocking? So sánh khi nào dùng cái nào và chi phí chuyển đổi?',
+  a: `**Tóm tắt:** Cả hai cho "code đồng bộ, chạy đồng thời" nhưng cơ chế khác: coroutine là suspend function với continuation, virtual thread là thread nhẹ của JVM. Với JPA blocking và Spring MVC, virtual thread thường ít thay đổi code hơn; coroutine phù hợp khi đã dùng WebFlux/Flow và cần structured concurrency.
+
+### Cơ chế bên trong
+- **Coroutine**: suspend function không block thread; khi gặp I/O, continuation được lưu, thread trả về pool; resume khi I/O xong. Cần dispatcher và structured concurrency (coroutineScope). Tích hợp Spring WebFlux (reactive) hoặc Spring MVC với suspend controller.
+- **Virtual thread**: mỗi request chạy trên virtual thread; blocking call (JDBC) park virtual thread, carrier thread trả về pool. Code vẫn là blocking đồng bộ, không cần suspend.
+
+### Khi nào chọn
+| Tiêu chí | Coroutine | Virtual thread |
+|---|---|---|
+| Stack hiện có | WebFlux/Flow, reactive | Spring MVC + JDBC blocking |
+| Thay đổi code | nhiều (suspend, Flow) | ít (bật property) |
+| Ecosystem | Kotlin-first | Java/Kotlin đều dùng |
+| Debug/observability | continuation stack trace | thread dump quen thuộc |
+| Structured concurrency | built-in | phải tự quản lý |
+
+### Pitfall production
+- Coroutine + blocking JDBC trên dispatcher mặc định → starvation; phải dùng {{Dispatchers.IO}} hoặc dedicated dispatcher.
+- Virtual thread + ThreadLocal (SecurityContext, MDC) → propagate tự động với Spring 6, nhưng code dùng InheritableThreadLocal custom có thể lỗi.
+- Mixing: không nên half coroutine half virtual thread trong cùng request path.
+
+### Ví dụ đời thực
+Service MVC + JPA, 200 req/s, latency p99 800ms do thread pool 200 saturated. Bật {{spring.threads.virtual.enabled=true}} → thread pool không còn giới hạn, p99 giảm xuống 250ms, code không đổi. Nếu dùng coroutine, phải rewrite controller sang suspend và repository sang reactive (R2DBC) → 3 sprint, rủi ro cao. Chọn virtual thread cho MVC.
+
+### Trả lời mẫu khi phỏng vấn
+"Với Spring Boot 3, tôi chọn theo stack: nếu đã MVC + JPA blocking, virtual thread ít rủi ro và không cần rewrite, chỉ bật property; nếu đã WebFlux/Flow và cần structured concurrency/backpressure, coroutine phù hợp. Không trộn hai cơ chế trong cùng request path. Coroutine với blocking JDBC phải dùng dispatcher dedicated; virtual thread phải kiểm tra ThreadLocal custom. Chi phí chuyển đổi: virtual thread gần như zero, coroutine lớn nếu phải chuyển sang reactive. Tôi đo p99 và throughput trước/sau để quyết định."
+
+> Senior tip: virtual thread không phải silver bullet nếu bottleneck là DB connection pool; đo HikariCP active/idle và pool size trước khi đổi concurrency model.`,
+  follow: ['Virtual thread có thay thế connection pool không?', 'Coroutine structured concurrency giải quyết gì mà virtual thread không?', 'Làm sao migrate từ MVC sang WebFlux?'],
+  tags: ['coroutine', 'virtual thread', 'Spring Boot 3', 'concurrency', 'performance']
+}
+,
+{
+  id: 'kotlin-044',
+  topic: 'kotlin',
+  level: 'senior',
+  q: 'Bạn dùng data class làm JPA entity. Cạm bẫy equals/hashCode, no-arg constructor và open class với plugin kotlin-spring/kotlin-jpa là gì, và bạn thiết kế thế nào?',
+  a: `**Tóm tắt:** Data class làm entity gây identity không ổn định (hashCode đổi sau persist), equals có thể kích hoạt lazy loading, và class final làm Hibernate proxy không tạo được. Plugin kotlin-jpa sinh no-arg constructor, kotlin-spring mở class; nhưng vẫn nên thiết kế identity theo business key và tránh collection lazy trong equals/toString.
+
+### Cơ chế từng cạm bẫy
+1. **equals/hashCode theo mọi thuộc tính**: data class sinh equals/hashCode trên primary constructor. id null trước persist → hashCode thay đổi sau save → object trong HashSet không còn tìm thấy.
+2. **Lazy loading trong equals**: nếu equals so sánh collection lazy, gọi equals → query DB ngoài transaction → LazyInitializationException.
+3. **Class final**: Kotlin class mặc định final; Hibernate cần subclass proxy → plugin kotlin-spring/all-open mở class có @Entity. Nếu thiếu plugin, runtime lỗi "could not initialize proxy".
+4. **No-arg constructor**: JPA yêu cầu constructor không tham số; kotlin-jpa plugin sinh. Constructor public có thể bypass validation; nên private/protected.
+5. **copy()**: tạo object mới không managed → mất dirty checking; không dùng copy cho entity.
+
+### Thiết kế an toàn
+- Identity theo business key bất biến (mã đơn hàng, email); equals/hashCode chỉ trên business key.
+- Nếu không có business key: equals trả false trừ khi cùng instance khi id null; dùng Persistable với isNew.
+- Không đưa collection lazy vào equals/hashCode/toString.
+- Dùng plugin kotlin-jpa + kotlin-spring; kiểm tra bytecode class có open.
+- Constructor no-arg private; factory method hoặc builder cho tạo mới.
+- Không dùng copy cho entity; dùng mutable property có kiểm soát.
+
+### Ví dụ đời thực
+Entity Order data class có id: Long? null trước persist. Service thêm vào HashSet kiểm tra trùng. Sau save, id được gán → hashCode đổi → contains false → trùng đơn được thêm lần nữa. Sửa: equals/hashCode theo mã đơn hàng, toString chỉ in mã. Test: thêm vào HashSet, persist, flush, kiểm tra contains vẫn true.
+
+### Trả lời mẫu khi phỏng vấn
+"Data class làm entity có ba cạm bẫy chính: equals/hashCode theo mọi thuộc tính làm identity thay đổi sau persist và phá Set; equals có thể kích hoạt lazy loading; class final ngăn Hibernate proxy. Plugin kotlin-jpa sinh no-arg constructor, kotlin-spring mở class, nhưng không giải quyết identity. Tôi thiết kế identity theo business key bất biến, equals/hashCode chỉ trên business key, không đưa collection lazy, constructor no-arg private, không dùng copy. Nếu không có business key, equals trả false trừ khi cùng instance khi id null và dùng Persistable với isNew."
+
+> Senior tip: test invariant identity bằng cách thêm entity vào HashSet, persist, flush, rồi kiểm tra contains; nếu fail, identity đang phụ thuộc mutable state.`,
+  follow: ['Persistable với isNew giải quyết vấn đề gì?', 'Làm sao verify plugin mở class đúng?', 'copy() trên entity có rủi ro gì?'],
+  tags: ['data class', 'JPA', 'Hibernate', 'kotlin-jpa', 'kotlin-spring', 'entity']
+}
 );
