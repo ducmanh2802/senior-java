@@ -3810,4 +3810,287 @@ Thuật ngữ:
 - **Tăng tốc ghi**: không phải chính.
 - **Đơn giản schema**: không chính.
 
-> Senior tip: Dùng event sourcing pattern; snapshot định kỳ để query nhanh.` });
+> Senior tip: Dùng event sourcing pattern; snapshot định kỳ để query nhanh.` },
+  // ===================== scenario (new round) =====================
+  {
+    id: 'qz-scenario-031',
+    topic: 'scenario',
+    q: 'Service dùng Spring Boot 3.2+ với virtual thread ({{spring.threads.virtual.enabled=true}}). Dưới tải cao, request bị treo, CPU thấp, thread dump cho thấy hàng trăm virtual thread ở trạng thái RUNNABLE nhưng carrier thread (ForkJoinPool) đều bận trong lời gọi HTTP blocking tới đối tác bên trong khối {{synchronized}}. Bước xử lý đúng đầu tiên?',
+    options: [
+      'Tăng -Xmx để giảm GC pressure',
+      'Thay {{synchronized}} bằng {{ReentrantLock}} quanh I/O, giới hạn concurrency bằng Semaphore, dùng JFR event {{jdk.VirtualThreadPinned}} để xác nhận pinning',
+      'Tắt virtual thread, quay lại platform thread',
+      'Tăng số carrier thread bằng {{-Djdk.virtualThreadScheduler.parallelism}}'
+    ],
+    answer: 1,
+    explain: `**Đáp án đúng: Thay synchronized bằng ReentrantLock quanh I/O, giới hạn concurrency bằng Semaphore, dùng JFR event jdk.VirtualThreadPinned để xác nhận pinning.**
+
+### Vì sao đúng
+- Trên Java 21–23, virtual thread block khi đang giữ monitor ({{synchronized}}) sẽ **ghim (pin)** carrier thread. Carrier thread mặc định bằng số core CPU. Vài chục lời gọi HTTP chậm trong synchronized là chiếm hết carrier → hàng nghìn virtual thread khác không được schedule → service treo mà CPU thấp.
+- {{ReentrantLock}} cho phép virtual thread unmount khi chờ lock, không pin carrier. Giới hạn concurrency tới đối tác ({{Semaphore}}) tránh dồn tải khiến đối tác cũng sập.
+- JFR event {{jdk.VirtualThreadPinned}} ghi lại stack trace tại điểm pin, giúp tìm chính xác khối synchronized gây vấn đề.
+- JDK 24 (JEP 491) đã cho phép unmount trong synchronized, nhưng hiện tại production nhiều nơi vẫn dùng Java 21 LTS.
+
+### Vì sao các phương án khác sai
+- **Tăng -Xmx**: không liên quan, vấn đề là scheduling chứ không phải heap.
+- **Tắt virtual thread**: lãng phí throughput cao của virtual thread; chỉ cần sửa pinning là chạy tốt.
+- **Tăng carrier thread**: chỉ trì hoãn vấn đề; pinning vẫn xảy ra và carrier thread tiêu tốn memory/stack.
+
+> Senior tip: virtual thread làm mất "giới hạn tự nhiên" của thread pool cũ. Luôn đặt giới hạn rõ ràng cho tài nguyên phía sau: connection pool DB, Semaphore cho đối tác; nếu không, 10.000 request đồng thời sẽ dồn hết vào hệ thống phía sau.`
+  },
+  {
+    id: 'qz-scenario-032',
+    topic: 'scenario',
+    multi: true,
+    q: 'Dưới tải cao, PostgreSQL báo lỗi {{deadlock detected}} liên tục trên bảng {{orders}} khi cập nhật trạng thái đơn hàng. Hai session cùng cập nhật {{order_items}} và {{orders}} nhưng theo thứ tự ngược nhau. Chọn 2 biện pháp đúng để khắc phục (Chọn 2).',
+    options: [
+      'Đảm bảo mọi transaction cập nhật các bảng theo **cùng một thứ tự cố định** (ví dụ: orders trước, order_items sau) ở mọi nơi trong codebase',
+      'Tăng {{deadlock_timeout}} lên 10 giây để transaction có thời gian retry tự động',
+      'Dùng {{SELECT ... FOR UPDATE NOWAIT}} trên bảng cha (orders) ở đầu transaction để lấy lock theo thứ tự nhất quán trước khi chạm bảng con',
+      'Bỏ qua lỗi deadlock và cho application retry vô hạn',
+      'Chuyển isolation level sang READ UNCOMMITTED'
+    ],
+    answer: [0, 2],
+    explain: `**Đáp án đúng: Đảm bảo thứ tự cập nhật bảng cố định · Dùng SELECT FOR UPDATE NOWAIT trên bảng cha để lấy lock trước.**
+
+### Vì sao đúng
+- Deadlock kinh điển xảy ra khi session A lock orders rồi muốn lock order_items, session B lock order_items rồi muốn lock orders. **Quy tắc vàng**: mọi transaction phải lock tài nguyên theo **cùng một thứ tự toàn cục** (thường là theo thứ tự phân cấp: bảng cha trước, bảng con sau).
+- {{SELECT ... FOR UPDATE NOWAIT}} ở đầu transaction trên bảng cha ({{orders}}) lấy lock hàng mục tiêu ngay lập tức; nếu không lấy được thì fail ngay (không chờ), tránh tình trạng "nắm một tay, chờ tay kia". Kết hợp với thứ tự cố định loại bỏ deadlock triệt để.
+
+### Vì sao các phương án khác sai
+- **Tăng deadlock_timeout**: chỉ làm transaction chờ lâu hơn trước khi bị chọn làm victim; không giải quyết vòng tròn lock.
+- **Retry vô hạn**: application có thể retry mãi không xong nếu deadlock liên tục; cần sửa nguyên nhân là thứ tự lock.
+- **READ UNCOMMITTED**: PostgreSQL không hỗ trợ isolation level này (chỉ có READ COMMITTED, REPEATABLE READ, SERIALIZABLE); và đọc dirty không giải quyết write-write conflict.
+
+> Senior tip: đặt convention "luôn lock bảng cha trước" vào coding standard và review. Có thể viết test tích hợp mô phỏng 2 session cập nhật ngược thứ tự để verify fix.`
+  },
+  {
+    id: 'qz-scenario-033',
+    topic: 'scenario',
+    q: 'Service Java 21 dùng G1GC. p99 latency bình thường ~50 ms nhưng **mỗi 5–10 phút có đợt spike lên 3–5 giây**, cùng lúc GC log cho thấy Full GC (hoặc G1 long pause) kéo dài 2–4 giây. Heap usage sau GC vẫn cao (~80% heap). Metric {{jvm.gc.pause}} p99 tăng mạnh. Nguyên nhân khả dĩ nhất?',
+    options: [
+      'Heap quá nhỏ, cần tăng -Xmx',
+      'Allocation rate cao gây young GC quá nhiều, object promote sớm sang old gen, old gen đầy và trigger Full GC; cần tuning G1 ({{-XX:G1HeapRegionSize}}, {{-XX:InitiatingHeapOccupancyPercent}}, {{-XX:MaxGCPauseMillis}}) hoặc chuyển ZGC',
+      'Database chậm làm request chờ',
+      'Memory leak, object không bị thu hồi'
+    ],
+    answer: 1,
+    explain: `**Đáp án đúng: Allocation rate cao gây promote sớm, old gen đầy, trigger Full GC; cần tuning G1 hoặc chuyển ZGC.**
+
+### Vì sao đúng
+- G1GC chia heap thành các region. Nếu **allocation rate** (tốc độ cấp phát object) cao, young generation đầy nhanh, object bị promote sang old gen sớm trước khi chết (premature promotion). Old gen dần đầy → G1 trigger **mixed GC** rồi **Full GC** (stop-the-world) để dọn old gen. Full GC G1 là single-threaded, chậm, gây spike latency lớn.
+- Heap sau GC vẫn ~80% là dấu hiệu **old gen chứa nhiều object sống lâu** (caching, session, lazy-loaded data) chứ không phải leak đơn thuần. Leak thì heap tăng đơn điệu không bao giờ giảm sau Full GC.
+- Giải pháp: giảm allocation rate (object pooling, tránh tạo object rác trong hot path), tuning G1: tăng {{-XX:G1HeapRegionSize}} (1–32 MB), hạ {{-XX:InitiatingHeapOccupancyPercent}} (mặc định 45%) để mixed GC sớm hơn, đặt {{-XX:MaxGCPauseMillis}} thực tế (100–200 ms). Hoặc chuyển **ZGC** (JDK 21+) cho pause < 1 ms ở heap lớn, trade-off là CPU overhead cao hơn một chút.
+
+### Vì sao các phương án khác sai
+- **Heap quá nhỏ**: nếu heap nhỏ thì OOM sớm, không phải spike định kỳ.
+- **Database chậm**: sẽ thấy DB wait time trong trace, không trùng với GC pause.
+- **Memory leak**: heap sau Full GC sẽ không giảm; ở đây heap giảm sau Full GC (từ ~95% xuống ~80%) nên là promotion pressure.
+
+> Senior tip: bật {{-Xlog:gc*}} hoặc JFR recording để xem allocation rate (MB/s). Allocation rate > 500 MB/s thường cần tuning. Đừng chỉ nhìn heap usage % — hãy nhìn **old gen occupancy trend** và **GC pause distribution**.`
+  },
+  {
+    id: 'qz-scenario-034',
+    topic: 'scenario',
+    q: 'Sau khi bật Spring Boot DevTools hoặc dùng library sinh class động (CGLIB, ByteBuddy, Groovy), Metaspace usage tăng không ngừng và cuối cùng ném {{OutOfMemoryError: Metaspace}}. Heap vẫn bình thường. Nguyên nhân gốc và cách xử lý?',
+    options: [
+      'Tăng {{-XX:MaxMetaspaceSize}} lên 1 GB là đủ',
+      'Classloader leak: classloader cũ không bị GC vì vẫn bị reference (static field, ThreadLocal, driver JDBC đăng ký không huỷ). Cần tìm classloader bị leak bằng heap dump + MAT dominator tree theo classloader, fix reference hoặc đăng ký shutdown hook huỷ driver',
+      'Chuyển sang Java 8 để tránh Metaspace',
+      'Tắt class loading động'
+    ],
+    answer: 1,
+    explain: `**Đáp án đúng: Classloader leak — classloader cũ không bị GC vì vẫn bị reference (static field, ThreadLocal, driver JDBC). Cần tìm bằng heap dump + MAT dominator tree theo classloader.**
+
+### Vì sao đúng
+- Metaspace lưu **metadata class** (Klass, method, annotation). Classloader nạp class, và classloader chỉ bị GC khi **không còn object nào reference tới classloader hoặc class của nó**.
+- Nguyên nhân phổ biến:
+  1. **JDBC driver**: {{DriverManager.registerDriver()}} giữ reference static tới driver class → classloader không bao giờ GC. Fix: {{DriverManager.deregisterDriver()}} trong shutdown hook.
+2. **ThreadLocal** giữ object của classloader (Spring {{RequestContextHolder}}, {{LocaleContextHolder}}). Fix: dùng {{ThreadLocal}} của thư viện có {{remove()}} hoặc **dọn dẹp thủ công**.
+   3. **Cache/static field** giữ reference tới class (ví dụ {{Map<Class, ...>}}).
+  4. **JSP/Thymeleaf template compile** mỗi request tạo class mới.
+- Chẩn đoán: heap dump {{jmap -dump}}, mở Eclipse MAT, nhóm object theo **classloader** ({{Group By Classloader}}). Classloader nào retain nhiều object nhất là culprit.
+
+### Vì sao các phương án khác sai
+- **Tăng MaxMetaspaceSize**: chỉ trì hoãn OOM, không sửa leak; Metaspace không giới hạn mặc định sẽ ăn hết native memory.
+- **Chuyển Java 8**: Java 8 dùng PermGen (cũng bị OOM), không giải quyết leak.
+- **Tắt class loading động**: DevTools, Spring AOP (CGLIB), Hibernate proxy **cần** class loading động; không thể tắt hoàn toàn.
+
+> Senior tip: production **không bao giờ bật DevTools**. Metaspace OOM thường xảy ra sau nhiều lần redeploy (hot reload) trong dev/staging; production dùng immutable image. Luôn có shutdown hook deregister JDBC driver.`
+  },
+  {
+    id: 'qz-scenario-035',
+    topic: 'scenario',
+    multi: true,
+    q: 'Consumer Kafka (Spring Kafka) xử lý message mất trung bình 2 giây. Cấu hình {{max.poll.interval.ms=300000}} (5 phút), {{max.poll.records=500}}. Sau deploy, consumer group liên tục rebalance, log lặp lại {{Member ... failed to join group: The member ... failed to re-join within the session timeout}}. Chọn 2 nguyên nhân/biện pháp đúng (Chọn 2).',
+    options: [
+      'Xử lý message quá lâu (gần max.poll.interval.ms) khiến coordinator coi consumer chết và trigger rebalance; cần giảm max.poll.records hoặc tăng max.poll.interval.ms',
+      'Heartbeat thread bị block do processing trong listener cùng thread, không gửi heartbeat kịp; cần tách processing ra thread pool riêng hoặc dùng @KafkaListener(containerFactory) với concurrency',
+      'Broker quá tải, cần restart broker',
+      'Topic partition quá ít, cần tăng partition',
+      'Network partition giữa consumer và broker'
+    ],
+    answer: [0, 1],
+    explain: `**Đáp án đúng: Xử lý message gần max.poll.interval.ms gây rebalance · Heartbeat thread bị block bởi processing.**
+
+### Vì sao đúng
+- Kafka consumer có 2 timeout quan trọng:
+  1. **session.timeout.ms** (mặc định 45s): thời gian consumer phải gửi heartbeat. Heartbeat chạy trên **thread riêng** (heartbeat thread).
+  2. **max.poll.interval.ms** (mặc định 5 phút): thời gian tối đa giữa 2 lần {{poll()}}. Nếu xử lý batch 500 record mất > 5 phút, consumer bị coi là stuck và kick khỏi group.
+- Với {{max.poll.records=500}} và xử lý 2 giây/record → batch mất ~1000 giây (16 phút) **vượt xa max.poll.interval.ms** → coordinator kick consumer → rebalance liên tục.
+- Ngoài ra, Spring Kafka listener mặc định xử lý trên **cùng thread** với poll loop. Nếu processing block thread này, **heartbeat thread** (riêng) vẫn chạy nhưng **poll loop không gọi poll() kịp** → vi phạm max.poll.interval.ms. Cách fix: giảm {{max.poll.records}} (ví dụ 50–100), **tăng {{max.poll.interval.ms}}** (ví dụ 10–15 phút), **tách processing ra thread pool** ({{@KafkaListener}} + {{containerFactory}} set {{concurrency}} hoặc custom {{Executor}}) để poll loop nhẹ nhàng.
+
+### Vì sao các phương án khác sai
+- **Restart broker**: không giải quyết consumer config sai.
+- **Tăng partition**: không giảm thời gian xử lý mỗi record; vẫn vi phạm max.poll.interval.ms.
+- **Network partition**: sẽ gây mất kết nối, không phải rebalance lặp có pattern cố định sau deploy.
+
+> Senior tip: đặt alert {{consumer-lag}} và {{rebalance-rate}}. Rebalance > 1 lần/phút là bất thường. Luôn test consumer với tải thực tế trước khi deploy.`
+  },
+  {
+    id: 'qz-scenario-036',
+    topic: 'scenario',
+    q: 'Service reactive (Spring WebFlux + R2DBC) chạy ổn định vài tuần thì bất ngờ báo lỗi {{HikariPool-1 - Connection is not available, request timed out after 30000ms}}. Code dùng {{Mono.fromCallable(() -> blockingJdbcCall())}} và {{.subscribeOn(Schedulers.boundedElastic())}}. Nguyên nhân khả dĩ?',
+    options: [
+      'R2DBC driver bị leak connection',
+      'Blocking JDBC call trong boundedElastic vẫn lấy connection từ HikariCP (pool chung với code blocking cũ), nhưng boundedElastic unbounded queue làm hàng nghìn task chờ connection → pool cạn; cần tách pool riêng cho blocking code hoặc chuyển hoàn toàn sang R2DBC non-blocking',
+      'Database quá tải',
+      'Cần tăng maximum-pool-size của HikariCP'
+    ],
+    answer: 1,
+    explain: `**Đáp án đúng: Blocking JDBC call trong boundedElastic dùng chung HikariCP với code blocking cũ; boundedElastic unbounded queue làm task dồn lên, cạn connection pool.**
+
+### Vì sao đúng
+- {{Schedulers.boundedElastic()}} là thread pool **unbounded queue** (có thể xếp hàng không giới hạn task). Khi traffic tăng, hàng nghìn task {{Mono.fromCallable}} được ném vào queue, mỗi task khi chạy lấy connection từ **chung HikariCP**.
+- HikariCP có {{maximumPoolSize}} cố định (ví dụ 20). 10.000 task chờ → 20 connection bị giữ bởi 20 task đang chạy, 9.980 task chờ connection → timeout 30s → lỗi.
+- Code reactive nên dùng **R2DBC non-blocking** (không dùng thread pool blocking, không dùng connection pool truyền thống). Nếu bắt buộc dùng JDBC blocking (thư viện cũ), phải **tách HikariCP riêng** cho blocking code, đặt queue giới hạn ({{Schedulers.newBoundedElastic(queueCapacity)}}), và áp dụng **backpressure** ở tầng trên.
+
+### Vì sao các phương án khác sai
+- **R2DBC driver leak**: R2DBC không dùng HikariCP; lỗi nói rõ HikariPool.
+- **Database quá tải**: sẽ thấy DB CPU cao, slow query; ở đây lỗi là client-side pool timeout.
+- **Tăng maximumPoolSize**: chỉ trì hoãn vấn đề; unbounded queue vẫn dồn task, pool lớn hơn làm DB quá tải hơn.
+
+> Senior tip: reactive + blocking JDBC là anti-pattern. Nếu chưa chuyển hết sang R2DBC, hãy cô lập blocking code: pool riêng, bounded queue, circuit breaker. Đừng để unbounded queue "ăn" connection pool chung.`
+  },
+  {
+    id: 'qz-scenario-037',
+    topic: 'scenario',
+    q: 'Cache-aside pattern: đọc cache miss → query DB → set cache. Dưới tải cao, cùng một key bị miss đồng thời bởi 100 request, tất cả query DB và set cache → **cache stampede**. Code đã có lock Redis {{SET key:lock NX EX 10}} nhưng vẫn thấy stampede. Lỗi thường gặp?',
+    options: [
+      'Lock key trùng với data key, bị overwrite khi set cache',
+      'Lock được lấy nhưng **exception trong query DB không release lock** (thiếu try-finally hoặc Lua script), các request sau wait hết 10s rồi tự query DB → stampede',
+      'Redis single-threaded nên không hỗ trợ lock',
+      'TTL 10 giây quá ngắn'
+    ],
+    answer: 1,
+    explain: `**Đáp án đúng: Exception trong query DB không release lock (thiếu try-finally hoặc Lua script), request sau wait hết TTL rồi tự query DB → stampede.**
+
+### Vì sao đúng
+- Pattern đúng:
+~~~java
+lock = SET lockKey NX EX 10;
+if (lock) {
+    try {
+        data = queryDB();
+        setCache(data);
+    } finally {
+        DEL lockKey;
+    }
+} else {
+    waitAndReadCache();
+}
+~~~
+- Lỗi hay gặp:
+  1. **Quên finally**: exception ném ra giữa chừng → lock không bị xóa → các request khác {{GET lockKey}} thấy tồn tại, sleep wait, hết 10s lock tự expire → tất cả cùng query DB.
+  2. **Dùng 2 lệnh riêng (SET + DEL)**: không atomic; crash giữa 2 lệnh cũng để lock treo.
+  3. **Lock key trùng data key**: {{SET dataKey NX}} thì set cache sẽ ghi đè lock → race condition.
+- Giải pháp chắc chắn: dùng **Lua script** (atomic) hoặc **Redisson** (có tryLock/unlock tự động, watchdog gia hạn TTL). Lua script gộp {{check lock → query DB (không thể ở trong Lua) → set cache → release}} không được vì Lua không gọi được DB. Thay vào đó: lock bằng Lua/Redisson, **finally block bắt buộc** ở Java.
+
+### Vì sao các phương án khác sai
+- **Lock key trùng data key**: là bug khác, nhưng không phải nguyên nhân "vẫn stampede khi đã có lock".
+- **Redis single-threaded**: Redis hỗ trợ lock tốt (SET NX, Redisson).
+- **TTL 10 giây**: đủ dài cho query DB bình thường; ngắn hơn query time mới gây vấn đề.
+
+> Senior tip: luôn test case "query DB ném exception" để verify lock vẫn được release. Dùng Redisson {{RLock.tryLock()}} + {{unlock()}} trong finally, hoặc Redisson {{RLock}} với watchdog tự gia hạn.`
+  },
+  {
+    id: 'qz-scenario-038',
+    topic: 'scenario',
+    multi: true,
+    q: 'Service A gọi Service B qua Resilience4j CircuitBreaker. Cấu hình: {{slidingWindowSize=10}}, {{failureRateThreshold=50%}}, {{waitDurationInOpenState=30s}}. Service B chậm (latency p99 5 giây) nhưng **không fail** (trả 200). CircuitBreaker **không mở** (closed), Service A tiếp tục gọi, thread pool A cạn kệ vì chờ B. Chọn 2 cấu hình/biện pháp đúng (Chọn 2).',
+    options: [
+      'Bật **slow call rate** detection: {{slowCallRateThreshold=50%}}, {{slowCallDurationThreshold=2s}} để mở circuit khi latency cao',
+      'Thêm **TimeLimiter** ({{TimeLimiterConfig}}) timeout 2 giây, biến slow call thành exception → tính vào failure rate',
+      'Tăng failureRateThreshold lên 90% để circuit khó mở hơn',
+      'Giảm slidingWindowSize xuống 5 để circuit nhạy hơn',
+      'Tắt CircuitBreaker, chỉ dùng Retry'
+    ],
+    answer: [0, 1],
+    explain: `**Đáp án đúng: Bật slow call rate detection · Thêm TimeLimiter timeout biến slow call thành exception.**
+
+### Vì sao đúng
+- CircuitBreaker mặc định chỉ đếm **failure** (exception, 5xx). **Slow call (latency cao nhưng trả 200) không tính failure** → circuit không bao giờ mở → thread pool bị chiếm bởi request chờ.
+- **Slow call rate** (Resilience4j 2.x): cấu hình {{slowCallDurationThreshold}} (ví dụ 2s) và {{slowCallRateThreshold}} (ví dụ 50%). Nếu > 50% call chậm hơn 2s trong cửa sổ trượt → circuit mở.
+- **TimeLimiter**: bọc call bằng timeout (ví dụ 2s). Timeout ném {{TimeoutException}} → tính là **failure** → failure rate tăng → circuit mở. Kết hợp hai cơ chế: slow call rate mở sớm, TimeLimiter đảm bảo không chờ vô hạn.
+
+### Vì sao các phương án khác sai
+- **Tăng failureRateThreshold lên 90%**: làm circuit **khó mở hơn**, ngược với mục tiêu.
+- **Giảm slidingWindowSize xuống 5**: cửa sổ nhỏ hơn làm metric nhạy hơn nhưng không giải quyết bản chất: slow call không được tính.
+- **Tắt CircuitBreaker**: mất bảo vệ hoàn toàn; thread pool A sẽ cạn ngay.
+
+> Senior tip: luôn pair CircuitBreaker + TimeLimiter + Bulkhead. Bulkhead giới hạn số call đồng thời tới B (ví dụ 20), khi đầy reject ngay (fail fast) thay vì chờ.`
+  },
+  {
+    id: 'qz-scenario-039',
+    topic: 'scenario',
+    q: 'Servlet service (Spring MVC, Tomcat) upload file lớn lên S3. Dưới tải cao, request upload chậm (S3 latency 5–10 giây), **Tomcat thread pool (max 200) cạn kệ**, health check fail, pod bị restart. Code dùng {{AmazonS3Client.putObject}} blocking. Cách xử lý đúng?',
+    options: [
+      'Tăng Tomcat maxThreads lên 1000',
+      'Chuyển sang **Spring WebFlux + S3 Async Client (non-blocking)** hoặc tách upload vào service riêng dùng **virtual thread**/boundedElastic, trả presigned URL cho client upload thẳng S3',
+      'Tăng S3 timeout',
+      'Giảm file size limit'
+    ],
+    answer: 1,
+    explain: `**Đáp án đúng: Chuyển sang WebFlux + S3 Async Client hoặc tách upload service dùng virtual thread, tốt nhất là trả presigned URL cho client upload thẳng S3.**
+
+### Vì sao đúng
+- Tomcat thread pool (mặc định 200) dành cho **request xử lý nhanh**. Blocking I/O 5–10 giây/upload chiếm thread lâu → 200 upload đồng thời là cạn pool → mọi request khác (health check, API khác) đều queue → timeout → pod unhealthy.
+- **Giải pháp tốt nhất**: **Presigned URL**. Server sinh URL có hạn (5–15 phút), client upload thẳng S3. Server chỉ lo metadata, không stream byte qua JVM. Tiết kiệm bandwidth, CPU, thread, memory.
+- Nếu phải upload qua server: dùng **S3 Async Client** ({{S3AsyncClient.putObject}} trả {{CompletableFuture}}) kết hợp **Spring WebFlux** (non-blocking I/O, event loop Netty) hoặc **virtual thread** (Java 21+, {{Executors.newVirtualThreadPerTaskExecutor()}}) để blocking I/O không pin platform thread.
+- Tách service upload riêng cũng được, nhưng vẫn cần async/virtual thread cho service đó.
+
+### Vì sao các phương án khác sai
+- **Tăng Tomcat maxThreads 1000**: mỗi thread ~1 MB stack + kernel overhead; 1000 thread = ~1 GB RAM, GC pressure cao, context switch chậm; không scale.
+- **Tăng S3 timeout**: không giảm thời gian chiếm thread.
+- **Giảm file size**: không giải quyết bản chất blocking I/O.
+
+> Senior tip: presigned URL là pattern chuẩn cho upload/download lớn. Nếu cần xử lý file sau upload: S3 Event Notification → SQS → worker xử lý (async, decoupled).`
+  },
+  {
+    id: 'qz-scenario-040',
+    topic: 'scenario',
+    q: 'Chạy migration Flyway/Liquibase song song trên 3 pod Kubernetes ({{initContainer}}). Pod 1 chạy migration thành công, pod 2 và 3 báo lỗi {{Lock wait timeout exceeded; try restarting transaction}} trên bảng {{flyway_schema_history}} / {{databasechangeloglock}}. Nguyên nhân và cách xử lý?',
+    options: [
+      'Database khóa bảng history, cần restart DB',
+      'Flyway/Liquibase dùng advisory lock (hoặc row lock) trên bảng metadata để đảm bảo chỉ 1 instance migrate một lúc. Pod 1 đang giữ lock, pod 2/3 wait timeout. Cách xử lý: cấu hình {{lockTimeout}} lớn hơn thời gian migration, hoặc chỉ cho 1 pod chạy migration (Kubernetes Job + {{completions=1}}), các pod khác đợi Job hoàn tất',
+      'Chạy migration thủ công trên 1 pod, các pod khác bỏ qua',
+      'Tắt lock trong Flyway/Liquibase'
+    ],
+    answer: 1,
+    explain: `**Đáp án đúng: Flyway/Liquibase dùng advisory lock/row lock trên bảng metadata; pod 1 giữ lock, pod 2/3 wait timeout. Chạy migration bằng Kubernetes Job (completions=1) thay vì initContainer trên mọi pod.**
+
+### Vì sao đúng
+- Flyway/Liquibase **tự động locking** để tránh 2 tiến trình migrate cùng lúc làm hỏng schema. Lock mechanism:
+  - Flyway: {{SELECT ... FOR UPDATE}} trên {{flyway_schema_history}} hoặc advisory lock ({{pg_advisory_lock}}).
+  - Liquibase: row lock trên {{databasechangeloglock}} ({{locked=1}}).
+- Với {{initContainer}} trên Deployment 3 replica: 3 pod start cùng lúc → 3 initContainer cùng chạy migrate → 2 pod bị block chờ lock → timeout (mặc địnhFlyway {{lockTimeout=0}} = không timeout, nhưng DB hoặc driver có {{lock_wait_timeout}}).
+- **Kiến trúc đúng**: tách migration ra **Kubernetes Job** ({{completions=1}}, {{parallelism=1}}). Deployment pod thêm {{initContainer}} chỉ **wait** Job hoàn tất (poll {{kubectl wait --for=condition=complete job/migrate}} hoặc dùng sidecar). Chỉ 1 lần migrate cho toàn cụm.
+
+### Vì sao các phương án khác sai
+- **Restart DB**: không giải quyết race condition migrate.
+- **Chạy thủ công**: không tự động, dễ quên, không phù hợp CI/CD.
+- **Tắt lock**: cực kỳ nguy hiểm, 2 migrate cùng lúc có thể corrupt schema history.
+
+> Senior tip: Flyway {{lockTimeout}} (ms) có thể đặt lớn (ví dụ 1800000 = 30 phút) để wait thay vì fail, nhưng Job pattern vẫn tốt hơn vì tách biệt vòng đời migrate và vòng đời app.`
+  }
+);
