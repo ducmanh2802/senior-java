@@ -3175,6 +3175,8 @@ window.DATA_INDEX = {
     {"id":"lesson-banking-016","track":"banking","order":16,"title":"Doi soat nang cao: khop 1-1 chinh xac, sai so cho phep, khop 1-nhieu, va bao cao mat mot ben","level":"senior","minutes":40},
     {"id":"lesson-banking-017","track":"banking","order":17,"title":"Sổ cái double-entry: ghi bút toán Nợ/Có, kiểm tra cân bằng và cấm số dư âm","level":"senior","minutes":30},
     {"id":"lesson-banking-018","track":"banking","order":18,"title":"Đối soát: so khớp hai danh sách giao dịch theo mã tham chiếu","level":"senior","minutes":30},
+    {"id":"lesson-banking-019","track":"banking","order":19,"title":"Sổ cái kép nâng cao: kiểm tra cân bằng, idempotency key và khôi phục audit","level":"senior","minutes":30},
+    {"id":"lesson-banking-020","track":"banking","order":20,"title":"Đối soát nâng cao: partial match, tolerance và aging unmatched","level":"senior","minutes":30},
     {"id":"lesson-autotest-001","track":"autotest","order":1,"title":"Automation test là gì, kim tự tháp test và kỹ thuật thiết kế ca kiểm thử","level":"mid","minutes":30},
     {"id":"lesson-autotest-002","track":"autotest","order":2,"title":"Locator: id, CSS, XPath, data-testid — và vì sao locator vỡ","level":"mid","minutes":30},
     {"id":"lesson-autotest-003","track":"autotest","order":3,"title":"Wait: implicit, explicit, fluent và auto-wait của Playwright","level":"mid","minutes":35},

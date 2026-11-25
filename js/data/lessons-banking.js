@@ -5482,5 +5482,120 @@ Tôi đối soát theo mã tham chiếu (ref), phân loại 4 nhóm kết quả 
     }],
     check: [{q:'Tổng bằng nhau có đảm bảo mọi giao dịch khớp?', options:['Có','Không, có thể sai lệch bu trù','Chỉ khi ref khớp','Luôn luôn'], answer:1, explain:'Tổng bằng nhau không đảm bảo; cần so từng dòng.'},{q:'Kết quả đối soát nào cần điều tra?', options:['Matched','AmountMismatch','OnlyInternal','Tất cả các loại lệch'], answer:3, explain:'Mọi lệch cần điều tra.'}],
     related: ['banking-002'], tags: ['reconciliation','match','ref']
+  },
+{
+    id: 'lesson-banking-019',
+    track: 'banking', order: 19,
+    title: 'Sổ cái kép nâng cao: kiểm tra cân bằng, idempotency key và khôi phục audit',
+    level: 'senior',
+    minutes: 30,
+    goals: ['Phát hiện bút toán lệch Nợ/Có', 'Đảm bảo idempotency khi retry', 'Khôi phục từ audit log'],
+    body: `**Tóm tắt:** Sổ cái kép yêu cầu tổng Nợ = tổng Có cho mỗi bút toán; retry phải không ghi trùng; mọi thay đổi phải có audit trail để khôi phục.
+
+### Kiểm tra cân bằng
+Mỗi bút toán gồm nhiều dòng (entry), mỗi dòng có tài khoản, số tiền, chiều Nợ (debit=true) hoặc Có (debit=false). Tổng số tiền bên Nợ phải bằng đúng tổng số tiền bên Có. Nếu lệch dù chỉ 1 đồng, hệ thống phải **từ chối toàn bộ bút toán** (atomic validation) — không được ghi một phần rồi báo lỗi phần còn lại. Việc kiểm tra này phải diễn ra **trước khi** ghi bất kỳ dòng nào vào sổ cái.
+
+Quy trình chuẩn (three-phase commit cục bộ):
+1. **Validate phase**: Duyệt tất cả entry, cộng dồn tổng Nợ và tổng Có, kiểm tra amount > 0, tài khoản tồn tại. Nếu tổng Nợ ≠ tổng Có ⇒ ném IllegalArgumentException.
+2. **Simulate phase**: Tính delta số dư từng tài khoản (Nợ giảm, Có tăng), kiểm tra tài khoản tài sản (ASSET) không bị âm sau khi áp dụng delta.
+3. **Commit phase**: Chỉ khi cả hai phase trên pass, mới áp dụng delta vào balances và append bút toán vào txLog.
+
+Đây là pattern chuẩn trong production để tránh "bút toán nửa chừng" — một bút toán bị từ chối ở giữa không được để lại vết chân trong sổ.
+
+### Idempotency key
+Client (hoặc gateway) tạo một khóa duy nhất — **idempotency key** — gắn với mỗi yêu cầu ghi bút toán. Server tra cứu key trong tập hợp đã xử lý:
+- Key chưa từng thấy ⇒ xử lý bình thường, lưu key vào tập đã xử lý (cùng transaction với bút toán).
+- Key đã tồn tại ⇒ **no-op**: trả về kết quả cũ (success/failed), **không** ghi thêm bút toán, **không** thay đổi số dư.
+
+Key phải đủ độ dài và entropy (ví dụ UUID v4) để tránh va chạm. Trong hệ thống thực, key thường là cặp (clientId, requestSeq) hoặc UUID do client sinh. Lưu key cùng bút toán cho phép audit: khi đối soát, có thể truy ngược từ bút toán về request gốc.
+
+Lưu ý: Idempotency chỉ bảo vệ ở tầng application. Nếu client gửi hai request song song với cùng key, cần cơ chế khoá (distributed lock hoặc DB unique constraint) để tránh race condition ghi trùng.
+
+### Audit log append-only
+Mọi thay đổi trạng thái sổ cái (ghi bút toán, hoàn tiền, điều chỉnh) đều ghi vào **audit log** — một luồng chỉ append (append-only). Audit log lưu: timestamp, actor (userId/system), action, bút toán liên quan, idempotency key, snapshot số dư trước/sau.
+
+Để khôi phục trạng thái (disaster recovery, migration, debug): replay audit log từ đầu theo thứ tự thời gian. Vì log chỉ append, không sửa/xoá, việc replay luôn cho kết quả xác định (deterministic).
+
+Trong production, audit log thường được phân shard theo thời gian (ngày/tuần) và nén (compress) để tiết kiệm lưu trữ. Quy định lưu giữ dữ liệu ngân hàng tại Việt Nam thường yêu cầu **≥ 10 năm** (theo Luật Ngân hàng, Luật Kế toán và các thông tư hướng dẫn).
+
+### Ví dụ đời thực
+Hệ thống thanh toán retry do timeout; idempotency key ngăn ghi trùng; audit log giúp đối soát khi lệch. Trong production, mỗi bút toán được ghi kèm transaction id, idempotency key và timestamp; khi retry, server tra key và trả kết quả cũ. Audit log append-only cho phép replay để khôi phục trạng thái khi có sự cố. Kiểm tra cân bằng bắt buộc (three-phase) ngăn ghi bút toán lệch.
+
+### Trả lời mẫu khi phỏng vấn
+Tôi thiết kế sổ cái với kiểm tra cân bằng bắt buộc (atomic three-phase: validate → simulate → commit), idempotency key cho mọi giao dịch (tra cứu trước khi ghi, lưu key cùng bút toán), và audit log append-only để khôi phục và kiểm toán (replay deterministic). Khi retry, server tra idempotency key và trả kết quả cũ; audit log cho phép replay theo thứ tự để khôi phục. Kiểm tra cân bằng ngăn ghi bút toán lệch. Đây là hai trụ cột của hệ thống tài chính.
+
+### Chi tiết thêm
+Trong hệ thống tài chính, mọi bút toán phải cân bằng; idempotency key ngăn ghi trùng khi retry; audit log append-only cho phép khôi phục và kiểm toán. Kiểm tra cân bằng bắt buộc, số tiền phải dương, tài khoản phải tồn tại. Khi retry, server tra key và trả kết quả cũ; audit log replay theo thứ tự khôi phục trạng thái. Audit log phải lưu theo quy định lưu giữ dữ liệu ngân hàng (thường ≥ 10 năm).
+
+> Senior tip: Idempotency và audit trail là hai trụ cột của hệ thống tài chính. Kiểm tra cân bằng phải atomic (validate trước, ghi sau) để không để lại bút toán nửa chừng. Cặp (clientId, idempotencyKey) nên có unique constraint ở DB để chống race condition song song.`,
+    exercises: [{
+      title: 'LedgerValidator',
+      prompt: 'Viết method validate(entries) trả về true nếu tổng Nợ == tổng Có và không có entry số tiền <= 0.',
+      starter: 'import java.util.*;\nclass LedgerValidator {\n    static class Entry { String account; long amount; boolean debit; Entry(String a,long m,boolean d){account=a;amount=m;debit=d;} }\n    boolean validate(List<Entry> entries) {\n        throw new UnsupportedOperationException("TODO");\n    }\n}',
+      tests: 'public class Main {\n    static int passed=0,total=0;\n    static void check(String name, boolean ok, String d){total++; if(ok){passed++;System.out.println("PASS "+name);}else System.out.println("FAIL "+name+": "+d);}\n    public static void main(String[] args){\n        LedgerValidator v=new LedgerValidator();\n        List<LedgerValidator.Entry> ok=List.of(new LedgerValidator.Entry("A",100,true),new LedgerValidator.Entry("B",100,false));\n        check("balanced", v.validate(ok), "should true");\n        List<LedgerValidator.Entry> bad=List.of(new LedgerValidator.Entry("A",100,true),new LedgerValidator.Entry("B",50,false));\n        check("unbalanced", !v.validate(bad), "should false");\n        List<LedgerValidator.Entry> zero=List.of(new LedgerValidator.Entry("A",0,true),new LedgerValidator.Entry("B",0,false));\n        check("zero", !v.validate(zero), "should false");\n        System.out.println("RESULT "+passed+"/"+total);\n    }\n}',
+      reference: 'import java.util.*;\nclass LedgerValidator {\n    static class Entry { String account; long amount; boolean debit; Entry(String a,long m,boolean d){account=a;amount=m;debit=d;} }\n    boolean validate(List<Entry> entries) {\n        if(entries==null||entries.isEmpty()) return false;\n        long d=0,c=0;\n        for(Entry e:entries){ if(e.amount<=0) return false; if(e.debit) d+=e.amount; else c+=e.amount; }\n        return d==c;\n    }\n}',
+      hints: ['Tính tổng debit và credit', 'So sánh'],
+      explain: 'Kiểm tra cân bằng và số tiền dương.'
+    }],
+    check: [{q:'Tổng Nợ != tổng Có thì?', options:['Ghi anyway','Từ chối ghi','Ghi một phần','Sửa tự động'], answer:1, explain:'Từ chối ghi.'},{q:'Idempotency key dùng để?', options:['Mã hoá','Chống ghi trùng khi retry','Phân quyền','Log'], answer:1, explain:'Chống ghi trùng.'}],
+    related: ['banking-005'], tags: ['ledger','idempotency','audit']
+  },
+{
+    id: 'lesson-banking-020',
+    track: 'banking', order: 20,
+    title: 'Đối soát nâng cao: partial match, tolerance và aging unmatched',
+    level: 'senior',
+    minutes: 30,
+    goals: ['Xử lý partial match', 'Áp dụng tolerance cho làm tròn', 'Aging unmatched'],
+    body: `**Tóm tắt:** Đối soát thực tế có partial match, chênh lệch làm tròn và giao dịch chưa khớp cần aging.
+
+### Partial match
+Một giao dịch lớn (ví dụ: một lệnh thu tổng hợp từ gateway) có thể khớp với nhiều giao dịch nhỏ hơn ở sổ cái core banking (ví dụ: nhiều dòng chi tiết theo từng đơn hàng con). Cần tổng hợp (aggregate) các dòng theo ref hoặc theo nhóm tài khoản để so sánh tổng.
+
+Thuật toán khớp 1-nhiều (one-to-many):
+1. Nhóm các dòng sổ cái theo khóa khớp (ref, account, hoặc transaction group id).
+2. Tính tổng số tiền của nhóm.
+3. So sánh tổng nhóm với số tiền giao dịch gateway.
+4. Nếu khớp (trong tolerance) ⇒ đánh dấu nhóm và giao dịch gateway là MATCHED.
+
+Lưu ý: một giao dịch sổ cái chỉ được dùng trong **một** nhóm khớp (đánh dấu used), tránh double-count.
+
+### Tolerance
+Chênh lệch nhỏ do làm tròn (ví dụ: chênh lệch đơn vị tiền tệ nhỏ nhất, sai số tỷ giá, phí xử lý) được coi là khớp nếu trong ngưỡng tolerance cấu hình. Tolerance thường được định nghĩa là:
+- **Phần trăm**: {{|a-b| / max(|a|,|b|) × 100 ≤ tolerancePercent}}
+- **Số tiền cố định**: {{|a-b| ≤ toleranceAmount}}
+
+Trong production, tolerance thường cấu hình theo từng loại giao dịch/cáp thanh toán. Ví dụ: thanh toán quốc tế có tolerance cao hơn do tỷ giá; thanh toán trong nước tolerance thấp hơn. Quan trọng: tolerance **không được** dùng để che giấu sai sót thực sự — mọi khớp trong tolerance phải được ghi log để audit.
+
+### Aging unmatched
+Giao dịch chưa khớp sau N ngày (theo quy định nội bộ, ví dụ 3-5 ngày làm việc) được chuyển sang trạng thái **AGING** và escalate lên đội vận hành/rủi ro. Quy trình aging:
+1. Mỗi ngày đối soát, cập nhật {{unmatchedDays}} cho các giao dịch chưa khớp.
+2. Khi {{unmatchedDays}} ≥ ngưỡng aging ⇒ tạo ticket escalate, gửi cảnh báo.
+3. Giao dịch aging quá lâu (ví dụ > 30 ngày) ⇒ chuyển sang xử lý đặc biệt (write-off, điều chỉnh sổ sách theo quy trình phê duyệt).
+
+Báo cáo aging phải lưu: mã giao dịch, số tiền, số ngày chưa khớp, nguyên nhân dự đoán, người phụ trách xử lý. Đây là bằng chứng cho kiểm toán và quản lý rủi ro.
+
+### Ví dụ đời thực
+Đối soát thẻ: partial capture (một auth khớp nhiều capture), tolerance cho phép chênh lệch làm tròn, unmatched aging theo quy định nội bộ sau đó escalate. Trong production, đối soát chạy hàng ngày, partial match tổng hợp nhiều giao dịch nhỏ khớp một giao dịch lớn, tolerance chấp nhận chênh lệch làm tròn, unmatched aging theo quy định sau đó escalate.
+
+### Trả lời mẫu khi phỏng vấn
+Tôi thiết kế reconciliation với partial match (khớp 1-nhiều bằng cách aggregate theo ref/group), tolerance cho rounding (cấu hình theo % hoặc số tiền cố định, log để audit), và aging cho unmatched với escalate (cập nhật {{unmatchedDays}} hàng ngày, escalate khi vượt ngưỡng). Đây là cách xử lý thực tế trong hệ thống tài chính.
+
+### Chi tiết thêm
+Đối soát thực tế có partial match, tolerance cho làm tròn và aging unmatched. Partial match tổng hợp nhiều giao dịch nhỏ khớp một lớn (aggregate theo ref/account); tolerance chấp nhận chênh lệch theo cấu hình (% hoặc Amount), mọi khớp tolerance phải log audit; aging escalate theo quy định nội bộ (ví dụ 3-5 ngày). Báo cáo lưu trữ phục vụ kiểm toán. Đối soát phải idempotent, chạy lại cho kết quả giống nhau.
+
+> Senior tip: Luôn có tolerance và aging để tránh backlog unmatched. Tolerance không phải "hôm nay cho qua, mai sau lại tra" — phải có log audit trail. Partial match cần unique constraint trên (gatewayTxnId, bookTxnId) để tránh double-count khi chạy lại.`,
+    exercises: [{
+      title: 'ReconcileWithTolerance',
+      prompt: 'Viết method reconcile(a,b,tolerance) trả về matched count khi |a-b| <= tolerance.',
+      starter: 'import java.util.*;\nclass Reconciler2 {\n    int reconcile(long a, long b, long tolerance) {\n        throw new UnsupportedOperationException("TODO");\n    }\n}',
+      tests: 'public class Main {\n    static int passed=0,total=0;\n    static void check(String name, boolean ok, String d){total++; if(ok){passed++;System.out.println("PASS "+name);}else System.out.println("FAIL "+name+": "+d);}\n    public static void main(String[] args){\n        Reconciler2 r=new Reconciler2();\n        check("exact", r.reconcile(100,100,0)==1, "should 1");\n        check("tol", r.reconcile(100,102,2)==1, "should 1");\n        check("fail", r.reconcile(100,110,2)==0, "should 0");\n        System.out.println("RESULT "+passed+"/"+total);\n    }\n}',
+      reference: 'import java.util.*;\nclass Reconciler2 {\n    int reconcile(long a, long b, long tolerance) {\n        return Math.abs(a-b)<=tolerance ? 1 : 0;\n    }\n}',
+      hints: ['So sánh chênh lệch với tolerance'],
+      explain: 'Khớp nếu chênh lệch trong tolerance.'
+    }],
+    check: [{q:'Partial match là?', options:['Một-khớp-một','Nhiều nhỏ khớp một lớn','Không khớp','Khớp tổng'], answer:1, explain:'Nhiều nhỏ khớp một lớn.'},{q:'Tolerance dùng để?', options:['Bảo mật','Chấp nhận chênh lệch làm tròn','Log','Phân quyền'], answer:1, explain:'Chấp nhận chênh lệch làm tròn.'}],
+    related: ['banking-002'], tags: ['reconciliation','tolerance','aging']
   }
+
 );
