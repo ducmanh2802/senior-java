@@ -1445,4 +1445,339 @@ given().when().get("/users/1")
 - **Chỉ GET, không POST/PUT**: Sai. RestAssured hỗ trợ đủ method ({{get/post/put/patch/delete}}).
 - **Là công cụ chạy browser E2E**: Sai. Đó là Selenium/Playwright; RestAssured chuyên kiểm thử API REST.`
 },
+{
+  id: 'qz-autotest-061',
+  topic: 'autotest',
+  q: 'Khi viết test Selenium bền vững, phát biểu nào KHÔNG đúng về cách chọn locator?',
+  options: [
+    'Ưu tiên {{By.id}} hoặc {{By.name}} vì giá trị này thường ổn định và tìm nhanh',
+    'Dùng {{By.linkText}} hay {{By.partialLinkText}} cho liên kết khi text ổn định',
+    'Dùng XPath tuyệt đối bắt đầu bằng {{/html/body/...}} để chỉ chính xác vị trí phần tử',
+    'Tránh locator theo chỉ số như {{button[2]}} hay full XPath, vì thêm/xóa thẻ cha sẽ làm gãy'
+  ],
+  answer: 2,
+  explain: `**Đáp án đúng: KHÔNG dùng XPath tuyệt đối.** XPath tuyệt đối gắn chặt cấu trúc trang, nên dễ gãy; ưu tiên id/name/linkText và tránh chỉ số.
+
+**Giải thích từng bước:**
+- **Locator là gì:** cách Selenium tìm phần tử trên trang (bằng id, tên, class, XPath, CSS…). Chọn locator ổn định giúp test không gãy mỗi lần UI thay đổi nhỏ.
+- **XPath tuyệt đối** ({{/html/body/div[1]/div[2]/button}}) mô tả đường dẫn từ gốc trang xuống phần tử. Nếu designer thêm một {{div}} hay đổi thứ tự thành phần, đường dẫn sai và test fail.
+- **{{By.id}}/{{By.name}}** thường do developer kiểm soát và đổi ít hơn, nên bền hơn.
+- **Ví dụ (Java):**
+~~~java
+WebElement btn = driver.findElement(By.id("saveBtn"));
+btn.click();
+~~~
+- **Lỗi hay gặp:** copy XPath từ DevTools (công cụ lập trình của trình duyệt) rồi paste vào test. XPath mà DevTools sinh ra thường là tuyệt đối và cực kỳ gièn gãy — không nên dùng trực tiếp.
+
+> Senior tip: Nếu trang chưa có attribute ổn định, đề nghị team thêm {{data-testid}} (thuộc tính dành cho test) và dùng {{By.cssSelector("[data-testid='save']")}} hoặc Playwright {{getByTestId}}. Không bao giờ copy XPath đầy đủ từ trình duyệt vào code test.
+
+### Vì sao các phương án còn lại sai
+- **Ưu tiên {{By.id}}/{{By.name}}**: Đây là phát biểu đúng, nên không chọn vì câu hỏi hỏi cái KHÔNG đúng.
+- **{{By.linkText}}/{{By.partialLinkText}}**: Đúng cho liên kết khi đoạn text ổn định.
+- **Tránh chỉ số/full XPath**: Đúng, đây là practice tốt nên không chọn.`
+},
+{
+  id: 'qz-autotest-062',
+  topic: 'autotest',
+  q: 'Trong Selenium, bạn cần chờ một điều kiện với tần suất kiểm tra tuỳ chỉnh và muốn bỏ qua một loại exception cụ thể trong khi chờ. Lớp nào phù hợp nhất?',
+  options: [
+    'Implicit wait, vì áp dụng cho mọi findElement và tự bỏ qua NoSuchElementException',
+    'Thread.sleep, vì dừng chính xác theo milliseconds bạn chỉ định',
+    'WebDriverWait, vì là lớp duy nhất có khả năng chờ điều kiện trong Selenium 4',
+    'FluentWait, cho phép thiết lập khoảng polling, timeout và các exception cần bỏ qua trong khi chờ'
+  ],
+  answer: 3,
+  explain: `**Đáp án đúng: FluentWait.** FluentWait cho cấu hình chi tiết: khoảng thời gian chờ tối đa, tần suất kiểm tra lại (polling) và danh sách exception bỏ qua trong khi chờ.
+
+**Giải thích từng bước:**
+- **FluentWait là gì:** lớp chờ linh hoạt của Selenium. Bạn đặt timeout (thời gian chờ tối đa), pollingEvery (xem xét lại mỗi bao nhiêu ms) và ignoring (bỏ qua exception nào, ví dụ {{NoSuchElementException}}) cho đến khi điều kiện thỏa mãn.
+- **WebDriverWait** là dạng phổ biến của FluentWait với polling mặc định, ít cấu hình hơn.
+- **Ví dụ (Java):**
+~~~java
+Wait<WebDriver> wait = new FluentWait<>(driver)
+    .withTimeout(Duration.ofSeconds(10))
+    .pollingEvery(Duration.ofMillis(200))
+    .ignoring(NoSuchElementException.class);
+WebElement el = wait.until(d -> d.findElement(By.id("save")));
+~~~
+- **Lỗi hay gặp:** dùng {{Thread.sleep(5000)}} (chờ cứng) — chậm cố định và vẫn fail nếu phần tử xuất hiện sau 5 giây trên máy chậm.
+- **Khi nào dùng:** FluentWait hữu ích khi phần tử xuất hiện theo nhịp bất thường (ví dụ SPA render từng bursts); tình huống thường dùng thì WebDriverWait đã đủ.
+
+> Senior tip: Mức độ chi tiết của FluentWait cao nên code dài hơn; dùng khi bạn thực sự cần điều chỉnh polling hoặc bỏ qua exception. Còn lại WebDriverWait đã đáp ứng đa số tình huống chờ điều kiện.
+
+### Vì sao các phương án còn lại sai
+- **Implicit wait**: áp dụng cho mọi tìm phần tử nhưng không cho cấu hình polling hay bỏ qua exception tùy ý; chỉ chờ phần tử xuất hiện, không chờ điều kiện phức tạp.
+- **Thread.sleep**: chờ cứng, không kiểm tra điều kiện, dễ flaky và làm suite chậm.
+- **WebDriverWait là lớp duy nhất**: sai. FluentWait cũng có trong Selenium và WebDriverWait xây dựng dựa trên cơ chế tương tự.`
+},
+{
+  id: 'qz-autotest-063',
+  topic: 'autotest',
+  q: 'Bạn có nhiều page object (Đăng nhập, Trang chủ, Hóa đơn) cùng chứa phần tử header (menu, logo, nút Đăng xuất). Thiết kế Page Object hợp lý là gì?',
+  options: [
+    'Copy-paste code header vào mỗi page object để mỗi class tự-contained',
+    'Tạo một class BasePage chứa các phần tử/thao tác chung của header, các page object kế thừa BasePage',
+    'Gọi thao tác header trực tiếp trong test class mà không qua page object',
+    'Tạo một page object siêu lớn chứa toàn bộ trang web, dùng cho mọi test'
+  ],
+  answer: 1,
+  explain: `**Đáp án đúng: BasePage chứa thành phần chung, các page object kế thừa.** Giúp tái sử dụng code header, khi header đổi chỉ sửa một chỗ.
+
+**Giải thích từng bước:**
+- **Page Object Model (POM) là gì:** mẫu thiết kế tách "mô tả trang" (locator + thao tác) ra khỏi kịch bản test. Mỗi trang có một class; UI đổi thì chỉ sửa class đó.
+- **BasePage là gì:** class cha chứa thành phần xuất hiện trên hầu hết mọi trang (header, footer, menu chính, nút đăng xuất). Các page class cụ thể (InvoicePage, LoginPage) kế thừa BasePage.
+- **Ví dụ (Java):**
+~~~java
+public class BasePage {
+    protected WebDriver driver;
+    @FindBy(id = "logout") protected WebElement logoutBtn;
+    public BasePage(WebDriver d) {
+        driver = d;
+        PageFactory.initElements(d, this);
+    }
+    public void logout() { logoutBtn.click(); }
+}
+public class InvoicePage extends BasePage {
+    public InvoicePage(WebDriver d) { super(d); }
+    // thêm locator/action riêng của trang hóa đơn
+}
+~~~
+- **Lỗi hay gặp:** tạo một "god page" khổng lồ chứa cả website — khó đọc, khó bảo trì; hoặc copy-paste code header vào mấy chục class — sửa header thì phải đi sửa hết.
+- **Khi không dùng BasePage:** nếu thành phần chỉ xuất hiện trên một hai trang, không cần ép lên BasePage.
+
+> Senior tip: BasePage chỉ chứa thành phần thực sự dùng trên đa số trang; tránh kế thừa quá sâu (hơn 2 cấp) làm code khó theo dõi.
+
+### Vì sao các phương án còn lại sai
+- **Copy-paste header**: trùng lặp code, khi đổi header phải sửa nhiều chỗ, dễ bỏ sót.
+- **Gọi header trực tiếp trong test**: phá vỡ POM, test phụ thuộc chi tiết locator header, gãy ngay khi header đổi.
+- **Page object siêu lớn**: chứa toàn bộ site trong một class, khó quản lý và dễ xung đột khi nhiều người sửa cùng lúc.`
+},
+{
+  id: 'qz-autotest-064',
+  topic: 'autotest',
+  q: 'Bạn cần gọi API upload file (multipart/form-data) bằng RestAssured. Cách gửi file dưới đây là đúng?',
+  options: [
+    'given().body(new File("report.pdf")).when().post("/upload")',
+    'RestAssured không hỗ trợ upload file, phải dùng Apache HttpClient',
+    'given().multiPart("file", "report.pdf", new File("report.pdf")).when().post("/upload")',
+    'given().param("file", "report.pdf").when().post("/upload")'
+  ],
+  answer: 2,
+  explain: `**Đáp án đúng: dùng multiPart()** để gửi file dưới dạng multipart/form-data, đúng với cách trình duyệt và server form thường nhận file.
+
+**Giải thích từng bước:**
+- **multipart/form-data là gì:** định dạng gửi dữ liệu kèm file nhị phân qua HTTP, thường dùng cho form upload file trên web.
+- **multiPart(name, fileName, file)** của RestAssured gán tên trường (ví dụ "file"), tên file và đối tượng File, rồi đặt Content-Type phù hợp.
+- **Ví dụ (Java):**
+~~~java
+given()
+    .multiPart("file", "report.pdf", new File("report.pdf"))
+    .contentType(ContentType.MULTIPART)
+.when()
+    .post("/api/upload")
+.then()
+    .statusCode(200);
+~~~
+- **Lỗi hay gặp:** dùng {{body(new File(...))}} gửi nhị phân thô (loại application/octet-stream), không phải form multipart; server dạng form sẽ không đọc được trường file.
+- **Sau khi upload:** dùng {{extract().path()}} để lấy URL hoặc id file mà server trả về cho bước kiểm tra sau.
+
+> Senior tip: Kiểm tra server yêu cầu tên trường gì (ví dụ "file" hay "attachment") và content type nào; sai tên trường là lý do phổ biến khiến upload thành công về mặt HTTP nhưng server bỏ qua file.
+
+### Vì sao các phương án còn lại sai
+- **body(new File(...))**: gửi nhị phân thô, không gắn tên trường form, server form không nhận dạng được file.
+- **RestAssured không hỗ trợ upload**: sai. RestAssured có {{multiPart}} và {{multiPartConfig}} cho upload file.
+- **param("file", ...)**: gửi tham số văn bản (query param hoặc form field text), không kèm nội dung nhị phân của file.`
+},
+{
+  id: 'qz-autotest-065',
+  topic: 'autotest',
+  multi: true,
+  q: 'Trong RestAssured, về cách truyền tham số vào URL API, phát biểu nào đúng? (Chọn 2)',
+  options: [
+    'queryParam("page", 2) thêm tham số vào chuỗi truy vấn sau dấu ?, ví dụ /users?page=2',
+    'queryParam và pathParam là hoàn toàn giống nhau, chỉ khác tên gọi',
+    'pathParam chỉ dùng được với method GET, không dùng được POST',
+    'pathParam("id", 100) thay thế chỗ đánh dấu {id} trong đường dẫn, ví dụ /users/{id}'
+  ],
+  answer: [0, 3],
+  explain: `**Đáp án đúng: queryParam cho chuỗi truy vấn (?key=value), pathParam thay placeholder {id} trong đường dẫn.** Hai thứ khác về mục đích và vị trí trên URL.
+
+**Giải thích từng bước:**
+- **Path param** dùng để định danh tài nguyên trong đường dẫn, ví dụ {{/users/100}}. RestAssured dùng cặp ngoặc nhọn làm chỗ đánh dấu trong đường dẫn, rồi gọi {{pathParam("id", 100)}} để thay thế giá trị vào.
+- **Query param** dùng để lọc, sắp xếp, phân trang, xuất hiện sau dấu {{?}}, ví dụ {{/users?page=2&size=10}}.
+- **Ví dụ (Java):**
+~~~java
+given().pathParam("id", 100).when().get("/users/{id}")
+given().queryParam("page", 2).queryParam("size", 10).when().get("/users")
+~~~
+- **Lỗi hay gặp:** nhầm vị trí (đặt id vào query param thay vì path param) khiến server trả 404 không tìm thấy tài nguyên.
+- **Khi nào dùng:** path param cho định danh (mã đơn hàng, mã user); query param cho lọc/tùy chọn (trang, kích thước trang, trạng thái).
+
+> Senior tip: Path param nên dùng cho giá trị định danh tài nguyên, query param cho các điều kiện lọc. URL ngắn gọn và server dễ định tuyến route.
+
+### Vì sao các phương án còn lại sai
+- **queryParam và pathParam giống nhau**: sai. Chúng đặt ở vị trí khác nhau trên URL và nghĩa khác (định danh so với điều kiện lọc).
+- **pathParam chỉ dùng GET**: sai. Dùng được với mọi method HTTP (GET, POST, PUT, DELETE…).`
+},
+{
+  id: 'qz-autotest-066',
+  topic: 'autotest',
+  q: 'Trong CI (GitHub Actions, GitLab CI…), bạn muốn chạy test trên Chrome và Firefox cùng lúc để giảm thời gian phản hồi. Practice phù hợp là gì?',
+  options: [
+    'Chạy lần lượt toàn bộ suite trên Chrome rồi mới Firefox trên cùng một máy',
+    'Dùng ma trận (matrix) để cùng lúc chạy nhiều job, mỗi job một trình duyệt',
+    'Chỉ chạy test trên Chrome vì đủ để đảm bảo chất lượng',
+    'Gộp hai trình duyệt vào một test method để chạy cùng lúc'
+  ],
+  answer: 1,
+  explain: `**Đáp án đúng: dùng ma trận (matrix) của CI** để chia suite thành nhiều job độc lập chạy song song, mỗi job một trình duyệt (hoặc hệ điều hành), từ đó giảm tổng thời gian chờ.
+
+**Giải thích từng bước:**
+- **Ma trận CI là gì:** cấu hình sinh ra nhiều job song song, mỗi job kết hợp một giá trị (ví dụ browser = chrome, firefox). Các job chạy trên runner riêng biệt, không ảnh hưởng lẫn nhau.
+- **Vì sao giúp:** 200 test chạy 40 phút trên một máy; chia thành 2 job (Chrome/Firefox) chạy cùng lúc có thể còn khoảng 20 phút (cộng overhead nhỏ), giúp phản hồi PR nhanh hơn.
+- **Ví dụ (ý tưởng YAML):**
+~~~yaml
+strategy:
+  matrix:
+    browser: [chrome, firefox]
+~~~
+- **Lỗi hay gặp:** chạy tuần tự trên cùng một máy làm pipeline gấp đôi thời gian; hoặc gộp hai trình duyệt vào một test method — không thể vì một WebDriver instance chỉ điều khiển một trình duyệt tại một thời điểm.
+- **Trade-off:** ma trận tốn nhiều runner (máy ảo) hơn, cần cân bằng chi phí và tốc độ phản hồi.
+
+> Senior tip: Kết hợp ma trận (nhiều máy/trình duyệt) với sharding (chia suite) nếu bộ test lớn. Lưu ý test phải độc lập, không chia sẻ port/file cố định giữa các job.
+
+### Vì sao các phương án còn lại sai
+- **Chạy lần lượt trên cùng máy**: đúng về khả thi nhưng chậm gấp đôi, không giải quyết mục tiêu giảm thời gian.
+- **Chỉ chạy Chrome**: bỏ sót lỗi riêng của Firefox (ví dụ CSS, sự kiện trình duyệt khác biệt).
+- **Gộp hai trình duyệt vào một test method**: không thể; một instance WebDriver chỉ điều khiển được một trình duyệt.`
+},
+{
+  id: 'qz-autotest-067',
+  topic: 'autotest',
+  multi: true,
+  q: 'Hai test A và B pass khi chạy riêng, nhưng fail khi chạy A trước B. Nguyên nhân có thể là gì? (Chọn 2)',
+  options: [
+    'Test A để lại dữ liệu trong DB/state dùng chung, làm bỏng điều kiện ban đầu của test B',
+    'Test chạy chậm hơn bình thường',
+    'Hai test dùng cùng một tài nguyên cố định (ví dụ port 8080, file output cùng tên)',
+    'Máy chạy test có RAM dư'
+  ],
+  answer: [0, 2],
+  explain: `**Đáp án đúng: test phụ thuộc thứ tự do shared state** (trạng thái dùng chung) — dữ liệu còn dư từ test A hoặc tài nguyên cố định bị giữ, làm test B fail.
+
+**Giải thích từng bước:**
+- **Shared state là gì:** nhiều test chia sẻ cùng một nguồn (cơ sở dữ liệu, biến static, file, port…). Test A ghi vào DB, test B đọc DB mong đợi trống → test B fail do dữ liệu dư của A.
+- **Tài nguyên cố định:** hai test cùng bind cổng 8080 hoặc ghi file output cùng tên; cái chạy sau sẽ lỗi (port đã dùng, file bị ghi đè).
+- **Vì sao chỉ fail khi chạy A trước B:** khi chạy riêng, mỗi test ban đầu khởi tạo môi trường sạch; khi chạy loạt, trạng thái từ test trước "rò rỉ" sang test sau.
+- **Lỗi hay gặp:** sửa bằng cách ép thứ tự chạy (bắt buộc A trước B) — chỉ che giấu vấn đề, không khắc phục gốc; khi chạy song song thì lỗi bùng nổ bất ngờ.
+
+> Senior tip: Mỗi test phải tự tạo và dọn dẹp dữ liệu của mình (rollback transaction, DB riêng, file tạm có tên duy nhất), không giả định thứ tự chạy. CI chạy song song càng dễ trùng loại lỗi này, nên kiểm tra độc lập ngay từ đầu.
+
+### Vì sao các phương án còn lại sai
+- **Test chạy chậm hơn**: không phải nguyên nhân làm fail logic; chậm vẫn có thể pass.
+- **Máy có RAM dư**: tài nguyên dư không gây fail test; thiếu RAM mới gây vấn đề (và không liên quan thứ tự chạy A trước B).`
+},
+{
+  id: 'qz-autotest-068',
+  topic: 'autotest',
+  multi: true,
+  q: 'Trong Allure report, annotation và phân loại nào giúp team ưu tiên xử lý lỗi? (Chọn 2)',
+  options: [
+    '@Step dùng để gán mức độ nghiêm trọng cho lỗi',
+    '@Severity(SeverityLevel.BLOCKER) đánh dấu test cực kỳ quan trọng, fail thì cần xử lý ngay',
+    'Allure chỉ hỗ trợ đánh severity cho test pass, không dùng cho fail',
+    'Allure nhóm test theo epic/feature/story, giúp xem lỗi tập trung ở module nào'
+  ],
+  answer: [1, 3],
+  explain: `**Đáp án đúng: @Severity đánh mức độ quan trọng; epic/feature/story nhóm test theo module để đội thấy lỗi tập trung ở đâu.**
+
+**Giải thích từng bước:**
+- **@Severity là gì:** annotation của Allure đánh mức độ nghiêm trọng của test (BLOCKER, CRITICAL, NORMAL, MINOR, TRIVIAL). Test BLOCKER fail thì người phụ trách cần xử lý ngay vì ảnh hưởng chức năng cốt lõi.
+- **epic/feature/story:** phân cấp nhóm test. Epic = sản phẩm/tính năng lớn (ví dụ "Thanh toán"), Feature = tính năng con (ví dụ "Thẻ tín dụng"), Story = câu người dùng cụ thể. Allure hiển thị theo cây phân cấp này, giúp thấy module nào bị lỗi nhiều.
+- **Ví dụ (Java):**
+~~~java
+@Severity(SeverityLevel.BLOCKER)
+@Epic("Thanh toán")
+@Feature("Thẻ tín dụng")
+@Test
+void testPayByCard() { ... }
+~~~
+- **Lỗi hay gặp:** đánh mọi test BLOCKER thì mất ý nghĩa phân biệt ưu tiên; khi mọi thứ đều khẩn cấp, thứ gì cũng chờ.
+- **Khi dùng severity:** kết hợp với tần suất fail; BLOCKER fail trên CI nên dừng pipeline ngay để sửa trước khi merge.
+
+> Senior tip: severity giúp xếp hạng sự cố, epic/feature/story giúp định vị module. Hai thứ cùng dùng thì báo cáo Allure trở thành công cụ hỗ trợ quyết định cho đội phát hành.
+
+### Vì sao các phương án còn lại sai
+- **@Step gán mức độ nghiêm trọng**: sai. @Step gom các hành động thành bước có cấu trúc trong báo cáo, không phải severity.
+- **Allure chỉ severity cho test pass**: sai. Severity gắn với test bất kể kết quả pass hay fail, dùng để phân loại tầm quan trọng.`
+},
+{
+  id: 'qz-autotest-069',
+  topic: 'autotest',
+  q: 'Bạn chạy test Selenium trên CI (không có màn hình) bằng chế độ headless. Phát biểu nào đúng về Chrome headless mới (--headless=new)?',
+  options: [
+    'Headless không cần ChromeDriver vì không mở cửa sổ',
+    'Test headless luôn nhanh hơn headful (có màn hình) và không bao giờ flaky',
+    'Headless mới chạy giống trình duyệt thực tế hơn headless cũ, hỗ trợ nhiều tính năng web hơn',
+    'Headless mới không thể chụp screenshot'
+  ],
+  answer: 2,
+  explain: `**Đáp án đúng: Chrome headless mới (--headless=new) chạy gần như trình duyệt thật**, hỗ trợ nhiều tính năng web hơn headless cũ.
+
+**Giải thích từng bước:**
+- **Headless là gì:** chạy trình duyệt không có cửa sổ giao diện, phù hợp CI vì tiết kiệm tài nguyên và không cần display.
+- **Headless cũ (--headless)** có một số hạn chế (ví dụ không hiển thị đúng một số CSS, quyền truy cập, hành trình JS khác biệt so với trình duyệt thật).
+- **Headless mới (--headless=new)** dùng engine trình duyệt thực tế hơn, hành vi gần giống khi người dùng mở Chrome bình thường.
+- **Ví dụ (Java):**
+~~~java
+ChromeOptions opts = new ChromeOptions();
+opts.addArguments("--headless=new");
+WebDriver driver = new ChromeDriver(opts);
+~~~
+- **Lỗi hay gặp:** giả định headless hoàn toàn giống có màn hình — một số dialog, quyền hạn, hoặc tải file hành xử khác biệt; cần chạy headful định kỳ trên một máy để phát hiện lỗi chỉ xuất hiện khi có giao diện.
+
+> Senior tip: Chạy headless trên CI để nhanh và tiết kiệm; định kỳ chạy headful (có màn hình) để phát hiện sai lệch hành vi giữa hai chế độ.
+
+### Vì sao các phương án còn lại sai
+- **Headless không cần ChromeDriver**: sai. Vẫn cần ChromeDriver để điều khiển Chrome, dù không có cửa sổ.
+- **Luôn nhanh hơn và không flaky**: sai. Headless thường nhanh hơn nhưng vẫn flaky do mạng, trạng thái dùng chung, thời gian render.
+- **Không thể chụp screenshot**: sai. ChromeDriver vẫn hỗ trợ chụp ảnh màn hình ở chế độ headless.`
+},
+{
+  id: 'qz-autotest-070',
+  topic: 'autotest',
+  q: 'Trong Selenium, test mở một tab mới sau khi nhấn "Xem chi tiết". Cách chuyển điều khiển của driver sang tab mới là gì?',
+  options: [
+    'driver.close() rồi mở tab mới bằng driver.get("url")',
+    'Selenium tự chuyển sang tab mới khi tab đó mở, không cần code thêm',
+    'Dùng driver.switchTo().defaultContent() để vào tab mới',
+    'driver.switchTo().window(windowHandle) với windowHandle của tab mới, lấy được từ driver.getWindowHandles()'
+  ],
+  answer: 3,
+  explain: `**Đáp án đúng: dùng getWindowHandles() lấy tập handles của tất cả tab, loại handle tab cũ, rồi switchTo().window(handle của tab mới).**
+
+**Giải thích từng bước:**
+- **Window handle là gì:** chuỗi định danh duy nhất của mỗi tab/cửa sổ trình duyệt. Selenium mặc định điều khiển tab đầu tiên; khi có tab mới, bạn phải chuyển thủ công.
+- **getWindowHandles()** trả về tập tất cả handle hiện có. So sánh với handle tab đã lưu trước khi nhấn, phần còn lại là tab mới.
+- **Ví dụ (Java):**
+~~~java
+String main = driver.getWindowHandle();
+driver.findElement(By.linkText("Xem chi tiết")).click();
+for (String handle : driver.getWindowHandles()) {
+    if (!handle.equals(main)) {
+        driver.switchTo().window(handle);
+        break;
+    }
+}
+~~~
+- **Lỗi hay gặp:** dùng {{switchTo().defaultContent()}} — đó là lệnh thoát khung iframe, không liên quan đến tab; hoặc giả định driver tự chuyển sang tab mới (thực ra không).
+- **Sau khi xong:** close() tab mới rồi switch() lại tab chính để các test sau không bị ảnh hưởng.
+
+> Senior tip: Mỗi tab có handle riêng; sau khi chuyển, hãy kiểm tra URL hoặc tiêu đề để xác nhận đang ở tab mong muốn trước khi assert.
+
+### Vì sao các phương án còn lại sai
+- **driver.close() rồi get()**: đóng tab hiện tại rồi mở URL mới — không phải chuyển điều khiển sang tab đã mở.
+- **Selenium tự chuyển tab**: sai. Driver vẫn ở tab cũ cho tới khi gọi switchTo().window.
+- **switchTo().defaultContent()**: dùng để thoát iframe (khung nhúng trong trang), không phải để chuyển tab.`
+},
 );
