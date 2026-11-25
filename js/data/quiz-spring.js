@@ -7457,5 +7457,209 @@ Khi bạn **thực sự cần** cột từ orders (amount, status...). Khi đó 
 
 > Senior tip: "chỉ kiểm tra tồn tại" → EXISTS; "cần dữ liệu bảng con" → JOIN; "cần tổng hợp bảng con" → EXISTS/IN với aggregate hoặc CTE. Chọn đúng công cụ tránh cả nhân dòng lẫn quét thừa.`
   },
-
+  {
+    id: 'qz-spring-923',
+    topic: 'spring',
+    q: 'Trong một {{@Service}} Spring, method {{@Transactional}} {{placeOrder()}} gọi trực tiếp {{this.sendEmail()}} cũng có {{@Transactional}}. Điều gì xảy ra với transaction khi sendEmail() chạy?',
+    options: [
+      'Spring mở một transaction mới cho sendEmail() vì nó có @Transactional',
+      'sendEmail() tham gia vào transaction hiện có của placeOrder(), không có transaction riêng',
+      'Spring ném exception vì self-invocation không được phép',
+      'sendEmail() chạy không có transaction nào, vì gọi this. bỏ qua proxy'
+    ],
+    answer: 3,
+    explain: `**Đáp án đúng: sendEmail() chạy không có transaction, vì self-invocation bỏ qua proxy.**
+### Vì sao đúng
+{{@Transactional}} hoạt động qua proxy AOP bao quanh bean. Khi code gọi {{this.sendEmail()}}, nó gọi trực tiếp method trên object gốc, không đi qua proxy, nên không có interceptor nào can thiệp, không có transaction nào được mở. sendEmail() chạy trong transaction của placeOrder() nếu có, nhưng annotation của nó bị bỏ qua hoàn toàn.
+### Vì sao các phương án còn lại sai
+- **Mở transaction mới**: chỉ xảy ra khi gọi qua proxy (từ bean khác) với REQUIRES_NEW.
+- **Tham gia transaction hiện có**: đó là hành vi khi gọi qua proxy với propagation mặc định REQUIRED, không phải self-invocation.
+- **Ném exception**: Spring không cấm self-invocation, chỉ silently bỏ qua advice.
+> Senior tip: self-invocation là lỗi kinh điển với @Transactional, @Async, @Cacheable. Cách sửa: tách method sang bean khác, hoặc inject chính bean vào chính nó ({{@Lazy}}), hoặc dùng {{AopContext.currentProxy()}}.`
+  },
+  {
+    id: 'qz-spring-924',
+    topic: 'spring',
+    q: 'Method {{@Transactional}} private {{doWork()}} trong một Spring bean. Khi bean khác gọi method public gọi đến doWork(), transaction có được mở không?',
+    options: [
+      'Có, vì @Transactional trên method private vẫn được áp dụng',
+      'Không, vì Spring AOP (proxy-based) chỉ intercept method public; method private chạy mà không có advice',
+      'Có, nếu dùng CGLIB proxy',
+      'Spring ném exception lúc khởi động vì annotation trên private method'
+    ],
+    answer: 1,
+    explain: `**Đáp án đúng: không, vì proxy-based AOP chỉ intercept method public.**
+### Vì sao đúng
+Spring mặc định dùng proxy (JDK dynamic proxy hoặc CGLIB). Proxy chỉ override được method public (với CGLIB còn protected/package-private trong một số trường hợp, nhưng private thì không). Method private không thể bị override, nên advice @Transactional không bao giờ chạy. Spring Boot log warning "Methods annotated with @Transactional must be public" (hoặc silently ignore tùy version).
+### Vì sao các phương án còn lại sai
+- **@Transactional private vẫn áp dụng**: sai, annotation không có tác dụng.
+- **CGLIB xử lý được**: CGLIB cũng không override private method.
+- **Ném exception lúc khởi động**: Spring thường chỉ cảnh báo, không fail.
+> Senior tip: luôn khai báo method @Transactional là public. Nếu cần transaction cho logic private, tách sang bean khác hoặc gọi transactionTemplate.execute() bên trong.`
+  },
+  {
+    id: 'qz-spring-925',
+    topic: 'spring',
+    q: 'Method {{@Transactional(propagation = REQUIRES_NEW)}} {{audit()}} được gọi từ trong một transaction đang có. Điều gì xảy ra?',
+    options: [
+      'audit() tham gia vào transaction hiện có, không tạo mới',
+      'Transaction hiện có bị suspend, một transaction vật lý mới được tạo cho audit(); commit/rollback độc lập',
+      'Spring ném IllegalTransactionStateException',
+      'audit() chạy trong savepoint của transaction hiện có'
+    ],
+    answer: 1,
+    explain: `**Đáp án đúng: transaction hiện có bị suspend, transaction vật lý mới được tạo độc lập.**
+### Vì sao đúng
+REQUIRES_NEW luôn tạo transaction vật lý mới. Spring suspend transaction hiện tại (giữ lại), tạo transaction mới. Khi audit() xong, transaction mới commit/rollback độc lập; sau đó transaction cũ được resume. Nếu audit() ném exception và rollback, transaction cũ không bị ảnh hưởng.
+### Vì sao các phương án còn lại sai
+- **Tham gia transaction hiện có**: đó là REQUIRED (mặc định).
+- **Ném exception**: REQUIRES_NEW hợp lệ trong mọi trường hợp.
+- **Savepoint**: đó là NESTED.
+> Senior tip: REQUIRES_NEW giữ 2 connection cùng lúc (transaction cũ suspend nhưng connection có thể vẫn giữ). Với pool nhỏ và tải cao có thể deadlock pool. Chỉ dùng khi thực sự cần commit độc lập (audit, notification).`
+  },
+  {
+    id: 'qz-spring-926',
+    topic: 'spring',
+    q: 'Bean {{@Component}} có scope mặc định. Mỗi lần {{ApplicationContext.getBean()}} trả về instance như thế nào?',
+    options: [
+      'Mỗi lần getBean() tạo một instance mới',
+      'Luôn trả về cùng một instance trong suốt vòng đời của ApplicationContext',
+      'Tạo mới instance cho mỗi thread',
+      'Tạo mới instance cho mỗi HTTP request'
+    ],
+    answer: 1,
+    explain: `**Đáp án đúng: luôn trả về cùng một instance (singleton).**
+### Vì sao đúng
+Scope mặc định của bean Spring là singleton: container tạo một instance duy nhất khi khởi tạo (hoặc lazy) và tái sử dụng cho mọi lần getBean() và mọi injection. Đây là scope mặc định cho @Component, @Service, @Repository, @Controller.
+### Vì sao các phương án còn lại sai
+- **Mỗi lần tạo mới**: đó là scope prototype.
+- **Mỗi thread**: đó là scope thread (ít dùng, không có sẵn mặc định).
+- **Mỗi HTTP request**: đó là scope request (web scope).
+> Senior tip: singleton bean phải thread-safe (không giữ state thay đổi theo request). State theo request nên đặt trong method local hoặc dùng request scope bean. Prototype bean inject vào singleton sẽ bị "đóng băng" thành singleton nếu không dùng ObjectFactory/Provider.`
+  },
+  {
+    id: 'qz-spring-927',
+    topic: 'spring',
+    multi: true,
+    q: 'Khi viết auto-configuration cho Spring Boot 3, annotation nào dùng điều kiện dựa trên sự tồn tại của bean trong context? (Chọn 2)',
+    options: [
+      '@ConditionalOnMissingBean',
+      '@ConditionalOnBean',
+      '@ConditionalOnProperty',
+      '@ConditionalOnClass',
+      '@ConditionalOnWebApplication'
+    ],
+    answer: [0, 1],
+    explain: `**Đáp án đúng: @ConditionalOnMissingBean và @ConditionalOnBean.**
+### Vì sao đúng
+- @ConditionalOnMissingBean: chỉ tạo bean nếu context chưa có bean cùng type/name → cho phép user override.
+- @ConditionalOnBean: chỉ tạo bean nếu context đã có bean cùng type/name → dùng khi bean phụ thuộc bean khác.
+Cả hai đều kiểm tra sự tồn tại của bean trong context tại thời điểm auto-config chạy.
+### Vì sao các phương án còn lại sai
+- @ConditionalOnProperty: dựa vào property trong config, không phải bean.
+- @ConditionalOnClass: dựa vào class có trong classpath.
+- @ConditionalOnWebApplication: dựa vào loại application context (web).
+> Senior tip: thứ tự auto-config quan trọng. @ConditionalOnMissingBean chỉ kiểm tra bean đã đăng ký trước đó; nếu bean user được tạo sau auto-config (qua @ComponentScan muộn), điều kiện có thể đánh giá sai. Dùng @AutoConfigureBefore/@AutoConfigureAfter để kiểm soát thứ tự.`
+  },
+  {
+    id: 'qz-spring-928',
+    topic: 'spring',
+    q: 'Trong Spring Boot, @Profile("dev") trên một @Bean. Khi chạy với profile "prod" active, bean đó có được tạo không?',
+    options: [
+      'Có, vì @Profile chỉ là hint, không chặn tạo bean',
+      'Không, bean chỉ được đăng ký khi profile "dev" đang active',
+      'Có, nhưng bean bị đánh dấu lazy',
+      'Spring ném exception vì profile không khớp'
+    ],
+    answer: 1,
+    explain: `**Đáp án đúng: không, bean chỉ được đăng ký khi profile dev active.**
+### Vì sao đúng
+@Profile là điều kiện đăng ký bean: bean chỉ được thêm vào context khi profile chỉ định đang active. Với profile prod active, bean bị bỏ qua hoàn toàn, như thể không khai báo. Nhiều profile có thể chỉ định: @Profile({"dev","test"}).
+### Vì sao các phương án còn lại sai
+- **Chỉ là hint**: sai, @Profile có tác dụng thực sự.
+- **Lazy**: không liên quan.
+- **Ném exception**: Spring không lỗi khi profile không khớp, chỉ bỏ qua bean.
+> Senior tip: tránh dùng @Profile cho logic nghiệp vụ; dùng cho cấu hình theo môi trường (DataSource, client endpoint). Với Spring Boot, spring.config.activate.on-profile trong application.yml rõ ràng hơn. Đặt profile mặc định qua spring.profiles.default.`
+  },
+  {
+    id: 'qz-spring-929',
+    topic: 'spring',
+    q: 'Khi expose endpoint Actuator qua HTTP, cách nào bảo vệ endpoint nhạy cảm như /actuator/env đúng theo best practice Spring Boot 3?',
+    options: [
+      'Đặt management.endpoints.web.exposure.include=* là đủ vì Spring Security tự bảo vệ',
+      'Dùng Spring Security để phân quyền endpoint; tách management.server.port sang cổng riêng; không expose env/heapdump ra internet',
+      'Đặt spring.security.user.password trong application.yml',
+      'Dùng @PreAuthorize trên từng endpoint actuator'
+    ],
+    answer: 1,
+    explain: `**Đáp án đúng: dùng Spring Security phân quyền, tách cổng management, không expose endpoint nhạy cảm ra internet.**
+### Vì sao đúng
+Best practice: expose chỉ health/info/prometheus qua HTTP; endpoint env, beans, heapdump, threaddump chỉ bật ở môi trường dev hoặc qua JMX/cổng nội bộ. Tách management.server.port sang cổng riêng (8081) và không mở ra internet. Spring Security config phân quyền: permitAll cho health, authenticated cho còn lại.
+### Vì sao các phương án còn lại sai
+- **include=* là đủ**: mặc định Spring Security bảo vệ, nhưng expose env/heapdump vẫn rủi ro nếu config sai; nên không expose.
+- **spring.security.user.password**: chỉ tạo user mặc định, không đủ phân quyền chi tiết.
+- **@PreAuthorize trên endpoint**: endpoint actuator không phải bean controller thông thường; dùng SecurityFilterChain.
+> Senior tip: trên Kubernetes, /actuator/health/liveness và /actuator/health/readiness tự bật; đừng nhét kiểm tra DB vào liveness. Dùng management.endpoint.health.probes.enabled=true.`
+  },
+  {
+    id: 'qz-spring-930',
+    topic: 'spring',
+    q: 'Method @Async void sendMail() trả về void. Caller gọi method này và ngay sau đó kiểm tra DB. Điều gì xảy ra?',
+    options: [
+      'Caller chờ sendMail() xong mới tiếp tục',
+      'Caller tiếp tục ngay, sendMail() chạy trên thread khác; caller không biết khi nào xong và không bắt được exception',
+      'Spring tự động block caller cho đến khi async task hoàn thành',
+      'Method @Async void không được phép, Spring ném exception'
+    ],
+    answer: 1,
+    explain: `**Đáp án đúng: caller tiếp tục ngay, async chạy trên thread khác; không biết khi nào xong và không bắt được exception.**
+### Vì sao đúng
+@Async với void trả về: caller nhận null ngay, task chạy trên executor khác. Exception trong task bị nuốt (trừ khi có AsyncUncaughtExceptionHandler). Caller không có handle để chờ.
+### Vì sao các phương án còn lại sai
+- **Caller chờ**: chỉ với Future/CompletableFuture trả về.
+- **Spring block**: @Async không block caller.
+- **Không được phép**: @Async void hợp lệ.
+> Senior tip: nếu cần biết kết quả hoặc xử lý lỗi, trả về CompletableFuture và dùng whenComplete/exceptionally. Luôn cấu hình AsyncUncaughtExceptionHandler để log lỗi async, nếu không lỗi "chết im lặng".`
+  },
+  {
+    id: 'qz-spring-931',
+    topic: 'spring',
+    multi: true,
+    q: 'Khi review code, bạn thấy @Transactional trên method public của bean Spring. Phát biểu nào đúng về proxy và self-invocation? (Chọn 2)',
+    options: [
+      'Gọi method từ bean khác qua injection sẽ đi qua proxy và transaction được mở',
+      'Gọi method từ chính bean đó (this.method()) sẽ không mở transaction mới',
+      'Gọi method từ chính bean đó vẫn mở transaction vì annotation nằm trên method',
+      'Proxy chỉ tạo cho bean có interface, class-based bean không có proxy'
+    ],
+    answer: [0, 1],
+    explain: `**Đáp án đúng: gọi từ bean khác đi qua proxy; self-invocation không mở transaction.**
+### Vì sao đúng
+- Gọi từ bean khác: đi qua proxy, interceptor @Transactional chạy, transaction mở.
+- Self-invocation (this.method()): gọi trực tiếp object gốc, bỏ qua proxy, annotation bị ignore.
+### Vì sao các phương án còn lại sai
+- **Self-invocation vẫn mở transaction**: sai, đây là hiểu lầm phổ biến.
+- **Proxy chỉ cho interface**: Spring Boot mặc định dùng CGLIB (class-based proxy) từ Spring Boot 2.0+, nên class không interface vẫn có proxy. JDK proxy chỉ khi có interface và spring.aop.proxy-target-class=false.
+> Senior tip: test transaction bằng cách inject bean và gọi method; đừng test bằng cách gọi this.method() trong cùng class, vì sẽ cho kết quả sai (không có transaction).`
+  },
+  {
+    id: 'qz-spring-932',
+    topic: 'spring',
+    q: 'Auto-configuration class có @ConditionalOnMissingBean(DataSource.class). Khi ứng dụng tự định nghĩa một @Bean DataSource, điều gì xảy ra với auto-config DataSource của Spring Boot?',
+    options: [
+      'Cả hai DataSource bean cùng tồn tại, Spring chọn ngẫu nhiên',
+      'Auto-config DataSource bị bỏ qua vì đã có bean DataSource do user định nghĩa',
+      'Spring ném NoUniqueBeanDefinitionException',
+      'Auto-config DataSource override bean của user'
+    ],
+    answer: 1,
+    explain: `**Đáp án đúng: auto-config DataSource bị bỏ qua.**
+### Vì sao đúng
+@ConditionalOnMissingBean(DataSource.class) nghĩa là: chỉ tạo bean DataSource nếu context chưa có bean nào cùng type. Vì user đã định nghĩa @Bean DataSource, điều kiện false, auto-config "lùi lại", bean của user được dùng. Đây là cơ chế cho phép override mặc định.
+### Vì sao các phương án còn lại sai
+- **Cả hai tồn tại**: không, auto-config không tạo bean.
+- **NoUniqueBeanDefinitionException**: chỉ khi có 2 bean không có @Primary/@Qualifier, ở đây chỉ có 1.
+- **Override bean user**: auto-config không override; user bean thắng.
+> Senior tip: đây là nguyên lý "convention over configuration": mặc định hoạt động, nhưng user luôn có thể override bằng cách định nghĩa bean cùng type. Để biết auto-config nào bật/tắt, chạy với --debug hoặc xem ConditionEvaluationReport.`
+  },
 );
