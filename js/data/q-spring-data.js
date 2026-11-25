@@ -18171,5 +18171,179 @@ Service dùng chung {{acme-observability-starter}}. Một team thêm tag {{order
     'commonTags đặt instance hoặc pod có làm cardinality tăng không, khi nào chấp nhận được?'
   ],
   tags: ['Micrometer', 'metric naming', 'PrometheusNamingConvention', 'MeterFilter', 'cardinality', 'commonTags', 'observability']
+},
+{
+  id: 'spring-108',
+  topic: 'spring',
+  level: 'senior',
+  q: 'Khi một bean auto-configuration không được tạo (hoặc bị override) trong Spring Boot 3, bạn dùng cách nào để đọc báo cáo condition evaluation và xác định đúng nguyên nhân — bật debug mode, đọc AutoConfigurationReport, và xử lý bean overriding thế nào?',
+  a: `**Tóm tắt:** Spring Boot auto-configuration chỉ tạo bean khi mọi điều kiện {{@ConditionalOn...}} khớp. Khi bean "biến mất" hoặc bị override, nguyên nhân thường là thiếu classpath, property sai, hoặc bean cùng tên đã có trước. Cách chẩn đoán chuẩn: bật {{debug=true}} hoặc {{--debug}} để in **Condition Evaluation Report** (Positive/Negative matches) lúc startup, cùng endpoint {{/actuator/conditions}}; bật {{spring.main.allow-bean-definition-overriding=true}} chỉ để điều tra, sau đó sửa tên bean hoặc dùng {{@ConditionalOnMissingBean}}.
+
+### Auto-config chạy thế nào (tóm tắt)
+1. Spring Boot nạp danh sách auto-config từ {{META-INF/spring/org.springframework.boot.autoconfigure.AutoConfiguration.imports}}.
+2. Mỗi class có {{@AutoConfiguration}} được đánh giá theo thứ tự; các {{@ConditionalOn...}} quyết định có đăng ký bean hay không.
+3. Kết quả được gom vào **Condition Evaluation Report**: Positive (điều kiện khớp, bean được tạo) và Negative (điều kiện không khớp, kèm lý do).
+
+### Vì sao bean "không được tạo"
+- Thiếu classpath ({{@ConditionalOnClass}} không khớp) → Negative match "did not find required class".
+- Property không bật ({{@ConditionalOnProperty}}) → Negative match "did not find property".
+- Bean cùng **kiểu** đã có ({{@ConditionalOnMissingBean}} kiểm tra theo type, có thể dùng {{name}} để kiểm tra theo tên) → Negative match "found bean".
+- Thứ tự auto-config: auto-config chạy sau user config, nên {{@ConditionalOnMissingBean}} nhường cho bean người dùng khai báo.
+
+### Cách đọc báo cáo
+- Bật debug: {{debug=true}} trong {{application.yml}} hoặc {{--debug}} khi chạy jar. Report in ra console khi startup.
+- Endpoint: {{/actuator/conditions}} (cần {{spring-boot-starter-actuator}}) trả JSON đầy đủ Positive/Negative matches.
+- Log level: {{logging.level.org.springframework.boot.autoconfigure=DEBUG}}.
+
+~~~yaml
+# application.yml
+debug: true
+management:
+  endpoints:
+    web:
+      exposure:
+        include: conditions,health,info
+~~~
+
+### Bean overriding
+- Spring Boot 2.1+ **tắt** bean overriding mặc định. Nếu hai bean cùng tên, app fail lúc startup với "BeanDefinitionOverrideException".
+- Khi điều tra tạm thời bật {{spring.main.allow-bean-definition-overriding=true}} để xem bean nào thắng (theo thứ tự đăng ký).
+- Sửa đúng cách: đổi tên bean, hoặc dùng {{@ConditionalOnMissingBean}} để auto-config nhường cho bean người dùng.
+
+### Pitfall production
+- Bật {{allow-bean-definition-overriding=true}} vĩnh viễn → bean bị đè âm thầm, khó debug.
+- Đọc report nhưng bỏ qua "Negative matches" → không biết tại sao bean không được tạo.
+- Auto-config phụ thuộc thứ tự; thêm {{@AutoConfigureBefore/After}} sai → bean tạo sai thứ tự.
+- Thiếu {{@ConditionalOnMissingBean}} → auto-config đè bean người dùng.
+
+### Ví dụ đời thực
+Service dùng starter {{acme-cache-starter}} nhưng bean {{CacheClient}} không được tạo. Bật debug thấy Negative match: "did not find required class com.redis.clients.jedis.Jedis" — thiếu dependency jedis. Thêm dependency, bean xuất hiện. Một case khác: bean {{DataSource}} bị override vì hai starter cùng khai báo; bật {{allow-bean-definition-overriding=true}} tạm để thấy starter A thắng; sửa bằng đổi tên bean và {{@ConditionalOnMissingBean}}. Kết quả: startup rõ ràng, không còn override âm thầm.
+
+### Trả lời mẫu khi phỏng vấn
+"Khi bean auto-config không được tạo, tôi bật debug=true để xem Condition Evaluation Report, tìm Negative match kèm lý do (thiếu class, property, hoặc bean đã có). Nếu bean bị override, tôi tạm bật allow-bean-definition-overriding=true để xác định bean nào thắng, rồi sửa bằng đổi tên hoặc ConditionalOnMissingBean. Tôi không để override bật vĩnh viễn. Tôi cũng dùng /actuator/conditions để kiểm tra runtime. Nhờ đó nguyên nhân rõ ràng và sửa đúng chỗ thay vì đoán."
+
+> Senior tip: Condition Evaluation Report là bản đồ của auto-config. Luôn đọc Negative matches trước Positive; đó là nơi 90% sự cố auto-config ẩn.`,
+  follow: [
+    'Vì sao Spring Boot 2.1+ tắt bean overriding mặc định và khi nào cần bật tạm để điều tra?',
+    '@ConditionalOnMissingBean đánh giá theo kiểu bean hay theo tên, và vì sao thứ tự auto-config ảnh hưởng?',
+    'Làm sao test một auto-config bằng ApplicationContextRunner để khẳng định bean được/tạo hoặc không được tạo?'
+  ],
+  tags: ['auto-configuration', 'Condition Evaluation Report', 'debug', 'bean overriding', 'ConditionalOnMissingBean', 'actuator']
+},
+{
+  id: 'spring-109',
+  topic: 'spring',
+  level: 'senior',
+  q: '{{@ConfigurationProperties}} bind thế nào từ property source, relaxed binding là gì, constructor binding vs setter binding khác nhau ra sao, và profile-specific property hoạt động thế nào?',
+  a: `**Tóm tắt:** {{@ConfigurationProperties}} bind giá trị từ {{Environment}} (property sources) vào POJO theo prefix. **Relaxed binding** cho phép tên property linh hoạt ({{app.my-property}}, {{app.myProperty}}, {{APP_MY_PROPERTY}}). **Setter binding** mặc định mutate object sau khi tạo; **constructor binding** (record hoặc {{@ConstructorBinding}}) bind qua constructor, cho immutable và fail-fast. Property theo profile ({{application-prod.yml}}) được nạp theo {{spring.profiles.active}} và có thứ tự ưu tiên rõ ràng.
+
+### Cái gì — vì sao cần
+- Thay vì {{@Value("...")}} rải rác, {{@ConfigurationProperties}} gom config thành object type-safe, dễ validate và test.
+- Bind xảy ra lúc startup; sai kiểu → fail-fast.
+
+### Relaxed binding
+| Property source key | Field Java |
+|---|---|
+| {{app.my-property}} | {{myProperty}} |
+| {{app.my_property}} | {{myProperty}} |
+| {{APP_MY_PROPERTY}} | {{myProperty}} |
+| {{app.myProperty}} | {{myProperty}} |
+
+Spring chuẩn hoá tên: bỏ dấu, gạch, gạch dưới, chữ hoa → lowercase. Nhờ đó YAML/ENV/properties đều bind được.
+
+### Setter vs constructor binding
+- **Setter binding** (mặc định): tạo object rỗng rồi gọi setter. Có thể mutate sau bind; nested object cần setter hoặc field.
+- **Constructor binding**: bind qua constructor; object **immutable** (record). Fail-fast hơn vì thiếu required field → lỗi bind lúc startup.
+~~~java
+@ConfigurationProperties(prefix = "app.cache")
+public record CacheProperties(
+    @NotNull String uri,
+    @Min(1) int ttlSeconds,
+    boolean enabled
+) {}
+~~~
+Đăng ký: {{@EnableConfigurationProperties(CacheProperties.class)}} hoặc bean {{@Bean @ConfigurationProperties}}.
+
+### Profile-specific property
+- File {{application-prod.yml}} tự động nạp khi profile prod active.
+- Thứ tự ưu tiên (cao → thấp): command line args → env vars → {{application-prod.yml}} → {{application.yml}}.
+- {{spring.profiles.active=prod}} chọn profile; có thể active nhiều profile.
+
+### Pitfall production
+- Dùng setter binding + mutate sau bind → config không còn bất biến, khó test.
+- Relaxed binding quá linh hoạt → gõ sai tên vẫn bind được giá trị default, không báo lỗi.
+- Profile file đặt sai tên ({{application.prod.yml}} thiếu dấu gạch) → không nạp.
+- Constructor binding với field không có default → fail nếu property thiếu, nhưng message rõ.
+
+### Ví dụ đời thực
+Service có {{CacheProperties}} với {{uri}}, {{ttlSeconds}}. Dev đặt {{APP_CACHE_URI}} trong env (relaxed binding) và {{application-prod.yml}} override {{ttlSeconds=60}}. Constructor binding (record) đảm bảo {{uri}} không null; nếu thiếu env, app fail lúc startup với "Binding to target failed". Setter binding cũ cho phép object rỗng chạy tiếp → NPE lúc dùng. Chuyển sang record + {{@Validated}} → lỗi rõ tại startup.
+
+### Trả lời mẫu khi phỏng vấn
+"ConfigurationProperties bind từ Environment theo prefix với relaxed binding, nên tên property linh hoạt giữa YAML, env, và properties. Tôi ưu tiên constructor binding qua record để object immutable và fail-fast khi thiếu field. Profile-specific file application-prod.yml được nạp theo spring.profiles.active với thứ tự ưu tiên rõ. Tôi luôn có @Validated để validate lúc bind, và test bằng ApplicationContextRunner cho cả trường hợp hợp lệ và thiếu field."
+
+> Senior tip: constructor binding + record là lựa chọn mặc định cho config mới; setter binding chỉ khi cần mutate hoặc nested phức tạp. Relaxed binding tiện nhưng dễ che lỗi gõ sai tên — luôn validate.`,
+  follow: [
+    'Vì sao relaxed binding có thể che lỗi gõ sai tên property và cách phát hiện?',
+    'Constructor binding với record khác @ConstructorBinding annotation thế nào ở Spring Boot 3?',
+    'Thứ tự ưu tiên property source là gì và khi nào env var thắng application.yml?'
+  ],
+  tags: ['ConfigurationProperties', 'relaxed binding', 'constructor binding', 'profile', 'immutable config', 'validation']
+},
+{
+  id: 'spring-110',
+  topic: 'spring',
+  level: 'lead',
+  q: 'Với Micrometer, khi nào nên dùng histogram/percentile thay vì gauge/counter, SLO và bucket hoạt động thế nào, và làm sao liên kết metric với trace (exemplar) để điều tra latency spike?',
+  a: `**Tóm tắt:** Counter đo số lần, gauge đo giá trị tức thời, timer/histogram đo phân phối latency. Dùng **histogram** (bucket) khi cần percentile (p95/p99) và SLO; dùng **gauge** cho trạng thái (queue depth, heap). **Exemplar** gắn traceId vào metric sample để từ dashboard nhảy sang trace điều tra spike. Cấu hình bucket/SLO qua {{Timer.Builder().publishPercentileHistogram()}} và {{sla(...)}}; exemplar cần backend hỗ trợ (Prometheus + Tempo/Grafana).
+
+### Cái gì — vì sao
+- Counter/gauge không đủ để trả lời "p99 latency là bao nhiêu" vì mất phân phối.
+- Histogram lưu bucket counts, cho phép tính percentile và SLO (ví dụ p99 < 500ms).
+- Exemplar gắn traceId vào một sample → từ biểu đồ metric click sang trace cụ thể.
+
+### Histogram vs percentile
+- {{publishPercentileHistogram()}}: xuất bucket counts (Prometheus histogram) → tính percentile ở phía Prometheus (histogram_quantile).
+- {{publishPercentiles(0.5,0.95,0.99)}}: tính percentile ở phía app (client-side) → tốn heap, không khuyến nghị cho high traffic.
+- SLO: {{sla(Duration.ofMillis(500))}} tạo bucket tại 500ms để đo tỷ lệ request dưới ngưỡng.
+
+~~~java
+Timer.builder("http.server.requests")
+    .publishPercentileHistogram()
+    .sla(Duration.ofMillis(200), Duration.ofMillis(500))
+    .register(registry);
+~~~
+
+### Khi nào dùng gì
+| Nhu cầu | Loại metric |
+|---|---|
+| Số request, số lỗi | Counter |
+| Queue depth, heap, connection pool size | Gauge |
+| Latency phân phối, p95/p99, SLO | Timer + histogram |
+| Trạng thái on/off | Gauge (0/1) |
+
+### Exemplar liên kết trace
+- Micrometer hỗ trợ exemplar từ version mới; Prometheus scrape exemplar khi {{scrape_configs}} bật {{exemplar_storage}}.
+- Grafana hiển thị exemplar trên biểu đồ → click nhảy sang trace (Tempo).
+- Cần traceId trong MDC/context; Micrometer tự lấy từ tracing context (Brave/OpenTelemetry).
+
+### Pitfall production
+- Bật {{publishPercentiles}} client-side trên high traffic → heap tăng, cardinality cao.
+- Bucket quá nhiều → scrape chậm, TSDB lớn.
+- Exemplar không hoạt động nếu backend (Prometheus) chưa bật exemplar storage.
+- Gauge cho latency → mất phân phối, p99 không tính được.
+
+### Ví dụ đời thực
+Service có latency spike p99 từ 200ms lên 2s. Dashboard chỉ có average → không thấy spike. Thêm histogram + SLO 500ms → Prometheus alert khi tỷ lệ request > 500ms vượt 5%. Exemplar gắn traceId → click biểu đồ mở trace Tempo, thấy DB query chậm do missing index. Sửa index, p99 về 180ms. Alert SLO về 0.
+
+### Trả lời mẫu khi phỏng vấn
+"Khi cần percentile và SLO cho latency, tôi dùng timer với publishPercentileHistogram và sla() để Prometheus tính histogram_quantile, thay vì publishPercentiles client-side tốn heap. Counter cho số lần, gauge cho trạng thái tức thời. Để điều tra spike, tôi bật exemplar gắn traceId vào sample metric, backend Prometheus + Tempo cho phép click từ biểu đồ sang trace cụ thể. Tôi tránh client-side percentile trên traffic cao và kiểm soát số bucket để scrape không chậm. Nhờ đó alert SLO rõ và điều tra nhanh."
+
+> Senior tip: histogram ở phía server (Prometheus) cho phép đổi percentile mà không deploy lại code; client-side percentile thì phải deploy lại và tốn heap. Exemplar là cầu nối metric-trace, nhưng chỉ đáng giá khi team đã có tracing end-to-end.`,
+  follow: [
+    'Vì sao publishPercentiles client-side tốn heap và khi nào vẫn chấp nhận được?',
+    'SLO bucket và alert threshold thiết kế thế nào để tránh false positive?',
+    'Exemplar cần những điều kiện ở Prometheus/Grafana/Tempo để hoạt động end-to-end?'
+  ],
+  tags: ['Micrometer', 'histogram', 'percentile', 'SLO', 'exemplar', 'tracing', 'observability']
 }
 );
