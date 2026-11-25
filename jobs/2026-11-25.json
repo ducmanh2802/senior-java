@@ -1,0 +1,265 @@
+{
+  "date": "2026-11-25",
+  "intro": "Hôm nay có 9 tin Java còn hạn ở Hà Nội, đa số từ 5 năm kinh nghiệm: ngân hàng/chứng khoán (MSB, SHS, Alphaway), fintech (Gimo), sàn hàng hóa MXV với bài toán độ trễ thấp, và outsource/doanh nghiệp (LG CNS, Viettel Construction, Wiinvent, Tiên Phong). Chưa xác minh được tin HCM hoặc remote nào còn mở nên hôm nay không có; Gimo, Tiên Phong và SHS hết hạn trong 3–5 ngày tới.",
+  "editor": "claude",
+  "items": [
+    {
+      "title": "Java Backend Developer (Senior)",
+      "company": "Wiinvent",
+      "url": "https://vn.joboko.com/viec-lam-java-backend-developer-senior-xvi6852944",
+      "source": "Joboko",
+      "location": "Hà Nội (onsite, Yên Hòa)",
+      "level": "senior",
+      "salary": "35–45 triệu",
+      "skills": [
+        "Java",
+        "Spring Boot",
+        "Kafka",
+        "PostgreSQL",
+        "Redis",
+        "Kubernetes"
+      ],
+      "summary": "Xây dựng và bảo trì hệ thống phần mềm cho khách hàng, thiết kế kiến trúc và tích hợp hệ thống bên thứ ba. Yêu cầu 4–5 năm Java (ít nhất 2 năm Spring Boot), microservices, event-driven, message broker như Kafka, RDBMS và NoSQL, Docker/Kubernetes, CI/CD. Hạn nộp 21/12/2026.",
+      "prep": "Ôn Kafka (delivery semantics, consumer group), concurrency và bảo mật trong hệ phân tán, tối ưu SQL. Chuẩn bị kể một lần thiết kế event-driven và cách làm việc trực tiếp với khách hàng.",
+      "topics": [
+        "spring",
+        "microservices",
+        "concurrency",
+        "db"
+      ],
+      "tags": [
+        "outsource"
+      ]
+    },
+    {
+      "title": "Senior Java Engineer (Fintech)",
+      "company": "Gimo",
+      "url": "https://vn.joboko.com/viec-lam-senior-java-engineer-xvi6776623",
+      "source": "Joboko",
+      "location": "Hà Nội (onsite, Thanh Xuân)",
+      "level": "senior",
+      "salary": "Tới 40 triệu",
+      "skills": [
+        "Java 11+",
+        "Spring Boot",
+        "Hibernate",
+        "Kafka",
+        "Redis",
+        "AWS",
+        "Kubernetes"
+      ],
+      "summary": "Phụ trách phần kỹ thuật của nhiều sản phẩm fintech giúp người lao động tiếp cận dịch vụ tài chính; thiết kế kiến trúc, xử lý sự cố production, làm việc với backend, mobile, QA và PM. Yêu cầu 5 năm JVM, microservices, Liquibase, và AWS thực tế (S3, EKS, RDS, KMS, SQS, SNS). Hạn nộp 28/11/2026, gần hết hạn.",
+      "prep": "Ôn AWS (EKS, SQS/SNS, KMS), JPA/Hibernate và migration với Liquibase, observability và quy trình xử lý incident. Chuẩn bị ví dụ debug production có số liệu.",
+      "topics": [
+        "aws",
+        "spring",
+        "jpa",
+        "microservices"
+      ],
+      "tags": [
+        "fintech"
+      ]
+    },
+    {
+      "title": "Java Backend Developer (Middle - Senior), nền tảng giao dịch hàng hóa",
+      "company": "Sở Giao dịch Hàng hóa Việt Nam (MXV)",
+      "url": "https://vn.joboko.com/viec-lam-java-backend-developer-level-middle-senior-xvi6824881",
+      "source": "Joboko",
+      "location": "Hà Nội (onsite, Cầu Giấy)",
+      "level": "senior",
+      "salary": "Thỏa thuận",
+      "skills": [
+        "Java 17/21",
+        "Spring Boot",
+        "Kafka",
+        "WebSocket",
+        "gRPC",
+        "FIX Protocol",
+        "PostgreSQL"
+      ],
+      "summary": "Phát triển nền tảng giao dịch hàng hóa với các module khớp lệnh, quản lý tài khoản và ký quỹ, nạp rút, dữ liệu thị trường; hệ thống độ trễ thấp, tải cao. Cần Java đa luồng vững, Kafka, WebSocket/gRPC, tối ưu DB; ưu tiên biết FIX và in-memory DB. Tin ghi hạn 07/12/2026 ở đầu trang nhưng ngày trong nội dung không hợp lệ, nên kiểm tra lại.",
+      "prep": "Ôn kỹ concurrency (thread pool, thread safety), profiling JVM, thiết kế order matching đơn giản, độ trễ thấp và exactly-once với Kafka. Đọc qua FIX Protocol nếu có thời gian.",
+      "topics": [
+        "concurrency",
+        "jvm",
+        "microservices",
+        "banking"
+      ],
+      "tags": [
+        "trading",
+        "low-latency"
+      ]
+    },
+    {
+      "title": "Java Developer Leader (Banking)",
+      "company": "Alphaway",
+      "url": "https://vn.joboko.com/viec-lam-java-developer-leader-banking-xvi6830633",
+      "source": "Joboko",
+      "location": "Hà Nội (onsite, nhiều văn phòng)",
+      "level": "lead",
+      "salary": "25–35 triệu gross",
+      "skills": [
+        "Java",
+        "Spring Boot",
+        "Microservices",
+        "Kubernetes",
+        "Kafka",
+        "RabbitMQ",
+        "Oracle"
+      ],
+      "summary": "Vai trò leader cho đội phát triển, triển khai, nâng cấp và tích hợp ứng dụng thuộc mảng digital banking của ngân hàng, kèm tài liệu giải pháp và đề xuất công nghệ. Yêu cầu 3+ năm Java/Spring Boot có dự án payment, fintech hoặc banking, message queue, container. Hạn nộp 10/12/2026.",
+      "prep": "Ôn kiến trúc microservices trong ngân hàng, message queue, tối ưu SQL và unit test; chuẩn bị câu chuyện dẫn dắt team nhỏ và viết tài liệu giải pháp.",
+      "topics": [
+        "banking",
+        "microservices",
+        "spring",
+        "architecture"
+      ],
+      "tags": [
+        "banking"
+      ]
+    },
+    {
+      "title": "Java Backend Developer (Spring, SQL) - dự án SBSI",
+      "company": "Ngân hàng TMCP Hàng Hải Việt Nam (MSB)",
+      "url": "https://vn.joboko.com/viec-lam-java-backend-developer-srping-sql-sbsi-3k089-xvi6817686",
+      "source": "Joboko",
+      "location": "Hà Nội (onsite, Nguyễn Chí Thanh)",
+      "level": "mid",
+      "salary": "Thỏa thuận",
+      "skills": [
+        "Java",
+        "Spring Boot",
+        "Hibernate/JPA",
+        "SQL",
+        "Kafka",
+        "DDD",
+        "CQRS"
+      ],
+      "summary": "Xây backend microservice cho sản phẩm số và hệ thống lõi: REST API, thiết kế giải pháp, debug production. Cần 3+ năm Java và microservices, kiến thức DDD, CQRS, event-driven; ưu tiên biết chứng khoán, bảo mật ứng dụng, Docker/K8s. Trang tin nêu một pháp nhân thu thập hồ sơ khác tên MSB nên kiểm tra nhà tuyển dụng trước khi gửi CV. Hạn nộp 09/12/2026.",
+      "prep": "Ôn DDD, CQRS, event-driven và Kafka, JPA/Hibernate, tối ưu SQL. Chuẩn bị câu hỏi làm rõ đơn vị tuyển dụng và phạm vi dự án.",
+      "topics": [
+        "microservices",
+        "architecture",
+        "jpa",
+        "banking"
+      ],
+      "tags": [
+        "banking"
+      ]
+    },
+    {
+      "title": "Fullstack Java Developer (Insurance/Banking Domain)",
+      "company": "LG CNS Việt Nam",
+      "url": "https://vn.joboko.com/viec-lam-fullstack-java-developer-insurance-banking-domain-xvi6845820",
+      "source": "Joboko",
+      "location": "Hà Nội (onsite, Keangnam Landmark 72)",
+      "level": "senior",
+      "salary": "Thỏa thuận",
+      "skills": [
+        "Java",
+        "Spring Boot",
+        "React/Vue/Angular",
+        "REST API",
+        "RDBMS"
+      ],
+      "summary": "Phát triển kênh phân phối số (web và mobile) cho bảo hiểm và ngân hàng: đăng ký online, báo giá, hồ sơ, thanh toán, quản lý khách hàng, tích hợp Core Insurance, Payment, CRM. Yêu cầu 5+ năm full-stack Java, tiếng Anh công việc bắt buộc, kinh nghiệm làm việc trong đội đa quốc gia. Hạn nộp 23/12/2026.",
+      "prep": "Luyện trả lời phỏng vấn bằng tiếng Anh, ôn thiết kế REST API và tích hợp hệ thống, RDBMS, một framework frontend. Tìm hiểu nghiệp vụ bảo hiểm cơ bản.",
+      "topics": [
+        "english",
+        "api",
+        "spring",
+        "banking"
+      ],
+      "tags": [
+        "english",
+        "insurance"
+      ]
+    },
+    {
+      "title": "Phó nhóm lập trình Java (Sublead/Lead)",
+      "company": "Công ty CP Đầu tư Công nghệ Tiên Phong",
+      "url": "https://vn.joboko.com/viec-lam-pho-nhom-lap-trinh-java-java-sublead-lead-xvi6810669",
+      "source": "Joboko",
+      "location": "Hà Nội (onsite, Yên Hòa)",
+      "level": "lead",
+      "salary": "30–40 triệu",
+      "skills": [
+        "Java",
+        "Spring Boot",
+        "Microservices",
+        "MySQL/PostgreSQL",
+        "Kubernetes",
+        "Docker"
+      ],
+      "summary": "Dẫn dắt nhóm Java trong các dự án banking, fintech, ứng dụng doanh nghiệp, mạng xã hội, livestream theo Agile/Scrum: phân tích, thiết kế kiến trúc, code, unit test. Cần 5+ năm Java, Spring Boot, microservices, event-driven messaging, SQL, Linux; biết K8s/Docker là lợi thế lớn. Hạn nộp 29/11/2026, sắp hết.",
+      "prep": "Ôn thiết kế microservices và messaging, tối ưu DB, Linux cơ bản; chuẩn bị ví dụ về kèm cặp thành viên và chia task trong team.",
+      "topics": [
+        "microservices",
+        "spring",
+        "architecture",
+        "behavioral"
+      ],
+      "tags": [
+        "lead"
+      ]
+    },
+    {
+      "title": "Java Developer (Midlevel/Senior/Lead)",
+      "company": "Viettel Construction",
+      "url": "https://vn.joboko.com/viec-lam-java-developer-midlevel-senior-lead-xvi6809442",
+      "source": "Joboko",
+      "location": "Hà Nội (onsite, Cầu Giấy)",
+      "level": "senior",
+      "salary": "28–35 triệu x 14 tháng",
+      "skills": [
+        "Java",
+        "Spring Boot",
+        "Kafka",
+        "Redis",
+        "Oracle",
+        "PostgreSQL",
+        "Jenkins"
+      ],
+      "summary": "Trung tâm CNTT xây phần mềm Java cho quản trị vận hành, bán hàng, chăm sóc khách hàng và ERP; tuyển 2 người, từ mid đến lead, một vòng phỏng vấn, không yêu cầu tiếng Anh. Yêu cầu 3+ năm Java, OOP, multithreading, Collections, J2EE, ORM, caching, Kafka và Redis. Mô tả nêu lương cơ bản 28–35 triệu, 14 tháng. Hạn nộp 12/12/2026.",
+      "prep": "Ôn Java core (multithreading, Collections), JPA và caching, Kafka. Chuẩn bị mô tả thiết kế một module ERP hoặc sales và cách hỗ trợ sau go-live.",
+      "topics": [
+        "core",
+        "collections",
+        "jpa",
+        "spring"
+      ],
+      "tags": [
+        "enterprise"
+      ]
+    },
+    {
+      "title": "Senior Backend Developer (Java, Spring, SQL)",
+      "company": "Công ty CP Chứng khoán Sài Gòn - Hà Nội (SHS)",
+      "url": "https://vn.joboko.com/viec-lam-senior-backend-developer-java-spring-sql-xvi6798025",
+      "source": "Joboko",
+      "location": "Hà Nội (onsite, Hoàn Kiếm)",
+      "level": "senior",
+      "salary": "Thỏa thuận",
+      "skills": [
+        "Java 11+",
+        "Spring Boot",
+        "Oracle/PostgreSQL",
+        "Elasticsearch",
+        "Kafka",
+        "OAuth2"
+      ],
+      "summary": "Thiết kế giải pháp cùng Tech Lead từ yêu cầu của BA, xây tính năng phức tạp và cải thiện hệ thống legacy trong công ty chứng khoán. Cần 5+ năm backend Java, RESTful, microservices, distributed transaction, hệ thống ACID-critical, tối ưu SQL; ưu tiên Spring Cloud, Redis, Kafka. Hạn nộp 30/11/2026, sắp hết.",
+      "prep": "Ôn distributed transaction (saga, outbox), isolation level, tối ưu truy vấn, OAuth2/OIDC; luyện thuật toán cơ bản vì tin có yêu cầu cấu trúc dữ liệu.",
+      "topics": [
+        "db",
+        "sql",
+        "microservices",
+        "security"
+      ],
+      "tags": [
+        "securities"
+      ]
+    }
+  ]
+}

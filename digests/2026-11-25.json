@@ -1,0 +1,79 @@
+{
+  "date": "2026-11-25",
+  "intro": "Hôm nay nổi bật là AWS Lambda nâng timeout lên 30 phút (và chạy được GPU), Spring AI 2.1 thêm cơ chế duyệt tool call để agent dừng chờ người rồi chạy tiếp, cùng một case study bảo mật dữ liệu trên AWS Nitro và vài cập nhật hạ tầng (CloudFormation StackSets, Terraform, Nomad).",
+  "editor": "claude",
+  "items": [
+    {
+      "title_vi": "AWS Lambda tăng timeout Event Function lên 30 phút, hỗ trợ GPU trên Managed Instances",
+      "title": "AWS Weekly Roundup: Local Zone in Bogotá, 30-minute Lambda timeout, and more (November 24, 2026)",
+      "url": "https://aws.amazon.com/blogs/aws/aws-weekly-roundup-local-zone-in-bogota-30-minute-lambda-timeout-and-more-november-24-2026/",
+      "source": "AWS News Blog",
+      "category": "cloud",
+      "summary": "Event Function của Lambda giờ cấu hình được timeout tối đa 30 phút (1.800 giây), gấp đôi mức 15 phút tồn tại từ 2018, áp dụng cho invoke đồng bộ, bất đồng bộ và event source mapping, giá giữ nguyên. Cùng tuần Lambda Managed Instances hỗ trợ GPU (dòng G4dn đến G6e, đóng gói OCI image) cho inference và xử lý media. Bài lưu ý: service gọi đồng bộ có timeout riêng, client cần read timeout đủ dài, NAT gateway ngắt kết nối nhàn rỗi sau 350 giây.",
+      "why": "Các tác vụ dài như chuỗi gọi LLM/tool, chuyển mã media hay chuyển đổi file giờ có thể chạy trong Lambda mà không phải tách sang Step Functions hay ECS. Nhưng đặt timeout cao mà bỏ qua timeout của client, API Gateway hay NAT sẽ gây lỗi khó hiểu.",
+      "interview_q": "Một job xử lý file mất khoảng 20 phút, bạn chọn Lambda, ECS/Fargate hay Step Functions? Nếu dùng Lambda timeout 30 phút thì cần kiểm tra những giới hạn nào ở các tầng xung quanh?",
+      "related": ["aws-001", "aws-002"],
+      "tags": ["lambda", "serverless", "aws"]
+    },
+    {
+      "title_vi": "Spring AI 2.1: tool call cần xác nhận, dừng chờ người duyệt rồi chạy tiếp sau khi restart",
+      "title": "Human in the Loop with Spring AI 2.1: Tool Calls That Survive a Restart",
+      "url": "https://spring.io/blog/2026/11/24/spring-ai-tool-call-confirmation-park-resume",
+      "source": "Spring Blog",
+      "category": "tech",
+      "summary": "Spring AI 2.1 cho phép đánh dấu tool cần xác nhận bằng {{@Tool(requiresConfirmation = true)}}, thuộc tính cấu hình hoặc bean {{ToolCallConfirmationPolicy}}. Khi model gọi tool đó, vòng lặp dừng và trả về reply đang chờ; ứng dụng dùng {{ToolCallDecision.allow/deny}} rồi {{toolCallingManager.executeToolCalls}} để chạy tiếp. Dự án cộng đồng Session Extensions 0.11.0 lưu lượt đang \"parked\" vào session log (JDBC) để tiến trình khác resume được. Bài nhấn mạnh: không có timeout, cần tự kiểm tra quyền người duyệt và xử lý idempotent.",
+      "why": "Agent gọi tool có tác dụng phụ (chuyển tiền, xoá dữ liệu) cần human approval. Nắm cách lưu trạng thái chờ duyệt ngoài bộ nhớ, kiểm quyền người duyệt và an toàn khi resume lặp lại là phần dev backend phải tự thiết kế.",
+      "interview_q": "Bạn thiết kế thế nào để một AI agent chỉ thực thi lệnh chuyển tiền sau khi người có thẩm quyền duyệt, và vẫn chạy tiếp đúng nếu server restart giữa chừng?",
+      "related": ["ai-001", "security-001"],
+      "tags": ["spring-ai", "agent", "human-in-the-loop"]
+    },
+    {
+      "title_vi": "Bee xây Zero Operator Access cho AI cá nhân trên AWS bằng attestation và Nitro",
+      "title": "How Bee implemented Zero Operator Access for personal AI on AWS",
+      "url": "https://aws.amazon.com/blogs/architecture/how-bee-implemented-zero-operator-access-for-personal-ai-on-aws/",
+      "source": "AWS Architecture Blog",
+      "category": "cloud",
+      "summary": "Bee xử lý dữ liệu rất nhạy cảm nên thiết kế để kỹ sư của chính họ, nhân viên Amazon khác và operator hạ tầng AWS đều không có đường truy cập dữ liệu khách hàng. Cốt lõi là EC2 instance attestation: app trên thiết bị chỉ nhả khoá giải mã ngắn hạn khi instance chạy đúng phần mềm đã được xác minh (NitroTPM, chứng chỉ từ AWS Private CA, log minh bạch Sigstore Rekor). Khoá chỉ nằm trong bộ nhớ app server và Redis; inference server không nhận khoá. Attestation được kết hợp với kiểm soát mạng, lưu trữ và tổ chức.",
+      "why": "Khi hệ thống chứa dữ liệu tài chính, y tế, mô hình tin cậy kiểu \"admin cũng không đọc được\" ngày càng được yêu cầu. Bài cho thấy key management, attestation và phân quyền phải đi cùng nhau thay vì chỉ mã hoá at rest.",
+      "interview_q": "Làm sao để chính DevOps và DBA của công ty cũng không đọc được dữ liệu nhạy cảm của khách hàng? Mã hoá at rest bằng KMS có đủ không, vì sao?",
+      "related": ["aws-003", "security-002"],
+      "tags": ["nitro", "attestation", "security"]
+    },
+    {
+      "title_vi": "CloudFormation StackSets thêm xem tiến độ triển khai theo từng giai đoạn",
+      "title": "Track AWS CloudFormation StackSets deployments with progress visibility",
+      "url": "https://aws.amazon.com/blogs/devops/track-aws-cloudformation-stacksets-deployments-with-progress-visibility/",
+      "source": "AWS DevOps Blog",
+      "category": "devops",
+      "summary": "Mỗi stack set operation giờ báo hai giai đoạn riêng là provisioning role và deploy stack, mỗi giai đoạn có trạng thái, phần trăm hoàn thành và số lượng succeeded/failed/pending (deploy còn có skipped, cancelled). Có bảng tiến độ theo Region trên console (tab Progress) và qua API tại {{StatusDetails.Stages}} của {{DescribeStackSetOperation}} và {{ListStackSetOperations}}. Thay đổi mang tính bổ sung nên tích hợp cũ không bị ảnh hưởng, kết quả vẫn xem lại được sau khi hoàn tất.",
+      "why": "Nếu team bạn rollout baseline bảo mật hay network tới hàng chục đến hàng nghìn account, việc biết account nào kẹt ở giai đoạn nào giúp tự động hoá cảnh báo và quyết định dừng hay tiếp tục sớm.",
+      "interview_q": "Bạn rollout một thay đổi hạ tầng tới hàng trăm AWS account như thế nào để giới hạn blast radius và theo dõi được tiến độ cũng như lỗi từng account?",
+      "related": ["devops-001"],
+      "tags": ["cloudformation", "iac", "multi-account"]
+    },
+    {
+      "title_vi": "Terraform: policy-as-code tfpolicy cho Stacks, nhóm deployment và SCIM 2.0",
+      "title": "Terraform introduces tfpolicy support for Stacks, SCIM support, and more",
+      "url": "https://www.hashicorp.com/blog/terraform-introduces-tfpolicy-support-for-stacks-scim-support-and-more",
+      "source": "HashiCorp Blog",
+      "category": "devops",
+      "summary": "Terraform policy (khung policy-as-code viết bằng HCL) đã GA cho Stacks trên HCP Terraform và Terraform Enterprise; policy chạy sau mỗi plan và có thể gắn cho toàn organization, project hoặc từng Stack. Deployment group hỗ trợ ngưỡng failure tolerance để dừng rollout, kiểm soát eager planning và xem số lượng thành công/thất bại. Stacks CLI thêm lệnh không tương tác như {{terraform stacks deployment-run watch}}, và SCIM 2.0 tự động provision/deprovision người dùng, thu hồi cả session và API token.",
+      "why": "Dev backend ngày càng phải tự sở hữu hạ tầng; policy-as-code và rollout theo nhóm với ngưỡng lỗi là cách chuẩn để giữ guardrail mà không cần review thủ công từng thay đổi.",
+      "interview_q": "Bạn áp guardrail (ví dụ cấm public S3, bắt buộc tag) cho mọi thay đổi Terraform của nhiều team thế nào để không làm chậm việc deploy?",
+      "related": ["devops-002"],
+      "tags": ["terraform", "policy-as-code", "iac"]
+    },
+    {
+      "title_vi": "Nomad 2.0/2.1: WAL cho Raft, hàng đợi batch job thử nghiệm và driver exec2",
+      "title": "Nomad in 2026: A Year of Scale, Security, and Ecosystem Velocity",
+      "url": "https://www.hashicorp.com/blog/nomad-in-2026-a-year-of-scale-security-and-ecosystem-velocity",
+      "source": "HashiCorp Blog",
+      "category": "devops",
+      "summary": "Tổng kết năm của Nomad: có thể chuyển Raft log store từ BoltDB sang Write-Ahead Log cho workload ghi nhiều, thêm {{nomad operator snapshot filter}} để dọn snapshot trước khi restore. Nomad 2.1 có Batch Job Queue (thử nghiệm) với FIFO hoặc ưu tiên động để tránh job nhỏ bị đói. Driver exec2 0.2.0 hỗ trợ Linux capabilities và mount volume; Autoscaler 0.6.0 thêm plugin Instana, InfluxDB và lịch scale theo khung giờ. Phiên bản khuyến nghị: Nomad 2.1.1.",
+      "why": "Nếu công ty chạy workload JVM trên Nomad thay vì Kubernetes, các thay đổi về scheduler, autoscaling và quản lý capability của task ảnh hưởng trực tiếp cách bạn vận hành và tune service.",
+      "interview_q": "So sánh Nomad và Kubernetes để chạy các service Java: khi nào chọn cái nào, và bạn cân nhắc những trade-off vận hành nào?",
+      "related": ["devops-003"],
+      "tags": ["nomad", "scheduler", "orchestration"]
+    }
+  ]
+}
