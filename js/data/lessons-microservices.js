@@ -6429,4 +6429,628 @@ Idempotency key là bắt buộc cho API thanh toán vì mạng không đáng ti
   related: ['microservices-006', 'microservices-011', 'microservices-001'],
   tags: ['idempotency', 'payment', 'api', 'dedup']
 },
+{
+  id: 'lesson-microservices-027', track: 'microservices', order: 27,
+  title: 'Circuit breaker cửa sổ thời gian: đếm tỉ lệ lỗi trong T giây gần nhất', level: 'senior', minutes: 30,
+  goals: [
+    'Phân biệt breaker đếm liên tiếp, đếm theo số lần (count-based) và đếm theo thời gian (time-based)',
+    'Tự viết breaker cửa sổ thời gian: ghi kết quả kèm mốc thời gian, loại kết quả cũ, tính tỉ lệ lỗi',
+    'Dùng Clock giả để test xác định và tránh half-open storm'
+  ],
+  body: `**Tóm tắt:** Circuit breaker cửa sổ thời gian (time-based sliding window) mở mạch khi **tỉ lệ lỗi trong T giây gần nhất** vượt ngưỡng, thay vì đếm số lỗi liên tiếp hay đếm trên N lần gọi gần nhất. Mỗi kết quả gọi được ghi kèm một mốc thời gian; khi đánh giá, chỉ những kết quả còn nằm trong cửa sổ T giây mới được tính, kết quả cũ hơn bị loại bỏ. Nhờ vậy breaker phản ánh đúng "sức khỏe hiện tại" của dependency và không bị một request thành công xen giữa làm reset bộ đếm.
+
+### Ba cách đếm lỗi, ba hành vi khác nhau
+- **Đếm liên tiếp (consecutive):** cứ một lần thành công là bộ đếm về 0. Nhược điểm: lỗi rải rác (thành công xen kẽ) gần như không bao giờ chạm ngưỡng, breaker mù trước một dependency lỗi 40%.
+- **Đếm theo số lần (count-based):** giữ N kết quả gần nhất (ví dụ 100). Đơn giản, bộ nhớ cố định, nhưng khi traffic thấp thì N lần gọi có thể trải dài nhiều giờ, phản ánh quá khứ cũ.
+- **Đếm theo thời gian (time-based):** giữ các kết quả trong T giây gần nhất (ví dụ 10 giây). Phản ánh "hiện tại" tốt hơn, phù hợp khi lưu lượng dao động mạnh; đổi lại cần lưu mốc thời gian và loại phần tử cũ.
+
+Bài 016 đã làm bản count-based, bài 025 làm bản đếm liên tiếp. Bài này làm bản **time-based** — góc còn thiếu — và là cách Resilience4j dùng khi {{slidingWindowType}} = {{TIME_BASED}}.
+
+### Ba khái niệm cần định nghĩa
+- **Cửa sổ trượt theo thời gian:** một khoảng T giây luôn trôi theo đồng hồ. Tại thời điểm now, cửa sổ là đoạn [now - T, now]. Mọi kết quả có mốc thời gian nhỏ hơn now - T đã "rơi" khỏi cửa sổ và không được tính.
+- **Tỉ lệ lỗi (failure rate):** số kết quả thất bại chia cho tổng số kết quả còn trong cửa sổ. Ví dụ 4 kết quả trong 10 giây, 2 thất bại → tỉ lệ 0,5 (50%).
+- **minimumCalls (số lần tối thiểu):** chưa đủ ngưỡng này thì chưa xét tỉ lệ, tránh mở mạch oan lúc traffic thấp (1 lỗi trên 1 lần gọi là 100% nhưng không đủ tin cậy).
+
+### Cơ chế từng bước
+1. **Ghi kết quả kèm mốc thời gian:** mỗi lần gọi xong, thêm một phần tử (timestamp, thành công/thất bại) vào cuối cửa sổ (một hàng đợi đôi).
+2. **Loại kết quả cũ (evict):** trước khi tính, bỏ khỏi đầu hàng mọi phần tử có timestamp < now - T. Vì phần tử được thêm theo thứ tự thời gian tăng dần, chỉ cần xét từ đầu.
+3. **Tính tỉ lệ:** nếu số phần tử còn lại >= minimumCalls và tỉ lệ lỗi >= ngưỡng thì mở mạch.
+4. **Mở mạch (OPEN):** ghi openedAt = now, xóa cửa sổ để lần đo sau bắt đầu sạch.
+5. **Open sang Half-open:** khi now - openedAt >= openMs, chuyển Half-open và reset bộ đếm probe.
+6. **Half-open:** cho tối đa một số probe giới hạn; đủ ngưỡng thành công thì về Closed và xóa cửa sổ, chỉ cần một probe lỗi là về Open ngay.
+
+~~~java
+// Bản rút gọn: cửa sổ thời gian bằng ArrayDeque các phần tử [timestamp, outcome]
+synchronized void recordFailure() {
+    long now = clock.millis();
+    if (state == State.HALF_OPEN) { state = State.OPEN; openedAt = now; window.clear(); return; }
+    window.addLast(new long[]{now, 0});          // 0 = thất bại
+    evict(now);                                   // bỏ phần tử cũ hơn now - windowMs
+    if (window.size() >= minimumCalls && failureRate() >= failureRateThreshold) {
+        state = State.OPEN; openedAt = now; window.clear();
+    }
+}
+private void evict(long now) {
+    while (!window.isEmpty() && window.peekFirst()[0] < now - windowMs) window.removeFirst();
+}
+~~~
+
+### Vì sao dùng Clock giả
+Trong test, nếu dùng giờ thật, muốn kiểm tra "kết quả cũ rơi khỏi cửa sổ" bạn phải ngủ thật vài giây — chậm và flaky (lúc pass lúc fail). Clock giả (một hàm trả về số mili-giây do bạn điều khiển) cho phép "tiến thời gian" tức thì: đặt now = 0 rồi now = 1500 để kiểm tra phần tử ở mốc 0 đã bị loại. Đây là pattern chung cho mọi logic phụ thuộc thời gian (timeout, TTL, SLA, breaker).
+
+### Lỗi hay gặp trên production
+- **Quên evict phần tử cũ:** cửa sổ phình theo thời gian, tỉ lệ tính cả quá khứ, breaker mở muộn hoặc không bao giờ mở.
+- **minimumCalls quá thấp:** lúc traffic thấp, 1-2 lỗi làm tỉ lệ 100% và mở mạch oan; đặt theo lưu lượng thực (ví dụ 20-50).
+- **Cửa sổ quá dài so với nhịp lỗi:** phản ánh quá khứ, không bảo vệ hiện tại; cân nhắc T ngắn hơn khi dependency hay đổi trạng thái nhanh.
+- **Half-open không giới hạn probe:** dependency vừa hồi phục bị dồn cả trăm request, sập lại; giới hạn số probe.
+- **Không xóa cửa sổ khi vào Open và khi về Closed:** lần đo sau lẫn kết quả cũ.
+
+### Ví dụ đời thực
+Service Order gọi Payment. Payment tăng lỗi từ 0,1% lên 60% trong 5 phút do pool kết nối cạn, lỗi rải rác (có request lọt qua). Breaker đếm liên tiếp (ngưỡng 5 liên tiếp) không mở vì cứ vài lỗi lại có một thành công chen vào reset bộ đếm; p99 của Order tăng từ 180ms lên 4,2s, 18% request timeout. Đổi sang time-based: cửa sổ 10 giây, failureRateThreshold 50%, minimumCalls 20, openMs 30 giây, half-open 10 probe. Sau khi đủ 20 call trong 10 giây, tỉ lệ lỗi 60% vượt ngưỡng nên breaker mở mạch ngay dù lỗi không liên tiếp. Khi mở, Order trả 503 kèm metric; 30 giây sau cho 10 probe, 9/10 thành công (tỉ lệ 10% < ngưỡng) nên về Closed. Kết quả: p99 của Order về 200ms, timeout giảm từ 18% xuống 0,4%.
+
+### Trả lời mẫu khi phỏng vấn
+Circuit breaker của tôi đếm tỉ lệ lỗi trên một cửa sổ trượt theo thời gian, không đếm lỗi liên tiếp, vì lỗi rải rác không làm bộ đếm liên tiếp chạm ngưỡng. Tôi dùng cửa sổ 10 giây, failure rate threshold 50%, minimum 20 call để tránh mở oan lúc traffic thấp, wait 30 giây và half-open giới hạn 10 probe. Mỗi kết quả được ghi kèm mốc thời gian; trước khi tính tỉ lệ tôi loại các phần tử cũ hơn 10 giây, rồi so tỉ lệ với ngưỡng. Khi vượt ngưỡng tôi mở mạch, fail fast trả 503 và ghi metric; sau 30 giây cho 10 request thử, đủ thành công thì về Closed. Tôi theo dõi state, failure rate, số request bị reject và thời gian ở OPEN theo từng dependency để chỉnh ngưỡng theo SLA.
+
+> Senior tip: đặt failureRateThreshold theo SLA: dependency nội bộ 50% là hợp lý, còn dependency ngoài (thanh toán) nên 30-40% vì mỗi lỗi đều là tiền; luôn đo tỉ lệ reject để biết ngưỡng có quá gắt không, và theo dõi tuổi phần tử cũ nhất trong cửa sổ để phát hiện evict có chạy đúng không.
+
+### Liên hệ phỏng vấn
+- **Hỏi:** Time-based khác count-based window ở đâu? **Trả lời ngắn:** Count giữ N lần gọi gần nhất (đơn giản, nhưng cũ khi traffic thấp); time giữ các lần gọi trong T giây gần nhất (phản ánh hiện tại tốt hơn, tốn bộ nhớ hơn và cần chia bucket/evict theo thời gian).
+- **Hỏi:** Vì sao time-based tốt hơn đếm liên tiếp khi lỗi rải rác? **Trả lời ngắn:** Đếm liên tiếp reset khi có một thành công xen giữa nên bỏ sót lỗi rải rác; time-based nhìn tỉ lệ lỗi tổng trong cửa sổ nên vẫn phát hiện và mở mạch kịp thời.
+- **Hỏi:** minimumCalls dùng để làm gì? **Trả lời ngắn:** Tránh mở mạch oan khi chỉ có 1-2 call lúc traffic thấp; chỉ xét tỉ lệ khi đủ mẫu.
+- **Hỏi:** Vì sao dùng Clock giả trong test? **Trả lời ngắn:** Để tiến thời gian tức thì, kiểm tra phần tử cũ rơi khỏi cửa sổ mà không cần ngủ thật, test deterministic không flaky.`,
+  exercises: [{
+    title: 'TimeWindowBreaker: cửa sổ thời gian + tỉ lệ lỗi + half-open giới hạn',
+    prompt: `Cài {{TimeWindowBreaker}} theo mô hình tỉ lệ lỗi trên cửa sổ trượt theo thời gian (time-based), dùng {{Clock}} giả (interface {{long millis()}}).
+
+- Constructor: {{TimeWindowBreaker(long windowMs, double failureRateThreshold, int minimumCalls, long openMs, int halfOpenMaxCalls, Clock clock)}}. Validate: {{windowMs > 0}}, {{0 < failureRateThreshold <= 1}}, {{minimumCalls >= 1}}, {{openMs > 0}}, {{halfOpenMaxCalls >= 1}}, {{clock != null}}; sai thì ném {{IllegalArgumentException}}.
+- {{boolean canCall()}}: loại các phần tử có timestamp nhỏ hơn {{now - windowMs}}; nếu OPEN và {{now - openedAt >= openMs}} thì chuyển HALF_OPEN, reset bộ đếm probe; nếu vẫn OPEN thì {{false}}. Nếu HALF_OPEN: cho tối đa {{halfOpenMaxCalls}} probe (mỗi lần gọi tăng bộ đếm), hết thì {{false}}. CLOSED thì {{true}}.
+- {{void recordSuccess()}}: nếu HALF_OPEN tăng số probe thành công, đủ {{halfOpenMaxCalls}} thì về CLOSED và xóa cửa sổ; nếu CLOSED thì thêm kết quả thành công kèm {{now}} vào cửa sổ rồi loại phần tử cũ.
+- {{void recordFailure()}}: nếu HALF_OPEN thì về OPEN, {{openedAt = now}}, xóa cửa sổ; nếu CLOSED thì thêm kết quả thất bại kèm {{now}}, loại phần tử cũ, và nếu đủ {{minimumCalls}} mà {{failureRate >= failureRateThreshold}} thì về OPEN, {{openedAt = now}}, xóa cửa sổ.
+- {{State state()}} trả trạng thái hiện tại; {{int count()}} trả số phần tử còn trong cửa sổ (đã loại phần tử cũ theo đồng hồ hiện tại).
+
+{{Clock}} là interface {{long millis()}}. Test dùng {{AtomicLong}} làm clock.`,
+    starter: `interface Clock { long millis(); }
+class TimeWindowBreaker {
+    enum State { CLOSED, OPEN, HALF_OPEN }
+    private final long windowMs;
+    private final double failureRateThreshold;
+    private final int minimumCalls;
+    private final long openMs;
+    private final int halfOpenMaxCalls;
+    private final Clock clock;
+    private final java.util.ArrayDeque<long[]> window = new java.util.ArrayDeque<>();
+    private State state = State.CLOSED;
+    private long openedAt = 0;
+    private int halfOpenCalls = 0;
+    private int halfOpenSuccess = 0;
+    TimeWindowBreaker(long windowMs, double failureRateThreshold, int minimumCalls, long openMs, int halfOpenMaxCalls, Clock clock) {
+        this.windowMs = windowMs; this.failureRateThreshold = failureRateThreshold; this.minimumCalls = minimumCalls;
+        this.openMs = openMs; this.halfOpenMaxCalls = halfOpenMaxCalls; this.clock = clock;
+    }
+    synchronized boolean canCall() { throw new UnsupportedOperationException("TODO"); }
+    synchronized void recordSuccess() { throw new UnsupportedOperationException("TODO"); }
+    synchronized void recordFailure() { throw new UnsupportedOperationException("TODO"); }
+    synchronized State state() { return state; }
+    synchronized int count() { return window.size(); }
+}`,
+    tests: `public class Main {
+ static int p=0,t=0; static void ck(String n,Runnable r){t++;try{r.run();p++;System.out.println("PASS "+n);}catch(Throwable e){System.out.println("FAIL "+n+": "+e);}}
+ static void eq(Object a,Object b){if(!Objects.equals(a,b))throw new AssertionError(a+" != "+b);}
+ public static void main(String[] x){
+  ck("old failures age out of the time window",()->{
+   AtomicLong clock=new AtomicLong(0);
+   TimeWindowBreaker b=new TimeWindowBreaker(1000,0.5,2,5000,2,clock::get);
+   b.recordFailure();
+   clock.set(1500);
+   b.recordFailure();
+   eq(TimeWindowBreaker.State.CLOSED,b.state());
+   eq(1,b.count());
+  });
+  ck("opens when failure rate reaches threshold in window",()->{
+   AtomicLong clock=new AtomicLong(0);
+   TimeWindowBreaker b=new TimeWindowBreaker(1000,0.5,4,5000,2,clock::get);
+   b.recordSuccess(); b.recordSuccess(); b.recordFailure();
+   eq(TimeWindowBreaker.State.CLOSED,b.state());
+   b.recordFailure();
+   eq(TimeWindowBreaker.State.OPEN,b.state());
+  });
+  ck("open blocks until openMs then half-open",()->{
+   AtomicLong clock=new AtomicLong(0);
+   TimeWindowBreaker b=new TimeWindowBreaker(1000,0.5,2,5000,2,clock::get);
+   b.recordFailure(); b.recordFailure();
+   eq(false,b.canCall());
+   clock.set(999); eq(false,b.canCall());
+   clock.set(5000); eq(true,b.canCall());
+   eq(TimeWindowBreaker.State.HALF_OPEN,b.state());
+  });
+  ck("half-open success closes after maxCalls",()->{
+   AtomicLong clock=new AtomicLong(0);
+   TimeWindowBreaker b=new TimeWindowBreaker(1000,0.5,2,5000,2,clock::get);
+   b.recordFailure(); b.recordFailure();
+   clock.set(5000); eq(true,b.canCall());
+   b.recordSuccess();
+   eq(TimeWindowBreaker.State.HALF_OPEN,b.state());
+   eq(true,b.canCall());
+   b.recordSuccess();
+   eq(TimeWindowBreaker.State.CLOSED,b.state());
+  });
+  ck("half-open failure reopens",()->{
+   AtomicLong clock=new AtomicLong(0);
+   TimeWindowBreaker b=new TimeWindowBreaker(1000,0.5,2,5000,2,clock::get);
+   b.recordFailure(); b.recordFailure();
+   clock.set(5000); eq(true,b.canCall());
+   b.recordFailure();
+   eq(TimeWindowBreaker.State.OPEN,b.state());
+   eq(false,b.canCall());
+  });
+  ck("half-open limits probe calls",()->{
+   AtomicLong clock=new AtomicLong(0);
+   TimeWindowBreaker b=new TimeWindowBreaker(1000,0.5,2,5000,2,clock::get);
+   b.recordFailure(); b.recordFailure();
+   clock.set(5000);
+   eq(true,b.canCall());
+   eq(true,b.canCall());
+   eq(false,b.canCall());
+  });
+  System.out.println("RESULT "+p+"/"+t);
+ }
+}`,
+    reference: `interface Clock { long millis(); }
+class TimeWindowBreaker {
+    enum State { CLOSED, OPEN, HALF_OPEN }
+    private final long windowMs;
+    private final double failureRateThreshold;
+    private final int minimumCalls;
+    private final long openMs;
+    private final int halfOpenMaxCalls;
+    private final Clock clock;
+    private final ArrayDeque<long[]> window = new ArrayDeque<>();
+    private State state = State.CLOSED;
+    private long openedAt = 0;
+    private int halfOpenCalls = 0;
+    private int halfOpenSuccess = 0;
+    TimeWindowBreaker(long windowMs, double failureRateThreshold, int minimumCalls, long openMs, int halfOpenMaxCalls, Clock clock) {
+        if (windowMs <= 0) throw new IllegalArgumentException("windowMs");
+        if (failureRateThreshold <= 0 || failureRateThreshold > 1) throw new IllegalArgumentException("threshold");
+        if (minimumCalls < 1) throw new IllegalArgumentException("minimumCalls");
+        if (openMs <= 0) throw new IllegalArgumentException("openMs");
+        if (halfOpenMaxCalls < 1) throw new IllegalArgumentException("halfOpenMaxCalls");
+        if (clock == null) throw new IllegalArgumentException("clock");
+        this.windowMs = windowMs; this.failureRateThreshold = failureRateThreshold; this.minimumCalls = minimumCalls;
+        this.openMs = openMs; this.halfOpenMaxCalls = halfOpenMaxCalls; this.clock = clock;
+    }
+    private void evict(long now) {
+        while (!window.isEmpty() && window.peekFirst()[0] < now - windowMs) window.removeFirst();
+    }
+    private double failureRate() {
+        int fail = 0;
+        for (long[] e : window) if (e[1] == 0) fail++;
+        return (double) fail / window.size();
+    }
+    synchronized boolean canCall() {
+        long now = clock.millis();
+        evict(now);
+        if (state == State.OPEN) {
+            if (now - openedAt >= openMs) { state = State.HALF_OPEN; halfOpenCalls = 0; halfOpenSuccess = 0; }
+            else return false;
+        }
+        if (state == State.HALF_OPEN) {
+            if (halfOpenCalls >= halfOpenMaxCalls) return false;
+            halfOpenCalls++;
+            return true;
+        }
+        return true;
+    }
+    synchronized void recordSuccess() {
+        long now = clock.millis();
+        if (state == State.HALF_OPEN) {
+            halfOpenSuccess++;
+            if (halfOpenSuccess >= halfOpenMaxCalls) { state = State.CLOSED; window.clear(); halfOpenCalls = 0; halfOpenSuccess = 0; }
+            return;
+        }
+        if (state == State.CLOSED) { window.addLast(new long[]{now, 1}); evict(now); }
+    }
+    synchronized void recordFailure() {
+        long now = clock.millis();
+        if (state == State.HALF_OPEN) {
+            state = State.OPEN; openedAt = now; halfOpenCalls = 0; halfOpenSuccess = 0; window.clear(); return;
+        }
+        if (state == State.CLOSED) {
+            window.addLast(new long[]{now, 0});
+            evict(now);
+            if (window.size() >= minimumCalls && failureRate() >= failureRateThreshold) {
+                state = State.OPEN; openedAt = now; window.clear();
+            }
+        }
+    }
+    synchronized State state() { return state; }
+    synchronized int count() { evict(clock.millis()); return window.size(); }
+}`,
+    hints: [
+      'Mỗi phần tử cửa sổ là một mảng long hai phần: timestamp và outcome (1 thành công, 0 thất bại). Thêm vào cuối, evict từ đầu khi timestamp < now - windowMs.',
+      'canCall() trong OPEN: nếu now - openedAt >= openMs thì chuyển HALF_OPEN và reset bộ đếm probe, ngược lại trả false. HALF_OPEN giới hạn số probe bằng halfOpenCalls.',
+      'recordFailure() trong HALF_OPEN phải về OPEN ngay và set openedAt = now; trong CLOSED thì thêm phần tử, evict, rồi so failureRate với ngưỡng khi đủ minimumCalls.',
+      'Nhớ xóa cửa sổ khi vào OPEN và khi về CLOSED để lần đo sau không lẫn kết quả cũ.'
+    ],
+    explain: `Bài tập cài breaker tỉ lệ lỗi trên cửa sổ thời gian: ArrayDeque giữ các phần tử [timestamp, outcome] theo thứ tự thời gian tăng dần, mỗi lần thêm thì evict phần tử có timestamp nhỏ hơn now - windowMs. Chỉ khi số phần tử còn lại đủ minimumCalls mới tính failureRate = số thất bại / kích thước cửa sổ và so với ngưỡng; vượt ngưỡng thì vào OPEN, ghi openedAt và xóa cửa sổ.
+
+canCall() xử lý ba trạng thái: OPEN chỉ chuyển HALF_OPEN khi hết openMs; HALF_OPEN giới hạn số probe bằng halfOpenCalls; CLOSED luôn cho qua. recordSuccess/recordFailure phân nhánh theo trạng thái: ở HALF_OPEN, đủ halfOpenMaxCalls lần thành công thì về CLOSED, còn một lỗi thì về OPEN ngay.
+
+Điểm khác so với bản count-based (bài 016): ở đây phần tử bị loại theo mốc thời gian chứ không theo số lượng, nên khi traffic thấp cửa sổ vẫn phản ánh đúng "T giây gần nhất". Lỗi thường gặp: quên evict (cửa sổ phình, mở muộn), không xóa cửa sổ khi vào OPEN, hoặc so tỉ lệ khi chưa đủ minimumCalls (mở oan lúc traffic thấp). Trong production, các thông số này ánh xạ sang Resilience4j: slidingWindowType = TIME_BASED, slidingWindowSize (giây), failureRateThreshold, minimumNumberOfCalls, waitDurationInOpenState, permittedNumberOfCallsInHalfOpenState.`
+  }],
+  check: [
+    { q: 'Điểm khác chính giữa time-based window và count-based window?', options: ['Time-based giữ N lần gọi gần nhất, count-based giữ T giây', 'Time-based giữ các lần gọi trong T giây gần nhất (loại phần tử cũ theo thời gian), count-based giữ N lần gọi gần nhất', 'Chúng giống hệt nhau', 'Time-based không cần ngưỡng tỉ lệ'], answer: 1, explain: `Đúng (B): time-based loại phần tử cũ hơn now - T theo mốc thời gian, phản ánh hiện tại tốt hơn khi traffic dao động; count-based giữ N phần tử gần nhất bất kể trải dài bao lâu. (A) mô tả ngược. (C) sai vì khác nhau về cách loại phần tử. (D) sai vì time-based vẫn cần failureRateThreshold.` },
+    { q: 'Vì sao time-based tốt hơn đếm liên tiếp khi lỗi rải rác (thành công xen kẽ)?', options: ['Vì time-based không cần Clock', 'Vì đếm liên tiếp reset về 0 khi có một thành công xen giữa nên bỏ sót lỗi rải rác, còn time-based nhìn tỉ lệ lỗi trong cửa sổ', 'Vì time-based luôn mở mạch nhanh hơn', 'Vì đếm liên tiếp tốn nhiều bộ nhớ hơn'], answer: 1, explain: `Đúng (B): một request thành công xen giữa làm bộ đếm liên tiếp về 0, nên dependency lỗi 40% nhưng không liên tiếp gần như không chạm ngưỡng; time-based tính tỉ lệ trên cửa sổ nên vẫn phát hiện. (A) sai, time-based cần Clock để test. (C) sai, không phải lúc nào cũng nhanh hơn. (D) sai, vấn đề là độ nhạy với lỗi rải rác chứ không phải bộ nhớ.` },
+    { q: 'minimumCalls (ví dụ 20) dùng để làm gì trong breaker time-based?', options: ['Giảm kích thước cửa sổ', 'Tránh mở mạch oan khi chỉ có 1-2 call lúc traffic thấp', 'Tăng tốc độ gọi downstream', 'Thay thế openMs'], answer: 1, explain: `Đúng (B): với 1-2 call, một lỗi cho tỉ lệ 100% nhưng không đủ tin cậy; chỉ xét khi đủ mẫu. (A) sai vì kích thước cửa sổ do windowMs quyết định. (C) sai vì không ảnh hưởng tốc độ gọi. (D) sai vì đây là hai tham số khác nhau.` },
+    { q: 'Trong HALF_OPEN của bài này, khi nào về CLOSED và khi nào về OPEN?', options: ['Chờ hết số probe rồi mới quyết định', 'Đủ halfOpenMaxCalls probe thành công thì về CLOSED, chỉ cần một probe lỗi là về OPEN', 'Về CLOSED ngay sau probe thành công đầu tiên', 'Không đổi trạng thái'], answer: 1, explain: `Đúng (B): mô hình trong bài đếm số probe thành công, đủ halfOpenMaxCalls thì về CLOSED và xóa cửa sổ; mỗi probe lỗi đều chứng minh dependency chưa hồi phục nên về OPEN ngay và ghi openedAt = now. (A) là cách Resilience4j làm (chờ đủ probe rồi so tỉ lệ). (C) sai vì phải đủ halfOpenMaxCalls lần. (D) sai vì trạng thái cập nhật theo kết quả probe.` }
+  ],
+  related: ['microservices-025', 'microservices-060', 'microservices-061'],
+  tags: ['circuit breaker', 'sliding window', 'time-based', 'failure rate', 'resilience4j']
+},
+{
+  id: 'lesson-microservices-028', track: 'microservices', order: 28,
+  title: 'Idempotency key thanh toán: fingerprint từ payload, TTL bằng Clock và từ chối in-flight', level: 'senior', minutes: 30,
+  goals: [
+    'Giải thích vì sao API thanh toán bắt buộc idempotent và vì sao key do client sinh',
+    'Tự viết store idempotency: tính fingerprint từ payload, lưu kết quả, replay khi lặp, từ chối khi khác payload',
+    'Xử lý in-flight (trả 409 ngay), TTL/phantom bằng Clock giả và dọn key khi processor lỗi'
+  ],
+  body: `**Tóm tắt:** Mạng không đáng tin: client gửi request thanh toán, server xử lý xong nhưng response bị mất, client retry, server xử lý lần nữa, khách bị trừ tiền hai lần. Idempotency key giải quyết: client gửi kèm một key duy nhất (UUID) cho mỗi "ý định thanh toán"; server tính **fingerprint** từ payload, lưu kết quả theo key; request lặp cùng key + cùng payload trả **đúng kết quả cũ** mà không xử lý lại; cùng key nhưng **payload khác** bị từ chối (422) để phát hiện bug client; request đến khi một request khác đang xử lý (in-flight) bị từ chối ngay (409); key hết TTL thì bị coi như mới (phantom).
+
+### Vì sao key do client sinh
+Chỉ client biết "hai request này là cùng một ý định". Nếu server tự sinh key thì khi client retry, nó không biết key cũ là gì, server lại tạo key mới và xử lý lần hai — idempotency vô dụng. Vì vậy client sinh một UUID cho mỗi lần bấm nút "Thanh toán", và **retry phải dùng lại đúng key đó**.
+
+### Fingerprint: nhận ra "cùng payload" hay "khác payload"
+Fingerprint là một dấu vân tay rút gọn của payload, dùng để so sánh nhanh mà không cần giữ nguyên payload gốc. Trong bài này fingerprint đơn giản là payload đã chuẩn hóa (cắt khoảng trắng thừa); production dùng SHA-256 của JSON đã chuẩn hóa (sắp xếp khóa ổn định) để hai payload "cùng nội dung" cho cùng fingerprint dù khác thứ tự khóa. Khi key đã tồn tại: fingerprint khớp → replay kết quả cũ; fingerprint khác → 422 (client bug: cùng key nhưng dữ liệu khác, không được xử lý lại vì có thể duplicate, cũng không được trả kết quả cũ vì sai dữ liệu).
+
+### Máy trạng thái của một key
+| Trạng thái key | Request cùng key + cùng fingerprint | Việc cần làm |
+|---|---|---|
+| chưa có | tạo in-flight | chạy processor, lưu kết quả, đánh dấu completed |
+| in-flight (đang xử lý) | trả 409 ngay | không chờ, không xử lý song song |
+| completed, còn trong TTL | replay | trả kết quả đã lưu, không chạy processor |
+| completed, quá TTL | coi như mới (phantom) | chạy lại processor |
+| bất kỳ, khác fingerprint | từ chối 422 | không đụng trạng thái cũ |
+
+### In-flight: từ chối ngay thay vì chờ
+Bài 026 cho request thứ hai "chờ" (spin) đến khi request đầu xong. Bài này chọn góc khác: **từ chối ngay 409** khi thấy key đang in-flight. Lý do: với API thanh toán đồng bộ, chờ giữ thread và dễ treo; trả 409 kèm Retry-After để client tự retry sau một khoảng ngắn gọn gàng hơn. Yêu cầu "chỉ một request được xử lý" được đảm bảo bằng putIfAbsent (đặt-hay-không) trên map: thread nào đặt được entry rỗng vào key đó thì "giành" quyền chạy processor.
+
+### TTL và phantom bằng Clock giả
+Key không lưu mãi (tốn bộ nhớ). TTL thường 24 giờ tới 7 ngày. Sau TTL, key bị coi như chưa từng có, request lặp muộn sẽ xử lý lại — gọi là **phantom duplicate**. Đây là đánh đổi chấp nhận được: retry sau nhiều ngày hiếm, và downstream (payment gateway) cũng phải idempotent theo transaction id. Để test phần TTL mà không ngủ thật, ta truyền vào một Clock giả: đặt now = 0 khi tạo key, rồi now = ttl để kiểm tra key đã hết hạn.
+
+### Cơ chế từng bước
+1. Client sinh key = UUID cho mỗi ý định, gửi POST kèm key và payload; retry dùng cùng key.
+2. Server nhận: tính fingerprint từ payload, tra store theo key.
+3. Nếu có entry completed và now - createdAt >= ttl → xóa entry (hết hạn), coi như mới.
+4. Nếu có entry: fingerprint khác → ném PayloadMismatch (422); completed → trả kết quả cũ (replay); in-flight → ném InFlight (409).
+5. Nếu chưa có: putIfAbsent một entry in-flight để giành quyền; nếu giành được thì chạy processor, lưu kết quả, đánh dấu completed; processor ném lỗi thì xóa entry để lần sau chạy lại.
+
+~~~java
+// Rút gọn: giành quyền bằng putIfAbsent, lưu fingerprint + kết quả theo key
+Entry fresh = new Entry(fingerprint(payload), now);
+Entry prev = store.putIfAbsent(key, fresh);   // chỉ một request giành được
+if (prev != null) {
+    if (!prev.fingerprint.equals(fresh.fingerprint)) throw new PayloadMismatchException();
+    if (prev.completed) return prev.result;     // replay
+    throw new InFlightException();              // 409: đang xử lý
+}
+try {
+    Result r = processor.get();
+    fresh.result = r; fresh.completed = true;   // publish result trước cờ completed
+    return r;
+} catch (RuntimeException ex) {
+    store.remove(key, fresh);                   // lỗi: dọn để retry chạy lại
+    throw ex;
+}
+~~~
+
+### Lỗi hay gặp trên production
+- **Server tự sinh key:** client retry không biết key cũ, idempotency vô dụng.
+- **Không lưu fingerprint:** client bug gửi cùng key nhưng payload khác vẫn bị replay kết quả cũ, trả sai dữ liệu.
+- **In-flight xử lý song song:** hai request cùng key cùng chạy processor, trừ tiền hai lần; phải dùng putIfAbsent/unique constraint để chỉ một request giành quyền.
+- **TTL quá ngắn:** retry hợp lệ sau TTL bị xử lý lại (phantom); đặt TTL dài hơn cửa sổ retry thực tế.
+- **Không dọn key khi processor lỗi:** key kẹt in-flight vĩnh viễn, mọi retry sau nhận 409; phải xóa entry khi lỗi.
+- **Map trong RAM:** mất khi restart, không chia sẻ giữa nhiều pod; production dùng DB với unique index theo key và TTL, hoặc Redis.
+
+### Ví dụ đời thực
+E-commerce: khách bấm "Đặt hàng", client sinh key K1, gửi POST /orders với K1. Server xử lý, trừ kho, tạo order O1, lưu kết quả theo K1. Response mất do mạng. Client retry với K1 → server thấy K1 completed, fingerprint khớp → trả O1, không trừ kho lần nữa. Nếu client bug gửi K1 nhưng payload khác (thêm sản phẩm) → server trả 422, client phải tạo key mới. Đo: trước khi có idempotency, duplicate order ~0,3% giao dịch; sau khi có, ~0.
+
+### Trả lời mẫu khi phỏng vấn
+Idempotency key là bắt buộc cho API thanh toán vì mạng không đáng tin và client retry. Client sinh UUID cho mỗi ý định, retry dùng cùng key. Server tính fingerprint từ payload và lưu kết quả theo key: chưa có thì giành quyền bằng putIfAbsent, chạy processor và lưu; đã completed thì replay kết quả cũ; đang in-flight thì trả 409 kèm Retry-After; cùng key khác fingerprint thì trả 422 để phát hiện bug. Key có TTL (24 giờ tới 7 ngày), quá hạn thì coi như mới và chấp nhận phantom duplicate muộn. In-memory chỉ đúng cho một node; production dùng DB unique index theo key hoặc Redis. Payment gateway downstream cũng phải idempotent theo transaction id — idempotency ở API chỉ giải quyết retry của client, không thay thế downstream.
+
+> Senior tip: key phải do client sinh và client phải retry cùng key; lưu fingerprint (SHA-256 của JSON chuẩn hóa) để bắt bug cùng key khác payload; theo dõi tỉ lệ replay, tỉ lệ in-flight bị từ chối (409) và số key hết TTL — 409 tăng đột biến thường là client retry quá sớm, không phải lỗi server.
+
+### Liên hệ phỏng vấn
+- **Hỏi:** Idempotency key nên do ai sinh, vì sao? **Trả lời ngắn:** Client sinh UUID cho mỗi ý định, retry dùng cùng key; server sinh key thì client retry không biết key cũ, idempotency vô dụng.
+- **Hỏi:** Cùng key nhưng payload khác nên xử lý thế nào? **Trả lời ngắn:** Từ chối 422 để phát hiện bug client; không xử lý lại (có thể duplicate) và không trả kết quả cũ (sai dữ liệu). Dùng fingerprint (SHA-256 của JSON chuẩn hóa) để so sánh.
+- **Hỏi:** In-flight request đến cùng lúc nên làm gì? **Trả lời ngắn:** Trả 409 kèm Retry-After, không xử lý song song; giành quyền bằng putIfAbsent/unique constraint để chỉ một request chạy processor.
+- **Hỏi:** TTL và phantom duplicate là gì? **Trả lời ngắn:** Key hết TTL bị coi như mới, retry muộn xử lý lại (phantom); đặt TTL dài hơn cửa sổ retry thực tế và downstream cũng idempotent theo transaction id.`,
+  exercises: [{
+    title: 'PaymentIdempotency: fingerprint, replay, từ chối khác payload, in-flight và TTL',
+    prompt: `Cài {{PaymentIdempotency}} dùng {{Clock}} giả (interface {{long millis()}}).
+
+- Constructor: {{PaymentIdempotency(long ttlMs, Clock clock)}}; validate {{ttlMs > 0}}, {{clock != null}}, sai thì ném {{IllegalArgumentException}}.
+- {{Result handle(String key, String payload, java.util.function.Supplier<Result> processor)}}:
+  - Tính {{fingerprint = payload == null ? "" : payload.trim()}}.
+  - Nếu key đã có entry {{completed}} và {{now - createdAt >= ttlMs}} thì xóa entry (hết hạn), coi như chưa có.
+  - Nếu key đã có (chưa hết hạn): fingerprint khác → ném {{PayloadMismatchException}}; {{completed}} → trả {{result}} đã lưu (không chạy processor); đang in-flight → ném {{InFlightException}}.
+  - Nếu chưa có: dùng {{putIfAbsent}} để giành quyền với entry in-flight; nếu không giành được thì xử lý như nhánh "đã có" ở trên. Giành được thì chạy {{processor.get()}}, gán {{result}} rồi đánh dấu {{completed = true}} và trả về; nếu processor ném {{RuntimeException}} thì xóa entry ({{remove(key, fresh)}}) rồi ném lại.
+- {{int size()}} trả số key đang lưu.
+
+{{Result}} có {{int status}} và {{String body}}. {{InFlightException}} và {{PayloadMismatchException}} là RuntimeException. Dùng {{ConcurrentHashMap}}.`,
+    starter: `import java.util.concurrent.*;
+interface Clock { long millis(); }
+class PaymentIdempotency {
+    static class Result { final int status; final String body; Result(int s, String b){status=s;body=b;} }
+    static class InFlightException extends RuntimeException {}
+    static class PayloadMismatchException extends RuntimeException {}
+    private static class Entry {
+        final String fingerprint; final long createdAt;
+        volatile boolean completed = false;
+        Result result;
+        Entry(String fingerprint, long createdAt){ this.fingerprint=fingerprint; this.createdAt=createdAt; }
+    }
+    private final long ttlMs;
+    private final Clock clock;
+    private final ConcurrentHashMap<String, Entry> store = new ConcurrentHashMap<>();
+    PaymentIdempotency(long ttlMs, Clock clock){ this.ttlMs=ttlMs; this.clock=clock; }
+    Result handle(String key, String payload, java.util.function.Supplier<Result> processor) {
+        throw new UnsupportedOperationException("TODO");
+    }
+    int size(){ return store.size(); }
+}`,
+tests: `public class Main {
+  static int p=0,t=0; static void ck(String n,Runnable r){t++;try{r.run();p++;System.out.println("PASS "+n);}catch(Throwable e){System.out.println("FAIL "+n+": "+e);}}
+  static void eq(Object a,Object b){if(!Objects.equals(a,b))throw new AssertionError(a+" != "+b);}
+  public static void main(String[] x){
+   ck("first call processes and stores",()->{
+    PaymentIdempotency s=new PaymentIdempotency(10000, ()->0L);
+    PaymentIdempotency.Result r=s.handle("k1","p1", ()-> new PaymentIdempotency.Result(201,"order-1"));
+    eq(201,r.status); eq("order-1",r.body); eq(1,s.size());
+   });
+   ck("repeat same key and payload replays without processing",()->{
+    PaymentIdempotency s=new PaymentIdempotency(10000, ()->0L);
+    s.handle("k1","p1", ()-> new PaymentIdempotency.Result(201,"order-1"));
+    boolean[] ran={false};
+    PaymentIdempotency.Result r=s.handle("k1","p1", ()->{ ran[0]=true; return new PaymentIdempotency.Result(201,"other"); });
+    eq(false,ran[0]); eq("order-1",r.body);
+   });
+   ck("same key different payload is rejected",()->{
+    PaymentIdempotency s=new PaymentIdempotency(10000, ()->0L);
+    s.handle("k1","p1", ()-> new PaymentIdempotency.Result(201,"order-1"));
+    try { s.handle("k1","p2", ()-> new PaymentIdempotency.Result(201,"x")); throw new AssertionError("should reject"); }
+    catch(PaymentIdempotency.PayloadMismatchException ok){}
+   });
+   ck("different keys are independent",()->{
+    PaymentIdempotency s=new PaymentIdempotency(10000, ()->0L);
+    s.handle("a","p", ()-> new PaymentIdempotency.Result(200,"A"));
+    PaymentIdempotency.Result r=s.handle("b","p", ()-> new PaymentIdempotency.Result(200,"B"));
+    eq("B",r.body); eq(2,s.size());
+   });
+   ck("failed processor removes key so retry reruns",()->{
+    PaymentIdempotency s=new PaymentIdempotency(10000, ()->0L);
+    try { s.handle("k","p", ()->{ throw new RuntimeException("boom"); }); throw new AssertionError("should throw"); }
+    catch(RuntimeException ok){}
+    eq(0,s.size());
+    PaymentIdempotency.Result r=s.handle("k","p", ()-> new PaymentIdempotency.Result(200,"ok"));
+    eq("ok",r.body);
+   });
+   ck("expired key is treated as new after ttl",()->{
+    AtomicLong clock=new AtomicLong(0);
+    PaymentIdempotency s=new PaymentIdempotency(1000, clock::get);
+    s.handle("k","p", ()-> new PaymentIdempotency.Result(200,"first"));
+    clock.set(1000);
+    boolean[] ran={false};
+    PaymentIdempotency.Result r=s.handle("k","p", ()->{ ran[0]=true; return new PaymentIdempotency.Result(200,"second"); });
+    eq(true,ran[0]); eq("second",r.body);
+   });
+   ck("in-flight duplicate is rejected",()->{
+    PaymentIdempotency s=new PaymentIdempotency(10000, ()->0L);
+    CountDownLatch started=new CountDownLatch(1);
+    CountDownLatch release=new CountDownLatch(1);
+    AtomicReference<Throwable> err=new AtomicReference<>();
+    Thread th=new Thread(()->{
+      try { s.handle("k","p", ()->{ started.countDown(); try{release.await(2,TimeUnit.SECONDS);}catch(InterruptedException ie){Thread.currentThread().interrupt();} return new PaymentIdempotency.Result(200,"first"); }); }
+      catch(Throwable e){ err.set(e); }
+    });
+    th.start();
+    try { if(!started.await(2,TimeUnit.SECONDS)) throw new AssertionError("worker did not start"); }
+    catch (InterruptedException ie) { Thread.currentThread().interrupt(); throw new AssertionError(ie); }
+    try { s.handle("k","p", ()-> new PaymentIdempotency.Result(200,"second")); throw new AssertionError("should reject in-flight"); }
+    catch(PaymentIdempotency.InFlightException ok){}
+    release.countDown();
+    try { th.join(2000); }
+    catch (InterruptedException ie) { Thread.currentThread().interrupt(); throw new AssertionError(ie); }
+    if(err.get()!=null) throw new AssertionError(err.get());
+    eq("first", s.handle("k","p", ()-> new PaymentIdempotency.Result(200,"x")).body);
+   });
+   System.out.println("RESULT "+p+"/"+t);
+  }
+ }`,
+    reference: `import java.util.concurrent.*;
+interface Clock { long millis(); }
+class PaymentIdempotency {
+    static class Result { final int status; final String body; Result(int s, String b){status=s;body=b;} }
+    static class InFlightException extends RuntimeException {}
+    static class PayloadMismatchException extends RuntimeException {}
+    private static class Entry {
+        final String fingerprint; final long createdAt;
+        volatile boolean completed = false;
+        Result result;
+        Entry(String fingerprint, long createdAt){ this.fingerprint=fingerprint; this.createdAt=createdAt; }
+    }
+    private final long ttlMs;
+    private final Clock clock;
+    private final ConcurrentHashMap<String, Entry> store = new ConcurrentHashMap<>();
+    PaymentIdempotency(long ttlMs, Clock clock){
+        if (ttlMs <= 0) throw new IllegalArgumentException("ttlMs");
+        if (clock == null) throw new IllegalArgumentException("clock");
+        this.ttlMs = ttlMs; this.clock = clock;
+    }
+    private static String fingerprint(String payload) { return payload == null ? "" : payload.trim(); }
+    Result handle(String key, String payload, java.util.function.Supplier<Result> processor) {
+        long now = clock.millis();
+        String fp = fingerprint(payload);
+        Entry e = store.get(key);
+        if (e != null && e.completed && now - e.createdAt >= ttlMs) {
+            store.remove(key, e);
+            e = null;
+        }
+        if (e != null) return existing(e, fp);
+        Entry fresh = new Entry(fp, now);
+        Entry prev = store.putIfAbsent(key, fresh);
+        if (prev != null) return existing(prev, fp);
+        try {
+            Result r = processor.get();
+            fresh.result = r;
+            fresh.completed = true;
+            return r;
+        } catch (RuntimeException ex) {
+            store.remove(key, fresh);
+            throw ex;
+        }
+    }
+    private static Result existing(Entry e, String fp) {
+        if (!e.fingerprint.equals(fp)) throw new PayloadMismatchException();
+        if (e.completed) return e.result;
+        throw new InFlightException();
+    }
+    int size(){ return store.size(); }
+}`,
+    hints: [
+      'Tính fingerprint = payload.trim() (bản rút gọn của SHA-256 JSON chuẩn hóa). Dùng putIfAbsent để chỉ một thread giành quyền chạy processor.',
+      'Nếu putIfAbsent trả về entry cũ: fingerprint khác thì ném PayloadMismatch, completed thì trả result, in-flight thì ném InFlight.',
+      'Khi processor ném RuntimeException thì remove(key, fresh) để retry chạy lại; khi thành công thì gán result rồi mới đặt completed = true.',
+      'Hết TTL (now - createdAt >= ttlMs) thì xóa entry và coi như mới; dùng Clock giả để test phần này không cần ngủ.'
+    ],
+    explain: `Bài tập tách idempotency thành ba quyết định: replay (đã completed, cùng fingerprint), từ chối (khác fingerprint → 422; in-flight → 409), và xử lý mới (chưa có hoặc hết TTL). putIfAbsent là điểm tuần tự hóa: thread nào đặt được entry rỗng vào key thì giành quyền chạy processor, các thread khác thấy entry in-flight và nhận 409 — không xử lý song song.
+
+Fingerprint lưu trong entry để so sánh khi lặp; ở đây là payload.trim(), production là SHA-256 của JSON đã chuẩn hóa (sắp xếp khóa ổn định) để cùng nội dung cho cùng fingerprint. Khi thành công, result được gán trước cờ completed, nên request replay không bao giờ đọc phải result null. Khi processor lỗi, entry bị xóa để lần sau chạy lại, tránh kẹt in-flight vĩnh viễn.
+
+TTL giải quyết phantom: key hết hạn bị coi như mới, retry muộn xử lý lại — đánh đổi chấp nhận được nếu TTL dài hơn cửa sổ retry thực tế. Lỗi thường gặp: server tự sinh key, không lưu fingerprint (bắt sót bug cùng key khác payload), xử lý in-flight song song, không dọn key khi lỗi, hoặc dùng map trong RAM (mất khi restart, không chia sẻ giữa nhiều pod — production dùng DB unique index hoặc Redis).`
+  }],
+  check: [
+    { q: 'Idempotency key nên do ai sinh và client phải làm gì khi retry?', options: ['Server sinh, client không cần key', 'Client sinh UUID cho mỗi ý định, retry dùng lại cùng key', 'Database sinh, client đọc lại', 'Gateway sinh ngẫu nhiên mỗi request'], answer: 1, explain: `Đúng (B): chỉ client biết hai request là cùng một ý định; retry phải dùng lại đúng key thì server mới nhận ra và replay. (A) sai vì server sinh key thì client retry không biết key cũ. (C) sai vì DB không biết "ý định" nghiệp vụ. (D) sai vì key ngẫu nhiên mỗi request làm idempotency vô dụng.` },
+    { q: 'Cùng key nhưng payload khác (fingerprint khác) nên xử lý thế nào?', options: ['Xử lý lại bình thường', 'Trả kết quả cũ đã lưu', 'Từ chối 422 để phát hiện bug client', 'Bỏ qua im lặng'], answer: 2, explain: `Đúng (C): cùng key khác payload là client bug; xử lý lại có thể duplicate, trả kết quả cũ là sai dữ liệu, nên từ chối 422 để client tạo key mới. (A) và (B) sai vì che mất bug và có thể gây sai/duplicated. (D) sai vì bỏ qua im lặng không sửa được nguyên nhân.` },
+    { q: 'Hai request cùng key đến khi request đầu đang in-flight. Request thứ hai nên?', options: ['Xử lý song song', 'Trả 409 kèm Retry-After, không xử lý song song', 'Chờ vô hạn', 'Xóa key của request đầu'], answer: 1, explain: `Đúng (B): in-flight nghĩa là đang có chủ xử lý; request sau nhận 409 để không nhân đôi hiệu ứng, client tự retry sau. (A) sai vì xử lý song song gây duplicate. (C) sai vì giữ thread dễ treo. (D) sai vì xóa key của chủ hiện tại làm hỏng request đang chạy.` },
+    { q: 'Key hết TTL rồi client retry. Hậu quả và cách hiểu đúng?', options: ['Key vẫn replay kết quả cũ mãi mãi', 'Key bị coi như mới nên xử lý lại (phantom duplicate); đặt TTL dài hơn cửa sổ retry và downstream cũng idempotent', 'Server ném lỗi vĩnh viễn', 'Client không bao giờ được retry'], answer: 1, explain: `Đúng (B): hết TTL thì key coi như chưa có, retry muộn xử lý lại — phantom duplicate chấp nhận được nếu TTL dài hơn cửa sổ retry thực tế và downstream idempotent theo transaction id. (A) sai vì key không giữ mãi. (C) và (D) sai vì không chặn retry hợp lệ.` }
+  ],
+  related: ['microservices-006', 'microservices-041', 'microservices-031'],
+  tags: ['idempotency', 'payment', 'fingerprint', 'TTL', 'in-flight', 'phantom']
+},
+{
+  id: 'lesson-microservices-029',
+  track: 'microservices',
+  order: 29,
+  title: 'Circuit breaker nửa mở: probe giới hạn và khôi phục an toàn',
+  level: 'senior',
+  minutes: 30,
+  goals: [
+    'Hiểu rõ vai trò của half-open và cách giới hạn số probe',
+    'Tự viết breaker với probe counter và reset khi thất bại',
+    'Biết đo metric và fallback khi breaker mở'
+  ],
+  body: `**Tóm tắt:** Trong trạng thái half-open, circuit breaker chỉ cho phép một số probe nhỏ gọi dependency để kiểm tra hồi phục. Nếu probe thành công đủ số lượng thì đóng lại; nếu bất kỳ probe nào thất bại thì mở lại ngay và reset timer. Giới hạn probe tránh dội lại dependency đang yếu.
+
+### Vì sao half-open cần giới hạn
+
+Khi breaker vừa mở xong và chuyển half-open, nếu cho phép tất cả thread cùng gọi, dependency đang cố hồi phục sẽ bị tấn công đúng lúc yếu nhất → fail lại → mở lại → vòng lặp. Vì vậy chỉ cho N probe (thường 1–3) gọi; các lời gọi khác vẫn bị từ chối như khi open. Đây là điểm khác biệt quan trọng so với việc cho toàn bộ traffic đi qua: half-open là giai đoạn "thăm dò" có kiểm soát, không phải mở cửa hoàn toàn.
+
+### Luồng probe
+
+1. Breaker chuyển từ open sang half-open sau reset timeout (waitDurationInOpenState).
+2. Cho phép tối đa {{halfOpenPermits}} (permittedNumberOfCallsInHalfOpenState) lời gọi probe.
+3. Nếu probe thành công: tăng counter thành công; đủ permits → chuyển closed, reset mọi counter.
+4. Nếu probe thất bại: chuyển open ngay lập tức, reset openedAt = now, reset counter probe.
+
+Lưu ý: Resilience4j implementation chờ đủ số probe rồi mới so failure rate với ngưỡng, nhưng mô hình đơn giản trong bài này coi một probe thất bại là đủ để mở lại ngay — cách này an toàn hơn cho dependency đang yếu.
+
+### Metric và fallback
+
+Trong production theo dõi: số lần mở, thời gian mở, số probe thành công/thất bại, tỷ lệ probe thành công. Fallback phải có ý nghĩa (cache, queue, thông báo) chứ không chỉ ném exception. Khi breaker mở, client nhận fallback thay vì chờ timeout — đây là giá trị cốt lõi của circuit breaker: fail fast để giải phóng tài nguyên.
+
+### Ví dụ đời thực
+
+Payment service gọi fraud-check. Fraud-check hồi phục chậm do connection pool cạn. Breaker half-open cho 2 probe: probe 1 thành công, probe 2 thành công → đóng lại, traffic trở về bình thường. Nếu probe 1 thất bại → mở lại ngay, chờ thêm 30 giây. Khách thấy vài giây chậm thay vì sập toàn hệ thống. Đo: trước khi có breaker, p99 payment 12s khi fraud-check down; sau breaker, p99 200ms (fallback trả ngay) và fraud-check tự hồi phục sau 45s.
+
+### Trả lời mẫu khi phỏng vấn
+
+Half-open là giai đoạn thăm dò: chỉ cho ít probe (1–3) gọi dependency để kiểm tra hồi phục. Giới hạn probe tránh storm — nếu cho tất cả request đi qua, dependency vừa hồi phục bị dội lại và sập tiếp. Nếu probe thất bại thì mở lại ngay, reset timer chờ. Kết hợp metric (số lần mở, thời gian mở, probe success/fail) và fallback (cache/stale data) để theo dõi và giữ trải nghiệm người dùng.
+
+> Senior tip: Đặt halfOpenPermits nhỏ (1–3) và reset timeout tăng dần (exponential backoff) để tránh hammer dependency đang yếu. Theo dõi probe success rate: nếu thấp kéo dài thì dependency thực sự chưa hồi phục, cần can thiệp thủ công hoặc scale.
+`,
+  exercises: [
+    {
+      title: 'Breaker với probe limit',
+      prompt: 'Viết class {{ProbeBreaker}} nhận {{Clock clock}}, {{Duration openDuration}}, {{int permits}}. Phương thức {{boolean tryCall(Callable<T> action)}} hoạt động như mô tả. Dùng Clock để kiểm tra thời gian.',
+      starter: 'import java.time.*;\nimport java.util.concurrent.*;\n\nclass ProbeBreaker {\n    enum State { CLOSED, OPEN, HALF_OPEN }\n    private final Clock clock;\n    private final Duration openDuration;\n    private final int permits;\n\n    ProbeBreaker(Clock clock, Duration openDuration, int permits) {\n        this.clock = clock; this.openDuration = openDuration; this.permits = permits;\n    }\n\n    State state() { return State.CLOSED; }\n\n    <T> boolean tryCall(Callable<T> action) throws Exception {\n        throw new UnsupportedOperationException("TODO");\n    }\n}',
+      tests: 'import java.time.*;\npublic class Main {\n    static int passed=0,total=0;\n    static void check(String n, Runnable r){total++;try{r.run();passed++;System.out.println("PASS "+n);}catch(Throwable t){System.out.println("FAIL "+n+": "+t);}}\n    static void eq(Object e,Object a){if(!java.util.Objects.equals(e,a)) throw new AssertionError("expected "+e+" got "+a);}\n    public static void main(String[] args){\n        class MC extends Clock { Instant now=Instant.parse("2026-01-01T00:00:00Z"); public ZoneId getZone(){return ZoneId.of("UTC");} public Clock withZone(ZoneId z){return this;} public Instant instant(){return now;} }\n        MC clock=new MC();\n        ProbeBreaker cb=new ProbeBreaker(clock, Duration.ofSeconds(10), 2);\n        check("starts closed", () -> eq(ProbeBreaker.State.CLOSED, cb.state()));\n        check("opens after failures and rejects", () -> {\n            try { cb.tryCall(() -> { throw new RuntimeException(); }); } catch (Exception ignored) {}\n            try { cb.tryCall(() -> { throw new RuntimeException(); }); } catch (Exception ignored) {}\n            try { cb.tryCall(() -> { throw new RuntimeException(); }); } catch (Exception ignored) {}\n            eq(ProbeBreaker.State.OPEN, cb.state());\n            boolean[] invoked = {false};\n            boolean r = false;\n            try { r = cb.tryCall(() -> { invoked[0]=true; return 1; }); } catch (Exception ignored) {}\n            if (r) throw new AssertionError("should reject");\n            if (invoked[0]) throw new AssertionError("action should not be invoked");\n        });\n        check("half-open allows limited probes", () -> {\n            clock.now = clock.now.plusSeconds(11);\n            boolean r1=false, r2=false, r3=false;\n            try { r1 = cb.tryCall(() -> 1); } catch (Exception ignored) {}\n            try { r2 = cb.tryCall(() -> 1); } catch (Exception ignored) {}\n            try { r3 = cb.tryCall(() -> 1); } catch (Exception ignored) {}\n            if (!r1) throw new AssertionError("first probe should be allowed");\n            if (!r2) throw new AssertionError("second probe should be allowed");\n            eq(ProbeBreaker.State.CLOSED, cb.state());\n            if (!r3) throw new AssertionError("breaker đã đóng, lần gọi tiếp được phép");\n        });\n        check("probe success closes breaker", () -> {\n            class MC2 extends Clock { Instant now=Instant.parse(\"2026-01-01T00:00:00Z\"); public ZoneId getZone(){return ZoneId.of(\"UTC\");} public Clock withZone(ZoneId z){return this;} public Instant instant(){return now;} }\n            MC2 clock2 = new MC2();\n            ProbeBreaker cb2 = new ProbeBreaker(clock2, Duration.ofSeconds(10), 2);\n            try { cb2.tryCall(() -> { throw new RuntimeException(); }); } catch (Exception ignored) {}\n            try { cb2.tryCall(() -> { throw new RuntimeException(); }); } catch (Exception ignored) {}\n            try { cb2.tryCall(() -> { throw new RuntimeException(); }); } catch (Exception ignored) {}\n            clock2.now = clock2.now.plusSeconds(11);\n            try { cb2.tryCall(() -> 1); } catch (Exception ignored) {}\n            try { cb2.tryCall(() -> 1); } catch (Exception ignored) {}\n            eq(ProbeBreaker.State.CLOSED, cb2.state());\n        });\n        check("probe failure reopens breaker", () -> {\n            class MC3 extends Clock { Instant now=Instant.parse(\"2026-01-01T00:00:00Z\"); public ZoneId getZone(){return ZoneId.of(\"UTC\");} public Clock withZone(ZoneId z){return this;} public Instant instant(){return now;} }\n            MC3 clock3 = new MC3();\n            ProbeBreaker cb3 = new ProbeBreaker(clock3, Duration.ofSeconds(10), 2);\n            try { cb3.tryCall(() -> { throw new RuntimeException(); }); } catch (Exception ignored) {}\n            try { cb3.tryCall(() -> { throw new RuntimeException(); }); } catch (Exception ignored) {}\n            try { cb3.tryCall(() -> { throw new RuntimeException(); }); } catch (Exception ignored) {}\n            clock3.now = clock3.now.plusSeconds(11);\n            try { cb3.tryCall(() -> 1); } catch (Exception ignored) {}\n            try { cb3.tryCall(() -> { throw new RuntimeException(); }); } catch (Exception ignored) {}\n            eq(ProbeBreaker.State.OPEN, cb3.state());\n        });\n        System.out.println("RESULT "+passed+"/"+total);\n    }\n}',
+      reference: 'import java.time.*;\nimport java.util.concurrent.*;\n\nclass ProbeBreaker {\n    enum State { CLOSED, OPEN, HALF_OPEN }\n    private final Clock clock;\n    private final Duration openDuration;\n    private final int permits;\n    private final int failureThreshold = 3;\n    private State state = State.CLOSED;\n    private Instant openedAt;\n    private int consecutiveFailures = 0;\n    private int probeAttempts = 0;\n    private int probeSuccess = 0;\n\n    ProbeBreaker(Clock clock, Duration openDuration, int permits) {\n        this.clock = clock; this.openDuration = openDuration; this.permits = permits;\n    }\n\n    State state() {\n        if (state == State.OPEN && clock.instant().isAfter(openedAt.plus(openDuration))) {\n            state = State.HALF_OPEN;\n            probeAttempts = 0;\n            probeSuccess = 0;\n        }\n        return state;\n    }\n\n    <T> boolean tryCall(Callable<T> action) throws Exception {\n        State s = state();\n        if (s == State.OPEN) return false;\n        if (s == State.HALF_OPEN) {\n            if (probeAttempts >= permits) return false;\n            probeAttempts++;\n        }\n        try {\n            action.call();\n            if (state == State.HALF_OPEN) {\n                probeSuccess++;\n                if (probeAttempts >= permits) { // evaluate after all permits used\n                    if (probeSuccess == permits) { state = State.CLOSED; consecutiveFailures = 0; }\n                    else { state = State.OPEN; openedAt = clock.instant(); }\n                    probeAttempts = 0; probeSuccess = 0;\n                }\n            } else {\n                consecutiveFailures = 0;\n            }\n            return true;\n        } catch (Exception e) {\n            if (state == State.HALF_OPEN) { state = State.OPEN; openedAt = clock.instant(); probeAttempts = 0; probeSuccess = 0; }\n            else { consecutiveFailures++; if (consecutiveFailures >= failureThreshold) { state = State.OPEN; openedAt = clock.instant(); } }\n            throw e;\n        }\n    }\n}',
+      hints: ['State() phải tự chuyển OPEN→HALF_OPEN theo thời gian.'],
+      explain: 'Lỗi hay gặp: quên reset counter khi fail, hoặc cho phép không giới hạn probe. Production dùng Resilience4j.'
+    }
+  ],
+  check: [
+    { q: 'Half-open cho phép bao nhiêu probe?', options: ['Tất cả thread', '1–3 probe', 'Không cho phép', 'Vô hạn'], answer: 1, explain: 'Chỉ 1–3 probe để tránh storm dependency đang yếu.' },
+    { q: 'Probe thất bại trong half-open thì?', options: ['Thử tiếp', 'Mở lại ngay và reset timer', 'Đóng lại', 'Bỏ qua'], answer: 1, explain: 'Thất bại → mở lại ngay, reset openedAt.' },
+    { q: 'Metric quan trọng của breaker?', options: ['Chỉ số lỗi', 'Số lần mở, thời gian mở, probe success/fail', 'Throughput', 'Latency p50'], answer: 1, explain: 'Theo dõi số lần mở, thời gian mở, probe thành công/thất bại.' }
+  ],
+  related: ['microservices-015', 'microservices-016', 'microservices-017'],
+  tags: ['circuit-breaker', 'half-open', 'probe', 'resilience']
+},
+{
+  id: 'lesson-microservices-030',
+  track: 'microservices',
+  order: 30,
+  title: 'Idempotency key nâng cao: TTL phantom, fingerprint và lock phân tán',
+  level: 'senior',
+  minutes: 30,
+  goals: [
+    'Hiểu TTL phantom và cách giảm rủi ro',
+    'Tự viết store với fingerprint và TTL bằng Clock giả',
+    'Biết lock phân tán cho multi-pod'
+  ],
+  body: `**Tóm tắt:** Idempotency key nâng cao thêm fingerprint (hash payload) để phát hiện client bug, TTL để tránh giữ key mãi, và lock phân tán để dedup giữa nhiều pod. TTL phantom là trade-off: key hết hạn → retry muộn xử lý lại, chấp nhận được nếu TTL dài hơn cửa sổ retry và downstream idempotent.
+
+### Fingerprint
+
+Hash payload đã chuẩn hóa (sắp xếp khóa) để cùng nội dung cho cùng fingerprint. Nếu cùng key khác fingerprint → 422 để phát hiện bug client. Fingerprint khác với việc so sánh toàn bộ payload: nó là bản tóm gọn (SHA-256 của JSON canonical) nên so sánh nhanh, tốn ít bộ nhớ, và bỏ qua sự khác biệt vô nghĩa như thứ tự key trong JSON. Production thường dùng Jackson để chuẩn hóa JSON (sắp xếp khóa), rồi tính SHA-256 làm fingerprint.
+
+### TTL và phantom
+
+Key lưu có thời hạn (24h–7 ngày). Sau TTL bị xóa → request lặp muộn coi như mới → xử lý lại (phantom duplicate). Đây là trade-off chấp nhận được: retry sau nhiều ngày rất hiếm, và downstream (payment gateway) cũng phải idempotent theo transaction id. TTL không nên quá ngắn (dưới p99 latency của business logic + network) vì sẽ gây phantom duplicate không cần thiết; cũng không nên quá dài (trên 7 ngày) vì tốn bộ nhớ store. Clock giả trong test cho phép tiến thời gian tức thì để kiểm tra TTL expiry mà không cần {{Thread.sleep}}.
+
+### Lock phân tán
+
+In-memory ConcurrentHashMap chỉ hoạt động single pod. Production dùng DB unique constraint trên key ({{INSERT ... ON CONFLICT}}) hoặc Redis SETNX với TTL để dedup giữa nhiều pod. Với DB, unique index trên {{(tenant, endpoint, key)}} đảm bảo chỉ một request thắng; với Redis, {{SET key value NX EX ttl}} thực hiện atomic check-and-set. Cả hai cách đều giải quyết in-flight dedup ở mức cluster: chỉ một pod xử lý, các pod khác nhận lỗi conflict/409.
+
+### Ví dụ đời thực
+
+Thanh toán: client retry sau 2 ngày (ngoài TTL 24h) → xử lý lại → phantom duplicate. Giảm bằng TTL dài hơn cửa sổ retry thực tế (ví dụ 7 ngày) và downstream idempotent theo transaction id. Metric: theo dõi phantom rate (số request xử lý lại sau TTL / tổng request) — nên < 0.01%.
+
+### Trả lời mẫu khi phỏng vấn
+
+Idempotency key nâng cao cần fingerprint (SHA-256 canonical JSON), TTL (24h–7 ngày) và lock phân tán (DB unique index hoặc Redis SETNX). TTL phantom là trade-off chấp nhận được: key hết hạn → retry muộn xử lý lại. Production dùng DB/Redis để dedup giữa pod, in-memory chỉ cho single node. Fingerprint bắt bug client dùng lại key cho payload khác.
+
+> Senior tip: Đặt TTL dài hơn cửa sổ retry thực tế và downstream idempotent theo transaction id để giảm phantom. Theo dõi 409 rate (in-flight conflict) — tăng đột biến thường do client retry quá sớm, không phải lỗi server.
+`,
+  exercises: [
+    {
+      title: 'Store với fingerprint và TTL',
+      prompt: 'Viết class {{TtlStore}} với Clock, ttlMs, phương thức {{Result handle(String key, String fingerprint, Supplier<Result> processor)}} theo quy tắc idempotency + TTL.',
+      starter: 'import java.time.*;\nimport java.util.concurrent.*;\nimport java.util.function.*;\n\nclass TtlStore {\n    static class Result { final int status; final String body; Result(int s,String b){status=s;body=b;} }\n    static class PayloadMismatch extends RuntimeException {}\n    static class InFlight extends RuntimeException {}\n    private final Clock clock;\n    private final long ttlMs;\n    TtlStore(Clock clock, long ttlMs){ this.clock=clock; this.ttlMs=ttlMs; }\n    Result handle(String key, String fingerprint, Supplier<Result> processor){ throw new UnsupportedOperationException("TODO"); }\n}',
+      tests: 'import java.time.*;\npublic class Main {\n    static int passed=0,total=0;\n    static void check(String n, Runnable r){total++;try{r.run();passed++;System.out.println("PASS "+n);}catch(Throwable t){System.out.println("FAIL "+n+": "+t);}}\n    public static void main(String[] args){\n        class MC extends Clock { Instant now=Instant.parse("2026-01-01T00:00:00Z"); public ZoneId getZone(){return ZoneId.of("UTC");} public Clock withZone(ZoneId z){return this;} public Instant instant(){return now;} }\n        MC clock=new MC();\n        TtlStore s=new TtlStore(clock, 1000);\n        check("first processes", () -> { TtlStore.Result r=s.handle("k","f",()->new TtlStore.Result(201,"o")); if(r.status!=201) throw new AssertionError("bad"); });\n        check("repeat returns stored", () -> { boolean[] p={false}; TtlStore.Result r=s.handle("k","f",()->{p[0]=true;return new TtlStore.Result(201,"x");}); if(p[0]) throw new AssertionError("processed"); if(!"o".equals(r.body)) throw new AssertionError("not stored"); });\n        check("different fingerprint rejected", () -> {\n            TtlStore s2=new TtlStore(clock, 1000);\n            s2.handle("k","f1",()->new TtlStore.Result(201,"o"));\n            try { s2.handle("k","f2",()->new TtlStore.Result(201,"x")); throw new AssertionError("should reject"); }\n            catch (TtlStore.PayloadMismatch ok) {}\n        });\n        check("expired key treated as new", () -> {\n            MC clock2=new MC();\n            TtlStore s3=new TtlStore(clock2, 1000);\n            s3.handle("k","f",()->new TtlStore.Result(201,"first"));\n            clock2.now = clock2.now.plusMillis(1500);\n            boolean[] p={false};\n            TtlStore.Result r=s3.handle("k","f",()->{p[0]=true;return new TtlStore.Result(201,"second");});\n            if(!p[0]) throw new AssertionError("should process again");\n            if(!"second".equals(r.body)) throw new AssertionError("should return new result");\n        });\n        check("in-flight throws exception", () -> {\n            MC clock3=new MC();\n            TtlStore s4=new TtlStore(clock3, 1000);\n            CountDownLatch start=new CountDownLatch(1), done=new CountDownLatch(1);\n            AtomicReference<Throwable> err=new AtomicReference<>();\n            Thread th=new Thread(()->{try{s4.handle("k","f",()->{start.countDown();try{done.await();}catch(InterruptedException e){}return new TtlStore.Result(200,"x");});}catch(Throwable e){err.set(e);}});\n            th.start();\n            try{start.await();}catch(InterruptedException e){throw new AssertionError(e);}\n            try{s4.handle("k","f",()->new TtlStore.Result(200,"y"));throw new AssertionError("should reject");}\n            catch(TtlStore.InFlight ok){}\n            done.countDown();\n            try{th.join(1000);}catch(InterruptedException e){throw new AssertionError(e);}\n        });\n        System.out.println("RESULT "+passed+"/"+total);\n    }\n}',
+      reference: 'import java.time.*;\nimport java.util.concurrent.*;\nimport java.util.function.*;\n\nclass TtlStore {\n    static class Result { final int status; final String body; Result(int s,String b){status=s;body=b;} }\n    static class PayloadMismatch extends RuntimeException {}\n    static class InFlight extends RuntimeException {}\n    static class Entry { String fingerprint; Result result; long createdAt; boolean done; }\n    private final Clock clock;\n    private final long ttlMs;\n    private final ConcurrentHashMap<String,Entry> store=new ConcurrentHashMap<>();\n    TtlStore(Clock clock, long ttlMs){ this.clock=clock; this.ttlMs=ttlMs; }\n    Result handle(String key, String fingerprint, Supplier<Result> processor){\n        long nowMs=clock.instant().toEpochMilli();\n        Entry e=store.get(key);\n        if (e!=null && nowMs - e.createdAt >= ttlMs) { store.remove(key); e=null; }\n        if (e==null) {\n            Entry ne=new Entry(); ne.fingerprint=fingerprint; ne.createdAt=nowMs;\n            Entry prev=store.putIfAbsent(key,ne);\n            if (prev==null) {\n                try { Result r=processor.get(); ne.result=r; ne.done=true; return r; }\n                catch (RuntimeException ex){ store.remove(key); throw ex; }\n            } else { e=prev; }\n        }\n        if (!e.done) throw new InFlight();\n        if (!e.fingerprint.equals(fingerprint)) throw new PayloadMismatch();\n        return e.result;\n    }\n}',
+      hints: ['Dùng Clock để lấy thời gian hiện tại.'],
+      explain: 'Lỗi hay gặp: không kiểm tra TTL, không fingerprint. Production dùng DB/Redis.'
+    }
+  ],
+  check: [
+    { q: 'TTL phantom là gì?', options: ['Key giữ mãi', 'Key hết hạn → retry muộn xử lý lại', 'Server ném lỗi vĩnh viễn', 'Client không được retry'], answer: 1, explain: 'Key hết TTL → coi như mới → xử lý lại (phantom duplicate).' },
+    { q: 'Fingerprint dùng để?', options: ['Tăng tốc', 'Phát hiện cùng key khác payload', 'Mã hóa', 'Nén'], answer: 1, explain: 'Cùng key khác fingerprint → client bug → 422.' },
+    { q: 'Dedup giữa nhiều pod dùng?', options: ['ConcurrentHashMap', 'DB unique constraint hoặc Redis SETNX', 'ThreadLocal', 'File lock'], answer: 1, explain: 'Production dùng DB unique constraint hoặc Redis SETNX với TTL.' }
+  ],
+  related: ['microservices-006', 'microservices-011', 'microservices-001'],
+  tags: ['idempotency', 'TTL', 'fingerprint', 'distributed-lock']
+},
 );
