@@ -7849,5 +7849,220 @@ Indexes:
     ],
     tags: ['postgresql', 'partition', 'partition-pruning', 'or-condition', 'union-all', 'partitioned-table'],
   },
+  {
+    id: 'lab-sql-052',
+    category: 'sql',
+    title: 'PreparedStatement generic plan chọn sai kế hoạch do tham số lệch (parameter skew)',
+    level: 'senior',
+    scenario: `**Bối cảnh.** Hệ thống {{order-service}} (Spring Boot 3.3, Hibernate 6.4, PostgreSQL 15.6 trên RDS, 8 vCPU / 64 GB RAM) lưu đơn hàng trong bảng {{orders}}: **60.000.000 dòng** (~15 GB heap). Cột {{status}} lưu trạng thái đơn: {{PENDING}} (0,5% ~ 300.000 dòng), {{SHIPPED}} (10%), {{DELIVERED}} (85% ~ 51 triệu dòng), {{CANCELLED}} (4,5%). Có chỉ mục {{idx_orders_status}} btree trên {{status}}.
+
+Endpoint {{GET /api/v1/orders?status=}} dùng Hibernate/JPA với parameter binding: {{SELECT o FROM Order o WHERE o.status = :status}}. Spring Data JPA tạo PreparedStatement với tham số {{?}}.
+
+**Triệu chứng (14/03/2026, 09:00–11:00).** Khi tìm đơn {{PENDING}} (hiếm) query chạy **8 ms** — dùng Index Scan, đúng. Khi tìm đơn {{DELIVERED}} (phổ biến, 85%) query đột nhiên chảy lên **6,2 giây** — dùng Seq Scan toàn bảng. Không ai đổi code, không đổi index, không đổi dữ liệu. Một dev nghĩ "index bị hỏng" và đề xuất REINDEX — không giảm.
+
+**Việc bạn có.** Hai artifact: EXPLAIN ANALYZE EXECUTE của câu với tham số PENDING và với tham số DELIVERED (sau khi PreparedStatement đã được dùng 5 lần trở lên, PostgreSQL dùng generic plan), và log auto_explain. Hãy chỉ ra vì sao cùng câu, cùng index, mà kế hoạch xấu chỉ xảy ra với tham số phổ biến, và cách buộc PostgreSQL dùng custom plan cho mỗi tham số.`,
+    artifacts: [
+      {
+        name: 'auto-explain-generic-delivered.log',
+        lang: 'text',
+        content: `-- 2026-03-14 09:15:22 +07, RDS orderdb (PostgreSQL 15.6, plan_cache_mode = auto)
+orderdb=# EXPLAIN (ANALYZE, BUFFERS)
+EXECUTE stmt_get_orders_by_status('DELIVERED');
+                                                              QUERY PLAN
+------------------------------------------------------------------------------------------------------------------------------
+ Limit  (cost=0.43..45.43 rows=50 width=72) (actual time=3120.887..6204.123 rows=50 loops=1)
+   Buffers: shared hit=1894320 read=1442
+   ->  Index Scan using idx_orders_status on orders o  (cost=0.43..2345678.90 rows=15000000 width=72) (actual time=0.041..6203.552 rows=51000000 loops=1)
+         Index Cond: (status = 'DELIVERED'::varchar)
+         Buffers: shared hit=1894320 read=1442
+ Planning Time: 0.284 ms
+ Execution Time: 6204.512 ms
+-- Generic plan: Index Scan ước lượng 15 triệu dòng (trung bình 4 trạng thái), thực tế 51 triệu dòng DELIVERED -> 6,2 giây.`,
+      },
+      {
+        name: 'explain-custom-pending.txt',
+        lang: 'text',
+        content: `-- 2026-03-14 09:20:00 +07, sau SET plan_cache_mode = force_custom_plan
+orderdb=# EXPLAIN (ANALYZE, BUFFERS)
+EXECUTE stmt_get_orders_by_status('PENDING');
+                                                           QUERY PLAN
+------------------------------------------------------------------------------------------------------------------------------
+ Index Scan using idx_orders_status on orders o  (cost=0.43..8.45 rows=300000 width=72) (actual time=0.051..7.812 rows=300000 loops=1)
+   Index Cond: (status = 'PENDING'::varchar)
+   Buffers: shared hit=750 read=2
+ Planning Time: 0.284 ms
+ Execution Time: 8.103 ms
+
+orderdb=# EXPLAIN (ANALYZE, BUFFERS)
+EXECUTE stmt_get_orders_by_status('DELIVERED');
+                                                           QUERY PLAN
+------------------------------------------------------------------------------------------------------------------------------
+ Seq Scan on orders o  (cost=0.00..1845123.45 rows=51000000 width=72) (actual time=0.112..784.321 rows=51000000 loops=1)
+   Filter: (status = 'DELIVERED'::varchar)
+   Buffers: shared hit=3124512 read=0
+ Planning Time: 0.284 ms
+ Execution Time: 785.102 ms
+-- Custom plan: PENDING dùng Index Scan (8 ms), DELIVERED dùng Seq Scan (0,8 giây) — mỗi tham số có kế hoạch riêng phù hợp.`,
+      },
+    ],
+    questions: [
+      'Vì sao cùng câu PreparedStatement, tìm PENDING chạy 8 ms nhưng tìm DELIVERED chạy 6,2 giây, dù không đổi code hay index? Chỉ ra bằng artifact nào.',
+      'Generic plan là gì, và tại sao nó lại xấu với tham số lệch (parameter skew) như trạng thái DELIVERED chiếm 85%?',
+      'Bạn sửa thế nào để mỗi giá trị tham số có kế hoạch riêng, phù hợp với selectivity thực tế? Giải thích trade-off của force_custom_plan.',
+    ],
+    hints: [
+      'PostgreSQL 12+ dùng custom plan cho 5 lần EXECUTE đầu, sau đó chuyển sang generic plan (một kế hoạch cho tất cả tham số) khi plan_cache_mode = auto. Generic plan dùng selectivity trung bình (4 trạng thái → ~25% mỗi trạng thái), không phản ánh sự lệch thực tế.',
+      'Generic plan chọn Index Scan (tốt cho PENDING 0,5%, xấu cho DELIVERED 85% = 51 triệu dòng qua index random I/O). DELIVERED nên dùng Seq Scan (đọc tuần tự 15 GB nhanh hơn).',
+      'Sửa: SET plan_cache_mode = force_custom_plan (hoặc force_generic_plan nếu muốn ngược lại) ở cấp session/transaction, hoặc viết các truy vấn riêng cho từng giá trị phổ biến. Custom plan có chi phí lập kế hoạch cao hơn nhưng phù hợp mỗi tham số.',
+    ],
+    answer: `**Tóm tắt:** Câu {{SELECT ... WHERE status = $1}} dùng PreparedStatement. PostgreSQL 12+ với {{plan_cache_mode = auto}} dùng custom plan 5 lần đầu rồi chuyển sang **generic plan** (một kế hoạch cho mọi tham số, dựa trên selectivity trung bình). Với cột {{status}} lệch (DELIVERED 85%, PENDING 0,5%), generic plan chọn Index Scan — tốt cho PENDING (8 ms) nhưng thảm họa cho DELIVERED: quét 51 triệu dòng qua index random I/O, 6,2 giây. Sửa: dùng {{force_custom_plan}} để mỗi EXECUTE có kế hoạch riêng theo giá trị tham số (PENDING → Index Scan 8 ms, DELIVERED → Seq Scan 0,8 giây), hoặc tách truy vấn riêng cho giá trị phổ biến.
+
+### Kiến thức nền: custom plan vs generic plan
+PostgreSQL chuẩn bị PreparedStatement lần đầu, sau mỗi EXECUTE nhận tham số thực tế và lập kế hoạch riêng (custom plan). Từ lần thứ 6 trở lên (mặc định {{plan_cache_mode = auto}}), nó caches một **generic plan** — kế hoạch duy nhất dùng cho tất cả các giá trị tham số sau này, dựa trên thống kê trung bình từ {{pg_stats}}. Điều này giảm chi phí lập kế hoạch nhưng rủi ro: với dữ liệu lệch, generic plan có thể sai bét cho một số giá trị.
+
+Ví dụ đời thường: như lập vé xe theo "loại khách hàng trung bình" (generic plan) — giá vé trung bình. Nhưng khách hàng thực tế là trẻ em (giá rẻ) hoặc người lớn (giá đắt). Generic plan không khớp ai. Custom plan là lập vé riêng theo từng khách hàng.
+
+### Nguyên nhân gốc, từng bước
+1. Bảng {{orders}} 60 triệu dòng, cột {{status}} có chỉ mục {{idx_orders_status}}, dữ liệu lệch: DELIVERED 85% (51 triệu), PENDING 0,5% (300 nghìn).
+2. Ứng dụng gọi PreparedStatement với tham số {{status}}. 5 lần EXECUTE đầu dùng custom plan: PENDING dùng Index Scan (8 ms), DELIVERED dùng Seq Scan (0,8 giây) — đều ổn.
+3. Lần thứ 6 trở lên, PostgreSQL chuyển sang generic plan (dựa trên selectivity trung bình ~25% mỗi trạng thái). Generic plan chọn **Index Scan** (chi phí thấp hơn Seq Scan theo ước lượng trung bình).
+4. Với tham số DELIVERED, Index Scan phải đọc 51 triệu entries từ index rồi fetch heap → random I/O massic → 6,2 giây. Seq Scan sẽ đọc tuần tự 15 GB, chỉ ~0,8 giây.
+5. Với tham số PENDING, Index Scan vẫn tốt (8 ms) — nên vấn đề chỉ phát hiện với giá trị phổ biến.
+
+### Dẫn chứng
+- Artifact 1 (generic plan, DELIVERED): **Index Scan** trên {{idx_orders_status}}, estimated rows 15.000.000 (trung bình), actual rows 51.000.000, **Execution Time: 6204.512 ms**, Buffers 1.894.320 hit (đọc heap nhiều do index random fetch).
+- Artifact 2 (custom plan): PENDING → Index Scan, Execution Time 8.103 ms; DELIVERED → **Seq Scan**, Execution Time 785.102 ms. Mỗi tham số có kế hoạch phù hợp.
+- Log auto_explain sẽ hiển thị các EXECUTE sau lần thứ 5 đều dùng cùng generic plan (Index Scan) bất kể tham số.
+
+### Cách sửa ngắn hạn (hôm nay)
+- {{SET plan_cache_mode = force_custom_plan;}} ở cấp session (hoặc {{ALTER DATABASE ... SET plan_cache_mode = force_custom_plan}} / {{ALTER ROLE}}) trước khi chạy truy vấn bị ảnh hưởng. Mỗi EXECUTE lập kế hoạch riêng theo giá trị tham số thực tế.
+- Nếu chỉ một số giá trị phổ biến bị ảnh hưởng: viết các truy vấn riêng (ví dụ {{WHERE status = 'DELIVERED'}} hard-coded) hoặc dùng {{CASE}} để hướng planner, thay vì dùng tham số chung.
+- {{SET plan_cache_mode = force_generic_plan}} nếu ngược lại: generic plan tốt cho tất cả, muốn tiết kiệm chi phí lập kế hoạch.
+
+### Cách sửa dài hạn
+- Theo dõi {{pg_stat_statements}} + auto_explain: phát hiện truy vấn có nhiều Execution Time lệch lớn giữa các lần gọi cùng queryid — dấu hiệu parameter skew với generic plan.
+- Chuẩn bị thiết kế: tránh dùng tham số cho cột có phân bố dữ liệu cực độ lệch nếu cần kế hoạch khác nhau; cân nhắc hard-coded hoặc stored procedure với IF/ELSE chọn truy vấn phù hợp.
+- Tune {{prepare_threshold}} (số lần custom plan trước khi chuyển generic) nếu cần, nhưng force_custom_plan rõ ràng hơn.
+
+### Phòng ngừa và monitoring
+- Alert khi cùng queryid có Execution Time chênh lệch > 10 lần giữa các lần gọi (auto_explain / pg_stat_statements).
+- Kiểm tra {{plan_cache_mode}} mặc định là auto; với dữ liệu lệch cân nhắc force_custom_plan cho các truy vấn báo cáo.
+- Quy tắc review: truy vấn dùng PreparedStatement trên cột có phân bố lệch phải kiểm tra EXPLAIN với cả giá trị hiếm và phổ biến.
+
+### Trả lời mẫu khi phỏng vấn
+"Câu truy vấn PreparedStatement WHERE status = $1 dùng generic plan sau 5 lần execute. Generic plan dựa trên selectivity trung bình (~25% mỗi trạng thái) chọn Index Scan, tốt cho PENDING (0,5%, 8 ms) nhưng thảm họa cho DELIVERED (85%, 51 triệu dòng qua index) → 6,2 giây. Sửa: SET plan_cache_mode = force_custom_plan để mỗi tham số có kế hoạch riêng (PENDING Index Scan 8 ms, DELIVERED Seq Scan 0,8 giây), hoặc tách truy vấn riêng cho giá trị phổ biến. Theo dõi pg_stat_statements để phát hiện parameter skew."
+
+> Senior tip: **Generic plan là "một kế hoạch cho tất cả" — với dữ liệu đều đều thì tốt, với dữ liệu lệch thì thảm.** Khi cùng câu SQL chạy nhanh với tham số hiếm nhưng chậm với tham số phổ biến (không đổi code, không đổi index), hãy nghi generic plan + parameter skew. Quy tắc: dùng EXPLAIN ANALYZE EXECUTE với cả giá trị hiếm và phổ biến; nếu khác biệt quá lớn, bật force_custom_plan hoặc tách truy vấn. Chi phí lập kế hoạch custom plan nhỏ bé so với chi phí chạy sai kế hoạch 6 giây.`,
+    rubric: [
+      'Chỉ đúng nguyên nhân: generic plan (sau 5 lần EXECUTE) dùng selectivity trung bình, chọn Index Scan xấu cho tham số phổ biến DELIVERED 85%, tốt cho PENDING 0,5%',
+      'Dẫn chứng đúng: artifact 1 Index Scan estimated 15 triệu / actual 51 triệu, 6,2 giây; artifact 2 custom plan PENDING Index Scan 8 ms, DELIVERED Seq Scan 0,8 giây',
+      'Giải thích đúng custom vs generic plan: plan_cache_mode = auto, 5 lần đầu custom, sau đó generic dựa trên pg_stats trung bình',
+      'Đề xuất sửa đúng: force_custom_plan ở session/transaction, hoặc hard-coded truy vấn riêng cho giá trị phổ biến, nêu trade-off chi phí lập kế hoạch',
+      'Có monitoring/phòng ngừa: pg_stat_statements + auto_explain phát hiện execution time lệch, quy tắc review EXPLAIN với giá trị hiếm và phổ biến',
+    ],
+    tags: ['postgresql', 'prepared-statement', 'generic-plan', 'parameter-skew', 'plan-cache-mode', 'explain'],
+  },
+  {
+    id: 'lab-sql-053',
+    category: 'sql',
+    title: 'LIKE có ký tự wildcard ở đầu (LIKE %pattern) không dùng B-tree index → Seq Scan',
+    level: 'senior',
+    scenario: `**Bối cảnh.** Hệ thống {{notification-service}} (Spring Boot 3.3, Hibernate 6.4, PostgreSQL 15.6 trên RDS, 8 vCPU / 64 GB RAM) lưu khách hàng trong bảng {{customers}}: **40.000.000 dòng** (~10 GB heap). Cột {{email}} kiểu {{varchar(255)}} có chỉ mục {{idx_customers_email}} btree. Endpoint {{GET /api/v1/customers?domain=}} tìm khách hàng theo domain email: WHERE email LIKE :pattern với pattern = '%@gmail.com'.
+
+**Triệu chứng (14/03/2026, 10:00).** Query tìm domain @gmail.com (khoảng 4 triệu dòng) chạy **12 giây**, CPU RDS 100% một core. EXPLAIN thấy **Seq Scan** toàn bảng 40 triệu dòng dù chỉ mục {{idx_customers_email}} đã tồn tại. DBA nghĩ "index bị hỏng" và chạy REINDEX — không giảm.
+
+**Việc bạn có.** Hai artifact: EXPLAIN ANALYZE của câu LIKE '%@gmail.com', và EXPLAIN của câu viết lại dùng pg_trgm (hoặc cột đảo ngược). Hãy chỉ ra vì sao B-tree index không giúp với wildcard ở đầu, và cách tạo chỉ mục phù hợp.`,
+    artifacts: [
+      {
+        name: 'explain-like-tail.txt',
+        lang: 'text',
+        content: `-- 2026-03-14 10:05:12 +07, RDS notificationdb (PostgreSQL 15.6)
+notifdb=# EXPLAIN (ANALYZE, BUFFERS)
+SELECT id, email, full_name FROM customers WHERE email LIKE '%@gmail.com';
+                                                               QUERY PLAN
+-----------------------------------------------------------------------------------------------------------------------------
+ Seq Scan on customers  (cost=0.00..1245678.90 rows=4000000 width=48) (actual time=0.021..11984.567 rows=4000000 loops=1)
+   Filter: ((email)::text ~~ '%@gmail.com'::text)
+   Rows Removed by Filter: 36000000
+   Buffers: shared hit=2500000 read=12345
+ Planning Time: 0.284 ms
+ Execution Time: 11985.102 ms
+-- B-tree index trên email KHÔNG được dùng vì LIKE '%@gmail.com' bắt đầu bằng wildcard: không xác định được dải giá trị để quét index.`,
+      },
+      {
+        name: 'explain-like-trigram.txt',
+        lang: 'text',
+        content: `-- 2026-03-14 10:10:00 +07, sau CREATE EXTENSION pg_trgm; CREATE INDEX ... USING gin (email gin_trgm_ops);
+notifdb=# EXPLAIN (ANALYZE, BUFFERS)
+SELECT id, email, full_name FROM customers WHERE email LIKE '%@gmail.com';
+                                                               QUERY PLAN
+-----------------------------------------------------------------------------------------------------------------------------
+ Bitmap Heap Scan on customers  (cost=245.67..24567.89 rows=4000000 width=48) (actual time=45.123..312.456 rows=4000000 loops=1)
+   Recheck Cond: ((email)::text ~~ '%@gmail.com'::text)
+   ->  Bitmap Index Scan using idx_customers_email_trgm on customers  (cost=0.00..245.67 rows=4000000 width=0) (actual time=12.345..12.345 rows=4000000 loops=1)
+         Index Cond: ((email)::text ~~ '%@gmail.com'::text)
+   Buffers: shared hit=12500 read=0
+ Planning Time: 0.412 ms
+ Execution Time: 313.204 ms
+-- pg_trgm GiN index dùng được cho LIKE '%pattern%', thời gian từ 12 giây xuống 0,3 giây.`,
+      },
+    ],
+    questions: [
+      'Vì sao câu LIKE "%@gmail.com" (khoảng 4 triệu dòng) lại Seq Scan toàn bảng 40 triệu dòng dù có chỉ mục btree trên email? Chỉ ra bằng dòng nào trong EXPLAIN.',
+      'B-tree index hỗ trợ tìm kiếm theo dạng gì, và tại sao wildcard ở đầu làm index không dùng được?',
+      'Bạn sửa thế nào để tìm kiếm domain email nhanh? So sánh hai cách: pg_trgm (GiN/GiST) và cột đảo ngược reverse(email) + btree.',
+    ],
+    hints: [
+      'B-tree index lưu giá trị theo thứ tự lexicographic, chỉ hỗ trợ tìm kiếm theo tiền tố (prefix). LIKE "gmail%" có thể dùng index (quét dải gmail..gmailz), nhưng LIKE "%@gmail.com" không xác định được điểm bắt đầu trong index.',
+      'Dòng "Filter: ((email)::text ~~ "%@gmail.com"::text)" trong EXPLAIN và "Seq Scan on customers" xác nhận chỉ mục bị bỏ qua.',
+      'Giải pháp 1: pg_trgm extension, chỉ mục GiN/GiST trên email (gin_trgm_ops) hỗ trợ tìm chuỗi bất kỳ. Giải pháp 2: cột tạo tự động reverse(email) + btree index, truy vấn WHERE reverse(email) LIKE "moc.liamg@%".',
+    ],
+    answer: `**Tóm tắt:** Câu {{WHERE email LIKE '%@gmail.com'}} không dùng được chỉ mục btree {{idx_customers_email}} vì B-tree chỉ hỗ trợ tìm kiếm theo tiền tố; wildcard ở đầu ('%') làm mất điểm bắt đầu để quét index → PostgreSQL chọn **Seq Scan** quét 40 triệu dòng, 12 giây. Sửa: tạo chỉ mục **pg_trgm (GiN/GiST)** trên email hoặc dùng **cột đảo ngược reverse(email)** + btree index với {{WHERE reverse(email) LIKE 'moc.liamg@%'}}. Thời gian từ 12 giây xuống 0,3 giây.
+
+### Kiến thức nền: B-tree và tìm kiếm theo mẫu
+Chỉ mục B-tree lưu giá trị theo thứ tự tăng dần (lexicographic cho chuỗi). Nó hỗ trợ hiệu quả các phép so sánh =, <, >, BETWEEN, và LIKE với **tiền tố cố định** (LIKE 'gmail%') vì có thể xác định dải giá trị [gmail, gmailz] và quét liên tiếp trong index.
+
+Khi LIKE bắt đầu bằng wildcard ('%@gmail.com'), giá trị bắt đầu là bất kỳ → không thể xác định dải index → B-tree không dùng được. PostgreSQL coi đây là điều kiện không sargable đối với B-tree, chọn Seq Scan.
+
+Ví dụ đời thường: danh bạ theo thứ tự bảng chữ cái. Tìm "tên bắt đầu bằng An" (An*) thì nhanh — mở trang A, đọc đến A-z. Tìm "tên kết thúc bằng van" (*van) thì phải đọc toàn bộ danh bạ — không biết bắt đầu từ trang nào.
+
+### Nguyên nhân gốc, từng bước
+1. Bảng {{customers}} 40 triệu dòng, cột {{email}} varchar(255), chỉ mục btree {{idx_customers_email}}.
+2. Truy vấn {{WHERE email LIKE '%@gmail.com'}} — wildcard ở đầu, phần trước '@gmail.com' là bất kỳ.
+3. Planner không thể xác định dải giá trị trong btree để quét → bỏ qua chỉ mục → **Seq Scan** toàn bảng.
+4. Dòng Filter: ((email)::text ~~ '%@gmail.com'::text) xác nhận điều kiện được áp dụng làm filter sau khi đọc từng dòng, không phải index condition.
+5. Đọc 40 triệu dòng từ heap, loại bỏ 36 triệu, trả 4 triệu → 12 giây, CPU 100% một core.
+
+### Dẫn chứng
+- Artifact 1: **Seq Scan on customers**, estimated rows 4.000.000, actual rows 4.000.000, Rows Removed by Filter 36.000.000, **Execution Time: 11985.102 ms**. Không có Index Cond, chỉ Filter.
+- Artifact 2 (pg_trgm): **Bitmap Index Scan using idx_customers_email_trgm**, **Execution Time: 313.204 ms** — nhanh khoảng 38 lần. Chỉ mục GiN hỗ trợ tìm chuỗi bất kỳ qua toán tử trgm.
+
+### Cách sửa ngắn hạn (hôm nay)
+- {{CREATE EXTENSION IF NOT EXISTS pg_trgm;}} rồi {{CREATE INDEX idx_customers_email_trgm ON customers USING gin (email gin_trgm_ops);}}. Chỉ mục GiN hỗ trợ LIKE '%pattern%', ILIKE, similarity. CREATE INDEX thông thường khoá bảng (không ghi được), có thể chạy ngoài giờ cao điểm; hoặc {{CREATE INDEX CONCURRENTLY}} nếu không muốn khoá.
+- Truy vấn giữ nguyên {{WHERE email LIKE '%@gmail.com'}}, planner tự chọn chỉ mục trigram.
+
+### Cách sửa dài hạn
+- Nếu chỉ tìm domain email (luôn '%@domain'), cột đảo ngược hiệu quả hơn: thêm cột {{email_rev}} kiểu {{varchar(255)}} sinh tự động (generated column) {{reverse(email)}}, chỉ mục btree trên {{email_rev}}, truy vấn {{WHERE email_rev LIKE 'moc.liamg@%'}} → dùng btree index, nhanh và nhỏ hơn pg_trgm.
+- Nếu cần tìm kiếm văn bản toàn văn (full-text) trên nhiều cột: dùng {{to_tsvector}} + chỉ mục GiN, hoặc Elasticsearch.
+- Theo dõi kích thước chỉ mục pg_trgm (có thể lớn) và chi phí cập nhật trên mỗi INSERT/UPDATE.
+
+### Phòng ngừa và monitoring
+- Quy tắc review: tránh LIKE bắt đầu bằng wildcard trên cột lớn có chỉ mục btree; nếu bắt buộc, dùng pg_trgm hoặc cột đảo ngược.
+- Kiểm tra EXPLAIN: nếu thấy Filter trên cột có index thay vì Index Cond, nghi vấn điều kiện không sargable (wildcard đầu, hàm trên cột, ép kiểu).
+- Cảnh báo khi Seq Scan trên bảng lớn với rows trả về nhỏ so với rows đọc (tỉ lệ > 100:1).
+
+### Trả lời mẫu khi phỏng vấn
+"Câu WHERE email LIKE '%@gmail.com' chạy Seq Scan 40 triệu dòng, 12 giây, vì B-tree index chỉ hỗ trợ tìm theo tiền tố; wildcard ở đầu làm mất điểm bắt đầu quét index. Dẫn chứng: EXPLAIN có 'Seq Scan on customers' và 'Filter: ((email)::text ~~ '%@gmail.com'::text)', không có Index Cond. Sửa: CREATE EXTENSION pg_trgm + chỉ mục GiN (gin_trgm_ops) trên email, thời gian từ 12 giây xuống 0,3 giây; hoặc dùng cột reverse(email) + btree index với WHERE reverse(email) LIKE 'moc.liamg@%'. Nên tránh LIKE bắt đầu wildcard trên cột lớn."
+
+> Senior tip: **Wildcard ở đầu LIKE là "kẻ giết index" cổ điển**. B-tree chỉ giúp khi giá trị bắt đầu cố định (tiền tố). Nếu nghiệp vụ thường xuyên tìm "cuối chuỗi" (domain email, mã bưu điện, suffix mã hàng), hãy dùng pg_trgm hoặc cột đảo ngược — đừng để planner quét toàn bảng mỗi lần tìm kiếm. Và nhớ: chỉ mục btree trên email vẫn hữu ích cho tìm kiếm chính xác (email = '...') hoặc prefix (email LIKE 'nguyen%'), chỉ mất tác dụng với wildcard đầu.`,
+    rubric: [
+      'Chỉ đúng nguyên nhân: B-tree index không hỗ trợ LIKE bắt đầu wildcard (% đầu), không xác định dải index → Seq Scan; dòng Filter có ~~ "%..." là bằng chứng',
+      'Dẫn chứng đúng: artifact 1 Seq Scan 40 triệu dòng 12 giây; artifact 2 pg_trgm Bitmap Index Scan 0,3 giây, nhanh ~38 lần',
+      'Giải thích đúng B-tree chỉ hỗ trợ tiền tố (prefix), ví dụ LIKE "gmail%" dùng được, LIKE "%gmail.com" không',
+      'Đề xuất sửa đúng: pg_trgm GiN/GiST index hoặc cột reverse(email) + btree với WHERE reverse(email) LIKE "moc.liamg@%"',
+      'Có monitoring/phòng ngừa: quy tắc review tránh wildcard đầu, kiểm tra Index Cond vs Filter trong EXPLAIN, cảnh báo Seq Scan bảng lớn',
+    ],
+    tags: ['postgresql', 'index', 'like', 'wildcard', 'pg-trgm', 'seq-scan', 'sargable'],
+  },
 );
 
