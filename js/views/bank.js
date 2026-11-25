@@ -80,6 +80,7 @@
 
   const PAGE_SIZE = 150;
   const DEBOUNCE_MS = 150;
+  const FILTER_KEY = 'sjp.bank.filters';  // lưu bộ lọc vào localStorage để giữ khi reload/quay lại trang
 
   const STATUS_CHIPS = [
     { id: 'all', label: 'all' },
@@ -139,6 +140,25 @@
   }
   function loadReadPos() {
     try { return JSON.parse(localStorage.getItem(READ_KEY) || 'null'); } catch (e) { return null; }
+  }
+
+  /** Đọc bộ lọc đã lưu (topic/level/status/core/q) từ localStorage. Trả về null nếu không có. */
+  function loadFilters() {
+    try {
+      const raw = localStorage.getItem(FILTER_KEY);
+      if (!raw) return null;
+      const o = JSON.parse(raw);
+      return o && typeof o === 'object' && !Array.isArray(o) ? o : null;
+    } catch (e) { return null; }
+  }
+
+  /** Ghi bộ lọc hiện tại vào localStorage (chỉ các trường bộ lọc, không lưu expanded/answers…). */
+  function saveFilters() {
+    try {
+      localStorage.setItem(FILTER_KEY, JSON.stringify({
+        topic: S.topic, level: S.level, status: S.status, core: !!S.core, q: S.q,
+      }));
+    } catch (e) { /* private mode */ }
   }
 
   /** Tạo id ổn định cho heading trong đáp án. */
@@ -488,6 +508,7 @@
       // gọi lại render bằng cách cập nhật url và rebuild UI đơn giản
     }
     syncUrl();
+    saveFilters();
     rebuildUI();
   }
 
@@ -570,6 +591,7 @@
         searchTimer = setTimeout(() => {
           S.q = v;
           S.shown = PAGE_SIZE;
+          saveFilters();
           renderList();
         }, DEBOUNCE_MS);
       });
@@ -579,6 +601,7 @@
     if (level) level.addEventListener('change', () => {
       S.level = level.value;
       S.shown = PAGE_SIZE;
+      saveFilters();
       renderList();
     });
 
@@ -613,6 +636,7 @@
           b.setAttribute('aria-pressed', on ? 'true' : 'false');
         });
         syncUrl();
+        saveFilters();
         renderList();
         return;
       }
@@ -626,6 +650,7 @@
           b.classList.toggle('active', on);
           b.setAttribute('aria-pressed', on ? 'true' : 'false');
         });
+        saveFilters();
         renderList();
         return;
       }
@@ -636,6 +661,7 @@
         S.shown = PAGE_SIZE;
         coreChip.setAttribute('aria-pressed', S.core ? 'true' : 'false');
         coreChip.classList.toggle('active', S.core);
+        saveFilters();
         renderList();
         return;
       }
@@ -980,6 +1006,16 @@
       S.topic = topicParam === 'all' ? 'all' : topicParam;
       if (S.topic !== 'all' && !App.topics().some(t => t.id === S.topic)) S.topic = 'all';
       S.shown = PAGE_SIZE;
+
+      // Áp dụng bộ lọc đã lưu khi route không chỉ định chủ đề cụ thể (giữ trạng thái khi quay lại trang).
+      const saved = loadFilters();
+      if (saved) {
+        if (topicParam === 'all' && saved.topic && App.topics().some(t => t.id === saved.topic)) S.topic = saved.topic;
+        if (S.level === 'all' && saved.level) S.level = saved.level;
+        if (S.status === 'all' && saved.status) S.status = saved.status;
+        if (saved.core !== undefined) S.core = !!saved.core;
+        if (S.q === '' && saved.q) S.q = saved.q;
+      }
 
       const all = filtered();
       const head =
