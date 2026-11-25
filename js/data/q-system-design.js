@@ -13260,5 +13260,223 @@ Với em, ADR là nhật ký quyết định sống, không phải văn bản ch
     'Khi người phản đối vẫn không đồng ý sau dữ liệu, bạn dẫn dắt thế nào để team không rạn nứt?'
   ],
   tags: ['ADR', 'supersede', 'decision reversal', 'sunk cost', 'review trigger', 'leadership']
+},
+{
+  id: 'design-074',
+  topic: 'design',
+  level: 'senior',
+  q: 'Trong hệ thống đặt lịch khám chuỗi 50 phòng khám, bác sĩ nghỉ đột xuất và phải dời/huỷ hàng loạt lịch đã giữ chỗ. Thiết kế quy trình dời lịch an toàn, thông báo bệnh nhân và không mất slot?',
+  a: `**Tóm tắt:** Khi bác sĩ nghỉ, hệ thống đánh dấu slot unavailable, tìm slot thay thế cùng chuyên khoa, tự động dời hoặc gửi link tự chọn; dùng saga + outbox để thông báo; idempotency key cho mỗi lần dời; audit trail đầy đủ.
+
+### 1. Sự cố và tác động
+Bác sĩ X nghỉ 3 ngày, có 48 slot đã BOOKED (3 ngày × 16 slot). Cần dời mà không mất bệnh nhân, không double-book, thông báo kịp thời.
+
+### 2. State machine slot mới
+AVAILABLE → HELD → BOOKED → CANCELLED (do bác sĩ nghỉ) → REBOOKED. Thêm cột {{cancelled_reason}}, {{rebooked_to_slot}}.
+
+### 3. Quy trình dời lịch (saga)
+1. Admin/HR đánh dấu doctor_unavailable (doctor_id, date range).
+2. Job quét appointment của bác sĩ trong range → status CANCELLED_BY_DOCTOR.
+3. Outbox event APPOINTMENT_CANCELLED → worker gửi SMS/email + link tự chọn slot mới (token JWT có hạn 24h).
+4. Worker tìm slot thay thế cùng chuyên khoa/chi nhánh; nếu có 1 slot phù hợp → auto-rebook + thông báo "đã dời sang ..."; nếu nhiều → gửi link chọn.
+5. Nếu bệnh nhân không chọn trong 24h → slot trả AVAILABLE, gửi nhắc lần 2.
+
+### 4. Idempotency
+Mỗi lần dời có {{rebook_id}} = hash(appointment_id + new_slot_id). Retry không tạo duplicate. Bảng {{rebook_log}} lưu (appointment_id, old_slot, new_slot, created_at).
+
+### 5. Waitlist (danh sách chờ)
+Bệnh nhân muốn slot đã đầy → ghi waitlist (doctor_id, desired_date). Khi slot bị huỷ → notify waitlist theo FIFO + priority (bệnh nhân cũ ưu tiên).
+
+### 6. Audit & compliance
+Mọi thay đổi trạng thái ghi {{audit_log}} (who, when, from, to, reason). Y tế yêu cầu traceability.
+
+### 7. Sơ đồ sequence
+~~~seq
+title: Doctor unavailable rebook
+actors: Admin | App | DB | Worker | Patient
+Admin -> App: mark doctor unavailable
+App -> DB: cancel appointments + outbox (tx)
+Worker -> DB: poll outbox
+Worker -> Patient: SMS/email + rebook link
+Patient -> App: choose new slot
+App -> DB: rebook transaction (lock)
+~~~
+
+### Bảng trade-off
+| Cách | UX | Complexity | Rủi ro |
+|---|---|---|---|
+| Auto-rebook im lặng | Nhanh | Trung bình | Bệnh nhân không biết |
+| Gửi link tự chọn | Tôn trọng | Cao | Chậm, có thể không phản hồi |
+| Gọi điện thủ công | Cá nhân | Rất cao | Không scale |
+
+### Pitfall production
+- Timezone: bác sĩ nghỉ "ngày X" theo giờ địa phương chi nhánh, không theo UTC server.
+- Slot thay thế khác múi giờ (chi nhánh khác) → hiển thị rõ.
+- Notification fail → retry outbox, không drop.
+- Race: bệnh nhân tự huỷ cùng lúc hệ thống dời → dùng status guard.
+
+### Ví dụ đời thực
+Chuỗi 50 phòng khám, bác sĩ tim mạch nghỉ 3 ngày do ốm, 48 lịch bị ảnh hưởng. Hệ thống cancel + gửi SMS trong 2 phút. 30 bệnh nhân nhận link chọn slot mới; 25 chọn trong 4h, 5 auto-rebook sang bác sĩ cùng chuyên khoa chi nhánh gần nhất. 3 bệnh nhân không phản hồi sau 24h → slot trả AVAILABLE, waitlist FIFO nhận thông báo. Audit log đầy đủ cho thanh tra y tế. Không double-book nhờ rebook_id idempotent.
+
+### Trả lời mẫu khi phỏng vấn
+Khi bác sĩ nghỉ đột xuất, tôi không chỉ cancel mà chạy saga: đánh dấu doctor_unavailable, transaction cancel appointment + outbox event. Worker gửi SMS/email kèm link JWT 24h để bệnh nhân tự chọn slot mới, đồng thời tìm slot thay thế cùng chuyên khoa để auto-rebook nếu phù hợp. Idempotency key rebook_id chống duplicate khi retry. Waitlist FIFO nhận slot bị huỷ theo priority bệnh nhân cũ. Audit log ghi đầy đủ who/when/from/to/reason vì y tế yêu cầu traceability. Pitfall lớn là timezone chi nhánh và race cancel tự động vs bệnh nhân tự huỷ; dùng status guard và DB now(). Thông báo qua outbox pattern đảm bảo at-least-once, không mất.
+
+> Senior tip: Trong y tế, audit trail không phải "nice to have" mà là yêu cầu pháp lý; mọi thay đổi trạng thái slot phải có who/when/from/to/reason.
+`,
+  follow: ['Làm sao xử lý overbooking có chủ đích trong đặt lịch khám?', 'So sánh saga orchestration vs choreography cho quy trình dời lịch.', 'Thiết kế waitlist với priority và fairness thế nào?'],
+  tags: ['booking', 'rebook', 'cancellation', 'waitlist', 'saga', 'notification']
+},
+{
+  id: 'design-075',
+  topic: 'design',
+  level: 'senior',
+  q: 'Bạn import file Excel 500.000 dòng có quan hệ cha-con (đơn hàng + chi tiết dòng) vào hệ thống. Thiết kế thế nào để đảm bảo thứ tự, foreign key, partial failure và không phải import lại từ đầu khi fail?',
+  a: `**Tóm tắt:** Parse streaming → validate & group theo parent key → batch insert parent trước child trong transaction; checkpoint theo offset; upsert theo business key để retry idempotent; lỗi từng row ghi import_error; resume từ checkpoint.
+
+### 1. Vấn đề đặc thù cha-con
+- Child row tham chiếu parent qua order_number (business key), không phải DB id.
+- Phải insert parent trước, lấy id, rồi insert child.
+- Nếu fail ở row 300k, không muốn import lại 300k row đầu.
+- File có thể chứa parent trùng, child mồ côi (orphan), duplicate.
+
+### 2. Kiến trúc
+~~~seq
+title: Import cha-con Excel
+actors: Client | API | S3 | Worker | DB
+Client -> API: upload
+API -> S3: lưu file
+API -> DB: import_job (PENDING, checksum)
+API --> Client: 202 + jobId
+Worker -> S3: stream parse
+Worker -> Worker: group by parent key (in-memory LRU)
+Worker -> DB: upsert parent batch
+Worker -> DB: upsert child batch (FK parent_id)
+Worker -> DB: checkpoint offset
+~~~
+
+### 3. Grouping & ordering
+- Streaming parse XSSFReader, giữ buffer {{Map<orderNumber, OrderAccumulator>}}.
+- Khi gặp row header parent → tạo accumulator.
+- Khi gặp row child → append vào accumulator.children.
+- Khi buffer đạt 500 parents hoặc hết file → flush: insert parents (batch), lấy id map, insert children (batch).
+- Memory: 500 parents × (1 + N children) ≈ vài MB, an toàn.
+
+### 4. Idempotency & checkpoint
+- Bảng import_job: status, total_rows, processed_rows, last_checkpoint_offset, checksum.
+- Mỗi flush thành công → update processed_rows + checkpoint.
+- Retry từ checkpoint (skip rows đã xử lý) bằng cách seek offset trong streaming parser (hoặc re-parse và skip until checkpoint).
+- Business key upsert: {{INSERT ... ON CONFLICT (order_number) DO UPDATE}} → retry không duplicate.
+
+### 5. Partial failure
+- Validate từng row: required fields, format, foreign key tồn tại.
+- Row lỗi → ghi import_error (job_id, row_number, reason, raw_payload).
+- Job tiếp tục; cuối cùng status=COMPLETED_WITH_ERRORS nếu có lỗi.
+- Threshold: nếu > 5% rows lỗi → fail job (có thể config).
+
+### 6. Foreign key handling
+- Parent chưa tồn tại trong DB (đơn hàng cũ) → insert parent mới (upsert).
+- Child tham chiếu parent không có trong file → lookup DB; nếu không có → import_error (orphan).
+- Duplicate parent trong file → gộp children vào cùng accumulator.
+
+### 7. Concurrency & throughput
+- Worker concurrency 2-4; mỗi worker xử lý 1 file.
+- Batch size 500 parents / 2000 children per transaction.
+- HikariCP max 20; reserve 5 cho API.
+
+### Bảng trade-off
+| Cách | Memory | Throughput | Complexity |
+|---|---|---|---|
+| Load all vào Map | OOM risk | Cao | Thấp |
+| Streaming + buffer 500 | Thấp | Cao | Trung bình |
+| Sort file trước | Thấp | Thấp (I/O) | Cao |
+
+### Pitfall production
+- Parent xuất hiện sau children trong file → buffer accumulate + flush khi gặp parent? Giải pháp: hai pass hoặc buffer tất cả parent keys trước. Thực tế: sort file theo order_number trước khi parse (nếu file nhỏ) hoặc dùng map pending children.
+- Orphan rows: child không có parent → không silent fail, ghi lỗi.
+- Transaction timeout khi batch lớn → giữ ≤ 2000 child.
+- Checksum phải tính trước upload (client) để detect corrupt.
+
+### Ví dụ đời thực
+File 500k dòng = 100k đơn × trung bình 5 dòng. Synchronous parse full workbook OOM tại 512MB. Streaming + buffer 500 parents: peak heap 80MB, flush mỗi 500 đơn, 200 flush, mỗi flush 2 transaction (parent+child). Fail ở offset 280k (row lỗi FK): checkpoint 279500, retry từ đó, 220k còn lại xử lý 4 phút. import_error có 12 row orphan → team sửa file và re-import chỉ phần lỗi (idempotent upsert không duplicate).
+
+### Trả lời mẫu khi phỏng vấn
+Tôi parse streaming bằng Apache POI XSSFReader, group theo parent key trong buffer 500 đơn để insert parent trước child trong cùng transaction. Mỗi flush thành công cập nhật checkpoint offset vào import_job; retry seek đến checkpoint, không import lại từ đầu. Upsert theo business key (order_number) đảm bảo idempotent. Row lỗi ghi import_error với row_number và raw payload, job tiếp tục; nếu > 5% lỗi thì fail job. Orphan child không silent fail. Pitfall là parent xuất hiện sau child trong file: tôi dùng pending-children map hoặc sort file trước. Memory peak ~80MB thay vì OOM, throughput ~2000 row/giây.
+
+> Senior tip: Checkpoint + upsert là cặp bài trùng cho import lớn: checkpoint giúp resume, upsert giúp retry an toàn; thiếu một trong hai thì import fail giữa chừng là thảm hoạ.
+`,
+  follow: ['Làm sao xử lý khi file Excel chứa formula và macro?', 'So sánh COPY (PostgreSQL) vs batch insert cho import lớn.', 'Thiết kế dead letter queue cho row lỗi không thể sửa tự động?'],
+  tags: ['import', 'excel', 'parent-child', 'checkpoint', 'idempotency', 'streaming']
+},
+{
+  id: 'design-076',
+  topic: 'design',
+  level: 'lead',
+  q: 'Hệ thống xuất hoá đơn điện tử gửi cơ quan thuế đã chạy ổn. Cơ quan thuế thay đổi schema hoá đơn (thêm trường bắt buộc, đổi format). Thiết kế migration, versioning và backward compatibility thế nào để không gián đoạn xuất hoá đơn?',
+  a: `**Tóm tắt:** Versioning API bằng header/URL; adapter pattern chuyển đổi model nội bộ sang schema thuế theo version; feature flag rollout; dual-write trong thời gian chuyển tiếp; reconciliation phát hiện lệch; backward compat tối thiểu 6 tháng.
+
+### 1. Vấn đề
+Thuế thay đổi schema (thêm trường {{buyer_tax_code}} bắt buộc, đổi format ngày). Hệ thống đang xuất 10k hoá đơn/ngày. Không được dừng xuất; không được gửi sai format (bị reject).
+
+### 2. Versioning strategy
+- API thuế có version trong URL: {{/v1/invoices}}, {{/v2/invoices}}.
+- Hệ thống lưu {{tax_schema_version}} trên mỗi invoice (default v1).
+- Adapter pattern: {{TaxInvoiceAdapter}} interface, implement {{V1Adapter}}, {{V2Adapter}}. Worker chọn adapter theo version của invoice.
+
+### 3. Migration plan (3 phase)
+Phase 1 (tuần 1-2): Deploy V2 adapter (code) nhưng feature flag OFF. Chạy shadow: gửi song song V1 và V2, so sánh response, không ảnh hưởng production.
+Phase 2 (tuần 3): Feature flag ON cho traffic mới (hoá đơn mới dùng V2). Hoá đơn cũ (V1) tiếp tục retry V1.
+Phase 3 (tuần 4+): Deprecate V1 sau 6 tháng; migration batch convert V1 invoice sang V2 nếu thuế yêu cầu.
+
+### 4. Data model
+Bảng invoice thêm: {{tax_version}} (default 'v1'), {{tax_payload}} (JSON raw gửi đi), {{tax_response}} (raw response). Lưu raw để audit và replay.
+
+### 5. Backward compatibility
+- V1 adapter vẫn hoạt động cho invoice cũ retry.
+- Không xoá V1 code cho đến khi tất cả invoice V1 đã ACCEPTED hoặc quá hạn reconciliation (6 tháng).
+- Idempotency key unchanged (invoice_id) → thuế dedup cross-version nếu hỗ trợ.
+
+### 6. Reconciliation & monitoring
+- Dashboard: % invoice V1 vs V2, reject rate theo version.
+- Alert nếu reject rate V2 > 2% trong 1h.
+- Reconciliation job so sánh local status vs thuế; nếu thuế trả "version not supported" → escalate.
+
+### 7. Sơ đồ sequence
+~~~seq
+title: Tax schema migration
+actors: App | Worker | V1Adapter | V2Adapter | TaxAPI
+App -> Worker: new invoice v2
+Worker -> V2Adapter: build payload
+V2Adapter -> TaxAPI: POST v2 (Idempotency-Key)
+TaxAPI --> V2Adapter: 200 accepted
+Worker -> DB: mark ACCEPTED v2
+note App..TaxAPI: V1 invoices retry qua V1Adapter
+~~~
+
+### 8. Rollback
+Feature flag OFF → traffic mới quay về V1. V2 adapter code vẫn deploy, không rollback code. Nếu V2 reject > threshold → auto-disable flag (circuit breaker).
+
+### Bảng trade-off
+| Cách | Downtime | Risk | Complexity |
+|---|---|---|---|
+| Big bang switch | Cao | Cao | Thấp |
+| Feature flag + adapter | 0 | Thấp | Trung bình |
+| Shadow traffic | 0 | Rất thấp | Cao |
+
+### Pitfall production
+- Không lưu raw payload → không replay khi adapter bug.
+- Feature flag không có kill switch → rollback phải deploy.
+- Migration batch không idempotent → duplicate.
+- Thuế có thể deprecate V1 trước 6 tháng → theo dõi thông báo chính thức.
+
+### Ví dụ đời thực
+Thuế công bố V2 schema với buyer_tax_code bắt buộc, effective 01/07. Team deploy V2 adapter với flag OFF ngày 15/06, shadow 2 tuần phát hiện 3% invoice thiếu buyer_tax_code (do data cũ). Backfill buyer_tax_code từ customer table. Ngày 01/07 flag ON, reject rate 0.2%. V1 adapter giữ cho 1200 invoice cũ retry; sau 3 tháng tất cả đã ACCEPTED, V1 code deprecated. Không gián đoạn xuất hoá đơn.
+
+### Trả lời mẫu khi phỏng vấn
+Tôi version API thuế qua URL v1/v2, lưu tax_version trên mỗi invoice. Adapter pattern: interface TaxInvoiceAdapter với V1/V2 implementation, worker chọn theo version. Migration 3 phase: shadow traffic so sánh response, feature flag rollout traffic mới, deprecate V1 sau 6 tháng. Lưu raw payload/response để audit và replay. Feature flag có kill switch auto-disable nếu reject rate > 2%. V1 adapter giữ cho invoice cũ retry, idempotency key invoice_id unchanged. Pitfall là không lưu raw payload (không replay được) và migration batch không idempotent. Backward compat tối thiểu 6 tháng hoặc cho đến khi reconciliation confirm tất cả V1 đã ACCEPTED.
+
+> Senior tip: "Adapter + feature flag + shadow traffic" là bộ ba cho mọi external API migration: adapter cách ly thay đổi, flag cho phép rollback không deploy, shadow phát hiện bug trước khi ảnh hưởng user.
+`,
+  follow: ['Làm sao xử lý khi cơ quan thuế downtime kéo dài trong migration?', 'So sánh API versioning qua URL vs header vs content negotiation.', 'Thiết kế backward compatibility cho webhook callback từ thuế?'],
+  tags: ['invoice', 'migration', 'versioning', 'adapter', 'feature-flag', 'backward-compat']
 }
 );
