@@ -6933,4 +6933,217 @@ class BoundedExecutor {
   related: ['concurrency-003', 'concurrency-012'],
   tags: ['Semaphore', 'rate limit', 'throttling', 'concurrency'],
 },
+{
+  id: 'lesson-concurrency-025',
+  track: 'concurrency', order: 25,
+  title: 'Semaphore nâng cao: bulkhead nhiều đối tác và load shedding',
+  level: 'senior',
+  minutes: 30,
+  goals: ['Hiểu bulkhead pattern dùng Semaphore riêng cho từng downstream', 'Biết load shedding: từ chối sớm thay vì xếp hàng', 'Biết giám sát permit để phát hiện rò'],
+  body: `**Tóm tắt:** Bulkhead dùng một Semaphore riêng cho mỗi downstream; khi một downstream chậm, chỉ thread gọi nó bị chặn. Kết hợp load shedding qua tryAcquire timeout và metric permit để phát hiện rò.
+
+### Vấn đề: cascading failure
+Khi service gọi DB, payment và email cùng lúc, nếu payment chậm, thread pool bị chiếm hết bởi request payment, DB và email cũng ngừng phục vụ dù khoẻ.
+
+### Bulkhead
+Chia tài nguyên thành các khoang riêng: mỗi downstream có Semaphore riêng.
+
+### Ví dụ
+~~~java
+class Gateway {
+    private final Semaphore dbSem = new Semaphore(50);
+    private final Semaphore paySem = new Semaphore(20);
+    private Response run(Semaphore sem, Supplier<Response> f) throws Exception {
+        if (!sem.tryAcquire(100, TimeUnit.MILLISECONDS)) throw new ServiceUnavailable("busy");
+        try { return f.get(); } finally { sem.release(); }
+    }
+}
+~~~
+
+### Load shedding vs queue
+Queue dài tăng latency và memory. Load shedding trả 503 ngay, client retry.
+
+### Giám sát permit
+Theo dõi availablePermits và getQueueLength. Nếu availablePermits giảm dần không phục hồi → rò permit.
+
+### Lỗi hay gặp
+- Dùng chung một Semaphore → mất bulkhead.
+- Quên release trong finally → rò.
+- Timeout quá ngắn → shedding quá nhiều.
+
+### Trả lời mẫu khi phỏng vấn
+Bulkhead cô lập downstream bằng Semaphore riêng. Khi một downstream chậm chỉ thread của nó bị chặn. Kết hợp tryAcquire timeout để load shedding. Giám sát availablePermits phát hiện rò.
+
+### So sánh với circuit breaker
+Circuit breaker ngắt hẳn downstream khi lỗi nhiều; bulkhead chỉ giới hạn concurrency. Kết hợp cả hai: bulkhead giới hạn số thread, circuit breaker ngắt khi downstream failing.
+
+### Giám sát và alerting
+Theo dõi sem.availablePermits() và getQueueLength(). Nếu availablePermits giảm dần không phục hồi, có rò permit. Alert khi queue length > ngưỡng.
+
+### Ví dụ đời thực
+Một hệ thống thanh toán gọi 3 downstream: DB, payment gateway, email. Bulkhead cho payment gateway 20 permit. Khi gateway chậm, chỉ 20 thread bị chặn, DB và email vẫn phục vụ. Load shedding trả 503 cho request mới thay vì queue.
+
+### Pitfall production
+Quên release trong finally làm permit rò. Dùng chung Semaphore mất bulkhead. Timeout quá ngắn gây shedding quá nhiều.
+
+### Ví dụ đời thực
+Một hệ thống thanh toán gọi 3 downstream. Bulkhead cho payment gateway 20 permit. Khi gateway chậm, chỉ 20 thread bị chặn, DB và email vẫn phục vụ.
+
+### So sánh với circuit breaker
+Circuit breaker ngắt hẳn downstream khi lỗi nhiều; bulkhead chỉ giới hạn concurrency. Kết hợp cả hai.
+
+### Liên hệ phỏng vấn
+Bulkhead thường kết hợp circuit breaker và retry.`,
+  exercises: [
+    {
+      title: 'Bulkhead với load shedding',
+      prompt: `Viết class Bulkhead với method run(String downstream, Callable task) dùng Semaphore riêng cho từng downstream, tryAcquire timeout 50ms, throw nếu busy.`,
+      starter: `import java.util.*;\nimport java.util.concurrent.*;\n\nclass Bulkhead {
+    private final int cap;
+    public Bulkhead(int cap){ this.cap = cap; }
+    public <T> T run(String downstream, Callable<T> task) throws Exception {\n        return task.call();\n    }\n}\n`,
+      tests: `public class Main {
+    static int passed = 0, total = 0;
+    static void check(String name, boolean ok) {
+        total++;
+        if (ok) { passed++; System.out.println("PASS " + name); }
+        else System.out.println("FAIL " + name + ": sai");
+    }
+    public static void main(String[] args) throws Exception {
+        Bulkhead b = new Bulkhead(1);
+        CountDownLatch hold = new CountDownLatch(1);
+        ExecutorService ex = Executors.newFixedThreadPool(2);
+        Future<String> f1 = ex.submit(() -> b.run("pay", () -> { hold.await(); return "ok"; }));
+        Thread.sleep(50);
+        boolean busy = false;
+        try { b.run("pay", () -> "x"); } catch (Exception e) { busy = true; }
+        check("busy", busy);
+        String other = b.run("db", () -> "ok");
+        check("isolation", "ok".equals(other));
+        hold.countDown();
+        ex.shutdown(); ex.awaitTermination(5, TimeUnit.SECONDS);
+        String after = b.run("pay", () -> "done");
+        check("release", "done".equals(after));
+        System.out.println("RESULT " + passed + "/" + total);
+        System.exit(0);
+    }
+}
+`,
+      reference: `import java.util.*;\nimport java.util.concurrent.*;\n\nclass Bulkhead {\n    private final Map<String, Semaphore> sems = new ConcurrentHashMap<>();\n    private final int cap;\n    public Bulkhead(int cap){ this.cap = cap; }\n    private Semaphore sem(String d){ return sems.computeIfAbsent(d, k -> new Semaphore(cap)); }\n    public <T> T run(String downstream, Callable<T> task) throws Exception {\n        Semaphore s = sem(downstream);\n        if (!s.tryAcquire(50, TimeUnit.MILLISECONDS)) throw new RuntimeException("busy");\n        try { return task.call(); } finally { s.release(); }\n    }\n}\n`,
+      hints: ['Dùng ConcurrentHashMap.computeIfAbsent'],
+      explain: `Lời giải dùng map downstream->Semaphore và tryAcquire timeout.`
+    }
+  ],
+  check: [
+    { q: 'Bulkhead giải quyết vấn đề gì?', options: ['Tăng throughput', 'Cô lập downstream tránh cascading failure', 'Giảm memory', 'Tăng cache'], answer: 1, explain: 'Bulkhead cô lập tài nguyên theo downstream.' },
+    { q: 'Load shedding khác queue ở điểm nào?', options: ['Nhanh hơn', 'Từ chối sớm thay vì xếp hàng', 'Ít memory', 'Cả B và C'], answer: 3, explain: 'Load shedding từ chối sớm, giảm memory và latency.' }
+  ],
+  related: ['concurrency-003'],
+  tags: ['bulkhead', 'load shedding', 'Semaphore']
+},
+{
+  id: 'lesson-concurrency-026',
+  track: 'concurrency', order: 26,
+  title: 'Structured concurrency trên Java 17: fan-out, timeout và hủy tác vụ con',
+  level: 'senior',
+  minutes: 35,
+  goals: ['Hiểu structured concurrency và lifetime tác vụ con', 'Biết fan-out với ExecutorService + Future timeout', 'Biết hủy các tác vụ còn lại khi một tác vụ lỗi'],
+  body: `**Tóm tắt:** Structured concurrency đảm bảo tác vụ con không sống lâu hơn tác vụ cha; trên Java 17 dùng ExecutorService + Future với timeout và cancel còn lại khi một con lỗi.
+
+### Khái niệm
+Tác vụ con ràng buộc bởi scope của cha. Khi cha kết thúc, mọi con phải kết thúc. Tránh thread rò và stack trace rõ.
+
+### Java 21 có StructuredTaskScope
+Java 21 preview cung cấp ShutdownOnFailure. Java 17 tự làm tương đương.
+
+### Fan-out với timeout và hủy
+~~~java
+ExecutorService ex = Executors.newFixedThreadPool(3);
+List<Future<String>> futures = new ArrayList<>();
+for (Callable<String> t : tasks) futures.add(ex.submit(t));
+List<String> results = new ArrayList<>();
+try {
+    for (Future<String> f : futures) results.add(f.get(2, TimeUnit.SECONDS));
+} catch (Exception e) {
+    for (Future<String> f : futures) f.cancel(true);
+    throw e;
+} finally { ex.shutdownNow(); }
+~~~
+
+### Hủy khi một con lỗi
+Khi fetchB ném exception, fetchA và fetchC vẫn chạy nếu không cancel. Phải cancel(true).
+
+### Lỗi hay gặp
+- Không cancel future còn lại → thread rò.
+- get() không timeout → con treo làm cha treo.
+- shutdown không awaitTermination → process không thoát.
+
+### Trả lời mẫu khi phỏng vấn
+Structured concurrency ràng buộc lifetime con với cha. Java 21 có StructuredTaskScope; Java 17 dùng ExecutorService + Future với timeout và cancel còn lại. Luôn set timeout cho get() và cancel(true) trong catch.
+
+### So sánh với Java 21 StructuredTaskScope
+Java 21 cung cấp API chuẩn với ShutdownOnFailure và ShutdownOnSuccess. Trên Java 17 phải tự quản lý Future và cancel.
+
+### Xử lý partial result
+Khi một task lỗi, có thể vẫn trả partial result từ các task thành công nếu business cho phép. Cần thiết kế rõ.
+
+### Ví dụ đời thực
+Một API fan-out gọi 3 service: user, order, inventory. Nếu order service timeout, cancel user và inventory còn lại, trả lỗi cho client thay vì treo.
+
+### Pitfall production
+Không cancel future còn lại gây thread rò. get() không timeout làm cha treo. Shutdown không awaitTermination làm process không thoát.
+
+### Ví dụ đời thực
+Một API fan-out gọi 3 service. Nếu order service timeout, cancel user và inventory còn lại, trả lỗi cho client.
+
+### So sánh với Java 21
+Java 21 StructuredTaskScope cung cấp API chuẩn. Trên Java 17 phải tự quản lý Future và cancel.
+
+### Xử lý partial result
+Khi một task lỗi, có thể vẫn trả partial result từ các task thành công nếu business cho phép. Cần thiết kế rõ.
+
+### Pitfall production bổ sung
+Quên cancel future còn lại gây thread rò. get() không timeout làm cha treo mãi.
+
+### Liên hệ phỏng vấn
+Chủ đề hay bị hỏi ở phỏng vấn Senior về concurrency.`,
+  exercises: [
+    {
+      title: 'Fan-out an toàn với timeout',
+      prompt: `Viết method fanOut(List tasks, long timeoutMs) trả về List kết quả; nếu một task lỗi hoặc timeout thì cancel tất cả còn lại và ném exception.`,
+      starter: `import java.util.*;\nimport java.util.concurrent.*;\n\nclass FanOut {\n    public static List<String> run(List<Callable<String>> tasks, long timeoutMs) throws Exception {\n        throw new UnsupportedOperationException("TODO");\n    }\n}\n`,
+      tests: `public class Main {
+    static int passed = 0, total = 0;
+    static void check(String name, boolean ok) {
+        total++;
+        if (ok) { passed++; System.out.println("PASS " + name); }
+        else System.out.println("FAIL " + name + ": sai");
+    }
+    public static void main(String[] args) throws Exception {
+        List<Callable<String>> ok = List.of(() -> "a", () -> "b");
+        List<String> r = FanOut.run(ok, 1000);
+        check("ok", r.size() == 2);
+        List<Callable<String>> bad = List.of(() -> "a", () -> { throw new RuntimeException("boom"); });
+        boolean thrown = false;
+        try { FanOut.run(bad, 1000); } catch (Exception e) { thrown = true; }
+        check("throw", thrown);
+        List<String> r2 = FanOut.run(List.of(() -> "x", () -> "y", () -> "z"), 1000);
+        check("three", r2.size() == 3);
+        System.out.println("RESULT " + passed + "/" + total);
+        System.exit(0);
+    }
+}
+`,
+      reference: `import java.util.*;\nimport java.util.concurrent.*;\n\nclass FanOut {\n    public static List<String> run(List<Callable<String>> tasks, long timeoutMs) throws Exception {\n        ExecutorService ex = Executors.newFixedThreadPool(tasks.size());\n        List<Future<String>> futures = new ArrayList<>();\n        for (Callable<String> t : tasks) futures.add(ex.submit(t));\n        List<String> results = new ArrayList<>();\n        try {\n            for (Future<String> f : futures) results.add(f.get(timeoutMs, TimeUnit.MILLISECONDS));\n        } catch (Exception e) {\n            for (Future<String> f : futures) f.cancel(true);\n            throw e;\n        } finally { ex.shutdownNow(); }\n        return results;\n    }\n}\n`,
+      hints: ['Dùng ExecutorService + Future.get(timeout) và cancel(true)'],
+      explain: `Lời giải fan-out với timeout và cancel.`
+    }
+  ],
+  check: [
+    { q: 'Structured concurrency đảm bảo gì?', options: ['Tăng throughput', 'Tác vụ con không sống lâu hơn cha', 'Giảm memory', 'Tăng cache'], answer: 1, explain: 'Ràng buộc lifetime của con với cha.' },
+    { q: 'Khi một task lỗi trong fan-out cần làm gì?', options: ['Chờ hết', 'Cancel các task còn lại', 'Retry', 'Log'], answer: 1, explain: 'Cancel các future còn lại để tránh thread rò.' }
+  ],
+  related: ['concurrency-004'],
+  tags: ['structured concurrency', 'fan-out', 'Future', 'timeout']
+}
 );

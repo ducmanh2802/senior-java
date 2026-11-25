@@ -2827,6 +2827,8 @@ window.DATA_INDEX = {
     {"id":"lesson-concurrency-020","track":"concurrency","order":20,"title":"Producer-Consumer với BlockingQueue và backpressure","level":"senior","minutes":30},
     {"id":"lesson-concurrency-021","track":"concurrency","order":21,"title":"Retry có backoff và Dead Letter Queue trong worker","level":"senior","minutes":30},
     {"id":"lesson-concurrency-022","track":"concurrency","order":22,"title":"Semaphore: giới hạn số tác vụ chạy song song (rate limit)","level":"senior","minutes":30},
+    {"id":"lesson-concurrency-025","track":"concurrency","order":25,"title":"Semaphore nâng cao: bulkhead nhiều đối tác và load shedding","level":"senior","minutes":30},
+    {"id":"lesson-concurrency-026","track":"concurrency","order":26,"title":"Structured concurrency trên Java 17: fan-out, timeout và hủy tác vụ con","level":"senior","minutes":35},
     {"id":"lesson-spring-001","track":"spring","order":1,"title":"IoC và DI: container quản lý object","level":"mid","minutes":30},
     {"id":"lesson-spring-002","track":"spring","order":2,"title":"AOP và proxy: lời gọi nội bộ bỏ qua advice","level":"senior","minutes":30},
     {"id":"lesson-spring-003","track":"spring","order":3,"title":"@Transactional: propagation và rollback","level":"senior","minutes":35},
