@@ -1,0 +1,91 @@
+{
+  "date": "2026-11-26",
+  "intro": "Hôm nay nổi bật là Java4Shell (CVE-2026-114938) ở tầng HotSpot JVM với cách kiểm tra và giảm thiểu cụ thể cho container, cùng bài về kiểm chứng guardrail cho AI agent bằng Docker Sandboxes. Về hệ sinh thái Spring: Spring for Apache Pulsar chuyển sang Apache, Spring AI 2.1 đổi mô hình message để giữ reasoning; phía JDK có plugin jlink mới và Newscast về adaptive heap sizing cho ZGC.",
+  "editor": "claude",
+  "items": [
+    {
+      "title_vi": "Java4Shell (CVE-2026-114938): cách kiểm tra JVM và giảm thiểu khi chưa có bản vá",
+      "title": "Docker patches Java4Shell and the NGINX HTTP/2 flaws with Docker Hardened Images",
+      "url": "https://www.docker.com/blog/docker-patches-java4shell-and-the-nginx-http-2-with-docker-hardened-images/",
+      "source": "Docker Blog",
+      "category": "devops",
+      "summary": "Lỗi memory corruption trong đoạn mã Base64 viết tay dùng AVX-512 của HotSpot, ảnh hưởng Java 17.0.6 trở lên trên CPU x86-64 có AVX-512 VBMI (ARM64 không bị). Bản vá: 17.0.21.1, 21.0.13.1, 25.0.5.1, 27.0.1.1; Java 26 không có bản vá. Bài hướng dẫn kiểm tra phiên bản bằng {{java -version}} trong image, kiểm tra cờ CPU, và tạm giảm thiểu bằng {{-XX:-UseBASE64Intrinsics}} qua {{JAVA_TOOL_OPTIONS}}. Lúc đăng bài, Eclipse Temurin trong catalog của Docker chưa có bản sửa.",
+      "why": "Mọi service Java 17+ chạy trên node x86 đời mới đều có thể dính, nên team cần biết nhanh image nào đang chạy build nào. Cạm bẫy thật: tag không đổi nhưng nội dung đổi, {{JAVA_OPTS}} bị bỏ qua, biến môi trường ghi đè giá trị có sẵn của image, Java 8 không chịu cờ này.",
+      "interview_q": "Một CVE trong JVM được công bố sáng nay và chưa có bản vá cho distro của bạn. Bạn kiểm tra phạm vi ảnh hưởng, giảm thiểu tạm thời và triển khai bản vá an toàn trên Kubernetes thế nào?",
+      "related": ["jvm-001", "devops-001", "security-001"],
+      "tags": ["security", "jvm", "cve", "docker"]
+    },
+    {
+      "title_vi": "Kiểm chứng guardrail cho AI agent bằng Docker Sandboxes và chính sách tổ chức",
+      "title": "Prove your AI agent guardrails work",
+      "url": "https://www.docker.com/blog/prove-your-ai-agent-guardrails-work/",
+      "source": "Docker Blog",
+      "category": "devops",
+      "summary": "Bài lập luận rằng guardrail phải được test chứ không chỉ cấu hình. Mỗi agent chạy trong microVM của Docker Sandboxes; quản trị viên đặt chính sách mạng (allow/deny theo host, deny thắng), chính sách mount thư mục, credential do proxy gắn vào và quyền truy cập MCP. Ví dụ demo chỉ cho phép một host qua HTTPS và chặn mount thư mục log, rồi kiểm tra bằng {{sbx exec}} và audit log. Bài nêu rõ giới hạn: token nằm trong biến môi trường vẫn có thể lộ, MCP server stdio chạy ngoài sandbox.",
+      "why": "Dev Java ngày càng dùng coding agent trên repo có secret và truy cập mạng nội bộ. Hiểu cách giới hạn quyền (mạng, filesystem, credential) và cách tự kiểm chứng là kỹ năng thực tế khi đưa agent vào quy trình làm việc của team.",
+      "interview_q": "Team muốn cho coding agent chạy trên repo nội bộ có secret. Bạn thiết kế lớp cô lập và kiểm soát quyền thế nào, và chứng minh nó thực sự chặn được những gì?",
+      "related": ["ai-001", "security-002"],
+      "tags": ["ai-agent", "sandbox", "security"]
+    },
+    {
+      "title_vi": "JDK 28: plugin jlink mới để nhúng security properties vào runtime tuỳ chỉnh",
+      "title": "JDK 28: New jlink Security Properties Plugin - Quality Outreach Heads-up",
+      "url": "https://inside.java/2026/11/25/quality-heads-up/",
+      "source": "Inside Java",
+      "category": "tech",
+      "summary": "JDK 28 (hiện là early access) thêm plugin {{--security-properties=file}} cho {{jlink}}. Mỗi property trong file sẽ cập nhật hoặc nối thêm vào {{conf/security/java.security}} của image sinh ra; comment bị bỏ qua, property trùng thì giá trị cuối thắng. Câu lệnh {{include}} được đặt cuối cấu hình và không kiểm tra file tồn tại lúc build. File {{java.security}} gốc có property trùng hoặc có {{include}} sẽ gây lỗi.",
+      "why": "Ai đóng gói runtime gọn bằng {{jlink}} cho container có thể cố định các thiết lập như {{networkaddress.cache.ttl}} ngay trong image thay vì sửa file sau build. Bài là lời nhắc các dự án thử bản early access sớm.",
+      "interview_q": "Bạn đóng gói service Java thành image nhỏ bằng jlink thế nào, và làm sao đảm bảo các thiết lập bảo mật JVM như DNS cache TTL nhất quán giữa các môi trường?",
+      "related": ["jvm-002", "devops-002"],
+      "tags": ["jdk28", "jlink", "security"]
+    },
+    {
+      "title_vi": "Spring for Apache Pulsar chuyển sang Apache Software Foundation",
+      "title": "Announcing a New Home for Spring for Apache Pulsar",
+      "url": "https://spring.io/blog/2026/11/10/spring-pulsar-new-home-asf",
+      "source": "Spring Blog",
+      "category": "tech",
+      "summary": "Dự án trở thành subproject của Apache Pulsar với tên \"Apache Pulsar support for Spring\". Bản 2.0.8 là bản cuối do Spring phát hành và vẫn dùng được với Spring Boot 4.2.0; starter Pulsar của Spring bị ngừng. Binder Pulsar sẽ có trong Spring Cloud Stream 5.1.0, sau đó lấy từ dự án mới. Ứng dụng đang chạy không bị ảnh hưởng, nhưng muốn nhận cập nhật phải đổi dependency coordinates và package import.",
+      "why": "Nếu hệ thống đang dùng Pulsar với Spring thì cần lên kế hoạch đổi coordinates trước khi nâng Spring Boot. Đây cũng là ví dụ về rủi ro vòng đời của thư viện tích hợp mà team nên theo dõi khi chọn dependency.",
+      "interview_q": "Một thư viện tích hợp bạn đang phụ thuộc bị chuyển sang tổ chức khác và đổi coordinates. Bạn đánh giá rủi ro, lên kế hoạch di chuyển và tránh bị kẹt phiên bản Spring Boot thế nào?",
+      "related": ["spring-001", "microservices-002"],
+      "tags": ["spring", "pulsar", "messaging"]
+    },
+    {
+      "title_vi": "Spring AI 2.1 Message Parts: giữ nguyên reasoning khi gửi lại lịch sử hội thoại",
+      "title": "Spring AI 2.1 Message Parts: Reasoning That Survives the Round Trip",
+      "url": "https://spring.io/blog/2026/10/28/spring-ai-message-parts-reasoning-replay",
+      "source": "Spring Blog",
+      "category": "tech",
+      "summary": "Model reasoning trả về thinking block, chữ ký và item mã hoá cần gửi lại nguyên vẹn và đúng thứ tự, nếu không dễ gặp lỗi HTTP 400. Spring AI 2.1 đổi message thành danh sách {{MessagePart}} có thứ tự (text, reasoning, tool call, tool result, media, unknown), kèm {{OpaquePayload}} cho dữ liệu chỉ replay. Mỗi model chỉ replay payload của chính nó; có thêm {{getReasoning()}} dùng chung. {{ChatMemory}} bị deprecated và sẽ bị gỡ ở 3.0.0.",
+      "why": "Ai đang lưu lịch sử chat vào DB cho agent Java cần biết lịch sử cũ trước 2.1 không có reasoning để replay, và việc chuyển nhà cung cấp model giữa chừng không mang theo reasoning. Cần lên kế hoạch thay {{ChatMemory}} trước 3.0.",
+      "interview_q": "Bạn lưu lịch sử hội thoại của một LLM agent trong DB thế nào để vẫn replay đúng khi dùng model có reasoning, và khi cần đổi nhà cung cấp model thì xử lý ra sao?",
+      "related": ["ai-002", "spring-002"],
+      "tags": ["spring-ai", "llm", "agent"]
+    },
+    {
+      "title_vi": "Newscast #117: adaptive heap sizing cho ZGC và việc rút primitive patterns khỏi JDK 28",
+      "title": "Adaptive Heap Sizing + Numeric Conversion + Primitive Patterns - Inside Java Newscast #117",
+      "url": "https://inside.java/newscast/117/",
+      "source": "Inside Java",
+      "category": "tech",
+      "summary": "Tập này nói về JEP 546 trong JDK 28: ZGC tự cân bằng giữa CPU và bộ nhớ gần như không cần cấu hình. Nội dung tiếp theo là bài toán chuyển đổi số giữa các kiểu tuỳ chỉnh khi có value class, và việc primitive patterns sẽ không quay lại trong JDK 28 vì còn nhiều câu hỏi về tương tác với các tính năng khác chưa giải quyết xong.",
+      "why": "Tuning heap cho ZGC là chủ đề hay gặp khi nói về latency trên production; adaptive sizing hứa hẹn giảm công sức cấu hình. Biết primitive patterns bị rút giúp tránh dạy hoặc dựa vào một tính năng chưa chắc ra mắt.",
+      "interview_q": "Service Java của bạn chạy ZGC trên container có giới hạn bộ nhớ. Bạn chọn kích thước heap thế nào, và adaptive heap sizing sẽ thay đổi cách tuning đó ra sao?",
+      "related": ["jvm-003", "core-001"],
+      "tags": ["zgc", "jdk28", "gc"]
+    },
+    {
+      "title_vi": "Podcast: Guy Pardon (Atomikos) về distributed transaction, XA và two-phase commit",
+      "title": "A Bootiful Podcast: Atomikos founder Guy Pardon on distributed transactions, data integrity, and more",
+      "url": "https://spring.io/blog/2026/11/12/a-bootiful-podcast-guy-pardon",
+      "source": "Spring Blog",
+      "category": "company",
+      "summary": "Josh Long trò chuyện với người sáng lập Atomikos về cách giữ nhất quán khi một database, broker hay lời gọi service là chưa đủ. Chủ đề gồm XA và two-phase commit, khi nào nên dùng distributed transaction, vì sao compensating logic và eventual consistency không phải lúc nào cũng thay thế được, ví dụ ngân hàng và bảo hiểm, và cách tích hợp vào Spring Boot mà không cần application server.",
+      "why": "Phân biệt 2PC/XA với saga và outbox là câu hỏi kinh điển ở phỏng vấn microservices và ngân hàng; podcast cho góc nhìn từ người làm transaction manager về trade-off thực tế.",
+      "interview_q": "So sánh XA/two-phase commit với saga và transactional outbox: khi nào bạn chọn cái nào cho luồng chuyển tiền giữa hai service?",
+      "related": ["microservices-001", "design-001"],
+      "tags": ["transactions", "xa", "saga"]
+    }
+  ]
+}
