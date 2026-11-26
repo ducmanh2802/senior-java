@@ -11146,6 +11146,201 @@ Spring Boot 3.2+ tôi dùng **OpenTelemetry Java agent** thay vì manual Microme
     'Baggage propagation: bạn truyền key nào (tenant, user-tier) và giới hạn size ra sao để không phình context?'
   ],
   tags: ['opentelemetry', 'micrometer tracing', 'spring boot 3', 'virtual thread', 'CompletableFuture', 'Reactor', 'exemplars', 'java agent']
+},
+{
+  id: 'microservices-132',
+  topic: 'microservices',
+  level: 'senior',
+  q: 'Ngân hàng có app mobile (3 triệu người dùng) và web (dashboard nhân viên). BFF-mobile và BFF-web đã tách riêng. Một downstream (promotion-service) bị chậm 4 giây trong giờ cao điểm. Bạn thiết kế **timeout budget, circuit breaker, fallback và partial degradation** sao cho mobile vẫn trả màn hình home trong < 1 giây mà không làm mất dữ liệu quan trọng, và giải thích vì sao không nên để gateway tự retry?',
+  a: `**Tóm tắt:** BFF-mobile phải trả màn hình home trong < 1 giây nên tổng timeout budget không được vượt 800 ms. Mỗi downstream có timeout riêng (promotion 300 ms, order 500 ms, customer 400 ms) chạy song song; promotion chậm sẽ bị timeout và fallback mảng rỗng thay vì chờ 4 giây. Circuit breaker mở khi tỉ lệ lỗi vượt ngưỡng để tránh gọi promotion liên tục. Gateway không retry vì retry ở gateway chồng với retry ở BFF sẽ nhân bội lỗi (retry storm) và làm chậm downstream thêm.
+
+### Cơ chế từng bước
+
+1. **Fan-out song song**: BFF-mobile gọi order, customer, promotion cùng lúc bằng CompletableFuture.allOf. Tổng latency chờ chậm nhất, không cộng dồn. Nếu gọi tuần tự 3 service mỗi 300 ms = 900 ms; song song = 300 ms.
+2. **Timeout budget**: tổng budget 800 ms. Mỗi downstream timeout nhỏ hơn budget: promotion 300 ms, order 500 ms, customer 400 ms. Nếu promotion vượt 300 ms, CompletableFuture exceptionally trả mảng rỗng, màn hình vẫn hiển thị đơn hàng và thông tin khách hàng.
+3. **Circuit breaker**: Resilience4j cấu hình sliding window 10 request, failure rate threshold 50%, wait duration 30 giây. Khi promotion lỗi liên tục, circuit mở, BFF không gọi promotion mà trả fallback ngay, giảm tải cho promotion để nó hồi phục.
+4. **Partial degradation**: promotion lỗi chỉ mất phần khuyến mãi, không làm hỏng toàn bộ màn hình. Mobile hiển thị banner "khuyến mãi tạm thời không khả dụng" thay vì màn hình trắng.
+5. **Gateway không retry**: gateway retry 3 lần + BFF retry 3 lần = 9 lần gọi cho một request gốc. Khi downstream đã chậm, retry làm chậm thêm và khuếch đại sự cố. Retry chỉ nên ở một tầng (BFF hoặc gateway, không cả hai).
+
+### Code: timeout + fallback + circuit breaker
+
+~~~java
+public class HomeBff {
+    private final PromotionClient promos;
+    private final CircuitBreaker cb;
+
+    public List<Promo> loadPromos(String customerId) {
+        try {
+            return cb.executeSupplier(() ->
+                promos.forCustomer(customerId)
+                    .orTimeout(300, TimeUnit.MILLISECONDS)
+                    .join());
+        } catch (Exception e) {
+            return List.of(); // fallback: không khuyến mãi
+        }
+    }
+}
+~~~
+
+### Bảng trade-off
+
+| Tiêu chí | Timeout riêng từng downstream | Timeout chung 800 ms |
+|---|---|---|
+| Promotion chậm | Chỉ promotion bị cắt, order/customer vẫn trả | Toàn bộ màn hình chờ 800 ms |
+| Complexity | Cao hơn (cấu hình từng service) | Đơn giản |
+| UX | Partial degradation | All-or-nothing |
+| Phù hợp | Mobile cần < 1 giây | Web dashboard chịu được 2 giây |
+
+### Pitfall thực tế trên production
+
+- **Timeout quá lớn**: promotion timeout 2 giây, màn hình home chờ 2 giây, người dùng thoát app. Cách tránh: timeout < budget tổng, promotion là "nice-to-have" nên timeout nhỏ.
+- **Fallback trả dữ liệu cũ mà không đánh dấu**: mobile hiển thị khuyến mãi cũ như mới, người dùng claim giảm giá hết hạn. Cách tránh: gắn cờ promotionStale=true, UI hiển thị "dữ liệu có thể cũ".
+- **Circuit breaker không có fallback**: circuit mở nhưng BFF trả 500, màn hình trắng. Cách tránh: fallback luôn trả mảng rỗng hoặc cache cũ.
+- **Retry ở nhiều tầng**: gateway retry 3, BFF retry 3, downstream retry 3 = 27 lần gọi. Cách tránh: retry chỉ ở một tầng, chuẩn hóa "retry budget" toàn hệ thống.
+- **Không đo timeout thực tế**: đặt timeout 300 ms nhưng p99 promotion là 400 ms, circuit luôn mở. Cách tránh: đo p99 thực tế, đặt timeout = p99 * 1.5.
+
+### Ví dụ đời thực
+
+Màn hình home mobile ngân hàng gọi 4 service (order, customer, promotion, notification). Giờ cao điểm promotion-service chậm do DB lock (p99 từ 200 ms lên 4 giây). Trước: mobile chờ 4 giây, 30% người dùng thoát app, rating store giảm. Sau: BFF-mobile fan-out song song, promotion timeout 300 ms, fallback mảng rỗng + cờ promotionStale, circuit breaker mở sau 5 lỗi liên tiếp, gateway không retry. Kết quả: thời gian load home từ 4 giây xuống 520 ms (chậm nhất là order 500 ms), tỷ lệ thoát giảm từ 30% xuống 4%, promotion-service có thời gian hồi phục vì circuit breaker giảm tải. Khi promotion hồi phục, circuit đóng lại và dữ liệu khuyến mãi xuất hiện lại.
+
+### Trả lời mẫu khi phỏng vấn
+
+BFF-mobile phải trả màn hình home trong < 1 giây nên tôi đặt tổng timeout budget 800 ms. Mỗi downstream có timeout riêng: promotion 300 ms, order 500 ms, customer 400 ms, chạy song song bằng CompletableFuture.allOf. Promotion chậm sẽ bị timeout và fallback mảng rỗng thay vì chờ 4 giây. Circuit breaker mở khi tỉ lệ lỗi vượt ngưỡng để giảm tải cho promotion. Gateway không retry vì retry ở gateway chồng với retry ở BFF sẽ nhân bội lỗi và làm chậm downstream thêm. Partial degradation: promotion lỗi chỉ mất phần khuyến mãi, không làm hỏng toàn bộ màn hình. Tôi cũng gắn cờ promotionStale để UI hiển thị "dữ liệu có thể cũ" tránh người dùng claim giảm giá hết hạn. Đo p99 thực tế trước khi đặt timeout để tránh circuit luôn mở.
+
+  > Senior tip: Đo p99 thực tế của từng downstream trước khi đặt timeout; đặt timeout = p99 * 1.5 và luôn có fallback trả mảng rỗng hoặc cache cũ, không bao giờ trả 500 cho màn hình home.`,
+  follow: [
+    'Khi promotion-service hồi phục, circuit breaker đóng lại như thế nào và làm sao tránh "thundering herd" khi nhiều BFF cùng retry?',
+    'Timeout của downstream nên nhỏ hơn tổng budget bao nhiêu phần trăm, và vì sao?',
+    'Partial degradation nên thông báo cho người dùng thế nào để không mất niềm tin, và khi nào nên cache cũ thay vì mảng rỗng?'
+  ],
+  tags: ['BFF', 'timeout budget', 'circuit breaker', 'partial degradation', 'retry storm', 'mobile']
+},
+{
+  id: 'microservices-133',
+  topic: 'microservices',
+  level: 'lead',
+  q: 'Hệ thống có 15 service Java trên Kubernetes, chi phí cloud tăng 30% quý trước. Team đề xuất cài Istio để "giảm chi phí và tăng observability". Bạn đánh giá Istio có thực sự giảm chi phí không, trade-off với Kubernetes NetworkPolicy + Prometheus/Grafana + OpenTelemetry, và lộ trình áp dụng an toàn nếu quyết định cài?',
+  a: `**Tóm tắt:** Istio không trực tiếp giảm chi phí; nó thêm sidecar mỗi pod tốn RAM/CPU và phải vận hành control plane. Chi phí cloud tăng 30% thường do over-provisioning, không có autoscaling, hoặc lãng phí tài nguyên — Istio không giải quyết những vấn đề này. Istio đáng cài khi cần mTLS mọi nơi không sửa code, canary traffic shifting theo header, hoặc đa ngôn ngữ. Trade-off với NetworkPolicy + Prometheus + OTel là Istio gộp mTLS + retry + telemetry vào mesh nhưng trả giá tài nguyên và complexity; nếu chỉ cần observability thì OTel + Prometheus đủ và rẻ hơn.
+
+### Cơ chế từng bước
+
+1. **Chi phí thực của Istio**: mỗi pod thêm sidecar Envoy tốn ~50-100 MB RAM và ~0.05-0.1 CPU. Với 15 service x 3 pod = 45 pod, sidecar thêm ~3-4 GB RAM và ~3-5 CPU cores toàn cụm. Control plane (istiod) thêm ~1-2 pod. Chi phí tăng chứ không giảm.
+2. **Nguyên nhân chi phí cloud tăng 30%**: thường là node size quá lớn (request/limit mismatch), HPA chưa cấu hình, idle pod ban đêm, storage snapshots, egress traffic giữa AZ. Giải pháp: right-sizing, HPA/KEDA, spot instance, scheduled scale-down — không cần mesh.
+3. **Khi nào Istio đáng cài**: (a) yêu cầu zero-trust nội bộ (mTLS mọi nơi) mà không sửa code Java; (b) canary deployment theo header/cookie/percentage cần chính xác; (c) đa ngôn ngữ (Java + Go + Node) không muốn thư viện resilience riêng cho mỗi ngôn ngữ; (d) traffic shifting phức tạp (A/B test, dark launch).
+4. **Trade-off với NetworkPolicy + Prometheus + OTel**: NetworkPolicy lọc lưu lượng theo label (L3/L4), không mã hóa. Prometheus scrape metric từ pod. OTel thu trace. Istio gộp cả ba: mTLS (L4/TLS), retry/timeout, metric/trace tự động. Nhưng trả giá: sidecar tài nguyên, control plane vận hành, debug phức tạp (proxy từ chối vs app lỗi).
+5. **Lộ trình an toàn**: (1) đo baseline p99 và tài nguyên; (2) cài Istio trên một namespace thí điểm (ví dụ staging) với mTLS PERMISSIVE; (3) bật mTLS STRICT sau 1-2 tuần quan sát; (4) cấu hình retry/timeout chỉ ở mesh, tắt retry ở gateway và app; (5) đo p99 tăng < 5% và sidecar RAM < 100 MB/pod; (6) mở rộng namespace-by-namespace, không big-bang.
+
+### Bảng so sánh
+
+| Tiêu chí | Istio | NetworkPolicy + Prometheus + OTel |
+|---|---|---|
+| mTLS nội bộ | Tự động, không code | Không có built-in |
+| Retry/timeout | Cấu hình mesh, chung mọi ngôn ngữ | Code Java (Resilience4j) |
+| Metric/trace | Tự động từ sidecar | OTel SDK trong app |
+| Tài nguyên thêm | Sidecar mỗi pod + control plane | Không có proxy thêm |
+| Complexity vận hành | Cao (control plane, cert rotation) | Trung bình (OTel collector) |
+| Phù hợp | Zero-trust, canary phức tạp, đa ngôn ngữ | Chi phí quan trọng, ít service, một ngôn ngữ |
+
+### Pitfall thực tế trên production
+
+- **Cài mesh để "giảm chi phí"**: sidecar tăng chi phí, không giảm. Cách tránh: giải quyết right-sizing và autoscaling trước.
+- **Retry chồng chéo**: gateway retry 3, mesh retry 3, app retry 3 = 27 lần gọi. Cách tránh: retry chỉ ở một tầng, chuẩn hóa retry budget.
+- **mTLS strict làm hỏng workload không có sidecar**: cron job, batch job không có sidecar bị từ chối kết nối. Cách tránh: bắt đầu PERMISSIVE, audit workload không có sidecar trước khi chuyển STRICT.
+- **Control plane là điểm đơn**: istiod bị lỗi làm không cấp chứng chỉ mới, sidecar mới không khởi động. Cách tránh: HA control plane (3 replica), monitoring istiod.
+- **Debug khó**: proxy từ chối (403, RBAC) vs app lỗi (500) khó phân biệt. Cách tránh: bật access log sidecar, dùng kiali/jaeger để visualize, training đội ops.
+
+### Ví dụ đời thực
+
+Một nền tảng ngân hàng số có 15 service Java trên Kubernetes, chi phí cloud tăng 30% quý trước. Team đề xuất Istio. Sau phân tích: nguyên nhân chi phí là node size quá lớn (request 500m CPU nhưng limit 4 CPU, utilization 12%), HPA chưa cấu hình, idle pod ban đêm. Giải pháp right-sizing + HPA + scheduled scale-down giảm chi phí 35% mà không cần mesh. Istio được thí điểm trên namespace thanh toán (5 service) cho mTLS và canary: p99 tăng 18 ms (4%), sidecar tốn 280 MB RAM/node. Kết luận: Istio không giảm chi phí, nhưng đáng cài cho mTLS và canary trên namespace thanh toán; không cài toàn cụm ngay.
+
+### Trả lời mẫu khi phỏng vấn
+
+Istio không trực tiếp giảm chi phí; nó thêm sidecar mỗi pod tốn RAM/CPU và phải vận hành control plane. Chi phí cloud tăng 30% thường do over-provisioning, không có autoscaling — Istio không giải quyết. Tôi sẽ giải quyết right-sizing, HPA, spot instance trước, thường giảm 30-40% chi phí. Istio đáng cài khi cần mTLS mọi nơi không sửa code, canary theo header, hoặc đa ngôn ngữ. Trade-off với NetworkPolicy + Prometheus + OTel là Istio gộp mTLS + retry + telemetry vào mesh nhưng trả giá tài nguyên và complexity. Lộ trình: thí điểm namespace staging với mTLS PERMISSIVE, đo p99 và RAM sidecar, chuẩn hóa retry chỉ ở một tầng, rồi mở rộng namespace-by-namespace. Không bao giờ big-bang.
+
+  > Senior tip: Giải quyết right-sizing và autoscaling trước khi nghĩ đến mesh; mesh là công cụ cho zero-trust và traffic shifting, không phải công cụ giảm chi phí.`,
+  follow: [
+    'Right-sizing và autoscaling giải quyết chi phí cloud thế nào, và nên bắt đầu từ metric nào?',
+    'Khi nào nên dùng spot instance cho workload nào, và làm sao xử lý interruption gracefully?',
+    'Istio Ambient mesh (sidecar-less) giải quyết vấn đề tài nguyên thế nào so với sidecar truyền thống?'
+  ],
+  tags: ['Istio', 'chi phí cloud', 'right-sizing', 'autoscaling', 'NetworkPolicy', 'observability']
+},
+{
+  id: 'microservices-134',
+  topic: 'microservices',
+  level: 'senior',
+  q: 'Hệ thống Spring Boot 3 có 8 service giao tiếp qua HTTP và Kafka. Một request đặt hàng đi qua order-service → inventory-service (HTTP) → payment-service (Kafka async). Bạn thiết lập **OpenTelemetry + Micrometer Tracing** thế nào để trace không bị đứt ở biên bất đồng bộ (Kafka header, @Async, thread pool), và dùng **tail-based sampling** để giữ trace lỗi/latency cao mà không tốn quá nhiều storage?',
+  a: `**Tóm tắt:** Trace bị đứt khi context không được truyền qua biên bất đồng bộ: Kafka record header, @Async, thread pool tự tạo. Giải pháp: producer ghi trace context vào Kafka record header; consumer đọc header và tạo child span; với @Async và thread pool tự tạo, dùng ContextPropagatingTaskDecorator hoặc wrap executor để propagate MDC và trace context. Tail-based sampling giữ trace lỗi và latency cao (p99) bằng cách buffer span ở collector và quyết định sau khi thấy toàn bộ trace, thay vì quyết định ngay ở đầu (head-based). Trade-off: tail-based cần bộ đệm lớn và latency quyết định cao hơn, nhưng giữ được trace "đáng tiền".
+
+### Cơ chế từng bước
+
+1. **HTTP propagation**: Spring Boot 3 với micrometer-tracing-bridge-otel tự instrument WebMVC và WebClient. Client tự chèn traceparent header; service nhận đọc header và tạo child span với parentSpanId. Không cần code thêm nếu dùng RestTemplate/WebClient đã được instrument.
+2. **Kafka propagation**: KafkaTemplate được instrument tự động ghi trace context vào record header (key: traceparent). Consumer dùng KafkaListener với OTel instrumentation đọc header và tạo span tiếp tục. Nếu dùng client Kafka thủ công, phải gọi TracingKafkaTemplate hoặc thêm header thủ công.
+3. **@Async và thread pool**: Spring @Async dùng TaskExecutor; nếu executor không propagate context, span mới không có cha. Giải pháp: cấu hình ContextPropagatingTaskDecorator (Spring Framework) trên TaskExecutor. Với thread pool tự tạo (ExecutorService), wrap Runnable/Callable bằng ContextSnapshot.wrap().
+4. **Tail-based sampling**: thay vì quyết định sampling ở đầu (head-based, ví dụ 5%), collector buffer span và quyết định sau: giữ 100% trace có lỗi (status=ERROR) hoặc latency > ngưỡng (ví dụ p99 = 2 giây), còn lại giữ 5%. Cần collector hỗ trợ (OTel Collector với tail_sampling processor).
+5. **Liên kết log-trace-metric**: in traceId và spanId vào MDC log để nhảy từ log sang trace; gắn exemplar (traceId) vào metric để nhảy từ dashboard metric sang trace chậm.
+
+### Code: propagate context qua @Async và thread pool
+
+~~~java
+@Configuration
+public class AsyncConfig {
+    @Bean
+    public TaskExecutor taskExecutor() {
+        ThreadPoolTaskExecutor executor = new ThreadPoolTaskExecutor();
+        executor.setCorePoolSize(4);
+        executor.setMaxPoolSize(8);
+        executor.setTaskDecorator(new ContextPropagatingTaskDecorator());
+        executor.initialize();
+        return executor;
+    }
+}
+
+// Thread pool tự tạo: wrap runnable
+ExecutorService pool = Executors.newFixedThreadPool(4);
+Runnable task = ContextSnapshot.captureAll().wrap(() -> {
+    // span context được propagate vào đây
+    processOrder(orderId);
+});
+pool.submit(task);
+~~~
+
+### Sơ đồ trace qua HTTP và Kafka
+
+~~~seq
+title: Trace context đi qua HTTP và Kafka
+actors: Client | Order API | Inventory | Kafka | Payment Worker
+Client -> Order API: POST /orders (traceparent)
+Order API -> Inventory: HTTP GET /stock (traceparent)
+Inventory --> Order API: 200 OK
+Order API -> Kafka: publish OrderCreated + trace header
+Kafka --> Payment Worker: consume + đọc trace header
+Payment Worker -> Payment Worker: child span xử lý
+~~~
+
+### Pitfall thực tế trên production
+
+- **Mất context ở @Async**: span mới không có cha, trace bị đứt thành hai trace rời. Cách tránh: ContextPropagatingTaskDecorator hoặc ContextSnapshot.wrap().
+- **Kafka consumer không instrument**: trace bị đứt ở biên async, không tìm được payment-service trong trace. Cách tránh: bật OTel Kafka instrumentation (micrometer-tracing + otel-kafka) và kiểm tra header traceparent.
+- **Tail-based sampling buffer quá lớn**: collector tốn RAM và CPU, latency quyết định cao. Cách tránh: đặt buffer size và timeout hợp lý (ví dụ 30 giây), monitor collector resource.
+- **Cardinality cao trong span attribute**: gắn orderId, userId vào attribute không kiểm soát làm backend phình. Cách tránh: attribute trace có kiểm soát, metric label chỉ low-cardinality.
+- **Log không in traceId**: không nhảy từ log sang trace. Cách tránh: MDC chứa traceId, spanId, cấu hình log pattern.
+
+### Ví dụ đời thực
+
+Hệ thống đặt hàng có 5 hop (gateway → order → inventory HTTP → Kafka → payment). Trước đây trace bị đứt ở Kafka: payment-service tạo trace riêng, không liên kết với order. Khi khách báo "đặt hàng mất 10 giây", đội phải grep log thủ công 30 phút. Sau khi bật OTel với Kafka header propagation, @Async decorator, và tail-based sampling (giữ 100% lỗi + request > 2 giây, còn lại 5%): trace liên tục từ gateway đến payment, MDC in traceId. Một tối p99 tăng 4 giây: truy vấn trace chậm cho thấy span payment.authorize chiếm 3,5 giây do thread pool payment cạn (queue wait 3,2 giây). Nhóm tăng pool từ 8 lên 24 và đặt queue capacity 100; p99 giảm còn 680 ms. Thời gian điều tra từ 30 phút xuống 3 phút.
+
+### Trả lời mẫu khi phỏng vấn
+
+Trace bị đứt khi context không được truyền qua biên bất đồng bộ. Tôi giải quyết: HTTP propagation tự động qua Micrometer Tracing bridge OTel; Kafka propagation qua record header traceparent; @Async và thread pool tự tạo qua ContextPropagatingTaskDecorator hoặc ContextSnapshot.wrap(). Tail-based sampling giữ trace lỗi và latency cao bằng cách buffer span ở collector và quyết định sau khi thấy toàn bộ trace, thay vì quyết định ngay ở đầu. Trade-off: tail-based cần bộ đệm lớn nhưng giữ được trace "đáng tiền". Tôi cũng in traceId vào MDC log và gắn exemplar vào metric để nối ba trụ cột. Lưu ý: kiểm tra header traceparent trong Kafka record và đảm bảo mọi executor đều propagate context; thiếu một mắt xích là trace bị "gãy" đúng lúc cần điều tra nhất.
+
+  > Senior tip: Kiểm tra header traceparent trong Kafka record bằng consumer thủ công và đảm bảo mọi executor (bao gồm @Async và thread pool tự tạo) đều propagate context; thiếu một mắt xích là trace bị "gãy" đúng lúc cần điều tra nhất.`,
+  follow: [
+    'Head-based và tail-based sampling khác nhau thế nào, và tail-based cần thành phần nào trong pipeline thu thập?',
+    'Làm sao để trace không bị đứt khi xử lý bất đồng bộ với @Async, thread pool riêng hoặc message consumer?',
+    'Bạn liên kết trace với log và metric (three pillars) như thế nào để khoan từ alert xuống nguyên nhân gốc?'
+  ],
+  tags: ['opentelemetry', 'micrometer tracing', 'spring boot 3', 'Kafka', 'tail-based sampling', 'context propagation']
 }
 );
 
