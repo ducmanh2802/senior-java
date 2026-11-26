@@ -6572,4 +6572,251 @@ Một cổng thanh toán xử lý 2.000 giao dịch/giây, dữ liệu Aurora ap
   ],
   tags: ['multi-region', 'active-passive', 'Aurora Global Database', 'RPO', 'RTO', 'failback', 'idempotency', 'fencing', 'lead']
 },
+{
+  id: 'aws-096',
+  topic: 'aws',
+  level: 'senior',
+  q: 'Thiết kế VPC cho hệ thống ngân hàng: ứng dụng Spring Boot chạy ECS Fargate trong private subnet, RDS PostgreSQL trong data subnet, cần pull Docker image, ghi log, đọc Secrets Manager và lưu file lên S3 — không muốn traffic ra Internet nếu không bắt buộc. Bạn thiết kế subnet, NAT Gateway và VPC endpoint ra sao, và vì sao?',
+  a: `**Tóm tắt:** VPC chia thành 2–3 Availability Zone. Mỗi AZ có public subnet (ALB và NAT Gateway), private subnet (ứng dụng ECS) và data subnet (RDS, không route ra Internet). NAT Gateway đặt trong public subnet của chính AZ đó; route table của private subnet ở AZ nào trỏ tới NAT của AZ đó. Thêm gateway endpoint cho S3 (miễn phí) và interface endpoint cho Secrets Manager có bật private DNS trong private subnet, rồi gắn Security Group chỉ cho phép task ECS gọi endpoint. Như vậy task đọc secret, ghi log CloudWatch và lưu file lên S3 không qua Internet, không qua NAT; NAT chỉ giữ lại cho việc thật sự cần, ví dụ gọi API đối tác nằm ngoài AWS. Endpoint policy giới hạn principal và action được phép.
+
+### Thuật ngữ (giải thích từ gốc)
+- **VPC (Virtual Private Cloud)**: mạng riêng ảo trên AWS, bạn tự quy hoạch CIDR, subnet và route table.
+- **Availability Zone (AZ)**: một hoặc nhiều datacenter tách biệt về điện và mạng trong một region; hỏng một AZ không làm hỏng AZ khác.
+- **CIDR**: cách ghi dải IP, ví dụ 10.0.0.0/16 có khoảng 65.000 địa chỉ.
+- **Public subnet**: subnet có route tới Internet Gateway, dùng cho ALB và NAT Gateway.
+- **Private subnet**: subnet chỉ có route qua NAT Gateway (ứng dụng), không ai từ Internet kết nối trực tiếp vào.
+- **Data subnet**: subnet chỉ có route nội bộ, dùng cho RDS, không ra Internet.
+- **Internet Gateway (IGW)**: cổng hai chiều giữa VPC và Internet.
+- **NAT Gateway**: cho máy trong private subnet đi ra Internet bằng IP public, chặn kết nối bắt đầu từ ngoài vào; tính phí theo giờ và theo GB dữ liệu xử lý.
+- **Security Group**: tường lửa stateful gắn vào ENI (card mạng ảo) của task hoặc RDS; nhớ kết nối đã cho vào nên phản hồi tự được về.
+- **ENI**: card mạng ảo gắn vào tài nguyên trong VPC.
+- **VPC endpoint**: lối đi nội bộ từ VPC tới dịch vụ AWS mà không ra Internet. Gateway endpoint (S3, DynamoDB) gắn vào route table, miễn phí. Interface endpoint hay PrivateLink (Secrets Manager, ECR, CloudWatch Logs, KMS) tạo ENI trong subnet, tính phí theo giờ và theo GB.
+- **Private DNS**: tên endpoint mặc định của AWS (ví dụ secretsmanager.ap-southeast-1.amazonaws.com) phân giải về IP private trong VPC, nên SDK gọi như bình thường mà không ra Internet.
+- **Endpoint policy**: policy gắn trên endpoint giới hạn principal (ai) và action (làm gì) được phép.
+
+### Cơ chế từng bước: task gọi secret và lưu file
+1. Task ECS (10.0.11.25) gọi Secrets Manager bằng SDK với tên miền mặc định. Vì private DNS bật, tên này phân giải về IP của interface endpoint trong private subnet.
+2. Route table của private subnet có route pl-xxxx (prefix list Secrets Manager) trỏ vào vpce-id. Route này cụ thể hơn 0.0.0.0/0 nên thắng; traffic đi vào endpoint, không qua NAT, không ra Internet.
+3. Security Group của endpoint chỉ cho phép ingress TCP 443 từ Security Group của task; traffic khác bị chặn.
+4. Endpoint chuyển tiếp yêu cầu vào Secrets Manager qua mạng nội bộ AWS; kết quả quay ngược cùng đường.
+5. Khi task lưu file lên S3: route table có route prefix-list S3 trỏ vào gateway endpoint, miễn phí, không tốn phí NAT theo GB.
+6. Khi task pull Docker image: dùng interface endpoint ECR (api + dkr) cộng gateway endpoint S3 (chứa layer image), nên không kéo image qua NAT.
+
+### Bố cục tham chiếu (một AZ)
+~~~text
+                   Internet
+                      |
+                   [ IGW ]
+AZ-a public subnet          AZ-a private subnet (app)
+| ALB | NAT Gateway (EIP) | ECS task 10.0.11.25 |
+Route table public: 0.0.0.0/0 -> igw
+Route table private: 0.0.0.0/0 -> nat-a | pl-s3 -> vpce-s3 | pl-secrets -> vpce-secrets
+Data subnet (RDS 10.0.21.10): chỉ route nội bộ, không ra Internet
+~~~
+
+### Gateway endpoint vs interface endpoint
+| Tiêu chí | Gateway endpoint | Interface endpoint (PrivateLink) |
+|---|---|---|
+| Dùng cho | S3, DynamoDB | Secrets Manager, ECR, CloudWatch Logs, KMS… |
+| Gắn vào | Route table | ENI trong subnet |
+| Private DNS | Không cần (prefix list) | Cần bật |
+| Phí | Miễn phí | Theo giờ + GB dữ liệu |
+| Kiểm soát | Route table + bucket policy | Endpoint policy + Security Group |
+
+### Mã Java (không đổi code khi bật private DNS)
+~~~java
+// SDK tự phân giải tên miền mặc định sang IP private của VPC endpoint
+SecretsManagerClient sm = SecretsManagerClient.create();
+GetSecretValueResponse res = sm.getSecretValue(
+    GetSecretValueRequest.builder()
+        .secretId("prod/ngan-hang/mat-khau-db")
+        .build());
+String matKhau = res.secretString();   // không log ra màn hình, không gửi qua log
+~~~
+Nếu private DNS không bật, bạn phải ghi đè endpoint bằng endpointOverride và quản lý danh sách tên miền của từng dịch vụ — phiền hơn và dễ sai sót.
+
+### Lỗi hay gặp
+- **Tắt private DNS.** Triệu chứng: SDK phân giải secretsmanager.*.amazonaws.com về IP public, traffic ra Internet qua NAT (tốn phí) hoặc bị chặn nếu không có NAT. Cách tránh: luôn bật enableDnsSupport và enableDnsHostnames trên VPC, bật private DNS cho interface endpoint.
+- **Một NAT cho nhiều AZ.** Triệu chứng: AZ chứa NAT gặp sự cố là toàn hệ mất đường ra ngoài; ngày thường phát sinh phí cross-AZ. Cách tránh: mỗi AZ một NAT Gateway, route table của AZ nào trỏ NAT của AZ đó.
+- **Thiếu endpoint policy.** Triệu chứng: mọi principal trong VPC (bao gồm task của team khác) đều có thể đọc ghi qua endpoint. Cách tránh: chính sách endpoint giới hạn principal ARN và action, kết hợp bucket policy/secret policy.
+- **Kéo image và ghi log qua NAT.** Triệu chứng: phí NAT tăng vọt mỗi lần deploy (image 600 MB × 5 task × 10 deploy/ngày ≈ 900 GB/tháng). Cách tránh: endpoint ECR (hai interface endpoint) và CloudWatch Logs.
+- **Route table thiếu route prefix-list hoặc Security Group endpoint sai.** Triệu chứng: task không gọi được secret/S3 dù endpoint đã tạo. Cách tra cứu: VPC Flow Logs (thấy REJECT) và Reachability Analyzer.
+
+### Ví dụ đời thực
+Hệ thống tổng hợp ngân hàng: 5 task ECS Fargate, Spring Boot, lưu file tệp lên S3, đọc secret từ Secrets Manager. Ban đầu chỉ có một NAT Gateway chung cho hai AZ, chưa có VPC endpoint. Triệu chứng: mỗi lần deploy, 5 task pull image 600 MB qua NAT và gửi log qua NAT, phí NAT Gateway tăng vọt; một lần AZ chứa NAT bị lỗi, toàn hệ mất egress. Điều tra qua VPC Flow Logs: nhiều traffic tới dịch vụ AWS đi qua NAT, metric NatGateway-BytesProcessed nhảy. Nguyên gốc: thiếu endpoint, NAT không chia theo AZ. Xử lý: thêm gateway endpoint S3, interface endpoint ECR (api, dkr), Secrets Manager và CloudWatch Logs bật private DNS, đặt một NAT Gateway mỗi AZ, route table private của AZ nào trỏ NAT của AZ đó. Kết quả: phí NAT giảm xuống chỉ còn traffic ra Internet thật sự, task lưu file và đọc secret không qua Internet, mất một AZ không làm ngắt egress của các AZ còn lại.
+
+### Trả lời mẫu khi phỏng vấn
+VPC của hệ thống ngân hàng chia thành hai đến ba AZ. Mỗi AZ có public subnet (ALB, NAT Gateway), private subnet dùng cho ứng dụng ECS, và data subnet dùng cho RDS không ra Internet. NAT Gateway đặt trong public subnet của chính AZ đó; route table private của AZ nào trỏ tới NAT của AZ đó, tránh điểm chết đơn lẻ và phí cross-AZ. Để ứng dụng gọi dịch vụ AWS không ra Internet, thêm gateway endpoint cho S3 (miễn phí) và interface endpoint cho Secrets Manager bật private DNS, kèm Security Group chỉ cho phép task gọi endpoint. Như vậy task đọc secret, ghi log và lưu file lên S3 không qua NAT, không qua Internet; NAT chỉ giữ lại cho việc gọi API của đối tác ngoài AWS. Endpoint policy hạn chế principal và action được phép. Kinh nghiệm của tôi là vẽ route table trước khi vẽ diagram: phần lớn lỗi 'không gọi được S3/Secrets Manager' là do thiếu endpoint hoặc thiếu route, không phải do code. Luôn bật VPC Flow Logs để điều tra nhanh.`,
+  follow: [
+    'Vì sao NAT Gateway nên đặt một cái mỗi AZ dù tốn thêm tiền?',
+    'Private DNS của VPC endpoint đóng vai trò gì, và gì xảy ra nếu tắt nó?',
+    'Endpoint policy khác Security Group trên endpoint ở điểm nào?'
+  ],
+  tags: ['VPC', 'NAT', 'private subnet', 'VPC endpoint', 'Secrets Manager', 'S3', 'ngân hàng']
+},
+{
+  id: 'aws-097',
+  topic: 'aws',
+  level: 'senior',
+  q: 'Hệ thống ngân hàng chạy Spring Boot trên RDS PostgreSQL: Multi-AZ, read replica và Aurora failover mất bao lâu, và ứng dụng Java cần cấu hình gì (DNS TTL, HikariCP) để ghi tiếp được ngay sau failover?',
+  a: `**Tóm tắt:** RDS PostgreSQL Multi-AZ failover thường mất 60–120 giây (promote standby, đổi DNS cluster endpoint); Aurora failover thường dưới 30 giây vì storage dùng chung, không cần sao chép dữ liệu; read replica là asynchronous, chỉ dùng đọc, không dùng làm failover tự động cho ghi. Ứng dụng Java ghi qua cluster endpoint (writer endpoint); sau failover JVM vẫn cache IP cũ, HikariCP vẫn giữ kết nối tới instance cũ (đã chuyển thành reader) nên mọi lệnh ghi bị lỗi read-only. Cách xử lý: đặt networkaddress.cache.ttl ngắn (5 giây), Hikari max-lifetime vài phút, connection-timeout và socketTimeout ngắn, và retry transaction 1–2 lần có idempotency key.
+
+### Thuật ngữ (giải thích từ gốc)
+- **Multi-AZ**: RDS tự sinh bản standby đồng bộ ở AZ khác; khi primary hỏng, RDS promote standby thành primary mới.
+- **Read replica**: bản sao chỉ đọc, nhận dữ liệu bất đồng bộ từ primary, có replica lag; không tự động chuyển thành ghi.
+- **Aurora**: engine tương thích PostgreSQL/MySQL, storage phân tán (6 bản trên 3 AZ), commit khi đa số xác nhận, promote reader thành writer nhanh.
+- **Cluster endpoint (writer endpoint)**: tên DNS luôn trỏ tới writer hiện tại của cluster.
+- **Reader endpoint**: DNS cân bằng giữa các reader; chỉ dùng đọc.
+- **Instance endpoint**: DNS cố định của một instance cụ thể; sau failover nó có thể là reader, không dùng để ghi.
+- **DNS cache của JVM**: thuộc tính networkaddress.cache.ttl; JVM nhớ kết quả phân giải tên miền, sau failover vẫn trỏ IP cũ trong vòng TTL.
+- **HikariCP**: connection pool của Spring Boot; max-lifetime (thời gian sống connection), connection-timeout, socketTimeout, validationTimeout.
+- **Replica lag**: khoảng trễ giữa lúc ghi trên primary và lúc replica nhìn thấy dữ liệu.
+- **Idempotency key**: mã duy nhất giúp chạy lại giao dịch không bị xử lý hai lần.
+
+### Thời gian failover (số liệu mô tả)
+~~~text
+RDS PostgreSQL Multi-AZ:   phát hiện 10-30s + promote standby + đổi DNS (TTL 5s) => khoảng 60-120s
+Aurora PostgreSQL:          phát hiện + promote reader (storage dùng chung) => dưới 30s, ít nhất 10-15s
+Read replica:               không failover tự động; promote thủ công, mất dữ liệu chưa replicate (lag)
+~~~
+
+### Cấu hình Java và HikariCP (Spring Boot)
+~~~yaml
+# JVM: giải mã DNS nhanh, không cache IP của instance cũ sau failover
+networkaddress.cache.ttl=5
+
+spring:
+  datasource:
+    url: jdbc:postgresql://cluster-xxx.ap-southeast-1.rds.amazonaws.com:5432/ngan-hang
+    hikari:
+      maximum-pool-size: 20
+      max-lifetime: 300000      # 5 phút, làm mới connection định kỳ
+      connection-timeout: 3000  # fail nhanh thay vì treo thread
+      validation-timeout: 5000
+      leak-detection-threshold: 60000
+~~~
+Lưu ý: luôn ghi qua cluster endpoint (writer), không dùng instance endpoint cụ thể.
+
+### Mã Java: retry giao dịch khi failover (≤ 30 dòng)
+~~~java
+public void chuyenKhoan(ChuyenKhoan req) {
+    String idempotencyKey = "TXN#" + req.getIdempotencyKey();   // mã duy nhất của khách
+    for (int lan = 0; lan < 2; lan++) {                        // tối đa 2 lần: gốc + 1 retry
+        try {
+            return txTemplate.execute(status -> {
+                dao.kiemTraDaXuLy(idempotencyKey);               // nếu đã xử lý, trả kết quả cũ
+                dao.truTien(req.getNguon(), req.getSoTien());
+                dao.congTien(req.getDich(), req.getSoTien());
+                dao.ghiGiaoDich(idempotencyKey, req);            // đánh dấu đã xử lý
+            });
+        } catch (CannotSerializeTransactionException | CannotAcquireLockException e) {
+            if (lan == 1) throw e;                               // hết lần retry, ném ngoại lệ
+        } catch (DataAccessException e) {                        // lỗi kết nối sau failover
+            if (lan == 1) throw e;
+        }
+    }
+    throw new IllegalStateException("không được đến đây");
+}
+~~~
+
+### Lỗi hay gặp
+- **Đọc từ replica ngay sau khi ghi.** Triệu chứng: đọc không thấy dữ liệu vừa ghi (replica lag). Cách xử lý: đọc những dữ liệu cần thông tin mới từ writer, hoặc chấp nhận đọc dữ liệu cũ.
+- **Retry giao dịch không idempotent.** Triệu chứng: lỗi lúc commit, chạy lại làm trừ tiền hai lần. Cách xử lý: kiểm tra idempotency key trước khi chạy lại.
+- **Dùng instance endpoint cụ thể.** Triệu chứng: sau failover app vẫn ghi vào instance cũ (đã thành reader), bị lỗi read-only. Cách xử lý: luôn ghi qua cluster endpoint.
+- **DNS TTL dài.** Triệu chứng: sau 2 phút app vẫn lỗi vì JVM vẫn cache IP cũ. Cách xử lý: đặt networkaddress.cache.ttl ngắn (5 giây) và khởi động lại cùng lúc.
+- **Connection storm.** Triệu chứng: nhiều task kết nối lại cùng lúc sau failover, cạn hết max_connections. Cách xử lý: max-lifetime ngắn, retry có backoff jitter, pool size không quá lớn.
+
+### Ví dụ đời thực
+Hệ thống ghi đơn hàng ngân hàng chạy Spring Boot + RDS PostgreSQL Multi-AZ (db.r6g.large x 2 AZ). Ban đầu team không sửa cấu hình Java, chỉ test failover trên giấy. Triệu chứng: sau aws rds failover-db-cluster, console báo hoàn tất khoảng 30 giây, nhưng ứng dụng báo lỗi "cannot execute INSERT in a read-only transaction" trong 2–3 phút. Điều tra: JVM cache DNS của instance cũ (networkaddress.cache.ttl mặc định khoảng 30 giây), Hikari giữ 20 connection tới instance cũ đã thành reader, TCP half-open khi instance cũ chết không gửi RST. Xử lý: đặt networkaddress.cache.ttl=5, Hikari max-lifetime 300000, connection-timeout 3000, socketTimeout 5000, luôn ghi qua cluster endpoint, bổ sung retry 1 lần có idempotency key. Kết quả: lần failover tiếp theo, thời gian không ghi được từ ứng dụng còn dưới 1 phút.
+
+### Trả lời mẫu khi phỏng vấn
+Multi-AZ PostgreSQL failover thực sự khoảng một đến hai phút: promote standby, đổi DNS cluster endpoint, nhưng app Java vẫn bị lỗi vì JVM cache IP cũ và HikariCP giữ connection tới instance cũ (đã thành reader). Aurora nhanh hơn (dưới 30 giây) vì storage dùng chung. Read replica không dùng cho failover ghi vì đọc bất đồng bộ có lag. Em xử lý từng lớp: networkaddress.cache.ttl 5 giây, Hikari max-lifetime chưa một phút, connection-timeout và socketTimeout ngắn để fail nhanh, ghi qua cluster endpoint, retry giao dịch 1–2 lần có idempotency key. Chọn Multi-AZ nếu chỉ cần HA ghi; chọn read replica nếu cần đọc nhiều và chấp nhận lag; chọn Aurora nếu cần failover nhanh và đọc scale lớn. Mục tiêu em đo là thời gian không ghi được từ góc nhìn ứng dụng, không phải thời gian failover trên console.`,
+  follow: [
+    'Read replica dùng cho ghi được không, và replica lag ảnh hưởng thế nào?',
+    'HikariCP max-lifetime nên đặt bao lâu so với thời gian failover?',
+    'Sai khi chọn Aurora thay RDS Multi-AZ cho hệ thống ngân hàng?'
+  ],
+  tags: ['RDS', 'PostgreSQL', 'Aurora', 'failover', 'HikariCP', 'DNS', 'read replica']
+},
+{
+  id: 'aws-098',
+  topic: 'aws',
+  level: 'lead',
+  q: 'Hóa đơn AWS tháng này 40.000 USD, ban lãnh đạo yêu cầu cắt 30% mà không giảm chức năng của hệ thống Java. Bạn tìm và cắt chi phí ra sao, theo thứ tự nào, và kiểm soát không bị ngược trở lại?',
+  a: `**Tóm tắt:** Không cắt mù. Làm theo thứ tự: đo (tag bắt buộc + Cost Explorer) → xếp hạng 5 dòng chi phí lớn nhất và 5 dòng tăng nhanh nhất → rightsize theo p95 (không theo trung bình) → cam kết Savings Plans chỉ phần nền ổn định → chuyển kiến trúc (Spot, Graviton, VPC endpoint thay NAT, S3 lifecycle) → ngăn tái phát (AWS Budgets, cảnh báo, review một giờ mỗi tháng). Ví dụ hóa đơn 40.000 USD: EC2/Fargate 16.000, RDS 10.000, NAT + truyền dữ liệu 5.000, CloudWatch 4.000, S3 3.000, khác 2.000. Các đòn bẩy sau cắt khoảng 12.000 USD (30%) mà không giảm chức năng.
+
+### Thuật ngữ
+- **Cost allocation tag**: thẻ (team, env, service) bật trong Billing để chia phí theo nhóm.
+- **Cost Explorer**: dịch vụ xem và phân tích hoá đơn AWS theo dịch vụ, tag, vùng.
+- **AWS Budgets**: đặt ngưỡng chi phí, gửi cảnh báo khi vượt hoặc dự báo vượt.
+- **CUR (Cost and Usage Report)**: báo cáo chi phí chi tiết nhất, đẩy ra S3, truy vấn bằng Athena.
+- **Rightsizing**: thay đổi kích thước tài nguyên khớp với mức sử dụng thật.
+- **p95**: giá trị dưới đó nằm 95% mẫu đo; dùng thay trung bình để tránh che mất giờ cao điểm.
+- **Savings Plans**: cam kết chi tiền mỗi giờ trong 1–3 năm để được giảm giá (Compute SP linh hoạt instance family, vùng, Fargate, Lambda).
+- **Spot**: dung lượng EC2/Fargate dư, rẻ hơn nhiều nhưng có thể bị thu hồi 2 phút.
+- **Graviton**: chip ARM của AWS, giá trên hiệu năng tốt hơn x86 cùng thế hệ.
+- **Compute Optimizer**: dịch vụ phân tích metric và gợi ý kích thước EC2, ECS, Lambda, EBS.
+- **Data transfer liên vùng**: phí theo GB giữa AZ, region, ra Internet.
+- **NAT Gateway**: phí theo giờ + GB xử lý; kéo image qua NAT mỗi deploy là chi phí ẩn.
+- **Intelligent-Tiering / S3 lifecycle**: chuyển đối tượng ít dùng sang lớp lưu rẻ hơn, xóa multipart upload dở dang.
+
+### Cột giảm chi phí ưu tiên (đầu tiên làm)
+1. Bật tag bắt buộc (team, env, service), xem Cost Explorer theo tag. Không đo thì không biết tiền chảy đi đâu.
+2. Xếp hạng: 5 dòng chi phí lớn nhất và 5 dòng tăng nhanh nhất so với tháng trước. Khoảng 80% tiền thường nằm ở vài dòng.
+3. Rightsize: xem p95 CPU/memory 2–4 tuần qua Compute Optimizer + CloudWatch, giảm size từng bước nhỏ, theo dõi độ trễ p99.
+4. Cam kết: mới sau khi rightsize mua Savings Plans cho phần nền chắc chắn chạy 24/7.
+5. Chuyển kiến trúc: Spot cho batch/hệ đối soát, Graviton cho service Java, endpoint thay NAT, lifecycle cho S3.
+6. Ngăn tái phát: AWS Budgets có cảnh báo, policy bắt buộc tag, tắt dev/staging ngoài giờ hành chính.
+
+### Ví dụ: hóa đơn 40.000 USD (mô phỏng)
+~~~text
+EC2/Fargate    16.000 USD
+RDS            10.000 USD
+NAT + transfer  5.000 USD
+CloudWatch      4.000 USD
+S3              3.000 USD
+Khác            2.000 USD
+Tổng            40.000 USD
+
+Rightsize compute giảm 20%                      -3.200
+Savings Plans phần nền 8.000 (giảm khoảng 25%)  -2.000
+Spot cho batch và hệ đối soát                  -1.600
+Graviton cho service Java (giảm khoảng 20%)     -1.600
+Endpoint ECR/S3 thay NAT, giảm truyền dữ liệu   -1.200
+S3 lifecycle, xóa multipart dở dang, EBS/snapshot không dùng -1.000
+CloudWatch retention, bỏ log debug              -  800
+Dev/staging tắt ngoài giờ                       -  600
+Tổng giảm                                     -12.000 USD (30%)
+~~~
+
+### Bảng đòn bẩy
+| Đòn bẩy | Tác động | Lưu ý |
+|---|---|---|
+| Rightsizing | Cao, không ràng buộc | Theo p95, giảm bước nhỏ, theo dõi p99 |
+| Savings Plans | 20-60% cho compute ổn định | Chỉ mua phần nền chắc chắn; 1-3 năm |
+| Spot | Đến 90% cho batch | Có thể bị thu hồi 2 phút; cần idempotent |
+| Graviton | Giảm khoảng 20% | Kiểm tra thư viện native hỗ trợ ARM |
+| VPC endpoint thay NAT | Giảm phí NAT theo GB | Chỉ cho dịch vụ AWS có endpoint |
+| S3 lifecycle | Giảm lưu dữ liệu cũ | Xóa multipart dở dang, chuyển IA/Glacier |
+| Log retention | Trung bình | Đặt hạn sử dụng, không log debug ở prod |
+
+### Ví dụ đời thực
+Hệ thống Java ngân hàng hóa đơn tăng từ 32.000 lên 40.000 USD tháng nay. Điều tra qua Cost Explorer theo tag env=prod: NAT Gateway tăng 2.200 USD (CI/CD trong private subnet kéo image Docker 600 MB qua NAT, deploy 20 lần/ngày), RDS có instance db.r5.2xlarge chạy CPU p95 25%, log debug ở prod chiếm 2.000 GB/tháng. Nguyên gốc: không có endpoint ECR, RDS quá kích, log không có hạn sử dụng. Xử lý: thêm gateway endpoint S3 và interface endpoint ECR, build image cùng vùng; giảm RDS xuống db.r6g.large (rightsize), đặt MaxRAMPercentage=75; bật S3 lifecycle xóa multipart dở dang sau 7 ngày; đặt retention CloudWatch 7 ngày, chỉ gửi WARN/ERROR. Kết quả: tháng sau hóa đơn 28.000 USD (giảm 30%), NAT giảm còn 400 USD, CloudWatch còn 800 USD, và chức năng không bị giảm.
+
+### Lỗi hay gặp
+- **Cut instance quá tay.** Triệu chứng: ứng dụng chậm, autoscale bổ thêm instance, tổng tiền tăng mà user vẫn không hài lòng. Cách xử lý: giảm bước nhỏ, theo dõi p99 và số instance sau mỗi bước.
+- **Mua Savings Plans trước khi rightsize.** Triệu chứng: trả trước cho phần thừa, cam kết thành tiền chết nếu giao diện thay đổi. Cách xử lý: rightsize xong mới mua cho phần nền.
+- **Spot cho workload có state không checkpoint.** Triệu chứng: bị thu hồi giữa chừng, chạy lại từ đầu, chi phí gấp đôi. Cách xử lý: Spot chỉ cho worker không state, checkpoint định kỳ.
+- **Tắt NAT để tiết kiệm.** Triệu chứng: private subnet mất đường ra ngoài, người ta mở public subnet, bảo mật giảm. Cách xử lý: giữ NAT, giảm traffic qua NAT bằng endpoint.
+- **Quên dev/staging chạy 24/7.** Triệu chứng: instance lớn chạy liên tục cho môi trường chỉ dùng giờ hành chính. Cách xử lý: scheduled scaling về 0 ngoài giờ, instance nhỏ hơn prod.
+
+### Trả lời mẫu khi phỏng vấn
+Với hóa đơn 40.000 USD, em không cắt mù mà làm theo thứ tự. Đầu tiên bắt buộc tag (team, env, service) và xem Cost Explorer để biết tiền chảy ở đâu, xếp hạng 5 dòng lớn nhất và 5 dòng tăng nhanh nhất. Sau đó rightsize theo p95 (không theo trung bình), mới sau đó mới mua Savings Plans cho phần nền chắc chắn. Chuyển kiến trúc: Spot cho batch, Graviton cho Java, endpoint ECR/S3 thay NAT, S3 lifecycle xóa dữ liệu cũ. Cuối cùng ngăn tái phát: AWS Budgets, policy bắt buộc tag, tắt dev/staging ngoài giờ. Trong ví dụ mô phỏng, các đòn bẩy cộng lại giảm 12.000 USD (30%) và chức năng không bị giảm. Để không ngược trở lại, em dành một giờ mỗi tháng xem top 5 dịch vụ tăng chi phí, và yêu cầu mọi thành phần mới có tag đầy đủ.`,
+  follow: [
+    'Vì sao rightsizing theo CPU trung bình thường sai?',
+    'Khi nào Savings Plans không còn đáng mua?',
+    'Bạn ngăn chi phí từ các team khác làm overspend thế nào?'
+  ],
+  tags: ['cost', 'Savings Plans', 'Spot', 'Graviton', 'rightsizing', 'budget', 'lead']
+}
 )
