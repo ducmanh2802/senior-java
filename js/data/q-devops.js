@@ -19158,6 +19158,115 @@ Triệu chứng: 180 alert, team bỏ qua. Xử lý: burn-rate SLO alert. Kết 
     'Khi nào dùng symptom-based alert vs cause-based alert?'
   ],
   tags: ['SRE', 'Burn rate', 'SLO', 'Alert fatigue', 'Monitoring']
+},
+{
+  id: 'devops-213',
+  topic: 'devops',
+  level: 'senior',
+  q: 'Bạn có monorepo Java với 40 module, pipeline CI hiện mất 25 phút. Làm sao giảm xuống dưới 10 phút mà không hy sinh độ tin cậy?',
+  a: `**Tóm tắt:** Kết hợp cache Maven/Gradle (local + remote), build/test song song theo module, và chỉ build module bị ảnh hưởng bởi thay đổi (affected modules). Thêm remote build cache và test sharding để đạt <10 phút.
+
+### Cache Maven/Gradle
+- **Cái gì:** lưu dependency và output build trong cache.
+- **Vì sao:** tải lại dependency mỗi lần tốn 5-10 phút.
+- **Cách:** GitHub Actions cache ~/.m2 và ~/.gradle; dùng Gradle Build Cache remote (Develocity/Gradle Enterprise); Maven dùng local repository cache (~/.m2) và có thể dùng Maven Daemon (mvnd) để tăng tốc.
+
+### Chỉ build module đổi
+- **Cái gì:** affected modules = module thay đổi + downstream dependents.
+- **Cách:** Maven {{mvn -pl module -am}}; Gradle dùng configuration cache + plugin {{gradle-git-changes}} hoặc script git diff tùy chỉnh (Gradle không có flag {{--affected-modules}} built-in).
+- **Pitfall:** thay đổi ở module core làm rebuild toàn bộ; cần phân tách module nhỏ.
+
+### Test song song
+- **Cách:** Maven Surefire forkCount; Gradle maxParallelForks; test sharding (chia test class thành nhiều nhóm chạy trên nhiều runner) — không dùng {{gradle-test-retry}} (đó là cho retry flaky test).
+- **Ví dụ:** 40 module × 2 phút = 80 phút tuần tự; song song 8 worker ≈ 10 phút (giả lập lý tưởng, thực tế có overhead).
+
+### Ví dụ đời thực
+Monorepo 40 module, CI 25 phút. Áp dụng cache + affected modules + 8 worker + test sharding → ~8 phút. Cache hit cao (remote build cache hiệu quả).
+
+### Trả lời mẫu khi phỏng vấn
+Tôi giảm CI từ 25 phút xuống ~8 phút bằng ba lớp: remote build cache (Gradle Build Cache), chỉ build module bị ảnh hưởng (affected graph qua plugin git-changes hoặc script), và chạy test song song trên 8 worker với test sharding. Pitfall là thay đổi core module rebuild toàn bộ; tôi tách module nhỏ và dùng BOM để giảm coupling. Kết quả: cache hit cao, CI ~8 phút.
+
+> Senior tip: **Đo thời gian từng stage trước khi tối ưu.** Thường bottleneck là test, không phải build. Dùng remote build cache và test sharding hiệu quả hơn parallelize mù quáng.
+`,
+  follow: [
+    'Khi nào cache bị invalidate và làm sao warm cache?',
+    'Làm sao đảm bảo test song song không race condition?'
+  ],
+  tags: ['CI', 'Maven', 'Gradle', 'Cache', 'Monorepo']
+},
+{
+  id: 'devops-214',
+  topic: 'devops',
+  level: 'senior',
+  q: 'Image container Java production cần nhỏ và an toàn: bạn chọn base image, non-root, và quét CVE như thế nào?',
+  a: `**Tóm tắt:** Dùng multi-stage build với distroless hoặc Eclipse Temurin JRE (Debian slim), chạy non-root, quét CVE bằng Trivy/Grype trong pipeline, và ký image bằng cosign.
+
+### Base image
+- **Cái gì:** image nền chứa JRE.
+- **Vì sao:** image đầy đủ (JDK + OS) nặng 500MB+ và nhiều CVE.
+- **Lựa chọn:** Eclipse Temurin JRE (Debian slim) ~200MB; distroless java-debian12 ~120MB; Alpine-based JRE (ví dụ BellSoft Liberica Alpine) ~90MB (musl libc, có thể gây vấn đề với native library phụ thuộc glibc).
+
+### Multi-stage build
+- **Cái gì:** stage build dùng JDK + Maven/Gradle, stage runtime chỉ copy JAR + JRE.
+- **Vì sao:** không ship compiler và source vào production.
+- **Ví dụ:** FROM maven:3.9-eclipse-temurin-21 AS build; FROM gcr.io/distroless/java21-debian12.
+
+### Non-root
+- **Cái gì:** USER 1000 hoặc nobody.
+- **Vì sao:** nếu container bị escape, attacker không có root.
+- **Cách:** adduser trong Dockerfile hoặc dùng distroless mặc định non-root.
+
+### Quét CVE
+- **Cách:** Trivy/Grype trong CI; fail pipeline nếu CVE critical/high; SBOM (Syft) để audit.
+
+### Ví dụ đời thực
+Image 500MB → distroless 110MB, CVE critical 12 → 0. Boot time 15s → 8s.
+
+### Trả lời mẫu khi phỏng vấn
+Tôi build image bằng multi-stage: stage build dùng Maven+JDK, stage runtime dùng distroless java21 (~110MB) chạy non-root uid 1000. Pipeline quét CVE bằng Trivy và fail nếu critical/high, sinh SBOM bằng Syft. Pitfall là distroless không có shell nên debug khó; tôi giữ debug image riêng (distroless debug) cho staging. Kết quả image 500MB → 110MB, CVE 12 → 0.
+
+> Senior tip: **Image nhỏ không chỉ tiết kiệm bandwidth mà còn giảm attack surface.** Luôn ký image (cosign) và verify ở cluster (policy admission) để chặn image không được phê duyệt.
+`,
+  follow: [
+    'Khi nào dùng Alpine vs distroless cho Java?',
+    'Làm sao debug container không có shell?'
+  ],
+  tags: ['Docker', 'Image', 'CVE', 'Distroless', 'Security']
+},
+{
+  id: 'devops-215',
+  topic: 'devops',
+  level: 'lead',
+  q: 'Bạn chọn 4 golden signals và viết alert không gây mệt mỏi cho team operations như thế nào?',
+  a: `**Tóm tắt:** Chọn Latency, Traffic, Errors, Saturation (4 golden signals) làm SLI; viết alert dựa trên burn rate của SLO (multi-window multi-burn-rate) thay vì threshold cố định; thêm runbook và silence cho deploy.
+
+### 4 Golden signals
+- **Latency:** thời gian xử lý request (tách success vs error).
+- **Traffic:** request rate (RPS).
+- **Errors:** tỷ lệ lỗi 5xx / business error.
+- **Saturation:** CPU, memory, thread pool, connection pool.
+
+### Alert theo burn rate
+- **Cái gì:** alert khi error budget bị đốt nhanh (burn rate).
+- **Vì sao:** threshold CPU > 80% kêu liên tục nhưng không liên quan user impact.
+- **Cách:** fast burn (5 phút, burn rate 14.4x) detect sự cố lớn; slow burn (1 giờ, 6x) detect suy giảm dần; alert chỉ fire khi cả hai vượt ngưỡng.
+
+### Runbook và ownership
+- Mỗi alert có runbook (link) và owner; silence tự động trong deploy window.
+
+### Ví dụ đời thực
+180 alert rule → 54 alert; MTTR 2h → 30 phút; on-call sleep tốt hơn.
+
+### Trả lời mẫu khi phỏng vấn
+Tôi chọn 4 golden signals làm SLI: latency, traffic, errors, saturation. Thay vì threshold cố định CPU/heap, tôi thiết kế multi-window multi-burn-rate alert theo SLO: fast burn 5 phút detect sự cố lớn, slow burn 1 giờ detect suy giảm dần. Mỗi alert có runbook và owner, silence tự động trong deploy. Pitfall là SLO không rõ; tôi workshop với product owner để set SLO thực tế. Kết quả 180 → 54 alert, MTTR 2h → 30 phút.
+
+> Senior tip: **Alert phải liên kết đến user impact.** CPU cao không phải sự cố nếu latency OK. Review alert hàng quý để loại bỏ noise; alert không có runbook thì xoá.
+`,
+  follow: [
+    'Cách set SLO cho service mới chưa có baseline?',
+    'Khi nào dùng symptom-based alert vs cause-based alert?'
+  ],
+  tags: ['SRE', 'Golden signals', 'Burn rate', 'Alert', 'Monitoring']
 }
 );
 
