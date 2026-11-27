@@ -14188,6 +14188,220 @@ API thư viện collection: Collections.copy(List<? super T> dest, List<? extend
   refs: [
     { type: 'doc', title: 'Generics Wildcards', url: 'https://docs.oracle.com/javase/tutorial/java/generics/wildcards.html' }
   ]
+},
+{
+  id: 'core-086',
+  topic: 'core',
+  level: 'senior',
+  q: 'Tính bất biến (immutable) của {{String}} có ý nghĩa gì với bảo mật? Vì sao KHÔNG nên lưu mật khẩu/token bằng {{String}} (không xoá được khỏi heap, string pool/intern còn giữ lâu hơn), nên dùng {{char[]}} hay {{KeyStore}}; và chiều ngược lại, bất biến giúp gì cho an toàn khi dùng đường dẫn/URL/hostname đã kiểm tra (TOCTOU)?',
+  a: `**Tóm tắt:** String bất biến (immutable - không sửa được nội dung sau khi tạo) là con dao hai lưỡi với bảo mật. Mặt tốt: một chuỗi đã kiểm tra (đường dẫn, URL, hostname) không thể bị đổi giữa chừng, chặn tấn công TOCTOU. Mặt xấu: object String nằm trên heap cho tới khi GC, không có cách nào ghi đè (wipe) nội dung, nên mật khẩu/token để trong String có thể bị đọc từ heap dump; intern còn giữ chúng lâu hơn nữa. Vì vậy secret phải để trong {{char[]}} hoặc {{KeyStore}} và xoá bằng {{Arrays.fill}}.
+
+### Vì sao String bất biến
+- Lớp {{String}} là {{final}} và field {{private final byte[] value}} (từ Java 9, kèm {{byte coder}}); không có method nào sửa nội dung, các hàm như {{substring}}/{{replace}} đều trả về String MỚI.
+- Lợi ích: chia sẻ an toàn giữa nhiều luồng (thread-safe) mà không cần khoá; làm key {{HashMap}} an toàn vì {{hashCode}} không đổi; và tạo string pool (bảng các literal dùng chung) được.
+- Cái giá: muốn "đổi" một ký tự phải tạo object mới; muốn "xoá sạch" một chuỗi nhạy cảm thì không làm được, vì reference chỉ trỏ tới object bất biến.
+
+### Mặt bảo mật TỐT: chặn TOCTOU
+- TOCTOU (Time-Of-Check-To-Time-Of-Use) là lỗi: bạn kiểm tra một giá trị ở thời điểm A, dùng lại ở thời điểm B, nhưng giá trị đã bị đổi ở giữa.
+- Nếu đường dẫn/URL là {{String}} bất biến, một khi đã {{allowPath}} kiểm tra "không chứa ..", đoạn sau dùng lại chính object đó thì không thể bị kẻ khác sửa thành đường dẫn độc hại.
+- Tương tự hostname đã kiểm tra "không phải host nội bộ" (chống SSRF) sẽ không bị đổi; nếu dùng {{char[]}}/object mutable cho những giá trị này, bạn phải tự bảo vệ bằng defensive copy.
+
+### Mặt bảo mật XẤU: secret không xoá được
+- Heap là vùng nhớ chung; khi process còn sống, nội dung object String vẫn nằm đó cho tới khi GC thu hồi. Một heap dump (jmap, actuator /heapdump, crash dump) hay lỗi tràn bộ nhớ có thể để lộ mật khẩu dạng chữ rõ.
+- {{String}} không có method {{clear}}/{{wipe}}. Bạn không thể chủ động ghi số 0 lên mảng byte bên trong (field private, không có API).
+- {{intern()}} còn rủi ro hơn: chuỗi được đưa vào string pool (StringTable, nằm trên heap từ Java 7) và có thể sống lâu hơn object thường vì pool giữ strong reference; tuy pool vẫn bị GC khi không còn tham chiếu, nhưng thời gian sống kéo dài làm tăng cửa sổ lộ secret.
+- So sánh: {{char[]}} cho phép {{Arrays.fill(chars, '\0')}} sau khi dùng để ghi đè nội dung bằng null character; {{KeyStore}}/secret manager giữ khóa trong vùng nhớ được bảo vệ và không log ra.
+
+### Mã ví dụ (dưới 30 dòng)
+~~~java
+import java.util.Arrays;
+
+public class SecretDemo {
+    // Tốt: secret nằm trong char[], dùng xong xoá sạch
+    static boolean check(char[] password) {
+        boolean ok = password.length >= 8; // ví dụ kiểm tra
+        Arrays.fill(password, '\0');        // ghi đè bằng null character, xoá sạch trên heap
+        return ok;
+    }
+
+    public static void main(String[] args) {
+        char[] secret = "mat-khau-dai".toCharArray();
+        check(secret);
+        System.out.println("con lai: " + secret.length); // length không đổi, nội dung đã thành \0
+    }
+}
+~~~
+
+### Bảng: String vs char[] vs KeyStore cho secret
+| Tiêu chí | {{String}} | {{char[]}} | {{KeyStore}} / secret manager |
+|---|---|---|---|
+| Xoá chủ động khỏi RAM | Không | Có ({{Arrays.fill(chars, '\0')}}) | Có (quản lý vòng đời khóa) |
+| Rủi ro lộ qua heap dump | Cao | Thấp hơn | Thấp (vùng bảo vệ) |
+| Dễ log nhầm | Rất dễ (in thẳng) | Vẫn được, phải cẩn thận | Không cầm plaintext lâu |
+| Dùng cho | Dữ liệu không nhạy cảm | Mật khẩu nhập tay, tạm | Khóa API, khóa ký, secret hệ thống |
+
+### Ví dụ đời thực
+Một dịch vụ Java nhận request có header {{Authorization: Bearer ...}} và lưu token vào một field {{String}} để kiểm tra 3 lần trong luồng xử lý. Khi sự cố, team bật {{jmap -dump}} để phân tích OOM; file heap dump 2GB được copy sang máy phân tích và upload lên hệ thống ticket. Về sau phát hiện hàng nghìn token người dùng còn nằm dạng chữ rõ trong dump. Khắc phục: chuyển token sang {{char[]}}, dùng xong {{Arrays.fill}} ngay; cấm log header; với khóa dịch vụ dùng AWS Secrets Manager (chỉ lấy khi cần, cache ngắn hạn, không ghi đĩa). Rà soát: không còn secret dạng String sống lâu; policy chặn upload heap dump thô.
+
+### Trả lời mẫu khi phỏng vấn
+"String bất biến nên an toàn cho dữ liệu đã kiểm tra: đường dẫn hay URL sau khi validate không bị đổi giữa chừng, chặn TOCTOU, và chia sẻ đa luồng không cần khoá. Nhưng với secret thì bất biến là bất lợi: object String nằm trên heap tới khi GC, không có API ghi đè, nên heap dump có thể lộ mật khẩu; intern còn giữ lâu hơn. Vì vậy em không lưu mật khẩu/token bằng String mà dùng char[] rồi Arrays.fill để xoá, hoặc KeyStore/secret manager cho khóa hệ thống. Em cũng cấm log secret và kiểm soát heap dump. Nói ngắn gọn: bất biến tốt cho tính toàn vẹn dữ liệu, nhưng secret cần khả năng xoá chủ động nên phải dùng cấu trúc mutable có kiểm soát."
+
+> Senior tip: đừng chỉ dựa vào "GC sẽ dọn" — heap dump, core dump, hay swap ra đĩa đều có thể giữ plaintext. Với secret, nguyên tắc là tồn tại ngắn nhất có thể và xoá chủ động; với dữ liệu cần toàn vẹn (path, URL) thì bất biến là bạn.`,
+  follow: [
+    'TOCTOU là gì và String bất biến chặn nó bằng cách nào?',
+    'Vì sao intern() làm secret sống lâu hơn so với String thường?',
+    'Khi nào dùng KeyStore/AWS Secrets Manager thay cho char[]?'
+  ],
+  tags: ['String', 'immutable', 'security', 'char[]', 'intern', 'heap dump'],
+  refs: [
+    { type: 'doc', title: 'Java Security: Secure Coding Guidelines', url: 'https://www.oracle.com/java/technologies/javase/seccodeguide.html' }
+  ]
+},
+{
+  id: 'core-087',
+  topic: 'core',
+  level: 'senior',
+  q: 'Trong Spring, {{@Transactional}} mặc định chỉ rollback với unchecked exception, không rollback với checked. Vì sao, và ba lỗi production hay gặp: (1) bắt exception bên trong method {{@Transactional}} rồi không rethrow nên transaction vẫn commit; (2) method {{@Transactional}} lồng nhau ném ra làm ngoài bắt rồi commit, gây {{UnexpectedRollbackException}}; (3) checked exception không rollback. Cách dùng {{rollbackFor}}/{{noRollbackFor}}, wrap giữ cause, và chọn checked vs unchecked ở tầng service?',
+  a: `**Tóm tắt:** {{@Transactional}} mặc định coi unchecked ({{RuntimeException}}, {{Error}}) là lỗi hệ thống nên rollback, còn checked là "lỗi nghiệp vụ caller có thể xử lý" nên commit. Ba bẫy production: nuốt exception trong method transaction làm dữ liệu commit sai; transaction lồng nhau đánh dấu rollback-only rồi bị ngoài bắt sẽ ném {{UnexpectedRollbackException}} lúc commit; checked exception không rollback. Sửa bằng {{rollbackFor}}, không nuốt lỗi, và cân nhắc checked vs unchecked theo ngữ cảnh.
+
+### Vì sao mặc định như vậy
+- Quy ước của Spring: unchecked = lỗi ngoài tầm kiểm soát (DB chết, null, trạng thái hệ thống sai) -> không thể khôi phục, rollback. Checked = điều kiện nghiệp vụ caller có thể bắt và xử lý (ví dụ "số dư không đủ") -> mặc định commit để caller tự quyết.
+- Đây chỉ là MẶC ĐỊNH, không phải luật. Bạn đổi bằng {{rollbackFor = XxxException.class}} (rollback cả checked) hoặc {{noRollbackFor = XxxException.class}} (commit dù unchecked).
+- Rollback dựa trên việc exception có "vọt ra" khỏi method proxy hay không. Proxy chỉ thấy ngoại lệ nếu nó không bị bắt lại bên trong.
+
+### Lỗi 1: nuốt exception trong method transaction
+- Nếu bạn bắt exception trong method rồi chỉ log mà không rethrow, proxy thấy method return bình thường -> coi như thành công -> COMMIT.
+- Hậu quả: một phần thay đổi đã ghi DB nhưng nghiệp vụ coi là thất bại, dữ liệu mâu thuẫn (ví dụ trừ tiền mà không ghi lịch sử).
+- Cách sửa: không bắt rồi bỏ; muốn xử lý thì phải {{throw}} lại (giữ cause) hoặc đánh dấu rollback thủ công bằng {{TransactionAspectSupport.currentTransactionStatus().setRollbackOnly()}}.
+
+### Lỗi 2: transaction lồng nhau và UnexpectedRollbackException
+- Khi method A (transaction) gọi method B (cũng {{@Transactional}}, mặc định {{REQUIRED}} - join cùng transaction), nếu B ném exception, cả transaction bị đánh dấu {{rollback-only}}.
+- Nếu A bắt exception của B và tiếp tục rồi commit, lúc commit Spring thấy transaction đã bị đánh dấu rollback-only và ném {{UnexpectedRollbackException}} thay vì commit.
+- Cách sửa: hoặc để exception lan ra (đừng bắt), hoặc cho B chạy transaction riêng ({{REQUIRES_NEW}}) nếu B phải độc lập, và luôn giữ cause khi wrap.
+
+### Lỗi 3: checked exception không rollback
+- Nếu lỗi nghiệp vụ của bạn là checked ({{extends Exception}}) và không khai báo {{rollbackFor}}, transaction vẫn commit dù dữ liệu sai.
+- Cách sửa: khai báo {{rollbackFor}} tường minh, hoặc (khuyến nghị) dùng unchecked {{BusinessException}} có mã lỗi để mặc định rollback và chữ ký gọn.
+
+### Mã ví dụ (dưới 30 dòng)
+~~~java
+@Service
+public class ChuyenTienService {
+    private final TaiKhoanRepo repo;
+
+    // rollbackFor: rollback cả checked; dùng unchecked BusinessException để mặc định rollback
+    @Transactional(rollbackFor = Exception.class)
+    public void chuyen(String nguon, String dich, long tien) {
+        repo.tru(nguon, tien);          // nếu bước sau lỗi, bước này phải bị rollback
+        try {
+            repo.cong(dich, tien);
+        } catch (RuntimeException e) {
+            // KHÔNG nuốt: hoặc để lan, hoặc setRollbackOnly rồi throw
+            throw new ChuyenTienException("Cộng tiền thất bại cho " + dich, e); // giữ cause
+        }
+    }
+}
+~~~
+
+### Bảng: checked vs unchecked trong service
+| Khía cạnh | Checked ({{extends Exception}}) | Unchecked ({{extends RuntimeException}}) |
+|---|---|---|
+| Rollback mặc định | Không (phải rollbackFor) | Có |
+| Chữ ký method | Khai báo {{throws}}, lây lan | Gọn, dùng được trong lambda/stream |
+| Khi nào hợp | Lỗi caller buộc xử lý lại (hiếm ở service) | Lỗi nghiệp vụ phổ biến (không đủ tiền, hết hàng) |
+| Khuyến nghị | Hạn chế | Mặc định cho {{BusinessException}} |
+
+### Ví dụ đời thực
+Một service rút tiền dùng hai câu UPDATE (trừ tài khoản nguồn, cộng tài khoản đích) trong {{@Transactional}}. Một nhánh bắt {{DataAccessException}} rồi chỉ log để "thử lại sau", không rethrow. Kết quả: tiền bị trừ ở nguồn nhưng cộng đích thất bại, transaction vẫn commit -> mỗi đêm đối soát phát hiện vài chục giao dịch lệch, phải bù tay. Khắc phục: bỏ catch nuốt lỗi, khai báo {{rollbackFor = Exception.class}}, wrap giữ cause; với thao tác phải độc lập thì tách {{REQUIRES_NEW}}. Sau sửa, lệch đối soát về 0, và {{UnexpectedRollbackException}} do nuốt lỗi lồng nhau cũng biến mất.
+
+### Trả lời mẫu khi phỏng vấn
+"Spring mặc định rollback với unchecked và commit với checked, vì coi unchecked là lỗi hệ thống không khôi phục được, còn checked là điều caller xử lý. Em dùng unchecked BusinessException có mã lỗi cho phần lớn lỗi nghiệp vụ để mặc định rollback và chữ ký gọn; khi cần rollback cả checked thì khai báo rollbackFor tường minh. Ba bẫy em luôn rà: không bao giờ bắt exception trong method transaction mà không rethrow, vì proxy sẽ commit; cẩn thận transaction lồng nhau, nếu inner ném ra và outer bắt thì lúc commit gặp UnexpectedRollbackException, nên không nuốt hoặc dùng REQUIRES_NEW khi cần độc lập; và luôn wrap giữ cause thay vì ném RuntimeException(e.getMessage())."
+
+> Senior tip: rollback chỉ chạy nếu exception thoát khỏi method proxy; catch trong cùng method là "tự bắn chân". Khi cần rollback thủ công mà vẫn muốn đi tiếp, dùng setRollbackOnly() nhưng hiểu rằng commit sẽ ném UnexpectedRollbackException. Đo bằng test cố tình ném lỗi ở bước giữa để chắc dữ liệu không commit.`,
+  follow: [
+    'setRollbackOnly() khác gì rethrow, và vì sao vẫn gặp UnexpectedRollbackException?',
+    'REQUIRES_NEW giải quyết transaction lồng nhau thế nào, cái giá là gì?',
+    'Vì sao checked exception mặc định không rollback, và khi nào nên dùng rollbackFor?'
+  ],
+  tags: ['spring', '@Transactional', 'exception', 'rollback', 'checked', 'service'],
+  refs: [
+    { type: 'doc', title: 'Spring Framework: Transaction Management', url: 'https://docs.spring.io/spring-framework/reference/data-access/transaction.html' }
+  ]
+},
+{
+  id: 'core-088',
+  topic: 'core',
+  level: 'lead',
+  q: '(Lead) Thiết kế API generic cho một hệ thống thật ({{Result<T>}}, event bus, converter registry, generic repository): áp dụng PECS thế nào với {{? extends}}/{{? super}}, variance của functional interface ({{Function<? super T, ? extends R>}}, {{Consumer<? super T>}}, {{Supplier<? extends T>}}), wildcard capture helper, giới hạn do erasure (không {{new T[]}}, không {{instanceof List<String>}}), và vì sao {{List<Object>}}/{{List<?>}} làm mất type safety?',
+  a: `**Tóm tắt:** Khi thiết kế API generic, PECS (Producer Extends, Consumer Super) quyết định wildcard: tham số chỉ đọc dùng {{? extends T}}, chỉ ghi dùng {{? super T}}, đọc-ghi thì dùng {{T}} cụ thể. Functional interface cũng có variance: {{Supplier<? extends T>}} (producer), {{Consumer<? super T>}} (consumer), {{Function<? super T, ? extends R>}} (vào consumer, ra producer). Erasure giới hạn: không {{new T[]}}, không {{instanceof List<String>}}. {{List<Object>}}/{{List<?>}} phá type safety vì invariant và mất kiểu phần tử.
+
+### PECS trong API thật
+- Producer extends: nguồn dữ liệu chỉ đọc -> {{? extends T}}. Ví dụ {{Result<T>}} có method {{List<? extends T> items()}} để caller nhận {{List<MyDto>}}.
+- Consumer super: đích chỉ ghi -> {{? super T}}. Ví dụ {{void addAll(List<? super T> dst)}}.
+- Đọc-ghi: dùng {{T}} cụ thể, không wildcard (wildcard cả hai chiều là bất khả).
+- Áp dụng cho generic repository: {{saveAll(Iterable<? extends T>)}} (nhận con), {{mapIds(Function<? super T, ? extends Long>)}} (nhận cha, trả con).
+
+### Variance của functional interface
+- {{Supplier<? extends T>}}: producer giá trị -> extends.
+- {{Consumer<? super T>}}: tiêu thụ giá trị -> super (nhận được Consumer cha).
+- {{Function<? super T, ? extends R>}}: đầu vào consumer (super), đầu ra producer (extends). Đây là lý do {{Stream.map}} nhận {{Function<? super T, ? extends R>}}.
+- Hệ quả: một {{Consumer<Object>}} truyền được vào chỗ cần {{Consumer<String>}}; một {{List<Integer>}} truyền được vào chỗ cần {{List<? extends Number>}}.
+
+### Wildcard capture helper
+- Khi compiler thấy {{List<?>}}, nó không biết kiểu thật, nên {{list.add(x)}} bị cấm (trừ null). Nếu cần thao tác, viết helper generic để "bắt" wildcard:
+~~~java
+static void reverseAll(List<?> list) { reverseHelper(list); }
+private static <T> void reverseHelper(List<T> list) {
+    Collections.reverse(list); // T được suy ra, an toàn
+}
+~~~
+
+### Giới hạn do erasure
+- Generic bị xoá kiểu lúc compile, nên không {{new T[]}} (phải dùng {{Array.newInstance}} hoặc {{List}}), không {{instanceof List<String>}} (chỉ {{instanceof List<?>}}), không overload theo generic.
+- Không tạo được generic array an toàn -> đây là lý do heap pollution và {{@SafeVarargs}} tồn tại.
+
+### Mã ví dụ (dưới 30 dòng)
+~~~java
+import java.util.*;
+import java.util.function.*;
+
+class Result<T> {
+    private final List<T> items;
+    Result(List<T> items) { this.items = List.copyOf(items); }
+    List<? extends T> items() { return items; }              // producer: extends
+    <R> Result<R> map(Function<? super T, ? extends R> f) {  // consumer in, producer out
+        List<R> out = new ArrayList<>();
+        for (T t : items) out.add(f.apply(t));
+        return new Result<>(out);
+    }
+    void forEach(Consumer<? super T> action) { items.forEach(action); } // consumer: super
+}
+~~~
+
+### Bảng: chọn wildcard theo vai trò
+| Vai trò | Kiểu | Ví dụ JDK/Spring |
+|---|---|---|
+| Chỉ đọc (producer) | {{? extends T}} | {{CopyOnWriteArrayList}} ctor, {{Result.items}} |
+| Chỉ ghi (consumer) | {{? super T}} | {{Collections.copy}} dest, {{Consumer}} |
+| Đọc-ghi | {{T}} | {{List<T>}} thông thường |
+| Vào consumer, ra producer | {{Function<? super T, ? extends R>}} | {{Stream.map}} |
+
+### Ví dụ đời thực
+Một platform có event bus generic {{EventBus}} và nhiều handler. Bản đầu khai báo {{register(Consumer<T>)}} và {{Map<Class, Consumer<Object>>}}; kết quả là mọi handler phải cast thủ công và một handler {{Consumer<String>}} không đăng ký được cho {{Object}}, gây {{ClassCastException}} lúc chạy. Thiết kế lại theo PECS: {{register(Class<T>, Consumer<? super T>)}} (nhận consumer cha), {{publish(List<? extends E>)}} (nhận danh sách con), map nội bộ dùng wildcard capture helper. Sau sửa, thêm subtype event không phải sửa API, không còn cast, và type safety được compiler bảo đảm. Review cũng chặn {{List<Object>}} trong chữ ký public vì nó buộc caller copy sang List<Object> (invariant).
+
+### Trả lời mẫu khi phỏng vấn
+"Khi thiết kế API generic em theo PECS: tham số chỉ đọc dùng ? extends T, chỉ ghi dùng ? super T, đọc-ghi thì dùng T cụ thể. Functional interface cũng có variance: Supplier<? extends T> là producer, Consumer<? super T> là consumer, Function<? super T, ? extends R> nhận consumer ở đầu vào và producer ở đầu ra, đúng như Stream.map. Em tránh List<Object> và List<?> trong chữ ký public vì invariant làm mất type safety và wildcard làm mất kiểu phần tử; khi cần thao tác với ? em viết wildcard capture helper generic. Em nhớ giới hạn erasure: không new T[], không instanceof List<String>, nên em ưu tiên List và trả kiểu cụ thể. Kết quả là API vừa linh hoạt (nhận subtype) vừa an toàn, thêm subtype không phải sửa chữ ký."
+
+> Senior tip: wildcard đặt ở CHỮ KÝ method (parameter/return), không đặt ở field hay biến local - đó là chỗ PECS phát huy. Nếu một type param vừa cần đọc vừa cần ghi, đừng cố wildcard, dùng T. Và đừng biến API thành "nhận Object cho linh hoạt": caller sẽ phải copy và mất hết type safety.`,
+  follow: [
+    'Vì sao List<Object> trong chữ ký public là anti-pattern, khác gì List<? extends T>?',
+    'Wildcard capture helper hoạt động thế nào khi compiler gặp List<?>?',
+    'Erasure cấm new T[] và instanceof List<String> — làm việc với chúng ra sao?'
+  ],
+  tags: ['generics', 'PECS', 'wildcard', 'lead', 'design', 'erasure'],
+  refs: [
+    { type: 'doc', title: 'Oracle Generics: Wildcards and PECS', url: 'https://docs.oracle.com/javase/tutorial/java/generics/wildcards.html' }
+  ]
 }
 );
 
