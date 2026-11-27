@@ -8686,5 +8686,56 @@ Index chỉ chứa 182k dòng (1%), nhẹ, query {{WHERE event_type = 'EXCEPTION
   ],
   tags: ['postgresql', 'index', 'bitmap-or', 'or-condition', 'seq-scan', 'random-io', 'union-all', 'partial-index'],
 },
+{id:'lab-sql-058',category:'sql',title:'Index trên phone không dùng vì tham số numeric ép kiểu ngầm',level:'senior',scenario:`**Bối cảnh.** Service xác thực OTP cho app ngân hàng **PayVault** (Spring Boot 3.3, PostgreSQL 15.6 trên RDS). Bảng {{user_account}} có 6.800.000 dòng, index B-tree trên {{phone}} kiểu {{varchar(20)}}. Endpoint {{POST /api/v1/auth/otp}} nhận OTP theo số điện thoại; JDBC driver nhận tham số là {{Long}} (số điện thoại parse thành số) và query {{WHERE phone = ?}}. Latency từ 12 ms lên 2,8 s trong giờ cao điểm, CPU RDS 95%.`,artifacts:[{name:'explain-1.txt',lang:'text',content:`EXPLAIN (ANALYZE, BUFFERS): SELECT id, status FROM user_account WHERE phone = 84901234567;
+Seq Scan on user_account (actual time=0.03..2814.6 rows=1 loops=1)
+Rows Removed by Filter: 6799999
+shared hit=12400 read=55200
+Planning Time=0.3 ms
+Execution Time=2815.0 ms
+Index: CREATE INDEX user_account_phone_idx ON user_account(phone);
+phone column type: character varying(20)
+Parameter type inferred by JDBC: bigint`},{name:'explain-2.txt',lang:'text',content:`EXPLAIN (ANALYZE, BUFFERS): SELECT id, status FROM user_account WHERE phone = '84901234567';
+Index Scan using user_account_phone_idx on user_account (actual time=0.05..0.09 rows=1 loops=1)
+Index Cond: ((phone)::text = '84901234567'::text)
+shared hit=4 read=0
+Planning Time=0.2 ms
+Execution Time=0.12 ms
+Rows: 1`}],questions:['Vì sao index không dùng ở explain-1 và vì sao PostgreSQL lại cho phép so sánh varchar với bigint?','Sửa ở tầng ứng dụng/JDBC như thế nào và kiểm tra lại bằng EXPLAIN ANALYZE?'],hints:['PostgreSQL ép kiểu ngầm theo assignment coercion: varchar -> numeric/bigint nếu cột là text và tham số là số.','Predicate thực thi là {{phone::numeric = $1}} (hoặc bigint), biến đổi cột nên index B-tree trên varchar không khớp.','Bind tham số đúng kiểu text/varchar, đừng parse số điện thoại thành Long.'],answer:`**Tóm tắt:** JDBC bind tham số {{Long}} làm PostgreSQL ngầm ép cột {{phone}} (varchar) thành số để so sánh, predicate thực thi {{phone::numeric = $1}} biến đổi cột nên B-tree trên varchar không khớp → Seq Scan 6,8 triệu dòng, 2,8 s. Bind đúng {{String}} giữ predicate sargable và Index Scan 0,12 ms.
+### Bằng chứng
+explain-1: Seq Scan, Rows Removed by Filter 6.799.999, read 55.200 buffer, Execution Time 2.815 ms. explain-2 với tham số chuỗi: Index Scan, shared hit 4, 0,12 ms.
+### Vì sao PostgreSQL cho phép
+PostgreSQL có implicit cast từ varchar sang numeric/bigint trong ngữ cảnh so sánh (assignment coercion). Khi một vế là text và vế kia là số, planner chèn cast lên cột để types khớp, làm predicate không còn "cột = hằng số" nữa. Index B-tree lưu key theo kiểu varchar; biểu thức {{phone::numeric}} là biểu thức khác, nên planner không dùng index.
+### Khắc phục
+- Ở ứng dụng: giữ phone là String, không parse thành Long/BigInteger; bind JDBC với {{setString}} hoặc JPA {{@Param}} kiểu String.
+- Kiểm tra {{pg_stat_statements}} và EXPLAIN ANALYZE để thấy kiểu tham số; nếu driver suy luận sai, ép kiểu rõ ràng trong SQL: {{WHERE phone = CAST(? AS varchar)}} hoặc {{WHERE phone = ?::text}}.
+- Thêm constraint/check để phone luôn là chuỗi chữ số; cân nhắc domain type.
+- Nếu cần tìm theo số đã chuẩn hóa (bỏ dấu +, khoảng trắng), tạo expression index đúng biểu thức và query đúng biểu thức đó (như lab-sql-006).
+### Phòng ngừa
+- Code review: cột text không được so sánh với tham số số; test integration với EXPLAIN.
+- Monitoring: alert query có Seq Scan trên bảng > 1M dòng và Execution Time > 1 s; theo dõi {{shared read}}.
+- Tránh implicit cast ở mọi predicate (date, uuid, numeric) để giữ index.
+> Senior tip: Bug này thường xuất hiện khi refactor "phone parse thành Long cho tiện validate". Index có sẵn nhưng predicate đã đổi kiểu; luôn kiểm tra kiểu bind, không chỉ tên cột.`,rubric:['Nhận đúng implicit cast varchar->numeric làm mất index','Dẫn chứng explain-1 Seq Scan vs explain-2 Index Scan','Đề xuất bind tham số đúng kiểu text/String','Nêu kiểm tra pg_stat_statements/EXPLAIN và cast rõ ràng','Có monitoring/phòng ngừa implicit cast'],tags:['postgresql','index','implicit-cast','jdbc','sargable']},
+{id:'lab-sql-059',category:'sql',title:'Deadlock giữa 2 transaction cập nhật số dư theo thứ tự khác nhau',level:'senior',scenario:`**Bối cảnh.** Service ví điện tử **WalletX** (Spring Boot 3.3, PostgreSQL 15.6 trên RDS) xử lý chuyển tiền giữa 2 ví. Hai request đồng thời: T1 chuyển 500k từ ví 101 sang 202 (khóa 101 rồi 202); T2 chuyển 300k từ ví 202 sang 101 (khóa 202 rồi 101). Một transaction bị PostgreSQL hủy với SQLSTATE 40P01, số dư có thể lệch nếu ứng dụng không retry đúng.`,artifacts:[{name:'postgresql-2026-11-03.log',lang:'text',content:`2026-11-03 14:22:18.112 +07 [22104] ERROR: deadlock detected
+2026-11-03 14:22:18.112 +07 [22104] DETAIL: Process 22104 waits for ShareLock on transaction 104857; blocked by process 22119.
+Process 22119 waits for ShareLock on transaction 104858; blocked by process 22104.
+Process 22104: UPDATE wallet SET balance = balance - 500000 WHERE id = 202
+Process 22119: UPDATE wallet SET balance = balance - 300000 WHERE id = 101
+2026-11-03 14:22:18.112 +07 [22104] HINT: See server log for query details.
+T1 pid=22104: first UPDATE wallet id=101 then id=202; T2 pid=22119: first UPDATE wallet id=202 then id=101; deadlock_timeout=1s.`},{name:'wallet-tx.log',lang:'text',content:`2026-11-03 14:22:18.115 +07 tx=TX-9001 status=ABORTED reason=deadlock sqlstate=40P01
+2026-11-03 14:22:18.116 +07 tx=TX-9002 status=COMMITTED balance_101=... balance_202=...
+retry policy: max 3, backoff 50/100/200ms with jitter; only retry on SQLSTATE 40P01/40001
+idempotency key: transfer_id UUID stored in wallet_transfer ledger (unique)`}],questions:['Dựng wait-for cycle từ log và giải thích vì sao deadlock detector chọn victim.','Sửa thứ tự khóa và retry/idempotency như thế nào để không mất tiền?'],hints:['T1 giữ 101 chờ 202, T2 giữ 202 chờ 101.','PostgreSQL chọn victim sau deadlock_timeout; transaction bị hủy phải retry toàn bộ, không retry từng câu.','Idempotency key đảm bảo retry không trừ tiền hai lần.'],answer:`**Tóm tắt:** T1 giữ khóa ví 101 chờ 202, T2 giữ 202 chờ 101 tạo chu trình deadlock; PostgreSQL phát hiện sau 1 s và hủy một transaction (SQLSTATE 40P01). Sửa bằng khóa theo thứ tự id tăng dần cho mọi chuyển tiền + retry toàn transaction có idempotency key.
+### Bằng chứng
+Log: pid 22104 chờ transaction 104857 của 22119; pid 22119 chờ 104858 của 22104; câu UPDATE ngược chiều (22104 update 202, 22119 update 101). wallet-tx.log: TX-9001 ABORTED 40P01, retry policy max 3 với backoff, idempotency key transfer_id.
+### Khắc phục
+- Mọi luồng cập nhật nhiều ví khóa theo thứ tự id tăng dần trong cùng transaction: {{SELECT ... FROM wallet WHERE id IN (...) ORDER BY id FOR UPDATE}}.
+- Bắt SQLSTATE 40P01/40001 và retry toàn transaction (không retry từng câu giữa transaction đã aborted) với backoff + jitter, giới hạn số lần.
+- Idempotency: lưu transfer_id (UUID) trong bảng wallet_transfer với unique constraint; retry kiểm tra đã tồn tại thì trả kết quả cũ, tránh trừ tiền hai lần.
+- Giữ transaction ngắn, index id, theo dõi deadlock rate và lock wait time.
+### Phòng ngừa
+- Kiểm thử tải đồng thời hai chiều chuyển tiền; chaos test retry.
+- Monitoring: alert deadlock count > ngưỡng, lock wait > 200 ms; log idempotency duplicate.
+- Không trộn thứ tự khóa giữa các code path (ví dụ batch job khóa theo created_at khác với API khóa theo id).
+> Senior tip: Deadlock không phải lỗi dữ liệu mà là lỗi thứ tự tài nguyên; idempotency + retry toàn transaction là bắt buộc cho ví tiền, không chỉ "thử lại câu UPDATE".`,rubric:['Dựng đúng chu trình 22104↔22119 theo transaction IDs','Nêu deadlock detector hủy transaction 40P01','Đề xuất khóa theo thứ tự id tăng dần','Retry toàn transaction + idempotency key','Có monitoring/phòng ngừa'],tags:['postgresql','deadlock','locking','wallet','idempotency']},
 );
 
