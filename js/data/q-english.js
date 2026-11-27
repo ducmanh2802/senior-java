@@ -13170,5 +13170,147 @@ The result was p99 dropping from two point five seconds to about three hundred m
   ],
   tags: ['n+1', 'jpa', 'hibernate', 'performance', 'leadership'],
   lang: 'en'
+},
+{
+  id: 'english-255',
+  topic: 'english',
+  level: 'senior',
+  q: 'Explain how Java HashMap works internally, focusing on what happens when two keys have the same hashCode. How does Java 8+ handle collisions, and what does that mean for worst-case performance?',
+  a: `**Tóm tắt:** HashMap lưu entry trong mảng bucket; hash(key) trỏ tới bucket, entry nối thành linked list khi collision, và khi một bucket vượt 8 phần tử list chuyển thành red-black tree (Java 8+), nên worst-case từ O(n) xuống O(log n) cho một bucket.
+
+### Cơ chế bên trong
+1. **Hash**: {{hashCode()}} của key được trộn thêm {{(h >>> 16) ^ h}} để phân tán bit cao xuống thấp, tránh mất thông tin khi mảng bucket nhỏ.
+2. **Index**: {{(n-1) & hash}} chọn bucket trong mảng độ dài lũy thừa của 2.
+3. **Collision**: hai key khác nhau có thể cùng bucket; Java lưu chúng thành linked list theo thứ tự chèn.
+4. **Treeify**: khi một bucket có ≥ 8 node và bảng ≥ 64, list chuyển thành red-black tree; khi size giảm còn ≤ 6, tree quay lại list.
+5. **Resize**: khi load factor (mặc định 0.75) vượt ngưỡng, mảng nhân đôi và rehash.
+
+### Vì sao cần treeify
+Trước Java 8, collision nặng gây O(n) lookup và là vector tấn công HashDoS. Treeify giới hạn worst-case O(log n) mỗi bucket.
+
+### Code minh hoạ
+~~~java
+Map<String,Integer> m = new HashMap<>(16, 0.75f);
+m.put("a", 1); m.put("b", 2);   // hash khác bucket khác
+// key có hashCode trùng nhưng equals khác -> collision -> list/tree
+~~~
+
+### Khi nào dùng / không dùng
+- HashMap: lookup O(1) trung bình, không thread-safe.
+- ConcurrentHashMap: nhiều thread.
+- TreeMap: cần thứ tự.
+
+### Pitfall production
+- Key mutable (đổi field dùng trong hashCode/equals sau khi put) -> mất entry.
+- hashCode kém (ví dụ chỉ trả constant) -> mọi key cùng bucket -> O(n)/O(log n) lookup, CPU cao.
+- Capacity quá nhỏ với load factor cao -> resize thường xuyên.
+
+### Ví dụ đời thực
+Service cache 2 triệu session id trong HashMap; một thư viện trả hashCode constant cho key -> CPU 90%, p99 latency 800ms. Đổi key sang immutable record với hashCode chuẩn -> p99 12ms.
+
+### Trả lời mẫu khi phỏng vấn
+HashMap stores entries in an array of buckets. It computes a hash from the key's hashCode, mixes high bits into low bits, then indexes with (n-1) and hash. When two different keys land in the same bucket, Java chains them in a linked list. Since Java 8, if a bucket grows to 8 nodes and the table is at least 64, the list becomes a red-black tree, so worst-case per bucket is O(log n) instead of O(n). When load factor 0.75 is exceeded, the table doubles and entries are rehashed. The average lookup stays O(1) because buckets stay short. I always make keys immutable and implement hashCode and equals consistently; a bad hashCode like a constant turns every lookup into a tree traversal and burns CPU.
+
+> Senior tip: In interviews, mention the treeify threshold (8) and untreeify (6), plus the 64 minimum table size — that shows you read the source, not just the docs.
+`,
+  follow: ['What breaks if a key hashCode changes after it is inserted?', 'When would you use ConcurrentHashMap instead of HashMap?', 'How would you size a HashMap for 1 million entries?'],
+  tags: ['hashmap', 'collections', 'performance'],
+  lang: 'en'
+},
+{
+  id: 'english-256',
+  topic: 'english',
+  level: 'senior',
+  q: 'Describe your current system architecture in two minutes to a backend engineer who is new to your team. What components exist, how do they talk, and where are the risky parts?',
+  a: `**Tóm tắt:** Mô tả theo lớp: client -> API gateway -> services -> data stores, nêu protocol, ownership, SLA và điểm rủi ro (single points of failure, coupling, data consistency) trong 2 phút.
+
+### Cách cấu trúc câu trả lời
+1. **Bối cảnh**: sản phẩm, traffic, team.
+2. **Lớp ngoài**: mobile/web -> CDN -> API gateway (auth, rate limit).
+3. **Services**: domain services, sync REST vs async Kafka.
+4. **Data**: PostgreSQL per service, Redis cache, S3.
+5. **Observability**: logs/metrics/traces.
+6. **Rủi ro**: shared DB, synchronous chain, missing idempotency.
+
+### Vì sao cần nói rủi ro
+Interviewer senior muốn biết bạn biết hệ thống không hoàn hảo. Nêu 2-3 rủi ro và kế hoạch giảm thiểu.
+
+### Ví dụ đời thực
+"Payment service calls Order service synchronously; if Order is slow, payment times out. We added circuit breaker and async fallback queue; p99 improved from 1.2s to 200ms."
+
+### Trả lời mẫu khi phỏng vấn
+Our system serves about fifty thousand daily active users. Clients hit a CDN for static assets, then an API gateway that handles auth and rate limiting. Behind it, three Spring Boot services own their domains: user, order, payment. User and order talk over REST for reads; order emits Kafka events that payment consumes to create invoices, so the write path is asynchronous and decoupled. Each service has its own PostgreSQL database; Redis caches hot product data for five minutes. We run on Kubernetes with HPA and ship via GitOps. Observability is Prometheus, Grafana, and distributed tracing with OpenTelemetry. Two risks I would name: payment synchronously calls order for validation, so an order slowdown cascades; and our idempotency keys are not yet on every endpoint. I would fix the first with a circuit breaker and a fallback queue, and the second with a shared idempotency filter.
+
+> Senior tip: Always include numbers (users, RPS, latency) and name one thing you would change — interviewers reward self-awareness over perfection.
+`,
+  follow: ['Which part of that architecture would you change first and why?', 'How do services discover each other?', 'What is your deployment strategy?'],
+  tags: ['architecture', 'system-design', 'communication'],
+  lang: 'en'
+},
+{
+  id: 'english-257',
+  topic: 'english',
+  level: 'lead',
+  q: 'A deployment you just released broke production. Walk me through how you decide between rolling back immediately and hot-fixing forward, and what you communicate to stakeholders.',
+  a: `**Tóm tắt:** Quyết định theo blast radius và thời gian rollback: nếu rollback < 5 phút và an toàn, rollback; nếu migration đã chạy hoặc data đã thay đổi, hot-fix forward với feature flag; luôn giao tiếp theo timeline và owner rõ ràng.
+
+### Decision tree
+- **Rollback** khi: code-only change, DB migration backward-compatible, rollback time < 5 phút, blast radius lớn.
+- **Hot-fix forward** khi: migration không thể revert, data đã thay đổi, rollback rủi ro hơn, fix nhỏ và test được nhanh.
+- **Feature flag off** khi: change được guard bằng flag -> tắt flag, không cần redeploy.
+
+### Vì sao không mặc định rollback
+Rollback migration có thể mất data hoặc lock table; đôi khi forward fix an toàn hơn. Cần đánh giá theo từng case.
+
+### Communication
+- T+0: declare incident, assign IC, notify stakeholders.
+- T+5: trạng thái + ETA.
+- T+15: root cause preliminary + action.
+- Sau: RCA trong 48h.
+
+### Ví dụ đời thực
+Deploy v2.4.1 gây 5% requests 500 do null pointer trong path mới. Rollback về v2.4.0 trong 3 phút; traffic recover. RCA: test thiếu null case; thêm test và contract test.
+
+### Trả lời mẫu khi phỏng vấn
+If a deployment breaks production, my first question is blast radius: how many users and which flow. If rollback is under five minutes and the database migration is backward compatible, I roll back immediately to restore service, because user impact dominates. If a migration has already run and cannot be reverted safely, or data has changed, I prefer a forward hot-fix guarded by a feature flag, because rolling back could lose data or lock tables. I also check whether a feature flag can disable just the new code without redeploying. Communication is structured: at minute zero I declare the incident, name an incident commander, and notify stakeholders with impact and ETA; at minute five I give status; at minute fifteen I share a preliminary root cause and next action; within forty-eight hours I deliver a blameless RCA with action items. In a recent case, a null pointer in a new code path caused five percent of requests to fail; we rolled back in three minutes and added a regression test plus a contract test.
+
+> Senior tip: Practice saying "I would roll back first, then investigate" — it signals customer-first thinking, which interviewers weight heavily.
+`,
+  follow: ['How do you make a deployment reversible?', 'What is your rollback SLA?', 'How do you run a blameless postmortem?'],
+  tags: ['deployment', 'incident', 'leadership'],
+  lang: 'en'
+},
+{
+  id: 'english-258',
+  topic: 'english',
+  level: 'senior',
+  q: 'Tell me about a time you improved the performance of a slow system. What was slow, what did you measure, what did you change, and what was the result?',
+  a: `**Tóm tắt:** Trả lời theo STAR: tình huống + số liệu trước, cách đo (profiling, APM), thay đổi cụ thể (index, cache, N+1, GC), kết quả đo được; nhấn mạnh bạn đo trước và sau.
+
+### Cấu trúc STAR
+- **Situation**: endpoint p99 2.4s, DB CPU 85%.
+- **Task**: giảm p99 dưới 300ms.
+- **Action**: EXPLAIN ANALYZE, thêm index, fix N+1, cache hot data.
+- **Result**: p99 180ms, DB CPU 30%, error rate 0.
+
+### Vì sao phải đo trước
+Không đo thì không biết bottleneck; tối ưu sai chỗ lãng phí thời gian và có thể làm chậm hơn.
+
+### Pitfall production
+- Thêm index mà không kiểm tra write overhead.
+- Cache mà không invalidation -> stale data.
+- Micro-optimization trước khi fix N+1.
+
+### Ví dụ đời thực
+Order list endpoint: 1 query chính + N query item. Hibernate show_sql log 101 queries/request. Dùng @EntityGraph -> 2 queries; p99 từ 1.8s xuống 120ms.
+
+### Trả lời mẫu khi phỏng vấn
+In one project, the order history page had a p99 latency of two point four seconds and database CPU at eighty-five percent. I started with measurement: I enabled Hibernate SQL logging and used EXPLAIN ANALYZE on the slowest query. I found an N plus one: one query for orders plus one per order for items, so a page of one hundred orders ran one hundred and one queries. I replaced it with an entity graph that fetches orders and items in two queries, and added a composite index on orders(user_id, created_at) for the filter and sort. I also cached the product catalog in Redis with a five-minute TTL because it changed rarely. After deploying, p99 dropped to one hundred and eighty milliseconds, database CPU fell to thirty percent, and the error rate went to zero. The key lesson I took is to measure first: without the query count I would have guessed wrong and tuned the wrong layer.
+
+> Senior tip: Always quote before/after numbers in interviews; "it got faster" is forgettable, "p99 2.4s -> 180ms" is memorable.
+`,
+  follow: ['How do you find the bottleneck before optimizing?', 'What is the risk of adding too many indexes?', 'How do you validate a performance fix in production?'],
+  tags: ['performance', 'database', 'star'],
+  lang: 'en'
 }
 );
