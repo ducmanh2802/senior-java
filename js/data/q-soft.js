@@ -10976,128 +10976,530 @@ Làm lead, tôi xây dựng hệ thống loại flaky test: automated detection 
   topic: 'testing',
   level: 'senior',
   q: 'Testcontainers khởi động container mỗi test class làm CI chậm. Cách tái sử dụng container giữa các module và giữa các lần chạy local thế nào, và rủi ro là gì?',
-  a: `**Tóm tắt:** Dùng **singleton container** (một static instance dùng chung) và **reuse** (giữ container sống giữa các lần chạy) để giảm thời gian khởi động. Rủi ro: state bẩn giữa test và rò rỉ container nếu không dọn đúng.
+  a: `**Tóm tắt:** Testcontainers (thư viện khởi tạo container Docker thật từ trong test Java) bật một PostgreSQL/Kafka thật nên mỗi lần tạo tốn 5–20 giây. Để CI không đội giờ, dùng **singleton container** (một instance static dùng chung cho cả suite) và **reuse** (giữ container sống qua nhiều lần chạy local). Cái giá phải trả là **state bẩn** (dữ liệu test trước rò sang test sau) và **rò rỉ container** — nên reuse chỉ bật ở local, còn CI luôn tắt để môi trường sạch.
 
-### Singleton container
-- Khai báo {{static PostgreSQLContainer}} và khởi tạo một lần cho toàn suite, các test class dùng chung.
-- Spring Boot 3.1+ {{@ServiceConnection}} tự nối datasource.
+### Container khởi động tốn gì — vì sao chậm
+- Lần đầu phải **kéo image** (tải file Docker image về, ví dụ postgres:16-alpine ~80MB), sau đó tạo network ảo, chạy process, chờ cổng mở.
+- PostgreSQL sẵn sàng sau ~5–10 giây; Kafka KRaft ~10–20 giây vì phải bầu controller (chọn node điều phối).
+- Nếu **mỗi test class** khai báo @Container riêng thì N class nhân 10 giây: suite 400 test dễ mất khoảng 67 phút chỉ để chờ container, chưa tính chạy test.
 
-### Reuse
-- Bật {{testcontainers.reuse.enable=true}} trong ~/.testcontainers.properties ở máy dev.
-- Container sống qua nhiều lần chạy test, tiết kiệm 3-5 giây/lần.
+### Singleton container — một instance dùng chung
+- Khai báo container là {{static}} trong một base class, khởi động đúng một lần khi class được nạp; mọi test class kế thừa dùng lại.
+- Spring Boot 3.1+ còn có {{@ServiceConnection}} tự nối datasource, gọn hơn {{@DynamicPropertySource}} thủ công.
 
-### Rủi ro
-- State bẩn: dữ liệu test trước ảnh hưởng test sau. Khắc phục bằng {{@Transactional}} rollback hoặc {{@Sql}} cleanup.
-- Container không dừng khi test fail ⇒ rò rỉ. Testcontainers dùng Ryuk để dọn, nhưng nếu tắt Ryuk phải dọn tay.
-- Trên CI không nên bật reuse để môi trường sạch.
+~~~java
+// Base class: container sống suốt cả suite, không tạo lại mỗi test
+abstract class AbstractIntegrationTest {
+    static final PostgreSQLContainer<?> PG =
+        new PostgreSQLContainer<>("postgres:16-alpine")
+            .withReuse(true);          // local: cho phép tái dùng giữa các lần chạy
+    static { PG.start(); }             // chỉ chạy 1 lần khi class được nạp
+
+    @DynamicPropertySource             // nối datasource của app vào container
+    static void props(DynamicPropertyRegistry r) {
+        r.add("spring.datasource.url", PG::getJdbcUrl);
+        r.add("spring.datasource.username", PG::getUsername);
+        r.add("spring.datasource.password", PG::getPassword);
+    }
+}
+~~~
+
+### Reuse — giữ container sống giữa các lần chạy
+- Tạo file ~/.testcontainers.properties với dòng {{testcontainers.reuse.enable=true}} (chỉ trên máy dev).
+- Khi đó container không bị xoá sau khi test kết thúc; lần chạy sau Testcontainers thấy container còn sống thì dùng lại, tiết kiệm 3–8 giây mỗi lần.
+- Container reuse được đặt tên cố định ({{reuse-hash}}) để lần sau tìm lại đúng nó.
+
+### Rủi ro và cách phòng
+| Rủi ro | Vì sao xảy ra | Cách phòng |
+|---|---|---|
+| State bẩn | Dữ liệu test trước còn lại, test sau đọc nhầm | {{@Transactional}} rollback, hoặc {{@Sql}} cleanup sau mỗi test |
+| Rò rỉ container | Test fail giữa chừng, container không được dọn | Giữ Ryuk (trình dọn container tự động của Testcontainers) bật; không tắt tuỳ tiện |
+| CI không sạch | Reuse để lại topic/offset/bảng cũ | Trên CI luôn {{.withReuse(false)}} và dùng image tag cố định |
+| Trôi version | Container reuse dùng image cũ, khác CI | Ghim tag image rõ ràng, không dùng latest |
+
+### Bẫy hay gặp
+- **Reuse trên CI**: container cũ còn dữ liệu ⇒ test pass giả (xanh không thật). Đây là lỗi nguy hiểm nhất vì nó che bug.
+- **Tắt Ryuk** ({{TESTCONTAINERS_RYUK_DISABLED=true}}) để chạy trong môi trường đặc biệt: container không được dọn, máy đầy disk sau vài trăm lần chạy.
+- **Singleton + @SpringBootTest**: nếu một test gọi {{@DirtiesContext}} thì context bị nạp lại, mất luôn lợi ích singleton — cân nhắc bỏ @DirtiesContext.
 
 ### Ví dụ đời thực
-Team 12 dev, 400 integration test dùng Testcontainers. Trước: mỗi class khởi động container riêng, CI 22 phút. Sau: singleton container + reuse local, CI 9 phút. Flaky do state bẩn giảm bằng rollback.
+Team 12 dev, 400 integration test dùng Testcontainers. Triệu chứng: CI 22 phút, dev chạy local 3 phút mỗi lần. Điều tra: mỗi test class khai @Container riêng nên container PostgreSQL khởi động lại ~50 lần. Xử lý: (1) gom về singleton container trong base class, (2) bật reuse ở local, (3) thêm @Sql cleanup cho 3 test ghi nhiều dữ liệu. Kết quả: CI còn 9 phút, local còn 40 giây; flaky do state bẩn giảm từ 6% xuống 0.5% sau khi cleanup.
 
 ### Trả lời mẫu khi phỏng vấn
-Tôi dùng singleton container và reuse để giảm thời gian khởi động, nhưng luôn rollback transaction hoặc cleanup dữ liệu để tránh state bẩn. Trên CI tôi để môi trường sạch, không bật reuse.
+Tôi dùng singleton container static dùng chung cả suite để container chỉ khởi động một lần, kết hợp @ServiceConnection cho gọn. Ở local tôi bật reuse để container sống qua nhiều lần chạy, tiết kiệm vài giây mỗi lần. Nhưng tôi luôn tắt reuse trên CI vì container cũ để lại dữ liệu làm test pass giả. State bẩn tôi xử lý bằng @Transactional rollback hoặc @Sql cleanup, còn rò rỉ container thì dựa vào Ryuk. Ví dụ: 400 test, CI từ 22 xuống 9 phút, flaky 6% xuống 0.5%. Nguyên tắc: tối ưu tốc độ không được đánh đổi bằng độ tin cậy.
 
-> Senior tip: Đo thời gian khởi động container trước khi tối ưu; thường singleton + reuse giảm 60-70% thời gian CI.
+> Senior tip: Trước khi tối ưu, hãy **đo** thời gian khởi động container (log Testcontainers in ra). Singleton + reuse thường cắt 60–70% thời gian, nhưng reuse trên CI là bẫy chết người — giữ nó cho local.
 `,
   follow: [
-    'Bạn xử lý state bẩn giữa test như thế nào?',
-    'Khi nào không nên dùng reuse?',
-    'Bạn giám sát rò rỉ container thế nào?',
+    'Bạn xử lý state bẩn giữa các test dùng chung singleton container thế nào cho chắc?',
+    'Khi nào KHÔNG nên dùng reuse container, dù ở local?',
+    'Bạn giám sát và dọn container rò rỉ (leak) ra sao?',
   ],
-  tags: ['Testcontainers', 'reuse', 'singleton', 'CI', 'performance'],
+  tags: ['Testcontainers', 'reuse', 'singleton', 'CI', 'performance', 'Ryuk'],
 },
 {
   id: 'testing-082',
   topic: 'testing',
   level: 'senior',
-  q: '@DataJpaTest có rollback transaction mặc định, nhưng đôi khi test vẫn thấy dữ liệu cũ. Vì sao và cách xử lý?',
-  a: `**Tóm tắt:** @DataJpaTest rollback sau mỗi test, nhưng dữ liệu có thể còn do flush timing, @Sql, hoặc test dùng cùng transaction. Xử lý bằng cleanup rõ ràng và kiểm soát transaction.
+  q: '@DataJpaTest rollback transaction mặc định, nhưng đôi khi test vẫn "thấy dữ liệu cũ" hoặc dữ liệu lọt ra ngoài. Vì sao (REQUIRES_NEW, @Sql, flush timing), và ranh giới slice test so với @SpringBootTest nằm ở đâu?',
+  a: `**Tóm tắt:** @DataJpaTest (slice test chỉ nạp tầng JPA) bọc mỗi test trong một transaction và rollback ở cuối, nên đáng lẽ test độc lập. Nhưng dữ liệu vẫn lọt khi code gọi @Transactional(REQUIRES_NEW) (transaction mới commit riêng), khi @Sql bị cấu hình chạy tách biệt ngoài transaction test, hoặc do flush timing (truy vấn chưa thấy dữ liệu vừa lưu). Đây cũng là lúc thấy rõ slice test nhanh nhưng không mô phỏng hết hành vi transaction thật của @SpringBootTest.
 
-### Cơ chế
-- @DataJpaTest bọc mỗi test trong transaction và rollback ở cuối.
-- Nếu test gọi code @Transactional(REQUIRES_NEW), transaction đó commit riêng và không rollback.
-- @Sql(executionPhase=AFTER_TEST_METHOD) chạy cleanup.
+### @DataJpaTest làm gì bên trong
+- Chỉ nạp JPA, datasource, EntityManager — không nạp web, service, security ⇒ chạy 1–3 giây thay vì 10–20 giây.
+- Mặc định {{@AutoConfigureTestDatabase}} thay datasource cấu hình bằng database nhúng; muốn dùng PostgreSQL thật thì kết hợp Testcontainers hoặc {{replace=NONE}}.
+- Mỗi @Test chạy trong một transaction và **rollback** khi kết thúc ⇒ test không để lại rác.
 
-### Pitfall
-- Test phụ thuộc thứ tự chạy do shared data.
-- Flush chưa xảy ra, query không thấy dữ liệu.
+### Vì sao vẫn thấy dữ liệu cũ hoặc dữ liệu lọt
+1. **REQUIRES_NEW**: code gọi phương thức @Transactional(propagation = REQUIRES_NEW) mở transaction con, commit độc lập. Transaction cha rollback không đụng tới nó ⇒ dữ liệu con vẫn nằm lại DB.
+2. **@Sql**: Mặc định @Sql chạy trong transaction của test và **bị rollback** theo khi test kết thúc, nên không tự rò dữ liệu. Chỉ rò nếu bạn cấu hình @Sql chạy tách biệt (transactionMode) hoặc dùng datasource nằm ngoài transaction test.
+3. **Flush timing**: Hibernate lưu entity vào **first-level cache** (bộ đệm trong session) nhưng chưa đẩy xuống DB; nếu test truy vấn bằng EntityManager khác hoặc native query chưa flush, kết quả "trống" hoặc "cũ".
+4. **Sequence/identity**: bảng dùng IDENTITY thì insert đã tăng sequence, rollback không hoàn lại ⇒ test sau nhảy id (không sai, nhưng gây khó so khớp).
+
+### Ví dụ REQUIRES_NEW lọt dữ liệu
+~~~java
+@Service
+class TransferService {
+    @Transactional(propagation = REQUIRES_NEW) // commit riêng, không theo rollback của test
+    public void saveAudit(Audit a) { repo.save(a); }
+}
+
+@DataJpaTest
+class TransferServiceTest {
+    @Autowired TransferService svc;
+    @Test void test() {
+        svc.saveAudit(new Audit("x")); // dòng này commit thật, test sau vẫn thấy
+    }
+}
+~~~
+
+### Slice test vs @SpringBootTest — ranh giới
+| | @DataJpaTest / @WebMvcTest (slice) | @SpringBootTest (full context) |
+|---|---|---|
+| Nạp | một lớp hạ tầng | toàn bộ app, mọi bean, aspect, security |
+| Tốc độ | 1–4 giây | 10–30 giây |
+| Transaction thật | không có aspect @Transactional của service | có đủ propagation, AOP |
+| Bắt lỗi | logic JPA/web đơn lẻ | lỗi tích hợp xuyên tầng (transaction, security, async) |
+| Khi nào dùng | phần lớn test repository/controller | ít test "khói" xác nhận wiring thật |
+
+### Bẫy hay gặp
+- Nghĩ @DataJpaTest rollback mọi thứ ⇒ yên tâm để dữ liệu bẩn; REQUIRES_NEW (hoặc @Sql chạy tách biệt) phá vỡ giả định đó.
+- Dùng @SpringBootTest cho mọi test chỉ vì "cho chắc" ⇒ CI chậm, team bỏ test.
+- So sánh id tuyệt đối giữa các test ⇒ vỡ vì sequence không reset.
 
 ### Ví dụ đời thực
-Team thấy test pass riêng lẻ nhưng fail khi chạy cùng suite do REQUIRES_NEW commit dữ liệu. Fix bằng cleanup @Sql và test độc lập.
+Team thấy 5 test @DataJpaTest pass khi chạy riêng nhưng fail khi chạy cả suite. Điều tra: một service audit dùng REQUIRES_NEW commit thật, để lại 5 dòng; test khác đếm số dòng kỳ vọng 0. Xử lý: thêm @Sql(AFTER_TEST_METHOD) xoá bảng audit, và đổi test đếm sang lọc theo id của chính nó. Kết quả: flaky biến mất, suite vẫn 2 giây vì giữ slice test thay vì chuyển sang @SpringBootTest.
 
 ### Trả lời mẫu khi phỏng vấn
-Tôi luôn đảm bảo test độc lập: rollback mặc định, cleanup bằng @Sql, và tránh REQUIRES_NEW trong test path. Nếu cần dữ liệu chung, dùng @Sql(BEFORE_TEST_METHOD) và cleanup sau.
+@DataJpaTest rollback sau mỗi test, nhưng tôi không coi đó là bảo chứng tuyệt đối. REQUIRES_NEW commit riêng, flush timing làm dữ liệu lọt hoặc test thấy dữ liệu cũ; @Sql chỉ rò nếu bạn ép chạy tách biệt ngoài transaction test. Tôi xử lý bằng @Sql cleanup và làm mỗi test tự lọc dữ liệu của nó. Về ranh giới: slice test nhanh, đủ cho phần lớn repository/controller; còn hành vi transaction xuyên tầng, security, async thì phải @SpringBootTest mới bắt được. Ví dụ: 5 test fail do audit REQUIRES_NEW, cleanup bằng @Sql là hết, không cần full context.
 
-> Senior tip: Test flaky do ordering thường do shared state; fix bằng isolation, không bằng retry.
+> Senior tip: Đừng dùng @SpringBootTest để "chữa" test @DataJpaTest bị bẩn — đó là che triệu chứng. Hãy hiểu vì sao transaction lọt (REQUIRES_NEW, @Sql) và dọn đúng chỗ.
 `,
   follow: [
-    'Bạn test code dùng REQUIRES_NEW thế nào?',
-    'Khi nào dùng @DirtiesContext?',
-    'Bạn kiểm soát test order thế nào?',
+    'Bạn test một service dùng REQUIRES_NEW như thế nào cho không rò dữ liệu?',
+    'Khi nào @DirtiesContext là cần thiết, và nó tốn gì?',
+    'Bạn kiểm soát thứ tự chạy test (test ordering) ra sao?',
   ],
-  tags: ['DataJpaTest', 'transaction', 'rollback', 'isolation'],
+  tags: ['DataJpaTest', 'transaction', 'rollback', 'slice-test', 'REQUIRES_NEW', 'isolation'],
 },
 {
   id: 'testing-083',
   topic: 'testing',
   level: 'senior',
-  q: 'Contract test với Pact: làm sao tích hợp vào CI để chặn deploy khi provider thay đổi API làm consumer hỏng?',
-  a: `**Tóm tắt:** Dùng Pact Broker + can-i-deploy trong pipeline. Consumer publish pact, provider verify, can-i-deploy kiểm tra compatibility trước khi deploy.
+  q: 'Contract test với Pact: tích hợp vào CI thế nào để chặn deploy khi provider đổi API làm consumer hỏng? Provider state, webhook, can-i-deploy hoạt động ra sao, và khi nào chọn Spring Cloud Contract thay Pact?',
+  a: `**Tóm tắt:** Contract test (kiểm thử hợp đồng) cho hai team verify API mà không cần gọi nhau thật. Với Pact: consumer viết test sinh ra file pact (mô tả request/response mong đợi), provider chạy verify file đó với **provider state** (dữ liệu giả lập), rồi **can-i-deploy** chặn deploy nếu version chưa tương thích. Đây là "cổng an toàn" — thiếu nó, contract test chỉ là tài liệu.
 
-### Luồng
-1. Consumer test sinh pact → publish lên broker.
-2. Provider test verify pact → publish verification.
-3. can-i-deploy kiểm tra consumer/provider versions tương thích.
+### Vì sao cần — vấn đề hai team
+- Team A (consumer) gọi API team B (provider). A test bằng mock, B test riêng ⇒ cả hai xanh nhưng ghép thật lại vỡ vì B đổi tên trường.
+- Contract test biến "giả định của A" thành file pact, buộc B phải verify; B đổi API mà không cập nhật ⇒ verify đỏ ⇒ chặn deploy.
 
-### Pitfall
-- Không version pact theo commit ⇒ deploy sai.
-- Broker không có webhook ⇒ verify chậm.
+### Luồng Pact trong CI
+~~~seq
+title: Pact consumer-provider
+actors: Consumer | Broker | Provider
+Consumer -> Broker: test sinh pact, publish version theo commit
+Provider -> Broker: kéo pact về, verify với provider state
+Provider -> Broker: publish kết quả verify
+Consumer -> Broker: can-i-deploy hỏi version có tương thích không
+Broker --> Consumer: yes/no (chặn deploy nếu no)
+~~~
+
+### Provider state là gì
+- Là trạng thái dữ liệu giả lập mà provider phải dựng khi verify (ví dụ "đã có order 42 trong DB").
+- Consumer ghi {{given("order 42 exists")}} trong test; provider map state đó sang dữ liệu thật (insert vào DB test, hoặc seed).
+- Không có state, provider trả 404 và verify đỏ oan.
+
+### Tích hợp CI (4 bước)
+1. Consumer build: chạy test sinh pact, publish lên **Pact Broker** (nơi lưu pact theo version/commit).
+2. Provider build: kéo pact, verify với provider state, publish kết quả.
+3. **can-i-deploy**: trước khi deploy consumer hoặc provider, hỏi broker "version này có tương thích với partner đang chạy không?" — nếu no thì fail pipeline.
+4. **Webhook**: pact mới được publish ⇒ broker gọi webhook trigger provider verify tự động, không chờ tay.
+
+### Pact vs Spring Cloud Contract
+| | Pact | Spring Cloud Contract (SCC) |
+|---|---|---|
+| Hướng | Consumer-driven, hợp đồng tập trung ở broker | Provider viết contract, generate stub |
+| Đa ngôn ngữ | Có (consumer/provider khác stack) | Chủ yếu JVM |
+| Hạ tầng | Cần Pact Broker + can-i-deploy | Stubs trong repo/artifact, không cần broker |
+| Phù hợp | Nhiều team, polyglot, cần cổng deploy | Monorepo JVM, ít team |
+
+### Bẫy hay gặp
+- **Không version pact theo commit** ⇒ can-i-deploy so nhầm version, deploy lọt.
+- **Provider state thiếu** ⇒ verify đỏ giả, team mất niềm tin.
+- **Breaking change không qua quy trình**: B đổi API, verify đỏ nhưng team tắt verify cho "chạy tiếp" ⇒ contract thành vô nghĩa.
+- **Không có webhook** ⇒ pact mới nằm im, provider verify trễ, consumer deploy trước rồi vỡ.
 
 ### Ví dụ đời thực
-Team deploy consumer mới nhưng provider chưa verify ⇒ can-i-deploy fail, chặn deploy. Fix bằng webhook trigger provider verify tự động.
+order-service (consumer) và payment-service (provider) do hai team phát triển. Triệu chứng: 2 lần/tháng order deploy xong gọi payment vỡ vì payment đổi mã lỗi. Triển khai: consumer publish pact theo commit, provider verify với state "payment method thẻ tồn tại", can-i-deploy chặn deploy, webhook trigger verify. Kết quả sau 1 quý: 0 sự cố do đổi API, thời gian verify pact từ 30 phút (chạy tay) xuống 3 phút (webhook).
 
 ### Trả lời mẫu khi phỏng vấn
-Tôi tích hợp Pact Broker và can-i-deploy vào pipeline, đảm bảo mọi deploy đều kiểm tra compatibility. Webhook trigger verify ngay khi pact mới.
+Tôi dùng Pact cho hai team: consumer viết test sinh file pact mô tả request/response mong đợi, publish lên broker theo commit. Provider verify file đó với provider state dựng dữ liệu giả lập, rồi publish kết quả. Điểm mấu chốt là can-i-deploy — trước mỗi deploy nó hỏi broker version có tương thích không, không thì chặn. Pact mới cũng trigger webhook để provider verify ngay. Tôi chọn Pact thay Spring Cloud Contract khi hai team khác stack hoặc cần cổng deploy tập trung. Ví dụ: order và payment, sau khi có can-i-deploy thì hết sự cố đổi API, verify pact còn 3 phút.
 
-> Senior tip: can-i-deploy là cổng an toàn; không có nó contract test chỉ là tài liệu.
+> Senior tip: can-i-deploy là thứ biến contract test từ "tài liệu" thành "cổng chặn deploy". Không có nó, provider đổi API vẫn lọt nếu verify chạy trễ.
 `,
   follow: [
-    'Bạn xử lý breaking change thế nào?',
-    'Khi nào dùng Spring Cloud Contract thay Pact?',
-    'Bạn quản lý versions pact thế nào?',
+    'Bạn xử lý breaking change có chủ đích (cần đổi API) thế nào trong luồng Pact?',
+    'Khi nào Spring Cloud Contract phù hợp hơn Pact?',
+    'Bạn quản lý version và môi trường (dev/staging/prod) trong Pact Broker ra sao?',
   ],
-  tags: ['Pact', 'contract-test', 'CI', 'can-i-deploy'],
+  tags: ['Pact', 'contract-test', 'can-i-deploy', 'CI', 'provider-state', 'Spring-Cloud-Contract'],
 },
 {
   id: 'testing-084',
   topic: 'testing',
   level: 'lead',
-  q: 'Flaky test do thời gian và thứ tự chạy: cách tìm nguyên nhân và sửa triệt để trong pipeline lớn?',
-  a: `**Tóm tắt:** Flaky do time/order thường do clock thực, shared state, hoặc test order. Tìm bằng dashboard + retry isolation, sửa bằng clock injection và test isolation.
+  q: 'Flaky test do thời gian và thứ tự chạy: là lead, bạn tìm nguyên nhân và sửa triệt để thế nào trong pipeline lớn (hàng nghìn test, nhiều team)?',
+  a: `**Tóm tắt:** Flaky test (test chập chờn, lúc pass lúc fail mà không đổi code) do thời gian và thứ tự thường đến từ: dùng giờ thật ({{LocalDateTime.now()}}), chia sẻ trạng thái (DB, static, file), và phụ thuộc thứ tự chạy. Lead phải **đo** (dashboard flaky score), **cô lập** (quarantine có deadline), rồi **sửa gốc** bằng Clock injection và isolation — không che bằng retry.
 
-### Nguyên nhân
-- Dùng System.currentTimeMillis() trong code ⇒ test phụ thuộc thời gian.
-- Shared DB state ⇒ test order ảnh hưởng.
-- Thread scheduling ⇒ race condition.
+### Phân loại flaky do thời gian và thứ tự
+- **Giờ thật**: code gọi {{LocalDateTime.now()}}, {{System.currentTimeMillis()}}; test chạy sát nửa đêm hoặc timeout 1 giây ⇒ fail ngẫu nhiên.
+- **Chia sẻ trạng thái**: hai test cùng ghi một bảng, một email cố định, một consumer group ⇒ test A để lại rác, test B đọc nhầm.
+- **Phụ thuộc thứ tự**: test B chỉ pass nếu test A chạy trước (A tạo dữ liệu B cần). Đổi thứ tự (hoặc chạy song song) ⇒ B fail.
+- **Lịch thread**: {{@Scheduled}}, {{@Async}}, sleep 100ms chờ việc xong ⇒ race.
 
-### Cách sửa
-- Inject Clock/Instant thay vì thời gian thực.
-- Mỗi test tự tạo dữ liệu và cleanup.
-- Dùng Awaitility thay sleep.
+### Tìm nguyên nhân trong pipeline lớn
+1. **Dashboard flaky score**: chạy lại (rerun) test fail trên main; test nào pass ở lần rerun mà fail lần đầu ⇒ flaky. Tính điểm theo 30 ngày.
+2. **Chạy random order**: JUnit 5 {{@TestMethodOrder}} ngẫu nhiên để lộ phụ thuộc thứ tự.
+3. **Phân biệt hạ tầng vs code**: fail do runner/network (infra) tách khỏi fail do logic test.
+
+### Sửa gốc
+~~~java
+// 1) Clock injection: không dùng giờ thật
+class OrderService {
+    private final Clock clock;
+    OrderService(Clock clock) { this.clock = clock; }
+    boolean isExpired(Order o) {
+        return o.createdAt.plusDays(3).isBefore(LocalDateTime.now(clock));
+    }
+}
+// test: clock cố định ⇒ không flaky
+// OrderService svc = new OrderService(Clock.fixed(ts, ZoneOffset.UTC));
+
+// 2) Awaitility thay sleep: chờ điều kiện, không chờ mù
+Awaitility.await().atMost(5, SECONDS)
+    .untilAsserted(() -> assertThat(repo.count()).isEqualTo(1));
+~~~
+
+### Quy trình lead ở quy mô team
+| Bước | Làm gì | Metric |
+|---|---|---|
+| Đo | Dashboard flaky score 30 ngày | flaky rate < 1% |
+| Cô lập | {{@Tag("flaky")}} + job riêng, ticket owner + deadline 7 ngày | quarantine resolution time |
+| Sửa gốc | Clock injection, UUID data, isolation | flaky rate giảm |
+| Văn hoá | Cấm retry che, reward fix gốc | change failure rate |
+
+### Bẫy hay gặp
+- **Retry che triệu chứng**: cấu hình retry tự động ⇒ test xanh giả, bug thật lọt.
+- **Quarantine vĩnh viễn**: test bị cô lập nhưng không ai sửa ⇒ mất độ phủ âm thầm.
+- **Sửa bằng sleep dài hơn**: chỉ giảm tần suất, không hết flaky.
 
 ### Ví dụ đời thực
-Pipeline 3000 test, flaky 12%. Top flaky: OrderServiceIT dùng email cố định, PaymentKafkaIT consumer group trùng. Fix bằng UUID, clock injection, Awaitility. Flaky giảm 0.8%.
+Team 15 dev, 3000 test, flaky 12% (360 lần fail ngẫu nhiên/ngày), CI 18 phút. Điều tra: top flaky là OrderServiceIT (email cố định trùng unique), PaymentKafkaIT (consumer group id cứng), ReportE2E (sleep chờ async). Xử lý: dashboard + quarantine 7 ngày, Clock injection, UUID email/group, Awaitility thay sleep, cấm retry. Sau 8 tuần: flaky 12% → 0.8%, CI 18 → 7 phút, change failure rate 14% → 6%.
 
 ### Trả lời mẫu khi phỏng vấn
-Tôi xây dashboard flaky, quarantine với ticket+deadline, fix top 10 root cause, cấm retry. Clock injection và isolation là hai vũ khí chính.
+Là lead, tôi không sửa flaky bằng retry. Tôi dựng dashboard flaky score 30 ngày để đo, quarantine test có ticket và deadline 7 ngày, rồi sửa gốc: top flaky thường do giờ thật và chia sẻ trạng thái. Tôi thay giờ thật bằng Clock injection, dữ liệu cố định bằng UUID, sleep bằng Awaitility, và làm mỗi test tự dọn. Về quy trình, tôi cấm retry che và thưởng việc fix gốc. Ví dụ: 3000 test, flaky 12%; sau 8 tuần còn 0.8%, CI từ 18 xuống 7 phút. Nguyên tắc: flaky là nợ của cả team, hệ thống quan trọng hơn cá nhân.
 
-> Senior tip: Flaky là nợ team; fix root cause, không che bằng retry.
+> Senior tip: Đừng mở chiến dịch sửa 300 test cùng lúc. Fix top 10 test flaky có impact cao nhất (chạy nhiều, chặn pipeline lâu) — 10% test thường gây 80% nỗi đau.
 `,
   follow: [
-    'Bạn phân biệt flaky infra vs code thế nào?',
-    'Khi nào quarantine test?',
-    'Bạn đo flaky rate thế nào?',
+    'Bạn phân biệt flaky do hạ tầng (runner, network) và do code test thế nào trên dashboard?',
+    'Khi nào nên quarantine một test, và ai chịu trách nhiệm sửa?',
+    'Bạn đo và theo dõi flaky rate ra sao để biết có tiến bộ?',
   ],
-  tags: ['flaky-test', 'time', 'ordering', 'CI', 'leadership'],
+  tags: ['flaky-test', 'time', 'ordering', 'Clock', 'Awaitility', 'quarantine', 'leadership'],
+},
+{
+  id: 'testing-085',
+  topic: 'testing',
+  level: 'senior',
+  q: 'CI của bạn chuyển sang chạy trên runner Kubernetes, không còn Docker daemon sẵn như máy dev. Bạn vẫn muốn dùng Testcontainers cho PostgreSQL và Kafka. Bạn chạy container thế nào (docker:dind, rootless, Testcontainers Cloud), xử lý Ryuk, image pull chậm và registry riêng ra sao, và có nên bật reuse container trên CI không?',
+  a: `**Tóm tắt:** Testcontainers cần một **container runtime** (Docker daemon) để khởi chạy container. Trên runner Kubernetes không có daemon đó, nên bạn phải chọn một trong ba cách: **docker:dind sidecar** (một container chạy daemon riêng), **rootless Docker/Podman**, hoặc **Testcontainers Cloud** (daemon ở xa). Kèm theo là ba bài toán vận hành: **Ryuk** (tiến trình dọn container) phải truy cập được socket, **image pull** làm test chậm, và **registry riêng** cần cấu hình xác thực. Reuse container gần như không bao giờ bật trên CI vì mỗi job là môi trường sạch.
+
+### Vì sao Testcontainers cần Docker daemon
+Testcontainers là một thư viện Java: khi test chạy, nó **gọi Docker API** để tạo container Postgres/Kafka, chờ container sẵn sàng, rồi trỏ datasource của ứng dụng vào đó. Nếu không có daemon, mọi test tích hợp ném {{IllegalStateException}} kiểu "Could not find a valid Docker environment". Máy dev có Docker Desktop nên vô hình; CI trên Kubernetes thì mỗi pod là một container không có daemon bên trong — đây là khác biệt lớn nhất khi "lên mây".
+
+### Ba cách cấp runtime cho CI
+| Cách | Hoạt động | Ưu | Nhược |
+|---|---|---|---|
+| docker:dind sidecar | thêm container chạy {{dockerd}} privileged, chia sẻ socket | giống local nhất, không đổi code | cần privileged (nhiều cluster chặn), tốn RAM |
+| Rootless Docker/Podman | daemon chạy không cần root trong pod | an toàn hơn, hợp K8s hạn chế | cấu hình phức tạp, đôi khi lỗi mount |
+| Testcontainers Cloud | daemon ở vendor, test kết nối qua token | không cần runtime local, có warm node | tốn phí, cần mạng ra ngoài |
+
+Với người đi phỏng vấn: **nói tên đủ ba cách và nêu đánh đổi** là đủ ghi điểm; đừng khẳng định "Testcontainers chạy được trên K8s" mà không nói nó cần runtime ở đâu.
+
+### Ryuk — tiến trình dọn dẹp
+Ryuk là một container nhỏ Testcontainers dựng lên để **xoá mọi container còn sót** khi JVM test chết giữa chừng (tránh rò rỉ container đầy disk). Ryuk cần truy cập Docker socket để làm việc đó. Trong môi trường rootless hoặc dind bị giới hạn, Ryuk hay lỗi khởi động; khi đó có thể tắt bằng biến {{TESTCONTAINERS_RYUK_DISABLED=true}}, nhưng **phải tự dọn** (cần dọn dẹp cuối job), nếu không runner sẽ đầy disk sau vài chục lần chạy.
+
+### Xử lý image pull chậm và registry riêng
+- **Warm image**: tự dựng image runner đã {{docker pull}} sẵn Postgres/Kafka, hoặc dùng registry mirror nội bộ để không kéo từ Docker Hub mỗi job.
+- **Pin tag cụ thể** ({{postgres:16.3-alpine}}), không dùng {{latest}}, để pull tái lập được và tận dụng cache layer.
+- **Registry riêng**: Testcontainers đọc {{~/.docker/config.json}}; trên CI nạp credential qua secret rồi ghi vào file đó, hoặc đặt biến {{DOCKER_AUTH_CONFIG}}. Đừng hardcode mật khẩu vào repo.
+- **Reuse container** ({{withReuse(true)}} + {{testcontainers.reuse.enable=true}}): chỉ nên bật ở máy dev. Trên CI mỗi job là môi trường mới, reuse không có lợi và còn gây rò rỉ trạng thái.
+
+### Ví dụ cấu hình dind cho GitLab/GitHub Actions
+~~~yaml
+# job chạy test tích hợp với docker:dind sidecar
+services:
+  - docker:27-dind        # daemon riêng, biến DOCKER_HOST trỏ tới nó
+variables:
+  DOCKER_HOST: tcp://docker:2375
+  DOCKER_TLS_CERTDIR: ""   # tắt TLS cho dind nội bộ
+script:
+  - ./gradlew test         # Testcontainers tự thấy DOCKER_HOST
+~~~
+
+### Bẫy thường gặp
+- **Quên DOCKER_HOST**: trong sidecar, test vẫn tìm socket local không có ⇒ fail "no Docker".
+- **Bật reuse trên CI**: container cũ còn state làm test sau đọc nhầm dữ liệu.
+- **Không warm image**: mỗi job pull 1–2 GB, test "chậm" nhưng thực ra đang tải image.
+- **Tắt Ryuk mà không dọn**: disk runner đầy sau vài chục job, job sau fail vì {{no space left}}.
+
+### Ví dụ đời thực
+Một team chuyển CI từ VM có Docker sang runner Kubernetes (GitLab, 4 job song song). Triệu chứng: 70% test tích hợp đỏ với "Could not find a valid Docker environment", số còn lại chập chờn. Điều tra: pod không có daemon; một số job cấu hình dind nhưng thiếu {{DOCKER_HOST}}; Ryuk lỗi khởi động trong dind. Cách xử lý: (1) thêm sidecar {{docker:27-dind}} và đặt {{DOCKER_HOST=tcp://docker:2375}}; (2) dựng image runner warm sẵn {{postgres:16.3-alpine}} và {{apache/kafka:3.7.0}} để không pull mỗi job; (3) nạp credential registry qua secret vào {{~/.docker/config.json}}; (4) giữ Ryuk bật, thêm bước {{docker rm}} dọn dẹp cuối job. Kết quả đo được: tỉ lệ pass test tích hợp từ 30% lên 99%; thời gian trung bình mỗi job giảm từ 14 phút xuống 6 phút (bỏ pull); 4 job song song không còn tranh socket; 2 tháng không có job nào fail vì đầy disk.
+
+### Trả lời mẫu khi phỏng vấn
+"Testcontainers cần một container runtime, mà runner Kubernetes không có Docker daemon sẵn, nên tôi chọn một trong ba cách: thêm sidecar docker:dind, dùng rootless Docker/Podman, hoặc Testcontainers Cloud; mỗi cách có đánh đổi về bảo mật và chi phí. Tôi luôn chỉ rõ DOCKER_HOST cho test, giữ Ryuk để dọn container sót (nếu tắt thì phải tự dọn), và warm image Postgres/Kafka trong runner để không pull lại mỗi job. Registry riêng tôi nạp credential qua secret vào ~/.docker/config.json, không hardcode. Tôi pin tag image cụ thể thay vì latest, và không bật reuse container trên CI vì mỗi job là môi trường sạch, reuse chỉ gây rò rỉ state. Ví dụ: chuyển sang runner Kubernetes làm 70% test đỏ vì thiếu daemon; thêm dind, warm image và DOCKER_HOST, tỉ lệ pass lên 99%, thời gian job từ 14 xuống 6 phút."
+
+> Senior tip: khi được hỏi "Testcontainers trên Kubernetes", câu trả lời phân biệt senior với mid là **nói ngay Testcontainers không chạy container, nó điều khiển một daemon ở đâu đó** — rồi mới bàn dind, rootless hay cloud. Người không biết điều này sẽ tưởng Testcontainers "tự có Docker" và trả lời mơ hồ.`,
+  follow: [
+    'Bạn chọn docker:dind, rootless hay Testcontainers Cloud cho CI của mình, và vì sao?',
+    'Ryuk là gì, khi nào nên tắt, và rủi ro khi tắt là gì?',
+    'Làm sao warm image và dùng registry mirror để test tích hợp không bị nghẽn ở khâu pull?'
+  ],
+  tags: ['Testcontainers', 'CI', 'Kubernetes', 'dind', 'Ryuk', 'registry']
+},
+{
+  id: 'testing-086',
+  topic: 'testing',
+  level: 'senior',
+  q: 'Trong slice test Spring Boot ({{@WebMvcTest}}, {{@DataJpaTest}}), vì sao service/repository của bạn bị thay bằng mock, và {{@MockitoBean}} có hành vi reset gì giữa các test? Khi nào slice test buộc phải {{@Import}} bean thật, và khi nào chỉ {{@SpringBootTest}} mới đúng?',
+  a: `**Tóm tắt:** Slice test chỉ nạp **một lát cắt** của context: {{@WebMvcTest}} nạp tầng web (controller, filter, Jackson, validation) nhưng **không** nạp {{@Service}}/{{@Repository}}, nên bạn phải khai báo chúng bằng {{@MockitoBean}}. {{@MockitoBean}} (Spring Boot 3.4+, thay {{@MockBean}}) **tự reset sau mỗi test method**, gây bất ngờ "mock trả null ở test thứ hai". Khi logic cần kiểm chứng nằm ở bean bị mock, slice test vô dụng — phải {{@Import}} bean thật hoặc chuyển sang {{@SpringBootTest}}.
+
+### Slice test nạp gì, bỏ gì
+| Annotation | Nạp | Không nạp (phải mock/import) |
+|---|---|---|
+| {{@WebMvcTest}} | controller, filter chain, Jackson, validation, MVC config | service, repository, @Component khác |
+| {{@DataJpaTest}} | JPA, repository, DataSource (embedded mặc định), transaction rollback | service, controller, cache |
+| {{@SpringBootTest}} | toàn bộ context theo cấu hình | – (nạp hết) |
+
+Cơ chế: slice test dùng {{TypeExcludeFilter}} để chỉ giữ bean thuộc lát cắt. Bean ngoài lát cắt **không tồn tại** trong context ⇒ nếu controller phụ thuộc service mà không khai báo, context khởi động fail. Đó là lý do bạn thấy phải {{@MockitoBean}}.
+
+### @MockitoBean reset — cái bẫy ít ai để ý
+Mặc định {{@MockitoBean}} có {{reset = MockReset.AFTER}}: sau **mỗi** test method, mọi stub ({{when(...).thenReturn(...)}}) bị xoá. Test A cấu hình mock, test B không cấu hình lại sẽ nhận giá trị mặc định (null/false). Đây là nguồn "test chạy riêng xanh, chạy cả lớp đỏ".
+~~~java
+@WebMvcTest(OrderController.class)
+class OrderControllerTest {
+    @Autowired MockMvc mvc;
+    @MockitoBean OrderService service;   // reset = AFTER mặc định
+
+    @Test void a_returns_order() throws Exception {
+        given(service.find("OD-1")).willReturn(new Order("OD-1", PAID));
+        // ... assert 200
+    }
+    @Test void b_without_stub_gets_null() throws Exception {
+        // service vừa bị reset => find trả null, KHÔNG dùng lại stub của a
+        given(service.find("OD-2")).willReturn(null);   // phải tự cấu hình
+        // ... assert 404
+    }
+}
+~~~
+- Muốn giữ stub qua các test: đặt {{@MockitoBean(reset = MockReset.NONE)}} (hiếm dùng, dễ rò state).
+- {{@MockBean}} (bản cũ) đã deprecated từ Boot 3.4; dùng {{@MockitoBean}} cho code mới.
+
+### Khi nào slice test bỏ sót, phải @Import hoặc @SpringBootTest
+- **Bean thật bị mock**: controller gọi service, bạn mock service ⇒ không kiểm được logic nghiệp vụ; hãy {{@Import(OrderService.class)}} để nạp service thật (kèm dependency của nó cũng phải import hoặc mock).
+- **Cấu hình bảo mật/Jackson tùy chỉnh**: nếu filter chain nằm ở {{@Configuration}} ngoài lát cắt, slice có thể không áp dụng; cần {{@Import}} cấu hình đó.
+- **AOP, @Async, transaction propagation**: slice không có proxy đầy đủ ⇒ chỉ {{@SpringBootTest}} mới tái hiện.
+- **Quy tắc thực dụng**: nếu test của bạn chủ yếu **verify mock** thay vì assert kết quả, đó là dấu hiệu bạn đang ở sai tầng.
+
+### Bảng chọn tầng
+| Mục tiêu | Tầng |
+|---|---|
+| controller + validation + JSON, service là phụ thuộc ngoài | {{@WebMvcTest}} + {{@MockitoBean}} |
+| repository + JPQL trên DB thật | {{@DataJpaTest}} + Testcontainers |
+| logic nghiệp vụ thật, không qua HTTP | unit test thuần hoặc {{@Import}} service vào slice |
+| filter chain, AOP, @Async, wiring thật | {{@SpringBootTest}} |
+
+### Bẫy thường gặp
+- **Mock service rồi tưởng đã test nghiệp vụ**: slice xanh nhưng logic sai vẫn lọt.
+- **Không reset thủ công khi dùng MockReset.NONE**: state rò giữa test.
+- **Quên {{@Import}} bean phụ thuộc**: context fail với {{NoSuchBeanDefinitionException}}.
+- **Lạm dụng {{@SpringBootTest}} cho mọi test** vì "slice rắc rối": CI chậm trở lại.
+
+### Ví dụ đời thực
+Một service đặt hàng (Spring Boot 3.4) có 180 test {{@WebMvcTest}}. Triệu chứng: chạy cả lớp, 20 test đỏ ngẫu nhiên; chạy riêng từng test thì xanh. Điều tra: tất cả dùng {{@MockitoBean OrderService}} với mặc định reset AFTER; nhiều test không cấu hình lại stub nên nhận null. Ngoài ra 30 test controller gọi service thật cần kiểm tra logic chiết khấu nhưng service bị mock ⇒ test chỉ verify lời gọi, không bắt lỗi tính tiền. Cách xử lý: (1) nâng 30 test logic sang {{@Import(OrderService.class)}} trong slice (service thật, chỉ mock repository); (2) 20 test còn lại tự cấu hình stub đầu mỗi method; (3) 10 test cần filter chain JWT chuyển sang {{@SpringBootTest}}. Kết quả: flaky 20 test về 0; 2 lỗi tính chiết khấu bị bắt ở tầng slice trước khi merge; thời gian suite tăng nhẹ 8% nhưng độ tin cậy tăng rõ.
+
+### Trả lời mẫu khi phỏng vấn
+"Slice test chỉ nạp một lát cắt context, nên {{@WebMvcTest}} không có service/repository — tôi phải khai báo bằng {{@MockitoBean}}. Điểm ít ai để ý là {{@MockitoBean}} mặc định reset sau mỗi test method, nên test sau không thấy stub của test trước; nếu không cấu hình lại sẽ nhận null và đỏ khi chạy cả lớp. Khi logic cần kiểm nằm ở bean bị mock, slice test vô dụng: tôi {{@Import}} bean thật vào slice, hoặc chuyển sang {{@SpringBootTest}} nếu cần filter chain, AOP, @Async hay transaction propagation. Tôi cũng tránh mock service rồi chỉ verify lời gọi, vì như thế không kiểm được nghiệp vụ. Ví dụ: 180 test WebMvcTest, 20 test đỏ do reset mock, 30 test chỉ verify mock nên bỏ sót lỗi tính tiền; tôi import service thật cho phần logic, tự cấu hình stub, và chuyển 10 test cần JWT sang full context — flaky về 0 và bắt được 2 lỗi chiết khấu."
+
+> Senior tip: một cách nhanh để biết bạn dùng sai tầng — nếu test của bạn **chỉ có verify(...) mà không có assertThat trên kết quả**, gần như chắc chắn logic nghiệp vụ đang không được kiểm. Hãy hỏi "nếu tôi đổi công thức tính tiền bên trong service, test này có đỏ không?"; nếu không, nó đang test mock chứ không test hành vi.`,
+  follow: [
+    'Bạn dùng {{@MockitoBean}} hay {{@MockBean}} cho Spring Boot 3.4, và khác biệt reset giữa chúng là gì?',
+    'Khi nào bạn {{@Import}} một bean thật vào slice test thay vì mock nó?',
+    'Làm sao phát hiện một test slice đang "xanh giả" vì chỉ verify mock?'
+  ],
+  tags: ['slice-test', 'WebMvcTest', 'DataJpaTest', 'MockitoBean', 'SpringBootTest']
+},
+{
+  id: 'testing-087',
+  topic: 'testing',
+  level: 'lead',
+  q: 'Hai team phát triển order-service và payment-service deploy độc lập, mỗi bên nhịp release khác nhau. Là lead, bạn tổ chức contract test bằng Pact Broker thế nào để một bên đổi API không làm hỏng bên kia, dùng pending pact và can-i-deploy ra sao, và provider state được setup thế nào?',
+  a: `**Tóm tắt:** Với hai team deploy độc lập, contract test phải là **quy trình tổ chức** chứ không chỉ là test. Consumer publish pact (kỳ vọng của mình) lên **Pact Broker** kèm version theo branch/commit; provider chạy **pactVerify** để chứng minh mình đáp ứng; **can-i-deploy** là cổng chặn deploy — chỉ cho phép lên môi trường nếu version đó tương thích với mọi consumer đang chạy ở đó. **Pending pact** cho consumer "đi trước" mà không làm đỏ build provider. **Provider state** là dữ liệu nền cho mỗi interaction.
+
+### Luồng giữa hai team (consumer-driven)
+~~~text
+Consumer (order) --publish pact v1.4--> Pact Broker
+Provider (payment) --pactVerify v1.4--> Pact Broker (fail nếu lệch)
+Provider --can-i-deploy?--> Broker trả "yes/no" theo môi trường
+Consumer --can-i-deploy?--> Broker kiểm tương thích ngược
+~~~
+- Consumer viết test mô tả request/response nó cần → sinh pact → publish kèm {{version}} và {{branch}}.
+- Provider CI kéo các pact "pending" hoặc đã released, chạy verify. Nếu provider **chưa** đáp ứng pact mới, pact đó ở trạng thái pending ⇒ verify **không chặn** build provider (cho consumer đi trước).
+- Khi consumer đã deploy lên môi trường ({{prod}}), pact chuyển sang **released**; từ lúc đó provider không đáp ứng được sẽ **fail** ⇒ chặn breaking change.
+
+### Pending pact và can-i-deploy
+| Khái niệm | Ý nghĩa | Vì sao cần |
+|---|---|---|
+| Pending pact (WIP) | pact consumer mới publish, provider chưa verify đạt | cho consumer release trước, không đỏ build provider |
+| can-i-deploy | hỏi broker "version X có an toàn để lên môi trường Y không" | cổng chặn deploy dựa trên tương thích thật |
+| Environment (prod/staging) | broker gắn version với môi trường đã lên | phân biệt "đã verify" và "đang chạy thật" |
+| Webhook | broker gọi provider CI khi có pact mới | tự động verify, không chờ tay |
+
+Cơ chế can-i-deploy: broker biết consumer {{order}} version {{1.4}} đang chạy ở {{prod}} cần provider {{payment}} đáp ứng pact X. Khi provider muốn lên {{2.0}}, broker trả "no" nếu {{2.0}} không verify được pact X ⇒ CI chặn. Đây là điểm khác biệt so với chỉ chạy pactVerify: can-i-deploy xét **tổ hợp version thực tế đang chạy**, không chỉ một pact lẻ.
+
+### Provider state — dữ liệu nền
+Mỗi interaction trong pact có {{given("order 999 does not exist")}}. Provider phải hiện thực state đó: một interface nhận tên state rồi seed dữ liệu (tạo/xoá bản ghi) trước khi verify. Nếu không, provider trả 200 trong khi consumer mong 404 ⇒ verify đỏ oan. State phải **idempotent** và dọn sau khi xong để không rò dữ liệu.
+
+### Khi nào Pact, khi nào Spring Cloud Contract
+- **Pact (consumer-driven)**: nhiều consumer, provider không biết hết ai dùng; phù hợp hai team độc lập.
+- **Spring Cloud Contract (provider-driven)**: provider viết contract, sinh stub cho consumer; hợp khi provider chủ động và ít consumer.
+- Với hai team ngang hàng, Pact + Broker thường hợp hơn vì consumer chủ động mô tả nhu cầu.
+
+### Bẫy thường gặp
+- **Provider state không idempotent**: verify lần hai đỏ vì dữ liệu còn sót.
+- **Bỏ qua can-i-deploy**: chỉ chạy pactVerify mà không chặn deploy ⇒ breaking change vẫn lọt.
+- **Pending pact quên chuyển released**: provider không bao giờ bị chặn, pact thành "WIP vĩnh viễn".
+- **Contract chỉ happy path**: lỗi 4xx (phần hay vỡ) không được mô tả.
+- **Broker không có người vận hành**: version phình, không ai dọn pact cũ.
+
+### Ví dụ đời thực
+Hai team order/payment deploy độc lập. Triệu chứng: sau khi payment đổi {{amount}} (long) sang {{totalAmount}} (string), order nhận 500 hàng loạt; cả hai CI đều xanh vì mỗi team chỉ test mình. Điều tra: chưa có broker, không có cổng chặn. Cách xử lý: (1) dựng Pact Broker, consumer publish pact theo branch; (2) provider chạy pactVerify cho pact pending (không chặn) và released (chặn); (3) thêm bước {{can-i-deploy --pacticipant payment --version $GIT_SHA --environment prod}} vào cả hai pipeline; (4) provider state idempotent cho "order not found". Kết quả đo được: trong 1 tháng broker chặn 3 breaking change trước merge (đổi kiểu amount, xoá status, đổi 404→422); can-i-deploy chặn 1 lần payment 2.0 lên prod khi order 1.4 còn chạy; 0 sự cố "gọi API nhau rồi hỏng" sau đó.
+
+### Trả lời mẫu khi phỏng vấn
+"Với hai team deploy độc lập, tôi tổ chức contract test bằng Pact Broker theo hướng consumer-driven: consumer publish pact kèm version và branch; provider chạy pactVerify; và quan trọng nhất là can-i-deploy — cổng chặn deploy chỉ cho lên môi trường nếu version đó tương thích với mọi consumer đang chạy ở đó. Pact mới của consumer ở trạng thái pending nên không làm đỏ build provider, cho consumer đi trước; khi đã lên prod thì thành released và provider không đáp ứng sẽ bị chặn. Provider state phải idempotent để verify không đỏ oan. Tôi cũng mô tả cả case lỗi 4xx chứ không chỉ happy path. Ví dụ: hai team đổi amount long sang string làm order 500; sau khi có broker và can-i-deploy, 1 tháng chặn 3 breaking change trước merge và 1 lần chặn deploy. Trade-off là phải vận hành broker và viết state, nhưng đổi lấy deploy độc lập an toàn."
+
+> Senior tip: ở vai trò lead, điều quan trọng không phải "chạy được Pact" mà là **ai vận hành broker và cổng can-i-deploy nằm ở đâu**. Một contract test không chặn được deploy thì chỉ là tài liệu. Hãy chứng minh bằng cách cố tình đổi response một lần và cho cả hai team xem build đỏ.`,
+  follow: [
+    'Pending pact khác released pact thế nào, và vì sao nó giúp consumer đi trước?',
+    'can-i-deploy khác pactVerify ở điểm nào, và vì sao nó chặn được breaking change?',
+    'Provider state không idempotent sẽ gây ra lỗi gì khi verify, và bạn dọn state ra sao?'
+  ],
+  tags: ['contract-testing', 'Pact', 'PactBroker', 'can-i-deploy', 'provider-state', 'leadership']
+},
+{
+  id: 'testing-088',
+  topic: 'testing',
+  level: 'senior',
+  q: 'Flaky test do thời gian và thứ tự chạy: bạn phát hiện thế nào (chạy random order, lặp lại), phân biệt flaky do chia sẻ trạng thái với flaky do async/thread pool, và sửa ra sao bằng {{@ResourceLock}}, {{@Isolated}}, Clock injection thay vì tăng timeout?',
+  a: `**Tóm tắt:** Flaky do thời gian và thứ tự đến từ ba nguồn: **giờ thật** ({{LocalDateTime.now()}}), **chia sẻ trạng thái** (static, DB, file, thread pool), và **phụ thuộc thứ tự** (test B cần dữ liệu test A tạo). Phát hiện bằng **chạy random order** và **lặp lại nhiều lần**; sửa gốc bằng **Clock injection**, **{{@ResourceLock}}/{{@Isolated}}** để tuần tự hoá truy cập tài nguyên chung, và **Awaitility** thay {{Thread.sleep}} — không che bằng tăng timeout.
+
+### Phân biệt hai loại flaky
+| Loại | Dấu hiệu | Sửa gốc |
+|---|---|---|
+| Thời gian | fail sát nửa đêm, timeout 1 giây, so sánh ngày | Clock cố định, timeout hợp lý |
+| Thứ tự / shared state | chạy riêng xanh, chạy cả lớp đỏ; random order lộ ra | @ResourceLock, @Isolated, UUID data, tự dọn |
+| Async/thread pool | kết quả assert trước khi việc xong; ThreadLocal rò | Awaitility, đóng pool, không dùng chung pool |
+
+### Phát hiện — random order + lặp lại
+- **Random order**: JUnit 5 chạy method theo thứ tự ngẫu nhiên ({{@TestMethodOrder(MethodOrderer.Random.class)}} hoặc plugin junit-pioneer). Test phụ thuộc thứ tự sẽ lộ ngay.
+- **Lặp lại**: {{@RepeatedTest(20)}} hoặc chạy class 20 lần; flaky do race sẽ đỏ vài lần.
+- **CI dashboard**: test nào pass ở rerun mà fail lần đầu ⇒ flaky; tính theo 30 ngày.
+~~~java
+// Bật random order cho cả lớp để lộ phụ thuộc thứ tự
+@TestMethodOrder(MethodOrderer.Random.class)
+class OrderRepositoryIT {
+    @Test void a_creates_order() { /* tạo dữ liệu */ }
+    @Test void b_reads_order()  { /* nếu cần dữ liệu của a => SẼ FLAKY */ }
+}
+~~~
+
+### Sửa gốc — @ResourceLock và @Isolated
+JUnit 5.9+ có {{@ResourceLock}} để **tuần tự hoá** các test cùng đụng một tài nguyên (cùng bảng, cùng file, cùng consumer group), và {{@Isolated}} để chạy test **không song song** với mọi test khác.
+~~~java
+@ResourceLock("orders-table")          // các test cùng lock chạy tuần tự
+@Sql(scripts = "/reset-orders.sql", executionPhase = BEFORE_TEST_METHOD)
+class OrderLockTest {
+    @Test void deduct_ok() { /* ... */ }
+}
+
+@Isolated                              // test này không chạy song song với test khác
+class KafkaConsumerIT { /* dùng chung một topic */ }
+~~~
+- {{@ResourceLock}} giải quyết "hai test cùng ghi một bảng khi chạy parallel" mà không phải tắt parallel toàn cục.
+- {{@Isolated}} dành cho test không thể chia sẻ tài nguyên (một cổng cố định, một topic duy nhất).
+
+### Sửa gốc — thời gian và async
+~~~java
+class VoucherService {
+    private final Clock clock;                       // inject, không new Date()
+    boolean isExpired(Voucher v) {
+        return v.expiresAt().isBefore(LocalDateTime.now(clock));
+    }
+}
+// test: Clock.fixed(...) => không flaky
+// async: await().atMost(5, SECONDS).untilAsserted(...) thay Thread.sleep
+~~~
+- {{Thread.sleep}} chỉ giảm tần suất, không hết flaky; Awaitility chờ **điều kiện** và fail nhanh khi hết giờ.
+- Với {{@Async}} dùng chung thread pool, ThreadLocal của request trước có thể rò sang request sau ⇒ đóng pool trong test hoặc dùng pool riêng mỗi test.
+
+### Bảng chọn cách sửa
+| Nguyên nhân | Cách sửa |
+|---|---|
+| Giờ thật | Clock injection, Clock.fixed trong test |
+| Test chung static/DB | @ResourceLock, UUID data, tự dọn |
+| Test không chia sẻ được | @Isolated |
+| Thứ tự method | random order để lộ, rồi tách phụ thuộc |
+| Async chưa xong | Awaitility, đóng thread pool |
+
+### Bẫy thường gặp
+- **Tăng timeout để "hết flaky"**: chỉ giảm tần suất, race vẫn còn.
+- **Tắt parallel toàn cục**: suite chậm lại; @ResourceLock đúng chỗ tốt hơn.
+- **@ResourceLock quên tên khác nhau**: hai test dùng tên lock khác nhau vẫn chạy song song.
+- **@Isolated lạm dụng**: mọi test đều isolated ⇒ mất hết lợi ích parallel.
+- **Random order không log seed**: fail không tái hiện được; hãy in seed/đường thứ tự.
+
+### Ví dụ đời thực
+Suite 1.200 test, chạy song song, flaky 4% (khoảng 1/25 lần đỏ). Triệu chứng: 18 test đỏ ngẫu nhiên; chạy riêng xanh. Điều tra: bật random order ⇒ lộ 9 test repository dùng chung bảng {{orders}} không lock; 6 test dùng {{LocalDateTime.now()}} fail vào 23:59; 3 test {{@Async}} assert trước khi xong. Cách xử lý: (1) {{@ResourceLock("orders-table")}} + {{@Sql}} reset cho 9 test; (2) Clock injection cho 6 test; (3) Awaitility + đóng pool cho 3 test; (4) bật random order + log seed trong CI. Kết quả đo được: flaky từ 4% xuống 0,2% sau 3 tuần; 0 test phải tăng timeout; suite vẫn chạy parallel, thời gian không đổi; 2 race thật (mất update khi trừ tiền) lộ ra và được fix.
+
+### Trả lời mẫu khi phỏng vấn
+"Tôi phát hiện flaky bằng random order và lặp lại: bật @TestMethodOrder(Random) để lộ phụ thuộc thứ tự, @RepeatedTest để lộ race, và dashboard CI đếm test đỏ ngẫu nhiên. Tôi phân biệt ba nguồn: giờ thật, chia sẻ trạng thái, và async. Sửa gốc chứ không tăng timeout: giờ thật thì Clock injection; test chung bảng/file thì @ResourceLock để tuần tự hoá đúng chỗ, hoặc @Isolated cho test không chia sẻ được; async thì Awaitility chờ điều kiện và đóng thread pool. Dữ liệu dùng chung thì UUID và tự dọn. Ví dụ: 1.200 test flaky 4%; random order lộ 9 test chung bảng, 6 test giờ thật, 3 test async; sau khi lock, inject Clock và dùng Awaitility, flaky còn 0,2% mà vẫn giữ parallel, và còn bắt được 2 race thật. Nguyên tắc: flaky là bug thật, sửa tận gốc, không che bằng retry."
+
+> Senior tip: đừng tắt parallel để "cho hết flaky" — đó là đánh đổi tốc độ lấy sự ổn định giả. Dùng @ResourceLock đúng tài nguyên và @Isolated đúng test không chia sẻ được; suite vẫn nhanh mà hết chập chờn. Và luôn in seed/thứ tự khi random order fail, nếu không bạn sẽ không tái hiện được ở máy mình.`,
+  follow: [
+    'Bạn dùng {{@ResourceLock}} và {{@Isolated}} khác nhau thế nào, và khi nào chọn cái nào?',
+    'Làm sao tái hiện ổn định một flaky do race để chứng minh với team là bug thật?',
+    'Random order làm test đỏ nhưng khó đọc stack — bạn log gì để lần sau tái hiện được?'
+  ],
+  tags: ['flaky-test', 'ResourceLock', 'Isolated', 'random-order', 'Clock', 'Awaitility']
 }
 );
