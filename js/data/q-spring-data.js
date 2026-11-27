@@ -18345,5 +18345,132 @@ Service có latency spike p99 từ 200ms lên 2s. Dashboard chỉ có average �
     'Exemplar cần những điều kiện ở Prometheus/Grafana/Tempo để hoạt động end-to-end?'
   ],
   tags: ['Micrometer', 'histogram', 'percentile', 'SLO', 'exemplar', 'tracing', 'observability']
+},
+{
+  id: 'jpa-093',
+  topic: 'jpa',
+  level: 'senior',
+  q: 'Khi insert 1 triệu bản ghi bằng Hibernate 6, vì sao hibernate.jdbc.batch_size không phát huy nếu dùng GenerationType.IDENTITY, và cách dùng SEQUENCE + pooled optimizer + clear persistence context ra sao?',
+  a: `**Tóm tắt:** IDENTITY yêu cầu DB trả về id ngay nên Hibernate không thể gom nhiều insert vào một batch JDBC; dùng SEQUENCE với pooled optimizer cho phép Hibernate tự sinh id trong bộ nhớ và gom insert vào batch, rồi clear persistence context định kỳ để tránh phình bộ nhớ.
+
+### Vì sao IDENTITY làm tắt batch insert
+- Với GenerationType.IDENTITY, sau mỗi persist() Hibernate phải flush để DB sinh id (auto-increment/serial). Mỗi flush là một round-trip insert đơn lẻ, batch_size bị bỏ qua.
+- Với SEQUENCE, Hibernate gọi sequence một lần lấy một khối id (pooled), gán cho entity trong bộ nhớ, không cần flush ngay → nhiều insert được gom vào một JDBC batch.
+
+### Cấu hình SEQUENCE + pooled optimizer
+~~~java
+@Entity
+public class Transaction {
+  @Id
+  @GeneratedValue(strategy = GenerationType.SEQUENCE, generator = "tx_seq")
+  @SequenceGenerator(name = "tx_seq", sequenceName = "tx_seq", allocationSize = 50)
+  private Long id;
 }
+~~~
+- allocationSize = 50 khớp với increment của sequence ở DB (increment by 50). Hibernate pooled optimizer: gọi seq một lần lấy giá trị, rồi tự phân phát 50 id trong bộ nhớ.
+- hibernate.jdbc.batch_size=50 và hibernate.order_inserts=true.
+
+### Clear persistence context
+- Khi persist 1 triệu entity, first-level cache (persistence context) phình to → OutOfMemoryError và dirty checking chậm.
+- Mỗi batch (ví dụ 500 bản ghi) gọi entityManager.flush(); entityManager.clear(); để đồng bộ xuống DB và giải phóng cache.
+- Sau clear, entity trở thành detached; không truy cập lazy association sau đó.
+
+### Ví dụ đời thực
+Job đêm nhập 1 triệu giao dịch từ file CSV. Trước khi sửa: IDENTITY + không clear → 45 phút, heap 6GB, OOM. Sau khi sửa: SEQUENCE pooled + batch_size=50 + clear mỗi 500 → 4 phút, heap ổn định 512MB.
+
+### Trả lời mẫu khi phỏng vấn
+Khi phỏng vấn tôi giải thích IDENTITY làm tắt batch vì Hibernate phải flush từng bản ghi để lấy id. Để batch insert hiệu quả, dùng SEQUENCE với allocationSize khớp increment của sequence, bật hibernate.jdbc.batch_size và order_inserts. Quan trọng là flush và clear persistence context định kỳ (ví dụ mỗi 500 bản ghi) để tránh phình bộ nhớ và dirty checking chậm. Nếu dùng IDENTITY bắt buộc, có thể cân nhắc JDBC batch trực tiếp hoặc Spring JDBC.
+
+> Senior tip: kiểm tra số dòng thực sự được batch bằng logging org.hibernate.engine.jdbc.batch.internal.BatchingBatch; nếu thấy "Executing batch size: 1" thì batch chưa bật.`,
+  follow: ['Vì sao hibernate.order_inserts và order_updates quan trọng với batch?', 'Khi nào nên dùng StatelessSession thay vì EntityManager?', 'Làm sao đo throughput insert và phát hiện bottleneck?'],
+  tags: ['batch', 'IDENTITY', 'SEQUENCE', 'pooled', 'clear', 'Hibernate 6']
+},
+{
+  id: 'jpa-094',
+  topic: 'jpa',
+  level: 'mid',
+  q: 'Màn hình danh sách cần 5 cột nhưng entity có 50 cột: nên trả DTO projection thay vì entity, và interface projection so với record/constructor projection khác nhau thế nào?',
+  a: `**Tóm tắt:** Trả DTO projection chỉ select đúng cột cần thiết, giảm I/O, network và dirty checking; interface projection của Spring Data JPA vẫn có thể select thừa cột nếu không cẩn thận, còn constructor/record projection kiểm soát SQL chặt hơn.
+
+### Vì sao entity cho màn hình danh sách là sai
+- Load entity 50 cột cho màn hình chỉ hiển thị 5 cột → SELECT * ngầm, tốn I/O, network, memory.
+- Entity còn được dirty checking theo dõi → tốn CPU.
+- Quan hệ lazy có thể bị truy cập ngoài session → LazyInitializationException.
+
+### Interface projection
+~~~java
+public interface OrderSummary {
+  Long getId();
+  Instant getCreatedAt();
+  String getStatus();
+}
+List<OrderSummary> findByCustomerId(Long customerId);
+~~~
+- Spring Data JPA sinh proxy interface; SQL thường select các cột được gọi, nhưng có thể select thừa nếu dùng open projections (biểu thức) → closed projection an toàn hơn.
+
+### Constructor/record projection (DTO)
+~~~java
+public record OrderSummary(Long id, Instant createdAt, String status) {}
+@Query("select new com.example.OrderSummary(o.id, o.createdAt, o.status) from Order o where o.customerId = :cid")
+List<OrderSummary> findSummary(@Param("cid") Long cid);
+~~~
+- Kiểm soát chính xác cột được select; không có dirty checking; immutable.
+- Phù hợp khi cần alias, join, aggregate.
+
+### Bảng trade-off
+| Tiêu chí | Interface projection | Constructor/record |
+|---|---|---|
+| Kiểm soát SQL | Trung bình | Cao |
+| Boilerplate | Thấp | Cao hơn |
+| Immutable | Không | Có |
+| Aggregate/join | Hạn chế | Linh hoạt |
+
+### Ví dụ đời thực
+Màn hình danh sách đơn hàng 50 cột. Trước: entity → SELECT * 50 cột, 200ms, heap cao. Sau: record projection 5 cột → 30ms, heap giảm 80%.
+
+### Trả lời mẫu khi phỏng vấn
+Tôi chọn projection cho màn hình đọc: interface projection cho trường hợp đơn giản, constructor/record projection khi cần kiểm soát SQL chính xác hoặc join/aggregate. Tránh trả entity cho API đọc vì dirty checking và LazyInitializationException. Cần đo bằng EXPLAIN để đảm bảo số cột select đúng.
+
+> Senior tip: dùng projection kết hợp với DTO mapping ở tầng service; nếu cần cập nhật, load entity riêng trong transaction ghi, không reuse projection.`,
+  follow: ['Open projection và closed projection khác nhau ra sao?', 'Khi nào nên dùng @EntityGraph thay vì projection?', 'Làm sao test rằng query projection không select thừa cột?'],
+  tags: ['projection', 'DTO', 'interface', 'record', 'performance']
+},
+{
+  id: 'jpa-095',
+  topic: 'jpa',
+  level: 'lead',
+  q: 'Second-level cache của Hibernate: khi nào nên bật, khi nào không nên, và các rủi ro về consistency trong hệ thống phân tán?',
+  a: `**Tóm tắt:** Second-level cache hữu ích cho dữ liệu đọc nhiều, thay đổi ít và ít node; trong hệ thống phân tán nhiều instance, cache phải có cơ chế invalidation đồng bộ (distributed cache) hoặc tắt để tránh dữ liệu cũ.
+
+### Cơ chế
+- First-level cache (persistence context) sống trong một Session/EntityManager.
+- Second-level cache sống ở SessionFactory, dùng chung giữa các session trong cùng một JVM.
+- Query cache cache kết quả query; entity cache cache entity theo id.
+
+### Khi nên bật
+- Dữ liệu danh mục (country, currency, tax rate) thay đổi hiếm.
+- Single instance hoặc cache distributed (Redis/Hazelcast) với invalidation.
+- Read-heavy, write-light.
+
+### Khi không nên bật
+- Dữ liệu thay đổi thường xuyên → cache miss/invalidation liên tục, overhead.
+- Multi-instance không có distributed cache → dữ liệu cũ giữa các node.
+- Transaction isolation nghiêm ngặt → cache có thể trả stale data.
+
+### Rủi ro consistency
+- Cache invalidation không đồng bộ giữa các node → user thấy dữ liệu cũ.
+- Query cache phụ thuộc vào update timestamp cache: bulk update JPQL (@Modifying) đi qua Hibernate vẫn invalidate đúng query cache (Hibernate ghi vào update timestamps), nhưng KHÔNG evict entity cache region nên entity cache vẫn trả dữ liệu cũ; còn update bằng native SQL ngoài Hibernate (kết nối khác, dịch vụ khác) thì cả query cache lẫn entity cache đều không được invalidate → stale.
+- Cache stampede khi cache hết hạn đồng thời.
+
+### Ví dụ đời thực
+Hệ thống 8 pod Spring Boot, bật second-level cache cho bảng product price trên Caffeine local → pod A cập nhật giá, pod B vẫn trả giá cũ 5 phút. Chuyển sang Redis distributed cache với eviction on update → consistent.
+
+### Trả lời mẫu khi phỏng vấn
+Tôi bật second-level cache cho dữ liệu danh mục ít thay đổi và trong môi trường single instance hoặc distributed cache có invalidation. Tránh bật cho dữ liệu transactional hay multi-instance không có distributed cache. Luôn cân nhắc consistency, invalidation và overhead. Nếu cần, dùng cache ở tầng service (Redis cache-aside) thay vì Hibernate second-level cache để kiểm soát tốt hơn.
+
+> Senior tip: nếu dùng bulk update (@Modifying), nhớ evict cache thủ công (CacheManager) hoặc tắt cache cho entity đó.`,
+  follow: ['Query cache và entity cache khác nhau ra sao?', 'Làm sao invalidation cache khi dữ liệu thay đổi từ nhiều nguồn?', 'So sánh Hibernate second-level cache với Redis cache-aside?'],
+  tags: ['second-level cache', 'consistency', 'distributed', 'invalidation', 'Hibernate 6']
+}
+
 );
