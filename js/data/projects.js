@@ -8185,4 +8185,623 @@ Single-threaded matching (không khoá, replay tất định); journal append-on
     },
     related: ['banking-003', 'banking-004', 'concurrency-006', 'concurrency-009', 'design-005', 'design-011', 'microservices-005', 'microservices-009', 'sql-010', 'api-011']
   },
+  {
+    id: 'proj-clearing-margin', title: 'Bù trừ, ký quỹ và thanh toán lãi lỗ hằng ngày (clearing & margin)', level: 'senior', weeks: 10,
+    skills: ['Java 21', 'Spring Boot 3', 'Spring Batch', 'PostgreSQL', 'Kafka', 'Redis', 'Docker Compose', 'Testcontainers', 'Micrometer/Prometheus'],
+    business: {
+      intro: `**Tóm tắt:** Dự án này là **hậu kỳ giao dịch (post-trade)**: sau khi sàn khớp lệnh (dự án sàn giao dịch hàng hoá trước đó), hệ thống bù trừ (clearing) nhận các trade đã khớp qua Kafka, ghi **vị thế (position)** theo từng tài khoản × hợp đồng, rồi **cuối mỗi ngày** chốt lãi/lỗ theo **giá thanh toán (settlement price)** và trừ/cộng tiền mặt — gọi là **mark-to-market**. Nếu số dư tụt dưới **ký quỹ duy trì**, hệ thống phát **margin call** (gọi ký quỹ); quá hạn không nạp thì **thanh lý cưỡng bức**. Toàn bộ tiền ký quỹ đi qua **sổ cái kế toán kép (double-entry ledger)**, nạp/rút có **idempotency**, và một **batch cuối ngày (EOD)** có checkpoint chạy lại an toàn.
+
+### Bù trừ (clearing) là gì, vì sao cần?
+Hãy tưởng tượng chợ nông sản: người nông dân bán ngô cho nhà máy. Nếu mỗi lần có người mua–người bán mới, cả hai phải tự biết "ai đang nợ ai". Rủi ro: người bán giao hàng rồi người mua quỵt tiền. **Bù trừ trung tâm (central clearing house, ví dụ MXV ở Việt Nam hay CME Clearing ở Mỹ)** đứng ra làm **bên đối ứng (novation)**: sau khi khớp, sàn nói với cả hai rằng "từ giờ các anh không nợ nhau nữa, các anh nợ **tôi**; tôi là người mua của người bán và người bán của người mua". Nhờ vậy rủi ro tín dụng dồn về một chỗ được quản lý tập trung bằng **ký quỹ**, thay vì rải rác khắp thị trường.
+
+Nói dễ hiểu: bù trừ là "người giữ sổ chung" biết chính xác **mỗi tài khoản đang long/short bao nhiêu hợp đồng, giá vào bao nhiêu, đã lời/lỗ ra sao**, và **bảo đảm** không ai nợ quá khả năng chi trả nhờ ký quỹ.
+
+### Ba khái niệm tiền bạc người mới hay nhầm (tiếp nối dự án sàn)
+1. **Vị thế (position):** số hợp đồng bạn đang giữ theo mỗi hợp đồng×tài khoản. Dương = long (mua), âm = short (bán). Vị thế **không phải tiền**, nó là "lượng hàng cam kết".
+2. **Mark-to-market (định giá lại theo thị trường):** cuối ngày, lấy **giá thanh toán** mới, tính lãi/lỗ = (giá mới − giá vào) x nhân hệ số x số hợp đồng, rồi **cộng/trừ tiền mặt ngay**. Đây là lý do futures "thanh toán mỗi ngày".
+3. **Ký quỹ (margin):** tiền đặt cọc. **Ký quỹ ban đầu (initial margin)** để mở vị thế; **ký quỹ duy trì (maintenance margin)** là ngưỡng sàn, tụt dưới thì bị gọi thêm.
+
+### Ví dụ tính tay 3 ngày lãi lỗ của một vị thế
+Lan **mua (long) 2 hợp đồng ngô**, mỗi hợp đồng 5.000 bushel (nhân hệ số 5.000), giá vào 4,20 USD/bushel. Ký quỹ ban đầu 3.000 USD (1.500/hợp đồng), mức duy trì 2.200 USD (1.100/hợp đồng). Số liệu ký quỹ chỉ là minh hoạ, phải kiểm tra contract spec của sàn.
+
+| Ngày | Giá thanh toán (USD/bushel) | Tăng/giảm so với hôm trước | Lãi/lỗ = thay đổi x 5.000 x 2 | Số dư ký quỹ cuối ngày | Ghi chú |
+|---|---|---|---|---|---|
+| Mở vị thế | 4,20 | — | — | 3.000 | Nạp ký quỹ ban đầu, long 2 |
+| Ngày 1 | 4,25 | +0,05 | +500 | 3.500 | Cộng variation margin +500 |
+| Ngày 2 | 4,15 | −0,10 | −1.000 | 2.500 | Vẫn trên mức duy trì 2.200 |
+| Ngày 3 | 4,05 | −0,10 | −1.000 | 1.500 | Dưới 2.200 → margin call cần nạp 1.500 |
+
+Đọc bảng: mỗi ngày chỉ **thay đổi giá so với hôm trước** mới tính lãi/lỗ (không phải so với giá vào). Ngày 3 số dư 1.500 < 2.200 nên hệ thống gọi ký quỹ yêu cầu nạp thêm 1.500 để về mức ban đầu 3.000; nếu không nạp trong hạn thì **thanh lý cưỡng bức** 2 hợp đồng ở giá thị trường.
+
+> Senior tip: khi kể dự án, mở đầu bằng "sàn khớp lệnh xong, nhưng ai đảm bảo tiền về đúng? Đó là việc của bù trừ". Đừng nhảy vào Spring Batch. Interviewer sàn phái sinh muốn nghe bạn hiểu **vì sao** có mark-to-market và margin call trước khi nghe bạn code.
+
+### Vì sao dự án này "chạy được trên laptop"?
+Trạn thái thái bù trừ là **dữ liệu bảng biểu** (PostgreSQL) cộng một **batch cuối ngày** (Spring Batch) và một **consumer Kafka** đọc trade từ sàn. Không cần matching engine, không cần phần cứng đắt tiền. Docker Compose dựng PostgreSQL, Kafka, Redis; bạn đo batch EOD 100.000 vị thế bằng số giây thật và p99 truy vấn số dư khả dụng bằng JMH ngay trên máy 8 core.`,
+      journeys: [
+        { title: 'Vị thế của Lan bị margin call rồi thanh lý cưỡng bức', persona: 'Lan, nhà đầu tư cá nhân, đang long 2 hợp đồng ngô từ sàn; hệ thống bù trừ theo dõi vị thế và tiền ký quỹ của Lan.',
+          steps: [
+            { icon: '📥', screen: 'Nhận trade từ sàn', text: 'Sàn khớp lệnh và đẩy trade đã khớp lên Kafka. Consumer bù trừ đọc, ghi nhận Lan **long 2 @ 4,20**, trừ ký quỹ ban đầu 3.000 USD vào sổ cái.' },
+            { icon: '🌙', screen: 'Batch cuối ngày 1', text: '23:00 job EOD đọc settlement price 4,25, tính lãi +500, cộng vào số dư Lan còn 3.500, ghi bút toán MTM. Checkpoint lưu lại để chạy lại không cộng đôi.' },
+            { icon: '📉', screen: 'Batch cuối ngày 3', text: 'Giá về 4,05, lỗ thêm 1.000, số dư còn 1.500 < mức duy trì 2.200. Hệ thống tạo margin call, đặt hạn nạp 30 phút.' },
+            { icon: '🔔', screen: 'Thông báo cho Lan', text: 'Lan nhận margin call: cần nạp 1.500 USD về mức ban đầu trước 23:30. App hiện số tiền, hạn chót, và cảnh báo sẽ bị đóng vị thế.' },
+            { icon: '🏦', screen: 'Lan không nạp kịp', text: 'Hết hạn, margin call chuyển EXPIRED. Job thanh lý cưỡng bức đóng 2 hợp đồng ở giá thị trường 4,05, ghi Fill + ledger LIQUIDATION, đặt qty = 0.' },
+          ] },
+        { title: 'Điều phối viên chạy batch EOD và đối soát', persona: 'Nhân viên vận hành (clearing officer) phụ trách chạy và kiểm tra batch cuối ngày.',
+          steps: [
+            { icon: '🕙', screen: 'Kích hoạt EOD', text: '23:00 scheduler gọi POST /api/admin/eod. Hệ thống kiểm tra đã có settlement price cho ngày hôm nay chưa; thiếu thì dừng và báo.' },
+            { icon: '⚙️', screen: 'Batch chạy theo lô', text: 'Spring Batch đọc vị thế theo lô (chunk) 500 dòng, tính MTM, ghi ledger, cập nhật số dư. Mỗi lô xong lưu checkpoint (step, last_processed date).' },
+            { icon: '💥', screen: 'Batch chết giữa chừng', text: 'Process bị kill sau lô 3. Khi chạy lại, batch đọc checkpoint, chỉ xử lý tiếp từ lô 4; bảng daily_settlement có PK (account, contract, trade_date) nên không cộng MTM hai lần.' },
+            { icon: '🧾', screen: 'Đối soát', text: 'Sau batch, job đối soát so tổng ledger với số dư từng tài khoản; lệch 1 đồng cũng alert kèm account id, không tự sửa.' },
+          ] },
+        { title: 'Nạp, rút tiền và chuyển giữa hai tài khoản có idempotency', persona: 'Lan nạp thêm 1.500 USD để cứu vị thế; một admin chuyển tiền nội bộ giữa hai tài khoản.',
+          steps: [
+            { icon: '💳', screen: 'Nạp tiền', text: 'Lan bấm nạp 1.500 USD, app gửi kèm Idempotency-Key. Server ghi deposit + ledger DEPOSIT trong một transaction, cộng số dư khả dụng.' },
+            { icon: '🔁', screen: 'Mạng chập chờn gửi lại', text: 'App không nhận phản hồi, gửi lại cùng key. Server thấy idem_key đã có, trả kết quả cũ, không cộng tiền hai lần.' },
+            { icon: '🔀', screen: 'Chuyển nội bộ A→B', text: 'Admin chuyển 500 USD từ tài khoản A sang B. Hệ thống **khoá hai tài khoản theo thứ tự id tăng dần** để không deadlock khi có chiều ngược lại.' },
+            { icon: '📄', screen: 'Sao kê', text: 'Cuối ngày Lan xem sao kê: các dòng nạp, MTM, margin call, tất toán, số dư đầu/cuối kỳ khớp tuyệt đối.' },
+          ] },
+      ],
+      diagrams: [
+        { title: 'Batch đối soát cuối ngày (EOD) có checkpoint',
+          caption: 'Mũi tên liền là yêu cầu, mũi tên đứt là phản hồi. Batch chạy theo lô, lưu checkpoint sau mỗi lô; chạy lại chỉ xử lý phần còn dở và không cộng MTM hai lần.',
+          actors: ['Scheduler', 'EOD Job', 'Position', 'Ledger', 'Margin'],
+          steps: [
+            { from: 0, to: 1, text: '23:00 kích hoạt EOD' },
+            { from: 1, to: 2, text: 'đọc vị thế + settlement price' },
+            { from: 2, to: 1, text: 'danh sách vị thế', reply: true },
+            { from: 1, to: 3, text: 'ghi bút toán MTM (append-only)' },
+            { from: 1, to: 4, text: 'cập nhật số dư, kiểm tra ngưỡng' },
+            { from: 4, to: 1, text: 'tài khoản thiếu ký quỹ', reply: true },
+            { note: 'Checkpoint sau mỗi lô: chạy lại không nhân đôi MTM', over: [1, 3] },
+          ] },
+        { title: 'Margin call và thanh lý cưỡng bức',
+          caption: 'Số dư dưới mức duy trì sinh margin call có hạn nạp; quá hạn không nạp thì đóng vị thế ở giá thị trường.',
+          actors: ['Risk Job', 'Margin', 'Account', 'Client', 'Market'],
+          steps: [
+            { from: 0, to: 1, text: 'số dư < mức duy trì' },
+            { from: 1, to: 2, text: 'tạo margin call, hạn nạp 30 phút' },
+            { from: 1, to: 3, text: 'thông báo nạp thêm' },
+            { from: 3, to: 1, text: 'nạp đủ trong hạn', reply: true },
+            { note: 'Quá hạn: đóng vị thế ở giá thị trường, chốt lỗ', over: [0, 4] },
+          ] },
+      ],
+      glossary: [
+        { term: 'Bù trừ trung tâm (central clearing house)', meaning: 'Tổ chức đứng giữa người mua và người bán, trở thành bên đối ứng của cả hai (novation), quản lý rủi ro tập trung bằng ký quỹ. Ở Việt Nam có MXV, ở Mỹ có CME Clearing.' },
+        { term: 'Novation (chuyển giao nghĩa vụ)', meaning: 'Sau khi khớp, nghĩa vụ giữa hai bên được thay bằng nghĩa vụ với trung tâm bù trừ; người mua không còn nợ người bán mà nợ trung tâm.' },
+        { term: 'Vị thế (position)', meaning: 'Số hợp đồng đang giữ theo tài khoản×hợp đồng. Dương = long (mua), âm = short (bán). Là lượng cam kết, không phải tiền.' },
+        { term: 'Giá thanh toán (settlement price)', meaning: 'Giá dùng để tính lãi/lỗ cuối ngày, thường là trung bình có trọng số các giao dịch gần đóng cửa, do sàn công bố.' },
+        { term: 'Mark-to-market (định giá lại)', meaning: 'Cuối mỗi ngày tính lại lãi/lỗ theo settlement price và cộng/trừ tiền mặt. Vì thế futures thanh toán lãi/lỗ hằng ngày.' },
+        { term: 'Variation margin (biên độ biến động)', meaning: 'Khoản lãi/lỗ phải nạp thêm hoặc được rút ra mỗi ngày do mark-to-market. Lỗ bị trừ, lãi được cộng.' },
+        { term: 'Ký quỹ ban đầu (initial margin)', meaning: 'Tiền đặt cọc để mở vị thế, không phải tiền mua hàng. Số này thay đổi theo sàn; kiểm tra contract spec trước khi tin.' },
+        { term: 'Ký quỹ duy trì (maintenance margin)', meaning: 'Ngưỡng số dư tối thiểu để giữ vị thế, thường thấp hơn ký quỹ ban đầu. Tụt dưới ngưỡng sinh margin call.' },
+        { term: 'Margin call (gọi ký quỹ)', meaning: 'Thông báo sàn yêu cầu nạp thêm tiền khi số dư dưới mức duy trì, có thời hạn; quá hạn thì thanh lý cưỡng bức.' },
+        { term: 'Thanh lý cưỡng bức (forced liquidation)', meaning: 'Sàn tự đóng vị thế của khách ở giá thị trường khi khách không nạp đủ margin call, bảo vệ sàn và thành viên khác khỏi vỡ nợ.' },
+        { term: 'Sổ cái kế toán kép (double-entry ledger)', meaning: 'Sổ ghi mọi biến động tiền, mỗi giao dịch có bút toán Nợ/Có cân bằng, chỉ thêm không sửa, để truy vết từng đồng.' },
+        { term: 'Batch cuối ngày (EOD - end of day)', meaning: 'Job chạy sau khi đóng cửa để chốt settlement, mark-to-market, margin call, đối soát. Chạy theo lô và có checkpoint để chạy lại an toàn.' },
+        { term: 'Checkpoint (điểm lưu tiến độ)', meaning: 'Mốc lưu lại batch đã xử lý tới đâu (ví dụ theo ngày, theo lô). Khi job chết và chạy lại, đọc checkpoint để không xử lý lại phần đã xong.' },
+        { term: 'Idempotency (tính lặp lại an toàn)', meaning: 'Xử lý cùng một yêu cầu nhiều lần vẫn cho kết quả như một lần, dựa trên khóa duy nhất (Idempotency-Key).' },
+        { term: 'Sao kê (statement)', meaning: 'Báo cáo biến động tiền của một tài khoản trong một kỳ: số dư đầu kỳ, các dòng nạp/rút/MTM/margin, số dư cuối kỳ.' },
+        { term: 'Đối soát (reconciliation)', meaning: 'So hai nguồn số liệu (tổng ledger với số dư, hoặc vị thế dựng lại với snapshot) để phát hiện lệch, không tự sửa.' },
+      ],
+    },
+    pitch: `Dự án mô phỏng **hệ thống bù trừ và ký quỹ** của một sàn phái sinh hàng hoá: nhận trade đã khớp từ sàn qua Kafka, ghi vị thế theo tài khoản×hợp đồng, cuối ngày **mark-to-market** và trừ/cộng **variation margin**, phát **margin call** khi số dư dưới mức duy trì và **thanh lý cưỡng bức** khi quá hạn. Tiền ký quỹ đi qua **sổ cái kế toán kép**, nạp/rút có **idempotency**, batch **EOD** dùng Spring Batch có **checkpoint** chạy lại an toàn, có **đối soát** và **sao kê**. Bạn sẽ thể hiện được hiểu biết nghiệp vụ hậu kỳ giao dịch thật (vì sao futures thanh toán mỗi ngày, margin call bảo vệ sàn ra sao) và kỹ thuật độ tin cậy (batch restart, ledger, concurrency số dư khả dụng), đúng thứ JD module tài khoản/ký quỹ của sàn tìm kiếm. Đây là câu chuyện để kể với interviewer sàn phái sinh, nối tiếp dự án sàn giao dịch trước đó.`,
+    requirements: `### User story
+1. **Nhận trade từ sàn:** là hệ thống bù trừ, tôi đọc trade đã khớp từ Kafka và cập nhật vị thế theo tài khoản×hợp đồng.
+   Ví dụ: trade long 2 @ 4,20 → position Lan/NGZ26 qty = +2, avg_price 4,20; trade trùng id bị bỏ qua.
+   Chấp nhận: mỗi trade xử lý đúng một lần (idempotent theo trade id); avg_price tính theo weighted average.
+2. **Giá thanh toán và mark-to-market:** cuối ngày tôi đọc settlement price và tính lãi/lỗ từng vị thế.
+   Ví dụ: long 2, giá vào 4,20, settlement 4,25 → +500 USD cộng số dư; ghi ledger MTM.
+   Chấp nhận: pnl = (giá mới − giá cũ) x multiplier x qty; số dư cập nhật đúng; chạy lại cùng ngày không cộng đôi.
+3. **Margin call:** khi số dư dưới mức duy trì, tôi tạo margin call có hạn nạp.
+   Ví dụ: số dư 1.500 < duy trì 2.200 → margin call cần nạp 1.500, deadline 30 phút.
+   Chấp nhận: margin call có required và deadline; nạp đủ trong hạn thì đóng (MET).
+4. **Thanh lý cưỡng bức:** quá hạn không nạp, tôi đóng vị thế ở giá thị trường.
+   Ví dụ: deadline qua, margin call EXPIRED → đóng 2 hợp đồng ở 4,05, qty = 0, ghi ledger LIQUIDATION.
+   Chấp nhận: đóng đúng số hợp đồng còn mở; số dư không âm sau khi đóng.
+5. **Nạp/rút có idempotency:** tôi nạp thêm hoặc rút phần dư, có Idempotency-Key.
+   Ví dụ: nạp 1.500, gửi lại cùng key → trả kết quả cũ, không cộng hai lần; rút vượt khả dụng → 422.
+   Chấp nhận: idem_key là khóa chính; rút không vượt số dư khả dụng (cash − locked).
+6. **Chuyển tiền nội bộ:** admin chuyển tiền giữa hai tài khoản.
+   Ví dụ: A→B 500 USD; nếu có chiều B→A cùng lúc vẫn không deadlock.
+   Chấp nhận: tổng tiền hệ thống không đổi; không lỗi deadlock; ledger kép cân bằng.
+7. **Batch EOD có checkpoint:** tôi chạy batch cuối ngày, chết giữa chừng thì chạy lại tiếp tục.
+   Ví dụ: kill sau lô 3, chạy lại chỉ xử lý từ lô 4; không cộng MTM hai lần.
+   Chấp nhận: checkpoint lưu theo step; daily_settlement chặn trùng; batch restart được.
+8. **Đối soát và sao kê:** cuối ngày tôi đối soát ledger với số dư và xuất sao kê.
+   Ví dụ: lệch 1 đồng → alert kèm account id; sao kê số dư đầu/cuối kỳ khớp.
+   Chấp nhận: đối soát không tự sửa; sao kê liệt kê đủ dòng theo kỳ.
+
+### Phi chức năng
+- Throughput mục tiêu: batch EOD xử lý 100.000 vị thế < 30 giây trên laptop 8 core (chunk 500).
+- Latency: p99 đọc số dư khả dụng < 20 ms; POST nạp/rút p99 < 80 ms ở 200 req/s.
+- Nhất quán: số dư và ledger **strong consistency** trong một transaction PostgreSQL; market data/sao kê là **eventual**.
+- Bất biến: tổng ledger theo tài khoản = số dư; số dư khả dụng không âm; chạy lại EOD không nhân đôi MTM; journal trade idempotent.
+- Bảo mật: JWT; không log số dư đầy đủ; dữ liệu giả hoàn toàn.
+
+### Ngoài phạm vi
+- Không giao nhận hàng thật, không nối sàn thật, không thanh toán tiền thật.
+- Không mô phỏng SPAN đầy đủ (chỉ mô hình theo kịch bản giá, nói rõ khác SPAN thật).
+- Không làm UI đầy đủ; dùng Swagger UI, curl và job trigger.`,
+    architecture: `~~~text
+Sàn (dự án trước) -> Kafka (trade đã khớp) -> Clearing consumer (1 tx) -> PostgreSQL
+                                   -> Account/Position/Ledger (PostgreSQL)
+Scheduler -> Spring Batch EOD (chunk + checkpoint) -> Settlement/MTM/Margin
+Redis: cache settlement price + rate limit;  Docker Compose: Postgres, Kafka, Redis
+~~~
+Consumer đọc trade từ Kafka (idempotent theo trade id), cập nhật vị thế và trừ ký quỹ trong một transaction. Batch EOD chạy theo lô, lưu checkpoint, tính mark-to-market và margin call. Mọi biến động tiền ghi ledger append-only; số dư là projection đối soát được.`,
+    design: `### Schema DB (PostgreSQL 16, Flyway V1)
+~~~sql
+CREATE TABLE account (
+  id          UUID PRIMARY KEY,
+  owner_id    VARCHAR(64) NOT NULL,
+  cash        NUMERIC(18,2) NOT NULL DEFAULT 0,   -- tiền mặt (khả dụng + đang khóa)
+  locked      NUMERIC(18,2) NOT NULL DEFAULT 0,   -- ký quỹ đang khóa cho vị thế
+  version     BIGINT NOT NULL DEFAULT 0,          -- optimistic lock
+  UNIQUE (owner_id)
+);
+CREATE TABLE position (                             -- vị thế theo tài khoản × hợp đồng
+  account_id  UUID NOT NULL REFERENCES account(id),
+  contract_id VARCHAR(16) NOT NULL,
+  qty         INTEGER NOT NULL,                     -- dương = long, âm = short
+  avg_price   NUMERIC(10,6) NOT NULL,
+  last_settle NUMERIC(10,6) NOT NULL,               -- settlement đã dùng gần nhất
+  PRIMARY KEY (account_id, contract_id)
+);
+CREATE TABLE settlement_price (
+  contract_id VARCHAR(16) NOT NULL,
+  trade_date  DATE NOT NULL,
+  price       NUMERIC(10,6) NOT NULL,
+  PRIMARY KEY (contract_id, trade_date)
+);
+CREATE TABLE daily_settlement (                     -- chặn MTM chạy lại hai lần
+  account_id  UUID NOT NULL,
+  contract_id VARCHAR(16) NOT NULL,
+  trade_date  DATE NOT NULL,
+  pnl         NUMERIC(18,2) NOT NULL,
+  PRIMARY KEY (account_id, contract_id, trade_date)
+);
+CREATE TABLE ledger_entry (                         -- kế toán kép, chỉ thêm
+  id          BIGSERIAL PRIMARY KEY,
+  account_id  UUID NOT NULL,
+  amount      NUMERIC(18,2) NOT NULL,               -- âm/dương
+  reason      VARCHAR(16) NOT NULL,                 -- DEPOSIT|MTM|WITHDRAW|LIQUIDATION
+  trade_date  DATE NOT NULL,
+  created_at  TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX ix_ledger_acc ON ledger_entry (account_id, id DESC);
+CREATE TABLE margin_call (
+  id          BIGSERIAL PRIMARY KEY,
+  account_id  UUID NOT NULL,
+  contract_id VARCHAR(16) NOT NULL,
+  required    NUMERIC(18,2) NOT NULL,               -- cần nạp về mức ban đầu
+  deadline    TIMESTAMPTZ NOT NULL,
+  status      VARCHAR(8) NOT NULL DEFAULT 'OPEN',   -- OPEN|MET|EXPIRED
+  created_at  TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE TABLE deposit (                              -- idempotency nạp/rút
+  idem_key      VARCHAR(64) PRIMARY KEY,
+  account_id    UUID NOT NULL,
+  amount        NUMERIC(18,2) NOT NULL CHECK (amount > 0),
+  request_hash  CHAR(64) NOT NULL,
+  created_at    TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE TABLE eod_checkpoint (
+  step          VARCHAR(64) PRIMARY KEY,
+  last_processed DATE,
+  updated_at    TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+~~~
+{{daily_settlement}} có PK (account, contract, trade_date): khi batch chạy lại, {{INSERT ... ON CONFLICT DO NOTHING}} trả 0 dòng thì bỏ qua, không cộng MTM hai lần. {{ledger_entry}} append-only (thu quyền UPDATE/DELETE của user app).
+
+### API
+| Method | Path | Request | Response | Mã lỗi |
+|---|---|---|---|---|
+| GET | /api/accounts/{id} | - | 200 số dư khả dụng + vị thế | 404 |
+| POST | /api/deposits | Idempotency-Key, {amount} | 201 Ledger (200 nếu replay) | 400, 422 |
+| POST | /api/withdrawals | Idempotency-Key, {amount} | 201 Ledger | 422 thiếu khả dụng |
+| POST | /api/transfers | Idempotency-Key, {from,to,amount} | 201 Ledger | 422, 409 |
+| GET | /api/accounts/{id}/statement?from=&to= | - | 200 sao kê | 404 |
+| GET | /api/margin-calls?accountId= | - | 200 danh sách | - |
+| POST | /api/admin/eod | {tradeDate} | 202 batch started | 409 đã chạy |
+
+### Luồng chính: batch EOD
+~~~seq
+title: EOD mark-to-market có checkpoint
+actors: Scheduler | EOD Job | Position | Ledger | Margin
+Scheduler -> EOD Job: POST /admin/eod {tradeDate}
+EOD Job -> Position: đọc theo lô 500 + settlement
+Position --> EOD Job: vị thế chưa chốt
+EOD Job -> Ledger: INSERT daily_settlement + MTM
+Ledger --> EOD Job: 0 dòng nếu đã chốt (bỏ qua)
+EOD Job -> Margin: cập nhật số dư, kiểm tra ngưỡng
+note EOD Job..Ledger: checkpoint sau mỗi lô, chạy lại an toàn
+~~~
+
+### Cấu trúc dữ liệu cốt lõi (Java)
+~~~java
+// Áp lãi/lỗ mark-to-market: long lãi khi giá tăng, short lãi khi giá giảm
+// qty âm (short) tự đảo dấu, không cần if riêng
+BigDecimal pnl = newPrice.subtract(oldSettle)
+        .multiply(BigDecimal.valueOf(multiplier))   // nhân hệ số hợp đồng
+        .multiply(BigDecimal.valueOf(qty));          // qty có dấu
+account.applyPnl(pnl);                               // cash += pnl, ghi ledger MTM
+
+// Số dư khả dụng = cash - locked; chỉ được mở vị thế khi đủ
+boolean canOpen(Account a, BigDecimal required) {
+    return a.cash().subtract(a.locked()).compareTo(required) >= 0;
+}
+~~~
+Vì chỉ batch EOD (một luồng) chạm {{daily_settlement}} và {{position}} theo ngày, không có race; phần nạp/rút dùng {{UPDATE ... WHERE}} có điều kiện ở milestone 5.
+
+### Xử lý đồng thời và nhất quán
+| Tình huống | Hành vi | Cách test |
+|---|---|---|
+| Hai lệnh mở vị thế cùng tài khoản | Cập nhật số dư khả dụng bằng {{SELECT ... FOR UPDATE}} hoặc optimistic {{@Version}}; không âm | 100 thread, {{CountDownLatch}}, số dư khả dụng >= 0 |
+| Chuyển A→B và B→A cùng lúc | Khoá hai tài khoản theo thứ tự id tăng dần, không deadlock | 200 cặp ngược chiều, không lỗi 40P01 |
+| Batch chạy lại sau crash | {{daily_settlement}} chặn trùng, checkpoint bỏ qua lô đã xong | Kill giữa chừng, chạy lại, MTM không nhân đôi |
+| Trade Kafka trùng id | Consumer idempotent theo trade id | Gửi 2 lần cùng id → 1 lần cập nhật |
+| Rút vượt khả dụng | {{UPDATE}} có điều kiện, 0 dòng → 422 | 50 request rút cùng tài khoản |
+
+### Số liệu hiệu năng mục tiêu và cách đo
+- Batch EOD 100.000 vị thế < 30 giây (chunk 500, ghi ledger theo lô) — đo bằng Micrometer Timer {{eod.duration}} và log thời gian thực.
+- p99 đọc số dư khả dụng < 20 ms; POST nạp/rút p99 < 80 ms ở 200 req/s — đo bằng k6 hoặc Gatling.
+- Tính pnl bằng BigDecimal; nếu cần nhanh hơn dùng long tick rồi quy đổi, nhưng phải nói rõ trade-off.
+- Ghi rõ CPU/RAM/JDK/heap vào README; số local không phải cam kết production.
+
+> Senior tip: interviewer sẽ hỏi "số dư khả dụng cập nhật khi có lệnh mới thì optimistic hay FOR UPDATE?". Trả lời có điều kiện: vị thế nóng (nhiều lệnh/giây) dùng FOR UPDATE để tránh retry; thao tác thưa dùng optimistic. Luôn kèm test chứng minh.`,
+    milestones: [
+      { title: 'Schema, model tài khoản/vị thế và đối soát', tasks: `1. Tạo project Spring Boot 3.3 (Java 21) với Web, Data JPA, Validation, Flyway, PostgreSQL driver, Actuator.
+2. Viết {{V1__init.sql}} theo phần Schema DB; chạy {{docker compose up -d postgres}}.
+3. Viết record {{Money}} (BigDecimal scale 2, HALF_EVEN) và {{Tick}} (kiểm tra bội số tick).
+4. Viết entity {{Account}}, {{Position}}; {{cash}}, {{locked}} là BigDecimal, không dùng double.
+5. Viết 2 query đối soát: tổng ledger theo tài khoản = cash; vị thế = tổng trade.
+
+~~~java
+public record Money(BigDecimal amount) {
+    public Money {
+        amount = amount.setScale(2, RoundingMode.HALF_EVEN);  // làm tròn ngân hàng
+    }
+    public Money plus(Money o) { return new Money(amount.add(o.amount)); }
+    public Money minus(Money o) { return new Money(amount.subtract(o.amount)); }
+}
+~~~`, done: `Flyway migrate xanh trên PostgreSQL 16 sạch; INSERT amount có scale sai bị chuẩn hoá; query đối soát ledger = cash trả 0 dòng sau test; grep không có {{double}} cho tiền.`,
+        guide: `### Các khái niệm trước khi làm
+- **Ký quỹ (margin):** tiền đặt cọc để mở vị thế, không phải tiền mua hàng. Tài khoản có hai phần: {{cash}} (tiền mặt) và {{locked}} (phần đang bị khóa cho vị thế). Số dư **khả dụng** = cash − locked.
+- **Ledger kép:** mỗi lần tiền đổi (nạp, MTM, rút, thanh lý) ghi bút toán; tổng ledger theo tài khoản phải bằng số dư. Đây là "sự thật" để đối soát.
+- **Scale và HALF_EVEN:** tiền dùng BigDecimal scale 2, làm tròn kiểu ngân hàng (0,005 về 0,00) để tránh lệch cộng dồn.
+
+### Các bước
+1. Vào start.spring.io chọn Maven, Java 21, Spring Boot 3.3.x, group {{com.example}}, artifact {{clearing}}; thêm Spring Web, Spring Data JPA, Validation, Flyway, PostgreSQL Driver, Actuator, Testcontainers. Giải nén, chạy {{./mvnw -v}} chắc dùng JDK 21.
+2. Tạo {{compose.yaml}} ở gốc với postgres:16-alpine, kafka:3.7.0 (KRaft), redis:7-alpine; chạy {{docker compose up -d postgres}} rồi {{docker compose ps}} thấy healthy.
+3. {{application.yml}}: datasource {{jdbc:postgresql://localhost:5432/clearing}}, user/pass {{app}}, {{spring.jpa.hibernate.ddl-auto=validate}} để Flyway là nơi duy nhất tạo bảng.
+4. Chép {{V1__init.sql}} (account, position, settlement_price, daily_settlement, ledger_entry, margin_call, deposit, eod_checkpoint) vào {{src/main/resources/db/migration}}; khởi động app, log phải có "Successfully applied 1 migration".
+5. Viết record {{Money}} như phần tasks; viết {{Tick}} kiểm tra giá là bội số tick (giống dự án sàn trước). Unit test {{MoneyTest}}: 0,1 + 0,2 = 0,30 chính xác; scale luôn 2.
+6. Viết entity {{Account}} (không có setCash; số dư chỉ đổi qua service) và {{Position}} (PK account+contract, {{@Version}} cho optimistic).
+7. Lưu 2 query đối soát vào {{src/main/resources/sql/reconcile.sql}}: (a) {{SELECT account_id, SUM(amount) FROM ledger_entry GROUP BY account_id}} phải bằng {{cash}}; (b) vị thế = tổng qty từ trade.
+8. Viết {{SchemaConstraintsIT}} Testcontainers: INSERT ledger amount = 0 hoặc deposit amount <= 0 phải bị CHECK chặn.
+
+### Kiểm tra
+- {{./mvnw verify}} xanh; {{MoneyTest}} chứng minh không dùng double.
+- {{docker compose exec postgres psql -U app -d clearing}} mô tả bảng ledger_entry thấy index {{ix_ledger_acc}}.
+- {{grep -rnEi "double|float" src/main/java}} không có kết quả liên quan tới tiền.
+
+### Bẫy hay gặp
+- **So sánh BigDecimal bằng equals:** {{new BigDecimal("2.0").equals(new BigDecimal("2.00"))}} là false vì khác scale; chuẩn hoá scale 2 ngay khi tạo (Money làm việc này).
+- **Tạo BigDecimal từ double:** {{new BigDecimal(0.1)}} cho 0,1000000000000000055…; luôn dùng {{new BigDecimal("0.1")}}.
+- **Sửa file migration đã chạy:** Flyway báo checksum mismatch; muốn đổi thì viết V2 mới.
+
+> Interview tip: Nhấn rằng bạn đẩy bất biến xuống DB (CHECK, UNIQUE, append-only) để dù code có bug thì dữ liệu tiền vẫn không sai, và có query đối soát chứng minh.` },
+      { title: 'Nhận trade từ sàn qua Kafka và ghi vị thế', tasks: `1. Thêm {{spring-kafka}}; topic {{trades}} (trade đã khớp từ sàn), key = trade id.
+2. Viết consumer idempotent: bảng {{processed_trade(trade_id PK)}}; INSERT ON CONFLICT DO NOTHING, 0 dòng thì bỏ qua.
+3. Cập nhật vị thế: qty cộng dồn có dấu, avg_price theo trung bình có trọng số.
+4. Trừ ký quỹ ban đầu bằng {{UPDATE ... WHERE cash - locked >= required}}.
+5. Ghi ledger_entry (TRADE) trong cùng transaction.
+6. Viết test {{TradeConsumerIT}}: gửi 2 lần cùng trade id → 1 lần cập nhật.
+
+~~~java
+// avg_price mới = (giá cũ x qty cũ + giá mới x qty mới) / tổng qty
+BigDecimal newQty = old.qty() + trade.qty();
+BigDecimal newAvg = old.avgPrice().multiply(old.qty())
+        .add(trade.price().multiply(trade.qty()))
+        .divide(newQty, 6, RoundingMode.HALF_EVEN);
+~~~`, done: `Gửi trade long 2 @ 4,20 → position qty +2, avg 4,20; gửi lại cùng id → không đổi; số dư khả dụng trừ đúng ký quỹ; {{TradeConsumerIT}} xanh.`,
+        guide: `### Các khái niệm
+- **Kafka:** hàng đợi sự kiện phân tán; sàn đẩy trade đã khớp vào topic {{trades}}, bù trừ đọc sau. Mỗi trade có id duy nhất.
+- **Idempotent theo trade id:** khi consumer đọc lại (Kafka at-least-once) hoặc bị gửi trùng, dùng trade id làm khóa để không cập nhật vị thế hai lần.
+- **Vị thế có dấu:** qty dương là long, âm là short; cộng dồn trực tiếp, không cần tách hai loại.
+
+### Các bước
+1. Thêm {{spring-kafka}}; tạo topic bằng bean {{NewTopic}} ({{TopicBuilder.name("trades").partitions(6).build()}}), KafkaAdmin tự tạo khi khởi động.
+2. Cấu hình consumer {{groupId = "clearing"}}, {{enable.auto.commit=false}} để commit offset sau khi xử lý xong (at-most-once tránh mất).
+3. Migration V2 tạo {{processed_trade(trade_id VARCHAR(64) PRIMARY KEY, processed_at TIMESTAMPTZ)}}; ghi {{INSERT ... ON CONFLICT DO NOTHING}}, 0 dòng thì return.
+4. Trong {{@Transactional}}: cập nhật {{position}} (upsert qty, avg_price), trừ ký quỹ bằng {{UPDATE account SET locked = locked + :req WHERE id = :id AND cash - locked >= :req}}, 0 dòng → ném {{InsufficientMarginException}} → rollback.
+5. Ghi {{ledger_entry}} reason TRADE cùng transaction; commit offset sau listener trả về.
+6. Viết {{TradeConsumerIT}} Testcontainers + Kafka: gửi cùng trade id 2 lần → {{SELECT count(*) FROM processed_trade}} = 1, position qty đúng.
+
+### Kiểm tra
+- {{./mvnw verify -Dit.test=TradeConsumerIT}} xanh.
+- {{kafka-console-consumer.sh --topic trades --property print.key=true}} thấy key là trade id.
+- Gửi trade trùng id → log "duplicate trade", vị thế không đổi.
+
+### Bẫy hay gặp
+- **Cập nhật vị thế rồi mới khử lặp:** race khi consumer chạy lại; khử lặp trước bằng PK.
+- **Commit offset trước khi xử lý:** mất trade khi crash; commit sau khi transaction thành công.
+- **avg_price chia cho 0:** khi qty cũ + qty mới = 0 (đóng vị thế) phải đặt avg = 0, không chia.
+
+> Interview tip: Kể "consumer idempotent theo trade id + commit offset sau xử lý = không mất, không trùng trade".` },
+      { title: 'Settlement price, mark-to-market và variation margin', tasks: `1. Viết {{SettlementJob}} đọc {{settlement_price}} mỗi hợp đồng cho ngày hôm nay.
+2. Tính pnl = (giá mới − last_settle) x multiplier x qty; cập nhật {{cash}}, {{last_settle}}.
+3. Ghi {{daily_settlement}} (PK account, contract, trade_date) và {{ledger_entry}} MTM; ON CONFLICT DO NOTHING để không cộng đôi.
+4. Viết test {{MtmIT}}: long 2 @ 4,20 → 4,25 = +500; 4,15 = −1.000; chạy lại cùng ngày không đổi.
+5. Viết query đối soát ledger = cash.
+
+~~~java
+int inserted = jdbc.update(
+  "INSERT INTO daily_settlement(account_id, contract_id, trade_date, pnl) " +
+  "VALUES (?,?,?,?) ON CONFLICT DO NOTHING", acc, cid, date, pnl);
+if (inserted == 0) return;   // đã chốt ngày này rồi, bỏ qua
+account.applyPnl(pnl);        // cash += pnl, ledger MTM
+~~~`, done: `Long 2 @ 4,20 → settlement 4,25 = +500; 4,15 = −1.000; chạy lại cùng ngày không cộng thêm; ledger = cash; {{MtmIT}} xanh.`,
+        guide: `### Các khái niệm
+- **Settlement price (giá thanh toán):** giá chốt cuối ngày do sàn công bố, dùng để tính lãi/lỗ, không phải giá vào lệnh.
+- **Mark-to-market:** cuối ngày cộng/trừ lãi/lỗ vào tiền mặt; đây là "thanh toán mỗi ngày" của futures.
+- **Variation margin:** chính là khoản lãi/lỗ hằng ngày đó; lãi được cộng, lỗ bị trừ.
+
+### Các bước
+1. Viết {{SettlementPriceProvider}} đọc bảng {{settlement_price}} (hoặc Redis cache) theo contract + trade_date; thiếu thì ném lỗi rõ ràng, không đoán giá.
+2. {{SettlementJob}} lặp qua {{position}} chưa chốt trong ngày; với mỗi vị thế tính {{pnl = (new − last_settle) x multiplier x qty}} (qty có dấu).
+3. {{INSERT daily_settlement ... ON CONFLICT DO NOTHING}}; 0 dòng → đã chốt, bỏ qua (idempotent khi chạy lại).
+4. 1 dòng → {{account.applyPnl}} cộng/trừ {{cash}}, ghi {{ledger_entry}} reason MTM, cập nhật {{last_settle}} = new.
+5. Viết {{MtmIT}}: nạp 3.000, long 2 @ 4,20; settlement 4,25 → +500; 4,15 → −1.000; chạy lại cùng ngày → số dư không đổi.
+6. Viết {{ReconcileIT}}: sau chuỗi, {{SELECT SUM(amount) FROM ledger_entry WHERE account_id = ?}} = {{cash}}.
+
+### Kiểm tra
+- {{./mvnw test -Dtest=MtmIT}} xanh; số dư cuối đúng.
+- {{reconcile.sql}} trả 0 dòng lệch.
+- Chạy job 2 lần cùng ngày: số dư y hệt.
+
+### Bẫy hay gặp
+- **So pnl với giá vào thay vì giá hôm trước:** sai; phải dùng {{last_settle}} của ngày trước.
+- **Không ghi ledger MTM:** số dư đổi mà không truy vết; luôn ghi ledger.
+- **Chạy lại cộng đôi:** thiếu {{daily_settlement}} hoặc ON CONFLICT; PK chặn trùng.
+- **Long/short cùng dấu:** short lãi khi giá giảm; qty âm tự đảo dấu.
+
+> Interview tip: Nhấn "mark-to-market biến rủi ro tín dụng thành rủi ro thanh khoản hằng ngày; daily_settlement là hàng rào chống cộng đôi khi batch chạy lại".` },
+      { title: 'Margin call và thanh lý cưỡng bức', tasks: `1. Sau MTM, kiểm tra {{cash < maintenance}}; tạo {{margin_call}} (required, deadline = now + 30 phút).
+2. Gửi thông báo cho client (Kafka event {{margin.call}}).
+3. {{ForcedLiquidationJob}} {{@Scheduled}}: margin call quá hạn OPEN → đóng vị thế ở {{last_price}}.
+4. Ghi Fill + ledger LIQUIDATION, đặt qty = 0, margin_call status = EXPIRED.
+5. Viết test {{MarginIT}}: long 2, giá giảm → margin call; không nạp → đóng 2; nạp đủ → MET.
+
+~~~java
+if (account.cash().compareTo(maintenance) < 0) {
+    marginRepo.create(account.id(), contract, initial.subtract(account.cash()), now().plusMinutes(30));
+    events.publish("margin.call", account.id());     // gửi client
+}
+~~~`, done: `Long 2 @ 4,20 → 4,05 dưới duy trì → margin call cần nạp 1.500; không nạp → đóng đúng 2, qty 0, số dư không âm; nạp đủ → MET; {{MarginIT}} xanh.`,
+        guide: `### Các khái niệm
+- **Maintenance margin (ký quỹ duy trì):** ngưỡng tối thiểu; tụt dưới → margin call.
+- **Margin call:** yêu cầu nạp thêm về mức ban đầu, có hạn chót; quá hạn → thanh lý cưỡng bức.
+- **Forced liquidation:** sàn tự đóng vị thế ở giá thị trường, bảo vệ sàn khỏi rủi ro khách vỡ nợ.
+
+### Các bước
+1. Trong {{SettlementJob}} sau khi áp pnl, so {{cash}} với {{maintenance}} (lấy từ contract spec); nhỏ hơn → tạo {{margin_call}} {{required = initial − cash}}, {{deadline = now + 30 phút}}, status OPEN.
+2. Phát event {{margin.call}} lên Kafka (key = account id) để notification service gửi cho khách; dùng outbox nếu cần đảm bảo không mất.
+3. {{ForcedLiquidationJob}} {{@Scheduled(fixedDelay = 60000)}}: tìm margin_call OPEN quá deadline; với mỗi cái, đóng vị thế ở {{last_price}} (giá thị trường mới nhất), ghi {{ledger_entry}} LIQUIDATION, đặt {{position.qty = 0}}, status = EXPIRED.
+4. {{DepositService}}: khi nạp đủ, đóng margin_call thành MET (status = MET), không thanh lý.
+5. Viết {{MarginIT}}: nạp 3.000, long 2 @ 4,20; settlement 4,05 → lỗ, dưới duy trì → margin call; không nạp → đóng 2; nạp 1.500 trong hạn → MET, giữ vị thế.
+
+### Kiểm tra
+- {{./mvnw test -Dtest=MarginIT}} xanh; số dư cuối không âm.
+- Margin call có deadline; forced liquidation đóng đúng số hợp đồng còn mở.
+- {{reconcile.sql}} 0 dòng lệch.
+
+### Bẫy hay gặp
+- **Margin call không có hạn:** khách không biết khi nào bị đóng; đặt deadline rõ.
+- **Đóng ở giá vào lệnh:** phải dùng {{last_price}} thị trường mới nhất.
+- **Đóng vị thế đã đóng:** kiểm tra qty != 0 trước khi thanh lý.
+- **Gửi margin call trùng:** dùng id margin_call làm khóa idempotent.
+
+> Interview tip: Kể "margin call + forced liquidation biến rủi ro vỡ nợ của một khách thành nghĩa vụ đóng ngay, bảo vệ cả sàn".` },
+      { title: 'Nạp/rút idempotency, ledger kép và chuyển tránh deadlock', tasks: `1. {{POST /api/deposits}} nhận {{Idempotency-Key}}, băm SHA-256 payload; {{deposit}} idem_key là PK.
+2. Nạp/rút ghi {{ledger_entry}} (DEPOSIT/WITHDRAW) và cập nhật {{cash}} trong một transaction.
+3. Rút bằng {{UPDATE ... WHERE cash - locked >= amount}}; 0 dòng → 422.
+4. {{POST /api/transfers}} chuyển A→B: khoá hai tài khoản theo thứ tự id tăng dần.
+5. Viết test {{IdempotencyIT}} 10 thread cùng key; {{TransferDeadlockIT}} 200 cặp ngược chiều.
+
+~~~java
+@Transactional
+public void transfer(UUID from, UUID to, BigDecimal amt) {
+    UUID first = from.compareTo(to) < 0 ? from : to;   // khoá theo thứ tự id
+    UUID second = from.compareTo(to) < 0 ? to : from;
+    lock(first); lock(second);                          // SELECT ... FOR UPDATE
+    debit(from, amt); credit(to, amt);                  // ledger kép
+}
+~~~`, done: `10 thread cùng key → 1 ledger; rút vượt khả dụng → 422; 200 cặp A→B/B→A không lỗi 40P01; tổng tiền hệ thống không đổi; {{IdempotencyIT}} + {{TransferDeadlockIT}} xanh.`,
+        guide: `### Các khái niệm
+- **Idempotency key:** mã duy nhất kèm mỗi lần bấm; server nhận ra yêu cầu gửi lại, không làm hai lần. {{deposit}} dùng idem_key làm khóa chính.
+- **Số dư khả dụng:** {{cash − locked}}; không được rút vượt phần này.
+- **Deadlock:** hai transaction khoá chéo nhau; tránh bằng cách luôn khoá theo thứ tự id tăng dần.
+
+### Các bước
+1. Viết {{RequestHasher}}: chuẩn hoá {{account|amount.toPlainString()}}, băm SHA-256, hex 64 ký tự ({{HexFormat.of().formatHex(...)}}).
+2. {{DepositService}}: {{INSERT INTO deposit ... ON CONFLICT (idem_key) DO NOTHING}}; 0 dòng → đọc bản cũ, so hash, giống trả 200, khác 422 IDEMPOTENCY_MISMATCH.
+3. Nạp: {{UPDATE account SET cash = cash + :amt}} + {{ledger_entry}} DEPOSIT; rút: {{UPDATE ... WHERE cash - locked >= :amt}}, 0 dòng → {{InsufficientFundsException}} → 422.
+4. {{TransferService}}: {{SELECT ... FOR UPDATE}} hai tài khoản theo id tăng dần (tránh deadlock), rồi debit/credit + 2 ledger entry.
+5. Viết {{IdempotencyIT}}: 10 thread + {{CountDownLatch}} cùng key → 1 ledger; đổi amount giữ key → 422.
+6. Viết {{TransferDeadlockIT}}: 200 cặp A→B và B→A song song, assert không có SQLState 40P01, tổng tiền không đổi.
+
+### Kiểm tra
+- {{./mvnw verify -Dit.test=IdempotencyIT,TransferDeadlockIT}} xanh.
+- curl 2 lần cùng key: lần 1 201, lần 2 200 cùng id; đổi amount → 422.
+- {{SELECT SUM(amount) FROM ledger_entry}} = tổng nạp − tổng rút.
+
+### Bẫy hay gặp
+- **Bắt exception rồi commit:** nếu catch trong {{@Transactional}} và return, dòng đã chèn vẫn commit; để exception bay ra.
+- **Khoá không theo thứ tự:** A→B và B→A khoá chéo → deadlock; luôn theo id tăng dần.
+- **Rút vượt locked:** phải trừ cả {{locked}}, không chỉ {{cash}}.
+
+> Interview tip: Kể "unique idem_key là hàng rào cuối, UPDATE có điều kiện chặn rút vượt, khoá theo thứ tự id chống deadlock", kèm số 200 cặp không lỗi.` },
+      { title: 'Batch EOD Spring Batch, checkpoint và sao kê', tasks: `1. Thêm {{spring-boot-starter-batch}}; cấu hình {{JobRepository}} (PostgreSQL), chunk 500.
+2. Viết {{EodJob}}: step {{settle}} (MTM), step {{margin}} (margin call), step {{reconcile}}.
+3. Bật {{@EnableBatchProcessing}}; checkpoint tự lưu sau mỗi chunk; chạy lại đọc checkpoint.
+4. Viết {{StatementService}}: {{GET /api/accounts/:id/statement}} liệt kê ledger theo kỳ, số dư đầu/cuối.
+5. Viết test {{EodRestartIT}}: kill giữa chừng, chạy lại, MTM không nhân đôi.
+
+~~~java
+@Bean
+public Job eodJob(JobRepository repo, Step settle, Step margin, Step reconcile) {
+    return new JobBuilder("eodJob", repo)
+        .start(settle).next(margin).next(reconcile).build();   // checkpoint tự lưu
+}
+~~~`, done: `Batch 100.000 vị thế < 30 giây; kill sau lô 3, chạy lại chỉ xử lý tiếp, MTM không cộng đôi; sao kê số dư đầu/cuối khớp; {{EodRestartIT}} xanh.`,
+        guide: `### Các khái niệm
+- **Spring Batch:** khung chạy batch theo lô (chunk), tự lưu checkpoint (đã xử lý tới đâu) vào {{BATCH_STEP_EXECUTION}}, chạy lại tiếp tục.
+- **Checkpoint:** mốc tiến độ; khi job chết, đọc lại để không xử lý trùng.
+- **Sao kê (statement):** báo cáo biến động tiền theo kỳ, số dư đầu/cuối phải khớp tổng ledger.
+
+### Các bước
+1. Thêm {{spring-boot-starter-batch}} và {{spring-boot-starter-jdbc}}; cấu hình {{spring.batch.jdbc.initialize-schema=always}} (hoặc Flyway tạo bảng BATCH_*).
+2. Viết {{PositionItemReader}} đọc {{position}} theo {{trade_date}} chưa chốt; {{MtmItemProcessor}} tính pnl; {{LedgerItemWriter}} ghi {{daily_settlement}} + {{ledger_entry}} + cập nhật {{cash}}.
+3. Cấu hình {{Step}} chunk 500, {{JobRepository}} PostgreSQL; checkpoint tự lưu; bật {{@EnableBatchProcessing}}.
+4. {{EodJob}} gồm 3 step nối tiếp: settle → margin → reconcile; chạy bằng {{POST /api/admin/eod}} hoặc {{JobLauncher}}.
+5. {{StatementService}}: {{SELECT * FROM ledger_entry WHERE account_id = ? AND trade_date BETWEEN ? AND ? ORDER BY id}}; số dư đầu kỳ = cash đầu, cuối kỳ = cash cuối.
+6. Viết {{EodRestartIT}}: chạy job, kill giữa chừng (hoặc ném exception ở chunk 3), chạy lại; assert {{daily_settlement}} không có dòng trùng và {{cash}} đúng.
+
+### Kiểm tra
+- {{./mvnw test -Dtest=EodRestartIT}} xanh; log "restart from checkpoint".
+- Batch 100.000 vị thế < 30 giây (đo bằng Timer, ghi cấu hình máy).
+- Sao kê: số dư đầu + tổng biến động = số dư cuối.
+
+### Bẫy hay gặp
+- **Không idempotent step:** chạy lại cộng đôi; {{daily_settlement}} ON CONFLICT + checkpoint.
+- **Đọc toàn bộ vào RAM:** 100.000 vị thế OK, nhưng phải dùng reader theo lô để mở rộng.
+- **Sao kê dùng OFFSET sâu:** chậm; phân trang bằng cursor theo id.
+
+> Interview tip: Nhấn "Spring Batch chunk + checkpoint + daily_settlement idempotent = batch restart an toàn, không cộng đôi tiền".` },
+      { title: 'Concurrency số dư khả dụng, đo hiệu năng và đóng gói', tasks: `1. So sánh optimistic {{@Version}} và {{SELECT ... FOR UPDATE}} cho cập nhật số dư khả dụng; chọn theo tải.
+2. Viết {{BalanceConcurrencyIT}}: 100 thread mở vị thế cùng tài khoản, số dư khả dụng không âm.
+3. Thêm Micrometer + Prometheus + Grafana (profile obs); dashboard throughput, p99, eod duration.
+4. Viết {{load/withdraw.js}} cho k6; ghi cấu hình máy.
+5. Hoàn thiện README: sơ đồ, luồng, lệnh chạy, bảng quyết định, STAR.
+
+~~~java
+// FOR UPDATE: khoá dòng, đánh giá lại điều kiện trên bản mới nhất
+@Lock(LockModeType.PESSIMISTIC_WRITE)
+@Query("select a from Account a where a.id = :id")
+Account lockForUpdate(@Param("id") UUID id);
+~~~`, done: `100 thread mở vị thế → số dư khả dụng không âm; p99 đọc số dư < 20 ms; dashboard hiện p99, eod duration; README có STAR số liệu; demo 3 phút chạy trơn.`,
+        guide: `### Các khái niệm
+- **Optimistic lock ({{@Version}}):** không khoá, đọc có version, ghi kiểm tra version; tranh chấp thì retry. Phù hợp tải thấp.
+- **Pessimistic lock ({{SELECT ... FOR UPDATE}}):** khoá dòng ngay, chờ; không retry. Phù hợp vị thế nóng.
+- **p99:** 99% yêu cầu nhanh hơn con số này; đo độ trễ đuôi.
+
+### Các bước
+1. Cấu hình {{spring.jpa.properties.hibernate.jdbc.batch_versioned_data=true}}; bật {{@Version}} trên {{Account}}.
+2. Viết {{BalanceService.openPosition}}: dùng {{lockForUpdate}} (FOR UPDATE) cho vị thế nóng, kiểm tra {{cash − locked >= required}}, cập nhật {{locked}}, ghi ledger.
+3. Viết {{BalanceConcurrencyIT}}: 100 thread + {{CountDownLatch}} cùng mở vị thế; assert số dư khả dụng >= 0, không deadlock.
+4. Thêm {{micrometer-registry-prometheus}}; {{management.endpoints.web.exposure.include=health,prometheus}}; Timer {{eod.duration}}, {{balance.update.duration}}.
+5. Thêm Prometheus + Grafana vào compose profile obs; dashboard 4 panel: throughput, p99, eod duration, hikaricp pending.
+6. Viết {{load/withdraw.js}} k6 ramp lên 200 req/s; chạy, chụp p99; nâng rate limit profile perf.
+7. Viết README theo mẫu (mục "Quyết định thiết kế": ledger kép, EOD checkpoint, FOR UPDATE; trade-off).
+
+### Kiểm tra
+- {{./mvnw verify -Dit.test=BalanceConcurrencyIT}} xanh; số dư khả dụng không âm.
+- {{curl localhost:8080/actuator/prometheus | grep eod_}} có counter, histogram.
+- k6 p99 < 80 ms; reconcile 0 dòng.
+
+### Bẫy hay gặp
+- **Optimistic cho vị thế nóng:** retry liên tục, p99 tăng; dùng FOR UPDATE.
+- **Tag cardinality cao:** gắn accountId vào metric làm Prometheus nổ; chỉ tag result/endpoint.
+- **Benchmark trên máy đang chạy IDE:** số dao động; warm-up, chạy 3 lần, báo trung vị.
+
+> Interview tip: Trình bày bảng "optimistic vs FOR UPDATE" kèm số đo, nói rõ chọn theo tải và có test chứng minh không âm.` },
+    ],
+    challenges: [
+      `### Số dư khả dụng bị âm khi nhiều lệnh cùng tài khoản
+**Triệu chứng:** hai lệnh mở vị thế cùng lúc, {{cash − locked}} âm, hoặc margin call gửi trùng.
+**Nguyên nhân gốc:** đọc {{cash}} rồi ghi không nguyên tử; nhiều thread cùng thấy đủ tiền.
+**Cách 1, {{SELECT ... FOR UPDATE}}:** khoá dòng, đánh giá lại điều kiện trên bản mới nhất; không retry, phù hợp vị thế nóng.
+**Cách 2, optimistic {{@Version}}:** không khoá, retry khi tranh chấp; phù hợp tải thấp, nhưng vị thế nóng retry liên tục làm tăng p99.
+**Chứng minh:** 100 thread + {{CountDownLatch}} cùng mở vị thế; assert số dư khả dụng >= 0 và đúng số thành công.`,
+      `### Deadlock khi chuyển tiền giữa hai tài khoản
+**Triệu chứng:** log {{ERROR: deadlock detected}} (SQLSTATE 40P01) khi A→B và B→A cùng lúc.
+**Nguyên nhân gốc:** TX1 khoá A rồi chờ B, TX2 khoá B rồi chờ A.
+**Cách 1, khoá theo thứ tự id tăng dần:** loại bỏ deadlock tận gốc, chi phí gần như 0.
+**Cách 2, retry khi 40P01/40001** (Spring Retry, tối đa 3 lần, có jitter): lưới an toàn, nhưng vẫn tốn thời gian chờ.
+**Chứng minh:** 200 cặp ngược chiều song song, assert không có lỗi deadlock và tổng tiền hệ thống không đổi.`,
+      `### Batch EOD chạy lại cộng đôi MTM
+**Triệu chứng:** sau khi job chết và chạy lại, số dư lệch, ledger có hai dòng MTM cùng ngày.
+**Nguyên nhân gốc:** không có checkpoint hoặc {{daily_settlement}} không idempotent.
+**Cách 1, chunk + checkpoint + {{daily_settlement}} PK (account, contract, trade_date) + ON CONFLICT DO NOTHING:** chạy lại bỏ qua phần đã chốt.
+**Cách 2, đánh dấu trạng thái theo ngày trong {{eod_checkpoint}}:** dừng hẳn nếu ngày đã hoàn tất.
+**Chứng minh:** kill sau lô 3, chạy lại; {{SELECT count(*) FROM daily_settlement}} không có dòng trùng, {{cash}} đúng.`,
+      `### Variation margin làm tròn lệch từng ngày
+**Triệu chứng:** số dư cuối kỳ lệch vài cent so với tính tay, do cộng dồn làm tròn.
+**Nguyên nhân gốc:** làm tròn mỗi ngày rồi cộng, hoặc dùng double.
+**Cách 1, BigDecimal scale 2 HALF_EVEN, làm tròn một lần khi ghi ledger:** ổn định, tái lập được.
+**Cách 2, dùng long tick rồi quy đổi cuối ngày:** nhanh hơn nhưng phải nói rõ trade-off và kiểm soát làm tròn.
+**Chứng minh:** tính tay 3 ngày khớp với số dư hệ thống từng cent; {{MoneyTest}} 0,1 + 0,2 = 0,30.`,
+      `### Thanh lý cưỡng bức đua với lệnh mới
+**Triệu chứng:** khách vừa nạp tiền thì bị đóng, hoặc lệnh mới vào sau khi đã thanh lý.
+**Nguyên nhân gốc:** {{ForcedLiquidationJob}} và {{DepositService}} không đồng bộ trên cùng margin_call.
+**Cách 1, {{SELECT ... FOR UPDATE}} margin_call + kiểm tra status OPEN:** nạp đủ đóng MET, thanh lý chỉ chạy khi vẫn OPEN quá hạn.
+**Cách 2, dùng version trên margin_call:** optimistic, retry; nhưng deadline nóng nên FOR UPDATE an toàn hơn.
+**Chứng minh:** mô phỏng nạp và thanh lý cùng lúc; kết quả hoặc MET (giữ vị thế) hoặc EXPIRED (đóng), không vừa đóng vừa nhận tiền.`
+    ],
+    readme: `# Clearing & Margin (mini)
+\n## Mục tiêu
+Hệ thống bù trừ và ký quỹ cho sàn phái sinh hàng hoá thu nhỏ: nhận trade qua Kafka, ghi vị thế, mark-to-market cuối ngày, margin call và thanh lý cưỡng bức, ledger kép, nạp/rút idempotent, batch EOD có checkpoint. Dữ liệu giả, không tiền thật.
+\n## Kiến trúc
+Sàn -> Kafka (trades) -> Clearing consumer -> PostgreSQL (account, position, ledger). Scheduler -> Spring Batch EOD (chunk + checkpoint) -> settlement/MTM/margin. Redis cache settlement + rate limit.
+\n## Chạy local
+Yêu cầu Docker. {{docker compose up -d}} rồi {{./mvnw spring-boot:run}}; Flyway tự migrate, profile local dùng dữ liệu giả.
+\n## Kiểm thử và benchmark
+JUnit 5 + Testcontainers cho integration; đo batch EOD 100.000 vị thế và p99 số dư khả dụng; k6 cho nạp/rút. Ghi rõ máy, JDK, heap; số local không phải cam kết production.
+\n## Quyết định thiết kế
+Ledger append-only + số dư projection đối soát được; EOD chunk + checkpoint + daily_settlement idempotent; nạp/rút idem_key + UPDATE có điều kiện; chuyển khoá theo id tăng dần; FOR UPDATE cho vị thế nóng.`,
+    interview: {
+      story: `### STAR
+**Situation:** Bản đầu của hệ thống bù trừ dùng kiểu đọc {{cash}} rồi ghi lại; chạy 100 thread mở vị thế cùng tài khoản có 4/20 lần số dư khả dụng âm; batch EOD không checkpoint nên sau khi kill, chạy lại cộng đôi MTM; chuyển A→B và B→A cùng lúc gây deadlock.
+**Task:** Đảm bảo ba bất biến: số dư khả dụng không âm, tổng ledger = số dư, chạy lại EOD không nhân đôi MTM; giữ batch 100.000 vị thế < 30 giây và p99 số dư < 20 ms.
+**Action:**
+- Chuyển sang ledger kép append-only, {{UPDATE ... WHERE cash - locked >= amount}} và {{SELECT ... FOR UPDATE}} cho vị thế nóng.
+- Nạp/rút dùng {{idempotency-key}} + {{daily_settlement}} ON CONFLICT; batch EOD chunk 500 + checkpoint.
+- Chuyển tiền khoá hai tài khoản theo thứ tự id; margin call + forced liquidation cuối ngày.
+- Viết test Testcontainers: 100 thread, kill/replay batch, 200 cặp chuyển ngược chiều.
+**Result:**
+- 0 lần số dư khả dụng âm qua 50 lần chạy (trước 4/20 lỗi); 0 deadlock; MTM không nhân đôi sau restart.
+- Batch 100.000 vị thế 22 giây; p99 số dư 12 ms; đối soát ledger 0 dòng lệch.
+
+> Số liệu trên là ví dụ minh hoạ: hãy thay bằng kết quả bạn tự đo và nói rõ cấu hình máy.
+
+### Demo trong 5 phút
+1. {{docker compose up -d}} rồi {{./mvnw spring-boot:run}}; mở Swagger, chỉ nhanh sơ đồ README (30 giây).
+2. Gửi trade qua Kafka (hoặc {{POST /api/admin/eod}} sau khi nạp); xem {{position}} và {{ledger_entry}}.
+3. Chạy {{./mvnw test -Dtest=MarginIT}}: long 2, settlement giảm → margin call; không nạp → đóng 2.
+4. {{./mvnw test -Dtest=TransferDeadlockIT}}: 200 cặp, log không có 40P01.
+5. Kill batch giữa chừng, chạy lại: {{daily_settlement}} không trùng; kết bằng p99 và reconcile 0 dòng.`,
+      questions: [
+        'Vì sao futures phải mark-to-market và thanh toán lãi/lỗ hằng ngày thay vì đợi đến hạn?',
+        'Variation margin khác initial margin và maintenance margin thế nào, tính ra sao?',
+        'Bạn làm gì khi số dư tụt dưới mức duy trì, margin call và forced liquidation hoạt động thế nào?',
+        'Batch EOD chết giữa chừng, bạn làm sao để chạy lại không cộng đôi MTM?',
+        'Nạp/rút tiền idempotent thế nào, vì sao không rút vượt số dư khả dụng?',
+        'Cập nhật số dư khả dụng khi có lệnh mới: optimistic hay SELECT FOR UPDATE, chọn ra sao?',
+        'Chuyển tiền giữa hai tài khoản tránh deadlock thế nào, và vì sao phải theo thứ tự id?',
+        'Bạn đối soát ledger với số dư và vị thế ra sao, lệch thì xử lý thế nào?'
+      ],
+      answers: [
+        `Mark-to-market biến **rủi ro tín dụng** (chờ đến hạn mới biết ai quỵt) thành **rủi ro thanh khoản hằng ngày**: mỗi ngày lãi được cộng, lỗ bị trừ tiền mặt, nên không ai nợ tích luỹ lớn. Nếu đợi đến hạn, một khách lỗ nặng có thể mất khả năng trả, sàn gánh. Thanh toán hằng ngày giữ số dư luôn phản ánh giá thị trường, và margin call xuất hiện sớm khi vốn mỏng. Trade-off: hệ thống phải chạy batch mỗi ngày, ghi ledger MTM và chịu lỗi restart, nhưng đổi lại rủi ro được kiểm soát liên tục. Đây là lý do interviewer hỏi "vì sao futures khác giao ngay".`,
+        `**Initial margin** là tiền đặt cọc để **mở** vị thế; **maintenance margin** là ngưỡng sàn tối thiểu (thấp hơn initial); **variation margin** là khoản lãi/lỗ **hằng ngày** do mark-to-market. Công thức: pnl = (giá thanh toán mới − giá hôm trước) x nhân hệ số x số hợp đồng (qty có dấu). Lãi cộng vào cash, lỗ trừ. Khi cash < maintenance thì margin call yêu cầu nạp về mức initial; phần cần nạp = initial − cash. Tôi dùng BigDecimal scale 2 HALF_EVEN, ghi ledger MTM và {{daily_settlement}} để không cộng đôi. Trade-off: mô hình theo kịch bản giá đơn giản, không phải SPAN thật (SPAN mô phỏng nhiều kịch bản giá/vol), tôi nói rõ điều này.`,
+        `Khi {{cash < maintenance}}, tôi tạo {{margin_call}} với {{required = initial − cash}} và {{deadline = now + 30 phút}}, phát event cho client. Nếu khách nạp đủ trong hạn, margin_call chuyển MET, giữ vị thế. Nếu quá hạn vẫn OPEN, {{ForcedLiquidationJob}} đóng vị thế ở {{last_price}} (giá thị trường mới nhất, không phải giá vào), ghi Fill + ledger LIQUIDATION, đặt qty = 0, status EXPIRED. Mục đích là bảo vệ sàn và thành viên khác khỏi vỡ nợ. Test {{MarginIT}}: long 2 @ 4,20, settlement 4,05 → margin call; không nạp → đóng đúng 2; nạp đủ → MET.`,
+        `Tôi dùng ba lớp. (1) Spring Batch chunk 500 + checkpoint: sau mỗi lô lưu tiến độ vào {{BATCH_STEP_EXECUTION}}, chạy lại đọc checkpoint tiếp tục. (2) {{daily_settlement}} có PK (account, contract, trade_date) và {{INSERT ... ON CONFLICT DO NOTHING}}: lô đã chốt trả 0 dòng thì bỏ qua, không cộng MTM. (3) {{eod_checkpoint}} đánh dấu ngày hoàn tất. Test {{EodRestartIT}}: kill sau lô 3, chạy lại; {{SELECT count(*) FROM daily_settlement}} không có dòng trùng, {{cash}} đúng. Trade-off: batch chậm hơn một chút do ghi checkpoint, nhưng đổi lại restart an toàn, không cộng đôi tiền.`,
+        `Mỗi lần nạp/rút client gửi {{Idempotency-Key}}; bảng {{deposit}} dùng idem_key làm khóa chính, {{INSERT ... ON CONFLICT DO NOTHING}}; 0 dòng thì đọc bản cũ, so {{request_hash}} (SHA-256 payload chuẩn hoá): giống trả 200, khác 422 IDEMPOTENCY_MISMATCH. Rút bằng {{UPDATE account SET cash = cash − :amt WHERE cash − locked >= :amt}}, 0 dòng → 422. Lý do không rút vượt khả dụng: phần {{locked}} đang giữ cho vị thế, rút vào đó sẽ khiến không đủ ký quỹ và sinh nợ. Test {{IdempotencyIT}}: 10 thread cùng key → 1 ledger; rút vượt → 422.`,
+        `Tôi chọn theo tải. Vị thế nóng (nhiều lệnh/giây) dùng {{SELECT ... FOR UPDATE}} (pessimistic): khoá dòng, đánh giá lại điều kiện {{cash − locked >= required}} trên bản mới nhất, không retry, p99 ổn định. Thao tác thưa dùng optimistic {{@Version}}: không khoá, retry khi tranh chấp, throughput cao hơn nhưng retry liên tục khi nóng làm tăng p99. Test {{BalanceConcurrencyIT}}: 100 thread + {{CountDownLatch}} cùng mở vị thế, assert số dư khả dụng >= 0 và đúng số thành công. Tôi nói rõ trade-off và đo bằng k6 trước khi chọn, không đoán.`,
+        `Khi chuyển A→B, tôi luôn khoá hai tài khoản theo **thứ tự id tăng dần** ({{first = min(from,to)}}) bằng {{SELECT ... FOR UPDATE}}, rồi debit/credit + 2 ledger entry. Vì mọi đường code đều khoá theo cùng thứ tự, không thể có TX1 giữ A chờ B còn TX2 giữ B chờ A, nên không deadlock. Lưới an toàn là retry khi gặp SQLState 40P01 (Spring Retry, tối đa 3 lần, có jitter). Test {{TransferDeadlockIT}}: 200 cặp A→B và B→A song song, không lỗi 40P01, tổng tiền hệ thống không đổi. Trade-off: retry vẫn tốn thời gian chờ, nên thứ tự khoá là chính, retry chỉ là phụ.`,
+        `Tôi có hai tầng. Tầng 1 trong transaction: ledger ghi cùng lúc với cập nhật {{cash}} nên lệch chỉ khi có bug. Tầng 2 là job đối soát: {{SELECT account_id, SUM(amount) FROM ledger_entry GROUP BY account_id}} phải bằng {{cash}}; và {{daily_settlement}} cộng {{position}} phải khớp. Lệch dù 1 đồng cũng alert mức page kèm account id, **không tự sửa** vì cần người điều tra nguyên nhân. Khi dữ liệu lớn, đối soát tăng dần theo ngày thay vì quét toàn bộ. Test {{ReconcileIT}} sau chuỗi MTM/margin trả 0 dòng lệch.`
+      ]
+    },
+    related: ['banking-003', 'banking-004', 'concurrency-006', 'concurrency-009', 'design-005', 'design-011', 'db-010', 'sql-010', 'microservices-005', 'jvm-003']
+  },
 ];
