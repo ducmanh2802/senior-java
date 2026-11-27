@@ -56,7 +56,7 @@
       aws: ['aws-plan.js', 'aws-sap-1.js', 'aws-sap-2.js', 'aws-sap-3.js', 'aws-dop-1.js', 'aws-dop-2.js', 'aws-dop-3.js', 'aws-sap-4.js', 'aws-dop-4.js', 'aws-sap-5.js', 'aws-dop-5.js', 'aws-labs.js'],
       // Freelance track (#/freelance): 12-week AI-agent + Stripe + English roadmap (docs/FREELANCE-TRACK.md, scripts/check-freelance.js)
       freelance: ['freelance-plan.js', 'freelance-english.js'],
-      upwork: ['upwork-guide.js', 'upwork-cases-1.js', 'upwork-cases-2.js', 'upwork-cases-3.js'],   // #/upwork cẩm nang + case khó (docs/UPWORK-GUIDE.md)
+      upwork: ['upwork-guide.js', 'upwork-guide-2.js', 'upwork-cases-1.js', 'upwork-cases-2.js', 'upwork-cases-3.js'],   // #/upwork cẩm nang + case khó (docs/UPWORK-GUIDE.md)
     },
     routes: {
       // dashboard: SRS due list + stats, next lesson, today's plan, interview plan — all from the light index via

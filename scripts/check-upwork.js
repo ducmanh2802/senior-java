@@ -19,7 +19,9 @@ const CASE_KEYS = new Set(['id', 'category', 'level', 'severity', 'title', 'situ
   'mistakes', 'prevention', 'related', 'tags']);
 
 function files() {
-  return ['upwork-guide.js'].concat(fs.readdirSync(DATA).filter(f => /^upwork-cases-\d+\.js$/.test(f))
+  const num = f => parseInt((f.match(/-(\d+)\.js$/) || [0, 0])[1], 10);
+  const guides = fs.readdirSync(DATA).filter(f => /^upwork-guide(-\d+)?\.js$/.test(f)).sort((x, y) => num(x) - num(y));
+  return guides.concat(fs.readdirSync(DATA).filter(f => /^upwork-cases-\d+\.js$/.test(f))
     .sort((a, b) => parseInt(a.match(/\d+/)[0], 10) - parseInt(b.match(/\d+/)[0], 10)));
 }
 
