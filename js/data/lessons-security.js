@@ -6136,4 +6136,697 @@ Bài dùng {{ITERATIONS = 6000}} để test chạy nhanh; production theo khuy�
   related: ['security-029', 'security-036', 'security-070'],
   tags: ['password', 'pepper', 'PBKDF2', 'HMAC', 'timing attack'],
 },
+{
+  id: 'lesson-security-019',
+  track: 'security',
+  order: 19,
+  title: 'JWT: kiểm tra chữ ký xong vẫn chưa đủ — aud, iss, nbf, leeway và cái bẫy dùng chéo token giữa các service',
+  level: 'senior',
+  minutes: 35,
+  goals: [
+    'Giải thích được vì sao verify chữ ký thành công vẫn có thể bị tấn công nếu bỏ qua {{aud}} (audience) và {{iss}} (issuer)',
+    'Tự ký và kiểm tra JWT bằng {{javax.crypto.Mac}} ({{HmacSHA256}}), cố định {{alg}} = HS256 để từ chối {{alg:none}} và alg confusion',
+    'Kiểm tra đúng {{exp}}, {{nbf}} kèm {{leeway}} (dung sai lệch giờ) và hiểu vì sao đồng hồ lệch làm token hợp lệ bị từ chối oan',
+  ],
+  body: `**Tóm tắt:** Verify JWT không phải chỉ "chữ ký có khớp không". Một token ký đúng bằng secret chung nhưng mang {{aud}} (đối tượng nhận) của service khác vẫn phải bị từ chối — nếu không, token cấp cho service A sẽ dùng được ở service B (token confusion). Quy trình đúng: cố định thuật toán → tách 3 phần → kiểm chữ ký hằng thời gian → kiểm {{exp}} và {{nbf}} với {{leeway}} → kiểm {{iss}} và {{aud}}. Bài tập tự viết một {{JwtAuth}} làm đúng các bước đó.
+
+### Chữ ký đúng không có nghĩa là token dành cho bạn
+Hãy hình dung một toà nhà có nhiều phòng, mỗi phòng một ổ khoá. {{aud}} (audience) ghi rõ "tấm thẻ này mở phòng nào". Dù thẻ do đúng bảo vệ (issuer) cấp và còn hạn, bạn vẫn không mở được phòng khác bằng nó. Trong hệ thống nhiều service dùng chung một secret ký (hoặc chung một IdP), nếu resource server **không** kiểm {{aud}}, thì một access token mà client xin cho service A sẽ được service B chấp nhận — attacker chỉ cần xin token hợp lệ cho một service "dễ tính" rồi mang sang service "nhạy cảm". Đây là lỗi **token confusion / confused deputy**, và nó đã gây ra các sự cố thật khi nhiều API cùng tin một issuer.
+
+Tương tự, {{iss}} (issuer) trả lời "ai cấp token này". Nếu bạn cấu hình nhiều issuer (ví dụ Keycloak nội bộ và một IdP đối tác) mà không kiểm {{iss}}, token của issuer không mong muốn cũng lọt qua.
+
+### Cấu trúc và ký HMAC-SHA256 (nhắc lại để tự viết được)
+JWT là ba chuỗi Base64URL nối bằng dấu chấm: {{header.payload.signature}}. Base64URL dùng {{-}} và {{_}} thay {{+}} {{/}} và bỏ padding {{=}}. Chữ ký là HMAC-SHA256 tính trên đúng đoạn {{header.payload}}:
+
+~~~java
+Mac mac = Mac.getInstance("HmacSHA256");
+mac.init(new SecretKeySpec(secret.getBytes(StandardCharsets.UTF_8), "HmacSHA256"));
+byte[] sig = mac.doFinal(signingInput.getBytes(StandardCharsets.UTF_8));   // signingInput = header.payload
+String signature = Base64.getUrlEncoder().withoutPadding().encodeToString(sig);
+~~~
+
+Bên kiểm tra tính lại HMAC rồi so với chữ ký nhận được bằng {{MessageDigest.isEqual}} (hằng thời gian). Thuật toán do **bên verify cố định** (HS256), không đọc {{alg}} từ header — nếu không, attacker đổi header sang {{none}} (bỏ chữ ký) hoặc alg confusion (đổi sang HS256 rồi ký bằng public key) sẽ qua.
+
+### Thứ tự kiểm tra bắt buộc
+Đọc claim trước khi xác thực là tin dữ liệu chưa kiểm chứng. Thứ tự đúng:
+
+0. Thuật toán cố định HS256; header {{alg}} khác → từ chối ngay.
+1. Tách đúng 3 phần với 2 dấu chấm; khác là rác.
+2. Tính lại HMAC trên {{header.payload}}, so bằng {{MessageDigest.isEqual}}.
+3. {{exp}}: chỉ nhận khi {{now < exp}} (RFC 7519: bằng {{exp}} là đã hết hạn).
+4. {{nbf}} (not before): chỉ nhận khi {{now >= nbf}}; trước đó token "chưa sinh ra".
+5. {{iss}} bằng issuer mong đợi; {{aud}} bằng audience của chính service này.
+
+### Leeway: dung sai cho lệch đồng hồ
+Đồng hồ giữa các máy không bao giờ khớp tuyệt đối. Nếu authorization server nhanh hơn resource server 30 giây, một token vừa cấp có {{nbf}} = thời điểm của AS sẽ bị RS (đang ở 30 giây trước) coi là "chưa tới hạn" và từ chối oan. {{leeway}} (dung sai, thường 30–60 giây) nới biên: coi token hết hạn khi {{now >= exp + leeway}} và còn hiệu lực từ {{now >= nbf - leeway}}. Spring Security cho cấu hình {{clockSkew}} (mặc định 60 giây) đúng cho mục đích này. Leeway quá lớn (vài phút) thì token hết hạn vẫn dùng được lâu — cân nhắc theo độ nhạy.
+
+### Bẫy production
+- **Bỏ kiểm {{aud}}**: token của service A dùng được ở service B — token confusion. Luôn kiểm {{aud}} đúng giá trị của service mình.
+- **Bỏ kiểm {{iss}}** khi hệ thống có nhiều issuer: token từ issuer lạ lọt qua.
+- **Tin {{alg}} từ header**: {{none}} hoặc alg confusion. Cố định HS256.
+- **Không có leeway** hoặc đồng bộ NTP kém: token hợp lệ bị 401 ngẫu nhiên, rất khó debug.
+- **Đọc {{sub}}/{{role}} trước khi verify**: leo thang quyền bằng token giả.
+- **So chữ ký bằng {{equals}}**: rò rỉ thời gian; dùng {{MessageDigest.isEqual}}.
+
+### Liên hệ phỏng vấn
+Interviewer hay hỏi: "verify JWT cần kiểm những claim nào, không chỉ chữ ký?", "{{aud}} và {{iss}} khác nhau thế nào, bỏ kiểm {{aud}} thì bị tấn công gì?", "clock skew là gì, xử lý ra sao?", "vì sao không tin {{alg}} trong header?". Làm xong bài tập dưới đây — tự ký bằng {{javax.crypto.Mac}}, tự viết {{verify}} kiểm chữ ký, {{exp}}, {{nbf}}, {{iss}}, {{aud}} với leeway — là bạn trả lời được cả bốn câu bằng chính mã của mình.`,
+  exercises: [
+    {
+      title: 'Viết JwtAuth: ký HS256, verify chữ ký + exp/nbf (có leeway) + iss + aud, từ chối alg sai',
+      prompt: `Hoàn thiện {{JwtAuth}} — phiên bản tối giản của JWT ký HS256 có kiểm tra đầy đủ claim, chỉ dùng JDK 17, thời gian do test truyền vào.
+
+- {{sign(subject, audience, issuer, secret, issuedAtSeconds, ttlSeconds)}}: header JSON cố định {{alg}} = HS256, {{typ}} = JWT; payload JSON viết liền, đúng thứ tự {{sub}}, {{iss}}, {{aud}}, {{nbf}}, {{exp}} với {{nbf = issuedAtSeconds}} và {{exp = issuedAtSeconds + ttlSeconds}}. Mỗi phần Base64URL không padding; chữ ký HMAC-SHA256 trên {{header.payload}}. Trả về {{header.payload.signature}}.
+- {{verify(token, secret, expectedIssuer, expectedAudience, nowSeconds, leewaySeconds)}}: true đúng khi tất cả các bước sau pass, ngược lại false (không ném exception):
+  1. token null/không đủ 3 phần → false;
+  2. header {{alg}} khác HS256 → false (chặn none và alg confusion);
+  3. chữ ký (HMAC-SHA256 trên {{header.payload}}) khớp bằng {{MessageDigest.isEqual}};
+  4. {{nowSeconds < exp + leewaySeconds}} (hết hạn khi now >= exp + leeway);
+  5. {{nowSeconds >= nbf - leewaySeconds}} (chưa sinh ra khi now < nbf - leeway);
+  6. {{iss}} bằng {{expectedIssuer}} và {{aud}} bằng {{expectedAudience}}.
+
+Mọi lỗi parse (Base64 rác, JSON rác) trả false. Bên verify luôn cố định HS256, không đọc {{alg}} để chọn thuật toán.`,
+      starter: `import java.nio.charset.StandardCharsets;
+import java.security.GeneralSecurityException;
+import java.security.MessageDigest;
+import java.util.Base64;
+import javax.crypto.Mac;
+import javax.crypto.spec.SecretKeySpec;
+
+final class JwtAuth {
+    static String sign(String subject, String audience, String issuer, String secret,
+                       long issuedAtSeconds, long ttlSeconds) {
+        throw new UnsupportedOperationException("TODO");
+    }
+
+    static boolean verify(String token, String secret, String expectedIssuer,
+                          String expectedAudience, long nowSeconds, long leewaySeconds) {
+        throw new UnsupportedOperationException("TODO");
+    }
+}`,
+      tests: `import java.nio.charset.StandardCharsets;
+import java.util.Base64;
+
+public class Main {
+    static final char Q = '"';
+    static int passed = 0, total = 0;
+    static void check(String name, Runnable r) {
+        total++;
+        try { r.run(); passed++; System.out.println("PASS " + name); }
+        catch (Throwable t) { System.out.println("FAIL " + name + ": " + t); }
+    }
+    static void eq(Object expected, Object actual) {
+        if (!Objects.equals(expected, actual)) throw new AssertionError("expected " + expected + " got " + actual);
+    }
+    static boolean v(String t, long now, long leeway) {
+        return JwtAuth.verify(t, "top-secret", "auth.example.com", "orders-api", now, leeway);
+    }
+    static String b64(String s) {
+        return Base64.getUrlEncoder().withoutPadding().encodeToString(s.getBytes(StandardCharsets.UTF_8));
+    }
+    public static void main(String[] args) {
+        check("token has three parts and header says HS256", () -> {
+            String t = JwtAuth.sign("user-42", "orders-api", "auth.example.com", "top-secret", 1000, 60);
+            int p1 = t.indexOf('.');
+            int p2 = t.indexOf('.', p1 + 1);
+            if (p1 <= 0 || p2 <= p1 + 1) throw new AssertionError("phai co 3 phan: " + t);
+            if (t.indexOf('.', p2 + 1) >= 0) throw new AssertionError("qua 2 dau cham");
+            String header = new String(Base64.getUrlDecoder().decode(t.substring(0, p1)), StandardCharsets.UTF_8);
+            if (!header.contains("HS256")) throw new AssertionError("header phai HS256: " + header);
+            if (t.indexOf('+') >= 0 || t.indexOf('/') >= 0 || t.indexOf('=') >= 0) throw new AssertionError("co ky tu base64 thuong");
+        });
+        check("payload has sub, iss, aud, nbf, exp in order", () -> {
+            String t = JwtAuth.sign("user-42", "orders-api", "auth.example.com", "k", 1000, 60);
+            int p1 = t.indexOf('.');
+            int p2 = t.indexOf('.', p1 + 1);
+            String payload = new String(Base64.getUrlDecoder().decode(t.substring(p1 + 1, p2)), StandardCharsets.UTF_8);
+            eq("{" + Q + "sub" + Q + ":" + Q + "user-42" + Q + "," + Q + "iss" + Q + ":" + Q + "auth.example.com" + Q
+                    + "," + Q + "aud" + Q + ":" + Q + "orders-api" + Q + "," + Q + "nbf" + Q + ":1000," + Q + "exp" + Q + ":1060}", payload);
+        });
+        check("valid token verifies inside its window", () -> {
+            String t = JwtAuth.sign("u", "orders-api", "auth.example.com", "top-secret", 1000, 60);
+            if (!v(t, 1000, 0)) throw new AssertionError("trong han ma verify false");
+            if (!v(t, 1059, 0)) throw new AssertionError("truoc exp ma verify false");
+        });
+        check("wrong secret is rejected", () -> {
+            String t = JwtAuth.sign("u", "orders-api", "auth.example.com", "k1", 1000, 60);
+            if (JwtAuth.verify(t, "k2", "auth.example.com", "orders-api", 1000, 0)) throw new AssertionError("sai secret ma verify true");
+        });
+        check("exp boundary with leeway", () -> {
+            String t = JwtAuth.sign("u", "orders-api", "auth.example.com", "k", 1000, 60);   // exp = 1060
+            if (JwtAuth.verify(t, "k", "auth.example.com", "orders-api", 1060, 0)) throw new AssertionError("now == exp phai het han");
+            if (JwtAuth.verify(t, "k", "auth.example.com", "orders-api", 1061, 0)) throw new AssertionError("qua exp ma verify true");
+            if (!JwtAuth.verify(t, "k", "auth.example.com", "orders-api", 1075, 20)) throw new AssertionError("trong leeway ma verify false");
+            if (JwtAuth.verify(t, "k", "auth.example.com", "orders-api", 1081, 20)) throw new AssertionError("vuot leeway ma verify true");
+        });
+        check("nbf with leeway: not valid before nbf - leeway", () -> {
+            String t = JwtAuth.sign("u", "orders-api", "auth.example.com", "k", 1000, 60);   // nbf = 1000
+            if (JwtAuth.verify(t, "k", "auth.example.com", "orders-api", 999, 0)) throw new AssertionError("truoc nbf ma verify true");
+            if (!JwtAuth.verify(t, "k", "auth.example.com", "orders-api", 985, 20)) throw new AssertionError("trong leeway truoc nbf ma verify false");
+            if (JwtAuth.verify(t, "k", "auth.example.com", "orders-api", 979, 20)) throw new AssertionError("vuot leeway truoc nbf ma verify true");
+        });
+        check("wrong audience is rejected (token confusion)", () -> {
+            String t = JwtAuth.sign("u", "orders-api", "auth.example.com", "k", 1000, 60);
+            if (JwtAuth.verify(t, "k", "auth.example.com", "billing-api", 1000, 0)) throw new AssertionError("sai aud ma verify true");
+        });
+        check("wrong issuer is rejected", () -> {
+            String t = JwtAuth.sign("u", "orders-api", "auth.example.com", "k", 1000, 60);
+            if (JwtAuth.verify(t, "k", "evil.example.com", "orders-api", 1000, 0)) throw new AssertionError("sai iss ma verify true");
+        });
+        check("alg none and alg confusion are rejected", () -> {
+            String headerNone = b64("{" + Q + "alg" + Q + ":" + Q + "none" + Q + "}");
+            String payload = b64("{" + Q + "sub" + Q + ":" + Q + "u" + Q + "}");
+            String noneToken = headerNone + "." + payload + ".";
+            if (JwtAuth.verify(noneToken, "k", "auth.example.com", "orders-api", 1000, 0)) throw new AssertionError("alg none ma verify true");
+            String headerHs = b64("{" + Q + "alg" + Q + ":" + Q + "HS512" + Q + "}");
+            String other = headerHs + "." + payload + ".AAAA";
+            if (JwtAuth.verify(other, "k", "auth.example.com", "orders-api", 1000, 0)) throw new AssertionError("alg khac HS256 ma verify true");
+        });
+        check("tampered payload breaks the signature", () -> {
+            String t = JwtAuth.sign("alice", "orders-api", "auth.example.com", "k", 1000, 60);
+            int p1 = t.indexOf('.');
+            String forged = t.substring(0, p1 + 1) + "A" + t.substring(p1 + 2);
+            if (v(forged, 1000, 0)) throw new AssertionError("payload bi sua ma verify true");
+        });
+        check("malformed tokens are rejected", () -> {
+            if (JwtAuth.verify(null, "k", "auth.example.com", "orders-api", 0, 0)) throw new AssertionError("null phai false");
+            if (JwtAuth.verify("", "k", "auth.example.com", "orders-api", 0, 0)) throw new AssertionError("empty phai false");
+            if (JwtAuth.verify("onlyone", "k", "auth.example.com", "orders-api", 0, 0)) throw new AssertionError("1 phan phai false");
+            if (JwtAuth.verify("a.b", "k", "auth.example.com", "orders-api", 0, 0)) throw new AssertionError("2 phan phai false");
+            if (JwtAuth.verify("a.b.c.d", "k", "auth.example.com", "orders-api", 0, 0)) throw new AssertionError("4 phan phai false");
+        });
+        System.out.println("RESULT " + passed + "/" + total);
+    }
+}`,
+      reference: `import java.nio.charset.StandardCharsets;
+import java.security.GeneralSecurityException;
+import java.security.MessageDigest;
+import java.util.Base64;
+import javax.crypto.Mac;
+import javax.crypto.spec.SecretKeySpec;
+
+final class JwtAuth {
+    private static final char Q = '"';
+
+    static String sign(String subject, String audience, String issuer, String secret,
+                       long issuedAtSeconds, long ttlSeconds) {
+        String header = encode("{" + Q + "alg" + Q + ":" + Q + "HS256" + Q + "," + Q + "typ" + Q + ":" + Q + "JWT" + Q + "}");
+        String payload = encode("{" + Q + "sub" + Q + ":" + Q + subject + Q + ","
+                + Q + "iss" + Q + ":" + Q + issuer + Q + ","
+                + Q + "aud" + Q + ":" + Q + audience + Q + ","
+                + Q + "nbf" + Q + ":" + issuedAtSeconds + "," + Q + "exp" + Q + ":" + (issuedAtSeconds + ttlSeconds) + "}");
+        String input = header + "." + payload;                    // chỉ đoạn này được ký
+        return input + "." + encode(hmac(input, secret));
+    }
+
+    static boolean verify(String token, String secret, String expectedIssuer,
+                          String expectedAudience, long nowSeconds, long leewaySeconds) {
+        if (token == null || secret == null) return false;
+        int p1 = token.indexOf('.');
+        int p2 = p1 <= 0 ? -1 : token.indexOf('.', p1 + 1);
+        if (p2 <= p1 + 1 || token.indexOf('.', p2 + 1) >= 0) return false;   // đúng 3 phần
+        byte[] headerBytes = decode(token.substring(0, p1));
+        if (headerBytes == null) return false;
+        String header = new String(headerBytes, StandardCharsets.UTF_8);
+        if (!header.contains(Q + "alg" + Q + ":" + Q + "HS256" + Q)) return false;   // cố định HS256
+        byte[] given = decode(token.substring(p2 + 1));
+        if (given == null) return false;
+        if (!MessageDigest.isEqual(hmac(token.substring(0, p2), secret), given)) return false;   // chữ ký trước
+        byte[] payloadBytes = decode(token.substring(p1 + 1, p2));
+        if (payloadBytes == null) return false;
+        String payload = new String(payloadBytes, StandardCharsets.UTF_8);
+        long exp = num(payload, "exp");
+        long nbf = num(payload, "nbf");
+        if (exp < 0 || nowSeconds >= exp + leewaySeconds) return false;      // hết hạn
+        if (nowSeconds < nbf - leewaySeconds) return false;                  // chưa sinh ra
+        return expectedIssuer != null && expectedIssuer.equals(str(payload, "iss"))
+                && expectedAudience != null && expectedAudience.equals(str(payload, "aud"));
+    }
+
+    private static String str(String payload, String name) {
+        String key = Q + name + Q + ":" + Q;
+        int i = payload.indexOf(key);
+        if (i < 0) return null;
+        int start = i + key.length();
+        int end = payload.indexOf(Q, start);
+        return end < 0 ? null : payload.substring(start, end);
+    }
+
+    private static long num(String payload, String name) {
+        String key = Q + name + Q + ":";
+        int i = payload.indexOf(key);
+        if (i < 0) return -1;
+        int start = i + key.length();
+        int end = start;
+        while (end < payload.length() && Character.isDigit(payload.charAt(end))) end++;
+        if (end == start) return -1;
+        try {
+            return Long.parseLong(payload.substring(start, end));
+        } catch (NumberFormatException e) {
+            return -1;
+        }
+    }
+
+    private static String encode(String s) {
+        return encode(s.getBytes(StandardCharsets.UTF_8));
+    }
+
+    private static String encode(byte[] bytes) {
+        return Base64.getUrlEncoder().withoutPadding().encodeToString(bytes);
+    }
+
+    private static byte[] decode(String s) {
+        try {
+            return Base64.getUrlDecoder().decode(s);
+        } catch (IllegalArgumentException e) {
+            return null;
+        }
+    }
+
+    private static byte[] hmac(String data, String secret) {
+        try {
+            Mac mac = Mac.getInstance("HmacSHA256");
+            mac.init(new SecretKeySpec(secret.getBytes(StandardCharsets.UTF_8), "HmacSHA256"));
+            return mac.doFinal(data.getBytes(StandardCharsets.UTF_8));
+        } catch (GeneralSecurityException e) {
+            throw new IllegalStateException(e);
+        }
+    }
+}`,
+      hints: [
+        'Chỉ ký đoạn trước dấu chấm thứ hai ({{header.payload}}); header cố định {{alg}} = HS256 để bên verify không bị alg confusion.',
+        'Thứ tự verify: kiểm {{alg}} → tách 3 phần → chữ ký ({{MessageDigest.isEqual}}) → {{exp}}/{{nbf}} với leeway → {{iss}}/{{aud}}. Đọc claim trước chữ ký là tin dữ liệu chưa xác thực.',
+        'Hết hạn khi {{now >= exp + leeway}}, chưa sinh ra khi {{now < nbf - leeway}}; {{leeway}} là dung sai lệch đồng hồ, thường 30–60 giây.',
+        'Tách claim bằng {{indexOf}} trên payload đã decode; mọi lỗi Base64/parse trả false, không ném exception.',
+      ],
+      explain: `Điểm cốt lõi: **chữ ký đúng là điều kiện cần, chưa đủ**. Một token ký hợp lệ bằng secret chung nhưng {{aud}} của service khác vẫn phải bị từ chối, nếu không attacker xin token cho service dễ tính rồi dùng chéo sang service nhạy cảm (token confusion). {{iss}} chặn token từ issuer lạ khi hệ thống có nhiều issuer.
+
+Bẫy hay gặp:
+- Bỏ kiểm {{aud}}/{{iss}} → token dùng chéo giữa các service.
+- Tin {{alg}} từ header → {{none}} bỏ chữ ký, hoặc alg confusion ký HMAC bằng public key; bên verify phải cố định HS256.
+- Không có {{leeway}} hoặc NTP kém → token hợp lệ bị 401 ngẫu nhiên; nhưng leeway quá lớn thì token hết hạn vẫn dùng lâu.
+- Sai biên {{exp}}: RFC 7519 yêu cầu {{now}} phải nhỏ hơn {{exp}}, nên bằng {{exp}} là hết hạn (test "now == exp phai het han" bắt đúng lỗi này).
+- So chữ ký bằng {{equals}} → timing channel; phải decode sang byte rồi {{MessageDigest.isEqual}}.
+
+Trong production, đừng tự parse JSON kiểu này mà dùng Nimbus/Spring Security oauth2 resource server ({{NimbusJwtDecoder}}) — nhưng phải cấu hình {{issuer-uri}}, {{audience}} và {{clockSkew}} đúng; hiểu thứ tự trên giúp bạn đọc và debug cấu hình đó.`,
+    },
+  ],
+  check: [
+    {
+      q: 'Token ký đúng bằng secret chung nhưng mang {{aud}} của service khác. Resource server không kiểm {{aud}} thì sao?',
+      options: [
+        'Không sao, chữ ký đúng là đủ',
+        'Token dùng chéo được sang service nhạy cảm (token confusion / confused deputy) — phải kiểm {{aud}} đúng giá trị của service mình',
+        'Chỉ cần kiểm {{exp}} là chặn được',
+        'Phải đổi sang RS256 mới an toàn',
+      ],
+      answer: 1,
+      explain: `Chữ ký chỉ chứng minh token do bên giữ secret cấp và chưa bị sửa, không nói token **dành cho ai**. {{aud}} (audience) ghi đối tượng nhận; bỏ kiểm nó thì token xin cho service A dùng được ở service B — đúng lỗi confused deputy. Kiểm {{exp}} không liên quan (token còn hạn), và đổi sang RS256 không sửa được việc thiếu kiểm {{aud}} (vẫn phải kiểm aud).`,
+    },
+    {
+      q: 'Vì sao verify cần {{leeway}} (dung sai lệch giờ)?',
+      options: [
+        'Để token sống lâu hơn',
+        'Vì đồng hồ giữa các máy không khớp tuyệt đối; leeway nới biên {{exp}}/{{nbf}} để token hợp lệ không bị từ chối oan (thường 30–60 giây)',
+        'Để attacker không dò được secret',
+        'Vì JWT bắt buộc phải có leeway theo RFC',
+      ],
+      answer: 1,
+      explain: `Đồng hồ authorization server và resource server lệch nhau vài chục giây là bình thường; không có leeway thì token vừa cấp ({{nbf}} theo giờ AS) bị RS (đang ở giờ sớm hơn) coi là "chưa sinh ra" và từ chối oan. Leeway nới biên: hết hạn khi {{now >= exp + leeway}}, hiệu lực từ {{now >= nbf - leeway}}. Leeway không kéo dài đời token một cách vô hạn (chỉ cộng một khoảng nhỏ) và không liên quan tới dò secret; RFC không bắt buộc con số cụ thể.`,
+    },
+    {
+      q: 'Khi verify, có nên đọc {{alg}} từ header để chọn thuật toán không?',
+      options: [
+        'Có, theo spec header quyết định thuật toán',
+        'Không: bên verify cố định HS256 để tránh {{alg:none}} (bỏ chữ ký) và alg confusion (đổi sang HS256 rồi ký bằng public key)',
+        'Chỉ cần cố định alg với token nội bộ',
+        'Được, miễn là hash {{alg}} lại',
+      ],
+      answer: 1,
+      explain: `Tin {{alg}} từ token là lỗ hổng: attacker đổi header sang {{none}} để bỏ chữ ký, hoặc với server dùng RS256 thì đổi sang HS256 và tự ký HMAC bằng public key (công khai). Quyết định thuật toán phải nằm ở **bên verify**, cố định HS256 (hoặc danh sách thuật toán cho phép), không đọc từ token. Hai phương án còn lại không có căn cứ và không chặn được tấn công.`,
+    },
+  ],
+  related: ['security-003', 'security-018', 'security-062', 'security-063'],
+  tags: ['JWT', 'HMAC', 'HS256', 'aud', 'iss', 'nbf', 'clock skew'],
+},
+{
+  id: 'lesson-security-020',
+  track: 'security',
+  order: 20,
+  title: 'Đăng nhập bằng PBKDF2 không rò rỉ: so sánh hằng thời gian và chống dò username bằng dummy hash',
+  level: 'senior',
+  minutes: 35,
+  goals: [
+    'Giải thích được vì sao so sánh hash bằng {{String.equals}} rò rỉ thời gian và phải dùng {{MessageDigest.isEqual}}',
+    'Hiểu và triển khai được kỹ thuật {{dummy hash}}: khi username không tồn tại vẫn chạy một phép PBKDF2 để thời gian phản hồi không tiết lộ username có thật hay không',
+    'Tự viết {{LoginService}} với {{PBKDF2WithHmacSHA256}}, salt riêng từng user, đọc số vòng từ chuỗi đã lưu và verify hằng thời gian',
+  ],
+  body: `**Tóm tắt:** Đăng nhập an toàn cần hai thứ hay bị bỏ quên. (1) So sánh hash phải **hằng thời gian** ({{MessageDigest.isEqual}}) — {{equals}} thoát sớm ở byte khác đầu tiên nên rò rỉ vị trí khác biệt. (2) Khi username **không tồn tại**, vẫn phải chạy một phép PBKDF2 trên một {{dummy hash}} cố định, để kẻ tấn công không đo thời gian phản hồi mà suy ra username nào có thật (username enumeration). Bài tập tự viết {{LoginService}} làm cả hai.
+
+### Vì sao {{equals}} là lỗ hổng
+{{String.equals}} (và {{Arrays.equals}}) **dừng ngay** khi gặp byte khác biệt đầu tiên: hai chuỗi khác ở byte đầu trả về false gần như tức thì, khác ở byte cuối thì lâu hơn. Kẻ tấn công gửi hàng loạt yêu cầu và đo thời gian phản hồi có thể suy ra mỗi lần đúng thêm một byte — gọi là **timing attack**. Với hash mật khẩu có salt thì attacker khó điều khiển byte hash, nhưng với token, chữ ký HMAC, API key thì đây là lỗ hổng thật. Thói quen đúng: mọi phép so sánh bí mật dùng {{MessageDigest.isEqual}} — nó duyệt hết độ dài mảng thứ nhất, gộp mọi khác biệt bằng XOR/OR, không thoát sớm. Đặt hash đã lưu làm **tham số thứ nhất** vì thời gian của {{isEqual}} phụ thuộc độ dài tham số này.
+
+### Username enumeration: thời gian phản hồi cũng là thông tin
+Kịch bản: form đăng nhập trả về "sai mật khẩu" nhanh khi username **không có** (chỉ tra map, không hash), nhưng chậm khi username **có** (phải chạy PBKDF2 hàng trăm nghìn vòng). Kẻ tấn công không cần đọc DB: cứ thử username, đo thời gian, cái nào chậm là **có thật**. Từ đó hắn có danh sách email hợp lệ để dò mật khẩu (credential stuffing) hoặc lừa đảo trúng đích hơn.
+
+Cách chống kinh điển: khi username không tồn tại, **vẫn** chạy PBKDF2 với một {{dummy hash}} cố định (một bản ghi giả, hợp lệ, có salt và số vòng riêng), rồi trả về "sai" như thường. Thời gian hai nhánh xấp xỉ nhau nên không lộ username. Đây là kỹ thuật "fake work" / dummy verification, Spring Security và nhiều hệ thống auth thật đều làm.
+
+~~~java
+// users tra username; neu khong co thi verify mot ban ghi gia (ton chi phi nhu that)
+String stored = users.get(username);
+if (stored == null) stored = DUMMY_STORED;     // chay PBKDF2 that, ket qua bi bo
+boolean ok = verify(password, stored);          // luon ton chi phi mot phep PBKDF2
+return stored != DUMMY_STORED && ok;            // user la khong co thi luon false
+~~~
+
+Lưu ý: đây là **giảm nhẹ**, không phải chống tuyệt đối — mạng, GC, cache vẫn có thể tạo khác biệt nhỏ; nhưng bỏ dummy hash thì khác biệt lộ rõ (hàng trăm mili-giây).
+
+### PBKDF2 và salt (nhắc lại để tự viết)
+PBKDF2 (Password-Based Key Derivation Function 2) lặp HMAC nhiều lần để **cố ý chậm**. JDK có sẵn qua {{SecretKeyFactory}} với {{PBKDF2WithHmacSHA256}}. Salt là chuỗi ngẫu nhiên riêng từng user, lưu cùng hash, chặn rainbow table và tấn công hàng loạt.
+
+~~~java
+PBEKeySpec spec = new PBEKeySpec(password.toCharArray(), salt, ITERATIONS, 256);
+SecretKeyFactory kf = SecretKeyFactory.getInstance("PBKDF2WithHmacSHA256");
+byte[] hash = kf.generateSecret(spec).getEncoded();   // 32 byte
+spec.clearPassword();                                 // xoá bản sao mật khẩu
+~~~
+
+Định dạng lưu {{pbkdf2$ITERATIONS$saltHex$hashHex}}: lưu cả số vòng, để verify đọc **đúng số vòng đã lưu** (không dùng hằng số hiện tại), nhờ đó nâng chi phí mà hash cũ vẫn verify được.
+
+### Bẫy production
+- **So hash bằng {{equals}}**: timing attack; luôn {{MessageDigest.isEqual}} trên byte.
+- **Không có dummy hash**: nhánh "user không tồn tại" trả về nhanh → lộ username có thật. Phải chạy PBKDF2 giả.
+- **Verify bằng hằng số {{ITERATIONS}}**: nâng chi phí là user cũ không đăng nhập được; đọc số vòng từ chuỗi đã lưu.
+- **Parse hỏng ném exception**: một bản ghi lỗi biến đăng nhập thành 500 và lộ stack trace; {{verify}} trả false.
+- **Salt bằng {{Random}} hoặc salt chung**: phá vỡ mục đích; dùng {{SecureRandom}} ≥ 16 byte.
+- **Log mật khẩu**: interceptor log body, exception in tham số; mask ở tầng logging.
+
+> Senior tip: dummy hash chỉ là một lớp; kết hợp rate limit theo user/IP + khóa tạm + phát hiện credential stuffing (xem câu security-014) mới chặn brute force thật. Và đặt mục tiêu tổng thời gian đăng nhập dưới ~1 giây trên phần cứng thật — dummy hash phải dùng **cùng số vòng** với hash thật, nếu không chính nó lại tạo khác biệt thời gian.
+
+### Liên hệ phỏng vấn
+Interviewer hay hỏi: "vì sao không so hash bằng {{equals}}?", "username không tồn tại thì đăng nhập xử lý thế nào để không lộ thông tin?", "PBKDF2 với bcrypt/Argon2 khác nhau ra sao?", "làm sao nâng cost factor mà không bắt user đổi mật khẩu?". Làm xong bài tập dưới đây — tự viết {{LoginService}} với PBKDF2, salt, {{MessageDigest.isEqual}} và dummy hash — là bạn trả lời được cả bốn câu bằng chính mã của mình.`,
+  exercises: [
+    {
+      title: 'Viết LoginService: PBKDF2 + salt, verify hằng thời gian, dummy hash chống dò username',
+      prompt: `Hoàn thiện {{LoginService}} (chỉ dùng JDK 17). Thời gian không đọc đồng hồ thật; các hàm hash/verify là hàm tất định để test đối chiếu.
+
+- {{LoginService()}}: khởi tạo map rỗng và một {{DUMMY_STORED}} là bản ghi {{pbkdf2$...}} **hợp lệ** tính từ {{DUMMY_PASSWORD}} với salt cố định (để nhánh user-không-tồn-tại vẫn chạy đúng một phép PBKDF2).
+- {{register(username, password)}}: sinh salt 16 byte bằng {{SecureRandom}}, lưu {{pbkdf2$ITERATIONS$saltHex$hashHex}} (hex viết thường bằng {{HexFormat}}) vào map theo {{username}}. username/password null thì ném {{IllegalArgumentException}}.
+- {{hash(password, salt)}}: trả hex viết thường (64 ký tự) của PBKDF2WithHmacSHA256 với {{ITERATIONS}} vòng, {{KEY_BITS}} bit — hàm tất định. Viết thêm overload private {{hash(password, salt, iterations)}} để {{verify}} dùng lại.
+- {{verify(password, stored)}}: tách 4 phần, kiểm phần đầu là {{pbkdf2}}, **đọc số vòng từ phần thứ hai** (trong khoảng 1..10.000.000), tính lại hash từ password, salt và số vòng đó, so bằng {{MessageDigest.isEqual}}. Trả **false** (không ném exception) khi null, sai định dạng, số vòng/hex không hợp lệ hoặc mật khẩu sai.
+- {{login(username, password)}}: lấy {{stored = users.get(username)}}; nếu null thì dùng {{DUMMY_STORED}} (vẫn chạy PBKDF2 thật); gọi {{verify(password, stored)}}; trả về {{stored != DUMMY_STORED && ok}} — username không tồn tại luôn false nhưng vẫn tốn đúng một phép PBKDF2. username null → false (sau khi vẫn chạy dummy để giữ thời gian).
+
+{{DUMMY_PASSWORD}} là hằng số package-visible (static final) để test đối chiếu. Chỉ dùng JDK 17, không thư viện ngoài.`,
+      starter: `import java.nio.charset.StandardCharsets;
+import java.security.GeneralSecurityException;
+import java.security.MessageDigest;
+import java.security.SecureRandom;
+import java.util.HashMap;
+import java.util.Map;
+import java.util.HexFormat;
+import javax.crypto.SecretKeyFactory;
+import javax.crypto.spec.PBEKeySpec;
+
+final class LoginService {
+    static final int ITERATIONS = 6000;
+    static final int SALT_BYTES = 16;
+    static final int KEY_BITS = 256;
+    static final String DUMMY_PASSWORD = "dummy-password-for-timing";
+
+    private final Map<String, String> users = new HashMap<>();
+    private final String dummyStored;
+
+    LoginService() {
+        this.dummyStored = null;
+        throw new UnsupportedOperationException("TODO");
+    }
+
+    void register(String username, String password) {
+        throw new UnsupportedOperationException("TODO");
+    }
+
+    String hash(String password, byte[] salt) {
+        throw new UnsupportedOperationException("TODO");
+    }
+
+    boolean verify(String password, String stored) {
+        throw new UnsupportedOperationException("TODO");
+    }
+
+    boolean login(String username, String password) {
+        throw new UnsupportedOperationException("TODO");
+    }
+
+    String dummyStored() {
+        return dummyStored;
+    }
+}`,
+      tests: `import java.nio.charset.StandardCharsets;
+import java.util.Arrays;
+import java.util.HexFormat;
+import java.util.Objects;
+import javax.crypto.Mac;
+import javax.crypto.SecretKeyFactory;
+import javax.crypto.spec.PBEKeySpec;
+
+public class Main {
+    static int passed = 0, total = 0;
+    static void check(String name, Runnable r) {
+        total++;
+        try { r.run(); passed++; System.out.println("PASS " + name); }
+        catch (Throwable t) { System.out.println("FAIL " + name + ": " + t); }
+    }
+    static void eq(Object expected, Object actual) {
+        if (!Objects.equals(expected, actual)) throw new AssertionError("expected " + expected + " got " + actual);
+    }
+    static String jdkHash(String pw, byte[] salt, int iterations) {
+        try {
+            PBEKeySpec spec = new PBEKeySpec(pw.toCharArray(), salt, iterations, 256);
+            return HexFormat.of().formatHex(SecretKeyFactory.getInstance("PBKDF2WithHmacSHA256").generateSecret(spec).getEncoded());
+        } catch (Exception e) { throw new IllegalStateException(e); }
+    }
+    static String[] parts(String stored) {
+        int a = stored.indexOf('$');
+        int b = a < 0 ? -1 : stored.indexOf('$', a + 1);
+        int c = b < 0 ? -1 : stored.indexOf('$', b + 1);
+        if (a < 0 || b < 0 || c < 0) throw new AssertionError("sai dinh dang: " + stored);
+        return new String[] { stored.substring(0, a), stored.substring(a + 1, b), stored.substring(b + 1, c), stored.substring(c + 1) };
+    }
+    public static void main(String[] args) {
+        check("register stores a pbkdf2 record with random salt", () -> {
+            LoginService s = new LoginService();
+            s.register("alice", "S3cret!");
+            String stored = s.dummyStored();   // dummy là bản ghi hợp lệ
+            String[] p = parts(stored);
+            eq("pbkdf2", p[0]);
+            eq(String.valueOf(LoginService.ITERATIONS), p[1]);
+            eq(32, p[2].length());
+            eq(64, p[3].length());
+            if (!p[2].matches("[0-9a-f]+") || !p[3].matches("[0-9a-f]+")) throw new AssertionError("hex phai viet thuong");
+        });
+        check("login accepts the right password and rejects wrong ones", () -> {
+            LoginService s = new LoginService();
+            s.register("alice", "correct horse battery staple");
+            if (!s.login("alice", "correct horse battery staple")) throw new AssertionError("mat khau dung ma login false");
+            if (s.login("alice", "correct horse battery stapla")) throw new AssertionError("sai cung do dai ma login true");
+            if (s.login("alice", "abc")) throw new AssertionError("khac do dai ma login true");
+        });
+        check("unknown username always fails but dummy path is real PBKDF2", () -> {
+            LoginService s = new LoginService();
+            if (s.login("bob", "whatever")) throw new AssertionError("user khong ton tai ma login true");
+            if (s.login("bob", LoginService.DUMMY_PASSWORD)) throw new AssertionError("user la ma dung dummy password van login true");
+            if (s.login(null, "x")) throw new AssertionError("username null ma login true");
+            if (!s.verify(LoginService.DUMMY_PASSWORD, s.dummyStored())) throw new AssertionError("dummy phai la ban ghi hop le");
+        });
+        check("same password gives different stored (salt random)", () -> {
+            LoginService a = new LoginService();
+            LoginService b = new LoginService();
+            a.register("u", "pw123456");
+            b.register("u", "pw123456");
+            // dummyStored khac nhau giua hai instance vi salt dummy random? -> dummy co salt co dinh nen giong nhau;
+            // kiem salt random qua hash cua password that:
+            byte[] s1 = new byte[16];
+            byte[] s2 = new byte[16];
+            Arrays.fill(s1, (byte) 1);
+            Arrays.fill(s2, (byte) 2);
+            String h1 = a.hash("pw", s1);
+            String h2 = a.hash("pw", s2);
+            if (h1.equals(h2)) throw new AssertionError("khac salt phai khac hash");
+            eq(64, h1.length());
+            eq(h1, a.hash("pw", s1));
+        });
+        check("hash equals PBKDF2WithHmacSHA256 computed by the JDK", () -> {
+            LoginService s = new LoginService();
+            byte[] salt = new byte[16];
+            for (int i = 0; i < salt.length; i++) salt[i] = (byte) i;
+            eq(jdkHash("Mat-khau-123", salt, LoginService.ITERATIONS), s.hash("Mat-khau-123", salt));
+        });
+        check("verify uses the iteration count stored in the string", () -> {
+            LoginService s = new LoginService();
+            byte[] salt = new byte[16];
+            Arrays.fill(salt, (byte) 7);
+            String saltHex = HexFormat.of().formatHex(salt);
+            String old = "pbkdf2$1000$" + saltHex + "$" + jdkHash("pw-cu", salt, 1000);
+            if (!s.verify("pw-cu", old)) throw new AssertionError("hash cu 1000 vong phai verify duoc");
+            String[] p = parts(old);
+            if (s.verify("pw-cu", p[0] + "$999$" + p[2] + "$" + p[3])) throw new AssertionError("sua so vong ma verify true");
+            if (s.verify("pw-cu", p[0] + "$0$" + p[2] + "$" + p[3])) throw new AssertionError("0 vong ma verify true");
+            if (s.verify("pw-cu", p[0] + "$abc$" + p[2] + "$" + p[3])) throw new AssertionError("so vong rac ma verify true");
+            if (s.verify("pw-cu", p[0] + "$99999999$" + p[2] + "$" + p[3])) throw new AssertionError("so vong qua lon ma verify true");
+            if (s.verify("pw-cu", "sha1$1000$" + p[2] + "$" + p[3])) throw new AssertionError("sai thuat toan ma verify true");
+        });
+        check("verify fails cleanly on malformed storage", () -> {
+            LoginService s = new LoginService();
+            if (s.verify("x", "khong-phai-dinh-dang")) throw new AssertionError("chuoi rac ma verify true");
+            if (s.verify("x", "pbkdf2$6000$zz$yy")) throw new AssertionError("hex rac ma verify true");
+            if (s.verify("x", "pbkdf2$6000$aa")) throw new AssertionError("thieu phan ma verify true");
+            if (s.verify("x", null)) throw new AssertionError("null ma verify true");
+        });
+        check("tampered hash is rejected", () -> {
+            LoginService s = new LoginService();
+            String stored = s.dummyStored();
+            String[] p = parts(stored);
+            char last = p[3].charAt(63);
+            char other = last == '0' ? '1' : '0';
+            String tampered = p[0] + "$" + p[1] + "$" + p[2] + "$" + p[3].substring(0, 63) + other;
+            if (s.verify(LoginService.DUMMY_PASSWORD, tampered)) throw new AssertionError("hash bi sua ma verify true");
+        });
+        System.out.println("RESULT " + passed + "/" + total);
+    }
+}`,
+      reference: `import java.nio.charset.StandardCharsets;
+import java.security.GeneralSecurityException;
+import java.security.MessageDigest;
+import java.security.SecureRandom;
+import java.util.HashMap;
+import java.util.Map;
+import java.util.HexFormat;
+import javax.crypto.SecretKeyFactory;
+import javax.crypto.spec.PBEKeySpec;
+
+final class LoginService {
+    static final int ITERATIONS = 6000;
+    static final int SALT_BYTES = 16;
+    static final int KEY_BITS = 256;
+    static final int MAX_ITERATIONS = 10_000_000;
+    static final String DUMMY_PASSWORD = "dummy-password-for-timing";
+
+    private final Map<String, String> users = new HashMap<>();
+    private final String dummyStored;
+
+    LoginService() {
+        byte[] salt = new byte[SALT_BYTES];
+        for (int i = 0; i < salt.length; i++) salt[i] = (byte) (i + 1);   // salt cố định cho dummy
+        this.dummyStored = "pbkdf2$" + ITERATIONS + "$" + HexFormat.of().formatHex(salt) + "$"
+                + hash(DUMMY_PASSWORD, salt, ITERATIONS);
+    }
+
+    void register(String username, String password) {
+        if (username == null || password == null) throw new IllegalArgumentException("null");
+        byte[] salt = new byte[SALT_BYTES];
+        new SecureRandom().nextBytes(salt);                                // muối riêng mỗi user
+        users.put(username, "pbkdf2$" + ITERATIONS + "$" + HexFormat.of().formatHex(salt) + "$"
+                + hash(password, salt, ITERATIONS));
+    }
+
+    String hash(String password, byte[] salt) {
+        return hash(password, salt, ITERATIONS);
+    }
+
+    private String hash(String password, byte[] salt, int iterations) {
+        PBEKeySpec spec = new PBEKeySpec(password.toCharArray(), salt, iterations, KEY_BITS);
+        try {
+            return HexFormat.of().formatHex(
+                    SecretKeyFactory.getInstance("PBKDF2WithHmacSHA256").generateSecret(spec).getEncoded());
+        } catch (GeneralSecurityException e) {
+            throw new IllegalStateException("PBKDF2WithHmacSHA256 khong co trong JVM nay", e);
+        } finally {
+            spec.clearPassword();                                          // xoá bản sao mật khẩu
+        }
+    }
+
+    boolean verify(String password, String stored) {
+        if (password == null || stored == null) return false;
+        int a = stored.indexOf('$');
+        int b = a < 0 ? -1 : stored.indexOf('$', a + 1);
+        int c = b < 0 ? -1 : stored.indexOf('$', b + 1);
+        if (a < 0 || b < 0 || c < 0 || stored.indexOf('$', c + 1) >= 0) return false;   // đúng 4 phần
+        if (!"pbkdf2".equals(stored.substring(0, a))) return false;
+        try {
+            int iterations = Integer.parseInt(stored.substring(a + 1, b));             // số vòng ĐÃ LƯU
+            if (iterations < 1 || iterations > MAX_ITERATIONS) return false;
+            byte[] salt = HexFormat.of().parseHex(stored.substring(b + 1, c));
+            byte[] expected = HexFormat.of().parseHex(stored.substring(c + 1));
+            if (salt.length == 0 || expected.length == 0) return false;
+            byte[] actual = HexFormat.of().parseHex(hash(password, salt, iterations));
+            return MessageDigest.isEqual(expected, actual);                            // constant-time
+        } catch (IllegalArgumentException e) {                                         // gom ca NumberFormatException
+            return false;
+        }
+    }
+
+    boolean login(String username, String password) {
+        String stored = username == null ? null : users.get(username);
+        boolean exists = stored != null;
+        if (!exists) stored = dummyStored;                  // user la: vẫn chạy PBKDF2 thật
+        boolean ok = verify(password, stored);              // luôn tốn đúng một phép PBKDF2
+        return exists && ok;                                // user không tồn tại luôn false
+    }
+
+    String dummyStored() {
+        return dummyStored;
+    }
+}`,
+      hints: [
+        '{{login}}: nếu username không có trong map thì đặt {{stored = dummyStored}} rồi vẫn {{verify}} — nhánh "không tồn tại" tốn đúng một phép PBKDF2 như nhánh thật; chỉ trả {{exists && ok}}.',
+        'Sinh salt bằng {{new SecureRandom().nextBytes(salt)}}; {{DUMMY_STORED}} dùng salt cố định để là bản ghi hợp lệ, tính sẵn trong constructor.',
+        'Số vòng đọc bằng {{Integer.parseInt}} từ phần thứ hai; {{NumberFormatException}} là lớp con của {{IllegalArgumentException}} nên một {{catch (IllegalArgumentException e)}} bắt cả lỗi số lẫn hex.',
+        'So hash bằng {{MessageDigest.isEqual(expected, actual)}} trên byte đã parse; mọi đường lỗi đều trả false, không ném exception.',
+      ],
+      explain: `Hai ý cốt lõi:
+- **Hằng thời gian**: {{equals}}/{{Arrays.equals}} thoát sớm ở byte khác đầu tiên → attacker đo thời gian suy ra vị trí khác biệt. {{MessageDigest.isEqual}} duyệt hết mảng thứ nhất; đặt hash đã lưu làm tham số thứ nhất.
+- **Dummy hash chống dò username**: nếu nhánh "user không tồn tại" chỉ tra map rồi trả về (nhanh), còn nhánh "user có" chạy PBKDF2 (chậm hàng trăm mili-giây), attacker đo thời gian là biết username nào có thật. {{login}} của bài luôn chạy đúng một phép PBKDF2 (thật hoặc trên {{dummyStored}}), nên hai nhánh xấp xỉ thời gian nhau. Đây là giảm nhẹ (mạng/GC vẫn tạo khác biệt nhỏ), không phải chống tuyệt đối.
+
+Bẫy hay gặp: (1) so bằng {{equals}} thay vì {{MessageDigest.isEqual}}; (2) thiếu dummy hash → lộ username; (3) dummy dùng số vòng khác hash thật → chính nó tạo khác biệt thời gian; (4) verify bằng hằng số {{ITERATIONS}} thay vì số vòng đã lưu → nâng chi phí là user cũ không vào được; (5) {{split("$")}} — {{$}} là ký tự neo cuối chuỗi trong regex nên chuỗi không bị cắt, phải dùng {{indexOf}}; (6) parse hỏng ném exception thành 500.
+
+Bài dùng {{ITERATIONS = 6000}} để test chạy nhanh; production theo khuyến nghị hiện hành của OWASP cho PBKDF2-HMAC-SHA256 (khoảng 600.000 vòng) và cân nhắc Argon2id nếu attacker có GPU. Kết hợp dummy hash với rate limit + khóa tạm + phát hiện credential stuffing mới chặn brute force thật.`,
+    },
+  ],
+  check: [
+    {
+      q: 'Vì sao không so sánh hash mật khẩu bằng {{String.equals}}?',
+      options: [
+        'Vì {{equals}} chậm hơn {{MessageDigest.isEqual}} nhiều lần',
+        'Vì {{equals}} thoát sớm ở byte khác biệt đầu tiên nên rò rỉ vị trí khác biệt qua thời gian phản hồi (timing attack)',
+        'Vì {{equals}} không xử lý được chuỗi dài',
+        'Vì {{equals}} luôn trả về true cho hai mảng byte',
+      ],
+      answer: 1,
+      explain: `Vấn đề là **thời gian**, không phải tốc độ: {{equals}} (và {{Arrays.equals}}) dừng ngay khi gặp byte khác đầu tiên, nên thời gian phản hồi tiết lộ hai chuỗi giống nhau tới byte nào — attacker đo và dò từng byte. {{MessageDigest.isEqual}} duyệt hết độ dài mảng thứ nhất, gộp mọi khác biệt, không thoát sớm. {{equals}} xử lý chuỗi dài bình thường và không "luôn true" cho byte[]; hai phương án còn lại mô tả sai.`,
+    },
+    {
+      q: 'Username không tồn tại trong DB. Đăng nhập nên xử lý thế nào để không lộ username có thật?',
+      options: [
+        'Trả về ngay "sai tài khoản" cho nhanh',
+        'Vẫn chạy một phép PBKDF2 trên {{dummy hash}} cố định rồi trả về "sai", để thời gian phản hồi xấp xỉ nhánh user có thật',
+        'Trả về 404 để phân biệt rõ',
+        'Tự tạo tài khoản mới với mật khẩu vừa nhập',
+      ],
+      answer: 1,
+      explain: `Nếu nhánh "không tồn tại" trả về ngay (nhanh) còn nhánh "có" chạy PBKDF2 (chậm), attacker đo thời gian là liệt kê được username có thật (username enumeration) để dò mật khẩu. Chạy PBKDF2 trên dummy hash làm hai nhánh tốn chi phí xấp xỉ nhau. Trả 404 làm lộ rõ hơn; tự tạo tài khoản là lỗ hổng nghiêm trọng (ai gõ gì cũng "thành công").`,
+    },
+    {
+      q: 'Vì sao {{verify}} phải đọc số vòng từ chuỗi đã lưu thay vì dùng hằng số {{ITERATIONS}} hiện tại?',
+      options: [
+        'Để hash ngắn hơn',
+        'Vì khi nâng chi phí (tăng số vòng), hash cũ tạo với số vòng thấp phải vẫn verify được — verify dùng đúng số vòng đã lưu, rồi rehash khi đăng nhập',
+        'Vì số vòng trong chuỗi luôn lớn hơn hằng số',
+        'Vì {{PBKDF2WithHmacSHA256}} không nhận hằng số',
+      ],
+      answer: 1,
+      explain: `Số vòng là một phần của "công thức" tạo hash; đổi số vòng là ra hash khác. Nếu verify luôn dùng hằng số hiện tại, ngày bạn tăng {{ITERATIONS}} thì toàn bộ user cũ (hash tạo với số vòng thấp) không đăng nhập được. Verify phải đọc số vòng **từ chuỗi đã lưu**; khi đăng nhập thành công (đang có mật khẩu gốc) thì hash lại bằng số vòng mới và ghi đè — rehash on login. Ba phương án còn lại đều sai kỹ thuật.`,
+    },
+  ],
+  related: ['security-014', 'security-036', 'security-070', 'security-029'],
+  tags: ['password', 'PBKDF2', 'timing attack', 'username enumeration', 'dummy hash'],
+},
 );
