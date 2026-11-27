@@ -10177,4 +10177,317 @@ Một sàn phái sinh gặp sự cố giờ mở cửa phiên Mỹ: giá cà ph�
     'Đối soát phát hiện lệch 5 triệu giữa sổ nội bộ và clearing house: quy trình điều tra và xử lý không sửa mù diễn ra thế nào?'
   ]
 }
+,
+{
+  id: 'sd-068',
+  title: 'Hệ thống trả góp / BNPL: duyệt hạn mức 3 giây, lịch trả nợ, nhắc nợ, phạt trễ, đối soát đối tác',
+  kind: 'bank',
+  level: 'senior',
+  prompt: `Bạn thiết kế hệ thống **trả góp (BNPL - Buy Now Pay Later)** cho một công ty fintech phục vụ 2 triệu khách hàng hoạt động. Quy trình: khách chọn mua trả góp tại đối tác (sàn TMĐT, cửa hàng vật lý) -> hệ thống duyệt hạn mức trong **dưới 3 giây** -> tạo lịch trả nợ (6-24 kỳ) -> trừ tiền tự động mỗi kỳ -> nhắc nợ trước hạn -> phạt trễ hạn theo quy định -> **đối soát hàng ngày với đối tác bán hàng** (chia sẻ doanh thu, phí, hoàn trả). Peak: 500 duyệt hạn mức/giây, 50.000 lượt trừ tiền/giây vào ngày đáo hạn. Yêu cầu: không duyệt sai (hạn mức vượt thực tế), không trừ nhầm/lỡ kỳ, đối soát khớp đồng. Bạn có 45 phút.`,
+  phases: [
+    { name: 'Requirements', minutes: 5, guide: `Chốt functional: duyệt hạn mức (pre-approval, real-time), tạo hợp đồng trả góp, lịch trả nợ linh hoạt (6/12/24 kỳ, có kỳ nghỉ), thu tự động (thẻ, ví, chuyển khoản), nhắc nợ (SMS/push/email Zalo), phạt trễ (tính lãi suất năm, tối đa theo luật), xử lý trả trước/all-in, huỷ hợp đồng, đối soát đối tác (doanh thu, phí BNPL, hoàn hàng, điều chỉnh). Non-functional: duyệt < 3 giây p99, thu tiền 50k TPS peak, availability 99.95%, audit 7 năm. Hỏi: đối tác tích hợp như thế nào (API, SDK, redirect), có.White-label không, rủi ro gian lận (mượn tên, synthetic identity). Out-of-scope: scoring model training, KYC (giả định đã có eKYC).` },
+    { name: 'Estimation', minutes: 5, guide: `Duyệt: 500 req/s, p99 < 3s => latency budget: scoring 500ms, rule engine 200ms, DB 500ms, network 500ms. Thu tiền: 50k req/s peak (ngày đáo hạn), mỗi req ~1KB => 50 MB/s inbound. Storage: 2M khách x trung bình 3 hợp đồng x 24 kỳ = 144M installment rows, ~50 GB. Lịch sử duyệt: 500 x 86400 = 43M/ngày, retention 2 năm. Kết luận: DB duyệt cần partition theo tháng, cache scoring features; thu tiền dùng async queue + idempotent consumer.` },
+    { name: 'API & data model', minutes: 5, guide: `API: POST /bnpl/pre-approve {partner_id, customer_id, amount, tenor} -> {limit_id, approved_amount, interest_rate, monthly_payment}, POST /bnpl/contracts {limit_id, items[], schedule} -> {contract_id, schedule[]}, POST /bnpl/collect {contract_id, installment_no} (idempotent), GET /bnpl/contracts/{id}/statement. Bảng: credit_limit(id, customer_id, partner_id, total_limit, used_limit, available_limit, status, version), installment_contract(id, limit_id, customer_id, partner_id, principal, interest_rate, tenor, status, created_at), installment_schedule(id, contract_id, seq_no, due_date, principal_due, interest_due, fee_due, total_due, status, paid_at, payment_ref), collection_event(id, contract_id, schedule_id, amount, channel, status, idempotency_key, created_at), partner_reconciliation(id, partner_id, date, expected_revenue, actual_revenue, fee, adjustment, status).` },
+    { name: 'High-level design', minutes: 15, guide: `Vẽ: Partner -> API Gateway -> Limit Service (scoring + rule engine, cache features Redis) -> Contract Service -> Schedule Generator -> Collection Service (async queue Kafka -> worker thu tiền) -> Notification Service (nhắc nợ). Đối soát: Job hàng ngày đọc collection_event + partner feed -> so khớp -> adjustment. Giải thích: duyệt sync (dưới 3s), thu tiền async (chịu đợt), nhắc nợ schedule riêng. Tách Limit Service (real-time) khỏi Collection Service (batch/async).` },
+    { name: 'Deep dive', minutes: 15, guide: `Đào sâu: (1) Duyệt hạn mức real-time: feature store (income, debt, repayment history, bureau score) -> scoring model (logistic regression/GBDT) -> rule engine (max DTI, max loan/value, age, blacklist) -> tất cả trong < 3s. Cache feature Redis TTL 1h, fallback DB. (2) Lịch trả nợ: sinh schedule khi tạo hợp đồng, hỗ trợ thay đổi due_date (ngày nghỉ dịch sang ngày làm việc sau), tính lãi suất giảm dần (amortization). (3) Thu tiền: idempotency_key = contract_id:installment_no:attempt; worker Kafka consume -> gọi payment gateway -> cập nhật schedule status PAID/FAILED -> outbox event cho notification. Retry failed: 3 lần/ngày, sau đó chuyển MANUAL. (4) Phạt trễ: tính daily penalty = outstanding * annual_rate / 365, cap theo luật. Ghi riêng penalty_schedule. (5) Đối soát: partner gửi file doanh thu/hoàn hàng hàng ngày; job so khớp contract_id, amount, date; mismatch > 0.1% alert; adjustment ghi ledger.` }
+  ],
+  rubric: [
+    'Duyệt hạn mức real-time: feature store + scoring + rule engine, p99 < 3s, cache feature, fallback',
+    'Lịch trả nợ amortization đúng, hỗ trợ thay đổi due_date, trả trước/all-in',
+    'Thu tiền async: Kafka queue, idempotent consumer, retry policy, dead letter',
+    'Nhắc nợ đa kênh, schedule riêng không block thu tiền',
+    'Phạt trễ tính đúng công thức, cap theo luật, tách penalty schedule',
+    'Đối soát hàng ngày: so khớp contract-level, mismatch alert, adjustment ledger',
+    'Không double-charge: idempotency key + unique constraint',
+    'Xử lý hoàn hàng: điều chỉnh principal/interest, regenerate schedule hoặc credit note',
+    'Giám sát: approval rate, approval latency, collection success rate, overdue ratio, reconciliation mismatch',
+    'Failure modes: scoring timeout, payment gateway down, partner file missing, schedule drift'
+  ],
+  reference: `**Tóm tắt:** Hệ thống BNPL có hai đường nhanh/chậm: **duyệt real-time** (dưới 3 giây, scoring + rule engine, cache feature) và **thu tiền async** (Kafka queue, idempotent worker, retry, DLQ). Lịch trả nợ dùng amortization chuẩn, phạt trễ tính daily penalty cap theo luật. Đối soát hàng ngày so khớp từng hợp đồng với file đối tác, mismatch ghi adjustment ledger. Ba trụ cột: idempotency mọi chặng, tách sync/async, đối soát là lưới an toàn cuối.
+  
+### 1. Yêu cầu và quy mô
+- 2 triệu khách hàng, 500 duyệt/giây peak, 50.000 thu tiền/giây ngày đáo hạn.
+- Duyệt < 3 giây p99; thu tiền peak 50k TPS; availability 99.95%.
+- Lịch trả 6-24 kỳ, nhắc nợ đa kênh, phạt trễ cap pháp luật, đối soát hàng ngày.
+- Không duyệt sai hạn mức, không trừ nhầm/lỡ kỳ, đối soát khớp đồng.
+
+### 2. Ước lượng (có phép tính)
+| Đại lượng | Phép tính | Kết quả |
+|---|---|---|
+| Duyệt/giây peak | 500 | latency budget 3s |
+| Scoring features | ~50 feature/khách | cache Redis TTL 1h |
+| Hợp đồng/khách | trung bình 3 | 6M hợp đồng tổng |
+| Kỳ trả/ngày peak | 50.000 TPS | ngày đáo hạn đồng loạt |
+| Storage schedule | 6M x 24 kỳ x 300 byte | ~43 GB |
+| Lịch sử duyệt | 500 x 86400 x 2 KB | ~86 GB/ngày |
+
+Kết luận: Limit Service (duyệt) cần feature cache + connection pool tuning; Collection Service (thu) dùng async queue để hấp thụ burst 50k TPS.
+
+### 3. Duyệt hạn mức Real-time (< 3 giây)
+Luồng: Partner API -> Limit Service -> Feature Store (Redis cache) -> Scoring Model -> Rule Engine -> Decision.
+
+**Feature Store:** 50 feature (thu nhập, nợ hiện tại, lịch sử trả, bureau score, thiết bị, địa chỉ...). Cache Redis key {{code}} TTL 1h, fallback query DB (Postgres read replica). Warm-up cache hàng ngày cho khách hoạt động.
+
+**Scoring Model:** Logistic Regression / LightGBM nhỏ (~100 trees) chạy in-process hoặc sidecar. Input: feature vector. Output: probability default (PD). Latency p99 < 200ms.
+
+**Rule Engine:** Drools / JsonLogic, rules ví dụ:
+- PD > 0.15 -> REJECT
+- DTI (debt-to-income) > 40% -> REJECT
+- Loan-to-value > 80% -> REDUCE_LIMIT
+- Tuổi < 18 hoặc > 65 -> REJECT
+- Blacklist (fraud, court order) -> REJECT
+- Số hợp đồng active > 5 -> REDUCE_LIMIT
+
+Mọi rule có version, hot-reload không downtime.
+
+**Decision:** APPROVED (kèm limit, rate, tenor max) / REJECTED (reason code) / MANUAL_REVIEW (edge case).
+
+### 4. Lịch trả nợ (Amortization)
+Khi tạo hợp đồng, sinh schedule theo **amortization giảm dần** (annuity):
+~~~text
+Monthly payment = P * r * (1+r)^n / ((1+r)^n - 1)
+Trong đó: P = principal, r = monthly rate, n = tenor
+Mỗi kỳ: interest = remaining * r; principal = payment - interest; remaining -= principal
+~~~
+- Hỗ trợ **due_date thay đổi**: nếu rơi ngày nghỉ -> dịch sang ngày làm việc sau (T+1). Ghi {{code}} và {{code}}.
+- **Trả trước/all-in**: tính remaining principal + interest đến ngày trả + fee trả trước (nếu có). Cập nhật schedule: các kỳ sau chuyển {{code}}, ghi {{code}}.
+- **Kỳ nghỉ**: config lịch nghỉ từng năm, schedule generator tự động adjust.
+
+### 5. Thu tiền Async (Collection)
+~~~seq
+title: Thu tiền kỳ trả góp
+actors: Scheduler | Kafka | Collection Worker | Payment Gateway | Schedule DB | Notification
+Scheduler -> Kafka: publish collect job (contract_id, installment_no, idempotency_key)
+Kafka --> Worker: consume (concurrency 100, partition by contract_id)
+Worker -> Payment Gateway: charge (saved token/card/ví)
+Gateway --> Worker: success/failed + payment_ref
+Worker -> Schedule DB: UPDATE status=PAID/FAILED, paid_at, payment_ref WHERE id=?
+Worker -> Kafka: collection_event (outbox) -> Notification Service
+~~~
+- **Idempotency**: {{code}}. Worker kiểm tra schedule status trước khi charge; Payment Gateway cũng nhận idempotency key.
+- **Retry**: failed -> retry 3 lần/ngày (6h, 12h, 18h). Vẫn fail -> status {{code}}, tạo task cho CSKH.
+- **Dead Letter**: sau 7 ngày vẫn MANUAL -> DLQ, alert operation.
+
+### 6. Phạt trễ hạn (Penalty)
+- Công thức: {{code}}
+- {{code}} config theo sản phẩm (thường 1.5x - 2x interest rate), **cap theo luật** (Việt Nam: tối đa 150% lãi suất cơ bản).
+- Tách {{code}} riêng: {{code}}.
+- Penalty tích lũy hàng ngày, khi khách trả -> ưu tiên trừ penalty trước, rồi interest, rồi principal.
+
+### 7. Nhắc nợ (Notification)
+- Schedule riêng: T-3 ngày (push), T-1 ngày (SMS/Zalo), ngày đáo hạn (push + SMS), T+1/T+3/T+7 quá hạn (escalation).
+- Template versioned, đa ngôn ngữ. Quiet hours 22h-7h (delay không drop).
+- Rate limit: max 3 nhắc/ngày/kỳ, opt-out marketing nhưng **không opt-out được nhắc trả nợ**.
+
+### 8. Đối soát hàng ngày (Reconciliation)
+Job 02:00 chạy:
+1. Đọc file đối tác (CSV/SFTP/API): {{code}}.
+2. Join với {{code}} (đã PAID) và {{code}} theo {{code}}.
+3. So khớp:
+   - Amount mismatch -> ghi {{code}} (ledger), alert nếu > 0.1%.
+   - Missing ở ta (partner có, ta không) -> kiểm tra collection_event FAILED/MANUAL -> điều tra.
+   - Missing ở partner (ta có, partner không) -> partner chưa cập nhật, retry ngày mai.
+4. Kết quả lưu bảng {{code}}, dashboard mismatch count.
+
+### 9. Xử lý hoàn hàng / điều chỉnh
+- Khách hoàn hàng: Partner gửi {{code}} -> tìm contract, tính {{code}} (chỉ principal đã thu, interest đã thu có thể giữ hoặc hoàn theo policy).
+- Nếu hợp đồng còn kỳ -> **regenerate schedule** cho remaining principal (giữ nguyên tenor hoặc rút gọn).
+- Nếu all-in -> ghi {{code}}, điều chỉnh partner_reconciliation.
+
+### 10. Failure Modes
+| Sự cố | Ảnh hưởng | Xử lý |
+|---|---|---|
+| Scoring timeout (>3s) | Duyệt chậm/REJECT mặc định | Fallback rule-based (chỉ dùng rule engine, bỏ scoring), alert |
+| Payment Gateway down | Thu tiền fail hàng loạt | Retry async, queue backlog, alert, partner communication |
+| Partner file missing | Đối soát không chạy | Alert 04:00, dùng dữ liệu ngày trước làm baseline, run manual khi có file |
+| Schedule drift (due_date sai) | Nhắc nợ sai, phạt sai | Daily job verify schedule vs calendar, auto-fix + audit log |
+| Double charge | Khách bị trừ 2 lần | Idempotency key + unique constraint + reconciliation catch |
+
+### 11. Giám sát
+- Approval rate, approval latency p50/p99, REJECT reason distribution.
+- Collection success rate (auto vs manual), overdue ratio (1dpd, 7dpd, 30dpd, 90dpd).
+- Penalty accrual rate, waiver rate.
+- Reconciliation mismatch count, adjustment amount, partner SLA.
+- Notification delivery rate per channel.
+
+### 12. Trả lời mẫu khi phỏng vấn
+"Tôi tách BNPL thành hai đường: **duyệt real-time** và **thu tiền async**. Duyệt: feature cache Redis -> scoring model LightGBM (p99 200ms) -> rule engine Drools -> dưới 3 giây. Thu tiền: scheduler đẩy job Kafka partition by contract_id, worker consume -> payment gateway -> update schedule với idempotency key, retry 3 lần/ngày, failed chuyển MANUAL. Lịch trả nợ amortization chuẩn, hỗ trợ due_date adjust ngày nghỉ, trả trước recalculate remaining. Phạt trễ daily penalty cap pháp luật, tách penalty_schedule. Nhắc nợ schedule riêng T-3/T-1/T/T+1/T+3/T+7, quiet hours delay. Đối soát hàng ngày: join collection_event với file partner theo contract_id+date, mismatch > 0.1% alert, ghi adjustment ledger. Failure modes: scoring timeout fallback rule-only, gateway down queue backlog, partner file missing alert, schedule drift daily verify."
+
+> Senior tip: **đừng bao giờ để phạt trễ tính sai** — đây là nơi khách khiếu nại nhiều nhất và luật phạt nặng. Tách penalty_schedule riêng, tính daily, cap theo luật, và có audit trail mọi lần waive/adjust. Đối soát không chỉ "so số" mà phải có **adjustment ledger** để sau này truy vết: mismatch ngày nào, điều chỉnh như thế nào, ai duyệt. Và nhớ: **idempotency key phải đi từ partner đến payment gateway**, không chỉ ở collection service — nếu partner retry API pre-approve, limit service phải trả kết quả cũ chứ không tạo limit mới.`,
+  followups: [
+    'Khách muốn đổi kỳ trả (từ 12 kỳ sang 24 kỳ) giữa chừng: bạn recalculate schedule thế nào, interest rate đổi không, và đối soát với partner ra sao?',
+    'Partner lớn muốn "white-label" BNPL dưới brand của họ: thay đổi gì ở API, dữ liệu, và quy trình đối soát?',
+    'Scoring model drift (PD thực tế cao hơn dự báo 2x): bạn detect và retrain/rollback thế nào mà không ngừng duyệt?',
+    'Một ngày đáo hạn rơi trùng Tết/Nghỉ dài (5 ngày không làm việc): scheduler thu tiền, nhắc nợ, phạt trễ xử lý ra sao?',
+    'Gian lận "mượn tên" (dùng CCCD người khác duyệt BNPL): lớp phòng thủ nào bắt được ở duyệt real-time?'
+  ],
+  related: ['banking-004', 'design-022', 'scenario-056']
+},
+{
+  id: 'sd-069',
+  title: 'Hệ thống eKYC mở tài khoản online: CCCD + selfie + NFC, hàng đợi duyệt thủ công, lưu ảnh an toàn, 50.000 hồ sơ/ngày',
+  kind: 'bank',
+  level: 'senior',
+  prompt: `Bạn thiết kế hệ thống **eKYC (electronic Know Your Customer)** cho ngân hàng số: khách chụp **CCCD (Căn cước Công dân) mặt trước/sau**, chụp **selfie** (so sánh khuôn mặt), đọc **chip NFC** trên CCCD (có chữ ký số xác thực), sau đó vào **hàng đợi duyệt thủ công** (nhân viên compliance check) trước khi mở tài khoản. Yêu cầu: **lưu ảnh/video an toàn** (mã hóa, watermark, access log), xử lý **50.000 hồ sơ/ngày**, peak 1.000 hồ sơ/phút, SLA duyệt end-to-end < 15 phút (tự động < 5 phút, thủ công < 10 phút), tuân thủ **Luật Bảo vệ dữ liệu cá nhân** và **Thông tư KYC ngân hàng**. Bạn có 45 phút.`,
+  phases: [
+    { name: 'Requirements', minutes: 5, guide: `Chốt functional: capture CCCD 2 mặt + selfie (liveness check: nháy mắt, gật đầu), đọc chip NFC (PASSIVE authentication, đọc DG1-DG14, verify chữ ký số CA), OCR trích xuất thông tin, so khớp mặt CCCD vs selfie (face match), quy tắc auto-approve/reject/manual-review, hàng đợi duyệt thủ công (gán case cho officer, SLA, escalation), lưu trữ ảnh/video bền vững + mã hóa + watermark, audit trail đầy đủ. Non-functional: 50k hồ sơ/ngày, peak 1k/phút, auto-processing p99 < 5 phút, manual review queue p99 < 10 phút, availability 99.9%, encryption at rest/in transit, PII masking log. Hỏi: có hỗ trợ passport/visa cho người nước ngoài không, chip NFC fail thì fallback OCR-only không, officer review trên web hay mobile. Out-of-scope: AML screening (sanction list, PEP - tách service), core banking account creation (gọi API sau khi eKYC PASS).` },
+    { name: 'Estimation', minutes: 5, guide: `50k hồ sơ/ngày x (CCD trước 2MB + CCCD sau 2MB + selfie 1MB + video liveness 5MB + NFC data 50KB) ≈ 500 GB/ngày dữ liệu thô. Giữ 5 năm (luật) = ~900 TB -> object storage tiered (hot 30 ngày, cold Glacier). Metadata: 50k x 2 KB = 100 MB/ngày. Auto-processing: OCR 2s, face match 1s, NFC verify 1s, rule engine 0.5s = ~5s CPU/hồ sơ. Peak 1k/phút = 17 concurrent -> cần worker pool ~50. Manual queue: 20% cần review = 10k/ngày, officer xử lý 5 phút/hồ sơ -> cần ~35 officer online peak.` },
+    { name: 'API & data model', minutes: 5, guide: `API: POST /ekyc/sessions (tạo session, trả session_id, upload URLs), PUT /ekyc/sessions/{id}/documents (client upload multipart CCCD trước/sau, selfie, video, NFC payload), POST /ekyc/sessions/{id}/submit (kích hoạt auto-processing), GET /ekyc/sessions/{id}/status. Manual review: GET /ekyc/review/queue?officer_id=&status=PENDING, POST /ekyc/review/{id}/decision {decision: APPROVE/REJECT, reason, officer_id}. Bảng: ekyc_session(id, customer_id, status, session_data_json, created_at, updated_at, completed_at), ekyc_document(id, session_id, type: FRONT/BACK/SELFIE/VIDEO/NFC, object_key, encryption_key_id, watermark_id, checksum, size_bytes, uploaded_at), ekyc_result(id, session_id, ocr_data_json, face_match_score, nfc_verify_result, rule_engine_decision, final_status, auto_decided_at, manual_decided_at, officer_id), ekyc_audit_log(id, session_id, action, actor, before_json, after_json, ip, user_agent, created_at).` },
+    { name: 'High-level design', minutes: 15, guide: `Vẽ: Client -> API Gateway -> Session Service -> Object Storage (presigned URL, SSE-KMS) -> Kafka (ekyc.submitted) -> Auto-processing Workers (OCR, Face Match, NFC Verify, Rule Engine) -> Decision. Nếu MANUAL_REVIEW -> Review Queue (Redis sorted set priority + timestamp) -> Officer Web App -> Decision -> Callback -> Account Opening Service. Lưu trữ: Object Storage (S3) mã hóa SSE-KMS, key per session; watermark động (session_id + timestamp) thêm lúc upload; access log CloudTrail. Giải thích tách auto vs manual, tại sao dùng presigned URL, watermark chống rò rỉ nội bộ.` },
+    { name: 'Deep dive', minutes: 15, guide: `Đào sâu: (1) Liveness detection: active (nháy mắt, gật đầu) vs passive (phân tích texture, depth), challenge-response ngẫu nhiên để chống replay/deepfake. (2) NFC chip reading: đọc DG1 (thông tin cá nhân), DG2 (ảnh khuôn mặt trên chip), DG14 (SecurityInfos), verify chữ ký số CA (certificate chain up to root CA Việt Nam), passive authentication (SOD - Security Object Document). (3) Face match: so sánh ảnh CCCD (DG2 hoặc OCR crop) vs selfie, threshold 0.85 (tùy model), fallback manual nếu 0.7-0.85. (4) Rule engine: auto-approve nếu (face_match > 0.9 AND nfc_verify=PASS AND OCR match CCCD data AND age 18-70 AND không blacklist), auto-reject nếu (face_match < 0.7 OR nfc_verify=FAIL OR age invalid OR blacklist), else MANUAL_REVIEW. (5) Manual review queue: officer claim case (atomic CAS), SLA 10 phút, escalation manager nếu quá SLA, decision ghi audit. (6) Bảo mật lưu trữ: SSE-KMS, key rotation 90 ngày, watermark per download, access log immutable, PII masking trong log/metric. (7) Tuân thủ: data retention 5 năm sau đóng tài khoản, right to be forgotten (xóa theo yêu cầu hợp pháp), DPIA (Data Protection Impact Assessment).` }
+  ],
+  rubric: [
+    'Luồng capture: CCCD 2 mặt + selfie video liveness + NFC payload, presigned URL upload trực tiếp S3',
+    'Liveness detection: active challenge-response (ngẫu nhiên) + passive texture analysis, chống deepfake/replay',
+    'NFC verify: đọc DG1/DG2/DG14, verify chữ ký số CA chain lên root CA VN, passive authentication SOD',
+    'Face match: so sánh selfie vs ảnh CCCD (OCR crop hoặc DG2 chip), threshold, fallback manual',
+    'Rule engine: auto-approve/reject/manual-review với điều kiện rõ ràng, versioned, hot-reload',
+    'Manual review queue: Redis sorted set priority, officer claim CAS, SLA 10 phút, escalation',
+    'Lưu trữ an toàn: SSE-KMS, key per session, watermark động, access log, PII masking',
+    'Tuân thủ: retention 5 năm, right to be forgotten, DPIA, data minimization',
+    'Ước lượng 50k/ngày, 500 GB/ngày, tiered storage, worker pool sizing',
+    'Failure modes: NFC fail fallback OCR, OCR low quality, face match borderline, officer idle, storage cost'
+  ],
+  reference: `**Tóm tắt:** eKYC là bài toán **xác thực danh tính đa yếu tố** (CCCD giấy + chip NFC + sinh trắc học khuôn mặt + liveness) kết hợp **hàng đợi duyệt thủ công có SLA**. Ba lớp bảo vệ: (1) **NFC passive authentication** (chữ ký số CA Việt Nam) chứng minh CCCD thật, chưa bị giả mạo; (2) **Face match + liveness** chứng minh người cầm CCCD chính là chủ nhân; (3) **Rule engine + manual review** bắt các case borderline. Lưu trữ dùng **presigned URL + SSE-KMS + watermark động**, access log bất biến. Dữ liệu 500 GB/ngày -> tiered storage S3 -> Glacier.
+  
+### 1. Yêu cầu và quy mô
+- 50.000 hồ sơ/ngày, peak 1.000/phút (giờ hành chính).
+- SLA: auto-processing p99 < 5 phút, manual review p99 < 10 phút, end-to-end < 15 phút.
+- Capture: CCCD mặt trước, mặt sau, selfie video (liveness), NFC payload.
+- Lưu trữ 5 năm, mã hóa, watermark, audit trail đầy đủ.
+- Tuân thủ Luật Bảo vệ dữ liệu cá nhân, Thông tư KYC ngân hàng.
+
+### 2. Ước lượng (có phép tính)
+| Đại lượng | Phép tính | Kết quả |
+|---|---|---|
+| Dữ liệu thô/hồ sơ | 2+2+1+5+0.05 MB | ~10 MB |
+| Dữ liệu/ngày | 50.000 x 10 MB | 500 GB |
+| Dữ liệu 5 năm | 500 GB x 365 x 5 | ~912 TB |
+| Metadata/ngày | 50k x 2 KB | 100 MB |
+| Auto-processing CPU | 5 giây/hồ sơ | 250.000 giây CPU/ngày |
+| Peak concurrent | 1.000/phút x 5 phút SLA | ~83 concurrent workers |
+| Manual review (20%) | 10.000/ngày x 5 phút | 83 officer-giờ/ngày |
+
+Kết luận: Object storage tiered (S3 Standard 30 ngày -> Glacier Instant Retrieval 1 năm -> Glacier Deep Archive 5 năm). Worker pool auto-scaling 20-100. Manual queue cần 35-40 officer ca hành chính.
+
+### 3. Luồng capture & Upload (Presigned URL)
+~~~seq
+title: Khách thực hiện eKYC
+actors: Client App | API Gateway | Session Service | S3 (Presigned) | Kafka
+Client App -> API Gateway: POST /ekyc/sessions
+API Gateway -> Session Service: tạo session_id, status=CREATED
+Session Service -> S3: sinh presigned URL (PUT, expire 15 phút, SSE-KMS, key=session/{id}/{type})
+Session Service --> Client App: session_id + upload URLs (front, back, selfie, video, nfc)
+Client App -> S3: upload song song 5 file (multipart, checksum SHA256)
+Client App -> API Gateway: POST /ekyc/sessions/{id}/submit
+API Gateway -> Kafka: ekyc.submitted {session_id}
+~~~
+- **Presigned URL**: Client upload thẳng S3, không qua API server -> giảm bandwidth server, scale tốt. URL có điều kiện: {{code}} range, {{code}} whitelist (image/jpeg, video/mp4, application/octet-stream).
+- **SSE-KMS**: Mỗi session một encryption key (AWS KMS GenerateDataKey), lưu {{code}} trong metadata. Key rotation 90 ngày (re-encrypt background job).
+- **Watermark động**: Lúc download/view, hệ thống thêm watermark {{code}} vào ảnh/video -> trace được rò rỉ nguồn nội bộ.
+
+### 4. Auto-processing Pipeline
+Worker consume {{code}}, chạy song song 4 task:
+
+**A. OCR CCCD (2 giây):**
+- Model: PaddleOCR / Vietnam-ID-Card-OCR (đã fine-tune CCCD VN).
+- Trích: CCCD number, họ tên, DOB, giới tính, quốc tịch, nơi thường trú, ngày cấp, ngày hết hạn, đặc điểm nhận dạng.
+- Kết quả: JSON + confidence score per field. Nếu confidence < 0.9 bất kỳ field -> flag {{code}}.
+
+**B. NFC Chip Verify (1 giây) - QUAN TRỌNG NHẤT:**
+- Đọc: DG1 (thông tin cá nhân), DG2 (ảnh khuôn mặt trên chip - JPEG2000), DG14 (SecurityInfos), SOD (Security Object Document).
+- **Passive Authentication**: Verify chữ ký số trên SOD bằng certificate chain: {{code}}. Root CA VNCA được tin cậy sẵn trong trust store.
+- **Chip Authentication (tuỳ chọn)**: Nếu CCCD hỗ trợ Active Authentication (private key trên chip) -> challenge-response chứng minh chip không phải clone.
+- Kết quả: {{code}}, {{code}}, {{code}}, {{code}}.
+
+**C. Face Match + Liveness (1 giây):**
+- **Liveness**: Active challenge (ngẫu nhiên: "nháy mắt 2 lần", "gật đầu", "quay trái/phải") + Passive (texture analysis, depth map, eye blink detection). Challenge ngẫu nhiên mỗi session -> chống replay video/deepfake.
+- **Face Match**: So sánh selfie (crop face) vs ảnh CCCD (OCR crop từ mặt trước HOẶC DG2 từ NFC chip - ưu tiên DG2 vì chất lượng cao hơn). Model: ArcFace / AdaFace, threshold:
+  - Score > 0.9: {{code}}
+  - 0.7 - 0.9: {{code}} -> MANUAL_REVIEW
+  - < 0.7: {{code}}
+
+**D. Rule Engine (0.5 giây):**
+- Input: OCR data, NFC verify, Face match, Liveness, Blacklist check (fraud DB, sanction list), Age check (DOB).
+- Rules (versioned, hot-reload):
+  ~~~text
+  IF nfc_verify=PASS AND face_match=PASS AND liveness=PASS 
+     AND age 18-70 AND NOT blacklist AND ocr_confidence>0.95
+  THEN AUTO_APPROVE
+  
+  IF nfc_verify=FAIL OR face_match=FAIL OR liveness=FAIL 
+     OR age<18 OR age>70 OR blacklist
+  THEN AUTO_REJECT (reason_code)
+  
+  ELSE MANUAL_REVIEW
+  ~~~
+- Output: {{code}}, {{code}}, {{code}}.
+
+### 5. Manual Review Queue
+- Queue: Redis Sorted Set {{code}} score = {{code}} (priority: HIGH=fraud suspicion, NORMAL=borderline, LOW=doc quality).
+- Officer Web App: GET {{code}} -> trả case cũ nhất priority cao nhất.
+- **Claim CAS**: Officer click "Xử lý" -> {{code}} atomic claim:
+  ~~~lua
+  local session = redis.call('ZPOPMIN', 'ekyc:review:queue', 1)
+  if session then
+      redis.call('HSET', 'ekyc:session:'..session, 'status', 'IN_REVIEW', 'officer_id', ARGV[1], 'claimed_at', ARGV[2])
+      return session
+  end
+  return nil
+  ~~~
+- Officer xem: CCCD 2 mặt, selfie video, NFC result, OCR data, face match score, rule engine reason. UI có zoom, so sánh side-by-side.
+- Decision: APPROVE / REJECT (reason_code bắt buộc) -> POST {{code}}.
+- **SLA**: Claimed case phải quyết định trong 10 phút. Quá SLA -> auto-escalation: gửi Slack/Email manager, re-queue priority HIGH.
+- Audit: Mọi action (claim, view, zoom, approve, reject) ghi {{code}} (immutable, append-only).
+
+### 6. Lưu trữ an toàn & Tuân thủ
+| Yêu cầu | Triển khai |
+|---|---|
+| **Mã hóa tại chỗ** | SSE-KMS, key per session (GenerateDataKey), key rotation 90 ngày (re-encrypt job) |
+| **Mã hóa truyền tải** | TLS 1.3, presigned URL HTTPS only |
+| **Watermark** | Dynamic watermark lúc download/view: {{code}} (dùng Lambda@Edge hoặc signed URL với watermark param) |
+| **Access Log** | CloudTrail data events cho S3, VPC Flow Logs, immutable log -> S3 Object Lock (WORM) |
+| **PII Masking** | Log/metric chỉ log {{code}}, {{code}} (hashed), không log tên/CCCD/số điện thoại |
+| **Retention** | 5 năm sau đóng tài khoản (Thông tư NHNN), sau đó xóa tự động (S3 Lifecycle) |
+| **Right to be Forgotten** | API xóa: verify legal basis -> xóa object S3 + metadata DB + ghi audit {{code}} |
+| **DPIA** | Data Protection Impact Assessment đã làm trước go-live, review hàng năm |
+
+### 7. Fallback & Error Handling
+- **NFC FAIL** (chip hỏng, điện thoại không đọc được, CCCD cũ không có chip): Fallback {{code}} mode. Rule engine điều chỉnh: yêu cầu face_match > 0.95, thêm bước verify OTP SMS đã đăng ký ngân hàng. Tăng xác suất MANUAL_REVIEW.
+- **OCR LOW CONFIDENCE**: Yêu cầu khách chụp lại (gửi push notification), hoặc chuyển MANUAL_REVIEW officer nhập thủ công.
+- **Face Match BORDERLINE (0.7-0.9)**: Tự động MANUAL_REVIEW, officer so sánh trực quan.
+- **Liveness FAIL**: Yêu cầu quay video lại (challenge mới), max 3 lần.
+- **Officer Idle / Queue Backlog**: Auto-scale officer assignment (round-robin claim), alert manager nếu queue > 500 hoặc wait time > 15 phút.
+
+### 8. Failure Modes
+| Sự cố | Ảnh hưởng | Xử lý |
+|---|---|---|
+| S3 upload fail (throttling/network) | Khách không nộp được hồ sơ | Presigned URL retry client-side (exponential backoff), API hỗ trợ resume multipart |
+| OCR model crash | Auto-processing dừng | Circuit breaker -> fallback MANUAL_REVIEW all, alert oncall |
+| NFC verify FAIL false positive (chip thật nhưng verify fail) | Khách tốt bị reject | Log chi tiết SOD verification error, officer manual override có reason |
+| Deepfake bypass liveness | Gian lận mở tài khoản | Passive liveness ensemble (3 model), challenge ngẫu nhiên, watermark video gốc lưu để forensic |
+| Officer Decision sai (approve hồ sơ giả) | Rủi ro compliance | Dual approval cho HIGH risk, audit log immutable, định kỳ sample audit 5% |
+| Storage cost vọt (upload spam) | Chi phí S3 tăng | Rate limit session tạo (10/ngày/device), validate file type/size trước khi cấp presigned URL |
+
+### 9. Giám sát
+- Throughput: sessions/ngày, auto vs manual ratio, approval/reject rate.
+- Latency: auto-processing p50/p99, manual review wait time p50/p99, claim-to-decision time.
+- Quality: OCR confidence distribution, face match score distribution, NFC verify pass rate, liveness pass rate.
+- SLA: manual review SLA breach rate, escalation count.
+- Compliance: audit log completeness, watermark verification, access log integrity, retention policy compliance.
+- Cost: S3 storage by tier, KMS requests, worker CPU, officer headcount efficiency.
+
+### 10. Trả lời mẫu khi phỏng vấn
+"Tôi thiết kế eKYC quanh ba lớp xác thực: **NFC passive authentication** (verify chữ ký số CA Việt Nam lên root CA VNCA - chứng minh CCCD thật), **Face match + liveness** (active challenge ngẫu nhiên + passive texture, so sánh selfie vs DG2 chip - chứng minh người cầm là chủ nhân), **Rule engine + manual review queue** (auto approve/reject rõ ràng, borderline vào queue officer claim CAS, SLA 10 phút). Upload dùng presigned URL trực tiếp S3 SSE-KMS, key per session, watermark động lúc download. Dữ liệu 500 GB/ngày -> tiered storage 30 ngày hot -> 1 năm warm -> 5 năm cold. Manual queue Redis sorted set priority, officer claim atomic CAS, escalation auto. Tuân thủ: retention 5 năm, PII masking log, right to be forgotten, DPIA. Failure: NFC fail fallback OCR+OTP, deepfake chống bằng ensemble liveness + challenge ngẫu nhiên, officer sai dual approval cho high risk."
+
+> Senior tip: **NFC passive authentication là "kim chỉ nam" của eKYC Việt Nam**. Không có nó, bạn chỉ có ảnh CCCD giấy - rất dễ giả mạo (in ảnh, photoshop). Với NFC, bạn đọc được SOD (Security Object Document) trên chip, verify chữ ký số lên Root CA VNCA (do Bộ Công An quản lý) - đây là bằng chứng mật mã học CCCD **chính hãng, chưa bị sửa đổi**. Interviewer ngân hàng Việt Nam rất quan tâm chi tiết này: hãy nói rõ {{code}}, {{code}}, {{code}}, {{code}}, {{code}}, {{code}}. Và **liveness active challenge ngẫu nhiên** (không cố định "nháy mắt" mỗi lần) là bắt buộc để chống replay/deepfake - đừng chỉ dùng passive.`,
+  followups: [
+    'Khách người nước ngoài chỉ có Passport (không có CCCD/NFC): fallback flow như thế nào, face match với ảnh passport có độ tin cậy như CCCD không?',
+    'Root CA VNCA rotate certificate (hàng 5 năm): hệ thống cập nhật trust store như thế nào không downtime?',
+    'Officer remote work (làm từ nhà): kiểm soát bảo mật màn hình, watermark, access log thế nào?',
+    'Một ngày spike 200.000 hồ sơ (chương trình khuyến mãi): auto-scaling worker, manual queue, officer scheduling xử lý ra sao?',
+    'Gian lận "deepfake real-time" (bộ lọc khuôn mặt live stream): liveness passive ensemble + challenge ngẫu nhiên còn đủ không, cần thêm lớp gì?'
+  ],
+  related: ['banking-001', 'security-001', 'design-022', 'scenario-057']
+}
 ];
