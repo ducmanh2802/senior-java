@@ -7556,6 +7556,205 @@ public void confirmTransfer(String transferId, long toId, long amount) {
     'Phòng ngừa: review cấm tryLock hai tham số, test DB chậm, monitoring lock_expired/renewal_failed, config watchdog timeout.'
   ],
   tags: ['redisson', 'distributed-lock', 'watchdog', 'trylock', 'lease-time', 'optimistic-lock', 'lost-update', 'page-split', 'redis', 'saga']
+},
+{
+  id: 'lab-thread-038',
+  category: 'thread',
+  title: 'Batch EOD variation margin deadlock — hệ thống treo lúc 17:05, API nạp tiền timeout',
+  level: 'senior',
+  scenario: `**Bối cảnh:** Sàn phái sinh hàng hoá **MXV-clone** (hợp đồng tương lai nông sản, kim loại, năng lượng liên thông sàn quốc tế tham khảo). Stack: Java 17, Spring Boot 3.3, PostgreSQL 15, HikariCP maximum-pool-size=30, Tomcat max-threads=200. Cuối mỗi ngày giao dịch, lúc **17:00**, hệ thống chạy batch EOD tính **variation margin** (ký quỹ biến động: chênh lệch giá đóng cửa so với giá hôm trước, phải nạp/thu thêm tiền ký quỹ) cho ~120.000 vị thế, chạy song song 16 thread trong một ExecutorService. Cùng thời điểm, luồng chuyển tiền ký quỹ giữa **tài khoản mẹ–con** (parent–sub account) có thể được kích hoạt bởi khách hàng hoặc bởi chính batch (nạp tiền từ tài khoản mẹ sang con để bù variation margin).
+
+**Triệu chứng:** Lúc **17:05 ngày 18/11/2026**, dashboard báo batch EOD treo ở 73% tiến độ; API nạp tiền trả HTTP 504 timeout; CPU pod ~8%, RAM bình thường, PostgreSQL ~15% CPU và không có lock wait đáng kể. Restart pod thì batch chạy tiếp từ đầu (mất ~12 phút) và API hồi phục, nhưng nếu không tắt batch thì sự cố tái diễn sau vài phút.
+
+**Dữ liệu thu thập:** jstack trên pod đang treo (PID 1 trong container) lúc 17:06, log ứng dụng JSON, metric HikariCP actuator lúc 17:05:30.`,
+  artifacts: [
+    {
+      name: 'jstack-eod-2026-11-18.txt',
+      lang: 'text',
+      content: `2026-11-18 17:06:02
+Full thread dump OpenJDK 64-Bit Server VM (17.0.12+8-LTS-286 mixed mode, sharing):
+
+"Reference Handler" #9 [47] daemon prio=10 os_prio=0 cpu=2.01ms elapsed=86402.11s tid=0x00007f9c8c0e1800 nid=47 waiting on condition  [0x00007f9c3cafe000]
+   java.lang.Thread.State: RUNNABLE
+        at java.lang.ref.Reference.waitForReferencePendingList(java.base@17.0.12/Native Method)
+
+"eod-margin-7" #81 [24353] prio=5 os_prio=0 cpu=812.44ms elapsed=312.31s tid=0x00007f9c8c1a9800 nid=24353 waiting for monitor entry  [0x00007f9c3d9f7000]
+   java.lang.Thread.State: BLOCKED (on object monitor)
+        at vn.exchange.margin.MarginService.transferMargin(MarginService.java:142)
+        - waiting to lock <0x000000076ab2d8f8> (a vn.exchange.account.Account)
+        - locked <0x000000076ab2d0a0> (a vn.exchange.account.Account)
+        at vn.exchange.eod.VariationMarginJob.run(VariationMarginJob.java:67)
+        at java.util.concurrent.ThreadPoolExecutor.runWorker(java.base@17.0.12/ThreadPoolExecutor.java:1136)
+        at java.util.concurrent.ThreadPoolExecutor$Worker.run(java.base@17.0.12/ThreadPoolExecutor.java:635)
+        at java.lang.Thread.run(java.base@17.0.12/Thread.java:840)
+
+   Locked ownable synchronizers:
+        - <0x000000076ac00418> (a java.util.concurrent.ThreadPoolExecutor$Worker)
+
+"eod-margin-12" #86 [24361] prio=5 os_prio=0 cpu=798.02ms elapsed=312.28s tid=0x00007f9c8c1b2800 nid=24361 waiting for monitor entry  [0x00007f9c3dbf8000]
+   java.lang.Thread.State: BLOCKED (on object monitor)
+        at vn.exchange.margin.MarginService.transferMargin(MarginService.java:142)
+        - waiting to lock <0x000000076ab2d0a0> (a vn.exchange.account.Account)
+        - locked <0x000000076ab2d8f8> (a vn.exchange.account.Account)
+        at vn.exchange.account.TransferJob.run(TransferJob.java:41)
+        at java.util.concurrent.ThreadPoolExecutor.runWorker(java.base@17.0.12/ThreadPoolExecutor.java:1136)
+        at java.util.concurrent.ThreadPoolExecutor$Worker.run(java.base@17.0.12/ThreadPoolExecutor.java:635)
+        at java.lang.Thread.run(java.base@17.0.12/Thread.java:840)
+
+   Locked ownable synchronizers:
+        - <0x000000076ac004f0> (a java.util.concurrent.ThreadPoolExecutor$Worker)
+
+"HikariPool-1 housekeeper" #27 [72] daemon prio=5 os_prio=0 cpu=88.71ms elapsed=86390.20s tid=0x00007f9c8c19b000 nid=72 waiting on condition  [0x00007f9c3d4f5000]
+   java.lang.Thread.State: TIMED_WAITING (parking)
+        at jdk.internal.misc.Unsafe.park(java.base@17.0.12/Native Method)
+
+"tomcat-exec-14" #118 [35345] prio=5 os_prio=0 cpu=1021.55ms elapsed=300.09s tid=0x00007f9c8c1c2000 nid=35345 waiting on condition  [0x00007f9c8f7f6000]
+   java.lang.Thread.State: TIMED_WAITING (parking)
+        at jdk.internal.misc.Unsafe.park(java.base@17.0.12/Native Method)
+        - parking to wait for  <0x000000076b1e2210> (a java.util.concurrent.SynchronousQueue$Transferer)
+        at com.zaxxer.hikari.util.ConcurrentBag.borrow(ConcurrentBag.java:159)
+        at com.zaxxer.hikari.pool.HikariPool.getConnection(HikariPool.java:162)
+        at com.zaxxer.hikari.HikariDataSource.getConnection(HikariDataSource.java:112)
+
+"GC Thread#0" os_prio=0 cpu=18221.44ms elapsed=86399.99s tid=0x00007f9c8c1ad800 nid=49 runnable
+
+JNI global refs: 38, weak refs: 0
+
+Found one Java-level deadlock:
+=============================
+"eod-margin-7":
+  waiting to lock monitor 0x00007f9c64004b00 (object 0x000000076ab2d8f8, a vn.exchange.account.Account),
+  which is held by "eod-margin-12"
+
+"eod-margin-12":
+  waiting to lock monitor 0x00007f9c64004a80 (object 0x000000076ab2d0a0, a vn.exchange.account.Account),
+  which is held by "eod-margin-7"
+
+Java stack information for the threads listed above:
+===================================================
+"eod-margin-7":
+        at vn.exchange.margin.MarginService.transferMargin(MarginService.java:142)
+        - waiting to lock <0x000000076ab2d8f8> (a vn.exchange.account.Account)
+        - locked <0x000000076ab2d0a0> (a vn.exchange.account.Account)
+        at vn.exchange.eod.VariationMarginJob.run(VariationMarginJob.java:67)
+"eod-margin-12":
+        at vn.exchange.margin.MarginService.transferMargin(MarginService.java:142)
+        - waiting to lock <0x000000076ab2d0a0> (a vn.exchange.account.Account)
+        - locked <0x000000076ab2d8f8> (a vn.exchange.account.Account)
+        at vn.exchange.account.TransferJob.run(TransferJob.java:41)
+
+Found 1 deadlock.`
+    },
+    {
+      name: 'app-2026-11-18.log',
+      lang: 'text',
+      content: `{"@timestamp":"2026-11-18T17:00:05.112+07:00","level":"INFO","logger":"vn.exchange.eod.EodScheduler","thread":"scheduling-1","message":"EOD variation margin batch started, positions=120432, workers=16"}
+{"@timestamp":"2026-11-18T17:03:12.404+07:00","level":"INFO","logger":"vn.exchange.margin.MarginService","thread":"eod-margin-7","message":"transferMargin parent=ACC-1002 child=ACC-2077 amount=5400000"}
+{"@timestamp":"2026-11-18T17:03:12.411+07:00","level":"INFO","logger":"vn.exchange.account.TransferService","thread":"eod-margin-12","message":"transferMargin parent=ACC-2077 child=ACC-1002 amount=1200000"}
+{"@timestamp":"2026-11-18T17:04:50.003+07:00","level":"WARN","logger":"vn.exchange.ops.PoolStatsReporter","thread":"scheduling-1","message":"HikariPool-1 stats total=30 active=6 idle=24 waiting=14"}
+{"@timestamp":"2026-11-18T17:05:10.521+07:00","level":"ERROR","logger":"vn.exchange.api.DepositController","thread":"tomcat-exec-14","message":"deposit timeout after 30000ms accountId=ACC-9001"}
+{"@timestamp":"2026-11-18T17:05:30.004+07:00","level":"WARN","logger":"vn.exchange.ops.PoolStatsReporter","thread":"scheduling-1","message":"HikariPool-1 stats total=30 active=6 idle=24 waiting=14"}
+{"@timestamp":"2026-11-18T17:05:55.001+07:00","level":"ERROR","logger":"vn.exchange.api.DepositController","thread":"tomcat-exec-22","message":"deposit timeout after 30000ms accountId=ACC-9007"}
+{"@timestamp":"2026-11-18T17:06:02.000+07:00","level":"INFO","logger":"vn.exchange.eod.EodScheduler","thread":"scheduling-1","message":"EOD batch progress=73% (87915/120432) frozen"}`
+    }
+  ],
+  questions: [
+    'Nguyên nhân gốc của việc treo là gì? Dẫn chứng cụ thể từ artifact (tên thread, địa chỉ lock, số dòng).',
+    'Tại sao CPU thấp, HikariCP còn idle nhưng API nạp tiền vẫn timeout? Điều đó nói gì về việc chỉ nhìn metric tài nguyên?',
+    'Bạn sửa thế nào trong 30 phút tới để không mất dữ liệu batch, và sửa gì trong sprint tới để không tái diễn?'
+  ],
+  hints: [
+    'Đọc kỹ hai thread có trạng thái BLOCKED (on object monitor): mỗi thread đang giữ lock nào và chờ lock nào? Hai địa chỉ <0x...> có đối xứng nhau không?',
+    'jstack in ra nguyên một mục "Found one Java-level deadlock" — nhưng hãy tự chứng minh bằng 4 dòng - waiting to lock / - locked, đừng chỉ trích kết luận của công cụ.',
+    'Nếu batch EOD xử lý variation margin theo cặp tài khoản cha–con và luồng chuyển tiền chạy ngược chiều (ACC-1002 ↔ ACC-2077) cùng lúc thì thứ tự khoá phụ thuộc vào tham số đầu vào. Làm sao để thứ tự khoá chỉ phụ thuộc vào dữ liệu, không phụ thuộc vào chiều giao dịch?'
+  ],
+  answer: `**Tóm tắt:** Đây là deadlock AB-BA kinh điển trong batch EOD. Thread {{eod-margin-7}} giữ monitor của tài khoản ACC-1002 (0x000000076ab2d0a0) và chờ monitor của ACC-2077 (0x000000076ab2d8f8); thread {{eod-margin-12}} giữ đúng lock ACC-2077 và chờ đúng lock ACC-1002. Hai thread chờ nhau vô hạn nên batch treo ở 73%, trong khi CPU và connection pool vẫn "bình thường" — vì deadlock là chờ, không phải quay vòng.
+
+### Nguyên nhân gốc
+
+{{MarginService.transferMargin}} khoá hai object {{Account}} theo đúng thứ tự tham số truyền vào:
+
+~~~java
+// MarginService.java — phiên bản lỗi (dòng 138-148)
+public void transferMargin(long fromAccountId, long toAccountId, long amount) {
+    Account from = accountRepo.findById(fromAccountId);
+    Account to   = accountRepo.findById(toAccountId);
+    synchronized (from) {              // dòng 140: khoá tài khoản nguồn
+        synchronized (to) {            // dòng 142: khoá tài khoản đích
+            from.balance -= amount;
+            to.balance   += amount;
+            marginRepo.save(from);
+            marginRepo.save(to);
+        }
+    }
+}
+~~~
+
+Với lệnh batch EOD ACC-1002 → ACC-2077 (variation margin thu từ con sang mẹ), thứ tự khoá là (ACC-1002, ACC-2077). Với lệnh chuyển tiền khách hàng ACC-2077 → ACC-1002 (nạp tiền từ con sang mẹ), thứ tự là (ACC-2077, ACC-1002). Khi hai luồng chạy đồng thời và mỗi bên đã vào được lớp {{synchronized}} ngoài, mỗi thread giữ một lock và chờ lock còn lại. JVM không có cơ chế phá deadlock tự động: monitor không có timeout, nên hai thread nằm đó mãi cho tới khi process chết.
+
+Điểm khiến lỗi "âm thầm" là cửa sổ thời gian: batch EOD chạy 16 thread xử lý 120.432 vị thế trong ~5 phút, còn luồng chuyển tiền mẹ–con có thể được kích hoạt cùng thời điểm (khách hàng nạp tiền để bù variation margin). Chỉ cần hai job cùng chạm một cặp tài khoản là đủ. Đây là lý do restart thì hết nhưng nếu không tắt batch thì sự cố tái diễn sau vài phút ở cặp tài khoản khác.
+
+### Dẫn chứng
+
+- {{eod-margin-7 ... waiting for monitor entry ... BLOCKED (on object monitor)}} — BLOCKED nghĩa là đang xếp hàng vào monitor, không phải đang chờ IO.
+- Dòng {{waiting to lock <0x000000076ab2d8f8>}} + {{locked <0x000000076ab2d0a0>}} của thread eod-margin-7.
+- Dòng {{waiting to lock <0x000000076ab2d0a0>}} + {{locked <0x000000076ab2d8f8>}} của thread eod-margin-12 — đảo đúng hai địa chỉ.
+- Mục {{Found one Java-level deadlock}} liệt kê chính xác hai thread và hai monitor {{0x00007f9c64004b00}} / {{0x00007f9c64004a80}}.
+- Các thread khác ({{tomcat-exec-14}}, {{HikariPool-1 housekeeper}}, {{GC Thread#0}}) đều WAITING/TIMED_WAITING hoặc rảnh — đó là "nhiễu", không liên quan.
+
+Vì sao CPU thấp, pool rảnh (idle=24/30) mà vẫn timeout: thread bị BLOCKED không tiêu CPU (chúng bị park trong hàng đợi monitor của JVM), và mỗi job chỉ mở transaction sau khi đã có đủ hai lock nên không giữ connection. Metric tài nguyên vì thế đẹp, chỉ có latency API và số thread BLOCKED là xấu. Nếu chỉ alert theo CPU/RAM/connection thì sự cố này vô hình.
+
+### Cách sửa
+
+**Ngắn hạn (trong 30 phút):**
+1. Không kill thread (Java không hỗ trợ an toàn). Lấy dump lưu bằng chứng, rồi rolling restart pod bị treo để giải phóng monitor. Trước khi restart phải tạm dừng batch EOD và luồng chuyển tiền mẹ–con để tránh tái diễn ngay.
+2. Kiểm tra tính nhất quán số dư: vì hai lệnh có thể đã trừ ở một tài khoản mà chưa cộng ở tài khoản kia nếu code ghi từng bước, phải chạy job đối soát và hoàn tiền cho các giao dịch ở trạng thái PENDING. Tốt nhất là ghi cả hai bút toán trong **một transaction DB** hoặc dùng outbox để có thể phát lại.
+3. Nếu có cờ feature, tạm tắt chuyển tiền mẹ–con trong cửa sổ EOD, chuyển sang xử lý tuần tự theo cặp tài khoản.
+
+**Dài hạn (sprint tới):** chuẩn hoá thứ tự khoá theo một khoá duy nhất có thứ tự toàn cục, ví dụ theo {{accountId}} tăng dần:
+
+~~~java
+public void transferMargin(long fromId, long toId, long amount) {
+    long firstId  = Math.min(fromId, toId);   // luôn khoá id nhỏ trước
+    long secondId = Math.max(fromId, toId);
+    Account first  = accountRepo.findById(firstId);
+    Account second = accountRepo.findById(secondId);
+    synchronized (first) {
+        synchronized (second) {
+            Account from = first.id == fromId ? first : second;
+            Account to   = first.id == toId   ? first : second;
+            doTransfer(from, to, amount);
+        }
+    }
+}
+~~~
+
+Cách này biến đồ thị chờ thành DAG nên không thể có chu trình. Các lựa chọn khác, cân nhắc theo kiến trúc:
+
+| Cách | Ưu | Nhược |
+|---|---|---|
+| Khoá theo thứ tự id | Đơn giản, không cần thư viện | Vẫn là khoá trong JVM, không bảo vệ khi có nhiều pod |
+| Một khoá duy nhất cho toàn bộ tài khoản | Không deadlock | Throughput sụt mạnh, nút thắt |
+| Khoá ở DB: {{SELECT ... FOR UPDATE}} theo thứ tự id | Đúng khi nhiều instance | Tăng tải DB, cần index và transaction ngắn |
+| Optimistic locking (cột version) + retry | Không giữ lock lâu, scale tốt | Cần retry idempotent, có thể đói khi tranh chấp cao |
+| Distributed lock (Redisson) theo cặp id đã sắp | Đúng đa pod | Thêm Redis vào đường tới hạn, cần xử lý lock hết hạn |
+
+Với hệ thống ký quỹ, hướng bền vững nhất là **khoá ở tầng DB theo thứ tự id** và giữ transaction thật ngắn, còn cache trong bộ nhớ chỉ để đọc. Khoá JVM chỉ đúng khi mỗi tài khoản chỉ do đúng một pod xử lý (sharding theo tài khoản), nếu không thì nó chỉ là "may mắn" khi scale ngang.
+
+### Phòng ngừa
+
+- Bật phát hiện deadlock định kỳ bằng {{ThreadMXBean.findDeadlockedThreads()}} và log/alert; hoặc chạy {{jcmd <pid> Thread.print -l}} theo lịch và grep {{Found .* deadlock}}.
+- Alert theo số thread BLOCKED (BLOCKED > 0 kéo dài > 60s) chứ không chỉ CPU. Với Micrometer/Prometheus là metric {{jvm_threads_states_threads}} với tag {{state=blocked}}.
+- Test tải có chủ đích hai chiều trên cùng cặp tài khoản (k6/JMH) trong CI hiệu năng; deadlock thường chỉ lộ ra khi đúng thứ tự thời gian.
+- Review code: bất kỳ chỗ nào có hai {{synchronized}} lồng nhau hoặc hai lock khác loại phải có comment nêu rõ thứ tự khoá.
+
+> Senior tip: Trong hệ thống ký quỹ/thanh toán, đừng bao giờ để thứ tự khoá phụ thuộc vào tham số nghiệp vụ (ai chuyển cho ai). Một mẹo thực dụng: viết hàm {{lockPair(long a, long b)}} trả về mảng đã sắp xếp và cấm mọi chỗ khác tự khoá hai object. Ngoài ra, deadlock JVM thường đi kèm deadlock DB (hai transaction khoá hai row ngược thứ tự) — nếu thấy row lock wait trong {{pg_stat_activity}} cùng lúc với jstack deadlock thì đó là cùng một lỗi thiết kế, không phải hai sự cố.`,
+  rubric: [
+    'Chỉ ra đúng deadlock AB-BA giữa eod-margin-7 và eod-margin-12, nêu đúng hai địa chỉ lock <0x000000076ab2d0a0> và <0x000000076ab2d8f8> cùng chiều giữ/chờ.',
+    'Giải thích vì sao CPU thấp và HikariCP còn idle (6/30 active, 24 idle) nhưng API nạp tiền vẫn timeout (thread BLOCKED không tiêu CPU, không giữ connection).',
+    'Đề xuất sửa bằng thứ tự khoá nhất quán (sắp xếp theo id) hoặc khoá ở DB, kèm cách xử lý dữ liệu PENDING/đối soát sau restart.',
+    'Nêu biện pháp phòng ngừa: phát hiện deadlock bằng ThreadMXBean/jcmd, alert theo số thread BLOCKED, test tải hai chiều.'
+  ],
+  tags: ['deadlock', 'jstack', 'synchronized', 'lock-ordering', 'margin', 'eod', 'commodity-exchange']
 }
 );
-
