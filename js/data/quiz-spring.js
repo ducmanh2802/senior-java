@@ -7925,4 +7925,171 @@ class OrderRepositoryTest {
 - **Mutation testing thay thế coverage**: mutation testing ({{Pitest}}) **bổ sung** coverage, đo lường assertion quality (kill mutant), không thay thế. Chạy chậm, dùng cho module quan trọng.
 > Senior tip: CI pipeline: unit test (mọi PR) -> test slice (mỗi PR) -> integration test (nightly/main branch). Dùng {{JaCoCo}} + {{Pitest}} trên module core. Không gán KPI coverage 100% cho dev.`
   },
+
+{
+  id: 'qz-sql-067',
+  topic: 'sql',
+  q: 'Truy vấn nào trả về tổng tiền cho từng khách hàng, kể cả khách chưa có đơn?',
+  options: [
+    'SELECT c.id, COALESCE(SUM(o.amount),0) FROM customers c LEFT JOIN orders o ON o.customer_id=c.id GROUP BY c.id',
+    'SELECT c.id, SUM(o.amount) FROM customers c JOIN orders o ON o.customer_id=c.id GROUP BY c.id',
+    'SELECT c.id, SUM(o.amount) FROM customers c LEFT JOIN orders o ON o.customer_id=c.id',
+    'SELECT c.id, COUNT(o.amount) FROM customers c LEFT JOIN orders o ON o.customer_id=c.id GROUP BY c.id'
+  ],
+  answer: 0,
+  explain: `**Đáp án đúng: LEFT JOIN + GROUP BY + COALESCE.**
+### Vì sao đúng
+- LEFT JOIN giữ mọi khách hàng.
+- GROUP BY c.id gom theo khách.
+- COALESCE biến NULL thành 0 cho khách không có đơn.
+### Vì sao các phương án còn lại sai
+- INNER JOIN: loại khách không có đơn.
+- Thiếu GROUP BY: lỗi SQL hoặc gom toàn bảng.
+- COUNT: đếm số đơn, không phải tổng tiền.
+> Senior tip: Luôn kiểm tra NULL semantics khi aggregate.`
+},
+{
+  id: 'qz-sql-068',
+  topic: 'sql',
+  q: 'HAVING trong GROUP BY dùng để làm gì?',
+  options: [
+    'Lọc nhóm sau khi gom, có thể dùng aggregate',
+    'Lọc hàng trước khi gom',
+    'Sắp xếp kết quả',
+    'Tạo index'
+  ],
+  answer: 0,
+  explain: `**Đáp án đúng: lọc nhóm sau gom.**
+### Vì sao đúng
+- Thứ tự logic: FROM -> WHERE -> GROUP BY -> HAVING -> SELECT. HAVING chạy sau GROUP BY nên dùng được COUNT/SUM.
+### Vì sao các phương án còn lại sai
+- Lọc hàng trước gom: đó là WHERE.
+- Sắp xếp: ORDER BY.
+- Index: DDL riêng.
+> Senior tip: Đẩy điều kiện cột gốc xuống WHERE để dùng index.`
+},
+
+
+{
+  id: 'qz-sql-069',
+  topic: 'sql',
+  q: 'Window function ROW_NUMBER() OVER (PARTITION BY dept ORDER BY salary DESC) làm gì?',
+  options: ['Đánh số thứ tự trong từng phòng ban theo lương giảm dần','Gom nhóm và tính tổng','Lọc top mỗi phòng','Sắp xếp toàn bảng'],
+  answer: 0,
+  explain: `**Đáp án đúng: đánh số thứ tự trong partition.**
+### Vì sao đúng
+- PARTITION BY chia nhóm nhưng không gộp hàng; ORDER BY trong OVER xác định thứ tự.
+### Vì sao các phương án còn lại sai
+- Gom/tổng là GROUP BY + SUM.
+- Lọc top cần subquery bọc ngoài.
+- Sắp xếp toàn bảng là ORDER BY cuối query.
+> Senior tip: Top N per group = ROW_NUMBER rồi filter rn <= N.`
+},
+{
+  id: 'qz-sql-070',
+  topic: 'sql',
+  q: 'Khi nào EXISTS thường nhanh hơn IN?',
+  options: ['Subquery trả nhiều dòng, EXISTS dừng sớm khi tìm thấy','Subquery 1 dòng','Cần lấy cột từ subquery','EXISTS luôn chậm hơn'],
+  answer: 0,
+  explain: `**Đáp án đúng: EXISTS dừng sớm (short-circuit).**
+### Vì sao đúng
+- EXISTS là semi-join, dừng ngay khi gặp match đầu tiên.
+### Vì sao các phương án còn lại sai
+- 1 dòng: IN tối ưu tốt.
+- Lấy cột: dùng JOIN.
+- EXISTS luôn chậm: sai.
+> Senior tip: EXISTS an toàn hơn IN khi có NULL.`
+},
+{
+  id: 'qz-sql-071',
+  topic: 'sql',
+  multi: true,
+  q: 'Composite index (a,b,c). Chọn 2 truy vấn dùng index hiệu quả (prefix). (Chọn 2)',
+  options: ['WHERE a=1 AND b=2','WHERE b=2 AND c=3','WHERE a=1 AND c=3','WHERE a=1'],
+  answer: [0,3],
+  explain: `**Đáp án đúng: (a,b) và (a).**
+### Vì sao đúng
+- Composite index tận dụng prefix từ trái.
+### Vì sao các phương án còn lại sai
+- (b,c): thiếu a.
+- (a,c): bỏ b, không tận dụng thứ tự b.
+> Senior tip: Đặt cột hay lọc ở đầu index.`
+},
+{
+  id: 'qz-sql-072',
+  topic: 'sql',
+  q: 'EXPLAIN hiển thị Seq Scan on users. Ý nghĩa?',
+  options: ['Quét toàn bảng','Dùng index','Gộp nhiều index','Chỉ đọc index'],
+  answer: 0,
+  explain: `**Đáp án đúng: quét toàn bảng.**
+### Vì sao đúng
+- Seq Scan đọc mọi trang heap, O(n).
+### Vì sao các phương án còn lại sai
+- Index Scan: dùng index rồi fetch heap.
+- Bitmap Scan: gộp index.
+- Index Only Scan: chỉ đọc index.
+> Senior tip: Seq Scan trên bảng lớn + điều kiện chọn lọc -> thiếu index.`
+},
+{
+  id: 'qz-sql-073',
+  topic: 'sql',
+  q: 'Index Only Scan xuất hiện khi nào?',
+  options: ['Tất cả cột SELECT có trong index và visibility map cho phép','Index có cột WHERE nhưng SELECT có cột khác','Bảng rất nhỏ','Không có WHERE'],
+  answer: 0,
+  explain: `**Đáp án đúng: covering index + visibility map.**
+### Vì sao đúng
+- Đọc index không fetch heap, cần mọi cột trong index và trang all-visible.
+### Vì sao các phương án còn lại sai
+- SELECT có cột ngoài index -> fetch heap.
+- Bảng nhỏ -> Seq Scan.
+- Không WHERE không phải điều kiện bắt buộc.
+> Senior tip: Dùng INCLUDE để covering; VACUUM thường xuyên.`
+},
+{
+  id: 'qz-sql-074',
+  topic: 'sql',
+  q: 'NOT IN trả rỗng dù có hàng không khớp. Nguyên nhân?',
+  options: ['Subquery chứa NULL làm kết quả UNKNOWN','Thiếu index','JOIN duplicate','ORDER BY thiếu'],
+  answer: 0,
+  explain: `**Đáp án đúng: NULL trong subquery.**
+### Vì sao đúng
+- x NOT IN (...,NULL) = UNKNOWN, WHERE chỉ giữ TRUE.
+### Vì sao các phương án còn lại sai
+- Thiếu index: hiệu năng.
+- Duplicate: không làm rỗng toàn bộ.
+- ORDER BY: không ảnh hưởng tập kết quả.
+> Senior tip: Dùng NOT EXISTS thay NOT IN khi có thể NULL.`
+},
+{
+  id: 'qz-sql-075',
+  topic: 'sql',
+  q: 'UPSERT trong PostgreSQL dùng cú pháp nào?',
+  options: ['INSERT ... ON CONFLICT (key) DO UPDATE SET ...','MERGE INTO','INSERT OR REPLACE','UPSERT INTO'],
+  answer: 0,
+  explain: `**Đáp án đúng: ON CONFLICT DO UPDATE.**
+### Vì sao đúng
+- PostgreSQL hỗ trợ ON CONFLICT DO UPDATE với EXCLUDED.
+### Vì sao các phương án còn lại sai
+- MERGE: PostgreSQL 15+ mới có, cú pháp khác.
+- INSERT OR REPLACE: SQLite/MySQL.
+- UPSERT INTO: không tồn tại.
+> Senior tip: Dùng EXCLUDED để lấy giá trị insert.`
+},
+{
+  id: 'qz-sql-076',
+  topic: 'sql',
+  multi: true,
+  q: 'Chọn 2 cách giảm Seq Scan trên bảng lớn. (Chọn 2)',
+  options: ['Tạo index phù hợp','Chạy ANALYZE','Tăng shared_buffers lên 90% RAM','Dùng SELECT *'],
+  answer: [0,1],
+  explain: `**Đáp án đúng: index + ANALYZE.**
+### Vì sao đúng
+- Index phù hợp cho phép Index/Bitmap Scan.
+- ANALYZE cập nhật thống kê.
+### Vì sao các phương án còn lại sai
+- shared_buffers 90%: quá cao, thường 25%.
+- SELECT *: planner tránh index-only.
+> Senior tip: Dùng EXPLAIN (ANALYZE, BUFFERS).`
+}
+
 );
