@@ -8737,5 +8737,220 @@ Log: pid 22104 chờ transaction 104857 của 22119; pid 22119 chờ 104858 củ
 - Monitoring: alert deadlock count > ngưỡng, lock wait > 200 ms; log idempotency duplicate.
 - Không trộn thứ tự khóa giữa các code path (ví dụ batch job khóa theo created_at khác với API khóa theo id).
 > Senior tip: Deadlock không phải lỗi dữ liệu mà là lỗi thứ tự tài nguyên; idempotency + retry toàn transaction là bắt buộc cho ví tiền, không chỉ "thử lại câu UPDATE".`,rubric:['Dựng đúng chu trình 22104↔22119 theo transaction IDs','Nêu deadlock detector hủy transaction 40P01','Đề xuất khóa theo thứ tự id tăng dần','Retry toàn transaction + idempotency key','Có monitoring/phòng ngừa'],tags:['postgresql','deadlock','locking','wallet','idempotency']},
+{id:'lab-sql-060',category:'sql',title:'Partitioned table stale statistics gây Nested Loop sai (ước lượng 120 dòng, thực tế 1,8M)',level:'senior',scenario:`**Bối cảnh.** Hệ thống **OrderFlow** (Spring Boot 3.3, Hibernate 6.4, PostgreSQL 16.2 trên RDS, 16 vCPU / 128 GB RAM). Bảng **order_line** được partition theo RANGE trên {{created_at}} (1 partition/tháng, 36 partitions, tổng **42.300.000 dòng**, ~18 GB heap + 9 GB index). Bảng **product** 2.100.000 dòng. Query join đơn hàng - sản phẩm lọc theo {{order_line.created_at}} (tháng hiện tại) và {{product.category_id}}. Index: {{idx_order_line_product}} trên {{product_id}}, {{idx_order_line_created}} trên {{created_at}}, {{idx_product_category}} trên {{category_id}}.
+
+**Triệu chứng (12/03/2026, 08:45).** p95 query nhảy từ 45 ms lên **12,4 giây**, CPU RDS 89%. EXPLAIN ANALYZE cho thấy planner chọn **Nested Loop** với {{order_line}} làm outer (ước lượng **120 rows**), scan {{product}} bằng Index Scan. Thực tế {{order_line}} trả **1.824.567 dòng** (partition tháng hiện tại), Nested Loop lặp 1.8M lần -> **Execution Time 12.415 ms**. Statistics partition cha {{order_line}} đã **stale 3 tuần** (chưa ANALYZE sau bulk load tháng trước).
+
+**Việc bạn có.** Ba artifact: EXPLAIN ANALYZE của câu join chậm, {{pg_stat_user_tables}} + {{pg_stats}} cho partition cha và con, log ứng dụng. Hãy chỉ ra vì sao planner ước lượng sai, tại sao Nested Loop được chọn, và cách khắc phục.`,artifacts:[{name:'explain-join-slow.txt',lang:'text',content:`-- 2026-03-12 08:46:10 +07, RDS orderflow-primary (PostgreSQL 16.2)
+-- Query: join order_line (partition tháng 03/2026) + product lọc category_id=10
+orderflow=# EXPLAIN (ANALYZE, BUFFERS)
+SELECT ol.id, ol.order_id, ol.product_id, ol.qty, ol.price, p.name, p.category_id
+FROM order_line ol
+JOIN product p ON p.id = ol.product_id
+WHERE ol.created_at >= '2026-03-01' AND ol.created_at < '2026-04-01'
+  AND p.category_id = 10;
+                                                          QUERY PLAN
+--------------------------------------------------------------------------------------------------------------------------------------
+ Nested Loop  (cost=1.12..84521.44 rows=120 width=104) (actual time=0.041..12415.682 rows=1824567 loops=1)
+   Buffers: shared hit=5842104 read=12440
+   ->  Append  (cost=0.56..1245.12 rows=120 width=48) (actual time=0.021..412.304 rows=1824567 loops=1)
+         Subplans Removed: 35
+         ->  Index Scan using order_line_202603_created_at_idx on order_line_202603 ol  (cost=0.56..1245.12 rows=120 width=48)
+               Index Cond: (created_at >= '2026-03-01 00:00:00+07' AND created_at < '2026-04-01 00:00:00+07')
+               Buffers: shared hit=18420 read=12440
+   ->  Index Scan using product_pkey on product p  (cost=0.56..694.32 rows=1 width=56) (actual time=0.006..0.006 rows=1 loops=1824567)
+         Index Cond: (id = ol.product_id)
+         Filter: (category_id = 10)
+         Rows Removed by Filter: 0
+         Buffers: shared hit=5823684
+ Planning Time: 2.145 ms
+ Execution Time: 12416.821 ms
+-- Planner ước lượng 120 rows cho partition order_line_202603 (dựa trên stats partition CHA stale).
+-- Thực tế partition con có 1.824.567 rows. Nested Loop lặp 1.8M lần Index Scan product.`},{name:'stats-partition.txt',lang:'text',content:`-- 2026-03-12 08:50:00 +07
+orderflow=# SELECT relname, n_live_tup, n_dead_tup, last_analyze, last_autoanalyze
+FROM pg_stat_user_tables WHERE relname LIKE 'order_line%';
+   relname        | n_live_tup | n_dead_tup |     last_analyze     |  last_autoanalyze
+------------------+------------+------------+----------------------+--------------------
+ order_line       |  42300000  |    12450   | 2026-02-19 03:15:00  | 2026-02-19 03:15:00  -- PARTITION CHA, stale 3 tuần
+ order_line_202601|   987450   |     412    | 2026-03-01 03:15:00  | 2026-03-01 03:15:00
+ order_line_202602|  1123560   |     520    | 2026-03-08 03:15:00  | 2026-03-08 03:15:00
+ order_line_202603|  1824567   |     890    | 2026-03-08 03:15:00  | 2026-03-08 03:15:00  -- partition con đã analyze
+ order_line_202604|         0  |       0    |                      |                      -- partition rỗng (tương lai)
+ ...
+
+orderflow=# SELECT relname, schemaname, n_live_tup, n_dead_tup
+FROM pg_stat_user_tables WHERE relname = 'order_line';  -- chỉ partition cha
+   relname  | schemaname | n_live_tup | n_dead_tup
+------------+------------+------------+------------
+ order_line | public     |  42300000  |    12450   -- tổng 36 partitions
+
+orderflow=# SELECT tablename, attname, n_distinct, most_common_vals, most_common_freqs
+FROM pg_stats WHERE tablename = 'order_line' AND attname = 'created_at';
+   tablename  | attname    | n_distinct |          most_common_vals          |       most_common_freqs
+--------------+------------+------------+----------------------------------+--------------------------
+ order_line   | created_at |       -1.0 | {2026-01-15,2026-02-10,2026-02-20}| {0.023,0.019,0.018}  -- stats CHA cũ, không phản ánh tháng 03
+-- Partition con order_line_202603 có stats riêng (n_live_tup=1824567) nhưng planner dùng stats CHA khi Append.`},{name:'app-order-slow.log',lang:'text',content:`2026-03-12 08:46:12.340 DEBUG [http-nio-8080-exec-88] o.h.SQL :
+    select ol.id, ol.order_id, ol.product_id, ol.qty, ol.price, p.name, p.category_id
+    from order_line ol
+    join product p on p.id = ol.product_id
+    where ol.created_at >= ? and ol.created_at < ? and p.category_id = ?
+2026-03-12 08:46:24.755 INFO  [http-nio-8080-exec-88] c.o.OrderController :
+    GET /api/v1/orders/lines?month=2026-03&category=10 -> 200 in 12418 ms
+-- Pattern: mọi request lọc tháng hiện tại + category đều mất 12-13 giây.`}],questions:['Tại sao planner ước lượng 120 rows cho partition tháng 03 mà thực tế có 1,8M rows? Giải thích vai trò stats partition CHA vs CON.','Tại sao Nested Loop được chọn thay vì Hash Join? Chi phí ước lượng vs thực tế.','Sửa ngắn hạn (hôm nay) và dài hạn (tuần này) như thế nào? So sánh: ANALYZE partition cha, SET enable_nestloop=off, CTE materialized, Hash Join ép bằng join_collapse_limit.'],hints:['Planner dùng stats partition CHA (stale 3 tuần) để ước lượng cho Append, không dùng stats partition CON (đã fresh).','Nested Loop cost = outer_rows * inner_cost. Với outer=120 ước lượng, cost thấp. Thực tế outer=1.8M -> cost thực tế = 1.8M * inner_cost.','ANALYZE partition cha cập nhật n_live_tup tổng, nhưng partition con vẫn giữ stats riêng. Cần ANALYZE partition cha SAU khi partition con có dữ liệu mới.','Hash Join: build hash table inner (product filter category=10 ~210k rows) + probe outer (order_line partition 1.8M) -> sequential I/O, nhanh hơn Nested Loop random I/O.'],answer:`**Tóm tắt:** Planner ước lượng **120 rows** cho partition {{order_line_202603}} dựa trên **statistics partition CHA {{order_line}} stale 3 tuần** (chưa ANALYZE sau bulk load tháng 02-03). Thực tế partition con có **1.824.567 rows**. Planner chọn **Nested Loop** vì cost model thấy outer=120 nhỏ -> Index Scan product 120 lần rẻ hơn Hash Join. Thực tế Nested Loop lặp **1.8M lần** Index Scan product -> **12,4 giây**. Sửa: {{ANALYZE order_line}} (partition cha) ngay lập tức; dài hạn: auto_analyze threshold partition, pg_stat_clear_snapshot, monitor n_live_tup lệch.
+
+### Nguyên nhân gốc, từng bước
+1. Bảng {{order_line}} partition RANGE theo tháng. Partition cha {{order_line}} lưu **stats tổng hợp** (n_live_tup=42.3M, last_analyze=19/02). Partition con {{order_line_202603}} có **stats riêng** (n_live_tup=1.82M, last_analyze=08/03).
+2. Khi planner xử lý {{Append}} (gộp 36 partitions), nó dùng **stats partition CHA** để ước lượng rows cho từng subplan. Vì stats CHA stale (cập nhật 19/02, trước khi partition 03 có dữ liệu), planner ước lượng **120 rows** cho tháng 03 (dựa trên mật độ cũ).
+3. Partition con {{order_line_202603}} thực tế có **1.824.567 rows** (bulk load tháng 03). Planner không dùng stats partition con khi Append vì partition pruning đã chọn 1 partition, nhưng ước lượng rows vẫn lấy từ CHA.
+4. Với outer_rows ước lượng = 120, cost Nested Loop = 120 * (Index Scan product cost ~694) = ~83k. Cost Hash Join = build hash product (category=10 ~210k rows) + probe 120 rows = cao hơn ước lượng. Planner chọn **Nested Loop**.
+5. Thực thi: Append trả **1.824.567 rows** từ partition 03 -> Nested Loop lặp 1.8M lần Index Scan product -> **Heap Fetches 1.8M**, **Buffers 5.8M**, **Execution Time 12.415 ms**.
+
+### Dẫn chứng
+- Artifact 1: **Nested Loop**, **rows=120** (ước lượng), **actual rows=1824567**, **loops=1824567** trên Index Scan product, **Execution Time 12416 ms**.
+- Artifact 2: Partition CHA {{order_line}} **last_analyze 19/02** (stale 3 tuần), n_live_tup=42.3M. Partition con {{order_line_202603}} n_live_tup=1.82M, last_analyze=08/03 (fresh). Stats CHA không phản ánh dữ liệu tháng 03.
+- Artifact 3: App log 12.4 giây/request, pattern nhất quán.
+
+### Cách sửa ngắn hạn (hôm nay)
+1. **ANALYZE partition cha ngay**:
+~~~sql
+ANALYZE order_line;  -- cập nhật stats tổng hợp, planner sẽ ước lượng đúng ~1.8M cho tháng 03
+~~~
+Sau ANALYZE, planner chọn **Hash Join** (outer 1.8M probe hash table product 210k) -> ~400 ms.
+
+2. **Workaround ngay nếu không ANALYZE được**: ép Hash Join
+~~~sql
+SET enable_nestloop = off;  -- session-level, ép planner dùng Hash Join/Merge Join
+-- HOẶC dùng CTE materialized:
+WITH ol AS MATERIALIZED (
+  SELECT * FROM order_line
+  WHERE created_at >= '2026-03-01' AND created_at < '2026-04-01'
+)
+SELECT ol.*, p.name, p.category_id
+FROM ol JOIN product p ON p.id = ol.product_id
+WHERE p.category_id = 10;
+~~~
+
+### Cách sửa dài hạn
+- **Giảm auto_analyze threshold cho partition**: {{autovacuum_analyze_scale_factor = 0.01}} (mặc định 0.1) trên partition cha, {{autovacuum_analyze_threshold = 1000}} để trigger sớm khi partition con nhận dữ liệu mới.
+- **pg_stat_clear_snapshot()** sau bulk load partition mới: ép planner nạp stats mới mà không cần reconnect.
+- **Partition-wise join** (PostgreSQL 14+): {{enable_partitionwise_join = on}} (mặc định on) cho phép planner dùng stats partition con trực tiếp khi join. Kiểm tra {{join_collapse_limit}} đủ lớn (mặc định 8) để không collapse partition.
+- **Monitoring**: alert khi {{n_live_tup partition cha}} lệch > 20% tổng {{n_live_tup partition con}} (tổng 36 partitions). Query theo dõi:
+~~~sql
+SELECT 'order_line' AS parent, n_live_tup FROM pg_stat_user_tables WHERE relname = 'order_line'
+UNION ALL
+SELECT 'sum_children', SUM(n_live_tup) FROM pg_stat_user_tables WHERE relname LIKE 'order_line\_%';
+~~~
+
+### Phòng ngừa và monitoring
+- Alert khi query có **loops > 100.000** trên Nested Loop (dấu hiệu ước lượng sai).
+- Dashboard: so sánh **Estimated Rows vs Actual Rows** cho query quan trọng (auto_explain log_analyze).
+- Chạy {{ANALYZE}} partition cha **sau mỗi bulk load partition mới** (hook trong pipeline CDC/ETL).
+- Cân nhắc **pg_repack** hoặc {{CLUSTER}} trên partition lớn để giảm random I/O nếu Hash Join vẫn chậm.
+
+> Senior tip: **Partition table stats là "bẫy" hay gặp nhất**. Partition cha stats chỉ cập nhật khi ANALYZE cha hoặc autovacuum chạy trên cha. Bulk load partition con KHÔNG tự cập nhật stats cha. Luôn nhớ: **sau khi attach/load partition mới -> ANALYZE partition cha**. Và đừng tin auto_analyze mặc định (scale_factor=0.1) trên bảng lớn - nó trigger quá muộn. Tôi để scale_factor=0.01 cho bảng > 100M rows.`,rubric:['Chỉ đúng nguyên nhân: planner dùng stats partition CHA stale để ước lượng rows cho Append, không phản ánh dữ liệu partition CON mới','Dẫn chứng đúng: artifact 1 rows=120 ước lượng vs actual 1824567, loops=1824567; artifact 2 last_analyze CHA 19/02 vs CON 08/03','Giải thích đúng tại sao Nested Loop được chọn: cost model outer=120 rẻ hơn Hash Join','Đề xuất sửa đúng: ANALYZE partition cha ngay, SET enable_nestloop=off workaround, dài hạn giảm auto_analyze_scale_factor, pg_stat_clear_snapshot','Có monitoring/phòng ngừa: alert loops > 100k, dashboard estimated vs actual, ANALYZE sau bulk load'],tags:['postgresql','partition','statistics','nested-loop','hash-join','analyze','autoanalyze','bulk-load']},
+{id:'lab-sql-061',category:'sql',title:'Prepared transaction (PREPARE TRANSACTION) quên commit giữ xmin chặn vacuum, bloat n_dead_tup',level:'senior',scenario:`**Bối cảnh.** Hệ thống thanh toán **PayLink** (Spring Boot 3.3, PostgreSQL 15.6 trên RDS, 8 vCPU / 64 GB RAM) dùng **two-phase commit (2PC)** cho giao dịch chuyển tiền liên ngân hàng qua XA transaction. Bảng {{wallet_ledger}} ghi log chuyển tiền: **8.400.000 dòng** (~3,2 GB heap + 1,1 GB index). Mỗi ngày ~150.000 giao dịch, trong đó ~200 giao dịch 2PC.
+
+**Triệu chứng (28/02/2026, 14:30).** Bảng {{wallet_ledger}} bloat nghiêm trọng: **n_dead_tup = 4.200.000** (50% bảng), heap size tăng 40% trong 2 tuần. Autovacuum chạy 6 lần/ngày nhưng **dead tuples không giảm**. pg_stat_progress_vacuum cho thấy vacuum scan toàn bảng nhưng **tuples removed = 0**. CPU vacuum worker cao, I/O đọc ghi liên tục. Không có long-running transaction (pg_stat_activity max xact_start 2 phút).
+
+**Việc bạn có.** Ba artifact: {{pg_prepared_xacts}}, {{pg_stat_user_tables}} + {{pg_stat_progress_vacuum}}, log ứng dụng XA. Hãy tìm nguyên nhân vacuum không dọn dead tuple, và cách khắc phục.`,artifacts:[{name:'prepared-xacts.txt',lang:'text',content:`-- 2026-02-28 14:35:00 +07
+paylink=# SELECT * FROM pg_prepared_xacts;
+ transaction  | gid                              | prepared           | owner  | database
+--------------+----------------------------------+--------------------+--------+----------
+ 1048576      | xa_2pc_paylink_20260214_001234  | 2026-02-14 09:12:34| paylink| paylink
+ 1048577      | xa_2pc_paylink_20260215_002156  | 2026-02-15 14:22:56| paylink| paylink
+ 1048578      | xa_2pc_paylink_20260216_003421  | 2026-02-16 11:05:42| paylink| paylink
+ 1048579      | xa_2pc_paylink_20260220_004512  | 2026-02-20 16:30:11| paylink| paylink
+ 1048580      | xa_2pc_paylink_20260222_005678  | 2026-02-22 08:45:33| paylink| paylink
+ 1048581      | xa_2pc_paylink_20260225_006789  | 2026-02-25 12:10:19| paylink| paylink
+-- 6 prepared transaction **chưa COMMIT PREPARED / ROLLBACK PREPARED** từ 14/02 đến 25/02 (2-14 ngày).
+-- Mỗi prepared xact giữ **xmin** (transaction ID) tại thời điểm PREPARE.
+-- Vacuum không thể dọn tuple có xmin >= prepared_xact_xmin.`},{name:'vacuum-stats.txt',lang:'text',content:`-- 2026-02-28 14:40:00 +07
+paylink=# SELECT relname, n_live_tup, n_dead_tup, last_vacuum, last_autovacuum, last_analyze, last_autoanalyze
+FROM pg_stat_user_tables WHERE relname = 'wallet_ledger';
+   relname      | n_live_tup | n_dead_tup |    last_vacuum    |  last_autovacuum  |    last_analyze    |  last_autoanalyze
+----------------+------------+------------+-------------------+-------------------+--------------------+-------------------
+ wallet_ledger  |   8400000  |   4200000  | 2026-02-28 14:25  | 2026-02-28 14:25  | 2026-02-28 14:25   | 2026-02-28 14:25
+-- n_dead_tup = 4.2M (50%), không giảm sau autovacuum.
+
+paylink=# SELECT * FROM pg_stat_progress_vacuum;
+ pid  | datname | relid | phase        | heap_blks_total | heap_blks_scanned | heap_blks_vacuumed | index_vacuum_count | max_dead_tuples | num_dead_tuples
+------+---------+-------+--------------+-----------------+-------------------+--------------------+--------------------+-----------------+----------------
+ 3214 | paylink | 16420 | vacuuming heap|  410000         |  410000           |  410000            |        12          |     178000      |       0
+-- vacuum scan hết 410k heap blocks, vacuumed 410k blocks, **num_dead_tuples = 0** (không dọn được tuple nào).
+-- max_dead_tuples = 178k (maintenance_work_mem limit), nhưng thực tế 0 tuple xóa được.
+
+paylink=# SELECT age(datfrozenxid) FROM pg_database WHERE datname = 'paylink';
+ age
+-------
+  12450000
+-- datfrozenxid age 12.45M (gần ngưỡng autovacuum_freeze_max_age 200M), nhưng không phải vấn đề chính.`},{name:'xa-recovery.log',lang:'text',content:`2026-02-14 09:12:34.112 INFO  [xa-recovery] c.p.XARecoveryManager :
+    XAResource.start(xid=xa_2pc_paylink_20260214_001234, flags=TMNOFLAGS)
+    XAResource.end(xid=..., flags=TMSUCCESS)
+    XAResource.prepare(xid=...) -> XA_OK
+    -- PREPARED thành công, chờ commit từ coordinator
+2026-02-14 09:12:35.220 ERROR  [xa-recovery] c.p.XARecoveryManager :
+    Coordinator unavailable (network partition), cannot send COMMIT
+    -- Coordinator down, transaction Prepared bị treo
+2026-02-14 09:15:00.000 INFO  [xa-recovery] c.p.XARecoveryManager :
+    Recovery scan: found 1 prepared xact (xa_2pc_paylink_20260214_001234), retrying commit...
+    XAResource.commit(xid=..., onePhase=false) -> XAER_RMERR (Resource Manager error)
+    -- Commit thất bại, Prepared transaction vẫn còn
+-- Pattern lặp lại: coordinator network partition -> prepare thành công -> commit thất bại -> recovery retry thất bại -> prepared xact tồn tại vô thời hạn.
+-- Ứng dụng KHÔNG có timeout auto-rollback cho prepared transaction.`}],questions:['Tại sao autovacuum scan toàn bảng nhưng num_dead_tuples = 0? Giải thích vai trò xmin của prepared transaction.','Tìm 6 prepared transaction trong artifact 1: chúng đã tồn tại bao lâu? Tại sao vacuum không dọn tuple có xmin >= prepared_xmin?','Sửa ngắn hạn (hôm nay) và dài hạn (tuần này) như thế nào? So sánh: ROLLBACK PREPARED thủ công, max_prepared_xacts timeout, application-level recovery timeout.'],hints:['Prepared transaction giữ xmin "đóng băng" (frozen) tại thời điểm PREPARE. Vacuum chỉ dọn tuple có xmin < oldest active xmin (kể cả prepared xact).','6 prepared xact từ 14/02 đến 25/02 (2-14 ngày). prepared_xact_xmin = xmin tại thời điểm PREPARE. Mọi tuple INSERT/UPDATE sau thời điểm đó có xmin >= prepared_xmin -> vacuum không dọn.','ROLLBACK PREPARED \'xa_gid\' xóa prepared transaction ngay, giải phóng xmin. Vacuum sau đó sẽ dọn được dead tuples.','Dài hạn: ứng dụng phải có timeout auto-rollback prepared xact (ví dụ 1 giờ), monitor pg_prepared_xacts, alert khi age > ngưỡng.'],answer:`**Tóm tắt:** 6 **prepared transaction (2PC)** từ 14/02 đến 25/02 **chưa COMMIT PREPARED / ROLLBACK PREPARED** do coordinator network partition. Mỗi prepared xact giữ **xmin** tại thời điểm PREPARE. **Autovacuum không thể dọn dead tuple** có xmin >= oldest prepared_xact_xmin -> **n_dead_tup 4.2M (50%) không giảm**, vacuum scan toàn bảng nhưng **num_dead_tuples = 0**. Sửa: {{ROLLBACK PREPARED 'gid'}} thủ công 6 xact ngay; dài hạn: app timeout auto-rollback prepared xact > 1 giờ, monitor pg_prepared_xacts, alert age.
+
+### Nguyên nhân gốc, từng bước
+1. Ứng dụng dùng **XA 2PC** cho chuyển tiền liên ngân hàng. {{XAResource.prepare()}} thành công -> PostgreSQL tạo **prepared transaction** (hiện trong {{pg_prepared_xacts}}), gán **xmin = transaction ID hiện tại**.
+2. Coordinator network partition -> **COMMIT PREPARED không gửi được**. Recovery manager retry commit nhưng thất bại ({{XAER_RMERR}}). Prepared transaction **tồn tại vô thời hạn** (không có timeout auto-rollback ở ứng dụng).
+3. 6 prepared transaction tích lũy từ 14/02 đến 25/02. **Oldest prepared_xact_xmin = xmin của xact 14/02** (1048576).
+4. Mọi **INSERT/UPDATE/DELETE** trên {{wallet_ledger}} sau 14/02 nhận **xmin >= oldest prepared_xmin**.
+5. Autovacuum chạy: chỉ dọn tuple có **xmin < oldest active xmin** (kể cả prepared xact). Vì prepared xact cũ nhất giữ xmin rất cũ, **hết dead tuple đều có xmin >= prepared_xmin** -> **vacuum không dọn được tuple nào** (num_dead_tuples = 0).
+6. Dead tuple tích lũy: **n_dead_tup 4.2M (50%)**, heap bloat 40%, autovacuum chạy liên tục (6 lần/ngày) nhưng vô ích, tiêu tốn CPU/I/O.
+
+### Dẫn chứng
+- Artifact 1: **6 prepared transaction** trong {{pg_prepared_xacts}}, prepared từ 14/02 đến 25/02 (2-14 ngày), owner=paylink.
+- Artifact 2: {{wallet_ledger}} **n_dead_tup = 4.2M**, **pg_stat_progress_vacuum: heap_blks_vacuumed = 410k, num_dead_tuples = 0** (scan hết nhưng không dọn được tuple nào).
+- Artifact 3: Log XA recovery: prepare thành công -> coordinator down -> commit thất bại -> retry thất bại -> prepared xact tồn tại. Không có timeout auto-rollback.
+
+### Cách sửa ngắn hạn (hôm nay)
+1. **ROLLBACK PREPARED thủ công** 6 prepared transaction:
+~~~sql
+ROLLBACK PREPARED 'xa_2pc_paylink_20260214_001234';
+ROLLBACK PREPARED 'xa_2pc_paylink_20260215_002156';
+ROLLBACK PREPARED 'xa_2pc_paylink_20260216_003421';
+ROLLBACK PREPARED 'xa_2pc_paylink_20260220_004512';
+ROLLBACK PREPARED 'xa_2pc_paylink_20260222_005678';
+ROLLBACK PREPARED 'xa_2pc_paylink_20260225_006789';
+~~~
+Sau đó chạy {{VACUUM (ANALYZE) wallet_ledger}} -> dead tuples được dọn, n_dead_tup về 0.
+
+2. **Kiểm tra dữ liệu**: các giao dịch 2PC này đã rollback ở coordinator chưa? Nếu coordinator đã rollback, ROLLBACK PREPARED an toàn. Nếu coordinator chưa quyết định, cần phối hợp với team operations.
+
+### Cách sửa dài hạn
+- **Application-level timeout**: XA recovery manager phải có **max prepared age** (ví dụ 1 giờ). Quá timeout -> tự động {{ROLLBACK PREPARED}} và ghi log alert.
+~~~java
+@Scheduled(fixedDelay = 300_000) // 5 phút
+public void cleanupStalePreparedXacts() {
+  List<PreparedXact> stale = jdbc.query(
+    "SELECT gid, prepared FROM pg_prepared_xacts WHERE prepared < now() - interval '1 hour'",
+    (rs, i) -> new PreparedXact(rs.getString("gid"), rs.getTimestamp("prepared"))
+  );
+  for (PreparedXact x : stale) {
+    jdbc.execute("ROLLBACK PREPARED '" + x.gid + "'");
+    log.warn("Rolled back stale prepared xact: {}", x.gid);
+    metrics.increment("xa.prepared.rolled_back");
+  }
+}
+~~~
+- **Monitoring**: alert khi {{pg_prepared_xacts}} có row **age > 1 giờ** (hoặc {{max_prepared_xacts}} > 0). Dashboard: số prepared xact, age cũ nhất.
+- **{{max_prepared_xacts}}**: đặt > 0 (mặc định 0 = unlimited) để giới hạn số prepared xact đồng thời, tránh exhaustion.
+- **XA transaction design**: cân nhắc **1PC (single-phase)** cho giao dịch nội bộ, chỉ dùng 2PC khi thực sự cần atomic cross-database. Giảm surface area 2PC.
+
+### Phòng ngừa và monitoring
+- Alert: {{SELECT count(*) FROM pg_prepared_xacts WHERE prepared < now() - interval '1 hour'}} > 0.
+- Alert: {{age(datfrozenxid)}} tăng bất thường do prepared xact giữ xmin.
+- Log structured: mọi PREPARE/COMMIT PREPARED/ROLLBACK PREPARED có correlation ID, gửi sang ELK.
+- Chaos test: kill coordinator sau PREPARE, verify app auto-rollback trong 1 giờ.
+
+> Senior tip: **Prepared transaction là "kill switch" cho vacuum**. Một prepared xact quên tồn tại 1 ngày = vacuum vô hiệu hóa cho toàn database (vì xmin global). 2PC hiếm khi cần thiết - 90% trường hợp dùng 1PC + idempotency + reconciliation job an toàn hơn. Nếu BẮT BUỘC 2PC: **timeout auto-rollback là bắt buộc**, không có ngoại lệ.`,rubric:['Chỉ đúng nguyên nhân: prepared transaction 2PC quên giữ xmin chặn vacuum dọn dead tuple','Dẫn chứng đúng: artifact 1 6 prepared xact 14/02-25/02; artifact 2 n_dead_tup 4.2M, vacuum num_dead_tuples=0','Giải thích đúng cơ chế: vacuum chỉ dọn tuple xmin < oldest active xmin (kể prepared xact)','Đề xuất sửa đúng: ROLLBACK PREPARED thủ công 6 xact, app timeout auto-rollback > 1h, monitor pg_prepared_xacts','Có monitoring/phòng ngừa: alert prepared xact age > 1h, max_prepared_xacts, chaos test coordinator down'],tags:['postgresql','prepared-transaction','two-phase-commit','xmin','vacuum','bloat','xa','recovery']},
 );
 

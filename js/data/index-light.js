@@ -3507,6 +3507,8 @@ window.DATA_INDEX = {
     ["lab-sql-057","sql","OR giữa 2 cột có index: BitmapOr được chọn nhưng chậm hơn Seq Scan do combined selectivity cao","senior"],
     ["lab-sql-058","sql","Index trên phone không dùng vì tham số numeric ép kiểu ngầm","senior"],
     ["lab-sql-059","sql","Deadlock giữa 2 transaction cập nhật số dư theo thứ tự khác nhau","senior"],
+    ["lab-sql-060","sql","Partitioned table stale statistics gây Nested Loop sai (ước lượng 120 dòng, thực tế 1,8M)","senior"],
+    ["lab-sql-061","sql","Prepared transaction (PREPARE TRANSACTION) quên commit giữ xmin chặn vacuum, bloat n_dead_tup","senior"],
     ["lab-incident-001","incident","Ngân hàng đối tác chậm, cả luồng thanh toán sập và khách bị trừ tiền hai lần","senior"],
     ["lab-incident-002","incident","Flash sale 12:00: retry không backoff biến 2,400 request thành 27,000 request mỗi giây","senior"],
     ["lab-incident-003","incident","Consumer hạch toán đứng hình: lag Kafka 1.6 triệu, rebalance liên tục","senior"],
