@@ -9201,5 +9201,246 @@ Trước khi đọc, hãy kiểm tra {{::ten.isInitialized}} (trả về true/fa
 - **Lỗi biên dịch vì lateinit phải gán ngay**: sai,lateinit chính là cho phép không gán ngay, lỗi chỉ xảy ra khi đọc trước khi gán (runtime).
 
 > Senior tip: dùng {{lateinit}} khi thực sự không thể gán ngay nhưng chắc chắn sẽ gán trước khi đọc. Nếu không chắc, dùng kiểu có thể null {{var ten: String? = null}} hoặc {{by lazy}} để an toàn hơn.`
+},
+{
+  id: 'qz-core-065', topic: 'core',
+  q: `Một {{HashMap<Employee, String>>}} dùng {{Employee}} làm khóa. Class {{Employee}} ghi đè {{equals}} và {{hashCode}} dựa trên trường {{id}}. Sau khi put một entry, code thay đổi {{employee.setId(999)}} (trường {{id}} dùng trong equals/hashCode). Điều gì xảy ra khi sau đó gọi {{map.get(employee)}}?`,
+  options: [
+    `Trả về value đúng, vì HashMap cập nhật tự động khi khóa mutate`,
+    `Trả về {{null}}, vì hashCode thay đổi khiến entry rơi vào bucket sai (lost key)`,
+    `Ném {{ConcurrentModificationException}} ngay tại lúc setId`,
+    `Trả về value cũ, vì HashMap lưu khóa theo identity (==) không phải equals`
+  ],
+  answer: 1,
+  explain: `**Tóm tắt:** Mutate khóa đã nằm trong HashMap/HashSet làm thay đổi {{hashCode}} → entry bị "mất" vì HashMap tìm kiếm theo bucket cũ (dựa trên hashCode lúc put). Khi get, nó tính hashCode mới, đến bucket khác, không tìm thấy entry.
+### Vì sao đúng
+HashMap dùng {{hashCode}} để chọn bucket, sau đó so sánh {{equals}} trong bucket. Khi put, bucket = hash(key). Nếu key mutate làm {{hashCode}} đổi, get(key) sẽ đi bucket mới, không thấy entry cũ (vẫn nằm bucket cũ). Kết quả: {{map.get(key)}} trả {{null}} dù key.equals(oldKey) vẫn true.
+~~~java
+class Employee { int id; Employee(int id){this.id=id;} void setId(int id){this.id=id;}
+  public boolean equals(Object o){ return o instanceof Employee && ((Employee)o).id == this.id; }
+  public int hashCode(){ return Objects.hash(id); } }
+Map<Employee, String> m = new HashMap<>();
+Employee e = new Employee(1);
+m.put(e, "data"); // hashCode=1, bucket A
+e.setId(999);      // hashCode=999, bucket B (entry vẫn ở A)
+m.get(e);          // hashCode=999 → bucket B → không thấy → null
+~~~
+### Vì sao các phương án còn lại sai
+- **Tự động cập nhật**: HashMap không theo dõi mutation của key; nó không có listener hay proxy.
+- **ConcurrentModificationException**: chỉ ném khi iterator phát hiện sửa đổi cấu trúc map (put/remove) trong khi duyệt, không phải mutate key.
+- **Lưu theo identity**: HashMap dùng equals/hashCode, không phải == (trừ khi không override equals/hashCode, fallback Object dùng identity).
+> Senior tip: **Khóa trong HashMap/HashSet phải immutable**. Nếu cần mutable, dùng wrapper hoặc copy key khi put, hoặc dùng {{IdentityHashMap}} (dùng ==). Tránh dùng entity JPA (có setter id) làm key trực tiếp.`
+},
+{
+  id: 'qz-core-066', topic: 'core',
+  q: `Code sau chạy trên Java 17. Đoạn nào tạo ít object rác nhất khi nối 1000 chuỗi trong vòng lặp?`,
+  options: [
+    `{{String s = ""; for (int i=0; i<1000; i++) s += i;}} — trình biên dịch tự tối ưu thành StringBuilder`,
+    `{{StringBuilder sb = new StringBuilder(); for (int i=0; i<1000; i++) sb.append(i); String s = sb.toString();}}`,
+    `{{String s = String.join("", IntStream.range(0,1000).mapToObj(String::valueOf).toArray(String[]::new));}}`,
+    `{{String s = ""; for (int i=0; i<1000; i++) s = s.concat(String.valueOf(i));}}`
+  ],
+  answer: 1,
+  explain: `**Tóm tắt:** {{StringBuilder}} dùng một buffer nội bộ mở rộng dần, chỉ tạo **một** object builder và **một** String kết quả. Các cách khác tạo object trung gian mỗi lần nối (kể cả {{+}} trong vòng lặp, vì Java 9+ dùng {{invokedynamic}} nhưng vẫn tạo builder mới mỗi vòng lặp nếu không dùng biến builder chung).
+### Vì sao đúng
+- **B**: {{StringBuilder}} chỉ cấp phát buffer (mặc định 16 char, gấp đôi khi đầy). 1000 lần append → một builder, một {{toString()}} tạo String cuối. Hiệu năng tốt nhất, ít GC nhất.
+### Vì sao các phương án còn lại sai
+- **A**: {{s += i}} trong vòng lặp **không** tự gộp thành một builder chung. Mỗi vòng lặp là một biểu thức nối riêng → tạo builder mới, append, toString → 1000 builder + 1000 String trung gian. Chỉ khi nối **một câu lệnh** nhiều literal/biến (ví dụ {{a + b + c}}) trình biên dịch mới gộp.
+- **C**: {{String.join}} tạo mảng {{String[]}} 1000 phần tử trước (1000 object), rồi copy nội dung → nhiều allocation hơn builder.
+- **D**: {{concat}} tạo String mới mỗi lần (giống {{+}} nhưng không qua builder), chậm hơn và tạo rác nhiều.
+> Senior tip: luôn dùng {{StringBuilder}} (hoặc {{StringBuffer}} nếu thread-safe) cho nối lặp. Từ Java 11, {{String.repeat}}, {{String.lines}}... tiện hơn nhưng builder vẫn linh hoạt nhất. Tránh {{+}} trong vòng lặp hot path.`
+},
+{
+  id: 'qz-core-067', topic: 'core',
+  q: `Đoạn code sau ném exception gì khi chạy? (Java 17)
+~~~java
+Integer a = 1000;
+Integer b = 1000;
+int c = a + b; // dòng 3
+System.out.println(c);
+~~~`,
+  options: [
+    `Không ném, in ra 2000`,
+    `NullPointerException ở dòng 3 vì unboxing a hoặc b là null`,
+    `ArithmeticException vì overflow int`,
+    `ClassCastException vì Integer không ép được sang int`
+  ],
+  answer: 0,
+  explain: `**Tóm tắt:** {{a + b}} với {{Integer}} trigger **unboxing** tự động: {{a.intValue() + b.intValue()}} → kiểu {{int}}, không ném exception vì cả hai không null. Kết quả 2000 gán vào {{int c}} bình thường.
+### Vì sao đúng
+Toán tử số học {{+}} trên wrapper ép unboxing về primitive. {{Integer.intValue()}} trả về giá trị {{int}}. 1000 + 1000 = 2000 trong phạm vi {{int}}, không overflow. Code tương đương:
+~~~java
+int c = a.intValue() + b.intValue(); // 2000
+~~~
+### Vì sao các phương án còn lại sai
+- **NPE**: chỉ xảy ra khi wrapper **null** ({{Integer a = null; int x = a;}}). Ở đây {{a}} và {{b}} đều non-null.
+- **ArithmeticException**: Java **không** ném exception cho overflow int; nó wrap-around (2_147_483_647 + 1 = -2_147_483_648). Chỉ {{Math.addExact}} mới ném.
+- **ClassCastException**: unboxing là cơ chế ngôn ngữ, không phải cast; không bao giờ ném ClassCastException.
+> Senior tip: **Luôn kiểm tra null trước unboxing ngầm** (trong biểu thức số học, so sánh {{==}} với primitive, v.v.). Dùng {{Optional<Integer>}} hoặc {{Objects.requireNonNull}} tại ranh giới dữ liệu vào (DB, JSON, API) để tránh NPE lẻ tẻ ở dòng toán học.`
+},
+{
+  id: 'qz-core-068', topic: 'core', multi: true,
+  q: `Về checked/unchecked exception và try-with-resources, phát biểu nào đúng? (Chọn 2)`,
+  options: [
+    `Phương thức ném {{IOException}} (checked) bắt buộc khai báo {{throws IOException}} hoặc catch; phương thức ném {{RuntimeException}} không bắt buộc`,
+    `Trong try-with-resources, nếu cả block try và {{close()}} đều ném exception, exception từ block try bị mất (swallowed)`,
+    `{{catch (IOException | SQLException e)}} (multi-catch) chỉ hợp lệ khi các exception **không có quan hệ cha-con** (disjoint hierarchy)`,
+    `Exception ném từ {{close()}} của resource trong try-with-resources bị ẩn (suppressed) và có thể lấy qua {{e.getSuppressed()}} trên exception chính`
+  ],
+  answer: [0, 3],
+  explain: `**Tóm tắt:** Checked exception bắt buộc xử lý (catch/throws); unchecked (RuntimeException, Error) không bắt buộc. Multi-catch yêu cầu các loại exception không kế thừa nhau. try-with-resources: exception từ try là chính, exception từ close() bị **suppressed** (ghi đè vào chính), không bị mất — dùng {{getSuppressed()}} để lấy.
+### Vì sao đúng
+- **A**: đúng quy tắc ngôn ngữ: checked = Exception (trừ RuntimeException) → bắt buộc catch/throws. Unchecked = RuntimeException/Error → không bắt buộc.
+- **D**: đúng hành vi try-with-resources: exception chính = từ try block (hoặc từ resource đầu tiên nếu try không ném); exception từ {{close()}} các resource khác bị gắn vào chính như suppressed exception. {{e.getSuppressed()}} trả mảng các suppressed exception.
+### Vì sao các phương án còn lại sai
+- **B**: ngược lại — exception từ **try block** là chính, exception từ **close()** bị suppressed. Exception chính **không bao giờ bị mất**.
+- **C**: multi-catch {{IOException | SQLException}} **hợp lệ** vì chúng **không có quan hệ cha-con** (cả hai đều extends Exception, không extends nhau). Nếu có quan hệ cha-con (ví dụ {{FileNotFoundException | IOException}}) thì compiler báo lỗi "exception FileNotFoundException is already caught by IOException".
+> Senior tip: luôn log {{e.getSuppressed()}} khi xử lý lỗi try-with-resources; trên production suppressed exception thường chứa manh mối gốc (ví dụ close connection thất bại do network, mà try block cũng fail do query timeout).`
+},
+{
+  id: 'qz-core-069', topic: 'core',
+  q: `Hai resource {{R1}}, {{R2}} implement {{AutoCloseable}}. Khối try-with-resources ném exception từ try block và close() cũng ném exception:
+~~~java
+try (R1 r1 = ...; R2 r2 = ...) {
+    throw new RuntimeException("try");
+}
+~~~
+Nếu {{r2.close()}} cũng ném {{IOException("close")}}, exception cuối cùng ném ra là gì?`,
+  options: [
+    `RuntimeException("try") — exception từ try block, IOException("close") bị suppressed`,
+    `IOException("close") — exception từ close() ghi đè exception try`,
+    `Ném cả hai cùng lúc (multiple exceptions)`,
+    `IllegalStateException vì close ném khi đang unwind exception khác`
+  ],
+  answer: 0,
+  explain: `**Tóm tắt:** try-with-resources: exception từ **try block là chính** (primary). Exception từ {{close()}} của các resource (theo thứ tự ngược: resource sau close trước) bị gắn là **suppressed** vào exception chính. Không ghi đè, không ném nhiều exception cùng lúc.
+### Vì sao đúng
+Thứ tự thực thi:
+1. try block ném {{RuntimeException("try")}} → đây là exception chính.
+2. JVM gọi {{r2.close()}} (resource khai báo sau) → ném {{IOException("close")}} → bị **suppressed** vào exception chính.
+3. JVM gọi {{r1.close()}} → nếu cũng ném thì cũng suppressed.
+4. Ném exception chính {{RuntimeException("try")}} kèm {{getSuppressed()}} chứa {{IOException("close")}}.
+### Vì sao các phương án còn lại sai
+- **B**: exception close **không** ghi đè exception try; nó bị suppressed.
+- **C**: Java chỉ ném **một** exception tại một thời điểm; suppressed được mang theo.
+- **D**: không ném IllegalStateException; cơ chế suppressed được thiết kế đúng cho trường hợp này.
+> Senior tip: khi debug, luôn in {{e.getSuppressed()}}. Trên log production, suppressed exception thường là "nguyên nhân gốc" (ví dụ DB connection leak, network reset khi close) mà exception chính chỉ là "triệu chứng" (query timeout).`
+},
+{
+  id: 'qz-core-070', topic: 'core',
+  q: `Method generic sau có vấn đề gì? (Java 17)
+~~~java
+public static <T> void addAll(List<T> dest, List<T> src) {
+    dest.addAll(src);
+}
+~~~`,
+  options: [
+    `Không compile vì {{List<T>>}} không covariant; {{src}} nên là {{List<? extends T>>}} để cho phép thêm từ list con`,
+    `Compile được nhưng runtime ném {{ClassCastException}} khi {{src}} chứa subtype của {{T}}`,
+    `Compile được và chạy an toàn; không cần thay đổi`,
+    `Phải dùng {{List<? super T>>}} cho {{dest}} để ghi an toàn`
+  ],
+  answer: 0,
+  explain: `**Tóm tắt:** {{List<T>>}} **invariant** (không covariant, không contravariant). {{List<Dog>>}} **không** phải subtype của {{List<Animal>>}}. Để đọc từ {{src}} (producer) an toàn, dùng {{List<? extends T>>}} (PECS: producer extends).
+### Vì sao đúng
+Với signature {{addAll(List<T> dest, List<T> src)}}, caller truyền {{List<Animal> dest, List<Dog> src}} sẽ **lỗi biên dịch** vì {{List<Dog>>}} không gán được cho {{List<Animal>>}} (invariant). Sửa:
+~~~java
+public static <T> void addAll(List<? super T> dest, List<? extends T> src) {
+    dest.addAll(src); // dest: consumer (ghi) → super; src: producer (đọc) → extends
+}
+~~~
+{{List<? super T>>}} cho {{dest}} (ghi vào) và {{List<? extends T>>}} cho {{src}} (đọc từ) là PECS chuẩn.
+### Vì sao các phương án còn lại sai
+- **B**: Java generic erasure → runtime không biết {{T}}, không ném ClassCastException ở đây (chỉ có unchecked warning nếu cast raw type).
+- **C**: không an toàn về kiểu; caller không truyền được List subtype.
+- **D**: {{dest}} cần {{? super T}} (consumer), không phải {{? extends T}}. {{? extends T}} chỉ đọc được, không add được.
+> Senior tip: PECS: **Producer Extends, Consumer Super**. Collection đọc (src) → {{? extends T}}; collection ghi (dest) → {{? super T}}. Đây là pattern cốt lõi thiết kế API generic linh hoạt ({{Collections.copy}}, {{Stream}}, v.v.).`
+},
+{
+  id: 'qz-core-071', topic: 'core', multi: true,
+  q: `Về {{final}} và {{static}} trong Java 17, phát biểu nào đúng? (Chọn 2)`,
+  options: [
+    `Biến {{final}} tham chiếu object immutable ({{String}}, {{Integer}}) thì object thực sự không thể thay đổi; nhưng {{final List<String>>}} vẫn có thể {{add}} phần tử`,
+    `Method {{static}} có thể truy cập biến instance {{non-static}} nếu biến đó {{public}}`,
+    `Biến {{static final}} primitive hoặc String được khởi tạo tại khai báo → trở thành **compile-time constant**, trình biên dịch inline giá trị vào bytecode caller`,
+    `Class {{final}} không thể extends class khác, và cũng không thể implements interface`
+  ],
+  answer: [0, 2],
+  explain: `**Tóm tắt:** {{final}} trên reference chỉ cấm **gán lại tham chiếu** (reassign), không cấm mutate object bên trong. {{static final}} primitive/String khởi tạo tại khai báo → constant folding (inline vào bytecode gọi). {{static}} không truy cập được instance member (public cũng không). Class {{final}} không extends class khác.
+### Vì sao đúng
+- **A**: đúng — {{final List<String> list = new ArrayList<>(); list.add("x");}} **compile và chạy được**. {{final}} bảo vệ biến {{list}} không trỏ sang list khác, nhưng list object nội bộ vẫn mutable.
+- **C**: đúng — {{static final int MAX = 100;}} hoặc {{static final String NAME = "App";}} được coi là constant expression (JLS 15.28). Compiler thay mọi {{Class.MAX}} trong code khác bằng literal {{100}} ngay lúc biên dịch. Thay đổi giá trị constant **không** cần recompile caller (caller đã inline giá trị cũ) → nguy hiểm khi đổi constant public API.
+### Vì sao các phương án còn lại sai
+- **B**: {{static}} method không có {{this}}, không truy cập instance field/method **dù public**. Cần instance reference.
+- **D**: class {{final}} **không thể extends** class khác, nhưng **CÓ THỂ implements interface** (final class implements interface hoàn toàn hợp lệ). Option D viết "không thể extends, và cũng không thể implements interface" — điều này **sai**.
+> Senior tip: hằng {{static final}} public là API contract — đổi giá trị phải rebuild **tất cả** module dependency. Dùng {{static final}} private hoặc method getter nếu có thể thay đổi.`
+},
+{
+  id: 'qz-core-072', topic: 'core',
+  q: `Method {{void modify(List<String> list)}} nhận danh sách từ caller. Bên trong method: {{list = new ArrayList<>(); list.add("x");}}. Sau khi gọi, danh sách gốc của caller có thay đổi không?`,
+  options: [
+    `Có, vì Java pass-by-reference cho object`,
+    `Không, vì Java pass-by-value (copy reference); gán {{list = new...}} chỉ thay đổi bản sao tham chiếu cục bộ`,
+    `Có, vì {{list}} trỏ đến cùng object; {{new ArrayList}} tạo object mới nhưng reference cũ vẫn trỏ đến object cũ`,
+    `Phụ thuộc: nếu caller truyền {{ArrayList}} thì có, {{LinkedList}} thì không`
+  ],
+  answer: 1,
+  explain: `**Tóm tắt:** Java **luôn pass-by-value**. Với object, giá trị truyền là **bản sao của tham chiếu (reference)**. Bên trong method, {{list}} là biến cục bộ trỏ đến cùng object với caller. Gán {{list = new ArrayList<>()}} làm biến cục bộ trỏ sang object mới — **không ảnh hưởng** biến caller (vẫn trỏ object cũ).
+### Vì sao đúng
+~~~java
+List<String> caller = new ArrayList<>();
+caller.add("a");
+modify(caller); // list (local) trỏ cùng object caller
+// trong modify: list = new ArrayList<>(); list.add("x");
+// caller vẫn trỏ ArrayList cũ chứa ["a"]
+~~~
+Chỉ khi **mutate** object qua reference ({{list.add}}, {{list.clear}}) thì caller thấy thay đổi. **Reassign** tham chiếu cục bộ không ảnh hưởng caller.
+### Vì sao các phương án còn lại sai
+- **A**: Java **không** pass-by-reference. Không có cơ chế "out parameter" như C++ {{&}}.
+- **C**: logic ngược — {{new ArrayList}} tạo object mới, biến local trỏ sang object mới, caller vẫn giữ reference cũ.
+- **D**: hành vi không phụ thuộc kiểu thực thi (ArrayList/LinkedList); pass-by-value áp dụng đồng nhất mọi kiểu tham chiếu.
+> Senior tip: để method thay đổi danh sách caller, dùng **mutate** ({{list.clear(); list.addAll(newData)}}) hoặc trả về list mới ({{return new ArrayList<>(newData);}}). Tránh gán lại tham số — pattern này gây bug khó tìm vì caller không thấy thay đổi.`
+},
+{
+  id: 'qz-core-073', topic: 'core', multi: true,
+  q: `Về autoboxing/unboxing và cache, phát biểu nào đúng? (Chọn 2)`,
+  options: [
+    `{{Integer a = 127; Integer b = 127; a == b}} → {{true}} (cache -128..127)`,
+    `{{Long a = 127L; Long b = 127L; a == b}} → {{true}} (Long cũng có cache -128..127)`,
+    `{{Integer i = null; int x = i;}} → ném {{NullPointerException}} tại dòng gán (unboxing null)`,
+    `{{Double a = 1.0; Double b = 1.0; a == b}} → {{true}} (Double cache giá trị nhỏ)`
+  ],
+  answer: [0, 2],
+  explain: `**Tóm tắt:** Integer cache -128..127 (JLS bắt buộc). Long **có cache** -128..127 (từ Java 5, {{Long.valueOf}} cache) nhưng **không bắt buộc** bởi spec; một số JVM có thể không cache. Double/Float **không có cache**. Unboxing {{null}} wrapper ném {{NullPointerException}}.
+### Vì sao đúng
+- **A**: đúng — {{Integer.valueOf(127)}} trả cached instance. {{a == b}} so sánh reference → true.
+- **C**: đúng — {{Integer i = null; int x = i;}} dịch thành {{int x = i.intValue();}} → gọi method trên null → NPE.
+### Vì sao các phương án còn lại sai
+- **B**: {{Long}} có cache -128..127 trong hầu hết JVM (HotSpot), nhưng **JLS không yêu cầu**. Không nên dựa vào {{Long a = 127L; a == b}} trên production. Dùng {{equals}}.
+- **D**: {{Double}}/{{Float}} **không cache** bất kỳ giá trị nào. {{Double.valueOf(1.0)}} luôn tạo object mới → {{a == b}} false.
+> Senior tip: quy tắc an toàn: **so sánh wrapper dùng {{equals}}**, không dùng {{==}}. Chỉ dùng {{==}} khi chắc chắn cả hai là primitive hoặc đã kiểm tra null và dùng primitive. Với Long, đừng tin cache — dùng {{equals}}.`
+},
+{
+  id: 'qz-core-074', topic: 'core',
+  q: `Generic method {{<T> T pick(T a, T b)}} được gọi bằng {{pick("hello", 123)}}. Kiểu {{T}} suy ra là gì và kết quả compile thế nào? (Java 17)`,
+  options: [
+    `{{T = Object}}; compile thành công, trả về {{Object}}`,
+    `{{T = String}}; compile lỗi vì {{123}} (int) không gán được cho {{String}}`,
+    `{{T = Serializable & Comparable<?>}}; compile thành công (intersection type)`,
+    `Lỗi biên dịch: không suy ra được kiểu chung cho {{String}} và {{int}}`
+  ],
+  answer: 2,
+  explain: `**Tóm tắt:** Java generic type inference tìm **greatest lower bound (GLB)** / **intersection type** của các đối số. {{String}} implements {{Serializable, Comparable<String>, CharSequence...}}. {{Integer}} (boxed từ {{123}}) implements {{Serializable, Comparable<Integer>...}}. Kiểu chung cụ thể nhất là intersection {{Serializable & Comparable<?>}}.
+### Vì sao đúng
+- {{pick("hello", 123)}}: đối số 1 {{String}}, đối số 2 {{Integer}} (autobox {{123}}). {{String}} và {{Integer}} không có quan hệ cha-con, GLB không phải {{Object}} (quá rộng) mà là **intersection của các interface chung**: cả hai implements {{Serializable}} và {{Comparable}} (raw type {{Comparable<?>}}).
+- Kết quả: method trả về {{Serializable & Comparable<?>}}, gán được cho biến kiểu đó.
+~~~java
+Serializable & Comparable<?> res = pick("hello", 123); // compile OK
+~~~
+### Vì sao các phương án còn lại sai
+- **A**: {{Object}} là upper bound, không phải GLB. Compiler chọn kiểu **cụ thể nhất** (most specific) thỏa mãn ràng buộc.
+- **B**: autoboxing {{123}} thành {{Integer}}; {{String}} và {{Integer}} không liên quan → không ép được lẫn nhau.
+- **D**: luôn suy ra được intersection type (ít nhất {{Object}}), không bao giờ "không suy ra được" với đối số reference.
+> Senior tip: intersection type xuất hiện khi truyền nhiều đối số khác kiểu cho cùng một type parameter. Tránh dùng intersection type trong API public (khó đọc, không thể cast an toàn). Nếu cần, overload method hoặc dùng {{Object}} tường minh.`
 }
 )
