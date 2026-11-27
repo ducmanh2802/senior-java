@@ -4177,5 +4177,470 @@ Khi lỗi là của người khác, senior xử lý theo nguyên tắc "blameles
 
 > Senior tip: quy tắc "no Friday deploys" tồn tại vì lý do: cuối tuần thiếu người trực, sự cố kéo dài. Khi bị ép, hãy nêu rủi ro bằng số liệu và luôn kèm phương án thay thế — người phản biện giỏi là người đưa ra lựa chọn, không phải người nói "không".`
 }
- 
+,
+{
+  id: 'qz-frontend-063',
+  topic: 'frontend',
+  q: 'Trong Vue 3 Composition API, component sau gán {{count}} bằng cách nào đúng?',
+  options: [
+    'const count = ref(0); count = 5;',
+    'const count = ref(0); count.value = 5;',
+    'const count = reactive(0); count.value = 5;',
+    'const count = ref(0); count.set(5);'
+  ],
+  answer: 1,
+  explain: `**Đáp án đúng: const count = ref(0); count.value = 5;**
+
+### Vì sao đúng
+{{ref}} bọc một giá trị nguyên thủy (number, string, boolean) thành object reactive; để đọc/ghi giá trị thực phải dùng thuộc tính {{.value}}. Trong template Vue tự unwrap nên không cần {{.value}}, nhưng trong script thì bắt buộc.
+
+### Vì sao các phương án khác sai
+- **count = 5**: gán lại biến tham chiếu, làm mất reactivity và báo lỗi read-only reassignment.
+- **reactive(0)**: {{reactive}} dùng cho object/array, không nhận primitive; còn {{count.value}} trên reactive object không tồn tại theo cách đó.
+- **count.set(5)**: ref không có method set trong Vue 3.
+
+> Senior tip: quy tắc nhớ: primitive dùng ref, object/array dùng reactive; trong script luôn thao tác {{.value}}.`
+},
+{
+  id: 'qz-frontend-064',
+  topic: 'frontend',
+  q: 'Khi nào dùng {{computed}} thay vì {{watch}} trong Vue 3?',
+  options: [
+    'Khi cần chạy side-effect (gọi API) khi dữ liệu đổi',
+    'Khi cần giá trị dẫn xuất từ state và tự cache khi dependency không đổi',
+    'Khi cần debounce input người dùng',
+    'Khi cần theo dõi deep mutation của object'
+  ],
+  answer: 1,
+  explain: `**Đáp án đúng: Khi cần giá trị dẫn xuất từ state và tự cache khi dependency không đổi**
+
+### Vì sao đúng
+{{computed}} là getter thuần: trả về giá trị từ state khác và được cache; chỉ tính lại khi dependency thay đổi. Phù hợp cho derived state (lọc danh sách, tổng tiền).
+
+### Vì sao các phương án khác sai
+- **Side-effect / gọi API**: dùng {{watch}} hoặc {{watchEffect}}, vì computed phải pure (không side-effect).
+- **Debounce input**: dùng watch + debounce, computed không có debounce.
+- **Deep mutation**: watch với {{deep: true}}; computed không theo dõi mutation kiểu đó theo ý.
+
+> Senior tip: computed cho "giá trị mới từ state"; watch cho "phản ứng khi state đổi" (side-effect).`
+},
+{
+  id: 'qz-frontend-065',
+  topic: 'frontend',
+  q: 'Trong {{v-for}}, vì sao không nên dùng index làm {{:key}} khi danh sách có thêm/xóa ở giữa?',
+  options: [
+    'Vì Vue không cho phép index làm key',
+    'Vì key trùng nhau gây lỗi compile',
+    'Vì tái sử dụng component sai, state nội bộ bị lệch (input focus, animation)',
+    'Vì hiệu năng giảm do always re-render'
+  ],
+  answer: 2,
+  explain: `**Đáp án đúng: Vì tái sử dụng component sai, state nội bộ bị lệch (input focus, animation)**
+
+### Vì sao đúng
+Vue dùng key để ánh xạ DOM/component. Index làm key thì khi chèn/xóa giữa danh sách, các item sau bị reuse theo index → state nội bộ (input value, focus, transition) bị gán nhầm cho item khác.
+
+### Vì sao các phương án khác sai
+- **Không cho phép index**: Vue cho phép, chỉ không khuyến nghị.
+- **Key trùng**: index không trùng trong cùng list.
+- **Luôn re-render**: không phải vấn đề chính; vấn đề là reuse sai.
+
+> Senior tip: dùng id ổn định từ dữ liệu; chỉ dùng index cho list tĩnh không thay đổi thứ tự.`
+},
+{
+  id: 'qz-frontend-066',
+  topic: 'frontend',
+  multi: true,
+  q: 'Về lifecycle Vue 3 Composition API, điều nào đúng? (Chọn 2)',
+  options: [
+    'onMounted chạy sau khi component được mount vào DOM',
+    'onUnmounted chạy trước khi component bị remove khỏi DOM',
+    'onMounted chạy trước khi render',
+    'onUnmounted dùng để hủy interval/listener',
+    'created hook tương đương onMounted'
+  ],
+  answer: [0, 3],
+  explain: `**Đáp án đúng: onMounted chạy sau khi component được mount vào DOM; onUnmounted dùng để hủy interval/listener**
+
+### Vì sao đúng
+onMounted chạy sau khi DOM đã sẵn sàng (truy cập ref DOM được). onUnmounted chạy khi component bị hủy, là nơi cleanup interval, event listener, subscription để tránh leak.
+
+### Vì sao các phương án khác sai
+- **onUnmounted chạy trước khi remove**: nó chạy trong quá trình unmount, nhưng mục đích chính cleanup; phát biểu "trước khi remove" không chính xác trọng tâm.
+- **onMounted trước render**: sai, mounted là sau render/mount.
+- **created tương đương onMounted**: Options API có created (trước mount), không tương đương.
+
+> Senior tip: mọi listener/interval tạo trong onMounted phải cleanup trong onUnmounted.`
+},
+{
+  id: 'qz-frontend-067',
+  topic: 'frontend',
+  q: 'Axios interceptor xử lý refresh token đúng nên làm thế nào khi nhận 401?',
+  options: [
+    'Gọi refresh rồi retry request gốc, dùng queue để tránh gọi refresh nhiều lần',
+    'Refresh mỗi request để đảm bảo token mới',
+    'Logout ngay khi gặp 401',
+    'Bỏ qua 401 và trả cache'
+  ],
+  answer: 0,
+  explain: `**Đáp án đúng: Gọi refresh rồi retry request gốc, dùng queue để tránh gọi refresh nhiều lần**
+
+### Vì sao đúng
+Khi nhiều request đồng thời hết hạn, chỉ một request nên gọi refresh; các request khác chờ token mới rồi retry. Dùng promise queue (isRefreshing + subscribers) để tránh refresh storm và retry đúng request gốc.
+
+### Vì sao các phương án khác sai
+- **Refresh mỗi request**: tốn tài nguyên và race condition.
+- **Logout ngay**: mất session không cần thiết; chỉ logout khi refresh fail.
+- **Bỏ qua 401**: trả dữ liệu sai/stale.
+
+> Senior tip: pattern: interceptor response 401 → nếu đang refresh thì enqueue; else refresh → resolve queue → retry original. Nếu refresh fail → logout.`
+},
+{
+  id: 'qz-frontend-068',
+  topic: 'frontend',
+  q: 'CORS preflight OPTIONS request bị Spring Security chặn 401. Nguyên nhân và fix?',
+  options: [
+    'Preflight không gửi cookie nên Spring Security reject; disable CORS',
+    'Spring Security bảo vệ endpoint OPTIONS; cần permitAll cho OPTIONS và cấu hình CorsFilter trước SecurityFilterChain',
+    'Trình duyệt không gửi preflight',
+    'Dùng proxy frontend là cách duy nhất'
+  ],
+  answer: 1,
+  explain: `**Đáp án đúng: Spring Security bảo vệ endpoint OPTIONS; cần permitAll cho OPTIONS và cấu hình CorsFilter trước SecurityFilterChain**
+
+### Vì sao đúng
+Preflight OPTIONS không có credential/Authorization, nhưng Spring Security vẫn áp dụng filter chain và có thể trả 401/403. Fix: cho phép OPTIONS (permitAll) và đảm bảo CorsFilter (hoặc CorsConfigurationSource) được xử lý trước security filter (addFilterBefore hoặc securityMatcher). 
+
+### Vì sao các phương án khác sai
+- **Disable CORS**: không giải quyết root cause, giảm bảo mật.
+- **Trình duyệt không gửi preflight**: sai, với method/content-type đặc biệt sẽ gửi.
+- **Proxy là cách duy nhất**: không, cấu hình CORS đúng là đủ.
+
+> Senior tip: preflight phải trả 200 với Access-Control-Allow-* headers; kiểm tra bằng curl OPTIONS.`
+},
+{
+  id: 'qz-frontend-069',
+  topic: 'frontend',
+  q: 'Deploy SPA (Vue/React) cùng Spring Boot: route client-side như /users/123 refresh bị 404. Fix đúng?',
+  options: [
+    'Thêm controller trả index.html cho mọi path không phải API/static',
+    'Đổi tất cả route thành hash mode',
+    'Cấu hình Spring Boot serve static only',
+    'Tắt client-side routing'
+  ],
+  answer: 0,
+  explain: `**Đáp án đúng: Thêm controller trả index.html cho mọi path không phải API/static**
+
+### Vì sao đúng
+SPA client-side routing: server phải trả index.html cho các path không phải API/static để router phía client xử lý. Spring Boot: dùng WebMvcConfigurer addViewControllers hoặc controller với @RequestMapping("/**") forward index.html, exclude /api/** và static resources.
+
+### Vì sao các phương án khác sai
+- **Hash mode**: workaround, URL xấu, SEO kém.
+- **Serve static only**: không xử lý fallback.
+- **Tắt client routing**: mất SPA benefit.
+
+> Senior tip: cấu hình fallback chỉ cho non-API paths; API 404 phải trả JSON.`
+},
+{
+  id: 'qz-frontend-070',
+  topic: 'frontend',
+  q: 'Vue 3: {{ref}} vs {{reactive}} — khi nào dùng reactive?',
+  options: [
+    'Khi lưu primitive value',
+    'Khi lưu object/array cần theo dõi deep mutation',
+    'Khi cần unwrap trong template',
+    'Khi cần replace toàn bộ object bằng gán mới'
+  ],
+  answer: 1,
+  explain: `**Đáp án đúng: Khi lưu object/array cần theo dõi deep mutation**
+
+### Vì sao đúng
+reactive proxy theo dõi deep property changes. Dùng cho object/array state. Primitive thì dùng ref.
+
+### Vì sao các phương án khác sai
+- **Primitive**: dùng ref.
+- **Unwrap template**: ref tự unwrap trong template, reactive không "unwrap" theo nghĩa đó.
+- **Replace toàn bộ object bằng gán**: reactive không cho replace reference (mất reactivity); nếu cần replace thì dùng ref với object.
+
+> Senior tip: nếu state object có thể bị replace wholesale, dùng ref(object) thay vì reactive.`
+},
+{
+  id: 'qz-frontend-071',
+  topic: 'frontend',
+  multi: true,
+  q: 'Khi gọi API refresh token, điều nào nên tránh? (Chọn 2)',
+  options: [
+    'Lưu refresh token trong localStorage (XSS risk)',
+    'Gửi refresh token qua cookie HttpOnly + Secure',
+    'Refresh token không có expiry/rotation',
+    'Dùng access token dài hạn',
+    'Log token ra console'
+  ],
+  answer: [0, 2],
+  explain: `**Đáp án đúng: Lưu refresh token trong localStorage (XSS risk); Refresh token không có expiry/rotation**
+
+### Vì sao đúng
+Refresh token nên lưu HttpOnly Secure cookie để tránh XSS; và phải có expiry + rotation (mỗi refresh cấp token mới, invalidate cũ) để giảm impact nếu bị đánh cắp.
+
+### Vì sao các phương án khác sai
+- **Cookie HttpOnly Secure**: đúng hướng, không phải điều tránh.
+- **Access token dài hạn**: cũng không tốt nhưng không nằm trong đáp án chọn (câu hỏi tập trung refresh).
+- **Log token**: rất tệ nhưng không trong đáp án chọn; vẫn nên tránh.
+
+> Senior tip: access token ngắn (5-15 phút), refresh token rotation + reuse detection.`
+},
+{
+  id: 'qz-frontend-072',
+  topic: 'frontend',
+  q: 'SPA fallback với Spring Boot: vì sao không nên forward mọi path including /api/** về index.html?',
+  options: [
+    'Vì index.html không chứa API data',
+    'Vì API 404 nên trả JSON error, không HTML; forward sẽ làm frontend parse HTML thành JSON lỗi',
+    'Vì Spring Security chặn',
+    'Vì static resource không load'
+  ],
+  answer: 1,
+  explain: `**Đáp án đúng: Vì API 404 nên trả JSON error, không HTML; forward sẽ làm frontend parse HTML thành JSON lỗi**
+
+### Vì sao đúng
+Nếu API endpoint không tồn tại hoặc lỗi, response phải là JSON (có status code) để frontend xử lý. Forward về index.html trả 200 HTML → axios/fetch parse HTML thành JSON → SyntaxError, che giấu lỗi thật.
+
+### Vì sao các phương án khác sai
+- **index.html không chứa API data**: đúng nhưng không phải lý do chính.
+- **Spring Security chặn**: không phải root cause.
+- **Static resource không load**: không liên quan.
+
+> Senior tip: fallback exclude /api/**, /actuator/**, static assets; API errors trả JSON.`
+}
+ ,
+{
+  id: 'qz-frontend-073',
+  topic: 'frontend',
+  q: `Trong Vue 3, bạn có state {{user}} là object {name, age}. Khi nào dùng {{ref}} thay vì {{reactive}}?`,
+  options: [
+    'Luôn dùng reactive cho object, ref chỉ cho primitive',
+    'Dùng ref nếu cần gán lại toàn bộ object (user = newUser); dùng reactive nếu chỉ mutate thuộc tính',
+    'ref và reactive giống hệt nhau, chọn tuỳ ý',
+    'reactive không theo dõi nested object'
+  ],
+  answer: 1,
+  explain: `**Đáp án đúng: Dùng ref nếu cần gán lại toàn bộ object; dùng reactive nếu chỉ mutate thuộc tính**
+
+### Vì sao đúng
+ref bọc giá trị trong .value, gán user.value = newUser reactive-safe. reactive proxy chỉ mutate property, gán reactiveVar = newObject mất reactivity (phá proxy). 
+
+### Vì sao các phương án khác sai
+- **Luôn reactive cho object**: sai vì mất reactivity khi reassign.
+- **Giống hệt**: sai, semantics khác.
+- **reactive không track nested**: sai, reactive deep proxy track nested.
+
+> Senior tip: state top-level thường ref; form object mutate nhiều thì reactive.`
+},
+{
+  id: 'qz-frontend-074',
+  topic: 'frontend',
+  multi: true,
+  q: `Computed property trong Vue 3 nên dùng khi nào? (Chọn 2)`,
+  options: [
+    'Giá trị dẫn xuất từ state và cần cache khi deps không đổi',
+    'Thực hiện side effect như gọi API',
+    'Format dữ liệu cho template',
+    'Thay thế watch để theo dõi thay đổi'
+  ],
+  answer: [0, 2],
+  explain: `**Đáp án đúng: giá trị dẫn xuất cache + format template**
+
+### Vì sao đúng
+computed cache kết quả, chỉ recompute khi deps thay đổi; phù hợp derived value/format. 
+
+### Vì sao các phương án khác sai
+- **Side effect API**: dùng watch/watchEffect, không computed.
+- **Thay thế watch**: computed không có side effect, không thay thế.
+
+> Senior tip: computed cho derived read-only; watch cho side effects.`
+},
+{
+  id: 'qz-frontend-075',
+  topic: 'frontend',
+  q: `v-for render list users. Vì sao key nên là user.id thay vì index?`,
+  options: [
+    'Index nhanh hơn',
+    'Dùng index gây reuse sai component state khi insert/delete giữa list',
+    'Vue yêu cầu id',
+    'id giúp sort'
+  ],
+  answer: 1,
+  explain: `**Đáp án đúng: index gây reuse sai component state khi insert/delete**
+
+### Vì sao đúng
+Vue reuse DOM theo key; index key khiến insert giữa list reuse sai node → input state sai. id stable identity.
+
+### Vì sao các phương án khác sai
+- **Index nhanh hơn**: không.
+- **Vue yêu cầu id**: không bắt buộc.
+- **id giúp sort**: không phải lý do chính.
+
+> Senior tip: key phải stable unique, không dùng index cho mutable list.`
+},
+{
+  id: 'qz-frontend-076',
+  topic: 'frontend',
+  q: `Khi component mount, cần fetch data và cleanup subscription. Lifecycle nào?`,
+  options: [
+    'onBeforeMount fetch, onUnmounted cleanup',
+    'onMounted fetch, onUnmounted cleanup',
+    'onUpdated fetch',
+    'onCreated fetch'
+  ],
+  answer: 1,
+  explain: `**Đáp án đúng: onMounted fetch, onUnmounted cleanup**
+
+### Vì sao đúng
+onMounted chạy sau DOM render, an toàn fetch. onUnmounted cleanup subscription/timer tránh leak.
+
+### Vì sao các phương án khác sai
+- **onBeforeMount**: DOM chưa ready.
+- **onUpdated**: chạy mỗi update, sai.
+- **onCreated**: Options API, không Composition.
+
+> Senior tip: cleanup trong onUnmounted/onScopeDispose.`
+},
+{
+  id: 'qz-frontend-077',
+  topic: 'frontend',
+  q: `Axios interceptor refresh token: 401 response → refresh → retry original request. Pitfall chính?`,
+  options: [
+    'Refresh token hết hạn',
+    'Nhiều request đồng thời cùng refresh → race condition, cần queue',
+    'CORS',
+    'Token không lưu'
+  ],
+  answer: 1,
+  explain: `**Đáp án đúng: nhiều request đồng thời cùng refresh → race**
+
+### Vì sao đúng
+Nhiều 401 cùng lúc gọi refresh nhiều lần → invalidate token. Cần flag isRefreshing + queue pending requests.
+
+### Vì sao các phương án khác sai
+- **Refresh hết hạn**: edge case, không phải pitfall chính.
+- **CORS**: không liên quan.
+- **Token không lưu**: design issue.
+
+> Senior tip: implement mutex refresh + request queue.`
+},
+{
+  id: 'qz-frontend-078',
+  topic: 'frontend',
+  multi: true,
+  q: `CORS preflight với Spring Security: browser gửi OPTIONS trước POST. Cần cấu hình gì? (Chọn 2)`,
+  options: [
+    'Permit OPTIONS requests trong SecurityFilterChain',
+    'CORS config cho phép origin/methods/headers',
+    'Disable CSRF cho API',
+    'Thêm @CrossOrigin trên controller'
+  ],
+  answer: [0, 1],
+  explain: `**Đáp án đúng: permit OPTIONS + CORS config**
+
+### Vì sao đúng
+Spring Security chặn OPTIONS → 403 preflight fail. Cần permitAll OPTIONS và CorsConfigurationSource.
+
+### Vì sao các phương án khác sai
+- **Disable CSRF**: không bắt buộc cho stateless JWT, nhưng không fix preflight.
+- **@CrossOrigin**: works nhưng global config tốt hơn, không đủ nếu security block.
+
+> Senior tip: configure CorsConfigurationSource bean + security http.cors().`
+},
+{
+  id: 'qz-frontend-079',
+  topic: 'frontend',
+  q: `SPA (Vue) deploy cùng Spring Boot: route /users/123 refresh 404. Sửa thế nào?`,
+  options: [
+    'Thêm @GetMapping("/users/{id}") trả index.html',
+    'Cấu hình fallback: non-API, non-static paths forward index.html',
+    'Dùng hash router',
+    'Tăng server timeout'
+  ],
+  answer: 1,
+  explain: `**Đáp án đúng: fallback non-API/non-static → index.html**
+
+### Vì sao đúng
+SPA client-side routing; server phải trả index.html cho unknown routes (trừ /api, static). 
+
+### Vì sao các phương án khác sai
+- **@GetMapping từng route**: không scalable.
+- **Hash router**: workaround, mất clean URL.
+- **Timeout**: không liên quan.
+
+> Senior tip: WebMvc config addResourceHandler + fallback controller exclude /api/**.`
+},
+{
+  id: 'qz-frontend-080',
+  topic: 'frontend',
+  q: `Vue 3 watch vs watchEffect: khác biệt chính?`,
+  options: [
+    'watchEffect tự track deps, chạy ngay; watch cần chỉ định source',
+    'watchEffect không cleanup',
+    'watch chạy ngay mặc định',
+    'watchEffect chỉ chạy 1 lần'
+  ],
+  answer: 0,
+  explain: `**Đáp án đúng: watchEffect auto-track deps + immediate; watch explicit source**
+
+### Vì sao đúng
+watchEffect tự động theo dõi reactive deps trong callback và chạy ngay. watch cần source và immediate option.
+
+### Vì sao các phương án khác sai
+- **watchEffect không cleanup**: có onCleanup.
+- **watch immediate mặc định**: false.
+- **watchEffect 1 lần**: chạy khi deps đổi.
+
+> Senior tip: watch cho specific source; watchEffect cho multiple deps.`
+},
+{
+  id: 'qz-frontend-081',
+  topic: 'frontend',
+  q: `ref vs reactive: truy cập trong template khác nhau thế nào?`,
+  options: [
+    'ref cần .value trong template',
+    'reactive cần .value',
+    'Cả hai không cần .value trong template (auto unwrap)',
+    'Cả hai cần .value'
+  ],
+  answer: 2,
+  explain: `**Đáp án đúng: template auto-unwrap cả ref và reactive**
+
+### Vì sao đúng
+Trong template, ref top-level auto unwrap; reactive property truy cập trực tiếp. Không cần .value trong template.
+
+### Vì sao các phương án khác sai
+- **ref cần .value trong template**: sai, auto unwrap.
+- **reactive cần .value**: sai.
+- **Cả hai cần .value**: sai.
+
+> Senior tip: .value chỉ trong <script setup>.`
+},
+{
+  id: 'qz-frontend-082',
+  topic: 'frontend',
+  q: `SPA fallback: vì sao phải exclude /api/** khỏi fallback?`,
+  options: [
+    'Vì index.html không chứa API data',
+    'Vì API 404 nên trả JSON error, không HTML; forward sẽ làm frontend parse HTML thành JSON lỗi',
+    'Vì Spring Security chặn',
+    'Vì static resource không load'
+  ],
+  answer: 1,
+  explain: `**Đáp án đúng: API 404 trả JSON, forward HTML gây parse lỗi**
+
+### Vì sao đúng
+Nếu API endpoint không tồn tại/lỗi, response phải JSON. Forward index.html trả 200 HTML → frontend parse HTML thành JSON → SyntaxError, che giấu lỗi.
+
+### Vì sao các phương án khác sai
+- **index.html không chứa API data**: đúng nhưng không phải lý do chính.
+- **Spring Security chặn**: không root cause.
+- **Static resource không load**: không liên quan.
+
+> Senior tip: fallback exclude /api/**, /actuator/**, static assets.`
+}
 );
