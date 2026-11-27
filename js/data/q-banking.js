@@ -7698,4 +7698,409 @@ Một ngân hàng có 2 triệu tài khoản, đa tiền tệ VND/USD. Một đ�
   ],
   tags: ['sổ cái kép', 'đa tiền tệ', 'ledger', 'đối soát', 'tỷ giá', 'revalue', 'maker-checker', 'append-only']
 },
+{
+  id: 'banking-104',
+  topic: 'banking',
+  level: 'senior',
+  q: 'FIX Protocol hoạt động thế nào ở mức dev Java: phân biệt session layer với application layer, vai trò Logon/Heartbeat/ResendRequest, sequence number và gap fill, luồng NewOrderSingle đến ExecutionReport; xử lý mất kết nối và trùng lệnh bằng ClOrdID ra sao?',
+  a: `**Tóm tắt:** FIX (Financial Information eXchange) là bộ giao thức nhắn tin chuẩn ngành để công ty chứng khoán, sàn và ngân hàng trao đổi lệnh và báo cáo khớp. Nó chia làm hai tầng: **session layer** lo kết nối, đăng nhập, nhịp tim, số thứ tự và bù gói mất; **application layer** lo nội dung nghiệp vụ như NewOrderSingle (đặt lệnh) và ExecutionReport (báo cáo khớp). Mỗi phiên FIX giữ một bộ **sequence number** tăng dần hai chiều; khi mất kết nối rồi nối lại, hai bên dùng ResendRequest để gửi lại tin thiếu và gap fill để đánh dấu phần đã biết, còn trùng lệnh được chặn bằng **ClOrdID** do client sinh.
+### FIX là gì, giải thích từ đầu
+FIX là một cách viết tin nhắn dạng chuỗi khóa = giá trị, phân tách bằng ký tự điều khiển SOH (mã 0x01, một ký tự "không nhìn thấy" dùng làm dấu ngăn). Ví dụ một tin đặt lệnh rút gọn:
+~~~text
+8=FIX.4.4|9=176|35=D|34=7|49=CLIENT|56=MXV|52=20261127-09:15:00|11=CL-0001|55=AAA|54=1|38=1000|40=2|44=25100|10=142|
+~~~
+- {{8}} là BeginString (phiên bản FIX), {{35}} là MsgType (loại tin), {{34}} là MsgSeqNum (số thứ tự), {{49}}/{{56}} là bên gửi/bên nhận, {{11}} là ClOrdID, {{55}} là mã chứng khoán, {{54}} là side (1 = mua), {{38}} là khối lượng, {{44}} là giá, {{10}} là checksum.
+- Ví dụ đời thường: FIX giống một "biểu mẫu chuẩn" mà mọi bên trong ngành điền cùng một kiểu, để máy của bên này đọc được máy của bên kia mà không cần phiên dịch thủ công.
+- Bản FIX hay dùng hiện nay là **FIX 4.4** và **FIX 5.0 SP2**; nói về FIX trong phỏng vấn nên ghi rõ phiên bản, vì hành vi session khác nhau giữa các bản.
+### Session layer và application layer
+Đây là điểm chia quan trọng nhất, nhiều người nhầm.
+- **Session layer** (tầng phiên) quản lý *cuộc trò chuyện*: thiết lập kết nối TCP, bắt tay đăng nhập, giữ nhịp tim, đánh số thứ tự, phát hiện mất gói và yêu cầu gửi lại, đóng phiên đúng cách. Nó không biết gì về "lệnh mua 1000 cổ phiếu".
+- **Application layer** (tầng ứng dụng) mang *nội dung nghiệp vụ*: NewOrderSingle, ExecutionReport, OrderCancelRequest... Session layer chở các tin này đi mà không cần hiểu chúng.
+- Vì sao tách? Vì cùng một phần mềm session có thể chở hàng trăm loại tin nghiệp vụ khác nhau; sửa nghiệp vụ không phải sửa lại cơ chế kết nối. Đây là ví dụ kinh điển của **phân tách concern** (tách mối quan tâm).
+### Trình tự đăng nhập và nhịp tim
+1. Hai bên mở TCP, bên khởi tạo gửi **Logon (35=A)** kèm heartbeat interval đã thống nhất, số thứ tự bắt đầu.
+2. Bên kia trả Logon để xác nhận, thống nhất **heartbeat interval** (ví dụ 30 giây).
+3. Trong lúc rảnh, mỗi bên gửi **Heartbeat (35=0)** đúng chu kỳ để chứng minh "tôi còn sống".
+4. Nếu một bên im lặng quá lâu, bên kia gửi **TestRequest (35=1)**; bên nhận phải trả Heartbeat ngay.
+5. Đóng phiên bằng **Logout (35=5)**, không bao giờ đóng cúp máy.
+~~~seq
+title: Phiên FIX: Logon, đặt lệnh, heartbeat
+actors: Client | Gateway | MXV
+Client -> Gateway: Logon 35=A seq=1
+Gateway -> MXV: Logon 35=A seq=1
+MXV --> Gateway: Logon 35=A seq=1
+Gateway --> Client: Logon 35=A seq=1
+Client -> MXV: NewOrderSingle 35=D ClOrdID=CL-0001
+MXV --> Client: ExecutionReport 35=8 ExecID=E-1
+Client -> MXV: Heartbeat 35=0
+MXV --> Client: Heartbeat 35=0
+~~~
+### Sequence number, ResendRequest và gap fill
+- Mỗi tin có **MsgSeqNum (34)** tăng dần từ 1, đếm riêng cho từng chiều gửi. Bên nhận kiểm tra: nếu số nhận được lớn hơn số mong đợi đúng 1 → bình thường; nếu lớn hơn → có tin bị thiếu; nếu nhỏ hơn hoặc trùng → tin bị lặp.
+- Khi phát hiện thiếu (ví dụ đang chờ seq 7 nhưng nhận 10), bên nhận gửi **ResendRequest (35=2)** với BeginSeqNo=7, EndSeqNo=10.
+- Bên gửi gửi lại các tin 7..10, nhưng đánh dấu **PossDupFlag=Y (43)** và **PossResend=Y (29)** để bên nhận biết đây là bản gửi lại, không xử lý trùng như lệnh mới.
+- **Gap fill**: nếu khoảng thiếu là các tin mà bên nhận không cần (ví dụ Heartbeat), bên gửi trả một tin **SequenceReset (35=4)** với GapFillFlag=Y (123) và NewSeqNo=11, nghĩa là "từ 7 đến 10 không có gì quan trọng, nhảy tới 11". Việc này tránh gửi lại rác.
+- Vì sao cần? Vì TCP đảm bảo thứ tự nhưng không đảm bảo tầng ứng dụng không mất tin khi reconnect; sequence number là "số trang" để hai bên biết trang nào còn thiếu.
+### Luồng NewOrderSingle đến ExecutionReport
+1. Client gửi **NewOrderSingle (35=D)** với ClOrdID duy nhất, mã, side, khối lượng, loại lệnh, giá.
+2. Sàn nhận, kiểm tra, khớp. Mỗi thay đổi trạng thái sinh một **ExecutionReport (35=8)** mang OrderID (37), ExecID (17), OrdStatus (39: 0=New, 1=Partial, 2=Filled, 4=Cancelled, 8=Rejected), CumQty, LeavesQty.
+3. Lệnh khớp nhiều phần → nhiều ExecutionReport, cộng dồn CumQty cho tới khi LeavesQty=0.
+4. Client không bao giờ tự suy ra trạng thái; trạng thái chân lý là ExecutionReport cuối cùng từ sàn.
+### Mất kết nối và trùng lệnh bằng ClOrdID
+- Khi socket đứt, client **không gửi lại lệnh mới bằng tay**. Nối lại phiên (Logon với seq tiếp nối hoặc ResetSeqNum nếu hai bên thỏa), xử lý ResendRequest, rồi đối chiếu các ExecutionReport nhận được với lệnh đã gửi.
+- **ClOrdID (11)** là khóa chống trùng: mỗi ý định đặt lệnh chỉ có một ClOrdID. Nếu client gửi lại cùng ClOrdID, sàn trả lại ExecutionReport của lệnh cũ thay vì tạo lệnh mới — giống idempotency key trong REST.
+- Phía nhận phải lưu ClOrdID đã xử lý (unique) để khi PossDup/retransmit tới thì nhận ra, không cộng khối lượng hai lần.
+### Bảng trade-off
+| Cách tích hợp | Ưu điểm | Nhược điểm | Khi nào dùng |
+|---|---|---|---|
+| FIX qua session engine (QuickFIX/J) | Chuẩn ngành, độ trễ thấp, tự lo seq/heartbeat | Học curve cao, debug khó | Kết nối sàn, broker lớn |
+| FIX/WebSocket JSON tự chế | Dễ đọc, dễ debug | Không chuẩn, phải tự lo chống trùng | Nội bộ, kênh số |
+| REST đặt lệnh | Đơn giản, quen thuộc | Độ trễ cao hơn, không có seq/resend chuẩn | Kênh bán lẻ, app |
+### Lỗi hay gặp
+- Coi mỗi lần reconnect là phiên mới, reset seq về 1 mà không thống nhất → sàn từ chối hàng loạt tin.
+- Xử lý PossDupFlag như lệnh mới → cộng khối lượng hai lần.
+- Không lưu ClOrdID đã xử lý → retransmit tạo lệnh trùng.
+- Bỏ qua gap fill, cố gửi lại tin Heartbeat → tốn băng thông, nghẽn phiên.
+### Ví dụ đời thực
+Một công ty chứng khoán nối FIX tới MXV. Sau một lần bảo trì mạng 40 giây, session reconnect nhưng client reset MsgSeqNum về 1; sàn đang chờ seq 5000 nên trả Logout và từ chối toàn bộ lệnh trong 6 phút, mất 1.200 lệnh của khách. Điều tra log FIX thấy {{MsgSeqNum=1}} trong khi phiên trước đã tới {{34=4998}}. Cách xử lý: dùng session engine QuickFIX/J để giữ state seq qua reconnect, bật ResendRequest tự động và gap fill; thêm lưu ClOrdID (unique theo tài khoản) để retransmit không tạo lệnh trùng; đo lại: sau 3 tháng không còn sự cố mất lệnh, p99 độ trễ đặt lệnh 18 ms.
+### Trả lời mẫu khi phỏng vấn
+"FIX chia làm hai tầng: session layer lo kết nối, Logon, Heartbeat, sequence number và bù gói; application layer chở nội dung nghiệp vụ như NewOrderSingle và ExecutionReport. Mỗi phiên giữ số thứ tự tăng dần hai chiều; khi mất kết nối rồi nối lại, tôi không reset seq tùy tiện mà tiếp nối hoặc thống nhất reset, rồi xử lý ResendRequest và gap fill cho các tin còn thiếu. Để chống trùng lệnh, tôi dùng ClOrdID do client sinh làm khóa idempotent, lưu unique ở phía nhận, nên khi sàn gửi lại ExecutionReport do retransmit thì tôi cộng dồn ExecID chứ không tạo lệnh mới. Tôi luôn dùng session engine như QuickFIX/J thay vì tự parse, vì nó lo sẵn seq, heartbeat và reconnect đúng chuẩn. Thực tế tôi từng xử lý sự cố mất lệnh do reset seq về 1 sau reconnect, sau khi chuyển sang engine giữ state thì hết hẳn."
+> Senior tip: trong phỏng vấn, hãy nói "FIX không phải chỉ là đặt lệnh — phần khó và hay sai nhất là session layer: sequence number, gap fill và retransmission". Nêu rõ phiên bản FIX 4.4/5.0 SP2 và nhấn mạnh ClOrdID chính là idempotency key của thế giới FIX.
+> Cụm từ: Session layer là tầng quản lý kết nối và số thứ tự; ClOrdID là mã lệnh do client sinh, dùng chống trùng; Gap fill là đánh dấu các tin không quan trọng bị thiếu để nhảy qua.
+  `,
+  follow: [
+    'Sau reconnect, bạn xử lý ResendRequest và gap fill thế nào để không tạo lệnh trùng?',
+    'ClOrdID trùng nhưng nội dung lệnh khác nhau thì sàn xử lý ra sao, phía bạn làm gì?',
+    'Vì sao nên dùng session engine như QuickFIX/J thay vì tự viết parser FIX?'
+  ],
+  tags: ['FIX', 'session layer', 'sequence number', 'gap fill', 'ClOrdID', 'NewOrderSingle', 'ExecutionReport', 'jd-2026-12']
+},
+{
+  id: 'banking-105',
+  topic: 'banking',
+  level: 'senior',
+  q: 'Order book và khớp lệnh theo ưu tiên giá - thời gian: cấu trúc dữ liệu (TreeMap theo giá + hàng đợi FIFO), vòng lặp khớp một luồng, vì sao không khóa theo từng lệnh, và phát market data real-time qua WebSocket như thế nào?',
+  a: `**Tóm tắt:** Order book (sổ lệnh) là hai sổ lệnh chờ mua (bid) và chờ bán (ask), mỗi sổ sắp theo **ưu tiên giá - thời gian**: giá tốt hơn đứng trước, cùng giá thì lệnh đến trước được khớp trước. Cấu trúc phổ biến là **TreeMap** ánh xạ giá tới một **hàng đợi FIFO** các lệnh cùng giá. Khớp lệnh chạy **một luồng duy nhất cho mỗi mã** để kết quả tất định và không cần khóa; phát **market data** real-time qua **WebSocket** bằng cách gửi ảnh chụp lúc đầu (snapshot) rồi các bản cập nhật tăng dần (incremental) kèm số thứ tự để client tự vá khi thiếu.
+### Các thuật ngữ
+- **Order book (sổ lệnh)**: danh sách lệnh đang chờ khớp, chia hai bên mua/bán. Ví dụ đời thường: hai hàng người xếp hàng, ai trả giá tốt hơn đứng trước, cùng giá thì ai đến trước phục vụ trước.
+- **Bid/Ask**: giá mua cao nhất và giá bán thấp nhất; khoảng cách giữa chúng gọi là **spread**.
+- **Price-time priority**: ưu tiên 1 là giá, ưu tiên 2 là thời gian.
+- **Market data**: dữ liệu thị trường (giá tốt nhất, độ sâu sổ, lệnh khớp) đẩy cho client.
+- **WebSocket**: kết nối TCP hai chiều, server chủ động đẩy dữ liệu khi có thay đổi, thay vì client phải hỏi lại liên tục (polling).
+### Cấu trúc dữ liệu: TreeMap + hàng đợi FIFO
+- Giá có **bước giá** cố định (tick size), ví dụ 100 đồng. Dùng **TreeMap<Long, Deque<Order>>**: khóa là giá, giá trị là hàng đợi các lệnh cùng giá theo thứ tự đến.
+- Bid dùng TreeMap đảo (giảm dần) để lấy giá mua cao nhất O(1); Ask dùng TreeMap xuôi để lấy giá bán thấp nhất O(1).
+- Trong một mức giá, **Deque** (hàng đợi hai đầu) giữ đúng thứ tự thời gian: thêm vào cuối, khớp từ đầu.
+- Tra cứu để huỷ: bảng băm orderId -> vị trí để huỷ O(1), hoặc **lazy delete** (đánh dấu huỷ, dọn khi tới lượt).
+### Vòng lặp khớp một luồng
+1. Lệnh taker tới. Lấy mức giá đối diện tốt nhất.
+2. Nếu không còn giá thoả (ask > giá mua) → dừng, phần dư vào sổ.
+3. Nếu thoả → khớp tại **giá của lệnh nằm sẵn (maker)**, khối lượng = min(còn lại hai bên).
+4. Trừ khối lượng, sinh bản ghi trade, lặp tới khi hết hoặc hết giá.
+5. Phần dư đặt vào cuối hàng đợi mức giá của nó.
+### Vì sao không khóa theo từng lệnh
+- Nếu nhiều luồng cùng đọc "còn 100" rồi cùng khớp 100 → khớp 200, thừa khối lượng không tồn tại.
+- Khóa từng lệnh đúng nhưng dễ **deadlock** (hai luồng giữ khóa chéo), khó suy luận, chậm khi tranh chấp cao.
+- **Một luồng cho mỗi mã** (single-writer): mọi thao tác vào sổ tuần tự hoá tự nhiên, không khóa nội bộ, kết quả **tất định** (deterministic) và dễ replay. Các mã độc lập scale theo số luồng/mã.
+~~~java
+// Toàn bộ chạy trên luồng của mã này -> không cần synchronized
+void submit(Order in) {
+    TreeMap<Long, Deque<Order>> asks = book.asks();
+    while (in.remaining() > 0 && !asks.isEmpty()) {
+        long bestPrice = asks.firstKey();              // giá bán thấp nhất
+        if (bestPrice > in.price()) break;             // không còn giá thoả
+        Deque<Order> level = asks.get(bestPrice);
+        Order maker = level.peekFirst();               // FIFO trong mức giá
+        long qty = Math.min(in.remaining(), maker.remaining());
+        trades.add(new Trade(symbol, in.id(), maker.id(), bestPrice, qty));
+        in.fill(qty); maker.fill(qty);
+        if (maker.remaining() == 0) level.pollFirst();
+        if (level.isEmpty()) asks.remove(bestPrice);
+    }
+    if (in.remaining() > 0) book.bids().computeIfAbsent(in.price(), k -> new ArrayDeque<>()).add(in);
+}
+~~~
+Ba chi tiết quyết định tính đúng: khớp ở {{bestPrice}} (giá maker) không phải giá taker, dùng {{min}} khối lượng, bỏ maker ngay khi hết.
+### Phát market data qua WebSocket
+- Client kết nối WebSocket, server gửi **snapshot** (toàn bộ sổ: best bid/ask, độ sâu vài mức) kèm một số thứ tự {{seq}}.
+- Mỗi thay đổi (lệnh vào, khớp, huỷ) server gửi **incremental** mang {{seq}} tăng dần.
+- Client áp incremental theo thứ tự; nếu phát hiện thiếu {{seq}} (do rớt mạng) thì gửi yêu cầu **snapshot lại** từ {{seq}} đó để vá.
+- Vì sao WebSocket? Vì sổ lệnh đổi liên tục; polling HTTP mỗi 100 ms vừa trễ vừa tốn tài nguyên. WebSocket đẩy ngay khi có thay đổi, độ trễ mili-giây.
+- Nên tách kênh snapshot và kênh diff, hoặc gắn seq vào mọi bản tin để client tự phát hiện lỗ.
+### Bảng trade-off
+| Thiết kế | Độ đúng | Hiệu năng | Khi nào dùng |
+|---|---|---|---|
+| Một luồng/mã, TreeMap + FIFO in-memory | Cao, tất định | Rất nhanh (micro-giây) | Matching engine thật |
+| Khóa DB từng mã | Cao nhưng khó suy luận | Chậm, nghẽn | Hệ thống nhỏ |
+| Nhiều luồng sửa sổ | Dễ sai | Nhanh lý thuyết | Không nên cho khớp lệnh |
+### Lỗi hay gặp
+- Khớp ở giá taker khiến một bên được lợi bất công, sai quy tắc sàn.
+- Quên kiểm tra cờ huỷ (lazy delete) → sinh trade với lệnh đã huỷ.
+- Dùng double cho giá → 25100.0000001, so sánh sai; giá phải là số nguyên đơn vị nhỏ nhất.
+- WebSocket gửi diff không có seq → client không biết thiếu, sổ hiển thị lệch.
+### Ví dụ đời thực
+Một sàn mô phỏng dùng DB khóa theo mã: 4.000 lệnh lúc 9h15, p99 khớp 2,3 giây và 37 cặp khớp vượt khối lượng do đọc-sửa-ghi. Chuyển sang một luồng/mã với TreeMap + FIFO trong bộ nhớ và log bất biến: p99 còn 4 ms, throughput đỉnh 12.000 lệnh/giây. Bổ sung WebSocket: snapshot lúc vào, diff kèm seq mỗi 50 ms; khi một client rớt 3 giây, nó phát hiện lỗ seq và xin snapshot lại, sổ hiển thị khớp 100% sau 1 lần vá. Tranh chấp kết quả khớp được giải quyết bằng replay log thay vì tranh cãi.
+### Trả lời mẫu khi phỏng vấn
+"Order book của tôi là hai TreeMap: bid sắp giảm dần, ask sắp tăng dần, mỗi mức giá là một hàng đợi FIFO các lệnh cùng giá — đó là price-time priority. Khớp chạy một luồng duy nhất cho mỗi mã nên không cần khóa, kết quả tất định và replay được. Khi khớp, tôi lấy mức giá đối diện tốt nhất, nếu thoả thì khớp tại giá maker, khối lượng là min hai bên, trừ rồi lặp; phần dư vào cuối hàng đợi. Tôi không khóa từng lệnh vì dễ deadlock và khó suy luận, trong khi single-writer vừa nhanh vừa đúng. Market data tôi đẩy qua WebSocket: snapshot lúc client kết nối, sau đó diff kèm số thứ tự tăng dần; client theo dõi seq, thiếu thì xin snapshot lại để vá. Giá lưu bằng số nguyên đơn vị nhỏ nhất, không dùng double. Thực tế chuyển từ DB khóa mã sang in-memory đã giảm p99 từ 2,3 giây xuống 4 ms."
+> Senior tip: hãy viết bộ test replay: cho một chuỗi lệnh cố định, chạy hai lần và so từng trade. Bộ test này bắt được gần hết lỗi tinh vi của matching engine, kể cả huỷ lười và khớp một phần. Đo p99 và p999 theo từng mã, không chỉ trung bình — một mã thanh khoản cao có thể làm nghẽn cả luồng.
+> Cụm từ: TreeMap là cấu trúc cây tự cân bằng, lấy khóa nhỏ/lớn nhất nhanh; FIFO là hàng đợi vào trước ra trước; Snapshot là ảnh chụp toàn bộ sổ, incremental là bản cập nhật từng phần.
+  `,
+  follow: [
+    'Bạn xử lý huỷ lười (lazy delete) trong sổ lệnh thế nào để không sinh trade với lệnh đã huỷ?',
+    'WebSocket gửi diff không có số thứ tự thì client gặp vấn đề gì, fix ra sao?',
+    'Muốn scale theo số mã và số lệnh, bạn phân vùng và đo hiệu năng thế nào?'
+  ],
+  tags: ['order book', 'matching engine', 'price-time priority', 'TreeMap', 'FIFO', 'WebSocket', 'market data', 'jd-2026-12']
+},
+{
+  id: 'banking-106',
+  topic: 'banking',
+  level: 'lead',
+  q: 'Kiểm tra rủi ro trước giao dịch và ký quỹ (margin): initial/maintenance margin, gọi ký quỹ, cập nhật số dư khả dụng đồng thời (optimistic vs pessimistic lock) và ghi bút toán kép ra sao?',
+  a: `**Tóm tắt:** Trước khi cho khách đặt lệnh, hệ thống phải chạy một **cổng kiểm tra rủi ro (pre-trade risk check)**: mã có được phép không, khách còn đủ **sức mua** không, lệnh có vượt hạn mức không. Với giao dịch **ký quỹ (margin)** — khách vay tiền công ty để mua, thế chấp bằng chính tài sản — phải theo dõi **tỷ lệ ký quỹ**; xuống dưới **ngưỡng duy trì (maintenance)** thì **gọi ký quỹ (margin call)**, xuống dưới ngưỡng giải chấp thì **bán giải chấp (force sell)**. Cập nhật số dư khả dụng khi nhiều lệnh tới cùng lúc phải chọn giữa **optimistic lock** (kiểm tra version khi ghi) và **pessimistic lock** (khóa hàng ngay từ đầu), và mọi thay đổi tiền phải ghi **bút toán kép** để sổ luôn cân bằng.
+### Các thuật ngữ
+- **Pre-trade risk check**: bước kiểm tra ngay trước khi gửi lệnh, khác với post-trade (kiểm tra sau khi khớp).
+- **Margin (ký quỹ)**: khách bỏ một phần vốn, công ty cho vay phần còn lại, tài sản mua được là thế chấp. Ví dụ đời thường: mua nhà trả góp 30%, ngân hàng cho vay 70%.
+- **Initial margin**: tỷ lệ vốn tự có tối thiểu khi mở vị thế.
+- **Maintenance margin**: ngưỡng tối thiểu phải duy trì; dưới ngưỡng → phát sinh nghĩa vụ nộp thêm.
+- **Available balance (số dư khả dụng)**: tiền khách dùng được ngay = số dư sổ sách trừ các khoản đang hold.
+### Cổng kiểm tra rủi ro trước giao dịch
+1. **Hợp lệ**: mã có trên sàn, đang mở cửa, khối lượng là bội số lô, giá trong biên độ.
+2. **Hạn mức**: tổng giá trị lệnh không vượt hạn mức ngày, không vượt tỷ trọng danh mục.
+3. **Sức mua**: với lệnh tiền mặt, tiền cần = giá × khối lượng × (1 + phí); với lệnh margin, kiểm tra tỷ lệ ký quỹ sau lệnh vẫn ≥ ngưỡng.
+4. Nếu vi phạm → từ chối ngay, trả lý do; không để lệnh "lọt" rồi mới báo lỗi sau.
+### Margin và margin call
+- **margin ratio = equity / giá trị chứng khoán**, với equity = giá trị tài sản theo giá thị trường − dư nợ − lãi vay.
+- Ba ngưỡng: cảnh báo, duy trì (maintenance), giải chấp.
+- Giá đổi liên tục → phải tính lại theo giá thị trường, không chỉ lúc đặt lệnh. Dưới ngưỡng duy trì → **call margin** (gửi thông báo nộp thêm, có hạn). Dưới ngưỡng giải chấp → **force sell** phần đủ đưa về ngưỡng an toàn, không bán sạch.
+~~~text
+[OK] --tỷ lệ < ngưỡng duy trì--> [CALL_MARGIN]
+[CALL_MARGIN] --khách nộp thêm--> [OK]
+[CALL_MARGIN] --tỷ lệ < ngưỡng giải chấp--> [FORCE_SELL]
+[FORCE_SELL] --bán đủ về an toàn--> [OK]
+~~~
+### Cập nhật số dư khả dụng đồng thời: optimistic vs pessimistic
+Khi 10 lệnh tới cùng lúc cùng trừ vào một tài khoản, nếu đọc-rồi-ghi mà không kiểm soát sẽ **oversell** (bán vượt số dư).
+- **Pessimistic lock**: {{SELECT ... FOR UPDATE}} khóa hàng tài khoản ngay từ đầu, các lệnh khác chờ. Đúng, đơn giản, nhưng chờ lâu, dễ nghẽn khi tranh chấp cao.
+- **Optimistic lock**: thêm cột {{version}}; khi ghi, {{UPDATE ... WHERE version = ?}} và kiểm tra số dòng ảnh hưởng. Nếu 0 → có người ghi trước → đọc lại, tính lại, thử lại. Nhanh khi ít tranh chấp, nhưng retry nhiều khi tranh chấp cao. Nguyên tắc: tiền mặt/nhanh → optimistic + retry có giới hạn; khi tranh chấp rất cao (margin call hàng loạt) → pessimistic hoặc gộp theo hàng đợi một luồng.
+### Ghi bút toán kép
+- Mọi thay đổi tiền là bút toán kép: hold/trừ/giải chấp đều sinh entry Nợ/Có cân bằng, append-only.
+- Số dư khả dụng = tổng bút toán đã ghi; không UPDATE mù cột balance. Khi hold → ghi bút toán hold; khi khớp → chuyển hold thành ghi nợ thật; khi huỷ → bút toán đảo.
+- Vì sao? Để khi hai lệnh race, sổ vẫn cân bằng và kiểm toán dựng lại được chuỗi.
+### Bảng trade-off
+| Cách | Ưu điểm | Nhược điểm | Khi nào |
+|---|---|---|---|
+| Pessimistic (FOR UPDATE) | Đơn giản, không retry | Chờ, nghẽn | Tranh chấp cao, ít lệnh |
+| Optimistic (version) | Nhanh, không giữ khóa | Retry khi đụng | Tranh chấp thấp, nhiều tài khoản |
+| Single-writer theo tài khoản | Tất định, không khóa | Phải phân vùng | Hệ thống khớp lệnh, ví |
+### Lỗi hay gặp
+- Chỉ kiểm tra margin lúc đặt lệnh, không tính lại theo giá → không phát hiện tài khoản âm vốn khi giá giảm.
+- Đọc-sửa-ghi số dư không version/lock → oversell.
+- Hold không nhả khi huỷ → tiền khách bị khóa oan.
+- Margin call gửi trùng nhiều lần do không idempotent → khách bị làm phiền, khiếu nại.
+### Ví dụ đời thực
+Một công ty chứng khoán tính margin theo lô 60 giây. Một phiên tin xấu, cổ phiếu A giảm sàn hai phiên; 1.240 tài khoản vượt ngưỡng giải chấp nhưng batch chỉ phát hiện sau 60 giây, lệnh bán giải chấp đẩy vào lúc giá đã sàn nên không khớp, dư nợ xấu tăng. Đồng thời, do đọc-sửa-ghi không version, một số lệnh margin cùng lúc làm số dư khả dụng âm tạm thời. Cách xử lý: (1) chuyển sang **cổng risk + tính đẩy theo sự kiện** khi giá cập nhật vượt ngưỡng cảnh báo (p99 ~800 ms); (2) thêm **optimistic lock version** cho số dư khả dụng, retry có giới hạn; (3) mọi thay đổi ghi bút toán kép append-only; (4) margin call idempotent theo (tài khoản, lần gọi). Kết quả: tỷ lệ tài khoản âm vốn giảm từ 0,9% xuống 0,2%, không còn oversell, thông báo trùng giảm nhờ khoảng đệm chống rung quanh ngưỡng.
+### Trả lời mẫu khi phỏng vấn
+"Trước khi đặt lệnh, tôi chạy cổng pre-trade risk: kiểm tra mã, lô, biên độ, hạn mức ngày và sức mua; với margin thì kiểm tra tỷ lệ ký quỹ sau lệnh vẫn trên ngưỡng. Margin là cho khách vay mua chứng khoán thế chấp bằng chính tài sản, nên tôi theo dõi margin ratio theo giá thị trường; dưới ngưỡng duy trì thì call margin, dưới ngưỡng giải chấp thì force sell phần đủ đưa về an toàn. Vấn đề khó là cập nhật số dư khả dụng khi nhiều lệnh tới cùng lúc: tôi dùng optimistic lock với cột version và UPDATE có điều kiện, retry có giới hạn khi đụng; với trường hợp tranh chấp rất cao thì pessimistic FOR UPDATE hoặc single-writer theo tài khoản. Mọi thay đổi tiền đều ghi bút toán kép append-only để sổ luôn cân bằng và audit được. Thực tế tôi từng xử lý oversell do đọc-sửa-ghi không version và margin call không phát hiện kịp, sau khi thêm version, tính đẩy theo sự kiện và bút toán kép thì hết hẳn."
+> Senior tip: trong phỏng vấn, hãy phân biệt rõ risk **pre-trade** (chặn trước) và **post-trade** (phát hiện sau), và nói rằng với margin, "tính theo giá đặt lệnh" là sai lầm kinh điển — phải tính theo giá thị trường và tính đẩy khi giá chạm ngưỡng. Chọn optimistic hay pessimistic tùy mức tranh chấp, đừng mặc định một cách.
+> Cụm từ: Initial margin là vốn tự có tối thiểu khi mở; Maintenance margin là ngưỡng duy trì; Margin call là gọi nộp thêm; Optimistic lock là kiểm tra version khi ghi, pessimistic lock là khóa hàng ngay từ đầu.
+  `,
+  follow: [
+    'Bạn chọn optimistic hay pessimistic lock cho số dư khả dụng, dựa vào tiêu chí gì?',
+    'Margin call gửi lại nhiều lần do retry, bạn làm idempotent thế nào?',
+    'Force sell không khớp vì giá đã sàn, bạn xử lý ra sao để không âm vốn tiếp?'
+  ],
+  tags: ['margin', 'ký quỹ', 'pre-trade risk', 'maintenance margin', 'margin call', 'optimistic lock', 'pessimistic lock', 'double-entry', 'jd-2026-12']
+},
+{
+  id: 'banking-107',
+  topic: 'banking',
+  level: 'senior',
+  q: 'Nạp/rút tiền và đối soát sao kê (statement) với ngân hàng: các trạng thái giao dịch, idempotency key, đối soát cuối ngày và xử lý lệch như thế nào?',
+  a: `**Tóm tắt:** Nạp/rút tiền là giao dịch đi qua nhiều bên (app → cổng thanh toán → ngân hàng đối tác → core), nên phải có **máy trạng thái** rõ ràng (INITIATED → PENDING → COMPLETED/FAILED/REVERSED) và **idempotency key** để gửi lại không cộng/trừ hai lần. Cuối ngày, hệ thống **đối soát sao kê (statement)** của mình với file sao kê ngân hàng theo mã tham chiếu chung, phân loại khớp / chỉ bên mình / chỉ bên ngân hàng / lệch số tiền, rồi xử lý lệch qua bút toán điều chỉnh có maker-checker.
+### Các thuật ngữ
+- **Nạp/rút (deposit/withdrawal)**: khách đưa tiền vào hoặc lấy tiền ra khỏi tài khoản qua quầy, ATM, cổng thanh toán, ví.
+- **Statement (sao kê)**: bảng liệt kê mọi biến động tiền của tài khoản trong một kỳ, do ngân hàng phát hành.
+- **Idempotency key**: mã duy nhất cho một ý định nạp/rút, gửi lại cùng mã chỉ xử lý một lần.
+- **Reversal (đảo bút)**: bút toán ngược để hoàn tác một giao dịch đã ghi sai, không xóa dữ liệu cũ.
+### Máy trạng thái giao dịch nạp/rút
+~~~text
+[INITIATED] --gửi cổng--> [PENDING]
+[PENDING] --cổng báo thành công--> [COMPLETED]
+[PENDING] --cổng báo thất bại--> [FAILED] --> hoàn/nhả hold
+[PENDING] --timeout, chưa rõ--> [PENDING_INQUIRY] --> tra soát
+[PENDING_INQUIRY] --thành công--> [COMPLETED]
+[PENDING_INQUIRY] --quá hạn--> [MANUAL] --> đối soát/điều chỉnh
+[COMPLETED] --phát hiện sai--> [REVERSED] (bút toán đảo, không xóa)
+~~~
+- Ở PENDING, tiền đã hold/ghi tạm nhưng chưa chốt; app hiển thị "đang xử lý".
+- Timeout **không phải thất bại**: có thể tiền đã đi mà phản hồi mất, nên chuyển PENDING_INQUIRY, tra soát theo mã, không tự hoàn ngay.
+### Idempotency key xuyên suốt
+- App sinh key (UUID) khi khách xác nhận, giữ nguyên cho mọi lần retry.
+- Mỗi tầng (gateway, dịch vụ, core) lưu key với unique constraint; gặp key đã xử lý → trả kết quả cũ.
+- Ghi key cùng transaction với bút toán: đã xong trả response cũ, đang xử lý trả 409/202.
+### Đối soát sao kê cuối ngày
+1. Nhận file sao kê ngân hàng (SFTP/API), kiểm tra toàn vẹn (checksum, số dòng, tổng tiền).
+2. Chuẩn hoá về định dạng chung, nạp bảng staging.
+3. So khớp theo **mã tham chiếu chung** (không theo số tiền + thời gian):
+~~~sql
+SELECT coalesce(o.ref, b.ref) AS ref,
+       CASE WHEN o.ref IS NULL THEN 'ONLY_BANK'
+            WHEN b.ref IS NULL THEN 'ONLY_OURS'
+            WHEN o.amount <> b.amount OR o.status <> b.status THEN 'MISMATCH'
+            ELSE 'MATCHED' END AS result
+FROM ours_day o FULL OUTER JOIN bank_stmt b ON o.ref = b.ref;
+~~~
+4. Tự động xử lý nhóm có quy tắc (treo bên mình mà ngân hàng báo thành công → hoàn tất; lệch ranh giới ngày → so lại ngày kế).
+5. Phần còn lại vào hàng chờ maker-checker, điều chỉnh bằng **bút toán mới**, không sửa giao dịch gốc.
+### Xử lý lệch
+- Lệch nhỏ, nguyên nhân rõ → bút toán điều chỉnh, maker đề xuất, checker duyệt.
+- Lệch lớn, không rõ → đóng băng, báo quản lý rủi ro, tra tới ref.
+- Mọi điều chỉnh lưu audit (ai, lúc nào, trước/sau); không UPDATE/xóa bút toán cũ.
+### Bảng trade-off
+| Cách đối soát | Ưu điểm | Nhược điểm |
+|---|---|---|
+| Theo mã tham chiếu | Chính xác, ghép đúng | Cần mã duy nhất hai bên |
+| Theo số tiền + thời gian | Không cần mã | Ghép nhầm giao dịch cùng số tiền |
+| Thủ công Excel | Linh hoạt ban đầu | Chậm, dễ sai, không audit |
+### Lỗi hay gặp
+- Coi timeout là thất bại → hoàn tiền rồi khách nạp lại → tiền vào hai lần.
+- Không lưu idempotency key → retry cộng tiền hai lần.
+- Đối soát theo số tiền + thời gian → ghép nhầm.
+- Sửa trực tiếp giao dịch gốc thay vì bút toán đảo → mất dấu kiểm toán.
+### Ví dụ đời thực
+Một ví điện tử đối soát thủ công bằng Excel với 3 ngân hàng: mỗi ngày ~150 khoản lệch, 2 nhân viên làm cả buổi sáng, khoản cũ nhất tồn 47 ngày. Triệu chứng nổi bật: một số khách nạp 2 triệu qua cổng bị cộng hai lần do cổng gửi lại callback khi timeout và hệ thống không có idempotency. Điều tra thấy callback thứ hai có cùng mã tham chiếu nhưng được xử lý như mới. Cách xử lý: (1) thêm idempotency key lưu DB unique, callback trùng trả 200 OK không cộng thêm; (2) tự động hoá đối soát theo mã tham chiếu với full outer join, 82% lệch auto-resolve (treo đã thành công, ranh giới ngày); (3) phần còn lại vào maker-checker SLA 2 ngày; (4) hoàn các giao dịch cộng trùng trong 4 giờ. Kết quả: đối soát khớp 100%, khiếu nại "nạp hai lần" về 0.
+### Trả lời mẫu khi phỏng vấn
+"Nạp/rút đi qua nhiều bên nên tôi dùng máy trạng thái INITIATED, PENDING, COMPLETED, FAILED, REVERSED, và coi timeout là chưa biết kết quả chứ không phải thất bại — chuyển PENDING_INQUIRY, tra soát theo mã, không tự hoàn. Mỗi ý định nạp/rút có idempotency key do app sinh, lưu DB với unique constraint và ghi cùng transaction với bút toán, nên cổng gửi lại callback không cộng tiền hai lần. Cuối ngày tôi đối soát sao kê với file ngân hàng theo mã tham chiếu chung bằng full outer join, ra bốn nhóm: khớp, chỉ bên mình, chỉ ngân hàng, lệch số tiền/trạng thái. Nhóm có quy tắc thì auto-resolve, phần còn lại vào maker-checker và điều chỉnh bằng bút toán đảo append-only, không sửa gốc. Thực tế tôi từng xử lý vụ cộng tiền hai lần do callback trùng và đối soát thủ công, sau khi thêm idempotency và tự động hoá thì hết lệch và khiếu nại về 0."
+> Senior tip: trong phỏng vấn, nhấn mạnh "timeout không phải thất bại" và "đối soát theo mã tham chiếu, không theo số tiền + thời gian". Hai câu này phân biệt dev junior với senior. Mọi điều chỉnh phải là bút toán mới có maker-checker, không bao giờ UPDATE giao dịch gốc.
+> Cụm từ: Statement là sao kê; Reversal là bút toán đảo ngược để hoàn tác; Maker-checker là người tạo và người duyệt khác nhau.
+  `,
+  follow: [
+    'Vì sao timeout không được coi là thất bại và tự động hoàn tiền?',
+    'Đối soát theo mã tham chiếu khác gì theo số tiền + thời gian, cái nào đúng hơn?',
+    'Điều chỉnh lệch số dư cần quy trình gì để tránh gian lận?'
+  ],
+  tags: ['nạp rút', 'statement', 'sao kê', 'idempotency', 'đối soát', 'reversal', 'maker-checker', 'jd-2026-12']
+},
+{
+  id: 'banking-108',
+  topic: 'banking',
+  level: 'senior',
+  q: 'Luồng kênh số bảo hiểm: báo giá (quotation) → nộp hồ sơ (policy application) → thanh toán phí → phát hành hợp đồng qua Core Insurance; idempotency, trạng thái, retry và anti-corruption layer khi tích hợp core cũ ra sao?',
+  a: `**Tóm tắt:** Kênh số bảo hiểm cho khách tự làm mọi bước online: **báo giá (quotation)** → **nộp hồ sơ (policy application)** → **thanh toán phí** → **phát hành hợp đồng** qua hệ thống lõi **Core Insurance**. Mỗi bước là một **máy trạng thái** riêng, có **idempotency key** để gửi lại không tạo hồ sơ/đơn trùng, và **retry** có kiểm soát khi core lỗi. Vì core cũ thường không hỗ trợ transaction phân tán, ta bọc nó bằng **anti-corruption layer (ACL)** — lớp chống hư hỏng — để cấu trúc cổ của core không rò rỉ ra ngoài, và dùng **saga** (các bước bù trừ) thay cho 2PC.
+### Các thuật ngữ
+- **Quotation (báo giá)**: tính phí bảo hiểm khách phải trả dựa trên thông tin (tuổi, sức khỏe, xe, nhà...), chưa phải hợp đồng.
+- **Policy application (nộp hồ sơ)**: khách gửi thông tin và đồng ý mua; hệ thống tạo hồ sơ chờ.
+- **Core Insurance**: hệ thống lõi quản lý hợp đồng, khách hàng, phí, bồi thường — thường là phần mềm cũ, khó sửa.
+- **Anti-corruption layer (ACL)**: lớp trung gian dịch qua lại giữa hệ thống mới và core cũ, ngăn mô hình dữ liệu cổ "làm bẩn" hệ thống mới. Ví dụ đời thường: một "phiên dịch viên" đứng giữa hai người nói hai thứ tiếng.
+- **Saga**: chuỗi bước, mỗi bước có bước bù trừ (compensation) để lùi lại khi bước sau thất bại, thay cho transaction 2PC.
+### Luồng từng bước
+1. **Báo giá**: khách nhập thông tin → hệ thống tính phí theo biểu phí (bảng giá có hiệu lực theo ngày) → trả quotation với mã báo giá và thời hạn hiệu lực.
+2. **Nộp hồ sơ**: khách xác nhận → tạo application ở trạng thái SUBMITTED, kèm idempotency key; kiểm tra trùng theo (khách, quotation).
+3. **Thanh toán phí**: gọi cổng thanh toán; timeout → PENDING_INQUIRY, tra soát, không tự tạo đơn mới. Thanh toán xong → application chuyển PAID.
+4. **Phát hành hợp đồng**: gửi yêu cầu tới Core Insurance qua ACL; core trả số hợp đồng → application chuyển ISSUED; thất bại → retry có backoff, quá hạn → MANUAL.
+~~~seq
+title: Mua bảo hiểm online qua core
+actors: Khách | Kênh số | Cổng TT | ACL | Core
+Khách -> Kênh số: yêu cầu báo giá
+Kênh số --> Khách: quotation + phí
+Khách -> Kênh số: nộp hồ sơ (key K)
+Kênh số -> Cổng TT: thanh toán phí
+Cổng TT --> Kênh số: đã thanh toán
+Kênh số -> ACL: phát hành hợp đồng
+ACL -> Core: tạo hợp đồng (định dạng core)
+Core --> ACL: số hợp đồng
+ACL --> Kênh số: ISSUED
+Kênh số --> Khách: hợp đồng đã phát hành
+~~~
+### Idempotency, trạng thái, retry
+- Mỗi bước có idempotency key riêng (báo giá theo quotationId, nộp theo applicationKey, thanh toán theo paymentKey). Gửi lại → trả kết quả cũ, không tạo bản ghi mới.
+- Trạng thái application: DRAFT → SUBMITTED → PAID → ISSUED, hoặc FAILED/CANCELLED/EXPIRED. Mỗi chuyển trạng thái là UPDATE có điều kiện (compare-and-set).
+- Retry: chỉ retry các lỗi tạm thời (timeout, 5xx) với backoff mũ; lỗi 4xx (sai dữ liệu) không retry. Retry phát hành hợp đồng phải idempotent theo applicationKey để không phát hành hai hợp đồng.
+### Anti-corruption layer và saga
+- ACL dịch application (JSON chuẩn của kênh số) sang định dạng core (thường XML/ISO 20022 hoặc API riêng), và ngược lại. Core không bao giờ được gọi thẳng từ kênh số.
+- Vì core không hỗ trợ 2PC, luồng nhiều bước dùng saga: nếu thanh toán xong nhưng phát hành thất bại, chạy compensation (hoàn phí hoặc giữ tiền chờ phát hành lại), không để tiền treo.
+- ACL cũng lo timeout, circuit breaker (ngắt mạch khi core lỗi liên tục), và ánh xạ mã lỗi cổ sang mã lỗi chuẩn.
+### Bảng trade-off
+| Cách tích hợp | Ưu điểm | Nhược điểm |
+|---|---|---|
+| Gọi core trực tiếp | Nhanh, ít lớp | Rò rỉ mô hình cổ, khó đổi core |
+| ACL + canonical model | Cô lập, dễ test, đổi core chỉ sửa ACL | Thêm độ trễ, phải viết lớp dịch |
+| Saga qua message queue | Bền, retry tốt | Cần compensation, theo dõi phức tạp |
+### Lỗi hay gặp
+- Không có idempotency → khách bấm "Mua" hai lần → hai hợp đồng.
+- Retry phát hành không idempotent → hai hợp đồng cho một hồ sơ.
+- ACL quá mỏng, để cấu trúc core rò ra ngoài → đổi core gãy toàn bộ.
+- Không có compensation → tiền đã thu nhưng hợp đồng không phát hành, khách khiếu nại.
+### Ví dụ đời thực
+Một công ty bảo hiểm có core 20 năm tuổi, kênh số gọi thẳng API core. Mỗi lần core nâng cấp, kênh số gãy; tỷ lệ timeout 3% giờ cao điểm, 5% hồ sơ bị treo ở PAID không phát hành. Thêm vào đó, khách bấm "Mua" lại khi mạng chậm tạo 1.800 hồ sơ trùng/tháng. Cách xử lý: (1) dựng ACL với canonical model, kênh số nói JSON chuẩn, ACL dịch sang core; (2) idempotency key cho từng bước, unique ở DB; (3) saga: thanh toán xong phát hành thất bại → compensation giữ tiền chờ phát hành lại, không mất; (4) circuit breaker khi core lỗi. Kết quả: hồ sơ trùng về 0, timeout giảm còn 0,4%, nâng cấp core chỉ sửa ACL, 0 hệ thống ngoài ảnh hưởng.
+### Trả lời mẫu khi phỏng vấn
+"Kênh số bảo hiểm đi bốn bước: báo giá, nộp hồ sơ, thanh toán phí, phát hành hợp đồng qua Core Insurance. Mỗi bước là một máy trạng thái riêng với idempotency key, nên khách bấm lại không tạo hồ sơ hay hợp đồng trùng; retry chỉ cho lỗi tạm thời với backoff, còn phát hành phải idempotent theo applicationKey. Vì core cũ không hỗ trợ 2PC, tôi bọc nó bằng anti-corruption layer với canonical model: kênh số nói JSON chuẩn, ACL dịch sang định dạng core và ngược lại, core không bao giờ bị gọi thẳng. Luồng nhiều bước dùng saga, mỗi bước có compensation: nếu thanh toán xong mà phát hành thất bại thì giữ tiền chờ phát hành lại chứ không để treo. ACL cũng lo timeout và circuit breaker. Thực tế tôi từng xử lý vụ hồ sơ trùng và treo PAID do gọi core trực tiếp, sau khi thêm ACL, idempotency và saga thì hồ sơ trùng về 0 và nâng cấp core không còn làm gãy kênh số."
+> Senior tip: trong phỏng vấn, hãy nói "core bảo hiểm là hệ thống sống lâu, không thể 2PC, nên câu trả lời đúng là ACL + saga + idempotency, không phải cố nhét transaction phân tán". Nêu rõ compensation cho từng bước để không mất tiền khách.
+> Cụm từ: Quotation là báo giá; ACL là lớp chống hư hỏng dịch giữa hệ thống mới và core cũ; Saga là chuỗi bước có bù trừ thay cho 2PC.
+  `,
+  follow: [
+    'Vì sao không dùng 2PC khi tích hợp core bảo hiểm, và saga giải quyết thế nào?',
+    'Phát hành hợp đồng bị timeout, bạn retry ra sao để không tạo hai hợp đồng?',
+    'ACL nên dịch những gì để core cũ không rò rỉ ra kênh số?'
+  ],
+  tags: ['bảo hiểm', 'insurance', 'quotation', 'policy application', 'Core Insurance', 'anti-corruption layer', 'saga', 'jd-2026-12']
+},
+{
+  id: 'banking-109',
+  topic: 'banking',
+  level: 'mid',
+  q: 'Bảo mật và tuân thủ cho kênh số tài chính: PII (CCCD, sức khỏe), mã hóa at-rest/in-transit, che log (masking), audit trail và các lỗi OWASP hay gặp ở form đăng ký online?',
+  a: `**Tóm tắt:** Kênh số tài chính thu thập **PII** (Personal Identifiable Information — thông tin định danh cá nhân) như số CCCD, thông tin sức khỏe, số điện thoại, nên phải **mã hóa at-rest** (khi lưu trên đĩa) và **in-transit** (khi truyền qua mạng bằng TLS), **che (masking)** dữ liệu nhạy cảm trong log và màn hình, ghi **audit trail** (nhật ký kiểm toán) bất biến, và tránh các lỗi **OWASP Top 10** hay gặp ở form đăng ký online như broken access control, cryptographic failure, injection, và lỗi xác thực.
+### Các thuật ngữ
+- **PII**: thông tin nhận dạng cá nhân (CCCD, họ tên, ngày sinh, sức khỏe, tài chính). Ví dụ đời thường: PII giống "hộ chiếu thông tin" của khách — lộ ra là bị mạo danh.
+- **At-rest**: dữ liệu khi đang nằm yên trên ổ đĩa/database.
+- **In-transit**: dữ liệu khi đang di chuyển qua mạng.
+- **Masking (che)**: hiển thị một phần, ví dụ CCCD 123456789 → 123******9.
+- **Audit trail**: nhật ký ghi ai làm gì lúc nào, không sửa được.
+- **OWASP Top 10**: danh sách 10 nhóm rủi ro bảo mật web phổ biến nhất do tổ chức OWASP công bố.
+### Mã hóa at-rest và in-transit
+- **In-transit**: mọi kết nối qua **TLS 1.2+** (HTTPS). Không bao giờ gửi PII qua HTTP thuần hay email không mã hóa.
+- **At-rest**: mã hóa database (TDE — Transparent Data Encryption) hoặc mã hóa từng trường nhạy cảm bằng **AES-256**; khóa lưu trong **KMS/HSM**, không để trong file config cạnh dữ liệu.
+- Nguyên tắc **envelope encryption**: khóa dữ liệu được mã hóa bởi khóa chủ trong HSM, xoay vòng khóa không phải giải mã lại toàn bộ.
+### Che log và masking
+- Log không bao giờ ghi PII thô. Dùng quy tắc che tập trung ở lớp log (logback pattern hoặc filter): CCCD → 123******9, thẻ → **** **** **** 3456, điện thoại → 090****1234.
+- Màn hình, API trả về, email, SMS đều phải che; chỉ 4 số cuối khi cần định danh.
+- Vì sao? Log tập trung (ELK, CloudWatch) là nơi nhiều người truy cập; một dòng log có CCCD là một vụ lộ dữ liệu diện rộng.
+### Audit trail bất biến
+- Ghi ai, làm gì, lúc nào, từ IP nào, trước/sau giá trị gì.
+- Append-only, lưu WORM (write-once read-many), tách quyền: admin hệ thống không xóa được log.
+- Không ghi PII vào chính audit log.
+### OWASP Top 10 hay gặp ở form đăng ký online
+- **A01 Broken Access Control**: người dùng A xem/sửa hồ sơ B bằng cách đổi id trên URL → phải kiểm tra quyền ở backend, không chỉ ẩn nút ở UI.
+- **A02 Cryptographic Failure**: gửi PII qua HTTP, lưu CCCD không mã hóa → dùng TLS + mã hóa at-rest.
+- **A03 Injection**: nhập liệu form không validate → SQL injection; dùng tham số hóa (PreparedStatement), không nối chuỗi.
+- **A07 Identification and Authentication Failures**: mật khẩu yếu, không rate limit, không MFA → validate mạnh, khóa sau N lần sai, thêm OTP.
+- **A09 Logging Failures**: log thiếu hoặc log lọt PII → che log, audit đầy đủ.
+### Bảng trade-off
+| Biện pháp | Ưu điểm | Nhược điểm |
+|---|---|---|
+| Mã hóa toàn bộ DB (TDE) | Dễ bật, minh bạch | Khóa lộ là mất tất cả |
+| Mã hóa từng trường | Giảm thiệt hại từng phần | Khó tìm kiếm, phải quản lý khóa |
+| Masking ở UI/log | Giảm lộ khi xem | Không bảo vệ at-rest |
+| Audit WORM | Bằng chứng pháp lý | Chi phí lưu trữ |
+### Lỗi hay gặp
+- Log in ra toàn bộ request body gồm CCCD, số thẻ khi debug.
+- Lưu CCCD không mã hóa, khóa để trong application.properties.
+- Form đăng ký tin id client, không kiểm quyền → xem hồ sơ người khác.
+- Không rate limit form OTP → brute force.
+### Ví dụ đời thực
+Một công ty fintech chuẩn bị audit bảo mật: rà soát thấy CCCD và thông tin sức khỏe nằm ở 5 nơi (DB không mã hóa, log, file xuất, cache, môi trường test). Một pentest phát hiện form đăng ký tin {{userId}} từ client nên đổi id là xem được hồ sơ khách khác (broken access control), và form OTP không rate limit nên brute force được. Cách xử lý: (1) mã hóa trường CCCD/sức khỏe bằng AES-256, khóa trong KMS; (2) bật TLS 1.2+ toàn bộ; (3) che log tập trung, xóa PII khỏi log cũ; (4) kiểm quyền ở backend theo phiên đăng nhập; (5) rate limit + khóa sau 5 lần sai + thêm MFA. Kết quả: audit đạt, không còn PII trong log, pentest không còn lỗi access control.
+### Trả lời mẫu khi phỏng vấn
+"Với kênh số tài chính, PII như CCCD và sức khỏe phải được mã hóa at-rest bằng AES-256 với khóa trong KMS/HSM, và in-transit bằng TLS 1.2+. Log và màn hình phải che dữ liệu nhạy cảm, chỉ hiện 4 số cuối, vì log tập trung là nơi dễ lộ diện rộng. Audit trail phải append-only, WORM, tách quyền để admin không xóa được. Về OWASP, ở form đăng ký online tôi hay gặp broken access control — tin userId từ client nên xem được hồ sơ người khác, phải kiểm quyền ở backend; cryptographic failure — gửi PII qua HTTP; injection — phải dùng PreparedStatement; và authentication failure — phải rate limit, khóa sau N lần sai, thêm MFA. Tôi luôn che log tập trung và không ghi PII vào audit. Thực tế tôi từng xử lý vụ lộ PII do log thô và broken access control, sau khi mã hóa trường, che log và kiểm quyền backend thì audit đạt."
+> Senior tip: trong phỏng vấn, hãy nói "masking không thay thế mã hóa" — che chỉ giảm hiển thị, còn at-rest vẫn phải mã hóa. Và broken access control là lỗi số 1 OWASP, hãy nhấn mạnh kiểm quyền ở backend chứ không chỉ ẩn nút ở UI. Không bao giờ log PII thô.
+> Cụm từ: PII là thông tin định danh cá nhân; At-rest là lưu trên đĩa, in-transit là truyền qua mạng; Masking là che một phần; WORM là ghi một lần đọc nhiều lần.
+  `,
+  follow: [
+    'Masking và mã hóa at-rest khác nhau thế nào, có thay thế nhau được không?',
+    'Broken access control ở form đăng ký online xảy ra ra sao và fix thế nào?',
+    'Audit trail bất biến thực hiện thế nào ở mức hạ tầng lưu trữ?'
+  ],
+  tags: ['bảo mật', 'tuân thủ', 'PII', 'CCCD', 'mã hóa', 'masking', 'audit trail', 'OWASP', 'jd-2026-12']
+},
 );
