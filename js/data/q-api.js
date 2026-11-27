@@ -1457,4 +1457,110 @@ follow: [
 ],
     tags: ['Webhook', 'Ordering', 'Replay Protection', 'Idempotency', 'Partner Integration', 'Outbox'],
   },
+  {
+    id: 'api-091',
+    topic: 'api',
+    level: 'senior',
+    q: 'Versioning API khi có 40 client mobile không update kịp: làm thế nào để thêm field mới mà không phá app cũ, và khi nào bắt buộc phải bump major version?',
+    a: `**Tóm tắt:** Ưu tiên additive change (thêm field, thêm endpoint) và giữ backward compat; chỉ bump major version khi xóa/sửa ngữ nghĩa field hoặc đổi contract không tương thích. Dùng capability negotiation + telemetry để biết client nào còn cũ.
+
+### Cơ chế và vì sao
+- **Additive first**: thêm field optional vào response, client cũ bỏ qua field lạ. Thêm query param optional với default. Không đổi type field đã có.
+- **Deprecation gradual**: đánh dấu field cũ deprecated trong OpenAPI, trả header Sunset + Deprecation, log usage. Chỉ xóa sau khi telemetry cho thấy 0 client dùng.
+- **Capability negotiation**: client gửi X-App-Version; server trả variant phù hợp.
+
+### Khi nào dùng / không dùng
+- Dùng additive + deprecation cho 90% thay đổi.
+- Bump major chỉ khi breaking không thể tránh.
+
+### Pitfall production
+- Client mobile cache response hoặc parse strict → thêm field có thể crash nếu dùng codegen strict. Test với client cũ.
+- Không đo usage → xóa sớm làm crash app cũ.
+
+### Ví dụ đời thực
+40 client mobile iOS/Android phiên bản 2.1 đến 4.0. Team thêm feeBreakdown vào response thanh toán. Giữ fee cũ, thêm field mới optional. Sau 6 tháng telemetry cho thấy v2.x <0.5%, đặt Sunset header, rồi xóa fee ở v5.
+
+### Trả lời mẫu khi phỏng vấn
+“Tôi ưu tiên additive change: thêm field optional, giữ field cũ, deprecate dần theo telemetry. Chỉ bump major version khi thay đổi semantics không tương thích. Dùng header Sunset/Deprecation và capability negotiation để rollout an toàn cho 40 client mobile.”
+
+> Senior tip: Đo usage trước khi xóa; telemetry là điều kiện bắt buộc cho deprecation.`,
+    follow: [
+      'Làm sao đo usage field trong response ở production?',
+      'Capability negotiation qua header vs query param: ưu nhược?',
+      'Khi nào dùng API gateway để route version?',
+    ],
+    tags: ['API Versioning', 'Backward Compatibility', 'Mobile', 'Deprecation', 'Telemetry'],
+  },
+  {
+    id: 'api-092',
+    topic: 'api',
+    level: 'lead',
+    q: 'Thiết kế error model RFC 9457 (ProblemDetail) trong Spring Boot 3.x: mapping exception, i18n, extensions và content negotiation thế nào?',
+    a: `**Tóm tắt:** Spring Boot 3.x (Spring Framework 6) cung cấp ProblemDetail; map exception → ProblemDetail qua @ExceptionHandler hoặc ProblemDetailFactory, thêm extensions (traceId, field errors), i18n qua MessageSource, và content negotiation application/problem+json.
+
+### Cơ chế và vì sao
+- **ProblemDetail**: type, title, status, detail, instance. Extensions là map thêm thông tin (errors, traceId).
+- **Mapping**: ResponseEntityExceptionHandler đã map nhiều exception; override handleExceptionInternal để chuẩn hóa. Custom exception implement ErrorResponse để Spring tự render.
+- **i18n**: title/detail qua MessageSource với Locale từ Accept-Language.
+- **Extensions**: thêm errors list field validation, traceId từ MDC. Không leak stacktrace.
+- **Content negotiation**: trả application/problem+json khi client Accept; fallback JSON.
+
+### Khi nào dùng / không dùng
+- Dùng cho mọi API public/partner; nội bộ có thể dùng đơn giản hơn nhưng nên thống nhất.
+
+### Pitfall production
+- Log detail đầy đủ nhưng response chỉ trả message an toàn; tránh leak PII.
+- Validation errors phải có field path để client highlight.
+- Không set instance URI → khó trace.
+
+### Ví dụ đời thực
+Partner gọi POST transfer với amount âm. Server trả 400 ProblemDetail type /errors/validation, extensions.errors=[{field:amount, message:...}], traceId. Partner log traceId để support điều tra.
+
+### Trả lời mẫu khi phỏng vấn
+“Tôi dùng ProblemDetail Spring Boot 3.x, map exception qua ErrorResponse/@ExceptionHandler, i18n qua MessageSource, thêm extensions cho field errors và traceId, và content negotiation application/problem+json. Đảm bảo không leak stacktrace và có traceId để điều tra.”
+
+> Senior tip: Luôn có traceId trong extensions; support sẽ cảm ơn bạn.`,
+    follow: [
+      'Khi nào dùng ProblemDetail vs custom error DTO?',
+      'Làm sao version hóa error type URIs?',
+      'Validation errors nên format thế nào cho client?',
+    ],
+    tags: ['RFC 9457', 'ProblemDetail', 'Spring Boot 3', 'Error Model', 'i18n'],
+  },
+  {
+    id: 'api-093',
+    topic: 'api',
+    level: 'senior',
+    q: 'Webhook gửi cho đối tác: ký HMAC, retry, thứ tự và chống replay nên thiết kế thế nào để an toàn và không mất sự kiện?',
+    a: `**Tóm tắt:** Gửi webhook at-least-once với HMAC-SHA256 trên payload + timestamp, retry exponential backoff với jitter, idempotency key cố định per event, và ordering qua sequence per partition; chống replay bằng timestamp tolerance và dedup store.
+
+### Cơ chế và vì sao
+- **Ký HMAC**: HMAC-SHA256(secret, timestamp + "." + body); header X-Signature, X-Timestamp. Secret per partner, rotate qua version header.
+- **Chống replay**: timestamp trong ±5 phút; dedup store theo deliveryId với TTL > max retry window.
+- **Retry**: exponential backoff + jitter; phân loại retryable (5xx, timeout, 429) vs non-retryable (4xx). Max attempts + dead-letter.
+- **Thứ tự**: sequence tăng theo aggregate (account) + reordering buffer; client gọi API tra trạng thái nếu gap.
+- **Idempotency**: deliveryId cố định per event; unique index outbox chặn gửi trùng.
+
+### Khi nào dùng / không dùng
+- Dùng cho mọi webhook tài chính; đơn giản hơn cho event không quan trọng (best-effort).
+
+### Pitfall production
+- Secret leak trong log → redact.
+- Retry storm khi partner down → circuit breaker/backoff.
+- Duplicate delivery nếu không dedup.
+
+### Ví dụ đời thực
+Đối tác ví điện tử nhận webhook giao dịch: HMAC verify, dedup deliveryId, buffer theo sequence. Khi thiếu seq, gọi API ngân hàng tra trạng thái. Kết quả: sai trạng thái 0%, khôi phục <5 phút.
+
+### Trả lời mẫu khi phỏng vấn
+“Tôi thiết kế webhook at-least-once: ký HMAC với timestamp, retry exponential backoff, dedup deliveryId, sequence per partition và reordering buffer. Chống replay bằng timestamp tolerance. Idempotency qua unique index outbox.”
+
+> Senior tip: Không tin thứ tự sự kiện; nếu không có sequence, gọi API để lấy trạng thái chuẩn.`,
+    follow: [
+      'Secret rotation zero-downtime thế nào?',
+      'Dead-letter handling và alerting ra sao?',
+      'Ordering guarantee có cần cho mọi event không?',
+    ],
+    tags: ['Webhook', 'HMAC', 'Retry', 'Replay Protection', 'Ordering', 'Idempotency'],
+  },
 );
