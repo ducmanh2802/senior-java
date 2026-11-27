@@ -30,14 +30,16 @@ window.COMPANIES = [
       'Database recovery hoạt động thế nào? Làm sao trao đổi dữ liệu giữa các database trong hệ phân tán?',
       'Bạn viết unit test thế nào (Mockito, JMockit...)?',
       'Câu hỏi system design tập trung vào microservices và database (một ứng viên backend 2021 cho biết gần như không hỏi về ngôn ngữ/framework).',
-      'Khi trong team có thành viên yếu kỹ thuật hoặc có mâu thuẫn, bạn xử lý và phân chia việc thế nào?'
+      'Khi trong team có thành viên yếu kỹ thuật hoặc có mâu thuẫn, bạn xử lý và phân chia việc thế nào?',
+      '[AI Engineer] Techcombank có JD Expert AI Engineer (GenAI, RAG, Agentic AI): bạn thiết kế pipeline RAG/LLM cho ngân hàng ra sao và làm sao không gửi dữ liệu khách hàng ra model public? (xem pack TPBank AI Engineer để luyện)'
     ],
     tips: [
       'Ôn chắc Java core (exception, thread, collections) và Spring core vì có thể có bài test trắc nghiệm trước vòng phỏng vấn.',
       'Chuẩn bị 1–2 dự án kể theo mạch bối cảnh → vấn đề → giải pháp → kết quả, sẵn sàng bị hỏi tình huống giả định xoay quanh dự án đó.',
       'Đọc sách System Design Interview (Alex Xu) và kiến thức hệ phân tán — ứng viên từng phỏng vấn khuyên như vậy.',
       'Tìm hiểu kiến thức cloud/AWS cơ bản (container, managed database, Kafka) vì ngân hàng công khai định hướng cloud; hỏi recruiter stack cụ thể của team.',
-      'Lồng ghép yếu tố tuân thủ, bảo mật và quản trị rủi ro vào câu trả lời; một số vị trí ngân hàng có thể hỏi chứng chỉ tiếng Anh, hãy xác nhận trong JD.'
+      'Lồng ghép yếu tố tuân thủ, bảo mật và quản trị rủi ro vào câu trả lời; một số vị trí ngân hàng có thể hỏi chứng chỉ tiếng Anh, hãy xác nhận trong JD.',
+      '[AI Engineer] Techcombank có JD Expert AI Engineer (AI production-grade, data platform cho ML training và LLM/RAG cân bằng cost-latency-freshness, A/B test online, hiệu chỉnh LLM-as-judge, GenAI/RAG/Agentic AI): nếu nhắm vai trò này, ôn thêm RAG, eval, MLOps và bảo mật dữ liệu — xem pack "TPBank (AI Engineer / AI Ops)" trong danh sách công ty để luyện tập.'
     ],
     pay: [
       { role: 'Backend (NodeJS, không phải Java)', yoe: '2 năm', amount: '23tr gross/tháng (deal được nhưng không nhận)', year: '2025', note: 'quy trình 4 vòng (tech NestJS, DB, lead, TA); có offer khác cao hơn', url: 'https://voz.vn/t/thread-tong-hop-chia-se-ve-muc-luong-tai-cac-cong-ty-part-2.515355/page-816#post-35934382' }
@@ -51,6 +53,109 @@ window.COMPANIES = [
       { title: 'ITviec — Techcombank company page', url: 'https://itviec.com/companies/techcombank' }
     ],
     confidence: 'medium'
+  },
+
+  {
+    id: 'tpbank',
+    name: 'TPBank (AI Engineer / AI Ops)',
+    type: 'bank',
+    icon: '🤖',
+    summary: `**Tóm tắt:** TPBank (Ngân hàng TMCP Tiên Phong) đang mở nhóm vị trí AI trong Khối CNTT tại Hà Nội — AI Engineer (Chuyên viên cao cấp / Chuyên gia), AI Ops, AI Product Owner, AI Product Manager — theo tin tuyển dụng công khai nêu mức 15–17 tháng lương/năm. Đây là **pack ôn luyện** cho người dùng (dev Java/Spring Boot 4 năm, đã tích hợp LLM vào Java: failover nhiều provider, AI grading, rate limit, vận hành pipeline agent hơn 3.000 task) muốn chuyển sang làm AI Engineer ngân hàng. Mọi nội dung dưới đây là **tổng hợp từ JD công khai + kiến thức chuẩn ngành**, không phải mô tả nội bộ TPBank; chỗ chưa chắc đã ghi rõ "xác nhận lại với JD chính thức".
+
+### 1. Bốn vai trò AI ở ngân hàng — làm gì, khác nhau ra sao
+
+Ngân hàng không chỉ tuyển "AI Engineer". Hiểu đúng vai trò giúp bạn nhắm đúng JD và trả lời phỏng vấn đúng kỳ vọng.
+
+- **AI Engineer (kỹ sư AI)** — *người XÂY hệ thống AI chạy được trên production*. Ví dụ: dựng pipeline RAG (Retrieval-Augmented Generation — cho model tra cứu tài liệu nội bộ trước khi trả lời) cho chatbot ngân hàng; viết service gọi LLM (Large Language Model — model ngôn ngữ lớn như GPT/Claude) có timeout, retry, fallback; tối ưu chi phí token, độ trễ; đóng gói model thành API. Đây là vai trò **hợp nhất** với hồ sơ của bạn nhất (bạn đã làm LLM trong Java).
+- **AI Ops (AI Operations)** — *người VẬN HÀNH và GIÁM SÁT* hệ thống AI sau khi đã build: theo dõi độ trôi (drift — model dần kém chính xác khi dữ liệu thực tế đổi), cảnh báo latency/chi phí, quản lý phiên bản model, xử lý sự cố, đảm bảo SLA (Service Level Agreement — cam kết mức dịch vụ, ví dụ 99.9% uptime). Gần với DevOps nhưng cho hệ thống AI.
+- **AI Product Owner (PO)** — *người quyết định NÊN build gì*: viết user story, ưu tiên backlog, làm việc với business để chọn use case AI có giá trị, đo lường kết quả. Cần hiểu AI đủ sâu để nói "cái này khả thi/không khả thi".
+- **AI Product Manager (PM)** — *người chịu trách nhiệm sản phẩm AI end-to-end*: thị trường, đối thủ, chiến lược, roadmap, chỉ số thành công (KPI), phối hợp engineering + pháp chế + rủi ro.
+
+> Khác biệt cốt lõi: **AI Engineer** trả lời "làm thế nào để chạy ổn định", **AI Ops** trả lời "làm sao biết nó vẫn ổn và sửa khi hỏng", **AI PO/PM** trả lời "làm cái gì và vì sao đáng làm". Người dùng (bạn) nhắm AI Engineer là chính; AI Ops là hướng mở rộng tự nhiên.
+
+### 2. Gap analysis cho hồ sơ của bạn
+
+**Điểm mạnh (đã có, hãy kể trong phỏng vấn):**
+- Java/Spring Boot 4 năm — nền tảng backend vững, ngân hàng chạy rất nhiều Java.
+- Đã tích hợp LLM vào Java: **failover nhiều AI provider** (chuyển dự phòng khi provider lỗi), **AI grading** (AI chấm điểm), **rate limit** (giới hạn số request để tránh vượt hạn mức/chi phí).
+- Vận hành **pipeline agent hơn 3.000 task** — kinh nghiệm vận hành, xử lý lỗi, retry ở quy mô thật. Đây là điểm khác biệt lớn so với ứng viên thuần lý thuyết.
+
+**Điểm còn thiếu thường gặp (và cách lấp trong 4–8 tuần):**
+- **Python** (nhiều thư viện AI viết bằng Python): viết được script đọc file, gọi API, xử lý JSON. Lấp: 1 tuần ôn Python cơ bản + pandas.
+- **RAG + vector database** (vector DB — DB lưu "vector" là mảng số biểu diễn nghĩa của câu, để tìm tài liệu liên quan theo ngữ nghĩa): hiểu chunking (chia nhỏ tài liệu), embedding (biến câu thành vector), hybrid search (kết hợp tìm từ khoá + tìm vector), rerank (xếp lại kết quả). Lấp: 2 tuần làm 1 demo RAG nhỏ.
+- **Đánh giá (eval)**: golden set (bộ câu hỏi mẫu có đáp án chuẩn), LLM-as-judge (dùng LLM khác chấm câu trả lời) và hiệu chỉnh (calibration — chỉnh cho điểm khớp đánh giá người). Lấp: 1 tuần.
+- **MLOps / AI Ops**: MLflow (công cụ theo dõi thí nghiệm, phiên bản model), giám sát drift, latency, chi phí; deploy trên Kubernetes (K8s — hệ điều hành điều phối container). Lấp: 1–2 tuần đọc + thử.
+- **Bảo mật & tuân thủ dữ liệu khách hàng ngân hàng**: PII masking (che thông tin cá nhân), data residency (dữ liệu phải nằm trong lãnh thổ), prompt injection (kẻ xấu chèn lệnh vào input để lừa model), audit log (nhật ký ghi vết không sửa được), **không gửi dữ liệu khách hàng ra model public**. Lấp: 1 tuần — đây là phần ngân hàng rất coi trọng, bạn phải thuộc.
+- **Quan sát (observability)**: log có cấu trúc, metric, distributed tracing (theo vết một request đi qua nhiều service). Lấp: 1 tuần.
+
+> Lộ trình 4–8 tuần gợi ý: Tuần 1–2 Python + RAG demo; Tuần 3 eval + LLM-as-judge; Tuần 4 bảo mật/tuân thủ ngân hàng; Tuần 5–6 MLOps/K8s + observability; Tuần 7–8 ôn system design + STAR (kể chuyện theo Situation-Task-Action-Result) từ trải nghiệm thật của bạn. Mỗi tuần dành 30% thời gian làm demo, 70% đọc/ôn.
+
+### 3. Nguồn JD gốc để đọc (mục 5 có link đầy đủ)
+Tin TPBank công khai gần nhất là **Cộng tác viên Prompt Engineer (Khối CNTT)**: xây bộ prompt mẫu + tài liệu hướng dẫn cho phòng ban, làm PoC/demo use case GenAI, chuẩn hoá dữ liệu đầu vào, đánh giá chất lượng đầu ra của model. Các ngân hàng khác (MB, Techcombank, VPBank) có JD AI Engineer chi tiết hơn — đọc để biết từ khoá tuyển dụng.`,
+    stack: ['Java', 'Spring Boot', 'Python', 'LLM', 'RAG', 'Vector DB', 'Prompt Engineering', 'AI Ops', 'MLflow', 'Docker', 'Kubernetes', 'Kafka', 'Redis', 'PostgreSQL', 'AWS'],
+    process: [
+      { round: 'Vòng 1 — Sàng lọc CV / HR (tham khảo JD, chưa có review công khai TPBank AI)', detail: 'Tin TPBank AI Engineer nêu 15–17 tháng lương/năm tại Hà Nội. Chưa có review phỏng vấn AI Engineer TPBank công khai đủ tin cậy; quy trình dưới đây là mẫu chung của ngân hàng + JD, cần xác nhận lại với recruiter.' },
+      { round: 'Vòng 2 — Phỏng vấn kỹ thuật AI/LLM (dự kiến theo JD)', detail: 'Với AI Engineer ngân hàng, thường hỏi: RAG (chunking, embedding, hybrid search, rerank, đánh giá retrieval), LLM production (timeout, retry, fallback provider, cache, chi phí token, streaming), eval (golden set, LLM-as-judge), agent & tool use (giới hạn bước, quyền hạn tool, human-in-the-loop). Hồ sơ bạn đã làm thật nên hãy kể bằng số liệu.' },
+      { round: 'Vòng 3 — System design / tình huống ngân hàng (dự kiến)', detail: 'Có thể yêu cầu thiết kế chatbot RAG trên tài liệu nội bộ, hoặc hệ thống phát hiện giao dịch bất thường có LLM giải thích. Xem mục "Đề bài system design" trong phần Mẹo chuẩn bị.' },
+      { round: 'Vòng 4 — Bảo mật / tuân thủ / behavioral (dự kiến)', detail: 'Ngân hàng rất coi trọng PII masking, data residency, prompt injection, audit log, không gửi dữ liệu khách hàng ra model public. Behavioral dùng STAR từ trải nghiệm thật (pipeline 3.000 task, failover provider). Tiếng Anh có thể được yêu cầu — xác nhận JD.' },
+      { round: 'Hình thức test (tham khảo ngân hàng 2024–2025)', detail: 'Các ngân hàng thường có bài test online (iMocha/Codility) Java core + Spring + SQL + English trước vòng kỹ thuật; vị trí AI có thể thêm bài về Python/LLM. Hỏi recruiter team (Khối CNTT — AI/GenAI platform) vì stack khác nhau. Đây là mẫu tham khảo, không phải quy trình TPBank đã xác nhận.' }
+    ],
+    focus: ['ai', 'security', 'microservices', 'design', 'db', 'scenario', 'devops', 'english', 'behavioral'],
+    algoWeight: 0.2,
+    englishRequired: true,
+    questions: [
+      '[RAG] Bạn thiết kế pipeline RAG cho chatbot ngân hàng thế nào? Giải thích chunking, embedding, vector DB, hybrid search, rerank.',
+      '[RAG] Chunking tài liệu dài ra sao để không mất ngữ cảnh? Kích thước chunk và overlap ảnh hưởng gì tới chất lượng retrieval?',
+      '[RAG] Hybrid search (từ khoá + vector) khác gì chỉ dùng vector? Khi nào cần rerank và rerank hoạt động thế nào?',
+      '[RAG] Làm sao đánh giá chất lượng retrieval (không phải chất lượng trả lời)? Recall@k, MRR, nDCG là gì?',
+      '[LLM production] Một request gọi LLM bị timeout, bạn xử lý thế nào? Retry, backoff, circuit breaker khác nhau ra sao?',
+      '[LLM production] Failover giữa nhiều AI provider hoạt động thế nào? Bạn đã làm gì trong dự án thật của mình?',
+      '[LLM production] Cache kết quả LLM: cache theo cái gì, khi nào cache gây trả lời sai (stale)?',
+      '[LLM production] Chi phí token và độ trễ: bạn tối ưu thế nào (prompt ngắn, streaming, chọn model nhỏ cho việc đơn giản)?',
+      '[LLM production] Streaming (trả lời dần từng chữ) ảnh hưởng kiến trúc backend ra sao? Làm sao hủy request giữa chừng?',
+      '[Eval] Golden set là gì, xây thế nào cho use case ngân hàng? LLM-as-judge có nhược điểm gì và hiệu chỉnh ra sao?',
+      '[Eval] A/B test online cho tính năng AI: chia lưu lượng, đo chỉ số, tránh nhiễu do model thay đổi thế nào?',
+      '[Agent] Agent và tool use: làm sao giới hạn số bước để agent không chạy vô hạn? Quyền hạn của tool nên giới hạn ra sao?',
+      '[Agent] Human-in-the-loop (có người duyệt) đặt ở đâu trong luồng agent ngân hàng? Vì sao bắt buộc với giao dịch?',
+      '[Agent] Bạn vận hành pipeline agent hơn 3.000 task — hãy kể cách xử lý lỗi, retry, idempotency và quan sát.',
+      '[Bảo mật] PII masking là gì, làm ở bước nào trước khi gửi dữ liệu cho LLM?',
+      '[Bảo mật] Prompt injection là gì, cho ví dụ và cách phòng (input/output guardrail, phân quyền tool)?',
+      '[Bảo mật] Vì sao ngân hàng không gửi dữ liệu khách hàng ra model public? Data residency ảnh hưởng kiến trúc thế nào?',
+      '[Bảo mật] Audit log cho hệ thống AI: ghi gì, làm sao chống sửa (append-only, tamper-proof)?',
+      '[AI Ops] Giám sát drift, latency, chi phí model trên production: bạn theo dõi metric nào, cảnh báo ra sao?',
+      '[AI Ops] MLflow dùng để làm gì? Quản lý phiên bản model và rollback khi model mới kém đi thế nào?',
+      '[AI Ops] Deploy service AI trên Kubernetes: scaling, resource limit cho inference, xử lý cold start ra sao?',
+      '[Java/Backend] Bạn vẫn là Java dev — hãy thiết kế service gọi LLM bằng Spring Boot: cấu trúc, timeout, thread, bảo mật token.',
+      '[System design] Thiết kế chatbot hỗ trợ khách hàng ngân hàng dùng RAG trên tài liệu nội bộ (yêu cầu, ước lượng, kiến trúc, trade-off).',
+      '[System design] Thiết kế hệ thống phát hiện giao dịch bất thường có LLM giải thích lý do (yêu cầu, ước lượng, kiến trúc, trade-off).',
+      '[Behavioral] Kể một quyết định kỹ thuật khó bạn đã đưa ra trong dự án LLM (failover/rate limit) theo STAR, có số liệu.',
+      '[Behavioral] Bạn xử lý xung đột với product owner về phạm vi use case AI thế nào? (STAR)',
+      '[Behavioral] Vì sao bạn muốn chuyển từ Java backend sang AI Engineer ngân hàng, và 6 tháng đầu bạn đóng góp gì?',
+      '[English] Trình bày dự án tích hợp LLM của bạn bằng tiếng Anh trong 2 phút.'
+    ],
+    tips: [
+      '**Cách trả lời nhóm RAG (câu 1–4):** Vẽ luồng: tải tài liệu → chunking (chia ~300–800 token, overlap 10–20% để không mất ngữ cảnh) → embedding (biến mỗi chunk thành vector) → lưu vector DB → khi có câu hỏi: embedding câu hỏi → hybrid search (BM25 từ khoá + vector) → rerank (một model nhỏ xếp lại top-k) → đưa vào prompt LLM. Nhấn trade-off: chunk nhỏ retrieval chính xác hơn nhưng mất ngữ cảnh; chunk lớn ngược lại. Đánh giá retrieval bằng recall@k, MRR, nDCG trên golden set — tách khỏi đánh giá trả lời.',
+      '**Cách trả lời nhóm LLM production (câu 5–9):** Luôn nói theo lớp: timeout (đặt deadline, không chờ vô hạn) → retry có backoff + jitter (tăng dần thời gian chờ, thêm ngẫu nhiên để tránh dồn request) → circuit breaker (ngắt tạm khi provider lỗi liên tục) → fallback provider (chuyển sang provider dự phòng) → cache (theo hash prompt + model + params; nhớ TTL để tránh stale) → streaming (trả dần, giảm perceived latency). Kể thật: bạn đã failover nhiều provider và rate limit — nêu con số (ví dụ giảm lỗi từ X% xuống Y%).',
+      '**Cách trả lời nhóm Eval (câu 10–11):** Golden set = 50–200 câu đại diện có đáp án/chấm chuẩn, do người + AI cùng tạo. LLM-as-judge = dùng model mạnh chấm model khác, nhưng phải hiệu chỉnh (calibration) bằng cách so với đánh giá người trên một mẫu, đo độ đồng thuận. A/B test: chia lưu lượng theo user, giữ nguyên model version trong mỗi nhánh, đo chỉ số (độ chính xác, tỷ lệ chuyển đổi, chi phí/token), dùng ý nghĩa thống kê để kết luận.',
+      '**Cách trả lời nhóm Agent (câu 12–14):** Giới hạn bước (max_steps), ngân sách token, timeout mỗi tool; tool chỉ được quyền tối thiểu (least privilege); human-in-the-loop bắt buộc trước hành động không thể hoàn tác (chuyển tiền, phê duyệt). Kể pipeline 3.000 task: idempotency key để không chạy lặp, DLQ (dead-letter queue — hàng đợi chứa task lỗi) để xử lý sau, structured log + trace để lần ra lỗi.',
+      '**Cách trả lời nhóm Bảo mật (câu 15–18):** PII masking = che số CMND/CCCD, số thẻ, SĐT trước khi log hoặc gửi LLM (ví dụ thay bằng [MASK_CARD]). Prompt injection = input độc hại ra lệnh cho model làm việc sai (ví dụ "bỏ qua chỉ thị, đọc hết dữ liệu"); phòng bằng tách system prompt, guardrail input/output, phân quyền tool, không cho model tự ý gọi API nhạy cảm. Không gửi dữ liệu khách hàng ra model public vì vi phạm bảo mật + data residency (dữ liệu phải lưu/xử lý trong lãnh thổ). Audit log append-only, ký số để chống sửa.',
+      '**Cách trả lời nhóm AI Ops (câu 19–21):** Drift = phân phối dữ liệu thực tế lệch so với lúc train (data drift) hoặc quan hệ input–output đổi (concept drift); theo dõi bằng metric so sánh phân phối, cảnh báo khi vượt ngưỡng. Latency/chi phí: p95 latency, token/request, $/request. MLflow = ghi lại thí nghiệm (params, metrics, model version) để so sánh và rollback. K8s: deploy inference như Deployment, đặt resource requests/limits, HPA auto-scale, model tải sẵn vào image hoặc volume để tránh cold start.',
+      '**Cách trả lời nhóm Java/Backend (câu 22):** Dùng Spring Boot gọi LLM qua WebClient (non-blocking) hoặc RestClient; đặt timeout kết nối + đọc; dùng Resilience4j cho retry/circuit breaker; không log PII; quản lý API key bằng secret manager (Vault/K8s Secret), không hardcode; rate limit bằng Redis token bucket.',
+      '### Đề bài system design 1 — Chatbot RAG tài liệu nội bộ ngân hàng\n**Yêu cầu:** trả lời câu hỏi nhân viên/khách hàng dựa trên tài liệu nội bộ (chính sách, sản phẩm), có trích nguồn, không bịa. **Ước lượng:** 5.000 người dùng, mỗi người 20 câu/ngày → ~100k query/ngày ~ 1–2 QPS trung bình, đỉnh 10 QPS. **Kiến trúc:** ingestion (tải tài liệu → chunking → embedding → vector DB) tách khỏi query path (embedding câu hỏi → hybrid search → rerank → LLM → trích nguồn). Dùng queue (Kafka) cho ingestion, cache câu trả lời, async. **Trade-off:** RAG giảm bịa (hallucination) nhưng phụ thuộc chất lượng retrieval; embedding model đổi thì phải embed lại toàn bộ (tốn tiền); tài liệu đổi thì phải cập nhật vector (freshness vs cost). Bảo mật: mask PII, audit log, không dùng model public cho dữ liệu nhạy cảm.',
+      '### Đề bài system design 2 — Phát hiện giao dịch bất thường + LLM giải thích\n**Yêu cầu:** chấm điểm rủi ro mỗi giao dịch theo thời gian thực, nếu bất thường thì LLM sinh lời giải thích dễ hiểu cho bộ phận điều tra. **Ước lượng:** 2 triệu giao dịch/ngày ~ 23 TPS trung bình, đỉnh 200 TPS; SLA phát hiện < 1 giây. **Kiến trúc:** stream (Kafka) → feature store (tổng hợp theo cửa sổ thời gian) → model phát hiện (gradient boosting, không phải LLM — LLM chậm và đắt, chỉ dùng để giải thích) → nếu nghi ngờ, gọi LLM với prompt chứa đặc điểm giao dịch đã mask PII → lưu kết quả + audit. **Trade-off:** model ML nhanh nhưng khó giải thích → dùng LLM giải thích; LLM không nằm trên đường tới hạn (critical path) để không tăng latency; precision vs recall (bỏ sót gian lận vs báo nhầm nhiều). Giám sát drift + A/B khi đổi model.',
+      '**Senior tip:** Ngân hàng phỏng vấn AI Engineer không chỉ test bạn biết RAG/LLM, mà test bạn có **tư duy vận hành + tuân thủ**: luôn hỏi "dữ liệu này có được phép gửi ra model không?", "nếu model sai thì ai chịu trách nhiệm, log ở đâu?", "chi phí 1.000 user/ngày là bao nhiêu?". Kể trải nghiệm thật (failover, rate limit, 3.000 task) bằng số liệu cụ thể sẽ thắng ứng viên chỉ biết lý thuyết.',
+      '**Nguồn:** đọc JD gốc ở mục Nguồn (ITviec, tuyển dụng VPBank) để lấy từ khoá; chỗ chưa chắc (mức lương/tháng, quy trình vòng) ghi rõ "xác nhận lại với JD chính thức", không bịa.'
+    ],
+    pay: [
+      { role: 'AI Engineer / AI Ops / AI PO / AI PM (tin tuyển dụng)', yoe: 'không nêu trong tin (xác nhận JD)', amount: '15–17 tháng lương/năm', year: '2026', note: 'Theo tin tuyển dụng công khai TPBank (Hà Nội); tin không nêu mức lương/tháng — không suy ra con số. Xác nhận lại với JD chính thức.', url: 'https://itviec.com/it-jobs/cong-tac-vien-prompt-engineer-khoi-cntt-ngan-hang-tmcp-tien-phong-tpbank-0040' }
+    ],
+    sources: [
+      { title: 'ITviec — TPBank Cộng tác viên Prompt Engineer (Khối CNTT)', url: 'https://itviec.com/it-jobs/cong-tac-vien-prompt-engineer-khoi-cntt-ngan-hang-tmcp-tien-phong-tpbank-0040' },
+      { title: 'ITviec — MB Bank AI Engineer (Computer Vision/NLP/LLM)', url: 'https://itviec.com/it-jobs/ai-engineer-computer-vision-nlp-llm-mb-bank-1237' },
+      { title: 'ITviec — Techcombank Expert AI Engineer', url: 'https://itviec.com/it-jobs/expert-ai-engineer-techcombank-5156' },
+      { title: 'VPBank Careers — AI Engineer Hà Nội (TA174)', url: 'https://tuyendung.vpbank.com.vn/job/AI-Engineer-H%C3%A0-N%E1%BB%99i-TA174/6380-vi_VN/' }
+    ],
+    confidence: 'low'
   },
 
   {
@@ -70,13 +175,15 @@ window.COMPANIES = [
     englishRequired: false,
     questions: [
       'Chưa có câu hỏi phỏng vấn Senior Java nào được chia sẻ công khai đủ tin cậy. Hãy ôn theo JD: Spring Boot, Hibernate/JPA, tối ưu SQL trên MySQL/Oracle.',
-      'Với vị trí core banking: chuẩn bị giải thích cách tích hợp với hệ thống core (Temenos) và đảm bảo tính nhất quán giao dịch.'
+      'Với vị trí core banking: chuẩn bị giải thích cách tích hợp với hệ thống core (Temenos) và đảm bảo tính nhất quán giao dịch.',
+      '[AI Engineer] VPBank có tin Middle AI Engineer (3 năm, phân tích yêu cầu nghiệp vụ và đề xuất giải pháp GenAI cho hệ thống IT): hãy nêu một use case GenAI cụ thể cho ngân hàng và cách đánh giá rủi ro/bảo mật của nó.'
     ],
     tips: [
       'Dùng JD chính thức mới làm nguồn ưu tiên: Java/Spring Boot, MS SQL/Oracle và kiến thức quy trình banking; stack có thể khác theo domain.',
       'Chuẩn bị tình huống microservice/API, hỗ trợ production và xử lý incident vì JD senior nêu rõ thiết kế, triển khai và vận hành dịch vụ.',
       'Vì thiếu review công khai, hãy hỏi người quen nội bộ hoặc HR về format vòng kỹ thuật trước khi phỏng vấn.',
-      'Chuẩn bị câu chuyện về làm việc với hệ thống legacy, vì ngân hàng nói chung thường vừa phát triển mới vừa bảo trì hệ thống cũ.'
+      'Chuẩn bị câu chuyện về làm việc với hệ thống legacy, vì ngân hàng nói chung thường vừa phát triển mới vừa bảo trì hệ thống cũ.',
+      '[AI Engineer] VPBank tuyển Middle AI Engineer (phân tích yêu cầu nghiệp vụ, đề xuất giải pháp GenAI cho hệ thống IT): chuẩn bị kể use case GenAI cụ thể kèm bảo mật/tuân thủ (PII masking, không gửi dữ liệu khách hàng ra model public); tham khảo pack "TPBank (AI Engineer / AI Ops)" để luyện RAG/LLM production.'
     ],
     pay: [
       { role: 'Data Engineer (tham khảo, không phải backend Java)', yoe: '1 năm', amount: '20 (đơn vị trong bài ghi net)*15 ~ 300tr/năm (cách tính trong bài, không rõ gross/net chuẩn)', year: '2024', note: '14 ngày phép, 4 triệu tiền holiday, làm thứ 7 cách ngày tùy team', url: 'https://voz.vn/t/thread-tong-hop-chia-se-ve-muc-luong-tai-cac-cong-ty-part-2.515355/page-1051#post-38215996' }
@@ -115,13 +222,15 @@ window.COMPANIES = [
       'Công việc/kỹ thuật khó nhất bạn từng giải quyết là gì?',
       'Thiết kế hệ thống sao cho người dùng không bị chờ khi lượng request tăng đột biến.',
       'Các nguyên tắc SOLID; một vài câu thuật toán và câu hỏi bảo mật cơ bản.',
-      'Viết/giải thích câu SQL theo yêu cầu.'
+      'Viết/giải thích câu SQL theo yêu cầu.',
+      '[AI Engineer] MB Bank có JD AI Engineer (NLP/LLM, RAG, AI agent, chatbot, fraud detection, semantic search; Docker/K8s/MLflow/Kubeflow/Triton): bạn chọn model serving và tối ưu (pruning, quantization) ra sao?'
     ],
     tips: [
       'Theo dõi email sát sao sau khi nộp CV vì HR thường gửi lịch phỏng vấn qua mail.',
       'Ôn kỹ tối ưu SQL (index, execution plan) trên Oracle/PostgreSQL và bảo mật API (JWT, OAuth2).',
       'Chuẩn bị bài toán chịu tải cao: queue/async, cache, rate limiting, scale ngang — đây là dạng câu tình huống được nhắc tới.',
-      'Ôn cả Golang ở mức đọc hiểu nếu ứng tuyển các tin Java/Go.'
+      'Ôn cả Golang ở mức đọc hiểu nếu ứng tuyển các tin Java/Go.',
+      '[AI Engineer] MB Bank có JD AI Engineer (LLM pipeline, RAG, AI agent, chatbot, fraud detection, semantic search; Docker, Kubernetes, MLflow, Kubeflow, Triton Inference Server; tối ưu model bằng pruning/quantization): nếu nhắm vai trò này, ôn RAG, model serving, MLOps và bảo mật — xem pack "TPBank (AI Engineer / AI Ops)" trong danh sách công ty.'
     ],
     pay: [
       { role: 'AI Engineer (tham khảo, không phải backend Java)', yoe: '2 năm', amount: '23tr gross/tháng', year: '2024', note: 'tháng 13, bonus 4–6 tháng tùy KPI (theo bài chia sẻ)', url: 'https://voz.vn/t/thread-tong-hop-chia-se-ve-muc-luong-tai-cac-cong-ty-part-2.515355/page-932#post-36967197' },

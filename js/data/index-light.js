@@ -4348,6 +4348,7 @@ window.DATA_INDEX = {
   ],
   companies: [
     {"id":"techcombank","name":"Techcombank","focus":["core","jvm","spring","microservices","design","db","architecture"]},
+    {"id":"tpbank","name":"TPBank (AI Engineer / AI Ops)","focus":["ai","security","microservices","design","db","scenario","devops","english","behavioral"]},
     {"id":"vpbank","name":"VPBank","focus":["spring","jpa","db","microservices","aws","scenario"]},
     {"id":"mb-bank","name":"MB Bank","focus":["spring","db","microservices","design","scenario","architecture"]},
     {"id":"momo","name":"MoMo","focus":["spring","microservices","db","design","concurrency","scenario"]},
