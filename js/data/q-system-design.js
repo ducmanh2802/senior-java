@@ -13790,5 +13790,202 @@ Tôi dùng outbox pattern: lưu invoice và outbox_event cùng transaction. Work
     'Thiết kế reconciliation cho trường hợp thuế downtime dài?'
   ],
   tags: ['invoice', 'tax', 'outbox', 'retry', 'idempotency', 'reconciliation']
+},
+{
+  id: 'architecture-084',
+  topic: 'architecture',
+  level: 'senior',
+  q: 'Monolith của bạn dùng chung một PostgreSQL cho mọi module. Khi tách microservices, ranh giới dữ liệu mới là phần khó nhất chứ không phải code. Bạn thiết kế chiến lược tách dữ liệu thế nào: database per service, khóa ngoại và join liên service, và giai đoạn "shared database" tạm thời trong strangler?',
+  a: `**Tóm tắt:** Tách microservices thất bại thường vì dữ liệu chứ không vì code: một PostgreSQL dùng chung biến mọi service thành "distributed monolith" (monolith phân tán) vì chúng vẫn ghim vào nhau qua bảng và khóa ngoại. Chiến lược đúng là **database per service** (mỗi service sở hữu dữ liệu riêng, không service nào đọc hay ghi bảng của service khác), thay khóa ngoại liên service bằng **tham chiếu lỏng + đối soát (reconciliation)**, và trong giai đoạn strangler chấp nhận **shared database tạm thời** nhưng phải đo "số bảng dùng chung" giảm dần về 0.
+
+### Cái gì → vì sao cần
+- **Database per service (mỗi service một cơ sở dữ liệu):** mỗi microservice có schema/database riêng, chỉ nó truy cập. Vì sao cần: nếu 6 service cùng ghi một bảng {{orders}}, chúng chia sẻ khóa, transaction và migration ⇒ không thể deploy độc lập, một lệnh ALTER TABLE làm sập tất cả. Giống 6 người cùng sửa một file Word: ai cũng phải chờ, dễ đè nội dung của nhau.
+- **Shared database (dùng chung DB) là anti-pattern ở trạng thái cuối**, nhưng là **bước quá độ chấp nhận được** trong strangler: hệ mới tạm đọc bảng cũ để không phải migrate dữ liệu ngay. Vấn đề là phải có kế hoạch thoát, không để nó thành vĩnh viễn.
+- **Khóa ngoại liên service (foreign key):** trong monolith, {{orders.customer_id}} có FK tới {{customers}}. Khi tách, FK xuyên database không còn được (PostgreSQL chỉ enforce FK trong cùng database). Phải thay bằng cơ chế khác.
+
+### Vì sao FK liên service biến mất và thay bằng gì
+- PostgreSQL chỉ kiểm FK trong cùng một database. Hai database khác nhau ⇒ không thể tạo FK. Ép "1 database 2 schema" chỉ hoãn vấn đề chứ không giải quyết.
+- Thay FK bằng một trong ba: (1) **kiểm tra lúc ghi** qua API/gRPC (gọi service Customer kiểm tra tồn tại — thêm độ trễ và phụ thuộc), (2) **chấp nhận tham chiếu lỏng** cộng **reconciliation job** phát hiện bản ghi mồ côi (orphan), (3) **saga** cho luồng cần nhất quán (xem design-014).
+- **Join liên service:** không JOIN được hai database. Giải pháp: **API composition** (một tầng BFF gọi nhiều service rồi ghép ở tầng ứng dụng) hoặc **CQRS read model** (một bảng đọc tổng hợp cập nhật qua event).
+
+### Bảng: chiến lược dữ liệu
+| | Shared DB | Database per service |
+|---|---|---|
+| Deploy độc lập | Không | Có |
+| FK / join | Dễ (SQL thuần) | Phải bỏ, thay bằng API/event |
+| Ranh giới | Mờ | Rõ |
+| Vai trò | Giai đoạn strangler | Trạng thái đích |
+
+### Java: cổng "bảng dùng chung" đo được trong strangler
+~~~java
+// Đếm truy vấn xuyên module để biết ranh giới dữ liệu đã sạch chưa
+class SharedTableGate {
+    private final MeterRegistry meters; // Micrometer
+    void record(String module, String table) {
+        // module truy cập bảng KHÔNG thuộc mình = còn dùng chung DB
+        meters.counter("db.shared_table", "module", module, "table", table).increment();
+    }
+}
+~~~
+Cổng cutover: chỉ số {{db.shared_table}} phải giảm về 0 trước khi tuyên bố tách dữ liệu xong.
+
+### Pitfall production
+- **Hai schema một database tự huyễn hoặc:** vẫn chung connection pool, chung migration, chung vacuum ⇒ chưa tách thật, chỉ đổi tên.
+- **Bỏ FK mà không reconciliation:** đơn trỏ tới customer không tồn tại, không ai phát hiện cho tới khi khách khiếu nại.
+- **API composition gọi dây chuyền:** trang chi tiết gọi 5 service tuần tự ⇒ p99 cộng dồn, một service chậm kéo sập cả trang (lại thành distributed monolith).
+- **Backfill dữ liệu đọc toàn bảng** làm nghẽn database production; phải chạy batch nhỏ có giới hạn tốc độ.
+
+### Ví dụ đời thực
+Một SaaS 8 người, monolith dùng 1 PostgreSQL 80 bảng. Tách 4 service nhưng vẫn để chung DB. **Triệu chứng:** mỗi migration ALTER TABLE phải phối hợp cả 4 nhóm, 2 sự cố mỗi tuần do một service đổi cột mà service khác đang đọc. **Điều tra:** cổng {{db.shared_table}} cho thấy 37 bảng bị từ 2 service trở lên cùng ghi. **Nguyên nhân gốc:** ranh giới dữ liệu không được tách, chỉ tách code. **Xử lý:** đặt cổng shared_table trong CI; gán quyền mỗi service chỉ đọc/ghi schema của mình bằng DB role; thay 12 FK liên module bằng reconciliation job cộng event; 6 bảng đọc nhiều dùng read model CQRS. **Kết quả đo được:** sau một quý, shared_table còn 3 (chỉ bảng cấu hình tạm), migration độc lập trở lại, sự cố giảm khoảng 70 phần trăm.
+
+### Trả lời mẫu khi phỏng vấn
+Em coi ranh giới dữ liệu là phần khó nhất khi tách microservices, không phải code. Mặc định em dùng database per service: mỗi service sở hữu schema riêng, không service nào đọc bảng của service khác, vì chung DB thì migration và khóa làm chúng ghim vào nhau, deploy không độc lập. PostgreSQL không cho khóa ngoại xuyên database, nên em thay FK bằng tham chiếu lỏng cộng reconciliation job phát hiện orphan, còn join liên service thì em dùng API composition hoặc read model CQRS cập nhật qua event. Trong giai đoạn strangler, em chấp nhận shared database tạm thời để không migrate dữ liệu ngay, nhưng em đặt cổng đo được: đếm số bảng bị nhiều service ghi, phải giảm về 0 mới coi là tách xong. Em từng thấy team tách 4 service mà để chung DB, 37 bảng bị ghi chéo, mỗi migration phải phối hợp cả 4; sau khi gán quyền theo schema và thay FK bằng reconciliation, shared table còn 3 và sự cố giảm khoảng 70 phần trăm.
+
+> Senior tip: ranh giới dữ liệu khó đổi hơn ranh giới code nhiều lần, vì code đổi trong một PR còn dữ liệu phải migrate qua nhiều bản release. Hãy coi "số bảng dùng chung" là metric cutover bắt buộc về 0; nếu không đo được nó, bạn chưa tách xong, bạn chỉ mới tách cái tên service.`,
+  follow: [
+    'Bạn thay 12 khóa ngoại liên module bằng gì để vừa không mồ côi dữ liệu vừa không thêm độ trễ mỗi lần ghi?',
+    'Read model CQRS cập nhật qua event bị trễ — bạn xử lý khi user đọc ngay sau khi ghi thế nào?',
+    'Khi nào shared database tạm thời trở thành nợ không trả được, dấu hiệu đo được là gì?'
+  ],
+  tags: ['database per service', 'shared database', 'data decomposition', 'strangler fig', 'reconciliation', 'CQRS'],
+  refs: [
+    { type: 'doc', title: 'Database per service pattern', url: 'https://microservices.io/patterns/data/database-per-service.html' },
+    { type: 'doc', title: 'StranglerFigApplication (Martin Fowler)', url: 'https://martinfowler.com/bliki/StranglerFigApplication.html' }
+  ]
+},
+{
+  id: 'architecture-085',
+  topic: 'architecture',
+  level: 'lead',
+  q: 'Bạn viết ADR với review trigger, nhưng trigger thường nằm im vì không ai canh. Ở góc lead, bạn biến review trigger thành "fitness function" (hàm kiểm kiến trúc tự động) chạy trong CI và SLO để kiến trúc không mục. Thiết kế cơ chế, viết một ADR mẫu có fitness function, và xử lý thế nào khi fitness function đỏ?',
+  a: `**Tóm tắt:** Review trigger trong ADR dễ chết vì phụ thuộc con người nhớ canh. **Fitness function** (hàm thể dục kiến trúc — một kiểm tra tự động chạy trong CI hoặc định kỳ để bảo đảm một thuộc tính kiến trúc còn đúng) biến trigger thành mã: ArchUnit chặn ranh giới module, consumer-driven contract chặn phá API, alert SLO chặn trôi hiệu năng. ADR mẫu phải ghi rõ **metric + ngưỡng + hành động khi đỏ**, và khi đỏ thì đó là "điều kiện đã đổi", chạy quy trình supersede chứ không tắt checker cho yên.
+
+### Cái gì → vì sao cần
+- **Fitness function (hàm thể dục kiến trúc):** khái niệm từ sách "Building Evolutionary Architectures" (Neal Ford, Rebecca Parsons, Patrick Kua). Là một kiểm tra tự động đo một đặc tính kiến trúc (ranh giới, độ trễ, độ phủ, chi phí) và đỏ khi đặc tính bị vi phạm. Vì sao cần: kiến trúc "mục" dần vì mỗi commit nhỏ phá một chút mà không ai để ý (xem architecture-021). Con người không canh nổi hàng nghìn commit mỗi tháng; máy thì canh được.
+- **Review trigger → fitness function:** trigger "xem lại nếu p99 hơn 200 mili giây" chỉ chạy khi có người nhớ. Fitness function chính là cái alert hoặc CI gate đó, chạy mỗi lần build hoặc mỗi phút, không cần ai nhớ.
+
+### Ba loại fitness function phổ biến
+| Loại | Đo gì | Công cụ | Chạy ở đâu |
+|---|---|---|---|
+| Ranh giới | module không gọi nội bộ module khác | ArchUnit | CI mỗi PR |
+| Hợp đồng | API không phá consumer | Spring Cloud Contract / Pact | CI |
+| Hiệu năng / độ tin | p99, error rate, chi phí | Micrometer + Prometheus alert | Định kỳ theo SLO |
+
+### ADR mẫu có fitness function
+~~~text
+# ADR-0041: Modular monolith, ranh giới cưỡng chế bằng fitness function
+
+Status: Accepted (2026-11-01)
+Deciders: Backend team, Lead
+
+## Context
+- Team 8 người, chọn modular monolith (xem ADR-0007).
+- Rủi ro: ranh giới module mục dần theo thời gian.
+
+## Decision
+Giữ monolith; mỗi ranh giới có một fitness function:
+- ArchUnit: module X không truy cập internal của Y (chạy CI).
+- SLO: p99 module Search dưới 250ms (alert Prometheus).
+
+## Review trigger (đo được)
+Fitness function đỏ 2 lần mỗi sprint, HOẶC p99 Search trên 250ms một tuần
+=> viết ADR supersede, xem tách Search.
+
+## Action khi đỏ
+Không tắt checker. Mở ticket, hoặc sửa code, hoặc supersede ADR.
+~~~
+
+### Khi fitness function đỏ: quy trình lead
+1. **Không tắt checker** (tắt là mù). Đỏ là tín hiệu, không phải nhiễu.
+2. Phân loại: vi phạm thật (sửa code) hay ngưỡng lỗi thời (số liệu đổi ⇒ supersede ADR).
+3. Nếu supersede: viết ADR mới link {{Supersedes}}, ghi mục "What we learned".
+4. Ghi vào runbook ai xử lý và SLA (trong bao lâu phải phản hồi).
+
+### Pitfall production
+- **Checker đỏ kinh niên bị ignore:** alert kêu mãi mọi người bấm mute ⇒ coi như không có. Phải có SLA xử lý, không mute.
+- **Ngưỡng hardcode sai:** đặt p99 dưới 50 mili giây trong khi thực tế 80 ⇒ đỏ vĩnh viễn, mất uy tín checker.
+- **Fitness function đắt:** chạy full contract test mỗi commit làm CI 40 phút ⇒ team lách. Chọn cái rẻ, đặt đúng chỗ.
+- **Đo nhầm thứ dễ đo:** đếm số dòng code thay vì đo ranh giới thật.
+
+### Ví dụ đời thực
+Một SaaS 8 người, ADR modular monolith có trigger "xem lại nếu ranh giới vỡ". Ban đầu trigger nằm trên giấy, sáu tháng không ai canh, hai module bắt đầu import nội bộ lẫn nhau. **Điều tra:** không có kiểm tra tự động, review PR không bắt được. **Nguyên nhân gốc:** trigger phụ thuộc con người. **Xử lý (lead):** thêm fitness function ArchUnit vào CI, PR nào phá ranh giới bị chặn ngay; thêm alert SLO p99 Search. **Kết quả đo được:** trong một quý, 14 PR bị chặn đúng lúc dev định "đi tắt", ranh giới giữ sạch; khi p99 Search chạm 260 mili giây một tuần, alert SLO đỏ, team chạy supersede và tách Search thành service có cổng số liệu (architecture-079). Quyết định tách dựa trên số liệu, không cảm tính.
+
+### Trả lời mẫu khi phỏng vấn
+Em biến review trigger trong ADR thành fitness function để trigger không chết vì không ai canh. Fitness function là kiểm tra tự động đo một thuộc tính kiến trúc: em dùng ArchUnit chặn ranh giới module trong CI, consumer-driven contract chặn phá API, và alert SLO dựa trên Micrometer cho p99 và error rate. ADR mẫu của em ghi rõ metric, ngưỡng và hành động khi đỏ, ví dụ fitness function đỏ hai lần mỗi sprint hoặc p99 Search trên 250 mili giây một tuần thì viết ADR supersede. Nguyên tắc lead của em là không tắt checker khi đỏ, vì đỏ là tín hiệu điều kiện đã đổi; em phân loại vi phạm thật thì sửa code, còn ngưỡng lỗi thời thì supersede ADR kèm mục what we learned. Em từng thấy trigger giấy sáu tháng không ai canh làm hai module import chéo nhau; sau khi đưa ArchUnit vào CI, mười bốn PR bị chặn đúng lúc và ranh giới giữ sạch, còn khi p99 Search chạm ngưỡng thì em tách Search dựa trên số liệu.
+
+> Senior tip: một ADR chỉ thực sự "sống" khi review trigger của nó là một dòng lệnh CI hoặc một ngưỡng alert, không phải một câu văn. Nếu trigger không chạy được bằng máy, nó sẽ không bao giờ kích hoạt — hãy viết fitness function rẻ, đặt đúng chỗ, và có SLA xử lý khi đỏ thay vì cho team quyền mute.`,
+  follow: [
+    'Bạn chọn ngưỡng fitness function thế nào để không đỏ kinh niên mà vẫn bắt được vi phạm thật?',
+    'Fitness function và test thường khác nhau ra sao, cái nào đo kiến trúc còn test đo hành vi?',
+    'Khi fitness function đỏ nhưng sửa code quá đắt, bạn dẫn dắt team supersede ADR thế nào cho không mất niềm tin?'
+  ],
+  tags: ['ADR', 'fitness function', 'ArchUnit', 'evolutionary architecture', 'SLO', 'leadership'],
+  refs: [
+    { type: 'doc', title: 'Evolutionary Architectures (Martin Fowler)', url: 'https://martinfowler.com/articles/evolutionary-architecture.html' },
+    { type: 'doc', title: 'ArchUnit', url: 'https://www.archunit.org' }
+  ]
+},
+{
+  id: 'architecture-086',
+  topic: 'architecture',
+  level: 'senior',
+  q: 'Bạn phải tách nhiều module của monolith qua nhiều tháng (strangler), không thể tách hết cùng lúc. Bạn chọn module nào tách trước dựa trên số liệu nào (churn, coupling, blast radius, giá trị kinh doanh) và sắp thứ tự ra sao? Giải thích cách đo từng chỉ số bằng công cụ thật.',
+  a: `**Tóm tắt:** Thứ tự tách quyết định thành công: tách nhầm module "rốn" (coupling cao, churn thấp) trước sẽ kéo theo cả hệ và đình trệ. Dùng số liệu: **churn** (tần suất đổi, đo bằng git log), **coupling** (số phụ thuộc, đo bằng ArchUnit/jdeps), **blast radius** (bán kính ảnh hưởng lan), và **giá trị kinh doanh**. Tách trước module **coupling thấp, churn cao, giá trị cao** (dễ cắt, nhiều lợi ích); để lại module rốn cho cuối, khi các module khác đã lỏng phụ thuộc.
+
+### Cái gì → vì sao cần
+- **Churn (tần suất thay đổi):** đếm số lần một file/module bị sửa trong 3–6 tháng ({{git log --since}}). Vì sao cần: module churn cao là nơi team liên tục đụng nhau ⇒ tách để deploy độc lập sẽ giảm xung đột và merge conflict. Đo bằng git.
+- **Coupling (độ ghép):** số module khác phụ thuộc vào module này (import hoặc gọi hàm). Đo bằng ArchUnit hoặc jdeps. Coupling cao nghĩa là "rốn" — cắt nó kéo theo nhiều module khác.
+- **Blast radius (bán kính ảnh hưởng):** khi module này lỗi hoặc đổi, bao nhiêu module và bao nhiêu người dùng bị ảnh hưởng. Gần bằng coupling cộng với call graph lúc chạy (runtime).
+- **Vì sao cần số liệu:** "tách theo cảm tính" hay theo to-do của sếp thường tách module rốn trước ⇒ kéo cả hệ, dự án trễ. Số liệu biến quyết định thành "cái nào dễ cắt nhất trước".
+
+### Công thức gợi ý (điểm ưu tiên tách)
+Điểm = (churn chuẩn hóa × w1) + (giá trị × w2) − (coupling × w3) − (blast radius × w4). Module điểm cao tách trước. Trọng số do team chốt và ghi vào ADR để minh bạch.
+
+### Đo từng chỉ số bằng công cụ thật
+| Chỉ số | Cách đo | Công cụ |
+|---|---|---|
+| Churn | số commit mỗi module 6 tháng | git log, git-of-theseus |
+| Coupling | số module phụ thuộc | ArchUnit, jdeps, SonarQube |
+| Blast radius | call graph lúc chạy | Micrometer, distributed tracing |
+| Giá trị | tách xong giảm bao nhiêu sự cố/chi phí | số liệu on-call, SLO |
+
+### Java: tính điểm ưu tiên (rút gọn)
+~~~java
+record ModuleStat(String name, double churn, double coupling, double value) {}
+double priority(ModuleStat m) {
+    // churn & value cao thì cộng, coupling cao thì trừ (khó cắt)
+    return 2.0 * m.churn() + 1.5 * m.value() - 1.0 * m.coupling();
+}
+~~~
+
+### Trình tự tách mẫu
+1. **Đo** churn và coupling 6 tháng, vẽ ma trận.
+2. **Tách trước:** module churn cao + coupling thấp (ví dụ Notification, Report).
+3. **Tiếp theo:** module giá trị cao, coupling trung bình (Search).
+4. **Cuối cùng:** module rốn coupling cao (Order) — tách sau khi các module khác đã gọi qua API/event nên coupling đã giảm.
+
+### Pitfall production
+- **Tách module rốn trước** (Order) vì "quan trọng nhất" ⇒ kéo theo 5 module, blast radius lớn, dự án đình trệ.
+- **Chỉ đo churn quên coupling:** module churn cao nhưng coupling cũng cao ⇒ tách rất đau.
+- **Không đo lại sau mỗi lần tách:** coupling thay đổi theo thời gian; phải đo lại để cập nhật thứ tự.
+- **Bỏ qua giá trị:** tách module ít lỗi, ít tải ⇒ tốn công vô ích.
+
+### Ví dụ đời thực
+Monolith 8 người, 6 module. Đo 6 tháng: Notification churn 42, coupling 1; Report churn 30, coupling 2; Order churn 55 nhưng coupling 6 (rốn). **Trực giác** muốn tách Order trước vì quan trọng nhất. **Số liệu:** điểm Notification cao nhất (churn cao, coupling thấp). **Xử lý:** tách Notification trước (2 tuần, 3 dev), rồi Report, rồi Search; để Order cuối. **Kết quả đo được:** 3 module tách trong một quý không downtime; khi tới Order, coupling đã giảm từ 6 xuống 2 vì các module khác đã gọi qua event; tách Order chỉ mất 3 tuần thay vì ước tính 3 tháng nếu làm đầu tiên.
+
+### Trả lời mẫu khi phỏng vấn
+Em không tách theo cảm tính mà theo số liệu. Em đo churn bằng git log sáu tháng, coupling bằng ArchUnit hoặc jdeps đếm số module phụ thuộc, blast radius bằng call graph lúc chạy, và giá trị bằng số liệu on-call. Em tính điểm ưu tiên: churn và giá trị cộng, coupling và blast radius trừ. Nguyên tắc là tách trước module churn cao nhưng coupling thấp, vì dễ cắt và nhiều lợi ích; module rốn coupling cao như Order em để cuối, khi các module khác đã lỏng phụ thuộc qua API và event. Em từng thấy trực giác muốn tách Order trước vì nó quan trọng nhất, nhưng số liệu cho thấy coupling của nó là 6; em tách Notification và Report trước, và khi tới Order thì coupling đã giảm còn 2, nên tách chỉ mất ba tuần thay vì ba tháng. Em đo lại coupling sau mỗi lần tách để cập nhật thứ tự.
+
+> Senior tip: thứ tự tách sai làm tốn gấp nhiều lần công sức, vì module rốn kéo theo cả hệ. Hãy để số liệu (churn cao, coupling thấp) chọn module đầu tiên, và luôn đo lại coupling sau mỗi lần tách — "cái rốn" hôm nay có thể đã lỏng sau khi bạn bóc các module quanh nó.`,
+  follow: [
+    'Bạn đo coupling lúc chạy (runtime) khác gì coupling tĩnh (static) và khi nào cần cả hai?',
+    'Nếu sếp ép tách module rốn trước, bạn dùng số liệu nào để thuyết phục hoặc giảm rủi ro?',
+    'Churn cao nhưng là module rốn — bạn xử lý mâu thuẫn giữa hai chỉ số này ra sao?'
+  ],
+  tags: ['strangler fig', 'churn', 'coupling', 'blast radius', 'git', 'ArchUnit'],
+  refs: [
+    { type: 'doc', title: 'StranglerFigApplication (Martin Fowler)', url: 'https://martinfowler.com/bliki/StranglerFigApplication.html' },
+    { type: 'doc', title: 'ArchUnit', url: 'https://www.archunit.org' }
+  ]
 }
 );
