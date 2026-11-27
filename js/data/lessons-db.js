@@ -6099,4 +6099,642 @@ Một API tra cứu đơn hàng {{WHERE created_at BETWEEN ? AND ?}} trên bản
   related: ['db-001', 'db-003', 'db-023'],
   tags: ['binary-search', 'lower-bound', 'upper-bound', 'B-tree', 'EXPLAIN']
 },
+{
+  id: 'lesson-db-024', track: 'db', order: 24,
+  title: 'Transaction retry với exponential backoff: xử lý serialization failure 40001',
+  level: 'senior', minutes: 30,
+  goals: [
+    'Hiểu SQLSTATE 40001 là gì và tại sao phải retry toàn bộ transaction',
+    'Cài exponential backoff với jitter để tránh thundering herd khi retry',
+    'Phân biệt retry tạm thời (transient) và conflict nghiệp vụ (cần can thiệp)',
+    'Áp dụng idempotency key để an toàn khi retry có side effect'
+  ],
+body: `**Tóm tắt:** Khi dùng REPEATABLE READ hoặc SERIALIZABLE trong PostgreSQL, xung đột ghi (write skew, lost update bị chặn) khiến database abort transaction với lỗi **SQLSTATE 40001** (serialization_failure). Ứng dụng **bắt buộc retry toàn bộ transaction** (đọc lại, tính lại, ghi lại), không chỉ chạy lại câu SQL chết. Retry sai cách (vô hạn, không backoff, side effect lặp) biến xung đột nhỏ thành sập hệ thống.
+
+### SQLSTATE 40001: serialization_failure là gì
+Ở REPEATABLE READ, nếu transaction cố ghi một hàng đã bị transaction khác sửa và commit sau snapshot, PostgreSQL không ghi đè mà ném **ERROR: could not serialize access due to concurrent update** (SQLSTATE 40001). Ở SERIALIZABLE, SSI (Serializable Snapshot Isolation) phát hiện các phụ thuộc nguy hiểm (dangerous structure) và abort một transaction. Cả hai đều yêu cầu ứng dụng bắt đầu transaction **mới**, đọc trạng thái mới, tính lại thay đổi từ input nghiệp vụ, rồi thử lại.
+
+### Tại sao không chỉ chạy lại câu UPDATE?
+Vì transaction đã bị **rollback hoàn toàn**: mọi thay đổi trước đó (INSERT, UPDATE, DELETE) trong transaction đó đều bị huỷ. Chạy lại riêng câu chết không khôi phục được các bước trước. Retry đúng nghĩa là:
+1. Bắt đầu transaction mới (BEGIN)
+2. ĐỌC LẠI dữ liệu liên quan (SELECT ... FOR UPDATE hoặc SELECT với version)
+3. TÍNH LẠI thay đổi từ input nghiệp vụ (không dùng giá trị đã đọc cũ)
+4. Ghi và commit
+ 
+ ~~~java
+ // SAI: chỉ chạy lại UPDATE
+ try { updateBalance(id, newBalance); } catch (e) { if (e.sqlState == '40001') updateBalance(id, newBalance); }
+ 
+ // ĐÚNG: retry toàn bộ transaction
+ for (int attempt = 0; attempt < MAX_RETRY; attempt++) {
+     try (Connection c = ds.getConnection()) {
+         c.setTransactionIsolation(Connection.TRANSACTION_REPEATABLE_READ);
+         int current = readBalance(c, id);           // đọc lại
+         int next = current + delta;                 // tính lại từ input
+         int updated = updateBalance(c, id, next, currentVersion);
+         if (updated == 1) { c.commit(); return; }   // thành công
+     } catch (SQLException e) {
+         if (!"40001".equals(e.getSQLState())) throw e;
+     }
+     sleep(backoff(attempt));                        // chờ rồi thử lại
+ }
+ throw new RetryExhaustedException();
+ ~~~
+ 
+### Exponential backoff với jitter: tránh thundering herd
+Khi nhiều transaction cùng conflict và cùng retry ngay lập tức, chúng đọc cùng trạng thái, conflict lại, retry lại — tải tăng vọt (thundering herd). Giải pháp:
+- **Exponential backoff**: thời gian chờ tăng gấp đôi mỗi lần (10ms, 20ms, 40ms, 80ms...)
+- **Jitter (ngẫu nhiên)**: cộng thêm ngẫu nhiên ±25% để các transaction không va chạm lại
+- **Giới hạn số lần**: 3-5 lần, sau đó ném lỗi cho caller quyết định
+ 
+ ~~~java
+ long backoff(int attempt) {
+     long base = 10L * (1L << attempt);          // 10, 20, 40, 80, 160 ms
+     long jitter = (long) (base * 0.25 * (random.nextDouble() * 2 - 1)); // ±25%
+     return Math.max(1, base + jitter);
+ }
+ ~~~
+ 
+### Phân biệt: conflict tạm thời vs conflict nghiệp vụ
+Không phải 40001 nào cũng nên retry vô điều kiện:
+- **Serialization failure (40001)**: conflict do concurrency, thường retry được.
+- **Deadlock (40P01)**: cũng retry được nhưng cần backoff dài hơn.
+- **Unique violation (23505)**: key trùng — KHÔNG retry, báo lỗi nghiệp vụ (ví dụ email đã tồn tại).
+- **Check violation (23514)**: ràng buộc dữ liệu — KHÔNG retry, dữ liệu đầu vào sai.
+- **Lock timeout (55P03)**: chờ lock quá lâu — có thể retry nhưng cần xem xét contention.
+
+### Side effect và idempotency key
+Nếu transaction có side effect (gửi email, gọi API thanh toán, publish Kafka), retry sẽ lặp lại side effect → gửi trùng email, trừ tiền hai lần. Cách an toàn:
+1. **Không làm side effect trong transaction** (đồng ý cả team).
+2. Dùng **outbox pattern**: ghi event vào bảng outbox **trong cùng transaction**, relay đọc outbox và gửi sau commit.
+3. Dùng **idempotency key**: client sinh UUID cho request, server kiểm tra key đã xử lý chưa (bảng idempotency_keys). Nếu đã có thì trả kết quả cũ, không chạy lại.
+
+### Ví dụ đời thực
+Payment service dùng REPEATABLE READ cho chuyển tiền. Giờ cao điểm, 200 transaction/giây cùng đụng tài khoản hot. Không có retry → 15% request lỗi 40001, client thấy thất bại. Có retry nhưng không backoff → khi conflict tăng, retry dồn tải làm DB CPU 100%, latency từ 50ms lên 5s. Sửa: retry 3 lần với exponential backoff (10ms base, ±25% jitter), log số lần retry để theo dõi. Kết quả: 99.8% transaction thành công ở lần 1-2, p99 latency ổn định 80ms.
+
+### Lỗi hay gặp
+1. **Retry riêng câu SQL** thay vì cả transaction — mất các bước trước. Luôn BEGIN mới, đọc lại, tính lại.
+2. **Không giới hạn số lần retry** — hệ thống nóng, retry dồn tải thêm. Giới hạn 3-5 lần.
+3. **Không có jitter** — tất cả retry cùng lúc, thundering herd. Luôn thêm ngẫu nhiên.
+4. **Side effect trong transaction** (gửi email, call API) — retry lặp lại. Dùng outbox + idempotency key.
+5. **Retry cả lỗi nghiệp vụ** (unique violation, check violation) — vô ích, làm chậm client. Chỉ retry 40001/40P01/55P03.
+
+### Pitfall production
+Đo tỷ lệ 40001 theo loại entity; nếu entity nào thường xuyên conflict, cân nhắc redesign: atomic UPDATE, partition hot key, hoặc optimistic locking thay vì SERIALIZABLE. Đừng để retry che giấu vấn đề thiết kế.
+
+> Senior tip: retry không phải miễn phí; mỗi lần retry tốn một round-trip DB và giữ connection pool. Theo dõi {{retry_count}} histogram; nếu p99 > 2 thì hệ thống đang bị contention, cần fix ở mức thiết kế hơn là tăng {{MAX_RETRY}}.
+
+### Liên hệ phỏng vấn
+- **"SQLSTATE 40001 nghĩa là gì? Ứng dụng xử lý sao?"** → Serialization failure do SSI hoặc REPEATABLE READ ghi đè snapshot cũ. Phải retry TOÀN BỘ transaction: BEGIN mới, đọc lại, tính lại từ input, ghi lại.
+- **"Vì sao cần exponential backoff và jitter khi retry?"** → Tránh thundering herd: nhiều transaction cùng retry cùng lúc làm tải tăng vọt. Backoff rải thời gian, jitter rải thêm ngẫu nhiên.
+- **"Retry có side effect (gửi email) thì sao?"** → Mỗi retry gửi trùng email. Dùng outbox pattern (ghi event trong transaction, relay gửi sau) hoặc idempotency key (client gửi UUID, server deduplicate).
+- **"Khi nào KHÔNG retry 40001?"** → Khi đã vượt MAX_RETRY, hoặc lỗi thực ra là unique violation (23505) / check violation (23514) bị nhầm là 40001. Luôn kiểm tra SQLState chính xác.`,
+  exercises: [{
+    title: 'RetryTransaction: exponential backoff, jitter, giới hạn lần và idempotency',
+    prompt: `Cài {{RetryTransaction}} mô phỏng retry transaction với exponential backoff và jitter.
+ 
+ Constructor {{RetryTransaction(int maxAttempts, long baseDelayMs, long maxDelayMs, Random random)}}:
+ - {{maxAttempts}}: tối đa bao nhiêu lần thử (kể cả lần đầu), ví dụ 3.
+ - {{baseDelayMs}}: delay cơ sở cho lần retry 1 (lần 0 là lần đầu, không delay).
+ - {{maxDelayMs}}: trần delay, không được vượt.
+ - {{random}}: nguồn ngẫu nhiên cho jitter (±25%).
+ 
+ {{boolean execute(TransactionBody body)}}: chạy transaction.
+ - {{TransactionBody}} là functional interface: {{boolean run()}} trả {{true}} nếu thành công, ném {{SerializationFailure}} (custom exception) nếu conflict 40001, ném exception khác cho lỗi nghiệp vụ.
+ - Logic: vòng lặp tới {{maxAttempts}}. Lần 0 chạy ngay. Nếu ném {{SerializationFailure}}, delay = min(baseDelayMs * 2^attempt, maxDelayMs) ±25% jitter, sleep (trong mô phỏng: chỉ tính tổng delay, không sleep thật), tăng attempt, thử lại. Ném exception khác thì dừng ngay, không retry. Trả {{true}} nếu thành công, {{false}} nếu hết lần thử.
+ - {{long totalDelayMs()}}: tổng mili giây đã delay (để test xác định).
+ - {{int attemptsMade()}}: số lần đã thử (kể cả lần thành công).
+ 
+ Không dùng {{Thread.sleep}}; delay mô phỏng bằng cách cộng vào {{totalDelay}}. Cùng input + random seed -> cùng output.`,
+    starter: `import java.util.*;
+ 
+ class RetryTransaction {
+     static class SerializationFailure extends Exception {
+         SerializationFailure() { super("SQLSTATE 40001"); }
+     }
+ 
+     @FunctionalInterface
+     interface TransactionBody {
+         boolean run() throws SerializationFailure;
+     }
+ 
+     private final int maxAttempts;
+     private final long baseDelayMs;
+     private final long maxDelayMs;
+     private final Random random;
+ 
+     RetryTransaction(int maxAttempts, long baseDelayMs, long maxDelayMs, Random random) {
+         this.maxAttempts = maxAttempts;
+         this.baseDelayMs = baseDelayMs;
+         this.maxDelayMs = maxDelayMs;
+         this.random = random;
+     }
+ 
+     boolean execute(TransactionBody body) {
+         throw new UnsupportedOperationException("TODO");
+     }
+ 
+     long totalDelayMs() { throw new UnsupportedOperationException("TODO"); }
+ 
+     int attemptsMade() { throw new UnsupportedOperationException("TODO"); }
+ }`,
+    tests: `public class Main {
+     static int p = 0, t = 0;
+     static void c(String name, Runnable r) {
+         t++;
+         try { r.run(); p++; System.out.println("PASS " + name); }
+         catch (Throwable e) { System.out.println("FAIL " + name + ": " + e); }
+     }
+     static void eq(Object expected, Object actual) {
+         if (!Objects.equals(expected, actual)) throw new AssertionError("expected " + expected + " but got " + actual);
+     }
+     static void ok(boolean b) { if (!b) throw new AssertionError("expected true"); }
+ 
+     public static void main(String[] args) {
+         c("success on first attempt", () -> {
+             Random rnd = new Random(42);
+             RetryTransaction rt = new RetryTransaction(3, 10, 1000, rnd);
+             boolean ok = rt.execute(() -> true);
+             eq(true, ok);
+             eq(1, rt.attemptsMade());
+             eq(0L, rt.totalDelayMs());
+         });
+ 
+         c("retry once on serialization failure", () -> {
+             Random rnd = new Random(42);
+             RetryTransaction rt = new RetryTransaction(3, 10, 1000, rnd);
+             AtomicInteger calls = new AtomicInteger();
+             boolean ok = rt.execute(() -> {
+                 if (calls.incrementAndGet() == 1) throw new RetryTransaction.SerializationFailure();
+                 return true;
+             });
+             eq(true, ok);
+             eq(2, rt.attemptsMade());
+             ok(rt.totalDelayMs() > 0);
+         });
+ 
+         c("exhausted retries returns false", () -> {
+             Random rnd = new Random(42);
+             RetryTransaction rt = new RetryTransaction(3, 10, 1000, rnd);
+             AtomicInteger calls = new AtomicInteger();
+             boolean ok = rt.execute(() -> {
+                 calls.incrementAndGet();
+                 throw new RetryTransaction.SerializationFailure();
+             });
+             eq(false, ok);
+             eq(3, rt.attemptsMade());
+             ok(rt.totalDelayMs() > 0);
+         });
+ 
+         c("business exception not retried", () -> {
+             Random rnd = new Random(42);
+             RetryTransaction rt = new RetryTransaction(3, 10, 1000, rnd);
+             AtomicInteger calls = new AtomicInteger();
+             boolean threw = false;
+             try {
+                 rt.execute(() -> {
+                     calls.incrementAndGet();
+                     throw new IllegalArgumentException("unique violation");
+                 });
+             } catch (IllegalArgumentException e) { threw = true; }
+             ok(threw);
+             eq(1, calls.get());
+             eq(1, rt.attemptsMade());
+         });
+ 
+         c("delay capped at maxDelayMs", () -> {
+             Random rnd = new Random(42);
+             RetryTransaction rt = new RetryTransaction(5, 100, 250, rnd); // base 100, max 250
+             AtomicInteger calls = new AtomicInteger();
+             rt.execute(() -> {
+                 calls.incrementAndGet();
+                 throw new RetryTransaction.SerializationFailure();
+             });
+             // attempts: 1 (success not reached) + 4 retries = 5 attempts total
+             // delays: attempt 1: ~100, attempt 2: ~200, attempt 3: capped 250, attempt 4: capped 250
+             // total should be <= 4 * 250 * 1.25 (with jitter max)
+             ok(rt.totalDelayMs() <= 1250);
+             eq(5, rt.attemptsMade());
+         });
+ 
+         c("jitter makes delay non-deterministic across seeds", () -> {
+             RetryTransaction rt1 = new RetryTransaction(3, 10, 1000, new Random(1));
+             RetryTransaction rt2 = new RetryTransaction(3, 10, 1000, new Random(2));
+             rt1.execute(() -> { throw new RetryTransaction.SerializationFailure(); });
+             rt2.execute(() -> { throw new RetryTransaction.SerializationFailure(); });
+             // with different seeds, total delay should differ (jitter)
+             ok(rt1.totalDelayMs() != rt2.totalDelayMs());
+         });
+ 
+         System.out.println("RESULT " + p + "/" + t);
+     }
+ }`,
+    reference: `import java.util.*;
+ 
+ class RetryTransaction {
+     static class SerializationFailure extends Exception {
+         SerializationFailure() { super("SQLSTATE 40001"); }
+     }
+ 
+     @FunctionalInterface
+     interface TransactionBody {
+         boolean run() throws SerializationFailure;
+     }
+ 
+     private final int maxAttempts;
+     private final long baseDelayMs;
+     private final long maxDelayMs;
+     private final Random random;
+ 
+     private long totalDelay = 0;
+     private int attempts = 0;
+ 
+     RetryTransaction(int maxAttempts, long baseDelayMs, long maxDelayMs, Random random) {
+         this.maxAttempts = maxAttempts;
+         this.baseDelayMs = baseDelayMs;
+         this.maxDelayMs = maxDelayMs;
+         this.random = random;
+     }
+ 
+     boolean execute(TransactionBody body) {
+         for (int attempt = 0; attempt < maxAttempts; attempt++) {
+             attempts = attempt + 1;
+             try {
+                 if (body.run()) return true;
+} catch (SerializationFailure e) {
+                  if (attempt == maxAttempts - 1) return false; // hết lần thử
+                  long delay = Math.min(baseDelayMs * (1L << attempt), maxDelayMs);
+                  // jitter ±25%
+                  double jitterFactor = 1.0 + 0.25 * (random.nextDouble() * 2 - 1);
+                  long delayWithJitter = Math.max(1, (long) (delay * jitterFactor));
+                  totalDelay += delayWithJitter;
+                  // không sleep thật, chỉ tính tổng delay
+              } catch (RuntimeException e) {
+                  // lỗi nghiệp vụ: không retry, ném ra ngoài nguyên gốc
+                  throw e;
+              }
+         }
+         return false;
+     }
+ 
+     long totalDelayMs() { return totalDelay; }
+ 
+     int attemptsMade() { return attempts; }
+ }`,
+    hints: [
+      'Vòng lặp từ attempt = 0 đến maxAttempts - 1. Lần 0 chạy ngay, không delay.',
+      'SerializationFailure thì tính delay = min(base * 2^attempt, maxDelay), thêm jitter ±25% bằng random.nextDouble().',
+      'Exception khác (IllegalArgumentException...) ném ra ngoài ngay (wrap RuntimeException).',
+      'Lưu totalDelay và attempts để test kiểm tra.'
+    ],
+    explain: `Lời giải thể hiện ba yêu cầu cốt lõi của retry an toàn: (1) **chỉ retry serialization failure** (40001), lỗi nghiệp vụ ném ngay; (2) **exponential backoff có trần** (maxDelay) để không chờ quá lâu; (3) **jitter ngẫu nhiên** (±25%) để các transaction không retry đồng loạt gây thundering herd. Trong production, delay thật dùng {{Thread.sleep}} hoặc {{CompletableFuture.delayedExecutor}}; bài tập chỉ cộng delay để test xác định. Idempotency key không demo ở đây nhưng là bắt buộc nếu transaction có side effect: client sinh UUID, server lưu key trong bảng idempotency_keys trước khi chạy transaction, nếu key đã tồn tại thì trả kết quả cũ.`
+  }],
+  check: [
+    {q:'SQLSTATE 40001 (serialization_failure) xảy ra khi nào trong PostgreSQL?',options:['Khi deadlock','Khi REPEATABLE READ/SERIALIZABLE phát hiện xung đột ghi trên snapshot cũ và abort transaction','Khi unique constraint vi phạm','Khi lock timeout'],answer:1,explain:'SSI hoặc REPEATABLE READ abort transaction ghi đè snapshot cũ với 40001; ứng dụng phải retry toàn bộ transaction.'},
+    {q:'Vì sao retry phải chạy lại TOÀN BỘ transaction (BEGIN mới, đọc lại, tính lại) thay vì chỉ câu SQL chết?',options:['Vì câu SQL chết là câu duy nhất','Vì transaction đã rollback hoàn toàn, mọi thay đổi trước đó đều mất','Vì PostgreSQL yêu cầu vậy','Vì connection pool reset'],answer:1,explain:'Rollback huỷ tất cả INSERT/UPDATE/DELETE trong transaction; chạy lại một câu không khôi phục được state.'},
+    {q:'Exponential backoff với jitter giải quyết vấn đề gì?',options:['Làm transaction nhanh hơn','Tránh thundering herd: nhiều transaction cùng retry đồng loạt làm tải tăng vọt','Giảm số lần retry','Bỏ qua lock timeout'],answer:1,explain:'Không có jitter, tất cả conflict cùng retry cùng lúc -> thundering herd. Backoff rải thời gian, jitter rải thêm ngẫu nhiên.'},
+    {q:'Transaction có side effect (gửi email) thì retry thế nào an toàn?',options:['Retry bình thường, email trùng không sao','Dùng outbox pattern (ghi event trong transaction, relay gửi sau commit) hoặc idempotency key','Tắt retry','Gửi email trước khi BEGIN'],answer:1,explain:'Side effect trong transaction sẽ lặp lại mỗi lần retry. Outbox + relay hoặc idempotency key (client UUID, server deduplicate) là cách chuẩn.'}
+  ],
+  related: ['db-020', 'db-022', 'db-006'],
+  tags: ['retry', 'serialization-failure', '40001', 'exponential-backoff', 'jitter', 'idempotency', 'outbox']
+},
+{
+  id: 'lesson-db-025', track: 'db', order: 25,
+  title: 'BRIN index cho time-series: min/max per block, nhỏ gọn và phù hợp dữ liệu append-only',
+  level: 'senior', minutes: 30,
+  goals: [
+    'Hiểu BRIN (Block Range Index) lưu min/max cho mỗi dải block thay vì từng hàng',
+    'Biết khi nào BRIN thắng B-tree: bảng lớn, dữ liệu append-only có tương quan vật lý (timestamp tăng dần)',
+    'Mô phỏng tìm kiếm khoảng trên BRIN và so sánh số block phải đọc với B-tree',
+    'Nêu trade-off: BRIN nhỏ, ghi nhanh, nhưng scan trong block có thể đọc nhiều hàng không liên quan'
+  ],
+body: `**Tóm tắt:** **BRIN** (Block Range Index) là loại index PostgreSQL thiết kế cho bảng **rất lớn** (tỷ hàng) với dữ liệu **append-only** có thứ tự tự nhiên (như timestamp, serial id). Thay vì lưu con trỏ cho từng hàng như B-tree, BRIN chia bảng thành các **range** (mặc định 128 block = 1 MB), mỗi range chỉ lưu **min** và **max** của cột index. Kích thước BRIN chỉ ~1% B-tree, ghi nhanh vì không phải duy trì cây, nhưng truy vấn range phải đọc toàn bộ block nằm trong range (có thể đọc thừa hàng không khớp).
+
+### Vì sao cần BRIN khi đã có B-tree
+B-tree index trên cột {{created_at}} của bảng 1 tỷ hàng: mỗi hàng một entry, index to (~10-20% kích thước bảng), mỗi INSERT phải chèn entry vào B-tree (random I/O trên index, page split, WAL). Với dữ liệu time-series (IoT, log, metrics), hàng mới luôn có timestamp lớn hơn hàng cũ → dữ liệu **tự nhiên sắp xếp theo thứ tự vật lý trên đĩa**. BRIN tận dụng tính chất này: không index từng hàng, chỉ tóm tắt "block 1000-1127 có timestamp từ 2026-01-01 00:00 đến 2026-01-01 01:00".
+
+### Cấu trúc BRIN: range và summary
+ - **Range**: một dải block liên tiếp (mặc định {{pages_per_range = 128}}, mỗi block 8 KB → 1 MB dữ liệu).
+ - **Summary**: cho mỗi range, lưu {{min}} và {{max}} của cột index (có thể multi-column). Nếu range chưa có dữ liệu thì summary rỗng.
+ - **Meta page**: trang 0 của index BRIN lưu bitmap các range nào có summary.
+ 
+ ~~~text
+ Bảng events (append-only, sắp theo created_at):
+ Block 0-127    (range 0): created_at ∈ [2026-01-01 00:00:00, 2026-01-01 00:59:59]  -> summary (min, max)
+ Block 128-255  (range 1): created_at ∈ [2026-01-01 01:00:00, 2026-01-01 01:59:59]  -> summary (min, max)
+ Block 256-383  (range 2): created_at ∈ [2026-01-01 02:00:00, 2026-01-01 02:59:59]  -> summary (min, max)
+ ...
+ 
+ BRIN index chỉ lưu mảng summary này (~1 entry per 128 block). Kích thước ~1% B-tree.
+ ~~~
+ 
+### Tra cứu range trên BRIN
+Truy vấn {{WHERE created_at BETWEEN '2026-01-01 00:30' AND '2026-01-01 01:30'}}:
+1. Đọc meta page, duyệt các summary.
+2. Range nào có {{max < lo}} hoặc {{min > hi}} -> **bỏ qua toàn bộ range** (không đọc block nào trong range đó).
+3. Range nào giao nhau (overlap) -> **phải đọc tất cả block trong range đó** (và filter hàng trong block).
+
+Vì mỗi range 128 block, một truy vấn nhỏ có thể đọc thừa nhiều block (và hàng trong block) không thực sự khớp. Đó là trade-off: index nhỏ, ghi nhanh, đổi lại scan trong range có overhead.
+
+### Khi nào BRIN thắng, khi nào thua
+ | Đặc điểm | BRIN tốt | B-tree tốt |
+ |---|---|---|
+ | Kích thước bảng | > 100 GB (tỷ hàng) | Bất kỳ |
+ | Thứ tự dữ liệu | Append-only, tương quan vật lý cao (timestamp, serial) | Ngẫu nhiên, update nhiều |
+ | Kích thước index | ~1% bảng | ~10-20% bảng |
+ | Tốc độ INSERT | Rất nhanh (chỉ append summary khi range mới) | Chậm hơn (random I/O trên index) |
+ | Truy vấn point lookup ({{=}}) | Kém (phải scan range) | Rất nhanh |
+ | Truy vấn range scan | Tốt nếu selectivity thấp (trả về ít % bảng) | Tốt cho mọi selectivity |
+ | UPDATE/DELETE nhiều | Kém (summary cũ, cần BRIN summation) | Tốt |
+ 
+### BRIN summation: cập nhật summary khi dữ liệu cũ bị sửa
+Nếu UPDATE/DELETE làm thay đổi min/max trong range đã có summary, summary sẽ **không còn chính xác** (stale). PostgreSQL không tự cập nhật summary ngay (để giữ ghi nhanh). Có hai cách:
+- {{brin_summarize_new_values(index)}}: quét các range chưa có summary (dữ liệu mới append) và tạo summary.
+- {{brin_desummarize_range(index, range)}}: xoá summary của một range, lần sau truy vấn sẽ quét block thật để rebuild.
+- Autovacuum cũng tự summarize range mới.
+
+### SQL minh họa
+ ~~~sql
+ -- Tạo BRIN index trên cột timestamp (mặc định pages_per_range = 128)
+ CREATE INDEX idx_events_created_brin ON events USING BRIN (created_at);
+ 
+ -- Tùy chỉnh pages_per_range: nhỏ hơn -> summary chính xác hơn, index to hơn
+ CREATE INDEX idx_events_created_brin_32 ON events USING BRIN (created_at) WITH (pages_per_range = 32);
+ 
+ -- Multi-column BRIN
+ CREATE INDEX idx_events_tenant_time_brin ON events USING BRIN (tenant_id, created_at);
+ 
+ -- Kiểm tra kích thước index
+ SELECT pg_size_pretty(pg_relation_size('idx_events_created_brin')) AS brin_size,
+        pg_size_pretty(pg_relation_size('idx_events_created_btree')) AS btree_size;
+ 
+ -- Xem summary của BRIN (debug)
+ SELECT * FROM brin_page_items(get_raw_page('idx_events_created_brin', 1), 'idx_events_created_brin');
+ ~~~
+ 
+### Cơ chế từng bước của bài tập mô phỏng
+1. Bảng mô phỏng: mảng các block, mỗi block chứa các timestamp đã sắp (append-only).
+2. BRIN chia thành range (mỗi range {{rangeSize}} block), tính min/max cho mỗi range.
+3. {{rangeQuery(lo, hi)}}: duyệt summary, bỏ qua range không giao nhau, đếm block phải đọc trong range giao nhau.
+4. {{btreeQuery(lo, hi)}}: mô phỏng B-tree tìm biome dưới/ trên bằng binary search, đếm block phải đọc (giả định mỗi block 1 entry, B-tree height = 3).
+5. So sánh: BRIN đọc ít block hơn khi range nhỏ và dữ liệu có tương quan; B-tree đọc chính xác các block chứa hàng khớp.
+
+### Ví dụ đời thực
+ Hệ thống IoT thu 10 triệu event/ngày từ 50.000 sensor. Bảng {{sensor_events}} 3 tỷ hàng sau 1 năm. B-tree trên {{event_time}} to 600 GB, INSERT chậm do page split. Chuyển sang BRIN {{pages_per_range = 32}}: index chỉ 8 GB, INSERT nhanh 5x, truy vấn "event của sensor X trong 1 giờ" p99 từ 2 giây xuống 300 ms (vì dữ liệu sensor Xappend liên tục, range nhỏ chỉ đọc vài block). Trade-off: truy vấn "tất cả event lúc 12:00:00 chính xác" (point lookup) chậm hơn vì phải scan range.
+ 
+### Lỗi hay gặp
+1. **Dùng BRIN cho bảng hay UPDATE/DELETE** — summary stale, kết quả sai (trả hàng không khớp hoặc bỏ sót). Chỉ dùng cho append-only.
+2. **Point lookup ({{=}}) trên BRIN** — phải scan toàn range, chậm. Cần B-tree cho point lookup.
+3. **Quên brin_summarize_new_values sau khi nạp dữ liệu hàng loạt** — range mới chưa có summary, planner không dùng index. Chạy summarize hoặc chờ autovacuum.
+4. **pages_per_range quá lớn** — range rộng, scan thừa nhiều block. Giảm xuống 32 hoặc 16 cho range nhỏ hơn.
+
+### Pitfall production
+ BRIN không thay thế B-tree cho mọi trường hợp. Chỉ dùng khi: (1) bảng rất lớn, (2) dữ liệu append-only có tương quan vật lý, (3) truy vấn chủ yếu là range scan trên cột đó. Luôn benchmark với {{EXPLAIN (ANALYZE, BUFFERS)}} trên dữ liệu thật; đừng tin cảm tính.
+ 
+ > Senior tip: với time-series, BRIN + partition theo tháng là cặp đôi vàng: partition pruning loại bỏ partition không liên quan, BRIN trong partition lọc nhanh range. Kích thước index tổng thể chỉ vài % so với B-tree toàn bảng.
+ 
+### Liên hệ phỏng vấn
+- **"BRIN index là gì và khác B-tree ở đâu?"** → BRIN chia bảng thành range (mặc định 128 block), mỗi range lưu min/max. Không con trỏ từng hàng. Index nhỏ (~1% B-tree), ghi nhanh, phù hợp append-only có thứ tự vật lý.
+- **"Khi nào dùng BRIN thay vì B-tree?"** → Bảng lớn (100GB+), dữ liệu append-only sắp theo cột index (timestamp, serial), truy vấn chủ yếu range scan, ít UPDATE/DELETE.
+- **"pages_per_range ảnh hưởng gì?"** → Nhỏ hơn -> summary chính xác hơn (ít đọc thừa block), index to hơn. Mặc định 128; time-series hay dùng 32 hoặc 16.
+- **"Dữ liệu cũ bị UPDATE thì BRIN sao?"** → Summary stale (min/max không còn đúng). Cần {{brin_desummarize_range}} rồi summarize lại, hoặc tránh UPDATE trên bảng BRIN.`,
+  exercises: [{
+    title: 'BRINIndexSim: min/max per range, range query so với B-tree',
+    prompt: `Cài {{BRINIndexSim}} mô phỏng BRIN index trên mảng timestamp đã sắp (append-only).
+ 
+ Constructor {{BRINIndexSim(long[] timestamps, int rangeSizeBlocks, int blockSize)}}:
+ - {{timestamps}}: mảng timestamp (ms) của các hàng, đã sắp tăng dần (append-only).
+ - {{rangeSizeBlocks}}: số block mỗi range (mặc định 128 trong PG, ở bài tập dùng giá trị nhỏ như 4, 8).
+ - {{blockSize}}: số hàng mỗi block.
+ - Chia {{timestamps}} thành các block {{blockSize}} hàng, rồi gom {{rangeSizeBlocks}} block thành một range. Tính {{min}} và {{max}} timestamp cho mỗi range. Range rỗng (chưa đủ block) không tạo summary.
+ 
+ {{int rangeQueryBlocks(long lo, long hi)}}: trả số block **phải đọc** khi truy vấn range {{[lo, hi]}}.
+ - Duyệt các range: nếu {{range.max < lo}} hoặc {{range.min > hi}} -> bỏ qua (0 block).
+ - Nếu giao nhau -> cộng {{blocksInRange}} (số block thực tế trong range đó, range cuối có thể < rangeSizeBlocks).
+ 
+ {{int btreeQueryBlocks(long lo, long hi)}}: mô phỏng B-tree tìm kiếm range trên cùng dữ liệu.
+ - Giả định B-tree height = 3 (root + internal + leaf), leaf entry trỏ tới block.
+ - Tìm lower bound block index bằng binary search trên mảng timestamp (mỗi block lấy timestamp hàng đầu).
+ - Tìm upper bound block index.
+ - Trả về {{height + (upperBlockIdx - lowerBlockIdx + 1)}}: 3 block cho traversal + số block leaf trong khoảng.
+ 
+ {{int totalBlocks()}}: tổng số block.
+ {{int totalRanges()}}: số range có summary.
+ 
+ Không dùng Thread, không I/O thật. Kết quả xác định.`,
+    starter: `class BRINIndexSim {
+     private final long[] timestamps;
+     private final int rangeSizeBlocks;
+     private final int blockSize;
+ 
+     // summary per range
+     private final long[] rangeMin;
+     private final long[] rangeMax;
+     private final int[] blocksInRange;
+ 
+     BRINIndexSim(long[] timestamps, int rangeSizeBlocks, int blockSize) {
+         throw new UnsupportedOperationException("TODO");
+     }
+ 
+     int rangeQueryBlocks(long lo, long hi) {
+         throw new UnsupportedOperationException("TODO");
+     }
+ 
+     int btreeQueryBlocks(long lo, long hi) {
+         throw new UnsupportedOperationException("TODO");
+     }
+ 
+     int totalBlocks() { throw new UnsupportedOperationException("TODO"); }
+ 
+     int totalRanges() { throw new UnsupportedOperationException("TODO"); }
+ }`,
+    tests: `public class Main {
+     static int p = 0, t = 0;
+     static void c(String name, Runnable r) {
+         t++;
+         try { r.run(); p++; System.out.println("PASS " + name); }
+         catch (Throwable e) { System.out.println("FAIL " + name + ": " + e); }
+     }
+     static void eq(int a, int b) { if (a != b) throw new AssertionError(a + " != " + b); }
+     static void ok(boolean b) { if (!b) throw new AssertionError("expected true"); }
+ 
+     public static void main(String[] args) {
+         // 100 block, 10 hàng/block, 4 block/range -> 25 range
+         long[] ts = new long[1000];
+         for (int i = 0; i < 1000; i++) ts[i] = i * 1000L; // 0, 1000, 2000... ms
+ 
+c("basic range query", () -> {
+              BRINIndexSim sim = new BRINIndexSim(ts, 4, 10);
+              eq(100, sim.totalBlocks());
+              eq(25, sim.totalRanges());
+              // query [250000, 350000] ms -> block 25-35 (11 block)
+              // BRIN: range 6 (block 24-27) và range 7 (block 28-31) và range 8 (block 32-35) -> 3 ranges overlap = 12 blocks
+              int brin = sim.rangeQueryBlocks(250000, 350000);
+              ok(brin >= 11 && brin <= 12); // BRIN đọc thừa tối đa 1 block mỗi range biên
+          });
+
+          c("btree query blocks", () -> {
+              BRINIndexSim sim = new BRINIndexSim(ts, 4, 10);
+              // B-tree: height 3 + 11 blocks in range = 14
+              int btree = sim.btreeQueryBlocks(250000, 350000);
+              eq(14, btree);
+          });
+
+          c("brin reads fewer blocks for small range when correlation high", () -> {
+              BRINIndexSim sim = new BRINIndexSim(ts, 4, 10);
+              int brin = sim.rangeQueryBlocks(250000, 260000); // 2 blocks (25, 26)
+              int btree = sim.btreeQueryBlocks(250000, 260000); // 3 + 2 = 5
+              // BRIN reads range 6 (4 blocks) = 4 blocks (plus maybe partial overlap)
+              ok(brin <= btree);
+          });
+ 
+         c("no overlap returns 0", () -> {
+             BRINIndexSim sim = new BRINIndexSim(ts, 4, 10);
+             eq(0, sim.rangeQueryBlocks(2_000_000, 3_000_000));
+             eq(3, sim.btreeQueryBlocks(2_000_000, 3_000_000)); // height only
+         });
+ 
+         c("range covering full table", () -> {
+             BRINIndexSim sim = new BRINIndexSim(ts, 4, 10);
+             eq(100, sim.rangeQueryBlocks(0, 1_000_000));
+             eq(103, sim.btreeQueryBlocks(0, 1_000_000));
+         });
+ 
+         c("partial last range", () -> {
+             long[] ts2 = new long[1050]; // 105 block -> 26 ranges (last has 1 block)
+             for (int i = 0; i < 1050; i++) ts2[i] = i * 1000L;
+             BRINIndexSim sim = new BRINIndexSim(ts2, 4, 10);
+             eq(105, sim.totalBlocks());
+             eq(27, sim.totalRanges()); // 105/4 = 26.25 -> 27 ranges
+             // query last few blocks
+             int brin = sim.rangeQueryBlocks(1_040_000, 1_050_000);
+             ok(brin >= 1 && brin <= 4);
+         });
+ 
+         System.out.println("RESULT " + p + "/" + t);
+     }
+ }`,
+    reference: `class BRINIndexSim {
+     private final long[] timestamps;
+     private final int rangeSizeBlocks;
+     private final int blockSize;
+ 
+     private final long[] rangeMin;
+     private final long[] rangeMax;
+     private final int[] blocksInRange;
+ 
+     BRINIndexSim(long[] timestamps, int rangeSizeBlocks, int blockSize) {
+         this.timestamps = timestamps;
+         this.rangeSizeBlocks = rangeSizeBlocks;
+         this.blockSize = blockSize;
+ 
+         int nBlocks = (timestamps.length + blockSize - 1) / blockSize;
+         int nRanges = (nBlocks + rangeSizeBlocks - 1) / rangeSizeBlocks;
+ 
+         rangeMin = new long[nRanges];
+         rangeMax = new long[nRanges];
+         blocksInRange = new int[nRanges];
+ 
+         for (int r = 0; r < nRanges; r++) {
+             int startBlock = r * rangeSizeBlocks;
+             int endBlock = Math.min(startBlock + rangeSizeBlocks, nBlocks);
+             blocksInRange[r] = endBlock - startBlock;
+ 
+             long min = Long.MAX_VALUE;
+             long max = Long.MIN_VALUE;
+             for (int b = startBlock; b < endBlock; b++) {
+                 int startIdx = b * blockSize;
+                 int endIdx = Math.min(startIdx + blockSize, timestamps.length);
+                 if (startIdx < endIdx) {
+                     min = Math.min(min, timestamps[startIdx]);
+                     max = Math.max(max, timestamps[endIdx - 1]);
+                 }
+             }
+             if (min == Long.MAX_VALUE) {
+                 rangeMin[r] = 0;
+                 rangeMax[r] = 0;
+                 blocksInRange[r] = 0;
+             } else {
+                 rangeMin[r] = min;
+                 rangeMax[r] = max;
+             }
+         }
+     }
+ 
+     int rangeQueryBlocks(long lo, long hi) {
+         if (lo > hi) return 0;
+         int blocks = 0;
+         for (int r = 0; r < rangeMin.length; r++) {
+             if (blocksInRange[r] == 0) continue;
+             if (rangeMax[r] < lo || rangeMin[r] > hi) continue; // no overlap
+             blocks += blocksInRange[r]; // must read all blocks in this range
+         }
+         return blocks;
+     }
+ 
+     int btreeQueryBlocks(long lo, long hi) {
+         if (lo > hi) return 3; // height only, no leaf blocks
+         int nBlocks = (timestamps.length + blockSize - 1) / blockSize;
+         // lower bound: first block with timestamp >= lo
+         int lb = lowerBoundBlock(lo);
+         // upper bound: first block with timestamp > hi
+         int ub = upperBoundBlock(hi);
+         if (lb >= nBlocks) return 3; // no match
+         if (ub > nBlocks) ub = nBlocks;
+         int leafBlocks = ub - lb;
+         return 3 + leafBlocks; // height 3 + leaf blocks
+     }
+ 
+     private int lowerBoundBlock(long target) {
+         int nBlocks = (timestamps.length + blockSize - 1) / blockSize;
+         int lo = 0, hi = nBlocks;
+         while (lo < hi) {
+             int mid = lo + (hi - lo) / 2;
+             long firstTs = timestamps[mid * blockSize];
+             if (firstTs < target) lo = mid + 1; else hi = mid;
+         }
+         return lo;
+     }
+ 
+     private int upperBoundBlock(long target) {
+         int nBlocks = (timestamps.length + blockSize - 1) / blockSize;
+         int lo = 0, hi = nBlocks;
+         while (lo < hi) {
+             int mid = lo + (hi - lo) / 2;
+             long firstTs = timestamps[mid * blockSize];
+             if (firstTs <= target) lo = mid + 1; else hi = mid;
+         }
+         return lo;
+     }
+ 
+     int totalBlocks() {
+         return (timestamps.length + blockSize - 1) / blockSize;
+     }
+ 
+     int totalRanges() {
+         int nBlocks = totalBlocks();
+         return (nBlocks + rangeSizeBlocks - 1) / rangeSizeBlocks;
+     }
+ }`,
+    hints: [
+      'Constructor: chia timestamps thành block (blockSize hàng), gom rangeSizeBlocks block thành range. Mỗi range lưu min/max của block đầu và block cuối (vì timestamps đã sắp).',
+      'rangeQueryBlocks: duyệt ranges, nếu rangeMax < lo hoặc rangeMin > hi thì bỏ qua; giao nhau thì cộng blocksInRange[r]. Range rỗng (blocksInRange=0) bỏ qua.',
+      'btreeQueryBlocks: binary search trên first timestamp của mỗi block để tìm lb, ub. Trả 3 (height) + (ub - lb). Không match thì trả 3.',
+      'Test dùng timestamp cách đều 1000ms để dễ suy diễn block index = timestamp / (blockSize * 1000).'
+    ],
+    explain: `BRINIndexSim minh hoạ cốt lõi của BRIN: **tóm tắt min/max cho mỗi range block**. Với dữ liệu append-only đã sắp, range query chỉ cần đọc các range giao nhau. Vì mỗi range 4 block, một range query nhỏ (2 block) vẫn đọc 4 block (toàn range) — đây là overhead của BRIN đổi lấy index nhỏ. B-tree tìm chính xác block chứa giá trị (binary search trên entry đầu block) nên đọc ít block hơn cho range hẹp, nhưng index to gấp nhiều lần.
+ 
+ Tham số {{pages_per_range}} (ở đây {{rangeSizeBlocks}}) quyết định trade-off: nhỏ hơn -> summary chính xác hơn, index to hơn. PostgreSQL mặc định 128 block (1 MB); time-series thường giảm xuống 32 hoặc 16.
+ 
+ Quan trọng: mô phỏng này giả định timestamps **hoàn toàn sắp xếp** (correlation = 1). Thực tế correlation < 1 thì BRIN đọc thừa nhiều hơn; planner dùng {{correlation}} từ {{pg_stats}} để ước lượng. Nếu correlation thấp, planner có thể chọn seq scan thay vì BRIN.`
+  }],
+  check: [
+    {q:'BRIN index lưu gì cho mỗi range?',options:['Con trỏ tới từng hàng','Min và max của cột index trong range đó','Bitmap của các hàng','Hash của cột index'],answer:1,explain:'BRIN không lưu entry per hàng; mỗi range (mặc định 128 block) chỉ lưu min/max -> index rất nhỏ.'},
+    {q:'Khi nào BRIN hiệu quả hơn B-tree?',options:['Bảng nhỏ, point lookup','Bảng lớn, append-only, dữ liệu có thứ tự vật lý (timestamp), truy vấn range scan','Bảng hay UPDATE/DELETE','Cần unique constraint'],answer:1,explain:'BRIN tận dụng tương quan vật lý: dữ liệu mới append ở cuối, min/max của range khớp chặt với dữ liệu thật. Index nhỏ, ghi nhanh.'},
+    {q:'pages_per_range nhỏ hơn (ví dụ 32 vs 128) ảnh hưởng gì?',options:['Index nhỏ hơn, ghi chậm hơn','Index to hơn, summary chính xác hơn (ít đọc thừa block)','Không ảnh hưởng','Index bị hỏng'],answer:1,explain:'Range nhỏ hơn -> summary min/max bao quát ít block hơn -> chính xác hơn cho range query, nhưng số range tăng -> index to hơn.'},
+    {q:'Dữ liệu cũ trong bảng BRIN bị UPDATE thì sao?',options:['BRIN tự cập nhật summary','Summary stale (min/max không còn đúng), cần brin_desummarize_range rồi summarize lại','B-tree tự convert','Query trả kết quả nhanh hơn'],answer:1,explain:'BRIN không tự maintain summary khi UPDATE/DELETE; summary stale dẫn đến kết quả sai (đọc thừa hoặc bỏ sót). Cần summarize lại.'}
+  ],
+  related: ['db-010', 'db-014', 'db-021', 'db-023'],
+  tags: ['BRIN', 'block-range-index', 'time-series', 'append-only', 'PostgreSQL', 'index']
+},
 );

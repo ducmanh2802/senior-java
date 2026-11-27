@@ -3030,6 +3030,8 @@ window.DATA_INDEX = {
     {"id":"lesson-db-021","track":"db","order":21,"title":"HOT update và fillfactor: vì sao UPDATE có khi không phải chạm vào index","level":"senior","minutes":30},
     {"id":"lesson-db-022","track":"db","order":22,"title":"Lost update và hai cách chặn: pessimistic lock (FOR UPDATE) và compare-and-set","level":"senior","minutes":30},
     {"id":"lesson-db-023","track":"db","order":23,"title":"Tìm kiếm khoảng bằng binary search: lower bound, upper bound và so với quét toàn bộ","level":"mid","minutes":25},
+    {"id":"lesson-db-024","track":"db","order":24,"title":"Transaction retry với exponential backoff: xử lý serialization failure 40001","level":"senior","minutes":30},
+    {"id":"lesson-db-025","track":"db","order":25,"title":"BRIN index cho time-series: min/max per block, nhỏ gọn và phù hợp dữ liệu append-only","level":"senior","minutes":30},
     {"id":"lesson-jvm-001","track":"jvm","order":1,"title":"Heap và bốn loại reference: vì sao static Map giữ object mãi mãi","level":"senior","minutes":30},
     {"id":"lesson-jvm-002","track":"jvm","order":2,"title":"GC mark-and-sweep từ con số 0: reachability, tri-color và vì sao cần compact","level":"senior","minutes":35},
     {"id":"lesson-jvm-003","track":"jvm","order":3,"title":"Class loading và static init: thứ tự khởi tạo, holder idiom và bẫy classloader","level":"senior","minutes":30},
