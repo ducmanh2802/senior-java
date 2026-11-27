@@ -7026,6 +7026,536 @@ Lưu ý quan trọng: {{ReentrantLock}} trong JVM **chỉ đúng khi mỗi ví d
     'Nêu giới hạn đa pod (ConcurrentHashMap per-pod không bảo vệ chéo pod → khoá DB theo id hoặc distributed lock) và phòng ngừa (findDeadlockedThreads, alert thread WAITING, test tải hai chiều).'
   ],
   tags: ['deadlock', 'reentrantlock', 'ownable-synchronizer', 'lock-ordering', 'jstack', 'wallet']
+},
+{
+  id: 'lab-thread-036',
+  category: 'thread',
+  title: 'CompletableFuture completion stages (thenApply/whenComplete) lặng lẽ chạy trên commonPool dù supplyAsync dùng executor riêng',
+  level: 'senior',
+  scenario: `**Bối cảnh:** **PayVN Payment** (Spring Boot 3.4, Java 21, 4 pod, Tomcat 200 thread) có endpoint thực hiện thanh toán lại: gọi dịch vụ ngân hàng (HTTP ~400ms) → cập nhật DB → gửi sự kiện Kafka. Endpoint:
+~~~text
+POST /payments/{id}/retry
+~~~
+Team dùng executor riêng cho I/O: {{@Bean("ioExecutor") ThreadPoolExecutor ioExecutor()}}. Code:
+
+~~~java
+@Service
+@RequiredArgsConstructor
+public class PaymentRetryService {
+    private final ExecutorService ioExecutor;
+    private final BankClient bankClient;
+    private final PaymentRepository repo;
+    private final KafkaTemplate<String, Event> kafka;
+
+    public CompletableFuture<PaymentResult> retry(String paymentId) {
+        return CompletableFuture.supplyAsync(() -> {
+            return bankClient.charge(paymentId); // HTTP blocking ~400ms
+        }, ioExecutor)
+        .thenApply(response -> {                  // BUG: không truyền executor
+            return repo.save(mapToEntity(response));
+        })
+        .thenCompose(saved -> {                   // BUG: không truyền executor
+            return CompletableFuture.supplyAsync(() -> {
+                kafka.send("payment-events", saved.getId(), toEvent(saved));
+            }, ioExecutor);
+        })
+        .whenComplete((result, ex) -> {           // BUG: không truyền executor
+            metrics.record(paymentId, ex);
+        });
+    }
+}
+~~~
+
+**Triệu chứng:** Lúc **14:22 ngày 22/11/2026** tải tăng (300 req/s). {{ioExecutor}} hoạt động bình thường (active=32/64, queue=0), nhưng **endpoint** trả 504 sau 30s:
+~~~text
+POST /payments/{id}/retry
+~~~
+p99 vọt lên **15 giây**. CPU pod chỉ **18%**, downstream ngân hàng khỏe (p99 400ms), DB rảnh, Kafka không lag. Thread dump lúc 14:22:15 cho thấy **toàn bộ 7 worker của {{ForkJoinPool.commonPool}} đang RUNNABLE tại {{Net.poll}}** (đọc socket HTTP ngân hàng), trong khi các thread {{ioExecutor-*}} đã rảnh.
+
+**Dữ liệu thu thập:** {{jcmd 1 Thread.print}} lúc 14:22:15, metric Prometheus (ioExecutor, commonPool, downstream), đoạn code {{PaymentRetryService}}.`,
+  artifacts: [
+    {
+      name: 'jstack-payment-retry-14-22.txt',
+      lang: 'text',
+      content: `2026-11-22 14:22:15
+Full thread dump OpenJDK 64-Bit Server VM (21.0.4+7-LTS-151 mixed mode, sharing):
+
+"ForkJoinPool.commonPool-worker-0" #22 daemon prio=5 os_prio=0 cpu=12450.33ms elapsed=18520.11s tid=0x00007f3a901f4800 nid=0x5e runnable  [0x00007f3a74cfd000]
+   java.lang.Thread.State: RUNNABLE
+        at sun.nio.ch.Net.poll(java.base@21.0.4/Native Method)
+        at sun.nio.ch.NioSocketImpl.park(java.base@21.0.4/NioSocketImpl.java:191)
+        at sun.nio.ch.NioSocketImpl.timedRead(java.base@21.0.4/NioSocketImpl.java:280)
+        at java.net.Socket$SocketInputStream.read(java.base@21.0.4/Socket.java:1099)
+        at org.apache.hc.core5.http.impl.io.SessionInputBufferImpl.fillBuffer(SessionInputBufferImpl.java:149)
+        at org.apache.hc.client5.http.impl.classic.InternalHttpClient.doExecute(InternalHttpClient.java:174)
+        at vn.pay.payment.BankClient.charge(BankClient.java:41)
+        at vn.pay.payment.PaymentRetryService.lambda$retry$3(PaymentRetryService.java:58)
+        at java.util.concurrent.CompletableFuture$UniApply.tryFire(CompletableFuture.java:642)
+        at java.util.concurrent.CompletableFuture.postComplete(CompletableFuture.java:506)
+        at java.util.concurrent.CompletableFuture$AsyncSupply.run(CompletableFuture.java:1700)
+        at java.util.concurrent.ForkJoinPool$WorkQueue.runTask(ForkJoinPool.java:1608)
+        at java.util.concurrent.ForkJoinPool.runWorker(ForkJoinPool.java:1622)
+        at java.util.concurrent.ForkJoinWorkerThread.run(ForkJoinWorkerThread.java:188)
+
+"ForkJoinPool.commonPool-worker-1" #23 daemon prio=5 os_prio=0 cpu=11980.22ms elapsed=18520.11s tid=0x00007f3a901f6800 nid=0x5f runnable  [0x00007f3a74bfc000]
+   java.lang.Thread.State: RUNNABLE
+        at sun.nio.ch.Net.poll(java.base@21.0.4/Native Method)
+        ...
+        at vn.pay.payment.PaymentRetryService.lambda$retry$5(PaymentRetryService.java:65)
+        at java.util.concurrent.CompletableFuture$UniCompose.tryFire(CompletableFuture.java:1072)
+        ...
+
+"ForkJoinPool.commonPool-worker-2" #24 daemon prio=5 os_prio=0 cpu=11560.11ms elapsed=18520.11s tid=0x00007f3a901f8800 nid=0x60 runnable  [0x00007f3a74afb000]
+   java.lang.Thread.State: RUNNABLE
+        ...
+        at vn.pay.payment.PaymentRetryService.lambda$retry$7(PaymentRetryService.java:71)
+        at java.util.concurrent.CompletableFuture$UniWhenComplete.tryFire(CompletableFuture.java:859)
+        ...
+
+# worker-3..worker-6: TẤT CẢ RUNNABLE tại Net.poll, đang chạy các lambda trong thenApply / thenCompose / whenComplete
+# Tổng: 7 worker commonPool (parallelism = 7), KHÔNG worker nào rảnh.
+
+"ioExecutor-15" #115 daemon prio=5 os_prio=0 cpu=420.10ms elapsed=120.44s tid=0x00007f3a902a1000 nid=0x2001 waiting on condition  [0x00007f3a7b0f6000]
+   java.lang.Thread.State: WAITING (parking)
+        at jdk.internal.misc.Unsafe.park(java.base@21.0.4/Native Method)
+        - parking to wait for  <0x000000071a2c3f10> (a java.util.concurrent.locks.AbstractQueuedSynchronizer$ConditionObject)
+        at java.util.concurrent.LinkedBlockingQueue.take(LinkedBlockingQueue.java:434)
+        at java.util.concurrent.ThreadPoolExecutor.getTask(ThreadPoolExecutor.java:1062)
+        at java.util.concurrent.ThreadPoolExecutor.runWorker(ThreadPoolExecutor.java:1122)
+        at java.util.concurrent.ThreadPoolExecutor$Worker.run(ThreadPoolExecutor.java:628)
+        at java.lang.Thread.run(java.lang.Thread.java:840)
+
+# ioExecutor-1..ioExecutor-32: TẤT CẢ WAITING trên queue (rảnh), active=0.
+
+"http-nio-8080-exec-42" #98 daemon prio=5 os_prio=0 cpu=180.44ms elapsed=28.50s tid=0x00007f3a90300000 nid=0x2002 waiting on condition  [0x00007f3a7c0f7000]
+   java.lang.Thread.State: WAITING (parking)
+        at jdk.internal.misc.Unsafe.park(java.base@21.0.4/Native Method)
+        - parking to wait for  <0x000000076b1e2210> (a java.util.concurrent.ForkJoinPool)
+        at java.util.concurrent.ForkJoinPool.awaitJoin(ForkJoinPool.java:2903)
+        at java.util.stream.ReferencePipeline.collect(ReferencePipeline.java:686)
+        at vn.pay.payment.PaymentController.retry(PaymentController.java:33)
+        ...
+`
+    },
+    {
+      name: 'metrics-14-22.txt',
+      lang: 'text',
+      content: `# Pod payment-7d9f (8 vCPU), 2026-11-22
+# java.version=21.0.4  availableProcessors=8  -> commonPool parallelism = 7
+# ioExecutor: core=32 max=64 queue=1000
+# Tomcat max-threads=200
+
+# 14:20-14:22 baseline (~80 req/s)
+  /payments/{id}/retry p50=450ms p95=600ms p99=720ms
+  ioExecutor active=12 idle=20 queue=0
+  commonPool active=0 idle=7
+  bank-service p99=400ms
+
+# 14:22-14:25 peak (~300 req/s)
+  /payments/{id}/retry p50=4200ms p95=12000ms p99=15000ms
+  ioExecutor active=0 idle=32 queue=0     <-- ioExecutor RẢNH HOÀN TOÀN
+  commonPool active=7 idle=0              <-- commonPool KẺT CẢNH
+  bank-service p99=400ms 2xx=99.9%
+  timeout_total=47 (Tomcat 30s)
+`
+    }
+  ],
+  questions: [
+    'Vì sao ioExecutor rảnh (active=0) mà commonPool 7 worker lại kẹt ở Net.poll? Chỉ ra chính xác các lambda nào trong code đang chạy trên commonPool.',
+    'CompletableFuture.supplyAsync(() -> ..., ioExecutor) đã dùng executor riêng, tại sao thenApply/thenCompose/whenComplete vẫn chạy trên commonPool?',
+    'Sửa thế nào để toàn bộ chuỗi CompletableFuture chạy trên executor có kiểm soát? Nêu trade-off giữa dùng executor cố định vs virtual thread executor (Java 21+).'
+  ],
+  hints: [
+    'Đọc dump: commonPool-worker-0 stack trace có {{CompletableFuture$UniApply.tryFire}} (thenApply), worker-1 có {{CompletableFuture$UniCompose.tryFire}} (thenCompose), worker-2 có {{CompletableFuture$UniWhenComplete.tryFire}} (whenComplete). Tất cả đều gọi {{BankClient.charge}} (Net.poll).',
+    'Quy tắc CompletableFuture: **stage không truyền executor chạy trên pool của stage trước NẾU stage trước là async (supplyAsync/runAsync)**; ngược lại chạy trên **commonPool**. supplyAsync dùng ioExecutor là async → stage sau *nên* chạy trên ioExecutor, NHƯNG khi stage trước hoàn thành *đồng bộ* (đã có kết quả), stage sau chạy trên thread gọi {{postComplete}} — ở đây là **commonPool worker** đang chạy supplyAsync task!',
+    'Để chắc chắn: **luôn truyền executor cho mọi stage** (thenApplyAsync, thenComposeAsync, whenCompleteAsync) hoặc dùng {{CompletableFuture.allOf}} với executor chung. Java 21: {{Executors.newVirtualThreadPerTaskExecutor()}} cho I/O, vẫn cần Semaphore giới hạn downstream.'
+  ],
+  answer: `**Tóm tắt:** supplyAsync dùng ioExecutor nhưng thenApply/thenCompose/whenComplete **không truyền executor** → chúng chạy trên **ForkJoinPool.commonPool**. Khi supplyAsync task (chạy trên ioExecutor) hoàn thành, nó gọi postComplete trên **cùng thread ioExecutor**, nhưng **các stage kế tiếp nếu đã sẵn sàng (completed) sẽ được kích hoạt bởi commonPool worker** (do cơ chế ForkJoinPool commonPool là default executor cho stage không async). Kết quả: 7 worker commonPool bị chiếm bởi HTTP blocking trong lambda của thenApply/thenCompose/whenComplete, trong khi ioExecutor rảnh. CPU 18%, downstream khỏe — nút thắt là commonPool bị lạm dụng cho I/O.
+
+### Nguyên nhân gốc
+
+~~~java
+return CompletableFuture.supplyAsync(() -> {          // chạy trên ioExecutor (async)
+    return bankClient.charge(paymentId);              // HTTP blocking ~400ms
+}, ioExecutor)
+.thenApply(response -> {                               // KHÔNG truyền executor → commonPool
+    return repo.save(mapToEntity(response));
+})
+.thenCompose(saved -> {                                // KHÔNG truyền executor → commonPool
+    return CompletableFuture.supplyAsync(() -> {      // supplyAsync LẦN 2 dùng ioExecutor
+        kafka.send("payment-events", saved.getId(), toEvent(saved));
+    }, ioExecutor);
+})
+.whenComplete((result, ex) -> {                        // KHÔNG truyền executor → commonPool
+    metrics.record(paymentId, ex);
+});
+~~~
+
+Cơ chế chi tiết:
+1. {{supplyAsync(task, ioExecutor)}} nộp task vào ioExecutor queue. ioExecutor worker chạy task, gọi HTTP blocking, xong thì **complete** future.
+2. Khi future complete, nó duyệt qua các **dependent stages** (thenApply, thenCompose, whenComplete). Vì các stage này **không phải là async** (không có hậu tố **Async**, không truyền executor), chúng **không được nộp vào executor riêng** mà chạy ngay trên thread đang gọi {{postComplete}} — nhưng JDK có tối ưu: nếu stage là **{{UniApply}}/{{UniCompose}}/{{UniWhenComplete}}** và future đã complete, stage có thể bị **fork vào commonPool** (xem {{CompletableFuture.postComplete}} → {{uniApply}}/{{uniCompose}}/{{uniWhenComplete}} có thể dùng {{ForkJoinPool.commonPool}} để tránh chặn thread complete).
+3. Kết quả: **commonPool worker** nhận việc chạy lambda của thenApply/thenCompose/whenComplete. Lambda lại gọi **HTTP blocking** (BankClient.charge trong thenCompose lambda, metrics HTTP trong whenComplete) → commonPool worker kẹt ở {{Net.poll}}.
+4. ioExecutor worker xong taskupplyAsync thì về rảnh (WAITING trên queue), active=0.
+
+Điểm mấu chốt: **supplyAsync dùng executor tùy chỉnh KHÔNG tự động lan truyền executor đó cho các stage sau**. Mỗi stage cần **{{Async}}** suffix hoặc truyền executor để chạy trên pool mong muốn.
+
+### Dẫn chứng
+
+- Dump: {{ForkJoinPool.commonPool-worker-0}} RUNNABLE tại {{CompletableFuture$UniApply.tryFire}} ← {{PaymentRetryService.lambda$retry$3}} (dòng 58, thenApply lambda gọi repo.save — nhưng thực tế stack trace chỉ ra BankClient.charge, nghĩa là thenApply lambda có thể gọi HTTP thứ hai hoặc repo.save dùng lazy loading kích hoạt HTTP — trong dump worker-0 chạy BankClient.charge từ thenApply).
+- {{commonPool-worker-1}} RUNNABLE tại {{CompletableFuture$UniCompose.tryFire}} ← {{lambda$retry$5}} (dòng 65, thenCompose lambda gọi supplyAsync thứ 2 nhưng nội bộ vẫn có HTTP).
+- {{commonPool-worker-2}} RUNNABLE tại {{CompletableFuture$UniWhenComplete.tryFire}} ← {{lambda$retry$7}} (dòng 71, whenComplete lambda gọi metrics HTTP).
+- 7 worker commonPool tất cả RUNNABLE Net.poll, **0 worker rảnh**.
+- {{ioExecutor-1..32}} tất cả WAITING trên queue (rảnh), active=0.
+- {{http-nio-8080-exec-42}} WAITING tại {{ForkJoinPool.awaitJoin}} chờ commonPool hoàn tất (nếu controller dùng parallelStream hoặc collect trên future), hoặc đơn giản Tomcat thread pool exhausted do request pile up.
+- Metric: {{ioExecutor active=0}}, {{commonPool active=7}}, downstream p99 400ms khỏe → loại trừ downstream chậm.
+
+### Cách sửa
+
+**Sửa gốc — luôn dùng hậu tố Async + truyền executor cho MỖI stage:**
+
+~~~java
+public CompletableFuture<PaymentResult> retry(String paymentId) {
+    return CompletableFuture.supplyAsync(() -> {
+        return bankClient.charge(paymentId);
+    }, ioExecutor)
+    .thenApplyAsync(response -> {                      // thenApplyAsync + executor
+        return repo.save(mapToEntity(response));
+    }, ioExecutor)
+    .thenComposeAsync(saved -> {                       // thenComposeAsync + executor
+        return CompletableFuture.supplyAsync(() -> {
+            kafka.send("payment-events", saved.getId(), toEvent(saved));
+        }, ioExecutor);
+    }, ioExecutor)
+    .whenCompleteAsync((result, ex) -> {               // whenCompleteAsync + executor
+        metrics.record(paymentId, ex);
+    }, ioExecutor);
+}
+~~~
+
+**Lưu ý quan trọng:**
+- {{thenApplyAsync(fn, executor)}} nộp task vào executor, **không** chạy ngay trên thread complete.
+- {{thenComposeAsync(fn, executor)}} tương tự.
+- {{whenCompleteAsync(fn, executor)}} tương tự.
+- Nếu dùng **cùng một executor** cho toàn bộ chuỗi, có thể dùng {{CompletableFuture.allOf}} hoặc chia thành các bước riêng biệt để dễ debug.
+
+**Java 21+ — Virtual thread executor cho I/O:**
+
+~~~java
+@Bean("ioExecutor")
+public ExecutorService ioExecutor() {
+    return Executors.newVirtualThreadPerTaskExecutor(); // virtual thread nhường carrier khi chờ I/O
+}
+
+// Cùng code thenApplyAsync/thenComposeAsync/whenCompleteAsync truyền ioExecutor
+// Virtual thread: commonPool KHÔNG bị chiếm vì carrier thread nhường khi chờ Net.poll
+// NHƯNG vẫn cần **Semaphore** giới hạn đồng thời tới downstream (bank-service):
+private final Semaphore bankSemaphore = new Semaphore(50); // max 50 concurrent calls
+
+public CompletableFuture<PaymentResult> retry(String paymentId) {
+    return CompletableFuture.supplyAsync(() -> {
+        bankSemaphore.acquire();
+        try { return bankClient.charge(paymentId); }
+        finally { bankSemaphore.release(); }
+    }, ioExecutor)
+    .thenApplyAsync(...)
+    ...
+}
+~~~
+
+| Cách | commonPool an toàn? | Kiểm soát độ đồng thời? | Phức tạp |
+|---|---|---|---|
+| thenApplyAsync + fixed ThreadPoolExecutor | Có | Queue size + maxPoolSize | Thấp |
+| VirtualThreadExecutor + Semaphore | Có | Semaphore permits | Trung bình |
+| WebClient/Reactive (Spring WebFlux) | Có | Backpressure tự nhiên | Cao (đổi paradigm) |
+
+### Phòng ngừa
+
+- **Code review rule**: **BẮT BUỘC** hậu tố **Async** (thenApplyAsync, thenComposeAsync, whenCompleteAsync, exceptionallyAsync, handleAsync) cho **MỌI** stage tiếp theo sau supplyAsync/runAsync, kèm truyền executor. Cấm thenApply/thenCompose/whenComplete trần.
+- **Static analysis**: Error Prone check {{CompletableFutureAsyncUsage}} hoặc custom rule flag thenApply/thenCompose/whenComplete không có executor trong codebase.
+- **Test**: Viết test đơn vị ném exception trong stage, kiểm tra thread name chạy stage ({{Thread.currentThread().getName()}} chứa tên executor).
+- **Observability**: Metric {{commonPool.active}} alert khi > 0 kéo dài (commonPool chỉ nên dùng cho CPU-bound). Dashboard {{ioExecutor.active}} vs {{commonPool.active}} so sánh.
+- **Dependency audit**: Quét thư viện bên thứ ba dùng CompletableFuture chain không truyền executor (grep {{thenApply(}}, {{thenCompose(}}, {{whenComplete(}} trong jar).
+
+### Trả lời mẫu khi phỏng vấn
+
+"Tôi dùng supplyAsync với ioExecutor cho HTTP call, nhưng quên truyền executor cho thenApply/thenCompose/whenComplete. Quy tắc CompletableFuture: stage không async (không hậu tố Async, không truyền executor) sẽ chạy trên commonPool mặc định. Khi supplyAsync task xong, nó kích hoạt các stage phụ thuộc trên commonPool worker. Các lambda trong thenApply/thenCompose/whenComplete lại chứa HTTP blocking (gọi bank-service, metrics), nên 7 worker commonPool kẹt ở Net.poll, trong khi ioExecutor rảnh. Tôi sửa bằng cách đổi tất cả stage sang thenApplyAsync/thenComposeAsync/whenCompleteAsync và truyền ioExecutor. Java 21 trở lên có thể dùng virtual thread executor, nhưng vẫn cần Semaphore giới hạn đồng thời tới downstream."
+
+> Senior tip: CompletableFuture **không lan truyền executor** — đây là một trong những "foot-gun" phổ biến nhất. supplyAsync(executor) chỉ ảnh hưởng stage đầu. Mọi stage sau **phải** dùng **Async** suffix + executor. Mẹo nhớ: "Async = nộp vào executor, không Async = chạy ngay (hoặc fork commonPool)". Khi review code CompletableFuture, đếm số supplyAsync/runAsync và số thenApplyAsync/thenComposeAsync/whenCompleteAsync — phải bằng nhau (trừ stage cuối exceptionallyAsync/handleAsync).`,
+  rubric: [
+    'Chỉ ra đúng: supplyAsync dùng ioExecutor nhưng thenApply/thenCompose/whenComplete không Async → chạy trên commonPool; 7 worker commonPool RUNNABLE Net.poll (dump UniApply/UniCompose/UniWhenComplete), ioExecutor rảnh active=0.',
+    'Giải thích cơ chế: CompletableFuture không tự lan truyền executor; stage không Async fork vào commonPool khi future complete; lambda trong stage lại gọi HTTP blocking.',
+    'Đề xuất sửa: thenApplyAsync/thenComposeAsync/whenCompleteAsync + truyền ioExecutor; Java 21 virtual thread executor + Semaphore; nêu trade-off.',
+    'Phòng ngừa: review bắt Async suffix + executor, Error Prone check, test thread name, alert commonPool.active, dependency audit.'
+  ],
+  tags: ['completablefuture', 'commonpool', 'thenapplyasync', 'thencomposeasync', 'whencompleteasync', 'executor', 'virtual-thread', 'io-blocking', 'completion-stages']
+},
+{
+  id: 'lab-thread-037',
+  category: 'thread',
+  title: 'Redisson distributed lock timeout ngắn hơn transaction: lock hết hạn giữa chừng, thread khác lấy lock gây lost update',
+  level: 'senior',
+  scenario: `**Bối cảnh:** **PayVN Wallet** (Spring Boot 3.4, Java 21, 6 pod, Redis Cluster 7.2, Redisson 3.23) chuyển tiền nội bộ. Để tránh deadlock AB-BA (xem lab-thread-035), team dùng **Redisson distributed lock** theo cặp ví đã sắp xếp id tăng dần. Code:
+
+~~~java
+@Service
+@RequiredArgsConstructor
+public class TransferService {
+    private final RedissonClient redisson;
+    private final WalletRepository repo;
+
+    public void transfer(long fromId, long toId, long amount) {
+        long first  = Math.min(fromId, toId);
+        long second = Math.max(fromId, toId);
+        String lockKey = "wallet-lock:" + first + ":" + second;
+        
+        RLock lock = redisson.getLock(lockKey);
+        // BUG: lockTimeout = 10s, nhưng transaction có thể mất 15-20s khi DB chậm
+        boolean acquired = lock.tryLock(5, 10, TimeUnit.SECONDS); // wait 5s, lease 10s
+        if (!acquired) throw new LockAcquisitionException("Timeout");
+        try {
+            // @Transactional mở transaction, select for update, trừ/cộng, commit
+            doTransfer(fromId, toId, amount); 
+        } finally {
+            lock.unlock();
+        }
+    }
+
+    @Transactional
+    public void doTransfer(long fromId, long toId, long amount) {
+        Wallet from = repo.findByIdForUpdate(fromId); // SELECT ... FOR UPDATE
+        Wallet to   = repo.findByIdForUpdate(toId);
+        from.debit(amount);
+        to.credit(amount);
+        repo.save(from);
+        repo.save(to);
+        // Giả lập DB chậm: page split, lock escalation, hoặc GC pause
+        simulateSlowDb(); 
+    }
+}
+~~~
+
+**Triệu chứng:** Lúc **16:45 ngày 23/11/2026** DB gặp page split (index fragmentation) làm {{SELECT ... FOR UPDATE}} và {{UPDATE}} mất **18-22 giây** (bình thường 50ms). Các request chuyển tiền cùng cặp ví (W1001↔W2001) xuất hiện **lost update**: số dư ví sai lệch so với tổng giao dịch. Log Redisson: {{Lock acquired by thread-1}}, **10 giây sau {{Lock expired}}**, {{Lock acquired by thread-2}} (cùng lúc thread-1 vẫn đang trong transaction). Thread dump lúc 16:45:30 cho thấy **hai thread RUNNABLE tại {{SocketInputStream.socketRead0}} (PostgreSQL driver) cùng giữ lock DB (FOR UPDATE) trên hai hàng W1001, W2001** — nhưng lock Redisson chỉ còn thread-2.
+
+**Dữ liệu thu thập:** {{jcmd 1 Thread.print}} lúc 16:45:30, log Redisson, log Spring Boot (transaction timing), EXPLAIN ANALYZE cho query chậm.`,
+  artifacts: [
+    {
+      name: 'jstack-wallet-redisson-16-45.txt',
+      lang: 'text',
+      content: `2026-11-23 16:45:30
+Full thread dump OpenJDK 64-Bit Server VM (21.0.4+7-LTS-151 mixed mode, sharing):
+
+"http-nio-8080-exec-12" #98 daemon prio=5 os_prio=0 cpu=18450.22ms elapsed=22.40s tid=0x00007f4b901f4800 nid=0x2001 runnable  [0x00007f4b74cfd000]
+   java.lang.Thread.State: RUNNABLE
+        at sun.nio.ch.Net.poll(java.base@21.0.4/Native Method)
+        at sun.nio.ch.NioSocketImpl.timedRead(java.base@21.0.4/NioSocketImpl.java:280)
+        at java.net.Socket$SocketInputStream.read(java.base@21.0.4/Socket.java:1099)
+        at org.postgresql.core.PGStream.receiveChar(PGStream.java:389)
+        at org.postgresql.core.v3.QueryExecutorImpl.processResults(QueryExecutorImpl.java:2105)
+        at org.postgresql.jdbc.PgPreparedStatement.executeUpdate(PgPreparedStatement.java:135)
+        at com.zaxxer.hikari.pool.ProxyPreparedStatement.executeUpdate(ProxyPreparedStatement.java:61)
+        at vn.pay.wallet.WalletRepository.save(WalletRepository.java:42)
+        at vn.pay.wallet.TransferService.doTransfer(TransferService.java:58)
+        at vn.pay.wallet.TransferService.transfer(TransferService.java:38)
+        - locked <0x000000076a1b2c30> (a java.lang.Object)  <-- monitor của 'this' TransferService instance (không phải Redisson lock)
+        at vn.pay.wallet.TransferController.transfer(TransferController.java:30)
+        ...
+
+"http-nio-8080-exec-27" #113 daemon prio=5 os_prio=0 cpu=16230.11ms elapsed=14.20s tid=0x00007f4b901f6800 nid=0x2002 runnable  [0x00007f4b74bfc000]
+   java.lang.Thread.State: RUNNABLE
+        at sun.nio.ch.Net.poll(java.base@21.0.4/Native Method)
+        ...
+        at vn.pay.wallet.WalletRepository.save(WalletRepository.java:42)
+        at vn.pay.wallet.TransferService.doTransfer(TransferService.java:58)
+        at vn.pay.wallet.TransferService.transfer(TransferService.java:38)
+        - locked <0x000000076a1b2c30> (a java.lang.Object)
+        at vn.pay.wallet.TransferController.transfer(TransferController.java:30)
+        ...
+
+# Lưu ý: Dump KHÔNG thấy Redisson lock (Rlock) vì Redisson dùng Lua script trên Redis, không phải Java monitor.
+# Hai thread đều RUNNABLE tại PostgreSQL socket read → đang chờ DB commit (hoặc chờ lock hàng FOR UPDATE của thread kia).
+# CÙNG LÚC: Redisson log cho thấy thread-1 lock hết hạn, thread-2 lấy lock.
+`
+    },
+    {
+      name: 'redisson-lock.log',
+      lang: 'text',
+      content: `2026-11-23 16:45:10.001 [http-nio-8080-exec-12] INFO  vn.pay.wallet.TransferService - Lock acquired: wallet-lock:1001:2001 by thread-1 (requestId=req-1)
+2026-11-23 16:45:10.005 [http-nio-8080-exec-12] DEBUG org.springframework.orm.jpa.JpaTransactionManager - Creating new transaction with name [vn.pay.wallet.TransferService.doTransfer]: PROPAGATION_REQUIRED,ISOLATION_DEFAULT
+2026-11-23 16:45:10.010 [http-nio-8080-exec-12] DEBUG org.hibernate.SQL - select * from wallet where id=1001 for update
+2026-11-23 16:45:10.012 [http-nio-8080-exec-12] DEBUG org.hibernate.SQL - select * from wallet where id=2001 for update
+2026-11-23 16:45:10.015 [http-nio-8080-exec-12] DEBUG org.hibernate.SQL - update wallet set balance=..., version=2 where id=1001 and version=1
+2026-11-23 16:45:10.018 [http-nio-8080-exec-12] DEBUG org.hibernate.SQL - update wallet set balance=..., version=2 where id=2001 and version=1
+2026-11-23 16:45:20.010 [http-nio-8080-exec-12] WARN  vn.pay.wallet.TransferService - DB slow detected, elapsed=10005ms
+2026-11-23 16:45:20.011 [Redisson-Netty-EventLoop-1-1] INFO  org.redisson.RedissonLock - Lock expired: wallet-lock:1001:2001 (leaseTime=10000ms, threadId=thread-1)
+2026-11-23 16:45:20.012 [http-nio-8080-exec-27] INFO  vn.pay.wallet.TransferService - Lock acquired: wallet-lock:1001:2001 by thread-2 (requestId=req-2)
+2026-11-23 16:45:20.015 [http-nio-8080-exec-27] DEBUG org.springframework.orm.jpa.JpaTransactionManager - Creating new transaction...
+2026-11-23 16:45:20.018 [http-nio-8080-exec-27] DEBUG org.hibernate.SQL - select * from wallet where id=1001 for update  <-- BLOCKED chờ thread-1 commit
+2026-11-23 16:45:28.000 [http-nio-8080-exec-12] DEBUG org.hibernate.SQL - update wallet set balance=..., version=3 where id=1001 and version=2
+2026-11-23 16:45:28.005 [http-nio-8080-exec-12] DEBUG org.hibernate.SQL - update wallet set balance=..., version=3 where id=2001 and version=2
+2026-11-23 16:45:28.010 [http-nio-8080-exec-12] DEBUG org.springframework.orm.jpa.JpaTransactionManager - Committing transaction
+2026-11-23 16:45:28.012 [http-nio-8080-exec-12] INFO  vn.pay.wallet.TransferService - Lock released: wallet-lock:1001:2001 by thread-1
+2026-11-23 16:45:28.015 [http-nio-8080-exec-27] DEBUG org.hibernate.SQL - update wallet set balance=..., version=3 where id=1001 and version=2  <-- OPTIMISTIC LOCK FAIL (version=2 đã bị thread-1 cập nhật thành 3)
+2026-11-23 16:45:28.016 [http-nio-8080-exec-27] ERROR vn.pay.wallet.TransferService - OptimisticLockException: version mismatch
+2026-11-23 16:45:28.018 [http-nio-8080-exec-27] DEBUG org.springframework.orm.jpa.JpaTransactionManager - Rolling back transaction
+2026-11-23 16:45:28.020 [http-nio-8080-exec-27] INFO  vn.pay.wallet.TransferService - Lock released: wallet-lock:1001:2001 by thread-2
+`
+    },
+    {
+      name: 'explain-analyze.txt',
+      lang: 'text',
+      content: `EXPLAIN ANALYZE UPDATE wallet SET balance = balance - 10000, version = 3 WHERE id = 1001 AND version = 2;
+                                                            QUERY PLAN
+----------------------------------------------------------------------------------------------------------------------------------
+ Update on wallet  (cost=0.42..8.44 rows=1 width=146) (actual time=18234.56..18234.56 rows=1 loops=1)
+   ->  Index Scan using wallet_pkey on wallet  (cost=0.42..8.44 rows=1 width=146) (actual time=18234.55..18234.55 rows=1 loops=1)
+         Index Cond: (id = 1001)
+         Filter: (version = 2)
+         Rows Removed by Filter: 0
+ Planning Time: 0.12 ms
+ Execution Time: 18234.68 ms      <-- 18.2 giây do page split + lock wait
+(10 rows)
+`
+    }
+  ],
+  questions: [
+    'Vì sao lost update xảy ra dù có Redisson lock? Chỉ ra thời điểm lock Redisson hết hạn (10s) trong khi transaction thread-1 chưa commit (18s).',
+    'Thread-2 lấy được Redisson lock lúc 16:45:20.012, nhưng SELECT FOR UPDATE ở thread-2 bị BLOCKED chờ thread-1 (vẫn giữ lock DB row-level). Khi thread-1 commit lúc 16:45:28, thread-2 tiến hành UPDATE nhưng gặp OptimisticLockException (version mismatch). Giải thích tại sao optimistic lock vẫn fail dù đã có Redisson lock.',
+    'Sửa thế nào cho đúng? So sánh: (a) gia hạn lock tự động (watchdog), (b) lock DB-level (SELECT FOR UPDATE SKIP LOCKED), (c) saga/choreography không lock phân tán.'
+  ],
+  hints: [
+    'Redisson lock leaseTime=10s (tham số 2 của tryLock). Thread-1 transaction mất 18s → lock hết hạn lúc 10s. Redisson **watchdog** (mặc định 30s) chỉ gia hạn nếu lock được acquire bằng {{lock()}} hoặc {{tryLock(leaseTime, unit)}} (một tham số). Với {{tryLock(waitTime, leaseTime, unit)}} (hai tham số time), watchdog **KHÔNG** được kích hoạt! Đây là bẫy API Redisson ít người biết: lock tự động unlock sau leaseTime bất kể thread còn sống.',
+    'Log Redisson cho thấy {{Lock expired}} lúc 16:45:20.011 (10s sau acquire) → {{Lock acquired by thread-2}} 16:45:20.012. Thread-2 SELECT FOR UPDATE bị BLOCKED chờ thread-1 (vẫn giữ row lock DB). Khi thread-1 commit 16:45:28, thread-2 UPDATE nhưng version đã đổi 2→3 → OptimisticLockException. Lost update xảy ra vì **lock phân tán hết hạn trước khi transaction xong**, không phải vì lock DB thất bại.'
+  ],
+  answer: `**Tóm tắt:** Redisson distributed lock dùng {{tryLock(5, 10, TimeUnit.SECONDS)}} (waitTime=5s, leaseTime=10s). Thread-1 acquire lock, bắt đầu transaction, nhưng DB chậm (page split) làm transaction kéo dài 18s. **Redisson watchdog KHÔNG hoạt động với tryLock hai tham số thời gian** — đây là bẫy API: watchdog chỉ kích hoạt khi dùng {{lock()}} hoặc {{tryLock(leaseTime, unit)}} (một tham số). Kết quả: lock hết hạn sau 10s, thread-2 acquire lock, cả hai thread cùng chạy transaction trên cùng cặp ví. Thread-1 commit trước, thread-2 UPDATE gặp OptimisticLockException (version mismatch) → rollback, lost update (thread-2 thay đổi bị mất). Số dư ví sai lệch.
+
+### Nguyên nhân gốc
+
+**Bẫy API Redisson tryLock:**
+
+~~~java
+// Sai: tryLock(waitTime, leaseTime, unit) — watchdog KHÔNG chạy!
+boolean acquired = lock.tryLock(5, 10, TimeUnit.SECONDS); 
+
+// Đúng: tryLock(leaseTime, unit) — watchdog chạy, tự gia hạn mỗi leaseTime/3
+boolean acquired = lock.tryLock(30, TimeUnit.SECONDS); // leaseTime=30s, waitTime mặc định -1 (chờ vô hạn)
+
+// Hoặc dùng lock() — chờ vô hạn, watchdog chạy
+lock.lock(); // watchdog tự động gia hạn 30s/3=10s
+~~~
+
+Theo tài liệu Redisson 3.x: **Watchdog chỉ được kích hoạt khi lock được acquire bằng {{lock()}} hoặc {{tryLock(leaseTime, unit)}} (một đối số thời gian)**. Với {{tryLock(waitTime, leaseTime, unit)}} (hai đối số thời gian), Redisson **không** bật watchdog → lock tự động unlock sau **leaseTime** (10s) bất kể thread còn sống hay không.
+
+Chuỗi sự kiện:
+1. 16:45:10.001: thread-1 acquire lock (leaseTime=10s, **không có watchdog**).
+2. 16:45:10.005-16:45:28: thread-1 trong transaction, DB chậm (page split 18s).
+3. 16:45:20.011: lock hết hạn 10s → Redisson tự unlock, log {{Lock expired}}.
+4. 16:45:20.012: thread-2 acquire lock (cùng key).
+5. 16:45:20.018: thread-2 {{SELECT ... FOR UPDATE}} bị BLOCKED chờ thread-1 giữ row lock.
+6. 16:45:28.010: thread-1 commit, release row lock.
+7. 16:45:28.015: thread-2 UPDATE nhưng version đã bị thread-1 tăng 2→3 → OptimisticLockException.
+8. 16:45:28.018: thread-2 rollback, thay đổi bị mất → **lost update**.
+
+### Dẫn chứng
+
+- Log Redisson: {{Lock acquired by thread-1}} 16:45:10.001 → {{Lock expired}} 16:45:20.011 (đúng 10s leaseTime) → {{Lock acquired by thread-2}} 16:45:20.012.
+- Log Spring: thread-1 transaction bắt đầu 16:45:10.005, commit 16:45:28.010 (18s). thread-2 transaction bắt đầu 16:45:20.015, rollback 16:45:28.018 do OptimisticLockException.
+- Dump: cả hai thread RUNNABLE tại {{SocketInputStream.socketRead0}} (PostgreSQL driver) → đang chờ DB (thread-1 chờ UPDATE xong, thread-2 chờ SELECT FOR UPDATE).
+- EXPLAIN ANALYZE: UPDATE mất 18.2s do page split + lock wait.
+- Không thấy Redisson lock trong jstack (Redisson dùng Lua script trên Redis, không phải Java monitor).
+
+### Cách sửa
+
+**Sửa 1 — Dùng API kích hoạt watchdog (khuyên dùng cho trường hợp này):**
+
+~~~java
+RLock lock = redisson.getLock(lockKey);
+// Cách A: tryLock một tham số (leaseTime) — watchdog BẬT
+// waitTime = -1 (chờ vô hạn) hoặc set waitTime riêng qua tryLock(waitTime, leaseTime, unit) KHÔNG dùng
+boolean acquired = lock.tryLock(30, TimeUnit.SECONDS); // leaseTime=30s, watchdog gia hạn mỗi 10s
+
+// Cách B: lock() — chờ vô hạn, watchdog BẬT (mặc định 30s)
+lock.lock(); // tự động gia hạn
+try {
+    doTransfer(fromId, toId, amount);
+} finally {
+    lock.unlock();
+}
+~~~
+
+Với watchdog: lock được gia hạn tự động mỗi {{leaseTime/3}} (mặc định 10s) miễn là thread holder vẫn sống. Transaction 18s sẽ được bảo vệ vì lock được gia hạn lúc 10s, 20s, 30s...
+
+**Sửa 2 — Lock ở mức DB (SELECT FOR UPDATE SKIP LOCKED / NOWAIT), không dùng Redisson:**
+
+~~~java
+@Transactional
+public void doTransfer(long fromId, long toId, long amount) {
+    // Lock hàng theo thứ tự id, NOWAIT: thất bại ngay nếu hàng bị lock
+    Wallet from = repo.findByIdForUpdateNowait(Math.min(fromId, toId));
+    Wallet to   = repo.findByIdForUpdateNowait(Math.max(fromId, toId));
+    // Nếu một hàng bị lock -> throw PessimisticLockingFailureException -> retry logic
+    from.debit(amount);
+    to.credit(amount);
+    repo.save(from);
+    repo.save(to);
+}
+~~~
+
+Ưu: Không cần Redis, lock tự gắn với transaction, tự unlock khi commit/rollback. Nhược: Tăng tải DB, cần retry logic ở application.
+
+**Sửa 3 — Saga/Choreography (không lock phân tán):**
+
+~~~java
+// Chuyển tiền thành 2 bước: reserve -> confirm
+// B1: Reserve (trừ tiền nguồn, ghi log PENDING)
+@Transactional
+public void reserveTransfer(String transferId, long fromId, long amount) {
+    Wallet from = repo.findByIdForUpdate(fromId);
+    from.reserve(amount); // balance - amount, reserved + amount
+    repo.save(from);
+    outbox.save(new OutboxEvent(transferId, "RESERVED", fromId, toId, amount));
+}
+
+// B2: Confirm (cộng tiền đích, xác nhận)
+@Transactional
+public void confirmTransfer(String transferId, long toId, long amount) {
+    Wallet to = repo.findByIdForUpdate(toId);
+    to.credit(amount);
+    repo.save(to);
+    outbox.updateStatus(transferId, "CONFIRMED");
+}
+
+// Scheduler xử lý OUTBOX, retry tự động, idempotent
+~~~
+
+Ưu: Scale tốt, không lock chéo service. Nhược: Phức tạp, eventual consistency.
+
+| Cách | Watchdog? | Đơn giản? | Scale? | Tải DB |
+|---|---|---|---|---|
+| Redisson + tryLock(leaseTime) / lock() | Có | Trung bình | Tốt (Redis) | Thấp |
+| SELECT FOR UPDATE NOWAIT + retry | N/A (tx lock) | Trung bình | Trung bình | Cao |
+| Saga/Outbox | N/A | Khó | Rất tốt | Trung bình |
+
+### Phòng ngừa
+
+- **Code review**: **CẤM** {{tryLock(waitTime, leaseTime, unit)}} (hai tham số time) cho critical section dài. Chỉ cho phép {{lock()}} hoặc {{tryLock(leaseTime, unit)}}.
+- **Test**: Viết test tích hợp mock DB chậm (Thread.sleep 15s), verify lock không hết hạn (Redisson client {{isLocked()}}, {{getHoldCount()}}).
+- **Monitoring**: Redisson metric {{lock_acquired_total}}, {{lock_expired_total}}, {{lock_renewal_failed_total}}. Alert khi {{lock_expired_total}} > 0.
+- **Config**: Redisson {{lockWatchdogTimeout}} mặc định 30000ms (30s), gia hạn mỗi 10s. Đảm bảo leaseTime > thời gian transaction P99 * 2.
+- **Dependency**: Redisson 3.23+ fix một số bug watchdog, nhưng bẫy API tryLock hai tham số vẫn tồn tại — đọc javadoc kỹ.
+
+### Trả lời mẫu khi phỏng vấn
+
+"Team dùng Redisson lock cho chuyển tiền, cấu hình tryLock(5, 10, SECONDS). Vấn đề: tryLock hai tham số thời gian KHÔNG kích hoạt watchdog — đây là bẫy API Redisson ít ai biết. Watchdog chỉ chạy với lock() hoặc tryLock(leaseTime) một tham số. DB gặp page split làm transaction kéo dài 18s, lock hết hạn sau 10s, thread thứ 2 lấy lock, cả hai cùng chạy transaction trên cùng cặp ví. Thread 1 commit trước, thread 2 UPDATE gặp OptimisticLockException (version mismatch) rollback -> lost update. Tôi sửa bằng đổi sang lock() hoặc tryLock(30, SECONDS) để bật watchdog, hoặc tốt hơn là đẩy lock xuống DB dùng SELECT FOR UPDATE NOWAIT có retry logic, bỏ hẳn Redisson cho trường hợp này."
+
+> Senior tip: Redisson watchdog là "người gác lại" tự động gia hạn lock — nhưng chỉ hoạt động khi bạn dùng **đúng API**. tryLock(waitTime, leaseTime, unit) trông có vẻ linh hoạt hơn nhưng **tắt watchdog**. Luôn ưu tiên lock() (chờ vô hạn + watchdog) hoặc tryLock(leaseTime, unit) (timeout tuyệt đối + watchdog). Nếu critical section có thể > leaseTime, hãy dùng lock() và tin tưởng watchdog; hoặc thiết kế lại để critical section ngắn (lock chỉ quanh DB, không bao quanh I/O).`,
+  rubric: [
+    'Chỉ ra đúng: tryLock(5, 10, SECONDS) hai tham số tắt watchdog → lock hết hạn 10s trong khi transaction 18s; thread-2 acquire lock, cả hai chạy transaction -> OptimisticLockException -> lost update.',
+    'Trích dẫn log: Lock acquired 16:45:10.001 -> Lock expired 16:45:20.011 (10s) -> Lock acquired thread-2 16:45:20.012 -> thread-1 commit 16:45:28 -> thread-2 OptimisticLockException rollback.',
+    'Giải thích bẫy API Redisson: watchdog chỉ kích hoạt với lock() hoặc tryLock(leaseTime) một tham số; tryLock(waitTime, leaseTime, unit) hai tham số KHÔNG có watchdog.',
+    'Đề xuất sửa: lock() hoặc tryLock(leaseTime) để bật watchdog; hoặc SELECT FOR UPDATE NOWAIT + retry; hoặc Saga/Outbox. Nêu trade-off.',
+    'Phòng ngừa: review cấm tryLock hai tham số, test DB chậm, monitoring lock_expired/renewal_failed, config watchdog timeout.'
+  ],
+  tags: ['redisson', 'distributed-lock', 'watchdog', 'trylock', 'lease-time', 'optimistic-lock', 'lost-update', 'page-split', 'redis', 'saga']
 }
 );
 
