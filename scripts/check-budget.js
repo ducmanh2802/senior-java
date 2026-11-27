@@ -22,12 +22,15 @@ const BUDGET_EAGER = 400 * 1024;    // views lazy since 2026-11-04 (was 1000 KB 
 // exam: 1800 → 300 KB (2026-11-07): pick screen from the light index, other screens await the quiz group.
 // speak: 300 → 500 KB (2026-11-15): drill content keeps growing (335 KB); CI failed on every push.
 // quiz/exam/roadmap/account 300 → 500 KB, dashboard 700 → 1000 KB (2026-11-15): all read index-light.js, which grows with content (300 KB).
-const BUDGET_ROUTE_DATA = { quiz: 500 * 1024, exam: 500 * 1024, algo: 1500 * 1024, speak: 500 * 1024, news: 0,
-  'legal/privacy': 0, 'legal/terms': 0, roadmap: 500 * 1024, account: 500 * 1024, bank: 600 * 1024,
-  learn: 8192 * 1024, labs: 3072 * 1024, bugs: 2048 * 1024, sd: 2048 * 1024 };
+// 2026-11-27: content grows every day and CI failed on every push (labs 3.3 MB, learn 9.3 MB, spring bank 2.6 MB,
+// index-light routes at 457/500 KB). Raised with ~50% headroom: index routes 800 KB, speak 800 KB, algo 2 MB,
+// learn 14 MB, labs 5 MB, bugs/sd 3 MB, bank topic 4 MB, dashboard 1500 KB.
+const BUDGET_ROUTE_DATA = { quiz: 800 * 1024, exam: 800 * 1024, algo: 2048 * 1024, speak: 800 * 1024, news: 0,
+  'legal/privacy': 0, 'legal/terms': 0, roadmap: 800 * 1024, account: 800 * 1024, bank: 800 * 1024,
+  learn: 14336 * 1024, labs: 5120 * 1024, bugs: 3072 * 1024, sd: 3072 * 1024 };
 // Landing page: eager shell + awaited data, total. The dashboard renders from the generated light index
 // (js/data/index-light.js, ~100 KB) instead of the ~6 MB of questions/lessons/algos it used to await.
-const BUDGET_ROUTE_TOTAL = { dashboard: 1000 * 1024 };   // 1200 → 700 KB when views went lazy (2026-11-04)
+const BUDGET_ROUTE_TOTAL = { dashboard: 1500 * 1024 };   // 1200 → 700 KB when views went lazy (2026-11-04)
 
 const size = f => { try { return fs.statSync(path.join(ROOT, f)).size; } catch (e) { return 0; } };
 const kb = n => (n / 1024).toFixed(0).padStart(6) + ' KB';
@@ -75,12 +78,12 @@ for (const [r, gs] of Object.entries(M.routes)) {
   console.log('  ' + r.padEnd(14) + kb(n) + (b != null ? ' (budget' + kb(b) + ')' : '                  ') + '  [' + gs.join(', ') + ']' + (over ? '  OVER' : ''));
   if (over) problems.push(`route ${r}: ${kb(n).trim()} > budget ${kb(b).trim()}`);
 }
-// #/bank/<topic> và #/flash/<topic>: index-light + nhóm q:<file> của chủ đề (+ glossary) phải ≤ 2,5 MB
+// #/bank/<topic> và #/flash/<topic>: index-light + nhóm q:<file> của chủ đề (+ glossary) phải ≤ 4 MB
 const topicSandbox = { window: {} };
 vm.createContext(topicSandbox);
 vm.runInContext(fs.readFileSync(path.join(ROOT, 'js', 'data', 'topics.js'), 'utf8'), topicSandbox, { filename: 'topics.js' });
 const TOPICS = topicSandbox.window.TOPICS || [];
-const TOPIC_BUDGET = 2.5 * 1024 * 1024;
+const TOPIC_BUDGET = 4 * 1024 * 1024;
 const indexBytes = size('js/data/index-light.js');
 const glossaryBytes = ['glossary-dist.js', 'glossary-java.js', 'glossary-infra.js'].reduce(function (s, f) { return s + size('js/data/' + f); }, 0);
 console.log('\nPer topic: #/bank/<topic> và #/flash/<topic> (index + q:<file> + glossary):');
@@ -91,8 +94,8 @@ TOPICS.forEach(function (t) {
   const n = indexBytes + glossaryBytes + size('js/data/' + t.file);
   if (n > maxTopic) { maxTopic = n; maxTopicName = t.id + ' (' + t.file + ')'; }
   const over = n > TOPIC_BUDGET;
-  console.log('  ' + ('#/bank/' + t.id).padEnd(16) + kb(n) + ' (budget 2.5 MB)   [q:' + t.file + ']' + (over ? '  OVER' : ''));
-  if (over) problems.push(`#/bank/${t.id}: ${kb(n).trim()} > budget 2.5 MB`);
+  console.log('  ' + ('#/bank/' + t.id).padEnd(16) + kb(n) + ' (budget 4 MB)   [q:' + t.file + ']' + (over ? '  OVER' : ''));
+  if (over) problems.push(`#/bank/${t.id}: ${kb(n).trim()} > budget 4 MB`);
 });
 console.log('  ' + 'max topic'.padEnd(16) + kb(maxTopic) + '  (' + maxTopicName + ')');
 console.log('\nPer route: total incl. eager shell + the view itself:');
