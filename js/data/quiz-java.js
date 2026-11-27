@@ -9203,6 +9203,271 @@ Trước khi đọc, hãy kiểm tra {{::ten.isInitialized}} (trả về true/fa
 > Senior tip: dùng {{lateinit}} khi thực sự không thể gán ngay nhưng chắc chắn sẽ gán trước khi đọc. Nếu không chắc, dùng kiểu có thể null {{var ten: String? = null}} hoặc {{by lazy}} để an toàn hơn.`
 },
 {
+  id: 'qz-kotlin-041', topic: 'kotlin',
+  q: `Kotlin có từ khóa {{by lazy}} để khởi tạo muộn. Đoạn sau in ra gì?
+~~~kotlin
+val duLieu: String by lazy {
+    println("tai du lieu")
+    "Ket qua"
+}
+
+fun main() {
+    println(duLieu)
+    println(duLieu)
+}
+~~~`,
+  options: [
+    `In "tai du lieu" 2 lần, sau đó "Ket qua" 2 lần`,
+    `In "tai du lieu" 1 lần, sau đó "Ket qua" 2 lần; giá trị được bộ nhớ và an toàn với luồng mặc định`,
+    `In "tai du lieu" 2 lần, mỗi lần truy cập tính lại`,
+    `Lỗi biên dịch vì {{by lazy}} bắt buộc phải có kiểu trả về`
+  ],
+  answer: 1,
+  explain: `**Tóm tắt:** {{by lazy}} hoàn toàn thay một lambda, tính toán lần đầu tiên truy cập, lưu lại và trả lại giá trị đó cho các lần sau. Mặc định an toàn với luồng (đồng bộ), nên chỉ một luồng tính toán.
+
+### Vì sao đúng
+- {{by lazy}} có kiểu {{Lazy<T>}} và che method {{getValue()}}. ThreadSafetyMode mặc định là {{SYNCHRONIZED}}: khi nhiều luồng cùng truy cập lần đầu, chỉ một luồng được phép tính toán, các luồng khác chờ đợi và nhận cùng kết quả.
+- Output: lần gọi đầu in "tai du lieu" và trả "Ket qua"; lần gọi thứ hai trả "Ket qua" từ bộ nhớ, không in lại "tai du lieu".
+
+### Tại sao các phương án sai
+- **In "tai du lieu" 2 lần**: sai, giá trị đã được bộ nhớ sau lần tính toán đầu tiên.
+- **In "tai du lieu" 2 lần, mỗi lần truy cập tính lại**: sai, không chế độ {{LazyThreadSafetyMode}} nào tính lại mỗi lần truy cập; {{PUBLICATION}} chỉ cho nhiều luồng cùng khởi tạo ở lần đầu rồi vẫn lưu và dùng lại giá trị đã có.
+- **Lỗi biên dịch kiểu trả về**: sai, {{by lazy}} suy kiểu từ lambda, không bắt buộc khai báo kiểu trả về.
+
+> Senior tip: chỉ dùng {{by lazy}} khi giá trị thực sự cần muộn (lazy) và mục tiêu là tính toán một lần; nếu giá trị có thể null, có thể thích hợp hơn là {{var ten: String? = null}} hoặc {{lateinit}} kiểm tra bằng {{::ten.isInitialized}} trước khi đọc.`
+},
+{
+  id: 'qz-kotlin-042', topic: 'kotlin',
+  q: `Kotlin sử dụng {{?.}} (safe call) và {{let}}. Đoạn sau có vấn đề gì?
+~~~kotlin
+fun doDai(ten: String?): Int {
+    val chieuDai: Int = ten?.let { it.length }
+    return chieuDai
+}
+~~~`,
+  options: [
+    `Biên dịch và trả về chiều dài (trả 0 nếu ten null)`,
+    `it trong lambda let vẫn có kiểu String?, nên phải kiểm tra null lại`,
+    `Lỗi biên dịch: kiểu của biểu thức là Int? (có thể null), không gán được cho Int`,
+    `Ném NullPointerException nếu ten null`
+  ],
+  answer: 2,
+  explain: `**Tóm tắt:** Biểu thức {{ten?.let}} trả về kiểu {{Int?}} (có thể null), vì safe call {{?.}} trả null nếu {{ten}} không có giá trị; lambda chỉ chạy khi {{ten}} khác null. Nên không gán được cho biến {{Int}} không null.
+
+### Vì sao đúng
+- Trong lambda {{let}}, tham số {{it}} được smart cast thành {{String}} (không null) nhờ contract của stdlib, nên {{it.length}} có kiểu {{Int}}. Nhưng tổng kết của {{?.let}} vẫn là {{Int?}} vì có thể short-circuit về null khi {{ten}} null.
+- Sửa: dùng {{ten?.length}} kết hợp {{?: -1}}.
+
+### Tại sao các phương án sai
+- **Biên dịch và trả về chiều dài**: sai, kiểu trả về là {{Int?}}, gán cho {{Int}} bị từ chối bởi trình biên dịch.
+- **it trong lambda let vẫn có kiểu String?**: sai, {{it}} được smart cast thành {{String}} không null trong lambda.
+- **Ném NullPointerException nếu ten null**: sai, Kotlin chặn từ lúc biên dịch; safe call không ném ngoại lệ.
+
+> Senior tip: ưu tiên {{ten?.length ?: -1}} cho ngắn gọn; dùng {{ten?.let}} khi cần biến đổi giá trị sau khi kiểm tra không null.`
+},
+{
+  id: 'qz-kotlin-043', topic: 'kotlin',
+  q: `Kotlin cho phép data class implements interface, nhưng có thể kế thừa class khác không?
+~~~kotlin
+open class DichVu(val ten: String)
+
+data class DonHang(val id: Long) : DichVu("giao hang")
+~~~`,
+  options: [
+    `Lỗi biên dịch: data class không được kế thừa từ class khác, chỉ được implements interface`,
+    `Biên dịch, DonHang là subclass của DichVu`,
+    `Lỗi biên dịch vì DichVu phải khai báo abstract`,
+    `Biên dịch nhưng DonHang không có constructor chính`
+  ],
+  answer: 0,
+  explain: `**Tóm tắt:** Data class không được kế thừa từ một class khác (chỉ được implements interface), nên khai báo trên bị từ chối bởi trình biên dịch.
+
+### Vì sao đúng
+- Data class là lớp cụ thể của Kotlin, không được mở rộng (ngoại trừ các interface). DichVu khai báo {{open}} không thay đổi quy luật này.
+
+### Tại sao các phương án sai
+- **Biên dịch, DonHang là subclass của DichVu**: sai, data class kế thừa class bị cấm.
+- **Lỗi biên dịch vì DichVu phải khai báo abstract**: sai, abstract/open không phải yêu cầu cho data class implements interface, nhưng kế thừa class vẫn bị cấm.
+- **Biên dịch nhưng DonHang không có constructor chính**: sai, data class bắt buộc có ít nhất một tham số trong constructor chính (DonHang có id).
+
+> Senior tip: nếu cần chia sẻ mã giữa các data class, hãy dùng interface hoặc delegation (by), không dùng kế thừa class.`
+},
+{
+  id: 'qz-kotlin-044', topic: 'kotlin',
+  q: `Data class tự sinh {{toString()}}. Đoạn sau in ra gì?
+~~~kotlin
+data class SanPham(val ma: String, val gia: Int)
+
+println(SanPham("IP13", 15000000))
+~~~`,
+  options: [
+    `SanPham(IP13, 15000000)`,
+    `Lỗi biên dịch vì toString phải override tự viết`,
+    `[ma=IP13, gia=15000000]`,
+    `SanPham(ma=IP13, gia=15000000)`
+  ],
+  answer: 3,
+  explain: `**Tóm tắt:** {{toString()}} của data class xuất theo dạng TenClass(ten1=giá1, ten2=giá2, …) dùng giá trị toString của từng thuộc tính.
+
+### Vì sao đúng
+- Data class sinh {{toString()}} in tên lớp kèm từng thuộc tính trong constructor chính với dạng tên=giá trị. Kết quả: SanPham(ma=IP13, gia=15000000).
+
+### Tại sao các phương án sai
+- **SanPham(IP13, 15000000)**: sai, data class in kèm tên thuộc tính, không in thuần tuần như Java record/toString thường.
+- **Lỗi biên dịch vì toString phải override tự viết**: sai, {{toString()}} được tự sinh, không bắt buộc override.
+- **[ma=IP13, gia=15000000]**: sai, không phải danh sách hay JSON.`
+},
+{
+  id: 'qz-kotlin-045', topic: 'kotlin', multi: true,
+  q: `Về sealed class, phát biểu nào sau đây là đúng? (Chọn 2)
+~~~kotlin
+sealed class KetQua
+data class ThanhCong(val duLieu: String) : KetQua()
+object Loi : KetQua()
+~~~`,
+  options: [
+    `Sealed class không thể khởi tạo trực tiếp (có tính abstract)`,
+    `Tất cả subtype của sealed class phải cùng module và cùng package với lớp gốc`,
+    `Sealed class có thể khai báo open để cho phép kế thừa thêm`,
+    `Khi thêm subtype mới, các when đã xử lý đủ loại cũ không cần sửa`
+  ],
+  answer: [0, 1],
+  explain: `**Tóm tắt:** Sealed class không thể tạo instance (có tính abstract ẩn), và tất cả subtype phải cùng module cùng package; thêm subtype mới làm tất cả when chưa xử lý loại đó bị lỗi biên dịch.
+
+### Vì sao đúng
+- **Sealed class không thể khởi tạo trực tiếp**: compiler coi như abstract, ta không thể viết {{val x = KetQua()}}.
+- **Tất cả subtype cùng module cùng package**: ràng buộc này cho compiler biết tất cả loại có thể có, phục vụ cho when ke toan (exhaustive).
+
+### Tại sao các phương án sai
+- **Sealed class có thể khai báo open**: sai, sealed lớp không thể mở thêm (và không thể inner, abstract).
+- **Khi thêm subtype mới, các when đã xử lý đủ loại cũ không cần sửa**: sai, ngược lại: when ke toan chưa nhánh loại mới bị lỗi "when must be exhaustive", bắt buộc bổ sung.`
+},
+{
+  id: 'qz-kotlin-046', topic: 'kotlin',
+  q: `Kotlin coroutine có {{runBlocking}} chặn block luồng gọi và chờ con coroutine. Đoạn sau in ra gì?
+~~~kotlin
+fun main() = runBlocking {
+    launch { delay(300); println("xong") }
+    println("ket thuc main")
+}
+~~~`,
+  options: [
+    `In "ket thuc main" trước, sau 300 ms in "xong", runBlocking mới trả về`,
+    `In "xong" trước, sau đó "ket thuc main"`,
+    `In "ket thuc main" rồi thoát ngay, "xong" không được đảm bảo in`,
+    `Treo vĩnh viễn vì launch không được gọi join`
+  ],
+  answer: 0,
+  explain: `**Tóm tắt:** {{runBlocking}} chặn block luồng hiện tại và chờ tất cả coroutine con trong cùng scope kết thúc mới khi trả về, nên "ket thuc main" in trước, "xong" in sau 300 ms.
+
+### Vì sao đúng
+- {{launch}} chạy nhẹ nhàng với {{main}} và in "xong" sau 300 ms; {{runBlocking}} không kết cho đến khi hết con, nên in "ket thuc main" ngay, đợi 300 ms, in "xong", mới kết thúc.
+
+### Tại sao các phương án sai
+- **In "xong" trước**: sai, {{launch}} chạy song song, không ép thứ tự; "ket thuc main" in ngay sau khi launch khởi tạo.
+- **Thoát ngay**: sai, {{runBlocking}} chờ con.
+- **Treo vĩnh viễn**: sai, {{delay}} là hàm treo (release luồng), runBlocking chờ và kết thúc.`
+},
+{
+  id: 'qz-kotlin-047', topic: 'kotlin',
+  q: `Kotlin coroutine có {{async}} và {{await()}}. Về đoạn sau, phát biểu nào đúng?
+~~~kotlin
+val d = async { delay(100); 42 }
+~~~`,
+  options: [
+    `d có kiểu Int, đã có giá trị 42`,
+    `d có kiểu Deferred<Int>, coroutine đã bắt chạy (không block luồng gọi), gọi d.await() mới nhận 42`,
+    `d có kiểu Deferred<Int>, code trong async chưa chạy đến khi gọi await()`,
+    `d có kiểu Job, không thể lấy giá trị`
+  ],
+  answer: 1,
+  explain: `**Tóm tắt:** {{async}} trả về {{Deferred<T>}} và coroutine bắt chạy luôn (không đợi await); giá trị chỉ được nhận khi gọi {{await()}}.
+
+### Vì sao đúng
+- {{async}} trả về {{Deferred<Int>}}. Coroutine được lập tức bắt đầu (CoroutineStart.DEFAULT mặc định), không block luồng gọi. {{d.await()}} chờ và trả 42 (hoặc ném nếu coroutine con thất bại).
+
+### Tại sao các phương án sai
+- **d có kiểu Int**: sai, async không trả kết quả thẳng, trả {{Deferred}}.
+- **Code trong async chưa chạy đến khi gọi await()**: sai, {{async}} bắt chạy luôn (không phải lazy).
+- **d có kiểu Job**: sai, {{launch}} mới trả {{Job}}.`
+},
+{
+  id: 'qz-kotlin-048', topic: 'kotlin', multi: true,
+  q: `Về structured concurrency, phát biểu nào sau đây là đúng? (Chọn 2)
+~~~kotlin
+coroutineScope {
+    launch { delay(100); error("loi A") }
+    launch { delay(1000); println("B chua chay den het") }
+}
+~~~`,
+  options: [
+    `coroutineScope: một con thất bại -> hủy các con còn lại`,
+    `supervisorScope: một con thất bại -> các con KHÔNG bị hủy, mỗi con độc lập`,
+    `launch trả về Deferred<Int>`,
+    `async không cần await cũng nhận được giá trị`
+  ],
+  answer: [0, 1],
+  explain: `**Tóm tắt:** {{coroutineScope}} hủy tất cả con còn lại khi một con thất bại; {{supervisorScope}} không hủy anh em, mỗi con độc lập.
+
+### Vì sao đúng
+- **coroutineScope hủy con còn lại**: trong ví dụ, "loi A" hiện sau 100 ms, coroutineScope hủy coroutine con B (đang delay(1000)) và ném exception ra ngoài.
+- **supervisorScope không hủy anh em**: nếu thay bằng supervisorScope, con B chạy đến hết (in "B…"), lỗi của con A vẫn được ném ra sau khi hết con.
+
+### Tại sao các phương án sai
+- **launch trả về Deferred<Int>**: sai, {{launch}} trả {{Job}}; {{async}} mới trả {{Deferred<T>}}.
+- **async không cần await cũng nhận được giá trị**: sai, cần {{await()}} để lấy giá trị.`
+},
+{
+  id: 'qz-kotlin-049', topic: 'kotlin',
+  q: `Kotlin gọi qua lại với Java, annotation {{@JvmName}} được dùng làm gì?
+~~~kotlin
+@file:JvmName("DonHangUtils")
+fun tong(a: Int, b: Int): Int = a + b
+~~~`,
+  options: [
+    `Cần thêm {{@JvmStatic}} mới gọi được`,
+    `Java gọi DonHangUtilsKt.tong(1, 2)`,
+    `Java gọi DonHang.tong(1, 2)`,
+    `Java gọi DonHangUtils.tong(1, 2)`
+  ],
+  answer: 3,
+  explain: `**Tóm tắt:** {{@file:JvmName("DonHangUtils")}} đổi tên class trung gian sinh ra cho hàm top-level từ {{DonHangUtilsKt}} sang {{DonHangUtils}}, có method static, nên Java gọi {{DonHangUtils.tong(1, 2)}}.
+
+### Vì sao đúng
+- Hàm top-level trong file Kotlin được sinh trong class {{TenFileKt}}. {{@file:JvmName}} đổi tên class đó, và hàm luôn có method static tương ứng để Java gọi.
+
+### Tại sao các phương án sai
+- **Java gọi DonHangUtilsKt.tong**: sai, tên đã được đổi bởi {{@file:JvmName}}.
+- **Java gọi DonHang.tong**: sai, không có lớp {{DonHang}} trong trường hợp này.
+- **Cần thêm {{@JvmStatic}}**: sai, {{@JvmStatic}} dùng cho method trong companion object, không cần cho hàm top-level.`
+},
+{
+  id: 'qz-kotlin-050', topic: 'kotlin',
+  q: `Data class có tham số mặc định và phương thức {{copy()}}. Đoạn sau in ra gì?
+~~~kotlin
+data class DonHang(val id: Long, val ten: String = "chua dat")
+
+val a = DonHang(1L)
+val b = a.copy(id = 2L)
+println(b.ten)
+~~~`,
+  options: [
+    `chua dat`,
+    `null`,
+    `""`,
+    `Lỗi biên dịch vì copy bắt buộc truyền tất cả tham số`
+  ],
+  answer: 0,
+  explain: `**Tóm tắt:** {{copy()}} gán lại các thuộc tính được đặt trong gọi và giữ nguyên các thuộc tính không xác định (lấy giá trị mặc định nếu có), nên b.ten là "chua dat".
+
+### Vì sao đúng
+- a.copy(id = 2L) tạo DonHang mới với id = 2L, ten được giữ nguyên theo giá trị mặc định "chua dat".
+
+### Tại sao các phương án sai
+- **null / ""**: sai, Kotlin không tự gán giá trị mặc định khác ngoài tham số đã khai báo.
+- **Lỗi biên dịch vì copy bắt buộc truyền tất cả tham số**: sai, copy cho phép chọn bỏ tham số dùng tên (named argument).`
+},
+{
   id: 'qz-core-065', topic: 'core',
   q: `Một {{HashMap<Employee, String>>}} dùng {{Employee}} làm khóa. Class {{Employee}} ghi đè {{equals}} và {{hashCode}} dựa trên trường {{id}}. Sau khi put một entry, code thay đổi {{employee.setId(999)}} (trường {{id}} dùng trong equals/hashCode). Điều gì xảy ra khi sau đó gọi {{map.get(employee)}}?`,
   options: [
