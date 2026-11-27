@@ -9707,5 +9707,764 @@ Serializable & Comparable<?> res = pick("hello", 123); // compile OK
 - **B**: autoboxing {{123}} thành {{Integer}}; {{String}} và {{Integer}} không liên quan → không ép được lẫn nhau.
 - **D**: luôn suy ra được intersection type (ít nhất {{Object}}), không bao giờ "không suy ra được" với đối số reference.
 > Senior tip: intersection type xuất hiện khi truyền nhiều đối số khác kiểu cho cùng một type parameter. Tránh dùng intersection type trong API public (khó đọc, không thể cast an toàn). Nếu cần, overload method hoặc dùng {{Object}} tường minh.`
+},
+{
+  id: 'qz-modern-061', topic: 'modern',
+  q: `Record {{Address(String city, String district)}} và {{Person(String name, Address addr)}}. Dùng pattern matching cho switch (Java 21) để trích xuất tên thành phố từ {{Person}}. Code nào đúng?
+~~~java
+record Address(String city, String district) {}
+record Person(String name, Address addr) {}
+Person p = new Person("An", new Address("Hanoi", "Cau Giay"));
+~~~`,
+  options: [
+    `switch (p) { case Person(String name, Address(String city, _)) -> city; }`,
+    `switch (p) { case Person(var name, Address(var city, var _)) -> city; }`,
+    `switch (p) { case Person(String name, Address addr) -> addr.city(); }`,
+    `switch (p) { case Person p when p.addr().city().equals("Hanoi") -> p.addr().city(); }`
+  ],
+  answer: 1,
+  explain: `**Tóm tắt:** Java 21 hỗ trợ **nested record pattern**: {{case Person(var name, Address(var city, var _))}} vừa kiểm tra kiểu, vừa deconstruct lồng nhau — {{var city}} bind trực tiếp component {{city}} của {{Address}} bên trong {{Person}}.
+### Vì sao đúng
+- Record pattern {{case Type(var component1, var component2...)}} deconstruct component theo thứ tự khai báo.
+- Lồng record pattern: {{Address(var city, var _)}} deconstruct {{Address}} bên trong {{Person}}.
+- Dấu {{_}} (wildcard pattern, Java 21) bỏ qua component không cần dùng.
+### Vì sao các phương án sai
+- **A**: cú pháp {{Address(String city, _)}} không hợp lệ; pattern variable phải dùng {{var}} hoặc kiểu tường minh {{String city}} (nhưng không cho phép bỏ qua component bằng {{_}} ở cấp ngoài).
+- **C**: không deconstruct lồng nhau; chỉ bind {{addr}} rồi gọi accessor — đúng nhưng không dùng record pattern lồng nhau như yêu cầu.
+- **D**: dùng guard pattern thay vì deconstruction; dài dòng hơn.
+### Ví dụ cụ thể
+~~~java
+String city = switch (p) {
+    case Person(var name, Address(var city, var _)) -> city;
+    default -> "Unknown";
+}; // "Hanoi"
+~~~
+### Lỗi hay gặp
+- Quên {{var}} trước component pattern: {{case Person(name, Address(city, _))}} báo lỗi "pattern variable expected".
+- Dùng {{_}} sai chỗ: wildcard chỉ dùng trong nested pattern hoặc {{case _}} (default), không thể dùng làm tên biến.
+> Senior tip: nested record pattern rất gọn cho domain model phức tạp (Order -> OrderLine -> Product). Compiler kiểm tra exhaustiveness nếu selector là sealed type.`
+},
+{
+  id: 'qz-modern-062', topic: 'modern', multi: true,
+  q: `Sealed interface {{Vehicle}} permits {{Car}}, {{Truck}}. Class {{Car}} là {{final}}, nhưng {{Truck}} **không final** (cho phép subclass). Những phát biểu nào đúng? (Chọn 2)
+~~~java
+sealed interface Vehicle permits Car, Truck {}
+final class Car implements Vehicle {}
+class Truck implements Vehicle {} // non-final
+~~~`,
+  options: [
+    `Switch exhaustive trên {{Vehicle}} **bắt buộc** có {{default}} vì {{Truck}} có thể có subclass không nằm trong permits`,
+    `Compiler **không** cho phép {{Truck}} non-final khi khai báo trong permits`,
+    `Thêm subclass {{ElectricTruck extends Truck}} làm switch exhaustive cũ trên {{Vehicle}} **không biên dịch được** (nếu không có default)`,
+    `Khai báo {{non-sealed class Truck implements Vehicle}} thì mới cho phép subclass tự do`,
+    `Sealed interface chỉ hoạt động khi **tất cả** permitted subtype đều {{final}}`
+  ],
+  answer: [0, 3],
+  explain: `**Tóm tắt:** Permitted subtype của sealed type có thể là {{final}}, {{sealed}}, hoặc {{non-sealed}}. Nếu có subtype {{non-sealed}} (hoặc class thường non-final), compiler **không thể đảm bảo exhaustiveness** lúc compile-time vì có thể có subclass không xác định trước → switch trên sealed type **bắt buộc có default**.
+### Vì sao đúng
+- **A**: đúng. {{Truck}} non-final → mở cửa cho subclass vô hạn → exhaustiveness check thất bại → bắt buộc {{default}}.
+- **D**: đúng. Muốn khai báo rõ ràng cho phép subclass tùy ý, dùng từ khóa {{non-sealed}}: {{non-sealed class Truck implements Vehicle}}. Class thường không có {{final}}/{{sealed}}/{{non-sealed}} cũng được hiểu là non-sealed.
+### Vì sao các phương án sai
+- **B**: sai. Permits cho phép cả final, sealed, non-sealed.
+- **C**: sai. Vì {{Truck}} non-final, switch cũ đã có {{default}} nên thêm subclass **vẫn biên dịch được** (default bắt subclass mới). Chỉ khi switch **không có default** thì mới lỗi — nhưng compiler đã bắt buộc phải có default từ đầu.
+- **E**: sai. Sealed interface hoạt động bình thường với mix final/sealed/non-sealed; chỉ exhaustiveness check mới bị ảnh hưởng.
+### Ví dụ cụ thể
+~~~java
+sealed interface Vehicle permits Car, Truck {}
+final class Car implements Vehicle {}
+non-sealed class Truck implements Vehicle {} // rõ ràng cho phép subclass
+
+String desc(Vehicle v) {
+    return switch (v) {
+        case Car c -> "Car";
+        case Truck t -> "Truck"; // không exhaustive vì Truck non-sealed
+        default -> "Other Vehicle"; // BẮT BUỘC
+    };
+}
+~~~
+### Lỗi hay gặp
+- Tưởng sealed type luôn cho exhaustiveness check hoàn hảo → quên thêm default khi có non-sealed subtype.
+- Dùng {{sealed class Truck}} khi muốn cho phép subclass trong cùng module → đúng, nhưng subclass phải cũng nằm trong permits của Truck.
+> Senior tip: API công khai nên dùng {{final}} hoặc {{sealed}} cho permitted subtype; tránh {{non-sealed}} trừ khi thực sự cần mở rộng không kiểm soát.`
+},
+{
+  id: 'qz-modern-063', topic: 'modern',
+  q: `Pattern matching cho switch (Java 21) với nested record pattern. Cho {{sealed interface Expr permits Const, Add}} và record {{Const(int value)}}, {{Add(Expr left, Expr right)}}. Switch nào tính đúng biểu thức {{1 + (2 + 3)}}?
+~~~java
+sealed interface Expr permits Const, Add {}
+record Const(int value) implements Expr {}
+record Add(Expr left, Expr right) implements Expr {}
+Expr e = new Add(new Const(1), new Add(new Const(2), new Const(3)));
+~~~`,
+  options: [
+    `switch (e) { case Const c -> c.value(); case Add(Const l, Const r) -> l.value() + r.value(); }`,
+    `switch (e) { case Const c -> c.value(); case Add(var l, var r) -> eval(l) + eval(r); }`,
+    `switch (e) { case Const c -> c.value(); case Add(Expr l, Expr r) -> l.value() + r.value(); }`,
+    `switch (e) { case Const c -> c.value(); case Add(Add(Const ll, Const lr), Const r) -> ll.value() + lr.value() + r.value(); }`
+  ],
+  answer: 1,
+  explain: `**Tóm tắt:** Dùng **recursive pattern** với {{var}}: {{case Add(var l, var r)}} bind hai component là {{Expr}}, sau đó gọi đệ quy {{eval(l)}} và {{eval(r)}}. Nested pattern như {{Add(Const l, Const r)}} chỉ khớp khi **cả hai con đều là Const** — không khớp với {{Add(Const, Add)}}.
+### Vì sao đúng
+- {{case Add(var l, var r)}}: deconstruct {{Add}} thành hai {{Expr}} bất kỳ (có thể Const hoặc Add lồng nhau).
+- Gọi hàm đệ quy {{eval}} trên mỗi con xử lý được cây biểu thức tùy ý độ sâu.
+- Exhaustive vì cover hết {{Const}} và {{Add}} (sealed interface).
+### Vì sao các phương án sai
+- **A**: {{Add(Const l, Const r)}} chỉ khớp khi **cả hai con là Const** — {{Add(Const(2), Const(3))}} khớp, nhưng {{Add(Const(1), Add(...))}} **không khớp** → rơi vào default hoặc MatchException.
+- **C**: {{Add(Expr l, Expr r)}} dùng kiểu {{Expr}} làm pattern variable — hợp lệ nhưng {{l}} và {{r}} kiểu {{Expr}}, không có method {{value()}} (chỉ {{Const}} có) → lỗi biên dịch ở {{l.value()}}.
+- **D**: hard-code độ sâu 2, không mở rộng được.
+### Ví dụ cụ thể
+~~~java
+int eval(Expr e) {
+    return switch (e) {
+        case Const c -> c.value();
+        case Add(var l, var r) -> eval(l) + eval(r); // đệ quy
+    };
+}
+~~~
+### Lỗi hay gặp
+- Tưởng nested pattern {{Add(Const l, Const r)}} khớp mọi Add → bỏ qua trường hợp con là Add.
+- Quên {{var}} trong pattern: {{Add(l, r)}} báo lỗi "pattern variable expected".
+> Senior tip: recursive pattern + sealed type = algebraic data type xử lý an toàn. Compiler báo lỗi nếu quên case nào.`
+},
+{
+  id: 'qz-modern-064', topic: 'modern',
+  q: `Text block (Java 15) kết hợp {{formatted(Object... args)}} (Java 15) và escape sequence. Đoạn code sau in ra gì?
+~~~java
+String template = """
+    User: %s
+    Action: %s
+    Time: %tF %tT
+    """;
+String result = template.formatted("An", "LOGIN", new Date(1704067200000L), new Date(1704067200000L));
+System.out.println(result);
+~~~`,
+  options: [
+    `In ra 3 dòng, %s và %tF/%tT được thay thế, có newline cuối`,
+    `In ra 1 dòng, các placeholder không bị thay vì text block không hỗ trợ formatted()`,
+    `Ném IllegalFormatException vì %tF cần Calendar`,
+    `In ra 3 dòng nhưng không có newline cuối vì formatted() cắt trailing newline`
+  ],
+  answer: 0,
+  explain: `**Tóm tắt:** Text block hỗ trợ {{formatted(args)}} (Java 15) hoạt động như {{String.format}}. Placeholder {{%s}}, {{%tF}} (date ISO), {{%tT}} (time) được thay thế. Text block **giữ trailing newline** (newline trước {{"""}} đóng) → kết quả có newline cuối.
+### Vì sao đúng
+- {{formatted}} trên text block xử lý mọi format specifier của {{String.format}}.
+- {{%tF}} = {{yyyy-MM-dd}}, {{%tT}} = {{HH:mm:ss}} (cần 2 đối số Date cho date và time).
+- Trailing newline của text block được bảo toàn sau formatted.
+### Vì sao các phương án sai
+- **B**: text block hoàn toàn hỗ trợ formatted().
+- **C**: {{%tF}}/{{%tT}} nhận {{Date}}, {{Calendar}}, {{Long}} (epoch ms), {{Instant}}... không ném exception.
+- **D**: formatted() không cắt trailing newline; chỉ {{stripTrailing()}} mới cắt.
+### Ví dụ cụ thể
+~~~java
+// epoch 1704067200000L = 2024-01-01 00:00:00 UTC
+String result = template.formatted("An", "LOGIN", new Date(1704067200000L), new Date(1704067200000L));
+// Kết quả (có newline cuối):
+//     User: An
+//     Action: LOGIN
+//     Time: 2024-01-01 00:00:00
+~~~
+### Lỗi hay gặp
+- Truyền 1 Date cho cả %tF và %tT → cả hai dùng cùng Date (OK), nhưng nếu format phức tạp hơn cần truyền đủ số lượng arg.
+- Quên escape {{%}} khi muốn in chữ {{%}}: viết {{%%}}.
+- Dùng text block làm SQL template: **không** dùng formatted() với giá trị user input (SQL injection); dùng PreparedStatement.
+> Senior tip: text block + formatted() rất hợp cho log template, email template, code generation. Dùng {{stripIndent()}} nếu muốn bỏ incidental indentation trước khi format.`
+},
+{
+  id: 'qz-modern-065', topic: 'modern',
+  q: `Khai báo {{var}} với generic type. Code nào dẫn tới **raw type warning** khi biên dịch?
+~~~java
+// A
+var map1 = new HashMap<String, List<Integer>>();
+// B
+var map2 = new HashMap<>();
+// C
+var map3 = new HashMap<String, List<Integer>>() {{
+// D
+var map4 = Map.of("a", List.of(1, 2));
+~~~`,
+  options: [
+    `A: diamond operator không làm việc với var`,
+    `B: constructor không đối số + không diamond → var suy ra raw type HashMap`,
+    `C: anonymous class với initializer block không tương thích với var`,
+    `D: Map.of trả về type implementation cụ thể không phù hợp var`
+  ],
+  answer: 1,
+  explain: `**Tóm tắt:** {{var map2 = new HashMap();}} (không diamond, không đối số) khiến {{var}} suy ra **raw type** {{HashMap}}. Code **biên dịch được** nhưng compiler cảnh báo *unchecked conversion* / raw type. Các trường hợp còn lại đều có đủ thông tin kiểu: A/C có type parameter tường minh, D suy ra từ return type của {{Map.of}}.
+### Vì sao đúng
+- **B**: {{new HashMap()}} là raw type constructor → {{var}} suy ra {{HashMap}} (raw). Mất generic safety, có warning.
+- **A**: {{new HashMap<String, List<Integer>>()}} có diamond → suy ra {{HashMap<String, List<Integer>>}}.
+- **C**: anonymous class có type parameter tường minh → suy ra anonymous subclass kiểu đầy đủ.
+- **D**: {{Map.of}} return type là {{Map<K,V>}} → suy ra {{Map<String, List<Integer>>}}.
+### Lỗi hay gặp
+- Dùng {{var map = new HashMap();}} → raw type, mất generic safety. Luôn dùng diamond: {{var map = new HashMap<String, List<Integer>>();}}.
+- Dùng {{var list = List.of();}} → suy ra {{List<Object>}} (không phải {{List<String>}}).
+> Senior tip: var + diamond operator là cặp đôi vàng. Tránh var với constructor không đối số hoặc raw type.`
+},
+{
+  id: 'qz-modern-066', topic: 'modern',
+  q: `{{Collectors.partitioningBy}} chia stream thành 2 nhóm theo predicate. Code sau cho kết quả gì?
+~~~java
+List<Integer> nums = List.of(1, 2, 3, 4, 5, 6);
+Map<Boolean, List<Integer>> result = nums.stream()
+    .collect(Collectors.partitioningBy(n -> n % 2 == 0,
+        Collectors.mapping(n -> n * 10, Collectors.toList())));
+System.out.println(result);
+~~~`,
+  options: [
+    `{false=[10, 30, 50], true=[20, 40, 60]}`,
+    `{false=[1, 3, 5], true=[2, 4, 6]}`,
+    `{false=[10, 30, 50], true=[20, 40, 60]} nhưng key Boolean là true/false ngược`,
+    `Lỗi biên dịch: partitioningBy không nhận downstream collector`
+  ],
+  answer: 0,
+  explain: `**Tóm tắt:** {{partitioningBy}} có overload 2 tham số: predicate và downstream collector. Key luôn là {{Boolean}} ({{true}} cho thỏa predicate, {{false}} cho không thỏa). Downstream {{mapping(n -> n * 10, toList())}} biến đổi mỗi phần tử trước khi gom vào list.
+### Vì sao đúng
+- Predicate {{n -> n % 2 == 0}}: số chẵn → {{true}}, số lẻ → {{false}}.
+- Downstream {{mapping(n -> n * 10, toList())}}: mỗi phần tử nhân 10 rồi gom list.
+- Kết quả: {{false}} (lẻ) = {{[1*10, 3*10, 5*10]}} = {{[10, 30, 50]}}; {{true}} (chẵn) = {{[20, 40, 60]}}.
+### Vì sao các phương án sai
+- **B**: bỏ qua downstream mapping (chỉ partitioningBy mặc định {{toList()}}).
+- **C**: key Boolean cố định: {{true}} = thỏa predicate (chẵn), {{false}} = không thỏa (lẻ).
+- **D**: partitioningBy overload 2 tham số có từ Java 12.
+### Ví dụ cụ thể
+~~~java
+// partitioningBy với downstream counting()
+Map<Boolean, Long> counts = nums.stream().collect(
+    Collectors.partitioningBy(n -> n % 2 == 0, Collectors.counting()));
+// {false=3, true=3}
+~~~
+### Lỗi hay gặp
+- Nhầm key true/false: predicate trả true → group true.
+- Dùng partitioningBy khi cần chia nhiều nhóm (>2) → dùng groupingBy.
+> Senior tip: partitioningBy tối ưu cho chia 2 nhóm (valid/invalid, pass/fail). Downstream collector mạnh: mapping, filtering, counting, toSet()... tránh tạo list trung gian.`
+},
+{
+  id: 'qz-modern-067', topic: 'modern',
+  q: `Cần làm phẳng (flatten) {{List<List<Integer>>}} thành {{List<Integer>}}. Stream collector nào đúng và hiệu quả?
+~~~java
+List<List<Integer>> nested = List.of(List.of(1, 2), List.of(3, 4), List.of(5));
+~~~`,
+  options: [
+    `nested.stream().flatMap(List::stream).collect(Collectors.toList())`,
+    `nested.stream().collect(Collectors.flatMapping(List::stream, Collectors.toList()))`,
+    `nested.stream().collect(Collectors.mapping(List::stream, Collectors.toList()))`,
+    `Cả A và B đều đúng và cho cùng kết quả`
+  ],
+  answer: 3,
+  explain: `**Tóm tắt:** Cả {{flatMap}} (trên stream) và {{flatMapping}} (collector, Java 16) đều làm phẳng nested collection. {{flatMap}} chuyển stream của stream thành stream đơn; {{flatMapping}} làm việc tương tự nhưng ở tầng collector, cho phép compose với các collector khác (ví dụ groupingBy -> flatMapping).
+### Vì sao đúng
+- **A**: {{flatMap(List::stream)}} biến {{Stream<List<Integer>>}} thành {{Stream<Integer>}}, rồi {{toList()}}.
+- **B**: {{flatMapping(List::stream, toList())}} là collector version, hữu ích khi làm downstream của {{groupingBy}}/{{partitioningBy}}.
+- Kết quả cả hai: {{[1, 2, 3, 4, 5]}}.
+### Vì sao các phương án sai
+- **C**: {{mapping}} không làm phẳng; nó biến đổi mỗi phần tử thành **một** giá trị khác (mapping function trả về single value). {{List::stream}} trả về {{Stream<Integer>}} → kết quả sẽ là {{List<Stream<Integer>>}} (list của stream), không phải list integer.
+### Ví dụ cụ thể
+~~~java
+// Dùng flatMapping làm downstream của groupingBy
+Map<String, List<Integer>> byFirstDigit = nested.stream()
+    .flatMap(List::stream)
+    .collect(Collectors.groupingBy(n -> String.valueOf(n).charAt(0),
+        Collectors.flatMapping(n -> Stream.of(n), Collectors.toList())));
+// flatMapping ở đây dư thừa vì đã flatMap ở stream level
+~~~
+### Lỗi hay gặp
+- Dùng {{mapping}} thay {{flatMapping}} khi function trả về collection/stream → kết quả lồng nhau.
+- Quên import {{java.util.stream.Collectors.flatMapping}} (Java 16).
+> Senior tip: {{flatMapping}} cho phép compose: {{groupingBy(key, flatMapping(mapper, toList()))}} gom và làm phẳng trong một pass. Hiệu quả hơn stream().flatMap().collect(groupingBy()) khi cần cả grouping và flattening.`
+},
+{
+  id: 'qz-modern-068', topic: 'modern', multi: true,
+  q: `Optional {{flatMap}} vs {{map}} khi function trả về Optional. Code nào **không** dẫn tới {{Optional<Optional<String>>}}? (Chọn 2)
+~~~java
+Optional<String> opt = Optional.of("hello");
+Function<String, Optional<String>> toUpperOpt = s -> Optional.of(s.toUpperCase());
+~~~`,
+  options: [
+    `opt.map(toUpperOpt)`,
+    `opt.flatMap(toUpperOpt)`,
+    `opt.map(s -> s.toUpperCase())`,
+    `opt.map(Optional::of)`,
+    `opt.map(s -> Optional.of(s.toUpperCase()))`
+  ],
+  answer: [1, 2],
+  explain: `**Tóm tắt:** {{map}} áp dụng function lên giá trị **bên trong** Optional và gói kết quả vào Optional mới. Nếu function **đã trả về Optional** → {{Optional<Optional<T>>}}. {{flatMap}} mong đợi function trả về Optional và **không gói thêm** (flatten).
+### Vì sao đúng
+- **B**: {{flatMap(toUpperOpt)}} — function trả {{Optional<String>}}, flatMap flatten → {{Optional<String>}}.
+- **C**: {{map(s -> s.toUpperCase())}} — function trả String (không phải Optional), map gói → {{Optional<String>}}.
+### Vì sao các phương án sai
+- **A**: {{map(toUpperOpt)}} — function trả Optional, map gói thêm → {{Optional<Optional<String>>}} (lồng Optional).
+- **D**: {{map(Optional::of)}} — {{Optional::of}} trả {{Optional<String>}}, map gói thêm → {{Optional<Optional<String>>}}.
+- **E**: {{map(s -> Optional.of(s.toUpperCase()))}} — lambda trả Optional, map gói thêm → {{Optional<Optional<String>>}}.
+### Trả lời phỏng vấn thế nào
+"map dùng khi function trả giá trị thường; flatMap dùng khi function trả Optional. Dùng sai sẽ tạo Optional lồng nhau — dấu hiệu code smell."
+> Senior tip: nếu đã có Optional<Optional<T>>, dùng {{flatMap(Function.identity())}} hoặc {{orElseThrow()}} để flatten.`
+},
+{
+  id: 'qz-modern-069', topic: 'modern',
+  q: `StructuredTaskScope (Java 21 preview, JEP 453) cho phép chạy nhiều subtask song song và xử lý kết quả/lỗi tập trung. Code sau có vấn đề gì?
+~~~java
+try (var scope = new StructuredTaskScope.ShutdownOnFailure()) {
+    var future1 = scope.fork(() -> layDuLieuA());
+    var future2 = scope.fork(() -> layDuLieuB());
+    scope.join();           // chờ tất cả
+    scope.throwIfFailed();  // ném exception nếu có subtask fail
+    return List.of(future1.get(), future2.get());
+}
+~~~`,
+  options: [
+    `join() không chờ exception, throwIfFailed() mới ném`,
+    `fork() trả về Subtask (không phải Future), cần ép kiểu hoặc dùng get() trên Subtask`,
+    `StructuredTaskScope không hỗ trợ generic type parameter cho kết quả`,
+    `Cần gọi scope.join() TRƯỚC khi truy cập future.get(), nếu không có thể đọc kết quả chưa sẵn sàng`
+  ],
+  answer: 3,
+  explain: `**Tóm tắt:** {{StructuredTaskScope}} yêu cầu **gọi join() trước khi đọc kết quả** từ subtask. {{join()}} chờ tất cả subtask hoàn thành (thành công hoặc thất bại). Chỉ sau {{join()}} thì {{Subtask.get()}} (hoặc {{Future.get()}}) mới an toàn; gọi trước có thể ném {{IllegalStateException}} vì subtask chưa xong.
+### Vì sao đúng
+- {{fork()}} trả về {{Subtask<T>}} (extends {{Future<T>}}), submit subtask vào scope.
+- {{join()}} block cho đến khi tất cả subtask hoàn thành (hoặc scope bị shutdown theo policy).
+- {{throwIfFailed()}} kiểm tra sau join: nếu có subtask fail theo policy (ShutdownOnFailure: fail nhanh khi có exception), ném exception của subtask đó.
+- Truy cập {{future.get()}} **trước join()** vi phạm contract → có thể đọc kết quả chưa sẵn sàng.
+### Vì sao các phương án sai
+- **A**: {{join()}} chờ tất cả hoàn thành (kể cả fail); {{throwIfFailed()}} chỉ ném exception nếu policy yêu cầu.
+- **B**: {{fork()}} trả {{Subtask<T>}} — là subtype của {{Future<T>}}, có method {{get()}}.
+- **C**: StructuredTaskScope hỗ trợ generic qua {{Subtask<T>}}.
+### Ví dụ cụ thể
+~~~java
+try (var scope = new StructuredTaskScope.ShutdownOnFailure()) {
+    Subtask<String> f1 = scope.fork(() -> apiA());
+    Subtask<String> f2 = scope.fork(() -> apiB());
+    scope.join();                  // bắt buộc trước khi đọc kết quả
+    scope.throwIfFailed();         // ném nếu có fail
+    return List.of(f1.get(), f2.get()); // an toàn
+}
+~~~
+### Lỗi hay gặp
+- Quên join() → đọc future.get() sớm → IllegalStateException.
+- Dùng try-with-resources: scope tự shutdown khi thoát block, nhưng join() vẫn cần gọi tường minh.
+> Senior tip: StructuredTaskScope (preview Java 21, chuẩn Java 24+) thay thế CompletableFuture.allOf() cho "fork-join có quản lý vòng đời". Policy: ShutdownOnFailure (fail fast), ShutdownOnSuccess (khi một task thành công).`
+},
+{
+  id: 'qz-modern-070', topic: 'modern', multi: true,
+  q: `Virtual thread (Java 21) và {{ThreadLocal}} / {{ScopedValue}} (JDK 25). Phát biểu nào đúng? (Chọn 2)
+~~~java
+ThreadLocal<String> tl = new ThreadLocal<>();
+tl.set("data");
+Thread.startVirtualThread(() -> System.out.println(tl.get()));
+~~~`,
+  options: [
+    `Virtual thread kế thừa ThreadLocal của thread cha (thread tạo virtual thread)`,
+    `Virtual thread có ThreadLocal riêng, tl.get() trong virtual thread trả về null`,
+    `ScopedValue (JDK 25) cho phép chia sẻ giá trị immutable an toàn giữa virtual thread con và cha`,
+    `ThreadLocal trên virtual thread hiệu năng cao hơn platform thread vì stack trên heap`,
+    `Để truyền context cho virtual thread, nên dùng ThreadLocal thay vì ScopedValue`
+  ],
+  answer: [1, 2],
+  explain: `**Tóm tắt:** Virtual thread **không kế thừa** ThreadLocal của thread cha. Mỗi virtual thread có ThreadLocal riêng (rỗng ban đầu) → {{tl.get()}} trả {{null}}. {{ScopedValue}} (JDK 25, JEP 481) thiết kế cho structured concurrency: binding immutable data cho một scope, tự động nhìn thấy bởi virtual thread con trong scope đó.
+### Vì sao đúng
+- **B**: đúng. Virtual thread là thread độc lập, không copy ThreadLocal từ creator. ThreadLocal của virtual thread rỗng cho đến khi set.
+- **C**: đúng. {{ScopedValue.where(key, value).run(() -> ...)}} bind giá trị cho scope hiện tại; mọi virtual thread fork trong scope (qua StructuredTaskScope) thấy giá trị đó. Immutable, an toàn, không leak memory như ThreadLocal.
+### Vì sao các phương án sai
+- **A**: sai. Đây là nhầm lẫn phổ biến. ThreadLocal **không** tự truyền sang virtual thread con.
+- **D**: sai. ThreadLocal trên hàng triệu virtual thread tốn bộ nhớ (mỗi entry là object trong ThreadLocalMap). ScopedValue nhẹ hơn vì không lưu per-thread map.
+- **E**: sai. ScopedValue là phương án khuyến nghị cho virtual thread; ThreadLocal là legacy.
+### Ví dụ cụ thể
+~~~java
+// ThreadLocal: virtual thread không thấy giá trị cha
+ThreadLocal<String> tl = new ThreadLocal<>();
+tl.set("parent");
+Thread.startVirtualThread(() -> System.out.println(tl.get())); // null
+
+// ScopedValue (JDK 25): chia sẻ an toàn
+ScopedValue<String> sv = ScopedValue.newInstance();
+ScopedValue.where(sv, "shared").run(() -> {
+    Thread.startVirtualThread(() -> System.out.println(sv.get())); // "shared"
+    Thread.startVirtualThread(() -> System.out.println(sv.get())); // "shared"
+});
+~~~
+### Lỗi hay gặp
+- Dùng ThreadLocal cache user session cho virtual thread web server → mỗi request là virtual thread mới, ThreadLocal rỗng → bug authentication.
+- Không dọn ThreadLocal trên virtual thread pool (nếu pool virtual thread) → memory leak.
+> Senior tip: chuyển sang ScopedValue khi có JDK 25+. Trước đó, truyền context qua tham số method hoặc dùng StructuredTaskScope với custom context.`
+},
+{
+  id: 'qz-modern-071', topic: 'modern',
+  q: `{{Collectors.teeing}} (Java 12) áp dụng HAI collector lên cùng một stream rồi gộp kết quả bằng một hàm thứ ba. Đoạn code sau in ra gì?
+~~~java
+List<Integer> nums = List.of(2, 4, 6);
+double result = nums.stream().collect(Collectors.teeing(
+    Collectors.summingDouble(Integer::doubleValue),
+    Collectors.counting(),
+    (sum, count) -> sum / count));
+System.out.println(result);
+~~~`,
+  options: [
+    `12.0`,
+    `2.0`,
+    `4.0`,
+    `0.5`
+  ],
+  answer: 2,
+  explain: `**Tóm tắt:** {{teeing}} chạy hai collector song song trên cùng dữ liệu: {{summingDouble}} cho tổng {{12.0}}, {{counting}} cho số lượng {{3}}; hàm gộp {{sum / count}} = {{12.0 / 3}} = {{4.0}} (trung bình cộng).
+### Vì sao đúng
+- {{teeing(collector1, collector2, merger)}}: mỗi phần tử được đưa cho cả hai collector.
+- Collector 1 {{summingDouble(Integer::doubleValue)}} cộng {{2 + 4 + 6}} = {{12.0}}.
+- Collector 2 {{counting()}} đếm được {{3}} phần tử.
+- Merger {{sum / count}} = {{12.0 / 3}} = {{4.0}}.
+### Vì sao các phương án sai
+- **A** {{12.0}}: chỉ là tổng, quên chia cho count ở bước merger.
+- **B** {{2.0}}: kết quả nếu chia nhầm {{count / sum}} hoặc tính trung bình sai.
+- **D** {{0.5}}: vô nghĩa, không khớp bất kỳ phép tính hợp lý nào ở đây.
+### Ví dụ cụ thể
+~~~java
+// Tính min và max trong MỘT lần duyệt (thay vì 2 stream riêng)
+var mm = list.stream().collect(Collectors.teeing(
+    Collectors.minBy(Integer::compareTo),
+    Collectors.maxBy(Integer::compareTo),
+    (min, max) -> new int[]{min.get(), max.get()}));
+~~~
+### Lỗi hay gặp
+- Tưởng {{teeing}} chạy tuần tự hai lần duyệt — thực ra nó gộp trong một collector, chỉ duyệt dữ liệu một lần.
+- Merger trả về kiểu không khớp với kiểu khai báo của biến đích.
+> Senior tip: {{teeing}} rất hợp khi cần nhiều thống kê cùng lúc (min/max, sum/count, list + size) mà không muốn duyệt stream nhiều lần. Thường dùng kèm các collector trả {{Optional}} như {{minBy}}/{{maxBy}}.`
+},
+{
+  id: 'qz-modern-072', topic: 'modern',
+  q: `{{Optional.orElse}} và {{orElseGet}} khác nhau ở chỗ nào về thời điểm tính toán? Cho đoạn code sau, {{getDefault()}} in ra chữ {{LOAD}} rồi trả về {{Optional}} rỗng. Chuỗi {{LOAD}} được in ra bao nhiêu lần?
+~~~java
+Optional<String> opt = Optional.of("An");
+String a = opt.orElse(getDefault());
+String b = opt.orElseGet(() -> getDefault());
+~~~`,
+  options: [
+    `In "LOAD" 2 lần`,
+    `In "LOAD" 1 lần (chỉ orElse gọi getDefault ngay cả khi opt có giá trị)`,
+    `In "LOAD" 0 lần`,
+    `Ném NoSuchElementException vì opt không rỗng`
+  ],
+  answer: 1,
+  explain: `**Tóm tắt:** {{orElse(value)}} nhận một **giá trị đã tính sẵn** nên luôn được tính (eager) dù Optional có giá trị; {{orElseGet(supplier)}} nhận một hàm, chỉ gọi khi Optional **rỗng** (lazy). Ở đây {{getDefault()}} bị gọi 1 lần bởi {{orElse}}, còn lambda của {{orElseGet}} không chạy vì {{opt}} có giá trị.
+### Vì sao đúng
+- {{opt.orElse(getDefault())}}: Java phải tính {{getDefault()}} trước khi truyền vào → in {{LOAD}} 1 lần.
+- {{opt.orElseGet(() -> getDefault())}}: lambda chỉ được thực thi nếu cần giá trị mặc định; {{opt}} đang là {{Optional.of("An")}} nên không gọi.
+### Vì sao các phương án sai
+- **A** {{2 lần}}: nhầm {{orElseGet}} là eager; thực ra nó lazy.
+- **C** {{0 lần}}: nhầm {{orElse}} là lazy; thực ra đối số của {{orElse}} luôn được tính.
+- **D**: {{orElse}}/{{orElseGet}} không ném {{NoSuchElementException}} (chỉ {{get()}} trên Optional rỗng mới ném).
+### Ví dụ cụ thể
+~~~java
+// NẶNG: getDefault() gọi DB mất 200ms — nhưng vẫn chạy dù opt có sẵn!
+String v = opt.orElse(getDefault());      // luôn 200ms
+// TỐT: chỉ gọi khi thực sự rỗng
+String v2 = opt.orElseGet(this::getDefault); // 0ms khi opt có giá trị
+~~~
+### Lỗi hay gặp
+- Dùng {{orElse}} với giá trị mặc định tốn kém (gọi DB, gọi API) → lãng phí tài nguyên mỗi request.
+- Tưởng {{orElseGet}} nhận giá trị; nó nhận {{Supplier<? extends T>}}, phải truyền lambda.
+> Senior tip: mặc định dùng {{orElseGet}} cho giá trị mặc định "đắt", hoặc {{orElseThrow}} nếu thiếu giá trị là lỗi. {{orElse}} chỉ hợp với hằng số/chi phí thấp.`
+},
+{
+  id: 'qz-modern-073', topic: 'modern', multi: true,
+  q: `Từ khóa {{var}} (Java 10) chỉ dùng được cho **biến cục bộ**. Những khai báo nào **KHÔNG biên dịch được**? (Chọn 2)
+~~~java
+// A
+var count = 10;
+// B
+class Foo { private var name = "x"; }
+// C
+var items = new ArrayList<String>();
+// D
+public var build() { return 1; }
+// E
+for (var s : List.of("a", "b")) { }
+~~~`,
+  options: [
+    `A: var count = 10; (biến cục bộ có initializer)`,
+    `B: private var name = "x"; (var làm field)`,
+    `C: var items = new ArrayList<String>(); (diamond + initializer)`,
+    `D: public var build() { return 1; } (var làm kiểu trả về)`,
+    `E: for (var s : List.of("a","b")) (var trong enhanced for)`
+  ],
+  answer: [1, 3],
+  explain: `**Tóm tắt:** {{var}} chỉ hợp lệ cho biến cục bộ có initializer. Nó **không** dùng được làm field (B), kiểu trả về của method (D), kiểu tham số, hay biến không có initializer. {{var}} trong enhanced for (E) và biến cục bộ có initializer (A, C) đều hợp lệ.
+### Vì sao đúng
+- **B**: field là biến instance/static, không phải biến cục bộ → {{var}} bị cấm.
+- **D**: kiểu trả về phải xác định tại thời điểm khai báo; {{var}} không phải kiểu thật → bị cấm.
+### Vì sao các phương án sai
+- **A**: biến cục bộ {{var count = 10;}} suy ra {{int}} — hợp lệ.
+- **C**: {{var items = new ArrayList<String>();}} suy ra {{ArrayList<String>}} — hợp lệ (có diamond và initializer).
+- **E**: {{for (var s : list)}} là biến cục bộ trong vòng lặp — hợp lệ từ Java 10.
+### Ví dụ cụ thể
+~~~java
+var x = 5;                 // OK: local
+for (var i = 0; i < 3; i++) // OK: local trong for
+var list = new ArrayList<String>(); // OK
+// var y;                  // LỖI: thiếu initializer
+// var z = null;           // LỖI: không suy ra kiểu từ null
+~~~
+### Lỗi hay gặp
+- Cố dùng {{var}} cho field để "cho gọn" → lỗi biên dịch.
+- {{var x = null;}} → không suy ra được kiểu (null không mang thông tin kiểu).
+> Senior tip: {{var}} chỉ để giảm lặp khi kiểu đã rõ ở vế phải (constructor generic dài). Không lạm dụng cho kiểu đơn giản như {{int}}, {{String}}.`
+},
+{
+  id: 'qz-modern-074', topic: 'modern',
+  q: `Pattern matching cho switch (Java 21) cho phép {{case null}} để xử lý null an toàn. Đoạn code sau in ra gì?
+~~~java
+String s = null;
+String r = switch (s) {
+    case String t -> "str";
+    case null -> "null";
+};
+System.out.println(r);
+~~~`,
+  options: [
+    `Ném NullPointerException vì s là null`,
+    `"str"`,
+    `"" (chuỗi rỗng)`,
+    `"null"`
+  ],
+  answer: 3,
+  explain: `**Tóm tắt:** Java 21 cho phép {{case null}} trong switch pattern matching. Khi selector là {{null}}, nhánh {{case null}} khớp và trả về {{'"null"'}}. Nếu **không có** {{case null}} (hoặc {{default}}), switch trên null sẽ ném {{NullPointerException}}.
+### Vì sao đúng
+- Selector {{s}} là {{null}} → so khớp lần lượt: {{case String t}} không khớp (null không phải String), {{case null}} khớp → trả {{'"null"'}}.
+- Đây chính là lý do JEP 441 thêm {{case null}}: trước đây phải tự kiểm tra null trước switch.
+### Vì sao các phương án sai
+- **A**: chỉ ném NPE khi **thiếu** {{case null}}/{{default}}; ở đây đã có {{case null}} nên an toàn.
+- **B** {{'"str"'}}: {{case String t}} không khớp null.
+- **C** {{""}}: không có nhánh nào trả chuỗi rỗng.
+### Ví dụ cụ thể
+~~~java
+String f(Object o) {
+    return switch (o) {
+        case null -> "IS_NULL";
+        case String s -> "str:" + s;
+        default -> "other";
+    };
+}
+// f(null) => "IS_NULL", không ném NPE
+~~~
+### Lỗi hay gặp
+- Quên {{case null}} rồi tưởng switch an toàn với null → NPE lúc runtime.
+- Đặt {{case null}} sau {{default}}: {{default}} đã bắt hết nên {{case null}} thành unreachable (lỗi biên dịch).
+> Senior tip: khi viết switch trên giá trị có thể null (request param, DB column), luôn thêm {{case null}} đầu tiên. Nếu dùng {{default}} thì đặt {{case null, default ->}} gộp chung.`
+},
+{
+  id: 'qz-modern-075', topic: 'modern',
+  q: `{{takeWhile}} và {{dropWhile}} (Java 9) khác {{filter}}: chúng **dừng ngay** khi gặp phần tử đầu tiên không thỏa predicate. Cho danh sách sau, {{a}} là kết quả của {{takeWhile}}?
+~~~java
+List<Integer> nums = List.of(1, 3, 5, 2, 4, 6);
+List<Integer> a = nums.stream().takeWhile(n -> n < 4).toList();
+~~~`,
+  options: [
+    `[1, 3]`,
+    `[1, 3, 2]`,
+    `[5, 2, 4, 6]`,
+    `[1, 3, 5, 2]`
+  ],
+  answer: 0,
+  explain: `**Tóm tắt:** {{takeWhile(p)}} giữ các phần tử đầu cho tới khi gặp phần tử **đầu tiên** không thỏa {{p}} rồi dừng hẳn (không xét tiếp). Với {{n < 4}}: lấy {{1}} (ok), {{3}} (ok), gặp {{5}} (thỏa? không) → dừng → {{[1, 3]}}.
+### Vì sao đúng
+- {{takeWhile}} đi tuần tự: {{1<4}} lấy, {{3<4}} lấy, {{5<4}} sai → dừng, bỏ qua toàn bộ phần còn lại kể cả {{2}} (dù 2<4).
+- Đây là điểm khác {{filter}}: {{filter}} sẽ quét hết và giữ cả {{2}} → {{[1,3,2]}}.
+### Vì sao các phương án sai
+- **B** {{[1,3,2]}}: là kết quả của {{filter(n -> n<4)}}, không phải {{takeWhile}}.
+- **C** {{[5,2,4,6]}}: là kết quả của {{dropWhile(n -> n<4)}} (bỏ 1,3 rồi giữ phần còn lại).
+- **D** {{[1,3,5,2]}}: không khớp logic takeWhile nào.
+### Ví dụ cụ thể
+~~~java
+List<Integer> nums = List.of(1, 3, 5, 2, 4, 6);
+nums.stream().takeWhile(n -> n < 4).toList(); // [1, 3]
+nums.stream().dropWhile(n -> n < 4).toList(); // [5, 2, 4, 6]
+nums.stream().filter(n -> n < 4).toList();    // [1, 3, 2]
+~~~
+### Lỗi hay gặp
+- Dùng {{takeWhile}} trên stream **không có thứ tự** (HashSet) → kết quả tùy ý vì "phần tử đầu tiên" không xác định.
+- Nhầm {{takeWhile}} với {{filter}}: takeWhile dừng sớm, filter quét toàn bộ.
+> Senior tip: {{takeWhile}}/{{dropWhile}} rất hợp xử lý list đã sắp xếp (ví dụ log theo thời gian tăng dần, lấy tới khi vượt ngưỡng). Trên stream unordered, hãy dùng {{filter}}.`
+},
+{
+  id: 'qz-modern-076', topic: 'modern',
+  q: `Text block (Java 15) tự cắt **indentation ngoài lề** (incidental indentation) dựa trên mức thụt nhỏ nhất của mọi dòng không trống và dòng chứa dấu {{"""}} đóng. Đoạn code sau in ra gì? ({{\\\\n}} biểu thị ký tự xuống dòng)
+~~~java
+String s = """
+    Hello
+      World
+    """;
+System.out.print(s);
+~~~`,
+  options: [
+    `    Hello\\\\n      World\\\\n (giữ nguyên thụt lề)`,
+    `Hello\\\\nWorld\\\\n (cắt hết thụt lề)`,
+    `Hello\\\\n  World\\\\n (giữ 2 space trước World, có newline cuối)`,
+    `Hello\\\\n      World\\\\n (cắt 4 space đầu nhưng giữ 6 space của World)`
+  ],
+  answer: 2,
+  explain: `**Tóm tắt:** Text block cắt số space chung nhỏ nhất của tất cả các dòng (kể cả dòng {{"""}} đóng). Ở đây mức nhỏ nhất là {{4}} (dòng {{Hello}} và dòng {{"""}} đều thụt 4). Sau khi cắt 4: {{Hello}} (0 space), {{World}} còn {{6-4=2}} space, và giữ newline cuối trước {{"""}}.
+### Vì sao đúng
+- Các dòng: {{    Hello}} (4), {{      World}} (6), {{    }} """ (4). Min = 4.
+- Cắt 4 space mỗi dòng → {{Hello}}, {{  World}} (còn 2 space), rồi newline cuối.
+- Kết quả: {{Hello}} + newline + {{  World}} + newline cuối.
+### Vì sao các phương án sai
+- **A**: không cắt indentation — sai, text block luôn cắt incidental indentation.
+- **B**: cắt hết cả 2 space của World — sai, chỉ cắt mức chung nhỏ nhất (4), không cắt phần dư.
+- **D**: cắt 4 nhưng giữ nguyên 6 space của World (quên trừ) — sai, phải trừ 4.
+### Ví dụ cụ thể
+~~~java
+String s = """
+    A
+      B
+    """;
+// s = "A\\n  B\\n"  (A 0 space, B 2 space, newline cuối)
+~~~
+### Lỗi hay gặp
+- Đặt dấu {{"""}} đóng thụt sâu hơn nội dung → mức cắt nhỏ hơn, dư space đầu dòng.
+- Tưởng newline cuối bị cắt — không, {{stripTrailing()}} mới cắt newline cuối.
+> Senior tip: đặt {{"""}} đóng cùng mức thụt với dòng nội dung ngoài cùng để kiểm soát chính xác indentation. Dùng {{stripIndent()}} khi cần chuẩn hoá thêm.`
+},
+{
+  id: 'qz-modern-077', topic: 'modern',
+  q: `{{Stream.iterate}} có overload 3 tham số (Java 9): {{iterate(seed, hasNext, next)}}. Đoạn code sau cho kết quả gì?
+~~~java
+List<Integer> r = Stream.iterate(1, n -> n < 5, n -> n + 1).toList();
+~~~`,
+  options: [
+    `[1, 2, 3, 4, 5]`,
+    `[1, 2, 3, 4]`,
+    `[2, 3, 4, 5]`,
+    `Lỗi biên dịch: iterate không có overload 3 tham số`
+  ],
+  answer: 1,
+  explain: `**Tóm tắt:** {{iterate(seed, hasNext, next)}} bắt đầu từ {{seed=1}}, sinh phần tử kế bằng {{next}} ({{n+1}}), và **dừng** khi {{hasNext}} ({{n<5}}) sai. Chuỗi: 1 (hasNext 1<5 đúng, lấy), 2, 3, 4; tới 5 thì {{5<5}} sai → dừng → {{[1,2,3,4]}}.
+### Vì sao đúng
+- Khởi tạo 1; kiểm tra {{1<5}} đúng → nhận 1; next → 2; {{2<5}} đúng → nhận 2; ... nhận 4; next → 5; {{5<5}} sai → kết thúc.
+- Kết quả {{[1,2,3,4]}} (không có 5 vì 5 không thỏa hasNext).
+### Vì sao các phương án sai
+- **A** {{[1,2,3,4,5]}}: overload 3 tham số loại phần tử không thỏa hasNext, nên 5 không được lấy.
+- **C** {{[2,3,4,5]}}: nhầm seed là 2 hoặc hiểu next chạy trước hasNext.
+- **D**: overload 3 tham số có từ Java 9, không phải lỗi biên dịch.
+### Ví dụ cụ thể
+~~~java
+// 2 tham số (cũ, Java 8): VÔ HẠN, cần limit
+Stream.iterate(1, n -> n + 1).limit(4).toList();   // [1,2,3,4]
+// 3 tham số (Java 9): HỮU HẠN nhờ hasNext
+Stream.iterate(1, n -> n < 5, n -> n + 1).toList(); // [1,2,3,4]
+~~~
+### Lỗi hay gặp
+- Dùng overload 2 tham số mà quên {{limit}} → stream vô hạn, treo chương trình.
+- Hiểu sai thứ tự: hasNext kiểm tra **trước** khi lấy phần tử, next sinh phần tử **kế tiếp**.
+> Senior tip: overload 3 tham số an toàn hơn hẳn (không lo vô hạn), thay thế được nhiều vòng {{for}} tính dãy. Tránh overload 2 tham số trong code không có {{limit}} rõ ràng.`
+},
+{
+  id: 'qz-modern-078', topic: 'modern', multi: true,
+  q: `Switch expression (Java 14+) dùng {{yield}} để trả giá trị từ một block. Những phát biểu nào đúng? (Chọn 2)
+~~~java
+int n = 2;
+int x = switch (n) {
+    case 1 -> 100;
+    default -> {
+        int y = n * 2;
+        yield y + 1;
+    }
+};
+~~~`,
+  options: [
+    `Arrow case dạng biểu thức (case 1 -> 100) không cần yield; block arrow cần yield để trả giá trị`,
+    `Arrow case dạng biểu thức (case 1 -> 100) bắt buộc phải có yield, nếu thiếu sẽ lỗi biên dịch`,
+    `Nhánh dùng dấu hai chấm (case default:) trong switch expression cần yield để trả giá trị`,
+    `yield chỉ dùng trong switch statement (không phải expression)`,
+    `yield trả về void nên không gán được cho biến x`
+  ],
+  answer: [0, 2],
+  explain: `**Tóm tắt:** Trong switch **expression**, nhánh arrow dạng biểu thức ({{case 1 -> 100}}) tự trả giá trị, **không** cần {{yield}}; nhánh block (arrow hoặc colon) cần {{yield}} để trả giá trị ra. {{yield}} chỉ tồn tại trong switch expression, không dùng trong switch statement thường.
+### Vì sao đúng
+- **A**: đúng. {{case 1 -> 100}} là arrow expression, giá trị 100 tự trả; nhánh {{default}} dạng block cần {{yield}} để trả giá trị.
+- **C**: đúng. Nhánh colon {{case default:}} trong switch expression cũng phải dùng {{yield}} để trả giá trị (không dùng {{return}}).
+### Vì sao các phương án sai
+- **B**: sai. Arrow dạng biểu thức {{case 1 -> 100}} **không** cần {{yield}}; chính giá trị biểu thức là giá trị trả về. (Chỉ arrow dạng block mới dùng {{yield}}.)
+- **D**: sai. {{yield}} chỉ dành cho switch **expression**; switch statement (dạng câu lệnh) không có {{yield}}.
+- **E**: sai. {{yield}} trả về giá trị thật ({{y+1}}), gán được cho biến {{x}}.
+### Ví dụ cụ thể
+~~~java
+int x = switch (n) {
+    case 1 -> 100;                 // arrow expression: không yield
+    default -> { int y = n*2; yield y+1; } // block arrow: cần yield
+}; // n=2 => x=5
+~~~
+### Lỗi hay gặp
+- Dùng {{return}} thay {{yield}} trong switch expression → lỗi biên dịch.
+- Quên {{yield}} trong block → switch expression không trả giá trị, lỗi.
+> Senior tip: arrow ({{->}}) gọn cho nhánh một dòng; block + {{yield}} khi cần tính toán nhiều bước. Không trộn {{yield}} với arrow expression.`
+},
+{
+  id: 'qz-modern-079', topic: 'modern',
+  q: `{{Optional.stream()}} (Java 9) biến một Optional thành stream 0 hoặc 1 phần tử. Kết hợp với {{flatMap}} để lọc bỏ Optional rỗng. Đoạn code sau cho kết quả gì?
+~~~java
+List<Optional<String>> list = List.of(
+    Optional.of("a"), Optional.empty(), Optional.of("b"));
+List<String> r = list.stream()
+    .flatMap(Optional::stream)
+    .toList();
+~~~`,
+  options: [
+    `["a", "b"]`,
+    `["a", null, "b"]`,
+    `[Optional[a], Optional.empty, Optional[b]]`,
+    `Ném NoSuchElementException vì có Optional.empty()`
+  ],
+  answer: 0,
+  explain: `**Tóm tắt:** {{Optional.stream()}} trả về stream có đúng 1 phần tử nếu Optional có giá trị, hoặc stream rỗng nếu Optional rỗng. {{flatMap}} ghép các stream con lại, nên các Optional rỗng biến mất → {{["a", "b"]}}.
+### Vì sao đúng
+- {{Optional.of("a").stream()}} → stream ["a"]; {{Optional.empty().stream()}} → stream rỗng; {{Optional.of("b").stream()}} → ["b"].
+- {{flatMap}} làm phẳng: ["a"] + [] + ["b"] = ["a", "b"].
+### Vì sao các phương án sai
+- **B** {{["a", null, "b"]}}: {{Optional.stream()}} không sinh null; empty cho stream rỗng, không phải phần tử null.
+- **C**: đó là kết quả nếu **không** dùng flatMap (giữ nguyên List<Optional>).
+- **D**: {{Optional.stream()}} trên empty không ném exception (khác {{get()}}).
+### Ví dụ cụ thể
+~~~java
+List<Optional<Integer>> opts = List.of(Optional.of(1), Optional.empty(), Optional.of(3));
+List<Integer> r = opts.stream().flatMap(Optional::stream).toList(); // [1, 3]
+// Cách cũ (Java 8): filter(o -> o.isPresent()).map(Optional::get)
+~~~
+### Lỗi hay gặp
+- Dùng {{map(Optional::get)}} trên empty → {{NoSuchElementException}}; {{flatMap(Optional::stream)}} an toàn hơn.
+- Nhầm {{Optional.stream()}} với {{Optional.get()}}: một cái trả stream, một cái ném nếu rỗng.
+> Senior tip: {{flatMap(Optional::stream)}} là idiom sạch để "lọc + unwrap" danh sách Optional trong một pipeline, thay cho filter + map thủ công.`
+},
+{
+  id: 'qz-modern-080', topic: 'modern', multi: true,
+  q: `{{Collectors.joining}} nối các phần tử CharSequence thành chuỗi. Cho {{Stream.of("a","b","c")}}. Những phát biểu nào đúng? (Chọn 2)
+~~~java
+String s = Stream.of("a", "b", "c")
+    .collect(Collectors.joining(", ", "[", "]"));
+~~~`,
+  options: [
+    `joining(", ", "[", "]") cho kết quả "[a, b, c]"`,
+    `joining() không tham số nối trực tiếp thành "abc"`,
+    `joining chỉ làm việc với Stream<String>, không nối được stream số nguyên`,
+    `joining(delimiter) đặt delimiter ở đầu và cuối mỗi phần tử`,
+    `joining trả về List thay vì String`
+  ],
+  answer: [0, 1],
+  explain: `**Tóm tắt:** {{joining(delimiter, prefix, suffix)}} nối phần tử với delimiter {{", "}}, thêm prefix {{"["}} và suffix {{"]"}} → {{"[a, b, c]"}}. {{joining()}} không tham số nối thẳng → {{"abc"}}. {{joining}} trả về {{String}}, làm việc trên stream {{CharSequence}} (không riêng String).
+### Vì sao đúng
+- **A**: {{joining(", ", "[", "]")}} = prefix + join(delimiter) + suffix = {{[}} + {{a, b, c}} + {{]}} = {{"[a, b, c]"}}.
+- **B**: {{joining()}} không delimiter → {{a}} + {{b}} + {{c}} = {{"abc"}}.
+### Vì sao các phương án sai
+- **C**: sai. {{joining}} nhận stream {{CharSequence}} (String, StringBuilder...); với stream số phải {{map(String::valueOf)}} trước, nhưng không phải "chỉ String".
+- **D**: sai. {{delimiter}} đặt **giữa** các phần tử; prefix/suffix mới ở đầu/cuối.
+- **E**: sai. {{joining}} trả về {{String}}, không phải {{List}}.
+### Ví dụ cụ thể
+~~~java
+Stream.of("a","b","c").collect(Collectors.joining());          // "abc"
+Stream.of("a","b","c").collect(Collectors.joining(", "));      // "a, b, c"
+Stream.of("a","b","c").collect(Collectors.joining(",","[","]"));// "[a,b,c]"
+// stream số: map trước
+Stream.of(1,2,3).map(String::valueOf).collect(Collectors.joining("-")); // "1-2-3"
+~~~
+### Lỗi hay gặp
+- Gọi {{joining}} trực tiếp trên {{Stream<Integer>}} → lỗi biên dịch vì Integer không phải CharSequence; phải map sang String.
+- Nhầm delimiter với prefix/suffix.
+> Senior tip: {{joining}} thay cho vòng lặp StringBuilder thủ công, vừa gọn vừa nhanh. Rất hợp tạo CSV, log message, URL query string.`
 }
 )
