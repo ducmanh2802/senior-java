@@ -7608,5 +7608,1306 @@ class OrderAggregator {
   ],
   related: ['concurrency-004', 'concurrency-013'],
   tags: ['structured concurrency', 'fan-out', 'Future', 'timeout', 'ExecutorService'],
+},
+{
+  id: 'lesson-concurrency-029',
+  track: 'concurrency',
+  order: 29,
+  title: 'Semaphore: giới hạn số request song song gọi đối tác',
+  level: 'senior',
+  minutes: 30,
+  goals: [
+    'Hiểu Semaphore là gì: đếm số permit, acquire() chờ khi hết permit',
+    'Dùng Semaphore để giới hạn tối đa N request song song gọi service đối tác',
+    'Viết bài tập tự chấm với CountDownLatch và kiểm tra số request đồng thời thực sự bị giới hạn',
+  ],
+  body: `### Tóm tắt
+Semaphore (đồng bộ) là một bộ đếm permit: thread gọi acquire() sẽ chờ nếu không còn permit, release() trả permit về. Dùng để giới hạn số tác vụ chạy song song, ví dụ tối đa 20 request gọi service đối tác cùng lúc, tránh làm quá tải đối tác và tránh tự làm quá tải chính mình.
+
+### Vì sao cần giới hạn đồng thời
+Khi fan-out gọi đối tác, nếu không giới hạn, 1000 request đồng thời sẽ mở 1000 connection tới đối tác, có thể làm đối tác trả 429/503 và làm cạn connection pool của mình. Semaphore đặt ngưỡng an toàn: chỉ cho phép N request song song, các request còn lại chờ permit.
+
+### Cách hoạt động
+Semaphore được khởi tạo với số permit = N. acquire() giảm permit; nếu permit = 0 thì thread block. release() tăng permit và đánh thức thread đang chờ. Có thể fair (FIFO) hoặc non-fair.
+
+~~~java
+Semaphore sem = new Semaphore(20);   // tối đa 20 song song
+sem.acquire();                       // xin permit, chờ nếu hết
+try {
+    partnerClient.call();            // gọi đối tác
+} finally {
+    sem.release();                   // luôn trả permit
+}
+~~~
+
+### Ví dụ đời thực
+Service thanh toán gọi service kiểm tra số dư đối tác. Đối tác chỉ cho phép 50 RPS song song. Đặt Semaphore(20) để an toàn, log số request đang chờ (getQueueLength()) để theo dõi.
+
+### Lỗi hay gặp
+- Quên release() trong finally → permit rò rỉ, deadlock.
+- acquire() không có timeout → thread chờ mãi; dùng tryAcquire(timeout).
+- Dùng Semaphore(1) như mutex nhưng không fair → starvation.
+
+### So sánh với các giải pháp khác
+| Giải pháp | Mục đích |
+|---|---|
+| Semaphore | Giới hạn đồng thời N |
+| Mutex/Lock | Loại trừ lẫn nhau 1 |
+| RateLimiter (Guava) | Giới hạn tốc độ theo thời gian |
+| Bulkhead (Resilience4j) | Cô lập tài nguyên |
+
+### Ví dụ đời thực 2
+API gateway gọi service partner; partner cho phép 100 concurrent. Đặt Semaphore(80) để an toàn, theo dõi getQueueLength() và release() trong finally. Khi queue dài, trả 429 sớm thay vì chờ.
+
+### Trả lời mẫu khi phỏng vấn
+Semaphore là công cụ giới hạn đồng thời: khởi tạo với N permit, acquire() xin permit (chờ nếu hết), release() trả permit. Dùng để bảo vệ service đối tác và chính mình. Luôn release trong finally, nên có timeout cho acquire.
+
+### Cách đo lường
+Theo dõi permit đã dùng (maxConcurrent - availablePermits()) và số thread đang chờ (getQueueLength()). Nếu queue dài liên tục, tăng pool hoặc giảm tải. Dùng tryAcquire(timeout) để tránh chờ mãi.
+
+> Senior tip: fair=true đảm bảo FIFO nhưng chậm hơn; mặc định non-fair throughput cao hơn. Theo dõi getQueueLength() để phát hiện nghẽn.`,  exercises: [
+    {
+      title: 'Rate limit đồng thời bằng Semaphore',
+      prompt: `Viết method callPartner(int n, int maxConcurrent) gọi đối tác n lần nhưng tối đa maxConcurrent song song. Dùng Semaphore và CountDownLatch để chờ tất cả xong.`,
+      starter: `import java.util.concurrent.*;\n\nclass Solution {\n    public int callPartner(int n, int maxConcurrent) throws Exception {\n        // TODO\n        return 0;\n    }\n}`,
+      tests: `public class Main {
+    static int passed = 0, total = 0;
+    static void check(String name, Runnable r) {
+        total++;
+        try { r.run(); passed++; System.out.println("PASS " + name); }
+        catch (Throwable t) { System.out.println("FAIL " + name + ": " + t); }
+    }
+    static void eq(Object expected, Object actual) {
+        if (!Objects.equals(expected, actual)) throw new AssertionError("expected " + expected + " got " + actual);
+    }
+    public static void main(String[] args) throws Exception {
+        Solution s = new Solution();
+        check("Gọi 50 lần với maxConcurrent=5, tất cả thành công", () -> {
+            try { eq(50, s.callPartner(50, 5)); } catch (Exception e) { throw new AssertionError(e); }
+        });
+        check("Gọi 20 lần với maxConcurrent=10, tất cả thành công", () -> {
+            try { eq(20, s.callPartner(20, 10)); } catch (Exception e) { throw new AssertionError(e); }
+        });
+        check("Gọi 100 lần với maxConcurrent=20, tất cả thành công", () -> {
+            try { eq(100, s.callPartner(100, 20)); } catch (Exception e) { throw new AssertionError(e); }
+        });
+        check("Gọi 0 lần trả về 0", () -> {
+            try { eq(0, s.callPartner(0, 5)); } catch (Exception e) { throw new AssertionError(e); }
+        });
+        check("maxConcurrent=1 xử lý tuần tự", () -> {
+            try { eq(10, s.callPartner(10, 1)); } catch (Exception e) { throw new AssertionError(e); }
+        });
+        System.out.println("RESULT " + passed + "/" + total);
+    }
+}`,
+      reference: `import java.util.concurrent.*;\n\nclass Solution {\n    public int callPartner(int n, int maxConcurrent) throws Exception {\n        Semaphore sem = new Semaphore(maxConcurrent);\n        CountDownLatch done = new CountDownLatch(n);\n        AtomicInteger counter = new AtomicInteger();\n        ExecutorService pool = Executors.newFixedThreadPool(Math.max(2, maxConcurrent));\n        for (int i = 0; i < n; i++) {\n            pool.submit(() -> {\n                try {\n                    sem.acquire();\n                    try { Thread.sleep(10); } catch (InterruptedException e) { Thread.currentThread().interrupt(); }\n                    counter.incrementAndGet();\n                } catch (InterruptedException e) { Thread.currentThread().interrupt(); }\n                finally { sem.release(); done.countDown(); }\n            });\n        }\n        done.await(10, TimeUnit.SECONDS);\n        pool.shutdownNow();\n        return counter.get();\n    }\n}`,
+      hints: ['Dùng Semaphore(maxConcurrent) và CountDownLatch(n)'],
+      explain: 'Semaphore giới hạn số thread gọi đối tác song song; CountDownLatch chờ tất cả xong.',
+    },
+  ],
+  check: [
+    { q: 'Semaphore acquire() làm gì khi hết permit?', options: ['Trả về false', 'Block chờ', 'Throw', 'Bỏ qua'], answer: 1, explain: 'acquire() block cho đến khi có permit.' },
+    { q: 'Cần làm gì trong finally?', options: ['acquire()', 'release()', 'shutdown()', 'sleep()'], answer: 1, explain: 'Luôn release() để trả permit.' },
+  ],
+  related: ['concurrency-004'],
+  tags: ['semaphore', 'rate limit', 'concurrency'],
+},
+{
+  id: 'lesson-concurrency-030',
+  track: 'concurrency',
+  order: 30,
+  title: 'Huỷ tác vụ còn lại khi một tác vụ lỗi (deadline propagation)',
+  level: 'senior',
+  minutes: 35,
+  goals: [
+    'Hiểu deadline propagation: tổng thời gian fan-out bị giới hạn bởi deadline chung',
+    'Khi một con lỗi, huỷ tất cả con còn lại bằng cancel(true)',
+    'Viết fan-out với timeout tổng và cleanup đúng',
+  ],
+  body: `### Tóm tắt
+Khi fan-out nhiều tác vụ con, cần một deadline tổng: nếu vượt deadline thì huỷ tất cả con. Khi một con lỗi, huỷ các con còn lại để giải phóng tài nguyên. Đây là nguyên tắc structured concurrency trên Java 17 bằng ExecutorService + Future.
+
+### Vấn đề
+Gọi 3 service song song, nếu service A lỗi sau 100ms, các service B,C vẫn chạy đến timeout 2s → lãng phí tài nguyên và connection. Cần huỷ ngay.
+
+### Cách làm
+Dùng Future.get(timeout) cho từng con; bọc trong try/catch; khi có exception, cancel(true) tất cả future còn lại; finally shutdownNow().
+
+~~~java
+List<Future<?>> futures = new ArrayList<>();
+try {
+    Future<A> fa = pool.submit(() -> callA());
+    Future<B> fb = pool.submit(() -> callB());
+    futures.add(fa); futures.add(fb);
+    A a = fa.get(deadlineMs, MILLISECONDS);
+    B b = fb.get(deadlineMs, MILLISECONDS);
+    return new Result(a, b);
+} catch (Exception e) {
+    for (Future<?> f : futures) f.cancel(true);
+    throw e;
+} finally {
+    pool.shutdownNow();
+}
+~~~
+
+### Deadline tổng
+Tính deadline = System.nanoTime() + timeout; mỗi future.get dùng thời gian còn lại.
+
+### Lỗi hay gặp
+- get() không timeout → thread treo.
+- Quên cancel(true) → thread rò.
+- shutdown() thay vì shutdownNow() → task vẫn chạy.
+
+### Trả lời mẫu khi phỏng vấn
+Khi fan-out, dùng deadline tổng; mỗi con get(timeout). Khi một con lỗi, cancel(true) các con còn lại và shutdownNow() pool. Đảm bảo không còn thread rò.
+
+### Cách đo lường
+Theo dõi số future bị cancel và thời gian trung bình. Nếu cancel nhiều, xem lại timeout và retry policy. Ghi log deadline để debug.
+
+### Ví dụ đời thực
+Service tổng hợp gọi 3 API downstream. Nếu API giá lỗi, huỷ ngay các API còn lại, trả lỗi cho client, tránh lãng phí connection và thread. Ghi log số future bị cancel.
+
+### So sánh deadline tổng vs timeout từng con
+- Timeout từng con: mỗi con có timeout riêng, tổng có thể vượt.
+- Deadline tổng: tổng thời gian fan-out bị giới hạn, phân bổ thời gian còn lại cho từng con.
+
+### Lỗi hay gặp
+- get() không timeout → thread treo.
+- Quên cancel(true) → thread rò.
+- shutdown() thay vì shutdownNow() → task vẫn chạy.
+
+### Trả lời mẫu khi phỏng vấn
+Khi fan-out, dùng deadline tổng; mỗi con get(timeout). Khi một con lỗi, cancel(true) các con còn lại và shutdownNow() pool. Đảm bảo không còn thread rò.
+
+### Cách đo lường
+Theo dõi số future bị cancel và thời gian trung bình. Nếu cancel nhiều, xem lại timeout và retry policy. Ghi log deadline để debug.
+
+> Senior tip: ghi log số future bị cancel để theo dõi lãng phí tài nguyên.`,  exercises: [
+    {
+      title: 'Fan-out với huỷ khi lỗi',
+      prompt: `Viết method fanOut(callables) chạy song song, nếu một callable ném exception thì huỷ các cái còn lại và ném exception đó.`,
+      starter: `import java.util.*;\nimport java.util.concurrent.*;\n\nclass Solution {\n    public int fanOut(List<Callable<Integer>> tasks) throws Exception {\n        // TODO\n        return 0;\n    }\n}`,
+      tests: `public class Main {
+    static int passed = 0, total = 0;
+    static void check(String name, Runnable r) {
+        total++;
+        try { r.run(); passed++; System.out.println("PASS " + name); }
+        catch (Throwable t) { System.out.println("FAIL " + name + ": " + t); }
+    }
+    static void eq(Object expected, Object actual) {
+        if (!Objects.equals(expected, actual)) throw new AssertionError("expected " + expected + " got " + actual);
+    }
+    public static void main(String[] args) throws Exception {
+        Solution s = new Solution();
+        check("Tất cả thành công: trả về tổng các kết quả", () -> {
+            try {
+                List<Callable<Integer>> ok = List.of(() -> 1, () -> 2, () -> 3);
+                eq(6, s.fanOut(ok));
+            } catch (Exception e) { throw new AssertionError(e); }
+        });
+        check("Một con ném exception: huỷ các con còn lại, ném lại exception", () -> {
+            try {
+                List<Callable<Integer>> fail = List.of(
+                    () -> { throw new IllegalStateException("task failed"); },
+                    () -> 100,
+                    () -> 200
+                );
+                s.fanOut(fail);
+                throw new AssertionError("phải ném exception");
+            } catch (IllegalStateException e) {
+                eq("task failed", e.getMessage());
+            } catch (Exception e) { throw new AssertionError(e); }
+        });
+        check("Danh sách rỗng trả về 0", () -> {
+            try { eq(0, s.fanOut(List.of())); } catch (Exception e) { throw new AssertionError(e); }
+        });
+        check("Một task thành công, một task lỗi: ném lỗi của task đầu tiên", () -> {
+            try {
+                List<Callable<Integer>> mixed = List.of(
+                    () -> 10,
+                    () -> { throw new RuntimeException("error"); },
+                    () -> 30
+                );
+                s.fanOut(mixed);
+                throw new AssertionError("phải ném exception");
+            } catch (RuntimeException e) {
+                eq("error", e.getMessage());
+            } catch (Exception e) { throw new AssertionError(e); }
+        });
+        System.out.println("RESULT " + passed + "/" + total);
+    }
+}`,
+      reference: `import java.util.*;\nimport java.util.concurrent.*;\n\nclass Solution {\n    public int fanOut(List<Callable<Integer>> tasks) throws Exception {\n        ExecutorService pool = Executors.newFixedThreadPool(Math.max(1, tasks.size()));\n        List<Future<Integer>> futures = new ArrayList<>();\n        for (Callable<Integer> c : tasks) futures.add(pool.submit(c));\n        int sum = 0;\n        try {\n            for (Future<Integer> f : futures) sum += f.get(1, TimeUnit.SECONDS);\n        } catch (ExecutionException e) {\n            for (Future<Integer> f : futures) f.cancel(true);\n            pool.shutdownNow();\n            Throwable cause = e.getCause();\n            if (cause instanceof RuntimeException) throw (RuntimeException) cause;\n            if (cause instanceof Error) throw (Error) cause;\n            throw new RuntimeException(cause);\n        } catch (Exception e) {\n            for (Future<Integer> f : futures) f.cancel(true);\n            pool.shutdownNow();\n            throw e;\n        }\n        pool.shutdownNow();\n        return sum;\n    }\n}`,
+      hints: ['submit tất cả, get từng cái, cancel(true) khi lỗi'],
+      explain: 'Huỷ các future còn lại khi một con lỗi để giải phóng tài nguyên.',
+    },
+  ],
+  check: [
+    { q: 'Khi một con lỗi, nên làm gì với con còn lại?', options: ['Chờ hết', 'cancel(true)', 'Retry', 'Bỏ qua'], answer: 1, explain: 'cancel(true) huỷ ngay.' },
+    { q: 'get() không timeout thì sao?', options: ['Trả về null', 'Chờ mãi', 'Throw nhanh', 'Bỏ qua'], answer: 1, explain: 'get() không tham số chờ mãi nếu con treo.' },
+  ],
+  related: ['concurrency-004', 'concurrency-013'],
+  tags: ['deadline', 'cancellation', 'fan-out'],
+},
+{
+  id: 'lesson-concurrency-031',
+  track: 'concurrency',
+  order: 31,
+  title: 'Giới hạn số request đồng thời gọi đối tác bằng Semaphore',
+  level: 'mid',
+  minutes: 35,
+  goals: [
+    'Giải thích được Semaphore là "cái bình chứa n vé" và tại sao nó giới hạn số tác vụ đang chạy cùng lúc, không phải số request mỗi giây',
+    'Viết mã gọi API đối tác: tối đa 20 request đang bay, acquire() trước khi gọi, release() trong finally',
+    'Biết khi permit bị rò (không release đường lỗi) thì sau 20 lần lỗi toàn hệ thống gọi đối tác sẽ treo',
+    'Viết test deterministic bằng CountDownLatch để chứng minh đúng 20 request cùng chạy vào lúc cao nhất'
+  ],
+  body: `### Tóm tắt
+Khi ứng dụng gọi một API đối tác (kiểm tra gian lận, cổng thanh toán, bưu điện…), đối tác thường chỉ chấp nhận một số kết nối đang xử lý cùng lúc. Phóng 500 request cùng lúc thì đối tác từ chối (HTTP 429) hoặc chậm đến không chịu nổi, đồng thời hàng trăm thread của bạn treo chờ đáp ứng và có thể làm treo cả server. Semaphore trong java.util.concurrent đặt một bulkhead (tường ngăn cháy lan) — giới hạn số tác vụ được vào cùng lúc, phần còn lại xếp hàng chờ thay vì đổ xô vào đối tác.
+
+### Semaphore là cái bình chứa n vé
+Semaphore là một bộ đếm có n permit (chiếc vé vào). acquire() lấy một vé: còn vé thì vào ngay, hết vé thì thread chờ (bị park, nhường CPU cho thread khác). release() trả một vé vào bình. Mọi vé lấy ra phải được trả lại, ngay cả khi đoạn gọi ném exception — do đó release() nằm trong finally.
+
+Ví dụ đời thường: bãi đỗ xe có 5 chỗ. Xe vào lấy một vé đậu xe, xe ra trả vé để thả chỗ cho xe khác. Hết 5 chỗ thì xe thứ 6 đợi ở cổng, không được vùn vào làm lộn xộn bãi đỗ.
+
+Thuật ngữ cần nhớ:
+- Permit: chiếc vé, đại diện cho một đơn vị tài nguyên được dùng đồng thời.
+- Acquire/Release: lấy và trả vé.
+- Bulkhead: mẫu thiết kế tách biệt tài nguyên cho từng loại gọi (như các ngăn trên tàu: nước tràn vào một ngăn thì các ngăn khác không chìm). Ở đây ngăn các cuộc gọi đối tác dùng quá nhiều thread của hệ thống.
+- Concurrency (độ đồng thời): số tác vụ đang chạy cùng một lúc.
+- Rate limit (giới hạn tốc độ): số tác vụ được bắt đầu trong một đơn vị thời gian (ví dụ 100 request/giây). Hai thứ khác nhau: 20 request đồng thời, mỗi request 200 ms thì throughput khoảng 100 request/giây; nếu mỗi request 2 giây thì cùng 20 request đồng thời chỉ khoảng 10 request/giây. Semaphore giới hạn độ đồng thời, không giới hạn theo thời gian.
+
+Ví dụ số: đối tác cho phép tối đa 20 kết nối đồng thời. Bạn tạo Semaphore(20). 100 request đến, 20 request vào gọi API ngay, 80 request chờ ở acquire(). Mỗi call 200 ms, cứ 200 ms có 20 lượt xong và trả vé, khoảng 100 call/giây. Giờ đối tác chậm lên 2 giây, cùng Semaphore(20) thì throughput rơi xuống khoảng 10 call/giây, nhưng 20 kết nối của đối tác không bao giờ bị vượt — đối tác không sập do bạn.
+
+### Mã minh họa: gọi đối tác tối đa 20 đồng thời
+~~~java
+class PartnerGateway {
+    private final Semaphore permits = new Semaphore(20); // tối đa 20 call đang bay
+
+    String checkFraud(String orderId) {
+        permits.acquire();                 // lấy vé: hết 20 thì chờ ở đây
+        try {
+            return fraudClient.check(orderId);   // gọi đối tác
+        } catch (RuntimeException e) {
+            throw e;                       // lỗi vẫn ném ra
+        } finally {
+            permits.release();             // TRẢ VÉ: nằm trong finally, không bao giờ bỏ qua
+        }
+    }
+}
+~~~
+
+Lưu ý: acquire() đặt ngoài try, release() đặt trong finally. Nếu đặt acquire() vào trong try, khi acquire() ném InterruptedException thì finally lại gọi release() trên chiếc vé chưa từng lấy, số vé tăng dần, giới hạn biến mất im lặng.
+
+### Lỗi production hay gặp
+1. Vé rò: gọi acquire(), sau đó gọi đối tác ném exception mà quên release() trong finally. Mỗi lần lỗi mất một vé; sau 20 lần lỗi, Semaphore(20) cạn kiệt, mọi request sau chờ acquire() mãi, CPU vẫn rảnh nhưng server không gọi được đối tác nữa.
+2. Làm Semaphore thành rate limiter: Semaphore(20) không có nghĩa là 20 request/giây. Nếu mỗi request 10 ms thì thực tế 2000 request/giây, có thể đánh sập đối tác. Muốn giới hạn theo thời gian hãy dùng token bucket (bài rate limiter trong track này) kết hợp.
+3. Release nhiều lần (hai lần release() cho một acquire(), hoặc release() mà không acquire()): số permit tăng dần, giới hạn biến mất.
+4. Không có timeout: acquire() chờ vô hạn. Nếu đối tác treo, hàng request của bạn cũng treo theo. Thực tế nên kết hợp tryAcquire(timeout) hoặc timeout ở HTTP client, và fail-fast (trả 503) thay vì để hàng request chồng chồng.
+
+### Ví dụ đời thực
+Công ty logistik gọi API đối tác để in vận đơn: quota đối tác là 20 kết nối đồng thời, vượt quá trả HTTP 429. Trước đây code gọi thẳng, giờ cao điểm 150 request/giây thì 40% request nhận 429, đội vận hành phải khởi động lại server mỗi sáng. Sau khi gói Semaphore(20) quanh mỗi gọi, số 429 xuống 0, p99 thời gian gọi từ 3 giây xuống 600 ms, và server không còn thread treo chờ đối tác. Kết quả đo được sau 2 tuần: 0 mất kết nối, thời gian phản hồi ổn định.
+
+### Liên hệ phỏng vấn
+Câu hỏi hay: Semaphore khác RateLimiter ở điểm nào?; Bạn có Semaphore(20), mỗi call 200 ms, throughput tối đa là bao nhiêu?; release() sai đường thể hiện gì?. Trả lời senior: Semaphore giới hạn số tác vụ đang chạy cùng lúc (bulkhead), RateLimiter giới hạn số tác vụ mỗi đơn vị thời gian; throughput xấp xỉ số permit chia thời gian mỗi call (ví dụ 20 chia 0,2 giây bằng 100 req/s) và chỉ đúng khi mọi call đều chờ permit; release() phải nằm trong finally để tránh rò vé. Nếu đối tác chậm, Semaphore bảo vệ đối tác nhưng làm tăng độ chờ của hệ thống bạn, lúc đó cần fail-fast hoặc hàng đợi có giới hạn ở phía trước.
+`,
+  exercises: [
+    {
+      title: 'Gọi đối tác tối đa 20 song song bằng Semaphore',
+      prompt: `Viết class PartnerGateway để gọi một API đối tác (giả lập bằng hàm call), với quy tắc:
+
+- List<String> callAll(List<String> ids, Function<String,String> call, int maxConcurrent): mỗi id là một lời gọi, gọi song song qua một executor (code nhận executor từ người gọi).
+- Tại mọi thời điểm tối đa maxConcurrent lời gọi call đang chạy đồng thời (dùng Semaphore).
+- Trả về kết quả cùng thứ tự với ids. Lời gọi ném exception thì kết quả tại vị trí đó là ERR- + id.
+- Không shutdown executor (người gọi sở hữu executor).
+- maxConcurrent < 1 thì ném IllegalArgumentException. Danh sách rỗng trả về danh sách rỗng.
+
+Test sẽ dùng CountDownLatch để các lời gọi bắt đầu cùng lúc, rồi kiểm chứng số cuộc gọi đồng thời cao nhất không vượt maxConcurrent (và đúng bằng khi đủ tài nguyên pool).`,
+      starter: `class PartnerGateway {
+    static List<String> callAll(ExecutorService executor, List<String> ids,
+                                Function<String, String> call, int maxConcurrent) {
+        throw new UnsupportedOperationException("TODO");
+    }
+}`,
+      tests: `public class Main {
+    static int passed = 0, total = 0;
+    static void check(String name, Runnable r) {
+        total++;
+        try { r.run(); passed++; System.out.println("PASS " + name); }
+        catch (Throwable t) { System.out.println("FAIL " + name + ": " + t); }
+    }
+    static void eq(Object expected, Object actual) {
+        if (!Objects.equals(expected, actual)) throw new AssertionError("expected " + expected + " got " + actual);
+    }
+    static ExecutorService pool(int n) {
+        AtomicInteger seq = new AtomicInteger();
+        return Executors.newFixedThreadPool(n, r -> { Thread t = new Thread(r, "partner-" + seq.incrementAndGet()); t.setDaemon(true); return t; });
+    }
+    static List<String> run(ExecutorService ex, List<String> ids, Function<String, String> call, int max) {
+        ExecutorService caller = Executors.newSingleThreadExecutor(r -> { Thread t = new Thread(r, "caller"); t.setDaemon(true); return t; });
+        try {
+            return caller.submit(() -> PartnerGateway.callAll(ex, ids, call, max)).get(10, TimeUnit.SECONDS);
+        } catch (TimeoutException e) { throw new AssertionError("callAll không xong trong 10s"); }
+        catch (InterruptedException e) { throw new AssertionError(e); }
+        catch (ExecutionException e) {
+            if (e.getCause() instanceof RuntimeException) throw (RuntimeException) e.getCause();
+            throw new AssertionError("callAll lỗi: " + e.getCause());
+        }
+        finally { caller.shutdownNow(); }
+    }
+    public static void main(String[] args) {
+        check("Kết quả trả về theo thứ tự đầu vào, lỗi biết bằng ERR-id", () -> {
+            ExecutorService ex = pool(8);
+            try {
+                List<String> out = run(ex, List.of("A", "B", "C", "D"), id -> "R-" + id, 3);
+                eq(List.of("R-A", "R-B", "R-C", "R-D"), out);
+            } finally { ex.shutdownNow(); }
+        });
+        check("Một lời gọi ngoài lỗi không làm mất kết quả còn lại, kết quả vẫn có thứ tự", () -> {
+            ExecutorService ex = pool(8);
+            try {
+                List<String> out = run(ex, List.of("A", "B", "C"), id -> { if (id.equals("B")) throw new IllegalStateException("timeout"); return "R-" + id; }, 2);
+                eq(List.of("R-A", "ERR-B", "R-C"), out);
+            } finally { ex.shutdownNow(); }
+        });
+        check("Không vượt maxConcurrent số lời gọi đồng thời (CountDownLatch bắt đầu cùng lúc)", () -> {
+            ExecutorService ex = pool(40);
+            AtomicInteger active = new AtomicInteger(), maxActive = new AtomicInteger();
+            CountDownLatch gate = new CountDownLatch(1);
+            CountDownLatch atGate = new CountDownLatch(20); // dùng 20 permit của Semaphore(20)
+            int max = 20, totalCall = 35;
+            List<String> ids = new ArrayList<>();
+            for (int i = 0; i < totalCall; i++) ids.add("id-" + i);
+            final AtomicReference<List<String>> results = new AtomicReference<>();
+            final Throwable[] error = { null };
+            Function<String, String> call = id -> {
+                atGate.countDown(); // đã được phép vào, đang ở cổng
+                try { gate.await(); } catch (InterruptedException e) { Thread.currentThread().interrupt(); return "X"; }
+                maxActive.accumulateAndGet(active.incrementAndGet(), Math::max);
+                try { Thread.sleep(20); } catch (InterruptedException e) { Thread.currentThread().interrupt(); }
+                active.decrementAndGet();
+                return "R-" + id;
+            };
+            Thread runner = new Thread(() -> {
+                try { results.set(PartnerGateway.callAll(ex, ids, call, max)); }
+                catch (Throwable t) { error[0] = t; }
+            });
+            runner.start();
+            try {
+                if (!atGate.await(5, TimeUnit.SECONDS)) throw new AssertionError("không đủ 20 call ở cổng");
+            } catch (InterruptedException e) { throw new AssertionError(e); }
+            gate.countDown();
+            try { runner.join(10000); } catch (InterruptedException e) { throw new AssertionError(e); }
+            if (runner.isAlive()) throw new AssertionError("callAll không kết thúc");
+            if (error[0] != null) throw new AssertionError("callAll lỗi: " + error[0]);
+            if (maxActive.get() > max) throw new AssertionError("quá hạn: " + maxActive.get() + " call chạy cùng lúc, cho phép " + max);
+            if (maxActive.get() < max) throw new AssertionError("chưa đạt hạn: chỉ " + maxActive.get() + " call chạy cùng lúc, mong muon " + max);
+            ex.shutdownNow();
+        });
+        check("Danh sách rỗng trả về danh sách rỗng", () -> {
+            ExecutorService ex = pool(2);
+            try { eq(List.of(), run(ex, List.of(), id -> "x", 3)); }
+            finally { ex.shutdownNow(); }
+        });
+        check("maxConcurrent < 1 ném IllegalArgumentException", () -> {
+            ExecutorService ex = pool(2);
+            try {
+                run(ex, List.of("A"), id -> "x", 0);
+                throw new AssertionError("maxConcurrent = 0 phải ném IllegalArgumentException");
+            } catch (IllegalArgumentException expected) { }
+            finally { ex.shutdownNow(); }
+        });
+        check("Executor của người gọi không bị shutdown", () -> {
+            ExecutorService ex = pool(2);
+            try {
+                run(ex, List.of("A", "B"), id -> "R-" + id, 1);
+                if (ex.isShutdown()) throw new AssertionError("không được shutdown executor của người gọi");
+            } finally { ex.shutdownNow(); }
+        });
+        System.out.println("RESULT " + passed + "/" + total);
+    }
+}`,
+      reference: `class PartnerGateway {
+    static List<String> callAll(ExecutorService executor, List<String> ids,
+                                Function<String, String> call, int maxConcurrent) {
+        if (maxConcurrent < 1) throw new IllegalArgumentException("maxConcurrent must be >= 1");
+        Semaphore permits = new Semaphore(maxConcurrent);
+        List<Future<String>> futures = new ArrayList<>(ids.size());
+        for (String id : ids) {
+            final String requestId = id;
+            futures.add(executor.submit(() -> {
+                permits.acquire();                 // lấy vé: hết vé thì chờ ở đây
+                try {
+                    return call.apply(requestId);
+                } catch (RuntimeException e) {
+                    return "ERR-" + requestId;     // lỗi của một lời gọi không làm sao các lời gọi còn lại
+                } finally {
+                    permits.release();             // TRẢ VÉ, luôn trong finally
+                }
+            }));
+        }
+        List<String> results = new ArrayList<>(ids.size());
+        try {
+            for (Future<String> f : futures) results.add(f.get());   // giữ thứ tự đầu vào
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            for (Future<String> f : futures) f.cancel(true);
+            throw new IllegalStateException("bị ngắt", e);
+        } catch (ExecutionException e) {
+            throw new IllegalStateException(e.getCause());
+        }
+        return results;                            // không shutdown executor
+    }
+}`,
+      hints: [
+        'Tạo new Semaphore(maxConcurrent); trong mỗi task: acquire(), gọi call.apply(id) trong try, release() trong finally.',
+        'Submit tất cả các task vào executor, lưu List<Future<String>>, sau đó get() lần lượt để giữ thứ tự đầu vào.',
+        'Bắt RuntimeException quanh call.apply(id) để trả về ERR- + id. Không gọi executor.shutdown().',
+        'Test có đồng thời: tất cả task chuẩn bị xong, CountDownLatch mở cửa cùng lúc, số luồng đang chạy (active) không vượt maxConcurrent.',
+      ],
+      explain: `Semaphore làm việc như cổng: mỗi acquire() giảm số còn lại, hết thì thread chờ (virtual thread sẽ unmount, platform thread được park). release() trong finally bắt buộc: nếu một lời gọi lỗi không trả về, sau maxConcurrent lỗi hết vé, tất cả các lời gọi sau chờ vô hạn. Test CountDownLatch làm kiểm tra deterministic: thả 35 task cùng lúc với Semaphore(20), chỉ 20 task được vào lúc đầu, số luồng đang chạy (active) tối đa phải bằng 20. Nếu code thiếu acquire hoặc release ở chưa đúng vị trí, test sẽ bị bắt quá hạn hoặc chưa đạt hạn.`,
+    },
+  ],
+  check: [
+    {
+      q: 'Semaphore(20) bao quanh mỗi lời gọi API đối tác, mỗi lời gọi trung bình 200 ms. Throughput (số lời gọi giây) xấp xỉ là bao nhiêu?',
+      options: ['Luôn đúng 20 lời gọi/giây', 'Khoảng 100 lời gọi/giây (20 lời gọi chia 0,2 giây), và chỉ đúng nếu mọi lời gọi đều phải chờ permit', '200 lời gọi/giây', 'Không giới hạn'],
+      answer: 1,
+      explain: 'Theo định luật Little: throughput = số tác vụ đồng thời / thời gian mỗi tác vụ = 20 / 0,2 giây = 100 req/s. Con số này chỉ đúng khi hết 20 permit luôn được sử dụng (mọi lời gọi đều bắt buộc phải chờ permit). Nếu mỗi lời gọi chỉ 10 ms thì cùng Semaphore(20) lên đến 2000 req/s — bằng chứng Semaphore giới hạn đồng thời, không giới hạn theo thời gian.',
+    },
+    {
+      q: 'Tại sao release() của Semaphore phải nằm trong finally?',
+      options: ['Để Garbage Collection thu hồi vé', 'Để tránh rò vé: một lời gọi lỗi không release thì một vé mất rồi vĩnh viễn; sau 20 lỗi Semaphore(20) hết vé và tất cả lời gọi sau chờ mãi', 'release() trong finally chạy nhanh hơn', 'Không cần, release() tự động'],
+      answer: 1,
+      explain: 'Mỗi acquire() phải kết hợp release() một lần, trên cùng đường gọi. Nếu gọi đối tác lỗi ngoài giữa mà bỏ release() ở cuối, mỗi lần lỗi mất một vé; sau 20 lần lỗi hết 20 permit, tất cả request sau bị block ở acquire() — CPU vẫn rảnh nhưng hệ thống không gọi được đối tác nữa.',
+    },
+    {
+      q: 'Semaphore(20) khác RateLimiter 20 request/giây ở điểm nào?',
+      options: ['Không chốt gì cả hai', 'Semaphore giới hạn số lời gọi đang bay (đồng thời); RateLimiter giới hạn số lời gọi mỗi một đơn vị thời gian', 'RateLimiter chuẩn hơn Semaphore', 'Semaphore chỉ dùng được với virtual thread'],
+      answer: 1,
+      explain: 'Semaphore là công cụ bulkhead (giới hạn đồng thời). RateLimiter (token bucket) giới hạn tần số theo thời gian. Hai công cụ thường dùng chung: RateLimiter chặn số lời gọi mỗi giây, Semaphore chặn số lời gọi treo cùng lúc khi đối tác chậm đi.',
+    },
+  ],
+  related: ['concurrency-011', 'concurrency-012'],
+  tags: ['Semaphore', 'bulkhead', 'concurrency limit', 'permit', 'partner API'],
+},
+{
+  id: 'lesson-concurrency-032',
+  track: 'concurrency',
+  order: 32,
+  title: 'Structured concurrency: nhiều tác vụ làm một đơn vị, hủy khi có lỗi',
+  level: 'senior',
+  minutes: 40,
+  goals: [
+    'Giải thích được structured concurrency là nguyên tắc nhiều tác vụ con được quản lý như một khối cha: chờ con xong, một con lỗi thì hủy các con còn lại',
+    'Nhận ra CompletableFuture để các task mồ côi (chạy tiếp sau khi cha lỗi) và stack trace khó đọc',
+    'Viết tương đương Java 17: ExecutorService + Future + cancel(true) + deadline chung, fan-out/hủy đúng',
+    'Biết dùng get có timeout và không để thread mồ côi'
+  ],
+  body: `### Tóm tắt
+Khi chạy nhiều tác vụ song song để hoàn thành một công việc (ví dụ lấy giá từ ba đối tác rồi chọn giá nhỏ nhất), các tác vụ con phải được quản lý như một đơn vị duy nhất: khi công việc cha kết thúc thì mọi tác vụ con phải đã xong; nếu một con bị lỗi, các con còn lại phải bị hủy ngay để không lãng phí thread, kết nối và CPU. Nguyên tắc này gọi là structured concurrency (c song song có cấu trúc). Java 21 có API có sẵn (StructuredTaskScope), còn trên Java 17 ta làm tương đương bằng ExecutorService + Future + cancel(true).
+
+### Structured concurrency là gì - ví dụ đời thường
+Hãy hình dung một trưởng nhóm giao ba việc cho ba người, rồi ngồi chờ tại phòng họp. Luật structured concurrency: không ai rời phòng khi còn việc đang làm; một người báo lỗi thì trưởng nhóm gọi hai người kia dừng tay ngay, rồi thông báo lỗi cho cấp trên. Điều ngược lại là task mồ côi (orphan task): trưởng nhóm về mà ba người vẫn làm tiếp, có người sau khi biết leader về vẫn tiếp tục in kết quả lên bảng cho không ai xem. Task mồ côi gây rò thread, gây rò kết nối DB, và có thể ghi dữ liệu sau khi request đã trả lời lỗi.
+
+### Ba quy tắc cốt lõi
+1. Vòng đời con nằm trong cha: mỗi tác vụ con được tạo và chờ trong cùng một khối code; ra khỏi khối thì không còn tác vụ con nào còn chạy.
+2. Một lỗi thì hủy dây chuyền (cancellation propagation): task con A ném lỗi thì hủy ngay B và C còn lại, rồi ném lỗi của A lên cha.
+3. Toàn bộ có thời hạn (deadline): mỗi con được get() với timeout (hoặc thời gian còn lại của deadline chung) để không để thread treo mãi.
+
+### Tương đương trên Java 17
+Java 17 chưa có StructuredTaskScope (API preview từ Java 21). Tương đương bằng ExecutorService + Future:
+~~~java
+long deadlineNanos = System.nanoTime() + 2_000_000_000L;   // deadline chung: 2 giây cho toàn bộ fan-out
+List<Future<Integer>> futures = new ArrayList<>();
+for (Callable<Integer> c : tasks) futures.add(pool.submit(c));
+try {
+    List<Integer> results = new ArrayList<>();
+    for (Future<Integer> f : futures) {
+        long remainingMs = (deadlineNanos - System.nanoTime()) / 1_000_000L;
+        if (remainingMs <= 0) throw new TimeoutException("quá hạn fan-out");
+        results.add(f.get(remainingMs, TimeUnit.MILLISECONDS));
+    }
+    return results;
+} catch (Exception e) {
+    for (Future<Integer> f : futures) f.cancel(true);   // một con lỗi -> hủy tất cả con còn lại
+    throw e;
+}
+~~~
+
+cancel(true) ngắt thread đang chạy task (nếu task tự kiểm tra Thread.interrupted()) và lấy task chưa chạy khỏi hàng đợi. shutdown() của pool không dừng task đang chạy, nên phải dùng cancel(true) trên từng future.
+
+### Ví dụ mã: đơn hàng gọi kho, thanh toán, thông báo
+Trang thanh toán gọi ba API: kiểm tra kho (khoảng 150 ms), gọi cổng thẻ (khoảng 400 ms), gửi email xác nhận (khoảng 300 ms). Nếu cổng thẻ trả lời, không có lý do gọi hai API còn lại. Với structured concurrency: lỗi xác nhận tại 400 ms, hai API còn lại bị hủy ngay, tổng latency 400 ms thay vì lãng phí thread, và không gửi email cho đơn hàng bị từ chối.
+
+### Lỗi production hay gặp
+1. get() không timeout: một con treo (đang chờ DB không hồi đáp) làm hết các con treo theo, thread pool cạn, toàn service treo trong những giây tương tự deadlock. Luôn get(timeout) hoặc dùng thời gian còn lại của deadline.
+2. Quên cancel(true): A lỗi mà B, C vẫn chạy đến hết, lãng phí kết nối đối tác và thread; con xong thì kết quả bị bỏ qua, tài nguyên đã bỏ ra.
+3. shutdown() thay vì cancel(true): shutdown() không ngắt task đang chạy; task B đang gọi HTTP vẫn tiếp tục.
+4. Task mồ côi: tác vụ được submit nhưng không ai giữ tham chiếu Future hay không thể hủy hay chạy dài sau khi request đã trả lời lỗi.
+
+### Ví dụ thực tế
+Trang thanh toán của một công ty gọi ba API: kiểm tra kho 150 ms, cổng thẻ 400 ms, gửi email 300 ms. Cổng thẻ bị lỗi, với structured concurrency lỗi phát hiện tại 400 ms, hai API còn lại bị hủy ngay. Được đo: giảm 60% số kết nối thẻ đang bay trong giờ cao điểm, p95 trang thanh toán từ 2,4 giây xuống 0,9 giây.
+
+### Liên hệ phỏng vấn
+Câu hỏi hay: Structured concurrency khác CompletableFuture ở điểm nào?; cancel(true) làm gì, và khi nào nó không dừng được task?; Tại sao get() không timeout là lỗi nặng trong fan-out?. Trả lời senior: structured concurrency gán vòng đời của tác vụ con vào khối cha, một lỗi lan hủy dây chuyền (cancellation propagation), không để task mồ côi; CompletableFuture để các task chạy độc lập, phải tự viết logic hủy. cancel(true) ngắt thread và bỏ task trong hàng đợi, chỉ dùng được task tự kiểm tra Thread.interrupted(); get() không timeout làm thread treo nếu dependency treo.
+`,
+  exercises: [
+    {
+      title: 'Fan-out với hủy dây chuyền: một con lỗi thì hủy hết con còn lại',
+      prompt: `Viết method fanOut:
+
+- List<Integer> fanOut(ExecutorService pool, List<Callable<Integer>> tasks, long timeoutMs): submit tất cả task vào pool cùng lúc.
+- Đọc kết quả của mỗi future lần lượt, mỗi lần dùng thời gian còn lại của timeoutMs (đo bằng nano, đổi sang ms), sao cho tổng thời gian đợi không vượt timeoutMs.
+- Nếu một task ném exception, hết giờ, hoặc bị hủy: hủy tất cả task còn lại bằng cancel(true), rồi ném lại exception của task đầu tiên bị lỗi.
+- Mọi task thành công: trả về danh sách kết quả cùng thứ tự với tasks.
+- Không shutdown pool (người gọi sở hữu pool). Danh sách rỗng trả về danh sách rỗng.
+
+Test sẽ dùng các task chờ trên một cổng (CountDownLatch) để bắt đầu cùng lúc: task đầu tiên ném lỗi ngay, hai task còn lại lặp vô hạn cho đến khi bị interrupt. Kiểm chứng hai task còn lại đã bị hủy (thay vì vẫn chạy sau khi fanOut ném lỗi).`,
+      starter: `class FanOut {
+    static List<Integer> fanOut(ExecutorService pool, List<Callable<Integer>> tasks, long timeoutMs) {
+        throw new UnsupportedOperationException("TODO");
+    }
+}`,
+      tests: `public class Main {
+    static int passed = 0, total = 0;
+    static void check(String name, Runnable r) {
+        total++;
+        try { r.run(); passed++; System.out.println("PASS " + name); }
+        catch (Throwable t) { System.out.println("FAIL " + name + ": " + t); }
+    }
+    static void eq(Object expected, Object actual) {
+        if (!Objects.equals(expected, actual)) throw new AssertionError("expected " + expected + " got " + actual);
+    }
+    static ExecutorService pool(int n) {
+        AtomicInteger seq = new AtomicInteger();
+        return Executors.newFixedThreadPool(n, r -> { Thread t = new Thread(r, "fanout-" + seq.incrementAndGet()); t.setDaemon(true); return t; });
+    }
+    public static void main(String[] args) throws Exception {
+        check("Tất cả thành công: kết quả theo thứ tự đầu vào", () -> {
+            ExecutorService p = pool(4);
+            try {
+                List<Callable<Integer>> tasks = List.of(() -> 1, () -> 2, () -> 3);
+                eq(List.of(1, 2, 3), FanOut.fanOut(p, tasks, 5000));
+            } catch (Exception e) { throw new AssertionError(e); }
+            finally { p.shutdownNow(); }
+        });
+        check("Một con lỗi: hủy con còn lại, ném lỗi của con đầu", () -> {
+            ExecutorService p = pool(4);
+            CountDownLatch gate = new CountDownLatch(1);   // bắt đầu cùng lúc
+            CountDownLatch inLoop = new CountDownLatch(2); // hai con chậm đã vào vòng lập kiểm tra ngắt
+            AtomicInteger cancelled = new AtomicInteger();
+            List<Callable<Integer>> tasks = new ArrayList<>();
+            tasks.add(() -> {
+                gate.await();
+                inLoop.await(5, TimeUnit.SECONDS); // cho hai con chậm vào vòng lập rồi mới ném lỗi
+                throw new IllegalStateException("payment declined");
+            });
+            for (int i = 0; i < 2; i++) {
+                final int index = i;
+                tasks.add(() -> {
+                    gate.await();
+                    inLoop.countDown();      // đã vào vòng lập kiểm tra trạng thái ngắt
+                    try { while (!Thread.interrupted()) { Thread.onSpinWait(); } }
+                    catch (Throwable t) { }
+                    cancelled.incrementAndGet();
+                    Thread.currentThread().interrupt();
+                    return index + 10;
+                });
+            }
+            final Throwable[] error = { null };
+            Thread runner = new Thread(() -> {
+                try { FanOut.fanOut(p, tasks, 5000); }
+                catch (Throwable t) { error[0] = t; }
+            });
+            runner.start();
+            gate.countDown();
+            try { runner.join(10000); } catch (InterruptedException e) { throw new AssertionError(e); }
+            if (runner.isAlive()) throw new AssertionError("fanOut không kết thúc");
+            if (error[0] == null || !(error[0] instanceof IllegalStateException))
+                throw new AssertionError("phải ném IllegalStateException, lỗi: " + error[0]);
+            if (!"payment declined".equals(error[0].getMessage()))
+                throw new AssertionError("lỗi sai: " + error[0].getMessage());
+            try { Thread.sleep(300); } catch (InterruptedException e) { throw new AssertionError(e); }
+            if (cancelled.get() != 2)
+                throw new AssertionError("hai con còn lại phải bị hủy, đã hủy: " + cancelled.get());
+        });
+        check("Hết hạn tổng: tất cả con bị hủy", () -> {
+            ExecutorService p = pool(4);
+            try {
+                CountDownLatch gate = new CountDownLatch(1);
+                CountDownLatch started = new CountDownLatch(3);
+                AtomicInteger cancelled = new AtomicInteger();
+                List<Callable<Integer>> tasks = new ArrayList<>();
+                for (int i = 0; i < 3; i++) {
+                    tasks.add(() -> {
+                        gate.await();
+                        started.countDown();   // đã vào vòng lập
+                        try { while (!Thread.interrupted()) { Thread.onSpinWait(); } }
+                        catch (Throwable t) { }
+                        cancelled.incrementAndGet();
+                        Thread.currentThread().interrupt();
+                        return 1;
+                    });
+                }
+                final Throwable[] error = { null };
+                Thread runner = new Thread(() -> {
+                    try { FanOut.fanOut(p, tasks, 50); }
+                    catch (Throwable t) { error[0] = t; }
+                });
+                runner.start();
+                gate.countDown();   // mở cửa: tất cả task đã được submit vào pool, bắt đầu chạy vòng lập
+                try {
+                    if (!started.await(5, TimeUnit.SECONDS)) throw new AssertionError("task không bắt đầu");
+                } catch (InterruptedException e) { throw new AssertionError(e); }
+                try { runner.join(10000); } catch (InterruptedException e) { throw new AssertionError(e); }
+                if (runner.isAlive()) throw new AssertionError("fanOut không kết thúc");
+                if (error[0] == null || !(error[0] instanceof TimeoutException))
+                    throw new AssertionError("phải ném TimeoutException, lỗi: " + error[0]);
+                try { Thread.sleep(300); } catch (InterruptedException e) { throw new AssertionError(e); }
+                if (cancelled.get() != 3)
+                    throw new AssertionError("tất cả 3 con phải bị hủy, đã hủy: " + cancelled.get());
+            } finally { p.shutdownNow(); }
+        });
+        check("Danh sách rỗng trả về danh sách rỗng", () -> {
+            ExecutorService p = pool(2);
+            try { eq(List.of(), FanOut.fanOut(p, List.of(), 5000)); }
+            catch (Exception e) { throw new AssertionError(e); }
+            finally { p.shutdownNow(); }
+        });
+        check("Thời gian còn lại được phép cho con sau", () -> {
+            ExecutorService p = pool(4);
+            try {
+                List<Callable<Integer>> tasks = List.of(
+                    () -> { Thread.sleep(400); return 1; },
+                    () -> { Thread.sleep(500); return 2; }
+                );
+                eq(List.of(1, 2), FanOut.fanOut(p, tasks, 1000));
+            } catch (Exception e) { throw new AssertionError(e); }
+            finally { p.shutdownNow(); }
+        });
+        System.out.println("RESULT " + passed + "/" + total);
+    }
+}`,
+      reference: `class FanOut {
+    static List<Integer> fanOut(ExecutorService pool, List<Callable<Integer>> tasks, long timeoutMs) throws Exception {
+        if (tasks.isEmpty()) return List.of();
+        List<Future<Integer>> futures = new ArrayList<>(tasks.size());
+        for (Callable<Integer> c : tasks) futures.add(pool.submit(c));
+        long deadlineNanos = System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(timeoutMs);
+        try {
+            List<Integer> results = new ArrayList<>(futures.size());
+            for (Future<Integer> f : futures) {
+                long remainingMs = TimeUnit.NANOSECONDS.toMillis(deadlineNanos - System.nanoTime());
+                if (remainingMs <= 0) throw new TimeoutException("quá hạn " + timeoutMs + " ms");
+                results.add(f.get(remainingMs, TimeUnit.MILLISECONDS));
+            }
+            return results;
+        } catch (ExecutionException e) {
+            for (Future<Integer> f : futures) f.cancel(true);
+            Throwable cause = e.getCause();          // lỗi gốc của task bị lỗi
+            if (cause instanceof RuntimeException) throw (RuntimeException) cause;
+            throw new IllegalStateException(cause);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();      // khôi phục cờ cho caller
+            for (Future<Integer> f : futures) f.cancel(true);
+            throw e;
+        } catch (TimeoutException e) {
+            for (Future<Integer> f : futures) f.cancel(true);
+            throw e;
+        }
+    }
+}`,
+      hints: [
+        'Submit tất cả task và lưu List<Future>; deadline = System.nanoTime() + timeout.',
+        'Lặp qua danh sách future, tính remainingMs cho mỗi get(); <= 0 ném TimeoutException; f.get(remainingMs, MILLISECONDS).',
+        'Có exception: cancel(true) tất cả future còn lại, ném lại lỗi gốc.',
+        'Không shutdown pool (pool thuộc người gọi).',
+      ],
+      explain: `Toàn bộ tình huống ở: (1) submit hết trước để các task chạy song song đường, (2) chia deadline còn lại cho mỗi get() tổng thời gian đợi không vượt timeout, (3) lỗi của bất kỳ con nào thì cancel(true) tất cả con còn lại, không để task mồ côi, (4) không shutdown pool của người gọi. Test bắt con đầu lỗi ngay, hai con còn lại loop cho khi bị interrupt: sau fanOut ném IllegalStateException, hai biến cancelled phải bằng 2, nếu thiếu cancel(true) hai con vẫn chạy, test sẽ bị bắt. Nếu get() không timeout (test hết hạn tổng), fanOut ném TimeoutException sau 50 ms và tất cả con bị hủy.`,
+    },
+  ],
+  check: [
+    {
+      q: 'Structured concurrency khác CompletableFuture ở điểm quan trọng nhất là điều gì?',
+      options: ['Structured concurrency chạy nhanh hơn', 'Một task lỗi thì hủy các task còn lại, không để task mồ côi; CompletableFuture để các task chạy độc lập và phải tự viết logic hủy', 'CompletableFuture không chạy được song song', 'Structured concurrency chỉ dùng được với virtual thread'],
+      answer: 1,
+      explain: 'Structured concurrency gán vòng đời của tác vụ con vào khối cha: ra khỏi thì hết con phải xong, một lỗi lan hủy dây chuyền. CompletableFuture để các task chạy độc lập, lỗi của một con không tự động dừng các con còn lại, có thể để task mồ côi lãng phí tài nguyên.',
+    },
+    {
+      q: 'Trong fan-out, get() không timeout nguy cơ gì?',
+      options: ['Không có nguy cơ', 'Một con treo làm hết các con treo theo, thread pool cạn, toàn service treo', 'Làm chậm hơn', 'Bị lỗi compile'],
+      answer: 1,
+      explain: 'get() không tham số block đến khi con xong. Nếu một con đang chờ DB không hồi đáp, thread của nó treo mà vẫn được giữ; nhiều con như vậy hết pool, các request khác không được thread chạy. Luôn get(timeout) hoặc dùng thời gian còn lại của deadline.',
+    },
+    {
+      q: 'cancel(true) trên Future làm gì?',
+      options: ['Ngắt thread đang chạy task (nếu task tự kiểm tra Thread.interrupted()) và lấy task chưa chạy khỏi hàng đợi', 'Xóa toàn bộ pool', 'Chỉ đánh dấu task là lỗi nhưng vẫn chạy tiếp', 'Tự động restart task'],
+      answer: 0,
+      explain: 'cancel(true) gửi interrupt đến thread chạy task và bỏ các task đang ở hàng đợi chưa chạy. Chỉ dùng được task tự kiểm tra Thread.interrupted() hoặc có cái gì đó kiểm tra trạng thái; task bỏ qua interrupt vẫn chạy tiếp.',
+    },
+    {
+      q: 'Một con lỗi trong structured concurrency, cha phải làm gì ngay lập tức?',
+      options: ['Bỏ qua lỗi, cho các con còn lại chạy hết', 'Hủy tất cả con còn lại bằng cancel(true), rồi ném lỗi của con đầu tiên', 'Khởi động lại con lỗi', 'Ghi log và trả kết quả của các con đã xong'],
+      answer: 1,
+      explain: 'Theo quy tắc một lỗi thì hủy dây chuyền: gán lỗi của con đầu tiên bị lỗi, hủy các con còn lại để giải phóng tài nguyên, không cho tất cả chạy xong rồi mới trả lời.',
+    },
+  ],
+  related: ['concurrency-013', 'concurrency-004'],
+  tags: ['structured concurrency', 'cancellation', 'fan-out', 'deadline', 'Future', 'ExecutorService'],
+},
+{
+  id: 'lesson-concurrency-033',
+  track: 'concurrency',
+  order: 33,
+  title: 'Semaphore và bẫy tự-khoá (self-deadlock): giữ permit rồi chờ việc con cũng xin permit',
+  level: 'senior',
+  minutes: 35,
+  goals: [
+    'Giải thích được vì sao **giữ một permit rồi đồng bộ chờ việc con** (việc con cũng xin permit từ cùng Semaphore) có thể làm cả hệ thống treo vĩnh viễn — gọi là self-deadlock hay pool starvation',
+    'Biết ba cách sửa: xin đủ permit cho cả cha lẫn con **lên trước** theo thứ tự cố định, tách pool/Semaphore riêng cho việc con, hoặc dùng tryAcquire có timeout để fail-fast (load shedding)',
+    'Viết được lớp gọi đối tác nhận đủ permit bằng **một lần tryAcquire(n) nguyên tử**, nhả trong finally, không rò permit khi body ném exception',
+    'Phân biệt rõ Semaphore (giới hạn số việc cùng chạy) với rate limiter (giới hạn số việc mỗi giây) trong tình huống gọi lồng nhau',
+  ],
+  body: `### Tóm tắt
+Semaphore (bộ đếm "vé vào") chỉ cho tối đa N tác vụ cùng ở trong vùng nguy hiểm, các tác vụ khác chờ. Bẫy chết người là **giữ một vé rồi đồng bộ chờ một việc con cũng phải xin vé từ cùng Semaphore đó**. Nếu mọi vé đang bị các tác vụ cha giữ và ai cũng đang chờ việc con xin vé, thì không còn vé nào tự do: cả hệ thống treo vĩnh viễn. Đây gọi là self-deadlock (tự khoá) hay pool starvation (đói tài nguyên). Cách sửa cốt lõi: xin đủ vé cho cả cha lẫn con **lên trước** bằng một lần tryAcquire(n) nguyên tử, hoặc tách pool/Semaphore riêng cho việc con, hoặc dùng tryAcquire có timeout để fail-fast thay vì treo.
+
+### Bài toán: request cha gọi request con
+Hãy hình dung một API gateway. Mỗi request của khách hàng phải làm hai việc:
+1. Gọi đối tác A (ví dụ kiểm tra tồn kho) — giữ 1 permit.
+2. Trong lúc còn đang giữ permit đó, gọi tiếp đối tác B (ví dụ trừ tiền) — cũng xin 1 permit từ **cùng** một Semaphore.
+
+Giả sử Semaphore có tổng 2 permit và đang có 2 request cùng tới. Mỗi request lấy 1 permit cho bước A, rồi cả hai cùng xin thêm 1 permit cho bước B. Lúc này 2 permit đã bị giữ hết, không còn permit tự do, mà cả hai request đều đang **đứng chờ** permit để làm bước B. Không ai nhả permit vì không ai đi tiếp được. Treo.
+
+### Vì sao treo: vòng chờ permit
+Vòng chờ trông như sau (mỗi mũi tên là "đang chờ"):
+
+~~~text
+Request 1: giữ permit #1  --chờ--> permit cho B
+Request 2: giữ permit #2  --chờ--> permit cho B
+Permit tự do: 0
+=> Không ai được cấp thêm, không ai nhả ra => deadlock
+~~~
+
+Điểm mấu chốt: permit bị giữ **trong lúc** thread block chờ một thứ khác. Block ở đây có thể là Future.get(), một request HTTP đồng bộ, hay chính Semaphore.acquire(). Chỉ cần "giữ tài nguyên trong lúc chờ tài nguyên khác" mà tài nguyên đó lại do nhóm cùng loại đang giữ, vòng tròn khép lại và không ai thoát. Đây không phải bug của Semaphore; Semaphore làm đúng việc của nó. Bug nằm ở **cách ta dùng**: giữ permit quá lâu và giữ trong lúc chờ.
+
+### Cách sửa 1: xin đủ permit lên trước (khuyến nghị)
+Thay vì "xin 1, làm, rồi xin tiếp 1", hãy tính tổng số permit mà cả cha lẫn con cần, rồi xin **một lần** bằng tryAcquire(needed). Semaphore.tryAcquire(int permits) là **nguyên tử**: hoặc cấp đủ needed permit, hoặc không cấp gì cả. Vì không có trạng thái "đang giữ nửa chừng", không thể tạo vòng chờ.
+
+~~~java
+class PartnerGate {
+    private final Semaphore sem;
+    private final int total;
+    PartnerGate(int totalPermits) { this.total = totalPermits; this.sem = new Semaphore(totalPermits); }
+
+    <T> T run(int subCount, IntFunction<T> body) throws Exception {
+        int needed = 1 + subCount;                  // 1 cho cha + subCount cho các việc con
+        if (!sem.tryAcquire(needed, 300, TimeUnit.MILLISECONDS)) {
+            throw new RuntimeException("busy");      // fail-fast: không treo
+        }
+        try { return body.apply(subCount); }         // việc con coi như đã có permit sẵn
+        finally { sem.release(needed); }             // nhả ĐỦ, kể cả khi body ném exception
+    }
+}
+~~~
+
+Vì mỗi job xin đủ (1 + subCount) permit **một lần**, hai job không thể cùng giữ "nửa vé" rồi chờ nhau. Job nào xin được thì chạy trọn vẹn rồi nhả, job kia mới vào. Không có vòng tròn.
+
+### Cách sửa 2: tách pool/Semaphore cho việc con
+Nếu việc con thực sự độc lập (không cần permit của cha), hãy cho nó một Semaphore riêng, hoặc một ExecutorService riêng. Khi đó cha giữ permit của pool cha, con xin permit của pool con — hai nhóm tài nguyên tách biệt, không tranh chấp chéo. Đây chính là bulkhead (vách ngăn): cô lập tài nguyên theo nhóm để một nhóm nghẽn không kéo nhóm khác nghẽn theo.
+
+### Cách sửa 3: tryAcquire có timeout (fail-fast)
+Nếu không thể xin đủ, đừng block vô hạn. tryAcquire(needed, timeout, unit) chờ tối đa timeout rồi trả false. Khi false, ta ném lỗi (ví dụ 503 kèm Retry-After) để client retry sau, thay vì để thread đứng mãi. Đây là load shedding: từ chối sớm còn hơn xếp hàng đến khi sập. Lưu ý: timeout phải ngắn hơn deadline của request cha, nếu không cha đã timeout mà con vẫn còn chờ.
+
+### Semaphore không phải rate limiter
+Một điểm hay nhầm: Semaphore(20) **không** đảm bảo "100 request mỗi giây". Nếu mỗi request mất 200 ms, 20 request đồng thời tương đương 100 request/giây; nhưng khi đối tác chậm còn 2 giây/request, cũng 20 permit đó chỉ còn 10 request/giây. Semaphore trả lời "bao nhiêu việc **cùng** chạy", rate limiter (token bucket) trả lời "bao nhiêu việc **mỗi giây**". Gọi lồng nhau càng phải nhớ điều này: giới hạn đồng thời không thay được giới hạn tốc độ.
+
+### Lỗi production hay gặp
+- **Giữ permit trong lúc gọi IO đồng bộ rồi lại xin permit**: đúng công thức của self-deadlock khi tải đủ cao. Test tải thấp không bao giờ lộ.
+- **Quên nhả trong finally**: rò permit, sau N lần lỗi Semaphore cạn, service tự khoá dù CPU rảnh.
+- **Semaphore không reentrant theo thread**: một thread acquire hai lần liên tiếp mà không release ở giữa sẽ tự chặn mình ngay lập tức.
+- **Đặt permit quá cao** (ví dụ 1000): Semaphore không còn bảo vệ đối tác, chính bạn DDoS đối tác.
+- **Dùng Semaphore để bảo vệ biến dùng chung** (ví dụ số dư): sai công cụ, đó là việc của lock/Atomic.
+
+### Ví dụ đời thực
+Một hệ thống thanh toán gọi cổng thẻ qua Semaphore(20). Ban đầu code giữ permit trong lúc gọi đồng bộ một API phụ (quét gian lận) cũng xin permit từ cùng Semaphore. Khi lưu lượng tăng, p99 vọt từ 1,2 giây lên hơn 30 giây và nhiều request treo: 20 permit bị 20 request cha giữ, tất cả đang chờ permit cho bước quét gian lận. Đổi sang xin đủ permit lên trước (tryAcquire(needed)) và tách Semaphore riêng cho bước quét: p99 về 1,4 giây, không còn request treo, số 503 giảm còn 0,2%.
+
+### Trả lời mẫu khi phỏng vấn
+"Semaphore giới hạn số việc cùng chạy, nhưng nếu một tác vụ giữ permit rồi đồng bộ chờ việc con cũng xin permit từ cùng Semaphore, ta sẽ tự khoá: mọi permit bị giữ, không ai nhả. Tôi sửa bằng cách xin đủ permit cho cả cha lẫn con trong một lần tryAcquire(n) nguyên tử, nhả đủ trong finally, hoặc tách Semaphore riêng cho việc con. Nếu không xin đủ thì fail-fast bằng tryAcquire có timeout và trả 503, thay vì treo. Tôi cũng nhớ Semaphore chỉ giới hạn đồng thời, còn giới hạn tốc độ mỗi giây phải dùng token bucket."
+
+### Liên hệ phỏng vấn
+Interviewer hay hỏi: "đoạn này có deadlock không?" với một class giữ permit rồi gọi việc con; "Semaphore với rate limiter khác nhau ra sao?"; "làm sao tránh thread pool starvation?". Trả lời senior luôn chỉ ra **tài nguyên bị giữ trong lúc chờ** là gốc của self-deadlock, và cách sửa là xin đủ lên trước (nguyên tử) hoặc tách tài nguyên, cộng fail-fast bằng timeout.`,
+  exercises: [
+    {
+      title: 'PartnerGate: xin đủ permit lên trước để tránh tự-khoá',
+      prompt: `Viết class {{PartnerGate}} mô phỏng một cổng gọi đối tác có tổng {{totalPermits}} permit. Mỗi job "cha" cần 1 permit cho chính nó cộng {{subCount}} permit cho các việc con.
+
+Yêu cầu cho {{run(int subCount, IntFunction<T> body)}}:
+- Tính {{needed = 1 + subCount}}. Nếu {{needed > total}} thì ném {{IllegalArgumentException}} (không bao giờ xin được đủ).
+- Xin **đủ** {{needed}} permit bằng **một lần** {{tryAcquire(needed, 300, MILLISECONDS)}}. Nếu không xin đủ trong 300 ms thì ném {{RuntimeException}} có message chứa chữ {{busy}} (fail-fast, KHÔNG treo).
+- Chạy {{body.apply(subCount)}} trong lúc giữ permit; **finally** nhả đủ {{needed}} permit (kể cả khi body ném exception).
+- {{available()}} trả về số permit còn tự do.
+
+Bài học: nếu bạn viết kiểu "xin 1 permit rồi trong body lại xin thêm" thì hai job đồng thời sẽ tự khoá (mỗi job giữ 1, cả hai chờ permit thứ hai). Test chạy hai job cần 2 permit với tổng 2 permit: cách xin-đủ-lên-trước sẽ chạy tuần tự và hoàn tất, cách giữ-rồi-xin-thêm sẽ treo.`,
+      starter: `import java.util.concurrent.Semaphore;
+
+class PartnerGate {
+    PartnerGate(int totalPermits) {
+        throw new UnsupportedOperationException("TODO");
+    }
+
+    <T> T run(int subCount, IntFunction<T> body) throws Exception {
+        throw new UnsupportedOperationException("TODO");
+    }
+
+    int available() {
+        throw new UnsupportedOperationException("TODO");
+    }
+}`,
+      tests: `public class Main {
+    static int passed = 0, total = 0;
+    static void check(String name, Runnable r) {
+        total++;
+        try { r.run(); passed++; System.out.println("PASS " + name); }
+        catch (Throwable t) { System.out.println("FAIL " + name + ": " + t); }
+    }
+    static void eq(Object expected, Object actual) {
+        if (!Objects.equals(expected, actual)) throw new AssertionError("expected " + expected + " got " + actual);
+    }
+    static void pause(long ms) {
+        try { Thread.sleep(ms); } catch (InterruptedException e) { Thread.currentThread().interrupt(); }
+    }
+    public static void main(String[] args) throws Exception {
+        check("hai job cha (moi job 1 viec con) khong tu-khoa", () -> {
+            PartnerGate g = new PartnerGate(2);                 // tong 2 permit
+            CountDownLatch start = new CountDownLatch(1);
+            AtomicInteger done = new AtomicInteger();
+            List<Thread> ts = new ArrayList<>();
+            for (int i = 0; i < 2; i++) {
+                Thread t = new Thread(() -> {
+                    try {
+                        start.await();
+                        String r = g.run(1, sub -> "job");        // can 2 permit: 1 cha + 1 con
+                        if (!"job".equals(r)) throw new AssertionError("sai ket qua");
+                        done.incrementAndGet();
+                    } catch (Throwable e) { throw new RuntimeException(e); }
+                }, "top-" + i);
+                t.setDaemon(true);
+                ts.add(t);
+                t.start();
+            }
+            start.countDown();
+            for (Thread t : ts) {
+                try { t.join(5000); } catch (InterruptedException e) { Thread.currentThread().interrupt(); throw new AssertionError(e); }
+                if (t.isAlive()) throw new AssertionError("self-deadlock: job cha treo qua 5s");
+            }
+            eq(2, done.get());
+            eq(2, g.available());
+        });
+        check("available() hoi ve total sau khi xong (khong ro permit)", () -> {
+            PartnerGate g = new PartnerGate(3);
+            try { g.run(2, sub -> "x"); } catch (Exception e) { throw new RuntimeException(e); }
+            eq(3, g.available());
+        });
+        check("nhu cau vuot tong permit: nem IllegalArgumentException", () -> {
+            PartnerGate g = new PartnerGate(2);
+            boolean threw = false;
+            try { g.run(5, sub -> "x"); }
+            catch (IllegalArgumentException e) { threw = true; }
+            catch (Exception e) { }
+            if (!threw) throw new AssertionError("phai nem IllegalArgumentException khi needed > total");
+            eq(2, g.available());
+        });
+        check("thieu permit tam thoi: fail-fast chu khong treo", () -> {
+            PartnerGate g = new PartnerGate(2);
+            CountDownLatch hold = new CountDownLatch(1);
+            Thread a = new Thread(() -> {
+                try {
+                    g.run(1, sub -> { try { hold.await(); } catch (InterruptedException e) { Thread.currentThread().interrupt(); } return "A"; });
+                } catch (Exception e) { }
+            }, "holder");
+            a.setDaemon(true);
+            a.start();
+            pause(100);                                          // cho A giu 2 permit
+            long t0 = System.nanoTime();
+            boolean busy = false;
+            String msg = "";
+            try { g.run(1, sub -> "B"); }
+            catch (RuntimeException e) { busy = true; msg = String.valueOf(e.getMessage()); }
+            catch (Exception e) { }
+            long ms = (System.nanoTime() - t0) / 1_000_000L;
+            if (!busy) throw new AssertionError("job B phai bi tu choi (busy) chu khong treo");
+            if (!msg.contains("busy")) throw new AssertionError("message phai chua 'busy', got: " + msg);
+            if (ms > 2000) throw new AssertionError("fail-fast qua cham: " + ms + "ms");
+            hold.countDown();                                    // nha A
+            try { a.join(5000); } catch (InterruptedException e) { Thread.currentThread().interrupt(); throw new AssertionError(e); }
+            eq(2, g.available());
+        });
+        check("body nem exception: van nha du permit", () -> {
+            PartnerGate g = new PartnerGate(3);
+            boolean threw = false;
+            try { g.run(2, sub -> { throw new IllegalStateException("boom"); }); }
+            catch (IllegalStateException e) { threw = true; }
+            catch (Exception e) { }
+            if (!threw) throw new AssertionError("exception cua body phai duoc nem ra tiep");
+            eq(3, g.available());
+        });
+        System.out.println("RESULT " + passed + "/" + total);
+    }
+}`,
+      reference: `import java.util.concurrent.Semaphore;
+
+class PartnerGate {
+    private final Semaphore sem;
+    private final int total;
+
+    PartnerGate(int totalPermits) {
+        this.total = totalPermits;
+        this.sem = new Semaphore(totalPermits);
+    }
+
+    <T> T run(int subCount, IntFunction<T> body) throws Exception {
+        int needed = 1 + subCount;                               // 1 cho cha + subCount cho con
+        if (needed > total) {
+            throw new IllegalArgumentException("can " + needed + " permit, chi co " + total);
+        }
+        // xin DU 1 lan (nguyen tu): hoac du needed, hoac khong cap gi -> khong the tao vong cho
+        if (!sem.tryAcquire(needed, 300, TimeUnit.MILLISECONDS)) {
+            throw new RuntimeException("busy: khong xin du " + needed + " permit trong 300ms");
+        }
+        try {
+            return body.apply(subCount);                         // viec con coi nhu da co permit san
+        } finally {
+            sem.release(needed);                                 // nha DU, ke ca khi body nem exception
+        }
+    }
+
+    int available() {
+        return sem.availablePermits();
+    }
+}`,
+      hints: [
+        'Tính {{needed = 1 + subCount}} và kiểm tra {{needed > total}} trước, ném {{IllegalArgumentException}}.',
+        'Xin đủ bằng MỘT lần {{sem.tryAcquire(needed, 300, TimeUnit.MILLISECONDS)}}; false thì ném RuntimeException có chữ {{busy}}.',
+        'Đặt {{sem.release(needed)}} trong {{finally}} để không rò permit khi body lỗi.',
+      ],
+      explain: `Vì sao xin đủ lên trước hết self-deadlock: {{tryAcquire(needed)}} cấp **tất cả** needed permit hoặc không cấp gì (nguyên tử). Không tồn tại trạng thái "job đang giữ một nửa rồi chờ nửa còn lại", nên hai job không thể cùng giữ nửa rồi chờ nhau. Test "hai job cha" với tổng 2 permit, mỗi job cần 2: job này xin đủ 2, chạy, nhả; job kia mới vào — hoàn tất trong 5 giây. Cách viết "xin 1 rồi trong body xin thêm 1" sẽ làm cả hai giữ 1 và chờ mãi.
+
+Lỗi hay gặp:
+- Giữ permit trong lúc gọi IO đồng bộ rồi lại xin permit: đúng công thức self-deadlock, chỉ lộ khi tải cao.
+- Quên release trong finally: rò permit, Semaphore cạn dần, service tự khoá.
+- tryAcquire(needed) mà quên timeout: nếu đối tác treo, vẫn treo theo; timeout biến treo thành 503 để client retry.
+- Nhầm Semaphore với rate limiter: Semaphore(20) không cam kết 100 request/giây khi độ trễ thay đổi; muốn giới hạn tốc độ phải dùng token bucket.`,
+    },
+  ],
+  check: [
+    {
+      q: 'Một job giữ 1 permit rồi đồng bộ chờ việc con cũng xin permit từ cùng Semaphore. Khi tải đủ cao, điều gì xảy ra?',
+      options: ['Semaphore tự cấp thêm permit', 'Self-deadlock: mọi permit bị giữ, không ai nhả, cả hệ thống treo', 'JVM tự phát hiện và sửa', 'Chỉ chậm hơn một chút'],
+      answer: 1,
+      explain: 'Khi mọi permit bị các job cha giữ và ai cũng đang chờ permit cho việc con, không còn permit tự do nên không ai đi tiếp, không ai nhả: vòng chờ khép kín, treo vĩnh viễn. Semaphore không tự cấp thêm; JVM không tự sửa deadlock logic; và đây là treo hẳn chứ không chỉ chậm. Cách sửa: xin đủ permit lên trước bằng tryAcquire(n) nguyên tử, tách Semaphore riêng, hoặc fail-fast bằng timeout.',
+    },
+    {
+      q: 'Cách nào loại bỏ self-deadlock tận gốc khi một job cần cả permit cho cha lẫn con?',
+      options: ['Tăng số permit lên gấp đôi', 'Xin đủ (1 + subCount) permit trong MỘT lần tryAcquire nguyên tử rồi mới chạy', 'Dùng synchronized quanh Semaphore', 'Gọi Thread.sleep giữa hai lần xin'],
+      answer: 1,
+      explain: 'tryAcquire(needed) cấp đủ hoặc không cấp gì, nên không có trạng thái giữ-nửa-rồi-chờ, vòng tròn không thể khép. Tăng permit chỉ giảm xác suất chứ không loại bỏ (job vẫn có thể giữ-nửa). synchronized không phá vòng chờ tài nguyên. Thread.sleep không tạo quan hệ happens-before và không giải phóng permit. Cách khác là tách Semaphore riêng cho việc con.',
+    },
+    {
+      q: 'Vì sao Semaphore(20) không đảm bảo "100 request mỗi giây"?',
+      options: ['Vì Semaphore luôn sai', 'Vì Semaphore giới hạn số việc CÙNG chạy; số request mỗi giây còn phụ thuộc độ trễ mỗi request', 'Vì Semaphore đếm sai', 'Vì cần fair lock mới đúng'],
+      answer: 1,
+      explain: '20 request đồng thời, mỗi request 200 ms, tương đương 100 request/giây; nhưng nếu độ trễ tăng lên 2 giây thì 20 permit chỉ còn 10 request/giây. Semaphore trả lời "bao nhiêu việc cùng chạy", còn "bao nhiêu việc mỗi giây" là việc của rate limiter (token bucket). Fair lock chỉ đổi thứ tự cấp permit, không liên quan tốc độ.',
+    },
+  ],
+  related: ['concurrency-005', 'concurrency-021', 'concurrency-034'],
+  tags: ['Semaphore', 'self-deadlock', 'pool starvation', 'tryAcquire', 'bulkhead', 'load shedding'],
+},
+{
+  id: 'lesson-concurrency-034',
+  track: 'concurrency',
+  order: 34,
+  title: 'Structured concurrency: hai chính sách ShutdownOnFailure và ShutdownOnSuccess, làm trên Java 17',
+  level: 'senior',
+  minutes: 35,
+  goals: [
+    'Phân biệt hai chính sách của structured concurrency: **tất-cả-phải-thành-công** (một con lỗi thì hủy hết) và **đầu-tiên-thành-công** (một con thành công thì hủy hết)',
+    'Làm tương đương ShutdownOnSuccess trên Java 17 bằng ExecutorService + CompletionService, hủy các con còn lại ngay khi có con thành công',
+    'Hiểu vì sao dùng CompletionService (lấy theo thứ tự **hoàn thành**) thay vì duyệt Future theo thứ tự khai báo (lấy theo thứ tự **gửi**)',
+    'Tránh task mồ côi và luôn gắn deadline chung cho cả nhóm',
+  ],
+  body: `### Tóm tắt
+Structured concurrency (song song có cấu trúc) quản lý một nhóm tác vụ con như một đơn vị: khi cha kết thúc thì mọi con phải đã xong, và khi "đủ điều kiện dừng" thì hủy các con còn lại để không lãng phí tài nguyên. Có **hai chính sách dừng**: ShutdownOnFailure — chỉ cần một con lỗi là hủy tất cả (đã học ở bài trước); và ShutdownOnSuccess — chỉ cần một con **thành công** là hủy tất cả (lấy kết quả đầu tiên, ví dụ giá tốt nhất từ nhiều nguồn). Java 21 có API chuẩn (StructuredTaskScope với hai biến thể này); trên Java 17 ta làm tương đương bằng ExecutorService + CompletionService + cancel(true) + deadline chung.
+
+### Hai chính sách của structured concurrency
+Hãy hình dung bạn giao ba người đi hỏi giá, ai về trước có giá thì dừng cả ba:
+- **ShutdownOnFailure** (thất bại thì dừng): cả ba phải thành công; một người báo "không hỏi được" thì gọi hai người kia dừng, trả lỗi. Dùng khi cần **đủ** mọi mảnh (ví dụ ghép user + order + inventory, thiếu một mảnh là không dựng được trang).
+- **ShutdownOnSuccess** (thành công thì dừng): chỉ cần một người mang giá về là dừng hai người còn lại, trả giá đó. Dùng khi cần **một** kết quả đủ tốt (best price, health check nhiều vùng, đọc từ replica nhanh nhất).
+
+Cả hai đều là structured: không để task mồ côi (orphan task) chạy tiếp sau khi cha đã quyết định. Khác CompletableFuture ở chỗ vòng đời con gắn chặt vào khối cha.
+
+### ShutdownOnFailure (nhắc lại)
+submit hết, duyệt Future.get() theo thứ tự, một con ném exception hoặc timeout thì cancel(true) tất cả rồi ném lỗi. Bài 026 và 032 đã làm kỹ. Điểm cần nhớ: get() phải có timeout (hoặc dùng thời gian còn lại của deadline chung), nếu không một con treo làm cả nhóm treo.
+
+### ShutdownOnSuccess: lấy kết quả đầu tiên thành công
+Vấn đề của cách "duyệt Future theo thứ tự khai báo": nếu task 1 chậm còn task 2 đã xong, ta vẫn phải chờ task 1 mới đọc được kết quả — trong khi giá tốt nhất đã nằm ở task 2. CompletionService giải quyết: nó trả về Future theo **thứ tự hoàn thành**, không theo thứ tự gửi.
+
+~~~java
+CompletionService<Integer> cs = new ExecutorCompletionService<>(pool);
+for (Callable<Integer> t : tasks) cs.submit(t);
+long deadline = System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(timeoutMs);
+int handled = 0;
+Throwable firstError = null;
+while (handled < tasks.size()) {
+    long remaining = TimeUnit.NANOSECONDS.toMillis(deadline - System.nanoTime());
+    if (remaining <= 0) throw new TimeoutException("hết hạn");
+    Future<Integer> f = cs.poll(remaining, TimeUnit.MILLISECONDS);   // chờ con HOÀN THÀNH kế tiếp
+    if (f == null) throw new TimeoutException("hết hạn");
+    handled++;
+    try {
+        Integer r = f.get();
+        for (Future<Integer> x : all) x.cancel(true);   // có người thắng -> hủy phần còn lại
+        return r;
+    } catch (ExecutionException e) {
+        if (firstError == null) firstError = e.getCause();   // con lỗi: ghi lại, KHÔNG dừng
+    }
+}
+throw new ExecutionException("mọi con đều lỗi", firstError);   // không con nào thành công
+~~~
+
+Điểm mấu chốt: khi một con **thành công**, lập tức cancel(true) mọi con còn lại rồi trả kết quả. Khi một con **lỗi**, ta **không** dừng (khác ShutdownOnFailure) — ghi lại lỗi đầu tiên và tiếp tục chờ con khác, vì biết đâu con khác thành công. Chỉ khi **mọi** con đã xử lý xong mà không con nào thành công thì mới ném lỗi.
+
+### Vì sao CompletionService chứ không phải Future.get theo thứ tự
+Future trong danh sách trả kết quả theo thứ tự bạn **gửi**, không theo thứ tự **xong**. Nếu task 1 mất 5 giây còn task 2 mất 100 ms, duyệt theo danh sách sẽ chặn 5 giây ở task 1 dù task 2 đã sẵn sàng. CompletionService dùng một hàng đợi nội bộ: mỗi khi một task xong, nó đẩy Future vào hàng đợi; poll() lấy ra con đã xong. Nhờ vậy "đầu tiên thành công" là đầu tiên **về đích**, không phải đầu tiên trong danh sách.
+
+### Lỗi production hay gặp
+1. **Không cancel(true) khi đã có người thắng**: các con còn lại vẫn chạy tốn kết nối/CPU, kết quả bị bỏ. Vẫn là task mồ côi.
+2. **Dừng ngay khi một con lỗi** (lẫn với ShutdownOnFailure): trong chính sách first-success, một nguồn lỗi không nên giết cả nhóm; phải chờ nguồn khác.
+3. **get() không timeout**: một con treo làm poll() chờ mãi; luôn dùng deadline chung.
+4. **Không shutdown pool**: pool do người gọi sở hữu thì người gọi shutdown; nếu tự tạo thì shutdownNow trong finally.
+5. **Coi cancel(true) là dừng ngay**: cancel(true) chỉ gửi interrupt; task không kiểm tra Thread.interrupted() vẫn chạy tiếp.
+
+### Ví dụ đời thực
+Một trang so sánh giá gọi ba đối tác qua API. Trước đây dùng CompletableFuture.allOf chờ cả ba (p99 = 2,8 giây, phụ thuộc đối tác chậm nhất). Đổi sang first-success có cấu trúc: đối tác nào trả giá hợp lệ trước thì hủy hai đối tác còn lại. p99 giảm còn 0,9 giây, số kết nối đang bay giảm 60% giờ cao điểm, và không còn task mồ côi ghi log sau khi request đã trả lời.
+
+### Trả lời mẫu khi phỏng vấn
+"Structured concurrency có hai chính sách dừng. ShutdownOnFailure: một con lỗi thì hủy hết, dùng khi cần đủ mọi mảnh. ShutdownOnSuccess: một con thành công thì hủy hết, dùng khi cần một kết quả đủ tốt như best price. Trên Java 17 tôi làm first-success bằng CompletionService để lấy con hoàn thành trước, có deadline chung, cancel(true) phần còn lại khi có người thắng, và chỉ ném lỗi khi mọi con đều lỗi. Luôn get có timeout để một con treo không kéo cả nhóm treo."
+
+### Liên hệ phỏng vấn
+Interviewer hay hỏi: "StructuredTaskScope có gì khác ExecutorService?"; "ShutdownOnSuccess dùng khi nào?"; "vì sao CompletionService thay vì duyệt Future?"; "cancel(true) có dừng được task đang chạy không?". Trả lời senior nêu đúng hai chính sách, lý do dùng CompletionService (thứ tự hoàn thành), và giới hạn của cancel(true) (chỉ interrupt, task phải tự kiểm tra).`,
+  exercises: [
+    {
+      title: 'FirstSuccess: lấy kết quả đầu tiên thành công, hủy phần còn lại',
+      prompt: `Viết method {{firstSuccess}} mô phỏng chính sách ShutdownOnSuccess trên Java 17:
+
+- {{static <T> T firstSuccess(ExecutorService pool, List<Callable<T>> tasks, long timeoutMs)}}: submit tất cả task vào pool cùng lúc (dùng CompletionService để nhận theo thứ tự hoàn thành).
+- Có một **deadline chung** = timeoutMs. Mỗi lần chờ dùng **thời gian còn lại** của deadline; hết giờ mà chưa có con nào thành công thì hủy tất cả bằng {{cancel(true)}} rồi ném {{TimeoutException}}.
+- Khi một task **thành công**: hủy tất cả task còn lại bằng {{cancel(true)}} rồi trả về kết quả đó ngay.
+- Khi một task **lỗi** (ném exception): **không** dừng; ghi lại lỗi đầu tiên rồi chờ con khác (vì con khác có thể thành công).
+- Khi **mọi** task đã xử lý xong mà không con nào thành công: hủy phần còn lại (nếu có) và ném {{ExecutionException}} với {{cause}} là lỗi gốc đầu tiên.
+- Danh sách rỗng: ném {{IllegalArgumentException}}.
+- Không shutdown pool (người gọi sở hữu pool).
+
+Test dùng CountDownLatch để bắt đầu cùng lúc: một con lỗi ngay, một con chờ cổng rồi trả kết quả, một con lặp vô hạn tới khi bị interrupt — firstSuccess phải trả kết quả con thành công và hủy con lặp (đếm số con bị hủy).`,
+      starter: `class FirstSuccess {
+    static <T> T firstSuccess(ExecutorService pool, List<Callable<T>> tasks, long timeoutMs) throws Exception {
+        throw new UnsupportedOperationException("TODO");
+    }
+}`,
+      tests: `public class Main {
+    static int passed = 0, total = 0;
+    static void check(String name, Runnable r) {
+        total++;
+        try { r.run(); passed++; System.out.println("PASS " + name); }
+        catch (Throwable t) { System.out.println("FAIL " + name + ": " + t); }
+    }
+    static void eq(Object expected, Object actual) {
+        if (!Objects.equals(expected, actual)) throw new AssertionError("expected " + expected + " got " + actual);
+    }
+    static ExecutorService pool(int n) {
+        AtomicInteger seq = new AtomicInteger();
+        return Executors.newFixedThreadPool(n, r -> { Thread t = new Thread(r, "fs-" + seq.incrementAndGet()); t.setDaemon(true); return t; });
+    }
+    static void pause(long ms) {
+        try { Thread.sleep(ms); } catch (InterruptedException e) { Thread.currentThread().interrupt(); }
+    }
+    public static void main(String[] args) throws Exception {
+        check("tat ca thanh cong: tra ve mot trong cac ket qua", () -> {
+            ExecutorService p = pool(3);
+            try {
+                List<Callable<Integer>> tasks = List.of(() -> 1, () -> 2, () -> 3);
+                Integer r = FirstSuccess.firstSuccess(p, tasks, 5000);
+                if (r != 1 && r != 2 && r != 3) throw new AssertionError("ket qua la " + r);
+            } catch (Exception e) { throw new RuntimeException(e); }
+            finally { p.shutdownNow(); }
+        });
+        check("mot con loi, mot con thanh cong, mot con loop: tra ve con thanh cong va huy con loop", () -> {
+            ExecutorService p = pool(3);
+            CountDownLatch gate = new CountDownLatch(1);
+            CountDownLatch started = new CountDownLatch(1);
+            AtomicInteger cancelled = new AtomicInteger();
+            List<Callable<String>> tasks = new ArrayList<>();
+            tasks.add(() -> { throw new IllegalStateException("boom"); });
+            tasks.add(() -> { gate.await(); return "B"; });
+            tasks.add(() -> {
+                started.countDown();
+                try { while (!Thread.interrupted()) { Thread.onSpinWait(); } } catch (Throwable t) { }
+                cancelled.incrementAndGet();
+                return "C";
+            });
+            final Object[] result = { null };
+            final Throwable[] error = { null };
+            Thread runner = new Thread(() -> {
+                try { result[0] = FirstSuccess.firstSuccess(p, tasks, 5000); }
+                catch (Throwable t) { error[0] = t; }
+            });
+            runner.start();
+            try {
+                if (!started.await(5, TimeUnit.SECONDS)) throw new AssertionError("con loop chua vao vong lap");
+                gate.countDown();                                // cho con B tra ket qua
+                runner.join(10000);
+                if (runner.isAlive()) throw new AssertionError("firstSuccess khong ket thuc");
+                if (error[0] != null) throw new AssertionError("phai tra ve thanh cong, loi: " + error[0]);
+                eq("B", result[0]);
+                pause(300);
+                eq(1, cancelled.get());
+            } catch (Exception e) { throw new RuntimeException(e); }
+            finally { p.shutdownNow(); }
+        });
+        check("tat ca deu loi: nem ExecutionException voi cause goc", () -> {
+            ExecutorService p = pool(2);
+            try {
+                List<Callable<Integer>> tasks = List.of(
+                    () -> { throw new IllegalStateException("boom"); },
+                    () -> { throw new IllegalStateException("boom"); }
+                );
+                boolean threw = false;
+                try { FirstSuccess.firstSuccess(p, tasks, 5000); }
+                catch (ExecutionException e) {
+                    threw = true;
+                    Throwable cause = e.getCause();
+                    if (cause == null || !"boom".equals(cause.getMessage()))
+                        throw new AssertionError("cause phai la 'boom', got: " + cause);
+                }
+                catch (Exception e) { throw new RuntimeException(e); }
+                if (!threw) throw new AssertionError("phai nem ExecutionException");
+            } finally { p.shutdownNow(); }
+        });
+        check("het han: nem TimeoutException va huy tat ca", () -> {
+            ExecutorService p = pool(3);
+            CountDownLatch started = new CountDownLatch(3);
+            AtomicInteger cancelled = new AtomicInteger();
+            List<Callable<Integer>> tasks = new ArrayList<>();
+            for (int i = 0; i < 3; i++) {
+                tasks.add(() -> {
+                    started.countDown();
+                    try { while (!Thread.interrupted()) { Thread.onSpinWait(); } } catch (Throwable t) { }
+                    cancelled.incrementAndGet();
+                    return 1;
+                });
+            }
+            final Throwable[] error = { null };
+            Thread runner = new Thread(() -> {
+                try { FirstSuccess.firstSuccess(p, tasks, 200); }
+                catch (Throwable t) { error[0] = t; }
+            });
+            runner.start();
+            try {
+                if (!started.await(5, TimeUnit.SECONDS)) throw new AssertionError("task chua vao vong lap");
+                runner.join(10000);
+                if (runner.isAlive()) throw new AssertionError("firstSuccess khong ket thuc");
+                if (!(error[0] instanceof TimeoutException)) throw new AssertionError("phai nem TimeoutException, got: " + error[0]);
+                pause(300);
+                eq(3, cancelled.get());
+            } catch (Exception e) { throw new RuntimeException(e); }
+            finally { p.shutdownNow(); }
+        });
+        check("danh sach rong: nem IllegalArgumentException", () -> {
+            ExecutorService p = pool(1);
+            try {
+                boolean threw = false;
+                try { FirstSuccess.firstSuccess(p, List.of(), 1000); }
+                catch (IllegalArgumentException e) { threw = true; }
+                catch (Exception e) { }
+                if (!threw) throw new AssertionError("phai nem IllegalArgumentException");
+            } finally { p.shutdownNow(); }
+        });
+        System.out.println("RESULT " + passed + "/" + total);
+    }
+}`,
+      reference: `class FirstSuccess {
+    static <T> T firstSuccess(ExecutorService pool, List<Callable<T>> tasks, long timeoutMs) throws Exception {
+        if (tasks.isEmpty()) throw new IllegalArgumentException("danh sach rong");
+        CompletionService<T> cs = new ExecutorCompletionService<>(pool);
+        List<Future<T>> futures = new ArrayList<>(tasks.size());
+        for (Callable<T> t : tasks) futures.add(cs.submit(t));
+        long deadline = System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(timeoutMs);
+        int handled = 0;
+        Throwable firstError = null;
+        while (handled < tasks.size()) {
+            long remaining = TimeUnit.NANOSECONDS.toMillis(deadline - System.nanoTime());
+            if (remaining <= 0) { cancelAll(futures); throw new TimeoutException("het han " + timeoutMs + "ms"); }
+            Future<T> f = cs.poll(remaining, TimeUnit.MILLISECONDS);   // con HOAN THANH ke tiep
+            if (f == null) { cancelAll(futures); throw new TimeoutException("het han " + timeoutMs + "ms"); }
+            handled++;
+            try {
+                T r = f.get();
+                cancelAll(futures);                  // co nguoi thang -> huy phan con lai
+                return r;
+            } catch (ExecutionException e) {
+                if (firstError == null) firstError = e.getCause();   // con loi: ghi lai, cho con khac
+            } catch (CancellationException e) {
+                if (firstError == null) firstError = e;
+            }
+        }
+        cancelAll(futures);
+        Throwable cause = firstError != null ? firstError : new IllegalStateException("khong ro");
+        throw new ExecutionException("moi con deu loi", cause);
+    }
+
+    private static void cancelAll(List<? extends Future<?>> futures) {
+        for (Future<?> f : futures) f.cancel(true);
+    }
+}`,
+      hints: [
+        'Dùng {{CompletionService}} ({{new ExecutorCompletionService<>(pool)}}) và {{poll(remaining, MILLISECONDS)}} để lấy con hoàn thành kế tiếp.',
+        'Tính deadline chung bằng {{System.nanoTime()}}; mỗi vòng lấy remaining, <= 0 thì cancelAll và ném TimeoutException.',
+        'f.get() thành công: cancelAll rồi return; ExecutionException: lưu lỗi đầu tiên rồi đi tiếp; hết task mà chưa thành công: ném ExecutionException với cause là lỗi đầu.',
+        'Không shutdown pool của người gọi; danh sách rỗng ném IllegalArgumentException.',
+      ],
+      explain: `Chính sách first-success khác ShutdownOnFailure ở chỗ: một con **lỗi** không giết cả nhóm (ta còn hy vọng con khác thành công), chỉ khi **mọi** con đã xử lý mà không con nào thành công mới ném lỗi. CompletionService trả Future theo thứ tự **hoàn thành** nên "đầu tiên" là đầu tiên về đích, không phải đầu tiên trong danh sách.
+
+Vì sao các test tất định: test "một con lỗi, một con thành công, một con loop" dùng cổng (gate) để con B chỉ trả kết quả sau khi con loop đã vào vòng lặp; firstSuccess gặp A lỗi (ghi lại), rồi B thành công (cancel C), trả "B"; sau 300 ms C đã bị interrupt nên cancelled == 1. Test "hết hạn" cho ba con lặp vô hạn với timeout 200 ms: poll trả null khi hết giờ, ném TimeoutException, cancelAll khiến cả ba bị interrupt, cancelled == 3.
+
+Lỗi hay gặp:
+- Không cancel(true) khi có người thắng: các con còn lại chạy tiếp, lãng phí kết nối, là task mồ côi.
+- Lẫn với ShutdownOnFailure: dừng ngay khi một nguồn lỗi, trong khi first-success phải chờ nguồn khác.
+- get()/poll() không timeout: một con treo làm cả nhóm treo; luôn dùng deadline chung.
+- Tưởng cancel(true) dừng ngay: nó chỉ gửi interrupt; task phải tự kiểm tra Thread.interrupted() (hoặc chặn trên IO có đóng được) mới dừng.`,
+    },
+  ],
+  check: [
+    {
+      q: 'Chính sách ShutdownOnSuccess trong structured concurrency làm gì khi một tác vụ con thành công?',
+      options: ['Chờ mọi con còn lại xong rồi mới trả', 'Hủy ngay các con còn lại bằng cancel(true) và trả kết quả đó', 'Ném lỗi cho cả nhóm', 'Khởi động lại các con còn lại'],
+      answer: 1,
+      explain: 'ShutdownOnSuccess: chỉ cần một con thành công là hủy phần còn lại và trả kết quả đó (ví dụ best price). Chờ hết là ShutdownOnFailure/allOf. Ném lỗi là khi mọi con đều lỗi. Không có chuyện khởi động lại. cancel(true) gửi interrupt và bỏ task chưa chạy khỏi hàng đợi.',
+    },
+    {
+      q: 'Vì sao dùng CompletionService thay vì duyệt List<Future> theo thứ tự khai báo?',
+      options: ['CompletionService nhanh hơn về CPU', 'CompletionService trả Future theo thứ tự HOÀN THÀNH, nên lấy được con về đích trước mà không phải chờ con khai báo trước', 'Future không dùng được', 'Để tránh deadlock'],
+      answer: 1,
+      explain: 'Duyệt List<Future> theo thứ tự gửi sẽ chặn ở con đầu danh sách dù con sau đã xong. CompletionService đẩy Future vào hàng đợi khi con hoàn thành, poll() lấy con đã xong, nên "đầu tiên thành công" là đầu tiên về đích. Đây là vấn đề thứ tự, không phải CPU; Future vẫn dùng được; và không liên quan deadlock.',
+    },
+    {
+      q: 'Trong first-success, khi một tác vụ con ném exception, code đúng nên làm gì?',
+      options: ['Hủy tất cả và ném lỗi ngay', 'Ghi lại lỗi đầu tiên rồi tiếp tục chờ con khác, vì con khác có thể thành công', 'Bỏ qua hoàn toàn, không ghi lỗi', 'Retry con đó vô hạn'],
+      answer: 1,
+      explain: 'first-success không dừng khi một nguồn lỗi; nó ghi lỗi đầu tiên phòng khi mọi con đều lỗi, rồi chờ con khác. Dừng ngay là ShutdownOnFailure. Bỏ qua hoàn toàn làm mất thông tin khi cả nhóm lỗi. Retry vô hạn phá deadline. Chỉ khi mọi con đã xử lý mà không con nào thành công mới ném ExecutionException với cause là lỗi đầu.',
+    },
+  ],
+  related: ['concurrency-004', 'concurrency-013', 'concurrency-030'],
+  tags: ['structured concurrency', 'ShutdownOnSuccess', 'first-success', 'CompletionService', 'cancel', 'deadline'],
 }
 );
+
