@@ -4307,4 +4307,515 @@ Lỗi hay gặp: quên chia 1_000_000 (price là per 1M token), nhầm cache_wri
   related: ['claude-003', 'claude-012'],
   tags: ['prompt caching', 'batch api', 'cost optimization', 'cache_control', 'ttl', 'model selection'],
 }
+,
+{
+  id: 'lesson-claude-015',
+  track: 'claude',
+  order: 15,
+  title: 'Claude Code hằng ngày: CLAUDE.md, plan mode và chia ticket thành bước nhỏ',
+  level: 'mid',
+  minutes: 30,
+  goals: ['Viết được CLAUDE.md hữu ích cho dự án Spring Boot', 'Biết khi nào dùng plan mode', 'Chia task nhỏ để agent làm an toàn'],
+  body: `**Tóm tắt:** Claude Code là một coding agent chạy ngay trong terminal: nó đọc code, sửa file và chạy lệnh theo yêu cầu của bạn. {{CLAUDE.md}} là "bản đồ dự án" để agent không phải đoán; {{plan mode}} bắt agent trình bày kế hoạch trước khi sửa; chia ticket thành bước nhỏ giúp bạn review từng diff một.
+
+### Claude Code là gì
+Claude Code là công cụ dòng lệnh (CLI) do Anthropic phát hành. Khác với chatbot trên web, nó **ở ngay trong repo của bạn**: đọc được toàn bộ file, chạy được lệnh build/test, và sửa file trực tiếp. Bạn ra yêu cầu bằng tiếng Việt hoặc tiếng Anh, nó phân tích rồi thực hiện. Vì nó có quyền chạy lệnh và ghi file, bạn phải kiểm soát nó bằng ba thứ: một file mô tả dự án, một chế độ "dựng kế hoạch trước", và thói quen giao việc nhỏ.
+
+### CLAUDE.md là gì và vì sao cần
+Mỗi lần mở session, Claude Code tự động đọc file {{CLAUDE.md}} ở gốc repo (và {{CLAUDE.local.md}} nếu có, cùng các CLAUDE.md trong thư mục con khi nó đọc file ở đó). Đây là nơi bạn ghi những thứ agent không thể tự suy ra:
+- **Stack**: Java 17, Spring Boot 3.x, Hibernate 6, PostgreSQL 15.
+- **Lệnh build/test**: {{./mvnw test}}, {{./mvnw spring-boot:run}}. Ghi rõ vì agent không đoán được bạn dùng Maven wrapper hay không.
+- **Convention**: đặt tên package, cách viết test, quy ước commit.
+- **Điều cấm**: "không sửa file migration đã apply", "không thêm dependency mới".
+- **Ví dụ lệnh** hay dùng.
+
+Vì sao cần? Agent không đọc được suy nghĩ của bạn. Không có CLAUDE.md, mỗi session nó lại đoán lại convention, dễ tạo code lệch chuẩn. File này giống như một README ngắn dành riêng cho agent: càng chính xác, agent càng ít sai.
+
+### Plan mode hoạt động thế nào
+Trong Claude Code, nhấn {{Shift+Tab}} để xoay vòng giữa các chế độ quyền: bình thường → tự động chấp nhận sửa file → {{plan mode}}. Ở plan mode, agent **chỉ đọc và đề xuất**, không ghi file, không chạy lệnh thay đổi hệ thống. Nó trình bày kế hoạch (sẽ sửa file nào, theo bước nào), bạn đọc và duyệt, rồi mới cho thực thi.
+
+Dùng plan mode khi: task mơ hồ ("thêm tính năng X"), đụng nhiều file, hoặc bạn chưa chắc cách làm. Nó biến "agent sửa lung tung rồi bạn phải undo" thành "bạn duyệt kế hoạch trước". Đây là cách rẻ nhất để tránh diff rác.
+
+### Chia ticket thành bước nhỏ
+Đừng giao "làm cả module thanh toán". Hãy chia: (1) thêm entity + migration, (2) viết repository, (3) viết service có test, (4) thêm endpoint. Mỗi bước là một PR nhỏ có test, bạn review được từng diff. Agent làm tốt việc có ranh giới rõ; việc lớn mơ hồ làm nó trôi.
+
+### Khi nào tự làm, không giao agent
+Logic thanh toán, bảo mật, migration trên production, quyết định kiến trúc: bạn tự thiết kế, chỉ để agent viết boilerplate (getter, DTO, test khung). Đây là phần sai thì tốn tiền thật, nên con người phải chịu trách nhiệm.
+
+### Lỗi hay gặp
+- CLAUDE.md quá dài, mâu thuẫn: agent bị nhiễu. Giữ ngắn, đúng.
+- Giao việc lớn một lúc: diff khổng lồ, không review nổi.
+- Bật auto-accept edits cho task quan trọng: agent sửa hàng loạt file trước khi bạn kịp thấy.
+
+### Trả lời mẫu khi phỏng vấn
+"Em dùng CLAUDE.md để ghi stack, lệnh build/test và các điều cấm như không sửa migration đã apply. Với task lớn em bật plan mode cho agent đề xuất trước, duyệt xong mới cho chạy. Em chia feature thành PR nhỏ có test để review từng diff, và giữ phần thanh toán, bảo mật cho người tự thiết kế."`,
+  exercises: [{
+    title: 'Mô phỏng plan mode: chỉ chạy khi đã duyệt',
+    prompt: `Viết class {{TaskPlan}} mô phỏng plan mode. {{addStep}} thêm một bước; {{approve}} đánh dấu kế hoạch đã được duyệt; {{execute}} chỉ được chạy khi đã approve, nếu chưa thì ném {{IllegalStateException}}. Khi đã duyệt, {{execute}} trả về danh sách các bước theo đúng thứ tự đã thêm.`,
+    starter: `class TaskPlan {
+    private final List<String> steps = new ArrayList<>();
+    private boolean approved = false;
+    void addStep(String s) { steps.add(s); }
+    void approve() { approved = true; }
+    List<String> execute() {
+        return new ArrayList<>(steps);   // TODO: kiểm tra approved trước khi trả
+    }
+}`,
+    tests: `public class Main {
+    static int passed = 0, total = 0;
+    static void check(String name, boolean ok, String detail) {
+        total++;
+        if (ok) { passed++; System.out.println("PASS " + name); }
+        else System.out.println("FAIL " + name + ": " + detail);
+    }
+    public static void main(String[] args) {
+        TaskPlan p = new TaskPlan();
+        p.addStep("them entity");
+        p.addStep("viet repository");
+        boolean threw = false;
+        try { p.execute(); } catch (IllegalStateException e) { threw = true; }
+        check("execute truoc approve nem loi", threw, "phai nem IllegalStateException khi chua approve");
+        p.approve();
+        List<String> out = p.execute();
+        check("chay dung thu tu sau approve", out.equals(List.of("them entity", "viet repository")), "out = " + out);
+        TaskPlan empty = new TaskPlan();
+        empty.approve();
+        check("plan rong tra ve rong", empty.execute().isEmpty(), "phai rong");
+        System.out.println("RESULT " + passed + "/" + total);
+    }
+}`,
+    reference: `class TaskPlan {
+    private final List<String> steps = new ArrayList<>();
+    private boolean approved = false;
+    void addStep(String s) { steps.add(s); }
+    void approve() { approved = true; }
+    List<String> execute() {
+        if (!approved) throw new IllegalStateException("plan chua duoc duyet");
+        return new ArrayList<>(steps);
+    }
+}`,
+    hints: ['approved là cờ báo kế hoạch đã duyệt', 'execute kiểm tra cờ trước khi trả kết quả'],
+    explain: `Bài mô phỏng plan mode bằng Java thuần: {{approved}} là "kế hoạch đã được duyệt chưa". Lỗi hay gặp là quên kiểm tra cờ, khiến execute chạy cả khi chưa duyệt — đúng như bật auto-accept rồi agent sửa trước khi bạn xem.`
+  }],
+  check: [
+    { q: 'Plan mode trong Claude Code làm gì?', options: ['Tự động commit', 'Chỉ đề xuất, không sửa file', 'Chạy test liên tục', 'Deploy staging'], answer: 1, explain: 'Plan mode bắt agent trình bày kế hoạch trước, chưa ghi file hay chạy lệnh thay đổi; bạn duyệt rồi mới cho thực thi.' },
+    { q: 'CLAUDE.md nên ghi gì?', options: ['Toàn bộ source code', 'Stack, lệnh build/test, convention, điều cấm', 'Mật khẩu API', 'Lịch sử git'], answer: 1, explain: 'CLAUDE.md là bản đồ ngắn cho agent: stack, lệnh build/test, convention và các điều cấm. Không bao giờ ghi secret.' },
+    { q: 'Vì sao nên chia ticket nhỏ khi giao agent?', options: ['Để agent chạy nhanh hơn', 'Để review từng diff và giới hạn rủi ro', 'Để không cần test', 'Để dùng ít token'], answer: 1, explain: 'Việc nhỏ có ranh giới rõ giúp agent ít trôi và bạn review được từng diff; gộp cả feature lớn dễ sinh diff rác khó kiểm soát.' }
+  ],
+  tags: ['claude code', 'CLAUDE.md', 'plan mode']
+},
+{
+  id: 'lesson-claude-016',
+  track: 'claude',
+  order: 16,
+  title: 'Test trước, agent code sau: JUnit/Testcontainers làm hợp đồng',
+  level: 'senior',
+  minutes: 35,
+  goals: ['Viết test làm hợp đồng', 'Cho agent implement', 'Chạy test xác minh'],
+  body: `**Tóm tắt:** Viết test trước nghĩa là bạn định nghĩa "hành vi đúng" bằng một test máy đọc được, rồi mới để agent viết code cho test đó xanh. Test là hợp đồng: agent có mục tiêu rõ nên ít "sáng tác" sai, và bug lọt ra sẽ được bổ sung bằng một test mới.
+
+### Vì sao test trước lại hợp với agent
+Agent rất giỏi viết code "trông có vẻ đúng" nhưng hay bỏ sót edge case. Nếu bạn tả hành vi bằng lời, nó dễ hiểu lệch. Nếu bạn viết test, bạn cho nó một **mục tiêu kiểm chứng được**: chạy {{mvn test}}, xanh là xong. Test trở thành spec (bản đặc tả) bằng máy đọc được, không mơ hồ.
+
+Quy trình: (1) bạn viết test đỏ (fail) mô tả hành vi mong muốn; (2) agent implement; (3) chạy test; (4) nếu đỏ, agent sửa; (5) bạn review diff và review chính test.
+
+### JUnit là gì
+{{JUnit 5}} là thư viện test phổ biến nhất của Java. Bạn đánh dấu method bằng {{@Test}}, khẳng định bằng {{assertEquals}}/{{assertThrows}}. Spring Boot Starter Test đã có sẵn JUnit 5, AssertJ, Mockito. Mỗi {{@Test}} là một test case, báo PASS/FAIL.
+
+### Testcontainers là gì
+{{Testcontainers}} là thư viện cho phép test chạy trong một container Docker thật (PostgreSQL, Kafka...) thay vì mock. Bạn khai báo {{@Container}} một {{PostgreSQLContainer}}, Spring lấy datasource trỏ vào container đó. Vì sao cần? Mock repository thường "xanh" nhưng câu SQL thật lại sai; Testcontainers chạy đúng DB nên bắt được lỗi Hibernate/SQL mà mock giấu. Nhược điểm: cần Docker và test chậm hơn.
+
+### Test làm hợp đồng cho agent
+Khi bạn giao "implement {{OrderRepository.save}} trả về id tăng dần", kèm test đã viết, agent không còn đoán. Nó đọc test, thấy cần id tăng dần và validate null, rồi viết đúng. Test cũng chặn agent "làm cho vui": nếu nó thêm side effect lạ, test đỏ.
+
+### Pitfall
+- Test quá yếu (chỉ {{assertNotNull}}) làm agent pass mà vẫn sai. Hãy assert giá trị cụ thể và edge case.
+- Test phụ thuộc thời gian thực ({{Thread.sleep}}) gây flaky (lúc pass lúc fail). Dùng {{CountDownLatch}}, {{Clock}} cố định.
+- Testcontainers quên {{@Testcontainers}} hoặc không đóng container: rò rỉ tài nguyên.
+
+### Ví dụ đời thực
+Một team có endpoint {{POST /orders}} hay trả về 500 khi khách đặt hàng lần hai. Mock repository test vẫn xanh, nên bug lọt. Họ viết lại test bằng Testcontainers + PostgreSQL thật: chạy hai request liên tiếp, test đỏ vì thiếu unique constraint. Agent được giao implement, đọc test, thêm {{@Table(uniqueConstraints)}} và fix. Sau đó test xanh, bug không tái diễn. Bài học: mock giấu lỗi SQL, test thật bắt được.
+
+### Trả lời mẫu khi phỏng vấn
+"Có agent em viết test trước như một hợp đồng: em assert cả edge case và giá trị cụ thể, rồi mới để agent implement cho xanh, cuối cùng review cả diff lẫn test. Bug lọt thì em thêm test hồi quy. Em không coi 'có test' là xong — test phải mạnh, nếu không agent pass mà code vẫn sai."`,
+  exercises: [{
+    title: 'Repository.save: id tăng dần và validate (test-first)',
+    prompt: `Viết class {{Repository}} với {{save(String name)}}: trả về id số nguyên tăng dần bắt đầu từ 1 (lần gọi đầu trả 1, lần hai trả 2). Nếu {{name}} null hoặc rỗng (kể cả toàn space) thì ném {{IllegalArgumentException}}. Mô phỏng hợp đồng test-first bằng Java thuần.`,
+    starter: `class Repository {
+    private long seq = 0;
+    long save(String name) {
+        return 0;   // TODO: validate name và trả id tăng dần
+    }
+}`,
+    tests: `public class Main {
+    static int passed = 0, total = 0;
+    static void check(String name, boolean ok, String detail) {
+        total++;
+        if (ok) { passed++; System.out.println("PASS " + name); }
+        else System.out.println("FAIL " + name + ": " + detail);
+    }
+    public static void main(String[] args) {
+        Repository r = new Repository();
+        check("save dau tien tra 1", r.save("a") == 1L, "phai la 1");
+        check("save thu hai tra 2", r.save("b") == 2L, "phai la 2");
+        boolean threw = false;
+        try { r.save(null); } catch (IllegalArgumentException e) { threw = true; }
+        check("save null nem loi", threw, "phai nem IllegalArgumentException");
+        boolean threw2 = false;
+        try { r.save("  "); } catch (IllegalArgumentException e) { threw2 = true; }
+        check("save rong nem loi", threw2, "chuoi toan space phai nem loi");
+        System.out.println("RESULT " + passed + "/" + total);
+    }
+}`,
+    reference: `class Repository {
+    private long seq = 0;
+    long save(String name) {
+        if (name == null || name.isBlank()) throw new IllegalArgumentException("name rong");
+        return ++seq;
+    }
+}`,
+    hints: ['seq là biến đếm, ++seq tăng trước khi trả', 'name.isBlank() bắt cả chuỗi rỗng và toàn space'],
+    explain: `Test-first: test định nghĩa save trả id tăng dần và validate đầu vào. Lỗi hay gặp là quên validate (agent hay bỏ qua) hoặc trả id không tăng. {{isBlank}} bắt cả "  " mà {{isEmpty}} bỏ sót.`
+  }],
+  check: [
+    { q: 'Vì sao viết test trước khi để agent code?', options: ['Để code ngắn hơn', 'Test là spec máy đọc được, cho agent mục tiêu rõ', 'Để khỏi review', 'Để deploy nhanh'], answer: 1, explain: 'Test định nghĩa hành vi đúng bằng máy đọc được; agent có mục tiêu kiểm chứng nên ít hiểu lệch.' },
+    { q: 'Testcontainers dùng để?', options: ['Mock mọi thứ', 'Chạy test với DB/Kafka thật trong container Docker', 'Tăng tốc build', 'Thay JUnit'], answer: 1, explain: 'Testcontainers dựng container thật (PostgreSQL, Kafka) để test bắt lỗi SQL/Hibernate mà mock giấu; cần Docker và chậm hơn.' },
+    { q: 'Test yếu (chỉ assertNotNull) dẫn tới?', options: ['Nhanh hơn', 'Agent pass mà code vẫn sai', 'Tự động đúng', 'Bỏ được CI'], answer: 1, explain: 'Chỉ assert not null thì gần như code nào cũng pass; phải assert giá trị cụ thể và edge case thì test mới có giá trị.' }
+  ],
+  tags: ['test-first', 'junit', 'testcontainers']
+},
+{
+  id: 'lesson-claude-017',
+  track: 'claude',
+  order: 17,
+  title: 'Review diff của agent: checklist và ghi Agent wrote / I reviewed / I rewrote',
+  level: 'senior',
+  minutes: 35,
+  goals: ['Checklist review diff', 'Nhận diện lỗi agent hay mắc', 'Ghi PR template'],
+  body: `**Tóm tắt:** Agent viết nhanh nhưng hay mắc lại đúng vài lỗi kinh điển: nuốt exception, dùng EAGER fetch, query trong loop (N+1), log lộ dữ liệu nhạy cảm, test hình thức. Vì vậy review diff của agent là bắt buộc, theo một checklist cố định.
+
+### Vì sao agent hay mắc lỗi hệ thống
+Agent học từ rất nhiều code mẫu, nên nó hay lặp lại các "mẫu" phổ biến kể cả mẫu xấu: {{try/catch}} rỗng, {{@OneToMany(fetch = EAGER)}}, gọi repository trong vòng {{for}}. Nó cũng hay viết test chỉ {{assertNotNull}} cho có. Những lỗi này lặp đi lặp lại, nên một checklist ngắn bắt được phần lớn. Vì các mẫu đó xuất hiện rất nhiều trong code công khai, agent coi chúng là chuẩn và lặp lại mà không biết đó là sai.
+
+### Checklist review diff
+Đọc diff theo thứ tự:
+1. **Logic đúng chưa**: kết quả có khớp yêu cầu, edge case (null, rỗng, biên) xử lý chưa.
+2. **Transaction boundary**: có thiếu {{@Transactional}} không, có gọi repository ngoài transaction không.
+3. **N+1**: có query trong loop không; quan hệ có bị EAGER không.
+4. **Exception handling**: có {{catch}} nuốt lỗi, log rồi bỏ qua không.
+5. **Logging/PII**: có log số thẻ, mật khẩu, token, email không.
+6. **Test có thật không**: test có assert giá trị thật, hay chỉ assertNotNull.
+7. **Secret**: có hardcode key trong code không.
+
+### Lỗi hay gặp cụ thể
+- {{catch}} rỗng nuốt lỗi, log rồi bỏ qua. Ví dụ một khối try/catch không xử lý gì:
+
+~~~java
+try {
+    paymentGateway.charge(order);   // ném lỗi mạng
+} catch (Exception e) { }           // rỗng: lỗi biến mất, không ai biết
+~~~
+
+- {{FetchType.EAGER}} trên {{@ManyToOne}}: mỗi lần đọc Order lại kéo theo User, sinh N+1.
+- Gọi {{repository.findById}} trong {{for}}: N câu SQL thay vì 1.
+- {{log.info("card " + number)}}: lộ dữ liệu thẻ.
+
+### Ví dụ đời thực
+Một PR của agent thêm {{findById}} trong vòng {{for}} để gắn tên user vào 200 đơn hàng: 1 query lấy đơn + 200 query lấy user = 201 câu SQL, API chậm từ 80ms lên 2s. Review diff theo checklist "N+1" bắt được ngay; sửa bằng {{findAllById}} gom 1 query. Đây là lỗi agent hay lặp vì code mẫu phổ biến viết như vậy, nên checklist N+1 luôn phải có trong mọi PR review.
+
+### Ghi lại trong PR
+PR template nên có: "Agent wrote X%, I reviewed toàn bộ, I rewrote phần Y", kèm bằng chứng test (số test pass). Điều này minh bạch cho reviewer sau và cho chính bạn biết chỗ nào agent yếu.
+
+### Trả lời mẫu khi phỏng vấn
+"Khi review code agent em có checklist cố định: logic và edge case, transaction boundary, N+1, exception handling, PII trong log, test có thật không, và secret. Em rewrite phần rủi ro và ghi rõ Agent wrote / I reviewed / I rewrote trong PR kèm số test pass."`,
+  exercises: [{
+    title: 'Checklist máy quét: phát hiện mẫu rủi ro trong diff',
+    prompt: `Viết class {{DiffReviewer}} với {{review(String code)}} trả về danh sách tên vấn đề tìm thấy (rỗng nếu sạch). Nhận diện: {{FetchType.EAGER}} trả "eager-fetch"; có {{for (}} kèm {{repository.find}} trả "query-in-loop"; có {{password=}} trả "hardcoded-secret". Mô phỏng checklist bằng Java thuần.`,
+    starter: `class DiffReviewer {
+    List<String> review(String code) {
+        return new ArrayList<>();   // TODO: quét các mẫu rủi ro
+    }
+}`,
+    tests: `public class Main {
+    static int passed = 0, total = 0;
+    static void check(String name, boolean ok, String detail) {
+        total++;
+        if (ok) { passed++; System.out.println("PASS " + name); }
+        else System.out.println("FAIL " + name + ": " + detail);
+    }
+    public static void main(String[] args) {
+        DiffReviewer r = new DiffReviewer();
+        check("bat eager fetch", r.review("@ManyToOne(fetch = FetchType.EAGER) User u;").contains("eager-fetch"), "phai co eager-fetch");
+        check("bat query trong loop", r.review("for (Long id : ids) { repository.findById(id); }").contains("query-in-loop"), "phai co query-in-loop");
+        check("bat hardcode secret", r.review("String password=hunter2;").contains("hardcoded-secret"), "phai co hardcoded-secret");
+        check("code sach thi rong", r.review("int a = 1; int b = 2;").isEmpty(), "phai rong");
+        System.out.println("RESULT " + passed + "/" + total);
+    }
+}`,
+    reference: `class DiffReviewer {
+    List<String> review(String code) {
+        List<String> issues = new ArrayList<>();
+        if (code == null) return issues;
+        if (code.contains("FetchType.EAGER")) issues.add("eager-fetch");
+        if (code.contains("for (") && code.contains("repository.find")) issues.add("query-in-loop");
+        if (code.contains("password=")) issues.add("hardcoded-secret");
+        return issues;
+    }
+}`,
+    hints: ['dùng contains để dò từng mẫu', 'trả danh sách rỗng khi không có vấn đề'],
+    explain: `Bài mô phỏng checklist review bằng cách quét mẫu. Ngoài đời checklist là đọc bằng mắt, nhưng ý tưởng giống nhau: mỗi dòng code khớp một mẫu rủi ro thì gắn cờ. Lỗi hay gặp là chỉ bắt một mẫu rồi bỏ sót các mẫu còn lại.`
+  }],
+  check: [
+    { q: 'Lỗi nào agent hay mắc khi review diff?', options: ['Viết quá ít comment', 'Nuốt exception trong catch rỗng', 'Dùng quá nhiều getter', 'Đặt tên biến dài'], answer: 1, explain: 'try/catch rỗng nuốt lỗi là mẫu kinh điển; checklist bắt buộc soi exception handling.' },
+    { q: 'N+1 query thường do đâu?', options: ['Gọi repository trong vòng lặp', 'Dùng cache', 'Đọc file cấu hình', 'Ghi log'], answer: 0, explain: 'Gọi findById trong for tạo N câu SQL; sửa bằng findAllById hoặc join fetch.' },
+    { q: 'PR nên ghi gì khi dùng agent?', options: ['Chỉ mô tả tính năng', 'Agent wrote / I reviewed / I rewrote + bằng chứng test', 'Không cần ghi', 'Toàn bộ prompt'], answer: 1, explain: 'Ghi rõ phần agent viết, phần bạn review/rewrite và số test pass để minh bạch và truy vết.' }
+  ],
+  tags: ['code review', 'diff', 'agent']
+},
+{
+  id: 'lesson-claude-018',
+  track: 'claude',
+  order: 18,
+  title: 'Secrets và an toàn: .env, gitleaks, không dán key vào prompt',
+  level: 'mid',
+  minutes: 30,
+  goals: ['Quản lý secret', 'Pre-commit scan', 'Quyền tool tối thiểu'],
+  body: `**Tóm tắt:** Secret là thông tin bí mật (API key, mật khẩu DB, token). Nguyên tắc: không bao giờ commit secret, không dán secret vào prompt, và nếu lỡ lộ thì phải {{rotate}} (đổi key mới) chứ không chỉ xóa commit.
+
+### Secret là gì
+Secret là chuỗi cho phép truy cập hệ thống: {{sk_live_...}} (Stripe live key), {{AKIA...}} (AWS access key), mật khẩu PostgreSQL, JWT secret. Ai có nó thì hành động thay bạn. Vì vậy nó phải nằm ngoài git.
+
+### .env và .gitignore
+Cách phổ biến: để biến môi trường trong file {{.env}} (không commit), thêm {{.env}} vào {{.gitignore}}. Spring Boot đọc giá trị qua placeholder {{@Value}} trỏ tới biến môi trường {{DB_PASSWORD}}. Khi chạy, biến môi trường được inject; code không chứa giá trị thật.
+
+### gitleaks quét secret
+{{gitleaks}} là công cụ mã nguồn mở quét secret trong code và lịch sử git. Cài làm pre-commit hook: mỗi lần commit, nó chặn nếu phát hiện mẫu key. Bật cả trong CI để chặn PR. Nếu gitleaks báo, đừng cố lách: xử lý gốc.
+
+### Đừng dán key vào prompt
+Khi làm việc với agent, không paste key thật vào câu lệnh. Dùng placeholder như {{sk_test_...}} (key test của Stripe, không có tiền thật) hoặc {{YOUR_KEY}}. Prompt có thể bị log, và agent có thể gửi lên server.
+
+### Test key vs live key
+Stripe có {{sk_test_}} (chế độ test, không tính tiền) và {{sk_live_}} (tiền thật). Luôn test bằng test key; live key chỉ ở môi trường production, do CI/CD inject.
+
+### Least privilege cho tool
+Cấp cho agent quyền tối thiểu: chỉ đọc thư mục cần thiết, không cho ghi vào production, không cho chạy lệnh phá hủy. Giống như cấp súng cho người chỉ cần tua vít.
+
+### Khi secret lọt git
+Xóa commit là KHÔNG đủ: secret vẫn nằm trong lịch sử và trong bản clone của người khác. Phải {{rotate}}: tạo key mới, thu hồi key cũ, rồi mới dọn lịch sử. Đây là điểm phỏng vấn hay hỏi.
+
+### Ví dụ đời thực
+Một dev dán {{sk_live_51H...}} vào prompt để nhờ agent viết code Stripe. Prompt bị lưu log, key lộ. gitleaks ở CI không bắt được vì key không nằm trong code. Sự cố: phải rotate key ngay, kiểm tra log xem có request lạ không. Bài học: không bao giờ dán live key vào prompt; dùng {{sk_test_}} khi test. Quét secret phải chạy cả pre-commit lẫn CI để chặn nhiều đường, và rotate ngay khi nghi lộ.
+
+### Trả lời mẫu khi phỏng vấn
+"Em quản lý secret bằng .env + .gitignore, chạy gitleaks ở pre-commit và CI, không dán key vào prompt mà dùng placeholder, và test bằng test key. Nếu key lỡ lộ, em rotate ngay — tạo key mới và thu hồi key cũ — chứ không chỉ xóa commit, vì lịch sử git vẫn giữ."`,
+  exercises: [{
+    title: 'Mô phỏng gitleaks: nhận diện dòng chứa secret',
+    prompt: `Viết class {{SecretScanner}} với {{containsSecret(String line)}} trả về true nếu dòng chứa dấu hiệu secret: {{sk_live_}}, {{AKIA}} (AWS access key), hoặc {{password=}}. Dòng null hoặc sạch trả false. Mô phỏng pre-commit scanner bằng Java thuần.`,
+    starter: `class SecretScanner {
+    boolean containsSecret(String line) {
+        return false;   // TODO: dò các mẫu secret
+    }
+}`,
+    tests: `public class Main {
+    static int passed = 0, total = 0;
+    static void check(String name, boolean ok, String detail) {
+        total++;
+        if (ok) { passed++; System.out.println("PASS " + name); }
+        else System.out.println("FAIL " + name + ": " + detail);
+    }
+    public static void main(String[] args) {
+        SecretScanner s = new SecretScanner();
+        check("bat stripe live", s.containsSecret("key=sk_live_abc123"), "phai bat sk_live_");
+        check("bat aws key", s.containsSecret("AWS=AKIAIOSFODNN7EXAMPLE"), "phai bat AKIA");
+        check("bat password", s.containsSecret("password=hunter2"), "phai bat password=");
+        check("dong sach tra false", !s.containsSecret("int a = 1;"), "phai false");
+        check("null tra false", !s.containsSecret(null), "null phai false");
+        System.out.println("RESULT " + passed + "/" + total);
+    }
+}`,
+    reference: `class SecretScanner {
+    boolean containsSecret(String line) {
+        if (line == null) return false;
+        return line.contains("sk_live_") || line.contains("AKIA") || line.contains("password=");
+    }
+}`,
+    hints: ['kiểm tra null trước', 'dùng contains cho từng mẫu'],
+    explain: `Mô phỏng gitleaks: mỗi dòng khớp một mẫu secret thì gắn cờ. Thực tế gitleaks có hàng trăm quy tắc (regex) và quét cả lịch sử git; ý tưởng cốt lõi là so khớp mẫu. Lỗi hay gặp là quên null và bỏ sót mẫu.`
+  }],
+  check: [
+    { q: 'Secret lọt vào git thì nên làm gì đầu tiên?', options: ['Xóa commit là đủ', 'Rotate (đổi) key ngay', 'Đổi tên file', 'Ẩn branch'], answer: 1, explain: 'Xóa commit không xóa được lịch sử và bản clone; phải tạo key mới, thu hồi key cũ (rotate) trước.' },
+    { q: 'gitleaks thường chạy ở đâu?', options: ['Chỉ trong trình duyệt', 'Pre-commit hook và CI', 'Trong database', 'Khi deploy'], answer: 1, explain: 'gitleaks quét secret ở pre-commit (chặn commit) và trong CI (chặn PR), quét cả lịch sử git.' },
+    { q: 'Vì sao không dán key thật vào prompt agent?', options: ['Prompt có thể bị log/gửi lên server', 'Agent không đọc được', 'Làm chậm agent', 'Key hết hạn'], answer: 0, explain: 'Prompt có thể bị lưu log hoặc gửi lên dịch vụ; dùng placeholder như sk_test_ hoặc YOUR_KEY thay thế.' }
+  ],
+  tags: ['secrets', 'gitleaks', 'env']
+},
+{
+  id: 'lesson-claude-019',
+  track: 'claude',
+  order: 19,
+  title: 'Agent đụng code thanh toán: staging, idempotency, webhook chữ ký',
+  level: 'senior',
+  minutes: 40,
+  goals: ['Guardrails cho payment code', 'Staging trước production', 'Test mode Stripe', 'Idempotency + signature'],
+  body: `**Tóm tắt:** Code thanh toán là nơi sai một li là mất tiền thật, nên không để agent tự ý đưa lên production. Bắt buộc: staging trước, test mode, {{idempotency key}} để retry an toàn, verify {{chữ ký webhook}}, và review hai người.
+
+### Vì sao payment nguy hiểm
+Một request trùng (do mạng chập, client retry) có thể khiến khách bị tính tiền hai lần. Một webhook giả mạo có thể đánh dấu đơn đã trả khi chưa trả. Vì tiền là thật, mọi thay đổi phải qua staging và review kỹ.
+
+### Staging trước production
+Staging là môi trường giống production (cùng cấu hình, DB phụ) nhưng không ảnh hưởng khách. Mọi thay đổi payment deploy lên staging, chạy test end-to-end, rồi mới lên prod. CI nên tự deploy staging trước.
+
+### Test mode
+Stripe có chế độ test với {{sk_test_}}: thẻ {{4242 4242 4242 4242}} luôn thành công, không trừ tiền thật. Mọi tích hợp ban đầu chạy ở test mode; live chỉ bật ở prod.
+
+### Idempotency key
+{{Idempotency-Key}} là một id duy nhất bạn sinh cho mỗi lần "charge". Gọi Stripe kèm header {{Idempotency-Key}}: nếu bạn retry cùng key, Stripe trả về đúng kết quả lần đầu, KHÔNG charge lần hai. Đây là cách phòng duplicate charge khi client timeout và gửi lại.
+
+### Webhook chữ ký
+Sau khi charge, Stripe gửi {{webhook}} (HTTP callback) báo kết quả. Bạn phải {{verify chữ ký}} bằng {{Webhook.constructEvent(payload, sigHeader, endpointSecret)}} để chắc chắn webhook thật sự từ Stripe. Lưu {{event.id}} với UNIQUE constraint để xử lý retry (Stripe gửi lại cùng event) và sai thứ tự (dùng trạng thái để bỏ qua event cũ).
+
+### Bug review bắt được
+Agent quên idempotency: client retry → hai lần charge. Review diff theo checklist (bài 17) bắt được vì thiếu Idempotency-Key. Đây là lý do payment luôn cần human review.
+
+### Ví dụ đời thực
+Một app ví điện tử gọi Stripe charge khi khách bấm "Thanh toán". Mạng chập, client timeout và gửi lại request; server không có idempotency nên charge hai lần, khách bị trừ tiền gấp đôi, khiếu nại. Điều tra: log Stripe cho thấy hai charge cùng số tiền cách nhau 2s. Sửa: sinh {{Idempotency-Key}} theo {{orderId}}, lưu {{event.id}} UNIQUE để webhook retry không xử lý hai lần. Sau sửa, retry cùng key chỉ còn một charge. Đây là lỗi review bắt được trước khi lên prod nếu có checklist.
+
+### Trả lời mẫu khi phỏng vấn
+"Với payment em không cho agent tự deploy prod. Mọi thay đổi lên staging và chạy test mode trước; em bắt buộc idempotency key để retry không charge trùng, verify chữ ký webhook bằng endpoint secret, lưu event.id UNIQUE để chống retry và sai thứ tự, và luôn review hai người."`,
+  exercises: [{
+    title: 'Charge idempotent: cùng key không charge hai lần',
+    prompt: `Viết class {{ChargeService}} với {{charge(String key, long amount)}}: mỗi {{key}} (idempotency key) chỉ được cộng tiền một lần; gọi lại cùng key trả về tổng hiện tại mà KHÔNG cộng thêm. Khác key thì cộng dồn. Key null/rỗng ném {{IllegalArgumentException}}. {{total()}} trả tổng đã charge. Mô phỏng idempotency bằng Java thuần.`,
+    starter: `class ChargeService {
+    private long total = 0;
+    long charge(String key, long amount) {
+        if (key == null || key.isBlank()) throw new IllegalArgumentException("key");
+        total += amount;   // TODO: chỉ cộng khi key chưa từng charge
+        return total;
+    }
+    long total() { return total; }
+}`,
+    tests: `public class Main {
+    static int passed = 0, total = 0;
+    static void check(String name, boolean ok, String detail) {
+        total++;
+        if (ok) { passed++; System.out.println("PASS " + name); }
+        else System.out.println("FAIL " + name + ": " + detail);
+    }
+    public static void main(String[] args) {
+        ChargeService s = new ChargeService();
+        s.charge("k1", 1000);
+        s.charge("k1", 1000);
+        check("cung key khong charge hai lan", s.total() == 1000L, "total = " + s.total() + ", mong doi 1000");
+        s.charge("k2", 500);
+        check("khac key thi cong don", s.total() == 1500L, "total = " + s.total() + ", mong doi 1500");
+        boolean threw = false;
+        try { s.charge("  ", 100); } catch (IllegalArgumentException e) { threw = true; }
+        check("key rong nem loi", threw, "phai nem IllegalArgumentException");
+        System.out.println("RESULT " + passed + "/" + total);
+    }
+}`,
+    reference: `class ChargeService {
+    private final Set<String> seen = new HashSet<>();
+    private long total = 0;
+    long charge(String key, long amount) {
+        if (key == null || key.isBlank()) throw new IllegalArgumentException("key");
+        if (!seen.add(key)) return total;
+        total += amount;
+        return total;
+    }
+    long total() { return total; }
+}`,
+    hints: ['dùng một Set đánh dấu key đã charge', 'seen.add(key) trả false nếu key đã có'],
+    explain: `Mô phỏng Idempotency-Key: {{seen}} ghi nhớ key đã xử lý; nếu key đã có thì trả về total cũ, không cộng thêm. Lỗi hay gặp (như starter) là cộng tiền mỗi lần gọi, khiến retry làm duplicate charge. Ngoài đời Stripe làm việc này ở server với header Idempotency-Key.`
+  }],
+  check: [
+    { q: 'Idempotency-Key dùng để làm gì?', options: ['Xác thực user', 'Cho retry an toàn, không charge trùng', 'Mã hóa dữ liệu', 'Ghi log'], answer: 1, explain: 'Cùng Idempotency-Key khi retry, Stripe trả kết quả lần đầu, không charge lần hai.' },
+    { q: 'Webhook của Stripe cần gì để tin cậy?', options: ['Không cần gì', 'Verify chữ ký bằng endpoint secret', 'Chỉ cần HTTPS', 'Lưu vào file text'], answer: 1, explain: 'Webhook.constructEvent verify chữ ký để chắc chắn callback thật sự từ Stripe, tránh webhook giả.' },
+    { q: 'Vì sao payment luôn cần review người?', options: ['Agent không biết code', 'Sai sót gây mất tiền thật, không thể tự deploy prod', 'Để chậm hơn', 'Vì Stripe yêu cầu'], answer: 1, explain: 'Lỗi payment là tiền thật; staging + test mode + idempotency + verify chữ ký + review hai người là bắt buộc.' }
+  ],
+  tags: ['stripe', 'payment', 'idempotency', 'webhook']
+},
+{
+  id: 'lesson-claude-020',
+  track: 'claude',
+  order: 20,
+  title: 'Coach team thận trọng dùng agent: rules file, checklist, đo lường',
+  level: 'lead',
+  minutes: 35,
+  goals: ['Rules file chung', 'Review checklist team', 'Đo lường hiệu quả', 'Kể câu chuyện phỏng vấn'],
+  body: `**Tóm tắt:** Để cả team thận trọng dùng agent (không phải chỉ mình bạn), cần: pairing và demo thật, một {{rules file}} + checklist chung, và đo lường bằng số liệu (số PR, thời gian review, bug lọt prod, tỷ lệ PR bị trả lại). Adoption đến từ niềm tin, niềm tin đến từ an toàn đo được.
+
+### Vì sao team e dè agent
+Dev thận trọng sợ agent sinh code rác, khó review, hoặc lộ secret. Ép dùng sẽ phản tác dụng. Cách hiệu quả là cho họ thấy quy trình an toàn qua demo thật, không phải hô hào.
+
+### Pairing và demo thật
+Ngồi cùng một dev thận trọng, làm một task nhỏ thật (sửa một bug, thêm một endpoint), cho họ thấy: viết test trước, bật plan mode, review diff theo checklist. Trải nghiệm thật thuyết phục hơn slide.
+
+### Rules file chung
+Một {{rules file}} (như CLAUDE.md hoặc file convention) chia sẻ cho cả team: stack, convention, điều cấm, cách test. Kèm một {{review checklist}} chung để mọi PR agent đều được soi theo cùng tiêu chí. Nhờ đó review nhất quán, không ai bỏ sót.
+
+### Đo lường
+Không đo thì không cải thiện được. Các chỉ số:
+- **Số PR/tuần** có agent tham gia.
+- **Thời gian review** trung bình mỗi PR.
+- **Bug lọt production** liên quan code agent.
+- **Tỷ lệ PR bị trả lại** (cần sửa nhiều vòng).
+Theo dõi theo tuần để thấy xu hướng; mục tiêu là tăng PR, giảm review time và bug lọt.
+
+### Kể câu chuyện phỏng vấn
+Khi được hỏi "dẫn dắt team dùng agent thế nào", trả lời theo STAR: tình huống (team e dè), hành động (pairing + rules file + checklist + đo lường), kết quả (số liệu cụ thể: PR tăng, bug lọt giảm), và cách bạn biết nó bền (theo dõi nhiều tuần, không chỉ một lần).
+
+### Ví dụ đời thực
+Một team 6 người e dè agent. Lead không ép, mà pairing với một senior thận trọng trong 2 buổi, làm thật một task nhỏ, cho thấy quy trình test-first + review checklist. Sau đó chốt rules file chung và checklist. Đo trong 4 tuần: PR/tuần tăng từ 8 lên 14, thời gian review mỗi PR giảm từ 50 xuống 35 phút, bug lọt prod từ 3 xuống 1, tỷ lệ PR bị trả lại giảm. Vì theo dõi nhiều tuần nên biết cải thiện bền, không phải may mắn một lần. Số liệu này thuyết phục cả team tin tưởng và tự nguyện dùng agent, thay vì bị ép buộc dùng một cách hình thức.
+
+### Trả lời mẫu khi phỏng vấn
+"Em không ép team dùng agent. Em pairing với một dev thận trọng, demo quy trình an toàn trên task nhỏ, rồi chốt rules file và checklist chung. Em đo adoption bằng số PR, thời gian review, bug lọt prod và tỷ lệ PR bị trả lại theo từng tuần. Niềm tin đến từ an toàn đo được, nên em theo dõi nhiều tuần chứ không chỉ một lần."`,
+  exercises: [{
+    title: 'Đo adoption: tỷ lệ bug lọt và giờ review mỗi PR',
+    prompt: `Viết class {{AdoptionMetrics}} với hai method static: {{bugLeakRate(int totalPr, int leakedBugs)}} trả về tỷ lệ bug lọt = leakedBugs / totalPr (double); {{reviewHoursPerPr(int totalReviewHours, int totalPr)}} trả về giờ review trung bình mỗi PR. Nếu {{totalPr <= 0}} ném {{IllegalArgumentException}}. Mô phỏng đo lường adoption bằng Java thuần.`,
+    starter: `class AdoptionMetrics {
+    static double bugLeakRate(int totalPr, int leakedBugs) {
+        throw new UnsupportedOperationException("TODO");
+    }
+    static double reviewHoursPerPr(int totalReviewHours, int totalPr) {
+        throw new UnsupportedOperationException("TODO");
+    }
+}`,
+    tests: `public class Main {
+    static int passed = 0, total = 0;
+    static void check(String name, boolean ok, String detail) {
+        total++;
+        if (ok) { passed++; System.out.println("PASS " + name); }
+        else System.out.println("FAIL " + name + ": " + detail);
+    }
+    static boolean close(double a, double b) { return Math.abs(a - b) < 1e-9; }
+    public static void main(String[] args) {
+        check("bug leak rate", close(AdoptionMetrics.bugLeakRate(100, 5), 0.05), "mong doi 0.05");
+        check("review hours per pr", close(AdoptionMetrics.reviewHoursPerPr(40, 20), 2.0), "mong doi 2.0");
+        boolean threw = false;
+        try { AdoptionMetrics.bugLeakRate(0, 0); } catch (IllegalArgumentException e) { threw = true; }
+        check("totalPr 0 nem loi", threw, "phai nem IllegalArgumentException");
+        System.out.println("RESULT " + passed + "/" + total);
+    }
+}`,
+    reference: `class AdoptionMetrics {
+    static double bugLeakRate(int totalPr, int leakedBugs) {
+        if (totalPr <= 0) throw new IllegalArgumentException("totalPr");
+        return (double) leakedBugs / totalPr;
+    }
+    static double reviewHoursPerPr(int totalReviewHours, int totalPr) {
+        if (totalPr <= 0) throw new IllegalArgumentException("totalPr");
+        return (double) totalReviewHours / totalPr;
+    }
+}`,
+    hints: ['ép (double) trước khi chia để tránh chia nguyên', 'kiểm tra totalPr <= 0 trước'],
+    explain: `Đo adoption bằng số liệu: bug lọt/PR và giờ review/PR. Lỗi hay gặp là chia nguyên (5/100 = 0) — phải ép double. Validate totalPr > 0 để tránh chia cho 0. Theo dõi nhiều tuần mới thấy xu hướng bền.`
+  }],
+  check: [
+    { q: 'Cách nào giúp team thận trọng dùng agent hiệu quả nhất?', options: ['Ép buộc dùng', 'Pairing + demo thật + rules file + đo lường', 'Cấm dùng', 'Mua license'], answer: 1, explain: 'Cho thấy quy trình an toàn qua demo thật, rules chung và số liệu; ép buộc phản tác dụng.' },
+    { q: 'Chỉ số nào đo adoption tốt?', options: ['Chỉ số PR', 'Số PR, thời gian review, bug lọt, tỷ lệ PR bị trả lại', 'Chỉ bug lọt', 'Số dòng code'], answer: 1, explain: 'Kết hợp nhiều chỉ số theo tuần mới thấy xu hướng; nhìn một chỉ số dễ hiểu sai.' },
+    { q: 'Vì sao chia nguyên trong tính tỷ lệ là lỗi?', options: ['Không phải lỗi', '5/100 ra 0 thay vì 0.05', 'Làm chậm', 'Gây tràn số'], answer: 1, explain: 'Chia hai số nguyên cho kết quả nguyên (5/100=0); phải ép (double) để có 0.05.' }
+  ],
+  tags: ['team', 'coach', 'adoption', 'metrics']
+}
 );
