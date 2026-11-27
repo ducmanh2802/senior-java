@@ -19267,6 +19267,597 @@ Tôi chọn 4 golden signals làm SLI: latency, traffic, errors, saturation. Tha
     'Khi nào dùng symptom-based alert vs cause-based alert?'
   ],
   tags: ['SRE', 'Golden signals', 'Burn rate', 'Alert', 'Monitoring']
+  },
+  {
+    id: 'devops-216',
+    topic: 'devops',
+    level: 'senior',
+    q: 'Trong kỳ thi CKAD bạn phải viết liveness, readiness và startup probe cho một Pod Spring Boot chỉ trong vài phút; nhưng ở production bạn từng thấy cả cụm restart dây chuyền khi DB chậm. Bạn viết probe thế nào cho đúng, kiểm chứng ra sao trên terminal, và vì sao trỏ liveness vào /actuator/health tổng hợp là thảm hoạ?',
+    a: `**Tóm tắt:** Ba probe trả lời ba câu hỏi khác nhau: startup cho app khởi động chậm, readiness gỡ Pod khỏi Service khi chưa phục vụ được, liveness restart khi process treo. Trong CKAD bạn viết được chúng trong vài phút và kiểm chứng bằng {{kubectl describe}} cùng {{kubectl get events}}; ở production, tách health group của Actuator để liveness chỉ gồm {{livenessState}}, còn dependency như DB chỉ được vào readiness — trỏ liveness vào {{/actuator/health}} tổng hợp khiến DB chậm làm mọi Pod restart cùng lúc.
+
+### Hiểu nhanh
+Ba probe giống ba câu hỏi của quản lý ca. Startup hỏi "nhân viên đã vào ca xong chưa" và cho đủ thời gian chuẩn bị, trong lúc đó không hỏi hai câu còn lại. Readiness hỏi "giờ có nhận khách được không"; chưa thì tạm không dẫn khách tới, nhưng không thay người. Liveness hỏi "còn tỉnh táo không hay đã ngất"; ngất thì thay người, tức restart. Nếu bạn hỏi liveness bằng câu "kho hàng, tức DB, có mở cửa không", kho đóng 30 giây là mọi nhân viên bị thay cùng lúc, dù lỗi chẳng nằm ở họ.
+
+### Thuật ngữ
+- **startupProbe**: probe chạy trong lúc khởi động; khi nó chưa thành công thì liveness và readiness chưa được chạy.
+- **readinessProbe**: fail thì Pod bị gỡ khỏi EndpointSlice, không bị restart.
+- **livenessProbe**: fail quá ngưỡng thì kubelet restart container.
+- **Health group**: nhóm health indicator của Actuator được gom thành endpoint riêng, ví dụ {{/actuator/health/readiness}}.
+- **LivenessState / ReadinessState**: trạng thái nội tại của app, CORRECT hoặc BROKEN, ACCEPTING_TRAFFIC hoặc REFUSING_TRAFFIC.
+- **failureThreshold nhân periodSeconds**: số lần fail liên tiếp nhân chu kỳ ra thời gian tới khi kubelet hành động.
+
+### Vì sao phải tách, cơ chế bên trong
+Actuator gom nhiều HealthIndicator, gồm db, redis, disk, vào {{/actuator/health}}. Nếu liveness trỏ vào địa chỉ tổng hợp này, một dependency chậm sẽ làm liveness fail ở mọi Pod. Với failureThreshold 3 và periodSeconds 10, ngưỡng là 30 giây; DB failover 30 giây là đủ để cả 6 Pod restart đồng loạt, mất cache Caffeine, rồi dồn 600 connection mới lên DB vừa hồi phục, tạo vòng xoáy chết. Readiness fail thì chỉ gỡ traffic, an toàn hơn nhiều lần.
+
+### Cấu hình health group và probe
+~~~yaml
+management:
+  endpoint:
+    health:
+      probes: { enabled: true }
+      group:
+        liveness: { include: livenessState }          # chỉ trạng thái nội tại
+        readiness: { include: [readinessState, db] }    # DB chỉ vào readiness
+  server: { port: 8081 }                             # tách cổng actuator khỏi 8080
+~~~
+~~~yaml
+startupProbe:
+  httpGet: { path: /actuator/health/liveness, port: 8081 }
+  periodSeconds: 5
+  failureThreshold: 30           # 5s x 30 = 150s cho app boot chậm
+readinessProbe:
+  httpGet: { path: /actuator/health/readiness, port: 8081 }
+  periodSeconds: 5
+  failureThreshold: 3
+livenessProbe:
+  httpGet: { path: /actuator/health/liveness, port: 8081 }
+  periodSeconds: 10
+  failureThreshold: 3
+~~~
+
+### Lệnh kiểm chứng trên terminal
+~~~bash
+kubectl apply -f pod.yaml
+kubectl get pod -n payments -w                  # STATUS, READY, RESTARTS
+kubectl describe pod payment-7d9f -n payments   # Events: Liveness/Readiness probe failed
+kubectl get events -n payments --sort-by=.lastTimestamp
+kubectl exec -it payment-7d9f -n payments -- curl -s localhost:8081/actuator/health/readiness
+~~~
+
+### Bảng trade-off
+| Probe | Fail thì sao | Nên kiểm tra |
+|---|---|---|
+| startup | chưa chạy hai probe kia; fail quá ngưỡng thì restart | app đã boot xong |
+| readiness | gỡ khỏi Service, KHÔNG restart | có thể nhận request, pool sẵn, warm-up xong |
+| liveness | restart container | app treo không tự hồi, ví dụ deadlock |
+
+### Pitfall production
+- Liveness kiểm tra DB: restart dây chuyền, biến sự cố nhỏ thành sập hệ thống.
+- Readiness báo Ready quá sớm, chỉ kiểm tra cổng mở: Pod nhận traffic khi pool chưa sẵn.
+- Đặt management port 8081 nhưng probe vẫn trỏ 8080: probe nhận 404, Pod không bao giờ Ready.
+- Probe timeout 1 giây nhưng DB health timeout 5 giây: probe fail trước khi health kịp trả lời.
+
+### Ví dụ đời thực
+Triệu chứng: service tài khoản boot 95 giây, DB primary failover 30 giây, cả 6 Pod restart cùng lúc 3 lần trong 2 tuần, mỗi lần restart dồn 600 connection mới lên DB.
+
+Điều tra: liveness trỏ {{/actuator/health}} tổng hợp; khi DB failover, DataSourceHealthIndicator trả DOWN trong 30 giây, failureThreshold 3 nhân period 10 giây bằng 30 giây, nên tất cả Pod bị restart đồng thời. Readiness cũng fail nhưng không gây restart.
+
+Nguyên nhân gốc: liveness kiểm tra dependency thay vì trạng thái nội tại; không có startup probe che giai đoạn khởi động chậm; restart dây chuyền làm mất cache và dồn tải.
+
+Cách xử lý: tách health group, liveness chỉ {{livenessState}}; readiness thêm {{db}} và một custom warmup indicator; thêm startup probe 5 giây nhân 30 bằng 150 giây. Trên staging chủ động chặn DB: liveness xanh, readiness đỏ, 0 Pod restart.
+
+Kết quả đo được: 3 đợt failover DB sau đó, 0 restart dây chuyền, p99 tăng 200 ms trong 30 giây failover rồi về bình thường.
+
+### Trả lời mẫu khi phỏng vấn
+Ba probe trả lời ba câu hỏi khác nhau: startup che quá trình khởi động chậm, liveness restart khi process treo không tự hồi, readiness gỡ Pod khỏi traffic khi tạm chưa phục vụ được. Nếu trỏ cả ba vào /actuator/health tổng hợp, DB chậm 30 giây làm liveness fail ở mọi Pod, tất cả restart cùng lúc, mất cache và dồn tải lên DB, tức là tự tạo sự cố dây chuyền. Tôi dùng health group của Actuator: liveness chỉ gồm livenessState, readiness gồm readinessState cộng db nếu service hoàn toàn không phục vụ được khi DB chết. Với app boot 90 giây, startup probe period 5 giây failureThreshold 30 cho tối đa 150 giây. Trên terminal tôi kiểm chứng bằng kubectl get pod, describe để đọc Events, và logs --previous. Trước khi lên prod, tôi chặn DB trên staging và kiểm tra: liveness xanh, readiness đỏ, không Pod nào restart.
+
+> Senior tip: trong staging hãy chủ động chặn DB và Kafka rồi quan sát: liveness phải xanh, readiness phải đỏ, không Pod nào restart. Đây là bài test bắt buộc trước production; nếu liveness đỏ, bạn đang tự tạo thảm hoạ.`,
+    follow: [
+      'Readiness nên kiểm tra DB bằng SELECT 1 hay chỉ trạng thái connection pool? Vì sao?',
+      'Khi DB chậm, vì sao gỡ toàn bộ Pod khỏi traffic đôi khi còn hại hơn để nguyên?',
+      'Làm sao chứng minh trong một phút rằng liveness không phụ thuộc DB?'
+    ],
+    tags: ['ckad', 'Kubernetes', 'Actuator', 'Probe', 'Readiness', 'Liveness'],
+    refs: [
+      { type: 'doc', title: 'Configure Liveness, Readiness and Startup Probes', url: 'https://kubernetes.io/docs/tasks/configure-pod-container/configure-liveness-readiness-startup-probes/' }
+    ]
+  },
+  {
+    id: 'devops-217',
+    topic: 'devops',
+    level: 'senior',
+    q: 'Bạn ôn CKAD và được hỏi về ConfigMap và Secret cho Spring Boot: tạo bằng lệnh nào, nạp vào app bằng biến môi trường hay mount file, sửa ConfigMap xong app có tự nhận không, và vì sao Secret base64 không phải là bảo mật?',
+    a: `**Tóm tắt:** Tạo bằng {{kubectl create configmap}} từ literal, file hoặc env-file, và {{kubectl create secret}} các loại generic, docker-registry, tls. Nạp vào Pod theo hai cách: {{envFrom}} hoặc {{valueFrom}} thành biến môi trường, hoặc mount thành file rồi đọc bằng {{spring.config.import=configtree:/etc/secrets/}}. Sửa ConfigMap thì biến môi trường KHÔNG đổi tới khi restart; file mount không dùng subPath được kubelet cập nhật sau khoảng một phút nhưng app phải tự reload; subPath KHÔNG bao giờ cập nhật. Secret chỉ là base64, ai có quyền get đều đọc được, nên phải bật encryption at rest, RBAC chặt và external secrets.
+
+### Hiểu nhanh
+ConfigMap và Secret giống bộ chìa khoá và giấy tờ giao kèm khi bàn giao xe: image giống hệt nhau cho mọi khách, còn giấy tờ thì theo từng khách. Biến môi trường giống dán thông tin lên táp-lô lúc nổ máy, muốn đổi phải tắt máy mở lại. Mount file giống để giấy tờ trong hộc xe, thay được, nhưng tài xế phải tự mở hộc đọc lại mới biết. subPath giống kẹp giấy vào một khe cố định, không bao giờ tự đổi.
+
+### Thuật ngữ
+- **ConfigMap / Secret**: cặp key value không nhạy cảm và nhạy cảm.
+- **envFrom / valueFrom**: nạp toàn bộ hoặc từng key thành biến môi trường của container.
+- **configtree**: nguồn cấu hình Spring đọc mỗi file là một property, tên file là key.
+- **subPath**: mount một key thành file cụ thể; kubelet cố tình không cập nhật.
+- **immutable**: đánh dấu ConfigMap hoặc Secret bất biến, kubelet ngừng theo dõi đổi.
+- **encryption at rest**: mã hoá etcd bằng KMS, khác với base64.
+
+### Cơ chế cập nhật, vì sao
+- Biến môi trường: kubelet chỉ đặt env lúc tạo container, nên sửa ConfigMap xong env cũ vẫn giữ tới khi Pod restart.
+- Volume mount: kubelet đồng bộ file định kỳ, mặc định khoảng một phút và có thể trễ hơn; app chỉ đọc lúc khởi động thì vẫn phải restart, app đọc lại mỗi lần hoặc dùng refresh scope mới nhận.
+- subPath: kubelet cố tình không cập nhật file mount kiểu này để tránh app đọc giữa chừng; muốn đổi phải tạo Pod mới.
+- immutable: tắt theo dõi, muốn đổi phải tạo ConfigMap tên khác.
+
+### Lệnh tạo, CKAD hay dùng
+~~~bash
+kubectl create configmap app-config -n payments \\
+  --from-literal=SPRING_PROFILES_ACTIVE=prod --from-literal=FEATURE_X=true
+kubectl create configmap app-config -n payments --from-file=application.yml
+kubectl create secret generic db-secret -n payments --from-literal=password=s3cr3t
+kubectl create secret docker-registry regcred -n payments \\
+  --docker-server=harbor.bank.vn --docker-username=robot --docker-password=...
+kubectl get configmap app-config -n payments -o yaml    # xem giá trị
+kubectl describe secret db-secret -n payments           # không in giá trị
+~~~
+
+### Manifest nạp vào app
+~~~yaml
+envFrom:
+  - configMapRef: { name: app-config }
+env:
+  - name: SPRING_CONFIG_IMPORT
+    value: optional:configtree:/etc/secrets/
+volumeMounts:
+  - { name: sec, mountPath: /etc/secrets, readOnly: true }
+# phần pod:
+volumes:
+  - name: sec
+    secret: { secretName: db-secret }    # key password thành file /etc/secrets/password
+~~~
+
+### Bảng trade-off env so với file
+| Tiêu chí | Biến môi trường | File mount cộng configtree |
+|---|---|---|
+| Đơn giản | rất đơn giản | cần spring.config.import |
+| Cập nhật khi sửa | chỉ khi restart | file đổi sau khoảng một phút, app tự reload |
+| Rủi ro lộ | cao hơn, dump env, process con | thấp hơn, giới hạn quyền đọc file |
+| subPath | không áp dụng | không bao giờ cập nhật |
+| Hợp với | URL, profile, flag | mật khẩu, khoá, chứng chỉ |
+
+### Pitfall production
+- Tưởng Secret đã mã hoá: base64 decode là ra mật khẩu.
+- Dùng subPath rồi chờ tự cập nhật: không bao giờ, phải restart.
+- Sửa ConfigMap tưởng đã áp dụng: Pod cũ giữ giá trị cũ, Pod scale mới dùng giá trị mới, sinh hai hành vi cùng lúc.
+- Quên checksum annotation: đổi cấu hình không kích hoạt rollout.
+- RBAC quá rộng: ai tạo được Pod trong namespace là gián tiếp đọc được mọi Secret ở đó.
+
+### Ví dụ đời thực
+Triệu chứng: DBA đổi mật khẩu PostgreSQL, team sửa Secret; 10 phút sau khoảng 30% request tạo đơn báo password authentication failed, 70% vẫn thành công; rollout thủ công có lúc 2 Pod lỗi, 3 Pod chạy.
+
+Điều tra: app đọc password từ biến môi trường envFrom cũ, không phải file configtree, nên Secret đã sửa nhưng container cũ vẫn giữ giá trị lúc khởi động; HPA scale thêm Pod mới dùng giá trị mới.
+
+Nguyên nhân gốc: biến môi trường không tự cập nhật khi ConfigMap hoặc Secret đổi; secret nhạy cảm đi qua env; scale-out tạo trạng thái hỗn hợp.
+
+Cách xử lý: chuyển secret DB sang mount file cộng configtree; sau mỗi lần đổi ConfigMap hoặc Secret chạy kubectl rollout restart và theo dõi readiness; thêm annotation checksum vào Pod template để mỗi thay đổi là một rollout.
+
+Kết quả đo được: sau rollout 6 phút, 100% Pod dùng endpoint và mật khẩu mới, tỷ lệ lỗi xác thực về 0.
+
+### Trả lời mẫu khi phỏng vấn
+Tôi tạo ConfigMap và Secret bằng kubectl create configmap và create secret từ literal, file hoặc env-file, rồi nạp vào Pod theo hai cách. Cấu hình thường như URL, profile, feature flag đặt trong ConfigMap và nạp bằng envFrom; Spring relaxed binding map SPRING_DATASOURCE_URL thành spring.datasource.url. Secret tôi mount thành file và đọc bằng spring.config.import configtree, vì biến môi trường dễ lộ qua dump và không cập nhật khi secret đổi. Sửa ConfigMap thì biến môi trường không đổi tới khi Pod restart; file mount không dùng subPath được kubelet cập nhật sau khoảng một phút nhưng app phải tự reload; subPath không bao giờ cập nhật. Secret chỉ là base64 nên phải có RBAC, encryption at rest, hoặc lấy từ Vault qua External Secrets Operator. Khi đổi cấu hình tôi luôn rollout restart có readiness, hoặc gắn checksum annotation để mỗi thay đổi là một rollout có kiểm soát.
+
+> Senior tip: hãy coi thay đổi cấu hình như một lần deploy, có review, có rollout từng Pod, có rollback. Tự động reload cấu hình nóng nghe hấp dẫn nhưng làm khó trả lời câu hỏi "lúc 14:00 Pod nào đang chạy giá trị nào"; checksum annotation cho bạn lịch sử rõ ràng.`,
+    follow: [
+      'Khi nào nên lấy secret trực tiếp từ AWS Secrets Manager hoặc Vault thay vì Secret của Kubernetes?',
+      'Làm sao xem app đang thực sự dùng giá trị cấu hình nào mà không lộ mật khẩu?',
+      'immutable ConfigMap giúp gì và khi đổi cấu hình thì làm thế nào?'
+    ],
+    tags: ['ckad', 'ConfigMap', 'Secret', 'Spring Boot', 'configtree', 'Kubernetes'],
+    refs: [
+      { type: 'doc', title: 'ConfigMaps', url: 'https://kubernetes.io/docs/concepts/configuration/configmap/' },
+      { type: 'doc', title: 'Secrets', url: 'https://kubernetes.io/docs/concepts/configuration/secret/' }
+    ]
+  },
+  {
+    id: 'devops-218',
+    topic: 'devops',
+    level: 'senior',
+    q: 'Bạn chuyển một batch Java tính lãi cuối ngày, chạy khoảng 40 phút, sang Kubernetes. Bạn dùng Job hay CronJob, và giải thích completions, parallelism, backoffLimit, activeDeadlineSeconds, concurrencyPolicy, suspend, restartPolicy; vì sao job phải idempotent khi chạy lại?',
+    a: `**Tóm tắt:** Job chạy một loạt Pod tới khi đủ {{completions}} thành công; CronJob tạo Job theo lịch. {{parallelism}} là số Pod chạy song song; {{backoffLimit}} là số lần thử lại, mặc định 6; {{activeDeadlineSeconds}} chặn chạy vô hạn; {{concurrencyPolicy}} gồm Allow, Forbid, Replace để chống chạy chồng; {{suspend}} tạm dừng; Pod của Job chỉ được {{restartPolicy}} là Never hoặc OnFailure. Kubernetes chỉ hứa CronJob xấp xỉ một lần mỗi lịch, đôi khi hai đôi khi không, nên job phải idempotent và có alarm khi không chạy.
+
+### Hiểu nhanh
+CronJob giống quản đốc có đồng hồ báo thức: tới giờ thì giao phiếu việc, tức Job, cho một tổ; tổ cử người, tức Pod, làm. Forbid là việc hôm qua chưa xong thì hôm nay không giao thêm. startingDeadlineSeconds là lỡ giờ quá X phút thì bỏ ca này. activeDeadlineSeconds là làm quá 2 tiếng thì dừng lại báo cáo. Vì quản đốc đôi khi giao trùng phiếu, phiếu việc phải ghi rõ "lãi ngày 29/10" để tổ biết đã làm rồi thì thôi, tức idempotent.
+
+### Thuật ngữ
+- **Job**: chạy Pod tới khi đủ completions; backoffLimit là số lần thử trước khi coi Job thất bại.
+- **CronJob**: tạo Job theo lịch; timeZone chọn múi giờ, ổn định từ Kubernetes 1.27.
+- **concurrencyPolicy**: Allow, mặc định cho chạy chồng; Forbid bỏ lần mới nếu lần cũ chưa xong; Replace huỷ lần cũ chạy lần mới.
+- **startingDeadlineSeconds**: lỡ giờ trong khoảng này vẫn tạo bù, quá thì bỏ lần đó.
+- **activeDeadlineSeconds**: thời gian sống tối đa của Job, vượt thì mọi Pod bị dừng.
+- **ttlSecondsAfterFinished**: tự xoá Job đã xong sau một khoảng.
+- **suspend**: tạm dừng tạo Job, đặt true để dừng, false để chạy lại.
+
+### Cơ chế bên trong, vì sao
+Job controller tạo Pod; Pod lỗi, exit code khác 0, thì Job tạo Pod mới với thời gian chờ tăng dần, tối đa backoffLimit lần. CronJob controller theo lịch tạo Job; nếu controller bận hoặc cluster đang nâng cấp, không tạo đúng giờ, lỡ quá 100 lịch thì controller ghi sự kiện TooManyMissedTimes và chỉ chạy lần mới nhất (các lịch cũ không chạy), không phải ngừng hẳn — đây là nguồn gốc của "không chạy" với các lịch cũ. concurrencyPolicy mặc định Allow cho job hôm trước còn chạy thì job hôm nay chồng lên, đây là nguồn gốc của "chạy hai lần".
+
+### Manifest CronJob
+~~~yaml
+apiVersion: batch/v1
+kind: CronJob
+metadata: { name: daily-interest }
+spec:
+  schedule: "0 23 * * *"
+  timeZone: Asia/Ho_Chi_Minh
+  concurrencyPolicy: Forbid
+  startingDeadlineSeconds: 1800
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 5
+  jobTemplate:
+    spec:
+      backoffLimit: 2
+      activeDeadlineSeconds: 7200
+      ttlSecondsAfterFinished: 86400
+      template:
+        spec:
+          restartPolicy: Never
+          containers:
+            - name: job
+              image: registry.example.com/core-batch:3f9c2a1
+              args: ["--spring.main.web-application-type=none"]
+~~~
+
+### Job thuần chạy một lần
+~~~yaml
+spec:
+  completions: 5
+  parallelism: 2          # 2 Pod chạy song song, tổng cộng 5 lần thành công
+  backoffLimit: 4
+  activeDeadlineSeconds: 600
+  template: { spec: { restartPolicy: OnFailure, containers: [] } }
+~~~
+
+### App chạy xong thì thoát
+~~~java
+@Component
+class InterestRunner implements ApplicationRunner {
+    public void run(ApplicationArguments a) {
+        LocalDate day = LocalDate.now(ZoneId.of("Asia/Ho_Chi_Minh"));
+        if (runs.isDone(day)) return;        // idempotent: ngày này đã tính rồi
+        interestService.accrue(day);         // ghi theo lô, mỗi lô một transaction
+        runs.markDone(day);
+    }
 }
+// main: System.exit(SpringApplication.exit(ctx)) để exit code phản ánh kết quả
+~~~
+
+### Bảng trade-off
+| Trường | Tác dụng | Sai thì sao |
+|---|---|---|
+| concurrencyPolicy Forbid | không chạy chồng | Allow làm tính lãi hai lần |
+| backoffLimit nhỏ | không thử lại mù | mặc định 6, job không idempotent ghi trùng |
+| activeDeadlineSeconds | chặn treo | không đặt thì chạy tới sáng |
+| restartPolicy Never | mỗi lần thử một Pod mới, dễ xem log | Always bị cấm với Job |
+| timeZone | đúng giờ Việt Nam | để UTC thì tính lúc 6 giờ sáng |
+
+### Pitfall production
+- Để concurrencyPolicy mặc định Allow: job chậm hôm trước chồng lên hôm nay.
+- Không đặt startingDeadlineSeconds: lần chậm không bị giới hạn thời gian; sau sự cố dài, khi khôi phục CronJob khởi tạo lại các lần đã lỡ (qua 100 lịch thì chỉ chạy lần mới nhất, kèm sự kiện TooManyMissedTimes).
+- App không tự thoát vì còn web server: Pod Running mãi, lần sau bị Forbid chặn.
+- backoffLimit mặc định 6 với job không idempotent: mỗi lần thử làm lại từ đầu, ghi trùng.
+
+### Ví dụ đời thực
+Triệu chứng: ba đêm liên tiếp, đêm một ghi lãi trùng cho khoảng 12.000 tài khoản; đêm hai không có bản ghi lãi nào; đêm ba Pod vẫn Running lúc 6:30 sáng, chặn job ngày mới.
+
+Điều tra: hai Job cùng ngày chạy chồng do concurrencyPolicy mặc định Allow, lần trước kéo dài 55 phút; control plane bảo trì lúc 23 giờ, không đặt startingDeadlineSeconds nên khi khôi phục, quá 100 lịch bị lỡ chỉ chạy lần mới nhất (sự kiện TooManyMissedTimes), có thể bỏ qua lịch hôm đó; app giữ web server không tắt, không có activeDeadlineSeconds.
+
+Nguyên nhân gốc: thiếu Forbid, thiếu startingDeadlineSeconds và activeDeadlineSeconds, app không thoát sau khi hoàn tất, job không idempotent theo ngày nghiệp vụ.
+
+Cách xử lý: đặt timeZone, schedule, Forbid, startingDeadlineSeconds 1800, backoffLimit 2, activeDeadlineSeconds 7200; app chạy web-application-type none, kiểm tra isDone, ghi theo lô, thoát bằng System.exit; thêm alert khi không có Job thành công sau 00:30.
+
+Kết quả đo được: 30 đêm tiếp theo không ghi trùng lãi; một lần treo do DB lock bị dừng sau 2 giờ và báo Failed; job hoàn tất trong 38 phút.
+
+### Trả lời mẫu khi phỏng vấn
+CronJob tạo Job, Job tạo Pod, và Kubernetes chỉ hứa xấp xỉ một lần mỗi lịch, nên tôi thiết kế job idempotent theo ngày nghiệp vụ trước. Về cấu hình: timeZone Asia/Ho_Chi_Minh để khỏi lệch UTC; concurrencyPolicy Forbid để job chậm hôm trước không chạy chồng; startingDeadlineSeconds khoảng 30 phút để lỡ giờ vẫn chạy bù; backoffLimit nhỏ; activeDeadlineSeconds để job treo không chạy tới sáng; restartPolicy Never để mỗi lần thử là một Pod mới dễ xem log. App Spring Boot chạy không web, logic trong ApplicationRunner, cuối cùng System.exit với exit code của Spring để Job biết thành công hay thất bại. Với Job thuần, completions là số lần thành công cần đạt, parallelism là số Pod chạy song song. Cuối cùng là alarm khi job thất bại và cả khi tới hạn mà không thấy lần chạy thành công.
+
+> Senior tip: job tài chính nên chạy theo lô có checkpoint, ví dụ 10.000 tài khoản một lô, ghi lại lô cuối đã xong, để khi bị dừng giữa chừng thì chạy lại tiếp tục từ lô đó thay vì làm lại 40 phút. Theo dõi thời lượng job theo ngày: job tăng từ 40 lên 90 phút trong ba tháng là tín hiệu sớm trước khi đụng activeDeadlineSeconds vào một đêm cuối tháng.`,
+    follow: [
+      'parallelism và completions khác nhau thế nào? Khi nào completions lớn hơn 1?',
+      'concurrencyPolicy Replace phù hợp với loại job nào?',
+      'Làm sao chạy thủ công lại job cho một ngày cụ thể mà không sửa CronJob?'
+    ],
+    tags: ['ckad', 'Kubernetes', 'Job', 'CronJob', 'batch', 'idempotency'],
+    refs: [
+      { type: 'doc', title: 'Kubernetes CronJob', url: 'https://kubernetes.io/docs/concepts/workloads/controllers/cron-jobs/' },
+      { type: 'doc', title: 'Kubernetes Job', url: 'https://kubernetes.io/docs/concepts/workloads/controllers/job/' }
+    ]
+  },
+  {
+    id: 'devops-219',
+    topic: 'devops',
+    level: 'mid',
+    q: 'Một Pod Java của bạn CrashLoopBackOff, Pod khác OOMKilled với exit 137. Bạn đọc log lần chết trước bằng lệnh nào, lấy thread và heap dump khi image không có shell bằng kubectl debug ephemeral container ra sao, và Events chỉ cho bạn điều gì?',
+    a: `**Tóm tắt:** Luôn theo thứ tự {{kubectl get pod}} để thấy STATUS và RESTARTS, {{kubectl describe pod}} để đọc Events, Last State và Exit Code, rồi {{kubectl logs --previous}} để xem log lần chạy vừa chết. CrashLoopBackOff gần như luôn là lỗi app hoặc cấu hình; OOMKilled là kernel giết vì vượt memory limit, exit 137, khác OutOfMemoryError của JVM. Image distroless không có shell thì dùng {{kubectl debug}} gắn ephemeral container chung process namespace để chạy jcmd và jstack.
+
+### Hiểu nhanh
+Chẩn đoán Pod giống bác sĩ khám bệnh theo trình tự: hỏi triệu chứng bằng get pod, đọc hồ sơ bệnh án bằng describe gồm Events, Last State, Exit Code, rồi xem xét nghiệm của lần phát bệnh trước bằng logs --previous. CrashLoopBackOff là bệnh nhân vừa tỉnh dậy đã ngất lại; OOMKilled là ăn vượt khẩu phần; ephemeral container là bác sĩ mang máy siêu âm vào phòng bệnh mà không cần bệnh nhân có sẵn máy.
+
+### Thuật ngữ
+- **CrashLoopBackOff**: kubelet chờ lâu dần, 10 giây, 20 giây, 40 giây, tối đa 5 phút, giữa các lần restart.
+- **Exit code 137** bằng 128 cộng 9, tức SIGKILL: OOMKilled hoặc bị kill do quá grace period.
+- **Exit code 1**: app tự thoát do exception.
+- **--previous**: xem log của container đã chết, không phải lần chạy hiện tại.
+- **Ephemeral container**: container debug tạm gắn vào Pod đang chạy, dùng chung process namespace với container đích.
+- **Events**: sự kiện do control plane và kubelet ghi, gồm Scheduled, Pulled, Created, Started, Killed, Unhealthy.
+
+### Trình tự lệnh
+~~~bash
+kubectl get pod -n payments -o wide
+kubectl describe pod payment-7d9f -n payments      # Events cuối, Last State, Exit Code
+kubectl logs payment-7d9f -n payments --previous    # log lần chết
+kubectl logs payment-7d9f -c app -n payments --previous   # Pod nhiều container
+kubectl get events -n payments --sort-by=.lastTimestamp
+kubectl top pod -n payments                         # cần metrics-server
+~~~
+
+### Đọc Last State
+| Last State | Exit Code | Kết luận |
+|---|---|---|
+| Terminated | 1 | app ném exception, Spring APPLICATION FAILED TO START |
+| Terminated | 137 | OOMKilled, hoặc quá grace period |
+| Terminated | 143 | SIGTERM, tắt bình thường |
+| Waiting CrashLoopBackOff | trống | restart liên tục, xem logs --previous |
+
+### kubectl debug ephemeral container
+~~~bash
+# distroless không có shell: gắn container debug chung process namespace với app
+kubectl debug -it payment-7d9f -n payments \\
+  --image=eclipse-temurin:21-jdk --target=app -- bash
+# bên trong: ps -ef; jcmd 1 GC.heap_info; jcmd 1 Thread.print
+# chép heap dump ra ngoài:
+kubectl cp payment-7d9f:/tmp/heap.bin ./heap.bin -c app
+~~~
+Lưu ý: ephemeral container không sửa được Pod spec và không restart được; jcmd chỉ attach được khi chạy cùng UID với process app, và Pod nên đặt shareProcessNamespace true để thấy process của container đích.
+
+### Bảng trade-off
+| Trạng thái | Ý nghĩa | Bằng chứng |
+|---|---|---|
+| Pending | chưa được xếp node | Event FailedScheduling, Insufficient cpu hoặc memory |
+| ImagePullBackOff | sai tag, registry, credential | Event Failed, manifest unknown hoặc unauthorized |
+| CrashLoopBackOff | app chết liên tục | Last State Terminated exit 1, logs --previous có stack |
+| OOMKilled | vượt memory limit | Reason OOMKilled, exit 137 |
+
+### Pitfall production
+- Chỉ chạy logs không kèm --previous khi CrashLoop: thấy log rỗng của lần chạy mới.
+- Tăng memory limit mỗi lần OOMKilled mà không tìm nguyên nhân: rò native hoặc thread vẫn tăng, Pod chỉ chết chậm hơn.
+- Xoá Pod cho tạo lại: lỗi nằm ở spec, Pod mới lỗi y hệt.
+- Image build arm64 chạy trên node amd64: exec format error.
+
+### Ví dụ đời thực
+Triệu chứng: Pod payment vào CrashLoopBackOff, RESTARTS tăng nhanh, ứng dụng không phục vụ.
+
+Điều tra: get pod thấy STATUS CrashLoopBackOff, RESTARTS 15; describe thấy Last State Terminated, Exit Code 1; logs --previous thấy stack trace Flyway migration thất bại vì cột đã tồn tại, app ném exception và thoát ngay khi khởi động.
+
+Nguyên nhân gốc: script migration chạy lại trên DB đã áp dụng một phần, app không boot, kubelet restart liên tục và chờ lâu dần.
+
+Cách xử lý: sửa migration thành idempotent, quay về revision ổn định bằng kubectl rollout undo, sau đó rollout lại; khi cần, dùng ephemeral debug container để lấy thread dump.
+
+Kết quả đo được: Pod về Running, RESTARTS dừng tại 15, không restart thêm, dịch vụ phục vụ bình thường trong 5 phút.
+
+### Trả lời mẫu khi phỏng vấn
+Tôi luôn đi ba lệnh: get pod để thấy trạng thái và số restart, describe pod để đọc Events, Last State và Exit Code, rồi logs --previous để đọc log lần chạy vừa chết. Pending là vấn đề lập lịch; ImagePullBackOff là sai tag hoặc credential; CrashLoopBackOff gần như luôn là lỗi app hoặc cấu hình như thiếu property, Flyway fail, hay liveness giết app khởi động chậm; OOMKilled là kernel giết vì RSS vượt limit, khác OutOfMemoryError của JVM, nên tôi xem lại MaxRAMPercentage và native memory. Khi image distroless không có shell, tôi dùng kubectl debug gắn ephemeral container JDK chung process namespace để chạy jcmd lấy thread và heap dump. Exit code 137 là SIGKILL, 1 là app tự thoát, 143 là SIGTERM. Xoá Pod cho tạo lại không sửa được gì vì lỗi nằm ở spec; tôi đặt alert theo số restart và reason OOMKilled.
+
+> Senior tip: đặt alert cho {{kube_pod_container_status_restarts_total}} tăng và cho reason OOMKilled thay vì chờ người dùng báo. Trong ngân hàng, lỗi ImagePullBackOff lúc 2 giờ sáng thường do cert của Harbor nội bộ hết hạn hoặc robot account bị rotate; hãy đưa ngày hết hạn cert và token vào checklist vận hành.`,
+    follow: [
+      'OOMKilled nhưng heap dump trống: bạn điều tra phần bộ nhớ còn lại thế nào?',
+      'Ephemeral container có thay thế được container app không? Vì sao?',
+      'Pod Pending vì Insufficient cpu trong khi node chỉ dùng 20% thực tế, bạn giải thích thế nào?'
+    ],
+    tags: ['ckad', 'Kubernetes', 'Troubleshooting', 'CrashLoopBackOff', 'OOMKilled', 'kubectl debug'],
+    refs: [
+      { type: 'doc', title: 'Debug Pods', url: 'https://kubernetes.io/docs/tasks/debug/debug-application/debug-pods/' }
+    ]
+  },
+  {
+    id: 'devops-220',
+    topic: 'devops',
+    level: 'senior',
+    q: 'Bạn phải deploy 30 service Spring Boot qua 4 môi trường. Trong CKAD bạn phải dùng nhuần nhuyễn cả Helm lẫn Kustomize. Bạn giải thích cơ chế từng công cụ, trade-off, cách kết hợp, và các lệnh cùng template cốt lõi; khi nào chọn cái nào?',
+    a: `**Tóm tắt:** Helm là package manager dùng template Go cộng file values, có khái niệm release, version, rollback, và là chuẩn để cài phần mềm bên thứ ba. Kustomize không template mà vá, patch, YAML thuần theo mô hình base cộng overlay, có sẵn trong kubectl. Thực tế hay làm một chart Helm chung cho mọi service, mỗi môi trường một file values, hoặc base cộng overlay Kustomize; hai cái kết hợp qua Argo CD. Secret không bao giờ commit dạng plain hay base64.
+
+### Hiểu nhanh
+Helm giống một mẫu đơn có các ô trống: một chart dùng chung cho mọi service Spring Boot, mỗi môi trường điền một phiếu values riêng. Kustomize giống lấy bản gốc rồi dán giấy ghi chú sửa vài chỗ cho từng môi trường, không có ô trống hay logic điều kiện. Secret thì không bao giờ viết thẳng lên mẫu: Git chỉ ghi "mật khẩu nằm ở két số 5", còn operator trong cluster sẽ tự đi lấy.
+
+### Thuật ngữ
+- **Chart / Values / Release / Revision**: gói Helm, file điền giá trị, một lần cài vào namespace, mỗi upgrade tạo một revision.
+- **Base / Overlay**: trong Kustomize, base là YAML chung, overlay là phần vá riêng cho từng môi trường.
+- **configMapGenerator**: tính năng Kustomize sinh ConfigMap có hậu tố hash, đổi nội dung là đổi tên và kích hoạt rolling update.
+- **namePrefix / images / patches**: các field trong kustomization.
+- **External Secrets Operator**: operator đọc secret từ Vault hoặc AWS Secrets Manager rồi tạo Secret Kubernetes.
+
+### Helm cơ chế
+~~~yaml
+# templates/deployment.yaml, trích
+spec:
+  replicas: {{ .Values.replicas }}
+  template:
+    metadata:
+      annotations:
+        checksum/config: {{ include (print $.Template.BasePath "/configmap.yaml") . | sha256sum }}
+    spec:
+      containers:
+        - name: app
+          image: "{{ .Values.image.repository }}@{{ .Values.image.digest }}"
+          resources: {{- toYaml .Values.resources | nindent 12 }}
+~~~
+~~~bash
+helm upgrade --install payment ./chart -n payments -f values.yaml -f values-prod.yaml --wait
+helm template payment ./chart -f values-prod.yaml | kubectl diff -f -   # xem trước
+helm history payment -n payments
+helm rollback payment 12 -n payments
+helm list -A
+helm show values ./chart
+~~~
+
+### Kustomize cơ chế
+~~~text
+base/            deployment.yaml, service.yaml, kustomization.yaml
+overlays/prod/   kustomization.yaml + patch-resources.yaml
+~~~
+~~~yaml
+# overlays/prod/kustomization.yaml
+resources: [ ../../base ]
+namespace: payments
+namePrefix: prod-
+images:
+  - name: payment
+    newTag: 3f9c2a1
+patches:
+  - path: patch-resources.yaml
+configMapGenerator:
+  - name: app-config
+    literals: [ SPRING_PROFILES_ACTIVE=prod ]
+~~~
+~~~bash
+kubectl apply -k overlays/prod
+kubectl diff -k overlays/prod
+kustomize build overlays/prod | kubectl apply -f -
+~~~
+
+### Bảng trade-off
+| Tiêu chí | Helm | Kustomize |
+|---|---|---|
+| Cách tiếp cận | template cộng values | patch YAML thuần |
+| Logic điều kiện, vòng lặp | có, if và range | cố ý không có |
+| Đọc hiểu | template phức tạp, lỗi thụt lề | YAML thật, dễ review |
+| Quản lý release, rollback | có, lưu revision | dựa vào Git hoặc Argo CD |
+| Cài phần mềm bên thứ ba | chuẩn de facto | ít |
+| Hợp với | một chart chung nhiều service | biến thể nhỏ giữa môi trường |
+
+### Kết hợp
+Argo CD render Helm chart rồi áp patch Kustomize cho chỉnh sửa đặc thù; hoặc dùng Helm cho ứng dụng và Kustomize cho hạ tầng.
+
+### Pitfall production
+- 30 service nhân 4 môi trường copy YAML: sửa probe phải sửa 120 chỗ, cấu hình trôi dạt.
+- Values prod đặt sai do override nhiều tầng: luôn chạy helm template và kubectl diff trong pipeline.
+- Helm release kẹt ở pending-upgrade khi pipeline bị huỷ: cần rollback thủ công trước lần deploy sau.
+- Chart chung quá nhiều if else: không ai dám sửa; giữ chart nhỏ, có helm lint và helm unittest.
+- Secret base64 commit vào Git: coi như plain text.
+
+### Ví dụ đời thực
+Triệu chứng: team quản lý 30 service, mỗi môi trường copy một bộ YAML; sửa liveness probe mất 2 tiếng vì 120 file; prod lệch UAT; secret DB commit dạng base64 bị lộ khi repo bị clone.
+
+Điều tra: 30 service nhân 4 môi trường bằng 120 bộ YAML, không có cơ chế chia sẻ; secret DB để plain base64 trong Git; chart của các team khác nhau, không có versioning.
+
+Nguyên nhân gốc: thiếu abstraction layer, cấu hình lặp lại, secret management yếu.
+
+Cách xử lý: xây một chart Helm chuẩn do platform team quản version, mỗi service một file values nhỏ; secret dùng External Secrets Operator trỏ Vault; pipeline chạy helm template và kubectl diff trước khi áp prod.
+
+Kết quả đo được: sửa probe từ 2 tiếng xuống 5 phút; secret không còn trong Git; cấu hình prod bằng UAT đảm bảo bởi cùng chart version.
+
+### Trả lời mẫu khi phỏng vấn
+Với 30 service và 4 môi trường, tôi không copy YAML cho từng nơi vì sửa một probe phải sửa 120 chỗ. Helm là package manager dùng template Go cộng file values, có release, history và rollback, là chuẩn để cài phần mềm bên thứ ba; tôi dùng một chart chung do platform team quản version, mỗi service một values nhỏ, mỗi môi trường một values ghi đè. Kustomize không template mà vá YAML thuần theo base và overlay, dễ review hơn, hợp khi khác biệt nhỏ; hai cái kết hợp qua Argo CD. Trong CKAD tôi phải nhớ lệnh: helm upgrade --install, helm template để xem trước, helm rollback; còn kubectl apply -k, kustomization với images, namePrefix, configMapGenerator. configMapGenerator tự thêm hậu tố hash nên đổi cấu hình là rolling update. Secret không bao giờ commit base64, tôi dùng External Secrets Operator kéo từ Vault, cộng encryption at rest và RBAC chặt.
+
+> Senior tip: mô hình hay được auditor chấp nhận là một chart chuẩn do platform team quản version, mỗi service một file values nhỏ trong repo GitOps, secret nằm ở Vault với policy theo namespace, Argo CD đồng bộ và mọi thay đổi prod đi qua merge request có phê duyệt.`,
+    follow: [
+      'configMapGenerator đổi nội dung vì sao tự kích hoạt rolling update?',
+      'Helm release bị kẹt ở pending-upgrade, bạn xử lý ra sao?',
+      'Khi nào Kustomize là đủ mà không cần Helm?'
+    ],
+    tags: ['ckad', 'Kubernetes', 'Helm', 'Kustomize', 'GitOps'],
+    refs: [
+      { type: 'doc', title: 'Helm Documentation', url: 'https://helm.sh/docs/intro/' },
+      { type: 'doc', title: 'Kustomize', url: 'https://kubernetes.io/docs/tasks/manage-kubernetes-objects/kustomization/' }
+    ]
+  },
+  {
+    id: 'devops-221',
+    topic: 'devops',
+    level: 'lead',
+    q: 'Trong CKAD bạn chỉ có Deployment và Service để làm blue-green và canary, không có Argo Rollouts, không service mesh. Bạn làm thế nào, giới hạn là gì, và khi nào bắt buộc phải cần Argo Rollouts hoặc service mesh?',
+    a: `**Tóm tắt:** Blue-green bằng Deployment cộng Service: chạy hai Deployment blue và green cùng nhãn, Service trỏ selector sang một bên; cutover là đổi selector sang green, rollback là đổi lại. Canary bằng Deployment cộng Service: chia tỉ lệ theo số replica, ví dụ green 1 trên 10 bằng 10 phần trăm, hoặc dùng hai Service cộng ingress weight nếu có ingress. Giới hạn: tỉ lệ thô theo Pod, không phân tích tự động, không header routing, rollback thủ công. Khi cần canary chính xác theo phần trăm, tự abort theo metric, header hoặc mirror thì dùng Argo Rollouts; cần mTLS, traffic split L7 và observability thì dùng service mesh.
+
+### Hiểu nhanh
+Blue-green giống dựng sẵn sân khấu thứ hai, kiểm tra xong thì gạt công tắc chuyển khán giả sang, có sự cố thì gạt ngược lại. Canary bằng Deployment cộng Service giống chia 10 suất diễn viên, 1 suất mặc áo mới, tức 1 trên 10 replica, nên khán giả gặp diễn viên mới khoảng 10 phần trăm số lần. Không có máy đo tự động như Argo nên phải tự nhìn log; không chia được theo header như mesh nên không tách riêng được tester.
+
+### Thuật ngữ
+- **Blue-green**: hai môi trường chạy song song, Service trỏ vào một bên.
+- **Canary theo replica**: tỉ lệ bằng replica canary chia tổng replica.
+- **Cutover**: thời điểm đổi selector của Service sang môi trường mới.
+- **Argo Rollouts**: CRD Rollout với steps setWeight, pause và analysis.
+- **Service mesh**: sidecar như Istio hoặc Linkerd, traffic split tầng 7, mTLS.
+
+### Blue-green bằng Deployment cộng Service
+~~~yaml
+# Service trỏ blue, bản đang chạy
+spec:
+  selector: { app: payment, track: blue }
+---
+# green deploy song song, cùng nhãn app payment nhưng track green
+# cutover: đổi selector sang track green
+# rollback: đổi lại track blue
+~~~
+~~~bash
+kubectl apply -f svc-green.yaml        # file Service có selector track green
+kubectl rollout status deploy/payment-green
+# rollback nhanh: apply lại svc-blue.yaml
+~~~
+
+### Canary theo replica
+~~~text
+Tổng 10 replica: 9 blue cộng 1 green, Service round-robin theo Pod nên khoảng 10% traffic tới green
+Tăng dần: 1, 2, 5, 10 green, mỗi bước theo dõi log và metric
+~~~
+Nếu có ingress-nginx, chia theo weight chính xác hơn:
+~~~yaml
+metadata:
+  annotations:
+    nginx.ingress.kubernetes.io/canary: "true"
+    nginx.ingress.kubernetes.io/canary-weight: "10"
+~~~
+
+### Bảng trade-off
+| Tiêu chí | Deployment cộng Service | Argo Rollouts | Service mesh |
+|---|---|---|---|
+| Tỉ lệ canary | thô theo replica | chính xác theo phần trăm | chính xác, cộng header |
+| Phân tích tự động | không | có AnalysisTemplate | tuỳ cấu hình |
+| Header routing | không | có, qua ingress | có |
+| mTLS, observability | không | không | có |
+| Chi phí | thấp nhất | vừa | cao |
+| Phù hợp | CKAD, ít traffic, thay đổi nhỏ | production nghiêm túc | đa dịch vụ phức tạp |
+
+### Giới hạn, vì sao
+- Tỉ lệ theo Pod chỉ đúng khi traffic đều; Pod nhận nhiều kết nối nhất làm lệch tỉ lệ.
+- Không tự abort: phải tự watch metric và rollback tay.
+- DB là state chia sẻ: canary không cách ly schema, migration phải expand-contract.
+- Không chia được traffic theo phần trăm cho Kafka consumer.
+
+### Pitfall production
+- Canary so Pod mới chưa warm JIT với Pod cũ đã chạy vài ngày: kết luận sai là version mới chậm.
+- Blue-green gấp đôi connection pool: green khởi động làm cạn connection, blue sập theo.
+- Quên expand-contract: version cũ vỡ vì schema đã đổi.
+- Cutover bằng kubectl set selector gõ nhầm nhãn: mất traffic.
+
+### Ví dụ đời thực
+Triệu chứng: cần canary 10 phần trăm cho payment, nhưng chỉ có Deployment và Service.
+
+Điều tra: 10 replica, 1 green; theo dõi log thủ công, không auto abort; Pod green JIT lạnh p99 cao trong 3 phút đầu.
+
+Nguyên nhân gốc: tỉ lệ thô theo replica, không warm-up, không analysis tự động.
+
+Cách xử lý: warm-up green trước cutover; chia 1, 2, 5, 10; theo dõi 5xx rate cộng lỗi nghiệp vụ; migration expand-contract; khi cần chính xác theo phần trăm và tự abort thì chuyển sang Argo Rollouts.
+
+Kết quả đo được: canary từ 10 lên 100 phần trăm trong 30 phút, rollback đổi selector dưới 1 phút; tìm được một bug gateway từ chối tăng 2 phần trăm.
+
+### Trả lời mẫu khi phỏng vấn
+Trong CKAD chỉ có Deployment và Service, nên blue-green là chạy hai Deployment blue và green, Service trỏ selector sang một bên; cutover là đổi selector sang green, rollback là đổi lại. Canary thì chia tỉ lệ theo số replica: 10 replica với 1 green là khoảng 10 phần trăm traffic, tăng dần 1, 2, 5, 10, mỗi bước theo dõi log. Giới hạn là tỉ lệ thô theo Pod, không có phân tích tự động, không header routing, rollback thủ công, và DB là state chia sẻ nên migration phải expand-contract. Khi cần canary chính xác theo phần trăm, tự abort theo metric, hoặc header cho tester, tôi dùng Argo Rollouts; khi cần mTLS, traffic split tầng 7 và observability, tôi dùng service mesh. Với service thanh toán, tôi bắt đầu bằng 5xx rate cộng lỗi nghiệp vụ thay vì p99 vì ít nhiễu ở sample nhỏ, và giữ bước pause đầu để người xem log canary.
+
+> Senior tip: trong CKAD, blue-green là đổi selector, canary là chia replica; hãy nhớ chính xác hai thao tác này. Production nghiêm túc mới cần Argo Rollouts hoặc service mesh, và đừng chọn công cụ trước khi có SLO và metric tin cậy, vì một canary 5 phần trăm chỉ đáng tin khi có dashboard so sánh baseline và canary cùng cửa sổ thời gian.`,
+    follow: [
+      'Canary theo replica khác canary theo weight ở ingress thế nào?',
+      'Blue-green gấp đôi connection pool: bạn tính và cấu hình DB ra sao để không sập?',
+      'Vì sao canary không cứu được một migration phá vỡ version cũ?'
+    ],
+    tags: ['ckad', 'Kubernetes', 'Blue-green', 'Canary', 'Deployment', 'Service'],
+    refs: [
+      { type: 'doc', title: 'Kubernetes Services', url: 'https://kubernetes.io/docs/concepts/services-networking/service/' }
+    ]
+  }
 );
 
