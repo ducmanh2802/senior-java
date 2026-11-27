@@ -1,6 +1,6 @@
 # T2810 — Cẩm nang Upwork: chương 10–12
 
-Status: TODO
+Status: DONE
 Agent: kilo
 Owns: `js/data/upwork-guide-2.js`
 
@@ -26,3 +26,6 @@ Thêm **3 chương** `uw-ch-10`…`uw-ch-12` (order 10–12; file mới, push v�
 Xong: sửa dòng `Status:` đầu file thành `Status: DONE`, Notes ghi id đã thêm.
 
 ## Notes
+
+Đã thêm 3 chương vào js/data/upwork-guide-2.js: uw-ch-10 (Tiếng Anh làm việc với khách), uw-ch-11 (Dùng AI khi làm freelance), uw-ch-12 (Kế hoạch 30 ngày đầu trên Upwork). check-upwork.js OK (12 chương, 37 case); validate.js không báo lỗi thuộc file này. Sửa lỗi cú pháp: apostrophe trong checklist uw-ch-10 đã escape.
+Reviewed-by: verify-only (code/UI task)
