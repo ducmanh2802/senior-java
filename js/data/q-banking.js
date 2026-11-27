@@ -8103,4 +8103,355 @@ Một công ty fintech chuẩn bị audit bảo mật: rà soát thấy CCCD và
   ],
   tags: ['bảo mật', 'tuân thủ', 'PII', 'CCCD', 'mã hóa', 'masking', 'audit trail', 'OWASP', 'jd-2026-12']
 },
+{
+  id: 'banking-110',
+  topic: 'banking',
+  level: 'mid',
+  q: 'Hợp đồng tương lai (futures) hàng hoá là gì, khác giao ngay (spot) thế nào, và contract spec (multiplier, tick size, tháng đáo hạn) ảnh hưởng gì tới data model và cách tính tiền?',
+  a: `**Tóm tắt:** Hợp đồng tương lai (futures) là thoả thuận mua hoặc bán một lượng hàng hoá (lúa mì, dầu, vàng...) ở mức giá chốt **hôm nay** nhưng giao vào **một ngày tương lai** đã định; khác giao ngay (spot) ở chỗ spot là mua đứt bán đoạn, nhận hàng và trả tiền gần như tức thì. Mỗi mã hợp đồng có một **contract spec** (bản đặc tả) gồm **multiplier** (hệ số nhân mỗi điểm giá), **tick size** (bước giá nhỏ nhất) và **tháng đáo hạn**; mấy con số này quyết định **data model** (phải lưu spec riêng từng mã) và **cách tính tiền** (giá trị = giá × multiplier, lãi/lỗ theo tick).
+### Các thuật ngữ
+- **Spot (giao ngay)**: mua bán và nhận hàng ngay (T+0 hoặc T+2), bạn sở hữu hàng thật.
+- **Futures (tương lai)**: chốt giá hôm nay, giao sau; chỉ cần **ký quỹ** (margin) một phần nhỏ, phần lớn vị thế được **đóng** trước ngày giao.
+- **Leverage (đòn bẩy)**: bỏ 5% vốn kiểm soát 100% giá trị, nên lãi/lỗ nhân lên.
+- **Contract spec**: bản mô tả chuẩn của một mã hợp đồng do sàn công bố.
+### Spot và futures khác nhau ở đâu
+- Spot: trả tiền, nhận hàng ngay; không có ký quỹ; lãi/lỗ = chênh giá mua bán.
+- Futures: không cần đủ tiền ngay, chỉ ký quỹ; lãi/lỗ **chốt mỗi ngày** (mark-to-market, câu sau); ít khi nhận hàng thật, đa số đóng vị thế đối ứng.
+- Ví dụ đời thường: bạn đặt cọc mua 1 tấn cà phê giá 50 triệu, hẹn 3 tháng sau giao; giá lên 60 triệu bạn lời 10 triệu, xuống 40 triệu bạn lỗ 10 triệu — futures là phiên bản chuẩn hoá, giao dịch trên sàn của thoả thuận đó.
+### Contract spec gồm gì
+- **Multiplier (hệ số nhân)**: mỗi điểm giá bằng bao nhiêu tiền. Giả định hợp đồng vàng có multiplier = 1.000.000 đồng/điểm; giá 50 điểm thì giá trị = 50 × 1.000.000 = 50 triệu.
+- **Tick size (bước giá nhỏ nhất)**: mức giá nhỏ nhất được đặt, ví dụ 0,01 điểm; mỗi tick = tick_size × multiplier tiền.
+- **Tháng đáo hạn (expiry)**: một sản phẩm có nhiều kỳ (tháng 3, 6, 9, 12), mỗi kỳ là một mã riêng.
+- **Đơn vị giao hàng, chất lượng, địa điểm giao** (với hàng hoá thật).
+### Contract spec ảnh hưởng data model
+Vì mỗi mã có spec riêng, không thể "cứng" một công thức. Cần bảng riêng:
+~~~sql
+CREATE TABLE contract_spec (
+  symbol      VARCHAR(20) PRIMARY KEY,  -- vd GOLD-2026-12
+  product     VARCHAR(20) NOT NULL,     -- GOLD
+  multiplier  NUMERIC(18,4) NOT NULL,   -- tiền mỗi điểm giá
+  tick_size   NUMERIC(18,6) NOT NULL,   -- bước giá nhỏ nhất
+  tick_value  NUMERIC(18,4) NOT NULL,   -- = tick_size * multiplier
+  expiry_date DATE NOT NULL,            -- ngày đáo hạn
+  settle_type VARCHAR(10) NOT NULL,     -- PHYSICAL | CASH
+  currency    CHAR(3) NOT NULL          -- USD, VND
+);
+~~~
+- Giá nên lưu **số nguyên theo tick** (long) để tránh sai số: giá 50,00 = 5000 tick.
+- Giá trị hợp đồng và lãi/lỗ tính bằng **BigDecimal**, không dùng double.
+### Tính tiền theo spec
+- **Giá trị hợp đồng (notional)** = giá × multiplier.
+- **Giá trị 1 tick** = tick_size × multiplier, tra sẵn từ spec.
+- **Lãi/lỗ mỗi hợp đồng** = (giá đóng − giá mở) × multiplier với vị thế mua; bán thì đổi dấu.
+~~~java
+record Spec(long multiplier, long tickSize, long tickValue) {}
+long pnlPerContract(long open, long close, long multiplier, int side) {
+    long diff = side == 1 ? close - open : open - close;   // side 1 = mua
+    return diff * multiplier;
+}
+~~~
+### Bảng trade-off
+| Cách lưu giá | Ưu điểm | Nhược điểm |
+|---|---|---|
+| double | Viết nhanh | Sai số, so sánh tick hỏng |
+| BigDecimal | Đúng tuyệt đối | Chậm hơn, tốn bộ nhớ |
+| Số nguyên theo tick | Nhanh, đúng, so sánh O(1) | Phải quy đổi khi hiển thị |
+### Lỗi hay gặp
+- Hard-code công thức "giá × 1.000.000" cho mọi mã → sai khi mã khác multiplier.
+- Dùng double cho tick → 0,1 + 0,2 khác 0,3, so sánh biên giá sai.
+- Không lưu tick_value sẵn, tính lại mỗi lệnh → tốn CPU, dễ lệch làm tròn.
+- Trộn các tháng đáo hạn trong một mã → báo giá nhầm kỳ.
+### Ví dụ đời thực
+Một sàn phái sinh mới chỉ có 3 mã, dev hard-code multiplier = 1.000.000. Khi mở thêm mã lúa mì multiplier = 500.000, hệ thống tính giá trị hợp đồng gấp đôi thực tế, margin thu thừa 2 lần, 200 khách khiếu nại. Điều tra thấy công thức notional viết cứng. Cách xử lý: (1) đưa toàn bộ spec vào bảng contract_spec, tra theo symbol; (2) lưu giá theo tick nguyên; (3) tính tick_value sẵn khi nạp spec; (4) thêm test so notional với spec từng mã. Kết quả: sai lệch về 0, thêm mã mới chỉ cần insert một dòng spec.
+### Trả lời mẫu khi phỏng vấn
+"Hợp đồng tương lai là thoả thuận chốt giá hôm nay và giao vào ngày tương lai, khác spot là giao ngay. Điểm cốt lõi là mỗi mã có contract spec riêng: multiplier quy định mỗi điểm giá bằng bao nhiêu tiền, tick size là bước giá nhỏ nhất, tháng đáo hạn tách thành mã riêng. Spec này quyết định data model, nên tôi tách bảng contract_spec, lưu giá theo số nguyên tick để tránh sai số, và tính tick_value sẵn. Giá trị hợp đồng bằng giá nhân multiplier, lãi lỗ bằng chênh lệch giá nhân multiplier nhân số hợp đồng, tất cả bằng BigDecimal. Tôi từng gặp sự cố hard-code multiplier cho một mã rồi mở mã mới sai gấp đôi, nên nay mọi công thức đều tra spec theo symbol và có test đối chiếu notional từng mã."
+> Senior tip: hãy nói "futures khác spot ở đòn bẩy và mark-to-market, còn data model khác ở chỗ spec là dữ liệu, không phải hằng số trong code". Nêu rõ lưu giá theo tick nguyên và BigDecimal — hai chi tiết này phân biệt dev biết làm hệ thống tài chính thật.
+> Cụm từ: Multiplier là tiền mỗi điểm giá; Tick size là bước giá nhỏ nhất; Spec là bản đặc tả hợp đồng; Notional là giá trị danh nghĩa = giá × multiplier.
+  `,
+  follow: [
+    'Vì sao nên lưu giá theo số nguyên tick thay vì double, và điều đó ảnh hưởng so sánh giá thế nào?',
+    'Một sản phẩm có nhiều tháng đáo hạn, bạn tổ chức symbol và data model ra sao để không nhầm kỳ?',
+    'Multiplier và tick size khác nhau thế nào, mỗi cái ảnh hưởng phép tính tiền nào?'
+  ],
+  tags: ['phai-sinh', 'hợp đồng tương lai', 'futures', 'spot', 'contract spec', 'multiplier', 'tick size', 'data model', 'jd-2026-12']
+},
+{
+  id: 'banking-111',
+  topic: 'banking',
+  level: 'senior',
+  q: 'Mark-to-market hằng ngày và variation margin: hãy tính tay ví dụ 3 ngày, và batch EOD cần đảm bảo gì để idempotent, chạy lại được và đối soát được với sàn?',
+  a: `**Tóm tắt:** **Mark-to-market (MTM)** là định giá lại vị thế theo **giá thanh toán (settlement price)** mỗi ngày và ghi nhận lãi/lỗ ngay, thay vì chờ đóng vị thế. Phần lãi/lỗ quy ra tiền mặt chuyển hằng ngày gọi là **variation margin** (ký quỹ biến thiên): ngày lời được cộng, ngày lỗ bị trừ. Batch **EOD** (end-of-day) chạy MTM phải **idempotent** (chạy lại không cộng hai lần), **chạy lại được** (replay ra cùng kết quả) và **đối soát** tổng với file sàn trước khi chi tiền.
+### Các thuật ngữ
+- **Mark-to-market (MTM)**: định giá lại theo giá thị trường. Ví dụ: mua giá 100, cuối ngày 105 thì ghi lãi 5 dù chưa bán.
+- **Settlement price (giá thanh toán)**: giá đóng cửa chính thức sàn công bố để tính MTM.
+- **Variation margin**: khoản tiền mặt chuyển mỗi ngày theo lãi/lỗ MTM.
+- **EOD batch**: chương trình chạy cuối ngày, xử lý hàng loạt.
+### Vì sao cần MTM hằng ngày
+Futures có đòn bẩy; nếu chờ đến đáo hạn mới tính lãi/lỗ, một khách lỗ nặng có thể không trả nổi, rủi ro tín dụng tích tụ. MTM **chốt lãi/lỗ mỗi ngày** và **thu/chi tiền ngay** — "lãi hôm nay, lỗ hôm nay" — nên rủi ro không dồn.
+### Tính tay ví dụ 3 ngày
+Giả định: mua 2 hợp đồng, multiplier = 1.000.000, ký quỹ ban đầu 20 triệu/hợp đồng.
+- Ngày 1: mở 50, đóng 52. Lãi = (52 − 50) × 1.000.000 × 2 = +4 triệu. Tài khoản: 40 + 4 = 44 triệu.
+- Ngày 2: đóng 49. Lỗ = (49 − 52) × 1.000.000 × 2 = −6 triệu. Tài khoản: 44 − 6 = 38 triệu.
+- Ngày 3: đóng 51. Lãi = (51 − 49) × 1.000.000 × 2 = +4 triệu. Tài khoản: 38 + 4 = 42 triệu.
+Mỗi ngày variation margin chỉ tính **chênh lệch ngày đó**, không cộng dồn từ đầu.
+### Batch EOD cần đảm bảo
+1. **Nguồn giá**: lấy settlement price chính thức, **đóng băng phiên bản giá (version)** để chạy lại ra cùng kết quả.
+2. **Idempotent**: mỗi (ngày, tài khoản, mã) chỉ một bút toán MTM; chạy lại ngày cũ thì xoá/đảo kết quả cũ rồi ghi lại, không cộng thêm.
+3. **Chạy lại được (replay)**: lưu input (giá, vị thế đầu ngày) để tính lại y hệt.
+4. **Đối soát**: tổng variation margin phải khớp file sàn; lệch thì dừng, không giải ngân.
+~~~sql
+-- idempotent: xoá kết quả cũ của ngày rồi tính lại
+DELETE FROM mtm_entry WHERE trade_date = :d;
+INSERT INTO mtm_entry (trade_date, account, symbol, pnl, version)
+SELECT :d, p.account, p.symbol,
+       (p.close_px - p.open_px) * s.multiplier * p.qty * p.side AS pnl, :ver
+FROM position_snapshot p JOIN contract_spec s ON s.symbol = p.symbol
+WHERE p.trade_date = :d;
+~~~
+### Bảng trade-off
+| Cách chạy MTM | Ưu điểm | Nhược điểm |
+|---|---|---|
+| Trực tiếp trên DB | Đơn giản | Chậm khi triệu dòng, khó replay |
+| Tính in-memory từ snapshot | Nhanh, replay tốt | Cần nạp đủ input |
+| Chia lô nhỏ (chunk) | Giới hạn bộ nhớ | Phải quản lý checkpoint |
+### Lỗi hay gặp
+- Chạy lại batch mà không xoá kết quả cũ → cộng lãi/lỗ hai lần.
+- Lấy giá realtime thay settlement price → MTM không tái lập được.
+- Không version giá → sửa giá sau khi chạy, kết quả cũ sai.
+- Không đối soát tổng với sàn → chi tiền sai mà không ai biết.
+### Ví dụ đời thực
+Một sàn chạy MTM lúc 22h, batch bị restart giữa chừng do deploy. Vì không xoá kết quả cũ, 3.000 tài khoản bị cộng variation margin hai lần, tổng thừa 7,2 tỷ. Điều tra: batch không idempotent. Cách xử lý: (1) DELETE theo trade_date trước khi INSERT; (2) đóng băng version giá; (3) lưu snapshot vị thế đầu ngày; (4) đối soát tổng PnL với file sàn trước khi giải ngân. Kết quả: chạy lại 5 lần vẫn ra cùng số, 0 sai lệch.
+### Trả lời mẫu khi phỏng vấn
+"MTM là định giá lại vị thế theo settlement price mỗi ngày và ghi lãi/lỗ ngay; variation margin là khoản tiền mặt chuyển theo lãi/lỗ đó. Ví dụ mua 2 hợp đồng multiplier 1 triệu, ngày 1 giá 50 lên 52 lời 4 triệu, ngày 2 xuống 49 lỗ 6 triệu, ngày 3 lên 51 lời 4 triệu — mỗi ngày chỉ tính chênh lệch ngày đó. Batch EOD của tôi phải idempotent: xoá kết quả theo trade_date rồi tính lại, đóng băng version giá để replay ra cùng kết quả, lưu snapshot vị thế đầu ngày, và đối soát tổng PnL với file sàn trước khi chi. Tôi từng gặp batch restart làm cộng margin hai lần 7 tỷ, sau khi idempotent hoá và đối soát thì chạy lại bao nhiêu lần cũng đúng."
+> Senior tip: trong phỏng vấn, hãy nhấn mạnh "idempotent = xoá/đảo theo ngày rồi tính lại, không cộng dồn" và "đóng băng version settlement price để replay". Nói rõ đối soát tổng với sàn trước khi giải ngân — đó là chốt chặn cuối chống chi tiền sai.
+> Cụm từ: MTM là định giá lại theo giá thị trường; Variation margin là tiền mặt chuyển theo lãi/lỗ ngày; Settlement price là giá thanh toán chính thức; Idempotent là chạy lại không nhân đôi kết quả.
+  `,
+  follow: [
+    'Batch MTM chạy lại giữa chừng do restart, bạn làm idempotent và replay thế nào?',
+    'Vì sao phải đóng băng version settlement price, nếu không thì điều gì xảy ra?',
+    'Đối soát tổng variation margin với file sàn lệch, bạn xử lý ra sao trước khi chi tiền?'
+  ],
+  tags: ['phai-sinh', 'mark-to-market', 'MTM', 'variation margin', 'EOD batch', 'idempotent', 'đối soát', 'settlement price', 'jd-2026-12']
+},
+{
+  id: 'banking-112',
+  topic: 'banking',
+  level: 'lead',
+  q: 'Ký quỹ ban đầu/duy trì, margin call và tất toán bắt buộc: thiết kế luồng ra sao, và xử lý đồng thời thế nào khi khách vừa nạp tiền vừa bị tất toán?',
+  a: `**Tóm tắt:** **Ký quỹ ban đầu (initial margin)** là phần vốn khách phải có khi mở vị thế; **ký quỹ duy trì (maintenance margin)** là ngưỡng tối thiểu phải giữ; tụt dưới ngưỡng thì **gọi ký quỹ (margin call)**, không nộp kịp thì **tất toán bắt buộc (forced liquidation)** — hệ thống tự bán bớt vị thế. Điểm khó nhất là **xử lý đồng thời**: khách vừa **nạp tiền** để cứu margin, vừa bị **tất toán**; nếu không điều phối sẽ nạp tiền xong vẫn bị bán, hoặc bán rồi tiền nạp vào thành thừa.
+### Các thuật ngữ
+- **Initial margin**: vốn tối thiểu để mở vị thế (giả định 10% giá trị).
+- **Maintenance margin**: ngưỡng duy trì (giả định 7%); equity dưới ngưỡng → call.
+- **Equity**: giá trị vị thế theo giá thị trường trừ dư nợ (với mua) hoặc cộng lãi chưa chốt.
+- **Unrealized PnL**: lãi/lỗ chưa chốt trên giấy.
+- **Margin call**: thông báo nộp thêm tiền trong hạn.
+- **Forced liquidation (tất toán bắt buộc)**: hệ thống tự đóng vị thế đưa equity về an toàn.
+### Luồng thiết kế
+1. Tính equity theo giá realtime; nếu dưới maintenance → tạo margin call (idempotent theo tài khoản + lần gọi).
+2. Khách nộp tiền → cộng equity; nếu đạt initial → huỷ call.
+3. Quá hạn mà equity vẫn dưới maintenance → forced liquidation: **bán dần cho đủ** về ngưỡng, không bán sạch.
+4. Mọi bước ghi **bút toán kép**, append-only.
+~~~text
+[OK] --equity < maintenance--> [CALL_MARGIN]
+[CALL_MARGIN] --khách nộp thêm--> [OK]
+[CALL_MARGIN] --quá hạn, vẫn thiếu--> [FORCED_LIQUIDATION]
+[FORCED_LIQUIDATION] --bán đủ về an toàn--> [OK]
+~~~
+### Xử lý đồng thời nạp tiền vs tất toán
+Hai luồng tranh chấp trên cùng tài khoản:
+- **Pessimistic lock cả tài khoản**: nạp và tất toán xếp hàng, đơn giản nhưng nghẽn khi nhiều lệnh cùng lúc.
+- **Optimistic (version)**: hai bên cùng đọc version, một bên ghi trước, bên kia retry — nhưng tất toán retry dễ **bán trùng**.
+- **Cách đúng**: dùng **một hàng đợi (single-writer) cho mỗi tài khoản** cho các quyết định margin; nạp tiền đi qua ledger và **được áp trước**, tất toán chỉ đọc equity **sau khi** mọi khoản nạp đã ghi (snapshot mới nhất có version). Margin call và liquidation đều idempotent.
+~~~java
+// single-writer theo account: mọi sự kiện margin tuần tự hoá
+void onAccountEvent(AccountEvent e) {
+    accountQueue(e.account()).submit(() -> {
+        Account a = load(e.account());
+        a.apply(e);                        // nạp tiền hoặc ghi nợ
+        if (a.equity() < a.maintenance()) {
+            liquidateToSafe(a);            // chỉ chạy sau khi nạp đã áp
+        }
+    });
+}
+~~~
+### Bảng trade-off
+| Cách điều phối | Ưu điểm | Nhược điểm |
+|---|---|---|
+| Pessimistic lock cả TK | Đơn giản, đúng | Nghẽn, chờ lâu |
+| Optimistic + retry | Nhanh khi ít tranh chấp | Tất toán retry dễ bán trùng |
+| Single-writer theo TK | Tất định, không deadlock | Phải phân vùng, giữ hàng đợi |
+### Lỗi hay gặp
+- Nạp tiền và tất toán race → khách nạp xong vẫn bị bán.
+- Margin call không idempotent → gửi nhiều lần, khách khiếu nại.
+- Bán sạch thay vì bán đủ → khách mất vị thế oan.
+- Không đọc equity mới nhất sau nạp → tất toán sai ngưỡng.
+### Ví dụ đời thực
+Một sàn dùng pessimistic lock; giờ biến động mạnh, 1.500 khách cùng bị call và nạp, hàng đợi nghẽn 8 giây, nhiều lệnh tất toán chạy trước khi tiền nạp kịp ghi → 120 khách bị bán oan. Cách xử lý: (1) single-writer theo tài khoản, nạp áp trước rồi mới đánh giá margin; (2) margin call idempotent theo (tài khoản, lần); (3) đọc equity snapshot mới nhất có version; (4) bán dần về ngưỡng. Kết quả: 0 khách bị bán oan, p99 xử lý call 300 ms.
+### Trả lời mẫu khi phỏng vấn
+"Ký quỹ ban đầu là vốn tối thiểu để mở, ký quỹ duy trì là ngưỡng phải giữ; dưới ngưỡng thì margin call, không nộp kịp thì tất toán bắt buộc bằng cách bán dần về an toàn chứ không bán sạch. Luồng của tôi: theo dõi equity theo giá realtime, dưới maintenance thì tạo call idempotent theo tài khoản và lần gọi, quá hạn thì liquidation. Phần khó là đồng thời: khách vừa nạp tiền vừa bị tất toán. Tôi dùng single-writer cho mỗi tài khoản, nạp tiền áp vào ledger trước, rồi tất toán mới đọc equity snapshot mới nhất, nên không có cảnh nạp xong vẫn bị bán; call và liquidation đều idempotent để không gửi trùng hay bán trùng. Tôi từng gặp 120 khách bị bán oan do pessimistic lock nghẽn 8 giây, sau khi chuyển single-writer và đọc equity mới nhất thì hết hẳn."
+> Senior tip: đây là câu lead — hãy nhấn mạnh "đọc equity sau khi nạp đã ghi" và "bán dần về ngưỡng, không bán sạch". Nêu rõ single-writer theo tài khoản loại bỏ deadlock mà vẫn tất định, và idempotent cho cả call lẫn liquidation.
+> Cụm từ: Initial margin là vốn mở vị thế; Maintenance margin là ngưỡng duy trì; Margin call là gọi nộp thêm; Forced liquidation là tất toán bắt buộc; Single-writer là một luồng xử lý tuần tự cho mỗi tài khoản.
+  `,
+  follow: [
+    'Khách nạp tiền đúng lúc đang bị tất toán, bạn đảm bảo nạp được áp trước thế nào?',
+    'Vì sao single-writer theo tài khoản tốt hơn pessimistic lock khi hàng loạt khách bị call?',
+    'Margin call và liquidation cần idempotent ra sao để không gửi trùng, bán trùng?'
+  ],
+  tags: ['phai-sinh', 'ký quỹ', 'initial margin', 'maintenance margin', 'margin call', 'tất toán bắt buộc', 'forced liquidation', 'concurrency', 'single-writer', 'jd-2026-12']
+},
+{
+  id: 'banking-113',
+  topic: 'banking',
+  level: 'senior',
+  q: 'Vị thế mở, open interest và đóng vị thế đối ứng là gì; position keeping theo FIFO hay bình quân: chọn gì và ảnh hưởng thế nào tới báo cáo lãi/lỗ?',
+  a: `**Tóm tắt:** **Vị thế mở (open position)** là trạng thái khách đang nắm hợp đồng chưa đóng. **Open interest (OI)** là tổng số hợp đồng đang mở của **toàn thị trường**, khác **volume** (số khớp trong ngày). Đóng vị thế bằng giao dịch **đối ứng** (bán nếu đang mua). Khi khách vào/ra nhiều lần cùng mã, **position keeping** phải chọn cách tính giá vốn: **FIFO** (vào trước ra trước) hay **bình quân gia quyền (average cost)**; lựa chọn này ảnh hưởng trực tiếp **báo cáo lãi/lỗ** và nghĩa vụ thuế.
+### Các thuật ngữ
+- **Open position**: vị thế đang giữ, chưa đóng.
+- **Open interest (OI)**: tổng hợp đồng chưa đóng toàn thị trường; tăng khi có bên mới mở, giảm khi đóng.
+- **Volume**: số hợp đồng khớp trong phiên.
+- **Offsetting (đóng đối ứng)**: mở vị thế ngược để đóng vị thế cũ.
+- **FIFO**: hàng vào trước ra trước.
+- **Average cost**: giá vốn bình quân gia quyền.
+### Vì sao phân biệt OI và volume
+- Volume đếm mỗi lần khớp; OI đếm hợp đồng còn "sống". Một ngày OI không đổi nhưng volume lớn nếu các bên chỉ chuyển vị thế cho nhau.
+- OI tăng = có tiền mới vào; OI giảm = thoái vốn. Phân tích thị trường dùng OI để xác nhận xu hướng, nên không được lẫn với volume.
+### Đóng vị thế đối ứng
+- Đang mua 5 → bán 5 để đóng; đang bán 5 → mua 5.
+- Hệ thống phải khớp đúng vị thế, không để biến thành vị thế **ngược** ngoài ý muốn (đóng 5 nhưng bán 8 → thành bán 3).
+### FIFO vs bình quân
+Giả định mua 2 lô: 10 @ 50, 10 @ 60; sau đó bán 8.
+- FIFO: bán 8 từ lô 50 → giá vốn 50, lãi = (giá bán − 50) × 8.
+- Bình quân: giá vốn = (10 × 50 + 10 × 60) / 20 = 55 → lãi = (giá bán − 55) × 8.
+Cùng giao dịch nhưng lãi khác nhau → báo cáo khác, thuế khác.
+| Cách | Ưu điểm | Nhược điểm |
+|---|---|---|
+| FIFO | Phản ánh dòng hàng thật, khớp giao nhận vật chất | Lãi biến động theo lô cũ |
+| Bình quân | Ổn định, dễ tính | Không khớp lô giao nhận thật |
+| FIFO + lưu lô riêng | Truy vết từng lô | Phức tạp, tốn lưu trữ |
+### Lỗi hay gặp
+- Không tách OI và volume → báo cáo sai quy mô thị trường.
+- Đóng đối ứng nhầm thành mở ngược → nhân đôi rủi ro.
+- Trộn FIFO và bình quân giữa báo cáo và thuế → số lệch.
+- Không lưu lô (lot) → không truy được nguồn gốc vị thế.
+### Ví dụ đời thực
+Một công ty tính lãi theo bình quân nhưng báo cáo thuế yêu cầu FIFO; kiểm toán phát hiện lệch 3,4 tỷ trên 2.000 tài khoản. Cách xử lý: (1) tách position keeping theo lô, dùng FIFO cho báo cáo; (2) lưu OI riêng volume; (3) chốt quy ước ở một chỗ, test đối chiếu; (4) đối soát OI với sàn cuối ngày. Kết quả: khớp 100%, hết lệch thuế.
+### Trả lời mẫu khi phỏng vấn
+"Vị thế mở là hợp đồng khách đang giữ; open interest là tổng hợp đồng chưa đóng toàn thị trường, khác volume là số khớp trong ngày — OI tăng nghĩa là có tiền mới vào, giảm là thoái vốn. Đóng vị thế bằng giao dịch đối ứng, và tôi luôn kiểm soát để không biến thành vị thế ngược. Về position keeping, FIFO phản ánh dòng lô thật nên hợp với giao nhận vật chất, còn bình quân ổn định và dễ tính nhưng không khớp lô; tôi chốt một quy ước dùng chung cho báo cáo và thuế, lưu lô riêng để truy vết. Tôi từng gặp lệch 3,4 tỷ vì báo cáo dùng bình quân còn thuế đòi FIFO, sau khi tách theo lô và đối chiếu thì khớp 100%."
+> Senior tip: hãy nói rõ "OI là hợp đồng còn sống, volume là số khớp — đừng lẫn". Và "FIFO hay bình quân không có đúng sai tuyệt đối, quan trọng là nhất quán giữa báo cáo và thuế, có lưu lô để truy vết".
+> Cụm từ: Open interest là tổng hợp đồng chưa đóng; Volume là số khớp trong phiên; Offsetting là đóng vị thế đối ứng; FIFO là vào trước ra trước; Average cost là giá vốn bình quân.
+  `,
+  follow: [
+    'Open interest và volume khác nhau thế nào, vì sao không được lẫn trong báo cáo?',
+    'Đóng vị thế đối ứng mà không kiểm soát khối lượng thì rủi ro gì xảy ra?',
+    'FIFO và bình quân cho ra lãi khác nhau, bạn chọn theo tiêu chí nào và ảnh hưởng thuế ra sao?'
+  ],
+  tags: ['phai-sinh', 'vị thế mở', 'open interest', 'volume', 'đóng vị thế', 'FIFO', 'bình quân', 'position keeping', 'lãi lỗ', 'jd-2026-12']
+},
+{
+  id: 'banking-114',
+  topic: 'banking',
+  level: 'senior',
+  q: 'Ngày giao dịch cuối, rollover và tất toán vật chất so với tiền mặt: hệ thống phải chặn/nhắc gì, và lỗi production hay gặp là gì?',
+  a: `**Tóm tắt:** **Ngày giao dịch cuối (last trading day)** là ngày cuối cùng hợp đồng còn được giao dịch; sau đó phải **tất toán**. Khách muốn giữ vị thế lâu dài phải **rollover (đáo hạn)**: đóng hợp đồng kỳ cũ, mở kỳ mới. Hợp đồng có hai kiểu tất toán: **vật chất (physical)** — giao hàng thật; **tiền mặt (cash)** — chênh lệch quy ra tiền. Hệ thống phải **chặn/nhắc** khách trước ngày cuối, phân loại khách không đủ điều kiện nhận/giao hàng, và tránh lỗi hay gặp như đóng nhầm kỳ, quên rollover, tất toán trùng.
+### Các thuật ngữ
+- **Last trading day**: ngày giao dịch cuối của hợp đồng.
+- **Rollover (đáo hạn)**: chuyển vị thế từ kỳ sắp đáo hạn sang kỳ sau.
+- **Physical settlement**: tất toán bằng cách giao hàng thật.
+- **Cash settlement**: tất toán bằng tiền theo chênh lệch giá.
+- **First notice day**: ngày bắt đầu được yêu cầu giao hàng (với hợp đồng vật chất).
+### Vì sao phải chặn/nhắc
+- Khách nhỏ lẻ không có kho, không đủ điều kiện nhận hàng → để lọt sang physical sẽ vỡ giao nhận.
+- Quên rollover → bị tất toán tự động ở giá bất lợi.
+- Hệ thống phải chặn đặt lệnh mới vào kỳ sắp đáo hạn với khách không đủ điều kiện, và nhắc hạn rollover trước vài ngày.
+### Luồng rollover
+~~~seq
+title: Rollover và tất toán
+actors: Khách | Hệ thống | Sàn
+Khách -> Hệ thống: giữ vị thế kỳ 12
+Hệ thống --> Khách: nhắc trước ngày cuối
+Khách -> Hệ thống: yêu cầu rollover
+Hệ thống -> Sàn: đóng kỳ 12, mở kỳ 03
+Sàn --> Hệ thống: xác nhận
+Hệ thống --> Khách: vị thế kỳ 03
+~~~
+### Bảng trade-off
+| Kiểu tất toán | Ưu điểm | Nhược điểm |
+|---|---|---|
+| Vật chất (physical) | Phản ánh cung cầu hàng thật | Rủi ro giao nhận, kho bãi, first notice day |
+| Tiền mặt (cash) | Đơn giản, không giao hàng | Có thể lệch giá giao nhận thực tế |
+### Lỗi hay gặp
+- Đóng nhầm kỳ (cũ/mới) do nhầm symbol.
+- Quên rollover → tất toán tự động giá xấu.
+- Tất toán trùng do retry không idempotent.
+- Không chặn khách không đủ điều kiện → vỡ giao nhận.
+### Ví dụ đời thực
+Một sàn để khách lẻ giữ hợp đồng vật chất đến ngày cuối mà không chặn; 40 khách không có kho bị tất toán cưỡng bức, đồng loạt khiếu nại. Song song, batch rollover chạy lại do restart, đóng kỳ mới hai lần cho 200 khách. Cách xử lý: (1) chặn đặt lệnh kỳ sắp đáo hạn với khách không đủ điều kiện, nhắc trước 5 ngày; (2) rollover idempotent theo (tài khoản, kỳ); (3) phân loại settle_type rõ ràng; (4) đối soát vị thế sau rollover. Kết quả: 0 khiếu nại giao nhận, 0 đóng trùng.
+### Trả lời mẫu khi phỏng vấn
+"Ngày giao dịch cuối là ngày cuối còn giao dịch được, sau đó tất toán; muốn giữ lâu dài thì rollover — đóng kỳ cũ mở kỳ mới. Hợp đồng có hai kiểu tất toán: vật chất là giao hàng thật, tiền mặt là quy ra tiền. Với hàng hoá, rủi ro lớn nhất là khách lẻ không đủ điều kiện nhận/giao hàng, nên hệ thống phải chặn đặt lệnh kỳ sắp đáo hạn và nhắc trước vài ngày; rollover phải idempotent theo tài khoản và kỳ để retry không đóng hai lần; và phải phân loại settle_type rõ để không nhầm. Tôi từng gặp 40 khách bị cưỡng bức tất toán vì không chặn điều kiện, cộng batch rollover restart đóng trùng 200 khách; sau khi chặn, idempotent hoá và đối soát vị thế thì hết hẳn."
+> Senior tip: hãy nhấn mạnh "với physical, first notice day và điều kiện giao nhận là rủi ro pháp lý, không chỉ kỹ thuật" và "rollover idempotent theo (tài khoản, kỳ)". Nêu rõ phân loại settle_type ngay từ data model để không nhầm kỳ.
+> Cụm từ: Last trading day là ngày giao dịch cuối; Rollover là đáo hạn chuyển kỳ; Physical là giao hàng thật; Cash settlement là tất toán bằng tiền.
+  `,
+  follow: [
+    'Vì sao phải chặn khách không đủ điều kiện trước physical settlement, hậu quả nếu không chặn?',
+    'Rollover chạy lại do restart, bạn làm idempotent và đối soát vị thế thế nào?',
+    'First notice day khác last trading day ra sao và ảnh hưởng gì tới lịch hệ thống?'
+  ],
+  tags: ['phai-sinh', 'ngày giao dịch cuối', 'last trading day', 'rollover', 'đáo hạn', 'tất toán vật chất', 'cash settlement', 'physical settlement', 'jd-2026-12']
+},
+{
+  id: 'banking-115',
+  topic: 'banking',
+  level: 'senior',
+  q: 'Liên thông sàn quốc tế: lệch múi giờ, phiên giao dịch, ngày nghỉ khác nhau và tỷ giá USD/VND khi tính ký quỹ — thiết kế lịch giao dịch (trading calendar) và xử lý thế nào?',
+  a: `**Tóm tắt:** Khi **liên thông (linkage)** với sàn quốc tế (phái sinh nông sản, kim loại, năng lượng ở Mỹ, Anh...), hệ thống phải xử lý **lệch múi giờ**, **phiên giao dịch (session)** khác nhau, **ngày nghỉ** khác nhau và **tỷ giá USD/VND** khi quy đổi ký quỹ. Giải pháp là một **trading calendar** (lịch giao dịch) cho từng sàn, lưu mọi mốc theo **UTC** rồi quy đổi khi hiển thị, cùng bảng tỷ giá có **hiệu lực theo ngày** để margin tái lập được.
+### Các thuật ngữ
+- **Liên thông (linkage)**: kết nối để lệnh khớp chéo giữa các sàn.
+- **UTC**: múi giờ chuẩn 0, dùng làm mốc chung.
+- **Session (phiên)**: khung giờ một sàn mở cửa.
+- **Trading calendar**: lịch ngày giao dịch và ngày nghỉ của từng sàn.
+- **FX rate (tỷ giá)**: giá quy đổi USD/VND.
+### Vì sao khó
+- Sàn Mỹ mở khi Việt Nam đang đêm; "hôm nay" của hai bên lệch nhau.
+- Ngày nghỉ khác nhau (Lễ Tạ Ơn Mỹ, Tết Việt) → một bên đóng, bên kia mở.
+- Ký quỹ tính bằng USD nhưng khách nộp VND → phải quy đổi theo tỷ giá **chốt phiên**, nếu không margin sẽ lệch và không tái lập.
+### Thiết kế trading calendar
+- Lưu mọi mốc theo **UTC**, hiển thị theo giờ địa phương của từng sàn.
+- Mỗi sàn một calendar: phiên mở/đóng, ngày nghỉ, ngày đáo hạn.
+- Hàm tra: isTradingDay(symbol, date) và sessionWindow(symbol) đọc từ calendar.
+- Tỷ giá: bảng fx_rate(currency_pair, rate, effective_from) có hiệu lực theo ngày, chốt theo phiên.
+~~~java
+boolean isOpen(String symbol, Instant now) {
+    Session s = calendar.of(symbol).sessionFor(now.atZone(UTC));
+    return s != null && s.contains(now) && !calendar.of(symbol).isHoliday(s.date());
+}
+long marginInVnd(long marginUsd, LocalDate d) {
+    BigDecimal rate = fx.rate("USDVND", d);          // chốt theo ngày
+    return BigDecimal.valueOf(marginUsd).multiply(rate).longValue();
+}
+~~~
+### Bảng trade-off
+| Cách lưu thời gian | Ưu điểm | Nhược điểm |
+|---|---|---|
+| Giờ địa phương mỗi sàn | Dễ đọc | Lệch múi giờ, sai ngày |
+| UTC + quy đổi khi hiển thị | Nhất quán, so sánh đúng | Phải map timezone |
+| Bảng tỷ giá theo ngày | Tái lập được | Phải nạp đủ phiên bản |
+### Lỗi hay gặp
+- So sánh giờ theo giờ máy chủ (local) → lệch ngày khi qua midnight UTC.
+- Không có calendar ngày nghỉ → đặt lệnh vào ngày sàn đóng.
+- Tỷ giá realtime thay vì chốt phiên → margin không tái lập.
+- Bỏ qua daylight saving → lệch 1 giờ theo mùa.
+### Ví dụ đời thực
+Một sàn liên thông dùng giờ máy chủ (UTC+7) để so phiên; khi qua 0h UTC, "ngày" lệch, 500 lệnh bị từ chối vì tưởng ngoài phiên. Tỷ giá realtime làm margin dao động, 80 khách bị call oan. Cách xử lý: (1) lưu UTC, map timezone từng sàn; (2) trading calendar có ngày nghỉ; (3) tỷ giá chốt phiên theo ngày; (4) test qua midnight và lệch múi giờ. Kết quả: 0 từ chối oan, margin ổn định.
+### Trả lời mẫu khi phỏng vấn
+"Liên thông sàn quốc tế thì khó nhất là lệch múi giờ, phiên và ngày nghỉ khác nhau, cộng tỷ giá USD/VND khi tính ký quỹ. Tôi thiết kế một trading calendar cho từng sàn, lưu mọi mốc theo UTC rồi quy đổi khi hiển thị, có danh sách ngày nghỉ riêng; hàm isTradingDay và sessionWindow tra calendar thay vì so giờ máy chủ. Tỷ giá lưu trong bảng có hiệu lực theo ngày, chốt theo phiên, để margin tái lập được và không dao động theo realtime. Tôi từng gặp 500 lệnh bị từ chối oan do so giờ local qua midnight UTC, cộng 80 khách bị call oan do tỷ giá realtime; sau khi chuyển UTC, calendar ngày nghỉ và tỷ giá chốt phiên thì hết hẳn."
+> Senior tip: hãy nói "lưu UTC, hiển thị local, chốt tỷ giá theo phiên" — ba nguyên tắc này giải quyết gần hết lỗi múi giờ và margin. Nhấn mạnh có calendar ngày nghỉ riêng từng sàn và test qua midnight, lệ múi giờ, daylight saving.
+> Cụm từ: UTC là múi giờ chuẩn 0; Session là phiên giao dịch; Trading calendar là lịch giao dịch từng sàn; FX rate là tỷ giá; Linkage là liên thông khớp chéo.
+  `,
+  follow: [
+    'Vì sao nên lưu mốc thời gian theo UTC rồi mới quy đổi, và lỗi gì xảy ra nếu so theo giờ máy chủ?',
+    'Tỷ giá realtime làm margin không tái lập, bạn chốt tỷ giá thế nào để replay đúng?',
+    'Ngày nghỉ khác nhau giữa các sàn, trading calendar phải xử lý ra sao để không đặt lệnh nhầm ngày?'
+  ],
+  tags: ['phai-sinh', 'liên thông', 'linkage', 'múi giờ', 'UTC', 'phiên giao dịch', 'trading calendar', 'tỷ giá', 'USD/VND', 'ký quỹ', 'jd-2026-12']
+},
 );
