@@ -7180,4 +7180,971 @@ additional: OrderService builds message with + operator` },
   rubric: ['Nhận ra string concat trong log.', 'Đề xuất placeholder và isDebugEnabled.', 'Liên hệ allocation rate.'],
   tags: ['logging', 'allocation', 'stringbuilder', 'gc']
 },
+{
+  id: 'lab-gc-038',
+  category: 'gc',
+  title: 'Direct memory rò rỉ: NIO direct ByteBuffer không release, MaxDirectMemorySize mặc định bằng heap, process bị OOMKill',
+  level: 'senior',
+  scenario: `**Bối cảnh (background):** Dịch vụ **chuyển file lớn** (Spring Boot 3.3, JDK 17.0.11, G1) dùng {{java.nio.file.Files}} / {{FileChannel.transferTo}} để copy file 2-5 GB giữa storage và API. Pod memory limit 8 Gi, heap {{-Xms4g -Xmx4g}}. **Không set {{-XX:MaxDirectMemorySize}}} → mặc định bằng heap max (4 GB). Container memory limit 8 Gi. Traffic: upload file 2-5 GB, 20 request đồng thời. Mỗi request mở direct ByteBuffer (allocateDirect) để transfer, nhưng code **không close channel/buffer** sau khi dùng.
+
+**Thuật ngữ giải thích:**
+- **Direct memory / off-heap:** Bộ nhớ ngoài heap JVM, do {{ByteBuffer.allocateDirect()}} cấp phát. Không nằm trong {{-Xmx}}, không bị GC dọn. Giới hạn bởi {{-XX:MaxDirectMemorySize}} (mặc định bằng heap max) và memory limit container.
+- **Direct ByteBuffer:** Buffer trực tiếp trong native memory, dùng cho I/O channel (FileChannel, SocketChannel) để tránh copy heap↔native. Mỗi buffer cleanup phụ thuộc Cleaner (phantom reference) → dọn chậm, không deterministic.
+- **OOMKill container:** Container bị kill khi tổng RAM (heap + direct + metaspace + stack + native) vượt memory limit, exit code 137. Không phải {{OutOfMemoryError}} từ JVM.
+
+**Triệu chứng:** Từ **14:00-15:00 ngày 10/11/2026**, user upload file 2-5 GB đồng thời. API báo lỗi {{OutOfMemoryError: Direct buffer memory}} hoặc pod bị **OOMKill (exit 137)**. GC log **bình thường**: young GC 20-40ms, heap used ổn định 2-3 GB / 4 GB, không có Full GC, không OOM heap. Dev nghi "heap leak" và đề xuất tăng heap lên 8 GB. Heap dump không thấy object lớn lạ.
+
+**Dữ liệu thu thập:** GC log JDK 17, {{jcmd VM.native_memory}}, container OOM log, code FileTransferService.`,
+    artifacts: [
+      {
+        name: 'gc-file-transfer.log',
+        lang: 'text',
+        content: `[2026-11-10T14:00:00.012+0700][0.012s][info][gc,init] Version: 17.0.11+7 (release)
+[2026-11-10T14:00:00.012+0700][0.012s][info][gc,init] CPUs: 4 total, 4 available
+[2026-11-10T14:00:00.012+0700][0.012s][info][gc,init] Memory: 8192M
+[2026-11-10T14:00:00.012+0700][0.012s][info][gc,init] Heap Min Capacity: 4096M
+[2026-11-10T14:00:00.012+0700][0.012s][info][gc,init] Heap Initial Capacity: 4096M
+[2026-11-10T14:00:00.012+0700][0.012s][info][gc,init] Heap Max Capacity: 4096M
+... (không có -XX:MaxDirectMemorySize trong dòng init) ...
+[2026-11-10T14:05:12.440+0700][312.440s][info][gc] GC(45) Pause Young (Allocation Failure) 3200M->480M(4096M) 32.101ms
+[2026-11-10T14:05:12.800+0700][312.800s][info][gc] GC(46) Pause Young (Allocation Failure) 3200M->500M(4096M) 35.201ms
+[2026-11-10T14:05:13.160+0700][313.160s][info][gc] GC(47) Pause Young (Allocation Failure) 3200M->520M(4096M) 28.440ms
+... (young GC bình thường, heap ổn định, không Full GC, không OOM heap) ...
+[2026-11-10T15:00:00.001+0700][3600.001s][info][gc] GC(450) Pause Young (Allocation Failure) 3100M->450M(4096M) 30.201ms`
+      },
+      {
+        name: 'jcmd-native-memory.txt',
+        lang: 'text',
+        content: `$ jcmd 1 VM.native_memory detail
+Native Memory Tracking:
+Total: reserved=7682456KB, committed=7682456KB
+- Java Heap (reserved=4194304KB, committed=4194304KB)
+  (malloc=4194304KB #...)
+- Class (reserved=1050649KB, committed=1050649KB)
+- Thread (reserved=16250KB, committed=16250KB)
+- Code (reserved=247871KB, committed=247871KB)
+- GC (reserved=192360KB, committed=192360KB)
+- **DirectBuffer (reserved=4194304KB, committed=4194304KB)  <-- = MaxDirectMemorySize 4 GB**
+  (reserved=4194304KB committed=4194304KB)
+- Symbol (reserved=7318KB, committed=7318KB)
+...
+[2026-11-10T14:55:00.000+0700] DirectBuffer: used 4194304K, capacity 4194304K  <-- đầy 4 GB
+[2026-11-10T14:55:01.000+0700] java.lang.OutOfMemoryError: Direct buffer memory
+$
+$ dmesg | tail -3
+[2026-11-10T15:00:00.123] oom-kill: process 1234 (java) score 500
+[2026-11-10T15:00:00.123] Memory cgroup out of memory: Kill process 1234 (java) score 500 or sacrifice child
+[2026-11-10T15:00:00.123] Killed process 1234 (java) total-vm:1048576kB, anon-rss:7864320kB, file-rss:0kB
+-- OOMKill container, exit 137, RSS 7.5 GB > limit 8 Gi --`
+      },
+      {
+        name: 'FileTransferService.java',
+        lang: 'text',
+        content: `package vn.file.service;
+
+import org.springframework.stereotype.Service;
+import org.springframework.web.multipart.MultipartFile;
+
+import java.io.FileOutputStream;
+import java.io.IOException;
+import java.nio.ByteBuffer;
+import java.nio.channels.Channels;
+import java.nio.channels.FileChannel;
+import java.nio.channels.ReadableByteChannel;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.nio.file.StandardOpenOption;
+
+@Service
+public class FileTransferService {
+
+    private static final Path STORAGE = Path.of("/storage/uploads");
+
+    public void upload(MultipartFile file, String targetName) throws IOException {
+        Path target = STORAGE.resolve(targetName);
+
+        // VẤN ĐỀ: Files.copy tạo direct ByteBuffer nội bộ, không kiểm soát size
+        // VÀ: ReadableByteChannel từ file.getInputStream() không được close
+        try (ReadableByteChannel src = Channels.newChannel(file.getInputStream());
+             FileChannel dst = FileChannel.open(target, StandardOpenOption.CREATE, StandardOpenOption.WRITE)) {
+
+            // Mỗi transferTo có thể alloc direct ByteBuffer internals
+            long transferred = dst.transferFrom(src, 0, Long.MAX_VALUE);  // file 2-5 GB
+            // Không close src/channels rõ ràng → Cleaner dọn chậm → direct memory tích lũy
+        }
+        // dst được try-with-resources close, nhưng src (Channels.newChannel) tạo wrapper
+        // direct buffer bên trong không được release ngay
+    }
+
+    // VẤN ĐỀ 2: Dùng allocateDirect cho buffer lớn, không clear/release
+    public void copyWithDirectBuffer(Path src, Path dst) throws IOException {
+        try (FileChannel in = FileChannel.open(src);
+             FileChannel out = FileChannel.open(dst)) {
+            ByteBuffer buf = ByteBuffer.allocateDirect(64 * 1024 * 1024);  // 64 MB direct buffer
+            while (in.read(buf) > 0) {
+                buf.flip();
+                out.write(buf);
+                buf.compact();
+            }
+            // buf không được clear/giai phóng explicitly, Cleaner dọn qua phantom reference (chậm)
+        }
+    }
+}`
+      },
+      {
+        name: 'container-oom.log',
+        lang: 'text',
+        content: `$ kubectl describe pod file-transfer-7d8f6c-x4k2p
+...
+Last State:     Terminated
+Reason:       OOMKilled
+Exit Code:    137
+Started:      Mon, 10 Nov 2026 14:00:00 +0700
+Finished:     Mon, 10 Nov 2026 15:00:00 +0700
+Container memory limit: 8Gi
+Container memory usage: 7.8 Gi  <-- heap 4 GB + direct memory 4 GB > 8 Gi limit
+...
+$ kubectl logs file-transfer-7d8f6c-x4k2p --previous
+...
+java.lang.OutOfMemoryError: Direct buffer memory
+at java.nio.Bits.reserveMemory(Bits.java:185)
+at java.nio.DirectByteBuffer.<init>(DirectByteBuffer.java:120)
+at java.nio.ByteBuffer.allocateDirect(ByteBuffer.java:321)
+at vn.file.service.FileTransferService.copyWithDirectBuffer(FileTransferService.java:42)`
+      }
+    ],
+    questions: [
+      'Tại sao process bị OOMKill / Direct buffer memory dù heap GC log bình thường, heap chỉ 2-3 GB / 4 GB?',
+      'MaxDirectMemorySize mặc định là bao nhiêu? Tại sao trực tiếp bằng heap max gây rủi ro với container 8 Gi?',
+      'Từ native memory tracking, DirectBuffer committed 4 GB = đầy limit. Giải thích tại sao direct memory không bị GC dọn ngay.',
+      'Sửa ngắn hạn và dài hạn. Set MaxDirectMemorySize, close channel, dùng heap buffer, hay streaming chunk nhỏ?'
+    ],
+    hints: [
+      'GC log: heap ổn định 2-3 GB, young GC bình thường, không Full GC → vấn đề KHÔNG nằm ở heap.',
+      'jcmd: DirectBuffer reserved=committed=4194304 KB = 4 GB = MaxDirectMemorySize mặc định (bằng -Xmx).',
+      'Container: heap 4 GB + direct memory 4 GB = 8 GB, gần limit 8 Gi. Métaspace, thread stack, code cache thêm nữa → vượt limit → OOMKill (exit 137).',
+      'Direct ByteBuffer dọn qua Cleaner (phantom reference), không deterministic. Nếu không close channel, buffer giữ native memory lâu.'
+    ],
+    answer: `**Tóm tắt:** Dịch vụ chuyển file lớn dùng NIO direct ByteBuffer (allocateDirect / transferTo) nhưng **không close channel/buffer** sau khi dùng. **Không set {{-XX:MaxDirectMemorySize}}} → mặc định bằng heap max (4 GB). Direct memory là off-heap, không nằm trong {{-Xmx}}, không bị GC dọn. 20 request đồng thời × file 2-5 GB → direct memory tích lũy lên 4 GB (đầy limit). Tổng RAM: heap 4 GB + direct 4 GB + metaspace/thread/code > container limit 8 Gi → **OOMKill (exit 137)** hoặc {{OutOfMemoryError: Direct buffer memory}}. GC log bình thường vì heap không bị ảnh hưởng. Sửa gốc: (1) Set {{-XX:MaxDirectMemorySize}} phù hợp (vd: 1-2 GB, để lại dư cho container), (2) Close channel/buffer rõ ràng, (3) Dùng heap buffer hoặc streaming chunk nhỏ thay allocateDirect lớn, (4) Giảm heap để để lại RAM cho direct memory và container overhead.
+
+### Nguyên nhân gốc
+
+1. **Direct memory ngoài heap:** {{ByteBuffer.allocateDirect()}} cấp phát native memory, không nằm trong {{-Xms}}/{{-Xmx}}. GC **không quét** direct memory. Cleaner (phantom reference) dọn buffer khi object bị GC, nhưng **không deterministic** → có thể giữ native memory lâu.
+2. **MaxDirectMemorySize mặc định:** JDK 17 mặc định {{-XX:MaxDirectMemorySize}} bằng heap max ({{-Xmx}}). Ở đây -Xmx4g → direct memory limit 4 GB. Container limit 8 Gi. Heap 4 GB + direct 4 GB = 8 GB, cộng metaspace, thread stack, code cache → vượt 8 Gi → OOMKill.
+3. **Không close channel/buffer:** FileTransferService.upload() dùng {{Channels.newChannel()}} tạo wrapper, direct buffer bên trong không release ngay. copyWithDirectBuffer() alloc 64 MB direct buffer, không clear/giai phóng. 20 request đồng thời → 20 × buffer lớn → direct memory đầy nhanh.
+4. **GC log không phản ánh direct memory:** Young GC bình thường, heap 2-3 GB / 4 GB, không Full GC → dev dễ nhầm là heap leak. Thực sự vấn đề nằm ở native memory (direct buffer).
+5. **Container OOMKill:** RSS 7.8 GB > limit 8 Gi (kernel tính cả heap, direct, metaspace, stack, page cache) → OOMKill exit 137. Không phải JVM OOM heap.
+
+### Dẫn chứng (trích dòng cụ thể trong artifact)
+
+| Artifact | Dòng trích | Ý nghĩa |
+|---|---|---|
+| GC log | {{Heap Max Capacity: 4096M}}, không có {{-XX:MaxDirectMemorySize}} | Heap 4 GB, direct memory limit mặc định = 4 GB |
+| GC log | Young GC bình thường, không Full GC, heap 2-3 GB | Vấn đề KHÔNG ở heap |
+| jcmd | {{DirectBuffer (reserved=4194304KB, committed=4194304KB)}} | Direct memory đầy 4 GB = limit |
+| jcmd | {{java.lang.OutOfMemoryError: Direct buffer memory}} | JVM không thể cấp direct buffer nữa |
+| dmesg | {{oom-kill: process ... (java) ... Killed process ... (exit 137)}} | Container OOMKill, RSS 7.8 GB > 8 Gi limit |
+| Code | {{ByteBuffer.allocateDirect(64 * 1024 * 1024)}} line 42 | Alloc 64 MB direct buffer, không release |
+| Code | {{dst.transferFrom(src, 0, Long.MAX_VALUE)}} | NIO transfer có thể alloc direct buffer internals |
+
+### Cách sửa
+
+**Ngắn hạn (giảm rủi ro ngay, hôm nay):**
+
+1. **Set {{-XX:MaxDirectMemorySize}} phù hợp:** Giới hạn direct memory nhỏ hơn container limit - heap.
+   ~~~bash
+   -XX:MaxDirectMemorySize=1g   # để lại 3 GB cho metaspace, thread, container overhead
+   ~~~
+2. **Giảm heap:** Để lại RAM cho direct memory và container overhead.
+   ~~~bash
+   -Xmx2g -Xms2g -XX:MaxDirectMemorySize=1g
+   ~~~
+
+**Dài hạn (sửa gốc, loại bỏ rò rỉ direct memory):**
+
+1. **Close channel/buffer rõ ràng:** Dùng try-with-resources cho tất cả channel, không để buffer rò rỉ.
+   ~~~java
+   // TRƯỚC: ReadableByteChannel src không trong try-with-resources rõ ràng
+   try (ReadableByteChannel src = Channels.newChannel(file.getInputStream());
+        FileChannel dst = FileChannel.open(target, CREATE, WRITE)) {
+       dst.transferFrom(src, 0, Long.MAX_VALUE);
+   }  // src và dst được close, nhưng direct buffer internals có thể vẫn giữ native
+   ~~~
+
+2. **Tránh {{allocateDirect}} lớn, dùng heap buffer hoặc streaming chunk nhỏ:**
+   ~~~java
+   // TRƯỚC: ByteBuffer.allocateDirect(64 MB) - direct buffer lớn, dọn chậm
+   ByteBuffer buf = ByteBuffer.allocateDirect(64 * 1024 * 1024);
+
+   // SAU: Heap buffer 8 KB, streaming chunk nhỏ, không direct memory
+   ByteBuffer buf = ByteBuffer.allocate(8 * 1024);  // heap buffer
+   // hoặc dùng Files.copy(inputStream, target, REPLACE_EXISTING) không alloc direct lớn
+   ~~~
+
+3. **Giảm đồng thời upload:** Bulkhead / Semaphore tối đa 5 file upload lớn đồng thời/pod.
+
+**Khuyến nghị:** Set {{-XX:MaxDirectMemorySize=1g}}, giảm {{-Xmx2g}}, dùng heap buffer streaming chunk nhỏ, close channel rõ ràng. Giám sát direct memory bằng {{jcmd VM.native_memory}} hoặc Micrometer {{jvm_buffer_memory_used_bytes}}.
+
+### Phòng ngừa
+
+- **Code review:** Cấm {{ByteBuffer.allocateDirect()}} cho buffer > 1 MB mà không có lý do. Cấm {{FileChannel}}/{{ReadableByteChannel}} không trong try-with-resources.
+- **Static analysis:** SpotBugs custom rule detect {{allocateDirect}} không được close. Detect {{FileChannel.open}} không trong try-with-resources.
+- **Test:** Load test upload 10 file 5 GB đồng thời, verify direct memory ổn định (jcmd VM.native_memory), không OOMKill.
+- **Monitoring:** Alert {{jvm_buffer_memory_used_bytes}} > 80% MaxDirectMemorySize. Alert container OOMKill (exit 137). Theo dõi RSS container vs limit.
+- **JVM flag:** Luôn set {{-XX:MaxDirectMemorySize}} rõ ràng, không để mặc định bằng -Xmx.
+
+### Trả lời mẫu khi phỏng vấn
+
+"Dịch vụ chuyển file lớn dùng NIO direct ByteBuffer (allocateDirect / transferTo) nhưng không close channel/buffer. Không set -XX:MaxDirectMemorySize → mặc định bằng -Xmx = 4 GB. Direct memory là off-heap, không bị GC dọn, Cleaner dọn chậm. 20 request đồng thời × file lớn → direct memory đầy 4 GB. Tổng RAM heap 4 GB + direct 4 GB + overhead > container limit 8 Gi → OOMKill exit 137 hoặc OutOfMemoryError: Direct buffer memory. GC log bình thường vì heap không bị ảnh hưởng. Sửa: set -XX:MaxDirectMemorySize=1g, giảm -Xmx2g, dùng heap buffer streaming chunk nhỏ, close channel rõ ràng, bulkhead upload. Giám sát direct memory bằng jcmd VM.native_memory hoặc Micrometer jvm_buffer_memory_used_bytes."
+
+> Senior tip: **Direct memory là "vùng mù" của nhiều dev**: nằm ngoài -Xmx, không bị GC, không xuất hiện trong heap dump. Nếu container OOMKill (exit 137) nhưng GC log bình thường, heap dump sạch → hãy nghi direct memory / metaspace / thread stack. Luôn set -XX:MaxDirectMemorySize rõ ràng, đừng để mặc định bằng -Xmx. Dùng jcmd VM.native_memory hoặc Micrometer jvm_buffer_memory_used_bytes để theo dõi. NIO FileChannel.transferTo tiện nhưng có thể alloc direct buffer internals - hiểu rõ việc cleanup của nó.`,
+    rubric: [
+      'Giải thích đúng cơ chế: Direct memory off-heap, không nằm trong -Xmx, không bị GC dọn, Cleaner dọn chậm (phantom reference).',
+      'Dẫn chứng: GC log heap ổn định, không Full GC. jcmd DirectBuffer 4 GB = đầy limit. OOMKill exit 137, RSS 7.8 GB > 8 Gi.',
+      'Giải thích MaxDirectMemorySize mặc định = -Xmx (4 GB), nên set rõ ràng nhỏ hơn container limit - heap.',
+      'Chỉ đúng gốc rễ: FileTransferService không close channel/buffer, allocateDirect 64 MB không release, 20 request đồng thời.',
+      'Đề xuất có chiều sâu: set MaxDirectMemorySize, giảm heap, dùng heap buffer streaming, close channel, bulkhead upload; giải thích vì sao tăng heap 8 GB làm tình huống đồi xấu hơn (càng ít RAM cho direct).'
+    ],
+    tags: ['direct-memory', 'off-heap', 'nio', 'filechannel', 'bytebuffer', 'allocatedirect', 'maxdirectmemorysize', 'oomkill', 'container', 'native-memory', 'jdk17', 'jcmd', 'cleaner', 'phantom-reference']
+  },
+  {
+  id: 'lab-gc-039',
+  category: 'gc',
+  title: 'System.gc() / RMI DistributedGC kích hoạt Full GC stop-the-world, p99 spike 3 giây mỗi 10 phút',
+  level: 'senior',
+  scenario: `**Bối cảnh (background):** Hệ thống **đơn hàng** (Spring Boot 3.3, JDK 17.0.11, G1) heap 8 GB, container 16 Gi. Monitoring gọi {{ManagementFactory.getGarbageCollectorMXBeans()}} hoặc code legacy gọi {{System.gc()}} định kỳ. RMI bị bật mặc định (JDK 17+ tắt RMI DistributedGC mặc định, nhưng legacy code vẫn bật {{-Dsun.rmi.dgc.client.gcInterval=3600000}}). Mỗi 10 phút, Full GC stop-the-world 2.5-3 giây, p99 API đơn hàng spike. Heap used ổn định ~4 GB / 8 GB, không có áp lực allocation, không có memory leak.
+
+**Thuật ngữ giải thích:**
+- **System.gc():** Gợi ý JVM chạy Full GC. **Không phải lệnh bắt buộc** (JVM có thể bỏ qua), nhưng G1 thường honor và chạy Full GC stop-the-world.
+- **RMI DistributedGC:** RMI gọi {{System.gc()}} trên tất cả máy khách khi DGC client/gc interval đến hạn (mặc định 1 giờ, có thể đặt ngắn). Gây Full GC đồng bộ trên nhiều instance.
+- **GC Cause "System":** GC log ghi {{Pause Full (System)}} hoặc {{Pause Full (GC Cause: System)}}. Phân biệt {{Pause Full (Allocation Failure)}} (heap đầy, alloc không kịp) và {{Pause Full (Concurrent Mode Failure)}} (marking không kịp).
+
+**Triệu chứng:** Từ **09:00-12:00 ngày 15/11/2026**, p99 API {{POST /api/order}} spike từ 100 ms lên **2.5-3 giây** mỗi 10 phút (09:00, 09:10, 09:20...). GC log: {{Pause Full (System)}} 2800-3100ms. Heap used ổn định ~4 GB / 8 GB, young GC bình thường 20-40ms, không có Allocation Failure. Dev nghi memory leak và đề xuất tăng heap. Thread dump thấy {{main}} thread hoặc {{RMI TCP Connection}} thread gọi {{System.gc()}}.
+
+**Dữ liệu thu thập:** GC log JDK 17, thread dump, code tìm System.gc(), JVM flags RMI.`,
+    artifacts: [
+      {
+        name: 'gc-order-system.log',
+        lang: 'text',
+        content: `[2026-11-15T09:00:00.012+0700][0.012s][info][gc,init] Version: 17.0.11+7 (release)
+[2026-11-15T09:00:00.012+0700][0.012s][info][gc,init] CPUs: 8 total, 8 available
+[2026-11-15T09:00:00.012+0700][0.012s][info][gc,init] Memory: 16384M
+[2026-11-15T09:00:00.012+0700][0.012s][info][gc,init] Heap Min Capacity: 8192M
+[2026-11-15T09:00:00.012+0700][0.012s][info][gc,init] Heap Max Capacity: 8192M
+... (young GC bình thường mỗi 2-3s, pause 20-40ms, heap 3-4 GB / 8 GB) ...
+[2026-11-15T09:00:01.100+0700][1.100s][info][gc] GC(100) Pause Full (System) 4200M->3800M(8192M) 2850.210ms
+[2026-11-15T09:10:01.200+0700][601.200s][info][gc] GC(101) Pause Full (System) 4100M->3750M(8192M) 3100.450ms
+[2026-11-15T09:20:01.300+0700][1201.300s][info][gc] GC(102) Pause Full (System) 4150M->3820M(8192M) 2900.112ms
+[2026-11-15T09:30:01.400+0700][1801.400s][info][gc] GC(103) Pause Full (System) 4200M->3800M(8192M) 2750.889ms
+... (lặp lại mỗi 10 phút, heap không giảm đáng kể sau Full GC) ...`
+      },
+      {
+        name: 'thread-dump-system-gc.txt',
+        lang: 'text',
+        content: `$ jstack 1 | grep -B5 -A10 "System.gc"
+"main" #1 prio=5 os_prio=0 tid=0x00007f8b1c000000 nid=0x1234 waiting on condition [0x00007f8b0e0fe000]
+   java.lang.Thread.State: WAITING (parking)
+   at jdk.internal.misc.Unsafe.park(java.base@17.0.11/Native Method)
+   at java.lang.System.gc(System.java:158)  <-- main thread gọi System.gc()
+   at vn.order.monitor.HealthMonitor.runCheck(HealthMonitor.java:42)
+   ...
+"RMI TCP Connection(3)-127.0.0.1" #45 daemon prio=5 ... 
+   at sun.rmi.transport.DGCClient$DirectorEntry$1.run(DGCClient.java:150)  <-- RMI DGC gọi System.gc()
+   at sun.rmi.transport.DGCClient$DirectorEntry$1.run(DGCClient.java:...)
+   at java.security.AccessController.doPrivileged(Native Method)
+   ...
+# GC log ghi Pause Full (System) mỗi 10 phút, khớp với HealthMonitor.runCheck và RMI DGC interval`
+      },
+      {
+        name: 'HealthMonitor.java',
+        lang: 'text',
+        content: `package vn.order.monitor;
+
+import java.lang.management.ManagementFactory;
+import java.util.logging.Logger;
+
+public class HealthMonitor {
+
+    private static final Logger log = Logger.getLogger(HealthMonitor.class.getName());
+
+    // VẤN ĐỀ: Gọi System.gc() định kỳ trong health check
+    public void runCheck() {
+        log.info("Running health check...");
+        // Legacy code: "xịn heap" trước khi ghi metric
+        System.gc();  <-- Gợi ý Full GC, G1 honor → stop-the-world 3 giây
+        
+        long used = ManagementFactory.getMemoryMXBean().getHeapMemoryUsage().getUsed();
+        log.info("Heap used: " + used);
+    }
+}`
+      },
+      {
+        name: 'jvm-flags.txt',
+        lang: 'text',
+        content: `$ java -jar app.jar \
+  -Xms8g -Xmx8g \
+  -XX:+UseG1GC \
+  -XX:MaxGCPauseMillis=200 \
+  -Dsun.rmi.dgc.client.gcInterval=3600000   # RMI DGC mỗi 1 giờ (có thể đặt ngắn hơn)
+  -Dsun.rmi.dgc.server.gcInterval=3600000
+# JDK 17+: -XX:+DisableExplicitGC MẶC ĐỊNH TẮT (System.gc bị bỏ qua)
+# Nhưng legacy code hoặc thư viện cũ có thể bật lại -XX:-DisableExplicitGC
+# Hoặc RMI vẫn gọi System.gc() qua DGCClient`
+      }
+    ],
+    questions: [
+      'Tại sao Pause Full (System) xảy ra mỗi 10 phút dù heap chỉ 4 GB / 8 GB, không có Allocation Failure?',
+      'GC Cause "System" khác gì với "Allocation Failure" và "Concurrent Mode Failure"?',
+      'Từ thread dump, tìm ra ai gọi System.gc(). Giải thích RMI DGC để gọi System.gc() như thế nào.',
+      'Sửa ngắn hạn và dài hạn. -XX:+DisableExplicitGC, tắt RMI DGC, hay xóa System.gc() trong code?'
+    ],
+    hints: [
+      'GC log: Pause Full (System) mỗi 10 phút (09:00, 09:10, 09:20...), heap 4 GB / 8 GB ổn định, không Allocation Failure.',
+      'Thread dump: {{main}} thread tại {{System.gc()}} (HealthMonitor.java:42) và {{RMI TCP Connection}} tại {{DGCClient}}.',
+      'JDK 17+: {{-XX:+DisableExplicitGC}} mặc định bật → System.gc() thường bị bỏ qua. Nhưng nếu legacy bật {{-XX:-DisableExplicitGC}} hoặc thư viện gọi {{Runtime.getRuntime().gc()}} thì Full GC vẫn chạy.',
+      'RMI DGC: {{-Dsun.rmi.dgc.client.gcInterval}} mặc định 3600000 ms (1 giờ). Nếu đặt ngắn (vd: 600000 ms = 10 phút) → RMI gọi System.gc() mỗi 10 phút trên mọi instance.'
+    ],
+    answer: `**Tóm tắt:** Hệ thống đơn hàng heap 8 GB, G1GC. Mỗi 10 phút, {{Pause Full (System)}} 2.8-3.1 giây, p99 API spike. Heap used ổn định ~4 GB / 8 GB, young GC bình thường, không Allocation Failure → **không phải heap đầy, không phải memory leak**. Nguyên nhân: {{HealthMonitor.runCheck()}} gọi {{System.gc()}} định kỳ, và/hoặc RMI DistributedGC (DGCClient) gọi System.gc() theo interval. JDK 17+ mặc định {{-XX:+DisableExplicitGC}} (bỏ qua System.gc()), nhưng legacy code hoặc cấu hình có thể bật lại {{-XX:-DisableExplicitGC}}. Sửa gốc: (1) Xóa {{System.gc()}} trong code (HealthMonitor), (2) Đảm bảo {{-XX:+DisableExplicitGC}} bật (mặc định JDK 17+), (3) Tắt RMI DGC hoặc đặt interval dài ({{-Dsun.rmi.dgc.client.gcInterval}} lớn), (4) Nếu cần trigger GC, dùng {{JMX}} hoặc {{jcmd GC.run}} thủ công thay vì System.gc() trong code.
+
+### Nguyên nhân gốc
+
+1. **System.gc() là gợi ý, không phải lệnh:** {{System.gc()}} gợi ý JVM chạy Full GC. JVM có thể bỏ qua (nếu -XX:+DisableExplicitGC) hoặc honor (chạy Full GC stop-the-world). G1 thường honor System.gc() khi không bị disable.
+2. **GC Cause "System":** GC log ghi {{Pause Full (System)}} → Full GC do code hoặc JMX yêu cầu, **không phải do heap đầy**. Phân biệt với {{Pause Full (Allocation Failure)}} (heap đầy, alloc không kịp) và {{Pause Full (Concurrent Mode Failure)}} (marking không kịp).
+3. **HealthMonitor gọi System.gc():** {{HealthMonitor.runCheck()}} (line 42) gọi {{System.gc()}} trước khi lấy heap metric. Mỗi 10 phút (theo scheduler) → Full GC 3 giây, dừng toàn bộ ứng dụng.
+4. **RMI DistributedGC:** RMI DGCClient gọi System.gc() theo {{-Dsun.rmi.dgc.client.gcInterval}}. Nếu interval ngắn (vd: 10 phút) → Full GC đồng bộ. JDK 17+ tắt RMI theo mặc định, nhưng legacy code hoặc ứng dụng cũ vẫn bật.
+5. **JDK 17+ DisableExplicitGC:** Mặc định {{-XX:+DisableExplicitGC}} → System.gc() bị bỏ qua. Nhưng nếu config bật {{-XX:-DisableExplicitGC}} → System.gc() hoạt động bình thường → Full GC.
+6. **Heap ổn định 4 GB / 8 GB:** Sau Full GC 4200M->3800M, heap chỉ giảm 400 MB, về ổn định. Không tăng theo thời gian → không leak.
+
+### Dẫn chứng (trích dòng cụ thể trong artifact)
+
+| Artifact | Dòng trích | Ý nghĩa |
+|---|---|---|
+| GC log | {{Pause Full (System)}} GC(100-103) | Full GC do System.gc(), không phải Allocation Failure |
+| GC log | 4200M->3800M, 4100M->3750M | Heap giảm ít, về ổn định → không leak |
+| Thread dump | {{System.gc()}} tại {{HealthMonitor.java:42}} (main thread) | Code gọi System.gc() định kỳ |
+| Thread dump | {{DGCClient$DirectorEntry$1.run}} (RMI thread) | RMI DGC gọi System.gc() |
+| JVM flags | {{-Dsun.rmi.dgc.client.gcInterval=3600000}} | RMI DGC interval (có thể đặt ngắn hơn) |
+| Config | {{-XX:+DisableExplicitGC}} (mặc định JDK 17+) | Nếu tắt (-XX:-DisableExplicitGC) → System.gc() chạy |
+
+### Cách sửa
+
+**Ngắn hạn (giảm rủi ro ngay, hôm nay):**
+
+1. **Đảm bảo {{-XX:+DisableExplicitGC}} bật (mặc định JDK 17+):** Kiểm tra không có {{-XX:-DisableExplicitGC}} trong JVM flags.
+2. **Tắt RMI DGC hoặc đặt interval dài:** {{-Dsun.rmi.dgc.client.gcInterval=86400000}} (1 ngày) hoặc {{-Dsun.rmi.dgc.server.gcInterval=86400000}}.
+
+**Dài hạn (sửa gốc, loại bỏ Full GC chủ động):**
+
+1. **Xóa {{System.gc()}} trong code:** HealthMonitor không cần gọi System.gc() trước khi lấy heap metric. JMX / ManagementFactory trả về heap usage hiện tại, không cần GC trước.
+   ~~~java
+   // TRƯỚC
+   System.gc();  // KHÔNG NÊN LÀM
+   long used = ManagementFactory.getMemoryMXBean().getHeapMemoryUsage().getUsed();
+
+   // SAU
+   long used = ManagementFactory.getMemoryMXBean().getHeapMemoryUsage().getUsed();
+   ~~~
+
+2. **Nếu cần trigger GC điều khiển:** Dùng {{jcmd GC.run}} hoặc JMX {{GarbageCollectorMXBean}} thủ động, **không để trong code produkcja**.
+
+3. **Giám sát GC cause:** Alert khi GC log có {{Pause Full (System)}} → tìm nguồn gọi System.gc().
+
+### Phòng ngừa
+
+- **Code review:** Cấm {{System.gc()}} và {{Runtime.getRuntime().gc()}} trong code production. Cấm {{-XX:-DisableExplicitGC}}.
+- **Static analysis:** SpotBugs/SonarQube rule detect {{System.gc()}} / {{Runtime.gc()}}. Custom rule detect {{-XX:-DisableExplicitGC}} trong JVM flags.
+- **Test:** Load test, quan sát GC log: không được có {{Pause Full (System)}} định kỳ. Thread dump khi spike p99.
+- **Monitoring:** Alert GC log có {{Pause Full (System)}}. Theo dõi GC cause qua {{jdk.GCPause}} (JFR) hoặc {{jvm_gc_pause_seconds_max}} (Prometheus).
+- **JDK 17+:** Giữ {{-XX:+DisableExplicitGC}} mặc định, không tắt trừ khi có lý do đặc biệt.
+
+### Trả lời mẫu khi phỏng vấn
+
+"Hệ thống đơn hàng heap 8 GB, G1GC. Mỗi 10 phút, Pause Full (System) 2.8-3.1 giây, p99 spike. Heap ổn định 4 GB / 8 GB, không Allocation Failure → không phải heap đầy, không leak. Nguyên nhân: HealthMonitor.runCheck() gọi System.gc() định kỳ, và/hoặc RMI DistributedGC (DGCClient) gọi System.gc() theo interval. JDK 17+ mặc định -XX:+DisableExplicitGC (bỏ qua System.gc()), nhưng legacy code hoặc config có thể bật lại -XX:-DisableExplicitGC. Sửa: xóa System.gc() trong code, giữ -XX:+DisableExplicitGC, tắt RMI DGC hoặc đặt interval dài. Nếu cần trigger GC, dùng jcmd GC.run hoặc JMX thủ động, không để trong code production."
+
+> Senior tip: **System.gc() trong code production là "anti-pattern kinh điển"**. Nó gợi ý Full GC stop-the-world, làm p99 spike, không giải quyết bất kỳ vấn đề gì. JDK 17+ mặc định disable explicit GC, hãy giữ nguyên. Nếu cần xem heap usage, JMX / ManagementFactory trả về ngay, không cần System.gc() trước. RMI DGC là nguồn gọi System.gc() ẩn - kiểm tra -Dsun.rmi.dgc.*.GCInterval. GC log ghi Pause Full (System) là dấu hiệu rõ ràng: hãy tìm nguồn gọi, đừng trách heap.`,
+
+    rubric: [
+      'Giải thích đúng cơ chế: System.gc() là gợi ý Full GC, G1 thường honor nếu không bị DisableExplicitGC. GC Cause "System" khác Allocation Failure / Concurrent Mode Failure.',
+      'Dẫn chứng: GC log Pause Full (System) mỗi 10 phút, heap 4 GB / 8 GB ổn định, không Allocation Failure. Thread dump: System.gc() tại HealthMonitor.java:42 và DGCClient (RMI).',
+      'Giải thích JDK 17+: -XX:+DisableExplicitGC mặc định bật → System.gc() bị bỏ qua. Nếu tắt (-XX:-DisableExplicitGC) → System.gc() chạy.',
+      'Chỉ đúng gốc rễ: HealthMonitor.runCheck() gọi System.gc(), RMI DGC interval ngắn.',
+      'Đề xuất có chiều sâu: xóa System.gc() trong code, giữ DisableExplicitGC, tắt RMI DGC / interval dài, dùng jcmd GC.run nếu cần; giải thích vì sao tăng heap không giúp (không phải heap đầy).'
+    ],
+    tags: ['system-gc', 'explicit-gc', 'disableexplicitgc', 'rmi', 'dgc', 'full-gc', 'gc-cause-system', 'stop-the-world', 'p99-spike', 'jdk17', 'g1gc', 'jmx', 'health-monitor', 'anti-pattern']
+  }
+,
+{
+  id: 'lab-gc-040',
+  category: 'gc',
+  title: 'Đọc PostgreSQL BYTEA/BLOB: humongous allocation từ byte[] lớn gây G1 Full GC',
+  level: 'senior',
+  scenario: `**Bối cảnh (background):** App **báo cáo ngân hàng** (Spring Boot 3.3, JDK 17.0.11, G1) chạy batch job cuối ngày đọc dữ liệu giao dịch từ PostgreSQL. Bảng {{transaction}} có cột {{receipt_blob BYTEA}} lưu ảnh biên lai (1–5 MB mỗi dòng). JVM: {{-Xms8g -Xmx8g -XX:+UseG1GC -XX:G1HeapRegionSize=4m -Xlog:gc*:file=/logs/gc.log:time,uptime,level,tags}}. Container: 4 vCPU, memory limit 10Gi. Job đọc 50.000 dòng/ngày, mỗi dòng select toàn bộ cột {{receipt_blob}} vào {{byte[]}}.
+ 
+**Thuật ngữ giải thích:**
+- **Humongous object:** Trong G1, object lớn hơn **50% region size** (region 4 MB → ngưỡng 2 MB) là humongous. G1 cấp phát humongous **trực tiếp vào Old Gen** (không qua Eden), chiếm các region liên tiếp.
+- **PostgreSQL BYTEA / BLOB:** Kiểu dữ liệu nhị phân lớn. JDBC driver (pgjdbc) khi đọc BYTEA thường trả về toàn bộ nội dung trong một {{byte[]}} trên heap Java.
+- **To-space exhausted:** Khi young GC cần copy object sang region mới nhưng region trống bị humongous chiếm → G1 ném To-space exhausted → **Full GC (G1 Compaction Pause)** stop-the-world.
+ 
+**Triệu chứng:** Từ **01:00-02:30 ngày 20/11/2026**, batch job chạy. p99 API liên quan tăng từ 200 ms lên **4–5 giây**. GC log ghi **Pause Young (G1 Humongous Allocation)** dày đặc, rồi **To-space exhausted**, **Pause Full (G1 Compaction Pause)** 2–3 giây. Heap used chỉ ~4.5 GB / 8 GB. Sau 02:30 job xong, hệ thống ổn định. Dev đề xuất: "Tăng heap 16 GB, G1HeapRegionSize 8 MB."
+ 
+**Dữ liệu thu thập:** GC log JDK 17, heap histogram lúc 01:45, đoạn code {{TransactionRepository}} đọc BYTEA, JFR allocation profiling.`,
+  artifacts: [
+    {
+      name: 'gc-postgres-blob.log',
+      lang: 'text',
+      content: `[2026-11-20T00:00:00.012+0700][0.012s][info][gc,init] Version: 17.0.11+7 (release)
+[2026-11-20T00:00:00.012+0700][0.012s][info][gc,init] CPUs: 4 total, 4 available
+[2026-11-20T00:00:00.012+0700][0.012s][info][gc,init] Memory: 10240M
+[2026-11-20T00:00:00.012+0700][0.012s][info][gc,init] Heap Min Capacity: 8192M
+[2026-11-20T00:00:00.012+0700][0.012s][info][gc,init] Heap Initial Capacity: 8192M
+[2026-11-20T00:00:00.012+0700][0.012s][info][gc,init] Heap Max Capacity: 8192M
+[2026-11-20T00:00:00.012+0700][0.012s][info][gc,init] G1 Heap Region Size: 4M
+[2026-11-20T00:00:00.012+0700][0.012s][info][gc,init] MaxGCPauseMillis: 200
+... (young GC bình thường mỗi 5-8s, pause 30-60ms, heap 2-3 GB) ...
+[2026-11-20T01:15:22.400+0700][4522.400s][info][gc] GC(85) Pause Young (G1 Evacuation Pause) 3200M->400M(8192M) 45.201ms
+[2026-11-20T01:18:10.100+0700][4690.100s][info][gc,start] GC(86) Pause Young (Concurrent Start) (G1 Humongous Allocation)
+[2026-11-20T01:18:10.100+0700][4690.100s][info][gc,heap] GC(86) Old regions: 210->380
+[2026-11-20T01:18:10.100+0700][4690.100s][info][gc,heap] GC(86) Humongous regions: 80->160
+[2026-11-20T01:18:10.100+0700][4690.100s][info][gc] GC(86) Pause Young (Concurrent Start) (G1 Humongous Allocation) 3200M->2800M(8192M) 58.114ms
+[2026-11-20T01:20:45.440+0700][4845.440s][info][gc] GC(87) Pause Young (Normal) (G1 Humongous Allocation) 4100M->3500M(8192M) 72.340ms
+[2026-11-20T01:20:45.440+0700][4845.440s][info][gc,heap] GC(87) Old regions: 580->720
+[2026-11-20T01:20:45.440+0700][4845.440s][info][gc,heap] GC(87) Humongous regions: 160->280
+[2026-11-20T01:22:12.881+0700][4932.881s][info][gc] GC(88) Pause Young (Normal) (G1 Humongous Allocation) 4800M->4200M(8192M) 88.602ms
+[2026-11-20T01:22:12.881+0700][4932.881s][info][gc,heap] GC(88) Old regions: 720->890
+[2026-11-20T01:22:12.881+0700][4932.881s][info][gc,heap] GC(88) Humongous regions: 280->380
+[2026-11-20T01:23:50.210+0700][5030.210s][info][gc] GC(89) Pause Young (Normal) (G1 Humongous Allocation) 5600M->5000M(8192M) 102.771ms
+[2026-11-20T01:23:50.210+0700][5030.210s][info][gc] GC(89) To-space exhausted
+[2026-11-20T01:23:50.211+0700][5030.211s][info][gc,start] GC(90) Pause Full (G1 Compaction Pause)
+[2026-11-20T01:23:52.355+0700][5032.355s][info][gc,heap] GC(90) Old regions: 1020->110
+[2026-11-20T01:23:52.355+0700][5032.355s][info][gc,heap] GC(90) Humongous regions: 460->460
+[2026-11-20T01:23:52.355+0700][5032.355s][info][gc] GC(90) Pause Full (G1 Compaction Pause) 5200M->1800M(8192M) 2144.902ms
+[2026-11-20T01:27:10.979+0700][5230.979s][info][gc] GC(91) To-space exhausted
+[2026-11-20T01:27:10.979+0700][5230.979s][info][gc] GC(91) Pause Young (Normal) (G1 Evacuation Pause) 3420M->3380M(8192M) 319.004ms
+[2026-11-20T01:27:12.001+0700][5232.001s][info][gc] GC(92) Pause Full (G1 Compaction Pause) 3380M->1850M(8192M) 2011.447ms
+[2026-11-20T01:35:40.001+0700][5740.001s][info][gc] GC(93) Pause Full (G1 Compaction Pause) 3450M->1900M(8192M) 1988.334ms
+[2026-11-20T02:15:20.001+0700][8120.001s][info][gc] GC(94) Pause Young (Normal) (G1 Evacuation Pause) 2200M->480M(8192M) 15.102ms
+[2026-11-20T02:15:20.001+0700][8120.001s][info][gc,heap] GC(94) Humongous regions: 560->10`
+    },
+    {
+      name: 'jmap-histo-0145.txt',
+      lang: 'text',
+      content: `$ kubectl exec report-batch-5d9f8c-x2k1 -- jmap -histo 1 | head -15
+  num     #instances         #bytes  class name (module)
+-------------------------------------------------------
+   1:       125000      1250000000  [B (java.base@17.0.11)
+   2:        50000       500000000  [B (java.base@17.0.11)
+   3:         25000       250000000  vn.batch.model.TransactionRecord
+   4:         12500       50000000  java.math.BigDecimal
+   5:         10000       40000000  java.lang.String
+Total       222500      2050000000
+ 
+# Dòng 1: 125.000 instance byte[] ~10 MB trung bình? Không.
+# Thực tế: 2.500 instance byte[] ~3 MB (receipt_blob) + các byte[] nhỏ khác.
+# 2.500 dòng select × 1 byte[] ~3 MB = 7.5 GB allocation humongous/lần job.`
+    },
+    {
+      name: 'TransactionRepository.java',
+      lang: 'text',
+      content: `package vn.batch.repository;
+ 
+import org.springframework.jdbc.core.JdbcTemplate;
+import org.springframework.stereotype.Repository;
+import vn.batch.model.TransactionRecord;
+import java.util.List;
+ 
+@Repository
+public class TransactionRepository {
+ 
+    private final JdbcTemplate jdbc;
+ 
+    public TransactionRepository(JdbcTemplate jdbc) {
+        this.jdbc = jdbc;
+    }
+ 
+    // VẤN ĐỀ: SELECT * bao gồm cột receipt_blob BYTEA (1-5 MB)
+    // JdbcTemplate.query đọc toàn bộ result set vào List<TransactionRecord>
+    // Mỗi TransactionRecord có field: byte[] receiptBlob
+    // → 50.000 dòng × 1 byte[] 3 MB = 150 GB allocation rác
+    public List<TransactionRecord> findAllWithBlob() {
+        return jdbc.query(
+            "SELECT id, amount, txn_date, receipt_blob FROM transactions WHERE txn_date = ?",
+            (rs, rowNum) -> new TransactionRecord(
+                rs.getLong("id"),
+                rs.getBigDecimal("amount"),
+                rs.getDate("txn_date").toLocalDate(),
+                rs.getBytes("receipt_blob")  // VẤN ĐỀ: đọc BYTEA vào byte[] lớn trên heap
+            ),
+            java.time.LocalDate.now().minusDays(1)
+        );
+    }
+ 
+    // Sửa: dùng streaming cursor, không đọc blob vào heap cùng lúc
+    public void processBlobStreaming(java.util.function.Consumer<TransactionRecord> consumer) {
+        jdbc.query(
+            "SELECT id, amount, txn_date, receipt_blob FROM transactions WHERE txn_date = ?",
+            rs -> {
+                TransactionRecord rec = new TransactionRecord(
+                    rs.getLong("id"),
+                    rs.getBigDecimal("amount"),
+                    rs.getDate("txn_date").toLocalDate(),
+                    null  // KHÔNG đọc blob ở đây
+                );
+                // Blob sẽ được đọc riêng khi cần qua getBinaryStream
+                consumer.accept(rec);
+            },
+            java.time.LocalDate.now().minusDays(1)
+        );
+    }
+}
+ 
+class TransactionRecord {
+    final long id;
+    final java.math.BigDecimal amount;
+    final java.time.LocalDate txnDate;
+    final byte[] receiptBlob;
+    TransactionRecord(long id, java.math.BigDecimal amount, java.time.LocalDate txnDate, byte[] receiptBlob) {
+        this.id = id; this.amount = amount; this.txnDate = txnDate; this.receiptBlob = receiptBlob;
+    }
+}`
+    },
+    {
+      name: 'jfr-allocation-0145.txt',
+      lang: 'text',
+      content: `$ jcmd 1 JFR.start duration=30s filename=/tmp/blob.jfr
+$ jfr print --events jdk.ObjectAllocationSample /tmp/blob.jfr | grep -A5 "byte\\[\\]"
+ 
+jdk.ObjectAllocationSample {
+  startTime = 01:22:10.123
+  objectClass = byte[] (classLoader = bootstrap)
+  weight = 3.1 MB
+  eventThread = "batch-main-1"
+  stackTrace = [
+    java.lang.String.getBytes(String.java:3000)
+    org.postgresql.jdbc.PgResultSet.getBytes(int)
+    vn.batch.repository.TransactionRepository.lambda$findAllWithBlob$0(TransactionRepository.java:28)
+  ]
+}
+ 
+jdk.ObjectAllocationSample {
+  startTime = 01:22:10.124
+  objectClass = byte[] (classLoader = bootstrap)
+  weight = 4.2 MB
+  eventThread = "batch-main-1"
+  stackTrace = [
+    org.postgresql.jdbc.PgResultSet.getBytes(int)
+    vn.batch.repository.TransactionRepository.lambda$findAllWithBlob$0(TransactionRepository.java:28)
+  ]
+}
+ 
+# Tổng hợp allocation rate lúc 01:22 (batch-main-1):
+# byte[] (PgResultSet.getBytes)  ~ 3.5 MB × 200 rows/s = 700 MB/s
+# TransactionRecord + BigDecimal  ~ 50 MB/s
+# TỔNG allocation rate ≈ 750 MB/s (chỉ cho batch đọc blob)`
+    }
+  ],
+  questions: [
+    'Tại sao G1 báo "G1 Humongous Allocation", rồi "To-space exhausted" và "Pause Full" khi đọc PostgreSQL BYTEA? Trích dòng cụ thể trong GC log và giải thích với region size 4 MB.',
+    'Từ histogram và JFR, object humongous là byte[] nào, kích thước bao nhiêu, do code dòng nào tạo ra.',
+    'Chứng minh đây KHÔNG phải memory leak. Tăng heap hoặc G1HeapRegionSize có phải lời giải gốc không.',
+    'Sửa ngắn hạn (code) và dài hạn (kiến trúc). Streaming cursor, getBinaryStream, hay tăng region size?'
+  ],
+  hints: [
+    'Region size 4 MB → ngưỡng humongous = 2 MB. PostgreSQL BYTEA 1-5 MB > 2 MB → humongous. Nhìn Humongous regions: 80 -> 160 -> 280 -> 380 -> 460 (tăng đều), Full GC không giảm (460->460).',
+    'Histogram: {{jmap -histo}} gộp mọi mảng byte[] vào MỘT dòng (~125k instance, 1.25 GB); phần lớn dung lượng đến từ các mảng 1-5 MB của cột receipt_blob đang được batch đọc. JFR chỉ rõ byte[] 3-4 MB tại PgResultSet.getBytes (TransactionRepository.java:28).',
+    'GC(94) khi job xong: Humongous regions 560->10, heap 2200M->480M. Khác với leak (leak thì heap sau GC tăng dần, Full GC không giảm humongous).',
+    'Tăng G1HeapRegionSize 8 MB: ngưỡng humongous = 4 MB, blob 1-3 MB không còn humongous, nhưng blob 5 MB VẪN humongous. Region 8 MB → heap 8 GB chỉ 1024 region, giảm độ linh hoạt G1. Chỉ là workaround.'
+  ],
+  answer: `**Tóm tắt:** Batch job đọc 50.000 dòng PostgreSQL, mỗi dòng có cột {{receipt_blob BYTEA}} 1–5 MB. JdbcTemplate.select * đọc toàn bộ blob vào {{byte[]}} trong {{TransactionRecord}}. Với **G1HeapRegionSize=4 MB**, ngưỡng humongous = **2 MB** → blob 1–5 MB **là humongous object**, cấp phát trực tiếp vào Old Gen trên region liên tiếp. 50.000 dòng × 3 MB = **150 GB allocation humongous** trong job. Humongous regions tăng 80 → 560 (~2.2 GB), chặn region trống → {{To-space exhausted}} → **Pause Full 2–3 giây** lặp lại. Khi job xong, GC(94) thu hồi humongous 560->10 trong young GC thường, chứng minh **không leak**. Sửa gốc: **streaming cursor** (JdbcTemplate query với RowCallbackHandler), đọc blob qua {{getBinaryStream()}} khi cần, **KHÔNG** select * vào byte[].
+ 
+### Nguyên nhân gốc
+ 
+1. **Region và ngưỡng:** GC log {{G1 Heap Region Size: 4M}}. G1 coi object > 50% region = **> 2 MB** là humongous. PostgreSQL BYTEA 1–5 MB > 2 MB → **humongous**.
+2. **Humongous allocation path:** Humongous object **không qua Eden**, cấp phát trực tiếp **Old Gen** (startsHumongous + continuesHumongous). Young GC **không dọn** humongous. Chỉ Mixed GC (sau concurrent marking) hoặc Full GC dọn được.
+3. **Accumulation rate:** Batch select 50.000 dòng, mỗi dòng blob ~3 MB → 50.000 × 3 MB = **150 GB allocation** humongous trong job. Humongous regions tăng 80 → 560 (560 × 4 MB = 2.2 GB Old Gen bị humongous chiếm).
+4. **To-space exhausted:** Humongous regions chiếm 2.2 GB Old Gen. Chỉ còn ~5.8 GB region trống cho Eden+Survivor+Old thường. Khi Eden đầy, không đủ region trống evacuate → To-space exhausted → Full GC.
+5. **Full GC không giảm humongous:** GC(90) {{Humongous regions: 460->460}}, GC(92) humongous không giảm. Vì byte[] blob **vẫn được tham chiếu** bởi List<TransactionRecord> đang xử lý (stack frame giữ reference) → live data. Full GC chỉ di chuyển object còn sống, không thu hồi object vẫn reachable.
+ 
+### Dẫn chứng (trích dòng cụ thể trong artifact)
+ 
+| Artifact | Dòng trích | Ý nghĩa |
+|---|---|---|
+| GC log | {{G1 Heap Region Size: 4M}} | Region size 4 MB → humongous threshold 2 MB |
+| GC log | {{Pause Young (Concurrent Start) (G1 Humongous Allocation)}}, {{Humongous regions: 80->160}} | Bắt đầu có humongous, +80 region = 320 MB |
+| GC log | {{Humongous regions: 160->280 -> 380 -> 460}} | Tăng đều mỗi young GC, tổng 460 region = 1.8 GB |
+| GC log | {{To-space exhausted}} (GC 89), {{Pause Full (G1 Compaction Pause) 5200M->1800M 2144ms}} | Cạn region trống, Full GC 2.1 giây |
+| GC log | {{Humongous regions: 460->460}} (GC 90), GC 92 | Full GC không giảm humongous |
+| GC log | GC(94) {{Pause Young ... 2200M->480M}}, {{Humongous regions: 560->10}} | **Bằng chứng không leak**: job xong, humongous 560->10, heap về 480 MB |
+| JFR | {{weight = 3.1 MB, 4.2 MB}}, {{stackTrace: PgResultSet.getBytes}} (TransactionRepository.java:28) | byte[] 3-4 MB humongous mỗi dòng select blob |
+| Histogram | {{byte[]}} 125.000 instance 1.25 GB | {{jmap -histo}} gộp mọi mảng byte[], phần lớn là blob 1-5 MB đang live |
+| Code | {{rs.getBytes("receipt_blob")}} (TransactionRepository.java:28) | Đọc BYTEA vào byte[] lớn trên heap |
+ 
+### Cách sửa
+ 
+**Fix 1: Streaming cursor - không đọc blob vào heap cùng lúc (KHUYẾN DÙNG NHẤT)**
+ 
+~~~java
+// TRƯỚC: findAllWithBlob() đọc 50.000 blob vào List<TransactionRecord> → 150 GB allocation
+public List<TransactionRecord> findAllWithBlob() { ... }
+ 
+// SAU: processBlobStreaming() dùng RowCallbackHandler, blob chỉ đọc khi cần qua getBinaryStream
+public void processBlobStreaming(Consumer<TransactionRecord> consumer) {
+    jdbc.query(
+        "SELECT id, amount, txn_date, receipt_blob FROM transactions WHERE txn_date = ?",
+        rs -> {
+            TransactionRecord rec = new TransactionRecord(
+                rs.getLong("id"),
+                rs.getBigDecimal("amount"),
+                rs.getDate("txn_date").toLocalDate(),
+                null  // KHÔNG đọc blob ở đây
+            );
+            // Blob sẽ được đọc riêng khi consumer cần
+            consumer.accept(rec);
+        },
+        java.time.LocalDate.now().minusDays(1)
+    );
+}
+ 
+// Khi cần blob: dùng rs.getBinaryStream("receipt_blob") -> InputStream -> copy ra file/S3
+// KHÔNG bao giờ rs.getBytes("receipt_blob") cho blob lớn
+~~~
+ 
+- **Cơ chế:** JdbcTemplate {{query}} với {{RowCallbackHandler}} xử lý từng dòng (streaming), không đệm toàn bộ result set vào List. Blob chỉ đọc qua {{getBinaryStream()}} khi thực sự cần, ghi trực tiếp ra file/OutputStream, **không bao giờ load toàn bộ vào byte[] heap**.
+- **Kết quả:** **0 humongous object** từ blob. Chỉ allocation nhỏ cho TransactionRecord (id, amount, date) ~200 byte/dòng.
+ 
+**Fix 2: Cursor-based pagination / chunked processing**
+ 
+~~~java
+// Dùng fetchSize + cursor để PostgreSQL stream kết quả
+jdbc.query(
+    "SELECT id, amount, txn_date, receipt_blob FROM transactions WHERE txn_date = ?",
+    rs -> { ... },
+    date
+);
+// Cần set fetchSize trên connection: datasource.setDefaultFetchSize(1000)
+// Hoặc dùng PagingQueryProvider (Spring Batch) với chunk size 1000
+~~~
+ 
+**Fix 3: Tăng G1HeapRegionSize (WORKAROUND, không khuyên dùng làm fix chính)**
+ 
+~~~bash
+# Thay vì region 4MB mặc định, dùng 8MB
+-XX:G1HeapRegionSize=8m
+~~~
+ 
+- **Cơ chế:** Region 8MB → humongous threshold = 4 MB. Blob 1-3 MB < 4 MB → **không humongous**, đi qua Eden bình thường, Young GC dọn được.
+- **Trade-off:** Region lớn → **heap waste** (internal fragmentation). Mixed GC scan region lớn → pause tăng. Heap 8GB / 8MB = 1024 regions (ít hơn 2048 regions của 4MB).
+- **Khuyên dùng:** Chỉ khi KHÔNG thể sửa code (vendor library). Ưu tiên Fix 1.
+ 
+### Phòng ngừa
+ 
+- **Code review:** Cấm {{SELECT *}} có cột BLOB/BYTEA/CLOB vào entity có field {{byte[]}}. Cấm {{rs.getBytes()}}, {{rs.getString()}} cho cột lớn. Bắt buộc dùng {{getBinaryStream()}}/{{getCharacterStream()}} + streaming xử lý.
+- **Static analysis:** SpotBugs custom rule detect {{ResultSet.getBytes()}}, {{getString()}} trên cột LOB. Detect {{JdbcTemplate.query}} trả về List có field {{byte[]}} lớn.
+- **Test:** Load test batch đọc 10.000 dòng có blob 5 MB, verify GC log: không được có Full GC, Young GC pause < 100ms, humongous count = 0.
+- **Monitoring:** Alert khi GC log có {{To-space exhausted}} hoặc {{Pause Full (G1 Compaction Pause)}}. Theo dõi {{jvm_g1_humongous_count}} (Micrometer/JMX).
+- **JFR:** Profile allocation định kỳ, tìm {{byte[]}} weight lớn tại {{PgResultSet.getBytes}}, {{ResultSet.getBytes}}.
+ 
+### Trả lời mẫu khi phỏng vấn
+ 
+"Batch job select 50.000 dòng PostgreSQL, mỗi dòng có cột receipt_blob BYTEA 3 MB. JdbcTemplate query đọc toàn bộ blob vào byte[] trong TransactionRecord. G1 region 4 MB → humongous threshold 2 MB. Blob 3 MB > 2 MB → humongous object, cấp phát trực tiếp Old Gen. 50.000 dòng × 3 MB = 150 GB allocation humongous. Humongous regions tăng 80 → 560, chặn region trống → To-space exhausted → Full GC 2-3 giây. Chứng minh không leak: job xong, young GC thu hồi humongous 560->10, heap về 480 MB. Sửa gốc: streaming cursor (JdbcTemplate RowCallbackHandler), đọc blob qua getBinaryStream() khi cần, KHÔNG select * vào byte[]. Tăng RegionSize 8 MB chỉ là workaround, trade-off heap waste."
+ 
+> Senior tip: **Database LOB (BYTEA, BLOB, CLOB) là "cây núc humongous" ẩn**. JDBC driver pgjdbc/ojdbc đọc LOB vào byte[]/String nếu dùng getBytes/getString. Quy tắc: **LOB lớn (> 1 MB) KHÔNG BAO GIỜ đọc vào heap toàn bộ**. Luôn dùng getBinaryStream()/getCharacterStream() + streaming copy ra file/S3/OutputStream. JFR 30s + GC log đủ bắt humongous pattern từ PgResultSet.getBytes. Nếu không thể sửa code ngay, tăng G1HeapRegionSize 8-16 MB là workaround tạm (nhưng heap waste, mixed GC chậm).`,
+  rubric: [
+    'Giải thích đúng cơ chế: G1 region 4MB → humongous threshold 2MB. PostgreSQL BYTEA 1-5 MB > 2MB = humongous. Humongous alloc Old Gen trực tiếp, Young GC không dọn.',
+    'Dẫn chứng GC log: Region Size 4M, Humongous regions 80→160→280→380→460→560, To-space exhausted (GC 89), Pause Full ~2s nhưng Humongous regions không giảm (460->460). GC(94) humongous 560->10 khi job xong.',
+    'Chứng minh không leak: Full GC dọn Old Gen 5.2GB -> 1.8GB (GC 90), job xong humongous 560->10 heap về 480MB. Leak thì Old Gen sau Full GC vẫn cao.',
+    'Chỉ đúng code gây ra: TransactionRepository.java rs.getBytes("receipt_blob") dòng 28, JFR weight 3-4 MB khớp. JdbcTemplate query đọc 50k dòng vào List<TransactionRecord> có field byte[].',
+    'Đề xuất có chiều sâu: streaming cursor (RowCallbackHandler) + getBinaryStream() loại bỏ humongous hoàn toàn; chunked pagination; giải thích tăng RegionSize/heap chỉ là workaround; alert To-space exhausted / Full GC.'
+  ],
+  tags: ['g1gc', 'humongous', 'postgresql', 'bytea', 'blob', 'jdbc', 'streaming', 'full-gc', 'to-space-exhausted', 'jdbc-template', 'lob', 'jdk17', 'jfr', 'jmap', 'batch']
+}
+,
+{
+  id: 'lab-gc-041',
+  category: 'gc',
+  title: 'Hệ thống plugin động: Metaspace leak từ URLClassLoader không bao giờ bị GC',
+  level: 'senior',
+  scenario: `**Bối cảnh (background):** App **core banking** (Spring Boot 3.3, JDK 17.0.11, G1) hỗ trợ **hệ thống plugin** cho phép đội nghiệp vụ upload file JAR chứa logic tùy chỉnh (tính phí, validate, quy tắc tín dụng). Mỗi plugin được nạp vào một **{{URLClassLoader}} riêng** để cô lập class. JVM: {{-Xms8g -Xmx8g -XX:+UseG1GC -XX:MetaspaceSize=256m -XX:MaxMetaspaceSize=1g -Xlog:gc+metaspace=debug:file=/logs/gc.log:time,uptime,level,tags}}. Container: 4 vCPU, memory limit 10Gi. MaxMetaspaceSize = 1 GB.
+ 
+**Thuật ngữ giải thích:**
+- **URLClassLoader:** ClassLoader nạp class từ file JAR trên đĩa. Mỗi instance URLClassLoader tạo một "namespace" class riêng, class cùng tên trong JAR khác nhau không xung đột.
+- **Metaspace & ClassLoader leak:** Class chỉ bị unload khi **ClassLoader nạp nó bị GC** (không còn reference nào). Nếu app giữ reference đến ClassLoader (trong cache static, map, thread local), ClassLoader không bao giờ GC → class metadata vẫn nằm trong Metaspace mãi → **Metaspace leak**.
+- **Plugin system pattern:** Nạp plugin JAR → tạo URLClassLoader → load class plugin → cache instance plugin. Khi plugin update, nạp JAR mới → tạo ClassLoader mới → cache instance mới. ClassLoader cũ **phải bị remove khỏi cache** để GC.
+ 
+**Triệu chứng:** Sau **3 tháng chạy**, app bị **{{java.lang.OutOfMemoryError: Metaspace}}**. Restart app tạm fix 2-3 ngày. GC log: Metaspace used tăng dần từ 300 MB → **1.1 GB** (vượt MaxMetaspaceSize 1 GB → GC cưỡng lại nhưng không dọn được → OOM). {{jcmd 1 VM.class_histogram}} thấy **800.000+ class** loaded (bình thường ~20.000). Top class: tên class từ các plugin JAR (com.plugin.v1.*, com.plugin.v2.*, ...). Heap dump: **{{PluginManager.pluginLoaders}}** (static map) giữ reference đến **150+ URLClassLoader** instance.
+ 
+**Dữ liệu thu thập:** GC log (metaspace debug), jcmd class histogram, heap dump (Eclipse MAT), code {{PluginManager}} nạp plugin, JFR class loading.`,
+  artifacts: [
+    {
+      name: 'gc-plugin-metaspace.log',
+      lang: 'text',
+      content: `[2026-11-20T14:30:00.100+0700][0.100s][info][gc,init] Version: 17.0.11+7 (release)
+[2026-11-20T14:30:00.100+0700][0.100s][info][gc,init] CPUs: 4 total, 4 available
+[2026-11-20T14:30:00.100+0700][0.100s][info][gc,init] Memory: 10240M
+[2026-11-20T14:30:00.100+0700][0.100s][info][gc,init] Heap Min Capacity: 8192M
+[2026-11-20T14:30:00.100+0700][0.100s][info][gc,init] Heap Initial Capacity: 8192M
+[2026-11-20T14:30:00.100+0700][0.100s][info][gc,init] Heap Max Capacity: 8192M
+[2026-11-20T14:30:00.100+0700][0.100s][info][gc,init] MaxMetaspaceSize: 1024M
+[2026-11-20T14:30:00.100+0700][0.100s][info][gc,metaspace] Metaspace       used 307200K, capacity 307200K, committed 307200K, reserved 1048576K
+[2026-11-20T14:30:00.100+0700][0.100s][info][gc,metaspace]   class space    used 38400K, capacity 38400K, committed 38400K, reserved 1073741824K
+... (Metaspace tăng dần mỗi lần reload plugin) ...
+[2026-11-20T14:30:00.100+0700][86400.100s][info][gc,metaspace] Metaspace       used 980000K, capacity 980000K, committed 980000K, reserved 1048576K
+[2026-11-20T14:30:00.100+0700][86400.200s][info][gc,metaspace] Metaspace       used 1020000K, capacity 1020000K, committed 1020000K, reserved 1048576K
+[2026-11-20T14:30:00.100+0700][86400.300s][error][gc,metaspace] Metaspace OOM: Failed to allocate 1024KB for class metadata
+[2026-11-20T14:30:00.100+0700][86400.300s][error][gc] java.lang.OutOfMemoryError: Metaspace
+`
+    },
+    {
+      name: 'jcmd-class-histogram.txt',
+      lang: 'text',
+      content: `$ jcmd 1 VM.class_histogram | head -30
+ 
+  num     #instances         #bytes  class name (module)
+-------------------------------------------------------
+   1:       800000       32000000  com.plugin.v1.FeeCalculator
+   2:       795000       31800000  com.plugin.v2.FeeCalculator
+   3:       790000       31600000  com.plugin.v3.FeeCalculator
+   4:       785000       31400000  com.plugin.v4.FeeCalculator
+   ... (150 phiên bản plugin, mỗi phiên bản ~5.000 class) ...
+   150001:         5000         200000  java.lang.String
+   150002:         1000          40000  java.util.ArrayList
+   150003:          150           6000  java.net.URLClassLoader
+   150004:            1             80  vn.core.plugin.PluginManager
+ 
+# Total loaded classes: ~800.000 (bình thường app Spring Boot ~20.000)
+# Mỗi class ~40 bytes metadata. 800k × 40B = 32 MB class metadata.
+# Nhưng Metaspace 1 GB → overhead Klass, method, constant pool, annotation ~1.2 KB/class.
+# 800k × 1.2 KB ≈ 960 MB Metaspace. Khớp GC log: Metaspace used 1.02 GB.`
+    },
+    {
+      name: 'heap-dump-plugin.hprof (MAT dominator)',
+      lang: 'text',
+      content: `========== MAT Dominator Tree (GC Root: System class) ==========
+java.lang.ClassLoader@0x7f8a... (system) 
+  -> vn.core.plugin.PluginManager.class (static field: pluginLoaders)
+    -> java.util.concurrent.ConcurrentHashMap@0x7f8b... (pluginLoaders)
+      -> [key="fee-calculator", value=URLClassLoader@0x7f8c...]
+        -> URLClassLoader@0x7f8c... (parent = PluginManager.class.getClassLoader())
+          -> loadedClasses: Vector<Class<?>> (5.000 entries)
+            -> com.plugin.v1.FeeCalculator, com.plugin.v1.Validator, ...
+      -> [key="fee-calculator-v2", value=URLClassLoader@0x7f8d...]
+        -> URLClassLoader@0x7f8d...
+          -> loadedClasses: Vector<Class<?>> (5.000 entries)
+            -> com.plugin.v2.FeeCalculator, com.plugin.v2.Validator, ...
+      ... (150 entry, mỗi key 1 URLClassLoader instance) ...
+ 
+========== GC Root Path to com.plugin.v1.FeeCalculator ==========
+com.plugin.v1.FeeCalculator (class)
+  <- loadedClasses (Vector) in URLClassLoader@0x7f8c...
+  <- URLClassLoader@0x7f8c... (instance)
+  <- value in ConcurrentHashMap@0x7f8b... (pluginLoaders)
+  <- pluginLoaders (static field) in PluginManager.class
+  <- PluginManager.class (system class loader)
+ 
+**Kết luận:** PluginManager.pluginLoaders (static ConcurrentHashMap) giữ reference mạnh đến 150+ URLClassLoader.
+Mỗi URLClassLoader giữ Vector<Class<?>> loadedClasses chứa 5.000 class của plugin đó.
+ClassLoader KHÔNG bao giờ bị GC → class KHÔNG bao giờ bị unload → Metaspace leak.`
+    },
+    {
+      name: 'PluginManager.java',
+      lang: 'text',
+      content: `package vn.core.plugin;
+ 
+import org.springframework.stereotype.Component;
+import java.io.File;
+import java.net.URL;
+import java.net.URLClassLoader;
+import java.util.Map;
+import java.util.concurrent.ConcurrentHashMap;
+ 
+@Component
+public class PluginManager {
+ 
+    // VẤN ĐỀ 1: Static cache giữ URLClassLoader FOREVER
+    private static final Map<String, URLClassLoader> pluginLoaders = new ConcurrentHashMap<>();
+    private static final Map<String, Object> pluginInstances = new ConcurrentHashMap<>();
+ 
+    // VẤN ĐỀ 2: Mỗi lần reload plugin, tạo URLClassLoader MỚI, không close cái cũ
+    public void loadPlugin(String pluginId, File jarFile) throws Exception {
+        // Tạo ClassLoader mới từ file JAR
+        URL jarUrl = jarFile.toURI().toURL();
+        URLClassLoader loader = new URLClassLoader(new URL[]{jarUrl}, PluginManager.class.getClassLoader());
+ 
+        // Load class plugin
+        Class<?> pluginClass = loader.loadClass("com.plugin.FeeCalculator");
+        Object pluginInstance = pluginClass.getDeclaredConstructor().newInstance();
+ 
+        // VẤN ĐỀ 3: Put vào cache, ClassLoader cũ bị overwrite nhưng KHÔNG bị GC
+        pluginLoaders.put(pluginId, loader);           // ClassLoader cũ mất key trong map nhưng VẪN CÓ INSTANCE
+        pluginInstances.put(pluginId, pluginInstance); // Instance plugin giữ reference đến class -> ClassLoader
+ 
+        // ClassLoader cũ (nếu có) vẫn sống vì:
+        // 1. pluginInstances vẫn giữ instance plugin cũ -> class cũ -> ClassLoader cũ
+        // 2. Không có logic remove/close ClassLoader cũ
+    }
+ 
+    public Object executePlugin(String pluginId, Object input) {
+        Object plugin = pluginInstances.get(pluginId);
+        if (plugin == null) throw new IllegalStateException("Plugin not loaded: " + pluginId);
+        // Gọi method trên plugin instance (instance cũ vẫn sống nếu không remove)
+        return plugin.getClass().getMethod("calculate", Object.class).invoke(plugin, input);
+    }
+ 
+    // KHÔNG CÓ method unloadPlugin() / close()
+}`
+    },
+    {
+      name: 'jfr-class-loading.txt',
+      lang: 'text',
+      content: `$ jcmd 1 JFR.start duration=60s filename=/tmp/classload.jfr
+$ jfr print --events jdk.ClassLoad /tmp/classload.jfr | tail -20
+ 
+jdk.ClassLoad {
+  startTime = 14:30:15.123
+  className = com.plugin.v50.FeeCalculator
+  classLoader = java.net.URLClassLoader@0x7f8c...
+  isHidden = false
+}
+ 
+jdk.ClassLoad {
+  startTime = 14:30:15.124
+  className = com.plugin.v50.Validator
+  classLoader = java.net.URLClassLoader@0x7f8c...
+  isHidden = false
+}
+ 
+# Mỗi reload plugin nạp ~5.000 class mới (plugin JAR có nhiều class phụ).
+# 150 lần reload = 150 × 5.000 = 750.000 class. Log thấy 800.000 class khớp.
+# ClassLoader không close → class không unload`
+    }
+  ],
+  questions: [
+    'Tại sao Metaspace tăng vô hạn dù đã set -XX:MaxMetaspaceSize=1g? Giải thích cơ chế class unloading: class chỉ unload khi ClassLoader bị GC.',
+    'Từ heap dump: static field {{pluginLoaders}} trong {{PluginManager}} giữ reference đến 150+ {{URLClassLoader}}. Giải thích tại sao đây là ClassLoader leak pattern điển hình.',
+    'Mỗi lần reload plugin, tạo {{new URLClassLoader()}} và put vào cache. ClassLoader cũ bị overwrite trong map nhưng KHÔNG bị GC. Tại sao? (Hint: pluginInstances vẫn giữ instance cũ -> class cũ -> ClassLoader cũ).',
+    'So sánh 3 giải pháp: (1) **Close ClassLoader cũ** trước khi tạo mới ({{URLClassLoader.close()}} JDK 9+), (2) **Single shared ClassLoader** + cache class theo tên, (3) **Plugin process riêng** (out-of-process) giao tiếp qua gRPC/HTTP. Ưu/nhược điểm.',
+    'Tại sao {{jcmd VM.class_histogram}} thấy 800.000 class {{com.plugin.v1.*}}...{{com.plugin.v150.*}} nhưng heap chỉ có ~150 {{URLClassLoader}} instance? Giải thích quan hệ 1 ClassLoader → nhiều class.'
+  ],
+  hints: [
+    'MaxMetaspaceSize=1g chỉ giới hạn capacity, không tự dọn class. Class chỉ unload khi ClassLoader GC. Leak ClassLoader → class không unload → Metaspace đầy → OOM dù đã set limit.',
+    'pluginLoaders static ConcurrentHashMap -> GC Root (System class loader) -> PluginManager.class -> static pluginLoaders -> 150 URLClassLoader. ClassLoader không bao giờ GC vì static field giữ reference mạnh.',
+    'URLClassLoader giữ reference MẠNH đến TẤT CẢ class đã load trong \`loadedClasses\` (Vector nội bộ). Overwrite map value KHÔNG xóa class của loader cũ. pluginInstances giữ instance plugin cũ -> class cũ -> ClassLoader cũ. Nếu loader cũ vẫn được reference thì class không unload.',
+    'Giải pháp 1: {{loader.close()}} (JDK 9+) trước khi tạo mới -> xóa cache loader, giải phóng tài nguyên; class chỉ unload khi loader bị GC (không deterministic). Giải pháp 2: Single shared ClassLoader + cache Class object, reload chỉ swap instance. Giải pháp 3: Out-of-process plugin (gRPC/HTTP) -> class cách ly hoàn toàn, restart process plugin không ảnh hưởng Metaspace app chính. Khuyên dùng Giải pháp 3 cho production.',
+    '1 {{URLClassLoader}} nạp 1 JAR plugin (~5.000 class). 150 plugin × 5.000 class = 750.000 class. Mỗi URLClassLoader loadedClasses Vector chứa ~5.000 class. Heap chỉ có 150 URLClassLoader instance, nhưng mỗi instance kéo theo 5.000 class trong Metaspace.'
+  ],
+  answer: `**Tóm tắt:** App core banking hỗ trợ plugin động. Mỗi plugin JAR nạp bằng **{{new URLClassLoader()}}**, instance lưu trong **static {{ConcurrentHashMap pluginLoaders}}**. Mỗi lần reload plugin (150 lần/3 tháng), tạo ClassLoader mới, put vào cache, **ClassLoader cũ không bị remove/close**. {{pluginInstances}} giữ instance plugin cũ → class cũ → ClassLoader cũ. **Class chỉ unload khi ClassLoader GC** → ClassLoader không GC → **800.000 class plugin vẫn nằm trong Metaspace** → Metaspace 800k × ~1.2 KB = **~960 MB** → vượt {{MaxMetaspaceSize=1g}} → **OOM Metaspace**. Fix: (1) {{loader.close()}} (JDK 9+) trước tạo mới (chỉ giải phóng tài nguyên loader, KHÔNG unload class ngay), (2) Single shared ClassLoader + cache Class object, (3) **Out-of-process plugin** (gRPC/HTTP) - khuyên dùng production.
+ 
+### Nguyên nhân gốc
+ 
+1. **Metaspace & Class Unloading cơ chế:** Metaspace lưu class metadata. Class **chỉ bị unload khi ClassLoader nạp nó bị GC** (không còn reference nào). {{MaxMetaspaceSize}} chỉ giới hạn dung lượng, **KHÔNG trigger unload**. Nếu ClassLoader leak → class leak → Metaspace OOM.
+2. **Static cache ClassLoader leak:** {{PluginManager.pluginLoaders}} là {{static ConcurrentHashMap}}. Static field = **GC Root** (System class loader → PluginManager.class → {{static pluginLoaders}}). 150+ {{URLClassLoader}} instance trong map → **không bao giờ GC**.
+3. **ClassLoader giữ class đã load:** Mỗi {{URLClassLoader}} giữ các class đã load trong {{loadedClasses}} (Vector nội bộ). Class chỉ unload khi ClassLoader bị GC (không còn reference nào). Overwrite map value **KHÔNG xóa class** của loader cũ; {{pluginInstances}} giữ instance plugin cũ → class cũ → ClassLoader cũ.
+4. **Class explosion:** Mỗi reload plugin: {{loader.loadClass()}} → nạp ~5.000 class từ JAR. 150 plugin × 5.000 class = **750.000 class** (log thấy 800.000). Mỗi class ~1.2 KB Metaspace (Klass, method, constant pool, annotation) → 800k × 1.2 KB = **~960 MB**.
+5. **MaxMetaspaceSize không giúp:** Set 1GB chỉ làm OOM sớm hơn. GC log: Metaspace used 1.02 GB → capacity 1.02 GB → reserved 1.048 GB (1GB). Full GC cưỡng lại (Metaspace GC) nhưng **không dọn được class** vì ClassLoader còn sống → OOM.
+ 
+### Dẫn chứng (trích dòng cụ thể trong artifact)
+ 
+| Artifact | Dòng trích | Ý nghĩa |
+|---|---|---|
+| GC log | {{MaxMetaspaceSize: 1024M}} | Limit Metaspace 1GB |
+| GC log | {{Metaspace used 1020000K... Metaspace OOM}} | Metaspace đầy 1.02 GB → OOM |
+| jcmd histogram | {{800000 com.plugin.v1.FeeCalculator...com.plugin.v150.*}} | 800k class plugin loaded |
+| MAT Dominator | {{pluginLoaders (static field) in PluginManager.class}} | Static cache là GC Root giữ ClassLoader |
+| MAT Dominator | {{loadedClasses: Vector<Class<?>> (5.000 entries)}} | URLClassLoader giữ reference tất cả class |
+| Code | {{private static final Map<String, URLClassLoader> pluginLoaders}} | Static cache leak pattern |
+| Code | {{URLClassLoader loader = new URLClassLoader(...)}} | Tạo ClassLoader mới mỗi reload |
+| Code | {{pluginLoaders.put(pluginId, loader); pluginInstances.put(pluginId, instance)}} | Overwrite không close ClassLoader cũ |
+| JFR | {{className = com.plugin.v50.FeeCalculator, classLoader = URLClassLoader}} | Mỗi reload tạo class mới, cùng ClassLoader |
+ 
+### Cách sửa
+ 
+**Fix 1: Close ClassLoader cũ trước khi tạo mới (JDK 9+, CẢI TIẾN NHANH)**
+ 
+~~~java
+// TRƯỚC: Tạo mới, put vào cache, ClassLoader cũ leak
+URLClassLoader loader = new URLClassLoader(new URL[]{jarUrl}, getClass().getClassLoader());
+pluginLoaders.put(pluginId, loader);
+ 
+// SAU: Close ClassLoader cũ (JDK 9+ close() xóa cache loader, giải phóng tài nguyên)
+// LƯU Ý: close() KHÔNG unload class ngay; class chỉ unload khi loader bị GC (không còn reference)
+public void loadPlugin(String pluginId, File jarFile) throws Exception {
+    URLClassLoader oldLoader = pluginLoaders.remove(pluginId);
+    if (oldLoader != null) {
+        try {
+            oldLoader.close();  // JDK 9+: xóa cache loader, giải phóng tài nguyên
+            // Cần đảm bảo KHÔNG còn reference nào đến instance plugin cũ
+            pluginInstances.remove(pluginId);  // QUAN TRỌNG: xóa instance cũ
+        } catch (Exception e) {
+            log.warn("Failed to close old loader for {}", pluginId, e);
+        }
+    }
+    URLClassLoader newLoader = new URLClassLoader(new URL[]{jarUrl}, getClass().getClassLoader());
+    Class<?> pluginClass = newLoader.loadClass("com.plugin.FeeCalculator");
+    Object pluginInstance = pluginClass.getDeclaredConstructor().newInstance();
+    pluginLoaders.put(pluginId, newLoader);
+    pluginInstances.put(pluginId, pluginInstance);
+}
+~~~
+ 
+- **Vấn đề:** {{URLClassLoader.close()}} (JDK 9+) chỉ giải phóng tài nguyên loader và xóa cache nội bộ; **class chỉ unload khi ClassLoader bị GC** (không còn reference nào), không deterministic. Phải xóa **{{pluginInstances.remove(pluginId)}}** để instance plugin cũ không còn giữ reference đến class/ClassLoader.
+- **Yêu cầu:** JDK 9+. ClassLoader phải không còn reference khác (thread, stack).
+ 
+**Fix 2: Single Shared ClassLoader + Cache Class Object (KHÔNG TẠO CLASSLOADER MỚI)**
+ 
+~~~java
+// ClassLoader dùng chung, cache Class object
+private static final URLClassLoader SHARED_LOADER = new URLClassLoader(new URL[0], PluginManager.class.getClassLoader());
+private static final Map<String, Class<?>> pluginClassCache = new ConcurrentHashMap<>();
+ 
+public void loadPlugin(String pluginId, File jarFile) throws Exception {
+    // Nạp class từ JAR vào SHARED_LOADER (cần add URL vào loader - URLClassLoader không hỗ trợ addURL public)
+    // Workaround: dùng reflection addURL hoặc custom ClassLoader extends URLClassLoader
+    // Hoặc: mỗi plugin JAR nạp bằng child ClassLoader, nhưng cache Class object, close child loader khi không dùng
+}
+~~~
+ 
+- **Vấn đề:** {{URLClassLoader}} không có API public {{addURL()}}. Cần custom ClassLoader hoặc reflection (không khuyến khích).
+ 
+**Fix 3: Out-of-Process Plugin (KHUYẾN DÙNG PRODUCTION)**
+ 
+~~~text
+┌─────────────────┐         gRPC/HTTP          ┌──────────────────┐
+│   App chính     │ ─────────────────────────> │  Plugin Service  │
+│  (Core Banking) │  <──────────────────────── │  (Fee Calculator)│
+│  Heap 8 GB      │      JSON/Protobuf         │  Process riêng   │
+│  Metaspace 1 GB │                            │  Restart bất kỳ  │
+└─────────────────┘                            └──────────────────┘
+ 
+- App chính KHÔNG nạp class plugin → Metaspace app chính ổn định.
+- Plugin service là process Java riêng, restart plugin service khi reload → Metaspace plugin service reset.
+- Giao tiếp qua gRPC/HTTP, timeout, retry, circuit breaker.
+- Scale plugin service độc lập, deploy plugin không downtime app chính.
+~~~
+ 
+- **Ưu:** **Hoàn toàn loại bỏ Metaspace leak từ plugin**. Plugin crash không làm sập app chính. Deploy plugin độc lập.
+- **Nhược:** Phức tạp hơn (network, serialization, service discovery). Latency network thêm ~1-5 ms.
+- **Phù hợp:** Production banking/fintech cần ổn định cao, plugin thay đổi thường xuyên.
+ 
+### Phòng ngừa
+ 
+- **Code review:** Cấm {{new URLClassLoader()}}/{{new ScriptEngine()}} trong static cache. Cấm static field giữ {{ClassLoader}}/{{ScriptEngine}}.
+- **Static analysis:** SpotBugs rule detect {{URLClassLoader}}/{{ClassLoader}} instance stored in static field. Custom rule detect {{loadClass}}/{{defineClass}} trong method không close loader.
+- **Test:** Load test reload plugin 1000 lần, verify Metaspace stable (không tăng), {{jcmd VM.class_histogram}} class count không tăng.
+- **Monitoring:** Alert Metaspace used > 80% MaxMetaspaceSize. Theo dõi {{jvm_classes_loaded}} vs {{jvm_classes_unloaded}} (Micrometer). Leak = loaded tăng, unloaded = 0.
+- **JFR:** Profile {{jdk.ClassLoad}}/{{jdk.ClassUnload}}. Leak = ClassLoad nhiều, ClassUnload = 0.
+- **Architecture:** Mọi hệ thống plugin động **PHẢI** có kế hoạch unload class (close loader, out-of-process, hoặc compile-once cache Class).
+ 
+### Trả lời mẫu khi phỏng vấn
+ 
+"App core banking nạp plugin JAR bằng URLClassLoader, lưu trong static ConcurrentHashMap pluginLoaders. Mỗi reload tạo ClassLoader mới, put vào cache, ClassLoader cũ không remove/close. pluginInstances giữ instance plugin cũ → class cũ → ClassLoader cũ. **Class chỉ unload khi ClassLoader GC** → ClassLoader không GC → **800k class plugin vẫn nằm trong Metaspace** → Metaspace 960 MB > MaxMetaspaceSize 1 GB → OOM. Fix: (1) {{loader.close()}} (JDK 9+) + xóa instance cũ (nhưng class unload không deterministic), (2) Single shared ClassLoader + cache Class object (khó với URLClassLoader), (3) **Out-of-process plugin** (gRPC/HTTP) - khuyên dùng production, hoàn toàn cách ly Metaspace. Monitoring: {{jvm_classes_loaded}} tăng, {{jvm_classes_unloaded}} = 0 = leak."
+ 
+> Senior tip: **Dynamic plugin/class loading = Metaspace leak risk cao nhất**. Quy tắc vàng: **Class chỉ unload khi ClassLoader GC**. Không bao giờ cache ClassLoader trong static field. **Out-of-process plugin (gRPC/HTTP) là "silver bullet" cho Metaspace leak từ plugin** - restart process plugin là cách chắc chắn nhất reset Metaspace. Nếu buộc in-process: {{URLClassLoader.close()}} (JDK 9+) + xóa MỌI reference đến instance/class của loader cũ. JFR {{jdk.ClassLoad}}/{{jdk.ClassUnload}} 1 phút đủ bắt leak: Load nhiều, Unload = 0. Container memory limit + MaxMetaspaceSize KHÔNG tự fix leak - chỉ làm OOM sớm hơn.`,
+  rubric: [
+    'Giải thích đúng cơ chế: Class chỉ unload khi ClassLoader GC. Static cache giữ ClassLoader → ClassLoader không GC → 800k class plugin không unload → Metaspace 960 MB > MaxMetaspaceSize 1 GB → OOM.',
+    'Dẫn chứng: GC log MaxMetaspaceSize 1GB, Metaspace used 1020000K OOM. jcmd histogram 800k plugin class. MAT: static pluginLoaders -> 150 URLClassLoader -> loadedClasses Vector 5000 entries. Code: static cache, new URLClassLoader mỗi reload, put không close.',
+    'Giải thích đúng loadedClasses Vector: URLClassLoader giữ reference mạnh tất cả class đã load. Overwrite map không clear Vector cũ → ClassLoader cũ vẫn reachable qua pluginInstances → class không unload.',
+    'So sánh 3 fix đúng trade-off: (1) close() + remove instance (JDK 9+, class unload không deterministic), (2) Shared ClassLoader (khó addURL), (3) Out-of-process plugin gRPC/HTTP (best, cách ly hoàn toàn Metaspace). Khuyên Fix 3.',
+    'Giải thích 800k class nhưng chỉ 150 ClassLoader: Mỗi plugin JAR ~5.000 class. 150 plugin × 5.000 class = 750k class. Mỗi URLClassLoader loadedClasses chứa ~5.000 class.'
+  ],
+tags: ['metaspace', 'classloader-leak', 'urlclassloader', 'plugin-system', 'dynamic-class-loading', 'closeable', 'class-unloading', 'maxmetaspacesize', 'oom', 'static-cache', 'loadedclasses', 'vector', 'jdk9', 'jfr', 'jcmd', 'class-histogram', 'mat', 'out-of-process', 'grpc', 'architecture']
+  }
 )
