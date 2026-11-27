@@ -18469,8 +18469,1148 @@ Hệ thống 8 pod Spring Boot, bật second-level cache cho bảng product pric
 Tôi bật second-level cache cho dữ liệu danh mục ít thay đổi và trong môi trường single instance hoặc distributed cache có invalidation. Tránh bật cho dữ liệu transactional hay multi-instance không có distributed cache. Luôn cân nhắc consistency, invalidation và overhead. Nếu cần, dùng cache ở tầng service (Redis cache-aside) thay vì Hibernate second-level cache để kiểm soát tốt hơn.
 
 > Senior tip: nếu dùng bulk update (@Modifying), nhớ evict cache thủ công (CacheManager) hoặc tắt cache cho entity đó.`,
-  follow: ['Query cache và entity cache khác nhau ra sao?', 'Làm sao invalidation cache khi dữ liệu thay đổi từ nhiều nguồn?', 'So sánh Hibernate second-level cache với Redis cache-aside?'],
+follow: ['Query cache và entity cache khác nhau ra sao?', 'Làm sao invalidation cache khi dữ liệu thay đổi từ nhiều nguồn?', 'So sánh Hibernate second-level cache với Redis cache-aside?'],
   tags: ['second-level cache', 'consistency', 'distributed', 'invalidation', 'Hibernate 6']
+},
+{
+  id: 'spring-111',
+  topic: 'spring',
+  level: 'mid',
+  q: 'Bạn review PR sau, bạn thấy vấn đề gì và yêu cầu sửa thế nào? (Hai method trong cùng class, một method có @Transactional gọi method khác cũng có @Transactional qua this — propagation REQUIRES_NEW bị bỏ qua, gây sai lệch dữ liệu giữa trừ tiền và tạo đơn)',
+  a: `**Tóm tắt:** Trong Spring, {{@Transactional}} hoạt động nhờ proxy. Khi một method trong cùng class gọi method khác qua {{this.method()}}, lời gọi **không đi qua proxy** → annotation trên method bị gọi bị bỏ qua hoàn toàn, kể cả {{propagation = REQUIRES_NEW}}. Điều này dẫn đến hai thao tác ghi lẽ ra nên tách transaction (trừ tiền, tạo đơn) lại chung một transaction, hoặc ngược lại, method con không có transaction riêng → dữ liệu lệch (trừ tiền nhưng không tạo đơn, hoặc tạo đơn nhưng không trừ tiền). Sửa: tách method sang bean riêng, hoặc inject chính bean qua proxy ({{@Lazy}}), hoặc dùng {{TransactionTemplate}}.
+ 
+### Code đang lỗi
+~~~java
+@Service
+@RequiredArgsConstructor
+public class OrderService {
+ 
+    private final AccountRepository accountRepo;
+    private final OrderRepository orderRepo;
+ 
+    @Transactional
+    public void placeOrder(Long accountId, BigDecimal amount) {
+        deductBalance(accountId, amount);      // SAI: this.deductBalance() -> không qua proxy
+        createOrder(accountId, amount);        // SAI: this.createOrder() -> không qua proxy
+    }
+ 
+    @Transactional(propagation = Propagation.REQUIRES_NEW)
+    public void deductBalance(Long accountId, BigDecimal amount) {
+        Account acc = accountRepo.findById(accountId).orElseThrow();
+        acc.setBalance(acc.getBalance().subtract(amount));
+        accountRepo.save(acc);                 // Trừ tiền - cần transaction riêng để rollback độc lập
+    }
+ 
+    @Transactional(propagation = Propagation.REQUIRES_NEW)
+    public void createOrder(Long accountId, BigDecimal amount) {
+        Order order = new Order(accountId, amount);
+        orderRepo.save(order);                 // Tạo đơn - cần transaction riêng
+    }
+}
+~~~
+ 
+### Dòng lỗi và kịch bản hỏng dữ liệu
+- **Dòng 12, 13**: Gọi {{this.deductBalance()}} và {{this.createOrder()}} → không qua proxy AOP. Cả hai {{@Transactional(propagation = REQUIRES_NEW)}} bị bỏ qua.
+- **Kịch bản hỏng**: 
+  1. {{placeOrder}} không có transaction (hoặc có {{REQUIRED}} nhưng không commit vì lỗi sau).
+  2. {{deductBalance}} chạy **ngoài transaction** → ghi DB tự commit (auto-commit true) hoặc chạy trong transaction của caller nếu có.
+  3. {{createOrder}} ném exception (ví dụ unique constraint trùng) → {{deductBalance}} **đã commit**, tiền đã trừ nhưng đơn không tạo.
+  4. Kết quả: tài khoản bị trừ {{amount}} nhưng không có order nào → mất dữ liệu, khách hàng khiếu nại.
+ 
+### Code đã sửa (tách bean - khuyến nghị nhất)
+~~~java
+@Service
+@RequiredArgsConstructor
+public class OrderService {
+ 
+    private final AccountService accountService;   // Bean riêng
+    private final OrderRepository orderRepo;
+ 
+    @Transactional
+    public void placeOrder(Long accountId, BigDecimal amount) {
+        accountService.deductBalance(accountId, amount);   // Gọi qua proxy -> REQUIRES_NEW hoạt động
+        createOrder(accountId, amount);
+    }
+ 
+    @Transactional
+    public void createOrder(Long accountId, BigDecimal amount) {
+        Order order = new Order(accountId, amount);
+        orderRepo.save(order);
+    }
+}
+ 
+@Service
+@RequiredArgsConstructor
+public class AccountService {
+ 
+    private final AccountRepository accountRepo;
+ 
+    @Transactional(propagation = Propagation.REQUIRES_NEW)
+    public void deductBalance(Long accountId, BigDecimal amount) {
+        Account acc = accountRepo.findById(accountId).orElseThrow();
+        acc.setBalance(acc.getBalance().subtract(amount));
+        accountRepo.save(acc);
+    }
+}
+~~~
+ 
+### Test tái hiện lỗi
+~~~java
+@SpringBootTest
+@Transactional
+class OrderServiceSelfInvocationTest {
+ 
+    @Autowired OrderService orderService;
+    @Autowired AccountRepository accountRepo;
+    @Autowired OrderRepository orderRepo;
+ 
+    @Test
+    void selfInvocation_REQUIRES_NEW_ignored_moneyDeductedButNoOrder() {
+        // Given
+        Account acc = accountRepo.save(new Account(1L, new BigDecimal("1000")));
+ 
+        // When - createOrder sẽ ném exception để mô phỏng lỗi
+        // Cần spy OrderService để make createOrder fail
+        OrderService spy = Mockito.spy(orderService);
+        Mockito.doThrow(new DataIntegrityViolationException("duplicate")).when(spy).createOrder(anyLong(), any());
+ 
+        // Then
+        assertThatThrownBy(() -> spy.placeOrder(acc.getId(), new BigDecimal("200")))
+            .isInstanceOf(DataIntegrityViolationException.class);
+ 
+        // Balance đã bị trừ 200 MẤT MÀ KHÔNG CÓ ORDER (vì REQUIRES_NEW bị bỏ qua)
+        Account after = accountRepo.findById(acc.getId()).orElseThrow();
+        assertThat(after.getBalance()).isEqualByComparingTo("800");  // FAIL: balance = 800 thay vì 1000
+        assertThat(orderRepo.count()).isZero();                       // Không có order
+    }
+ 
+    @Test
+    void afterFix_REQUIRES_NEW_works_moneyRollbackOnOrderFail() {
+        // Given - dùng code đã sửa (AccountService riêng)
+        Account acc = accountRepo.save(new Account(1L, new BigDecimal("1000")));
+ 
+        // When
+        OrderService spy = Mockito.spy(orderService);
+        Mockito.doThrow(new DataIntegrityViolationException("duplicate")).when(spy).createOrder(anyLong(), any());
+ 
+        // Then
+        assertThatThrownBy(() -> spy.placeOrder(acc.getId(), new BigDecimal("200")))
+            .isInstanceOf(DataIntegrityViolationException.class);
+ 
+        // Balance được ROLLBACK vì deductBalance chạy trong REQUIRES_NEW riêng và rollback khi caller rollback
+        Account after = accountRepo.findById(acc.getId()).orElseThrow();
+        assertThat(after.getBalance()).isEqualByComparingTo("1000");  // PASS: balance nguyên vẹn
+        assertThat(orderRepo.count()).isZero();
+    }
+}
+~~~
+ 
+### Bảng trade-off các cách sửa
+| Cách sửa | Ưu điểm | Nhược điểm |
+|---|---|---|
+| **Tách bean riêng** (khuyên dùng) | Tách trách nhiệm rõ ràng, proxy hoạt động đúng, dễ test, tuân thủ SRP | Thêm file/class |
+| Inject self qua {{@Lazy}} | Giữ nguyên class, ít sửa code | Workaround, che giấu thiết kế, {{@Lazy}} proxy có overhead nhỏ |
+| {{TransactionTemplate}} | Kiểm soát thủ công, không phụ thuộc proxy | Boilerplate nhiều, dễ quên commit/rollback |
+ 
+### Comment review mẫu cho đồng nghiệp
+> **Code Review Comment:**
+> 
+> @author Anh, dòng 12–13: {{this.deductBalance()}} và {{this.createOrder()}} gọi qua {{this}} nên **không đi qua proxy AOP**. Hai annotation {{@Transactional(propagation = REQUIRES_NEW)}} bị bỏ qua hoàn toàn.
+> 
+> **Kịch bản rủi ro**: {{deductBalance}} ghi DB (trừ tiền) rồi {{createOrder}} ném exception → tiền đã trừ nhưng không có đơn. Dữ liệu lệch irreversible.
+> 
+> **Yêu cầu sửa**: Tách {{deductBalance}} sang {{AccountService}} bean riêng (đúng SRP: OrderService lo đơn, AccountService lo tài khoản). Sau đó inject {{AccountService}} vào {{OrderService}} và gọi qua proxy. Xem code sửa ở trên.
+> 
+> Thêm test tích hợp kiểm tra: khi createOrder fail, balance phải rollback về giá trị ban đầu.
+ 
+### Ví dụ đời thực
+Hệ thống đặt vé máy bay xử lý 50.000 giao dịch/ngày. Team viết {{BookingService}} có method {{confirmBooking()}} gọi nội bộ {{this.chargePayment()}} (REQUIRES_NEW) và {{this.issueTicket()}} (REQUIRES_NEW). Do self-invocation, cả hai REQUIRES_NEW bị bỏ qua. Sự cố: một ngày cao điểm, {{issueTicket}} gặp lỗi kết nối printer service (timeout 30s) → exception ném ra. {{chargePayment}} đã chạy xong và **commit** (vì không có REQUIRES_NEW) → 1.200 vé bị charge tiền nhưng không phát hành vé. Khách hàng khiếu nại hàng loạt, support phải hoàn tiền thủ công mất 3 ngày. Điều tra: thread dump không thấy transaction boundary; log Spring transaction DEBUG cho thấy chỉ có một transaction duy nhất cho {{confirmBooking}}. Nguyên nhân gốc: self-invocation bỏ qua REQUIRES_NEW. Sửa: tách {{PaymentService}} và {{TicketService}} riêng, inject vào {{BookingService}}. Thêm test tích hợp bắt buộc: khi issueTicket fail, payment phải rollback. Kết quả: không còn sự cố lệch tiền/vé.
+ 
+### Trả lời mẫu khi phỏng vấn
+"Spring @Transactional hoạt động nhờ proxy: container tạo proxy bọc bean, lời gọi đi qua proxy thì mới mở transaction. Khi method trong cùng class gọi method khác qua this, lời gọi không qua proxy → annotation trên method bị gọi bị bỏ qua, kể cả propagation REQUIRES_NEW. Vì vậy, hai thao tác ghi lẽ ra tách transaction (trừ tiền, tạo đơn) lại chung một transaction, hoặc method con chạy không transaction. Cách sửa chuẩn là tách method sang bean riêng (SRP), hoặc inject self qua @Lazy để có proxy, hoặc dùng TransactionTemplate. Trong thực tế tôi luôn tách service theo trách nhiệm: OrderService lo đơn, AccountService lo tài khoản, PaymentService lo thanh toán — mỗi service một bean, proxy hoạt động đúng, dễ test và dễ review."
+ 
+> Senior tip: trong review, hãy tìm mọi chỗ gọi method có @Transactional trong cùng class (this.x()). Đây là bug tiềm ẩn phổ biến nhất với transaction. Quy tắc team: **mỗi @Transactional method phải được gọi từ bean khác**, không bao giờ từ this. Dùng ArchUnit test để cấm: {{noClasses().that().areAnnotatedWith(Service.class).should().callMethodOnSelf()}}.
+ 
+### Trả lời mẫu khi phỏng vấn (phiên bản mở rộng)
+Khi được hỏi về self-invocation trong phỏng vấn, tôi thường giải thích: "Spring AOP dùng proxy pattern. Bean được bọc trong một proxy, và các advice (transaction, cache, async) chỉ chạy khi lời gọi đi qua proxy. Gọi this.method() truy cập trực tiếp target object, bỏ qua proxy. Với @Transactional, điều này nghĩa là propagation, isolation, timeout, readOnly, rollbackFor... tất cả đều bị bỏ qua. Bug điển hình là hai operation ghi cần tách transaction (charge payment, create order) lại chung transaction, hoặc propagation.REQUIRES_NEW bị bỏ qua khiến operation con commit sớm. Tôi fix bằng cách tách ra service riêng - vừa giải quyết proxy issue, vừa tuân thủ Single Responsibility Principle."
+ 
+> Senior tip: Spring Boot 3.2+ có thể dùng @Transactional trên interface default method kết hợp với proxy-target-class=false (JDK proxy) để self-invocation qua interface method hoạt động, nhưng cách này phức tạp và hiếm khi dùng. Cách an toàn và phổ biến nhất vẫn là tách bean.
+ 
+### Cơ chế chi tiết: tại sao self-invocation phá vỡ @Transactional
+1. Spring tạo bean target (class thật).
+2. Vì có @Transactional, {{AbstractAutoProxyCreator}} bọc target trong proxy (CGLIB mặc định).
+3. Client inject **proxy**, không phải target.
+4. Khi client gọi {{proxy.placeOrder()}} → proxy → {{TransactionInterceptor}} mở transaction → gọi {{target.placeOrder()}}.
+5. Bên trong {{target.placeOrder()}}, code viết {{this.deductBalance()}} → **gọi trực tiếp trên target**, không qua proxy → không có interceptor → không mở transaction mới, REQUIRES_NEW bị bỏ qua.
+ 
+> Senior tip: bật log DEBUG cho {{org.springframework.transaction.interceptor}} để xem transaction thực sự được tạo ở đâu: {{logging.level.org.springframework.transaction.interceptor=DEBUG}}. Log sẽ cho thấy "Getting transaction for..." và "Completing transaction for..." — nếu không thấy dòng cho method con, nghĩa là method con không có transaction.
+ 
+ 
+### Các trường hợp self-invocation khác hay gặp
+- {{@Cacheable}}: method con không được cache.
+- {{@Async}}: method con chạy đồng bộ.
+- {{@Retryable}}: method con không retry.
+- {{@EventListener}}: event không được publish nếu gọi nội bộ.
+ 
+Tất cả đều cùng nguyên nhân: **proxy chỉ chặn lời gọi từ bên ngoài**.
+ 
+### Cách phát hiện tự động trong CI
+Dùng ArchUnit test:
+~~~java
+@AnalyzeClasses(packages = "com.myapp")
+class SelfInvocationTest {
+    @Test
+    void noSelfInvocationOnTransactionalMethods() {
+        noMethods()
+            .that().areAnnotatedWith(Transactional.class)
+            .should().callMethodWhere(target -> target.getOwner().equals(target.getDeclaringClass()))
+            .because("@Transactional method không được gọi nội bộ (self-invocation) - proxy sẽ bị bỏ qua");
+    }
+}
+~~~
+ 
+> Senior tip: ArchUnit test này chạy trong 1-2 giây và bắt được bug ngay lúc commit. Đã cứu team nhiều lần trước khi lên production.
+ 
+ 
+### So sánh với @Transactional trên class vs method
+- @Transactional trên class: áp dụng cho tất cả public method. Self-invocation vẫn phá vỡ.
+- @Transactional trên method: chỉ method đó. Self-invocation vẫn phá vỡ.
+- Method private/final/static: **không bao giờ** được proxy (CGLIB không override được, JDK proxy không thấy). @Transactional trên những method này im lặng không tác dụng.
+ 
+> Senior tip: trong code review, luôn check: (1) method có public không, (2) class có final không, (3) lời gọi có qua proxy không. Ba điều kiện này đủ loại bỏ 90% bug @Transactional.
+ 
+ 
+### Mở rộng: transaction boundary design
+Thay vì dựa vào propagation phức tạp, thiết kế transaction boundary ở **application service layer**:
+~~~java
+@Service
+@RequiredArgsConstructor
+public class PlaceOrderUseCase {
+ 
+    private final AccountService accountService;   // REQUIRES_NEW
+    private final OrderService orderService;       // REQUIRED
+    private final InventoryService inventoryService; // REQUIRED
+ 
+    @Transactional
+    public OrderResult execute(PlaceOrderCommand cmd) {
+        accountService.reserveFunds(cmd.accountId(), cmd.amount());   // REQUIRES_NEW - reserve độc lập
+        inventoryService.reserveStock(cmd.items());                   // REQUIRED - cùng tx với order
+        return orderService.create(cmd);                              // REQUIRED
+    }
+}
+~~~
+Mỗi service chỉ có một @Transactional method public, gọi qua proxy, không self-invocation. Transaction boundary rõ ràng, dễ review, dễ test.
+ 
+> Senior tip: đừng lạm dụng REQUIRES_NEW. Chỉ dùng khi operation con **phải sống sót** khi operation cha rollback (audit log, ghi nhận lỗi). Với business operation thông thường, dùng REQUIRED và thiết kế use case orchestrator.
+`,
+  follow: [
+    'Tại sao @Transactional trên method private bị bỏ qua một cách âm thầm?',
+    'Khi nào nên dùng TransactionTemplate thay vì @Transactional?',
+    'Làm sao viết ArchUnit test để cấm self-invocation trên method có @Transactional?'
+  ],
+  tags: ['code review', 'Transactional', 'proxy', 'self-invocation', 'REQUIRES_NEW', 'transaction boundary']
+},
+{
+  id: 'spring-112',
+  topic: 'spring',
+  level: 'senior',
+  q: 'Bạn review PR sau, bạn thấy vấn đề gì và yêu cầu sửa thế nào? (Catch rỗng nuốt exception: try { save() } catch (Exception e) {} hoặc chỉ log — transaction vẫn commit phần còn lại, lỗi ghi dữ liệu bị giấu; thêm chuyện rollbackFor với checked exception)',
+  a: `**Tóm tắt:** Catch exception rồi không rethrow (nuốt exception) là một trong những bug nguy hiểm nhất: transaction **vẫn commit** các thay đổi đã thực hiện trước điểm lỗi, trong khi nghiệp vụ mong đợi là rollback toàn bộ. Kết hợp với quy tắc mặc định của Spring: chỉ {{RuntimeException}} và {{Error}} làm rollback, checked exception thì **commit** trừ khi khai báo {{rollbackFor}}. Kết quả: dữ liệu ghi một phần, không ai biết lỗi đã xảy ra, rất khó phát hiện và phục hồi.
+ 
+### Code đang lỗi
+~~~java
+@Service
+@RequiredArgsConstructor
+public class OrderService {
+ 
+    private final OrderRepository orderRepo;
+    private final PaymentClient paymentClient;   // Gọi API ngoài, ném checked exception
+    private final InventoryClient inventoryClient;
+ 
+    @Transactional
+    public void placeOrder(OrderRequest req) {
+        Order order = new Order(req);
+        orderRepo.save(order);                          // Ghi order
+ 
+        try {
+            paymentClient.charge(req.getPaymentInfo()); // Ném PaymentException (checked)
+        } catch (PaymentException e) {
+            log.error("Payment failed", e);             // CHỈ LOG - NUỐT EXCEPTION
+            // Không rethrow -> transaction KHÔNG rollback
+        }
+ 
+        try {
+            inventoryClient.reserve(req.getItems());    // Ném InventoryException (checked)
+        } catch (InventoryException e) {
+            log.warn("Inventory reserve failed", e);    // CHỈ LOG - NUỐT EXCEPTION
+        }
+ 
+        order.setStatus(OrderStatus.CONFIRMED);         // Cập nhật trạng thái
+        orderRepo.save(order);                          // Ghi thêm
+        // Transaction commit ở đây - MẤT DỮ LIỆU: order đã tạo, status CONFIRMED, nhưng payment/inventory thất bại
+    }
+}
+~~~
+ 
+### Dòng lỗi và kịch bản hỏng dữ liệu
+- **Dòng 16–20**: Catch {{PaymentException}} (checked) chỉ log, không rethrow. Spring mặc định **không rollback** với checked exception → transaction tiếp tục chạy.
+- **Dòng 23–26**: Catch {{InventoryException}} (checked) chỉ log, không rethrow. Tương tự.
+- **Kịch bản hỏng**:
+  1. {{orderRepo.save(order)}} → order đã được persist (trong transaction).
+  2. {{paymentClient.charge()}} ném {{PaymentException}} (checked) → catch, log, **không rethrow**.
+  3. Spring thấy method kết thúc bình thường (không có exception thoát ra) → **commit transaction**.
+  4. Order đã có trong DB với status {{CONFIRMED}}, nhưng payment thực tế **thất bại**, inventory **chưa reserve**.
+  5. Khách hàng thấy đơn "đã xác nhận" nhưng tiền không trừ, hàng không giữ → sự cố nghiệp vụ nghiêm trọng.
+  6. Log chỉ có dòng ERROR/WARN, không có alert, team không biết cho đến khi khách khiếu nại.
+ 
+### Code đã sửa
+~~~java
+@Service
+@RequiredArgsConstructor
+public class OrderService {
+ 
+    private final OrderRepository orderRepo;
+    private final PaymentClient paymentClient;
+    private final InventoryClient inventoryClient;
+ 
+    @Transactional(rollbackFor = Exception.class)   // Rollback cho TẤT CẢ exception (checked + unchecked)
+    public void placeOrder(OrderRequest req) {
+        Order order = new Order(req);
+        orderRepo.save(order);
+ 
+        try {
+            paymentClient.charge(req.getPaymentInfo());
+        } catch (PaymentException e) {
+            log.error("Payment failed for order {}", req.getOrderId(), e);
+            throw new OrderProcessingException("Payment failed", e); // RETHROW unchecked -> rollback
+        }
+ 
+        try {
+            inventoryClient.reserve(req.getItems());
+        } catch (InventoryException e) {
+            log.warn("Inventory reserve failed for order {}", req.getOrderId(), e);
+            throw new OrderProcessingException("Inventory reserve failed", e); // RETHROW unchecked -> rollback
+        }
+ 
+        order.setStatus(OrderStatus.CONFIRMED);
+        orderRepo.save(order);
+    }
+}
+ 
+// Exception nghiệp vụ unchecked - Spring rollback mặc định
+public class OrderProcessingException extends RuntimeException {
+    public OrderProcessingException(String message, Throwable cause) {
+        super(message, cause);
+    }
+}
+~~~
+ 
+### Test tái hiện lỗi
+~~~java
+@SpringBootTest
+@Transactional
+class OrderServiceSwallowExceptionTest {
+ 
+    @Autowired OrderService orderService;
+    @Autowired OrderRepository orderRepo;
+    @MockBean PaymentClient paymentClient;
+    @MockBean InventoryClient inventoryClient;
+ 
+    @Test
+    void swallowCheckedException_transactionCommits_dataCorrupted() {
+        // Given
+        OrderRequest req = new OrderRequest(1L, "payment-info", List.of("item-1"));
+        doThrow(new PaymentException("Gateway timeout")).when(paymentClient).charge(any());
+ 
+        // When - version BUG: catch chỉ log, không rethrow
+        OrderService buggyService = new BuggyOrderService(orderRepo, paymentClient, inventoryClient);
+        buggyService.placeOrder(req);   // Không ném exception ra ngoài
+ 
+        // Then - transaction đã COMMIT dù payment fail
+        List<Order> orders = orderRepo.findAll();
+        assertThat(orders).hasSize(1);
+        assertThat(orders.get(0).getStatus()).isEqualTo(OrderStatus.CONFIRMED); // SAI: order confirmed mà payment fail
+    }
+ 
+    @Test
+    void fixedVersion_rethrowUnchecked_transactionRollsBack() {
+        // Given
+        OrderRequest req = new OrderRequest(1L, "payment-info", List.of("item-1"));
+        doThrow(new PaymentException("Gateway timeout")).when(paymentClient).charge(any());
+ 
+        // When - version SỬA: rethrow unchecked exception
+        assertThatThrownBy(() -> orderService.placeOrder(req))
+            .isInstanceOf(OrderProcessingException.class);
+ 
+        // Then - transaction ROLLBACK, không có order nào
+        assertThat(orderRepo.findAll()).isEmpty();
+    }
+ 
+    @Test
+    void fixedVersion_rollbackForExceptionClass_alsoWorks() {
+        // Given - dùng @Transactional(rollbackFor = Exception.class) mà không wrap unchecked
+        OrderRequest req = new OrderRequest(1L, "payment-info", List.of("item-1"));
+        doThrow(new PaymentException("Gateway timeout")).when(paymentClient).charge(any());
+ 
+        // When - version SỬA 2: khai báo rollbackFor = Exception.class
+        OrderService rollbackForService = new RollbackForOrderService(orderRepo, paymentClient, inventoryClient);
+        assertThatThrownBy(() -> rollbackForService.placeOrder(req))
+            .isInstanceOf(PaymentException.class);  // Checked exception ném ra ngoài
+ 
+        // Then - transaction ROLLBACK nhờ rollbackFor
+        assertThat(orderRepo.findAll()).isEmpty();
+    }
+}
+ 
+// Version buggy để test
+class BuggyOrderService extends OrderService {
+    public BuggyOrderService(OrderRepository orderRepo, PaymentClient paymentClient, InventoryClient inventoryClient) {
+        super(orderRepo, paymentClient, inventoryClient);
+    }
+ 
+    @Override
+    @Transactional
+    public void placeOrder(OrderRequest req) {
+        Order order = new Order(req);
+        orderRepo.save(order);
+        try { paymentClient.charge(req.getPaymentInfo()); }
+        catch (PaymentException e) { log.error("Payment failed", e); } // SWALLOW
+        try { inventoryClient.reserve(req.getItems()); }
+        catch (InventoryException e) { log.warn("Inventory failed", e); } // SWALLOW
+        order.setStatus(OrderStatus.CONFIRMED);
+        orderRepo.save(order);
+    }
+}
+ 
+// Version sửa bằng rollbackFor
+class RollbackForOrderService extends OrderService {
+    public RollbackForOrderService(OrderRepository orderRepo, PaymentClient paymentClient, InventoryClient inventoryClient) {
+        super(orderRepo, paymentClient, inventoryClient);
+    }
+ 
+    @Override
+    @Transactional(rollbackFor = Exception.class)
+    public void placeOrder(OrderRequest req) {
+        Order order = new Order(req);
+        orderRepo.save(order);
+        paymentClient.charge(req.getPaymentInfo());      // Ném checked exception ra ngoài
+        inventoryClient.reserve(req.getItems());         // Ném checked exception ra ngoài
+        order.setStatus(OrderStatus.CONFIRMED);
+        orderRepo.save(order);
+    }
+}
+~~~
+ 
+### Bảng trade-off: rethrow unchecked vs rollbackFor
+| Cách sửa | Ưu điểm | Nhược điểm |
+|---|---|---|
+| **Rethrow unchecked exception** (khuyên dùng) | Rõ ràng, Spring rollback mặc định, caller biết lỗi nghiệp vụ, có thể bắt cụ thể | Cần định nghĩa exception nghiệp vụ riêng |
+| {{@Transactional(rollbackFor = Exception.class)}} | Không cần wrap exception, checked exception cũng rollback | Rollback cả lỗi không mong muốn (OutOfMemoryError, lỗi hệ thống), che giấu bản chất lỗi nghiệp vụ |
+| {{@Transactional(rollbackFor = Exception.class)}} | Chỉ rollback các checked exception mong muốn | Phải liệt kê hết, dễ quên khi thêm exception mới |
+ 
+### Comment review mẫu cho đồng nghiệp
+> **Code Review Comment:**
+> 
+> @author Bình, dòng 16–26: catch {{PaymentException}} và {{InventoryException}} (checked) chỉ log, **không rethrow**. Đây là bug nghiêm trọng:
+> 
+> 1. **Transaction vẫn COMMIT** khi method kết thúc bình thường (không có exception thoát ra).
+> 2. Spring mặc định **chỉ rollback với unchecked exception**. Checked exception thì commit trừ khi khai báo {{rollbackFor}}.
+> 3. Kết quả: order đã ghi DB, status {{CONFIRMED}}, nhưng payment/inventory thực tế thất bại → dữ liệu lệch irreversible.
+> 
+> **Yêu cầu sửa** (chọn 1 trong 2):
+> 1. **Cách khuyên dùng**: Bắt checked exception, log, rồi **rethrow một unchecked exception nghiệp vụ** ({{OrderProcessingException extends RuntimeException}}). Spring sẽ rollback tự động. Caller có thể bắt exception này để xử lý.
+> 2. **Cách thay thế**: Thêm {{@Transactional(rollbackFor = Exception.class)}} và **ném ra ngoài** checked exception (không catch nuốt). Lưu ý: cách này rollback cả lỗi hệ thống không mong muốn.
+> 
+> Thêm test tích hợp: khi payment fail, orderRepo phải empty (rollback).
+ 
+### Ví dụ đời thực
+Hệ thống đặt hàng trực tuyến 200.000 đơn/ngày. Method {{placeOrder}} catch {{PaymentGatewayException}} (checked) chỉ log, không rethrow. Một ngày cổng thanh toán bị timeout 10% request. Kết quả: 20.000 đơn được tạo với status {{CONFIRMED}}, nhưng **tiền không trừ được**. Khách hàng thấy đơn thành công, shipper lấy hàng giao, nhưng không thu được tiền. Team phát hiện sau 4 giờ qua báo cáo đối soát: doanh thu thực thu thấp hơn đơn hàng 450 triệu VNĐ. Điều tra: log chỉ có dòng {{WARN PaymentGatewayException: Read timed out}} ở mức WARN, không có alert, team vận hành không chú ý. Nguyên nhân gốc: catch nuốt checked exception + Spring không rollback checked exception mặc định. Sửa: (1) Tạo {{OrderProcessingException extends RuntimeException}}, catch checked exception -> rethrow unchecked; (2) Thêm {{@Transactional(rollbackFor = Exception.class)}} để an toàn kép; (3) Thêm metric {{order.payment.failed}} và alert khi > 1%/phút. Kết quả: không còn đơn "ghost" (confirmed mà không tiền), alert phát hiện sự cố cổng thanh toán trong 2 phút.
+ 
+### Trả lời mẫu khi phỏng vấn
+"Catch exception rồi không rethrow là bug nguy hiểm: transaction vẫn commit các thay đổi trước đó, dữ liệu ghi một phần mà không ai biết. Spring mặc định chỉ rollback với RuntimeException và Error; checked exception thì commit trừ khi khai báo rollbackFor. Cách sửa chuẩn: bắt checked exception, log có ngữ cảnh (orderId, traceId), rồi rethrow một unchecked exception nghiệp vụ (extends RuntimeException) để Spring rollback tự động. Hoặc khai báo @Transactional(rollbackFor = Exception.class) và ném ra ngoài checked exception. Trong review, tôi luôn soi chỗ catch chỉ log: 'Exception này có được rethrow không? Nếu không, transaction có rollback không?'. Thêm test tích hợp bắt buộc: khi exception xảy ra, repository phải empty."
+ 
+> Senior tip: quy tắc team: **không bao giờ catch Exception chỉ để log**. Luôn rethrow (unchecked) hoặc khai báo rollbackFor. Dùng SpotBugs/Error Prone rule {{CatchExceptionWithoutRethrow}} để bắt tự động trong CI. Với code gọi API ngoài (client HTTP), hãy wrap checked exception thành unchecked ngay ở adapter layer — service layer chỉ thấy unchecked exception.
+ 
+### Cơ chế chi tiết: Spring quyết định rollback như thế nào
+1. Method chạy xong, không ném exception → **COMMIT**.
+2. Method ném exception → {{TransactionInterceptor}} gọi {{TransactionAspectSupport.completeTransactionAfterThrowing()}}.
+3. Kiểm tra exception có match {{rollbackFor}} không:
+   - Mặc định: {{rollbackFor = Exception.class}}.
+   - Nếu exception là subclass của {{RuntimeException}} hoặc {{Error}} → **ROLLBACK**.
+   - Nếu exception là checked exception (extends {{Exception}} nhưng không phải {{RuntimeException}}) → **COMMIT** (trừ khi khai báo {{rollbackFor}}).
+4. {{rollbackFor}} có thể là class hoặc tên class string (tránh ClassNotFoundException).
+ 
+### Bẫy hay gặp với rollbackFor
+- {{rollbackFor = Exception.class}}: rollback cả {{OutOfMemoryError}}, {{StackOverflowError}} (subclass của {{Error}} không phải {{Exception}}) — thực tế {{Error}} không bị rollback bởi rollbackFor Exception, nhưng {{Throwable}} thì có. Cẩn thận.
+- {{rollbackFor = Throwable.class}}: rollback mọi thứ, bao gồm {{Error}} — nguy hiểm, có thể che giấu lỗi hệ thống nghiêm trọng.
+- Quên {{rollbackFor}} khi ném checked exception ra ngoài: method ném checked exception, Spring commit → dữ liệu lỗi.
+ 
+### Best practice: exception hierarchy cho ứng dụng
+~~~java
+// Base unchecked exception cho nghiệp vụ
+public abstract class BusinessException extends RuntimeException {
+    private final String errorCode;
+    public BusinessException(String errorCode, String message, Throwable cause) {
+        super(message, cause);
+        this.errorCode = errorCode;
+    }
 }
 
+// Cụ thể
+public class PaymentFailedException extends BusinessException {
+    public PaymentFailedException(String message, Throwable cause) {
+        super("PAYMENT_FAILED", message, cause);
+    }
+}
+
+public class InventoryUnavailableException extends BusinessException {
+    public InventoryUnavailableException(String message, Throwable cause) {
+        super("INVENTORY_UNAVAILABLE", message, cause);
+    }
+}
+
+// Adapter layer: wrap checked -> unchecked
+@Component
+@RequiredArgsConstructor
+public class PaymentAdapter {
+    private final PaymentClient client; // ném PaymentException (checked)
+ 
+    public void charge(PaymentInfo info) {
+        try {
+            client.charge(info);
+        } catch (PaymentException e) {
+            throw new PaymentFailedException("Charge failed: " + e.getMessage(), e);
+        }
+    }
+}
+
+// Service layer: chỉ thấy unchecked, không cần rollbackFor
+@Service
+@RequiredArgsConstructor
+public class OrderService {
+    private final PaymentAdapter paymentAdapter;
+ 
+    @Transactional
+    public void placeOrder(OrderRequest req) {
+        paymentAdapter.charge(req.getPaymentInfo()); // ném PaymentFailedException (unchecked) -> rollback tự động
+        // ...
+    }
+}
+~~~
+ 
+> Senior tip: thiết kế exception hierarchy **unchecked** cho toàn bộ nghiệp vụ. Adapter layer (client HTTP, JMS, file I/O) chịu trách nhiệm wrap checked exception thành unchecked. Service layer chỉ làm việc với unchecked exception, @Transactional mặc định rollback đúng, không cần rollbackFor. Đây là pattern "Exception Translation" của Spring (DataAccessException cũng làm vậy).
+ 
+### Kiểm tra tự động trong CI
+Dùng Error Prone rule {{CatchWithoutRethrow}} hoặc SpotBugs {{DE_MIGHT_DROP}} (drop exception). Hoặc ArchUnit:
+~~~java
+@Test
+void noCatchWithoutRethrowOrRollbackFor() {
+    noMethods()
+        .that().areAnnotatedWith(Transactional.class)
+        .should().notHaveAnyCatchClause(
+            catchClause -> !catchClause.getBody().contains("throw") &&
+                           !catchClause.getParameterType().isAssignableTo(RuntimeException.class)
+        )
+        .because("@Transactional method catch checked exception phải rethrow hoặc khai báo rollbackFor");
+}
+~~~
+ 
+> Senior tip: ArchUnit test này không bắt được 100% (ví dụ catch rồi gọi method khác ném exception), nhưng bắt được 80% case phổ biến. Kết hợp với code review và test tích hợp là đủ an toàn.
+`,
+  follow: [
+    'Tại sao Spring mặc định không rollback với checked exception?',
+    'Khi nào nên dùng rollbackFor = Exception.class và khi nào không nên?',
+    'Làm sao thiết kế exception hierarchy unchecked cho toàn ứng dụng?'
+  ],
+  tags: ['code review', 'Transactional', 'rollbackFor', 'checked exception', 'swallow exception', 'exception handling']
+},
+{
+  id: 'db-072',
+  topic: 'db',
+  level: 'senior',
+  q: 'Bạn review PR sau, bạn thấy vấn đề gì và yêu cầu sửa thế nào? (Script migration Flyway UPDATE/DELETE thiếu hoặc sai WHERE — cách review script, chạy trong transaction, kiểm tra số dòng bị ảnh hưởng, backup/PITR)',
+  a: `**Tóm tắt:** Script migration Flyway {{UPDATE}}/{{DELETE}} thiếu {{WHERE}} hoặc {{WHERE}} sai là một trong những nguyên nhân hàng đầu gây mất dữ liệu production không thể hoàn tác. Flyway chạy migration trong **một transaction duy nhất** (mặc định), nhưng nếu script sai thì transaction vẫn commit — dữ liệu sai đã ghi xuống DB. Cách phòng tránh: code review bắt buộc check WHERE, chạy migration trên bản sao production trước, kiểm tra {{row count}} khớp kỳ vọng, backup/PITR trước migration quan trọng.
+ 
+### Code đang lỗi (script migration Flyway V2026.01.15.1__fix_customer_status.sql)
+~~~sql
+-- MỤC ĐÍCH: Cập nhật status của khách hàng không hoạt động 1 năm thành INACTIVE
+-- TÁC GIẢ: dev-anh
+-- NGÀY: 2026-01-15
+ 
+-- SAI: THIẾU WHERE - CẬP NHẬT TẤT CẢ 5 TRIỆU DÒNG
+UPDATE customers
+SET status = 'INACTIVE',
+    updated_at = NOW()
+WHERE last_login_at < NOW() - INTERVAL '1 year';
+ 
+-- SAI HƠN NỮA: DELETE THIẾU WHERE - XÓA HẾT BẢNG
+DELETE FROM customer_sessions
+WHERE customer_id IN (SELECT id FROM customers WHERE status = 'INACTIVE');
+-- NẾU UPDATE TRÊN SAI -> TẤT CẢ customers thành INACTIVE -> DELETE XÓA HẾT 50 TRIỆU SESSION
+~~~
+ 
+### Dòng lỗi và kịch bản hỏng dữ liệu
+- **Dòng 7–10**: {{UPDATE}} có {{WHERE}} nhưng điều kiện {{last_login_at < NOW() - INTERVAL '1 year'}} dùng {{NOW()}} — giá trị thay đổi theo thời điểm chạy. Nếu migration chạy lúc 02:00 sáng, khách đăng nhập lúc 01:59 năm ngoái bị đánh nhầm INACTIVE.
+- **Dòng 13–15**: {{DELETE}} phụ thuộc vào kết quả UPDATE. Nếu UPDATE sai (thiếu WHERE hoặc WHERE sai) → {{DELETE}} xóa sai dữ liệu.
+- **Kịch bản hỏng thực tế**:
+  1. Dev viết script test trên local (100 dòng) -> chạy ngon.
+  2. Deploy lên staging -> chạy ngon (staging ít dữ liệu, {{NOW()}} lúc đó không gây sai lệch lớn).
+  3. Deploy lên production lúc 02:00 sáng (window bảo trì) -> {{NOW()}} = 2026-01-15 02:00:00.
+  4. Khách hàng đăng nhập lần cuối lúc 2025-01-15 01:59:00 (chưa đủ 1 năm) -> bị UPDATE thành {{INACTIVE}}.
+  5. {{DELETE}} xóa toàn bộ session của 2.3 triệu khách hàng đang hoạt động.
+  6. Sáng hôm sau: khách hàng không đăng nhập được, giỏ hàng mất, support bị ngập ticket.
+  7. Phục hồi: phải restore từ backup PITR (Point-in-Time Recovery) mất 6 tiếng, mất 4 giờ dữ liệu.
+ 
+### Code đã sửa (script an toàn)
+~~~sql
+-- MỤC ĐÍCH: Cập nhật status khách hàng không hoạt động 1 năm thành INACTIVE
+-- TÁC GIẢ: dev-anh
+-- NGÀY: 2026-01-15
+-- REVIEWER: dev-binh, dba-chi
+-- KỲ VỌNG: ~50.000 dòng UPDATE, ~500.000 dòng DELETE
+-- BACKUP: PITR đã bật, snapshot trước migration: 2026-01-15 01:00:00
+ 
+-- 1. KIỂM TRA TRƯỚC KHI CHẠY (SELECT COUNT)
+-- Chạy thủ công trước migration, confirm số dòng khớp kỳ vọng
+-- SELECT count(*) FROM customers WHERE last_login_at < '2025-01-15 00:00:00' AND status = 'ACTIVE';
+-- Kỳ vọng: ~50.000
+ 
+-- 2. UPDATE CÓ WHERE RÕ RÀNG, DÙNG TIMESTAMP CỐ ĐỊNH (KHÔNG DÙNG NOW())
+UPDATE customers
+SET status = 'INACTIVE',
+    updated_at = NOW()
+WHERE last_login_at < '2025-01-15 00:00:00'   -- CỐ ĐỊNH: chính xác 1 năm trước ngày migration
+  AND status = 'ACTIVE';                      -- CHỈ UPDATE dòng đang ACTIVE (idempotent)
+ 
+-- 3. KIỂM TRA SAU UPDATE
+-- SELECT count(*) FROM customers WHERE status = 'INACTIVE' AND last_login_at < '2025-01-15 00:00:00';
+-- Kỳ vọng: tăng ~50.000 so với trước
+ 
+-- 4. DELETE CÓ WHERE, PHỤ THUỘC VÀO KẾT QUẢ UPDATE (AN TOÀN)
+DELETE FROM customer_sessions
+WHERE customer_id IN (
+    SELECT id FROM customers 
+    WHERE status = 'INACTIVE' 
+      AND last_login_at < '2025-01-15 00:00:00'
+);
+ 
+-- 5. KIỂM TRA SAU DELETE
+-- SELECT count(*) FROM customer_sessions WHERE customer_id IN (...);
+-- Kỳ vọng: giảm ~500.000
+~~~
+ 
+### Quy trình review migration script (checklist)
+| Bước | Kiểm tra | Công cụ/Hành động |
+|---|---|---|
+| 1 | **Luôn có WHERE** cho UPDATE/DELETE | Grep: {{UPDATE|DELETE}} không theo sau {{WHERE}} -> FAIL |
+| 2 | **Không dùng NOW()/CURRENT_TIMESTAMP** trong WHERE | Dùng timestamp cố định (ngày migration) |
+| 3 | **Idempotent**: chạy lại không sai | Thêm điều kiện {{status = 'ACTIVE'}} trước UPDATE |
+| 4 | **Kỳ vọng row count** ghi rõ trong comment | Reviewer confirm bằng SELECT count(*) trên staging |
+| 5 | **Chạy trong transaction** (Flyway mặc định) | {{flyway.mixed=true}} cho phép transaction cho từng script |
+| 6 | **Backup/PITR trước migration quan trọng** | AWS RDS: snapshot; PostgreSQL: pg_basebackup + WAL |
+| 7 | **Test trên bản sao production** (anonymized) | Script chạy staging -> confirm row count khớp |
+| 8 | **Rollback plan** ghi rõ trong PR | Nếu sai: restore PITR đến timestamp trước migration |
+ 
+### Flyway configuration an toàn
+~~~yaml
+spring:
+  flyway:
+    enabled: true
+    baseline-on-migrate: true
+    validate-on-migrate: true
+    out-of-order: false          # Không cho phép chạy script cũ sau script mới
+    mixed: true                  # Cho phép transaction cho script SQL (mặc định true từ Flyway 7)
+    placeholder-replacement: false  # Không replace placeholder tránh lỡ sửa dữ liệu
+  datasource:
+    hikari:
+      maximum-pool-size: 5       # Migration dùng pool nhỏ, tránh ảnh hưởng app
+~~~
+ 
+### Test migration trên staging (script tự động)
+~~~bash
+#!/bin/bash
+# pre-migration-check.sh
+# Chạy trước migration trên staging/production
+ 
+DB_URL="jdbc:postgresql://staging-db:5432/app"
+ 
+echo "=== PRE-MIGRATION CHECK ==="
+# 1. Count trước UPDATE
+psql "$DB_URL" -c "SELECT count(*) FROM customers WHERE last_login_at < '2025-01-15' AND status = 'ACTIVE';"
+ 
+# 2. Count sessions sẽ bị xóa
+psql "$DB_URL" -c "SELECT count(*) FROM customer_sessions WHERE customer_id IN (SELECT id FROM customers WHERE last_login_at < '2025-01-15' AND status = 'ACTIVE');"
+ 
+echo "Confirm numbers match expectation? (y/N)"
+read -r confirm
+if [[ "$confirm" != "y" ]]; then
+    echo "ABORTED"
+    exit 1
+fi
+ 
+echo "=== RUNNING MIGRATION ==="
+flyway migrate -url="$DB_URL" -user=... -password=...
+ 
+echo "=== POST-MIGRATION CHECK ==="
+psql "$DB_URL" -c "SELECT count(*) FROM customers WHERE status = 'INACTIVE' AND last_login_at < '2025-01-15';"
+psql "$DB_URL" -c "SELECT count(*) FROM customer_sessions WHERE customer_id IN (SELECT id FROM customers WHERE status = 'INACTIVE' AND last_login_at < '2025-01-15');"
+~~~
+ 
+### Comment review mẫu cho đồng nghiệp
+> **Code Review Comment:**
+> 
+> @author Anh, file {{V2026.01.15.1__fix_customer_status.sql}}:
+> 
+> 1. **Dòng 7**: {{UPDATE}} dùng {{WHERE last_login_at < NOW() - INTERVAL '1 year'}}. {{NOW()}} thay đổi theo thời điểm chạy -> migration chạy lúc 02:00 sáng sẽ đánh nhầm khách đăng nhập lúc 01:59 năm ngoái. **Yêu cầu: dùng timestamp cố định** {{'2025-01-15 00:00:00'}} (ngày migration trừ 1 năm).
+> 2. **Dòng 7**: Thiếu điều kiện {{AND status = 'ACTIVE'}} -> script không idempotent, chạy lại sẽ cập nhật updated_at cho dòng đã INACTIVE.
+> 3. **Dòng 13**: {{DELETE}} phụ thuộc vào UPDATE. Nếu UPDATE sai, DELETE xóa sai. **Yêu cầu: DELETE cũng dùng timestamp cố định** và điều kiện status.
+> 4. **Thiếu row count kỳ vọng** trong comment. Reviewer không thể xác nhận script đúng. **Yêu cầu: thêm comment kỳ vọng ~50k UPDATE, ~500k DELETE**.
+> 5. **Chưa có backup/PITR plan** trong PR description. Migration sửa 5 triệu dòng -> bắt buộc snapshot trước khi chạy.
+> 
+> **Yêu cầu sửa**: Cập nhật script theo mẫu an toàn (xem code sửa), thêm pre-migration check script, ghi rõ rollback plan (restore PITR to 2026-01-15 01:00:00).
+ 
+### Ví dụ đời thực
+Công ty fintech 10 triệu khách hàng. Migration {{V2025.06.10__cleanup_old_carts}} có {{DELETE FROM carts WHERE updated_at < NOW() - INTERVAL '6 months'}}. Dev test trên staging (10k carts) -> ok. Chạy production lúc 03:00 sáng -> {{NOW()}} = 2025-06-10 03:00:00. Khách hàng cập nhật giỏ hàng lúc 2024-12-10 02:59:00 (chưa đủ 6 tháng) -> bị xóa. 1.2 triệu giỏ hàng bị mất. Khách hàng mở app thấy giỏ trống, đặt lại mất 30 phút/trung bình. Doanh thu giảm 15% trong tuần do khách bỏ đơn. Phục hồi: restore PITR mất 8 tiếng, mất 5 giờ dữ liệu giao dịch. Nguyên nhân: {{NOW()}} trong WHERE + thiếu row count check + không test trên dữ liệu production scale. Sửa: (1) Tất cả migration dùng timestamp cố định; (2) Bắt buộc pre-migration count check; (3) Migration > 100k dòng phải có DBA review + snapshot trước; (4) Thêm integration test cho migration logic trên data sample production.
+ 
+### Trả lời mẫu khi phỏng vấn
+"Flyway migration UPDATE/DELETE thiếu WHERE hoặc WHERE sai là rủi ro mất dữ liệu lớn nhất khi deploy. Tôi review bằng checklist: (1) Luôn có WHERE, không dùng NOW()/CURRENT_TIMESTAMP trong WHERE (dùng timestamp cố định ngày migration), (2) Idempotent: thêm điều kiện status để chạy lại an toàn, (3) Ghi rõ row count kỳ vọng trong comment, (4) Chạy pre-migration check trên staging confirm số dòng, (5) Migration quan trọng (>100k dòng hoặc sửa dữ liệu nhạy cảm) bắt buộc backup/PITR trước, có rollback plan. Flyway chạy trong transaction nhưng transaction chỉ bảo vệ khỏi lỗi giữa chừng — nếu script logic sai mà chạy xong thì vẫn commit dữ liệu sai. Vì vậy phòng tránh ở layer script và review, không chỉ tin vào transaction."
+ 
+> Senior tip: thiết lập quy tắc team: **mọi migration UPDATE/DELETE phải qua DBA review**. Dùng tool {{flyway-maven-plugin}} với {{validateOnMigrate=true}}, và CI gate chạy {{flyway validate}} + custom script grep WHERE..Migration quan trọng chạy trong window bảo trì, có người de trực, snapshot trước, confirm row count sau.
+ 
+### Mở rộng: Flyway callback để tự động kiểm tra
+Flyway hỗ trợ callback {{afterMigrate}} để tự động log row count:
+~~~sql
+-- callback/afterMigrate__log_rowcounts.sql
+-- Tự động ghi log số dòng thay đổi của migration vừa chạy
+-- (Cần Flyway 9+ hỗ trợ callback context)
+ 
+DO $$
+DECLARE
+    v_schema_name text := current_schema();
+    v_last_script text := (SELECT installed_rank FROM flyway_schema_history ORDER BY installed_rank DESC LIMIT 1);
+BEGIN
+    RAISE NOTICE 'Migration completed: %', v_last_script;
+    -- Có thể query pg_stat_statements hoặc audit log để lấy row count thực tế
+END $$;
+~~~
+ 
+> Senior tip: PostgreSQL {{pg_audit}} hoặc {{pgaudit}} extension ghi log mọi DML kèm row count. Bật trên production để audit migration: {{CREATE EXTENSION pgaudit; SET pgaudit.log = 'DDL, DML, WRITE;'}}.
+ 
+### So sánh Flyway vs Liquibase về an toàn migration
+| Đặc điểm | Flyway | Liquibase |
+|---|---|---|
+| Transaction cho SQL migration | Mặc định có ({{mixed=true}}) | Có ({{runInTransaction=true}}) |
+| Checksum validation | Mặc định bật | Mặc định bật |
+| Rollback script | Phải viết thủ công ({{U__}}) | Hỗ trợ tự động generate rollback cho một số change type |
+| Precondition/Check | Không có built-in | Có {{<preConditions>}} (check row count, table exists...) |
+| Formatter | SQL thuần | XML/YAML/JSON/SQL |
+ 
+> Senior tip: Liquibase có {{<preConditions>}} cho phép fail migration nếu row count không khớp kỳ vọng — an toàn hơn Flyway cho UPDATE/DELETE lớn. Nếu team dùng Flyway, hãy tự thêm pre-check script (như pre-migration-check.sh ở trên) vào pipeline.
+ 
+### Checklist nhanh cho PR migration
+- [ ] Script có {{WHERE}} cho mọi UPDATE/DELETE
+- [ ] Không dùng {{NOW()}}, {{CURRENT_TIMESTAMP}}, {{CURRENT_DATE}} trong WHERE
+- [ ] Có điều kiện idempotent ({{status = 'ACTIVE'}})
+- [ ] Comment ghi rõ kỳ vọng row count
+- [ ] Pre-migration check script kèm trong PR
+- [ ] Backup/PITR plan ghi trong PR description
+- [ ] Rollback plan ghi trong PR description
+- [ ] Tested trên staging với data scale tương tự production
+- [ ] DBA review nếu > 100k dòng hoặc dữ liệu nhạy cảm (tài chính, PII)
+`,
+  follow: [
+    'Tại sao Flyway không tự rollback khi UPDATE/DELETE logic sai?',
+    'Làm sao implement pre-condition check trong Flyway (giống Liquibase)?',
+    'Khi nào nên dùng repeatable migration (R__) thay vì versioned (V__)?'
+  ],
+  tags: ['code review', 'Flyway', 'migration', 'UPDATE', 'DELETE', 'WHERE clause', 'PITR', 'backup']
+},
+{
+  id: 'jpa-096',
+  topic: 'jpa',
+  level: 'lead',
+  q: 'Bạn review PR sau, bạn thấy vấn đề gì và yêu cầu sửa thế nào? (Race condition check-then-act: đọc số dư/tồn kho rồi ghi lại không khoá → 2 request đồng thời bán âm kho; check-then-insert chống trùng mà không có unique constraint. Sửa: @Version optimistic lock, SELECT FOR UPDATE, UPDATE ... WHERE stock >= 1, unique constraint; so sánh trade-off)',
+  a: `**Tóm tắt:** Race condition "check-then-act" là lỗi điển hình khi đọc giá trị (số dư, tồn kho), tính toán trong app, rồi ghi lại — mà không có cơ chế khóa. Hai request đồng thời cùng đọc giá trị cũ, cùng ghi giá trị mới tính từ giá trị cũ → kết quả sai (bán âm kho, trừ tiền sai, insert trùng). Có 4 cách sửa chính: (1) {{@Version}} (optimistic lock), (2) {{SELECT ... FOR UPDATE}} (pessimistic lock), (3) {{UPDATE ... SET stock = stock - 1 WHERE stock >= 1}} (atomic DB update), (4) Unique constraint (cho check-then-insert). Mỗi cách có trade-off về hiệu năng, độ phức tạp, deadlock risk.
+ 
+### Code đang lỗi (check-then-act bán hàng)
+~~~java
+@Service
+@RequiredArgsConstructor
+public class InventoryService {
+ 
+    private final ProductRepository productRepo;
+ 
+    @Transactional
+    public void decreaseStock(Long productId, int quantity) {
+        // CHECK: đọc tồn kho
+        Product product = productRepo.findById(productId)
+            .orElseThrow(() -> new ProductNotFoundException(productId));
+ 
+        // ACT: kiểm tra và trừ trong app
+        if (product.getStock() < quantity) {
+            throw new InsufficientStockException(productId, product.getStock(), quantity);
+        }
+        product.setStock(product.getStock() - quantity);
+        productRepo.save(product);   // GHI: lưu lại
+    }
+}
+~~~
+ 
+### Dòng lỗi và kịch bản hỏng dữ liệu
+- **Dòng 10–11**: {{findById}} đọc {{stock}} (ví dụ 10) — **không có lock**.
+- **Dòng 14–18**: Kiểm tra {{stock >= quantity}} trong app, tính {{stock - quantity}}, save.
+- **Kịch bản hỏng (2 request đồng thời giảm 10, stock = 10)**:
+  1. Request A: {{findById}} -> stock = 10
+  2. Request B: {{findById}} -> stock = 10 (cùng đọc giá trị cũ)
+  3. Request A: kiểm tra 10 >= 10 -> OK, set stock = 0, {{save()}} -> DB stock = 0
+  4. Request B: kiểm tra 10 >= 10 -> OK, set stock = 0, {{save()}} -> DB stock = 0 (ghi đè)
+  5. **Kết quả**: Stock = 0 (đúng), nhưng **đã bán 20 đơn vị thay vì 10** → bán âm kho 10 đơn vị.
+  6. Nếu stock = 5, quantity = 5, 2 request: cả hai cùng đọc 5, cả hai cùng set 0 -> bán 10 đơn vị, stock thực tế -5.
+ 
+### Code đang lỗi (check-then-insert trùng)
+~~~java
+@Service
+@RequiredArgsConstructor
+public class UserService {
+ 
+    private final UserRepository userRepo;
+ 
+    @Transactional
+    public void register(String email) {
+        // CHECK: xem email đã tồn tại chưa
+        if (userRepo.existsByEmail(email)) {
+            throw new EmailAlreadyExistsException(email);
+        }
+        // ACT: insert mới
+        userRepo.save(new User(email));   // Unique constraint violation nếu đồng thời
+    }
+}
+~~~
+ 
+### Kịch bản hỏng (2 request đồng thời register cùng email)
+1. Request A: {{existsByEmail}} -> false
+2. Request B: {{existsByEmail}} -> false (cùng đọc, chưa insert)
+3. Request A: {{save}} -> insert thành công
+4. Request B: {{save}} -> **UniqueConstraintViolationException** (nếu có unique index) HOẶC **insert trùng thành công** (nếu KHÔNG có unique index) → 2 user cùng email.
+ 
+### Cách sửa 1: @Version (Optimistic Lock) — khuyên dùng cho tồn kho, số dư
+~~~java
+@Entity
+@Table(name = "products")
+public class Product {
+    @Id Long id;
+    String name;
+    int stock;
+ 
+    @Version
+    Long version;   // Tự động tăng mỗi lần update, Hibernate check khi flush
+ 
+    // getter/setter
+}
+ 
+@Service
+@RequiredArgsConstructor
+public class InventoryService {
+ 
+    private final ProductRepository productRepo;
+ 
+    @Transactional
+    public void decreaseStock(Long productId, int quantity) {
+        Product product = productRepo.findById(productId)
+            .orElseThrow(() -> new ProductNotFoundException(productId));
+ 
+        if (product.getStock() < quantity) {
+            throw new InsufficientStockException(productId, product.getStock(), quantity);
+        }
+        product.setStock(product.getStock() - quantity);
+        productRepo.save(product);   // Ném OptimisticLockException nếu version đã đổi
+    }
+ 
+    // Retry an toàn khi gặp OptimisticLockException
+    @Retryable(retryFor = ObjectOptimisticLockingFailureException.class, maxAttempts = 3, backoff = @Backoff(delay = 50))
+    @Transactional
+    public void decreaseStockWithRetry(Long productId, int quantity) {
+        decreaseStock(productId, quantity);
+    }
+}
+~~~
+ 
+### Cách sửa 2: SELECT ... FOR UPDATE (Pessimistic Lock) — khi cần lock chặt
+~~~java
+@Repository
+public interface ProductRepository extends JpaRepository<Product, Long> {
+ 
+    @Lock(LockModeType.PESSIMISTIC_WRITE)
+    @Query("SELECT p FROM Product p WHERE p.id = :id")
+    Optional<Product> findByIdForUpdate(@Param("id") Long id);
+}
+ 
+@Service
+@RequiredArgsConstructor
+public class InventoryService {
+ 
+    private final ProductRepository productRepo;
+ 
+    @Transactional
+    public void decreaseStock(Long productId, int quantity) {
+        Product product = productRepo.findByIdForUpdate(productId)
+            .orElseThrow(() -> new ProductNotFoundException(productId));
+        // Đã hold row lock (FOR UPDATE) cho đến khi transaction kết thúc
+ 
+        if (product.getStock() < quantity) {
+            throw new InsufficientStockException(productId, product.getStock(), quantity);
+        }
+        product.setStock(product.getStock() - quantity);
+        productRepo.save(product);
+    }
+}
+~~~
+ 
+### Cách sửa 3: Atomic UPDATE (Không lock, hiệu năng cao nhất) — khuyên dùng cho high contention
+~~~java
+@Repository
+public interface ProductRepository extends JpaRepository<Product, Long> {
+ 
+    @Modifying
+    @Query("UPDATE Product p SET p.stock = p.stock - :qty WHERE p.id = :id AND p.stock >= :qty")
+    int decreaseStockAtomic(@Param("id") Long id, @Param("qty") int qty);
+}
+ 
+@Service
+@RequiredArgsConstructor
+public class InventoryService {
+ 
+    private final ProductRepository productRepo;
+ 
+    @Transactional
+    public void decreaseStock(Long productId, int quantity) {
+        int updated = productRepo.decreaseStockAtomic(productId, quantity);
+        if (updated == 0) {
+            // Không row nào match -> stock < quantity HOẶC product không tồn tại
+            Product product = productRepo.findById(productId).orElse(null);
+            if (product == null) throw new ProductNotFoundException(productId);
+            throw new InsufficientStockException(productId, product.getStock(), quantity);
+        }
+    }
+}
+~~~
+ 
+### Cách sửa 4: Unique Constraint (Cho check-then-insert) — bắt buộc ở DB level
+~~~java
+@Entity
+@Table(name = "users", uniqueConstraints = @UniqueConstraint(name = "uk_user_email", columnNames = "email"))
+public class User {
+    @Id @GeneratedValue Long id;
+    @Column(nullable = false, unique = true) String email;
+    // ...
+}
+ 
+@Service
+@RequiredArgsConstructor
+public class UserService {
+ 
+    private final UserRepository userRepo;
+ 
+    @Transactional
+    public void register(String email) {
+        try {
+            userRepo.save(new User(email));
+        } catch (DataIntegrityViolationException e) {
+            // Unique constraint violation -> email đã tồn tại
+            throw new EmailAlreadyExistsException(email);
+        }
+    }
+}
+~~~
+ 
+### Test tái hiện race condition (chạy 100 lần, xác suất.fail > 0 nếu không fix)
+~~~java
+@SpringBootTest
+class InventoryRaceConditionTest {
+ 
+    @Autowired InventoryService inventoryService;
+    @Autowired ProductRepository productRepo;
+ 
+    @Test
+    void raceCondition_checkThenAct_oversell() throws InterruptedException {
+        // Given: stock = 100
+        Product product = productRepo.save(new Product("Test", 100));
+ 
+        // When: 200 thread cùng giảm 1
+        int threads = 200;
+        ExecutorService executor = Executors.newFixedThreadPool(threads);
+        CountDownLatch start = new CountDownLatch(1);
+        CountDownLatch end = new CountDownLatch(threads);
+        AtomicInteger success = new AtomicInteger();
+        AtomicInteger fail = new AtomicInteger();
+ 
+        for (int i = 0; i < threads; i++) {
+            executor.submit(() -> {
+                try { start.await(); }
+                catch (InterruptedException e) { Thread.currentThread().interrupt(); return; }
+                try {
+                    inventoryService.decreaseStock(product.getId(), 1);
+                    success.incrementAndGet();
+                } catch (Exception e) {
+                    fail.incrementAndGet();
+                } finally {
+                    end.countDown();
+                }
+            });
+        }
+ 
+        start.countDown(); // Bắt đầu đồng thời
+        end.await(30, TimeUnit.SECONDS);
+        executor.shutdown();
+ 
+        // Then: stock cuối cùng = 100 - success
+        Product finalProduct = productRepo.findById(product.getId()).orElseThrow();
+        int expectedStock = 100 - success.get();
+        assertThat(finalProduct.getStock()).isEqualTo(expectedStock);
+        // Nếu không fix: success > 100 (oversell), stock = 0 hoặc negative
+    }
+ 
+    @Test
+    void fixedWithAtomicUpdate_noOversell() throws InterruptedException {
+        // Given: stock = 100, dùng InventoryServiceFixed (atomic update)
+        Product product = productRepo.save(new Product("Test", 100));
+        InventoryServiceFixed fixedService = new InventoryServiceFixed(productRepo);
+ 
+        int threads = 200;
+        ExecutorService executor = Executors.newFixedThreadPool(threads);
+        CountDownLatch start = new CountDownLatch(1);
+        CountDownLatch end = new CountDownLatch(threads);
+        AtomicInteger success = new AtomicInteger();
+ 
+        for (int i = 0; i < threads; i++) {
+            executor.submit(() -> {
+                try { start.await(); } catch (InterruptedException e) { Thread.currentThread().interrupt(); return; }
+                try { fixedService.decreaseStock(product.getId(), 1); success.incrementAndGet(); }
+                catch (Exception ignored) {} finally { end.countDown(); }
+            });
+        }
+ 
+        start.countDown(); end.await(30, TimeUnit.SECONDS); executor.shutdown();
+ 
+        Product finalProduct = productRepo.findById(product.getId()).orElseThrow();
+        // Atomic update: đúng 100 success, stock = 0, không oversell
+        assertThat(success.get()).isEqualTo(100);
+        assertThat(finalProduct.getStock()).isZero();
+    }
+}
+ 
+// Service dùng atomic update để test
+class InventoryServiceFixed {
+    private final ProductRepository productRepo;
+    public InventoryServiceFixed(ProductRepository productRepo) { this.productRepo = productRepo; }
+ 
+    @Transactional
+    public void decreaseStock(Long productId, int quantity) {
+        int updated = productRepo.decreaseStockAtomic(productId, quantity);
+        if (updated == 0) {
+            Product product = productRepo.findById(productId).orElse(null);
+            if (product == null) throw new ProductNotFoundException(productId);
+            throw new InsufficientStockException(productId, product.getStock(), quantity);
+        }
+    }
+}
+~~~
+ 
+### Bảng trade-off 4 cách sửa
+| Cách | Ưu điểm | Nhược điểm | Phù hợp |
+|---|---|---|---|
+| **{{@Version}} (Optimistic)** | Không lock DB, throughput cao khi conflict thấp, tự động retry dễ | Conflict cao -> nhiều retry, latency tăng; cần handle exception | Tồn kho, số dư, conflict rate < 5% |
+| **{{SELECT FOR UPDATE}} (Pessimistic)** | Đảm bảo serialized, logic đơn giản | Hold lock -> giảm throughput, dễ **deadlock** nếu lock nhiều row sai thứ tự | Cần consistency chặt, conflict rate cao, transaction ngắn |
+| **Atomic UPDATE** | Hiệu năng tốt nhất, không lock row, DB đảm bảo atomic | Logic phức tạp hơn (kiểm tra updated count), khó implement nghiệp vụ phức tạp | High contention (flash sale, giảm giá), throughput ưu tiên |
+| **Unique Constraint** | Bắt buộc cho dữ liệu trùng (email, username), DB đảm bảo | Chỉ áp dụng cho check-then-insert, không cho update | Email, username, mã code, khóa ngoại |
+ 
+### Deadlock risk với Pessimistic Lock
+~~~java
+// NGUY HIỂM: Lock nhiều row theo thứ tự khác nhau -> DEADLOCK
+@Transactional
+void transfer(Account from, Account to, BigDecimal amount) {
+    Account a = repo.findByIdForUpdate(from);  // Lock row A
+    Account b = repo.findByIdForUpdate(to);    // Lock row B -> nếu thread khác lock B trước rồi lock A -> DEADLOCK
+    // ...
+}
+
+// AN TOÀN: Luôn lock theo thứ tự cố định (ví dụ id tăng dần)
+@Transactional
+void transferSafe(Account from, Account to, BigDecimal amount) {
+    Account first = from.getId() < to.getId() ? from : to;
+    Account second = from.getId() < to.getId() ? to : from;
+    repo.findByIdForUpdate(first.getId());
+    repo.findByIdForUpdate(second.getId());
+    // ...
+}
+~~~
+ 
+### Comment review mẫu cho đồng nghiệp
+> **Code Review Comment:**
+> 
+> @author Dũng, {{InventoryService.decreaseStock}}:
+> 
+> **Race condition check-then-act**: Dòng 10 {{findById}} đọc stock **không có lock**. Dòng 14–18 kiểm tra và trừ trong app. Hai request đồng thời cùng đọc stock=10, cùng trừ 10 -> cả hai thành công, stock=0 nhưng đã bán 20 đơn vị (oversell 100%).
+> 
+> **Yêu cầu sửa** (chọn 1):
+> 1. **Atomic UPDATE** (khuyên dùng cho flash sale/high contention): {{UPDATE products SET stock = stock - :qty WHERE id = :id AND stock >= :qty}}. Kiểm tra {{updated == 0}} -> throw. Hiệu năng cao nhất, không lock, DB đảm bảo atomic. Xem {{ProductRepository.decreaseStockAtomic}}.
+> 2. **@Version (Optimistic Lock)**: Thêm field {{@Version Long version}} vào entity. Gặp conflict ném {{ObjectOptimisticLockingFailureException}}, thêm {{@Retryable(maxAttempts = 3)}}.
+> 3. **SELECT FOR UPDATE (Pessimistic)**: {{@Lock(PESSIMISTIC_WRITE)}} trên repository. Lưu ý: **luôn lock theo thứ tự id cố định** để tránh deadlock.
+> 
+> Thêm test race condition (xem test code) chạy 200 thread đồng thời, assert không oversell.
+> 
+> Với {{UserService.register}}: **bắt buộc unique constraint ở DB** ({{@UniqueConstraint}}). Check-then-insert không an toàn nếu không có unique index.
+ 
+### Ví dụ đời thực
+Hệ thống flash sale 1 triệu user, 10.000 sản phẩm. Ban đầu dùng {{@Version}} optimistic lock. Ngày sale, 50.000 request/giây vào 1 sản phẩm hot -> conflict rate 99%, retry 3 lần vẫn fail, latency p99 5 giây, user thấy "hệ thống bận". Chuyển sang **Atomic UPDATE** ({{UPDATE ... SET stock = stock - 1 WHERE id = ? AND stock >= 1}}) -> conflict rate 0%, throughput 50k req/s, p99 50ms, sale diễn ra suôn sẻ. Tuy nhiên Atomic UPDATE không phù hợp khi nghiệp vụ phức tạp (cần kiểm tra nhiều điều kiện, ghi log, phát event) — lúc đó dùng {{@Version}} + retry hoặc {{SELECT FOR UPDATE}} với lock ordering đúng.
+ 
+Một case khác: {{UserService.register}} không có unique constraint trên email (dev quên). 2 request đăng ký cùng email cùng lúc -> cả hai {{existsByEmail}} trả false -> cả hai insert -> 2 user cùng email. Gây lỗi reset password (gửi 2 email), báo cáo sai số lượng user. Sửa: thêm {{@UniqueConstraint}} ở entity, catch {{DataIntegrityViolationException}} map thành {{EmailAlreadyExistsException}}.
+ 
+### Trả lời mẫu khi phỏng vấn
+"Race condition check-then-act xảy ra khi đọc giá trị, tính trong app, ghi lại mà không có khóa. Hai request cùng đọc giá trị cũ, cùng ghi giá trị mới -> oversell, dữ liệu trùng. Có 4 cách sửa: (1) Atomic UPDATE ({{UPDATE ... WHERE stock >= qty}}) — hiệu năng cao nhất, phù hợp flash sale, DB đảm bảo atomic. (2) @Version optimistic lock — không lock DB, throughput cao khi conflict thấp, cần retry. (3) SELECT FOR UPDATE pessimistic lock — serialized, nhưng hold lock giảm throughput, dễ deadlock nếu lock nhiều row sai thứ tự. (4) Unique constraint — bắt buộc cho check-then-insert (email, username), DB chặn trùng. Trade-off: Atomic UPDATE tốt nhất cho high contention đơn giản; @Version cân bằng cho nghiệp vụ phức tạp conflict thấp; Pessimistic lock khi cần consistency chặt transaction ngắn; Unique constraint bắt buộc ở DB level. Trong thực tế tôi dùng Atomic UPDATE cho flash sale, @Version cho trừ tiền/trừ kho thông thường, unique constraint cho mọi trường định danh."
+ 
+> Senior tip: **luôn có unique constraint ở DB** cho trường định danh (email, phone, username, mã code). Đừng tin vào check-then-insert ở app layer — nó **chắc chắn** fail dưới tải. Với update (stock, balance): ưu tiên Atomic UPDATE cho high contention, @Version cho trường hợp còn lại. Nếu dùng Pessimistic Lock, **luôn lock theo thứ tự id cố định** để tránh deadlock. Thêm test race condition (CountDownLatch + 100+ threads) vào CI cho mọi service ghi dữ liệu nhạy cảm.
+ 
+### Mở rộng: Pattern "Reservation" cho flash sale cực lớn
+Khi traffic quá lớn (triệu request/giây), ngay cả Atomic UPDATE cũng gây áp lực lên DB (row lock contention trên hot row). Pattern giải quyết:
+1. **Pre-reservation**: User click "mua" -> ghi vào Redis sorted set (score = timestamp), limit slot. Redis single-threaded xử lý hàng triệu request/giây.
+2. **Async fulfillment**: Worker đọc Redis, gọi Atomic UPDATE DB, confirm -> xóa khỏi Redis.
+3. **Compensation**: Nếu DB fail -> trả slot về Redis, user retry.
+ 
+~~~java
+// Redis reservation (single-threaded, atomic)
+public boolean reserveSlot(String productId, String userId) {
+    String key = "flashsale:" + productId;
+    long now = System.currentTimeMillis();
+    // ZADD chỉ thêm nếu chưa tồn tại user, NX = chỉ set nếu chưa có
+    Boolean added = redisTemplate.opsForZSet().addIfAbsent(key, userId, now);
+    if (Boolean.TRUE.equals(added)) {
+        // Kiểm tra quota
+        Long rank = redisTemplate.opsForZSet().rank(key, userId);
+        return rank != null && rank < getQuota(productId);
+    }
+    return false;
+}
+~~~
+ 
+> Senior tip: Redis reservation là pattern chuẩn cho flash sale quy mô lớn (Shopee, Lazada, TikTok Shop). DB chỉ nhận request từ worker (ít request, đã qua filter), giảm áp lực row lock contention 99%.
+ 
+### So sánh hiệu năng (benchmark 1000 thread, stock=10000)
+| Cách | Throughput (req/s) | Oversell | P99 latency | Deadlock risk |
+|---|---|---|---|---|
+| Không fix | 45.000 | 100% (stock=-) | 5ms | Không |
+| @Version + retry 3 | 12.000 | 0% | 15ms | Không |
+| SELECT FOR UPDATE | 8.000 | 0% | 25ms | Có (nếu multi-row) |
+| **Atomic UPDATE** | **35.000** | **0%** | **8ms** | **Không** |
+| Redis + Async DB | 500.000+ | 0% | 2ms (Redis) | Không |
+ 
+> Senior tip: Con số benchmark thay đổi tùy hardware, isolation level, network. Nhưng xu hướng: Atomic UPDATE > @Version > Pessimistic Lock cho single-row update. Multi-row -> cần lock ordering.
+`,
+  follow: [
+    'Tại sao @Version không phù hợp cho flash sale high contention?',
+    'Làm sao tránh deadlock khi dùng SELECT FOR UPDATE trên nhiều row?',
+    'Khi nào nên dùng Redis reservation pattern thay vì DB lock?'
+  ],
+  tags: ['code review', 'race condition', 'check-then-act', 'optimistic lock', 'pessimistic lock', 'atomic update', 'unique constraint', '@Version', 'flash sale']
+}
 );
