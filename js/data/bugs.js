@@ -11211,6 +11211,331 @@ class OrderBook {
 3. Sort theo price desc rồi priority asc. Đây là quy tắc chuẩn của matching engine (price-time priority). Phong ngua: log audit moi amend, test property-based cho thu tu hang doi, monitoring so khieu nai. Tren production that su: amend di qua gateway kiem tra quyen; ghi event sourcing de tai tao order book; replay test truoc release; canh bao khi so luong amend bat thuong. Them: amend di qua gateway kiem tra quyen, ghi event sourcing de tai tao order book, replay test truoc release, canh bao khi so luong amend bat thuong, drill su co dinh ky, monitor latency p99. Them: can nhac dung disruptor pattern cho matching engine, benchmark truoc release, alert khi amend rate bat thuong, drill su co dinh ky, audit trail day du.`,
   hints: ['Amend tăng khối lượng hoặc đổi giá -> mất ưu tiên.', 'Giảm khối lượng giữ ưu tiên.'],
   related: [],
-  tags: ['matching-engine', 'price-time-priority', 'amend', 'order-book'],
+  tags: ['matching-engine', 'price-time-priority', 'amend', 'order-book']
+},
+{
+  id: 'bug-055',
+  title: 'Báo cáo gộp theo số tiền: 10.0 và 10.00 bị tách thành hai nhóm',
+  domain: 'Báo cáo / Gộp dữ liệu',
+  level: 'mid',
+  severity: 'P2',
+  minutes: 25,
+  story: `**Bối cảnh dự án:** Hệ thống báo cáo doanh thu gộp hàng trăm nghìn giao dịch **theo số tiền** để đếm "có bao nhiêu giao dịch cùng giá trị" (ví dụ thống kê các mức phí cố định 10, 50, 100 nghìn). Kỹ sư viết {{RevenueAggregator.totalByAmount}} dùng một {{HashMap<BigDecimal, BigDecimal>}} (bản đồ ánh xạ từ số tiền sang tổng) với {{out.merge(amount, amount, BigDecimal::add)}}: gặp số tiền đã có thì cộng dồn, chưa có thì tạo nhóm mới. Số tiền đọc từ hai nguồn: sổ cái nội bộ trả {{10.0}}, file đối tác trả {{10.00}}.
+
+**Sự cố:** Báo cáo tháng 10 cho ra **hai dòng "10.0" và "10.00"** như thể là hai mức giá khác nhau, tương tự {{1250000.0}} và {{1250000.00}} cũng bị tách đôi. Tổng số nhóm bị nhân đôi ở các mức hay gặp, khiến biểu đồ phân bố sai và tổng tiền gộp bị đếm hai lần. Đội phân tích mất một ngày mới nhận ra: hai cách viết **cùng một giá trị** nhưng hệ thống coi là **khác nhau**.
+
+**Nhiệm vụ của bạn:**
+1. Đọc code {{totalByAmount}} và dữ liệu mẫu, giải thích vì sao {{10.0}} và {{10.00}} không được gộp chung.
+2. Sửa để các số tiền **cùng giá trị** (bất kể số chữ số thập phân) nằm trong **một** nhóm, và khoá của map đã được **chuẩn hoá** (cùng scale) để làm khoá gộp ổn định.
+3. Bấm **Chạy test**: test dùng đúng dữ liệu mô phỏng {{10.0}}, {{10.00}}, {{10.000}}.`,
+  artifacts: [
+    { name: 'revenue-grouped.csv', lang: 'text', content: `amount,txn_count,total
+10.0,8812,88120.00
+10.00,8790,87900.00
+10.000,44,440.00
+1250000.0,12044,15055000000.00
+1250000.00,11980,14975000000.00
+# 5 mức giá trị nhưng 8 dòng -> cùng một số tiền bị tách thành 2-3 nhóm` },
+    { name: 'aggregator.log', lang: 'text', content: `2026-11-05 02:11:03.118 INFO  RevenueAggregator : input rows=855000
+2026-11-05 02:11:03.402 DEBUG RevenueAggregator : distinct keys=8 (expected 5)
+2026-11-05 02:11:03.410 WARN  RevenueAggregator : key 10.0 and 10.00 both present
+2026-11-05 02:11:03.411 WARN  RevenueAggregator : key 1250000.0 and 1250000.00 both present` },
+  ],
+  starter: `import java.math.BigDecimal;
+import java.util.*;
+
+// ===== Hạ tầng (đã có sẵn trong dự án, KHÔNG cần sửa) =====
+record Txn(String id, BigDecimal amount) {}
+
+// ===== Code cần sửa =====
+class RevenueAggregator {
+    /** Gộp các giao dịch cùng số tiền: trả về map amount -> tổng số tiền của nhóm đó. */
+    Map<BigDecimal, BigDecimal> totalByAmount(List<Txn> txns) {
+        Map<BigDecimal, BigDecimal> out = new HashMap<>();
+        for (Txn t : txns) {
+            out.merge(t.amount(), t.amount(), BigDecimal::add);
+        }
+        return out;
+    }
+}`,
+  tests: `import java.math.BigDecimal;
+import java.util.*;
+
+public class Main {
+    static int passed = 0, total = 0;
+    static void check(String name, boolean ok, String detail) {
+        total++;
+        if (ok) { passed++; System.out.println("PASS " + name); }
+        else System.out.println("FAIL " + name + ": " + detail);
+    }
+
+    static BigDecimal sumValues(Map<BigDecimal, BigDecimal> m) {
+        BigDecimal s = BigDecimal.ZERO;
+        for (BigDecimal v : m.values()) s = s.add(v);
+        return s;
+    }
+
+    static boolean allScale2(Map<BigDecimal, BigDecimal> m) {
+        for (BigDecimal k : m.keySet()) if (k.scale() != 2) return false;
+        return true;
+    }
+
+    public static void main(String[] args) {
+        RevenueAggregator agg = new RevenueAggregator();
+
+        // 1. Cùng giá trị, khác cách viết (10.0, 10.00, 10.000) phải gộp thành MỘT nhóm
+        Map<BigDecimal, BigDecimal> r1 = agg.totalByAmount(List.of(
+            new Txn("a", new BigDecimal("10.0")),
+            new Txn("b", new BigDecimal("10.00")),
+            new Txn("c", new BigDecimal("10.000"))));
+        check("cung_gia_tri_gop_mot_nhom", r1.size() == 1 && sumValues(r1).compareTo(new BigDecimal("30")) == 0,
+            "kỳ vọng 1 nhóm tổng 30, thực tế " + r1.size() + " nhóm, tổng " + sumValues(r1) + ", map=" + r1);
+
+        // 2. Khác giá trị thật phải tách nhóm
+        Map<BigDecimal, BigDecimal> r2 = agg.totalByAmount(List.of(
+            new Txn("a", new BigDecimal("10.00")),
+            new Txn("b", new BigDecimal("10.01"))));
+        check("khac_gia_tri_tach_nhom", r2.size() == 2,
+            "10.00 và 10.01 phải là 2 nhóm, thực tế " + r2.size() + ", map=" + r2);
+
+        // 3. Số âm và số 0
+        Map<BigDecimal, BigDecimal> r3 = agg.totalByAmount(List.of(
+            new Txn("a", new BigDecimal("-25.50")),
+            new Txn("b", new BigDecimal("-25.5"))));
+        check("so_am_gop_nhom", r3.size() == 1 && sumValues(r3).compareTo(new BigDecimal("-51")) == 0,
+            "-25.50 và -25.5 phải 1 nhóm tổng -51, thực tế " + r3);
+        Map<BigDecimal, BigDecimal> r3b = agg.totalByAmount(List.of(
+            new Txn("a", new BigDecimal("0.00")),
+            new Txn("b", new BigDecimal("0.0"))));
+        check("so_khong_gop_nhom", r3b.size() == 1,
+            "0.00 và 0.0 phải 1 nhóm, thực tế " + r3b.size() + ", map=" + r3b);
+
+        // 4. Khoá của map phải cùng scale (đã chuẩn hoá) để làm khoá gộp ổn định
+        check("khoa_cung_scale", allScale2(r1),
+            "mọi khoá phải cùng scale 2, thực tế " + r1.keySet());
+
+        // 5. Dữ liệu mô phỏng báo cáo: 1250000.0 / 1250000.00 / 1250000.000 là một nhóm
+        Map<BigDecimal, BigDecimal> r5 = agg.totalByAmount(List.of(
+            new Txn("x", new BigDecimal("1250000.0")),
+            new Txn("y", new BigDecimal("1250000.00")),
+            new Txn("z", new BigDecimal("1250000.000"))));
+        check("bao_cao_khong_tach_nhom", r5.size() == 1 && sumValues(r5).compareTo(new BigDecimal("3750000")) == 0,
+            "kỳ vọng 1 nhóm tổng 3750000, thực tế " + r5.size() + " nhóm tổng " + sumValues(r5));
+
+        System.out.println("RESULT " + passed + "/" + total);
+    }
+}`,
+  reference: `import java.math.BigDecimal;
+import java.math.RoundingMode;
+import java.util.*;
+
+record Txn(String id, BigDecimal amount) {}
+
+class RevenueAggregator {
+    // Tiền: luôn chuẩn hoá về 2 chữ số thập phân trước khi làm KHOÁ gộp.
+    // Sau khi chuẩn hoá, equals và hashCode của BigDecimal mới nhất quán với "cùng giá trị".
+    private static final int MONEY_SCALE = 2;
+
+    Map<BigDecimal, BigDecimal> totalByAmount(List<Txn> txns) {
+        Map<BigDecimal, BigDecimal> out = new HashMap<>();
+        for (Txn t : txns) {
+            BigDecimal key = t.amount().setScale(MONEY_SCALE, RoundingMode.HALF_UP);
+            out.merge(key, key, BigDecimal::add);
+        }
+        return out;
+    }
+}`,
+  hints: [
+    'Đọc dữ liệu: {{10.0}} và {{10.00}} bằng nhau về giá trị nhưng code tạo hai khoá khác nhau. Hãy tự hỏi: {{new BigDecimal("10.0").equals(new BigDecimal("10.00"))}} trả về gì, và vì sao?',
+    '{{BigDecimal}} lưu hai phần: {{intVal}} (chữ số) và {{scale}} (số chữ số sau dấu phẩy). {{equals}} và {{hashCode}} so CẢ hai, nên khác scale là khác khoá. {{HashMap}} dùng {{equals}}/{{hashCode}} để tìm khoá, nên tách nhóm.',
+    'Chuẩn hoá về cùng scale trước khi làm khoá: {{amount.setScale(2, RoundingMode.HALF_UP)}}. Khi đó {{10.0}}, {{10.00}}, {{10.000}} đều thành {{10.00}} và gộp chung một nhóm.',
+  ],
+  rootCause: `**Dùng {{BigDecimal}} làm khoá {{HashMap}} mà không chuẩn hoá scale — {{equals}}/{{hashCode}} của BigDecimal so cả "cách viết".** {{BigDecimal}} lưu số tiền thành hai phần: {{intVal}} (các chữ số, ví dụ 1000) và {{scale}} (số chữ số sau dấu phẩy). {{10.00}} có intVal=1000, scale=2; {{10.0}} có intVal=100, scale=1; {{10.000}} có intVal=10000, scale=3. Hợp đồng của {{BigDecimal}}: {{equals}} trả true chỉ khi **cùng giá trị VÀ cùng scale**, còn {{hashCode}} cũng nhất quán với {{equals}} (khác scale thì hash khác).
+
+{{HashMap}} tìm khoá bằng {{hashCode}} rồi {{equals}}. Vì {{10.0}} và {{10.00}} có hash khác nhau, chúng rơi vào hai ô khác nhau và **không bao giờ** được so sánh bằng {{equals}} — kết quả là hai nhóm riêng. {{out.merge}} vì thế tạo nhóm mới cho mỗi cách viết. Dẫn chứng: log {{distinct keys=8 (expected 5)}} và {{key 10.0 and 10.00 both present}}.
+
+**Vì sao chỉ lộ gần đây?** Sổ cái và file đối tác trước đây tình cờ cùng số chữ số thập phân nên {{equals}} cho kết quả đúng. Khi nguồn dữ liệu mới trả số tiền giữ nguyên chuỗi gốc ({{10.0}}), khác scale xuất hiện và lỗi vốn có trong cách dùng {{BigDecimal}} làm khoá mới lộ. Đây là kiểu bug im lặng: sai từ lâu, chỉ chờ dữ liệu "bẩn" về scale để lộ.`,
+  fix: `### Cách sửa trong bài
+Chuẩn hoá **mọi** số tiền về cùng một scale (ở đây 2 chữ số thập phân) **trước khi** dùng làm khoá:
+~~~java
+BigDecimal key = amount.setScale(2, RoundingMode.HALF_UP);
+out.merge(key, key, BigDecimal::add);
+~~~
+Sau khi chuẩn hoá, {{10.0}}, {{10.00}}, {{10.000}} đều là {{10.00}} (cùng intVal, cùng scale) nên {{equals}} và {{hashCode}} khớp nhau và gộp về một nhóm. Test {{khoa_cung_scale}} sẽ đỏ nếu bạn quên chuẩn hoá.
+
+### Vì sao không chỉ sửa bằng compareTo
+{{compareTo}} so **giá trị** ({{10.0}} vs {{10.00}} trả 0), nhưng {{HashMap}} không dùng {{compareTo}} — nó dùng {{hashCode}}/{{equals}}. Muốn dùng {{compareTo}} làm khoá thì phải chuyển sang {{TreeMap}} (cây, sắp theo thứ tự) với {{Comparator}} so bằng {{compareTo}}, phức tạp hơn. Với báo cáo, chuẩn hoá scale là cách gọn và an toàn nhất.
+
+### Trên production thật
+- **Quy ước scale theo loại tiền:** VND dùng scale 0, USD/EUR scale 2, một số ngoại tệ (KWD, BHD) scale 3. Chuẩn hoá ngay tại **biên** (khi đọc từ file/DB), không để scale "rò rỉ" vào logic.
+- **Lớp {{Money}}:** đóng gói số tiền + loại tiền, chỉ cho phép so sánh bằng {{compareTo}} và luôn chuẩn hoá; tránh dùng {{BigDecimal}} trần.
+- **DB:** cột tiền nên là {{NUMERIC(19,2)}}; khi đọc bằng native query tự tính ({{SUM}}), scale có thể khác — chuẩn hoá sau khi đọc.
+- **Test:** dùng {{assertThat(a).isEqualByComparingTo(b)}} (AssertJ) thay cho {{assertEquals}} để test không đỏ vì khác scale.
+
+### Phòng ngừa
+- Cấm dùng {{BigDecimal}} làm khoá {{Map}}/{{Set}} mà chưa chuẩn hoá (SpotBugs/Sonar có rule tương tự).
+- Property test: sinh ngẫu nhiên cùng giá trị ở nhiều scale, khẳng định luôn gộp một nhóm.
+- Log số nhóm theo ngày; nếu số nhóm tăng đột biến so với số mức giá dự kiến, cảnh báo.
+
+### Liên hệ phỏng vấn
+Câu "vì sao {{BigDecimal.equals}} và {{compareTo}} khác nhau, khi nào dùng cái nào" rất hay gặp. Trả lời: {{equals}} so cả scale (nhất quán với {{hashCode}}), {{compareTo}} so giá trị; làm khoá {{Map}} phải chuẩn hoá scale trước; đừng dùng {{double}}; {{new BigDecimal(double)}} là bẫy.
+
+> Senior tip: {{BigDecimal}} làm khoá {{HashMap}} mà không chuẩn hoá scale là nguồn tách nhóm âm thầm. Chuẩn hoá tại biên ({{setScale}} theo loại tiền), và trong test dùng {{isEqualByComparingTo}} thay cho {{equals}}.`,
+  related: ['core-012'],
+  tags: ['BigDecimal', 'equals', 'hashCode', 'HashMap', 'scale', 'reporting']
+},
+{
+  id: 'bug-056',
+  title: 'Chia phí thanh toán cho nhiều đối tác: làm tròn HALF_UP làm tổng lệch 1 đồng',
+  domain: 'Fintech / Chia phí',
+  level: 'mid',
+  severity: 'P2',
+  minutes: 20,
+  story: `**Bối cảnh dự án:** Ví điện tử thu phí dịch vụ của một chuỗi giao dịch rồi **chia đều cho nhiều đối tác** (ví dụ 100.000đ chia cho 3 đối tác). Tiền là **VND, không có phần lẻ**, lưu dạng số nguyên. Kỹ sư viết {{FeeSplitter.split}} dùng {{BigDecimal}} với {{divide(n, 0, RoundingMode.HALF_UP)}} để "làm tròn cho đẹp": mỗi phần được làm tròn độc lập tới 0 chữ số thập phân.
+
+**Sự cố:** Đối soát cuối tháng lệch **hơn 1,1 triệu đồng** trên 180.000 lần chia. Nguyên nhân: {{100.000 / 3 = 33.333,33...}} làm tròn HALF_UP thành {{33.333}}, nhưng {{33.333 × 3 = 99.999}} — **thiếu 1 đồng** mỗi lần. Có lúc lại **thừa** 1 đồng khi phần lẻ ≥ 0,5. Mỗi lần lệch chỉ 1 đồng nhưng nhân với hàng trăm nghìn lần thì thành khoản tiền thật, và sổ cái không bao giờ khớp tổng phí đã thu.
+
+**Nhiệm vụ của bạn:**
+1. Đọc code {{split}} và số liệu, giải thích vì sao tổng các phần không bằng tổng gốc.
+2. Sửa để **tổng các phần luôn đúng bằng tổng gốc** với mọi {{total}} và {{n}} (phần cuối gánh phần dư).
+3. Bấm **Chạy test**: test kiểm tra nhiều trường hợp, gồm cả {{100.000}} chia {{3}} và số lớn.`,
+  artifacts: [
+    { name: 'fee-split-audit.csv', lang: 'text', content: `split_id,total,partners,parts,sum_parts,diff
+FEE-100231,100000,3,"33333|33333|33333",99999,-1
+FEE-100244,100000,6,"16667|16667|16667|16667|16667|16667",100002,+2
+FEE-100259,7,3,"2|2|2",6,-1
+FEE-100260,1000000007,10,"100000001 x10",1000000010,+3
+# month total diff: -612,000 VND (under) / +498,000 VND (over)` },
+    { name: 'fee-service.log', lang: 'text', content: `2026-11-05 23:00:01.118 INFO  FeeSplitter : split total=100000 n=3 -> [33333, 33333, 33333]
+2026-11-05 23:00:01.119 WARN  FeeSplitter : sum=99999 != total=100000 (missing 1)
+2026-11-05 23:00:01.402 INFO  FeeSplitter : split total=7 n=3 -> [2, 2, 2]
+2026-11-05 23:00:01.403 WARN  FeeSplitter : sum=6 != total=7 (missing 1)` },
+  ],
+  starter: `import java.math.BigDecimal;
+import java.math.RoundingMode;
+import java.util.*;
+
+// ===== Code cần sửa =====
+class FeeSplitter {
+    /** Chia đều total (VND, không có phần lẻ) cho n đối tác. Trả về danh sách n phần. */
+    List<BigDecimal> split(BigDecimal total, int n) {
+        if (n <= 0) throw new IllegalArgumentException("n phải > 0");
+        BigDecimal part = total.divide(BigDecimal.valueOf(n), 0, RoundingMode.HALF_UP);
+        List<BigDecimal> parts = new ArrayList<>();
+        for (int i = 0; i < n; i++) parts.add(part);
+        return parts;
+    }
+}`,
+  tests: `import java.math.BigDecimal;
+import java.util.*;
+
+public class Main {
+    static int passed = 0, total = 0;
+    static void check(String name, boolean ok, String detail) {
+        total++;
+        if (ok) { passed++; System.out.println("PASS " + name); }
+        else System.out.println("FAIL " + name + ": " + detail);
+    }
+
+    static BigDecimal sum(List<BigDecimal> xs) {
+        BigDecimal s = BigDecimal.ZERO;
+        for (BigDecimal x : xs) s = s.add(x);
+        return s;
+    }
+
+    static void checkSplit(String name, FeeSplitter sp, String totalStr, int n) {
+        List<BigDecimal> parts = sp.split(new BigDecimal(totalStr), n);
+        boolean ok = parts.size() == n && sum(parts).compareTo(new BigDecimal(totalStr)) == 0;
+        check(name, ok, "chia " + totalStr + " cho " + n + " phải có tổng đúng " + totalStr
+            + ", thực tế các phần " + parts + " tổng " + sum(parts));
+    }
+
+    public static void main(String[] args) {
+        FeeSplitter sp = new FeeSplitter();
+
+        // 1. 100.000đ chia 3: 33333 x 3 = 99999 -> thiếu 1đ (đúng như sự cố)
+        checkSplit("chia_100000_cho_3", sp, "100000", 3);
+
+        // 2. Chia hết: 100.000 cho 4 = 25000 mỗi phần
+        checkSplit("chia_100000_cho_4", sp, "100000", 4);
+
+        // 3. Số lẻ: 7 cho 3
+        checkSplit("chia_7_cho_3", sp, "7", 3);
+
+        // 4. Một người: phải trả đủ
+        checkSplit("chia_mot_nguoi", sp, "55555", 1);
+
+        // 5. Số lớn: 1.000.000.007 cho 10
+        checkSplit("chia_so_lon", sp, "1000000007", 10);
+
+        // 6. Không được có phần âm
+        List<BigDecimal> parts = sp.split(new BigDecimal("100000"), 3);
+        boolean nonNeg = true;
+        for (BigDecimal p : parts) if (p.signum() < 0) nonNeg = false;
+        check("khong_co_phan_am", nonNeg, "các phần không được âm: " + parts);
+
+        System.out.println("RESULT " + passed + "/" + total);
+    }
+}`,
+  reference: `import java.math.BigDecimal;
+import java.math.RoundingMode;
+import java.util.*;
+
+class FeeSplitter {
+    /** Chia đều total cho n phần; phần cuối gánh toàn bộ phần dư để tổng luôn khớp. */
+    List<BigDecimal> split(BigDecimal total, int n) {
+        if (n <= 0) throw new IllegalArgumentException("n phải > 0");
+        BigDecimal part = total.divide(BigDecimal.valueOf(n), 0, RoundingMode.HALF_UP);
+        List<BigDecimal> parts = new ArrayList<>(n);
+        BigDecimal allocated = BigDecimal.ZERO;
+        for (int i = 0; i < n - 1; i++) {   // n-1 phần đầu làm tròn như cũ
+            parts.add(part);
+            allocated = allocated.add(part);
+        }
+        // phần cuối = tổng gốc - đã phân bổ -> tổng các phần LUÔN bằng total
+        parts.add(total.subtract(allocated));
+        return parts;
+    }
+}`,
+  hints: [
+    'Tính thử {{100.000 / 3}}: {{33.333,33...}} làm tròn HALF_UP tới 0 chữ số thập phân là {{33.333}}. {{33.333 × 3}} bằng bao nhiêu? So với {{100.000}} thì lệch mấy đồng?',
+    'Làm tròn từng phần **độc lập** thì sai số cộng dồn: mỗi phần lệch tối đa 0,5 đơn vị, nhân n phần thì tổng lệch tới n/2 đơn vị. Đây là lỗi "allocation" (phân bổ): tổng các phần phải bảo toàn tổng gốc.',
+    'Cách sửa: tính n-1 phần đầu như cũ, rồi **phần cuối = tổng gốc trừ đi tổng n-1 phần đã chia**. Khi đó tổng luôn đúng bằng tổng gốc, phần cuối gánh phần dư (có thể chênh 1-2 đồng so với các phần khác, chấp nhận được).',
+  ],
+  rootCause: `**Làm tròn từng phần độc lập bằng {{HALF_UP}} rồi nhân lại — sai số cộng dồn, tổng không bảo toàn.** {{BigDecimal.divide(total, n, 0, HALF_UP)}} làm tròn **một** phần tới số nguyên gần nhất. Với {{100.000 / 3}}, phần lẻ là {{0,33...}} nên HALF_UP làm xuống {{33.333}}; ba phần {{33.333 × 3 = 99.999}}, thiếu 1 đồng. Khi phần lẻ ≥ 0,5 (ví dụ {{100.000 / 6 = 16.666,67}} làm lên {{16.667}}, sáu phần thành {{100.002}}, **thừa** 2 đồng).
+
+Bản chất: làm tròn là **mất mát có hướng**. Mỗi phần lệch tối đa 0,5 đơn vị; với n phần, tổng lệch tối đa khoảng n/2 đơn vị. Code không hề kiểm tra bất biến "tổng các phần == tổng gốc", nên lỗi âm thầm đi vào sổ cái. Dẫn chứng: audit {{FEE-100231 ... sum_parts=99999 diff=-1}} và log {{sum=99999 != total=100000 (missing 1)}}.
+
+**Vì sao không dùng {{double}}?** {{double}} còn tệ hơn: {{0.1}} không biểu diễn chính xác trong nhị phân, sai số tích luỹ sau nhiều phép chia. Với tiền, {{BigDecimal}} đúng hơn nhưng vẫn phải **phân bổ phần dư**, không chỉ làm tròn.`,
+  fix: `### Cách sửa trong bài
+Giữ n-1 phần đầu làm tròn như cũ, **phần cuối = tổng gốc − tổng n-1 phần đã chia**:
+~~~java
+BigDecimal part = total.divide(BigDecimal.valueOf(n), 0, RoundingMode.HALF_UP);
+BigDecimal allocated = BigDecimal.ZERO;
+for (int i = 0; i < n - 1; i++) { parts.add(part); allocated = allocated.add(part); }
+parts.add(total.subtract(allocated));   // phần cuối gánh phần dư
+~~~
+Khi đó tổng = allocated + (total − allocated) = total, **luôn đúng** với mọi total và n. Test {{chia_100000_cho_3}} sẽ đỏ nếu bạn chỉ làm tròn từng phần.
+
+### Vì sao không "làm tròn rồi sửa phần đầu"
+Sửa phần đầu hay phần cuối đều được, miễn **đúng một** phần gánh phần dư. Gánh ở phần cuối là quy ước phổ biến vì dễ đọc. Nếu muốn phần dư chia đều hơn (mỗi phần chênh ≤ 1 đồng), dùng số học nguyên: {{base = total / n}}, {{remainder = total % n}}, phát thêm 1 đồng cho {{remainder}} phần đầu (xem bug-003).
+
+### Trên production thật
+- **VND (scale 0):** chia bằng số nguyên {{long}} rồi phân bổ dư, hoặc {{BigDecimal}} scale 0 như trên.
+- **Tiền có phần thập phân (USD, EUR):** {{divide(n, 2, RoundingMode.DOWN)}} cho n−1 phần, phần cuối = tổng − tổng các phần trước; hoặc đổi về **đơn vị nhỏ nhất** (cent) dạng {{long}} rồi chia.
+- **Bất biến trong code:** trước khi lưu, assert {{sum(parts).compareTo(total) == 0}}; nếu lệch thì từ chối và log.
+- **Không dùng {{double}}/{{float}} cho tiền**, và {{divide}} luôn phải có scale + {{RoundingMode}} (không có sẽ ném {{ArithmeticException}} khi không chia hết).
+
+### Phòng ngừa
+- **Property test:** với mọi total và n ngẫu nhiên, tổng các phần == total.
+- Đặt tên hàm rõ ràng ({{splitEvenly}} kèm ghi chú "phần cuối gánh dư") để người sau không "tối ưu" lại thành làm tròn độc lập.
+- Đối soát tổng phí đã thu với tổng phí đã chia hằng ngày.
+
+### Liên hệ phỏng vấn
+Câu "chia 100 nghìn cho 3 người thế nào" kiểm tra bạn có nghĩ tới **bảo toàn tổng** (allocation) chứ không chỉ "làm tròn". Nêu được cách phân bổ phần dư và lý do không dùng {{double}} là điểm cộng rõ.
+
+> Senior tip: làm tròn tiền là bài toán phân bổ, không phải làm tròn số học. Luôn có một phần "gánh dư" và một assert tổng khớp; nếu không, mỗi giao dịch lệch 1 đồng, một tháng thành triệu.`,
+  related: ['core-012'],
+  tags: ['money', 'rounding', 'HALF_UP', 'allocation', 'BigDecimal']
 }
 );

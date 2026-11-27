@@ -3592,6 +3592,8 @@ window.DATA_INDEX = {
     ["bug-052","Cache write-through không invalidation khi DB update thất bại: 20% request đọc dữ liệu cũ 5 phút","senior",["jpa"]],
     ["bug-053","Sàn phái sinh: job tất toán ký quỹ ghi đè nạp tiền (lost update)","lead",[]],
     ["bug-054","Sàn phái sinh: amend tăng khối lượng giữ nguyên ưu tiên thời gian (vi phạm price-time priority)","senior",[]],
+    ["bug-055","Báo cáo gộp theo số tiền: 10.0 và 10.00 bị tách thành hai nhóm","mid",["core"]],
+    ["bug-056","Chia phí thanh toán cho nhiều đối tác: làm tròn HALF_UP làm tổng lệch 1 đồng","mid",["core"]],
   ],
   sd: [
     {"id":"sd-001","title":"Chuyển tiền liên ngân hàng qua Napas"},
