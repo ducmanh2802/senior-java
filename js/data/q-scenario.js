@@ -11917,5 +11917,263 @@ Hệ thống điện tử: Order → Payment.reserve → Inventory.reserve → P
       'Distributed saga với 10+ bước: làm sao tránh compensation chain quá dài?'
     ],
     tags: ['saga', 'microservices', 'compensation', 'orchestration', 'idempotency', 'distributed-transaction']
-  }
+  },
+{
+  id: 'scenario-191',
+  topic: 'scenario',
+  level: 'senior',
+  q: 'Dữ liệu của một khách hàng lớn bị hỏng logic (sai số dư) phát hiện lúc 11:00, nhưng không ai biết chính xác bắt đầu sai từ lúc nào; DB dùng chung (multi-tenant) 2TB với hàng trăm khách khác. Bạn khôi phục thế nào cho đúng một khách mà không downtime cả cụm, và giao tiếp ra sao?',
+  a: `**Tóm tắt:** đây không phải sự cố "xoá lúc 15:00" mà là **hỏng logic âm thầm, không rõ mốc bắt đầu** — việc đầu tiên là **khoanh cửa sổ thời gian** bằng cách dò ngược WAL/log (LSN theo dòng bị sai) chứ không đoán; sau đó **không restore cả cụm** mà PITR một bản sao sang instance tạm, trích riêng dữ liệu của khách đó rồi vá ngược vào production theo lô có kiểm soát; song song thông báo cho khách, pháp chế và on-call theo mốc thời gian rõ ràng.
+
+### Vì sao bài này khó hơn "xoá bảng lúc 15:00"
+- **Không có mốc thời gian chắc chắn**: số dư sai tăng dần, có thể bắt đầu từ 2 giờ trước khi khách khiếu nại. Nếu đặt {{recovery_target_time}} bừa, hoặc là vá thiếu, hoặc là ghi đè cả giao dịch đúng.
+- **DB dùng chung**: restore cả cụm 2TB để cứu một khách là "giết nhầm" — hàng trăm khách khác mất mọi giao dịch sau mốc khôi phục.
+- **Áp lực thời gian**: khách lớn đòi câu trả lời, nhưng vá vội còn làm hỏng thêm.
+
+### Thuật ngữ cần rõ
+- **LSN (Log Sequence Number)**: con trỏ vị trí trong WAL của PostgreSQL, tăng dần theo từng thay đổi. Dùng để định vị "dòng nào đổi lúc nào".
+- **PITR (Point-In-Time Recovery)**: khôi phục về một thời điểm bằng base backup + replay WAL.
+- **Multi-tenant**: nhiều khách chia nhau một cụm DB, thường phân biệt bằng {{tenant_id}}.
+- **RPO (Recovery Point Objective)**: mức mất dữ liệu tối đa chấp nhận được, tính bằng thời gian.
+
+### Bước 1 — Khoanh cửa sổ thời gian (quan trọng nhất, làm trước khi đụng dữ liệu)
+1. Lấy **snapshot read-only** hiện trạng của khách (để sau còn đối chiếu), không sửa gì.
+2. Dò WAL/log để tìm **dòng đầu tiên sai**: ví dụ dùng {{pg_waldump}} hoặc audit/CDC đã có để truy vết thay đổi số dư của {{tenant_id}} đó, tìm timestamp nhỏ nhất mà giá trị lệch so với nguồn đối tác.
+3. Chốt **mốc nghi ngờ** [T_start, T_now]. Ghi lại RPO dự kiến = T_start.
+
+### Bước 2 — Phục hồi có chọn lọc (không restore cả cụm)
+~~~text
+Cụm production (2TB, 300 tenant) ── base backup + WAL archive ──► instance tạm
+                                                                   │ replay WAL tới T_start
+                                                                   ▼
+                                            chỉ đọc tenant_id = KHACH_LON (vài GB)
+                                                                   │ vá theo lô, có audit
+                                                                   ▼
+                                            production (chỉ ghi phần của 1 khách)
+~~~
+- Phục hồi **ra instance riêng** (PITR tới T_start), không chạm production.
+- Trích **chỉ dữ liệu của khách đó** ({{WHERE tenant_id = ...}}) từ bản đã khôi phục.
+- Vá ngược vào production **theo lô nhỏ có checkpoint**, đối chiếu từng bước với snapshot read-only đã lấy ở Bước 1.
+
+### Bước 3 — Code vá idempotent (chạy lại không nhân đôi)
+~~~sql
+-- Mỗi bản vá mang khóa nghiệp vụ, chạy lại không ghi trùng
+INSERT INTO balance_fix (tenant_id, account_id, fix_date, amount, source_lsn)
+VALUES (:tenant, :acc, :fixDate, :amount, :lsn)
+ON CONFLICT (tenant_id, account_id, fix_date) DO NOTHING;
+
+-- Chỉ áp cho đúng dòng đã xác định, không UPDATE mù
+UPDATE accounts a
+SET balance = a.balance + f.amount
+FROM balance_fix f
+WHERE f.tenant_id = :tenant AND f.fix_date = :fixDate
+  AND a.id = f.account_id
+  AND NOT EXISTS (SELECT 1 FROM applied_fix x WHERE x.fix_id = f.id);
+~~~
+- Ghi **bút toán đảo/điều chỉnh** (append-only), **không sửa lịch sử** — đúng chuẩn kiểm toán.
+- Mỗi lô 1.000–5.000 dòng, commit riêng, ghi checkpoint để dừng/chạy lại an toàn.
+
+### Bảng trade-off
+| Phương án | Downtime | Rủi ro | Khi nào |
+|---|---|---|---|
+| PITR cả cụm về T_start | cao (cả 300 khách) | mất giao dịch của khách khác sau T_start | chỉ khi hỏng lan rộng toàn cụm |
+| PITR instance tạm + vá 1 khách | ~0 cho khách khác | trích/đối chiếu phức tạp | đúng tình huống này |
+| Không vá, bù thủ công từng dòng | thấp | sai sót tay, không truy vết | lượng nhỏ, có người rà |
+
+### Pitfall production
+- **Đặt mốc khôi phục sai**: thiếu mốc thật → vá thiếu; quá muộn → ghi đè cả giao dịch đúng. Phải dò LSN, không đoán.
+- **Quên lock/đối chiếu khi vá**: hai lần chạy vá cùng lúc → cộng hai lần. Unique key + checkpoint là bắt buộc.
+- **Không thông báo đúng lúc**: im lặng vài giờ khiến khách mất niềm tin; cập nhật mỗi 30 phút quan trọng ngang việc vá.
+- **PITR chưa từng diễn tập**: base backup có thể hỏng; "backup chưa thử restore là chưa có backup".
+
+### Ví dụ đời thực
+Ví điện tử dùng chung cụm PostgreSQL 2TB cho 320 merchant. 11:00 một merchant báo số dư lệch; dò audit/CDC thấy dòng đầu tiên sai lúc **08:12** (một job cộng phí chạy đè). RPO = 08:12, tức gần 3 giờ giao dịch của **toàn cụm** — không thể PITR cả cụm. Xử lý: (1) lấy snapshot read-only số dư merchant đó; (2) PITR instance tạm tới 08:11:30, trích riêng 41.000 tài khoản của merchant (khoảng 1,8GB); (3) đối chiếu với snapshot, chốt danh sách 1.240 tài khoản lệch; (4) vá theo lô 2.000 dòng bằng bút toán điều chỉnh idempotent, checkpoint mỗi lô; (5) cập nhật khách mỗi 30 phút, báo pháp chế vì là sai số tiền. Tổng downtime cho merchant khác: **0**; merchant được vá xong trong 50 phút, đối soát cuối ngày khớp 100%.
+
+### Trả lời mẫu khi phỏng vấn
+"Điểm khác biệt so với sự cố xoá bảng là ở đây không ai biết chính xác bắt đầu sai từ lúc nào, và DB lại dùng chung cho hàng trăm khách, nên tôi không restore cả cụm. Việc đầu tiên là khoanh cửa sổ thời gian: tôi lấy snapshot read-only hiện trạng, rồi dò WAL hoặc audit để tìm dòng đầu tiên bị sai, chốt mốc nghi ngờ và RPO. Sau đó tôi PITR một bản sao sang instance tạm, trích riêng dữ liệu của khách đó theo tenant_id, đối chiếu với snapshot, rồi vá ngược vào production theo lô nhỏ có checkpoint. Mỗi bản vá là bút toán điều chỉnh append-only, có khóa nghiệp vụ để chạy lại không nhân đôi, không sửa lịch sử. Trong suốt quá trình tôi cập nhật cho khách, on-call và pháp chế theo mốc thời gian rõ ràng, vì đây là sai số tiền. Bài học là phải diễn tập restore định kỳ và có công cụ dò LSN để không phải đoán mốc khôi phục."
+
+> Senior tip: với hỏng logic không rõ mốc, tôi luôn "dò LSN trước, restore sau" và "vá theo tenant, không restore cả cụm". Một lần tôi đặt mốc muộn hơn thực tế 4 phút và ghi đè mất 900 giao dịch đúng — từ đó quy tắc là lấy mốc từ dòng sai đầu tiên, và luôn snapshot read-only trước khi vá để còn đường lùi.`,
+  follow: [
+    'Nếu không có WAL archive và audit log, bạn khoanh mốc thời gian bằng cách nào?',
+    'Vá số dư cho một khách nhưng các báo cáo đối tác đã gửi sai — xử lý truyền thông và bù trừ thế nào?',
+    'Làm sao thiết kế để sự cố này không xảy ra: job cộng phí nên chạy ra sao cho idempotent và không đè?'
+  ],
+  tags: ['PITR', 'point-in-time-recovery', 'multi-tenant', 'data-corruption', 'incident', 'LWW']
+  ,
+  refs: [
+    { type: 'doc', title: 'PostgreSQL Docs: Continuous Archiving and Point-in-Time Recovery', url: 'https://www.postgresql.org/docs/current/continuous-archiving.html' }
+  ]
+},
+{
+  id: 'scenario-192',
+  topic: 'scenario',
+  level: 'senior',
+  q: 'Sau deploy, CPU tăng từ 30% lên 90% nhưng throughput (số request/giây xử lý được) lại GIẢM, p99 tăng gấp 4 lần. Traffic không đổi. Bạn điều tra bằng JFR và async-profiler thế nào để phân biệt "code đốt CPU thật" với "thread tranh lock/spin"?',
+  a: `**Tóm tắt:** CPU cao mà throughput **giảm** là dấu hiệu kinh điển của **tranh chấp lock / context-switch**, không phải code làm việc nhiều hơn — nếu là code nóng thật thì throughput thường giữ nguyên hoặc tăng. Phân biệt bằng JFR (sự kiện {{jdk.JavaMonitorEnter}}/{{jdk.ThreadPark}} và {{jdk.ExecutionSample}}) và async-profiler ở chế độ **wall** so với chế độ **cpu**: wall cao nhưng cpu thấp nghĩa là thread đang chờ/khóa, không phải tính toán.
+
+### Vì sao "CPU cao + throughput giảm" là chữ ký của lock contention
+- **Code nóng thật** (regex, parse, vòng lặp): mỗi request tốn nhiều CPU hơn, nhưng số request/giây vẫn tương đương (chỉ chậm hơn đều).
+- **Tranh lock/spin**: nhiều thread cùng chực một monitor, bị block rồi đánh thức liên tục → CPU đổ vào **context switch và spin**, throughput tụt vì phần lớn thời gian thread không làm việc hữu ích.
+- **Quan hệ Little's Law**: throughput = concurrency / latency. CPU tăng nhưng throughput giảm nghĩa là latency tăng nhanh hơn — cổ chai là **tài nguyên bị tranh**, không phải thiếu CPU.
+
+### Thuật ngữ
+- **Monitor / intrinsic lock**: khóa gắn với object khi vào {{synchronized}}. Nhiều thread chờ cùng một monitor là {{BLOCKED}}.
+- **Context switch**: CPU lưu trạng thái thread này, nạp thread khác; quá nhiều switch làm "ngốn" CPU mà không chạy logic.
+- **Wall-clock vs CPU time**: wall là thời gian thực trôi qua, cpu là thời gian thread thực sự chạy trên CPU. Chênh lệch lớn = thread đang chờ.
+
+### Điều tra bằng JFR
+~~~bash
+# Thu 60 giây, bật cả event lock và execution sample
+jcmd <pid> JFR.start name=cpu-lock duration=60s \
+  filename=/tmp/jfr.jfr \
+  settings=profile
+# Xem thread nào vào monitor và chờ bao lâu
+jfr print --events jdk.JavaMonitorEnter,jdk.ThreadPark /tmp/jfr.jfr
+# Xem method nào chiếm mẫu thực thi
+jfr print --events jdk.ExecutionSample /tmp/jfr.jfr
+~~~
+- Nếu {{jdk.JavaMonitorEnter}} có thời gian chờ lớn tập trung ở **một** monitor → tranh lock.
+- Nếu {{jdk.ExecutionSample}} dồn vào method nghiệp vụ → code nóng thật.
+
+### Điều tra bằng async-profiler (wall vs cpu)
+~~~bash
+# Chế độ cpu: chỉ tính thời gian thread chạy trên CPU
+./profiler.sh -e cpu -d 30 -f /tmp/cpu.html <pid>
+# Chế độ wall: tính cả thời gian chờ (lock, I/O, park)
+./profiler.sh -e wall -d 30 -f /tmp/wall.html <pid>
+~~~
+- **cpu.html** không có method nóng rõ rệt, nhưng **wall.html** một cột rất rộng ở {{synchronized}} → thread đang chờ khóa, không phải tính toán.
+- Nhiều thread dump ({{jstack <pid>}}) lặp lại: phần lớn thread {{BLOCKED}} tại cùng một {{...lock...}} → xác nhận.
+
+### Code minh hoạ lỗi và cách sửa
+~~~java
+// SAI: một lock toàn cục bọc cả đoạn chậm -> mọi request xếp hàng
+private final Object lock = new Object();
+public Result handle(Request r) {
+    synchronized (lock) {                 // tất cả thread tranh 1 monitor
+        var data = slowDownstream.call(r); // I/O chậm nằm TRONG khóa
+        return transform(data);
+    }
+}
+
+// ĐÚNG: thu hẹp vùng khóa, không bọc I/O; hoặc tách khóa theo key
+public Result handle(Request r) {
+    var data = slowDownstream.call(r);    // I/O NGOÀI khóa
+    return transform(data);               // transform không dùng chung state -> không cần khóa
+}
+~~~
+
+### Bảng trade-off
+| Triệu chứng | cpu flame graph | wall flame graph | Kết luận |
+|---|---|---|---|
+| Method nghiệp vụ chiếm CPU | rộng, rõ | giống cpu | code nóng thật → tối ưu method |
+| {{synchronized}}/{{park}} chiếm wall | không nổi bật | rất rộng | tranh lock → thu hẹp khóa |
+| GC thread chiếm CPU | rộng ở {{*GC*}} | — | rò rỉ/allocation → sửa bộ nhớ |
+
+### Pitfall production
+- **Nhầm wall với cpu**: chỉ chụp async-profiler chế độ cpu sẽ "không thấy gì" khi vấn đề là lock; phải chụp cả wall.
+- **Tối ưu nhầm chỗ**: thấy CPU 90% liền đi tối ưu method nghiệp vụ, trong khi thật ra chỉ cần bỏ I/O ra khỏi {{synchronized}}.
+- **Container throttling**: CPU "90%" có thể là 90% của limit 1 vCPU, node vẫn rảnh — kiểm tra {{container_cpu_cfs_throttled_periods_total}} trước.
+- ** tachycardia spin**: code dùng spin-loop (busy wait) cũng làm CPU cao + throughput giảm; thread dump cho thấy thread {{RUNNABLE}} trong vòng lặp rỗng.
+
+### Ví dụ đời thực
+Service Java 17, 6 pod, sau deploy 10:00 CPU từ 320m lên 940m (limit 1 vCPU), p99 từ 190ms lên 760ms, **throughput giảm từ 1.200 xuống 700 req/s**, traffic vẫn 1.200 req/s. async-profiler chế độ cpu không thấy method nóng; chế độ wall cho thấy 70% thời gian ở {{synchronized}} của một hàm mới thêm. 5 thread dump liên tiếp: 24/32 thread {{http-nio}} {{BLOCKED}} tại cùng một monitor, và I/O gọi dịch vụ giá nằm **trong** khối {{synchronized}}. Sửa: đưa I/O ra ngoài khóa, thu hẹp vùng đồng bộ; thêm cảnh báo {{container_cpu_cfs_throttled_periods_total > 0,2}}. Sau deploy 20:00: CPU 350m, throughput về 1.250 req/s, p99 200ms.
+
+### Trả lời mẫu khi phỏng vấn
+"Tôi để ý ngay chi tiết CPU tăng nhưng throughput lại giảm — đó là chữ ký của tranh chấp lock chứ không phải code làm nhiều việc hơn, vì code nóng thật thì throughput thường không tụt. Tôi xác minh bằng hai công cụ. JFR cho tôi sự kiện JavaMonitorEnter và ThreadPark: nếu thời gian chờ dồn vào một monitor thì là tranh lock; ExecutionSample cho biết method nào thực sự chiếm CPU. async-profiler tôi chạy cả hai chế độ: cpu và wall. Nếu wall rất rộng ở synchronized nhưng cpu không có method nóng, thread đang chờ khóa chứ không tính toán. Thread dump lặp lại xác nhận nhiều thread BLOCKED tại cùng một monitor. Trong một sự cố, một hàm mới bọc lời gọi I/O chậm trong synchronized làm mọi request xếp hàng; tôi đưa I/O ra ngoài khóa, throughput phục hồi và CPU về bình thường. Tôi cũng luôn kiểm tra throttling trước khi kết luận."
+
+> Senior tip: quy tắc đọc nhanh của tôi: "CPU cao + throughput giảm = chờ đợi (lock/I/O/spin); CPU cao + throughput không đổi = code nóng thật". Đọc wall so với cpu trong async-profiler mất 30 giây và đổi hẳn hướng điều tra — tôi từng để dành cả buổi tối đi tối ưu regex trong khi thủ phạm là một khối synchronized bọc I/O.`,
+  follow: [
+    'Nếu async-profiler không cài được trên production, bạn dùng JFR hay thread dump, và đọc thế nào?',
+    'Thu hẹp khóa tới mức nào là đủ, và làm sao tránh over-optimization gây sai state dùng chung?',
+    'CPU cao do container throttling khác CPU cao do lock ở chỗ nào khi đọc metric?'
+  ],
+  tags: ['CPU', 'JFR', 'async-profiler', 'lock-contention', 'wall-clock', 'throughput']
+  ,
+  refs: [
+    { type: 'doc', title: 'Oracle JDK: JFR Runbook (Java Flight Recorder)', url: 'https://docs.oracle.com/en/java/javase/17/jfr/jdk-flight-recorder.html' }
+  ]
+},
+{
+  id: 'scenario-193',
+  topic: 'scenario',
+  level: 'lead',
+  q: 'Đối tác báo nhận cùng một webhook (cùng event_id) tới 3 lần. Điều tra cho thấy KHÔNG phải do retry/timeout mà do hệ thống của bạn chạy nhiều instance publisher đọc chung bảng outbox. Bạn tìm nguyên nhân gốc và sửa thế nào để không phát trùng, kể cả khi có 2 publisher cùng lúc?',
+  a: `**Tóm tắt:** đây là **double-publish do nhiều instance outbox cùng đọc một hàng chưa được "claim"** — hai (hoặc ba) publisher cùng thấy {{status=PENDING}} và cùng gửi trước khi kịp đánh dấu. Sửa gốc bằng **claim nguyên tử** ({{SELECT ... FOR UPDATE SKIP LOCKED}} hoặc lease có fencing) để mỗi hàng chỉ một publisher sở hữu; kết hợp idempotency key (event_id) để bên nhận dedup; và **không đánh dấu published trước khi gửi xong** mà theo đúng thứ tự claim → gửi → mark.
+
+### Vì sao "3 lần" chứ không phải "2 lần"
+- Hệ thống có **3 instance** publisher (scale ngang cho throughput). Cả ba poll cùng bảng {{outbox}} mỗi 200ms.
+- Một hàng event mới vào, cả 3 cùng đọc thấy {{status=PENDING}} (chưa ai kịp update) → cả 3 cùng gửi → đối tác nhận 3 lần.
+- Đây **không** phải retry (mỗi lần chỉ gửi 1 lần từ mỗi instance), nên cách sửa "giảm retry" của bài webhook thông thường **không áp dụng**.
+
+### Thuật ngữ
+- **Outbox pattern**: ghi event vào bảng DB cùng transaction nghiệp vụ, một publisher đọc bảng đó gửi đi.
+- **Claim (giành việc)**: cơ chế để nhiều worker không xử lý cùng một hàng — giống chia phiếu, mỗi người chỉ nhận phiếu của mình.
+- **SKIP LOCKED**: câu lệnh khoá các hàng đang bận rồi **bỏ qua** chúng, lấy hàng chưa ai giữ — nền tảng của hàng đợi trong DB.
+- **Fencing token**: số thứ tự tăng dần để phát hiện "chủ cũ" đã mất lease vẫn còn chạy.
+
+### Luồng đúng (claim nguyên tử)
+~~~text
+3 publisher cùng poll outbox
+        │ SELECT ... WHERE status=PENDING ... FOR UPDATE SKIP LOCKED LIMIT 100
+        ▼
+   mỗi hàng chỉ 1 publisher giữ được (2 publisher khác nhảy sang hàng khác)
+        │ gửi event (kèm event_id) tới đối tác
+        ▼
+   mark status=SENT, published_at=now  (chỉ chủ sở hữu mới mark)
+~~~
+~~~sql
+-- Claim: lấy và khoá hàng chưa ai giữ; instance khác SKIP các hàng này
+WITH claimed AS (
+  SELECT id FROM outbox
+  WHERE status = 'PENDING'
+  ORDER BY created_at
+  FOR UPDATE SKIP LOCKED
+  LIMIT 100
+)
+UPDATE outbox o
+SET status = 'SENDING', locked_by = :instanceId, locked_at = now()
+FROM claimed c
+WHERE o.id = c.id
+RETURNING o.id, o.event_id, o.payload;
+-- Sau khi gửi thành công: UPDATE outbox SET status='SENT' WHERE id=:id AND locked_by=:me;
+~~~
+- {{SKIP LOCKED}} đảm bảo hai publisher không bao giờ claim cùng hàng.
+- {{locked_by}} + {{locked_at}} cho phép **reclaim** hàng bị treo (instance chết giữa chừng) sau một lease timeout.
+
+### Vì sao vẫn cần idempotency key (phòng thủ nhiều lớp)
+- Claim chống double-publish **trong cùng cụm**, nhưng không chống được: instance chết **sau khi gửi** mà **trước khi mark SENT** → hàng được reclaim và gửi lại.
+- Vì vậy mỗi event mang **event_id (UUID) do giao dịch sinh ra**, đối tác lưu {{processed_events}} và bỏ qua trùng. Đây là lớp cuối cùng, đúng nguyên tắc "exactly-once qua hai hệ là bất khả thi; phải idempotent ở đầu nhận".
+
+### Bảng trade-off
+| Cơ chế | Chống double-publish nội bộ | Chống gửi lại sau crash | Chi phí |
+|---|---|---|---|
+| Chỉ idempotency key ở đối tác | không (vẫn gửi 3 lần) | có | đối tác phải lưu event_id |
+| Claim SKIP LOCKED | có | không (crash sau send) | cần cột status/locked_by |
+| Claim + lease reclaim + idempotency | có | có | phức tạp hơn, cần metric |
+
+### Pitfall production
+- **Đánh dấu SENT trước khi gửi**: nếu gửi fail thì event mất hẳn — phải mark **sau** khi gửi thành công, và chấp nhận "gửi lại" (đã có idempotency lo).
+- **Không có lease/reclaim**: instance chết khi {{status=SENDING}} → hàng kẹt vĩnh viễn, không ai gửi. Cần {{locked_at}} + job reclaim.
+- **Polling không SKIP LOCKED**: dùng {{SELECT}} rồi {{UPDATE}} tách rời vẫn có khe hở race — phải gộp claim và update trong một câu.
+- **event_id sinh theo lần gửi**: nếu mỗi lần gửi sinh UUID mới thì đối tác không dedup được; event_id phải gắn với **giao dịch gốc**.
+
+### Ví dụ đời thực
+Hệ thống thanh toán scale publisher outbox lên **3 instance** để tăng tốc. Đối tác đối soát báo cùng event_id E1 nhận **3 lần** trong giờ cao điểm (khoảng 8% event). Điều tra: không phải retry (mỗi instance gửi 1 lần), mà cả 3 cùng poll thấy hàng {{PENDING}} trước khi ai kịp mark {{SENT}}. Sửa: (1) claim bằng {{FOR UPDATE SKIP LOCKED}} + cột {{locked_by}}/{{locked_at}}, mỗi hàng chỉ một instance sở hữu; (2) lease 30 giây + job reclaim hàng treo; (3) mark {{SENT}} **sau** khi gửi thành công; (4) gắn {{Idempotency-Key: event_id}} (UUID do giao dịch sinh) và đối tác lưu {{processed_events}} trong cùng transaction. Kết quả: số lần đối tác nhận trùng giảm từ 8% xuống **0**, hàng outbox treo được reclaim tự động, không mất event.
+
+### Trả lời mẫu khi phỏng vấn
+"Điểm mấu chốt là đối tác nhận 3 lần nhưng không phải do retry, mà do hệ thống mình chạy 3 instance publisher cùng đọc một bảng outbox; cả ba thấy hàng PENDING và cùng gửi trước khi kịp đánh dấu. Tôi sửa gốc bằng claim nguyên tử: dùng SELECT FOR UPDATE SKIP LOCKED để mỗi hàng chỉ một instance giành được, kèm cột locked_by và locked_at để reclaim hàng bị treo khi instance chết. Thứ tự đúng là claim, gửi, rồi mới mark SENT sau khi gửi thành công, không mark trước. Nhưng claim không chống được trường hợp instance chết sau khi gửi mà trước khi mark, nên tôi vẫn gắn idempotency key là event_id do giao dịch sinh ra, và đối tác lưu event_id đã xử lý trong cùng transaction để bỏ qua trùng. Đây là phòng thủ nhiều lớp: claim chống double-publish nội bộ, idempotency chống gửi lại sau crash. Tôi cũng theo dõi số hàng SENDING quá lease và số lần đối tác báo trùng làm cảnh báo."
+
+> Senior tip: khi scale outbox publisher, câu đầu tiên tôi hỏi là "claim bằng gì?" — nếu chưa có SKIP LOCKED hoặc lease, tăng instance là **nhân số lần gửi trùng**. Và event_id phải do giao dịch gốc sinh, không phải do lần gửi; nếu không, mỗi lần gửi lại là một UUID mới và dedup vô nghĩa.`,
+  follow: [
+    'Lease timeout bao lâu là hợp lý, và reclaim một hàng SENDING treo có rủi ro gì?',
+    'Nếu outbox tăng nhanh, làm sao tránh polling SKIP LOCKED gây tranh chấp và lag?',
+    'Đối tác từ chối lưu processed_events — bạn còn lớp bảo vệ nào khác để không phát trùng?'
+  ],
+  tags: ['outbox', 'SKIP-LOCKED', 'double-publish', 'idempotency', 'webhook', 'Kafka']
+  ,
+  refs: [
+    { type: 'doc', title: 'PostgreSQL Docs: Explicit Locking (FOR UPDATE SKIP LOCKED)', url: 'https://www.postgresql.org/docs/current/sql-select.html' }
+  ]
+}
 );
