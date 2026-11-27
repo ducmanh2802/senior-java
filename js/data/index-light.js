@@ -3044,6 +3044,8 @@ window.DATA_INDEX = {
     {"id":"lesson-design-013","track":"design","order":13,"title":"Strategy + Factory: điều hướng kênh thông báo (Email, SMS, Push, Webhook) với failover và rate limit","level":"senior","minutes":30},
     {"id":"lesson-design-015","track":"design","order":15,"title":"Payment Method Strategy: Strategy + Factory cho xử lý thanh toán đa phương thức (thẻ, ví, chuyển khoản, crypto, BNPL)","level":"senior","minutes":30},
     {"id":"lesson-design-016","track":"design","order":16,"title":"Outbox Priority Relay + Consumer Deduplication + Cleanup: ưu tiên event thanh toán, idempotent consumer, dọn dẹp outbox cũ","level":"senior","minutes":30},
+    {"id":"lesson-design-017","track":"design","order":17,"title":"Saga pattern: giao dịch phân tán với bước bù","level":"senior","minutes":30},
+    {"id":"lesson-design-018","track":"design","order":18,"title":"Bulkhead pattern: cách ly tài nguyên ngăn lan truyền lỗi","level":"senior","minutes":30},
     {"id":"lesson-microservices-001","track":"microservices","order":1,"title":"Transactional outbox: không mất event giữa database và broker","level":"senior","minutes":30},
     {"id":"lesson-microservices-002","track":"microservices","order":2,"title":"Idempotent consumer: chống duplicate và sự kiện cũ","level":"senior","minutes":25},
     {"id":"lesson-microservices-003","track":"microservices","order":3,"title":"Saga orchestration: bù trừ khi quy trình nhiều service thất bại","level":"lead","minutes":30},

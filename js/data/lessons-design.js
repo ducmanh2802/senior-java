@@ -4978,5 +4978,211 @@ class OutboxMetrics {
       { q: 'Exponential backoff + DLQ trong relay dùng để làm gì?', options: ['Gửi event nhanh hơn', 'Event fail tạm thời được retry với khoảng chờ tăng dần (30s, 60s, 120s...); vượt maxRetries thì chuyển DLQ để không chặn queue (poison pill)', 'Xóa event cũ', 'Tăng priority event'], answer: 1, explain: 'Backoff tránh dồn dập retry khi provider vừa hồi phục. Nếu event luôn fail (schema sai, provider down vĩnh viễn) -> poison pill chặn queue; sau maxRetries chuyển sang DLQ (priority=1000) để relay tiếp tục xử lý event khác, ops xử lý DLQ sau.' },
       { q: 'Cleanup/archive outbox nên làm gì với event đã gửi cũ?', options: ['Xóa ngay mọi event đã gửi', 'Archive sang bảng lạnh (partition by month) rồi xóa khỏi bảng chính theo batch, tuyệt đối giữ event chưa gửi (sent_at IS NULL)', 'Không bao giờ xóa', 'Đổi priority = 1000'], answer: 1, explain: 'Outbox chỉ tăng -> scan chậm, index bloat. Archive sang bảng partition theo tháng rồi drop partition cũ O(1), hoặc batch delete + sleep tránh lock relay. Chỉ xóa event đã gửi (sent_at IS NOT NULL) và quá retention; xóa event chưa gửi sẽ mất event.' },
     ], ['outbox-pattern', 'priority-queue', 'idempotent-consumer', 'dead-letter-queue', 'exponential-backoff', 'archival', 'observability']),
+  lesson('017', 17, 'Saga pattern: giao dịch phân tán với bước bù', 'senior', [
+    'Mô phỏng Saga orchestrator: thực hiện từng bước cục bộ, nếu bước nào thất bại thì gọi bù các bước đã làm theo thứ tự ngược lại',
+    'Phân biệt choreography và orchestration, biết khi nào dùng Saga và hạn chế của eventual consistency',
+  ], `### Saga là gì?
+Trong kiến trúc microservice, một nghiệp vụ thường chạm nhiều dịch vụ, mỗi dịch vụ có database riêng (mô hình database-per-service). Giao dịch ACID đơn truyền thống không chạy xuyên dịch vụ vì các dịch vụ không chia sẻ connection hay transaction. Saga giải quyết bằng cách chia nghiệp vụ lớn thành chuỗi các bước cục bộ, mỗi bước là một giao dịch cục bộ trong một dịch vụ. Nếu bước nào thất bại, Saga chạy các bước bù (compensating transaction) cho các bước đã hoàn thành để hoàn tác tác động, giữ tính nhất quán cuối cùng (eventual consistency).
+
+### Hai kiểu Saga
+Choreography: không có bộ điều phối trung tâm. Mỗi dịch vụ thực hiện bước của mình rồi phát sự kiện; dịch vụ khác nghe sự kiện và thực hiện bước tiếp theo. Ưu điểm: đơn giản, không có single point of failure. Nhược điểm: khó theo dõi luồng end-to-end, dễ gây vòng lặp sự kiện và rối rã khi số dịch vụ tăng.
+Orchestration: có một orchestrator gọi từng bước theo thứ tự, ghi trạng thái vào cơ sở dữ liệu saga log. Nếu bước nào thất bại, orchestrator gọi bù cho các bước đã làm theo thứ tự ngược lại. Ưu điểm: dễ theo dõi, kiểm soát, retry tập trung. Nhược điểm: orchestrator có thể trở thành single point of failure, cần lưu trạng thái saga để khôi phục khi sập.
+
+### Cơ chế orchestrator từng bước
+Ví dụ nghiệp vụ đặt hàng gồm 3 bước:
+1. Trừ tồn kho (dịch vụ kho) — thành công, ghi COMPLETED.
+2. Thanh toán (dịch vụ thanh toán) — thất bại (thẻ hết hạn), orchestrator gọi bù bước 1 (hoàn tồn kho), saga FAILED.
+3. Nếu tất cả thành công → saga COMPLETED.
+Orchestrator lưu trạng thái saga (PENDING, COMPLETED_STEP_1, FAILED, COMPENSATING) vào database. Nếu orchestrator sập giữa chừng, sau khi khởi động lại nó đọc saga log và tiếp tục hoặc chạy bù các bước còn lại.
+
+### Ví dụ mã Java
+~~~java
+class SagaOrchestrator {
+    private final List<Runnable> steps = new ArrayList<>();
+    private final List<Runnable> compensations = new ArrayList<>();
+    private final List<Integer> completed = new ArrayList<>();
+    SagaOrchestrator() {}
+    void addStep(Runnable execute, Runnable compensate) {
+        steps.add(execute);
+        compensations.add(compensate);
+    }
+    boolean run() {
+        for (int i = 0; i < steps.size(); i++) {
+            try {
+                steps.get(i).run();
+                completed.add(i);
+            } catch (Throwable t) {
+                for (int j = completed.size() - 1; j >= 0; j--) {
+                    compensations.get(completed.get(j)).run();
+                }
+                return false;
+            }
+        }
+        return true;
+    }
+}
+~~~
+
+### Lưu ý thực tế
+- Bước bù phải idempotent: chạy lại nhiều lần không gây sai. Ví dụ hoàn tiền một giao dịch đã hoàn tiền thì không bị trừ hai lần.
+- Bước bù cũng có thể thất bại (mạng, dịch vụ down) -> cần retry, dead-letter queue, hoặc cảnh báo ops can thiệp thủ công. Không bao giờ bỏ lặng.
+- Saga chỉ đảm bảo eventual consistency, không phải ACID cứng. Giữa các bước dữ liệu có thể tạm thời không nhất quán, client cần chấp nhận trạng thái trung gian (ví dụ đơn hàng đang xử lý, chưa xác nhận thanh toán).
+- Không dùng Saga cho nghiệp vụ cần phản hồi tức thì và chặt chẽ (ví dụ thanh toán phải xác nhận ngay trước khi báo người dùng). Dùng giao dịch cục bộ trong một dịch vụ cho trường hợp đó.
+- Orchestrator cần saga log lưu trạng thái để khôi phục sau sập; nếu không, bước đã làm sẽ không biết phải bù khi khởi động lại.
+
+### Liên hệ phỏng vấn
+Nêu lý do chia database-per-service làm ACID đơn không chạy xuyên dịch vụ, sau đó chọn Saga orchestrator khi cần theo dõi luồng phức tạp và choreography khi luồng đơn giản. Nhấn mạnh bước bù phải idempotent, orchestrator lưu saga log để khôi phục, và Saga chỉ đạt eventual consistency.`, {
+    title: 'Cài Saga orchestrator với bước bù',
+    prompt: 'Cài {{SagaOrchestrator}}. addStep(thucHien, hoanTac) đăng ký bước. run() thực hiện các bước theo thứ tự; nếu bước nào ném exception thì gọi hoanTac của các bước đã thành công theo thứ tự ngược lại và trả về false. Nếu tất cả thành công trả về true. Bước chưa chạy sau khi thất bại không được gọi.',
+    starter: `class SagaOrchestrator {
+    private final List<Runnable> steps = new ArrayList<>();
+    private final List<Runnable> compensations = new ArrayList<>();
+    SagaOrchestrator() {}
+    void addStep(Runnable execute, Runnable compensate) { throw new UnsupportedOperationException("TODO"); }
+    boolean run() { throw new UnsupportedOperationException("TODO"); }
+}`,
+    tests: `public class Main {
+  static int pass=0,total=0;
+  static void c(String n, boolean ok){total++;if(ok){pass++;System.out.println("PASS "+n);}else System.out.println("FAIL "+n+": unexpected result");}
+  public static void main(String[] a){
+    List<String> log=new ArrayList<>();
+    SagaOrchestrator s=new SagaOrchestrator();
+    s.addStep(()->log.add("S1-exec"),()->log.add("S1-comp"));
+    s.addStep(()->{log.add("S2-exec");throw new RuntimeException("boom");},()->log.add("S2-comp"));
+    s.addStep(()->log.add("S3-exec"),()->log.add("S3-comp"));
+    boolean ok=s.run();
+    c("tra ve false khi buoc that bai",!ok);
+    c("buoc 1 va 2 chay theo thu tu",log.get(0).equals("S1-exec")&&log.get(1).equals("S2-exec"));
+    c("buoc 3 khong chay sau that bai",!log.contains("S3-exec"));
+    c("buoc 1 duoc hoan tac",log.contains("S1-comp"));
+    c("chi buoc da hoan thanh duoc hoan tac",log.size()==3&&log.get(2).equals("S1-comp"));
+    List<String> log2=new ArrayList<>();
+    SagaOrchestrator s2=new SagaOrchestrator();
+    s2.addStep(()->log2.add("A-exec"),()->log2.add("A-comp"));
+    s2.addStep(()->log2.add("B-exec"),()->log2.add("B-comp"));
+    c("tat ca thanh cong tra ve true",s2.run());
+    c("khong buoc nao bi hoan tac khi tat ca thanh cong",!log2.contains("A-comp")&&!log2.contains("B-comp"));
+    System.out.println("RESULT "+pass+"/"+total);
+  }
+}`,
+    reference: `class SagaOrchestrator {
+    private final List<Runnable> steps = new ArrayList<>();
+    private final List<Runnable> compensations = new ArrayList<>();
+    private final List<Integer> completed = new ArrayList<>();
+    SagaOrchestrator() {}
+    void addStep(Runnable execute, Runnable compensate) {
+        steps.add(execute);
+        compensations.add(compensate);
+    }
+    boolean run() {
+        for (int i = 0; i < steps.size(); i++) {
+            try {
+                steps.get(i).run();
+                completed.add(i);
+            } catch (Throwable t) {
+                for (int j = completed.size() - 1; j >= 0; j--) {
+                    compensations.get(completed.get(j)).run();
+                }
+                return false;
+            }
+        }
+        return true;
+    }
+}`,
+    hints: [
+      'Dùng danh sách completed để ghi chỉ số các bước đã thực hiện thành công.',
+      'Khi bước i ném exception, lặp completed ngược từ cuối lên đầu và chạy bù từng bước.',
+      'Trả về false ngay sau khi bù xong, bước sau đó không được gọi.',
+    ],
+    explain: `Orchestrator thực hiện các bước tuần tự. Mỗi bước thành công ghi vào completed. Nếu bước bất kỳ ném exception, orchestrator gọi bù cho các bước đã hoàn thành theo thứ tự ngược lại (LIFO) để hoàn tác tác động, rồi trả về false. Các bước sau bước thất bại không được gọi. Nếu tất cả thành công trả về true. Các bước bù nên idempotent và có retry nếu thất bại.`,
+  }, [
+    { q: 'Saga orchestrator khi bước bất kỳ thất bại làm gì?', options: ['Gọi bù các bước đã thành công theo thứ tự ngược lại và trả về false', 'Tiếp tục chạy các bước còn lại cho đến hết', 'Xóa database của tất cả các dịch vụ liên quan', 'Chỉ chạy bước bù của bước thất bại'], answer: 0, explain: 'Orchestrator hoàn tác các bước đã hoàn thành bằng bước bù theo thứ tự ngược lại (LIFO), rồi trả về false. Các bước sau bước thất bại không được gọi, tránh làm sâu sắc hơn sự cố.' },
+    { q: 'Khác biệt chính giữa Saga choreography và orchestration?', options: ['Orchestration có bộ điều phối trung tâm gọi từng bước và quản lý trạng thái; choreography mỗi dịch vụ nghe sự kiện và thực hiện bước của mình', 'Choreography chỉ dùng cho một dịch vụ, orchestration dùng cho nhiều dịch vụ', 'Orchestration không cần lưu trạng thái, choreography phải lưu trạng thái', 'Cả hai đều dùng giao dịch ACID đơn xuyên dịch vụ'], answer: 0, explain: 'Orchestration tập trung luồng điều phối ở một orchestrator có saga log, dễ theo dõi và retry. Choreography phi tập trung, mỗi dịch vụ phản ứng theo sự kiện, khó theo dõi end-to-end.' },
+    { q: 'Bước bù trong Saga phải đáp ứng điều kiện gì?', options: ['Phải idempotent và có thể retry khi thất bại, không được bỏ lặng', 'Chỉ được chạy đúng một lần', 'Phải chạy song song với bước thực hiện', 'Không cần xử lý lỗi khi bước bù thất bại'], answer: 0, explain: 'Bước bù phải idempotent (chạy lại nhiều lần không gây sai) và có cơ chế retry/dead-letter khi thất bại, vì mạng hoặc dịch vụ down có thể khiến bù không thành công lần đầu.' },
+  ], ['saga', 'orchestration', 'compensating-transaction', 'eventual-consistency', 'microservice', 'distributed-transaction']),
+  lesson('018', 18, 'Bulkhead pattern: cách ly tài nguyên ngăn lan truyền lỗi', 'senior', [
+    'Cài Bulkhead giới hạn số cuộc gọi đồng thời theo nhóm, cách ly lỗi giữa các downstream',
+    'Kết hợp bulkhead với timeout và circuit breaker, hiểu trade-off của cách ly tài nguyên',
+  ], `### Bulkhead là gì?
+Bulkhead (tách ngăn trên tàu) là mẫu cách ly tài nguyên (thread, connection, bộ nhớ) theo nhóm để lỗi hoặc quá tải ở một nhóm không lan sang các nhóm khác. Trong dịch vụ Java, nếu một gọi API chậm làm cạn hết thread pool chung, tất cả các calling khác cũng bị treo theo. Bulkhead tách thread pool và connection pool riêng cho từng downstream dependency, chừng một dependency bị chậm thì chỉ nhóm thread của nó bị ảnh hưởng, các nhóm khác vẫn xử lý bình thường.
+
+### Tại sao cần Bulkhead
+Một service gọi hai downstream: A (kho) và B (thanh toán). Cả hai dùng chung một thread pool lớn. Khi A bị giật lag, hàng triệu request clog thread pool, B không có thread để xử lý dù B vẫn khỏe, toàn bộ service bị down. Với Bulkhead, A có 10 thread, B có 10 thread. A chậm chỉ chiếm 10 thread của nó, B vẫn có 10 thread sẵn sàng. Lỗi được cách ly, hệ thống còn hoạt động một phần thay vì toàn diện down.
+
+### Cơ chế Bulkhead bằng semaphore đơn giản
+Bulkhead giống một semaphore: mỗi nhóm có số permits bằng số cuộc gọi đồng thời tối đa. Gọi một dịch vụ cần lấy permit; nếu nhóm đầy, request mới bị từ chối ngay (fail-fast) hoặc xếp hàng chờ ngắn với timeout, chứ không bị chặn vô thời hạn. Khi gọi xong, trả permit về nhóm.
+
+### Ví dụ mã Java
+~~~java
+class Bulkhead {
+    private int permits;
+    Bulkhead(int maxConcurrent) { this.permits = maxConcurrent; }
+    synchronized boolean tryAcquire() {
+        if (permits > 0) { permits--; return true; }
+        return false;
+    }
+    synchronized void release() { permits++; }
+    synchronized int available() { return permits; }
+}
+~~~
+
+### Lưu ý thực tế
+- Giữ kích thước bulkhead phù hợp: quá nhỏ làm giảm throughput, quá lớn không cách ly được lỗi. Đặt theo số connection pool và latency của từng downstream.
+- Kết hợp với timeout và circuit breaker: bulkhead ngăn chặn gọi mới khi nhóm đầy, circuit breaker ngắt hoàn toàn khi downstream lỗi liên tiếp, timeout tránh chờ vĩnh viễn.
+- Bulkhead áp dụng ở nhiều tầng: thread pool (Resilience4j thread-pool bulkhead), connection pool (HikariCP mỗi datasource), HTTP client connection pool, semaphore cho call ngoài hệ thống.
+- Nhược điểm: tài nguyên không chia sẻ linh hoạt giữa các nhóm; nếu một nhóm ít dùng thì permits của nó bị ngưng trong khi nhóm khác khát hở. Cần theo dõi metrics và điều chỉnh.
+
+### Liên hệ phỏng vấn
+Nêu cách bulkhead cách ly thread/connection pool theo downstream để lỗi tại một dependency không lan toàn hệ thống, so sánh với circuit breaker (bulkhead là cách ly nguồn lực, circuit breaker là ngắt gọi khi lỗi liên tiếp), và lưu ý kết hợp timeout để không chờ vĩnh viễn.`, {
+    title: 'Cài Bulkhead giới hạn số lượt gọi đồng thời',
+    prompt: 'Cài {{Bulkhead}} với số permits bằng maxConcurrent. tryAcquire() lấy một permit nếu còn, trả về true; nếu nhóm đầy trả về false (không chờ). release() trả một permit về nhóm. available() trả số permit còn lại. Tất cả các thao tác phải an toàn với luồng (thread-safe).',
+    starter: `class Bulkhead {
+    private int permits;
+    Bulkhead(int maxConcurrent) { this.permits = maxConcurrent; }
+    boolean tryAcquire() { throw new UnsupportedOperationException("TODO"); }
+    void release() { throw new UnsupportedOperationException("TODO"); }
+    int available() { throw new UnsupportedOperationException("TODO"); }
+}`,
+    tests: `public class Main {
+  static int pass=0,total=0;
+  static void c(String n, boolean ok){total++;if(ok){pass++;System.out.println("PASS "+n);}else System.out.println("FAIL "+n+": unexpected result");}
+  public static void main(String[] a){
+    Bulkhead b=new Bulkhead(2);
+    c("permit ban dau",b.available()==2);
+    c("lay 2 permit",b.tryAcquire()&&b.tryAcquire());
+    c("con 0 permit",b.available()==0);
+    c("cap 3 bi tu choi",!b.tryAcquire());
+    b.release();
+    c("con 1 sau release",b.available()==1);
+    c("lay lai duoc",b.tryAcquire());
+    c("con 0 sau lay lai",b.available()==0);
+    b.release();b.release();
+    c("con 2 sau release het",b.available()==2);
+    Bulkhead c2=new Bulkhead(1);
+    c("bulkhead 1 chi lay 1",c2.tryAcquire()&&!c2.tryAcquire());
+    System.out.println("RESULT "+pass+"/"+total);
+  }
+}`,
+    reference: `class Bulkhead {
+    private int permits;
+    Bulkhead(int maxConcurrent) { this.permits = maxConcurrent; }
+    synchronized boolean tryAcquire() {
+        if (permits > 0) { permits--; return true; }
+        return false;
+    }
+    synchronized void release() { permits++; }
+    synchronized int available() { return permits; }
+}`,
+    hints: [
+      'Dùng từ khóa synchronized trên các phương thức để đảm bảo an toàn luồng.',
+      'tryAcquire chỉ giảm permits khi permits > 0, không chờ khi nhóm đầy.',
+      'release tăng permits, available trả số còn lại.',
+    ],
+    explain: `Bulkhead giữ một bộ đếm permits. tryAcquire giảm permits nếu còn và trả về true, nếu hết trả về false ngay (fail-fast) để gọi không bị chặn vĩnh viễn. release trả permit về nhóm. Các phương thức dùng synchronized để nhiều luồng gọi cùng lúc không gây race condition. Kết hợp với timeout và circuit breaker trong production.`,
+  }, [
+    { q: 'Mục đích chính của Bulkhead?', options: ['Cách ly tài nguyên theo nhóm để lỗi tại một dependency không lan toàn hệ thống', 'Tăng tốc độ xử lý của từng request', 'Thay thế hoàn toàn cơ sở dữ liệu', 'Mã hóa dữ liệu truyền qua mạng'], answer: 0, explain: 'Bulkhead chia tài nguyên (thread, connection) thành các nhóm độc lập theo downstream. Lỗi hoặc quá tải ở một nhóm chỉ chiếm tài nguyên của nhóm đó, các nhóm khác vẫn hoạt động -> hệ thống giảm sút một phần thay vì toàn diện down.' },
+    { q: 'Khi nhóm Bulkhead đầy (hết permit), tryAcquire nên làm gì?', options: ['Trả về false ngay (fail-fast), không chờ vô thời hạn', 'Chờ vĩnh viễn cho đến khi có permit', 'Tự động tăng số permit', 'Bỏ qua và cho phép gọi tiếp'], answer: 0, explain: 'Bulkhead fail-fast: khi nhóm đầy, request mới bị từ chối ngay thay vì chờ vô thời hạn làm treo caller. Kết hợp timeout để caller không bị chờ liên tục không kết thúc.' },
+    { q: 'Bulkhead thường được kết hợp với gì trong production?', options: ['Timeout và circuit breaker', 'Chỉ dùng đơn lẻ, không kết hợp với gì', 'Thay thế connection pool hoàn toàn', 'Không cần cấu hình thêm'], answer: 0, explain: 'Bulkhead cách ly nguồn lực, circuit breaker ngắt gọi khi lỗi liên tiếp, timeout tránh chờ vĩnh viễn. Ba cơ chế bổ sung nhau để hệ thống bền vững (resilience).' },
+  ], ['bulkhead', 'circuit-breaker', 'thread-pool', 'isolation', 'resilience', 'graceful-degradation']),
   );
 })();
