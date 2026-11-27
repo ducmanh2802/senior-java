@@ -6259,4 +6259,689 @@ class RetryService {
   related: ['testing-002', 'testing-009', 'testing-015'],
   tags: ['Clock', 'MutableClock', 'scheduled job', 'retry', 'exponential backoff', 'DST', 'advance time', 'time testing'],
 },
+{
+  id: 'lesson-testing-017',
+  track: 'testing',
+  order: 17,
+  title: 'Stub có kịch bản và argument captor: test nhánh retry và kiểm chứng payload không lưu ở đâu',
+  level: 'senior',
+  minutes: 30,
+  goals: [
+    'Phân biệt stub trả một giá trị với stub trả **chuỗi giá trị theo thứ tự gọi** (kịch bản) để drive retry/fallback',
+    'Tự viết sequenced stub phát hiện over-call và argument captor để khẳng định payload phức tạp đúng lúc gọi',
+    'Biết khi nào dùng fake (đọc-sau-ghi), khi nào dùng stub kịch bản, và vì sao captor không thay được state verification',
+  ],
+  body: `**Tóm tắt:** Ba bài trước đã nói tới fake (thay cả cài đặt) và spy (ghi lại lời gọi). Bài này bổ sung hai kỹ thuật mà Mockito có sẵn nhưng ít người dùng đúng: **stub có kịch bản** — một stub trả về các giá trị khác nhau theo thứ tự gọi (thất bại, thất bại, thành công) để kiểm thử logic retry/fallback — và **argument captor** — một double ghi lại đúng tham số phức tạp được truyền vào tại thời điểm gọi, để khẳng định nội dung mà không nơi nào lưu lại được. Cả hai giải quyết đúng hai tình huống mà fake đơn thuần không làm tốt.
+
+### Nhắc lại: stub trả lời, mock kiểm tra, fake thay cài đặt
+Một **test double** (đối tượng thay thế trong kiểm thử) là object giả lập thay cho collaborator thật (database, API, hàng đợi) để cô lập đơn vị cần test. Bốn loại hay dùng:
+
+| Loại | Nhiệm vụ | Ví dụ |
+|---|---|---|
+| Stub | Trả dữ liệu định trước cho lời gọi | Gateway luôn trả {{true}} |
+| Spy | Ghi lại lời gọi để test kiểm tra sau | Lưu mọi entry audit |
+| Mock | Test **đặt kỳ vọng** tương tác lên | verify gửi đúng một lần |
+| Fake | Cài đặt thật nhưng đơn giản hơn | Repository lưu trong {{HashMap}} |
+
+Điểm mấu chốt: **stub trả lời câu hỏi, mock kiểm tra hành vi, fake thay cả cài đặt**. Bài này đi vào hai chỗ mà ba bài trước chưa chạm: stub trả **nhiều giá trị theo thứ tự**, và cách **bắt đúng tham số** tại thời điểm gọi.
+
+### Vấn đề 1: retry cần stub trả chuỗi giá trị, không phải một giá trị
+Logic retry/fallback rất phổ biến: gọi cổng thanh toán, nếu lỗi thì thử lại tối đa N lần. Để test nhánh "lỗi hai lần rồi thành công", bạn cần một collaborator **thất bại, thất bại, rồi thành công**. Một stub trả về đúng một giá trị cố định không làm được việc đó.
+
+Mockito có {{thenReturn(a, b, c)}} đúng cho mục đích này: mỗi lần gọi trả phần tử kế tiếp. Khi hết phần tử mà vẫn bị gọi, Mockito trả giá trị cuối (hoặc bạn cấu hình {{thenThrow}}). Ta tự viết một **sequenced stub** (stub có kịch bản) để thấy rõ cơ chế và để **phát hiện over-call**:
+
+~~~java
+interface SmsGateway { boolean send(String code); }
+
+class SequencedStubGateway implements SmsGateway {
+    private final List<Boolean> results;          // kịch bản: false, false, true...
+    private int index = 0;
+
+    SequencedStubGateway(List<Boolean> results) {
+        this.results = new ArrayList<>(results);   // copy để không phụ thuộc list ngoài
+    }
+
+    @Override public boolean send(String code) {
+        // hết kịch bản mà vẫn bị gọi = service gọi nhiều hơn dự kiến -> báo ngay
+        if (index >= results.size())
+            throw new IllegalStateException("no more stubbed responses (call " + (index + 1) + ")");
+        return results.get(index++);               // trả theo thứ tự, tăng con trỏ
+    }
+
+    int calls() { return index; }                  // đếm số lời gọi
+}
+~~~
+
+Hai chi tiết quan trọng. Thứ nhất, **stub không kiểm tra tham số**: nó trả theo thứ tự bất kể {{code}} là gì — việc service truyền đúng {{code}} hay không phải do một double khác kiểm tra. Thứ hai, **over-call phải nổ ra**: nếu service gọi 4 lần trong khi kịch bản chỉ có 3 phần tử, ném exception giúp bạn phát hiện ngay lỗi "gọi dư" thay vì im lặng trả giá trị mặc định. Đây là điểm cộng lớn so với mock mặc định: mock khi hết {{thenReturn}} sẽ trả {{false}}/{{null}} và test có thể xanh giả.
+
+### Vấn đề 2: payload không lưu ở đâu thì dùng argument captor
+Có những tác dụng phụ **không quan sát được qua state**: service gọi {{audit.record(entry)}} hoặc {{publisher.publish(event)}} rồi... không lưu entry vào chỗ nào bạn đọc lại được. Fake repository không giúp gì vì không có state để đọc. Lúc này bạn cần một **argument captor** (bộ bắt tham số): một spy ghi lại **đúng object được truyền vào tại thời điểm gọi**.
+
+~~~java
+interface AuditLog { void record(String entry); }
+
+class CapturingAuditLog implements AuditLog {
+    private final List<String> entries = new ArrayList<>();
+
+    @Override public void record(String entry) {
+        entries.add(entry);                        // chép lại tham số vào bộ nhớ của test
+    }
+
+    List<String> entries() {
+        return new ArrayList<>(entries);           // trả BẢN SAO để test không sửa được state thật
+    }
+
+    int size() { return entries.size(); }
+}
+~~~
+
+Sau khi chạy, test khẳng định {{entries().get(0)}} đúng là chuỗi mong đợi, ví dụ {{SENT phone=0900 attempt=3}}. Đây chính là điều Mockito làm bằng {{ArgumentCaptor}}: {{verify(audit).record(captor.capture())}} rồi {{assertEquals(..., captor.getValue())}}. Điểm cần nhớ: captor chỉ nên dùng cho **tương tác là hợp đồng nghiệp vụ** (đã gửi đúng nội dung gì), không phải cho mọi lời gọi nội bộ.
+
+### Kết hợp: service gửi mã có retry, test bằng stub kịch bản + captor
+~~~java
+class NotificationService {
+    private final SmsGateway gateway;
+    private final AuditLog audit;
+    private final int maxAttempts;
+
+    NotificationService(SmsGateway gateway, AuditLog audit, int maxAttempts) {
+        this.gateway = gateway; this.audit = audit; this.maxAttempts = maxAttempts;
+    }
+
+    void sendCode(String phone, String code) {
+        if (phone == null || phone.isEmpty()) throw new IllegalArgumentException("phone required");
+        if (code == null || code.isEmpty()) throw new IllegalArgumentException("code required");
+        int attempt = 0;
+        while (attempt < maxAttempts) {
+            attempt++;
+            if (gateway.send(code)) {              // stub kịch bản quyết định true/false
+                audit.record("SENT phone=" + phone + " attempt=" + attempt);
+                return;
+            }
+        }
+        audit.record("FAILED phone=" + phone + " attempts=" + maxAttempts);
+    }
+}
+~~~
+
+Test dựng {{new SequencedStubGateway(List.of(false, false, true))}}, gọi {{sendCode}}, rồi khẳng định: gateway được gọi đúng 3 lần (stub cho biết qua {{calls()}}), và captor ghi đúng một entry {{SENT phone=0900 attempt=3}}. Bạn vừa kiểm tra **state** (đã gửi thành công ở lần 3) lẫn **interaction** (nội dung audit) mà không cần DB thật.
+
+### Khi nào dùng cái nào (bổ sung cho bảng ở bài 001)
+| Tình huống | Nên dùng | Lý do |
+|---|---|---|
+| Cần service chạy được nhiều bước đọc-ghi | Fake | Giữ state, không khoá số lời gọi |
+| Test retry/fallback: lỗi rồi thành công | Stub kịch bản | Trả chuỗi giá trị theo thứ tự, phát hiện over-call |
+| Tác dụng phụ không lưu ở đâu (audit, event) | Argument captor (spy) | Bắt đúng tham số tại thời điểm gọi |
+| Kiểm tra "gọi đúng một lần" | Mock/verify | Interaction verification |
+
+Một quy tắc: **state verification trước, captor sau**. Nếu đọc lại được kết quả từ state (số dư, đơn hàng đã lưu) thì đừng captor; captor để dành cho những gì thực sự không có state.
+
+### Bẫy production hay gặp
+- **Stub trả giá trị cuối khi hết kịch bản**: service gọi dư một lần vẫn "thành công" giả. Hãy ném exception khi hết kịch bản để bắt over-call.
+- **Captor trả thẳng list nội bộ**: test vô tình {{clear()}} hoặc {{add()}} làm hỏng state. Luôn trả {{new ArrayList<>(entries)}}.
+- **Lạm dụng captor cho mọi lời gọi**: test biết quá nhiều về cách service làm việc, refactor là đỏ. Chỉ captor những tương tác là hợp đồng.
+- **Stub dùng chung giữa các test**: con trỏ {{index}} đã chạy tới cuối, test sau nhận giá trị sai. Tạo stub mới mỗi test.
+- **Nhầm captor với fake**: fake cho bạn đọc-sau-ghi; captor chỉ chụp tham số. Chọn sai sẽ khiến test không kiểm chứng được điều bạn cần.
+
+> Senior tip: khi test một luồng có retry, hãy hỏi "đây là state verification hay interaction verification?". Số dư cuối đúng là state; "đã gửi đúng một SMS với nội dung X" là interaction. Dùng stub kịch bản cho phần retry, captor cho phần audit, và fake cho repository — mỗi double một việc. Đừng để một mock ôm cả ba vai trò, vì khi đó test sẽ vỡ mỗi lần bạn đổi cách cài đặt bên trong.
+
+### Ví dụ đời thực: gửi OTP retry và audit thiếu
+Một app gửi mã OTP qua SMS. Service thử tối đa 3 lần; gateway hay timeout 1–2 lần rồi mới thành công. Test ban đầu dùng một stub trả {{true}} cố định, nên không bao giờ chạm nhánh retry. Một hôm gateway đổi hành vi trả {{false}} lần đầu, service gửi 3 SMS cho cùng một người (vì logic retry sai), test vẫn xanh. Đội viết lại: sequenced stub {{List.of(false, true)}}, captor audit, assert gateway gọi đúng 2 lần và audit ghi {{attempt=2}}. Ngay lần chạy đầu, test đỏ vì service gọi 3 lần — bug over-send lộ ra trước production. Sau khi sửa, mỗi lần ai đó làm hỏng điều kiện dừng retry, CI bắt được tức thì.
+
+### Trả lời mẫu khi phỏng vấn
+"Khi hỏi 'test logic retry thế nào?', tôi nói: retry cần collaborator trả về chuỗi giá trị theo thứ tự — lỗi, lỗi, thành công — nên tôi dùng stub có kịch bản, tương đương {{thenReturn(a, b, c)}} của Mockito, và cho nó ném exception khi bị gọi quá số phần tử để bắt over-call. Với những tác dụng phụ không lưu ở đâu như audit hay publish event, tôi dùng argument captor — một spy ghi lại đúng tham số tại thời điểm gọi — rồi khẳng định nội dung, giống {{ArgumentCaptor}}. Tôi phân biệt rõ: đọc lại được từ state thì dùng state verification và fake; không có state thì mới captor. Và tôi chỉ captor những tương tác là hợp đồng nghiệp vụ, không captor mọi lời gọi, để test không vỡ khi refactor bên trong."
+
+### Liên hệ phỏng vấn
+Interviewer hay hỏi: "Bạn test retry/backoff thế nào?", "{{thenReturn(a,b,c)}} dùng khi nào?", "ArgumentCaptor khác gì verify thông thường?", và đưa một service gọi SMS 3 lần rồi hỏi bạn viết test. Câu trả lời tốt nêu rõ: stub kịch bản cho retry (kèm phát hiện over-call), captor cho payload không có state, fake cho repository, và luôn ưu tiên state verification khi có thể. Bài tập dưới đây bắt bạn tự viết cả sequenced stub lẫn captor cho một luồng gửi mã có retry.`,
+  exercises: [
+    {
+      title: 'Sequenced stub và argument captor cho NotificationService có retry',
+      prompt: `Cho sẵn interface {{SmsGateway}}, {{AuditLog}} và class {{NotificationService}}. Hãy hoàn thiện ba phần:
+
+1. {{SequencedStubGateway.send(code)}}: trả lần lượt các giá trị trong danh sách kết quả đã cấu hình theo thứ tự gọi; mỗi lần gọi tăng con trỏ. Nếu bị gọi khi **đã hết** kịch bản, ném {{IllegalStateException}} (để bắt over-call). {{calls()}} trả số lần đã gọi.
+2. {{CapturingAuditLog.record(entry)}} thêm entry vào danh sách; {{entries()}} trả về **bản sao** ({{new ArrayList<>(entries)}}) để test không sửa được state thật.
+3. {{NotificationService.sendCode(phone, code)}}: ném {{IllegalArgumentException}} nếu {{phone}} hoặc {{code}} rỗng/null; thử gọi {{gateway.send(code)}} tối đa {{maxAttempts}} lần; lần nào trả {{true}} thì ghi {{audit.record("SENT phone=" + phone + " attempt=" + attempt)}} rồi dừng; nếu hết lượt vẫn {{false}} thì ghi {{audit.record("FAILED phone=" + phone + " attempts=" + maxAttempts)}}.
+
+Test dùng stub kịch bản (false, false, true) để đi qua nhánh retry, và captor để kiểm chứng nội dung audit.`,
+      starter: `import java.util.*;
+
+interface SmsGateway {
+    boolean send(String code);
+}
+
+interface AuditLog {
+    void record(String entry);
+}
+
+class SequencedStubGateway implements SmsGateway {
+    private final List<Boolean> results;
+    private int index = 0;
+
+    SequencedStubGateway(List<Boolean> results) {
+        this.results = new ArrayList<>(results);
+    }
+
+    @Override public boolean send(String code) {
+        throw new UnsupportedOperationException("TODO");
+    }
+
+    int calls() { return index; }
+}
+
+class CapturingAuditLog implements AuditLog {
+    private final List<String> entries = new ArrayList<>();
+
+    @Override public void record(String entry) {
+        throw new UnsupportedOperationException("TODO");
+    }
+
+    List<String> entries() {
+        throw new UnsupportedOperationException("TODO");
+    }
+
+    int size() { return entries.size(); }
+}
+
+class NotificationService {
+    private final SmsGateway gateway;
+    private final AuditLog audit;
+    private final int maxAttempts;
+
+    NotificationService(SmsGateway gateway, AuditLog audit, int maxAttempts) {
+        this.gateway = gateway;
+        this.audit = audit;
+        this.maxAttempts = maxAttempts;
+    }
+
+    void sendCode(String phone, String code) {
+        throw new UnsupportedOperationException("TODO");
+    }
+}`,
+      tests: `public class Main {
+    static int passed = 0, total = 0;
+    static void check(String name, Runnable r) {
+        total++;
+        try { r.run(); passed++; System.out.println("PASS " + name); }
+        catch (Throwable t) { System.out.println("FAIL " + name + ": " + t); }
+    }
+    static void eq(Object expected, Object actual) {
+        if (!Objects.equals(expected, actual)) throw new AssertionError("expected " + expected + " got " + actual);
+    }
+    static void throwsType(Class<? extends Throwable> type, Runnable r) {
+        try { r.run(); } catch (Throwable t) {
+            if (type.isInstance(t)) return;
+            throw new AssertionError("mong doi " + type.getSimpleName() + " nhung nhan " + t.getClass().getSimpleName());
+        }
+        throw new AssertionError("mong doi " + type.getSimpleName() + " nhung khong nem gi");
+    }
+    public static void main(String[] args) {
+        check("sequenced stub returns configured results in order and detects over-call", () -> {
+            SequencedStubGateway g = new SequencedStubGateway(List.of(true, false, true));
+            eq(true, g.send("c"));
+            eq(false, g.send("c"));
+            eq(true, g.send("c"));
+            eq(3, g.calls());
+            throwsType(IllegalStateException.class, () -> g.send("c"));
+        });
+        check("service succeeds on third attempt and audit records attempt=3", () -> {
+            SequencedStubGateway g = new SequencedStubGateway(List.of(false, false, true));
+            CapturingAuditLog log = new CapturingAuditLog();
+            new NotificationService(g, log, 5).sendCode("0900", "123456");
+            eq(3, g.calls());
+            eq(1, log.size());
+            eq("SENT phone=0900 attempt=3", log.entries().get(0));
+        });
+        check("service gives up after maxAttempts and records FAILED", () -> {
+            SequencedStubGateway g = new SequencedStubGateway(List.of(false, false));
+            CapturingAuditLog log = new CapturingAuditLog();
+            new NotificationService(g, log, 2).sendCode("0900", "123456");
+            eq(2, g.calls());
+            eq(1, log.size());
+            eq("FAILED phone=0900 attempts=2", log.entries().get(0));
+        });
+        check("first attempt success records attempt=1 and calls gateway once", () -> {
+            SequencedStubGateway g = new SequencedStubGateway(List.of(true));
+            CapturingAuditLog log = new CapturingAuditLog();
+            new NotificationService(g, log, 3).sendCode("0911", "999");
+            eq(1, g.calls());
+            eq("SENT phone=0911 attempt=1", log.entries().get(0));
+        });
+        check("captor returns a defensive copy", () -> {
+            CapturingAuditLog log = new CapturingAuditLog();
+            log.record("a");
+            List<String> copy = log.entries();
+            copy.add("b");
+            eq(1, log.size());
+            eq("a", log.entries().get(0));
+        });
+        check("validation rejects empty phone/code and never calls the gateway", () -> {
+            SequencedStubGateway g = new SequencedStubGateway(List.of(true));
+            CapturingAuditLog log = new CapturingAuditLog();
+            NotificationService s = new NotificationService(g, log, 3);
+            throwsType(IllegalArgumentException.class, () -> s.sendCode("", "x"));
+            throwsType(IllegalArgumentException.class, () -> s.sendCode("0900", ""));
+            eq(0, g.calls());
+            eq(0, log.size());
+        });
+        System.out.println("RESULT " + passed + "/" + total);
+    }
+}`,
+      reference: `import java.util.*;
+
+interface SmsGateway {
+    boolean send(String code);
+}
+
+interface AuditLog {
+    void record(String entry);
+}
+
+class SequencedStubGateway implements SmsGateway {
+    private final List<Boolean> results;
+    private int index = 0;
+
+    SequencedStubGateway(List<Boolean> results) {
+        this.results = new ArrayList<>(results);
+    }
+
+    @Override public boolean send(String code) {
+        if (index >= results.size())
+            throw new IllegalStateException("no more stubbed responses (call " + (index + 1) + ")");
+        return results.get(index++);
+    }
+
+    int calls() { return index; }
+}
+
+class CapturingAuditLog implements AuditLog {
+    private final List<String> entries = new ArrayList<>();
+
+    @Override public void record(String entry) {
+        entries.add(entry);
+    }
+
+    List<String> entries() {
+        return new ArrayList<>(entries);
+    }
+
+    int size() { return entries.size(); }
+}
+
+class NotificationService {
+    private final SmsGateway gateway;
+    private final AuditLog audit;
+    private final int maxAttempts;
+
+    NotificationService(SmsGateway gateway, AuditLog audit, int maxAttempts) {
+        this.gateway = gateway;
+        this.audit = audit;
+        this.maxAttempts = maxAttempts;
+    }
+
+    void sendCode(String phone, String code) {
+        if (phone == null || phone.isEmpty()) throw new IllegalArgumentException("phone required");
+        if (code == null || code.isEmpty()) throw new IllegalArgumentException("code required");
+        int attempt = 0;
+        while (attempt < maxAttempts) {
+            attempt++;
+            if (gateway.send(code)) {
+                audit.record("SENT phone=" + phone + " attempt=" + attempt);
+                return;
+            }
+        }
+        audit.record("FAILED phone=" + phone + " attempts=" + maxAttempts);
+    }
+}`,
+      hints: [
+        'Sequenced stub: {{if (index >= results.size()) throw new IllegalStateException(...)}} để bắt over-call, rồi {{return results.get(index++)}}. Đừng trả giá trị mặc định khi hết kịch bản.',
+        'Captor: {{record}} làm {{entries.add(entry)}}; {{entries()}} trả {{new ArrayList<>(entries)}} (bản sao) để test không sửa được state thật.',
+        'Service: vòng {{while (attempt < maxAttempts)}}, tăng {{attempt}} trước khi gọi; {{true}} thì ghi SENT kèm attempt rồi {{return}}; hết vòng thì ghi FAILED. Kiểm tra phone/code rỗng trước vòng lặp.',
+      ],
+      explain: `**Vì sao stub kịch bản chứ không phải một giá trị.** Retry cần quan sát service xử lý đúng khi collaborator đổi kết quả qua từng lần gọi. Một stub {{true}} cố định không bao giờ chạm nhánh retry; một stub {{false}} cố định không bao giờ chạm nhánh thành công. Chuỗi {{false, false, true}} đi qua cả hai.
+
+**Vì sao over-call phải nổ ra.** Nếu hết kịch bản mà stub trả giá trị mặc định, service gọi dư một lần vẫn "thành công" giả và test xanh. Ném {{IllegalStateException}} biến "gọi dư" thành tín hiệu đỏ ngay — đây là điểm mạnh so với {{when(...).thenReturn(...)}} mặc định của Mockito (trả {{false}}/{{null}} khi hết).
+
+**Vì sao captor trả bản sao.** {{entries()}} trả thẳng list nội bộ thì test có thể {{clear()}}/{{add()}} làm hỏng state, và hai lần đọc không còn nhất quán. {{new ArrayList<>(entries)}} giữ cho state của double chỉ do service thay đổi.
+
+Lỗi hay gặp:
+- Dùng một stub {{true}} cố định: test không bao giờ chạy nhánh retry, bug điều kiện dừng lọt.
+- Quên tăng {{attempt}} trước khi gọi: vòng lặp lặp vô hạn hoặc đếm sai số lần.
+- Ghi SENT trước khi kiểm tra kết quả: service báo thành công dù gateway trả {{false}}.
+- Captor cho mọi lời gọi: test khoá vào chi tiết nội bộ, refactor là đỏ. Chỉ captor tương tác là hợp đồng (nội dung audit).
+- Dùng chung stub giữa các test: con trỏ {{index}} đã ở cuối, test sau nhận sai. Tạo mới mỗi test.
+
+Trong Mockito, bài này tương đương {{when(gateway.send(...)).thenReturn(false, false, true)}} cho stub kịch bản, và {{ArgumentCaptor<String> captor = ArgumentCaptor.forClass(String.class); verify(audit).record(captor.capture());}} cho captor.`,
+    },
+  ],
+  check: [
+    {
+      q: 'Bạn cần test service thử lại tối đa 3 lần: gateway lỗi 2 lần rồi thành công. Double nào phù hợp nhất?',
+      options: [
+        'Một stub luôn trả về {{true}}',
+        'Một stub có kịch bản trả về theo thứ tự {{false, false, true}} và ném lỗi khi bị gọi quá 3 lần',
+        'Một fake repository lưu trong {{HashMap}}',
+        'Không cần double, gọi gateway thật',
+      ],
+      answer: 1,
+      explain: `Retry cần quan sát service xử lý đúng khi kết quả đổi qua từng lần gọi, nên cần stub trả chuỗi giá trị theo thứ tự. Stub {{true}} cố định không chạm nhánh retry; fake repository không mô phỏng được chuỗi kết quả của gateway; gọi gateway thật làm test chậm và flaky. Ném lỗi khi gọi dư giúp bắt over-call.`,
+    },
+    {
+      q: 'Vì sao argument captor nên trả về bản sao danh sách thay vì danh sách nội bộ?',
+      options: [
+        'Vì Java bắt buộc mọi getter phải copy',
+        'Vì nếu trả list gốc, test có thể sửa nó làm hỏng state và hai lần đọc không nhất quán',
+        'Vì captor không được phép lưu dữ liệu',
+        'Vì bản sao chạy nhanh hơn',
+      ],
+      answer: 1,
+      explain: `Trả list nội bộ cho phép test (hoặc code khác) {{clear}}/{{add}} làm hỏng state mà double đang giữ, khiến kết quả đọc sau không còn phản ánh đúng những gì service đã ghi. {{new ArrayList<>(entries)}} bảo vệ state. Java không bắt buộc copy; captor sinh ra chính để lưu; bản sao không nhanh hơn.`,
+    },
+    {
+      q: 'Khi nào nên dùng state verification thay vì argument captor?',
+      options: [
+        'Luôn dùng captor cho mọi lời gọi',
+        'Khi đọc lại được kết quả từ state (số dư, đơn hàng đã lưu) thì ưu tiên state verification; captor để dành cho tác dụng phụ không có state',
+        'Captor chỉ dùng cho method trả về {{void}}',
+        'State verification không bao giờ dùng được với repository',
+      ],
+      answer: 1,
+      explain: `State verification bền vững hơn vì không khoá vào cách service gọi collaborator. Chỉ khi tác dụng phụ không quan sát được qua state (audit, publish event) mới cần captor. Dùng captor cho mọi lời gọi là over-specification. Captor không chỉ dùng cho {{void}}, và state verification hoàn toàn dùng được với repository (đọc lại dữ liệu đã lưu).`,
+    },
+  ],
+  related: ['testing-003', 'testing-057', 'testing-011'],
+  tags: ['test double', 'stub', 'sequenced stub', 'argument captor', 'retry', 'spy', 'mock'],
+},
+{
+  id: 'lesson-testing-018',
+  track: 'testing',
+  order: 18,
+  title: 'Test nghiệp vụ theo ngày lịch bằng Clock: cuối tháng, năm nhuận và múi giờ kinh doanh',
+  level: 'senior',
+  minutes: 25,
+  goals: [
+    'Phân biệt mốc tuyệt đối ({{Instant}}) với ngày lịch ({{LocalDate}}) và vì sao nghiệp vụ "theo ngày" cần {{LocalDate.now(clock)}}',
+    'Dùng {{Clock.fixed}} với {{ZoneId}} cố định để test bài toán kỳ thanh toán: ngày cuối kỳ, năm nhuận, biên ngày',
+    'Tránh bẫy múi giờ (server UTC, người dùng UTC+7) và off-by-one khi đếm "còn N ngày"',
+  ],
+  body: `**Tóm tắt:** Bài 002/014 đã dùng {{Clock}} cho mốc tuyệt đối (token hết hạn, phí trễ hạn theo giây). Bài này xử lý một họ bài toán khác: nghiệp vụ **theo ngày lịch** — kỳ thanh toán, hạn dùng "trong hôm nay", ngày reset — nơi kết quả phụ thuộc {{LocalDate}} và **múi giờ kinh doanh**. Công thức đúng là {{LocalDate.now(clock)}} với một {{ZoneId}} cố định, cộng/trừ tháng bằng {{plusMonths}} (tự xử lý tháng dài ngắn và năm nhuận), và đếm ngày còn lại theo quy ước bao gồm cả hôm nay. Test dùng {{Clock.fixed(instant, zone)}} để đóng băng cả thời điểm lẫn múi giờ.
+
+### Mốc tuyệt đối khác ngày lịch
+Một **mốc tuyệt đối** ({{Instant}}) là một điểm trên trục thời gian toàn cầu, không phụ thuộc múi giờ: {{2026-03-01T00:00:00Z}} là cùng một khoảnh khắc ở mọi nơi. Một **ngày lịch** ({{LocalDate}}) là "ngày 1 tháng 3" — nó chỉ có nghĩa khi gắn với một múi giờ, vì {{2026-03-01}} bắt đầu ở các thời điểm khác nhau tại Hà Nội và London.
+
+Với token hết hạn hay phí trễ hạn theo giây, {{Instant}} là đúng. Nhưng với "kỳ thanh toán từ ngày 1 đến cuối tháng", "hạn dùng trong hôm nay", "ngày reset lượt miễn phí", nghiệp vụ nói về **ngày trên lịch của người dùng**, nên phải dùng {{LocalDate}} với **múi giờ kinh doanh cố định**, không phải múi giờ mặc định của JVM.
+
+### Vì sao {{LocalDate.now()}} không tham số là bẫy
+~~~java
+LocalDate today = LocalDate.now();          // SAI: dùng múi giờ mặc định của JVM
+~~~
+
+Server thường chạy UTC, còn người dùng ở Việt Nam (UTC+7). Cùng một khoảnh khắc, {{LocalDate.now()}} trên server ra "hôm qua", trên máy dev ra "hôm nay". Test viết bằng {{LocalDate.now()}} sẽ xanh trên CI (UTC) và đỏ trên máy dev, hoặc ngược lại — đúng loại flaky theo múi giờ. Cách đúng là **đưa cả thời điểm lẫn múi giờ vào từ ngoài**:
+
+~~~java
+class SubscriptionService {
+    private final Clock clock;                 // clock đã mang múi giờ kinh doanh
+
+    SubscriptionService(Clock clock) { this.clock = clock; }
+
+    LocalDate today() { return LocalDate.now(clock); }   // chỉ đọc clock ở đây
+}
+~~~
+
+Production truyền {{Clock.system(ZoneId.of("Asia/Ho_Chi_Minh"))}}; test truyền {{Clock.fixed(instant, ZoneId.of("Asia/Ho_Chi_Minh"))}}. Từ đây "hôm nay" là một hàm thuần của clock, test cố định được.
+
+### Bài toán kỳ thanh toán: cuối tháng và năm nhuận
+Một chu kỳ bắt đầu từ {{start}} (bao gồm) và kéo dài {{months}} tháng. Ngày cuối kỳ là **ngày trước** thời điểm cùng ngày sau {{months}} tháng:
+
+~~~java
+LocalDate periodEnd(LocalDate start, int months) {
+    return start.plusMonths(months).minusDays(1);
+}
+~~~
+
+Điểm mấu chốt: dùng {{plusMonths}} thay vì tự cộng 30 hay "nhảy sang tháng sau rồi lùi 1 ngày" bằng số học tay. {{plusMonths}} của JDK tự biết tháng 2 có 28 hay 29 ngày, tháng 4 có 30 ngày. Ví dụ:
+
+| start | months | periodEnd | Vì sao |
+|---|---|---|---|
+| 2026-01-01 | 1 | 2026-01-31 | tháng 1 có 31 ngày |
+| 2026-01-15 | 1 | 2026-02-14 | cùng ngày tháng sau trừ 1 |
+| 2024-02-01 | 1 | 2024-02-29 | 2024 là năm nhuận |
+| 2026-02-01 | 1 | 2026-02-28 | 2026 không nhuận |
+
+Nếu bạn tự viết {{start.withDayOfMonth(1).plusMonths(1).minusDays(1)}} cho ngày 31/1 cũng ra đúng, nhưng nếu quên xử lý "ngày 31 của tháng không có 31" (ví dụ 31/1 cộng 1 tháng) thì sẽ ném lỗi hoặc nhảy sai. {{plusMonths}} lo hết.
+
+### Đếm "còn N ngày": quy ước bao gồm hôm nay
+Khi hỏi "còn bao nhiêu ngày nữa hết kỳ", cần chốt quy ước. Ở đây ta đếm **bao gồm cả hôm nay**: nếu hôm nay là ngày cuối kỳ thì còn 1 ngày; hôm sau ngày cuối kỳ thì còn 0.
+
+~~~java
+long daysRemaining(LocalDate start, int months) {
+    LocalDate end = periodEnd(start, months);
+    LocalDate t = today();
+    if (t.isBefore(start) || t.isAfter(end)) return 0;  // ngoài kỳ: chưa vào hoặc đã qua
+    return ChronoUnit.DAYS.between(t, end) + 1;         // +1 để tính cả hôm nay
+}
+~~~
+
+Đây là chỗ **off-by-one** hay xảy ra nhất: {{ChronoUnit.DAYS.between(t, end)}} đếm số ranh giới nửa đêm giữa hai ngày, nên từ 1/3 đến 31/3 là 30, nhưng "số ngày còn lại" phải là 31. Phải cộng 1. Test biên "đúng ngày cuối kỳ" (còn 1) và "hôm sau" (còn 0) là nơi bắt được lỗi này. Ngoài ra, nếu hôm nay còn **trước** ngày bắt đầu kỳ (chưa vào kỳ) thì cũng trả 0 — "còn N ngày" chỉ có nghĩa khi đã ở trong kỳ.
+
+### Múi giờ kinh doanh quyết định "hôm nay"
+Cùng một khoảnh khắc {{2026-02-28T20:00:00Z}}:
+- Ở UTC+7 (Hà Nội) là 03:00 ngày 1/3 → "hôm nay" là 1/3.
+- Ở UTC là 20:00 ngày 28/2 → "hôm nay" là 28/2.
+
+Nếu kỳ bắt đầu 1/3, người Hà Nội đã ở trong kỳ, người theo UTC thì chưa. Vì vậy clock phải mang đúng {{ZoneId}} kinh doanh. Test cố định cả hai để chứng minh: cùng một {{Instant}}, hai {{ZoneId}} cho hai kết quả khác nhau — và đó là hành vi đúng, không phải bug.
+
+### DST: vì sao bài này dùng {{LocalDate}} là an toàn
+Giờ mùa hè (DST — daylight saving time, mùa chỉnh đồng hồ) làm một ngày có 23 hoặc 25 giờ. Với {{LocalDate}} (chỉ có ngày, không giờ) thì DST không ảnh hưởng: "ngày 31/3" vẫn là ngày 31/3. Nếu bài toán cần cả **giờ** (ví dụ "hạn lúc 23:59 ngày cuối kỳ"), hãy dùng {{ZonedDateTime}} với {{ZoneId}}, và cẩn thận với khoảng giờ không tồn tại (02:30 ngày chuyển DST) — JDK sẽ tự điều chỉnh, nhưng bạn phải viết test cho cả ngày thường lẫn ngày DST.
+
+### Trong Spring Boot
+Khai báo một bean {{Clock}} mang múi giờ kinh doanh và inject vào service:
+
+~~~java
+@Configuration
+class TimeConfig {
+    @Bean Clock clock() { return Clock.system(ZoneId.of("Asia/Ho_Chi_Minh")); }
+}
+~~~
+
+Unit test tạo service trực tiếp với {{Clock.fixed}}, không cần Spring. Đừng để mỗi service tự gọi {{LocalDate.now()}} — như thế lại quay về dependency ẩn.
+
+### Bẫy production hay gặp
+- **Dùng {{LocalDate.now()}} không tham số**: phụ thuộc múi giờ JVM, server UTC lệch một ngày so với người dùng.
+- **Tự cộng ngày bằng số 30/31**: sai độ dài tháng và năm nhuận. Dùng {{plusMonths}}/{{minusDays}}.
+- **Off-by-one khi đếm ngày**: quên cộng 1 khiến "ngày cuối kỳ" báo còn 0. Test biên "đúng ngày cuối" và "hôm sau".
+- **So sánh {{LocalDate}} với {{Instant}}**: hai kiểu không so trực tiếp được; phải quy về cùng kiểu qua {{ZoneId}}.
+- **Đọc giờ hệ thống ở tầng khác**: service nhận clock nhưng một helper vẫn gọi {{LocalDate.now()}}. Grep {{now()}} không tham số để soát.
+
+> Senior tip: với nghiệp vụ theo ngày, quy ước team nên là "không có {{now()}} không tham số trong domain code, chỉ có {{LocalDate.now(clock)}} với clock mang múi giờ kinh doanh". Khi review, grep {{LocalDate.now()}} là ra ngay chỗ vi phạm. Và luôn viết test biên: ngày cuối tháng, 29/2 năm nhuận, và khoảnh khắc nửa đêm ranh giới hai múi giờ.
+
+### Ví dụ đời thực: gia hạn thuê bao lệch một ngày
+Một dịch vụ thuê bao tính kỳ theo tháng, bắt đầu từ ngày đăng ký. Backend dùng {{LocalDate.now()}} trên server UTC để quyết định "đã hết kỳ chưa". Người dùng ở Việt Nam thấy bị chặn truy cập sớm một ngày vào cuối tháng, khi server đã sang ngày mới theo UTC nhưng Hà Nội vẫn còn trong ngày cũ. Đội điều tra: test chạy trên CI múi giờ UTC nên luôn xanh. Sau khi đổi sang {{LocalDate.now(clock)}} với {{ZoneId.of("Asia/Ho_Chi_Minh")}} và viết lại test bằng {{Clock.fixed}} cho cả hai múi giờ, lỗi không tái hiện. Họ cũng phát hiện thêm một off-by-one: "còn 1 ngày" bị báo là 0 vào đúng ngày cuối kỳ — sửa bằng cách cộng 1 khi đếm.
+
+### Trả lời mẫu khi phỏng vấn
+"Khi hỏi 'test nghiệp vụ theo ngày thế nào?', tôi nói: trước hết phân biệt mốc tuyệt đối ({{Instant}}) với ngày lịch ({{LocalDate}}). Token hết hạn thì dùng {{Instant}}, còn kỳ thanh toán hay hạn dùng trong ngày thì dùng {{LocalDate}} với {{Clock}} mang múi giờ kinh doanh, vì server UTC và người dùng UTC+7 lệch nhau một ngày. Tôi dùng {{plusMonths}} để cộng tháng — nó tự xử lý tháng dài ngắn và năm nhuận, nên 29/2 ra đúng. Đếm ngày còn lại tôi chốt quy ước bao gồm hôm nay và cộng 1, rồi test biên ngày cuối kỳ và hôm sau để bắt off-by-one. Test dùng {{Clock.fixed(instant, zone)}} để cố định cả thời điểm lẫn múi giờ, và tôi viết test cho cả hai múi giờ để chứng minh hành vi đúng. Không bao giờ dùng {{LocalDate.now()}} không tham số trong domain code."
+
+### Liên hệ phỏng vấn
+Interviewer hay hỏi: "{{LocalDate}} khác {{Instant}} thế nào, khi nào dùng cái nào?", "Xử lý ngày cuối tháng và năm nhuận ra sao?", "Server UTC người dùng UTC+7 thì test thế nào?", và đưa một bài toán "còn N ngày" để hỏi off-by-one. Câu trả lời tốt: dùng {{LocalDate.now(clock)}} với múi giờ cố định, {{plusMonths}} cho tháng/năm nhuận, quy ước đếm rõ ràng kèm test biên, và {{Clock.fixed}} cho cả hai múi giờ. Bài tập dưới đây mô phỏng đúng bài toán kỳ thuê bao với các biên cuối tháng, năm nhuận và ranh giới múi giờ.`,
+  exercises: [
+    {
+      title: 'SubscriptionService với Clock: ngày cuối kỳ, năm nhuận và múi giờ kinh doanh',
+      prompt: `Hoàn thiện {{SubscriptionService}} nhận {{Clock}} qua constructor (clock đã mang múi giờ kinh doanh):
+
+- {{today()}}: trả {{LocalDate.now(clock)}} (đã cho sẵn, không cần sửa).
+- {{periodEnd(start, months)}}: ngày cuối kỳ = {{start.plusMonths(months).minusDays(1)}}. {{start}} null hoặc {{months <= 0}} thì ném {{IllegalArgumentException}}.
+- {{daysRemaining(start, months)}}: số ngày còn lại **bao gồm cả hôm nay**; nếu hôm nay **trước** {{start}} hoặc **sau** ngày cuối kỳ thì trả 0 (ngoài kỳ). Công thức khi trong kỳ: {{ChronoUnit.DAYS.between(today, end) + 1}}.
+- {{inCycle(start, months)}}: true khi {{today}} nằm trong đoạn từ {{start}} (bao gồm) đến {{periodEnd}} (bao gồm).
+
+Test tạo {{Clock.fixed}} với các mốc cố định và các {{ZoneId}} khác nhau, nên kết quả phải không phụ thuộc thời gian chạy thật.`,
+      starter: `import java.time.*;
+import java.time.temporal.ChronoUnit;
+
+class SubscriptionService {
+    private final Clock clock;
+
+    SubscriptionService(Clock clock) {
+        this.clock = clock;
+    }
+
+    LocalDate today() { return LocalDate.now(clock); }
+
+    LocalDate periodEnd(LocalDate start, int months) {
+        throw new UnsupportedOperationException("TODO");
+    }
+
+    long daysRemaining(LocalDate start, int months) {
+        throw new UnsupportedOperationException("TODO");
+    }
+
+    boolean inCycle(LocalDate start, int months) {
+        throw new UnsupportedOperationException("TODO");
+    }
+}`,
+      tests: `import java.time.*;
+import java.time.temporal.ChronoUnit;
+
+public class Main {
+    static int passed = 0, total = 0;
+    static void check(String name, Runnable r) {
+        total++;
+        try { r.run(); passed++; System.out.println("PASS " + name); }
+        catch (Throwable t) { System.out.println("FAIL " + name + ": " + t); }
+    }
+    static void eq(Object expected, Object actual) {
+        if (!Objects.equals(expected, actual)) throw new AssertionError("expected " + expected + " got " + actual);
+    }
+    static Clock fixed(String iso, String zone) {
+        return Clock.fixed(Instant.parse(iso), ZoneId.of(zone));
+    }
+    static final LocalDate START = LocalDate.of(2026, 3, 1);
+    public static void main(String[] args) {
+        check("periodEnd handles month-end and short months", () -> {
+            SubscriptionService s = new SubscriptionService(fixed("2026-03-15T00:00:00Z", "UTC"));
+            eq(LocalDate.of(2026, 1, 31), s.periodEnd(LocalDate.of(2026, 1, 1), 1));
+            eq(LocalDate.of(2026, 2, 14), s.periodEnd(LocalDate.of(2026, 1, 15), 1));
+        });
+        check("periodEnd handles leap year February", () -> {
+            SubscriptionService s = new SubscriptionService(fixed("2026-03-15T00:00:00Z", "UTC"));
+            eq(LocalDate.of(2024, 2, 29), s.periodEnd(LocalDate.of(2024, 2, 1), 1));
+            eq(LocalDate.of(2026, 2, 28), s.periodEnd(LocalDate.of(2026, 2, 1), 1));
+        });
+        check("daysRemaining counts today inclusive and zero after the period", () -> {
+            eq(31L, new SubscriptionService(fixed("2026-03-01T00:00:00Z", "UTC")).daysRemaining(START, 1));
+            eq(1L, new SubscriptionService(fixed("2026-03-31T00:00:00Z", "UTC")).daysRemaining(START, 1));
+            eq(0L, new SubscriptionService(fixed("2026-04-01T00:00:00Z", "UTC")).daysRemaining(START, 1));
+        });
+        check("inCycle is inclusive of both start and end", () -> {
+            eq(true, new SubscriptionService(fixed("2026-03-15T00:00:00Z", "UTC")).inCycle(START, 1));
+            eq(true, new SubscriptionService(fixed("2026-03-31T00:00:00Z", "UTC")).inCycle(START, 1));
+            eq(false, new SubscriptionService(fixed("2026-02-28T00:00:00Z", "UTC")).inCycle(START, 1));
+            eq(false, new SubscriptionService(fixed("2026-04-01T00:00:00Z", "UTC")).inCycle(START, 1));
+        });
+        check("business zone decides today: same instant, Hanoi in cycle, UTC not yet", () -> {
+            SubscriptionService hcm = new SubscriptionService(fixed("2026-02-28T20:00:00Z", "Asia/Ho_Chi_Minh"));
+            eq(true, hcm.inCycle(START, 1));
+            eq(31L, hcm.daysRemaining(START, 1));
+            SubscriptionService utc = new SubscriptionService(fixed("2026-02-28T20:00:00Z", "UTC"));
+            eq(false, utc.inCycle(START, 1));
+            eq(0L, utc.daysRemaining(START, 1));
+        });
+        check("non-positive months and null start are rejected", () -> {
+            SubscriptionService s = new SubscriptionService(fixed("2026-03-15T00:00:00Z", "UTC"));
+            try { s.periodEnd(LocalDate.of(2026, 1, 1), 0); throw new AssertionError("phai nem loi"); }
+            catch (IllegalArgumentException expected) { /* ok */ }
+            try { s.daysRemaining(LocalDate.of(2026, 1, 1), -1); throw new AssertionError("phai nem loi"); }
+            catch (IllegalArgumentException expected) { /* ok */ }
+        });
+        System.out.println("RESULT " + passed + "/" + total);
+    }
+}`,
+      reference: `import java.time.*;
+import java.time.temporal.ChronoUnit;
+
+class SubscriptionService {
+    private final Clock clock;
+
+    SubscriptionService(Clock clock) {
+        this.clock = clock;
+    }
+
+    LocalDate today() { return LocalDate.now(clock); }
+
+    LocalDate periodEnd(LocalDate start, int months) {
+        if (start == null) throw new IllegalArgumentException("start required");
+        if (months <= 0) throw new IllegalArgumentException("months must be positive");
+        return start.plusMonths(months).minusDays(1);
+    }
+
+    long daysRemaining(LocalDate start, int months) {
+        LocalDate end = periodEnd(start, months);
+        LocalDate t = today();
+        if (t.isBefore(start) || t.isAfter(end)) return 0;   // ngoai ky: chua vao hoac da qua
+        return ChronoUnit.DAYS.between(t, end) + 1;          // +1: bao gom ca hom nay
+    }
+
+    boolean inCycle(LocalDate start, int months) {
+        LocalDate end = periodEnd(start, months);
+        LocalDate t = today();
+        return !t.isBefore(start) && !t.isAfter(end);
+    }
+}`,
+      hints: [
+        '{{periodEnd}} chỉ là {{start.plusMonths(months).minusDays(1)}}; kiểm tra {{start == null}} và {{months <= 0}} trước. Dùng {{plusMonths}} để tự xử lý tháng dài ngắn và năm nhuận.',
+        '{{daysRemaining}}: lấy {{end = periodEnd(...)}}; nếu {{today().isBefore(start) || today().isAfter(end)}} trả 0 (ngoài kỳ); ngược lại {{ChronoUnit.DAYS.between(today, end) + 1}} (cộng 1 để tính cả hôm nay).',
+        '{{inCycle}}: {{!t.isBefore(start) && !t.isAfter(end)}} — bao gồm cả hai đầu mút. Đừng dùng {{LocalDate.now()}}; luôn đọc {{today()}} từ clock.',
+      ],
+      explain: `**Vì sao {{plusMonths}} chứ không phải số học tay.** {{start.plusMonths(1)}} với 2024-02-01 ra 2024-03-01, trừ 1 ngày ra 2024-02-29 — đúng năm nhuận. Với 2026-02-01 ra 2026-02-28. Tự cộng 30 ngày sẽ sai ở tháng 31 ngày và ở năm nhuận.
+
+**Vì sao cộng 1 khi đếm ngày.** {{ChronoUnit.DAYS.between(1/3, 31/3)}} = 30 (đếm ranh giới nửa đêm), nhưng "còn bao nhiêu ngày" phải là 31 vì tính cả hôm nay. Quên +1 là off-by-one kinh điển; test biên "đúng ngày cuối kỳ còn 1" và "hôm sau còn 0" bắt được nó.
+
+**Vì sao múi giờ quyết định kết quả.** Cùng {{Instant}} {{2026-02-28T20:00:00Z}}, ở UTC+7 là 1/3 (trong kỳ), ở UTC là 28/2 (chưa vào kỳ). {{Clock.fixed(instant, zone)}} cố định cả hai, nên test chứng minh được hành vi phụ thuộc múi giờ là đúng.
+
+Lỗi hay gặp:
+- Dùng {{LocalDate.now()}} không tham số: phụ thuộc múi giờ JVM, server UTC lệch một ngày.
+- Cộng 30/31 ngày bằng tay: sai độ dài tháng và năm nhuận.
+- Quên +1: ngày cuối kỳ báo còn 0.
+- {{inCycle}} dùng {{isAfter(start)}} thay vì {{!isBefore(start)}}: loại mất ngày bắt đầu.
+- Dùng {{Instant}} so với {{LocalDate}}: hai kiểu khác nhau, phải quy về cùng kiểu qua {{ZoneId}}.
+
+Trong Spring Boot, khai báo {{@Bean Clock clock()}} mang {{ZoneId}} kinh doanh và inject; đừng gọi {{LocalDate.now()}} rải rác.`,
+    },
+  ],
+  check: [
+    {
+      q: 'Nghiệp vụ "kỳ thuê bao từ ngày 1 đến cuối tháng, người dùng ở Việt Nam". Nên tính "hôm nay" bằng gì?',
+      options: [
+        '{{LocalDate.now()}} không tham số cho đơn giản',
+        '{{LocalDate.now(clock)}} với clock mang {{ZoneId.of("Asia/Ho_Chi_Minh")}}',
+        '{{Instant.now()}} rồi so sánh trực tiếp với {{LocalDate}}',
+        'Chuỗi ngày theo định dạng dd/MM/yyyy',
+      ],
+      answer: 1,
+      explain: `Ngày lịch phải gắn với múi giờ kinh doanh, nên dùng {{LocalDate.now(clock)}} với clock mang {{ZoneId}} cố định. {{LocalDate.now()}} dùng múi giờ JVM (server UTC) nên lệch ngày; {{Instant}} là mốc tuyệt đối không so trực tiếp với {{LocalDate}}; so sánh chuỗi ngày sai thứ tự và mất ngữ nghĩa lịch.`,
+    },
+    {
+      q: '{{periodEnd}} của kỳ bắt đầu 2024-02-01 kéo dài 1 tháng là ngày nào?',
+      options: [
+        '2024-02-28',
+        '2024-02-29',
+        '2024-03-01',
+        '2024-03-31',
+      ],
+      answer: 1,
+      explain: `{{2024-02-01.plusMonths(1)}} = 2024-03-01, trừ 1 ngày = 2024-02-29. 2024 là năm nhuận nên tháng 2 có 29 ngày; {{plusMonths}} tự xử lý điều này. 2024-02-28 là kết quả nếu nhầm 2026 (không nhuận); 2024-03-01 là quên trừ 1; 2024-03-31 là cộng nhầm tháng.`,
+    },
+    {
+      q: 'Vì sao {{daysRemaining}} phải cộng 1 sau {{ChronoUnit.DAYS.between(today, end)}}?',
+      options: [
+        'Vì {{between}} luôn trả kết quả âm',
+        'Vì {{between}} đếm ranh giới nửa đêm, còn "số ngày còn lại" phải tính cả hôm nay',
+        'Vì {{LocalDate}} không có method {{between}}',
+        'Vì phải cộng 1 cho mọi phép đếm ngày trong Java',
+      ],
+      answer: 1,
+      explain: `Từ 1/3 đến 31/3, {{between}} = 30 (số lần qua nửa đêm), nhưng còn 31 ngày nếu tính cả hôm nay. Cộng 1 biến "số ranh giới" thành "số ngày bao gồm hai đầu". {{between}} không âm khi today trước end; {{LocalDate}} có {{between}} qua {{ChronoUnit}}; và không phải mọi phép đếm ngày đều cộng 1 — chỉ khi quy ước bao gồm hôm nay.`,
+    },
+  ],
+  related: ['testing-052', 'testing-006', 'testing-055'],
+  tags: ['Clock', 'LocalDate', 'timezone', 'month-end', 'leap year', 'off-by-one', 'time testing'],
+},
 );
