@@ -12152,18 +12152,41 @@ Hệ thống tick processing: trước tối ưu allocation 2KB/tick → GC paus
   topic: 'concurrency',
   level: 'senior',
   q: 'Xử lý tick data realtime: backpressure và conflation là gì, khi nào dùng?',
-  a: `**Tóm tắt:** Backpressure ngăn producer overwhelm consumer (drop/slow); conflation gộp các tick cũ chỉ giữ mới nhất cho mỗi symbol, giảm tải cho UI/strategy.
+  a: `**Tóm tắt:** Backpressure là cơ chế áp lực ngược: khi consumer chậm hơn producer, hệ thống phải báo ngược lên để producer giảm tốc (block, drop, hoặc báo lỗi), tránh queue phình tới OOM. Conflation là kỹ thuật gộp nhiều tick cùng một symbol trong một cửa sổ thời gian, chỉ giữ tick mới nhất (latest price) để đẩy cho consumer, giảm tải mạng và CPU xử lý. Dùng backpressure cho mọi đường dữ liệu (persistence, Kafka, downstream API) để bảo vệ tài nguyên; dùng conflation cho dữ liệu thị trường real-time (giá cổ phiếu, FX, crypto) nơi chỉ giá mới nhất quan trọng, tick trung gian có thể bỏ qua.
 
-### Cơ chế
-Tick data đến burst cao. Consumer chậm → queue đầy → OOM hoặc lag. Backpressure: producer bị block hoặc drop khi queue đầy. Conflation: với mỗi symbol chỉ giữ tick mới nhất, discard intermediate → consumer xử lý latest price. Dùng Disruptor với EventHandler và sequence barrier; hoặc conflation buffer per symbol.
+### Cơ chế backpressure (từng bước)
+1. Producer đẩy tick vào buffer (ring buffer, Disruptor, hoặc bounded queue). Buffer có giới hạn sức chứa (bounded).
+2. Consumer lấy tick từ buffer xử lý (tính chỉ báo, lưu DB, đẩy WebSocket). Nếu consumer chậm, buffer lấp đầy.
+3. Khi buffer đầy, producer nhận tín hiệu backpressure: hoặc block (chờ chỗ trống), hoặc drop tick cũ, hoặc trả lỗi (RejectedExecutionException, 429 Too Many Requests).
+4. Tín hiệu backpressure lan ngược: từ consumer → buffer → producer → upstream (Kafka pause partition, HTTP 429, TCP window zero). Mục tiêu là producer tự giảm tốc hoặc upstream tự ngưng đẩy.
+
+### Cơ chế conflation (từng bước)
+1. Tick data đến theo thời gian thực: mỗi symbol có thể có hàng chục tick/giây (ví dụ VN30F1M: 1000 → 1001 → 1000 → 1002 trong 50 ms).
+2. Thay vì đẩy từng tick, hệ thống gom tick theo symbol trong một cửa sổ (window) cấu hình, ví dụ 100 ms.
+3. Khi window hết, chỉ lấy tick mới nhất của mỗi symbol (latest price) và đẩy xuống consumer. Các tick trung gian bị discard.
+4. Consumer nhận update rate thấp hơn đáng kể (200 symbol × 10 updates/s = 2.000 msg/s thay vì 50.000 tick/s), giảm CPU serialize JSON, giảm bandwidth, giảm GC pressure.
+
+### So sánh backpressure vs conflation
+| Tiêu chí | Backpressure | Conflation |
+|---|---|---|
+| Mục đích | Bảo vệ tài nguyên, tránh OOM/lag | Giảm tải dữ liệu, tối ưu network/CPU |
+| Áp dụng | Mọi đường dữ liệu (persistence, Kafka, API) | Chỉ dữ liệu real-time có tính "latest wins" (giá, orderbook) |
+| Mất dữ liệu | Có thể drop tick cũ khi buffer đầy | Có chủ đích bỏ tick trung gian, giữ latest |
+| Độ trễ | Tăng độ trễ khi buffer đầy (producer block) | Giảm độ trễ consumer do ít tick hơn |
+
+### Khi nào dùng cái nào
+- **Backpressure (bắt buộc luôn có)**: mọi pipeline có producer-consumer, đặc biệt khi downstream có giới hạn (DB connection pool, Kafka quota, WebSocket client buffer). Không bao giờ dùng unbounded queue.
+- **Conflation**: market data feed (giá, orderbook top-of-book), UI real-time dashboard, strategy chỉ cần latest price. **Không dùng** cho: order execution (mỗi tick là lệnh, không được bỏ), audit trail, thanh toán, risk management.
 
 ### Ví dụ đời thực
-Market data 50k tick/s cho 200 symbol; strategy chỉ cần giá mới nhất. Conflation giảm xuống 200 update/s, latency ổn định.
+Sàn chứng khoán đẩy market data 50.000 tick/s cho 200 symbol đến 50.000 WebSocket client. Không có conflation: mỗi client nhận 50k msg/s, network 2 Gbps, CPU serialize JSON 100%, GC young GC liên tục. Có conflation 100 ms window: mỗi symbol chỉ đẩy 10 msg/s, tổng 2.000 msg/s, network giảm 75%, CPU serialization giảm 90%, p99 latency từ 80 ms xuống 15 ms. Backpressure ở tầng WebSocket: mỗi client có send buffer 100 tick; client chậm đọc → buffer đầy → server ngưng đẩy cho client đó (không block các client khác), log metric slow_client_count. Kết hợp: conflation giảm tải toàn hệ thống, backpressure bảo vệ từng client chậm.
 
 ### Trả lời mẫu khi phỏng vấn
-"Backpressure xử lý khi consumer chậm hơn producer: block hoặc drop. Conflation gộp tick per symbol, giữ mới nhất, phù hợp market data. Kết hợp: conflation cho UI/strategy, backpressure cho persistence."
+"Backpressure là cơ chế bảo vệ: khi consumer chậm, producer phải giảm tốc (block, drop, hoặc báo lỗi) thay vì nhận dữ liệu vô hạn gây OOM. Conflation là tối ưu cho market data: gộp nhiều tick cùng symbol trong một window (ví dụ 100 ms), chỉ giữ latest price, bỏ tick trung gian. Tôi dùng backpressure cho mọi pipeline (Kafka consumer pause, HTTP 429, bounded queue reject) và conflation cho dữ liệu giá real-time nơi chỉ latest quan trọng. Trong ví dụ 50k tick/s cho 200 symbol, conflation 100 ms giảm xuống 2k msg/s, network giảm 75%, p99 từ 80 ms xuống 15 ms. Lưu ý: conflation làm mất history tick trung gian, nên nếu cần audit phải lưu raw stream riêng vào Kafka/DB."
 
-> Senior tip: Conflation làm mất tick history; nếu cần audit, lưu raw stream riêng.`
+> Senior tip: Conflation là trade-off độ chính xác ngắn hạn (bỏ tick trung gian) đổi ổn định hệ thống. Chỉ áp cho dữ liệu "latest wins" như giá thị trường. Luôn có metric slow_client_count và alert khi vượt ngưỡng; backpressure không phải để "chữa cháy" mà để thiết kế hệ thống tự điều tiết.`,
+  follow: ['Làm sao client khôi phục sau khi bị ngắt do slow consumer mà không mất dữ liệu quan trọng?', 'Conflation áp cho giá thị trường, tại sao không áp cho lệnh khớp lệnh?', '50.000 WebSocket connection trên một server: giới hạn thực tế là gì?'],
+  tags: ['websocket', 'kafka', 'backpressure', 'slow consumer', 'conflation', 'market data']
 },
 {
   id: 'concurrency-082',
@@ -12188,36 +12211,62 @@ Counter per-thread trong Disruptor: false sharing làm throughput giảm 3x; th�
   topic: 'concurrency',
   level: 'senior',
   q: 'Đo latency p99/p999 đúng cách: coordinated omission và HdrHistogram nguyên lý?',
-  a: `**Tóm tắt:** Coordinated omission là client chờ response trước khi gửi request tiếp, làm histogram bỏ sót delay thực; HdrHistogram ghi latency vào bucket theo significance digits, hỗ trợ corrected latency.
+  a: `**Tóm tắt:** Coordinated omission là hiện tượng client đồng bộ chờ response trước khi gửi request tiếp theo, khiến các khoảng delay thực tế (khi server chậm) không được ghi nhận vào histogram — kết quả under-report tail latency. HdrHistogram (High Dynamic Range Histogram) là cấu trúc dữ liệu ghi latency vào các bucket theo significant digits (mặc định 3 chữ số), hỗ trợ recorded latency (gốc) và corrected latency (đã bù trừ coordinated omission), cho phép xuất percentile chính xác (p50, p99, p99.9, p99.99, max).
 
-### Cơ chế
-Naive benchmark: gửi request, chờ response, đo thời gian → khi server chậm, client cũng chậm gửi → số liệu under-report tail. Coordinated omission: phải đo theo thời gian thực (scheduled send), ghi latency thực tế kể cả khi request bị delay. HdrHistogram: histogram compact với configurable precision (3 significant digits), hỗ trợ recorded vs corrected latency, xuất percentile chính xác.
+### Cơ chế coordinated omission (từng bước)
+1. **Naive benchmark (có coordinated omission)**: client gửi request → chờ response → đo thời gian → gửi request tiếp. Khi server chậm (ví dụ GC pause 200 ms), client bị block 200 ms ở chờ response, trong lúc đó **không gửi request mới**. Kết quả: histogram chỉ ghi 1 sample 200 ms, bỏ sót 199 request "ảo" mà client *nên* đã gửi trong 200 ms đó nếu server bình thường. Tail latency bị báo thấp hơn thực tế.
+2. **Coordinated omission-free (scheduled send)**: client lên lịch gửi request theo tỷ lệ cố định (ví dụ 10.000 req/s = mỗi 100 µs một request), **bất kể response trước có về hay không**. Mỗi request mang theo scheduled timestamp. Khi response về, latency = now - scheduled_timestamp. Nếu server chậm 200 ms, client vẫn gửi 2.000 request trong lúc đó, mỗi request đều ghi latency ~200 ms → histogram phản ánh đúng tail.
+3. **HdrHistogram corrected latency**: HdrHistogram lưu recorded value (latency thực đo được) và tự tính corrected value bằng cách giả định các request bị bỏ sót có latency bằng recorded value của request sau cùng trong khoảng delay. Ví dụ: recorded = 200 ms, correction = 2.000 samples × 200 ms → tail phân bố chính xác.
+
+### Cấu trúc HdrHistogram
+- **Bucket theo significant digits**: mỗi bucket đại diện cho một khoảng giá trị với độ chính xác 3 chữ số (mặc định). Ví dụ: bucket 1.000–1.009, 1.010–1.019... cho phép lưu giá trị từ 1 đến 10^9 với độ chính xác 1%.
+- **Memory efficient**: dùng mảng long nén, chỉ ~100 KB cho 3 chữ số precision, phù hợp chạy liên tục trên production.
+- **Recorded vs Corrected**: API cung cấp cả {{recordedValue}} (gốc) và {{correctedValue}} (đã bù). Percentile API: {{getValueAtPercentile(99.9)}} trả corrected.
+- **Thread-safe**: {{LongHistogram}} dùng CAS cho concurrent recording; {{Recorder}} per-thread rồi merge.
 
 ### Ví dụ đời thực
-Latency test 10k req/s: naive p99 5ms; corrected p99 40ms. HdrHistogram ghi cả hai.
+Benchmark API thanh toán 10.000 req/s, SLA p99 < 50 ms. Naive client: p99 báo 12 ms, p999 18 ms — trông đẹp. HdrHistogram corrected (scheduled send): p99 68 ms, p999 240 ms, max 1,2 s — **trượt SLA**. Nguyên nhân: GC pause 200 ms mỗi 30 giây làm coordinated omission che giấu 2.000 request bị delay. Sửa: giảm allocation rate, tune GC, thêm headroom CPU. Sau tối ưu: corrected p99 32 ms, p999 45 ms, đạt SLA.
 
 ### Trả lời mẫu khi phỏng vấn
-"Coordinated omission under-reports tail latency. Dùng HdrHistogram với corrected latency theo scheduled send time. Báo cáo p99/p999/p99.99, không chỉ average."
+"Coordinated omission là khi client chờ response xong mới gửi request tiếp, làm histogram bỏ sót các request 'nên có' trong lúc server chậm — tail latency bị under-report. Cách đúng là scheduled send: client gửi request theo tỷ lệ cố định bất kể response, ghi latency = now - scheduled_time. HdrHistogram lưu latency vào bucket theo significant digits (3 chữ số), hỗ trợ recorded và corrected latency tự động bù trừ coordinated omission. Tôi luôn dùng HdrHistogram với corrected latency, báo cáo p50/p99/p99.9/p99.99/max, không bao giờ chỉ average. Trong một benchmark thanh toán, naive p99 12 ms nhưng corrected p99 68 ms — chênh lệch 5,6 lần do GC pause gây coordinated omission."
 
-> Senior tip: Luôn report max và p99.99; average che giấu tail.`
+> Senior tip: Average che giấu tail hoàn toàn. Luôn report max và p99.99; nếu p99 đẹp nhưng max 10 giây thì hệ thống vẫn không ổn. HdrHistogram corrected latency là chuẩn mực cho latency measurement — không dùng nó là đang đo sai.`,
+  follow: ['HdrHistogram bucket encoding thế nào để vừa nhỏ vừa chính xác?', 'async-profiler có hỗ trợ coordinated omission correction không?', 'Làm sao áp dụng scheduled send cho load test tool (wrk, k6, JMeter)?'],
+  tags: ['latency', 'coordinated omission', 'HdrHistogram', 'percentile', 'benchmark']
 },
 {
   id: 'concurrency-084',
   topic: 'concurrency',
   level: 'senior',
   q: 'Đảm bảo thứ tự và không mất lệnh khi crash: event sourcing + snapshot + replay?',
-  a: `**Tóm tắt:** Mọi thay đổi trạng thái lưu thành event append-only; định kỳ snapshot; khi crash replay event từ snapshot để khôi phục, đảm bảo thứ tự và không mất lệnh.
+  a: `**Tóm tắt:** Event sourcing lưu mọi thay đổi trạng thái dưới dạng event immutable append-only vào log (Kafka, disk, EventStoreDB). Để khôi phục nhanh sau crash, hệ thống chụp snapshot định kỳ (state tại thời điểm T). Khi crash: load snapshot mới nhất → replay các event sau snapshot theo thứ tự sequence number → khôi phục state chính xác, không mất lệnh, giữ nguyên thứ tự. Idempotency key trên mỗi command tránh duplicate khi retry; sequence number đảm bảo ordering tuyệt đối.
 
-### Cơ chế
-Event sourcing: order book state = fold(events). Mỗi lệnh là event immutable append to log (Kafka/disk). Snapshot định kỳ để replay nhanh. Khi crash: load snapshot mới nhất + replay event sau snapshot. Idempotency key tránh duplicate khi retry. Sequence number đảm bảo ordering.
+### Cơ chế chi tiết (từng bước)
+1. **Command → Event**: Mỗi lệnh (PlaceOrder, CancelOrder, ModifyOrder) được validate, rồi biến thành một hoặc nhiều event immutable (OrderPlaced, OrderCancelled, OrderModified). Event chứa: aggregateId, sequenceNumber, timestamp, payload, metadata (userId, traceId).
+2. **Append-only log**: Event được append vào event store (Kafka topic per aggregate, hoặc EventStoreDB, hoặc file segment). Write là atomic per aggregate; sequence number tăng đơn điệu đảm bảo ordering.
+3. **State projection (fold)**: Trạng thái hiện tại = {{fold(initialState, events)}} — áp dụng lần lượt các event theo thứ tự. Đây là pure function, deterministic, dễ test.
+4. **Snapshot định kỳ**: Mỗi N event (hoặc mỗi T giây), hệ thống serialize state hiện tại thành snapshot (protobuf, JSON, Avro) kèm metadata: aggregateId, lastSequenceNumber, timestamp. Snapshot lưu riêng (Kafka compacted topic, S3, DB).
+5. **Crash recovery**: Khi service restart:
+   - Load snapshot mới nhất của aggregate (tìm snapshot có sequenceNumber lớn nhất ≤ current).
+   - Replay tất cả event có sequenceNumber > snapshot.sequenceNumber từ event store.
+   - Kết quả: state khớp chính xác thời điểm crash, không mất event, thứ tự đúng.
+6. **Idempotency**: Client gửi command kèm idempotency key (UUID). Command handler kiểm tra key đã xử lý chưa (Redis SETNX với TTL, hoặc bảng processed_commands). Nếu đã có → trả kết quả cũ, không sinh event mới. Tránh duplicate khi network retry.
+7. **Ordering guarantee**: Sequence number per aggregate đảm bảo total order. Cross-aggregate ordering dùng correlationId hoặc partition key trong Kafka.
+
+### Trade-off snapshot frequency
+| Frequency | Ưu điểm | Nhược điểm |
+|---|---|---|
+| Mỗi 100 event | Replay nhanh (< 100 event) | Ghi snapshot thường, I/O tăng |
+| Mỗi 1.000 event | Ít I/O snapshot | Replay chậm (1.000 event), RTO cao |
+| Theo thời gian (5 phút) | Dễ cấu hình | Event count biến động, replay time không đều |
 
 ### Ví dụ đời thực
-Matching engine crash lúc 10:30; snapshot 10:25 + replay 5 phút event → khôi phục trong 30s, không mất lệnh.
+Matching engine sàn chứng khoán: 50.000 lệnh/giây, mỗi lệnh sinh 1–3 event. Event store: Kafka topic per symbol (partition = symbol). Snapshot mỗi 10.000 event (≈ 5 giây). Lúc 10:30:05 engine crash do OOM. Recovery: load snapshot 10:30:00 (sequence 1.500.000), replay 50.000 event từ Kafka (offset 1.500.001 → 1.550.000) trong 3 giây. Engine ready lúc 10:30:08, không mất lệnh nào, order book khớp bit-to-bit với trước crash. Idempotency key trên PlaceOrder tránh duplicate khi client retry do timeout network.
 
 ### Trả lời mẫu khi phỏng vấn
-"Event sourcing + snapshot + replay đảm bảo durability và ordering. Append-only log là source of truth. Snapshot giảm replay time. Idempotency tránh duplicate."
+"Event sourcing lưu state dưới dạng chuỗi event immutable append-only, không update in-place. Để khôi phục nhanh, tôi chụp snapshot định kỳ (mỗi N event hoặc T giây). Khi crash: load snapshot mới nhất, replay event từ sequence number sau snapshot. Idempotency key trên command tránh duplicate khi retry; sequence number đảm bảo ordering. Trong matching engine 50k lệnh/giây, snapshot 10k event, crash recovery 3 giây replay 50k event, không mất lệnh. Append-only log là source of truth — state chỉ là projection, có thể rebuild bất cứ lúc nào."
 
-> Senior tip: Test replay định kỳ; nếu replay > RTO thì tăng snapshot frequency.`
+> Senior tip: Replay time = RTO (Recovery Time Objective). Nếu replay 100.000 event mất 30 giây mà RTO yêu cầu 10 giây, phải tăng snapshot frequency hoặc partition event store song song. Luôn test recovery định kỳ (chaos engineering), không chỉ test backup.`
 }
 ,
 {
@@ -12598,27 +12647,154 @@ Service tra cứu đơn hàng chạy 900 platform thread, p99 210 ms ở 1.200 r
   topic: 'jvm',
   level: 'senior',
   q: 'Tại sao {{ThreadLocal}} lại là nguồn rò rỉ bộ nhớ trong thread pool, và cách dùng an toàn trong Spring Boot?',
-  a: `**Tóm tắt:** ThreadLocal lưu giá trị theo thread; trong thread pool thread không chết sau request nên giá trị cũ còn đó. Nếu không gọi remove() thì user A có thể thấy dữ liệu của user B, và GC không thu được object vì thread còn sống. Cách an toàn: luôn remove() trong finally, hoặc dùng ScopedValue (Java 21 preview).`,
+  a: `**Tóm tắt:** ThreadLocal lưu giá trị theo thread (mỗi thread một ThreadLocalMap). Trong thread pool (Tomcat, Hikari, custom executor), thread được tái sử dụng cho nhiều request liên tiếp. Nếu code set ThreadLocal nhưng không remove() trong finally, giá trị của request A vẫn còn trong thread khi request B đến — gây leak dữ liệu (user A thấy data của user B) và memory leak (GC không thu được object vì thread còn sống, ThreadLocalMap vẫn giữ strong reference tới value). Cách an toàn: luôn remove() trong finally block, dùng try-with-resources pattern, hoặc mig sang ScopedValue (Java 21 preview, chính thức JDK 25 qua JEP 506) — giá trị gắn với scope, tự hết hạn khi ra khỏi scope, không cần remove thủ công.
+
+### Cơ chế leak (từng bước)
+1. ThreadLocalMap lưu entry với key là WeakReference<ThreadLocal<?>>, value là strong reference tới object.
+2. Khi ThreadLocal object bị GC (key weak ref), entry key trở thành null, nhưng **value vẫn còn** trong map cho đến khi map được dọn (next set/get/remove).
+3. Trong thread pool, thread sống lâu (survive cả đời ứng dụng), map không bị clear. Nếu không gọi remove(), value tích lũy — mỗi request thêm một entry mới hoặc ghi đè key cũ nhưng value cũ vẫn còn nếu key khác nhau.
+4. Kết quả: OOM do heap đầy object ThreadLocal value, hoặc data leak (request B đọc ThreadLocal thấy data của request A).
+
+### Phát hiện leak
+- **Heap dump + MAT**: Dominator tree tìm ThreadLocalMap, xem retained size. Path to GC Roots thường dừng ở Thread → ThreadLocalMap → entry → value.
+- **JFR**: Event {{jdk.ThreadLocalAllocation}} (nếu bật) hoặc custom event ghi khi set ThreadLocal.
+- **Runtime metrics**: Theo dõi thread count và heap used; nếu heap tăng tuyến tính với request count mà không giảm sau GC → nghi leak ThreadLocal.
+
+### Cách dùng an toàn trong Spring Boot
+1. **Filter/Interceptor**: Set ThreadLocal ở preHandle, **bắt buộc** remove() ở afterCompletion (finally) — ngay cả khi exception.
+2. **RequestContextHolder**: Spring dùng ThreadLocal nội bộ; không can thiệp trực tiếp, dùng {{RequestContextHolder.currentRequestAttributes()}} (có remove tự động ở DispatcherServlet).
+3. **MDC (SLF4J)**: {{MDC.put(key, val)}} / {{MDC.remove(key)}} trong filter; Logback MDCAdapter tự clear ở cuối request nếu dùng {{MDC.clear()}}.
+4. **ScopedValue (Java 21+)**: Thay ThreadLocal bằng {{ScopedValue.where(key, val).run(() -> ...)}} — giá trị tự hết hạn khi lambda kết thúc, không leak, inherit được cho virtual thread con.
+5. **Virtual thread**: Mỗi request một virtual thread mới → ThreadLocalMap tự hủy khi thread chết → **không leak giữa request**. Nhưng object lớn trong ThreadLocal nhân với 10k+ virtual thread đồng thời vẫn gây GC pressure → giữ MDC nhỏ, xóa rõ ràng.
+
+### Ví dụ đời thực
+Spring Boot service 200 thread Tomcat, mỗi request set {{UserContext}} (10 KB) vào ThreadLocal. Quên remove() ở filter. Sau 100k request: 200 thread × 100k/200 = 500 entry/thread × 10 KB = 50 MB leak (thực tế hơn do entry cũ không GC). Heap từ 500 MB tăng tới 1.2 GB, Full GC mỗi 2 phút. Heap dump MAT: ThreadLocalMap retained 600 MB. Sửa: thêm {{threadLocal.remove()}} trong finally của filter. Heap ổn định 500 MB, Full GC biến mất.
+
+### Trả lời mẫu khi phỏng vấn
+"ThreadLocal map gắn với thread, thread pool tái dùng thread nên nếu không remove() thì giá trị request A còn lại cho request B — leak data và leak memory vì GC không thu được (thread còn sống, strong reference trong map). Cách an toàn: luôn remove() trong finally, hoặc dùng ScopedValue (Java 21 preview, JDK 25 chính thức) tự scope-based cleanup. Trong Spring Boot: filter set MDC/ThreadLocal, interceptor afterCompletion remove(). Với virtual thread: mỗi request thread mới → ThreadLocal tự clear khi thread chết, nhưng object lớn × nhiều virtual thread đồng thời vẫn gây GC pressure → giữ nhỏ, xóa rõ ràng."
+
+> Senior tip: Leak ThreadLocal là "kẻ giết người thầm lặng" — heap tăng từ từ, Full GC ngày càng nhiều, không có stack trace báo lỗi. Luôn code review tìm {{ThreadLocal.set}} không có {{remove}} trong finally. Tool: MAT Dominator tree theo ThreadLocalMap retained size.`,
   follow: ['ScopedValue khác ThreadLocal ở điểm nào?', 'Bạn phát hiện rò rỉ ThreadLocal bằng công cụ nào?'],
-  tags: ['ThreadLocal', 'thread pool', 'memory leak']
+  tags: ['ThreadLocal', 'thread pool', 'memory leak', 'ScopedValue', 'Spring Boot']
 },
 {
   id: 'jvm-071',
   topic: 'jvm',
   level: 'senior',
   q: 'CompletableFuture.supplyAsync mặc định dùng commonPool — rủi ro gì và khi nào cần executor riêng?',
-  a: `**Tóm tắt:** commonPool có số thread bằng số core - 1 và dùng chung toàn JVM. Nếu supplyAsync chứa blocking I/O, nó chiếm thread của ForkJoinPool, làm chậm parallelStream và các CompletableFuture khác. Quy tắc: mọi I/O đi qua executor riêng có tên, commonPool chỉ cho CPU-bound.`,
+  a: `**Tóm tắt:** {{CompletableFuture.supplyAsync(() -> ...)}} không truyền executor sẽ dùng {{ForkJoinPool.commonPool()}} — pool dùng chung toàn JVM, kích thước mặc định = {{availableProcessors() - 1}} (ví dụ 8 core → 7 thread). Rủi ro lớn: **blocking I/O (JDBC, HTTP, file) trên commonPool chiếm thread ForkJoinPool**, làm {{parallelStream}}, {{CompletableFuture}} CPU-bound khác, và thư viện dùng ForkJoinPool (Kafka Streams, parallel collectors) bị chậm hoặc deadlock. Quy tắc: **mọi I/O blocking phải dùng executor riêng có tên**, commonPool chỉ dành cho CPU-bound non-blocking.
+
+### Cơ chế rủi ro (từng bước)
+1. Ứng dụng gọi {{supplyAsync(() -> httpClient.get(url))}} — task block ở socket read 500 ms.
+2. Task chạy trên commonPool worker thread. Worker thread bị block 500 ms, không thể chạy task khác.
+3. commonPool chỉ có 7 thread (8 core). 7 request I/O đồng thời → 7 worker đều block → commonPool **cạn kiệt**.
+4. Tác động lan tỏa: {{list.parallelStream().map(cpuHeavy)}} ném task vào commonPool → xếp hàng chờ I/O task xong → latency tăng 100x. {{CompletableFuture.supplyAsync(cpuTask)}} (không truyền executor) cũng bị chậm. Kafka Streams, Reactor parallel scheduler dùng ForkJoinPool → bị ảnh hưởng.
+5. Thread dump: hàng chục {{ForkJoinPool.commonPool-worker-*}} ở {{RUNNABLE}} nhưng stack là {{SocketInputStream.socketRead0}} — báo hiệu I/O trên commonPool.
+
+### Khi nào cần executor riêng
+| Loại task | Executor khuyến nghị | Lý do |
+|---|---|---|
+| CPU-bound (tính toán, serialize, hash) | commonPool OK, hoặc dedicated fixed pool | Không block, tận dụng parallelism của ForkJoinPool |
+| Blocking I/O (JDBC, HTTP sync, file) | **Executor riêng** ({{ThreadPoolExecutor}} bounded queue) | Tránh cạn commonPool, kiểm soát queue/rejection, đặt tên thread cho debug |
+| I/O async (Netty, reactive, virtual thread) | Virtual thread executor hoặc event loop | Không block platform thread |
+| Mixed (CPU + I/O) | Tách: CPU part trên commonPool, I/O part trên executor riêng | Cách ly failure domain |
+
+### Code: executor riêng đúng chuẩn
+~~~java
+// I/O executor: bounded queue, tên thread, rejection policy rõ ràng
+ThreadFactory ioFactory = r -> {
+    Thread t = new Thread(r, "partner-http-" + counter.incrementAndGet());
+    t.setDaemon(true);
+    return t;
+};
+ExecutorService ioExecutor = new ThreadPoolExecutor(
+    16, 32, 60, TimeUnit.SECONDS,
+    new ArrayBlockingQueue<>(500),  // queue hữu hạn, tránh OOM
+    ioFactory,
+    new ThreadPoolExecutor.AbortPolicy()  // đầy thì reject ngay, caller quyết định fallback
+);
+
+// Dùng đúng
+CompletableFuture<Price> price = CompletableFuture.supplyAsync(() -> partner.getPrice(), ioExecutor)
+    .orTimeout(500, TimeUnit.MILLISECONDS)
+    .exceptionally(ex -> Price.fallback());
+~~~
+
+### Pitfall production
+- **Dùng {{Executors.newFixedThreadPool}} cho I/O**: queue {{LinkedBlockingQueue}} unbounded → OOM khi downstream chậm. Phải dùng {{ArrayBlockingQueue}} hoặc custom {{ThreadPoolExecutor}}.
+- **Không đặt tên thread**: thread dump thấy {{pool-1-thread-3}} không biết là pool nào. Luôn custom {{ThreadFactory}} đặt prefix.
+- **Quên shutdown**: executor leak thread khi redeploy/spring context destroy. Dùng {{@PreDestroy}} hoặc {{SmartLifecycle}} để shutdown gracefully.
+- **Truyền executor cho {{thenApply}} callback**: callback nhanh (non-blocking) có thể dùng commonPool; nếu callback blocking thì cần executor riêng nữa.
+
+### Ví dụ đời thực
+E-commerce checkout gọi 3 service: Payment (HTTP 200 ms), Inventory (JDBC 100 ms), Shipping (HTTP 300 ms). Ban đầu dùng {{supplyAsync}} không executor → 7 thread commonPool. Flash sale 500 rps → 1.500 I/O calls/s → commonPool cạn, {{parallelStream}} tính chiết khấu báo cáo chậm từ 50 ms lên 8 giây. Sửa: {{ioExecutor}} 32 thread, {{ArrayBlockingQueue(200)}}, {{AbortPolicy}}. Kết quả: commonPool worker 0% busy trên I/O, báo cáo {{parallelStream}} ổn định 50 ms, checkout p99 450 ms (giới hạn bởi downstream).
+
+### Trả lời mẫu khi phỏng vấn
+"supplyAsync không truyền executor dùng ForkJoinPool.commonPool — pool chung toàn JVM, size = cores - 1. Nếu task blocking I/O (JDBC, HTTP sync), nó chiếm worker thread, làm cạn pool → parallelStream, CF khác, Kafka Streams đều bị chậm. Tôi luôn tạo executor riêng cho I/O: ThreadPoolExecutor bounded queue, tên thread có prefix, AbortPolicy. commonPool chỉ cho CPU-bound non-blocking. Thread dump thấy ForkJoinPool worker ở socketRead là dấu hiệu sai pattern này."
+
+> Senior tip: commonPool là tài nguyên chia sẻ — một team dùng sai làm hỏng team khác. Code review bắt buộc: mọi supplyAsync/thenApplyAsync phải có executor rõ ràng hoặc comment "CPU-bound, dùng commonPool OK".`,
   follow: ['Làm sao giới hạn concurrency cho downstream bằng Semaphore?', 'parallelStream có dùng commonPool không?'],
-  tags: ['CompletableFuture', 'ForkJoinPool', 'executor']
+  tags: ['CompletableFuture', 'ForkJoinPool', 'executor', 'commonPool', 'I/O']
 },
 {
   id: 'jvm-072',
   topic: 'jvm',
   level: 'lead',
   q: 'StructuredTaskScope (Java 21 preview) giải quyết vấn đề gì của CompletableFuture khi fan-out nhiều call?',
-  a: `**Tóm tắt:** StructuredTaskScope ràng buộc vòng đời subtask với scope: nếu một subtask fail hoặc timeout, scope huỷ các subtask còn lại và cleanup tự động, tránh orphan thread và leak. CompletableFuture phải tự quản lý cancel và exception aggregation, dễ sai. Dùng ShutdownOnFailure cho "fail fast", ShutdownOnSuccess cho "lấy kết quả đầu tiên".`,
+  a: `**Tóm tắt:** StructuredTaskScope (JEP 453, preview JDK 21-24, chuẩn bị standardize JDK 25) giải quyết ba vấn đề cốt lõi của CompletableFuture khi fan-out: (1) **Orphan task / leak**: CF fire-and-forget dễ quên cancel, task chạy lą trong background; StructuredTaskScope gắn vòng đời subtask với scope — ra khỏi scope (thoát try-with-resources) thì tự động {{shutdown()}} huỷ tất cả subtask chưa xong. (2) **Exception aggregation**: CF {{allOf}} chỉ ném exception của task **đầu tiên** fail, các exception khác mất; StructuredTaskScope {{ShutdownOnFailure}} thu thập tất cả exception, {{throwIfFailed()}} ném {{ExecutionException}} chứa **tất cả** cause. (3) **Cancellation propagation**: CF {{cancel(true)}} không interrupt task đang chạy (bỏ qua {{mayInterruptIfRunning}}); StructuredTaskScope dùng {{Thread.interrupt()}} thật trên carrier thread của subtask, hiệu quả hơn. Dùng {{ShutdownOnFailure}} cho "fail fast — một lỗi huỷ tất cả", {{ShutdownOnSuccess}} cho "race — lấy kết quả đầu tiên thành công".
+
+### Vấn đề của CompletableFuture (từng cái)
+1. **Orphan task**: {{CompletableFuture.supplyAsync(() -> longRunning())}} — nếu caller không giữ reference hoặc quên cancel, task chạy đến hết dù không ai cần kết quả. Leak thread, leak resource (DB connection, HTTP socket).
+2. **Exception loss**: {{CompletableFuture.allOf(f1, f2, f3).join()}} — nếu f1 và f2 cùng fail, chỉ exception f1 được ném (hoặc f2 tùy hoàn thành trước). {{handle}}/{{exceptionally}} trên each future giúp nhưng verbose, dễ quên.
+3. **Weak cancellation**: {{future.cancel(true)}} trên CF **không interrupt** thread đang chạy task (JDK implementation bỏ qua {{mayInterruptIfRunning}}). Task I/O blocking (socket read, JDBC) tiếp tục chạy đến khi timeout OS.
+4. **No deadline propagation**: CF không có khái niệm deadline tự động lan truyền xuống subtask. Phải tự quản lý {{orTimeout}}/{{completeOnTimeout}} trên mỗi nhánh.
+
+### StructuredTaskScope cơ chế
+~~~java
+// ShutdownOnFailure: một fail -> huỷ tất cả, collect tất cả exception
+try (var scope = new StructuredTaskScope.ShutdownOnFailure()) {
+    Subtask<Price> p1 = scope.fork(() -> partnerA.getPrice());
+    Subtask<Price> p2 = scope.fork(() -> partnerB.getPrice());
+    Subtask<Price> p3 = scope.fork(() -> partnerC.getPrice());
+    scope.join();           // chờ tất cả xong hoặc một fail
+    scope.throwIfFailed();  // ném ExecutionException chứa TẤT CẢ exception của subtask fail
+    return List.of(p1.get(), p2.get(), p3.get());
+} // scope.close() -> shutdown() tự huỷ subtask còn chạy
+
+// ShutdownOnSuccess: race condition — lấy kết quả đầu tiên thành công
+try (var scope = new StructuredTaskScope.ShutdownOnSuccess<Price>()) {
+    scope.fork(() -> partnerA.getPrice());
+    scope.fork(() -> partnerB.getPrice());
+    scope.fork(() -> partnerC.getPrice());
+    scope.join();           // chờ một success hoặc tất cả fail
+    return scope.result();  // Optional<Price> — kết quả đầu tiên success
+}
+~~~
+
+### So sánh với ExecutorService + invokeAll
+| Tiêu chí | {{ExecutorService.invokeAll}} | {{StructuredTaskScope}} |
+|---|---|---|
+| Exception aggregation | Trả {{List<Future>}} — phải tự duyệt {{get()}} bắt exception | {{throwIfFailed()}} ném {{ExecutionException}} multi-cause |
+| Cancellation | {{shutdownNow()}} interrupt tất cả | Tự {{shutdown()}} khi scope thoát, interrupt subtask |
+| Deadline/timeout | Phải tự quản lý per-task | Chưa có built-in deadline (dùng {{fork}} với timeout wrapper) |
+| Scoped value propagation | Không tự động | Tích hợp {{ScopedValue}} — context tự inherit cho subtask |
+| API maturity | Stable từ JDK 1.5 | Preview JDK 21-24, API có thể đổi (JEP 481/488) |
+
+### Khi nào dùng StructuredTaskScope
+- Fan-out N call độc lập, cần **fail-fast** (một lỗi -> huỷ hết) hoặc **first-success** (race).
+- Cần **structured concurrency**: vòng đời subtask gắn với scope, không orphan, cleanup deterministic.
+- Tích hợp {{ScopedValue}} cho context propagation (traceId, security) — tự inherit, không leak.
+- **Chưa production-ready trên JDK 21-24** (preview, cần {{--enable-preview}}). JDK 25 dự kiến standardize. Production hiện nay: wrapper riêng hoặc dùng {{ExecutorService}} + {{invokeAll}} + manual cancel.
+
+### Ví dụ đời thực
+API gateway aggregate 5 backend service. Dùng CF {{allOf}}: một service chậm 10s -> caller timeout 2s -> CF cancel -> nhưng 4 service khác vẫn chạy ngầm, giữ DB connection, log noise. Dùng StructuredTaskScope {{ShutdownOnFailure}}: caller timeout 2s -> scope.exit -> tự interrupt 4 subtask còn lại, connection trả về pool ngay, log gọn gàng. Exception aggregation: 2 service fail -> {{throwIfFailed()}} ném {{ExecutionException}} với 2 cause, monitoring alert thấy rõ cả hai.
+
+### Trả lời mẫu khi phỏng vấn
+"CompletableFuture fan-out có ba điểm yếu: (1) orphan task dễ leak, (2) allOf chỉ ném exception đầu tiên, (3) cancel(true) không interrupt task blocking. StructuredTaskScope gắn vòng đời subtask với scope (try-with-resources): ra khỏi scope tự shutdown huỷ tất cả, {{throwIfFailed()}} aggregate tất cả exception, interrupt thật trên carrier thread. Hai policy: {{ShutdownOnFailure}} (fail-fast) và {{ShutdownOnSuccess}} (first-success). Tích hợp ScopedValue cho context propagation. Nhưng preview JDK 21-24, production nên wrap hoặc chờ JDK 25 standardize."
+
+> Senior tip: Structured concurrency không chỉ là API mới — là thay đổi tư duy: "task con không sống lâu cha". Preview API đổi (JDK 21 {{StructuredTaskScope.open()}} -> JDK 24 {{StructuredTaskScope.open(Joiner)}}). Nếu dùng production, cô lập sau adapter interface để dễ migrate.`,
   follow: ['So sánh StructuredTaskScope với ExecutorService + invokeAll?', 'Preview API có production-ready không?'],
-  tags: ['StructuredTaskScope', 'Java 21', 'structured concurrency']
+  tags: ['StructuredTaskScope', 'Java 21', 'structured concurrency', 'preview', 'ScopedValue']
 },
 {
   id: 'concurrency-090',
@@ -13622,4 +13798,606 @@ Sàn chứng khoán đẩy giá sàn cho 50.000 khách hàng môi giới, 200 m�
   ],
   tags: ['websocket', 'kafka', 'backpressure', 'slow consumer', 'conflation', 'market data', 'jd-2026-12']
 },
+{
+  id: 'concurrency-099',
+  topic: 'concurrency',
+  level: 'senior',
+  q: 'Ứng dụng Spring Boot 3.2 trên JDK 21 bật {{spring.threads.virtual.enabled=true}}: tại sao virtual thread có thể bị "pin" vào carrier thread do {{synchronized}}, ThreadLocal/MDC ảnh hưởng thế nào, và khi nào KHÔNG nên bật ảo luồng?',
+  a: `**Tóm tắt:** Virtual thread (Java 21) là luồng nhẹ do JVM quản lý, mount lên một carrier thread (platform thread thuộc pool riêng, số carrier bằng số CPU). Khi virtual thread gặp blocking I/O được JDK viết lại (Socket, Thread.sleep, các khóa java.util.concurrent…), JVM cất stack xuống heap, unmount và trả carrier cho virtual thread khác — vì vậy 8 carrier có thể phục vụ hàng nghìn virtual thread chủ yếu đang chờ I/O. Nhưng trên Java 21–23, block bên trong khối synchronized hoặc trong native call khiến virtual thread pin: không unmount được, giữ carrier cho đến khi khối kết thúc; nhiều task cùng chạm khu vực đó thì hiệu suất tụ về đúng số carrier. JDK 24 (JEP 491) đã bỏ pinning cho synchronized. ThreadLocal/MDC: mỗi virtual thread tạo mới cho mỗi task nên không bị tái sử dụng giữa các task (không leak dữ liệu như thread pool), nhưng mỗi task lại sinh một ThreadLocalMap mới; object lớn giữ trong ThreadLocal nhân với hàng vạn task là dễ gây lực GC và OOM. MDC nên giữ nhỏ và luôn xóa trong finally. Khi nào KHÔNG bật: task tính toán nặng (CPU-bound), stack reactive đã chạy tốt, traffic ít không cần hàng nghìn luồng đồng thời, hoặc code có nhiều synchronized block xung quanh I/O mà không thể sửa/nâng thư viện.
+
+### Hiểu nhanh
+Platform thread giống một tài xế thuê riêng cho một khách hàng: khách vào quán ăn 30 giây (đang chờ DB trả về), tài xế ngồi đợi trong xe, không đón khách khác. Virtual thread giống đội taxi: khách xuống xe vào quán (gặp I/O blocking), xe chạy đi đón khách khác; khi khách ăn xong, một chiếc xe bất kỳ đến đón tiếp. Số xe (carrier) chỉ bằng số CPU nhưng phục vụ được hàng nghìn khách. Pinning là khi khách bắt tài xế "chờ tôi, không được đi đâu" — trên Java 21 đó là khi khách đang ở trong khối synchronized, xe bị giữ yên, các khách khác không được phục vụ cho đến khi khách đó xong.
+
+### Thuật ngữ
+- Virtual thread: luồng nhẹ do JVM lập lịch, stack lưu trên heap dưới dạng continuation, tạo mới rẻ hơn platform thread pooled.
+- Platform thread: luồng Java truyền thống, ánh xạ 1-1 với thread của hệ điều hành, stack khoảng 1 MB.
+- Carrier thread: platform thread đang chạy một virtual thread tại thời điểm hiện tại.
+- Mount / unmount: gắn virtual thread lên carrier để chạy / tháo ra khi nó phải chờ I/O.
+- Continuation: cấu trúc lưu trạng thái ngăn xếp của virtual thread để tạm dừng rồi chạy tiếp đúng chỗ dừng.
+- Pinning: virtual thread bị dính chặt vào carrier, không thể unmount khi block (synchronized hoặc native call trên Java 21–23).
+- JFR (Java Flight Recorder): công cụ ghi sự kiện JVM với chi phí thấp, có sự kiện jdk.VirtualThreadPinned.
+- MDC (Mapped Diagnostic Context): bản đồ ngữ cảnh chẩn đoán (SLF4J/Logback) gắn requestId/userId vào mọi dòng log, thường cài đặt bằng ThreadLocal.
+- ScopedValue: giá trị bất biến gắn với một phạm vi code, tự hết hạn khi ra khỏi phạm vi (chính thức JDK 25), thay thế ThreadLocal cho virtual thread.
+
+### Cơ chế bên trong (từng bước)
+1. Tạo: Thread.ofVirtual().start(task) hoặc Executors.newVirtualThreadPerTaskExecutor(). Chi phí vài trăm byte ban đầu vì stack là continuation trên heap.
+2. Lập lịch: scheduler là một ForkJoinPool riêng (không phải commonPool), chế độ FIFO, mount virtual thread lên carrier rảnh.
+3. Gặp blocking I/O: các điểm blocking của JDK được viết lại để virtual thread chép stack xuống heap, unmount, giải phóng carrier cho virtual thread khác.
+4. I/O xong: virtual thread vào hàng chờ, mount lên carrier bất kỳ, chạy tiếp từ đúng dòng đã dừng.
+5. Phong cách mới: một virtual thread cho mỗi task, KHÔNG pool virtual thread; giới hạn concurrency bằng Semaphore ở phía tài nguyên (DB pool, đối tác).
+
+Pinning (Java 21–23):
+
+~~~java
+synchronized (lock) {                // block I/O trong đây...
+    api.call();                      // virtual thread bị PIN vào carrier
+}                                    // carrier không giải phóng cho task khác
+~~~
+
+Phát hiện: bật JFR sự kiện jdk.VirtualThreadPinned hoặc cờ -Djdk.tracePinnedThreads=full (Java 21–23) để in stack nơi bị pin. Sửa: thay synchronized bằng ReentrantLock ở vùng có I/O, hoặc nâng thư viện JDBC/HTTP lên bản đã bỏ synchronized, hoặc nâng JDK 24+. Ví dụ:
+
+~~~java
+final ReentrantLock lock = new ReentrantLock();
+lock.lock();
+try {
+    api.call();                      // ReentrantLock không pin virtual thread
+} finally {
+    lock.unlock();
+}
+~~~
+
+### Khi nên / KHÔNG nên bật spring.threads.virtual.enabled
+- Nên: server có nhiều kết nối đồng thời với blocking I/O; migrate code blocking cũ mà không muốn viết reactive; fan-out gọi hàng trăm dịch vụ mỗi request. Spring Boot 3.2+ bật bằng spring.threads.virtual.enabled=true (Tomcat và Jetty dùng chung thuộc tính này, không có thuộc tính server.threads.virtual.enabled riêng).
+- KHÔNG nên: task CPU-bound (luồng rẻ không tạo thêm lõi CPU); stack reactive đã chạy tốt; traffic nhỏ (mấy trăm request/giây thì platform thread đủ và đơn giản hơn); code bị pin nặng ở synchronized bên trong I/O mà không thể sửa.
+- Virtual thread "rẻ" nhưng tài nguyên phía sau thì không: DB pool, file descriptor, quota đối tác — vẫn cần Semaphore + rate limit.
+
+### ThreadLocal & MDC với virtual thread
+- Không pool virtual thread => thread tiêu hủy sau mỗi task, ThreadLocalMap cũng bị tiêu hủy cùng thread, nên KHÔNG có leak dữ liệu giữa các task như thread pool platform. Nhưng mỗi task mới sinh một ThreadLocalMap, và object lớn giữ trong ThreadLocal nhân với hàng vạn task đồng thời là dễ gây lực GC, thậm chí OOM.
+- MDC: đặt requestId/userId ở filter, xóa trong finally (hoặc để thread tự tiêu hủy thì giá trị cũng mất theo task, nhưng tốt nhất vẫn xóa rõ ràng). Giữ MDC nhỏ (chuỗi ngắn), không chứa object lớn.
+- ScopedValue (preview Java 21–24, chính thức JDK 25 qua JEP 506) là hướng thay thế: giá trị gắn với phạm vi run, tự hết hạn, không có remove để quên, phù hợp virtual thread. Trên JDK 21 production chưa bật preview, vẫn dùng ThreadLocal có remove trong filter.
+
+### Lỗi hay gặp
+- Pool virtual thread (đưa vào FixedThreadPool hay tái dùng): mất lợi ích, còn rò ThreadLocal giữa task. Cách tránh: mỗi task một virtual thread mới, giới hạn bằng Semaphore.
+- Không giới hạn sau khi bật virtual thread: triệu chứng là DB báo hết connection, đối tác trả 429, Hikari timeout hàng loạt. Cách tránh: Semaphore theo từng đối tác.
+- Pinning trên Java 21: triệu chứng là throughput bất thường, thread dump thấy carrier đều đứng trong synchronized. Cách tránh: JFR VirtualThreadPinned, đổi sang ReentrantLock hoặc nâng JDK 24+.
+- Dùng virtual thread cho tính toán nặng: không nhanh hơn, còn làm các task I/O bị chậm vì carrier bị chiếm. Cách tránh: tách pool CPU riêng.
+
+### Ví dụ đời thực
+Một dịch vụ Spring Boot 3.2 trên JDK 21 xử lý API kiểm tra giá gọi 3 đối tác hạ tầng. Ban đầu dùng platform thread pool 200 thread: burst 8000 request đồng thời → 200 thread bận, hàng nghìn request xếp hàng, p99 trượt 2,5 giây, CPU 92% do context switch. Bật spring.threads.virtual.enabled=true: 8000 request chạy song song trên 8 carrier, p99 giảm xuống 400 ms, CPU giảm 60%. Tuy nhiên sau một tuần phát hiện p99 trở lại bất thường (1,8 giây) ở giờ cao điểm. Điều tra: thread dump thấy tất cả 8 carrier đang BLOCKED trong khối synchronized bọc việc lấy kết nối từ JDBC driver cũ; JFR ghi sự kiện jdk.VirtualThreadPinned tại phương thức lấy connection, và -Djdk.tracePinnedThreads=full chỉ stack trỏ đến đoạn synchronized trong thư viện điều phối kết nối. Nguyên nhân gốc: trên Java 21, virtual thread không unmount khi block trong synchronized, nên 8 carrier bị giữ bởi 8 request đang chờ DB, hiệu suất tụ về đúng 8. Đồng thời, filter gán MDC chứa đối tượng UserContext 1,5 KB mỗi request; với 8000 virtual thread đồng thời, lực GC tăng rõ rệt. Sửa: (1) nâng JDBC driver lên bản bỏ synchronized trong đường I/O, hoặc thay đoạn synchronized bằng ReentrantLock; (2) giữ MDC nhỏ và xóa trong finally của filter; (3) đặt Semaphore(40) cho pool kết nối 40 của mỗi đối tác. Kết quả: p99 ổn định 350 ms, throughput 8000 rps, không OOM heap theo dõi 60 ngày. Tương tự, nếu code gọi native library (mã hóa, nén) thì virtual thread cũng bị pin — phải tách sang platform thread riêng hoặc nâng JDK 24+.
+
+### Trả lời mẫu khi phỏng vấn
+"Virtual thread là luồng nhẹ do JVM quản lý: mount lên một carrier thread, và khi gặp blocking I/O, JVM cất stack xuống heap, unmount, trả carrier cho việc khác, nên vài carrier phục vụ được hàng nghìn request đồng thời. Điểm yếu trên Java 21 là pinning: block bên trong synchronized hoặc native call giữ carrier, hiệu suất tụ về số carrier; tôi phát hiện bằng JFR sự kiện VirtualThreadPinned và -Djdk.tracePinnedThreads, sửa bằng ReentrantLock, nâng driver hoặc JDK 24+. ThreadLocal/MDC được tạo mới mỗi task nên không leak giữa task, nhưng object lớn nhân với hàng vạn task gây lực GC; tôi giữ MDC nhỏ, xóa trong finally, và hướng tới ScopedValue. Không bật virtual thread cho CPU-bound, reactive đã tốt, traffic ít, hoặc code bị pin nặng không thể sửa. Vẫn phải giới hạn tài nguyên phía sau bằng Semaphore."
+
+> Senior tip: bật virtual thread không phải là "bật xong xong". Trước khi bật trên production, hãy chạy thử với tải dần từ 100 lên 10.000 request đồng thời, theo dõi JFR VirtualThreadPinned và số kết nối DB; thường thì điểm nghẽn chuyển từ số thread sang pool JDBC hoặc quota đối tác, và việc cần làm là tune pool JDBC trong giới hạn DB plus đặt Semaphore cho mỗi đối tác, chứ không phải thêm thread.`,
+follow: [
+  'Phát hiện pinning của virtual thread trong production Java 21 dùng công cụ gì, stack trông như thế nào?',
+  'ThreadLocal trong virtual thread có bị leak dữ liệu giữa request không? Tại sao?',
+  'Spring Boot 3.2 bật virtual thread bằng thuộc tính nào, và Tomcat có thuộc tính riêng không?'
+],
+tags: ['virtual threads', 'pinning', 'ThreadLocal', 'MDC', 'Spring Boot 3.2', 'Java 21', 'JFR', "core"],
+refs: [
+  { type: 'doc', title: 'JEP 444: Virtual Threads', url: 'https://openjdk.org/jeps/444' },
+  { type: 'doc', title: 'JEP 491: Synchronize Virtual Threads without Pinning', url: 'https://openjdk.org/jeps/491' },
+  { type: 'doc', title: 'Virtual Threads (Oracle JDK 21 guide)', url: 'https://docs.oracle.com/en/java/javase/21/core/virtual-threads.html' },
+]
+},
+{
+  id: 'concurrency-100',
+  topic: 'concurrency',
+  level: 'senior',
+  q: 'CompletableFuture: thiết kế timeout và fallback cho mỗi đối tác (orTimeout, completeOnTimeout), phân bổ ngãn thời gian tổng cho request, và xử lý lỗi sao cho không làm treo commonPool?',
+  a: `**Tóm tắt:** orTimeout(2, SECONDS) khiến future lỗi bằng TimeoutException nếu chưa hoàn thành trong 2 giây; completeOnTimeout(fallback, 2, SECONDS) trả giá trị dự phòng thay vì ném lỗi. Dùng cho từng đối tác độc lập, rồi gom kết quả; thời gian chờ của từng bước phải được chia từ ngãn thời gian tổng của request (ví dụ tổng 2 giây = đối tác A 500 ms + B 500 ms + C 1 giây), không phải gán mỗi bước 2 giây vì tổng sẽ lên 6 giây. Lỗi đi qua chuỗi CompletableFuture bị bọc trong CompletionException khi gọi join hoặc get; dùng exceptionally hoặc handle để đưa fallback. Không truyền executor thì các hàm *Async chạy trên ForkJoinPool.commonPool() dùng chung cả JVM; task blocking (JDBC, HTTP) trên commonPool sẽ chiếm hết worker và làm chậm mọi tính năng khác.
+
+### Hiểu nhanh
+CompletableFuture giống một món đặt tại nhà hàng: bạn nhận mã số gọi ngay, món xong sau. orTimeout là đồng hồ bấm giờ đặt trên bàn: món chưa ra sau 2 giây thì món bị đánh là quá giờ, khách không đợi mãi. completeOnTimeout là món thay thế: khi món chính quá giờ, nhân viên mang món tương tự ra thay cho khách, chờ khách không phải ngồi im lặng. Nếu có ba món gọi cùng lúc, mỗi món có đồng hồ riêng và tổng thời gian khách sẵn sàng chờ phải được chia sẵn cho ba món, chứ không phải mỗi món đều đợi 2 giây.
+
+### Thuật ngữ
+- CompletableFuture (CF): future có thể hoàn thành từ bên ngoài và nối nhiều bước xử lý bất đồng bộ.
+- orTimeout: Java 9+, future bị lỗi TimeoutException nếu chưa complete trong khoảng thời gian cho trước.
+- completeOnTimeout: trả về giá trị dự phòng nếu future chưa complete kịp thời gian, không ném lỗi.
+- TimeoutException: lỗi ném ra bởi orTimeout khi hết thời gian.
+- CompletionException: lỗi bọc lỗi gốc khi lỗi đi qua chuỗi CF hoặc khi gọi join/get.
+- exceptionally / handle / whenComplete: xử lý lỗi trong chuỗi CF; exceptionally chỉ chạy khi lỗi, handle luôn chạy, whenComplete dùng cho side effect (log).
+- ForkJoinPool.commonPool: pool dùng chung toàn JVM cho các hàm *Async không truyền executor; parallelism mặc định = số core − 1.
+- Timeout budget / ngãn thời gian tổng: thời gian tối đa khách hàng hoặc SLA cho phép cho toàn bộ request, phải chia nhỏ cho từng bước gọi đối tác.
+- Fallback / giá dự phòng: giá trị thay thế khi đối tác lỗi hoặc quá giờ, giúp response vẫn về cho khách.
+
+### Cơ chế (từng bước)
+1. Gọi đối tác bất đồng bộ trên executor I/O riêng: CompletableFuture.supplyAsync(() -> partnerA.callPrice(), ioExecutor).
+2. Gắn timeout: .orTimeout(2, TimeUnit.SECONDS) — nếu chưa xong trong 2 giây, future complete exceptionally với TimeoutException.
+3. Gắn fallback: .exceptionally(ex -> defaultPrice) hoặc .completeOnTimeout(defaultPrice, 2, TimeUnit.SECONDS).
+4. Gom kết quả: dùng allOf hoặc thenCompose cho các bước tuần tự; chỉ join ở tầng biên (controller).
+5. Không truyền executor => callback chạy trên commonPool; task blocking đó sẽ làm treo chung pool.
+
+~~~java
+// Gọi đối tác A với timeout riêng + fallback
+CompletableFuture<Price> priceA = CompletableFuture
+    .supplyAsync(() -> partnerA.getPrice(item), ioExecutor)
+    .orTimeout(500, TimeUnit.MILLISECONDS)
+    .exceptionally(ex -> Price.fallback("partnerA lỗi hoặc quá giờ"));
+
+// Gom ba đối tác, mỗi đối tác đã có timeout và fallback riêng
+CompletableFuture<Void> all = CompletableFuture.allOf(priceA, priceB, priceC);
+all.join(); // chỉ ở tầng biên
+return new Quote(priceA.join(), priceB.join(), priceC.join());
+~~~
+
+Lưu ý: completeOnTimeout không "dừng" tác vụ bên dưới — tác vụ vẫn chạy ngầm, chỉ là future trả về sớm. Nếu muốn hủy thật, phải truyền cờ huỷ vào tác vụ hoặc dùng StructuredTaskScope (Java 21 preview).
+
+### Bảng so sánh orTimeout và completeOnTimeout
+
+| Đặc điểm | orTimeout | completeOnTimeout |
+|---|---|---|
+| Hết giờ thì sao | future lỗi với TimeoutException | future hoàn thành với giá trị dự phòng |
+| Caller dùng join/get | join ném CompletionException, get ném ExecutionException (đều bao TimeoutException) | nhận giá trị dự phòng, không lỗi |
+| Tác vụ bên dưới | vẫn chạy ngầm (trừ khi tự hủy) | vẫn chạy ngầm |
+| Dùng khi | muốn biết rõ đối tác quá giờ để xử lý khác | muốn trả lời khách ngay mà không làm chậm response |
+
+### Lỗi hay gặp
+- orTimeout rồi quên xử lý lỗi: triệu chứng là join ném CompletionException (hoặc get ném ExecutionException) bao TimeoutException, container in stack trace dài và trả 500. Cách tránh: exceptionally hoặc handle sau orTimeout.
+- Gọi orTimeout cho mỗi bước là 2 giây mà có 3 bước: tổng thời gian chờ lên 6 giây, vượt SLA. Cách tránh: chia ngãn thời gian tổng (ví dụ tổng 2 giây: A 500 ms, B 500 ms, C 1 giây).
+- supplyAsync không truyền executor cho JDBC/HTTP: triệu chứng là commonPool hết worker, các API không liên quan cũng chậm, thread dump thấy ForkJoinPool.commonPool-worker chờ socket. Cách tránh: truyền ioExecutor riêng có giới hạn.
+- Ng chunk completeOnTimeout tưởng tác vụ đã dừng: tác vụ vẫn chạy, tiếp tục gọi DB và tốn tài nguyên. Cách tránh: nếu cần hủy thật, truyền cờ huỷ vào tác vụ hoặc StructuredTaskScope.
+- join rải rác giữa chuỗi: mất lợi ích async, có thể deadlock. Cách tránh: chỉ join ở tầng cuối cùng.
+
+### Ví dụ đời thực
+Endpoint tổng hợp đơn hàng gọi 3 đối tác: giá (trung bình 120 ms), tồn kho (80 ms), vận chuyển (300 ms). Ban đầu dùng CompletableFuture.supplyAsync không truyền executor cho 3 lời gọi HTTP rồi allOf gom kết quả. Dưới tải 2000 rps, khi đối tác vận chuyển chậm lên 3 giây, 3 worker của commonPool bị giữ toàn thời gian chờ socket, request mới xếp hàng; p99 từ 350 ms trượt 2,8 giây, và các endpoint khác dùng commonPool (parallel stream, CF khác) cũng chậm theo. Thread dump thấy mọi worker commonPool đang ở socket read. Sửa: (1) tạo ioExecutor riêng (ThreadPoolExecutor core 8, max 32, queue 200, rejection AbortPolicy); (2) mỗi đối tác dùng supplyAsync(fn, ioExecutor) rồi orTimeout riêng (giá 1 giây, tồn kho 500 ms, vận chuyển 2 giây) và completeOnTimeout fallback (giá mặc định, tồn kho "không có dữ liệu", vận chuyển miễn phí); (3) tổng budget 3 giây, chỉ join ở controller. Kết quả: p99 xuống 400 ms (giới hạn bởi đối tác chậm nhất trong budget), commonPool không còn hết worker, metric activeCount của commonPool ổn định dưới 3. Một lỗi khác trước đó: một developer dùng orTimeout(2, SECONDS) cho mỗi bước mà không chia budget, 4 bước × 2 giây = 8 giây, khách đã timeout trước khi nhận response. Sửa bằng chia budget trước khi code.
+
+### Trả lời mẫu khi phỏng vấn
+"Tôi thiết kế timeout cho mỗi đối tác riêng bằng orTimeout hoặc completeOnTimeout, rồi gom kết quả bằng allOf và join chỉ ở tầng ngoài cùng. orTimeout ném TimeoutException (bọc trong CompletionException) nên phải có exceptionally hoặc handle để đưa fallback; completeOnTimeout trả trực tiếp giá trị dự phòng, phù hợp khi muốn response nhanh mà không làm khách chờ. Quan trọng nhất là chia ngãn thời gian tổng: nếu SLA là 2 giây và gọi 3 đối tác, tôi phân chia 500 ms, 500 ms, 1 giây chứ không phải gán mỗi cái 2 giây. Tất cả chỉ HTTP/JDBC chạy trên executor I/O riêng, không để trên commonPool dùng chung cả JVM. Nếu tác vụ phải dừng thật khi quá giờ, orTimeout không đủ — phải truyền cờ huỷ vào tác vụ hoặc dùng StructuredTaskScope."
+
+> Senior tip: timeout không phải là "đặt mỗi bước 2 giây rồi xong" — đó là cách thường làm sinh ra tổng thời gian 6 giây với 3 bước. Tôi luôn chia budget từ SLA tổng xuống từng đối tác theo latency lịch sử của từng đối tác, đồng thời theo dõi metric "số lần fallback do orTimeout" và "số lần completeOnTimeout"; nếu fallback ratio cao, vấn đề nằm ở đối tác hoặc quota, không phải code Java.`,
+
+follow: [
+  'orTimeout vs completeOnTimeout: trường hợp nào chọn cái nào?',
+  'TimeoutException từ orTimeout bị bao trong CompletionException khi gọi join — xử lý ra sao?',
+  'supplyAsync không truyền executor chạy trên commonPool — rủi ro là gì trên server?'
+],
+tags: ['CompletableFuture', 'orTimeout', 'completeOnTimeout', 'timeout', 'fallback', 'ForkJoinPool', 'commonPool', "core"],
+refs: [
+  { type: 'doc', title: 'CompletableFuture API', url: 'https://docs.oracle.com/en/java/javase/21/docs/api/java.base/java/util/concurrent/CompletableFuture.html' },
+  { type: 'doc', title: 'ForkJoinPool API', url: 'https://docs.oracle.com/en/java/javase/21/docs/api/java.base/java/util/concurrent/ForkJoinPool.html' },
+]
+},
+{
+  id: 'concurrency-101',
+  topic: 'concurrency',
+  level: 'lead',
+  q: 'Thiết kế bulkhead khi gọi 3 đối tác chậm: cách tách ngăn tài nguyên cho mỗi đối tác, chọn Semaphore hay thread pool riêng, timeout và fallback theo từng đối tác, kết hợp circuit breaker như thế nào?',
+  a: `**Tóm tắt:** Bulkhead (tách ngăn) gói mỗi đối tác vào một "ngăn" riêng với giới hạn concurrency, timeout và fallback riêng: đối tác A chậm hoặc treo sẽ không làm cạn tài nguyên cần cho B và C. Thiết kế thông thường: mỗi đối tác một Semaphore (hoặc thread pool riêng) kích thước bằng quota × latency trung bình (định luật Little), gọi qua supplyAsync trên ioExecutor riêng với orTimeout riêng và completeOnTimeout fallback, bao ngoài bởi circuit breaker (trip sau N thất bại, nửa mở để thử lại). Không dùng một pool chung cho cả ba đối tác, vì đó là head-of-line blocking: đối tác chậm nhất chiếm hết thread, hai đối tác còn lại bị kẹt theo mặc dù nhanh.
+
+### Hiểu nhanh
+Bulkhead giống tách ngăn trên tàu thủy buồm: tàu có nhiều ngăn kín, một ngăn bị tràn nước không làm chìm toàn tàu. Gọi 3 đối tác trên cùng một pool thread giống một bếp chỉ có một người giao hàng: đơn hàng cho đối tác C (chậm 5 giây) chiếm người giao hàng, đơn hàng cho A và B (mỗi cái 100 ms) cũng phải đợi người giao hàng về từ C, dù A và B nhanh như chớp. Bulkhead là mỗi đối tác có một "người giao hàng" riêng: C chậm không làm chậm A và B.
+
+### Thuật ngữ
+- Bulkhead / tách ngăn: cách ly tài nguyên (thread, kết nối, semaphore) cho mỗi đối tác hoặc nhóm dịch vụ để sự cố ở một nơi không lan toàn hệ thống.
+- Semaphore: đếm số "giấy phép" vào, giới hạn số request đang gọi đồng thời đối tác.
+- Thread-pool bulkhead: mỗi đối tác một pool thread riêng; pool cạn thì reject hoặc fallback.
+- Circuit breaker: ngắt mạch — trip (ngắt) sau N thất bại, nửa mở (half-open) sau khoảng thời gian để thử lại.
+- Fallback / giá dự phòng: giá trị trả về khi đối tác lỗi hoặc quá giờ, giúp response vẫn về.
+- Head-of-line blocking: requests chậm ở đầu hàng làm các request nhanh phía sau bị kẹt cùng nhau.
+- Định luật Little: concurrency cần ≈ throughput × thời gian xử lý (ví dụ 100 rps × 200 ms = 20 request đang bay).
+- Half-open: trạng thái circuit breaker sau khi trip, cho một ít request đi kiểm tra dịch vụ đã khôi phục chưa.
+
+### Cơ chế thiết kế (từng bước)
+1. Đo chính xác latency trung bình và p99, quota (rps) của từng đối tác từ tài liệu hoặc header 429/Retry-After.
+2. Phân chia ngãn thời gian tổng của request (ví dụ 2 giây) thành timeout riêng cho từng đối tác (A 500 ms, B 800 ms, C 700 ms), để tổng không vượt SLA.
+3. Tính semaphore mỗi đối tác bằng định luật Little: quota (rps) × latency (s). Ví dụ đối tác C 50 rps × 0,7 s = 35 request đang bay ⇒ Semaphore(35).
+4. Mỗi lời gọi: acquire semaphore → supplyAsync trên ioExecutor riêng → orTimeout timeout riêng → completeOnTimeout fallback riêng → release semaphore trong finally.
+5. Bao ngoài bằng circuit breaker: trip sau 5 thất bại trong 10 giây, nửa mở sau 30 giây; khi trip, trả fallback ngay mà không gọi đối tác.
+6. Expose metric per đối tác: số lần gọi, số lần từ chối bởi semaphore, số lần fallback, latency p99, trạng thái circuit breaker.
+
+~~~seq
+title: Gọi 3 đối tác tách ngăn (bulkhead)
+actors: Client | Bulkhead | Đối tác A | Đối tác B | Đối tác C
+Client -> Bulkhead: gọi tổng hợp 3 đối tác
+Bulkhead -> Đối tác A: gọi trong ngăn A (semaphore)
+Bulkhead -> Đối tác B: gọi trong ngăn B (semaphore)
+Bulkhead -> Đối tác C: gọi trong ngăn C (semaphore)
+Đối tác C --> Bulkhead: chậm -> orTimeout, fallback
+Bulkhead -> Client: tổng hợp kết quả
+~~~
+
+~~~java
+// Một đối tác: semaphore + timeout riêng + fallback
+CompletableFuture<Result> callPartnerC() {
+    if (!semaphoreC.tryAcquire(100, TimeUnit.MILLISECONDS)) {
+        return CompletableFuture.completedFuture(Result.fallback("bulkhead C đầy"));
+    }
+    return CompletableFuture
+        .supplyAsync(() -> partnerC.call(), ioExecutor)
+        .orTimeout(700, TimeUnit.MILLISECONDS)
+        .exceptionally(ex -> Result.fallback("partner C lỗi hoặc quá giờ"))
+        .whenComplete((v, ex) -> semaphoreC.release());
+}
+~~~
+
+Lưu ý: release semaphore phải luôn chạy (finally hoặc whenComplete), kể cả lỗi; nếu không semaphore sẽ cạn dần.
+
+### Semaphore bulkhead vs thread-pool bulkhead
+
+| Tiêu chí | Semaphore bulkhead | Thread-pool bulkhead |
+|---|---|---|
+| Tài nguyên giới hạn | số request đang bay | số thread |
+| Chi phí | thấp (không tạo thread) | cao (mỗi pool có thread riêng) |
+| Dễ điều chỉnh | đổi số permit trong config | thay đổi kích thước pool |
+| Hợp với | virtual thread, ít thread | platform thread, task CPU nhẹ |
+| Nhược điểm | nếu tác vụ block thì vẫn giữ thread | pool cạn thì reject ngay |
+
+Tôi ưu tiên Semaphore trên virtual thread (Spring Boot 3.2+) vì rẻ và điều chỉnh dễ; thread-pool bulkhead hợp khi mỗi đối tác cần thread riêng và tác vụ có tính chất CPU nhẹ nhưng gọi nhiều.
+
+### Khi dùng / KHÔNG dùng
+- Dùng: gọi nhiều đối tác độc lập trong một request, tỷ lệ chậm/treo khác nhau, cần fallback khác nhau, muốn sự cố ở C không làm fail A và B.
+- KHÔNG dùng: chỉ gọi một đối tác (thì timeout + retry là đủ); đối tác cực nhanh và ổn định (overhead bulkhead không đáng); team chưa có metric (không biết permit nào bị cạn).
+
+### Lỗi hay gặp
+- Pool chung cho 3 đối tác: triệu chứng là C chậm 5 giây làm cạn 200 thread, A và B timeout mặc dù nhanh (head-of-line blocking). Cách tránh: semaphore/pool riêng mỗi đối tác.
+- Semaphore mỗi đối tác nhưng fallback cũng gọi chung cùng executor: fallback của C bùng nổ cũng làm chém gió A và B. Cách tránh: fallback nhẹ, không gọi I/O nặng, hoặc executor riêng cho fallback.
+- Circuit breaker trip rồi không bao giờ nửa mở: tất cả request đều fallback vĩnh viễn. Cách tránh: nửa mở sau khoảng thời gian cố định.
+- Quên release semaphore: số permit giảm dần, sau một thời gian bulkhead cạn. Cách tránh: release trong finally/whenComplete, luôn kiểm tra code review.
+- Không có metric per bulkhead: không biết đối tác nào đang là điểm nghẽn. Cách tránh: đếm số lần bị từ chối bởi semaphore và số lần fallback.
+
+### Ví dụ đời thực
+Hệ thống thanh toán gọi 3 đối tác: A (xác minh danh tính, trung bình 100 ms), B (kiểm tra gian lận, 500 ms), C (gửi thông báo, 2 giây, đôi khi treo 5 giây). Ban đầu dùng một ThreadPoolExecutor 200 thread chung cho cả ba, timeout 5 giây chung. Sự cố: đối tác C treo 5 giây trong giờ cao điểm, 200 thread đều kẹt ở C, A và B bị timeout mặc dù chỉ cần 100–500 ms; p99 từ 600 ms trượt 5,2 giây, tỷ lệ thất bại 15%. Redesign: semaphore riêng A(80), B(60), C(20) theo định luật Little (C: 30 rps × 0,7 s ≈ 21, chọn 20, hơi dưới nhu cầu để an toàn), orTimeout riêng (A 500 ms, B 1 giây, C 2 giây), completeOnTimeout fallback (A: dùng kết quả cache gần nhất, B: chấp nhận đơn, C: bỏ thông báo), circuit breaker trip sau 5 thất bại/10 giây, nửa mở sau 30 giây. Kết quả: p99 từ 5,2 giây xuống 600 ms, thất bại 15% xuống 0,3%, thread tối đa dùng 160/200, metric "bulkhead C từ chối" giúp team biết ngay khi C suy giảm. Circuit breaker nửa mở cho 2 request đi kiểm tra sau 30 giây, nếu thành công thì đóng lại và phục vụ bình thường.
+
+### Trả lời mẫu khi phỏng vấn
+"Bulkhead là cách ly tài nguyên cho mỗi đối tác: mỗi đối tác một semaphore (hoặc pool riêng) với timeout và fallback riêng, nên đối tác chậm không làm cạn tài nguyên của hai đối tác còn lại. Thiết kế của tôi: đo latency và quota từng đối tác, phân chia SLA tổng thành timeout riêng, tính semaphore bằng định luật Little (quota × latency), gọi qua executor riêng với orTimeout và completeOnTimeout, bao ngoài bằng circuit breaker (trip sau N thất bại, nửa mở để thử lại). Phải luôn release semaphore trong finally, và cần metric per bulkhead để biết permit nào cạn. Trường hợp thực tế: 3 đối tác thanh toán, C treo 5 giây làm timeout cả A và B trên pool 200 thread chung; sau khi tách semaphore riêng, p99 từ 5,2 giây xuống 600 ms, thất bại từ 15% xuống 0,3%. Bulkhead là phòng thủ, không phải tăng tốc: tổng throughput vẫn bị giới hạn bởi tổng quota của các đối tác."
+
+> Senior tip: bulkhead không làm hệ thống nhanh hơn, nó làm hệ thống "không chết cùng lúc". Từ khi có bulkhead, hãy theo dõi hai con số: "số lần bị từ chối bởi semaphore" (bulkhead đang đầy) và "tỷ lệ fallback" (đối tác lỗi hoặc quá giờ). Nếu fallback ratio cao liên tục, vấn đề nằm ở đối tác hoặc quota, hãy thương lượng quota hoặc thiết kế fallback tốt hơn thay vì vò vẽ tăng permit.`,
+
+follow: [
+  'Semaphore bulkhead và thread-pool bulkhead khác nhau ra sao, chọn cái nào khi nào?',
+  'Circuit breaker trip rồi nửa mở hoạt động như thế nào?',
+  'Tính kích thước semaphore cho mỗi đối tác bằng định luật Little ra sao?'
+],
+tags: ['bulkhead', 'semaphore', 'circuit breaker', 'timeout', 'fallback', 'head-of-line blocking', 'per-dependency isolation'],
+refs: [
+  { type: 'doc', title: 'Semaphore API', url: 'https://docs.oracle.com/en/java/javase/21/docs/api/java.base/java/util/concurrent/Semaphore.html' },
+  { type: 'doc', title: 'CompletableFuture API', url: 'https://docs.oracle.com/en/java/javase/21/docs/api/java.base/java/util/concurrent/CompletableFuture.html' },
+]
+},
+{
+  id: 'jvm-086',
+  topic: 'jvm',
+  level: 'senior',
+  q: 'Service Java 21 cần p99 < 5 ms với heap 8 GB và allocation rate ~500 MB/s. Bạn chọn G1 hay Generational ZGC? Trình bày số liệu benchmark và trade-off throughput.',
+  a: `**Tóm tắt:** Với p99 < 5 ms và allocation rate cao, chọn Generational ZGC (JDK 21) vì pause < 1 ms; G1 thường pause 5–20 ms ở heap 8 GB. Đổi lại ZGC tốn ~10–15% throughput và CPU; G1 throughput cao hơn nhưng tail latency kém.
+
+### Cơ chế bên trong
+- **G1**: chia heap thành region, pause STW để copy object sống; pause tỷ lệ với volume object sống ở young gen. Ở allocation rate 500 MB/s, young gen đầy nhanh, mixed GC pause có thể 10–30 ms.
+- **Generational ZGC**: pause chỉ là safepoint rất ngắn (< 1 ms), relocation chạy concurrent; generational giúp allocation rate cao không làm pause tăng. Colored pointers + load barrier overhead ~5–10% CPU.
+- **Parallel GC**: throughput tối đa nhưng pause dài (hàng trăm ms) → không phù hợp p99 < 5 ms.
+
+### Benchmark (ví dụ thực tế)
+- Heap 8 GB, alloc 500 MB/s, workload HTTP JSON:
+  - G1: p99 12 ms, throughput 45k rps, GC pause p99 18 ms.
+  - Gen ZGC: p99 3.2 ms, throughput 39k rps, GC pause p99 0.4 ms.
+  - Parallel: p99 80 ms, throughput 48k rps.
+- Kết luận: ZGC đạt SLO p99 < 5 ms với chi phí ~13% throughput.
+
+### Khi nào dùng / không dùng
+- ZGC: p99 nhạy, heap lớn, alloc rate cao.
+- G1: throughput ưu tiên, p99 < 20 ms chấp nhận được, heap < 4 GB.
+- Không dùng ZGC cho workload batch throughput-first với heap nhỏ.
+
+### Pitfall production
+- ZGC cần JDK 21+ và -XX:+UseZGC -XX:+ZGenerational; trên JDK 17 là non-generational (alloc rate cao → CPU cao).
+- Không đặt -XX:MaxGCPauseMillis cho ZGC (không áp dụng).
+- Monitoring: dùng JFR event jdk.GCPhasePause; alert pause > 2 ms.
+
+### Ví dụ đời thực
+Service thanh toán p99 SLA 5 ms: với G1 p99 12 ms, vi phạm SLA 8% request. Chuyển Gen ZGC: p99 3.2 ms, vi phạm 0,1%, throughput giảm 45k→39k rps nhưng SLA đạt. Trade-off chấp nhận được.
+
+### Trả lời mẫu khi phỏng vấn
+"Với p99 < 5 ms và alloc rate cao, tôi chọn Generational ZGC trên JDK 21 vì pause dưới 1 ms; G1 ở heap 8 GB thường pause 10–20 ms. Benchmark thực tế: ZGC p99 3.2 ms throughput 39k rps vs G1 p99 12 ms throughput 45k rps — mất ~13% throughput để đạt SLA. Nếu throughput ưu tiên và p99 < 20 ms chấp nhận, G1 vẫn tốt. Lưu ý ZGC generational cần JDK 21, và monitoring pause qua JFR."
+
+> Senior tip: đừng chọn GC theo "tên hay" — hãy đo bằng JMH + JFR trên workload thực. ZGC không phải luôn tốt hơn; ở alloc rate thấp và heap nhỏ, G1 có thể p99 tương đương với throughput cao hơn.`,
+
+  follow: [
+    'Generational ZGC khác ZGC non-generational ở điểm nào và khi nào migrate?',
+    'Cách đo GC pause chính xác bằng JFR và HdrHistogram?',
+    'Tuning ZGC: -XX:ZCollectionInterval và -XX:ZAllocationSpikeTolerance dùng khi nào?'
+  ],
+  tags: ['gc', 'zgc', 'g1', 'latency', 'benchmark', 'trade-off', 'jdk21'],
+},
+{
+  id: 'jvm-087',
+  topic: 'jvm',
+  level: 'senior',
+  q: 'Container memory: -XX:MaxRAMPercentage và vì sao pod bị OOMKilled dù heap chưa đầy? Native memory, thread stack, direct buffer đóng vai trò thế nào?',
+  a: `**Tóm tắt:** Pod OOMKilled khi RSS (bộ nhớ process) vượt limit container, không phải khi heap đầy. Heap chỉ là một phần; còn metaspace, thread stack, direct buffer, code cache, native library. MaxRAMPercentage chỉ giới hạn heap theo RAM container, không bao toàn bộ.
+
+### Cơ chế bên trong
+- JVM trong container (UseContainerSupport, mặc định JDK 10+) đọc cgroup memory limit thay vì RAM host.
+- -XX:MaxRAMPercentage=75.0 đặt MaxHeapSize = 75% limit container. Heap = 75%.
+- RSS = heap + metaspace + code cache + thread stacks + direct buffers + native (JNI, malloc) + JVM overhead.
+- Nếu thread count lớn (ví dụ 1000 thread × 1 MB stack = 1 GB) hoặc direct buffer lớn, RSS vượt limit dù heap còn trống → OOMKilled.
+
+### Phân tích thành phần (ví dụ limit 2 GB)
+- MaxRAMPercentage 75% → heap ~1.5 GB.
+- Metaspace ~100 MB, code cache ~50 MB.
+- 500 thread × 1 MB = 500 MB stack.
+- Direct buffer 200 MB (Netty).
+- Tổng RSS ≈ 1.5 + 0.1 + 0.05 + 0.5 + 0.2 = 2.35 GB > 2 GB → OOMKilled.
+
+### Checklist chẩn đoán
+1. kubectl describe pod → OOMKilled, exit 137.
+2. /proc/<pid>/smaps_rollup hoặc Native Memory Tracking (NMT) -XX:NativeMemoryTracking=summary.
+3. jcmd <pid> VM.native_memory summary → xem từng vùng.
+4. Heap dump/MAT nếu nghi leak Java.
+5. GC log: heap sau GC còn nhiều → không phải heap leak.
+
+### Khi nào dùng / không dùng
+- Giảm thread count, dùng virtual thread (JDK 21) giảm stack.
+- Direct buffer: đặt -XX:MaxDirectMemorySize và monitoring.
+- Metaspace: -XX:MaxMetaspaceSize để tránh leak classloader.
+
+### Pitfall production
+- MaxRAMPercentage quá cao (90%) không còn chỗ cho native → OOMKilled ngẫu nhiên.
+- Thread pool không giới hạn (Executors.newCachedThreadPool) → thread explosion.
+- Netty/ByteBuffer.allocateDirect không giới hạn → native leak.
+
+### Ví dụ đời thực
+Pod limit 2 GB, heap sau GC 1.2 GB (còn trống 300 MB trong heap), nhưng OOMKilled. NMT cho thấy thread stack 600 MB (1200 thread do cached thread pool). Giảm thread pool còn 200 + virtual thread → RSS xuống 1.6 GB, ổn định.
+
+### Trả lời mẫu khi phỏng vấn
+"Pod OOMKilled khi RSS vượt limit container, không phải heap đầy. Heap chỉ là một phần bộ nhớ JVM; còn metaspace, code cache, thread stack, direct buffer và native. MaxRAMPercentage chỉ giới hạn heap theo cgroup limit. Ví dụ limit 2 GB, heap 1.5 GB, nhưng 1200 thread × 1 MB stack = 1.2 GB → tổng RSS 2.7 GB → OOMKilled dù heap còn trống. Chẩn đoán bằng NMT (jcmd VM.native_memory summary), giảm thread count, dùng virtual thread, đặt MaxMetaspaceSize và MaxDirectMemorySize, và đặt MaxRAMPercentage ~60–70% để chừa chỗ native."
+
+> Senior tip: luôn theo dõi RSS và native memory cùng heap. Alert khi RSS > 85% limit, không chỉ khi heap > 85%. NMT overhead ~5% CPU nhưng đáng giá khi điều tra OOMKilled không rõ nguyên nhân.`,
+
+  follow: [
+    'Native Memory Tracking: cách bật, đọc output, overhead?',
+    'Virtual thread giảm thread stack như thế nào và giới hạn?',
+    'Cách đặt MaxRAMPercentage cho service có nhiều direct buffer?'
+  ],
+  tags: ['container', 'oomkilled', 'rss', 'native-memory', 'maxrampercentage', 'thread-stack', 'direct-buffer'],
+},
+{
+  id: 'jvm-088',
+  topic: 'jvm',
+  level: 'lead',
+  q: 'Dùng JFR để tìm allocation hotspot trên production: quy trình, event, và cách sử dụng kết quả để giảm GC pressure?',
+  a: `**Tóm tắt:** Bật JFR continuous recording, xem event jdk.ObjectAllocationInNewTLAB / jdk.ObjectAllocationOutsideTLAB, aggregate theo stack trace, tìm top allocating class/method, sau đó tối ưu (object reuse, escape, pooling) và đo lại allocation rate + GC pause.
+
+### Cơ chế bên trong
+- **TLAB (Thread Local Allocation Buffer)**: mỗi thread có vùng buffer riêng trong young gen để allocate nhanh không cần lock. Allocation trong TLAB không trigger event mặc định (để giảm overhead); Outside TLAB (object lớn) luôn ghi event.
+- **JFR allocation event**: {{jdk.ObjectAllocationSample}} lấy mẫu theo tần suất giới hạn (throttle mặc định 150 mẫu/giây ở profile default, chỉnh qua {{jdk.ObjectAllocationSample#throttle}}) và ghi stack trace. Overhead thấp (~1–2% CPU).
+- **Quy trình**:
+  1. Bật continuous: -XX:StartFlightRecording=disk=true,maxsize=200m,maxage=1h (hoặc jcmd JFR.start).
+  2. Dump: jcmd <pid> JFR.dump filename=alloc.jfr.
+  3. Mở JMC → Memory → Allocations, hoặc dùng jfr print --events jdk.ObjectAllocationInNewTLAB.
+  4. Aggregate theo "Stack Trace" và "Class"; top 5 dominating.
+  5. Tối ưu: reuse buffer, primitive thay wrapper, avoid boxing, string concat, logger formatting.
+  6. Đo lại: allocation rate (MB/s) và GC pause trước/sau.
+
+### Ví dụ phân tích
+- Top allocator: OrderService.process() → new ArrayList<>() mỗi request (1000 req/s) → 50 MB/s allocation.
+- Fix: reuse list với clear() hoặc pre-size; allocation giảm 50→5 MB/s; young GC từ 200 ms/s xuống 20 ms/s.
+
+### Khi nào dùng / không dùng
+- Allocation rate > 100 MB/s hoặc young GC pause cao.
+- Không bật allocation profiling liên tục ở production nếu overhead không chấp nhận được (có thể sample theo thời gian).
+
+### Pitfall production
+- Event allocation sample có thể miss hot path nhỏ nhưng frequent; kết hợp với async-profiler alloc mode.
+- Không tối ưu allocation "theo cảm giác" — phải đo before/after bằng JFR allocation rate.
+- String concatenation trong loop: dùng StringBuilder.
+
+### Ví dụ đời thực
+Service REST alloc 300 MB/s, young GC 400 ms/s. JFR top: JSON serializer tạo HashMap per request (80 MB/s) và logger format string (40 MB/s). Fix: reuse ObjectMapper buffer + parameterized logging → alloc 90 MB/s, GC pause 80 ms/s, p99 giảm 40%.
+
+### Trả lời mẫu khi phỏng vấn
+"Quy trình: bật JFR continuous recording với allocation events, dump file, mở JMC hoặc jfr print, aggregate theo stack trace để tìm top allocating class/method. Ví dụ top allocator là OrderService tạo ArrayList mỗi request → reuse list giảm allocation 50 MB/s → young GC pause từ 200 ms/s xuống 20 ms/s. Kết hợp async-profiler alloc mode để cross-check. Luôn đo allocation rate trước và sau để chứng minh cải thiện, không tối ưu theo cảm giác."
+
+> Senior tip: allocation profiling là "tìm rác trước khi nó thành GC pause". Một fix allocation tốt thường giảm p99 nhiều hơn tuning GC flags, và không rủi ro như đổi collector.`,
+
+  follow: [
+    'async-profiler alloc mode khác JFR allocation event ở điểm nào?',
+    'TLAB và allocation outside TLAB: khi nào object lớn không qua TLAB?',
+    'Cách bật/tắt JFR allocation event dynamically không restart JVM?'
+  ],
+  tags: ['jfr', 'allocation', 'profiling', 'gc-pressure', 'tlab', 'optimization', 'production'],
+},
+{
+  id: 'jvm-089',
+  topic: 'jvm',
+  level: 'senior',
+  q: 'Service đang chạy G1 ổn định, throughput cao và p99 đạt SLO; khi đổi sang Generational ZGC để hạ p99 thì CPU tăng vọt và throughput tụt. Vì sao ZGC tốn CPU hơn G1, {{allocation stall}} là gì, và khi nào KHÔNG nên đổi collector?',
+  a: `**Tóm tắt:** ZGC đạt pause dưới 1 ms vì nó làm phần lớn việc thu gom **đồng thời** (concurrent) với ứng dụng, nên phải trả giá bằng CPU: nhiều thread GC chạy song song cộng thêm **load barrier** trên mỗi lần đọc tham chiếu. Khi tốc độ tạo rác (allocation rate) vượt khả năng dọn của GC, thread ứng dụng bị **allocation stall** — phải dừng lại chờ bộ nhớ. Vì thế đổi sang ZGC chỉ đáng khi p99 hiện tại thực sự vi phạm SLO và CPU còn dư; nếu SLO đã đạt mà CPU eo hẹp thì G1 tốt hơn.
+
+### Hiểu nhanh
+Hãy hình dung một nhà bếp. G1 giống một đầu bếp thỉnh thoảng dừng tay lau bếp (stop-the-world): lúc lau thì mọi người đứng chờ, nhưng lau xong bếp sạch bong. ZGC giống một phụ bếp lau **liên tục trong lúc bạn vẫn nấu** (concurrent): bạn không phải dừng, nhưng phải trả lương cho phụ bếp (CPU) và mỗi lần với lấy gia vị bạn phải kiểm tra xem phụ bếp có đang cầm nó không (load barrier). Nếu bạn nấu nhanh hơn tốc độ phụ bếp dọn (allocation nhanh hơn GC), bạn sẽ phải đứng chờ một chỗ trống để đặt nồi — đó là allocation stall.
+
+### Vì sao ZGC tốn CPU hơn G1 (từng bước)
+1. ZGC dùng **colored pointers** (con trỏ nhuộm màu: vài bit metadata gắn ngay trong con trỏ 64 bit) và **load barrier** (mã chèn trước mỗi lần đọc object từ heap). Mỗi lần ứng dụng đọc một tham chiếu, barrier kiểm tra bit màu để biết object có đang bị dời chỗ không. Đây là chi phí trả cho **mỗi lần đọc**, không phải mỗi lần GC.
+2. ZGC dời object sống bằng **concurrent relocation**: các thread GC chạy nền, copy object sang vùng mới và cập nhật con trỏ, trong khi ứng dụng vẫn chạy. Việc này ngốn CPU liên tục chứ không dồn vào một pause.
+3. **Generational ZGC** (JDK 21, bật bằng {{-XX:+ZGenerational}}) chia young/old nên quét young gen rẻ hơn nhiều, giảm CPU so với ZGC non-generational — nhưng vẫn tốn hơn G1 ở mức baseline.
+4. Khi allocation rate tăng đột biến, ZGC phải kích hoạt GC sớm và nhiều hơn; nếu vẫn không kịp, nó **không** có "pause dài để dọn nhanh" như G1, mà để thread cấp phát **chờ** (stall) cho tới khi có vùng trống.
+
+### Allocation stall là gì (sơ đồ)
+~~~text
+Timeline một thread ứng dụng cần cấp phát object:
+  [allocate][allocate][...  STALL  ...][allocate]
+                         ^ thread bị chặn trong JVM,
+                           không chạy code của bạn
+Log ZGC (-Xlog:gc*): "Allocation Stall (threadName) 234.5ms"
+=> Trong 234 ms đó request của bạn đứng yên -> p99 nhảy
+~~~
+
+Đọc log bằng:
+~~~bash
+-XX:+UseZGC -XX:+ZGenerational -Xlog:gc*,gc+alloc=info:file=/logs/zgc.log:time
+~~~
+
+Khi thấy dòng {{Allocation Stall}} lặp lại, nghĩa là allocation rate đang vượt năng lực dọn của GC. Cách chữa không phải tăng heap mà là **giảm allocation** hoặc thêm CPU cho GC.
+
+### Bảng trade-off G1 vs Generational ZGC
+| Tiêu chí | G1 | Generational ZGC (JDK 21) |
+|---|---|---|
+| Pause điển hình | 20–200 ms (mixed GC) | 0,3–1 ms |
+| CPU cho GC | Thấp hơn | Cao hơn (thread concurrent + load barrier) |
+| Throughput | Cao hơn ở cùng CPU | Thấp hơn vài % đến vài chục % |
+| Phù hợp | SLO p99 ≥ vài chục ms, CPU eo hẹp | SLO p99 dưới 10 ms, CPU dư |
+| Rủi ro chính | Pause spike khi mixed GC | Allocation stall khi alloc rate cao |
+
+### Khi nào KHÔNG nên đổi
+- SLO hiện tại đã đạt: p99 40 ms mà SLO là 50 ms thì đổi ZGC chỉ để "đẹp hơn" trong khi mất CPU và throughput.
+- CPU là nút thắt: service đã chạy 70–80% CPU, thêm thread GC sẽ đẩy sang throttling.
+- Allocation rate rất cao chưa tối ưu: ZGC sẽ gặp allocation stall; phải giảm rác trước.
+- Heap nhỏ (dưới 2–3 GB) và tải thấp: overhead barrier không đáng.
+
+### Ví dụ đời thực
+Service API heap 16 GB, allocation 800 MB/s, chạy G1: CPU 40%, throughput 12.000 req/s, p99 40 ms (SLO 50 ms — đạt). Đội đổi sang Generational ZGC để "cho chắc". Triệu chứng: CPU lên 65% do thread GC concurrent, throughput tụt còn 9.500 req/s, và khi traffic đỉnh allocation vọt 1,5 GB/s thì log ZGC đầy {{Allocation Stall}} 180–250 ms, p99 có lúc 300 ms — tệ hơn G1. Điều tra: SLO vốn đã đạt, CPU là tài nguyên đắt (đang scale theo CPU). Kết luận: **giữ G1**, chỉ tối ưu allocation (giảm autoboxing, tái dùng buffer) để hạ p99 xuống 28 ms mà không đổi collector. CPU về 42%, throughput 12.500 req/s.
+
+### Trả lời mẫu khi phỏng vấn
+"ZGC đạt pause dưới 1 ms nhờ làm thu gom đồng thời với ứng dụng, nên đổi lại nó tốn CPU hơn G1: nhiều thread GC chạy nền cộng load barrier trên mỗi lần đọc tham chiếu. Nếu allocation rate vượt khả năng dọn, thread cấp phát bị allocation stall — dừng chờ bộ nhớ — và p99 nhảy. Vì vậy tôi không đổi collector chỉ để hạ p99; tôi chỉ đổi khi p99 thực sự vi phạm SLO và CPU còn dư. Ở service tôi từng làm, G1 đã đạt SLO 50 ms với CPU 40%; đổi sang ZGC làm CPU lên 65%, throughput tụt 20% và vẫn allocation stall khi đỉnh. Tôi giữ G1 và giảm allocation thay vì đổi GC. Khi đổi, tôi luôn đo cả CPU, throughput và allocation stall trong GC log, không chỉ nhìn pause."
+
+> Senior tip: "GC tốt nhất là GC bạn không phải đổi". Trước khi migrate sang ZGC, hãy tự hỏi: p99 hiện tại có vi phạm SLO không, CPU có dư không, allocation rate đã tối ưu chưa. Một lần giảm allocation (tránh boxing, tái dùng buffer) thường hạ p99 nhiều hơn đổi collector, mà không rủi ro về CPU và throughput.`,
+  follow: [
+    'ZAllocationSpikeTolerance và ZCollectionInterval dùng để làm gì, chỉnh khi nào?',
+    'Load barrier của ZGC khác write barrier của G1 ở điểm nào về chi phí?',
+    'Làm sao đo chính xác allocation stall và allocation rate từ GC log và JFR?'
+  ],
+  tags: ['gc', 'zgc', 'g1', 'allocation-stall', 'cpu', 'throughput', 'trade-off', 'jdk21']
+},
+{
+  id: 'jvm-090',
+  topic: 'jvm',
+  level: 'senior',
+  q: 'Pod Java không đặt {{Xmx}} mà dùng {{MaxRAMPercentage}}, heap sau GC ổn định nhưng RSS cứ tăng dần theo số thread rồi bị OOMKilled. Vì sao {{glibc malloc arena}} làm RSS phình dù heap không leak, {{MALLOC_ARENA_MAX}} là gì, và dùng NMT baseline diff để chứng minh ra sao?',
+  a: `**Tóm tắt:** Nhiều malloc/free nhỏ từ nhiều thread khiến glibc (thư viện cấp phát bộ nhớ mặc định trên Linux) tạo nhiều **arena** (vùng cấp phát riêng cho từng nhóm thread) và không trả bộ nhớ đã free về cho hệ điều hành, làm RSS (resident set size — RAM thực process chiếm) phình theo số thread dù heap Java ổn định. {{MALLOC_ARENA_MAX}} giới hạn số arena để giảm phình. Để chứng minh đây là native chứ không phải heap leak, dùng **NMT baseline diff**: chụp mốc bộ nhớ native rồi so sánh sau vài giờ; phần chênh giữa RSS và tổng NMT chính là arena.
+
+### Hiểu nhanh
+Hãy tưởng tượng một kho chung. Mỗi nhóm công nhân (thread) được cấp một **khu vực riêng** (arena) để chứa hàng đã dỡ (object đã free nhưng chưa mang đi). Khi có nhiều nhóm, kho có nhiều khu vực, mỗi khu vực giữ một ít hàng lẻ không dùng hết — tổng lại rất tốn chỗ (RSS cao) dù thực tế hàng dùng rất ít. Giới hạn số khu vực (MALLOC_ARENA_MAX) làm kho gọn hơn. Điều quan trọng: đây **không phải** rò rỉ (hàng không mất), chỉ là chiếm chỗ.
+
+### glibc malloc arena hoạt động thế nào (từng bước)
+1. Khi thread gọi {{malloc}}, glibc cần một arena để cấp phát. Mặc định trên Linux 64 bit, glibc tạo tới **8 × số CPU** arena (arena_max mặc định).
+2. Mỗi arena có thể giữ tới ~64 MB vùng ảo; khi thread free object, bộ nhớ **không** trả ngay về OS mà giữ lại trong arena để tái dùng.
+3. Nếu bộ nhớ bị **mảnh vụn** (fragmentation: các object nhỏ xen kẽ, không giải phóng được thành khối lớn), arena giữ nhiều RAM dù không dùng.
+4. Nhiều thread + nhiều arena ⇒ tổng RAM giữ lại (RSS) lớn hơn nhiều so với lượng object sống thực tế. Đây là lý do RSS tăng theo thread chứ không theo heap.
+
+### Phân biệt bằng NMT baseline diff
+NMT (Native Memory Tracking) chỉ theo dõi vùng do JVM quản lý; arena của glibc **không** nằm trong NMT. Vì thế thủ thuật là so RSS với tổng NMT: phần dư chính là malloc/arena.
+~~~bash
+jcmd <pid> VM.native_memory baseline
+# ... cho chạy tải 30 phút ...
+jcmd <pid> VM.native_memory summary.diff
+# xem tổng committed thay đổi bao nhiêu
+# RSS lấy từ: ps -o rss= -p <pid>  hoặc cat /proc/<pid>/smaps_rollup
+# RSS - tổng NMT = phần native ngoài JVM (arena, JNI, thư viện)
+~~~
+
+Nếu heap sau GC ổn định, NMT committed gần như không đổi, nhưng RSS vẫn tăng theo số thread ⇒ gần như chắc chắn là arena/malloc.
+
+### MALLOC_ARENA_MAX và trade-off
+Đặt biến môi trường trước khi khởi động JVM:
+~~~bash
+MALLOC_ARENA_MAX=2 java -XX:MaxRAMPercentage=70 -jar app.jar
+~~~
+- Giảm số arena ⇒ giảm RSS phình và giảm mảnh vụn.
+- Đánh đổi: ít arena hơn có thể tăng **tranh chấp lock** trong malloc khi rất nhiều thread cấp phát song song ⇒ throughput giảm nhẹ. Thường chọn 2 hoặc 4 là cân bằng.
+- Không phải "càng thấp càng tốt": 1 arena trên 32 vCPU có thể nghẽn malloc.
+
+### Bảng: heap leak vs arena bloat
+| Dấu hiệu | Heap leak (Java) | Arena bloat (native) |
+|---|---|---|
+| Heap sau GC | Tăng đều | Ổn định |
+| NMT committed | Tăng | Gần như không đổi |
+| Tương quan với thread | Không rõ | Tăng theo số thread |
+| Cách chữa | Sửa code giữ object | MALLOC_ARENA_MAX, giảm thread |
+| Xác nhận | Heap dump + MAT | RSS − NMT, smaps |
+
+### Pitfall production
+- Chỉ nhìn heap mà bỏ qua RSS: alert "heap > 85%" không bao giờ cháy, nhưng pod vẫn OOMKilled vì RSS.
+- Dùng {{Executors.newCachedThreadPool}} không giới hạn ⇒ thread tăng vô hạn ⇒ arena tăng theo ⇒ RSS phình.
+- Tăng limit container để "chữa cháy" mà không đặt MALLOC_ARENA_MAX: tốn tiền và vẫn phình tới mức mới.
+
+### Ví dụ đời thực
+Pod limit 4 GB, {{MaxRAMPercentage=70}} ⇒ heap ~2,8 GB, heap sau GC ổn định 1,2 GB. Service có 800 thread (Tomcat 200 + nhiều async pool). Sau vài giờ tải, RSS lên 4 GB ⇒ OOMKilled (exit 137) dù heap còn trống 1,6 GB. NMT: tổng committed ~2,9 GB gần như không đổi; RSS 4 GB ⇒ chênh 1,1 GB là native ngoài JVM. Chẩn đoán: arena glibc phình theo 800 thread. Đặt {{MALLOC_ARENA_MAX=2}} và gộp bớt thread pool: RSS ổn định ~3,1 GB, không còn OOMKilled sau 7 ngày.
+
+### Trả lời mẫu khi phỏng vấn
+"Khi heap sau GC ổn định mà RSS vẫn tăng theo số thread rồi OOMKilled, tôi nghi native memory chứ không phải heap leak. Nguyên nhân hay gặp là glibc malloc arena: nhiều thread cấp phát nhỏ làm glibc tạo nhiều arena và không trả RAM về OS, nên RSS phình. Tôi chứng minh bằng NMT baseline diff: chụp mốc rồi so sánh sau vài giờ; nếu NMT committed gần như không đổi nhưng RSS tăng, phần chênh là arena. Cách chữa là đặt MALLOC_ARENA_MAX bằng 2 hoặc 4 và giảm số thread, đánh đổi là có thể tăng tranh chấp malloc nhẹ. Tôi từng gặp pod 4 GB, heap 1,2 GB nhưng 800 thread làm RSS lên 4 GB; đặt MALLOC_ARENA_MAX=2 và gộp pool thì RSS về 3,1 GB ổn định."
+
+> Senior tip: luôn alert theo RSS chứ không chỉ theo heap. Khi RSS tăng theo thread mà heap phẳng, đừng mở heap dump — hãy chạy NMT baseline diff và thử MALLOC_ARENA_MAX trước. Giảm số thread (gộp pool, dùng virtual thread) thường hiệu quả hơn tăng limit.`,
+  follow: [
+    'NMT bật thế nào, overhead bao nhiêu, và vì sao arena không hiện trong NMT?',
+    'Virtual thread có giúp giảm arena bloat không, vì sao?',
+    'Làm sao phân biệt arena bloat với direct buffer leak (Netty)?'
+  ],
+  tags: ['container', 'oomkilled', 'rss', 'native-memory', 'malloc-arena', 'nmt', 'thread', 'maxrampercentage']
+},
+{
+  id: 'jvm-091',
+  topic: 'jvm',
+  level: 'lead',
+  q: 'Allocation trung bình thấp nhưng thỉnh thoảng p99 spike vài giây rồi hết; bật JFR continuous recording rồi dump sau sự cố lại không thấy gì vì số liệu đã bị làm mượt. Dùng {{JFR event streaming}} ({{jfr stream}} / {{EventStream}}) để bắt spike trực tiếp thế nào, và bẫy sampling của {{jdk.ObjectAllocationSample}} là gì?',
+  a: `**Tóm tắt:** Continuous recording ghi theo chunk rồi mới dump nên khi bạn dump sau sự cố, file chỉ còn giá trị đã gộp/làm mượt, spike vài giây bị chìm. **JFR event streaming** (JDK 16+) đẩy event ra **ngay khi phát sinh** theo thời gian thực, nên bạn thấy đúng giây allocation vọt. Nhưng {{jdk.ObjectAllocationSample}} chỉ **lấy mẫu** theo tần suất giới hạn (throttle mặc định 150 mẫu/giây ở profile default) nên bỏ sót hot path nhỏ; phải dùng thêm {{jdk.ObjectAllocationInNewTLAB}} / {{OutsideTLAB}} và async-profiler alloc để bắt đủ.
+
+### Hiểu nhanh
+Continuous recording giống camera an ninh ghi lại rồi bạn xem băng sau: nếu sự cố chỉ kéo dài 3 giây trong 1 giờ, bạn phải tua đúng đoạn, mà file đã nén/gộp nên dễ mất chi tiết. Event streaming giống một người ngồi xem màn hình trực tiếp và hô lên ngay khi có chuyện: bạn thấy đúng khoảnh khắc. Còn sampling giống đếm xe qua trạm cứ mỗi 100 xe: bạn biết dòng xe đông nhưng không thấy chiếc xe tải lẻ gây tắc.
+
+### Vì sao post-mortem averaging làm mất spike
+1. Continuous recording chia file theo {{maxsize}}/{{maxage}}; khi phân tích trên JMC, nhiều biểu đồ hiển thị **trung bình theo khoảng**.
+2. Spike 3 giây trên nền 1 giờ bị trung bình làm phẳng: 900 MB/s trong 3 giây (≈ 2.700 MB) chia cho 3.600 giây ≈ 0,75 MB/s trung bình cả giờ ⇒ trông "bình thường".
+3. Khi bạn dump **sau** khi spike đã qua, buffer có thể đã xoay vòng (ring buffer) hoặc merge, mất đúng đoạn cần xem.
+
+### JFR event streaming hoạt động thế nào
+Streaming mở một luồng nhận event ngay khi JVM phát, không cần dump file:
+~~~bash
+# xem trực tiếp allocation sample và pause theo thời gian thực
+jfr stream --events jdk.ObjectAllocationSample,jdk.GCPhasePause <pid>
+~~~
+
+Hoặc bằng code (API lập trình):
+~~~java
+import jdk.jfr.consumer.*;
+import java.time.Duration;
+
+try (EventStream stream = new RecordingStream()) {
+    stream.setThreshold(Duration.ZERO);          // nhận mọi event ngay
+    stream.onEvent("jdk.ObjectAllocationSample", e -> {
+        String cls = e.getString("objectClass");
+        long bytes = e.getLong("weight");        // bytes đã cấp phát
+        if (bytes > 1_000_000)                    // chỉ in allocation lớn
+            System.out.println(cls + "  " + bytes);
+    });
+    stream.start();                              // chạy tới khi đóng stream
+}
+~~~
+
+Khi thấy một lớp lặp lại với {{weight}} lớn đúng lúc p99 spike, bạn đã bắt được thủ phạm theo thời gian thực.
+
+### Bẫy sampling của jdk.ObjectAllocationSample
+- Mặc định event bị **giới hạn tần suất** (throttle mặc định 150 mẫu/giây ở profile default, chỉnh qua {{jdk.ObjectAllocationSample#throttle}}), nên hot path cấp phát ít nhưng rất thường xuyên có thể bị bỏ sót.
+- Object lớn cấp phát ngoài TLAB luôn có {{jdk.ObjectAllocationOutsideTLAB}}; object nhỏ trong TLAB dùng {{jdk.ObjectAllocationInNewTLAB}}.
+- Để bắt nhiều hơn, giảm ngưỡng sample (tốn overhead) hoặc dùng **async-profiler alloc mode** (không dựa safepoint, lấy mẫu theo thời gian) để cross-check.
+
+### Bảng: continuous recording vs streaming
+| Tiêu chí | Continuous recording | Event streaming |
+|---|---|---|
+| Thời điểm xem | Sau sự cố (dump file) | Ngay khi event xảy ra |
+| Rủi ro mất spike | Cao (trung bình, ring buffer) | Thấp |
+| Overhead | ~1% | ~1–2% |
+| Phù hợp | Theo dõi nền, sự cố đã biết | Bắt spike hiếm, chẩn đoán trực tiếp |
+
+### Pitfall production
+- Chỉ dựa {{ObjectAllocationSample}} rồi kết luận "không có allocation hotspot" — sai vì sampling bỏ sót.
+- Bật streaming ở chế độ in mọi event lên stdout: log flooding, lại thành nút thắt mới. Hãy lọc ngưỡng.
+- Quên rằng spike có thể do **một endpoint hiếm** (ví dụ xuất PDF) chứ không phải tải trung bình.
+
+### Ví dụ đời thực
+Service 6.000 req/s, allocation trung bình 80 MB/s, nhưng mỗi ~10 phút p99 vọt 400 ms trong 3 giây. Continuous recording dump sau đó cho biểu đồ phẳng, không thấy gì. Bật {{jfr stream}} lọc {{ObjectAllocationOutsideTLAB}} với weight > 1 MB: đúng lúc spike, thấy {{PdfExportService.render}} cấp phát byte[] 2 MB lặp lại ⇒ 900 MB/s burst. Nguyên nhân: endpoint xuất PDF hiếm nhưng buffer cả file trong byte[]. Sửa: stream PDF trực tiếp ra response thay vì giữ mảng lớn. Sau sửa, spike biến mất, p99 ổn định 30 ms.
+
+### Trả lời mẫu khi phỏng vấn
+"Spike vài giây rất khó bắt bằng continuous recording vì dump sau sự cố chỉ còn số liệu đã gộp, spike bị trung bình làm phẳng. Tôi dùng JFR event streaming — jfr stream hoặc EventStream API — để nhận event ngay khi phát sinh và lọc theo ngưỡng, ví dụ chỉ in allocation ngoài TLAB trên 1 MB. Tôi cũng biết jdk.ObjectAllocationSample chỉ lấy mẫu theo tần suất giới hạn (throttle mặc định 150 mẫu/giây) nên có thể bỏ sót hot path nhỏ; vì thế tôi kết hợp ObjectAllocationOutsideTLAB và async-profiler alloc mode để cross-check. Có lần streaming bắt được một endpoint xuất PDF hiếm nhưng cấp phát byte[] 2 MB gây burst 900 MB/s; sửa bằng cách stream trực tiếp ra response. Bài học: với spike hiếm, xem trực tiếp theo thời gian thực tốt hơn dump sau."
+
+> Senior tip: với spike hiếm, "trực tiếp" thắng "sau sự cố". Hãy để một recording nền chạy sẵn, và khi p99 nhảy, dùng jfr stream lọc theo ngưỡng để bắt đúng class trong đúng giây. Đừng bao giờ kết luận "không có allocation hotspot" chỉ từ một biểu đồ trung bình — sampling và averaging đều có thể giấu đúng thứ bạn tìm.`,
+  follow: [
+    'jdk.ObjectAllocationSample#throttle chỉnh thế nào và đánh đổi overhead ra sao?',
+    'async-profiler alloc mode khác JFR allocation event ở cơ chế lấy mẫu nào?',
+    'Làm sao tương quan event allocation với request/traceId để biết endpoint nào?'
+  ],
+  tags: ['jfr', 'streaming', 'allocation', 'profiling', 'spike', 'tlab', 'async-profiler', 'production']
+},
 );
+
