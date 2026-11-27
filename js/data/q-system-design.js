@@ -13695,4 +13695,100 @@ ADR với em là ghi lại quyết định kiến trúc, tại sao chọn, và h
     { type: 'doc', title: 'Architecture Decision Records', url: 'https://adr.github.io/' }
   ]
 }
+
+,
+{
+  id: 'design-080',
+  topic: 'design',
+  level: 'senior',
+  q: 'Thiết kế hệ thống đặt lịch khám cho chuỗi 50 phòng khám: giữ slot, hết hạn giữ chỗ, lịch bác sĩ?',
+  a: `**Tóm tắt:** Sinh slot trước 30 ngày từ lịch bác sĩ lặp tuần; hold slot dùng Redis lock + optimistic lock DB với TTL; pg_cron giải phóng slot hết hạn; waitlist FIFO notify khi cancel.
+
+### Cơ chế
+- doctor_schedule: doctor_id, weekday, start_time, end_time, slot_duration.
+- Sinh appointment_slot trước 30 ngày, status AVAILABLE.
+- Hold: Redis SET NX EX 5s rồi UPDATE DB status=HELD version++, hold_expires_at=NOW()+10 phút, trả hold_token JWT.
+- Confirm: token rồi UPDATE status=BOOKED.
+- Expiry: pg_cron mỗi phút UPDATE status=AVAILABLE WHERE status=HELD AND hold_expires_at<NOW().
+- Chống overbooking: unique constraint slot_id khi status IN (HELD,BOOKED) + optimistic lock.
+- Waitlist FIFO priority tái khám, notify top 1 khi cancel.
+
+### Ví dụ đời thực
+50 phòng khám, 200 bác sĩ, 60k slot/ngày. Giờ cao điểm 500 bệnh nhân cùng chọn 1 slot. Redis lock + optimistic lock giảm lock wait 2s xuống 5ms, không overbooking, waitlist fill rate 85%.
+
+### Trả lời mẫu khi phỏng vấn
+Tôi thiết kế doctor_schedule lặp tuần, sinh appointment_slot trước 30 ngày. Hold slot dùng Redis SET NX EX 5 giây làm distributed lock, trong lock UPDATE DB status=HELD với optimistic lock, set hold_expires_at NOW()+10 phút, trả JWT hold_token. Confirm dùng token UPDATE status=BOOKED. pg_cron mỗi phút giải phóng slot HELD hết hạn. Chống overbooking bằng unique constraint + optimistic lock. Waitlist FIFO priority bệnh nhân cũ, notify top 1 khi cancel. Pitfall: timezone chi nhánh, clock skew dùng NOW() DB, bác sĩ nghỉ đột xuất override schedule + rebook.
+
+> Senior tip: Hold slot là critical section ngắn. Dùng Redis lock cho tốc độ, DB constraint cho an toàn tuyệt đối. DB unique constraint là dòng phòng thủ cuối cùng.`,
+  follow: [
+    'Làm sao xử lý khi bác sĩ có ca làm chia cắt?',
+    'So sánh sinh slot trước vs sinh khi cần?',
+    'Thiết kế multi-clinic bệnh nhân muốn slot bất kỳ phòng khám nào?'
+  ],
+  tags: ['booking', 'slot hold', 'expiry', 'waitlist']
+}
+
+,
+{
+  id: 'design-081',
+  topic: 'design',
+  level: 'senior',
+  q: 'Import file Excel 500.000 dòng không làm treo app: thiết kế thế nào?',
+  a: `**Tóm tắt:** Upload streaming lên S3, tạo job PENDING trả 202, worker parse SAX từng row, checkpoint mỗi 1000 rows, retry từ checkpoint, WebSocket push progress, DLQ cho row lỗi, alert khi error rate trên 5%.
+
+### Cơ chế
+- Client POST multipart rồi API stream lên S3, trả 202 + jobId.
+- Worker parse bằng XSSFReader SAX, chỉ giữ 1 row trong heap (khoảng 50MB).
+- Validate format ghi import_error ngay; validate FK gom batch 1000 query IN.
+- Upsert INSERT ON CONFLICT DO UPDATE rồi retry an toàn.
+- Checkpoint mỗi 1000 rows: processed_rows, checkpoint_offset, last_success_at.
+- Retry: worker restart thì parse lại từ đầu SAX và bỏ qua các row đã checkpoint theo processed_rows/checkpoint_offset (SAX forward-only, không seek được).
+- WebSocket push progress mỗi 1000 rows hoặc 500ms.
+- DLQ cho row lỗi; alert nếu error_count > total_rows*5%.
+
+### Ví dụ đời thực
+File 500k dòng 80MB. DOM (XSSFWorkbook) OOM heap 4GB. Chuyển SAX, heap khoảng 50MB, import 500k rows trong 4 phút, checkpoint mỗi 1000 rows, retry từ row 349001 khi worker restart, WebSocket push progress realtime, 12 row lỗi vào DLQ.
+
+### Trả lời mẫu khi phỏng vấn
+Tôi thiết kế import job: upload streaming S3, API trả 202 + jobId. Worker parse SAX XSSFReader, chỉ giữ 1 row heap khoảng 50MB. Validate format ngay, FK batch 1000. Upsert ON CONFLICT. Checkpoint mỗi 1000 rows. Retry từ checkpoint: parse lại từ đầu SAX, bỏ qua row đã xử lý (forward-only, không seek được). WebSocket progress. DLQ row lỗi. Alert error rate trên 5%. Pitfall: header row, merged cell, date format, encoding, memory leak nếu giữ row list.
+
+> Senior tip: Không bao giờ load full workbook vào memory. SAX parser + checkpoint + retry từ offset là combo an toàn cho import lớn.`,
+  follow: [
+    'Làm sao xử lý file có merged cell và formula?',
+    'So sánh import sync vs async cho file nhỏ (dưới 10k)?',
+    'Thiết kế cancel import giữa chừng?'
+  ],
+  tags: ['import', 'excel', 'streaming', 'sax', 'checkpoint', 'websocket']
+},
+{
+  id: 'design-082',
+  topic: 'design',
+  level: 'lead',
+  q: 'Xuất hoá đơn điện tử gửi cơ quan thuế với retry và đối soát: thiết kế thế nào?',
+  a: `**Tóm tắt:** Outbox pattern: lưu invoice + outbox event trong cùng transaction DB; worker gửi XML ký số tới thuế qua API, retry exponential backoff + jitter, idempotency key, DLQ, reconciliation hằng ngày so sánh trạng thái local vs thuế, alert mismatch.
+
+### Cơ chế
+- Tạo invoice + outbox_event trong cùng DB transaction (atomic).
+- Worker poll outbox (FOR UPDATE SKIP LOCKED) rồi build XML ký số rồi POST API thuế.
+- Idempotency key = invoice_id, retry safe.
+- Retry: exponential backoff 1s,2s,4s,... max 1h + full jitter.
+- Response: accepted thì status=ACCEPTED, lưu tax_code; rejected thì status=REJECTED + reason.
+- DLQ sau N retry.
+- Reconciliation hằng ngày: query từng invoice status từ thuế, so sánh local, alert mismatch.
+- Monitoring: outbox age, retry count, DLQ size, mismatch count.
+
+### Ví dụ đời thực
+Hệ thống xuất 50k invoice/ngày. API thuế timeout 2% request. Outbox + retry exponential + jitter xử lý 98% trong 5 phút, DLQ 0.1% cần manual. Reconciliation hằng đêm phát hiện 3 invoice mismatch do clock skew, auto-retry fix.
+
+### Trả lời mẫu khi phỏng vấn
+Tôi dùng outbox pattern: lưu invoice và outbox_event cùng transaction. Worker poll outbox FOR UPDATE SKIP LOCKED, build XML ký số, POST API thuế với idempotency key invoice_id. Retry exponential backoff + full jitter max 1h. Accepted lưu tax_code, rejected lưu reason. DLQ sau N retry. Reconciliation hằng ngày query từng invoice so sánh local, alert mismatch. Monitoring outbox age, retry count, DLQ size, mismatch count. Pitfall: clock skew, idempotency, partial failure, schema version thuế thay đổi.
+
+> Senior tip: Outbox + idempotency là combo bắt buộc khi tích hợp bên ngoài. DB transaction đảm bảo event không mất; idempotency đảm bảo retry không duplicate.`,
+  follow: [
+    'Làm sao xử lý khi thuế không có API query batch, chỉ query từng hoá đơn?',
+    'So sánh polling outbox vs CDC (Debezium)?',
+    'Thiết kế reconciliation cho trường hợp thuế downtime dài?'
+  ],
+  tags: ['invoice', 'tax', 'outbox', 'retry', 'idempotency', 'reconciliation']
+}
 );
