@@ -1,6 +1,6 @@
 # T2806 — Case khó Upwork: lừa đảo và proposal (6 case)
 
-Status: TODO
+Status: DONE
 Agent: kilo
 Owns: `js/data/upwork-cases-3.js`
 
@@ -29,3 +29,5 @@ Thêm **6 case** `uw-case-201`…`uw-case-206` vào `js/data/upwork-cases-3.js` 
 Xong: sửa dòng `Status:` đầu file thành `Status: DONE`, Notes ghi id đã thêm.
 
 ## Notes
+Đã thêm 6 case uw-case-201…uw-case-206 vào js/data/upwork-cases-3.js. check-upwork OK.
+Reviewed-by: verify-only (code/UI task)
