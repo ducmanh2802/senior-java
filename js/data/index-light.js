@@ -3578,6 +3578,10 @@ window.DATA_INDEX = {
     {"id":"sd-060","title":"QR thanh toán cho merchant (VietQR)"},
     {"id":"sd-061","title":"Đặt phòng khách sạn nhiều kênh (website + OTA): chống overbooking, giữ phòng tạm, đồng bộ tồn phòng, huỷ và hoàn tiền"},
     {"id":"sd-062","title":"Quản lý kho và giao hàng chặng cuối: tồn kho nhiều kho, giữ hàng khi đặt, phân tuyến shipper, theo dõi đơn realtime"},
+    {"id":"sd-063","title":"Nền tảng form/khảo sát trực tuyến 1 triệu lượt trả lời mỗi ngày: form động, chống spam, xuất báo cáo, webhook"},
+    {"id":"sd-064","title":"Log tập trung cho 200 service: thu thập, lưu nóng/lạnh, tìm kiếm, cảnh báo, chi phí lưu 30 ngày"},
+    {"id":"sd-065","title":"Nền tảng khảo sát với phân tích kết quả thời gian thực và logic nhánh (1 triệu lượt/ngày)"},
+    {"id":"sd-066","title":"Log tập trung 200 service với lấy mẫu theo đuôi (tail-based sampling) để giảm chi phí mà không bỏ sót lỗi"},
   ],
   drills: [
     {"id":"drill-shadow-001","kind":"shadow","en":"I am a backend engineer with eight years of experience building Java services for fintech products."},
