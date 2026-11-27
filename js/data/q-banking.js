@@ -7146,4 +7146,282 @@ Một ngân hàng có 2 triệu tài khoản. Một đêm, job reconcile phát h
   ],
   tags: ['core', 'sổ cái kép', 'ledger', 'đối soát', 'lệch', 'maker-checker']
 },
+{
+  id: 'banking-094',
+  topic: 'banking',
+  level: 'senior',
+  q: 'Phát hiện gian lận giao dịch theo thời gian thực hoạt động thế nào? Bạn thiết kế quy tắc, danh sách đen, kiểm tra vận tốc và cảnh báo như thế nào để không chặn khách thường và không để gian lận lướt qua lưới?',
+  a: `**Tóm tắt:** Mỗi giao dịch trước khi chốt phải đi qua lớp đánh giá rủi ro: quy tắc tĩnh (ngưỡng tiền, địa danh, danh sách đen), mô hình vận tốc (số tiền và số lần trong cửa sổ thời gian), điểm số rủi ro tổng hợp, rồi quyết định CHẤP NHẬN / CHẤN / CẢNH BÁO cần xem lại. Khách thường phải có đường thoát (whitelist tạm, xem lại thủ công) và gian lận phải bị chặn trước khi tiền rời tài khoản.
+
+### Quy tắc đánh giá rủi ro
+- Quy tắc tĩnh: giao dịch trên ngưỡng (ví dụ trên 500 triệu VND), địa chỉ IP hoặc quốc gia ngoài danh sách cho phép, thiết bị chưa xác thực, nhận thanh toán từ tài khoản mới tạo dưới 24 giờ.
+- Vận tốc (velocity): tổng tiền và số lần giao dịch của cùng khách trong 1 giờ, 24 giờ, 7 ngày; vượt ngưỡng thì đánh dấu cao.
+- Danh sách đen/ trắng: thẻ, tài khoản, IP, thiết bị bị cấm hoặc được tin cậy; cập nhật theo sự cố thật, không cứng nhắc.
+- Đánh dấu bất thường: địa điểm giao dịch nhảy xa (giao dịch nửa đêm ở Hà Nội rồi sáng ở TP.HCM), thiết bị mới lần đầu, số lần sai OTP liên tiếp.
+
+### Quyết định chặn hay để qua
+Mỗi giao dịch được tính điểm rủi ro từ các quy tắc trên. Điểm thấp chấp nhận, điểm trung bình chờ xem lại (không chặn ngay, nhưng ghi log và giám sát), điểm cao chặn và yêu cầu xác thực thêm (OTP, gọi điện) hoặc từ chối. Không được chặn dựa trên một quy tắc đơn lẻ trừ khi là danh sách đen rõ ràng, để khách thường không bị ảnh hưởng bởi một lá cờ sai.
+
+### Cảnh báo và xử lý theo ca
+- Cảnh báo được gửi cho phân tích viên rủi ro với bằng chứng (quy tắc nào kích hoạt, số tiền, thiết bị, địa điểm).
+- Phân tích viên xem xét và hành động: chặn vĩnh viễn, bỏ chặn tạm thời, hoặc theo dõi thêm.
+- Có nhật ký kiểm tra: ai kích hoạt quy tắc, ai duyệt chặn hoặc bỏ chặn, lúc nào.
+
+### Ví dụ đời thực
+Một ngân hàng số phát hiện nhóm gian lận dùng thẻ cắp mua hàng hóa cao giá trong 2 giờ. Quy tắc vận tốc phát hiện cùng thẻ giao dịch 5 lần trong 30 phút, tổng 150 triệu, vượt ngưỡng bình thường 5 triệu. Hệ thống chặn giao dịch thứ 6, cảnh báo phân tích viên, và thẻ bị khóa tạm. Khách hàng thật gọi điện xác minh, được bỏ chặn sau khi xác nhận danh tính; gian lận bị ngăn chặn trước khi mất hơn 200 triệu.
+
+### Trả lời mẫu khi phỏng vấn
+"Tôi thiết kế lớp đánh giá rủi ro chạy trước khi chốt mỗi giao dịch, kết hợp quy tắc tĩnh (ngưỡng tiền, danh sách đen, địa danh), mô hình vận tốc (số tiền và số lần trong cửa sổ 1 giờ/24 giờ/7 ngày), và điểm số rủi ro tổng hợp. Quyết định có ba nhánh: chấp nhận, cảnh báo cần xem lại, hoặc chặn yêu cầu xác thực thêm. Không chặn dựa trên một quy tắc đơn lẻ trừ danh sách đen rõ ràng, để khách thường không bị ảnh hưởng. Cảnh báo gửi phân tích viên kèm bằng chứng, có nhật ký kiểm tra ai duyệt chặn hay bỏ chặn. Thực tế nhóm gian lận dùng thẻ cắp mua cao giá trong 2 giờ được phát hiện bởi quy tắc vận tốc, chặn kịp trước khi mất trên 200 triệu, và khách thật được bỏ chặn sau xác minh danh tính."
+
+> Senior tip: Điểm số rủi ro phải có nhãn rõ ràng (quy tắc nào tạo điểm) để phân tích viên tin cậy và điều chỉnh ngưỡng theo thực tế. Ngưỡng quá chặt khiến khách thường phàn nàn, ngưỡng quá lỏng để gian lận qua lưới — cần theo dõi tỷ lệ chặn sai và tỷ lệ gian lận không phát hiện để cân bằng.
+
+> Cụm từ: Velocity (vận tốc) là số tiền và số lần giao dịch trong một cửa sổ thời gian. Whitelist/blacklist là danh sách tin cậy hoặc cấm. Điểm số rủi ro là tổng điểm từ các quy tắc kích hoạt trên mỗi giao dịch.
+  `,
+  follow: [
+    'Bạn thiết kế quy tắc vận tốc như thế nào để phát hiện cùng thẻ giao dịch nhiều lần trong thời gian ngắn?',
+    'Khách hàng thường bị chặn nhầm, bạn có đường thoát và xem lại thủ công như thế nào?',
+    'Bạn lưu nhật ký kiểm tra cho việc chặn hoặc bỏ chặn giao dịch ra sao để sau này kiểm toán?'
+  ],
+  tags: ['phát hiện gian lận', 'vận tốc', 'danh sách đen', 'điểm rủi ro', 'chặn giao dịch']
+},
+{
+  id: 'banking-095',
+  topic: 'banking',
+  level: 'senior',
+  q: 'Luồng chargeback (đối kháng giao dịch thẻ) và representment (biện minh) hoạt động thế nào giữa ngân hàng phát hành, ngân hàng thu mua và hội thẻ? Bạn thiết kế xử lý như thế nào để không mất tiền và đúng hạn phản hồi?',
+  a: `**Tóm tắt:** Chargeback là chủ thẻ đối kháng giao dịch thẻ, yêu cầu ngân hàng phát hành hoàn tiền, và ngân hàng phát hành đòi tiền lại từ ngân hàng thu mua. Representment là ngân hàng thu mua bằng minh bằng chứng giao dịch hợp lệ để giữ tiền. Mỗi bên có hạn chặt (ví dụ 7-45 ngày), và miss hạn nghĩa là mất tiền tự động. Hệ thống phải theo dõi vòng đời chargeback, nhắc hạn, thu thập bằng chứng và giao giải quyết với hội thẻ.
+
+### Các vai trò và quy trình
+- Chủ thẻ: khách hàng đối kháng giao dịch, gọi hoặc gửi yêu cầu hoàn tiền.
+- Ngân hàng phát hành (issuer): thẻ của chủ thẻ, nhận yêu cầu chargeback, gửi yêu cầu hoàn tiền qua hội thẻ.
+- Ngân hàng thu mua (acquirer): thẻ của người bán, nhận chargeback, có thể representment bằng bằng chứng.
+- Hội thẻ (Visa/Mastercard): quy định quy trình, hạn, phí, và giải quyết tranh chấp cuối cùng.
+
+### Vòng đời chargeback
+1. Chủ thẻ đối kháng giao dịch với ngân hàng phát hành.
+2. Ngân hàng phát hành gửi yêu cầu chargeback qua hội thẻ đến ngân hàng thu mua.
+3. Ngân hàng thu mua có thể chấp nhận (hoàn tiền) hoặc representment (biện minh bằng hóa đơn, vận đơn, log giao dịch).
+4. Nếu representment, ngân hàng phát hành chấp nhận hoặc gửi pre-arbitration (tranh chấp cấp cao hơn).
+5. Arbitration: hội thẻ quyết định cuối cùng, có phí cao.
+
+### Hạn hạn quan trọng
+Mỗi bước có hạn (ví dụ chargeback 120 ngày từ ngày giao dịch, representment 7-45 ngày, pre-arb 10-30 ngày). Miss hạn = mất tiền hoặc mất quyền tranh chấp. Hệ thống phải nhắc hạn tự động và không để yêu cầu treo quá hạn.
+
+### Bằng chứng cho representment
+Hóa đơn, đơn hàng, vận đơn giao hàng, log IP/ thiết bị, ghi chép thoại xác nhận đơn, screenshot giao dịch thành công. Bằng chứng phải được thu thập sớm, lưu trữ an toàn và gửi đúng định dạng hội thẻ yêu cầu.
+
+### Ví dụ đời thực
+Một cửa hàng online bán điện tử nhận chargeback 20 triệu vì khách hàng nói không nhận hàng. Ngân hàng thu mua nhận yêu cầu representment trong 7 ngày, thu thập đơn hàng, vận đơn và log IP khớp với địa chỉ khách hàng, gửi hồ sơ bằng minh chứng cho hội thẻ. Ngân hàng phát hành chấp nhận, tiền giữ lại cho cửa hàng. Nếu miss hạn 7 ngày, cửa hàng mất 20 triệu và phải xử lý bằng tiền mặt.
+
+### Trả lời mẫu khi phỏng vấn
+"Chargeback là chủ thẻ đối kháng giao dịch yêu cầu hoàn tiền, đại luồng đi từ ngân hàng phát hành đến ngân hàng thu mua qua hội thẻ. Representment là ngân hàng thu mua bằng minh bằng chứng giao dịch hợp lệ để giữ tiền. Mỗi bước có hạn chặt, miss hạn nghĩa mất tiền tự động. Hệ thống của tôi theo dõi vòng đời chargeback, nhắc hạn tự động, thu thập bằng chứng (hóa đơn, vận đơn, log IP) và gửi đúng định dạng hội thẻ. Nếu ngân hàng phát hành không chấp nhận representment, có thể đi đến pre-arbitration và arbitration do hội thẻ quyết định. Thực tế cửa hàng online nhận chargeback 20 triệu, tôi thu thập bằng chứng trong 7 ngày và giữ được tiền; miss hạn sẽ mất toàn bộ."
+
+> Senior tip: Thu thập bằng chứng ngay khi giao dịch diễn ra, không chờ chargeback mới thu. Log IP, thiết bị, đơn hàng, vận đơn phải được lưu sẵn sẵn để representment nhanh. Miss hạn chargeback là mất tiền chắc chắn, không có cách cứu.
+
+> Cụm từ: Chargeback là chủ thẻ đối kháng giao dịch thẻ yêu cầu hoàn tiền. Representment là bằng minh bằng chứng giao dịch hợp lệ để giữ tiền. Arbitration là hội thẻ quyết định tranh chấp cuối cùng. Pre-arb là tranh chấp cấp cao hơn sau representment.
+  `,
+  follow: [
+    'Bạn xử lý thế nào khi miss hạn representment, và có cách cứu không?',
+    'Bằng chứng nào cần thu thập sẵn để representment nhanh và thành công?',
+    'Phí arbitration cao như thế nào ảnh hưởng quyết định tranh chấp hay bỏ?'
+  ],
+  tags: ['chargeback', 'representment', 'thẻ', 'hội thẻ', 'đối kháng']
+},
+{
+  id: 'banking-096',
+  topic: 'banking',
+  level: 'lead',
+  q: 'Lệnh định kỳ (standing order) và tiền khấu trừ tự động (direct debit) chạy theo lịch, nhưng ngày thanh toán có thể trùng cuối tuần, ngày lễ hoặc năm nhuận. Bạn thiết kế xử lý lịch, dời ngày, idempotency và giải phóng hạn mức khi giao dịch thất bại ra sao?',
+  a: `**Tóm tắt:** Lệnh định kỳ và tiền khấu trừ tự động phải được lên lịch và thực hiện đúng ngày nghiệp vụ, nhưng ngày thanh toán có thể trùng cuối tuần, ngày lễ hoặc năm nhuận, cần dời theo quy tắc modified following. Mỗi lần chạy phải idempotent (chạy lại không trừ hai lần), kiểm tra hạn mức và số dư, và giải phóng hạn mức hoặc hòm tiền khi giao dịch thất bại để không kẹt tiền khách.
+
+### Lịch và dời ngày
+- Ngày thanh toán theo lịch cố định (ví dụ hàng tháng ngày 5). Nếu ngày 5 trùng cuối tuần hay ngày lễ, dời theo modified following (ngày làm việc tiếp theo, trừ khi sang tháng mới thì lùi về ngày làm việc trước).
+- Năm nhuận: ngày 29 tháng 2 chỉ xuất hiện mỗi 4 năm; lệnh định ngày 29 tháng 2 cần quy tắc cụ thể (dời sang ngày 1 tháng 3 hoặc chạy ngày 28 tháng 2).
+- Ngày nghiệp vụ lấy từ bảng lịch ngân hàng, không lấy ngày máy chủ mù quáng.
+
+### Idempotency và chạy lại
+- Mỗi lần thực hiện có execution id (lệnh định kỳ + ngày nghiệp vụ + số thứ tự chạy). Nếu job crash giữa chừng và chạy lại cùng execution id, không được trừ tiền hai lần.
+- Lưu trạng thái từng lần chạy: CHƯA_CHẠY, ĐANG_CHẠY, THÀNH_CÔNG, THẤT_BẠI, HOÀN.
+- Nếu THÀNH_CÔNG, chạy lại là no-op. Nếu THẤT_BẠI, có thể retry trong ngày theo backoff.
+
+### Hạn mức và số dư
+- Trước khi trừ, kiểm tra số dư và hạn mức (nếu có). Không đủ thì chuyển sang THẤT_BẠI, thông báo khách, không giữ hạn mức vĩnh viễn.
+- Nếu giao dịch PENDING (đã gửi nhưng chưa có phản hồi), giữ hạn mức nhưng có TTL; quá hạn thì giải phóng và tra soát.
+
+### Giải phóng khi thất bại
+- Giao dịch thất bại: giải phóng hold hoặc hạn mức ngay, hoàn tiền nếu đã trừ, cập nhật số dư khả dụng.
+- Giao dịch treo quá hạn: job giải phóng có kiểm soát, không để tiền kẹt.
+
+### Ví dụ đời thực
+Một công ty bảo hiểm thu phí hằng tháng ngày 10. Tháng này ngày 10 trùng Chủ Nhật, hệ thống dời sang ngày 11 (thứ Hai). Khách A có số dư 500.000, phí 400.000, trừ thành công. Khách B số dư 300.000, phí 400.000, không đủ -> THẤT_BẠI, giải phóng hold, gửi thông báo nộp phí thủ công. Job chạy lại ngày 11 với cùng execution id là no-op cho khách A, không trừ hai lần. Thực tế 0 trường hợp bị trừ hai lần, 0 tiền bị kẹt.
+
+### Trả lời mẫu khi phỏng vấn
+"Lệnh định kỳ và tiền khấu trừ tự động tôi thiết kế theo ngày nghiệp vụ, dời ngày khi trùng cuối tuần hay ngày lễ bằng modified following, và xử lý năm nhuận riêng cho ngày 29 tháng 2. Mỗi lần chạy có execution id (lệnh định kỳ + ngày nghiệp vụ), chạy lại cùng id là no-op, không trừ hai lần. Trước khi trừ, kiểm tra số dư và hạn mức; không đủ thì thất bại và giải phóng hold. Giao dịch treo quá hạn được job giải phóng có kiểm soát. Thực tế ngày 10 trùng Chủ Nhật dời sang ngày 11, khách đủ tiền trừ thành công, khách không đủ thất bại và giải phóng hold, chạy lại cùng execution id không trừ hai lần, 0 tiền bị kẹt."
+
+> Senior tip: Lệnh định kỳ là bài toán tính ngày và idempotency, không phải chỉ chạy cron mù quáng. Ngày dời phải lấy từ bảng lịch ngân hàng có hiệu lực theo ngày, và execution id phải duy nhất theo lệnh + ngày nghiệp vụ để job crash rồi chạy lại không tạo lỗi trùng tiền.
+
+> Cụm từ: Lệnh định kỳ (standing order) là giao dịch lặp lại theo lịch. Direct debit (khấu trừ tự động) là bên thu được phép lấy tiền từ tài khoản khách theo cho phép. Modified following là dời ngày nghỉ sang ngày làm việc tiếp theo, trừ khi sang tháng mới thì lùi lại.
+  `,
+  follow: [
+    'Ngày thanh toán trùng ngày lễ và dời sang tháng khác, bạn xử lý modified following ra sao?',
+    'Job crash giữa chừng rồi chạy lại, bạn đảm bảo không trừ tiền hai lần như thế nào?',
+    'Giao dịch PENDING treo quá hạn, bạn giải phóng hạn mức ra sao mà không mở khe vượt hạn?'
+  ],
+  tags: ['lệnh định kỳ', 'standing order', 'direct debit', 'idempotency', 'modified following', 'năm nhuận']
+},
+{
+  id: 'banking-097',
+  topic: 'banking',
+  level: 'senior',
+  q: 'Tính lãi hàng ngày cho hàng triệu tài khoản tiết kiệm: làm tròn phần dư phân bổ vào kỳ cuối, ngày nghỉ trong kỳ tính lãi không, và job hàng đêm idempotent như thế nào?',
+  a: `**Tóm tắt:** Tính lãi tiết kiệm hàng ngày cho hàng triệu tài khoản bằng BigDecimal, tích lũy lãi thuần trong ngày với scale đủ cao, làm tròn một lần vào cuối kỳ và phân bổ phần dư nhỏ hơn 1 đồng vào kỳ tiếp theo; ngày nghỉ/lễ trong kỳ không tính lãi trừ khi sản phẩm quy định khác, và job hàng đêm phải idempotent để chạy lại cùng ngày nghiệp vụ không tính lãi hai lần.
+
+### Làm tròn và phần dư
+- Tính lãi mỗi ngày với scale 10 hoặc cao hơn, không làm tròn giữa chừng: lãi = gốc × lãi suất × (1/365) (hoặc 1/366 năm nhuận).
+- Cuối kỳ (tháng hoặc ngày sáp nhập), làm tròn một lần theo RoundingMode.HALF_UP về đơn vị tiền nhỏ nhất (đồng).
+- Phần dư sau làm tròn (< 1 đồng) không bị bỏ: cộng dồn vào khoản lãi của kỳ tiếp theo, hoặc ghi vào cột phần dư cho khách.
+- Không được làm tròn mỗi ngày rồi cộng lại — sai số tích lũy lớn ở hàng triệu tài khoản.
+
+### Ngày nghỉ/lễ trong kỳ
+- Lãi chỉ tính vào ngày làm việc theo lịch ngân hàng (thứ 2–6, trừ ngày lễ).
+- Nếu ngày đầu hoặc ngày cuối kỳ rơi vào ngày nghỉ, value date dời theo modified following; lãi tính đến ngày dời, không tính ngày nghỉ.
+- Nếu kỳ crossing cuối tuần/lễ, tổng số ngày tính lãi chỉ bao gồm ngày làm việc, chia cho 365 (hoặc quy ước sản phẩm).
+- Phải ghi rõ trong hợp đồng: ngày nghỉ có tính lãi hay không, tránh khách khiếu nại.
+
+### Chạy hàng triệu tài khoản hàng đêm
+- Chia batch nhỏ (ví dụ 1.000 tài khoản mỗi chunk), xử lý tuần tự trong mỗi chunk để tránh khóa toàn bảng.
+- Mỗi tài khoản có trạng thái tính lãi theo ngày nghiệp vụ: CHƯA_TÍNH, ĐANG_TÍNH, ĐÃ_TÍNH, LỖI.
+- Idempotency: nếu job crash và chạy lại cùng ngày nghiệp vụ, các tài khoản ĐÃ_TÍNH bị bỏ qua, chỉ tính lại CHƯA_TÍNH và LỖI.
+- Lưu mã chạy (run id = ngày nghiệp vụ + mã job) để kiểm toán, không ghi đè kết quả cũ nếu đã tính thành công.
+- Song số lượng worker có giới hạn (ví dụ 4–8 luồng) để không làm quá tải database.
+
+### Code ví dụ
+~~~java
+public class TinhLaiNgay {
+    private static final BigDecimal NAM = new BigDecimal("365");
+    private static final int SCALE = 10;
+
+    public BigDecimal tinhLaiMotNgay(BigDecimal goc, BigDecimal laiSuatNam) {
+        // lãi = goc × lãi suất × 1/365, scale cao, chưa làm tròn
+        BigDecimal motNgay = BigDecimal.ONE.divide(NAM, SCALE, RoundingMode.HALF_UP);
+        return goc.multiply(laiSuatNam).multiply(motNgay).setScale(SCALE, RoundingMode.HALF_UP);
+    }
+
+    public BigDecimal lamTronCuoiKy(BigDecimal laiThuan, BigDecimal phanDuKyTruoc) {
+        BigDecimal tong = laiThuan.add(phanDuKyTruoc);
+        return tong.setScale(0, RoundingMode.HALF_UP); // làm tròn về đồng, phần dư vào kỳ sau
+    }
+}
+~~~
+
+### Ví dụ đời thực
+Một ngân hàng có 2 triệu tài khoản tiết kiệm, lãi suất 4%/năm. Tài khoản A gốc 100.000.000 VND, kỳ 30 ngày (loại trừ 4 ngày cuối tuần/lễ = 26 ngày tính lãi). Lãi thuần = 100.000.000 × 0,04 × 26/365 = 284.931,5068… → làm tròn cuối kỳ 284.932 VND, phần dư 0,4932 VND không bỏ mà cộng vào kỳ tháng sau. Job chạy đêm chia 2 triệu tài khoản thành 2.000 chunk × 1.000 tài khoản, idempotent theo ngày nghiệp vụ; crash ở chunk 500 rồi chạy lại chỉ tính lại chunk 500–2.000, không tính lại 499 chunk đầu. Kết quả: 0 tài khoản bị tính lãi hai lần, sai số phần dư < 1 đồng mỗi tài khoản, thời gian chạy giảm từ 6 giờ xuống 45 phút.
+
+### Trả lời mẫu khi phỏng vấn
+"Tôi tính lãi tiết kiệm hàng ngày cho hàng triệu tài khoản bằng BigDecimal, không dùng double, tích lũy lãi thuần trong ngày với scale đủ cao và chỉ làm tròn một lần vào cuối kỳ. Phần dư nhỏ hơn 1 đồng không bị bỏ mà cộng vào kỳ tiếp theo. Ngày nghỉ/lễ không tính lãi, ngày đầu/cuối kỳ rơi nghỉ dời theo modified following và ghi rõ trong hợp đồng. Job hàng đêm chia batch nhỏ, mỗi tài khoản có trạng thái tính lãi theo ngày nghiệp vụ, và chạy lại cùng ngày nghiệp vụ là idempotent — tài khoản đã tính bị bỏ qua, không tính hai lần. Thực tế với 2 triệu tài khoản, tôi chia 2.000 chunk, crash rồi chạy lại chỉ tính lại phần còn lại, 0 tài khoản bị tính lại, sai số phần dư dưới 1 đồng mỗi tài khoản, thời gian chạy từ 6 giờ xuống 45 phút."
+
+> Senior tip: Sai số tích lũy từ làm tròn mỗi ngày rồi cộng lại sẽ lớn hơn nhiều so với làm tròn một lần cuối kỳ. Luôn lưu phần dư vào kỳ sau thay vì vứt bỏ, và idempotency của job tính lãi phải gán theo ngày nghiệp vụ chứ không theo ngày máy chủ, nếu không job chạy lại sau midnight sẽ tính sai ngày.
+
+### Cụm từ: Lãi thuần là lãi chưa làm tròn, phần dư là số tiền nhỏ hơn đơn vị tiền sau khi làm tròn, modified following là dời ngày nghỉ sang ngày làm việc tiếp theo.
+  `,
+  follow: [
+    'Phần dư < 1 đồng sau làm tròn bạn xử lý ra sao để không bị khiếu nại khách?',
+    'Job tính lãi crash ở giữa và chạy lại cùng ngày nghiệp vụ, bạn đảm bảo không tính hai lần như thế nào?',
+    'Ngày đầu hoặc cuối kỳ trùng cuối tuần/lễ, bạn tính lãi đến ngày nào và dời value date ra sao?'
+  ],
+  tags: ['lãi tiết kiệm', 'BigDecimal', 'làm tròn', 'phần dư', 'ngày nghỉ', 'idempotency', 'batch']
+},
+{
+  id: 'banking-098',
+  topic: 'banking',
+  level: 'senior',
+  q: 'Giờ cut-off khác nhau theo kênh (NAPAS, RTGS, thẻ quốc tế), ngày nghỉ nối tiếp nhau (Thứ 7 sau cut-off dời sang Thứ 2), value date khác posting date, và khách khiếu nại SLA khi cut-off job bị miss: bạn xử lý ra sao?',
+  a: `**Tóm tắt:** Mỗi kênh (NAPAS, RTGS, thẻ quốc tế) có giờ cut-off riêng và ngày xử lý riêng; giao dịch sau cut-off chuyển sang ngày làm việc kế tiếp. Value date (ngày giá trị tiền) và posting date (ngày ghi sổ) có thể khác nhau, và ngày nghỉ nối tiếp nhau (ví dụ Thứ 7 sau cut-off → Chủ Nhật → Thứ 2) phải dời theo lịch ngân hàng. Khi cut-off job bị miss, phải có job chạy lại, thông báo khách theo SLA, và không để tiền treo không rõ trạng thái.
+
+### Cut-off matrix theo kênh
+- NAPAS (chuyển tiền trong nước): cut-off ví dụ 16:30, xử lý cùng ngày hoặc T+1.
+- RTGS (gross settlement, lớn khẩn): cut-off 15:30, xử lý real-time trong ngày.
+- Thẻ quốc tế (Visa/Mastercard): cut-off theo múi giờ đối tác, thường 23:59 UTC, settlement T+1.
+- Mỗi kênh có bảng cut-off riêng, lưu trong database với effective date, không hard-code.
+
+### Ngày nghỉ nối tiếp nhau (holiday cascading)
+- Nếu giao dịch thứ 6 sau cut-off, chuyển sang ngày làm việc kế tiếp: bỏ qua Thứ 7, Chủ Nhật, ngày lễ → Thứ 2.
+- Nếu có nhiều ngày lễ nối tiếp (ví dụ Tết 5 ngày), ngày xử lý dời xa hơn, phải tính đúng từ bảng lịch ngân hàng.
+- Không được dời theo ngày máy chủ mà phải theo ngày nghiệp vụ có hiệu lực.
+
+### Value date vs posting date
+- Value date: ngày tiền bắt đầu tính lãi / ngày đối tác nhận tiền (ngày giá trị).
+- Posting date: ngày ghi vào sổ cái của ngân hàng (ngày hiển thị cho khách).
+- Hai ngày có thể khác: ví dụ giao dịch thứ 6 sau cut-off, value date là thứ 2 (khi đối tác xử lý), posting date cũng là thứ 2 khi ghi sổ.
+- Không được hiển thị "thành công" cho khách khi value date chưa đến.
+
+### Khi cut-off job bị miss
+- Job cut-off chạy mỗi ngày vào giờ chốt, đóng gói giao dịch gửi đối tác.
+- Nếu job miss (crash, không chạy), phải phát hiện qua monitoring và chạy lại ngay (re-run cut-off), không chờ đến ngày hôm sau.
+- Giao dịch bị ảnh hưởng đặt trạng thái CẦN_XỬ_LÝ, thông báo khách: "dự kiến xử lý vào ngày X".
+- Theo dõi SLA: tỷ lệ giao dịch xử lý đúng cut-off, số giao dịch bị miss, thời gian khôi phục.
+
+### Ví dụ đời thực
+Một ngân hàng có 3 kênh: NAPAS cut-off 16:30, RTGS cut-off 15:30, thẻ quốc tế cut-off 23:59 UTC. Một khách chuyển tiền NAPAS lúc 17:00 thứ 6 → cut-off đã qua, giao dịch đặt PENDING, value date dời sang thứ 2 (bỏ qua thứ 7, chủ nhật). Cut-off job thứ 6 bị crash miss 30 phút, phát hiện qua monitoring vào 17:15, chạy lại ngay, gửi 5.000 giao dịch đợi. Khách A khiếu nại "chuyển hôm qua sao chưa về" → nhân viên xem value date là thứ 2, giải thích SLA, khách hiểu. Kết quả: 0 giao dịch bị mất, tỷ lệ miss cut-off giảm từ 2% xuống 0,1%, thời gian khôi phục từ 4 giờ xuống 30 phút.
+
+### Trả lời mẫu khi phỏng vấn
+"Mỗi kênh (NAPAS, RTGS, thẻ quốc tế) có giờ cut-off riêng và bảng cut-off lưu trong database, không hard-code. Giao dịch sau cut-off chuyển sang ngày làm việc kế tiếp, và ngày nghỉ nối tiếp nhau (thứ 7, chủ nhật, lễ) được dời theo lịch ngân hàng, không theo ngày máy chủ. Tôi phân biệt value date (ngày tiền bắt đầu tính lãi/đối tác nhận) và posting date (ngày ghi sổ, hiển thị khách), không hiển thị thành công khi value date chưa đến. Khi cut-off job bị miss, monitoring phát hiện ngay và job chạy lại ngay, giao dịch bị ảnh hưởng đặt PENDING và thông báo khách theo SLA. Thực tế với 3 kênh, cut-off job miss rồi chạy lại trong 30 phút, gửi 5.000 giao dịch đợi, 0 giao dịch bị mất, tỷ lệ miss từ 2% xuống 0,1%, thời gian khôi phục từ 4 giờ xuống 30 phút."
+
+> Senior tip: Cut-off không chỉ là giờ chốt trong code — phải có bảng cut-off theo kênh có effective date, và cut-off job phải có monitoring plus cơ chế chạy lại ngay khi miss. Value date và posting date phải được phân biệt rõ, nếu không khách sẽ khiếu nại khi số tiền chưa về nhưng hệ thống đã hiển thị thành công.
+
+### Cụm từ: Cut-off là giờ chốt xử lý trong ngày theo từng kênh. Value date là ngày giá trị tiền (bắt đầu tính lãi), posting date là ngày ghi vào sổ cái. Holiday cascading là nhiều ngày nghỉ nối tiếp làm ngày xử lý dời xa hơn.
+  `,
+  follow: [
+    'NAPAS, RTGS và thẻ quốc tế có cut-off khác nhau, bạn quản lý bảng cut-off ra sao để không hard-code?',
+    'Thứ 7 sau cut-off dời sang Thứ 2 (bỏ qua Chủ Nhật), bạn tính ngày làm việc kế tiếp ra sao?',
+    'Cut-off job bị miss crash, bạn phát hiện và chạy lại ra sao mà không gửi trùng giao dịch?'
+  ],
+  tags: ['cut-off', 'NAPAS', 'RTGS', 'thẻ quốc tế', 'value date', 'posting date', 'holiday cascading', 'SLA']
+},
+{
+  id: 'banking-099',
+  topic: 'banking',
+  level: 'lead',
+  q: 'Core banking cũ quá tải gây cascade timeout qua middleware, giao dịch khẩn không được ưu tiên, dead letter queue đầy, và đối soát real-time giữa log middleware và log core phát hiện tiền treo: bạn thiết kế xử lý sự cố như thế nào?',
+  a: `**Tóm tắt:** Khi core banking cũ quá tải, middleware/ESB phải ngăn cascade timeout xuống kênh số, ưu tiên giao dịch khẩn qua hàng đợi ưu tiên, buffer tạm thời qua Kafka, điều chỉnh circuit breaker half-open khớp với khả năng phục hồi của core, và chạy đối soát real-time giữa log middleware và log core để phát hiện giao dịch gửi đi mà core không phản hồi (tiền treo). Mọi giao dịch trong dead letter queue phải được tra soát và xử lý thủ công, không bị bỏ qua.
+
+### Ngăn cascade timeout
+- Core cũ throughput thấp (ví dụ 30 TPS), kênh số gửi 200 TPS → core quá tải, timeout lan sang middleware, kênh số chậm theo.
+- Middleware đặt timeout ngắn (3–5 giây) cho mỗi call core, không để kết nối treo vì core chậm.
+- Circuit breaker mở khi core lỗi liên tục (ví dụ 50% thất bại trong 10 giây), nhanh fail cho các request mới, bảo vệ kênh số.
+- Sau thời gian chờ, circuit breaker half-open: cho một vài request đi qua để kiểm tra core đã phục hồi chưa, nếu thành công thì đóng mạch, nếu thất bại thì mở lại.
+
+### Giao dịch khẩn và hàng đợi ưu tiên
+- Giao dịch khẩn (chuyển tiền lớn, thanh toán lương, MTT) được gắn mức ưu tiên cao, vào hàng đợi riêng xử lý trước.
+- Giao dịch thường vào hàng đợi bình thường, không bị giao dịch khẩn chặn lâu.
+- Kafka làm buffer tạm thời: middleware ghi lệnh vào Kafka topic theo mức ưu tiên, consumer đọc và gửi core theo tốc độ core chịu được (rate limiting).
+
+### Dead letter queue (DLQ)
+- Giao dịch lỗi liên tục (ví dụ core trả lỗi định dạng, timeout quá hạn) chuyển vào DLQ, không bỏ qua.
+- DLQ phải có giao diện tra soát: xem payload, lý do lỗi, thời gian, số lần retry.
+- Nhân viên vận hành xử lý DLQ theo quy trình maker-checker, gửi lại hoặc từ chối, không xóa silently.
+
+### Đối soát real-time middleware log vs core log
+- Mỗi lệnh gửi từ middleware có message_id, ghi log kèm timestamp và trạng thái (GỬI, ĐANG_CHỜ, THÀNH_CÔNG, THẤT_BẠI).
+- Core log có message_id tương ứng (hoặc mã tham chiếu), ghi khi nhận và khi xử lý xong.
+- Job đối soát real-time (mỗi 1–2 phút) so sánh: lệnh middleware đã gửi nhưng core không có phản hồi trong ngưỡng (ví dụ 5 phút) → đánh dấu tiền treo, cảnh báo ngay.
+- Không chờ đối soát cuối ngày để phát hiện tiền treo — phải phát hiện sớm trong giờ làm việc.
+
+### Ví dụ đời thực
+Một ngân hàng có core cũ 30 TPS, giờ cao điểm kênh số gửi 200 TPS. Core quá tải, timeout 8%, cascade xuống middleware và app di động. Sau khi thêm Kafka buffer (rate limit 25 TPS cho core), hàng đợi ưu tiên cho giao dịch khẩn, circuit breaker half-open tuning (thử 3 request mỗi 30 giây), và đối soát real-time middleware log vs core log, tỷ lệ timeout giảm từ 8% xuống 0,3%, mọi giao dịch timeout được tra soát trong vòng 2 phút, DLQ có 0 giao dịch để lâu hơn 15 phút. Thời gian khôi phục sự cố từ 4 giờ xuống 20 phút.
+
+### Trả lời mẫu khi phỏng vấn
+"Khi core banking cũ quá tải gây cascade timeout, tôi thiết kế middleware để ngăn ảnh hưởng xuống kênh số: timeout ngắn cho mỗi call core, circuit breaker mở khi core lỗi liên tục và half-open kiểm tra phục hồi, Kafka làm buffer với rate limiting theo khả năng core (ví dụ 25 TPS khi core chỉ chịu 30 TPS). Giao dịch khẩn được gắn mức ưu tiên cao vào hàng đợi riêng xử lý trước. Dead letter queue lưu giao dịch lỗi liên tục để tra soát, không bỏ qua. Quan trọng nhất, tôi chạy đối soát real-time giữa log middleware và log core theo message_id: lệnh đã gửi mà core không phản hồi trong 5 phút được đánh dấu tiền treo và cảnh báo ngay, không chờ đối soát cuối ngày. Thực tế tỷ lệ timeout từ 8% xuống 0,3%, 0 giao dịch để trong DLQ quá 15 phút, thời gian khôi phục từ 4 giờ xuống 20 phút."
+
+> Senior tip: Circuit breaker half-open phải tuning khớp với khả năng phục hồi của core — thử quá sớm lại làm core quá tải tiếp, thử quá muộn làm kênh số chậm không cần thiết. DLQ không được bỏ qua: mỗi thông điệp trong DLQ phải có người xử lý và audit trail. Đối soát real-time middleware log vs core log phải kịp phát hiện tiền treo trong giờ làm việc, không đợi cuối ngày.
+
+### Cụm từ: Cascade timeout là sự việc timeout lan từ core xuống middleware và kênh số. Dead letter queue là hàng đợi lưu tin nhắn xử lý không thành công sau nhiều lần retry. Half-open là trạng thái circuit breaker cho một vài request đi qua kiểm tra downstream đã phục hồi chưa.
+  `,
+  follow: [
+    'Circuit breaker half-open bạn thử lại bao nhiêu request, cách nhau bao lâu, và điều chỉnh theo như thế nào?',
+    'Dead letter queue đầy hoặc có thông điệp lỗi lặp lại, bạn xử lý ra sao mà không bỏ qua thông điệp?',
+    'Đối soát real-time middleware log vs core log dùng message_id như thế nào, và ngưỡng cảnh báo tiền treo là bao lâu?'
+  ],
+  tags: ['core banking', 'middleware', 'ESB', 'Kafka', 'circuit breaker', 'dead letter queue', 'cascade timeout', 'đối soát real-time', 'lead']
+},
 );
