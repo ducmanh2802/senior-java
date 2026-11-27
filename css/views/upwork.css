@@ -37,7 +37,45 @@
   background: var(--surface); border: 1px solid var(--border); color: var(--text); font-size: .9rem; }
 .view-upwork .uw-actions { gap: 8px; flex-wrap: wrap; margin-top: 16px; }
 
+/* Stats */
+.view-upwork .uw-stats { margin-bottom: 16px; }
+.view-upwork .uw-stats h3 { margin: 0 0 12px; }
+.view-upwork .uw-stats-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 12px; margin-bottom: 16px; }
+.view-upwork .uw-stat { text-align: center; padding: 12px; background: var(--surface-2); border-radius: var(--radius-sm); }
+.view-upwork .uw-stat-value { display: block; font-size: 1.5rem; font-weight: 700; color: var(--accent); line-height: 1.2; }
+.view-upwork .uw-stat-label { display: block; font-size: .8rem; color: var(--muted); margin-top: 4px; }
+.view-upwork .uw-stat-cats { display: grid; gap: 10px; }
+.view-upwork .uw-stat-cat { display: grid; grid-template-columns: 1fr auto auto; gap: 10px; align-items: center; }
+.view-upwork .uw-stat-cat-label { font-size: .9rem; }
+.view-upwork .uw-stat-cat .progress { flex: 1; height: 8px; min-width: 0; }
+.view-upwork .uw-stat-cat-pct { font-size: .85rem; font-weight: 600; color: var(--accent); min-width: 40px; text-align: right; }
+
+/* Practice area */
+.view-upwork .uw-practice { margin: 16px 0; }
+.view-upwork .uw-practice h3 { margin: 0 0 8px; }
+.view-upwork .uw-practice .muted.small { margin-bottom: 10px; display: block; }
+.view-upwork .uw-score-show { display: flex; align-items: center; gap: 10px; margin-bottom: 10px; padding: 8px 12px; background: var(--surface-2); border-radius: var(--radius-sm); }
+.view-upwork .uw-draft { width: 100%; font-family: inherit; }
+.view-upwork .uw-practice-tools { gap: 10px; flex-wrap: wrap; align-items: center; margin-top: 10px; }
+.view-upwork .uw-practice-tools .mic-btn { display: inline-flex; align-items: center; justify-content: center; width: 40px; height: 40px; padding: 0; }
+.view-upwork .uw-practice-tools .mic-btn.recording { background: var(--danger); color: #fff; animation: uw-pulse 1s infinite; }
+.view-upwork .uw-practice-tools .mic-btn[hidden] { display: none !important; }
+.view-upwork .uw-grade-result { margin-top: 12px; }
+.view-upwork .uw-random { flex: 1 1 auto; max-width: 220px; }
+
+@keyframes uw-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.6; }
+}
+
+/* Responsive */
 @media (max-width: 480px) {
   .view-upwork .uw-keys { display: none; }
   .view-upwork .uw-detail { padding: 12px; }
+  .view-upwork .uw-stats-grid { grid-template-columns: repeat(2, 1fr); }
+  .view-upwork .uw-stat-cat { grid-template-columns: 1fr; gap: 6px; }
+  .view-upwork .uw-stat-cat-pct { text-align: left; }
+  .view-upwork .uw-tools { flex-direction: column; align-items: stretch; }
+  .view-upwork .uw-tools .input { width: 100%; }
+  .view-upwork .uw-random { max-width: none; }
 }

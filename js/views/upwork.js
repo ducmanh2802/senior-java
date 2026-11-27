@@ -3,7 +3,8 @@
  * từng bước + tin nhắn mẫu). Data: window.UPWORK_GUIDE (js/data/upwork-guide.js) + window.UPWORK_CASES
  * (js/data/upwork-cases-*.js), nhóm 'upwork' trong data-manifest. Schema: docs/UPWORK-GUIDE.md.
  * Routes: #/upwork, #/upwork/cases, #/upwork/<uw-ch-NN>, #/upwork/<uw-case-NNN>.
- * Lưu: App.store.data.upwork = { read: { '<chapterId>': ts }, done: { '<caseId>': ts }, check: { '<chapterId>:<i>': true } }.
+ * Lưu: App.store.data.upwork = { read: { '<chapterId>': ts }, done: { '<caseId>': ts }, check: { '<chapterId>:<i>': true },
+ *   drafts: { '<caseId>': 'text...' }, scores: { '<caseId>': { score, at } } }.
  */
 (function () {
   'use strict';
@@ -15,6 +16,9 @@
   const SEV = { high: ['Thiệt hại cao', 'bad'], medium: ['Thiệt hại vừa', 'warn'], low: ['Thiệt hại thấp', 'ok'] };
   let rootEl = null;
   const ui = { cat: 'all', q: '', hideDone: false };
+  let draftDebounceTimer = null;
+  let speechHandle = null;
+  let aiGrading = false;
 
   function chapters() { return (window.UPWORK_GUIDE || []).slice().sort((a, b) => a.order - b.order); }
   function cases() { return window.UPWORK_CASES || []; }
@@ -23,6 +27,7 @@
     if (!d.upwork || typeof d.upwork !== 'object') d.upwork = {};
     const u = d.upwork;
     u.read = u.read || {}; u.done = u.done || {}; u.check = u.check || {};
+    u.drafts = u.drafts || {}; u.scores = u.scores || {};
     return u;
   }
   function save() { try { App.store.save(); } catch (e) { /* storage blocked */ } }
@@ -35,6 +40,41 @@
       return '<a class="chip" href="#/bank/' + esc(id) + '">📚 ' + esc(id) + '</a>';
     }).join('');
     return items ? '<h3>Liên quan</h3><div class="chips">' + items + '</div>' : '';
+  }
+
+  function statsHtml() {
+    const u = S();
+    const chList = chapters();
+    const caList = cases();
+    const nRead = chList.filter(c => u.read[c.id]).length;
+    const nCheck = chList.reduce((sum, c) => sum + ((c.checklist || []).filter((_, i) => u.check[c.id + ':' + i]).length), 0);
+    const totalCheck = chList.reduce((sum, c) => sum + (c.checklist || []).length, 0);
+    const nDone = caList.filter(c => u.done[c.id]).length;
+    const scores = Object.values(u.scores).filter(s => typeof s.score === 'number');
+    const avgScore = scores.length ? (scores.reduce((s, x) => s + x.score, 0) / scores.length).toFixed(1) : '—';
+    const byCat = {};
+    caList.forEach(c => {
+      if (!byCat[c.category]) byCat[c.category] = { total: 0, done: 0 };
+      byCat[c.category].total++;
+      if (u.done[c.id]) byCat[c.category].done++;
+    });
+    const catBars = Object.keys(CATS).filter(k => byCat[k]).map(k => {
+      const b = byCat[k];
+      const pct = b.total ? Math.round((b.done / b.total) * 100) : 0;
+      return '<div class="uw-stat-cat"><span class="uw-stat-cat-label">' + esc(CATS[k]) + ' <span class="muted">(' + b.done + '/' + b.total + ')</span></span>' +
+        '<div class="progress"><div class="progress-bar ' + (pct === 100 ? 'ok' : '') + '" style="width:' + pct + '%"></div></div>' +
+        '<span class="uw-stat-cat-pct">' + pct + '%</span></div>';
+    }).join('');
+    return '<section class="uw-stats card">' +
+      '<h3>📊 Thống kê</h3>' +
+      '<div class="uw-stats-grid">' +
+        '<div class="uw-stat"><span class="uw-stat-value">' + nRead + '/' + chList.length + '</span><span class="uw-stat-label">Chương đã đọc</span></div>' +
+        '<div class="uw-stat"><span class="uw-stat-value">' + nCheck + '/' + totalCheck + '</span><span class="uw-stat-label">Checklist đã tick</span></div>' +
+        '<div class="uw-stat"><span class="uw-stat-value">' + nDone + '/' + caList.length + '</span><span class="uw-stat-label">Case đã nắm</span></div>' +
+        '<div class="uw-stat"><span class="uw-stat-value">' + avgScore + '</span><span class="uw-stat-label">Điểm AI trung bình</span></div>' +
+      '</div>' +
+      (catBars ? '<h4>Tiến độ theo nhóm</h4><div class="uw-stat-cats">' + catBars + '</div>' : '') +
+    '</section>';
   }
 
   function tabs(active) {
@@ -52,11 +92,12 @@
     const u = S();
     const list = chapters();
     if (!list.length) return '<p class="empty">Chưa có chương nào.</p>';
-    return '<ol class="uw-chapters">' + list.map(c =>
-      '<li><a class="card uw-chapter' + (u.read[c.id] ? ' read' : '') + '" href="#/upwork/' + esc(c.id) + '">' +
-      '<span class="uw-ch-icon" aria-hidden="true">' + esc(c.icon) + '</span>' +
-      '<span class="uw-ch-text"><strong>' + esc(c.order + '. ' + c.title) + '</strong><small>' + esc(c.summary) + '</small></span>' +
-      (u.read[c.id] ? '<span class="badge ok">Đã đọc</span>' : '') + '</a></li>').join('') + '</ol>';
+    return statsHtml() +
+      '<ol class="uw-chapters">' + list.map(c =>
+        '<li><a class="card uw-chapter' + (u.read[c.id] ? ' read' : '') + '" href="#/upwork/' + esc(c.id) + '">' +
+        '<span class="uw-ch-icon" aria-hidden="true">' + esc(c.icon) + '</span>' +
+        '<span class="uw-ch-text"><strong>' + esc(c.order + '. ' + c.title) + '</strong><small>' + esc(c.summary) + '</small></span>' +
+        (u.read[c.id] ? '<span class="badge ok">Đã đọc</span>' : '') + '</a></li>').join('') + '</ol>';
   }
 
   function chapterHtml(c) {
@@ -91,16 +132,20 @@
     const chips = '<div class="chips uw-cats"><button class="chip' + (ui.cat === 'all' ? ' active' : '') + '" data-cat="all">Tất cả (' + cases().length + ')</button>' +
       Object.keys(CATS).filter(k => counts[k]).map(k => '<button class="chip' + (ui.cat === k ? ' active' : '') + '" data-cat="' + k + '">' + esc(CATS[k]) + ' (' + counts[k] + ')</button>').join('') + '</div>';
     const tools = '<div class="row uw-tools"><input class="input" id="uwSearch" type="search" placeholder="Tìm case (ví dụ: refund, Telegram, JSS)…" aria-label="Tìm case" value="' + esc(ui.q) + '">' +
-      '<label class="uw-hide"><input type="checkbox" id="uwHideDone"' + (ui.hideDone ? ' checked' : '') + '> Ẩn case đã nắm</label></div>';
+      '<label class="uw-hide"><input type="checkbox" id="uwHideDone"' + (ui.hideDone ? ' checked' : '') + '> Ẩn case đã nắm</label>' +
+      '<button type="button" class="btn uw-random" id="uwRandom" title="Case ngẫu nhiên chưa nắm (phím tắt: R)"><kbd>R</kbd> 🎲 Case ngẫu nhiên chưa nắm</button></div>';
     const list = filtered();
     const items = list.length ? '<div class="uw-cases">' + list.map(c => {
       const sev = SEV[c.severity] || SEV.medium;
+      const scoreObj = u.scores[c.id];
+      const badge = scoreObj && typeof scoreObj.score === 'number' ? App.ui.scoreBadge(scoreObj.score) : '';
       return '<a class="card uw-case' + (u.done[c.id] ? ' done' : '') + '" href="#/upwork/' + esc(c.id) + '">' +
-        '<strong>' + esc(c.title) + '</strong><span class="uw-meta"><span class="badge">' + esc(CATS[c.category] || c.category) + '</span>' +
+        '<strong>' + esc(c.title) + '</strong>' + badge +
+        '<span class="uw-meta"><span class="badge">' + esc(CATS[c.category] || c.category) + '</span>' +
         '<span class="badge ' + sev[1] + '">' + sev[0] + '</span><span class="badge">' + esc((App.LEVELS && App.LEVELS[c.level]) || c.level) + '</span>' +
         (u.done[c.id] ? '<span class="badge ok">Đã nắm</span>' : '') + '</span></a>';
     }).join('') + '</div>' : '<p class="empty">Không có case nào khớp bộ lọc.</p>';
-    return chips + tools + items;
+    return statsHtml() + chips + tools + items;
   }
 
   function caseHtml(c) {
@@ -111,11 +156,29 @@
       '<div class="uw-template"><div class="row"><strong>' + esc(t.name) + '</strong>' +
       '<button class="btn sm" data-act="copy" data-i="' + j + '" aria-label="Chép tin nhắn mẫu: ' + esc(t.name) + '">📋 Chép</button></div>' +
       '<pre lang="en">' + esc(t.text) + '</pre></div>').join('');
+    const draft = u.drafts[c.id] || '';
+    const scoreObj = u.scores[c.id];
+    const scoreHtml = scoreObj && typeof scoreObj.score === 'number'
+      ? '<div class="uw-score-show">' + App.ui.scoreBadge(scoreObj.score) + '<span class="muted small">Lần chấm gần nhất: ' + App.fmtDate(scoreObj.at) + '</span></div>'
+      : '';
+    const practiceHtml = '<section class="uw-practice card" aria-labelledby="uw-practice-title">' +
+      '<h3 id="uw-practice-title">✍️ Luyện xử lý case này</h3>' +
+      '<p class="muted small">Viết các bước bạn sẽ làm và tin nhắn gửi khách. <kbd>Ctrl+Enter</kbd> để lưu nháp, <kbd>R</kbd> case ngẫu nhiên.</p>' +
+      scoreHtml +
+      '<textarea class="textarea uw-draft" id="uwDraft" rows="6" placeholder="Ví dụ:\n1. Kiểm tra milestone đã funded chưa...\n2. Submit work kèm link commit...\n3. Gửi tin nhắn: \"Hi Mark, I have submitted...\"\n...">' + esc(draft) + '</textarea>' +
+      '<div class="row uw-practice-tools">' +
+      '<button type="button" class="btn mic-btn" id="uwMic" aria-label="Đọc chính tả" title="Đọc chính tả (phím tắt: M)"' + (App.speech.supported ? '' : ' hidden') + '><span class="mic-icon" aria-hidden="true">🎙️</span></button>' +
+      '<button type="button" class="btn primary" id="uwGrade" data-id="' + esc(c.id) + '">🤖 AI chấm</button>' +
+      '<span id="uwGradeStatus" class="ai-loading" hidden>AI đang chấm…</span>' +
+      '<div id="uwGradeResult" class="uw-grade-result"></div>' +
+      '</div>' +
+    '</section>';
     return '<article class="card uw-detail"><p class="muted"><a href="#/upwork/cases">← Case khó</a></p>' +
       '<h2>' + esc(c.title) + '</h2><p class="uw-meta"><span class="badge">' + esc(CATS[c.category] || c.category) + '</span>' +
       '<span class="badge ' + sev[1] + '">' + sev[0] + '</span><span class="badge">' + esc((App.LEVELS && App.LEVELS[c.level]) || c.level) + '</span></p>' +
       '<h3>📍 Tình huống</h3><div class="md">' + App.md(c.situation) + '</div>' +
       '<h3>🚩 Dấu hiệu nhận biết sớm</h3><ul>' + li(c.signals) + '</ul>' +
+      practiceHtml +
       '<details class="uw-solution"><summary>🛠️ Xem cách xử lý từng bước (tự nghĩ trước rồi mới mở)</summary>' +
       '<div class="md">' + App.md(c.steps) + '</div>' +
       (tpl ? '<h3>💬 Tin nhắn mẫu (tiếng Anh)</h3>' + tpl : '') +
@@ -148,6 +211,102 @@
     if (s2 && box) { s2.focus(); try { s2.setSelectionRange(pos, pos); } catch (e) { /* type=search */ } }
   }
 
+  function saveDraft(caseId, text) {
+    const u = S();
+    u.drafts[caseId] = text;
+    save();
+  }
+
+  function debouncedSaveDraft(caseId, text) {
+    if (draftDebounceTimer) clearTimeout(draftDebounceTimer);
+    draftDebounceTimer = setTimeout(() => saveDraft(caseId, text), 500);
+  }
+
+  function startSpeech(textarea) {
+    if (!App.speech.supported) return;
+    const btn = rootEl.querySelector('#uwMic');
+    if (speechHandle) { speechHandle.stop(); speechHandle = null; }
+    btn.classList.add('recording');
+    btn.setAttribute('aria-pressed', 'true');
+    speechHandle = App.speech.start({
+      lang: 'vi',
+      onText(finalText, interim) {
+        textarea.value = finalText + (interim ? ' ' + interim : '');
+        debouncedSaveDraft(current.id, textarea.value);
+      },
+      onError(msg) {
+        btn.classList.remove('recording');
+        btn.setAttribute('aria-pressed', 'false');
+        speechHandle = null;
+        App.ui.error({ message: msg, code: 'speech' });
+      },
+    });
+  }
+
+  function stopSpeech() {
+    if (!speechHandle) return;
+    const metrics = speechHandle.stop();
+    speechHandle = null;
+    const btn = rootEl.querySelector('#uwMic');
+    btn.classList.remove('recording');
+    btn.setAttribute('aria-pressed', 'false');
+    const textarea = rootEl.querySelector('#uwDraft');
+    if (textarea && metrics.text) {
+      textarea.value = metrics.text;
+      saveDraft(current.id, metrics.text);
+    }
+  }
+
+  async function gradeAnswer(caseId) {
+    const c = byId(caseId);
+    if (!c) return;
+    const textarea = rootEl.querySelector('#uwDraft');
+    const btn = rootEl.querySelector('#uwGrade');
+    const status = rootEl.querySelector('#uwGradeStatus');
+    const resultBox = rootEl.querySelector('#uwGradeResult');
+    const answer = textarea ? textarea.value.trim() : '';
+    if (answer.length < 80) {
+      resultBox.innerHTML = App.ui.error({ message: 'Câu trả lời quá ngắn (tối thiểu 80 ký tự). Hãy viết thêm chi tiết các bước và tin nhắn.', code: 'short' });
+      return;
+    }
+    if (aiGrading) return;
+    aiGrading = true;
+    btn.disabled = true;
+    status.hidden = false;
+    resultBox.innerHTML = '';
+    try {
+      const res = await App.ai.grade({
+        question: c.title + '\n' + c.situation,
+        reference: c.steps + '\nSai lầm hay gặp: ' + (c.mistakes || []).join('; '),
+        answer: answer,
+        lang: 'vi',
+        topic: 'remote',
+        level: c.level,
+      });
+      const u = S();
+      u.scores[caseId] = { score: res.score, at: Date.now() };
+      save();
+      resultBox.innerHTML = App.ui.feedback(res, 'vi');
+      // Update score badge in place
+      const badge = rootEl.querySelector('.uw-score-show');
+      if (badge) badge.innerHTML = App.ui.scoreBadge(res.score) + '<span class="muted small">Lần chấm gần nhất: ' + App.fmtDate(u.scores[caseId].at) + '</span>';
+    } catch (e) {
+      resultBox.innerHTML = App.ui.error(e);
+    } finally {
+      aiGrading = false;
+      btn.disabled = false;
+      status.hidden = true;
+    }
+  }
+
+  function randomUnmasteredCase() {
+    const u = S();
+    const unmastered = cases().filter(c => !u.done[c.id]);
+    if (!unmastered.length) return;
+    const c = unmastered[Math.floor(Math.random() * unmastered.length)];
+    App.navigate('#/upwork/' + c.id);
+  }
+
   App.registerView('upwork', {
     title: 'Freelance & Upwork',
     render(root, params) {
@@ -166,25 +325,65 @@
           const t = current.templates[+b.dataset.i];
           if (t && navigator.clipboard) navigator.clipboard.writeText(t.text).then(() => { b.textContent = '✓ Đã chép'; }, () => { b.textContent = 'Không chép được'; });
         }
+        else if (b.id === 'uwGrade') { gradeAnswer(b.dataset.id); }
+        else if (b.id === 'uwRandom') { randomUnmasteredCase(); }
+        else if (b.id === 'uwMic') {
+          const textarea = rootEl.querySelector('#uwDraft');
+          if (textarea && speechHandle) stopSpeech();
+          else if (textarea) startSpeech(textarea);
+        }
       };
       const onChange = e => {
         const el = e.target;
         if (el.dataset && el.dataset.check) { const u = S(); if (el.checked) u.check[el.dataset.check] = true; else delete u.check[el.dataset.check]; save(); }
         else if (el.id === 'uwHideDone') { ui.hideDone = el.checked; render(['cases']); }
       };
-      const onInput = e => { if (e.target.id === 'uwSearch') { ui.q = e.target.value; rerenderCases(); } };
+      const onInput = e => {
+        if (e.target.id === 'uwSearch') { ui.q = e.target.value; rerenderCases(); }
+        else if (e.target.id === 'uwDraft') { debouncedSaveDraft(current.id, e.target.value); }
+      };
+      const onKeydown = e => {
+        if (e.target.id === 'uwDraft' && e.ctrlKey && e.key === 'Enter') {
+          e.preventDefault();
+          saveDraft(current.id, e.target.value);
+          const btn = rootEl.querySelector('#uwGrade');
+          if (btn) btn.focus();
+        }
+      };
       root.addEventListener('click', onClick);
       root.addEventListener('change', onChange);
       root.addEventListener('input', onInput);
+      root.addEventListener('keydown', onKeydown);
       const offKey = App.onKey(e => {
         if (e.key === '1') App.navigate('#/upwork');
         else if (e.key === '2') App.navigate('#/upwork/cases');
+        else if ((e.key === 'r' || e.key === 'R') && !e.ctrlKey && !e.metaKey && !e.altKey) {
+          const activeEl = document.activeElement;
+          if (!activeEl || activeEl.tagName !== 'TEXTAREA' && activeEl.tagName !== 'INPUT') {
+            e.preventDefault();
+            randomUnmasteredCase();
+          }
+        }
+        else if ((e.key === 'm' || e.key === 'M') && !e.ctrlKey && !e.metaKey && !e.altKey) {
+          const activeEl = document.activeElement;
+          if (!activeEl || activeEl.tagName !== 'TEXTAREA' && activeEl.tagName !== 'INPUT') {
+            const btn = rootEl.querySelector('#uwMic');
+            const textarea = rootEl.querySelector('#uwDraft');
+            if (btn && textarea && !btn.hidden) {
+              e.preventDefault();
+              if (speechHandle) stopSpeech(); else startSpeech(textarea);
+            }
+          }
+        }
       });
       return () => {
         root.removeEventListener('click', onClick);
         root.removeEventListener('change', onChange);
         root.removeEventListener('input', onInput);
+        root.removeEventListener('keydown', onKeydown);
         offKey();
+        if (draftDebounceTimer) clearTimeout(draftDebounceTimer);
+        if (speechHandle) { speechHandle.stop(); speechHandle = null; }
         rootEl = null;
       };
     },
