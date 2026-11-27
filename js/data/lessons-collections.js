@@ -3668,5 +3668,627 @@ Job scheduler duyệt danh sách job đang chạy để cancel theo điều ki�
     related: ['collections-001', 'collections-003'],
     tags: ['fail-fast', 'modCount', 'CME', 'removeIf', 'ConcurrentHashMap', 'snapshot']
   },
-);
+  {
+    id: 'lesson-collections-015',
+    track: 'collections',
+    order: 15,
+    title: 'TreeMap và NavigableMap: tra cứu theo bậc và tìm khung giờ trống',
+    level: 'senior',
+    minutes: 25,
+    goals: [
+      'Giải thích được TreeMap lưu dữ liệu theo thứ tự khóa (cây đỏ-đen) và vì sao get/put/remove là O(log n) trong trường hợp xấu nhất',
+      'Dùng đúng floorEntry, ceilingEntry, lowerEntry, higherEntry và headMap/tailMap/subMap',
+      'Viết comparator nhất quán với equals, tránh lỗi mất entry im lặng, và biết TreeMap không thread-safe',
+    ],
+    body: `**Tóm tắt:** {{TreeMap}} là một {{Map}} (bản đồ, cấu trúc tra cứu khóa → giá trị) giữ các cặp khóa-giá trị đã **sắp xếp theo khóa**, giống danh bạ điện thoại in sách đã xếp theo bảng chữ cái. Ngoài tra cứu chính xác O(log n), nó còn trả lời "phần tử gần nhất" và "khoảng giá trị". {{NavigableMap}} là giao diện mở rộng {{SortedMap}} (Map đã sắp xếp), thêm các phương thức dò theo thứ tự như {{floorEntry}}/{{ceilingEntry}} và các view khoảng {{subMap}}/{{headMap}}/{{tailMap}}. Bài viết đi từ ý tưởng cây đỏ-đen đến hai bài toán thực tế: tra biểu phí theo bậc và tìm khung giờ trống trong lịch, rồi chỉ ra lỗi comparator và vấn đề đa luồng.
+
+### TreeMap và cây đỏ-đen: bản đồ đã sắp xếp
+**{{TreeMap}} là gì?** Một loại {{Map}} mà mọi khóa luôn được xếp theo thứ tự tăng dần, nên bạn không cần quét toàn bộ bản đồ để tìm một khóa hoặc dò các khóa lân cận.
+
+**Cây đỏ-đen (red-black tree) là gì?** Cây nhị phân tìm kiếm tự cân bằng: mỗi nút lưu một khóa, có nút trái nhỏ hơn và nút phải lớn hơn; mỗi nút tô màu đỏ hoặc đen. Sau mỗi lần thêm/xoá, {{TreeMap}} đổi màu và xoay nút để chiều cao cây không vượt quá khoảng 2 × log2(số nút). Vậy 1.000.000 khóa chỉ cần khoảng 20-40 lần so sánh để tìm, thêm hoặc xoá. Mọi thao tác {{get}}, {{put}}, {{remove}} của {{TreeMap}} là **O(log n)** trong trường hợp xấu nhất, chậm hơn {{HashMap}} trung bình O(1) nhưng đổi lại có thứ tự và tra cứu gần nhất.
+
+So sánh nhanh:
+- {{HashMap}}: tra cứu chính xác nhanh, không giữ thứ tự, không có floorEntry/ceilingEntry.
+- {{TreeMap}}: tra cứu O(log n), giữ thứ tự khóa, có toàn bộ công cụ dò lân cận và khoảng.
+
+### NavigableMap: hỏi 'gần nhất' thay vì 'đúng bằng'
+{{NavigableMap}} là giao diện mở rộng {{SortedMap}}, thêm các phương thức dò theo thứ tự:
+
+| Phương thức | Ý nghĩa | Ví dụ với khóa 0, 100, 500 |
+|---|---|---|
+| {{floorEntry(x)}} | mục có khóa lớn nhất **≤** x | floorEntry(250) → khóa 100; floorEntry(100) → khóa 100 |
+| {{lowerEntry(x)}} | mục có khóa lớn nhất **<** x | lowerEntry(100) → khóa 0 |
+| {{ceilingEntry(x)}} | mục có khóa nhỏ nhất **≥** x | ceilingEntry(101) → khóa 500 |
+| {{higherEntry(x)}} | mục có khóa nhỏ nhất **>** x | higherEntry(500) → null |
+
+{{floorKey}}/{{lowerKey}}/{{ceilingKey}}/{{higherKey}} tương tự nhưng trả về khóa thay vì mục. Không có mục phù hợp thì trả về **null**, nên phải kiểm tra null trước khi lấy giá trị, tránh {{NullPointerException}}.
+
+~~~java
+NavigableMap<Long, Long> feeByTier = new TreeMap<>();
+feeByTier.put(0L, 1_100L);          // từ 0 đồng: phí 1.100 đồng
+feeByTier.put(10_000_000L, 3_300L); // từ 10 triệu: phí 3.300 đồng
+feeByTier.put(500_000_000L, 11_000L); // từ 500 triệu: phí 11.000 đồng
+Map.Entry<Long, Long> e = feeByTier.floorEntry(25_000_000L); // bậc 10 triệu → 3.300
+if (e != null) System.out.println(e.getValue()); // 3300
+~~~
+
+### Tra biểu phí theo bậc bằng floorEntry
+**Biểu phí theo bậc là gì?** Quy tắc tính phí phụ thuộc vào khoảng số tiền: ví dụ chuyển khoản từ 0-10 triệu phí 1.100, từ 10-500 triệu phí 3.300, trên 500 triệu phí 11.000. Mỗi bậc có một **ngưỡng dưới** (tính cả ngưỡng đó) và áp dụng cho tới ngưỡng của bậc kế tiếp.
+
+Vì sao dùng {{TreeMap}}? Khóa là ngưỡng dưới (inclusive), value là phí. {{floorEntry(sốTiền)}} trả về bậc có ngưỡng lớn nhất không quá số tiền — chính bậc đang áp dụng. Không cần chuỗi if/else dài, thêm bậc mới chỉ là một lệnh {{put}}, không phải sửa code.
+
+**Lỗi hay gặp:** dùng {{ceilingEntry}} để tìm "bậc kế tiếp lớn hơn số tiền" thì sai khi số tiền chính bằng một ngưỡng (ceiling trả về chính ngưỡng đó). Phải dùng {{higherKey}}. Quên kiểm tra null của {{floorEntry}} khi số tiền nhỏ hơn ngưỡng thấp nhất gây {{NullPointerException}} khi unboxing.
+
+### Tìm khung giờ trống trong lịch
+**Khung giờ trống là gì?** Khoảng thời gian không có cuộc hẹn nào, đủ dài để đặt một cuộc hẹn mới. Ví dụ phòng họp bận từ 9:00-10:00 và 14:00-15:30, muốn đặt cuộc hẹn 60 phút sau 8:00 → khung trống đầu tiên là 10:00-11:00.
+
+Lưu các khoảng bận trong {{TreeMap<Long, Long>}}: khóa là phút bắt đầu (tính từ nửa đêm), value là phút kết thúc. Tìm khung trống sớm nhất sau {{now}} đủ dài {{duration}} phút:
+
+1. {{floorEntry(now)}} tìm khoảng bận chứa {{now}} (nếu có). Nếu {{now}} đang nằm trong một cuộc bận, con trỏ nhảy đến kết thúc cuộc đó; vì các khoảng có thể chồng chéo, hãy nhảy và kiểm tra lại cho đến khi con trỏ rảnh.
+2. Duyệt {{tailMap(conTrỏ, true)}} (view các khoảng bắt đầu từ con trỏ, bao gồm cả ngưỡng): khoảng trống giữa kết thúc cuộc trước và bắt đầu cuộc sau. Nếu khoảng dài đủ ≥ duration → tìm thấy.
+3. Nếu duyệt hết chưa tìm thấy, khung trống nằm sau cuộc bận cuối cùng.
+
+Ví dụ số liệu: bận [540, 600] (9:00-10:00) và [840, 930] (14:00-15:30), now = 480 (8:00), duration = 60 → floorEntry(480) = null, con trỏ = 480; khoảng trống đầu tiên [480, 540] dài 60 phút → tìm thấy ngay 8:00.
+
+~~~java
+static Long freeSlot(TreeMap<Long, Long> busy, long now, long duration) {
+    long cursor = now;
+    // Khoảng bận có thể chồng chéo: nhảy con trỏ qua mọi đoạn đang chứa nó
+    for (;;) {
+        long furthest = cursor;
+        for (Map.Entry<Long, Long> e : busy.headMap(cursor, true).entrySet()) {
+            if (e.getValue() > furthest) furthest = e.getValue();
+        }
+        if (furthest == cursor) break;
+        cursor = furthest;
+    }
+    for (Map.Entry<Long, Long> e : busy.tailMap(cursor, true).entrySet()) {
+        if (e.getKey() - cursor >= duration) return cursor;
+        if (e.getValue() > cursor) cursor = e.getValue();
+    }
+    return cursor + duration <= 1_440 ? cursor : null;
+}
+~~~
+
+### subMap/headMap/tailMap là view, không sao chép
+{{headMap(khôngGiớiHạn)}} trả các mục khóa < giới hạn; {{tailMap(khởiĐầu)}} trả các mục khóa >= khởi đầu; {{subMap(từ, đến)}} trả [từ, đến) (gồm đầu, không gồm đuôi). Hai tham số boolean bổ sung {{subMap(từ, cóTừ, đến, cóĐến)}} chọn có gồm cả hai đầu hay không.
+
+Quan trọng: các view này **không sao chép** — chúng nhìn thẳng vào cây gốc. Sửa qua view là sửa bản gốc; {{put}} một khóa nằm ngoài khoảng của view ném {{IllegalArgumentException}}. Mục trả về từ {{floorEntry}} là ảnh chụp bất biến: gọi {{setValue}} ném {{UnsupportedOperationException}}.
+
+### Comparator phải nhất quán với equals — lỗi mất entry im lặng
+{{TreeMap}} quyết định hai khóa "giống nhau" khi {{compare(a, b) == 0}}. Nó **không bao giờ gọi** {{equals}} hay {{hashCode}}. Nếu comparator trả 0 cho hai object khác nhau (theo equals), {{TreeMap}} coi chúng là cùng một khóa: mục thứ nhất được giữ, mục thứ hai bị **ghi đè im lặng**, dữ liệu biến mất mà không có exception.
+
+Ví dụ sai: comparator chỉ so sánh giờ bắt đầu của ca làm việc. Hai ca khác nhau cùng 9:00 → compare == 0 → ca thứ hai bị bỏ.
+
+~~~java
+// SAI: hai ca cùng giờ bị coi là trùng khóa
+NavigableMap<Shift, String> shifts = new TreeMap<>(Comparator.comparingInt(Shift::startMinute));
+shifts.put(new Shift("ca-sang", 540), "An");   // 9:00
+shifts.put(new Shift("ca-chiều", 540), "Bình"); // 9:00, khác ca cùng giờ
+System.out.println(shifts.size()); // 1, "ca-chiều" mất hết
+~~~
+
+Sửa: thêm tiêu chí phân biệt duy nhất (mã ca) làm tie-breaker, nên dùng comparator chuẩn như {{Long.compare}} (không trừ, tránh tràn số) và comparator phải nhất quán với equals: compare == 0 khi và chỉ khi equals == true.
+
+Lỗi khác: Comparator viết tay bằng phép trừ {{a.amount - b.amount}} có thể **tràn số** khi giá trị lớn hoặc âm, cho dấu sai, làm cây sắp sai và tra cứu "không thấy" khóa đang có. Dùng {{Comparator.comparingLong}} hoặc {{Long.compare}}.
+
+### Key mutable và luồng cùng ghi
+Nếu sửa field tham gia so sánh của key sau khi {{put}}, entry nằm sai nhánh trong cây, {{get}} không tìm thấy. Chỉ dùng khóa **immutable** (bất biến, không đổi sau khi tạo) như {{String}}, {{Long}}, record có thành phần bất biến.
+
+{{TreeMap}} **không thread-safe**: nhiều luồng cùng ghi có thể làm hỏng cây; iterator là fail-fast (ném {{ConcurrentModificationException}} khi phát hiện cấu trúc đổi trong lúc duyệt). Cần bản đồ có thứ tự và an toàn đồng thời thì dùng {{ConcurrentSkipListMap}} (xây dựng trên skip list, cấu trúc liên kết có nhiều tầng giúp tìm kiếm O(log n) kỳ vọng, iterator weakly consistent: có thể thấy hoặc không thấy thay đổi đồng thời, không ném CME, nhưng không cho khóa null).
+
+### Ví dụ đời thực
+Hệ thống đặt lịch khám bệnh của một phòng khám: khoảng 5.000 đặt lịch/ngày, mỗi khung 30 phút. Ban đầu comparator chỉ so sánh giờ bắt đầu, bỏ qua mã bệnh nhân. Hai bệnh nhân đặt cùng 14:00 → comparator trả 0 → {{TreeMap}} giữ ca đầu, ca thứ hai biến mất im lặng. Triệu chứng: 200 ca trong tháng bị "mất", bệnh nhân đến hẹn mà không thấy trong hệ thống, phòng khám phải hoàn lại hơn 45 triệu đồng phí khám đã trước thanh toán. Điều tra: in ra {{shifts.size()}} so với số ca trong database (200 vs 1.200), thấy các cặp ca có compare == 0 nhưng khác equals. Sửa comparator bằng {{Comparator.comparingInt(Shift::startMinute).thenComparing(Shift::patientId)}}. Sau đó size khớp database, không còn ca bị mất.
+
+### Trả lời mẫu khi phỏng vấn
+"TreeMap là Map được xây dựng trên cây đỏ-đen tự cân bằng, giữ khóa theo thứ tự, nên get/put/remove đều O(log n) cả trong trường hợp xấu nhất. Ngoài tra cứu chính xác, NavigableMap cung cấp floorEntry (khóa lớn nhất <= x), ceilingEntry (khóa nhỏ nhất >= x), lowerEntry, higherEntry và các view subMap/headMap/tailMap — rất hữu ích cho biểu phí theo bậc, lịch trống, time-series. TreeMap không gọi equals, chỉ gọi compare, nên comparator phải nhất quán với equals; nếu không, hai khóa khác nhau có thể bị coi là trùng và mất dữ liệu im lặng. TreeMap không thread-safe; cần đồng thời và thứ tự thì dùng ConcurrentSkipListMap. Nếu chỉ cần tra cứu chính xác O(1) trung bình và không cần thứ tự, HashMap nhanh hơn và nhẹ hơn."
+
+> Senior tip: Comparator trả 0 cho hai object khác nhau là nút nút làm TreeMap "ăn" mục mà không báo lỗi. Luôn viết unit test: put hai object khác nhau nhưng comparator trả 0, assert size tăng 2; và test floorEntry trả null ở biên dưới.
+
+### Liên hệ phỏng vấn
+Interviewer hay hỏi: khi nào chọn TreeMap thay vì HashMap (cần thứ tự hoặc tra cứu gần nhất/khoảng), độ phức tạp O(log n) vì sao (cây đỏ-đen cân bằng), floorEntry vs ceilingEntry vs higherEntry khác nhau thế nào, và câu bẫy comparator trả 0 cho hai key khác nhau làm mất entry. Câu trả lời giỏi nêu ví dụ thực như biểu phí theo bậc (floorEntry) hoặc lịch trống (tailMap), và nhớ kiểm tra null của floorEntry.
+`,
+    exercises: [
+      {
+        title: 'Biểu phí vận chuyển theo trọng lượng bằng floorEntry',
+        prompt: `Viết {{FeeSchedule}} quản lý biểu phí vận chuyển theo trọng lượng:
+- {{addTier(fromKg, fee)}}: thêm bậc, {{fromKg}} là trọng lượng dưới tính cả ngưỡng đó (kg, nguyên không âm). {{fromKg < 0}} ném {{IllegalArgumentException}}. Thêm lại cùng ngưỡng thì ghi đè phí. Các bậc có thể thêm theo thứ tự bất kỳ.
+- {{feeFor(weightKg)}}: phí của bậc có ngưỡng **lớn nhất không quá** {{weightKg}}. Nếu không có bậc nào (trọng lượng âm, hoặc chưa có bậc) ném {{IllegalArgumentException}}.
+- {{nextThreshold(weightKg)}}: ngưỡng bậc kế tiếp **lớn hơn hẳn** {{weightKg}} (để thông báo khách "từ X kg trở lại đổi phí"), không có thì trả về null.
+Mọi thao tác phải là O(log n).`,
+        starter: `class FeeSchedule {
+    // TODO: chọn cấu trúc dữ liệu và hoàn thiện
+
+    void addTier(long fromKg, long fee) {
+        throw new UnsupportedOperationException("TODO");
+    }
+
+    long feeFor(long weightKg) {
+        throw new UnsupportedOperationException("TODO");
+    }
+
+    Long nextThreshold(long weightKg) {
+        throw new UnsupportedOperationException("TODO");
+    }
+}`,
+        tests: `public class Main {
+    static int passed = 0, total = 0;
+    static void check(String name, Runnable r) {
+        total++;
+        try { r.run(); passed++; System.out.println("PASS " + name); }
+        catch (Throwable t) { System.out.println("FAIL " + name + ": " + t); }
+    }
+    static void eq(Object expected, Object actual) {
+        if (!Objects.equals(expected, actual)) throw new AssertionError("expected " + expected + " got " + actual);
+    }
+    static void throwsIae(Runnable r) {
+        try { r.run(); } catch (IllegalArgumentException e) { return; }
+        throw new AssertionError("phải ném IllegalArgumentException");
+    }
+    static FeeSchedule standard() {
+        FeeSchedule s = new FeeSchedule();
+        s.addTier(500L, 11_000L);   // thêm lộn xộn thứ tự
+        s.addTier(0L, 1_100L);
+        s.addTier(10_000L, 3_300L);
+        return s;
+    }
+    public static void main(String[] args) {
+        check("fee inside each tier", () -> {
+            FeeSchedule s = standard();
+            eq(1_100L, s.feeFor(0L)); eq(1_100L, s.feeFor(499L));
+            eq(11_000L, s.feeFor(5_000L)); eq(3_300L, s.feeFor(25_000L));
+            eq(3_300L, s.feeFor(2_000_000_000L));
+        });
+        check("boundaries inclusive at fromKg", () -> {
+            FeeSchedule s = standard();
+            eq(1_100L, s.feeFor(499L)); eq(11_000L, s.feeFor(500L));
+            eq(11_000L, s.feeFor(9_999L)); eq(3_300L, s.feeFor(10_000L));
+        });
+        check("below lowest tier or empty throws", () -> {
+            FeeSchedule s = new FeeSchedule();
+            throwsIae(() -> s.feeFor(100L));
+            s.addTier(1_000L, 500L);
+            throwsIae(() -> s.feeFor(999L));
+            eq(500L, s.feeFor(1_000L));
+        });
+        check("re-adding a tier overwrites fee", () -> {
+            FeeSchedule s = standard();
+            s.addTier(10_000L, 2_200L);
+            eq(2_200L, s.feeFor(10_000L)); eq(1_100L, s.feeFor(1L));
+        });
+        check("negative fromKg rejected", () -> throwsIae(() -> new FeeSchedule().addTier(-1L, 100L)));
+        check("nextThreshold is strictly greater", () -> {
+            FeeSchedule s = standard();
+            eq(0L, s.nextThreshold(-5L));
+            eq(500L, s.nextThreshold(0L));
+            eq(10_000L, s.nextThreshold(500L));
+            eq(null, s.nextThreshold(10_000L));
+            eq(500L, s.nextThreshold(1L));
+            eq(null, new FeeSchedule().nextThreshold(1L));
+        });
+        System.out.println("RESULT " + passed + "/" + total);
+    }
+}`,
+        reference: `class FeeSchedule {
+    // key = ngưỡng dưới của bậc, value = phí; TreeMap giữ nguyên thứ tự khóa
+    private final NavigableMap<Long, Long> tiers = new TreeMap<>();
+
+    void addTier(long fromKg, long fee) {
+        if (fromKg < 0) throw new IllegalArgumentException("fromKg < 0: " + fromKg);
+        tiers.put(fromKg, fee);                 // trung khóa thì ghi đè
+    }
+
+    long feeFor(long weightKg) {
+        if (weightKg < 0) throw new IllegalArgumentException("weightKg < 0: " + weightKg);
+        Map.Entry<Long, Long> tier = tiers.floorEntry(weightKg); // bậc lớn nhất <= trọng lượng, O(log n)
+        if (tier == null) throw new IllegalArgumentException("Không có bậc phí cho trọng lượng " + weightKg);
+        return tier.getValue();
+    }
+
+    Long nextThreshold(long weightKg) {
+        return tiers.higherKey(weightKg);       // nhỏ nhất > trọng lượng, null nếu không có
+    }
+}`,
+        hints: [
+        'Dùng {{TreeMap<Long, Long>}}: key là ngưỡng dưới của bậc (kg), value là phí.',
+        '{{floorEntry(weightKg)}} trả về bậc lớn nhất có key <= weightKg, hoặc null nếu weightKg nhỏ hơn mọi key.',
+        'Bậc kế tiếp "lớn hơn hẳn" là {{higherKey}}, không phải {{ceilingKey}} (ceiling trả về chính weightKg nếu nó trùng một ngưỡng).',
+      ],
+        explain: `{{floorEntry}} chính là câu hỏi "bậc nào đang áp dụng cho trọng lượng này", trả lời trong O(log n) không cần chuỗi if/else. Thêm bậc mới chỉ là một lệnh {{put}}; trong thực tế biểu phí thường được nạp từ DB vào TreeMap lúc khởi động.
+
+Lỗi hay gặp:
+- Dùng {{ceilingKey}} cho {{nextThreshold}}: khi trọng lượng đúng bằng một ngưỡng, ceiling trả về chính ngưỡng đó thay vì bậc kế tiếp.
+- Quên kiểm tra {{floorEntry}} trả về null: gây {{NullPointerException}} khi unboxing thay vì lỗi nghiệp vụ rõ ràng.
+- Dùng {{HashMap}} rồi duyệt mọi key: đúng kết quả nhưng O(n) và phụ thuộc thứ tự lặp.
+- Dùng {{double}} cho tiền: luôn dùng {{long}} (đơn vị nhỏ nhất) hoặc {{BigDecimal}}.
+`,
+      },
+      {
+        title: 'Tìm khung giờ trống sớm nhất trong danh sách khoảng bận',
+        prompt: `Lịch bận lưu các khoảng [bắt đầu, kết thúc) tính bằng phút từ nửa đêm. Viết {{Calendar.freeSlot(busy, now, duration)}}:
+- {{busy}} là {{TreeMap<Long, Long>}} (khóa = phút bắt đầu, value = phút kết thúc). Các khoảng có thể chồng chéo.
+- Trả về phút bắt đầu của khung trống sớm nhất **≥ now** dài ít nhất {{duration}} phút, hoặc null nếu không tìm thấy trong ngày (giả sử ngày chạy từ 0 đến 1_440 phút).
+- Không được sửa {{busy}}.
+Gợi ý: dùng {{floorEntry(now)}} để tìm khoảng chứa now, rồi duyệt {{tailMap}} từ con trỏ.`,
+        starter: `import java.util.*;
+
+class Calendar {
+    static Long freeSlot(TreeMap<Long, Long> busy, long now, long duration) {
+        throw new UnsupportedOperationException("TODO");
+    }
+}`,
+        tests: `public class Main {
+    static int passed = 0, total = 0;
+    static void check(String name, Runnable r) {
+        total++;
+        try { r.run(); passed++; System.out.println("PASS " + name); }
+        catch (Throwable t) { System.out.println("FAIL " + name + ": " + t); }
+    }
+    static void eq(Object expected, Object actual) {
+        if (!Objects.equals(expected, actual)) throw new AssertionError("expected " + expected + " got " + actual);
+    }
+    static TreeMap<Long, Long> busy(Object... pairs) {
+        TreeMap<Long, Long> m = new TreeMap<>();
+        for (int i = 0; i < pairs.length; i += 2) m.put((Long) pairs[i], (Long) pairs[i + 1]);
+        return m;
+    }
+    public static void main(String[] args) {
+        check("khung trống ngay sau now", () -> {
+            TreeMap<Long, Long> b = busy(540L, 600L, 840L, 930L);
+            eq(Long.valueOf(480L), Calendar.freeSlot(b, 480, 60));
+        });
+        check("now nằm trong khoảng bận, nhảy đến kết thúc", () -> {
+            TreeMap<Long, Long> b = busy(540L, 600L, 840L, 930L);
+            eq(Long.valueOf(600L), Calendar.freeSlot(b, 570, 30));
+        });
+        check("khoảng trống giữa hai khoảng bận", () -> {
+            TreeMap<Long, Long> b = busy(540L, 600L, 840L, 930L);
+            eq(Long.valueOf(600L), Calendar.freeSlot(b, 600, 200));
+            eq(Long.valueOf(930L), Calendar.freeSlot(b, 600, 330));
+        });
+        check("không còn thừa ngày", () -> {
+            TreeMap<Long, Long> b = busy(0L, 1_440L);
+            eq(null, Calendar.freeSlot(b, 100, 10));
+        });
+        check("duration bằng chính khoảng trống", () -> {
+            TreeMap<Long, Long> b = busy(540L, 600L);
+            eq(Long.valueOf(600L), Calendar.freeSlot(b, 600, 100));
+        });
+        check("không sửa map gốc", () -> {
+            TreeMap<Long, Long> b = busy(540L, 600L);
+            TreeMap<Long, Long> before = new TreeMap<>(b);
+            Calendar.freeSlot(b, 480, 60);
+            eq(before, b);
+        });
+        System.out.println("RESULT " + passed + "/" + total);
+    }
+}`,
+        reference: `import java.util.*;
+
+class Calendar {
+    static Long freeSlot(TreeMap<Long, Long> busy, long now, long duration) {
+        Map.Entry<Long, Long> cur = busy.floorEntry(now);
+        long start = (cur != null && cur.getValue() > now) ? cur.getValue() : now;
+        for (Map.Entry<Long, Long> e : busy.tailMap(start, true).entrySet()) {
+            if (e.getKey() - start >= duration) return start;
+            if (e.getValue() > start) start = e.getValue();
+        }
+        return start + duration <= 1_440 ? start : null;
+    }
+}`,
+        hints: [
+        '{{floorEntry(now)}} trả khoảng bận chứa now (nếu có); nếu now đang nằm trong một khoảng bận, con trỏ nhảy đến kết thúc khoảng đó.',
+        'Duyệt {{tailMap(start, true)}}: khoảng trống giữa kết thúc khoảng trước và bắt đầu khoảng kế. Nếu e.getKey() - start >= duration thì đã tìm thấy.',
+        'Cập nhật start = max(start, e.getValue()) sau mỗi khoảng bận; nếu vòng lặp kết thúc không break, khung trống ở cuối ngày.',
+      ],
+        explain: `floorEntry(now) tìm khoảng bận chứa now (hoặc khoảng gần nhất trước now). Nếu now nằm trong khoảng bận, chỉ có thể bắt đầu sau khi khoảng đó kết thúc. tailMap(start, true) duyệt các khoảng bắt đầu từ start, khoảng trống giữa kết thúc khoảng trước và bắt đầu khoảng sau chính là ứng viên. Mỗi khoảng vào vòng lặp một lần, tổng O(log n + k) với k là số khoảng quét.
+
+Lỗi hay gặp:
+- Quên điều kiện now nằm trong khoảng bận (cur.getValue() > now) thì trả về now dù now đang bận.
+- Dùng {{tailMap(now)}} rồi để start không dịch qua các khoảng bận trước now.
+- Sửa map gốc khi duyệt view (không xảy ra ở đây vì chỉ đọc, nhưng lưu ý subMap là view).
+`,
+      },
+    ],
+    check: [
+      {
+        q: '{{TreeMap}} có các khóa 0, 100, 500. {{floorKey(100)}} và {{lowerKey(100)}} lần lượt trả về gì?',
+        options: ['100 và 0', '0 và 0', '100 và 100', '100 và null'],
+        answer: 0,
+        explain: `floor là "lớn nhất ≤ x" nên lấy chính 100; lower là "lớn nhất < x" (chặt) nên lấy 0. null chỉ xảy ra khi không có khóa nào nhỏ hơn, ví dụ {{lowerKey(0)}}.`,
+      },
+      {
+        q: 'Dùng {{TreeMap}} để tra biểu phí theo bậc với {{floorEntry}}. Sai lầm phổ biến là gì?',
+        options: ['Dùng {{ceilingEntry}} để tìm bậc kế tiếp, nhưng khi số tiền bằng đúng ngưỡng thì ceiling trả về chính ngưỡng đó', 'floorEntry luôn trả null', 'TreeMap không được thêm bậc mới sau khi khởi tạo', 'Phải sắp xếp các bậc thêm vào trước khi put'],
+        answer: 0,
+        explain: `Bậc kế tiếp "lớn hơn hẳn số tiền" là {{higherKey}}; {{ceilingKey}} trả về chính số tiền nếu số tiền trùng một ngưỡng. floorEntry không luôn null; thêm bậc mới chỉ cần put; TreeMap tự sắp xếp, không cần sắp xếp trước.`,
+      },
+      {
+        q: '{{TreeMap}} xác định hai khóa "giống nhau" bằng cách nào, và nguy hiểm nếu comparator không nhất quán với equals?',
+        options: ['Gọi equals, và hai khóa equals true luôn được lưu cả hai', 'Gọi compare(a,b) == 0 để coi là cùng khóa; nếu comparator trả 0 cho hai object khác nhau, mục thứ hai bị ghi đè mất hết', 'Gọi hashCode, nếu hash khác nhau thì lưu cả hai', 'Không xác định, lưu cả hai đều'],
+        answer: 1,
+        explain: `TreeMap không bao giờ gọi equals/hashCode; chỉ sử dụng compare. compare == 0 được coi là cùng khóa, nên mục thứ nhất được giữ, mục thứ hai bị ghi đè. Cách sửa: thêm tiêu chí phân biệt duy nhất (tie-breaker) và dùng Long.compare/Comparator.comparingLong để tránh tràn số.`,
+      },
+      {
+        q: 'Cấu trúc nào có thứ tự, an toàn đồng thời, iterator không ném ConcurrentModificationException?',
+        options: ['{{TreeMap}}', '{{HashMap}}', '{{ConcurrentSkipListMap}}', '{{LinkedHashMap}}'],
+        answer: 2,
+        explain: `ConcurrentSkipListMap là Map có thứ tự, an toàn đồng thời, được xây dựng trên skip list; iterator weakly consistent: không ném CME, có thể thấy hoặc không thấy thay đổi đồng thời. TreeMap không an toàn đồng thời; LinkedHashMap không an toàn đồng thời (iterator fail-fast).`,
+      },
+    ],
+    related: ['collections-006', 'collections-001'],
+    tags: ['TreeMap', 'NavigableMap', 'floorEntry', 'red-black tree', 'comparator', 'subMap'],
+  },
+  {
+    id: 'lesson-collections-016',
+    track: 'collections',
+    order: 16,
+    title: 'Iterator fail-fast và ConcurrentModificationException: xoá phần tử đúng cách',
+    level: 'mid',
+    minutes: 25,
+    goals: [
+      'Hiểu modCount và fail-fast: iterator ném CME khi collection được sửa cấu trúc không qua chính nó',
+      'Biết 3 cách xoá đúng khi duyệt: iterator.remove(), removeIf(), chỉ số lui; và cách sai (for-each + remove) có thể không ném exception mà bỏ phần tử',
+      'Phân biệt fail-fast, fail-safe (snapshot) và weakly consistent; chọn cấu trúc cho đồng thời',
+    ],
+    body: `**Tóm tắt:** {{Iterator}} của {{ArrayList}}/{{HashMap}} là **fail-fast**: nếu collection được sửa cấu trúc (thêm/xoá/xóa hết) trong lúc đang duyệt mà không qua chính iterator đó, trường {{modCount}} thay đổi và iterator ném {{ConcurrentModificationException}} (CME) ở lần {{next()}} tiếp theo. Cách xoá đúng khi đang lặp là {{iterator.remove()}} hoặc {{removeIf(...)}}. Bài viết đi từ cơ chế modCount đến lỗi "im lặng" (không ném exception nhưng bỏ phần tử), rồi ba cách an toàn và phân biệt fail-fast/fail-safe/weakly consistent.
+
+### For-each chính là Iterator đội lột
+Khi {{orders}} là một {{Collection}}, vòng {{for (Order o : orders)}} được dịch bởi compiler thành đúng ba bước: gọi {{orders.iterator()}}, lặp {{while (it.hasNext())}}, rồi {{Order o = it.next()}}. Không có gì khác, nên mọi quy tắc của {{Iterator}} áp dụng cho for-each. Ngoại lệ duy nhất: lặp trên **mảng** thì compiler dùng chỉ số {{0..length-1}}, không có iterator nên cũng không có CME.
+
+**{{Iterator}}** (bộ lặp) là đối tượng cho phép duyệt từng phần tử của collection bằng {{hasNext()}} (còn lại hay không) và {{next()}} (trả về phần tử tiếp theo). Hợp đồng quan trọng: {{next()}} ném {{NoSuchElementException}} khi đã hết, không trả {{null}}; {{remove()}} chỉ hợp lệ sau một {{next()}} thành công và tối đa một lần cho mỗi {{next()}}.
+
+### modCount và expectedModCount: gốc của CME
+Mỗi {{ArrayList}}, {{HashMap}}, {{LinkedHashMap}}, {{TreeMap}} có một trường {{int modCount}} tăng lên mỗi lần **thay đổi cấu trúc**: {{add}}, {{remove}}, {{clear}}, và {{put}} một khóa **chưa có** trong map. Khi gọi {{iterator()}}, iterator chép {{modCount}} vào {{expectedModCount}} của riêng nó, rồi so hai giá trị ở mỗi bước:
+
+~~~java
+// Phong thích của HashMap.KeyIterator.nextNode và ArrayList.Itr.next()
+public E next() {
+    if (modCount != expectedModCount)
+        throw new ConcurrentModificationException(); // "collection đã đổi từ lúc tôi bắt đầu lặp"
+    ...
+}
+~~~
+
+Ba hệ quả ứng viên hay trả lời sai:
+- **Một thread cũng ném được CME.** Tên exception gợi tới đồng thời, nhưng đây là cơ chế *fail-fast* để bắt lỗi logic: sửa cấu trúc bằng con đường khác iterator ({{map.remove(k)}}, {{list.remove(o)}}) làm {{modCount}} nhảy, và iterator phát hiện ở lần {{next()}} tiếp theo.
+- **Không phải mọi thao tác sửa đều bị cấm.** {{list.set(i, x)}}, {{entry.setValue(v)}} và {{put}} đè lên khóa đã có **không** đổi {{modCount}}, nên vẫn an toàn khi đang lặp.
+- **Code sai có thể im lặng.** Việc kiểm tra nằm ở trong {{next()}}, nếu phần tử bạn xoá là phần tử **cuối cùng** được duyệt thì không còn lệnh {{next()}} nào nữa để ném exception. Vòng lặp dừng, kết quả đúng, unit test xanh. Ngày mai dữ liệu có thêm một dòng nữa thì hệ thống crash. Lý do câu hỏi "đoạn này có ném CME không" phải trả lời bằng {{modCount}}, không bằng cảm giác.
+
+### Ba cách xoá đúng và một cách sai
+Có một vấn đề quan trọng khi cần xoá phần tử thỏa điều kiện trong khi đang lặp:
+
+1. **{{iterator.remove()}}** (chuẩn, dùng cho mọi {{Collection}}):
+~~~java
+Iterator<Order> it = orders.iterator();
+while (it.hasNext()) {
+    if (it.next().isExpired()) it.remove(); // xoá qua iterator, cập nhật modCount cùng lúc
+}
+~~~
+
+2. **{{removeIf(predicate)}}** (Java 8+, ngắn gọn):
+~~~java
+orders.removeIf(o -> o.isExpired());
+~~~
+{{removeIf}} tự quản lý iterator và modCount, an toàn.
+
+3. **Chỉ số lui + {{remove(i)}}** (chỉ {{ArrayList}}): lặp từ cuối về đầu, xoá chỉ số i không làm lệch các chỉ số chưa xét.
+
+~~~java
+for (int i = orders.size() - 1; i >= 0; i--)
+    if (orders.get(i).isExpired()) orders.remove(i);
+~~~
+
+**Cách sai: chỉ số thuận + {{remove(i)}}**: sau khi xoá ở chỉ số i, phần tử bên phải dịch về chỉ số i và bị bỏ qua vĩnh viễn; **không có exception nào báo**. Vậy nếu cần xoá nhiều phần tử, **xây dựng danh sách mới** (dùng {{removeIf}} hoặc stream filter rồi collect) rẻ hơn nhiều so với xoá lần lượt trên danh sách cũ, vì {{remove(i)}} ở giữa danh sách phải {{System.arraycopy}} toàn bộ phần sau mảng.
+
+### Lỗi nhất: for-each + remove, và cái kết "im lặng"
+~~~java
+List<String> ids = new ArrayList<>(List.of("a", "b", "c"));
+for (String s : ids) {
+    if (s.equals("b")) ids.remove(s);
+}
+// -> ConcurrentModificationException
+~~~
+{{ids.remove(s)}} làm {{modCount}} tăng, nhưng {{expectedModCount}} iterator đã chép lúc tạo đứng yên. Kiểm tra nằm ở trong {{next()}}, nên lỗi chỉ nở ở lần bước tiếp theo. Nếu phần tử bị xoá là phần tử cuối cùng được duyệt, vòng lặp kết thúc bình thường và code trông như đúng, đến ngày dữ liệu thêm thì có sự cố.
+
+### Fail-fast, fail-safe (snapshot), weakly consistent
+| Cấu trúc | Tính chất iterator | Hệ quả |
+|---|---|---|
+| {{ArrayList}}, {{HashMap}}, {{HashSet}}, {{LinkedList}}, {{TreeMap}} | **fail-fast** | đồng thời đọc và ghi là không xác định; CME là triệu chứng, không phải đồng bộ thực sự |
+| {{CopyOnWriteArrayList}}, {{CopyOnWriteArraySet}} | **fail-safe (snapshot)** | iterator lặp trên mảng lúc tạo, không bao giờ ném CME; mỗi lần ghi phải copy cả mảng, chỉ hợp với đọc nhiều - ghi ít (danh sách listener) |
+| {{ConcurrentHashMap}}, {{ConcurrentSkipListMap}}, {{ConcurrentLinkedQueue}} | **weakly consistent** | có thể thấy hoặc không thấy các thay đổi xảy ra đồng thời, không trùng phần tử, không ném CME, cũng không hứa thấy hết |
+| {{Hashtable}}, {{Collections.synchronizedList(...)}} | fail-fast | vẫn cần khóa **cả khối lặp** trong {{synchronized (list)}}, không thì vẫn CME |
+
+Câu trả lời senior: trong hệ thống nhiều luồng, không thể "sửa hết CME" bằng cách bắt exception rồi chạy lại; hay đổi cấu trúc dữ liệu, hoặc đồng bộ **cả khối lặp**.
+
+### Ví dụ đời thực
+Một service lọc đơn hàng hết hạn: mỗi request đến, duyệt danh sách IP bị chặn để log. Nếu **cùng luồng đó** (vì code log viết sai) xoá IP khỏi danh sách trong lúc đang duyệt, fail-fast ném CME → request lỗi 500. Giải pháp: dùng {{CopyOnWriteArrayList}} cho danh sách chặn (đọc nhiều, ghi ít), hoặc sao chép bản trước khi duyệt ({{new ArrayList<>(ds)}}), hoặc dùng {{removeIf}} trong cùng một thao tác.
+
+### Lỗi hay gặp
+- Xoá trong for-each không qua iterator → CME.
+- Nghĩ {{removeIf}} ném CME → không, {{removeIf}} tự xử lý.
+- Dùng fail-safe/weakly consistent cho mọi trường hợp -> tốn bộ nhớ (sao chép) hoặc không thấy cập nhật thực tế.
+- CME không chỉ do đồng thời: cùng một thread tự sửa trong for-each cũng ném.
+- modCount trong {{ArrayList}} là {{protected transient}}, trong {{HashMap}} là {{transient}} (package-private); không nên đọc trong code sản xuất.
+
+### Trả lời mẫu khi phỏng vấn
+"Iterator của ArrayList và HashMap là fail-fast: lưu expectedModCount khi tạo và kiểm tra ở mỗi next(); nếu collection được sửa cấu trúc không qua iterator, modCount lệch và ném ConcurrentModificationException. Đây là cơ chế phát hiện lỗi sớm, không phải đồng bộ thực sự. Để xoá phần tử khi duyệt, dùng {{iterator.remove()}} hoặc {{removeIf}} (Java 8). Với đồng thời đọc nhiều ghi ít, dùng {{CopyOnWriteArrayList}} (fail-safe, snapshot) hoặc {{ConcurrentHashMap}} (weakly consistent). Cần phân biệt: CME có thể xảy ra ngay cùng một thread nếu sửa trong for-each; fail-safe dùng bản sao, weakly consistent có thể thấy một phần thay đổi mới."
+
+> Senior tip: Trong code review, thấy for-each kèm collection.remove bên trong là red flag; thay bằng {{removeIf}} hoặc collect vào danh sách mới. Với danh sách lớn, {{removeIf}} hiệu quả hơn vì xoá tại chỗ và tránh cấp phát danh sách mới.
+
+### Liên hệ phỏng vấn
+Câu hỏi thông gap: "Đoạn này có ném CME không?" — so sánh {{modCount}} với {{expectedModCount}}, nhớ chỉ {{next()}} mới kiểm tra nên có thể sai mà không ném; "Xoá phần tử thỏa mãn khi đang lặp bằng cách nào?" — {{removeIf}} hoặc {{Iterator.remove}}, dùng {{list.remove(o)}} trong for-each; "Fail-fast khác snapshot và weakly consistent thế nào?"; "Vì sao {{Iterator.remove}} bắt buộc gọi sau {{next}}?" — iterator phải biết phần tử nào là "vừa trả về" và phải bảo vệ bao {{IllegalStateException}} nếu xoá hai lần; "Khi nào cần {{ListIterator}}?" — đi ngược, chèn hoặc sửa tại con trỏ.
+`,
+    exercises: [
+      {
+        title: 'Loại sản phẩm hết hàng khỏi danh sách không bỏ qua phần tử',
+        prompt: `Kho hàng cần lọc danh sách {{Product}}: xoá tất cả sản phẩm có {{stock == 0}} và trả về số lượng đã xoá. Cần thực hiện đúng: nếu hai sản phẩm hết hàng liên ke nhau, cả hai phải bị xoá; sản phẩm hết hàng ở cuối cùng cũng phải bị xoá, không được bỏ qua.`,
+        starter: `record Product(String id, int stock) {}
+
+class StockRemover {
+    static int removeOutOfStock(List<Product> list) {
+        // TODO: xoá hết sản phẩm stock == 0, không được bỏ qua phần tử liên ke hoặc phần tử cuối
+        throw new UnsupportedOperationException("TODO");
+    }
+}`,
+        tests: `public class Main {
+    static int passed = 0, total = 0;
+    static void check(String name, Runnable r) {
+        total++;
+        try { r.run(); passed++; System.out.println("PASS " + name); }
+        catch (Throwable t) { System.out.println("FAIL " + name + ": " + t); }
+    }
+    static void eq(Object expected, Object actual) {
+        if (!Objects.equals(expected, actual)) throw new AssertionError("expected " + expected + " got " + actual);
+    }
+    static Product p(String id, int stock) { return new Product(id, stock); }
+    static List<String> ids(List<Product> list) {
+        List<String> r = new ArrayList<>();
+        for (Product x : list) r.add(x.id());
+        return r;
+    }
+    public static void main(String[] args) {
+        check("hai sản phẩm hết hàng liên ke ca hai bi xoa", () -> {
+            List<Product> list = new ArrayList<>(List.of(p("A", 0), p("B", 0), p("C", 5)));
+            eq(2, StockRemover.removeOutOfStock(list));
+            eq(List.of("C"), ids(list));
+        });
+        check("san pham het hang o cuoi cung bi xoa", () -> {
+            List<Product> list = new ArrayList<>(List.of(p("A", 5), p("B", 0)));
+            eq(1, StockRemover.removeOutOfStock(list));
+            eq(List.of("A"), ids(list));
+        });
+        check("khong co san pham het hang", () -> {
+            List<Product> list = new ArrayList<>(List.of(p("A", 1), p("B", 2)));
+            eq(0, StockRemover.removeOutOfStock(list));
+            eq(List.of("A", "B"), ids(list));
+        });
+        check("danh sach rong", () -> eq(0, StockRemover.removeOutOfStock(new ArrayList<>())));
+        check("tat ca het hang", () -> {
+            List<Product> list = new ArrayList<>(List.of(p("A", 0), p("B", 0)));
+            eq(2, StockRemover.removeOutOfStock(list));
+            eq(List.of(), ids(list));
+        });
+        System.out.println("RESULT " + passed + "/" + total);
+    }
+}`,
+        reference: `record Product(String id, int stock) {}
+
+class StockRemover {
+    static int removeOutOfStock(List<Product> list) {
+        int before = list.size();
+        list.removeIf(p -> p.stock() == 0);
+        return before - list.size();
+    }
+}`,
+        hints: [
+        'Dùng {{list.removeIf(p -> p.stock() == 0)}}: xoá tại chỗ, tự quản lý iterator và modCount.',
+        'Đếm số đã xoá = size trước - size sau.',
+        'Khoảng sai hay gặp: lặp chỉ số thuận từ đầu đến cuối và gọi {{list.remove(i)}} bỏ qua phần tử đứng sau phần tử vừa xoá, và phần tử cuối cùng có thể không bao giờ được xét.',
+      ],
+        explain: `Cách sai: for (int i = 0; i < list.size(); i++) if (list.get(i).stock() == 0) list.remove(i);. Sau remove(i), phần tử ở i+1 dịch sang i, nhưng tăng i lên 1 => phần tử đó bị bỏ qua. Nếu phần tử hết hàng là phần tử cuối cùng, vòng lặp kết thúc ngay sau đó và không có exception báo lỗi. Test "hai sản phẩm liên ke" và "sản phẩm ở cuối" tồn tại chính vì lý do đó.
+
+{{removeIf}} duyệt một lần, xoá từng phần tử thỏa mãn, nên chạy O(n) và không bỏ phần tử nào.
+
+Lỗi hay gặp:
+- Duyệt for-each và gọi {{list.remove(o)}} -> CME.
+- Dùng chỉ số thuận và xoá -> bỏ phần tử, không có exception.
+- Trả về danh sách mới thay đổi danh sách cũ có lạc nhiều yếu tố ngoài muốn.
+`,
+      },
+      {
+        title: 'Xoá trung lập trang web lượt xem, giữ lần đầu tiên',
+        prompt: `Nhật ký lưu các đường dẫn trang đã xem. Viết {{UniqueViews.removeDuplicates(List<String> paths)}}:
+- Xoá tất cả đường dẫn trung lập, **giữ lần xuất hiện đầu tiên**, trả về số lượng đã xoá.
+- Không bỏ qua phần tử trung lập liên ke hoặc phần tử ở cuối danh sách.
+Gợi ý: dùng {{iterator.remove()}} trong vòng lặp hoặc {{removeIf}} với một {{HashSet}} đánh dấu đã thấy.`,
+        starter: `class UniqueViews {
+    static int removeDuplicates(List<String> paths) {
+        // TODO: xoá đường dẫn trung lập, giữ lần đầu tiên, trả về số đã xoá
+        throw new UnsupportedOperationException("TODO");
+    }
+}`,
+        tests: `public class Main {
+    static int passed = 0, total = 0;
+    static void check(String name, Runnable r) {
+        total++;
+        try { r.run(); passed++; System.out.println("PASS " + name); }
+        catch (Throwable t) { System.out.println("FAIL " + name + ": " + t); }
+    }
+    static void eq(Object expected, Object actual) {
+        if (!Objects.equals(expected, actual)) throw new AssertionError("expected " + expected + " got " + actual);
+    }
+    public static void main(String[] args) {
+        check("trung lap khong lien ke", () -> {
+            List<String> list = new ArrayList<>(List.of("a", "b", "a", "c", "b"));
+            eq(2, UniqueViews.removeDuplicates(list));
+            eq(List.of("a", "b", "c"), list);
+        });
+        check("trung lap lien ke", () -> {
+            List<String> list = new ArrayList<>(List.of("a", "a", "a"));
+            eq(2, UniqueViews.removeDuplicates(list));
+            eq(List.of("a"), list);
+        });
+        check("khong co trung lap", () -> {
+            List<String> list = new ArrayList<>(List.of("a", "b", "c"));
+            eq(0, UniqueViews.removeDuplicates(list));
+            eq(List.of("a", "b", "c"), list);
+        });
+        check("danh sach rong", () -> eq(0, UniqueViews.removeDuplicates(new ArrayList<>())));
+        check("phan tu cuoi cung trung lap", () -> {
+            List<String> list = new ArrayList<>(List.of("a", "b", "c", "a"));
+            eq(1, UniqueViews.removeDuplicates(list));
+            eq(List.of("a", "b", "c"), list);
+        });
+        System.out.println("RESULT " + passed + "/" + total);
+    }
+}`,
+        reference: `class UniqueViews {
+    static int removeDuplicates(List<String> paths) {
+        int before = paths.size();
+        Set<String> seen = new HashSet<>();
+        paths.removeIf(p -> !seen.add(p));
+        return before - paths.size();
+    }
+}`,
+        hints: [
+        'Dùng {{paths.removeIf(p -> !seen.add(p))}}: {{seen.add(p)}} trả true lần đầu thấy p (giữ), lần sau trả false (removeIf xoá).',
+        'Đếm số đã xoá = size trước - size sau.',
+        'Không được lặp chỉ số thuận và xoá vì bỏ qua phần tử liên ke.',
+      ],
+        explain: `{{removeIf}} duyệt theo thứ tự; {{seen.add(p)}} trả true nếu p chưa có trong tập (lần đầu -> giữ), false nếu p đã có (trung lập -> xoá). Tập nhớ lần đầu tiên của mỗi đường dẫn, nên kết quả không bỏ qua phần tử liên ke và phần tử cuối cùng.
+
+Cách sai: lặp chỉ số thuận từ 0 đến cuối và gọi {{list.remove(i)}} khi trung lập -> phần tử sau dịch về vị trí i mà i đã tăng lên, nên bị bỏ qua; nếu phần tử trung lập ở cuối cùng vòng lặp kết thúc ngay và không báo lỗi.
+
+Lỗi hay gặp:
+- Duyệt for-each và gọi {{list.remove(o)}} -> CME.
+- Tạo HashSet trong removeIf nhưng quên cập nhật đúng chức năng -> kết quả sai.
+- Sửa danh sách trong khi lặp bằng con đường khác iterator -> CME hoặc kết quả im lặng.
+`,
+      },
+    ],
+    check: [
+      {
+        q: 'Sửa vòng lặp for-each trên {{ArrayList}} và gọi {{list.remove(o)}} bên trong. CME xảy ra ở đâu?',
+        options: ['Lúc ngay lần remove đầu tiên', 'Ở lần next() tiếp theo của iterator, nếu còn phần tử để duyệt; nếu xoá phần tử cuối cùng vòng lặp kết thúc bình thường', 'Chỉ xảy ra khi hai luồng cùng sửa', 'Không bao giờ xảy ra cùng một luồng'],
+        answer: 1,
+        explain: `Kiểm tra modCount != expectedModCount nằm ở trong next()/hasNext() của iterator, không nằm ở list.remove. Nếu không còn phần tử nào để bước tiếp theo, vòng lặp kết thúc bình thường và code trông như đúng. CME không bảo đảm lỗi đúng và có thể xảy ra cùng một luồng.`,
+      },
+      {
+        q: 'Trong lúc đang lặp {{List}} bằng for-each, thao tác nào **không** thay đổi {{modCount}} (nên không gây CME)?',
+        options: ['{{list.add(e)}}', '{{list.remove(o)}}', '{{list.set(i, x)}}', '{{list.clear()}}'],
+        answer: 2,
+        explain: `{{set}} chỉ thay giá trị tại ô có sẵn, số phần tử không đổi nên modCount đứng yên. {{add}}, {{remove}}, {{clear}} là thay đổi cấu trúc. Muốn chèn khi đang lặp thì dùng {{ListIterator.add}}.`,
+      },
+      {
+        q: 'Iterator của {{ConcurrentHashMap}} là loại nào?',
+        options: ['Fail-fast', 'Fail-safe (snapshot)', 'Weakly consistent', 'Blocking'],
+        answer: 2,
+        explain: `ConcurrentHashMap iterator là weakly consistent: có thể thấy hoặc không thấy thay đổi xảy ra sau khi tạo, không ném CME, không trùng phần tử. Bản sao toàn bộ là CopyOnWriteArrayList (mỗi lần ghi thì copy).`,
+      },
+    ],
+    related: ['collections-004', 'collections-017'],
+    tags: ['Iterator', 'ConcurrentModificationException', 'modCount', 'removeIf', 'fail-fast', 'fail-safe'],
+  }
+  );
 
