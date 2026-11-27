@@ -13475,5 +13475,102 @@ I would open with impact, not technical detail. First line: "We have a payment i
   follow: ['How do you escalate an incident?', 'What do you say if you do not know the root cause yet?', 'How do you write the postmortem?'],
   tags: ['jd-2026-12', 'incident', 'communication'],
   lang: 'en'
+},
+{
+  id: 'english-263',
+  topic: 'english',
+  level: 'senior',
+  q: 'Walk me through a production incident you led where the database connection pool was exhausted. What was the timeline, root cause, and fix?',
+  a: `**Tóm tắt:** Pool HikariCP cạn do query chậm giữ connection; fix: thêm index, giảm transaction scope, tăng pool hợp lý, circuit breaker.
+
+### Cơ chế
+- HikariCP pool size N; request lấy connection, chạy query, trả về. Query chậm -> connection bị giữ lâu -> pool cạn -> request mới chờ -> timeout -> cascade.
+- Root cause thường: thiếu index, transaction bao gồm call HTTP, N+1.
+- Mitigation: kill long queries, scale pool tạm, circuit breaker để fail fast.
+
+### Ví dụ đời thực
+Checkout service 500 RPS, pool 20. Một query thiếu index mất 2s -> pool cạn gần như ngay lập tức (20 connection / 500 RPS ≈ 40ms), error rate 40%, p99 8s. Fix index giảm query 2s->5ms; transaction tách HTTP call; thêm circuit breaker. Kết quả error rate 0%, p99 120ms.
+
+### Trả lời mẫu khi phỏng vấn
+I led an incident where our checkout service started returning 503s. Timeline: at 10:02 alerts fired, error rate jumped to forty percent. I checked metrics and saw HikariCP active connections at twenty, the pool size, with wait time spiking. I suspected a slow query holding connections. We found a missing index on orders.user_id; a query that took two seconds was saturating the pool. Short term we added the index, which dropped query time to five milliseconds, and we restarted pods to clear stuck connections. Medium term we moved the external payment call outside the transaction and added a circuit breaker so we fail fast instead of queueing. Postmortem added a slow-query alert and a load test gate. The key lesson: pool exhaustion is usually a symptom, not the cause; always look for what holds connections.
+
+> Senior tip: Treat pool exhaustion as a symptom; find the holder, not just increase pool size.
+`,
+  follow: ['How do you set pool size?', 'What is a circuit breaker?', 'How do you test for this?'],
+  tags: ['incident', 'database', 'hikaricp'],
+  lang: 'en'
+},
+{
+  id: 'english-264',
+  topic: 'english',
+  level: 'senior',
+  q: 'How would you explain eventual consistency to a non-technical product manager using a real feature example?',
+  a: `**Tóm tắt:** Dữ liệu tạm thời khác nhau giữa các hệ thống, nhưng cuối cùng đồng bộ; chấp nhận để đổi lấy tốc độ và khả dụng.
+
+### Cơ chế
+- Strong consistency: mọi đọc thấy write mới nhất (chậm, khoá).
+- Eventual consistency: write trả về ngay, propagate async; đọc có thể stale trong window ngắn.
+- Ví dụ: inventory reservation; order service ghi order, inventory service trừ stock async; trong vài giây stock có thể stale.
+
+### Ví dụ đời thực
+E-commerce: user đặt hàng, order service trả "đặt thành công" ngay; inventory service trừ stock trong 200ms. Nếu 2 user cùng mua item cuối, có thể oversell; fix bằng reservation lock hoặc saga compensation. Trade-off: UX nhanh vs rủi ro oversell.
+
+### Trả lời mẫu khi phỏng vấn
+I would use a shopping example. Imagine a customer buys the last item. With strong consistency, the system locks the inventory row, updates it, then responds; everyone waits, but stock is always exact. With eventual consistency, we accept the order immediately and update inventory in the background; the customer sees success in fifty milliseconds, but for a short window, say two hundred milliseconds, another customer might also see the item as available. We accept this because most of the time no one buys the exact last item at the same instant, and the speed matters more. If oversell happens, we compensate: cancel the second order and notify the customer with a voucher. I would tell the PM: eventual consistency trades a rare, recoverable edge case for much better latency and availability, and we add safeguards for the edge case.
+
+> Senior tip: Always pair eventual consistency with a compensation story for the edge case.
+`,
+  follow: ['When is strong consistency required?', 'How do you measure staleness?', 'What is a saga?'],
+  tags: ['consistency', 'communication', 'pm'],
+  lang: 'en'
+},
+{
+  id: 'english-265',
+  topic: 'english',
+  level: 'senior',
+  q: 'How do you estimate a feature when the requirements are unclear? Walk me through your process.',
+  a: `**Tóm tắt:** Chia nhỏ, spike để giảm uncertainty, đưa range với confidence, đặt checkpoint.
+
+### Cơ chế
+- Không đoán một số; chia thành slice có thể demo.
+- Time-boxed spike (1-3 ngày) để trả lời câu hỏi kỹ thuật chính.
+- Ước lượng theo story points hoặc days với confidence (low/med/high).
+- Communicate range (best/likely/worst) và điều kiện.
+
+### Ví dụ đời thực
+Feature: "export report to Excel" mơ hồ. Spike 2 ngày: thử Apache POI với 1M rows -> 8s, memory 1.2GB. Kết luận cần streaming + pagination. Ước lượng: best 5 ngày, likely 8, worst 12 nếu data lớn. Checkpoint sau 3 ngày.
+
+### Trả lời mẫu khi phỏng vấn
+When requirements are unclear, I never give a single number. First I break the feature into the smallest slices that can be demoed. Then I run a time-boxed spike, usually one to three days, to answer the riskiest technical question; for example, can we generate a one-million-row Excel in under ten seconds. Based on the spike I give a range: best case five days, likely eight, worst twelve if data volume is larger than expected. I explain the assumptions and what would change the estimate. I also propose a checkpoint after three days to re-estimate with real data. This keeps expectations honest and gives the PM leverage to cut scope if needed. The key is to make uncertainty visible instead of hiding it in a single number.
+
+> Senior tip: Make uncertainty visible; a range with assumptions beats a fake precise number.
+`,
+  follow: ['How do you handle scope creep?', 'What is a spike?', 'How do you re-estimate?'],
+  tags: ['estimation', 'planning', 'communication'],
+  lang: 'en'
+},
+{
+  id: 'english-266',
+  topic: 'english',
+  level: 'lead',
+  q: 'Describe a time you pushed back on a deadline because meeting it would compromise security. How did you say it?',
+  a: `**Tóm tắt:** Nêu rủi ro cụ thể, đề xuất alternative, đưa decision cho stakeholder với data.
+
+### Cơ chế
+- Push back không phải "không làm được", mà "làm được nhưng rủi ro X, đề xuất Y".
+- Cung cấp evidence: CVSS, blast radius, cost of breach.
+- Alternative: ship feature flag off, partial release, mitigate first.
+
+### Ví dụ đời thực
+Deadline Friday cho payment API mới. Phát hiện SQL injection trong query builder. Push back: nếu ship, rủi ro breach PII 50k users, fix cần 3 ngày. Alternative: ship read-only endpoints Friday, write endpoints sau patch. Stakeholder chọn alternative.
+
+### Trả lời mẫu khi phỏng vấn
+I pushed back when a deadline required shipping a payment API with a known SQL injection in the query builder. I did not say "we cannot make Friday"; I said "we can ship Friday, but there is a SQL injection that could expose fifty thousand users' payment data; here is the CVSS score and the blast radius. I propose shipping the read-only endpoints on Friday and the write endpoints after a three-day patch, which covers ninety percent of the value." I gave the decision to the stakeholder with data, not emotion. They chose the partial release. The key is to make the trade-off explicit: speed versus security, with numbers, and to always bring an alternative. That keeps trust and avoids being seen as obstructive.
+
+> Senior tip: Push back with options and numbers, never with a bare no.
+`,
+  follow: ['How do you handle pressure from management?', 'What is CVSS?', 'How do you document the decision?'],
+  tags: ['deadline', 'security', 'leadership'],
+  lang: 'en'
 }
 );
