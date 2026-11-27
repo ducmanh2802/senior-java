@@ -305,4 +305,311 @@ Lưu ý: nói trung thực builds trust; overcommit leads to failure và bad rev
   related: ['uw-ch-01', 'remote-011', 'remote-030'],
   tags: ['proposal', 'skills', 'scope', 'honesty', 'full-stack'],
 },
+{
+  id: 'uw-case-207',
+  category: 'scam',
+  level: 'senior',
+  severity: 'high',
+  title: 'Khách mạo danh công ty lớn: form onboarding đòi CCCD, ảnh mặt, tài khoản ngân hàng',
+  situation: `Bạn nhận email từ địa chỉ "hr@amaz0n-careers.com" (chữ o là số 0) mời phỏng vấn cho vị trí "Senior Java Developer - remote". Email có logo Amazon và link form Google Forms "onboarding": họ yêu cầu điền họ tên, số CCCD, ảnh mặt trước/sau, số tài khoản ngân hàng, mã OTP ngân hàng, và ảnh selfie cầm CCCD. Họ nói "để verify danh tính trước khi ký hợp đồng". Bạn chưa có hợp đồng Upwork nào với họ, chưa có escrow, và email không phải domain chính thức.`,
+  signals: [
+    'Tên miền email gần giống thật nhưng sai ký tự (amaz0n-careers.com thay vì amazon.com).',
+    'Yêu cầu thông tin nhạy cảm: CCCD, ảnh mặt, tài khoản ngân hàng, OTP.',
+    'Form "onboarding" trước khi có hợp đồng/escrow.',
+    'Logo công ty nhưng link không phải domain chính thức.',
+    'Hứa lương cao, quy trình nhanh, "verify ngay".',
+  ],
+  steps: `1. **Dừng lại, không điền form.** Không cung cấp CCCD, ảnh mặt, tài khoản ngân hàng, OTP cho ai qua form/email.
+2. **Kiểm tra tên miền:** so sánh từng ký tự với domain chính thức; nếu sai một ký tự → scam.
+3. **Kiểm tra trên Upwork:** mọi hợp đồng phải trên Upwork với escrow; email ngoài platform không có bảo vệ.
+4. **Không trả lời email đó.** Nếu đã trả lời, ngừng; chuyển sang Upwork Messages nếu có job post thật.
+5. **Báo cáo:** forward email cho abuse@upwork.com (hoặc Report trên Upwork) kèm header email; báo cáo domain giả mạo cho công ty thật (Amazon có trang report phishing).
+6. **Nếu đã điền form:** coi thông tin bị lộ: đổi mật khẩu ngân hàng, liên hệ ngân hàng để khóa thẻ/tài khoản, theo dõi giao dịch, đổi mật khẩu email và bật 2FA.
+7. **Quy tắc:** không có hợp đồng/escrow → không cung cấp thông tin nhạy cảm; mọi onboarding chính thức chỉ sau khi ký hợp đồng trên platform.
+8. **Giữ bằng chứng:** screenshot email, form, tên miền để báo cáo và điều tra.
+
+Nhánh hay gặp:
+- **Khách nói "chỉ để verify":** vẫn không cung cấp; verify chỉ qua Upwork chính thức.
+- **Form có vẻ chuyên nghiệp:** giao diện có thể bị giả; domain và escrow mới là bằng chứng.
+- **Bạn đã gửi CCCD:** hành động ngay (khóa tài khoản, báo công an nếu cần).`,
+  templates: [
+    { name: 'Từ chối cung cấp thông tin', text: 'Hi, I do not share personal IDs, bank details, or OTPs outside an official onboarding process tied to a signed contract on Upwork. Please share the official job post and contract link so I can proceed on-platform.' },
+    { name: 'Xác minh domain', text: 'Hi, the email domain does not match the official company domain. Could you confirm the official job posting on Upwork and the hiring manager contact? I only proceed through verified channels.' },
+    { name: 'Báo cáo ngắn', text: 'Reporting phishing: email from lookalike domain requesting ID, selfie, bank details via Google Form before any contract. No escrow. Domain: amaz0n-careers.com.' },
+  ],
+  mistakes: [
+    'Điền form vì logo và email có vẻ chuyên nghiệp.',
+    'Cung cấp OTP ngân hàng: mất tiền ngay.',
+    'Tin "verify trước hợp đồng": không có escrow = không có bảo vệ.',
+    'Không báo cáo: để scammer tiếp tục.',
+    'Dùng cùng mật khẩu cho nhiều tài khoản: lây nhiễm.',
+  ],
+  prevention: `- Kiểm tra từng ký tự tên miền; sai một chữ → scam.
+- Không cung cấp thông tin nhạy cảm trước khi có hợp đồng/escrow.
+- Chỉ onboarding qua Upwork chính thức.
+- Bật 2FA, dùng mật khẩu khác nhau.
+- Báo cáo phishing ngay.
+
+> Senior tip: Scammer đầu tư vào giao diện chuyên nghiệp để tạo trust; nhưng domain và escrow không thể giả. Nếu chưa có hợp đồng trên Upwork, mọi yêu cầu "verify" đều là red flag. CCCD + ảnh mặt + OTP = bộ ba để đánh cắp danh tính và tiền.`,
+  related: ['uw-ch-01', 'remote-008'],
+  tags: ['scam', 'phishing', 'identity', 'onboarding', 'report'],
+},
+{
+  id: 'uw-case-208',
+  category: 'scam',
+  level: 'senior',
+  severity: 'high',
+  title: 'Khách nhờ cài remote control/extension theo dõi giờ làm hoặc đăng nhập tài khoản họ',
+  situation: `Bạn nhận job "Java bug fix" với khách mới. Sau khi ký hợp đồng nhỏ, khách nói: "Please install TeamViewer/AnyDesk so I can monitor your work hours and guide you." Sau đó: "Also log into my AWS console using these credentials to deploy." Họ gửi file .exe "time tracker" và yêu cầu cài extension Chrome "to verify hours". Bạn chưa cài gì. Yêu cầu rõ ràng vi phạm bảo mật và có thể là mã độc.`,
+  signals: [
+    'Yêu cầu cài remote control (TeamViewer/AnyDesk) để "theo dõi".',
+    'Gửi file .exe/.msi "tracker" không rõ nguồn.',
+    'Yêu cầu đăng nhập tài khoản của họ (AWS, GitHub) trên máy bạn.',
+    'Yêu cầu cài extension Chrome không rõ.',
+    'Khách không giải thích rõ lý do bảo mật.',
+  ],
+  steps: `1. **Từ chối cài remote control và file không rõ nguồn.** Không cài TeamViewer/AnyDesk theo yêu cầu khách; không chạy .exe/.msi.
+2. **Không đăng nhập tài khoản của họ trên máy bạn.** Nếu cần deploy, khách phải cấp quyền qua IAM role/credentials tạm thời, hoặc bạn deploy bằng tài khoản của mình với quyền giới hạn.
+3. **Giải thích Upwork có time tracker chính thức** (nếu fixed/hourly). Không cần remote control; screenshot/log là đủ.
+4. **Nếu cần chia sẻ màn hình:** dùng tool chính thức (Zoom/Meet) và chỉ share khi bạn chủ động; không cho điều khiển máy.
+5. **Kiểm tra extension Chrome:** chỉ cài từ Chrome Web Store chính thức; đọc permission; không cài extension yêu cầu "read all data".
+6. **Báo cáo nếu khách ép:** flag trên Upwork; mô tả "requested remote control install and account sharing".
+7. **Nếu đã cài:** gỡ phần mềm, quét malware, đổi mật khẩu, revoke token, kiểm tra tài khoản AWS/GitHub.
+8. **Nguyên tắc:** máy bạn là biên giới bảo mật; không cho ai điều khiển hoặc đăng nhập tài khoản của họ.
+
+Nhánh hay gặp:
+- **Khách nói "chỉ để xem":** vẫn không cho điều khiển; chỉ share màn hình một chiều.
+- **Khách gửi "tracker chính thức":** kiểm tra domain và chữ ký; không chạy nếu không chắc.
+- **Bạn muốn "hợp tác":** đề xuất Zoom share screen + log Upwork thay vì remote control.`,
+  templates: [
+    { name: 'Từ chối remote control', text: 'Hi, I cannot install remote control software or run executables from clients. For hour tracking, Upwork has a built-in time tracker with screenshots. I am happy to share progress via screen share on a call instead.' },
+    { name: 'Từ chối đăng nhập tài khoản họ', text: 'Hi, I cannot log into your accounts on my machine. For deployment, please provide temporary scoped credentials (e.g., IAM role with limited permissions) or I can deploy from my environment with your review. This protects both of us.' },
+    { name: 'Báo cáo ngắn', text: 'Reporting client: requested installation of remote control software and running an executable "time tracker", plus asked me to log into their AWS account. Refused; no contract beyond small job.' },
+  ],
+  mistakes: [
+    'Cài TeamViewer/AnyDesk theo yêu cầu: mất kiểm soát máy.',
+    'Chạy .exe "tracker": mã độc.',
+    'Đăng nhập AWS/GitHub của khách trên máy bạn: lộ secret và vi phạm bảo mật.',
+    'Cài extension không rõ: đánh cắp dữ liệu trình duyệt.',
+    'Không báo cáo: để scammer tiếp tục.',
+  ],
+  prevention: `- Không cài phần mềm remote control theo yêu cầu khách.
+- Không chạy file .exe/.msi không rõ nguồn.
+- Không đăng nhập tài khoản của khách trên máy bạn.
+- Chỉ dùng Upwork time tracker chính thức.
+- Báo cáo yêu cầu vi phạm bảo mật.
+
+> Senior tip: Remote control + file lạ + đăng nhập tài khoản khách = bộ ba để đánh cắp máy và secret. Upwork có time tracker chính thức; không ai cần remote control để "theo dõi giờ làm". Nếu khách ép, đó là red flag.`,
+  related: ['uw-ch-01', 'remote-024'],
+  tags: ['scam', 'remote-control', 'malware', 'security', 'account-sharing'],
+},
+{
+  id: 'uw-case-209',
+  category: 'scam',
+  level: 'senior',
+  severity: 'high',
+  title: 'Job có dấu hiệu vi phạm pháp luật hoặc điều khoản: viết review giả, bypass bảo vệ, clone app có bản quyền',
+  situation: `Bạn thấy job: "Need someone to post 5-star reviews on our app store listing (50 reviews, $2 each)" hoặc "Bypass Cloudflare protection to scrape competitor data" hoặc "Clone TikTok app with full features, remove watermark". Khách trả tiền tốt, scope rõ ràng. Bạn cần nhận diện và từ chối vì vi phạm pháp luật/điều khoản nền tảng và có thể bị ban tài khoản.`,
+  signals: [
+    'Yêu cầu viết review giả, vote giả, follow giả.',
+    'Yêu cầu bypass bảo vệ (Cloudflare, CAPTCHA, rate limit).',
+    'Yêu cầu clone app có bản quyền, xóa watermark, crack license.',
+    'Yêu cầu scrape dữ liệu vi phạm ToS hoặc dữ liệu cá nhân.',
+    'Khách nói "không ai biết", "chỉ cần kết quả".',
+  ],
+  steps: `1. **Nhận diện vi phạm:** review giả = gian lận; bypass bảo vệ = hack; clone bản quyền = vi phạm IP; scrape dữ liệu cá nhân = vi phạm privacy.
+2. **Từ chối ngay, không thương lượng.** Không làm một phần "để test".
+3. **Giải thích ngắn gọn cho khách:** bạn không làm việc vi phạm pháp luật/điều khoản; có thể bị ban tài khoản và pháp lý.
+4. **Đề xuất thay thế hợp pháp:** thay vì review giả → marketing thật; thay vì bypass → dùng API chính thức; thay vì clone → xây app gốc với tính năng tương tự.
+5. **Báo cáo job trên Upwork** (Report) để bảo vệ cộng đồng.
+6. **Nếu đã làm một phần:** dừng ngay, không nhận tiền, báo cáo để giảm rủi ro.
+7. **Hiểu hậu quả:** ban tài khoản vĩnh viễn, mất tiền escrow, có thể bị pháp lý (đặc biệt IP và dữ liệu cá nhân).
+8. **Ghi lại bài học:** giữ nguyên tắc "không làm việc vi phạm" dù trả tiền cao.
+
+Nhánh hay gặp:
+- **Khách nói "chỉ test":** vẫn vi phạm; không làm.
+- **Khách nói "không ai biết":** Upwork và pháp luật có thể biết; rủi ro cao.
+- **Bạn cần tiền:** rủi ro mất toàn bộ tài khoản không đáng.
+- **Khách ép deadline:** giữ ranh giới; không làm việc vi phạm dù trả cao.
+- **Khách hứa "không ai biết":** không có bảo mật nào cho hành vi vi phạm; Upwork có thể kiểm tra.`,
+  templates: [
+    { name: 'Từ chối review giả', text: 'Hi, I cannot post fake reviews or manipulate ratings. That violates platform terms and can lead to account bans. I can help with legitimate marketing or user feedback collection instead.' },
+    { name: 'Từ chối bypass bảo vệ', text: 'Hi, I cannot bypass security measures like Cloudflare or CAPTCHA. I can integrate with official APIs or build compliant data collection within rate limits.' },
+    { name: 'Từ chối clone bản quyền', text: 'Hi, I cannot clone or remove watermarks from copyrighted apps. I can build an original app with similar features from scratch, which is safer and legal.' },
+  ],
+  mistakes: [
+    'Làm "một chút" review giả: vẫn vi phạm.',
+    'Tin "không ai biết": rủi ro cao.',
+    'Nhận tiền cho việc vi phạm: mất tiền và tài khoản.',
+    'Không báo cáo: để scammer tiếp tục.',
+    'Giảm giá vì "khách trả cao": không đáng.',
+  ],
+  prevention: `- Không làm review giả, bypass bảo vệ, clone bản quyền.
+- Đề xuất thay thế hợp pháp.
+- Báo cáo job vi phạm.
+- Giữ nguyên tắc dù trả tiền cao.
+- Đọc điều khoản Upwork và pháp luật.
+
+> Senior tip: "Tiền cao cho việc vi phạm" là bẫy; ban tài khoản vĩnh viễn + pháp lý không đáng. Một freelancer chuyên nghiệp từ chối rõ ràng và đề xuất thay thế hợp pháp; đó chính là giá trị của bạn.`,
+  related: ['uw-ch-01', 'remote-018'],
+  tags: ['scam', 'terms', 'legal', 'ip', 'report'],
+},
+{
+  id: 'uw-case-210',
+  category: 'proposal',
+  level: 'senior',
+  severity: 'medium',
+  title: 'Được mời (invite) vào job ngân sách quá thấp so với phạm vi: giữ quan hệ mà không bán rẻ',
+  situation: `Bạn nhận invite từ khách có profile tốt (nhiều job, review 5 sao) cho job "Build admin dashboard + API + auth + deploy" với ngân sách fixed $300. Scope thực tế ~60 giờ. Khách nói "We like your profile, can you do it for $300? We have tight budget." Bạn muốn giữ quan hệ với khách tốt nhưng $300 = $5/giờ, không khả thi. Cần trả lời để giữ quan hệ mà không bán rẻ.`,
+  signals: [
+    'Invite từ khách tốt nhưng ngân sách thấp hơn nhiều so với scope.',
+    'Khách dùng "tight budget" để ép giá.',
+    'Scope lớn nhưng budget nhỏ.',
+    'Khách có review tốt → có thể là khách thật, nhưng ngân sách không hợp lý.',
+    'Bạn muốn giữ quan hệ dài hạn.',
+  ],
+  steps: `1. **Cảm ơn invite và xác nhận quan tâm.** Giữ tone chuyên nghiệp, không từ chối ngay.
+2. **Đề xuất giảm scope để khớp budget:** chia scope thành must-have và nice-to-have; báo giá cho must-have trong budget, phần còn lại làm milestone sau.
+3. **Nêu giá trị của bạn:** kinh nghiệm, chất lượng, bảo hành; khách trả cho rủi ro thấp hơn.
+4. **Đặt ranh giới:** nếu khách khăng khăng full scope $300, từ chối lịch sự. Không làm việc lỗ.
+5. **Đề xuất alternative:** nếu budget cố định, đề xuất hourly với cap, hoặc chia thành nhiều milestone nhỏ.
+6. **Giữ quan hệ:** nếu không deal được, để cửa mở cho job sau với budget phù hợp.
+7. **Ghi lại:** đàm phán dựa trên scope, không dựa trên cảm xúc; khách tốt vẫn có thể có budget không hợp lý.
+
+Nhánh hay gặp:
+- **Khách nói "chỉ pilot":** vẫn chốt scope pilot rõ ràng; phần còn lại là milestone riêng.
+- **Khách doạ "đi tìm người khác":** để họ đi; giữ chất lượng khách hàng.
+- **Khách đồng ý giảm scope:** chốt milestone mới, không làm phần còn lại miễn phí.
+- **Khách ép giá thêm:** giữ ranh giới; không giảm thêm.
+- **Khách quay lại sau:** giữ nguyên ranh giới; không hạ giá.
+- **Khách tốt nhưng budget thấp:** vẫn giữ chất lượng; không bán rẻ.
+- **Khách hỏi hourly:** đề xuất cap giờ để kiểm soát budget.`,
+  templates: [
+    { name: 'Giảm scope để khớp budget', text: 'Hi [Name], thanks for the invite—I would love to work with you. For $300, I can deliver the core: [must-have features] with tests and basic deploy. The remaining items ([list]) can be a follow-up milestone. Would that fit your budget?' },
+    { name: 'Đề xuất hourly với cap', text: 'Hi [Name], given the scope, $300 is below my minimum for full delivery. I can do hourly at $X with a cap of Y hours for the first milestone, then we review. This keeps quality high and budget controlled.' },
+    { name: 'Giữ quan hệ, từ chối lịch sự', text: 'Hi [Name], thanks for reaching out. For this scope my minimum is $Z; I cannot deliver full quality at $300. If budget changes or scope can be reduced, I would be glad to help. Wishing you success with the project.' },
+  ],
+  mistakes: [
+    'Nhận full scope $300: làm việc lỗ.',
+    'Giảm giá mà không giảm scope: tạo tiền lệ.',
+    'Từ chối thô: mất khách tốt.',
+    'Không đề xuất alternative: bỏ cơ hội.',
+    'Tranh cãi về giá trị: nên tập trung scope.',
+  ],
+  prevention: `- Không giảm giá mà không giảm scope.
+- Chia scope thành must-have/nice-to-have.
+- Nêu giá trị (quality, support, on-time).
+- Đề xuất alternative (hourly, milestone).
+- Giữ quan hệ dù không deal.
+
+> Senior tip: Khách tốt có budget không hợp lý không phải "kẻ xấu"; đó là cơ hội để đàm phán scope. Giảm scope tương ứng budget keeps quality và builds trust. Bán rẻ full scope chỉ tạo tiền lệ ép giá và kiệt sức.`,
+  related: ['uw-ch-01', 'remote-012', 'uw-case-205'],
+  tags: ['proposal', 'invite', 'pricing', 'scope', 'relationship'],
+},
+{
+  id: 'uw-case-211',
+  category: 'proposal',
+  level: 'senior',
+  severity: 'medium',
+  title: 'Khách hỏi "làm được trong 3 ngày không" với việc cần 2 tuần: ước lượng trung thực, đưa phương án cắt phạm vi',
+  situation: `Khách urgently cần feature "payment integration + invoice + email notification + tests" và hỏi: "Can you do it in 3 days?" Bạn ước tính cần 10-14 ngày để làm đầy đủ (tích hợp payment gateway, xử lý webhook, invoice PDF, email, test, deploy). Khách nói "3 ngày là deadline cứng, nếu không thì không thuê." Bạn cần ước lượng trung thực và đưa phương án cắt phạm vi để đáp ứng deadline.`,
+  signals: [
+    'Khách đặt deadline cứng ngắn hơn ước tính.',
+    'Scope lớn nhưng thời gian ít.',
+    'Khách doạ "không thuê nếu không kịp".',
+    'Bạn có thể cắt scope để đáp ứng deadline.',
+    'Cần nói trung thực để tránh fail.',
+  ],
+  steps: `1. **Ước lượng trung thực:** nói rõ cần 10-14 ngày cho full scope; không hứa 3 ngày nếu không làm được.
+2. **Phân tích deadline:** 3 ngày = 24 giờ làm việc; full scope không khả thi; phải cắt scope.
+3. **Đề xuất cắt phạm vi:** chia thành must-have (payment integration cơ bản + webhook) và nice-to-have (invoice PDF, email, tests đầy đủ); làm must-have trong 3 ngày, phần còn lại milestone sau.
+4. **Nêu rủi ro:** nếu ép full scope trong 3 ngày → bug, không test, deploy lỗi, bad review.
+5. **Đề xuất alternative:** nếu deadline cứng, khách có thể thêm người hoặc chấp nhận scope nhỏ hơn.
+6. **Chốt bằng văn bản:** scope nào làm trong 3 ngày, phần nào sau; giá tương ứng.
+7. **Nếu khách không chấp nhận:** rút lui lịch sự; không overcommit.
+
+Nhánh hay gặp:
+- **Khách nói "chỉ MVP":** vẫn chốt rõ MVP scope; phần còn lại là milestone.
+- **Khách doạ đi:** để họ đi; giữ chất lượng.
+- **Khách đồng ý cắt scope:** chốt milestone mới, không làm phần còn lại miễn phí.
+- **Khách ép deadline thêm:** giữ ranh giới; không overcommit.
+- **Khách quay lại sau:** giữ nguyên ranh giới.
+- **Khách deadline cứng:** phải cắt scope hoặc thêm người.
+- **Khách hỏi partial:** đề xuất milestone nhỏ để kiểm chứng.
+- **Khách ép thêm:** giữ ranh giới; không overcommit.`,
+  templates: [
+    { name: 'Ước lượng trung thực + cắt scope', text: 'Hi [Name], full scope (payment + invoice + email + tests) needs ~10-14 days for quality. For a 3-day deadline, I can deliver the core payment integration + webhook handling in 3 days, and invoice/email/tests as a follow-up milestone. This avoids rushed bugs. Would that work?' },
+    { name: 'Đề xuất must-have only', text: 'Hi [Name], to meet 3 days, I suggest we scope to: (1) payment gateway integration, (2) webhook handling, (3) basic error handling. Invoice PDF, email notifications, and full tests can be milestone 2. I can start immediately if we agree on this scope.' },
+    { name: 'Rút lui nếu không phù hợp', text: 'Hi [Name], thanks for the urgency. I cannot deliver full scope in 3 days without cutting quality. If 3 days is hard, I am happy to do the core in 3 days and the rest next week, or you may need additional help. Let me know how you would like to proceed.' },
+  ],
+  mistakes: [
+    'Hứa 3 ngày cho full scope: fail và bad review.',
+    'Cắt scope nhưng không chốt bằng văn bản: scope creep.',
+    'Làm full scope trong 3 ngày: bug, không test.',
+    'Từ chối thô: mất khách.',
+    'Không đề xuất alternative: bỏ cơ hội.',
+  ],
+  prevention: `- Ước lượng trung thực.
+- Cắt scope để đáp ứng deadline.
+- Nêu rủi ro overcommit.
+- Chốt bằng văn bản scope và thời gian.
+- Rút lui nếu không phù hợp.
+
+> Senior tip: "Làm được trong 3 ngày không" thường là test về honesty và estimation. Một Senior trả lời trung thực và đề xuất cắt scope; overcommit leads to fail và bad review. Deadline cứng + scope lớn = phải cắt scope hoặc thêm người.`,
+  related: ['uw-ch-01', 'remote-011', 'remote-030'],
+  tags: ['proposal', 'estimation', 'deadline', 'scope', 'honesty'],
+},
+{
+  id: 'uw-case-212',
+  category: 'proposal',
+  level: 'senior',
+  severity: 'medium',
+  title: 'Hai khách cùng muốn thuê một lúc, tổng việc vượt năng lực: chọn ai, từ chối/hoãn chuyên nghiệp',
+  situation: `Bạn đang làm job A (2 tuần còn lại, 20 giờ/tuần) với khách tốt. Đồng thời khách B invite bạn cho job B (4 tuần, 30 giờ/tuần) với giá tốt hơn. Tổng 50 giờ/tuần, vượt năng lực của bạn (max 35 giờ/tuần). Bạn không thể làm cả hai full-time. Cần quyết định chọn ai, từ chối/hoãn chuyên nghiệp, và giữ quan hệ với cả hai.`,
+  signals: [
+    'Hai job cùng thời gian, tổng giờ vượt năng lực.',
+    'Cả hai khách đều tốt, giá tốt.',
+    'Bạn không thể làm full-time cả hai.',
+    'Cần chọn dựa trên tiêu chí (giá, duration, relationship, growth).',
+    'Cần từ chối/hoãn chuyên nghiệp để giữ quan hệ.',
+  ],
+  steps: `1. **Đánh giá năng lực thật:** max 35 giờ/tuần; job A 20 + job B 30 = 50 → vượt 15 giờ.
+2. **Chọn dựa trên tiêu chí:** giá/giờ, duration, relationship hiện tại, growth potential, độ khó, rủi ro. Job A đã commit → ưu tiên giữ commitment.
+3. **Quyết định:** thường ưu tiên job đang làm (A) để không break commitment; job B có thể hoãn hoặc từ chối.
+4. **Với job B:** từ chối lịch sự hoặc đề xuất start sau khi job A xong; nêu lý do (đang commit với job khác) và giữ cửa mở.
+5. **Với job A:** không thay đổi commitment; nếu cần, đề xuất tăng giờ nhẹ nếu còn capacity.
+6. **Nếu muốn làm cả hai:** giảm scope một job (ví dụ job B part-time 15 giờ) và chốt bằng văn bản; đảm bảo không overcommit.
+7. **Ghi lại bài học:** luôn có buffer; không nhận job mới khi đang full; từ chối sớm hơn tốt hơn fail sau.
+
+Nhánh hay gặp:
+- **Khách B doạ đi:** để họ đi; giữ commitment với A.
+- **Khách B đồng ý hoãn:** chốt start date sau job A; giữ quan hệ.
+- **Bạn muốn làm cả hai part-time:** chỉ nếu tổng ≤ capacity và chốt bằng văn bản.
+- **Khách B doạ đi:** để họ đi; giữ commitment với A.
+- **Khách B đồng ý hoãn:** chốt start date sau job A.
+- **Khách B muốn part-time:** chỉ nếu tổng ≤ capacity.
+- **Khách B muốn start ngay:** từ chối nếu vượt capacity.`,
+  templates: [
+    { name: 'Từ chối job B, giữ quan hệ', text: 'Hi [Name], thanks for the invite—I would love to work with you. Unfortunately I am fully committed to another project until [date] and cannot take on 30 hrs/week right now. I would be glad to start after [date] or take a smaller scope if that helps. Let me know.' },
+    { name: 'Đề xuất hoãn start', text: 'Hi [Name], I am interested but currently at capacity. I could start on [date] after my current project ends, or take a reduced scope (e.g., 15 hrs/week) now. Which works better for you?' },
+    { name: 'Giữ commitment với job A', text: 'Hi [Name A], just confirming I remain fully committed to our project and on track for the agreed timeline. No changes on my side.' },
+  ],
+  mistakes: [
+    'Nhận cả hai full-time: overcommit, fail cả hai.',
+    'Break commitment với job A: bad review.',
+    'Từ chối thô job B: mất quan hệ.',
+    'Không có buffer: không có chỗ cho việc phát sinh.',
+    'Quyết định theo cảm xúc: nên theo tiêu chí.',
+  ],
+  prevention: `- Giữ buffer capacity (max 35 giờ nếu có thể 40).
+- Ưu tiên commitment hiện tại.
+- Từ chối/hoãn chuyên nghiệp, giữ cửa mở.
+- Chốt scope/giờ bằng văn bản.
+- Quyết định theo tiêu chí, không cảm xúc.
+
+> Senior tip: Overcommit là lỗi phổ biến của freelancer mới: "yes" với mọi job dẫn đến fail cả hai. Một Senior biết capacity của mình và từ chối sớm; giữ commitment hiện tại builds trust và reputation dài hạn. Từ chối lịch sự today mở cửa cho job tốt tomorrow.`,
+  related: ['uw-ch-01', 'remote-011', 'remote-030'],
+  tags: ['proposal', 'capacity', 'commitment', 'prioritization', 'relationship'],
+},
 );
+
