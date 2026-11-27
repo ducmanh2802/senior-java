@@ -3156,6 +3156,8 @@ window.DATA_INDEX = {
     {"id":"lesson-devops-022","track":"devops","order":22,"title":"Probe đúng cách: mã HTTP của liveness/readiness/startup, health group và quy tắc liveness không fail khi drain","level":"senior","minutes":40},
     {"id":"lesson-devops-023","track":"devops","order":23,"title":"Graceful shutdown: tín hiệu dừng, drain request và đóng pool trong timeout","level":"senior","minutes":45},
     {"id":"lesson-devops-024","track":"devops","order":24,"title":"Readiness vs liveness: DB chậm thì chỉ được gỡ traffic, không được restart Pod","level":"senior","minutes":40},
+    {"id":"lesson-devops-025","track":"devops","order":25,"title":"Graceful shutdown nâng cao: drain job dài, thread pool riêng và báo cáo số request bị cắt","level":"lead","minutes":40},
+    {"id":"lesson-devops-026","track":"devops","order":26,"title":"Readiness với nhiều dependency: timeout budget, fail-open và tránh cascade","level":"lead","minutes":40},
     {"id":"lesson-architecture-001","track":"architecture","order":1,"title":"Parking Lot: Strategy cho tính phí và Factory cho loại xe","level":"senior","minutes":30},
     {"id":"lesson-architecture-002","track":"architecture","order":2,"title":"Elevator: State pattern và chiến lược điều phối","level":"senior","minutes":30},
     {"id":"lesson-architecture-003","track":"architecture","order":3,"title":"Notification Service: Observer và nguyên tắc Open/Closed","level":"mid","minutes":25},

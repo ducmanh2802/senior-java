@@ -7000,4 +7000,134 @@ Lỗi hay gặp:
   related: ['devops-016', 'devops-002'],
   tags: ['Kubernetes', 'liveness', 'readiness', 'startup probe', 'DB', 'Spring Boot Actuator', 'Health group'],
 },
+{
+  id: 'lesson-devops-025',
+  track: 'devops',
+  order: 25,
+  title: 'Graceful shutdown nâng cao: drain job dài, thread pool riêng và báo cáo số request bị cắt',
+  level: 'lead',
+  minutes: 40,
+  goals: [
+    'Giải thích được vì sao SIGTERM tới PID 1 nhưng thread pool riêng và scheduler không tự dừng nếu không bật chờ task',
+    'Viết được coordinator ngừng nhận việc mới, chờ việc đang chạy trong hạn chót, hết hạn thì huỷ cưỡng bức và báo cáo số việc bị cắt',
+    'Nhận ra bẫy production: task dài hơn grace period, shutdown hook chạy song song gây race, pool không shutdownNow',
+  ],
+  body: `### Tắt gracefully không chỉ là web server
+Bài trước đã có dòng thời gian tắt Pod. Bài này đi vào phần thường bị bỏ: ngoài web server, process còn có **thread pool riêng** (gửi email, xử lý ảnh), **scheduler** (cron job), **consumer Kafka**. Spring đóng ApplicationContext theo thứ tự, nhưng nếu bạn tự tạo {{ExecutorService}} mà không đăng ký làm bean, nó **không tự dừng**: JVM chờ thread không-daemon mãi, Pod bị SIGKILL ở t=60s.
+
+### Nguyên tắc ba bước
+1. **Ngừng nhận việc mới**: đặt cờ {{accepting = false}}; mọi {{submit}} sau đó trả về false để caller biết từ chối (ví dụ trả 503).
+2. **Chờ việc đang chạy** với hạn chót: {{executor.shutdown()}} rồi {{awaitTermination(timeout)}}. Nếu xong trước hạn → thoát sạch.
+3. **Huỷ cưỡng bức** phần còn lại: {{shutdownNow()}} gửi interrupt cho thread đang chạy; đếm số task bị huỷ để log/metric. Task phải kiểm tra {{Thread.interrupted()}} hoặc bắt {{InterruptedException}} để dừng sớm; nếu không, interrupt bị bỏ qua và Pod vẫn bị SIGKILL.
+
+### Vì sao task dài hơn grace period là thảm hoạ
+Nếu một job xử lý ảnh mất 90s mà grace period 60s, thì dù code đúng, job vẫn bị SIGKILL giữa chừng. Hai cách xử lý: (a) tăng grace period và timeout-per-shutdown-phase; (b) làm job **idempotent** và để consumer khác xử lý lại (Kafka commit offset sau khi xong). Cách (b) robust hơn vì Pod có thể chết bất cứ lúc nào (OOM, node failure), không chỉ lúc tắt.
+
+### Bẫy hay gặp
+- Dùng thread không-daemon cho pool riêng → JVM không thoát.
+- Gọi {{shutdownNow()}} ngay lập tức → không có grace period, request đang chạy bị cắt.
+- Shutdown hook chạy đồng thời với Spring → race condition; nên để Spring quản lý lifecycle (bean implements DisposableBean hoặc @PreDestroy).
+- Không log số task bị cắt → không biết shutdown có sạch không.
+
+### Ví dụ đời thực
+Service xử lý ảnh: pool 8 thread, mỗi job 30s. Rolling update lúc traffic cao: 5 job đang chạy. Grace period 60s. Coordinator chờ 30s: 3 job xong, 2 còn chạy. shutdownNow interrupt 2 job; chúng ghi log "cancelled 2 jobs" và commit offset chưa xong → consumer khác xử lý lại (idempotent nhờ idempotency key). Metric {{shutdown_cancelled_jobs}} tăng → alert nếu > 0 thường xuyên → tăng grace period hoặc làm job nhanh hơn.
+
+### Trả lời mẫu khi phỏng vấn
+Graceful shutdown em làm ba bước: ngừng nhận việc mới bằng cờ accepting, chờ task đang chạy trong timeout bằng awaitTermination, hết hạn thì shutdownNow và đếm số task bị cắt. Thread pool riêng phải là bean để Spring quản lý, hoặc đăng ký shutdown hook. Task phải kiểm tra interrupt để dừng sớm. Job dài hơn grace period thì không thể tắt gracefully — nên làm idempotent và để consumer khác xử lý lại. Em đo metric số task bị cắt; nếu > 0 thường xuyên thì tăng grace period hoặc tối ưu job.
+
+> Senior tip: Pod có thể chết bất cứ lúc nào (OOM, node failure), không chỉ lúc rolling update. Vì vậy "graceful shutdown đúng" chỉ là trường hợp tốt; production thật cần idempotency + retry + checkpoint offset, không phụ thuộc vào việc tắt gracefully.`,
+  exercises: [
+    {
+      title: 'Coordinator ngừng nhận, chờ, huỷ cưỡng bức',
+      prompt: 'Viết {{ShutdownCoordinator}} có pool cố định {{n}} thread: {{submit(task)}} trả về true nếu còn nhận việc (chạy task trong pool, đếm số đang chạy), false nếu đã shutdown. {{shutdown(timeoutMs)}} đặt accepting=false, gọi shutdown(), chờ trong timeout; nếu xong trả {{finished=true, cancelled=0}}; nếu chưa xong gọi shutdownNow() và trả {{finished=false, cancelled = số task chưa xong}}. Cung cấp {{running()}}.',
+      starter: 'class ShutdownCoordinator {\n    private final int threads;\n    ShutdownCoordinator(int threads) { this.threads = threads; }\n    boolean submit(Runnable task) { throw new UnsupportedOperationException("TODO"); }\n    ShutdownReport shutdown(long timeoutMs) { throw new UnsupportedOperationException("TODO"); }\n    int running() { throw new UnsupportedOperationException("TODO"); }\n}\nrecord ShutdownReport(boolean finished, int cancelled) {}',
+      tests: 'public class Main {\n    static int passed = 0, total = 0;\n    static void check(String name, boolean ok, String detail) {\n        total++;\n        if (ok) { passed++; System.out.println("PASS " + name); }\n        else System.out.println("FAIL " + name + ": " + detail);\n    }\n    public static void main(String[] args) throws Exception {\n        ShutdownCoordinator c = new ShutdownCoordinator(2);\n        check("submit accepted before shutdown", c.submit(() -> {}), "phải true");\n        // task dài\n        c.submit(() -> { try { Thread.sleep(5000); } catch (InterruptedException e) { } });\n        ShutdownReport r = c.shutdown(100);\n        check("not finished within timeout", !r.finished(), "finished=" + r.finished());\n        check("cancelled at least one", r.cancelled() >= 1, "cancelled=" + r.cancelled());\n        check("submit rejected after shutdown", !c.submit(() -> {}), "phải false");\n        // clean fast case\n        ShutdownCoordinator c2 = new ShutdownCoordinator(2);\n        c2.submit(() -> {});\n        ShutdownReport r2 = c2.shutdown(1000);\n        check("finished when fast", r2.finished(), "finished=" + r2.finished());\n        check("cancelled zero when fast", r2.cancelled() == 0, "cancelled=" + r2.cancelled());\n        System.out.println("RESULT " + passed + "/" + total);\n    }\n}',
+      reference: 'import java.util.concurrent.*;\nimport java.util.concurrent.atomic.AtomicInteger;\nclass ShutdownCoordinator {\n    private final ExecutorService pool;\n    private volatile boolean accepting = true;\n    private final AtomicInteger running = new AtomicInteger();\n    ShutdownCoordinator(int threads) { this.pool = Executors.newFixedThreadPool(threads); }\n    boolean submit(Runnable task) {\n        if (!accepting) return false;\n        running.incrementAndGet();\n        try {\n            pool.submit(() -> { try { task.run(); } finally { running.decrementAndGet(); } });\n            return true;\n        } catch (RejectedExecutionException e) {\n            running.decrementAndGet();\n            return false;\n        }\n    }\n    ShutdownReport shutdown(long timeoutMs) {\n        accepting = false;\n        pool.shutdown();\n        try {\n            if (pool.awaitTermination(timeoutMs, TimeUnit.MILLISECONDS)) {\n                return new ShutdownReport(true, 0);\n            }\n        } catch (InterruptedException e) { Thread.currentThread().interrupt(); }\n        int runningNow = running.get();\n        int cancelled = pool.shutdownNow().size() + runningNow;\n        return new ShutdownReport(false, cancelled);\n    }\n    int running() { return running.get(); }\n}\nrecord ShutdownReport(boolean finished, int cancelled) {}',
+      hints: ['Dùng cờ volatile accepting; ExecutorService.shutdown() rồi awaitTermination.', 'shutdownNow() trả List<Runnable> các task chưa chạy; cộng với running.get() cho số đang chạy.'],
+      explain: 'Lỗi hay gặp: gọi shutdownNow ngay không chờ; không đếm số bị cắt; thread không-daemon làm JVM không thoát. Phải kiểm tra interrupt trong task dài.',
+    },
+  ],
+  check: [
+    {
+      q: 'Thread pool tự tạo (newFixedThreadPool) trong @Service mà không đăng ký bean: khi Spring shutdown, pool có tự dừng không?',
+      options: ['Có, Spring tự quét mọi ExecutorService', 'Không, phải shutdown thủ công hoặc đăng ký làm bean DisposableBean', 'Có, JVM tự dừng thread khi context đóng', 'Chỉ dừng nếu pool dùng daemon thread'],
+      answer: 1,
+      explain: 'Spring chỉ quản lý bean. ExecutorService tự tạo không phải bean → không tự shutdown → thread không-daemon giữ JVM sống → Pod bị SIGKILL. Đăng ký bean hoặc @PreDestroy gọi shutdown.',
+    },
+    {
+      q: 'Job xử lý ảnh mất 90s, grace period 60s: cách robust nhất?',
+      options: ['Tăng grace period lên 120s', 'Làm job idempotent, commit offset/checkpoint sau khi xong, để consumer khác xử lý lại nếu bị cắt', 'Dùng SIGKILL để nhanh', 'Chạy job trên thread daemon'],
+      answer: 1,
+      explain: 'Pod có thể chết bất cứ lúc nào (OOM, node failure), không chỉ rolling update. Idempotency + retry robust hơn phụ thuộc grace period.',
+    },
+  ],
+  related: ['devops-023'],
+  tags: ['graceful shutdown', 'thread pool', 'Kubernetes', 'idempotency'],
+},
+{
+  id: 'lesson-devops-026',
+  track: 'devops',
+  order: 26,
+  title: 'Readiness với nhiều dependency: timeout budget, fail-open và tránh cascade',
+  level: 'lead',
+  minutes: 40,
+  goals: [
+    'Thiết kế readiness tổng hợp nhiều dependency (DB, cache, queue) với timeout budget và fail-open/fail-closed hợp lý',
+    'Viết được checker chạy từng dependency với timeout riêng, gom kết quả, không để một dependency chậm làm treo probe',
+    'Nhận ra bẫy production: readiness đồng bộ gọi DB không timeout → probe treo → K8s gỡ Pod muộn; fail-closed với cache không quan trọng gây gỡ Pod oan',
+  ],
+  body: `### Readiness tổng hợp không phải "kiểm tra hết mọi thứ"
+Bài trước giải thích liveness không kiểm tra DB. Bài này đi vào readiness tổng hợp nhiều dependency. Sai lầm phổ biến: readiness gọi tuần tự DB, Redis, Kafka, mỗi cái 5s → probe mất 15s, K8s timeout probe (thường 1-2s) → coi là fail → gỡ Pod → traffic dồn sang Pod khác → cascade. Hoặc fail-closed với cache không quan trọng → gỡ Pod oan khi cache chậm.
+
+### Timeout budget
+Probe có thời gian giới hạn ({{timeoutSeconds}}, thường 1-2s). Tổng thời gian kiểm tra mọi dependency phải nằm trong budget. Cách làm: chạy song song (hoặc timeout từng cái nhỏ), mỗi dependency timeout = budget / số dependency. Nếu một dependency chậm, readiness fail nhanh thay vì treo.
+
+### Fail-open vs fail-closed
+- **Fail-closed** (fail → readiness false): dependency bắt buộc cho request (DB chính). Nếu DB down, Pod không nhận request.
+- **Fail-open** (fail → readiness vẫn true): dependency không bắt buộc hoặc có fallback (cache, recommendation). Gỡ Pod vì cache chậm là sai; cache miss chỉ làm chậm, không fail request.
+
+### Bẫy hay gặp
+- Readiness gọi DB synchronously không timeout → probe treo.
+- Dùng cùng timeout cho mọi dependency → DB chậm làm cache không được check.
+- Fail-closed với dependency không quan trọng → gỡ Pod oan, giảm capacity.
+- Readiness check nặng (query lớn) → chính probe gây tải DB.
+
+### Ví dụ đời thực
+Service e-commerce: readiness check DB (ping 200ms), Redis (ping 50ms), Kafka (metadata 100ms). Budget 1s. Chạy song song với timeout 300ms mỗi cái. DB chậm (500ms) → readiness false → Pod gỡ traffic → request sang Pod khác. Redis chậm → fail-open → vẫn nhận traffic (cache miss chấp nhận được). Metric readiness_failed_total với tag dep=db tăng → alert DB.
+
+### Checklist trước khi merge
+Trước khi merge readiness mới, kiểm tra: tổng thời gian probe < timeoutSeconds; dependency bắt buộc fail-closed; dependency có fallback fail-open; check chỉ ping không query; có metric per dependency; alert khi fail rate > ngưỡng. Nếu một trong các mục chưa đạt, giữ readiness cũ để tránh cascade.
+
+### Trả lời mẫu khi phỏng vấn
+Readiness tổng hợp em làm với timeout budget: chạy kiểm tra song song hoặc timeout từng dependency nhỏ, tổng nằm trong timeoutSeconds của probe. Phân loại fail-open/fail-closed: DB chính fail-closed, cache/recommendation fail-open. Readiness check phải nhẹ (ping, không query lớn). Em đo metric per dependency để biết nguyên nhân. Tránh probe treo gây cascade.
+
+> Senior tip: readiness fail nên là "Pod này không nên nhận request mới", không phải "Pod này bị lỗi". Nếu dependency có fallback, fail-open để không gỡ Pod oan. Cascade từ probe treo là sự cố production hay gặp hơn là DB thực sự down.`,
+  exercises: [
+    {
+      title: 'Checker chạy dependency với timeout và gom kết quả',
+      prompt: 'Viết {{ReadinessChecker}} đăng ký dependency bằng {{register(name, check)}} với {{check}} là functional interface {{boolean ok() throws Exception}}. {{check()}} chạy từng dependency với timeout {{timeoutMs}} (dùng Future.get(timeout)), gom tên dependency fail vào list; trả về {{ReadinessResult(ready, failed)}}. Liveness đơn giản trả true.',
+      starter: 'import java.util.*;\nclass ReadinessChecker {\n    @FunctionalInterface interface Check { boolean ok() throws Exception; }\n    ReadinessChecker(long timeoutMs) { }\n    void register(String name, Check c) { }\n    ReadinessResult check() { throw new UnsupportedOperationException("TODO"); }\n    boolean liveness() { throw new UnsupportedOperationException("TODO"); }\n}\nrecord ReadinessResult(boolean ready, List<String> failed) {}',
+      tests: 'public class Main {\n    static int passed = 0, total = 0;\n    static void check(String name, boolean ok, String detail) {\n        total++;\n        if (ok) { passed++; System.out.println("PASS " + name); }\n        else System.out.println("FAIL " + name + ": " + detail);\n    }\n    public static void main(String[] args) throws Exception {\n        ReadinessChecker rc = new ReadinessChecker(200);\n        rc.register("db", () -> true);\n        rc.register("cache", () -> { Thread.sleep(5000); return true; }); // chậm → timeout → fail\n        ReadinessResult r = rc.check();\n        check("not ready when dep times out", !r.ready(), "ready=" + r.ready());\n        check("failed contains slow dep", r.failed().contains("cache"), "failed=" + r.failed());\n        check("fast dep not failed", !r.failed().contains("db"), "failed=" + r.failed());\n        check("liveness always true", rc.liveness(), "liveness false");\n        ReadinessChecker rc2 = new ReadinessChecker(200);\n        rc2.register("db", () -> true);\n        ReadinessResult r2 = rc2.check();\n        check("ready when all pass", r2.ready(), "ready=" + r2.ready());\n        check("failed empty", r2.failed().isEmpty(), "failed=" + r2.failed());\n        System.out.println("RESULT " + passed + "/" + total);\n    }\n}',
+      reference: 'import java.util.*;\nimport java.util.concurrent.*;\nclass ReadinessChecker {\n    @FunctionalInterface interface Check { boolean ok() throws Exception; }\n    private final long timeoutMs;\n    private final Map<String, Check> checks = new LinkedHashMap<>();\n    ReadinessChecker(long timeoutMs) { this.timeoutMs = timeoutMs; }\n    void register(String name, Check c) { checks.put(name, c); }\n    ReadinessResult check() {\n        List<String> failed = new ArrayList<>();\n        for (Map.Entry<String, Check> e : checks.entrySet()) {\n            ExecutorService ex = Executors.newSingleThreadExecutor();\n            Future<Boolean> f = ex.submit(() -> e.getValue().ok());\n            try {\n                if (!f.get(timeoutMs, TimeUnit.MILLISECONDS)) failed.add(e.getKey());\n            } catch (Exception ex2) {\n                failed.add(e.getKey());\n            } finally {\n                ex.shutdownNow();\n            }\n        }\n        return new ReadinessResult(failed.isEmpty(), failed);\n    }\n    boolean liveness() { return true; }\n}\nrecord ReadinessResult(boolean ready, List<String> failed) {}',
+      hints: ['Dùng Future.get(timeout, TimeUnit.MILLISECONDS) để timeout từng dependency.', 'Mỗi dependency một ExecutorService đơn hoặc dùng chung; shutdownNow sau mỗi lần.'],
+      explain: 'Lỗi hay gặp: gọi check đồng bộ không timeout → probe treo → cascade. Fail-closed với dependency không quan trọng gây gỡ Pod oan. Check phải nhẹ (ping).',
+    },
+  ],
+  check: [
+    {
+      q: 'Readiness probe timeoutSeconds=2, có 3 dependency mỗi cái 1s chạy tuần tự: điều gì xảy ra?',
+      options: ['Probe thành công sau 3s', 'Probe timeout sau 2s → fail → Pod bị gỡ traffic sớm, cascade sang Pod khác', 'K8s tự tăng timeout', 'Pod restart'],
+      answer: 1,
+      explain: 'Probe timeout → coi fail → readiness false → Pod gỡ khỏi Endpoints. Traffic dồn sang Pod khác → có thể cascade. Cần timeout budget và chạy song song.',
+    },
+    {
+      q: 'Cache recommendation chậm: readiness nên fail-open hay fail-closed?',
+      options: ['Fail-closed, để restart Pod', 'Fail-open, vẫn nhận traffic vì cache miss chấp nhận được', 'Bỏ qua cache khỏi readiness', 'Tăng timeout probe'],
+      answer: 1,
+      explain: 'Dependency có fallback nên fail-open: gỡ Pod vì cache chậm giảm capacity oan. Cache miss chỉ chậm, không fail request.',
+    },
+  ],
+  related: ['devops-024'],
+  tags: ['readiness', 'timeout budget', 'Kubernetes', 'cascade', 'health check'],
+},
 );
