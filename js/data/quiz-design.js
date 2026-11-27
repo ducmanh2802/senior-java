@@ -4092,5 +4092,718 @@ if (lock) {
 - **Tắt lock**: cực kỳ nguy hiểm, 2 migrate cùng lúc có thể corrupt schema history.
 
 > Senior tip: Flyway {{lockTimeout}} (ms) có thể đặt lớn (ví dụ 1800000 = 30 phút) để wait thay vì fail, nhưng Job pattern vẫn tốt hơn vì tách biệt vòng đời migrate và vòng đời app.`
+  },
+  {
+    id: 'qz-banking-048',
+    topic: 'banking',
+    q: 'Hệ thống của bạn nhận lệnh chuyển 1.000.000 từ tài khoản A và ghi nhận ngay, nhưng lệnh này phải gom vào file batch gửi ngân hàng đối tác vài giờ sau mới thực sự đi. Theo ghi sổ kép, sổ cái phải luôn cân bằng. Cách ghi nào đúng trong khoảng thời gian tiền "đang đi"?',
+    options: [
+      'Chưa ghi gì vào sổ cái cho tới khi đối tác báo đã cộng tiền cho B, vì lúc đó tiền mới thật sự chuyển',
+      'Ghi ngay 2 bút toán: nợ (debit) tài khoản A 1.000.000, có (credit) một tài khoản trung chuyển (suspense/clearing account) 1.000.000; khi đối tác xác nhận đã cộng B thì ghi tiếp: nợ tài khoản trung chuyển 1.000.000, có tài khoản B 1.000.000',
+      'Ghi luôn nợ A và có B như thể chuyển xong, sau này đối tác lỗi thì sửa số dư bằng tay',
+      'Chỉ ghi một bút toán nợ A, không cần bút toán đối ứng vì đây là giao dịch nội bộ'
+    ],
+    answer: 1,
+    explain: `**Đáp án đúng: Ghi ngay qua tài khoản trung chuyển (suspense/clearing account) để sổ luôn cân bằng, rồi "đóng" tài khoản trung chuyển khi đối tác xác nhận.**
+
+**Tóm tắt:** Sổ cái kép bắt buộc mỗi giao dịch phải cân bằng (tổng nợ = tổng có) tại mọi thời điểm. Khi tiền còn "đang đi" (in transit) giữa hai hệ thống, ta không thể ghi thẳng có vào B vì B chưa nhận; cũng không thể bỏ trống vì như thế sổ mất cân bằng. Giải pháp chuẩn là dùng một tài khoản trung chuyển làm "điểm neo" tạm thời.
+
+Thuật ngữ:
+- **Suspense account (tài khoản treo) / clearing account (tài khoản thanh toán bù trừ)**: tài khoản kỹ thuật của chính ngân hàng, dùng để "giữ" số tiền đang chờ được xử lý tiếp. Nó không thuộc khách hàng nào, chỉ để sổ sách luôn khớp.
+- **In transit (đang chuyển)**: trạng thái tiền đã rời nguồn nhưng chưa tới đích.
+
+### Vì sao đúng
+Vì sổ kép yêu cầu cân bằng, khi A bị trừ 1.000.000 thì phải có một chỗ "cộng 1.000.000" ngay lập tức. Chỗ đó là tài khoản trung chuyển:
+~~~text
+Bước 1 (nhận lệnh, tiền đang đi):
+   NỢ  A:                  1.000.000   (tài sản khách A giảm)
+   CÓ  Tài khoản treo:    1.000.000   (nợ phải trả "treo" chờ xử lý)
+   Tổng nợ = tổng có = 1.000.000  -> cân bằng
+
+Bước 2 (đối tác xác nhận đã cộng B):
+   NỢ  Tài khoản treo:    1.000.000   (giải phóng khoản treo)
+   CÓ  B:                  1.000.000   (tài sản khách B tăng)
+   Tổng nợ = tổng có = 1.000.000  -> cân bằng
+~~~
+Sau bước 2, tài khoản trung chuyển về 0 (đã "đóng"), tiền đã tới B. Nếu đối tác báo lỗi, ta ghi bút toán đảo: nợ tài khoản treo, có lại A — A được hoàn tiền, sổ vẫn cân bằng. Số dư của tài khoản treo khác 0 chính là "tổng tiền đang đi" và luôn phải được theo dõi, đối soát.
+
+### Vì sao các phương án khác sai
+- **Chưa ghi gì cho tới khi B nhận được**: trong khoảng chờ, A đã bị trừ (hoặc sẽ bị trừ) nhưng sổ không có bút toán đối ứng → sổ mất cân bằng, không biết 1.000.000 đang nằm đâu. Đây chính là lúc cần tài khoản treo.
+- **Ghi thẳng có B rồi sửa tay khi lỗi**: B "tăng số dư" cho khoản tiền chưa thật sự tới; nếu đối tác lỗi, việc sửa số dư bằng tay phá vỡ nguyên tắc append-only (không sửa/xoá bút toán) và mất vết kiểm toán.
+- **Chỉ ghi một bút toán nợ A**: vi phạm sổ kép (một bút toán không có đối ứng), không thể tái hiện trạng thái và không cân bằng.
+
+> Senior tip: Mỗi loại "đang chờ" nên có tài khoản treo riêng (treo do timeout, treo do chờ đối tác, treo do sai thông tin người nhận) để dễ theo dõi và đối soát. Đặt cảnh báo khi số dư tài khoản treo vượt ngưỡng hoặc tồn quá lâu (ví dụ > 24 giờ), vì đó là dấu hiệu tiền bị kẹt.`
+  },
+  {
+    id: 'qz-banking-049',
+    topic: 'banking',
+    q: 'Hai giao dịch chạy song song: giao dịch 1 chuyển từ A sang B, giao dịch 2 chuyển từ B sang A. Cả hai đều dùng pessimistic lock ({{SELECT ... FOR UPDATE}}) trên từng dòng tài khoản. Thỉnh thoảng DB ném lỗi deadlock. Nguyên nhân gốc và cách sửa đúng là gì?',
+    options: [
+      'Deadlock do DB yếu, chỉ cần tăng {{lock_timeout}} cho thật lớn',
+      'Bỏ {{FOR UPDATE}}, dùng {{SELECT}} thường để không ai phải chờ lock',
+      'Các giao dịch khoá hai dòng theo thứ tự ngược nhau (giao dịch 1 giữ A rồi xin B, giao dịch 2 giữ B rồi xin A) nên cùng chờ nhau vô hạn; sửa bằng cách luôn khoá các tài khoản theo một thứ tự nhất quán (ví dụ id tăng dần) trước khi trừ/cộng',
+      'Đọc số dư bằng {{SELECT}}, kiểm tra ở Java rồi ghi lại giá trị mới, không cần lock'
+    ],
+    answer: 2,
+    explain: `**Đáp án đúng: Deadlock do hai giao dịch khoá hai dòng theo thứ tự ngược nhau; sửa bằng quy tắc lock theo thứ tự nhất quán (ví dụ luôn theo id tăng dần).**
+
+**Tóm tắt:** Deadlock (khoá chết) xảy ra khi hai tiến trình mỗi bên giữ một tài nguyên và cùng chờ tài nguyên bên kia đang giữ, tạo vòng chờ khép kín. Với chuyển tiền hai chiều, cách phòng ngừa kinh điển là **lock ordering**: mọi giao dịch phải khoá các tài khoản theo cùng một trật tự xác định.
+
+Thuật ngữ:
+- **Pessimistic lock (khoá bi quan)**: giả định chắc chắn có xung đột nên khoá dòng lại ({{SELECT ... FOR UPDATE}}) để không ai đọc/ghi trong lúc mình xử lý.
+- **Deadlock (khoá chết)**: hai transaction cùng giữ một phần khoá và chờ phần còn lại của nhau, không ai nhả ra.
+
+### Vì sao đúng
+Diễn tiến gây deadlock:
+~~~text
+Thời điểm   Giao dịch 1 (A->B)        Giao dịch 2 (B->A)
+   t1       FOR UPDATE dòng A       FOR UPDATE dòng B
+            (A đang bị khoá)         (B đang bị khoá)
+   t2       xin khoá dòng B  ...    xin khoá dòng A  ...
+            (B do GD2 giữ)           (A do GD1 giữ)
+   t3       chờ B                  chờ A   -> vòng chờ khép kín
+            DB phát hiện deadlock, huỷ một giao dịch
+~~~
+Cách sửa: quy ước "khi cần khoá nhiều tài khoản, luôn khoá theo id tăng dần". Giao dịch 1 khoá A rồi B; giao dịch 2 cũng khoá A rồi B (vì A có id nhỏ hơn). Khi đó không tồn tại vòng chờ: nếu GD2 đến sau, nó phải chờ A do GD1 giữ, GD1 lấy tiếp B và chạy xong, nhả khoá, GD2 mới tiếp tục.
+~~~java
+// Khoá hai tài khoản theo thứ tự id tăng dần để tránh deadlock
+var ids = Stream.of(fromId, toId).sorted().toList();
+for (Long id : ids) repo.lockById(id);   // SELECT ... FOR UPDATE theo trật tự cố định
+// sau đó mới trừ from, cộng to trong cùng transaction
+~~~
+
+### Vì sao các phương án khác sai
+- **Tăng {{lock_timeout}} thật lớn**: chỉ làm giao dịch chờ lâu hơn rồi vẫn deadlock; timeout lớn còn giữ connection và khoá lâu, dễ nghẽn pool. Không loại bỏ vòng chờ.
+- **Bỏ {{FOR UPDATE}}, dùng {{SELECT}} thường**: mất khoá → hai giao dịch cùng đọc số dư cũ rồi cùng ghi (lost update), số dư có thể sai hoặc âm; đổi deadlock lấy lỗi tiền tệ còn tệ hơn.
+- **Đọc rồi ghi lại giá trị mới ở Java, không lock**: chính là read-modify-write không nguyên tử, hai request cùng đọc 100, cùng thấy đủ, cùng ghi kết quả → mất cập nhật và có thể âm số dư.
+
+> Senior tip: Lock ordering là kỹ thuật chung cho mọi tài nguyên nhiều khoá (không chỉ tiền). Nếu một giao dịch động tới 3-4 tài khoản, vẫn áp cùng quy tắc sắp xếp. Khi DB vẫn báo deadlock lẻ tẻ, hãy retry cả giao dịch (vì DB đã rollback an toàn) kèm backoff, và log lại để điều tra.`
+  },
+  {
+    id: 'qz-banking-050',
+    topic: 'banking',
+    multi: true,
+    q: 'Bạn phải chia 100,00 (đơn vị tiền có 2 chữ số thập phân) thành 3 phần bằng nhau, mỗi phần là số có đúng 2 chữ số thập phân và tổng ba phần phải bằng đúng 100,00. Những cách nào cho kết quả đúng? (Chọn 2)',
+    options: [
+      'Tính 100,00 / 3 cho mỗi phần rồi làm tròn từng phần độc lập; nếu tổng lệch 0,01 thì chấp nhận vì sai số nhỏ',
+      'Chia phần nguyên cho mỗi phần, còn phần dư (0,01) phân bổ cho một phần theo quy tắc xác định (ví dụ phần có số dư lớn nhất - largest remainder), sao cho tổng khớp tuyệt đối',
+      'Dùng {{double}} tính rồi làm tròn khi hiển thị, tổng sẽ luôn khớp 100,00',
+      'Giữ danh sách phần đã chia, cộng dồn và gán nốt phần dư còn thiếu vào phần cuối theo trật tự cố định, đảm bảo tổng bằng đúng 100,00'
+    ],
+    answer: [1, 3],
+    explain: `**Đáp án đúng: Phân bổ phần dư còn lại theo quy tắc xác định (largest remainder hoặc gán vào phần cuối theo trật tự cố định) để tổng khớp tuyệt đối.**
+
+**Tóm tắt:** Chia tiền không bao giờ được "làm tròn mỗi phần một cách độc lập rồi bỏ qua phần dư", vì tổng các phần đã làm tròn thường lệch so với số ban đầu. Cách đúng là **allocation theo phần dư**: chia phần nguyên, rồi phân bổ phần dư còn lại một cách tất định (deterministic) sao cho tổng bằng đúng số gốc.
+
+Thuật ngữ:
+- **Allocation problem (bài toán phân bổ)**: chia một tổng thành nhiều phần mà ràng buộc tổng các phần phải bằng đúng tổng ban đầu.
+- **Largest remainder (phần dư lớn nhất)**: quy tắc chia phần dư cho phần có số dư (phần bị cắt) lớn nhất, giúp phân bổ công bằng nhất.
+- **Deterministic (tất định)**: cùng đầu vào luôn cho cùng kết quả, không tuỳ tiện.
+
+### Vì sao đúng
+100,00 chia 3 = 33,3333... Làm tròn độc lập mỗi phần về 33,33 thì tổng là 99,99, thiếu 0,01. Cách đúng:
+~~~text
+100,00 / 3 = 33 phần nguyên 33,00, dư 1,00 ; rồi 1,00 / 3 mỗi phần 0,33 dư 0,01
+Phần thô: 33,33 | 33,33 | 33,33   tổng 99,99  -> còn dư 0,01
+Phân bổ 0,01 cho một phần theo quy tắc (vd phần đầu): 33,34 | 33,33 | 33,33
+Tổng = 100,00  -> khớp tuyệt đối
+~~~
+- Phương án 1 (largest remainder) và phương án 3 (gán phần dư vào phần cuối theo trật tự cố định) đều đảm bảo tổng khớp; điểm chung là **phần dư được phân bổ tường minh, có quy tắc**, không bỏ quên.
+- Trong code, phải dùng {{BigDecimal}} với {{RoundingMode}} rõ ràng và một hàm allocate trả về danh sách phần đã cộng đúng phần dư.
+
+### Vì sao các phương án khác sai
+- **Làm tròn từng phần độc lập rồi chấp nhận lệch 0,01**: sai nguyên tắc tài chính — sổ cái phải khớp tuyệt đối; 0,01 nhân hàng triệu giao dịch thành sai số lớn, và không giải trình được đồng tiền thiếu nằm ở đâu.
+- **Dùng {{double}} rồi làm tròn hiển thị**: {{double}} là số nhị phân, 100,00 không biểu diễn chính xác; làm tròn lúc hiển thị không sửa được sai số đã tích luỹ trong phép chia, và tổng vẫn có thể lệch.
+
+> Senior tip: Khi chia tiền cho nhiều bên (phí, hoa hồng, chia doanh thu), luôn viết một hàm allocate(amount, ratios) trả về danh sách phần mà tổng bằng đúng amount, kèm kiểm thử tự động (assert tổng == amount). Quy tắc gán phần dư phải cố định để kết quả ổn định giữa các lần chạy và giữa các hệ thống.`
+  },
+  {
+    id: 'qz-banking-051',
+    topic: 'banking',
+    q: 'Một hệ thống tính phí và lãi cho hàng triệu giao dịch, làm tròn về 2 chữ số thập phân bằng {{RoundingMode.HALF_UP}}. Sau vài tháng, tổng tiền thu lệch nhẹ so với đối tác dù mỗi phép làm tròn trông "đúng". Vì sao {{HALF_EVEN}} (banker rounding) thường được khuyến nghị cho tính toán tài chính quy mô lớn?',
+    options: [
+      'Vì {{HALF_EVEN}} chạy nhanh hơn {{HALF_UP}}',
+      'Vì {{HALF_EVEN}} luôn làm tròn xuống nên có lợi cho ngân hàng',
+      'Vì {{HALF_UP}} bị cấm trong Java nên bắt buộc dùng {{HALF_EVEN}}',
+      'Vì {{HALF_UP}} luôn đẩy số 0,5 lên trên, tạo thiên lệch tích luỹ (bias) khi lặp lại rất nhiều lần; {{HALF_EVEN}} làm tròn về số chẵn gần nhất nên thiên lệch dương và âm triệt tiêu nhau, tổng sai số gần 0 hơn'
+    ],
+    answer: 3,
+    explain: `**Đáp án đúng: {{HALF_UP}} luôn làm tròn phần 0,5 lên trên nên tạo thiên lệch tích luỹ; {{HALF_EVEN}} làm tròn về số chẵn gần nhất giúp triệt tiêu thiên lệch, tổng sai số gần 0.**
+
+**Tóm tắt:** Làm tròn là việc bỏ bớt chữ số thừa. Nếu quy tắc luôn đẩy các trường hợp "đúng giữa" (0,5) về cùng một hướng, thì qua hàng triệu lần, sai số dồn về một phía và tích luỹ thành con số lớn. {{HALF_EVEN}} chia đều các trường hợp 0,5 về số chẵn nên không thiên vị.
+
+Thuật ngữ:
+- **Rounding mode (chế độ làm tròn)**: quy tắc quyết định chữ số cuối khi bỏ phần dư.
+- **HALF_UP**: nếu phần bị bỏ ≥ 0,5 thì tăng chữ số cuối lên 1 (làm tròn "nửa lên").
+- **HALF_EVEN (banker's rounding)**: nếu phần bị bỏ đúng 0,5 thì làm tròn về số chẵn gần nhất; nếu > 0,5 vẫn lên, < 0,5 vẫn xuống.
+- **Bias (thiên lệch)**: sai số có xu hướng dồn về một chiều.
+
+### Vì sao đúng
+Ví dụ với các số kết thúc đúng ở 0,5 khi làm tròn về số nguyên:
+~~~text
+Số     HALF_UP   HALF_EVEN
+0,5       1         0     (0 là chẵn)
+1,5       2         2     (2 là chẵn)
+2,5       3         2     (2 là chẵn)
+3,5       4         4     (4 là chẵn)
+---------------------------
+Với HALF_UP: 1+2+3+4 = 10  (luôn bị đẩy lên, dư 2 so với 8)
+Với HALF_EVEN: 0+2+2+4 = 8 (cân bằng, không dư)
+~~~
+Khi lặp hàng triệu giao dịch, phần dư "0,5" của HALF_UP dồn hết lên trên → tổng thu cao hơn thực tế một lượng nhỏ nhưng ổn định một chiều. HALF_EVEN khiến các lần lên/xuống xen kẽ, tổng lệch gần 0. Vì vậy nhiều chuẩn và hệ thống tài chính chọn HALF_EVEN cho tính toán nội bộ, còn HALF_UP thường dùng khi hiển thị cho người dùng theo thói quen "làm tròn 0,5 lên".
+
+### Vì sao các phương án khác sai
+- **{{HALF_EVEN}} nhanh hơn**: hai chế độ cùng độ phức tạp, tốc độ không phải lý do; đây là vấn đề đúng đắn số học, không phải hiệu năng.
+- **{{HALF_EVEN}} luôn làm tròn xuống, có lợi cho ngân hàng**: sai mô tả — HALF_EVEN làm tròn về số chẵn (lúc lên lúc xuống), không phải luôn xuống; "có lợi cho ngân hàng" cũng không phải mục tiêu kỹ thuật.
+- **{{HALF_UP}} bị cấm trong Java**: hoàn toàn sai, {{HALF_UP}} là hằng số hợp lệ và được dùng phổ biến; không có lệnh cấm nào.
+
+> Senior tip: Điều quan trọng là cả hệ thống và đối tác phải thoả thuận **cùng một rounding mode** cho cùng loại nghiệp vụ; lệch quy tắc làm tròn là nguyên nhân reconciliation break rất khó tìm. Ghi rõ rounding mode trong tài liệu tích hợp và trong test.`
+  },
+  {
+    id: 'qz-banking-052',
+    topic: 'banking',
+    q: 'Hệ thống đặt trên server cấu hình múi giờ UTC, dùng {{LocalDate.now()}} để so với cut-off 15h30. Ngân hàng áp cut-off theo giờ Việt Nam (UTC+7). Khách chuyển lúc 15h00 giờ VN (tức 08h00 UTC) bị tính nhầm sang value date hôm sau. Nguyên nhân gốc và cách sửa đúng?',
+    options: [
+      '{{LocalDate.now()}} lấy ngày/giờ theo múi giờ mặc định của JVM (đang là UTC), không phải giờ nghiệp vụ của ngân hàng; phải quy mọi so sánh cut-off về một timezone nghiệp vụ cố định (ví dụ {{Asia/Ho_Chi_Minh}}), hoặc dùng {{Instant}}/{{OffsetDateTime}} và đổi sang zone đó trước khi so với cut-off dạng giờ tường',
+      'Tăng cut-off lên 16h30 cho chắc, không lo lệch nữa',
+      'Thay {{LocalDate.now()}} bằng {{System.currentTimeMillis()}} là hết lệch múi giờ',
+      'Cách duy nhất và tốt nhất là đổi múi giờ hệ điều hành của server sang giờ VN'
+    ],
+    answer: 0,
+    explain: `**Đáp án đúng: {{LocalDate.now()}} dùng múi giờ mặc định của JVM (UTC) chứ không phải giờ nghiệp vụ; phải quy về timezone nghiệp vụ cố định ({{Asia/Ho_Chi_Minh}}) hoặc dùng {{Instant}} rồi đổi sang zone đó trước khi so cut-off.**
+
+**Tóm tắt:** "15h30" là một mốc giờ tường (wall-clock) gắn với một múi giờ cụ thể (giờ VN). Nếu bạn lấy thời điểm hiện tại theo UTC rồi so với 15h30, bạn đang so hai mốc ở hai múi giờ khác nhau → lệch 7 tiếng. Cách đúng là luôn gắn mốc cut-off với đúng múi giờ nghiệp vụ.
+
+Thuật ngữ:
+- **Timezone (múi giờ)**: vùng địa lý quy định độ lệch so với UTC; Việt Nam là UTC+7 quanh năm, không có giờ mùa hè.
+- **Wall-clock time (giờ tường)**: con số đồng hồ người dân thấy (ví dụ 15h30), khác với **instant** (mốc thời gian tuyệt đối trên trục thời gian).
+- **Instant**: mốc thời gian tuyệt đối, không phụ thuộc múi giờ (tương đương epoch).
+- **JVM default timezone**: múi giờ mặc định của tiến trình Java, có thể là UTC nếu server cấu hình vậy.
+
+### Vì sao đúng
+Vấn đề là so sánh hai đại lượng ở hai hệ quy chiếu:
+~~~text
+Khách chuyển 15h00 giờ VN = 08h00 UTC (cùng một instant)
+Code chạy: LocalDate.now() = 2026-11-27 (theo UTC), giờ hiện tại 08h00
+So 08h00 < 15h30 -> tưởng là trước cut-off? KHÔNG, vì...
+   thực tế 08h00 UTC chính là 15h00 VN, đã TRƯỚC 15h30 VN -> đúng ra là trước cut-off
+Nhưng nếu code lấy giờ VN bằng LocalDate.now(ZoneId.of("Asia/Ho_Chi_Minh"))
+   -> 15h00, so với cut-off 15h30 -> trước cut-off, value date hôm nay. Đúng.
+~~~
+Cách chuẩn: dùng {{Instant}} (luôn chính xác tuyệt đối), khi cần so với cut-off dạng giờ tường thì {{instant.atZone(ZoneId.of("Asia/Ho_Chi_Minh"))}} rồi lấy giờ trong ngày để so. Không dựa vào múi giờ mặc định của JVM.
+
+### Vì sao các phương án khác sai
+- **Tăng cut-off lên 16h30**: chỉ che một trường hợp, không sửa nguyên nhân; các mốc giờ khác (qua đêm, ngày lễ) vẫn sai, và đổi cut-off là đổi nghiệp vụ tuỳ tiện.
+- **Dùng {{System.currentTimeMillis()}}**: đây chỉ là epoch millis (một {{Instant}}), vẫn phải quy về múi giờ nghiệp vụ mới so được với "15h30"; bản thân nó không chứa thông tin múi giờ.
+- **Đổi múi giờ HĐH của server sang VN là cách duy nhất và tốt nhất**: phụ thuộc cấu hình hạ tầng, dễ vỡ khi deploy lên môi trường khác (container, cloud mặc định UTC), và không giải quyết khi hệ thống phục vụ nhiều múi giờ. Cách bền vững là xử lý timezone trong code một cách tường minh.
+
+> Senior tip: Lưu mọi timestamp trong DB ở UTC (kiểu {{timestamptz}}) và chỉ chuyển sang giờ nghiệp vụ ở tầng hiển thị/so sánh cut-off. Đặt hằng số {{ZoneId}} nghiệp vụ ở một chỗ, không rải rác. Viết test với các mốc sát cut-off (15h29, 15h30, 15h31) để bắt lỗi múi giờ.`
+  },
+  {
+    id: 'qz-banking-053',
+    topic: 'banking',
+    q: 'Ledger append-only của bạn đã có hàng trăm triệu bút toán. Mỗi lần khách mở app xem số dư, không thể cộng lại toàn bộ từ đầu. Thiết kế nào vừa nhanh vừa giữ được tính chính xác và kiểm toán?',
+    options: [
+      'Mỗi khi có bút toán mới thì {{UPDATE}} số dư trên bảng tài khoản; số dư đó là nguồn sự thật duy nhất, ledger chỉ để tham khảo',
+      'Lưu snapshot số dư định kỳ (ví dụ cuối ngày) kèm mốc bút toán cuối cùng đã áp dụng; số dư hiện tại = snapshot gần nhất + cộng các bút toán phát sinh sau mốc đó; có job đối chiếu snapshot với ledger để phát hiện lệch',
+      'Đếm số bút toán rồi nhân với số tiền trung bình để ra số dư',
+      'Cache số dư trong Redis và không bao giờ cập nhật lại cho tới khi restart'
+    ],
+    answer: 1,
+    explain: `**Đáp án đúng: Snapshot số dư định kỳ + cộng bút toán phát sinh sau mốc snapshot (replay), kèm job đối chiếu snapshot với ledger.**
+
+**Tóm tắt:** Ledger append-only là nguồn sự thật đầy đủ nhưng đọc cả lịch sử thì quá chậm. Cách chuẩn là **materialized balance có kiểm chứng**: lưu snapshot (bản chụp) số dư tại một mốc, rồi chỉ cộng thêm các bút toán mới sau mốc đó. Định kỳ đối chiếu snapshot với ledger để đảm bảo không lệch.
+
+Thuật ngữ:
+- **Snapshot (bản chụp)**: giá trị số dư được lưu tại một thời điểm (ví dụ 00:00 mỗi ngày), kèm id của bút toán cuối cùng đã tính vào snapshot.
+- **Replay (phát lại)**: cộng tiếp các bút toán xuất hiện sau mốc snapshot để ra số dư hiện tại.
+- **Materialized balance**: số dư được tính sẵn và lưu lại để đọc nhanh, thay vì tính lại từ đầu mỗi lần.
+
+### Vì sao đúng
+~~~text
+Số dư hiện tại = Snapshot(cuối ngày hôm qua) + tổng bút toán từ sáng nay tới giờ
+Ví dụ: snapshot 23:59 = 5.000.000 (đã gồm bút toán #900)
+   sáng nay có #901 (+200.000), #902 (-50.000)
+   -> số dư = 5.000.000 + 200.000 - 50.000 = 5.150.000
+Việc cần làm chỉ là đọc 1 dòng snapshot + vài chục bút toán mới, không phải hàng trăm triệu dòng.
+~~~
+Để đảm bảo đúng, job đối chiếu định kỳ cộng lại từ ledger (hoặc từ snapshot trước) và so với snapshot hiện tại; nếu lệch thì cảnh báo và dừng ghi. Cách này giữ ledger là nguồn sự thật (append-only, kiểm toán đầy đủ) còn snapshot chỉ là lớp tăng tốc có thể tái tạo lại bất cứ lúc nào.
+
+### Vì sao các phương án khác sai
+- **{{UPDATE}} số dư và coi đó là nguồn sự thật, ledger chỉ tham khảo**: phá vỡ append-only (sửa trực tiếp số dư), mất khả năng tái dựng lịch sử; nếu một lần UPDATE sai hoặc lost update thì không còn cách đối chiếu đáng tin. Số dư nên là hệ quả suy ra từ ledger, không phải sự thật độc lập.
+- **Đếm số bút toán nhân số tiền trung bình**: vô nghĩa về nghiệp vụ — các bút toán có số tiền khác nhau và cả hai chiều; không thể ra số dư đúng.
+- **Cache Redis không bao giờ cập nhật tới khi restart**: số dư sẽ đứng yên sai ngay khi có giao dịch mới; cache phải được cập nhật hoặc invalidate theo bút toán, không phải "đóng băng".
+
+> Senior tip: Snapshot nên tạo trong cùng transaction nhất quán (hoặc từ một bản read có mốc LSN rõ ràng) để không "vừa chụp vừa có bút toán chen vào". Ghi kèm mốc (sequence/LSN/thời điểm) để replay chính xác. Tần suất snapshot là bài toán đánh đổi: thưa thì replay nhiều, dày thì tốn lưu trữ.`
+  },
+  {
+    id: 'qz-banking-054',
+    topic: 'banking',
+    multi: true,
+    q: 'Đối tác gửi file đối soát cuối ngày trong đó mỗi dòng là "tổng ròng" (net settlement) của rất nhiều giao dịch trong ngày, không phải từng giao dịch lẻ. Bạn có ledger từng giao dịch. Những cách đối soát nào đúng? (Chọn 2)',
+    options: [
+      'Vì file chỉ có tổng ròng nên không thể đối soát, bỏ qua file',
+      'Tính tổng các giao dịch của bạn theo cùng nhóm/kỳ rồi so với tổng ròng của đối tác; nếu lệch thì truy vết (drill-down) xuống từng giao dịch cấu thành để tìm nguyên nhân',
+      'Coi mỗi dòng tổng ròng là một giao dịch đơn lẻ và tạo bút toán mới đúng bằng tổng đó',
+      'Đối soát hai chiều: so khớp ở mức tổng để phát hiện lệch nhanh, nhưng vẫn phải giải trình được từng giao dịch cấu thành khi có break'
+    ],
+    answer: [1, 3],
+    explain: `**Đáp án đúng: So khớp ở mức tổng ròng theo nhóm/kỳ để phát hiện lệch, nhưng vẫn phải truy vết được từng giao dịch cấu thành (drill-down).**
+
+**Tóm tắt:** Net settlement (thanh toán bù trừ ròng) là việc cuối ngày chỉ chuyển phần chênh lệch ròng giữa hai bên thay vì từng giao dịch. Đối soát vẫn làm được: so tổng của bạn với tổng ròng của đối tác; nếu lệch thì mở "hộp đen" từng giao dịch để tìm nguyên nhân. Bỏ qua hay tạo bút toán giả đều sai.
+
+Thuật ngữ:
+- **Net settlement (thanh toán ròng)**: thay vì chuyển từng giao dịch, hai bên chỉ chuyển số tiền chênh lệch (A nợ B 100, B nợ A 30 → cuối ngày A chuyển B 70).
+- **Gross settlement (thanh toán gộp)**: chuyển từng giao dịch riêng lẻ, không bù trừ.
+- **Break (điểm lệch)**: một dòng không khớp giữa hai bên cần điều tra.
+- **Drill-down (truy vết xuống chi tiết)**: từ tổng đi xuống từng giao dịch cấu thành.
+
+### Vì sao đúng
+- Phương án 1: gom các giao dịch của bạn theo cùng nhóm (cùng đối tác, cùng kỳ, cùng loại) rồi so với tổng ròng. Tổng khớp là dấu hiệu tốt; lệch thì phải truy từng giao dịch để biết giao dịch nào gây break (thiếu, trùng, sai số tiền, làm tròn).
+- Phương án 3: nguyên tắc đối soát không đổi — vẫn so khớp và phân loại matched/mismatched/unmatched, chỉ khác là mức khớp tổng hợp; khi có break vẫn phải giải trình được từng giao dịch. Đối soát chỉ ở mức tổng mà không truy được chi tiết thì không đủ tin cậy cho tài chính.
+~~~text
+Ledger của bạn (gross):  100 + 30 = 130 (A->B 100, B->A 30)
+File đối tác (net):      A->B ròng 70
+So khớp: 130 - 30 = 100? -> phải nhóm đúng chiều để ra 70; nếu ra 71 -> break 1
+   -> drill-down: tìm giao dịch lệch 1 (thường do làm tròn phí)
+~~~
+
+### Vì sao các phương án khác sai
+- **Bỏ qua file vì chỉ có tổng ròng**: net settlement vẫn phản ánh nghĩa vụ tiền thật; bỏ qua là mất khả năng phát hiện thất thoát/lệch, vi phạm kiểm soát tài chính.
+- **Coi mỗi dòng tổng ròng là một giao dịch đơn lẻ và tạo bút toán mới bằng tổng đó**: sẽ ghi trùng/ghi sai — tổng ròng không phải một giao dịch mới mà là kết quả gộp của nhiều giao dịch đã có; tạo bút toán mới làm sổ lệch và mất truy vết.
+
+> Senior tip: Lưu cả gross ledger lẫn kết quả net để đối soát hai chiều. Khi làm việc với net, phải có bảng ánh xạ (mapping) rõ ràng: tổng ròng này gồm những giao dịch nào, theo tiêu chí nhóm nào. Mọi break phải được phân loại nguyên nhân (timing, làm tròn, thiếu, trùng) và theo dõi bằng aging report.`
+  },
+  {
+    id: 'qz-banking-055',
+    topic: 'banking',
+    q: 'Theo ghi sổ kép, khi khách nộp 5.000.000 tiền mặt vào tài khoản của họ tại ngân hàng, bút toán đúng trên sổ cái của ngân hàng là gì?',
+    options: [
+      'Nợ (debit) tài khoản khách 5.000.000, có (credit) tiền mặt 5.000.000, vì tài khoản khách tăng',
+      'Chỉ ghi có (credit) tài khoản khách 5.000.000, không cần bút toán nợ',
+      'Nợ (debit) tài khoản tiền mặt/két của ngân hàng 5.000.000 (tài sản tăng), có (credit) tài khoản tiền gửi khách hàng 5.000.000 (nợ phải trả của ngân hàng tăng)',
+      'Nợ tiền mặt 5.000.000, có doanh thu 5.000.000'
+    ],
+    answer: 2,
+    explain: `**Đáp án đúng: Nợ tiền mặt (tài sản ngân hàng tăng) 5.000.000, có tiền gửi khách hàng (nợ phải trả của ngân hàng tăng) 5.000.000.**
+
+**Tóm tắt:** Với ngân hàng, tiền khách gửi là **nợ phải trả** (ngân hàng nợ khách, phải trả lại khi khách yêu cầu). Khi nhận tiền mặt, tài sản (tiền mặt) tăng → ghi nợ; đồng thời nghĩa vụ với khách tăng → ghi có. Đây là điểm khác biệt cốt lõi so với chuyển tiền giữa hai khách.
+
+Thuật ngữ:
+- **Tài sản (asset)**: cái ngân hàng sở hữu (tiền mặt, khoản cho vay...). Tài sản tăng → ghi nợ (debit).
+- **Nợ phải trả (liability)**: cái ngân hàng nợ người khác (tiền gửi của khách...). Nợ phải trả tăng → ghi có (credit).
+- **Tiền gửi khách hàng (customer deposit)**: khoản khách gửi vào ngân hàng; với ngân hàng đây là nợ phải trả.
+
+### Vì sao đúng
+Nguyên tắc ghi sổ theo loại tài khoản:
+~~~text
+Loại tài khoản      Tăng thì ghi gì
+Tài sản (tiền mặt)   NỢ (debit)
+Nợ phải trả (tiền gửi) CÓ (credit)
+Doanh thu            CÓ (credit)
+Chi phí              NỢ (debit)
+~~~
+Khách nộp 5.000.000 tiền mặt:
+- Tiền mặt trong két ngân hàng tăng 5.000.000 → tài sản tăng → **nợ tiền mặt 5.000.000**.
+- Ngân hàng giờ nợ khách 5.000.000 (phải trả khi khách rút) → nợ phải trả tăng → **có tiền gửi khách hàng 5.000.000**.
+Tổng nợ = tổng có = 5.000.000, sổ cân bằng. Bản chất: tiền không "biến mất", nó chuyển từ "tiền mặt trong két" sang "nghĩa vụ phải trả khách", cùng giá trị.
+
+### Vì sao các phương án khác sai
+- **Nợ tài khoản khách, có tiền mặt**: hiểu sai bản chất — tài khoản khách (tiền gửi) là nợ phải trả của ngân hàng, khi nó tăng phải ghi **có**, không phải nợ; chiều ghi này sẽ làm sổ hiểu ngược.
+- **Chỉ ghi có tài khoản khách, không ghi nợ**: vi phạm sổ kép (thiếu bút toán đối ứng), sổ mất cân bằng, không biết 5.000.000 đến từ đâu.
+- **Nợ tiền mặt, có doanh thu**: tiền khách nộp không phải doanh thu của ngân hàng (không phải phí/lãi); ghi vào doanh thu làm sai báo cáo kết quả kinh doanh và phải trả lại tiền cho khách sau này.
+
+> Senior tip: Khi phỏng vấn, nói rõ "tiền gửi khách hàng là nợ phải trả của ngân hàng" — đây là chi tiết Senior hay kiểm tra. Trong hệ thống, nên có bảng account với cột loại (ASSET/LIABILITY/EQUITY/REVENUE/EXPENSE) để tự kiểm tra chiều debit/credit và đảm bảo tổng cân bằng.`
+  },
+  {
+    id: 'qz-banking-056',
+    topic: 'banking',
+    q: 'Bảng idempotency key đặt TTL 24 giờ, một job dọn key cũ chạy mỗi giờ. Một đối tác bị offline lâu, retry một giao dịch sau 25 giờ kể từ lần đầu. Hậu quả có thể xảy ra và cách phòng ngừa đúng là gì?',
+    options: [
+      'Không có hậu quả gì, vì retry luôn an toàn',
+      'Giao dịch sẽ bị từ chối hoàn toàn, đúng như mong muốn',
+      'Nên đặt TTL ngắn hơn (1 giờ) để bảng gọn, retry sớm vẫn an toàn',
+      'Key đã bị dọn nên hệ thống coi request là mới và có thể trừ tiền lần hai; TTL của key phải dài hơn cửa sổ retry tối đa của đối tác, hoặc lưu kết quả giao dịch (theo mã giao dịch gốc) lâu hơn để tra soát khi retry đến muộn'
+    ],
+    answer: 3,
+    explain: `**Đáp án đúng: Key bị dọn trước khi retry tới → hệ thống tưởng request mới → có nguy cơ trừ tiền hai lần; TTL phải dài hơn cửa sổ retry của đối tác, hoặc lưu kết quả theo mã giao dịch gốc lâu hơn để tra soát.**
+
+**Tóm tắt:** Idempotency key chỉ chống trùng trong khoảng thời gian key còn tồn tại. Nếu key bị xoá (TTL hết hạn, job dọn) mà đối tác vẫn retry, hệ thống không còn "ký ức" về giao dịch cũ và xử lý như request mới. Vì vậy TTL phải bao trùm toàn bộ cửa sổ retry thực tế của đối tác.
+
+Thuật ngữ:
+- **TTL (Time To Live)**: thời gian sống của một bản ghi; hết TTL thì bản ghi bị xoá.
+- **Cửa sổ retry (retry window)**: khoảng thời gian tối đa mà một bên có thể gửi lại cùng một request (có thể vài giờ đến vài ngày tuỳ đối tác).
+- **Idempotency key**: khoá định danh ý định giao dịch, dùng để nhận request trùng.
+
+### Vì sao đúng
+~~~text
+t=0h   : đối tác gửi GD, key K được lưu, trừ tiền 1.000.000
+t=24h  : TTL của K hết hạn
+t=25h  : job dọn key K (đã dọn từ 24h)
+t=25h  : đối tác retry GD với cùng K
+         -> hệ thống tìm K: KHÔNG THẤY -> tưởng request mới
+         -> trừ tiền 1.000.000 LẦN NỮA (trùng)
+~~~
+Cách phòng ngừa:
+- Đặt TTL của key **dài hơn** cửa sổ retry tối đa của đối tác (ví dụ đối tác retry tới 72h thì TTL ≥ 7 ngày), và chỉ dọn key khi chắc chắn không còn retry.
+- Hoặc lưu kết quả giao dịch lâu hơn (theo mã giao dịch gốc/idempotency key) ở một bảng riêng, để khi retry đến muộn vẫn tra ra và trả kết quả cũ.
+- Kết hợp unique constraint trên mã giao dịch nghiệp vụ làm lưới an toàn ở tầng DB, không chỉ dựa vào bảng key.
+
+### Vì sao các phương án khác sai
+- **Không có hậu quả vì retry luôn an toàn**: sai — retry chỉ an toàn khi hệ thống còn nhận diện được request trùng; mất key thì retry trở thành giao dịch mới.
+- **Giao dịch bị từ chối hoàn toàn, đúng mong muốn**: không đúng nghiệp vụ — nếu lần đầu đã thành công, retry đến muộn cần được trả về kết quả cũ (thành công), không phải từ chối; từ chối khiến đối tác tưởng thất bại và có thể xử lý bù.
+- **TTL ngắn hơn (1 giờ) cho gọn**: làm vấn đề nặng thêm — cửa sổ không nhớ ngắn hơn, retry sau 1 giờ chắc chắn bị coi là mới; "gọn bảng" không đáng đánh đổi bằng rủi ro trừ tiền hai lần.
+
+> Senior tip: TTL của idempotency key là ràng buộc nghiệp vụ, không phải tuỳ chọn vận hành. Hỏi đối tác "retry tối đa bao lâu" rồi đặt TTL dài hơn. Với giao dịch đã hoàn tất, cân nhắc giữ bản ghi kết quả (không phải toàn bộ payload) theo mã giao dịch để vừa an toàn vừa không phình DB.`
+  },
+  {
+    id: 'qz-banking-057',
+    topic: 'banking',
+    multi: true,
+    q: 'Trong ngân hàng, ba khái niệm "ngày ghi sổ (posting/booking date)", "ngày giá trị (value date)" và "ngày giao dịch" thường bị nhầm lẫn. Những phát biểu nào đúng? (Chọn 2)',
+    options: [
+      'Ngày giá trị (value date) là ngày số dư thực sự thay đổi và bắt đầu tính lãi, có thể khác ngày hệ thống ghi bút toán (posting date)',
+      'Ba khái niệm này luôn trùng nhau, không cần phân biệt',
+      'Ngày posting/booking là ngày hệ thống ghi bút toán vào sổ; nó có thể khác value date (ví dụ giao dịch sau cut-off: posting hôm nay nhưng value date là ngày làm việc kế tiếp)',
+      'Value date luôn bằng đúng ngày khách bấm nút thực hiện giao dịch, không bao giờ khác'
+    ],
+    answer: [0, 2],
+    explain: `**Đáp án đúng: Value date là ngày số dư thực sự đổi và tính lãi, có thể khác posting date · Posting date là ngày hệ thống ghi bút toán, cũng có thể khác value date.**
+
+**Tóm tắt:** Một giao dịch có nhiều "ngày" khác nhau vì các hệ thống xử lý và hạch toán không cùng nhịp. Posting date là ngày bút toán được ghi vào sổ; value date là ngày số dư có hiệu lực và bắt đầu tính lãi. Chúng thường trùng nhưng có thể lệch (giao dịch sau cut-off, cuối tuần, ngày lễ).
+
+Thuật ngữ:
+- **Posting/booking date (ngày ghi sổ)**: ngày hệ thống thực sự ghi bút toán vào ledger.
+- **Value date (ngày giá trị)**: ngày khoản tiền bắt đầu có hiệu lực trên số dư và được tính lãi/hạn mức.
+- **Cut-off**: mốc giờ phân loại giao dịch vào ngày làm việc nào (xem qz-banking-035).
+- **Ngày giao dịch**: ngày khách thực hiện (có thể trùng posting hoặc value, tuỳ luồng).
+
+### Vì sao đúng
+- Phương án 0: value date quyết định lãi và số dư khả dụng thực sự. Ví dụ nộp tiền sau cut-off thứ Sáu: posting ghi thứ Sáu (hệ thống nhận), nhưng value date là thứ Ba (ngày làm việc kế tiếp) → tiền chưa được tính lãi cuối tuần. Hai ngày khác nhau là bình thường.
+- Phương án 2: posting date là mốc kỹ thuật "bút toán vào sổ khi nào"; nó phản ánh thời điểm xử lý, không nhất thiết là thời điểm tiền có hiệu lực. Giao dịch sau cut-off là ví dụ điển hình posting ≠ value.
+~~~text
+Khách chuyển 15h31 thứ Sáu (cut-off 15h30):
+   posting date  = thứ Sáu   (hệ thống ghi bút toán ngay)
+   value date    = thứ Ba    (ngày làm việc kế tiếp, sau cuối tuần + lễ)
+   -> số dư "ghi sổ" đổi thứ Sáu, nhưng "có hiệu lực/tính lãi" từ thứ Ba
+~~~
+
+### Vì sao các phương án khác sai
+- **Ba khái niệm luôn trùng nhau**: sai — chính vì có cut-off, cuối tuần, ngày lễ và các luồng xử lý khác nhau mà chúng thường lệch; gộp làm một sẽ tính lãi và báo cáo sai.
+- **Value date luôn bằng ngày khách bấm nút, không bao giờ khác**: sai — value date do quy tắc nghiệp vụ (cut-off, ngày làm việc) quyết định, không phải thời điểm khách bấm; giao dịch sau cut-off có value date ở tương lai.
+
+> Senior tip: Trong thiết kế, lưu tách bạch posting_date và value_date trên mỗi bút toán, và dùng chung một BusinessDayService để tính value date. Khi đối chiếu với đối tác, làm rõ đang so theo ngày nào — nhiều "break" thực chất là do hai bên hiểu "ngày" khác nhau.`
+  },
+  {
+    id: 'qz-banking-058',
+    topic: 'banking',
+    q: 'Một giao dịch chuyển tiền 500.000 VND từ tài khoản A sang B đã được ghi nhận (posting). Hôm sau phát hiện sai số tài khoản đích (nhầm B thành C). Cách khắc phục đúng theo sổ kế toán là gì?',
+    options: [
+      'Xoá bút toán cũ và ghi lại bút toán đúng (A nợ 500.000, B có 500.000)',
+      'Ghi bút toán đảo ngược (reversal): A có 500.000, C nợ 500.000; sau đó ghi bút toán đúng: A nợ 500.000, B có 500.000',
+      'Chỉ sửa trường account_id trong hàng ledger từ C thành B',
+      'Ghi bút toán mới: B nợ 500.000, C có 500.000 (chuyển tiền từ B về C để khấu trừ)'
+    ],
+    answer: 1,
+    explain: `**Đáp án đúng: Ghi bút toán đảo ngược (reversal) để hoàn tác giao dịch sai, sau đó ghi bút toán đúng — không bao giờ xoá hoặc sửa bút toán đã ghi.**
+**Tóm tắt:** Nguyên tắc sổ kế toán: bút toán một khi đã ghi vào sổ cái (posted) là bất biến (immutable). Sai sót phải khắc phục bằng bút toán đảo ngược (storno/reversal) rồi ghi lại đúng, để giữ lịch sử truy vết (audit trail) đầy đủ.
+
+### Vì sao đúng
+Kịch bản: A chuyển cho B, nhưng hệ thống ghi nhầm sang C.
+1. Bút toán gốc (sai): Nợ A 500.000; Có C 500.000.
+2. Bút toán reversal (storno): Có A 500.000; Nợ C 500.000 — hoàn tác số dư về trạng thái trước giao dịch.
+3. Bút toán đúng: Nợ A 500.000; Có B 500.000.
+
+Sau 3 bước, A giảm 500.000, B tăng 500.000, C về 0 — đúng nghiệp vụ. Lịch sử giữ nguyên cả bút toán sai và reversal để kiểm soát viên (auditor) thấy được quá trình sửa lỗi.
+
+Ví dụ ledger:
+~~~text
+Gốc (sai):  Nợ A 500.000 | Có C 500.000
+Reversal:   Có A 500.000 | Nợ C 500.000
+Đúng:       Nợ A 500.000 | Có B 500.000
+Kết quả A: -500.000, B: +500.000, C: 0
+~~~
+
+### Vì sao các phương án khác sai
+- **Xoá bút toán cũ**: vi phạm nguyên tắc bất biến của sổ cái, mất audit trail, không thể giải thích tại sao số dư thay đổi.
+- **Sửa account_id trong hàng ledger**: tương tự xoá, làm mất vết tích lịch sử; database ledger thường không cho UPDATE/DELETE trên bảng bút toán.
+- **Chuyển từ B về C**: B chưa bao giờ nhận tiền, không thể nợ B; logic nghiệp vụ sai và tạo bút toán không có bằng chứng.
+
+> Senior tip: Thiết kế bảng ledger với cột reversal_of (FK trỏ về transaction_id bị đảo ngược) để truy vết cặp gốc–reversal. Luôn yêu cầu phê duyệt cho reversal (maker-checker).`
+  },
+  {
+    id: 'qz-banking-059',
+    topic: 'banking',
+    multi: true,
+    q: 'Hệ thống dùng idempotency key cho API chuyển tiền. Các tình huống nào có thể gây duplicate charge dù đã có idempotency key? (Chọn 2)',
+    options: [
+      'Hai service khác nhau (API Gateway và Callback handler) dùng bảng idempotency key riêng biệt, không chia sẻ',
+      'Client gửi request với key "txn-123", server xử lý thành công nhưng response bị mất; client retry với key "txn-124" (key mới)',
+      'TTL của idempotency key là 24 giờ; đối tác retry sau 30 giờ do sự cố kéo dài',
+      'Server lưu key sau khi commit transaction nghiệp vụ, chứ không trong cùng transaction'
+    ],
+    answer: [1, 2],
+    explain: `**Đáp án đúng: Client retry với key mới (không dùng lại key cũ) · TTL key ngắn hơn cửa sổ retry của đối tác.**
+**Tóm tắt:** Idempotency key chỉ bảo vệ khi CÙNG KEY được dùng lại. Nếu client tự tạo key mới mỗi lần retry, hoặc key hết hạn trước khi đối tác retry, server sẽ coi là giao dịch mới và xử lý trùng.
+
+### Vì sao đúng
+- **Client retry với key mới**: idempotency hoạt động dựa trên định danh ý định. Key mới = ý định mới theo hiểu của server. Client PHẢI giữ nguyên key cho cùng một ý định (ví dụ lưu key ở localStorage hoặc nhận từ server lúc tạo giao dịch).
+- **TTL 24h, đối tác retry sau 30h**: key đã bị xoá do hết TTL, request retry đến sau 30h bị coi là mới. TTL phải dài hơn SLA retry tối đa của đối tác (thường 48–72h).
+
+### Vì sao các phương án khác sai
+- **Hai service dùng bảng key riêng**: nếu cùng một logical request đi qua hai entrypoint khác nhau (gateway + callback), cần chung kho dữ liệu idempotency (Redis/DB chung) hoặc key phải được truyền xuyên suốt. Việc tách bảng có thể gây duplicate nhưng không phải do cơ chế idempotency bản thân.
+- **Lưu key sau commit**: nếu lưu key trong transaction nghiệp vụ (cùng transaction) thì an toàn; nếu lưu SAU commit (transaction riêng) thì có khe hở: crash giữa commit nghiệp vụ và lưu key → key chưa lưu, retry sẽ xử lý lại. Cách đúng là key + nghiệp vụ CÙNG MỘT transaction.
+
+> Senior tip: Tách rõ "idempotency key do client tạo" (cho API public) và "mã tham chiếu nội bộ" (cho hệ thống con). Client public: server cấp key khi tạo intent, client dùng key đó cho mọi retry.`
+  },
+  {
+    id: 'qz-banking-060',
+    topic: 'banking',
+    q: 'Đối soát hàng ngày giữa ledger nội bộ và sao kê ngân hàng đối tác: file đối tác có 10.000 dòng, ledger nội bộ khớp 9.950 dòng, 50 dòng unmatched. 30 dòng unmatched là "timing difference" (giao dịch cuối ngày đối tác ghi sáng hôm sau). Cách xử lý 30 dòng timing difference đúng nhất là gì?',
+    options: [
+      'Tạo 30 bút toán điều chỉnh (adjustment) trong ledger nội bộ để khớp số liệu ngay',
+      'Đánh dấu 30 dòng là "timing difference", chờ batch ngày hôm sau tự khớp khi đối tác ghi, không tạo bút toán điều chỉnh',
+      'Yêu cầu đối tác sửa file sao kê hôm nay để khớp',
+      'Bỏ qua 30 dòng vì số lượng ít, không ảnh hưởng tổng tiền'
+    ],
+    answer: 1,
+    explain: `**Đáp án đúng: Đánh dấu là timing difference, chờ ngày sau tự khớp khi đối tác ghi, không tạo bút toán điều chỉnh.**
+**Tóm tắt:** Timing difference là chênh lệch do thời điểm ghi nhận khác nhau giữa hai bên (ví dụ cut-off khác nhau, batch chạy khác giờ). Đây KHÔNG phải sai sót, không được tạo bút toán điều chỉnh — chỉ cần theo dõi và xác nhận tự khớp ở kỳ đối soát sau.
+
+### Vì sao đúng
+Ví dụ: Khách chuyển tiền 23h50. Ledger nội bộ ghi posting ngay (cùng ngày). Đối tác cổng thanh toán có cut-off 23h00, nên chỉ ghi vào ngày làm việc kế tiếp. Hôm nay đối soát: nội bộ có, đối tác chưa có → unmatched.
+- Đây là timing difference hợp pháp, không phải lỗi.
+- Xử lý: ghi chú "timing difference", đặt expected_value_date, job tự động verify ngày sau.
+- Tạo adjustment sẽ làm ledger sai (ghi hai lần cùng một giao dịch khi ngày sau đối tác thực sự ghi).
+
+### Vì sao các phương án khác sai
+- **Tạo bút toán điều chỉnh**: adjustment dùng cho SAI SÓT (sai số tiền, sai tài khoản, thiếu ghi). Timing difference không phải sai sót; tạo adjustment sẽ gây duplicate khi ngày sau đối tác ghi dòng thật.
+- **Yêu cầu đối tác sửa file**: đối tác không sửa sao kê chính thức vì chênh lệch thời gian xử lý.
+- **Bỏ qua**: phải theo dõi rõ ràng (có danh sách aging), không được "bỏ qua" ngầm. Nếu quá hạn (ví dụ > 3 ngày làm việc) vẫn chưa khớp → escalate.
+
+> Senior tip: Thiết kế bảng reconciliation_breaks với cột break_type (TIMING, AMOUNT, MISSING, EXTRA...), expected_resolution_date. Dashboard operation hiển thị aging theo loại để ưu tiên xử lý AMOUNT/MISSING trước.`
+  },
+  {
+    id: 'qz-banking-061',
+    topic: 'banking',
+    q: 'Giao dịch thẻ bị "treo" ở trạng thái AUTHORIZED (đã hold tiền, chưa capture/settlement). Sau 7 ngày hold tự động hết hạn (expire), tiền được giải phóng về available balance. Khách hàng than phiền: "Tôi đã mua hàng, tại sao tiền bị trừ rồi lại hoàn về?" Phát biểu nào đúng?',
+    options: [
+      'Hệ thống lỗi, cần capture thủ công để giữ tiền',
+      'Đây là hành vi chuẩn: AUTHORIZED chỉ là hold tạm thời; merchant phải capture trong thời hạn (thường 7 ngày), hết hạn thì hold tự giải phóng — tiền chưa thực sự chuyển cho merchant',
+      'Khách hàng bị lừa, giao dịch không hợp lệ',
+      'Cần tăng thời gian hold lên 30 ngày để tránh hoàn tiền'
+    ],
+    answer: 1,
+    explain: `**Đáp án đúng: AUTHORIZED chỉ là hold (authorization); merchant phải capture trong thời hạn, hết hạn thì tự giải phóng — đây là hành vi chuẩn của card network (Visa/MC), không phải lỗi.**
+**Tóm tắt:** Luồng thẻ: AUTHORIZATION (hold tiền, đảm bảomerchant có thể thu) → CAPTURE/SETTLEMENT (chuyển tiền thật). Nếu merchant không capture trong thời hạn (thường 7 ngày, tùy card scheme), hold tự expire và tiền trở về available balance.
+
+### Vì sao đúng
+- **Authorization**: ngân hàng phát thẻ (issuer) khóa số tiền trên hạn mức/available balance, trả mã auth code cho merchant. Tiền CHƯA chuyển cho merchant.
+- **Capture**: merchant gửi capture (thường cùng ngày hoặc tối đa vài ngày) để yêu cầu chuyển tiền. Issuer khi nhận capture mới chuyển tiền (settlement) cho acquirer → merchant.
+- **Expire**: nếu không capture trong thời hạn, hold tự động nhả. Issuer không bị buộc phải thanh toán nếu không có capture.
+
+Ví dụ timeline:
+~~~text
+Ngày 0 10:00: Khách swipe thẻ 1.000.000 → AUTHORIZED (hold 1.000.000, available balance giảm)
+Ngày 0 14:00: Merchant gửi capture → CAPTURED → settlement T+1/T+2
+Hoặc:
+Ngày 0 10:00: AUTHORIZED
+Ngày 7 23:59: Không capture → hold EXPIRE → available balance khôi phục 1.000.000
+~~~
+
+### Vì sao các phương án khác sai
+- **Hệ thống lỗi/capture thủ công**: expire là quy tắc card scheme, không phải bug hệ thống. Capture thủ công sau expire thường bị từ chối bởi issuer.
+- **Khách bị lừa**: giao dịch hợp lệ, chỉ merchant quên capture.
+- **Tăng hold 30 ngày**: card scheme giới hạn tối đa (Visa thường 7 ngày cho POS, 30 ngày cho hotel/car rental); tăng tùy ý vi phạm quy tắc scheme.
+
+> Senior tip: Hiển thị rõ cho khách: "Số dư khả dụng đã trừ hold 1.000.000 (chờ merchant capture)". Cảnh báo merchant qua webhook khi hold sắp expire (ngày thứ 5, 6).`
+  },
+  {
+    id: 'qz-banking-062',
+    topic: 'banking',
+    multi: true,
+    q: 'Ngân hàng đang migrate từ ISO 8583 sang ISO 20022 cho real-time payment. Những thách thức nào là thực tế khi mapping message? (Chọn 2)',
+    options: [
+      'ISO 20022 dùng XML/JSON phong phú, ISO 8583 dùng field cố định với bitmap; cần mapping hai chiều cho hàng trăm trường, nhiều trường ISO 20022 không có đối ứng trực tiếp trong ISO 8583',
+      'Chuyển đổi chỉ cần đổi protocol từ TCP socket sang HTTP/REST, payload giữ nguyên',
+      'UETR (Unique End-to-End Transaction Reference) trong ISO 20022 phải được map sang field 11 (STAN) hoặc field 37 (RRN) của ISO 8583, nhưng STAN/RRN chỉ unique per session/acquirer, không đảm bảo unique end-to-end',
+      'ISO 20022 message ngắn hơn ISO 8583 nên bandwidth tiết kiệm hơn'
+    ],
+    answer: [0, 2],
+    explain: `**Đáp án đúng: Mapping hai chiều phức tạp do mô hình dữ liệu khác biệt · UETR không map 1-1 được với STAN/RRN của ISO 8583.**
+**Tóm tắt:** Migration không chỉ đổi format; mô hình dữ liệu ISO 20022 phong phú hơn (structured, có semantic rõ ràng) so với ISO 8583 (field cố định, bitmap). UETR là end-to-end unique; STAN/RRN chỉ unique trong phạm vi session/acquirer.
+
+### Vì sao đúng
+- **Mapping phức tạp**: ISO 20022 có component lồng nhau (PartyIdentification, CashAccount, RemittanceInformation...), ISO 8583 là field phẳng (DE 2, DE 3, DE 4...). Một trường ISO 20022 có thể tách ra nhiều field ISO 8583, hoặc nhiều trường ISO 20022 gộp thành một field 8583. Mapping phải xử lý optional/conditional fields, code list mapping (currency, country, transaction type).
+- **UETR vs STAN/RRN**: UETR (UUID) duy nhất xuyên suốt vòng đời giao dịch qua nhiều trung gian. STAN (System Trace Audit Number, 6 số) reset mỗi ngày/session; RRN (Retrieval Reference Number) thêm ngày + STAN. Không thể mapping lossless — cần lưu UETR riêng trong hệ thống khi chuyển sang 8583.
+
+### Vì sao các phương án khác sai
+- **Chỉ đổi protocol, payload giữ nguyên**: sai hoàn toàn — payload structure khác hẳn, XML vs binary field-based.
+- **ISO 20022 message ngắn hơn**: ngược lại, ISO 20022 XML thường lớn hơn do tag lặp lại và structure phong phú; bandwidth tăng, nhưng bù lại bằng khả năng mở rộng và tự mô tả.
+
+> Senior tip: Chạy song song (dual run) ít nhất 3 tháng: hệ thống mới sinh ISO 20022, adapter dịch sang 8583 gửi legacy; so sánh kết quả settlement hàng ngày. Lưu cả bản gốc 20022 và bản map 8583 để audit.`
+  },
+  {
+    id: 'qz-banking-063',
+    topic: 'banking',
+    q: 'Hệ thống lưu PAN (số thẻ) đã token hóa: PAN thật được mã hóa AES-256 và lưu trong vault riêng (HSM), backend chỉ giữ token (mã đại diện 16 ký tự). Khi cần hiển thị 4 số cuối PAN cho khách xem trên app, cách làm an toàn và đúng PCI DSS là gì?',
+    options: [
+      'Gọi API vault giải mã PAN thật, lấy 4 số cuối, trả về app; vault log mọi lần giải mã',
+      'Tokenization service trả về 4 số cuối ngay trong token (ví dụ token format: TK_xxxx1234), backend không bao giờ gọi vault giải mã PAN',
+      'Backend tự lưu 4 số cuối PAN trong DB riêng (không mã hóa) để hiển thị nhanh',
+      'App tự giải mã token bằng public key để lấy 4 số cuối'
+    ],
+    answer: 1,
+    explain: `**Đáp án đúng: Tokenization service thiết kế token chứa 4 số cuối (hoặc trả metadata kèm 4 số cuối), backend không bao giờ gọi vault giải mã PAN thật.**
+**Tóm tắt:** Mục đích tokenization là PAN thật không bao giờ rời khỏi vault/HSM. Hiển thị 4 số cuối (masked PAN) nên được hỗ trợ bởi token service (trả masked PAN hoặc embed trong token), không cần giải mã PAN thật.
+
+### Vì sao đúng
+- **Token chứa masked PAN**: ví dụ token TK_4242_1234 (prefix + BIN + 4 cuối) hoặc token service có endpoint GET /tokens/{id}/masked trả **** **** **** 1234. Backend/app chỉ nhận masked PAN.
+- Vault/HSM chỉ được gọi khi CẦN PAN thật (gửi sang acquirer, network tokenization). Mỗi lần giải mã là một lần PAN xuất hiện trong bộ nhớ → tăng phạm vi PCI DSS và rủi ro lộ dữ liệu.
+
+### Vì sao các phương án khác sai
+- **Gọi vault giải mã mỗi lần hiển thị**: PAN thật load vào memory backend, log, tracing, dump → phạm vi PCI DSS mở rộng ra toàn backend. Vault log giải mã không giảm rủi ro ở backend.
+- **Backend lưu 4 số cuối trong DB**: 4 số cuối PAN là dữ liệu nhạy cảm (PII), lưu riêng vẫn trong phạm vi PCI DSS nếu liên kết được với token. Không cần thiết vì token service đã cung cấp.
+- **App giải mã token**: token không phải mã hóa PAN (thường là random surrogate); không có public key để giải mã. Ngay khi token là encrypted PAN, key không được đưa vào app.
+
+> Senior tip: PCI DSS SAQ-A hoặc SAQ-A-EP yêu cầu PAN không chạm hệ thống merchant. Thiết kế token format: tk_{bin}_{last4}_{random} hoặc dùng network token (EMVCo) — card scheme cấp token, không cần vault riêng.`
+  },
+  {
+    id: 'qz-banking-064',
+    topic: 'banking',
+    q: 'Backend Java tính phí 0.05% cho giao dịch 1.234.567 VND. Mã: {{BigDecimal fee = amount.multiply(BigDecimal.valueOf(0.0005)).setScale(0, RoundingMode.HALF_EVEN);}} (làm tròn nguyên VND). Kết quả fee là bao nhiêu và tại sao dùng HALF_EVEN (banker\'s rounding) thay vì HALF_UP?',
+    options: [
+      'Fee = 617 VND; HALF_EVEN làm tròn 5 lên, giống HALF_UP',
+      'Fee = 617 VND; HALF_EVEN làm tròn 5 về số chẵn gần nhất, giảm bias tích lũy trên hàng triệu giao dịch',
+      'Fee = 618 VND; HALF_EVEN luôn làm tròn lên',
+      'Fee = 617 VND; HALF_EVEN chỉ dùng cho tiền tệ có 3 chữ số thập phân'
+    ],
+    answer: 1,
+    explain: `**Đáp án đúng: Fee = 617 VND; HALF_EVEN làm tròn 5 về số chẵn gần nhất, giảm bias tích lũy.**
+**Tóm tắt:** 1.234.567 × 0.0005 = 617.2835 VND. Làm tròn nguyên theo HALF_EVEN: phần thập phân .2835 < .5 → làm tròn xuống 617. HALF_EVEN (banker's rounding) khi phần thập phân đúng = 0.5 thì làm tròn về số chẵn gần nhất (617.5 → 618, 616.5 → 616), phân bố đều lên/xuống, tránh bias hệ thống luôn làm tròn lên của HALF_UP.
+
+### Vì sao đúng
+Tính toán:
+~~~java
+BigDecimal amount = new BigDecimal("1234567");
+BigDecimal rate = new BigDecimal("0.0005"); // 0.05%
+BigDecimal raw = amount.multiply(rate); // 617.2835
+int fee = raw.setScale(0, RoundingMode.HALF_EVEN).intValue(); // 617
+~~~
+- 617.2835: chữ số sau dấu phẩy là 2 (< 5) → làm tròn xuống 617.
+- Nếu raw = 617.5: HALF_UP → 618 (luôn lên); HALF_EVEN → 618 (vì 618 chẵn).
+- Nếu raw = 616.5: HALF_UP → 617; HALF_EVEN → 616 (vì 616 chẵn).
+
+Trên một triệu giao dịch, HALF_UP khiến tổng phí lệch lên hệ thống (bias dương). HALF_EVEN phân bố đều, tổng phí sát thực tế hơn — quan trọng cho sổ cái ngân hàng.
+
+### Vì sao các phương án khác sai
+- **HALF_EVEN làm tròn 5 lên giống HALF_UP**: sai — HALF_EVEN chỉ làm tròn 5 lên khi số nguyên phần chẵn, ngược lại làm tròn xuống.
+- **Fee = 618**: sai tính toán (617.2835 làm tròn nguyên là 617).
+- **HALF_EVEN chỉ cho 3 chữ số thập phân**: sai — HALF_EVEN áp dụng cho mọi scale, không phụ thuộc đơn vị tiền.
+
+> Senior tip: Luôn dùng {{BigDecimal(String)}} cho hằng số tỷ lệ (0.0005), không dùng {{BigDecimal(double)}} (sai số nhị phân). Định nghĩa {{RoundingMode}} trong constant dùng chung toàn hệ thống (ví dụ {{FEE_ROUNDING = HALF_EVEN}}, {{INTEREST_ROUNDING = HALF_UP}} tuỳ quy định).`
+  },
+  {
+    id: 'qz-banking-065',
+    topic: 'banking',
+    multi: true,
+    q: 'Ngân hàng có cut-off 15:30 cho chuyển tiền trong nước (NAPAS). Thứ Sáu 15:25 khách A chuyển 100 triệu, Thứ Sáu 15:35 khách B chuyển 50 triệu. Thứ Bảy, Chủ Nghỉ; Thứ Hai là ngày lễ. Value date và available balance thay đổi như nào? (Chọn 2)',
+    options: [
+      'Khách A: value date Thứ Sáu, available balance giảm ngay Thứ Sáu sau batch EOD',
+      'Khách B: value date Thứ Ba, available balance giảm Thứ Sáu nhưng tiền chỉ có hiệu lực Thứ Ba',
+      'Cả hai đều value date Thứ Sáu vì cùng ngày giao dịch',
+      'Khách B: value date Thứ Hai (ngày lễ), available balance không thay đổi Thứ Sáu'
+    ],
+    answer: [0, 1],
+    explain: `**Đáp án đúng: A value date Thứ Sáu, balance giảm Thứ Sáu · B value date Thứ Ba, balance giảm Thứ Sáu nhưng tiền chỉ có hiệu lực Thứ Ba.**
+**Tóm tắt:** Cut-off phân chia value date: trước cut-off → value date hôm nay; sau cut-off → value date ngày làm việc kế tiếp. Available balance thường giảm ngay khi giao dịch được chấp nhận (authorization), nhưng tiền chỉ "có hiệu lực" (tính lãi, dùng cho hạn mức) từ value date.
+
+### Vì sao đúng
+- **Khách A (15:25 < 15:30)**: trước cut-off → value date Thứ Sáu. Batch EOD Thứ Sáu tổng kết, số dư ledger (posted balance) và available balance đều phản ánh giao dịch này từ Thứ Sáu.
+- **Khách B (15:35 > 15:30)**: sau cut-off → value date ngày làm việc kế tiếp. Ngày làm việc sau Thứ Sáu: Thứ Bảy (nghỉ), Chủ Nhật (nghỉ), Thứ Hai (lễ) → Thứ Ba.
+  - Available balance: thường giảm ngay khi core chấp nhận giao dịch (để tránh khách chi tiêu trùng hạn mức), nhưng flag {{value_date = Thứ Ba}}.
+  - Posted balance (số dư đã ghi sổ): có thể chỉ cập nhật khi batch EOD ngày value date (Thứ Ba), tuỳ thiết kế.
+  - Lãi suất, hạn mức thẻ, kiểm tra minimum balance: dùng value date Thứ Ba.
+
+Timeline:
+~~~text
+Thứ Sáu 15:25: A chuyển -> auth OK -> available balance giảm, value_date = Thứ Sáu
+Thứ Sáu 15:35: B chuyển -> auth OK -> available balance giảm, value_date = Thứ Ba
+Thứ Sáu EOD: batch tổng kết A; B vẫn pending value_date
+Thứ Ba EOD: batch tổng kết B (posted balance cập nhật)
+~~~
+
+### Vì sao các phương án khác sai
+- **Cả hai value date Thứ Sáu**: B sau cut-off, không được value date hôm nay.
+- **B value date Thứ Hai**: Thứ Hai là ngày lễ, không phải ngày làm việc; value date phải là ngày làm việc (business day).
+
+> Senior tip: Tách biệt {{available_balance}} (dùng cho authorization, giảm ngay) và {{ledger_balance}}/{{posted_balance}} (dùng cho báo cáo, cập nhật theo value_date). Luôn dùng BusinessDayService tập trung để tính value_date.`
+  },
+  {
+    id: 'qz-banking-066',
+    topic: 'banking',
+    q: 'Hệ thống core banking dùng Oracle, cần migrate sang PostgreSQL. Bảng ledger có cột {{amount NUMBER(19,4)}}. Khi migrate sang PostgreSQL, kiểu dữ liệu nào tương đương an toàn nhất cho tiền tệ?',
+    options: [
+      'REAL (4 byte float)',
+      'DOUBLE PRECISION (8 byte float)',
+      'NUMERIC(19,4) hoặc DECIMAL(19,4)',
+      'BIGINT lưu số tiền nhân 10.000'
+    ],
+    answer: 2,
+    explain: `**Đáp án đúng: NUMERIC(19,4) hoặc DECIMAL(19,4) — kiểu điểm cố định (fixed-point) chính xác, tương đương Oracle NUMBER(19,4).**
+**Tóm tắt:** Tiền tệ bắt buộc dùng kiểu số chính xác (exact numeric). PostgreSQL NUMERIC/DECIMAL lưu chính xác đến scale chỉ định, không có sai số biểu diễn như float/double. BIGINT nhân 10.000 cũng chính xác nhưng mất ngữ nghĩa scale, dễ nhầm lẫn khi đọc/ghi.
+
+### Vì sao đúng
+- **Oracle NUMBER(19,4)**: 19 chữ số tổng cộng, 4 chữ số thập phân. Ví dụ: 999.999.999.999.999,9999 (15 chữ số nguyên + 4 thập phân).
+- **PostgreSQL NUMERIC(19,4)**: tương đương chính xác, storage biến đổi (khoảng 8–10 byte), tính toán chính xác, hỗ trợ scale.
+- **NUMERIC vs DECIMAL**: trong PostgreSQL là alias nhau; SQL standard: NUMERIC scale chính xác, DECIMAL scale tối thiểu. Dùng NUMERIC cho rõ ý định.
+
+### Vì sao các phương án khác sai
+- **REAL/DOUBLE PRECISION**: float nhị phân, KHÔNG biểu diễn chính xác 0.1, 0.01... Sai số tích lũy không chấp nhận được cho ledger.
+- **BIGINT x 10.000**: chính xác về mặt toán học nhưng:
+  - Application phải tự nhân/chia 10.000 ở mọi chỗ → dễ quên, bug.
+  - Không tự mang thông tin "đây là tiền VND 4 chữ số thập phân"; khác tiền tệ khác scale (JPY 0, USD 2).
+  - Query trực tiếp DB thấy số nguyên lớn, khó debug.
+  - Migration data: phải nhân 10.000 cho mọi dòng, rủi ro overflow nếu vượt 19 chữ số.
+
+> Senior tip: Dùng NUMERIC(19,4) cho tiền VND (4 chữ số thập phân cho phép tính lãi chính xác). Map JPA: {{@Column(precision = 19, scale = 4) private BigDecimal amount;}}. Không bao giờ dùng float/double cho tiền.`
+  },
+  {
+    id: 'qz-banking-067',
+    topic: 'banking',
+    q: 'Saga pattern cho chuyển tiền liên ngân hàng: Service A (initiator) gọi Service B (ngân hàng nhận) qua async message. B xử lý thành công và reply. Sau đó A cập nhật trạng thái SUCCESS. Nếu A crash SAU khi B reply thành công NHƯNG TRƯỚC khi A cập nhật SUCCESS, khi A restart phải làm gì?',
+    options: [
+      'Gửi lại request sang B để xử lý lại (retry)',
+      'Không làm gì, đợi B gửi callback lần nữa',
+      'Query trạng thái thực tế từ B (idempotent inquiry) rồi cập nhật local state cho khớp; không gửi request nghiệp vụ mới',
+      'Đánh dấu giao dịch FAILED và hoàn tiền cho khách'
+    ],
+    answer: 2,
+    explain: `**Đáp án đúng: Query trạng thái thực tế từ B (idempotent inquiry) rồi đồng bộ local state; không gửi request nghiệp vụ mới.**
+**Tóm tắt:** Saga step đã thành công ở participant (B) nhưng orchestrator (A) chưa kịp lưu state. Khi recover, A phải **hỏi trạng thái thực tế** (inquiry) thay vì retry nghiệp vụ. Retry có thể gây duplicate ở B (nếu B không idempotent) hoặc tạo giao dịch mới.
+
+### Vì sao đúng
+Kịch bản:
+1. A gửi {{TransferRequest}} (có idempotency key) → B.
+2. B xử lý, ghi ledger, reply {{TransferResponse SUCCESS}} (đã lưu idempotency key).
+3. A nhận response, chuẩn bị {{UPDATE status=SUCCESS}} → CRASH (power loss, OOM kill).
+4. A restart, đọc DB: giao dịch vẫn {{PENDING}}.
+
+Xử lý recover:
+- A gọi endpoint inquiry sang B với CÙNG idempotency key hoặc correlation ID:
+~~~text
+GET /transfers/{id}/status
+~~~
+- B trả {{SUCCESS}} (đã xử lý, không chạy lại vì key đã tồn tại).
+- A cập nhật local {{status=SUCCESS}} → consistent.
+
+Đây là nguyên tắc **state reconciliation** (đối soát trạng thái) trong distributed saga: orchestrator recover bằng cách query participant, không replay command.
+
+### Vì sao các phương án khác sai
+- **Gửi lại request (retry)**: nếu B không idempotent hoặc key khác, B xử lý lần 2 → duplicate. Ngay khi B idempotent, retry vẫn tốn tài nguyên và làm phức tạp logic.
+- **Đợi callback**: B đã reply xong, không callback lần 2 trừ khi có cơ chế riêng (webhook retry), không đáng tin cậy cho recover.
+- **Đánh dấu FAILED + hoàn tiền**: sai nghiệp vụ — giao dịch THÀNH CÔNG ở B, đánh giá FAILED và hoàn tiền sẽ tạo reversal không cần thiết, làm rối ledger.
+
+> Senior tip: Thiết kế saga state machine: {{PENDING}} → {{IN_PROGRESS}} (đã gửi) → {{WAITING_RESPONSE}} → {{SUCCESS}}/{{FAILED}}. Recovery job định kỳ quét {{IN_PROGRESS}}/{{WAITING_RESPONSE}} quá hạn (ví dụ > 5 phút), gọi inquiry sang participant, đồng bộ state. Luôn log correlation_id xuyên suốt.`
   }
 );
