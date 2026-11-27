@@ -1,8 +1,8 @@
 #!/usr/bin/env node
 /*
- * Check the CKA hands-on mock exams (docs/CKA-MOCK.md): js/data/cka-mock-N.js -> window.CKA_EXAMS.
+ * Check the CKAD hands-on mock exams (docs/CKAD-MOCK.md): js/data/ckad-mock-N.js -> window.CKAD_EXAMS.
  * Runnable alone or from scripts/validate.js:
- *   node scripts/check-cka.js   -> prints counts, exits 1 on errors
+ *   node scripts/check-ckad.js   -> prints counts, exits 1 on errors
  * Also runs `bash -n` on every setup/verify script when bash is available.
  */
 'use strict';
@@ -14,18 +14,19 @@ const { spawnSync } = require('child_process');
 
 const DATA = path.join(__dirname, '..', 'js', 'data');
 const Diagram = require(path.join(__dirname, '..', 'js', 'core', 'diagram.js'));
-const DOMAINS = { 'Troubleshooting': 30, 'Cluster Architecture': 25, 'Services & Networking': 20, 'Workloads & Scheduling': 15, 'Storage': 10 };
+// CKAD curriculum domains (CNCF, reference) — the exact names used in task.domain
+const DOMAINS = { 'Design & Build': 20, 'Deployment': 20, 'Observability & Maintenance': 15, 'Environment, Config & Security': 25, 'Services & Networking': 20 };
 const EXAM_KEYS = new Set(['id', 'title', 'minutes', 'passPct', 'intro', 'tasks']);
 const TASK_KEYS = new Set(['id', 'no', 'domain', 'weight', 'env', 'minutes', 'title', 'task', 'setup', 'verify', 'solution', 'refs', 'tags']);
 const LAB_KEYS = new Set(['id', 'order', 'title', 'summary', 'concepts', 'tasks']);
 const LAB_TASK_KEYS = new Set([...TASK_KEYS].filter(k => k !== 'weight').concat(['level', 'hints']));
 const LEVELS = new Set(['easy', 'medium', 'hard']);
-// cka-labs-N.js holds modules: 1 -> 1..5, 2 -> 6..10, 3 -> 11..15, 4 -> 16..20
-const LAB_RANGE = { 1: [1, 5], 2: [6, 10], 3: [11, 15], 4: [16, 20] };
+// ckad-labs-N.js holds modules: 1 -> 1..4, 2 -> 5..8, 3 -> 9..12
+const LAB_RANGE = { 1: [1, 4], 2: [5, 8], 3: [9, 12] };
 const VN = /[àáảãạăắằẳẵặâấầẩẫậèéẻẽẹêếềểễệìíỉĩịòóỏõọôốồổỗộơớờởỡợùúủũụưứừửữựỳýỷỹỵđ]/gi;
 
 function files() {
-  return fs.readdirSync(DATA).filter(f => /^cka-(mock|labs)-\d+\.js$/.test(f))
+  return fs.readdirSync(DATA).filter(f => /^ckad-(mock|labs)-\d+\.js$/.test(f))
     .sort((a, b) => parseInt(a.match(/\d+/)[0], 10) - parseInt(b.match(/\d+/)[0], 10));
 }
 
@@ -41,25 +42,25 @@ function check() {
   const src = {};
   for (const f of files()) {
     src[f] = fs.readFileSync(path.join(DATA, f), 'utf8');
-    const before = (ctx.window.CKA_EXAMS || []).length;
-    const labsBefore = (ctx.window.CKA_LABS || []).length;
+    const before = (ctx.window.CKAD_EXAMS || []).length;
+    const labsBefore = (ctx.window.CKAD_LABS || []).length;
     try { vm.runInContext(src[f], ctx, { filename: f }); }
     catch (e) { errors.push(`${f}: lỗi cú pháp/chạy: ${e.message}`); continue; }
-    const added = (ctx.window.CKA_EXAMS || []).slice(before);
+    const added = (ctx.window.CKAD_EXAMS || []).slice(before);
     const n = parseInt(f.match(/\d+/)[0], 10);
-    if (f.startsWith('cka-labs-')) {
-      if (added.length) errors.push(`${f}: file lab không được push CKA_EXAMS`);
+    if (f.startsWith('ckad-labs-')) {
+      if (added.length) errors.push(`${f}: file lab không được push CKAD_EXAMS`);
       const r = LAB_RANGE[n];
-      if (!r) errors.push(`${f}: chỉ có cka-labs-1..4.js`);
-      else (ctx.window.CKA_LABS || []).slice(labsBefore).forEach(l => {
+      if (!r) errors.push(`${f}: chỉ có ckad-labs-1..3.js`);
+      else (ctx.window.CKAD_LABS || []).slice(labsBefore).forEach(l => {
         if (l && (l.order < r[0] || l.order > r[1])) errors.push(`${f}: ${l.id} (module ${l.order}) phải nằm trong module ${r[0]}–${r[1]}`);
       });
       continue;
     }
     if (added.length > 1) errors.push(`${f}: mỗi file chỉ push 1 đề`);
-    added.forEach(x => { if (x && x.id !== `cka-${n}`) errors.push(`${f}: id đề phải là cka-${n}`); });
+    added.forEach(x => { if (x && x.id !== `ckad-${n}`) errors.push(`${f}: id đề phải là ckad-${n}`); });
   }
-  const exams = Array.isArray(ctx.window.CKA_EXAMS) ? ctx.window.CKA_EXAMS : [];
+  const exams = Array.isArray(ctx.window.CKAD_EXAMS) ? ctx.window.CKAD_EXAMS : [];
   const str = (v, min) => typeof v === 'string' && v.trim().length >= min;
   function markup(where, s) {
     if (typeof s !== 'string') return;
@@ -122,9 +123,9 @@ function check() {
     return true;
   }
   exams.forEach((ex, i) => {
-    const eid = ex && ex.id || `CKA_EXAMS[${i}]`;
+    const eid = ex && ex.id || `CKAD_EXAMS[${i}]`;
     if (!ex || typeof ex !== 'object') { errors.push(`${eid}: không phải object`); return; }
-    if (!/^cka-\d+$/.test(ex.id || '')) errors.push(`${eid}: id phải dạng cka-N`);
+    if (!/^ckad-\d+$/.test(ex.id || '')) errors.push(`${eid}: id phải dạng ckad-N`);
     if (ids.has(ex.id)) errors.push(`${eid}: id trùng`); ids.add(ex.id);
     if (!str(ex.title, 5)) errors.push(`${eid}: thiếu title`);
     if (ex.minutes !== 120) errors.push(`${eid}: minutes phải là 120`);
@@ -145,7 +146,7 @@ function check() {
     if (tasks.length) {
       if (wsum !== 100) errors.push(`${eid}: tổng weight phải = 100 (đang ${wsum})`);
       if (msum > 120) errors.push(`${eid}: tổng minutes ≤ 120 (đang ${msum})`);
-      if (kubeadm > 4) errors.push(`${eid}: tối đa 4 bài env kubeadm (đang ${kubeadm})`);
+      if (kubeadm > 0) errors.push(`${eid}: CKAD không có bài env kubeadm (đang ${kubeadm})`);
       for (const [d, w] of Object.entries(DOMAINS)) {
         const got = byDomain[d] || 0;
         if (Math.abs(got - w) > 7) errors.push(`${eid}: domain ${d} chiếm ${got}%, cần ${w} ± 7`);
@@ -153,13 +154,13 @@ function check() {
     }
   });
 
-  const labs = Array.isArray(ctx.window.CKA_LABS) ? ctx.window.CKA_LABS : [];
+  const labs = Array.isArray(ctx.window.CKAD_LABS) ? ctx.window.CKAD_LABS : [];
   labs.forEach((l, i) => {
-    const lid = l && l.id || `CKA_LABS[${i}]`;
+    const lid = l && l.id || `CKAD_LABS[${i}]`;
     if (!l || typeof l !== 'object') { errors.push(`${lid}: không phải object`); return; }
     const nn = String(l.order).padStart(2, '0');
-    if (!Number.isInteger(l.order) || l.order < 1 || l.order > 20) errors.push(`${lid}: order là số module 1–20`);
-    else if (l.id !== `cka-lab-${nn}`) errors.push(`${lid}: id phải là cka-lab-${nn}`);
+    if (!Number.isInteger(l.order) || l.order < 1 || l.order > 12) errors.push(`${lid}: order là số module 1–12`);
+    else if (l.id !== `ckad-lab-${nn}`) errors.push(`${lid}: id phải là ckad-lab-${nn}`);
     if (ids.has(l.id)) errors.push(`${lid}: id trùng`); ids.add(l.id);
     if (!str(l.title, 5) || l.title.length > 90) errors.push(`${lid}: title 5–90 ký tự`);
     if (!str(l.summary, 40) || l.summary.length > 300) errors.push(`${lid}: summary 40–300 ký tự`);
@@ -168,12 +169,12 @@ function check() {
     Object.keys(l).forEach(k => { if (!LAB_KEYS.has(k)) errors.push(`${lid}: field lạ "${k}"`); });
     const tasks = Array.isArray(l.tasks) ? l.tasks : [];
     if (tasks.length < 4 || tasks.length > 8) errors.push(`${lid}: cần 4–8 bài (đang ${tasks.length})`);
-    tasks.forEach((t, j) => checkTask(t, j, l.id, true));
+    tasks.forEach((t, j) => { checkTask(t, j, l.id, true); if (t && t.env === 'kubeadm') errors.push(`${t.id}: CKAD lab chỉ dùng env kind`); });
   });
 
   // bash -n on every script (skip silently when bash is missing)
   if (scripts.length && bashOk()) {
-    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'cka-'));
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ckad-'));
     scripts.forEach((s, i) => {
       const f = path.join(dir, `s${i}.sh`);
       fs.writeFileSync(f, s.code);
@@ -189,7 +190,7 @@ function check() {
 module.exports = check;
 if (require.main === module) {
   const { errors, exams, tasks, labs, labTasks } = check();
-  console.log(`CKA mock: ${exams} đề, ${tasks} bài; lab: ${labs} module, ${labTasks} bài.`);
+  console.log(`CKAD mock: ${exams} đề, ${tasks} bài; lab: ${labs} module, ${labTasks} bài.`);
   if (errors.length) { console.log('LỖI:\n  ' + errors.join('\n  ')); process.exit(1); }
-  console.log('OK — đề CKA hợp lệ.');
+  console.log('OK — đề CKAD hợp lệ.');
 }
