@@ -1,6 +1,6 @@
 # T2804 — Case khó Upwork: thanh toán và hợp đồng (6 case)
 
-Status: TODO
+Status: DONE
 Agent: kilo
 Owns: `js/data/upwork-cases-1.js`
 
@@ -29,3 +29,13 @@ Thêm **6 case** `uw-case-002`…`uw-case-007` vào `js/data/upwork-cases-1.js` 
 Xong: sửa dòng `Status:` đầu file thành `Status: DONE`, Notes ghi id đã thêm.
 
 ## Notes
+Đã thêm 6 case vào `js/data/upwork-cases-1.js` (chèn trước `);` cuối file, chỉ THÊM, không sửa case 001):
+- uw-case-002 (payment): tranh chấp 12 giờ hourly, 3 giờ manual time.
+- uw-case-003 (payment): khách hết ngân sách, đòi trả nửa milestone, phần còn lại "tháng sau".
+- uw-case-004 (contract): scope creep fixed-price, "chỉnh sửa nhỏ" cộng lại gấp đôi phạm vi.
+- uw-case-005 (contract): khách đòi "test task" 8 giờ không trả tiền trước khi thuê.
+- uw-case-006 (contract): ước lượng sai, milestone fixed-price tốn gấp đôi giờ, còn 40% việc.
+- uw-case-007 (contract): khách đòi dùng AWS/API key cá nhân + NDA/IP ngoài Upwork bất lợi.
+Mỗi case đủ field, steps có nhánh "nếu khách làm X thì…", 2–3 tin nhắn mẫu tiếng Anh.
+Kiểm tra: `node --check` OK; `node scripts/check-upwork.js` → OK (7 case); `node scripts/validate.js` không có lỗi nào thuộc file này (các lỗi còn lại thuộc quiz-ops.js, lessons-*.js — không sở hữu, không sửa theo luật 3).
+Reviewed-by: verify-only (code/UI task)
