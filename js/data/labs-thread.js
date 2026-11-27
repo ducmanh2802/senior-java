@@ -6527,6 +6527,505 @@ CPU thấp vì thread đang chờ khoá ở trạng thái {{WAITING (parking)}} 
     'Nêu phòng ngừa: alert throughput/p99, review log hot path, test tải với DEBUG.'
   ],
   tags: ['logging', 'logback', 'async-appender', 'lock-contention', 'performance']
+},
+{
+  id: 'lab-thread-034',
+  category: 'thread',
+  title: 'parallelStream gọi HTTP trong @Transactional: commonPool nghẽn kéo theo Hikari cạn',
+  level: 'senior',
+  scenario: `**Bối cảnh:** **PayVN Order** (Spring Boot 3.4, Java 21, pod 8 vCPU, Tomcat 200 thread, Hikari {{maximum-pool-size=20}}, PostgreSQL 15) có endpoint {{POST /orders/quote}} tính giá cuối cho đơn. Để "chạy song song cho nhanh", {{QuoteService.quote}} vừa được đánh dấu {{@Transactional}} (mở transaction, mượn 1 connection từ Hikari), vừa gọi ba dịch vụ ngoài (thuế, phí ship, tồn kho) bằng {{items.parallelStream().map(it -> enrich(it))}}. Mỗi lần gọi là một HTTP đồng bộ ~230–260ms.
+
+**Triệu chứng:** Ngày thường (~80 req/s) p99 ~340ms. Lúc **14:05 ngày 20/11/2026** tải lên ~300 req/s, {{/orders/quote}} trả **504 sau 30 giây**, p99 vọt lên **18 giây**. CPU pod chỉ **12%**, ba dịch vụ ngoài đều khỏe (p99 < 260ms), DB ~15% CPU, không exception ngoài {{SQLTransientConnectionException}}. Metric lúc 14:08: {{commonPool active=7 idle=0}}, {{hikaricp active=20 idle=0 pending=64}}. Restart pod hết, đợt tải sau tái diễn.
+
+**Dữ liệu thu thập:** {{jcmd 1 Thread.print}} lúc 14:08:30, metric Prometheus (commonPool + Hikari + downstream), và đoạn code {{QuoteService}}.`,
+  artifacts: [
+    {
+      name: 'jstack-order-quote-14-08.txt',
+      lang: 'text',
+      content: `2026-11-20 14:08:30
+Full thread dump OpenJDK 64-Bit Server VM (21.0.4+7-LTS-151 mixed mode, sharing):
+
+"ForkJoinPool.commonPool-worker-1" #22 daemon prio=5 os_prio=0 cpu=8120.44ms elapsed=18320.44s tid=0x00007f1a901f4800 nid=0x5e runnable  [0x00007f1a74cfd000]
+   java.lang.Thread.State: RUNNABLE
+        at sun.nio.ch.Net.poll(java.base@21.0.4/Native Method)
+        at sun.nio.ch.NioSocketImpl.park(java.base@21.0.4/NioSocketImpl.java:191)
+        at sun.nio.ch.NioSocketImpl.timedRead(java.base@21.0.4/NioSocketImpl.java:280)
+        at sun.nio.ch.NioSocketImpl.implRead(java.base@21.0.4/NioSocketImpl.java:304)
+        at java.net.Socket$SocketInputStream.read(java.base@21.0.4/Socket.java:1099)
+        at org.apache.hc.core5.http.impl.io.SessionInputBufferImpl.fillBuffer(SessionInputBufferImpl.java:149)
+        at org.apache.hc.client5.http.impl.classic.InternalHttpClient.doExecute(InternalHttpClient.java:174)
+        at vn.pay.order.TaxClient.fetch(TaxClient.java:41)
+        at vn.pay.order.QuoteService.lambda$quote$0(QuoteService.java:56)
+        at java.util.stream.ReferencePipeline$3$1.accept(java.base@21.0.4/ReferencePipeline.java:197)
+        at java.util.concurrent.ForkJoinPool$WorkQueue.runTask(java.base@21.0.4/ForkJoinPool.java:1608)
+        at java.util.concurrent.ForkJoinPool.runWorker(java.base@21.0.4/ForkJoinPool.java:1622)
+        at java.util.concurrent.ForkJoinWorkerThread.run(java.base@21.0.4/ForkJoinWorkerThread.java:188)
+
+"ForkJoinPool.commonPool-worker-2" #23 daemon prio=5 os_prio=0 cpu=7990.10ms elapsed=18320.44s tid=0x00007f1a901f6800 nid=0x5f runnable  [0x00007f1a74bfc000]
+   java.lang.Thread.State: RUNNABLE
+        at sun.nio.ch.Net.poll(java.base@21.0.4/Native Method)
+        at sun.nio.ch.NioSocketImpl.timedRead(java.base@21.0.4/NioSocketImpl.java:280)
+        at java.net.Socket$SocketInputStream.read(java.base@21.0.4/Socket.java:1099)
+        at org.apache.hc.client5.http.impl.classic.InternalHttpClient.doExecute(InternalHttpClient.java:174)
+        at vn.pay.order.ShippingClient.fetch(ShippingClient.java:39)
+        at vn.pay.order.QuoteService.lambda$quote$1(QuoteService.java:56)
+        at java.util.concurrent.ForkJoinPool.runWorker(java.base@21.0.4/ForkJoinPool.java:1622)
+        at java.util.concurrent.ForkJoinWorkerThread.run(java.base@21.0.4/ForkJoinWorkerThread.java:188)
+
+# worker-3..worker-7: TẤT CẢ RUNNABLE tại Net.poll, đang gọi InventoryClient.fetch / TaxClient.fetch / ShippingClient.fetch
+# Tổng: 7 worker commonPool (parallelism = availableProcessors - 1 = 7), KHÔNG worker nào rảnh.
+
+"http-nio-8080-exec-12" #48 daemon prio=5 os_prio=0 cpu=120.44ms elapsed=412.10s tid=0x00007f1a90200000 nid=0x2001 waiting on condition  [0x00007f1a7b0f6000]
+   java.lang.Thread.State: WAITING (parking)
+        at jdk.internal.misc.Unsafe.park(java.base@21.0.4/Native Method)
+        - parking to wait for  <0x000000076b1e2210> (a java.util.concurrent.ForkJoinPool)
+        at java.util.concurrent.ForkJoinPool.awaitQuiescence(ForkJoinPool.java:2903)
+        at java.util.stream.ReferencePipeline.collect(ReferencePipeline.java:686)
+        at vn.pay.order.QuoteService.quote(QuoteService.java:57)
+        at vn.pay.order.QuoteController.quote(QuoteController.java:33)
+        at org.springframework.transaction.interceptor.TransactionInterceptor.invoke(TransactionInterceptor.java:119)
+        at org.apache.catalina.core.ApplicationFilterChain.internalDoFilter(ApplicationFilterChain.java:195)
+
+"http-nio-8080-exec-31" #67 daemon prio=5 os_prio=0 cpu=98.20ms elapsed=410.88s tid=0x00007f1a90210000 nid=0x2002 waiting on condition  [0x00007f1a7c0f7000]
+   java.lang.Thread.State: TIMED_WAITING (parking)
+        at jdk.internal.misc.Unsafe.park(java.base@21.0.4/Native Method)
+        - parking to wait for  <0x000000071a2c3f10> (a java.util.concurrent.SynchronousQueue$Transferer)
+        at java.util.concurrent.LinkedTransferQueue$DualNode.await(java.base@21.0.4/LinkedTransferQueue.java:458)
+        at com.zaxxer.hikari.util.ConcurrentBag.borrow(ConcurrentBag.java:159)
+        at com.zaxxer.hikari.pool.HikariPool.getConnection(HikariPool.java:162)
+        at org.hibernate.engine.jdbc.connections.internal.DatasourceConnectionProviderImpl.getConnection(DatasourceConnectionProviderImpl.java:126)
+        at org.springframework.orm.jpa.JpaTransactionManager.doBegin(JpaTransactionManager.java:420)
+        at vn.pay.order.QuoteService.quote(QuoteService.java:55)
+        at vn.pay.order.QuoteController.quote(QuoteController.java:33)
+
+# Ghi chú on-call:
+#   grep -c 'ForkJoinPool.commonPool-worker' -> 7 (tất cả Net.poll)
+#   grep -c 'awaitQuiescence' -> 41 (41 thread Tomcat đang chờ commonPool, đang GIỮ connection)
+#   grep -c 'ConcurrentBag.borrow' -> 64 (64 thread chờ mượn connection)
+#   downstream p99 < 260ms; DB CPU ~15%; CPU pod 12%`
+    },
+    {
+      name: 'metrics-14h.txt',
+      lang: 'text',
+      content: `# Pod order-7d9f (8 vCPU), 2026-11-20
+# java.version=21.0.4  availableProcessors=8  -> commonPool parallelism = 7
+# Hikari maximum-pool-size=20, connection-timeout=30000ms, Tomcat max-threads=200
+
+# 13:50-14:00 baseline (~80 req/s)
+  /orders/quote p50=190ms p95=300ms p99=340ms
+  commonPool active=3 idle=4 ; Hikari active=6 idle=14 pending=0 ; CPU=28%
+
+# 14:05-14:10 peak (~300 req/s)
+  /orders/quote p50=4200ms p95=15000ms p99=18000ms
+  commonPool active=7 idle=0 queued=0
+  Hikari active=20 idle=0 pending=64 ; timeout_total=17
+  CPU=12% ; loadavg=0.6
+
+# downstream (cùng khung 14:05-14:10, đều khỏe)
+  tax-service       p99=240ms  2xx=99.9%
+  shipping-service  p99=260ms  2xx=99.9%
+  inventory-service p99=230ms  2xx=99.8%
+
+# Suy ra: mỗi request giữ 1 connection suốt lúc chờ commonPool (~250ms + xếp hàng).
+# 41 thread giữ connection + 64 thread chờ => pool 20 cạn, pending phình.`
+    },
+    {
+      name: 'QuoteService.java',
+      lang: 'java',
+      content: `@Service
+public class QuoteService {                                   // dòng 48
+    private final OrderRepository orderRepo;
+    private final TaxClient taxClient;                        // HTTP ~240ms
+    private final ShippingClient shippingClient;              // HTTP ~260ms
+    private final InventoryClient inventoryClient;            // HTTP ~230ms
+
+    @Transactional                                            // BUG 1: mở tx + giữ connection
+    public Quote quote(OrderRequest req) {                    // dòng 50
+        Order o = orderRepo.save(req.toEntity());             // dòng 55: mượn connection C1
+        // BUG 2: parallelStream dùng ForkJoinPool.commonPool cho I/O blocking
+        List<Enriched> items = o.items().parallelStream()     // dòng 56
+            .map(it -> enrich(it))                            // gọi HTTP blocking
+            .toList();
+        return Quote.of(o, items);                            // dòng 57: collect -> awaitQuiescence
+    }
+
+    private Enriched enrich(Item it) {                        // chạy trên commonPool
+        Tax t = taxClient.fetch(it);                          // Net.poll ~240ms
+        Ship s = shippingClient.fetch(it);                    // Net.poll ~260ms
+        Stock k = inventoryClient.fetch(it);                  // Net.poll ~230ms
+        return Enriched.of(it, t, s, k);
+    }
+}`
+    }
+  ],
+  questions: [
+    'Vì sao CPU chỉ 12%, downstream và DB đều khỏe mà {{/orders/quote}} vẫn 504? Chỉ ra HAI tài nguyên bị cạn cùng lúc và dẫn chứng từ dump.',
+    'Giải thích vì sao {{@Transactional}} làm sự cố nặng hơn: thread Tomcat chờ commonPool trong {{awaitQuiescence}} thì connection có bị giữ không? Tính bằng Little\'s law vì sao pool 20 cạn.',
+    'Sửa thế nào (ngắn hạn, dài hạn) để vừa bỏ nghẽn commonPool vừa không giữ connection qua I/O? Nêu trade-off của từng cách.'
+  ],
+  hints: [
+    'Đọc {{QuoteService.java}}: {{parallelStream()}} chạy trên pool nào? {{@Transactional}} khiến connection được mượn ở dòng 55 và trả ở đâu? Trong lúc {{awaitQuiescence}} (dòng 57) connection có bị trả về pool không?',
+    'Trong dump, {{http-nio-8080-exec-12}} {{WAITING}} tại {{awaitQuiescence}} (đang giữ connection), còn {{exec-31}} {{TIMED_WAITING}} tại {{ConcurrentBag.borrow}} (đang chờ connection). 41 + 64 thread so với pool 20 — tính thử xem cạn từ request thứ mấy.',
+    'commonPool có 7 worker, mỗi tác vụ I/O ~250ms → tối đa ~28 tác vụ/giây; mỗi request cần nhiều tác vụ → trần throughput rất thấp. Sửa: bỏ {{parallelStream}} cho I/O, dùng executor riêng; và đưa I/O ra NGOÀI transaction.'
+  ],
+  answer: `**Tóm tắt:** Hai lỗi chồng nhau. (1) {{parallelStream()}} và (2) việc bọc {{@Transactional}} quanh cả hàm. {{parallelStream}} chạy trên {{ForkJoinPool.commonPool}} (7 worker trên 8 vCPU) nhưng lại dùng để gọi HTTP blocking ~250ms, nên cả 7 worker kẹt ở {{Net.poll}}. (2) Vì {{@Transactional}}, thread Tomcat phải **giữ một connection Hikari** suốt thời gian chờ commonPool trong {{awaitQuiescence}}. Kết quả: commonPool nghẽn **kéo theo** Hikari cạn (41 thread giữ connection + 64 thread chờ, pool chỉ 20). CPU 12%, downstream/DB đều rảnh — nút thắt là hai pool bị chiếm, không phải tài nguyên tính toán.
+
+### Thuật ngữ nền (đọc trước)
+
+- **{{ForkJoinPool.commonPool}}:** bể thread dùng chung toàn JVM, mặc định {{số CPU - 1}} worker (8 vCPU → 7). {{parallelStream()}} và {{CompletableFuture.supplyAsync}} không truyền executor đều dùng nó. Nó sinh ra cho tác vụ **CPU-bound ngắn**, không cho I/O chờ mạng.
+- **{{parallelStream}}:** biến stream thành song song, chia phần tử cho các worker commonPool. Với I/O blocking, worker bị giữ nguyên cho tới khi mạng trả lời.
+- **{{awaitQuiescence}}:** khi thread gọi {{collect()}} trên parallel stream, nó **chờ** cho tới khi mọi tác vụ của stream (chạy trên commonPool) hoàn tất. Thread này bị park trong lúc chờ.
+- **{{@Transactional}} + connection:** Spring mượn 1 connection từ Hikari lúc bắt đầu transaction và chỉ trả khi commit/rollback. Suốt thời gian method chạy (kể cả lúc chờ I/O), connection bị đánh dấu {{active}}.
+- **{{ConcurrentBag.borrow}} / {{SynchronousQueue}}:** cấu trúc nội bộ Hikari; khi hết connection rảnh, thread park ở đây chờ tới {{connection-timeout}} (30s) rồi ném {{SQLTransientConnectionException}}.
+
+### Nguyên nhân gốc
+
+~~~java
+@Transactional                                  // mượn connection C1 NGAY, giữ tới hết hàm
+public Quote quote(OrderRequest req) {        // dòng 50
+    Order o = orderRepo.save(req.toEntity()); // dòng 55: C1 active
+    List<Enriched> items = o.items()
+        .parallelStream()                     // dòng 56: chạy trên commonPool (7 worker)
+        .map(it -> enrich(it))                // HTTP blocking ~250ms mỗi lần
+        .toList();                            // dòng 57: collect -> awaitQuiescence (chờ commonPool)
+    return Quote.of(o, items);                // C1 VẪN bị giữ suốt lúc chờ
+}                                             // commit + trả C1
+~~~
+
+Chuỗi nhân quả:
+
+1. 7 worker commonPool đều bận gọi HTTP (mỗi lần ~250ms). Trần của commonPool ≈ {{7 / 0,25}} ≈ **28 tác vụ I/O/giây**. Mỗi request cần nhiều tác vụ (3 dịch vụ × số item), nên nhu cầu vượt xa 28 → hàng đợi ở commonPool phình, {{awaitQuiescence}} kéo dài.
+2. Trong lúc {{awaitQuiescence}}, thread Tomcat **không trả connection C1**. Mỗi request đang chạy giữ đúng 1 connection.
+3. Số connection bị giữ ≈ số request đang kẹt ở {{awaitQuiescence}}. Khi con số này chạm 20 (pool), request mới gọi {{getConnection}} phải park ở {{ConcurrentBag.borrow}} chờ 30s → 504. Little's law: connection cần = TPS × thời gian giữ; thời gian giữ bị đẩy từ ~30ms lên hàng giây vì chờ commonPool, nên chỉ cần ~7–10 request đồng thời là cạn pool 20 (thực tế 41 giữ + 64 chờ vì hàng đợi đã phình).
+
+Điểm mấu chốt: **I/O nằm trong transaction** + **I/O nằm trên commonPool**. Hai lỗi này khuếch đại lẫn nhau: commonPool chậm làm transaction dài, transaction dài làm cạn connection.
+
+### Dẫn chứng
+
+- Dump: 7 thread {{ForkJoinPool.commonPool-worker-1..7}} đều {{RUNNABLE}} tại {{sun.nio.ch.Net.poll}} ← {{TaxClient.fetch}} / {{ShippingClient.fetch}} / {{InventoryClient.fetch}} ← {{QuoteService.lambda$quote$0/1}} (dòng 56). Không worker nào rảnh.
+- {{http-nio-8080-exec-12}} {{WAITING (parking)}} tại {{ForkJoinPool.awaitQuiescence}} ← {{ReferencePipeline.collect}} ← {{QuoteService.quote(QuoteService.java:57)}} ← {{TransactionInterceptor.invoke}}: đang chờ commonPool **trong transaction** → đang giữ connection.
+- {{http-nio-8080-exec-31}} {{TIMED_WAITING}} tại {{ConcurrentBag.borrow}} ← {{HikariPool.getConnection}} ← {{JpaTransactionManager.doBegin}} ← {{QuoteService.quote(QuoteService.java:55)}}: đang chờ mượn connection.
+- Metric: {{commonPool active=7 idle=0}}, {{hikaricp active=20 idle=0 pending=64}}, {{timeout_total=17}}. Downstream p99 < 260ms, DB ~15%, CPU 12% → loại trừ giả thuyết "downstream chậm" hay "DB nghẽn".
+- {{grep -c awaitQuiescence}} = 41, {{grep -c ConcurrentBag.borrow}} = 64 → khớp bức tranh hai pool cùng cạn.
+
+### Cách sửa
+
+**Ngắn hạn (30 phút, khôi phục SLA):**
+1. Gỡ {{@Transactional}} khỏi {{quote}} (hoặc thu hẹp chỉ quanh phần ghi DB). Không giữ connection qua I/O.
+2. Tắt {{parallelStream}} trong {{enrich}}: đổi sang gọi tuần tự tạm thời, hoặc chuyển sang executor I/O riêng (xem dưới). Mất song song nhưng hết kẹt.
+3. Đặt timeout HTTP ngắn (connect 500ms, read 2s) cho cả ba client để một downstream chậm không giữ worker mãi.
+4. Restart pod để xả các thread đang kẹt sau khi đã chặn nguồn.
+
+**Dài hạn (sprint):**
+
+Tách I/O khỏi transaction và khỏi commonPool:
+
+~~~java
+// B1: transaction CHỈ quanh phần ghi DB, KHÔNG gọi mạng
+@Transactional
+public Order saveOrder(OrderRequest req) {
+    return orderRepo.save(req.toEntity());     // commit + trả connection ngay
+}
+
+// B2: I/O chạy trên executor RIÊNG, có giới hạn + timeout, ngoài transaction
+private final ExecutorService ioPool = new ThreadPoolExecutor(
+    32, 64, 60, TimeUnit.SECONDS,
+    new ArrayBlockingQueue<>(500),
+    new ThreadPoolExecutor.CallerRunsPolicy());   // back-pressure thay vì phình vô hạn
+
+public Quote quote(OrderRequest req) {
+    Order o = saveOrder(req);                  // connection đã trả
+    List<CompletableFuture<Enriched>> fs = o.items().stream()
+        .map(it -> CompletableFuture.supplyAsync(() -> enrich(it), ioPool))
+        .toList();
+    List<Enriched> items = fs.stream()
+        .map(f -> f.get(2, TimeUnit.SECONDS))  // timeout từng task
+        .toList();
+    return Quote.of(o, items);
+}
+~~~
+
+Nếu lên Java 21 và muốn giữ code blocking, có thể dùng {{Executors.newVirtualThreadPerTaskExecutor()}} cho I/O (virtual thread nhường carrier khi chờ mạng), nhưng **vẫn phải** giới hạn đồng thời tới downstream bằng {{Semaphore}} và **vẫn không** bọc {{@Transactional}} quanh I/O.
+
+| Cách | Hết nghẽn commonPool? | Hết giữ connection? | Khi nào |
+|---|---|---|---|
+| Bỏ parallelStream, gọi tuần tự | Có | Chưa (nếu còn @Transactional) | Hotfix nhanh |
+| Executor I/O riêng + timeout | Có | Có (nếu I/O ngoài tx) | Java 8–17, blocking client |
+| Virtual thread executor + Semaphore | Có | Có | Java 21+, I/O-bound |
+| WebClient/reactive | Có | Có | Hệ reactive, throughput cao |
+
+### Phòng ngừa
+
+- Quy tắc review: **không {{@Transactional}} bao quanh HTTP/Kafka/S3**; **không {{parallelStream}}/commonPool cho blocking I/O**. Mọi {{supplyAsync}} phải truyền executor.
+- Alert theo **hai** metric cùng lúc: {{hikaricp_connections_pending > 0}} kéo dài và {{ForkJoinPool.commonPool}} active == parallelism; thêm SLO p99 cho {{/orders/quote}}.
+- Test tải với downstream giả lập chậm (WireMock/Toxiproxy) để thấy cả hai pool cạn trước production.
+- Grep CI: {{CompletableFuture.supplyAsync(}} thiếu tham số executor; {{parallelStream}} trong package có client HTTP.
+
+### Ví dụ đời thực
+
+Một đợt flash sale 300 req/s: commonPool 7 worker kẹt ở HTTP khiến {{awaitQuiescence}} kéo dài; 41 request giữ connection, 64 request chờ, pool 20 cạn, {{timeout_total}} tăng 17 trong 5 phút, p99 18s. Gỡ {{@Transactional}} + chuyển sang executor I/O riêng: connection chỉ giữ ~30ms, p99 về ~360ms, CPU vẫn thấp vì nút thắt không phải CPU.
+
+### Trả lời mẫu khi phỏng vấn
+
+"Endpoint của tôi dùng parallelStream để gọi ba dịch vụ, nhưng commonPool chỉ có 7 worker và mỗi lần gọi là I/O blocking 250ms, nên cả 7 worker kẹt ở socket read. Tệ hơn, hàm lại bọc @Transactional, nên thread Tomcat giữ một connection Hikari suốt lúc chờ commonPool trong awaitQuiescence. Hai pool cạn cùng lúc: 41 thread giữ connection, 64 thread chờ, pool 20 cạn, p99 18 giây dù CPU chỉ 12% và downstream vẫn khỏe. Tôi sửa bằng cách bỏ parallelStream cho I/O, chuyển sang executor riêng có timeout, và quan trọng nhất là đưa I/O ra ngoài transaction để connection không bị giữ qua mạng."
+
+> Senior tip: Khi thấy CPU thấp + nhiều pool cùng cạn, đừng chỉ nhìn một pool. Ở đây commonPool và Hikari cạn **vì nhau**: I/O trên commonPool làm transaction dài, transaction dài làm cạn connection. Câu hỏi review số một: "đoạn này có giữ connection trong lúc chờ I/O không, và I/O có chạy trên pool dùng chung không?". Một mẹo đọc dump: đếm thread ở {{awaitQuiescence}} (đang giữ tài nguyên) và ở {{ConcurrentBag.borrow}} (đang chờ tài nguyên) — tỉ lệ giữa chúng cho biết mức độ lan truyền nghẽn.`,
+  rubric: [
+    'Chỉ ra HAI tài nguyên cạn: 7 worker commonPool RUNNABLE tại Net.poll (parallelStream dòng 56) và Hikari active=20 pending=64; giải thích @Transactional giữ connection trong awaitQuiescence (exec-12 WAITING tại dòng 57) còn exec-31 chờ connection tại ConcurrentBag.borrow.',
+    'Giải thích vì sao CPU 12%/downstream khỏe/DB rảnh mà vẫn 504 (nút thắt là hai pool, không phải tính toán), và tính Little\'s law: thời gian giữ connection bị đẩy lên hàng giây nên pool 20 cạn.',
+    'Đề xuất sửa: bỏ parallelStream cho I/O (executor riêng có bound + timeout, hoặc virtual thread + Semaphore) VÀ đưa I/O ra ngoài @Transactional; nêu trade-off từng cách.',
+    'Nêu phòng ngừa: quy tắc không I/O trong transaction/không I/O trên commonPool, alert đồng thời pending + commonPool active, test tải với downstream chậm.'
+  ],
+  tags: ['parallelstream', 'commonpool', 'completablefuture', 'transaction', 'hikaricp', 'blocking-io', 'starvation', 'jstack']
+},
+{
+  id: 'lab-thread-035',
+  category: 'thread',
+  title: 'Deadlock AB-BA bằng ReentrantLock khi chuyển tiền: jstack vẫn bắt được qua ownable synchronizer',
+  level: 'senior',
+  scenario: `**Bối cảnh:** **PayVN Wallet** (Spring Boot 3.4, Java 21, 4 pod) chuyển tiền nội bộ. Khác với bản cũ dùng {{synchronized}}, team vừa refactor {{AccountService.transfer}} sang {{ReentrantLock}} (mỗi ví một {{ReentrantLock}}, lấy từ {{ConcurrentHashMap<WalletId, ReentrantLock>}}) để "kiểm soát tốt hơn". Code vẫn khoá ví nguồn rồi ví đích theo đúng thứ tự tham số {{from → to}}.
+
+**Triệu chứng:** Lúc **09:12 ngày 21/11/2026**, hai job chạy song song: {{transfer-1}} chuyển W1001 → W2001, {{transfer-2}} chuyển W2001 → W1001. Từ 09:12:05 cả hai treo, các request {{POST /transfer}} dùng cặp ví đó trả 504 sau 30 giây. CPU pod ~10%, không exception, Hikari còn connection rảnh (vì lock lấy trước khi mở transaction). Restart pod hết, ~2 giờ sau tái diễn ở cặp ví khác.
+
+**Dữ liệu thu thập:** {{jcmd 1 Thread.print -l}} lúc 09:12:40 (chạy với {{ReentrantLock}} nên dump có mục ownable synchronizer), và đoạn code {{AccountService}}.`,
+  artifacts: [
+    {
+      name: 'jstack-wallet-reentrant-09-12.txt',
+      lang: 'text',
+      content: `2026-11-21 09:12:40
+Full thread dump OpenJDK 64-Bit Server VM (21.0.4+7-LTS-151 mixed mode, sharing):
+
+"transfer-1" #41 [0x1001] prio=5 os_prio=0 cpu=42.10ms elapsed=120.40s tid=0x00007f2c8c1a1000 nid=0x1001 waiting on condition  [0x00007f2c3d7f6000]
+   java.lang.Thread.State: WAITING (parking)
+        at jdk.internal.misc.Unsafe.park(java.base@21.0.4/Native Method)
+        - parking to wait for  <0x000000076ab2d0a0> (a java.util.concurrent.locks.ReentrantLock$NonfairSync)
+        at java.util.concurrent.locks.LockSupport.park(java.base@21.0.4/LockSupport.java:371)
+        at java.util.concurrent.locks.AbstractQueuedSynchronizer.acquire(java.base@21.0.4/AbstractQueuedSynchronizer.java:754)
+        at java.util.concurrent.locks.ReentrantLock.lock(ReentrantLock.java:325)
+        at vn.pay.wallet.AccountService.transfer(AccountService.java:52)
+        - locked <0x000000076ab2d8f8> (a java.util.concurrent.locks.ReentrantLock$NonfairSync)
+        at vn.pay.wallet.TransferController.transfer(TransferController.java:30)
+
+   Locked ownable synchronizers:
+        - <0x000000076ab2d8f8> (a java.util.concurrent.locks.ReentrantLock$NonfairSync)
+
+"transfer-2" #42 [0x1002] prio=5 os_prio=0 cpu=39.80ms elapsed=120.38s tid=0x00007f2c8c1a2000 nid=0x1002 waiting on condition  [0x00007f2c3d8f7000]
+   java.lang.Thread.State: WAITING (parking)
+        at jdk.internal.misc.Unsafe.park(java.base@21.0.4/Native Method)
+        - parking to wait for  <0x000000076ab2d8f8> (a java.util.concurrent.locks.ReentrantLock$NonfairSync)
+        at java.util.concurrent.locks.LockSupport.park(java.base@21.0.4/LockSupport.java:371)
+        at java.util.concurrent.locks.AbstractQueuedSynchronizer.acquire(java.base@21.0.4/AbstractQueuedSynchronizer.java:754)
+        at java.util.concurrent.locks.ReentrantLock.lock(ReentrantLock.java:325)
+        at vn.pay.wallet.AccountService.transfer(AccountService.java:52)
+        - locked <0x000000076ab2d0a0> (a java.util.concurrent.locks.ReentrantLock$NonfairSync)
+        at vn.pay.wallet.TransferController.transfer(TransferController.java:30)
+
+   Locked ownable synchronizers:
+        - <0x000000076ab2d0a0> (a java.util.concurrent.locks.ReentrantLock$NonfairSync)
+
+"http-nio-8080-exec-9" #58 daemon prio=5 os_prio=0 cpu=30.10ms elapsed=118.20s tid=0x00007f2c8c1a9000 nid=0x2003 waiting on condition  [0x00007f2c3daf8000]
+   java.lang.Thread.State: WAITING (parking)
+        at jdk.internal.misc.Unsafe.park(java.base@21.0.4/Native Method)
+        - parking to wait for  <0x000000076ab2d0a0> (a java.util.concurrent.locks.ReentrantLock$NonfairSync)
+        at java.util.concurrent.locks.ReentrantLock.lock(ReentrantLock.java:325)
+        at vn.pay.wallet.AccountService.transfer(AccountService.java:52)
+        at vn.pay.wallet.TransferController.transfer(TransferController.java:30)
+
+   Locked ownable synchronizers:
+        - None
+
+JNI global refs: 38, weak refs: 0
+
+Found one Java-level deadlock:
+=============================
+"transfer-1":
+  waiting for ownable synchronizer <0x000000076ab2d0a0> (a java.util.concurrent.locks.ReentrantLock$NonfairSync),
+  which is held by "transfer-2"
+
+"transfer-2":
+  waiting for ownable synchronizer <0x000000076ab2d8f8> (a java.util.concurrent.locks.ReentrantLock$NonfairSync),
+  which is held by "transfer-1"
+
+Java stack information for the threads listed above:
+==================================================
+"transfer-1":
+        at vn.pay.wallet.AccountService.transfer(AccountService.java:52)
+        - waiting to lock <0x000000076ab2d0a0> (a java.util.concurrent.locks.ReentrantLock$NonfairSync)
+        - locked <0x000000076ab2d8f8> (a java.util.concurrent.locks.ReentrantLock$NonfairSync)
+"transfer-2":
+        at vn.pay.wallet.AccountService.transfer(AccountService.java:52)
+        - waiting to lock <0x000000076ab2d8f8> (a java.util.concurrent.locks.ReentrantLock$NonfairSync)
+        - locked <0x000000076ab2d0a0> (a java.util.concurrent.locks.ReentrantLock$NonfairSync)
+
+Found 1 deadlock.`
+    },
+    {
+      name: 'AccountService.java',
+      lang: 'java',
+      content: `package vn.pay.wallet;
+
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.locks.ReentrantLock;
+
+@Service
+public class AccountService {                                       // dòng 40
+    private final WalletRepository repo;
+    // Mỗi ví một khoá riêng, lấy theo walletId
+    private final ConcurrentHashMap<Long, ReentrantLock> locks = new ConcurrentHashMap<>();
+
+    private ReentrantLock lockOf(long walletId) {                  // dòng 44
+        return locks.computeIfAbsent(walletId, k -> new ReentrantLock());
+    }
+
+    // fromId, toId là tham số nghiệp vụ (ai chuyển cho ai) — KHÔNG sắp xếp
+    public void transfer(long fromId, long toId, long amount) {    // dòng 48
+        ReentrantLock from = lockOf(fromId);
+        ReentrantLock to = lockOf(toId);
+        from.lock();                                            // dòng 51: khoá ví nguồn
+        to.lock();                                              // dòng 52: khoá ví đích (thứ tự tham số!)
+        try {
+            Wallet a = repo.find(fromId);
+            Wallet b = repo.find(toId);
+            a.debit(amount);
+            b.credit(amount);
+            repo.save(a);
+            repo.save(b);
+        } finally {
+            to.unlock();                                        // dòng 63
+            from.unlock();                                      // dòng 64
+        }
+    }
+}`
+    }
+  ],
+  questions: [
+    'Vì sao {{transfer-1}} và {{transfer-2}} treo? Dẫn chứng bốn dòng {{- locked}} / {{- waiting to lock}} và mục {{Found one Java-level deadlock}} với hai địa chỉ khoá.',
+    'Đây là {{ReentrantLock}} chứ không phải {{synchronized}} — vì sao jstack VẪN in {{Found one Java-level deadlock}}? Phân biệt "monitor" và "ownable synchronizer" trong phát hiện deadlock của HotSpot.',
+    'Sửa thế nào cho đúng (khoá theo thứ tự id) và vì sao {{ReentrantLock}} có thêm lựa chọn {{tryLock(timeout)}} mà {{synchronized}} không có? Nêu cả bẫy khi dùng {{tryLock}} sai.'
+  ],
+  hints: [
+    'Đọc hai thread {{transfer-1}} / {{transfer-2}}: mỗi thread {{- locked}} khoá nào và {{- waiting to lock}} khoá nào? Hai địa chỉ <0x000000076ab2d0a0> và <0x000000076ab2d8f8> có đảo ngược nhau không?',
+    'Mục {{Found one Java-level deadlock}} liệt kê {{waiting for ownable synchronizer ... which is held by ...}}. {{ReentrantLock}} không phải monitor {{synchronized}}, nhưng HotSpot vẫn theo dõi chu trình chờ qua {{AbstractOwnableSynchronizer}} (lớp cha của {{ReentrantLock$NonfairSync}}).',
+    'Thứ tự khoá đang phụ thuộc tham số {{from/to}}. Nếu luôn khoá ví có id nhỏ trước (sắp xếp {{min/max}}) thì đồ thị chờ thành DAG, không còn chu trình. {{ReentrantLock.tryLock(timeout)}} cho phép "không chờ vô hạn" — nhưng nếu lock được khoá 1 rồi {{tryLock}} khoá 2 thất bại mà quên {{unlock}} khoá 1 thì vẫn kẹt (rò rỉ khoá).'
+  ],
+  answer: `**Tóm tắt:** Deadlock AB-BA kinh điển, lần này bằng {{ReentrantLock}}. {{transfer-1}} (W1001 → W2001) giữ khoá W1001 {{<0x000000076ab2d8f8>}} và chờ khoá W2001 {{<0x000000076ab2d0a0>}}; {{transfer-2}} (W2001 → W1001) giữ khoá W2001 {{<0x000000076ab2d0a0>}} và chờ khoá W1001 {{<0x000000076ab2d8f8>}}. Hai thread giữ một khoá, chờ khoá của thread kia — hai địa chỉ đảo chiều giữa giữ và chờ, tạo chu trình deadlock. HotSpot **vẫn** in {{Found one Java-level deadlock}} vì {{ReentrantLock}} là **ownable synchronizer** (lớp cha {{AbstractOwnableSynchronizer}}) được JVM theo dõi. Sửa gốc: **khoá theo thứ tự id tăng dần** (min trước, max sau) để đồ thị chờ thành DAG.
+
+### Hiểu từ gốc: monitor và ownable synchronizer
+
+- **Monitor ({{synchronized}}):** "ổ khoá" gắn với object, do JVM quản lý. Khi hai thread chờ monitor của nhau theo vòng, HotSpot in {{waiting to lock monitor ...}}.
+- **Ownable synchronizer ({{ReentrantLock}}, {{Semaphore}}, ...):** khoá do thư viện {{java.util.concurrent}} quản lý, nhưng vẫn ghi lại **chủ sở hữu** ({{exclusiveOwnerThread}}) qua lớp cha {{AbstractOwnableSynchronizer}}. HotSpot's deadlock detector ({{Threads::find_deadlocks}}) xét **cả hai** loại: nó dựng đồ thị "thread nào đang chờ tài nguyên của thread nào" từ monitor **và** ownable synchronizer, rồi tìm chu trình.
+- Vì vậy {{ReentrantLock}} **không** "vô hình" với deadlock detector. Khác biệt là chữ in ra: monitor → {{waiting to lock monitor ... (object ..., a ...)}}; ownable synchronizer → {{waiting for ownable synchronizer <0x...> ... which is held by ...}}. Bản chất phát hiện giống nhau: tìm chu trình chờ.
+
+### Nguyên nhân gốc
+
+~~~java
+public void transfer(long fromId, long toId, long amount) {   // dòng 48
+    ReentrantLock from = lockOf(fromId);
+    ReentrantLock to = lockOf(toId);
+    from.lock();                                            // dòng 51: khoá ví nguồn
+    to.lock();                                              // dòng 52: khoá ví đích
+    try { /* ... trừ/cộng tiền ... */ }
+    finally { to.unlock(); from.unlock(); }
+}
+~~~
+
+Thứ tự khoá = thứ tự tham số {{from, to}}. Với hai job ngược chiều:
+
+~~~text
+transfer-1 (W1001 -> W2001)            transfer-2 (W2001 -> W1001)
+-------------------------------------------------------------------
+lock W1001 = 0x...d0a0 (được)          lock W2001 = 0x...d8f8 (được)
+lock W2001 = 0x...d8f8 (CHỜ)  <------  lock W1001 = 0x...d0a0 (CHỜ)
+                 \--> DEADLOCK <--/
+mỗi thread giữ 1 khoá, chờ khoá do thread kia giữ
+~~~
+
+{{ReentrantLock}} mặc định là {{NonfairSync}} (không công bằng), nên thread mới tới có thể chen ngang; điều đó không ảnh hưởng deadlock, chỉ làm latency phân tán. JVM không tự phá deadlock: {{ReentrantLock.lock()}} không có timeout, hai thread nằm đó tới khi process chết.
+
+### Dẫn chứng
+
+- {{transfer-1}}: {{WAITING (parking)}}, {{- parking to wait for <0x000000076ab2d0a0>}}, {{- locked <0x000000076ab2d8f8>}}, tại {{AccountService.transfer(AccountService.java:52)}}; {{Locked ownable synchronizers: - <0x000000076ab2d8f8>}}.
+- {{transfer-2}}: đối xứng — {{- locked <0x000000076ab2d0a0>}}, {{- waiting to lock <0x000000076ab2d8f8>}}; {{Locked ownable synchronizers: - <0x000000076ab2d0a0>}}.
+- Mục {{Found one Java-level deadlock}}: {{transfer-1}} {{waiting for ownable synchronizer <0x...d0a0> ... held by transfer-2}}; {{transfer-2}} {{waiting for ownable synchronizer <0x...d8f8> ... held by transfer-1}}. Hai địa chỉ đảo đúng chiều giữ/chờ.
+- {{http-nio-8080-exec-9}} cũng {{WAITING}} chờ {{<0x...d0a0>}} (đang xếp hàng vào ví W1001) — là nạn nhân, không phải bên trong chu trình.
+- CPU thấp, Hikari rảnh: thread {{WAITING}} không tiêu CPU; lock lấy **trước** khi mở transaction nên không giữ connection. Nếu chỉ nhìn metric tài nguyên sẽ tưởng hệ thống rảnh.
+
+### Cách sửa
+
+**Ngắn hạn:** không kill thread (Java không hỗ trợ an toàn). Lưu dump làm bằng chứng, chặn hai job ngược chiều, rolling restart pod. Kiểm tra số dư các ví PENDING và đối soát/hoàn tiền nếu có bút toán dở.
+
+**Sửa gốc — khoá theo thứ tự toàn cục (id tăng dần):**
+
+~~~java
+public void transfer(long fromId, long toId, long amount) {
+    long first  = Math.min(fromId, toId);          // luôn khoá id nhỏ trước
+    long second = Math.max(fromId, toId);
+    ReentrantLock l1 = lockOf(first);
+    ReentrantLock l2 = lockOf(second);
+    l1.lock();
+    l2.lock();
+    try {
+        Wallet from = repo.find(fromId);           // dùng fromId/toId gốc để tính
+        Wallet to   = repo.find(toId);
+        from.debit(amount);
+        to.credit(amount);
+        repo.save(from);
+        repo.save(to);
+    } finally {
+        l2.unlock();
+        l1.unlock();
+    }
+}
+~~~
+
+Đồ thị chờ trở thành DAG (mọi transaction khoá theo cùng một thứ tự) → không thể có chu trình.
+
+**Lựa chọn khác (ReentrantLock có, synchronized không):**
+
+~~~java
+// tryLock có timeout: không chờ vô hạn, thất bại thì trả khoá 1 và bỏ
+if (l1.tryLock(2, TimeUnit.SECONDS)) {
+    try {
+        if (l2.tryLock(2, TimeUnit.SECONDS)) {
+            try { /* ... */ } finally { l2.unlock(); }
+        } else {
+            // KHÔNG quên: phải unlock l1 trước khi return
+        }
+    } finally {
+        l1.unlock();                                // luôn nhả l1
+    }
+}
+~~~
+
+| Cách | Ưu | Nhược |
+|---|---|---|
+| Khoá theo thứ tự id | Đơn giản, triệt để | Phải áp dụng mọi nơi |
+| {{tryLock(timeout)}} + nhả đúng | Fail fast, không treo | Code phức tạp, dễ quên unlock |
+| Một khoá toàn cục | Không deadlock | Throughput sụt |
+| Khoá ở DB ({{SELECT ... FOR UPDATE}} theo id) | Đúng đa pod | Tăng tải DB |
+| Optimistic (version) + retry | Scale tốt | Cần idempotent |
+
+Lưu ý quan trọng: {{ReentrantLock}} trong JVM **chỉ đúng khi mỗi ví do đúng một pod xử lý** (sharding theo ví). Khi scale ngang mà không sharding, hai pod có hai {{ConcurrentHashMap}} riêng → khoá JVM không bảo vệ chéo pod; khi đó phải đẩy khoá xuống DB ({{SELECT ... FOR UPDATE}} theo thứ tự id) hoặc dùng distributed lock (Redisson) theo cặp id đã sắp.
+
+### Phòng ngừa
+
+- Bật {{ThreadMXBean.findDeadlockedThreads()}} định kỳ (nó bắt cả monitor lẫn ownable synchronizer) và alert; hoặc {{jcmd <pid> Thread.print -l}} theo lịch, grep {{Found .* deadlock}}.
+- Alert theo số thread {{WAITING}} trên {{ReentrantLock}} kéo dài, không chỉ CPU.
+- Test tải có chủ đích hai chiều trên cùng cặp ví (k6/JMH) trong CI hiệu năng.
+- Review: mọi chỗ {{lock()}} hai khoá lồng nhau phải có comment nêu rõ thứ tự; ưu tiên hàm {{lockPair(a, b)}} trả về khoá đã sắp.
+
+### Trả lời mẫu khi phỏng vấn
+
+"Đó là deadlock AB-BA: transfer-1 giữ khoá W1001 chờ W2001, transfer-2 giữ W2001 chờ W1001. Dù dùng ReentrantLock chứ không phải synchronized, jstack vẫn in Found one Java-level deadlock, vì ReentrantLock là ownable synchronizer và HotSpot theo dõi chu trình chờ qua AbstractOwnableSynchronizer; dump có mục waiting for ownable synchronizer. Tôi sửa bằng cách luôn khoá ví có id nhỏ trước rồi mới tới id lớn, biến đồ thị chờ thành DAG. Nếu cần fail fast tôi dùng tryLock có timeout và luôn nhả khoá đã lấy trong finally. Lưu ý ReentrantLock chỉ đúng khi một ví do một pod xử lý; đa pod thì phải khoá ở DB theo thứ tự id."
+
+> Senior tip: Nhiều người tưởng chỉ {{synchronized}} mới bị phát hiện deadlock — sai. HotSpot bắt cả {{ReentrantLock}} vì nó là ownable synchronizer; dấu hiệu là dòng {{waiting for ownable synchronizer ... which is held by ...}} thay vì {{waiting to lock monitor}}. Mẹo thực chiến: khi thấy hai thread {{WAITING (parking)}} trên hai {{ReentrantLock$NonfairSync}} với địa chỉ đảo nhau, đừng hoảng đi tìm "monitor" — đọc thẳng mục {{Found one Java-level deadlock}}. Và nhớ {{ReentrantLock}} phải {{unlock}} trong {{finally}}; với {{tryLock}} thất bại ở khoá thứ hai, quên nhả khoá thứ nhất là một dạng rò rỉ khoá nguy hiểm không kém deadlock.`,
+  rubric: [
+    'Chỉ ra đúng deadlock AB-BA giữa transfer-1 và transfer-2, nêu đúng hai khoá <0x000000076ab2d0a0> và <0x000000076ab2d8f8> cùng chiều giữ/chờ, trích mục Found one Java-level deadlock.',
+    'Giải thích vì sao ReentrantLock vẫn bị phát hiện: nó là ownable synchronizer (AbstractOwnableSynchronizer), HotSpot dựng đồ thị chờ từ cả monitor lẫn ownable synchronizer; phân biệt chữ in ra monitor vs ownable synchronizer.',
+    'Đề xuất sửa bằng thứ tự khoá theo id (min/max) để thành DAG, nêu tryLock(timeout) là lựa chọn của ReentrantLock và bẫy quên unlock khoá 1 khi tryLock khoá 2 thất bại.',
+    'Nêu giới hạn đa pod (ConcurrentHashMap per-pod không bảo vệ chéo pod → khoá DB theo id hoặc distributed lock) và phòng ngừa (findDeadlockedThreads, alert thread WAITING, test tải hai chiều).'
+  ],
+  tags: ['deadlock', 'reentrantlock', 'ownable-synchronizer', 'lock-ordering', 'jstack', 'wallet']
 }
 );
 

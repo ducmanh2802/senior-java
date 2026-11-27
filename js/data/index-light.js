@@ -3301,6 +3301,8 @@ window.DATA_INDEX = {
     ["lab-thread-031","thread","synchronized bao phủ DB call gây hàng chục ngàn thread BLOCKED trên cùng monitor","senior"],
     ["lab-thread-032","thread","@Scheduled(fixedRate=60s) nhưng job mất 90s — TaskScheduler 1 thread làm trễ dần và chặn job khác","senior"],
     ["lab-thread-033","thread","Log đồng bộ: nhiều http-nio BLOCKED tại OutputStreamAppender cùng lock","senior"],
+    ["lab-thread-034","thread","parallelStream gọi HTTP trong @Transactional: commonPool nghẽn kéo theo Hikari cạn","senior"],
+    ["lab-thread-035","thread","Deadlock AB-BA bằng ReentrantLock khi chuyển tiền: jstack vẫn bắt được qua ownable synchronizer","senior"],
     ["lab-gc-001","gc","Export đối soát cuối ngày: humongous allocation đẩy G1 vào Full GC","senior"],
     ["lab-gc-002","gc","Heap của ví tăng đều mỗi ngày: hai lần class histogram lộ listener không được gỡ","senior"],
     ["lab-gc-003","gc","OutOfMemoryError: Metaspace sau khi thêm rule khuyến mãi bằng Groovy","senior"],
