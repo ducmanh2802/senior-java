@@ -1,6 +1,6 @@
 # T2805 — Case khó Upwork: khách hàng, review và tài khoản (6 case)
 
-Status: TODO
+Status: DONE
 Agent: kilo
 Owns: `js/data/upwork-cases-2.js`
 
@@ -29,3 +29,5 @@ Thêm **6 case** `uw-case-101`…`uw-case-106` vào `js/data/upwork-cases-2.js` 
 Xong: sửa dòng `Status:` đầu file thành `Status: DONE`, Notes ghi id đã thêm.
 
 ## Notes
+Đã thêm uw-case-101..106 vào js/data/upwork-cases-2.js. check-upwork OK, validate không có lỗi thuộc file.
+Reviewed-by: verify-only (code/UI task)
