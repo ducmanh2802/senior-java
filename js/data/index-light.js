@@ -4497,6 +4497,7 @@ window.DATA_INDEX = {
     {"id":"lg-cns-vietnam","name":"LG CNS Việt Nam","focus":["core","spring","microservices","iot","mes"]},
     {"id":"rikkei-soft","name":"Rikkei Soft","focus":["spring","db","microservices"]},
     {"id":"samsung-sds-vietnam","name":"Samsung SDS Vietnam","focus":["core","jvm","spring","microservices"]},
+    {"id":"mxv","name":"Sở Giao dịch Hàng hóa Việt Nam (MXV)","focus":["banking","concurrency","core","jvm","microservices","design","scenario","db","api"]},
   ],
   quiz: [
     ["qz-devops-001","devops"],

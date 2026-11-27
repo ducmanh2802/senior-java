@@ -2013,5 +2013,55 @@ process: [
     { title: 'voz.vn — Review Samsung SDS Vietnam (2023)', url: 'https://voz.vn/t/review-phong-van-cac-cong-ty-cntt' }
   ],
   confidence: 'low'
-},
+  },
+  {
+    id: 'mxv',
+    name: 'Sở Giao dịch Hàng hóa Việt Nam (MXV)',
+    type: 'fintech',
+    icon: '📊',
+    summary: `Sở Giao dịch Hàng hóa Việt Nam (MXV) là đơn vị tổ chức thị trường giao dịch hàng hóa tập trung cấp quốc gia tại Việt Nam (theo trang chính thức mxv.com.vn), giao dịch sản phẩm nông sản, nguyên liệu công nghiệp, kim loại và năng lượng. Trụ sở tại tầng 16, Tòa tháp Văn phòng Hòa Bình, Số 106, Đường Hoàng Quốc Việt, Phường Nghĩa Đô, Hà Nội. MXV tuyển Java Backend Developer (Middle–Senior) để phát triển các module core giao dịch: khớp lệnh, sổ lệnh, quản lý tài khoản/ký quỹ, nạp rút tiền và luồng dữ liệu thị trường real-time. Stack nêu trong JD: Java 17/21, Spring Boot, Spring Data, Spring Security, Kafka, WebSocket, FIX Protocol, PostgreSQL/Oracle/MySQL, Redis/Hazelcast, Microservices, Event-Driven, Docker, CI/CD (K8s là ưu tiên). Công ty làm việc với đối tác quốc tế (ví dụ kết nối MXV–SGX theo trang MXV), nên đọc hiểu tài liệu tiếng Anh là yêu cầu. Quy trình phỏng vấn MXV chưa có báo cáo công khai đủ tin cậy; mục quy trình và câu hỏi dưới đây là dự kiến theo mẫu chung của sàn giao dịch tài chính, cần hỏi recruiter xác nhận lại.`,
+    stack: ['Java', 'Spring Boot', 'Spring Data', 'Spring Security', 'Kafka', 'WebSocket', 'FIX Protocol', 'PostgreSQL', 'Oracle', 'MySQL', 'Redis', 'Hazelcast', 'MongoDB', 'gRPC', 'REST API', 'Microservices', 'Event-Driven', 'Clean Architecture', 'Docker', 'Git', 'CI/CD', 'Kubernetes'],
+    process: [
+      { round: 'Vòng 1 — Sàng lọc CV (dự kiến)', detail: 'Chưa có review phỏng vấn công khai của MXV; recruiter sàng lọc hồ sơ theo kinh nghiệm Java backend và stack JD (Java 17/21, Spring Boot, Kafka, database).' },
+      { round: 'Vòng 2 — Bài test online (dự kiến theo mẫu ngân hàng/sàn giao dịch)', detail: 'Java core (exception, thread, collections), Spring (bean, DI/IoC, JPA), SQL, design pattern và tiếng Anh; thời lượng và nền tảng cần hỏi recruiter xác nhận.' },
+      { round: 'Vòng 3 — Phỏng vấn kỹ thuật (dự kiến)', detail: 'Live coding easy–medium, deep-dive dự án trên CV, system design tập trung microservices/database/giao dịch, câu hỏi Kafka, WebSocket, FIX, concurrency, deadlock, data consistency.' },
+      { round: 'Vòng 4 — Behavioral / Leadership (cho vị trí Senior, dự kiến)', detail: 'Trao đổi xử lý tình huống, dẫn dắt team, conflict resolution, review code, mentor junior. Có thể gặp thêm lãnh đạo khối hoặc chuyên gia.' },
+      { round: 'Hình thức test (dự kiến, chưa xác nhận từ MXV)', detail: 'Các sàn giao dịch/ngân hàng tương tự thường dùng iMocha/Codility/HackerRank 60–90 phút trước vòng technical. Hỏi recruiter nền tảng test, thời lượng, có bài tiếng Anh riêng không.' }
+    ],
+    focus: ['banking', 'concurrency', 'core', 'jvm', 'microservices', 'design', 'scenario', 'db', 'api'],
+    algoWeight: 0.25,
+    englishRequired: true,
+    questions: [
+      'Khớp lệnh (order matching) là gì, và sổ lệnh (order book) ưu tiên lệnh theo giá rồi thời gian như thế nào?',
+      'FIX Protocol là chuẩn thông điệp tài chính dùng để kết nối hệ thống giao dịch với sàn/đối tác; trong sàn hàng hóa, FIX dùng cho mục đích gì và message phổ biến nào?',
+      'Ký quỹ (margin) là gì, tính toán margin ban đầu và margin duy trì ra sao, và lệnh margin call xảy ra khi nào?',
+      'Luồng nạp rút tiền (deposit/withdrawal) cần đảm bảo điều gì (idempotency, audit trail, tổng số dư khớp sổ)?',
+      'WebSocket dùng đẩy dữ liệu thị trường (market data) real-time khác REST API ra sao, và ưu nhược điểm của mỗi cách trong hệ thống giao dịch?',
+      'Kafka đảm bảo thứ tự tin nhắn trong phân vùng (partition), nhóm người dùng (consumer group) và xử lý tin nhắn đúng một lần (exactly-once) như thế nào?',
+      'Garbage Collection (GC) trong Java làm gì, và làm sao giảm pause time của GC để hệ thống giao dịch độ trễ thấp?',
+      'Deadlock (khóa kháng) là gì, nguyên nhân phổ biến trong Java concurrency, và bạn phát hiện/phòng ngừa deadlock ra sao?',
+      'Thread-safe là gì, synchronized và volatile hoạt động như thế nào, và thread pool được dùng khi nào trong hệ thống giao dịch?',
+      'Data consistency và distributed transaction (2PC, saga, outbox pattern) dùng khi nào trong hệ thống giao dịch?',
+      'Redis và Hazelcast (in-memory caching) dùng để làm gì, và khi cache miss bạn xử lý ra sao?',
+      'Clean Architecture / Microservices / Event-Driven: trade-off khi chia nhỏ service và giao tiếp bằng sự kiện trong hệ thống giao dịch?',
+      'Bạn review code và hướng dẫn junior (mentor) như thế nào, và xử lý mâu thuẫn kỹ thuật trong team ra sao?',
+      'Công cụ profiling (JProfiler, VisualVM) giúp tìm bottleneck CPU/memory như thế nào, và bạn áp dụng vào tối ưu database query và caching ra sao?'
+    ],
+    tips: [
+      'Dự án cá nhân: làm pet project sàn giao dịch hàng hóa (ví dụ proj-commodity-exchange) để xây sổ lệnh và khớp lệnh theo ưu tiên giá–thời gian; pet project ký quỹ (proj-clearing-margin) để tính toán margin và nạp rút tiền; pet project rủi ro phái sinh (proj-deriv-risk) để luyện quản trị rủi ro, margin call. Nếu dự án này chưa có trong trang #/projects, hãy tự làm một bản đơn giản để kể trong phỏng vấn theo STAR với số liệu (ví dụ xử lý X lệnh/giây, giảm latency xuống Y ms).',
+      'Ôn Java core & concurrency: thread pool, ExecutorService, synchronized, volatile, memory visibility, atomic variables; hiểu race condition và deadlock qua ví dụ mã nguồn nhỏ.',
+      'Ôn Kafka: producer/consumer, partition, consumer group, offset, exactly-once, transactional producer, DLQ (hàng đợi tin nhắn lỗi). Chỉ cần hiểu cơ chế và trả lời bằng ngôn ngữ đơn giản, không bắt buộc chạy thật Kafka.',
+      'Ôn FIX Protocol và WebSocket: FIX là chuẩn thông điệp tài chính (ví dụ NewOrderSingle gửi lệnh, ExecutionReport báo kết quả); WebSocket giữ kết nối dài đẩy giá thị trường, REST dùng cho truy vấn theo yêu cầu.',
+      'Ôn hiệu năng & GC: dùng JProfiler/VisualVM để xem heap, GC pause, tìm object gây memory leak; tối ưu SQL (index, execution plan), tránh N+1 query, dùng caching đúng chỗ.',
+      'Ôn database & transaction: isolation level (READ COMMITTED, REPEATABLE READ, SERIALIZABLE), lock (pessimistic/optimistic), deadlock prevention, idempotency key cho API đặt lệnh/hủy lệnh.',
+      'Tiếng Anh: đọc hiểu tài liệu kỹ thuật (JD nêu đọc tài liệu tiếng Anh tốt) và làm việc với đối tác quốc tế; chuẩn bị tự giới thiệu và kể project bằng tiếng Anh.',
+      'Quy trình phỏng vấn MXV chưa có báo cáo công khai; dự kiến theo mẫu chung của sàn giao dịch: sàng lọc CV → bài test online (Java core, Spring, SQL, tiếng Anh) → technical (live coding, deep-dive project, system design) → behavioral/leadership (Senior). Hỏi recruiter xác nhận số vòng và stack team trước khi ôn.'
+    ],
+    pay: [],
+    sources: [
+      { title: 'Joboko — Java Backend Developer (Level Middle - Senior) tại Sở Giao dịch Hàng hóa Việt Nam', url: 'https://vn.joboko.com/viec-lam-java-backend-developer-level-middle-senior-xvi6824881' },
+      { title: 'Sở Giao dịch Hàng hóa Việt Nam (MXV) — trang chủ', url: 'https://mxv.com.vn' }
+    ],
+    confidence: 'low'
+  },
 ];
