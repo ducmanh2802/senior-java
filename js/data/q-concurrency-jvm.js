@@ -5672,7 +5672,7 @@ Một nhóm gắn OpenTelemetry Java agent ({{-javaagent}}) cho các service Spr
   ]
 },
 {
-  id: 'jvm-032',
+  id: 'jvm-076',
   topic: 'jvm',
   level: 'lead',
   q: 'Service xử lý file lớn dùng {{ByteBuffer.allocateDirect}} và thỉnh thoảng gặp {{OutOfMemoryError}} về direct buffer memory dù heap còn trống. Vì sao bộ nhớ direct "không được trả", và Foreign Function & Memory API (Java 22) với {{Arena}} thay đổi cách quản lý off-heap ra sao?',
@@ -6287,7 +6287,7 @@ Service tổng hợp giá gọi 5 nhà cung cấp bằng {{supplyAsync(() -> cli
   tags: ['CompletableFuture', 'executor', 'timeout', 'MDC', 'backpressure']
 },
 {
-  id: 'jvm-033',
+  id: 'jvm-077',
   topic: 'jvm',
   level: 'senior',
   q: 'Khi đọc GC log của G1, các loại pause chính là gì và ý nghĩa của chúng?',
@@ -6340,7 +6340,7 @@ Service xuất báo cáo có Full GC 3–4 giây mỗi giờ. Log cho thấy nhi
   tags: ['G1', 'GC log', 'Young GC', 'Mixed GC', 'Humongous object']
 },
 {
-  id: 'jvm-034',
+  id: 'jvm-078',
   topic: 'jvm',
   level: 'senior',
   q: '{{Tiered compilation}} trong HotSpot là gì? Nó hoạt động như thế nào và tại sao cần cẩn thận khi benchmark?',
@@ -11778,7 +11778,7 @@ Một service thanh toán chạy 6 pod, limits.cpu = 1 (quota 100 ms mỗi perio
   topic: 'jvm',
   level: 'senior',
   q: 'Pod Java limit 2 GB, heap sau GC chỉ còn 700 MB nhưng thỉnh thoảng bị OOMKilled; working set vượt limit. Ngoài heap và native, những nguồn bộ nhớ nào bị tính vào container? Vì sao ghi file tạm vào emptyDir medium Memory hoặc log nhiều có thể giết pod dù heap nhỏ? Chẩn đoán và giảm thế nào?',
-  a: `**Tóm tắt:** "Bộ nhớ của container" trong cgroup không chỉ là heap. {{memory.current}} gồm bộ nhớ ẩn danh (anonymous: heap, thread stack, native JVM) cộng page cache cho file mà container đọc/ghi, cộng tmpfs (loại emptyDir medium: Memory) và một phần kernel. Page cache của file thường **reclaim được**: khi cgroup chạm ngưỡng, kernel bỏ bớt trang file sạch để lấy lại bộ nhớ. Nhưng tmpfs nằm trong RAM và **không reclaim được** (không có swap), nên ghi một file 1 GB vào tmpfs là chiếm 1 GB RAM thật; cộng với heap, tổng vượt limit là kernel OOMKill pod dù heap vẫn thấp.
+  a: `**Tóm tắt:** "Bộ nhớ của container" trong cgroup không chỉ là heap. {{memory.current}} gồm bộ nhớ ẩn danh (anonymous: heap, thread stack, native JVM) cộng page cache cho file mà container đọc/ghi, cộng tmpfs (loại emptyDir medium: Memory) và một phần kernel. Page cache của file thường **reclaim được**: khi cgroup chạm ngưỡng, kernel bỏ bớt trang file sạch để lấy lại bộ nhớ. Nhưng tmpfs **không được reclaim như page cache** (không thể đơn giản drop và đọc lại từ đĩa); các trang tmpfs chỉ giải phóng khi bị swap ra (nếu hệ thống có swap) hoặc khi file bị xoá. Trên Kubernetes swap thường tắt, nên ghi 1 GB vào tmpfs là chiếm 1 GB RAM thật không thể lấy lại; cộng với heap, tổng vượt limit khiến kernel OOMKill pod dù heap vẫn thấp.
 
 ### Hiểu nhanh
 Coi limit 2 GB là sức chứa một chiếc vali. Heap 700 MB chỉ là một ngăn; bạn còn nhét một tảng "đá nước" 1,5 GB (tmpfs) vào vali. Đá nước không nén được, nên vali vượt cân và bị loại, dù ngăn quần áo vẫn còn trống.
@@ -13087,5 +13087,539 @@ Bulkhead là vách ngăn tài nguyên. Chọn thread pool bulkhead cho blocking 
 > Senior tip: Pool size tính theo Little's Law: L = λ × W. Nếu SLO 200ms và 50 rps, concurrency ~10; đặt pool 15-20 để có headroom.`,
   follow: ['Little\'s Law tính pool size thế nào?', 'Circuit breaker threshold đặt ra sao?', 'Khi nào dùng semaphore thay thread pool?'],
   tags: ['bulkhead', 'circuit breaker', 'thread pool', 'resilience', 'timeout']
+},
+{
+  id: 'jvm-079',
+  topic: 'jvm',
+  level: 'senior',
+  q: 'Generational ZGC (JDK 21) khác ZGC truyền thống thế nào? Khi nào nên migrate từ G1 và số liệu trước/sau thực tế là gì?',
+  a: `**Tóm tắt:** Generational ZGC (JDK 21) thêm vùng young generation cho ZGC vốn non-generational, giảm chi phí GC cho workload phân bổ nhiều object ngắn sống, giữ pause < 1 ms; migrate khi G1 pause p99 vượt ngưỡng và allocation rate cao.
+
+### Cơ chế bên trong
+ZGC truyền thống (JDK 11-20) là single-generation: mọi object cùng một heap, GC phải scan toàn bộ. Generational ZGC (JDK 21) chia heap thành young (nhiều object chết sớm) và old (sống lâu). Minor GC chỉ quét young, rẻ hơn nhiều. Colored pointers + load barriers vẫn giữ pause < 1 ms.
+
+### Khi nào migrate từ G1
+- G1 p99 pause > 10-20 ms và allocation rate cao (> 1 GB/s).
+- Latency nhạy (p99 < 5 ms) và heap lớn (> 16 GB).
+- Throughput không phải ưu tiên số 1.
+
+### Số liệu thực tế (ví dụ)
+Service order 8 GB heap, allocation 1.2 GB/s:
+- G1 (MaxGCPauseMillis=20): p99 pause 18 ms, throughput 94%, CPU GC 8%.
+- Generational ZGC: p99 pause 0.4 ms, throughput 91%, CPU GC 12%.
+Trade-off: throughput giảm ~3%, CPU GC tăng, đổi lấy latency ổn định.
+
+### Pitfall
+- JDK < 21 không có generational ZGC; ZGC non-gen throughput kém hơn G1.
+- Heap < 4 GB: overhead barrier lớn, không đáng.
+- Warm-up: ZGC cần thời gian ổn định.
+
+### Ví dụ đời thực
+API thanh toán p99 45 ms do G1 mixed GC pause 30 ms. Migrate Gen ZGC JDK 21, p99 xuống 8 ms, throughput 91% (chấp nhận). GC CPU tăng từ 6% lên 11%.
+
+### Trả lời mẫu khi phỏng vấn
+Generational ZGC thêm young generation cho ZGC, minor GC chỉ quét young nên rẻ hơn, vẫn giữ pause dưới 1 ms. Tôi migrate từ G1 khi p99 pause vượt ngưỡng và allocation rate cao, chấp nhận throughput giảm vài %. Trên JDK 21, Gen ZGC là lựa chọn mặc định cho service latency nhạy với heap lớn. Cần benchmark thực tế vì overhead barrier.
+
+> Senior tip: Luôn đo p99/p999 và CPU GC trước khi migrate; throughput giảm 3-5% có thể chấp nhận được nếu latency ổn định.`,
+  follow: ['Làm sao benchmark GC công bằng trên workload thực?', 'ZGC non-generational còn dùng khi nào?', 'GraalVM native image ảnh hưởng GC thế nào?'],
+  tags: ['gc', 'zgc', 'generational', 'g1', 'latency', 'jdk21']
+},
+{
+  id: 'jvm-080',
+  topic: 'jvm',
+  level: 'senior',
+  q: 'Container memory: -XX:MaxRAMPercentage và vì sao pod bị OOMKilled dù heap chưa đầy? Tính tổng footprint và tuning an toàn.',
+  a: `**Tóm tắt:** JVM footprint = heap + metaspace + thread stack + direct buffer + code cache + native; MaxRAMPercentage chỉ giới hạn heap, pod bị OOMKilled khi tổng vượt memory limit. Cần sizing từng phần.
+
+### Cơ chế bên trong
+MaxRAMPercentage (mặc định 25% cho container nhỏ, tỷ lệ tăng dần cho limit lớn nhờ ergonomic JDK 10+) chỉ quyết định max heap từ container memory limit. JVM còn dùng native memory: metaspace (class metadata), thread stack (mỗi thread ~1 MB default), direct buffers (NIO), code cache (JIT), GC structures. Tổng = RSS. Kubernetes kill pod khi RSS > limit (OOMKilled), không quan tâm heap.
+
+### Công thức sizing
+Tổng ≈ Xmx + metaspace (64-256 MB) + threads*stack (N*1MB) + direct (tùy app) + code cache (240 MB) + GC overhead (~10-20% heap) + JVM base (~100 MB).
+Ví dụ limit 2 GB, threads 200: heap max ≈ 2GB - 200MB - 200MB - 240MB - 100MB - 20% = ~1.0 GB → MaxRAMPercentage ≈ 50%.
+
+### Pitfall
+- Đặt MaxRAMPercentage=75% rồi threads nhiều → OOMKilled.
+- Thread stack default 1 MB; virtual threads giảm stack nhưng carrier thread vẫn.
+- Direct buffer leak: ByteBuffer.allocateDirect không GC ngay.
+- Metaspace unbounded nếu classloader leak.
+
+### Ví dụ đời thực
+Pod 2 GB, heap 1.4 GB (70%), 300 threads, direct buffer 200 MB → RSS 2.1 GB → OOMKilled. Giảm MaxRAMPercentage xuống 50%, thread pool 100, direct buffer giới hạn 100 MB → ổn định.
+
+### Trả lời mẫu khi phỏng vấn
+MaxRAMPercentage chỉ giới hạn heap, tổng footprint gồm native memory. Tôi tính tổng trước khi đặt %, giữ headroom 20-30% cho native. Theo dõi RSS và Native Memory Tracking (NMT) để phát hiện leak native. Tránh OOMKilled bằng sizing thực tế, không chỉ heap.
+
+> Senior tip: Bật -XX:NativeMemoryTracking=summary và soi NMT output khi RSS cao; thread stack và direct buffer là thủ phạm phổ biến nhất.`,
+  follow: ['Làm sao đọc NMT summary?', 'Virtual threads thay đổi sizing thread stack thế nào?', 'Cách giới hạn direct buffer?'],
+  tags: ['container', 'oom', 'maxrampercentage', 'native-memory', 'kubernetes', 'rss']
+},
+{
+  id: 'jvm-081',
+  topic: 'jvm',
+  level: 'lead',
+  q: 'Dùng JFR để tìm allocation hotspot trên production: quy trình, event, và cách sửa allocation cao.',
+  a: `**Tóm tắt:** Bật JFR continuous, xem Object Allocation event/top allocators, xác định class/method phân bổ nhiều, sửa bằng tái sử dụng object, pooling, hoặc primitive; đo lại allocation rate và GC.
+
+### Cơ chế bên trong
+JFR ghi ObjectAllocationInNewTLAB và ObjectAllocationOutsideTLAB event với stack trace. TLAB (Thread Local Allocation Buffer) là vùng heap nhỏ mỗi thread tự cấp phát nhanh không cần đồng bộ. Allocation ngoài TLAB tốn kém hơn. Top allocators cho biết class/method nào tạo nhiều object.
+
+### Quy trình
+1. Bật JFR: jcmd <pid> JFR.start name=alloc settings=profile duration=60s filename=alloc.jfr
+2. Mở JMC, tab Memory → Top Allocators.
+3. Xem allocation rate (MB/s) và class phân bổ nhiều nhất.
+4. Drill vào stack trace để tìm method.
+5. Sửa: pooling, tái sử dụng, primitive, avoid boxing, StringBuilder.
+6. Đo lại: allocation rate giảm, GC pause giảm.
+
+### Pitfall
+- Overhead JFR ~1-2% CPU; continuous profiling OK nhưng sampling stack trace có chi phí.
+- Allocation event chỉ ghi TLAB refill, không mọi object; cần profile mode.
+- Fix allocation mà không đo → có thể làm chậm hơn (pooling overhead).
+
+### Ví dụ đời thực
+Service parse JSON allocation 2 GB/s, GC pause 15 ms. JFR top allocator: ObjectMapper.readValue tạo HashMap/ArrayList. Chuyển sang streaming parser + reuse buffer → allocation 400 MB/s, GC pause 3 ms, throughput +8%.
+
+### Trả lời mẫu khi phỏng vấn
+Tôi bật JFR continuous với profile settings, xem Top Allocators và stack trace. Xác định method phân bổ nhiều object nhất, thường là boxing, collection creation, JSON parsing. Sửa bằng pooling/reuse/primitive và đo lại allocation rate và GC. Mục tiêu giảm allocation, không chỉ GC tuning.
+
+> Senior tip: Allocation rate là root cause; GC tuning chỉ là workaround. Giảm allocation 50% thường hiệu quả hơn đổi GC.`,
+  follow: ['JFR overhead thực tế là bao nhiêu?', 'TLAB size tuning?', 'So sánh JFR với async-profiler alloc mode?'],
+  tags: ['jfr', 'allocation', 'profiling', 'tlab', 'gc', 'performance']
+},
+{
+  id: 'jvm-082',
+  topic: 'jvm',
+  level: 'lead',
+  q: 'Safepoint không chỉ dùng cho GC: tại sao p99 có lúc spike vài giây dù GC pause ngắn, và RevokeBias (thu hồi biased lock) đóng vai trò gì? Biased locking đã tắt mặc định từ JDK 15, còn cần lo lắng không?',
+  a: `**Tóm tắt:** JVM dừng mọi thread Java tại safepoint không chỉ khi GC, mà còn để dọn dẹp, deoptimization, và thu hồi biased lock (RevokeBias). Nếu một thread không kịp đến safepoint—vì đang trong native code, vòng lặp dài không gọi method, hoặc bị hệ điều hành không cấp CPU lâu—các thread khác phải chờ, gây STW spike mà GC log không ghi pause. Từ JDK 15 biased locking tắt mặc định nên RevokeBias hiếm, nhưng safepoint cleanup và safepoint timeout vẫn xảy ra.
+
+### Cơ chế safepoint, từng bước
+1. Safepoint là điểm tất cả thread Java dừng lại để JVM làm công việc cần toàn bộ thread đồng bộ: GC, deoptimization, thay đổi cờ JIT, dọn biased lock.
+2. Thread đến safepoint khi gặp "safepoint poll" (lệnh kiểm tra ở đầu vòng lặp / trước khi lùi vòng lặp) hoặc khi gọi method.
+3. Nếu một thread đang trong native code, vòng lặp không có poll, hoặc bị OS preempted lâu, nó không đến safepoint → JVM chờ → safepoint timeout / cleanup.
+4. Biased locking: JVM ghi nhận thread "sở hữu" lock để các lần sau không cần khoá. Khi thread khác muốn cùng lock, JVM phải RevokeBias: dừng tại safepoint, thu hồi bias, chuyển lock thành mono-thin hoặc heavy. RevokeBias tốn thời gian và xảy ra tại safepoint.
+5. Từ JDK 15, -XX:+UseBiasedLocking=false mặc định, nên RevokeBias hiếm, nhưng safepoint cleanup và "safepoint timeout" vẫn tồn tại.
+
+~~~text
+Ứng dụng (các thread Java)        VMThread
+   |                                      |
+   |--- chạy Java --->|                  |
+   |                  |  cần safepoint   |
+   |<-----------------|  (tất cả dừng)   |
+   |                  |  làm việc JIT/GC |
+   |--- chạy tiếp --->|                  |
+~~~
+
+### Code: vòng lặp dài khó đến safepoint
+~~~java
+// Vòng lặp không gọi method nào: JVM khó chèn safepoint poll
+long sum = 0;
+for (long i = 0; i < N; i++) {
+    sum += i;   // chỉ tính toán, không có poll
 }
+// Sau khi sửa: chia nhỏ vòng lập hoặc gọi method nhỏ để có poll
+for (long i = 0; i < N; i += BATCH) {
+    long end = Math.min(i + BATCH, N);
+    for (long j = i; j < end; j++) sum += j;
+    touch(); // gọi method nhỏ, cho phép JVM chèn poll
+}
+~~~
+
+### Bảng chuẩn đoán quan sát
+| Công cụ | Dùng khi | Nhược điểm |
+|---|---|---|
+| -XX:+PrintSafepointStatistics | Chẩn đoán STW spike không phải GC | Log nhiều, chỉ bật khi điều tra |
+| -XX:+PrintSafepointTimeouts | Xem thread nào không đến safepoint | Chỉ có khi có sự cố |
+| Giảm native code dài, tránh vòng lặp vô điều kiện | Giúp thread đến sớm safepoint | Cần refactor code |
+
+### Pitfall production
+- Nhóm safepoint spike với GC pause: GC log không có pause nhưng JFR/jstack cho thấy safepoint cleanup.
+- Biased locking đã tắt mặc định JDK 15+, không cần -XX:+UseBiasedLocking nữa; bật nó trên JDK 21 không cần thiết và có thể gây RevokeBias.
+
+### Ví dụ đời thực
+Service xử lý thanh toán, p99 spike 2 giây nhưng lẻ một giờ và GC pause dưới 50 ms. JFR sự kiện jdk.SafepointCleanup thời gian cho thread VMThread và safepoint khoảng 1,8 giây. Điều tra: một luồng tính toán report chạy vòng lặp vài triệu lần không gọi method, không đến safepoint, JVM chờ. Sửa: chia vòng lập nhỏ, gọi method nhỏ giữa chương để JVM chèn poll, hoặc dùng ForkJoinPool chia công việc. Kết quả: safepoint timeout biến mất, p99 ổn định 80 ms.
+
+### Trả lời mẫu khi phỏng vấn
+JVM dừng mọi thread Java tại safepoint không chỉ để GC, mà còn để dọn dẹp, deoptimization, và thu hồi biased lock (RevokeBias). Nếu một thread không kịp đến safepoint—vì đang trong native code, vòng lặp dài không có poll, hoặc bị hệ điều hành không cấp CPU lâu—các thread khác phải chờ, gây STW spike mà GC log không ghi pause. Từ JDK 15 biased locking tắt mặc định nên RevokeBias hiếm, nhưng safepoint cleanup và safepoint timeout vẫn xảy ra. Tôi chẩn đoán bằng JFR sự kiện jdk.SafepointCleanup và -XX:+PrintSafepointStatistics: nếu safepoint khoảng vài giây trong khi GC pause ngắn, gần như chắc có thread "đưa chậm". Cách xử lý là tránh vòng lặp dài không gọi method, hạn chế native code kéo dài, và chia công việc nhỏ để thread đến sớm safepoint. Trong một sự cố, p99 spike 2 giây do một luồng tính toán không đến safepoint; sau khi chia vòng lập nhỏ thì spike biến mất.
+
+> Senior tip: Nếu p99 spike nhưng GC log trong, hãy nghĩ sự cố safepoint không phải GC. Mở JFR sự kiện jdk.SafepointCleanup và -XX:+PrintSafepointStatistics trước khi đổ lỗi cho JIT hoặc GC.`,
+
+  follow: ['Safepoint là gì, và JVM dừng thread tại safepoint để làm công việc gì ngoài GC?',
+           'Tại sao một vòng lặp dài không gọi method có thể làm chậm safepoint?',
+           'Biased locking và RevokeBias là gì, và vì sao JDK 15 tắt nó mặc định?'],
+  tags: ['safepoint', 'biased locking', 'revokebias', 'STW', 'JFR', 'PrintSafepointStatistics']
+},
+{
+  id: 'jvm-083',
+  topic: 'jvm',
+  level: 'senior',
+  q: 'JFR không chỉ theo dõi GC hay cấp phát bộ nhớ: sự kiện jdk.ExecutionSample lấy mẫu stack trace để tìm method tiêu CPU nhất thế nào, và khác ObjectAllocationSample ở điểm nào?',
+  a: `**Tóm tắt:** JFR có sự kiện jdk.ExecutionSample lấy mẫu stack trace theo chu kỳ cố định (mỗi vài miligiây) để biết method nào đang chạy trên CPU và chiếm bao nhiêu tỷ lệ. Điều này khác hoàn toàn ObjectAllocationSample, chỉ ra nơi tạo object. Dùng flame graph để xem call chain, sau đó tối ưu method rộng nhất trên biểu đồ.
+
+### Cấu trúc ExecutionSample, từng bước
+1. JFR có một luồng lấy mẫu theo chu kỳ (ví dụ mỗi 1 ms hoặc 10 ms), chụp stack trace của mỗi thread Java.
+2. Mỗi mẫu gán cho method đang ở đỉnh stack → tính tỷ lệ CPU của method.
+3. Flame graph xếp các stack theo cha/con, chiều rộng = thời gian mẫu, nhìn ngay method nào gọi nhiều hàm con tiêu CPU.
+4. Không phải đọc thời gian thực của một lần gọi, mà là tỷ lệ thời gian CPU mỗi method chiếm.
+
+~~~java
+// Method nghi ngờ tiêu CPU: nén dữ liệu trước khi ghi log
+public String compressPayload(byte[] data) {
+    try (var baos = new java.io.ByteArrayOutputStream();
+         var gzip = new java.util.zip.GZIPOutputStream(baos)) {
+        gzip.write(data);
+        return Base64.getEncoder().encodeToString(baos.toByteArray());
+    }
+}
+~~~
+
+### Bảng chuẩn đoán quan sát
+| Công cụ | Dùng khi | Nhược điểm |
+|---|---|---|
+| JFR jdk.ExecutionSample | Tìm method tiêu CPU trên production liên tục | Overhead 1–2%, chỉ lấy mẫu |
+| async-profiler (cpu/alloc) | Chi tiết hơn, FlameGraph đẹp | Không phải công cụ JDK, cần cài thêm |
+| -XX:+PrintCompilation | Xem JIT dịch bytecode | Không nói method nào tiêu CPU |
+
+### Pitfall production
+- Lấy mẫu quá thường xuyên làm tăng CPU; quá ít thì bỏ lỡ method chạy ngắn.
+- ExecutionSample chỉ thấy method trên stack Java; native code (JNI, GC) không được chia chi tiết.
+- Không lấy mẫu đủ lâu (ít nhất vài phút dưới tải thật) thì kết quả không ổn định.
+
+### Ví dụ đời thực
+Service tính báo cáo tài chính, CPU trung bình 85% nhưng không biết method nào tiêu. Bật JFR profile 10 phút, JMC flame graph cho thấy com.app.ReportBuilder.formatCell chiếm 32% mẫu CPU vì dùng regex replaceAll trong vòng lặp 50.000 ô. Sửa: compile regex trước bằng Pattern, dùng StringBuilder thay vì nối chuỗi, giảm 50.000 lệnh gọi xuống 1 lệnh gọi. Kết quả: CPU từ 85% xuống 55%, p99 báo cáo từ 4 giây xuống 1,2 giây, throughput gấp gần 2.
+
+### Trả lời mẫu khi phỏng vấn
+JFR không chỉ dùng để theo dõi GC hay cấp phát bộ nhớ; sự kiện jdk.ExecutionSample lấy mẫu stack trace theo chu kỳ cố định (mỗi vài miligiây) để biết method nào đang chạy trên CPU và chiếm bao nhiêu tỷ lệ. Điều này khác hoàn toàn ObjectAllocationSample, chỉ ra nơi tạo object. Tôi bật JFR bằng settings=profile trong 10–15 phút dưới tải thật, mở JMC xem flame graph, rồi tối ưu method rộng nhất trên biểu đồ—thường là vòng lặp với regex, nối chuỗi, hoặc tính toán lặp lại. Lưu ý lấy mẫu quá thường xuyên làm tăng CPU, quá ít bỏ lỡ method chạy ngắn, và ExecutionSample không thấy chi tiết native code/JNI. Trong một ca báo cáo tài chính, flame graph chỉ ra một method tạo regex trong vòng lặp chiếm 32% CPU; sau khi compile Pattern trước và dùng StringBuilder, CPU giảm từ 85% xuống 55% và p99 báo cáo từ 4 giây xuống 1,2 giây.
+
+> Senior tip: ExecutionSample tìm "method nào chạy CPU", còn ObjectAllocationSample tìm "method nào tạo rác". Hai sự kiện bổ trợ nhau: nếu CPU cao nhưng allocation thấp, hãy nhìn vào tính toán chứ không phải bộ nhớ.`,
+
+  follow: ['jdk.ExecutionSample khác jdk.ObjectAllocationSample ở điểm nào?',
+           'Flame graph trong JMC đọc như thế nào để tìm method nóng?',
+           'Lấy mẫu JFR quá thường xuyên ảnh hưởng gì, và lấy mẫu quá ít bỏ lỡ gì?'],
+  tags: ['JFR', 'ExecutionSample', 'CPU profiling', 'flame graph', 'JMC', 'profiling']
+},
+{
+  id: 'jvm-084',
+  topic: 'jvm',
+  level: 'senior',
+  q: 'Code cache đầy thì ra sao: JIT tắt, throughput tụt, nhưng heap vẫn còn trong. Chuẩn đoán và xử lý như thế nào?',
+  a: `**Tóm tắt:** Code cache là vùng nhớ cố định (mặc định khoảng 240 MB) JIT C1/C2 lưu mã máy dịch từ bytecode. Khi vùng này đầy, JVM in "CodeCache is full. Compiler has been disabled." và các method mới chỉ chạy bằng trình thông dịch, throughput tụt và latency tăng dù heap vẫn còn trong. Dùng -XX:ReservedCodeCacheSize, -XX:+PrintCodeCache để quan sát.
+
+### Cấu trúc code cache, từng bước
+1. C2 dịch các method nóng thành mã máy, lưu vào code cache.
+2. Code cache có kích thước cố định; khi đầy, JVM không thể dịch method mới.
+3. Hiện tượng: "CodeCache is full. Compiler has been disabled." — các method mới chỉ chạy bằng trình thông dịch, throughput giảm.
+4. Vòng lặp deopt → dịch lại → code cache đầy làm tình trạng tệ hơn.
+5. Có thể tăng -XX:ReservedCodeCacheSize hoặc dùng -XX:CodeCacheMinimumFreeSpace, -XX:CodeCacheExpansionSize.
+
+~~~java
+// Nhiều loại class khác nhau gọi cùng một điểm: C2 dịch mã máy cho từng class
+interface Handler { void handle(Object o); }
+class A implements Handler { public void handle(Object o) {} }
+class B implements Handler { public void handle(Object o) {} }
+// Nhiều proxy / class động sinh ra => thêm mã máy vào code cache
+~~~
+
+### Bảng chuẩn đoán xử lý
+| Công cụ | Dùng khi | Nhược điểm |
+|---|---|---|
+| -XX:+PrintCodeCache | Xem code cache dùng bao nhiêu / còn trống | Log khá nhiều |
+| -XX:ReservedCodeCacheSize=N | Tăng kích thước code cache | Tốn RAM, chỉ trì hoãn vấn đề |
+| Giảm số class nạp động / tránh proxy sinh class nhiều | Giảm mã máy sinh ra | Cần thay đổi thiết kế |
+| -XX:+PrintCodeCacheOnCompilation | Xem từng method được dịch và vị trí | Rất chi tiết, chỉ dùng khi chẩn đoán |
+
+### Pitfall production
+- Nhóm code cache full với heap OOM: log có dòng "CodeCache is full", không phải OutOfMemoryError: Java heap space.
+- Tăng code cache vô hạn không sửa vấn đề nạp class sinh mã máy (proxy, dynamic class) chỉ trì hoãn.
+- Code cache đầy làm C2 bị tắt, các method nóng chạy bằng trình thông dịch → latency xấu.
+
+### Ví dụ đời thực
+Service Spring Boot chạy qua 3 tuần, throughput giảm dần 40%, p99 từ 50 ms lên 300 ms, heap ổn định 1,2 GB / 4 GB. GC log không có Full GC. Lỗi trong stdout: "CodeCache is full. Compiler has been disabled." -XX:PrintCodeCache cho thấy code cache 240 MB dùng hết. Nguyên nhân: nhiều proxy class sinh ra mỗi khi khởi tạo tenant (đa tenant, mỗi tenant một config class), C2 dịch mã máy cho từng class. Sửa: tăng -XX:ReservedCodeCacheSize lên 512 MB, cùng lúc hạn chế sinh class động, dùng Caffeine thay vì tạo class mới. Kết quả: code cache ổn định 320/512 MB, throughput về mức ban đầu, không còn thông báo code cache đầy.
+
+### Trả lời mẫu khi phỏng vấn
+Code cache là vùng nhớ cố định (mặc định khoảng 240 MB) JIT C1/C2 lưu mã máy dịch từ bytecode. Khi vùng này đầy, JVM in "CodeCache is full. Compiler has been disabled." và các method mới chỉ chạy bằng trình thông dịch, khiến throughput tụt và latency tăng dù heap vẫn còn trong. Tôi phát hiện bằng -XX:+PrintCodeCache hoặc dòng thông báo trong stdout/stderr, không qua OutOfMemoryError. Nguyên nhân thường là nạp quá nhiều class động (proxy, bytecode weaving, đa tenant sinh class mỗi tenant) hoặc vòng lặp deopt-dịch liên tục. Cách xử lý là tăng -XX:ReservedCodeCacheSize, cùng lúc hạn chế sinh class động và ổn định profile để C2 không dịch lại liên tục. Trong một sự cố Spring Boot đa tenant, code cache 240 MB đầy sau 3 tuần do sinh class config cho mỗi tenant; tôi tăng lên 512 MB và hạn chế class động, throughput về mức ban đầu và không còn thông báo code cache đầy.
+
+> Senior tip: Code cache đầy không báo trong GC log, mà in "CodeCache is full" ở stdout/stderr. Nếu p99 xấu nhưng heap ổn định, hãy xem code cache trước.`,
+
+  follow: ['Code cache full khác OutOfMemoryError: Java heap space ở điểm nào, và log hiển thị gì?',
+           'Vì sao tăng -XX:ReservedCodeCacheSize chỉ là khắc phục tạm thời nếu còn nạp class động?',
+           'Đặc trưng nào trong stdout hoặc stderr biết code cache đã đầy?'],
+  tags: ['code cache', 'JIT', 'C1', 'C2', 'ReservedCodeCacheSize', 'PrintCodeCache', 'throughput']
+},
+{
+  id: 'jvm-085',
+  topic: 'jvm',
+  level: 'senior',
+  q: 'Hệ thống khớp lệnh cần p99 dưới 1 ms: chọn GC nào (G1 hay Generational ZGC), làm sao giảm allocation trên hot path, và đo bằng GC log/JFR ra số liệu trước/sau thế nào?',
+  a: `**Tóm tắt:** Khớp lệnh đòi hỏi p99 dưới 1 mili giây, nên mỗi miligiây bị GC đóng cửa đều có thể làm p99 trượt khỏi ngạch. Generational ZGC (Java 21+) giữ pause dưới 1 mili giây gần như không phụ thuộc kích thước heap vì nhiều pha dọn rác chạy đồng thời với ứng dụng, còn G1 có thể spike 50–200 miligiây khi mixed GC dọn nhiều region cùng lúc. Hai hướng tối ưu là chọn GC phù hợp và giảm allocation trên hot path (tránh boxing, dùng kiểu nguyên thủy, tái sử dụng object), vì tốc độ tạo rác quyết định tần suất GC. Đo bằng GC log (-Xlog:gc*) và JFR (sự kiện jdk.GCPhasePause, jdk.ObjectAllocationSample), rồi so sánh số liệu trước và sau khi tối ưu.
+
+### Vì sao GC ảnh hưởng trực tiếp tới p99
+Hãy hình dung một quán ăn phổ thông: bếp nấu ăn liên tục, nhưng cứ một lát lại phải đóng cửa vài phút để dọn bẩn và rửa bát. Trong thời gian đóng cửa, khách mới không được phục vụ — đó chính là stop-the-world (STW), ứng dụng dừng hoàn toàn trong khi GC làm việc. Càng nhiều object được tạo ra trên đường xử lý nóng, càng nhiều rác rải, GC phải chạy thường xuyên và pause dài hơn. Nhầm lẫn lớn là nghĩ chỉHeap lớn là ổn; thực tế tốc độ tạo object (allocation rate) mới là kẻ quyết định tần suất GC.
+
+Mỗi lệnh khớp có thể tạo hàng chục object tạm (đơn hàng, kết quả khớp, sự kiện…). Với 50.000 lệnh/giây, đó là triệu object tạm mỗi phút, đủ để GC chiếm đáng kể phần CPU và đẩy p99 lên. Young GC dọn Eden thường xuyên và nhanh (vì đa số object chết trẻ), nhưng nếu allocation rate cao, object bị promote lên old gen nhanh, old gen đầy, rồi mixed GC hoặc full GC dùng pause dài. Trong khớp lệnh, một lệnh khớp có thể tạo hàng chục object tạm (Order, MatchResult, Event…). Với 50.000 lệnh/giây, đó là triệu object tạm mỗi phút, đủ để GC chiếm đáng kể phần CPU và làm p99 tăng.
+
+### G1 so với Generational ZGC
+| Tiêu chí | G1 (mặc định Java 9+) | Generational ZGC (Java 21+) |
+|---|---|---|
+| Cơ chế | Chia heap thành region, dọn theo chunk (young GC + mixed GC) | Đánh dấu và dọn rác đồng thời, heap tách young/old |
+| Pause typica | 10–50 ms, mixed GC có thể spike 50–200 ms | Dưới 1 ms, gần như không phụ thuộc heap size |
+| Phù hợp | Cân bằng latency/throughput, heap vừa và lớn | Latency nhạy (p99 < 1–10 ms), heap lớn |
+| Chi phí | ít thread GC | Có thread GC chạy song song, tốn thêm CPU |
+
+Lưu ý quan trọng: G1 chỉ có lý thuyết pause thấp, MaxGCPauseMillis là mục tiêu hướng dẫn không phải cam kết cứng. Khi heap lớn (vài GB đến mười GB), mixed GC của G1 thường spik vượt ngạch. ZGC dùng barrier (mã nhỏ JIT chèn vào mỗi lần đọc/ghi reference) và colored pointer để dọn rác khi ứng dụng vẫn chạy, nên pause ngắn ổn định. Trade-off: ZGC tốn thêm CPU cho các thread GC concurrent, và nếu CPU đã sát trần thì throughput có thể giảm so với G1.
+
+### Giảm allocation trên hot path
+Mục tiêu là giảm object tạm tạo ra trong vòng lặp khớp lệnh. Ví dụ sai: dùng Integer autoboxing trong comparator, tạo String cho mỗi tick, tạo MatchResult object mới cho mỗi lệnh.
+
+~~~java
+// HÀN CHE: tạo object mới trên mỗi lệnh khớp
+public MatchResult match(Order buy, Order sell) {
+    long price = buy.getPrice();
+    long qty = Math.min(buy.getQty(), sell.getQty());
+    String side = buy.getSide();          // tốn String mỗi lệnh
+    Integer id = orderIdGen.nextId();     // autoboxing int sang Integer
+    MatchResult r = new MatchResult(side, price, qty, id);
+    return r;
+}
+
+// ĐÚNG: dùng primitive nguyên thủy, không tạo object trên đường nóng
+public void match(long buyPrice, long sellPrice, long buyQty, long sellQty) {
+    long traded = Math.min(buyQty, sellQty);   // không tạo object
+    // ghi trực tiếp vào mảng/ring buffer, không boxing
+}
+~~~
+
+Giải thích code: đoạn đúng dùng long nguyên thủy, không tạo String hay Integer, vì mỗi object mới là một nháns rác sẽ phải bị GC dọn. Tại volume cao, giảm allocation từ chục object/lệnh xuống gần không đổi tần suất GC rõ rệt. Các kỹ thuật khác: dùng mảng thuần (long[], int[]) thay vì List<Object>, không nối chuỗi trong vòng lặp nóng, và tách đường nhịp (fast path) khỏi đường chậm (ghi log, gửi thông báo).
+
+### Đo bằng GC log và JFR
+Bật GC log khi khởi động:
+
+-Xlog:gc*:file=/logs/gc-%p.log:time,uptime,level,tags:filecount=5,filesize=20m
+
+Cách đọc: dòng Pause Young (Mixed) 400M->150M(2048M) 85ms cho thấy pause 85 ms — đã vượt ngạch 1 ms. Xem allocation rate (tốc độ tạo object, MB/s) trong sự kiện JFR jdk.ObjectAllocationSample hoặc tính từ heap trước/sau mỗi young GC chia thời gian.
+
+Với ZGC:
+
+-XX:+UseZGC -XX:+ZGenerational -Xlog:gc*,safepoint:file=/logs/gc.log:time
+
+JFR: bật default recording (overhead khoảng 1%) và xem sự kiện jdk.GCPhasePause (thời gian từng pha GC) và jdk.GCHeapSummary (kích thước heap sau GC). So sánh trước/sau: trước khi tối ưu, allocation rate 1.2 GB/s và mixed GC pause 60–120 ms; sau khi giảm allocation và đổi ZGC, allocation rate rơi xuống 200 MB/s, pause ZGC 0.3–0.8 ms, p99 khớp lệnh từ 120 ms xuống 3 ms.
+
+### Ví dụ đời thực
+Sàn giao dịch chứng khoán xử lý 40.000 lệnh/giây, heap 8 GB, dùng G1 mặc định. Triệu chứng: p99 khớp lệnh 95 ms, thường xuyên spike lên 300 ms vào 14h–15h (giờ cao điểm). Điều tra: GC log cho thấy mixed GC mỗi 20 phút, pause 90–150 ms; JFR cho thấy allocation rate 1.5 GB/s chủ yếu do tạo OrderEvent object cho mỗi lệnh. Sửa: (1) đổi sang Generational ZGC, (2) tái sử dụng buffer byte[] và dùng long[] thay vì List<Order> trên đường khớp, (3) không log chi tiết mỗi lệnh. Kết quả: allocation rate 300 MB/s, pause ZGC 0.4 ms, p99 khớp lệnh 2,5 ms, CPU giảm 12%. Theo dõi 30 ngày không còn spike p99 vượt 1 ms ngoài giai đoạn khởi động.
+
+### Trả lời mẫu khi phỏng vấn
+"Với mục tiêu p99 dưới 1 ms, tôi chọn Generational ZGC trên Java 21 vì pause dưới 1 ms gần như không phụ thuộc heap, trong khi G1 có thể spike 50–200 ms khi mixed GC. Cùng với đó tôi giảm allocation trên hot path: tránh autoboxing Integer, dùng long nguyên thủy và mảng thuần thay vì danh sách object, tái sử dụng buffer thay vì tạo object mỗi lệnh. Tốc độ tạo rác thấp thì GC chạy ít hơn, p99 ổn định hơn. Tôi đo bằng GC log (-Xlog:gc*) và JFR sự kiện GCPhasePause, ObjectAllocationSample, rồi so sánh allocation rate và pause trước/sau. Trên sàn xử lý 40k lệnh/giây, đổi ZGC và giảm allocation giúp p99 khớp lệnh từ 95 ms xuống 2,5 ms. Trade-off là ZGC tốn thêm CPU cho thread GC concurrent, nên tôi chỉ đổi khi đã đo CPU còn dư."
+
+> Senior tip: p99 dưới 1 ms không đạt được chỉ bằng đổi GC — nếu allocation rate cao, ZGC cũng bị allocation stall (thread cấp phát phải chờ GC dọn). Luôn giảm allocation trước, sau đó mới chọn collector, và phải theo dõi cả CPU (GC thread có thể tranh CPU với ứng dụng).`,
+  follow: [
+    'Allocation stall của ZGC là gì và xử lý ra sao?',
+    'Vì sao MaxGCPauseMillis của G1 chỉ là mục tiêu không phải cam kết?',
+    'JFR sự kiện nào giúp thấy allocation rate cao nhất?'
+  ],
+  tags: ['gc', 'zgc', 'g1', 'allocation', 'latency', 'jfr', 'jd-2026-12'],
+  refs: [
+    { type: 'doc', title: 'JEP 439: Generational ZGC', url: 'https://openjdk.org/jeps/439' },
+    { type: 'doc', title: 'HotSpot Garbage Collection Tuning Guide (JDK 21)', url: 'https://docs.oracle.com/en/java/javase/21/gctuning/' },
+  ]
+},
+{
+  id: 'concurrency-096',
+  topic: 'concurrency',
+  level: 'lead',
+  q: 'Ring buffer kiểu LMAX Disruptor nhanh hơn BlockingQueue ở điểm nào: nguyên lý single-writer, padding/@Contended tránh false sharing thế nào, và khi nào KHÔNG cần áp dụng?',
+  a: `**Tóm tắt:** Ring buffer kiểu Disruptor nhanh vì mỗi ô dữ liệu chỉ có một thread ghi (single-writer), nên không cần khoá hay CAS trên mỗi lần ghi, và các ô ghi được đẩy vào các cache line khác nhau bằng padding/@Contended để tránh false sharing (hai thread ghi vào biến khác nhau nhưng chung một block 64 byte của CPU làm cache line bị chuyền qua lại giữa các core). Không áp dụng khi tranh chấp thấp, dữ liệu ít ghi, hoặc độ phức tạp vượt quá lợi ích.
+
+### Hiểu nhanh
+Hãy tưởng tượng một bảng ghi công trên tường nhà máy. Nếu mỗi công nhân ghi vào một cột riêng và không ai cùng cột, họ không cần chờ nhau — đó là single-writer. Ngược lại, BlockingQueue giống một sổ chấm công duy nhất: mỗi người vào ghi phải lấy chìa khoá sổ, người khác đứng đợi. False sharing giống hai người viết vào hai cột khác nhau nhưng trên cùng một tờ giấy, và luật là mỗi lúc chỉ một người được cầm tờ — họ không ghi đè lên nhau, vậy mà cứ phải chuyển tờ qua lại liên tục, nên cả hai đều chậm. Padding/@Contended giống cho mỗi người một tờ giấy riêng.
+
+### Nguyên lý single-writer (từng bước)
+1. Ring buffer là một mảng tròn (circular buffer) gồm nhiều slot, mỗi slot lưu một sự kiện (ví dụ tick giá).
+2. Có một producer duy nhất (single-writer): nó ghi sự kiện vào slot theo thứ tự sequence, không ai khác ghi vào cùng slot đó.
+3. Vì chỉ một thread ghi mỗi slot, không cần synchronized hay lock trên dữ liệu; producer chỉ cập nhật một biến sequence bằng volatile/CAS rẻ.
+3. Các consumer đọc theo sequence của chính mình, mỗi consumer biết được slot nào đã ghi xong qua biến sequence (visibility nhờ volatile).
+4. Không có lock nên không có thread bị park, không có context switch do tranh chấp khoá, độ trễ định lượng rất thấp.
+
+~~~text
+Slot: [tick#1][tick#2][tick#3][tick#4]  <- mảng tròn
+Producer (single writer): ghi tick#5 vào slot trống, sequence = 5
+Consumer A: đọc đến sequence 3, đang xử lý tick#3
+Consumer B: đọc đến sequence 4, đang xử lý tick#4
+=> Không ai cùng tranh khoá trên dữ liệu, chỉ xem biến sequence
+~~~
+
+### False sharing và cache line (sơ đồ ASCII)
+CPU không đồng bộ từng biến riêng lẻ, mà đồng bộ theo đơn vị cache line (thường 64 byte trên x86 và ARM server). Khi hai thread ghi vào hai biến khác nhau nhưng nằm chung một line, giao thức MESI buộc line phải chuyển quyền sở hữu độc quyền giữa các core tại mỗi lần ghi — line bị "chuyền qua lại" (ping-pong), throughput giảm mạnh dù không có lock hay data race.
+
+~~~text
+Cache line 64 byte: [ bid (8B) | ask (8B) | padding 48B ]
+Core 1 ghi bid  -> line ở Core 1 = Modified, bản Core 2 = Invalid
+Core 2 ghi ask  -> kéo line về Core 2, Core 1 = Invalid
+Core 1 ghi bid  -> kéo line về lại ... (ping-pong hàng triệu lần/giây)
+Sau khi tách (padding/@Contended):
+[ bid | padding ... ]  [ ask | padding ... ]  -> mỗi core giữ line của mình
+~~~
+
+### Ring buffer vs BlockingQueue (bảng)
+| Tiêu chí | BlockingQueue (Array/Linked) | Ring buffer kiểu Disruptor |
+|---|---|---|
+| Đồng bộ | Lock/CAS trên mỗi put và take | Chỉ cập nhật sequence (volatile/CAS rẻ) |
+| Một slot ghi bởi | Có thể nhiều thread | Đúng một thread (single-writer) |
+| Thread bị park | Có, khi tranh chấp lock | Không, chủ yếu spin nhẹ trên sequence |
+| Độ trễ | Cao hơn do lock contention | Rất thấp, phù hợp low latency |
+| Độ phức tạp | Dễ dùng, có sẵn trong JDK | Phức tạp, phải tự xử lý sequence, consumer |
+
+### padding/@Contended ở mức nguyên lý
+Java cho phép JVM tự đệm quanh field bằng annotation @Contended (package nội bộ), cần biên dịch với --add-exports java.base/jdk.internal.vm.annotation=ALL-UNNAMED và chạy với -XX:-RestrictContended.
+
+~~~java
+import jdk.internal.vm.annotation.Contended;
+
+class TickStats {
+    @Contended volatile long bidUpdates;   // mỗi field được đẩy vào vùng riêng
+    @Contended volatile long askUpdates;
+}
+~~~
+
+Mặc định JVM đệm 128 byte (-XX:ContendedPaddingWidth) để phòng CPU đệm trước theo cặp line. Padding thủ công bằng field long thừa trong cùng class không đáng tin, vì HotSpot tự sắp xếp lại thứ tự field. Cách bền hơn là padding qua kế thừa nhiều tầng class (field của class cha luôn đặt trước field của class con), hoặc dùng thư viện đã làm sẵn (JCTools, Agrona, Disruptor). Cách tốt nhất thường là đổi thiết kế: mỗi thread ghi vào vùng dữ liệu riêng của nó, như LongAdder (mảng Cell, mỗi cell được đánh dấu @Contended).
+
+### Khi KHÔNG cần áp dụng
+- Tranh chấp thấp: ít producer/consumer, lock chưa từng là nút thắt, thì ring buffer phức tạp hơn không mang lại lợi ích thực.
+- Dữ liệu đọc nhiều ghi ít: chi phí quản lý sequence lớn hơn lợi ích của không lock.
+- Critical section ngắn: ghi vào BlockingQueue chỉ vài nano giây, không đáng trả giá thiết kế ring buffer.
+- Cần tính toán phức tạp giữa các slot: ring buffer tối ưu cho ghi/đọc tuần tự, không phải cho truy cập ngẫu nhiên phức tạp.
+- Đ'équipe chưa quen: sai sót về sequence có thể gây consumer bỏ lỡ sự kiện hoặc đọc dữ liệu cũ.
+
+### Ví dụ đời thực
+Sàn giao dịch chứng khoán cập nhật order book 50.000 lần/giây. Ban đầu dùng ArrayBlockingQueue: producer ghi tick vào queue, consumer đọc và cập nhật bảng giá. Triệu chứng: p99 cập nhật bảng giá 3 ms, CPU 90%, perf c2c cho thấy cache line chứa con trỏ head/tail của queue bị bounce 8 triệu lần/giây giữa hai socket. Sửa: thay bằng ring buffer kiểu Disruptor, một producer ghi tick (single-writer), mỗi consumer nhóm theo mã chứng khoán đọc theo sequence của mình, thêm @Contended vào các bộ đếm thống kê. Kết quả: 200.000 cập nhật/giây, p99 bảng giá 0,4 ms, CPU giảm 40%, không còn cache line bounce rõ rệt trên perf c2c.
+
+### Trả lời mẫu khi phỏng vấn
+"Ring buffer kiểu Disruptor nhanh hơn BlockingQueue vì áp dụng single-writer: mỗi ô dữ liệu chỉ một thread ghi, nên không cần khoá hay CAS trên dữ liệu, chỉ cập nhật biến sequence rẻ. Cùng với đó, padding/@Contended đẩy các ô ghi vào các cache line khác nhau để tránh false sharing — tình huống hai thread ghi biến khác nhau nhưng chung block 64 byte, làm cache line chuyền qua lại giữa core và giảm throughput dù không có lock. Tôi từng áp trên sàn cập nhật order book 50k lần/giây: p99 từ 3 ms xuống 0,4 ms, perf c2c xác nhận không còn line bounce. Không áp dụng khi tranh chấp thấp, dữ liệu ít ghi, hoặc độ phức tạp vượt lợi ích; trước khi dùng, phải đo bằng perf c2c hoặc JMH để xác nhận false sharing thực sự là nguyên nhân."
+
+> Senior tip: false sharing hiếm khi là nguyên nhân trong service CRUD, vì I/O và lock tốn hơn nhiều bậc. Chỉ nghĩ đến nó khi thêm thread mà throughput không tăng (thậm chí giảm), CPU vẫn cao và profiler không thấy lock contention. Trước khi dùng @Contended (phụ thuộc API nội bộ, tốn bộ nhớ), hãy thử LongAdder hoặc thiết kế lại để mỗi thread chỉ ghi dữ liệu của riêng mình.`,
+  follow: [
+    'Vì sao padding bằng field thừa trong cùng một class không đáng tin, còn padding qua kế thừa thì có?',
+    'LongAdder tránh false sharing và contention thế nào, đánh đổi gì so với AtomicLong?',
+    'Single-writer ring buffer xử lý nhiều consumer cùng đọc dữ liệu như thế nào?'
+  ],
+  tags: ['false sharing', 'single writer', 'disruptor', 'ring buffer', 'blocking queue', 'contended', 'cache line', 'jd-2026-12'],
+  refs: [
+    { type: 'doc', title: 'JEP 142: Reduce Cache Contention on Modern Hardware', url: 'https://openjdk.org/jeps/142' }
+  ]
+},
+{
+  id: 'concurrency-097',
+  topic: 'concurrency',
+  level: 'senior',
+  q: 'Profiling CPU và bộ nhớ trên production: JFR, async-profiler, VisualVM/JProfiler dùng lúc nào, overhead bao nhiêu, và quy trình tìm method nóng và rò rỉ bộ nhớ như thế nào?',
+  a: `**Tóm tắt:** Chọn công cụ theo mục tiêu, không dùng một công cụ cho mọi việc. JFR chạy liên tục trên production với overhead khoảng 1%, là hộp đen để xem lại sự cố đã qua. async-profiler lấy mẫu stack mà không cần safepoint, overhead thấp, dùng để vẽ flame graph tìm method nóng (cpu), tìm chờ đợi (wall), tìm tạo rác (alloc) và tranh chấp khoá (lock). VisualVM/JProfiler attach vào quá trình chạy, overhead cao, chỉ dùng staging hoặc khẩn cấp. Quy trình tìm method nóng: top -H lấy thread đốt CPU, jstack đọc stack, async-profiler flame graph, JFR sự kiện chi tiết. Tìm rò rỉ bộ nhớ: heap dump, MAT Dominator Tree theo retained size, Path to GC Roots, so sánh hai dump cách nhau vài giờ.
+
+### Bảng so sánh công cụ profiling
+| Công cụ | Khi dùng | Overhead | Nhược điểm |
+|---|---|---|---|
+| JFR | Chạy liên tục production, xem lại sự cố đã qua | ~1% (mặc định) | Cần JDK 11+, phân tích bằng JMC hoặc jfr |
+| async-profiler | Điều tra ngắn, flame graph, native/kernel frame | Thấp (mẫu 10 ms) | Chỉ xem dữ liệu khi đang chạy, không lưu liên tục |
+| VisualVM / JProfiler | Staging, khẩn cấp attach trực tiếp | Cao | Không nên để chạy lâu trên production |
+
+### Quy trình tìm method nóng (từng bước)
+1. Xác định process đốt CPU nhất bằng top/htop. Trên node có thể có sidecar, agent, không chắc là JVM.
+2. Lấy thread nóng nhất của process đó:
+
+top -H -p <pid>          # xem %CPU từng thread, giả sử TID nóng nhất là 4321
+printf %x 4321           # = 10e1 (JDK 17 trở về trước in nid hex)
+jstack <pid> | grep -A 12 "nid=0x10e1"
+jstack <pid> | grep -A 12 "nid=4321"   # JDK mới hơn: nid thập phân, kèm [4321]
+
+Frame đầu của thread RUNNABLE thường chỉ ra method đang đốt CPU. Nên chụp 3 lần cách nhau vài giây: frame lặp lại ở cả 3 lần mới đáng tin.
+3. Phân loại nguyên nhân từ tên thread: "GC Thread#" là GC (xem jstat -gcutil và GC log), "C2 CompilerThread" là JIT, "http-nio-..." là code nghiệp vụ.
+4. Nếu stack chưa rõ, chạy async-profiler 30 giây lấy flame graph:
+
+asprof -d 30 -e cpu -f flame.html <pid>
+
+Khung rộng nhất (nhiều sample nhất) = chỗ đốt CPU nhiều nhất; Flame graph đã gồm cả native và kernel frame.
+5. Xác nhận bằng JFR nếu có recording liên tục: xem sự kiện jdk.ExecutionSample.
+
+### Quy trình tìm rò rỉ bộ nhớ
+1. Xem xu hướng heap sau GC qua nhiều giờ: old gen đi lên dạng bậc thang là leak chậm.
+2. Rút pod khỏi load balancer, chụp heap dump (jcmd <pid> GC.heap_dump /dumps/heap.hprof). Dump là stop-the-world và file lớn cỡ heap đang dùng.
+3. Mở MAT: Leak Suspects report là điểm khởi đầu nhanh.
+4. Dominator Tree sắp theo Retained Heap: object giữ nhiều bộ nhớ nhất nằm đầu nhánh. Thường là collection có shallow nhỏ nhưng retained khổng lồ.
+5. Path to GC Roots (loại weak/soft reference): biết chính xác field nào đang giữ object, từ đó đối chiếu với code.
+6. Leak tăng chậm: lấy hai dump cách nhau vài giờ, so sánh histogram để thấy class nào tăng đều.
+
+### Ví dụ đời thực
+Service thanh toán Spring Boot trên GKE (Java 17, 4 vCPU, 8 GB) p99 tăng từ 120 ms lên 2,5 s lúc 02:00–04:00 sáng, không có deploy, dashboard không thấy spike CPU hay GC. Chạy async-profiler wall mode với -t (tách theo thread) 60 giây lúc p99 cao. Flame graph wall cho thấy 70% sample nằm trong HikariPool.getConnection, thread HTTP đang WAITING (parking) tại LockSupport.parkNanos <- SynchronousQueue.poll <- HikariPool.getConnection — đang chờ connection rảnh, không phải chờ mạng. CPU profile lúc đó chỉ thấy 15% ở JSON serialization, không nổi bật. Nguyên nhân: batch đồng bộ tồn kho chạy cron 02:00, dùng DataSource chung, chiếm hết 50 connection Hikari trong 2 giờ. Sửa: tách DataSource cho batch (pool 20 connection riêng), thêm Hikari metric pendingThreads alert > 10. Kết quả: p99 quay về 130 ms, batch vẫn chạy xong trong 90 phút. Lần sau dùng alloc mode tìm ra String.format trong vòng lặp tính phí sinh 200 MB/s rác, đổi sang StringBuilder giảm allocation rate 80%, GC young từ 30 giây/lần lên 2 phút/lần.
+
+### Trả lời mẫu khi phỏng vấn
+"Tôi chọn công cụ theo mục tiêu: JFR chạy liên tục production overhead khoảng 1% như hộp đen; async-profiler lấy mẫu không cần safepoint để vẽ flame graph tìm method nóng (cpu), chờ đợi (wall), tạo rác (alloc) và tranh chấp khoá (lock); VisualVM/JProfiler chỉ dùng staging vì overhead cao. Quy trình tìm method nóng: top -H lấy thread đốt CPU, jstack đọc stack, chụp ba lần để chắc, rồi async-profiler flame graph nếu chưa rõ. Tìm rò rỉ bộ nhớ: heap dump, MAT Dominator Tree theo retained size, Path to GC Roots loại weak/soft, so sánh hai dump cách nhau vài giờ cho leak chậm. Tôi từng debug p99 spike lúc 2 sáng: wall mode lộ thread HTTP chờ connection pool 4 giây do batch chiếm hết connection; tách DataSource, thêm alert pendingThreads — p99 từ 2,5 s về 130 ms. Luôn chụp flame graph trước và sau khi sửa để chứng minh bằng số."
+
+> Senior tip: điều tra latency, tôi chạy wall với -t trước cpu. CPU profile chỉ thấy phần thời gian thread thực sự chạy; nếu 80% thời gian request là chờ connection pool thì tối ưu hot method trên flame graph cpu chỉ cải thiện phần nhỏ còn lại. Và JFR là giá trị lớn nhất khi chạy sẵn như hộp đen, đừng chờ có sự cố mới bật.`,
+  follow: [
+    'async-profiler và JFR: khi nào bạn chọn cái nào?',
+    'Safepoint bias là gì và vì sao profiler cổ điển chỉ sai chỗ nóng?',
+    'Flame graph nhiều frame màu vàng (C++ của JVM) có nghĩa là gì?'
+  ],
+  tags: ['jfr', 'async-profiler', 'visualvm', 'jprofiler', 'profiling', 'memory leak', 'jd-2026-12']
+},
+{
+  id: 'concurrency-098',
+  topic: 'concurrency',
+  level: 'senior',
+  q: 'Đẩy dữ liệu thị trường real-time qua WebSocket tới 50.000 client: xử lý backpressure, slow consumer, conflation (gộp tick), mô hình luồng, và Kafka làm nguồn như thế nào?',
+  a: `**Tóm tắt:** Kiến trúc ngược từ Kafka: một publisher đơn luồng đọc Kafka và đẩy vào ring buffer (single-writer), WebSocket server nhóm client theo mã chứng khoán, xử lý slow consumer bằng backpressure (không đẩy khi client chậm) và conflation (gộp nhiều tick cùng mã, chỉ giữ giá mới nhất để giảm tải), mô hình luồng boss–worker/select–io. Không gửi thô từng tick cho từng client.
+
+### Hiểu nhanh
+Hãy tưởng tượng sàn giao dịch giống một bảng tin chứng khoán chạy liên tục. Kafka là nguồn tin thô (mỗi tick là một giá), publisher giống biên tập viên lấy tin từ nhà in và đăng lên bảng, WebSocket server giống nhiều bảng tin nhỏ đặt ở từng khu vực, mỗi bảng chỉ cập nhật mã cổ phiếu mà người dân ở khu vực đó quan tâm. Nếu một khu vực xem chậm (slow consumer), không được đè chậm cả hệ thống — phải chờ hoặc bỏ qua tick cũ, chỉ hiển thị giá mới nhất (conflation). Backpressure là tín hiệu "chậm lại" từ bảng tin ngược về phía nhà in.
+
+### Luồng end-to-end (sơ đồ sequence)
+~~~seq
+title: Giá sàn qua Kafka đến WebSocket client
+actors: Kafka | Publisher | WSServer | Client
+Kafka -> Publisher: gửi tick giá
+Publisher -> RingBuffer: ghi tick (single-writer)
+WSServer -> RingBuffer: đọc tick theo nhóm mã
+WSServer -> Client: gửi giá qua WebSocket
+Client --> WSServer: xác nhận nhận
+note WSServer..Client: slow consumer thì chậm gửi, không đè buffer
+~~~
+
+Giải thích các bước: Kafka phát hành tick giá (mã, giá, thời điểm). Publisher đơn luồng đọc Kafka và ghi vào ring buffer — chỉ một thread ghi nên không cần khoá (single-writer). WebSocket server đọc ring buffer theo nhóm mã chứng khoán, mỗi nhóm xử lý độc lập. Gửi giá qua WebSocket tới client. Nếu client chậm đọc, server không đè vào buffer của client đó mà áp dụng backpressure hoặc conflation.
+
+### Backpressure và slow consumer
+Slow consumer là client đọc chậm hơn tốc độ server gửi, làm buffer gửi của client đó lấp đầy. Có ba cách xử lý:
+1. Backpressure: server chậm tốc độ gửi cho client đó, hoặc không chấp nhận tin mới cho cho đến khi client đọc xong. Tín hiệu chậm lại truyền ngược về publisher, rồi về Kafka (pause phân vùng).
+2. Drop tick cũ: chỉ giữ tick mới nhất, bỏ các tick giữa chừng (dùng cho dữ liệu thời thực giá cổ phiếu — giá cũ không cần thiết).
+3. Ngắt kết nối: nếu client chậm quá ngưỡng (ví dụ 5 giây), ngắt kết nối để bảo vệ hệ thống, client kết nối lại và nạp lại trạng thái.
+
+Quy tắc: không để một client chậm làm chậm hàng chục nghìn client còn lại. Mỗi client phải có buffer gửi riêng và giới hạn.
+
+### Conflation (gộp tick)
+Với 50.000 client và mã chứng khoán thay đổi mỗi vài mili giây, gửi từng tick thô sẽ làm mạng và server nghẹt. Conflation là gộp nhiều tick cùng mã trong một khoảng thời gian (ví dụ 100 ms), chỉ gửi giá mới nhất của mỗi mã. Client nhận ít tin hơn nhưng vẫn thấy giá chính xác tại thời điểm hiển thị.
+
+~~~text
+Tick thô:       VN30F1m 1000 | 1001 | 1000 | 1002  (4 tin trong 100 ms)
+Conflation:     VN30F1m 1002            (chỉ 1 tin, giá mới nhất)
+Lợi ích:        giảm 75% tin nhắn, giảm tải mạng và CPU mã hóa JSON
+~~~
+
+### Mô hình luồng
+- Boss thread: duy nhất, chấp nhận kết nối WebSocket mới (selector accept).
+- Worker threads (I/O): nhóm theo mã chứng khoán, đọc ring buffer và gửi WebSocket frame. Số worker bằng số core hoặc ít hơn, mỗi worker quản lý hàng nghìn kết nối (không một thread cho mỗi client).
+- Publisher: đơn luồng đọc Kafka, ghi ring buffer (single-writer).
+- Không tạo thread mới cho mỗi client: 50.000 thread không thể (mỗi thread stack ~1 MB, RAM cạn kiệt, "unable to create native thread").
+
+### Ví dụ đời thực
+Sàn chứng khoán đẩy giá sàn cho 50.000 khách hàng môi giới, 200 mã chứng khoán, tick xuất hiện mỗi 50 ms. Ban đầu: mỗi client một thread, gửi thô từng tick. Triệu chứng: 50.000 thread, RAM 2,8 GB, p99 cập nhật giá 80 ms, client chậm làm buffer gửi đầy, nhiều client bị ngắt. Redesign: Kafka topic giá (1 phân vùng), publisher đơn luồng ghi ring buffer, 8 worker WebSocket nhóm theo mã, conflation 100 ms, mỗi client buffer 100 tick với backpressure. Kết quả: 50.000 client trên 8 worker, RAM 900 MB, p99 cập nhật giá 15 ms, 0 client bị ngắt do chậm, throughput mạng giảm 75% nhờ conflation. Dashboard: số client đang bị backpressure alert > 50.
+
+### Trả lời mẫu khi phỏng vấn
+"Đẩy giá sàn lên 50.000 client qua WebSocket, tôi thiết kế ngược từ Kafka: publisher đơn luồng đọc Kafka ghi vào ring buffer (single-writer, không khoá), WebSocket server nhóm client theo mã chứng khoán, mỗi client có buffer gửi riêng. Xử lý slow consumer bằng backpressure (chậm gửi hoặc ngắt nếu quá ngưỡng) và conflation (gộp nhiều tick cùng mã trong 100 ms, chỉ gửi giá mới nhất) để giảm 75% tải mạng. Mô hình luồng: một boss thread chấp nhận kết nối, ít worker I/O đọc ring buffer và gửi frame, không một thread cho mỗi client vì 50.000 thread sẽ cạn RAM. Tôi từng triển khai mô hình này: p99 cập nhật giá từ 80 ms xuống 15 ms, 0 client bị ngắt do chậm. Không gửi thô từng tick cho từng client, đó là con đường dẫn tới nghẹt hệ thống."
+
+> Senior tip: conflation là đồng ý mất độ chính xác ngắn hạn (bỏ qua tick trung gian) để đổi lấy độ ổn định hệ thống — chỉ áp cho dữ liệu thời thực như giá cổ phiếu, không áp cho lệnh giao dịch hoặc thanh toán (mỗi tick là dữ liệu quan trọng, không được bỏ). Luôn có metric slow client và alert khi số client bị backpressure vượt ngưỡng.`,
+  follow: [
+    'Slow consumer bị ngắt kết nối thì client khôi phục như thế nào mà không mất dữ liệu quan trọng?',
+    'Conflation áp cho giá thị trường, tại sao không áp cho lệnh khớp lệnh?',
+    '50.000 WebSocket connection trên một server: giới hạn thực tế là gì?'
+  ],
+  tags: ['websocket', 'kafka', 'backpressure', 'slow consumer', 'conflation', 'market data', 'jd-2026-12']
+},
 );
