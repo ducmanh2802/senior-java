@@ -6594,6 +6594,249 @@ SecurityFilterChain api(HttpSecurity http) throws Exception {
 > Senior tip: luôn breakpoint hoặc log {{authentication.getAuthorities()}} sau khi cấu hình converter để xác nhận authority thực tế. Đây là lỗi phổ biến nhất khiến {{hasAuthority("SCOPE_read")}} luôn false dù token có scope read.`
 },
  
+{
+  id: 'qz-security-048',
+  topic: 'security',
+  q: 'Resource server nhận request với JWT access token vẫn đúng chữ ký nhưng claim {{exp}} đã là thời điểm trong quá khứ (token hết hạn 2 phút trước). Server phản hồi thế nào và vì sao?',
+  options: [
+    'Chấp nhận token vì chữ ký vẫn đúng, chữ ký không liên quan thời hạn',
+    'Từ chối với 401, client dùng refresh token lấy access token mới',
+    'Từ chối với 403 Forbidden vì hết quyền',
+    'Chấp nhận nhưng chỉ ghi log cảnh báo'
+  ],
+  answer: 1,
+  explain: `**Đáp án đúng: từ chối với 401, client dùng refresh token lấy access token mới.**
+
+### Vì sao đúng
+JWT access token có claim {{exp}} (expiration) là thời điểm hết hạn dạng Unix timestamp (số giây từ 1970). Khi verify token, resource server không chỉ kiểm tra chữ ký mà còn so {{exp}} với thời gian hiện tại. Token hết hạn nên server trả **401 Unauthorized** (kèm header {{WWW-Authenticate}}). Client (SPA, mobile) bắt 401 rồi gọi endpoint refresh với refresh token để lấy cặp token mới, không cần user nhập lại mật khẩu.
+
+Phân biệt 401 và 403: **401** nghĩa là "chưa xác thực / phiên hết hạn" (thiếu token, chữ ký sai, token hết hạn). **403** nghĩa là "đã xác thực nhưng không đủ quyền". Hết hạn thuộc nhóm 401.
+
+### Vì sao các phương án còn lại sai
+- **Chấp nhận vì chữ ký đúng**: chữ ký chỉ bảo đảm toàn vẹn (không bị sửa), không bảo đảm còn hạn. Bỏ qua {{exp}} khiến token bị đánh cắp dùng được mãi mãi.
+- **403 Forbidden**: 403 dành cho user đã đăng nhập nhưng thiếu quyền; hết hạn là 401.
+- **Chấp nhận + log**: vô hiệu hoá cơ chế hết hạn, mở cửa cho token cũ.
+
+> Senior tip: thêm "leeway" (clock skew) 30-60 giây khi validate {{exp}} để tránh lỗi lệch giờ giữa các server; nhưng đừng đặt quá lớn kẻo kéo dài thời gian sống của token đã hết hạn.`
+},
+{
+  id: 'qz-security-049',
+  topic: 'security',
+  multi: true,
+  q: 'SPA cần lưu token để gọi API. So sánh lưu token trong cookie {{HttpOnly; Secure; SameSite=Lax}} với lưu trong {{localStorage}}. Phát biểu nào đúng? (Chọn 2)',
+  options: [
+    'Cookie HttpOnly không cho JavaScript đọc được token, giảm rủi ro bị đánh cắp qua XSS',
+    'localStorage an toàn hơn cookie vì không gửi kèm mỗi request',
+    'SameSite=Lax giúp giảm CSRF vì cookie không gửi trong request cross-site dạng POST',
+    'Cookie HttpOnly bảo vệ hoàn toàn khỏi mọi tấn công XSS'
+  ],
+  answer: [0, 2],
+  explain: `**Đáp án đúng: HttpOnly chặn JS đọc token (giảm thiệt hại XSS); SameSite=Lax giảm CSRF.**
+
+### Vì sao đúng
+- **HttpOnly**: cờ trên cookie khiến trình duyệt không cho {{document.cookie}} đọc cookie đó. Nếu trang bị XSS, kẻ tấn công vẫn chạy được JS nhưng **không copy được token** ra ngoài, giảm thiệt hại.
+- **SameSite=Lax**: cookie chỉ được gửi khi request cùng site; request POST cross-site (ví dụ form ẩn từ evil.com) không kèm cookie, nên chặn phần lớn CSRF. Lax vẫn cho phép cookie trong điều hướng GET top-level.
+- **localStorage**: JS đọc/ghi tự do, nên XSS copy token dễ dàng. Đây là lý do token trong localStorage rủi ro hơn cookie HttpOnly.
+
+### Vì sao các phương án còn lại sai
+- **localStorage an toàn hơn**: ngược lại, localStorage là mục tiêu đầu tiên của XSS.
+- **HttpOnly bảo vệ hoàn toàn khỏi XSS**: không, XSS vẫn thực thi hành động thay user (gọi API ngay trong trang) dù không đọc được token; HttpOnly chỉ chặn việc trích token.
+
+> Senior tip: không có nơi lưu token là "hoàn hảo". Cookie HttpOnly + Secure + SameSite là mặc định an toàn nhất cho trình duyệt; nếu buộc dùng localStorage (API Bearer thuần) thì phải siết CSP và escape output để chặn XSS.`
+},
+{
+  id: 'qz-security-050',
+  topic: 'security',
+  q: 'Trong OAuth2 Authorization Code Flow, tham số {{state}} gửi kèm request {{/authorize}} có mục đích bảo mật chính là gì?',
+  options: [
+    'Mã hoá access token khi redirect về client',
+    'Lưu refresh token an toàn phía client',
+    'Chống CSRF/login CSRF: client sinh state ngẫu nhiên và so khớp khi nhận callback',
+    'Thay thế hoàn toàn PKCE cho public client'
+  ],
+  answer: 2,
+  explain: `**Đáp án đúng: state chống CSRF bằng cách so khớp giá trị ngẫu nhiên ở bước callback.**
+
+### Vì sao đúng
+Client sinh một chuỗi {{state}} ngẫu nhiên, gửi kèm request {{/authorize}} và lưu lại (session hoặc cookie). Authorization server trả nguyên vẹn {{state}} về {{redirect_uri}} khi callback. Client so {{state}} nhận được với {{state}} đã lưu; không khớp thì từ chối. Cơ chế này chặn **login CSRF / authorization code injection**: kẻ tấn công tự khởi tạo một luồng OAuth rồi ép victim hoàn tất callback bằng code của kẻ tấn công. Bản chất {{state}} là một "nonce" (số dùng một lần) để đối chiếu, **không mã hoá** gì cả.
+
+### Vì sao các phương án còn lại sai
+- **Mã hoá access token**: state không mã hoá; access token cũng không đi qua {{/authorize}}.
+- **Lưu refresh token**: không liên quan; refresh token do bước {{/token}} trả về.
+- **Thay PKCE**: state và PKCE giải quyết hai vấn đề khác nhau. PKCE chống việc authorization code bị chặn; state chống CSRF. Cần dùng **cả hai**.
+
+> Senior tip: luôn bật đồng thời state (ngẫu nhiên, so khớp một lần) và PKCE ({{code_challenge_method=S256}}) cho public client; thiếu state thì vẫn dính login CSRF dù đã có PKCE.`
+},
+{
+  id: 'qz-security-051',
+  topic: 'security',
+  q: 'Hệ thống dùng {{BCryptPasswordEncoder}}. Một user đặt mật khẩu dài 100 ký tự. Phát biểu nào đúng về hành vi của BCrypt với mật khẩu này?',
+  options: [
+    'BCrypt hash toàn bộ 100 ký tự, không có giới hạn',
+    'BCrypt báo lỗi và từ chối mật khẩu quá dài',
+    'BCrypt chỉ dùng 72 byte đầu; phần sau byte 72 bị bỏ qua, hai mật khẩu khác nhau ở phần đuôi có thể cho cùng hash',
+    'BCrypt mã hoá mật khẩu rồi mới hash nên không giới hạn độ dài'
+  ],
+  answer: 2,
+  explain: `**Đáp án đúng: BCrypt chỉ dùng 72 byte đầu, phần dư bị bỏ qua âm thầm.**
+
+### Vì sao đúng
+Thuật toán BCrypt (dựa trên Blowfish) có giới hạn cố định **72 byte** cho đầu vào. Mọi byte sau byte thứ 72 bị **bỏ qua âm thầm**. Hệ quả: hai mật khẩu dài khác nhau nhưng giống hệt nhau ở 72 byte đầu (ví dụ cùng 72 byte rồi một bên thêm "x", một bên thêm "y") sẽ tạo ra **cùng một hash**, nên đăng nhập được bằng cả hai. Đây là cái bẫy "trộn lẫn": hệ thống tưởng đã hash đủ, thực ra đã đánh mất phần đuôi. Lưu ý 72 là **byte** chứ không phải ký tự; ký tự Unicode (tiếng Việt có dấu, emoji) thường chiếm nhiều hơn 1 byte.
+
+### Vì sao các phương án còn lại sai
+- **Hash toàn bộ 100 ký tự**: sai, có giới hạn 72 byte.
+- **Báo lỗi**: BCrypt không báo lỗi, nó cắt âm thầm nên rất khó phát hiện.
+- **Mã hoá rồi hash**: BCrypt không mã hoá; và dù có thì vẫn bị giới hạn đầu vào.
+
+> Senior tip: nếu cần mật khẩu rất dài, hãy pre-hash bằng SHA-256 rồi Base64 trước khi đưa vào BCrypt (kỹ thuật "pre-hash/pepper") để vượt mốc 72 byte; hoặc dùng Argon2id vốn không có giới hạn này.`
+},
+{
+  id: 'qz-security-052',
+  topic: 'security',
+  q: 'Resource server verify JWT nhưng code không cố định (pin) thuật toán, mà đọc {{alg}} từ chính header của token. Kẻ tấn công sửa header thành {{"alg": "none"}} rồi bỏ phần signature. Nếu server tin alg, điều gì xảy ra?',
+  options: [
+    'Token được chấp nhận vì alg none nghĩa là không cần kiểm tra chữ ký',
+    'Server luôn từ chối vì thiếu signature',
+    'Server ném lỗi JSON parse',
+    'Server tự chuyển sang RS256 mặc định'
+  ],
+  answer: 0,
+  explain: `**Đáp án đúng: nếu tin alg=none, server bỏ qua kiểm tra chữ ký và chấp nhận token giả.**
+
+### Vì sao đúng
+{{none}} là thuật toán JWT nghĩa là "không ký". Nếu server để kẻ tấn công tự chọn thuật toán qua header {{alg}} và không pin danh sách thuật toán cho phép, kẻ tấn công đặt {{alg: none}}, sửa payload (ví dụ {{role: admin}}), bỏ signature, thì server verify "thành công" một cách rỗng và chấp nhận. Đây là tấn công **algorithm confusion / alg none** kinh điển. Cách phòng: **pin** thuật toán ở phía server (chỉ cho RS256 hoặc ES256), không bao giờ để token tự quyết định cách verify. Thư viện như Nimbus hay java-jwt đều có API chỉ định cứng thuật toán.
+
+### Vì sao các phương án còn lại sai
+- **Luôn từ chối vì thiếu signature**: chỉ đúng khi server pin thuật toán; nếu tin alg thì không.
+- **JSON parse error**: token vẫn là JSON hợp lệ, parse không lỗi.
+- **Chuyển RS256 mặc định**: không có cơ chế đó; server làm theo đúng alg trong token.
+
+> Senior tip: trong Spring Security, cấu hình {{JwtDecoder}} với thuật toán cố định ({{NimbusJwtDecoder.withRsaPublicKey(...)}} hoặc {{withSecretKey(...)}}) để server pin RS256/ES256. Luôn có test token {{alg:none}} phải bị 401.`
+},
+{
+  id: 'qz-security-053',
+  topic: 'security',
+  multi: true,
+  q: 'Ứng dụng dùng MyBatis. So sánh cú pháp #{param} và ${param} trong mapper XML, kèm lưu ý khi ORDER BY động. Phát biểu nào đúng? (Chọn 2)',
+  options: [
+    'Cú pháp #{param} dùng PreparedStatement binding, giá trị được escape an toàn, chống SQL injection',
+    'Cú pháp ${param} nối thẳng chuỗi vào SQL, dễ SQL injection; với ORDER BY động phải whitelist cột',
+    'Cú pháp ${param} cũng an toàn như #{param} vì MyBatis tự escape mọi giá trị',
+    'ORDER BY không bao giờ dùng được #{param}, nên bắt buộc dùng ${param} và không cần kiểm tra gì'
+  ],
+  answer: [0, 1],
+  explain: `**Đáp án đúng: #{param} binding an toàn; \${param} nối chuỗi nguy hiểm, ORDER BY cần whitelist.**
+
+### Vì sao đúng
+Cú pháp #{param} sinh placeholder ? và bind qua PreparedStatement, nên driver escape giá trị, an toàn với mọi input. Cú pháp \${param} thay thẳng văn bản vào câu SQL trước khi gửi xuống DB, nên nếu param đến từ user thì sinh SQL injection. ORDER BY là **phần cú pháp** của câu SQL, không bind được bằng ?, nên MyBatis buộc dùng \${param} cho sort. Chính vì vậy với ORDER BY động **phải whitelist** giá trị sort ở server (map từ enum/mã cố định) trước khi đưa vào \${param}. Kết hợp đúng: WHERE luôn dùng #{param}, \${param} chỉ xuất hiện ở sort/tên bảng đã whitelist.
+
+### Vì sao các phương án còn lại sai
+- **\${param} an toàn như #{param}**: sai, \${param} là nối chuỗi thô, không escape.
+- **ORDER BY bắt buộc \${param} và không cần kiểm tra**: vế "không cần kiểm tra" sai; chính vì dùng \${param} nên càng phải whitelist.
+
+> Senior tip: quy ước an toàn: WHERE luôn dùng #{param}, \${param} chỉ dùng cho ORDER BY/tên bảng với giá trị map từ enum cố định. Review code mà thấy \${param} nhận input trực tiếp từ request là red flag.`
+},
+{
+  id: 'qz-security-054',
+  topic: 'security',
+  q: 'Endpoint DELETE /admin/users/{id} chỉ yêu cầu user đã đăng nhập (authenticated) mà không kiểm tra role. Một user thường đăng nhập vẫn gọi được API này và xoá user khác. Lỗi này thuộc loại nào và cách sửa cốt lõi?',
+  options: [
+    'Lỗi CSRF; sửa bằng CSRF token',
+    'Lỗi SQL injection; sửa bằng PreparedStatement',
+    'Broken Function Level Authorization (thiếu kiểm tra quyền theo vai trò); sửa bằng {{@PreAuthorize("hasRole(ADMIN)")}} hoặc kiểm tra role ở server',
+    'Lỗi IDOR do dùng UUID; sửa bằng đổi sang Long'
+  ],
+  answer: 2,
+  explain: `**Đáp án đúng: thiếu kiểm tra vai trò (function-level authorization); sửa bằng @PreAuthorize hasRole.**
+
+### Vì sao đúng
+Xác thực (authentication) trả lời "bạn là ai"; phân quyền (authorization) trả lời "bạn được làm gì". Endpoint chỉ kiểm tra authenticated nên **mọi** user đã đăng nhập đều gọi được, đây là **Broken Function Level Authorization** (thiếu phân quyền theo chức năng/vai trò). Sửa cốt lõi là bắt buộc role ở phía server. Spring có method security:
+~~~java
+@EnableMethodSecurity
+class SecurityConfig {}
+
+@PreAuthorize("hasRole('ADMIN')")
+@DeleteMapping("/admin/users/{id}")
+public void deleteUser(@PathVariable Long id) { /* ... */ }
+~~~
+Ngoài ra có thể dùng {{authorizeHttpRequests}} với {{requestMatchers("/admin/**").hasRole("ADMIN")}}. Không dựa vào việc ẩn nút trên UI.
+
+### Vì sao các phương án còn lại sai
+- **CSRF**: đây là user hợp lệ chủ động gọi, không phải giả mạo request cross-site.
+- **SQL injection**: không liên quan tới câu SQL.
+- **IDOR do UUID**: đây là lỗi phân quyền theo vai trò (ngang dọc), không phải truy cập object theo ID; đổi Long/UUID không sửa được.
+
+> Senior tip: khi phỏng vấn hãy tách bạch authentication vs authorization. Bật {{@EnableMethodSecurity}} và phủ @PreAuthorize cho mọi endpoint admin; viết test: user thường gọi /admin phải nhận 403.`
+},
+{
+  id: 'qz-security-055',
+  topic: 'security',
+  q: 'App dùng session cookie và đặt {{SameSite=Lax}} để chống CSRF. Phát biểu nào đúng về giới hạn của SameSite so với CSRF token?',
+  options: [
+    'SameSite=Lax loại bỏ hoàn toàn CSRF, không cần token nữa',
+    'SameSite=Lax chặn phần lớn CSRF cross-site nhưng không phải lá chắn tuyệt đối; nên kết hợp CSRF token',
+    'SameSite chỉ ảnh hưởng cookie, không liên quan gì tới CSRF',
+    'SameSite=Strict khiến cookie gửi trong mọi request nên an toàn hơn Lax'
+  ],
+  answer: 1,
+  explain: `**Đáp án đúng: SameSite=Lax giảm mạnh CSRF nhưng không tuyệt đối; nên kết hợp CSRF token.**
+
+### Vì sao đúng
+SameSite=Lax khiến cookie không được gửi trong các request POST/PUT/DELETE cross-site, nên chặn phần lớn CSRF. Nhưng vẫn còn khe hở: (1) cookie vẫn gửi trong điều hướng GET top-level, nên endpoint GET gây side-effect vẫn có thể bị lợi dụng; (2) "same-site" khác "same-origin", một subdomain bị chiếm (ví dụ evil.congty.com) vẫn tính là same-site và gửi được cookie; (3) trình duyệt cũ không hỗ trợ SameSite. Vì vậy chuẩn mực vẫn là **CSRF token** (synchronizer token) kết hợp SameSite để phòng thủ nhiều lớp.
+
+### Vì sao các phương án còn lại sai
+- **Loại bỏ hoàn toàn**: không, còn khe hở GET và same-site subdomain.
+- **Không liên quan**: sai, SameSite là một lớp phòng CSRF.
+- **Strict gửi mọi request**: ngược lại, Strict gửi **ít** cookie nhất (chỉ same-site), và còn làm hỏng luồng đăng nhập khi user bấm link từ site khác.
+
+> Senior tip: phòng thủ theo lớp: CSRF token + SameSite + kiểm tra Origin/Referer cho request state-changing. Đừng trông cậy một biện pháp duy nhất.`
+},
+{
+  id: 'qz-security-056',
+  topic: 'security',
+  multi: true,
+  q: 'API có cấu hình CORS. Phát biểu nào đúng về CORS và bảo mật? (Chọn 2)',
+  options: [
+    'CORS chặn được request từ curl/attacker vì họ cũng phải tuân theo chính sách',
+    'CORS chỉ điều khiển việc trình duyệt cho JS trang khác đọc response; không phải cơ chế xác thực',
+    'Đặt {{Access-Control-Allow-Origin: *}} cùng {{Access-Control-Allow-Credentials: true}} là cấu hình sai',
+    'CORS bảo vệ server khỏi SQL injection'
+  ],
+  answer: [1, 2],
+  explain: `**Đáp án đúng: CORS chỉ là chính sách phía trình duyệt (không xác thực); ACAO * kèm credentials là sai.**
+
+### Vì sao đúng
+CORS (Cross-Origin Resource Sharing) là cơ chế **của trình duyệt**: nó quyết định JS của origin A có được đọc response từ origin B hay không. CORS **không** xác thực danh tính và **không** chặn được client không phải trình duyệt (curl, Postman, server-to-server bỏ qua CORS hoàn toàn). Mục đích CORS là nới lỏng Same-Origin Policy một cách có kiểm soát, không phải để bảo mật. Cấu hình {{Access-Control-Allow-Origin: *}} cho phép mọi origin; kết hợp {{Access-Control-Allow-Credentials: true}} (cho gửi cookie) là mâu thuẫn và trình duyệt sẽ từ chối. Nếu server cố tình echo lại Origin kèm credentials thì biến thành lỗ hổng đọc dữ liệu cross-site.
+
+### Vì sao các phương án còn lại sai
+- **CORS chặn curl**: sai, curl không thực thi CORS; attacker gọi API trực tiếp thoải mái.
+- **CORS chống SQL injection**: không liên quan, SQLi là lỗi tầng dữ liệu.
+
+> Senior tip: whitelist origin cụ thể cho API có cookie, đừng để dấu *; và nhớ CORS không thay thế authorization, endpoint vẫn phải kiểm tra token và quyền ở server.`
+},
+{
+  id: 'qz-security-057',
+  topic: 'security',
+  q: 'Authorization Server không kiểm tra {{redirect_uri}} client gửi lên khớp CHÍNH XÁC với giá trị đã đăng ký (chỉ kiểm tra theo prefix). Kẻ tấn công lợi dụng điều này để redirect code về server của hắn. Rủi ro và cách sửa đúng là gì?',
+  options: [
+    'Không rủi ro vì code đã được mã hoá',
+    'Rủi ro thấp, chỉ cần bật HTTPS là đủ',
+    'Chỉ ảnh hưởng refresh token, không ảnh hưởng authorization code',
+    'Authorization code bị lộ cho attacker để đổi lấy token; sửa bằng so khớp redirect_uri CHÍNH XÁC (exact match) đã đăng ký'
+  ],
+  answer: 3,
+  explain: `**Đáp án đúng: code lộ cho attacker; sửa bằng exact-match redirect_uri.**
+
+### Vì sao đúng
+{{redirect_uri}} là nơi authorization server trả {{code}}. Nếu chỉ kiểm tra prefix hoặc không kiểm tra, kẻ tấn công trỏ redirect về domain hắn kiểm soát (ví dụ prefix {{https://app.example.com}} nhưng host thật là {{https://app.example.com.evil.com}}), nhận được code qua callback rồi đổi lấy token. Phòng đúng: **đăng ký trước** danh sách redirect_uri và **so khớp tuyệt đối** (scheme + host + port + path) với từng request; không cho wildcard, không so theo prefix.
+
+### Vì sao các phương án còn lại sai
+- **Không rủi ro vì mã hoá**: code không được mã hoá, nó là bearer (ai giữ cũng dùng được).
+- **Chỉ cần HTTPS**: HTTPS chống nghe lén nhưng không chống việc redirect sai địa chỉ.
+- **Chỉ refresh token**: cả authorization code lẫn access token đều có thể lộ.
+
+> Senior tip: redirect_uri exact match là yêu cầu bắt buộc của OAuth2 (RFC 6749). Test bằng cách gửi redirect_uri lạ (khác path, khác host, hoặc thêm ký tự @) phải bị từ chối.`
+},
   {
   id: 'qz-db-931',
   topic: 'db',
