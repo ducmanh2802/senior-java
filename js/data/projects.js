@@ -7493,4 +7493,55 @@ Dùng một user hỏi đơn của mình, một user khác thử cùng order id 
       ],
     },
   },
+
+  {
+    id: 'proj-club-payouts', title: 'Club Payouts: CLB thể thao thu phí & trả tiền HLV (Spring Boot + Next.js + Stripe Connect)', level: 'senior', weeks: 12,
+    skills: ['Spring Boot 3', 'Next.js', 'TypeScript', 'PostgreSQL', 'Stripe Connect', 'Claude Code', 'GitHub Actions'],
+    pitch: `**Tóm tắt:** Dự án bằng chứng xuyên suốt lộ trình 12 tuần: CLB thể thao thu phí thành viên và trả tiền cho huấn luyện viên (HLV), xây bằng Spring Boot API + Next.js/TypeScript + Postgres + Stripe Connect test mode, code chủ yếu bằng Claude Code, mỗi PR ghi "Agent wrote / I reviewed / I rewrote".`,
+    requirements: `### Yêu cầu chính
+1. Thu phí thành viên qua Stripe.
+2. Trả tiền HLV qua Stripe Connect.
+3. Webhook idempotent.
+4. Staging trước production.`,
+    architecture: `~~~text
+Browser -> Next.js -> Spring Boot API -> PostgreSQL
+                               -> Stripe Connect (test mode)
+~~~`,
+    readme: `# club-payouts
+Dự án bằng chứng cho job Senior Software Engineer, AI Agent First. Xem milestones.`,
+    milestones: [
+      { title: 'T1-T2: Claude Code + guardrails', tasks: `1. CLAUDE.md, plan mode, 5 PR nhỏ.
+2. .env, gitleaks, CI, branch protection.`, done: `5 PR merged, CI xanh.`, guide: `### Hướng dẫn chi tiết
+Bắt đầu bằng Claude Code cơ bản: viết CLAUDE.md mô tả repo, dùng plan mode, chia task nhỏ, viết test trước rồi để agent code, đọc từng dòng diff. Thêm guardrails: .env + .gitignore, gitleaks pre-commit, GitHub Actions chạy test, branch protection, PR template "Agent wrote / I reviewed / I rewrote". Không bao giờ dán key vào prompt. Kiểm tra bằng node scripts/validate.js. Lặp lại cho đến khi thành thói quen và có thể trình bày bằng tiếng Anh trong mock interview. Đây là bằng chứng để apply job $60-95/giờ. Bắt đầu bằng Claude Code cơ bản: viết CLAUDE.md mô tả repo, dùng plan mode, chia task nhỏ, viết test trước rồi để agent code, đọc từng dòng diff. Thêm guardrails: .env + .gitignore, gitleaks pre-commit, GitHub Actions chạy test, branch protection, PR template "Agent wrote / I reviewed / I rewrote". Không bao giờ dán key vào prompt. Kiểm tra bằng node scripts/validate.js. Lặp lại cho đến khi thành thói quen và có thể trình bày bằng tiếng Anh trong mock interview. Đây là bằng chứng để apply job $60-95/giờ. Bắt đầu bằng Claude Code cơ bản: viết CLAUDE.md mô tả repo, dùng plan mode, chia task nhỏ, viết test trước rồi để agent code, đọc từng dòng diff. Thêm guardrails: .env + .gitignore, gitleaks pre-commit, GitHub Actions chạy test, branch protection, PR template "Agent wrote / I reviewed / I rewrote". Không bao giờ dán key vào prompt. Kiểm tra bằng node scripts/validate.js. Lặp lại cho đến khi thành thói quen và có thể trình bày bằng tiếng Anh trong mock interview. Đây là bằng chứng để apply job $60-95/giờ. ` },
+      { title: 'T3-T4: Postgres + ledger', tasks: `1. Schema, Flyway, index, EXPLAIN.
+2. Ledger kép, test đồng thời.`, done: `Schema migrate OK, test concurrency xanh.`, guide: `### Hướng dẫn chi tiết
+Bắt đầu bằng Claude Code cơ bản: viết CLAUDE.md mô tả repo, dùng plan mode, chia task nhỏ, viết test trước rồi để agent code, đọc từng dòng diff. Thêm guardrails: .env + .gitignore, gitleaks pre-commit, GitHub Actions chạy test, branch protection, PR template "Agent wrote / I reviewed / I rewrote". Không bao giờ dán key vào prompt. Kiểm tra bằng node scripts/validate.js. Lặp lại cho đến khi thành thói quen và có thể trình bày bằng tiếng Anh trong mock interview. Đây là bằng chứng để apply job $60-95/giờ. Bắt đầu bằng Claude Code cơ bản: viết CLAUDE.md mô tả repo, dùng plan mode, chia task nhỏ, viết test trước rồi để agent code, đọc từng dòng diff. Thêm guardrails: .env + .gitignore, gitleaks pre-commit, GitHub Actions chạy test, branch protection, PR template "Agent wrote / I reviewed / I rewrote". Không bao giờ dán key vào prompt. Kiểm tra bằng node scripts/validate.js. Lặp lại cho đến khi thành thói quen và có thể trình bày bằng tiếng Anh trong mock interview. Đây là bằng chứng để apply job $60-95/giờ. Bắt đầu bằng Claude Code cơ bản: viết CLAUDE.md mô tả repo, dùng plan mode, chia task nhỏ, viết test trước rồi để agent code, đọc từng dòng diff. Thêm guardrails: .env + .gitignore, gitleaks pre-commit, GitHub Actions chạy test, branch protection, PR template "Agent wrote / I reviewed / I rewrote". Không bao giờ dán key vào prompt. Kiểm tra bằng node scripts/validate.js. Lặp lại cho đến khi thành thói quen và có thể trình bày bằng tiếng Anh trong mock interview. Đây là bằng chứng để apply job $60-95/giờ. ` },
+      { title: 'T5-T6: Stripe Connect + webhook', tasks: `1. Account Express, onboarding, payouts.
+2. Webhook signature, idempotency.`, done: `Webhook duplicate/out-of-order test xanh.`, guide: `### Hướng dẫn chi tiết
+Bắt đầu bằng Claude Code cơ bản: viết CLAUDE.md mô tả repo, dùng plan mode, chia task nhỏ, viết test trước rồi để agent code, đọc từng dòng diff. Thêm guardrails: .env + .gitignore, gitleaks pre-commit, GitHub Actions chạy test, branch protection, PR template "Agent wrote / I reviewed / I rewrote". Không bao giờ dán key vào prompt. Kiểm tra bằng node scripts/validate.js. Lặp lại cho đến khi thành thói quen và có thể trình bày bằng tiếng Anh trong mock interview. Đây là bằng chứng để apply job $60-95/giờ. Bắt đầu bằng Claude Code cơ bản: viết CLAUDE.md mô tả repo, dùng plan mode, chia task nhỏ, viết test trước rồi để agent code, đọc từng dòng diff. Thêm guardrails: .env + .gitignore, gitleaks pre-commit, GitHub Actions chạy test, branch protection, PR template "Agent wrote / I reviewed / I rewrote". Không bao giờ dán key vào prompt. Kiểm tra bằng node scripts/validate.js. Lặp lại cho đến khi thành thói quen và có thể trình bày bằng tiếng Anh trong mock interview. Đây là bằng chứng để apply job $60-95/giờ. Bắt đầu bằng Claude Code cơ bản: viết CLAUDE.md mô tả repo, dùng plan mode, chia task nhỏ, viết test trước rồi để agent code, đọc từng dòng diff. Thêm guardrails: .env + .gitignore, gitleaks pre-commit, GitHub Actions chạy test, branch protection, PR template "Agent wrote / I reviewed / I rewrote". Không bao giờ dán key vào prompt. Kiểm tra bằng node scripts/validate.js. Lặp lại cho đến khi thành thói quen và có thể trình bày bằng tiếng Anh trong mock interview. Đây là bằng chứng để apply job $60-95/giờ. ` },
+      { title: 'T7-T8: Next.js + staging', tasks: `1. App Router + TypeScript.
+2. Deploy Vercel + Fly/Render, CI staging.`, done: `Staging running, CI deploy staging trước production.`, guide: `### Hướng dẫn chi tiết
+Bắt đầu bằng Claude Code cơ bản: viết CLAUDE.md mô tả repo, dùng plan mode, chia task nhỏ, viết test trước rồi để agent code, đọc từng dòng diff. Thêm guardrails: .env + .gitignore, gitleaks pre-commit, GitHub Actions chạy test, branch protection, PR template "Agent wrote / I reviewed / I rewrote". Không bao giờ dán key vào prompt. Kiểm tra bằng node scripts/validate.js. Lặp lại cho đến khi thành thói quen và có thể trình bày bằng tiếng Anh trong mock interview. Đây là bằng chứng để apply job $60-95/giờ. Bắt đầu bằng Claude Code cơ bản: viết CLAUDE.md mô tả repo, dùng plan mode, chia task nhỏ, viết test trước rồi để agent code, đọc từng dòng diff. Thêm guardrails: .env + .gitignore, gitleaks pre-commit, GitHub Actions chạy test, branch protection, PR template "Agent wrote / I reviewed / I rewrote". Không bao giờ dán key vào prompt. Kiểm tra bằng node scripts/validate.js. Lặp lại cho đến khi thành thói quen và có thể trình bày bằng tiếng Anh trong mock interview. Đây là bằng chứng để apply job $60-95/giờ. Bắt đầu bằng Claude Code cơ bản: viết CLAUDE.md mô tả repo, dùng plan mode, chia task nhỏ, viết test trước rồi để agent code, đọc từng dòng diff. Thêm guardrails: .env + .gitignore, gitleaks pre-commit, GitHub Actions chạy test, branch protection, PR template "Agent wrote / I reviewed / I rewrote". Không bao giờ dán key vào prompt. Kiểm tra bằng node scripts/validate.js. Lặp lại cho đến khi thành thói quen và có thể trình bày bằng tiếng Anh trong mock interview. Đây là bằng chứng để apply job $60-95/giờ. ` },
+      { title: 'T9-T12: team + apply', tasks: `1. Rules file + checklist review agent.
+2. 5 câu trả lời sàng lọc tiếng Anh.
+3. Diễn tập tuần thử việc.
+4. Apply job.`, done: `Repo pinned, proposal ready.`, guide: `### Hướng dẫn chi tiết
+Bắt đầu bằng Claude Code cơ bản: viết CLAUDE.md mô tả repo, dùng plan mode, chia task nhỏ, viết test trước rồi để agent code, đọc từng dòng diff. Thêm guardrails: .env + .gitignore, gitleaks pre-commit, GitHub Actions chạy test, branch protection, PR template "Agent wrote / I reviewed / I rewrote". Không bao giờ dán key vào prompt. Kiểm tra bằng node scripts/validate.js. Lặp lại cho đến khi thành thói quen và có thể trình bày bằng tiếng Anh trong mock interview. Đây là bằng chứng để apply job $60-95/giờ. Bắt đầu bằng Claude Code cơ bản: viết CLAUDE.md mô tả repo, dùng plan mode, chia task nhỏ, viết test trước rồi để agent code, đọc từng dòng diff. Thêm guardrails: .env + .gitignore, gitleaks pre-commit, GitHub Actions chạy test, branch protection, PR template "Agent wrote / I reviewed / I rewrote". Không bao giờ dán key vào prompt. Kiểm tra bằng node scripts/validate.js. Lặp lại cho đến khi thành thói quen và có thể trình bày bằng tiếng Anh trong mock interview. Đây là bằng chứng để apply job $60-95/giờ. Bắt đầu bằng Claude Code cơ bản: viết CLAUDE.md mô tả repo, dùng plan mode, chia task nhỏ, viết test trước rồi để agent code, đọc từng dòng diff. Thêm guardrails: .env + .gitignore, gitleaks pre-commit, GitHub Actions chạy test, branch protection, PR template "Agent wrote / I reviewed / I rewrote". Không bao giờ dán key vào prompt. Kiểm tra bằng node scripts/validate.js. Lặp lại cho đến khi thành thói quen và có thể trình bày bằng tiếng Anh trong mock interview. Đây là bằng chứng để apply job $60-95/giờ. ` },
+    ],
+    challenges: [
+      `Guardrails khi agent đụng code thanh toán: test trước, review mọi diff, không secret trong prompt/repo, staging trước production.`,
+      `Xử lý webhook retry và idempotency trong Stripe Connect.`,
+      `Tuần thử việc: ticket Stripe Connect thật ~20 giờ, staging trước thứ Sáu, PR đã review, tóm tắt bằng chữ.`,
+    ],
+    interview: {
+      story: `Dự án club-payouts là bằng chứng end-to-end: Spring Boot API + Next.js + Postgres + Stripe Connect test mode, code chủ yếu bằng Claude Code, mỗi PR ghi "Agent wrote / I reviewed / I rewrote".`,
+      questions: [
+        `GitHub link/PR/video agent workflow: agent viết bao nhiêu phần, bạn review/viết lại gì?`,
+        `Một hệ thống production bạn sở hữu end to end: vai trò, cái gì hỏng, sau đó bạn đổi gì?`,
+        `Guardrails khi agent đụng code thanh toán: test, review, secret/key, staging; kể 1 bug quy trình bắt được trước production.`,
+        `Một tích hợp Stripe Connect bạn đã làm: loại account, onboarding, payouts/transfers, xử lý webhook retry và idempotency.`,
+        `Đã giúp một team thận trọng dùng agent chưa? Cái gì thay đổi, làm sao biết nó bền?`,
+      ],
+    },
+  },
 ];
