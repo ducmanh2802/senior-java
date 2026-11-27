@@ -8064,5 +8064,627 @@ Ví dụ đời thường: danh bạ theo thứ tự bảng chữ cái. Tìm "t�
     ],
     tags: ['postgresql', 'index', 'like', 'wildcard', 'pg-trgm', 'seq-scan', 'sargable'],
   },
+  {
+  id: 'lab-sql-054',
+  category: 'sql',
+  title: 'ALTER TABLE peak hours: ALTER COLUMN TYPE numeric trên bảng 50 triệu dòng gây rewrite 25 phút',
+  level: 'senior',
+  scenario: `**Bối cảnh.** Hệ thống thanh toán **PayFlow** (Spring Boot 3.3, Hibernate 6.4, PostgreSQL 15.6 trên RDS, 8 vCPU / 64 GB RAM). Bảng {{transactions}} lưu lịch sử giao dịch: **52.318.402 dòng** (~18 GB heap + 4,2 GB index). Giờ cao điểm 11:00–13:00 có 4.500 req/s (80% đọc, 20% ghi). Đội data cần đổi cột {{amount}} từ {{numeric(12,2)}} sang {{numeric(18,4)}} để hỗ trợ tiền tệ đòi hỏi độ chính xác cao hơn.
+     
+  **Triệu chứng (14/03/2026, 11:35).** DBA chạy migration:
+  ~~~sql
+  ALTER TABLE transactions ALTER COLUMN amount TYPE numeric(18,4);
+  ~~~
+  Lệnh chạy **25 phút 18 giây**. Trong lúc đó, toàn bộ API thanh toán trả 504. RDS CPU 100% một core, active connection nhảy từ 45 lên 480. {{pg_stat_activity}} đầy các SELECT/INSERT đang chờ lock. DBA nghĩ "chỉ đổi precision, không nên lâu" — thực tế PostgreSQL phải **rewrite toàn bộ bảng** và giữ **AccessExclusiveLock** suốt quá trình.
+  
+  **Điều đã thử, không ăn.** Tăng {{max_connections}}, restart PgBouncer — không giảm. DBA cho rằng "ALTER TYPE nhẹ, chỉ sửa metadata" — thực tế là rewrite dữ liệu.
+  
+  **Việc bạn có.** Ba artifact: log server lúc 11:35–12:00, snapshot pg_locks lúc 11:35:30, và EXPLAIN ANALYZE của câu SELECT mẫu. Hãy chỉ ra vì sao ALTER COLUMN TYPE rewrite bảng, và đề xuất cách an toàn trên bảng lớn.`,
+  artifacts: [
+    {
+      name: 'postgres-alter-type.log',
+      lang: 'text',
+      content: `# log server PostgreSQL 15.6 (RDS payflow-primary), timezone Asia/Ho_Chi_Minh
+# log_lock_waits = on, deadlock_timeout = 1s
+2026-03-14 11:35:00.012 +07 [31245] LOG:  duration: 0.041 ms  execute S_1: BEGIN
+2026-03-14 11:35:00.015 +07 [31245] LOG:  duration: 0.038 ms  execute <unnamed>: ALTER TABLE transactions ALTER COLUMN amount TYPE numeric(18,4)
+2026-03-14 11:35:00.016 +07 [31245] LOG:  duration: 0.011 ms  execute <unnamed>: (chờ AccessExclusiveLock)
+2026-03-14 11:35:00.089 +07 [31246] LOG:  duration: 0.022 ms  execute S_1: BEGIN
+2026-03-14 11:35:00.091 +07 [31246] LOG:  duration: 0.031 ms  execute <unnamed>: SELECT id, amount, status FROM transactions WHERE user_id = $1 ORDER BY created_at DESC LIMIT 20
+2026-03-14 11:35:00.092 +07 [31246] LOG:  duration: 0.009 ms  execute <unnamed>: (chờ lock)
+# ... (hàng trăm phiên xếp hàng chờ AccessExclusiveLock)
+2026-03-14 11:35:05.123 +07 [31245] LOG:  duration: 5123.456 ms  execute <unnamed>: (ALTER TABLE bắt đầu rewrite - đọc và ghi lại mọi dòng)
+2026-03-14 12:00:18.678 +07 [31245] LOG:  duration: 1513568.234 ms  execute <unnamed>: ALTER TABLE transactions ALTER COLUMN amount TYPE numeric(18,4)  -- kết thúc sau 25 phút 13 giây
+2026-03-14 12:00:18.679 +07 [31245] LOG:  duration: 0.040 ms  execute S_2: COMMIT
+2026-03-14 12:00:18.690 +07 [31246] LOG:  duration: 1513687.112 ms  execute <unnamed>: SELECT ... (trả về)
+# ... (các phiên drain xong trong ~10 giây)`,
+    },
+    {
+      name: 'pg-locks-alter-type.txt',
+      lang: 'text',
+      content: `-- 2026-03-14 11:35:30 +07, chụp khi migration đang rewrite
+payflow=# SELECT pid, state, wait_event_type, wait_event, now() - xact_start AS xact_age,
+       left(query, 60) AS query
+FROM pg_stat_activity
+WHERE pid IN (31245, 31246, 31247, 31248);
+  pid  | state  | wait_event_type | wait_event   | xact_age  |                              query
+-------+--------+-----------------+--------------+-----------+--------------------------------------------------------------
+ 31245 | active | IO              | DataFileRead | 00:00:30  | ALTER TABLE transactions ALTER COLUMN amount TYPE numeric(1
+ 31246 | active | Lock            | relation     | 00:00:30  | SELECT id, amount, status FROM transactions WHERE user_id = 
+ 31247 | active | Lock            | relation     | 00:00:30  | INSERT INTO transactions (user_id, amount) VALUES ($1, $2)
+ 31248 | active | Lock            | relation     | 00:00:30  | SELECT count(*) FROM transactions WHERE status = 'SUCCESS'
+
+payflow=# SELECT l.pid, l.locktype, l.relation::regclass AS relation, l.mode, l.granted
+FROM pg_locks l
+WHERE l.pid IN (31245, 31246, 31247, 31248)
+ORDER BY l.pid, l.granted, l.locktype;
+  pid  | locktype |   relation   |          mode          | granted
+-------+----------+--------------+------------------------+---------
+ 31245 | relation | transactions | AccessExclusiveLock    | t
+ 31246 | relation | transactions | AccessShareLock        | f
+ 31247 | relation | transactions | RowExclusiveLock       | f
+ 31248 | relation | transactions | AccessShareLock        | f
+
+payflow=# SELECT count(*) AS waiting_sessions FROM pg_locks
+WHERE NOT granted AND locktype = 'relation' AND relation = 'transactions'::regclass;
+  waiting_sessions
+------------------
+               312
+
+-- Ghi chú: migration (pid 31245) ĐANG GIỮ AccessExclusiveLock trong 25 phút do rewrite bảng.
+-- Mọi câu SELECT/INSERT/UPDATE mới phải chờ lock này (queue FIFO) -> toàn bộ bảng "treo".`,
+    },
+    {
+      name: 'explain-select-transactions.txt',
+      lang: 'text',
+      content: `-- 2026-03-14 11:34:55 +07 (trước migration)
+payflow=# EXPLAIN (ANALYZE, BUFFERS)
+SELECT id, amount, status FROM transactions WHERE user_id = 'u-12345' ORDER BY created_at DESC LIMIT 20;
+                                                             QUERY PLAN
+--------------------------------------------------------------------------------------------------------------------------------------
+  Limit  (cost=0.57..8.45 rows=20 width=48) (actual time=0.412..0.428 rows=20 loops=1)
+    Buffers: shared hit=5
+    ->  Index Scan Backward using idx_transactions_user_created on transactions  (cost=0.57..8.45 rows=20 width=48) (actual time=0.411..0.426 rows=20 loops=1)
+          Index Cond: (user_id = 'u-12345'::uuid)
+          Buffers: shared hit=5
+  Planning Time: 0.284 ms
+  Execution Time: 0.451 ms`,
+    },
+  ],
+  questions: [
+    'Vì sao ALTER TABLE ALTER COLUMN TYPE numeric lại phải rewrite toàn bộ bảng 52 triệu dòng trong 25 phút, trong khi ALTER TABLE ADD COLUMN DEFAULT chỉ sửa metadata? Chỉ ra bằng dòng nào trong artifact cho thấy rewrite đang chạy.',
+    'Vì sao migration giữ AccessExclusiveLock trong 25 phút (không phải chỉ chờ lock)? Giải thích sự khác biệt giữa ADD COLUMN (metadata-only từ PG 11) và ALTER COLUMN TYPE (bắt buộc rewrite).',
+    'Hãy đề xuất quy trình an toàn để đổi kiểu cột trên bảng 50 triệu dòng: expand/contract (thêm cột mới, dual-write, backfill, đổi tên), chạy ngoài giờ cao điểm, và cách đặt lock_timeout để migration tự bỏ cuộc.',
+  ],
+  hints: [
+    'PostgreSQL ADD COLUMN với DEFAULT từ phiên bản 11 chỉ sửa catalog (metadata-only), KHÔNG rewrite bảng. Nhưng ALTER COLUMN TYPE **luôn** phải rewrite toàn bộ bảng vì biểu diễn trên đĩa thay đổi (numeric(12,2) → numeric(18,4) khác cấu trúc lưu trữ).',
+    'Snapshot pg_locks cho thấy migration (pid 31245) GIỮ AccessExclusiveLock (granted = t) trong lúc rewrite, wait_event = DataFileRead (đang đọc/ghi đĩa). 312 phiên chờ lock.',
+    'Cách an toàn (expand/contract): (1) ALTER TABLE ADD COLUMN amount_new numeric(18,4); (2) backfill theo lô: UPDATE transactions SET amount_new = amount::numeric(18,4) WHERE id BETWEEN ...; (3) dual-write ở tầng ứng dụng; (4) ALTER TABLE RENAME COLUMN amount TO amount_old, RENAME COLUMN amount_new TO amount; (5) DROP COLUMN amount_old. Mỗi bước lock ngắn, có thể chạy trong giờ cao điểm (trừ DROP COLUMN cần AccessExclusiveLock ngắn).',
+  ],
+  answer: `**Tóm tắt:** DBA chạy {{ALTER TABLE transactions ALTER COLUMN amount TYPE numeric(18,4)}} — PostgreSQL phải **rewrite toàn bộ bảng 52.3 triệu dòng** vì biểu diễn trên đĩa của {{numeric(12,2)}} và {{numeric(18,4)}} khác nhau. Quá trình rewrite mất **25 phút 13 giây**, trong đó migration giữ **AccessExclusiveLock** (mạnh nhất, không tương thích với mọi lock khác). Mọi SELECT/INSERT/UPDATE mới vào phải xếp hàng chờ -> 312 phiên bị chặn, API trả 504. CPU 100% một core do sequential scan/ghi đĩa. Sửa: dùng pattern **expand/contract** (thêm cột mới, backfill theo lô, dual-write, đổi tên) — mỗi bước lock ngắn, không rewrite toàn bảng một lần.
+     
+### Kiến thức nền: ALTER COLUMN TYPE vs ADD COLUMN DEFAULT
+Khi thêm cột với DEFAULT từ **PostgreSQL 11**, engine chỉ ghi default vào catalog ({{pg_attribute.atthasdef}}), **không quét bảng** — các dòng cũ khi đọc sẽ lấy default từ catalog. Đây là metadata-only, lock vài mili-giây.
+
+Nhưng **ALTER COLUMN TYPE** hoàn toàn khác: kiểu dữ liệu thay đổi nghĩa là **biểu diễn nhị phân trên đĩa thay đổi** (ví dụ {{numeric(12,2)}} dùng 2 byte scale, {{numeric(18,4)}} dùng 4 byte scale). PostgreSQL **bắt buộc phải đọc mọi dòng, convert giá trị, ghi lại** — đó là **table rewrite**. Rewrite cần **AccessExclusiveLock** suốt quá trình (không thể chia nhỏ lock được vì catalog phải thay đổi nguyên tử).
+
+Ví dụ đời thường: ADD COLUMN DEFAULT như "thêm cột mới vào biểu mẫu, giá trị mặc định in sẵn" — không cần in lại toàn bộ hồ sơ cũ. ALTER COLUMN TYPE như "đổi đơn vị đo từ kg sang gam cho mọi hồ sơ" — phải lấy từng hồ sơ ra, chuyển đổi, lưu lại. (Lưu ý: numeric storage trong PostgreSQL dùng dạng biến đổi, không phải fixed byte per scale; việc đổi precision/scale vẫn buộc rewrite vì catalog và format trên đĩa thay đổi.)
+
+### Nguyên nhân gốc, từng bước
+1. **11:35:00.015** DBA chạy {{ALTER TABLE transactions ALTER COLUMN amount TYPE numeric(18,4)}}. PostgreSQL yêu cầu **AccessExclusiveLock** để sửa schema.
+2. Có một transaction ngắn đang giữ AccessShareLock -> migration chờ vài ms (log 11:35:00.016 "chờ AccessExclusiveLock").
+3. **11:35:05.123** Lock được cấp, migration bắt đầu **rewrite bảng** — đọc tuần tự 52.3 triệu dòng, convert {{amount}} từ numeric(12,2) sang numeric(18,4), ghi lại vào các page mới (wait_event = DataFileRead).
+4. Trong **25 phút 13 giây** (11:35:05 đến 12:00:18), migration **GIỮ AccessExclusiveLock**.
+5. Mọi câu SELECT/INSERT/UPDATE ứng dụng vào sau đều phải chờ lock này (FIFO queue). Snapshot 11:35:30 cho 312 phiên chờ.
+6. **12:00:18** rewrite xong, COMMIT, lock được nhả, 312 phiên drain xong ~10 giây.
+
+### Dẫn chứng
+- Artifact 1: log **"ALTER TABLE transactions ALTER COLUMN amount TYPE numeric(18,4) duration: 1513568.234 ms"** (25 phút 13 giây), wait_event = DataFileRead.
+- Artifact 2: migration pid 31245 **AccessExclusiveLock granted = t** (đang giữ), 312 phiên chờ AccessShareLock/RowExclusiveLock granted = f.
+- Artifact 2: wait_event_type = IO, wait_event = DataFileRead cho migration — xác nhận đang đọc/ghi đĩa rewrite.
+- Artifact 3: câu SELECT bình thường chỉ 0,45 ms khi không bị chặn.
+
+### Cách sửa ngắn hạn (trong ngày)
+- **Huỷ migration đang chạy**: {{SELECT pg_terminate_backend(31245);}} — rewrite bị huỷ, lock nhả, ứng dụng phục hồi ngay.
+- **Chạy lại an toàn (expand/contract)**:
+  1. {{ALTER TABLE transactions ADD COLUMN amount_new numeric(18,4);}} — metadata-only, ~5 ms.
+  2. **Backfill theo lô** (ngoài giờ cao điểm, mỗi lô 10.000 dòng, commit riêng):
+     ~~~sql
+     UPDATE transactions SET amount_new = amount::numeric(18,4) WHERE ctid BETWEEN '...' AND '...';
+     ~~~
+     Lặp cho đến hết (dùng ctid hoặc keyset pagination trên khóa chính). Mỗi batch commit riêng -> không giữ lock lâu, không bloat WAL.
+  3. **Dual-write ở tầng ứng dụng**: code mới ghi cả {{amount}} và {{amount_new}} (hoặc chỉ ghi {{amount_new}} và dùng trigger sync ngược).
+  4. **Đổi tên cột** (lock ngắn, AccessExclusiveLock vài ms):
+     ~~~sql
+     ALTER TABLE transactions RENAME COLUMN amount TO amount_old;
+     ALTER TABLE transactions RENAME COLUMN amount_new TO amount;
+     ~~~
+  5. **DROP COLUMN cũ** (cần AccessExclusiveLock, chạy ngoài giờ cao điểm):
+     ~~~sql
+     ALTER TABLE transactions DROP COLUMN amount_old;
+     ~~~
+- **Bắt buộc lock_timeout**: {{SET lock_timeout = '2s';}} trước ALTER TABLE. Migration tự bỏ cuộc nếu không lấy được lock trong 2 giây.
+
+### Cách sửa dài hạn (quy trình migration an toàn)
+1. **Luôn dùng expand/contract cho ALTER TYPE trên bảng lớn**: thêm cột mới -> backfill -> dual-write -> rename -> drop cũ.
+2. **Không bao giờ chạy ALTER COLUMN TYPE trong giờ cao điểm** — nó rewrite toàn bảng và giữ AccessExclusiveLock.
+3. **Test trên clone production** (RDS snapshot restore) đo thời gian rewrite trước khi apply production.
+4. **Quy tắc review**: mọi ALTER COLUMN TYPE trên bảng > 1 triệu dòng phải kèm kế hoạch expand/contract.
+
+### Phòng ngừa và monitoring
+- Alert khi có phiên giữ AccessExclusiveLock > 5 giây trên bảng production.
+- Theo dõi {{pg_stat_activity}} với {{wait_event_type = 'IO'}} và {{wait_event = 'DataFileRead'}}; alert khi số phiên chờ lock > 50.
+- Cảnh báo {{log_lock_waits = on}} ghi nhận lock wait > 1 giây.
+- Dashboard: số migration rewrite chạy, thời gian trung bình.
+
+> Senior tip: "ALTER COLUMN TYPE chỉ đổi precision, không nên lâu" là suy nghĩ nguy hiểm thứ hai sau "ADD COLUMN DEFAULT nhẹ". ADD COLUMN DEFAULT từ PG 11 là metadata-only (nhanh), nhưng ALTER COLUMN TYPE **luôn rewrite bảng** — trên 50 triệu dòng có thể mất 20–30 phút. Quy tắc vàng: **đổi kiểu cột = expand/contract**, không bao giờ ALTER COLUMN TYPE trực tiếp trên bảng production lớn. Và nhớ: DROP COLUMN cũng cần AccessExclusiveLock — hãy chạy nó ngoài giờ cao điểm sau khi đã rename xong.`,
+  rubric: [
+    'Chỉ đúng nguyên nhân: ALTER COLUMN TYPE rewrite toàn bảng 52.3 triệu dòng giữ AccessExclusiveLock 25 phút, chặn 312 phiên',
+    'Dẫn chứng đúng: artifact 1 ALTER duration 1513568 ms, DataFileRead; artifact 2 AccessExclusiveLock granted=t, 312 phiên chờ; artifact 3 SELECT bình thường 0.45 ms',
+    'Giải thích đúng sự khác biệt: ADD COLUMN DEFAULT (PG 11+) metadata-only vs ALTER COLUMN TYPE rewrite bắt buộc do biểu diễn đĩa thay đổi',
+    'Đề xuất sửa đúng: expand/contract (ADD COLUMN mới, backfill lô, dual-write, RENAME, DROP), lock_timeout, chạy ngoài giờ cao điểm',
+    'Có monitoring/phòng ngừa: alert AccessExclusiveLock lâu, DataFileRead, lock_waits, quy tắc review expand/contract',
+  ],
+  tags: ['postgresql', 'alter-table', 'alter-column-type', 'table-rewrite', 'access-exclusive-lock', 'expand-contract'],
+},
+  {
+  id: 'lab-sql-055',
+  category: 'sql',
+  title: 'OR query với implicit cast: Seq Scan dù có index do tham số numeric so sánh varchar',
+  level: 'senior',
+  scenario: `**Bối cảnh.** Hệ thống **ShopEase** (Spring Boot 3.3, Hibernate 6.4, PostgreSQL 15.6 trên RDS, 8 vCPU / 64 GB RAM). Bảng {{products}} lưu sản phẩm: **12.418.550 dòng** (~5,2 GB heap + 2,8 GB index). Có 2 index: {{idx_products_sku}} btree trên {{sku}} (varchar(32) chứa mã chỉ có số) và {{idx_products_barcode}} btree trên {{barcode}} (varchar(32) chứa mã vạch chỉ có số). Endpoint {{GET /api/v1/products/search?code=}} cho phép tìm theo SKU HOẶC barcode (logic OR).
+     
+  **Triệu chứng (14/03/2026, 10:00).** p95 endpoint nhảy từ 12 ms lên **3,8 giây**, CPU RDS từ 18% lên 89%. Slow query log cho thấy câu query với OR quét toàn bảng dù cả 2 cột đều có index. DBA nghi ngờ "index không hiệu quả" — thực tế là implicit cast phá index.
+     
+  **Việc bạn có.** Ba artifact: EXPLAIN ANALYZE của câu query OR, EXPLAIN ANALYZE của câu query viết lại đúng kiểu, và schema + danh sách index. Hãy chỉ ra vì sao implicit cast kết hợp với OR phá index, và cách sửa.`,
+  artifacts: [
+    {
+      name: 'explain-or-implicit-cast.txt',
+      lang: 'text',
+      content: `-- 2026-03-14 10:05:12 +07, RDS shopease-primary (PostgreSQL 15.6)
+shopease=# EXPLAIN (ANALYZE, BUFFERS)
+SELECT id, name, price FROM products
+WHERE sku = '20260314000142'::numeric
+   OR barcode = '20260314000142'::numeric;
+                                                           QUERY PLAN
+--------------------------------------------------------------------------------------------------------------------------------------
+  Seq Scan on products  (cost=0.00..3841521.44 rows=1 width=64) (actual time=0.021..3876.412 rows=1 loops=1)
+    Filter: ((sku)::numeric = 20260314000142::numeric) OR ((barcode)::numeric = 20260314000142::numeric)
+    Rows Removed by Filter: 12418549
+    Buffers: shared hit=145210 read=118433
+  Planning Time: 0.312 ms
+  Execution Time: 3877.204 ms
+(6 rows)
+
+Time: 3877.520 ms
+
+-- So sánh: cùng điều kiện, cast tham số về varchar (khớp kiểu cột):
+shopease=# EXPLAIN (ANALYZE, BUFFERS)
+SELECT id, name, price FROM products
+WHERE sku = '20260314000142'
+   OR barcode = '20260314000142';
+                                                           QUERY PLAN
+--------------------------------------------------------------------------------------------------------------------------------------
+  Bitmap Heap Scan on products  (cost=12.44..12.48 rows=1 width=64) (actual time=0.412..0.415 rows=1 loops=1)
+    Recheck Cond: ((sku = '20260314000142'::text) OR (barcode = '20260314000142'::text))
+    ->  BitmapOr  (cost=12.44..12.44 rows=1 width=0) (actual time=0.312..0.312 rows=1 loops=1)
+          ->  Bitmap Index Scan on idx_products_sku  (cost=0.00..6.18 rows=1 width=0) (actual time=0.121..0.121 rows=1 loops=1)
+                Index Cond: (sku = '20260314000142'::text)
+          ->  Bitmap Index Scan on idx_products_barcode  (cost=0.00..6.18 rows=1 width=0) (actual time=0.191..0.191 rows=1 loops=1)
+                Index Cond: (barcode = '20260314000142'::text)
+    Buffers: shared hit=12 read=2
+  Planning Time: 0.284 ms
+  Execution Time: 0.432 ms
+
+Time: 0.712 ms`,
+    },
+    {
+      name: 'schema-products.txt',
+      lang: 'text',
+      content: `-- 2026-03-14 10:07:05 +07
+shopease=# \d products
+                                       Table "public.products"
+   Column    |           Type           | Collation | Nullable |    Default
+-------------+--------------------------+-----------+----------+-------------
+ id          | bigint                   |           | not null |
+ name        | character varying(256)   |           | not null |
+ sku         | character varying(32)    |           | not null | -- mã SKU chỉ gồm chữ số
+ barcode     | character varying(32)    |           | not null | -- mã vạch chỉ gồm chữ số
+ price       | numeric(12,2)            |           | not null |
+ created_at  | timestamp with time zone |           | not null | now()
+Indexes:
+    "products_pkey" PRIMARY KEY, btree (id)
+    "idx_products_sku" btree (sku)
+    "idx_products_barcode" btree (barcode)
+    "idx_products_name" btree (name)
+
+shopease=# SELECT count(*) AS total_rows FROM products;
+  total_rows
+------------
+   12418550`,
+    },
+    {
+      name: 'app-search-slow.log',
+      lang: 'text',
+      content: `2026-03-14 10:05:42.118 DEBUG [http-nio-8080-exec-22] o.h.SQL :
+    select p1_0.id,p1_0.name,p1_0.price from products p1_0 where p1_0.sku=? or p1_0.barcode=?
+2026-03-14 10:05:45.980 INFO  [http-nio-8080-exec-22] c.s.p.ProductController :
+    GET /api/v1/products/search?code=20260314000142 -> 200 in 3881 ms
+2026-03-14 10:05:46.222 DEBUG [http-nio-8080-exec-7] o.h.SQL :
+    select p1_0.id,p1_0.id,p1_0.name,p1_0.price from products p1_0 where p1_0.sku=? or p1_0.barcode=?
+2026-03-14 10:05:50.114 INFO  [http-nio-8080-exec-7] c.s.p.ProductController :
+    GET /api/v1/products/search?code=20260314000142 -> 200 in 3894 ms
+-- pattern: mỗi request search mất ~3,9 giay, khong co request nao duoi 1 giay
+-- Java nhận tham số 'code' là String, nhưng Hibernate bind numeric do @Column(precision=18) trên entity field`,
+    },
+  ],
+  questions: [
+    'Vì sao câu query OR giữa sku và barcode không dùng được 2 index sẵn có, dù mỗi cột riêng lẻ đều có index? Chỉ ra bằng dòng nào trong EXPLAIN.',
+    'Implicit cast xảy ra ở đâu: JDBC bind numeric, PostgreSQL ép kiểu cột varchar → numeric. Khi cột bị ép kiểu trong OR, planner không thể dùng BitmapOr trên 2 index. Giải thích cơ chế.',
+    'Bạn sửa thế nào để index được dùng lại? So sánh: cast tham số về varchar ở ứng dụng, hoặc viết WHERE sku = CAST(:code AS varchar) OR barcode = CAST(:code AS varchar). Tại sao không nên đổi kiểu cột sang numeric?',
+  ],
+  hints: [
+    'Dòng "Filter: ((sku)::numeric = ...) OR ((barcode)::numeric = ...)" trong EXPLAIN cho thấy CẢ HAI CỘT đều bị ép kiểu sang numeric để so sánh với tham số numeric. Khi cột bị ép kiểu, B-tree index trên varchar không khớp biểu thức -> planner không thể dùng BitmapOr.',
+    'PostgreSQL không tự cast tham số numeric sang varchar để khớp index; ngược lại nó ép kiểu cột. Khi CẢ HAI vế của OR đều bị ép kiểu, planner từ chối BitmapOr (vì biểu thức không khớp index) và chọn Seq Scan.',
+    'Sửa: gửi tham số đúng kiểu varchar (String) hoặc cast vế tham số: WHERE sku = :code::varchar OR barcode = :code::varchar. Không đổi cột sang numeric vì SKU/barcode có thể có leading zero, prefix chữ cái sau này, migration tốn kém.',
+  ],
+  answer: `**Tóm tắt:** Câu query {{WHERE sku = :code OR barcode = :code}} với cột {{sku}}, {{barcode}} kiểu {{varchar}} nhưng tham số bind {{numeric}} (do Hibernate @Column precision). PostgreSQL không đổi kiểu tham số, mà **ép kiểu CẢ HAI CỘT varchar sang numeric** (xem dòng {{Filter: ((sku)::numeric = ...) OR ((barcode)::numeric = ...)}} trong EXPLAIN). Khi cột bị ép kiểu, B-tree index trên varchar không khớp -> planner không thể dùng **BitmapOr** trên 2 index, chọn **Seq Scan** quét 12,4 triệu dòng, 3,8 giây. Sửa: bind tham số kiểu String, hoặc cast vế tham số {{:code::varchar}}. Không đổi cột sang numeric.
+ 
+### Kiến thức nền: implicit cast + OR = index killer kép
+Với điều kiện đơn giản {{WHERE sku = :code}}, implicit cast numeric→varchar phá index (lab-sql-042). Với **OR giữa 2 cột**, vấn đề nhân đôi: PostgreSQL phải gom kết quả từ 2 index qua **BitmapOr**. Nhưng BitmapOr chỉ hoạt động khi điều kiện trên mỗi cột **khớp chính xác index expression** (cột thuần = tham số cùng kiểu). Khi CẢ HAI vế OR đều bị ép kiểu, planner không thấy index nào khả dụng cho BitmapOr -> fallback Seq Scan.
+
+Ví dụ đời thường: bạn có 2 sổ danh bạ (index) — một theo tên, một theo SĐT. Tìm "người có tên X HOẶC SĐT Y". Nếu bạn viết tên và SĐT sai định dạng (vd: SĐT viết thành số không dấu cách), cả 2 sổ đều không tra được -> phải lật trang trang (Seq Scan).
+
+### Nguyên nhân gốc, từng bước
+1. Cột {{sku}}, {{barcode}} khai báo {{varchar(32)}}, có B-tree index riêng.
+2. Entity field có annotation {{@Column(precision=18)}} -> Hibernate bind tham số kiểu {{numeric}} (hoặc {{BigDecimal}}).
+3. PostgreSQL không có toán tử {{varchar = numeric}} trực tiếp, chỉ ép kiểu ngầm. Hướng an toàn là {{varchar → numeric}}, nên planner ép **CẢ HAI CỘT**.
+4. Biểu thức trở thành {{WHERE (sku)::numeric = 20260314000142::numeric OR (barcode)::numeric = 20260314000142::numeric}}.
+5. Index {{idx_products_sku}} lưu giá trị varchar thô ("20260314000142"), không lưu giá trị sau ép kiểu. Planner không tìm thấy index khớp biểu thức {{(sku)::numeric}}.
+6. **BitmapOr yêu cầu mỗi nhánh có index condition khớp**. Vì 2 nhánh đều bị ép kiểu, không nhánh nào dùng được index -> planner chọn **Seq Scan**.
+7. Mỗi request quét 12,4 triệu dòng để trả 1 dòng; hàng chục request song song đốt cạn CPU. CPU 89% là hệ quả quét lãng phí.
+
+### Dẫn chứng
+- Artifact 1 (câu chậm): dòng {{Filter: ((sku)::numeric = ...) OR ((barcode)::numeric = ...)}} cho thấy CẢ HAI CỘT bị ép kiểu; {{Seq Scan on products}}, {{Rows Removed by Filter: 12418549}}, {{Buffers: shared hit=145210 read=118433}} (~263 nghìn trang), {{Execution Time: 3877.204 ms}}.
+- Artifact 1 (câu sửa): cùng điều kiện, cast tham số varchar -> {{Bitmap Heap Scan}}, {{BitmapOr}} với 2 **Bitmap Index Scan** trên {{idx_products_sku}} và {{idx_products_barcode}}, {{Buffers: shared hit=12 read=2}}, {{Execution Time: 0.432 ms}}. Chênh lệch khoảng **9.000 lần** chỉ vì kiểu tham số.
+- Artifact 2: index {{idx_products_sku}}, {{idx_products_barcode}} btree trên varchar đã tồn tại.
+- Artifact 3: log ứng dụng mỗi request search mất ~3,9 giây; Hibernate bind numeric do @Column(precision=18).
+
+### Cách sửa ngắn hạn (hôm nay)
+- **Sửa entity**: bỏ {{@Column(precision=18)}} trên field {{sku}}, {{barcode}}, dùng {{@Column(length=32)}} -> Hibernate bind {{String}}.
+- **Hoặc sửa repository**: viết {{WHERE sku = :code::varchar OR barcode = :code::varchar}} (cast vế tham số). Index dùng lại ngay.
+- Thêm {{statement_timeout}} cho role search (ví dụ 2 giây) để câu sai kiểu không chiếm DB lâu.
+
+### Cách sửa dài hạn
+- **Không đổi cột {{sku}}, {{barcode}} sang {{numeric}}**: SKU/barcode có thể có leading zero (00123), prefix chữ (SP-123), checksum. Đổi sang numeric mất dữ liệu và tốn migration 12 triệu dòng.
+- Chuẩn hóa kiểu ở ranh giới ứng dụng–DB: mã SKU, mã vạch, mã thẻ, mã số thuế là **chuỗi**, không phải số, dù chỉ chứa chữ số.
+- Quy tắc review: trong {{WHERE}} không được ép kiểu trên cột đã index; PR có truy vấn mới phải kèm {{EXPLAIN (ANALYZE, BUFFERS)}} trên staging có dữ liệu tỉ lệ production.
+
+### Trả lời mẫu khi phỏng vấn
+"Câu search OR giữa sku và barcode chạy Seq Scan 3,8 giây vì Hibernate bind tham số numeric (do @Column precision) vào cột varchar. PostgreSQL ép CẢ HAI CỘT varchar sang numeric (Filter có ::numeric), index B-tree bỏ qua, BitmapOr không dùng được -> Seq Scan 12,4 triệu dòng. Dẫn chứng: EXPLAIN có Filter ((sku)::numeric = ...) OR ((barcode)::numeric = ...). Sửa: bỏ @Column precision trên entity field, hoặc cast vế tham số ::varchar. Không đổi cột sang numeric vì mã SKU có thể có leading zero, prefix chữ. Chương trình phải chuẩn hóa kiểu ở ranh giới app-DB."
+
+### Phòng ngừa và monitoring
+- Bật {{pg_stat_statements}} và theo dõi {{total_exec_time}} theo queryid; cảnh báo khi truy vấn trên bảng lớn chọn Seq Scan hoặc {{Rows Removed by Filter}} cao so với dòng trả về.
+- Bật {{auto_explain}} với {{auto_explain.log_min_duration = 500}}; cảnh báo khi plan đổi từ {{Bitmap Index Scan}} sang {{Seq Scan}}.
+- Kiểm tra kiểu tham số khi viết {{PreparedStatement}}: mã SKU, barcode, số điện thoại, mã số thuế đều phải bind String, không phải numeric.
+
+> Senior tip: **Implicit cast + OR là "cặp giết index" chết người**. Một cast phá index đơn lẻ, hai cast phá cả BitmapOr. Khi EXPLAIN thấy Seq Scan dù có index, hãy hỏi ngay: "Điều kiện WHERE có ép kiểu cột không?" — đây là nguyên nhân phổ biến thứ hai sau statistics cũ. Quy tắc vàng: **ép kiểu ở vế tham số, không ở vế cột**. Và với OR, hãy đảm bảo TẤT CẢ vế đều khớp index (không ép kiểu, không hàm, không biểu thức).`,
+  rubric: [
+    'Chỉ đúng nguyên nhân: tham số numeric khiến PostgreSQL ép CẢ HAI CỘT varchar sang numeric, Filter có ::numeric trên cả sku và barcode -> BitmapOr không dùng được -> Seq Scan',
+    'Dẫn chứng đúng: so sánh hai EXPLAIN (tham số numeric -> Seq Scan 3877 ms; cast tham số varchar -> BitmapOr + 2 Bitmap Index Scan 0,43 ms), chỉ ra dòng Filter có ::numeric trên cả 2 cột',
+    'Sửa đúng: bind tham số String hoặc CAST vế tham số ::varchar, không đổi kiểu cột, giải thích tại sao không đổi cột sang numeric',
+    'Giải thích đúng cơ chế BitmapOr: yêu cầu mỗi nhánh có index condition khớp, ép kiểu cột làm mất khớp',
+    'Có monitoring/phòng ngừa: pg_stat_statements, auto_explain, quy tắc review kiểu tham số mã SKU/barcode',
+  ],
+  tags: ['postgresql', 'index', 'implicit-cast', 'or-condition', 'bitmap-or', 'seq-scan', 'bitmap-index-scan'],
+},
+{
+  id: 'lab-sql-056',
+  category: 'sql',
+  title: 'CREATE INDEX CONCURRENTLY trong transaction Flyway bị abort: migration lặp vô tận',
+  level: 'senior',
+  scenario: `**Bối cảnh.** Hệ thống **ShopMart** (Spring Boot 3.3, Flyway 10.x, PostgreSQL 15.6 trên RDS, 8 vCPU / 64 GB RAM) chạy migration tự động khi deploy. Bảng {{orders}} có **28.412.905 dòng** (~4,1 GB dữ liệu + 2,8 GB index). DBA thêm migration tạo index phục vụ báo cáo:
+  ~~~sql
+  CREATE INDEX CONCURRENTLY idx_orders_status_created ON orders (status, created_at DESC);
+  ~~~
+  Migration chạy trong Flyway (mặc định bọc mỗi migration trong **một transaction**).
+
+  **Triệu chứng (14/03/2026, 14:02).** Deploy bản v2.14.0. Migration **bị lỗi ngay lập tức**:
+  ~~~
+  ERROR: CREATE INDEX CONCURRENTLY cannot run inside a transaction block
+  ~~~
+  Flyway đánh dấu migration **failed**. Team fix code, deploy lại v2.14.1 — migration chạy lại, lại bị lỗi tương tự. Lặp lại 3 lần, mỗi lần Flyway rollback transaction, connection pool bị căng. DBA phải can thiệp thủ công: chạy index bằng psql ngoài transaction, rồi {{flyway repair}}.
+
+  **Việc bạn có.** Ba artifact: log Flyway, snapshot pg_locks lúc migration chạy, và script migration. Hãy giải thích tại sao CREATE INDEX CONCURRENTLY không chạy trong transaction, tại sao Flyway mặc định bọc transaction gây lỗi, và quy trình an toàn để tạo index CONCURRENTLY trên production.
+
+  **Điểm mới so với lab-sql-011/017/040/050:** Tập trung vào **Flyway transaction wrapping** conflict với **CONCURRENTLY**, không phải ALTER TABLE. Lỗi "cannot run inside a transaction block" là đặc trưng, không phải lock wait.`,
+  artifacts: [
+    {
+      name: 'flyway-migration-error.log',
+      lang: 'text',
+      content: `2026-03-14 14:02:00.012 INFO  [main] o.f.core.internal.command.DbMigrate : Migrating schema "public" to version "47 - add index for report"
+2026-03-14 14:02:00.015 INFO  [main] o.f.core.internal.sqlscript.DefaultSqlScriptExecutor : Executing SQL: CREATE INDEX CONCURRENTLY idx_orders_status_created ON orders (status, created_at DESC)
+2026-03-14 14:02:00.016 ERROR [main] o.f.core.internal.command.DbMigrate : Migration of schema "public" to version "47" failed! Please restore backups...
+2026-03-14 14:02:00.017 ERROR [main] o.f.core.internal.command.DbMigrate : SQL State  : 0A000 --- Error Code : 0 --- Message  : CREATE INDEX CONCURRENTLY cannot run inside a transaction block
+2026-03-14 14:02:00.018 ERROR [main] o.f.core.internal.command.DbMigrate : SQL State  : 0A000 --- Error Code : 0 --- Message  : CREATE INDEX CONCURRENTLY cannot run inside a transaction block
+-- Flyway 10.x mặc định: spring.flyway.out-of-order=false, spring.flyway.validate-on-migrate=true
+-- Mỗi migration chạy trong MỘT transaction (BEGIN ... COMMIT/ROLLBACK).
+-- CREATE INDEX CONCURRENTLY yêu cầu KHÔNG trong transaction.
+2026-03-14 14:02:00.019 WARN  [main] o.f.core.internal.command.DbMigrate : Rolling back transaction...`,
+    },
+    {
+      name: 'pg-locks-flyway.txt',
+      lang: 'text',
+      content: `-- 2026-03-14 14:02:00 +07, RDS shopmart-primary
+-- Migration V47 chạy, Flyway đang trong transaction (BEGIN đã chạy)
+shopmart=# SELECT pid, state, wait_event_type, wait_event, left(query, 80) AS query
+FROM pg_stat_activity
+WHERE datname = 'shopmart' AND backend_type = 'client backend' AND query LIKE '%CREATE INDEX CONCURRENTLY%';
+  pid  | state  | wait_event_type | wait_event |                            query
+-------+--------+-----------------+------------+--------------------------------------------------------------
+  31245 | active |                 |            | CREATE INDEX CONCURRENTLY idx_orders_status_created ON orders
+-- Không có lock wait vì câu lệnh lỗi ngay trước khi lấy lock.
+-- Transaction Flyway đang mở (BEGIN) -> CREATE INDEX CONCURRENTLY thấy đang trong transaction block -> báo lỗi 0A000.`,
+    },
+    {
+      name: 'migration-script.sql',
+      lang: 'text',
+      content: `-- V47__add_index_for_report.sql (Flyway)
+-- Chạy tự động khi deploy qua Spring Boot
+CREATE INDEX CONCURRENTLY idx_orders_status_created ON orders (status, created_at DESC);
+-- Flyway bọc câu này trong: BEGIN; ... COMMIT;
+-- Lỗi: CREATE INDEX CONCURRENTLY không được phép trong transaction block.`,
+    },
+  ],
+  questions: [
+    'Tại sao CREATE INDEX CONCURRENTLY báo lỗi "cannot run inside a transaction block"? Giải thích cơ chế PostgreSQL yêu cầu.',
+    'Flyway mặc định bọc migration trong transaction gây ra lỗi này. Có những cách nào để chạy CREATE INDEX CONCURRENTLY qua Flyway an toàn?',
+    'Nếu đã deploy lỗi 3 lần, migration table Flyway bị failed. Làm sao để khôi phục (flyway repair) và chạy lại index an toàn?',
+  ],
+  hints: [
+    'CREATE INDEX CONCURRENTLY cần 2 pass quét bảng, giữa 2 pass không giữ lock mạnh -> PostgreSQL cấm nó trong transaction vì nếu rollback thì index ở trạng thái bất nhất quán.',
+    'Flyway: (1) spring.flyway.schemas config, (2) callback afterMigrate chạy psql riêng, (3) tách file migration CONCURRENTLY và chạy thủ công, (4) Flyway 8+ hỗ trợ executeInTransaction=false cho migration riêng.',
+    'flyway repair: xóa record failed trong flyway_schema_history, sau đó chạy index bằng psql (không transaction), rồi flyway migrate tiếp.',
+  ],
+  answer: `**Tóm tắt:** Migration Flyway chạy {{CREATE INDEX CONCURRENTLY}} trong transaction (Flyway mặc định bọc mỗi migration trong BEGIN...COMMIT). PostgreSQL cấm CONCURRENTLY trong transaction vì index được xây dựng 2 pass, giữa 2 pass không giữ lock mạnh — nếu transaction rollback, index sẽ ở trạng thái hỏng (INVALID) không thể dọn. Lỗi {{0A000}} xảy ra ngay lập tức. Sửa: tách migration CONCURRENTLY ra file riêng với {{executeInTransaction=false}} (Flyway 8+) hoặc chạy thủ công bằng psql, sau đó {{flyway repair}} để bỏ qua version đã failed.
+
+### Kiến thức nền: tại sao CONCURRENTLY cấm trong transaction
+{{CREATE INDEX CONCURRENTLY}} xây dựng index trong 2 giai đoạn: (1) quét bảng lấy dữ liệu, (2) ghi index. Giữa 2 giai đoạn không giữ {{AccessExclusiveLock}} để cho phép ghi đồng thời. Nếu chạy trong transaction và bị rollback giữa chừng, index đã tạo một phần không thể rollback sạch (không có WAL cho build index) -> PostgreSQL cấm triệt để, ném lỗi {{0A000}} ngay khi thấy đang trong transaction block.
+
+Khác với {{CREATE INDEX}} thường: nó giữ {{ShareLock}} (chặn ghi) trong toàn bộ quá trình, xong mới commit -> có thể trong transaction.
+
+### Flyway và transaction wrapping
+Flyway mặc định: mỗi file migration = một transaction. Spring Boot Flyway auto-migration chạy ngay khi ứng dụng khởi động.
+
+| Cách chạy CONCURRENTLY qua Flyway | Ưu điểm | Nhược điểm |
+|---|---|---|
+| File migration riêng + {{executeInTransaction=false}} (Flyway 8+) | Tự động, không can thiệp | Cần Flyway 8+, chỉ dùng cho câu này |
+| Callback {{afterMigrate}} chạy {{psql -c "CREATE INDEX CONCURRENTLY..."}} | Tách hẳn khỏi transaction Flyway | Phụ thuộc psql, cần quản lý credentials |
+| Chạy thủ công psql -> {{flyway repair}} -> deploy tiếp | Kiểm soát đầy đủ | Thủ công, dễ quên |
+| Tắt auto-migrate, chạy migration qua script CI/CD | Kiểm soát thứ tự, có thể tách CONCURRENTLY | Phức tạp hóa pipeline |
+
+### Nguyên nhân gốc
+1. Team thêm {{CREATE INDEX CONCURRENTLY}} vào file migration Flyway thông thường.
+2. Flyway bọc câu lệnh trong transaction ({{BEGIN}} ... {{COMMIT}}).
+3. PostgreSQL thấy {{CREATE INDEX CONCURRENTLY}} trong transaction block -> ném lỗi {{SQLSTATE 0A000}} ngay lập tức.
+4. Flyway rollback transaction, đánh dấu version 47 **failed** trong {{flyway_schema_history}}.
+5. Deploy lại v2.14.1: Flyway thấy version 47 failed -> không chạy migration mới cho đến khi repair.
+
+### Dẫn chứng
+- Artifact 1: {{ERROR: CREATE INDEX CONCURRENTLY cannot run inside a transaction block}}, {{SQL State: 0A000}}.
+- Artifact 2: Migration Flyway đang trong transaction, CREATE INDEX CONCURRENTLY lỗi trước khi lấy lock.
+- Artifact 3: Script migration không có cấu hình {{executeInTransaction=false}}.
+
+### Cách sửa ngắn hạn (hôm nay)
+1. **Chạy index bằng psql thủ công** (ngoài transaction):
+~~~bash
+psql "postgresql://user:pass@host:5432/db" -c "CREATE INDEX CONCURRENTLY idx_orders_status_created ON orders (status, created_at DESC);"
+~~~
+2. **Sửa Flyway history**:
+~~~sql
+DELETE FROM flyway_schema_history WHERE version = '47' AND success = false;
+-- Hoặc: flyway repair (Flyway CLI)
+~~~
+3. Deploy lại ứng dụng (Flyway sẽ thấy version 47 đã được "sửa" và chạy migration tiếp).
+
+### Cách sửa dài hạn (quy trình chuẩn)
+1. **Tách migration CONCURRENTLY**: Tạo file {{V47.1__add_index_concurrently.sql}} với nội dung:
+~~~sql
+-- executeInTransaction=false
+CREATE INDEX CONCURRENTLY idx_orders_status_created ON orders (status, created_at DESC);
+~~~
+Flyway 8+ đọc comment {{executeInTransaction=false}} và chạy câu này **ngoài transaction**.
+2. **Nếu Flyway < 8**: Dùng callback {{afterMigrate}} trong Java:
+~~~java
+@Component
+public class ConcurrentIndexCallback implements Callback {
+    @Override
+    public boolean supports(Event event, Context context) {
+        return event == Event.AFTER_MIGRATE;
+    }
+    @Override
+    public void handle(Event event, Context context) {
+        // Chạy psql hoặc JDBCStatement.execute() KHÔNG trong transaction
+    }
+}
+~~~
+3. **Quy tắc review**: mọi {{CREATE INDEX CONCURRENTLY}} bắt buộc tách migration hoặc có config {{executeInTransaction=false}}. CI kiểm tra grep "CREATE INDEX CONCURRENTLY" trong file migration không có comment đó -> fail.
+
+### Phòng ngừa và monitoring
+- Alert khi {{flyway_schema_history}} có record {{success = false}}.
+- Theo dõi {{pg_stat_user_indexes}}: index mới tạo có {{idx_scan = 0}} ban đầu, sau vài phút nên > 0.
+- Chạy {{pg_repack}} hoặc {{REINDEX CONCURRENTLY}} nếu index bloat sau build.
+
+> Senior tip: **Flyway + CREATE INDEX CONCURRENTLY = cặp đôi hay gặp lỗi**. Mặc định Flyway bọc transaction, CONCURRENTLY cấm transaction. Luôn nhớ: "index lớn trên bảng production -> CONCURRENTLY -> tách transaction". Nên cấu hình Flyway default {{executeInTransaction=false}} cho migration DDL, chỉ bật transaction cho DML.`,
+  rubric: [
+    'Chỉ đúng nguyên nhân: Flyway bọc migration trong transaction, CREATE INDEX CONCURRENTLY cấm trong transaction block (SQLSTATE 0A000), PostgreSQL yêu cầu CONCURRENTLY chạy tự do giữa 2 pass quét bảng',
+    'Dẫn chứng đúng: artifact 1 lỗi 0A000, artifact 2 Flyway transaction đang mở, artifact 3 script migration không có executeInTransaction=false',
+    'Đề xuất sửa đúng: chạy index bằng psql thủ công + flyway repair, hoặc tách migration với executeInTransaction=false (Flyway 8+), hoặc callback afterMigrate',
+    'Có quy trình dài hạn: tách migration CONCURRENTLY, quy tắc review bắt buộc executeInTransaction=false, CI check grep',
+    'Phân biệt rõ với ALTER TABLE/ADD CONSTRAINT (cần transaction) vs CREATE INDEX CONCURRENTLY (cấm transaction)',
+  ],
+  tags: ['postgresql', 'index', 'concurrently', 'flyway', 'transaction', 'migration', 'executeintransaction'],
+},
+{
+  id: 'lab-sql-057',
+  category: 'sql',
+  title: 'OR giữa 2 cột có index: BitmapOr được chọn nhưng chậm hơn Seq Scan do combined selectivity cao',
+  level: 'senior',
+  scenario: `**Bối cảnh.** Hệ thống **LogiChain** (Spring Boot 3.3, Hibernate 6.4, PostgreSQL 15.6 trên RDS, 8 vCPU / 64 GB RAM). Bảng {{shipment_event}} ghi log sự kiện vận đơn: **18.214.507 dòng** (~4,2 GB heap + 1,8 GB index). Có 2 index: {{idx_shipment_event_shipment}} trên {{shipment_id}} (cardinality 18M, gần như unique), {{idx_shipment_event_type}} trên {{event_type}} (cardinality 8: CREATED, PICKED, IN_TRANSIT, DELIVERED, FAILED, RETURNED, CANCELLED, EXCEPTION). Endpoint tìm sự kiện: {{WHERE shipment_id = ? OR event_type = 'EXCEPTION'}}.
+
+  **Triệu chứng (14/03/2026, 10:15).** p95 endpoint nhảy từ 40 ms lên **2,8 giây**, CPU RDS từ 15% lên 88%. EXPLAIN cho thấy planner chọn **BitmapOr** (gom Bitmap Index Scan từ 2 index) nhưng thực tế chậm hơn Seq Scan nhiều. DBA nghĩ "BitmapOr chắc chắn nhanh hơn Seq Scan" — thực tế combined selectivity quá cao (OR gom ~40% bảng).
+
+  **Việc bạn có.** Ba artifact: EXPLAIN ANALYZE của câu OR (BitmapOr), EXPLAIN ANALYZE của Seq Scan ép bằng {{enable_bitmapscan = off}}, và thống kê cột. Hãy giải thích tại sao BitmapOr lại chậm, khi nào OR nên dùng Seq Scan, và cách viết lại an toàn.
+
+  **Điểm mới so với lab-sql-041/055:** Tập trung vào **BitmapOr được chọn nhưng kém hiệu quả hơn Seq Scan** do selectivity cao, không phải index không dùng. Planner chọn BitmapOr vì ước lượng chi phí thấp hơn, nhưng chi phí thực tế (random I/O + heap fetch) cao hơn đọc tuần tự.`,
+  artifacts: [
+    {
+      name: 'explain-bitmapor-slow.txt',
+      lang: 'text',
+      content: `-- 2026-03-14 10:16:02 +07, RDS logichain-primary (PostgreSQL 15.6)
+logichain=# EXPLAIN (ANALYZE, BUFFERS)
+SELECT id, shipment_id, event_type, created_at, detail
+FROM shipment_event
+WHERE shipment_id = 's-88990'::uuid
+   OR event_type = 'EXCEPTION';
+                                                           QUERY PLAN
+--------------------------------------------------------------------------------------------------------------------------------------
+ Limit  (cost=124.56..124.60 rows=50 width=80) (actual time=2841.112..2841.118 rows=50 loops=1)
+   Buffers: shared hit=1894320 read=1442
+   ->  Bitmap Heap Scan on shipment_event  (cost=124.56..3841521.44 rows=7285920 width=80) (actual time=0.041..2840.902 rows=7285920 loops=1)
+         Recheck Cond: ((shipment_id = 's-88990'::uuid) OR (event_type = 'EXCEPTION'::varchar))
+         Heap Fetches: 7285920
+         Buffers: shared hit=1894320 read=1442
+         ->  BitmapOr  (cost=124.56..124.56 rows=7285920 width=0) (actual time=412.301..412.301 rows=7285920 loops=1)
+               ->  Bitmap Index Scan on idx_shipment_event_shipment  (cost=0.00..62.28 rows=1 width=0) (actual time=0.121..0.121 rows=1 loops=1)
+                     Index Cond: (shipment_id = 's-88990'::uuid)
+               ->  Bitmap Index Scan on idx_shipment_event_type  (cost=0.00..62.28 rows=7285920 width=0) (actual time=412.180..412.180 rows=7285920 loops=1)
+                     Index Cond: (event_type = 'EXCEPTION'::varchar)
+ Planning Time: 0.284 ms
+ Execution Time: 2841.451 ms
+ -- BitmapOr gom 2 index: shipment_id (1 dòng) + event_type='EXCEPTION' (7.285.920 dòng).
+ -- Heap Fetches: 7.285.920 (random I/O đọc heap từng dòng).`,
+    },
+    {
+      name: 'explain-seqscan-forced.txt',
+      lang: 'text',
+      content: `-- 2026-03-14 10:18:00 +07, ép planner dùng Seq Scan
+logichain=# SET enable_bitmapscan = off;
+logichain=# EXPLAIN (ANALYZE, BUFFERS)
+SELECT id, shipment_id, event_type, created_at, detail
+FROM shipment_event
+WHERE shipment_id = 's-88990'::uuid
+   OR event_type = 'EXCEPTION';
+                                                           QUERY PLAN
+--------------------------------------------------------------------------------------------------------------------------------------
+ Seq Scan on shipment_event  (cost=0.00..3841521.44 rows=7285920 width=80) (actual time=0.021..1124.567 rows=7285920 loops=1)
+   Filter: ((shipment_id = 's-88990'::uuid) OR (event_type = 'EXCEPTION'::varchar))
+   Rows Removed by Filter: 10928587
+   Buffers: shared hit=1245210 read=0
+ Planning Time: 0.212 ms
+ Execution Time: 1125.212 ms
+ -- Seq Scan: 1.125 giây (đọc tuần tự, không random I/O), nhanh hơn BitmapOr 2.8 giây gấp 2.5 lần.`,
+    },
+    {
+      name: 'stats-shipment-event.txt',
+      lang: 'text',
+      content: `-- 2026-03-14 10:20:00 +07
+logichain=# SELECT relname, n_live_tup, n_dead_tup FROM pg_stat_user_tables WHERE relname = 'shipment_event';
+  relname      | n_live_tup | n_dead_tup
+---------------+------------+------------
+ shipment_event | 18214507   | 120442
+
+logichain=# SELECT attname, n_distinct, most_common_vals, most_common_freqs
+FROM pg_stats WHERE tablename = 'shipment_event' AND attname = 'event_type';
+  attname    | n_distinct |          most_common_vals          |       most_common_freqs
+--------------+------------+----------------------------------+--------------------------
+ event_type   |          8 | {DELIVERED, IN_TRANSIT, CREATED, PICKED, FAILED, CANCELLED, RETURNED, EXCEPTION} | {0.35,0.25,0.15,0.12,0.06,0.04,0.02,0.01}
+-- EXCEPTION chiếm 1% = 182.145 dòng. Nhưng planner ước lượng rows cho EXCEPTION = 7.285.920 (lệch lớn do statistics cũ?).
+-- shipment_id near-unique, EXCEPTION = 1% -> OR gom ~40% bảng (7.285.920 / 18.214.507).
+-- Planner chọn BitmapOr vì ước lượng chi phí < Seq Scan, nhưng random I/O 7.2M heap fetches chậm hơn sequential scan.`,
+    },
+  ],
+  questions: [
+    'Tại sao planner chọn BitmapOr (ước lượng chi phí thấp hơn) nhưng thực tế chậm hơn Seq Scan gấp 2.5 lần? Chỉ ra bằng Heap Fetches và Buffers.',
+    'Khi nào OR giữa 2 cột nên dùng Seq Scan thay vì BitmapOr? Giải thích ngưỡng selectivity và chi phí random I/O vs sequential scan.',
+    'Bạn sửa thế nào để query nhanh và ổn định? So sánh: (1) UNION ALL tách 2 nhánh + LIMIT push down, (2) partial index trên event_type = EXCEPTION, (3) materialized view cho EXCEPTION events.',
+  ],
+  hints: [
+    'BitmapOr gom TID từ 2 index -> sort TID -> random I/O đọc heap (Heap Fetches). Với 7.2M dòng, random I/O chậm hơn sequential scan 30-50%.',
+    'Planner ước lượng chi phí dựa trên cost model: seq_page_cost=1.0, random_page_cost=4.0 (mặc định). Nhưng nếu dữ liệu trong shared_buffers, random_page_cost thực tế thấp hơn -> planner ưu tiên BitmapOr sai.',
+    'UNION ALL: nhánh 1 (shipment_id) dùng Index Scan 1 dòng, nhánh 2 (event_type=EXCEPTION) dùng Index Scan + LIMIT. BitmapOr ép gom tất cả rồi mới LIMIT.',
+  ],
+  answer: `**Tóm tắt:** Query {{WHERE shipment_id = ? OR event_type = 'EXCEPTION'}} dùng **BitmapOr** gom 2 index: shipment_id (1 dòng) + event_type='EXCEPTION' (7.285.920 dòng = 40% bảng). BitmapOr phải fetch 7.285.920 heap tuple (random I/O) -> **2.841 ms**. Ép planner dùng **Seq Scan** ({{SET enable_bitmapscan = off}}) chỉ **1.125 ms** (sequential I/O nhanh hơn). Nguyên nhân: combined selectivity cao (~40% bảng), random_page_cost mặc định 4.0 làm planner ưu tiên BitmapOr, nhưng random I/O thực tế chậm hơn sequential scan. Sửa: {{UNION ALL}} tách 2 nhánh (mỗi nhánh LIMIT 50), hoặc partial index {{WHERE event_type = 'EXCEPTION'}}.
+
+### Kiến thức nền: BitmapOr vs Seq Scan — khi nào cái nào nhanh
+**BitmapOr**: gom TID (tuple ID) từ nhiều index -> sort TID -> đọc heap theo TID (random I/O). Phù hợp khi **tổng số dòng khớp nhỏ** (selectivity < 5-10%). Chi phí: index scan + sort TID + random heap fetches.
+**Seq Scan**: đọc tuần tự mọi page của bảng (sequential I/O). Phù hợp khi **selectivity cao** (> 10-20%) hoặc bảng nhỏ. Chi phí: sequential I/O, không sort, không random fetch.
+
+PostgreSQL cost model: {{seq_page_cost = 1.0}}, {{random_page_cost = 4.0}} (mặc định). Planner tính: BitmapOr cost = index_cost + sort_cost + random_page_cost * heap_fetches. Với 7.2M heap fetches, cost ước lượng vẫn thấp hơn Seq Scan vì planner cho rằng index selectivity cao. Nhưng thực tế:
+- Nếu dữ liệu không trong shared_buffers: random I/O đĩa chậm hơn sequential 10-50x.
+- Nếu trong shared_buffers: random_page_cost thực tế ~1.0-1.5, planner quá bi quan (dùng 4.0) -> chọn BitmapOr khi Seq Scan nhanh hơn.
+
+### Nguyên nhân gốc, từng bước
+1. Cột {{event_type}} có giá trị {{EXCEPTION}} chiếm 1% (statistics: most_common_freqs = 0.01). Nhưng planner ước lượng rows cho EXCEPTION = 7.285.920 (lệch do statistics cũ hoặc parameter binding).
+2. {{shipment_id}} near-unique (1 dòng). OR gom 2 điều kiện -> combined selectivity ước lượng ~40% bảng (7.285.920 / 18.214.507).
+3. Planner chọn **BitmapOr** vì cost model thấy index scan + random fetches rẻ hơn Seq Scan toàn bảng (theo cost model mặc định).
+4. Thực thi: Bitmap Index Scan event_type trả 7.285.920 TID -> sort TID -> **Heap Fetches: 7.285.920** (random I/O đọc heap từng dòng). {{Buffers: shared hit=1894320}}.
+5. Ép Seq Scan: đọc tuần tự 18.2M dòng, sequential I/O, **Execution Time: 1.125 s** (nhanh 2.5 lần).
+
+### Dẫn chứng
+- Artifact 1: **BitmapOr** -> **Bitmap Heap Scan**, **Heap Fetches: 7285920**, **Execution Time: 2841.451 ms**.
+- Artifact 2: **Seq Scan** ({{enable_bitmapscan = off}}) -> **Execution Time: 1125.212 ms**, nhanh 2.5 lần.
+- Artifact 3: {{event_type}} MCV có EXCEPTION freq 0.01 (1%), nhưng planner ước lượng 7.2M (40%) — statistics lệch hoặc parameter binding làm mất MCV.
+
+### Cách sửa ngắn hạn (hôm nay)
+1. **UNION ALL + LIMIT push down** (khuyên dùng):
+~~~sql
+SELECT * FROM (
+  SELECT id, shipment_id, event_type, created_at, detail
+  FROM shipment_event
+  WHERE shipment_id = $1
+  LIMIT 50
+  UNION ALL
+  SELECT id, shipment_id, event_type, created_at, detail
+  FROM shipment_event
+  WHERE event_type = 'EXCEPTION'
+  LIMIT 50
+) sub
+ORDER BY created_at DESC
+LIMIT 50;
+~~~
+PostgreSQL 14+ push LIMIT vào mỗi nhánh của Append -> nhánh 1 Index Scan 1 dòng, nhánh 2 Index Scan 50 dòng, không Heap Fetches 7.2M.
+
+2. **Partial index** cho EXCEPTION (nếu query thường lọc EXCEPTION):
+~~~sql
+CREATE INDEX CONCURRENTLY idx_shipment_event_exception
+  ON shipment_event (shipment_id, created_at DESC)
+  WHERE event_type = 'EXCEPTION';
+~~~
+Index chỉ chứa 182k dòng (1%), nhẹ, query {{WHERE event_type = 'EXCEPTION'}} dùng index này.
+
+3. **Materialized view** cho EXCEPTION events (refresh định kỳ), dashboard đọc view này.
+
+### Cách sửa dài hạn
+- **Cập nhật statistics**: {{ANALYZE shipment_event}} để planner có MCV đúng.
+- **Tune random_page_cost**: nếu workload chủ yếu trong RAM, {{SET random_page_cost = 1.5}} (hoặc 1.1 cho SSD/NVMe) cho planner đánh giá đúng chi phí random I/O.
+- **Extended statistics**: {{CREATE STATISTICS ... (dependencies) ON shipment_id, event_type FROM shipment_event;}} nếu 2 cột có tương quan.
+- **Materialized view** cho event_type hiếm (EXCEPTION, FAILED) refresh 5 phút.
+
+### Phòng ngừa và monitoring
+- Alert khi query có **Heap Fetches > 100.000** và **Execution Time > 1 giây** — dấu hiệu BitmapOr kém hiệu quả.
+- Auto_explain với {{log_analyze = on}}: soi tỉ lệ **Heap Fetches / Rows Returned > 1000**.
+- Dashboard: so sánh EXPLAIN ANALYZE với {{enable_bitmapscan = on/off}} cho query OR quan trọng.
+
+> Senior tip: **BitmapOr không phải thần thánh cho mọi OR**. Với combined selectivity > 10-20%, Seq Scan thường nhanh hơn nhờ sequential I/O. Planner dùng cost model (random_page_cost=4.0) nhưng thực tế trên SSD/NVMe hoặc shared_buffers lớn, random I/O không chậm gấp 4 lần sequential. Luôn test {{enable_bitmapscan = off}} để so sánh. Và nhớ: **UNION ALL + LIMIT push down** là pattern chuẩn cho OR trên bảng lớn — nó tách logic, cho phép planner tối ưu từng nhánh riêng, tránh gom TID khổng lồ.`,
+  rubric: [
+    'Chỉ đúng nguyên nhân: BitmapOr gom 7.2M TID từ index event_type=EXCEPTION -> Heap Fetches 7.2M (random I/O) chậm hơn Seq Scan sequential I/O',
+    'Dẫn chứng đúng: artifact 1 Heap Fetches 7285920, Execution Time 2841 ms; artifact 2 Seq Scan 1125 ms; artifact 3 combined selectivity ~40%, MCV EXCEPTION 1% nhưng planner ước lượng 40%',
+    'Giải thích đúng ngưỡng selectivity: BitmapOr tốt khi < 5-10%, Seq Scan tốt khi > 10-20%, cost model random_page_cost=4.0 vs thực tế SSD/RAM',
+    'Đề xuất sửa đúng: UNION ALL + LIMIT push down (mỗi nhánh LIMIT 50), partial index WHERE event_type=EXCEPTION, materialized view, tune random_page_cost',
+    'Có monitoring/phòng ngừa: alert Heap Fetches > 100k, auto_explain log_analyze, so sánh enable_bitmapscan on/off',
+  ],
+  tags: ['postgresql', 'index', 'bitmap-or', 'or-condition', 'seq-scan', 'random-io', 'union-all', 'partial-index'],
+},
 );
 
