@@ -8003,4 +8003,228 @@ Khi được hỏi "Lỗi bảo mật quan trọng nhất bạn từng bắt đ�
   ],
   tags: ['Logging', 'Sensitive Data Exposure', 'PII', 'Lombok', 'ELK', 'code review', 'Masking']
 },
+{
+  id: 'security-091',
+  topic: 'security',
+  level: 'senior',
+  q: 'Chạy Spring Boot trên Kubernetes: Secret trong K8s có được mã hoá không, tại sao KHÔNG nên nhúng secret vào env var, và CSI Secret Store driver / External Secrets Operator khác nhau thế nào?',
+  a: `**Tóm tắt:** Secret của Kubernetes **mặc định KHÔNG được mã hoá** — etcd chỉ lưu base64 (ai đọc được etcd là đọc được secret), nên phải bật **EncryptionConfiguration** (KMS provider) ở tầng etcd. App **không nên** đọc secret qua env var vì env lộ qua {{/proc/<pid>/environ}}, crash dump, {{kubectl describe pod}}, log của sidecar và mọi child process; thay vào đó mount bằng **CSI Secret Store driver** (volume trong RAM, {{tmpfs}}) hoặc inject bằng **External Secrets Operator**. Với service-to-service thì dùng **projected service account token** (ngắn hạn, tự xoay) thay vì secret tĩnh.
+
+### Secret trong etcd: base64 KHÔNG phải mã hoá
+- {{kubectl create secret generic}} chỉ **base64-encode**, không mã hoá. Ai có quyền đọc etcd (hoặc etcd backup) đều giải mã được.
+- Bảo vệ thật sự: bật **EncryptionConfiguration** với **KMS provider** ({{EncryptionConfiguration}} + {{--encryption-provider-config}}) để etcd ghi bản mã hoá; hoặc dùng etcd encryption at rest ở mức ổ đĩa.
+- **RBAC** giới hạn ai được {{get secrets}}; **namespace** cô lập; tách workload nhạy cảm sang node pool riêng.
+- Audit: bật K8s audit log bắt {{get/list}} secret — đọc secret hàng loạt là dấu hiệu tấn công.
+
+### Vì sao KHÔNG nhúng secret vào env var
+- Env đọc được từ: {{/proc/<pid>/environ}} (cùng node), {{kubectl describe pod}} (phần env hiện rõ), crash dump, APM agent, và **mọi process con** app spawn.
+- Env **tĩnh**: đổi secret phải restart pod; không xoay nóng được.
+- Env dễ lọt vào log khi code lỡ {{log.info(System.getenv(...))}} hoặc exception in ra environment.
+
+### Ba cách đưa secret vào app (từ an toàn đến kém)
+| Cách | Cơ chế | Xoay nóng | Rủi ro lộ |
+|---|---|---|---|
+| **CSI Secret Store driver** | Volume {{tmpfs}} (RAM), sync từ Vault/Secrets Manager | Có (tự cập nhật file) | Thấp — không qua env |
+| **External Secrets Operator** | Controller tạo Secret K8s từ kho ngoài, app mount volume | Có | Trung bình — vẫn là K8s Secret |
+| **Env var** | {{envFrom.secretRef}} | Không (phải restart) | **Cao** — lộ qua proc/describe |
+
+### CSI Secret Store driver + sync
+- App mount secret thành file: {{volumeMounts}} với {{mountPath: /mnt/secrets}}, {{readOnly: true}}. Code đọc file {{/mnt/secrets/db-password}}.
+- {{secretObjects}} để đồng bộ thành K8s Secret (nếu app bắt buộc đọc qua env, đây là cách bớt rủi ro).
+- Provider: AWS Secrets Manager, GCP Secret Manager, Azure Key Vault, HashiCorp Vault.
+
+### Projected service account token (thay secret tĩnh cho K8s API)
+- K8s 1.21+ không còn tự tạo secret token vĩnh viễn cho SA. Dùng **projected volume**: token gắn {{audience}}, {{expirationSeconds}} (mặc định 1 giờ), kubelet tự xoay.
+- App đọc token từ file, đổi khi gần hết hạn; không lưu token vào DB/image.
+
+~~~yaml
+# Deployment: mount secret qua CSI, KHÔNG dùng env
+spec:
+  template:
+    spec:
+      serviceAccountName: payments-sa   # IRSA/Workload Identity cho AWS
+      volumes:
+        - name: secrets-store
+          csi:
+            driver: secrets-store.csi.k8s.io
+            readOnly: true
+            volumeAttributes:
+              secretProviderClass: payments-spc
+      containers:
+        - name: app
+          volumeMounts:
+            - name: secrets-store
+              mountPath: /mnt/secrets
+              readOnly: true
+~~~
+
+### Ví dụ đời thực
+- **Triệu chứng**: Một nền tảng ví điện tử (Spring Boot 3 trên EKS, 60 pod) bị lộ một phần thông tin sau khi một nhà thầu bị gỡ quyền: người đó trước đó đã {{kubectl describe pod}} và chụp lại phần env, trong đó có {{SPRING_DATASOURCE_PASSWORD}} và {{STRIPE_API_KEY}}. Rà soát phát hiện secret còn nằm trong etcd backup S3 không mã hoá, và env của 60 pod đều chứa mật khẩu DB.
+- **Điều tra**: Kiểm tra etcd: chưa bật EncryptionConfiguration, secret chỉ base64. Kiểm tra Deployment: dùng {{envFrom.secretRef}} cho toàn bộ. CloudTrail cho thấy có request {{GetSecretValue}} bất thường nhưng không alert. Nhà thầu đã rời 3 tuần, key Stripe vẫn còn hiệu lực.
+- **Nguyên nhân gốc**: (1) Secret K8s không mã hoá at-rest. (2) Secret đưa vào env var nên lộ qua describe/proc và không xoay được. (3) Không tách quyền đọc secret, không alert khi đọc bất thường.
+- **Cách xử lý**: (1) Bật EncryptionConfiguration với KMS cho etcd, mã hoá lại secret cũ. (2) Chuyển sang **CSI Secret Store driver** mount {{tmpfs}}, bỏ env var. (3) Xoay toàn bộ credential nghi lộ (DB, Stripe). (4) Bật RBAC least privilege + audit log bắt {{get secrets}} + alert. (5) Dùng projected SA token cho truy cập K8s API.
+- **Kết quả đo được**: Sau 30 ngày, {{kubectl describe}} không còn lộ secret; xoay secret không cần restart (CSI sync); audit bắt 1 request đọc secret hàng loạt bị chặn tự động. Rà soát etcd backup đã mã hoá, không còn plaintext.
+
+### Trả lời mẫu khi phỏng vấn
+"Em coi Secret của Kubernetes mặc định là không an toàn: etcd chỉ base64, nên em luôn bật EncryptionConfiguration với KMS và giới hạn RBAC đọc secret. Em không đưa secret vào env var vì env lộ qua {{/proc}}, {{kubectl describe}}, crash dump và mọi child process, lại không xoay nóng được; thay vào đó em mount bằng CSI Secret Store driver dạng {{tmpfs}} trong RAM, đồng bộ từ Vault hoặc Secrets Manager, hoặc dùng External Secrets Operator khi cần. Với truy cập K8s API, em dùng projected service account token ngắn hạn tự xoay thay vì secret tĩnh. Em cũng bật audit log bắt việc đọc secret hàng loạt và alert. Thực tế em từng xử lý ca nhà thầu chụp env chứa mật khẩu DB và API key, etcd backup lại không mã hoá; sau khi chuyển sang CSI mount, bật KMS encryption và xoay toàn bộ key thì {{kubectl describe}} không còn lộ gì và xoay secret không cần restart pod."
+
+> Senior tip: coi "env var" là antialiased cho secret production. Mặc định: etcd mã hoá bằng KMS, secret mount qua CSI {{tmpfs}}, và projected SA token cho K8s API. Một thói quen tốt là chạy {{kubectl get secret -A -o json}} trong CI để phát hiện secret lộ base64, và bật audit cảnh báo khi có principal đọc secret ngoài giờ.`,
+  follow: [
+    'CSI Secret Store driver đồng bộ secret đổi thế nào vào file trong pod, và app phải làm gì để đọc lại (watch file, SIGHUP, hay timer)?',
+    'External Secrets Operator và native Secrets Manager CSI provider khác nhau ra sao khi secret bị xoá ở kho ngoài?',
+    'Projected service account token khác secret token vĩnh viễn ở điểm nào về audience, thời hạn và cơ chế xoay?'
+  ],
+  tags: ['Kubernetes', 'Secret', 'etcd', 'CSI Secret Store', 'External Secrets', 'env var', 'IRSA']
+},
+{
+  id: 'security-092',
+  topic: 'security',
+  level: 'senior',
+  q: 'Rate limiter phân tán nhiều instance dùng Redis: fixed window bị burst ở biên, sliding window chính xác hơn, và tại sao INCR+EXPIRE không atomic gây sai số? Cài đặt đúng bằng Lua thế nào?',
+  a: `**Tóm tắt:** Rate limit trên nhiều instance phải dùng **counter chung** (Redis). **Fixed window** đơn giản nhưng cho **burst gấp đôi** ở ranh giới cửa sổ (00:59 và 01:00 mỗi bên 100 req). **Sliding window log** chính xác nhất nhưng tốn bộ nhớ; **sliding window counter** (cân bằng) xấp xỉ tốt. {{INCR}} rồi {{EXPIRE}} là **hai lệnh rời** — nếu app chết giữa hai bước, key không có TTL và kẹt vĩnh viễn; phải gộp thành **một script Lua atomic**.
+
+### Ba thuật toán và bẫy của chúng
+| Thuật toán | Độ chính xác | Bộ nhớ | Bẫy chính |
+|---|---|---|---|
+| Fixed window | Thấp (burst biên 2x) | 1 key/cửa sổ | Double burst ở ranh giới |
+| Sliding window log | Cao nhất | 1 entry/request | Tốn RAM, phải trim |
+| Sliding window counter | Trung bình-cao | 2 key | Xấp xỉ có sai số nhỏ |
+
+### Fixed window: burst ở biên
+- Cửa sổ {{[00:00, 01:00)}} cho 100 req. Attacker gửi 100 lúc 00:59 và 100 lúc 01:00 → **200 req trong 2 phút** dù "mỗi phút 100".
+- Phòng: dùng **sliding window** hoặc thêm **token bucket** làm lớp hai.
+
+### Vì sao INCR + EXPIRE không atomic
+~~~java
+// ❌ SAI — hai lệnh rời, không atomic
+Long n = redis.opsForValue().increment("rl:" + ip); // lệnh 1
+if (n == 1) redis.expire("rl:" + ip, 60);           // lệnh 2
+// Nếu app crash giữa 1 và 2: key vĩnh viễn không TTL → user bị chặn mãi
+// Nếu hai thread cùng vào: cả hai thấy n==1? không, nhưng race ở expire vẫn có thể đè TTL
+~~~
+- Hệ quả: hoặc **key kẹt không hết hạn** (DoS cho chính user), hoặc TTL bị reset sai → cửa sổ kéo dài vô hạn.
+
+### Đúng: gộp thành Lua atomic
+~~~java
+// KEYS[1]=counter key, ARGV[1]=window seconds, ARGV[2]=limit
+// Redis thực thi script atomic (không lệnh khác chen giữa)
+String lua = """
+  local n = redis.call('INCR', KEYS[1])
+  if n == 1 then redis.call('EXPIRE', KEYS[1], ARGV[1]) end
+  local ttl = redis.call('TTL', KEYS[1])
+  return {n, ttl}
+  """;
+List<Long> r = redis.execute(new DefaultRedisScript<>(lua, Long.class),
+        List.of("rl:" + ip), "60", "100");
+long count = r.get(0), ttl = r.get(1);
+if (count > 100) return 429; // set Retry-After = ttl
+~~~
+
+### Sliding window counter (xấp xỉ tốt, ít RAM)
+- Giữ 2 fixed window liền kề, trọng số theo phần còn lại của cửa sổ trước:
+  {{ước_tính = count_trước * (phần_giao) + count_hiện_tại}}.
+- Ví dụ: cửa sổ 60s, hiện ở giây 20 của cửa sổ mới. Cửa trước 100 req, cửa này 30 req → ước tính {{100 * (40/60) + 30 = 96}} (còn 96 < 100, chưa chặn). Chính xác hơn fixed window mà chỉ 2 key.
+
+### Nơi đặt và vận hành
+- **Gateway** (Kong/Envoy/WAF): chặn thô theo IP, rẻ.
+- **App + Redis**: theo user/account/device, biết ngữ cảnh.
+- Luôn trả header {{Retry-After}} và {{X-RateLimit-Remaining}}; chọn 429 kèm Retry-After để client backoff đúng.
+- **Fail-open vs fail-closed**: nếu Redis chết, quyết định theo rủi ro — login nên **fail-closed tạm** (chặn) hoặc chuyển local limiter; API đọc có thể fail-open.
+
+### Ví dụ đời thực
+- **Triệu chứng**: API công khai (Spring Boot, 8 instance, Redis chung) giới hạn 100 req/phút/IP, nhưng WAF ghi nhận một IP đạt 210 req trong 90 giây mà không bị chặn. Một số user thật lại bị chặn "vĩnh viễn" phải chờ admin xoá key Redis.
+- **Điều tra**: Log cho thấy code dùng {{INCR}} rồi {{EXPIRE}} rời; 3 lần app restart giữa hai lệnh để lại key {{rl:ip}} không TTL. Đồng thời fixed window trùng giờ round nên attacker canh 00:59/01:00 tạo double burst. Redis {{INFO keyspace}} có key {{rl:*}} với {{ttl=-1}} (không hết hạn).
+- **Nguyên nhân gốc**: (1) Counter không atomic → key kẹt không TTL. (2) Fixed window → burst biên. (3) Không có lớp token bucket thứ hai.
+- **Cách xử lý**: (1) Chuyển sang script Lua atomic (INCR+EXPIRE+TTL một lần). (2) Đổi sang **sliding window counter** 2 cửa sổ. (3) Thêm job dọn key {{ttl=-1}} và metric đếm key không TTL. (4) Trả {{Retry-After}} đúng. (5) Thêm token bucket ở gateway làm lớp thô.
+- **Kết quả đo được**: Sau fix, IP tấn công bị chặn ở ~100 req/phút (sai số < 5%), 0 key kẹt {{ttl=-1}} trong 14 ngày; user thật không còn bị chặn oan. Test tải 8 instance đồng bộ qua Redis cho sai số đếm < 3%.
+
+### Trả lời mẫu khi phỏng vấn
+"Với rate limit nhiều instance, em dùng counter chung ở Redis. Fixed window đơn giản nhưng có bẫy burst ở biên: attacker gửi đầy quota cuối phút này và đầu phút sau nên thành gấp đôi trong thời gian ngắn; em đổi sang sliding window counter với hai cửa sổ có trọng số để xấp xỉ tốt mà chỉ tốn hai key. Quan trọng là {{INCR}} rồi {{EXPIRE}} là hai lệnh rời, không atomic: nếu app chết giữa hai bước thì key không có TTL và user bị chặn vĩnh viễn, hoặc TTL bị đè sai; em gộp tất cả vào một script Lua để Redis chạy atomic, trả về cả count và TTL để set {{Retry-After}}. Em luôn có lớp token bucket ở gateway chặn thô theo IP, còn app lo theo account/device, và quyết định fail-open hay fail-closed tùy mức rủi ro. Em từng gặp ca key kẹt không TTL và double burst ở biên; sau khi chuyển sang Lua atomic cộng sliding window thì sai số đếm dưới 5% và không còn key kẹt."
+
+> Senior tip: luôn gộp đọc-ghi counter vào **một** script Lua; key rate-limit phải luôn có TTL (kiểm tra metric {{ttl=-1}} = 0). Đừng dùng fixed window cho endpoint nhạy cảm; thêm token bucket ở gateway làm lớp thô. Với login, cân nhắc fail-closed khi Redis chết, nhưng phải có đường unlock để không tự khoá mình.`,
+  follow: [
+    'Sliding window log chính xác nhất nhưng tốn RAM — khi nào đánh đổi là đáng, và làm sao trim log hiệu quả?',
+    'Token bucket và sliding window counter khác nhau thế nào về khả năng cho burst?',
+    'Khi Redis cluster fail giữa chừng, fail-open và fail-closed ảnh hưởng ra sao tới bảo mật và tính sẵn sàng?'
+  ],
+  tags: ['Rate Limiting', 'Redis', 'Lua', 'Sliding Window', 'Token Bucket', 'Distributed', 'Fixed Window']
+},
+{
+  id: 'security-093',
+  topic: 'security',
+  level: 'lead',
+  q: 'Audit log cho hệ thống tài chính: làm sao ghi audit CÙNG transaction với nghiệp vụ để không mất/không lệch (dual-write problem)? Dùng transactional outbox + Kafka, idempotency và thứ tự thế nào?',
+  a: `**Tóm tắt:** Vấn đề cốt lõi là **dual-write**: ghi DB nghiệp vụ rồi ghi audit là **hai thao tác rời** — nếu app chết giữa hai bước, hoặc audit mất (không truy được ai làm gì), hoặc audit có mà nghiệp vụ rollback (audit "ma"). Giải pháp chuẩn: **transactional outbox** — ghi cả thay đổi nghiệp vụ lẫn bản ghi outbox **trong cùng một transaction**, một **relay (CDC hoặc polling)** đọc outbox đẩy sang Kafka/storage bất biến; consumer dùng **idempotency key** để retry an toàn và **partition theo aggregate id** để giữ thứ tự.
+
+### Vì sao dual-write hỏng
+~~~java
+// ❌ SAI — hai nguồn sự thật, không atomic
+txService.transfer(req);          // commit nghiệp vụ
+auditClient.send(auditEvent);     // network call — có thể fail/né
+// App chết ở đây: tiền đã chuyển nhưng KHÔNG có audit
+// Nếu send thành công nhưng tx rollback (đặt sai thứ tự): audit "ma"
+~~~
+- Không có cách nào để một transaction DB và một network call cùng commit. Đây là bài toán kinh điển, không phải bug code.
+
+### Transactional outbox: một transaction, hai bản ghi
+~~~java
+// ✅ ĐÚNG — nghiệp vụ + outbox cùng transaction
+@Transactional
+public void transfer(TransferCmd cmd) {
+    accountRepo.debit(cmd.from(), cmd.amount());   // nghiệp vụ
+    accountRepo.credit(cmd.to(), cmd.amount());
+    outboxRepo.save(OutboxEvent.of(               // cùng commit
+        "transfer.completed", cmd.idempotencyKey(), payload));
+}
+// Relay (Debezium CDC hoặc @Scheduled poll) đọc outbox -> đẩy Kafka -> xoá/đánh dấu
+~~~
+- Nếu transaction rollback, **cả hai** biến mất. Nếu commit, **cả hai** cùng tồn tại. Không còn "audit ma" hay "mất audit".
+
+### Relay: CDC hay polling
+| Cách | Độ trễ | Tải DB | Vận hành |
+|---|---|---|---|
+| **Debezium CDC** (đọc WAL) | Thấp (ms) | Thấp | Nặng (Kafka Connect) |
+| **Polling @Scheduled** | Trung bình (giây) | Trung bình | Nhẹ |
+- Outbox là bảng append-only, có cột {{created_at}}, {{status}}; relay gom theo lô, đánh dấu {{PUBLISHED}} sau khi Kafka ack.
+
+### Idempotency và thứ tự
+- **Idempotency key** (ví dụ {{transferId}}) để consumer retry không ghi trùng: lưu key đã xử lý trong DB, hoặc dùng {{INSERT ... ON CONFLICT DO NOTHING}}.
+- **Thứ tự**: Kafka partition theo **aggregate id** ({{account:from}}) để mọi event của một tài khoản vào cùng partition, giữ đúng thứ tự debit/credit.
+- **At-least-once** là mặc định của Kafka; consumer phải idempotent vì sẽ có duplicate.
+
+### Bất biến và chống sửa (nối tiếp storage WORM)
+- Outbox → Kafka → lưu song song vào **PostgreSQL** (tra cứu) và **S3 Object Lock** (bản gốc bất biến 7 năm).
+- Mỗi bản ghi audit có **hash chain**; định kỳ neo hash ra KMS/HSM để chống rewrite.
+- **Separation of duties**: user ghi audit khác user nghiệp vụ; app không có quyền UPDATE/DELETE audit.
+
+### Sơ đồ luồng
+~~~seq
+title: Audit qua transactional outbox
+actors: App | DB | Relay | Kafka | Audit Store
+App -> DB: INSERT business + outbox (cung transaction)
+DB --> App: commit ca hai
+Relay -> DB: doc outbox (CDC/poll)
+Relay -> Kafka: publish event (key=aggregate)
+Kafka -> Audit Store: consumer idempotent ghi
+note App..Audit Store: khong con dual-write, khong mat/lech audit
+~~~
+
+### Ví dụ đời thực
+- **Triệu chứng**: Một cổng thanh toán (Spring Boot, PostgreSQL, 12 service) khi kiểm toán phát hiện 0,3% giao dịch chuyển tiền **không có bản ghi audit** tương ứng; đồng thời vài audit "ma" cho giao dịch đã bị hủy. Tổng cộng ~4.000/1,2 triệu giao dịch lệch trong một quý, không giải trình được cho auditor.
+- **Điều tra**: Code gọi {{paymentClient.charge()}} (network) rồi {{auditClient.send()}} (network) sau khi {{@Transactional}} commit; đo thời gian cho thấy cửa sổ lỗi ~80ms giữa hai bước, trùng với các đợt deploy làm pod restart. Một nhánh khác gửi audit trước rồi mới commit, gây audit ma khi rollback. Outbox chưa có, relay không tồn tại.
+- **Nguyên nhân gốc**: Dual-write không atomic giữa DB và dịch vụ audit; thứ tự không nhất quán (có nơi audit trước, có nơi sau); không có idempotency nên retry gây trùng, thiếu gây mất.
+- **Cách xử lý (lead)**: (1) Áp **transactional outbox**: ghi audit cùng transaction nghiệp vụ. (2) Relay **Debezium CDC** đẩy Kafka, partition theo {{accountId}} giữ thứ tự. (3) Consumer idempotent theo {{transferId}} ({{ON CONFLICT DO NOTHING}}). (4) Lưu song song Postgres + S3 Object Lock, hash chain + neo KMS. (5) Backfill 4.000 giao dịch lệch từ journal ngân hàng đối chiếu. (6) Runbook và dashboard đếm {{outbox}} pending, cảnh báo relay lag.
+- **Kết quả đo được**: Sau 2 tháng, 0 giao dịch thiếu audit trên 3 triệu giao dịch; relay lag p95 < 2 giây; thử chaos kill pod giữa transaction không tạo audit ma (vì cùng commit); kiểm toán chấp nhận chuỗi bằng chứng có hash chain + neo KMS.
+
+### Trả lời mẫu khi phỏng vấn
+"Vấn đề em quan tâm nhất ở audit tài chính là dual-write: ghi nghiệp vụ vào DB rồi gọi dịch vụ audit là hai thao tác rời, app chết giữa hai bước là mất audit, còn gửi trước commit thì có audit ma. Em dùng transactional outbox: ghi thay đổi nghiệp vụ và bản ghi outbox trong cùng một transaction, nên cả hai cùng commit hoặc cùng mất; một relay kiểu Debezium CDC đọc outbox đẩy sang Kafka, partition theo aggregate id như accountId để giữ đúng thứ tự debit/credit. Consumer idempotent theo idempotency key vì Kafka at-least-once sẽ có duplicate, em dùng {{ON CONFLICT DO NOTHING}} để retry an toàn. Audit lưu song song Postgres để tra cứu và S3 Object Lock bất biến, có hash chain neo ra KMS chống sửa. Em từng xử lý ca 0,3% giao dịch thiếu audit do gọi network rời sau commit; sau khi chuyển sang outbox, kill pod giữa transaction không còn tạo audit ma và kiểm toán chấp nhận chuỗi bằng chứng."
+
+> Senior tip: với hệ tài chính, "ghi audit" phải nằm **trong** transaction nghiệp vụ (outbox), không phải network call sau commit. Luôn idempotent consumer (Kafka at-least-once) và partition theo aggregate để giữ thứ tự. Đo và alert {{outbox}} pending + relay lag — đó là chỉ số sức khoẻ của toàn bộ chuỗi bằng chứng. Audit chỉ INSERT, tách quyền, neo hash ra KMS/HSM định kỳ.`,
+  follow: [
+    'Debezium CDC đọc WAL khác gì polling bảng outbox, và khi nào chọn cái nào?',
+    'Kafka at-least-once khiến duplicate — idempotency key nên lưu ở đâu và sống bao lâu?',
+    'Làm sao backfill audit cho các giao dịch đã thiếu mà không tạo bản ghi trùng khi relay chạy lại?'
+  ],
+  tags: ['Audit Log', 'Transactional Outbox', 'Dual-Write', 'Kafka', 'Debezium', 'Idempotency', 'WORM']
+},
 );
