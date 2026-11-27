@@ -1,6 +1,6 @@
 # T2802 — Cẩm nang Upwork: chương 2–5
 
-Status: TODO
+Status: DONE
 Agent: kilo
 Owns: `js/data/upwork-guide.js`
 
@@ -27,3 +27,5 @@ Thêm **4 chương** `uw-ch-02`…`uw-ch-05` (order 2–5), mỗi body 3500–60
 Xong: sửa dòng `Status:` đầu file thành `Status: DONE`, Notes ghi id đã thêm.
 
 ## Notes
+Đã thêm 4 chương: uw-ch-02 (Hồ sơ đạt chuẩn), uw-ch-03 (Tìm job và viết proposal), uw-ch-04 (Phỏng vấn và chốt hợp đồng), uw-ch-05 (Thực hiện hợp đồng). Chương uw-ch-03 có sơ đồ ~~~seq cho phễu proposal. Tất cả validation pass.
+Reviewed-by: verify-only (code/UI task)
