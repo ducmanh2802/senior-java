@@ -103,6 +103,46 @@
         'Hôm nay mệt thì làm 1 mục thôi. Giữ chuỗi quan trọng hơn làm nhiều.',
         'Câu hỏi khó nhất trong phỏng vấn thường là “Tại sao?”. Ôn để trả lời được nó.',
         'Offer đến từ sự chuẩn bị lặp lại, không phải may mắn.',
+        'Câu trả lời hay nhất bắt đầu bằng "Tuỳ vào…" rồi nói rõ tuỳ vào điều gì.',
+        'Đừng học thuộc đáp án. Học cách đi từ vấn đề tới đáp án.',
+        'Mỗi trade-off bạn giải thích được là một bậc bạn tiến gần hơn tới Senior.',
+        'Interviewer nhớ câu chuyện có số liệu, không nhớ danh sách công nghệ.',
+        'Hiểu một thứ thật sâu tốt hơn biết mười thứ hời hợt.',
+        'Không biết thì nói không biết, rồi nói bạn sẽ tìm hiểu thế nào. Đó cũng là câu trả lời của Senior.',
+        'Production không quan tâm code đẹp cỡ nào, chỉ quan tâm nó chạy đúng lúc 3 giờ sáng.',
+        'Mỗi bug bạn từng sửa là một câu chuyện phỏng vấn. Hãy ghi lại.',
+        'Hôm nay ôn chậm cũng được, miễn là không dừng.',
+        'Lặp lại có chủ đích biến kiến thức khó thành phản xạ.',
+        'Thứ bạn né ôn nhất thường là thứ interviewer hỏi đầu tiên.',
+        'Đọc lỗi kỹ trước khi sửa: một nửa lời giải nằm trong stack trace.',
+        'Bạn không cần giỏi hơn mọi người, chỉ cần giỏi hơn chính mình hôm qua.',
+        'Hệ thống tốt không phải hệ thống không bao giờ lỗi, mà là hệ thống lỗi mà không ai mất tiền.',
+        'Đo trước, tối ưu sau. Đoán là cách nhanh nhất để tối ưu sai chỗ.',
+        'Một câu "tôi đã đo và thấy p99 giảm từ 800 ms xuống 120 ms" nặng ký hơn mười tính từ.',
+        'Kiến thức chưa được nói ra miệng thì chưa phải của bạn.',
+        'Hãy chuẩn bị như thể ngày mai phỏng vấn, và kiên nhẫn như thể còn cả năm.',
+        'Từ chối hôm nay là dữ liệu cho lần pass sau.',
+        'Interviewer không tìm người hoàn hảo, họ tìm người họ muốn làm việc cùng.',
+        'Học 20 phút có tập trung hơn 2 tiếng lướt điện thoại bên cạnh tài liệu.',
+        'Vẽ sơ đồ trước khi nói về system design: người nghe hiểu bằng mắt nhanh hơn bằng tai.',
+        'Đừng chỉ hỏi "làm thế nào", hãy hỏi "nếu nó hỏng thì sao".',
+        'Câu hỏi bạn hỏi lại interviewer cũng cho thấy trình độ của bạn.',
+        'Code review giỏi nhất là review chính câu trả lời của mình trước khi nói.',
+        'Mệt thì nghỉ, nhưng đừng bỏ. Chuỗi ngày học là vốn liếng của bạn.',
+        'Senior biến vấn đề mơ hồ thành các bước rõ ràng.',
+        'Mỗi khái niệm khó đều trở nên đơn giản sau lần giải thích thứ ba.',
+        'Bạn đang xây sự nghiệp, không phải chỉ đang ôn cho một buổi phỏng vấn.',
+        'Kiên trì 1% mỗi ngày, sau 100 ngày bạn là một người khác.',
+        'Đừng so sánh chương 1 của mình với chương 10 của người khác.',
+        'Khi bí, quay về nguyên lý gốc: dữ liệu ở đâu, ai đọc, ai ghi, lỗi thì sao.',
+        'Nhất quán, sẵn sàng, chịu lỗi: luôn có một thứ phải hy sinh. Biết chọn là kỹ năng.',
+        'Bình tĩnh là một kỹ năng phỏng vấn. Hít thở, rồi trả lời từng phần.',
+        'Viết lại câu trả lời bằng lời của mình là cách học nhanh nhất.',
+        'Không có câu hỏi ngớ ngẩn khi làm rõ yêu cầu. Có thiết kế ngớ ngẩn khi bỏ qua nó.',
+        'Thành thạo không đến từ đọc thêm, mà từ làm lại cho tới khi dễ.',
+        'Mỗi lần phỏng vấn thử là một lần bớt run thật.',
+        'Ghi chú lỗi sai hôm nay để ngày mai không sai lại.',
+        'Tiếng Anh chỉ cần đủ rõ để người nghe hiểu ý bạn. Rõ ràng thắng hoa mỹ.',
       ],
     },
     en: {
@@ -204,6 +244,46 @@
         'Tired today? Do just one item. Keeping the streak beats doing a lot.',
         'The hardest interview question is usually “Why?”. Study to answer it.',
         'Offers come from repeated preparation, not luck.',
+        'The best answer starts with "It depends…" and then says exactly what it depends on.',
+        'Do not memorise answers. Learn the path from the problem to the answer.',
+        'Every trade-off you can explain moves you one step closer to senior.',
+        'Interviewers remember stories with numbers, not lists of technologies.',
+        'Knowing one thing deeply beats knowing ten things on the surface.',
+        'If you do not know, say so, then say how you would find out. That is a senior answer too.',
+        'Production does not care how pretty your code is, only that it works at 3 a.m.',
+        'Every bug you have fixed is an interview story. Write it down.',
+        'Slow progress today is fine, as long as you do not stop.',
+        'Deliberate repetition turns hard knowledge into reflex.',
+        'The topic you avoid most is usually the first one the interviewer asks.',
+        'Read the error carefully before fixing: half the answer is in the stack trace.',
+        'You do not need to be better than everyone, only better than yesterday.',
+        'A good system is not one that never fails, but one that fails without losing anyone\'s money.',
+        'Measure first, optimise later. Guessing is the fastest way to optimise the wrong thing.',
+        '"I measured p99 drop from 800 ms to 120 ms" outweighs ten adjectives.',
+        'Knowledge you have not said out loud is not yours yet.',
+        'Prepare as if the interview is tomorrow, and be patient as if you have a year.',
+        'Today\'s rejection is data for the next pass.',
+        'Interviewers are not looking for perfect people, but for people they want to work with.',
+        '20 focused minutes beat 2 hours of scrolling next to your notes.',
+        'Draw before you talk in system design: people understand with their eyes faster than their ears.',
+        'Do not only ask "how does it work", ask "what if it breaks".',
+        'The questions you ask the interviewer also show your level.',
+        'The best code review is reviewing your own answer before you say it.',
+        'Rest when tired, but do not quit. Your streak is your capital.',
+        'A senior turns a vague problem into clear steps.',
+        'Every hard concept becomes simple after you explain it for the third time.',
+        'You are building a career, not just preparing for one interview.',
+        'One percent better every day; after 100 days you are a different engineer.',
+        'Do not compare your chapter 1 with someone else\'s chapter 10.',
+        'When stuck, go back to first principles: where is the data, who reads, who writes, what if it fails.',
+        'Consistency, availability, fault tolerance: something always gives. Knowing what to give is the skill.',
+        'Staying calm is an interview skill. Breathe, then answer one part at a time.',
+        'Rewriting an answer in your own words is the fastest way to learn it.',
+        'There are no silly questions when clarifying requirements, only silly designs that skip them.',
+        'Mastery does not come from reading more, but from redoing until it is easy.',
+        'Every mock interview makes the real one less scary.',
+        'Note today\'s mistakes so you do not repeat them tomorrow.',
+        'Your English only needs to be clear enough. Clarity beats eloquence.',
       ],
     },
   });
@@ -541,11 +621,14 @@
     '</svg>';
   }
 
+  let quotePick = Math.random();
+
   function heroHtml(st, editing) {
     const h = new Date().getHours();
     const hello = h < 11 ? tr('morning') : h < 18 ? tr('afternoon') : tr('evening');
     const quotes = App.t('dash.quotes');
-    const quote = Array.isArray(quotes) ? quotes[dayNumber() % quotes.length] : '';
+    // random quote, picked once per visit (quotePick is reset in render) so re-renders do not flicker
+    const quote = Array.isArray(quotes) && quotes.length ? quotes[Math.floor(quotePick * quotes.length)] : '';
     const readiness = pct(st.known, st.total);
     let tier = 0;
     TIERS.forEach((v, i) => { if (readiness >= v) tier = i; });
@@ -850,6 +933,7 @@
   App.registerView('dashboard', {
     get title() { return App.t('dash.title'); },
     render(root) {
+      quotePick = Math.random();
       const pomo = { left: POMO, id: null, running: false };
       let editing = false, editingCareer = false, loadErr = null;
       const getDetails = (id) => {

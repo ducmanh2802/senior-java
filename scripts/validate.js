@@ -665,6 +665,18 @@ for (const g of sandbox.window.GLOSSARY || []) {
   uw.errors.forEach(m => err('upwork', m));
 }
 
+// ---- CKA hands-on mock exams (#/cka): js/data/cka-mock-N.js, checked by scripts/check-cka.js (docs/CKA-MOCK.md) ----
+{
+  const ck = require('./check-cka.js')();
+  ck.errors.forEach(m => err('cka', m));
+}
+
+// ---- TOEIC Listening & Reading tests + 4-skill tips (#/toeic), checked by scripts/check-toeic-lr.js (docs/TOEIC-LR.md) ----
+{
+  const tl = require('./check-toeic-lr.js')();
+  tl.errors.forEach(m => err('toeic-lr', m));
+}
+
 // ---- AWS Pro track (#/aws): plan + exam-style pools, checked by scripts/check-aws.js ----
 {
   const aws = require('./check-aws.js')();
