@@ -7129,5 +7129,55 @@ public class PaymentService {
       'Đề xuất có chiều sâu: giảm InitiatingHeapOccupancyPercent (30-35%), giảm allocation rate (ít object tạm), ZGC cho latency nhạy cảm; giải thích tăng heap 24 GB không phải fix gốc.'
     ],
     tags: ['gc', 'g1gc', 'concurrent-mode-failure', 'concurrent-marking', 'initiating-heap-occupancy', 'full-gc', 'allocation-rate', 'zgc', 'jdk17', 'jfr', 'payment', 'tps']
-  }
-);
+  },
+
+{
+  id: 'lab-gc-036',
+  category: 'gc',
+  title: 'Parallel GC pause 4.2 giây trên heap 24 GB',
+  level: 'senior',
+  scenario: `**Bối cảnh:** Dịch vụ **batch-report** (Spring Boot 3.2, JDK 17) chạy trên máy 32 GB RAM, heap {{-Xms24g -Xmx24g -XX:+UseParallelGC}}. GC log JDK 17 cho thấy Pause Full (Ergonomics) dài 4.2 giây lúc 03:17 ngày 22/10/2026, p99 API tăng lên 5 giây.`,
+  artifacts: [
+    { name: 'gc-parallel-24g.log', lang: 'text', content: `[2026-10-22T03:17:00.000+0700][info][gc] GC(12) Pause Full (Ergonomics) 22500M->18000M(24576M) 4210.5ms
+[2026-10-22T03:17:04.210+0700][info][gc] GC(12) Pause Full (Ergonomics) end, heap 18000M, real 4.21s, user 31.8s, sys 0.9s` },
+  ],
+  questions: ['Vì sao Parallel GC pause dài trên heap lớn?', 'Bạn sửa thế nào?'],
+  hints: ['Parallel GC là stop-the-world cho toàn heap.', 'Heap 24 GB càng lớn pause càng dài.'],
+  answer: `**Tóm tắt:** Parallel GC pause dài vì stop-the-world quét toàn heap 24 GB. Chuyển sang G1/ZGC và đặt MaxGCPauseMillis.
+
+### Cách sửa
+- Dùng {{-XX:+UseG1GC -XX:MaxGCPauseMillis=200}} hoặc ZGC.
+- Giảm heap hoặc chia nhỏ workload.
+
+> Senior tip: Với heap lớn, ưu tiên GC có pause mục tiêu.`,
+  rubric: ['Nhận ra Parallel GC stop-the-world.', 'Đề xuất G1/ZGC và MaxGCPauseMillis.', 'Giải thích pause tỷ lệ với heap.'],
+  tags: ['parallel-gc', 'pause', 'g1', 'zgc']
+},
+{
+  id: 'lab-gc-037',
+  category: 'gc',
+  title: 'Allocation rate cao do ghép chuỗi log',
+  level: 'senior',
+  scenario: `**Bối cảnh:** Service **order-api** (Spring Boot 3.2, JDK 17) có GC log Pause Young mỗi 300 ms. JFR allocation top là StringBuilder từ log.debug ghép chuỗi.`,
+  artifacts: [
+    { name: 'gc-young-300ms.log', lang: 'text', content: `[2026-10-22T10:00:00.000+0700][info][gc] GC(1) Pause Young (Normal) 120M->40M(512M) 12.3ms
+[2026-10-22T10:00:00.300+0700][info][gc] GC(2) Pause Young (Normal) 118M->39M(512M) 11.9ms
+[2026-10-22T10:00:00.600+0700][info][gc] GC(3) Pause Young (Normal) 119M->41M(512M) 12.1ms` },
+    { name: 'jfr-allocation.txt', lang: 'text', content: `jdk.ObjectAllocationSample weight=45MB class=java.lang.StringBuilder
+stackTrace: vn.order.OrderService.logOrder(OrderService.java:42)
+weight detail: StringBuilder.toString called 45000 times
+additional: OrderService builds message with + operator` },
+  ],
+  questions: ['Vì sao allocation rate cao?', 'Bạn sửa thế nào?'],
+  hints: ['log.debug ghép chuỗi tạo StringBuilder mỗi lần.', 'Dùng placeholder {} và isDebugEnabled.'],
+  answer: `**Tóm tắt:** log.debug với + tạo StringBuilder mỗi request dù debug tắt. Sửa dùng placeholder {} và kiểm tra isDebugEnabled.
+
+### Cách sửa
+- Dùng placeholder trong log (xem code block).
+- Kiểm tra {{if (log.isDebugEnabled())}} trước khi build chuỗi lớn.
+
+> Senior tip: Log là nguồn allocation lớn nhất trong nhiều service.`,
+  rubric: ['Nhận ra string concat trong log.', 'Đề xuất placeholder và isDebugEnabled.', 'Liên hệ allocation rate.'],
+  tags: ['logging', 'allocation', 'stringbuilder', 'gc']
+},
+)

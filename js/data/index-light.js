@@ -3318,6 +3318,8 @@ window.DATA_INDEX = {
     ["lab-gc-033","gc","Metaspace OOM Groovy script reload: ClassLoader leak, 1.2M classes loaded, Metaspace 4GB","senior"],
     ["lab-gc-034","gc","Batch đóng sổ cuối ngày: OutOfMemoryError GC overhead limit exceeded, JVM bỏ 98% thời gian vào GC","senior"],
     ["lab-gc-035","gc","G1 concurrent marking kịp thay allocation rate: Concurrent Mode Failure gây Full GC 3 giây mỗi 15 phút","senior"],
+    ["lab-gc-036","gc","Parallel GC pause 4.2 giây trên heap 24 GB","senior"],
+    ["lab-gc-037","gc","Allocation rate cao do ghép chuỗi log","senior"],
     ["lab-sql-001","sql","Báo cáo giao dịch trong ngày quét 42 triệu dòng dù đã có index","senior"],
     ["lab-sql-002","sql","Đơn hàng seller console chậm dù optimizer đã dùng index","mid"],
     ["lab-sql-003","sql","Lịch sử giao dịch ví: 101 câu SQL cho một request","senior"],
