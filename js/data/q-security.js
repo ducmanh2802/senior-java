@@ -7573,5 +7573,434 @@ Em xem đây là bài toán dung hòa hai nghĩa vụ pháp lý xung đột: aud
     "Audit sạch PII nhưng log ứng dụng hoặc trace vẫn in PII: bạn kiểm soát rò rỉ ngoài audit thế nào?"
   ],
   tags: ["Audit Log", "GDPR", "Crypto-Shredding", "Tokenization", "Pseudonymization", "KMS", "Compliance"]
+},
+{
+  id: 'security-087',
+  topic: 'security',
+  level: 'senior',
+  q: 'Bạn review PR thêm hai endpoint GET/PUT /orders/{id} của đồng nghiệp: code lấy và sửa đơn hàng theo id trên URL nhưng không kiểm tra đơn có thuộc user đang đăng nhập. Bạn thấy vấn đề gì và yêu cầu sửa thế nào?',
+  a: `**Tóm tắt:** Đây là **IDOR** (Insecure Direct Object Reference — tham chiếu đối tượng không an toàn), một dạng của Broken Access Control: hệ thống chỉ kiểm tra "đã đăng nhập chưa" mà không kiểm tra "đối tượng này có thuộc về bạn không", nên user A chỉ cần đổi số id trên URL là đọc hoặc sửa đơn hàng của user B. Cách sửa là kiểm tra quyền sở hữu ngay trong service bằng truy vấn {{findByIdAndOwnerId}} (WHERE id = ? AND owner_id = ?), trả về **404** thay vì 403 để không lộ sự tồn tại của đơn, và thêm test tích hợp với hai user để chặn tái diễn.
+
+### Vì sao đoạn code này nguy hiểm
+
+Đăng nhập (authentication) trả lời câu "bạn là ai", còn phân quyền theo đối tượng (authorization) trả lời câu "bạn được phép làm gì với đối tượng cụ thể này". Hai câu này khác nhau: một người dùng hợp lệ vẫn không được phép chạm vào dữ liệu của người khác. Lỗi IDOR xảy ra khi code chỉ dựa vào id đến từ client mà quên gắn điều kiện chủ sở hữu.
+
+Kịch bản tấn công cụ thể: attacker đăng nhập bằng tài khoản của mình (user A, id 1024), rồi gọi {{GET /orders/10482}}. Server trả về đơn của user B. Attacker viết script tăng dần id (10482, 10483, 10484…) và thu thập hàng loạt đơn hàng của người khác — đây gọi là **horizontal privilege escalation** (leo thang quyền theo chiều ngang, giữa các user cùng cấp).
+
+### Code lỗi
+
+~~~java
+// ❌ NGUY HIỂM: chỉ check đã đăng nhập, không check chủ sở hữu
+@RestController
+@RequestMapping("/orders")
+public class OrderController {
+    private final OrderRepository orderRepo;
+
+    @GetMapping("/{id}")
+    public OrderDto get(@PathVariable Long id) {
+        // LỖI: đơn được lấy theo id, BẤT KỂ đơn thuộc về ai
+        return orderRepo.findById(id).map(OrderDto::from).orElseThrow();
+    }
+
+    @PutMapping("/{id}")
+    public OrderDto update(@PathVariable Long id, @RequestBody OrderDto body) {
+        Order o = orderRepo.findById(id).orElseThrow();
+        o.setStatus(body.status());   // LỖI: sửa đơn của người khác nếu biết id
+        return OrderDto.from(orderRepo.save(o));
+    }
 }
+~~~
+
+- Dòng {{orderRepo.findById(id)}}: id đến từ URL do client kiểm soát, không hề kèm điều kiện owner.
+- Cả GET và PUT đều dính lỗi; PUT còn nguy hiểm hơn vì attacker sửa được dữ liệu (đổi trạng thái, địa chỉ giao hàng).
+
+### Code đã sửa
+
+~~~java
+// ✅ ĐÚNG: kiểm tra quyền sở hữu ngay trong truy vấn, trả 404
+@RestController
+@RequestMapping("/orders")
+public class OrderController {
+    private final OrderRepository orderRepo;
+
+    @GetMapping("/{id}")
+    public OrderDto get(@PathVariable Long id, @AuthenticationPrincipal User user) {
+        // WHERE id = ? AND owner_id = ? — không khớp thì coi như không tồn tại
+        Order o = orderRepo.findByIdAndOwnerId(id, user.getId())
+            .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND));
+        return OrderDto.from(o);
+    }
+
+    @PutMapping("/{id}")
+    public OrderDto update(@PathVariable Long id, @RequestBody OrderDto body,
+                           @AuthenticationPrincipal User user) {
+        Order o = orderRepo.findByIdAndOwnerId(id, user.getId())
+            .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND));
+        o.setStatus(body.status());
+        return OrderDto.from(orderRepo.save(o));
+    }
+}
+~~~
+
+- {{findByIdAndOwnerId}} là derived query của Spring Data JPA: {{WHERE id = :id AND owner_id = :ownerId}}. Chỉ cần một dòng là chặn được IDOR.
+- Chủ sở hữu lấy từ {{@AuthenticationPrincipal}} (đối tượng đã xác thực), **không** lấy từ body hay tham số client gửi lên.
+- Trả 404 cho cả "không tồn tại" lẫn "không thuộc bạn" để attacker không phân biệt được id nào có thật (chống dò id — enumeration).
+
+### Bảng tóm tắt
+
+| | Nội dung |
+|---|---|
+| Lỗi | IDOR/BOLA: tin id từ URL, thiếu điều kiện chủ sở hữu |
+| Vì sao nguy hiểm | User A đọc/sửa dữ liệu user B chỉ bằng đổi số id; PUT còn sửa được |
+| Cách sửa | {{findByIdAndOwnerId}} trong service, owner lấy từ principal, trả 404 |
+| Phát hiện tự động | Test tích hợp 2 user; SAST taint (Semgrep/CodeQL); checklist review endpoint dạng /resource/:id |
+
+### Cách phát hiện tự động
+
+- **Test tích hợp hai user**: tạo user A và user B, gọi endpoint bằng token của A với id của B, khẳng định nhận 404. Đây là cách bắt IDOR đáng tin nhất vì SAST thường không suy luận được luồng quyền.
+- **Static analysis có taint analysis**: Semgrep/CodeQL với rule "repository tìm theo id lấy từ path mà không kèm ownerId". Find Security Bugs và SonarQube không có rule IDOR dựng sẵn, nên đừng trông cậy hoàn toàn vào chúng.
+- **Checklist review**: mọi endpoint dạng /resource/:id phải trả lời được "ai được phép xem/sửa resource này?" và câu trả lời phải nằm trong code, không phải giả định.
+
+### Comment review mẫu cho đồng nghiệp
+
+"Cảm ơn bạn đã thêm API đơn hàng! Mình có một điểm muốn cùng kiểm tra: hiện {{findById(id)}} lấy đơn theo id mà chưa gắn điều kiện chủ sở hữu, nên nếu user đổi id trên URL thì có thể đọc/sửa đơn của người khác (IDOR). Bạn thử đổi sang {{findByIdAndOwnerId(id, user.getId())}} và trả 404 khi không khớp giúp mình nhé — vừa an toàn vừa không lộ id nào tồn tại. Mình sẽ thêm một test tích hợp với hai user để khóa hành vi này. Cả GET và PUT đều cần sửa tương tự."
+
+### Ví dụ đời thực
+
+- **Triệu chứng**: Hệ thống bán lẻ (Spring Boot 3, PostgreSQL, ~80.000 user) có endpoint GET/PUT /orders/:id. WAF ghi nhận một IP gọi hàng loạt id tăng dần; trong 1 giờ có khoảng 2.400 request, nhiều đơn trả 200 dù user trong token khác chủ đơn. Không có 5xx, không có SQL lỗi.
+- **Điều tra**: Đối chiếu log truy cập với token cho thấy cùng user U1024 đọc được đơn của hàng trăm user khác. Code chỉ có {{findById(id)}}. SonarQube không có rule IDOR nên không cảnh báo.
+- **Nguyên nhân gốc**: Broken Access Control — endpoint tin id từ path mà không kiểm tra ownership.
+- **Cách xử lý**: (1) Thêm {{findByIdAndOwnerId}} cho cả GET và PUT, owner lấy từ principal. (2) Trả 404 đồng nhất. (3) Thêm test 2 user. (4) Rà toàn bộ endpoint dạng /resource/:id — phát hiện thêm 3 endpoint cùng lỗi. (5) Buộc đăng xuất phiên nghi vấn, thông báo bảo mật.
+- **Kết quả đo được**: Sau vá, 200 ca "user A chạm tài nguyên user B" đều trả 404; 30 ngày không còn request lệch chủ; CI chặn 3 PR có mẫu tương tự trong tháng sau.
+
+### Trả lời mẫu khi phỏng vấn
+
+"Khi review hai endpoint GET/PUT /orders/:id, em nhận ra đây là IDOR: code chỉ kiểm tra đã đăng nhập mà không kiểm tra đơn có thuộc user hiện tại không, nên user A chỉ cần đổi id trên URL là đọc hoặc sửa đơn của user B, PUT còn nguy hiểm hơn vì sửa được dữ liệu. Em yêu cầu sửa bằng cách lấy chủ sở hữu từ principal rồi truy vấn {{findByIdAndOwnerId}} với điều kiện WHERE id = ? AND owner_id = ?, không khớp thì trả 404 để không lộ id nào tồn tại. Em nhấn mạnh không bao giờ lấy ownerId từ body client gửi lên. Để chặn tái diễn, em thêm test tích hợp với hai user và một rule SAST có taint analysis, vì Find Security Bugs không có rule IDOR dựng sẵn. Em cũng rà các endpoint dạng /resource/:id khác. Thực tế em từng gặp một hệ thống bị dò id tăng dần làm lộ đơn hàng của người khác, và sau khi thêm kiểm tra ownership thì các request lệch chủ về 0."
+
+> Senior tip: IDOR là lỗi phân quyền phổ biến nhất mà công cụ tự động khó bắt — hãy coi mọi endpoint /resource/:id là điểm cần kiểm tra thủ công. Nguyên tắc: chủ sở hữu luôn lấy từ token/principal, truy vấn luôn kèm owner_id, và trả 404 đồng nhất cho "không tồn tại" lẫn "không thuộc bạn". Bổ sung test tích hợp 2 user vào CI; đó là hàng rào rẻ và hiệu quả nhất.`,
+  follow: [
+    'Trả 404 khác gì trả 403 cho tài nguyên không thuộc user, và vì sao 404 an toàn hơn về mặt rò rỉ thông tin?',
+    'Nếu một đơn hàng được chia sẻ (share) cho user khác thì kiểm tra ownership nên thiết kế thế nào?',
+    'Làm sao viết test tích hợp tự động bắt IDOR cho toàn bộ endpoint dạng /{id} trong dự án lớn?'
+  ],
+  tags: ['IDOR', 'BOLA', 'Broken Access Control', 'code review', 'Spring Security', 'Ownership Check']
+},
+{
+  id: 'security-088',
+  topic: 'security',
+  level: 'mid',
+  q: 'Bạn review PR thêm endpoint nội bộ mới DELETE /admin/users/{id}, nhưng đồng nghiệp quên @PreAuthorize và cũng quên khai báo requestMatchers trong SecurityFilterChain. Bạn thấy rủi ro gì và yêu cầu sửa thế nào?',
+  a: `**Tóm tắt:** Endpoint mới không nằm trong danh sách {{requestMatchers}} có luật riêng và không có {{@PreAuthorize}}, nên rơi vào luật mặc định. Nếu cấu hình hiện tại là {{anyRequest().permitAll()}} (hoặc một matcher bắt nhầm), thì **bất kỳ ai** — kể cả chưa đăng nhập — cũng gọi được DELETE /admin/users/:id và xóa user. Nguyên tắc sửa là **deny-by-default**: {{anyRequest().authenticated()}} (hoặc {{denyAll()}}), khai báo tường minh quyền cho endpoint admin bằng {{@PreAuthorize("hasRole('ADMIN')")}} kèm {{@EnableMethodSecurity}}, và viết test {{@WithMockUser}} để khóa hành vi.
+
+### Vì sao "quên khai báo" lại nguy hiểm
+
+Trong Spring Security 6, {{SecurityFilterChain}} quyết định endpoint nào được áp luật nào theo thứ tự khai báo matcher. Mọi request không khớp matcher nào sẽ rơi xuống luật cuối cùng. Nếu luật cuối là {{permitAll()}} hoặc {{anyRequest().authenticated()}} mà endpoint admin lại không được bảo vệ bằng method security, thì endpoint đó "mở toang".
+
+Hai cơ chế bổ sung cho nhau:
+- **URL-based (filter chain)**: chặn ở tầng HTTP theo đường dẫn, ví dụ {{requestMatchers("/admin/**").hasRole("ADMIN")}}.
+- **Method-based ({{@PreAuthorize}})**: chặn ở tầng service/controller theo annotation, mịn hơn (có thể dùng SpEL, tham số).
+
+Lỗi ở PR này là **cả hai lớp đều thiếu**: không matcher riêng cho {{/admin/**}}, không annotation trên method. Đây là kiểu lỗi "endpoint mới không nằm trong SecurityFilterChain" kinh điển.
+
+### Code lỗi
+
+~~~java
+// ❌ NGUY HIỂM: endpoint admin không matcher riêng, không @PreAuthorize
+@Configuration
+@EnableWebSecurity
+public class SecurityConfig {
+    @Bean
+    SecurityFilterChain chain(HttpSecurity http) throws Exception {
+        http.authorizeHttpRequests(a -> a
+            .requestMatchers("/public/**").permitAll()
+            .anyRequest().permitAll()   // LỖI: mọi thứ còn lại mở toang
+        );
+        return http.build();
+    }
+}
+
+@RestController
+@RequestMapping("/admin/users")
+public class AdminUserController {
+    @DeleteMapping("/{id}")
+    public void delete(@PathVariable Long id) {   // LỖI: không @PreAuthorize
+        userRepo.deleteById(id);
+    }
+}
+~~~
+
+- {{anyRequest().permitAll()}}: endpoint /admin/users/:id không khớp {{/public/**}} nên rơi vào đây → ai cũng gọi được.
+- Không có {{@EnableMethodSecurity}} nên {{@PreAuthorize}} (nếu có) cũng không chạy.
+
+### Code đã sửa
+
+~~~java
+// ✅ ĐÚNG: deny-by-default + matcher tường minh + method security
+@Configuration
+@EnableWebSecurity
+@EnableMethodSecurity   // bật @PreAuthorize
+public class SecurityConfig {
+    @Bean
+    SecurityFilterChain chain(HttpSecurity http) throws Exception {
+        http.authorizeHttpRequests(a -> a
+            .requestMatchers("/public/**").permitAll()
+            .requestMatchers("/admin/**").hasRole("ADMIN")  // lớp 1: chặn theo URL
+            .anyRequest().authenticated()                   // deny-by-default
+        );
+        return http.build();
+    }
+}
+
+@RestController
+@RequestMapping("/admin/users")
+public class AdminUserController {
+    @DeleteMapping("/{id}")
+    @PreAuthorize("hasRole('ADMIN')")   // lớp 2: chặn theo method
+    public void delete(@PathVariable Long id) {
+        userRepo.deleteById(id);
+    }
+}
+~~~
+
+- {{anyRequest().authenticated()}}: mọi endpoint không khai báo riêng đều yêu cầu đăng nhập; muốn an toàn tuyệt đối có thể dùng {{denyAll()}} rồi mở dần.
+- {{requestMatchers("/admin/**").hasRole("ADMIN")}}: chỉ user có role ADMIN mới chạm được vùng admin.
+- {{@EnableMethodSecurity}} + {{@PreAuthorize("hasRole('ADMIN')")}}: lớp phòng thủ thứ hai, bảo vệ cả khi gọi trực tiếp method từ nơi khác.
+
+### Bảng tóm tắt
+
+| | Nội dung |
+|---|---|
+| Lỗi | Endpoint admin thiếu matcher và thiếu @PreAuthorize → ai cũng gọi được |
+| Vì sao nguy hiểm | Người lạ (hoặc user thường) xóa được user; leo thang đặc quyền |
+| Cách sửa | deny-by-default (authenticated/denyAll), matcher /admin/**, @EnableMethodSecurity + @PreAuthorize |
+| Phát hiện tự động | Test @WithMockUser; rule SAST thiếu phân quyền; checklist endpoint mới |
+
+### Cách phát hiện tự động
+
+- **Test phân quyền**: dùng {{@WithMockUser(roles="USER")}} gọi endpoint admin, khẳng định nhận 403; dùng {{@WithMockUser(roles="ADMIN")}} khẳng định 200/204. Lặp cho mọi endpoint nhạy cảm.
+- **Checklist PR**: "endpoint mới đã có matcher hoặc @PreAuthorize chưa? đã có test 403 cho role thấp chưa?".
+- **SAST**: một số rule (ví dụ Semgrep custom) bắt controller method thiếu annotation phân quyền; đừng dựa hoàn toàn vào công cụ, hãy đưa vào review checklist.
+
+### Comment review mẫu cho đồng nghiệp
+
+"Cảm ơn bạn đã thêm API xóa user! Mình thấy hai điểm về phân quyền muốn cùng xử lý: (1) SecurityFilterChain hiện dùng {{anyRequest().permitAll()}} nên endpoint {{/admin/**}} đang mở cho mọi request — mình đề xuất đổi sang {{anyRequest().authenticated()}} và thêm {{requestMatchers("/admin/**").hasRole('ADMIN')}}; (2) method {{delete}} chưa có {{@PreAuthorize}}, bạn thêm {{@PreAuthorize(\"hasRole('ADMIN')\")}} và {{@EnableMethodSecurity}} ở config giúp mình nhé. Mình sẽ bổ sung test {{@WithMockUser}} cho cả role USER (kỳ vọng 403) và ADMIN (kỳ vọng thành công) để khóa hành vi này."
+
+### Ví dụ đời thực
+
+- **Triệu chứng**: Một hệ thống nội bộ (Spring Boot 3, Spring Security 6) có endpoint DELETE /admin/users/:id. Sau khi thêm tính năng "quên mật khẩu" gộp chung một PR, pentest phát hiện gọi endpoint admin bằng token của user thường vẫn xóa được tài khoản khác.
+- **Điều tra**: {{SecurityConfig}} dùng {{anyRequest().permitAll()}}; controller admin không có {{@PreAuthorize}}; {{@EnableMethodSecurity}} chưa bật. Log cho thấy một tài khoản role USER đã gọi thành công 17 lần.
+- **Nguyên nhân gốc**: Endpoint mới không được đưa vào SecurityFilterChain và thiếu method security → rơi vào luật permitAll.
+- **Cách xử lý**: (1) Đổi sang deny-by-default {{anyRequest().authenticated()}}. (2) Thêm matcher {{/admin/**}} và {{@PreAuthorize}}. (3) Bật {{@EnableMethodSecurity}}. (4) Thêm test {{@WithMockUser}}. (5) Rà toàn bộ controller xem còn endpoint nào thiếu phân quyền.
+- **Kết quả đo được**: Sau vá, request role USER vào admin trả 403 100%; 90 ngày không còn truy cập admin trái phép; CI chặn 2 PR thiếu annotation phân quyền.
+
+### Trả lời mẫu khi phỏng vấn
+
+"Khi review endpoint admin mới, em kiểm tra ngay hai lớp phân quyền. Lớp URL trong SecurityFilterChain: em thấy cấu hình đang dùng {{anyRequest().permitAll()}}, nghĩa là endpoint {{/admin/**}} không có matcher riêng sẽ mở toang, nên em đổi sang deny-by-default {{anyRequest().authenticated()}} và thêm {{requestMatchers(\"/admin/**\").hasRole('ADMIN')}}. Lớp method: method delete chưa có {{@PreAuthorize}} và config chưa bật {{@EnableMethodSecurity}}, nên em bổ sung cả hai để có phòng thủ theo chiều sâu. Em nhấn mạnh nguyên tắc deny-by-default: không khai báo tường minh thì mặc định từ chối, không phải mặc định cho phép. Để chặn tái diễn, em thêm test {{@WithMockUser}} với role USER kỳ vọng 403 và role ADMIN kỳ vọng thành công, cùng một mục checklist cho mọi PR thêm endpoint. Thực tế em từng gặp pentest phát hiện user thường xóa được tài khoản khác vì đúng lỗi này."
+
+> Senior tip: Luôn thiết kế SecurityFilterChain theo deny-by-default — {{anyRequest().authenticated()}} hoặc {{denyAll()}} ở cuối, rồi mở dần từng matcher. Endpoint mới mặc định KHÔNG được phép cho tới khi bạn khai báo. Bật {{@EnableMethodSecurity}} và dùng {{@PreAuthorize}} cho thao tác nhạy cảm như lớp hai. Test {{@WithMockUser}} cho cả role thấp (kỳ vọng 403) là hàng rào rẻ nhất chống lỗi "quên phân quyền".`,
+  follow: [
+    'deny-by-default nghĩa là gì, và vì sao {{anyRequest().authenticated()}} an toàn hơn {{permitAll()}}?',
+    'URL-based (requestMatchers) và method-based (@PreAuthorize) khác nhau thế nào, khi nào dùng cái nào?',
+    'Làm sao viết test tự động khẳng định mọi endpoint admin đều từ chối role USER?'
+  ],
+  tags: ['Broken Access Control', 'Spring Security', '@PreAuthorize', 'SecurityFilterChain', 'code review', 'Deny by Default']
+},
+{
+  id: 'security-089',
+  topic: 'security',
+  level: 'senior',
+  q: 'Bạn review PR thêm tính năng sắp xếp và lọc đơn hàng: đồng nghiệp ghép chuỗi input vào JdbcTemplate và cả ORDER BY động. Bạn thấy lỗ hổng gì, vì sao PreparedStatement chặn được, và sửa thế nào?',
+  a: `**Tóm tắt:** Ghép chuỗi giá trị lọc vào câu SQL của {{JdbcTemplate}} mở cửa cho **SQL injection** (tiêm mã SQL): attacker gửi {{' OR '1'='1}} để luôn đúng, hoặc UNION để đọc bảng khác. ORDER BY là **identifier** (tên cột), không bind được bằng placeholder {{?}}, nên phải **whitelist** cột cho phép. Cách sửa: dùng {{?}} cho mọi giá trị (PreparedStatement tách code và data nên input không đổi được cấu trúc câu lệnh), whitelist tên cột và chiều sắp xếp, ép kiểu int cho LIMIT.
+
+### Vì sao nối chuỗi nguy hiểm còn PreparedStatement an toàn
+
+SQL injection xảy ra khi dữ liệu người dùng bị trình thông dịch SQL hiểu như **mã lệnh** thay vì **dữ liệu**. Với nối chuỗi, input {{' OR '1'='1}} biến {{WHERE status = '...'}} thành điều kiện luôn đúng, trả về toàn bộ bản ghi.
+
+PreparedStatement an toàn vì nó **tách biệt code và data**: câu {{SELECT ... WHERE status = ?}} được DB parse và lập kế hoạch thực thi **trước**, giá trị {{?}} được gửi riêng theo giao thức và chỉ được "plug" vào plan đã có, không bao giờ được re-parse thành cú pháp. Vì thế {{' OR '1'='1}} chỉ là một chuỗi literal, không thể thoát ra ngoài.
+
+ORDER BY khác: {{?}} chỉ thay được **giá trị**, không thay được **tên cột** hay từ khóa {{ASC/DESC}}. Nếu cho người dùng chọn cột sắp xếp, phải so với danh sách cho phép (whitelist) rồi mới ghép.
+
+### Code lỗi
+
+~~~java
+// ❌ NGUY HIỂM: nối chuỗi giá trị + ORDER BY động
+@GetMapping("/orders")
+public List<Order> search(@RequestParam String status,
+                          @RequestParam String sort,
+                          @RequestParam String dir) {
+    String sql = "SELECT * FROM orders WHERE status = '" + status + "'"
+               + " ORDER BY " + sort + " " + dir;   // LỖI: cả status và sort/dir đều nối chuỗi
+    return jdbc.query(sql, orderMapper);
+}
+// status = "x' OR '1'='1"  → WHERE status = 'x' OR '1'='1'  → trả mọi đơn
+// sort = "id; DROP TABLE orders; --" (nếu driver cho multi-statement) → nguy hiểm hơn
+~~~
+
+- {{status}}: giá trị nên bind bằng {{?}}, nhưng đang nối chuỗi → injection.
+- {{sort}}/{{dir}}: identifier, không bind được, nhưng cũng KHÔNG được nối tự do → phải whitelist.
+
+### Code đã sửa
+
+~~~java
+// ✅ ĐÚNG: bind giá trị bằng ?, whitelist cột/hướng, ép kiểu LIMIT
+private static final Set<String> ALLOWED_SORT = Set.of("created_at", "amount", "status");
+private static final Set<String> ALLOWED_DIR = Set.of("ASC", "DESC");
+
+@GetMapping("/orders")
+public List<Order> search(@RequestParam String status,
+                          @RequestParam String sort,
+                          @RequestParam String dir,
+                          @RequestParam int limit) {
+    String col = ALLOWED_SORT.contains(sort) ? sort : "created_at";     // whitelist cột
+    String d   = ALLOWED_DIR.contains(dir) ? dir : "DESC";             // whitelist hướng
+    int safeLimit = Math.min(Math.max(limit, 1), 100);                 // chặn LIMIT lớn
+    String sql = "SELECT * FROM orders WHERE status = ? ORDER BY " + col + " " + d + " LIMIT ?";
+    return jdbc.query(sql, orderMapper, status, safeLimit);            // status + limit bind bằng ?
+}
+~~~
+
+- {{status}} và {{safeLimit}} đi qua placeholder {{?}} → PreparedStatement coi chúng là dữ liệu.
+- {{col}}/{{d}} chỉ nhận giá trị từ whitelist nên không thể chèn cú pháp; kể cả nối chuỗi ở đây cũng an toàn vì đã kiểm soát.
+- {{safeLimit}} ép int và giới hạn ≤ 100 để chặn attacker yêu cầu LIMIT khổng lồ.
+
+### Bảng tóm tắt
+
+| | Nội dung |
+|---|---|
+| Lỗi | Nối chuỗi giá trị lọc + ORDER BY động → SQL injection |
+| Vì sao nguy hiểm | {{' OR '1'='1}} trả toàn bảng; UNION đọc bảng khác; ORDER BY chèn phá cấu trúc |
+| Cách sửa | {{?}} cho giá trị; whitelist cột/hướng; ép int + giới hạn LIMIT |
+| Phát hiện tự động | Test payload injection; SonarQube java:S3649; Find Security Bugs SQL_INJECTION_JDBC |
+
+### Cách phát hiện tự động
+
+- **Test payload**: gửi {{status = "x' OR '1'='1"}} và {{sort = "id; --"}}, khẳng định không trả về nhiều hơn dự kiến và không lỗi 500.
+- **Static analysis**: SonarQube rule {{java:S3649}} (SQL injection), SpotBugs + Find Security Bugs ({{SQL_INJECTION_JDBC}}, {{SQL_INJECTION_JPA}}). Đặt thành blocker trong CI.
+- **Checklist review**: grep {{jdbc.query(}} và {{createNativeQuery}} để tìm mẫu nối chuỗi; mọi {{ORDER BY}} động phải có whitelist.
+
+### Comment review mẫu cho đồng nghiệp
+
+"Cảm ơn bạn đã thêm tính năng lọc/sắp xếp! Mình có một điểm bảo mật quan trọng: câu SQL đang nối {{status}} thẳng vào chuỗi nên có SQL injection — chỉ cần gửi {{x' OR '1'='1}} là lộ toàn bộ đơn. Bạn đổi {{status}} (và LIMIT) sang placeholder {{?}} giúp mình nhé, PreparedStatement sẽ coi chúng là dữ liệu. Riêng {{sort}}/{{dir}} là tên cột nên không bind được bằng {{?}}, mình đề xuất whitelist như {{ALLOWED_SORT}} rồi mới ghép, kèm ép LIMIT về int và giới hạn 100. Mình sẽ thêm test gửi payload injection để khóa hành vi."
+
+### Ví dụ đời thực
+
+- **Triệu chứng**: API tra cứu đơn (Spring Boot, JdbcTemplate, PostgreSQL) có endpoint {{GET /orders?status=...&sort=...}}. Log xuất hiện request {{status}} chứa {{' OR '1'='1}}; băng thông outbound tăng gấp 5 lần trong 15 phút, response trả hàng chục nghìn bản ghi.
+- **Điều tra**: Câu SQL ghép chuỗi; rule {{java:S3649}} đang ở mức info nên không chặn build. Tài khoản DB còn quyền rộng.
+- **Nguyên nhân gốc**: SQL injection do nối chuỗi giá trị; ORDER BY động không whitelist.
+- **Cách xử lý**: (1) Bind {{status}}/{{limit}} bằng {{?}}. (2) Whitelist {{sort}}/{{dir}}. (3) Thu hẹp quyền DB. (4) Thêm test payload. (5) Nâng rule S3649 + Find Security Bugs thành blocker.
+- **Kết quả đo được**: Payload {{' OR '1'='1}} trả đúng ngữ cảnh; 60 ngày không còn injection thành công; CI chặn 2 PR vi phạm.
+
+### Trả lời mẫu khi phỏng vấn
+
+"Khi review PR lọc/sắp xếp, em thấy hai vấn đề. Thứ nhất, {{status}} được nối thẳng vào câu SQL của JdbcTemplate nên bị SQL injection: attacker gửi {{x' OR '1'='1}} là điều kiện luôn đúng và lộ toàn bộ đơn. Em yêu cầu bind bằng placeholder {{?}}, vì PreparedStatement parse câu lệnh trước rồi mới gửi giá trị riêng nên input không thể đổi cấu trúc. Thứ hai, {{ORDER BY}} là tên cột, không bind được bằng {{?}}, nên em whitelist cột và chiều sắp xếp, chỉ ghép giá trị đã nằm trong danh sách cho phép, đồng thời ép LIMIT về int và giới hạn 100. Em cũng thêm test gửi payload injection và bật rule SonarQube {{java:S3649}} cùng Find Security Bugs làm blocker. Thực tế em từng gặp API trả về cả bảng do nối chuỗi, sau khi tham số hoá và whitelist thì payload không còn tác dụng và CI chặn các PR tương tự."
+
+> Senior tip: Trong code review, coi mọi nối chuỗi vào SQL/JPQL là finding P1. Giá trị luôn bind bằng {{?}}; tên bảng/cột/ORDER BY luôn whitelist. Dùng Find Security Bugs ({{SQL_INJECTION_JDBC}}, {{SQL_INJECTION_JPA}}) và SonarQube {{java:S3649}} làm blocker, và thu hẹp quyền tài khoản DB để giới hạn thiệt hại nếu lỡ có injection.`,
+  follow: [
+    'Vì sao ORDER BY không bind được bằng placeholder, và whitelist cột hoạt động thế nào?',
+    'PreparedStatement an toàn vì cơ chế prepare/execute tách code và data ra sao?',
+    'Làm sao phát hiện SQL injection trong codebase lớn một cách tự động trước khi merge?'
+  ],
+  tags: ['SQL Injection', 'JdbcTemplate', 'PreparedStatement', 'ORDER BY', 'code review', 'Whitelist']
+},
+{
+  id: 'security-090',
+  topic: 'security',
+  level: 'lead',
+  q: 'Bạn review PR thêm logging cho luồng đăng nhập: đồng nghiệp dùng log.info("req={}", request) với DTO có toString() tự sinh, và log cả body request. Bạn thấy rủi ro gì, hậu quả khi log đẩy sang ELK/CloudWatch, và yêu cầu sửa thế nào?',
+  a: `**Tóm tắt:** Ghi log đối tượng có {{toString()}} tự sinh (hoặc log cả body) sẽ in ra **mật khẩu, JWT/token, số CMND/CCCD** ở dạng rõ. Log tập trung (ELK, CloudWatch) lưu lâu và chia sẻ rộng, nên một dòng log vô tình biến thành rò rỉ dữ liệu diện rộng, vi phạm PCI-DSS/GDPR. Cách sửa: **không log body auth**, mask trường nhạy cảm trong {{toString()}} (hoặc dùng {{@ToString.Exclude}} của Lombok), cấu hình masking ở logback, và log định danh đã băm/mã hóa thay vì giá trị gốc.
+
+### Vì sao toString() tự sinh là bẫy
+
+Lombok {{@Data}} sinh {{toString()}} in **mọi trường**, kể cả {{password}}, {{token}}, {{idCard}}. Khi bạn log cả request (ví dụ {{log.info}} với một placeholder rồi truyền request vào), log gọi {{request.toString()}} và in toàn bộ. Tương tự, log cả body request của luồng đăng nhập sẽ chứa mật khẩu JSON.
+
+Vấn đề không dừng ở file log trên máy: log thường được đẩy về hệ tập trung (ELK — Elasticsearch/Logstash/Kibana, hoặc AWS CloudWatch Logs). Ở đó log được lưu nhiều tháng, nhiều người/nhóm có quyền đọc, và có thể đi vào index, backup, dashboard. Một mật khẩu lọt vào đó coi như đã lộ vĩnh viễn, vì bạn không thể "thu hồi" dữ liệu đã index.
+
+### Code lỗi
+
+~~~java
+// ❌ NGUY HIỂM: log cả request, toString() in mọi trường
+@PostMapping("/login")
+public TokenDto login(@RequestBody LoginRequest request) {   // LoginRequest có password
+    log.info("login req={}", request);   // LỖI: in password, email ra log
+    // ...
+}
+
+// LoginRequest (Lombok @Data) sinh toString():
+// LoginRequest(username=minh, password=123456, idCard=012345678901)
+~~~
+
+- {{log.info}} với request làm tham số: toString() in cả password và idCard.
+- Nếu còn log cả bodyJson thì lộ cả JWT/refresh token khi có.
+
+### Code đã sửa
+
+~~~java
+// ✅ ĐÚNG: DTO che trường nhạy cảm, không log body auth
+@Data
+public class LoginRequest {
+    private String username;
+    @ToString.Exclude private String password;   // Lombok: bỏ khỏi toString()
+    @ToString.Exclude private String idCard;     // CCCD không bao giờ vào log
+}
+
+@PostMapping("/login")
+public TokenDto login(@RequestBody LoginRequest request) {
+    // Chỉ log định danh không nhạy cảm, không log mật khẩu/token
+    log.info("login attempt user={}", maskUser(request.getUsername()));
+    // ...
+}
+
+private String maskUser(String u) {
+    if (u == null || u.length() <= 2) return "***";
+    return u.charAt(0) + "***" + u.charAt(u.length() - 1);   // ví dụ m***h
+}
+~~~
+
+- {{@ToString.Exclude}}: toString() không in password/idCard nữa.
+- Không log body request của luồng auth; chỉ log username đã mask.
+- Với token/JWT: không bao giờ log; nếu cần correlation thì log một hash ngắn hoặc fingerprint.
+
+### Bảng tóm tắt
+
+| | Nội dung |
+|---|---|
+| Lỗi | Log toString()/body → in password, token, CCCD dạng rõ |
+| Vì sao nguy hiểm | Log tập trung lưu lâu, nhiều người đọc → rò rỉ diện rộng, vi phạm PCI-DSS/GDPR |
+| Cách sửa | @ToString.Exclude, không log body auth, mask username, masking ở logback |
+| Phát hiện tự động | Rule SAST log secret; quét regex password/token trong log; checklist "không log PII" |
+
+### Cách phát hiện tự động
+
+- **Static analysis**: rule bắt mẫu {{log.*(request)}}/{{log.*(body)}} ở luồng auth, hoặc log biến tên chứa password/token/secret.
+- **Quét log tập trung**: chạy regex tìm chuỗi giống JWT ({{eyJ...}}), số CCCD 12 chữ số, khóa API trong index ELK/CloudWatch; nếu thấy là sự cố.
+- **Checklist review**: "log dòng này có chứa PII/credential không? có log body của request đăng nhập không?".
+
+### Comment review mẫu cho đồng nghiệp
+
+"Cảm ơn bạn đã thêm log cho luồng đăng nhập! Mình có một điểm quan trọng về dữ liệu nhạy cảm: dòng {{log.info}} ghi cả request sẽ in cả password và CCCD vì {{toString()}} của Lombok in mọi trường, mà log lại đẩy về ELK/CloudWatch lưu lâu và nhiều người đọc được. Bạn thêm {{@ToString.Exclude}} cho password/idCard và chỉ log username đã mask giúp mình nhé; tuyệt đối không log body request đăng nhập hay token. Mình sẽ bổ sung một mục checklist 'không log PII/credential' và quét regex trong log tập trung để chắc chắn không lọt."
+
+### Kể lại trong phỏng vấn
+
+Khi được hỏi "Lỗi bảo mật quan trọng nhất bạn từng bắt được khi review code là gì?", em kể theo STAR. Situation: hệ thống ví điện tử, em review một PR thêm tính năng. Task: kiểm tra an toàn trước khi merge. Action: em phát hiện endpoint /orders/{id} lấy đơn theo id mà không kiểm tra chủ sở hữu (IDOR), nên user chỉ cần đổi id là đọc được đơn của người khác; em yêu cầu đổi sang {{findByIdAndOwnerId}} và trả 404, kèm test tích hợp hai user. Result: vá xong, pentest không còn dò được id, và CI chặn được các PR tương tự sau đó. Em nhấn mạnh bài học: luôn kiểm tra quyền sở hữu ở service và không tin id từ client.
+
+### Ví dụ đời thực
+
+- **Triệu chứng**: Một ngân hàng số (Spring Boot, ELK + CloudWatch) sau khi audit phát hiện trong log tập trung có hàng nghìn dòng chứa mật khẩu đăng nhập dạng rõ và vài token JWT còn hiệu lực, do một PR thêm dòng log ghi cả request đăng nhập.
+- **Điều tra**: DTO dùng Lombok {{@Data}}, toString() in password; log đẩy về ELK lưu 90 ngày, 12 người có quyền đọc. Một mật khẩu trong log trùng với tài khoản bị đăng nhập lạ.
+- **Nguyên nhân gốc**: Log toString()/body của luồng auth → lộ credential; log tập trung khuếch đại rò rỉ.
+- **Cách xử lý**: (1) {{@ToString.Exclude}} cho password/idCard. (2) Không log body auth, chỉ log username mask. (3) Xóa index log cũ chứa secret, xoay token bị lộ. (4) Thêm masking ở logback và rule SAST. (5) Quét regex định kỳ.
+- **Kết quả đo được**: Sau vá, quét 30 ngày không còn password/token trong log; 100% dòng login chỉ còn username mask; rule SAST chặn 2 PR log credential.
+
+### Trả lời mẫu khi phỏng vấn
+
+"Khi review PR logging cho luồng đăng nhập, em thấy dòng {{log.info}} ghi cả request với DTO dùng Lombok {{@Data}} sẽ in cả password và CCCD qua toString(), và nếu log cả body thì lộ luôn JWT. Hậu quả nặng hơn khi log đẩy về ELK/CloudWatch: log lưu nhiều tháng, nhiều người đọc, đi vào index và backup, nên một dòng log vô tình thành rò rỉ diện rộng, vi phạm PCI-DSS và GDPR. Em yêu cầu sửa bằng {{@ToString.Exclude}} cho các trường nhạy cảm, không log body request đăng nhập, chỉ log username đã mask, và thêm masking ở logback. Em cũng đề xuất quét regex JWT, số CCCD, API key trong log tập trung định kỳ, và thêm rule SAST bắt mẫu log credential. Thực tế em từng gặp log tập trung chứa mật khẩu dạng rõ khiến phải xóa index và xoay token; sau khi sửa thì quét 30 ngày không còn secret trong log."
+
+> Senior tip: Coi log tập trung (ELK/CloudWatch) là nơi dữ liệu "không thể thu hồi": một khi secret đã vào index và backup, coi như đã lộ. Nguyên tắc: không bao giờ log password, token, CCCD, khóa API; dùng {{@ToString.Exclude}}, mask username, và quét regex định kỳ. Với ngân hàng, log credential là finding P1 và phải kèm quy trình xoay token bị lộ.`,
+  follow: [
+    'Lombok @ToString.Exclude khác gì @Data và @Getter/Setter, và còn cách nào che trường nhạy cảm?',
+    'Khi cần log để điều tra sự cố mà không log PII, bạn dùng kỹ thuật gì (hash, token, correlation id)?',
+    'Nếu secret đã lọt vào ELK/CloudWatch, quy trình ứng phó và thu hồi token bị lộ diễn ra thế nào?'
+  ],
+  tags: ['Logging', 'Sensitive Data Exposure', 'PII', 'Lombok', 'ELK', 'code review', 'Masking']
+},
 );
