@@ -2231,4 +2231,400 @@ Entity Order data class có id: Long? null trước persist. Service thêm vào 
   follow: ['Persistable với isNew giải quyết vấn đề gì?', 'Làm sao verify plugin mở class đúng?', 'copy() trên entity có rủi ro gì?'],
   tags: ['data class', 'JPA', 'Hibernate', 'kotlin-jpa', 'kotlin-spring', 'entity']
 }
+,
+{
+  id: 'kotlin-045', topic: 'kotlin', level: 'senior',
+  q: 'Spring Data JPA repository method trả về platform type từ custom @Query: bạn xử lý nullability của kết quả và tham số thế nào, và Optional<User> vs User? vs User trong signature Kotlin có khác nhau không?',
+  a: `**Tóm tắt:** Spring Data JPA repository method với custom {{@Query}} thường trả platform type vì bytecode không mang nullability metadata đầy đủ. {{Optional<User>}}, {{User?}} và {{User}} trong signature Kotlin có hành vi khác nhau khi Spring proxy gọi method: {{Optional}} ép non-null, {{User?}} cho phép null, {{User}} ép non-null nhưng NPE nổ tại proxy chứ không phải query. Hãy dùng annotation nullability tường minh (JSpecify {{@NullMarked}}, Spring {{@Nullable}}/{{@NonNull}}) và integration test với dữ liệu null thực tế.
+
+### Vì sao repository method thành platform type
+Spring Data JPA sinh proxy implementation cho interface repository lúc runtime. Kiểu trả về và tham số của method interface được proxy đọc từ bytecode; nếu method là default hoặc từ {{@Query}}, Kotlin compiler không sinh đủ annotation nullability cho generic type parameter hay nested type. Kết quả: {{User findByEmail(String email)}} nhìn Kotlin như {{User!}} (platform type), {{Optional<User> findByEmail(String email)}} như {{Optional<User!>!}}.
+
+### Ba signature Kotlin và hành vi Spring
+~~~kotlin
+// 1. User? — Spring trả entity hoặc null nếu không tìm thấy (findById, findOne semantics)
+fun findByEmail(email: String): User?
+
+// 2. User — Spring ép non-null; nếu query trả rỗng, Spring ném EmptyResultDataAccessException tại proxy
+fun findByEmail(email: String): User
+
+// 3. Optional<User> — Spring bọc kết quả; rỗng thành Optional.empty(), có entity thành Optional.of(entity)
+fun findByEmail(email: String): Optional<User>
+~~~
+Quan trọng: {{Optional}} trong Java là container bất biến, nhưng Kotlin caller thường dùng {{?.let}} hoặc {{orElseThrow}}. Spring Data JPA 3.x hỗ trợ {{Optional}} native, nhưng với Kotlin hãy ưu tiên {{User?}} cho semantics rõ ràng và tránh allocation {{Optional}} object.
+
+### Tham số query method và @Param
+{{@Query("select u from User u where u.email = :email")}} tham số {{:email}} bị ánh xạ theo tên hoặc vị trí. Nếu tham số Kotlin là {{String?}} nhưng query không chấp nhận null, Spring ném exception trước khi chạy query. Dùng {{@Nullable}} hoặc {{@NonNull}} trên tham số để Spring validate sớm:
+~~~kotlin
+@Query("select u from User u where u.email = :email")
+fun findByEmail(@Param("email") @NonNull email: String): User?
+~~~
+
+### JSpecify @NullMarked cho package repository
+Đặt {{@NullMarked}} (từ {{org.jspecify:jspecify}}) trên package repository để Kotlin compiler hiểu default non-null:
+~~~kotlin
+// package-info.java
+@org.jspecify.annotations.NullMarked
+package com.example.repository;
+~~~
+Khi đó {{User findByEmail(String email)}} được Kotlin hiểu là {{User}} (non-null), {{User?}} là nullable. Cần Kotlin 1.9+ và bật {{-Xjsr305=strict}} hoặc cấu hình compiler đọc JSpecify.
+
+### Pitfall production
+- {{Optional<User>}} trả về nhưng Kotlin code dùng {{.get()}} tuỳ tiện → {{NoSuchElementException}} thay vì kiểm tra {{isPresent}}.
+- Custom {{@Query}} với {{LEFT JOIN FETCH}} trả duplicate entity; Spring Data {{distinct}} không luôn hoạt động với pagination → dùng {{Set}} trong query hoặc xử lý ở service.
+- Method {{existsBy...}} trả {{Boolean}} (non-null) nhưng platform type {{Boolean!}}; Kotlin {{if (repo.existsByEmail(e))}} an toàn vì Boolean primitive không null, nhưng {{Boolean?}} từ {{@Query}} có thể null.
+- Derived query method ({{findByEmail}}) Spring tự xử lý nullability; custom {{@Query}} thì không — phải tự annotation.
+
+### Ví dụ đời thực
+Hệ thống đặt hàng (Spring Boot 3, Kotlin, Hibernate 6) có repository:
+~~~kotlin
+interface OrderRepository : JpaRepository<Order, Long> {
+    @Query("select o from Order o where o.code = :code")
+    fun findByCode(@Param("code") code: String): Order
+}
+~~~
+- **Triệu chứng:** endpoint đường dẫn:
+~~~text
+GET /orders/{code}
+~~~
+ngẫu nhiên trả 500 {{NullPointerException}} tại controller gọi {{order!!.total}} khi đơn hàng không tồn tại. Log chỉ thấy NPE, không thấy query trả rỗng.
+- **Điều tra:** {{findByCode}} signature là {{Order}} (non-null), nhưng query có thể không tìm thấy. Spring Data ném {{EmptyResultDataAccessException}} tại proxy, nhưng exception handling không nhất quán khiến NPE lọt ra controller.
+- **Nguyên nhân gốc:** Signature Kotlin {{Order}} ép non-null, Spring proxy ném exception khi query rỗng, nhưng exception handling không nhất quán khiến NPE lọt ra controller.
+- **Cách xử lý:** (1) đổi signature thành {{fun findByCode(@Param("code") @NonNull code: String): Order?}}; (2) controller dùng {{order ?: throw NotFoundException()}}; (3) thêm {{@NullMarked}} package repository; (4) viết integration test {{@DataJpaTest}} gọi repository với code không tồn tại, assert trả null.
+- **Kết quả đo được:** sau deploy, 500 endpoint:
+~~~text
+/orders/{code}
+~~~
+giảm về 0; integration test bắt được regression khi dev vô tình đổi signature.
+
+### Trả lời mẫu khi phỏng vấn
+"Spring Data JPA repository method với custom @Query thường trả platform type vì bytecode thiếu nullability metadata. Tôi phân biệt ba signature: User? cho phép null (findById semantics), User ép non-null (Spring ném EmptyResultDataAccessException khi rỗng), Optional<User> bọc kết quả. Với Kotlin tôi ưu tiên User? cho semantics rõ và tránh allocation Optional. Tôi thêm JSpecify @NullMarked trên package repository, annotation @NonNull/@Nullable trên tham số @Param, và viết integration test @DataJpaTest cho cả trường hợp tìm thấy và không tìm thấy. Trong một dự án, signature Order non-null khiến EmptyResultDataAccessException lọt thành NPE ở controller; đổi thành Order? và xử lý null tường minh đã giải quyết triệt để."
+
+> Senior tip: đừng tin vào derived query method semantics cho custom @Query; custom query không có convention Spring Data, hãy tự annotation nullability và test integration. Dùng @NullMarked package-wide để giảm annotation lặp.
+
+### Bảng hành vi Spring Data JPA theo signature Kotlin
+| Signature | Query tìm thấy | Query không tìm thấy | Khuyến nghị |
+|---|---|---|---|
+| {{User}} | entity | {{EmptyResultDataAccessException}} | Chỉ khi business rule đảm bảo luôn tồn tại |
+| {{User?}} | entity | {{null}} | Mặc định cho finder đơn lẻ |
+| {{Optional<User>}} | {{Optional.of(entity)}} | {{Optional.empty()}} | Khi cần explicit empty container cho Java caller |
+| {{List<User>}} | danh sách (có thể rỗng) | danh sách rỗng | An toàn, không ném exception |
+
+### Cách annotation tham số @Query
+~~~kotlin
+@Query("select u from User u where u.email = :email and u.status = :status")
+fun findActiveByEmail(
+    @Param("email") @NonNull email: String,
+    @Param("status") @Nullable status: UserStatus?
+): User?
+~~~
+
+### Integration test pattern
+~~~kotlin
+@DataJpaTest
+class OrderRepositoryTest(@Autowired val repo: OrderRepository) {
+    @Test
+    fun findByCode_notFound_returnsNull() {
+        assertNull(repo.findByCode("NON_EXISTENT"))
+    }
+
+    @Test
+    fun findByCode_found_returnsEntity() {
+        val order = Order(code = "ORD-001", ...).also { repo.save(it) }
+        assertEquals("ORD-001", repo.findByCode("ORD-001")?.code)
+    }
+}
+~~~`,
+  follow: ['Derived query method và custom @Query khác nhau thế nào về nullability?', 'Tại sao Optional<User> trong Kotlin repository thường không khuyến khích?', 'JSpecify @NullMarked ảnh hưởng thế nào đến derived query method?'],
+  tags: ['Spring Data JPA', 'null safety', 'repository', '@Query', 'JSpecify', 'platform type']
+}
+,
+{
+  id: 'kotlin-046', topic: 'kotlin', level: 'lead',
+  q: 'Coroutines và Virtual Threads trong Spring Boot 3: khác nhau ra sao về observability (JFR, thread dump, Micrometer), testing (runTest vs JUnit), và hybrid scenario khi thư viện Java dùng virtual thread gọi từ coroutine Kotlin?',
+  a: `**Tóm tắt:** Virtual thread là thread JVM thật, xuất hiện trong thread dump, JFR event ({{jdk.VirtualThreadStart}}/{{jdk.VirtualThreadPinned}}), và Micrometer {{jvm.threads.live}} đếm cả virtual thread. Coroutine không là thread: không xuất hiện trong thread dump truyền thống, cần {{-Dkotlinx.coroutines.debug}} để thấy continuation stack trace, Micrometer không đếm coroutine. Testing: coroutine dùng {{runTest}} (virtual time), virtual thread dùng JUnit thường với {{ExecutorService}}. Hybrid: gọi Java virtual thread code từ coroutine Kotlin cần bridge dispatcher, tránh blocking coroutine thread.
+
+### Observability: JFR và Thread Dump
+| Đặc điểm | Virtual Thread | Coroutine |
+|---|---|---|
+| Thread dump (jcmd/jstack) | Hiện {{VIRTUAL}} thread, stack trace đầy đủ | Chỉ hiện carrier thread, coroutine ẩn trong continuation |
+| JFR event | {{jdk.VirtualThreadStart}}, {{jdk.VirtualThreadEnd}}, {{jdk.VirtualThreadPinned}}, {{jdk.VirtualThreadSubmitFailed}} | Không có event JFR riêng; continuation opaque |
+| Profiling (async-profiler) | Flame graph thấy virtual thread stack | Cần {{-Dkotlinx.coroutines.debug}} hoặc tool Kotlin-specific |
+| Micrometer {{jvm.threads.live}} | Đếm virtual thread (có thể lên chục ngàn) | Chỉ đếm carrier/platform thread |
+| Spring Boot Actuator | {{/actuator/threaddump}} hiện virtual thread | Chỉ hiện platform thread |
+
+Virtual thread pinning ({{synchronized}} quanh I/O) phát hiện bằng JFR event {{jdk.VirtualThreadPinned}} hoặc log {{-Djdk.tracePinnedThreads=full}} (JDK 21+). Coroutine blocking trên {{Dispatchers.Default}} không có event JFR; phát hiện bằng thread dump thấy thread {{RUNNABLE}} trong coroutine code.
+
+### Debugging: Stack Trace
+Virtual thread stack trace đọc như thread thường:
+~~~text
+"VirtualThread-123" #456 prio=5 os_prio=0 cpu=12.34ms elapsed=1.2s tid=0x0000 nid=0x789 waiting for monitor entry
+  java.lang.Thread.sleep(Native Method)
+  com.example.OrderService.load(OrderService.kt:42)
+~~~
+Coroutine stack trace cần bật debug mode:
+~~~kotlin
+// VM option: -Dkotlinx.coroutines.debug
+// Thread dump sẽ hiện:
+"coroutine-123" #456 prio=5 ... waiting on condition
+  kotlinx.coroutines.DebugProbesKt.probeCoroutineCreated(DebugProbes.kt:...)
+  com.example.OrderService.load$suspendImpl(OrderService.kt:42)
+~~~
+Không bật debug mode, coroutine stack trace rất khó đọc vì continuation được flatten.
+
+### Testing: runTest vs JUnit Platform Thread
+Coroutine: {{runTest}} ({{kotlinx-coroutines-test}}) chạy với **virtual time** — {{delay(10_000)}} xong ngay, {{advanceUntilIdle()}} tua thời gian. Test xác định, nhanh, không flaky do timing.
+~~~kotlin
+@Test
+fun retryWithBackoff() = runTest {
+    val client = mockk<HttpClient>()
+    coEvery { client.get(any()) } throws IOException() andThen coEvery { client.get(any()) } returns HttpResponse(200)
+    val result = service.callWithRetry()
+    assertEquals(200, result.status)
+    // delay 5s trong retry logic xong trong mili giây
+}
+~~~
+Virtual thread: test chạy trên **real time** với {{ExecutorService}} virtual thread. Không có virtual time; {{Thread.sleep}} thật chậm. Dùng {{Executors.newVirtualThreadPerTaskExecutor()}} trong test, nhưng phải quản lý lifecycle executor và timeout thủ công.
+~~~kotlin
+@Test
+fun virtualThreadService() {
+    try (val executor = Executors.newVirtualThreadPerTaskExecutor()) {
+        val future = executor.submit { service.blockingCall() }
+        assertTimeout(Duration.ofSeconds(5)) { future.get() }
+    }
+}
+~~~
+Integration test Spring Boot: {{@SpringBootTest}} với virtual thread chạy bình thường; coroutine cần {{runTest}} không thể dùng trong {{@SpringBootTest}} context (Spring context chạy real time). Với coroutine controller, test dùng {{WebTestClient}} hoặc {{MockMvc}} real time.
+
+### Hybrid Scenario: Coroutine Kotlin gọi Java Virtual Thread Library
+Thư viện Java cung cấp API blocking chạy trên virtual thread (ví dụ JDBC wrapper, HTTP client). Gọi từ coroutine Kotlin:
+~~~kotlin
+// Sai: blocking code chạy trên coroutine dispatcher -> starvation
+suspend fun bad() = javaLib.blockingCall()
+
+// Đúng 1: đẩy sang Dispatchers.IO (thread pool elastic)
+suspend fun ok1() = withContext(Dispatchers.IO) { javaLib.blockingCall() }
+
+// Đúng 2: dùng virtual thread executor làm dispatcher
+private val vtDispatcher = Executors.newVirtualThreadPerTaskExecutor().asCoroutineDispatcher()
+suspend fun ok2() = withContext(vtDispatcher) { javaLib.blockingCall() }
+
+// Đúng 3: bridge CompletableFuture -> suspend (nếu lib trả future)
+suspend fun ok3() = javaLib.asyncCall().await() // kotlinx-coroutines-jdk8
+~~~
+Quan trọng: {{Dispatchers.IO}} mặc định giới hạn 64 thread (hoặc số core); virtual thread executor **không giới hạn thread** (mỗi task một virtual thread). Nếu gọi library virtual thread từ coroutine trên {{Dispatchers.IO}}, bạn giới hạn concurrency bằng IO pool chứ không tận dụng virtual thread. Nên dùng dispatcher virtual thread riêng ({{Executors.newVirtualThreadPerTaskExecutor().asCoroutineDispatcher()}}) cho gọi library này.
+
+### Spring @Async: Coroutine vs Virtual Thread
+{{@Async}} Spring mặc định dùng {{TaskExecutor}} (thread pool). Với virtual thread: cấu hình {{spring.task.execution.thread-factory=virtual}} (Spring Boot 3.2+) thì {{@Async}} method chạy trên virtual thread. Với coroutine: {{@Async}} không hỗ trợ suspend function trực tiếp; dùng {{@Async}} trả {{CompletableFuture}} rồi {{.await()}} trong coroutine, hoặc dùng {{@Scheduled}} với coroutine scope.
+
+### Pitfall production
+- Coroutine production không bật {{-Dkotlinx.coroutines.debug}} → incident khó debug vì stack trace thiếu.
+- Micrometer alert trên {{jvm.threads.live}} báo động khi dùng virtual thread (số thread lên 10k+) nhưng thực tế carrier thread thấp; cần alert trên {{jvm.threads.daemon}} hoặc carrier thread count.
+- Gọi library virtual thread từ coroutine trên {{Dispatchers.IO}} làm nghẽn IO pool, các coroutine khác (DB, HTTP) bị chờ.
+- {{runTest}} không thể test Spring context đầy đủ; integration test coroutine controller phải dùng real time, mất ưu điểm virtual time.
+
+### Ví dụ đời thực
+Hệ thống microservice Kotlin (Spring Boot 3, WebFlux + coroutine) tích hợp thư viện Java legacy {{ReportGenerator}} chạy PDF generation blocking. Team ban đầu gọi từ coroutine controller:
+~~~kotlin
+@GetMapping("/reports/{id}")
+suspend fun download(@PathVariable id: Long): ByteArray =
+    withContext(Dispatchers.IO) { reportGenerator.generate(id) } // Dispatchers.IO 64 thread
+~~~
+- **Triệu chứng:** giờ cao điểm, 200 request PDF đồng thời → {{Dispatchers.IO}} cạn 64 thread, các request WebClient khác (gọi service nội bộ) cũng dùng {{Dispatchers.IO}} bị chờ, p99 API đọc dữ liệu từ 200ms lên 12 giây.
+- **Điều tra:** thread dump thấy 64 thread {{RUNNABLE}} trong {{ReportGenerator.generate}} (blocking CPU-intensive), không còn thread cho I/O khác. Metric {{jvm.threads.live}} chỉ 64 (platform thread), không phản ánh áp lực.
+- **Nguyên nhân gốc:** {{Dispatchers.IO}} pool cố định chia sẻ giữa I/O network và CPU-intensive PDF generation. Virtual thread library không được tận dụng vì coroutine bridge dùng IO pool giới hạn.
+- **Cách xử lý:** (1) tạo dispatcher virtual thread riêng cho {{ReportGenerator}}: {{val pdfDispatcher = Executors.newVirtualThreadPerTaskExecutor().asCoroutineDispatcher()}}; (2) controller dùng {{withContext(pdfDispatcher)}}; (3) giới hạn concurrency PDF bằng {{Semaphore(10)}} (CPU-bound); (4) bật {{-Dkotlinx.coroutines.debug}} production staging.
+- **Kết quả đo được:** p99 API đọc dữ liệu về 220ms, PDF generation throughput tăng 3x (virtual thread không giới hạn 64), không còn nghẽn IO pool. JFR event {{jdk.VirtualThreadStart}}/{{End}} cho thấy PDF task chạy trên virtual thread độc lập.
+
+### Trả lời mẫu khi phỏng vấn
+"Virtual thread là thread JVM thật, hiện trong thread dump, JFR event, Micrometer thread count; coroutine không phải thread, cần -Dkotlinx.coroutines.debug để debug, không đếm trong thread metric. Testing: coroutine có runTest với virtual time (delay 10s xong ngay), virtual thread dùng JUnit real time với ExecutorService. Hybrid: gọi Java virtual thread lib từ coroutine không nên dùng Dispatchers.IO (giới hạn 64 thread), hãy tạo dispatcher virtual thread riêng (Executors.newVirtualThreadPerTaskExecutor().asCoroutineDispatcher()) và giới hạn Semaphore cho CPU-bound. Spring @Async: virtual thread config bằng spring.task.execution.thread-factory=virtual; coroutine thì bridge qua CompletableFuture. Trong dự án thực tế, PDF generation blocking nhét vào Dispatchers.IO làm nghẽn cả WebClient call khác; tách dispatcher virtual thread riêng đã giải quyết triệt để."
+
+> Senior tip: observability virtual thread dùng JFR event (VirtualThreadPinned, VirtualThreadSubmitFailed); coroutine bật -Dkotlinx.coroutines.debug staging. Metric thread count khác hẳn: virtual thread count có thể 10k+ nhưng carrier thread chỉ vài chục — alert trên carrier thread, không phải total thread.
+
+### Bảng so sánh testing
+| Khía cạnh | Coroutine (runTest) | Virtual Thread (JUnit) |
+|---|---|---|
+| Thời gian | Virtual (delay 10s = 0ms) | Real (delay 10s = 10s) |
+| Xác định | Rất cao | Phụ thuộc timing, cần timeout |
+| Spring context | Không tương thích runTest | Tương thích @SpringBootTest |
+| Flaky risk | Thấp | Trung bình (cần assertTimeout) |
+
+### Cấu hình dispatcher virtual thread cho coroutine
+~~~kotlin
+// Bean Spring
+@Bean
+fun pdfVirtualThreadDispatcher(): CoroutineDispatcher =
+    Executors.newVirtualThreadPerTaskExecutor()
+        .asCoroutineDispatcher()
+        .limitedParallelism(10) // Semaphore tương đương
+
+// Trong service
+@Autowired @Qualifier("pdfVirtualThreadDispatcher")
+private lateinit var pdfDispatcher: CoroutineDispatcher
+
+suspend fun generatePdf(id: Long) = withContext(pdfDispatcher) {
+    reportGenerator.generate(id)
+}
+~~~`,
+  follow: ['Làm sao bật JFR event cho virtual thread pinning?', 'Coroutine dispatcher limitedParallelism khác Semaphore thế nào?', 'Khi nào dùng CompletableFuture.await() thay vì withContext?'],
+  tags: ['coroutine', 'virtual thread', 'observability', 'JFR', 'testing', 'Spring Boot 3', 'hybrid']
+}
+,
+{
+  id: 'kotlin-047', topic: 'kotlin', level: 'senior',
+  q: 'Data class làm JPA entity với composite key (@EmbeddedId/@IdClass), inheritance (SINGLE_TABLE/JOINED), optimistic locking (@Version) và Spring Data projection: những cạm bẫy nào plugin kotlin-jpa/kotlin-spring không giải quyết được?',
+  a: `**Tóm tắt:** Plugin {{kotlin-jpa}} (no-arg constructor) và {{kotlin-spring}} (all-open) chỉ giải quyết khung xương: constructor rỗng cho JPA và class mở cho proxy. Chúng **không** xử lý: identity phức tạp của composite key, inheritance hierarchy mapping, @Version field mutation semantics với data class copy(), và projection interface mapping. Với data class entity, các tình huống này gây lỗi runtime hoặc semantics sai mà compiler không cảnh báo.
+
+### 1. Composite Key: @EmbeddedId và @IdClass
+Data class sinh {{equals}}/{{hashCode}} trên **tất cả** property primary constructor. Composite key entity thường có {{@EmbeddedId}} hoặc {{@IdClass}} là một class riêng (key class). Nếu entity là data class và key class cũng là data class:
+- Entity {{equals}} so sánh cả key lẫn các field khác → identity phụ thuộc mutable state.
+- Key class data class {{equals}} so sánh tất cả component → đúng nếu component immutable, nhưng Entity data class vẫn sai vì so sánh thêm field non-key.
+
+~~~kotlin
+// Sai: OrderEntity data class với @EmbeddedId
+@Entity
+@IdClass(OrderId::class) // hoặc @EmbeddedId
+data class OrderEntity(
+    @Id val region: String,
+    @Id val sequence: Long,
+    var customerName: String,      // mutable field → equals/hashCode sai
+    var totalAmount: BigDecimal
+) {
+    // equals/hashCode so sánh region, sequence, customerName, totalAmount
+}
+
+// Đúng: key class data class, entity class thường
+@Entity
+@IdClass(OrderId::class)
+open class OrderEntity(
+    @Id var region: String,
+    @Id var sequence: Long
+) {
+    var customerName: String = ""
+    var totalAmount: BigDecimal = BigDecimal.ZERO
+
+    override fun equals(o: Any?) = this === o || (o is OrderEntity && region == o.region && sequence == o.sequence)
+    override fun hashCode() = 31 * region.hashCode() + sequence.hashCode()
+}
+
+data class OrderId(val region: String, val sequence: Long) // data class immutable, cần no-arg constructor cho Hibernate
+~~~
+Plugin {{kotlin-jpa}} sinh constructor rỗng cho entity, nhưng **không** sinh constructor rỗng cho {{@EmbeddedId}} class (nếu là data class). Hibernate cần no-arg constructor cho embedded id — phải tự khai báo hoặc dùng {{@EmbeddedId}} class thường với constructor rỗng.
+
+### 2. Inheritance: SINGLE_TABLE, JOINED, TABLE_PER_CLASS
+Data class **không hỗ trợ inheritance** (data class không thể {{open}} hay {{abstract}}, không thể extends class khác). JPA inheritance strategies:
+- {{SINGLE_TABLE}}: entity con extends entity cha → data class không thể extends.
+- {{JOINED}}: entity con extends entity cha → data class không thể extends.
+- {{TABLE_PER_CLASS}}: entity con extends entity cha → data class không thể extends.
+
+Nếu cố gắng dùng data class làm base entity:
+~~~kotlin
+// Biên dịch lỗi: data class cannot be open/sealed/abstract
+@Entity
+@Inheritance(strategy = InheritanceType.JOINED)
+open data class BaseEntity(@Id @GeneratedValue var id: Long? = null) // LỖI COMPILE
+~~~
+Giải pháp: base entity dùng class thường {{open}}, entity con dùng class thường. Data class chỉ dùng cho **leaf entity không có con** (và vẫn không khuyến khích vì equals/hashCode).
+
+### 3. Optimistic Locking: @Version
+{{@Version}} field được Hibernate tăng tự động khi entity dirty. Data class {{copy()}} tạo instance mới copy tất cả field (kể cả version). Nếu code dùng {{entity.copy(total = newTotal)}} để cập nhật:
+- Instance mới có version cũ → Hibernate merge instance mới, version không khớp → {{OptimisticLockException}} hoặc ghi đè thay đổi của thread khác.
+- Data class không cho phép mutable property {{var}} trong primary constructor với {{copy()}} hành vi shallow copy cho collection.
+
+~~~kotlin
+// Sai: data class entity với @Version
+@Entity
+data class Account(
+    @Id @GeneratedValue var id: Long? = null,
+    var balance: BigDecimal,
+    @Version var version: Long = 0
+)
+
+// Service dùng copy()
+fun transfer(from: Account, to: Account, amount: BigDecimal) {
+    val newFrom = from.copy(balance = from.balance - amount) // version copy y nguyên!
+    val newTo = to.copy(balance = to.balance + amount)
+    repo.save(newFrom); repo.save(newTo) // OptimisticLockException hoặc lost update
+}
+
+// Đúng: class thường, mutable property, không copy
+@Entity
+open class Account(
+    @Id @GeneratedValue var id: Long? = null
+) {
+    var balance: BigDecimal = BigDecimal.ZERO
+    @Version var version: Long = 0
+}
+~~~
+
+### 4. Spring Data Projection với Data Class Entity
+Spring Data JPA hỗ trợ **projection interface** (closed projection) và **DTO projection** (open projection). Data class entity field mặc định {{val}} (read-only property), nhưng JPA cần setter cho field non-id (Hibernate dùng field access hoặc property access). Data class constructor parameter {{val}} sinh getter nhưng **không sinh setter** trừ khi dùng {{var}}. DTO projection dùng constructor expression (JPQL {{select new com.example.OrderDto(o.id, o.code)}}) hoạt động, nhưng **interface projection** mapping từ entity data class có thể gặp vấn đề:
+- Interface projection đọc qua getter; data class {{val}} có getter → hoạt động.
+- Nhưng nếu entity dùng field access ({{@Access(AccessType.FIELD)}}), getter không được Hibernate dùng → projection trả null.
+- Data class {{copy()}} không liên quan đến projection nhưng dễ bị lạm dụng trong service layer tạo "projection thủ công" mất dirty checking.
+
+### 5. Plugin kotlin-jpa/kotlin-spring không làm gì
+| Vấn đề | Plugin giải quyết? | Cần làm gì |
+|---|---|---|
+| No-arg constructor entity | Có (kotlin-jpa) | Kiểm tra bytecode |
+| No-arg constructor @EmbeddedId | **Không** | Tự khai báo constructor rỗng cho key class |
+| Open class entity | Có (kotlin-spring + allOpen) | Kiểm tra bytecode class open |
+| Open class @MappedSuperclass | Có (allOpen config) | Cấu hình allOpen annotation |
+| equals/hashCode identity | **Không** | Tự override theo business key |
+| @Version mutation safety | **Không** | Không dùng copy(), dùng mutable property |
+| Inheritance (extends entity) | **Không** (data class không extend được) | Dùng class thường |
+| Projection mapping | **Không** | Dùng class thường, kiểm tra access type |
+
+### Ví dụ đời thực
+Hệ thống ngân hàng (Spring Boot 3, Kotlin, Hibernate 6, PostgreSQL) thiết kế entity {{Transaction}} với composite key ({{branchCode}}, {{sequenceNo}}) và inheritance {{SINGLE_TABLE}} cho {{CreditTransaction}}, {{DebitTransaction}}.
+
+- **Triệu chứng:** (1) Entity {{Transaction}} data class không compile vì {{SINGLE_TABLE}} yêu cầu {{open}} class cha. (2) Key class {{TransactionId}} data class không có no-arg constructor → Hibernate ném {{InstantiationException}} khi load. (3) Service dùng {{transaction.copy(status = Status.COMPLETED)}} → @Version không tăng, lost update khi 2 thread duyệt cùng lúc.
+
+- **Điều tra:** (1) Data class không thể {{open}} → không thể làm base entity inheritance. (2) {{@EmbeddedId}} class data class không có no-arg constructor (kotlin-jpa chỉ sinh cho entity, không cho embeddable id class). (3) {{copy()}} copy version field → optimistic locking bypass.
+
+- **Cách xử lý:** (1) Base entity {{open class Transaction}} class thường, con {{CreditTransaction}}, {{DebitTransaction}} class thường. (2) Key class {{TransactionId}} đổi thành class thường với no-arg constructor {{private constructor()}} và factory method. (3) Entity dùng mutable property {{var}}, không dùng copy(), service gán field trực tiếp trong transaction. (4) Cấu hình {{allOpen}} cho {{jakarta.persistence.Entity}}, {{jakarta.persistence.MappedSuperclass}}, {{jakarta.persistence.Embeddable}}. (5) Thêm test integration: persist entity, load, verify version tăng sau update, verify inheritance discriminator column đúng.
+
+- **Kết quả đo được:** Compile thành công, Hibernate load entity composite key không lỗi, optimistic locking hoạt động ({{OptimisticLockException}} ném đúng khi concurrent update), inheritance discriminator column {{DTYPE}} populate đúng.
+
+### Trả lời mẫu khi phỏng vấn
+"Plugin kotlin-jpa và kotlin-spring chỉ lo khung xương: no-arg constructor cho entity, open class cho proxy. Chúng không giải quyết: composite key (@EmbeddedId/@IdClass) cần no-arg constructor cho key class riêng; inheritance (SINGLE_TABLE/JOINED) không dùng data class được vì data class không extend được; @Version optimistic locking bị bypass nếu dùng data class copy() vì version field bị copy y nguyên; Spring Data projection mapping phụ thuộc access type (field/property) mà data class val/var ảnh hưởng. Tôi thiết kế entity dùng class thường open, override equals/hashCode theo business key (composite key component), không dùng copy(), key class dùng class thường với no-arg constructor, cấu hình allOpen cho MappedSuperclass/Embeddable. Trong dự án ngân hàng, data class entity composite key + inheritance gây 3 lỗi compile/runtime; chuyển sang class thường đã giải quyết triệt để."
+
+> Senior tip: data class entity chỉ an toàn khi: không composite key, không inheritance, không @Version, không projection interface. Nếu có bất kỳ yếu tố nào, hãy dùng class thường — boilerplate vài dòng equals/hashCode rẻ hơn debug runtime.
+
+### Pattern entity composite key an toàn
+~~~kotlin
+// Key class: value class hoặc class thường immutable
+@JvmInline value class BranchCode(val value: String)
+@JvmInline value class SequenceNo(val value: Long)
+
+@Embeddable
+class TransactionId(
+    @Column(name = "branch_code") var branchCode: String? = null,
+    @Column(name = "seq_no") var sequenceNo: Long? = null
+) {
+    // No-arg constructor cho Hibernate
+    private constructor() : this(null, null)
+
+    constructor(branchCode: BranchCode, sequenceNo: SequenceNo) : this(branchCode.value, sequenceNo.value)
+
+    override fun equals(o: Any?) = o is TransactionId && branchCode == o.branchCode && sequenceNo == o.sequenceNo
+    override fun hashCode() = 31 * branchCode.hashCode() + sequenceNo.hashCode()
+}
+
+@Entity
+@IdClass(TransactionId::class)
+open class Transaction(
+    @Id var branchCode: String? = null,
+    @Id var sequenceNo: Long? = null
+) {
+    var amount: BigDecimal = BigDecimal.ZERO
+    @Version var version: Long = 0
+
+    override fun equals(o: Any?) = this === o || (o is Transaction && branchCode == o.branchCode && sequenceNo == o.sequenceNo)
+    override fun hashCode() = 31 * branchCode.hashCode() + sequenceNo.hashCode()
+}
+~~~`,
+  follow: ['@EmbeddedId class data class có cần no-arg constructor không?', 'Data class entity với @Version copy() gây lỗi gì cụ thể?', 'Spring Data projection interface đọc entity data class field access thế nào?'],
+  tags: ['data class', 'JPA', 'Hibernate', 'composite key', '@EmbeddedId', '@IdClass', 'inheritance', '@Version', 'projection', 'kotlin-jpa']
+}
 );
