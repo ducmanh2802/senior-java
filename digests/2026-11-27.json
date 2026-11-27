@@ -1,0 +1,79 @@
+{
+  "date": "2026-11-27",
+  "intro": "Hôm nay Spring AI 2.1 có thêm DecisionModel: trả lời Có/Không/Chọn/Chấm điểm kèm xác suất để làm guardrail và judge thay vì parse text. Về AI agent, Docker giải thích khi nào nên dùng microVM sandbox thay container và cách quản trị chính sách bằng Cedar. Ngoài ra là ba podcast đáng nghe về Java trong thời AI (Paul Sandoz), nâng cấp phần mềm có AI hỗ trợ (Cora Iberkleid) và JobRunr 9.",
+  "editor": "claude",
+  "items": [
+    {
+      "title_vi": "Spring AI 2.1 DecisionModel: quyết định Có/Không kèm xác suất cho guardrail và judge",
+      "title": "Decision Models in Spring AI 2.1: Yes, No, and How Sure",
+      "url": "https://spring.io/blog/2026/11/26/spring-ai-decision-models-guardrails-judges",
+      "source": "Spring Blog",
+      "category": "tech",
+      "summary": "Spring AI 2.1 thêm API {{DecisionModel}} khác với chat model: nhận các kết quả định trước và trả về câu trả lời có kiểu cùng xác suất ({{YesNoQuestion}}, {{ChoiceQuestion}}, {{ScoreQuestion}}), nên code rẽ nhánh được mà không phải sinh rồi parse text. Bài cho thấy cách dựng guardrail đầu vào/đầu ra, {{DecisionJudge}} chấm từng tiêu chí và {{DecisionSelfRefineAdvisor}} thử lại có phản hồi. Tác giả đo median khoảng 29 ms với model local, nhưng đây là số tự đo trên một laptop, và Decision Extensions 0.5.0 còn sớm, API có thể đổi.",
+      "why": "Nếu service Java của bạn gọi LLM để phân loại, kiểm duyệt hay chấm câu trả lời, đây là cách rẻ và nhanh hơn chat model, lại cho ngưỡng xác suất để tự động hoá hoặc chuyển người duyệt. Cần để ý thứ tự advisor (tin nhắn bị chặn vẫn có thể nằm trong session memory) và ngưỡng phải được kiểm chứng trên dữ liệu thật.",
+      "interview_q": "Bạn cần chặn nội dung độc hại và chấm chất lượng câu trả lời LLM trong một service Spring. Bạn thiết kế guardrail và judge thế nào, đặt ngưỡng ra sao, và khi nào vẫn dùng chat model?",
+      "related": ["ai-001", "ai-002", "spring-001"],
+      "tags": ["spring-ai", "llm", "guardrail"]
+    },
+    {
+      "title_vi": "Docker Sandboxes và container: nên cô lập AI agent thế nào",
+      "title": "Docker Sandboxes vs. Containers: Choosing the Right Isolation for AI Agents",
+      "url": "https://www.docker.com/blog/docker-sandboxes-vs-containers/",
+      "source": "Docker Blog",
+      "category": "devops",
+      "summary": "Bài lập luận container chia sẻ kernel với host, hợp để đóng gói ứng dụng, còn coding agent là một tác nhân chạy nhiều giờ, cài package, dựng image và đọc dữ liệu không đáng tin. Docker Sandboxes là microVM có kernel và Docker Engine riêng, proxy phía host mặc định chặn mạng và tiêm credential từ bên ngoài. Câu chốt: sandbox cho agent, container cho ứng dụng nó làm việc. Đây là bài của hãng nên cần đọc có chọn lọc; workspace vẫn mount read-write mặc định và MCP server dùng chung vẫn mở rộng phạm vi tác động của agent.",
+      "why": "Team Java ngày càng cho agent chạy Maven/Gradle, Testcontainers hay Compose. Mount docker.sock vào container là cách dễ dính nhất để agent thoát ra host. Hiểu ranh giới kernel, kiểm soát egress và quản lý secret giúp bạn đánh giá rủi ro trước khi bật auto-approve.",
+      "interview_q": "Bạn muốn cho một AI agent tự build và chạy Testcontainers trên máy dev hoặc CI. Container thường có đủ cô lập không, và bạn kiểm soát mạng, credential và workspace thế nào?",
+      "related": ["devops-001", "security-001", "ai-003"],
+      "tags": ["docker", "sandbox", "ai-agent", "security"]
+    },
+    {
+      "title_vi": "Docker AI Governance: chính sách sandbox, MCP bằng Cedar và audit cho agent",
+      "title": "The Trust Layer: Securing Agentic AI with Docker AI Governance",
+      "url": "https://www.docker.com/blog/agentic-ai-security-docker-governance/",
+      "source": "Docker Blog",
+      "category": "devops",
+      "summary": "Bài của một Docker Captain mô tả lớp kiểm soát nằm ngoài model gồm ba phần: chính sách sandbox (domain, IP, cổng, đường dẫn mount), quản trị công cụ MCP qua MCP Gateway viết bằng Cedar với mặc định từ chối, và audit có cấu trúc. Có thể kiểm tra ranh giới trước khi chạy bằng {{sbx policy check network}}. Giới hạn nêu trong bài: chỉ áp cho lưu lượng qua Gateway, thuộc tính {{readOnly}} do server tự khai nên chỉ mang tính tham khảo, audit không lưu nội dung prompt. Đây là nội dung quảng bá sản phẩm.",
+      "why": "Khi agent gọi tool qua MCP trong hệ thống backend, câu hỏi \"model quyết định\" khác \"được phép làm\" trở thành vấn đề bảo mật thật. Ý tưởng default-deny, policy as code và audit log áp dụng được cả khi bạn không dùng Docker.",
+      "interview_q": "Bạn cho một agent gọi các công cụ nội bộ qua MCP. Bạn thiết kế phân quyền, phê duyệt và audit thế nào để một quyết định sai của model không gây hậu quả production?",
+      "related": ["security-001", "ai-004"],
+      "tags": ["mcp", "governance", "cedar", "ai-agent"]
+    },
+    {
+      "title_vi": "Inside Java Podcast #76: Java trong thời đại AI với Paul Sandoz",
+      "title": "Episode 76 \"Java in the Age of AI\" [AtA]",
+      "url": "https://inside.java/podcast/76/",
+      "source": "Inside Java",
+      "category": "tech",
+      "summary": "Tập \"Ask the Architects\" ghi tại JavaOne 2026, Lize Raes phỏng vấn Paul Sandoz, lead của Project Babylon. Trang mô tả nêu các chủ đề: hỗ trợ AI trong Java, thêm tính năng AI vào ứng dụng hiện có, viết code Java chạy trên GPU, model viết bằng Java và ý tưởng dài hạn cho việc huấn luyện. Show notes dẫn tới Project Babylon và HAT. Trang chỉ có phần mô tả, không có nội dung cuộc trò chuyện, nên chi tiết và tiến độ cần nghe podcast để biết.",
+      "why": "Cho thấy hướng đi của nền tảng Java với workload AI/GPU, hữu ích khi được hỏi Java đứng ở đâu so với Python trong hệ sinh thái AI. Babylon và HAT là thứ nên biết tên và mục tiêu.",
+      "interview_q": "Team đã có hệ thống Java lớn và muốn thêm tính năng AI. Bạn tích hợp thế nào, và Java có lợi thế và hạn chế gì so với Python?",
+      "related": ["ai-001", "modern-001"],
+      "tags": ["java", "babylon", "ai"]
+    },
+    {
+      "title_vi": "Podcast Spring: Cora Iberkleid về AI, microservices và nâng cấp phần mềm",
+      "title": "A Bootiful Podcast: Cora Iberkleid on AI, Microservices, and the Future of Software Upgrades",
+      "url": "https://spring.io/blog/2026/11/26/a-bootiful-podcast-cora-iberkleid",
+      "source": "Spring Blog",
+      "category": "tech",
+      "summary": "Josh Long trò chuyện với Cora Iberkleid về tác động của AI lên nâng cấp, vá lỗi, bảo mật và niềm tin, không chỉ là sinh code. Các ý chính theo trang mô tả: AI thêm độ phức tạp dễ bị bỏ qua, phán đoán của con người vẫn quan trọng, công cụ nâng cấp mang tính xác định như OpenRewrite và AppAdvisor giúp nâng cấp an toàn hơn, cùng chuyện chuỗi cung ứng, SBOM và giữ phần mềm luôn sẵn sàng phát hành. Trang chỉ là mô tả tập.",
+      "why": "Nâng cấp Spring Boot, Java và vá CVE là việc lặp lại của mọi team. Biết OpenRewrite, SBOM và tư duy luôn releasable giúp bạn nói được chiến lược nâng cấp khi phỏng vấn thay vì chỉ nói \"đổi version rồi chạy test\".",
+      "interview_q": "Công ty còn nhiều service Spring Boot phiên bản cũ. Bạn lên kế hoạch nâng cấp hàng loạt thế nào, dùng công cụ tự động ra sao và kiểm soát rủi ro chuỗi cung ứng thế nào?",
+      "related": ["spring-001", "devops-002", "security-002"],
+      "tags": ["spring", "openrewrite", "sbom", "upgrade"]
+    },
+    {
+      "title_vi": "Podcast Spring: JobRunr 9 và xử lý tác vụ nền phân tán cho Java",
+      "title": "A Bootiful Podcast: JobRunr founder Ronald Dehuysser",
+      "url": "https://spring.io/blog/2026/11/19/a-bootiful-podcast-november-19th-2026",
+      "source": "Spring Blog",
+      "category": "tech",
+      "summary": "Josh Long phỏng vấn Ronald Dehuysser, tác giả JobRunr, về JobRunr 9 và xử lý phân tán trong hệ sinh thái Java/Spring Boot. Theo mô tả, bản 9 có durable steps, biểu đồ thực thi, retry thông minh hơn, dashboard dark mode, thông báo tức thì qua PG notify, tự chỉnh số worker và prefetch để tăng throughput. Phù hợp cho back-office, workflow agent, batch và đẩy việc nặng ra khỏi API. Trang chỉ là mô tả tập, chi tiết cần nghe thêm.",
+      "why": "Job nền bền vững, retry và idempotency là chủ đề phỏng vấn senior quen thuộc. JobRunr là một lựa chọn ngoài Quartz và Spring Batch để so sánh, đặc biệt với workload dài và bất đồng bộ.",
+      "interview_q": "So sánh Quartz, Spring Batch và một thư viện job nền như JobRunr: khi nào chọn cái nào, và bạn bảo đảm job idempotent, retry an toàn khi có nhiều node ra sao?",
+      "related": ["spring-002", "concurrency-001", "microservices-001"],
+      "tags": ["jobrunr", "background-jobs", "spring-boot"]
+    }
+  ]
+}
