@@ -3946,6 +3946,236 @@ server {
 - **root /var/www try_files $uri /index.html**: thiếu proxy /api, thiếu cache header assets.
 
 > Senior tip: luôn serve static bằng Nginx/CDN. Spring Boot chỉ chạy API. Fallback ở Nginx tránh round-trip Spring cho route SPA.`
+},
+{
+  id: 'qz-behavioral-020',
+  topic: 'behavioral',
+  q: 'Ba người khác nhau cùng giao cho bạn ba việc "gấp" trong cùng một buổi sáng: một hotfix production, một yêu cầu gấp từ khách hàng lớn, và một báo cáo cần cho cuộc họp chiều. Bạn chưa kịp làm gì. Cách xử lý tốt nhất là gì?',
+  options: [
+    'Làm việc của khách hàng lớn trước vì khách hàng luôn đúng, hai việc kia để sau.',
+    'Hỏi nhanh từng người: việc nào đang chặn doanh thu hoặc gây mất dữ liệu, việc nào có deadline cứng; dựa vào tác động và deadline để xếp thứ tự, rồi báo lại cho những việc không kịp làm ngay.',
+    'Làm cả ba cùng lúc bằng cách mở nhiều cửa sổ và chuyển qua lại cho nhanh.',
+    'Chọn việc dễ nhất làm trước để có cảm giác hoàn thành, rồi mới tới việc khó.'
+  ],
+  answer: 1,
+  explain: `**Đáp án đúng: Hỏi nhanh từng người: việc nào đang chặn doanh thu hoặc gây mất dữ liệu, việc nào có deadline cứng; dựa vào tác động và deadline để xếp thứ tự, rồi báo lại cho những việc không kịp làm ngay.**
+
+### Vì sao đúng
+Khi nhiều việc cùng "gấp", từ "gấp" không phải là tiêu chí xếp hạng — mọi người đều nói việc của mình gấp. Tiêu chí đúng là **tác động** (mất tiền, mất dữ liệu, ảnh hưởng nhiều người dùng) và **deadline cứng** (cuộc họp chiều, cam kết với khách). Sau khi có thứ tự, việc quan trọng của một senior là **giao tiếp lại**: nói rõ với hai người còn lại rằng việc của họ sẽ trễ và trễ bao lâu, để họ kịp điều chỉnh. Đây là tư duy ưu tiên theo giá trị và minh bạch.
+
+### Vì sao các phương án khác sai
+- **Làm việc của khách hàng lớn trước vì khách hàng luôn đúng, hai việc kia để sau**: "khách hàng luôn đúng" không phải là quy tắc kỹ thuật. Một hotfix production đang mất tiền có thể quan trọng hơn một yêu cầu "gấp" nhưng không có deadline thật.
+- **Làm cả ba cùng lúc bằng cách mở nhiều cửa sổ và chuyển qua lại cho nhanh**: đa nhiệm làm tăng thời gian chuyển ngữ cảnh (context switching), dễ sai sót, và không việc nào thực sự xong. Tốn thời gian hơn làm tuần tự.
+- **Chọn việc dễ nhất làm trước để có cảm giác hoàn thành, rồi mới tới việc khó**: ưu tiên theo độ dễ thay vì theo tác động là ngược với nguyên tắc senior. Việc khó/quan trọng bị dồn tới cuối và dễ trễ.
+
+> Senior tip: khi bị quá tải, đừng hỏi "việc nào gấp nhất" mà hỏi "việc nào có tác động lớn nhất nếu không làm". Sau đó luôn báo lại cho các bên liên quan — im lặng mới là thứ giết chết niềm tin.`
+},
+{
+  id: 'qz-behavioral-021',
+  topic: 'behavioral',
+  q: 'Một reviewer để lại bình luận code review rất khó chịu: "Đoạn này viết cẩu thả, ai cho merge cũng được à?". Bạn thấy bị xúc phạm. Cách phản hồi tốt nhất là gì?',
+  options: [
+    'Trả lời lại gay gắt để bảo vệ mình và chỉ ra lỗi của reviewer.',
+    'Im lặng, merge luôn cho xong để tránh cãi nhau.',
+    'Tách cảm xúc khỏi nội dung: hỏi lại cụ thể chỗ nào chưa ổn (đúng/sai, thiếu test, hiệu năng), cảm ơn góp ý, sửa phần hợp lý và giải thích ngắn phần bạn cho là có lý do.',
+    'Báo cáo reviewer với lead vì đã dùng lời lẽ thiếu tôn trọng.'
+  ],
+  answer: 2,
+  explain: `**Đáp án đúng: Tách cảm xúc khỏi nội dung: hỏi lại cụ thể chỗ nào chưa ổn (đúng/sai, thiếu test, hiệu năng), cảm ơn góp ý, sửa phần hợp lý và giải thích ngắn phần bạn cho là có lý do.**
+
+### Vì sao đúng
+Bình luận khó chịu thường trộn **cảm xúc** (giọng điệu) với **thông tin kỹ thuật** (chỗ code sai). Phản ứng trưởng thành là bỏ qua phần cảm xúc, chỉ xử lý phần thông tin: hỏi lại cho rõ vấn đề kỹ thuật là gì, cảm ơn vì đã chỉ ra, sửa những gì hợp lý và giải thích ngắn gọn khi bạn có lý do chính đáng. Cách này giữ quan hệ làm việc, giữ tiến độ, và cho thấy bạn không để cái tôi xen vào công việc — đúng tầm senior.
+
+### Vì sao các phương án khác sai
+- **Trả lời lại gay gắt để bảo vệ mình và chỉ ra lỗi của reviewer**: biến review kỹ thuật thành xung đột cá nhân, làm hỏng quan hệ và kéo cả team vào căng thẳng. Không giải quyết được vấn đề code.
+- **Im lặng, merge luôn cho xong để tránh cãi nhau**: merge một đoạn code có vấn đề chỉ vì né tránh là đánh đổi chất lượng lấy sự im lặng. Lỗi sẽ quay lại gây sự cố, và reviewer mất niềm tin.
+- **Báo cáo reviewer với lead vì đã dùng lời lẽ thiếu tôn trọng**: leo thang (escalate) ngay từ phản hồi đầu tiên là phản ứng thái quá. Nếu lời lẽ lặp lại nhiều lần mới là vấn đề quy trình, nhưng ở tình huống này bước đầu tiên phải là trao đổi trực tiếp.
+
+> Senior tip: quy tắc "hard on the problem, soft on the person". Khi đọc bình luận khó chịu, hít một nhịp rồi chỉ trả lời phần kỹ thuật. Nếu giọng điệu lặp lại, mới nói riêng với reviewer về cách góp ý.`
+},
+{
+  id: 'qz-behavioral-022',
+  topic: 'behavioral',
+  multi: true,
+  q: 'Một bạn junior mới vào team và bạn được giao kèm cặp. Trong tuần đầu, đâu là 2 việc nên làm? (Chọn 2)',
+  options: [
+    'Dành 30 phút đầu ngày hỏi bạn ấy đang vướng gì, và chuẩn bị sẵn môi trường dev cùng tài liệu chạy dự án.',
+    'Giao ngay một task khó để bạn ấy "học nhanh" một mình.',
+    'Đặt kỳ vọng rõ ràng cho tuần đầu (mục tiêu nhỏ, ai hỗ trợ phần nào) và cho phản hồi ngắn, cụ thể hằng ngày.',
+    'Để bạn ấy tự đọc toàn bộ codebase trong một tuần rồi mới hỏi.'
+  ],
+  answer: [0, 2],
+  explain: `**Đáp án đúng: (0) Dành 30 phút đầu ngày hỏi bạn ấy đang vướng gì, và chuẩn bị sẵn môi trường dev cùng tài liệu chạy dự án. (2) Đặt kỳ vọng rõ ràng cho tuần đầu và cho phản hồi ngắn, cụ thể hằng ngày.**
+
+### Vì sao đúng
+Onboard tốt = giảm ma sát + đặt kỳ vọng. Chuẩn bị sẵn môi trường và tài liệu giúp người mới không mất cả tuần chỉ để cài đặt; hỏi vướng mắc mỗi ngày giúp bạn phát hiện sớm chỗ họ kẹt. Đặt kỳ vọng rõ ràng (mục tiêu nhỏ, ai hỗ trợ gì) và phản hồi hằng ngày giúp họ tiến bộ nhanh và không đoán mò. Đây là cách một senior đỡ đần người mới mà không làm thay.
+
+### Vì sao các phương án khác sai
+- **Giao ngay một task khó để bạn ấy "học nhanh" một mình**: người mới chưa hiểu domain và codebase, task khó dễ khiến họ bế tắc, mất động lực, và tạo ấn tượng team không hỗ trợ.
+- **Để bạn ấy tự đọc toàn bộ codebase trong một tuần rồi mới hỏi**: codebase lớn, đọc một mình không có định hướng dễ nản và không ra kết quả. Thiếu tương tác thì bạn không biết họ hiểu đúng hay sai.
+
+> Senior tip: đo lường onboard bằng "thời gian tới commit đầu tiên" (time-to-first-commit). Người mới có commit nhỏ trong vài ngày đầu thường gắn bó và tin team hơn hẳn người bị bỏ tự bơi.`
+},
+{
+  id: 'qz-behavioral-023',
+  topic: 'behavioral',
+  q: 'Bạn phát hiện một lỗi mình vừa deploy có thể gây sai số liệu trong báo cáo, nhưng hiện chưa ai phàn nàn, và sửa ngay thì phải thông báo cho cả team. Cách xử lý tốt nhất là gì?',
+  options: [
+    'Âm thầm sửa và deploy lại, không nói gì vì chưa ai biết, tránh làm mọi người lo.',
+    'Chờ xem có ai báo lỗi không, nếu vài ngày không sao thì thôi.',
+    'Nói rằng dữ liệu đầu vào sai để không bị quy trách nhiệm.',
+    'Chủ động báo ngay cho team và lead về khả năng sai số liệu, mức ảnh hưởng và phương án sửa; minh bạch để team quyết định có cần thông báo khách hàng không.'
+  ],
+  answer: 3,
+  explain: `**Đáp án đúng: Chủ động báo ngay cho team và lead về khả năng sai số liệu, mức ảnh hưởng và phương án sửa; minh bạch để team quyết định có cần thông báo khách hàng không.**
+
+### Vì sao đúng
+"Chưa ai phàn nàn" không có nghĩa là "không có lỗi" — có thể chỉ là chưa ai phát hiện. Với senior, minh bạch (transparency) là mặc định: báo sớm cho team, nêu rõ mức ảnh hưởng (số liệu nào sai, từ khi nào) và phương án sửa. Việc có thông báo khách hàng hay không là quyết định của team/lead dựa trên mức độ, không phải một mình bạn giấu. Báo sớm giữ được niềm tin và giảm thiệt hại.
+
+### Vì sao các phương án khác sai
+- **Âm thầm sửa và deploy lại, không nói gì vì chưa ai biết, tránh làm mọi người lo**: giấu lỗi là hành vi nguy hiểm nhất. Nếu sau này phát hiện, niềm tin mất vĩnh viễn; và nếu số liệu đã ra ngoài thì việc im lặng làm thiệt hại lan rộng.
+- **Chờ xem có ai báo lỗi không, nếu vài ngày không sao thì thôi**: "chờ" là để lỗi tự phơi bày. Số liệu sai có thể đã được dùng để ra quyết định kinh doanh, và bạn đã bỏ lỡ cơ hội sửa sớm.
+- **Nói rằng dữ liệu đầu vào sai để không bị quy trách nhiệm**: đổ lỗi (deflection) là tín hiệu rất xấu trong phỏng vấn. Sự cố do code mình gây ra thì phải sở hữu, không đẩy sang nguyên nhân khác.
+
+> Senior tip: trong phỏng vấn, "tôi phát hiện và báo ngay dù chưa ai biết" là câu trả lời ăn điểm về đạo đức nghề nghiệp. Người không dám nhận lỗi im lặng thường là người gây sự cố lớn hơn về sau.`
+},
+{
+  id: 'qz-behavioral-024',
+  topic: 'behavioral',
+  q: 'Giữa sprint, một stakeholder xin thêm một tính năng "nhỏ, chỉ mất 5 phút" nhưng thực tế phải đụng vào nhiều module. Cách xử lý tốt nhất là gì?',
+  options: [
+    'Nhận làm ngay vì "nhỏ", cố nhét vào sprint hiện tại.',
+    'Cảm ơn và ghi nhận yêu cầu, giải thích chi phí thực (các module bị ảnh hưởng, rủi ro trễ), rồi đề xuất đưa vào sprint sau hoặc đổi lấy một việc khác ra khỏi sprint.',
+    'Từ chối thẳng vì đã hết phạm vi sprint, không bàn thêm.',
+    'Làm lén ngoài giờ để không ảnh hưởng sprint.'
+  ],
+  answer: 1,
+  explain: `**Đáp án đúng: Cảm ơn và ghi nhận yêu cầu, giải thích chi phí thực (các module bị ảnh hưởng, rủi ro trễ), rồi đề xuất đưa vào sprint sau hoặc đổi lấy một việc khác ra khỏi sprint.**
+
+### Vì sao đúng
+"Chỉ 5 phút" là ước lượng của người yêu cầu, không phải của người làm. Senior không nhận rồi mới phát hiện tốn 3 ngày; họ làm rõ chi phí thực và đưa ra lựa chọn có trade-off: hoãn sang sprint sau, hoặc đổi (swap) một việc khác ra. Nguyên tắc là sprint scope là cam kết — thêm việc mới thì phải bớt việc cũ, chứ không phải nhồi thêm. Cách này tôn trọng cả yêu cầu lẫn kế hoạch.
+
+### Vì sao các phương án khác sai
+- **Nhận làm ngay vì "nhỏ", cố nhét vào sprint hiện tại**: nhồi thêm việc vào sprint đã cam kết là công thức gây trễ. "Nhỏ" theo cảm nhận thường là "lớn" theo thực tế khi đụng nhiều module.
+- **Từ chối thẳng vì đã hết phạm vi sprint, không bàn thêm**: từ chối cứng nhắc không đưa ra giải pháp, khiến stakeholder thấy bạn không hợp tác. Đúng ra phải đề xuất phương án thay thế.
+- **Làm lén ngoài giờ để không ảnh hưởng sprint**: làm ngoài giờ che giấu khối lượng thật, dễ gây burnout, và không ai biết để đánh giá lại capacity. Đây là "hero mode" trá hình.
+
+> Senior tip: luôn yêu cầu "đổi một việc ra" khi thêm việc vào sprint. Câu thần thánh: "Được, để nhét việc này vào thì mình bỏ việc X ra, bạn chọn giúp mình nhé" — biến quyết định scope thành quyết định của người yêu cầu.`
+},
+{
+  id: 'qz-behavioral-025',
+  topic: 'behavioral',
+  multi: true,
+  q: 'Bạn vừa gây ra một sự cố production đang ảnh hưởng người dùng. Trong lúc xử lý, đâu là 2 việc nên làm? (Chọn 2)',
+  options: [
+    'Xóa log và commit để không ai lần ra lỗi của bạn.',
+    'Ưu tiên khôi phục dịch vụ trước (rollback hoặc tắt tính năng lỗi), rồi mới tìm nguyên nhân gốc.',
+    'Tự ý sửa nhiều thứ cùng lúc trên production để nhanh khỏi lỗi.',
+    'Cập nhật trạng thái cho team và các bên liên quan theo mốc thời gian, kể cả khi chưa fix xong.'
+  ],
+  answer: [1, 3],
+  explain: `**Đáp án đúng: (1) Ưu tiên khôi phục dịch vụ trước (rollback hoặc tắt tính năng lỗi), rồi mới tìm nguyên nhân gốc. (3) Cập nhật trạng thái cho team và các bên liên quan theo mốc thời gian, kể cả khi chưa fix xong.**
+
+### Vì sao đúng
+Trong sự cố, mục tiêu số một là **giảm thời gian người dùng chịu ảnh hưởng** (reduce MTTR), nên rollback hoặc tắt tính năng lỗi (mitigate) được ưu tiên hơn tìm nguyên nhân gốc (root cause) — sửa gốc làm sau khi dịch vụ đã ổn. Song song, **giao tiếp theo mốc thời gian** (timeline updates) giúp team và các bên không hoang mang và biết khi nào có thông tin mới. Đây là quy trình incident response chuẩn.
+
+### Vì sao các phương án khác sai
+- **Xóa log và commit để không ai lần ra lỗi của bạn**: tiêu hủy bằng chứng là hành vi nghiêm trọng nhất, vi phạm đạo đức nghề nghiệp và có thể vi phạm quy định pháp lý/kiểm toán. Không bao giờ làm.
+- **Tự ý sửa nhiều thứ cùng lúc trên production để nhanh khỏi lỗi**: thay đổi nhiều thứ cùng lúc khi đang cháy làm bạn không biết cái gì thực sự fix được, dễ gây thêm sự cố mới. Phải đổi từng thứ một và quan sát.
+
+> Senior tip: khôi phục trước, điều tra sau. Câu nói của SRE: "Mitigation first, root cause later". Và trong lúc sự cố, một dòng cập nhật mỗi 15 phút giá trị hơn cả một câu trả lời hoàn hảo im lặng suốt một tiếng.`
+},
+{
+  id: 'qz-behavioral-026',
+  topic: 'behavioral',
+  q: 'Bạn review code của một đồng nghiệp và thấy nhiều vấn đề. Cách viết bình luận review tốt nhất là gì?',
+  options: [
+    'Viết "Code này tệ, làm lại đi" cho nhanh và dứt khoát.',
+    'Không bình luận gì, tự sửa hết rồi merge để khỏi mất thời gian.',
+    'Nêu vấn đề kèm lý do và gợi ý cụ thể (ví dụ chỗ này dễ NullPointer, nên dùng Optional hoặc kiểm tra null), phân loại "chặn merge" và "nên cải thiện", giữ giọng tôn trọng.',
+    'Thu hồi quyền merge của đồng nghiệp đó.'
+  ],
+  answer: 2,
+  explain: `**Đáp án đúng: Nêu vấn đề kèm lý do và gợi ý cụ thể (ví dụ chỗ này dễ NullPointer, nên dùng Optional hoặc kiểm tra null), phân loại "chặn merge" và "nên cải thiện", giữ giọng tôn trọng.**
+
+### Vì sao đúng
+Review tốt là review **cụ thể, có lý do, và có gợi ý**: nói rõ chỗ nào sai, vì sao sai (NullPointer, race condition…), và hướng sửa. Phân loại mức độ ("chặn merge" so với "nên cải thiện") giúp tác giả biết đâu là bắt buộc, đâu là nice-to-have. Giọng tôn trọng giữ quan hệ. Người viết học được nhiều nhất từ review kiểu này — đó là mục tiêu thật của code review.
+
+### Vì sao các phương án khác sai
+- **Viết "Code này tệ, làm lại đi" cho nhanh và dứt khoát**: nhận xét chung chung, xúc phạm, không chỉ ra vấn đề kỹ thuật nào. Tác giả không biết sửa gì và mất động lực.
+- **Không bình luận gì, tự sửa hết rồi merge để khỏi mất thời gian**: review không phải để bạn viết lại code của người khác. Tác giả không học được gì, và bạn thành nút thắt cổ chai.
+- **Thu hồi quyền merge của đồng nghiệp đó**: hình phạt không tương xứng và vượt thẩm quyền. Vấn đề là chất lượng một PR cụ thể, không phải năng lực con người.
+
+> Senior tip: dùng "blocking" và "non-blocking" rõ ràng, và luôn kèm lý do kỹ thuật. Review sỉ nhục làm người ta giấu code; review tử tế làm người ta muốn code tốt hơn.`
+},
+{
+  id: 'qz-behavioral-027',
+  topic: 'behavioral',
+  multi: true,
+  q: 'Bạn nhận ra mình sẽ trễ deadline một tính năng đã cam kết. Đâu là 2 cách xử lý nên làm? (Chọn 2)',
+  options: [
+    'Báo sớm cho người phụ thuộc kèm tình trạng thực tế và ngày dự kiến mới, thay vì im lặng tới hạn.',
+    'Không nói gì, cố làm thêm giờ và cầu mong kịp.',
+    'Báo trễ vào đúng ngày deadline để không bị đánh giá sớm.',
+    'Đề xuất phương án giảm phạm vi hoặc giao phần dùng được trước, phần còn lại sau.'
+  ],
+  answer: [0, 3],
+  explain: `**Đáp án đúng: (0) Báo sớm cho người phụ thuộc kèm tình trạng thực tế và ngày dự kiến mới, thay vì im lặng tới hạn. (3) Đề xuất phương án giảm phạm vi hoặc giao phần dùng được trước, phần còn lại sau.**
+
+### Vì sao đúng
+Deadline là cam kết, và khi biết sẽ trễ thì **báo sớm** là bắt buộc: tin xấu đến sớm vẫn còn lựa chọn (đổi ngày, cắt phạm vi), tin xấu đến muộn chỉ còn hậu quả. Kèm theo đó là **phương án giảm phạm vi** (cut scope) hoặc giao phần dùng được trước (incremental delivery), để giá trị vẫn về tay người dùng dù chưa đủ 100%. Đây là tư duy quản lý kỳ vọng của senior.
+
+### Vì sao các phương án khác sai
+- **Không nói gì, cố làm thêm giờ và cầu mong kịp**: im lặng làm người phụ thuộc không kịp điều chỉnh kế hoạch của họ; "cầu mong" không phải kế hoạch. Làm thêm giờ kéo dài còn làm chất lượng giảm.
+- **Báo trễ vào đúng ngày deadline để không bị đánh giá sớm**: đây là giấu tin xấu để né đánh giá. Khi sự thật lộ ra, mất niềm tin còn nặng hơn việc trễ. Đánh giá dựa trên cách bạn xử lý khủng hoảng, không phải việc bạn có tin xấu.
+
+> Senior tip: công thức báo trễ: "Tôi đang trễ, nguyên nhân là X, ngày mới là Y, và đây là cách tôi đảm bảo không lặp lại". Người báo sớm được coi là đáng tin; người giấu mới là người bị đánh giá thấp.`
+},
+{
+  id: 'qz-behavioral-028',
+  topic: 'behavioral',
+  q: 'Bạn phát hiện một lỗi trong code của đồng nghiệp đã lên production, do một giả định sai của họ. Cách xử lý tốt nhất là gì?',
+  options: [
+    'Trao đổi riêng với đồng nghiệp trước, chỉ ra giả định sai và cách sửa; nếu cần thì cùng viết postmortem tập trung vào quy trình, không quy tội cá nhân.',
+    'Nói to trong group chat để mọi người biết ai gây lỗi.',
+    'Âm thầm sửa, không cho đồng nghiệp biết để tránh họ xấu hổ.',
+    'Để nguyên, chờ chính đồng nghiệp đó tự phát hiện.'
+  ],
+  answer: 0,
+  explain: `**Đáp án đúng: Trao đổi riêng với đồng nghiệp trước, chỉ ra giả định sai và cách sửa; nếu cần thì cùng viết postmortem tập trung vào quy trình, không quy tội cá nhân.**
+
+### Vì sao đúng
+Khi lỗi là của người khác, senior xử lý theo nguyên tắc "blameless" (không quy tội): nói riêng trước để giữ thể diện cho đồng nghiệp, chỉ ra giả định sai một cách cụ thể và cùng sửa. Nếu lỗi nghiêm trọng, postmortem tập trung vào **quy trình** (vì sao giả định sai lọt qua được) chứ không phải vào cá nhân. Cách này vừa sửa được lỗi vừa giữ quan hệ và cải thiện hệ thống.
+
+### Vì sao các phương án khác sai
+- **Nói to trong group chat để mọi người biết ai gây lỗi**: bêu tên công khai là hạ nhục đồng nghiệp, phá hoại an toàn tâm lý (psychological safety) của team. Người bị bêu sẽ giấu lỗi sau này.
+- **Âm thầm sửa, không cho đồng nghiệp biết để tránh họ xấu hổ**: sửa hộ mà không nói khiến đồng nghiệp không học được từ lỗi và có thể lặp lại. Bạn cũng đang ôm bí mật thay vì minh bạch.
+- **Để nguyên, chờ chính đồng nghiệp đó tự phát hiện**: nếu lỗi đang ảnh hưởng production thì chờ đợi là bỏ mặc người dùng chịu thiệt hại. Phát hiện lỗi mà không hành động là thiếu trách nhiệm.
+
+> Senior tip: "praise in public, criticize in private". Và khi viết postmortem, hỏi "quy trình nào để lỗi này lọt qua" thay vì "ai làm sai" — đó là tư duy senior phân biệt người trưởng thành với người chỉ giỏi kỹ thuật.`
+},
+{
+  id: 'qz-behavioral-029',
+  topic: 'behavioral',
+  q: '4 giờ chiều thứ Sáu, một quản lý (không phải kỹ thuật) yêu cầu deploy gấp một thay đổi lớn lên production "để kịp cuối tuần", bỏ qua quy trình test. Cách phản hồi tốt nhất là gì?',
+  options: [
+    'Deploy ngay vì quản lý đã yêu cầu, trách nhiệm thuộc về họ.',
+    'Từ chối thẳng và nói quy trình là bất di bất dịch.',
+    'Deploy một nửa rồi xem sao.',
+    'Nêu rủi ro cụ thể (deploy cuối tuần thiếu người trực, thay đổi lớn chưa test dễ gây sự cố kéo dài), đề xuất phương án an toàn hơn: deploy sáng thứ Hai, hoặc nếu bắt buộc thì có người trực và kế hoạch rollback.'
+  ],
+  answer: 3,
+  explain: `**Đáp án đúng: Nêu rủi ro cụ thể (deploy cuối tuần thiếu người trực, thay đổi lớn chưa test dễ gây sự cố kéo dài), đề xuất phương án an toàn hơn: deploy sáng thứ Hai, hoặc nếu bắt buộc thì có người trực và kế hoạch rollback.**
+
+### Vì sao đúng
+Đây là tình huống "push back" (phản biện) có cấu trúc: không nói "không" suông, mà nêu **rủi ro cụ thể** (cuối tuần thiếu người trực, thay đổi lớn chưa test) và đưa **phương án an toàn hơn** (deploy thứ Hai, hoặc nếu bắt buộc thì phải có người trực và kế hoạch rollback). Người quản lý ra quyết định dựa trên rủi ro bạn nêu, còn bạn giữ được trách nhiệm kỹ thuật. Đây là cách senior bảo vệ production mà vẫn hợp tác.
+
+### Vì sao các phương án khác sai
+- **Deploy ngay vì quản lý đã yêu cầu, trách nhiệm thuộc về họ**: "trách nhiệm thuộc về họ" là đẩy rủi ro. Nếu sự cố xảy ra, người chịu hậu quả là người dùng và team, không phải câu nói đó. Senior không deploy thứ Sáu chiều một thay đổi lớn chưa test.
+- **Từ chối thẳng và nói quy trình là bất di bất dịch**: từ chối cứng nhắc không đưa ra giải pháp, khiến bạn trông như người cản trở. Đúng ra phải đề xuất cách làm an toàn hơn.
+- **Deploy một nửa rồi xem sao**: "xem sao" trên production là đánh cược. Deploy một nửa thay đổi lớn dễ gây trạng thái không nhất quán (inconsistent state) còn tệ hơn không deploy.
+
+> Senior tip: quy tắc "no Friday deploys" tồn tại vì lý do: cuối tuần thiếu người trực, sự cố kéo dài. Khi bị ép, hãy nêu rủi ro bằng số liệu và luôn kèm phương án thay thế — người phản biện giỏi là người đưa ra lựa chọn, không phải người nói "không".`
 }
  
 );
