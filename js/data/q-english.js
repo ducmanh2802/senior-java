@@ -13312,5 +13312,168 @@ In one project, the order history page had a p99 latency of two point four secon
   follow: ['How do you find the bottleneck before optimizing?', 'What is the risk of adding too many indexes?', 'How do you validate a performance fix in production?'],
   tags: ['performance', 'database', 'star'],
   lang: 'en'
+},
+{
+  id: 'english-259',
+  topic: 'english',
+  level: 'senior',
+  q: 'Walk me through a digital channel feature you built end to end, from requirement to production.',
+  a: `**Tóm tắt:** Kênh số bảo hiểm (đăng ký online + báo giá + thanh toán) với Spring Boot + React, tích hợp Core Insurance/Payment/CRM, số liệu trước/sau.
+
+### Cấu trúc STAR
+- **Situation**: kênh Web/Mobile cho bảo hiểm, đăng ký online 3 bước, SLA 2s.
+- **Task**: thêm luồng báo giá + nộp hồ sơ + thanh toán end-to-end.
+- **Action**: REST API, React wizard, tích hợp Core/Payment/CRM, observability.
+- **Result**: conversion +18%, p99 2.1s -> 320ms, zero downtime.
+
+### Luồng nhiều bên
+~~~seq
+title: Luồng đăng ký online
+actors: User | React | Spring Boot | Core Insurance | Payment | CRM
+User -> React: điền form 3 bước
+React -> Spring Boot: POST /quotes
+Spring Boot -> Spring Boot: validate + rate limit
+Spring Boot -> Core Insurance: tính phí
+Core Insurance --> Spring Boot: premium
+Spring Boot -> Payment: create session
+Payment --> Spring Boot: payUrl
+Spring Boot --> React: 201 + payUrl
+React -> User: redirect thanh toán
+Payment -> Spring Boot: webhook PAID
+Spring Boot -> CRM: sync customer
+~~~
+
+### Vì sao chia bước
+Mỗi bước fail độc lập; idempotency key tránh duplicate payment khi retry.
+
+### Pitfall production
+- Webhook đến trước response redirect -> race; dùng outbox + dedup.
+- Không log correlation id -> khó trace.
+- Frontend state mất khi refresh -> persist draft server-side.
+
+### Ví dụ đời thực
+Insurance enrollment 12k registrations/day, peak 400/min. Redis draft TTL 30 phút, outbox cho CRM sync, circuit breaker cho Core Insurance. Error rate 0.3% -> 0.02%.
+
+### Trả lời mẫu khi phỏng vấn
+I led a digital channel feature for an insurance platform: online registration, quoting, document submission, and payment. The stack was Spring Boot 3 on the backend and React on the frontend, integrated with Core Insurance for premium calculation, a payment gateway, and CRM. I started by agreeing the contract: REST endpoints with OpenAPI, and a React wizard with three steps and server-side draft persistence so a refresh did not lose data. For reliability, each external call used a Resilience4j circuit breaker with a timeout, and I added an idempotency key on payment creation so retries never double-charged. For cross-service consistency I used the outbox pattern: write the event in the same transaction as the business data, then a relay publishes to Kafka. Observability meant correlation id in every log and trace, plus dashboards for conversion and p99. After launch, conversion rose eighteen percent, p99 dropped from two point one seconds to three hundred and twenty milliseconds, and we had zero downtime deploys. The main lesson: agree contracts and observability first, then code.
+
+> Senior tip: In JD interviews, always mention integration points (Core, Payment, CRM) and compliance; it signals domain awareness.
+`,
+  follow: ['How did you handle idempotency in payments?', 'What would you change if traffic grew 10x?', 'How did you test the integration?'],
+  tags: ['jd-2026-12', 'fullstack', 'insurance'],
+  lang: 'en'
+},
+{
+  id: 'english-260',
+  topic: 'english',
+  level: 'senior',
+  q: 'How would you explain a technical trade-off to a non-technical insurance product owner?',
+  a: `**Tóm tắt:** Khung 4 phần: vấn đề business, 2 lựa chọn với chi phí/thời gian/rủi ro, khuyến nghị, quyết định PO.
+
+### Khung trả lời
+1. **Vấn đề**: "We need faster quote response under 1s."
+2. **Lựa chọn A/B**: synchronous call vs async + cache; bảng trade-off.
+3. **Khuyến nghị**: chọn B vì SLA và scale.
+4. **Quyết định PO**: budget/độ phức tạp.
+
+### Bảng trade-off
+| Tiêu chí | Sync call | Async + cache |
+|---|---|---|
+| Latency | 800ms | 120ms |
+| Complexity | thấp | trung bình |
+| Stale risk | không | 5 phút |
+| Cost | thấp | +Redis |
+
+### Vì sao dùng ngôn ngữ business
+PO quan tâm revenue, risk, time-to-market; tránh jargon như "thread pool starvation".
+
+### Pitfall production
+- Hứa SLA không đo được.
+- Chọn cache mà không định nghĩa invalidation -> stale quote -> compliance issue.
+- Không ghi quyết định -> tranh cãi sau.
+
+### Ví dụ đời thực
+Quote engine: sync call Core Insurance p99 1.2s vượt SLA. Đề xuất async pre-compute cho sản phẩm phổ biến + cache 5 phút. PO đồng ý sau A/B test conversion +9%.
+
+### Trả lời mẫu khi phỏng vấn
+I would start with the business goal, not the technology. First, state the problem in business terms: quotes currently take one point two seconds, and our target is under one second because conversion drops after eight hundred milliseconds. Then I present two options with a simple table: option A keeps a synchronous call to the core system, low complexity but one point two seconds and a risk of timeouts in peak; option B pre-computes common quotes and caches them for five minutes, one hundred and twenty milliseconds but a small risk of a stale price and extra infrastructure cost. I recommend option B because the SLA and conversion matter more than the added complexity, and the stale risk is bounded by a short TTL and a refresh on price change. Finally, I ask the product owner to decide on the accepted stale window and budget, and I document the decision and the review date. I avoid jargon and always tie back to revenue, risk, and time to market.
+
+> Senior tip: Always bring a decision table and a review date; POs trust measurable trade-offs more than opinions.
+`,
+  follow: ['How do you handle a PO who disagrees?', 'What metrics prove the trade-off worked?', 'How do you document the decision?'],
+  tags: ['jd-2026-12', 'communication', 'tradeoff'],
+  lang: 'en'
+},
+{
+  id: 'english-261',
+  topic: 'english',
+  level: 'mid',
+  q: 'Tell me about a time you worked with a team in another country or time zone. What went wrong and what did you change?',
+  a: `**Tóm tắt:** STAR về làm việc với team Hàn Quốc: lệch múi giờ, hiểu sai requirement qua email, cách sửa overlap + spec + demo.
+
+### Cấu trúc STAR
+- **Situation**: team 4 dev VN + 2 BA Hàn Quốc, chênh 2 giờ.
+- **Task**: deliver module thanh toán đúng spec.
+- **Action**: overlap 1 giờ, spec written, demo hàng tuần.
+- **Result**: giảm rework 60%, giao đúng hạn.
+
+### Vì sao email không đủ
+Email thiếu ngữ cảnh; BA và dev hiểu khác nhau về "thanh toán một phần"; demo sớm phát hiện sai.
+
+### Pitfall production
+- Không chốt definition of done -> scope creep.
+- Không ghi quyết định -> tranh cãi.
+- Overlap giờ làm việc quá dài -> burnout.
+
+### Ví dụ đời thực
+Payment module: BA gửi email "support partial payment" nhưng ý là "pay by installment"; dev làm partial refund. Phát hiện ở demo tuần 2. Sau đó dùng spec 1 trang + acceptance criteria + demo 15 phút/tuần. Rework giảm từ 3 sprint xuống 1.
+
+### Trả lời mẫu khi phỏng vấn
+In a project with a Korean BA team two hours ahead, we communicated mainly by email. A requirement said "support partial payment," and our team understood it as partial refund, while the BA meant installment payments. We discovered the mismatch only at the demo two weeks later, and we had to redo a sprint. After that, I proposed three changes: a one-page written spec with explicit acceptance criteria before coding, a fixed one-hour overlap every day for quick questions, and a fifteen-minute weekly demo with the BA. Rework dropped by about sixty percent and we shipped on time. The lesson I took is that written specs plus frequent small demos beat long email threads across time zones.
+
+> Senior tip: Always propose a process change after a failure; interviewers value learning, not perfection.
+`,
+  follow: ['How do you handle language barriers?', 'What tools help async collaboration?', 'How do you build trust remotely?'],
+  tags: ['jd-2026-12', 'remote', 'teamwork'],
+  lang: 'en'
+},
+{
+  id: 'english-262',
+  topic: 'english',
+  level: 'senior',
+  q: 'A production payment issue happens during a global team meeting. How do you report it in English?',
+  a: `**Tóm tắt:** Báo cáo sự cố ngắn theo khung BLUF: impact, timeline, đã làm gì, next steps, ETA.
+
+### Khung báo cáo (BLUF)
+1. **Impact**: bao nhiêu user, tiền, region.
+2. **Timeline**: khi nào bắt đầu, phát hiện.
+3. **Actions taken**: rollback, mitigation.
+4. **Next steps + ETA**.
+
+### Mẫu câu
+- "We have a payment issue affecting about three percent of transactions in VN since 14:02."
+- "Impact: roughly 120 failed payments, no data loss."
+- "We rolled back to version 1.4.2 at 14:18; error rate is back to baseline."
+- "Next: RCA by EOD, postmortem tomorrow 10am."
+
+### Vì sao BLUF
+Người khác cần quyết định nhanh; chi tiết kỹ thuật đưa sau.
+
+### Pitfall production
+- Báo cáo muộn -> escalation.
+- Nói "everything is fine" khi chưa verify.
+- Không nêu owner/ETA -> không ai hành động.
+
+### Ví dụ đời thực
+Payment webhook duplicate: 120 giao dịch bị charge 2 lần. Báo cáo trong 3 phút: impact 0.3% users, đã disable webhook consumer, refund script chạy, ETA RCA 2 giờ. Kết quả: không escalate lên C-level.
+
+### Trả lời mẫu khi phỏng vấn
+I would open with impact, not technical detail. First line: "We have a payment issue affecting about three percent of transactions in Vietnam since fourteen oh two; roughly one hundred and twenty failed payments, no data loss." Then timeline: detected at fourteen oh five via alert, root cause suspected duplicate webhook. Actions taken: we disabled the webhook consumer at fourteen ten and started a refund script; error rate is back to baseline. Next steps: RCA by end of day, postmortem tomorrow at ten, and a fix with idempotency check deployed after review. I would keep it under thirty seconds, use numbers, and avoid jargon. If asked, I then go deeper into the technical cause. The goal is to give leaders enough to decide whether to escalate, while keeping the team focused on mitigation.
+
+> Senior tip: In global calls, lead with impact and ETA; technical detail comes only when asked.
+`,
+  follow: ['How do you escalate an incident?', 'What do you say if you do not know the root cause yet?', 'How do you write the postmortem?'],
+  tags: ['jd-2026-12', 'incident', 'communication'],
+  lang: 'en'
 }
 );
