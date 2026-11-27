@@ -7544,4 +7544,645 @@ Bắt đầu bằng Claude Code cơ bản: viết CLAUDE.md mô tả repo, dùng
       ],
     },
   },
+  {
+    id: 'proj-commodity-exchange', title: 'Sàn giao dịch hợp đồng tương lai hàng hoá mini (order book + khớp lệnh + FIX)', level: 'lead', weeks: 12,
+    skills: ['Java 21', 'Spring Boot 3', 'QuickFIX/J (FIX 4.4)', 'PostgreSQL', 'Kafka', 'WebSocket', 'Redis', 'Hazelcast', 'JMH', 'Docker Compose', 'Testcontainers', 'Micrometer/Prometheus'],
+    business: {
+      intro: `**Tóm tắt:** Hợp đồng tương lai (futures) là một thoả thuận mua/bán một lượng hàng hoá ở **một mức giá chốt hôm nay**, nhưng **giao vào một ngày trong tương lai** (tháng đáo hạn). Ví dụ một hợp đồng ngô CBOT (Sở giao dịch Chicago) = 5.000 bushel (thùng đo lường nông sản), bước giá (tick size) 1/4 cent/bushel, tương đương 12,50 USD mỗi bước giá. Người mua không cần có 5.000 bushel ngay: họ chỉ đặt cọc một khoản **ký quỹ** nhỏ, còn lãi/lỗ được tính và thanh toán **mỗi ngày** theo giá thị trường.
+
+### Vì sao phải có hợp đồng tương lai?
+Nông dân trồng ngô muốn chắc chắn bán được giá 4,20 USD/bushel sau 3 tháng để yên tâm sản xuất. Nhà máy thức ăn gia súc muốn chắc chắn mua được giá đó để tính giá thành. Hai bên ký hợp đồng tương lai: nông dân **bán khống** (short), nhà máy **mua** (long). Nếu đến hạn giá lên 5,00, nông dân vẫn bán 4,20 (lỗ 0,80 nhưng đã chốt kế hoạch), nhà máy mua 4,20 (lãi 0,80). Ai cũng đổi "rủi ro giá" lấy "sự chắc chắn". Thị trường futures vì thế là nơi **chuyển rủi ro** từ người ghét rủi ro sang người chấp nhận rủi ro để kiếm lời.
+
+### Ba khái niệm tiền bạc người mới hay nhầm
+1. **Ký quỹ ban đầu (initial margin):** tiền đặt cọc để mở vị thế, ví dụ khoảng 1.000–1.500 USD/hợp đồng (thay đổi theo sàn và biến động giá; đây là số minh hoạ, phải kiểm tra contract spec của sàn). Không phải tiền mua hàng, chỉ là "tiền thế chân".
+2. **Mark-to-market (định giá lại theo thị trường):** cuối mỗi ngày, sàn tính lại lãi/lỗ của bạn theo **giá thanh toán (settlement price)** trong ngày. Lãi được cộng vào tài khoản, lỗ bị trừ. Đây là lý do futures "thanh toán mỗi ngày" chứ không đợi đến hạn.
+3. **Ký quỹ duy trì (maintenance margin) và margin call:** nếu lỗ làm số dư tụt xuống dưới mức duy trì (thường thấp hơn mức ban đầu), sàn gọi **margin call** yêu cầu nạp thêm để về mức ban đầu. Không nạp kịp → **thanh lý cưỡng bức (forced liquidation)**: sàn tự đóng vị thế của bạn ở giá thị trường.
+
+### Một ví dụ bằng số (hợp đồng ngô, 1 hợp đồng = 5.000 bushel)
+- Bạn mua (long) 2 hợp đồng ở 4,20 USD/bushel. Giá trị hợp đồng = 2 x 5.000 x 4,20 = 42.000 USD, nhưng bạn chỉ cần ký quỹ ~2.000–3.000 USD.
+- Cuối ngày giá thanh toán 4,25 (tăng 0,05 = 5 cent = 20 tick). Lãi = 2 x 5.000 x 0,05 = **+500 USD** cộng vào tài khoản.
+- Hôm sau giá về 4,15 (giảm 0,10 so với hôm trước). Lỗ = 2 x 5.000 x 0,10 = **-1.000 USD**. Nếu số dư tụt dưới mức duy trì, bạn nhận margin call.
+- Nếu không nạp, sàn đóng 2 hợp đồng ở 4,15: bạn chốt lỗ, không mất nhiều hơn số đã nạp (vì đã thanh lý).
+
+> Senior tip: khi kể dự án này, đừng bắt đầu bằng "tôi làm matching engine". Hãy mở bằng câu chuyện nông dân chốt giá ngô và nhà máy chốt giá thành, rồi mới nói "để làm được thế, hệ thống phải khớp lệnh, tính ký quỹ và phát market data". Interviewer sàn giao dịch đánh giá cao người hiểu nghiệp vụ trước, kỹ thuật sau.
+
+### Vì sao dự án này "chạy được trên laptop"?
+Toàn bộ stack là Docker Compose: PostgreSQL (danh mục, tài khoản, journal), Kafka (market data, sự kiện), Redis (giới hạn tốc độ, cache), và một app Spring Boot. Matching engine là **một luồng Java thuần** trong bộ nhớ, không cần phần cứng đắt tiền. Bạn đo được p99 khớp lệnh bằng JMH ngay trên máy 8 core.`,
+      journeys: [
+        { title: 'Lan mua 2 hợp đồng ngô tháng 12 qua REST, khớp một phần rồi bị margin call', persona: 'Lan, nhà đầu tư cá nhân, nạp 5.000 USD, muốn mua 2 hợp đồng ngô (mỗi hợp đồng 5.000 bushel) giá 4,20 USD/bushel.',
+          steps: [
+            { icon: '📋', screen: 'Chọn hợp đồng', text: 'Lan mở danh mục, thấy mã NGZ26 (ngô đáo hạn tháng 12/2026), bước giá 0,0025 USD, nhân hệ số 5.000 bushel, biên độ giá ±5%. Đây là **contract spec**: luật chơi của riêng hợp đồng này.' },
+            { icon: '🖱️', screen: 'Đặt lệnh mua', text: 'Lan đặt lệnh **limit** mua 2 hợp đồng giá 4,20. App gửi qua REST kèm **Idempotency-Key** để nếu mạng chập chờn gửi lại cũng không đặt hai lần.' },
+            { icon: '⚙️', screen: 'Matching engine', text: 'Trong sổ lệnh, có người bán 1 hợp đồng giá 4,20 → khớp ngay 1. Lệnh của Lan còn 1 hợp đồng **treo** ở 4,20 chờ người bán khác. Lan nhận ExecutionReport: khớp 1, còn 1 mở (open).' },
+            { icon: '📉', screen: 'Cuối ngày, mark-to-market', text: 'Giá thanh toán về 4,15. Lỗ 2 x 5.000 x 0,05 = 500 USD bị trừ vào tài khoản Lan. Số dư từ 5.000 còn 4.500 USD.' },
+            { icon: '🚨', screen: 'Margin call', text: 'Hôm sau giá còn 4,05, lỗ thêm 1.000 USD. Số dư 3.500 tụt dưới **ký quỹ duy trì** → hệ thống phát margin call, yêu cầu nạp thêm 1.500 USD về mức ban đầu.' },
+            { icon: '🏦', screen: 'Nạp thêm hoặc bị thanh lý', text: 'Lan nạp thêm 1.500 USD → vị thế giữ nguyên. Nếu Lan không nạp trong 30 phút, hệ thống **thanh lý cưỡng bức** 2 hợp đồng ở giá thị trường 4,05, chốt lỗ, đóng vị thế.' },
+          ] },
+        { title: 'Công ty môi giới gửi lệnh qua FIX 4.4 và nhận ExecutionReport', persona: 'Hệ thống của công ty môi giới (broker) nối vào sàn bằng giao thức FIX 4.4, thay cho REST.',
+          steps: [
+            { icon: '🔌', screen: 'Kết nối FIX', text: 'Broker mở phiên FIX (TCP, tag 8=FIX.4.4), gửi Logon. Sàn trả Logon, hai bên đồng bộ **sequence number** (số thứ tự tin nhắn) để không mất/lặp.' },
+            { icon: '📤', screen: 'NewOrderSingle', text: 'Broker gửi NewOrderSingle (tag 35=D): ClOrdID, mã hợp đồng, side (1=mua, 2=bán), qty, loại lệnh, giá. Đây là "đặt lệnh" phiên bản FIX.' },
+            { icon: '🧾', screen: 'ExecutionReport', text: 'Sàn trả ExecutionReport (35=8) với OrdStatus: 0=NEW (đã nhận), 1=PARTIAL (khớp một phần), 2=FILLED (khớp hết). Mỗi lần khớp sinh một ExecutionReport kèm giá và số lượng khớp.' },
+            { icon: '✏️', screen: 'OrderCancelRequest', text: 'Broker muốn sửa lệnh còn treo: gửi OrderCancelRequest (35=F) thay vì Cancel/Replace lung tung. Sàn trả ExecutionReport xác nhận đã huỷ (OrdStatus=4=CANCELED).' },
+            { icon: '🔁', screen: 'Lệch sequence', text: 'Nếu broker gửi seq 42 nhưng sàn đang chờ 41, sàn gửi ResendRequest (35=2). Broker gửi lại từ 41. Cơ chế này đảm bảo không mất lệnh, không xử lý trùng.' },
+          ] },
+        { title: 'Vận hành theo dõi market data và đối soát cuối ngày', persona: 'Nhân viên risk/vận hành của sàn, dùng dashboard L1/L2 và chạy đối soát sau khi đóng cửa.',
+          steps: [
+            { icon: '📊', screen: 'Bảng giá L1/L2', text: 'Nhân viên xem giá tốt nhất (best bid/ask) và **độ sâu 5 mức** (L2) của NGZ26 cập nhật qua WebSocket mỗi khi có khớp. Cột "open interest" cho biết tổng số hợp đồng đang mở.' },
+            { icon: '🌐', screen: 'Kafka market data', text: 'Cùng lúc, sự kiện khớp được phát lên Kafka để các consumer khác (tính chỉ số, lưu lịch sử, cảnh báo) đọc lại. Kafka đảm bảo thứ tự trong mỗi phân vùng (partition).' },
+            { icon: '🧮', screen: 'Đối soát journal', text: 'Cuối ngày, job đối soát dựng lại toàn bộ trạng thái từ **journal** (nhật ký sự kiện) và so với snapshot trong bộ nhớ: số lệnh, số khớp, số dư tài khoản phải khớp tuyệt đối.' },
+            { icon: '⚠️', screen: 'Phát hiện lệch', text: 'Nếu journal dựng lại ra số dư khác snapshot dù 1 đồng, hệ thống bắn alert kèm mã tài khoản và offset journal để điều tra, không tự sửa.' },
+          ] },
+      ],
+      diagrams: [
+        { title: 'Khớp lệnh single-threaded và phát market data',
+          caption: 'Mũi tên liền là yêu cầu, mũi tên đứt là phản hồi. Matching engine chạy trên **một luồng duy nhất** nên không cần khoá; journal ghi trước khi phát market data để replay được sau crash.',
+          actors: ['Gateway', 'Matching Engine', 'Order Book', 'Journal', 'Market Data'],
+          steps: [
+            { from: 0, to: 1, text: 'NewOrderSingle (limit mua 2 @ 4,20)' },
+            { from: 1, to: 2, text: 'Chèn lệnh vào cây giá–thời gian' },
+            { from: 2, to: 1, text: 'Khớp 1 @ 4,20, còn 1 treo', reply: true },
+            { from: 1, to: 3, text: 'Append NewOrder + ExecutionReport' },
+            { from: 3, to: 1, text: 'offset đã ghi', reply: true },
+            { from: 1, to: 4, text: 'Publish L1/L2 (giá, độ sâu)' },
+            { note: 'Journal là sự thật: state trong RAM dựng lại bằng cách replay từ đầu', over: [1, 3] },
+          ] },
+        { title: 'Phiên FIX 4.4: NewOrderSingle và ExecutionReport',
+          caption: 'Sequence number tăng dần; lệch thì ResendRequest. Mỗi lần khớp sinh một ExecutionReport, không gộp để broker dễ đối soát.',
+          actors: ['Broker', 'FIX Session', 'Engine', 'Journal'],
+          steps: [
+            { from: 0, to: 1, text: 'Logon (8=FIX.4.4) + sequence' },
+            { from: 1, to: 0, text: 'Logon ack', reply: true },
+            { from: 0, to: 1, text: 'NewOrderSingle (35=D)' },
+            { from: 1, to: 2, text: 'Validate + pre-trade check' },
+            { from: 2, to: 3, text: 'Append order + fill' },
+            { from: 2, to: 1, text: 'ExecutionReport (35=8) PARTIAL', reply: true },
+            { from: 1, to: 0, text: 'ExecutionReport tới broker', reply: true },
+          ] },
+        { title: 'Margin call và thanh lý cưỡng bức',
+          caption: 'Cuối ngày mark-to-market; tụt dưới ký quỹ duy trì thì margin call; quá hạn không nạp thì forced liquidation.',
+          actors: ['Risk Job', 'Account', 'Margin', 'Client App'],
+          steps: [
+            { from: 0, to: 1, text: 'Đọc settlement price + vị thế' },
+            { from: 1, to: 2, text: 'Tính lãi/lỗ, trừ số dư' },
+            { from: 2, to: 0, text: 'Dưới mức duy trì?', reply: true },
+            { from: 0, to: 3, text: 'Gửi margin call + hạn nạp' },
+            { note: 'Quá hạn không nạp: đóng vị thế ở giá thị trường, chốt lỗ', over: [0, 2] },
+          ] },
+      ],
+      glossary: [
+        { term: 'Hợp đồng tương lai (futures)', meaning: 'Thoả thuận mua/bán một lượng hàng hoá ở mức giá chốt hôm nay, giao vào tháng đáo hạn trong tương lai. Khác hợp đồng giao ngay (spot) là giao ngay lập tức.' },
+        { term: 'Tháng đáo hạn (contract month)', meaning: 'Thời điểm hợp đồng hết hiệu lực và phải giao hàng hoặc tất toán. Mã như NGZ26 nghĩa là ngô đáo hạn tháng 12 năm 2026. Hợp đồng cùng hàng hoá nhưng khác tháng là hai hợp đồng khác nhau.' },
+        { term: 'Bước giá (tick size)', meaning: 'Mức giá nhỏ nhất hợp đồng được phép nhích. Ví dụ 0,0025 USD/bushel; mỗi tick tương đương 12,50 USD tiền cho 5.000 bushel. Giá hợp lệ luôn là bội số của tick.' },
+        { term: 'Nhân hệ số (multiplier)', meaning: 'Số đơn vị hàng hoá mỗi hợp đồng, ví dụ 5.000 bushel. Giá trị hợp đồng = giá x multiplier x số hợp đồng. Đây là đòn bẩy: bỏ 2.000 USD kiểm soát 42.000 USD hàng hoá.' },
+        { term: 'Ký quỹ ban đầu (initial margin)', meaning: 'Tiền đặt cọc để mở vị thế, không phải tiền mua hàng. Số này thay đổi theo sàn và biến động giá; kiểm tra contract spec của sàn trước khi tin con số.' },
+        { term: 'Ký quỹ duy trì (maintenance margin)', meaning: 'Ngưỡng số dư tối thiểu để giữ vị thế. Thường thấp hơn ký quỹ ban đầu. Tụt dưới ngưỡng này sinh margin call.' },
+        { term: 'Mark-to-market (định giá lại)', meaning: 'Cuối mỗi ngày, tính lại lãi/lỗ theo giá thanh toán và cộng/trừ vào tài khoản. Vì thế futures thanh toán lãi/lỗ hằng ngày, không đợi đến hạn.' },
+        { term: 'Variation margin (biên độ biến động)', meaning: 'Khoản tiền lãi/lỗ phải nạp thêm (hoặc được rút ra) mỗi ngày do mark-to-market. Lỗ thì bị trừ, lãi thì được cộng.' },
+        { term: 'Giá thanh toán (settlement price)', meaning: 'Giá dùng để tính lãi/lỗ cuối ngày, thường là trung bình có trọng số của các giao dịch gần đóng cửa, do sàn công bố.' },
+        { term: 'Open interest (khối lượng mở)', meaning: 'Tổng số hợp đồng đang còn hiệu lực (chưa đóng). Tăng khi có người mở mới, giảm khi có người đóng. Khác volume (số khớp trong ngày).' },
+        { term: 'Position limit (giới hạn vị thế)', meaning: 'Số hợp đồng tối đa một người được nắm giữ để tránh thao túng thị trường. Vượt giới hạn bị từ chối mở thêm.' },
+        { term: 'Margin call (gọi ký quỹ)', meaning: 'Thông báo sàn yêu cầu nạp thêm tiền khi số dư tụt dưới ký quỹ duy trì. Có thời hạn nạp; quá hạn thì thanh lý cưỡng bức.' },
+        { term: 'Thanh lý cưỡng bức (forced liquidation)', meaning: 'Sàn tự đóng vị thế của khách ở giá thị trường khi khách không nạp đủ margin call. Mục đích bảo vệ sàn và các thành viên khác khỏi rủi ro vỡ nợ.' },
+        { term: 'Giao nhận vật chất (physical settlement)', meaning: 'Đến hạn, bên mua nhận hàng thật, bên bán giao hàng thật. Với hàng hoá như ngô, kim loại. Người nhỏ lẻ thường đóng vị thế trước hạn để tránh.' },
+        { term: 'Tất toán tiền (cash settlement)', meaning: 'Đến hạn, chênh lệch giữa giá thanh toán cuối và giá vào lệnh được trả bằng tiền, không giao hàng. Phổ biến với chỉ số năng lượng, tài chính.' },
+        { term: 'Sổ lệnh (order book)', meaning: 'Danh sách lệnh mua/bán đang chờ khớp, sắp theo giá. Mua xếp giảm dần, bán xếp tăng dần; gặp nhau ở mức giá mua cao nhất và bán thấp nhất là khớp.' },
+        { term: 'Matching engine (bộ khớp lệnh)', meaning: 'Thành phần ghép lệnh mua với lệnh bán theo quy tắc giá–thời gian. Ở dự án này chạy một luồng để không cần khoá, đảm bảo tính đúng đắn và dễ replay.' },
+        { term: 'FIX 4.4', meaning: 'Giao thức FIX (Financial Information eXchange) phiên bản 4.4, chuẩn kết nối giữa broker và sàn. Lệnh đặt là NewOrderSingle (35=D), phản hồi là ExecutionReport (35=8).' },
+        { term: 'Lệnh limit / market / IOC / FOK', meaning: 'Limit: mua/bán ở giá cụ thể hoặc tốt hơn. Market: khớp ngay ở giá thị trường. IOC (Immediate-Or-Cancel): khớp phần có thể rồi huỷ phần còn lại. FOK (Fill-Or-Kill): khớp hết ngay hoặc huỷ toàn bộ.' },
+      ],
+    },
+    pitch: `Dự án mô phỏng một sàn giao dịch hợp đồng tương lai hàng hoá thu nhỏ: nhà đầu tư như Lan nạp 5.000 USD, đặt lệnh mua 2 hợp đồng ngô tháng 12 qua REST hoặc FIX 4.4, hệ thống khớp lệnh trên **order book giá–thời gian** chạy một luồng, phát market data L1/L2 qua WebSocket và Kafka, rồi cuối ngày **mark-to-market** và gọi **margin call** khi số dư tụt dưới ký quỹ duy trì. Bạn sẽ thể hiện được hiểu biết nghiệp vụ phái sinh thật (ký quỹ, thanh lý cưỡng bức, open interest) và kỹ thuật độ trễ thấp (matching single-threaded, journal để replay, JMH đo p99), đúng thứ JD sàn giao dịch tìm kiếm. Đây là câu chuyện để kể với interviewer sàn phái sinh, chứng minh bạn hiểu "khớp lệnh" không phải một vòng for mà là cả một hệ thống nhất quán, chịu được crash và đo được bằng số.`,
+    requirements: `### User story
+1. **Danh mục hợp đồng:** là người dùng, tôi xem danh mục hợp đồng đang mở (mã, tháng đáo hạn, tick size, multiplier, biên độ giá).
+   Ví dụ: {{GET /contracts}} trả mã NGZ26, tick 0,0025, multiplier 5000, biên độ ±5%.
+   Chấp nhận: chỉ trả hợp đồng trạng thái OPEN; mã không tồn tại trả 404.
+2. **Đặt lệnh limit qua REST:** tôi đặt lệnh mua 2 hợp đồng giá 4,20 kèm {{Idempotency-Key}}.
+   Ví dụ: khớp 1 ngay, còn 1 treo; gửi lại cùng key trả đúng kết quả cũ, không đặt hai lần.
+   Chấp nhận: giá phải là bội số tick và nằm trong biên độ; sai trả 400; thiếu tiền ký quỹ trả 422.
+3. **Lệnh market / IOC / FOK:** tôi chọn loại lệnh khi đặt.
+   Ví dụ: FOK không khớp hết ngay thì huỷ toàn bộ, không để lại phần treo; IOC khớp phần có thể rồi huỷ phần còn lại.
+   Chấp nhận: FOK chỉ khớp khi đủ khối lượng ngay; IOC không để lại lệnh treo.
+4. **Đặt/huỷ qua FIX 4.4:** broker gửi NewOrderSingle, OrderCancelRequest và nhận ExecutionReport.
+   Ví dụ: seq lệch thì ResendRequest; huỷ lệnh đã khớp trả lỗi, không huỷ hai lần.
+   Chấp nhận: mỗi lần khớp sinh ExecutionReport; sequence number tăng đúng; duplicate seq bị phát hiện.
+5. **Market data real-time:** tôi xem giá tốt nhất và độ sâu 5 mức qua WebSocket, cập nhật mỗi khi khớp.
+   Ví dụ: sau mỗi fill, L1/L2 đổi trong dưới 100 ms; Kafka cũng nhận cùng sự kiện để consumer khác đọc.
+   Chấp nhận: L2 đủ 5 mức mua/bán; thứ tự sự kiện trong một phân vùng Kafka được giữ.
+6. **Ký quỹ và mark-to-market:** cuối ngày hệ thống tính lãi/lỗ theo settlement price và trừ/cộng số dư.
+   Ví dụ: long 2 hợp đồng, giá tăng 0,05 → +500 USD; giảm 0,10 → -1.000 USD.
+   Chấp nhận: lãi/lỗ = chênh lệch giá x multiplier x số hợp đồng; số dư không âm sau khi thanh lý.
+7. **Margin call và thanh lý cưỡng bức:** khi số dư dưới mức duy trì, tôi nhận margin call; quá hạn không nạp thì bị đóng vị thế.
+   Ví dụ: nạp đủ trong hạn thì giữ vị thế; không nạp thì đóng ở giá thị trường, chốt lỗ.
+   Chấp nhận: margin call có hạn nạp; forced liquidation đóng đúng số hợp đồng còn mở.
+8. **Nạp/rút tiền:** tôi nạp thêm tiền ký quỹ và rút phần dư khi không còn vị thế.
+   Ví dụ: nạp 1.500 USD vào tài khoản ký quỹ; rút khi số dư khả dụng dương.
+   Chấp nhận: nạp/rút ghi ledger kép; không rút quá số dư khả dụng.
+
+### Phi chức năng
+- Throughput mục tiêu: 50.000 lệnh/giây trên 1 lõi (matching single-threaded), đo bằng JMH; gateway REST/FIX chịu 5.000 lệnh/giây.
+- Latency: p99 khớp lệnh (từ lúc nhận đến lúc ghi journal) < 50 micro giây; p99 FIX round-trip < 2 ms trong Docker trên laptop.
+- Nhất quán: trạng thái sổ lệnh và tài khoản là **strong consistency** trong bộ nhớ một luồng; journal là nguồn sự thật để replay; market data qua Kafka là **eventual**, trễ p95 < 200 ms.
+- Bất biến: tổng lãi/lỗ + số dư luôn khớp ledger; không bao giờ khớp vượt khối lượng có sẵn; journal replay ra đúng snapshot.
+- Bảo mật: FIX/REST đều qua xác thực; không log số dư đầy đủ; dữ liệu giả hoàn toàn.
+
+### Ngoài phạm vi
+- Không giao nhận hàng thật, không nối sàn thật, không thanh toán tiền thật.
+- Không làm UI đầy đủ; dùng WebSocket client nhỏ, FIX client mô phỏng và Swagger UI.
+- Không làm đa site/đa vùng (chỉ mô tả hướng mở rộng).`,
+    architecture: `~~~text
+Client/Broker -> Gateway (REST + FIX 4.4/QuickFIX/J) -> Matching Engine (1 luồng, in-memory)
+                                   -> Journal (PostgreSQL, append-only)
+                                   -> Market Data (WebSocket L1/L2 + Kafka)
+Risk/Settlement job -> Account & Margin (PostgreSQL) -> Client App (margin call)
+Redis: rate limit + cache;  Docker Compose: Postgres, Kafka, Redis
+~~~
+Gateway xác thực và kiểm tra pre-trade (giá trong biên độ, bội số tick, khối lượng tối đa), rồi đẩy lệnh vào hàng đợi của **một** matching thread. Matching thread đọc tuần tự, cập nhật order book trong RAM, ghi journal (append-only) trước khi phát market data. Risk job cuối ngày đọc settlement price, mark-to-market và margin call. Mọi trạng thái có thể dựng lại bằng replay journal.`,
+    design: `### Schema DB (PostgreSQL 16, Flyway V1)
+~~~sql
+CREATE TABLE contract (
+  id            VARCHAR(16) PRIMARY KEY,        -- NGZ26
+  product       VARCHAR(16) NOT NULL,         -- CORN, CRUDE, GOLD
+  expiry        DATE NOT NULL,
+  tick_size     NUMERIC(10,6) NOT NULL,       -- 0.002500
+  multiplier    INTEGER NOT NULL,             -- 5000 bushel
+  price_limit   NUMERIC(10,6) NOT NULL,       -- biên độ ±5% quanh settlement
+  status        VARCHAR(8) NOT NULL DEFAULT 'OPEN'
+);
+CREATE TABLE account (
+  id          UUID PRIMARY KEY,
+  owner_id    VARCHAR(64) NOT NULL,
+  balance     NUMERIC(18,2) NOT NULL DEFAULT 0,   -- tiền mặt trong tài khoản
+  kind        VARCHAR(8) NOT NULL DEFAULT 'USER',
+  version     BIGINT NOT NULL DEFAULT 0,
+  UNIQUE (owner_id)
+);
+CREATE TABLE position (                       -- vị thế đang mở theo hợp đồng
+  account_id  UUID NOT NULL REFERENCES account(id),
+  contract_id VARCHAR(16) NOT NULL REFERENCES contract(id),
+  qty         INTEGER NOT NULL,               -- dương = long, âm = short
+  avg_price   NUMERIC(10,6) NOT NULL,
+  PRIMARY KEY (account_id, contract_id)
+);
+CREATE TABLE journal (                         -- nguồn sự thật, chỉ thêm
+  seq         BIGSERIAL PRIMARY KEY,           -- thứ tự toàn cục
+  kind        VARCHAR(16) NOT NULL,           -- NEW_ORDER | FILL | CANCEL
+  payload     JSONB NOT NULL,
+  created_at  TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE TABLE ledger_entry (                    -- kế toán kép cho tiền ký quỹ
+  id          BIGSERIAL PRIMARY KEY,
+  account_id  UUID NOT NULL,
+  amount      NUMERIC(18,2) NOT NULL,         -- âm/dương
+  reason      VARCHAR(16) NOT NULL,           -- DEPOSIT | MTM | WITHDRAW
+  created_at  TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX ix_journal_seq ON journal (seq);
+CREATE INDEX ix_ledger_account ON ledger_entry (account_id, id DESC);
+~~~
+Journal là **append-only** (thu quyền UPDATE/DELETE của user app). Snapshot sổ lệnh và tài khoản nằm trong RAM; journal dùng để replay sau crash và đối soát.
+
+### API
+| Method | Path | Request | Response | Mã lỗi |
+|---|---|---|---|---|
+| GET | /api/contracts | - | 200 danh mục | - |
+| POST | /api/orders | Idempotency-Key, {contract, side, type, qty, price?} | 201 Order (200 nếu replay) | 400 giá sai tick/biên độ, 422 thiếu ký quỹ, 429 |
+| DELETE | /api/orders/{id} | - | 200 huỷ | 404, 409 đã khớp |
+| POST | /api/accounts/{id}/deposits | {amount} | 201 Ledger | 400 |
+| GET | /api/accounts/{id} | - | 200 số dư + vị thế | 404 |
+| WS | /ws/market/{contract} | - | L1/L2 mỗi fill | - |
+
+Ví dụ đặt lệnh:
+~~~json
+POST /api/orders
+Idempotency-Key: 7f9c1a52-3d2e-4b8e-9a51-1c2d3e4f5a6b
+{ "contract": "NGZ26", "side": "BUY", "type": "LIMIT", "qty": 2, "price": "4.2000" }
+
+201 Created
+{ "id": "o-1", "status": "PARTIAL", "filled": 1, "open": 1, "avgFill": "4.2000" }
+~~~
+Giá truyền dạng **string** để client không làm tròn sai bằng double; server kiểm tra bội số tick và biên độ.
+
+### Luồng chính: đặt lệnh và khớp (single-threaded)
+~~~seq
+title: Khớp lệnh single-threaded
+actors: Gateway | Matching | OrderBook | Journal | MarketData
+Gateway -> Matching: NewOrderSingle (limit mua 2)
+Matching -> OrderBook: chèn vào cây giá
+OrderBook -> Matching: khớp 1 @ 4,20, còn 1 treo
+Matching -> Journal: append NewOrder + Fill
+Journal --> Matching: offset đã ghi
+Matching -> MarketData: publish L1/L2
+note Matching..Journal: journal là sự thật, replay để dựng lại state
+~~~
+Điểm mấu chốt: chỉ **một** luồng chạm order book, nên không cần khoá, không có race, và thứ tự xử lý tất định (deterministic) — replay journal cho ra đúng kết quả.
+
+### Cấu trúc dữ liệu cốt lõi (Java)
+~~~java
+// Mỗi mức giá giữ một hàng đợi lệnh theo thời gian (FIFO)
+record PriceLevel(double price, ArrayDeque<Order> queue, long totalQty) { }
+
+// Sổ lệnh: TreeMap cho giá (log n), HashMap cho tra cứu nhanh theo id
+final class OrderBook {
+    private final TreeMap<Double, PriceLevel> bids = new TreeMap<>(Comparator.reverseOrder());
+    private final TreeMap<Double, PriceLevel> asks = new TreeMap<>();
+    private final HashMap<String, Order> byId = new HashMap<>();
+
+    // Khớp newOrder với phía đối diện; trả danh sách fill
+    List<Fill> match(Order in) {
+        var opposite = in.side() == Side.BUY ? asks : bids;
+        var fills = new ArrayList<Fill>();
+        while (in.remaining() > 0 && !opposite.isEmpty()) {
+            var best = opposite.firstEntry().getValue();     // giá tốt nhất
+            if (!crosses(in, best.price())) break;           // không còn khớp được
+            fills.addAll(best.queue().removeFirst() == null ? List.of() : List.of());
+            // ... trừ qty hai bên, ghi fill, cập nhật totalQty, xoá mức rỗng
+        }
+        if (in.remaining() > 0) rest(in);                    // phần còn lại vào sổ
+        return fills;
+    }
+}
+~~~
+Vì chỉ một luồng gọi {{match}}, không cần {{synchronized}}; mọi thay đổi được ghi journal tuần tự.
+
+### Xử lý đồng thời và nhất quán
+| Tình huống | Hành vi | Cách test |
+|---|---|---|
+| Hai lệnh cùng tới song song | Gateway đẩy vào queue; matching xử lý tuần tự theo thứ tự tới | 2 thread + CountDownLatch, assert thứ tự journal |
+| Khớp vượt khối lượng | Mức giá rỗng bị xoá; vòng lặp dừng khi hết | Test 100 lệnh, tổng khớp = tổng có sẵn |
+| Crash giữa chừng | Replay journal dựng lại đúng sổ lệnh | Kill process, chạy lại, so snapshot |
+| FIX seq lệch | ResendRequest, xử lý lại từ seq thiếu | Gửi seq nhảy cóc, assert ResendRequest |
+| Kafka chết | Matching vẫn chạy; market data dồn, phát bù | Dừng Kafka, assert L1/L2 vẫn qua WebSocket |
+
+### Số liệu hiệu năng mục tiêu và cách đo
+- Matching p99 < 50 micro giây, throughput 50.000 lệnh/giây (một lõi) — đo bằng **JMH** với order book đã nạp sẵn 10.000 lệnh.
+- FIX round-trip p99 < 2 ms, REST đặt lệnh p99 < 5 ms trong Docker Compose trên laptop 8 core.
+- Market data: từ lúc khớp đến lúc L2 đổi trên WebSocket p95 < 100 ms; Kafka end-to-end p95 < 200 ms.
+- Đo bằng Micrometer Timer (bật percentile histogram) cho {{order.match.duration}} và JMH cho hot path; ghi rõ CPU/RAM/JDK/heap vào README.
+
+### Tối ưu độ trễ (hot path)
+| Hạng mục | Trước | Sau | Cách đo |
+|---|---|---|---|
+| Allocation trên hot path | 1 lệnh = ~12 object tạm, GC áp lực cao | Tái dùng buffer, long/double nguyên thuỷ, ~2 object | JMH + GC log |
+| GC (G1 vs ZGC) | G1 pause ~8 ms ở heap 4 GB | ZGC pause < 1 ms | JMH với -Xmx4g, so p99 |
+| False sharing | 2 core ghi cùng cache line, throughput giảm ~30% | Tách field theo dòng cache (@Contended), +30% | JMH 2 thread |
+| Batching phát Kafka | 1 fill = 1 send, ~40 micro giây/ lần | Gom 50 fill/lô, ~6 micro giây/fill | Micrometer + Kafka log |
+
+> Senior tip: con số 50.000 lệnh/giây nghe ấn tượng, nhưng interviewer sẽ hỏi "đo thế nào, máy gì, order book bao nhiêu lệnh". Luôn kèm cấu hình JMH (warm-up, số iteration) và nói rõ đây là số local, không phải cam kết production.`,
+    milestones: [
+      { title: 'Danh mục hợp đồng, schema và pre-trade', tasks: `1. Tạo project Spring Boot 3.3 (Java 21) với Web, Data JPA, Validation, Flyway, PostgreSQL driver, Actuator.
+2. Viết {{V1__init.sql}} theo phần Schema DB; chạy {{docker compose up -d postgres}}.
+3. Viết record {{Contract}} và {{Tick}} kiểm tra giá là bội số tick, nằm trong biên độ.
+4. Viết {{PreTradeValidator}}: giá hợp lệ, khối lượng tối đa, vị thế không vượt position limit.
+5. Viết test {{TickTest}} và {{PreTradeTest}}.
+
+~~~java
+public record Tick(double size, int multiplier) {
+    public boolean isValid(double price) {
+        long ticks = Math.round(price / size);          // số tick gần nhất
+        return Math.abs(ticks * size - price) < 1e-9;   // phải là bội số đúng
+    }
+    public long value(double price) { return Math.round(price * multiplier); }
+}
+~~~`, done: `Flyway migrate xanh; {{Tick.isValid(4.2000)}} đúng, {{4.2001}} sai; {{PreTradeValidator}} chặn giá ngoài biên độ; test {{TickTest}} xanh; grep không có {{double}} cho tiền.`,
+        guide: `### Các khái niệm trước khi làm
+- **Contract spec:** "luật chơi" của một hợp đồng (mã, tháng đáo hạn, bước giá, nhân hệ số, biên độ). Đọc kỹ trước khi code, vì mỗi sản phẩm có tick và multiplier khác nhau.
+- **Tick size (bước giá):** mức giá nhỏ nhất được phép nhích. Giá 4,2001 là **không hợp lệ** nếu tick là 0,0025, vì 4,2001 không chia hết cho 0,0025.
+- **Biên độ giá (price limit):** khung giá ±5% quanh giá thanh toán; lệnh ngoài khung bị từ chối để tránh lỗi nhập liệu làm sập giá.
+
+### Các bước
+1. Vào start.spring.io chọn Maven, Java 21, Spring Boot 3.3.x, group {{com.example}}, artifact {{exchange}}; thêm Spring Web, Spring Data JPA, Validation, Flyway, PostgreSQL Driver, Actuator, Testcontainers. Giải nén, chạy {{./mvnw -v}} để chắc dùng JDK 21.
+2. Tạo {{compose.yaml}} ở gốc với postgres:16-alpine, kafka:3.7.0 (KRaft), redis:7-alpine; chạy {{docker compose up -d postgres}} rồi {{docker compose ps}} thấy healthy.
+3. {{application.yml}}: datasource {{jdbc:postgresql://localhost:5432/exchange}}, user/pass {{app}}, {{spring.jpa.hibernate.ddl-auto=validate}} để Flyway là nơi duy nhất tạo bảng.
+4. Chép {{V1__init.sql}} (contract, account, position, journal, ledger_entry) vào {{src/main/resources/db/migration}}; khởi động app, log phải có "Successfully applied 1 migration".
+5. Viết record {{Tick}} như phần tasks; chạy {{./mvnw test -Dtest=TickTest}}: 4,2000 hợp lệ, 4,2001 không hợp lệ, 4,2025 hợp lệ (là bội số).
+6. Viết {{PreTradeValidator}}: kiểm tra tick, biên độ (dùng settlement price lấy từ bảng hoặc tham số), khối lượng tối đa mỗi lệnh (ví dụ 100), position limit (ví dụ 50 hợp đồng).
+7. Viết {{PreTradeTest}}: giá ngoài biên độ → ném {{PreTradeException}}; khối lượng 0 hoặc âm → lỗi; vượt position limit → lỗi.
+8. Lưu 2 query đối soát (tổng ledger theo tài khoản; journal replay) vào {{src/main/resources/sql/reconcile.sql}} cho milestone sau.
+
+### Kiểm tra
+- {{./mvnw verify}} xanh; {{TickTest}} chứng minh 4,2001 bị chặn.
+- {{docker compose exec postgres psql -U app -d exchange}} rồi mô tả bảng journal thấy CHECK và index {{ix_journal_seq}}.
+- {{grep -rnEi "double|float" src/main/java}} không có kết quả liên quan tới tiền (giá dùng BigDecimal hoặc long tick).
+
+### Bẫy hay gặp
+- **So sánh double bằng ==:** 4,2000/0,0025 có thể ra 1679,9999999; dùng Math.round và so sai số nhỏ như code mẫu.
+- **Quên multiplier khi tính giá trị:** giá trị hợp đồng = giá x multiplier, không phải giá x số hợp đồng; đây là nguồn lỗi tiền ký quỹ.
+- **Migration đã chạy bị sửa:** Flyway báo checksum mismatch; muốn đổi thì viết V2 mới.
+
+> Interview tip: Nhấn rằng bạn đẩy luật hợp đồng (tick, biên độ) xuống ranh giới validate sớm, vì một lệnh sai giá có thể gây thiệt hại thật trên sàn.` },
+      { title: 'Order Gateway REST, idempotency và nạp tiền ký quỹ', tasks: `1. Viết {{POST /api/orders}} nhận {{Idempotency-Key}}, chuẩn hoá payload, băm SHA-256.
+2. Chống trùng bằng {{UNIQUE (owner_id, idem_key)}} + {{ON CONFLICT DO NOTHING}}; cùng key khác payload → 422.
+3. Trừ ký quỹ bằng UPDATE có điều kiện {{balance >= required}}; thiếu → 422, không ghi gì.
+4. Ghi ledger_entry (DEPOSIT/TRADE) trong cùng transaction với account update.
+5. Viết test {{OrderIdempotencyIT}} 10 thread cùng key.
+
+~~~java
+@Modifying
+@Query("update Account a set a.balance = a.balance - :amt where a.id = :id and a.balance >= :amt")
+int debit(@Param("id") UUID id, @Param("amt") BigDecimal amt);
+~~~`, done: `10 thread cùng key → 1 order, 1 ledger; số dư không âm; retry cùng key trả 200 với order cũ; đổi amount giữ key → 422.`,
+        guide: `### Các khái niệm
+- **Idempotency key (khóa lặp lại an toàn):** mã duy nhất kèm mỗi lần bấm; server nhận ra yêu cầu gửi lại và không đặt lệnh hai lần. Sàn không chấp nhận "đặt nhầm 2 lệnh".
+- **Ký quỹ (margin):** tiền đặt cọc để mở vị thế; phải trừ trước khi lệnh vào sổ, nếu không đủ thì từ chối.
+- **Ledger kép:** mỗi lần nạp/trừ tiền ghi bút toán, tổng luôn cân bằng, để đối soát được.
+
+### Các bước
+1. Thêm {{spring-boot-starter-validation}}; viết {{CreateOrderRequest}} với {{@NotBlank}} contract, {{@Min(1)}} qty, price là string parse sang BigDecimal.
+2. Viết {{RequestHasher}}: chuẩn hoá thành {{contract|side|type|qty|price.toPlainString()}}, băm SHA-256 bằng {{MessageDigest}}, hex 64 ký tự ({{HexFormat.of().formatHex(...)}}).
+3. Native {{INSERT INTO orders ... ON CONFLICT (owner_id, idem_key) DO NOTHING}}; 0 dòng → đọc order cũ, so hash, giống trả 200, khác 422 IDEMPOTENCY_MISMATCH.
+4. Tính ký quỹ yêu cầu = giá x multiplier x qty x tỉ lệ (ví dụ 10%); gọi {{debit}} có điều kiện; 0 dòng → {{InsufficientMarginException}} → rollback.
+5. Ghi ledger_entry (-required, reason TRADE) cùng transaction; nạp tiền dùng endpoint riêng ghi DEPOSIT.
+6. Viết {{OrderIdempotencyIT}} Testcontainers: 10 thread + CountDownLatch cùng key → đúng 1 order; đổi amount → 422.
+
+### Kiểm tra
+- {{./mvnw verify -Dit.test=OrderIdempotencyIT}} xanh.
+- curl 2 lần cùng key: lần 1 201, lần 2 200 cùng id; đổi qty giữ key → 422.
+- {{SELECT count(*) FROM ledger_entry}} sau test = số lần nạp + số lần khớp, không dư.
+
+### Bẫy hay gặp
+- **Bắt exception rồi commit:** nếu catch trong {{@Transactional}} và return bình thường, order đã chèn vẫn commit; để exception bay ra.
+- **Hash JSON thô:** khác khoảng trắng thành "payload khác"; hash từ object đã chuẩn hoá.
+- **Tính margin bằng double:** dùng BigDecimal, scale 2, HALF_EVEN.
+
+> Interview tip: Kể "unique index là hàng rào cuối, UPDATE có điều kiện chặn thiếu ký quỹ", kèm số 10 thread → 1 order.` },
+      { title: 'Order book giá–thời gian và matching single-threaded', tasks: `1. Viết {{OrderBook}} dùng {{TreeMap}} cho giá và {{ArrayDeque}} cho hàng đợi theo thời gian.
+2. Viết {{match}} theo quy tắc giá–thời gian: khớp giá tốt nhất trước, cùng giá thì ai tới trước.
+3. Hỗ trợ limit/market/IOC/FOK; IOC/FOK không để lại phần treo.
+4. Ghi mỗi thay đổi vào journal (NEW_ORDER, FILL, CANCEL) tuần tự.
+5. Viết test {{MatchingTest}} với 100 lệnh, tổng khớp = tổng có sẵn.
+
+~~~java
+while (in.remaining() > 0 && !opposite.isEmpty()) {
+    var best = opposite.firstEntry().getValue();
+    if (!crosses(in, best.price())) break;
+    var resting = best.queue().removeFirst();
+    long qty = Math.min(in.remaining(), resting.remaining());
+    // ... ghi Fill, trừ remaining hai bên, cập nhật totalQty
+    if (resting.remaining() == 0) byId.remove(resting.id());
+}
+~~~`, done: `100 lệnh → tổng khớp = tổng có sẵn; FOK không đủ khối lượng bị huỷ; IOC không để lại treo; replay journal ra đúng sổ lệnh; JMH cho p99 < 50 micro giây.`,
+        guide: `### Các khái niệm
+- **Order book (sổ lệnh):** danh sách lệnh mua/bán đang chờ, sắp theo giá. Mua xếp giảm dần, bán tăng dần; mua cao nhất gặp bán thấp nhất là khớp.
+- **Giá–thời gian (price-time priority):** cùng mức giá thì lệnh tới trước được khớp trước (FIFO). Đây là luật công bằng của sàn.
+- **Single-threaded:** chỉ một luồng chạm order book. Không cần khoá, không race, replay tất định. Đổi lại, throughput bị giới hạn bởi một lõi — nhưng 50.000 lệnh/giây là quá đủ cho dự án.
+
+### Các bước
+1. Tạo class {{Order}} (record hoặc class mutable) có id, side, type, qty, price, remaining; {{remaining}} giảm khi khớp.
+2. {{OrderBook}} như phần tasks: {{TreeMap<Double, PriceLevel>}} bids (reverseOrder) và asks; {{PriceLevel}} giữ {{ArrayDeque<Order>}} và {{totalQty}}.
+3. {{match}}: lặp lấy mức giá tốt nhất, kiểm tra {{crosses}} (mua >= bán), khớp phần nhỏ nhất, ghi Fill, xoá lệnh hết và mức rỗng.
+4. Sau vòng lặp: nếu còn remaining và type != IOC/FOK thì {{rest}} vào sổ; IOC huỷ phần còn; FOK nếu không khớp hết ngay thì huỷ toàn bộ (kiểm tra trước khi khớp).
+5. Ghi journal: mỗi NEW_ORDER, FILL, CANCEL một dòng JSONB; dùng {{seq}} BIGSERIAL tăng dần.
+6. Viết {{MatchingTest}}: (a) 100 lệnh xen kẽ → tổng khớp = tổng có; (b) FOK thiếu khối lượng → huỷ; (c) replay journal → sổ lệnh bằng snapshot; (d) JMH {{MatchingBenchmark}} nạp 10.000 lệnh, đo p99.
+
+### Kiểm tra
+- {{./mvnw test -Dtest=MatchingTest}} xanh; log in "matched=..., open=...".
+- JMH: {{./mvnw jmh:run}} cho p99 < 50 micro giây, throughput ~50k/giây (ghi cấu hình máy).
+- Kill app giữa chừng, chạy lại: replay journal cho sổ lệnh y hệt trước khi chết.
+
+### Bẫy hay gặp
+- **Dùng {{HashMap}} cho giá:** không sắp thứ tự; phải {{TreeMap}} để lấy giá tốt nhất log n.
+- **Không xoá mức rỗng:** mức giá rỗng vẫn được chọn, khớp sai; xoá khi totalQty = 0.
+- **Ghi journal sau khi phát market data:** crash giữa chừng mất sự thật; journal trước, market data sau.
+- **FOK khớp một phần rồi mới kiểm tra:** phải kiểm tra đủ khối lượng **trước** khi khớp, nếu không sẽ để lại phần treo.
+
+> Interview tip: Nhấn "một luồng nên không cần khoá, replay journal cho kết quả tất định", rồi đưa số JMH p99 làm bằng chứng.` },
+      { title: 'FIX 4.4 với QuickFIX/J (NewOrderSingle, ExecutionReport)', tasks: `1. Thêm dependency {{quickfixj-all}}; viết {{FixConfig}} với {{ initiator}} và {{acceptor}}.
+2. Map NewOrderSingle (35=D) sang lệnh nội bộ; trả ExecutionReport (35=8) với OrdStatus.
+3. Xử lý sequence number, ResendRequest (35=2), TestRequest (35=1) heartbeat.
+4. OrderCancelRequest (35=F) huỷ lệnh còn treo; đã khớp → ExecutionReport từ chối.
+5. Viết test {{FixSessionIT}} gửi NewOrderSingle và assert ExecutionReport.
+
+~~~java
+public void onMessage(NewOrderSingle m, SessionID s) {
+    Order o = FixMapper.toOrder(m);          // đọc tag 11, 55, 54, 40, 44, 38
+    engine.submit(o);                        // vào queue matching
+    sendExec(s, o.id(), OrdStatus.NEW, 0, 0);
+}
+~~~`, done: `Gửi NewOrderSingle → nhận ExecutionReport NEW/PARTIAL; seq lệch → ResendRequest; huỷ lệnh đã khớp bị từ chối; {{FixSessionIT}} xanh.`,
+        guide: `### Các khái niệm
+- **FIX (Financial Information eXchange):** chuẩn kết nối broker–sàn bằng tag-value. Phiên bản 4.4 dùng tag 8=FIX.4.4.
+- **Sequence number:** số thứ tự tin nhắn; hai bên phải khớp. Lệch → ResendRequest gửi lại từ số thiếu, tránh mất/lặp lệnh.
+- **ExecutionReport (35=8):** phản hồi trạng thái lệnh: 0=NEW, 1=PARTIAL, 2=FILLED, 4=CANCELED, 8=REJECTED.
+
+### Các bước
+1. Thêm {{quickfixj-all}} vào pom; tạo {{quickfix.cfg}} (một acceptor cổng 9876, một initiator để test).
+2. Viết {{FixApplication}} (QuickFIX/J interface): {{onMessage(NewOrderSingle)}} đọc tag 11 (ClOrdID), 55 (mã), 54 (side), 40 (loại), 44 (giá), 38 (qty); map sang {{Order}}; gọi {{engine.submit}}.
+3. Gửi ExecutionReport: {{ExecutionReport}} với 37 (OrderID), 11 (ClOrdID), 17 (ExecID), 150 (ExecType), 39 (OrdStatus), 38/31 (qty/avgPx). Mỗi fill một ExecutionReport.
+4. {{onMessage(OrderCancelRequest)}}: tìm lệnh còn open trong sổ; huỷ và trả CANCELED; đã khớp → REJECTED.
+5. Xử lý {{ResendRequest}}: gửi lại từ seq thiếu; {{TestRequest}}: trả Heartbeat (35=0).
+6. Viết {{FixSessionIT}}: khởi động acceptor, initiator gửi Logon + NewOrderSingle, assert nhận ExecutionReport trong 2 giây (Awaitility).
+
+### Kiểm tra
+- {{./mvnw verify -Dit.test=FixSessionIT}} xanh.
+- Log FIX thấy 8=FIX.4.4, 35=D rồi 35=8; seq tăng đúng.
+- Gửi seq nhảy cóc → nhận 35=2 ResendRequest.
+
+### Bẫy hay gặp
+- **Bỏ qua sequence:** broker gửi lại toàn bộ, hệ thống xử lý trùng; phải kiểm tra và ResendRequest.
+- **Gộp nhiều fill vào một ExecutionReport:** broker khó đối soát; mỗi fill một report.
+- **Không xử lý heartbeat:** phiên FIX timeout và ngắt; trả TestRequest bằng Heartbeat.
+- **Hard-code tag:** dùng thư viện QuickFIX/J thay vì tự parse tag-value.
+
+> Interview tip: Kể "FIX là classpath, không phải REST; sequence number và ResendRequest là lý do sàn không mất lệnh khi mạng chập chờn".` },
+      { title: 'Market data L1/L2 qua WebSocket và Kafka', tasks: `1. Sau mỗi fill, dựng L1 (best bid/ask) và L2 (5 mức) từ order book.
+2. Phát qua WebSocket topic {{/ws/market/}} (mỗi hợp đồng một topic) bằng STOMP hoặc SockJS.
+3. Phát cùng sự kiện lên Kafka topic {{market.data}} với key = contract id để giữ thứ tự.
+4. Viết consumer đọc Kafka, ghi lịch sử giá vào bảng {{price_history}}.
+5. Viết test {{MarketDataIT}}: khớp → L2 đổi; tắt Kafka → WebSocket vẫn chạy.
+
+~~~java
+void publish(Contract c, OrderBook ob) {
+    var l2 = ob.depth(5);                         // 5 mức mua/bán
+    broker.convertAndSend("/topic/market/" + c.id(), l2);
+    kafka.send("market.data", c.id(), l2);        // key = contract để giữ thứ tự
+}
+~~~`, done: `Mỗi fill → L2 đổi trên WebSocket < 100 ms; Kafka nhận cùng sự kiện; tắt Kafka WebSocket vẫn chạy; {{MarketDataIT}} xanh.`,
+        guide: `### Các khái niệm
+- **Market data L1/L2:** L1 là giá tốt nhất (best bid/ask); L2 là độ sâu nhiều mức (thường 5–10). Người giao dịch cần L2 để biết "độ dày" thị trường.
+- **WebSocket:** kết nối hai chiều, server đẩy dữ liệu ngay khi có thay đổi, thay vì client phải hỏi lại (polling).
+- **Kafka:** hàng đợi sự kiện phân tán; key = contract id giúp mọi sự kiện của một hợp đồng vào cùng phân vùng, giữ thứ tự.
+
+### Các bước
+1. Thêm {{spring-boot-starter-websocket}} và {{spring-kafka}}; cấu hình {{@EnableWebSocketMessageBroker}} với prefix {{/topic}}.
+2. Viết {{MarketPublisher}}: sau mỗi fill, gọi {{ob.depth(5)}} trả danh sách 5 mức mua/bán; {{convertAndSend("/topic/market/" + id, depth)}}.
+3. {{KafkaTemplate.send("market.data", contractId, depth)}} với key = contractId; cấu hình producer {{acks=all}}, {{enable.idempotence=true}}.
+4. Viết {{PriceHistoryConsumer}} {{@KafkaListener}}: INSERT vào {{price_history}} (contract_id, bid, ask, ts); dùng {{contractId}} + {{ts}} làm khóa để khử lặp.
+5. Viết {{MarketDataIT}}: đặt lệnh khớp, Awaitility chờ L2 đổi; {{docker stop kafka}} rồi khớp tiếp → WebSocket vẫn nhận; {{docker start kafka}} → consumer đọc bù.
+6. Thêm metric {{market.publish.duration}} (Timer) và {{market.lag}} (Gauge tuổi sự kiện chưa phát).
+
+### Kiểm tra
+- {{./mvnw verify -Dit.test=MarketDataIT}} xanh.
+- WebSocket client (wscat) thấy L2 đổi sau mỗi fill.
+- {{kafka-console-consumer.sh --topic market.data --property print.key=true}} thấy key là contract id.
+
+### Bẫy hay gặp
+- **Phát Kafka trong transaction DB:** dual write; ở đây matching không dùng DB nóng nên phát trực tiếp, nhưng phải chấp nhận at-least-once và consumer khử lặp.
+- **Key sai làm mất thứ tự:** key = order id → sự kiện cùng hợp đồng rơi nhiều partition; key = contract id.
+- **Gửi L2 quá dày:** 5 mức là đủ; gửi 100 mức làm nghẽn WebSocket.
+
+> Interview tip: Nhấn "một contract một partition nên thứ tự L2 được giữ; consumer idempotent để chịu Kafka phát lại".` },
+      { title: 'Ký quỹ, mark-to-market, margin call và thanh lý cưỡng bức', tasks: `1. Viết {{SettlementJob}} đọc settlement price, tính lãi/lỗ mỗi vị thế = (giá mới - giá cũ) x multiplier x qty.
+2. Cộng/trừ số dư, ghi ledger_entry (MTM); số dư không âm sau khi xử lý.
+3. Nếu số dư < maintenance margin → tạo margin call có hạn nạp (ví dụ 30 phút).
+4. Hết hạn không nạp → {{forcedLiquidation}} đóng vị thế ở giá thị trường.
+5. Viết test {{MarginIT}}: long 2, giá giảm → margin call; không nạp → bị đóng.
+
+~~~java
+long pnl = (newPrice - oldPrice) * multiplier * qty;   // long: tăng là lãi
+account.applyPnl(pnl);                                  // cộng/trừ + ledger MTM
+if (account.balance() < maintenance) risk.marginCall(account);
+~~~`, done: `Long 2, giá tăng 0,05 → +500; giảm 0,10 → -1.000; dưới duy trì → margin call; không nạp → đóng đúng 2 hợp đồng; số dư không âm; {{MarginIT}} xanh.`,
+        guide: `### Các khái niệm
+- **Mark-to-market:** cuối ngày tính lại lãi/lỗ theo settlement price, cộng/trừ tiền mặt. Đây là "thanh toán mỗi ngày".
+- **Maintenance margin:** ngưỡng tối thiểu; tụt dưới → margin call.
+- **Forced liquidation:** sàn tự đóng vị thế khi khách không nạp, bảo vệ sàn khỏi vỡ nợ.
+
+### Các bước
+1. Viết {{SettlementJob}} {{@Scheduled(cron)}}: đọc {{settlement_price}} mỗi contract, lặp qua {{position}}, tính {{pnl = (new - old) x multiplier x qty}} (long vs short đảo dấu).
+2. {{account.applyPnl}} cộng/trừ balance và ghi ledger_entry reason MTM trong một transaction; cập nhật avg_price = new.
+3. Kiểm tra {{balance < maintenance}}: tạo bản ghi {{margin_call}} (account, amount cần nạp, deadline = now + 30 phút); gửi thông báo cho client.
+4. {{ForcedLiquidationJob}} {{@Scheduled}}: margin call quá hạn chưa nạp → đóng vị thế ở {{last_price}}, ghi Fill + ledger, đặt qty = 0.
+5. Viết {{MarginIT}}: nạp 5.000, long 2 @ 4,20; settlement 4,15 → -500; 4,05 → thêm -1.000, dưới duy trì → margin call; không nạp → đóng 2.
+6. Viết {{ReconcileIT}}: sau chuỗi, tổng ledger = balance, journal replay = snapshot.
+
+### Kiểm tra
+- {{./mvnw test -Dtest=MarginIT}} xanh; số dư cuối không âm.
+- {{reconcile.sql}} trả 0 dòng lệch.
+- Margin call có deadline; forced liquidation đóng đúng số hợp đồng.
+
+### Bẫy hay gặp
+- **Long/short tính lãi cùng dấu:** short lãi khi giá giảm; đảo dấu theo side.
+- **Không ghi ledger MTM:** số dư đổi mà không truy vết; luôn ghi ledger.
+- **Đóng vị thế ở giá cũ:** phải dùng giá thị trường mới nhất, không phải giá vào lệnh.
+- **Margin call không có hạn:** khách không biết khi nào bị đóng; đặt deadline rõ.
+
+> Interview tip: Kể "mark-to-market biến rủi ro tín dụng thành rủi ro thanh khoản hằng ngày, margin call + forced liquidation là cơ chế bảo vệ sàn".` },
+      { title: 'Đo hiệu năng bằng JMH, quan sát và đóng gói portfolio', tasks: `1. Viết {{MatchingBenchmark}} (JMH) nạp 10.000 lệnh, đo p99 và throughput; chạy với G1 và ZGC.
+2. Thêm Micrometer + Prometheus + Grafana vào compose (profile obs); dashboard throughput, p99, outbox lag.
+3. Viết {{load/place.js}} cho k6 hoặc loop curl; ghi cấu hình máy.
+4. Hoàn thiện README: sơ đồ, luồng, lệnh chạy, bảng quyết định thiết kế, câu chuyện STAR.
+5. Chạy demo 3 phút: đặt lệnh qua REST, xem ExecutionReport FIX, xem L2 đổi, margin call.
+
+~~~java
+@Benchmark @Fork(1) @Warmup(iterations = 3) @Measurement(iterations = 5)
+public void matchBench() {
+    for (Order o : orders) engine.submit(o);      // engine đã nạp 10k lệnh
+}
+~~~`, done: `JMH cho p99 < 50 micro giây (G1) và < 50 micro giây (ZGC, pause thấp hơn); dashboard hiện p99, throughput; README có STAR số liệu; demo 3 phút chạy trơn.`,
+        guide: `### Các khái niệm
+- **JMH (Java Microbenchmark Harness):** công cụ đo hiệu năng đúng cách (warm-up, fork, đo trung vị), tránh "đo sai" do JIT chưa chạy.
+- **p99:** 99% yêu cầu nhanh hơn con số này; dùng để cam kết độ trễ đuôi.
+- **ZGC vs G1:** ZGC có pause rất thấp (< 1 ms) phù hợp độ trễ thấp; G1 thông dụng, pause cao hơn ở heap lớn.
+
+### Các bước
+1. Thêm plugin {{jmh-maven-plugin}}; viết {{MatchingBenchmark}} như phần tasks, nạp order book 10.000 lệnh trong {{@Setup}}.
+2. Chạy {{./mvnw jmh:run}} với mặc định (G1), rồi với {{-jvmArgs "-XX:+UseZGC -Xmx4g"}}; ghi p99, throughput, GC pause.
+3. Thêm {{micrometer-registry-prometheus}}; {{management.endpoints.web.exposure.include=health,prometheus}}; bật percentile histogram cho {{order.match.duration}}.
+4. Thêm Prometheus + Grafana vào compose profile obs; file {{prometheus.yml}} scrape mỗi 5 giây; dashboard 4 panel.
+5. Viết {{load/place.js}} k6 ramp lên 5.000 req/s; nâng rate limit profile perf; chạy, chụp p99.
+6. Viết README theo mẫu (mục "Quyết định thiết kế": single-threaded, journal, outbox market data; trade-off).
+
+### Kiểm tra
+- JMH in p99 < 50 micro giây; so sánh G1 vs ZGC có bảng.
+- {{curl localhost:8080/actuator/prometheus | grep order_}} có counter, histogram.
+- k6 p99 < 5 ms; reconcile 0 dòng.
+
+### Bẫy hay gặp
+- **Đo không warm-up:** JIT chưa chạy, số sai; JMH lo việc này.
+- **Tag cardinality cao:** gắn orderId vào metric làm Prometheus nổ; chỉ tag result/endpoint.
+- **Benchmark trên máy đang chạy IDE:** số dao động; warm-up, chạy 3 lần, báo trung vị.
+
+> Interview tip: Trình bày bảng "trước/sau" (allocation, GC, false sharing, batching) kèm số đo, nói rõ đây là local.`,
+      },
+    ],
+    challenges: [
+      `### Vì sao matching chạy một luồng, không khoá theo lệnh
+**Triệu chứng:** bản đầu dùng nhiều luồng + {{synchronized}} theo order id, p99 dao động mạnh và khó replay.
+**Nguyên nhân gốc:** nhiều luồng chạm order book → race, deadlock, thứ tự không tất định; khoá theo lệnh không bảo vệ cấu trúc chung (TreeMap).
+**Cách 1, single-threaded + queue:** một luồng đọc lệnh từ queue, không cần khoá, replay tất định; trần throughput = 1 lõi nhưng đủ 50k/giây.
+**Cách 2, phân mảnh theo contract (sharding):** mỗi contract một luồng, tăng song song theo số lõi; phức tạp hơn, cần định tuyến theo contract.
+**Chứng minh:** JMH 2 thread với @Contended tăng ~30% so với không tách; replay journal ra đúng snapshot.`,
+      `### Replay journal sau crash
+**Triệu chứng:** sau khi kill process, sổ lệnh và số dư lệch so với trước.
+**Nguyên nhân gốc:** state chỉ trong RAM, không ghi journal tuần tự, hoặc ghi sau khi phát market data.
+**Cách 1, append-only journal + replay:** mọi thay đổi ghi journal trước, khởi động lại đọc từ đầu dựng lại state; chậm khi journal lớn.
+**Cách 2, snapshot + journal từ offset:** định kỳ lưu snapshot, replay từ offset snapshot; nhanh hơn, cần quản lý snapshot.
+**Chứng minh:** kill app giữa 1.000 lệnh, chạy lại, so snapshot trước/sau bằng nhau.`,
+      `### FIX sequence number và ResendRequest
+**Triệu chứng:** broker gửi seq 42 nhưng sàn chờ 41, lệnh bị treo hoặc xử lý trùng.
+**Nguyên nhân gốc:** không kiểm tra sequence, hoặc không lưu tin đã gửi để gửi lại.
+**Cách 1, kiểm tra seq + ResendRequest:** lệch thì yêu cầu gửi lại từ số thiếu; lưu tin đã gửi trong bộ nhớ để phát lại.
+**Cách 2, ResetSeqNumFlag khi đồng bộ lại:** hai bên thống nhất reset, chấp nhận mất tin chưa xử lý.
+**Chứng minh:** gửi seq nhảy cóc → nhận ResendRequest; gửi lại đủ → khớp đúng, không trùng.`,
+      `### Margin call và race khi nhiều lệnh cùng tài khoản
+**Triệu chứng:** hai lệnh cùng trừ ký quỹ làm số dư âm, hoặc margin call gửi trùng.
+**Nguyên nhân gốc:** đọc balance rồi ghi không nguyên tử; nhiều job settlement chạy song song.
+**Cách 1, UPDATE có điều kiện + một job settlement:** {{balance >= required}} chặn âm; settlement chạy một instance (hoặc khoá theo account).
+**Cách 2, ledger append-only + balance projection:** ghi entry, tính balance theo batch; eventual.
+**Chứng minh:** 100 thread trừ cùng tài khoản → số dư không âm; margin call đúng một lần.`,
+      `### Market data không mất thứ tự và không nghẽn WebSocket
+**Triệu chứng:** L2 trên client sai thứ tự, hoặc WebSocket chậm khi nhiều fill.
+**Nguyên nhân gốc:** key Kafka sai làm sự kiện cùng contract rơi nhiều partition; gửi quá nhiều mức.
+**Cách 1, key = contract id + batching:** một contract một partition, giữ thứ tự; gom fill/lô.
+**Cách 2, L1 cho client phổ thông, L2 cho client chuyên nghiệp:** giảm tải.
+**Chứng minh:** tắt Kafka → WebSocket vẫn chạy; bật lại → consumer đọc bù, thứ tự đúng.`
+    ],
+    readme: `# Commodity Exchange (mini futures)
+\n## Mục tiêu
+Sàn giao dịch hợp đồng tương lai hàng hoá thu nhỏ: order book giá–thời gian, matching single-threaded, FIX 4.4, market data L1/L2, ký quỹ và mark-to-market. Dữ liệu giả, không tiền thật.
+\n## Kiến trúc
+Gateway REST + FIX (QuickFIX/J) -> Matching (1 luồng, in-memory) -> Journal (PostgreSQL append-only) -> Market Data (WebSocket + Kafka). Risk job tính margin cuối ngày.
+\n## Chạy local
+Yêu cầu Docker. {{docker compose up -d}} rồi {{./mvnw spring-boot:run}}; Flyway tự migrate, profile local dùng dữ liệu giả.
+\n## Kiểm thử và benchmark
+JUnit 5 + Testcontainers cho integration; JMH cho matching (p99, throughput); k6 cho gateway. Ghi rõ máy, JDK, heap; số local không phải cam kết production.
+\n## Quyết định thiết kế
+Single-threaded matching (không khoá, replay tất định); journal append-only là nguồn sự thật; market data qua Kafka at-least-once + consumer idempotent; margin call + forced liquidation bảo vệ sàn.`,
+    interview: {
+      story: `### STAR
+**Situation:** Bản đầu của sàn demo dùng nhiều luồng + khoá theo order id; chạy JMH 2 thread p99 dao động 80–120 micro giây và kill process làm sổ lệnh lệch; FIX client gửi lại seq sau timeout tạo lệnh trùng.
+**Task:** Đảm bảo ba bất biến: không khớp vượt khối lượng, journal replay ra đúng snapshot, không đặt trùng lệnh qua FIX/REST; giữ p99 khớp < 50 micro giây và FIX round-trip p99 < 2 ms.
+**Action:**
+- Chuyển matching sang **một luồng** đọc từ queue, bỏ khoá; ghi journal (NEW_ORDER, FILL, CANCEL) tuần tự trước khi phát market data.
+- REST dùng {{UNIQUE (owner_id, idem_key)}} + hash payload; FIX dùng QuickFIX/J, kiểm tra sequence và ResendRequest.
+- Market data key = contract id để giữ thứ tự; consumer idempotent; margin call + forced liquidation cuối ngày.
+- Viết test Testcontainers: 100 lệnh, kill/replay, FIX seq lệch, margin.
+**Result:**
+- 0 lần khớp vượt khối lượng qua 50 lần chạy; replay journal khớp snapshot tuyệt đối.
+- p99 từ 80–120 micro giây xuống 42 micro giây; FIX round-trip p99 1,4 ms; tắt Kafka 2 phút không mất L2 trên WebSocket.
+- 0 lệnh trùng FIX/REST; đối soát ledger 0 dòng lệch.
+
+> Số liệu trên là ví dụ minh hoạ: hãy thay bằng kết quả bạn tự đo và nói rõ cấu hình máy.
+
+### Demo trong 5 phút
+1. {{docker compose up -d}} rồi {{./mvnw spring-boot:run}}; mở Swagger, chỉ nhanh sơ đồ README (30 giây).
+2. {{POST /api/orders}} mua 2 NGZ26 giá 4,20 → 201 PARTIAL; xem {{journal}} có NEW_ORDER + FILL.
+3. Mở wscat {{/topic/market/NGZ26}} thấy L2 đổi; chạy FIX client thấy ExecutionReport 35=8.
+4. {{./mvnw test -Dtest=MatchingTest}}: log "matched=..., open=..."; kill app, chạy lại, sổ lệnh y hệt.
+5. Chạy {{MarginIT}}: long 2, settlement giảm → margin call; không nạp → đóng 2.
+6. Kết bằng JMH p99 và reconcile 0 dòng.`,
+      questions: [
+        'Vì sao matching chạy một luồng thay vì nhiều luồng có khoá?',
+        'Journal được dùng thế nào để replay sau crash, và vì sao ghi trước market data?',
+        'Bạn xử lý idempotency cho lệnh qua REST và FIX khác nhau ra sao?',
+        'Làm sao đảm bảo không khớp vượt khối lượng và không để lại lệnh treo với IOC/FOK?',
+        'Mark-to-market và margin call hoạt động thế nào, long/short tính lãi khác nhau chỗ nào?',
+        'Vì sao dùng key = contract id cho Kafka market data, và consumer idempotent để làm gì?',
+        'Nếu FIX sequence lệch hoặc broker gửi lại, bạn xử lý thế nào để không trùng lệnh?',
+        'Bạn đo p99 khớp lệnh bằng JMH thế nào, và vì sao chọn G1 hay ZGC?'
+      ],
+      answers: [
+        `Nhiều luồng chạm order book gây race, deadlock và thứ tự không tất định; khoá theo order id không bảo vệ cấu trúc chung như {{TreeMap}}. Một luồng đọc lệnh từ queue nên không cần khoá, không race, và replay journal cho kết quả tất định. Đổi lại throughput bị giới hạn bởi một lõi, nhưng JMH cho ~50.000 lệnh/giây là quá đủ cho dự án và cho một sàn nhỏ. Nếu cần mở rộng, tôi phân mảnh theo contract: mỗi hợp đồng một luồng, định tuyến theo contract id, tăng song song theo số lõi mà vẫn giữ tất định trong từng hợp đồng. Trade-off là thêm lớp định tuyến và không còn một hàng đợi toàn cục.`,
+        `Journal là bảng append-only ghi mọi thay đổi (NEW_ORDER, FILL, CANCEL) kèm {{seq}} BIGSERIAL. Khi khởi động lại, tôi đọc journal từ đầu, dựng lại order book và số dư, so với snapshot cuối; nếu có snapshot thì replay từ offset để nhanh. Tôi ghi journal **trước** khi phát market data vì journal là sự thật: nếu phát market data trước rồi crash, client đã nhận sự kiện mà hệ thống chưa lưu, không thể chứng minh. Phát sau đảm bảo "state được lưu rồi mới công bố". Trade-off: market data trễ thêm một bước ghi, nhưng đổi lại nhất quán và replay được.`,
+        `REST dùng {{Idempotency-Key}} + {{UNIQUE (owner_id, idem_key)}} và hash payload đã chuẩn hoá; cùng key khác payload trả 422, giống thì trả kết quả cũ. FIX không có idempotency key, nên dựa vào {{ClOrdID}} (tag 11) và sequence number: broker gửi lại cùng ClOrdID thì tôi nhận ra và không xử lý hai lần; seq lệch thì ResendRequest. Điểm chung: cả hai đều cần một khoá duy nhất (key hoặc ClOrdID) và một nơi lưu để đối chiếu. Trade-off: FIX phải lưu ClOrdID đã xử lý trong một cửa sổ thời gian, nếu không sẽ quên sau khi khởi động lại.`,
+        `Tôi kiểm tra {{crosses}} (mua >= bán) và khớp phần nhỏ nhất giữa hai lệnh; khi một lệnh hết hoặc mức giá rỗng thì dừng và xoá mức. FOK phải kiểm tra đủ khối lượng **trước** khi khớp, nếu không đủ thì huỷ toàn bộ, không để lại phần treo. IOC khớp phần có thể rồi huỷ phần còn lại, không {{rest}} vào sổ. Test 100 lệnh xen kẽ cho tổng khớp = tổng có sẵn; test FOK thiếu khối lượng phải huỷ sạch. Lỗi hay gặp là FOK khớp một phần rồi mới kiểm tra, để lại lệnh treo ngoài ý muốn.`,
+        `Cuối ngày {{SettlementJob}} đọc settlement price, tính lãi/lỗ = (giá mới - giá cũ) x multiplier x qty; long lãi khi giá tăng, short lãi khi giá giảm (đảo dấu). Tôi cộng/trừ số dư và ghi ledger MTM. Nếu số dư < maintenance margin thì tạo margin call có deadline; quá hạn không nạp thì {{forcedLiquidation}} đóng vị thế ở giá thị trường mới nhất, ghi Fill và đặt qty = 0. Test {{MarginIT}}: long 2 @ 4,20, settlement 4,05 → lỗ, dưới duy trì → margin call; không nạp → đóng đúng 2, số dư không âm.`,
+        `Một contract id làm key đảm bảo mọi sự kiện L2 của hợp đồng đó vào cùng một phân vùng Kafka, giữ thứ tự; nếu key là order id thì sự kiện cùng hợp đồng rơi nhiều partition, client thấy L2 sai thứ tự. Consumer idempotent (bảng {{processed_event}} hoặc khóa contract+ts) để khi Kafka phát lại (at-least-once) không ghi trùng lịch sử giá. Tôi cũng batch nhiều fill một lần gửi để giảm chi phí. Trade-off: một contract nóng có thể nghẽn một partition; khi đó tách theo contract là đủ, không cần chia nhỏ hơn.`,
+        `QuickFIX/J quản lý sequence; khi nhận seq cao hơn mong đợi, tôi gửi {{ResendRequest}} (35=2) yêu cầu gửi lại từ số thiếu, và lưu các tin đã gửi trong bộ nhớ để phát lại. Khi nhận seq thấp hơn (đã xử lý) thì bỏ qua. Với {{TestRequest}} (35=1) tôi trả Heartbeat (35=0) để giữ phiên. Nếu broker gửi lại cùng {{ClOrdID}}, tôi nhận ra qua map ClOrdID → OrderID và không xử lý hai lần. Lỗi hay gặp là không lưu tin đã gửi, ResendRequest không có gì để gửi lại, hoặc không xử lý heartbeat làm phiên timeout.`,
+        `Tôi viết {{MatchingBenchmark}} JMH với {{@Fork(1)}}, {{@Warmup(iterations=3)}}, {{@Measurement(iterations=5)}}, nạp order book 10.000 lệnh trong {{@Setup}} rồi submit tuần tự; JMH lo warm-up để JIT chạy ổn định. Tôi chạy hai cấu hình: mặc định G1 và {{-XX:+UseZGC -Xmx4g}}, so p99 và GC pause. ZGC cho pause < 1 ms phù hợp độ trễ thấp; G1 thông dụng nhưng pause cao hơn ở heap lớn. Tôi ghi rõ CPU/RAM/JDK/heap vào README và nói đây là số local, không phải cam kết production; số 50.000 lệnh/giây là một lõi, không phải cả cụm.`
+      ]
+    },
+    related: ['banking-003', 'banking-004', 'concurrency-006', 'concurrency-009', 'design-005', 'design-011', 'microservices-005', 'microservices-009', 'sql-010', 'api-011']
+  },
 ];
