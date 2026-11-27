@@ -3416,6 +3416,8 @@ window.DATA_INDEX = {
     ["lab-thread-036","thread","CompletableFuture completion stages (thenApply/whenComplete) lặng lẽ chạy trên commonPool dù supplyAsync dùng executor riêng","senior"],
     ["lab-thread-037","thread","Redisson distributed lock timeout ngắn hơn transaction: lock hết hạn giữa chừng, thread khác lấy lock gây lost update","senior"],
     ["lab-thread-038","thread","Batch EOD variation margin deadlock — hệ thống treo lúc 17:05, API nạp tiền timeout","senior"],
+    ["lab-thread-039","thread","@Scheduled cron overlap: job chạy 120s nhưng cron \"0 */1 * * * *\" (mỗi phút) — Spring tạo thread mới cho mỗi trigger, cạn Tomcat pool","senior"],
+    ["lab-thread-040","thread","Log4j2 sync appender trong Servlet Filter: request thread BLOCKED tại RollingRandomAccessFile.write, throughput sụt 90%","senior"],
     ["lab-gc-001","gc","Export đối soát cuối ngày: humongous allocation đẩy G1 vào Full GC","senior"],
     ["lab-gc-002","gc","Heap của ví tăng đều mỗi ngày: hai lần class histogram lộ listener không được gỡ","senior"],
     ["lab-gc-003","gc","OutOfMemoryError: Metaspace sau khi thêm rule khuyến mãi bằng Groovy","senior"],

@@ -7756,5 +7756,354 @@ Với hệ thống ký quỹ, hướng bền vững nhất là **khoá ở tần
     'Nêu biện pháp phòng ngừa: phát hiện deadlock bằng ThreadMXBean/jcmd, alert theo số thread BLOCKED, test tải hai chiều.'
   ],
   tags: ['deadlock', 'jstack', 'synchronized', 'lock-ordering', 'margin', 'eod', 'commodity-exchange']
+},
+{
+  id: 'lab-thread-039',
+  category: 'thread',
+  title: '@Scheduled cron overlap: job chạy 120s nhưng cron "0 */1 * * * *" (mỗi phút) — Spring tạo thread mới cho mỗi trigger, cạn Tomcat pool',
+  level: 'senior',
+  scenario: `**Bối cảnh:** **PayVN Settlement** (Spring Boot 3.4, Java 21, 3 pod, Tomcat max-threads=200) có job đối soát hàng ngày: {{@Scheduled(cron = "0 */1 * * * *")}} gọi {{SettlementJob.run()}} xử lý lô ~10 000 giao dịch, trung bình mất **120 giây**. Team dùng cron "mỗi phút" thay vì fixedRate vì muốn job chạy "gần đúng giờ" (00:00, 00:01, 00:02...).
+ 
+ **Triệu chứng:** Từ **00:05 ngày 25/11/2026**, pod báo {{Thread pool exhausted}}, health check fail, p99 API vọt lên 25s. Thread dump lúc 00:06 cho thấy **120+ thread tên {{scheduling-1}}...{{scheduling-120}}** đều RUNNABLE tại {{SettlementJob.run}}; Tomcat thread {{http-nio-8080-exec-*}} phần lớn WAITING chờ queue. CPU pod ~40%, DB khỏe, không exception.
+ 
+ **Dữ liệu thu thập:** jstack lúc 00:06, metric Prometheus (Tomcat threads, scheduler threads), cấu hình Spring TaskScheduler.`,
+  artifacts: [
+    {
+      name: 'jstack-settlement-cron.txt',
+      lang: 'text',
+      content: `2026-11-25 00:06:12
+Full thread dump OpenJDK 64-Bit Server VM (21.0.4+7-LTS-151 mixed mode, sharing):
+ 
+"scheduling-1" #41 prio=5 os_prio=0 cpu=18450.22ms elapsed=372.30s tid=0x00007f5a901a1000 nid=0x1001 runnable  [0x00007f5a74cfd000]
+   java.lang.Thread.State: RUNNABLE
+        at vn.pay.settlement.SettlementJob.processBatch(SettlementJob.java:88)
+        at vn.pay.settlement.SettlementJob.run(SettlementJob.java:42)
+        at org.springframework.scheduling.support.DelegatingErrorHandlingRunnable.run(DelegatingErrorHandlingRunnable.java:54)
+        at java.lang.Thread.run(java.base@21.0.4/Thread.java:840)
+ 
+"scheduling-2" #42 prio=5 os_prio=0 cpu=17230.11ms elapsed=312.28s tid=0x00007f5a901a2000 nid=0x1002 runnable  [0x00007f5a74bfc000]
+   java.lang.Thread.State: RUNNABLE
+        at vn.pay.settlement.SettlementJob.processBatch(SettlementJob.java:88)
+        at vn.pay.settlement.SettlementJob.run(SettlementJob.java:42)
+        at org.springframework.scheduling.support.DelegatingErrorHandlingRunnable.run(DelegatingErrorHandlingRunnable.java:54)
+        at java.lang.Thread.run(java.base@21.0.4/Thread.java:840)
+ 
+... (tương tự scheduling-3 đến scheduling-118, TẤT CẢ RUNNABLE tại SettlementJob.processBatch) ...
+ 
+"scheduling-119" #159 prio=5 os_prio=0 cpu=2450.33ms elapsed=60.10s tid=0x00007f5a902f0000 nid=0x1077 runnable  [0x00007f5a7b0f6000]
+   java.lang.Thread.State: RUNNABLE
+        at vn.pay.settlement.SettlementJob.processBatch(SettlementJob.java:88)
+        at vn.pay.settlement.SettlementJob.run(SettlementJob.java:42)
+        at org.springframework.scheduling.support.DelegatingErrorHandlingRunnable.run(DelegatingErrorHandlingRunnable.java:54)
+        at java.lang.Thread.run(java.base@21.0.4/Thread.java:840)
+ 
+"scheduling-120" #160 prio=5 os_prio=0 cpu=1020.44ms elapsed=0.50s tid=0x00007f5a902f1000 nid=0x1078 runnable  [0x00007f5a7c0f7000]
+   java.lang.Thread.State: RUNNABLE
+        at vn.pay.settlement.SettlementJob.processBatch(SettlementJob.java:88)
+        at vn.pay.settlement.SettlementJob.run(SettlementJob.java:42)
+        at org.springframework.scheduling.support.DelegatingErrorHandlingRunnable.run(DelegatingErrorHandlingRunnable.java:54)
+        at java.lang.Thread.run(java.base@21.0.4/Thread.java=840)
+ 
+"http-nio-8080-exec-12" #85 prio=5 os_prio=0 cpu=120.44ms elapsed=300.10s tid=0x00007f5a90300000 nid=0x2001 waiting on condition  [0x00007f5a7d0f8000]
+   java.lang.Thread.State: TIMED_WAITING (parking)
+        at jdk.internal.misc.Unsafe.park(java.base@21.0.4/Native Method)
+        - parking to wait for  <0x00007f5a64004b00> (a java.util.concurrent.LinkedBlockingQueue)
+        at java.util.concurrent.LinkedBlockingQueue.poll(LinkedBlockingQueue.java:493)
+        at org.apache.tomcat.util.threads.TaskQueue.poll(TaskQueue.java:85)
+        at org.apache.tomcat.util.threads.TaskQueue.poll(TaskQueue.java:32)
+        at org.apache.tomcat.util.threads.StandardThreadExecutor.getTask(StandardThreadExecutor.java:72)
+        at org.apache.tomcat.util.threads.StandardThreadExecutor$StandardThread.run(StandardThreadExecutor.java:90)
+ 
+# Tomcat thread count: active=200, queue=0, rejected=1450 (đếm từ actuator)
+# Scheduler thread count: 120 (mỗi phút trigger tạo thread mới, job 120s → tích lũy 120 thread)
+`
+    },
+    {
+      name: 'settlement-metrics.txt',
+      lang: 'text',
+      content: `# Pod settlement-7d9f, 2026-11-25
+# spring.task.scheduling.pool.size=1 (DEFAULT)
+# spring.task.scheduling.thread-name-prefix=scheduling-
+# Tomcat max-threads=200
+ 
+# 00:00-00:05 (bình thường)
+  scheduling-threads=5
+  tomcat-active=45
+  tomcat-queue=0
+  /api/settlement p99=180ms
+ 
+# 00:05-00:10 (sự cố)
+  scheduling-threads=120  <-- TĂNG DẦN MỖI PHÚT
+  tomcat-active=200
+  tomcat-queue=0
+  tomcat-rejected=1450
+  /api/settlement p99=25000ms
+  health-check-fail=true
+  CPU=40%
+ 
+# Ghi chú: mỗi phút cron trigger -> Spring tạo thread mới (ScheduledFutureTask) chạy job 120s
+# Thread không được reuse vì TaskScheduler pool size=1 nhưng cron trigger tạo ScheduledFutureTask riêng
+# Thực tế: TaskExecutor dùng cho cron là ScheduledThreadPoolExecutor, MỖI trigger submit một task mới
+# Job 120s + trigger 60s -> số thread chạy đồng thời = 120/60 = 2 thread/phút -> tích lũy
+# Sau 60 phút = 120 thread. Mỗi thread tiêu ~1MB stack -> 120MB + CPU contention.
+`
+    }
+  ],
+  questions: [
+    'Vì sao cron "0 */1 * * * *" với job 120s lại tạo 120 thread scheduling-* thay vì reuse thread? Spring TaskScheduler pool size=1 nhưng cron hoạt động thế nào?',
+    'Tại sao Tomcat thread pool bị exhausted (rejected=1450) trong khi scheduler thread là độc lập? Có liên quan gì giữa scheduling thread và Tomcat thread không?',
+    'Sửa thế nào: (a) config scheduler pool, (b) đổi cron sang fixedDelay, (c) ShedLock, (d) chia nhỏ job? So sánh trade-off.'
+  ],
+  hints: [
+    'Spring TaskScheduler mặc định pool size=1. Với @Scheduled(cron), Spring dùng ScheduledThreadPoolExecutor — MỖI lần trigger submit một Runnable mới vào DelayedWorkQueue (unbounded). Với pool size=1, job 120s + trigger 60s -> moi trigger xep hang, KHONG tao thread moi (ScheduledThreadPoolExecutor khong vuot corePoolSize cho scheduled task). Thread count giu 1 (scheduling-1), nhung backlog task tang -> queue phinh to -> memory + do tre thuc thi tang. Neu muon concurrency cao hon, phai tang pool size; neu khong, trigger bi tre.',
+    'Tomcat thread exhausted KHÔNG do scheduler chiếm thread Tomcat. Scheduler thread (scheduling-*) là thread riêng. Nhưng: job SettlementJob dùng @Transactional, mượn Hikari connection, và có thể gọi HTTP client. Khi 120 thread scheduler chạy đồng thời -> Hikari pool cạn -> Tomcat thread chờ connection -> rejected. Hoặc scheduler thread tiêu CPU -> GC pause -> Tomcat thread chậm -> queue đầy.',
+    'Giải pháp gốc: KHÔNG dùng cron cho job dài. Dùng fixedDelay (chờ job xong mới đếm giờ) HOẶC tăng scheduler pool size + thêm ShedLock (tránh chạy trùng pod) + chia nhỏ lô (pagination, async).'
+  ],
+answer: `**Tóm tắt:** @Scheduled(cron = "0 */1 * * * *") trigger mỗi phút, nhưng job mất 120s. Spring TaskScheduler mặc định dùng ScheduledThreadPoolExecutor với corePoolSize=1 và **unbounded queue** — NHƯNG ScheduledThreadPoolExecutor khi core pool đầy sẽ **tạo thread mới** (không dùng queue cho scheduled task). Kết quả: mỗi phút tạo thread mới, job 120s -> tích lũy 120 thread scheduling-*. 120 thread tiêu CPU/memory, cạn Hikari connection (nếu job có @Transactional), khiến Tomcat thread chờ connection -> rejected. CPU 40% do context switch + GC.
+
+### Nguyên nhân gốc
+
+Spring @Scheduled(cron) **không reuse thread** như fixedRate/fixedDelay. Mỗi lần trigger, ScheduledThreadPoolExecutor submit một task mới. Với corePoolSize=1 (mặc định), task đầu tiên chạy, task thứ 2...n **không vào queue** mà ScheduledThreadPoolExecutor **tạo thread mới** (vì task là delayed task, không phải queued task). Sau 60 phút (job 120s, trigger 60s) có 120 thread chạy đồng thời SettlementJob.
+
+~~~java
+// Cấu hình mặc định (application.yml KHÔNG set pool size)
+spring:
+  task:
+    scheduling:
+      pool:
+        size: 1  // DEFAULT
+
+// @Scheduled(cron = "0 */1 * * * *")
+public void run() { ... 120s ... }
+~~~
+
+Cơ chế ScheduledThreadPoolExecutor:
+- corePoolSize=1, maximumPoolSize=Integer.MAX_VALUE (mặc định)
+- Delayed task (cron) -> submit -> nếu worker đang bận -> **tạo thread mới** (không vào queue)
+- Thread mới chạy task, xong thì sống thêm keepAliveTime (mặc định 0 cho core, 60s cho non-core) rồi chết
+- Nhưng job 120s > keepAliveTime -> thread không chết, tích lũy
+
+### Dẫn chứng
+
+- Thread dump: 120 thread {{scheduling-1}} đến {{scheduling-120}} đều RUNNABLE tại {{SettlementJob.processBatch}} (dòng 88). Tên thread theo pattern {{scheduling-N}} tăng dần theo trigger.
+- Metric: {{scheduling-threads=120}} tăng đều mỗi phút. {{tomcat-rejected=1450}} do Hikari pool cạn (120 thread scheduler giữ connection @Transactional).
+- CPU 40%: 120 thread context switch + GC pressure (120MB stack + heap allocation).
+- Không có deadlock, không có exception — chỉ resource exhaustion.
+
+### Cách sửa
+
+**Ngắn hạn (30 phút):**
+1. Tăng scheduler pool size: {{spring.task.scheduling.pool.size=16}} (đủ cho 120s/60s = 2 concurrent, dư cho an toàn).
+2. Đặt keepAliveTime cho non-core thread: {{spring.task.scheduling.thread-pool.keep-alive=60s}} (giúp thread chết sau khi xong).
+3. Restart pod để xả 120 thread cũ.
+
+**Dài hạn (root cause fix):**
+
+1. **Đổi cron → fixedDelay**: {{@Scheduled(fixedDelay = 60000)}} — job mới chỉ bắt đầu sau khi job cũ xong 60s. Không tích lũy thread.
+2. **ShedLock** (đa pod): {{@SchedulerLock(name = "settlement", lockAtMostFor = "PT3M", lockAtLeastFor = "PT1M")}} — chỉ 1 pod chạy.
+3. **Chia nhỏ lô**: Pagination xử lý 500 record/lô, mỗi lô @Transactional riêng, trả connection ngay.
+4. **Virtual thread** (Java 21): {{spring.task.scheduling.pool.size=0}} + {{spring.threads.virtual.enabled=true}} — virtual thread nhường carrier khi chờ I/O, không cạn thread.
+
+| Cách | Hết tích lũy thread? | Đa pod an toàn? | Phức tạp |
+|---|---|---|---|
+| Tăng pool size + keepAlive | Giảm (vẫn tạo non-core) | Không | Thấp |
+| fixedDelay | Có (sequential) | Không (cần ShedLock) | Thấp |
+| fixedDelay + ShedLock | Có | Có | Trung bình |
+| Chia nhỏ lô + async | Có | Có | Trung bình |
+| Virtual thread executor | Có (carrier nhường) | Có | Thấp (Java 21+) |
+
+### Phòng ngừa
+
+- **Alert**: {{jvm_threads_live}} tăng không kiểm soát; {{spring_scheduler_scheduled_task_count}} (Micrometer) hoặc custom metric số thread scheduling-*.
+- **Review**: CẤM @Scheduled(cron) cho job > 30s. Bắt buộc fixedDelay hoặc ShedLock.
+- **Test**: Viết test integration mock job 120s, trigger cron 60s, assert thread count không vượt pool size * 2.
+- **Chaos**: Tăng tải DB làm job chậm lên 300s, quan sát thread count.
+
+> Senior tip: @Scheduled(cron) + long-running job = "thread leak" hợp pháp. Spring ScheduledThreadPoolExecutor tạo thread mới cho MỖI cron trigger (khác với fixedRate dùng queue). Luôn set pool size + keepAlive, hoặc tốt hơn: **đừng dùng cron cho job dài**. fixedDelay = "chạy, xong, nghỉ X giây, chạy tiếp" — an toàn nhất. Nếu cần "chạy đúng giờ" (00:00, 01:00), dùng cron nhưng job PHẢI ngắn (< 10s) hoặc delegate sang message queue (Kafka) xử lý async.`,
+  rubric: [
+    'Chỉ ra đúng: @Scheduled(cron) dùng ScheduledThreadPoolExecutor, mỗi trigger tạo thread mới (không reuse, không queue), job 120s + trigger 60s -> 120 thread tích lũy.',
+    'Giải thích Tomcat rejected do 120 scheduler thread giữ Hikari connection (@Transactional) -> connection pool cạn -> Tomcat thread chờ connection -> rejected.',
+    'Đề xuất: tăng pool size + keepAlive (ngắn hạn), đổi fixedDelay + ShedLock + chia nhỏ lô (dài hạn), nêu trade-off virtual thread.',
+    'Phòng ngừa: alert thread count, review cấm cron cho job dài, test integration mock job chậm.'
+  ],
+  tags: ['scheduled', 'cron', 'fixeddelay', 'shedlock', 'scheduledthreadpoolexecutor', 'thread-leak', 'hikaricp', 'tomcat']
+},
+{
+  id: 'lab-thread-040',
+  category: 'thread',
+  title: 'Log4j2 sync appender trong Servlet Filter: request thread BLOCKED tại RollingRandomAccessFile.write, throughput sụt 90%',
+  level: 'senior',
+  scenario: `**Bối cảnh:** **PayVN Gateway** (Spring Boot 3.4, Java 21, Log4j2 2.23, 4 pod, Tomcat max-threads=300) xử lý ~2 000 req/s. Team thêm **Servlet Filter log request/response body** để debug tích hợp ngân hàng: filter đọc {{HttpServletRequest.getInputStream}} (request body), bọc {{HttpServletResponse}} để capture response body, sau đó log **cả hai body** dưới dạng JSON pretty-print bằng Log4j2 logger dùng **{{RollingRandomAccessFile}}** appender (không async).
+ 
+ **Triệu chứng:** Sau deploy filter log body lúc **10:00 ngày 26/11/2026**, throughput giảm từ 2 000 req/s xuống **~200 req/s**, p99 từ 50ms lên **3.5 giây**, CPU pod **~60%** (trước ~25%), GC Young Gen frequency tăng 10x. Thread dump lúc 10:02 cho thấy **250+ thread {{http-nio-8080-exec-*}} BLOCKED tại {{RollingRandomAccessFile.write}}** chờ khoá {{ReentrantLock}} của appender. Heap dump: 80% heap là {{char[]}} / {{byte[]}} từ JSON pretty-print request/response body.
+ 
+ **Dữ liệu thu thập:** jstack lúc 10:02, GC log, heap dump (Eclipse MAT snapshot), log4j2.xml config.`,
+  artifacts: [
+    {
+      name: 'jstack-gateway-filter.txt',
+      lang: 'text',
+      content: `2026-11-26 10:02:44
+Full thread dump OpenJDK 64-Bit Server VM (21.0.4+7-LTS-151 mixed mode, sharing):
+ 
+"http-nio-8080-exec-12" #73 prio=5 os_prio=0 cpu=1820.44ms elapsed=1840.10s tid=0x00007f5b901a2000 nid=41201 waiting on condition  [0x00007f5b8f7f6000]
+   java.lang.Thread.State: BLOCKED (on object monitor)
+        at java.util.concurrent.locks.ReentrantLock.lock(ReentrantLock.java:325)
+        at org.apache.logging.log4j.core.appender.rolling.RollingRandomAccessFileManager.writeToDestination(RollingRandomAccessFileManager.java:312)
+        at org.apache.logging.log4j.core.appender.rolling.RollingRandomAccessFileManager.write(RollingRandomAccessFileManager.java:245)
+        at org.apache.logging.log4j.core.appender.OutputStreamManager.write(OutputStreamManager.java:210)
+        at org.apache.logging.log4j.core.appender.AbstractOutputStreamAppender.append(AbstractOutputStreamAppender.java:125)
+        at org.apache.logging.log4j.core.appender.AbstractAppender.tryAppend(AbstractAppender.java:198)
+        at org.apache.logging.log4j.core.core.AppenderControl.tryCallAppender(AppenderControl.java:156)
+        at org.apache.logging.log4j.core.config.LoggerConfig.callAppenders(LoggerConfig.java:534)
+        at org.apache.logging.log4j.core.config.LoggerConfig.processLogEvent(LoggerConfig.java:498)
+        at org.apache.logging.log4j.core.config.LoggerConfig.log(LoggerConfig.java:481)
+        at org.apache.logging.log4j.core.config.LoggerConfig.log(LoggerConfig.java:467)
+        at org.apache.logging.log4j.core.config.AwaitCompletionReliabilityStrategy.log(AwaitCompletionReliabilityStrategy.java:63)
+        at org.apache.logging.log4j.core.Logger.logMessage(Logger.logMessage.java:221)
+        at org.apache.logging.log4j.spi.AbstractLogger.logMessageSafely(AbstractLogger.java:211)
+        at org.apache.logging.log4j.spi.AbstractLogger.log(AbstractLogger.java:185)
+        at vn.pay.gateway.filter.BodyLoggingFilter.doFilter(BodyLoggingFilter.java:67)
+        at org.apache.catalina.core.ApplicationFilterChain.internalDoFilter(ApplicationFilterChain.java:195)
+        ...
+ 
+"http-nio-8080-exec-3" #64 prio=5 os_prio=0 cpu=1902.11ms elapsed=1841.20s tid=0x00007f5b90194000 nid=41180 runnable  [0x00007f5b8f5f4000]
+   java.lang.Thread.State: RUNNABLE
+        at java.io.RandomAccessFile.writeBytes(java.base@21.0.4/Native Method)
+        at java.io.RandomAccessFile.write(java.base@21.0.4/RandomAccessFile.java:523)
+        at org.apache.logging.log4j.core.appender.rolling.RollingRandomAccessFileManager.writeToDestination(RollingRandomAccessFileManager.java:312)
+        - locked <0x000000076c1a2b30> (a java.util.concurrent.locks.ReentrantLock$NonfairSync)
+        at org.apache.logging.log4j.core.appender.rolling.RollingRandomAccessFileManager.write(RollingRandomAccessFileManager.java:245)
+        at org.apache.logging.log4j.core.appender.rolling.RollingRandomAccessFileManager.write(RollingRandomAccessFileManager.java:245)
+        at org.apache.logging.log4j.core.appender.OutputStreamManager.write(OutputStreamManager.java:210)
+        at org.apache.logging.log4j.core.appender.AbstractOutputStreamAppender.append(AbstractOutputStreamAppender.java:125)
+        at org.apache.logging.log4j.core.appender.AbstractAppender.tryAppend(AbstractAppender.java:198)
+        at org.apache.logging.log4j.core.core.AppenderControl.tryCallAppender(AppenderControl.java:156)
+        at org.apache.logging.log4j.core.config.LoggerConfig.callAppenders(LoggerConfig.java:534)
+        at org.apache.logging.log4j.core.config.LoggerConfig.processLogEvent(LoggerConfig.java:498)
+        at org.apache.logging.log4j.core.config.LoggerConfig.log(LoggerConfig.java:481)
+        at vn.pay.gateway.filter.BodyLoggingFilter.doFilter(BodyLoggingFilter.java:67)
+        ...
+ 
+# 250 thread http-nio-8080-exec-* : 1 RUNNABLE giữ lock <0x000000076c1a2b30>, 249 BLOCKED chờ lock đó.
+# Appender config: RollingRandomAccessFile, immediateFlush=true, bufferSize=8192, NO AsyncAppender.
+`
+    },
+    {
+      name: 'gateway-gc.log',
+      lang: 'text',
+      content: `2026-11-26T10:00:05.123+07:00: [GC (Allocation Failure) [PSYoungGen: 512M->64M(512M)] 1024M->576M(2048M), 0.0452131 secs]
+2026-11-26T10:00:05.523+07:00: [GC (Allocation Failure) [PSYoungGen: 512M->64M(512M)] 1024M->576M(2048M), 0.0481123 secs]
+2026-11-26T10:00:06.023+07:00: [GC (Allocation Failure) [PSYoungGen: 512M->64M(512M)] 1024M->576M(2048M), 0.0423456 secs]
+# GC mỗi ~500ms, trước filter GC ~5s/lần. Allocation rate ~1.2 GB/s.
+ 
+2026-11-26T10:01:00.001+07:00: [Full GC (Ergonomics) [PSYoungGen: 512M->512M(512M)] [ParOldGen: 1536M->1450M(1536M)] 2048M->1962M(2048M), 1.2345678 secs]
+# Full GC 1.2s, stop-the-world -> request timeout.
+`
+    },
+    {
+      name: 'log4j2.xml',
+      lang: 'xml',
+      content: `<?xml version="1.0" encoding="UTF-8"?>
+<Configuration status="WARN" monitorInterval="30">
+    <Appenders>
+        <RollingRandomAccessFile name="FILE" fileName="logs/gateway.log"
+            filePattern="logs/gateway-%d{yyyy-MM-dd}.log.gz"
+            immediateFlush="true" bufferSize="8192">
+            <PatternLayout pattern="%d{ISO8601} %-5level [%thread] %logger{36} - %msg%n"/>
+            <Policies>
+                <TimeBasedTriggeringPolicy interval="1" modulate="true"/>
+            </Policies>
+        </RollingRandomAccessFile>
+    </Appenders>
+    <Loggers>
+        <Logger name="vn.pay.gateway.filter" level="INFO" additivity="false">
+            <AppenderRef ref="FILE"/>
+        </Logger>
+        <Root level="INFO">
+            <AppenderRef ref="FILE"/>
+        </Root>
+    </Loggers>
+</Configuration>`
+    }
+  ],
+  questions: [
+    'Vì sao throughput giảm 90% (2000 -> 200 req/s) và p99 lên 3.5s? Chỉ ra HAI nguyên nhân: (1) lock contention appender, (2) allocation/GC do JSON pretty-print body lớn.',
+    'Trong dump, thread exec-3 RUNNABLE tại RandomAccessFile.writeBytes HOLD lock <0x000000076c1a2b30>; 249 thread BLOCKED chờ lock đó. Tính Little\'s law: mỗi request log ~500KB JSON, ghi disk ~50MB/s -> mỗi ghi mất ~10ms -> 300 thread * 10ms = 3s serial time -> throughput ~30 req/s (gần 200 req/s thực tế do có request không log body).',
+    'Sửa thế nào: (a) AsyncAppender, (b) không log body to, (c) structured logging compact JSON, (d) sampling. So sánh trade-off.'
+  ],
+  hints: [
+    'RollingRandomAccessFile KHÔNG có async built-in. Log4j2 AsyncAppender là wrapper riêng. Filter log body -> JSON pretty-print (indent, space) -> string lớn ~500KB/request. Mỗi request: allocate char[] -> byte[] -> encode -> lock appender -> write disk -> flush (immediateFlush=true). Hai nút thắt: (1) lock appender serialize 300 thread, (2) allocation rate 1.2 GB/s -> Young GC 10x -> Full GC 1.2s stop-the-world.',
+    'Thread exec-3 là thread "may mắn" lấy được lock, đang ghi disk (RandomAccessFile.writeBytes - native). 249 thread khác BLOCKED tại ReentrantLock.lock chờ cùng lock. CPU 60% do GC + context switch, không phải business logic.',
+    'AsyncAppender: queueSize default 1024, worker thread riêng. Nếu queue đầy -> discard hoặc block (configurable). Với 2000 req/s * 500KB = 1GB/s log data -> disk I/O không kịp -> queue đầy -> block lại. CẦN: giảm size log (compact JSON, không pretty), sampling 1/100, hoặc offload log sang filebeat/fluentd.'
+  ],
+answer: `**Tóm tắt:** Servlet Filter log request/response body full JSON pretty-print bằng Log4j2 RollingRandomAccessFile **không Async**. Mỗi request allocate ~500KB string, 300 thread tranh giành một ReentrantLock của appender, ghi disk sync (immediateFlush=true). Kết quả: (1) Lock contention serialize 300 thread -> throughput sụt, (2) Allocation rate 1.2 GB/s -> Young GC 10x -> Full GC 1.2s stop-the-world -> p99 3.5s. CPU 60% chủ yếu do GC.
+
+### Nguyên nhân gốc
+
+1. **Lock contention**: Log4j2 RollingRandomAccessFile dùng **một ReentrantLock** ({{RollingRandomAccessFileManager.writeToDestination}}). Mọi thread log phải lấy lock -> ghi -> flush -> unlock. Với 2000 req/s, 300 thread Tomcat, lock thành nút thắt serial. Dump: 1 thread RUNNABLE giữ lock ghi disk, 249 thread BLOCKED chờ.
+
+2. **Allocation/GC pressure**: Filter đọc body -> {{ObjectMapper.writerWithDefaultPrettyPrinter().writeValueAsString()}} -> JSON pretty-print (indent 2 space, newline). Request body trung bình 200KB, response 300KB -> JSON string ~500KB. 2000 req/s * 500KB = **1 GB/s allocation rate**. Young Gen 512M đầy trong 0.5s -> GC mỗi 500ms. Survivor không kịp -> object promote Old Gen -> Full GC 1.2s stop-the-world.
+
+3. **immediateFlush=true**: Mỗi log event flush ngay xuống disk (fsync) -> I/O sync chặn thread.
+
+### Dẫn chứng
+
+- Thread dump: {{http-nio-8080-exec-3}} RUNNABLE tại {{RandomAccessFile.writeBytes}} HOLD lock {{<0x000000076c1a2b30>}}; 249 thread BLOCKED tại {{ReentrantLock.lock}} chờ cùng lock.
+- GC log: Young GC mỗi ~500ms (trước ~5s), Allocation Failure. Full GC 1.2s lúc 10:01.
+- Heap dump (MAT): 80% heap là {{char[]}} / {{byte[]}} từ {{ObjectMapper.writeValueAsString}} (pretty JSON).
+- Log4j2 config: {{RollingRandomAccessFile}}, {{immediateFlush="true"}}, **KHÔNG** AsyncAppender wrapper.
+- Metric: throughput 2000 -> 200 req/s, p99 50ms -> 3500ms, CPU 25% -> 60%.
+
+### Cách sửa
+
+**Ngắn hạn (giảm thiệt hại ngay):**
+1. Tắt filter log body: comment @Bean BodyLoggingFilter.
+2. Hoặc giảm log level filter logger: {{<Logger name="vn.pay.gateway.filter" level="OFF"/>}}.
+3. Restart pod để xả GC pressure.
+
+**Dài hạn (root cause fix):**
+
+1. **AsyncAppender** (bắt buộc cho production):
+
+~~~xml
+<AsyncAppender name="ASYNC_FILE" includeLocation="false">
+    <AppenderRef ref="FILE"/>
+    <Property name="queueSize">10000</Property>
+    <Property name="blocking">false</Property>  <!-- discard khi queue đầy thay vì block thread -->
+</AsyncAppender>
+<Logger name="vn.pay.gateway.filter" level="INFO" additivity="false">
+    <AppenderRef ref="ASYNC_FILE"/>
+</Logger>
+~~~
+
+2. **Compact JSON, KHÔNG pretty-print**: {{ObjectMapper.writeValueAsString()}} (mặc định compact) thay vì {{writerWithDefaultPrettyPrinter()}}. Giảm size 50-70%.
+3. **Chỉ log header + metadata, KHÔNG log full body**: log requestId, method, path, status, latency, errorCode. Body chỉ log khi error (sampling 1/100 error).
+4. **immediateFlush=false**, bufferSize=256KB: gom batch ghi disk.
+5. **Structured logging**: dùng {{StructuredDataMessage}} hoặc JSON template layout, tránh string concatenation.
+
+| Cách | Giảm lock contention? | Giảm allocation/GC? | Mất thông tin debug? |
+|---|---|---|---|
+| AsyncAppender | Có (worker thread riêng) | Không (vẫn allocate string trước khi enqueue) | Không |
+| Compact JSON | Không | Có (giảm 50-70% size) | Không (vẫn full content) |
+| Không log body / chỉ metadata | Có (string nhỏ) | Có (rất lớn) | Có (mất body) |
+| Sampling 1% | Có | Có | Có (chỉ sample) |
+| Offload Filebeat/Fluentd | Có (ghi local file nhanh) | Có | Không |
+
+### Phòng ngừa
+
+- **Code review**: CẤM log request/response body full trong filter/interceptor. Bắt buộc AsyncAppender cho mọi file appender. CẤM pretty-print JSON trong hot path.
+- **Static analysis**: SpotBugs rule cho {{ObjectMapper.writerWithDefaultPrettyPrinter}} trong package web/filter. Error Prone check {{immediateFlush="true"}} không có AsyncAppender.
+- **Load test**: Chạy JMeter/k6 2000 req/s với filter bật, đo p99, GC frequency, throughput. Phải pass SLA p99 < 200ms.
+- **Observability**: Metric {{log4j2_appender_queue_remaining}} (AsyncAppender), {{jvm_gc_pause_seconds_max}}, {{tomcat_threads_busy}}. Alert khi queue < 10% hoặc GC pause > 500ms.
+- **Log rotation**: Dùng {{RollingRandomAccessFile}} + gzip, nhưng KHÔNG immediateFlush. Disk I/O batch qua AsyncAppender worker.
+
+> Senior tip: "Log body để debug" là lý do số 1 gây sụt throughput production. Nguyên tắc: **production log = metadata + correlation ID**, body chỉ log khi **error** và **sampling**. Nếu business bắt buộc audit full body -> ghi ra **Kafka topic riêng** (async, không chặn request thread), consumer ghi file/S3/Elasticsearch. Đừng bao giờ ghi sync file trong request thread. Và nhớ: Log4j2 AsyncAppender **blocking=false** (discard) an toàn hơn **blocking=true** (block thread khi queue đầy) — production ưu tiên throughput hơn completeness log.`,
+  rubric: [
+    'Chỉ ra HAI nguyên nhân: (1) RollingRandomAccessFile ReentrantLock serialize 300 thread (dump exec-3 HOLD lock, 249 BLOCKED), (2) JSON pretty-print 500KB/request -> allocation 1.2 GB/s -> Young GC 10x -> Full GC 1.2s stop-the-world.',
+    'Trích dẫn dump: exec-3 RUNNABLE RandomAccessFile.writeBytes HOLD <0x000000076c1a2b30>; 249 thread BLOCKED ReentrantLock.lock. GC log: Young GC 500ms, Full GC 1.2s. Heap dump: 80% char[]/byte[].',
+    'Đề xuất: AsyncAppender + blocking=false, compact JSON, không log body full (chỉ metadata + sampling error), immediateFlush=false + bufferSize lớn. Nêu trade-off bảng.',
+    'Phòng ngừa: review cấm log body/pretty-print, static analysis, load test 2000 req/s, metric async queue remaining + GC pause.'
+  ],
+  tags: ['logging', 'log4j2', 'async-appender', 'rollingrandomaccessfile', 'servlet-filter', 'gc-pressure', 'allocation-rate', 'pretty-print', 'sampling']
 }
 );
