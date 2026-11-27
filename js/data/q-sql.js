@@ -10164,12 +10164,459 @@ Hệ thống analytics 5 tỷ events (tổng). Sub-partition RANGE month + HASH 
 
 > Senior tip: Sub-partitioning chỉ giá trị khi có hai truy vấn pattern trực giao (time-series + per-entity). Nếu 99% query lọc created_at, single-level RANGE partition đơn giản hơn và planner nhanh hơn. Luôn đo partition count vs planner time trước khi scale bucket.
 `,
-  follow: [
+follow: [
     'Partition-wise join yêu cầu gì về partition key và bucket count của hai bảng?',
     'Skew user_id trong HASH partition: làm sao phát hiện và khắc phục (HASH composite, LIST cho top user)?',
     'DETACH PARTITION CONCURRENTLY không hỗ trợ sub-partition: quy trình archive an toàn cho sub-partition là gì?'
   ],
   tags: ['sub-partitioning', 'RANGE', 'HASH', 'partition-wise join', 'pg_partman', 'retention', 'migration', 'zero-downtime', 'skew', 'CDC']
+},
+{
+  id: 'sql-125',
+  topic: 'sql',
+  level: 'senior',
+  q: 'Bảng transaction(account_id, amount, type IN/OUT, created_at): cần phát hiện giao dịch bất thường bằng window function. Cụ thể: (1) giao dịch có amount lớn hơn 3 lần trung bình 10 giao dịch trước đó của cùng tài khoản, (2) dấu hiệu "smurfing" – nhiều giao dịch nhỏ liên tiếp trong 10 phút để tránh ngưỡng báo cáo. Viết query dùng LAG/LEAD, AVG OVER, COUNT OVER với frame phù hợp.',
+  a: `**Tóm tắt:** Dùng LAG/LEAD để so sánh dòng hiện tại với dòng trước/sau, AVG() OVER với frame {{ROWS BETWEEN 10 PRECEDING AND 1 PRECEDING}} để lấy trung bình 10 giao dịch trước (không tính dòng hiện tại), COUNT() OVER với frame {{RANGE BETWEEN INTERVAL '10 minutes' PRECEDING AND CURRENT ROW}} để đếm giao dịch trong cửa sổ thời gian 10 phút. Luôn dùng ROWS cho frame tính theo số dòng, RANGE cho frame tính theo giá trị thời gian.
+
+### Hiểu nhanh
+Bạn ngồi xem camera giám sát quầy giao dịch. **LAG** giống việc lùi lại một khung hình để xem giao dịch ngay trước đó. **AVG OVER 10 PRECEDING** là lấy 10 khách trước đó, tính trung bình số tiền họ giao dịch – nếu khách hiện tại giao dịch lớn hơn 3 lần con số đó thì đáng ngờ. **COUNT OVER RANGE 10 phút** là đếm trong 10 phút qua có bao nhiêu giao dịch – nếu cùng tài khoản làm 15 giao dịch nhỏ trong 10 phút thì có thể là "smurfing" (chia nhỏ để tránh ngưỡng 50 triệu VND báo cáo bộ tài chính).
+
+### Thuật ngữ
+- **Window frame (khung cửa sổ)**: tập dòng liên quan đến dòng hiện tại mà hàm aggregate được phép "nhìn thấy".
+- **ROWS BETWEEN ... PRECEDING AND ... PRECEDING**: frame tính theo **số dòng vật lý** (ví dụ 10 dòng trước).
+- **RANGE BETWEEN INTERVAL ... PRECEDING AND CURRENT ROW**: frame tính theo **giá trị cột ORDER BY** (ví dụ 10 phút trước theo created_at).
+- **Peer rows**: các dòng có cùng giá trị ORDER BY. Với RANGE, toàn bộ peer rows được kéo vào frame.
+- **Smurfing / structuring**: chia nhỏ giao dịch lớn thành nhiều giao dịch nhỏ dưới ngưỡng báo cáo (AML).
+- **Exclusion frame**: {{ROWS BETWEEN 10 PRECEDING AND 1 PRECEDING}} – loại trừ dòng hiện tại khỏi frame.
+
+### Cơ chế từng bước
+
+#### 1. Phát hiện amount bất thường (lớn hơn 3x trung bình 10 giao dịch trước)
+~~~sql
+WITH stats AS (
+    SELECT t.*,
+           AVG(t.amount) OVER (
+               PARTITION BY t.account_id
+               ORDER BY t.created_at, t.id
+               ROWS BETWEEN 10 PRECEDING AND 1 PRECEDING
+           ) AS avg_prev_10,
+           LAG(t.amount) OVER (PARTITION BY t.account_id ORDER BY t.created_at, t.id) AS prev_amount
+    FROM transaction t
+)
+SELECT s.*,
+       CASE WHEN s.amount > 3 * s.avg_prev_10 AND s.avg_prev_10 IS NOT NULL THEN true ELSE false END AS is_anomaly_amount
+FROM stats s;
+~~~
+- {{ROWS BETWEEN 10 PRECEDING AND 1 PRECEDING}}: **10 dòng trước**, **không bao gồm dòng hiện tại**. Dòng đầu tiên của tài khoản sẽ có avg_prev_10 = NULL (chưa có 10 giao dịch trước) ⇒ không báo động.
+- Luôn thêm {{id}} vào ORDER BY làm tie-break: hai giao dịch cùng giây vẫn có thứ tự cố định.
+
+#### 2. Phát hiện smurfing (nhiều giao dịch nhỏ trong 10 phút)
+~~~sql
+WITH smurf AS (
+    SELECT t.*,
+           COUNT(*) OVER (
+               PARTITION BY t.account_id
+               ORDER BY t.created_at
+               RANGE BETWEEN INTERVAL '10 minutes' PRECEDING AND CURRENT ROW
+           ) AS txn_count_10min,
+           SUM(t.amount) OVER (
+               PARTITION BY t.account_id
+               ORDER BY t.created_at
+               RANGE BETWEEN INTERVAL '10 minutes' PRECEDING AND CURRENT ROW
+           ) AS sum_amount_10min
+    FROM transaction t
+    WHERE t.type = 'OUT'  -- chỉ xét giao dịch rút/chuyển ra
+)
+SELECT s.*,
+       CASE WHEN s.txn_count_10min >= 10 AND s.sum_amount_10min > 50000000 THEN true ELSE false END AS is_smurfing
+FROM smurf s;
+~~~
+- {{RANGE BETWEEN INTERVAL '10 minutes' PRECEDING}}: frame là **các dòng có created_at trong 10 phút trước** dòng hiện tại. Nếu 5 giao dịch cùng timestamp, cả 5 đều thuộc frame (peer rows).
+- Dùng RANGE thay vì ROWS vì cửa sổ là **thời gian thực**, không phải số dòng. Nếu dùng ROWS 100 PRECEDING thì 100 giao dịch có thể kéo dài nhiều giờ.
+
+#### 3. Kết hợp cả hai trong một query
+~~~sql
+WITH enriched AS (
+    SELECT t.*,
+           AVG(t.amount) OVER (
+               PARTITION BY t.account_id
+               ORDER BY t.created_at, t.id
+               ROWS BETWEEN 10 PRECEDING AND 1 PRECEDING
+           ) AS avg_prev_10,
+           COUNT(*) OVER (
+               PARTITION BY t.account_id
+               ORDER BY t.created_at
+               RANGE BETWEEN INTERVAL '10 minutes' PRECEDING AND CURRENT ROW
+           ) AS cnt_10min,
+           SUM(t.amount) OVER (
+               PARTITION BY t.account_id
+               ORDER BY t.created_at
+               RANGE BETWEEN INTERVAL '10 minutes' PRECEDING AND CURRENT ROW
+           ) AS sum_10min
+    FROM transaction t
+)
+SELECT e.*,
+       (e.amount > 3 * e.avg_prev_10 AND e.avg_prev_10 IS NOT NULL) AS anomaly_large_txn,
+       (e.cnt_10min >= 10 AND e.sum_10min > 50000000 AND e.type = 'OUT') AS anomaly_smurfing
+FROM enriched e
+WHERE (e.amount > 3 * e.avg_prev_10 AND e.avg_prev_10 IS NOT NULL)
+   OR (e.cnt_10min >= 10 AND e.sum_10min > 50000000 AND e.type = 'OUT');
+~~~
+
+### ROWS vs RANGE – khi nào dùng cái nào
+| Frame | Cách tính | Dùng cho | Ví dụ |
+|---|---|---|---|
+| {{ROWS BETWEEN 10 PRECEDING AND 1 PRECEDING}} | 10 dòng vật lý trước (không tính dòng hiện tại) | Trung bình N giao dịch gần nhất, rolling N | "trung bình 10 giao dịch trước" |
+| {{RANGE BETWEEN INTERVAL '10 minutes' PRECEDING AND CURRENT ROW}} | Tất cả dòng có ORDER BY trong khoảng giá trị | Cửa sổ thời gian, rate limiting | "số giao dịch trong 10 phút" |
+| {{ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW}} | Tất cả dòng từ đầu đến hiện tại | Running total, running balance | "số dư lũy kế" |
+
+**Bẫy quan trọng**: Mặc định khi có ORDER BY mà không ghi frame là {{RANGE BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW}}. Nếu ORDER BY created_at và có 3 giao dịch cùng giây, cả 3 sẽ thấy nhau trong frame → running total sai. Luôn ghi rõ frame.
+
+### Hiệu năng & index
+- Index composite: {{(account_id, created_at, id)}} cho cả hai frame.
+- AVG OVER ROWS: DB đọc tuần tự theo index, giữ buffer 10 giá trị → streaming, rất nhanh.
+- COUNT/SUM OVER RANGE: PostgreSQL hiện tại (15/16) dùng **WindowAgg** với sort; RANGE frame yêu cầu sort ngay cả khi đã có index theo created_at (vì frame phụ thuộc giá trị). Với bảng 50 triệu dòng/partition, tăng {{work_mem}} (256MB–1GB) và partition theo tháng để prune.
+- Materialize CTE: tránh tính window function hai lần nếu dùng trong nhiều CTE con.
+
+### Lỗi hay gặp
+1. **Dùng ROWS cho cửa sổ thời gian**. Triệu chứng: {{ROWS BETWEEN 100 PRECEDING}} đếm 100 giao dịch bất kể thời gian; 100 giao dịch có thể là 1 phút hoặc 1 tuần ⇒ rate limit sai. Cách tránh: dùng RANGE INTERVAL cho time window.
+2. **Quên loại trừ dòng hiện tại khi tính trung bình "trước đó"**. Triệu chứng: {{ROWS BETWEEN 10 PRECEDING AND CURRENT ROW}} lấy 11 dòng (kể cả dòng hiện tại) → trung bình bị đẩy lên → ít phát hiện anomaly hơn. Cách tránh: {{AND 1 PRECEDING}}.
+3. **ORDER BY không có tie-break**. Triệu chứng: cùng created_at, các dòng peer trong RANGE frame kéo nhau ⇒ COUNT bùng nổ. Cách tránh: {{ORDER BY created_at, id}}.
+4. **NULL avg_prev_10 khiến so sánh thành UNKNOWN**. Triệu chứng: dòng đầu tiên của tài khoản (chưa đủ 10 giao dịch trước) avg_prev_10 = NULL, so sánh {{amount > 3 * NULL}} ra UNKNOWN ⇒ không bị filter nhưng logic nên xử lý rõ ràng. Cách tránh: thêm {{avg_prev_10 IS NOT NULL}}.
+5. **Chạy trên toàn bảng không partition**. Triệu chứng: query quét 500 triệu dòng, WindowAgg sort toàn bộ, temp file 200GB, OOM. Cách tránh: partition theo tháng, chỉ quét partition gần nhất, hoặc pre-compute vào bảng aggregation.
+
+### Trả lời miệng 1 phút
+"Tôi dùng hai loại frame: ROWS cho trung bình 10 giao dịch trước (AVG OVER ROWS BETWEEN 10 PRECEDING AND 1 PRECEDING – loại trừ dòng hiện tại), và RANGE cho cửa sổ 10 phút (COUNT/SUM OVER RANGE BETWEEN INTERVAL '10 minutes' PRECEDING). ROWS tính theo số dòng, RANGE tính theo giá trị created_at. Anomaly lớn: amount > 3 * avg_prev_10. Smurfing: ≥10 giao dịch OUT trong 10 phút và tổng > 50 triệu. Index (account_id, created_at, id), partition tháng, work_mem 256MB. Bẫy: mặc định frame là RANGE UNBOUNDED PRECEDING, thiếu tie-break id làm peer rows kéo nhau, quên 1 PRECEDING thì trung bình sai."
+
+### Ví dụ đời thực
+Triệu chứng: hệ thống AML ngân hàng (PostgreSQL 15, bảng {{transaction}} 1,2 tỷ dòng, partition tháng) cần chạy rule detection hàng đêm. Rule cũ dùng self-join: {{SELECT ... FROM t1 JOIN t2 ON t1.account_id = t2.account_id AND t2.created_at BETWEEN t1.created_at - INTERVAL '10 minutes' AND t1.created_at}} chạy 6 tiếng, temp file 800GB, OOM kill. Doanh nghiệp phàn nàn báo cáo T+1 không kịp.
+Điều tra: {{EXPLAIN (ANALYZE, BUFFERS)}} rule cũ cho thấy Nested Loop join 1,2 tỷ x 1,2 tỷ (hash join không dùng được do điều kiện BETWEEN), spill to disk 800GB. Thử viết lại bằng window function: AVG OVER ROWS 10 PRECEDING + COUNT OVER RANGE 10 minutes. Chạy trên partition tháng gần nhất (85 triệu dòng), {{work_mem = '512MB'}}, parallel 8 worker: 22 phút, temp file 12GB, không OOM.
+Nguyên nhân gốc: self-join O(N²) trên dữ liệu lớn; window function streaming O(N log N) với frame phù hợp.
+Cách xử lý: migrate rule sang window function, thêm index {{(account_id, created_at, id)}}, cấu hình pg_partman auto-create partition, set {{work_mem = '512MB'}} cho session batch. Kết quả: batch detection từ 6h giảm xuống 22 phút, OOM = 0, phát hiện thêm 317 case smurfing mà rule cũ bỏ sót do self-join timeout.
+
+> Senior tip: interviewer hỏi "LAG/LEAD hay AVG OVER?", hãy phân biệt rõ: LAG/LEAD lấy **một giá trị** của dòng láng giềng (O(1) tra buffer), AVG/COUNT/SUM OVER với frame là **aggregate trên tập dòng** (cần sort, buffer frame). Khi nào dùng ROWS, khi nào RANGE – đó là câu hỏi knockout. Trên production, tôi luôn ghi frame rõ ràng, thêm tie-break id, và partition + work_mem cho bảng lớn.
+`,
+  follow: [
+    'Tại sao COUNT OVER RANGE INTERVAL 10 minutes không thể thay bằng ROWS 1000 PRECEDING?',
+    'Làm thế nào để tối ưu SUM OVER RANGE trên bảng partition 500 triệu dòng (work_mem, parallel, partial aggregate)?',
+    'Nếu cần phát hiện "giao dịch lặp lại cùng amount, cùng counterparty trong 5 phút", dùng window function nào?'
+  ],
+  tags: ['window function', 'LAG', 'LEAD', 'AVG OVER', 'COUNT OVER', 'ROWS vs RANGE', 'frame', 'smurfing', 'AML', 'anomaly detection', 'PostgreSQL']
+},
+{
+  id: 'sql-126',
+  topic: 'sql',
+  level: 'senior',
+  q: 'API lịch sử giao dịch 50 triệu dòng hỗ trợ sắp xếp tuỳ chọn (created_at, amount, status) và lọc theo khoảng ngày. Phân trang keyset (cursor-based) phải hoạt động đúng với mọi trường hợp sort. Thiết kế cursor opaque, giải thích cách encode/decode, và trade-off khi sort column không có index hoặc sort direction thay đổi.',
+  a: `**Tóm tắt:** Keyset pagination dùng WHERE (sort_col, tie_break) > (last_sort_val, last_tie_break) với ORDER BY sort_col, tie_break. Cursor opaque = base64(JSON({sort_col, sort_dir, last_vals...})). Với sort tuỳ chọn, cần **composite index** khớp từng cột sort (created_at, id), (amount, id), (status, created_at, id). Khi sort column không có index → fallback OFFSET/LIMIT hoặc từ chối sort đó. Sort direction thay đổi (ASC/DESC) đảo ngược toán tử so sánh và thứ tự index.
+
+### Hiểu nhanh
+Keyset pagination giống việc "gặp bạn cuối cùng ở trang trước, nhớ tên và ngày sinh của bạn ấy, trang sau chỉ tìm người đứng sau bạn ấy". Cursor opaque là một **vé thăm** được ký mã hóa: bên trong ghi "sắp xếp theo cột gì, chiều gì, giá trị cuối trang trước là gì". Client chỉ cần gửi vé đó, server decode và xây WHERE. Với sort tuỳ chọn, bạn cần một "chìa khóa" (index) cho mỗi cách sắp xếp – không có chìa khóa thì không mở được cửa (full scan).
+
+### Thuật ngữ
+- **Keyset pagination / seek method / cursor-based pagination**: phân trang bằng điều kiện WHERE trên giá trị cuối trang trước, không dùng OFFSET.
+- **Cursor opaque**: chuỗi base64 chứa trạng thái phân trang (sort column, direction, last values), client không cần hiểu cấu trúc bên trong.
+- **Tie-break / unique key**: cột duy nhất (thường là PK id) thêm vào ORDER BY để đảm bảo thứ tự xác định khi cột sort trùng giá trị.
+- **Composite index / covering index**: index trên nhiều cột theo đúng thứ tự ORDER BY; INCLUDE các cột SELECT để đạt index-only scan.
+- **Index-only scan**: DB trả kết quả chỉ từ index, không đọc heap table.
+- **Sort pushdown**: planner đẩy ORDER BY xuống index scan.
+
+### Thiết kế cursor opaque
+~~~json
+{
+  "v": 1,
+  "sort": "amount",
+  "dir": "desc",
+  "vals": { "amount": "12500000", "id": "987654321" }
+}
+~~~
+- v: version cursor (để migrate sau này).
+- sort: cột sort (created_at, amount, status).
+- dir: asc hoặc desc.
+- vals: object chứa giá trị cuối trang trước của **tất cả cột trong ORDER BY** (sort column + tie-break).
+
+Encode: cursor = base64url(JSON.stringify(obj)). Decode: JSON.parse(base64url.decode(cursor)).
+Base64URL (thay + / = an toàn cho URL) không padding.
+
+### Xây dựng WHERE từ cursor
+Giả sử ORDER BY sort_col dir, id dir (tie-break id cùng chiều với sort column).
+- Nếu dir = desc: WHERE (sort_col, id) < (last_sort_val, last_id)
+- Nếu dir = asc:  WHERE (sort_col, id) > (last_sort_val, last_id)
+
+PostgreSQL hỗ trợ **row value comparison** (tuple comparison): (a, b) < (x, y) tương đương a < x OR (a = x AND b < y).
+
+### Composite index cần thiết cho từng sort option
+| Sort option | ORDER BY | Index cần tạo | Ghi chú |
+|---|---|---|---|
+| created_at desc (mặc định) | created_at DESC, id DESC | (created_at DESC, id DESC) | Index mặc định, hỗ trợ cả filter created_at range |
+| amount desc | amount DESC, id DESC | (amount DESC, id DESC) INCLUDE (created_at, status, type) | Covering index cho index-only scan |
+| amount asc | amount ASC, id ASC | (amount ASC, id ASC) INCLUDE (...) | Ít dùng nhưng cần nếu UI cho phép |
+| status, created_at desc | status, created_at DESC, id DESC | (status, created_at DESC, id DESC) | Filter status + sort created_at |
+
+**Lưu ý**: Index phải khớp **chính xác** thứ tự cột và hướng (ASC/DESC) của ORDER BY. PostgreSQL có thể quét index theo chiều ngược (BackwardIndexScan), nên index (created_at ASC, id ASC) cũng phục vụ được ORDER BY created_at DESC, id DESC; nhưng tạo index khớp đúng cột và hướng giúp planner chọn Index Scan thay vì Sort node, nhất là khi kết hợp thêm điều kiện filter.
+
+### Xử lý filter ngày (created_at range) cùng keyset
+Filter ngày là **điều kiện bổ sung**, không thay đổi logic keyset:
+~~~sql
+-- Cursor: sort=amount, dir=desc, vals={amount: 12500000, id: 987654321}
+-- Filter: created_at >= '2026-01-01' AND created_at < '2026-02-01'
+SELECT * FROM transaction
+WHERE created_at >= '2026-01-01'
+  AND created_at <  '2026-02-01'
+  AND (amount, id) < (12500000, 987654321)
+ORDER BY amount DESC, id DESC
+LIMIT 20;
+~~~
+Planner sẽ dùng index (amount DESC, id DESC) (nếu select ít cột) hoặc (created_at, amount, id) (nếu filter created_at chặt). Composite index (amount DESC, id DESC) INCLUDE (created_at, status, type) giúp index-only scan khi không filter created_at; khi có filter created_at, planner có thể chọn index (created_at, amount DESC, id DESC) nếu selectivity cao.
+
+### Fallback khi sort column không có index
+Nếu client yêu cầu sort theo cột không có index (ví dụ type enum IN/OUT, cardinality thấp):
+1. **Từ chối**: trả lỗi 400 "Unsupported sort column: type. Supported: created_at, amount, status".
+2. **Fallback OFFSET/LIMIT**: chỉ cho trang 1-3, cảnh báo "sort không tối ưu, chỉ hỗ trợ 3 trang đầu".
+3. **Pre-compute**: materialized view đã sort sẵn, refresh định kỳ.
+
+Khuyến nghị: **luôn từ chối sort không có index** trên production 50M+ rows. UI chỉ hiển thị dropdown sort các cột đã có index.
+
+### Sort direction thay đổi (ASC ↔ DESC)
+Khi user bấm header cột để đổi chiều sort:
+- Cursor cũ **không thể tái sử dụng** vì toán tử so sánh và thứ tự index đảo ngược.
+- Phải **reset về trang 1** (cursor = null) khi đổi sort column hoặc direction.
+- UI nên vô hiệu hóa nút "Next" khi user đang đổi sort, ép họ bấm "Load first page".
+
+### Count tổng số bản ghi (total count)
+Keyset không cho total count. Giải pháp:
+- COUNT(*) OVER() trong cùng query: trả total trong mỗi dòng (cost thêm WindowAgg, chấp nhận được nếu limit nhỏ).
+- Estimated count: pg_class.reltuples (nhanh nhưng ước lượng).
+- Cache count: Redis key count:transaction:2026-01 refresh 5 phút.
+- Không cần total cho infinite scroll; chỉ cần total cho UI có pagination control.
+
+### Lỗi hay gặp
+1. **Thiếu tie-break id**. Triệu chứng: ORDER BY amount DESC – nhiều giao dịch cùng amount, kết quả lật đật giữa các trang, dòng bị skip/duplicate. Cách tránh: luôn ORDER BY amount DESC, id DESC.
+2. **Dùng cursor cũ khi đổi sort**. Triệu chứng: trang 2 sort by amount dùng cursor của sort by created_at → WHERE sai, kết quả rỗng hoặc trùng lặp. Cách tránh: client xóa cursor khi sort thay đổi.
+3. **Index không khớp ORDER BY**. Triệu chứng: EXPLAIN cho thấy Sort node thay vì Index Scan, query 50M rows chậm 100x. Cách tránh: tạo index chính xác (cột + hướng), kiểm tra bằng EXPLAIN.
+4. **Base64 padding gây lỗi URL**. Triệu chứng: cursor có = + / bị encode sai khi truyền query param. Cách tránh: dùng base64url (RFC 4648 §5) – replace + → -, / → _, bỏ =.
+5. **Filter created_at làm mất index cho sort amount**. Triệu chứng: planner chọn Seq Scan vì index amount không chứa created_at. Cách tránh: index (created_at, amount DESC, id DESC) hoặc covering index (amount DESC, id DESC) INCLUDE (created_at, ...), để planner chọn được index-only scan.
+
+### Trả lời miệng 1 phút
+"Keyset pagination: cursor opaque base64(JSON{v, sort, dir, vals{sort_col, id}). WHERE (sort_col, id) >/< (last_vals) tùy dir. Cần composite index khớp từng sort option: (created_at DESC, id DESC), (amount DESC, id DESC) INCLUDE(...), (status, created_at DESC, id DESC). Filter ngày là WHERE thêm, không đổi logic keyset. Sort không có index → từ chối (400) hoặc fallback OFFSET 3 trang. Đổi sort/dir → reset cursor. Total count: COUNT(*) OVER() hoặc cache Redis. Bẫy: thiếu tie-break id, dùng cursor cũ khi đổi sort, index không khớp hướng."
+
+### Ví dụ đời thực
+Triệu chứng: app ví điện tử (PostgreSQL 15, transaction 52 triệu dòng) API GET /transactions?sort=amount&dir=desc&cursor=... User sort by amount desc, scroll trang 50 (cursor dựa trên amount), rồi bấm sort by created_at desc mà **không reset cursor**. API trả về trang 2 sort by created_at nhưng dùng giá trị amount làm điều kiện WHERE → kết quả rỗng. User nghĩ "hết dữ liệu" và phàn nại. Log cho thấy 2.300 request/ngày bị lỗi logic này.
+Điều tra: code client không xóa cursor khi sort thay đổi. Cursor encode: v=1,sort=amount,dir=desc,vals={amount:12500000,id:987654321}. Server decode, thấy sort=created_at nhưng vals chứa amount → build WHERE (created_at, id) < (12500000, 987654321) (so sánh created_at với số tiền) → type mismatch hoặc kết quả sai.
+Nguyên nhân gốc: client không reset cursor khi sort column/direction thay đổi; server không validate cursor khớp sort parameter.
+Cách xử lý: server validate: nếu cursor.sort != requested_sort OR cursor.dir != requested_dir thì bỏ qua cursor, trả trang 1 + log warning. Client: khi user đổi sort, set cursor = null. Thêm index (amount DESC, id DESC) INCLUDE (created_at, status, type) cho sort amount. Kết quả: 0 request lỗi logic sort, p95 trang 1 sort amount 18 ms (index-only scan), p95 trang 1 sort created_at 12 ms.
+
+> Senior tip: interviewer hỏi "cursor opaque chứa gì?", hãy trả lời: "version, sort column, direction, last values của tất cả cột ORDER BY (sort column + tie-break)". Câu hỏi tiếp: "sort column thay đổi thì sao?" → "reset cursor, vì toán tử so sánh và index đều đổi". Đó là dấu hiệu bạn đã implement keyset pagination thật trên production.
+`,
+  follow: [
+    'Cursor opaque dùng base64url thay vì base64 chuẩn: lợi ích là gì khi truyền qua URL?',
+    'Partition table 50 triệu dòng: keyset pagination trên partition như thế nào? Planner prune partition khi có cursor?',
+    'Làm thế nào để hỗ trợ "jump to page N" với keyset pagination (hybrid approach)?'
+  ],
+  tags: ['keyset pagination', 'cursor-based', 'seek method', 'offset', 'composite index', 'tie-break', 'base64url', 'PostgreSQL', 'performance', 'API design']
+},
+{
+  id: 'sql-127',
+  topic: 'sql',
+  level: 'lead',
+  q: 'Hệ thống fintech 2 tỷ dòng giao dịch partition theo tháng (RANGE trên created_at). Cần: (1) tự động tạo partition mới hàng tháng, detach/archive partition cũ, (2) foreign key từ bảng order_items(transaction_id) tham chiếu bảng transaction (partitioned) – PostgreSQL không hỗ trợ FK TO partitioned table, thiết kế giải pháp, (3) query joining transaction (partitioned) với users (non-partitioned) – partition-wise join có hoạt động không? Thiết kế schema, migration, pg_partman config, và monitoring.',
+  a: `**Tóm tắt:** (1) Dùng **pg_partman** quản lý partition: {{CREATE EXTENSION pg_partman;}} cấu hình {{partman.create_parent}} RANGE tháng, {{retention}} 36 tháng, {{premake}} 3 partition tương lai. (2) FK TO partitioned table **không được hỗ trợ** – dùng **trigger BEFORE INSERT** trên order_items kiểm tra EXISTS trên transaction, hoặc **application-level check** (SELECT 1 FROM transaction WHERE id = $1 FOR SHARE). (3) Partition-wise join chỉ hoạt động khi **hai bảng cùng partition key, cùng partition method, cùng số partition**. users không partition → không partition-wise join; giải pháp: partition users theo hash(user_id) cùng bucket count, hoặc dùng **local join** trên từng partition transaction.
+
+### Hiểu nhanh
+Bảng transaction 2 tỷ dòng partition 12 tháng/năm = 24 partition (2 năm). pg_partman giống "người quản lý kho tự động": mỗi tháng 1h sáng tự tạo partition tháng sau, tự detach partition 36 tháng trước vào schema archive. FK từ order_items -> transaction không thể khai báo {{REFERENCES transaction(id)}} vì PostgreSQL cấm FK trỏ vào partitioned table (planner không biết partition nào chứa id). Giải pháp thực tế: trigger kiểm tra tồn tại, hoặc app check trước khi insert. Join transaction + users: nếu users không partition, planner dùng Hash Join/Merge Join toàn bảng; muốn partition-wise join thì partition users theo hash(user_id) 16 bucket, transaction sub-partition HASH(user_id) 16 bucket → join 16 cặp partition độc lập, không shuffle.
+
+### Thuật ngữ
+- **pg_partman**: extension PostgreSQL tự động tạo/detach partition theo thời gian/ID.
+- **Retention policy**: quy tắc giữ dữ liệu (ví dụ giữ 36 tháng, detach cũ).
+- **Premake**: số partition tạo trước (pre-create) để INSERT không chờ tạo partition.
+- **Partition-wise join**: planner join từng cặp partition tương ứng thay vì join toàn bảng rồi gộp.
+- **Sub-partitioning**: partition bên trong partition (RANGE tháng + HASH user_id).
+- **FK TO partitioned table**: ràng buộc khóa ngoại trỏ vào bảng đã partition – PostgreSQL **không hỗ trợ**.
+- **Trigger BEFORE INSERT ... FOR SHARE**: khoá dòng tham chiếu (shared lock) để tránh race condition xóa partition đang được tham chiếu.
+
+### 1. pg_partman cấu hình cho RANGE tháng
+~~~sql
+-- Cài extension (superuser)
+CREATE EXTENSION pg_partman;
+
+-- Tạo bảng cha (partitioned table)
+CREATE TABLE public.transaction (
+    id bigint NOT NULL,
+    account_id bigint NOT NULL,
+    amount numeric(18,2) NOT NULL,
+    type text NOT NULL CHECK (type IN ('IN','OUT')),
+    status text NOT NULL DEFAULT 'COMPLETED',
+    created_at timestamptz NOT NULL,
+    -- PK phải chứa partition key
+    PRIMARY KEY (id, created_at)
+) PARTITION BY RANGE (created_at);
+
+-- Tạo partition cho tháng hiện tại + 3 tháng tương lai (premake = 3)
+SELECT partman.create_parent(
+    p_parent_table := 'public.transaction',
+    p_control := 'created_at',
+    p_type := 'range',
+    p_interval := '1 month',
+    p_premake := 3,
+    p_automatic_maintenance := 'on'  -- bật background worker
+);
+
+-- Cấu hình retention: giữ 36 tháng, detach cũ vào schema archive
+UPDATE partman.part_config
+SET retention = '36 months',
+    retention_schema = 'partman_archive',
+    retention_keep_table = true,      -- không DROP, chỉ DETACH
+    retention_keep_index = true,
+    infinite_time_partitions = false
+WHERE parent_table = 'public.transaction';
+~~~
+Background worker pg_partman (chạy mỗi phút) sẽ:
+- Tự tạo partition tháng {{+1}}, {{+2}}, {{+3}} (premake).
+- Tự {{DETACH PARTITION}} các partition > 36 tháng, chuyển sang schema {{partman_archive}}.
+- Không DROP table – data an toàn, có thể {{ATTACH}} lại nếu cần.
+
+### 2. Foreign key TO partitioned table – giải pháp thực tế
+**Vấn đề**: {{ALTER TABLE order_items ADD CONSTRAINT fk_oi_txn FOREIGN KEY (transaction_id) REFERENCES transaction(id);}} → **ERROR: cannot create foreign key constraint on partitioned table**.
+
+**Giải pháp A: Trigger BEFORE INSERT trên order_items (khuyến nghị cho dữ liệu quan trọng)**
+~~~sql
+CREATE OR REPLACE FUNCTION check_txn_exists()
+RETURNS trigger LANGUAGE plpgsql AS $$
+BEGIN
+    -- FOR SHARE: lấy shared lock trên dòng transaction, chặn DETACH/DROP partition đang tham chiếu
+    IF NOT EXISTS (
+        SELECT 1 FROM public.transaction
+        WHERE id = NEW.transaction_id
+        FOR SHARE
+    ) THEN
+        RAISE EXCEPTION 'transaction_id % does not exist', NEW.transaction_id;
+    END IF;
+    RETURN NEW;
+END;
+$$;
+
+CREATE TRIGGER trg_oi_txn_exists
+BEFORE INSERT OR UPDATE ON public.order_items
+FOR EACH ROW EXECUTE FUNCTION check_txn_exists();
+~~~
+- {{FOR SHARE}}: nếu partition chứa transaction_id đang bị DETACH, DETACH sẽ chờ trigger xong (hoặc bị cancel bởi {{lock_timeout}}). Tránh dữ liệu mồ côi.
+- Cost: 1 index lookup trên transaction PK {{(id, created_at)}} – rất nhanh (index unique).
+
+**Giải pháp B: Application-level check (cho throughput cực cao, chấp nhận rủi ro nhỏ)**
+Trong service Java, trước khi insert order_items:
+~~~java
+// Spring Data JPA / JdbcTemplate
+Integer count = jdbcTemplate.queryForObject(
+    "SELECT COUNT(*) FROM transaction WHERE id = ? FOR SHARE", Integer.class, txnId);
+if (count == null || count == 0) throw new IllegalArgumentException("Transaction not found: " + txnId);
+// Sau đó insert order_items
+~~~
+- Cùng dùng {{FOR SHARE}} để khoá dòng tham chiếu.
+- Race condition: giữa lúc check và insert, partition có thể bị detach. Xác suất thấp nếu retention chạy 1 lần/ngày. Có thể retry khi bị lỗi.
+
+**Giải pháp C: Không FK, dọn dẹp bằng batch job**
+Chạy hàng đêm: {{DELETE FROM order_items oi WHERE NOT EXISTS (SELECT 1 FROM transaction t WHERE t.id = oi.transaction_id);}}
+- Phù hợp cho dữ liệu ít quan trọng (log, analytics).
+- Không chặn INSERT, nhưng dữ liệu mồ côi tồn tại tối đa 24h.
+
+### 3. Partition-wise join transaction (partitioned) + users (non-partitioned)
+**Mặc định**: users không partition → planner **không thể** dùng partition-wise join. Plan: Hash Join / Merge Join giữa toàn bộ transaction (tất cả partition) và users.
+
+**Giải pháp 1: Partition users theo HASH(user_id) cùng bucket count**
+~~~sql
+-- users partition by HASH(user_id) 16 buckets
+CREATE TABLE public.users (
+    user_id bigint NOT NULL,
+    full_name text NOT NULL,
+    email text NOT NULL UNIQUE,
+    created_at timestamptz NOT NULL DEFAULT now(),
+    PRIMARY KEY (user_id)
+) PARTITION BY HASH (user_id);
+
+-- Tạo 16 partition
+DO $$
+DECLARE i int;
+BEGIN
+    FOR i IN 0..15 LOOP
+        EXECUTE format('CREATE TABLE users_p%s PARTITION OF users FOR VALUES WITH (MODULUS 16, REMAINDER %s)', i, i);
+    END LOOP;
+END $$;
+
+-- transaction sub-partition: RANGE created_at + HASH user_id 16 buckets
+CREATE TABLE public.transaction (
+    id bigint NOT NULL,
+    user_id bigint NOT NULL,      -- thêm user_id để join
+    account_id bigint NOT NULL,
+    amount numeric(18,2) NOT NULL,
+    type text NOT NULL,
+    created_at timestamptz NOT NULL,
+    PRIMARY KEY (id, created_at, user_id)
+) PARTITION BY RANGE (created_at) SUBPARTITION BY HASH (user_id);
+
+-- Tạo sub-partition cho từng partition tháng (pg_partman không hỗ trợ sub-partition tự động, cần script)
+-- Mỗi partition tháng sẽ có 16 sub-partition (MODULUS 16, REMAINDER 0..15)
+~~~
+Khi join {{transaction t JOIN users u ON t.user_id = u.user_id}}:
+- Planner nhận ra hai bảng **cùng partition key (user_id), cùng method (HASH), cùng bucket count (16)**.
+- Dùng **Partition-wise Join**: join 16 cặp partition con độc lập (transaction_p2026_01_sp0 + users_p0, ...), song song nếu {{enable_partitionwise_join = on}} và {{max_parallel_workers_per_gather}} > 0.
+- Cost: O(N/16) thay vì O(N), không shuffle dữ liệu qua mạng (nếu distributed) hoặc qua temp file.
+
+**Giải pháp 2: Không partition users, dùng local index trên transaction**
+Nếu không muốn partition users (bảng nhỏ, ít join), tạo index local trên từng partition transaction:
+~~~sql
+-- Trên từng partition transaction_p2026_01, transaction_p2026_02...
+CREATE INDEX idx_txn_user_id ON transaction_p2026_01 (user_id);
+-- Hoặc covering index cho query thường dùng
+CREATE INDEX idx_txn_user_id_cover ON transaction_p2026_01 (user_id) INCLUDE (amount, type, created_at);
+~~~
+Query join sẽ dùng **Nested Loop** từ users (nhỏ) -> index scan từng partition transaction. Với users 50M, transaction 2B: planner có thể chọn Hash Join toàn bảng – monitor bằng {{EXPLAIN}}.
+
+### 4. Migration zero-downtime từ bảng thường sang partition + sub-partition
+1. **Tạo bảng mới partitioned + sub-partitioned** (không dữ liệu).
+2. **Backfill keyset** theo lô 100k dòng, {{INSERT INTO transaction_new SELECT * FROM transaction WHERE id > :last_id ORDER BY id LIMIT 100000;}}, sleep 50ms giữa lô, theo dõi replication lag.
+3. **CDC trigger** (pgoutput/logical replication) sync dữ liệu mới từ bảng cũ sang bảng mới.
+4. **Cutover**: transaction ngắn, {{lock_timeout = '3s'}}, {{ALTER TABLE transaction RENAME TO transaction_old; ALTER TABLE transaction_new RENAME TO transaction;}}.
+5. **Verify** ứng dụng hoạt động, sau 1 tuần drop transaction_old.
+
+### 5. Monitoring & alerting
+| Metric | Query | Ngưỡng cảnh báo |
+|---|---|---|
+| Số partition | {{SELECT count(*) FROM pg_class c JOIN pg_inherits i ON c.oid = i.inhrelid WHERE i.inhparent = 'transaction'::regclass;}} | > 100 (planner chậm) |
+| Skew sub-partition | {{SELECT inhrelid::regclass, pg_relation_size(inhrelid) FROM pg_inherits WHERE inhparent = 'transaction_p2026_01'::regclass;}} | Max/Min > 10x |
+| Partition pruning hiệu quả | {{EXPLAIN (ANALYZE) SELECT ... WHERE created_at >= '2026-01-01';}} | Partition pruned = 1, không có Merge Append thừa |
+| FK trigger latency | {{pg_stat_user_functions}} cho {{check_txn_exists}} | p99 > 5ms |
+| Background worker pg_partman | {{pg_stat_activity}} where worker name like '%partman%' | Không chạy > 10 phút |
+
+### Lỗi hay gặp
+1. **Quên thêm partition key vào PK**. Triệu chứng: {{CREATE TABLE ... PARTITION BY RANGE (created_at)}} mà PK chỉ {{(id)}} → ERROR: partition key must be part of primary key. Cách tránh: PK = {{(id, created_at)}} hoặc {{(id, created_at, user_id)}} cho sub-partition.
+2. **pg_partman không tạo sub-partition tự động**. Triệu chứng: partition cha có, nhưng INSERT báo "no partition for value" vì thiếu sub-partition. Cách tránh: script tạo sub-partition cho từng partition mới (dùng event trigger hoặc cron sau khi pg_partman tạo partition cha).
+3. **DETACH partition đang có dòng bị FK trigger tham chiếu**. Triệu chứng: DETACH treo chờ lock (FOR SHARE từ trigger), hoặc bị cancel bởi lock_timeout. Cách tránh: set {{lock_timeout = '30s'}} cho session DETACH, retry sau khi trigger xong; hoặc dừng ghi order_items trong lúc detach (maintenance window).
+4. **Partition-wise join không kích hoạt**. Triệu chứng: plan vẫn Hash Join toàn bảng. Kiểm tra: (a) {{enable_partitionwise_join = on}}, (b) hai bảng cùng partition key, method, bucket count, (c) join condition là equality trên partition key. Cách tránh: {{SET enable_partitionwise_join = on;}} trong session, verify bằng {{EXPLAIN}}.
+5. **Quá nhiều partition (>1000) làm planner chậm**. Triệu chứng: planning time 2-5 giây. Cách tránh: gộp bucket, tăng interval (RANGE 3 tháng), hoặc archive partition cũ sang schema riêng (pg_partman retention_keep_table = true).
+
+### Trả lời miệng 1 phút
+"Transaction 2 tỷ dòng partition RANGE tháng, pg_partman auto-create premake 3, retention 36 tháng detach sang archive. FK TO partitioned table không support: tôi dùng trigger BEFORE INSERT trên order_items check EXISTS transaction FOR SHARE – khoá shared lock chặn DETACH partition đang tham chiếu. Partition-wise join cần hai bảng cùng partition key/method/bucket: partition users HASH(user_id) 16, transaction sub-partition HASH(user_id) 16 → join 16 cặp partition song song. Migration: tạo bảng mới, backfill keyset 100k + CDC trigger, swap rename lock_timeout 3s. Monitoring: partition count, skew sub-partition, pruning hiệu quả, FK trigger latency. Bẫy: PK thiếu partition key, pg_partman không auto sub-partition, DETACH treo lock FOR SHARE, partition-wise join không bật enable_partitionwise_join."
+
+### Ví dụ đời thực
+Triệu chứng: fintech 2,4 tỷ giao dịch, 50M users. Bảng transaction partition RANGE tháng (24 partition), users không partition. Query join {{transaction t JOIN users u ON t.user_id = u.user_id WHERE t.created_at >= '2026-01-01'}} chạy 45 phút, Hash Join 2,4B x 50M, temp file 1.2TB, parallel 8 worker vẫn chậm. Đồng thời cần FK từ order_items(transaction_id) -> transaction – không tạo được constraint.
+Điều tra: {{EXPLAIN}} join cho thấy Hash Join toàn bảng transaction (tất cả 24 partition) với users; partition pruning chỉ lọc created_at nhưng join vẫn toàn bộ. FK error: "cannot create foreign key constraint on partitioned table".
+Nguyên nhân gốc: (1) users không partition → không partition-wise join; (2) PostgreSQL cấm FK trỏ vào partitioned table.
+Cách xử lý:
+- Partition users HASH(user_id) 16 buckets. Transaction thêm user_id vào PK, sub-partition HASH(user_id) 16.
+- Bật {{enable_partitionwise_join = on}}, {{max_parallel_workers_per_gather = 8}}.
+- Trigger FK trên order_items: BEFORE INSERT check EXISTS transaction FOR SHARE.
+- pg_partman: premake 3, retention 36 months, retention_schema = partman_archive.
+- Script cron tạo sub-partition 16 cho partition mới (pg_partman hook).
+Kết quả: Join partition-wise 16 cặp, từ 45 phút giảm xuống **3 phút**, temp file 0 (streaming). FK trigger p99 1.2ms, 0 lỗi DETACH nhờ FOR SHARE + lock_timeout. Migration 2 tuần backfill + CDC, cutover 2 giây downtime.
+
+> Senior tip: Partition-wise join là "vũ khí thần thánh" cho join bảng lớn, nhưng yêu cầu cực kỳ khắt khe: **cùng partition key, cùng method, cùng bucket count, join bằng equality trên key đó**. Nếu không đáp ứng được (ví dụ users nhỏ, không muốn partition), hãy dùng local index trên từng partition + Nested Loop từ bảng nhỏ. Về FK: trigger FOR SHARE là cách duy nhất an toàn trên production – đừng chỉ check application level vì race condition detach partition là thực tế.
+`,
+  follow: [
+    'pg_partman hook (p_post_script) để tự động tạo sub-partition khi partition cha mới được tạo: viết như thế nào?',
+    'Partition-wise join với bucket count khác nhau (users 16, transaction 32) – planner xử lý thế nào?',
+    'Khi DETACH partition, trigger FOR SHARE trên order_items có thể gây deadlock với INSERT order_items – cách phòng tránh?'
+  ],
+  tags: ['partitioning', 'RANGE', 'HASH', 'sub-partitioning', 'pg_partman', 'partition-wise join', 'foreign key', 'trigger', 'FOR SHARE', 'zero-downtime migration', 'retention', 'CDC', 'monitoring', 'fintech']
 }
 ,
 );
