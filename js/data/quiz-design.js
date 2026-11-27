@@ -5308,5 +5308,258 @@ GET /transfers/{id}/status
 - **System.gc() định kỳ**: không thu hồi được vì các phần tử vẫn được static field tham chiếu; gây Full GC stop-the-world thêm nặng.
 
 > Senior tip: bất kỳ container static (list, map, queue) tích luỹ dữ liệu theo thời gian đều là suspected memory leak. Quy tắc: mỗi cache cần chính sách eviction (xoá) — TTL, kích thước tối đa, hoặc lưu ngoài heap. Heap dump mở Eclipse MAT xem dominator tree sẽ xác định ngay nguyên nhân.`
+  },
+  {
+    id: 'qz-architecture-051',
+    topic: 'architecture',
+    q: 'Trong kiến trúc Clean/Hexagonal, entity Order phát ra sự kiện domain {{OrderShipped}} khi chuyển sang trạng thái SHIPPED. Việc gửi email thông báo cho khách hàng nên được đặt ở đâu?',
+    options: [
+      'Entity Order gọi trực tiếp service gửi email khi đặt trạng thái SHIPPED',
+      'Entity chỉ ghi sự kiện domain; application service (use case) nhận sự kiện sau khi commit và gọi port thông báo (ví dụ {{NotificationPort}})',
+      'Controller REST gọi service gửi email sau khi nhận phản hồi từ use case',
+      'Repository lưu sự kiện vào bảng nhưng không bao giờ đẩy ra bên ngoài'
+    ],
+    answer: 1,
+    explain: `**Đáp án đúng: Entity chỉ ghi sự kiện; application service nhận sự kiện sau khi commit và gọi port thông báo.**
+
+### Vì sao đúng
+- Trong kiến trúc Clean/Hexagonal, domain layer không được biết gì về hạ tầng (Spring, email, Kafka, JPA). Entity Order chỉ việc sinh ra một domain event (một value object ghi lại "đơn đã được giao") và đặt vào danh sách sự kiện bên trong aggregate.
+- Việc dispatch sự kiện — gửi email, gọi cổng thông báo {{NotificationPort}}, ghi vào bảng outbox — là trách nhiệm của application layer (use case), thường chạy sau khi transaction commit thành công. Nếu transaction rollback, sự kiện không được gửi, tránh trường hợp "thông báo đơn giao thành công nhưng đơn bị hủy".
+- Nhờ vậy entity có thể kiểm thử thuần Java, không cần khởi động mail server hay mock infra. Thay đổi infra (ví dụ đổi email sang push notification) chỉ đổi adapter, không đụng vào code nghiệp vụ.
+
+### Vì sao các phương án khác sai
+- Entity Order gọi trực tiếp service gửi email: domain phụ thuộc vào infra và lớp cụ thể (mail client). Entity không thể kiểm thử đơn lẻ, và mọi thay đổi cách gửi thông báo đều đụng vào code nghiệp vụ — vi phạm dependency rule của Clean Architecture.
+- Controller REST gọi email: controller không phải nơi chứa quy tắc nghiệp vụ. Nhiều entry point (REST, Kafka consumer, scheduler) đều cần gửi email thì logic lặp lại ở mỗi nơi; controller cũng khó kiểm thử và không nên biết nghiệp vụ chi tiết.
+- Repository lưu sự kiện vào bảng nhưng không đẩy ra bên ngoài: sự kiện được lưu nhưng không bao giờ được xử lý, tương đương không làm gì. Cần một bộ phận đọc bảng event/outbox và đẩy ra bên ngoài (event dispatcher, process manager).
+
+> Senior tip: sự kiện domain nên được ghi vào một bảng outbox trong cùng transaction với dữ liệu nghiệp vụ, rồi một relay đọc bảng đó và gửi ra message broker hoặc email. Đây là outbox pattern, giúp đảm bảo "sự kiện được gửi nếu và chỉ nếu dữ liệu đã commit", không phụ thuộc vào message broker ngay lúc ghi DB.`,
+  },
+  {
+    id: 'qz-architecture-052',
+    topic: 'architecture',
+    multi: true,
+    q: 'Module Order và module Inventory trong modular monolith đang nguy cơ vòng phụ thuộc: Order gọi Inventory để kiểm tra tồn kho; Inventory cũng muốn nhận sự kiện đơn mới để cập nhật kho. Cách thiết kế nào phá vỡ vòng phụ thuộc một cách đúng đắn? (Chọn 2)',
+    options: [
+      'Order gọi Inventory qua port (interface) ở package API của Inventory; Inventory không gọi ngược Order, mà phát sự kiện domain (ví dụ {{StockReserved}}) và Order lắng nghe',
+      'Cả hai module cùng gọi thẳng implementation class của nhau, hy vọng Spring sẽ tự giải quyết vòng phụ thuộc',
+      'Inventory phát sự kiện domain (ví dụ {{StockReserved}}) sau khi xử lý; Order lắng nghe sự kiện, không gọi ngược Inventory',
+      'Gộp Order và Inventory thành một module duy nhất để không còn ranh giới'
+    ],
+    answer: [0, 2],
+    explain: `**Đáp án đúng: Order gọi Inventory qua port API; Inventory không gọi ngược Order; thông tin chảy ngược lại qua sự kiện.**
+
+### Vì sao đúng
+- Order gọi Inventory qua port (interface) ở package API của Inventory: Inventory export ra interface (ví dụ {{InventoryPort}}) và DTO cần thiết. Order phụ thuộc vào interface này, Spring inject implementation của Inventory vào. Order không biết class bên trong package internal của Inventory — đúng quy ước modular monolith/Spring Modulith (package gốc là API, package con là internal).
+- Inventory không gọi ngược Order mà phát sự kiện domain (ví dụ {{StockReserved}}) sau khi xử lý. Order lắng nghe sự kiện đó qua {{@ApplicationModuleListener}} hoặc message broker nhẹ. Thông tin chảy ngược lại mà không tạo vòng phụ thuộc compile-time.
+- Vòng phụ thuộc giữa hai module là lỗi thiết kế nghiêm trọng: cả hai không thể compile, test hoặc triển khai độc lập; thay đổi một module có thể làm vỡ module kia.
+
+### Vì sao các phương án khác sai
+- Cả hai cùng gọi implementation class trực tiếp, hy vọng Spring giải quyết vòng: Spring không thể dễ dàng giải quyết vòng phụ thuộc giữa bean (ném BeanCurrentlyInCreationException), và ngay khi giải quyết được thì hai module vẫn bị chặt chẽ với nhau — vi phạm encapsulation.
+- Gộp Order và Inventory thành một module: xóa đi ranh giới bounded context, trở lại monolith phình to, mọi thay đổi đều đụng chung một chỗ. Điều này không phải "giải quyết vòng" mà là bỏ thề kiến trúc.
+
+> Senior tip: khi hai module cần gọi lẫn nhau, hãy hỏi cái nào là caller và cái nào là callee. Thường chỉ cần một chiều gọi API, phần còn lại dùng sự kiện. Nếu thật sự cần gọi hai chiều, đó là dấu hiệu hai module nên được gộp lại hoặc tách ra một shared kernel nhỏ, ổn định.`,
+  },
+  {
+    id: 'qz-architecture-053',
+    topic: 'architecture',
+    q: 'Trong strangler fig, module Catalog đang chuyển từ monolith sang service mới. Hai hệ thống cùng đọc và ghi bảng {{products}} trong thời gian chuyển. Cách chuyển quyền sở hữu dữ liệu an toàn nhất là gì?',
+    options: [
+      'Cả hai hệ thống cùng ghi vào bảng cũ vô thời hạn',
+      'Xoá bảng cũ ngay sau khi deploy service mới',
+      'Catalog mới đọc từ bản sao của bảng cũ, đồng bộ thay đổi qua CDC sang DB mới; khi đủ tự tin, route ghi catalog sang service mới và dừng ghi bảng cũ',
+      'Chỉ đọc từ bảng cũ, không ghi gì vào service mới'
+    ],
+    answer: 2,
+    explain: `**Đáp án đúng: Catalog mới đọc từ bản sao của bảng cũ, đồng bộ qua CDC sang DB mới; khi đủ tự tin, route ghi catalog sang service mới và dừng ghi bảng cũ.**
+
+### Vì sao đúng
+- Trong strangler fig, hai hệ thống chạy cùng lúc trên cùng dữ liệu trong thời gian chuyển, nên không thể xoá bảng cũ hay dừng ghi ngay lập tức.
+- Bước 1 (expand): Catalog mới đọc dữ liệu từ bản sao (replica) hoặc qua CDC (Change Data Capture, ví dụ Debezium đọc WAL của PostgreSQL) để có sẵn dữ liệu catalog. Các thay đổi trên monolith được đồng bộ sang database của service mới.
+- Bước 2 (cắt dần): route từng phần traffic catalog sang service mới qua API gateway/reverse proxy, đo lỗi và độ trễ. Nếu có vấn đề, đảo ngược route về monolith trong vài giây.
+- Bước 3 (contract): khi service mới ổn định và nhận toàn bộ traffic ghi catalog, dừng ghi vào bảng cũ của monolith, sau đó xoá cột/bảng cũ ở một release sau.
+- Nhờ CDC, mọi thay đổi trên monolith đều bị bắt (kể cả SQL trực tiếp), không bị bỏ sót.
+
+### Vì sao các phương án khác sai
+- Cả hai cùng ghi vô thời hạn: hai hệ thống ghi chung dữ liệu vẫn coupling ở tầng DB, không bao giờ có điểm kết thúc; dễ xảy ra xung đột dữ liệu (diverge data).
+- Xoá bảng cũ ngay sau deploy: monolith (vẫn còn phần lớn traffic) lập tức lỗi vì bảng không còn; không thể rollback vì schema đã đổi.
+- Chỉ đọc, không ghi mới: service mới không sở hữu dữ liệu, không thể chuyển quyền, strangler fig không bao giờ hoàn thành.
+
+> Senior tip: đặt metric "tỉ lệ traffic catalog đã đi qua hệ mới" và mốc tắt từng chức năng của monolith. Không có mốc tắt, dự án strangler dễ thành hai hệ thống song song mãi mãi. Khi backfill dữ liệu lịch sử, chia thành batch nhỏ để tránh khóa bảng lâu và WAL tăng vọt.`,
+  },
+  {
+    id: 'qz-architecture-054',
+    topic: 'architecture',
+    multi: true,
+    q: 'Theo CQRS, command ("đặt đơn") và query ("xem lịch sử đơn") dùng model riêng. Khi xử lý command đặt đơn, cần kiểm tra "sản phẩm còn kho". Những phát biểu nào đúng? (Chọn 2)',
+    options: [
+      'Kiểm tra invariant tồn kho trong write model (aggregate Inventory) khi xử lý command',
+      'Truy vấn read model (sơ đồ tồn kho hiển thị) để xác nhận còn kho trước khi đặt đơn',
+      'Read model chỉ dùng cho hiển thị, có thể chậm vài giây so với ghi (eventual consistency)',
+      'Command và query luôn strong consistency với nhau'
+    ],
+    answer: [0, 2],
+    explain: `**Đáp án đúng: Kiểm tra tồn kho trong write model khi xử lý command; read model chỉ dùng cho hiển thị và có thể chậm vài giây so với ghi.**
+
+### Vì sao đúng
+- CQRS tách model ghi (command) và model đọc (query). Model ghi là nguồn chân lý cho mọi quyết định nghiệp vụ: khi xử lý command đặt đơn, aggregate Inventory kiểm tra invariant "số lượng còn kho" trực tiếp trên write model trước khi chấp nhận đơn.
+- Read model chỉ dùng cho hiển thị (sơ đồ tồn kho, lịch sử đơn). Nó được cập nhật bất đồng bộ từ command qua projection, nên có thể chậm vài giây (eventual consistency). Không dùng read model để quyết định lệnh, vì dữ liệu có thể đã bị thay đổi bởi một command khác sau khi read model cập nhật lần cuối.
+- Trade-off của CQRS: code gấp đôi (hai model, hai repository, cơ chế đồng bộ), độ phức tạp vận hành tăng (projection lag, migration phức tạp), và người dùng có thể thấy "vừa đặt xong nhưng lịch sử chưa hiện".
+
+### Vì sao các phương án khác sai
+- Truy vấn read model để xác nhận còn kho trước khi đặt: sai vì read model eventual consistency, có thể chưa phản ánh đơn vừa được đặt bởi người khác. Điều này dẫn đến overselling (chấp nhận đơn mà thực tế hết kho).
+- Command và query luôn strong consistency với nhau: sai, đây chính là điểm CQRS chấp nhận eventual consistency giữa hai model. Nếu yêu cầu strong consistency ngay lập tức, không nên tách CQRS (dùng read-your-writes trên dữ liệu của chính user vừa ghi, không phải toàn bộ read model).
+
+> Senior tip: đừng bắt đầu bằng CQRS. Bắt đầu modular monolith, tách read model khi đo được read amplification và pain point thực tế (ví dụ trang hiển thị chậm vì join quá nhiều bảng). CQRS phù hợp nhất khi domain phức tạp và tỉ lệ đọc/ghi rất cao (100:1 trở lên).`,
+  },
+  {
+    id: 'qz-architecture-055',
+    topic: 'architecture',
+    q: 'Dùng Event Sourcing, event {{OrderPlaced}} phiên bản 1 có trường {{customerName}}. Sau này đổi thành {{customerId}} và {{customerFullName}}. Sự kiện cũ trong event store vẫn giữ định dạng cũ. Cách đọc sự kiện cũ mà không lỗi là gì?',
+    options: [
+      'Xoá sự kiện cũ và ghi lại theo phiên bản mới',
+      'Upcaster: khi đọc event phiên bản cũ, chuyển sang phiên bản mới (bổ sung trường, ánh xạ) trước khi đưa vào aggregate',
+      'Dùng reflection tự động gán trường cho sự kiện cũ',
+      'Bỏ qua các sự kiện cũ khi rebuild trạng thái'
+    ],
+    answer: 1,
+    explain: `**Đáp án đúng: Upcaster — khi đọc event phiên bản cũ, chuyển sang phiên bản mới trước khi đưa vào aggregate.**
+
+### Vì sao đúng
+- Event Sourcing lưu sự kiện theo kiểu append-only, bất biến: không bao giờ xoá hay sửa sự kiện đã ghi, vì chúng là lịch sử chính xác của hệ thống.
+- Khi schema event thay đổi (đổi tên trường, thêm trường, đổi kiểu), sự kiện cũ trong store vẫn giữ định dạng cũ. Upcaster là một bộ chuyển đổi chạy khi đọc: nhận event phiên bản cũ, bổ sung hoặc ánh xạ trường (ví dụ từ customerName tách thành customerId và customerFullName), rồi trả về sự kiện phiên bản mới cho aggregate xử lý.
+- Aggregate chỉ làm việc với phiên bản event mới nhất, nên code domain không cần xử lý nhiều định dạng event cũ.
+
+### Vì sao các phương án khác sai
+- Xoá sự kiện cũ và ghi lại: vi phạm bản chất append-only của event store; mất dấu vết lịch sử, không thể time-travel hay rebuild trạng thái ở thời điểm trong quá khứ.
+- Dùng reflection tự động gán trường: không đáng tin cậy với sự thay đổi cấu trúc (đổi tên trường, tách một trường thành hai), dễ gây lỗi runtime khó phát hiện.
+- Bỏ qua các sự kiện cũ: aggregate sẽ rebuild sai trạng thái (thiếu sự kiện), dẫn đến dữ liệu không chính xác.
+
+> Senior tip: kèm theo upcaster hãy có snapshot (lưu trạng thái aggregate định kỳ) để rebuild không phải replay từ sự kiện đầu tiên. Khi đổi schema event, hãy giữ upcaster cho mọi phiên bản cũ còn sống trong store, và documentation rõ ràng cho sự biến đổi của từng trường.`,
+  },
+  {
+    id: 'qz-architecture-056',
+    topic: 'architecture',
+    q: 'Orchestrator saga đặt hàng crash ở giữa compensation (đã trừ tiền thất bại, đang nhả kho). Khi khởi động lại, orchestrator cần biết làm gì để không gây charge kép hay thiếu nhả kho?',
+    options: [
+      'Orchestrator lưu state machine (bước đã hoàn thành, trạng thái compensation) vào DB bền vững; khởi động lại tiếp tục từ điểm dừng',
+      'Bắt đầu lại từ bước 1 (gây charge kép)',
+      'Chờ admin can thiệp thủ công',
+      'Xoá trạng thái saga và bắt đầu mới'
+    ],
+    answer: 0,
+    explain: `**Đáp án đúng: Orchestrator lưu state machine vào DB bền vững; khởi động lại tiếp tục từ điểm dừng.**
+
+### Vì sao đúng
+- Saga là chuỗi các local transaction, mỗi bước commit ở service của mình. Không có rollback thực tế, chỉ có hành động bù trừ (compensating transaction) về mặt nghiệp vụ.
+- Orchestrator là một state machine lưu trạng thái saga vào database (ví dụ: STARTED, INVENTORY_RESERVED, PAYMENT_FAILED, COMPENSATING, CANCELLED), cùng với bước đã hoàn thành và bước bù trừ cần chạy.
+- Nếu orchestrator crash giữa chừng (ví dụ đang nhả kho sau khi trừ tiền thất bại), khi khởi động lại nó đọc trạng thái saga từ DB và biết phải tiếp tục chạy compensation cho các bước đã thành công, chứ không bắt đầu lại từ bước 1. Điều này tránh charge kép hoặc bỏ sót nhả kho.
+- Các bước compensation nên idempotent (theo reservationId, lần đầu nhả, lần sau thấy đã nhả thì trả OK) vì lời gọi có thể bị lặp khi retry.
+
+### Vì sao các phương án khác sai
+- Bắt đầu lại từ bước 1: sẽ gọi lại thanh toán từ đầu -> charge kép cho khách hàng, sai nghiệp vụ và làm mất tiền uy tín.
+- Chờ admin can thiệp thủ công: chậm, không khả năng mở rộng, và admin dễ gây lỗi khi can thiệp vào dữ liệu đang chạy.
+- Xoá trạng thái saga và bắt đầu mới: mất ngữ cảnh của lần chạy cũ, bước bù trừ chưa hoàn thành sẽ bị bỏ qua, tồn kho bị giữ mãi.
+
+> Senior tip: thiết kế bước có khả năng thất bại cao nhất (thanh toán) càng sớm càng tốt, và bước không thể bù trừ (gửi hàng, gửi email) để cuối cùng. Thứ tự bước tốt làm giảm đáng kể số lần phải compensate. Luôn lưu trạng thái saga trong DB, không chỉ trong bộ nhớ của orchestrator.`,
+  },
+  {
+    id: 'qz-architecture-057',
+    topic: 'architecture',
+    multi: true,
+    q: 'ADR (Architecture Decision Record) nên viết khi nào và lưu ở đâu? (Chọn 2)',
+    options: [
+      'Chỉ viết cho quyết định khó đảo ngược, ảnh hưởng lớn (chọn database, broker, pattern kiến trúc, chia service)',
+      'Mỗi PR hoặc mỗi class đều phải có một ADR',
+      'Lưu trên Confluence/wiki để mọi người dễ sửa',
+      'Lưu trong repo (ví dụ docs/adr/), review qua PR như code, không sửa nội dung cũ (muốn đổi thì viết ADR mới đánh dấu superseded)'
+    ],
+    answer: [0, 3],
+    explain: `**Đáp án đúng: Chỉ viết ADR cho quyết định khó đảo ngược, ảnh hưởng lớn; lưu trong repo, review qua PR, không sửa nội dung cũ.**
+
+### Vì sao đúng
+- ADR (Architecture Decision Record) dành cho những quyết định "đắt" khi đảo ngược: chọn database, chọn message broker, pattern kiến trúc (hexagonal, modular monolith), chia service, technology stack cốt lõi. Mục đích là ghi lại tại sao quyết định được đưa ra tại thời điểm đó, không chỉ là quyết định là gì.
+- Cấu trúc chuẩn (Michael Nygard): Title, Status, Context, Decision, Consequences (cả mặt tốt và xấu), Options considered (các phương án đã cân nhắc và lý do loại). Phần Options considered giúp team sau không phải tái điều tra từ đầu.
+- Lưu trong repo (ví dụ docs/adr/) nên được version control cùng code, review qua PR như code, và không bị mất khi wiki di chuyển. ADR không sửa nội dung cũ: khi bối cảnh thay đổi, viết ADR mới và đánh dấu ADR cũ là superseded, kèm link tới ADR mới.
+
+### Vì sao các phương án khác sai
+- Mỗi PR hoặc mỗi class đều phải có ADR: quá nặng, làm chậm phát triển. ADR không dành cho chi tiết implement hay chọn thư viện nhỏ (ví dụ thư viện log có thể đổi trong một giờ).
+- Lưu trên Confluence/wiki: nội dung dễ bị ghi đè, mất lịch sử git, thường lệch với code và khó review cùng PR.
+
+> Senior tip: ADR nên ngắn, đọc dưới 5 phút. Chỉ viết khi quyết định có chi phí cao để thay đổi sau này. Nếu team không chắc có cần ADR hay không, hãy hỏi: "nếu đổi quyết định này sau 3 tháng, chi phí và rủi ro là bao nhiêu?" — trả lời cao thì viết ADR.`,
+  },
+  {
+    id: 'qz-architecture-058',
+    topic: 'architecture',
+    q: 'API trả về trực tiếp entity JPA {{Order}} (có annotation {{@Entity}}, lazy loading) cho client. Vấn đề lớn nhất và cách sửa theo Clean Architecture là gì?',
+    options: [
+      'Giữ nguyên, trả trực tiếp entity cho đơn giản',
+      'Tắt lazy loading và fetch tất cả trường',
+      'Đặt {{@JsonIgnore}} lên các trường nhạy cảm',
+      'Map sang OrderDTO / projection ở adapter (controller) trước khi trả về client; domain không biết DTO của API'
+    ],
+    answer: 3,
+    explain: `**Đáp án đúng: Map sang OrderDTO / projection ở adapter (controller) trước khi trả về client; domain không biết DTO của API.**
+
+### Vì sao đúng
+- Trong Clean Architecture, domain layer không được biết gì về outer layer (Spring, JSON, HTTP, JPA). Trả về trực tiếp entity JPA {{Order}} cho client làm rò rỉ schema database ra ngoài API: client có thể thấy các trường nội bộ, và Hibernate proxy/lazy loading dễ gây LazyInitializationException khi serializer truy cập trường chưa load.
+- Dùng DTO / projection (ví dụ {{OrderDto}}) ở adapter: controller gọi use case, nhận domain entity, rồi map sang DTO chỉ chứa những trường client cần. Nhiều khách hàng (mobile, web) có thể có DTO riêng khác nhau mà không ảnh hưởng domain.
+- Map xảy ra ở adapter (bên ngoài), domain chỉ trả về domain entity hoặc value object. Việc này cũng tránh over-fetching và giúp thay đổi API mà không đổi database.
+
+### Vì sao các phương án khác sai
+- Giữ nguyên, trả trực tiếp entity: đơn giản nhưng gây ra các vấn đề trên; đây là vi phạm rõ ràng dependency rule.
+- Tắt lazy loading và fetch tất cả trường: hiệu năng kém, dễ gây N+1 query và tải cả tập dữ liệu lớn không cần thiết.
+- Đặt {{@JsonIgnore}} lên trường nhạy cảm: chỉ ẩn field ở mức serialization, không giải quyết gốc (vẫn lộ schema, vẫn có lazy loading, domain rò ra ngoài). Dễ bỏ sót một trường mới thêm sau này.
+
+> Senior tip: dùng record (Java 14+) hoặc class DTO không mutable để chuyển dữ liệu ra ngoài. Nếu có nhiều loại client, mỗi client một DTO; đừng dùng một DTO chung cho mọi thứ. Map có thể dùng MapStruct hoặc viết tay (viết tay rõ ràng hơn và dễ debug hơn khi mapping sai).`,
+  },
+  {
+    id: 'qz-architecture-059',
+    topic: 'architecture',
+    q: 'Port {{NotificationPort}} có method {{send(Notification)}}; có hai adapter triển khai: {{EmailAdapter}} và {{SmsAdapter}}. Client có thể chọn kênh thông báo. Mô hình nào đúng theo Hexagonal?',
+    options: [
+      'Domain định nghĩa port; hai adapter implement port; client/injection chọn adapter tuỳ kênh',
+      'Port có hai method {{sendEmail}} và {{sendSms}}',
+      'Domain trực tiếp import thư viện gửi email (SDK)',
+      'Chỉ để một adapter, bỏ kênh khác'
+    ],
+    answer: 0,
+    explain: `**Đáp án đúng: Domain định nghĩa port; hai adapter implement port; client/injection chọn adapter tuỳ kênh.**
+
+### Vì sao đúng
+- Trong Hexagonal Architecture, port là interface do domain định nghĩa theo ngôn ngữ nghiệp vụ (ví dụ {{NotificationPort}} với method {{send(Notification)}}). Domain không biết nó sẽ gửi email hay SMS.
+- Có hai adapter (driven adapter) implement cùng một port: {{EmailAdapter}} và {{SmsAdapter}}. Client (application service) inject adapter phù hợp tuỳ kênh khách hàng chọn. Thêm kênh mới (ví dụ push notification) chỉ cần thêm adapter mới, không đổi domain — đúng Open/Closed Principle.
+- Domain hoàn toàn độc lập thư viện bên ngoài (SDK email, SMS gateway), dễ kiểm thử bằng một adapter in-memory.
+
+### Vì sao các phương án khác sai
+- Port có hai method sendEmail/sendSms: port bị ôm theo công cụ cụ thể, không còn trung lập. Mỗi lần thêm kênh mới phải đổi port và tất cả adapter, vi phạm OCP.
+- Domain trực tiếp import thư viện gửi email: domain phụ thuộc vào thư viện bên ngoài, vi phạm dependency rule và khó kiểm thử (cần mail server thật hoặc mock nặng).
+- Chỉ để một adapter: không giải quyết vấn đề chọn kênh, và mất tính mở rộng của hexagonal.
+
+> Senior tip: tên port nên từ góc nhìn domain (ví dụ {{NotificationPort}}, {{PaymentPort}}), không phải tên công nghệ ({{SmtpPort}}, {{KafkaPort}}). Adapter trong, còn domain ngoài — nhớ rằng phụ thuộc chỉ được trỏ về phía trong.`,
+  },
+  {
+    id: 'qz-architecture-060',
+    topic: 'architecture',
+    q: 'Hai module Order và Inventory đều cần class {{Money}}. Team tạo module {{common}} chứa Money, DateUtil, StringUtils và cả entity {{User}} dùng chung; mọi module import common. Điều gì xảy ra và cách xử lý đúng là gì?',
+    options: [
+      'Giữ common phình to, mọi module import',
+      'Xoá common, chép toàn bộ code vào mỗi module',
+      'Tách shared kernel nhỏ, ổn định (chỉ những thứ thực sự chung và hiếm đổi như Money); phần util còn lại từng module tự giữ hoặc chép lại nhỏ',
+      'Chỉ architect được phép sửa common'
+    ],
+    answer: 2,
+    explain: `**Đáp án đúng: Tách shared kernel nhỏ, ổn định (chỉ những thứ thực sự chung và hiếm đổi như Money); phần util còn lại từng module tự giữ hoặc chép lại nhỏ.**
+
+### Vì sao đúng
+- Module {{common}} ngày càng phình to (chứa Money, DateUtil, StringUtils, entity {{User}}...) và mọi module import nó tạo ra shared kernel biến thành god module: coupling cao, thay đổi một util nhỏ trong common có thể làm rebuild và hồi quy nhiều module không liên quan.
+- Theo DDD, shared kernel là phần model thực sự dùng chung giữa các bounded context và hầu như không đổi (ví dụ Money, DateRange). Nó được giữ nhỏ, chính thức, và cả hai team phải đồng ý trước khi sửa.
+- Phần util chung từng module tự giữ hoặc chép lại một chút (duplication nhỏ) tốt hơn việc tạo một module chung lớn bị sai lầm abstraction. Trong Java, trùng một ít code tốt hơn là buộc mọi module phụ thuộc vào một god module.
+
+### Vì sao các phương án khác sai
+- Giữ common phình to, mọi module import: nguyên nhân trực tiếp của coupling cao và hồi hộp khi thay đổi; mọi module đều rủi ro vì common.
+- Xoá common, chép toàn bộ code vào mỗi module: độ trùng quá lớn, khó bảo trì khi có lỗi chung cần sửa nhiều chỗ.
+- Chỉ architect được phép sửa common: đó là quy trình quản lý, không giải quyết vấn đề thiết kế; common vẫn là god module.
+
+> Senior tip: shared kernel chỉ cho những giá trị domain thực sự dùng chung và ổn định (ví dụ Money, CustomerId). Nếu hai module dùng chung class nhưng một module muốn thay đổi nó theo cách khác, đó là dấu hiệu chúng không nên dùng chung — hãy tách thành hai class riêng (phân biệt ngữ cảnh).`,
   }
 );
