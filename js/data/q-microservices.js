@@ -11341,6 +11341,249 @@ Trace bị đứt khi context không được truyền qua biên bất đồng b
     'Bạn liên kết trace với log và metric (three pillars) như thế nào để khoan từ alert xuống nguyên nhân gốc?'
   ],
   tags: ['opentelemetry', 'micrometer tracing', 'spring boot 3', 'Kafka', 'tail-based sampling', 'context propagation']
+},
+{
+  id: 'microservices-135',
+  topic: 'microservices',
+  level: 'senior',
+  q: 'Ngân hàng có app mobile (3 triệu người dùng) và web (dashboard nhân viên). Gateway đã xử lý xác thực và định tuyến. Bạn cần quyết định: chỉ để gateway route thẳng sang backend, hay thêm BFF (Backend For Frontend) riêng cho mobile và web? Giải thích vai trò khác nhau, khi nào gateway alone đủ, khi nào cần BFF, thiết kế BFF-mobile và BFF-web, và vì sao mobile không thể bắt đầu cập nhật ảnh hưởng versioning ra sao.',
+  a: `**Tóm tắt:** API Gateway là cổng vào duy nhất ở ranh giới hệ thống: xác thực JWT, giới hạn số yêu cầu, mã hóa TLS và định tuyến theo đường dẫn. BFF là backend riêng cho từng loại giao diện, gọi nhiều API backend rồi gộp thành một response có đúng hình dạng màn hình đó. Gateway alone đủ khi tất cả loại client cần cùng dữ liệu và API backend đã sạch; cần BFF khi mobile cần payload nhỏ, web cần dữ liệu phong phú, hoặc ứng dụng cũ không thể nâng cấp ngay. Vì app store review mất khoảng hai tuần và không thể bắt đầu cập nhật người dùng, BFF-mobile phải giữ API cũ chạy song song ít nhất ba đến sáu tháng, chỉ thay đổi kiểu thêm mới (additive).
+
+### Hiểu nhanh
+Tiệm bánh có một cửa kính tiếp nhận tất cả khách, kiểm tra vé và chỉ vào phòng làm bánh thích hợp — đó là gateway. BFF giống nhân viên hỗ trợ riêng cho từng loại khách: nhân viên hỗ trợ khách mang đi gói gọn món, nhân viên hỗ trợ khách ăn tại quán mang bài trình bày đầy đủ. Mỗi nhân viên chỉ phục vụ một loại khách, không trộn lẫn.
+
+### Thuật ngữ
+- **API Gateway**: cổng vào duy nhất, làm xác thực, giới hạn số yêu cầu, định tuyến.
+- **BFF (Backend For Frontend)**: backend riêng cho một loại client, tổng hợp và lọc dữ liệu từ nhiều API backend.
+- **Fan-out**: gọi nhiều backend song song rồi gộp kết quả.
+- **Payload shaping**: cắt bớt trường không cần để giảm kích thước response.
+- **Partial degradation**: lỗi một backend chỉ làm mất một phần màn hình, không làm trắng toàn bộ.
+- **Additive change**: chỉ thêm trường mới, không đổi ý nghĩa trường cũ.
+- **Contract testing**: kiểm tra BFF và client thống nhất về hình dạng request/response.
+
+### Khi nào gateway alone đủ, khi nào cần BFF
+| Tình huống | Chọn | Lý do |
+|---|---|---|
+| Mobile và web cần dữ liệu khác nhau | BFF | Mobile payload gọn, web dashboard phong phú, gộp theo từng màn hình |
+| Tất cả client dùng chung API, backend đã sạch | Gateway alone | Không cần BFF, route thẳng, giảm tầng cơ sở hạ tầng |
+| Mobile không thể bắt đầu cập nhật (app store hai tuần) | BFF-mobile | Giữ nhiều phiên bản API cũ song song, chỉ thay đổi thêm mới |
+| Cần xác thực và giới hạn số yêu cầu tập trung | Gateway | Làm một lần ở ranh giới, tránh mỗi BFF tự lặp lại |
+
+### Thiết kế BFF-mobile và BFF-web
+1. Gateway xác thực JWT, định tuyến theo header {{X-App-Version}} hoặc path {{/api/mobile/*}} sang BFF-mobile và {{/api/web/*}} sang BFF-web.
+2. Mỗi BFF gọi các backend song song bằng {{CompletableFuture.allOf}}, mỗi backend có timeout và circuit breaker riêng, lỗi một dịch vụ fallback theo từng trường (khuyến mãi lỗi → mảng rỗng, màn hình còn hiển thị đơn hàng).
+3. Payload shaping: BFF-mobile trả DTO chỉ chứa trường cần hiển thị (id, tên, giá, ảnh nhỏ), không trả toàn bộ đối tượng backend; giảm response từ khoảng 80 KB xuống 12 KB.
+4. BFF chỉ tổng hợp, ánh xạ và lọc, không chứa logic giảm giá hay tính điểm (tránh trở thành monolith thứ hai).
+5. Versioning: BFF-mobile giữ các phiên bản cũ chạy song song ({{/api/v1/mobile/*}} và {{/api/v2/mobile/*}}), gateway định tuyến theo {{X-App-Version}}; chỉ thêm trường mới, không sửa ý nghĩa trường cũ; đánh dấu trường cũ dùng header {{Deprecation}} và {{Sunset}} (RFC 8594).
+
+~~~seq
+title: BFF-mobile định tuyến theo phiên bản app
+actors: Mobile | Gateway | BFF-mobile | Order | Promotion
+Mobile -> Gateway: GET /home (X-App-Version: 4.1)
+Gateway -> BFF-mobile: định tuyến theo phiên bản
+BFF-mobile -> Order: GET đơn hàng gần nhất
+BFF-mobile -> Promotion: GET khuyến mãi
+Order --> BFF-mobile: 200 + đơn hàng
+Promotion --> BFF-mobile: fallback mảng rỗng
+BFF-mobile --> Gateway: response gộp, payload gọn
+Gateway --> Mobile: 200
+~~~
+
+~~~java
+public class HomeBff {
+  private final OrderClient orders;
+  private final PromotionClient promos;
+  public HomeDto load(String customerId) {
+      var orderFuture = CompletableFuture.supplyAsync(() -> orders.recent(customerId));
+      var promoFuture = CompletableFuture.supplyAsync(() -> promos.forCustomer(customerId)
+          .exceptionally(ex -> List.of())); // khuyến mãi lỗi: trả mảng rỗng, không làm hỏng màn hình
+      CompletableFuture.allOf(orderFuture, promoFuture).join(); // chờ song song, độ trễ bằng chậm nhất
+      return new HomeDto(orderFuture.join(), promoFuture.join());
+  }
+}
+~~~
+
+### Pitfall thực tế trên production
+1. **BFF chứa logic nghiệp vụ** (giảm giá, tính điểm): trở thành monolith thứ hai, frontend phải chờ BFF deploy để đổi quy tắc kinh doanh. Cách tránh: BFF chỉ tổng hợp, ánh xạ và lọc.
+2. **Gọi tuần sang thay vì song song**: 5 backend × 200 ms = 1 giây chờ. Cách tránh: {{CompletableFuture.allOf}}, độ trễ bằng chậm nhất không cộng dồn.
+3. **Một downstream lỗi làm trắng toàn bộ màn hình**: khuyến mãi-service chậm làm trang chủ trắng. Cách tránh: timeout + fallback riêng cho từng trường, giảm sút có kiểm soát.
+4. **Gateway và BFF cùng retry**: 3 × 3 = 9 lần gọi cho một yêu cầu gốc, chậm downstream thêm. Cách tránh: retry chỉ ở một tầng.
+5. **BFF-mobile quên hỗ trợ phiên bản cũ**: app store review hai tuần, người dùng không cập nhật ngay → API cũ phải giữ ít nhất 3-6 tháng.
+
+### Ví dụ đời thực
+Một ngân hàng số có màn hình chủ cần dữ liệu từ 5 service backend. Ban đầu app mobile gọi trực tiếp 5 API: 5 lượt đi lại mạng, payload 80 KB, tải trang 2,5 giây; khi khuyến mãi-service chậm toàn bộ trang trắng. Sau khi đưa BFF-mobile: gọi 5 service song song, timeout 400 ms mỗi service, fallback khuyến mãi lỗi trả mảng rỗng, DTO chỉ trả trường cần hiển thị. Kết quả: tải trang từ 2,5 giây xuống 700 ms, payload từ 80 KB xuống 12 KB (giảm 85 %), khi khuyến mãi-service lỗi thì phần khuyến mãi trống còn màn hình vẫn hiển thị đơn hàng và thông tin khách hàng. BFF-mobile do đội mobile sở hữu và deploy độc lập. Versioning: giữ API v1 cho ứng dụng 4.0 và cũ hơn trong 4 tháng sau khi ra v2, không có breaking change.
+
+### Trả lời mẫu khi phỏng vấn
+"API Gateway là cổng vào duy nhất: xác thực JWT, giới hạn số yêu cầu, định tuyến theo đường dẫn. BFF là backend riêng cho từng loại giao diện, gọi nhiều backend rồi gộp thành response đúng màn hình. Tôi chỉ dùng gateway alone khi mọi client cần cùng dữ liệu và API backend đã sạch; cần BFF khi mobile cần payload nhỏ, web cần dữ liệu phong phú, hoặc ứng dụng cũ không thể cập nhật ngay. Thiết kế của tôi: gateway xác thực và định tuyến theo phiên bản ứng dụng; mỗi BFF gọi backend song song với timeout và circuit breaker riêng, lỗi một dịch vụ chỉ làm mất một phần màn hình, payload cắt gọt cho từng loại client. BFF chỉ tổng hợp và lọc dữ liệu, không chứa logic kinh doanh. Vì app store review mất hai tuần, BFF-mobile phải giữ API cũ chạy song song ít nhất ba đến sáu tháng, chỉ thay đổi kiểu thêm mới. Kinh nghiệm: retry chỉ ở một tầng, không để gateway và BFF cùng retry, và BFF do đội frontend sở hữu, deploy độc lập."
+> Senior tip: BFF do đội frontend sở hữu và deploy độc lập; nếu BFF viết mã giảm giá hay tính điểm, đã trở thành monolith thứ hai — hãy dọn sạch ngay.`,
+
+
+  follow: [
+    'BFF-mobile và BFF-web dùng chung mã nguồn hay tách riêng, tại sao?',
+    'Timeout của từng backend trong BFF nên nhỏ hơn tổng thời gian chờ của mobile bao nhiêu phần trăm, và vì sao?',
+    'Không thể bắt đầu cập nhật mobile, bạn giữ API cũ bao lâu và dùng header nào để định tuyến phiên bản?'
+  ],
+  tags: ['API gateway', 'BFF', 'mobile', 'web', 'versioning', 'partial degradation'],
+  refs: [
+    { type: 'doc', title: 'Backends for Frontends (Martin Fowler)', url: 'https://martinfowler.com/articles/backends-for-frontends.html' }
+  ]
+},
+{
+  id: 'microservices-136',
+  topic: 'microservices',
+  level: 'lead',
+  q: 'Hệ thống 15 service Java trên Kubernetes. Team muốn cài Istio service mesh để mã hóa kết nối nội bộ và chuyển traffic canary. Bạn đánh giá Istio đáng cài không, chi phí thực là gì, sidecar vs không sidecar ra sao, và lộ trình áp dụng an toàn nếu quyết định cài.',
+  a: `**Tóm tắt:** Với 15 service, Istio không tự động giảm chi phí; nó thêm sidecar mỗi pod (khoảng 150–300 MB RAM) và control plane cần vận hành. Chỉ đáng cài khi bắt buộc mã hóa hai chiều nội bộ không sửa code, cần chuyển traffic canary theo header/cookie, hoặc có nhiều ngôn ngữ. Nếu chỉ Java, ít service, Resilience4j trong code cộng NetworkPolicy lọc lưu lượng là đủ và rẻ hơn. Vận hành mesh an toàn: bật mTLS chế độ PERMISSIVE trước, quan sát một đến hai tuần, mới chuyển sang STRICT; retry chỉ ở một tầng để tránh chồng chéo; sidecar cần giới hạn tài nguyên và theo dõi crash loop.
+
+### Hiểu nhanh
+Khách sạn có mười lăm phòng (mười lăm service). Không có mesh: mỗi phòng tự gọi điện thoại cho nhau, mỗi máy chủ tự mã hóa và tự xử lý lỗi. Có mesh: mỗi phòng thêm một máy trạm tổng đài (sidecar) nhận hết cuộc gọi vào và ra, mã hóa, đếm cuộc gọi, nhưng phải trả tiền máy trạm mỗi phòng và tuyển nhân viên quản lý tổng đài (control plane).
+
+### Thuật ngữ
+- **Service mesh**: lớp cơ sở hạ tầng xử lý liên lạc giữa các service (mã hóa, retry, timeout, đo lường).
+- **Sidecar**: container proxy chạy cùng pod, mọi traffic vào và ra pod đều đi qua nó.
+- **Control plane (istiod)**: phân phối cấu hình và chứng chỉ ngắn hạn xuống từng sidecar.
+- **Data plane**: tập hợp các sidecar thực sự chuyển tiếp và áp chính sách.
+- **mTLS (mã hóa hai chiều)**: hai sidecar xác thực lẫn nhau bằng chứng chỉ, không cần code Java xử lý TLS.
+- **PERMISSIVE / STRICT**: cho phép kết nối không mã hóa / bắt buộc mã hóa mọi kết nối nội bộ.
+- **VirtualService**: quy tắc chuyển traffic (canary theo phần trăm hoặc theo header).
+- **Sidecar crash loop**: sidecar khởi động lại liên tục, pod không sẵn sàng nhận traffic.
+- **Headless service**: service Kubernetes không có IP duy nhất, mỗi pod có IP riêng.
+
+### Cơ chế sidecar từng bước
+1. Gọi service A: iptables hoặc eBPF trong pod A chuyển request sang sidecar Envoy của A.
+2. Sidecar A kết thúc mã hóa mTLS, kiểm tra chính sách, chọn service B (cân bằng tải), mã hóa gửi sang sidecar B.
+3. Sidecar B giải mã và chuyển tiếp tới ứng dụng B. Ứng dụng B không biết proxy tồn tại.
+4. Control plane istiod gửi cấu hình và chứng chỉ cho mỗi sidecar.
+5. Nếu sidecar B crash, ứng dụng B vẫn chạy nhưng không nhận traffic mới cho đến khi sidecar khởi động lại.
+
+### Khi nào đáng cài với 15 service (danh sách kiểm tra)
+- Yêu cầu bảo mật: mọi kết nối nội bộ phải mã hóa và có danh tính, không thể sửa code Java → mTLS của mesh hữu ích.
+- Cần chuyển traffic canary chính xác theo header, cookie hoặc phần trăm.
+- Có nhiều ngôn ngữ (Java, Go, Node) không muốn thư viện resilience riêng cho mỗi ngôn ngữ.
+- Có đội SRE hoặc platform vận hành control plane, debug cấu hình proxy.
+Nếu không đủ điều kiện trên: Resilience4j trong code cộng NetworkPolicy lọc lưu lượng và Prometheus/Grafana là đủ.
+
+### Sidecar so với không sidecar (bảng)
+| Tiêu chí | Istio sidecar | Cilium eBPF không sidecar | Không mesh (Resilience4j + NetworkPolicy) |
+|---|---|---|---|
+| RAM thêm mỗi pod | 150–300 MB | khoảng 10 MB agent chạy trong kernel | 0 |
+| Độ trễ thêm | 1–3 ms mỗi nhảy | dưới 0,5 ms (kernel) | 0 |
+| Chính sách L7 (header, JWT) | Có | Hạn chế (cần Envoy riêng) | Không |
+| Vận hành | Control plane phức tạp | Kernel mới, eBPF khó debug | Đơn giản |
+
+### Cái gì hay hỏng trong production
+1. **Sidecar crash loop hoặc khởi động chậm**: pod không sẵn sàng, progressDeadline exceeded, deployment bị treo. Cách tránh: đặt requests/limits cho sidecar, theo dõi trạng thái sidecar.
+2. **Headless service**: sidecar cần DNS chính xác; nếu pod đổi IP, sidecar cũ giữ kết nối cũ. Cách tránh: kiểm tra DNS và kết nối lâu dài.
+3. **Retry chồng chéo**: gateway retry 3, mesh retry 3, ứng dụng retry 3 = 27 lần gọi, biến sự cố nhỏ thành lớn. Cách tránh: retry chỉ ở một tầng.
+4. **Chuyển mTLS sang STRICT sớm**: workload không có sidecar (cron job, batch) bị từ chối kết nối. Cách tránh: PERMISSIVE trước, kiểm tra workload không có sidecar, mới STRICT.
+5. **Sidecar tranh tài nguyên với app Java**: đặt giới hạn tài nguyên cho sidecar, không để nó chiếm CPU/RAM của ứng dụng.
+
+### Lộ trình áp dụng an toàn
+1. Đo cơ sở: độ trễ p99, RAM/CPU mỗi pod, chi phí cluster mỗi tháng.
+2. Thí điểm một namespace thí điểm (3–5 service), bật Istio PERMISSIVE hai tuần, đo chi phí thực (RAM, CPU, độ trễ thêm).
+3. Thử chuyển traffic canary 5 % bằng VirtualService.
+4. Chuyển mTLS sang STRICT sau khi quan sát một đến hai tuần và kiểm tra workload không có sidecar.
+5. Chuẩn hóa retry chỉ ở một tầng (không retry cùng lúc ở gateway và mesh).
+6. Mở rộng từng namespace, không triển khai toàn cụm một lần.
+
+### Ví dụ đời thực
+Nền tảng ngân hàng số có 15 service Java trên Kubernetes, lưu lượng 4.000 yêu cầu mỗi giây giờ cao điểm. Sau kiểm tra bảo mật, yêu cầu mã hóa mọi kết nối nội bộ. Thí điểm Istio namespace thanh toán (5 service): mTLS PERMISSIVE một tuần rồi STRICT, cấu hình timeout 800 ms và retry 1 lần chỉ cho lỗi kết nối. Kết quả: 100 % traffic nội bộ namespace được mã hóa hai chiều, độ trễ p99 từ 420 ms lên 438 ms (tăng 18 ms, khoảng 4 %), phát hiện 2 gọi không có timeout nhờ metric sidecar. Chi phí thêm: khoảng 300 MB RAM mỗi node cho sidecar, đội ops cần hai tuần học vận hành Istio. Nhóm không bật mesh toàn cụm ngay, mà mở rộng 3 namespace mỗi tháng và chỉ bật retry ở một tầng.
+
+### Trả lời mẫu khi phỏng vấn
+"Với mười lăm service Java, tôi không cài mesh vì 'có vẻ hiện đại'. Istio thêm sidecar mỗi pod, tốn khoảng 150–300 megabyte RAM, và phải vận hành control plane. Chỉ đáng cài khi cần mã hóa hai chiều mọi nơi không sửa code, chuyển traffic theo header, hoặc nhiều ngôn ngữ. Nếu chỉ Java, ít service, Resilience4j trong code cộng NetworkPolicy là đủ và rẻ hơn. Nếu cài, tôi làm theo lộ trình: thí điểm một namespace, bật mTLS chế độ cho phép trước để quan sát, chuẩn hóa retry chỉ ở một tầng để tránh chồng chéo, đo độ trễ và tài nguyên sidecar, rồi mới bắt buộc mã hóa và mở rộng từng namespace. Không bao giờ triển khai toàn cụm một lần. Kinh nghiệm: định kích cỡ tài nguyên và tự động co giãn trước khi nghĩ đến mesh; mesh là công cụ cho bảo mật zero-trust và chuyển traffic, không phải công cụ giảm chi phí."
+> Senior tip: Mesh xứng đáng khi chi phí không mesh (sự cố mã hóa theo tay, chuyển traffic thủ công gây downtime, debug tracing khó) vượt chi phí sidecar mỗi tháng. Hãy viết ra con số: sự cố mỗi tháng, giờ debug — so với chi phí sidecar mỗi tháng. Không con số thì không cài.`,
+
+
+  follow: [
+    'Sidecar crash loop làm pod không sẵn sàng, bạn xử lý ra sao và đặt giới hạn tài nguyên sidecar như thế nào?',
+    'Khi gateway, mesh và ứng dụng đều cấu hình retry, bạn thiết lập retry budget ra sao để tránh chồng chéo?',
+    'mTLS STRICT làm hỏng cron job không có sidecar, bạn chuyển từ PERMISSIVE sang STRICT an toàn thế nào?'
+  ],
+  tags: ['Istio', 'service mesh', 'sidecar', 'mTLS', 'canary', 'sidecar-less', 'van hanh'],
+  refs: [
+    { type: 'doc', title: 'Istio documentation', url: 'https://istio.io/latest/docs/' }
+  ]
+},
+{
+  id: 'microservices-137',
+  topic: 'microservices',
+  level: 'senior',
+  q: 'Hệ thống Spring Boot 3 có nhiều service gọi nhau qua HTTP và Kafka. Bạn thiết lập OpenTelemetry và Micrometer Tracing thế nào để trace không bị gãy ở ranh giới bất đồng bộ (header Kafka, @Async, thread pool), và dùng tail-based sampling để giữ trace lỗi và latency cao mà không tốn quá nhiều storage?',
+  a: `**Tóm tắt:** Distributed tracing gắn mã định danh duy nhất (traceId) theo một yêu cầu khi đi qua nhiều service; mỗi bước là một span, các span cùng một trace được nối bằng trace context (traceId, spanId, parentSpanId). Trace hay bị gãy ở ranh giới bất đồng bộ: header Kafka không mang context, @Async hoặc thread pool tự tạo mất span cha, batch listener của Spring Kafka tạo span mới cho mỗi lô. Sửa bằng truyền traceparent qua header Kafka, decorator executor để truyền context, đặt correlationId vào payload làm dự phòng, và tail-based sampling giữ trace lỗi.
+
+### Hiểu nhanh
+Hàng hóa đi qua mười kho, mỗi kho dán tem mã vận đơn trên bao-hàng. Nếu một kho quên dán tem, quản kho không biết hàng đã đi đường nào. Tracing giống việc dán tem traceId trên mỗi yêu cầu, mỗi kho (service) ghi lại khi nhận và khi chuyển tiếp.
+
+### Thuật ngữ
+- **Trace**: toàn bộ hành trình một yêu cầu qua nhiều service.
+- **Span**: một bước trong trace (gọi HTTP, xử lý Kafka, truy vấn cơ sở dữ liệu).
+- **traceId / spanId / parentSpanId**: mã yêu cầu, mã bước, mã bước cha.
+- **Trace context**: tập traceId, spanId, parentSpanId được truyền qua header.
+- **traceparent**: header chuẩn W3C mang trace context qua HTTP.
+- **Propagator**: cơ chế đọc và ghi trace context vào header.
+- **OpenTelemetry Java agent**: proxy tự động instrument code (không cần sửa code nhiều).
+- **Micrometer Tracing**: tạo span trong Spring Boot, xuất ra theo định dạng OTLP.
+- **Orphan span**: span không có cha, trace bị gãy.
+- **Correlation ID**: mã nghiệp vụ (orderId) ghi vào payload để nối log khi trace gãy.
+- **Tail-based sampling**: quyết định giữ trace sau khi thấy toàn bộ trace (lỗi hoặc latency cao giữ 100 %).
+
+### Cơ chế truyền context qua HTTP và Kafka
+1. HTTP: client đã instrument (RestTemplate hoặc WebClient) tự chèn header traceparent; service nhận đọc header và tạo span con với parentSpanId.
+2. Kafka: producer ghi trace context vào record header (traceparent) khi publish; consumer đọc header và tạo span tiếp tục. Nếu không truyền, luồng bất đồng bộ bị gãy thành các trace riêng lẻ.
+3. @Async và thread pool: executor không truyền context → span mới không có cha; dùng ContextPropagatingTaskDecorator hoặc ContextSnapshot.wrap().
+4. Reactor WebFlux: dùng contextWrite đặt Span vào Reactor Context, không đọc ThreadLocal.
+
+### Vị trí trace hay gãy và cách sửa
+| Vị trí | Nguyên nhân gãy | Cách sửa |
+|---|---|---|
+| Kafka producer không ghi header | client chưa instrument | KafkaTemplate đã instrument tự động; client thủ công phải thêm header traceparent |
+| Kafka consumer | không đọc header | cấu hình OTel Kafka instrumentation, đọc traceparent từ record header |
+| @Async và thread pool tự tạo | context không theo thread | ContextPropagatingTaskDecorator hoặc ContextSnapshot.wrap() |
+| Batch listener Spring Kafka | một span cho cả lô, mất cha trên mỗi bản ghi | xử lý từng bản ghi và tạo span con, hoặc dùng correlationId |
+| Reactor tự tạo Mono/Flux | quên contextWrite | luôn .contextWrite(Context.of(Span.class, Span.current())) ở biên bất đồng bộ |
+
+**Correlation ID dự phòng:** nếu header traceparent bị mất, mỗi event mang orderId; log in traceId và orderId vào MDC để nối log với trace.
+
+**Sampling:** head-based quyết định ngay ở đầu (ví dụ 10 %); tail-based buffer span ở collector, giữ 100 % trace có lỗi hoặc latency cao, còn lại 10 %. Cần collector hỗ trợ tail_sampling (OTel Collector). Trade-off: tail-based cần bộ nhớ lớn hơn nhưng giữ trace 'đáng tiền'.
+
+~~~java
+// Producer (KafkaTemplate đã instrument: header traceparent tự động ghi)
+kafkaTemplate.send("order.created", orderId, event);
+// Consumer thủ công: đọc header và nối span
+for (var header : record.headers()) {
+    if ("traceparent".equals(header.key())) {
+        var context = propagator.extract(Context.current(), new String(header.value()), getter);
+        var span = tracer.spanBuilder("consume-order").setParent(context).startSpan();
+    }
+}
+~~~
+
+~~~seq
+title: Trace context qua HTTP và Kafka
+actors: Client | Order API | Kafka | Payment Worker
+Client -> Order API: POST /orders (traceparent)
+Order API -> Kafka: publish, thêm header traceparent
+Kafka --> Payment Worker: consume, đọc header traceparent
+Payment Worker -> Payment Worker: tạo span con
+~~~
+
+### Ví dụ đời thực
+Hệ thống thanh toán có 4 nhảy (gateway → payment → Kafka topic fraud → fraud-service → core-banking). Trước trace gãy ở Kafka consumer: fraud-service tạo trace riêng, không liên kết với payment. Khách báo thanh toán mất 5,2 giây, đội grep log 30 phút. Sau bật OTel, truyền traceparent qua HTTP và Kafka header, decorator @Async, tail-based sampling (giữ 100 % lỗi và yêu cầu > 2 giây, còn lại 10 %): trace liên tục từ gateway tới fraud-service, MDC in traceId. Một tối p99 tăng 5 giây: truy vấn trace chậm thấy span fraud.rules chiếm 3,8 giây do quy tắc gian lận gọi API bên ngoài chậm. Tăng pool fraud-service 8 lên 24, đặt queue capacity 100; p99 về 900 ms. Thời gian điều tra từ 30 phút xuống 3 phút.
+
+### Trả lời mẫu khi phỏng vấn
+"Tracing gắn mã traceId theo yêu cầu đi qua nhiều service; mỗi bước tạo span có spanId và parentSpanId nên backend nối thành cây thời gian. Tôi truyền trace context qua header HTTP traceparent và qua header của bản ghi Kafka, vì luồng bất đồng bộ không truyền thì trace gãy thành các mảnh riêng lẻ. Ở @Async và thread pool tự tạo, tôi dùng decorator để truyền context; trong Reactor, luôn contextWrite Span vào Reactor Context. Nếu header bị mất, tôi đặt correlationId (orderId) vào payload và in traceId vào log MDC để nối log với trace. Về sampling, tôi không giữ 100 % ở lưu lượng lớn mà dùng head-based kết hợp tail-based giữ trace lỗi và yêu cầu chậm. Khi điều tra, tôi lọc trace chậm, nhìn span nào chiếm thời gian, rồi khoan xuống dịch vụ chậm. Lưu ý: kiểm tra header traceparent trong bản ghi Kafka và đảm bảo mọi executor đều truyền context; thiếu một mắt xích là trace gãy đúng lúc cần điều tra nhất."
+> Senior tip: Kiểm tra header traceparent trong bản ghi Kafka bằng consumer thủ công và đảm bảo mọi executor (bao gồm @Async và thread pool tự tạo) đều truyền context; thiếu một mắt xích là trace bị gãy đúng lúc cần điều tra nhất. Theo dõi chi phí sampling bằng dữ liệu thật trước khi hạ tỷ lệ giữ trace.`,
+
+
+  follow: [
+    'Head-based và tail-based sampling khác nhau thế nào, và tail-based cần thành phần nào trong pipeline thu thập?',
+    'Làm sao để trace không bị gãy khi xử lý bất đồng bộ với @Async, thread pool riêng hoặc consumer Kafka?',
+    'Bạn liên kết trace với log và metric (ba trụ cột) như thế nào để khoan từ alert xuống nguyên nhân gốc?'
+  ],
+  tags: ['opentelemetry', 'micrometer tracing', 'spring boot 3', 'Kafka', 'trace context', 'tail-based sampling'],
+  refs: [
+    { type: 'doc', title: 'OpenTelemetry documentation', url: 'https://opentelemetry.io/docs/' }
+  ]
 }
 );
 
