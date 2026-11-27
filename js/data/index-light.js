@@ -3573,6 +3573,8 @@ window.DATA_INDEX = {
     ["bug-050","Bỏ qua header Retry-After khi 429: 200 instance retry ngay 5 lần gây bão request, khoá API key 10 phút","senior",["ai"]],
     ["bug-051","Rò rỉ kết nối HTTP client không đồng bộ làm cạn connection pool, service treo 15 phút","senior",["microservices"]],
     ["bug-052","Cache write-through không invalidation khi DB update thất bại: 20% request đọc dữ liệu cũ 5 phút","senior",["jpa"]],
+    ["bug-053","Sàn phái sinh: job tất toán ký quỹ ghi đè nạp tiền (lost update)","lead",[]],
+    ["bug-054","Sàn phái sinh: amend tăng khối lượng giữ nguyên ưu tiên thời gian (vi phạm price-time priority)","senior",[]],
   ],
   sd: [
     {"id":"sd-001","title":"Chuyển tiền liên ngân hàng qua Napas"},

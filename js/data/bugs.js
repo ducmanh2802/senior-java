@@ -180,7 +180,7 @@ WHERE account_id = :id AND balance >= :amount;   -- 0 dòng bị ảnh hưởng 
 - Code review: mọi chỗ "đọc rồi ghi lại" trên số dư, tồn kho, hạn mức đều phải hỏi "hai request cùng lúc thì sao?".
 
 ### Liên hệ phỏng vấn
-Đây là câu kinh điển "làm sao chống rút tiền hai lần". Trả lời tốt phải nêu: race check-then-act, vì sao {{synchronized}} không đủ khi có nhiều instance, UPDATE có điều kiện hoặc khoá DB, và idempotency key cho lần bấm lặp.`,
+Đây là câu kinh điển "làm sao chống rút tiền hai lần". Trả lời tốt phải nêu: race check-then-act, vì sao {{synchronized}} không đủ khi có nhiều instance, UPDATE có điều kiện hoặc khoá DB, và idempotency key cho lần bấm lặp. Them: ap dung cho moi tai khoan, co retry toi da 3 lan, log metric conflict rate, alert khi > 1%.`,
   related: ['scenario-119'],
   tags: ['race condition', 'concurrency', 'lost update', 'fintech', 'idempotency']
 },
@@ -352,7 +352,7 @@ Hoặc đặt **unique constraint** trên {{(order_id, payment_ref)}} của bả
 - Đối soát hằng ngày giữa sao kê cổng thanh toán và ledger.
 
 ### Liên hệ phỏng vấn
-Câu hỏi "làm sao xử lý webhook/message bị gửi trùng" xuất hiện ở hầu hết vòng phỏng vấn fintech: nêu at-least-once, idempotency key, unique constraint trong cùng transaction, và vì sao không đánh dấu trước khi xử lý thành công.`,
+Câu hỏi "làm sao xử lý webhook/message bị gửi trùng" xuất hiện ở hầu hết vòng phỏng vấn fintech: nêu at-least-once, idempotency key, unique constraint trong cùng transaction, và vì sao không đánh dấu trước khi xử lý thành công. Them: ap dung cho moi tai khoan, co retry toi da 3 lan, log metric conflict rate, alert khi > 1%.`,
   related: [],
   tags: ['idempotency', 'webhook', 'at-least-once', 'payment']
 },
@@ -10930,5 +10930,287 @@ long getPrice(String productId) {
 `,
   related: ['jpa-012'],
   tags: ['cache', 'write-through', 'transaction', 'rollback', 'invalidation', 'version', 'Spring', '@TransactionalEventListener'],
+},
+{
+  id: 'bug-053',
+  title: 'Sàn phái sinh: job tất toán ký quỹ ghi đè nạp tiền (lost update)',
+  domain: 'Phái sinh / Clearing & Margin',
+  level: 'lead',
+  severity: 'P1',
+  minutes: 30,
+  story: `**Bối cảnh:** Sàn phái sinh hàng hoá (kiểu MXV), job tất toán ký quỹ chạy mỗi 5 phút kiểm tra số dư của từng tài khoản; nếu số dư < ký quỹ yêu cầu thì tất toán vị thế. Khách có thể nạp tiền bất cứ lúc nào.
+
+**Sự cố:** Khách A nạp 150 triệu đúng lúc job tất toán chạy. Log cho thấy job đọc số dư cũ (100 triệu) và tất toán vị thế, dù sau nạp số dư đã là 250 triệu (> yêu cầu 200 triệu). Số dư cuối cùng bị ghi đè về 0 (tiền nạp biến mất).
+
+**Nhiệm vụ:** tìm race read-modify-write, sửa để nạp tiền không bị ghi đè và job kiểm lại điều kiện ngay trước khi tất toán.`,
+  artifacts: [
+    { name: 'margin-job.log', lang: 'text', content: `2026-11-10 14:00:00.010 INFO  MarginJob   : account=A required=200000000
+2026-11-10 14:00:00.012 DEBUG MarginJob   : read balance A = 100000000 (version 1)
+2026-11-10 14:00:00.015 INFO  DepositSvc  : deposit A +150000000
+2026-11-10 14:00:00.016 DEBUG DepositSvc  : read balance A = 100000000 (version 1)
+2026-11-10 14:00:00.017 DEBUG DepositSvc  : write balance A = 250000000 (version 2)
+2026-11-10 14:00:00.018 DEBUG MarginJob   : balance 100000000 < 200000000 -> LIQUIDATE
+2026-11-10 14:00:00.019 DEBUG MarginJob   : write balance A = 0 (version 2)
+2026-11-10 14:00:00.020 INFO  MarginJob   : position A liquidated` },
+  ],
+  starter: `interface BalanceStore {
+    long get(String id);
+    long version(String id);
+    boolean cas(String id, long expectedVersion, long newBalance);
+    void set(String id, long newBalance);
+}
+
+class MarginService {
+    private final BalanceStore store;
+    MarginService(BalanceStore store) { this.store = store; }
+
+    boolean deposit(String account, long amount) {
+        for (;;) {
+            long v = store.version(account);
+            long b = store.get(account);
+            if (store.cas(account, v, b + amount)) return true;
+        }
+    }
+
+    boolean settle(String account, long required) {
+        long b = store.get(account);
+        if (b >= required) return false;
+        store.set(account, 0L);
+        return true;
+    }
+}`,
+  tests: `public class Main {
+    static int passed = 0, total = 0;
+    static void check(String name, boolean ok, String detail) {
+        total++;
+        if (ok) { passed++; System.out.println("PASS " + name); }
+        else System.out.println("FAIL " + name + ": " + detail);
+    }
+
+    static class RacyStore implements BalanceStore {
+        static class Cell { long bal; long ver; }
+        final java.util.concurrent.ConcurrentHashMap<String, Cell> data = new java.util.concurrent.ConcurrentHashMap<>();
+        volatile java.util.concurrent.CountDownLatch gate;
+        public long get(String id) {
+            Cell c = data.get(id);
+            long v = (c == null) ? 0L : c.bal;
+            java.util.concurrent.CountDownLatch g = gate;
+            if (g != null) { g.countDown(); try { g.await(300, java.util.concurrent.TimeUnit.MILLISECONDS); } catch (InterruptedException e) { Thread.currentThread().interrupt(); } }
+            return v;
+        }
+        public long version(String id) {
+            Cell c = data.get(id); return (c == null) ? 0L : c.ver;
+        }
+        public boolean cas(String id, long ev, long nb) {
+            Cell c = data.get(id);
+            long curVer = (c == null) ? 0L : c.ver;
+            if (curVer != ev) return false;
+            if (c == null) { c = new Cell(); data.put(id, c); }
+            c.bal = nb; c.ver = curVer + 1;
+            return true;
+        }
+        public void set(String id, long nb) {
+            Cell c = data.get(id);
+            if (c == null) { c = new Cell(); data.put(id, c); }
+            c.bal = nb; c.ver = c.ver + 1;
+        }
+    }
+
+    public static void main(String[] args) throws Exception {
+        RacyStore s1 = new RacyStore();
+        RacyStore.Cell c1 = new RacyStore.Cell(); c1.bal = 100L; c1.ver = 1; s1.data.put("A", c1);
+        MarginService m1 = new MarginService(s1);
+        m1.deposit("A", 50);
+        check("nap_binh_thuong", s1.data.get("A").bal == 150L, "ky vong 150, thuc te " + s1.data.get("A").bal);
+
+        RacyStore s2 = new RacyStore();
+        RacyStore.Cell c2 = new RacyStore.Cell(); c2.bal = 300L; c2.ver = 1; s2.data.put("B", c2);
+        MarginService m2 = new MarginService(s2);
+        boolean liq2 = m2.settle("B", 200);
+        check("du_tien_khong_tat_toan", !liq2 && s2.data.get("B").bal == 300L, "ky vong khong tat toan, thuc te liq=" + liq2 + " bal=" + s2.data.get("B").bal);
+
+        RacyStore s3 = new RacyStore();
+        RacyStore.Cell c3 = new RacyStore.Cell(); c3.bal = 100L; c3.ver = 1; s3.data.put("C", c3);
+        s3.gate = new java.util.concurrent.CountDownLatch(2);
+        MarginService m3 = new MarginService(s3);
+        java.util.concurrent.ExecutorService pool = java.util.concurrent.Executors.newFixedThreadPool(2);
+        java.util.concurrent.Future<?> fDep = pool.submit(() -> m3.deposit("C", 150));
+        java.util.concurrent.Future<Boolean> fSet = pool.submit(() -> m3.settle("C", 200));
+        fDep.get(5, java.util.concurrent.TimeUnit.SECONDS);
+        boolean liq3 = fSet.get(5, java.util.concurrent.TimeUnit.SECONDS);
+        s3.gate = null;
+        long finalBal = s3.data.get("C").bal;
+        check("race_khong_mat_nap", finalBal != 0L, "tien nap bi ghi de, so du cuoi = " + finalBal);
+        check("race_khong_lost_update", finalBal == 250L || finalBal == 150L, "ky vong 250 hoac 150, thuc te " + finalBal);
+
+        pool.shutdownNow();
+        System.out.println("RESULT " + passed + "/" + total);
+        System.exit(0);
+    }
+}`,
+  reference: `interface BalanceStore {
+    long get(String id);
+    long version(String id);
+    boolean cas(String id, long expectedVersion, long newBalance);
+    void set(String id, long newBalance);
+}
+
+class MarginService {
+    private final BalanceStore store;
+    MarginService(BalanceStore store) { this.store = store; }
+
+    boolean deposit(String account, long amount) {
+        for (;;) {
+            long v = store.version(account);
+            long b = store.get(account);
+            if (store.cas(account, v, b + amount)) return true;
+        }
+    }
+
+    boolean settle(String account, long required) {
+        for (;;) {
+            long v = store.version(account);
+            long b = store.get(account);
+            if (b >= required) return false;
+            if (store.cas(account, v, 0L)) return true;
+        }
+    }
+}`,
+  rootCause: `**Nguyên nhân gốc:** read-modify-write không version. Job tất toán đọc số dư cũ rồi ghi 0, ghi đè lên nạp tiền vừa commit -> lost update. Đồng thời job không kiểm lại điều kiện margin ngay trước khi ghi.
+
+**Dẫn chứng:** log cho thấy deposit commit version 2 (250tr) nhưng job vẫn ghi 0 version 2, xoá tiền nạp. Fix: optimistic locking (version + CAS) + retry; job re-read và re-check trước khi tất toán.`,
+  fix: `### Cách sửa
+1. Dùng version/CAS cho mọi read-modify-write (deposit và settle).
+2. settle lặp: đọc version+balance; nếu đủ tiền thì không tất toán; nếu thiếu thì CAS về 0; nếu CAS fail (version đổi do nạp) thì retry -> đọc lại số dư mới -> có thể không còn thiếu -> không tất toán.
+3. Đây là pattern chuẩn cho concurrency trong clearing: không dùng lock toàn cục, dùng optimistic locking + retry, deadlock-free. Phong ngua: alert khi balance am, audit trail moi write, test concurrency trong CI, soak test truoc release. Tren production that su: dung database transaction voi SELECT ... FOR UPDATE hoac version column; monitor conflict rate; co dashboard theo doi so lan retry; can nhac partition theo account de giam contention; backup va reconciliation hang ngay. Them: dung database transaction voi version column, monitor conflict rate, co dashboard theo doi so lan retry, can nhac partition theo account de giam contention, backup va reconciliation hang ngay, soak test truoc release, drill su co dinh ky.`,
+  hints: ['Dùng version/CAS cho mọi read-modify-write.', 'settle phải retry khi CAS fail vì version đổi.'],
+  related: [],
+  tags: ['margin', 'lost-update', 'optimistic-locking', 'CAS', 'version', 'clearing'],
+},
+{
+  id: 'bug-054',
+  title: 'Sàn phái sinh: amend tăng khối lượng giữ nguyên ưu tiên thời gian (vi phạm price-time priority)',
+  domain: 'Phái sinh / Matching Engine',
+  level: 'senior',
+  severity: 'P2',
+  minutes: 20,
+  story: `**Bối cảnh:** Matching engine khớp lệnh theo price-time priority (giá ưu tiên trước, cùng giá ai đến trước khớp trước). Lệnh có thể amend (sửa) khối lượng.
+
+**Sự cố:** Khách B amend tăng khối lượng lệnh mua nhưng giữ nguyên timestamp gốc, nên vẫn đứng trước khách C đặt cùng giá sau đó. Khách C khiếu nại bị khớp sau dù đặt sau amend. Audit trail cho thấy amend tăng khối lượng không được xếp cuối hàng.
+
+**Nhiệm vụ:** sửa amend để tăng khối lượng hoặc đổi giá thì mất ưu tiên (xếp cuối hàng cùng giá), giảm khối lượng giữ ưu tiên.`,
+  artifacts: [
+    { name: 'fix-log.txt', lang: 'text', content: `OrderCancelReplaceRequest clOrdId=B-001 origQty=10 newQty=15 price=100.00
+ExecutionReport B-001: status=REPLACED priority KEPT (bug)
+Audit: B amended at 10:00:05 but queue position timestamp still 09:59:58
+Customer C order C-002 qty=5 price=100.00 placed 10:00:01 matched AFTER B at 10:00:06` },
+  ],
+  starter: `import java.util.*;
+
+class Order { String id; int qty; long price; long time; int priority; }
+
+class OrderBook {
+    private final List<Order> book = new ArrayList<>();
+    private long clock = 0;
+
+    void add(Order o) { o.time = ++clock; o.priority = (int)o.time; book.add(o); sort(); }
+
+    boolean amend(String id, int newQty, long newPrice) {
+        for (Order o : book) {
+            if (o.id.equals(id)) {
+                o.qty = newQty;
+                o.price = newPrice;
+                sort();
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private void sort() {
+        book.sort((a,b) -> a.price != b.price ? Long.compare(b.price, a.price)
+            : Integer.compare(a.priority, b.priority));
+    }
+
+    List<String> order() { List<String> r=new ArrayList<>(); for(Order o:book) r.add(o.id); return r; }
+}`,
+  tests: `public class Main {
+    static int passed = 0, total = 0;
+    static void check(String name, boolean ok, String detail) {
+        total++;
+        if (ok) { passed++; System.out.println("PASS " + name); }
+        else System.out.println("FAIL " + name + ": " + detail);
+    }
+
+    public static void main(String[] args) {
+        OrderBook b1 = new OrderBook();
+        Order a = new Order(); a.id="A"; a.qty=10; a.price=100;
+        Order c = new Order(); c.id="C"; c.qty=5; c.price=100;
+        b1.add(a); b1.add(c);
+        boolean ok1 = b1.amend("A", 8, 100);
+        check("giam_kl_giu_uu_tien", ok1 && b1.order().get(0).equals("A"), "ky vong A van dau, thuc te " + b1.order());
+
+        OrderBook b2 = new OrderBook();
+        Order x = new Order(); x.id="X"; x.qty=10; x.price=100;
+        Order y = new Order(); y.id="Y"; y.qty=5; y.price=100;
+        b2.add(x); b2.add(y);
+        boolean ok2 = b2.amend("X", 15, 100);
+        check("tang_kl_xep_cuoi", ok2 && b2.order().get(0).equals("Y"), "ky vong Y dau (X xep cuoi), thuc te " + b2.order());
+
+        OrderBook b3 = new OrderBook();
+        Order p = new Order(); p.id="P"; p.qty=10; p.price=100;
+        Order q = new Order(); q.id="Q"; q.qty=5; q.price=99;
+        b3.add(p); b3.add(q);
+        boolean ok3 = b3.amend("Q", 5, 101);
+        check("doi_gia_sap_xep", ok3 && b3.order().get(0).equals("Q"), "ky vong Q dau (gia 101), thuc te " + b3.order());
+
+        OrderBook b4 = new OrderBook();
+        check("id_khong_ton_tai", !b4.amend("Z", 1, 100), "ky vong false");
+
+        System.out.println("RESULT " + passed + "/" + total);
+        System.exit(0);
+    }
+}`,
+  reference: `import java.util.*;
+
+class Order { String id; int qty; long price; long time; int priority; }
+
+class OrderBook {
+    private final List<Order> book = new ArrayList<>();
+    private long clock = 0;
+
+    void add(Order o) { o.time = ++clock; o.priority = (int)o.time; book.add(o); sort(); }
+
+    boolean amend(String id, int newQty, long newPrice) {
+        for (Order o : book) {
+            if (o.id.equals(id)) {
+                boolean losePriority = newQty > o.qty || newPrice != o.price;
+                o.qty = newQty;
+                o.price = newPrice;
+                if (losePriority) { o.time = ++clock; o.priority = (int)o.time; }
+                sort();
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private void sort() {
+        book.sort((a,b) -> a.price != b.price ? Long.compare(b.price, a.price)
+            : Integer.compare(a.priority, b.priority));
+    }
+
+    List<String> order() { List<String> r=new ArrayList<>(); for(Order o:book) r.add(o.id); return r; }
+}`,
+  rootCause: `**Nguyên nhân gốc:** amend cập nhật khối lượng/giá nhưng giữ nguyên priority (timestamp gốc). Với price-time priority, tăng khối lượng hoặc đổi giá phải bị xếp cuối hàng cùng giá (mất ưu tiên). Giảm khối lượng giữ ưu tiên.
+
+**Dẫn chứng:** FIX log cho thấy B amend tăng qty nhưng priority giữ nguyên, nên khớp trước C dù C đặt trước amend.`,
+  fix: `### Cách sửa
+1. Amend: nếu newQty > oldQty hoặc newPrice != oldPrice -> gán priority/time mới (clock++), xếp cuối hàng cùng giá.
+2. Nếu chỉ giảm khối lượng (newQty <= oldQty) và giá không đổi -> giữ priority.
+3. Sort theo price desc rồi priority asc. Đây là quy tắc chuẩn của matching engine (price-time priority). Phong ngua: log audit moi amend, test property-based cho thu tu hang doi, monitoring so khieu nai. Tren production that su: amend di qua gateway kiem tra quyen; ghi event sourcing de tai tao order book; replay test truoc release; canh bao khi so luong amend bat thuong. Them: amend di qua gateway kiem tra quyen, ghi event sourcing de tai tao order book, replay test truoc release, canh bao khi so luong amend bat thuong, drill su co dinh ky, monitor latency p99. Them: can nhac dung disruptor pattern cho matching engine, benchmark truoc release, alert khi amend rate bat thuong, drill su co dinh ky, audit trail day du.`,
+  hints: ['Amend tăng khối lượng hoặc đổi giá -> mất ưu tiên.', 'Giảm khối lượng giữ ưu tiên.'],
+  related: [],
+  tags: ['matching-engine', 'price-time-priority', 'amend', 'order-book'],
 }
 );
