@@ -7145,5 +7145,468 @@ Chủ đề hay bị hỏi ở phỏng vấn Senior về concurrency.`,
   ],
   related: ['concurrency-004'],
   tags: ['structured concurrency', 'fan-out', 'Future', 'timeout']
+},
+{
+  id: 'lesson-concurrency-027',
+  track: 'concurrency',
+  order: 27,
+  title: 'Semaphore và rate limit: giới hạn đồng thời và tốc độ gọi đối tác',
+  level: 'senior',
+  minutes: 40,
+  goals: [
+    'Phân biệt giới hạn số tác vụ chạy đồng thời (concurrency cap) và giới hạn số request mỗi giây (rate limit) — hai công cụ khác nhau, không thay thế được nhau',
+    'Viết được lớp gọi đối tác giới hạn tối đa N request đồng thời bằng Semaphore, release trong finally, test chắc chắn bằng CountDownLatch',
+    'Biết kết hợp Semaphore (bulkhead cho từng đối tác) với token bucket (giới hạn burst và tốc độ trung bình)',
+    'Nhận ra lỗi production: permit rò, Semaphore không reentrant theo thread, đặt permit quá cao',
+  ],
+  body: `### Tóm tắt
+Semaphore là bộ đếm "vé vào": chỉ cho tối đa N tác vụ đi vào vùng nguy hiểm cùng lúc, các tác vụ còn lại chờ. Rate limiter (ví dụ token bucket) giới hạn số tác vụ được bắt đầu trong một khoảng thời gian, chẳng hạn 100 request mỗi giây. Semaphore giải quyết câu hỏi "bao nhiêu việc cùng chạy", rate limiter giải quyết câu hỏi "bao nhiêu việc mỗi giây". Hai công cụ này không thay thế được nhau và thường dùng kết hợp để bảo vệ một đối tác bên ngoài: tránh đồng thời làm quá tải kết nối và vượt quota.
+
+### Vấn đề: gọi đối tác không giới hạn
+Giả sử service của bạn gọi payment gateway. Mỗi request của khách hàng tạo một lệnh gọi HTTP. Nếu cùng lúc có 500 khách hàng, bạn sẽ tạo 500 lệnh gọi tới đối tác. Đối tác chỉ chịu được 20 kết nối đồng thời và quota 100 request mỗi giây. Kết quả: đối tác trả HTTP 429 (Too Many Requests — server khuyên client chờ lại sau), hoặc chậm trệ, hoặc chặn IP của bạn. Lỗi này không xuất hiện trên máy dev vì tải thấp, nhưng explodes trên production.
+
+### Semaphore: giới hạn số tác vụ chạy đồng thời
+Semaphore giữ một số permit (ví dụ 20).
+- acquire(): lấy một permit. Nếu hết permit, thread chờ cho đến khi có chỗ.
+- release(): trả permit, đánh thức thread đang chờ.
+Semaphore không gắn với thread: luồng A có thể acquire, luồng B release. Vì vậy nó dùng để điều tiết lưu lượng, không dùng để bảo vệ dữ liệu dùng chung (mutual exclusion). Dùng ReentrantLock hoặc synchronized cho việc đó.
+
+~~~java
+class PartnerClient {
+    private final Semaphore sem = new Semaphore(20);   // toi da 20 request dong thoi
+    Response call(Request req) throws Exception {
+        sem.acquire();              // cho neu da co 20 request dang chay
+        try {
+            return doHttp(req);     // goi doi tac
+        } finally {
+            sem.release();          // LUON nhan phan cap, ke ca khi nem exception
+        }
+    }
+}
+~~~
+
+Diem then chot: release() phai nam trong finally. Neu doHttp() nem exception ma khong release, moi lan loi lam mat mot permit vinH viem. Sau 20 lan loi, Semaphore cap het permit, moi request sau do cho mai — service tu khoa minh, du CPU van rang.
+
+Semaphore mac dinh la unfair (khong cong bang): luong moi co the chen ngang truoc luong dang cho, throughput cao hon. Semaphore(20, true) la fair (FIFO), tranh khoi nguon luong nhung chua hon. Chon fair chi khi metric thay mot so luong bi doi nguyen luong lau dai.
+
+tryAcquire(): lay phan cap neu con, KHONG cho, tra true/false. tryAcquire(200, MILLISECONDS): cho toi da 200 ms roi tra false. Dung de tra 503 ngay thay de de hang doi phin to (load shedding).
+
+### Rate limiter: gioi han so request moi giay
+Semaphore giu so tac vu DANG CHAY. Neu moi request goi DB mat 200 ms, 20 request dong thoi tuong duong 100 request moi giay. Neu DB cham lai thanh 2 giay/request, cung 20 request dong thoi chi con 10 request moi giay. Vay Semaphore(20) khong cam ket 100 request moi giay — day la su khac nhau co ban voi rate limiter.
+
+Rate limiter (token bucket) dung cai xo chua toi da capacity vien bi. Mot voi rot refillPerSecond vien moi giay. Moi request lay 1 vien; khong con vien thi tu choi ngay.
+- capacity: co burst lon nhat (sau dem yên tin, xo day, co the don capacity request trong giay dau).
+- refillPerSecond: toc do trung bình ve lau dai.
+
+Ket hop Semaphore va rate limiter: Semaphore(20) la bulkhead (toi da 20 ket noi dong thoi toi doi tac), token bucket(100 req/s) la gioi han toc do. Hai lop bao vie doc lap.
+
+### Loi production hay gap
+- Quen release() trong finally: permit rot, sau N lan loi service tu khoa minh.
+- Goi acquire() hai lan trong cung mot luong ma khong release giua hai lan: Semaphore khong reentrant theo thread => deadlock ngay lap tuc.
+- Dung Semaphore de bao ve du lieu dung chung: sai cong cu, dung ReentrantLock/synchronized.
+- Dat permit qua cao (vi du 1000): Semaphore khong con bao ve doi tac, doi tac bi DDoS boi chinh ban.
+- Fixed window counter lam rate limiter: cho phep gấp doi quota o bien cua soa (vi du 3 request cuoi giay 0 va 3 request dau giay 1 trong 0,15 giay). Sliding window hoac token bucket chinh hon.
+
+### Vi du doi thuc
+He thong thanh toan goi 3 downstream: DB, payment gateway, email. Payment gateway chiu toi da 20 ket noi dong thoi va 100 request moi giay. Dat Semaphore(20) rieng cho payment gateway + token bucket(100, 100). Khi gateway cham, chi toi da 20 thread goi no bi chan; DB va email van phuc vu binh thuong (bulkhead tranh cascading failure — su co lan truyen). Neu gateway bat dau tra 429, token bucket tu choi som, client nhan 503 kem Retry-After va retry sau backoff. So lieu do duoc: truoc khi gioi han, p99 goi gateway la 8 giay va co 4% loi 429; sau khi gioi han, p99 giam xuong 1,2 giay, loi 429 bien mat hoan toan.
+
+### Tra loi mau khi phong vien
+"Toi dung Semaphore de lam bulkhead: moi doi tac downstream co Semaphore rieng voi so permit bang khang nang cua no, vi du 20 ket noi dong thoi. release() luon nam trong finally de khong rot permit. Neu can han so request moi giay, toi xep them token bucket o tren: capacity cho burst, refillPerSecond cho quota trung bình. Semaphore khong reentrant theo thread, nen mot luong khong duoc acquire hai lien tiep. Theo doi availablePermits: neu so permit giam dan khong hoi phuc, co loi rot permit. Ket hop circuit breaker: bulkhead gioi han concurrency, circuit breaker nga het downstream khi loi qua nhieu."
+
+> Senior tip: Khong bao gio dung Semaphore de bao ve bien dung chung (vi du dem so du tai khoan) — day cong viec cua lock hoac Atomic. Semaphore tra loi cau hoi "bao nhiêu vie cung chay", lock tra loi cau hoi "ai duoc vao doan code nay cung luc". Nham luan hai cau hoi la nguon cua deadlock va hong du lieu tren production.
+`,
+  exercises: [
+    {
+      title: 'Gioi han toi da 20 request dong thoi goi doi tac',
+      prompt: `Viet class PartnerClient gioi han toi da maxConcurrent request dang chay cung luc toi mot doi tac.
+
+- Constructor PartnerClient(int maxConcurrent).
+- <T> T call(Callable<T> partner): cho den khi co slot (Semaphore.acquire), sau do chay partner.call() trong luong hien tai. Neu partner nem exception, van duoc nhah va exception duoc nem ra tiep.
+- int active(): so request dang chay tai thoi diem goi.
+
+Rang bao: dung Semaphore. Test se dung CountDownLatch lam cong xuat phat de nhieu luong cung goi, va kiem chung khong bao qua maxConcurrent.`,
+      starter: `import java.util.concurrent.Callable;
+import java.util.concurrent.Semaphore;
+
+class PartnerClient {
+    PartnerClient(int maxConcurrent) {
+        throw new UnsupportedOperationException("TODO");
+    }
+
+    <T> T call(Callable<T> partner) throws Exception {
+        throw new UnsupportedOperationException("TODO");
+    }
+
+    int active() {
+        throw new UnsupportedOperationException("TODO");
+    }
+}`,
+      tests: `public class Main {
+    static int passed = 0, total = 0;
+    static void check(String name, Runnable r) {
+        total++;
+        try { r.run(); passed++; System.out.println("PASS " + name); }
+        catch (Throwable t) { System.out.println("FAIL " + name + ": " + t); }
+    }
+    static void eq(Object expected, Object actual) {
+        if (!Objects.equals(expected, actual)) throw new AssertionError("expected " + expected + " got " + actual);
+    }
+    static void pause(long ms) {
+        try { Thread.sleep(ms); } catch (InterruptedException e) { Thread.currentThread().interrupt(); }
+    }
+    public static void main(String[] args) throws Exception {
+        check("khong bao qua maxConcurrent request chay cung luc", () -> {
+            PartnerClient c = new PartnerClient(20);
+            AtomicInteger active = new AtomicInteger(), maxActive = new AtomicInteger();
+            CountDownLatch gate = new CountDownLatch(1);
+            List<Thread> ts = new ArrayList<>();
+            for (int i = 0; i < 50; i++) {
+                Thread t = new Thread(() -> {
+                    try { gate.await(); } catch (InterruptedException e) { Thread.currentThread().interrupt(); return; }
+                    try { c.call(() -> { int a = active.incrementAndGet(); maxActive.updateAndGet(m -> Math.max(m, a)); pause(30); active.decrementAndGet(); return "x"; }); }
+                    catch (Exception e) { throw new RuntimeException(e); }
+                });
+                t.setDaemon(true);
+                ts.add(t);
+                t.start();
+            }
+            gate.countDown();
+            for (Thread t : ts) { try { t.join(5000); } catch (InterruptedException e) { Thread.currentThread().interrupt(); } }
+            if (maxActive.get() > 20) throw new AssertionError("maxActive = " + maxActive.get() + " > 20");
+            eq(0, c.active());
+        });
+        check("exception nhiem slot", () -> {
+            PartnerClient c = new PartnerClient(1);
+            boolean threw = false;
+            try { c.call(() -> { throw new IllegalStateException("boom"); }); }
+            catch (Exception expected) { threw = true; }
+            if (!threw) throw new AssertionError("phai nem exception");
+            try { eq("x", c.call(() -> "x")); }
+            catch (Exception e) { throw new RuntimeException(e); }
+            eq(0, c.active());
+        });
+        check("tat ca hoan thanh", () -> {
+            PartnerClient c = new PartnerClient(5);
+            for (int i = 0; i < 100; i++) { try { eq("ok", c.call(() -> "ok")); } catch (Exception e) { throw new RuntimeException(e); } }
+            eq(0, c.active());
+        });
+        check("maxConcurrent <= 0 nem IllegalArgumentException", () -> {
+            boolean threw = false;
+            try { new PartnerClient(0); }
+            catch (IllegalArgumentException expected) { threw = true; }
+            if (!threw) throw new AssertionError("phai nem IllegalArgumentException");
+        });
+        System.out.println("RESULT " + passed + "/" + total);
+    }
+}`,
+      reference: `import java.util.concurrent.Callable;
+import java.util.concurrent.Semaphore;
+import java.util.concurrent.atomic.AtomicInteger;
+
+class PartnerClient {
+    private final Semaphore sem;
+    private final AtomicInteger active = new AtomicInteger();
+    private final int max;
+
+    PartnerClient(int maxConcurrent) {
+        if (maxConcurrent < 1) throw new IllegalArgumentException("maxConcurrent must be >= 1");
+        this.sem = new Semaphore(maxConcurrent);
+        this.max = maxConcurrent;
+    }
+
+    <T> T call(Callable<T> partner) throws Exception {
+        sem.acquire();
+        active.incrementAndGet();
+        try {
+            return partner.call();
+        } finally {
+            active.decrementAndGet();
+            sem.release();
+        }
+    }
+
+    int active() {
+        return active.get();
+    }
+}`,
+      hints: [
+        'Khai bao private final Semaphore sem = new Semaphore(maxConcurrent);',
+        'sem.acquire() truoc khi chay partner, sem.release() trong finally; nem lai exception cua partner.',
+        'active() = maxConcurrent - sem.availablePermits(); hoac dem bang AtomicInteger.',
+        'Constructor kiem tra maxConcurrent < 1 va nem IllegalArgumentException.',
+      ],
+      explain: `Semaphore hard-capped so luong nhap vao cung luc, nen maxActive khong qua 20 duoc luot lop luong sap xep the nao. release() trong finally dam bao slot duoc nhah du khi exception. active() dem so nhap vao dang chay.`
+
+    },
+  ],
+  check: [
+    {
+      q: 'Semaphore khac rate limiter theo thoi gian o diem nao?',
+      options: ['Semaphore nhanh hon', 'Semaphore gioi han so tac vu chay dong thoi; rate limiter gioi han so lan moi don vi thoi gian', 'Semaphore khong cho luong cho', 'Rate limiter khong dung duoc voi HTTP'],
+      answer: 1,
+      explain: 'Semaphore = concurrency cap (bao nhieu vie cung chay); rate limiter = bao nhieu request moi giay. Cung 20 request dong thoi nhung moi request 2 giay thi chi con 10 req/s — Semaphore khong cam ket toc do.',
+    },
+    {
+      q: 'Tai sao release() phai nam trong finally?',
+      options: ['De chay nhanh hon', 'De permit duoc nhah ke ca khi tac vu nem exception', 'De Semaphore cong bang', 'De tranh deadlock voi cung luong goi'],
+      answer: 1,
+      explain: 'Neu tac vu nem exception ma khong release, permit rot vinH viem; sau N lan loi, Semaphore het cap va moi request cho mai.',
+    },
+    {
+      q: 'Hai luong cung goi acquire() tren Semaphore(1), luong thu hai phai lam gi?',
+      options: ['Chen ngang truoc luong dau', 'Cho den khi luong dau release()', 'Tu tao moi phan cap', 'Nem RejectedExecutionException'],
+      answer: 1,
+      explain: 'acquire() cho khi het phan cap. Semaphore cong bang hoac khong chi thay doi thu tu duoc cap, khong thay doi vie phai cho.',
+    },
+    {
+      q: 'Luong goi acquire() hai lan lien tiep tren Semaphore(1) ma khong release giua hai lan thi gi xay ra?',
+      options: ['Chay binh thuong vi Semaphore reentrant', 'Luong do cho mai (deadlock), vi Semaphore khong reentrant theo luong', 'Tu tao them phan cap thu hai', 'Nem IllegalMonitorStateException'],
+      answer: 1,
+      explain: 'Semaphore khong gom voi luong giua phan cap va khong reentrant. acquire lan thu hai thay permit = 0, cho mai — cung cung mot luong dang giua phan cap duy nhat. Day khac ReentrantLock.',
+    },
+  ],
+  related: ['concurrency-003', 'concurrency-012'],
+  tags: ['Semaphore', 'rate limit', 'bulkhead', 'concurrency cap', 'CountDownLatch'],
+},
+{
+  id: 'lesson-concurrency-028',
+  track: 'concurrency',
+  order: 28,
+  title: 'Structured concurrency trong Java 17: quản lý vòng đời task con',
+  level: 'senior',
+  minutes: 40,
+  goals: [
+    'Hiểu structured concurrency: task con không được sống lâu hơn task cha; lỗi của con hủy cha, đóng cửa sổ race condition',
+    'Viết fan-out/fan-in bằng ExecutorService + Future.get(timeout) + cancel(true) + shutdownNow(), test chắc chắn bằng CountDownLatch',
+    'Nhận ra lỗi production: future chưa hủy, get() không timeout, pool chưa shutdown, task con để chạy dở',
+  ],
+  body: `### Tóm tắt
+Structured concurrency (càng chặt chẽ) yêu cầu mỗi tác vụ con phải được quản lý bên trong phạm vi của tác vụ cha: con không thể sống lâu hơn cha, lỗi của con phải lan truyền và hủy cha, cha phải đợi/con huỷ hết con trước khi kết thúc. Java 17 chưa có Project Loom StructuredTaskScope, nhưng nguyên tắc tương tự có thể áp dụng bằng ExecutorService + Future + try-with-resources. Mục tiêu là loại bỏ race condition: không còn thread rỗ chạy mãi, không còn future bị quên.
+
+### Vấn đề: fan-out không kiểm soát
+Service tổng hợp thông tin đơn hàng gọi song song 3 dịch vụ: kho hàng, giá, khuyến mãi. Mỗi dịch vụ chạy trong một thread riêng. Nếu dịch vụ giá treo, thread đó chờ mãi; cha phản hồi client mà 3 thread con vẫn chạy ngầm, bắt socket, dùng connection pool. Sự cố lan tràn (cascading failure): client đã nhận lỗi 504 nhưng server vẫn cần sinh lực cho các tác vụ con đã huỷ.
+
+### Structured concurrency bằng ExecutorService + Future
+Java 17: dùng Executors.newFixedThreadPool(n) + submit() trả về Future. Cha gọi future.get(timeout, unit) cho mỗi con. Nếu một con lỗi hoặc quá thời gian, cha gọi cancel(true) cho hết các con còn lại, rồi shutdownNow() pool. Trên Java 17 ExecutorService chưa có close(), nên đóng pool trong finally (như ví dụ, không dùng try-with-resources).
+
+~~~java
+class OrderAggregator {
+    private final ExecutorService pool = Executors.newFixedThreadPool(8);
+    OrderDto aggregate(OrderId id, long timeoutMs) throws Exception {
+        List<Future<?>> futures = new ArrayList<>();
+        try {
+            Future<StockInfo> f1 = pool.submit(() -> stockClient.get(id));
+            Future<PriceInfo> f2 = pool.submit(() -> priceClient.get(id));
+            Future<PromoInfo> f3 = pool.submit(() -> promoClient.get(id));
+            futures.addAll(List.of(f1, f2, f3));
+            // chờ tất cả, mỗi future có timeout riêng
+            StockInfo stock = f1.get(timeoutMs, MILLISECONDS);
+            PriceInfo price = f2.get(timeoutMs, MILLISECONDS);
+            PromoInfo promo = f3.get(timeoutMs, MILLISECONDS);
+            return new OrderDto(stock, price, promo);
+        } catch (Exception e) {
+            // lỗi hoặc timeout: hủy tất cả con còn lại
+            for (Future<?> f : futures) f.cancel(true);
+            throw e;
+        } finally {
+            pool.shutdownNow();          // đóng pool khi ra khỏi phạm vi
+        }
+    }
+}
+~~~
+
+Quy tắc cốt lõi:
+- Mọi future phải được get() (hoặc cancel()) — không để future bị quên.
+- get() phải có timeout; get() không tham số chờ mãi nếu con treo.
+- Khi lỗi/timeout, cancel(true) các con còn lại mới đóng cửa sổ race condition.
+- shutdownNow() pool trong finally, đặc biệt là khi executor tạo bên trong method.
+
+### Sai lầm production hay gặp
+- Quên cancel(true): con chạy dở sau khi cha đã phản hồi/lỗi → thread rỗ, connection rò.
+- get() không timeout: cha treo vĩnh viễn cùng con.
+- Tạo executor mỗi request mà không shutdown: thread pool lũy thụp, OOM sau một thời gian.
+- Dùng Future.get() tuần tự thay vì submit tất cả rồi get song song: mất lợi ích fan-out, tổng thời gian = tổng các con thay vì max(con).
+- Không xử lý InterruptedException: Luôn ghi lại và gọi Thread.currentThread().interrupt() để giữ trạng thái ngắt.
+
+### Ví dụ đời thực
+Hệ thống tổng hợp đơn hàng gọi kho hàng (p99 200 ms), giá (p99 300 ms), khuyến mãi (p99 150 ms). Không structured concurrency: khi dịch vụ giá treo, 3 thread chạy mãi, client nhận 504 sau 10 giây nhưng server vẫn sinh lực cho 3 thread. Áp dụng structured concurrency với timeout 800 ms: khi giá treo, cha hủy kho và promo ngay, client nhận 504 sau ~800 ms, thread giải phóng ngay. Số liệu: trước khi áp, p99 tổng hợp là 10 giây, có 2% thread treo vĩnh viễn sau sự cố; sau khi áp, p99 gom xuống 900 ms, thread treo bằng 0.
+
+### Trả lời mẫu khi phỏng vien
+"Tôi áp dụng structured concurrency bằng ExecutorService + Future: submit tất cả tác vụ con song song, mỗi future.get(timeout) để tránh chờ mãi. Nếu một con lỗi hoặc timeout, tôi cancel(true) các con còn lại và shutdownNow() pool trong finally. Mục tiêu là tác vụ con không sống lâu hơn cha — không để thread chạy dở sau khi client đã nhận phản hồi. Timeout chọn dựa trên SLA của từng dịch vụ downstream, không dùng một con số chung. Theo dõi metrics: số active task, thời gian chờ tối đa, tỉ lệ cancel do timeout. Khi có Project Loom (Java 21+), tôi sẽ dùng StructuredTaskScope để viết sạch hơn."
+
+> Senior tip: Structured concurrency không chỉ là "đóng pool". Nó là ràng buộc vòng đời: con không qua đời sau cha, lỗi con hủy cha, cha phải biết tất cả con đã kết thúc hay bị hủy. Trên production, lỗi thường không ở code chính mà ở các tác vụ nền bị quên — connection rò, thread rỗ, cache ghi dở. Luôn quản lý vòng đời tường minh.
+
+`,
+  exercises: [
+    {
+      title: 'Fan-out với timeout và hủy toàn bộ khi lỗi',
+      prompt: `Viet class OrderAggregator chay 3 tac vu con song song, moi co timeout, khi loi hoac timeout thi huy con con lai.
+
+- Constructor OrderAggregator(int poolSize).
+- OrderDto aggregate(OrderId id, long timeoutMs) throws Exception: gui 3 tac vu con (stockClient.get(id), priceClient.get(id), promoClient.get(id)) vao pool, moi future.get(timeoutMs, MILLISECONDS). Neu bat duoc exception (loai nao cung duoc), huy tat ca future con lai bang cancel(true), sau do nem exception ra ngoai. Cuoi cung pool.shutdownNow() trong finally.
+- Chi duoc dung ExecutorService, Future, TimeUnit, List, ArrayList, Arrays.
+
+Rang bao: dung CountDownLatch trong test de xuat phat dong thoi nhieu thread, kiem chung tat ca future duoc cancel khi mot con bi timeout.`,
+      starter: `import java.util.List;
+import java.util.concurrent.Callable;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
+import java.util.concurrent.TimeUnit;
+
+class StockInfo {}
+class PriceInfo {}
+class PromoInfo {}
+class OrderDto {
+    OrderDto(StockInfo s, PriceInfo p, PromoInfo m) {}
+}
+interface StockClient { StockInfo get(OrderId id) throws Exception; }
+interface PriceClient { PriceInfo get(OrderId id) throws Exception; }
+interface PromoClient { PromoInfo get(OrderId id) throws Exception; }
+class OrderId { OrderId() {} }
+
+class OrderAggregator {
+    private final ExecutorService pool;
+    private final StockClient stockClient;
+    private final PriceClient priceClient;
+    private final PromoClient promoClient;
+    OrderAggregator(int poolSize, StockClient stock, PriceClient price, PromoClient promo) {
+        throw new UnsupportedOperationException("TODO");
+    }
+    OrderDto aggregate(OrderId id, long timeoutMs) throws Exception {
+        throw new UnsupportedOperationException("TODO");
+    }
+}`,
+      tests: `public class Main {
+    static int passed = 0, total = 0;
+    static void check(String name, Runnable r) {
+        total++;
+        try { r.run(); passed++; System.out.println("PASS " + name); }
+        catch (Throwable t) { System.out.println("FAIL " + name + ": " + t); }
+    }
+    static void eq(Object expected, Object actual) {
+        if (!Objects.equals(expected, actual)) throw new AssertionError("expected " + expected + " got " + actual);
+    }
+    public static void main(String[] args) throws Exception {
+        StockClient slow = id -> { Thread.sleep(5000); return new StockInfo(); };
+        PriceClient fast = id -> new PriceInfo();
+        PromoClient promo = id -> new PromoInfo();
+        OrderAggregator agg = new OrderAggregator(4, slow, fast, promo);
+        check("tra ket qua khi tat ca con thanh cong", () -> {
+            StockClient s = id -> new StockInfo();
+            PriceClient p = id -> new PriceInfo();
+            PromoClient m = id -> new PromoInfo();
+            OrderAggregator a = new OrderAggregator(4, s, p, m);
+            OrderDto dto;
+            try { dto = a.aggregate(new OrderId(), 2000); }
+            catch (Exception e) { throw new RuntimeException(e); }
+            if (dto == null) throw new AssertionError("dto null");
+        });
+        check("nem exception khi mot con timeout", () -> {
+            OrderAggregator a = new OrderAggregator(4, slow, fast, promo);
+            boolean threw = false;
+            try { a.aggregate(new OrderId(), 100); }
+            catch (Exception expected) { threw = true; }
+            if (!threw) throw new AssertionError("phai nem exception khi timeout");
+        });
+        check("pool da dong sau goi", () -> {
+            OrderAggregator a = new OrderAggregator(2, slow, fast, promo);
+            boolean threw = false;
+            try { a.aggregate(new OrderId(), 100); }
+            catch (Exception ignored) { threw = true; }
+            if (!threw) throw new AssertionError("phai nem exception");
+            boolean reject = false;
+            try { a.aggregate(new OrderId(), 100); }
+            catch (Exception expected) { reject = true; }
+            if (!reject) throw new AssertionError("pool phai bi dong");
+        });
+        System.out.println("RESULT " + passed + "/" + total);
+    }
+}`,
+      reference: `import java.util.List;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
+import java.util.concurrent.TimeUnit;
+
+class StockInfo {}
+class PriceInfo {}
+class PromoInfo {}
+class OrderDto {
+    OrderDto(StockInfo s, PriceInfo p, PromoInfo m) {}
+}
+interface StockClient { StockInfo get(OrderId id) throws Exception; }
+interface PriceClient { PriceInfo get(OrderId id) throws Exception; }
+interface PromoClient { PromoInfo get(OrderId id) throws Exception; }
+class OrderId { OrderId() {} }
+
+class OrderAggregator {
+    private final ExecutorService pool;
+    private final StockClient stockClient;
+    private final PriceClient priceClient;
+    private final PromoClient promoClient;
+    OrderAggregator(int poolSize, StockClient stock, PriceClient price, PromoClient promo) {
+        this.pool = Executors.newFixedThreadPool(poolSize);
+        this.stockClient = stock;
+        this.priceClient = price;
+        this.promoClient = promo;
+    }
+    OrderDto aggregate(OrderId id, long timeoutMs) throws Exception {
+        List<Future<?>> futures = new java.util.ArrayList<>();
+        try {
+            Future<StockInfo> f1 = pool.submit(() -> stockClient.get(id));
+            Future<PriceInfo> f2 = pool.submit(() -> priceClient.get(id));
+            Future<PromoInfo> f3 = pool.submit(() -> promoClient.get(id));
+            futures.add(f1); futures.add(f2); futures.add(f3);
+            StockInfo stock = f1.get(timeoutMs, TimeUnit.MILLISECONDS);
+            PriceInfo price = f2.get(timeoutMs, TimeUnit.MILLISECONDS);
+            PromoInfo promo = f3.get(timeoutMs, TimeUnit.MILLISECONDS);
+            return new OrderDto(stock, price, promo);
+        } catch (Exception e) {
+            for (Future<?> f : futures) f.cancel(true);
+            throw e;
+        } finally {
+            pool.shutdownNow();
+        }
+    }
+}`,
+      hints: [
+        'Tao ExecutorService bang Executors.newFixedThreadPool(poolSize) trong constructor.',
+        'submit 3 tac vu con, luu vao List<Future<?>>.',
+        'Moi future.get(timeoutMs, TimeUnit.MILLISECONDS); bat Exception, huy con lai, nem exception.',
+        'pool.shutdownNow() trong finally.',
+      ],
+      explain: `Future.get(timeout) dam bao khong cho mai; cancel(true) dong cua so race condition khi loi; shutdownNow dong pool khi ra khoi pham vi.`
+
+    },
+  ],
+  check: [
+    {
+      q: 'Then chot cua structured concurrency la gi?',
+      options: ['Task con duoc song lau hon task cha', 'Loi cua con lan truyen va huy cha; con khong song lau hon cha', 'Chi dung cho I/O khong', 'Khong can dong pool'],
+      answer: 1,
+      explain: 'Structured concurrency rang buoc vong doi: con khong qua doi cha, loi con huy cha, cha phai quan ly tat ca con.',
+    },
+    {
+      q: 'Tai sao future.get() phai co timeout?',
+      options: ['Chay nhanh hon', 'Tranh cho mai neu tac vu con treo', 'Giam bo nho', 'Tang cache'],
+      answer: 1,
+      explain: 'get() khong tham so cho ma neu con treo; timeout gat gioi han thoi gian cho.',
+    },
+    {
+      q: 'Khi mot con loi trong fan-out, can lam gi voi con con lai?',
+      options: ['Cho het', 'cancel(true) het con con lai', 'Retry het con', 'Bo qua'],
+      answer: 1,
+      explain: 'cancel(true) ngat luong chay con de giai phong tai nguyen, khong de thread ro chay ma.',
+    },
+    {
+      q: 'Nhung sai lam nao sau day gay thread ro tren production?',
+      options: ['Dung get(timeout)', 'Quen cancel(true) sau khi loi', 'Dung shutdownNow() trong finally', 'Tao pool moi request va dong no'],
+      answer: 1,
+      explain: 'Quen cancel(true) de con chay do sau khi cha da loi/phan hoi => thread ro, connection ro.',
+    },
+  ],
+  related: ['concurrency-004', 'concurrency-013'],
+  tags: ['structured concurrency', 'fan-out', 'Future', 'timeout', 'ExecutorService'],
 }
 );
