@@ -8957,5 +8957,455 @@ Số transaction UNMATCHED/AMBIGUOUS, độ trễ khớp, tỷ lệ partial/over
 > Senior tip: interviewer hay hỏi "khách chuyển tiền nhưng quên ghi mã đơn, bạn khớp thế nào". Câu trả lời tốt là fuzzy match theo amount + thời gian + merchant; nếu chỉ một đơn khớp, tự động khớp và đánh dấu AMBIGUOUS để merchant xác nhận. Và webhook signature là bắt buộc.`,
   followups: ['Khách quét QR tĩnh và nhập số tiền sai: bạn xử lý thế nào?','Ngân hàng gửi webhook trễ 10 phút: merchant đã huỷ đơn, bạn xử lý thế nào?','Một mã đơn bị hai giao dịch khớp: bạn xử lý thế nào?','Làm sao đối soát giao dịch với sao kê ngân hàng cuối ngày?']
 },
+{
+  id: 'sd-061',
+  title: 'Đặt phòng khách sạn nhiều kênh (website + OTA): chống overbooking, giữ phòng tạm, đồng bộ tồn phòng, huỷ và hoàn tiền',
+  kind: 'bigtech',
+  level: 'senior',
+  prompt: `Bạn thiết kế hệ thống đặt phòng cho chuỗi khách sạn 500 khách sạn, 50.000 phòng. Khách đặt qua website trực tiếp và các OTA (Booking.com, Agoda, Expedia...). Yêu cầu: **tuyệt đối không overbooking** (bán một phòng cho hai khách), **giữ phòng tạm** 15 phút khi khách đang chọn/thanh toán, **đồng bộ tồn phòng realtime** với OTA, **huỷ và hoàn tiền** theo chính sách linh hoạt. Quy mô: 10.000 đặt phòng/ngày, peak 200 đặt/phút (ngày lễ), OTA pull availability mỗi 2-5 phút. Bạn có 45 phút.`,
+  phases: [
+    { name: 'Requirements', minutes: 5, guide: `Chốt functional: xem phòng, chọn ngày, giữ phòng 15 phút, thanh toán, nhận xác nhận, huỷ/đổi ngày, hoàn tiền theo policy (miễn phí huỷ trước 24h, 50% trong 24h, không hoàn tiền no-show). Non-functional: không overbooking (consistency mạnh ở mức phòng), availability sync với OTA < 30 giây, peak 200 đặt/phút, p99 xác nhận < 2 giây. Hỏi: room type vs room instance, children policy, extra bed, group booking. Out-of-scope: revenue management (giá động), loyalty, housekeeping.` },
+    { name: 'Estimation', minutes: 5, guide: `50.000 phòng, 10.000 booking/ngày ≈ 0,12 đặt/giây trung bình, peak 200/phút ≈ 3,3 đặt/giây. Cập nhật availability: 50.000 phòng x 365 ngày = 18,25 triệu room-night/năm. OTA pull: 20 OTA x 500 khách sạn x 12 pull/giờ = 120.000 request/giờ ≈ 33/s. Storage: inventory 50k x 365 x 100 byte ≈ 1,8 GB/năm. Kết luận: inventory nhỏ, bottleneck là **tranh chấp cùng một phòng** và **sync OTA**` },
+    { name: 'API & data model', minutes: 5, guide: `API: GET /availability?hotel_id&checkin&checkout&room_type, POST /holds {hotel_id, room_type, checkin, checkout, Idempotency-Key} -> hold_id + expires_at, POST /bookings {hold_id, guest_info, payment_token} -> booking_id, POST /bookings/{id}/cancel. Data: room_type (hotel_id, type_id, total_count), inventory (hotel_id, room_type_id, date, available_count, version), hold (id, hotel_id, room_type_id, checkin, checkout, status, expires_at), booking (id, hold_id, status, cancellation_policy). Unique hold per Idempotency-Key.` },
+    { name: 'High-level design', minutes: 15, guide: `Vẽ: Client -> API Gateway -> Inventory Service (Redis + DB) -> Payment Service; OTA Sync Worker đọc inventory đẩy lên OTA qua Channel Manager API; Booking Service quản lý state machine hold -> confirmed -> cancelled. Giải thích: tại sao không dùng DB UPDATE trực tiếp cho hold (hot row), cách sync OTA eventual nhưng bounded.` },
+    { name: 'Deep dive', minutes: 15, guide: `Đào sâu: atomic hold nhiều ngày bằng Lua/Redis, overbooking prevention bằng conditional update, OTA sync strategy (push change vs pull), cancellation window và race condition với hold hết hạn, refund flow, race condition khi OTA và website cùng giữ phòng cuối.` }
+  ],
+  rubric: [
+    'Nhận ra inventory nhỏ (50k phòng) nhưng tranh chấp phòng cuối là điểm nghẽn',
+    'Giữ phòng tạm (hold) bằng atomic operation (Redis Lua hoặc DB conditional update) với TTL 15 phút',
+    'Overbooking prevention: conditional update available_count > 0 + version, không bao giờ cho available âm',
+    'OTA sync: change-based push (Kafka -> Channel Manager) + periodic full pull để hồi phục, bounded staleness < 30s',
+    'State machine hold: PENDING -> CONFIRMED -> CANCELLED/EXPIRED, tiền trả theo policy',
+    'Race condition OTA vs website: cùng tranh chấp phòng cuối, ưu tiên theo timestamp hoặc fair queue',
+    'Refund: async process, idempotent, reconciliation với payment gateway',
+    'Giám sát: available_count = 0 count, OTA sync lag, hold expiry rate, overbooking attempt = 0'
+  ],
+  reference: `**Tóm tắt:** Đặt phòng khách sạn là bài toán **consistency mạnh ở mức từng phòng/ngày** cộng **sync dữ liệu ra bên ngoài (OTA)**. Inventory 50.000 phòng rất nhỏ, nhưng lúc peak 200 đặt/phút cùng tranh chấp một phòng cuối cùng (hot row) đòi hỏi atomic hold. Tôi dùng **Redis Lua script** hoặc **DB conditional update với version** để hold phòng: kiểm tra available > 0 rồi trừ 1 trong một bước nguyên tử, TTL 15 phút tự hết hạn (lazy expiry). OTA sync bằng **change data capture** (Kafka outbox) đẩy thay đổi availability sang Channel Manager, kèm **full pull hàng giờ** để tự hồi phục lệch. Huỷ và hoàn tiền theo state machine, race condition giữa hold hết hạn và thanh toán xử lý bằng conditional update trên trạng thái hold.
+
+### 1. Yêu cầu và quy mô
+- 500 khách sạn, 50.000 phòng, 20 OTA partner.
+- 10.000 đặt phòng/ngày, peak 200 đặt/phút (ngày lễ, Tết).
+- **Không overbooking**: một phòng/ngày chỉ bán cho một khách.
+- **Giữ phòng tạm**: 15 phút khi khách đang thanh toán; hết hạn tự trả phòng.
+- **OTA sync**: availability trên OTA phải khớp thực tế trong < 30 giây.
+- Huỷ miễn phí trước 24h, 50% trong 24h, no-show không hoàn tiền.
+
+### 2. Ước lượng (có phép tính)
+| Đại lượng | Phép tính | Kết quả |
+|---|---|---|
+| Room-night/năm | 50.000 phòng x 365 ngày | 18,25 triệu |
+| Inventory storage | 18,25M x 100 byte (date, type, available, version) | ~1,8 GB/năm |
+| Đặt phòng trung bình | 10.000 / 86.400 | ~0,12 đặt/giây |
+| Peak đặt phòng | 200 / 60 | ~3,3 đặt/giây |
+| OTA pull request | 20 OTA x 500 khách sạn x 12/giờ | 120.000/giờ ≈ 33/s |
+| Băng thông OTA sync | 33 req/s x 5 KB | ~165 KB/s |
+
+Kết luận: Dữ liệu inventory rất nhỏ (vài GB), **bottleneck không phải lưu trữ mà là tranh chấp cùng một phòng/ngày** (hot row) và **đồng bộ OTA kịp thời**.
+
+### 3. Mô hình dữ liệu
+~~~sql
+CREATE TABLE room_type (
+  hotel_id      BIGINT NOT NULL,
+  type_id       INT NOT NULL,
+  name          VARCHAR(100) NOT NULL,
+  total_count   INT NOT NULL CHECK (total_count > 0),
+  PRIMARY KEY (hotel_id, type_id)
+);
+
+CREATE TABLE inventory (
+  hotel_id         BIGINT NOT NULL,
+  room_type_id     INT NOT NULL,
+  stay_date        DATE NOT NULL,
+  available_count  INT NOT NULL DEFAULT 0,
+  version          BIGINT NOT NULL DEFAULT 0,
+  PRIMARY KEY (hotel_id, room_type_id, stay_date)
+);
+
+CREATE TABLE hold (
+  id              UUID PRIMARY KEY,
+  hotel_id        BIGINT NOT NULL,
+  room_type_id    INT NOT NULL,
+  checkin         DATE NOT NULL,
+  checkout        DATE NOT NULL,
+  status          VARCHAR(20) NOT NULL,  -- PENDING, CONFIRMED, EXPIRED, CANCELLED
+  guest_info      JSONB,
+  payment_token   VARCHAR(200),
+  idempotency_key VARCHAR(64) NOT NULL,
+  expires_at      TIMESTAMPTZ NOT NULL,
+  created_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
+  UNIQUE (idempotency_key)
+);
+
+CREATE TABLE booking (
+  id                   UUID PRIMARY KEY,
+  hold_id              UUID NOT NULL REFERENCES hold(id),
+  hotel_id             BIGINT NOT NULL,
+  room_type_id         INT NOT NULL,
+  checkin              DATE NOT NULL,
+  checkout             DATE NOT NULL,
+  status               VARCHAR(20) NOT NULL,  -- CONFIRMED, CANCELLED, CHECKED_IN, CHECKED_OUT, NO_SHOW
+  cancellation_policy  VARCHAR(50) NOT NULL,
+  total_amount         BIGINT NOT NULL,
+  refund_amount        BIGINT DEFAULT 0,
+  created_at           TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_at           TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+~~~
+
+### 4. Atomic Hold (Trái tim: không overbooking)
+Khi khách chọn phòng, hệ thống tạo **hold** 15 phút. Hold phải **trừ available_count** ngay để phòng khác không bán trúng.
+~~~text
+-- Redis Lua script: hold phòng cho [checkin, checkout)
+-- KEYS[1..N] = inv:{hotel}:{type}:{date}, ARGV = hold_id, ttl_ms
+local hold_id = ARGV[1]
+local ttl_ms = tonumber(ARGV[2])
+
+-- Kiểm tra tất cả ngày có available > 0
+for i = 1, #KEYS do
+  local avail = tonumber(redis.call('GET', KEYS[i]))
+  if not avail or avail <= 0 then
+    return {0, 'NOT_AVAILABLE', KEYS[i]}
+  end
+end
+
+-- Trừ available và set hold TTL
+for i = 1, #KEYS do
+  redis.call('DECR', KEYS[i])
+  redis.call('HSET', 'hold_dates:'..hold_id, KEYS[i], '1')
+end
+redis.call('PEXPIRE', 'hold:'..hold_id, ttl_ms)
+redis.call('PEXPIRE', 'hold_dates:'..hold_id, ttl_ms)
+return {1, 'HELD'}
+~~~
+- **Tại sao Redis Lua?** Atomic: không có request nào chen giữa "kiểm tra" và "trừ". TTL 15 phút (900.000 ms) tự động hết hạn -> lazy expiry, không cần cron.
+- **Lazy expiry**: Khi hold hết hạn, Redis tự xoá key. Background job đọc {{hold_dates}} key đã mất (scan hoặc stream từ Redis key expiry event) rồi {{INCR}} available_count cho các ngày đó.
+- **Nếu dùng Postgres**: Conditional update với version (optimistic locking):
+~~~sql
+UPDATE inventory
+SET available_count = available_count - 1, version = version + 1
+WHERE hotel_id = :h AND room_type_id = :t AND stay_date = :d
+  AND available_count > 0 AND version = :v;
+-- 0 rows affected => concurrent conflict hoặc hết phòng
+~~~
+
+### 5. State Machine Hold & Booking
+~~~text
+PENDING (hold 15p)
+  |-- thanh toán thành công --> CONFIRMED (booking tạo, hold xóa, available đã trừ)
+  |-- hết 15 phút / huỷ     --> EXPIRED (available +1 qua lazy expiry)
+  |-- thanh toán thất bại   --> EXPIRED (tương tự)
+
+CONFIRMED
+  |-- huỷ trước 24h         --> CANCELLED (available +1, refund 100%)
+  |-- huỷ trong 24h         --> CANCELLED (available +1, refund 50%)
+  |-- no-show               --> NO_SHOW (available +1, refund 0%)
+  |-- check-in              --> CHECKED_IN
+  |-- check-out             --> CHECKED_OUT
+~~~
+**Race condition hold hết hạn vs thanh toán**: Thanh toán đến lúc hold vừa hết hạn (Redis key đã mất). Giải pháp: payment service gọi {{GET hold}} trước; nếu key mất -> từ chối thanh toán, báo "phòng vừa được người khác đặt". Nếu hold còn -> atomic {{HSET status=CONFIRMED}} + {{DEL hold}} + {{INCR available}} (cho các ngày) trong Lua script.
+
+### 6. OTA Sync (Availability đồng bộ ra bên ngoài)
+OTA (Booking.com, Agoda...) không realtime được; dùng **Channel Manager** (SiteMinder, STAAH...) làm trung gian.
+**Kiến trúc sync**:
+~~~text
+Inventory Service --(outbox)--> Kafka (inventory.changed)
+                                    |
+                    +---------------+---------------+
+                    |                               |
+            [OTA Push Worker]                 [Full Pull Job (hourly)]
+                    |                               |
+                    v                               v
+            Channel Manager API              Channel Manager API
+            (rate limit 100 req/s)           (full inventory dump)
+                    |                               |
+                    +---------------+---------------+
+                                    v
+                            OTA Systems
+~~~
+- **Push change-based**: Mọi lần available_count thay đổi (hold, booking, cancel, expiry), ghi outbox -> Kafka -> OTA Push Worker gọi Channel Manager {{PUT /availability}} cho hotel+type+date cụ thể. Latency < 10 giây.
+- **Full pull hourly**: Mỗi giờ đẩy toàn bộ inventory để tự hồi phục lệch (network error, Channel Manager downtime, duplicate message). Bounded staleness: tối đa 1 giờ lệch, thực tế < 30 giây nhờ push.
+- **Idempotency**: Channel Manager API thường idempotent theo (hotel, room_type, date, available). Worker retry với exponential backoff.
+- **Rate limit**: Channel Manager giới hạn ~100 req/s; worker dùng token bucket, batch update 50 room-type/date một request.
+
+### 7. Huỷ và Hoàn tiền (Cancellation & Refund)
+- Huỷ booking: {{UPDATE booking SET status='CANCELLED', refund_amount=:amt WHERE id=? AND status='CONFIRMED'}}.
+- Conditional update trên status đảm bảo không huỷ hai lần.
+- Refund amount tính theo policy: {{CASE WHEN now() < checkin - 24h THEN 100% WHEN now() < checkin THEN 50% ELSE 0% END}}.
+- Refund async: ghi {{refund_request}} -> Payment Gateway Worker xử lý -> callback cập nhật {{booking.refund_amount}}.
+- Idempotency: refund_request có unique (booking_id, attempt).
+
+### 8. Race Condition: OTA và Website cùng giữ phòng cuối
+Tình huống: Phòng cuối cùng (available=1). OTA pull thấy available=1 -> hiển thị "còn phòng". Website khách A hold thành công (available=0). OTA khách B đặt -> Channel Manager gửi booking request.
+**Giải pháp**:
+1. Channel Manager booking request tới hệ thống -> Inventory Service kiểm tra available. Nếu available=0 -> từ chối booking, báo "vừa hết".
+2. Nếu Channel Manager không check realtime (pull-based), có thể overbooking. **Bắt buộc**: Channel Manager phải hỗ trợ realtime availability check hoặc booking request sync. Nếu không, fallback: full pull 15 phút/lần + overbooking compensation (upgrade phòng, voucher).
+3. Metric: {{overbooking_attempts}} (số lần booking request bị từ chối do available=0) phải = 0 trong production.
+
+### 9. Giám sát (Observability)
+| Metric | Mục tiêu | Alert |
+|---|---|---|
+| Available = 0 rooms (sold out) | Theo dõi | > 80% room type sold out |
+| OTA sync lag (push) | < 10 giây | > 30 giây |
+| OTA full pull drift | 0 lệch | > 5 phòng lệch |
+| Hold expiry rate | ~10-20% | > 50% (UX vấn đề) |
+| Overbooking attempts | 0 | > 0 |
+| Booking confirmation p99 | < 2 giây | > 5 giây |
+
+### 10. Ví dụ đời thực
+Chuỗi khách sạn 200 khách sạn tại Việt Nam. **Trước**: Dùng MySQL UPDATE inventory trực tiếp, không hold, OTA sync pull 1 giờ/lần. **Vấn đề**: (1) Ngày Tết, 50 khách cùng đặt phòng cuối -> deadlock MySQL, available thành -2, overbooking 3 phòng, khách đến không có chỗ. (2) OTA hiển thị "còn phòng" nhưng thực tế đã hết -> khách đặt OTA, khách sạn phải upgrade miễn phí, mất uy tín.
+**Sau redesign**:
+1. Redis Lua hold 15 phút, atomic, TTL tự hết hạn -> zero deadlock, overbooking = 0.
+2. OTA push change-based + full pull hàng giờ -> sync lag < 5 giây, drift = 0.
+3. Hold expiry rate 18% (khách xem xét 15 phút rồi huỷ), confirmation p99 1,2 giây.
+**Kết quả**: Tết sau đó zero overbooking, OTA complaint giảm 90%, conversion rate tăng 12% nhờ UX hold mượt.
+
+### 11. Trả lời mẫu khi phỏng vấn (90 giây)
+"Inventory 50k phòng rất nhỏ, nhưng tranh chấp phòng cuối là điểm nghẽn. Tôi dùng Redis Lua script hold phòng 15 phút: atomic check available > 0 rồi DECR cho tất cả ngày trong [checkin, checkout), TTL 15 phút tự hết hạn -> lazy expiry không cần cron. Booking xác thực thanh toán trước khi confirm; huỷ trả phòng + refund theo policy. OTA sync: push change-based qua Kafka -> Channel Manager API (< 10s) + full pull hàng giờ tự hồi phục lệch. Race OTA vs website: Channel Manager booking request check realtime available, available=0 thì từ chối. Giám sát overbooking attempts = 0, OTA sync lag < 30s. Tóm tắt: atomic hold + lazy expiry + push+pull OTA sync + conditional update state machine."
+
+> Senior tip: **Lazy expiry bằng TTL** thay vì cron là bài học đắt: cron chạy 1 phút thì phòng "kẹt" thêm 1 phút, cron chết thì phòng kẹt mãi. TTL trong Redis/Lua tự động trả phòng đúng lúc. Và OTA sync **phải có cả push và pull** — chỉ push thì lỗi network làm lệch vĩnh viễn, chỉ pull thì độ trễ không bao giờ < 30 giây.
+
+`,
+  followups: [
+    'Nếu OTA không hỗ trợ realtime availability check khi booking, bạn ngăn overbooking thế nào?',
+    'Khách đặt 5 phòng cùng lúc (group booking), atomic hold 5 phòng/ngày liên tiếp như thế nào?',
+    'Channel Manager rate limit 10 req/s, bạn sync 500 khách sạn kịp thời thế nào?',
+    'Khách huỷ booking nhưng refund thất bại (thẻ hết hạn), luồng xử lý thế nào?',
+    'Revenue management muốn giá động theo availability realtime: bạn cung cấp signal nào?'
+  ],
+  related: ['design-011', 'design-004', 'design-016']
+},
+{
+  id: 'sd-062',
+  title: 'Quản lý kho và giao hàng chặng cuối: tồn kho nhiều kho, giữ hàng khi đặt, phân tuyến shipper, theo dõi đơn realtime',
+  kind: 'bigtech',
+  level: 'senior',
+  prompt: `Bạn thiết kế hệ thống quản lý kho và giao hàng chặng cuối (last-mile delivery) cho sàn thương mại điện tử 50 kho, 10.000 shipper, 500.000 đơn/ngày. Yêu cầu: **tồn kho phân tán** (multi-warehouse), **giữ hàng** (reserve stock) khi khách đặt hàng, **phân tuyến shipper** (route optimization) theo thời gian thực, **theo dõi trạng thái đơn realtime** cho khách và CSKH. Peak sale: 5.000 đơn/phút. Bạn có 45 phút.`,
+  phases: [
+    { name: 'Requirements', minutes: 5, guide: `Chốt functional: nhập/xuất kho, chuyển kho, reserve stock khi đặt hàng (TTL 30 phút), phân đơn cho shipper (auto assign + manual override), theo dõi GPS shipper, trạng thái đơn (đang pack, shipper đến kho, đang giao, thành công, thất bại, trả hàng), COD thu tiền. Non-functional: reserve stock không oversell, shipper assign < 2 giây, tracking update < 5 giây, peak 5.000 đơn/phút, availability 99,95%. Hỏi: cross-dock, same-day delivery, cold chain, failed delivery retry. Out-of-scope: định tuyến đường chi tiết (dùng OSRM/Valhalla), thanh toán.` },
+    { name: 'Estimation', minutes: 5, guide: `500.000 đơn/ngày ≈ 5,8 đơn/giây trung bình, peak 5.000/phút ≈ 83 đơn/giây. 50 kho, mỗi kho ~10.000 SKU. Stock reserve: 83 đơn/s x 5 SKU = 415 reserve/s. Shipper: 10.000 online, GPS ping 5 giây/lần = 2.000 update/s. Tracking query: 500k đơn x 10 lần xem/ngày = 5M query/ngày ≈ 58 QPS. Storage: stock 50 x 10k x 100 byte = 50 MB. Kết luận: reserve stock hot row (SKU nổi), GPS ingest 2k/s, tracking read nhiều hơn ghi.` },
+    { name: 'API & data model', minutes: 5, guide: `API: POST /orders (items[], address) -> order_id + reserved_stock_ids, POST /stock/reserve {order_id, items[]}, POST /delivery/assign {order_id}, GET /tracking/{order_id}, POST /driver/location {lat, lng, heading, ts}. Data: warehouse (id, lat, lng, service_radius_km), stock (warehouse_id, sku_id, available_qty, reserved_qty, version), stock_reservation (id, order_id, warehouse_id, sku_id, qty, expires_at, status), delivery_order (id, order_id, warehouse_id, driver_id, route_seq, status, eta), driver_location (driver_id, lat, lng, heading, speed, ts, h3_index).` },
+    { name: 'High-level design', minutes: 15, guide: `Vẽ: Order Service -> Stock Service (reserve atomic) -> Payment; Order.created -> Kafka -> Assignment Service (tìm kho gần, shipper rảnh, route optimize) -> Driver App; Driver App -> Location Gateway -> Kafka (GPS) -> Tracking Service (WebSocket push cho khách); Stock sync: nhập/xuất/chuyển kho cập nhật available_qty, version. Giải thích tách reserve (mạnh) và assignment (eventual).` },
+    { name: 'Deep dive', minutes: 15, guide: `Đào sâu: reserve stock multi-warehouse (single order có thể tách nhiều kho), atomic reserve với conditional update, shipper assignment algorithm (greedy + local search), route re-optimize khi đơn mới/huỷ, GPS ingest scale, tracking realtime WebSocket, failed delivery retry logic, stock reconciliation.` }
+  ],
+  rubric: [
+    'Multi-warehouse stock: available_qty + reserved_qty, version cho optimistic locking',
+    'Reserve stock atomic: conditional update available >= qty, reserved + qty, version++ trong một transaction',
+    'Single order tách nhiều kho: chia items theo kho gần khách nhất, mỗi kho tạo một delivery_order con',
+    'Shipper assignment: greedy nearest available driver + route optimization (TSP heuristic), re-assign khi driver huỷ',
+    'Route optimization: cluster đơn theo khu vực + H3, dùng OSRM/Valhalla cho ETA, 2-opt/local search cải thiện',
+    'GPS ingest: 2.000 update/s -> Kafka -> TimescaleDB/Redis GEO, TTL 30s stale detection',
+    'Tracking realtime: WebSocket push cho khách, SSE fallback, driver location broadcast theo delivery_order',
+    'Failed delivery: retry 2 lần trong 2h, chuyển locker/pickup point, trả kho tự động',
+    'Stock reconciliation: hàng ngày so available_qty + reserved_qty = physical_count, lệch > 0 alert',
+    'Giám sát: reserve success rate, assignment latency, tracking lag, stock drift, driver utilization'
+  ],
+  reference: `**Tóm tắt:** Quản lý kho và giao hàng chặng cuối là bài toán **reserve stock consistency mạnh** cộng **phân tuyến shipper eventual**. Ba trụ cột: (1) **Stock reserve atomic** bằng conditional update (available >= qty) + version, không oversell; (2) **Assignment service** tách khỏi order: tìm kho tối ưu (gần khách, đủ hàng), gán shipper greedy + route optimize, re-optimize khi thay đổi; (3) **Tracking realtime** bằng GPS ingest Kafka -> Redis GEO/H3 -> WebSocket push cho khách. Peak 5.000 đơn/phút được xử lý bằng async pipeline: order -> reserve (sync) -> assignment (async) -> delivery.
+
+### 1. Yêu cầu và quy mô
+- 50 kho, 10.000 shipper, 500.000 đơn/ngày.
+- Peak sale: 5.000 đơn/phút (≈ 83 đơn/giây).
+- **Multi-warehouse**: một đơn có thể tách items từ nhiều kho.
+- **Reserve stock**: khi đặt hàng, giữ hàng 30 phút (TTL), thanh toán thành công -> confirm, huỷ/hết hạn -> release.
+- **Phân tuyến shipper**: auto assign theo khoảng cách, tải trọng, route optimization; manual override cho CSKH.
+- **Theo dõi realtime**: khách xem shipper trên bản đồ, CSKH xem dashboard toàn đơn.
+- Failed delivery: retry 2 lần, sau đó chuyển pickup point/locker, cuối cùng trả kho.
+
+### 2. Ước lượng (có phép tính)
+| Đại lượng | Phép tính | Kết quả |
+|---|---|---|
+| Đơn trung bình | 500.000 / 86.400 | ~5,8 đơn/giây |
+| Đơn peak | 5.000 / 60 | ~83 đơn/giây |
+| Reserve stock peak | 83 đơn/s x 5 items | ~415 reserve/s |
+| Shipper GPS | 10.000 / 5 giây | 2.000 update/s |
+| Tracking query | 500k x 10 / 86.400 | ~58 QPS |
+| Stock storage | 50 kho x 10k SKU x 100 byte | ~50 MB |
+
+Kết luận: Stock data rất nhỏ (50 MB) nhưng **reserve stock hot row** (SKU bestseller cùng lúc bị reserve nhiều). GPS ingest 2k/s cần Kafka + TimescaleDB. Tracking read nhiều hơn ghi, dùng WebSocket push.
+
+### 3. Mô hình dữ liệu
+~~~sql
+CREATE TABLE warehouse (
+  id                 BIGINT PRIMARY KEY,
+  name               VARCHAR(100) NOT NULL,
+  lat                DOUBLE PRECISION NOT NULL,
+  lng                DOUBLE PRECISION NOT NULL,
+  service_radius_km  INT NOT NULL DEFAULT 50
+);
+
+CREATE TABLE stock (
+  warehouse_id       BIGINT NOT NULL REFERENCES warehouse(id),
+  sku_id             BIGINT NOT NULL,
+  available_qty      INT NOT NULL DEFAULT 0,
+  reserved_qty       INT NOT NULL DEFAULT 0,
+  version            BIGINT NOT NULL DEFAULT 0,
+  updated_at         TIMESTAMPTZ NOT NULL DEFAULT now(),
+  PRIMARY KEY (warehouse_id, sku_id)
+);
+
+CREATE TABLE stock_reservation (
+  id                 UUID PRIMARY KEY,
+  order_id           UUID NOT NULL,
+  warehouse_id       BIGINT NOT NULL,
+  sku_id             BIGINT NOT NULL,
+  qty                INT NOT NULL CHECK (qty > 0),
+  status             VARCHAR(20) NOT NULL,  -- ACTIVE, CONFIRMED, RELEASED, EXPIRED
+  expires_at         TIMESTAMPTZ NOT NULL,
+  created_at         TIMESTAMPTZ NOT NULL DEFAULT now(),
+  UNIQUE (order_id, warehouse_id, sku_id)
+);
+
+CREATE TABLE delivery_order (
+  id                 UUID PRIMARY KEY,
+  parent_order_id    UUID NOT NULL,      -- order gốc (có thể tách nhiều delivery_order)
+  warehouse_id       BIGINT NOT NULL,
+  driver_id          BIGINT,
+  route_seq          JSONB,              -- [{lat, lng, address, order_id, action: PICKUP/DELIVERY}]
+  status             VARCHAR(20) NOT NULL,  -- PENDING, ASSIGNED, PICKED_UP, IN_TRANSIT, DELIVERED, FAILED, RETURNED
+  eta                TIMESTAMPTZ,
+  created_at         TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_at         TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE TABLE driver_location (
+  driver_id          BIGINT PRIMARY KEY,
+  lat                DOUBLE PRECISION NOT NULL,
+  lng                DOUBLE PRECISION NOT NULL,
+  heading            INT,                -- 0-359 độ
+  speed_kmh          DOUBLE PRECISION,
+  ts                 TIMESTAMPTZ NOT NULL,
+  h3_index           BIGINT NOT NULL,    -- H3 resolution 9
+  updated_at         TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+~~~
+
+### 4. Reserve Stock Atomic (Không oversell)
+Khi khách đặt hàng, Order Service gọi Stock Service reserve cho từng item. Một order có thể reserve từ **nhiều kho**.
+~~~sql
+-- Reserve cho một SKU tại một kho: conditional update
+UPDATE stock
+SET reserved_qty = reserved_qty + :qty, version = version + 1
+WHERE warehouse_id = :w AND sku_id = :s
+  AND available_qty >= :qty
+  AND version = :v;
+-- 0 rows => hết hàng hoặc conflict -> retry với version mới hoặc chọn kho khác
+~~~
+Nếu reserve thành công: INSERT 'stock_reservation' (ACTIVE, expires_at = now() + 30 phút).
+**Tại sao conditional update?** {{available_qty >= qty}} đảm bảo không reserve vượt tồn kho thực tế. {{version}} ngăn lost update khi hai request cùng reserve SKU nóng.
+**Single order, multi-warehouse**: Order Service tính toán warehouse tối ưu cho từng item (gần địa chỉ khách nhất, đủ hàng). Mỗi (warehouse, sku) một lệnh reserve độc lập. Nếu một item thất bại -> rollback các reservation đã thành công (status = RELEASED, available + qty).
+
+### 5. Phân tuyến Shipper (Assignment + Route Optimization)
+Khi reserve xong, Order Service phát event {{order.reserved}} -> Assignment Service xử lý.
+**Bước 1: Gom đơn theo warehouse**
+- Mỗi {{delivery_order}} gán cho một warehouse (items reserve tại kho đó).
+- Tính {{route_seq}}: sắp xếp các điểm {{PICKUP}} (kho) -> {{DELIVERY}} (khách) theo TSP heuristic.
+
+**Bước 2: Greedy assign driver**
+~~~text
+Với mỗi delivery_order PENDING:
+  1. Tìm driver ONLINE trong bán kính 5km kho (Redis GEO radius query).
+  2. Lọc: vehicle_type khớp, tải trọng đủ, không đang có delivery IN_TRANSIT > 3 đơn.
+  3. Tính cost = distance(driver -> warehouse) + route_distance.
+  4. Chọn driver cost nhỏ nhất.
+  4. CAS driver status: {{AVAILABLE}} -> {{ASSIGNED}} ({{Redis Lua}}).
+  5. Cập nhật delivery_order.driver_id, status=ASSIGNED, eta.
+~~~
+**Route Optimization (2-opt / local search)**:
+- Input: warehouse (start) + N điểm delivery + warehouse (end, nếu cần về kho).
+- Ban đầu: nearest neighbor heuristic.
+- Cải thiện: 2-opt swap cặp edge giảm tổng quãng đường. Chạy < 500ms cho N ≤ 20.
+- Re-optimize khi: đơn mới thêm vào route, driver huỷ, khách huỷ, traffic thay đổi.
+
+**H3 cho assignment nhanh**:
+- Driver location index: H3 res 9 (~150m). {{kRing(warehouse_h3, 3)}} -> ~37 ô -> tìm driver trong các ô đó.
+- Cluster đơn theo H3 cell: các đơn cùng khu vực gán cho một driver.
+
+### 6. Theo dõi Realtime (Tracking)
+**GPS Ingest Pipeline**:
+~~~text
+Driver App --gRPC stream 5s--> Location Gateway
+                                      |
+                                      v
+                             Location Service (stateless)
+                                      |
+                    +-----------------+-----------------+
+                    |                               |
+              Redis GEO/H3                    Kafka: driver.locations
+              (current pos, TTL 30s)          (TimescaleDB, analytics)
+                    |
+                    v
+            Tracking Service
+              (WebSocket push cho khách)
+~~~
+- **Redis GEO**: {{GEOADD drivers:{city} lng lat driver_id}}, TTL 30s (3x ping interval). Stale detection: key hết hạn -> driver OFFLINE.
+- **Tracking query**: Khách mở app -> WebSocket connection -> Tracking Service subscribe {{delivery_order:{id}}} channel. Driver location update -> publish channel -> push cho khách.
+- **SSE fallback**: WebSocket không được (proxy chặn) -> {{SSE}} long-polling.
+- **CSKH Dashboard**: đọc từ Redis GEO (vị trí realtime) + delivery_order status.
+
+### 7. Failed Delivery & Retry
+State machine delivery_order:
+~~~text
+ASSIGNED -> PICKED_UP -> IN_TRANSIT -> DELIVERED
+                    |              |
+                    |              +-- failed (khách không ở nhà) -> RETRY_1 (30p sau)
+                    |                                    -> RETRY_2 (2h sau)
+                    |                                    -> LOCKER/PICKUP_POINT
+                    |                                    -> RETURN_TO_WAREHOUSE
+                    +-- driver huỷ -> REASSIGN (tìm driver khác)
+~~~
+- Retry logic: delivery_order status = RETRY_1, tạo task mới cho cùng driver (ưu tiên) hoặc driver khác, ETA mới.
+- Locker/Pickup point: integration với Viettel Post, GHTK locker API. Khách nhận mã OTP lấy hàng.
+- Return to warehouse: driver mang hàng về kho, scan barcode -> status = RETURNED -> Stock Service release reserved -> available + qty.
+
+### 8. Stock Reconciliation (Đối soát hàng ngày)
+Mỗi ngày 02:00 chạy job:
+~~~sql
+-- Kiểm tra: available_qty + reserved_qty = physical_count (từ WMS)
+SELECT warehouse_id, sku_id, available_qty, reserved_qty,
+       (available_qty + reserved_qty) AS system_total,
+       wms.physical_count
+FROM stock
+JOIN wms_inventory wms ON stock.warehouse_id = wms.warehouse_id AND stock.sku_id = wms.sku_id
+WHERE (available_qty + reserved_qty) != wms.physical_count;
+~~~
+- Lệch > 0: tạo {{stock_adjustment}} (IN/OUT), alert Slack warehouse manager.
+- Nguyên nhân thường: damaged goods, lost, theft, receiving sai số lượng, reservation leak (expired mà không release).
+- Fix reservation leak: job quét {{stock_reservation}} {{EXPIRED}} mà status vẫn {{ACTIVE}} -> release (available + qty, reserved - qty).
+
+### 9. Giám sát (Observability)
+| Metric | Mục tiêu | Alert |
+|---|---|---|
+| Reserve success rate | > 99.5% | < 99% |
+| Reserve latency p99 | < 200 ms | > 500 ms |
+| Assignment latency p99 | < 2 giây | > 5 giây |
+| Tracking update lag | < 3 giây | > 10 giây |
+| Driver GPS stale rate | < 1% | > 5% |
+| Failed delivery rate | < 5% | > 10% |
+| Stock drift (reconciliation) | 0 SKU | > 0 |
+| Driver utilization | 60-80% | < 40% hoặc > 90% |
+
+### 10. Ví dụ đời thực
+Sàn TMĐT 30 kho, 500k đơn/ngày. **Trước**: Stock reserve dùng {{SELECT available WHERE ...}} rồi {{UPDATE available = available - qty}} hai câu riêng -> race condition: 2 đơn cùng reserve SKU bestseller (available=10) -> cả hai đọc 10, cả hai trừ 5 -> available = 5 thay vì 0, oversell 5 đơn. Assignment dùng nearest driver không tối ưu route -> driver chạy zigzag, trung bình 12 km/đơn. GPS poll 30s -> tracking lag 30s, khách phàn nàn.
+**Sau redesign**:
+1. Conditional update reserve ({{available >= qty + version}}) -> oversell = 0, reserve latency p99 80ms.
+2. Assignment: H3 cluster + 2-opt route -> trung bình 7.2 km/đơn (-40%), driver earning tăng 25%.
+3. GPS 5s + WebSocket push -> tracking lag < 2s, CSKH không phải refresh trang.
+4. Reconciliation hàng ngày bắt 3-5 SKU lệch/ngày (chủ yếu damaged), fix trước khi khách đặt.
+**Kết quả**: Peak 5.000 đơn/phút xử lý mượt, zero oversell, on-time delivery rate 88% -> 96%.
+
+### 11. Trả lời mẫu khi phỏng vấn (90 giây)
+"Tôi tách bài toán thành reserve stock (strong consistency) và assignment/tracking (eventual). Stock reserve: conditional update {{available_qty >= qty}} + {{version}} trong một câu UPDATE, multi-warehouse reserve độc lập, thất bại thì rollback. Assignment: order reserved -> Kafka -> Assignment Service gom đơn theo warehouse, H3 tìm driver gần, greedy assign + 2-opt route optimize, CAS driver state. Tracking: GPS 5s -> Redis GEO TTL 30s -> WebSocket push realtime cho khách. Failed delivery: retry 2 lần -> locker -> return kho -> auto release stock. Reconciliation hàng ngày so system_total (available + reserved) với WMS physical count. Giám sát reserve success rate, assignment latency, tracking lag, stock drift = 0."
+
+> Senior tip: **Conditional update với version** là chìa khóa reserve stock không oversell. Đừng bao giờ {{SELECT}} rồi {{UPDATE}} hai bước. Và **assignment tách khỏi order** là phải: order chỉ lo reserve hàng, assignment lo tìm shipper và route — nếu gộp chung thì peak sale 5.000 đơn/phút làm order service nghẽn cả assignment, driver assign chậm, khách chờ lâu. {{H3}} + {{Redis GEO}} cho driver location là chuẩn ngành ride-hailing/logistics, đừng tự viết geospatial index.
+
+`,
+  followups: [
+    'Một đơn 10 items từ 5 kho khác nhau: bạn gom route cho shipper thế nào để không tách 5 chuyến?',
+    'Shipper đang giao đơn A, đơn B gấp (same-day) xuất hiện gần đó: bạn re-optimize route thế nào không làm trễ đơn A?',
+    'Kho báo hỏng hàng 50 SKU lúc giờ cao điểm: bạn propagate stock change đến assignment và OTA thế nào?',
+    'Driver GPS mất tín hiệu 2 phút (tunnel): tracking hiển thị thế nào cho khách và CSKH?',
+    'Cross-dock: hàng từ kho trung tâm chuyển về kho giao hàng gần khách: luồng reserve và assignment thay đổi ra sao?'
+  ],
+  related: ['design-010', 'design-015', 'design-044', 'design-045']
+}
 
 ];

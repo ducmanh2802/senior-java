@@ -3551,6 +3551,8 @@ window.DATA_INDEX = {
     {"id":"sd-058","title":"Quản lý kho và giao hàng chặng cuối"},
     {"id":"sd-059","title":"Chấm công cho 20.000 công nhân nhà máy"},
     {"id":"sd-060","title":"QR thanh toán cho merchant (VietQR)"},
+    {"id":"sd-061","title":"Đặt phòng khách sạn nhiều kênh (website + OTA): chống overbooking, giữ phòng tạm, đồng bộ tồn phòng, huỷ và hoàn tiền"},
+    {"id":"sd-062","title":"Quản lý kho và giao hàng chặng cuối: tồn kho nhiều kho, giữ hàng khi đặt, phân tuyến shipper, theo dõi đơn realtime"},
   ],
   drills: [
     {"id":"drill-shadow-001","kind":"shadow","en":"I am a backend engineer with eight years of experience building Java services for fintech products."},
