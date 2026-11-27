@@ -7053,4 +7053,503 @@ Idempotency key nâng cao cần fingerprint (SHA-256 canonical JSON), TTL (24h�
   related: ['microservices-006', 'microservices-011', 'microservices-001'],
   tags: ['idempotency', 'TTL', 'fingerprint', 'distributed-lock']
 },
+{
+  id: 'lesson-microservices-031',
+  track: 'microservices',
+  order: 31,
+  title: 'Circuit breaker cửa sổ trượt theo thời gian: chia bucket giây, tỉ lệ lỗi trôi theo hiện tại',
+  level: 'senior',
+  minutes: 35,
+  goals: [
+    'Phân biệt cửa sổ trượt theo THỜI GIAN với đếm liên tiếp và đếm theo số call',
+    'Tự cài breaker 3 trạng thái với bucket theo giây và Clock giả, test xác định không sleep',
+    'Hiểu vì sao bucket cũ phải bị đẩy ra khỏi cửa sổ và vì sao điều đó phản ánh "hiện tại" tốt hơn'
+  ],
+  body: `**Tóm tắt:** Circuit breaker (máy cắt tự động) cửa sổ trượt theo THỜI GIAN chia các lời gọi gần đây thành các bucket (thùng) theo từng giây; mỗi bucket đếm số call và số lỗi. Tỉ lệ lỗi = tổng lỗi / tổng call trong N giây gần nhất. Khi tỉ lệ vượt ngưỡng và đã đủ số call tối thiểu thì mở mạch (OPEN) để chặn bớt tải; sau một khoảng chờ thì cho vài lời gọi thăm dò (HALF_OPEN), đủ thành công thì đóng mạch lại. Bài này tự cài bằng Java thuần, dùng Clock giả để test tiến thời gian tức thì.
+
+### Vì sao lại cần cửa sổ theo thời gian
+Bài 015 đếm SỐ LỖI LIÊN TIẾP: cứ đủ ngưỡng thì mở, nhưng chỉ một request thành công chen giữa là bộ đếm reset về 0. Bài 016 đếm THEO SỐ CALL (count-based): giữ N kết quả gần nhất, đơn giản nhưng khi lưu lượng thấp, N call có thể trải dài nhiều giờ, cửa sổ phản ánh quá khứ cũ chứ không phải "bây giờ".
+
+Cửa sổ theo THỜI GIAN (time-based) giữ các call trong T giây gần nhất (ví dụ 3 giây). Nhờ gắn nhãn thời gian cho từng bucket, khi thời gian trôi, các bucket cũ tự bị đẩy ra và không còn tính vào tỉ lệ lỗi. Đây chính là điểm mạnh: một cơn lỗi 5 phút trước không được phép làm mở mạch hôm nay khi dependency đã ổn định trở lại. Resilience4j gọi đây là {{slidingWindowType = TIME_BASED}} với {{slidingWindowSize}} tính bằng giây.
+
+Ví dụ đời thường: một bác sĩ không chẩn đoán dựa trên "cả đời bạn từng ho" (quá khứ xa) mà dựa trên "3 ngày gần đây" (cửa sổ thời gian). Cửa sổ trượt theo thời gian chính là "3 ngày gần đây" của circuit breaker.
+
+### Bucket và cách trượt
+Mỗi bucket ứng với một khoảng thời gian cố định {{bucketMs}} (ví dụ 100ms hoặc 1000ms). Bucket được đánh chỉ số theo {{start = (now / bucketMs) * bucketMs}} — tức làm tròn thời điểm hiện tại xuống mốc bucket. Khi ghi một kết quả:
+1. Nếu bucket cuối cùng trong deque có cùng {{start}} thì cộng dồn vào nó.
+2. Nếu khác, tạo bucket mới {{start}} và thêm vào cuối.
+3. Đẩy ra (evict) các bucket ở đầu mà {{start < startHienTai - (maxBuckets - 1) * bucketMs}}. Nói cách khác, cửa sổ chỉ giữ các bucket có mốc nằm trong khoảng [hiện tại - (maxBuckets-1)*bucketMs, hiện tại].
+
+Tổng cửa sổ = {{maxBuckets * bucketMs}}. Ví dụ bucketMs = 1000ms, maxBuckets = 3 → cửa sổ 3 giây, mỗi giây một thùng riêng.
+
+### State machine
+~~~text
+CLOSED: mỗi call ghi vào bucket; nếu tongCall >= minimumCalls va tiLeLoi >= nguong -> OPEN
+OPEN:   chan moi call (fail fast); khi now - openedAt >= openMs -> HALF_OPEN, xoa cua so
+HALF_OPEN: cho toi da halfOpenMax probe; du halfOpenSuccessThreshold thanh cong -> CLOSED
+           bat ky probe nao loi -> OPEN ngay, openedAt = now
+~~~
+
+### Cơ chế từng bước
+1. **Ghi kết quả vào bucket**: {{recordSuccess}} hoặc {{recordFailure}} tính {{start}} của bucket hiện tại, cộng dồn vào bucket cuối nếu trùng mốc, ngược lại tạo bucket mới. **Vì sao theo mốc thời gian?** Vì như thế mới biết một kết quả "thuộc giây nào" để lát nữa đẩy ra đúng lúc.
+2. **Đẩy bucket cũ**: sau khi thêm, loại bỏ các bucket có mốc quá xa so với hiện tại. **Vì sao?** Để tỉ lệ lỗi chỉ phản ánh T giây gần nhất, không bị quá khứ làm sai lệch.
+3. **Tính tỉ lệ và quyết định mở**: {{failureRate = tongLoi / tongCall}} trên các bucket còn lại. Nếu {{tongCall >= minimumCalls}} và {{failureRate >= nguong}} thì chuyển OPEN, ghi {{openedAt = now}} và xóa cửa sổ. **Vì sao xóa cửa sổ?** Để lần đo sau không bị "lẫn" kết quả cũ; nếu không, ngay khi mở mạch xong, tàn dư lỗi cũ vẫn còn và lần half-open kế tiếp tính sai.
+4. **OPEN chặn gọi**: {{canCall}} trả {{false}} cho tới khi {{now - openedAt >= openMs}}.
+5. **HALF_OPEN thăm dò có giới hạn**: mỗi lần {{canCall}} trong half-open tăng {{halfOpenCalls}}; vượt {{halfOpenMax}} thì trả {{false}}. **Vì sao giới hạn?** Dependency vừa hồi phục rất yếu; dồn cả trăm request sẽ đánh nó sập lại (thundering herd).
+6. **Đóng hoặc mở lại**: đủ {{halfOpenSuccessThreshold}} probe thành công thì CLOSED và xóa cửa sổ; chỉ một probe lỗi là OPEN ngay, {{openedAt = now}} để đếm lại thời gian chờ.
+
+### Tham số thực tế
+| Tham số | Ví dụ | Ý nghĩa |
+|---|---|---|
+| bucketMs | 1000 | Mỗi thùng rộng bao nhiêu mili-giây |
+| maxBuckets | 3 | Cửa sổ = maxBuckets * bucketMs (ở đây 3 giây) |
+| failureRateThreshold | 0.5 | Tỉ lệ lỗi (0..1) để mở mạch |
+| minimumCalls | 20 | Chưa đủ 20 call thì chưa xét tỉ lệ (tránh mở oan lúc traffic thấp) |
+| waitDurationInOpenState (openMs) | 30000 | Thời gian ở OPEN trước khi thử lại |
+| halfOpenMax | 10 | Số probe tối đa ở HALF_OPEN |
+| halfOpenSuccessThreshold | 5 | Số probe thành công để đóng mạch |
+
+### Lỗi hay gặp trên production
+- **Triệu chứng:** breaker không mở dù dependency lỗi 60% suốt 10 phút. **Nguyên nhân:** dùng đếm liên tiếp, một request thành công xen giữa reset bộ đếm; hoặc cửa sổ count-based quá lớn phản ánh quá khứ. **Cách sửa:** dùng time-based, bucket theo giây, ngưỡng tỉ lệ; kiểm tra {{failureRate}} thực tế trên dashboard.
+- **Triệu chứng:** breaker mở rồi đóng liên tục (flapping). **Nguyên nhân:** {{openMs}} quá ngắn so với thời gian dependency thực sự hồi phục; half-open probe quá nhiều làm sập lại. **Cách sửa:** tăng {{openMs}} theo p99 thời gian hồi phục, giảm {{halfOpenMax}} còn 1–3, thêm backoff cho khoảng mở.
+- **Triệu chứng:** lúc traffic thấp, 1 lỗi trên 2 call (50%) làm mở mạch oan. **Nguyên nhân:** {{minimumCalls}} quá nhỏ. **Cách sửa:** đặt {{minimumCalls}} theo lưu lượng thực (20–50), chỉ xét tỉ lệ khi đủ mẫu.
+- **Triệu chứng:** bucket cũ không bị đẩy ra, tỉ lệ lỗi luôn cao. **Nguyên nhân:** quên bước evict theo mốc thời gian, chỉ giới hạn theo số lượng. **Cách sửa:** evict theo {{start < hienTai - (maxBuckets-1)*bucketMs}}, không chỉ theo kích thước.
+
+### Ví dụ đời thực
+**Bối cảnh:** service Order gọi Payment qua HTTP, bucket 1 giây, cửa sổ 3 giây, ngưỡng 50%, minimumCalls 20, openMs 30 giây.
+**Triệu chứng:** Payment tăng lỗi lên 70% trong 2 phút do pool kết nối cạn, p99 của Order từ 180ms lên 4,2s.
+**Điều tra:** sau 20 call trong 3 giây gần nhất, tỉ lệ lỗi 70% > 50% → breaker mở, Order trả 503 kèm metric.
+**Xử lý:** 30 giây sau cho 10 probe, 9/10 thành công (tỉ lệ 10% < ngưỡng) → đóng mạch.
+**Kết quả:** p99 về 200ms, timeout giảm từ 18% xuống 0,4%, và khi Payment ổn định lại thì cửa sổ trôi qua 3 giây nên tỉ lệ lỗi tự về 0 mà không cần can thiệp.
+
+### Trả lời mẫu khi phỏng vấn
+Circuit breaker của tôi dùng cửa sổ trượt theo thời gian: chia kết quả thành bucket theo giây, giữ 3 giây gần nhất, tỉ lệ lỗi = lỗi / tổng call. Khi đủ minimumCalls và tỉ lệ vượt ngưỡng thì mở mạch, fail fast trả 503; sau 30 giây cho tối đa 10 probe, đủ 5 thành công thì đóng lại. Tôi chọn time-based thay vì count-based vì count-based phản ánh quá khứ khi traffic thấp, còn time-based luôn bám "hiện tại" nhờ đẩy bucket cũ ra khỏi cửa sổ. Tôi theo dõi state, failure rate, số request bị reject và thời gian ở OPEN để chỉnh ngưỡng theo SLA từng dependency.
+
+> Senior tip: đặt bucketMs mịn (100ms–1s) để cửa sổ mượt, nhưng không quá mịn gây tốn bộ nhớ; theo dõi riêng "số request bị breaker cắt" và "tỉ lệ lỗi theo cửa sổ" — hai đường này quyết định ngưỡng đúng hay sai.
+
+### Liên hệ phỏng vấn
+- **Hỏi:** Time-based khác count-based sliding window ở đâu? **Trả lời ngắn:** Count giữ N call gần nhất (đơn giản, nhưng cũ khi traffic thấp); time giữ các call trong T giây gần nhất nhờ bucket theo thời gian và đẩy bucket cũ ra, phản ánh hiện tại tốt hơn.
+- **Hỏi:** Vì sao phải xóa cửa sổ khi chuyển sang OPEN? **Trả lời ngắn:** Để lần đo sau không lẫn kết quả cũ; nếu giữ lại, tàn dư lỗi làm half-open kế tiếp tính sai tỉ lệ.
+- **Hỏi:** minimumCalls dùng để làm gì? **Trả lời ngắn:** Tránh mở mạch oan lúc traffic thấp hoặc mới khởi động, khi 1 lỗi trên 2 call đã là 50% nhưng không đủ tin cậy; chỉ xét tỉ lệ khi đủ mẫu.
+- **Hỏi:** Vì sao half-open phải giới hạn probe? **Trả lời ngắn:** Dependency vừa hồi phục rất yếu; dồn nhiều request sẽ đánh nó sập lại, nên chỉ cho 1–10 probe và cần đủ ngưỡng thành công mới đóng mạch.`,
+  exercises: [{
+    title: 'TimeWindowBreaker: bucket theo giây, tỉ lệ lỗi trôi theo thời gian',
+    prompt: `Cài {{TimeWindowBreaker}} với Clock giả (một interface Clock có method long millis()).
+
+Constructor: {{TimeWindowBreaker(long bucketMs, int maxBuckets, double threshold, int minimumCalls, long openMs, int halfOpenMax, int halfOpenSuccessThreshold, Clock clock)}}. Validate: {{bucketMs > 0}}, {{maxBuckets >= 1}}, {{0 < threshold <= 1}}, {{minimumCalls >= 1}}, {{openMs > 0}}, {{halfOpenMax >= 1}}, {{1 <= halfOpenSuccessThreshold <= halfOpenMax}}, {{clock != null}}; sai thì ném {{IllegalArgumentException}}.
+
+- {{boolean canCall()}}: nếu OPEN và {{now - openedAt >= openMs}} thì chuyển HALF_OPEN, reset {{halfOpenCalls = 0}}, {{halfOpenSuccess = 0}}, xóa cửa sổ; nếu vẫn OPEN thì {{false}}. Nếu HALF_OPEN: cho tối đa {{halfOpenMax}} probe (mỗi lần gọi tăng {{halfOpenCalls}}), hết thì {{false}}. CLOSED thì {{true}}.
+- {{void recordSuccess()}}: nếu HALF_OPEN tăng {{halfOpenSuccess}}, đủ {{halfOpenSuccessThreshold}} thì về CLOSED, reset bộ đếm và xóa cửa sổ; nếu CLOSED thì ghi {{true}} vào bucket hiện tại, đẩy bucket cũ, rồi nếu {{tongCall >= minimumCalls}} mà {{tiLeLoi >= threshold}} thì OPEN và xóa cửa sổ.
+- {{void recordFailure()}}: nếu HALF_OPEN thì về OPEN, {{openedAt = now}}, reset; nếu CLOSED thì ghi {{false}} vào bucket, đẩy bucket cũ, rồi kiểm tra ngưỡng như trên.
+- {{State state()}}, {{int windowCalls()}} (tổng call trong cửa sổ), {{int windowFailures()}} (tổng lỗi), {{double failureRate()}} (0 nếu chưa có call).
+
+Ghi kết quả vào bucket: {{start = (now / bucketMs) * bucketMs}}; nếu bucket cuối cùng có cùng {{start}} thì cộng dồn, ngược lại tạo bucket mới. Đẩy bucket cũ khi {{bucket.start < start - (maxBuckets - 1) * bucketMs}}. Tất cả method {{synchronized}}.`,
+    starter: `interface Clock { long millis(); }
+class TimeWindowBreaker {
+    enum State { CLOSED, OPEN, HALF_OPEN }
+    private final long bucketMs;
+    private final int maxBuckets;
+    private final double threshold;
+    private final int minimumCalls;
+    private final long openMs;
+    private final int halfOpenMax;
+    private final int halfOpenSuccessThreshold;
+    private final Clock clock;
+    private State state = State.CLOSED;
+    TimeWindowBreaker(long bucketMs, int maxBuckets, double threshold, int minimumCalls, long openMs, int halfOpenMax, int halfOpenSuccessThreshold, Clock clock) {
+        this.bucketMs=bucketMs; this.maxBuckets=maxBuckets; this.threshold=threshold; this.minimumCalls=minimumCalls;
+        this.openMs=openMs; this.halfOpenMax=halfOpenMax; this.halfOpenSuccessThreshold=halfOpenSuccessThreshold; this.clock=clock;
+    }
+    synchronized boolean canCall() { throw new UnsupportedOperationException("TODO"); }
+    synchronized void recordSuccess() { throw new UnsupportedOperationException("TODO"); }
+    synchronized void recordFailure() { throw new UnsupportedOperationException("TODO"); }
+    synchronized State state() { return state; }
+    synchronized int windowCalls() { throw new UnsupportedOperationException("TODO"); }
+    synchronized int windowFailures() { throw new UnsupportedOperationException("TODO"); }
+    synchronized double failureRate() { throw new UnsupportedOperationException("TODO"); }
+}`,
+    tests: `public class Main {
+ static int p=0,t=0; static void ck(String n,Runnable r){t++;try{r.run();p++;System.out.println("PASS "+n);}catch(Throwable e){System.out.println("FAIL "+n+": "+e);}}
+ static void eq(Object a,Object b){if(!Objects.equals(a,b))throw new AssertionError(a+" != "+b);}
+ static TimeWindowBreaker brk(AtomicLong clk,int min){ return new TimeWindowBreaker(100,3,0.5,min,1000,2,2,clk::get); }
+ public static void main(String[] x){
+  ck("closed allows calls",()->{
+   AtomicLong clk=new AtomicLong(0);
+   TimeWindowBreaker b=brk(clk,4);
+   eq(true,b.canCall());
+   eq(TimeWindowBreaker.State.CLOSED,b.state());
+  });
+  ck("opens at failure rate with minimum calls",()->{
+   AtomicLong clk=new AtomicLong(0);
+   TimeWindowBreaker b=brk(clk,4);
+   b.recordSuccess(); b.recordSuccess(); b.recordFailure(); b.recordFailure();
+   eq(TimeWindowBreaker.State.OPEN,b.state());
+   eq(false,b.canCall());
+  });
+  ck("below minimum calls never opens",()->{
+   AtomicLong clk=new AtomicLong(0);
+   TimeWindowBreaker b=brk(clk,4);
+   b.recordFailure(); b.recordFailure(); b.recordFailure();
+   eq(TimeWindowBreaker.State.CLOSED,b.state());
+   eq(true,b.canCall());
+  });
+  ck("old buckets age out of the time window",()->{
+   AtomicLong clk=new AtomicLong(0);
+   TimeWindowBreaker b=brk(clk,4);
+   b.recordFailure();
+   eq(1,b.windowCalls()); eq(1,b.windowFailures());
+   clk.set(350);
+   b.recordSuccess();
+   eq(1,b.windowCalls()); eq(0,b.windowFailures());
+  });
+  ck("open blocks until timeout then half-open limits probes",()->{
+   AtomicLong clk=new AtomicLong(0);
+   TimeWindowBreaker b=brk(clk,2);
+   b.recordFailure(); b.recordFailure();
+   eq(false,b.canCall());
+   clk.set(999); eq(false,b.canCall());
+   clk.set(1000); eq(true,b.canCall());
+   eq(true,b.canCall());
+   eq(false,b.canCall());
+   eq(TimeWindowBreaker.State.HALF_OPEN,b.state());
+  });
+  ck("half-open success threshold closes",()->{
+   AtomicLong clk=new AtomicLong(0);
+   TimeWindowBreaker b=brk(clk,2);
+   b.recordFailure(); b.recordFailure();
+   clk.set(1000); eq(true,b.canCall());
+   b.recordSuccess();
+   eq(TimeWindowBreaker.State.HALF_OPEN,b.state());
+   eq(true,b.canCall());
+   b.recordSuccess();
+   eq(TimeWindowBreaker.State.CLOSED,b.state());
+  });
+  ck("half-open failure reopens",()->{
+   AtomicLong clk=new AtomicLong(0);
+   TimeWindowBreaker b=brk(clk,2);
+   b.recordFailure(); b.recordFailure();
+   clk.set(1000); eq(true,b.canCall());
+   b.recordFailure();
+   eq(TimeWindowBreaker.State.OPEN,b.state());
+   eq(false,b.canCall());
+  });
+  System.out.println("RESULT "+p+"/"+t);
+ }
+}`,
+    reference: `interface Clock { long millis(); }
+class TimeWindowBreaker {
+    enum State { CLOSED, OPEN, HALF_OPEN }
+    private static final class Bucket { long start; int total; int fails; Bucket(long s){ start=s; } }
+    private final long bucketMs;
+    private final int maxBuckets;
+    private final double threshold;
+    private final int minimumCalls;
+    private final long openMs;
+    private final int halfOpenMax;
+    private final int halfOpenSuccessThreshold;
+    private final Clock clock;
+    private final ArrayDeque<Bucket> window = new ArrayDeque<>();
+    private State state = State.CLOSED;
+    private long openedAt = 0;
+    private int halfOpenCalls = 0;
+    private int halfOpenSuccess = 0;
+    TimeWindowBreaker(long bucketMs, int maxBuckets, double threshold, int minimumCalls, long openMs, int halfOpenMax, int halfOpenSuccessThreshold, Clock clock) {
+        if (bucketMs <= 0) throw new IllegalArgumentException("bucketMs>0");
+        if (maxBuckets < 1) throw new IllegalArgumentException("maxBuckets>=1");
+        if (threshold <= 0 || threshold > 1) throw new IllegalArgumentException("0<threshold<=1");
+        if (minimumCalls < 1) throw new IllegalArgumentException("minimumCalls>=1");
+        if (openMs <= 0) throw new IllegalArgumentException("openMs>0");
+        if (halfOpenMax < 1) throw new IllegalArgumentException("halfOpenMax>=1");
+        if (halfOpenSuccessThreshold < 1 || halfOpenSuccessThreshold > halfOpenMax) throw new IllegalArgumentException("halfOpenSuccess in 1..halfOpenMax");
+        if (clock == null) throw new IllegalArgumentException("clock");
+        this.bucketMs=bucketMs; this.maxBuckets=maxBuckets; this.threshold=threshold; this.minimumCalls=minimumCalls;
+        this.openMs=openMs; this.halfOpenMax=halfOpenMax; this.halfOpenSuccessThreshold=halfOpenSuccessThreshold; this.clock=clock;
+    }
+    synchronized boolean canCall() {
+        long now = clock.millis();
+        if (state == State.OPEN && now - openedAt >= openMs) {
+            state = State.HALF_OPEN; halfOpenCalls = 0; halfOpenSuccess = 0; window.clear();
+        }
+        if (state == State.OPEN) return false;
+        if (state == State.HALF_OPEN) {
+            if (halfOpenCalls >= halfOpenMax) return false;
+            halfOpenCalls++;
+            return true;
+        }
+        return true;
+    }
+    synchronized void recordSuccess() {
+        if (state == State.HALF_OPEN) {
+            halfOpenSuccess++;
+            if (halfOpenSuccess >= halfOpenSuccessThreshold) {
+                state = State.CLOSED; halfOpenCalls = 0; halfOpenSuccess = 0; window.clear();
+            }
+            return;
+        }
+        if (state != State.CLOSED) return;
+        add(true);
+        maybeOpen();
+    }
+    synchronized void recordFailure() {
+        if (state == State.HALF_OPEN) {
+            state = State.OPEN; openedAt = clock.millis(); halfOpenCalls = 0; halfOpenSuccess = 0; window.clear();
+            return;
+        }
+        if (state != State.CLOSED) return;
+        add(false);
+        maybeOpen();
+    }
+    private void add(boolean ok) {
+        long now = clock.millis();
+        long start = (now / bucketMs) * bucketMs;
+        Bucket last = window.peekLast();
+        if (last != null && last.start == start) {
+            last.total++;
+            if (!ok) last.fails++;
+        } else {
+            Bucket b = new Bucket(start);
+            b.total = 1;
+            if (!ok) b.fails = 1;
+            window.addLast(b);
+        }
+        long oldest = start - (maxBuckets - 1) * bucketMs;
+        while (!window.isEmpty() && window.peekFirst().start < oldest) window.removeFirst();
+    }
+    private void maybeOpen() {
+        if (windowCalls() >= minimumCalls && failureRate() >= threshold) {
+            state = State.OPEN; openedAt = clock.millis(); window.clear();
+        }
+    }
+    synchronized int windowCalls() { int s=0; for (Bucket b : window) s += b.total; return s; }
+    synchronized int windowFailures() { int s=0; for (Bucket b : window) s += b.fails; return s; }
+    synchronized double failureRate() { int c = windowCalls(); return c == 0 ? 0.0 : (double) windowFailures() / c; }
+    synchronized State state() { return state; }
+}`,
+    hints: [
+      'Mỗi bucket lưu {start, total, fails}. Ghi kết quả: nếu bucket cuối cùng cùng start thì cộng dồn, ngược lại tạo bucket mới.',
+      'Sau khi thêm, đẩy các bucket có start < startHienTai - (maxBuckets-1)*bucketMs để cửa sổ chỉ còn T giây gần nhất.',
+      'canCall() trong OPEN kiểm tra now - openedAt >= openMs để chuyển HALF_OPEN; trong HALF_OPEN giới hạn halfOpenMax probe.',
+      'maybeOpen() chỉ mở khi tongCall >= minimumCalls VÀ failureRate >= threshold; khi mở thì xóa cửa sổ.'
+    ],
+    explain: `Điểm cốt lõi là cửa sổ trượt theo thời gian: mỗi kết quả được gắn mốc bucket {{start = (now/bucketMs)*bucketMs}}, và các bucket cũ bị đẩy ra khi mốc của chúng ra ngoài khoảng [hiện tại - (maxBuckets-1)*bucketMs, hiện tại]. Nhờ vậy tỉ lệ lỗi luôn phản ánh T giây gần nhất, không bị quá khứ làm sai lệch — điều mà đếm liên tiếp (một success chen giữa là reset) và đếm theo số call (N call có thể trải dài nhiều giờ) không làm được.
+
+Khi mở mạch, cửa sổ bị xóa để lần đo sau không lẫn tàn dư lỗi cũ. Trong HALF_OPEN, {{canCall}} giới hạn số probe và {{recordSuccess}} đủ ngưỡng mới đóng; chỉ một {{recordFailure}} là mở lại ngay và {{openedAt = now}} để đếm lại thời gian chờ. Clock giả cho phép test tiến thời gian tức thì (ví dụ set 350ms để bucket cũ bị đẩy ra) mà không cần {{Thread.sleep}}.
+
+Lỗi thường gặp: quên bước evict theo mốc thời gian (chỉ giới hạn theo số lượng) khiến tỉ lệ luôn cao; {{minimumCalls}} quá thấp gây mở oan lúc traffic thấp; {{openMs}} quá ngắn gây flapping; và không xóa cửa sổ khi mở mạch làm half-open kế tiếp tính sai. Production dùng Resilience4j với {{slidingWindowType=TIME_BASED}}, {{slidingWindowSize}} tính bằng giây.`
+  }],
+  check: [
+    { q: 'Cửa sổ time-based bucket 1 giây, giữ 3 giây. Một lỗi xảy ra 5 giây trước còn được tính vào tỉ lệ lỗi không?', options: ['Còn, vì lỗi là lỗi', 'Không, vì bucket của nó đã bị đẩy ra khỏi cửa sổ 3 giây', 'Chỉ tính khi OPEN', 'Chỉ tính khi traffic cao'], answer: 1, explain: `Cửa sổ time-based chỉ giữ các bucket trong T giây gần nhất; bucket cũ hơn bị evict theo mốc thời gian nên không còn đóng góp vào tỉ lệ. Đây là lý do time-based phản ánh "hiện tại" tốt hơn count-based. (A) sai vì mục đích của cửa sổ là bỏ qua quá khứ xa. (C) sai vì tỉ lệ được tính liên tục ở CLOSED. (D) sai vì traffic không đổi cách evict theo thời gian.` },
+    { q: 'Vì sao phải xóa cửa sổ khi breaker chuyển sang OPEN?', options: ['Để tiết kiệm bộ nhớ', 'Để lần đo sau không lẫn tàn dư lỗi cũ, tránh half-open kế tiếp tính sai tỉ lệ', 'Để reset openedAt', 'Để tăng throughput'], answer: 1, explain: `Xóa cửa sổ khi vào OPEN đảm bảo mỗi chu kỳ đo bắt đầu sạch; nếu giữ lại, tàn dư lỗi cũ làm tỉ lệ ở lần half-open sau bị thổi phồng. (A) không phải lý do chính. (C) sai vì openedAt được set riêng. (D) không liên quan.` },
+    { q: 'minimumCalls = 20, window 3 giây. Vì sao cần ngưỡng này?', options: ['Để giảm bộ nhớ bucket', 'Để tránh mở mạch oan khi traffic thấp, khi 1 lỗi trên 2 call đã 50% nhưng không đủ tin cậy', 'Để tăng failureRateThreshold', 'Để tắt half-open'], answer: 1, explain: `minimumCalls đảm bảo chỉ xét tỉ lệ khi đủ mẫu; nếu không, lúc traffic thấp một lỗi đơn lẻ có thể mở mạch oan. (A) sai, bộ nhớ do số bucket quyết định. (C) sai, ngưỡng tỉ lệ là tham số khác. (D) sai, half-open vẫn hoạt động.` },
+    { q: 'Trong HALF_OPEN, vì sao giới hạn số probe (halfOpenMax)?', options: ['Để giảm chi phí tính toán', 'Vì dependency vừa hồi phục rất yếu, dồn nhiều request sẽ đánh nó sập lại (thundering herd)', 'Để tăng latency', 'Vì Kafka yêu cầu'], answer: 1, explain: `Giới hạn probe bảo vệ dependency đang yếu khỏi bị dồn request đúng lúc hồi phục; chỉ khi đủ ngưỡng thành công mới đóng mạch. (A) không phải lý do. (C) sai, mục tiêu là bảo vệ downstream. (D) không liên quan Kafka.` }
+  ],
+  related: ['microservices-015', 'microservices-016', 'microservices-009'],
+  tags: ['circuit-breaker', 'time-based', 'sliding-window', 'bucket', 'resilience']
+},
+{
+  id: 'lesson-microservices-032',
+  track: 'microservices',
+  order: 32,
+  title: 'Idempotency key cho API thanh toán: lưu cả kết quả từ chối, replay đúng phản hồi cũ',
+  level: 'senior',
+  minutes: 35,
+  goals: [
+    'Hiểu vì sao idempotency key của payment phải lưu CẢ kết quả thành công lẫn từ chối',
+    'Tự cài store: RUN / REPLAY / IN_PROGRESS / CONFLICT, scope theo tài khoản, phát hiện payload khác',
+    'Phân biệt "chạy lại business" với "trả lại phản hồi đã lưu" và vì sao retry accidental không được charge hai lần'
+  ],
+  body: `**Tóm tắt:** Idempotency key cho API thanh toán gắn một khóa do client sinh với kết quả xử lý, để retry (gửi lại do timeout) không tạo lần charge thứ hai. Khác với store generic, payment phải lưu CẢ kết quả TỪ CHỐI (declined) như một kết quả cuối: cùng key + cùng payload thì trả lại đúng phản hồi cũ (kể cả "thẻ bị từ chối"), KHÔNG chạy lại business; cùng key khác payload (ví dụ khác số tiền) thì 422; đang xử lý thì 409. Muốn thử lại một giao dịch bị từ chối, client phải dùng key MỚI.
+
+### Vì sao retry luôn xảy ra trong thanh toán
+Một request POST /payments có thể commit DB thành công nhưng response mất trên đường về. Client timeout rồi gửi lại. Nếu server không phân biệt được hai lần gửi, nó charge thẻ hai lần — khách bị trừ tiền oan. Không thể sửa bằng cách "đảm bảo mạng không mất gói"; phải làm cho thao tác lặp lại an toàn bằng idempotency key.
+
+Idempotency key thường do client sinh một lần cho mỗi thao tác logic (UUID). Server lưu key cùng tài khoản (account), và một fingerprint (vân tay) của payload — thường là hash của các trường quan trọng như số tiền và 4 số cuối thẻ. Fingerprint chặn trường hợp client tái sử dụng key cho payload khác: trả 422 thay vì replay kết quả cũ.
+
+### Điểm khác biệt của payment: từ chối cũng là kết quả cuối
+Trong store generic (xem bài 006), một lần thử FAILED thường cho phép BEGIN lại (retry). Nhưng trong thanh toán, một lần bị TỪ CHỐI (ví dụ {{card_declined}}) là một kết quả nghiệp vụ cuối cùng cho khóa đó: nếu client vô tình retry cùng key (do timeout), server phải trả lại đúng "từ chối" đó, KHÔNG được gọi lại cổng thanh toán. Lý do: cổng thanh toán có thể đã ghi nhận nỗ lực, và việc charge lại cùng một intent là sai. Muốn thử thẻ khác hoặc số tiền khác, client phải tạo key MỚI — đó là một thao tác logic mới.
+
+Vì thế store chỉ có hai trạng thái lưu: PENDING (đang chạy) và DONE (đã có kết quả cuối, dù approve hay decline). Không có trạng thái "failed để retry" trong bài này — chính điểm này làm nó khác bài 006.
+
+### Máy trạng thái
+| Trạng thái lưu | Request cùng account+key, cùng fingerprint | Việc cần làm |
+|---|---|---|
+| không có | RUN | chạy business (charge), rồi complete lưu kết quả |
+| PENDING | IN_PROGRESS | trả 409, không chạy business |
+| DONE | REPLAY | trả đúng body đã lưu (approve hoặc decline) |
+| khác fingerprint | CONFLICT | 422, không dùng lại kết quả, không ghi đè |
+
+### Cơ chế từng bước
+1. **Client sinh key + gửi request**: key là UUID, gửi kèm POST /payments. **Vì sao client sinh?** Vì chỉ client mới biết đâu là "một thao tác logic" cần retry; server không thể tự nhận ra hai request là một.
+2. **begin(account, key, fingerprint)**: server tra store theo khóa đã scope {{account::key}}. **Vì sao scope theo account?** Nếu key toàn cục, account A gửi trùng key của B có thể nhận kết quả của B — rò rỉ dữ liệu.
+3. **Nếu chưa có**: tạo entry PENDING, trả RUN. **Vì sao PENDING trước khi chạy?** Để request thứ hai đến trong lúc request đầu đang charge sẽ thấy PENDING và bị chặn (IN_PROGRESS), tránh hai lần charge song song.
+4. **Chạy business rồi complete(account, key, fingerprint, body)**: chỉ khi entry còn PENDING và đúng fingerprint thì lưu body và đặt DONE. **Vì sao kiểm tra lại fingerprint ở complete?** Để một request đã bị promote (sai payload) không ghi đè kết quả của chủ hợp lệ.
+5. **Nếu đã DONE**: trả REPLAY kèm body đã lưu. **Vì sao không chạy lại?** Vì kết quả (approve hay decline) đã là cuối; chạy lại có thể charge hai lần hoặc trả kết quả khác.
+6. **Nếu khác fingerprint**: trả CONFLICT (422). **Vì sao?** Cùng key nhưng khác số tiền/thẻ nghĩa là client dùng lại key sai — một lỗi dữ liệu nghiêm trọng nếu im lặng replay.
+7. **Nếu đang PENDING**: trả IN_PROGRESS (409). Client nên chờ rồi poll lại, không gửi request mới.
+
+### Lưu kết quả từ chối — ví dụ cụ thể
+~~~text
+Client -> API: POST /payments  key=k2  amount=50  card=0000
+API -> Store: begin(acc1, k2, "amt=50;card=0000") -> RUN
+API -> PaymentGateway: charge -> DECLINED(card_declined)
+API -> Store: complete(acc1, k2, "amt=50;card=0000", "DECLINED:card_declined")
+API --> Client: 402 DECLINED
+Client -> API: POST /payments  key=k2  (timeout, retry accidental)
+API -> Store: begin(acc1, k2, "amt=50;card=0000") -> REPLAY "DECLINED:card_declined"
+API --> Client: 402 DECLINED  (KHONG charge lai)
+~~~
+
+### Lỗi hay gặp trên production
+- **Triệu chứng:** khách bị charge hai lần sau khi mạng chập chờn. **Nguyên nhân:** store chỉ lưu kết quả thành công, lần từ chối không lưu nên retry chạy lại; hoặc không có fingerprint. **Cách sửa:** lưu mọi kết quả cuối (approve + decline) theo key; retry cùng key trả REPLAY.
+- **Triệu chứng:** một key bị dùng cho hai số tiền khác nhau, server trả kết quả của lần trước. **Nguyên nhân:** không so fingerprint. **Cách sửa:** fingerprint = hash các trường nghiệp vụ (amount, card last4, currency); khác fingerprint → 422.
+- **Triệu chứng:** hai request cùng key đến song song, cả hai cùng charge. **Nguyên nhân:** check-then-act không nguyên tử (kiểm tra "chưa có" rồi mới tạo, tách rời). **Cách sửa:** dùng unique constraint ở DB (INSERT ... ON CONFLICT) hoặc {{ConcurrentHashMap.compute}} để chỉ một request thắng; request kia nhận IN_PROGRESS.
+- **Triệu chứng:** client retry một giao dịch đã bị từ chối mãi không xong. **Nguyên nhân:** dùng lại key cũ. **Cách sửa:** muốn thử lại (thẻ khác, số tiền khác) phải dùng key MỚI; key cũ chỉ để nhận lại kết quả cũ.
+
+### Ví dụ đời thực
+**Bối cảnh:** hệ thống ví điện tử, cổng thanh toán thỉnh thoảng timeout 8s.
+**Triệu chứng:** 0,3% giao dịch bị charge hai lần; khiếu nại tăng.
+**Điều tra:** client retry sau timeout với cùng key, nhưng store chỉ lưu approve; các lần decline không lưu nên retry charge lại. Thêm nữa, một số client dùng lại key cho số tiền khác.
+**Xử lý:** lưu cả decline như DONE; thêm fingerprint (amount + card last4); scope theo account; in-flight trả 409.
+**Kết quả:** charge trùng giảm về 0; 422 rate 0,02% (client bug bị phát hiện sớm); p99 không đổi vì store chỉ là một lần tra map/DB.
+
+### Trả lời mẫu khi phỏng vấn
+Idempotency key cho payment do client sinh cho mỗi thao tác logic; server lưu theo account + key kèm fingerprint của payload. Điểm quan trọng là lưu CẢ kết quả từ chối như một kết quả cuối: retry cùng key trả lại đúng phản hồi cũ (kể cả decline) mà không charge lại; muốn thử lại phải dùng key mới. Cùng key khác fingerprint thì 422 để bắt bug client; đang xử lý thì 409. Tôi dùng unique constraint ở DB hoặc compute để chỉ một request thắng, tránh hai lần charge song song, và theo dõi replay rate, 409 rate, 422 rate.
+
+> Senior tip: theo dõi tỉ lệ REPLAY (retry cùng key — bình thường), IN_PROGRESS/409 (client retry quá sớm) và CONFLICT/422 (client dùng lại key sai payload). 422 tăng đột biến thường là bug client chứ không phải lỗi server; 409 tăng là do client không chờ đủ.
+
+### Liên hệ phỏng vấn
+- **Hỏi:** Vì sao payment phải lưu cả kết quả từ chối, khác store generic? **Trả lời ngắn:** Một decline là kết quả nghiệp vụ cuối cho khóa đó; retry accidental cùng key phải trả lại decline, không được charge lại. Muốn thử lại phải dùng key mới.
+- **Hỏi:** Cùng key khác số tiền thì làm gì? **Trả lời ngắn:** Trả 422 CONFLICT vì fingerprint khác; im lặng replay kết quả cũ là lỗi dữ liệu nghiêm trọng.
+- **Hỏi:** Hai request cùng key đến song song, tránh hai lần charge thế nào? **Trả lời ngắn:** Dùng unique constraint DB (INSERT ... ON CONFLICT) hoặc ConcurrentHashMap.compute để chỉ một request vào PENDING và chạy business; request kia nhận 409 IN_PROGRESS.
+- **Hỏi:** Vì sao scope key theo account? **Trả lời ngắn:** Tránh rò rỉ dữ liệu giữa các tài khoản: key toàn cục khiến account A có thể nhận kết quả của B khi trùng key.`,
+  exercises: [{
+    title: 'PaymentIdempotency: RUN / REPLAY / IN_PROGRESS / CONFLICT',
+    prompt: `Cài {{PaymentIdempotency}} trong bộ nhớ (các kiểu dùng chung đã có trong starter).
+
+- {{Outcome begin(String account, String key, String fingerprint)}} trả {{Outcome(Decision decision, String body)}}, {{Decision}} gồm {{RUN}}, {{REPLAY}}, {{IN_PROGRESS}}, {{CONFLICT}}. Quy tắc: khóa scope theo {{account + "::" + key}}. Chưa có → tạo entry PENDING và trả {{RUN}}. Đã có nhưng {{fingerprint}} khác → {{CONFLICT}} (không đổi trạng thái). Đang PENDING cùng fingerprint → {{IN_PROGRESS}}. Đã DONE cùng fingerprint → {{REPLAY}} kèm body đã lưu.
+- {{void complete(String account, String key, String fingerprint, String body)}}: chỉ khi entry còn PENDING và đúng fingerprint thì lưu {{body}} và đặt DONE; ngược lại bỏ qua (không ghi đè).
+- {{String body(String account, String key)}} trả body đã lưu hoặc {{null}}.
+- {{int size()}} trả số entry.
+
+{{begin}} phải ném {{IllegalArgumentException}} nếu account/key/fingerprint null. Tất cả method {{synchronized}}.`,
+    starter: `class PaymentIdempotency {
+    enum Decision { RUN, REPLAY, IN_PROGRESS, CONFLICT }
+    record Outcome(Decision decision, String body) {}
+    PaymentIdempotency() {}
+    synchronized Outcome begin(String account, String key, String fingerprint) { throw new UnsupportedOperationException("TODO"); }
+    synchronized void complete(String account, String key, String fingerprint, String body) { throw new UnsupportedOperationException("TODO"); }
+    synchronized String body(String account, String key) { throw new UnsupportedOperationException("TODO"); }
+    synchronized int size() { throw new UnsupportedOperationException("TODO"); }
+}`,
+    tests: `public class Main {
+ static int p=0,t=0; static void ck(String n,Runnable r){t++;try{r.run();p++;System.out.println("PASS "+n);}catch(Throwable e){System.out.println("FAIL "+n+": "+e);}}
+ static void eq(Object a,Object b){if(!Objects.equals(a,b))throw new AssertionError(a+" != "+b);}
+ public static void main(String[] x){
+  ck("first run then replay same body",()->{
+   PaymentIdempotency s=new PaymentIdempotency();
+   int[] runs={0};
+   PaymentIdempotency.Outcome a=s.begin("acc1","k1","amt=100;card=4242");
+   eq(PaymentIdempotency.Decision.RUN,a.decision());
+   runs[0]++;
+   s.complete("acc1","k1","amt=100;card=4242","APPROVED:txn-9");
+   PaymentIdempotency.Outcome b=s.begin("acc1","k1","amt=100;card=4242");
+   eq(PaymentIdempotency.Decision.REPLAY,b.decision());
+   eq("APPROVED:txn-9",b.body());
+   eq(1,runs[0]);
+  });
+  ck("declined result is replayed not re-run",()->{
+   PaymentIdempotency s=new PaymentIdempotency();
+   int[] runs={0};
+   eq(PaymentIdempotency.Decision.RUN,s.begin("acc1","k2","amt=50;card=0000").decision());
+   runs[0]++;
+   s.complete("acc1","k2","amt=50;card=0000","DECLINED:card_declined");
+   PaymentIdempotency.Outcome b=s.begin("acc1","k2","amt=50;card=0000");
+   eq(PaymentIdempotency.Decision.REPLAY,b.decision());
+   eq("DECLINED:card_declined",b.body());
+   eq(1,runs[0]);
+  });
+  ck("in-flight duplicate is blocked",()->{
+   PaymentIdempotency s=new PaymentIdempotency();
+   eq(PaymentIdempotency.Decision.RUN,s.begin("a","k","fp").decision());
+   PaymentIdempotency.Outcome b=s.begin("a","k","fp");
+   eq(PaymentIdempotency.Decision.IN_PROGRESS,b.decision());
+   eq(null,b.body());
+  });
+  ck("same key different payload conflicts",()->{
+   PaymentIdempotency s=new PaymentIdempotency();
+   s.begin("a","k","amt=100");
+   s.complete("a","k","amt=100","APPROVED:t1");
+   PaymentIdempotency.Outcome c=s.begin("a","k","amt=999");
+   eq(PaymentIdempotency.Decision.CONFLICT,c.decision());
+   eq("APPROVED:t1",s.body("a","k"));
+   eq(1,s.size());
+  });
+  ck("scoped per account",()->{
+   PaymentIdempotency s=new PaymentIdempotency();
+   eq(PaymentIdempotency.Decision.RUN,s.begin("accA","k","fp").decision());
+   eq(PaymentIdempotency.Decision.RUN,s.begin("accB","k","fp").decision());
+   eq(2,s.size());
+  });
+  ck("different key is a new payment",()->{
+   PaymentIdempotency s=new PaymentIdempotency();
+   s.begin("a","k1","fp"); s.complete("a","k1","fp","APPROVED:1");
+   eq(PaymentIdempotency.Decision.RUN,s.begin("a","k2","fp").decision());
+   eq(2,s.size());
+  });
+  System.out.println("RESULT "+p+"/"+t);
+ }
+}`,
+    reference: `class PaymentIdempotency {
+    enum Decision { RUN, REPLAY, IN_PROGRESS, CONFLICT }
+    record Outcome(Decision decision, String body) {}
+    private enum Status { PENDING, DONE }
+    private static final class Entry {
+        final String fingerprint;
+        Status status = Status.PENDING;
+        String body;
+        Entry(String fingerprint) { this.fingerprint = fingerprint; }
+    }
+    private final Map<String, Entry> store = new HashMap<>();
+    private static String scoped(String account, String key) { return account + "::" + key; }
+    synchronized Outcome begin(String account, String key, String fingerprint) {
+        if (account == null || key == null || fingerprint == null) throw new IllegalArgumentException("account/key/fingerprint required");
+        String sk = scoped(account, key);
+        Entry e = store.get(sk);
+        if (e == null) { store.put(sk, new Entry(fingerprint)); return new Outcome(Decision.RUN, null); }
+        if (!e.fingerprint.equals(fingerprint)) return new Outcome(Decision.CONFLICT, null);
+        if (e.status == Status.PENDING) return new Outcome(Decision.IN_PROGRESS, null);
+        return new Outcome(Decision.REPLAY, e.body);
+    }
+    synchronized void complete(String account, String key, String fingerprint, String body) {
+        Entry e = store.get(scoped(account, key));
+        if (e == null || e.status != Status.PENDING || !e.fingerprint.equals(fingerprint)) return;
+        e.body = body;   // publish the terminal result (approve or decline) before DONE
+        e.status = Status.DONE;
+    }
+    synchronized String body(String account, String key) {
+        Entry e = store.get(scoped(account, key));
+        return e == null ? null : e.body;
+    }
+    synchronized int size() { return store.size(); }
+}`,
+    hints: [
+      'Khóa scope theo account::key. begin: chưa có -> tạo PENDING trả RUN; khác fingerprint -> CONFLICT; PENDING -> IN_PROGRESS; DONE -> REPLAY kèm body.',
+      'complete chỉ ghi khi entry còn PENDING và đúng fingerprint; gán body trước rồi mới đặt DONE để REPLAY không bao giờ đọc phải body null.',
+      'Không có trạng thái FAILED để retry: decline là DONE và được replay; muốn thử lại phải dùng key mới.'
+    ],
+    explain: `Bài tập mô phỏng đúng phần khó của idempotency thanh toán: retry accidental không được charge hai lần, kể cả khi lần trước bị từ chối. Store chỉ có PENDING và DONE; một decline được lưu như DONE kèm body, nên begin cùng key trả REPLAY đúng "DECLINED" mà không chạy lại business — điều mà store generic (FAILED -> BEGIN) không làm.
+
+Khác fingerprint trên cùng key trả CONFLICT (422) để bắt bug client dùng lại key cho payload khác; không ghi đè kết quả cũ. Trong lúc PENDING, request thứ hai nhận IN_PROGRESS (409) thay vì chạy song song. Toàn bộ chuyển trạng thái nằm trong một synchronized block (mô phỏng unique constraint ở DB hoặc ConcurrentHashMap.compute): chỉ một request tạo được entry PENDING, request kia thấy PENDING.
+
+complete kiểm tra lại fingerprint và trạng thái PENDING trước khi ghi, rồi gán body trước khi đặt DONE. Thứ tự này đảm bảo REPLAY luôn đọc được body đầy đủ. Trong production, store phải nằm ở DB/Redis với unique index theo (account, endpoint, key) và TTL; map trong RAM chỉ đúng cho một JVM và mất khi restart. Muốn thử lại một giao dịch bị từ chối, client dùng key MỚI.`
+  }],
+  check: [
+    { q: 'Client retry accidental cùng key sau khi lần đầu bị TỪ CHỐI. Server nên làm gì?', options: ['Charge lại thẻ', 'Trả lại đúng kết quả từ chối đã lưu (REPLAY), không charge lại', 'Xóa key và xử lý như mới', 'Trả 500'], answer: 1, explain: `Decline là kết quả cuối cho khóa đó; retry cùng key phải replay đúng phản hồi cũ để không charge hai lần. Muốn thử lại (thẻ khác, số tiền khác) phải dùng key MỚI. (A) sai vì gây charge trùng. (C) sai vì mất khả năng chống trùng. (D) sai vì đây không phải lỗi server.` },
+    { q: 'Cùng key nhưng fingerprint (số tiền) khác. Hành vi đúng?', options: ['Replay kết quả cũ', '422 CONFLICT, không ghi đè, để bắt bug client', 'Charge theo số tiền mới', 'Xóa entry'], answer: 1, explain: `Cùng key khác payload là dấu hiệu client dùng lại key sai; im lặng replay sẽ trả kết quả của thao tác cũ — lỗi dữ liệu. Trả 422 buộc client sửa. (A) sai vì gây sai kết quả. (C) sai vì key đã gắn với intent cũ. (D) sai vì xóa entry phá khả năng dedup.` },
+    { q: 'Hai request cùng key đến song song, request đầu đang PENDING. Request thứ hai nhận gì?', options: ['RUN và charge song song', '409 IN_PROGRESS, không chạy business', 'REPLAY body null', '422 CONFLICT'], answer: 1, explain: `PENDING nghĩa là đang có chủ xử lý; request sau bị chặn để tránh hai lần charge. RUN chỉ cho entry mới; REPLAY chỉ khi DONE; CONFLICT chỉ khi khác fingerprint. (A) sai vì gây charge hai lần. (C) sai vì chưa có body. (D) sai vì fingerprint giống nhau.` },
+    { q: 'Vì sao idempotency key của payment phải scope theo account?', options: ['Để key ngắn hơn', 'Tránh rò rỉ dữ liệu: key toàn cục khiến account A có thể nhận kết quả của B khi trùng key', 'Để tăng tốc', 'Để dùng chung fingerprint'], answer: 1, explain: `Scope theo account đảm bảo mỗi tài khoản có không gian key riêng; nếu toàn cục, trùng key giữa hai account sẽ trả kết quả của nhau — rò rỉ dữ liệu nghiêm trọng. (A) không phải lý do. (C) không liên quan. (D) fingerprint là của payload, không thay thế scope.` }
+  ],
+  related: ['microservices-006', 'microservices-004', 'microservices-002'],
+  tags: ['idempotency', 'payment', 'replay', 'fingerprint', 'in-flight']
+}
 );
