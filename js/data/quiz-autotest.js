@@ -1780,4 +1780,344 @@ for (String handle : driver.getWindowHandles()) {
 - **Selenium tự chuyển tab**: sai. Driver vẫn ở tab cũ cho tới khi gọi switchTo().window.
 - **switchTo().defaultContent()**: dùng để thoát iframe (khung nhúng trong trang), không phải để chuyển tab.`
 },
+{
+  id: 'qz-autotest-071',
+  topic: 'autotest',
+  q: 'Bạn muốn test E2E Playwright for Java tự động fail nếu trang phát sinh lỗi JavaScript (uncaught exception). Cách làm đúng là gì?',
+  options: [
+    'Bật {{page.setDefaultTimeout(30000)}} để chờ lỗi xuất hiện',
+    '{{page.onPageError(err -> errors.add(err))}} để thu thập lỗi, rồi {{assertTrue(errors.isEmpty())}} sau khi thao tác',
+    '{{page.onConsoleMessage}} không tồn tại nên không thể bắt lỗi JS',
+    'Dùng {{page.waitForTimeout(1000)}} rồi kiểm tra {{page.title()}}'
+  ],
+  answer: 1,
+  explain: `**Tóm tắt:** Playwright phát sự kiện {{pageerror}} khi trang ném ra một JS exception không bắt (uncaught). Bạn đăng ký listener TRƯỚC khi điều hướng, gom lỗi vào một list, rồi assert list rỗng ở cuối test.
+
+**Giải thích từng bước:**
+- **Page error là gì:** Khi code JavaScript của trang lỗi (ví dụ gọi hàm không tồn tại, truy cập thuộc tính của {{null}}), trình duyệt bắn một "uncaught exception". Người dùng thường không thấy, nhưng đó là dấu hiệu trang hỏng ngầm.
+- **Vì sao cần bắt:** Test E2E có thể vẫn "pass" vì UI render được, trong khi console đang ngập lỗi. Bắt {{pageerror}} giúp phát hiện lỗi mà mắt thường bỏ qua.
+- **Hoạt động thế nào (Java):**
+~~~java
+import java.util.*;
+import static org.junit.jupiter.api.Assertions.assertTrue;
+
+List<Error> errors = new ArrayList<>();
+page.onPageError(errors::add);      // đăng ký TRƯỚC khi tải trang
+page.navigate("https://app.example.com/checkout");
+page.getByRole(AriaRole.BUTTON,
+    new Page.GetByRoleOptions().setName("Đặt hàng")).click();
+assertTrue(errors.isEmpty(), "Có lỗi JS: " + errors);
+~~~
+- **Bổ sung console error:** Ngoài {{pageerror}}, có thể bắt {{page.onConsoleMessage(msg -> ...)}} và lọc {{msg.type() == ConsoleMessage.Type.ERROR}} để bắt cả lỗi log ở mức error.
+
+**Lỗi hay gặp:** Đăng ký listener SAU khi trang đã tải xong - các lỗi lúc khởi động đã bắn ra và bị bỏ lỡ. Hoặc chỉ bắt mà quên assert, khiến test không fail.
+
+> Senior tip: Gom lỗi JS và assert rỗng ở bước cuối là "safety net" rẻ tiền nhưng bắt được rất nhiều lỗi front-end lọt qua. Kết hợp với {{onConsoleMessage}} lọc type error để phủ rộng hơn.
+
+### Vì sao các phương án còn lại sai
+- **{{setDefaultTimeout(30000)}}**: Chỉ chỉnh thời gian chờ tối đa cho action, không liên quan việc bắt lỗi JS.
+- **{{onConsoleMessage}} không tồn tại**: Sai. API này có thật; và {{pageerror}} mới là sự kiện dành riêng cho uncaught exception.
+- **{{waitForTimeout}} rồi kiểm tra {{title()}}**: Chờ cứng và kiểm tra tiêu đề không phát hiện được lỗi JS.`
+},
+{
+  id: 'qz-autotest-072',
+  topic: 'autotest',
+  q: 'Sau khi bấm "Gửi", server xử lý bất đồng bộ và trạng thái đơn hàng chuyển sang "DONE" sau khoảng 2 giây. Bạn muốn chờ điều kiện này (không gắn với một locator cụ thể) trong Playwright for Java. API nào phù hợp?',
+  options: [
+    '{{page.waitForTimeout(2000)}} rồi kiểm tra một lần',
+    '{{locator.isVisible()}} trong vòng lặp for chạy 100 lần',
+    '{{expect.poll(() -> api.getOrderStatus(id)).toBe("DONE")}} — lặp gọi hàm cho tới khi matcher pass hoặc timeout',
+    '{{page.waitForLoadState()}} vì nó luôn chờ mọi request async xong'
+  ],
+  answer: 2,
+  explain: `**Tóm tắt:** {{expect.poll(...)}} (poll assertion) lặp lại việc thực thi một hàm và so khớp kết quả cho tới khi pass hoặc hết timeout. Nó dành cho điều kiện async KHÔNG nằm trên một locator (ví dụ trạng thái từ API, biến trong bộ nhớ).
+
+**Giải thích từng bước:**
+- **Poll (thăm dò) là gì:** Thay vì kiểm tra một lần rồi bỏ, poll cứ vài trăm ms lại chạy lại hàm của bạn và áp matcher. Nếu kết quả khớp thì pass ngay, không thì chờ tiếp đến khi hết giờ.
+- **Vì sao cần:** Web-first assertion {{assertThat(locator)...}} chỉ áp cho phần tử UI. Khi điều kiện cần chờ là dữ liệu từ API hoặc trạng thái backend, bạn dùng {{expect.poll}} để có cùng cơ chế "tự retry" đó.
+- **Hoạt động thế nào (Java):**
+~~~java
+import static com.microsoft.playwright.assertions.PlaywrightAssertions.expect;
+// server đổi trạng thái sau ~2s; poll tự thử lại đến khi "DONE"
+expect.poll(() -> api.getOrderStatus(id)).toBe("DONE");
+~~~
+- **Khác với web-first assertion:** {{assertThat(locator).hasText(...)}} gắn với DOM; {{expect.poll}} gắn với bất kỳ biểu thức nào trả về giá trị so sánh được.
+
+**Lỗi hay gặp:** Dùng {{waitForTimeout}} cố định rồi kiểm tra một lần - nếu máy CI chậm hơn 2 giây, test fail oan. Hoặc viết vòng lặp {{for}} thủ công kèm {{Thread.sleep}} thay vì dùng poll (dễ sai, khó đọc).
+
+> Senior tip: Mọi chỗ cần "chờ điều kiện động", ưu tiên cơ chế retry có sẵn ({{expect.poll}} cho dữ liệu, web-first assertion cho UI). Tránh vòng lặp sleep thủ công - vừa chậm vừa flaky.
+
+### Vì sao các phương án còn lại sai
+- **{{waitForTimeout(2000)}} rồi kiểm tra một lần**: Chờ cứng, không đảm bảo trạng thái đã đổi; CI chậm hơn là fail.
+- **{{isVisible()}} trong vòng lặp for**: {{isVisible()}} không auto-wait và điều kiện ở đây không phải là hiển thị; vòng lặp tự viết dễ sai và không có timeout chuẩn.
+- **{{waitForLoadState()}} chờ mọi async xong**: Load state chỉ phản ánh tải trang/tài nguyên, không theo dõi một request nghiệp vụ cụ thể hay trạng thái backend.`
+},
+{
+  id: 'qz-autotest-073',
+  topic: 'autotest',
+  multi: true,
+  q: 'Trong Selenium 4, lớp {{Actions}} hỗ trợ những nhóm thao tác nào? (Chọn 2)',
+  options: [
+    'Thao tác chuột nâng cao như hover (di chuột lên phần tử) bằng {{moveToElement}}',
+    'Kéo thả (drag and drop) bằng {{dragAndDrop}}',
+    'Tự động chờ phần tử visible giống {{WebDriverWait}}',
+    'Đọc và trả về text của phần tử'
+  ],
+  answer: [0, 1],
+  explain: `**Tóm tắt:** {{Actions}} mô phỏng các tương tác chuột/bàn phím nâng cao mà {{element.click()}} đơn thuần không làm được: hover, click giữ chuột, kéo thả, phím tổ hợp. Nó KHÔNG có cơ chế chờ và KHÔNG đọc dữ liệu phần tử.
+
+**Giải thích từng bước:**
+- **Actions là gì:** Một "bộ mô phỏng hành vi người dùng" - nó tổng hợp chuỗi thao tác (di chuột, nhấn, thả) rồi thực thi bằng {{perform()}} hoặc {{build().perform()}}.
+- **Hover (moveToElement):** Di con trỏ lên phần tử để hiện tooltip/menu; {{click()}} không làm được việc này.
+- **Kéo thả (dragAndDrop):** Nắm phần tử nguồn, di tới đích, thả ra - dùng cho kanban, sắp xếp danh sách.
+- **Ví dụ (Java):**
+~~~java
+Actions actions = new Actions(driver);
+actions.moveToElement(driver.findElement(By.id("menu")))
+       .click(driver.findElement(By.id("item")));
+actions.perform();
+
+new Actions(driver)
+    .dragAndDrop(from, to)   // kéo thả
+    .perform();
+~~~
+- **Lưu ý:** Actions không tự chờ phần tử xuất hiện; nếu phần tử chưa sẵn sàng vẫn lỗi như thường. Bạn vẫn cần WebDriverWait trước đó.
+
+**Lỗi hay gặp:** Gọi {{build()}} mà quên {{perform()}} (thao tác không chạy). Hoặc kỳ vọng Actions tự retry - nó không có cơ chế đó.
+
+> Senior tip: Với hover/kéo thả hãy dùng Actions; với click/điền thông thường thì dùng thẳng WebElement để code gọn. Actions tỏa sáng (phát huy) ở tương tác phức tạp chuột/bàn phím.
+
+### Vì sao các phương án còn lại sai
+- **Tự chờ visible giống WebDriverWait**: Sai. Actions chỉ thực thi thao tác, không có timeout/polling; việc chờ thuộc WebDriverWait.
+- **Đọc text phần tử**: Sai. Đọc nội dung dùng {{element.getText()}}; Actions không trả về dữ liệu.`
+},
+{
+  id: 'qz-autotest-074',
+  topic: 'autotest',
+  q: 'Trang có dropdown HTML {{<select id="city">}} với các {{<option>}}. Trong Selenium, cách chọn option "Hà Nội" đúng là gì?',
+  options: [
+    '{{driver.findElement(By.id("city")).click()}} là tự chọn được option',
+    'new {{Select}}(driver.findElement(By.id("city"))).selectByVisibleText("Hà Nội")',
+    'Phải dùng {{Actions.moveToElement}} để chọn option',
+    '{{Select}} chỉ dùng cho {{input type=text}}'
+  ],
+  answer: 1,
+  explain: `**Tóm tắt:** Với phần tử {{<select>}}, Selenium cung cấp lớp {{Select}}: bọc phần tử đó rồi gọi {{selectByVisibleText}} (theo chữ hiển thị), {{selectByValue}} (theo giá trị attribute value) hoặc {{selectByIndex}} (theo thứ tự).
+
+**Giải thích từng bước:**
+- **Select là gì:** Lớp tiện ích (org.openqa.selenium.support.ui.Select) giúp thao tác dropdown HTML mà không phải tự mò từng {{<option>}}.
+- **Ba cách chọn:**
+  - {{selectByVisibleText("Hà Nội")}} - theo đúng chữ người dùng thấy.
+  - {{selectByValue("HN")}} - theo attribute value của option (ổn định hơn nếu text đổi).
+  - {{selectByIndex(0)}} - theo vị trí (giòn, tránh dùng).
+- **Ví dụ (Java):**
+~~~java
+Select city = new Select(driver.findElement(By.id("city")));
+city.selectByVisibleText("Hà Nội");
+// hoặc ổn định hơn khi text có thể đổi:
+city.selectByValue("HN");
+~~~
+- **Vì sao không click tay:** {{click()}} chỉ mở dropdown, không chọn; bạn còn phải tìm {{<option>}} rồi click - nhiều bước và dễ sai.
+
+**Lỗi hay gặp:** Dùng {{selectByVisibleText}} với text có khoảng trắng thừa hoặc khác dấu - không khớp thì ném {{NoSuchElementException}}. Khi đó nên dùng {{selectByValue}} với giá trị do dev kiểm soát.
+
+> Senior tip: Ưu tiên {{selectByValue}} (bám value ổn định) hơn {{selectByVisibleText}} (bám text dễ đổi theo ngôn ngữ). Với dropdown tự render (không phải {{<select>}} gốc), phải dùng cách khác vì {{Select}} không áp dụng.
+
+### Vì sao các phương án còn lại sai
+- **{{click()}} tự chọn option**: Sai. Click chỉ mở danh sách, không chọn giá trị.
+- **Dùng Actions.moveToElement**: Không phải cách chuẩn; dropdown {{<select>}} có lớp {{Select}} chuyên dụng.
+- **Select chỉ cho input text**: Sai. {{Select}} chỉ dùng cho {{<select>}}; input text dùng {{sendKeys}}.`
+},
+{
+  id: 'qz-autotest-075',
+  topic: 'autotest',
+  q: 'Trong Playwright for Java, ô nhập email có {{<label for="email">Email</label>}} gắn với {{<input id="email">}}. Locator nào bền vững và đúng ngữ nghĩa accessibility nhất?',
+  options: [
+    '{{page.getByTestId("email")}} dù trang không có data-testid',
+    '{{page.locator("#email")}}',
+    '{{page.locator("input")}}',
+    '{{page.getByLabel("Email")}}'
+  ],
+  answer: 3,
+  explain: `**Tóm tắt:** {{getByLabel}} tìm control theo text của {{<label>}} gắn với nó - bám vào ngữ nghĩa form (ý nghĩa của ô nhập) nên bền khi class/CSS đổi, đồng thời phản ánh đúng accessibility.
+
+**Giải thích từng bước:**
+- **Label (nhãn) là gì:** Văn bản mô tả một ô nhập, gắn qua {{for}} khớp {{id}} của input (hoặc bọc input bên trong label). Đây là cách trình bày chuẩn để screen reader đọc đúng tên ô.
+- **getByLabel hoạt động thế nào:** Nó tìm phần tử control (input/textarea/select) có nhãn khớp "Email", bất kể id/class là gì. Khi designer đổi CSS, test vẫn chạy.
+- **Ví dụ (Java):**
+~~~java
+page.getByLabel("Email").fill("a@example.com");
+~~~
+- **So sánh nhanh:** {{getByLabel}} ưu tiên cao ngang {{getByRole}} vì gắn với ý nghĩa; {{locator("#email")}} tuy chạy được nhưng bám id (dễ đổi), kém ngữ nghĩa hơn.
+
+**Lỗi hay gặp:** Trang quên gắn {{for}}/{{id}} hoặc không bọc label - {{getByLabel}} không tìm ra; khi đó nên đề nghị team sửa markup cho đúng accessibility thay vì chuyển sang CSS giòn.
+
+> Senior tip: Thứ tự ưu tiên locator: getByRole/getByLabel (ngữ nghĩa) > getByTestId (hợp đồng test) > CSS/id (phương án cuối). Form nên dùng getByLabel để vừa bền vừa kiểm tra luôn tính accessible.
+
+### Vì sao các phương án còn lại sai
+- **{{locator("#email")}}**: Chạy được nhưng bám id - đổi id là gãy; kém bền và không kiểm tra ngữ nghĩa nhãn.
+- **{{locator("input")}}**: Quá chung, khớp mọi ô input trên trang; không xác định đúng ô email.
+- **{{getByTestId("email")}} khi không có data-testid**: Không tìm thấy phần tử vì attribute đó không tồn tại.`
+},
+{
+  id: 'qz-autotest-076',
+  topic: 'autotest',
+  multi: true,
+  q: 'Bạn cần test tính năng "chi nhánh gần bạn" dùng geolocation của trình duyệt. Những phát biểu nào đúng về {{context.grantPermissions}} trong Playwright for Java? (Chọn 2)',
+  options: [
+    'Có thể cấp quyền {{geolocation}} cho context rồi set toạ độ qua {{setGeolocation}}',
+    'Quyền cấp cho một {{BrowserContext}} áp dụng cho mọi {{Page}} trong context đó',
+    '{{grantPermissions}} chỉ áp dụng cho tab hiện tại, không chia sẻ giữa các Page',
+    'Phải mở Chrome có giao diện (headed) mới dùng được geolocation trong test'
+  ],
+  answer: [0, 1],
+  explain: `**Tóm tắt:** {{context.grantPermissions(...)}} cấp quyền trình duyệt (geolocation, notification, camera...) cho cả {{BrowserContext}}; kết hợp {{setGeolocation}} để giả lập toạ độ. Quyền thuộc context nên mọi Page bên trong đều dùng được, kể cả khi chạy headless.
+
+**Giải thích từng bước:**
+- **Permission (quyền) là gì:** Trình duyệt hỏi người dùng trước khi cho web dùng vị trí, camera, thông báo. Trong test không có người bấm "Cho phép", nên bạn phải cấp quyền bằng code.
+- **Vì sao ở Context:** Context là phiên cô lập; cấp quyền ở đây giúp mọi tab trong cùng phiên đều có quyền, tránh phải cấp lặp cho từng Page.
+- **Hoạt động thế nào (Java):**
+~~~java
+BrowserContext ctx = browser.newContext();
+ctx.grantPermissions(java.util.Set.of("geolocation"));
+ctx.setGeolocation(21.0278, 105.8342); // toạ độ Hà Nội
+Page page = ctx.newPage();
+page.navigate("https://app.example.com/branches");
+~~~
+- **Headless vẫn được:** Geolocation là dữ liệu giả lập do bạn set, không cần màn hình thật; headless vẫn hoạt động.
+
+**Lỗi hay gặp:** Cấp quyền cho Page thay vì Context rồi mở tab mới bị thiếu quyền. Hoặc quên {{setGeolocation}} nên trang nhận vị trí mặc định (thường là rỗng) và tính năng không kích hoạt.
+
+> Senior tip: Đóng gói việc cấp quyền + set toạ độ vào một helper tạo context để tái dùng cho mọi test cần định vị. Với nhiều locale/vị trí, tạo nhiều context cấu hình khác nhau.
+
+### Vì sao các phương án còn lại sai
+- **Chỉ áp dụng cho tab hiện tại, không chia sẻ**: Sai. Quyền thuộc {{BrowserContext}}, mọi Page trong context đều hưởng.
+- **Phải mở headed mới dùng được**: Sai. Geolocation là giả lập qua {{setGeolocation}}, chạy tốt cả headless.`
+},
+{
+  id: 'qz-autotest-077',
+  topic: 'autotest',
+  q: 'Bạn cần gọi API được bảo vệ bằng OAuth2 Bearer token bằng RestAssured. Cách gắn token đúng là gì?',
+  options: [
+    'given().body(token).when().get("/orders")',
+    'given().queryParam("token", token).when().get("/orders")',
+    'given().auth().oauth2(token).when().get("/orders")',
+    'RestAssured không hỗ trợ OAuth2'
+  ],
+  answer: 2,
+  explain: `**Tóm tắt:** {{given().auth().oauth2(token)}} tự động thêm header {{Authorization: Bearer <token>}} cho request, đúng chuẩn OAuth2 resource request.
+
+**Giải thích từng bước:**
+- **OAuth2 Bearer token là gì:** Sau khi đăng nhập, client nhận một chuỗi token; mỗi lần gọi API phải kèm header {{Authorization: Bearer <token>}} để server xác thực. Đây là cách phổ biến cho API hiện đại.
+- **auth().oauth2(token) làm gì:** RestAssured sinh giúp bạn header chuẩn, khỏi phải tự ghép chuỗi "Bearer " + token (dễ sai).
+- **Ví dụ (Java):**
+~~~java
+given()
+    .auth().oauth2(token)          // thêm Authorization: Bearer ...
+    .when()
+    .get("/orders")
+    .then()
+    .statusCode(200);
+~~~
+- **Các kiểu auth khác có sẵn:** {{.auth().basic(user, pass)}} (Basic), {{.auth().preemptive()}}... nhưng với Bearer thì dùng {{oauth2}}.
+
+**Lỗi hay gặp:** Tự ghép header bằng {{.header("Authorization", "Bearer " + token)}} - vẫn chạy nhưng {{auth().oauth2}} gọn và ít lỗi hơn. Hoặc quên token nên nhận 401.
+
+> Senior tip: Lấy token một lần trong {{@BeforeAll}}/setup rồi tái sử dụng; nếu token hết hạn giữa chừng, làm cơ chế refresh để tránh cả loạt test fail 401.
+
+### Vì sao các phương án còn lại sai
+- **{{.body(token)}}**: {{body()}} là nội dung request (payload), không phải header xác thực; server không nhận token từ body theo chuẩn Bearer.
+- **{{.queryParam("token", token)}}**: Đưa token lên URL - sai chuẩn và lộ token trong log/URL; không thay được header Authorization.
+- **RestAssured không hỗ trợ OAuth2**: Sai. {{auth().oauth2(...)}} là API chính thức.`
+},
+{
+  id: 'qz-autotest-078',
+  topic: 'autotest',
+  q: 'Trong Testcontainers, thành phần nào chịu trách nhiệm dọn dẹp (xóa) các container sau khi JVM test thoát, kể cả khi test crash?',
+  options: [
+    'JUnit 5 {{@AfterEach}}',
+    'Docker daemon tự xóa mọi container mỗi phút',
+    'Ryuk (resource reaper) — container phụ do Testcontainers khởi động để theo dõi và xóa container test',
+    'Testcontainers không dọn dẹp, phải xóa tay'
+  ],
+  answer: 2,
+  explain: `**Tóm tắt:** Testcontainers khởi động một container phụ tên Ryuk làm "resource reaper" (kẻ dọn dẹp): nó theo dõi kết nối từ JVM test và xóa mọi container test khi JVM thoát - kể cả khi thoát bất thường.
+
+**Giải thích từng bước:**
+- **Vấn đề rò rỉ tài nguyên:** Nếu test tạo container DB/Kafka mà không xóa, mỗi lần chạy để lại container "mồ côi" ngốn RAM/CPU; lâu dài máy CI hết tài nguyên.
+- **Ryuk hoạt động thế nào:** Khi Testcontainers bắt đầu, nó dựng container Ryuk. Ryuk giữ kết nối tới JVM; khi kết nối đứt (test xong hoặc crash), Ryuk tự xóa các container do phiên đó tạo. Đây là "vòng đời tự hủy" an toàn.
+- **Vì sao không dựa @AfterEach:** Nếu JVM bị kill (CI timeout, OOM), {{@AfterEach}} không kịp chạy; Ryuk vẫn dọn vì nó canh theo kết nối, không theo lệnh gọi.
+- **Tùy chọn:** Có thể tắt Ryuk bằng biến môi trường {{TESTCONTAINERS_RYUK_DISABLED=true}} (thường không nên, dễ rò rỉ), hoặc bật reuse để tái dùng container giữa các lần chạy.
+
+**Lỗi hay gặp:** Tắt Ryuk rồi quên dọn tay - container tích tụ làm CI ì ạch. Hoặc dùng container với cờ {{--rm}} thủ công mà không hiểu Testcontainers đã có cơ chế riêng.
+
+> Senior tip: Để Ryuk mặc định bật; chỉ tắt khi bạn thực sự kiểm soát vòng đời container. Trên CI, Ryuk giúp đảm bảo không rò rỉ container sau hàng trăm lần build.
+
+### Vì sao các phương án còn lại sai
+- **JUnit 5 {{@AfterEach}}**: Không chạy được nếu JVM chết đột ngột; Testcontainers không dựa vào nó để dọn.
+- **Docker daemon tự xóa mỗi phút**: Sai. Docker không tự xóa container đang chạy; nếu không có reaper, container ở lại.
+- **Không dọn dẹp, phải xóa tay**: Sai. Ryuk chính là cơ chế dọn tự động mặc định.`
+},
+{
+  id: 'qz-autotest-079',
+  topic: 'autotest',
+  multi: true,
+  q: 'Về chạy song song trong Playwright Test: nhiều {{workers}} trên một máy so với {{sharding}} chia nhiều máy. Những phát biểu nào đúng? (Chọn 2)',
+  options: [
+    '{{workers}} là số tiến trình song song TRÊN MỘT máy; {{sharding}} chia bộ test ra NHIỀU máy/agent CI',
+    'Tăng {{workers}} luôn luôn làm test nhanh hơn mà không cần quan tâm CPU/RAM',
+    'Test phải độc lập (không chia sẻ state) thì mới chạy song song an toàn',
+    '{{fullyParallel}} chỉ hoạt động khi có sharding'
+  ],
+  answer: [0, 2],
+  explain: `**Tóm tắt:** {{workers}} là mức song song trong một máy (nhiều tiến trình), còn {{sharding}} là chia suite trên nhiều máy. Muốn song song đúng, test phải độc lập; còn {{fullyParallel}} là cờ riêng, không phụ thuộc sharding.
+
+**Giải thích từng bước:**
+- **Workers (công nhân):** Mỗi worker là một tiến trình chạy một phần test. Tăng workers tận dụng nhiều lõi CPU nhưng bị chặn bởi tài nguyên máy (RAM, số core). Quá nhiều workers gây tranh chấp tài nguyên, chậm đi hoặc OOM.
+- **Sharding (chia mảnh):** Chia danh sách test thành N phần không giao nhau, mỗi máy CI chạy một phần ({{--shard=1/4}}...). Mục tiêu là scale ra nhiều máy để giảm tổng thời gian.
+- **Điều kiện tiên quyết - độc lập:** Nếu test chia sẻ state (DB chung, file cố định, phụ thuộc thứ tự), chạy song song sẽ cho kết quả sai/flaky. Đây là yêu cầu bắt buộc cho cả workers lẫn sharding.
+- **fullyParallel:** Cờ trong Playwright Test cho phép chạy song song các test trong cùng một file (mặc định test trong một file chạy tuần tự). Nó độc lập với sharding - không cần sharding vẫn dùng được.
+
+**Lỗi hay gặp:** Đặt workers quá cao trên máy yếu làm OOM; hoặc bật song song cho suite cũ phụ thuộc thứ tự - bùng nổ flaky.
+
+> Senior tip: Chỉnh workers vừa với CPU/RAM của runner; kết hợp sharding khi suite quá lớn. Trước hết làm mọi test độc lập, rồi mới bật song song.
+
+### Vì sao các phương án còn lại sai
+- **Tăng workers luôn nhanh hơn, không cần quan tâm tài nguyên**: Sai. Vượt quá CPU/RAM gây tranh chấp, chậm hơn hoặc crash.
+- **{{fullyParallel}} chỉ chạy khi có sharding**: Sai. Hai cơ chế độc lập; fullyParallel là cờ cấu hình riêng của Playwright Test.`
+},
+{
+  id: 'qz-autotest-080',
+  topic: 'autotest',
+  q: 'Trang có ô upload {{<input type="file" id="cv">}}. Trong Playwright for Java, cách nạp file vào ô này đúng là gì?',
+  options: [
+    '{{page.locator("#cv").fill("cv.pdf")}}',
+    '{{page.locator("#cv").click()}} rồi gõ đường dẫn bằng bàn phím',
+    '{{page.locator("#cv").sendKeys("cv.pdf")}}',
+    '{{page.locator("#cv").setInputFiles(Paths.get("cv.pdf"))}}'
+  ],
+  answer: 3,
+  explain: `**Tóm tắt:** Với {{<input type="file">}}, dùng {{setInputFiles(...)}} để nạp trực tiếp file; đây là API chuyên dụng, không cần mở hộp thoại chọn file của hệ điều hành.
+
+**Giải thích từng bước:**
+- **Input type=file là gì:** Ô cho phép chọn file từ máy; khi bấm thường mở hộp thoại OS. Trong test tự động, ta không muốn thao tác hộp thoại đó.
+- **setInputFiles làm gì:** Gán thẳng đường dẫn file vào input mà không cần UI hộp thoại; Playwright mô phỏng việc chọn file tức thì.
+- **Hoạt động thế nào (Java):**
+~~~java
+page.locator("#cv").setInputFiles(Paths.get("src/test/resources/cv.pdf"));
+// sau đó bấm nút upload nếu cần
+page.getByRole(AriaRole.BUTTON,
+    new Page.GetByRoleOptions().setName("Gửi CV")).click();
+~~~
+- **Có thể nạp nhiều file:** {{setInputFiles(Path...)}} với input {{multiple}}.
+
+**Lỗi hay gặp:** Dùng {{fill()}} hay {{sendKeys()}} cho ô file - không hoạt động (trình duyệt chặn gõ trực tiếp vào input file vì lý do bảo mật). Hoặc đường dẫn sai/thiếu file - ném lỗi ngay.
+
+> Senior tip: Đặt file test trong {{src/test/resources}} và nạp bằng đường dẫn tương đối ổn định; tránh đường dẫn tuyệt đối của máy local (hỏng khi chạy CI).
+
+### Vì sao các phương án còn lại sai
+- **{{fill("cv.pdf")}}**: {{fill}} dùng cho input text/textarea; không nạp được file.
+- **{{click()}} rồi gõ đường dẫn**: Hộp thoại chọn file là OS-native, Playwright không tự gõ vào đó; đây không phải cách làm.
+- **{{sendKeys("cv.pdf")}}**: Trình duyệt chặn nhập trực tiếp vào input file; phải dùng {{setInputFiles}}.`
+},
 );
