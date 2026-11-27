@@ -88,11 +88,12 @@
       bugs: ['bugs', 'index', 'glossary'],                  // related-questions widget
       'jobs/prep': ['questions', 'glossary'],               // #/jobs/prep/<jobId>: JD study plan + knowledge summary from the bank
       aws: ['aws'],                                           // window.AWS_PLAN + window.AWS_QUESTIONS
+      freelance: ['freelance'],                               // window.FREELANCE_PLAN + window.FREELANCE_EN
     },
     // Views are lazy too: route 'x' loads css/views/x.css + js/views/x.js on first visit (App.loadView).
     // index.html loads NO view file. Adding a view: add its name here (scripts/check-budget.js checks the files).
     views: ['dashboard', 'roadmap', 'bank', 'flash', 'quiz', 'exam', 'algo', 'mock', 'companies', 'labs', 'account',
-      'legal', 'interview', 'learn', 'path', 'speak', 'news', 'sd', 'projects', 'career', 'aws', 'sdlc', 'jobs', 'bugs', 'toeic'],
+      'legal', 'interview', 'learn', 'path', 'speak', 'news', 'sd', 'projects', 'career', 'aws', 'freelance', 'sdlc', 'jobs', 'bugs', 'toeic'],
     // views prefetched at idle after the first render (nav targets most used first); the rest load on click
     prefetchViews: ['bank', 'flash', 'learn', 'quiz', 'roadmap', 'path', 'algo', 'mock'],
     // idle prefetch order after the first render (most likely next screens first)

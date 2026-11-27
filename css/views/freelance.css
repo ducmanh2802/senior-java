@@ -1,0 +1,65 @@
+/* Freelance track (#/freelance) — mọi selector bắt đầu bằng .view-freelance; chỉ dùng biến màu để dark mode tự chạy */
+.view-freelance .freelance-start { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin: 0 0 10px; }
+.view-freelance .freelance-start .input { width: auto; max-width: 100%; }
+.view-freelance .freelance-start p { flex-basis: 100%; margin: 0; }
+
+.view-freelance .freelance-stats { margin: 12px 0 16px; grid-template-columns: repeat(auto-fill, minmax(min(100%, 180px), 1fr)); }
+.view-freelance .freelance-stats .num { font-size: 1.4rem; overflow-wrap: anywhere; }
+.view-freelance .freelance-stats .progress { margin-top: 8px; }
+
+.view-freelance .freelance-tz { border-left: 4px solid var(--warn); }
+
+/* kế hoạch 12 tuần */
+.view-freelance .freelance-weeks { list-style: none; padding: 0; margin: 0; display: grid; gap: 10px; }
+.view-freelance .freelance-week { margin: 0; padding: 0; }
+.view-freelance .freelance-week > summary { display: flex; gap: 12px; align-items: flex-start; padding: 14px 16px; cursor: pointer; list-style: none; }
+.view-freelance .freelance-week > summary::-webkit-details-marker { display: none; }
+.view-freelance .freelance-week.now { border-color: var(--accent); }
+.view-freelance .freelance-wk-n { flex: none; width: 32px; height: 32px; border-radius: 50%; display: grid; place-items: center; font-weight: 700;
+  background: var(--surface-2); color: var(--text); font-variant-numeric: tabular-nums; }
+.view-freelance .freelance-week.done .freelance-wk-n { background: var(--ok-soft); color: var(--ok); }
+.view-freelance .freelance-week.now .freelance-wk-n { background: var(--accent-soft); color: var(--accent); }
+.view-freelance .freelance-wk-title { flex: 1; min-width: 0; }
+.view-freelance .freelance-wk-meta { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; margin-top: 4px; }
+.view-freelance .freelance-week-body { padding: 0 16px 16px; border-top: 1px solid var(--border); }
+.view-freelance .freelance-week-body h4 { margin: 14px 0 6px; }
+
+.view-freelance .freelance-goals, .view-freelance .freelance-tasks, .view-freelance .freelance-english, .view-freelance .freelance-links, .view-freelance .freelance-lessons {
+  margin: 6px 0 12px; padding-left: 20px;
+}
+.view-freelance .freelance-goals li, .view-freelance .freelance-tasks li, .view-freelance .freelance-english li, .view-freelance .freelance-links li, .view-freelance .freelance-lessons li {
+  margin: 4px 0; overflow-wrap: anywhere;
+}
+.view-freelance .freelance-tasks { list-style: none; padding-left: 0; margin: 6px 0 10px; }
+.view-freelance .freelance-task { display: flex; gap: 8px; align-items: center; margin: 5px 0; }
+.view-freelance .freelance-task label { margin: 0; display: flex; gap: 8px; align-items: center; cursor: pointer; width: 100%; }
+.view-freelance .freelance-task-text { min-width: 0; overflow-wrap: anywhere; flex: 1; }
+.view-freelance .freelance-task-text.done { text-decoration: line-through; color: var(--muted); }
+.view-freelance .freelance-week-actions { margin-top: 14px; gap: 8px; }
+
+.view-freelance .freelance-deliverable { margin: 10px 0; padding: 10px 14px; border-radius: var(--radius-sm); background: var(--surface-2); border: 1px solid var(--border); }
+
+.view-freelance .freelance-links a { overflow-wrap: anywhere; }
+
+/* yêu cầu job */
+.view-freelance .freelance-jobreq .freelance-musthaves { list-style: none; padding: 0; margin: 10px 0 0; }
+.view-freelance .freelance-must { display: flex; gap: 8px; align-items: center; margin: 6px 0; }
+.view-freelance .freelance-must label { margin: 0; cursor: pointer; width: 100%; display: flex; gap: 8px; align-items: flex-start; }
+.view-freelance .freelance-must-text { min-width: 0; overflow-wrap: anywhere; flex: 1; }
+.view-freelance .freelance-must-text.done { text-decoration: line-through; color: var(--muted); }
+
+/* câu hỏi sàng lọc */
+.view-freelance .freelance-screening { margin-top: 14px; }
+.view-freelance .freelance-screen { margin: 12px 0; }
+.view-freelance .freelance-screen h4 { margin: 0 0 8px; font-size: 1rem; }
+.view-freelance .freelance-sample { margin: 6px 0 8px; padding: 8px 12px; border-radius: var(--radius-sm); background: var(--info-soft); border-left: 3px solid var(--info); }
+.view-freelance .freelance-sample h5 { margin: 0 0 4px; font-size: var(--fs-xs); text-transform: uppercase; letter-spacing: .03em; color: var(--info); }
+.view-freelance .freelance-screen-actions { gap: 8px; margin-top: 8px; }
+.view-freelance .freelance-saved-msg { color: var(--ok); font-weight: 600; }
+
+@media (max-width: 760px) {
+  .view-freelance .freelance-week > summary { padding: 12px; gap: 10px; }
+  .view-freelance .freelance-week-body { padding: 0 12px 12px; }
+  .view-freelance .freelance-task { flex-direction: column; align-items: flex-start; gap: 6px; }
+  .view-freelance .freelance-task label { width: auto; flex-direction: column; align-items: flex-start; }
+}
