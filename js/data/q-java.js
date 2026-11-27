@@ -14402,6 +14402,243 @@ Một platform có event bus generic {{EventBus}} và nhiều handler. Bản đ�
   refs: [
     { type: 'doc', title: 'Oracle Generics: Wildcards and PECS', url: 'https://docs.oracle.com/javase/tutorial/java/generics/wildcards.html' }
   ]
+},
+{
+  id: 'modern-077',
+  topic: 'modern',
+  level: 'lead',
+  q: 'Record (Java 16+) làm DTO và JPA projection: vì sao KHÔNG dùng record làm JPA entity? Pitfall gì khi dùng record làm Map key / DTO lồng nhau?',
+  a: `**Tóm tắt:** Record là lớp dữ liệu bất biến (immutable) với constructor compact, accessor, equals/hashCode/toString tự sinh — rất hợp DTO/projection/query result, nhưng KHÔNG hợp JPA entity vì entity phải mutable, có id mutable, lazy loading và proxy; record bất biến + final fields phá vỡ Hibernate lifecycle. Record làm Map key thì equals/hashCode ổn định (tốt) nhưng nếu chứa collection mutable thì hash drift; DTO lồng nhau nên là record lồng record để giữ immutability.
+
+### Record là gì và vì sao sinh ra
+
+Trước Java 16, một DTO cần ~30 dòng: field private final, constructor, getter, equals, hashCode, toString. Record giảm còn 1 dòng:
+
+~~~java
+public record Money(BigDecimal amount, String currency) {}
+~~~
+
+Compiler sinh: constructor canonical, accessor {{amount()}}, {{currency()}}, equals/hashCode dựa trên mọi field, toString. Field là {{private final}}.
+
+### Vì sao record KHÔNG làm JPA entity
+
+Hibernate entity có yêu cầu:
+- Constructor không tham số (hoặc protected) để proxy/instantiation.
+- Field mutable (setter) để dirty checking.
+- Lazy loading qua proxy subclass.
+- @Id có thể gán sau khi persist.
+
+Record:
+- Không có no-arg constructor (constructor canonical bắt buộc mọi field).
+- Field {{final}} → không setter → Hibernate không dirty-check.
+- Class {{final}} → Hibernate không tạo proxy subclass → lazy loading hỏng.
+- equals/hashCode dựa trên mọi field bao gồm id; trước khi persist id null, sau persist id có giá trị → object "đổi identity" trong Set/Map → bug mất dữ liệu.
+
+Vì vậy entity dùng class thường; record dùng cho DTO/projection.
+
+### Record làm JPA projection (interface-based / DTO)
+
+Spring Data JPA hỗ trợ projection: interface hoặc DTO constructor. Record phù hợp DTO projection:
+
+~~~java
+public record UserView(Long id, String email) {}
+
+@Query("select new com.example.UserView(u.id, u.email) from User u where u.active = true")
+List<UserView> findActiveViews();
+~~~
+
+Lưu ý: constructor expression phải khớp thứ tự field record; alias trong native query phải khớp accessor name.
+
+### Record làm Map key
+
+Record equals/hashCode dựa trên mọi field → key ổn định nếu field immutable. Pitfall:
+- Nếu record chứa {{List}} mutable, hash có thể drift khi list bị sửa → entry "mất" trong Map.
+- Record chứa entity mutable → hash drift khi entity thay đổi.
+
+Best practice: record key chỉ chứa primitive/immutable (id, code).
+
+### DTO lồng nhau
+
+~~~java
+public record OrderView(Long id, CustomerView customer, List<ItemView> items) {}
+~~~
+
+Giữ immutability toàn chuỗi; mapping từ entity sang record nên làm ở service layer, không trong entity.
+
+### Pitfall production
+
+- Dùng record entity → LazyInitializationException hoặc không dirty check.
+- Record với field mutable (array, List) → equals/hashCode không nhất quán.
+- Compact constructor không validate → dữ liệu rác vào DTO.
+
+### Ví dụ đời thực
+
+Service trả 10k user view cho dashboard. Dùng record projection giảm memory (không load full entity + session) và tránh LazyInitializationException vì dữ liệu đã materialize. Trước dùng entity → 5% request N+1 query và OOM khi page lớn. Sau dùng record projection → query 1 lần, memory giảm 60%, p99 latency từ 1.2s xuống 200ms.
+
+### Trả lời mẫu khi phỏng vấn
+
+"Em dùng record cho DTO và projection vì bất biến, equals/hashCode tự sinh, code ngắn. Em không dùng record làm JPA entity vì entity cần mutable, no-arg constructor, proxy subclass cho lazy loading, và id thay đổi sau persist — record final fields phá tất cả. Record làm Map key ổn định nếu field immutable; chứa collection mutable thì hash drift. DTO lồng nhau nên record lồng record. Projection bằng record constructor expression trong @Query giúp tránh load full entity và N+1. Compact constructor em dùng để validate dữ liệu vào DTO."
+
+> Senior tip: record là "data carrier", không phải "domain entity". Boundary rõ ràng: persistence layer dùng class thường, application/API layer dùng record. Khi cần immutability ở domain, dùng record + validate trong compact constructor.`,
+  follow: [
+    'Compact constructor của record hoạt động thế nào, khi nào dùng để validate?',
+    'Interface-based projection khác DTO projection (record) ở điểm gì về performance và null handling?',
+    'Record chứa array: equals/hashCode có deep so sánh không?'
+  ],
+  tags: ['record', 'dto', 'jpa', 'projection', 'lead', 'immutability'],
+  refs: [
+    { type: 'doc', title: 'JEP 395: Records', url: 'https://openjdk.org/jeps/395' }
+  ]
+},
+{
+  id: 'modern-078',
+  topic: 'modern',
+  level: 'senior',
+  q: 'Sealed interface + switch pattern (Java 21) cho kết quả thanh toán: exhaustiveness và xử lý default thế nào? Khi nào default là code smell?',
+  a: `**Tóm tắt:** Sealed interface giới hạn tập subtype; pattern matching switch (Java 21) cho phép switch trực tiếp trên type; compiler kiểm tra exhaustiveness — nếu thiếu case, compile error. Default chỉ dùng khi có "khác" hợp lệ; default nuốt subtype mới là code smell vì sealed đã liệt kê hết.
+
+### Sealed interface
+
+~~~java
+public sealed interface PaymentResult
+    permits Success, Declined, Pending, Error {}
+public record Success(String txId) implements PaymentResult {}
+public record Declined(String reason) implements PaymentResult {}
+public record Pending(String pollUrl) implements PaymentResult {}
+public record Error(Throwable cause) implements PaymentResult {}
+~~~
+
+Sealed đảm bảo chỉ 4 subtype tồn tại trong cùng module/package.
+
+### Pattern matching switch
+
+~~~java
+String message = switch (result) {
+    case Success s -> "OK " + s.txId();
+    case Declined d -> "Declined: " + d.reason();
+    case Pending p -> "Poll " + p.pollUrl();
+    case Error e -> "Error: " + e.cause().getMessage();
+};
+~~~
+
+Không cần cast; compiler biết type trong mỗi case.
+
+### Exhaustiveness
+
+Vì sealed liệt kê hết subtype, compiler biết switch đã cover tất cả → không cần default. Nếu thêm subtype mới (ví dụ Refunded), compiler báo lỗi ở mọi switch → buộc xử lý → an toàn.
+
+### Khi nào default là code smell
+
+- Sealed đã cover hết → default không cần và nguy hiểm: nuốt subtype mới, logic sai im lặng.
+- Default chỉ hợp khi xử lý "khác" thực sự (ví dụ switch trên enum không sealed, hoặc input từ bên ngoài không kiểm soát).
+- Với sealed, nên dùng default chỉ để throw (fail-fast) nếu muốn phòng thủ: {{default -> throw new IllegalStateException()}}.
+
+### Guard (when)
+
+~~~java
+case Success s when s.txId().startsWith("TEST") -> "test tx";
+~~~
+
+Guard làm exhaustiveness phức tạp hơn; compiler không tự suy ra guard cover hết → có thể cần default. Hạn chế guard trong exhaustiveness-critical code.
+
+### Pitfall production
+
+- Thêm subtype nhưng quên update switch → compile error tốt; nhưng nếu có default nuốt → bug im lặng.
+- Switch trên sealed interface từ module khác: permits phải accessible.
+- Pattern matching với null: switch null throw NPE trừ khi case null xử lý (Java 21 cho phép {{case null}}).
+
+### Ví dụ đời thực
+
+Payment service xử lý 4 kết quả. Trước dùng if-else instanceof → thêm Refunded quên update một nhánh → production trả "success" cho refunded. Sau dùng sealed + switch exhaustiveness → thêm subtype compile fail ở 7 chỗ → sửa hết trước deploy. Bug zero.
+
+### Trả lời mẫu khi phỏng vấn
+
+"Em dùng sealed interface để cố định tập kết quả thanh toán, rồi pattern matching switch để xử lý từng case không cast. Compiler kiểm tra exhaustiveness: thiếu case là compile error, nên thêm subtype mới buộc update mọi nhánh. Default với sealed là code smell vì nuốt subtype mới; em chỉ dùng default để throw fail-fast. Guard when hữu ích nhưng làm exhaustiveness kém rõ ràng nên hạn chế. Null handling: Java 21 cho phép case null. Kết quả là logic thanh toán an toàn ở compile-time, dễ review."
+
+> Senior tip: sealed + switch là "algebraic data type" của Java. Kết hợp record (data) + sealed (sum type) + pattern matching (destructure) cho domain model rõ ràng, compiler làm reviewer.`,
+  follow: [
+    'Guard (when) trong pattern matching ảnh hưởng exhaustiveness thế nào?',
+    'Sealed class với permits và same-package restriction: khi nào cần cùng module?',
+    'Switch trên enum vs sealed interface: khác nhau ở exhaustiveness và default?'
+  ],
+  tags: ['sealed', 'pattern-matching', 'switch', 'java21', 'senior', 'exhaustiveness'],
+  refs: [
+    { type: 'doc', title: 'JEP 441: Pattern Matching for switch', url: 'https://openjdk.org/jeps/441' }
+  ]
+},
+{
+  id: 'modern-079',
+  topic: 'modern',
+  level: 'senior',
+  q: 'SequencedCollection / SequencedMap (Java 21): giải quyết vấn đề gì của List/Set/Map cũ? API nào hữu ích trong code nghiệp vụ (getFirst, getLast, reversed)?',
+  a: `**Tóm tắt:** Trước Java 21, truy cập phần tử đầu/cuối và duyệt ngược của List/Set/Map không thống nhất (List.get(0), Deque.peekFirst, SortedSet.first, LinkedHashMap...). SequencedCollection/SequencedSet/SequencedMap (Java 21) chuẩn hoá: getFirst(), getLast(), reversed() trả view đảo ngược. Hữu ích cho queue/stack logic, audit trail, pagination.
+
+### Vấn đề trước Java 21
+
+- List: {{get(0)}}, {{get(size()-1)}}.
+- Deque: {{peekFirst}}, {{peekLast}}.
+- SortedSet: {{first}}, {{last}}.
+- Map: không có first/last entry chuẩn (LinkedHashMap không expose).
+- Duyệt ngược: {{ListIterator}} hoặc {{descendingIterator}} tuỳ loại.
+
+Mỗi collection một API → code khó đọc, dễ lỗi (size()-1 với empty list).
+
+### SequencedCollection (Java 21)
+
+Interface mới, super của List, Deque, SortedSet, LinkedHashSet... Thêm:
+- {{getFirst()}}, {{getLast()}}: ném NoSuchElementException nếu rỗng.
+- {{addFirst(e)}}, {{addLast(e)}}, {{removeFirst()}}, {{removeLast()}}.
+- {{reversed()}}: trả SequencedCollection view đảo ngược (không copy).
+
+### SequencedMap / SequencedSet
+
+- SequencedMap: {{firstEntry}}, {{lastEntry}}, {{pollFirstEntry}}, {{pollLastEntry}}, {{putFirst}}, {{putLast}}, {{reversed()}}.
+- SequencedSet: kế thừa SequencedCollection.
+
+### Hữu ích trong code nghiệp vụ
+
+1. Audit trail: lưu sự kiện theo thời gian; reversed() để hiển thị mới nhất trước mà không copy list.
+2. Queue/stack logic: addFirst/removeLast cho deque; getFirst cho FIFO.
+3. Pagination "cursor": getLast của page hiện tại làm cursor trang sau.
+4. LRU cache: LinkedHashMap + SequencedMap.putLast khi access → evict firstEntry.
+
+### Ví dụ
+
+~~~java
+SequencedCollection<String> events = new ArrayList<>();
+events.addLast("login");
+events.addLast("purchase");
+String latest = events.getLast(); // purchase
+for (String e : events.reversed()) { /* purchase, login */ }
+~~~
+
+reversed() là view → thay đổi gốc phản ánh; không allocate.
+
+### Pitfall production
+
+- getFirst/getLast ném NoSuchElementException nếu rỗng → kiểm tra isEmpty hoặc dùng Optional? (API không trả Optional; wrap nếu cần).
+- reversed() view: concurrent modification → ConcurrentModificationException.
+- Không phải mọi Map là SequencedMap (HashMap không phải) → cần LinkedHashMap/TreeMap.
+- addFirst trên ArrayList là O(n) (shift) → nếu cần O(1) dùng Deque/LinkedList.
+
+### Ví dụ đời thực
+
+Audit log service trả 100 event mới nhất. Trước: copy list rồi Collections.reverse → allocate 100 object mỗi request, GC pressure. Sau: events.reversed().stream().limit(100) → zero-copy view, latency p99 giảm 30%, GC pause giảm. Pagination cursor dùng getLast() thay vì get(size()-1) → tránh off-by-one.
+
+### Trả lời mẫu khi phỏng vấn
+
+"SequencedCollection chuẩn hoá truy cập đầu/cuối và duyệt ngược cho mọi collection có thứ tự. Trước Java 21 mỗi loại một API, dễ lỗi với empty. Giờ dùng getFirst/getLast/reversed; reversed trả view không copy nên tiết kiệm memory. SequencedMap giúp LRU cache và audit trail. Pitfall: getFirst ném nếu rỗng, reversed là view (concurrent modification), HashMap không phải SequencedMap nên chọn LinkedHashMap. Em dùng cho audit trail, pagination cursor và queue logic."
+
+> Senior tip: reversed() là view, không phải copy — tận dụng cho stream pipeline lớn; nhưng nếu cần snapshot bất biến, wrap List.copyOf(events.reversed()).`,
+  follow: [
+    'reversed() trả view hay bản sao? Khi nào cần copy?',
+    'HashMap có phải SequencedMap không? Chọn collection nào để có first/last entry?',
+    'getFirst vs peekFirst (Deque): khác nhau ở exception và null?'
+  ],
+  tags: ['sequenced-collections', 'java21', 'collections', 'senior', 'api'],
+  refs: [
+    { type: 'doc', title: 'JEP 431: Sequenced Collections', url: 'https://openjdk.org/jeps/431' }
+  ]
 }
 );
 
