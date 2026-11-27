@@ -8091,5 +8091,235 @@ class OrderRepositoryTest {
 - SELECT *: planner tránh index-only.
 > Senior tip: Dùng EXPLAIN (ANALYZE, BUFFERS).`
 }
+,
+{
+  id: 'qz-spring-933',
+  topic: 'spring',
+  q: `Trong Spring Boot, method {{@Transactional}} tự gọi chính nó (self-invocation) qua {{this.doWork()}} thì transaction có mở không?`,
+  options: [
+    'Có, Spring vẫn mở transaction vì method có annotation',
+    'Không, vì gọi qua this bỏ qua proxy AOP',
+    'Có, nhưng chỉ rollback unchecked exception',
+    'Phụ thuộc vào propagation'
+  ],
+  answer: 1,
+  explain: `**Đáp án đúng: không mở transaction, vì self-invocation bypass proxy.**
 
+### Vì sao đúng
+Spring AOP dựa trên proxy: bean trả về cho caller là proxy bọc bean gốc. Chỉ khi gọi qua proxy, advice (@Transactional) mới chạy. Gọi {{this.method()}} là gọi trực tiếp trên object gốc, proxy không tham gia, nên @Transactional bị bỏ qua hoàn toàn, kể cả rollback.
+
+### Vì sao các phương án còn lại sai
+- **Có vì annotation**: annotation chỉ là metadata, tác dụng qua proxy.
+- **Rollback unchecked**: không có transaction để rollback.
+- **Phụ thuộc propagation**: propagation chỉ có ý nghĩa khi transaction context tồn tại.
+
+> Senior tip: để self-call có transaction, tách logic sang bean khác hoặc inject chính bean qua proxy ({{AopContext.currentProxy()}}) — nhưng cách đầu tiên sạch hơn.`
+},
+{
+  id: 'qz-spring-934',
+  topic: 'spring',
+  multi: true,
+  q: 'Khai báo {{@Transactional}} trên method {{private}} có hiệu lực không? (Chọn 2)',
+  options: [
+    'Có hiệu lực nếu dùng CGLIB proxy',
+    'Không hiệu lực với JDK dynamic proxy',
+    'Không hiệu lực với CGLIB proxy',
+    'Hiệu lực nếu method là static'
+  ],
+  answer: [1, 2],
+  explain: `**Đáp án đúng: không hiệu lực với CGLIB; hiệu lực nếu public.**
+
+### Vì sao đúng
+Spring AOP chỉ intercept method có thể override được. Với CGLIB (subclass), private method không thể override → advice không chạy. Method public + non-final mới được intercept. JDK dynamic proxy chỉ proxy interface method (public).
+
+### Vì sao các phương án còn lại sai
+- **Có hiệu lực CGLIB**: sai, private không override được.
+- **Không hiệu lực JDK**: đúng nhưng không phải đáp án vì câu hỏi hỏi hiệu lực; JDK proxy chỉ intercept interface public.
+
+> Senior tip: luôn đặt @Transactional trên public method; IDE/plugin cảnh báo nếu đặt trên private.`
+},
+{
+  id: 'qz-spring-935',
+  topic: 'spring',
+  q: 'Propagation {{REQUIRES_NEW}} khác {{REQUIRED}} ở điểm nào?',
+  options: [
+    'REQUIRES_NEW luôn reuse transaction hiện có',
+    'REQUIRES_NEW suspend TX hiện có và mở TX mới độc lập',
+    'REQUIRES_NEW chỉ dùng savepoint',
+    'REQUIRED mở TX mới nếu chưa có'
+  ],
+  answer: 1,
+  explain: `**Đáp án đúng: REQUIRES_NEW suspend transaction hiện có và mở transaction mới độc lập.**
+
+### Vì sao đúng
+REQUIRED tham gia transaction hiện có nếu có. REQUIRES_NEW luôn tạo transaction vật lý mới, suspend cái cũ; commit/rollback độc lập. Dùng cho audit log để không bị rollback cùng nghiệp vụ chính.
+
+### Vì sao các phương án còn lại sai
+- **reuse**: đó là REQUIRED.
+- **savepoint**: đó là NESTED.
+- **REQUIRED mở mới nếu chưa có**: đúng nhưng không phân biệt.
+
+> Senior tip: REQUIRES_NEW giữ 2 connection cùng lúc; pool nhỏ có thể deadlock.`
+},
+{
+  id: 'qz-spring-936',
+  topic: 'spring',
+  q: 'Bean scope {{prototype}} trong Spring: mỗi lần gọi getBean() trả về instance mới, nhưng lifecycle callback @PreDestroy có được gọi không?',
+  options: [
+    'Có, Spring gọi @PreDestroy khi container đóng',
+    'Không, Spring không quản lý destruction của prototype bean',
+    'Có, nếu khai báo destroy-method',
+    'Chỉ khi dùng @Scope(proxyMode=...)'
+  ],
+  answer: 1,
+  explain: `**Đáp án đúng: Spring không quản lý destruction của prototype bean.**
+
+### Vì sao đúng
+Prototype bean: container tạo instance mới mỗi lần request, nhưng không theo dõi nó sau khi trả về, nên không gọi @PreDestroy/destroy-method. Trách nhiệm cleanup thuộc về caller.
+
+### Vì sao các phương án còn lại sai
+- **Gọi khi container đóng**: chỉ singleton.
+- **destroy-method**: không được gọi cho prototype.
+- **proxyMode**: proxy không thay đổi lifecycle.
+
+> Senior tip: tài nguyên cần đóng (connection, file) trong prototype bean nên dùng try-with-resources hoặc callback.`
+},
+{
+  id: 'qz-spring-937',
+  topic: 'spring',
+  q: 'Method {{@Async}} trả về {{CompletableFuture}}. Nếu method ném exception, future sẽ ở trạng thái nào?',
+  options: [
+    'Completed normally với null',
+    'Completed exceptionally với exception',
+    'Chạy lại tự động',
+    'Transaction rollback'
+  ],
+  answer: 1,
+  explain: `**Đáp án đúng: future completed exceptionally.**
+
+### Vì sao đúng
+@Async chạy trên task executor khác thread. Exception trong method được capture và set vào CompletableFuture (completeExceptionally). Caller phải handle qua exceptionally/whenComplete.
+
+### Vì sao các phương án còn lại sai
+- **null**: sai, exception được propagate.
+- **retry**: @Async không tự retry.
+- **transaction rollback**: @Async không có transaction context mặc định.
+
+> Senior tip: luôn attach exceptionally để log; nếu không, exception bị nuốt và khó debug.`
+},
+{
+  id: 'qz-spring-938',
+  topic: 'spring',
+  q: 'Auto-configuration class với {{@ConditionalOnMissingBean(SomeBean.class)}} sẽ behave thế nào nếu context đã có SomeBean?',
+  options: [
+    'Tạo thêm một bean nữa',
+    'Bỏ qua auto-config bean đó',
+    'Ném ConflictingBeanDefinitionException',
+    'Override bean cũ'
+  ],
+  answer: 1,
+  explain: `**Đáp án đúng: bỏ qua auto-config bean.**
+
+### Vì sao đúng
+@ConditionalOnMissingBean kiểm tra context: nếu đã có bean type SomeBean thì condition false → auto-config method không chạy. Đây là cơ chế "customize don't replace".
+
+### Vì sao các phương án còn lại sai
+- **Tạo thêm**: không, condition false.
+- **Ném exception**: không.
+- **Override**: auto-config không override user bean.
+
+> Senior tip: dùng @ConditionalOnMissingBean để cung cấp default; user override bằng @Bean.`
+},
+{
+  id: 'qz-spring-939',
+  topic: 'spring',
+  q: 'Profile {{prod}} active. {{application-prod.yml}} và {{application.yml}} cùng định nghĩa {{server.port}}. Giá trị nào dùng?',
+  options: [
+    'application.yml',
+    'application-prod.yml',
+    'Biến môi trường SERVER_PORT nếu có',
+    'Random port'
+  ],
+  answer: 2,
+  explain: `**Đáp án đúng: biến môi trường SERVER_PORT nếu có (ưu tiên cao hơn file config).**
+
+### Vì sao đúng
+Thứ tự ưu tiên: command line > env > system props > profile-specific file > default file. Nếu env SERVER_PORT tồn tại, nó thắng cả application-prod.yml.
+
+### Vì sao các phương án còn lại sai
+- **application.yml**: ưu tiên thấp nhất.
+- **application-prod.yml**: thắng application.yml nhưng thua env.
+- **Random**: không mặc định.
+
+> Senior tip: debug qua /actuator/env.`
+},
+{
+  id: 'qz-spring-940',
+  topic: 'spring',
+  multi: true,
+  q: 'Bảo vệ Actuator endpoints trong production: những practice nào đúng? (Chọn 2)',
+  options: [
+    'Expose tất cả endpoints qua web',
+    'Chỉ expose health, info; bảo vệ còn lại bằng security',
+    'Dùng management.server.port riêng',
+    'Tắt security cho actuator để dễ debug'
+  ],
+  answer: [1, 2],
+  explain: `**Đáp án đúng: chỉ expose health/info; dùng port riêng cho management.**
+
+### Vì sao đúng
+Production nên hạn chế exposure (management.endpoints.web.exposure.include=health,info) và tách management server port để firewall. Security filter chain bảo vệ sensitive endpoints.
+
+### Vì sao các phương án còn lại sai
+- **Expose tất cả**: rò rỉ thông tin.
+- **Tắt security**: nguy hiểm.
+
+> Senior tip: dùng separate management port + network policy.`
+},
+{
+  id: 'qz-spring-941',
+  topic: 'spring',
+  q: 'Trong Spring, bean scope {{request}} chỉ tồn tại trong một HTTP request. Nếu inject request-scoped bean vào singleton bean trực tiếp, điều gì xảy ra?',
+  options: [
+    'Spring tự tạo proxy để resolve theo request hiện tại',
+    'Lỗi tại startup vì scope mismatch',
+    'Singleton nhận instance đầu tiên và reuse',
+    'Bean trở thành prototype'
+  ],
+  answer: 1,
+  explain: `**Đáp án đúng: lỗi scope mismatch tại startup (hoặc cần proxy).**
+
+### Vì sao đúng
+Singleton được tạo khi context khởi động, không có request context → không thể resolve request-scoped dependency trực tiếp. Spring báo lỗi hoặc yêu cầu @Scope(proxyMode=TARGET_CLASS) để inject proxy.
+
+### Vì sao các phương án còn lại sai
+- **Tự tạo proxy**: chỉ nếu khai báo proxyMode.
+- **Reuse instance đầu**: không, không có request.
+- **Prototype**: không tự chuyển scope.
+
+> Senior tip: dùng proxyMode hoặc inject ObjectProvider/Provider.`
+},
+{
+  id: 'qz-spring-942',
+  topic: 'spring',
+  q: 'Method {{@Transactional(readOnly=true)}}: tác dụng chính là gì?',
+  options: [
+    'Chặn mọi write operation ở DB',
+    'Gợi ý Hibernate không dirty-check và tối ưu flush',
+    'Tự động rollback sau method',
+    'Bắt buộc read replica'
+  ],
+  answer: 1,
+  explain: `**Đáp án đúng: gợi ý tối ưu, không chặn write.**
+
+### Vì sao đúng
+readOnly=true là hint cho transaction manager/Hibernate: không cần dirty checking/flush tự động, có thể route đến read replica nếu cấu hình. Nó không chặn write ở DB level.
+
+### Vì sao các phương án còn lại sai
+- **Chặn write**: không, DB vẫn cho phép.
+- **Auto rollback**: không.
+- **Bắt buộc replica**: cần cấu hình routing datasource.
+
+> Senior tip: dùng readOnly cho query để giảm overhead; vẫn phải đảm bảo code không write.`
+}
 );
