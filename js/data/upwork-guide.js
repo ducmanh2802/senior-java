@@ -741,4 +741,238 @@ Thanks again!
   ],
   related: ['remote-010', 'remote-011', 'remote-012', 'remote-031', 'remote-032', 'remote-039', 'uw-ch-01', 'uw-ch-02', 'uw-ch-03', 'uw-ch-04'],
 },
+{
+  id: 'uw-ch-06',
+  order: 6,
+  title: 'Tiền: tính đúng thực nhận, rút về Việt Nam, quỹ dự phòng và thuế',
+  icon: '💰',
+  summary: 'Học cách tính tiền thực nhận sau phí dịch vụ, phí rút và tỷ giá; hiểu cơ chế rút tiền về Việt Nam, khoảng chờ giải ngân (security period), quỹ dự phòng 3–6 tháng và nguyên tắc thuế để không vỡ kế hoạch tài chính.',
+  body: `**Tóm tắt:** Số tiền trong hợp đồng không phải số tiền về ví bạn. Thực nhận = giá hợp đồng − phí dịch vụ của Upwork − phí rút tiền − chênh lệch tỷ giá, và còn phải qua một khoảng chờ (security period) mới rút được. Chương này dạy bạn tính đúng từ dưới lên, chọn cách rút về Việt Nam ở mức cơ chế, giữ quỹ dự phòng sống sót và hiểu nguyên tắc thuế (không ghi thuế suất, luôn hỏi chuyên gia).
+
+### Vì sao "giá hợp đồng" không phải "tiền về ví"
+Người mới hay thấy hợp đồng ghi 30 USD/giờ rồi tưởng mỗi giờ cầm 30 USD. Thực tế có ít nhất bốn lớp làm số tiền teo lại:
+1. Phí dịch vụ của Upwork (freelancer service fee).
+2. Phí rút tiền của cổng thanh toán.
+3. Chênh lệch tỷ giá khi đổi USD sang VND.
+4. Khoảng chờ giải ngân — không mất tiền, nhưng tiền chưa dùng được ngay.
+
+Ví dụ đời thường: đi làm công ty lương offer 30 triệu nhưng thực nhận 26 triệu sau bảo hiểm, thuế, và một phần bị giữ tới kỳ sau. Freelance cũng vậy, chỉ khác là bạn tự phải tính.
+
+### Phí dịch vụ (freelancer service fee)
+(tại thời điểm viết, kiểm tra lại trên Upwork Help) Upwork thu một tỷ lệ phần trăm trên mỗi khoản bạn nhận. Mức này đã đổi nhiều lần trong lịch sử: có thời là bậc thang giảm dần theo tổng quan hệ với một khách, sau chuyển sang một mức phẳng áp cho mọi hợp đồng. Vì nó thay đổi theo thời gian, **đừng học thuộc một con số** — hãy mở trang Fees, đọc mức hiện hành và ghi vào sổ tay của bạn trước khi báo giá.
+
+Công thức nhanh: nếu phí là p (ví dụ 0,10 nghĩa là 10%), thì tiền sau phí = giá × (1 − p).
+
+### Phí rút tiền và tỷ giá
+Upwork không chuyển thẳng USD vào tài khoản VND của bạn. Tiền đi qua một cổng trung gian, mỗi cổng có cơ chế và phí khác nhau (mức phí thay đổi, kiểm tra lại trước khi dùng):
+- Ví/tài khoản toàn cầu (Payoneer, Wise…): nhận USD hoặc VND, tính phí theo lần rút hoặc theo phần trăm.
+- Chuyển khoản thẳng về ngân hàng Việt Nam: Upwork quy đổi USD sang VND theo tỷ giá của họ, thường kèm một khoản phí cố định.
+- Giữ tài khoản USD ở nước ngoài (nếu bạn có): tránh chênh lệch tỷ giá, nhưng thêm ràng buộc pháp lý và khai báo.
+
+Ví dụ số cụ thể, milestone 1.000 USD:
+- Phí dịch vụ 10% → còn 900 USD.
+- Cổng rút tính 1% cộng 2 USD cố định → 900 × 0,99 − 2 = 889 USD.
+- Quy đổi 1 USD = 25.000 VND, cổng trừ thêm 0,5% chênh lệch → 889 × 25.000 × 0,995 ≈ 22.113.000 VND.
+
+Con số thực nhận khác xa 1.000 USD ban đầu. Luôn tính từ đáy lên, đừng tính từ giá hợp đồng trừ đi một cảm giác.
+
+### Security period (khoảng chờ giải ngân)
+Sau khi milestone được approve hoặc tuần hourly chốt, tiền **không rút được ngay**. Upwork giữ một khoảng an toàn (thường vài ngày, kiểm tra lại mốc hiện hành) để khách còn thời gian khiếu nại. Hết khoảng đó tiền mới ở trạng thái rút được. Hệ quả thực tế: đừng tiêu tiền theo ngày khách bấm approve; hãy coi tiền là của bạn khi nó đã nằm trong ví ngân hàng.
+
+### Quỹ dự phòng 3–6 tháng
+Thu nhập freelance không đều: tháng có ba khách, tháng không ai. Nguyên tắc sống sót: giữ quỹ chi phí sinh hoạt **3–6 tháng** (tính bằng VND) ở tài khoản thanh khoản, không dồn hết vào các hợp đồng đang chờ thanh toán. Quỹ này cho bạn dũng khí từ chối khách ép giá, dám dừng hợp đồng độc hại, và không phải nhận job bấp bênh chỉ vì "đang cần tiền". Người có quỹ dự phòng làm việc ở vị thế người đi thuê, không phải người xin việc.
+
+### Nguyên tắc thuế (không ghi thuế suất)
+- Thu nhập freelance là thu nhập chịu thuế; nghĩa vụ khai và nộp thuộc về bạn, không ai khấu trừ hộ như lương công ty.
+- Tỷ lệ, ngưỡng miễn thuế, và cách khai (thuế thu nhập cá nhân, hay đăng ký hộ kinh doanh/khoán) thay đổi theo luật và theo tình trạng cư trú — **không có một con số đúng cho tất cả mọi người**.
+- Hãy hỏi một chuyên gia thuế hoặc kế toán ở Việt Nam, nhất là khi bạn nhận USD đều đặn, có hợp đồng dài hạn, hoặc sắp làm cho công ty nước ngoài.
+- Giữ chứng từ đầy đủ: hợp đồng, bảng payout của Upwork, sao kê cổng thanh toán. Đây là bằng chứng thu nhập khi khai thuế, và cũng cần khi vay mua nhà hay chứng minh tài chính.
+
+### Đọc bảng payout và đối soát hằng tháng
+Trong mục thanh toán/báo cáo, Upwork ghi rõ: tổng (gross), phí dịch vụ, các điều chỉnh (tranh chấp, hoàn tiền), và thực nhận (net). Mỗi tháng hãy đối chiếu net với sổ tay. Nếu lệch, kiểm tra ngay trong tháng — tranh chấp sau nhiều tháng gần như không còn cơ hội.
+
+> Senior tip: Trước khi nhận bất kỳ hợp đồng nào, hãy viết ra một dòng: "Giá X, phí còn Y, rút về khoảng Z VND, tiền dùng được sau N ngày". Nếu Z không đủ sống và quỹ dự phòng dưới 3 tháng, bạn đang nhận việc vì sợ chứ không vì nó tốt — đó là lúc dễ bị ép giá và dễ nhận hợp đồng độc hại nhất.`,
+  checklist: [
+    'Mở trang Fees trên Upwork Help, ghi lại tỷ lệ phí dịch vụ và phí rút hiện hành vào sổ tay.',
+    'Tính thử thực nhận cho một milestone 1.000 USD theo đúng công thức từ đáy lên.',
+    'Chọn một cổng rút về Việt Nam, ghi rõ phí theo lần và theo phần trăm của cổng đó.',
+    'Lập quỹ dự phòng 3–6 tháng chi phí, để riêng khỏi tiền đang chờ thanh toán.',
+    'Đặt lịch đối soát payout Upwork với sổ tay vào cuối mỗi tháng.',
+    'Liệt kê 5 loại chứng từ cần giữ và nơi lưu (hợp đồng, payout, sao kê cổng).',
+  ],
+  related: ['remote-002', 'remote-015', 'remote-037', 'uw-case-001', 'uw-case-003', 'uw-ch-01'],
+},
+{
+  id: 'uw-ch-07',
+  order: 7,
+  title: 'Review, Job Success Score và badge: cơ chế và cách giữ điểm',
+  icon: '⭐',
+  summary: 'Phân biệt public feedback và private feedback, hiểu Job Success Score (JSS) ở mức nguyên lý, nhận ra những hợp đồng âm thầm kéo JSS xuống, cách đóng hợp đồng chủ động và cách phản hồi một review xấu công khai.',
+  body: `**Tóm tắt:** Trên Upwork, hai thứ quyết định bạn có được mời việc hay không là review công khai (số sao ai cũng đọc) và Job Success Score (JSS) — điểm thành công chỉ bạn và Upwork thấy. JSS không chỉ dựa trên số sao: nó nhìn kết quả hợp đồng, private feedback (khách có muốn làm việc lại với bạn không), tranh chấp và những hợp đồng "chết". Chương này giải thích cơ chế, chỉ ra các hợp đồng âm thầm kéo điểm xuống, cách đóng hợp đồng chủ động và cách phản hồi review xấu.
+
+### Hai loại phản hồi: công khai và riêng tư
+- **Public feedback:** khách để lại số sao (1–5) kèm nhận xét ai cũng đọc được. Bạn cũng để lại đánh giá cho khách.
+- **Private feedback:** sau khi hợp đồng đóng, khách trả lời vài câu hỏi riêng (có muốn recommend bạn không, kỹ năng, giao tiếp, đúng hạn…). **Không ai ngoài Upwork đọc được**, nhưng đây là đầu vào mạnh nhất của JSS.
+
+Hệ quả ít người biết: một khách để 5 sao công khai nhưng private feedback ghi "sẽ không thuê lại" vẫn kéo JSS xuống. Ngược lại, 4 sao công khai cộng private "muốn làm lại" đỡ hại hơn nhiều. Đừng chỉ chạy theo số sao — hãy chạy theo việc khách có thật sự muốn làm việc với bạn lần nữa.
+
+### JSS hoạt động ở mức nguyên lý
+JSS là điểm thành công tổng hợp trên một cửa sổ thời gian trượt (thường lấy các tháng gần nhất, kiểm tra lại mốc hiện hành), có trọng số theo:
+- Kết quả hợp đồng: thành công hay có vấn đề.
+- Private feedback.
+- Quy mô hợp đồng: giá trị và độ dài, hợp đồng lớn ảnh hưởng nhiều hơn.
+- Tranh chấp, hoàn tiền, hủy hợp đồng.
+- Độ gần: chuyện gần đây ảnh hưởng nhiều hơn chuyện cũ.
+
+Công thức chính xác không được công bố và thay đổi theo thời gian, nên **đừng cố "lách hệ thống"**. Cách duy nhất bền vững là hợp đồng nào cũng đóng đúng cách.
+
+### Những hợp đồng âm thầm kéo JSS xuống
+1. **Hợp đồng không hoạt động lâu:** mở hợp đồng rồi cả hai im lặng hàng tháng, hệ thống coi là không có kết quả.
+2. **Hợp đồng đóng mà không có private feedback:** đóng quá sớm, không ai chấm.
+3. **Có dispute hoặc refund**, dù khoản nhỏ.
+4. **Hợp đồng bị hủy** trước khi có kết quả (khách hủy, hoặc bạn hủy).
+5. **Nhiều hợp đồng nhỏ chết yểu** cộng dồn lại thành một vết kéo điểm.
+
+### Cách đóng hợp đồng chủ động
+- Đóng khi đã giao xong và khách hài lòng, kèm xin private feedback tốt.
+- Hợp đồng hourly dài hạn sắp nghỉ: báo trước, hoàn tất tuần cuối, end contract lịch sự.
+- Hợp đồng "chết" (khách biến mất): khi đã giao phần dở và không còn khả năng tiếp, đóng chủ động thay vì để treo; cân nhắc hoàn phần chưa làm để giữ private feedback.
+- Tuyệt đối không mở hợp đồng "cho có" rồi bỏ — mỗi cái là một gạch trừ ngầm.
+
+### Badge và ngưỡng
+Các badge (ví dụ Top Rated, Top Rated Plus, và chương trình Expert-Vetted) có điều kiện về JSS tối thiểu, số hợp đồng, thu nhập, tỷ lệ hoàn thành, xác minh danh tính… (ngưỡng thay đổi, kiểm tra lại trên Upwork Help). Hãy coi badge là **kết quả** của việc làm tốt đều đặn, không phải mục tiêu để lách. Riêng Expert-Vetted do Upwork chủ động mời, bạn không apply được.
+
+### Phản hồi một review xấu công khai
+- Chỉ trả lời **một lần**, bình tĩnh, bằng sự kiện.
+- Không tranh cãi cảm tính, không tiết lộ thông tin khách (vi phạm NDA và điều khoản).
+- Nêu cách bạn đã khắc phục hoặc làm rõ, để người đọc sau tự đánh giá.
+- Nếu review vi phạm chính sách (đe doạ, xúc phạm, đòi tiền để đổi sao) thì báo Upwork, đừng tự xử.
+
+Mẫu trả lời ngắn (tiếng Anh, dùng khi cần):
+~~~text
+Thanks for the feedback. I take it seriously. For context, the scope agreed for this milestone was X and Y, both delivered and accepted on [date]. The additional request that came after delivery was outside that scope, and I offered a separate milestone for it. I wish the project had ended on a clearer note and I am happy to clarify anything for future clients reading this.
+~~~
+
+> Senior tip: Coi JSS như điểm tín dụng: nó đi theo bạn nhiều tháng và mở hoặc đóng nhiều cánh cửa. Một hợp đồng 200 USD làm tốt và đóng đúng cách có giá trị hơn năm hợp đồng 50 USD bỏ dở. Khi phân vân giữa "nhận thêm một job rác" và "giữ điểm sạch", hãy chọn giữ điểm — JSS 95% với ít hợp đồng luôn thắng JSS 88% với nhiều hợp đồng.`,
+  checklist: [
+    'Đọc lại 3 hợp đồng đã đóng gần nhất, kiểm tra private feedback và JSS hiện tại.',
+    'Lập quy tắc đóng hợp đồng: giao xong, xin feedback, end contract, ghi vào CRM.',
+    'Soạn sẵn một mẫu phản hồi review xấu bằng tiếng Anh, bình tĩnh và bằng sự kiện.',
+    'Kiểm tra điều kiện badge hiện hành trên Upwork Help và ghi lại khoảng cách của bạn.',
+    'Dọn các hợp đồng "chết" đang treo: đóng chủ động hoặc hoàn phần chưa làm.',
+  ],
+  related: ['remote-013', 'remote-032', 'uw-case-104', 'uw-ch-05'],
+},
+{
+  id: 'uw-ch-08',
+  order: 8,
+  title: 'Tranh chấp và an toàn tài khoản: quy trình và điều khoản dễ vi phạm',
+  icon: '🛡️',
+  summary: 'Hiểu quy trình hourly dispute, fixed-price refund, mediation và arbitration; nhận biết các điều khoản dễ khiến tài khoản bị khoá (circumvention, chia sẻ tài khoản, đăng nhập bất thường); cách kháng nghị và nguyên tắc lưu bằng chứng.',
+  body: `**Tóm tắt:** Tranh chấp và an toàn tài khoản là hai mặt của một nguyên tắc: chỉ những gì nằm trên Upwork mới được bảo vệ. Bạn cần hiểu quy trình hourly dispute, fixed-price refund, mediation và arbitration (có phí); biết điều khoản nào dễ làm bạn bị khoá tài khoản như circumvention (lôi khách ra ngoài), chia sẻ tài khoản, đăng nhập bất thường; và luôn lưu bằng chứng có tổ chức.
+
+### Hourly dispute (tranh chấp giờ)
+- Sau khi một tuần chốt, khách có một khoảng thời gian để xem Work Diary và tranh chấp giờ trong tuần đó.
+- Khi có tranh chấp, Upwork xem Work Diary (ảnh chụp màn hình, memo, mức hoạt động chuột/bàn phím) và trao đổi với hai bên.
+- Giờ được bảo vệ khi: ghi bằng desktop app, đúng phạm vi hợp đồng, memo mô tả rõ, không vượt weekly limit.
+- **Manual time** (giờ nhập tay) thường không được bảo vệ — đây là lý do lớn nhất khiến freelancer mất giờ khi tranh chấp.
+
+### Fixed-price refund và dispute
+- Khách có thể yêu cầu hoàn tiền một milestone trong thời hạn cho phép.
+- Bạn có ba lựa chọn: đồng ý hoàn, hoàn một phần, hoặc từ chối và mở dispute.
+- Nếu từ chối, vụ việc đi vào mediation; không xong thì có thể lên arbitration.
+
+### Mediation và arbitration
+- **Mediation:** bộ phận hỗ trợ của Upwork đọc bằng chứng và đề xuất giải pháp. Thường không tốn phí đáng kể.
+- **Arbitration:** bên thứ ba độc lập phân xử, **có phí** (thường bên thua chịu), mất nhiều tuần.
+- Với khoản vài trăm USD, arbitration thường không đáng. Hãy tính: số tiền đang tranh chấp so với phí arbitration cộng thời gian cộng rủi ro review xấu.
+
+Luồng một vụ tranh chấp fixed-price:
+~~~seq
+title: Tranh chấp fixed-price đi tới đâu
+actors: Freelancer | Upwork | Client
+Client -> Upwork: Yêu cầu hoàn tiền milestone
+Upwork --> Freelancer: Mở dispute, yêu cầu bằng chứng
+Freelancer -> Upwork: Nộp submit work và đối chiếu phạm vi
+Upwork --> Client: Mediation đề xuất phương án
+Client -> Upwork: Không đồng ý phương án
+Upwork --> Freelancer: Arbitration có phí nếu theo đuổi
+~~~
+
+### Điều khoản dễ vi phạm (dễ bị khoá tài khoản)
+- **Circumvention:** lôi khách bạn gặp qua Upwork ra ngoài để tránh phí. Khách gặp trên Upwork thì trong 24 tháng không được chuyển sang làm hoặc nhận tiền ngoài nền tảng, trừ khi trả conversion fee theo quy định.
+- **Chia sẻ tài khoản / đứng tên hộ / cho người khác dùng:** vi phạm nặng, là đường tắt bị khoá vĩnh viễn.
+- **Đăng nhập bất thường:** dùng VPN đổi IP liên tục, đăng nhập từ nhiều nơi cùng lúc, hoặc thiết bị lạ — hệ thống dễ nghi ngờ xâm phạm hoặc gian lận.
+- **Nhận tiền ngoài nền tảng** cho hợp đồng Upwork, hoặc chia sẻ email/số điện thoại/Telegram trước khi có hợp đồng.
+- **Tạo nhiều tài khoản** để né khoá: Upwork liên kết thiết bị và IP, multi-account bị coi là trốn ban.
+
+### Tài khoản bị khoá và kháng nghị
+- Khi bị khoá, bạn thường nhận email nêu lý do. Đọc kỹ, phản hồi qua kênh hỗ trợ chính thức.
+- Cung cấp bằng chứng: danh tính, lịch sử hợp đồng, giải thích rõ nếu là đăng nhập bất thường (ví dụ đổi nhà mạng, đi công tác).
+- Kháng nghị lịch sự, có bằng chứng, **một lần**; không tạo tài khoản mới (bị coi là trốn ban).
+- Nếu bị nhầm ở khâu xác minh: gửi lại giấy tờ rõ nét, đúng tên với tài khoản.
+
+### Lưu bằng chứng (làm trước khi cần)
+- Giữ mọi trao đổi trên Upwork Messages; không chuyển sang Telegram/email cho việc của hợp đồng.
+- Lưu submit work, commit/tag, video demo, memo Work Diary.
+- Lưu mô tả milestone, hợp đồng, bảng payout.
+- Khi có dispute, người có bằng chứng gọn gàng, đúng dòng thời gian gần như luôn thắng người chỉ có cảm tính.
+
+> Senior tip: Hãy chuẩn bị "hộp bằng chứng" cho mỗi hợp đồng ngay từ ngày đầu: một thư mục chứa mô tả milestone, các lần submit, link commit, video demo và ảnh chụp trao đổi quan trọng. Khi tranh chấp xảy ra, bạn chỉ mất 10 phút để nộp, thay vì cuống cuồng vét lại lịch sử. Và nhớ: không có bằng chứng nào mạnh bằng việc đã làm đúng đường ray ngay từ đầu — funded trước khi làm, submit trước khi báo xong.`,
+  checklist: [
+    'Đọc trang dispute và payment protection trên Upwork Help, ghi lại các mốc thời gian hiện hành.',
+    'Tạo cấu trúc thư mục "hộp bằng chứng" cho hợp đồng hiện tại và các hợp đồng sau.',
+    'Kiểm tra Work Diary tuần gần nhất: mọi giờ đều bằng app, memo rõ, không vượt limit.',
+    'Viết sẵn câu trả lời lịch sự khi khách rủ chuyển sang Telegram hoặc làm ngoài Upwork.',
+    'Liệt kê 4 điều khoản dễ vi phạm và một việc cụ thể để tránh mỗi điều khoản.',
+    'Ghi lại quy trình kháng nghị khi bị khoá: kênh chính thức, bằng chứng, không tạo tài khoản mới.',
+  ],
+  related: ['remote-004', 'remote-016', 'remote-025', 'uw-case-002', 'uw-case-105', 'uw-case-201', 'uw-case-203', 'uw-ch-01'],
+},
+{
+  id: 'uw-ch-09',
+  order: 9,
+  title: 'Phát triển dài hạn: khách lặp lại, tăng giá, chọn ngách và ra ngoài Upwork',
+  icon: '📈',
+  summary: 'Biến khách một lần thành khách dài hạn, tăng giá với khách cũ kèm mẫu tin nhắn, chuyên môn hoá một ngách để được trả cao, mô hình hợp đồng retainer, và ranh giới pháp lý khi mở rộng ra ngoài Upwork.',
+  body: `**Tóm tắt:** Freelance bền vững không đến từ việc luôn phải đi tìm khách mới, mà từ việc biến khách một lần thành khách dài hạn, tăng giá có lý do, chọn một ngách để được trả cao, và biết khi nào cùng làm thế nào để mở rộng ra ngoài Upwork mà không vi phạm điều khoản. Chương này cho bạn mẫu tin nhắn tăng giá, mô hình retainer và ranh giới pháp lý khi rời nền tảng.
+
+### Biến khách một lần thành khách dài hạn
+- Sau khi giao tốt, đề nghị gói hỗ trợ hoặc bảo trì (retainer) thay vì để khách "nghỉ".
+- Giữ liên lạc định kỳ 3–6 tháng bằng một cập nhật ngắn, không spam.
+- Chủ động đề xuất việc tiếp theo dựa trên hệ thống bạn vừa làm: "API đã ổn định, giờ mình có thể thêm caching để giảm 40% chi phí, bạn có muốn xem không?".
+- Trở thành "người trong team": hiểu domain của khách, nhớ ngữ cảnh, nhớ tên hệ thống. Khách rất ngại đi tìm và đào tạo người mới.
+
+### Tăng giá với khách cũ (mẫu tin nhắn)
+Nguyên tắc: chỉ tăng trên hợp đồng mới hoặc phần việc mới, kèm lý do giá trị, không xin lỗi, không kể khó khăn cá nhân. Mẫu tiếng Anh:
+~~~text
+Hi [Name], I have really enjoyed working on [project] with you. As the scope has grown and I have taken on more ownership (design, reviews, on-call), I would like to update my rate to [X] USD/h for new work starting next month. This reflects the additional responsibility and the results we have shipped together. Happy to keep the current rate for anything already in progress. Let me know if that works for you.
+~~~
+
+### Chuyên môn hoá ngách
+- Chọn một ngách ít người làm mà khách cần: payment/fintech, hệ thống tải cao, nâng cấp hệ thống cũ (legacy), hoặc cứu các app do AI viết.
+- Ngách giúp bạn được khách **mời** (invite) thay vì phải apply, và được trả cao hơn.
+- Xây bằng chứng trong ngách: case study có số liệu, bài viết kỹ thuật, demo nhỏ. Người ta trả cao cho người giải được đúng vấn đề của họ, không cho người "biết nhiều thứ".
+
+### Hợp đồng retainer
+- **Retainer** là thoả thuận khách trả một khoản cố định định kỳ (thường theo tháng) để bạn cam kết một số giờ hoặc một đầu ra.
+- Lợi ích: thu nhập ổn định, đỡ phải tìm khách liên tục.
+- Rủi ro: phụ thuộc một khách quá lớn — hãy đa dạng hoá, đừng để một retainer chiếm quá nửa thu nhập.
+- Phải định nghĩa rõ: bao nhiêu giờ, phạm vi gì, phản hồi trong bao lâu, phần vượt giờ tính thế nào.
+
+### Khi nào và làm thế nào mở rộng ra ngoài Upwork
+- **Được phép** khi: khách không phải người bạn gặp qua Upwork, hoặc đã qua mốc 24 tháng theo quy định, hoặc bạn trả conversion fee theo quy định.
+- **Không được** lôi khách gặp trên Upwork trong thời gian cấm ra ngoài để tránh phí, và không nhận tiền ngoài cho hợp đồng đang chạy trên Upwork.
+- Cách an toàn: hoàn tất hợp đồng trên Upwork trước, rồi minh bạch trao đổi về nhu cầu mới; nếu khách chủ động tìm bạn qua kênh khác thì càng rõ ràng. Khi nghi ngờ, hỏi thẳng bộ phận hỗ trợ của Upwork thay vì tự suy đoán.
+
+> Senior tip: Mục tiêu 18–24 tháng không phải "làm thật nhiều job" mà là "có 3–5 khách quay lại và 1–2 ngách bạn là chuyên gia". Thu nhập ổn định đến từ khách cũ và retainer, không đến từ việc mỗi tháng lại đốt Connects đi săn job. Mỗi hợp đồng, hãy hỏi: việc này có đưa tôi gần hơn tới việc được mời thay vì phải apply không? Nếu câu trả lời là không, cân nhắc lại giá hoặc ngách của bạn.`,
+  checklist: [
+    'Lập danh sách khách cũ và chọn 3 người để nhắn lại cập nhật trong tháng này.',
+    'Soạn mẫu tin nhắn tăng giá bằng tiếng Anh, kèm lý do giá trị cụ thể.',
+    'Chọn một ngách bạn muốn theo và liệt kê 3 bằng chứng cần xây (case study, bài viết, demo).',
+    'Thiết kế một gói retainer mẫu: số giờ, phạm vi, thời gian phản hồi, cách tính giờ vượt.',
+    'Đọc lại điều khoản circumvention và conversion fee, ghi ranh giới khi mở rộng ngoài Upwork.',
+  ],
+  related: ['remote-016', 'remote-017', 'remote-040', 'remote-058', 'uw-case-103', 'uw-ch-04'],
+},
 );
