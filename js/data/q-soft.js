@@ -11501,5 +11501,141 @@ Suite 1.200 test, chạy song song, flaky 4% (khoảng 1/25 lần đỏ). Triệ
     'Random order làm test đỏ nhưng khó đọc stack — bạn log gì để lần sau tái hiện được?'
   ],
   tags: ['flaky-test', 'ResourceLock', 'Isolated', 'random-order', 'Clock', 'Awaitility']
+},
+{
+  id: 'behavioral-087',
+  topic: 'behavioral',
+  level: 'senior',
+  q: 'Bạn bất đồng với tech lead về việc dùng {{Kafka}} (bất đồng bộ) hay {{REST}} (đồng bộ) cho luồng đặt hàng quan trọng. Bạn xử lý thế nào để cả hiệu quả kỹ thuật và quan hệ làm việc đều được bảo vệ?',
+  a: `**Tóm tắt:** Câu hỏi đánh giá bạn **tranh luận bằng số liệu và lợi ích sản phẩm chứ không phải bằng bản tính**, hiểu lý do bên kia, và **cam kết với quyết định cuối cùng**. Câu trả lời mạnh có bằng chứng thu được trước, có phương án thay thế rõ ràng, và có phần "nếu thua thì làm thế nào".
+
+### Interviewer muốn đánh giá gì
+- **Kỹ năng ảnh hưởng không quyền lực**: bạn thuyết phục người giữ quyền quyết định không?
+- **Chất lượng lập luận**: số liệu, pilot hay chỉ cảm tính?
+- **Khả năng đồng cảm**: bạn hiểu ràng buộc của tech lead không?
+- **Tính chuyên nghiệp khi thua**: nhiều ứng viên trả lời tệ ở câu này.
+- **Sự cụ thể**: có số liệu và kết quả thật không.
+
+### Khung STAR cho câu này
+- **S — Situation**: ai đề xuất gì, khối lượng và ràng buộc thời gian ra sao.
+- **T — Task**: thách thức quyết định mà vẫn giữ quan hệ làm việc.
+- **A — Action**: thu thập bằng chứng, đề xuất phương án thay thế, cách trình bày.
+- **R — Result**: quyết định cuối cùng, số liệu ra sao, quan hệ làm việc còn tốt không.
+
+### Câu trả lời mẫu
+> "Team đang xây luồng đặt hàng. Tech lead muốn dùng {{Kafka}} event-driven: đơn đặt hàng publish event, service kho hàng consume, sau đó gửi thông báo. Lý do là 'scale và tách biệt hệ thống'. Tôi không phản đối vấn đề, tôi phản đối **vì sao chọn cách này lúc này**.
+> Tôi thu thập số liệu trước khi bàn luận: volume hiện tại khoảng 300 đơn/giờ, tăng 15% mỗi tháng, latency yêu cầu dưới 2 giây từ lúc bấm đặt đến lúc khách nhận thông báo. Tôi ước lượng cả hai hướng: {{REST}} đồng bộ đơn giản, dễ debug, latency dưới 500 ms; {{Kafka}} thêm broker, consumer group, DLT, schema registry, và phải xử lý message trùng (idempotency) — thời gian phát triển khoảng 2–3 tuần dài hơn và cần thêm vận hành.
+> Tôi đề xuất pilot: dùng {{REST}} cho luồng đặt hàng chính trong 3 tháng, dùng {{Kafka}} chỉ cho luồng báo cáo không quan trọng. Tech lead đồng ý pilot {{REST}}. Sau 3 tháng volume đạt 900 đơn/giờ, latency vẫn ổn định, và team đã có kinh nghiệm {{Kafka}} từ luồng báo cáo nên quyết định mở rộng. Quan hệ làm việc không hư hỏng vì tôi không nói 'sếp sai', mà nói 'chúng ta có số liệu gì để chọn?'.
+> Bài học: bất đồng kiến trúc phải dùng bằng chứng, không dùng cảm tính, và luôn để lại cách đo để xem xét lại.
+
+### Những điều nên tránh
+- **Câu chuyện không có bằng chứng**: "tôi nghĩ {{Kafka}} sẽ phức tạp" không ai tin nếu không có số liệu.
+- **Công kích cá nhân**: "sếp tôi sai về kiến trúc" — kể cả khi đúng, cách nói quyết định kết quả.
+- **Đặt mình lên trên người khác**: "tôi đã cảnh báo rồi" là hành vi của người không chịu trách nhiệm chung.
+- **Bỏ qua khía cạnh con người**: câu chuyện chưa có chi tiết về cách bảo vệ quan hệ làm việc sẽ thiếu thuyết phục.
+- **Kết thúc ở việc "tôi thắng"**: interviewer muốn biết bạn xử lý thế nào dù thắng hay thua.
+
+### Ví dụ đời thực
+Một dịch vụ bán lẻ ({{Spring Boot}} 3, {{PostgreSQL}} 15) chịu tải 300 đơn/giờ vào giờ cao điểm. Tech lead đề xuất đưa luồng đặt hàng sang {{Kafka}} để tách biệt với service kho hàng. Triệu chứng sau khi triển khai thử trên môi trường dev: thêm 3 thành phần (broker, consumer, schema registry), latency p99 từ 400 ms lên 1,2 giây do consumer poll mỗi 500 ms, và 2 lần message bị xử lý trùng do consumer restart giữa chừng. Điều tra: tôi đo latency từng bước và tìm ra bước chậm nhất là consumer đợi poll, không phải xử lý business. Nguyên nhân gốc: áp dụng kiến trúc event-driven cho một luồng trung gian thấp mà chưa có observability và team chưa có kinh nghiệm debug message trùng. Cách xử lý: tôi trình bày số liệu (latency +800 ms, 2 lần trùng message, thời gian dev +2 tuần) và đề xuất giữ {{REST}} cho luồng chính, dùng {{Kafka}} cho báo cáo hàng ngày. Tech lead đồng ý. Kết quả: latency p99 ổn định 450 ms, không còn message trùng, và 6 tháng sau khi volume tăng gấp 3 lần, team tự đề xuất mở rộng {{Kafka}} vì đã có kinh nghiệm từ luồng báo cáo.
+
+### Trả lời mẫu khi phỏng vấn
+"Khi bất đồng với tech lead về kiến trúc, tôi không bắt đầu bằng cách nói cách của anh sai. Tôi thu thập số liệu đầu: volume 300 đơn/giờ, latency yêu cầu dưới 2 giây. Tôi ước lượng {{REST}} đồng bộ so với {{Kafka}} event-driven: {{REST}} đơn giản, dễ debug, latency dưới 500 ms; {{Kafka}} thêm broker, consumer, DLT, schema registry, phải xử lý message trùng, phát triển dài hơn 2–3 tuần. Tôi đề xuất pilot {{REST}} cho luồng chính, {{Kafka}} cho báo cáo. Lead đồng ý pilot. Ba tháng sau volume 900 đơn/giờ, latency ổn định, team đã có kinh nghiệm {{Kafka}} nên mở rộng. Quan hệ không hư hỏng vì tôi trình bày bằng chứng, không phải cảm tính, và để lại cách đo để xem xét lại. Bài học: bất đồng phải dùng số liệu, không dùng cảm tính."
+
+> Senior tip: chuẩn bị **hai phiên bản** cho cùng một sự kiện: phiên bản senior tập trung làm rõ vấn đề và bằng chứng; phiên bản lead tập trung lựa chọn đã cân nhắc chi phí cơ hội và tự quyết khi không có đồng thuận. Cùng một sự kiện, hai mức kỳ vọng hoàn toàn khác nhau.`,
+  follow: [
+    'Bạn có bao giờ phải không thuyết phục được người khác không? Bạn xử lý việc đó thế nào?',
+    'Với PM, khác biệt giữa phản đối giải pháp và phản đối mục tiêu là gì?',
+    'Nếu quyết định cuối cùng đi ngược ý bạn và sau đó có sự cố, bạn xử lý thế nào?'
+  ],
+  tags: ['conflict', 'architecture', 'Kafka', 'REST', 'STAR', 'senior']
+},
+{
+  id: 'behavioral-088',
+  topic: 'behavioral',
+  level: 'lead',
+  q: 'Bạn được giao nhận một hệ thống legacy không tài liệu, không test, từ một team đã rời công ty, và phải sửa lỗi báo cáo cuối tháng trong 2 tuần. Bạn xử lý thế nào?',
+  a: `**Tóm tắt:** Câu hỏi đánh giá **quản lý rủi ro trong codebase không quen thuộc**: bạn không viết lại toàn bộ, mà dùng characterization test để có safety net, giới hạn phạm vi thay đổi, và giao tiếp rõ rủi ro với stakeholder. Câu trả lời mạnh có số liệu trước/sau.
+
+### Interviewer muốn đánh giá gì
+- **Khả năng đọc code lạ và onboard nhanh**: bạn dùng công cụ gì (git blame, log, profiler)?
+- **Quản lý rủi ro**: bạn giới hạn thay đổi thế nào để không phá hệ thống?
+- **Ưu tiên**: sửa cái gì trước, defer phần nào?
+- **Giao tiếp**: bạn báo cáo tiến độ và rủi ro với stakeholder thế nào?
+- **Sự cụ thể**: có số liệu trước/sau.
+
+### Khung STAR cho câu này
+- **S — Situation**: hệ thống legacy như thế nào, deadline ra sao.
+- **T — Task**: bạn phải sửa lỗi gì trong bao lâu.
+- **A — Action**: các bước cụ thể bạn làm (characterization test, slice, feature flag/canary).
+- **R — Result**: số liệu đo được.
+
+### Câu trả lời mẫu
+> "Tôi được giao nhận module đối soát thanh toán cuối tháng từ team đã rời công ty. Không tài liệu, không test, {{Spring Boot}} cũ, chạy trên cơ sở dữ liệu Oracle. Ngày cuối quý sắp tới, báo cáo đối soát phải xuất chính xác trong 2 tuần.
+> Tôi không viết lại toàn bộ module. Tuần 1: tôi chạy characterization test (approval test) bằng cách ghi lại input/output của các luồng báo cáo chính để có baseline, đồng thời thêm log chi tiết vào từng bước tính toán. Tuần 2: tôi sửa chỉ phần tính toán sai, thêm test cho phần mới, và deploy canary cho 5% đơn hàng trước khi chạy toàn bộ. Kết quả: xuất báo cáo đúng hẹn, 0 sai số, characterization test phát hiện 2 lỗi tính toán cũ mà team chưa biết.
+> Bài học: legacy không phải viết lại, mà là thêm an toàn quanh chỗ bạn chạm vào, và ship theo slice nhỏ có thể rollback.
+
+### Những điều nên tránh
+- **Viết lại toàn bộ**: không có thời gian, rủi ro cao.
+- **Không có test**: ship mà không có safety net.
+- **Thay đổi quá rộng**: chạm nhiều file không liên quan.
+- **Không báo cáo rủi ro**: stakeholder không biết tiến độ.
+
+### Ví dụ đời thực
+Một hệ thống thanh toán ({{Spring Boot}} 1.5, {{Oracle}} 12) quản lý đối soát cuối tháng, 35k LOC, 0 test, team phát triển đã rời công ty 6 tháng trước. Ngày 25 của tháng, báo cáo đối soát phải xuất cho kiểm toán trong 2 tuần, không được lỡ. Triệu chứng: không ai biết báo cáo tính toán ra sao, và lần trước xuất có sai số 0,3% do làm tròn sai ở một cột. Điều tra: tôi đọc code tính toán, viết approval test ghi lại output của 15 báo cáo chính với dữ liệu tháng trước làm baseline, và review output với kiểm toán trước khi commit. Tôi tìm ra lỗi: hàm tính thuế làm tròn trước khi cộng, nên tổng sai lệch 0,3% ở biên. Tôi chỉ sửa hàm đó, thêm test với dữ liệu biên (0 đồng, 1 đồng, số lớn), và deploy canary cho 5% đơn hàng. Kết quả đo được: xuất báo cáo đúng hẹn ngày 25, 0 sai số, 2 lỗi cũ được phát hiện qua approval test, thời gian onboard 4 ngày, fix 6 ngày, verify 4 ngày.
+
+### Trả lời mẫu khi phỏng vấn
+"Nhận module đối soát legacy 35k LOC không test, team đã rời, phải xuất báo cáo cuối tháng trong 2 tuần. Tôi không viết lại. Viết approval test cho 15 báo cáo chính làm baseline, tìm ra lỗi làm tròn sai 0,3% ở biên, chỉ sửa hàm tính thuế, thêm test dữ liệu biên, deploy canary 5%. Kết quả: xuất đúng hẹn, 0 sai số, 2 lỗi cũ phát hiện sớm. Bài học: legacy không phải viết lại, mà thêm an toàn quanh chỗ bạn chạm vào, ship theo slice nhỏ, và giao tiếp rõ rủi ro với stakeholder."
+
+> Senior tip: trong legacy, **approval test** (ghi output thực tế làm baseline) là công cụ nhanh nhất để có safety net mà không cần hiểu toàn bộ code. Nhưng phải cảnh giác: nếu code đang sai, baseline sẽ sai theo — nên review output trước khi commit.`,
+  follow: [
+    'Bạn dùng công cụ gì để đọc code legacy nhanh (git blame, profiler)?',
+    'Làm sao bạn quyết định phạm vi thay đổi tối thiểu?',
+    'Khi nào bạn nên đề xuất rewrite thay vì patch?'
+  ],
+  tags: ['legacy', 'risk-management', 'approval-test', 'STAR', 'lead']
+},
+{
+  id: 'behavioral-089',
+  topic: 'behavioral',
+  level: 'senior',
+  q: 'Junior trong team bạn viết code chạy được nhưng chậm, và hay gây bug production (lỗi null, thiếu xử lý exception). Bạn mentoring và đo lường tiến bộ thế nào?',
+  a: `**Tóm tắt:** Câu hỏi đánh giá bạn **nhân bản năng lực** chứ không chỉ làm thay. Câu trả lời mạnh có hệ thống: mục tiêu cụ thể, pair programming, đo lường bằng số liệu, và một câu chuyện về người không tiến bộ để thể hiện bạn hiểu mentoring không phải công thức áp cho mọi người.
+
+### Interviewer muốn đánh giá gì
+- **Phương pháp có hệ thống** hay chỉ "giúp khi nào hỏi".
+- **Khả năng truyền đạt**: giải thích vì sao thay vì đưa đáp án.
+- **Tư duy phân tích năng lực**: tìm đúng điểm yếu (hiệu năng hay chính xác).
+- **Khả năng đo lường**: mentoring mà không đo thì không quản lý được.
+- **Sự kiên nhẫn**: coi việc dạy là phần việc chứ không phải việc phụ.
+
+### Khung STAR cho câu này
+- **S — Situation**: người được mentoring là ai, bối cảnh team, điểm yếu cụ thể.
+- **T — Task**: mục tiêu năng lực cụ thể, không phải "dạy code".
+- **A — Action**: các hoạt động cụ thể và cách đo.
+- **R — Result**: số liệu thay đổi và bằng chứng năng lực lớn lên.
+
+### Câu trả lời mẫu
+> "Junior 8 tháng kinh nghiệm làm module báo cáo doanh thu. Vấn đề: code chạy được nhưng chậm (N+1 query, load toàn bộ bảng vào RAM, gọi DB trong vòng lặp), và hay gây bug production (lỗi null, thiếu xử lý exception khi API đối tác chậm). Tôi không fix thay junior. Tôi đặt mục tiêu: 'junior tự viết query hiệu quả và có test hiện thực trước khi merge'. Tôi làm ba việc: (1) pair programming mỗi tuần 2 giờ, cùng xem query thực tế và dùng {{EXPLAIN ANALYZE}} để biết thiếu index; (2) viết test với dữ liệu lớn (10.000 đơn) để phát hiện query chậm trước khi deploy; (3) checklist trước khi merge: kiểm tra N+1, null check, xử lý exception. Sau 3 tháng: query chậm từ 12 xuống 2, bug production do junior từ 5/quý xuống 1, và junior tự viết được module báo cáo mới không cần tôi xem trước. Có một junior khác không tiến vì ngại hỏi, tôi chuyển sang pair trực tiếp 3 giờ/tuần, sau 6 tuần query chậm giảm một nửa. Bài học: mentoring là thiết kế để người học tự tạo phản hồi, không phải nói thay, và phải điều chỉnh phương pháp cho từng người.
+
+### Những điều nên tránh
+- **Con số không kiểm chứng**: "tôi mentoring 5 người, họ đều lên senior".
+- **Mentoring kiểu "tôi làm thay"**: người học không tiến bộ và bạn thành nút thắt.
+- **Chỉ dạy kiến thức, không dạy cách làm việc**: kỹ sư giỏi nhưng không biết profil, đọc stack trace thì vẫn không lên được.
+- **Bỏ qua quan hệ**: mentoring chỉ hiệu quả khi người đó tin bạn.
+- **Không kết nối với công việc thật**: không có gì để đo.
+
+### Ví dụ đời thực
+Một dịch vụ báo cáo ({{Spring Boot}} 3, {{PostgreSQL}} 15) có junior mới 8 tháng kinh nghiệm. Triệu chứng: báo cáo doanh thu tháng chậm 12 giây, và 3 lần production lỗi do null customer trong file xuất Excel. Điều tra: tôi xem code — junior dùng repository.findAll() rồi lọc trong Java, load 200.000 dòng vào RAM; và hàm xuất Excel không kiểm tra null trước khi ghi. Nguyên nhân gốc: junior chưa biết đọc execution plan, chưa có thói quen viết test với dữ liệu lớn, và chưa xử lý exception ở ranh giới hệ thống. Cách xử lý: (1) pair programming 2 giờ/tuần, dạy dùng {{EXPLAIN ANALYZE}} và thêm index cho cột order_date; (2) viết test với 50.000 đơn giả lập, assert thời gian dưới 2 giây; (3) checklist merge: null check ở ranh giới, try/catch với log rõ ràng. Kết quả đo được: báo cáo từ 12 giây xuống 1,8 giây, 0 lỗi null trong 2 tháng sau, junior tự viết module xuất PDF không cần review trước.
+
+### Trả lời mẫu khi phỏng vấn
+"Junior viết code chạy được nhưng chậm (N+1 query, load toàn bộ bảng vào RAM) và hay gây bug production (null, thiếu xử lý exception). Tôi không fix thay. Mục tiêu: junior tự viết query hiệu quả và test hiện thực. Pair programming 2 giờ/tuần, dùng {{EXPLAIN ANALYZE}} để thêm index, viết test với 50.000 đơn để phát hiện chậm trước khi deploy, checklist merge kiểm tra N+1 và null check. Ba tháng sau: query chậm từ 12 xuống 2, bug production từ 5/quý xuống 1, junior tự viết module báo cáo mới. Có junior khác không tiến vì ngại hỏi, tôi chuyển sang pair trực tiếp 3 giờ/tuần, 6 tuần sau query chậm giảm một nửa. Bài học: mentoring là thiết kế để người học tự tạo phản hồi, không phải nói thay."
+
+> Senior tip: chuẩn bị **một câu chuyện có số liệu trước/sau** và **một câu chuyện về một junior bạn không mentoring thành công**. Câu thứ hai cho thấy bạn hiểu mentoring không phải công thức áp cho mọi người, và đó là dấu hiệu của tư duy lead.`,
+  follow: [
+    'Bạn đo lường hiệu quả mentoring bằng cách nào ngoài cảm nhận chủ quan?',
+    'Làm sao mentoring một người hướng nội, thích làm một mình?',
+    'Bạn có bao giờ phải nói với một junior rằng họ chưa phù hợp với vị trí không? Bạn xử lý ra sao?'
+  ],
+  tags: ['mentoring', 'performance', 'leadership', 'STAR', 'senior']
 }
 );
